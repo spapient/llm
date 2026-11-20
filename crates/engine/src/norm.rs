@@ -232,6 +232,23 @@ struct Stage<'a> {
     args: &'a str,
 }
 
+/// 一段块级归约的派发与回读：`PARTIAL` 段在块内归约后写进输出缓冲，再拷回主机供下一段折叠。
+fn partial_pass(text: &mut String, stage: &Stage<'_>) {
+    text.push_str(&launch(PARTIAL, stage.grid, stage.args, ""));
+    text.push_str(&partial_copy(stage.output, stage.grid));
+}
+
+/// 末段归一化：每元素一线程，标度由前几段在主机折叠得到；`extra` 是带进内核的标量名。
+fn normalized_pass(text: &mut String, stage: &Stage<'_>, extra: &str) {
+    text.push_str(&launch_threads(
+        NORM,
+        stage.len.div_ceil(256),
+        256,
+        stage.args,
+        extra,
+    ));
+}
+
 /// 分块归一化的完整 CUDA 程序：多段设备源（仅首段带 preamble）+ host 串联驱动。
 ///
 /// RMSNorm：部分平方和 → 主机折叠 `sqrt(sum/N + 1e-6)` → 归一化。
@@ -242,20 +259,13 @@ pub fn cuda_rmsnorm_driver(
     chunk: usize,
 ) -> Result<String> {
     driver(segments, signature, sample, chunk, |text, stage| {
-        text.push_str(&launch(PARTIAL, stage.grid, stage.args, ""));
-        text.push_str(&partial_copy(stage.output, stage.grid));
+        partial_pass(text, &stage);
         text.push_str(&fold_sum());
         text.push_str(&format!(
             "    float rms = sqrtf(sum / (float){len} + 1e-6f);\n",
             len = stage.len
         ));
-        text.push_str(&launch_threads(
-            NORM,
-            stage.len.div_ceil(256),
-            256,
-            stage.args,
-            "rms",
-        ));
+        normalized_pass(text, &stage, "rms");
     })
 }
 
@@ -267,19 +277,12 @@ pub fn cuda_softmax_driver(
     chunk: usize,
 ) -> Result<String> {
     driver(segments, signature, sample, chunk, |text, stage| {
-        text.push_str(&launch(PARTIAL, stage.grid, stage.args, ""));
-        text.push_str(&partial_copy(stage.output, stage.grid));
+        partial_pass(text, &stage);
         text.push_str(&fold_max());
         text.push_str(&launch(EXPSUM, stage.grid, stage.args, "max"));
-        text.push_str(&partial_copy(stage.output, stage.grid));
+        partial_pass(text, &stage);
         text.push_str(&fold_sum());
-        text.push_str(&launch_threads(
-            NORM,
-            stage.len.div_ceil(256),
-            256,
-            stage.args,
-            "max, sum",
-        ));
+        normalized_pass(text, &stage, "max, sum");
     })
 }
 

@@ -47,7 +47,7 @@ pub(crate) const SITE: &str = "train::Buffers";
 /// 叶子、链尾与形状表一次给齐，调用方只负责装载常驻值。只被本模块的测试用到，
 /// 因此只在测试构建里存在：一个没有生产消费者的夹具不该进发布二进制。
 #[cfg(test)]
-pub struct QuantChain {
+struct QuantChain {
     tape: Tape,
     sizes: Sizes,
     x: Var,

@@ -45,7 +45,7 @@ impl Profile {
         let (meta, fingerprint) = parse_head(table)?;
         let (spaces, units) = parse_floor(table)?;
         let (provides, peak) = parse_capability(table)?;
-        let (flags, preamble) = parse_compile(table);
+        let (flags, preamble, headers) = parse_compile(table);
         Ok(Self {
             meta,
             fingerprint,
@@ -57,6 +57,7 @@ impl Profile {
             peak,
             flags,
             preamble,
+            headers,
         })
     }
 }
@@ -208,7 +209,7 @@ fn parse_peak(table: &Table) -> Result<Peak, ProfileError> {
     })
 }
 /// `[compile]` 段：参与缓存指纹的参数与源文件前置声明，缺项给空。
-fn parse_compile(table: &Table) -> (Vec<String>, String) {
+fn parse_compile(table: &Table) -> (Vec<String>, String, Vec<(String, String)>) {
     let compile = table.table("compile");
     let flags = compile
         .and_then(|table| table.string_array("flags"))
@@ -217,7 +218,20 @@ fn parse_compile(table: &Table) -> (Vec<String>, String) {
     let preamble = compile
         .and_then(|table| table.string("preamble"))
         .unwrap_or("");
-    (flags, preamble.to_string())
+    let headers = compile
+        .and_then(|table| table.table("headers"))
+        .map(|table| {
+            table
+                .entries()
+                .iter()
+                .filter_map(|(name, value)| match value {
+                    ::diagnostic::data::Value::Str(text) => Some((name.clone(), text.clone())),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    (flags, preamble.to_string(), headers)
 }
 /// 峰值常数：`value` 必须等于 `src` 的推导式结果；抄来的数字与带变量名的公式都不收。
 fn parse_constant(table: &Table, key: &str) -> Result<Option<Constant>, ProfileError> {

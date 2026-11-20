@@ -114,7 +114,7 @@ mod runner;
 // `probe` / `space` 的公开面也不因搬进 `device` 而消失。
 pub use device::probe;
 pub use device::space;
-pub use runner::driver;
+pub use runner::{compile_flags, driver};
 
 /// crate 自身的 schema 版本；闭集变更时递增，旧 `plan` 表与缓存随即失效（README §6.4）。
 ///

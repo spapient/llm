@@ -11,47 +11,24 @@
 //!
 //! 权重由确定性 PRNG 生成有限值；预热、采样与测量时长由 criterion 自身配置决定。
 
+#[path = "../support/model.rs"]
+mod support;
+
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use engine::exec::Stream;
 use engine::kv::{Cache, Pager};
 use engine::{Batch, Sequence};
-use nn::{Embedding, Linear, Stack, WeightFormat};
 use serve::Predict;
-use serve::model::{CpuModel, Params};
+use serve::model::CpuModel;
 use std::hint::black_box;
-use testkit::Rng;
+use support::PROMPT;
 
-/// 词表大小。
-const VOCAB: usize = 16;
-/// 嵌入与隐藏宽度。
-const DIM: usize = 8;
-/// 投影输出宽度（末层 logits 宽度）。
-const OUT: usize = 8;
 /// 同批序列数（小批变体）。
 const BATCH: usize = 4;
-/// 提示长度：一步 decode，序列只带一个 token。
-const PROMPT: &[u32] = &[3];
-
-/// 确定性有限权重：±[0.5, 2]，远离 0，避免平方类差分为 0。
-fn finite_values(n: usize, seed: u32) -> Vec<f32> {
-    let mut rng = Rng::new(seed);
-    (0..n).map(|_| rng.value() as f32).collect()
-}
 
 /// 装配合成栈与一批序列；模型、批与序列在测量轮次间复用，前向内不重新分配权重。
 fn fixture() -> (CpuModel, Batch, Vec<Sequence>) {
-    let table = finite_values(VOCAB * DIM, 7);
-    let projection = finite_values(OUT * DIM, 11);
-
-    let stack = Stack::of(vec![
-        Box::new(Embedding::new("tok_emb", VOCAB, DIM, 1).expect("层")),
-        Box::new(Linear::with_format("proj", WeightFormat::F32, DIM, OUT).expect("层")),
-    ])
-    .expect("栈");
-    let mut params = Params::new();
-    params.insert("tok_emb.weight", table);
-    params.insert("proj.weight", projection);
-    let model = CpuModel::new(&stack, &params).expect("装配");
+    let model = support::synthetic_model();
 
     let pager = Pager::new(Cache::new(16, 4).expect("页池"), 2).expect("行宽");
     let mut batch = Batch::new(pager);

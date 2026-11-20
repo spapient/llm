@@ -947,7 +947,10 @@ mod tests {
 
         #[test]
         fn reference_cycle_is_rejected() {
-            let raw = [Raw::Ref(f32_segment("a", &[1.0]), 1), Raw::Ref(f32_segment("b", &[1.0]), 0)];
+            let raw = [
+                Raw::Ref(f32_segment("a", &[1.0]), 1),
+                Raw::Ref(f32_segment("b", &[1.0]), 0),
+            ];
             let error = Archive::parse(&encode_raw(&raw)).expect_err("引用成环必须报错");
             assert_eq!(error.code(), Code::Invalid);
         }
@@ -955,7 +958,10 @@ mod tests {
         #[test]
         fn mismatched_reference_metadata_is_rejected() {
             let raw = [
-                Raw::Inline(f32_segment("a", &[1.0, 2.0]), f32_segment("a", &[1.0, 2.0]).data),
+                Raw::Inline(
+                    f32_segment("a", &[1.0, 2.0]),
+                    f32_segment("a", &[1.0, 2.0]).data,
+                ),
                 Raw::Ref(f16("b"), 0),
             ];
             let error = Archive::parse(&encode_raw(&raw)).expect_err("元数据不一致必须报错");

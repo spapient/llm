@@ -122,8 +122,8 @@ reason = "格式适配器与选码内部件：bin/gguf 解析件、五轴选码�
 
 [[ownership.unlisted]]
 crate = "wire"
-names = ["Count", "Cursor", "FileSink", "Measured", "Sink", "SliceSink", "Uint"]
-reason = "字节码闭集的接收器、游标与无符号整数标记族；公开面是 CRC/LEB/Sink 这组函数与 trait，内部实现件待边界稳定后逐项进表"
+names = ["Count", "FileSink", "Measured", "Sink", "SliceSink", "Uint"]
+reason = "字节码闭集的接收器与无符号整数标记族；公开面是 CRC/LEB/Sink 这组函数与 trait，内部实现件待边界稳定后逐项进表。`leb::Cursor` 已作为读游标进入所有权表的 `Cursor` 行，不再留在基线里"
 
 [gate]
 # 静态质量门阈值（`tool` 分析器消费，`cargo test` 不可绕过）。

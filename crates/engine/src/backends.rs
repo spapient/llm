@@ -790,7 +790,7 @@ pub fn compile_run_cuda(
     label: &str,
 ) -> Result<(String, String)> {
     let dir = driver::scratch(dirs, &format!("{label}-cuda"));
-    let outcome = cuda_in_dir(&dir, profile, program, label);
+    let outcome = cuda_in_dir(&dir, profile, program, label, dirs);
     let _ = std::fs::remove_dir_all(&dir);
     outcome
 }
@@ -800,59 +800,22 @@ fn cuda_in_dir(
     profile: &Profile,
     program: &str,
     label: &str,
+    dirs: &Dirs,
 ) -> Result<(String, String)> {
     let src = dir.join(format!("{label}.cu"));
     let exe = dir.join(format!("{label}.exe"));
     driver::write_text(&src, program)?;
-    cuda_compile(&exe, &src, profile)?;
+    cuda_compile(&exe, &src, profile, dirs)?;
     let mut command = Command::new(&exe);
     driver::run_exe(&mut command, &exe, "CUDA 执行失败")
 }
 
-/// CUDA 运行时头的 MUSA 转发垫片：生成的 `.cu` 只 `#include <cuda_runtime.h>` 与 `<cuda_fp16.h>`，
-/// 映射关系全在工具链侧。垫片写在源文件旁（不读仓库布局），因此发布出去的二进制自带这一行知识。
-const MUSA_SHIM_RUNTIME: &str = "\
-#pragma once\n\
-#include <musa_runtime.h>\n\
-#define cudaError_t musaError_t\n\
-#define cudaSuccess musaSuccess\n\
-#define cudaMalloc musaMalloc\n\
-#define cudaFree musaFree\n\
-#define cudaMemcpy musaMemcpy\n\
-#define cudaMemcpyHostToDevice musaMemcpyHostToDevice\n\
-#define cudaMemcpyDeviceToHost musaMemcpyDeviceToHost\n\
-#define cudaDeviceSynchronize musaDeviceSynchronize\n\
-#define cudaGetErrorString musaGetErrorString\n";
-
-const MUSA_SHIM_FP16: &str = "\
-#pragma once\n\
-#include <musa_fp16.h>\n";
-
-/// 把垫片写到源文件旁，返回 `-I` 需要的目录。
-fn write_musa_shims(src: &Path) -> Result<PathBuf> {
-    let dir = src
-        .parent()
-        .ok_or_else(|| Error::new(Code::Io, "源文件没有父目录".to_string()))?;
-    for (name, text) in [
-        ("cuda_runtime.h", MUSA_SHIM_RUNTIME),
-        ("cuda_fp16.h", MUSA_SHIM_FP16),
-    ] {
-        let path = dir.join(name);
-        std::fs::write(&path, text).map_err(|error| {
-            Error::new(
-                Code::Io,
-                format!("写 MUSA 垫片 {name} 到 {}：{error}", path.display()),
-            )
-        })?;
-    }
-    Ok(dir.to_path_buf())
-}
-
-fn cuda_compile(exe: &Path, src: &Path, profile: &Profile) -> Result<()> {
+fn cuda_compile(exe: &Path, src: &Path, profile: &Profile, dirs: &Dirs) -> Result<()> {
     let tool = profile.meta.tool.as_str();
     let mut command = Command::new(tool);
-    musa_shims(tool, src, &mut command)?;
-    command.args(&profile.flags);
+    // 头文件垫片归档案（`[compile.headers]`）：生成程序里的 `<cuda_runtime.h>` 与工具链实际提供的
+    // `<musa_runtime.h>` 之间的映射写在 `devices/musa.toml`，本层只负责把它变成 `-I`。
+    command.args(cutile::compile_flags(profile, dirs)?);
     cuda_ccbin(tool, &mut command)?;
     command.arg("-o").arg(exe).arg(src);
     driver::run_tool(tool, &mut command, src)
@@ -866,16 +829,6 @@ fn nvcc_ready() -> bool {
 /// MUSA 的可用性：编译器与设备都在。
 fn musa_ready() -> bool {
     detect_musa().is_some() && musa_device()
-}
-
-/// MUSA 的头文件名与 CUDA 不同，垫片只在这一支出现。
-fn musa_shims(tool: &str, src: &Path, command: &mut Command) -> Result<()> {
-    if tool != "mcc" {
-        return Ok(());
-    }
-    let dir = write_musa_shims(src)?;
-    command.arg(format!("-I{}", dir.display()));
-    Ok(())
 }
 
 /// Windows 上的 nvcc 需要显式指定 MSVC 编译器。

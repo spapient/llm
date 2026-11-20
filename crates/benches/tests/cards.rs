@@ -13,27 +13,21 @@
 //! 照 `lld` 的口径判出来归档，但不在测试里断言它通过——这台机器当时抖不抖是测量结果，
 //! 不是这个测试的前提。
 
+#[path = "../support/model.rs"]
+mod support;
+
 use std::hint::black_box;
 use std::time::Instant;
 
 use engine::exec::Stream;
 use engine::kv::{Cache, Pager};
 use engine::{Batch, Sequence};
-use nn::{Embedding, Linear, Stack, WeightFormat};
 use serve::Predict;
-use serve::model::{CpuModel, Params};
-use testkit::Rng;
+use serve::model::CpuModel;
+use support::PROMPT;
 use tool::bench::Harness;
 use tool::card::{Card, Direction, Protocol, Shortfall, Standing, Statistic};
 
-/// 词表大小。
-const VOCAB: usize = 16;
-/// 嵌入与隐藏宽度。
-const DIM: usize = 8;
-/// 投影输出宽度（末层 logits 宽度）。
-const OUT: usize = 8;
-/// 提示长度：一步 decode，序列只带一个 token。
-const PROMPT: &[u32] = &[3];
 /// 热身步数：不计入样本，只用来把首次分页与寄存器预热甩掉。
 const WARMUP: usize = 4;
 /// 采样的步数：`lld` §10.10 的预注册窗口在机器上至少这么多，才谈得上区间。
@@ -43,23 +37,9 @@ const PAGES: usize = 128;
 /// 每页 token 数。
 const PAGE_SIZE: usize = 4;
 
-/// 确定性有限权重：±[0.5, 2]，远离 0，避免平方类差分为 0。
-fn finite_values(n: usize, seed: u32) -> Vec<f32> {
-    let mut rng = Rng::new(seed);
-    (0..n).map(|_| rng.value() as f32).collect()
-}
-
 /// 装配合成栈与一条序列；模型、批与序列在测量轮次间复用，前向内不重新分配权重。
 fn fixture() -> (CpuModel, Batch, Sequence) {
-    let stack = Stack::of(vec![
-        Box::new(Embedding::new("tok_emb", VOCAB, DIM, 1).expect("层")),
-        Box::new(Linear::with_format("proj", WeightFormat::F32, DIM, OUT).expect("层")),
-    ])
-    .expect("栈");
-    let mut params = Params::new();
-    params.insert("tok_emb.weight", finite_values(VOCAB * DIM, 7));
-    params.insert("proj.weight", finite_values(OUT * DIM, 11));
-    let model = CpuModel::new(&stack, &params).expect("装配");
+    let model = support::synthetic_model();
 
     let pager = Pager::new(Cache::new(PAGES, PAGE_SIZE).expect("页池"), 2).expect("行宽");
     let mut batch = Batch::new(pager);

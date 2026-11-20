@@ -348,20 +348,25 @@ fn the_registry_and_the_model_annotations_are_mirrors() {
 
     let lib = fs::read_to_string(root().join("crates/op/src/lib.rs"))
         .expect("`crates/op/src/lib.rs` 必须存在");
-    // 注册表现在是 `类型路径 => 模板`：名字、可微性与语义表都由 `Operator` 派生
-    // （`Operator::NAME` / `DIFFERENTIABLE` / `model_of`），文本里不再有手写的注册名与
-    // `Model` 字面量。本测试核对「注解仍是语义表的唯一生产者」这条事实没有被表结构改变。
+    // 注册表现在由 `for_each_operator!` 生成（`REGISTRY` 是它的投影）：名字、可微性与语义表都由
+    // `Operator` 派生（`Operator::NAME` / `DIFFERENTIABLE` / `model_of`），文本里不再有手写的注册名与
+    // `Model` 字面量。锚点因此从 `registry! {` 换到那张宏表：每行是
+    // `名字: $crate::模块::类型 => "骨架"`。本测试核对「注解仍是语义表的唯一生产者」这条事实
+    // 没有被表结构改变。
     let start = lib
-        .find("registry! {")
-        .expect("`REGISTRY` 不见了：它是语义表的唯一入口");
-    let open = start + lib[start..].find('{').expect("注册表必须是一张表");
-    let close = open + lib[open..].find("\n}").expect("注册表必须闭合");
+        .find("macro_rules! for_each_operator")
+        .expect("`for_each_operator!` 不见了：它是 `REGISTRY` 的唯一来源");
+    let open = start + lib[start..].find("$m! {").expect("宏表必须是一张表") + "$m! {".len();
+    let close = open + lib[open..].find("\n        }").expect("宏表必须闭合");
     let mut types: Vec<String> = Vec::new();
     for line in lib[open..close].lines() {
-        let Some((ty, _template)) = line.trim().split_once("=>") else {
+        let Some((_, rest)) = line.trim().split_once(": $crate::") else {
             continue;
         };
-        types.push(ty.trim().trim_end_matches(',').to_string());
+        let Some((ty, _skeleton)) = rest.split_once(" =>") else {
+            continue;
+        };
+        types.push(ty.trim().to_string());
     }
     assert!(
         types.len() >= 2,

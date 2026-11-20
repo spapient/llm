@@ -58,22 +58,6 @@ pub const fn model_of<T: Operator>() -> Model {
     }
 }
 
-/// `const` 字符串逐字节相等：注册表清单与 `Operator::NAME` 的编译期对拍用。
-pub const fn same_str(left: &str, right: &str) -> bool {
-    let (left, right) = (left.as_bytes(), right.as_bytes());
-    if left.len() != right.len() {
-        return false;
-    }
-    let mut index = 0;
-    while index < left.len() {
-        if left[index] != right[index] {
-            return false;
-        }
-        index += 1;
-    }
-    true
-}
-
 /// 为「模块自带具体入口」的算子装配 [`Operator`]（ADR 0050 §3）：`AXES` / `project_shape` /
 /// `cost` / `sample` / `reference` 都取当前模块的同名项，装配行只剩类型、注册名、生产形状、
 /// 可微性与参考入口。族骨架的泛型入口（reduce / unary / binary / gemv / gemm）走

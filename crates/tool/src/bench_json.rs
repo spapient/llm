@@ -346,10 +346,13 @@ impl<'a> Reader<'a> {
                 Ok(())
             }
             Some(byte) if byte == close => Ok(()),
-            Some(_) => {
-                Err(self.cursor.fail_at(self.cursor.pos(), format!("{what}里期望 `,` 或 `{}`", close as char)))
-            }
-            None => Err(self.cursor.fail_at(self.cursor.pos(), format!("{what}没有闭合"))),
+            Some(_) => Err(self.cursor.fail_at(
+                self.cursor.pos(),
+                format!("{what}里期望 `,` 或 `{}`", close as char),
+            )),
+            None => Err(self
+                .cursor
+                .fail_at(self.cursor.pos(), format!("{what}没有闭合"))),
         }
     }
 
@@ -630,7 +633,9 @@ impl<'a> Reader<'a> {
         match byte {
             b'"' => Ok(true),
             b'\\' => self.push_escape(text),
-            0x00..=0x1f => Err(self.cursor.fail_at(self.cursor.pos() - 1, "控制字符必须转义")),
+            0x00..=0x1f => Err(self
+                .cursor
+                .fail_at(self.cursor.pos() - 1, "控制字符必须转义")),
             _ => self.push_utf8(text, byte),
         }
     }
@@ -652,22 +657,30 @@ impl<'a> Reader<'a> {
         };
         match byte {
             b'u' => Err(self.cursor.fail_at(at, "本记录字符串不接受 `\\u` 转义")),
-            _ => simple_escape(byte)
-                .ok_or_else(|| self.cursor.fail_at(at, format!("未知转义 `\\{}`", byte as char))),
+            _ => simple_escape(byte).ok_or_else(|| {
+                self.cursor
+                    .fail_at(at, format!("未知转义 `\\{}`", byte as char))
+            }),
         }
     }
 
     /// 取出自当前 `pos` 起的一个合法 UTF-8 字符片段，并把指针推到片段末尾。
     fn utf8_run(&mut self, first: u8) -> Result<&str> {
         let Some(width) = sequence_width(first) else {
-            return Err(self.cursor.fail_at(self.cursor.pos() - 1, "非法的 UTF-8 起始字节"));
+            return Err(self
+                .cursor
+                .fail_at(self.cursor.pos() - 1, "非法的 UTF-8 起始字节"));
         };
         let end = self.cursor.pos() - 1 + width;
         let Some(slice) = self.cursor.bytes().get(self.cursor.pos() - 1..end) else {
-            return Err(self.cursor.fail_at(self.cursor.pos() - 1, "多字节字符被截断"));
+            return Err(self
+                .cursor
+                .fail_at(self.cursor.pos() - 1, "多字节字符被截断"));
         };
-        let text = std::str::from_utf8(slice)
-            .map_err(|_| self.cursor.fail_at(self.cursor.pos() - 1, "非法的 UTF-8 序列"))?;
+        let text = std::str::from_utf8(slice).map_err(|_| {
+            self.cursor
+                .fail_at(self.cursor.pos() - 1, "非法的 UTF-8 序列")
+        })?;
         self.cursor.seek(end);
         Ok(text)
     }
@@ -691,8 +704,13 @@ impl<'a> Reader<'a> {
     }
 
     fn slice_text(&self, start: usize) -> Result<String> {
-        let text = std::str::from_utf8(self.cursor.bytes().get(start..self.cursor.pos()).unwrap_or_default())
-            .map_err(|_| self.cursor.fail_at(start, "数值不是 ASCII"))?;
+        let text = std::str::from_utf8(
+            self.cursor
+                .bytes()
+                .get(start..self.cursor.pos())
+                .unwrap_or_default(),
+        )
+        .map_err(|_| self.cursor.fail_at(start, "数值不是 ASCII"))?;
         Ok(text.to_string())
     }
 
@@ -702,7 +720,9 @@ impl<'a> Reader<'a> {
             .parse()
             .map_err(|_| self.cursor.fail_at(at, format!("数值 `{text}` 无法解析")))?;
         if !number.is_finite() {
-            return Err(self.cursor.fail_at(at, "数值必须是有限数（不接受 NaN / Infinity）"));
+            return Err(self
+                .cursor
+                .fail_at(at, "数值必须是有限数（不接受 NaN / Infinity）"));
         }
         Ok(number)
     }

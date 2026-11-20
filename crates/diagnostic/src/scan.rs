@@ -9,7 +9,7 @@
 //! ```
 //! use llm_diagnostic::scan::Cursor;
 //!
-//! let mut cursor = Cursor::new("  {}", "demo::scan");
+//! let mut cursor = Cursor::new("  {", "demo::scan");
 //! cursor.skip_space();
 //! cursor.eat(b'{').expect("有左花括号");
 //! assert_eq!(cursor.pos(), 3);

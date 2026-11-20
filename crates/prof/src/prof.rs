@@ -262,6 +262,12 @@ pub struct Profile {
     pub flags: Vec<String>,
     /// 源文件前置声明（`#include` 之类）。
     pub preamble: String,
+    /// 工具链头文件垫片：文件名 → 内容（`[compile.headers]`）。
+    ///
+    /// 生成的程序只写一种头文件名（`<cuda_runtime.h>`），而不同工具链的名字不同（MUSA 只有
+    /// `<musa_runtime.h>`）。把"缺哪个头、缺的那份长什么样"登记在档案里，编译入口才有依据落地，
+    /// 不必让每个后端各写一份——头文件名也是设备知识。
+    pub headers: Vec<(String, String)>,
 }
 /// 档案加载 / 校验错误。
 #[derive(Debug, Clone, PartialEq, Eq)]

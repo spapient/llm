@@ -162,11 +162,10 @@ impl<'a> Reader<'a> {
     fn literal(&mut self, word: &str, value: Value) -> Result<Value> {
         let at = self.cursor.pos();
         let end = at + word.len();
-        let slice = self
-            .cursor
-            .bytes()
-            .get(at..end)
-            .ok_or_else(|| self.cursor.fail_at(at, format!("期望 `{word}`，但内容不足")))?;
+        let slice = self.cursor.bytes().get(at..end).ok_or_else(|| {
+            self.cursor
+                .fail_at(at, format!("期望 `{word}`，但内容不足"))
+        })?;
         if slice != word.as_bytes() {
             return Err(self.cursor.fail_at(at, format!("期望 `{word}`")));
         }
@@ -315,7 +314,8 @@ impl<'a> Reader<'a> {
     fn chunk(&mut self, open: usize) -> Result<Option<String>> {
         let at = self.cursor.pos();
         let byte = self
-            .cursor.bump()
+            .cursor
+            .bump()
             .ok_or_else(|| self.cursor.fail_at(open, "字符串没有闭合"))?;
         if byte == b'"' {
             return Ok(None);
@@ -342,8 +342,10 @@ impl<'a> Reader<'a> {
         if escaped == b'u' {
             return self.unicode_escape(open);
         }
-        simple_escape(escaped)
-            .ok_or_else(|| self.cursor.fail_at(at, format!("未知转义 `\\{}`", escaped as char)))
+        simple_escape(escaped).ok_or_else(|| {
+            self.cursor
+                .fail_at(at, format!("未知转义 `\\{}`", escaped as char))
+        })
     }
 
     /// 一个多字节字符：按起始字节定宽度，切片必须是合法 UTF-8。
@@ -355,7 +357,8 @@ impl<'a> Reader<'a> {
         let Some(slice) = self.cursor.bytes().get(at..end) else {
             return Err(self.cursor.fail_at(at, "多字节字符被截断"));
         };
-        let text = std::str::from_utf8(slice).map_err(|_| self.cursor.fail_at(at, "非法的 UTF-8 序列"))?;
+        let text =
+            std::str::from_utf8(slice).map_err(|_| self.cursor.fail_at(at, "非法的 UTF-8 序列"))?;
         self.cursor.seek(end);
         Ok(text.to_string())
     }
@@ -417,7 +420,9 @@ impl<'a> Reader<'a> {
             return Err(self.cursor.fail_at(start, "整数缺少数字"));
         }
         if matches!(self.cursor.peek(), Some(b'.' | b'e' | b'E')) {
-            return Err(self.cursor.fail_at(start, "只接受整数：头部里的形状与偏移不能是小数或指数"));
+            return Err(self
+                .cursor
+                .fail_at(start, "只接受整数：头部里的形状与偏移不能是小数或指数"));
         }
         integer_value(
             &self.cursor,

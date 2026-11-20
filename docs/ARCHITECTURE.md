@@ -39,7 +39,7 @@
 不再复述每一次的数字；配置层的现状见 [ADR 0022](adr/0022-build-time-corpora.md) 与
 [ADR 0023](adr/0023-settings-to-cli.md)。
 
-允许的边（当前全量，共 111 条，含 42 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benches` / `testkit` 的边不参与运行时方向判定）：
+允许的边（当前全量，共 110 条，含 42 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benches` / `testkit` 的边不参与运行时方向判定）：
 
 ```
 cutile   → diagnostic, op, prim, prof    +dev: testkit
@@ -54,7 +54,7 @@ weights  → tensor, diagnostic, dtype, wire, storage（`storage` 仅由 `mmap` 
 autograd → tensor, diagnostic    +dev: testkit
 nn       → tensor, op, weights, diagnostic, annotation
 shard    → diagnostic
-train    → nn, autograd, weights, shard, op, tensor, diagnostic, wire, annotation    +dev: testkit（`annotation` 只用于 `#[derive(OperatorSet)]` 的装配表）
+train    → nn, autograd, weights, shard, op, tensor, diagnostic, wire    +dev: testkit
 engine   → tensor, diagnostic, storage, cutile, op, prof    +dev: testkit
 serve    → engine, nn, op, rng, tokenizer, diagnostic, weights, wire    +dev: testkit
 cli      → cutile, diagnostic, engine, nn, op, prim, prof, serve, tensor, tokenizer, tool, train, weights（L7 组合根：只做命令分派与各层装配，不定义新类型）
@@ -76,7 +76,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 
 | 概念 | 唯一主人 | 负责什么 |
 |---|---|---|
-| `Error` / `Code` / `Result` / `Cursor` | `diagnostic` | 全仓唯一错误类型：类别由产生错误的那一层给，上层只补上下文；`also` 追加同级诊断，`from_io` 区分"缺失"与"读不出"，`exit_code` 是类别到退出码的唯一映射。`Cursor`（`scan` 模块）是带字节位置的逐字节游标：只做读字节 / 跳空白 / 吃必需字节三件事，不认语法、不建树——否则它就成了第二份解析器 |
+| `Error` / `Code` / `Result` / `Cursor` | `diagnostic` | 全仓唯一错误类型：类别由产生错误的那一层给，上层只补上下文；`also` 追加同级诊断，`from_io` 区分"缺失"与"读不出"，`exit_code` 是类别到退出码的唯一映射。`Cursor`（`scan` 模块）是带字节位置的逐字节游标：只做读字节 / 跳空白 / 吃必需字节三件事，不认语法、不建树——否则它就成了第二份解析器 。同名局部读取器在 `wire`（LEB）/ `train`（快照）/ `tokenizer` / `cutile` / `annotation` 各有一份，按各自的格式边界读字节，与本行不是同一个类型——合并它们要按格式逐个收，不在这里主张 |
 | `Table` / `Value` | `diagnostic` | 声明数据树：构建期生成的代码构造、运行期只读，因此不存在"语法错误"这一类 |
 | `Rng` / `Uniform` / `Normal` / `Bernoulli` | `rng` | 计数器型确定性随机与三个构造期校验参数的分布；采样是 `u ∈ [0,1) → 元素` 的纯映射 |
 | `DType` / `QType` / `MxType` / `Element` | `dtype` | 全仓唯一精度事实源，三轴分文件（标量 / GGML 块量化 / OCP MX）；只放身份与布局元数据，反量化算法留在 `weights` |
@@ -148,7 +148,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Batch` / `Dataset` / `Chunks` | `train`（`samples` 模块） | 训练样本：借用调用方 token 缓冲（零分配 / 零拷贝），两个构造函数共用同一份几何校验，批总数在构造期算好，`Dataset` 对象安全 |
 | `Optimizer` / `Sgd` / `Adam` / `Group` / `Slot` / `OwnedSlot` / `Moments` / `SlotMoments` / `GradAccum` | `train` | 优化器：对象安全 trait，矩状态按槽位编号自持；参数组由 `ParamRole` 派生，不按字段名猜 |
 | `Muon` | `train` | 矩阵参数的近似正交化更新：更新量只由方向决定，非矩阵槽**拒绝**而不是悄悄跳过 |
-| `Buffers` / `Kernel` / `Reference` / `Data` / `View` / `ViewMut` / `Kind` / `Lane` / `Sealed` / `Inputs` / `OperatorSet` | `train` | 激活缓冲：`autograd::Store` 在训练侧的落地（按计划分配与交还、按等长空闲表复用），算术交给 `Kernel`；本层不定义算子、不碰 `unsafe` |
+| `Buffers` / `Kernel` / `Reference` / `Data` / `View` / `ViewMut` / `Kind` / `Lane` / `Sealed` / `Inputs` / `OperatorSetOps` | `train` | 激活缓冲：`autograd::Store` 在训练侧的落地（按计划分配与交还、按等长空闲表复用），算术交给 `Kernel`；本层不定义算子、不碰 `unsafe` |
 | `MetricPoint` / `MetricsBoard` / `Learner` / `ForwardOut` | `train` | 评估与编排：`Learner` 驱动"前向 → 评估入账 → 装梯度 → 优化步"闭环，模型拓扑与梯度来源由闭包注入 |
 | `Distill` / `Grpo` / `Loss` / `Metric` / `Outcome` | `train` | 损失与度量闭集：分类 CE / Hinton 蒸馏 / GRPO 三臂，配置随度量走；都是 train 侧纯函数，不进 `op` 的设备核注册表 |
 | `Envelope` / `Frame` / `Decoder` / `Kind` / `Version` | `serve`（`protocol` 模块；`proto` 为兼容重导出路径） | 端点契约的线格式：版本化信封、零拷贝帧视图与增量解码（帧布局 = 10 字节头 + 载荷 + v2 起的 CRC-32 尾，见 `serve::protocol` 的 `//!`） |

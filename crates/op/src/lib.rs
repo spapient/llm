@@ -196,7 +196,7 @@ macro_rules! registry_impl {
         const _: () = {
             $(
                 ::core::assert!(
-                    crate::operator::same_str(
+                    crate::same_bytes(
                         stringify!($name),
                         <$ty as crate::operator::Operator>::NAME,
                     ),
@@ -227,7 +227,8 @@ pub const fn contains(name: &str) -> bool {
 
 /// `const` 上下文里逐字节比两个名字（没有可用的 `str` 比较）。
 ///
-/// 全仓共用这一份：`train` 的内核表与 [`REGISTRY`] 名字对拍也调它，不再各写一遍。
+/// 全仓共用这一份：`train` 的内核表、注册表清单与 `Operator::NAME` 的编译期对拍、以及 `train`
+/// 的内核表对拍都调它，不再各写一遍。
 pub const fn same_bytes(left: &str, right: &str) -> bool {
     let (left, right) = (left.as_bytes(), right.as_bytes());
     if left.len() != right.len() {

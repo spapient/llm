@@ -1,18 +1,17 @@
-// `cutile_x_kernel` 的签名与配套样本：两个白盒对拍共用一份取值，免得各写一份后静默漂移。
-// 文档用普通注释：本文件被 `cutile` 以 `include!` 取用，而 `include!` 不接受内层文档（`//!`）。
-//
-// 调用点（都以 `#[path]` 取用本文件）：
-//
-// - `crates/cutile/src/harness.rs`：只测 C 宿主基准封装把样本渲染成数组、把签名拼成调用；
-// - `crates/engine/tests/schedule.rs`：测 vendor 生产态 lowering 的源文本（`__device__` /
-//   `kernel_main` / `<<<1, 1>>>` 一类判据）。
-//
-// 夹具共用不改这两件事：两边测的仍是不同层的产物。取值被下游的文本断言**逐字**依赖
-// （`cutile_x_kernel(x, w, scales, y, 4, 2, 4);`、`cudaMemcpy(h_y, d_y, 2 * sizeof(float)`），
-// 改这里的数等于改那些断言。
-//
-// 落在 `testkit` 的 `tests/` 而不是库体：库体只出零依赖夹具（浮点口径、随机数、暂存目录），
-// 不把被测层拉进依赖表；`cutile` 与 `engine` 都已经声明了 `+dev: testkit` 这条边。
+//! `cutile_x_kernel` 的签名与配套样本：两个白盒对拍共用一份取值，免得各写一份后静默漂移。
+//!
+//! 调用点（都以 `#[path]` 取用本文件）：
+//!
+//! - `crates/cutile/src/harness.rs`：只测 C 宿主基准封装把样本渲染成数组、把签名拼成调用；
+//! - `crates/engine/tests/schedule.rs`：测 vendor 生产态 lowering 的源文本（`__device__` /
+//!   `kernel_main` / `<<<1, 1>>>` 一类判据）。
+//!
+//! 夹具共用不改这两件事：两边测的仍是不同层的产物。取值被下游的文本断言**逐字**依赖
+//! （`cutile_x_kernel(x, w, scales, y, 4, 2, 4);`、`cudaMemcpy(h_y, d_y, 2 * sizeof(float)`），
+//! 改这里的数等于改那些断言。
+//!
+//! 落在 `testkit` 的 `tests/` 而不是库体：库体只出零依赖夹具（浮点口径、随机数、暂存目录），
+//! 不把被测层拉进依赖表；`cutile` 与 `engine` 都已经声明了 `+dev: testkit` 这条边。
 
 use op::model::{Buffer, Sample, Values};
 use op::sig::Signature;

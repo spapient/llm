@@ -296,6 +296,22 @@ mod tests {
         Hybrid::new(attention(), ffn, residual).expect("宽度一致")
     }
 
+    /// 主路的参考值：注意力与前馈各跑一遍、增量按 `1.0` 累加，次序与 `Hybrid::step` 的装配一致。
+    fn attending_then_feeding(
+        main: &[f64],
+        cache: &Latent<f64>,
+        query: &Query<'_, f64>,
+    ) -> Vec<f64> {
+        let mut expected = main.to_vec();
+        let attended = attention()
+            .attend(cache, query.nope, query.rope, 1, Path::Absorb)
+            .expect("位置在缓存内");
+        accumulate(&mut expected, &attended, 1.0);
+        let fed = ffn().forward(&expected).expect("宽度一致");
+        accumulate(&mut expected, &fed, 1.0);
+        expected
+    }
+
     /// 单流 + 单位混合时，这一层必须逐位等于「主路 + 注意力 + 前馈」：装配不许自己长出新算术。
     #[test]
     fn one_stream_identity_mixing_is_plain_residual_arithmetic() {
@@ -307,13 +323,7 @@ mod tests {
             .step(&mut streams, &cache, &query, Path::Absorb)
             .expect("前向");
 
-        let mut expected = vec![1.0, 2.0, 3.0, 4.0];
-        let attended = attention()
-            .attend(&cache, query.nope, query.rope, 1, Path::Absorb)
-            .expect("位置在缓存内");
-        accumulate(&mut expected, &attended, 1.0);
-        let fed = ffn().forward(&expected).expect("宽度一致");
-        accumulate(&mut expected, &fed, 1.0);
+        let expected = attending_then_feeding(&[1.0, 2.0, 3.0, 4.0], &cache, &query);
         assert_eq!(streams[0], expected, "装配层与三件单独调用必须给出同一份数");
     }
 
@@ -418,13 +428,7 @@ mod tests {
             "非主路流只带走混流后的值（全 1 阵归一后取均值）"
         );
 
-        let mut expected = mixed;
-        let attended = attention()
-            .attend(&cache, query.nope, query.rope, 1, Path::Absorb)
-            .expect("位置在缓存内");
-        accumulate(&mut expected, &attended, 1.0);
-        let fed = ffn().forward(&expected).expect("宽度一致");
-        accumulate(&mut expected, &fed, 1.0);
+        let expected = attending_then_feeding(&mixed, &cache, &query);
         assert_eq!(streams[0], expected, "主路必须比另一条流多出这一层的增量");
         assert_ne!(
             streams[0], streams[1],

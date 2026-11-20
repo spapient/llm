@@ -6,6 +6,9 @@
 //!
 //! 基线判定（`tool::regress`）随靶机首次实测后登记，未登记前本基准只出测量、不回退判定。
 
+#[path = "../support/attention.rs"]
+mod support;
+
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use op::attention;
 use std::hint::black_box;
@@ -18,20 +21,17 @@ const D: usize = 64;
 
 fn bench_flash(c: &mut Criterion) {
     let len = S * D;
-    let q: Vec<f32> = (0..len).map(|i| -0.5 + i as f32 * 0.13).collect();
-    let k: Vec<f32> = (0..len).map(|i| 0.4 - i as f32 * 0.09).collect();
-    let v: Vec<f32> = (0..len).map(|i| -0.2 + i as f32 * 0.11).collect();
-    let mut out = vec![0.0f32; len];
+    let mut sample = support::Sample::new(len);
 
     let mut group = c.benchmark_group("attention_f32");
     group.throughput(Throughput::Elements(len as u64));
     group.bench_function("flash_decode_128x64", |bench| {
         bench.iter(|| {
             attention::flash_forward(
-                black_box(&q),
-                black_box(&k),
-                black_box(&v),
-                black_box(&mut out),
+                black_box(&sample.q),
+                black_box(&sample.k),
+                black_box(&sample.v),
+                black_box(&mut sample.out),
                 S,
                 D,
             )

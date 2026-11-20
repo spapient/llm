@@ -1,6 +1,7 @@
 # 0053：类型化算子入口——一张清单、一个原语、零手写方法
 
-- 状态：已采纳（机制已落地：`op::for_each_operator!` + `train::OperatorSetOps` + 36 个在册算子）
+- 状态：已采纳（机制已落地：`op::for_each_operator!` + `train::OperatorSetOps` + 36 个在册算子；
+  CPU 运行时对照已实测，见下文）
 - 日期：2026-11-20
 - 相关：ADR 0002（单一主人）、ADR 0005（注解即契约）、ADR 0013（加算子只加数据）、ADR 0050（算子基座）
 
@@ -65,9 +66,34 @@ gemm_i4: $crate::gemm_i4::GemmI4Model => "gemm_packed",
 按 36 算子切片折算：后端原语面 **130 → 1**（约 130×），手写 API 面 **296 → 0**，单算子装配
 **3.6 条 trait 方法 + 8.2 条 Tensor 方法 → 1 条装配行 + 1 条生成方法**。
 
-**不宣称的部分**：没有做 Burn 与本仓的端到端运行时对比，因此不写"速度快几倍"。两者都是单态化静态
-派发；本仓的 `apply` 在 `Kernel::compute` 里按名字做一次线性查找（36 条），Burn 是直接 trait 调用，
-这点差异在真实算子粒度上未测，不能当结论。
+### 运行时对照（CPU 实测）
+
+同机、同形状、同输入，本仓 `Buffers<Reference>` 与 Burn `0.23.0-pre.2` Flex CPU 后端逐条对照
+（独立探针与原始输出：`benchmarks/burn-runtime/`；Apple M5 Pro，release，各跑 3 次取中位数）：
+
+| 用例 | 形状 | 本仓 ns/次 | Burn ns/次 | 比值（本仓/Burn） |
+|---|---|---:|---:|---:|
+| `add_f32` | 16 | 111 | 179 | 0.62 |
+| `add_f32` | 4096 | 340 | 387 | 0.88 |
+| `softmax_f32` | 4096 | 10 533 | 6 621 | 1.59 |
+| `rmsnorm_f32` | 4096 | 2 646 | 3 227 | 0.82 |
+| `matmul_f32` | 64×256×4096 | 4 709 209 | 1 264 833 | 3.72 |
+
+结论分两层：
+
+- **装配面没有可测代价**：36 条名字线性查表 + 池化输出缓冲，`add` 在 16 与 4096 元素上分别比
+  Burn 快 1.6× 与 1.1×；`rmsnorm` 快 1.2×。本仓稳态不分配大块缓冲，Burn 每步新建一个 Tensor。
+- **内核面有明确差距**：`softmax` 慢 1.6×，`matmul` 慢 3.7×（28.5 vs 106.1 GFLOP/s）。
+  这是 `Reference`（单线程分块标量）对 burn-flex SIMD `gemm` 微内核的差距，不能归因于类型化 API；
+  设备侧 tile 内核（Metal simdgroup GEMM，512×512×4096 实测 2 782.91 GFLOP/s）是另一条路径。
+
+顺带修正一个旧说法：Burn 0.23 的 Tensor 已不是单态化静态派发——`Tensor<D, K>` 持有类型擦除的
+`BridgeTensor`，`Device` 也是运行期 `DispatchDevice` 句柄（`burn-tensor-0.23.0-pre.2` 的
+`tensor/api/base.rs` 与 `device.rs`）。本仓是单态化 trait 默认方法 + 一次名字查表；实测查表没有
+可测惩罚。
+
+**未测**：Burn 的 Metal/wgpu 后端同设备对照；本仓 Metal 数字是 GPU 数字，不能与上表 CPU 数字
+直接比倍数。
 
 ## 验证
 
@@ -76,6 +102,8 @@ gemm_i4: $crate::gemm_i4::GemmI4Model => "gemm_packed",
 - 漂移演练（E1）：把清单里的方法名改成与 `Operator::NAME` 不同的拼写 → 编译期 `const` 断言失败；
   把某个算子的 `ARITY` 改错 → `arity_matches_the_samples` 失败。
 - `cargo test -p llm-tool --test gate`：静态门禁通过。
+- Burn 运行时对照（E1/E3）：`benchmarks/burn-runtime/` 两套探针各 3 轮，原始输出见
+  `results/2026-11-20-m5pro.txt`；两侧输出校验和一致（matmul 相对差 < 1e-5）。
 
 ## 后果
 

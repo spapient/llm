@@ -3,6 +3,8 @@
 //! 编译产物可以落进缓存（`crate::cache`）：命中时整步跳过，没有编译器也能跑已验证产物。这里不认识
 //! 算子，也不生成程序文本——那是 `crate::harness` 与 `crate::device` 的职责。
 
+use crate::dirs::Dirs;
+use crate::prof::Profile;
 use diagnostic::{Code, Error};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -71,6 +73,40 @@ impl Timing {
 /// 是因为编译产物可以落进缓存：命中时整步跳过。
 ///
 /// # Errors：目录不可建、源文件不可写、编译器不存在，或编译失败（诊断带命令、完整输出与路径）。
+/// 档案声明的编译参数：`[compile].flags`，加上工具链头文件垫片给出的 `-I`。
+///
+/// 垫片是**设备知识**而不是某条编译路径的私事：生成的程序只写一种头文件名（`<cuda_runtime.h>`），
+/// MUSA 的工具链只提供 `<musa_runtime.h>`。写进 `work.dir/include` 而不是产物沙箱，是因为它按档案
+/// 而不是按产物变化；同一份垫片因此同时服务算子产物、见证程序与 `bench` 的 harness。
+///
+/// # Errors
+///
+/// 垫片目录建不出来或文件写不进去时返回 IO 说明。
+pub fn compile_flags(profile: &Profile, dirs: &Dirs) -> diagnostic::Result<Vec<String>> {
+    let mut flags = profile.flags.clone();
+    if profile.headers.is_empty() {
+        return Ok(flags);
+    }
+    let include = dirs.work().join("include");
+    std::fs::create_dir_all(&include).map_err(|error| {
+        Error::new(
+            Code::Io,
+            format!("创建 {} 失败：{error}", include.display()),
+        )
+    })?;
+    for (name, text) in &profile.headers {
+        let path = include.join(name);
+        std::fs::write(&path, text).map_err(|error| {
+            Error::new(
+                Code::Io,
+                format!("写工具链垫片 {} 失败：{error}", path.display()),
+            )
+        })?;
+    }
+    flags.push(format!("-I{}", include.display()));
+    Ok(flags)
+}
+
 pub fn compile(
     tool: &str,
     flags: &[String],

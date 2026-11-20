@@ -55,6 +55,8 @@ flags = [
     "-O3",
     "-L/usr/local/musa/lib", "-lmusart",
 ]
+# 工具链垫片：生成的程序只写一种头文件名，MUSA 只提供 `musa_*.h`，映射写在档案里。
+# 两个编译路径（算子产物 / 见证）都从这张表落地，不再各写一份。
 preamble = """
 #include <cuda_fp16.h>
 __device__ float _cutile_exp_f32(float x) { return expf(x); }
@@ -253,3 +255,22 @@ impl    = "rcp.approx"
 dt      = ["f32"]
 grade   = "L1"
 witness = { file = "musa/witness.cu", func = "witness_rcp", expect = [0.25, 0.5] }
+
+[compile.headers]
+"cuda_runtime.h" = """
+#pragma once
+#include <musa_runtime.h>
+#define cudaError_t musaError_t
+#define cudaSuccess musaSuccess
+#define cudaMalloc musaMalloc
+#define cudaFree musaFree
+#define cudaMemcpy musaMemcpy
+#define cudaMemcpyHostToDevice musaMemcpyHostToDevice
+#define cudaMemcpyDeviceToHost musaMemcpyDeviceToHost
+#define cudaDeviceSynchronize musaDeviceSynchronize
+#define cudaGetErrorString musaGetErrorString
+"""
+"cuda_fp16.h" = """
+#pragma once
+#include <musa_fp16.h>
+"""

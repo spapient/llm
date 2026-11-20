@@ -162,12 +162,13 @@ pub fn execute(
     dirs: &Dirs,
 ) -> diagnostic::Result<(Outcome, Artifact)> {
     let cache = Cache::from_dirs(dirs);
+    let flags = runner::compile_flags(profile, dirs)?;
     cached_run(
         &cache,
         &key.hex(),
         key.flags_hash,
         tool,
-        &profile.flags,
+        &flags,
         harness,
         dirs,
     )
@@ -500,6 +501,9 @@ fn key(
 ) -> CacheKey {
     let mut flags = profile.flags.join(" ");
     flags.push_str(&format!("|{}", profile.preamble));
+    for (name, text) in &profile.headers {
+        flags.push_str(&format!("|{name}={text}"));
+    }
     let layouts: Vec<(String, String)> = op
         .layouts
         .iter()
