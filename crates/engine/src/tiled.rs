@@ -712,10 +712,7 @@ fn check_int8_shape(m: usize, n: usize, k: usize, tile: usize) -> Result<()> {
     if [m, n, k].iter().all(|&dim| dim.is_multiple_of(tile)) {
         return Ok(());
     }
-    Err(
-        Error::new(Code::Invalid, "int8 GEMM 要求 M/N/K 都能被分块整除")
-            .with(INT8_SITE),
-    )
+    Err(Error::new(Code::Invalid, "int8 GEMM 要求 M/N/K 都能被分块整除").with(INT8_SITE))
 }
 
 /// int8 GEMM 的报错出处。

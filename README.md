@@ -60,7 +60,7 @@ cargo run -p llm-cli --bin cutile -- cache gc --limit 1073741824                
 | 设备 | 现状 | 说明 |
 |---|---|---|
 | `cpu` | **L2** | 生成的 C 由 `cc` 编译执行，与 `crates/op` 的标量参考对拍 `max_rel_err = 0` |
-| `musa` | **L2** | MTT S4000（mp_22）真机实测：11 个算子用 `mcc` 编成、执行、与 `op` 的标量参考对拍 `max_rel_err ≤ 2.97e-7`；`bench` 如实报出 0.1% 达成率与“需要特化代码” |
+| `musa` | **L2** | MTT S4000（mp_22）真机实测：36 个算子全部用 `mcc` 编成、执行、与 `op` 的标量参考对拍 `max_rel_err ≤ 3.88e-7`；`bench` 如实报 0.1% 带宽达成率（P0 片段是单线程语义，并行化落点在 engine 的网格核） |
 | `nvidia` / `intel` / `metal` | L1 | 仅有档案、片段与见证；`verify` 会**失败**（缺设备即失败），协商拒绝未验证能力 |
 
 `metal` 的设备侧代码还能在构建期编成 `metallib` 并嵌进二进制：`cargo build -p llm-cli --features device-image`

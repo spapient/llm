@@ -190,6 +190,15 @@ fn upload(device: &MetalDevice, values: &[f32], label: &str) -> MetalBuffer {
     buf
 }
 
+/// 上传一段原始字节（int8 输入走这里，按字节而不是 f32 分配）。
+fn upload_bytes(device: &MetalDevice, bytes: &[u8], label: &str) -> MetalBuffer {
+    let mut buf = device
+        .new_buffer(bytes.len())
+        .unwrap_or_else(|| panic!("{label} 缓冲"));
+    buf.as_mut_bytes().copy_from_slice(bytes);
+    buf
+}
+
 /// 开一路只由 GPU 写的输出缓冲：`len` 个 f32，内容留白（`label` 只进失败消息）。
 fn output_buffer(device: &MetalDevice, len: usize, label: &str) -> MetalBuffer {
     device
@@ -470,6 +479,57 @@ fn metal_simdgroup_gemm_512() {
             "  simdgroup {row_frags}×{col_frags} 片段：{ns:.1} ns（{:.2} GFLOP/s） 加速={:.2}×",
             flop / ns,
             grid_ns / ns,
+        );
+    }
+}
+
+/// int8 分块 GEMM 真机基准：64×256×4096，`i8` 输入、`i32` 精确累加、`f32` 输出。
+///
+/// 同一输入先跑 CPU 参考（`op::matmul_i8::forward_tiled`）逐元素对拍，再对 tile=8/16/32
+/// 报端到端延迟；这是 `matmul_i8` 的设备侧落地，不是 f32 GEMM 的近似。
+///
+/// 本用例只出测量：`cargo test --release -p llm-engine --lib -- metal_int8_gemm_k4096 --ignored --nocapture`。
+#[test]
+#[ignore = "Metal int8 GEMM：cargo test --release -p llm-engine --lib -- metal_int8_gemm_k4096 --ignored --nocapture"]
+fn metal_int8_gemm_k4096() {
+    let Some((device, queue)) = bench_device("int8 GEMM 基准") else {
+        return;
+    };
+
+    const M: usize = 64;
+    const N: usize = 256;
+    const K: usize = 4096;
+
+    let a: Vec<u8> = (0..M * K)
+        .map(|i| (((i % 17) as i32 - 8) as i8) as u8)
+        .collect();
+    let b: Vec<u8> = (0..K * N)
+        .map(|i| (((i % 19) as i32 - 9) as i8) as u8)
+        .collect();
+    let (sa, sb): (Vec<i8>, Vec<i8>) = (
+        a.iter().map(|&x| x as i8).collect(),
+        b.iter().map(|&x| x as i8).collect(),
+    );
+    let mut acc = vec![0i32; M * N];
+    op::matmul_i8::forward_tiled(&sa, &sb, M, N, K, &mut acc).expect("CPU 参考");
+    let reference: Vec<f32> = acc.iter().map(|&v| v as f32).collect();
+
+    let a_buf = upload_bytes(&device, &a, "A-int8");
+    let b_buf = upload_bytes(&device, &b, "B-int8");
+    let mut y_buf = output_buffer(&device, M * N, "Y-int8");
+    let grid = [M as u32, N as u32, 1];
+
+    for tile in [8usize, 16, 32] {
+        let msl =
+            crate::tiled::metal_int8_gemm_program(M, N, K, tile).expect("int8 GEMM MSL 应能生成");
+        let pipe = device.compile(&msl).expect("int8 GEMM MSL 应能编译");
+        let block = [tile as u32, tile as u32, 1];
+        queue.execute(&pipe, &[&a_buf, &b_buf, &y_buf], grid, block);
+        assert_matmul_matches("int8", &reference, y_buf.as_mut_bytes());
+        let ns = measure(&queue, &pipe, &[&a_buf, &b_buf, &y_buf], grid, block);
+        eprintln!(
+            "Metal int8 GEMM 64×256×4096 tile={tile}：{ns:.1} ns（{:.2} G int-op/s）",
+            (M * N * K) as f64 / ns
         );
     }
 }
