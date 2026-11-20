@@ -192,6 +192,125 @@ fn invalid(message: impl Into<String>) -> Error {
     Error::new(Code::Invalid, message).with("weights::ptq")
 }
 
+/// 秩-r 低秩 + 残差量化补偿的结果：`Ŵ = L_r + Q(W − L_r)`。
+///
+/// 这是 M4「谱隙证书 + 秩-10 残差补偿」的数值侧：低秩项 `L_r` 以 f32 保存，显式残差
+/// `C = W − L_r` 才进入低位宽对称量化（g=32）。4bit 的量化误差因此只作用在残差上，而不是整张
+/// 权重上——这正是输出空间 SNR 能从「无补偿 ~20 dB」提到 44 dB 以上的原因，**前提**是
+/// `W` 在秩 r 处确实有谱隙（结构近似低秩）。没有谱隙时量化误差不缩小，应由调用方走
+/// [`crate::ledger::certify`] 拒压回退，而不是硬压出假数字。
+#[derive(Clone, Debug)]
+pub struct Compensated {
+    /// 实际使用的低秩项秩（`rank` 与 SVD 可取秩的较小值）。
+    pub rank: usize,
+    /// 最大奇异值 `σ_1`（谱隙的相对参照）。
+    pub sigma1: f64,
+    /// 秩 r 处的谱隙 `γ_r = σ_r − σ_{r+1}`（r 为末位时取 `σ_r`）。
+    pub gap: f64,
+    /// 低秩项 `L_r`（行主序 `m*n` f32）。
+    pub low: Vec<f32>,
+    /// 残差 `C` 的打包码。
+    pub packed: Vec<u8>,
+    /// 残差 `C` 的组标度。
+    pub scales: Vec<f32>,
+    /// 重构 `Ŵ = L_r + Q(C)`（行主序 `m*n` f32）。
+    pub recon: Vec<f32>,
+}
+
+/// 秩-r 低秩 + 残差量化补偿（自动谱隙证书门控）。
+///
+/// 流程：`W` 行主序 `m*n` → 一次 f64 SVD → [`svd::signal_rank`] 找信号/噪声边界秩 `r`
+/// （无谱隙即拒压）→ 取前 `r` 个奇异方向做低秩项 `L_r` → 残差 `C = W − L_r` 按
+/// [`quantize`] 做 `scheme`/`group` 对称量化 → [`dequantize`] 回解 `Q(C)` →
+/// 重构 `Ŵ = L_r + Q(C)`。
+///
+/// 返回 `Ok(None)` 表示**拒压回退**：满秩/平坦谱矩阵没有信号谱隙（`signal_rank` 返回 `None`），
+/// 4bit 量化误差不会因低秩分解而缩小，此时不硬压、不颁发证书。
+///
+/// # Errors
+///
+/// 形状非法、分组为 0、输入含非有限值，或 SVD 不收敛时返回说明。
+pub fn compensate(
+    scheme: Scheme,
+    group: usize,
+    w: &[f32],
+    m: usize,
+    n: usize,
+) -> Result<Option<Compensated>> {
+    validate_compensate(m, n, w)?;
+    rebuild(scheme, group, w, m, n)
+}
+
+/// 数值侧：一次 f64 分解定低秩项（连它撑起的谱隙），显式残差再走同一个量化器。
+fn rebuild(
+    scheme: Scheme,
+    group: usize,
+    w: &[f32],
+    m: usize,
+    n: usize,
+) -> Result<Option<Compensated>> {
+    let a: Vec<f64> = w.iter().map(|&x| x as f64).collect();
+    let d = svd::compute(&a, m, n)?;
+    let Some(r) = svd::signal_rank(&d.sigma) else {
+        return Ok(None);
+    };
+    let gap = spectral_gap(&d.sigma, r);
+    let low64 = d.reconstruct(r);
+    let low: Vec<f32> = low64.iter().map(|&x| x as f32).collect();
+    let rest: Vec<f32> = a
+        .iter()
+        .zip(&low64)
+        .map(|(orig, l)| (orig - l) as f32)
+        .collect();
+
+    let (packed, scales, qrest) = pack_residual(scheme, group, &rest)?;
+    let recon: Vec<f32> = low.iter().zip(&qrest).map(|(l, q)| l + q).collect();
+
+    Ok(Some(Compensated {
+        rank: r,
+        sigma1: d.sigma[0],
+        gap,
+        low,
+        packed,
+        scales,
+        recon,
+    }))
+}
+
+/// 截断处上方那道缝：`σ_r − σ_{r+1}`；已到最后一个奇异值时退化成 `σ_r`（下面没有值可供相减）。
+fn spectral_gap(sigma: &[f64], r: usize) -> f64 {
+    match sigma.get(r) {
+        Some(&below) => sigma[r - 1] - below,
+        None => sigma[r - 1],
+    }
+}
+
+/// 残差打包 → 回解：编解码只有 [`quantize`] / [`dequantize`] 一份定义，补偿不另写一套。
+fn pack_residual(
+    scheme: Scheme,
+    group: usize,
+    rest: &[f32],
+) -> Result<(Vec<u8>, Vec<f32>, Vec<f32>)> {
+    let (packed, scales) = quantize(scheme, group, rest)?;
+    let mut qrest = vec![0.0f32; rest.len()];
+    dequantize(scheme, &packed, &scales, group, &mut qrest)?;
+    Ok((packed, scales, qrest))
+}
+
+/// 补偿入口的两项契约：形状、有限性，每项各答一个问题。
+fn validate_compensate(m: usize, n: usize, w: &[f32]) -> Result<()> {
+    let cells = m
+        .checked_mul(n)
+        .filter(|&cells| cells > 0 && cells == w.len());
+    if cells.is_none() {
+        return Err(invalid(format!("形状不合法 m={m} n={n} len={}", w.len())));
+    }
+    if !w.iter().all(|v| v.is_finite()) {
+        return Err(invalid("输入必须是有限 f32"));
+    }
+    Ok(())
+}
+
 pub mod svd {
     //! 零依赖 f64 奇异值分解：单边 Jacobi SVD（one-sided Jacobi）。
     //!
@@ -248,6 +367,27 @@ pub mod svd {
             }
             out
         }
+    }
+
+    /// 信号秩选择的相对谱隙阈值。
+    ///
+    /// 依据（本机实测）：满秩高斯矩阵相邻奇异值的最大相对谱隙 ≈0.03；结构化近似低秩矩阵
+    /// （秩-10 信号 + 高斯噪声）在信号/噪声边界处的相对谱隙 ≈0.49。0.2 落在这两个实测值之间，
+    /// 与两侧都保持 >2× 的分离，用于把「有信号可压」与「纯噪声不可压」分开。
+    pub const REL_GAP: f64 = 0.2;
+
+    /// 有损补偿侧的信号秩：返回**噪声底之前**的最大秩 `r`，即 `(σ_r − σ_{r+1}) / σ_1 > REL_GAP`
+    /// 的最后一点。
+    ///
+    /// 与 [`crate::ledger`] 的 `certified_rank` 分工：后者用算法残差 `ε`（机器精度量级）做绝对
+    /// 阈值，服务**无损**压缩的精确秩判定（满秩矩阵返回满秩是正确语义）；本函数用相对阈值，服务
+    /// **有损**量化补偿（满秩噪声矩阵无信号谱隙 → 返回 `None` = 拒压回退）。两者不可互换。
+    #[must_use]
+    pub fn signal_rank(sigma: &[f64]) -> Option<usize> {
+        let floor = REL_GAP * sigma.first()?;
+        (1..sigma.len())
+            .rev()
+            .find(|&r| sigma[r - 1] - sigma[r] > floor)
     }
 
     /// 对行主序 `a[m*n]` 做 SVD。
@@ -488,12 +628,25 @@ pub mod svd {
             assert!(compute(&[1.0], 2, 2).is_err());
             assert!(compute(&[], 0, 4).is_err());
         }
+
+        /// 信号秩选择：结构化的秩边界有相对谱隙 → 秩 10；满秩噪声平坦谱 → 拒压；单一奇异值无从比较 → 拒压。
+        #[test]
+        fn signal_rank_separates_structure_from_noise() {
+            let mut structured = vec![10.0f64; 10];
+            structured.extend(vec![0.1f64; 6]);
+            assert_eq!(signal_rank(&structured), Some(10));
+
+            let noise: Vec<f64> = (0..16).map(|k| 10.0 - k as f64 * 0.1).collect();
+            assert_eq!(signal_rank(&noise), None);
+
+            assert_eq!(signal_rank(&[1.0]), None);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{I2, I4, I8, dequantize, quantize};
+    use super::{I2, I4, I8, compensate, dequantize, quantize};
 
     /// 打包位序：i4 低 nibble 在前，`[7, -7]` → 码 `[15, 1]` → 字节 `0x1F`。
     #[test]
@@ -591,5 +744,159 @@ mod tests {
         let (packed, scales) = quantize(I4, 32, &[1.0, -1.0]).expect("合法输入");
         let mut out = [0.0; 3];
         assert!(dequantize(I4, &packed, &scales, 32, &mut out).is_err());
+    }
+
+    /// M4/E5 输出空间 SNR 扫描（`#[ignore]` 实测基准：
+    /// `cargo test -p llm-weights --lib -- output_space_snr_scan --ignored --nocapture`）。
+    ///
+    /// 口径与 §10.10 M4/E5 卡一致：W4A16、g=32；SNR = 20·log10(‖Wx‖ / ‖Wx − Q(W)x‖)，
+    /// 跨层取 P50。本测试只出数字、不设 ≥44 dB 断言——44 dB 是门禁而非通过条件；
+    /// 当前 `quantize` 是无补偿的对称分组量化，必须如实报告它离门禁的距离，而不是伪造达标。
+    #[test]
+    #[ignore = "量化精度基准：cargo test -p llm-weights --lib -- output_space_snr_scan --ignored --nocapture"]
+    fn output_space_snr_scan() {
+        let (rows, cols, g) = (2048usize, 2048usize, 32usize);
+        let layers = 4usize;
+
+        // 确定性 LCG + Box–Muller 高斯权重（无外部 RNG 依赖，可复现）。
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next_f64 = move || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((seed >> 11) as f64) / ((1u64 << 53) as f64)
+        };
+        let mut next_gauss = move || {
+            let u1 = next_f64().max(1e-12);
+            let u2 = next_f64();
+            ((-2.0 * u1.ln()).sqrt() * (std::f64::consts::TAU * u2).cos()) as f32
+        };
+
+        for (scheme, name) in [(I2, "i2"), (I4, "i4"), (I8, "i8")] {
+            let mut snrs = Vec::with_capacity(layers);
+            for _ in 0..layers {
+                let w: Vec<f32> = (0..rows * cols).map(|_| next_gauss()).collect();
+                let x: Vec<f32> = (0..cols).map(|_| next_gauss()).collect();
+                let (packed, scales) = quantize(scheme, g, &w).expect("合法输入");
+                let mut qw = vec![0.0f32; rows * cols];
+                dequantize(scheme, &packed, &scales, g, &mut qw).expect("合法反解");
+                let (num, den) = output_snr(&w, &qw, &x, rows, cols);
+                snrs.push(20.0 * (num / den).log10());
+            }
+            snrs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let p50 = snrs[layers / 2];
+            println!(
+                "M4/E5 SNR[{name}] g={g} layers={layers} rows={rows} cols={cols} P50={p50:.3} dB 样本={:?}",
+                snrs.iter().map(|v| format!("{v:.3}")).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    /// `y = Wx` 与 `‖y − Q(W)x‖` 的 f64 累积：SNR = 20·log10(‖y‖ / ‖y − ŷ‖)。
+    fn output_snr(w: &[f32], qw: &[f32], x: &[f32], rows: usize, cols: usize) -> (f64, f64) {
+        let mut num = 0.0f64;
+        let mut den = 0.0f64;
+        for r in 0..rows {
+            let (mut y, mut yq) = (0.0f64, 0.0f64);
+            for c in 0..cols {
+                let xv = x[c] as f64;
+                y += w[r * cols + c] as f64 * xv;
+                yq += qw[r * cols + c] as f64 * xv;
+            }
+            num += y * y;
+            let d = y - yq;
+            den += d * d;
+        }
+        (num.sqrt(), den.sqrt())
+    }
+
+    /// 确定性高斯矩阵（Box–Muller，无外部 RNG 依赖）。
+    fn gaussian(rows: usize, cols: usize, seed: u64) -> Vec<f32> {
+        let mut state = seed | 1;
+        let mut next_f64 = move || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((state >> 11) as f64) / ((1u64 << 53) as f64)
+        };
+        (0..rows * cols)
+            .map(|_| {
+                let u1 = next_f64().max(1e-12);
+                let u2 = next_f64();
+                ((-2.0 * u1.ln()).sqrt() * (std::f64::consts::TAU * u2).cos()) as f32
+            })
+            .collect()
+    }
+
+    /// 结构近似低秩权重：`W = U·Vᵀ + σ_n·N`，`U∈m×r`、`V∈n×r`、`N` 高斯同形。
+    fn low_rank_plus_noise(m: usize, n: usize, r: usize, sigma_n: f32, seed: u64) -> Vec<f32> {
+        let u = gaussian(m, r, seed);
+        let v = gaussian(n, r, seed ^ 0x9e37_79b9);
+        let mut w = vec![0.0f32; m * n];
+        for i in 0..m {
+            for j in 0..n {
+                let mut s = 0.0f64;
+                for k in 0..r {
+                    s += u[i * r + k] as f64 * v[j * r + k] as f64;
+                }
+                w[i * n + j] = s as f32;
+            }
+        }
+        let noise = gaussian(m, n, seed ^ 0xdead_beef);
+        for (slot, &nval) in w.iter_mut().zip(&noise) {
+            *slot += sigma_n * nval;
+        }
+        w
+    }
+
+    /// M4 谱隙证书自动拒压 + 秩-10 残差补偿（`#[ignore]`：
+    /// `cargo test -p llm-weights --lib -- m4_residual_compensation_snr --release --ignored --nocapture`）。
+    ///
+    /// 谱隙证书（`svd::signal_rank`，相对阈值 0.2）自动选秩：结构近似低秩权重在秩 10 处有谱隙
+    /// → 补偿；满秩高斯无谱隙 → 拒压。σn∈{0.1,0.2,0.3} 扫描补偿 SNR 的 44 dB 分界。
+    #[test]
+    #[ignore = "M4 补偿基准：cargo test -p llm-weights --lib -- m4_residual_compensation_snr --release --ignored --nocapture"]
+    fn m4_residual_compensation_snr() {
+        let (m, n, r) = (512usize, 512usize, 10usize);
+        for sigma_n in [0.1f32, 0.2, 0.3] {
+            let w = low_rank_plus_noise(m, n, r, sigma_n, 0xfeed_0001);
+            match compensate(I4, 32, &w, m, n).expect("补偿") {
+                Some(comp) => {
+                    let x = gaussian(n, 1, 0xace_0002);
+                    let (num, den) = output_snr(&w, &comp.recon, &x, m, n);
+                    let snr = 20.0 * (num / den).log10();
+                    let frob = frob_snr(&w, &comp.recon);
+                    println!(
+                        "M4 结构化 σn={sigma_n} 补偿 秩={} 相对谱隙γ/σ_1={:.3} 输出SNR={snr:.3} dB FrobeniusSNR={frob:.3} dB",
+                        comp.rank,
+                        comp.gap / comp.sigma1,
+                    );
+                }
+                None => println!("M4 结构化 σn={sigma_n} 拒压（无谱隙）"),
+            }
+        }
+
+        let (m, n) = (256usize, 256usize);
+        let w = gaussian(m, n, 0xcafe_0003);
+        match compensate(I4, 32, &w, m, n).expect("补偿") {
+            Some(comp) => println!(
+                "M4 满秩高斯 补偿 秩={} 相对谱隙γ/σ_1={:.3e}（不应发生）",
+                comp.rank,
+                comp.gap / comp.sigma1,
+            ),
+            None => println!("M4 满秩高斯 拒压（无谱隙，不冒充 4bit）"),
+        }
+    }
+
+    /// Frobenius 口径 SNR：`20·log10(‖W‖_F / ‖W − Ŵ‖_F)`。
+    fn frob_snr(w: &[f32], recon: &[f32]) -> f64 {
+        let (mut num, mut den) = (0.0f64, 0.0f64);
+        for (a, b) in w.iter().zip(recon) {
+            let a = *a as f64;
+            let d = a - *b as f64;
+            num += a * a;
+            den += d * d;
+        }
+        20.0 * (num.sqrt() / den.sqrt()).log10()
     }
 }

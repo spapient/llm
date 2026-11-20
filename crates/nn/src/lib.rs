@@ -246,7 +246,7 @@ pub use policy::{
 };
 
 #[doc(inline)]
-pub use mix::{Lif, encode_id};
+pub use mix::{Audit, Encoder, Events, Lif, accumulate, encode_id, steepest};
 
 #[doc(inline)]
 pub use pointwise::{ReduceMax, ReduceSum};

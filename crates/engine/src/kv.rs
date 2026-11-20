@@ -887,4 +887,70 @@ mod tests {
             "两段各写各的，读回时拼成一行"
         );
     }
+
+    /// E12 随机历史访问 + 块表 O(1)（`#[ignore]` 实测：
+    /// `cargo test -p llm-engine --lib -- e12_random_access --release --ignored --nocapture`）。
+    ///
+    /// 冻结工作集 4096 页 × 16 token/页 = 65536 历史 token；确定性生成 10 万次随机访问，
+    /// `Table::slot` 只做 `index / page_size` + `index % page_size` + 一次 `Vec` 下标（源码即
+    /// O(1)，不随历史长度遍历），这里再用不同历史长度下的查表墙钟做经验佐证。
+    #[test]
+    #[ignore = "E12 块表基准：cargo test -p llm-engine --lib -- e12_random_access --release --ignored --nocapture"]
+    fn e12_random_access() {
+        let page_size = 16usize;
+        let pages = 4096usize;
+        let history = pages * page_size;
+        let mut table = Table::new(pages).expect("页表");
+        for id in 0..pages as u32 {
+            table.push(Page::new(id)).expect("追加");
+        }
+
+        // 确定性 xorshift64 随机访问集（冻结种子，可复现）。
+        let mut seed = 0xdead_beef_cafe_1234u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+
+        let samples = 100_000usize;
+        let mut hits = 0usize;
+        for _ in 0..samples {
+            let idx = (next() % history as u64) as usize;
+            let slot = table.slot(idx, page_size).expect("冻结工作集内必有页");
+            let expected_page = (idx / page_size) as u32;
+            let expected_offset = idx % page_size;
+            if slot.page().id() == expected_page && slot.offset() == expected_offset {
+                hits += 1;
+            }
+        }
+        let recall = hits as f64 / samples as f64;
+        println!(
+            "E12 随机访问 recall={recall:.6}（{hits}/{samples}，history={history}，page_size={page_size}）"
+        );
+
+        // 操作计数佐证：不同历史长度下 slot 的墙钟（每点取 min），应不随页数增长。
+        for page_count in [1024usize, 4096, 16384, 65536] {
+            let mut big = Table::new(page_count).expect("页表");
+            for id in 0..page_count as u32 {
+                big.push(Page::new(id)).expect("追加");
+            }
+            let reps = 1_000_000usize;
+            let idx = page_count * page_size - 1; // 最远端 token，也不该更慢
+            for _ in 0..3 {
+                big.slot(idx, page_size).expect("有页");
+            }
+            let start = std::time::Instant::now();
+            for _ in 0..reps {
+                std::hint::black_box(big.slot(idx, page_size).expect("有页"));
+            }
+            let per = start.elapsed().as_secs_f64() / reps as f64;
+            println!(
+                "E12 slot 查表 pages={page_count:<6} history={:<8} 每次={:.3} ns",
+                page_count * page_size,
+                per * 1e9
+            );
+        }
+    }
 }

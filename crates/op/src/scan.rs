@@ -48,10 +48,20 @@ pub trait Scalar: Copy + PartialEq + PartialOrd + Debug {
     fn cos(self) -> Self;
     /// 由 `f64` 字面量构造（仅用于常量，`f32` 下可能有损）。
     fn from_f64(v: f64) -> Self;
+    /// 就近取整，半分远离零（`f64::round` 的口径）。
+    ///
+    /// 量化到码位要用它：截断会把分布整体压向零，于是码表不是以零为中心的对称表，
+    /// `code·scale` 还原出来的偏差带符号。
+    fn round(self) -> Self;
+    /// 取回 `f64`。
+    ///
+    /// 只有两类用途：**量化边界**（浮点值 → 整数码位）与**实测指标**（稀疏度、相对重构损失、
+    /// 放大比）。前向算术里出现它就意味着精度被悄悄降级成 `f64`（`f32` 路径上尤其如此）。
+    fn to_f64(self) -> f64;
 }
 
 /// 一份算术骨架为 `f32` / `f64` 两个标量实现，能变的部分只有类型、负无穷与 `f64` 降级式；
-/// 逐字写两份会把 12 个方法的加/减/乘/除与超越函数复制成孪生（jscpd 的 15 行克隆源）。
+/// 逐字写两份会把 14 个方法的加/减/乘/除与超越函数复制成孪生（jscpd 的 15 行克隆源）。
 macro_rules! impl_scalar {
     ($ty:ty, $neg_inf:expr, $from_f64:expr) => {
         impl Scalar for $ty {
@@ -94,6 +104,12 @@ macro_rules! impl_scalar {
             }
             fn from_f64(v: f64) -> Self {
                 ($from_f64)(v)
+            }
+            fn round(self) -> Self {
+                <$ty>::round(self)
+            }
+            fn to_f64(self) -> f64 {
+                self as f64
             }
         }
     };
@@ -287,14 +303,8 @@ pub fn exp_trapezoid<S: Scalar>(lam_re: S, omega: S, dt: S, prev: S, cur: S) -> 
     let [a_re, a_im] = [magnitude.mul(cos), magnitude.mul(sin)];
     // (dt/2)·(ā·x_{t−1} + x_t)：`ā·x_{t−1}` 是复值，`x_t` 只进实部。
     let half = dt.div(S::ONE.add(S::ONE));
-    let b = [
-        half.mul(a_re.mul(prev).add(cur)),
-        half.mul(a_im.mul(prev)),
-    ];
-    PlaneStep {
-        a: [a_re, a_im],
-        b,
-    }
+    let b = [half.mul(a_re.mul(prev).add(cur)), half.mul(a_im.mul(prev))];
+    PlaneStep { a: [a_re, a_im], b }
 }
 
 /// 沿半群步序列推进状态，返回各步状态（`out[t]` = 施加前 `t` 步后的状态，`out[0] = init`）。
@@ -429,6 +439,113 @@ mod tests {
         assert!((total.apply(init) - state).abs() < 1e-12);
     }
 
+    /// M1 log-log 斜率实测（`#[ignore]`：
+    /// `cargo test -p llm-op --lib -- scan_loglog_slope --release --ignored --nocapture`）。
+    ///
+    /// 口径与 §10.10 M1 卡一致：n ∈ {4K..128K}，每点多测取最小值，对 (ln n, ln T) 做最小二乘，
+    /// 报斜率 k 与其 95% CI。产品串行核 `scan_f32::forward` 与第二份实现 `scan_blelloch` 各测一条。
+    #[test]
+    #[ignore = "M1 复杂度基准：cargo test -p llm-op --lib -- scan_loglog_slope --release --ignored --nocapture"]
+    fn scan_loglog_slope() {
+        let ns = [4096usize, 8192, 16384, 32768, 65536, 131072];
+        let reps = 30usize;
+
+        // 确定性输入（xorshift64）。
+        let mut seed = 0x1234_5678_9abc_def0u64;
+        let mut next_f32 = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            ((seed >> 40) as u32 as f32 / (u32::MAX as f32)) * 2.0 - 1.0
+        };
+
+        // 产品串行核：s = 0.5·s + 1.0·x[t]。
+        let mut fwd_points = Vec::new();
+        for &n in &ns {
+            let x: Vec<f32> = (0..n).map(|_| next_f32()).collect();
+            let mut out = vec![0.0f32; n];
+            for _ in 0..3 {
+                super::scan_f32::forward(&x, &mut out).expect("等长");
+            }
+            let mut best = f64::INFINITY;
+            for _ in 0..reps {
+                let t = std::time::Instant::now();
+                super::scan_f32::forward(&x, &mut out).expect("等长");
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            fwd_points.push((n as f64, best));
+        }
+        let (k, ci, r2) = loglog_fit(&fwd_points);
+        println!(
+            "M1 scan_f32::forward 斜率 k={k:.4} 95%CI=[{:.4},{:.4}] R²={r2:.6} 点={:?}",
+            ci.0,
+            ci.1,
+            fwd_points
+                .iter()
+                .map(|(n, t)| format!("{n:.0}:{t:.3e}s"))
+                .collect::<Vec<_>>()
+        );
+
+        // 半群 Blelloch 并行扫描（f32）。
+        let mut ble_points = Vec::new();
+        for &n in &ns {
+            let steps: Vec<SsmStep<f32>> = (0..n)
+                .map(|_| SsmStep {
+                    a: 0.5,
+                    b: next_f32(),
+                })
+                .collect();
+            for _ in 0..3 {
+                std::hint::black_box(scan_blelloch(&steps));
+            }
+            let mut best = f64::INFINITY;
+            for _ in 0..reps {
+                let t = std::time::Instant::now();
+                std::hint::black_box(scan_blelloch(&steps));
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            ble_points.push((n as f64, best));
+        }
+        let (k, ci, r2) = loglog_fit(&ble_points);
+        println!(
+            "M1 scan_blelloch       斜率 k={k:.4} 95%CI=[{:.4},{:.4}] R²={r2:.6} 点={:?}",
+            ci.0,
+            ci.1,
+            ble_points
+                .iter()
+                .map(|(n, t)| format!("{n:.0}:{t:.3e}s"))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// (ln n, ln T) 最小二乘：返回 (斜率 k, 95% CI, R²)。
+    fn loglog_fit(points: &[(f64, f64)]) -> (f64, (f64, f64), f64) {
+        let xs: Vec<f64> = points.iter().map(|(n, _)| n.ln()).collect();
+        let ys: Vec<f64> = points.iter().map(|(_, t)| t.ln()).collect();
+        let n = xs.len() as f64;
+        let (xbar, ybar) = (xs.iter().sum::<f64>() / n, ys.iter().sum::<f64>() / n);
+        let sxx = xs.iter().map(|x| (x - xbar) * (x - xbar)).sum::<f64>();
+        let sxy = xs
+            .iter()
+            .zip(&ys)
+            .map(|(x, y)| (x - xbar) * (y - ybar))
+            .sum::<f64>();
+        let k = sxy / sxx;
+        let intercept = ybar - k * xbar;
+        let residuals: Vec<f64> = xs
+            .iter()
+            .zip(&ys)
+            .map(|(x, y)| y - (intercept + k * x))
+            .collect();
+        let sse = residuals.iter().map(|r| r * r).sum::<f64>();
+        let sst = ys.iter().map(|y| (y - ybar) * (y - ybar)).sum::<f64>();
+        let r2 = 1.0 - sse / sst;
+        // 斜率标准误；df = 点数 - 2，n=6 时 t(0.975,4)=2.776。
+        let se = (sse / (n - 2.0) / sxx).sqrt();
+        let tcrit = 2.776;
+        (k, (k - tcrit * se, k + tcrit * se), r2)
+    }
+
     /// `λ = 0` 时退化为 `ā = 1`、`b̄ = dt·b`。
     #[test]
     fn exp_zero_order_zero_lambda() {
@@ -494,9 +611,13 @@ mod tests {
     #[test]
     fn trapezoid_and_zero_order_differ() {
         let (lam, dt) = (-0.6f64, 0.3);
-        let plane = exp_trapezoid(lam, 0.0, dt, 1.0, 1.0).apply([0.0, 0.0], 1.0)[0];
         let order = exp_zero_order(lam, 1.0, dt).apply(0.0);
-        assert!((plane - order).abs() > 1e-3, "{plane} vs {order}");
+        // 零阶保持把这一步的输入铺满整段步长，梯形只铺两端平均：从零状态起跳时差近一倍。
+        let half = exp_trapezoid(lam, 0.0, dt, 0.0, 1.0).apply([0.0, 0.0], 1.0)[0];
+        assert!(half < order * 0.6, "{half} vs {order}");
+        // 两端相等时两条式子仍然不同——步内线性与常数保持只在 `dt → 0` 的极限重合。
+        let flat = exp_trapezoid(lam, 0.0, dt, 1.0, 1.0).apply([0.0, 0.0], 1.0)[0];
+        assert!((flat - order).abs() > 1e-4, "{flat} vs {order}");
     }
 
     /// 梯形真的用了上一个抽头：`x_{t−1}` 不同，本步状态就不同。
@@ -643,6 +764,33 @@ pub mod scan_f32 {
             let mut out = vec![];
             forward(&[], &mut out).expect("空序列放行");
             assert_eq!(reference(&sample(0, 1)).expect("空参考"), Vec::<f32>::new());
+        }
+
+        /// M11 因果前缀不变性：给同一条输入追加未来 token 后，已生成前缀 `1..t` 的输出必须逐位不变。
+        ///
+        /// 串行递推的算术对前缀是确定且相同的，因此这里是**严格 0 偏差**（不是容差比较），
+        /// 对应 §10.10 M11 卡「未来 token 改变不得影响前缀输出」。
+        #[test]
+        fn m11_prefix_is_invariant_to_future_tokens() {
+            let mut seed = 0xfeed_beefu64;
+            let mut next = move || {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                ((seed >> 40) as u32 as f32 / (u32::MAX as f32)) * 2.0 - 1.0
+            };
+            let full: Vec<f32> = (0..256).map(|_| next()).collect();
+            for t in [1usize, 7, 31, 64, 127, 255] {
+                let mut prefix_out = vec![0.0f32; t];
+                forward(&full[..t], &mut prefix_out).expect("等长");
+                let mut full_out = vec![0.0f32; full.len()];
+                forward(&full, &mut full_out).expect("等长");
+                assert_eq!(
+                    &full_out[..t],
+                    prefix_out.as_slice(),
+                    "前缀 {t} 输出因未来 token 改变"
+                );
+            }
         }
     }
 }

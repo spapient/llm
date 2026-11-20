@@ -31,13 +31,30 @@ pub fn synthesize<S: Scalar>(ya: &[S], yb: &[S], yg: &[S], pi: S, gamma: S) -> V
     gate(&cont(ya, yb, pi), yg, gamma)
 }
 mod pulse {
-    //! γ 脉冲通道：事件编码 `Encode_event`（§1.5）。
+    //! γ 脉冲通道：事件编码 `Encode_event`（§1.5）与 INT8-Spiking 事件臂（E14 / E15）。
     //!
-    //! IEEE 上 `Encode_event ≡ Id`（Lipschitz 常数 `L_e = 1`）；FR-HW 走 LIF 发放 + 事件驱动整数
-    //! 累加。γ 通道不是可选装饰，而是跨平台统一契约的必要组成（§1.5 第 6 点）：它让同一模型可跨
-    //! IEEE/FR-HW 迁移，并允许运行时按输入稀疏度切换事件臂。
+    //! IEEE 上 `Encode_event ≡ Id`（[`encode_id`]，Lipschitz 常数 `L_e = 1`）；FR-HW 走 [`Encoder`]——
+    //! 对称 int8 量化 + 整数阈值发放，还原所需的步长随 [`Events`] 一起走，只对发放位置做整数累加
+    //! （[`accumulate`]）。γ 通道不是可选装饰，而是跨平台统一契约的必要组成（§1.5 第 6 点）：它让
+    //! 同一模型可跨 IEEE/FR-HW 迁移，并允许运行时按输入稀疏度切换事件臂。
+    //!
+    //! **三项实测在本模块，判定不在这里**：E14 的冻结稀疏度 `S = 1 − N_active/N_total` 由
+    //! [`Events::sparsity`] 给出，重构损失由 [`Audit`] 给出，`L_e` 的样本估计由 [`steepest`] 给出。
+    //! PASS/FAIL 属 `tool::card` 的协议卡——一列样本只能出一份判决，本模块不另开判定语汇。
 
+    use diagnostic::{Code, Error, Result};
     use op::scan::Scalar;
+
+    use crate::csa::finite;
+
+    /// 报错出处：参数、几何与非有限值都在入口失败。
+    const SITE: &str = "nn::mix::pulse";
+
+    /// 对称 int8 的正码上限：码位是 `−127..=127`。
+    ///
+    /// `−128` 不是码位——把它算进去，`code` 与 `−code` 就不再对称，`code·scale` 还原出来的偏差
+    /// 会整体偏一格。
+    const MAX_CODE: i32 = 127;
 
     /// LIF 神经元（FR-HW 事件臂）：膜电位积分 + 泄漏 + 阈值发放 + 重置。
     ///
@@ -91,6 +108,338 @@ mod pulse {
         y.to_vec()
     }
 
+    /// 稀疏事件：只记发放位置与整数码，未发放的位置不占记录。
+    ///
+    /// 还原所需的步长也在里面（[`Events::decode`] 因此不需要编码器）：事件与「按什么步长还原」
+    /// 分开存放时，拿另一层的 `Events` 去解会静默解出另一组数——内积照算，结果却不是这一层的。
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct Events<S: Scalar> {
+        width: usize,
+        scale: S,
+        indices: Vec<usize>,
+        codes: Vec<i8>,
+    }
+
+    impl<S: Scalar> Events<S> {
+        /// 事件覆盖的宽度（本层激活的元素数 `N_total`）。
+        pub fn width(&self) -> usize {
+            self.width
+        }
+
+        /// 发放的位置数 `N_active`。
+        pub fn active(&self) -> usize {
+            self.indices.len()
+        }
+
+        /// E14 的冻结定义：`S = 1 − N_active/N_total`。
+        ///
+        /// 宽度为零记 `1`，不是 `0` 也不是 `NaN`：一个位置都没有，就没有一个位置需要算，这与
+        /// 「全不发放」是同一个稀疏度；`NaN` 还会在下游被当成最大稀疏度。
+        pub fn sparsity(&self) -> f64 {
+            if self.width == 0 {
+                return 1.0;
+            }
+            1.0 - self.indices.len() as f64 / self.width as f64
+        }
+
+        /// 发放位置，严格升序。
+        pub fn indices(&self) -> &[usize] {
+            &self.indices
+        }
+
+        /// 与 [`Events::indices`] 一一对应的整数码。
+        pub fn codes(&self) -> &[i8] {
+            &self.codes
+        }
+
+        /// 每个码的步长。
+        pub fn scale(&self) -> S {
+            self.scale
+        }
+
+        /// 还原成稠密张量：发放位置取 `code·scale`，其余位置为零。
+        ///
+        /// 未发放的位置还原成零而不是「保留原值」：事件臂能给出的信息只有发放的那些码，
+        /// 补上原值等于偷偷退回连续臂。
+        pub fn decode(&self) -> Vec<S> {
+            let mut y = vec![S::ZERO; self.width];
+            for (&at, &code) in self.indices.iter().zip(&self.codes) {
+                y[at] = self.scale.mul(S::from_f64(f64::from(code)));
+            }
+            y
+        }
+    }
+
+    /// FR-HW 事件臂的编码器（`Encode_event` 的非恒等形态）：对称 int8 量化 + 整数阈值发放。
+    ///
+    /// 只持两个参数：`scale` 是每个码的步长，`threshold` 是发放门槛。门槛按**码位**给而不是按
+    /// 浮点值给，于是「发不发放」与 `scale` 解耦——换一个步长不会顺手把稀疏度换成另一个数。
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct Encoder<S> {
+        scale: S,
+        threshold: i32,
+    }
+
+    impl<S: Scalar> Encoder<S> {
+        /// 构造：步长有限且为正，门槛落在 `1..=127`。
+        ///
+        /// 门槛为零会让**每一个**位置都发放（含恰好为零的那些），事件臂于是退化成「带量化误差的
+        /// 稠密臂」——稀疏度是 0，能效论证随之不成立，所以在入口就拒绝。
+        ///
+        /// # Errors
+        ///
+        /// 步长非有限或非正、门槛不在 `1..=127`——返回 `Code::Invalid`。
+        pub fn new(scale: S, threshold: i32) -> Result<Self> {
+            if !finite(scale) || scale <= S::ZERO {
+                return Err(fail(format!("步长必须是有限正数，得到 {scale:?}")));
+            }
+            if !(1..=MAX_CODE).contains(&threshold) {
+                return Err(fail(format!(
+                    "发放门槛必须落在 1..={MAX_CODE}，得到 {threshold}"
+                )));
+            }
+            Ok(Self { scale, threshold })
+        }
+
+        /// 每个码的步长。
+        pub fn scale(&self) -> S {
+            self.scale
+        }
+
+        /// 发放门槛（码位口径）。
+        pub fn threshold(&self) -> i32 {
+            self.threshold
+        }
+
+        /// 编码：`code = round(y/scale)` 夹取到 `±127`，`|code| ≥ threshold` 的位置才发放。
+        ///
+        /// # Errors
+        ///
+        /// 输入含非有限值返回 `Code::Invalid`：比较对 `NaN` 全为假，放行会把它拾成码位 `0`，
+        /// 于是一个坏值静默变成「不发放」。
+        pub fn encode(&self, y: &[S]) -> Result<Events<S>> {
+            check_finite(y)?;
+            let mut indices = Vec::new();
+            let mut codes = Vec::new();
+            for (at, &value) in y.iter().enumerate() {
+                let code = self.quantize(value);
+                if i32::from(code).abs() >= self.threshold {
+                    indices.push(at);
+                    codes.push(code);
+                }
+            }
+            Ok(Events {
+                width: y.len(),
+                scale: self.scale,
+                indices,
+                codes,
+            })
+        }
+
+        /// 一次完整的事件臂前向：`y → Encode_event → (1−γ)·y + γ·y_γ`（§1.5 的 γ 合成）。
+        ///
+        /// 顺序固定在这一处：先编码再合成，因此 `γ = 0` 时结果与输入逐位相同，`γ = 1` 时结果恰是
+        /// [`Events::decode`] 的输出。
+        ///
+        /// # Errors
+        ///
+        /// 与 [`Encoder::encode`] 同一判据。
+        pub fn blend(&self, y: &[S], gamma: S) -> Result<Vec<S>> {
+            let events = self.encode(y)?;
+            Ok(super::gate(y, &events.decode(), gamma))
+        }
+
+        /// 一个浮点值 → 码位：`round(v/scale)` 夹取到 `±MAX_CODE`。
+        ///
+        /// 夹取而不是回绕：回绕把超量程的值折成另一个符号的合法码，看起来仍像一个数。
+        fn quantize(&self, value: S) -> i8 {
+            let raw = value.div(self.scale).round().to_f64();
+            let limit = f64::from(MAX_CODE);
+            raw.clamp(-limit, limit) as i8
+        }
+    }
+
+    /// 一段激活的事件臂实测两项：E14 稀疏度与相对重构损失 `‖ŷ − y‖₂ / ‖y‖₂`。
+    ///
+    /// 只报数、不判门：SpB 2.0 的「64.31% 稀疏 / 0.69% 损失」是同口径的**外部锚点**，本仓的数要
+    /// 自己测；判决由 `tool::card` 的协议卡出。
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct Audit {
+        sparsity: f64,
+        loss: f64,
+    }
+
+    impl Audit {
+        /// 对一段激活取两项实测。
+        ///
+        /// `‖y‖ = 0` 时分母为零，改用**绝对**误差 `‖ŷ‖`：相对误差在零输入上是 `0/0`，记成 `0`
+        /// 会把「没测到」与「完美重构」混为一谈。
+        ///
+        /// # Errors
+        ///
+        /// 输入含非有限值返回 `Code::Invalid`（与 [`Encoder::encode`] 同一判据）。
+        pub fn measure<S: Scalar>(encoder: &Encoder<S>, y: &[S]) -> Result<Self> {
+            let events = encoder.encode(y)?;
+            let restored = events.decode();
+            Ok(Self {
+                sparsity: events.sparsity(),
+                loss: relative_error(y, &restored),
+            })
+        }
+
+        /// E14 的稀疏度 `S = 1 − N_active/N_total`。
+        pub fn sparsity(&self) -> f64 {
+            self.sparsity
+        }
+
+        /// 相对重构损失（`‖y‖ = 0` 时退化为绝对误差）。
+        pub fn loss(&self) -> f64 {
+            self.loss
+        }
+    }
+
+    /// 样本对上的最大放大比 `max ‖Ê(u) − Ê(v)‖ / ‖u − v‖`（§1.5 的 `L_e`）。
+    ///
+    /// **量化器不是真 Lipschitz**：两点距离趋于零时，只要它们落在相邻两个码位上，比值就能任意大
+    /// （码位之间有台阶）。所以这里报的只是**给定样本对上**的实测比值——`L_e` 要有意义，样本集
+    /// （连同点的间距分布）必须与数字一起冻结，否则同一份实现能给出任意大的 `L_e`。
+    ///
+    /// 没有一对可比的输入时返回 `Ok(None)`：`0` 会被读成「完全不放大」，而事实是没有任何证据。
+    ///
+    /// # Errors
+    ///
+    /// 某一对两段长度不等、或任一输入含非有限值——返回 `Code::Invalid`。
+    pub fn steepest<S: Scalar>(
+        encoder: &Encoder<S>,
+        pairs: &[(&[S], &[S])],
+    ) -> Result<Option<f64>> {
+        let mut worst: Option<f64> = None;
+        for &(u, v) in pairs {
+            if let Some(ratio) = pair_gain(encoder, u, v)? {
+                worst = Some(worst.map_or(ratio, |w| w.max(ratio)));
+            }
+        }
+        Ok(worst)
+    }
+
+    /// 一对输入的放大比；两点重合时 `None`（没有距离，比值无定义）。
+    fn pair_gain<S: Scalar>(encoder: &Encoder<S>, u: &[S], v: &[S]) -> Result<Option<f64>> {
+        check_pair(u, v)?;
+        let (ha, hb) = (encoder.encode(u)?.decode(), encoder.encode(v)?.decode());
+        let span = squared_distance(u, v);
+        if span == 0.0 {
+            return Ok(None);
+        }
+        Ok(Some((squared_distance(&ha, &hb) / span).sqrt()))
+    }
+
+    /// 一对样本的入口契约：长度相等且各自都有限。
+    fn check_pair<S: Scalar>(u: &[S], v: &[S]) -> Result<()> {
+        if u.len() != v.len() {
+            return Err(fail(format!(
+                "样本对的两段长度必须相等，得到 {} 与 {}",
+                u.len(),
+                v.len()
+            )));
+        }
+        check_finite(u)?;
+        check_finite(v)
+    }
+
+    /// 事件驱动的整数累加：`y_j = Σ_{i ∈ 发放} w[j·width + i]·code_i`（§1.4 第 5 类）。
+    ///
+    /// 只遍历发放位置，因此代价随 `N_active` 而不是 `width` 走——这是事件臂相对于稠密臂的唯一
+    /// 实际好处；数值上它必须与「先铺成稠密码表再整行累加」**逐位相同**（累加次序仍是 `i` 升序，
+    /// 被跳过位置不贡献任何一项）。
+    ///
+    /// 累加在 `i32` 里做，容量在入口一次判清（`cols · 127²` 装得下才开工），于是内层不必逐项查
+    /// 溢出：回绕后的数看起来仍像一个数，比一个显式的失败危险得多。
+    ///
+    /// # Errors
+    ///
+    /// `w.len() != rows × cols`、`events.width() != cols`、尺寸或累加容量溢出——返回 `Code::Invalid`。
+    pub fn accumulate<S: Scalar>(
+        w: &[i8],
+        rows: usize,
+        cols: usize,
+        events: &Events<S>,
+    ) -> Result<Vec<i32>> {
+        check_geometry(w.len(), rows, cols, events.width())?;
+        let mut out = vec![0i32; rows];
+        for (row, slot) in out.iter_mut().enumerate() {
+            let line = &w[row * cols..(row + 1) * cols];
+            *slot = events
+                .indices()
+                .iter()
+                .zip(events.codes())
+                .fold(0i32, |acc, (&at, &code)| {
+                    acc + i32::from(line[at]) * i32::from(code)
+                });
+        }
+        Ok(out)
+    }
+
+    /// `‖ŷ − y‖₂ / ‖y‖₂`；`‖y‖ = 0` 时退化成 `‖ŷ‖₂`。
+    fn relative_error<S: Scalar>(y: &[S], restored: &[S]) -> f64 {
+        let residual = squared_distance(y, restored).sqrt();
+        let norm = squared_norm(y).sqrt();
+        if norm > 0.0 {
+            residual / norm
+        } else {
+            residual
+        }
+    }
+
+    /// 一段向量的欧氏长度平方。
+    fn squared_norm<S: Scalar>(values: &[S]) -> f64 {
+        values.iter().map(|&v| v.to_f64().powi(2)).sum()
+    }
+
+    /// 两段等长向量的欧氏距离平方。
+    fn squared_distance<S: Scalar>(a: &[S], b: &[S]) -> f64 {
+        a.iter()
+            .zip(b)
+            .map(|(&x, &y)| {
+                let d = x.sub(y).to_f64();
+                d * d
+            })
+            .sum()
+    }
+
+    /// 几何与容量一次判清：形状对了才谈累加，容量装得下才允许用普通 `i32` 加法。
+    fn check_geometry(got: usize, rows: usize, cols: usize, width: usize) -> Result<()> {
+        if rows.checked_mul(cols) != Some(got) {
+            return Err(fail(format!(
+                "权重长度必须是 rows × cols = {rows} × {cols}，得到 {got}"
+            )));
+        }
+        if width != cols {
+            return Err(fail(format!(
+                "事件宽度必须等于权重列数 {cols}，得到 {width}"
+            )));
+        }
+        let cell = (MAX_CODE as usize) * (MAX_CODE as usize);
+        if cols.saturating_mul(cell) > i32::MAX as usize {
+            return Err(fail(format!(
+                "列数 {cols} × 单格上限 {cell} 超出 i32 累加容量"
+            )));
+        }
+        Ok(())
+    }
+
+    /// 整段激活都有限：比较对 `NaN` 全为假，放行会把它静默拾成码位 `0`。
+    fn check_finite<S: Scalar>(values: &[S]) -> Result<()> {
+        if values.iter().all(|&v| finite(v)) {
+            return Ok(());
+        }
+        Err(fail("激活含非有限值".to_string()))
+    }
+
+    /// 统一的失败构造：出处固定、码位固定，报错文案各自不同。
+    fn fail(message: String) -> Error {
+        Error::new(Code::Invalid, message).with(SITE)
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -129,10 +478,164 @@ mod pulse {
             let y = vec![1.0f64, -2.0, 3.0];
             assert_eq!(encode_id(&y), y);
         }
+
+        /// 编码器：步长与门槛各自越界都被拒，边界值放行。
+        #[test]
+        fn encoder_params_outside_the_lattice_are_rejected() {
+            assert!(Encoder::new(0.0f64, 1).is_err());
+            assert!(Encoder::new(-0.5f64, 1).is_err());
+            assert!(Encoder::new(f64::NAN, 1).is_err());
+            assert!(Encoder::new(0.5f64, 0).is_err());
+            assert!(Encoder::new(0.5f64, 128).is_err());
+            assert!(Encoder::new(0.5f64, 127).is_ok());
+        }
+
+        /// 只有码位达到门槛的位置发放：门槛按码位而不是按浮点值。
+        #[test]
+        fn only_positions_at_or_above_the_threshold_fire() {
+            let enc = Encoder::new(0.5f64, 2).expect("参数合法");
+            let events = enc.encode(&[0.2, 0.6, -0.9, 3.0]).expect("合法输入");
+            assert_eq!(events.width(), 4);
+            assert_eq!(events.active(), 2);
+            assert_eq!(events.indices(), &[2, 3]);
+            assert_eq!(events.codes(), &[-2i8, 6]);
+            assert!((events.sparsity() - 0.5).abs() < 1e-12);
+        }
+
+        /// 超量程夹取，不回绕：回绕后的数仍像一个数。
+        #[test]
+        fn out_of_range_values_clip_into_the_code_lattice() {
+            let enc = Encoder::new(1.0f64, 1).expect("参数合法");
+            let events = enc.encode(&[1.0e6, -1.0e6, 300.0]).expect("合法输入");
+            assert_eq!(events.codes(), &[127i8, -127, 127]);
+            assert_eq!(events.decode(), vec![127.0, -127.0, 127.0]);
+        }
+
+        /// 还原只需要事件本身：同一组码配不同步长解出不同的数。
+        #[test]
+        fn decode_takes_its_scale_from_the_events() {
+            let coarse = Encoder::new(1.0f64, 1)
+                .expect("参数合法")
+                .encode(&[1.0])
+                .expect("合法输入");
+            let fine = Encoder::new(0.25f64, 1)
+                .expect("参数合法")
+                .encode(&[0.25])
+                .expect("合法输入");
+            assert_eq!(coarse.codes(), fine.codes());
+            assert_eq!(coarse.decode(), vec![1.0]);
+            assert_eq!(fine.decode(), vec![0.25]);
+        }
+
+        /// 实测两项：稀疏度 `1 − N_active/N_total` 与相对重构损失。
+        #[test]
+        fn audit_reports_sparsity_and_relative_loss() {
+            let enc = Encoder::new(0.5f64, 1).expect("参数合法");
+            let audit = Audit::measure(&enc, &[0.6, 0.0, 0.0]).expect("合法输入");
+            assert!((audit.sparsity() - 2.0 / 3.0).abs() < 1e-12);
+            // 还原成 0.5：残差 0.1，相对损失 = 0.1 / 0.6 = 1/6。
+            assert!((audit.loss() - 1.0 / 6.0).abs() < 1e-12);
+        }
+
+        /// 零输入没有相对误差可言：记 0 而不是 `0/0`。
+        #[test]
+        fn zero_input_has_no_relative_error() {
+            let enc = Encoder::new(0.5f64, 1).expect("参数合法");
+            let audit = Audit::measure(&enc, &[0.0f64; 3]).expect("合法输入");
+            assert_eq!(audit.sparsity(), 1.0);
+            assert_eq!(audit.loss(), 0.0);
+        }
+
+        /// 重合的一对没有距离，放大比无定义——记 `None` 而不是 0。
+        #[test]
+        fn coincident_pairs_give_no_gain_estimate() {
+            let enc = Encoder::new(0.5f64, 1).expect("参数合法");
+            let u = [0.7f64, 1.1];
+            assert_eq!(steepest(&enc, &[(u.as_slice(), u.as_slice())]), Ok(None));
+            assert_eq!(steepest(&enc, &[]), Ok(None));
+        }
+
+        /// 粗间距比值不超过 1；细间距跨码位台阶时超过 1——量化器不是真 Lipschitz。
+        #[test]
+        fn fine_pairs_exceed_the_lipschitz_constant() {
+            let enc = Encoder::new(0.5f64, 1).expect("参数合法");
+            let coarse = steepest(&enc, &[(&[0.0f64][..], &[1.0f64][..])]).expect("合法");
+            assert_eq!(coarse, Some(1.0));
+            let fine = steepest(&enc, &[(&[0.0f64][..], &[0.3f64][..])])
+                .expect("合法")
+                .expect("可比的一对");
+            assert!(fine > 1.0, "细间距的放大比 {fine} 应大于 1");
+            assert!((fine - 0.5 / 0.3).abs() < 1e-9);
+        }
+
+        /// 事件驱动累加与「补零后整行累加」逐位相同。
+        #[test]
+        fn accumulate_agrees_with_the_dense_path() {
+            let enc = Encoder::new(0.5f64, 1).expect("参数合法");
+            let events = enc.encode(&[0.2, 1.6, -0.1, 0.9]).expect("合法输入");
+            let w = [3i8, -2, 5, 1, -4, 7, 0, 2];
+            let got = accumulate(&w, 2, 4, &events).expect("几何合法");
+
+            let mut table = [0i8; 4];
+            for (&at, &code) in events.indices().iter().zip(events.codes()) {
+                table[at] = code;
+            }
+            let dense: Vec<i32> = (0..2)
+                .map(|row| {
+                    (0..4)
+                        .map(|col| i32::from(w[row * 4 + col]) * i32::from(table[col]))
+                        .sum()
+                })
+                .collect();
+            assert_eq!(got, dense);
+            // 码表是 `[0, 3, 0, 2]`：逐行 -2·3 + 1·2 与 7·3 + 2·2。
+            assert_eq!(got, vec![-4, 25]);
+        }
+
+        /// 权重长度或事件宽度不符都在入口被拒。
+        #[test]
+        fn accumulate_rejects_bad_geometry() {
+            let enc = Encoder::new(0.5f64, 1).expect("参数合法");
+            let two = enc.encode(&[1.0f64, 0.0]).expect("合法输入");
+            assert!(accumulate(&[1i8; 3], 2, 2, &two).is_err());
+            let three = enc.encode(&[1.0f64; 3]).expect("合法输入");
+            assert!(accumulate(&[1i8; 4], 2, 2, &three).is_err());
+        }
+
+        /// 非有限值不被拾成码位 0：编码、对拍与实测三处都拒。
+        #[test]
+        fn non_finite_input_is_rejected_not_absorbed() {
+            let enc = Encoder::new(0.5f64, 1).expect("参数合法");
+            assert!(enc.encode(&[1.0, f64::NAN]).is_err());
+            assert!(steepest(&enc, &[(&[1.0f64][..], &[f64::INFINITY][..])]).is_err());
+            assert!(Audit::measure(&enc, &[f64::NAN]).is_err());
+        }
+
+        /// `γ = 0` 时事件臂原样放行输入，`γ = 1` 时恰是解码结果。
+        #[test]
+        fn blend_endpoints_are_the_input_and_the_decoded_events() {
+            let enc = Encoder::new(0.5f64, 2).expect("参数合法");
+            let y = vec![0.1f64, 2.5, -1.2];
+            assert_eq!(enc.blend(&y, 0.0).expect("合法输入"), y);
+            let events = enc.encode(&y).expect("合法输入");
+            assert_eq!(enc.blend(&y, 1.0).expect("合法输入"), events.decode());
+        }
+
+        /// `f32` 与 `f64` 落在同一组码位上。
+        #[test]
+        fn f32_and_f64_quantize_to_the_same_codes() {
+            let wide = [0.2f64, 1.6, -0.7, 2.4];
+            let narrow = [0.2f32, 1.6, -0.7, 2.4];
+            let a = Encoder::new(0.5f64, 1).expect("合法").encode(&wide);
+            let b = Encoder::new(0.5f32, 1).expect("合法").encode(&narrow);
+            let (a, b) = (a.expect("合法输入"), b.expect("合法输入"));
+            assert_eq!(a.indices(), b.indices());
+            assert_eq!(a.codes(), b.codes());
+        }
     }
 }
 
-pub use pulse::{Lif, encode_id};
+pub use pulse::{Audit, Encoder, Events, Lif, accumulate, encode_id, steepest};
 
 #[cfg(test)]
 mod tests {

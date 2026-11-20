@@ -11,7 +11,7 @@
 //! 同困惑度」那条实证红利的实现形态是可测的：每个状态维占 2 个实值分量，`pairs` 取一半即同宽。
 //!
 //! **离散化取双抽头梯形**：[`exp_trapezoid`] 用 `x_{t−1}` 与 `x_t` 的平均，步内输入不是常数——这正是
-//! `exponential_trapezoid` 这个名字所指的算式；左端常数那条（[`exp_zero_order`]）是另一个名字、另一条
+//! `exponential_trapezoid` 这个名字所指的算式；左端常数那条（[`op::scan::exp_zero_order`]）是另一个名字、另一条
 //! 式子，`scan_f32` 算子用它。层内记着上一个 token 的输入（[`Carry::taps`]），所以梯形不需要调用方
 //! 额外传参。
 //!
@@ -83,47 +83,8 @@ impl<S: Scalar> Mamba<S> {
         phase: Vec<S>,
         skip: Vec<S>,
     ) -> Result<Self> {
-        if width == 0 || pairs == 0 || rank == 0 {
-            return Err(fail(format!(
-                "宽度、状态维数与秩都必须非零，得到 width = {width}、pairs = {pairs}、rank = {rank}"
-            )));
-        }
-        if rank > pairs {
-            return Err(fail(format!(
-                "秩 {rank} 不能超过状态维数 {pairs}：行多于列的选择矩阵必有线性相关"
-            )));
-        }
-        let cells = width.checked_mul(pairs).and_then(|n| n.checked_mul(2));
-        if cells.is_none() {
-            return Err(fail(format!("状态尺寸溢出（{width} × {pairs} × 2）")));
-        }
-        if decay.len() != width * pairs || phase.len() != width * pairs {
-            return Err(fail(format!(
-                "decay / phase 长度必须是 {}（width × pairs），得到 {} / {}",
-                width * pairs,
-                decay.len(),
-                phase.len()
-            )));
-        }
-        if skip.len() != width {
-            return Err(fail(format!(
-                "skip 长度必须是 {width}，得到 {}",
-                skip.len()
-            )));
-        }
-        for (channel, (&real, &imaginary)) in decay.iter().zip(&phase).enumerate() {
-            if !finite(real) || !finite(imaginary) {
-                return Err(fail(format!("第 {channel} 个状态维的 λ 非有限")));
-            }
-            if real > S::ZERO {
-                return Err(fail(format!(
-                    "第 {channel} 个状态维的 λ 实部必须 ≤ 0（正实部每步放大，几步就到 inf），得到 {real:?}"
-                )));
-            }
-        }
-        if !skip.iter().all(|&d| finite(d)) {
-            return Err(fail("skip 含非有限值".to_string()));
-        }
+        check_shape(width, pairs, rank)?;
+        check_params(width, pairs, &decay, &phase, &skip)?;
         Ok(Self {
             width,
             pairs,
@@ -236,38 +197,121 @@ impl<S: Scalar> Mamba<S> {
     }
 
     /// 输入契约：宽度、有限性与步长符号一起判，且都排在第一次写入之前。
-    fn check_inputs(
-        &self,
-        input: &[S],
-        delta: &[S],
-        select_b: &[S],
-        select_c: &[S],
-    ) -> Result<()> {
-        check_len("输入", input.len(), self.width)?;
-        check_len("步长", delta.len(), self.width)?;
+    fn check_inputs(&self, input: &[S], delta: &[S], select_b: &[S], select_c: &[S]) -> Result<()> {
         let selects = self.rank * self.pairs;
-        check_len("选择量 b", select_b.len(), selects)?;
-        check_len("选择量 c", select_c.len(), selects)?;
-        if !input.iter().all(|&v| finite(v))
-            || !delta.iter().all(|&v| finite(v))
-            || !select_b.iter().all(|&v| finite(v))
-            || !select_c.iter().all(|&v| finite(v))
-        {
-            return Err(fail("输入、步长或选择量含非有限值".to_string()));
-        }
-        if let Some(channel) = delta.iter().position(|&v| v <= S::ZERO) {
-            return Err(fail(format!(
-                "第 {channel} 个通道的步长必须为正，得到 {:?}",
-                delta[channel]
-            )));
-        }
-        Ok(())
+        let lengths = [
+            ("输入", input.len(), self.width),
+            ("步长", delta.len(), self.width),
+            ("选择量 b", select_b.len(), selects),
+            ("选择量 c", select_c.len(), selects),
+        ];
+        check_widths(&lengths)?;
+        check_finite_all(&[input, delta, select_b, select_c])?;
+        check_positive(delta)
     }
 }
 
 /// 选择量在某个状态维上对秩求和：`Σ_r S[r][state]`。
 fn mixed<S: Scalar>(select: &[S], pairs: usize, rank: usize, state: usize) -> S {
     (0..rank).fold(S::ZERO, |acc, r| acc.add(select[r * pairs + state]))
+}
+
+/// 几何三问：任一维为零、秩超过状态维、尺寸相乘溢出。
+///
+/// 秩那一问另有语义：行多于列的选择矩阵必有线性相关，多出来的那几组只是同一个方向的重复。
+fn check_shape(width: usize, pairs: usize, rank: usize) -> Result<()> {
+    if [width, pairs, rank].contains(&0) {
+        return Err(fail(format!(
+            "宽度、状态维数与秩都必须非零，得到 width = {width}、pairs = {pairs}、rank = {rank}"
+        )));
+    }
+    if rank > pairs {
+        return Err(fail(format!(
+            "秩 {rank} 不能超过状态维数 {pairs}：行多于列的选择矩阵必有线性相关"
+        )));
+    }
+    if width
+        .checked_mul(pairs)
+        .and_then(|n| n.checked_mul(2))
+        .is_none()
+    {
+        return Err(fail(format!("状态尺寸溢出（{width} × {pairs} × 2）")));
+    }
+    Ok(())
+}
+
+/// 参数三问：两组逐状态维的参数与一组逐通道的直连系数，长度都对上后各自判取值。
+fn check_params<S: Scalar>(
+    width: usize,
+    pairs: usize,
+    decay: &[S],
+    phase: &[S],
+    skip: &[S],
+) -> Result<()> {
+    let cells = width * pairs;
+    let lengths = [
+        ("decay", decay.len(), cells),
+        ("phase", phase.len(), cells),
+        ("skip", skip.len(), width),
+    ];
+    check_widths(&lengths)?;
+    check_spectrum(decay, phase)?;
+    every_finite(skip)
+}
+
+/// 逐状态维的 `λ` 必须有限且实部 `≤ 0`。
+fn check_spectrum<S: Scalar>(decay: &[S], phase: &[S]) -> Result<()> {
+    for (cell, (&real, &imaginary)) in decay.iter().zip(phase).enumerate() {
+        check_lambda(cell, real, imaginary)?;
+    }
+    Ok(())
+}
+
+/// 一个状态维的稳定性：非有限值报错在前，正实部报错在后（两者都可能同时成立）。
+fn check_lambda<S: Scalar>(cell: usize, real: S, imaginary: S) -> Result<()> {
+    if !finite(real) || !finite(imaginary) {
+        return Err(fail(format!("第 {cell} 个状态维的 λ 非有限")));
+    }
+    if real > S::ZERO {
+        return Err(fail(format!(
+            "第 {cell} 个状态维的 λ 实部必须 ≤ 0（正实部每步放大，几步就到 inf），得到 {real:?}"
+        )));
+    }
+    Ok(())
+}
+
+/// 一组「叫什么、拿到多少、该是多少」的宽度断言，逐条给出第一个不符的名字。
+///
+/// 收集成表再判，是为了让调用方不必为每条长度各写一个 `?`——每个 `?` 都是一条分支，
+/// 八条长度合起来会把一个只做校验的函数的圈复杂度顶到门限之上。
+fn check_widths(expected: &[(&str, usize, usize)]) -> Result<()> {
+    expected
+        .iter()
+        .try_for_each(|&(what, got, want)| check_len(what, got, want))
+}
+
+/// 若干段向量都要有限。分组而不是逐段调用，同样是为了把分支数收在一处。
+fn check_finite_all<S: Scalar>(groups: &[&[S]]) -> Result<()> {
+    groups.iter().try_for_each(|group| every_finite(group))
+}
+
+/// 整段向量都有限。比较对 `NaN` 全为假，所以放行一个 `NaN` 会让状态一路静默变成 `NaN`。
+fn every_finite<S: Scalar>(values: &[S]) -> Result<()> {
+    if values.iter().all(|&v| finite(v)) {
+        return Ok(());
+    }
+    Err(fail("输入、步长或选择量含非有限值".to_string()))
+}
+
+/// 步长必须严格为正：零步长读不到这一次输入，负步长把时间倒着走。
+fn check_positive<S: Scalar>(delta: &[S]) -> Result<()> {
+    if let Some(channel) = delta.iter().position(|&v| v <= S::ZERO) {
+        return Err(fail(format!(
+            "第 {channel} 个通道的步长必须为正，得到 {:?}",
+            delta[channel]
+        )));
+    }
+    Ok(())
 }
 
 /// 宽度不符一律 `Code::Invalid`：短了会静默读到别的通道，长了是多出来的数被丢掉。
@@ -317,13 +361,43 @@ mod tests {
         let ok = (WIDTH, 2, 1, 6usize, 3usize);
         assert!(Mamba::new(0, 2, 1, vec![0.0; 2], vec![0.0; 2], vec![0.0; ok.0]).is_err());
         assert!(Mamba::new(WIDTH, 0, 1, vec![], vec![], vec![0.0; WIDTH]).is_err());
-        assert!(Mamba::new(WIDTH, 1, 0, vec![0.0; WIDTH], vec![0.0; WIDTH], vec![0.0; WIDTH]).is_err());
+        assert!(
+            Mamba::new(
+                WIDTH,
+                1,
+                0,
+                vec![0.0; WIDTH],
+                vec![0.0; WIDTH],
+                vec![0.0; WIDTH]
+            )
+            .is_err()
+        );
         // 秩超过状态维数。
-        assert!(Mamba::new(WIDTH, 1, 2, vec![0.0; WIDTH], vec![0.0; WIDTH], vec![0.0; WIDTH]).is_err());
+        assert!(
+            Mamba::new(
+                WIDTH,
+                1,
+                2,
+                vec![0.0; WIDTH],
+                vec![0.0; WIDTH],
+                vec![0.0; WIDTH]
+            )
+            .is_err()
+        );
         // 三组参数各自短一格。
         assert!(Mamba::new(WIDTH, 2, 1, vec![0.0; 5], vec![0.0; ok.3], vec![0.0; WIDTH]).is_err());
         assert!(Mamba::new(WIDTH, 2, 1, vec![0.0; ok.3], vec![0.0; 5], vec![0.0; WIDTH]).is_err());
-        assert!(Mamba::new(WIDTH, 2, 1, vec![0.0; ok.3], vec![0.0; ok.3], vec![0.0; ok.4 - 1]).is_err());
+        assert!(
+            Mamba::new(
+                WIDTH,
+                2,
+                1,
+                vec![0.0; ok.3],
+                vec![0.0; ok.3],
+                vec![0.0; ok.4 - 1]
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -347,7 +421,8 @@ mod tests {
         let delta = units(WIDTH);
         let (b, c) = (units(2 * 4), units(2 * 4));
         for _ in 0..128 {
-            m.step(&mut carry, &units(WIDTH), &delta, &b, &c).expect("合法一步");
+            m.step(&mut carry, &units(WIDTH), &delta, &b, &c)
+                .expect("合法一步");
         }
         // 跑过 128 个 token，状态长度一格不变——这是「与序列长无关」的可测形态。
         assert_eq!(carry.planes().len(), WIDTH * 4 * 2);
@@ -360,13 +435,34 @@ mod tests {
         let mut carry = m.state();
         let delta = units(WIDTH);
         let (b, c) = (units(2), units(2));
-        assert!(m.step(&mut carry, &units(WIDTH - 1), &delta, &b, &c).is_err());
-        assert!(m.step(&mut carry, &units(WIDTH), &units(WIDTH + 1), &b, &c).is_err());
-        assert!(m.step(&mut carry, &units(WIDTH), &delta, &units(1), &c).is_err());
-        assert!(m.step(&mut carry, &units(WIDTH), &delta, &b, &units(3)).is_err());
-        assert!(m.step(&mut carry, &units(WIDTH), &[0.5, 0.0, 0.5], &b, &c).is_err());
-        assert!(m.step(&mut carry, &units(WIDTH), &[0.5, -0.5, 0.5], &b, &c).is_err());
-        assert!(m.step(&mut carry, &[1.0, f64::NAN, 1.0], &delta, &b, &c).is_err());
+        assert!(
+            m.step(&mut carry, &units(WIDTH - 1), &delta, &b, &c)
+                .is_err()
+        );
+        assert!(
+            m.step(&mut carry, &units(WIDTH), &units(WIDTH + 1), &b, &c)
+                .is_err()
+        );
+        assert!(
+            m.step(&mut carry, &units(WIDTH), &delta, &units(1), &c)
+                .is_err()
+        );
+        assert!(
+            m.step(&mut carry, &units(WIDTH), &delta, &b, &units(3))
+                .is_err()
+        );
+        assert!(
+            m.step(&mut carry, &units(WIDTH), &[0.5, 0.0, 0.5], &b, &c)
+                .is_err()
+        );
+        assert!(
+            m.step(&mut carry, &units(WIDTH), &[0.5, -0.5, 0.5], &b, &c)
+                .is_err()
+        );
+        assert!(
+            m.step(&mut carry, &[1.0, f64::NAN, 1.0], &delta, &b, &c)
+                .is_err()
+        );
     }
 
     #[test]
@@ -375,13 +471,20 @@ mod tests {
         let mut carry = m.state();
         let delta = units(WIDTH);
         let (b, c) = (units(2), units(2));
-        m.step(&mut carry, &units(WIDTH), &delta, &b, &c).expect("合法一步");
+        m.step(&mut carry, &units(WIDTH), &delta, &b, &c)
+            .expect("合法一步");
         let before = carry.clone();
         // 步长非正：在更新之前就被拒。
-        assert!(m.step(&mut carry, &units(WIDTH), &[1.0, 0.0, 1.0], &b, &c).is_err());
+        assert!(
+            m.step(&mut carry, &units(WIDTH), &[1.0, 0.0, 1.0], &b, &c)
+                .is_err()
+        );
         assert_eq!(carry, before);
         // 选择量长度不符同样在写之前。
-        assert!(m.step(&mut carry, &units(WIDTH), &delta, &units(9), &c).is_err());
+        assert!(
+            m.step(&mut carry, &units(WIDTH), &delta, &units(9), &c)
+                .is_err()
+        );
         assert_eq!(carry, before);
     }
 
@@ -391,7 +494,10 @@ mod tests {
         let wide = layer(3, 1);
         let mut carry = narrow.state();
         let delta = units(WIDTH);
-        assert!(wide.step(&mut carry, &units(WIDTH), &delta, &units(3), &units(3)).is_err());
+        assert!(
+            wide.step(&mut carry, &units(WIDTH), &delta, &units(3), &units(3))
+                .is_err()
+        );
     }
 
     /// 读数是**更新之后**的状态：从零状态出发，一步的闭式结果是 `C·(dt/2·x·B) + D·x`。
@@ -400,7 +506,9 @@ mod tests {
         let m = single(-0.5, 0.4, 1.0);
         let mut carry = m.state();
         let (x, dt) = (2.0f64, 0.25f64);
-        let y = m.step(&mut carry, &[x], &[dt], &[0.7], &[0.3]).expect("合法一步");
+        let y = m
+            .step(&mut carry, &[x], &[dt], &[0.7], &[0.3])
+            .expect("合法一步");
         // 左端为 0，故 b̄ 的实部是 (dt/2)·x，虚部为 0；直连项 D·x 另加。
         let expected = 0.3 * (dt / 2.0 * x * 0.7) + x;
         assert!((y[0] - expected).abs() < 1e-12, "{} vs {expected}", y[0]);
@@ -417,7 +525,10 @@ mod tests {
             let mut carry = m.state();
             tokens
                 .iter()
-                .map(|&x| m.step(&mut carry, &[x; WIDTH], &delta, &b, &c).expect("合法一步"))
+                .map(|&x| {
+                    m.step(&mut carry, &[x; WIDTH], &delta, &b, &c)
+                        .expect("合法一步")
+                })
                 .collect::<Vec<_>>()
         };
         let first = run(&inputs);
@@ -433,9 +544,11 @@ mod tests {
     fn two_writes_accumulate() {
         let m = single(-0.5, 0.4, 0.0);
         let mut carry = m.state();
-        m.step(&mut carry, &[1.0], &[0.25], &[1.0], &[0.0]).expect("合法一步");
+        m.step(&mut carry, &[1.0], &[0.25], &[1.0], &[0.0])
+            .expect("合法一步");
         let once = carry.planes()[0];
-        m.step(&mut carry, &[1.0], &[0.25], &[1.0], &[0.0]).expect("合法一步");
+        m.step(&mut carry, &[1.0], &[0.25], &[1.0], &[0.0])
+            .expect("合法一步");
         let twice = carry.planes()[0];
         assert!(twice > once, "{twice} 应大于 {once}");
     }
@@ -446,10 +559,12 @@ mod tests {
         for (phase, moves) in [(0.4f64, true), (0.0, false)] {
             let m = single(0.0, phase, 0.0);
             let mut carry = m.state();
-            m.step(&mut carry, &[1.0], &[0.25], &[1.0], &[0.0]).expect("合法一步");
+            m.step(&mut carry, &[1.0], &[0.25], &[1.0], &[0.0])
+                .expect("合法一步");
             let before = [carry.planes()[0], carry.planes()[1]];
             // 选择量为零：状态只吃 `ā h`，这正是「纯旋转」的那一步。
-            m.step(&mut carry, &[1.0], &[0.25], &[0.0], &[0.0]).expect("合法一步");
+            m.step(&mut carry, &[1.0], &[0.25], &[0.0], &[0.0])
+                .expect("合法一步");
             let after = [carry.planes()[0], carry.planes()[1]];
             let norm = |s: [f64; 2]| s[0].hypot(s[1]);
             assert!((norm(after) - norm(before)).abs() < 1e-12, "ω={phase}");
@@ -503,8 +618,8 @@ mod tests {
     /// `f32` 上同一套算术跑得动：泛型不是只为 `f64` 测试写的。
     #[test]
     fn f32_runs_the_same_loop() {
-        let m = Mamba::new(2, 2, 2, vec![-1.0f32; 4], vec![0.3; 4], vec![0.5; 2])
-            .expect("参数合法");
+        let m =
+            Mamba::new(2, 2, 2, vec![-1.0f32; 4], vec![0.3; 4], vec![0.5; 2]).expect("参数合法");
         let mut carry = m.state();
         let mut last = Vec::new();
         for _ in 0..8 {

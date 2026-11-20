@@ -9,6 +9,8 @@
 use diagnostic::{Code, Error, Result};
 use op::scan::Scalar;
 
+use crate::{Contract, ContractSpec, Shape};
+
 /// 乘-XOR 终混（64 位全雪崩，splitmix64 finalizer）。
 fn mix(mut x: u64) -> u64 {
     x ^= x >> 30;
@@ -26,6 +28,26 @@ pub fn phi(ngram: &[u32], seed: u64) -> u64 {
         h = mix(h ^ u64::from(t));
     }
     h
+}
+
+/// 槽号 `z = φ(ngram, seed) mod buckets`：槽公式只有这一份。
+///
+/// 表内查表（[`Table::slot`]）与装配侧每步回填的槽表都走它——同一份 N-gram 只有一种落槽方式，
+/// 因此「旁路算出的槽」与「训练写表时的槽」不可能是两个。
+fn bucket(ngram: &[u32], seed: u64, buckets: usize) -> usize {
+    (phi(ngram, seed) % buckets as u64) as usize
+}
+
+/// 尾部 `order` 元 N-gram 的槽号；历史不足 `order`（或几何退化）时 `None`。
+///
+/// `None` 与 [`Bypass::apply`] 返回 `false` 是同一句判据：**不猜记忆**。装配侧据此把这一行的门控
+/// 压成零，而不是拿第 0 槽顶替——顶替出来的向量在残差里就是一个真实的偏移。
+pub fn slot_of(tokens: &[u32], order: usize, seed: u64, buckets: usize) -> Option<usize> {
+    if buckets == 0 || order < 2 {
+        return None;
+    }
+    let tail = tokens.len().checked_sub(order)?;
+    Some(bucket(&tokens[tail..], seed, buckets))
 }
 
 /// 每 token 槽数 `K(N−1)`：`n` 为阶（≥2），`k` 为表数；与表长无关（`O(1)` 查找）。
@@ -111,7 +133,7 @@ impl<S: Scalar> Table<S> {
 
     /// 槽下标：`z = φ(ngram, seed) mod len`。
     pub fn slot(&self, ngram: &[u32], seed: u64) -> usize {
-        (phi(ngram, seed) % self.len as u64) as usize
+        bucket(ngram, seed, self.len)
     }
 
     /// `O(1)` 查表：返回该槽的嵌入切片（长度 = [`Table::dim`]）。
@@ -205,6 +227,140 @@ impl<S: Scalar> Bypass<S> {
             *slot = slot.add(value.mul(self.gate));
         }
         Ok(true)
+    }
+}
+
+/// 条件记忆层的装配视图（§5.8.2 的第二个执行形态）：`[width]` 隐藏向量 + 尾部 N-gram → 按门加回。
+///
+/// 与 [`Bypass`] 是**同一套公式的两个位置**，不是两份实现：槽函数同为 [`slot_of`]，门控同样是
+/// `hidden + gate · table[slot]`，历史不足 `order` 时同样不加。区别只在"谁算"——`Bypass` 在 `nn`
+/// 内一次算完，本结构只声明装配几何（槽数、行宽、阶、种子、门控强度），算术交给装配侧三个算子
+/// 节点（查表 → 门控缩放 → 加回主链），因为服务侧的执行单元是算子图而不是逐层函数。
+///
+/// 表本身是这一层的驻留权重条目 `[buckets, width]`，与词表嵌入同为查表角色（表行按槽随机访问，
+/// 豁免权重衰减比按行归一更贴切）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct MemoryBlock {
+    spec: ContractSpec,
+    width: usize,
+    order: usize,
+    seed: u64,
+    buckets: usize,
+    gate: f32,
+}
+
+/// 记忆层报错的出处。
+const MEMORY_SITE: &str = "nn::engram::MemoryBlock";
+
+impl MemoryBlock {
+    /// 查表节点算子名：`[slots, table] → [width]`。
+    pub const EMBED: &'static str = "embed_f32";
+    /// 门控缩放节点算子名：`[width] × [width]`（逐元素）。
+    pub const SCALE: &'static str = "mul_f32";
+    /// 加回主链节点算子名：`[width] + [width]`（逐元素）。
+    pub const RESIDUAL: &'static str = "add_f32";
+
+    /// 构造：行宽与槽数为正、`order ≥ 2`、门控有限。
+    ///
+    /// `order < 2` 时没有上下文可查（1-gram 只是词表拷贝，见 [`Bypass::new`]）；`gate` 非有限会让
+    /// 整行隐藏向量变成 `NaN` 而看不出是哪一层坏的。
+    ///
+    /// # Errors
+    ///
+    /// `width == 0`、`buckets == 0`、`order < 2`、`gate` 非有限——返回 `Code::Invalid`。
+    pub fn new(
+        name: &str,
+        width: usize,
+        order: usize,
+        seed: u64,
+        buckets: usize,
+        gate: f32,
+    ) -> Result<Self> {
+        if width == 0 {
+            return Err(Error::new(Code::Invalid, "条件记忆的行宽必须为正".to_string())
+                .with(MEMORY_SITE));
+        }
+        if buckets == 0 {
+            return Err(Error::new(
+                Code::Invalid,
+                "条件记忆的表槽数必须为正".to_string(),
+            )
+            .with(MEMORY_SITE));
+        }
+        if order < 2 {
+            return Err(Error::new(
+                Code::Invalid,
+                format!("N-gram 阶必须 ≥ 2（order = {order}）"),
+            )
+            .with(MEMORY_SITE));
+        }
+        if !gate.is_finite() {
+            return Err(Error::new(
+                Code::Invalid,
+                format!("门控强度必须是有限值，得到 {gate}"),
+            )
+            .with(MEMORY_SITE));
+        }
+        let spec = ContractSpec::new(
+            name,
+            Shape::new([width]),
+            vec![
+                Self::EMBED.to_string(),
+                Self::SCALE.to_string(),
+                Self::RESIDUAL.to_string(),
+            ],
+        );
+        Ok(Self {
+            spec,
+            width,
+            order,
+            seed,
+            buckets,
+            gate,
+        })
+    }
+
+    /// 隐藏宽度（本层的输入与输出宽度）。
+    pub fn width(&self) -> usize {
+        self.width
+    }
+
+    /// N-gram 阶 `N`。
+    pub fn order(&self) -> usize {
+        self.order
+    }
+
+    /// 槽哈希种子（与写表时同一把）。
+    pub fn seed(&self) -> u64 {
+        self.seed
+    }
+
+    /// 表槽数 `M`：驻留权重条目为 `[buckets, width]`。
+    pub fn buckets(&self) -> usize {
+        self.buckets
+    }
+
+    /// 门控强度 `γ`。
+    pub fn gate(&self) -> f32 {
+        self.gate
+    }
+}
+
+impl Contract for MemoryBlock {
+    fn name(&self) -> &str {
+        self.spec.name()
+    }
+
+    fn output(&self) -> &Shape {
+        self.spec.output()
+    }
+
+    fn spca(&self) -> &ContractSpec {
+        &self.spec
+    }
+
+    fn memory(&self) -> Option<&MemoryBlock> {
+        Some(self)
     }
 }
 
