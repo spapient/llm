@@ -257,7 +257,7 @@ pub use mix::{Audit, Encoder, Events, Lif, accumulate, encode_id, steepest};
 pub use pointwise::{ReduceMax, ReduceSum};
 
 #[doc(inline)]
-pub use spike::{Membrane, Spiking};
+pub use spike::{Gradients, Membrane, Spiking, Surrogate};
 
 #[doc(inline)]
 pub use stack::{Floor, Stack, Unpriced, WEIGHT_SUFFIX};
