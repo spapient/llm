@@ -1074,8 +1074,9 @@ fn metal_tensor_gemm() {
 
     // 形状只放开 M/N：`matmul_f32` 的规约轴由算子语义固定为 4096。
     let shapes = [(512, 512, 4096), (1024, 1024, 4096), (2048, 2048, 4096), (4096, 4096, 4096)];
-    // 候选几何：输出块 / 规约块 / simdgroup 数。小形状取 64 块，大形状取 128 块。
-    let geometries = [(64, 64, 4), (128, 96, 8), (128, 64, 8)];
+    // 候选几何：(M 跨度, N 跨度, 规约块, simdgroup 数)。线程组内存只随 N 跨度增长，
+    // 故 N 取 128 配 TK=96，M 取 64 换两倍线程组；小形状另试方阵 64 块。
+    let geometries = [(64, 128, 96, 8), (128, 128, 96, 8), (64, 64, 64, 4)];
 
     for (m, n, k) in shapes {
         let (a, b) = matmul_values(m, n, k);
@@ -1109,9 +1110,9 @@ fn metal_tensor_gemm() {
         });
 
         let mut pipes = Vec::new();
-        for (tile, k_tile, simdgroups) in geometries {
+        for (tile_m, tile_n, k_tile, simdgroups) in geometries {
             let msl = cutile::execution::metal_tensor_gemm_program(
-                &catalogue, &dirs, "matmul_f32", m, n, tile, k_tile, simdgroups,
+                &catalogue, &dirs, "matmul_f32", m, n, tile_m, tile_n, k_tile, simdgroups,
             )
             .expect("张量核 MSL 应能生成");
             assert!(
@@ -1119,13 +1120,17 @@ fn metal_tensor_gemm() {
                 "Gemm 骨架应走张量核 lowering"
             );
             let pipe = device.compile(&msl).expect("张量核 MSL 应能编译");
-            let grid = [((n / tile) * 32) as u32, ((m / tile) * simdgroups) as u32, 1];
+            let grid = [
+                ((n / tile_n) * 32) as u32,
+                ((m / tile_m) * simdgroups) as u32,
+                1,
+            ];
             let block = [32, simdgroups as u32, 1];
             assert!(
                 queue.execute(&pipe, &[&a_buf, &bt_buf, &y_buf], grid, block),
                 "GEMM 派发应成功"
             );
-            let label = format!("{tile}·{k_tile}·{simdgroups}");
+            let label = format!("{tile_m}·{tile_n}·{k_tile}·{simdgroups}");
             let error = reference.as_ref().map_or(f64::NAN, |want| {
                 assert_relaxed_matches(
                     &format!("张量核 {m}×{n}×{k} {label}"),
@@ -1175,8 +1180,17 @@ fn metal_tensor_kernel_gemm() {
     let declaration =
         "void cutile_bench_kernel(const float *a, const float *b, float *y, int M, int N, int K) {}";
     let signature = Signature::parse("bench", declaration).expect("自建签名应能解析");
-    // 128·96·8 是 llm.u 的生产档；64·64·4 在小形状上并行度更好。
-    let geometries = [(128, 96, 8), (64, 64, 4), (128, 64, 8)];
+    // 64·128·96·8 与 llm.u 的生产档同构（BM=64、BN=128、TK=96、8 个 simdgroup）；其余为对照。
+    // 1024³ 这类小形状的瓶颈是占用率而非单块吞吐，故小跨度 + 少 simdgroup 的档位一并扫。
+    let geometries = [
+        (128, 64, 128, 4),
+        (64, 64, 128, 4),
+        (128, 32, 128, 4),
+        (64, 32, 128, 4),
+        (128, 32, 256, 4),
+        (128, 128, 96, 8),
+        (64, 128, 64, 8),
+    ];
 
     for (m, n, k) in [(1024, 1024, 1024), (2048, 2048, 2048), (4096, 4096, 4096)] {
         let sample = Sample {
@@ -1213,18 +1227,23 @@ fn metal_tensor_kernel_gemm() {
         });
 
         let mut pipes = Vec::new();
-        for (tile, k_tile, simdgroups) in geometries {
-            let msl =
-                crate::tiled::metal_tensor_gemm("bench", &signature, &sample, tile, k_tile, simdgroups)
-                    .expect("张量核 MSL 应能生成");
+        for (tile_m, tile_n, k_tile, simdgroups) in geometries {
+            let msl = crate::tiled::metal_tensor_gemm(
+                "bench", &signature, &sample, tile_m, tile_n, k_tile, simdgroups,
+            )
+            .expect("张量核 MSL 应能生成");
             let pipe = device.compile(&msl).expect("张量核 MSL 应能编译");
-            let grid = [((n / tile) * 32) as u32, ((m / tile) * simdgroups) as u32, 1];
+            let grid = [
+                ((n / tile_n) * 32) as u32,
+                ((m / tile_m) * simdgroups) as u32,
+                1,
+            ];
             let block = [32, simdgroups as u32, 1];
             assert!(
                 queue.execute(&pipe, &[&a_buf, &bt_buf, &y_buf], grid, block),
                 "GEMM 派发应成功"
             );
-            let label = format!("{tile}·{k_tile}·{simdgroups}");
+            let label = format!("{tile_m}·{tile_n}·{k_tile}·{simdgroups}");
             let error = reference.as_ref().map_or(f64::NAN, |want| {
                 assert_relaxed_matches(
                     &format!("张量核立方 {m}³ {label}"),

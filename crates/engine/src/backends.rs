@@ -326,11 +326,12 @@ fn metal_gemm_lower(
         } => crate::tiled::metal_simdgroup_gemm(kernel, signature, sample, *row_frags, *col_frags)
             .map(|s| vec![s]),
         TensorGemm {
-            tile,
+            tile_m,
+            tile_n,
             k_tile,
             simdgroups,
         } => crate::tiled::metal_tensor_gemm(
-            kernel, signature, sample, *tile, *k_tile, *simdgroups,
+            kernel, signature, sample, *tile_m, *tile_n, *k_tile, *simdgroups,
         )
         .map(|s| vec![s]),
         Int8Gemm { tile } => {

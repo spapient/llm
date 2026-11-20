@@ -846,8 +846,8 @@ fn check_tensor_geometry(
     simdgroups: usize,
 ) -> Result<()> {
     let bad = |why: &str| Err(Error::new(Code::Invalid, why).with(TENSOR_SITE));
-    if !matches!(tile_m, 64 | 128) || !matches!(tile_n, 64 | 128) {
-        return bad("张量核输出块的行/列跨度都必须是 64 或 128");
+    if !matches!(tile_m, 32 | 64 | 128) || !matches!(tile_n, 32 | 64 | 128) {
+        return bad("张量核输出块的行/列跨度都必须是 32、64 或 128");
     }
     if k_tile < 32 || !k_tile.is_multiple_of(16) {
         return bad("张量核规约块必须是 ≥32 的 16 的倍数（装载按 16 元素一组）");
@@ -881,6 +881,37 @@ fn tensor_gemm_msl(
     k_tile: usize,
     simdgroups: usize,
 ) -> String {
+    // 规约轴被 `k_tile` 整除时没有尾块可走：直接生成单描述符、无分支的主循环，
+    // 省掉逐轮的边界判断与动态 extent 版本（小形状上这段开销不可忽略）。
+    let exact = k.is_multiple_of(k_tile);
+    let tail_decl = if exact {
+        String::new()
+    } else {
+        "    mpp::tensor_ops::matmul2d<D(TSM, NRN, static_cast<int>(dynamic_extent), false, true, true, MA),\n        execution_simdgroups<SG>> mm_tail;\n".to_string()
+    };
+    let mma = if exact {
+        format!(
+            "        auto av = tensor((device float*)d_{a} + (size_t)ra * K + k0,\n\
+             \x20                          dextents<int32_t, 2>(TK, TSM), array<int, 2>{{1, K}});\n\
+             \x20        auto bv = tensor(sb, dextents<int32_t, 2>(TK, NRN), array<int, 2>{{1, KP}});\n\
+             \x20        mm_full.run(av, bv, cT);\n"
+        )
+    } else {
+        format!(
+            "        if (k0 + TK <= K) {{\n\
+             \x20            auto av = tensor((device float*)d_{a} + (size_t)ra * K + k0,\n\
+             \x20                              dextents<int32_t, 2>(TK, TSM), array<int, 2>{{1, K}});\n\
+             \x20            auto bv = tensor(sb, dextents<int32_t, 2>(TK, NRN), array<int, 2>{{1, KP}});\n\
+             \x20            mm_full.run(av, bv, cT);\n\
+             \x20        }} else {{\n\
+             \x20            const int ke = K - k0;\n\
+             \x20            auto av = tensor((device float*)d_{a} + (size_t)ra * K + k0,\n\
+             \x20                              dextents<int32_t, 2>(ke, TSM), array<int, 2>{{1, K}});\n\
+             \x20            auto bv = tensor(sb, dextents<int32_t, 2>(ke, NRN), array<int, 2>{{1, KP}});\n\
+             \x20            mm_tail.run(av, bv, cT);\n\
+             \x20        }}\n"
+        )
+    };
     format!(
         "#include <metal_stdlib>\n\
          #include <metal_tensor>\n\
@@ -904,10 +935,9 @@ fn tensor_gemm_msl(
          \x20    auto tB = tensor(sb, dextents<int32_t, 2>(TK, NRN), array<int, 2>{{1, KP}});\n\
          \x20    using D = mpp::tensor_ops::matmul2d_descriptor;\n\
          \x20    constexpr auto MA = D::mode::multiply_accumulate;\n\
-         \x20    mpp::tensor_ops::matmul2d<D(NRN, TSM, TK, false, true, true, MA),\n\
+         \x20    mpp::tensor_ops::matmul2d<D(TSM, NRN, TK, false, true, true, MA),\n\
          \x20        execution_simdgroups<SG>> mm_full;\n\
-         \x20    mpp::tensor_ops::matmul2d<D(NRN, TSM, static_cast<int>(dynamic_extent), false, true, true, MA),\n\
-         \x20        execution_simdgroups<SG>> mm_tail;\n\
+         {tail_decl}\
          \x20    auto cT = mm_full.get_destination_cooperative_tensor<decltype(tA), decltype(tB), float>();\n\
          \x20    for (uint16_t i = 0; i < cT.get_capacity(); ++i) cT[i] = 0.0f;\n\
          \x20    for (int k0 = 0; k0 < K; k0 += TK) {{\n\
@@ -925,18 +955,7 @@ fn tensor_gemm_msl(
          \x20            }}\n\
          \x20        }}\n\
          \x20        threadgroup_barrier(mem_flags::mem_threadgroup);\n\
-         \x20        if (k0 + TK <= K) {{\n\
-         \x20            auto av = tensor((device float*)d_{a} + (size_t)ra * K + k0,\n\
-         \x20                              dextents<int32_t, 2>(TK, TSM), array<int, 2>{{1, K}});\n\
-         \x20            auto bv = tensor(sb, dextents<int32_t, 2>(TK, NRN), array<int, 2>{{1, KP}});\n\
-         \x20            mm_full.run(av, bv, cT);\n\
-         \x20        }} else {{\n\
-         \x20            const int ke = K - k0;\n\
-         \x20            auto av = tensor((device float*)d_{a} + (size_t)ra * K + k0,\n\
-         \x20                              dextents<int32_t, 2>(ke, TSM), array<int, 2>{{1, K}});\n\
-         \x20            auto bv = tensor(sb, dextents<int32_t, 2>(ke, NRN), array<int, 2>{{1, KP}});\n\
-         \x20            mm_tail.run(av, bv, cT);\n\
-         \x20        }}\n\
+         {mma}\
          \x20        threadgroup_barrier(mem_flags::mem_threadgroup);\n\
          \x20    }}\n\
          \x20    auto tD = tensor(d_{y} + (size_t)ra * N + rb,\n\
