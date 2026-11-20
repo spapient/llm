@@ -175,7 +175,8 @@ fn scatter(
     for ni in 0..n {
         for hi in 0..h {
             for wi in 0..w {
-                let row = &col[((ni * h + hi) * w + wi) * (cout * g.kh * g.kw)..][..cout * g.kh * g.kw];
+                let row =
+                    &col[((ni * h + hi) * w + wi) * (cout * g.kh * g.kw)..][..cout * g.kh * g.kw];
                 for ki in 0..g.kh {
                     let ii = (hi * g.sh + ki) as isize - g.ph as isize;
                     if ii < 0 || ii as usize >= oh {
@@ -212,7 +213,8 @@ fn scatter_i8(
     for ni in 0..n {
         for hi in 0..h {
             for wi in 0..w {
-                let row = &col[((ni * h + hi) * w + wi) * (cout * g.kh * g.kw)..][..cout * g.kh * g.kw];
+                let row =
+                    &col[((ni * h + hi) * w + wi) * (cout * g.kh * g.kw)..][..cout * g.kh * g.kw];
                 for ki in 0..g.kh {
                     let ii = (hi * g.sh + ki) as isize - g.ph as isize;
                     if ii < 0 || ii as usize >= oh {
@@ -268,13 +270,7 @@ impl ConvTranspose1d {
     /// 构造：通道、窗口与步长都必须非零。
     #[must_use]
     pub fn new(cin: usize, cout: usize, k: usize, s: usize, p: usize) -> Self {
-        Self {
-            cin,
-            cout,
-            k,
-            s,
-            p,
-        }
+        Self { cin, cout, k, s, p }
     }
 
     /// 输出长度 `(l − 1)·s − 2p + k`。
@@ -296,7 +292,10 @@ impl ConvTranspose1d {
         if span < pad + 1 {
             return Err(Error::new(
                 Code::Invalid,
-                format!("反卷积输出长度非正（l={l}, s={}, p={}, k={}）", self.s, self.p, self.k),
+                format!(
+                    "反卷积输出长度非正（l={l}, s={}, p={}, k={}）",
+                    self.s, self.p, self.k
+                ),
             ));
         }
         Ok(span - pad)
@@ -509,8 +508,8 @@ mod tests {
                                 let xv = x[((ni * h + hi) * w + wi) * cin + ci];
                                 for co in 0..cout {
                                     let wv = weight[((ci * cout + co) * g.kh + ki) * g.kw + kj];
-                                    out[((ni * oh + ii as usize) * ow + jj as usize) * cout + co] +=
-                                        xv * wv;
+                                    out[((ni * oh + ii as usize) * ow + jj as usize) * cout
+                                        + co] += xv * wv;
                                 }
                             }
                         }
@@ -535,9 +534,39 @@ mod tests {
     #[test]
     fn matches_naive_across_geometries() {
         let cases = [
-            ((1, 4, 4, 2, 3), ConvGeom { kh: 3, kw: 3, sh: 2, sw: 2, ph: 1, pw: 1 }),
-            ((2, 3, 5, 3, 2), ConvGeom { kh: 2, kw: 2, sh: 2, sw: 1, ph: 0, pw: 0 }),
-            ((1, 5, 5, 1, 1), ConvGeom { kh: 4, kw: 4, sh: 3, sw: 3, ph: 1, pw: 2 }),
+            (
+                (1, 4, 4, 2, 3),
+                ConvGeom {
+                    kh: 3,
+                    kw: 3,
+                    sh: 2,
+                    sw: 2,
+                    ph: 1,
+                    pw: 1,
+                },
+            ),
+            (
+                (2, 3, 5, 3, 2),
+                ConvGeom {
+                    kh: 2,
+                    kw: 2,
+                    sh: 2,
+                    sw: 1,
+                    ph: 0,
+                    pw: 0,
+                },
+            ),
+            (
+                (1, 5, 5, 1, 1),
+                ConvGeom {
+                    kh: 4,
+                    kw: 4,
+                    sh: 3,
+                    sw: 3,
+                    ph: 1,
+                    pw: 2,
+                },
+            ),
         ];
         for ((n, h, w, cin, cout), geom) in cases {
             let de = ConvTranspose2d::new(cin, cout, geom);
@@ -560,7 +589,14 @@ mod tests {
         let de = ConvTranspose2d::new(
             1,
             1,
-            ConvGeom { kh: 2, kw: 2, sh: 2, sw: 2, ph: 0, pw: 0 },
+            ConvGeom {
+                kh: 2,
+                kw: 2,
+                sh: 2,
+                sw: 2,
+                ph: 0,
+                pw: 0,
+            },
         );
         assert_eq!(de.oh(4).unwrap(), 8);
         assert_eq!(de.ow(4).unwrap(), 8);
@@ -571,7 +607,14 @@ mod tests {
         let de = ConvTranspose2d::new(
             2,
             3,
-            ConvGeom { kh: 3, kw: 3, sh: 2, sw: 2, ph: 1, pw: 1 },
+            ConvGeom {
+                kh: 3,
+                kw: 3,
+                sh: 2,
+                sw: 2,
+                ph: 1,
+                pw: 1,
+            },
         );
         let (n, h, w) = (1, 3, 3);
         let oh = de.oh(h).unwrap();
@@ -601,8 +644,8 @@ mod tests {
                                 let xv = x[((ni * h + hi) * w + wi) * de.cin + ci];
                                 for co in 0..de.cout {
                                     let wv = wgt[((ci * de.cout + co) * 3 + ki) * 3 + kj];
-                                    want[((ni * oh + ii as usize) * ow + jj as usize) * de.cout + co] +=
-                                        i32::from(xv) * i32::from(wv);
+                                    want[((ni * oh + ii as usize) * ow + jj as usize) * de.cout
+                                        + co] += i32::from(xv) * i32::from(wv);
                                 }
                             }
                         }
@@ -618,7 +661,14 @@ mod tests {
         let de = ConvTranspose2d::new(
             1,
             1,
-            ConvGeom { kh: 1, kw: 1, sh: 1, sw: 1, ph: 3, pw: 3 },
+            ConvGeom {
+                kh: 1,
+                kw: 1,
+                sh: 1,
+                sw: 1,
+                ph: 3,
+                pw: 3,
+            },
         );
         assert!(de.oh(1).is_err());
     }
@@ -663,7 +713,11 @@ mod tests {
     #[test]
     fn conv_transpose1d_matches_naive() {
         // 三组几何：same（k3/s1/p1）、放大（k4/s2/p1）、不合补零（k2/s2/p0）。
-        let cases = [(3usize, 1usize, 1usize, 4usize, 5usize, 2usize), (4, 2, 1, 3, 6, 3), (2, 2, 0, 5, 4, 2)];
+        let cases = [
+            (3usize, 1usize, 1usize, 4usize, 5usize, 2usize),
+            (4, 2, 1, 3, 6, 3),
+            (2, 2, 0, 5, 4, 2),
+        ];
         for (index, (k, s, p, cin, cout, l)) in cases.iter().enumerate() {
             let de = ConvTranspose1d::new(*cin, *cout, *k, *s, *p);
             let ol = de.len(*l).unwrap();

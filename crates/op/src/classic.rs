@@ -57,7 +57,7 @@ macro_rules! window_op {
             run(x, out)
         }
 
-        /// 标量代价：每输出 `$flops` 次浮点运算，读 `$reads` 遍字节、写一遍。
+        /// 标量代价：显式口径，浮点运算与字节读写见本模块装配行的注释。
         pub fn cost(shape: &ShapeContext) -> Result<Cost, Error> {
             crate::model::cost_n(shape, $op, $flops, $reads)
         }
@@ -92,7 +92,7 @@ macro_rules! norm_op {
             run(x, gamma, beta, out)
         }
 
-        /// 标量代价：每输出 `$flops` 次浮点运算，读 `$reads` 遍字节、写一遍。
+        /// 标量代价：显式口径，浮点运算与字节读写见本模块装配行的注释。
         pub fn cost(shape: &ShapeContext) -> Result<Cost, Error> {
             crate::model::cost_n(shape, $op, $flops, $reads)
         }
@@ -289,7 +289,17 @@ pub mod max_pool1d {
     }
 
     // 每输出读两个输入元素、写一个；读两遍字节、写一遍。
-    window_op!(MaxPool1dModel, MaxPool1d, "max_pool1d_f32", 64, 64, L, OL, 2.0, 2);
+    window_op!(
+        MaxPool1dModel,
+        MaxPool1d,
+        "max_pool1d_f32",
+        64,
+        64,
+        L,
+        OL,
+        2.0,
+        2
+    );
 }
 
 /// 二维最大池化（声明档几何 `3×3, s=1, p=1`，4×4 输入、same 输出）。
@@ -318,7 +328,17 @@ pub mod max_pool2d {
     }
 
     // 窗口 9 次比较、读 9 倍字节上界、写一遍。
-    window_op!(MaxPool2dModel, MaxPool2d, "max_pool2d_f32", 64, 64, H * W, H * W, 8.0, 4);
+    window_op!(
+        MaxPool2dModel,
+        MaxPool2d,
+        "max_pool2d_f32",
+        64,
+        64,
+        H * W,
+        H * W,
+        8.0,
+        4
+    );
 }
 
 /// 二维平均池化（声明档几何 `3×3, s=1, p=1`，补零不计入分母）。
@@ -350,7 +370,17 @@ pub mod avg_pool2d {
     }
 
     // 窗口 9 次加法 + 1 次除法，读 4 倍、写一遍。
-    window_op!(AvgPool2dModel, AvgPool2d, "avg_pool2d_f32", 64, 64, H * W, H * W, 10.0, 4);
+    window_op!(
+        AvgPool2dModel,
+        AvgPool2d,
+        "avg_pool2d_f32",
+        64,
+        64,
+        H * W,
+        H * W,
+        10.0,
+        4
+    );
 }
 
 /// 自适应平均池化（声明档 4×4 → 2×2）。
@@ -496,43 +526,26 @@ pub mod group_norm {
         norm().forward(x, gamma, beta, N, S, out)
     }
 
-    /// 声明档样本：固定几何下的输入与输出缓冲。
-    pub fn sample(_: usize, _: usize) -> Sample {
-        norm_sample(
-            N * S * C,
-            C,
-            vec![
-                ("N", (N * S * C) as i64),
-                ("G", G as i64),
-                ("C", C as i64),
-                ("S", S as i64),
-            ],
-            1.25,
-            0.5,
-        )
-    }
-
-    /// 标量参考：复用 conv/norm 的真实现算一遍（真窗口 / 真统计）。
-    pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
-        norm_reference(sample, N * S * C, run)
-    }
-
-    /// 声明档前向：`G` 组、每组 `(C/G, S)` 统计。
-    pub fn forward(
-        x: &[f32],
-        gamma: &[f32],
-        beta: &[f32],
-        out: &mut [f32],
-    ) -> diagnostic::Result<()> {
-        run(x, gamma, beta, out)
-    }
-
-    /// 标量代价：两趟统计 + 一趟归一化，读 3 遍、写一遍。
-    pub fn cost(shape: &ShapeContext) -> Result<Cost, Error> {
-        crate::model::cost_n(shape, "group_norm_f32", 4.0, 3)
-    }
-
-    classic_op!(GroupNormModel, GroupNorm, "group_norm_f32", 3, 64, 64);
+    // 两趟统计 + 一趟归一化，读 3 遍、写一遍。
+    norm_op!(
+        GroupNormModel,
+        GroupNorm,
+        "group_norm_f32",
+        64,
+        64,
+        N * S * C,
+        C,
+        vec![
+            ("N", (N * S * C) as i64),
+            ("G", G as i64),
+            ("C", C as i64),
+            ("S", S as i64),
+        ],
+        1.25,
+        0.5,
+        4.0,
+        3
+    );
 }
 
 /// 实例归一化（声明档 `C=4, spatial=2, n=2`）：等价于 `GroupNorm(G = C)`。
@@ -560,44 +573,20 @@ pub mod instance_norm {
         norm().forward(x, gamma, beta, N, S, out)
     }
 
-    /// 声明档样本：固定几何下的输入与输出缓冲。
-    pub fn sample(_: usize, _: usize) -> Sample {
-        norm_sample(
-            N * S * C,
-            C,
-            vec![("N", (N * S * C) as i64), ("C", C as i64), ("S", S as i64)],
-            0.75,
-            -0.25,
-        )
-    }
-
-    /// 标量参考：复用 conv/norm 的真实现算一遍（真窗口 / 真统计）。
-    pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
-        norm_reference(sample, N * S * C, run)
-    }
-
-    /// 声明档前向：`C` 个独立通道实例统计。
-    pub fn forward(
-        x: &[f32],
-        gamma: &[f32],
-        beta: &[f32],
-        out: &mut [f32],
-    ) -> diagnostic::Result<()> {
-        run(x, gamma, beta, out)
-    }
-
-    /// 标量代价：与组归一化同构（统计域更小、次数不变）。
-    pub fn cost(shape: &ShapeContext) -> Result<Cost, Error> {
-        crate::model::cost_n(shape, "instance_norm_f32", 4.0, 3)
-    }
-
-    classic_op!(
+    // 与组归一化同构（统计域更小、次数不变）。
+    norm_op!(
         InstanceNormModel,
         InstanceNorm,
         "instance_norm_f32",
-        3,
         64,
-        64
+        64,
+        N * S * C,
+        C,
+        vec![("N", (N * S * C) as i64), ("C", C as i64), ("S", S as i64)],
+        0.75,
+        -0.25,
+        4.0,
+        3
     );
 }
 
@@ -621,38 +610,21 @@ pub mod layer_norm {
         norm().forward(x, gamma, beta, out)
     }
 
-    /// 声明档样本：固定几何下的输入与输出缓冲。
-    pub fn sample(_: usize, _: usize) -> Sample {
-        norm_sample(
-            R * W,
-            W,
-            vec![("N", (R * W) as i64), ("R", R as i64), ("W", W as i64)],
-            1.0,
-            0.0,
-        )
-    }
-
-    /// 标量参考：复用 conv/norm 的真实现算一遍（真窗口 / 真统计）。
-    pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
-        norm_reference(sample, R * W, run)
-    }
-
-    /// 声明档前向：`R` 行、每行 `W` 宽。
-    pub fn forward(
-        x: &[f32],
-        gamma: &[f32],
-        beta: &[f32],
-        out: &mut [f32],
-    ) -> diagnostic::Result<()> {
-        run(x, gamma, beta, out)
-    }
-
-    /// 标量代价：两趟行内统计 + 一趟归一化，读 3 遍、写一遍。
-    pub fn cost(shape: &ShapeContext) -> Result<Cost, Error> {
-        crate::model::cost_n(shape, "layer_norm_f32", 4.0, 3)
-    }
-
-    classic_op!(LayerNormModel, LayerNorm, "layer_norm_f32", 3, 64, 64);
+    // 两趟行内统计 + 一趟归一化，读 3 遍、写一遍。
+    norm_op!(
+        LayerNormModel,
+        LayerNorm,
+        "layer_norm_f32",
+        64,
+        64,
+        R * W,
+        W,
+        vec![("N", (R * W) as i64), ("R", R as i64), ("W", W as i64)],
+        1.0,
+        0.0,
+        4.0,
+        3
+    );
 }
 
 #[cfg(test)]

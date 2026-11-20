@@ -10,8 +10,8 @@ use std::thread;
 
 use diagnostic::{Code, Error, Result};
 
-use crate::fast;
 use crate::Scalar;
+use crate::fast;
 
 /// 卷积的公共几何：核、步长、补零。通道数不在这里——1d 与 2d 共用同一套核参数。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,7 +47,10 @@ impl ConvGeom {
 
     fn out_len(&self, padded: usize, k: usize, s: usize, axis: &str) -> Result<usize> {
         if s == 0 || k == 0 {
-            return Err(Error::new(Code::Invalid, format!("{axis}: 核与步长必须非零")));
+            return Err(Error::new(
+                Code::Invalid,
+                format!("{axis}: 核与步长必须非零"),
+            ));
         }
         if padded < k {
             return Err(Error::new(
@@ -512,7 +515,15 @@ fn im2col2d(
     };
     if threads <= 1 {
         for r in 0..rows {
-            fill_row(x, &mut col[r * patch..(r + 1) * patch], r, n, (h, w), conv, (oh, ow));
+            fill_row(
+                x,
+                &mut col[r * patch..(r + 1) * patch],
+                r,
+                n,
+                (h, w),
+                conv,
+                (oh, ow),
+            );
         }
         return;
     }
@@ -632,7 +643,14 @@ fn im2col2d_i8(
     };
     if threads <= 1 {
         for r in 0..rows {
-            fill_row_i8(x, &mut col[r * patch..(r + 1) * patch], r, (h, w), conv, (oh, ow));
+            fill_row_i8(
+                x,
+                &mut col[r * patch..(r + 1) * patch],
+                r,
+                (h, w),
+                conv,
+                (oh, ow),
+            );
         }
         return;
     }
@@ -772,8 +790,11 @@ impl MaxPool1d {
                         }
                     }
                     // 整窗都落在补零上（只会在极端几何下出现）按 0 处理。
-                    out[(ni * ol + oi) * c + ci] =
-                        if best == S::NEG_INFINITY { S::ZERO } else { best };
+                    out[(ni * ol + oi) * c + ci] = if best == S::NEG_INFINITY {
+                        S::ZERO
+                    } else {
+                        best
+                    };
                 }
             }
         }
@@ -902,7 +923,11 @@ impl Interpolate {
                         .max(S::ZERO);
                         let y0 = fy.floor().min(S::from_usize(h - 1)).to_usize();
                         let y1 = (y0 + 1).min(h - 1);
-                        let ly = if y0 == y1 { S::ZERO } else { fy - S::from_usize(y0) };
+                        let ly = if y0 == y1 {
+                            S::ZERO
+                        } else {
+                            fy - S::from_usize(y0)
+                        };
                         for oj in 0..self.ow {
                             let fx = ((S::from_usize(oj) + S::from_f64(0.5)) * S::from_usize(w)
                                 / S::from_usize(self.ow)
@@ -910,7 +935,11 @@ impl Interpolate {
                             .max(S::ZERO);
                             let x0 = fx.floor().min(S::from_usize(w - 1)).to_usize();
                             let x1 = (x0 + 1).min(w - 1);
-                            let lx = if x0 == x1 { S::ZERO } else { fx - S::from_usize(x0) };
+                            let lx = if x0 == x1 {
+                                S::ZERO
+                            } else {
+                                fx - S::from_usize(x0)
+                            };
                             let dst = ((ni * self.oh + oi) * self.ow + oj) * c;
                             for ci in 0..c {
                                 let a = x[((ni * h + y0) * w + x0) * c + ci];
@@ -987,7 +1016,8 @@ mod tests {
                                     continue;
                                 }
                                 for ci in 0..cin {
-                                    let xv = x[((ni * h + ii as usize) * ww + jj as usize) * cin + ci];
+                                    let xv =
+                                        x[((ni * h + ii as usize) * ww + jj as usize) * cin + ci];
                                     let wv = wgt[((ki * g.kw + kj) * cin + ci) * cout + co];
                                     acc += xv * wv;
                                 }
@@ -1010,10 +1040,50 @@ mod tests {
     #[test]
     fn conv2d_matches_naive() {
         let cases = [
-            ((1, 8, 8, 3, 4), ConvGeom { kh: 3, kw: 3, sh: 1, sw: 1, ph: 1, pw: 1 }),
-            ((2, 7, 9, 2, 5), ConvGeom { kh: 3, kw: 3, sh: 2, sw: 2, ph: 0, pw: 0 }),
-            ((1, 5, 5, 1, 1), ConvGeom { kh: 5, kw: 5, sh: 1, sw: 1, ph: 0, pw: 0 }),
-            ((1, 6, 6, 4, 3), ConvGeom { kh: 2, kw: 4, sh: 3, sw: 1, ph: 2, pw: 0 }),
+            (
+                (1, 8, 8, 3, 4),
+                ConvGeom {
+                    kh: 3,
+                    kw: 3,
+                    sh: 1,
+                    sw: 1,
+                    ph: 1,
+                    pw: 1,
+                },
+            ),
+            (
+                (2, 7, 9, 2, 5),
+                ConvGeom {
+                    kh: 3,
+                    kw: 3,
+                    sh: 2,
+                    sw: 2,
+                    ph: 0,
+                    pw: 0,
+                },
+            ),
+            (
+                (1, 5, 5, 1, 1),
+                ConvGeom {
+                    kh: 5,
+                    kw: 5,
+                    sh: 1,
+                    sw: 1,
+                    ph: 0,
+                    pw: 0,
+                },
+            ),
+            (
+                (1, 6, 6, 4, 3),
+                ConvGeom {
+                    kh: 2,
+                    kw: 4,
+                    sh: 3,
+                    sw: 1,
+                    ph: 2,
+                    pw: 0,
+                },
+            ),
         ];
         for ((n, h, w, cin, cout), geom) in cases {
             let conv = Conv2d::new(cin, cout, geom);
@@ -1023,7 +1093,8 @@ mod tests {
             let bias = sample(cout, 3);
             let mut got = vec![0.0f32; n * oh * ow * cout];
             let mut want = vec![0.0f32; n * oh * ow * cout];
-            conv.forward_f32(&x, &wgt, &bias, n, h, w, &mut got).unwrap();
+            conv.forward_f32(&x, &wgt, &bias, n, h, w, &mut got)
+                .unwrap();
             naive2d(&x, &wgt, &bias, &conv, n, h, w, &mut want);
             close(&got, &want);
         }
@@ -1050,7 +1121,14 @@ mod tests {
     #[test]
     fn conv2d_i8_matches_exact() {
         let (n, h, w, cin, cout) = (1, 6, 6, 3, 5);
-        let geom = ConvGeom { kh: 3, kw: 3, sh: 1, sw: 1, ph: 1, pw: 1 };
+        let geom = ConvGeom {
+            kh: 3,
+            kw: 3,
+            sh: 1,
+            sw: 1,
+            ph: 1,
+            pw: 1,
+        };
         let conv = Conv2d::new(cin, cout, geom);
         let (oh, ow) = conv.shape(h, w).unwrap();
         let x = sample_i8(n * h * w * cin, 1);
@@ -1076,7 +1154,8 @@ mod tests {
                                     continue;
                                 }
                                 for ci in 0..cin {
-                                    let xv = x[((ni * h + ii as usize) * w + jj as usize) * cin + ci];
+                                    let xv =
+                                        x[((ni * h + ii as usize) * w + jj as usize) * cin + ci];
                                     let wv = wgt[((ki * geom.kw + kj) * cin + ci) * cout + co];
                                     acc += i32::from(xv) * i32::from(wv);
                                 }
@@ -1092,7 +1171,16 @@ mod tests {
 
     #[test]
     fn max_pool_matches_naive() {
-        let pool = MaxPool2d { geom: ConvGeom { kh: 2, kw: 2, sh: 2, sw: 2, ph: 0, pw: 0 } };
+        let pool = MaxPool2d {
+            geom: ConvGeom {
+                kh: 2,
+                kw: 2,
+                sh: 2,
+                sw: 2,
+                ph: 0,
+                pw: 0,
+            },
+        };
         let (n, h, w, c) = (1, 4, 4, 2);
         let (oh, ow) = pool.shape(h, w).unwrap();
         let x = sample(n * h * w * c, 1);
@@ -1119,9 +1207,17 @@ mod tests {
     }
 
     #[test]
-    fn avg_pool_counts_only_real_cells() {        // 3×3 输入、2×2..1 补零、步长 2 → 输出 2×2；左上窗口只有 (0,0) 一个真实单元。
+    fn avg_pool_counts_only_real_cells() {
+        // 3×3 输入、2×2..1 补零、步长 2 → 输出 2×2；左上窗口只有 (0,0) 一个真实单元。
         let pool = AvgPool2d {
-            geom: ConvGeom { kh: 2, kw: 2, sh: 2, sw: 2, ph: 1, pw: 1 },
+            geom: ConvGeom {
+                kh: 2,
+                kw: 2,
+                sh: 2,
+                sw: 2,
+                ph: 1,
+                pw: 1,
+            },
             count_include_pad: false,
         };
         let (n, h, w, c) = (1, 3, 3, 1);
@@ -1144,7 +1240,14 @@ mod tests {
             (1, 32, 32, 512, 512, 3),
         ];
         for (n, h, w, cin, cout, k) in shapes {
-            let geom = ConvGeom { kh: k, kw: k, sh: 1, sw: 1, ph: k / 2, pw: k / 2 };
+            let geom = ConvGeom {
+                kh: k,
+                kw: k,
+                sh: 1,
+                sw: 1,
+                ph: k / 2,
+                pw: k / 2,
+            };
             let conv = Conv2d::new(cin, cout, geom);
             let (oh, ow) = conv.shape(h, w).unwrap();
             let rows = n * oh * ow;
@@ -1164,7 +1267,8 @@ mod tests {
                 conv.forward_i8(&x8, &w8, &b8, n, h, w, &mut o8).unwrap();
                 best = best.min(t.elapsed().as_nanos() as f64);
                 let t = Instant::now();
-                conv.forward_i8_with(&x8, &w8, &b8, n, h, w, &mut o8, &mut buf).unwrap();
+                conv.forward_i8_with(&x8, &w8, &b8, n, h, w, &mut o8, &mut buf)
+                    .unwrap();
                 bestcol = bestcol.min(t.elapsed().as_nanos() as f64);
             }
             // 拆两段看谁在吃时间。
@@ -1192,11 +1296,13 @@ mod tests {
             let w32 = sample(patch * cout, 2);
             let b32 = sample(cout, 3);
             let mut o32 = vec![0.0f32; rows * cout];
-            conv.forward_f32(&x32, &w32, &b32, n, h, w, &mut o32).unwrap();
+            conv.forward_f32(&x32, &w32, &b32, n, h, w, &mut o32)
+                .unwrap();
             let mut best32 = f64::INFINITY;
             for _ in 0..5 {
                 let t = Instant::now();
-                conv.forward_f32(&x32, &w32, &b32, n, h, w, &mut o32).unwrap();
+                conv.forward_f32(&x32, &w32, &b32, n, h, w, &mut o32)
+                    .unwrap();
                 best32 = best32.min(t.elapsed().as_nanos() as f64);
             }
             println!(
@@ -1258,14 +1364,22 @@ mod tests {
         for (got, exp) in out.iter().zip(want.iter()) {
             assert!((got - exp).abs() < 1e-5, "{got} vs {exp}");
         }
-        assert!(AdaptiveAvgPool2d { oh: 0, ow: 1 }.forward(&x, 1, 4, 4, 1, &mut out).is_err());
+        assert!(
+            AdaptiveAvgPool2d { oh: 0, ow: 1 }
+                .forward(&x, 1, 4, 4, 1, &mut out)
+                .is_err()
+        );
     }
 
     #[test]
     fn interpolate_nearest_and_bilinear() {
         // 2×2 单通道升到 4×4：最近邻严格复制左上角。
         let x = [1.0f32, 2.0, 3.0, 4.0];
-        let up = Interpolate { sampler: Sampler::Nearest, oh: 4, ow: 4 };
+        let up = Interpolate {
+            sampler: Sampler::Nearest,
+            oh: 4,
+            ow: 4,
+        };
         let mut out = [0.0f32; 16];
         up.forward(&x, 1, 2, 2, 1, &mut out).unwrap();
         for oi in 0..4 {
@@ -1274,7 +1388,11 @@ mod tests {
             }
         }
         // 双线性在 4×4 上：中心附近的点应是四邻的加权，边界被夹住。
-        let up = Interpolate { sampler: Sampler::Linear, oh: 4, ow: 4 };
+        let up = Interpolate {
+            sampler: Sampler::Linear,
+            oh: 4,
+            ow: 4,
+        };
         up.forward(&x, 1, 2, 2, 1, &mut out).unwrap();
         // 左上角 (0,0)：源坐标 (−0.25,−0.25) → 夹到 (0,0) → 值 1.0。
         assert!((out[0] - 1.0).abs() < 1e-6);
@@ -1283,10 +1401,22 @@ mod tests {
         // 内部 (1,1)：源 (0.25,0.25) → 0.25/0.25 加权四邻 = 1.75。
         assert!((out[5] - 1.75).abs() < 1e-6, "{}", out[5]);
         // 恒等（同尺寸）时两种取样都必须逐元素一致。
-        let id = Interpolate { sampler: Sampler::Linear, oh: 2, ow: 2 };
+        let id = Interpolate {
+            sampler: Sampler::Linear,
+            oh: 2,
+            ow: 2,
+        };
         let mut same = [0.0f32; 4];
         id.forward(&x, 1, 2, 2, 1, &mut same).unwrap();
         assert_eq!(same, x);
-        assert!(Interpolate { sampler: Sampler::Nearest, oh: 0, ow: 2 }.forward(&x, 1, 2, 2, 1, &mut out).is_err());
+        assert!(
+            Interpolate {
+                sampler: Sampler::Nearest,
+                oh: 0,
+                ow: 2
+            }
+            .forward(&x, 1, 2, 2, 1, &mut out)
+            .is_err()
+        );
     }
 }

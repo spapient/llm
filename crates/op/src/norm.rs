@@ -81,8 +81,7 @@ impl<S: Scalar> BatchNorm2d<S> {
             } else {
                 var[ci]
             };
-            running_var[ci] =
-                (S::ONE - self.momentum) * running_var[ci] + self.momentum * unbiased;
+            running_var[ci] = (S::ONE - self.momentum) * running_var[ci] + self.momentum * unbiased;
         }
         affine(x, gamma, beta, &mean, &var, self.eps, c, count, out);
         Ok(())
@@ -223,13 +222,7 @@ impl<S: Scalar> LayerNorm<S> {
     /// # Errors
     ///
     /// 缓冲长度不是 `width` 整数倍或仿射参数长度不符时返回说明。
-    pub fn forward(
-        &self,
-        x: &[S],
-        gamma: &[S],
-        beta: &[S],
-        out: &mut [S],
-    ) -> Result<()> {
+    pub fn forward(&self, x: &[S], gamma: &[S], beta: &[S], out: &mut [S]) -> Result<()> {
         let width = self.width;
         if width == 0 || x.len() % width != 0 {
             return Err(Error::new(
@@ -351,7 +344,11 @@ mod tests {
 
     #[test]
     fn batchnorm_train_normalizes_per_channel() {
-        let bn = BatchNorm2d { channels: 3, eps: 1e-5, momentum: 0.1 };
+        let bn = BatchNorm2d {
+            channels: 3,
+            eps: 1e-5,
+            momentum: 0.1,
+        };
         let (n, h, w, c) = (2, 2, 2, 3);
         let count = n * h * w;
         let x = sample(count * c, 1);
@@ -377,7 +374,11 @@ mod tests {
 
     #[test]
     fn batchnorm_train_updates_running_stats() {
-        let bn = BatchNorm2d { channels: 1, eps: 1e-5, momentum: 0.5 };
+        let bn = BatchNorm2d {
+            channels: 1,
+            eps: 1e-5,
+            momentum: 0.5,
+        };
         let x = [1.0f32, 2.0, 3.0, 4.0];
         let gamma = [1.0f32];
         let beta = [0.0f32];
@@ -394,7 +395,11 @@ mod tests {
 
     #[test]
     fn batchnorm_eval_uses_running_stats_only() {
-        let bn = BatchNorm2d { channels: 2, eps: 1e-5, momentum: 0.1 };
+        let bn = BatchNorm2d {
+            channels: 2,
+            eps: 1e-5,
+            momentum: 0.1,
+        };
         let x = sample(4 * 2, 2);
         let gamma = [1.0f32, 2.0];
         let beta = [0.5f32, -0.5];
@@ -405,7 +410,8 @@ mod tests {
             .unwrap();
         for p in 0..4 {
             for ci in 0..2 {
-                let want = (x[p * 2 + ci] - rm[ci]) / (rv[ci] + bn.eps).sqrt() * gamma[ci] + beta[ci];
+                let want =
+                    (x[p * 2 + ci] - rm[ci]) / (rv[ci] + bn.eps).sqrt() * gamma[ci] + beta[ci];
                 assert!((out[p * 2 + ci] - want).abs() < 1e-5);
             }
         }
@@ -413,7 +419,11 @@ mod tests {
 
     #[test]
     fn groupnorm_yields_zero_mean_unit_variance() {
-        let gn = GroupNorm { groups: 2, channels: 4, eps: 1e-5 };
+        let gn = GroupNorm {
+            groups: 2,
+            channels: 4,
+            eps: 1e-5,
+        };
         let (n, spatial, c) = (2, 5, 4);
         let x = sample(n * spatial * c, 3);
         let gamma = vec![1.0f32; c];
@@ -448,18 +458,28 @@ mod tests {
         let beta = vec![0.0f32; c];
         let mut a = vec![0.0f32; n * spatial * c];
         let mut b = vec![0.0f32; n * spatial * c];
-        InstanceNorm { channels: c, eps: 1e-5 }
-            .forward(&x, &gamma, &beta, n, spatial, &mut a)
-            .unwrap();
-        GroupNorm { groups: c, channels: c, eps: 1e-5 }
-            .forward(&x, &gamma, &beta, n, spatial, &mut b)
-            .unwrap();
+        InstanceNorm {
+            channels: c,
+            eps: 1e-5,
+        }
+        .forward(&x, &gamma, &beta, n, spatial, &mut a)
+        .unwrap();
+        GroupNorm {
+            groups: c,
+            channels: c,
+            eps: 1e-5,
+        }
+        .forward(&x, &gamma, &beta, n, spatial, &mut b)
+        .unwrap();
         assert_eq!(a, b);
     }
 
     #[test]
     fn layernorm_normalizes_each_row() {
-        let ln = LayerNorm { width: 5, eps: 1e-5 };
+        let ln = LayerNorm {
+            width: 5,
+            eps: 1e-5,
+        };
         let x = sample(15, 5);
         let gamma = vec![1.0f32; 5];
         let beta = vec![0.0f32; 5];
@@ -478,22 +498,31 @@ mod tests {
                 .sum::<f64>()
                 / 5.0;
             let want = (var / (var + f64::from(ln.eps))) as f32;
-            let got: f32 = src
-                .iter()
-                .map(|v| (v - mean as f32).powi(2))
-                .sum::<f32>()
-                / 5.0;
-            assert!((got - want).abs() < 1e-5, "行 {row} 方差 {got}，期望 {want}");
+            let got: f32 = src.iter().map(|v| (v - mean as f32).powi(2)).sum::<f32>() / 5.0;
+            assert!(
+                (got - want).abs() < 1e-5,
+                "行 {row} 方差 {got}，期望 {want}"
+            );
         }
     }
 
     #[test]
     fn rejects_bad_geometry() {
-        let gn = GroupNorm { groups: 3, channels: 4, eps: 1e-5 };
+        let gn = GroupNorm {
+            groups: 3,
+            channels: 4,
+            eps: 1e-5,
+        };
         let x = vec![0.0f32; 8];
         let mut out = vec![0.0f32; 8];
-        assert!(gn.forward(&x, &[1.0; 4], &[0.0; 4], 1, 2, &mut out).is_err());
-        let ln = LayerNorm { width: 0, eps: 1e-5 };
+        assert!(
+            gn.forward(&x, &[1.0; 4], &[0.0; 4], 1, 2, &mut out)
+                .is_err()
+        );
+        let ln = LayerNorm {
+            width: 0,
+            eps: 1e-5,
+        };
         assert!(ln.forward(&x, &[], &[], &mut out).is_err());
     }
 }

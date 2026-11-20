@@ -132,7 +132,9 @@ fn bound_of(std: f32) -> f32 {
 /// `[−bound, bound)` 均匀抽样。
 fn uniform(len: usize, bound: f32, seed: u64) -> Vec<f32> {
     let mut rng = SplitMix64::new(seed);
-    (0..len).map(|_| (rng.next_f32() * 2.0 - 1.0) * bound).collect()
+    (0..len)
+        .map(|_| (rng.next_f32() * 2.0 - 1.0) * bound)
+        .collect()
 }
 
 /// `N(0, std)` 抽样。

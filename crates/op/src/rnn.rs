@@ -255,7 +255,10 @@ mod tests {
 
     #[test]
     fn rnn_step_matches_hand_computation() {
-        let rnn = Rnn { input: 2, hidden: 2 };
+        let rnn = Rnn {
+            input: 2,
+            hidden: 2,
+        };
         // 单位权重、零偏：h' = tanh(x + h)，可手算。
         let w_ih = [1.0, 0.0, 0.0, 1.0];
         let w_hh = [1.0, 0.0, 0.0, 1.0];
@@ -270,7 +273,10 @@ mod tests {
 
     #[test]
     fn lstm_cell_keeps_state_and_is_bounded() {
-        let lstm = Lstm { input: 2, hidden: 2 };
+        let lstm = Lstm {
+            input: 2,
+            hidden: 2,
+        };
         let w_ih = sample(2 * 8, 1);
         let w_hh = sample(2 * 8, 2);
         let b = sample(8, 3);
@@ -279,8 +285,7 @@ mod tests {
         let c = vec![0.0f32; 2];
         let mut oh = vec![0.0f32; 2];
         let mut oc = vec![0.0f32; 2];
-        lstm
-            .step(&x, &w_ih, &w_hh, &b, &h, &c, 1, &mut oh, &mut oc)
+        lstm.step(&x, &w_ih, &w_hh, &b, &h, &c, 1, &mut oh, &mut oc)
             .unwrap();
         assert!(oh.iter().all(|v| v.abs() <= 1.0), "h 经 tanh 有界");
         assert!(oc.iter().all(|v| v.abs() < 1.0), "c = f⊙c+i⊙g 首步有界");
@@ -288,7 +293,10 @@ mod tests {
 
     #[test]
     fn gru_step_is_convex_blend() {
-        let gru = Gru { input: 2, hidden: 2 };
+        let gru = Gru {
+            input: 2,
+            hidden: 2,
+        };
         let w_ih = vec![0.0f32; 2 * 6];
         let w_hh = vec![0.0f32; 2 * 6];
         let b = vec![0.0f32; 6];
@@ -303,7 +311,10 @@ mod tests {
 
     #[test]
     fn rnn_run_returns_every_step() {
-        let rnn = Rnn { input: 3, hidden: 4 };
+        let rnn = Rnn {
+            input: 3,
+            hidden: 4,
+        };
         let w_ih = sample(12, 1);
         let w_hh = sample(16, 2);
         let b = sample(4, 3);

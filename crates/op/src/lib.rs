@@ -52,25 +52,25 @@ extern crate self as llm_op;
 
 pub mod attention;
 pub mod attention_tiled;
+pub mod classic;
+pub mod conv;
 pub mod decl;
+pub mod deconv;
 pub mod dequant;
+pub mod dropout;
 pub mod einsum;
 pub mod elementwise;
 pub mod fast;
 pub mod formula;
-pub mod classic;
-pub mod conv;
-pub mod deconv;
-pub mod norm;
-pub mod dropout;
-pub mod init;
-pub mod rnd;
-pub mod rnn;
 pub mod gemm;
 pub mod gemv;
+pub mod init;
 pub mod matmul;
 pub mod model;
+pub mod norm;
 pub mod operator;
+pub mod rnd;
+pub mod rnn;
 pub mod softmax;
 pub(crate) use tpl::parse;
 pub mod reduce;
@@ -82,21 +82,23 @@ pub mod unary;
 
 // 一元 / 二元 / 归约 / 反量化 / GEMV / GEMM / 注意力骨架内的声明式子模块，re-export 到 crate 根保持 `op::<name>::MODEL` / `forward` 路径。
 pub use attention::decode_attention;
-pub use dequant::{dequant_i2, dequant_i4, dequant_i8};
 pub use classic::{
     adaptive_pool, avg_pool2d, batch_norm, conv2d, group_norm, instance_norm, interpolate,
     layer_norm, max_pool1d, max_pool2d,
 };
+pub use dequant::{dequant_i2, dequant_i4, dequant_i8};
 pub use elementwise::{add_f32, div_f32, max_f32, min_f32, mul_f32, residual_add_f32, sub_f32};
 pub use gemm::{gemm_f32, gemm_i2, gemm_i4, gemm_i8};
 pub use gemv::{gemv_f32, gemv_i2, gemv_i4, gemv_i8};
 pub use matmul::matmul_i8;
 pub use model::quant;
 pub use reduce::{reduce_max_f32, reduce_sum_f32};
-pub use scan::{scan_f32, Scalar};
+pub use scan::{Scalar, scan_f32};
 pub use sch::layout;
 pub use softmax::{embed_f32, rmsnorm_f32, rope_f32, softmax_f32};
-pub use unary::{exp_f32, gelu_f32, hard_sigmoid_f32, leaky_relu_f32, log_f32, scale_f32, silu_f32};
+pub use unary::{
+    exp_f32, gelu_f32, hard_sigmoid_f32, leaky_relu_f32, log_f32, scale_f32, silu_f32,
+};
 
 use diagnostic::data::Table;
 

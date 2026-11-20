@@ -73,15 +73,7 @@ pub fn gemm_f32_single(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: 
 }
 
 /// 单线程块计算：A 打包成 8 行面板，再 j 外层、面板内层跑微内核；残尾走标量。
-fn compute(
-    a: &[f32],
-    bpack: &[f32],
-    b: &[f32],
-    rows: usize,
-    n: usize,
-    k: usize,
-    out: &mut [f32],
-) {
+fn compute(a: &[f32], bpack: &[f32], b: &[f32], rows: usize, n: usize, k: usize, out: &mut [f32]) {
     let full = rows / MR;
     let apack = pack_panels(a, full, k);
     let mut first = true;
@@ -680,10 +672,12 @@ fn run_pooled(
     let mut free = pool.free.load(Ordering::Acquire);
     let mask = loop {
         match pick_free(free, need) {
-            Some(m) => match pool
-                .free
-                .compare_exchange(free, free & !m, Ordering::AcqRel, Ordering::Acquire)
-            {
+            Some(m) => match pool.free.compare_exchange(
+                free,
+                free & !m,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
                 Ok(_) => break m,
                 Err(actual) => free = actual,
             },

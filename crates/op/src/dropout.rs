@@ -19,7 +19,10 @@ pub fn dropout(x: &mut [f32], p: f32, seed: u64, train: bool) -> Result<()> {
         return Ok(());
     }
     if !(0.0..1.0).contains(&p) {
-        return Err(Error::new(Code::Invalid, format!("dropout 概率 {p} 应在 [0,1)")));
+        return Err(Error::new(
+            Code::Invalid,
+            format!("dropout 概率 {p} 应在 [0,1)"),
+        ));
     }
     let keep = 1.0 / (1.0 - p);
     let mut rng = SplitMix64::new(seed);
