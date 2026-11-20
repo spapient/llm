@@ -210,6 +210,73 @@ impl Conv2d {
         Ok(())
     }
 
+    /// f32 反向：上游梯度 `dy` → `dx / dweight / dbias`。
+    ///
+    /// 与前向共用同一份 `im2col` 与卷积几何，三个输出缓冲**先清零再累加**（多上游可叠加）。
+    ///
+    /// # Errors
+    ///
+    /// 缓冲长度与形状不符时返回说明。
+    #[allow(clippy::too_many_arguments)]
+    pub fn backward_f32(
+        &self,
+        x: &[f32],
+        weight: &[f32],
+        dy: &[f32],
+        n: usize,
+        h: usize,
+        w: usize,
+        dx: &mut [f32],
+        dweight: &mut [f32],
+        dbias: &mut [f32],
+    ) -> Result<()> {
+        let (oh, ow) = self.shape(h, w)?;
+        let (cin, cout) = (self.cin, self.cout);
+        let patch = self.geom.patch(cin);
+        let rows = n * oh * ow;
+        check(x.len(), n * h * w * cin, "输入")?;
+        check(weight.len(), patch * cout, "权重")?;
+        check(dy.len(), rows * cout, "上游梯度")?;
+        check(dx.len(), n * h * w * cin, "输入梯度")?;
+        check(dweight.len(), patch * cout, "权重梯度")?;
+        check(dbias.len(), cout, "偏置梯度")?;
+
+        let mut col = vec![0.0f32; rows * patch];
+        im2col2d(x, &mut col, n, (h, w), self, (oh, ow));
+        dx.fill(0.0);
+        dweight.fill(0.0);
+        dbias.fill(0.0);
+        for r in 0..rows {
+            let dy_row = &dy[r * cout..(r + 1) * cout];
+            for (slot, value) in dbias.iter_mut().zip(dy_row) {
+                *slot += *value;
+            }
+            // 权重梯度按行累加：`dweight[k, co] += col[r, k] · dy[r, co]`。
+            let col_row = &col[r * patch..(r + 1) * patch];
+            for (k, &value) in col_row.iter().enumerate() {
+                if value == 0.0 {
+                    continue;
+                }
+                let dw = &mut dweight[k * cout..(k + 1) * cout];
+                for (slot, upstream) in dw.iter_mut().zip(dy_row) {
+                    *slot += value * *upstream;
+                }
+            }
+        }
+        // 输入梯度走同一份 col 的转置乘：`dcol[r, k] = Σ_co dy[r, co] · weight[k, co]`。
+        let mut dcol = vec![0.0f32; rows * patch];
+        for r in 0..rows {
+            let dy_row = &dy[r * cout..(r + 1) * cout];
+            let dcol_row = &mut dcol[r * patch..(r + 1) * patch];
+            for (k, slot) in dcol_row.iter_mut().enumerate() {
+                let w_row = &weight[k * cout..(k + 1) * cout];
+                *slot = dy_row.iter().zip(w_row).map(|(a, b)| a * b).sum();
+            }
+        }
+        col2im2d(&dcol, dx, n, (h, w), self, (oh, ow));
+        Ok(())
+    }
+
     /// i8 前向（对称量化）：输入与权重已量化，输出 i32 累加，`bias` 为同尺度整数偏置。
     ///
     /// 量化卷积的全部算力都落在 `fast::gemm_i8` 的多槽池上；`bias` 传全 0 可省。
@@ -505,6 +572,45 @@ fn fill_row(
 }
 
 /// i8 im2col：口径与 [`im2col2d`] 一致，补零位置为 `i8` 的 0，同样按行块并行。
+/// `im2col` 的逆向：把每行的收缩梯度按同一窗口位置累加回输入（`stride < k` 的重叠位也要累加）。
+fn col2im2d(
+    col: &[f32],
+    dx: &mut [f32],
+    n: usize,
+    (h, w): (usize, usize),
+    conv: &Conv2d,
+    (oh, ow): (usize, usize),
+) {
+    let patch = conv.geom.patch(conv.cin);
+    let cin = conv.cin;
+    let g = conv.geom;
+    let _ = n;
+    for row in 0..oh * ow * (col.len() / (oh * ow * patch)) {
+        let ni = row / (oh * ow);
+        let rem = row % (oh * ow);
+        let oi = rem / ow;
+        let oj = rem % ow;
+        for ki in 0..g.kh {
+            let ii = (oi * g.sh + ki) as isize - g.ph as isize;
+            if ii < 0 || ii as usize >= h {
+                continue;
+            }
+            for kj in 0..g.kw {
+                let jj = (oj * g.sw + kj) as isize - g.pw as isize;
+                if jj < 0 || jj as usize >= w {
+                    continue;
+                }
+                let tail = (ki * g.kw + kj) * cin;
+                let dst = ((ni * h + ii as usize) * w + jj as usize) * cin;
+                let src = row * patch + tail;
+                for ci in 0..cin {
+                    dx[dst + ci] += col[src + ci];
+                }
+            }
+        }
+    }
+}
+
 fn im2col2d_i8(
     x: &[i8],
     col: &mut [i8],

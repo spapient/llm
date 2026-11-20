@@ -77,14 +77,7 @@ pub mod conv2d_f32 {
         Sample {
             m: OH * OW,
             n: COUT,
-            scalars: vec![
-                ("N", 1),
-                ("H", H as i64),
-                ("W", W as i64),
-                ("CIN", CIN as i64),
-                ("COUT", COUT as i64),
-                ("K", K as i64),
-            ],
+            scalars: vec![("N", 1)],
             buffers: vec![
                 x_buffer(H * W * CIN),
                 Buffer {
@@ -130,11 +123,11 @@ pub mod conv2d_f32 {
         crate::model::cost_n(shape, "conv2d_f32", 2.0 * PATCH as f64, 3)
     }
 
-    /// `conv2d_f32` 的标记类型（反向公式接入前先标不可微，编译期断言要求二者同步）。
+    /// `conv2d_f32` 的标记类型。
     #[derive(Debug, Clone, Copy)]
     pub struct Conv2dModel;
 
-    crate::operator_here!(Conv2dModel, "conv2d_f32", 3, (OH * OW, COUT), false, reference);
+    crate::operator_here!(Conv2dModel, "conv2d_f32", 3, (OH * OW, COUT), true, reference);
     #[annotation::model(name = "conv2d_f32", shape = [16, 3], dtype = "f32", skeleton = "elementwise")]
     /// 语义别名（`#[annotation::model]` 在此生成 `MODEL` 自检常量）。
     pub type Conv2dF32 = Conv2dModel;

@@ -9,7 +9,10 @@
 //! 层归一化是行主序 `rows × width`。
 
 use diagnostic::{Code, Error, Result};
-use op::conv::{AdaptiveAvgPool2d, AvgPool2d, ConvGeom, Interpolate, MaxPool1d, MaxPool2d, Sampler};
+use op::conv::{
+    AdaptiveAvgPool2d, AvgPool2d, Conv2d, ConvGeom, Interpolate, MaxPool1d, MaxPool2d,
+    Sampler,
+};
 use op::norm::{BatchNorm2d, GroupNorm, LayerNorm};
 
 /// 归一化 eps：与 `op::classic` 四个声明档模块的 `EPS` 同值（算术来源留在 op 侧）。
@@ -137,6 +140,23 @@ pub enum Geometry {
         /// 通道数。
         channels: usize,
     },
+    /// 二维卷积：NHWC 激活、`[(ki·k+kj)·cin+ci, cout]` 行主序权重、`same` 式补零（单样本）。
+    Conv2d {
+        /// 核边长。
+        k: usize,
+        /// 步长。
+        s: usize,
+        /// 两侧补零。
+        p: usize,
+        /// 输入高。
+        h: usize,
+        /// 输入宽。
+        w: usize,
+        /// 输入通道。
+        cin: usize,
+        /// 输出通道。
+        cout: usize,
+    },
     /// 层归一化：逐行在最后一维统计。
     Layer {
         /// 行数。
@@ -155,7 +175,7 @@ impl Geometry {
             | Self::Avg2d { .. }
             | Self::Adaptive { .. }
             | Self::Interp { .. } => 1,
-            Self::Norm { .. } | Self::Group { .. } | Self::Layer { .. } => 3,
+            Self::Norm { .. } | Self::Group { .. } | Self::Layer { .. } | Self::Conv2d { .. } => 3,
         }
     }
 
@@ -174,6 +194,9 @@ impl Geometry {
             Self::Norm { n, spatial, channels } | Self::Group { n, spatial, channels, .. } => {
                 n * spatial * channels
             }
+            Self::Conv2d { k, s, p, h, w, cin: _, cout } => pool_len(h, k, s, p)
+                .and_then(|oh| Ok(oh * pool_len(w, k, s, p)? * cout))
+                .unwrap_or(0),
             Self::Layer { rows, width } => rows * width,
         }
     }
@@ -182,7 +205,7 @@ impl Geometry {
     ///
     /// # Errors
     ///
-    /// `op` 不在九个经典算子之列时返回 [`Code::Unsupported`]。
+    /// `op` 不在十个经典算子之列时返回 [`Code::Unsupported`]。
     pub fn declared(op: &str) -> Result<Self> {
         match op {
             "max_pool1d_f32" => Ok(Self::Pool1d {
@@ -223,6 +246,15 @@ impl Geometry {
                 w: op::interpolate_f32::W,
                 c: 1,
                 linear: true,
+            }),
+            "conv2d_f32" => Ok(Self::Conv2d {
+                k: op::conv2d_f32::K,
+                s: op::conv2d_f32::S,
+                p: op::conv2d_f32::P,
+                h: op::conv2d_f32::H,
+                w: op::conv2d_f32::W,
+                cin: op::conv2d_f32::CIN,
+                cout: op::conv2d_f32::COUT,
             }),
             "batch_norm_f32" => Ok(Self::Norm {
                 n: op::batch_norm_f32::N,
@@ -348,6 +380,18 @@ impl Geometry {
                     site,
                 )?;
             }
+            Self::Conv2d { k, s, p, h, w, cin, cout } => {
+                let (oh, ow) = (pool_len(h, k, s, p)?, pool_len(w, k, s, p)?);
+                let patch = k * k * cin;
+                check(
+                    lens[0] == h * w * cin && lens[1] == patch * cout && lens[2] == cout,
+                    lens,
+                    out,
+                    "二维卷积的输入/权重/偏置",
+                    site,
+                )?;
+                check(out == oh * ow * cout, lens, out, "二维卷积输出", site)?;
+            }
             Self::Layer { rows, width } => {
                 let total = rows * width;
                 check(
@@ -421,6 +465,19 @@ impl Geometry {
             }
             Self::Group { groups, n, spatial, channels } => GroupNorm { groups, channels, eps: EPS }
                 .forward(inputs[0], inputs[1], inputs[2], n, spatial, out),
+            Self::Conv2d { k, s, p, h, w, cin, cout } => Conv2d::new(
+                cin,
+                cout,
+                ConvGeom {
+                    kh: k,
+                    kw: k,
+                    sh: s,
+                    sw: s,
+                    ph: p,
+                    pw: p,
+                },
+            )
+            .forward_f32(inputs[0], inputs[1], inputs[2], 1, h, w, out),
             Self::Layer { width, .. } => {
                 LayerNorm { width, eps: EPS }.forward(inputs[0], inputs[1], inputs[2], out)
             }
@@ -627,6 +684,30 @@ impl Geometry {
                 }
                 Ok(vec![dx, dgamma, dbeta])
             }
+            Self::Conv2d { k, s, p, h, w, cin, cout } => {
+                let conv = Conv2d::new(
+                    cin,
+                    cout,
+                    ConvGeom {
+                        kh: k,
+                        kw: k,
+                        sh: s,
+                        sw: s,
+                        ph: p,
+                        pw: p,
+                    },
+                );
+                let patch = k * k * cin;
+                let (mut dx, mut dweight, mut dbias) = (
+                    vec![0.0f32; inputs[0].len()],
+                    vec![0.0f32; patch * cout],
+                    vec![0.0f32; cout],
+                );
+                conv.backward_f32(
+                    &inputs[0], &inputs[1], incoming, 1, h, w, &mut dx, &mut dweight, &mut dbias,
+                )?;
+                Ok(vec![dx, dweight, dbias])
+            }
             Self::Layer { rows, width } => {
                 let total = rows * width;
                 let (mut dx, mut dgamma, mut dbeta) =
@@ -791,6 +872,23 @@ fn check(ok: bool, lens: &[usize], out: usize, what: &str, site: &str) -> Result
 mod tests {
     use super::*;
 
+    /// 声明档样本的输入切片：卷积是 `(x, weight, bias)`，其余按一元/三元口径。
+    fn declared_inputs(sample: &op::model::Sample, g: Geometry) -> Vec<&[f32]> {
+        match g {
+            Geometry::Conv2d { .. } => vec![
+                sample.f32("x").expect("x"),
+                sample.f32("weight").expect("weight"),
+                sample.f32("bias").expect("bias"),
+            ],
+            _ if g.arity() == 1 => vec![sample.f32("x").expect("x")],
+            _ => vec![
+                sample.f32("x").expect("x"),
+                sample.f32("gamma").expect("gamma"),
+                sample.f32("beta").expect("beta"),
+            ],
+        }
+    }
+
     /// 声明档实例与 `op::classic` 的声明档样本长度逐一对齐：前向缓冲与样本同长。
     #[test]
     fn declared_geometries_match_the_sample_lengths() {
@@ -801,22 +899,15 @@ mod tests {
             ("adaptive_pool_f32", op::adaptive_pool_f32::sample(1, 1)),
             ("interpolate_f32", op::interpolate_f32::sample(1, 1)),
             ("batch_norm_f32", op::batch_norm_f32::sample(1, 1)),
+            ("conv2d_f32", op::conv2d_f32::sample(1, 1)),
             ("group_norm_f32", op::group_norm_f32::sample(1, 1)),
             ("instance_norm_f32", op::instance_norm_f32::sample(1, 1)),
             ("layer_norm_f32", op::layer_norm_f32::sample(1, 1)),
         ] {
             let g = Geometry::declared(op).expect("声明档实例");
-            let x = sample.f32("x").expect("x");
             let y = sample.f32("y").expect("y");
-            let lens: Vec<usize> = if g.arity() == 1 {
-                vec![x.len()]
-            } else {
-                vec![
-                    x.len(),
-                    sample.f32("gamma").expect("gamma").len(),
-                    sample.f32("beta").expect("beta").len(),
-                ]
-            };
+            let inputs = declared_inputs(&sample, g);
+            let lens: Vec<usize> = inputs.iter().map(|input| input.len()).collect();
             g.expect(&lens, y.len()).expect("声明档形状自洽");
         }
     }
@@ -831,22 +922,14 @@ mod tests {
             ("adaptive_pool_f32", op::adaptive_pool_f32::sample(1, 1)),
             ("interpolate_f32", op::interpolate_f32::sample(1, 1)),
             ("batch_norm_f32", op::batch_norm_f32::sample(1, 1)),
+            ("conv2d_f32", op::conv2d_f32::sample(1, 1)),
             ("group_norm_f32", op::group_norm_f32::sample(1, 1)),
             ("instance_norm_f32", op::instance_norm_f32::sample(1, 1)),
             ("layer_norm_f32", op::layer_norm_f32::sample(1, 1)),
         ] {
             let g = Geometry::declared(op).expect("声明档实例");
-            let x = sample.f32("x").expect("x");
             let mut out = vec![0.0f32; g.outputs()];
-            if g.arity() == 1 {
-                g.forward(&[x], &mut out).expect("前向");
-            } else {
-                g.forward(
-                    &[x, sample.f32("gamma").expect("gamma"), sample.f32("beta").expect("beta")],
-                    &mut out,
-                )
-                .expect("前向");
-            }
+            g.forward(&declared_inputs(&sample, g), &mut out).expect("前向");
             let want = (op::model(op).expect("已注册").reference)(&sample).expect("参考");
             assert_eq!(out, want, "{op} 实例前向与声明档参考不一致");
         }

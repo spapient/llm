@@ -5,14 +5,12 @@
 //!
 //! # 下界分两档，理由不同
 //!
-//! - **卷积族**（`Conv1d`/`Conv2d`/`ConvTranspose1d`/`ConvTranspose2d`）绑 `gemm_f32`：im2col 之后
-//!   它们就是矩阵乘，语义同一副骨架。`gemm_f32` 的收缩轴是声明档 `K = 8`，而真实卷积的
-//!   `K = kh·kw·cin` 随几何变化，所以这里给出的是**松下界**——下界本来就允许偏松，且它不会高于
-//!   真实代价。
-//! - **窗口/归一化族**（池化、插值、四种归一化）没有可代理的已注册算子（池化的窗口 `max`、
-//!   归一化的减均值都不属于任何现有骨架），因此 `ops` 为空、下界走 [`Contract::bounds`] 的默认
-//!   `Ok(None)`：层仍被登记与收口，只明确标"当前无法计价"，而不是绑一个语义不符的算子名把
-//!   数字凑出来。
+//! - **二维卷积**绑 `conv2d_f32`（真卷积算子：im2col + GEMM 的完整语义表），下界按它的每输出
+//!   `2·k²·cin` 次运算与三读一写口径给出。
+//! - **一维卷积与两种转置**仍绑 `gemm_f32`：`Conv1d` 的 1d im2col 就是矩阵乘、转置卷积没有独立
+//!   算子，`gemm_f32` 的收缩轴是声明档 `K = 8`，因此这里是**松下界**（下界允许偏松，不会高于真实代价）。
+//! - **窗口/归一化族**各自绑定自己的真算子（`max_pool1d/max_pool2d/avg_pool2d/adaptive_pool/
+//!   interpolate/batch_norm/group_norm/instance_norm/layer_norm`），代价表即算子的语义表。
 
 use diagnostic::{Code, Error, Result};
 use op::conv::ConvGeom;
@@ -27,8 +25,11 @@ use tensor::Shape;
 use crate::{Bounds, BoundsResult, Contract, ContractSpec, ParamRole, spec_accessors};
 use crate::ContractSpec as Spec;
 
-/// 卷积/反卷积族绑定的算子：im2col 之后就是一次矩阵乘。
+/// 一维卷积与转置卷积绑定的算子：im2col 之后就是一次矩阵乘。
 const GEMM: &str = "gemm_f32";
+
+/// 二维卷积绑定的真算子（完整 im2col + GEMM 语义）。
+const CONV: &str = "conv2d_f32";
 
 /// 校验非零并在失败时点名层与字段。
 fn nonzero(value: usize, field: &str, layer: &str) -> Result<usize> {
@@ -140,7 +141,7 @@ impl Conv2d {
         nonzero(cout, "cout", layer)?;
         let kernel = OpConv2::new(cin, cout, geom);
         let (oh, ow) = kernel.shape(h, w)?;
-        let spec = __layer_spec_Conv2d!(name, oh, ow, cout, GEMM)?;
+        let spec = __layer_spec_Conv2d!(name, oh, ow, cout, CONV)?;
         Ok(Self {
             spec,
             cin,
@@ -176,7 +177,7 @@ impl Contract for Conv2d {
     spec_accessors!();
 
     fn bounds(&self) -> BoundsResult {
-        Bounds::of_context(GEMM, self.oh * self.ow, self.cout).map(Some)
+        Bounds::of_context(CONV, self.oh * self.ow, self.cout).map(Some)
     }
 }
 
@@ -750,13 +751,13 @@ mod tests {
     }
 
     #[test]
-    fn conv2d_registers_its_shape_and_gemm_operator() {
+    fn conv2d_registers_its_shape_and_conv_operator() {
         let layer = Conv2d::new("stem.conv", 3, 64, geom3(), 32, 32).expect("合法");
         assert_eq!(layer.name(), "stem.conv");
         assert_eq!(layer.output().dims(), [32, 32, 64]);
-        assert_eq!(layer.spca().ops(), [GEMM]);
+        assert_eq!(layer.spca().ops(), [CONV]);
         assert_eq!(layer.shape(), (32, 32));
-        // 下界来自 gemm 语义表（K 取声明档 8），因此有正 FLOPs 与正字节。
+        // 下界来自 conv2d_f32 的语义表（每输出 2·k²·cin、三读一写），因此有正 FLOPs 与正字节。
         let floor = layer.bounds().expect("合法").expect("有算子");
         assert!(floor.flops() > 0.0 && floor.bytes() > 0);
     }

@@ -168,7 +168,7 @@ struct Entry {
 /// 已接反向公式的可微算子目录；其余算子（量化权重 / 反量化）在 [`apply_formula`] 处回
 /// [`Code::Unsupported`]。与 [`op::REGISTRY`] 的 `differentiable` 标记一一对应，由下方 `const`
 /// 断言在编译期守住。
-const FORMULAS: [Entry; 35] = [
+const FORMULAS: [Entry; 36] = [
     Entry {
         op: "adaptive_pool_f32",
         formula: adaptive_pool,
@@ -298,6 +298,10 @@ const FORMULAS: [Entry; 35] = [
         formula: batch_norm,
     },
     Entry {
+        op: "conv2d_f32",
+        formula: conv2d,
+    },
+    Entry {
         op: "flash_attention_f32",
         formula: attention,
     },
@@ -410,6 +414,10 @@ fn interpolate(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
 
 fn batch_norm(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
     ctx.instance("batch_norm_f32")?.backward(ctx.inputs, ctx.incoming)
+}
+
+fn conv2d(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
+    ctx.instance("conv2d_f32")?.backward(ctx.inputs, ctx.incoming)
 }
 
 fn group_norm(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {

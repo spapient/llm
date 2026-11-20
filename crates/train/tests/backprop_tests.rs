@@ -1445,3 +1445,74 @@ fn rolling_statistics_persist_across_steps_in_the_buffers() -> Result<()> {
     }
     Ok(())
 }
+
+/// `loss = Σ conv2d(x, weight, bias)`：三个输入各做一次中心差分，声明档与任意步长/补零两种几何。
+#[test]
+fn conv2d_gradients_match_central_differences_on_any_geometry() -> Result<()> {
+    let shapes = [
+        Geometry::declared("conv2d_f32")?,
+        Geometry::Conv2d {
+            k: 3,
+            s: 2,
+            p: 0,
+            h: 5,
+            w: 5,
+            cin: 2,
+            cout: 2,
+        },
+    ];
+    for geom in shapes {
+        let Geometry::Conv2d { k, h, w, cin, cout, .. } = geom else {
+            unreachable!("本测试只跑卷积几何");
+        };
+        let x: Vec<f32> = (0..h * w * cin).map(|i| 0.2 + (i as f32 * 0.31).sin()).collect();
+        let weight: Vec<f32> = (0..k * k * cin * cout)
+            .map(|i| 0.1 + (i as f32 * 0.17).cos() * 0.2)
+            .collect();
+        let bias: Vec<f32> = (0..cout).map(|i| 0.3 - i as f32 * 0.1).collect();
+        let loss = move |px: &[f32], pw: &[f32], pb: &[f32]| -> f32 {
+            let mut y = vec![0.0f32; geom.outputs()];
+            geom.forward(&[px, pw, pb], &mut y).expect("前向");
+            y.iter().sum()
+        };
+        check_geometry_affine("conv2d_f32", geom, &x, &weight, &bias, loss)?;
+    }
+    Ok(())
+}
+
+/// 声明档前向：`Buffers::compute("conv2d_f32")` 的适配路径与算子自身的 reference 逐位一致。
+#[test]
+fn conv2d_reference_kernel_matches_the_operator_sample() -> Result<()> {
+    let sample = op::conv2d_f32::sample(0, 0);
+    let x = sample.f32("x")?.to_vec();
+    let weight = sample.f32("weight")?.to_vec();
+    let bias = sample.f32("bias")?.to_vec();
+    let want = op::conv2d_f32::reference(&sample)?;
+
+    let mut tape = Tape::new();
+    let a = tape.leaf();
+    let b = tape.leaf();
+    let c = tape.leaf();
+    let y = tape.record("conv2d_f32", &[a, b, c]).expect("记录");
+    let sizes = support::sizes_of(
+        &tape,
+        &[
+            (a, x.len()),
+            (b, weight.len()),
+            (c, bias.len()),
+            (y, want.len()),
+        ],
+    );
+    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
+    session.buffers().load(a, Data::F32(x))?;
+    session.buffers().load(b, Data::F32(weight))?;
+    session.buffers().load(c, Data::F32(bias))?;
+    session.buffers().compute("conv2d_f32", &[a, b, c], y)?;
+    let got = session.buffers().value(y).expect("y 应在场");
+    let got = got.f32().expect("y 是 f32");
+    assert_eq!(got.len(), want.len());
+    for (index, (g, w)) in got.iter().zip(&want).enumerate() {
+        assert!((g - w).abs() <= 1e-6, "第 {index} 个输出 {g} vs {w}");
+    }
+    Ok(())
+}
