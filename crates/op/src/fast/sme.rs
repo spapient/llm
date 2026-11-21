@@ -231,7 +231,8 @@ unsafe fn sme_tile(k: usize, a_p: *const f32, b_p: *const f32, c: *mut f32, n_st
         out("w12") _, out("w13") _, out("w14") _, out("w15") _,
         out("p0") _,
         options(nostack)
-    );
+        );
+    }
 }
 
 /// 进入流式模式并准备全真谓词 `p0`；必须在任何 SME 指令前调用，且每线程一次。
@@ -240,7 +241,9 @@ unsafe fn sme_tile(k: usize, a_p: *const f32, b_p: *const f32, c: *mut f32, n_st
 #[allow(unsafe_code)]
 #[inline(never)]
 unsafe fn enter_sm() {
-    asm!("smstart", "smstart za", "ptrue p0.s", options(nostack));
+    unsafe {
+        asm!("smstart", "smstart za", "ptrue p0.s", options(nostack));
+    }
 }
 
 /// 退出流式模式；与 [`enter_sm`] 成对，`sme_tile` 之间不得夹带 NEON。
@@ -249,7 +252,9 @@ unsafe fn enter_sm() {
 #[allow(unsafe_code)]
 #[inline(never)]
 unsafe fn exit_sm() {
-    asm!("smstop za", "smstop", options(nostack));
+    unsafe {
+        asm!("smstop za", "smstop", options(nostack));
+    }
 }
 
 #[cfg(all(test, target_arch = "aarch64"))]
