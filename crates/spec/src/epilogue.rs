@@ -101,13 +101,15 @@ fn split_steps(text: &str) -> Vec<(usize, &str)> {
     out
 }
 
-/// 把一个 `[start, end)` 字节区间收进结果；空段丢弃，行号按起点算。
+/// 把一个 `[start, end)` 字节区间收进结果；空段丢弃，行号按去空白后的真实起点算。
 fn push_step<'a>(out: &mut Vec<(usize, &'a str)>, text: &'a str, start: usize, end: usize) {
-    let piece = text[start..end].trim();
+    let raw = &text[start..end];
+    let leading = raw.len() - raw.trim_start().len();
+    let piece = raw.trim();
     if piece.is_empty() {
         return;
     }
-    let line = crate::tpl::parse::count_newlines(&text[..start]) + 1;
+    let line = crate::tpl::parse::count_newlines(&text[..start + leading]) + 1;
     out.push((line, piece));
 }
 
@@ -168,12 +170,20 @@ fn scale_of(arg: Option<&str>, line: usize) -> Result<f32> {
 
 /// `quant:<i8|i4|i2>`：参数必填，且是三者之一。
 fn quant_of(arg: Option<&str>, line: usize) -> Result<DType> {
-    let text = arg.ok_or_else(|| error(line, "`quant` 需要参数（i8 / i4 / i2）"))?;
-    let dtype = DType::parse_name(text).ok_or_else(|| error(line, format!("未知 dtype `{text}`")))?;
-    if !matches!(dtype, DType::I8 | DType::I4 | DType::I2) {
-        return Err(error(line, format!("`quant` 只接受 i8 / i4 / i2，`{text}` 不是")));
+    let text = arg.ok_or(error(line, "`quant` 需要参数（i8 / i4 / i2）"))?;
+    let dtype = DType::parse_name(text).ok_or(error(line, format!("未知 dtype `{text}`")))?;
+    if !is_quant(dtype) {
+        return Err(error(
+            line,
+            format!("`quant` 只接受 i8 / i4 / i2，`{text}` 不是"),
+        ));
     }
     Ok(dtype)
+}
+
+/// `quant` 只接受 i8 / i4 / i2 三种整数位宽。
+fn is_quant(dtype: DType) -> bool {
+    matches!(dtype, DType::I8 | DType::I4 | DType::I2)
 }
 
 /// 形状校验：`bias` 长度 = 列数、`residual` 长度 = 瓦片长度。
@@ -255,11 +265,7 @@ fn apply_act(x: f32, kind: ActKind) -> f32 {
 
 /// LeakyReLU：非负恒等，负区按斜率 `0.01` 缩放（与 `gemm::unary` 的 `SLOPE` 一致）。
 fn leaky(x: f32) -> f32 {
-    if x >= 0.0 {
-        x
-    } else {
-        0.01 * x
-    }
+    if x >= 0.0 { x } else { 0.01 * x }
 }
 
 /// 标量缩放。

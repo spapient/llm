@@ -2,6 +2,7 @@
 
 use crate::layout::LayoutSpec;
 use crate::sch::Schedule;
+use crate::sig::CType;
 use core::fmt;
 use diagnostic::{Code, Error};
 use prof::atom::Need;
@@ -210,40 +211,58 @@ impl OpDecl {
 /// 自融合被排除是代数层面的要求，不是偏保守：A 读的槽位要等 A 这一轮写完才有值，那是循环携带
 /// 依赖，拼出来的"融合核"无法定义执行顺序；把它放进候选表还会白占一个预算名额。
 pub fn compose(producer: &OpDecl, consumer: &OpDecl) -> Option<Fusion> {
-    if producer.name == consumer.name {
-        return None;
-    }
+    let seams = seams_between(producer, consumer);
+    (!seams.is_empty()).then(|| Fusion {
+        producer: producer.name.clone(),
+        consumer: consumer.name.clone(),
+        seams,
+    })
+}
+
+/// 生产者每条写槽位 × 消费者每条读槽位里同类型的配对。自融合的窗口从 `ops[i]` 往前数半径，
+/// 天生包含自己，所以这里第一件事就是把 `A == B` 摘掉。
+fn seams_between(producer: &OpDecl, consumer: &OpDecl) -> Vec<Seam> {
     let mut seams = Vec::new();
+    if producer.name == consumer.name {
+        return seams;
+    }
     for phase in &producer.phases {
         for from in &phase.writes {
             let Some(ctype) = producer.slot_type(from) else {
                 continue;
             };
-            for cphase in &consumer.phases {
-                for to in &cphase.reads {
-                    if consumer.slot_type(to) == Some(ctype)
-                        && !seams
-                            .iter()
-                            .any(|seam: &Seam| seam.from == *from && seam.to == *to)
-                    {
-                        seams.push(Seam {
-                            from: from.clone(),
-                            to: to.clone(),
-                            ctype,
-                        });
-                    }
-                }
-            }
+            record_seams(&mut seams, consumer, from, ctype);
         }
     }
-    if seams.is_empty() {
-        return None;
+    seams
+}
+
+/// 把一个生产者写槽位与消费者全部读槽位配对。
+fn record_seams(seams: &mut Vec<Seam>, consumer: &OpDecl, from: &str, ctype: CType) {
+    for phase in &consumer.phases {
+        for to in &phase.reads {
+            record_seam(seams, consumer, (from, to), ctype);
+        }
     }
-    Some(Fusion {
-        producer: producer.name.clone(),
-        consumer: consumer.name.clone(),
-        seams,
-    })
+}
+
+/// 登记一条缝：两侧同类型才成立，同一对 `(from, to)` 只登记一次。
+fn record_seam(seams: &mut Vec<Seam>, consumer: &OpDecl, pair: (&str, &str), ctype: CType) {
+    let (from, to) = pair;
+    if consumer.slot_type(to) != Some(ctype) {
+        return;
+    }
+    if seams
+        .iter()
+        .any(|seam| seam.from == from && seam.to == to)
+    {
+        return;
+    }
+    seams.push(Seam {
+        from: from.to_string(),
+        to: to.to_string(),
+        ctype,
+    });
 }
 
 /// 轴展开出的一组具体值。

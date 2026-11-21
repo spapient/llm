@@ -112,7 +112,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Profile` | `prof` | 设备档案；机制代码不得出现 `vendor == "..."` |
 | `Device` / `Image` / `Status` | `prof` | 一台设备这次构建带上的设备侧代码、编译产物与其结局（`Source` / `Compiled` / `NoRecipe` / `Skipped`）；放在最底层是为了让六份片段 crate 与 `prim` 都能引用同一份类型而不成环 |
 | `WitnessLookup` | `prof` | 「见证文件名 → 磁盘路径」的唯一缝：档案校验只问这一个方法，因此内嵌根（多 crate）与数据根（单目录）两种布局共用同一条校验路径 |
-| `Closed` / `Set` / `KernelKey` | `prof` | 词汇表契约、全仓唯一位集（容量在单态化时由 `const FITS` 断言）、以及一条内核实现的登记键（[ADR 0027](adr/0027-kernel-registry-and-fragment-contract.md) 七元组，只承载身份） |
+| `Closed` / `Set` / `KernelKey` / `Epilogue` / `ActKind` | `prof` | 词汇表契约、全仓唯一位集（容量在单态化时由 `const FITS` 断言）、以及一条内核实现的登记键（[ADR 0027](adr/0027-kernel-registry-and-fragment-contract.md) 七元组，只承载身份）。`Epilogue` 是写回尾块闭集（顺序即施加顺序，只有 `store` 有副作用），`ActKind` 是 `act:<kind>` 的参数闭集且与 `gemm::unary` 的执行核一一对应：两者只描述「做了什么」，算术仍归 `gemm`。这两个名字由 `vocabulary!` 宏展开成 `pub enum`，源码里没有那行 `pub`——所有权门禁的两向扫描因此共用 `public_type_names` 这一份口径 |
 | `FragmentSet` / `Fragment` / `Layout` | `prim` | 原语片段与见证源码的读入形状（文件名落在 `prof` 的原语闭集内）、以及「内嵌根 / 数据根」二选一的布局；六张内嵌表由各设备 crate 的 `build.rs` 扫描生成，`prim/src` 里只有机制与编译期的聚合 |
 | 片段文本 + 见证 | `cuda`、`cpu`、`metal`、`musa`、`opencl`、`rocm` | 一台设备一份：片段文本、见证与 `build.rs` 生成的 `FRAGMENTS` / `PRIMS` / `DEVICE` 三张表都由该成员拥有；`prim` 只把它们拼起来，不认识任何厂商名 |
 | `Catalogue` | `cutile` | 已装载的三层数据（声明 + 档案 + 片段）与它们的交叉校验 |

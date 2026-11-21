@@ -139,19 +139,47 @@ pub fn verify_fusion(
     fusion: &Fusion,
     sample: &mut Sample,
 ) -> diagnostic::Result<Oracle> {
+    let bridged = plan(fusion)?;
+    let got = run_fused(producer, consumer, sample, &bridged)?;
+    Ok(Oracle { got, bridged })
+}
+
+/// 校验融合值本身是否可对拍，并列出要桥接的 `(生产者写槽位, 消费者读槽位)`。
+/// 只看名字与类型：形状要到 `bridge_one` 里才拿得到样本，所以放在那里报。
+fn plan(fusion: &Fusion) -> diagnostic::Result<Vec<(String, String)>> {
+    check(fusion)?;
+    let from = sole_output(fusion)?;
+    let targets = seam_targets(fusion, from)?;
+    Ok(targets
+        .into_iter()
+        .map(|to| (from.to_string(), to.to_string()))
+        .collect())
+}
+
+/// 先排除不可对拍的形状：空融合与自融合。
+fn check(fusion: &Fusion) -> diagnostic::Result<()> {
     if fusion.seams.is_empty() {
         return Err(reject("融合值为空：没有任何缝，就没有可对拍的程序"));
     }
     if fusion.is_self() {
         return Err(reject("自融合不是融合：生产者与消费者是同一个算子"));
     }
+    Ok(())
+}
+
+/// 标量参考只产出一条输出，多输出的生产者桥接不完整。
+fn sole_output(fusion: &Fusion) -> diagnostic::Result<&str> {
     let outputs = fusion.outputs();
     if outputs.len() != 1 {
         return Err(unsupported(
             "生产者有多条输出，标量参考只给一条，无法完整桥接",
         ));
     }
-    let from = outputs[0];
+    Ok(outputs[0])
+}
+
+/// 至少有一条缝指向消费者，且全部是 F32——只有 F32 能由标量参考无损搬运。
+fn seam_targets<'a>(fusion: &'a Fusion, from: &'a str) -> diagnostic::Result<Vec<&'a str>> {
     let targets: Vec<&str> = fusion.targets(from).collect();
     if targets.is_empty() {
         return Err(reject("融合值里没有指向消费者的缝"));
@@ -159,32 +187,39 @@ pub fn verify_fusion(
     if fusion.seams.iter().any(|seam| seam.ctype != CType::F32) {
         return Err(unsupported("只有 F32 缝能由标量参考桥接"));
     }
+    Ok(targets)
+}
 
+/// 跑生产者、把每条缝桥进消费者样本、再跑消费者。
+fn run_fused(
+    producer: &Model,
+    consumer: &Model,
+    sample: &mut Sample,
+    bridged: &[(String, String)],
+) -> diagnostic::Result<Vec<f32>> {
     let mid = (producer.reference)(sample)?;
-    for to in &targets {
-        let buffer = sample
-            .buffer(to)
-            .ok_or_else(|| Error::new(Code::Missing, format!("样本里没有消费者槽位 `{to}`")))?;
-        if buffer.values.len() != mid.len() {
-            return Err(Error::new(
-                Code::Invalid,
-                format!(
-                    "缝 `{from} → {to}` 形状对不上：生产者产出 {} 个，消费者槽位声明 {} 个",
-                    mid.len(),
-                    buffer.values.len()
-                ),
-            ));
-        }
-        sample.set(to, Values::F32(mid.clone()))?;
+    for (from, to) in bridged {
+        bridge_one(sample, from, to, &mid)?;
     }
-    let got = (consumer.reference)(sample)?;
-    Ok(Oracle {
-        got,
-        bridged: targets
-            .into_iter()
-            .map(|to| (from.to_string(), to.to_string()))
-            .collect(),
-    })
+    (consumer.reference)(sample)
+}
+
+/// 把生产者产出写进消费者的一个槽位，长度不符就不写。
+fn bridge_one(sample: &mut Sample, from: &str, to: &str, mid: &[f32]) -> diagnostic::Result<()> {
+    let buffer = sample
+        .buffer(to)
+        .ok_or_else(|| Error::new(Code::Missing, format!("样本里没有消费者槽位 `{to}`")))?;
+    if buffer.values.len() != mid.len() {
+        return Err(Error::new(
+            Code::Invalid,
+            format!(
+                "缝 `{from} → {to}` 形状对不上：生产者产出 {} 个，消费者槽位声明 {} 个",
+                mid.len(),
+                buffer.values.len()
+            ),
+        ));
+    }
+    sample.set(to, Values::F32(mid.to_vec()))
 }
 
 /// 融合值自身不合法。
