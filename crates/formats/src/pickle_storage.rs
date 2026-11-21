@@ -22,24 +22,16 @@ pub(crate) fn at_str(items: &[Value], index: usize, message: &str) -> Result<Str
     into_str(at(items, index, message)?)
 }
 
-pub(crate) fn check_tag(items: &[Value]) -> Result<()> {
-    let tag = into_str(at(items, 0, "pid 空")?)?;
-    if tag == "storage" {
-        return Ok(());
-    }
-    Err(bad(format!("不支持的 persistent id `{tag}`")))
-}
-
-pub(crate) fn storage_class(items: &[Value]) -> Result<&str> {
-    match at(items, 1, "pid 缺 storage 类")? {
-        Value::Global { name, .. } => Ok(name.as_str()),
-        _ => Err(bad("storage 类不是 GLOBAL")),
-    }
-}
-
 pub(crate) fn storage_handle(items: &[Value]) -> Result<(String, DType)> {
-    check_tag(items)?;
-    let dtype = storage_dtype(storage_class(items)?)?;
+    let tag = into_str(at(items, 0, "pid 空")?)?;
+    if tag != "storage" {
+        return Err(bad(format!("不支持的 persistent id `{tag}`")));
+    }
+    let class = match at(items, 1, "pid 缺 storage 类")? {
+        Value::Global { name, .. } => name.as_str(),
+        _ => return Err(bad("storage 类不是 GLOBAL")),
+    };
+    let dtype = storage_dtype(class)?;
     let key = at_str(items, 2, "pid 缺 key")?;
     Ok((key, dtype))
 }
@@ -116,8 +108,10 @@ fn contiguous_dim(size: u64, step: usize, expected: usize) -> Result<usize> {
 }
 
 pub(crate) fn tensor_of(items: &[Value]) -> Result<Tensor> {
-    let (storage_key, dtype, offset) = storage_and_offset(items)?;
-    let (shape, count) = checked_shape(items)?;
+    let (storage_key, dtype) = storage_of(items)?;
+    let offset = offset_of(items)?;
+    let (shape, count) = shape_of(items)?;
+    check_contiguous(&shape, &stride_of(items)?)?;
     let (offset, len) = span(offset, count, dtype.bytes_for(1) as usize)?;
     Ok(Tensor {
         name: String::new(),
@@ -127,6 +121,18 @@ pub(crate) fn tensor_of(items: &[Value]) -> Result<Tensor> {
         offset,
         len,
     })
+}
+
+fn storage_and_offset(items: &[Value]) -> Result<(String, DType, usize)> {
+    let (storage_key, dtype) = storage_of(items)?;
+    let offset = offset_of(items)?;
+    Ok((storage_key, dtype, offset))
+}
+
+fn checked_shape(items: &[Value]) -> Result<(Vec<u64>, usize)> {
+    let (shape, count) = shape_of(items)?;
+    check_contiguous(&shape, &stride_of(items)?)?;
+    Ok((shape, count))
 }
 
 fn storage_and_offset(items: &[Value]) -> Result<(String, DType, usize)> {
