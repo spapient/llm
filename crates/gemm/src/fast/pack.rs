@@ -1,7 +1,4 @@
 //! 打包：把 A 的行块转成 `[p][MR]`、把 B 的列组转成 `[jblk][p][NR]` 面板。
-//!
-//! 微内核每条 `p` 只做两次**连续**加载，前提就是这里的重排。面板写进调用方的暂存区
-//! （[`super::scratch`]，已清零），不在这里分配：`n = k = 4096` 时这块是 67 MB。
 use std::thread;
 
 use super::{MR, NR};
@@ -22,9 +19,6 @@ pub(super) fn pack_panels(a: &[f32], full: usize, k: usize) -> Vec<f32> {
 }
 
 /// B 打包成 `[jblk][p][NR]`：微内核每条 `p` 只需两次连续向量加载（行主序 B 是每 `p` 跨一条行）。
-///
-/// `n` 不整除的部分补 0，只有列残尾（`nr < NR`）才回退到 `edge`。写进调用方的面板（已清零），
-/// 不在这里分配：`n = k = 4096` 时这块是 67 MB，每次调用现分配是第 5 条要扇掉的成本。
 pub(super) fn pack_b_f32_into(bpack: &mut [f32], b: &[f32], n: usize, k: usize) {
     let npad = n.div_ceil(NR) * NR;
     debug_assert_eq!(bpack.len(), npad * k);

@@ -1,13 +1,4 @@
 //! Unigram 分词实现：在中性 [`Vocab`] 上按逐片分数做前向 Viterbi 最优切分。
-//!
-//! 算法语义对齐公开 Unigram 参照：`best[0] = 0`；对每个终点位置，枚举所有以该点
-//! 结束的词片，取 `best[start] + score(piece)` 最大者；前向表建好后沿回指指针回溯。
-//! 分数累积用 `f64`（多个 f32 对数分数求和在长输入上的舍入误差不应翻转近平局切分）。
-//! 严格 `>` 比优，同分时保留最先扫描到的（最左）片段。
-//!
-//! **边界（D2 待办）**：预切分（空白/标点/脚本边界）、归一化与 SentencePiece `▁`
-//! 空白映射尚未接入，当前把整段 UTF-8 字节当作一个序列做片匹配。未覆盖路径回退到
-//! 已登记的 unknown 编号；未配置 `unk` 时报 [`Code::Invalid`]。
 
 use crate::{Token, Tokenizer, Vocab, VocabFamily};
 use diagnostic::{Code, Error, Result};

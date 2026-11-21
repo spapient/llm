@@ -1,16 +1,10 @@
 //! 归约骨架：`y[0] = fold(a[0..n])`，输出单个元素。
-//!
-//! 输入轴 `n` 被规约消掉，输出轴 `o` 长度恒为 1。`reduce_sum_f32` / `reduce_max_f32` 是同一副
-//! 骨架的两种 [`Reduce`] 实现，骨架（表达式缓存、代价、样本、校验、遍历）只有一份，按类型单态化。
 
 use crate::formula::FormulaOwner;
 use crate::model::{AxisRole, AxisSpec, Buffer, Cost, Sample, ShapeContext, Values};
 use diagnostic::{Code, Error};
 
 /// 归约算子随语义变化的部分。
-///
-/// 表达式（`n,o->o`）、操作数表与缓存由 [`FormulaOwner`] 给出：这条骨架只有一种求和形状
-/// （输出轴长度恒为 1），由装配宏统一声明，实现只决定初值与折叠。
 pub trait Reduce: FormulaOwner {
     /// 累加初值。
     fn start() -> f32;
@@ -170,8 +164,6 @@ pub(crate) mod test_support;
 
 pub mod reduce_max_f32 {
     //! 最大值归约：`y[0] = max(a[0..n])`。
-    //!
-    //! 语义表由 `#[annotation::model]` 生成，算术与遍历由 [`crate::reduce`] 骨架按 [`Max`] 单态化。
 
     crate::reduce_f32!(
         Max,
@@ -191,8 +183,6 @@ pub mod reduce_max_f32 {
 
 pub mod reduce_sum_f32 {
     //! 求和归约：`y[0] = sum(a[0..n])`。
-    //!
-    //! 语义表由 `#[annotation::model]` 生成，算术与遍历由 [`crate::reduce`] 骨架按 [`Sum`] 单态化。
 
     crate::reduce_f32!(
         Sum,

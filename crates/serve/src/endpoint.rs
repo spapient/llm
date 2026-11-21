@@ -1,9 +1,4 @@
 //! 端点契约：路由 [`Route`]、状态 [`Status`]、响应 [`Response`] 与一次调用 [`Endpoint`]。
-//!
-//! 这四件就是服务层对外的全部形状：路由说请求打到哪，状态说客户端该做什么，响应承载一帧
-//! 载荷，[`Endpoint`] 把"一次调用"收敛成一个方法。传输层（`http`）只搬运字节到
-//! [`Endpoint::call`]，不参与语义判断——因此同一个端点既能在进程内调用，也能经真实
-//! socket 调用，两条路径的判定完全一致。
 
 use crate::macros::code_set;
 use crate::protocol::{Envelope, Kind, Version};
@@ -52,9 +47,6 @@ impl Route {
 
 code_set! {
     /// 响应状态：闭集，映射到 HTTP 码。
-    ///
-    /// 三个失败态各对应一类不同的客户端动作：`400` 改请求、`404` 改路径、`503` 等一会儿重试。
-    /// 把它们合并成“请求失败”会让客户端只能盲重试。
     pub enum Status {
         /// 正常返回。
         Ok => 200,
@@ -113,8 +105,6 @@ impl Response {
 }
 
 /// 端点契约：一个路由 + 一次调用。
-///
-/// 实现者可以是内存里的测试端点，也可以是 HTTP 服务器；服务器只负责把字节交给 [`Endpoint::call`]。
 pub trait Endpoint {
     /// 它服务的路由。
     fn route(&self) -> &Route;

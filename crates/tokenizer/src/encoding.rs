@@ -6,9 +6,6 @@ use diagnostic::{Code, Error, Result};
 pub use stream::DecoderStream;
 
 /// 编码产出的对齐记录：token 编号、在原文本中的字节区间、是否特殊 token。
-///
-/// 三段长度在构造期闭合；暂不产出元数据的实现可用 [`Encoding::from_ids`]，
-/// 区间与标记留空。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Encoding {
     ids: Vec<Token>,
@@ -28,8 +25,6 @@ impl Encoding {
     }
 
     /// 带完整元数据；三段长度必须一致，否则报 [`Code::Invalid`]。
-    ///
-    /// 区间是原文本的 UTF-8 字节 `[start, end)`；`special` 标记该编号是否特殊 token。
     pub fn new(ids: Vec<Token>, offsets: Vec<(usize, usize)>, special: Vec<bool>) -> Result<Self> {
         let len = ids.len();
         if offsets.len() != len || special.len() != len {
@@ -93,9 +88,6 @@ mod stream {
     use diagnostic::{Code, Error, Result};
 
     /// UTF-8 边界安全的流式解码器。
-    ///
-    /// 推理逐 token 产出文本时，一块解码字节可能在多字节字符中间断开；本结构把不完整的
-    /// 尾字节留在缓冲，下次追加后再拼合。中间出现非法字节不是分片边界，直接拒绝。
     #[derive(Debug, Clone, Default, PartialEq, Eq)]
     pub struct DecoderStream {
         buffer: Vec<u8>,

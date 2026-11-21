@@ -88,10 +88,6 @@ use diagnostic::data::Table;
 use model::Model;
 
 /// 一次注册：一个算子的四件事——名字、模板、语义表、是否可微。
-///
-/// **这是唯一一处注册表**：加一个算子只改这里。声明正文由 [`build.rs`](../build.rs) 在编译期
-/// 从 `ops/<name>.toml` 生成，[`builtin()`] 与 [`model()`] 都从 [`REGISTRY`] 投影出来，不存在
-/// "声明层有、语义层没有"（或反过来）的第二份事实。
 #[derive(Debug, Clone, Copy)]
 pub struct Registration {
     /// 算子名（与 `ops/<name>.toml` 的文件名一致）。
@@ -106,9 +102,6 @@ pub struct Registration {
 }
 
 /// 内核表装配：一行一个「算子名 → 适配函数」，展开成 `Entry { op, run }` 的数组字面量。
-///
-/// `Entry` 由调用方定义（字段名固定为 `op` / `run`）；`train` 的全量参考表与 `serve` 的
-/// f32 子集表共用这一份展开规则，名字与顺序的断言留在各自 crate（前者同序锁注册表、后者只查存在性）。
 #[macro_export]
 macro_rules! kernel_table {
     ($($run:ident),* $(,)?) => {
@@ -117,14 +110,6 @@ macro_rules! kernel_table {
 }
 
 /// 全量算子清单：**唯一一次**声明。注册表与上层类型化 API 都从这张表展开。
-///
-/// 一行一个算子：`方法名: 类型路径 => 模板 stem`。方法名与
-/// [`Operator::NAME`](operator::Operator::NAME) 在编译期逐字节对拍（见 `registry_impl!`），
-/// 因此"清单写了一个名字、类型说另一个"无法通过编译；输入个数取 `Operator::ARITY`，
-/// 由 `arity_matches_the_samples` 再与样本对拍。
-///
-/// 模板仍是独立字面量：多算子共用一份泛型模板（`gemv_i2`/`gemv_i4` → `gemv_packed`）时，
-/// 模板名与注册名本来就不是同一个事实。
 #[macro_export]
 macro_rules! for_each_operator {
     ($m:ident) => {
@@ -182,16 +167,9 @@ macro_rules! for_each_operator {
 }
 
 /// 生成编译期内嵌的算子注册表：一行一个算子类型 + 模板 stem。
-///
-/// 名字、可微性、输入个数全部取自 [`Operator`](operator::Operator)，语义表是 [`model_of`] 的投影；
-/// 一行的可变部分只剩方法名、类型与 `ops/<模板>.k` 的 stem。
 macro_rules! registry_impl {
     ($($name:ident: $ty:ty => $template:literal),* $(,)?) => {
         /// 编译期内嵌的算子注册表。
-        ///
-        /// 新增算子在这里补一行，否则发布出去的二进制里没有它；
-        /// `the_registry_covers_the_generated_table_exactly` 把"生成表里有、注册表里没有"（或反过来）
-        /// 直接判为失败。数组长度由表本身数出来，不另写一个常数——那是第二个会漂移的数字。
         pub const REGISTRY: [Registration; <[()]>::len(&[$(registry_impl!(@one $ty)),*])] = [
             $(
                 Registration {
@@ -222,9 +200,6 @@ macro_rules! registry_impl {
 crate::for_each_operator!(registry_impl);
 
 /// 名字是否在注册表里；const 上下文可用。
-///
-/// 装配期的"内核表子集断言"走这个入口，归属判定只此一份；运行期查找仍由 [`builtin_named`]
-/// / [`model()`] 给出整条记录。本工具链 const 上下文尚未稳定 `str` 相等比较，逐字节比对收在这里。
 pub const fn contains(name: &str) -> bool {
     let mut index = 0;
     while index < REGISTRY.len() {
@@ -237,8 +212,6 @@ pub const fn contains(name: &str) -> bool {
 }
 
 /// 算子语义注册表：声明层有的算子，这里必须有它的代价、样本与标量参考。
-///
-/// 语义表和声明同属一条注册（[`REGISTRY`]），因此两者不会漂移，`cutile` 一侧不动。
 pub fn model(name: &str) -> Option<Model> {
     REGISTRY
         .iter()
@@ -255,9 +228,6 @@ mod generated {
 pub use generated::{declared, names};
 
 /// 一份算子声明：编译期生成的声明表与同名 `<name>.k` 模板。
-///
-/// 两段内容都是 `'static`：声明表随二进制发布，模板由 `include_str!` 编进来，[`builtin`]
-/// 不拷贝一个字符。运行期没有 TOML 文本，也没有解析器。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Op {
     name: &'static str,
@@ -292,20 +262,12 @@ impl Op {
 }
 
 /// 按名字取一条内嵌算子；名字不在注册表里时返回 `None`。
-///
-/// 存在的理由和 `model()` 一样：调用方要的是**某一条**算子，而不是"第一条算子"。按位置取
-/// （`builtin()[0]`）在注册表从一条变成两条的那天会静默换人——而算子之间并不等价（稠密 f32
-/// 与 int4 的代价差 8 倍）。
 pub fn builtin_named(name: &str) -> Option<Op> {
     let entry = REGISTRY.iter().find(|entry| entry.name == name)?;
     Some(Op::new(entry.name, declared(entry.name)?, entry.template))
 }
 
 /// 内嵌声明，顺序与 [`REGISTRY`] 一致。
-///
-/// 声明表是编译进去的常量，模板也是；这里的 `Vec` 只装指针，不拷贝任何正文。注册表里
-/// 缺一条生成表时会被跳过——`cargo test` 的 `every_builtin_entry_declares_an_operator`
-/// 会把这种漂移判为失败。
 pub fn builtin() -> Vec<Op> {
     REGISTRY
         .iter()

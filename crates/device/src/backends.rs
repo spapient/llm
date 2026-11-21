@@ -1,15 +1,4 @@
 //! Metal / CUDA 设备后端：实现 [`llm_optim::backend::Backend`]（`Codegen` 出源 + `Driver` 跑源）。
-//!
-//! 这是 L6 的设备落地：唯一碰 `nvcc` / `xcrun metal` / `metallib` / MSVC `cl.exe` 的地方。
-//! 厂商编译器的**探测**在 `crate::toolchain`，本模块只按档案取探测结果、拼命令行、跑源。
-//! cutile（L3 机制层）只认 [`llm_optim::backend::Backend`] 缝，不认识这里的任何厂商符号；本模块经
-//! [`install`] 把 Metal / CUDA 后端注册进 cutile 的进程级表，由 L7（`cli`）在启动时调用。
-//!
-//! 双源说明：Metal 是「设备源（.metal）+ host 驱动（.m）」两段文本，CUDA 是单段 `.cu`；这个差异
-//! 收在 [`llm_optim::backend::Source`] 里，由各自的 [`Driver::compile_run`] 解包，不外泄到机制层。
-//!
-//! 三条厂商链各自成文件（[`metal`] / [`cuda`] / [`ascend`]）——它们之间没有共享状态，只有基准几何
-//! 与见证回读这两段字面共用，因此留在本模块；本模块还剩装配（[`install`]）与三家的原路径再导出。
 
 pub mod cuda;
 pub mod metal;
@@ -132,10 +121,6 @@ impl Codegen for AscendBackend {
     }
 
     /// 语义门：`.k` 内核 → `__aicore__` 单源 AscendC 程序（内核 + 单块发射 + AscendCL 回读）。
-    ///
-    /// 这是 `L2` 那条证据链在昇腾上的最后一段：少这一处，`verify` 的加速器车道在 `ascend` 上
-    /// 必然 `Unsupported`，“与参考对拍通过”就只能靠人手贴一张图。它与 `lower` / `parallel` 不同——
-    /// 单块标量执行不粉饰性能，只回答“算得对不对”，所以现在就能给。
     fn harness(&self, kernel: &str, signature: &Signature, sample: &Sample) -> Result<Source> {
         crate::ascend::ascend_harness(kernel, signature, sample).map(Source::Single)
     }
@@ -162,9 +147,6 @@ impl Driver for AscendBackend {
     /// 生产态内核（`lower` / `harness` / `parallel`）仍是空：P0 片段只到标量 C 语义，没有一条
     /// 触及 MTE / Cube / Vector，把它们编成 AscendC 只会得到"能跑但和 CPU 一样慢"的核函数。
     /// 这里如实不支持，调用方按"已声明但没有并行实现"回落——等 P3 的 `DataCopy` / `Mmad` 特化落地。
-    ///
-    /// 语义门 [`harness`] 是**例外**：它不走这条入口，而是自己拼一份单源 AscendC 程序
-    /// （[`crate::ascend::ascend_harness`]），所以走的是上一个分支。
     fn compile_run(
         &self,
         profile: &Profile,
@@ -234,9 +216,6 @@ fn push_ascend_kernel(program: &mut String, max: usize, selected: &[Selected<'_>
 
 /// host 驱动：AscendCL 分配 GM、同步发射、回读。回读口径与 CUDA 版逐字一致（位模式 + `witness N`），
 /// 否则同一个 `driver::readback` 在两台设备上会读出两种东西。
-///
-/// 调用守卫取自 [`crate::ascend::ACL_GUARD`]：语义门 harness 用的是同一份，两处各写一套时，
-/// 加一个 API 调用就会漏掉其中一处。
 fn push_ascend_main(program: &mut String, max: usize, total: usize) {
     program.push_str(crate::ascend::ACL_GUARD);
     program.push_str(&format!(

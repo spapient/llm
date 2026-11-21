@@ -79,9 +79,6 @@ pub(super) fn i8_calc(j: &Job, slot: usize) {
 }
 
 /// f32 打包体：本槽负责的 8 列组按 `p` 步长轮转，写入 `[jblk][p][NR]`（零初始化覆盖补零列）。
-///
-/// 转置布局（[`tn`]）与行主序布局共用同一条池通道：两者只差一次读步长，所以差异收在
-/// [`pack::b_groups`] 与 [`tn::stage`] 里，池与闸门不必各备份。
 #[allow(unsafe_code)]
 pub(super) fn f32_pack(j: &Job, slot: usize) {
     let (n, k, npad) = (j.n, j.k, j.npad);
@@ -269,12 +266,6 @@ mod kernel {
     }
 
     /// 一个 8 列块的两行：起点行 `r`、列块起点 `blk`，矩阵列宽 `n`、内积长 `k` 与向量化长 `kvec`。
-    ///
-    /// 五个数合起来才说清「算哪一块」，所以同行进出一个值；`kvec` 与 `k` 分开是为了让标量尾段有
-    /// 一处明确的边界，而不是在微内核里再算一遍。
-    ///
-    /// `kvec` 只有 aarch64 dotprod 通道读它（`blk` 沿 16 字节一拍走，余下 `kvec..k` 由标量补）：
-    /// x86_64 的 SIMD 通道服务 f32，这条 i8 路径在这边本来就是标量，用不上分开的边界。
     #[derive(Clone, Copy)]
     pub(super) struct Gram {
         r: usize,
@@ -316,8 +307,6 @@ mod kernel {
     }
 
     /// 一个 4 列块的 4 行累加：`(4 行 × 4 列的整数累加和)`。
-    ///
-    /// `blk` 是列块起点、`p` 沿 `kvec` 走 16 字节一拍；`ave[mr]` 是第 `r+mr` 行。
     #[cfg(target_arch = "aarch64")]
     #[target_feature(enable = "dotprod")]
     #[allow(unsafe_code)]
@@ -354,8 +343,6 @@ mod kernel {
     }
 
     /// 一个 4 列块的收口：水平求和 + 标量补 `kvec..k` 的余数，写回 4 行。
-    ///
-    /// `jj >= n` 的列落在打包填充区，只算不写——填充列的乘积不参与任何输出元素。
     #[cfg(target_arch = "aarch64")]
     #[target_feature(enable = "dotprod")]
     #[allow(unsafe_code)]

@@ -1,15 +1,4 @@
 //! 连续批：[`Batch`] 把页账（[`Scheduler`]）与它正在跑的 [`Sequence`] 收在一处。
-//!
-//! 两者分开的代价是"批里有哪些序列"有两个来源：调用方自己维护的列表，与调度器里按 id 记的
-//! `running`。两者一漂，[`Scheduler::advance`] 就会对一个不在批里的序列报错，或者序列已经结束
-//! 而它的页还占着。[`Batch`] 让这件事只有一个来源：准入时把序列交出去，推进按 id 找，
-//! 结束时页与序列一起释放。
-//!
-//! 采样不在这里：每一步该采哪个 token 由调用方决定（`advance` 只回答"这一步的页有没有着落"），
-//! 所以本层不需要认识词表，也不持有 logits。
-//!
-//! `impl Batch` 按主题分成三个文件：[`admit`]（准入与轮次）、[`step`]（推进与记账）、
-//! [`account`]（KV 记账与只读视图）——三组方法之间没有共享的中间量，只是同一块状态的不同侧面。
 
 mod step;
 
@@ -32,9 +21,6 @@ pub enum Admission {
 }
 
 /// 一个批：页账 + 它正在跑的序列。
-///
-/// `sequences` 与 [`Scheduler`] 里的 `running` 一一对应，且顺序相同：同一批的两次 `step`
-/// 得到的结果按同一个顺序排列，调用方不必自己对齐。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Batch {
     scheduler: Scheduler,
@@ -42,10 +28,6 @@ pub struct Batch {
 }
 
 /// 批量结果视图：批内一条序列在本轮 `step` 后的结局。
-///
-/// 只读借片，生命周期跟随 [`Batch`]：序列事实（历史、计数、状态）与本步 [`Progress`] 成对持有，
-/// 两条序列的视图互不重叠，历史不会串到别的条上。批量前向（多序列同一步）的结果按这个视图
-/// 逐条对齐；单序列旧路径仍直接从 [`Batch::sequence`] 取事实，语义不变。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SequenceOutcome<'a> {
     sequence: &'a Sequence,
@@ -90,8 +72,6 @@ impl<'a> SequenceOutcome<'a> {
 
 /// 登记块要先只读地把上下文与页号收齐：`publish` 要独占页池，而这两样还得从只读的序列与页表里
 /// 取，两个借用不能同时活着。整段上下文只克隆一次，逐块登记时复用。
-///
-/// `None` 是「现在没有可登记的块」——序列已不在批里、页表没了、或页宽为零（零页不是算好的块）。
 fn settleable(
     sequences: &[Sequence],
     scheduler: &Scheduler,

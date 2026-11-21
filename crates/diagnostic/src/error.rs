@@ -1,17 +1,10 @@
 //! 带类别与上下文的错误，以及全仓库统一的结果别名。
-//!
-//! [`Error`] 是“错误即值”的载体：仓库不打日志、不随处 panic，而是把失败的类别
-//! （[`Code`]）、原始消息、从内到外的上下文帧与同级诊断都收进一个值，交给入口层
-//! 映射成退出码。读文件的分类统一走 [`Error::from_io`]，避免每个调用点各猜一遍。
 
 use crate::code::Code;
 use core::fmt;
 use std::path::Path;
 
 /// 带类别与上下文的错误。
-///
-/// `context` 是按“从内到外”追加的帧，`Display` 时用 ` → ` 连接，所以最外层（最靠近调用点）
-/// 在最后——诊断读起来是“发生了什么 → 在哪一层被发现的”。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error {
     code: Code,
@@ -39,10 +32,6 @@ impl Error {
     }
 
     /// 追加一条**同级**诊断（同一次校验里的另一个失败）。
-    ///
-    /// `Result` 只能携一个错误，但“装载一次报全”对改数据的人比“只报第一条”有用得多。
-    /// 类别与上下文取自第一条，追加的行各自带着自己的类别文本——所以 `missing` 与
-    /// `invalid` 混在一起时仍然可以分辨，而不是被压成同一个码。
     #[must_use]
     pub fn also(mut self, other: &Self) -> Self {
         self.notes.push(other.to_string());
@@ -74,9 +63,6 @@ impl Error {
     }
 
     /// 由一次读文件失败构造：路径不存在是 `missing`，其余是 `io`。
-    ///
-    /// 这条分类放在错误类型所在的层：它同时是退出码契约（`missing` → 4、`io` → 5），
-    /// 各读文件的层各写一遍，脚本看到的分类迟早会不一致。
     pub fn from_io(path: &Path, error: &std::io::Error) -> Self {
         let code = if error.kind() == std::io::ErrorKind::NotFound {
             Code::Missing

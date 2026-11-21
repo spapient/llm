@@ -1,7 +1,4 @@
 //! LEB128（小端基 128）变长整数：写端只有一种写法，读端拒绝一切非规范编码。
-//!
-//! 非规范的两种形态都被拒：用前导 `0x80` 把同一个数拉长（例如 `0x80 0x00` 表示 0），以及
-//! 超过 `u64` 容量的序列。`u64` 最多 10 个字节，且第 10 字节只允许最低位（前 9 字节已占 63 位）。
 
 use diagnostic::{Code, Error, Result};
 
@@ -11,9 +8,6 @@ use crate::sink::Sink;
 const MAX_BYTES: usize = 10;
 
 /// 可按 LEB128 编码的无符号整数族：归约到 `u64` 这一步只发生在本 trait 内。
-///
-/// 只开放五个原生无符号类型，把可接受的类型闭集写进类型系统；不像裸 `Into<u64>` 那样
-/// 允许不相关的外部类型意外参与编码，也避免在每个调用点散落 `as u64` 强转。
 pub trait Uint: Copy {
     /// 归约到 LEB128 的内部宽度 `u64`。
     fn as_u64(self) -> u64;
@@ -35,10 +29,6 @@ macro_rules! impl_uint {
 impl_uint!(u8, u16, u32, u64, usize);
 
 /// 把 `value` 按 LEB128 追加进 `out`。
-///
-/// 各 7 位组先落栈上定长缓冲，**一次** [`Sink::put`] 写出，避免逐字节回调下游。
-/// 分组次数由剩余值决定、且每一组都依赖上一次右移，无法跨组并行；这里保留串行循环，
-/// 批处理体现在收尾的单次 `put`，而不是逐字节回调。
 #[inline]
 pub fn write<N: Uint>(out: &mut impl Sink, value: N) {
     let mut value = value.as_u64();
@@ -100,9 +90,6 @@ impl<'a> Cursor<'a> {
     }
 
     /// 读一个规范 LEB128 整数，归约到目标无符号类型；超出目标宽度即报错。
-    ///
-    /// 目标类型由绑定推断（`let n: u32 = cur.read()?;`）或 turbofish
-    /// （`cur.read::<u64>()`）给出，不再提供按宽度拆开的包装方法。
     #[inline]
     pub fn read<N: TryFrom<u64>>(&mut self) -> Result<N> {
         let value = self.raw()?;

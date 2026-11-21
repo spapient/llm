@@ -3,17 +3,6 @@
 use super::*;
 
 /// 页池 + 页里的数据：一页 = `page_size` 行、每行 `width` 个 `f32`。
-///
-/// 行宽是"一个 token 位置在模型里的 KV 宽度"（例如 `2 · kv_heads · head_dim`），由装载模型的
-/// 一侧算好传进来：页池不知道层与头，也不该替模型猜。多层模型用 [`Pager::row_mut`] 拿整行，
-/// 再按自己的层偏移切片——层的偏移表归模型，页池不复制第二份。
-///
-/// 布局是 `[页][页内偏移][行内元素]`，与 [`Slot`] 的寻址算术一致：一页的元素连续存放，
-/// 所以"第几页第几个 token"只做一次乘加，不需要页内链表。整池在构造时一次分配完（页池就是
-/// 这些元素），之后借出与归还都不再碰分配器——KV 不该在生成到一半时因为一次 `Vec` 扩容而抖动。
-///
-/// 数据是 `Vec<f32>`：本类型是 CPU 页池。设备后端的同类对象在边界 crate，接口形状相同
-/// （[`Slot`] → 一段可写映射），本层不引入设备句柄。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Pager {
     cache: Cache,
@@ -193,8 +182,6 @@ impl Pager {
     }
 
     /// 线性起点：`(页号 × 页宽 + 页内偏移) × 行宽`。
-    ///
-    /// 只在这里写一次：`span` 与清零共用它，两处各写一遍就会在"清到哪"与"读到哪"之间漂。
     fn start(&self, page: Page, offset: usize) -> usize {
         (page.id() as usize * self.cache.page_size() + offset) * self.width
     }

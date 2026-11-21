@@ -13,9 +13,6 @@ const CLS: usize = 5;
 const MASK: usize = 6;
 
 /// 一组特殊 token 的编号占位；未配置的位置为 [`None`]。
-///
-/// 编号是否落在词表内由装配期校验；本结构只持有句柄，不做词表反查。
-/// 槽位按 wire 序号存放（下标即序号），读写都走同一张下标表，无按名扇出。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SpecialTokens {
     slots: [Option<u32>; 7],

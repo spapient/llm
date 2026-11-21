@@ -108,10 +108,6 @@ macro_rules! impl_from_str {
 pub(crate) use impl_from_str;
 
 /// 给一个闭集实现 `serde` 的字符串（反）序列化：名字只取自 [`Format::name`]。
-///
-/// 不用 `#[derive(Serialize)]` 的 `rename_all`：`MxType` 的规范名带下划线（`mxfp8_e4m3`），
-/// 而变体名没有（`MxFp8E4M3`）——逐变体写 `rename` 就是又一份名字表。这里直接读行表，
-/// 于是 serde 的线上名字、`Display` 与 `FromStr` 永远是同一个词。
 #[cfg(feature = "serde")]
 macro_rules! impl_serde {
     ($format:ty) => {
@@ -162,15 +158,6 @@ macro_rules! impl_serde {
 pub(crate) use impl_serde;
 
 /// 一个闭集格式的身份读法：全量表、判别值、规范名、位宽与名字解析。
-///
-/// 四个格式闭集各自实现它，于是「遍历闭集 / 名字往返 / 按名查找」只需写一次泛型代码。
-/// `Ord + Hash` 不是格式语义，而是位集（`prof` 的 `Set<E, WORDS>` 用判别值做下标、
-/// 用排序做诊断顺序）需要的边界：同一个闭集既能当枚举用，也能当集合元素用。
-///
-/// 标准互操作由这里派生：每个实现它的枚举同时得到 [`core::str::FromStr`]
-/// （见 `impl_from_str!`），`Display` 则输出 [`Format::name`]。`Display` 本身是本契约的
-/// 一部分（见下面的 supertrait）而不是各 impl 的额外约定：闭集一定有对外名字，泛型代码
-/// 因此不必再写一条 `where F: Display`。
 pub trait Format:
     Copy + Eq + Ord + core::hash::Hash + core::fmt::Debug + core::fmt::Display + 'static
 {
@@ -190,9 +177,6 @@ pub trait Format:
     fn bits(self) -> u32;
 
     /// 由规范名还原；未知名字返回 `None`。
-    ///
-    /// 唯一实现在这里：四个闭集的 inherent `parse_name` 只是转调，负责让
-    /// `DType::parse_name(..)` 这类路径调用不必先 `use llm_dtype::Format`。
     #[must_use]
     fn parse_name(text: &str) -> Option<Self> {
         Self::ALL
@@ -203,11 +187,6 @@ pub trait Format:
 }
 
 /// 块格式在 [`Format`] 之上多出来的布局：每块元素数、每块字节数与字节数算法。
-///
-/// 标量 [`DType`] 不实现它：亚字节类型按位跨元素打包（`U4` 的两个元素共用一个字节），
-/// 「每块字节」在标量轴上没有意义，硬套 `block_len = 1` 会把 `U4` 的字节数算成两倍。
-/// 四个方法都不带默认实现：几何的唯一实现在各枚举的 inherent `const fn`（常量求值需要），
-/// 这里若再写一份公式，就会出现「同一算法两处实现、靠测试对拍」的第二事实源。
 pub trait BlockFormat: Format {
     /// 每块元素数（GGML 的 `blck_size`、MX 的 32/16）。
     #[must_use]
@@ -222,21 +201,11 @@ pub trait BlockFormat: Format {
     fn block_count(self, numel: u64) -> u64;
 
     /// `numel` 个元素按本格式打包需要的字节数（含末块补齐与 scale）。
-    ///
-    /// 块数乘每块字节时**饱和**到 `u64::MAX`，不回绕：`numel` 可能来自权重文件头这类
-    /// 不受信任的输入，回绕会把巨大张量报成很小的字节数，让「缓冲够长」的判定被绕过。
     #[must_use]
     fn bytes_for(self, numel: u64) -> u64;
 }
 
 /// 一个张量的布局来源：标量元素（[`DType`]）或块格式（`B`）。
-///
-/// `weights` 的 GGUF 支持表用它表达「这个外部码按什么计宽」，标量手臂与块手臂的几何只有
-/// 这一份实现。块参数留在泛型上，因此同一套算法将来可直接用于 [`crate::MxType`]
-/// （MXFP4/NVFP4 解码接入时不必再写一遍 `elems`/`span`）。
-///
-/// 下面的几何方法走 [`BlockFormat`]，所以不是 `const fn`；需要在常量上下文里算几何时，
-/// 直接用具体格式的 inherent `const fn`（如 [`crate::QType::bytes_for`]）。
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum Layout<B> {
     /// 标量元素（无 scale）。

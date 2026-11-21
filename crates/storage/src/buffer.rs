@@ -1,8 +1,6 @@
 //! [`Buffer`]：一段拥有的扁平字节缓冲。
 
 /// 一段拥有的扁平字节缓冲：CPU 后端的不透明句柄。
-///
-/// 设备后端的指针/句柄藏在各自边界 crate 内，本层只暴露字节读写，不泄漏设备地址（ADR 0025 §2）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Buffer {
     bytes: Vec<u8>,

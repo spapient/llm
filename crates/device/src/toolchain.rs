@@ -1,13 +1,4 @@
 //! 厂商工具链探测：`nvcc` / `ccec` / `mcc` / `xcrun metal` / MSVC `cl.exe`。
-//!
-//! 这一层只回答「这台机器上有没有这个编译器」，不生成任何源、不跑任何内核——具体后端在
-//! [`crate::backends`] 里按档案的 `[meta].tools` 取这里的探测结果。探测按进程缓存一次
-//! （`OnceLock`）：同一台机器上「装了没有」在一次运行里不会变，重复 fork 子进程只会让
-//! `llm platform` 变慢。
-//!
-//! 工具链与设备是两个独立事实（编译器在、设备不在，或反之都会出现），因此
-//! [`detect_cce`] / [`ascend_device`]、[`detect_musa`] / [`musa_device`] 各自成对而不合成一个布尔：
-//! 合成后唯一的行动信息（装编译器 vs 换机器）就丢了。
 
 use llm_optim::toolchain::{Toolchain, parse_version, probe};
 use std::path::{Path, PathBuf};
@@ -30,17 +21,11 @@ pub(crate) fn detect_nvcc() -> Option<Toolchain> {
 }
 
 /// 探测 ccec（昇腾编译器，随 CANN 的 Ascend Toolkit 安装，不随宿主发行版）。
-///
-/// 与 `nvcc` 同一个判据：它在 PATH 里就算在。昇腾的单源流程里 ccec 同时编 host 与设备段，
-/// 所以不需要像 `nvcc` 那样另找宿主编译器。
 pub(crate) fn detect_cce() -> Option<Toolchain> {
     CCE.get_or_init(|| probe("ccec")).clone()
 }
 
 /// 这台机器上有没有昇腾设备：`npu-smi info -l` 能列出 NPU 就算有（华为版 `nvidia-smi -L`）。
-///
-/// 与 [`detect_cce`] 分开的理由同 MUSA：工具链在、设备不在（或反之）都会出现，合成一个布尔
-/// 就丢掉了唯一的行动信息（装 CANN vs 换机器）。
 pub(crate) fn ascend_device() -> bool {
     let Ok(output) = Command::new("npu-smi").args(["info", "-l"]).output() else {
         return false;
@@ -54,17 +39,11 @@ pub(crate) fn ascend_device() -> bool {
 }
 
 /// 探测 mcc（MUSA 编译器，clang-14 驱动）。
-///
-/// MUSA 与 CUDA 是**同一门输出语言**（`Emit::Cuda`）的两个工具链：生成的 `.cu` 只差运行时头，
-/// 因此后端只按档案的 `[meta].tools` 选命令名，不为它单开一个 `Emit` 变体。
 pub(crate) fn detect_musa() -> Option<Toolchain> {
     MUSA.get_or_init(|| probe("mcc")).clone()
 }
 
 /// 这台机器上有没有 MUSA 设备：`mthreads-gmi -L`（摩尔线程的 `nvidia-smi -L` 同构物）能列出卡就算有。
-///
-/// 与 [`detect_musa`] 分开：工具链在、设备不在（或反之）都会出现，混成一个布尔就丢掉了唯一的
-/// 行动信息（装编译器 vs 换机器）。
 pub(crate) fn musa_device() -> bool {
     let Ok(output) = Command::new("mthreads-gmi").arg("-L").output() else {
         return false;

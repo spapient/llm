@@ -54,10 +54,6 @@
 //! assert_eq!(settings.cache_dir(), std::path::PathBuf::from("/cli/cache"));
 //! ```
 
-//!
-//! 两个同伴模块按"改什么"分开：`key` 是键闭集、取值类型与路径根，
-//! `config` 是配置文件层；本模块只留优先级、来源与对外投影。
-
 use crate::key::APP;
 pub use crate::key::Roots;
 use crate::key::{
@@ -78,8 +74,6 @@ pub struct Settings {
 impl Settings {
     /// 生产入口：配置文件（`CUTILE_CONFIG` 或默认发现）→ 环境变量 → 默认值；
     /// 命令行覆盖由 [`Settings::apply_arguments`] 注入。
-    ///
-    /// 非 UTF-8 的环境变量视为未设置（`std::env::var` 的语义）。
     pub fn load() -> Result<Self> {
         let mut settings = Self::defaults(&Roots::discover());
         settings.read_config(|name| std::env::var(name).ok())?;

@@ -1,7 +1,4 @@
 //! pickle 的对象解码助手：把栈上的 [`crate::pickle::Value`] 读成张量的四要素。
-//!
-//! 从 [`crate::pickle`] 拆出：这里全是不改状态的纯函数，报错信息与 `storage_dtype` 表都集中在
-//! 一处，便于对着 PyTorch 的 storage 名字逐条核对。
 
 use diagnostic::Result;
 use dtype::DType;

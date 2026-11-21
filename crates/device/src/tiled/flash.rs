@@ -114,9 +114,6 @@ fn flash_attention_msl(q: &str, k: &str, v: &str, y: &str, shape: Flash) -> Stri
 }
 
 /// 模板填空：`@name` 逐个替换成对应文本。
-///
-/// 缺项不会被静默放过——剩下的 `@name` 会原样进入内核，由 Metal 编译报错指向模板本身，
-/// 而不是让"少填一项"变成一个能启动却算错的内核。
 fn fill(template: &str, pairs: &[(&str, &str)]) -> String {
     pairs
         .iter()
@@ -140,9 +137,6 @@ fn flash_output(y: &str, n: usize, shape: Flash) -> String {
 }
 
 /// flash 内核模板：`@name` 占位由 [`fill`] 替换。
-///
-/// 正文与"传什么参数"分开，是因为这段内核没有分支——真正需要读的是占位符那几行，
-/// 而把 60 余行正文和参数拼装塞进同一个函数只会一起越过函数长度上限。
 const FLASH_KERNEL: &str = "#include <metal_stdlib>\n\
          using namespace metal;\n\
          kernel void kernel_main(\n\

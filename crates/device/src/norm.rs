@@ -1,17 +1,4 @@
 //! CUDA 分块归一化 lowering：RMSNorm 两段、Softmax 三段，以及它们的 host 串联驱动。
-//!
-//! 归一化是「跨元素依赖 + 逐元素映射」两件事：部分平方和 / 部分最大值按 `[chunk]` 切块归约
-//! （每线程一块，主机折叠），归一化按同一块网格回写。与 Metal 侧由 Rust executor 逐段
-//! register 的路径不同——CUDA 的一次执行是**单个 host 程序**，折叠在 C 里做，因此多段设备源
-//! 与驱动必须同处一个翻译单元。
-//!
-//! 多段同文件有两个硬约束：
-//! - 每段入口名必须不同（`PARTIAL` / `EXPSUM` / `NORM`）；
-//! - 只有第一段携带设备 preamble（软件归约 / exp / sqrt 原语），后续段从 `__global__` 起截断，
-//!   否则同一份 preamble 在一个翻译单元里重复定义。
-//!
-//! 折叠公式与 `.k` 模板逐字同口径：RMSNorm 的 `sqrt(sum_sq / N + 1e-6f)`、Softmax 的
-//! `max` 与 `exp(x - max)` 求和；误差口径由同一份标量参考对拍。
 
 use crate::cuda::{buffer_args, cuda_host_buffers_grid, cuda_readback, cuda_release};
 use crate::dialect::{Cuda, Dialect, RMS_EPS, chunk_head, length_scalar, scalar_name};
@@ -172,9 +159,6 @@ fn single_read<'a>(signature: &'a Signature, family: &str) -> Result<&'a str> {
 
 /// 分块归一化驱动骨架：多段设备源（仅首段带 preamble）→ host 串联程序的几何、主机缓冲、
 /// 部分结果脚手架与收尾（回读、释放、`return 0`）只有这一份。
-///
-/// 两族的差别只在 `reduce`：哪几段归约、每次回读后怎么折叠、末段带哪些标量。`reduce` 拿到的
-/// [`Stage`] 是骨架已算好的几何与实参，`text` 已写到 `main` 体内、部分结果脚手架之后。
 fn driver(
     segments: &[String],
     signature: &Signature,
@@ -267,8 +251,6 @@ pub fn cuda_softmax(
 }
 
 /// 分块归一化的完整 CUDA 程序：多段设备源（仅首段带 preamble）+ host 串联驱动。
-///
-/// RMSNorm：部分平方和 → 主机折叠 `sqrt(sum/N + 1e-6)` → 归一化。
 pub fn cuda_rmsnorm_driver(
     segments: &[String],
     signature: &Signature,
@@ -320,9 +302,6 @@ pub(crate) fn length_usize(signature: &Signature, sample: &Sample) -> Result<usi
 }
 
 /// 程序头：CUDA include、错误检查宏、多段设备源。
-///
-/// 设备 preamble（`_cutile_*` 软件原语）在第一段完整出现；后续段从各自的 `__global__`
-/// 入口起截断——同一翻译单元里重复定义 preamble 会编译失败。
 pub(crate) fn program_head(segments: &[String]) -> String {
     let mut text = String::from(
         "#include <cuda_runtime.h>\n#include <cstdio>\n\

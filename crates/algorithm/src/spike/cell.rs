@@ -1,9 +1,6 @@
 use super::*;
 
 /// 一层 INT8-Spiking 线性：`i8` 权重 × 三元脉冲，整数累加后按行反量化再走 LIF。
-///
-/// 权重行主序 `[outputs, inputs]`，第 `i` 行配第 `i` 条反量化尺度；脉冲按输入列寻址，
-/// 因此「只按发放位置累加」就是跳过 `spike == 0` 的列，不需要另建稀疏矩阵。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Spiking {
     pub(super) inputs: usize,
@@ -58,9 +55,6 @@ impl Spiking {
     }
 
     /// 一份全新的膜电位（各通道积分从零开始）。
-    ///
-    /// 状态自带动力学：`step` 按状态里的那份阈值/泄漏/重置推进，所以一张膜电位不会被另一组动力学
-    /// 悄悄改写——与 [`Events`] 自带步长是同一条判据的两个方向。
     #[must_use]
     pub fn membrane(&self) -> Membrane {
         Membrane {
@@ -157,9 +151,6 @@ impl Spiking {
     }
 
     /// 一条事件的三件判据（位置在宽度内、取值三元、零脉冲不累加）与它的累加。
-    ///
-    /// 零脉冲在这里退化成「什么都不做」而不是错误：稠密路径的全零位置本来就该被跳过，事件路径
-    /// 不该为同一个事实多一条分支。
     fn pulse(&self, column: usize, spike: i8, state: &mut Membrane) -> Result<()> {
         if column >= self.inputs {
             return Err(bad(format!(
@@ -198,9 +189,6 @@ impl Spiking {
     }
 
     /// 反量化 + 推进 LIF + 统计发放：发放判据只由 [`Lif`] 定义。
-    ///
-    /// 膜电位分两步走（先 `peek` 再 `commit`）是为了把发放前的值留在 `state.pre` 上：那正是反传
-    /// 判窗要的那个数，而 `commit` 一提交就给发放过的通道写了 `reset`。
     fn settle(&self, state: &mut Membrane, out: &mut [i8]) -> usize {
         let mut fired = 0;
         for (row, spike) in out.iter_mut().enumerate() {

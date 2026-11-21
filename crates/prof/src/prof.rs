@@ -1,6 +1,4 @@
 //! 档案层：设备指纹、参数化能力供给、证据等级与字段校验（cutile README §5.3、§11.2）。
-//!
-//! 本模块只放数据类型与它们与判据无关的读取方法；解析在 `parse`，校验在 `check`。
 use crate::atom::{
     Attr, AttrKey, Closed, DType, DTypeSet, Grade, Need, Prim, Provide, Space, SpaceSet, Span,
     Witness,
@@ -264,10 +262,6 @@ pub struct Profile {
     /// 源文件前置声明（`#include` 之类）。
     pub preamble: String,
     /// 工具链头文件垫片：文件名 → 内容（`[compile.headers]`）。
-    ///
-    /// 生成的程序只写一种头文件名（`<cuda_runtime.h>`），而不同工具链的名字不同（MUSA 只有
-    /// `<musa_runtime.h>`）。把"缺哪个头、缺的那份长什么样"登记在档案里，编译入口才有依据落地，
-    /// 不必让每个后端各写一份——头文件名也是设备知识。
     pub headers: Vec<(String, String)>,
 }
 /// 档案加载 / 校验错误。
@@ -502,13 +496,6 @@ impl Profile {
 }
 
 /// 解析全部内置档案；构建期已过校验，解析失败只可能是表结构漂移，在此过滤掉。
-///
-/// 编排层（组合根）探测本机后把这份列表交给 [`select`]；档案清单从这里取一份，
-/// 不在调用方重复 `names → embedded → parse` 三段遍历。
-///
-/// 结果在进程内只算一次：档案表是编译期内嵌的只读数据，每次调用都重新解析等于把同一份
-/// 字符串重新拼成几十个 `String`/`Vec`。返回 `&'static` 让调用方不必为"再看一眼"付克隆代价
-/// （设备 crate 的用例每条都取一次档案）。
 pub fn builtin_profiles() -> &'static [Profile] {
     static PROFILES: OnceLock<Vec<Profile>> = OnceLock::new();
     PROFILES.get_or_init(|| {
@@ -521,10 +508,6 @@ pub fn builtin_profiles() -> &'static [Profile] {
 }
 
 /// 按探测指纹从一组档案里挑出唯一命中、且规则最具体的一份。
-///
-/// 命中规则条数（[`Profile::specificity`]）最多者胜出；与最优者同等具体的另一份也算
-/// 配置错误——“选谁”没有唯一答案就不该静默挑一份。没有任何档案命中时返回
-/// [`Code::Unsupported`]。选择判定是档案层职责，机制层只传入解析好的档案列表。
 pub fn select<'a>(profiles: &'a [Profile], detected: &Detected) -> diagnostic::Result<&'a Profile> {
     let Some((index, profile)) = profiles
         .iter()

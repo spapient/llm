@@ -1,10 +1,5 @@
 //! 高吞吐 CPU GEMM：多线程 + A 列面板打包 + 8×8 寄存器分块。
 //! 语义同 [`crate::matmul::matmul_scalar`]，浮点累加顺序不同，按 IEEE 容差对拍（不做逐位相等）。
-//!
-//! 关键在「打包」：A 行主序下按列取 8 行会跨 8 条 cache line、每条只用 4 字节，微内核会被访存打穿。
-//! 先把每个 8 行块转置成 `[p][8]` 面板，微内核每条 `p` 只做两次**连续**向量加载，再用 `lane` 广播
-//! 到 8 个累加器；微内核按目标架构选择：aarch64 走 NEON，x86_64 走 AVX2+FMA（运行时探测，缺
-//! 能力回退标量），其余架构走标量。`unsafe` 只在这两段 SIMD 微内核（`#[allow(unsafe_code)]`）。
 
 use std::thread;
 
@@ -31,9 +26,6 @@ thread_local! {
 }
 
 /// 借一块长度 `len` 的 f32 暂存区（不足则扩容并清零新增部分），返回 `f` 的结果。
-///
-/// 清零只针对**新增**的那一段：面板的每个字节都会被打包阶段覆写，但列残尾之外的补零区
-/// （`n % NR` 的补齐列）与 `edge` 的读路径依赖 0，复用旧内容时必须在扩容时清一次。
 fn with_panels<R>(len: usize, f: impl FnOnce(&mut [f32]) -> R) -> R {
     PANELS.with(|cell| match cell.try_borrow_mut() {
         Ok(mut buf) => {

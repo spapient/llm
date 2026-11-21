@@ -1,10 +1,4 @@
 //! 调度：4 个模板（cutile README §7）。
-//!
-//! 与 [`crate::layout`] 一样，这是**声明层的词汇表**：`[[variants]]` 的 `schedule` 取值就是
-//! 这里的闭集，声明解析（`op::decl`，在 `op` crate）要用它，因此事实源在本 crate，机制层只消费。
-//!
-//! 调度只产出模板文本里的骨架槽位，不产出设备指令；设备差异不进入这一层，S1–S4 才能
-//! 在八台设备上成立。
 
 use core::fmt;
 use diagnostic::{Code, Error};
@@ -54,21 +48,12 @@ impl Schedule {
     }
 
     /// 渲染回声明层写法。
-    ///
-    /// 只有这一处写对照表：`Display` 直接写进调用方的缓冲，不在中间先建一个 `String`。
     #[must_use]
     pub fn as_str(&self) -> String {
         self.to_string()
     }
 
     /// 该调度需要的原语（协商时逐条检查）。返回静态切片，不为每次协商分配 `Vec`。
-    ///
-    /// 只有真正会**发出指令**的原语才在这里：`pipe` 的正文每轮只发一次 `@load_async`，工作项
-    /// 之间没有共享量（`emit` 把行号绑到工作项，每个工作项只写自己的 `y[n]`、读 GM），屏障挡的
-    /// 那件事在这条路径上不存在，因此 `pipe` 不索取 `bar`——索取它只会让每台设备登记一条永远
-    /// 展开成空语句的 `provides`。`ws` 与 `pingpong` 则真的在多组/多工作项间共享同一片 SLM，
-    /// 必须先 `bar` 再读写，所以仍索取 `bar`；`ws` 还靠异步搬运填它的消费窗口，再索取
-    /// `load_async`。
     pub fn required_prims(&self) -> &'static [Prim] {
         match self {
             Self::Direct | Self::Pipe { .. } => &[],
@@ -162,9 +147,6 @@ fn bad(text: &str) -> Error {
 pub const UNMASKED_LIMIT: f64 = 0.20;
 
 /// 一个变体的掩盖账：`mma_share`、调度级数与由此推得的未掩盖占比。
-///
-/// 三个数一起走，因为判据（[`Self::within_limit`]）与 roofline 的「未掩盖 x%」必须是同一组值：
-/// 报告里写 19%、判定却按另一个数，等于没有判定。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Masking {
     /// 声明的 MMA 时间占比。
@@ -223,10 +205,6 @@ pub fn unmasked_share(mma_share: f64, stages: u32) -> f64 {
 }
 
 /// 降级链**首选**变体的掩盖判据（cutile README §12.2 判据 1）。
-///
-/// 只判首选：链上其余变体存在的理由就是"设备缺原语时仍能跑"，用质量判据把它们判死等于取消
-/// 显式降级——它们的账照样出现在 `doctor`/`bench` 的计划行里（「未掩盖 x% > 20%，兜底」）。
-/// 首选不达标则是声明写错了：要么加级数（S3/S4），要么承认这条路径根本不走 MMA。
 pub fn check_masking(variant: &str, masking: Masking) -> diagnostic::Result<()> {
     if !masking.claims_mma() || masking.within_limit() {
         return Ok(());
@@ -245,9 +223,6 @@ pub fn check_masking(variant: &str, masking: Masking) -> diagnostic::Result<()> 
 }
 
 /// 降级链的收益必须单调不增（cutile README §12.2 判据 3）。
-///
-/// 只读名字与占比，所以名字泛化到 `AsRef<str>`：装载期能直接传借用的变体名，
-/// 不为了一条判据先拷一份 `String`。
 pub fn check_monotonic<S: AsRef<str>>(variants: &[(S, f64)]) -> diagnostic::Result<()> {
     for pair in variants.windows(2) {
         let (first, second) = (&pair[0], &pair[1]);
@@ -273,21 +248,6 @@ mod tests;
 
 pub mod layout {
     //! 布局：4 个构造子的闭集与声明式签名（cutile README §6）。
-    //!
-    //! 布局是**声明层的词汇表**：`[layouts]` 的取值就是这里的闭集，声明解析（`op::decl`）
-    //! 要用它，因此事实源在本 crate，机制层（`cutile`）只消费。
-    //!
-    //! 布局不做推导，只给出一份稳定的声明式签名：缓存指纹与 `doctor` 都用它。声明式就是布局
-    //! 在构建期的身份——模板里 `{{w}}` 插的是它，而不是某个具体形状下的步长。
-    //!
-    //! 正规形（`(order, shape, stride, swizzle, pad)`）需要槽位的两级形状，而构建期没有形状：
-    //! tile 是轴取值（`GMAX=32`），不是 `w[n, m/2]` 这样的槽位形状。用编出来的形状去实例化，
-    //! 只能让缓存键和诊断看起来覆盖了形状，实际上描述了一次没有发生的编译。因此 P0 只保留闭集
-    //! 与声明式；等有真实形状（以及片段声明的布局）时再加回正规形与判定。
-    //!
-    //! 契约判定（模板给 vs 片段要）也不在 P0：片段层至今没有声明自己要求的布局（CPU 片段只收
-    //! 指针），没有第二个操作数可比较。设备侧唯一的真实约束是 bank 数，由
-    //! `cutile::space::check_alignment` 在构建期执行。
     use core::fmt;
     use diagnostic::{Code, Error};
 
@@ -317,8 +277,6 @@ pub mod layout {
     }
 
     /// `swz<b,m,s>`：三个参数是位宽、块宽、步长，各一个 `u8`。
-    ///
-    /// `rest` 是 `<` 之后的文本（含收尾的 `>`）。
     fn swz(text: &str, rest: &str) -> diagnostic::Result<LayoutSpec> {
         let [b, m, s] = widths(text, closed(text, rest, '>')?)?;
         Ok(LayoutSpec::Swz { b, m, s })
@@ -376,8 +334,6 @@ pub mod layout {
         }
 
         /// 渲染回声明层写法。
-        ///
-        /// 只有这一处写对照表：`Display` 直接写进调用方的缓冲，不在中间先建一个 `String`。
         #[must_use]
         pub fn as_str(&self) -> String {
             self.to_string()

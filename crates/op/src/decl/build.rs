@@ -12,8 +12,6 @@ use super::{Axis, OpDecl, Skeleton, Variant, field};
 
 impl OpDecl {
     /// 从编译期生成的声明表解析声明，并解析同名模板。
-    ///
-    /// 按「键 → 取值语法」分工；模板侧的三条判据见 `Self::verified`。
     pub fn parse(table: &Table, template: &str) -> diagnostic::Result<Self> {
         let op_decl = Self::declared(table, template)?;
         op_decl.verified(template)?;
@@ -40,10 +38,6 @@ impl OpDecl {
     }
 
     /// 全部缓冲同型：`y[n] = f(x[n])` 只有在此情形下才「线程下标就是元素下标」。
-    ///
-    /// 打包反量化是反例——`u8` 字节输入按 `cpb` 个 `f32` 输出展开，两侧元素计数不是 1:1，
-    /// 按元素拆线程会把每个字节解 0 次、结果全零。判据取「同型」而非「无打包常量」：同型是
-    /// 逐点成立的充分条件，打包族因此回落到整段串行（语义不变，只是不并行）。
     fn same_element_type(&self) -> bool {
         let mut types = self
             .signature
@@ -81,8 +75,6 @@ impl OpDecl {
     }
 
     /// 模板侧的三条判据：槽位有定义、每条原语都被申请、调用点参数落在签名内。
-    ///
-    /// 模板只切一遍：三处校验看同一份 [`Template`]，不再各 `lex` 一次。
     fn verified(&self, template: &str) -> diagnostic::Result<()> {
         let segments = Template::parse(template);
         tiles(self)?;
@@ -172,8 +164,6 @@ impl OpDecl {
     }
 
     /// 一个能力参数：闭集内的键必须在 `needs.{prim}` 里声明过，且取值被声明允许。
-    ///
-    /// 只回答"声明与生成是否一致"，不回答"这个参数该不该传"。
     fn check_argument(
         &self,
         variant: &Variant,
@@ -308,9 +298,6 @@ fn parse_span(path: &str, value: &Value) -> Result<Span, Error> {
 }
 
 /// 从字符串列表解析一个闭集位集：`["f32", "f16"]` 或单个标量都行；闭集外的名字报错并列出全量。
-///
-/// `DType` / `Space` 都是 [`Closed`] 闭集，位集都是 [`Set`]，因此解析循环只有这一份；新增一种闭集
-/// 只需加一行薄包装，不重写"逐名解析 + 闭集外诊断"的结构。
 fn parse_closed_set<E: Closed, const WORDS: usize>(
     path: &str,
     value: &Value,

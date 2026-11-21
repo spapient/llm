@@ -1,12 +1,4 @@
 //! 只读内存映射：全仓唯一的 `unsafe` 孤岛，对外只暴露一个拥有型、只读的字节视图。
-//!
-//! 本模块只在 `mmap` feature 开启**且目标为 Unix** 时编译：`mmap`/`munmap` 是 POSIX 系统调用，
-//! 非 Unix 目标没有这套 FFI。默认构建不含任何 unsafe，storage 仍满足 `deny(unsafe_code)`。
-//! 所有 `mmap`/`munmap` 的 FFI 与裸指针操作都收敛在本模块。
-//!
-//! 映射以 `PROT_READ | MAP_PRIVATE` 建立，内容不可改、写时复制不触发，因此把它当作 `&[u8]`
-//! 共享是线程安全的。[`Mmap`] 在 `Drop` 时自动 `munmap`，不泄漏映射。
-//! 上层把该切片交给 `weights::Archive::parse` 做零拷贝打开。
 
 // 工作区默认 deny(unsafe_code)；本模块是经架构决策隔离的唯一 unsafe 岛，对整个模块放开。
 #![allow(unsafe_code)]
@@ -156,9 +148,6 @@ fn mapped_len(path: &Path, len: u64) -> Result<usize> {
 }
 
 /// `MAP_FAILED` 指针值 `(void*)-1`。
-///
-/// 用 `without_provenance_mut(usize::MAX)` 而不是 `(-1isize) as *mut c_void`：后者在非 64 位
-/// 目标上曾被 `cfg` 整块裁掉，函数体变成空 `{}`、返回类型不符，交叉构建直接编译失败。
 fn map_failed() -> *mut c_void {
     core::ptr::without_provenance_mut::<c_void>(usize::MAX)
 }

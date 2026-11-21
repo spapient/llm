@@ -1,10 +1,4 @@
 //! Engram 条件记忆（§5.8.2）：哈希 N-gram、`O(1)` 槽、ρ 稀疏分配。
-//!
-//! 静态 N-gram 模式查表，不是第四前向、不替代块表（E12 KV）、不替代 CSA/HCA、不是有证书上界
-//! 压缩（§5.8.2 禁止越界）。每 token 取槽 `K(N−1)`，与表长 `M` 无关 ⇒ 查找 `O(1)`（数学验证 40）。
-//!
-//! [`Bypass`] 是这套公式的执行侧：它是 `LmHead` 之前的那条旁路——取尾部 N-gram、查一个槽、
-//! 按门控强度加进隐藏向量。表本身只读，写侧（训练/蒸馏）不在本模块。
 
 use diagnostic::{Code, Error, Result};
 use op::scan::Scalar;
@@ -31,17 +25,11 @@ pub fn phi(ngram: &[u32], seed: u64) -> u64 {
 }
 
 /// 槽号 `z = φ(ngram, seed) mod buckets`：槽公式只有这一份。
-///
-/// 表内查表（[`Table::slot`]）与装配侧每步回填的槽表都走它——同一份 N-gram 只有一种落槽方式，
-/// 因此「旁路算出的槽」与「训练写表时的槽」不可能是两个。
 fn bucket(ngram: &[u32], seed: u64, buckets: usize) -> usize {
     (phi(ngram, seed) % buckets as u64) as usize
 }
 
 /// 尾部 `order` 元 N-gram 的槽号；历史不足 `order`（或几何退化）时 `None`。
-///
-/// `None` 与 [`Bypass::apply`] 返回 `false` 是同一句判据：**不猜记忆**。装配侧据此把这一行的门控
-/// 压成零，而不是拿第 0 槽顶替——顶替出来的向量在残差里就是一个真实的偏移。
 pub fn slot_of(tokens: &[u32], order: usize, seed: u64, buckets: usize) -> Option<usize> {
     if buckets == 0 || order < 2 {
         return None;
@@ -56,8 +44,6 @@ pub const fn slots(n: usize, k: usize) -> usize {
 }
 
 /// 稀疏参数分配：`P_MoE = ρ·P_sparse`，`P_Engram = (1−ρ)·P_sparse`（`ρ∈[0,1]`）。
-///
-/// `ρ=1` 纯 MoE；公开最优 `ρ*≈75%–80%`，Engram-27B 取 `ρ=74.3%`（§5.8.2）。
 pub fn allocate<S: Scalar>(rho: S, p_sparse: S) -> (S, S) {
     debug_assert!(rho >= S::ZERO && rho <= S::ONE);
     let om = S::ONE.sub(rho);
@@ -94,9 +80,6 @@ fn is_prime(n: usize) -> bool {
 }
 
 /// 一张 N-gram 嵌入表：素数长、`d` 维嵌入，哈希槽 `O(1)` 读写。
-///
-/// 值类型泛型化到 [`Scalar`]（默认 `f32` 前向、`f64` 验证对拍），与 `csa` / `mix` 同一精度闭集，
-/// 不因精度复制两份表实现。
 #[derive(Debug, Clone)]
 pub struct Table<S: Scalar = f32> {
     len: usize,
@@ -151,10 +134,6 @@ impl<S: Scalar> Table<S> {
 }
 
 /// `LmHead` 前的条件记忆旁路：尾部 N-gram → 表槽 → 门控残差。
-///
-/// 表只读（写侧归训练/蒸馏），旁路只回答一个问题：这一步该给主干的末尾隐藏向量加多少记忆。
-/// 历史不足 `order` 时**不加**，而不是拿零向量补位——补位会把"没有证据"伪装成"证据是零"，
-/// 而零向量在残差里就是一个真实的偏移。
 #[derive(Debug, Clone)]
 pub struct Bypass<S: Scalar = f32> {
     table: Table<S>,
@@ -206,8 +185,6 @@ impl<S: Scalar> Bypass<S> {
     }
 
     /// 把记忆加进隐藏向量：`hidden += gate · recall`。
-    ///
-    /// 返回是否**有记忆可加**（历史足够）；`gate = 0` 时命中也算加过，只是加的是零。
     pub fn apply(&self, hidden: &mut [S], tokens: &[u32]) -> Result<bool> {
         if hidden.len() != self.table.dim() {
             return Err(Error::new(
@@ -231,14 +208,6 @@ impl<S: Scalar> Bypass<S> {
 }
 
 /// 条件记忆层的装配视图（§5.8.2 的第二个执行形态）：`[width]` 隐藏向量 + 尾部 N-gram → 按门加回。
-///
-/// 与 [`Bypass`] 是**同一套公式的两个位置**，不是两份实现：槽函数同为 [`slot_of`]，门控同样是
-/// `hidden + gate · table[slot]`，历史不足 `order` 时同样不加。区别只在"谁算"——`Bypass` 在 `nn`
-/// 内一次算完，本结构只声明装配几何（槽数、行宽、阶、种子、门控强度），算术交给装配侧三个算子
-/// 节点（查表 → 门控缩放 → 加回主链），因为服务侧的执行单元是算子图而不是逐层函数。
-///
-/// 表本身是这一层的驻留权重条目 `[buckets, width]`，与词表嵌入同为查表角色（表行按槽随机访问，
-/// 豁免权重衰减比按行归一更贴切）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct MemoryBlock {
     spec: ContractSpec,

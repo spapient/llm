@@ -175,8 +175,6 @@ impl MaxPool1d {
 }
 
 /// 二维自适应平均池化：任意输入尺寸都压到 `(oh, ow)`。
-///
-/// 第 `i` 格的窗口是 `[floor(i·h/oh), ceil((i+1)·h/oh))`，与 PyTorch 同口径。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AdaptiveAvgPool2d {
     /// 输出高。

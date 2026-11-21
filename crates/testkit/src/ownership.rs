@@ -1,8 +1,4 @@
 //! 所有权表：`docs/ARCHITECTURE.md` 第三节与源码的**双向**核对。
-//!
-//! 一条方向「表里写的必须真的 `pub`」，另一条「源码里的 `pub` 类型必须在表里或基线里」；
-//! 再加一条组合根判据：`cli` 是编排入口，不得定义新类型。三条合起来，所有权表既不能过期，
-//! 也不能漏项——只写一侧的话，漂移会从另一侧静默穿过。
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -32,9 +28,6 @@ pub(crate) fn type_definition(line: &str) -> Option<(bool, &str)> {
 }
 
 /// `files` 里出现的 `pub struct|enum|trait` 名字（`union` 不在所有权表的口径内）。
-///
-/// `vocabulary! { Name { ... } }` 宏展开出的 `pub enum`：名字在宏块后一行、行首没有 `pub`，
-/// 逐行正则看不到，这里按宏块结构补一份识别（prof 的四个闭集都走这个生成器）。
 pub(crate) fn public_types(files: &[std::path::PathBuf]) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     for path in files {
@@ -69,9 +62,6 @@ pub(crate) fn macro_block_name(line: &str) -> Option<&str> {
 }
 
 /// `lints/vocabulary.toml` 里的反向所有权存量基线：crate → 登记为「暂未进表」的公开类型名。
-///
-/// 读 `llm_tool` 构建期生成的词汇表：同一份文件只解析一次，运行期没有解析器；与
-/// `tests/contracts.rs` 读的是同一棵树，不另写一份。
 pub(crate) fn unlisted_baseline() -> BTreeMap<String, BTreeSet<String>> {
     let entries = tool::vocabulary()
         .table("ownership")
@@ -130,10 +120,6 @@ pub(crate) fn every_owned_type_is_public_in_the_claimed_crate() {
 /// 所有权表必须是**双向**的：上一条只保证「表里写的在源码里 `pub`」，这条保证反方向——
 /// 每个成员源码里的 `pub struct|enum|trait` 要么进表，要么登记在 `lints/vocabulary.toml`
 /// 的 `[[ownership.unlisted]]` 存量基线里。
-///
-/// 基线**不允许过期**（与 `[closed]` 白名单同一判据）：某个名字后来进了表、或不再是 `pub`，
-/// 对应条目就必须删掉，否则「存量冻结」会慢慢退化成「表永远落后于代码」——那正是这条门禁
-/// 之前发现不了 `Chunks` 的原因。
 #[test]
 pub(crate) fn every_public_type_is_listed_or_baselined() {
     let contract = contract();
@@ -197,9 +183,6 @@ pub(crate) fn every_public_type_is_listed_or_baselined() {
 }
 
 /// 组合根是 `cli`：编排入口「不得定义新类型」。
-///
-/// 上一个组装点里的类型（`LmHead`）就是这条规则失效的证据：它既不在所有权表里，也不违反
-/// 任何既有断言。类型属于产出它的层，编排入口只分派。
 #[test]
 pub(crate) fn the_entry_point_defines_no_types() {
     let cli_src = workspace_root().join("crates/cli/src");

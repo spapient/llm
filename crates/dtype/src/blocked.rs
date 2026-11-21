@@ -1,13 +1,4 @@
 //! `qtype` / `mxtype` 共用的 **`const fn`** 访问器。
-//!
-//! 两个模块的行表都按判别值排序，`name`、块长与块数这几项逐字相同。宏只负责 trait 表达不了
-//! 的部分——`const fn`（stable 还没有 const trait）；「按名解析」的唯一实现在
-//! [`crate::Format::parse_name`]，两个枚举的 inherent `parse_name` 只是转调。`block_bytes` 与
-//! `bits` 的来源不同（`QType` 显式存 `ggml-common.h` 的字节数，`MxType` 由元素位宽派生），
-//! 留在各自文件里。
-//!
-//! 表名与行类型必须由调用点显式给出：宏按名字查 `SPECS` 会让「这个模块必须有一张叫 `SPECS`
-//! 的表」变成隐式约定，改名后错误出现在展开处而不是定义处。
 
 macro_rules! blocked_accessors {
     ($specs:ident, $spec:ty) => {

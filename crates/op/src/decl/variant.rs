@@ -1,7 +1,4 @@
 //! 变体链：`[variants]` 的解析与链路校验（数量、`order` 连续、共享比例范围）。
-//!
-//! 变体是同一算子的多种落地形态（dtype/调度），`[variants]` 的顺序由 `order` 字段定序后
-//! 才参与 `MAX_VARIANTS` 与链路检查。
 use diagnostic::data::Table;
 
 use crate::sch;
@@ -41,8 +38,6 @@ fn check_count(variants: &[Variant]) -> diagnostic::Result<()> {
 }
 
 /// 降级链的判据：名字唯一、非 MMA 占比单调，且首选的掩码能落地。
-///
-/// 掩码只判首选：兜底变体的存在理由就是"设备缺原语时仍能跑"（见 `sch::check_masking`）。
 fn check_chain(variants: &[Variant]) -> diagnostic::Result<()> {
     for pair in variants.windows(2) {
         if pair[0].name == pair[1].name {

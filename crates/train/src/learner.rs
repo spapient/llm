@@ -1,14 +1,4 @@
 //! 独立训练编排器：把数据集遍历、前向评估、指标入账与优化步收拢到一个驱动对象。
-//!
-//! [`Session`](crate::Session) 只持有会话状态与单步接缝，不关心数据集如何分批；本模块补上
-//! 「遍历一批 → 前向 → 记 loss/accuracy → 回传梯度 → 优化步」的循环编排。模型拓扑不在这里硬编码：
-//! 前向装配由闭包注入，梯度先由 [`Session::backward`] 按反向计划自动回算——
-//!
-//! - `forward`：装载本批输入并算出 `logits` 与 `loss` 两个终点变量；
-//! - `backward`：自动回算之后的覆盖/追加口，把额外梯度装入或累加进会话缓冲。
-//!
-//! 标签按标准 next-token 设定由序列右移派生：位置 `(r, c)` 的标签是 `tokens[r, c+1]`；每行末列
-//! 没有后继，剔除出评估集。logits 必须按同一行主序位置展开成 `[positions, vocab]`。
 
 use diagnostic::{Code, Error, Result};
 
@@ -27,8 +17,6 @@ use crate::{Kernel, Session};
 pub(crate) const SITE: &str = "train::Learner";
 
 /// 一次前向的两个评估终点：`logits` 用于算 NLL 与命中率，`loss` 用于反传计划对账。
-///
-/// 默认度量是分类 NLL；`metric` 为 `Some` 时按蒸馏/RL 度量入账（见 [`Metric`]）。
 #[derive(Debug, Clone, Copy)]
 pub struct ForwardOut {
     /// 每个有效位置的词表分布，展平成 `[positions, vocab]`。
@@ -40,9 +28,6 @@ pub struct ForwardOut {
 }
 
 /// 非分类度量来源：蒸馏/RL 度量所需的额外变量与配置。
-///
-/// 蒸馏只多一个教师 logits 变量；RL 额外带当前/行为策略 log-prob、advantage 与参考 KL 四个变量
-/// （逐 token 对齐），配置随度量一起由前向闭包给出。
 #[derive(Debug, Clone, Copy)]
 pub enum Metric {
     /// Hinton 蒸馏：软 KL + 硬 CE。
@@ -75,9 +60,6 @@ struct Prepared {
 }
 
 /// 训练编排器：包住一个会话与一块指标看板，按 epoch 遍历数据集推进。
-///
-/// `C` 是通信后端，默认 [`Remote`](crate::Remote) 走单进程恒等回路；接分布式后端时显式传入，
-/// 编排器本体对后端透明——梯度同步发生在 [`Session::optimize`] 内部，本层不感知。
 pub struct Learner<K: Kernel, O: Optimizer, C: Collective = shard::Remote> {
     session: Session<K, O, C>,
     board: MetricsBoard,
@@ -192,8 +174,6 @@ impl<K: Kernel, O: Optimizer, C: Collective> Learner<K, O, C> {
     }
 
     /// 入账评估量、回传梯度、跑闭包覆盖口并走优化步。
-    ///
-    /// 回传段见 [`Self::backward_with`]；`backward` 闭包在自动回算之后保留为覆盖/追加口。
     fn finish<G>(&mut self, prepared: Prepared, backward: &mut G) -> Result<()>
     where
         G: FnMut(&mut Session<K, O, C>) -> Result<()>,
@@ -313,9 +293,6 @@ impl<K: Kernel, O: Optimizer, C: Collective> Learner<K, O, C> {
 }
 
 /// next-token 标签：`(r, c)` 的标签取 `tokens[r, c+1]`；行末列无后继，剔除。
-///
-/// 位置顺序与前向闭包产出的 logits 行主序一一对应；一列宽（`cols == 1`）没有可预测位置，
-/// 返回空表，由下游损失函数拒绝。
 fn next_token_labels(tokens: &[u32], rows: usize, cols: usize) -> Vec<f32> {
     let positions = rows.saturating_mul(cols.saturating_sub(1));
     let mut labels = Vec::with_capacity(positions);

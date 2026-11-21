@@ -1,14 +1,8 @@
 //! `classic` 的池化与插值层族：Max/Avg/Adaptive/Interpolate。
-//!
-//! 规格、`Contract` 实现与形状校验在本文件内闭环；共用校验留在父模块。
 
 use super::*;
 
 /// 一维最大池化层：`[l, c]` → `[ol, c]`。
-///
-/// 规格走 [`ContractSpec::new`] 直接构造而不是 `#[crate::spec]`：池化没有可代理的已注册算子，
-/// 注解层"一层至少一个算子"的硬约束在这里会把一个语义不符的名字塞进来，所以选择显式登记为
-/// "0 算子 + 无法计价"，而不是凑数。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MaxPool1d {
     spec: ContractSpec,

@@ -1,7 +1,4 @@
 //! 职责：`Geometry::declared` 与十个经典算子的声明档表。
-//!
-//! 声明档是梯度对拍的基准：固定几何逐字段对齐 `op::classic`，值全部取自 `op::*` 的
-//! `pub const`，不在训练侧另写一份算术常量。
 
 use diagnostic::{Code, Error, Result};
 
@@ -26,8 +23,6 @@ impl Geometry {
 }
 
 /// 十个经典算子的声明档实例：`declared` 的事实来源，一份表、一个数据源。
-///
-/// 值全部取自 `op::*` 的 `pub const`，不在训练侧另写一份算术常量。
 const DECLARED: &[(&str, Geometry)] = &[
     (
         "max_pool1d_f32",

@@ -1,9 +1,4 @@
 //! 内置声明与档案：随 crate 编译，不依赖工作目录。
-//!
-//! 三层数据各自住在自己的 crate：声明层（`ops/`）由 [`op`]、档案层（`devices/`）由 [`prof`]、
-//! 片段层（`prim/`）由 [`prim`]。本模块只负责把前两层解析成 [`OpDecl`] 与 [`Profile`]，并把
-//! 它们的交叉约束（重复档案、同一原语的同名实现、见证文件存在性）合成一次校验；内嵌副本让库调用方与
-//! 测试无需设置路径即可跑通整条流水线。
 
 use crate::cap;
 use crate::decl::OpDecl;
@@ -134,9 +129,6 @@ impl Catalogue {
     }
 
     /// 全量校验：重复标识、同一原语的同名实现、见证文件存在性。
-    ///
-    /// 片段与见证都从 `layout` 取：与构建期同一个入口，否则"装载期校验通过"与"构建期取到的
-    /// 文本"可以是两份不同的数据。返回逐条错误而不是第一个——装载要一次报全，否则改一条重跑一次。
     pub fn validate(&self, layout: &prim::Layout<'_>) -> Result<(), Vec<Error>> {
         let mut errors = self.duplicates();
         errors.extend(self.profile_errors(layout));

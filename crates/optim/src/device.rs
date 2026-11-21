@@ -1,9 +1,4 @@
 //! 宿主 C 参考后端 + 设备后端注册表。
-//!
-//! 本文件只保留「机制」：C 宿主参考后端（见证在 host CPU 上编过、跑出 `expect`，不证明设备能力）
-//! 与一张按 `emit` 分派的注册表。Metal / CUDA 的设备后端实现已搬到 `engine`（L6），经
-//! [`crate::backend::register`] 注入这张表；cutile 的机制层只认 [`crate::backend::Backend`] 缝，
-//! 不出现任何厂商字面量（`docs/ARCHITECTURE.md` 的 L3 契约）。
 
 use crate::backend::{Backend, Codegen, Driver, Readback};
 use crate::build;

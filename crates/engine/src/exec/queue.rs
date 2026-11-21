@@ -3,10 +3,6 @@
 use super::*;
 
 /// 后端要实现的东西：把一张图提交到一条流，并按编号登记内核与宿主缓冲。
-///
-/// 实现放在后端（CPU 线程池 / CUDA / Metal …）；调度与模型代码只认这个 trait，
-/// 因此换后端不改上层。它是本仓的 **Backend 基座**（ADR 0051）：Burn 的 `Backend` 在
-/// llm 里由本 trait 承担，装饰器（[`Trace`] 等）以同样的方式实现它并转发。
 pub trait Executor {
     /// 该执行器绑定的设备。
     fn device(&self) -> &Device;
@@ -15,17 +11,11 @@ pub trait Executor {
     fn submit(&mut self, graph: &Graph, stream: Stream) -> Result<()>;
 
     /// 等待一条流上已提交的工作完成。
-    ///
-    /// 这是“提交不等于完成”的兑现处：CPU 实现会把队列里的节点真的执行完再返回，设备后端
-    /// 在此做事件同步。跳过它就去读结果，看到的是未初始化的缓冲。
     fn sync(&mut self, _stream: Stream) -> Result<()> {
         Ok(())
     }
 
     /// 登记一段内核体；执行时按 [`Program::name`] 查找。
-    ///
-    /// 默认拒绝：只记账的队列执行器没有内核表，静默接受会让"提交成功、同步才发现没实现"
-    /// 变成一种运行期惊喜。
     fn register_program(&mut self, _program: Box<dyn Program>) -> Result<()> {
         Err(Error::new(
             Code::Unsupported,
@@ -34,8 +24,6 @@ pub trait Executor {
     }
 
     /// 绑定一块 `f32` 操作数；返回被替换掉的旧块。
-    ///
-    /// 默认返回 `None`：没有宿主缓冲的执行器不拥有这个编号，调用方按缺失处理。
     fn bind_f32(&mut self, _id: u32, _values: Vec<f32>) -> Option<Vec<f32>> {
         None
     }
@@ -57,10 +45,6 @@ pub trait Executor {
 }
 
 /// 执行基座的装饰器：包住任意 [`Executor`]，记录每次提交的节点名，其余方法原样转发。
-///
-/// 这是"装饰器叠在基座上"的第一个实例（ADR 0051）：上层只认 `E: Executor`，因此换成
-/// `Trace<CpuExecutor>` 不需要改模型代码；审计拿到的是**真实提交序**，不是装配侧另记的一份。
-/// 本装饰器不改变执行语义、不做重排或融合（ADR 0017 无 IR 冻结）。
 #[derive(Debug)]
 pub struct Trace<E> {
     inner: E,
@@ -153,13 +137,6 @@ impl Queued {
 }
 
 /// 同步 CPU 后端：把图节点按提交顺序记入本地队列，[`sync`](Executor::sync) 按流排水。
-///
-/// 这是 [`Executor`] 的第一个落地实现：单线程、不提交设备命令、不解析操作数引用——节点携带的
-/// 不透明编号到缓冲的解析、算子内核的挂载与 cutile 产物复用属于后续接内核执行体的后端（见模块顶部
-/// 边界）。本实现只守住契约：同一流内节点按图序入队，`sync` 后排干该流；编排层可以先接上执行入口，执行体后补。
-///
-/// 构造时注入 [`Allocator`] trait 对象；执行器只持有分配器，不持有 [`storage::Buffer`] 字节，
-/// 分配与写回由后端执行体经分配器完成。分配器是有状态后端句柄，因此本类型不派生克隆与相等。
 pub struct LocalExecutor {
     device: Device,
     allocator: Box<dyn Allocator>,
@@ -269,8 +246,6 @@ impl Executor for LocalExecutor {
 }
 
 /// 一段已绑定缓冲的存储形态：32 位浮点，或按位打包的字节（i4/i8 lane）。
-///
-/// 形态只承载元素宽度这一事实；形状与条目名描述留在装配侧（G4），本层不解释编号。
 #[derive(Debug, Clone, PartialEq)]
 pub enum Buffer {
     /// 32 位浮点。

@@ -1,15 +1,8 @@
 //! 图的静态部分：[`Requirement`]（谁在图上）、[`Var`]（变量的身份）、[`Node`]（一次算子调用）。
-//!
-//! 三者都是**数据**：不含数值、不含回调、不含设备知识。`Tape` 用稠密编号索引它们，
-//! `Schedule` 只读它们，`Account` 只数它们的入边。
 
 use std::sync::Arc;
 
 /// 一个变量在图里的出身：叶子是参数还是常量，算子输出都是激活。
-///
-/// 角色是 [`Requirement`] 与"是否有生产者"的**派生事实**，不另存一份：同一个变量的出身
-/// 只能由这两者推出，单独记账会让两处漂移。它回答"谁要取走梯度、谁只是常驻输入"，
-/// 不回答数值——数值仍由运行时缓冲持有。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum Role {
     /// 不参与反向的叶子：输入 token、常量权重之外的数据、detach 之前的常量。
@@ -57,9 +50,6 @@ impl Role {
 }
 
 /// 一个变量对反向传播的要求。
-///
-/// `None` 与另外两种是**图内/图外**的分界：不进图的变量既不产生反向步骤，也不接收梯度，
-/// 因此它的"梯度为 0"不是算出来的结果，而是根本没有这个量。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum Requirement {
     /// 不参与反向：常量、输入 token、detach 之后的输出。
@@ -88,9 +78,6 @@ impl Requirement {
     }
 
     /// 合并两个需求：都不需要梯度才是 `None`，否则输出只能是中间节点。
-    ///
-    /// 用"输出"而不是"两边的较大者"：两个梯度终点的和仍然不是梯度终点——终点由调用方
-    /// 显式声明（`record_with(.., Requirement::Grad)`），不从输入继承。
     pub fn merged(self, other: Self) -> Self {
         match self.is_none() && other.is_none() {
             true => Self::None,

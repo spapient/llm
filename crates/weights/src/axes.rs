@@ -1,17 +1,5 @@
 //! 五轴自适应选码（配置化）：`raw / dict / sparse / quant / rank` 五个候选，每个候选只有在解码后
 //! 与原始位模式逐元素一致（`to_bits` 相等）时才被采纳，最终在通过验证的候选里取字节最小者。
-//!
-//! 五轴各自实现 `AxisCfg`，搜索与逐位验证是泛型闭集：新增一轴只加一个 `impl AxisCfg` 与
-//! `AXES` 常量表一行，不碰分派、验码与形状判据。`raw` 是恒可用的基线（f32 字节走 rANS），
-//! 因此非空输入总有返回；其余轴不满足逐位精确即判不适用，绝不谎称无损。
-//!
-//! `rank` 轴比其余四轴多一道门：[`ledger::certify`] 先判谱隙，判定不过（无谱隙、形状退化）就
-//! 整轴不参与，秩与证书出自同一次分解——于是「证书不过就拒压回退」不是文档里的口号，而是
-//! [`search`] 里 `encode` 返回 `None` 的那条分支。
-//!
-//! 证书本身随载荷落盘（布局 `note_len | note | low_len | low | rest`）：它不再是写完就丢的事后
-//! 账目，而是与两段残差同受一条 CRC 保护的载荷内容，读端 [`decode`] 用载荷自己把证书的断言重算
-//! 一遍（[`ledger::audit`]），对不上就拒绝——「可证压缩」因此有一个可执行的判据。
 
 pub(crate) mod codec;
 pub(crate) mod rank;
@@ -62,9 +50,6 @@ trait AxisCfg {
     /// 编码为载荷；`None` 表示该轴对输入不适用。
     fn encode(&self, w: &[f32], m: usize, n: usize) -> Option<Vec<u8>>;
     /// 从载荷游标解码一张 `shape = (m, n)` 的矩阵（游标已越过 [`HEAD`]）。
-    ///
-    /// 传形状而不是只传元素数：秩轴的载荷自带证书，复核「秩落在 `1 <= r < min(m,n)`」要用原始
-    /// 形状，而元素数已经把它丢了。
     fn decode(&self, cur: &mut Cursor<'_>, shape: (usize, usize)) -> Result<Vec<f32>>;
 }
 
@@ -218,9 +203,6 @@ pub fn decode(artifact: &[u8]) -> Result<Vec<f32>> {
 }
 
 /// 只读证书：不解码权重也能拿到秩轴那张证书（其余轴返回 `None`）。
-///
-/// [`decode`] 本来就会复核证书，这里给的是另一条路：审计与工具只想问「凭什么这么压」时，
-/// 不必先落地一张张量。两边读的都是私有的 `rank_head`，因此“证书长什么样”只有一种解析。
 pub fn certificate(artifact: &[u8]) -> Result<Option<ledger::Note>> {
     let (axis, _, _) = head(artifact)?;
     if axis != Axis::Rank {

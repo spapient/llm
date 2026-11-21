@@ -1,7 +1,4 @@
 //! GGUF 的字节读取与表解析：`Reader`、值/张量记录的消费、对齐与数据区定位。
-//!
-//! 从 [`crate::gguf`] 拆出只为让公开面（类型与 `Gguf`）不掺字节细节；这里的入口只有
-//! [`Reader`]、[`tables`] 与 [`data_start`]，其余消费函数都是它们的内部分步。
 
 use diagnostic::Result;
 

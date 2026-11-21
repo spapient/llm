@@ -1,11 +1,4 @@
 //! Apple SME 16×64 微内核通道：ZA 矩阵累加器外积（`fmopa`）+ 运行时探测。
-//!
-//! 与 [`super`] 里的 NEON 8×8 通道并列，只服务「16 行 × 64 列整铺」的大 GEMM。SME 的收益来自
-//! 16×16 外积在 ZA 里就地累加、K 方向无需回写（四个瓦片交错隐藏 `fmopa` 延迟）；但 `smstart` /
-//! `smstop` 与 A 面板打包的固定成本在小题上会吞掉收益，因此入口 [`gemm`] 里有规模门槛。
-//!
-//! `unsafe` 只出现在三段内联汇编（`enter_sm` / `sme_tile` / `exit_sm`），全部 `#[allow(unsafe_code)]`
-//! 且由 `available` 的运行时探测保证只在 SME 存在时进入；非 aarch64 上整条内核不参与编译。
 
 #[cfg(target_arch = "aarch64")]
 use std::thread;
@@ -30,18 +23,12 @@ const NR: usize = 64;
 const MIN_ELEMS: usize = 1 << 20;
 
 /// 运行时探测：本机是否存在 SME（Apple M4/M5 起）。
-///
-/// 只在 aarch64 上存在：非 aarch64 整条内核不参与编译，[`gemm`] 直接返回 `false`，因此这里
-/// 不留一份永远返回 `false` 的替身——那在 x86_64 上只会变成死代码。
 #[cfg(target_arch = "aarch64")]
 fn available() -> bool {
     std::arch::is_aarch64_feature_detected!("sme")
 }
 
 /// 16×64 整铺 SME GEMM：`out[m,n] = a[m,k] · b[k,n]`。
-///
-/// 形状不可整铺、规模低于门槛或本机无 SME 时返回 `false`，由调用方走 NEON；成功写入 `out`
-/// 后返回 `true`。整铺形状下的数值与 [`crate::matmul::matmul_scalar`] 在容差内一致。
 pub(super) fn gemm(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f32]) -> bool {
     #[cfg(not(target_arch = "aarch64"))]
     {
@@ -78,12 +65,6 @@ fn tiled(m: usize, n: usize) -> bool {
 }
 
 /// 一次整铺 SME GEMM：单次铺线程，先并行打包 A 面板，屏障同步后并行外积累加写回。
-///
-/// B 不打包：`B[k,n]` 行主序里每个 64 列组的连续 64 元素本就满足微内核的连续加载，内核改按
-/// k 步长 `n*4` 直接读原始 B，省掉 B 面板的转置拷贝与其缓冲。A 必须转置成 `[块][k][16]` 让
-/// `ld1w` 连续加载，且每个线程只打包、只计算自己的行块 —— A 面板独占、B 只读、输出独占，
-/// 三者互不重叠，因此整次 GEMM 只需一次 [`std::thread::scope`]，把二次铺线程的固定开销
-/// （每次约 100µs）直接砍掉一半。
 #[cfg(target_arch = "aarch64")]
 fn packed(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f32], t: usize) {
     let mblk = m / MR;
@@ -111,10 +92,6 @@ fn packed(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f32], t
 }
 
 /// 打包 A 的一个行块段：`src[m,k]` → `dst[块][k][16]`，按 16×16 瓦片转置让微内核连续加载。
-///
-/// 逐列标量搬移在 16 行 × 4 KiB 跨距下受载入延迟拖累；改用 [`std::simd::f32x4`] 做 4×4
-/// 子块转置（编译器直接下沉成 `zip1`/`zip2`），配合 `copy_from_slice` 的 128 位连续读写，
-/// 全程安全代码，不触碰 `unsafe_code = "deny"` 的开岛边界。
 #[cfg(target_arch = "aarch64")]
 fn pack_a(src: &[f32], dst: &mut [f32], k: usize, mblk0: usize) {
     let blocks = dst.len() / (k * MR);
@@ -187,9 +164,6 @@ fn pack_tail(
 }
 
 /// 计算一段连续行块：进入流式模式 → 逐行块逐列组外积累加 → 写回 → 退出流式模式。
-///
-/// B 直接读原始 `[k,n]` 行主序：第 `g` 列的连续 64 元素从 `b + g*NR` 起，k 方向步长 `n*4`
-/// 字节由 [`sme_tile`] 处理，省去 B 面板的转置拷贝。
 #[cfg(target_arch = "aarch64")]
 #[allow(unsafe_code)]
 fn compute_stage(a_stage: &[f32], b: &[f32], o_stage: &mut [f32], n: usize, k: usize) {
@@ -213,9 +187,6 @@ fn compute_stage(a_stage: &[f32], b: &[f32], o_stage: &mut [f32], n: usize, k: u
 }
 
 /// 16×16 外积微内核：`zero` → K 循环 `ld1w`+`fmopa` → 4 个 ZA 瓦片按切片号 `str za` 写回。
-///
-/// `str za[wX, #imm]` 的切片由 `wX` 的值选定（imm=0 时 `slice = (v & 3) << 4 | v >> 2`），
-/// 寄存器名是惰性的：`w12..w15` 初始 0..3，每行写回后 `+4`，16 行后到达 64 覆盖全部切片。
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "sme")]
 #[allow(unsafe_code)]

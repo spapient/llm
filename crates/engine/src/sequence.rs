@@ -1,17 +1,9 @@
 //! 序列状态机：页数口径 [`pages_for`] 与单个请求的生命周期 [`Sequence`]。
-//!
-//! [`State`] 三个状态构成一条单向链路，[`Progress`] 把 [`crate::Scheduler::advance`] 的结局
-//! 分成「生成了」与「没生成」两类。页账跟着序列一起长：准入只预留提示长度的页，之后每生成
-//! 一个 token 由调度器再预留一页；`pages_for` 是「覆盖 N 个 token 要几页」的唯一口径。
 
 use diagnostic::{Code, Error, Result};
 use tensor::Shape;
 
 /// 覆盖 `tokens` 个 token 需要多少页：向上取整，至少一页。
-///
-/// 页数口径只在这里定义一次。合并 `kv` 之前它被写了四遍（准入上界、当前长度、增长判定、
-/// 下一次是否要页），四处里只要有一处写成"向下取整"或漏掉 `.max(1)`，就会出现"准入说能放下、
-/// 增长时却发现没页"这种只在长提示上复现的错。
 pub(crate) fn pages_for(tokens: usize, page_size: usize) -> usize {
     tokens.div_ceil(page_size).max(1)
 }
@@ -112,9 +104,6 @@ impl Sequence {
     }
 
     /// 提示段已经算进页账的位置数。
-    ///
-    /// 提示段的 K/V 必须由预填充逐位写进页：解码只算当前位置、历史从页里读，从不回补提示段。
-    /// 所以「能解码了没」看的是这个数，不是 `len()`——`len()` 从准入起就等于 `prompt_len`。
     pub fn prefilled(&self) -> usize {
         self.prefilled
     }
@@ -130,16 +119,11 @@ impl Sequence {
     }
 
     /// 已经采样出的生成 token，按生成顺序（不含提示段）。
-    ///
-    /// 序列是这条历史的唯一存放处：端点把它作为结果返回时只该带生成段，提示段由请求侧
-    /// 自己持有。需要完整上下文（嵌入查表、注意力回看历史）用 [`context`](Self::context)。
     pub fn tokens(&self) -> &[u32] {
         &self.all[self.prompt_len..]
     }
 
     /// 完整上下文：提示段在前、生成段在后。
-    ///
-    /// 模型前向只看得到 [`Sequence`]：整段 token 存在这里，模型不必让调用方再喂一遍历史。
     pub fn context(&self) -> &[u32] {
         &self.all
     }
@@ -197,9 +181,6 @@ impl Sequence {
     }
 
     /// 推进一个 token；已经结束时再推进是调用方的 bug。
-    ///
-    /// 只改状态与计数，**不碰页**：页由 [`Scheduler::advance`] 在调用它之前预留。因此这条路径
-    /// 只对同 crate 可见——绕过页账的生成不应该能写出来。
     pub(crate) fn step(&mut self) -> Result<()> {
         if self.state == State::Done {
             return Err(Error::new(Code::Invalid, "序列已结束").with("engine::Sequence::step"));
@@ -241,11 +222,6 @@ impl Sequence {
     }
 
     /// 跑满 `max_new` 需要多少页（最坏情况的上界）。
-    ///
-    /// 与 [`Sequence::pages_needed`] 不同：那个是"按当前长度"的数，随生成增长；这个是准入时就能
-    /// 算出的上界，用来回答"这条序列在这个页池里有没有可能跑完"。准入只看当前页数会把一条永远
-    /// 跑不完的序列放进批里：它迟早 [`Progress::Blocked`]，而批里没有任何序列能结束，于是谁也
-    /// 没法 [`Scheduler::finish`]、页也永远不会被归还。
     pub fn pages_required(&self) -> usize {
         pages_for(self.prompt_len.saturating_add(self.max_new), self.page_size)
     }
@@ -256,9 +232,6 @@ impl Sequence {
     }
 
     /// 当前上下文长度（提示 + 已生成）。
-    ///
-    /// 不会溢出：[`Sequence::new`] 已经校验过 `prompt_len + max_new` 装得下，而 `produced`
-    /// 永远小于 `max_new`。
     pub fn len(&self) -> usize {
         self.prompt_len + self.produced
     }
@@ -269,9 +242,6 @@ impl Sequence {
     }
 
     /// 走到当前长度需要多少页：向上取整，至少一页（否则 [`crate::kv::Table`] 无处可放）。
-    ///
-    /// 这是**准入**的紧凑预算（`pages_for(len)`）：行 0 的空槽在用之前不占页，写入时由
-    /// [`Scheduler::write_kv`](crate::Scheduler) 按需补齐；上界看 [`Sequence::pages_required`]。
     pub fn pages_needed(&self) -> usize {
         pages_for(self.len(), self.page_size)
     }

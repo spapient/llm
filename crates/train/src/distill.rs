@@ -1,15 +1,4 @@
 //! 蒸馏损失族：log-softmax、KL 散度与 Hinton 蒸馏损失（软标签）。
-//!
-//! 与 [`crate::loss`]（硬标签 NLL）互补。蒸馏用教师分布作软标签，KL 度量学生与教师在温度
-//! 缩放下两个 softmax 的距离；RL（GRPO / RLHF）复用同一套 log-softmax（token log-prob）与
-//! KL（策略到参考模型）原语。本模块与 loss 一致：只算前向纯计算，不进 op 设备核注册表，
-//! 反向公式属 P1。
-//!
-//! 数值稳定沿用 loss 的口径：log-softmax 每行先减行内最大值再取指数，KL 由
-//! `sum softmax(s/T) · (log softmax(s/T) − log softmax(t/T))` 一行算出，不先归一化再取对数。
-//!
-//! 校验沿用 loss 的收口模式：每个入口只做一次 `?`，把几何/参数校验推给纯校验函数，避免分支
-//! 堆在计算函数里抬高复杂度。
 
 use diagnostic::{Code, Error, Result};
 
@@ -19,8 +8,6 @@ use crate::loss::{check_len, check_logits_len, check_rows, check_vocab};
 pub(crate) const SITE: &str = "train::distill";
 
 /// 蒸馏损失配置：软目标温度 `T` 与软损失权重 `α`（Hinton 2015 约定）。
-///
-/// 损失 = `(1−α)·CE(student, labels) + α·T²·KL(student/T ‖ teacher/T)`。
 #[derive(Clone, Copy, Debug)]
 pub struct Distill {
     temperature: f32,

@@ -1,7 +1,4 @@
 //! 职责：优化器视图装配——参数/梯度按槽整块取走、步进后整块归还与镜像。
-//!
-//! 梯度向量按槽整块取走（[`Buffers::take_gradient`]），步进结束后整块归还；
-//! 参数槽与梯度表因此各只建立一条可变借用。
 
 use diagnostic::{Code, Error, Result};
 use shard::Collective;
@@ -14,9 +11,6 @@ use super::{ParamSlot, SITE, Session, SlotMeta};
 
 impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
     /// 汇总各槽的参数/梯度可变视图；任一槽梯度未装入即报错。
-    ///
-    /// 梯度向量按槽整块取走（[`Buffers::take_gradient`]），步进结束后在
-    /// [`Self::return_views`] 归还；参数槽与梯度表因此各只建立一条可变借用。
     pub(super) fn collect_views(
         slots: &mut [ParamSlot],
         buffers: &mut Buffers<K>,

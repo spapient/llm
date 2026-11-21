@@ -1,8 +1,4 @@
 //! 真机执行：用一份给定样本走完整条流水线并执行一次。
-//!
-//! 与 `verify` 的分工是**样本从哪来**：`verify` 用算子声明的确定性样本，回答"这台机器能算这条
-//! 算子"；本模块用调用方给的真实数据，回答"这份数据算出来的数对不对"。两者共用同一条
-//! `pipeline`，因此不存在第二套执行路径。
 
 use crate::backend::{Launch, Lower};
 use crate::build;
@@ -161,9 +157,6 @@ fn kind(op: &OpDecl) -> diagnostic::Result<Lower> {
 }
 
 /// 非逐元素、非 gemm 的两族：声明了 `[chunk]` 就分块降级，否则串行。
-///
-/// 扫描沿时间轴串行递推，正文就是一条跨元素循环；网格按元素拆只会让每线程各算一整遍。
-/// 归约未声明 `[chunk]` 时同理：串行（`grid = [1,1,1]`）。
 fn chunked_kind(op: &OpDecl) -> diagnostic::Result<Lower> {
     match (op.skeleton, op.chunk.is_some()) {
         (Skeleton::Reduce, true) => reduce_kind(op),
@@ -185,10 +178,6 @@ fn grid_kind(op: &OpDecl) -> Lower {
 }
 
 /// 逐元素族：纯逐点直接开线程，其余按 `[chunk]` 分块降级（[`chunked_elementwise`]）。
-///
-/// 分块逐元素：`[chunk]` 遇上 `[needs] reduce` 的 `max` 是三趟 softmax（最大 → 指数和 → 归一化），
-/// 遇上 `[needs] dot` 是两趟 rmsnorm（平方和 → 归一化）；其余正文已沿轴走完或下标依赖行 gather，
-/// 并行按元素拆会算错，退串行。
 fn chunked_elementwise(op: &OpDecl) -> Lower {
     if op.pointwise() {
         return Lower::Pointwise;
@@ -217,8 +206,6 @@ fn items_of(kind: &Lower, op: &OpDecl, sample: &Sample) -> diagnostic::Result<[u
 }
 
 /// 沿长度轴展开的块大小：逐点一族格即元素、分块族按 `[chunk]` 声明。
-///
-/// `None` 是「这一形态不沿长度轴」——gather 一类的下标依赖行不能按元素拆，几何固定为一格。
 fn slab(kind: &Lower) -> Option<usize> {
     match kind {
         Lower::Pointwise => Some(1),

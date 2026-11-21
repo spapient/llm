@@ -42,25 +42,15 @@ pub const TILE_N: usize = 64;
 pub const TILE_K: usize = 32;
 
 /// 线性层布局（`x [rows, k]` × `w [n, k]`）的 tile 行数。
-///
-/// 与 [`TILE_M`] 分开是因为两个核的复用轴不同：`[m, k] × [k, n]` 里 B 的列块沿 `k` 走，而线性层把
-/// 权重整行 `[n, k]` 放在一处，行块才是一次驻留的单位。
 pub const TN_ROWS: usize = 16;
 
 /// 线性层 tile 的输出列数：一列权重块要同时在累加器里驻留，不能大于 `TN_ROWS × TN_COLS` 的 L1 预算。
 pub const TN_COLS: usize = 32;
 
 /// 线性层 tile 的收缩块宽度。
-///
-/// 收缩块越宽，累加器"读出→加→写回"的次数越少（次数是 `k / TN_K`），而块内全是连续点积；
-/// 256 既让循环开销摊到 256 次乘加上，又让一行权重块（`TN_COLS × TN_K`）留在 L1。
 pub const TN_K: usize = 256;
 
 /// 收缩轴可变 GEMM 的精度契约：两档只差元素类型、累加器与一次乘加。
-///
-/// 标量参考、tile 遍历、块内 rank-1 更新与尺寸校验都只写一份，按元素类型单态化；加一档精度
-/// 只需再写这三件事。骨架不感知取整与提升规则——`i8` 档的 `i32` 精确累加就落在
-/// [`Precision::mac`] 里，遍历次序怎么换都不改结果。
 pub trait Precision: Copy {
     /// 累加器与输出元素：`f32` 档就是 [`f32`]，`i8` 档是 [`i32`]（转回 f32 由注册侧做）。
     type Acc: Copy + Default;
@@ -91,8 +81,6 @@ impl Precision for i8 {
 }
 
 /// 标量参考：`out[i,j] = Σ_p a[i,p]·b[p,j]`，每个元素按 `p` 顺序独立累加；两档精度共用。
-///
-/// 不读 `out` 的初值（直接赋值），是 tile 实现与后续 kernel 的对拍真值。
 pub fn matmul_scalar<P: Precision>(
     a: &[P],
     b: &[P],
@@ -115,9 +103,6 @@ pub fn matmul_scalar<P: Precision>(
 }
 
 /// 分块 tile：按 [`TILE_M`]×[`TILE_N`] 切输出、[`TILE_K`] 切收缩轴，块内 rank-1 更新。
-///
-/// 先清空 `out` 再逐块累加。A 行块（TILE_M×TILE_K）在 `bj` 循环内复用、B 列块
-/// （TILE_K×TILE_N）在 `i` 循环内复用，把跨块 cache miss 压到 tile 边界。
 pub fn matmul_tiled<P: Precision>(
     a: &[P],
     b: &[P],
@@ -151,9 +136,6 @@ pub fn matmul_tiled<P: Precision>(
 }
 
 /// 一个 tile 的三条区间：输出行、收缩轴、输出列。
-///
-/// 三条区间一起决定「乘哪一块」，分开放会让调用点出现三对含义相近的 `usize` 实参；包成一个值之后
-/// 传参只剩「哪个 tile」这一件事，块内累加也就不必知道它是第几块。
 struct Tile {
     rows: Range<usize>,
     contraction: Range<usize>,
@@ -161,8 +143,6 @@ struct Tile {
 }
 
 /// 块内 rank-1 更新：`out[i, j] += Σ_p a[i, p]·b[p, j]`，三条下标都取 `tile` 给的区间。
-///
-/// `n` / `k` 是整块的行宽与收缩轴长度：区间是绝对下标，行主序下 `[i, j]` 仍是 `i * n + j`。
 fn accumulate_tile<P: Precision>(
     a: &[P],
     b: &[P],
@@ -281,9 +261,6 @@ pub fn close_enough(actual: &[f32], expected: &[f32], rtol: f32, atol: f32) -> R
 }
 
 /// 收缩轴长度（生产档）：prefill 主链路 GEMM 的 K。
-///
-/// 与 [`crate::gemm`] 的 `K=8` 固定档同构：把大 K 作为算子语义的生产形状写入 [`MODEL`]，
-/// 使 `nn::Bounds` / roofline 对 256×256×4096 的代价分子取 2·m·K·n 而不是 gemm 的 2·m·8·n。
 pub const K: usize = 4096;
 
 /// 三轴：`m`/`k` 输入，`n` 输出（角色与 [`crate::gemm::AXES`] 一致，收缩轴长度由 [`K`] 给定）。
@@ -395,9 +372,6 @@ pub fn reference(sample: &Sample) -> Result<Vec<f32>> {
 pub struct Matmul;
 
 /// 语义表由注解生成：生产形状 `256×256`，收缩轴 [`K`]，输出 f32。
-///
-/// 手写常量的版本已删：`#[annotation::model]` 是它与注册表之间唯一的绑定点，两处各写一份
-/// 就会出现「注册名改了、语义表没改」这种编译得过却绑错算子的状态。
 #[annotation::model(name = "matmul_f32", shape = [256, 256], dtype = "f32", skeleton = "matmul")]
 pub type MatmulF32 = Matmul;
 
@@ -420,9 +394,4 @@ fn deterministic(len: usize, salt: u32) -> Vec<f32> {
 mod tests;
 
 /// 大 K 对称 int8 GEMM 的语义与精度档：`Y[m, n] = Σ_k A[m, k] · B[k, n]`，累加器 `i32`。
-///
-/// 骨架在 [`crate::matmul`]：标量参考、tile 遍历、尺寸校验、轴表与生产形状都只有一份。本模块
-/// 只给「元素是 `i8`、累加器是 `i32`」这一档（[`Precision`] 的 `i8` 实现）、语义表，以及两件与
-/// 精度绑在一起的事：样本缓冲用 `u8` 承载有符号码，代价按每元素 1 字节读。累加是整数加法，
-/// 所以 tile 与标量参考逐位相等（对应 CUDA `dp4a`），不像 `f32` 档要留容差。
 pub mod i8;

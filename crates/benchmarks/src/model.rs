@@ -1,10 +1,4 @@
 //! 整模型一步前向与 `train` 状态层基准。
-//!
-//! 前半：合成小栈（查表首层 + 投影）走 `Predict::logits`，单序列一步与四条序列同批各一档；
-//! 内存只记可观测账目（页池 `in_use`），不虚构峰值字节数。
-//!
-//! 后半：学习率调度求值、检查点快照编解码、激活缓冲池复用一轮前向。三组都只压 CPU 上的状态
-//! 计算，不碰设备；夹具失败一律走 [`checked`]，本文件没有 `unwrap` / `expect` / `panic!`。
 
 use crate::fixtures::{PROMPT, checked, synthetic_model};
 use autograd::{Sizes, Store, Tape, Var};

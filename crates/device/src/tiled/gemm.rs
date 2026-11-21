@@ -93,9 +93,6 @@ fn check_k(k: usize) -> Result<()> {
 }
 
 /// 逐对展开 `row_frags × col_frags`：声明、乘加、写回三段共用同一遍历次序。
-///
-/// 收成一处是因为"哪些片段存在"只能有一个答案——三段各写一遍循环，改片段数就得改三处，
-/// 而少改一处生成的内核要么漏写一个片段、要么读一个未声明的 `acc_r_c`。
 fn each_pair(row_frags: usize, col_frags: usize, mut emit: impl FnMut(usize, usize)) {
     for r in 0..row_frags {
         for c in 0..col_frags {
@@ -204,9 +201,6 @@ fn simple_tiled_gemm_msl(a: &str, b: &str, y: &str, n: usize, k: usize, tile: us
 }
 
 /// 4×4 寄存器分块 GEMM：每线程算 `per_thread × per_thread` 个输出，共享块按 `tile` 一次搬运。
-///
-/// 派发几何：`grid = [M/per_thread, N/per_thread]`、`block = [tile/per_thread, tile/per_thread]`；
-/// 组内 `tid = lid.x·TT + lid.y` 协同搬运 `tile×tile` 的 A/B 块。要求 `M/N/K` 均被 `tile` 整除。
 fn register_blocked_gemm_msl(
     a: &str,
     b: &str,

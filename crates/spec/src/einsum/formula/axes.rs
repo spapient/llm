@@ -2,24 +2,15 @@ use super::arith::multiply;
 use super::*;
 
 /// 一条轴在这次计算里的角色。
-///
-/// 这个分类不是装饰：`Batch` 与 `Free` 决定 TileLang 式的批处理能不能合批，`Reduced` 决定
-/// roofline 的 `flops` 口径。把它算出来，上层就不必再猜。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AxisRole {
     /// 批轴：出现在输出里，且被至少两个**只读**操作数共享。
-    ///
-    /// 只统计只读操作数：输出缓冲自己也带着同样的字母，把它算进去会让所有输出轴都变成批轴，
-    /// 这个分类就失去了信息量。
     Batch,
     /// 自由轴：出现在输出里，且只被一个操作数拥有。
     Free,
     /// 规约轴：不出现在输出里，求和后被消掉。
     Reduced,
     /// 分组轴：由另一条轴按固定因子切出（[`crate::einsum::Extents::group`]）。
-    ///
-    /// 它只影响**流量**（`scales[n, g]` 确实只有 `n · m/组宽` 个元素），不计入运算次数：
-    /// 遍历 `g` 与遍历 `m` 是同一批元素的两层看法，乘起来就是重复计数。
     Grouped,
 }
 
@@ -61,9 +52,6 @@ impl Axes {
     }
 
     /// 输出轴。
-    ///
-    /// 只含批轴与自由轴：分组轴虽然不由求和消掉，但它是一条已被别的轴覆盖的派生看法，
-    /// 算进输出形状就会把 `y[n]` 说成 `y[n, g]`。
     pub fn output(&self) -> impl Iterator<Item = &Axis> + '_ {
         self.axes
             .iter()
@@ -85,8 +73,6 @@ impl Axes {
     }
 
     /// 是否有真正的规约轴（决定 `flops` 用哪种口径）。
-    ///
-    /// 分组轴不算：它不增加运算次数。
     pub fn reduces(&self) -> bool {
         self.reduced().next().is_some()
     }

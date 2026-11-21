@@ -1,8 +1,4 @@
 //! 装配管线：把 `nn` 层栈与驻留参数表接成 engine [`Graph`]，再由 [`CpuModel`](crate::model::host::CpuModel) 宿主执行。
-//!
-//! 内核适配表留在 [`kernels`](crate::kernels)；层计划与族别分流在 [`plan`](crate::plan)，
-//! 注意力块子节点接线在 [`block`](crate::block)，本模块只收口图、台账与编号分配。前向取数与
-//! K/V 读写在 [`model_host`](crate::model::host)，不认识算子内核算式。
 
 use diagnostic::{Code, Error, Result};
 use engine::exec::{Executor, Graph, Launch, Node, Stream};
@@ -16,12 +12,6 @@ pub(crate) use crate::plan::{LayerKind, LayerPlan};
 use crate::kernels::SITE;
 
 /// 编号空间分区（与 [`engine::exec::Bindings`](../engine/exec) 的 u32 编号一一对应）：
-///
-/// - [`INPUT_SLOT`]：首层输入（提示词）占位编号，由 [`chain`](chain) 的 `prev` 初始绑定；
-/// - [`ACTIVATION_BASE`] .. 权重基址之前：逐层激活输出编号；
-/// - [`WEIGHT_BASE`] 及之后：驻留权重整块编号。
-///
-/// 两段基址分开登记，避免逐层复用的激活编号与驻留权重编号撞上。
 const INPUT_SLOT: u32 = 0;
 
 /// 激活输出编号起始基址；输入占位占 [`INPUT_SLOT`]。
@@ -57,8 +47,6 @@ pub(crate) struct Assembly {
 }
 
 /// 一条条件记忆层的运行时绑定：该层专有的槽表与门控缓冲编号，加装配期定下的四元几何。
-///
-/// 表本身走 [`Assembly::weights`] 同一份台账；这里只留“每步要覆写哪两块缓冲”与“按什么算槽”。
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct MemoryBinding {
     /// 槽表缓冲编号：每行一个槽号，每步覆写。
@@ -235,10 +223,6 @@ impl<'a> NodeSink<'a> {
     }
 
     /// 条件记忆层接三节点：查表 `[槽表, 表] → [width]`、逐元素门控缩放、加回主链。
-    ///
-    /// 表是驻留权重，走 [`Self::bind_weight`] 同一份台账；槽表与门控缓冲是该层专有的批表，
-    /// 宿主每步覆写（图结构不变）。门是**乘**而不是选路：γ = 0 时加回的是零向量，主链逐位不变，
-    /// 与 `nn::engram::Bypass` 返回“这一行没有记忆”同一结果。
     pub(crate) fn push_memory(
         &mut self,
         prev: u32,
@@ -501,10 +485,6 @@ fn bypass_input(name: &str, width: usize, held: Option<(u32, usize)>) -> Result<
 }
 
 /// 把层栈装配成图：逐层接线，上一层输出即下一层输入。
-///
-/// 族别（投影 / 查表 / 一元点wise / 归一化 / 逐元素二元 / 位置编码 / 注意力块）决定操作数路数与
-/// 权重形态；形状、宽度、权重缺失都在装配期报出，不带进执行期。量化族、归约按 [`Code::Unsupported`]
-/// 拒绝，不静默跳过。
 pub(crate) fn assemble(stack: &Stack, params: &Params) -> Result<Assembly> {
     let layers = stack.layers();
     if layers.is_empty() {

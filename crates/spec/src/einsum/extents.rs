@@ -5,10 +5,6 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 /// 轴长度表。
-///
-/// 长度**不属于表达式**：同一份 `"nm,m->n"` 可以算 8×64 也可以算 4096×4096，差别只在这张表。
-/// 用 `BTreeMap` 而不是 `HashMap`：诊断输出（`Display`）必须稳定，否则测试与 `doctor` 的差异
-/// 会随哈希种子变化。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Extents {
     entries: BTreeMap<char, usize>,
@@ -23,8 +19,6 @@ pub struct Group {
 }
 
 /// 分组声明的静态判据：轴名合法、不以自己为基准、因子非零。
-///
-/// 这三条只读声明的字面量，不读表；「基准有没有长度、能不能整除」属于 [`Extents::base_length`]。
 fn declared(label: char, base: char, divisor: usize) -> Result<(), Error> {
     if !is_label(label) {
         return Err(blame(format!("轴 `{label}` {NOT_LABEL}")));

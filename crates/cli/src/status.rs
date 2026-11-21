@@ -1,6 +1,4 @@
 //! `status` 命令的组装与汇报（L7 bin 内模块）：逐层构造最小实例，把读到的事实与算出的下界排成一行。
-//!
-//! 判定与数值都来自各层库，本模块只装配、选词与分行；不定义新类型。
 
 use diagnostic::render::Panel;
 use diagnostic::{Code, Error, Result};
@@ -11,9 +9,6 @@ use tokenizer::Tokenizer as _;
 use weights::Loader as _;
 
 /// 每台设备的设备侧代码这次构建带了什么：只有源码，还是连镜像一起带上了。
-///
-/// 这一行也是镜像真的进了二进制的证据：`device-image` 关着时它全是"源码"，打开后 `metal`
-/// 变成 `metallib N B/M 个符号`（`M` 是编译器数出来的符号数）。
 fn device_images() -> String {
     let parts: Vec<String> = prim::devices()
         .iter()
@@ -32,8 +27,6 @@ fn device_images() -> String {
 }
 
 /// 逐层构造一个最小实例：任何一层不可用都会让这个函数失败。
-///
-/// `weights` 是 `--weights <文件>` 给的 safetensors 路径：给了就读真实条目，不给就只用声明层。
 pub(crate) fn status(weights: Option<&str>) -> Result<()> {
     let panel = build_report(weights)?;
     print!("{}", panel.render());
@@ -240,9 +233,6 @@ fn status_pager() -> Result<engine::kv::Pager> {
 }
 
 /// 一条下界的统一写法：读、写分开给，合计与强度作为派生量。
-///
-/// 两个方向分开是 [`nn::Bounds`] 的口径：把"读受限还是写受限"折叠成一个总量之后，任何关于
-/// 这一层卡在哪一侧的判断都失去了依据。
 fn floor_row(bounds: &nn::Bounds) -> String {
     format!(
         "{:.2} MB 读 / {:.2} MB 写（合计 {:.2} MB）/ {:.3} MFLOP，强度 {:.2} flop/byte",
@@ -279,9 +269,6 @@ fn archive_row(archive: &weights::safetensors::File, path: &str) -> Result<Strin
 }
 
 /// 模型：给了权重文件就读真实条目，没给就用声明的一对投影。
-///
-/// 两条路都返回 [`nn::Stack`]，所以"层下界之和"只有一份算法；区别只在层的清单从哪来。返回的
-/// 第二项是权重那一行的文字——把"读到了什么"与"算出了什么"分开，读者才能判断下界覆盖了什么。
 fn load_model(weights: Option<&str>) -> Result<(nn::Stack, String)> {
     let Some(path) = weights else {
         return declared_stack();
@@ -297,10 +284,6 @@ fn load_model(weights: Option<&str>) -> Result<(nn::Stack, String)> {
 const SAMPLE_LIMIT: usize = 1 << 20;
 
 /// 按需读最小的那条条目：把"头部说合法"与"字节能取出来"这两件事分开验。
-///
-/// 挑最小的条目而不是第一条，是因为真实权重里第一条往往是嵌入矩阵——读它等于把整份文件搬进
-/// 内存，而这恰恰是 [`weights::safetensors::File`] 要避开的。超过 [`SAMPLE_LIMIT`] 时如实报
-/// "未读"，不为了让输出好看而把上限偷偷抬高。
 fn read_sample(archive: &weights::safetensors::File) -> Result<String> {
     let Some(entry) = archive
         .header()

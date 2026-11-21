@@ -1,7 +1,4 @@
 //! 帧的编解码：[`Envelope`]（拥有载荷）与 [`Frame`]（借用载荷）。
-//!
-//! 两者都从同一段字节出发、经同一趟 [`scan`]：分帧、版本判定、上限判定与校验只有一份实现，
-//! 所以"拥有的那条路"与"借用的那条路"不可能对同一段字节给出不同结论。
 
 use diagnostic::{Code, Error, Result};
 
@@ -21,18 +18,12 @@ pub(crate) struct Header {
 
 impl Header {
     /// 整帧字节数：帧头 + 载荷 + 校验尾。
-    ///
-    /// 不会溢出：`len` 在 [`header`] 里已被 [`MAX_PAYLOAD`] 挡住。
     fn total(&self) -> usize {
         HEADER_LEN + self.len + trailer_len(self.version)
     }
 }
 
 /// 校验尾字节数：第 2 版起每帧 4 字节。
-///
-/// 帧头的 [`Header::total`] 与 [`Envelope::encoded_len`] 都从这里取：两处各写一遍
-/// `if version.has_checksum()`，将来加一版更长的尾时就会变成「帧头说 N 字节、实际切 N+4」，
-/// 错位之后整条流都解不开。
 fn trailer_len(version: Version) -> usize {
     if version.has_checksum() {
         TRAILER_LEN
@@ -87,8 +78,6 @@ pub(crate) fn scan(bytes: &[u8]) -> Result<Scan<'_>> {
 }
 
 /// 校验尾必须与「帧头 + 载荷」算出的 CRC 一致；第 1 版没有校验尾，直接通过。
-///
-/// 回答「这帧是不是被改过」，不回答「帧有多长」——切帧与上限在 [`scan`] 里。
 fn verify_checksum(bytes: &[u8], header: &Header) -> Result<()> {
     if !header.version.has_checksum() {
         return Ok(());
@@ -106,8 +95,6 @@ fn verify_checksum(bytes: &[u8], header: &Header) -> Result<()> {
 }
 
 /// 解析 10 字节帧头：魔数、版本、类型与载荷长度各判一次。
-///
-/// [`Decoder::push`] 用它"一收到帧头就先判一次"，所以可见性是 `pub(crate)` 而不是私有。
 pub(crate) fn header(bytes: &[u8]) -> Result<Header> {
     let magic = u16::from_le_bytes([bytes[0], bytes[1]]);
     if magic != MAGIC {
@@ -173,9 +160,6 @@ fn length_at(bytes: &[u8]) -> Result<usize> {
 }
 
 /// 一帧的零拷贝视图：帧头三段 + 借来的载荷。
-///
-/// [`crate::protocol::Decoder`] 交付的是它；要留住这帧、或要把它放进别的结构里时，用 [`Frame::envelope`] 换一份
-/// 拥有载荷的 [`Envelope`]。一帧最大 [`MAX_PAYLOAD`]，所以"复制一次"的代价是有上界的。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Frame<'a> {
     version: Version,
@@ -254,8 +238,6 @@ impl Envelope {
     }
 
     /// 整帧字节数（帧头 + 载荷 + 校验尾）。
-    ///
-    /// 这一帧写不出去（版本本端不认识、载荷超限）时是错误——一个解不出来的帧也不该被写出去。
     pub fn encoded_len(&self) -> Result<usize> {
         self.check()
             .map_err(|error| error.with("proto::Envelope::encoded_len"))?;
@@ -263,8 +245,6 @@ impl Envelope {
     }
 
     /// 编码成一帧，复用调用方已有的缓冲。
-    ///
-    /// 失败时 `out` 保持原样：调用方可以接着写下一帧，不会在流里留下半帧。
     pub fn encode_into(&self, out: &mut Vec<u8>) -> Result<()> {
         let len = self
             .check()
@@ -290,9 +270,6 @@ impl Envelope {
     }
 
     /// 解析一帧；短于帧头、魔数不符、版本不认识、类型未知、载荷不够或校验和不符都报错。
-    ///
-    /// 多出来的字节不动：流式连接上一个缓冲里可能躺着好几帧。要按帧切下一段，用
-    /// [`Envelope::parse_rest`]；要避免复制载荷，用 [`Envelope::view`]。
     pub fn parse(bytes: &[u8]) -> Result<Self> {
         Self::parse_rest(bytes).map(|(envelope, _)| envelope)
     }

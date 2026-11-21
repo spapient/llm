@@ -1,22 +1,14 @@
 use super::*;
 
 /// 代理梯度（surrogate）：只定义「发放对膜电位」的导数，不参与前向。
-///
-/// 前向的发放是阶跃——导数在阈值处没有定义、别处为零，照它反传什么也学不到。surrogate 用一个
-/// 面积为 1 的窗把这段导数抹平：窗内按形状给值，窗外为零。它**不是**「软化的前向」：前向仍走
-/// [`Lif`] 的硬判据，只有反传这一侧看窗，所以同一个 `step` 还是给出同一个脉冲。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Surrogate {
     /// 矩形窗：`|v − θ| < width` 内恒为 `1/(2·width)`。
-    ///
-    /// 窗内一律同值，所以「离阈值多远」不影响梯度——简单，且对电位抖动不敏感。
     Rect {
         /// 窗的半宽。
         width: f32,
     },
     /// 三角形：窗内从阈值处的 `1/width` 线性衰减到边界上的零。
-    ///
-    /// 峰落在阈值上，于是「刚好压线」的通道拿到的梯度最大——与阶跃真正被跨越的位置一致。
     Triangle {
         /// 窗的半宽。
         width: f32,
@@ -33,8 +25,6 @@ impl Surrogate {
     }
 
     /// 发放对膜电位的导数：`potential` 与 `threshold` 的距离落在窗内才有值。
-    ///
-    /// 两种形状的面积都是 1，所以换形状不换「总敏感度」，只换它怎么摊在窗内。
     #[must_use]
     pub fn derivative(&self, potential: f32, threshold: f32) -> f32 {
         let offset = (potential - threshold).abs();

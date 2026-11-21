@@ -1,14 +1,4 @@
 //! 声明数据树：编译期语料在运行期的形状。
-//!
-//! 这里**没有解析器**：`ops/*.toml`、`devices/*.toml`、`lints/vocabulary.toml` 由各 crate 的
-//! `build.rs` 在编译期用构建期依赖读出并展开成 `Table` 字面量（ADR 0022），运行期只遍历这棵树。
-//!
-//! 保留"表 + 值"这一层，是因为字段含义属于各层自己的语义：`[axes]` 属于 `op`，`[[provides]]`
-//! 属于 `prof`，门禁阈值属于 `tools`——本 crate 不解释任何领域含义，也不决定语料放在哪。
-//!
-//! 构造入口分两组：[`Table::from_pairs`] 与 `Value::text` / `int` / `real` / `flag` / `array` /
-//! `table` 给生成的代码用；[`Table::set`]、[`Table::push`]、[`Table::remove`]、[`Table::at_mut`]
-//! 给测试改写内置语料用（"把内置声明改成非法的一份"不该再靠字符串替换）。
 
 /// 解析后的表：保持插入顺序，便于稳定打印。
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -166,9 +156,6 @@ impl Table {
     }
 
     /// 按点号路径写入：已存在则原地替换（顺序不变），否则追加。
-    ///
-    /// 路径不存在（父级缺失或类型不符）时静默不写——测试改写语料的前提是"路径本来就在"，
-    /// 写错路径的后果是断言失败，而不是 panic 掉整条测试。
     pub fn set(&mut self, path: &str, value: Value) {
         let segments = segments(path);
         let Some((last, parents)) = segments.split_last() else {

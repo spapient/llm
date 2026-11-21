@@ -37,9 +37,6 @@ use crate::format::impl_serde;
 use crate::format::{BlockFormat, Format, impl_from_str};
 
 /// 块内 scale 前缀的形状——决定反量化时先读哪几个字段。
-///
-/// 这里只描述 **scale 本身**，不描述值怎么编码（那是 [`Family`]）。块字节数里已经含了
-/// scale 的空间，但「scale 是什么形状」推不出来，必须显式声明。
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum Scale {
     /// 单个 `f16` 缩放因子（`q1_0`/`q2_0`/`q4_0`/`q5_0`/`q8_0`，以及只有 `d` 的 IQ/TQ 格式）。
@@ -53,9 +50,6 @@ pub enum Scale {
 }
 
 /// 值的编码族——决定反量化走哪一条解码路径。
-///
-/// 与 [`Scale`] 正交：`Family::KQuant` 里既有 `SubScale`（`q2_K`–`q6_K`）也有 `F32`
-/// （`q8_K`）；`Family::Grid` 里既有 `SubScale`（`iq2_xs` 等）也有 `F16`（`iq1_s`/`iq4_nl`）。
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum Family {
     /// 传统块量化（`q1_0`–`q8_1`）：固定块 32/64/128，线性 scale。
@@ -86,14 +80,6 @@ pub struct QTypeSpec {
 }
 
 /// GGML 块量化格式闭集：传统 Q、K-quant、IQ 查表、TQ 三元四族。
-///
-/// 变体顺序与 [`QType::ALL`]、内部 `SPECS` 表一致；新增格式只能追加在末尾。
-///
-/// `repr(u8)` 让「判别值 = 行表下标」成为类型保证，`SPECS[self as usize]` 不会越界。
-///
-/// 变体名必须与 GGML 官方码名逐字一致（`Q4_K`/`IQ2_XXS`），camel 化会与外部规范脱节，
-/// 所以只在这个枚举上放宽 `non_camel_case_types`：模块级 `#![allow]` 会把以后新增的类型
-/// 一并豁免。
 #[allow(non_camel_case_types)]
 #[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
@@ -155,10 +141,6 @@ pub enum QType {
 }
 
 /// 每格式的布局，按 [`QType::ALL`] 的声明顺序对齐（索引即判别值）。
-///
-/// `scale` 与 `family` 分别取自 `ggml-common.h` 的块字段与 `ggml_type_traits` 的解码归属：
-/// `q8_K` 的 `float d` 是唯一的 `F32`，`iq4_nl`/`iq1_s`/`iq2_xxs`/`iq3_xxs` 只有 `d`，
-/// 其余 IQ 格式块内另带 sub-scale 数组。
 const SPECS: [QTypeSpec; QType::ALL.len()] = [
     QTypeSpec {
         name: "q1_0",
@@ -395,8 +377,6 @@ impl QType {
     blocked_accessors!(SPECS, QTypeSpec);
 
     /// 由规范名还原；未知名字返回 `None`。
-    ///
-    /// 转调 [`Format::parse_name`]：解析的写法只有一份，inherent 这个方法只负责路径调用。
     #[must_use]
     pub fn parse_name(text: &str) -> Option<Self> {
         <Self as Format>::parse_name(text)

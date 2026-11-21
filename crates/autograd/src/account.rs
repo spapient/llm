@@ -1,7 +1,4 @@
 //! 反向执行的**状态**：[`Account`] 数每个变量还差几份梯度贡献，并决定它的反向步骤何时可执行。
-//!
-//! 与 [`crate::Schedule`] 的分工是刻意的：调度是事实（只读、可反复用），账本是运行期状态
-//! （每个 micro-batch 都要重建一次）。同一个计划可以配上任意多个账本，二者不共享可变状态。
 
 use diagnostic::Result;
 
@@ -10,11 +7,6 @@ use crate::schedule::Schedule;
 use crate::{internal, invalid};
 
 /// 反向执行的账本：扇出计数与"谁的梯度已经齐全"。
-///
-/// 一个变量被多少个**图上**步骤当作输入引用，就要接收多少份贡献；收满之前的步骤不允许执行。
-/// 计数一次建好（O(输入数)），之后每一步只做减法，没有哈希、没有扫描。
-///
-/// 训练循环里复用一个账本：每步 `rebuild` 一次，`pending` 与 `state` 的容量留在原处。
 #[derive(Debug, Clone, Default)]
 pub struct Account {
     pending: Vec<u32>,
@@ -38,8 +30,6 @@ impl Account {
     }
 
     /// 按 `schedule` 重建扇出计数，复用已分配的缓冲。
-    ///
-    /// 重建会丢弃之前结算的进度——这正是"一个调度、多个账本"的用法：想重跑就再重建一次。
     pub fn rebuild(&mut self, schedule: &Schedule) {
         let graph = schedule.graph();
         self.state.clear();
@@ -63,9 +53,6 @@ impl Account {
     }
 
     /// 该变量的梯度是否已经齐全（它的反向步骤现在可以执行）。
-    ///
-    /// 不进图的变量恒为 `false`：它没有梯度，也就谈不上"齐全"——把常量报成就绪会让调用方
-    /// 以为可以执行一步根本不存在的反向。
     pub fn ready(&self, var: Var) -> bool {
         self.graph(var) && self.pending(var) == 0
     }
@@ -81,9 +68,6 @@ impl Account {
     }
 
     /// 结算一步，返回因此**可以执行**的变量（梯度刚收满的前驱，按步骤的输入顺序）。
-    ///
-    /// 每次调用返回一个新 `Vec`；训练循环里要不分配请用 [`Account::settle_into`]。
-    /// 三种误用都会失败而不是算错：步骤不属于这份调度、步骤已结算、梯度还没收满。
     pub fn settle(&mut self, step: &Node) -> Result<Vec<Var>> {
         let mut ready = Vec::new();
         self.settle_into(step, &mut ready)?;

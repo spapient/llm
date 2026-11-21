@@ -1,13 +1,4 @@
 //! 一条流水线：找算子 → 取模型 → 建立证据 → 协商 → 选 tile → emit。
-//!
-//! `doctor` / `verify` / `bench` / `execution` 只决定"跑哪些形状、跑几次、对拍什么"，
-//! 这段序列只在这里写一次——四条命令各写一遍曾让同一台设备在两个命令里得出不同结论。
-//!
-//! 三个类型的分工：
-//!
-//! - [`Run`]：这次要跑谁（算子 + 模型 + 档案 + 证据），协商也由它给出；
-//! - [`Prepared`]：某个 `(m, n)` 的可执行产物（计划 + 源文本 + 缓存键）；
-//! - [`Prepared::harness`]：把样本变成实参，签名与样本在这里对齐。
 
 use crate::build;
 use cutile::cache::CacheKey;
@@ -46,16 +37,11 @@ impl<'a> Run<'a> {
     }
 
     /// 这次协商该用的证据。
-    ///
-    /// 失败时原样返回 [`NoPath`]：`doctor` 的职责正是解释"为什么不行"，它把诊断当报告内容。
     pub fn negotiate(&self) -> Result<Path, Box<NoPath>> {
         cap::negotiate_with(self.op, self.profile, &self.proof)
     }
 
     /// 把 `(m, n)` 变成可执行的一批：形状、代价、计划与源文本。
-    ///
-    /// 它不碰样本：`doctor` 只解释流水线，不该为了一次解释去分配一份 `m × n` 的样本缓冲。
-    /// 签名与样本的对齐在 [`Prepared::harness`] 里，仍先于编译。
     pub fn prepare(
         &self,
         path: &Path,
@@ -84,8 +70,6 @@ pub(crate) struct Prepared {
 
 impl Prepared {
     /// 拼出可执行程序：内核源码 + 样本 + 签名派生的实参 + 重复次数。
-    ///
-    /// 签名与样本先对齐：ABI 不一致时编译能过、结果会错位，因此这条检查必须先于编译。
     pub fn harness(
         &self,
         op: &OpDecl,
@@ -156,9 +140,6 @@ pub(crate) fn model_for(name: &str) -> diagnostic::Result<Model> {
 }
 
 /// `verify` 的形状矩阵：最小合法、多行非方形、生产形状。
-///
-/// 三项全部来自算子模型：组大小（`model.group`）与生产形状（`model.shape`）都由算子声明，
-/// 换一个分组策略或换一个算子时矩阵随它变，负例也不会跟着漂移。审计不写第二个方阵。
 pub(crate) fn verify_shapes(model: &Model) -> Vec<(u64, u64)> {
     let group = u64::from(model.group.max(1));
     let (m, n) = model.shape;

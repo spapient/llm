@@ -1,13 +1,4 @@
 //! 设备后端契约：cutile 只依赖这条缝，不认识 Metal / CUDA / C 的具体实现。
-//!
-//! 对标 Triton 的 `Backend = Codegen + Driver`：把「生成程序文本」与「编译 / 发射 / 回读」拆成两条
-//! trait，各自可独立实现、独立测试。[`Codegen`] 是纯函数（见证清单 → 一门语言的源），可离线对拍；
-//! [`Driver`] 是唯一碰工具链与设备 FFI / 子进程的一半。[`Backend`] 只是两者的并集，cutile 只经
-//! `&dyn Backend` 分派，不枚举后端。
-//!
-//! cutile 保留 [`Codegen`] 与 C 宿主参考后端（本机 CPU，不是设备厂商）；Metal / CUDA 的 [`Driver`]
-//! 由 L6（`engine`）实现、L7（`cli`）装配注入（`docs/ARCHITECTURE.md` 的 L3 契约：机制层不出现
-//! 厂商特判与运行时依赖）。装配走 [`register`]，cutile 的机制层只从这张表取后端，不硬编码后端清单。
 
 use crate::toolchain::Toolchain;
 use crate::witness::{Scope, Selected};
@@ -36,27 +27,17 @@ pub enum Source {
 }
 
 /// 并行网格程序的请求：降低形态 + 派发几何。
-///
-/// 两个字段都由声明与样本推出（[`crate::execution::launch`]），后端只照做——不再判断「该并行还是
-/// 串行」，也不得按算子名挑驱动：那是第二份分派，必然与 `[chunk]` / `[grid]` 声明漂移。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Launch {
     /// 降低形态。
     pub kind: Lower,
     /// 每个维度的工作项数：逐点是元素数、分块族是块数、循环注入是 `[grid]` 各维的样本取值。
-    ///
-    /// 它**不**等于 CUDA 的网格维（那是块数）：块数由后端用自己的线程组大小折算，两种方言的
-    /// 「网格」含义不同，混用会让末块越界或只跑一部分元素。
     pub items: [usize; 3],
     /// 一个线程组里放几个工作项：逐点取 [`crate::execution::POINT_THREADS`]，其余族一工作项一线程。
     pub group: usize,
 }
 
 /// 张量核 GEMM 的几何：输出块的行/列跨度、规约块尺寸，以及每组挂几个 simdgroup。
-///
-/// 四个量互相牵制——线程组内存只随 `tile_n` 与 `k_tile` 涨，线程组数随 `tile_m`、`tile_n`
-/// 反向变——故捆成一个值对象一起传，调用点只谈「几何」而不散装四个数。具体取哪一档由后端
-/// 按形状实测选型（`device::tiled::tensor_geometry`），本类型只描述「是什么」。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TensorGeometry {
     /// 输出块的行跨度（`M` 方向）。
@@ -107,9 +88,6 @@ impl TensorGeometry {
 }
 
 /// 生产态内核 lowering 请求：骨架分派后的中性描述，vendor 后端据此生成设备源。
-///
-/// 它只描述「怎么降」（网格 / 分块 / 串行），不含任何厂商语法；Metal / CUDA 的语法差异收在
-/// 各自后端的实现里（`engine`），cutile 的机制层不出现厂商字面量（L3 契约）。
 #[derive(Debug, Clone, PartialEq)]
 pub enum Lower {
     /// 逐点网格：每线程一个元素，唯一标量传 `1`。
@@ -175,9 +153,6 @@ pub enum Lower {
     /// 因此要求 B 预先转成 `N×K` 的低精度布局（布局前置不属于 lowering 本身）。
     /// 要求 `M` 被 `tile_m` 整除、两个块跨度 ∈ {32, 64, 128}、`k_tile` 是 16 的倍数、
     /// `simdgroups ∈ {4, 8}`；不满足时由调用方回落。
-    ///
-    /// 行/列跨度分开给：线程组内存只随 `tile_n` 增长，压小 `tile_m` 在同一份共享内存下换来
-    /// 更多线程组，尾部波次更满（详见 [`TensorGeometry`]）。
     TensorGemm {
         /// 输出块跨度、规约块与 simdgroup 数。
         geometry: TensorGeometry,
@@ -192,10 +167,6 @@ pub enum Lower {
         block: usize,
     },
     /// 共享内存分块的对称 int8 GEMM：`i8` 输入、`i32` 精确累加、`f32` 输出。
-    ///
-    /// 与 [`Self::TiledGemm`] 同几何，但共享块按 `int` 存放、乘加走整数；要求签名是
-    /// 「两个 `u8` 输入 + 一个 `f32` 输出 + 三个整数标量」，且 `M/N/K` 均能被 `tile` 整除
-    /// （尾块会破坏线程组屏障的统一控制流），不满足时由调用方回落。
     Int8Gemm {
         /// 输出块边长，同时是每维 threadgroup 线程数；`tile² ≤ 1024`。
         tile: usize,
@@ -235,8 +206,6 @@ pub trait Codegen {
     /// 基准封装：把一份 `.k` 内核 + 签名 + 样本降成「跑一次并回读」的完整程序源（verify 的
     /// 加速器车道）。host C 后端不实现（C 基准走产物缓存，不经 [`Driver::compile_run`]；
     /// 设备侧 `Metal` / `Cuda` / `Ascendc` 实现）。
-    ///
-    /// 它是**语义门**：单线程、`grid = 1`，回答「这个算子算得对不对」，不回答「跑得多快」。
     fn harness(&self, _kernel: &str, _signature: &Signature, _sample: &Sample) -> Result<Source> {
         Err(Error::new(
             Code::Unsupported,
@@ -245,9 +214,6 @@ pub trait Codegen {
     }
     /// 并行网格程序：按 [`Launch`] 降源并拼上**按网格发射**的 host 驱动——加速器车道跑的是生产态
     /// 形态（每线程一元素 / 每线程一块 / `[grid]` 各维一线程），不是单线程语义门。
-    ///
-    /// 不支持的形态（tile / flash / 波内特化）报 [`Code::Unsupported`]，调用方按「已声明但没有
-    /// 并行实现」回落到 [`Self::harness`]——这条回落必须显式，不能把缺实现说成已验证。
     fn parallel(
         &self,
         _kernel: &str,
@@ -261,9 +227,6 @@ pub trait Codegen {
         ))
     }
     /// 生产态计时封装：把 lowered kernel 和设备专属 launch geometry 变成带设备计时的程序。
-    ///
-    /// 与 [`Self::harness`] 的语义验证不同，此入口必须使用 [`Self::lower`] 的并行 kernel，
-    /// 并在设备上采样；不得用 host 侧串行语义实现冒充设备吞吐。
     fn benchmark_harness(
         &self,
         _profile: &Profile,
@@ -294,15 +257,9 @@ pub trait Driver {
         scope: Scope,
     ) -> Result<Readback>;
     /// 这条通道实测的工具链（进产物身份 / 报告）；拿不到（缺编译器）时为 `None`。
-    ///
-    /// 把「探针」暴露成方法而不是让机制层直接调 `detect_nvcc` / `detect_metal`：这样后端实现
-    /// 搬去 `engine` 后，[`crate::verify`] 仍只经这条缝取工具链身份，不依赖任何厂商检测函数。
     fn toolchain(&self) -> Option<Toolchain>;
     /// 生产态内核的「编译 + 执行 + 回读」，返回 `(stdout, stderr)` 原文。与见证 [`run`](Self::run)
     /// 分开：这条是原始子进程路径，`verify` 的加速器车道（CUDA / Metal）从这取回读并解析位模式。
-    ///
-    /// 宿主 C 的 `verify` 走产物缓存（`build::execute`），不经这条路径，故默认不支持；Metal / CUDA
-    /// 覆盖它。
     fn compile_run(
         &self,
         _profile: &Profile,
@@ -322,9 +279,6 @@ pub trait Driver {
 pub trait Backend: Codegen + Driver + Sync {}
 
 /// 装配一台后端：L7（`cli`）在启动时注入 Metal / CUDA；cutile 已内置 host C 参考后端。
-///
-/// 后端注册进 cutile 的进程级表后，机制层（`witness` / `verify`）按 `emit` 从表里取，不硬编码
-/// 后端清单。注册是幂等的（同一条后端重复注册只留一份，见 `crate::device::register`）。
 pub fn register(backend: &'static dyn Backend) {
     crate::device::register(backend);
 }

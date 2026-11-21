@@ -1,7 +1,4 @@
 //! 反向调度的**事实**：[`Schedule`] 是一次 `backward` 的结果——哪些步骤、什么顺序、谁是终点。
-//!
-//! 调度只读、可重复使用：把同一张图的下一次前向重新规划进同一个 `Schedule`，缓冲留在原处。
-//! 同一份只读视角还有 [`Summary`]：图规模、角色计数与可达性，供诊断、缓存键与容量预估。
 
 use diagnostic::Result;
 
@@ -32,14 +29,6 @@ impl Ordering {
 }
 
 /// 一次反向传播的计划：只含 loss 可达的节点，按反向拓扑序排列。
-///
-/// 默认顺序是"深度降序、同深度编号降序"：
-///
-/// - 深度降序保证输出总在输入之前（向后一步），因此是合法的反向拓扑序；
-/// - 同深度互不依赖，编号降序只是让同一种图每次排出来的顺序都一样，便于缓存与对拍。
-///
-/// 训练循环里应当复用一个 `Schedule`（[`Tape::plan_into`]）：`clear` 之后重填，
-/// 稳定态不再分配。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Schedule {
     loss: Var,
@@ -66,9 +55,6 @@ impl Default for Schedule {
 
 impl Schedule {
     /// 空的计划：还没有规划过任何 loss，也没有分配缓冲。
-    ///
-    /// 它存在的意义是给训练循环一个占位符——[`Tape::plan_into`] 可以反复往里写，
-    /// 第一次规划才分配，之后都复用容量。
     pub fn new() -> Self {
         Self::default()
     }
@@ -84,9 +70,6 @@ impl Schedule {
     }
 
     /// 需要取走的梯度：loss 可达、需求为 [`Requirement::Grad`] 的变量，按编号升序。
-    ///
-    /// 不可达的终点不出现在这里——这正是剪枝的价值：没参与 loss 的参数不该被优化器更新，
-    /// 也不该被分配梯度缓冲。
     pub fn endpoints(&self) -> &[Var] {
         &self.endpoints
     }
@@ -102,10 +85,6 @@ impl Schedule {
     }
 
     /// 按深度分层：同一层的步骤互不依赖，可以并行/合批执行。
-    ///
-    /// 层按执行顺序给出，第 0 层是 loss 所在深度、最先执行。分层不是随意的：边总是从
-    /// 浅层指向深层，所以一个深度为 `d` 的变量只会被深度 `> d` 的步骤消费——等前面的层
-    /// 全部结算完，这一层的每一步都必然已经收满梯度。
     pub fn levels(&self) -> impl Iterator<Item = &[Node]> {
         self.steps
             .chunk_by(|left, right| left.depth() == right.depth())
@@ -174,10 +153,6 @@ impl Schedule {
     }
 
     /// 从 `loss` 出发沿边反向走一遍，把"变量是否可达"写进位图。
-    ///
-    /// 边只能从小编号指向大编号（输入先于输出记录），因此**按编号降序遍历节点**时，
-    /// 一个节点的可达性已经由它全部消费者决定：这正是拓扑序的逆序，不需要显式栈，
-    /// 也不需要递归——两万层的前向与两层一样走一遍。
     fn mark(&mut self, tape: &Tape, loss: Var) {
         // `reset` 已把位图补成等长的全 false，这里不再整表清零。
         self.graph[loss.id() as usize] = true;
@@ -247,9 +222,6 @@ fn compare(ordering: Ordering, left: &Node, right: &Node) -> core::cmp::Ordering
 }
 
 /// 一张图与一次反向规划的计数快照。
-///
-/// 字段全部是计数：不存变量列表、不存边表，避免随图规模线性复制。需要逐个变量时仍走
-/// [`Tape`] 的访问器。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Summary {
     vars: u32,

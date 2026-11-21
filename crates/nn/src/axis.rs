@@ -1,8 +1,4 @@
 //! 单轴族与归约族层共享的规格内核与委托宏。
-//!
-//! 两族层的字段、构造校验、访问器委托与下界路径逐字相同，唯一实质差别是声明输出形状：单轴族
-//! 输出 `[len]`，归约族输出标量 `[]`。形状作为构造参数传入，内核因此只保留一份；算子语义
-//! （表达式、位宽、样本、参考）仍在 `op` 一侧，这里不抄第二份。
 
 use diagnostic::{Code, Error, Result};
 use tensor::Shape;
@@ -85,9 +81,6 @@ impl AxisCore {
 }
 
 /// 为一个已显式声明的层绑定算子名、构造器、访问器与 [`Contract`] 委托。
-///
-/// 类型声明留在源码里（架构门禁按 `pub struct` 行核对）；本宏只展开构造与委托。`$shape` 是输出
-/// 形状口径（[`OutputShape`]），`$kind` 是诊断文案里的族别名，`$role` 是该层参数槽的角色。
 #[doc(hidden)]
 #[macro_export]
 macro_rules! layer_delegate {

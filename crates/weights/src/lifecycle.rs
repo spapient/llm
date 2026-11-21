@@ -1,7 +1,4 @@
 //! 容器生命周期模式与增量补丁：训练/发布判定、`opt.` 状态剥离、逐字节 XOR 补丁。
-//!
-//! 模式判定与剥离只依赖已读 [`Archive`]；补丁是自逆 XOR：base 缺失或不等长按全量保留，
-//! 不做第二份容错。
 
 use crate::bad;
 use diagnostic::Result;
@@ -45,9 +42,6 @@ impl Mode {
 }
 
 /// 读取模式；无标记段的旧文件按推理模式处理。
-///
-/// 有标记段但码位不在闭集内时显式报错，不静默落进推理模式：未知码通常意味着文件损坏
-/// 或版本错位，按推理放行会丢掉训练状态段。
 pub fn mode_of(archive: &Archive<'_>) -> Result<Mode> {
     match archive
         .get(MODE_NAME)
@@ -134,10 +128,6 @@ fn xor(a: &[u8], b: &[u8]) -> Vec<u8> {
 
 pub mod import {
     //! 中性条目流导入：外部权重源 → 既有 [`Segment`] 列表，不新增第二份条目类型。
-    //!
-    //! 各适配通路只做「源字段 → 中性段」的归一：名字、元素类型、形状、字节落 [`Segment`]，
-    //! 量化配对、压缩与落盘仍走 `Writer`。读不通或类型不在映射闭集内显式报错
-    //! （[`Code::Unsupported`]），不静默转换、不丢精度、不伪造反量化。
 
     use std::path::Path;
 

@@ -1,11 +1,4 @@
 //! 外部格式与字节编码：自有 `.u` 容器 / safetensors 装载，分词器与 `wire` 字节码闭集。
-//!
-//! 两组都是"字节进、字节出"的边界层，不起编译器、不碰设备。共同的纪律：夹具在装配阶段造好并
-//! 校验，计时闭包里只留被测动作；唯一的失败出口是 [`checked`]，所以本文件没有
-//! `unwrap` / `expect` / `panic!`。
-//!
-//! 吞吐按**每条用例自己的字节数**登记（全量 8 条 vs 首条 1 条差 8 倍），与 `tests/table.rs`
-//! 的 `LOAD_SCENARIOS` 逐条对齐——组级一个总数会让台账与基准各说一套。
 
 pub(crate) mod weights {
     use crate::fixtures::{checked, found};
@@ -129,9 +122,6 @@ pub(crate) mod weights {
     }
 
     /// 装载组：`*_reopen` 每迭代重开（冷），`*_open` 复用已打开源（热）；`mmap_*` 仅 Unix。
-    ///
-    /// 四条 `read_*` 与四条 `mmap_*` 共用同一个 `plan`：只换"怎么开"与"怎么读"，
-    /// 条目名、首条 / 全量与吞吐口径只有一份。
     pub(crate) fn load(c: &mut Criterion) {
         let (path, names) = fixture();
         let file = checked(File::open(&path), "打开");
@@ -160,9 +150,6 @@ pub(crate) mod weights {
     ];
 
     /// 四条用例的骨架：`*_reopen` 每迭代重开（冷），`*_open` 复用已打开源（热）。
-    ///
-    /// 只换"怎么开"（`cold` / `hot`）与"怎么读"（调用点的 `loads` / `views`），
-    /// 条目名、首条 / 全量与吞吐口径只有一份。
     fn plan<C, H>(group: &mut BenchmarkGroup<'_, WallTime>, prefix: &str, cold: C, hot: H)
     where
         C: Fn(bool) -> usize,
@@ -251,8 +238,6 @@ pub(crate) mod text {
     }
 
     /// 基准内合成的 BPE：256 个单字节 + 三个 ASCII 二元组合；合并秩按表内顺序。
-    ///
-    /// 只用于跑通合并路径，不代表任何发布模型的词表规模。
     fn bpe_encoder() -> Bpe {
         let mut pieces: Vec<Vec<u8>> = (0..=255u8).map(|byte| vec![byte]).collect();
         pieces.extend([b"he".to_vec(), b"ll".to_vec(), b"  ".to_vec()]);
@@ -272,9 +257,6 @@ pub(crate) mod text {
     }
 
     /// 分词器五组：编码（基线 / BPE）、计数、解码（基线 / BPE）、详细对齐、流式增量。
-    ///
-    /// 每组一个函数：`criterion` 的 `iter` 要一个空闭包，而空闭包在复杂度口径里算一个条件
-    /// 分支，所以一组一函数既是语义边界，也让每组停在 `Ccn` 上限以内。
     pub(crate) fn tokenizer(c: &mut Criterion) {
         let text = sample();
         let encoder = bpe_encoder();

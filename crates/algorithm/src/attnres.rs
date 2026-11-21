@@ -30,9 +30,6 @@ use crate::csa::{accumulate, dot, finite, softmax_row};
 const SITE: &str = "algorithm::attnres";
 
 /// 注意力相对残差：在前几层输出上按一次注意力取凸组合。
-///
-/// 不持参数：查询、键、值都由调用方给（真实实现里各是一次投影）。方法对元素类型泛型，同一份几何
-/// 既跑 `f32` 也跑 `f64`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AttnRes {
     width: usize,
@@ -222,10 +219,6 @@ fn check_pairs<S: Scalar>(main: &[S], mixed: &[S]) -> Result<()> {
 }
 
 /// 一层的来源簿记：喂本层的前几层层号 + 主路取自哪一层。
-///
-/// 层号是模型级的名字（位置是这一层的私有视角）：装配侧读得到自己能解释的东西，重排 `values` 也不会
-/// 改语义。构造期就判——来源必须**严格递增**且**都不等于主路**；重复的层会在一份自注意力里被算两次，
-/// 等于偷偷改了权重。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sources {
     layers: Vec<usize>,

@@ -1,11 +1,4 @@
 //! 单机算子基准：逐元素 / 行内算子、小 K 稠密与量化 GEMM、大 K GEMM 与线程余量、内存搬参照。
-//!
-//! 四类共用一条契约：几何在装配阶段用同一条内核校验一次（[`checked`]），测量阶段只把 `Result`
-//! 交给 `black_box`。标量与分块的对照由 [`dual`] 统一给出——同一份 A/B 缓冲、同一组形状，
-//! 只有遍历次序不同，所以两组永远指向同一份算术。
-//!
-//! 报 ns/iter 与读入字节吞吐；`gemm_threads` 报乘加量吞吐（`GElem/s`），因为那几条路径读入
-//! 字节数相同、差别只在算术与并行度。回退判定在 `tests/regress`，本文件不写性能目标数字。
 
 use crate::fixtures::{checked, ok};
 use criterion::measurement::WallTime;
@@ -96,12 +89,6 @@ pub(crate) fn gemv(c: &mut Criterion) {
 }
 
 /// int4 decode 的两档：同一份打包权重、同一行 `x`，标量叶与向量通道。
-///
-/// 生产 decode 主链路就是这一档（[`gemv_i4`]），所以形状取 `1×4096×4096`：权重 `n` 行各
-/// [`ROW`]/2 个字节（int4 每字节 2 个码），标度 `n × groups` 逐行逐组不同——量化权重的真实读法。
-/// 两档指向同一份数据、同一个输出缓冲，差的只有内层算术：标量叶每码查表并串行累加，向量通道
-/// 按码值直接换算、4 列共享一次 `x` 载入、权重按列块驻留。开测前先核对两档给出同一个答案，
-/// 否则测的是两段不同的算术。
 pub(crate) fn gemv_quant(c: &mut Criterion) {
     let row = ROW / I4_CPB;
     let groups = ROW / GROUP;
@@ -217,9 +204,6 @@ pub(crate) fn silu(c: &mut Criterion) {
 }
 
 /// 同一份 A/B 缓冲上的两档内核：标量参考与分块执行路径。
-///
-/// `names[0]` 配 `scalar`、`names[1]` 配 `tiled`；分组名与用例名是 `tests/regress` 读取的契约，
-/// 由调用点逐字给出，不在这里拼。
 fn dual<A, C, E: fmt::Display>(
     group: &mut BenchmarkGroup<'_, WallTime>,
     (a, b, out): (&[A], &[A], &mut [C]),
@@ -256,9 +240,6 @@ fn dual<A, C, E: fmt::Display>(
 }
 
 /// 同一份 A/B 缓冲上的两档 `gemm` 内核：标量参考与 tile 执行路径。
-///
-/// `gemm` 的收缩轴固定为 [`gemm::K`]，所以这里只传 `(m, n)`；标量路径 `gemm::matmul`
-/// 不返回 `Result`，几何由 tiled 路径的 `check_dims` 一次性校验。
 fn gemm_pair<G: Gemm>(
     group: &mut BenchmarkGroup<'_, WallTime>,
     (a, b, out): (&[G::Elem], &[G::Elem], &mut [f32]),
@@ -280,9 +261,6 @@ fn gemm_pair<G: Gemm>(
 }
 
 /// f32 小 K：`prefill_256x256_k8` 走执行路径，`scalar_*` 走标量参考。
-///
-/// `K = 8` 时一行 A 就在寄存器里，分块实测慢 2~3 倍，所以这条格式不分块；本基准把这点留在
-/// 台架上可复现。量化格式的分块收益见 [`gemm_quant`]。
 pub(crate) fn gemm_dense(c: &mut Criterion) {
     let k = gemm::K;
     let a: Vec<f32> = (0..M * k).map(|i| (i % 5) as f32 * 0.25 - 0.5).collect();
@@ -346,9 +324,6 @@ pub(crate) fn matmul_dense(c: &mut Criterion) {
 }
 
 /// 线性层布局 `[rows, k] × [n, k]`（权重不转置）：逐行 `gemv`、tile 与寄存器分块 + 常驻池对照。
-///
-/// 这一组量的是"权重读几遍"：逐行路径每行读一遍整块权重，`tiled` 一行权重读一遍服务全部行，
-/// `packed` 再叠加 8×8 寄存器分块与多线程。三者算术相同，输出逐位一致。
 fn projection(c: &mut Criterion) {
     let rows = M;
     let x: Vec<f32> = (0..rows * K)
@@ -437,9 +412,6 @@ fn cores() -> usize {
 }
 
 /// 把 `m` 行切给 `parallel` 个线程：每线程只碰自己那段输出行。
-///
-/// 核数由调用点一次问出并传进来：`available_parallelism` 是系统调用，落在计时闭包里会把一次
-/// 调度查询的开销摊进被测内核。
 fn spread<T: Send>(
     parallel: usize,
     m: usize,
@@ -525,11 +497,6 @@ fn i8_paths(group: &mut BenchmarkGroup<'_, WallTime>, parallel: usize) {
 }
 
 /// 三档工作集对应三级存储（16 KiB / 1 MiB / 64 MiB），每档读、写分开测。
-///
-/// 只流式读权重的 GEMV 可以跑过拷贝上限，把两个方向合成一个数，"这层卡在哪一侧"就再也判断
-/// 不了（`nn::Bounds` 的分账口径与此相同）。小档在迭代内多跑几趟，让计时噪声不盖过信号。
-/// 读用无符号整数异或归约而不是浮点求和：浮点加法默认不可重排，编译器会把归约串行化，测到的
-/// 是加法延迟而不是搬运速率；搬运带宽与元素类型无关，整数读同样代表这一档的读上界。
 const TIERS: [(&str, &str, usize, usize); 3] = [
     ("l1", "16kib", 2048, 64),
     ("l2", "1mib", 128 * 1024, 8),

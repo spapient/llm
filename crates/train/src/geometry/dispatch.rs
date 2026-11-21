@@ -1,7 +1,4 @@
 //! 职责：`Geometry` 的检查/前向/反向方法分派——形状核对与逐变体数值实现。
-//!
-//! 形状核对与窗口几何在 [`super::shape`]，逐变体数值微核在 [`super::kernel`]；
-//! 本文件是 [`Geometry`] 方法层的大 match，把实例几何路由到正确的核对/微核。
 
 use diagnostic::Result;
 use op::conv::{AdaptiveAvgPool2d, AvgPool2d, Conv2d, Interpolate, MaxPool1d, MaxPool2d, Sampler};

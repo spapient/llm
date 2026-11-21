@@ -1,11 +1,4 @@
 //! RL 损失族：策略梯度的前向纯计算原语（GRPO / PPO 共享地基）。
-//!
-//! 与 [`crate::loss`]（分类 NLL）、[`crate::distill`]（蒸馏软标签）互补：RL 采样出动作后，需要
-//! token 的 log-prob、组内 advantage 归一化、熵正则与 advantage 加权策略损失。策略到参考模型
-//! 的 KL 直接复用 [`crate::distill::kl_div`]（temperature=1），本模块不重复。与 loss / distill
-//! 一致：只算前向纯计算，不进 op 设备核注册表，反向公式与 ratio 裁剪属 P1 / 后续接入。
-//!
-//! 数值稳定沿用 loss 的口径：log-prob 与熵都先减行内最大值再取指数，避免 `exp` 上溢。
 
 use diagnostic::{Code, Error, Result};
 
@@ -114,9 +107,6 @@ pub fn policy_loss(log_probs: &[f32], advantages: &[f32]) -> Result<f32> {
 }
 
 /// GRPO / PPO 训练损失配置：裁剪范围 `ε` 与参考 KL 惩罚系数 `β`。
-///
-/// 损失 = `−mean(min(ratio·A, clamp(ratio, 1−ε, 1+ε)·A)) + β·mean(KL_ref)`，其中
-/// `ratio = exp(new_logp − old_logp)`，`A` 是 advantage，`KL_ref` 是逐 token 的参考 KL。
 #[derive(Clone, Copy, Debug)]
 pub struct Grpo {
     epsilon: f32,

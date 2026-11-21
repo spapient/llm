@@ -1,12 +1,4 @@
 //! 内核签名：从 `.k` 的入口函数声明解析形参，供执行侧派生实参列表与输出缓冲。
-//!
-//! ABI 过去有三份事实源——模板的 C 签名、样本里"按签名顺序"的缓冲、算子手写的实参字符串——
-//! 三者只在 `cc` 编译期对齐，错了报的是 C 的 `incompatible pointer type`，不带算子与缓冲名。
-//! 这里把模板变成唯一事实源：装载期解析签名，[`Signature::check`] 再把它与样本逐项比对，
-//! 因此类型或名字漂移在 emit 之前就失败，诊断带算子名与形参名。
-//!
-//! 只支持 P0 需要的那一小撮 C 声明：指针缓冲（`float`、`unsigned char`/`u8`）与整数标量。
-//! 不追求通用 C 解析器——遇到闭集之外的类型就报错，而不是猜。
 
 use crate::model::{DType, Sample};
 use crate::parse::{line_error as at, matching_paren, split_top_level};
@@ -39,10 +31,6 @@ impl CType {
     }
 
     /// 样本侧对应的 [`DType`]：签名与语义表必须用同一个词描述同一块缓冲。
-    ///
-    /// `None` 表示这个 C 类型在样本侧没有同名词（标量不占缓冲，也就没有元素类型）。
-    /// 输出类型因此能被交叉核对：[`Signature::output_type`] 说 `.k` 写的是什么，
-    /// [`crate::model::Model::dtype`] 说回读时按什么类型解释——两者只能指同一个类型。
     pub fn dtype(self) -> Option<DType> {
         match self {
             Self::F32 => Some(DType::F32),
@@ -118,9 +106,6 @@ impl Signature {
     }
 
     /// 唯一可写输出缓冲的类型（与 [`Self::output`] 同源）。
-    ///
-    /// 单独暴露类型而不是只给名字：回读路径按它检查"内核写的到底是不是 float"，
-    /// 而不必再猜一次 `Model::dtype`（cutile README §11.3 的输出契约）。
     pub fn output_type(&self) -> Option<CType> {
         self.params
             .iter()
@@ -340,8 +325,6 @@ mod parse {
     use super::*;
 
     /// 入口函数的括号区间：`cutile_{op}_kernel(` 的 `(` 与配对的 `)`。
-    ///
-    /// 模板保留 `{{op}}` 插值，已展开的文本也接受（测试与将来的内联模板）。
     pub(super) fn entry(op: &str, template: &str) -> diagnostic::Result<(usize, usize)> {
         let marker = format!("cutile_{op}_kernel(");
         // 一次定位：`find` 已经给出起点，再 `contains` 一遍只是把同一段文本扫两次。

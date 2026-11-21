@@ -1,12 +1,5 @@
 //! 见证源码的宿主执行：把设备 crate 的 `witness.<ext>` 编成可执行文件，逐条调用
 //! `int func(float *out)` 并与档案里的 `witness.expect` 对拍。
-//!
-//! 只回答"这份见证写的算法在本机算得对"：它不是设备证据，也不替代语言门——真机执行与
-//! `ccec` / `clang -x cl` 的语法门由 `cutile::witness` 驱动。夹具刻意不依赖 `prof`：
-//! 调用方把 `(入口名, 期望值)` 传进来，`testkit` 因此仍然只有 `std` 一个依赖。
-//!
-//! 只接受按宿主 ABI 写成的见证（`emit = c` / `opencl` / `ascendc` 三类的 `witness.*`）。
-//! `__global__` 一类的设备扩展不在这里编译——那是设备执行器的职责。
 
 use std::fmt::Write as _;
 use std::path::PathBuf;

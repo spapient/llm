@@ -49,10 +49,6 @@ use storage::Allocator;
 mod tests;
 
 /// 定长类型化闭集标量槽（D9 / ADR 0043）：首批仅 rope 解码位置。
-///
-/// 槽位集合冻结在 ADR 0043，新增槽位走 ADR 修订；不用字符串键名值表，也不用 `HashMap` 标量
-/// 上下文，热路径没有查表。位置这类语义参数不编进 1 元素 f32 缓冲——缓冲切片通道仍由
-/// [`Program::run`] 的 `inputs` / `outputs` 承担。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct ScalarSlots {
     /// `rope_f32` 的解码位置；该算子尚未接入模型路径时保持 `None`。
@@ -84,9 +80,6 @@ impl ScalarSlots {
 }
 
 /// 一次 kernel 的网格与线程块几何。
-///
-/// 三轴是设备 API 的公共形态（CUDA / Metal / HIP 都是 `(grid, block)`）；DSL 的宿主 API
-/// （cutile README §4.4，P0 尚未实现）由分片比推出 `grid.x`，这里只负责承载它。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Launch {
     /// 网格大小（每轴多少个块）。
@@ -137,9 +130,6 @@ impl Launch {
 }
 
 /// 操作数角色：只读输入还是可写输出。
-///
-/// 语义对齐算子签名里的可变标记（`const` 指针为输入、可变指针为输出），但本层不依赖 `op` 声明，
-/// 角色词汇在这里自定；具体缓冲的可写性由后端按算子签名复核。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OperandRole {
     /// 只读输入：节点消费它，不写入。
@@ -149,10 +139,6 @@ pub enum OperandRole {
 }
 
 /// 一个节点操作数的不透明引用：编号 + 角色。
-///
-/// 引擎侧只持引用编号，不持缓冲字节、不持设备地址；编号到实际缓冲的映射、
-/// 拥有/借用生命周期与设备句柄都在后端边界侧完成（ADR 0025 §2/§3）。编号的分配与去重
-/// 归编排层，本层不解释编号含义。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Operand {
     /// 编排层分配的不透明引用编号。
@@ -255,9 +241,6 @@ impl Node {
 }
 
 /// 一张图：按插入顺序提交的节点列表。
-///
-/// 不是"优化后的 IR"——`cutile` 的定位是"无 IR 的 lowering"，图只是提交单元，
-/// 不做算子融合或重排。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Graph {
     nodes: Vec<Node>,

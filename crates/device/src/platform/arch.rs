@@ -34,9 +34,6 @@ impl Arch {
 }
 
 /// 一台宿主的证词：判定只经由它，于是"在 A800 上跑"与"台账声称在 A800 上跑"能分开验。
-///
-/// **CPU 行不由这里回答**：x86 / ARM 的证据是架构本身（[`Host::arch`] 直接推），任何宿主实现都
-/// 无法把"x86 行覆盖"写成一句空话。
 pub trait Host {
     /// 宿主架构。
     fn arch(&self) -> Arch;
@@ -49,9 +46,6 @@ pub trait Host {
 }
 
 /// 真实本机：设备与工具链都走**已有**的探测，不新写第二份。
-///
-/// Metal 走 `metal::MetalDevice::system_default`（进程内默认设备），CUDA / Metal 的编译器走
-/// `toolchain::detect_nvcc` / `detect_metal`（`nvcc --version`、`xcrun -sdk macosx metal --version`）。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Machine;
 
@@ -162,9 +156,6 @@ impl Standing {
 }
 
 /// 这一行现在是什么状态。
-///
-/// 判定次序是"设备 → 编译器"：先说清有没有设备，再说清有没有编译器。反过来的话，"这台机器连
-/// GPU 都没有"会被报成"缺 nvcc"，台账就会把工程问题说成环境问题。
 #[must_use]
 pub fn standing(row: Row, host: &impl Host) -> Standing {
     if !present(row, host) {

@@ -1,22 +1,6 @@
 //! IFB 一次迭代的可行域：`B ≤ B_max`、`Σ T_i ≤ T_max`（第三条 `N_need ≤ N_free` 由页账给）。
-//!
-//! 三条约束不是一回事：[`crate::Scheduler::admit`] 回答的是"这条序列这辈子跑不跑得完"，
-//! 这里回答的是"**这一轮**塞得下几行"。混为一谈的后果是把"这轮挤不下"当成"请求非法"退回
-//! 客户端，而前者下一轮会自己好。
-//!
-//! 两条口径钉在这里：
-//!
-//! - **packed 无 padding**：一行的 token 数只由它自己决定，不为凑齐块宽补位——补出来的位要算进
-//!   `T_max`，等于拿预算替空转买单。
-//! - **生成优先、上下文在后**：上下文行可以整体推到下一轮（历史仍在各序列里），已生成 token
-//!   却回不回去，所以挤的时候先挤上下文。
-//!
-//! 分块预填充的对齐（除末块外 `C ≡ 0 (mod P)`）也在这一层：[`chunk`] 是唯一的算式，调用方不
-//! 再自己 `min` 一次——两处各算一次，就会有一处把"对齐到整页"漏成"随便切一刀"。
 
 /// 一次迭代的两条预算；`usize::MAX` 表示该维不限。
-///
-/// 零不当"不限"：一次误配置的 0 应当立刻拒绝，而不是悄悄变成不设防。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Budget {
     seqs: usize,
@@ -107,9 +91,6 @@ impl Candidate {
 }
 
 /// 排布结论：装进本轮，或哪条约束先撞上。
-///
-/// `OverSeqs` 与 `OverTokens` 分开而不是合成一个"装不下"：前者是"批满了，等一条结束"，
-/// 后者是"生成行本身就超预算"——后者重试多少次都一样，只有改配置或改模型才有用。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
     /// 这些行按序进本轮，总行数 `tokens`。
@@ -138,9 +119,6 @@ pub enum Verdict {
 }
 
 /// 按 `budget` 排这一轮的行：生成优先，上下文按输入序补到预算为止。
-///
-/// 上下文挤不下就整条推到下一轮（不切半块，半块既不进前缀树也不落页），而生成一条都不丢：
-/// 生成行自己超预算时直接 [`Verdict::OverTokens`]，而不是悄悄丢掉几条让它"看起来装下了"。
 #[must_use]
 pub fn pack(budget: Budget, candidates: &[Candidate]) -> Verdict {
     if candidates.is_empty() {
@@ -190,9 +168,6 @@ fn fill(ordered: Vec<Candidate>, tokens_max: usize) -> (Vec<Candidate>, usize) {
 }
 
 /// 本轮上下文能推进几行：除末块外 `C ≡ 0 (mod page_size)`。
-///
-/// 返回 0 是"这一轮不做上下文"（预算不足一整页，或已经算完）：不足一页的块不进前缀树、
-/// 也换不来一次干净的对齐，做它只是把预算花在一半的块上。
 #[must_use]
 pub fn chunk(remaining: usize, page_size: usize, budget: usize) -> usize {
     if remaining == 0 || page_size == 0 || budget == 0 {

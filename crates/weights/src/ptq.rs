@@ -1,16 +1,4 @@
 //! 2/3/4/8-bit 对称训练后量化（PTQ）：把 f32 权重按组量化并打包，以及它的反解。
-//!
-//! 与 [`super::quant`] 的分工：`quant` 是**磁盘方案描述符与分组推断**（读已有量化文件的形状与
-//! 标度，不做数值）；本模块是**把 f32 真正算成打包码**的正向算法与其逆变换，供离线 PTQ 与
-//! round-trip 验证使用。换算算法按 ADR 0018 留在 `weights`，不进入设备内核注册表。
-//!
-//! `I2`/`I4`/`I8` 的运行时事实（位宽、对称零点、正码上限）与 `op::quant::Row` **逐项同源**
-//! （低码在前的打包位序、对称零点一致）；`I3` 是离线侧新增档位（3 码位宽），无内核对应。本模块
-//! 不自建到 `op` 的依赖边：离线换算按 ADR 0018 留在 `weights`，不需要内核层。
-//!
-//! 对称口径：`scale = max_abs / max_code`，`signed = round(x/scale)` 夹取到 `[-max_code, max_code]`，
-//! 码的线格式与反量化公式 `y = scale * (code - zero)` 完全一致。i2/i4 是**偏移码**（`code = signed + zero`，
-//! 无符号 nibble），i8 是**二补码字节**（`zero = 0`，`code = signed` 直接按 `i8` 解释）。
 
 pub use crate::adaptive::{Adaptive, AdaptiveCompensated, adaptive_quantize, compensate_adaptive};
 
@@ -19,11 +7,6 @@ use crate::svd;
 use diagnostic::Result;
 
 /// 一档对称量化格式的运行时事实。
-///
-/// 三个字段回答“这一档怎么量化/怎么打包”，与 `op::quant::Row`（`I2`/`I4`/`I8`）逐项一致：
-/// `bits` 对应 `Row::width`，`zero` 对应 `Row::zero`，`max_code` 是对称码域的正码上限
-/// （`2^(bits-1) - 1`，i8 取 127 避开 -128 的非对称）。打包长度由 `bits` 直接推出，
-/// 不单设每字节码数——3 位档每码 3 bit，不整除字节。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Scheme {
     /// 元素位宽：2 / 3 / 4 / 8。
@@ -205,8 +188,6 @@ fn decode_code(scheme: Scheme, field: u8) -> f32 {
 }
 
 /// 把第 `index` 个 `width` 位码写入位流（低码在前）；跨字节边界时高位溢到下一字节。
-///
-/// `code` 必须落在 `[0, 2^width)`；调用方（[`quantize`]）已按 `signed + zero` 把它夹在该区间。
 fn pack_bits(packed: &mut [u8], index: usize, width: u8, code: u8) {
     let bit = index * width as usize;
     let byte = bit / 8;
@@ -231,12 +212,6 @@ fn unpack_bits(packed: &[u8], index: usize, width: u8) -> u8 {
 }
 
 /// 秩-r 低秩 + 残差量化补偿的结果：`Ŵ = L_r + Q(W − L_r)`。
-///
-/// 这是 M4「谱隙证书 + 秩-10 残差补偿」的数值侧：低秩项 `L_r` 以 f32 保存，显式残差
-/// `C = W − L_r` 才进入低位宽对称量化（g=32）。4bit 的量化误差因此只作用在残差上，而不是整张
-/// 权重上——这正是输出空间 SNR 能从「无补偿 ~20 dB」提到 44 dB 以上的原因，**前提**是
-/// `W` 在秩 r 处确实有谱隙（结构近似低秩）。没有谱隙时量化误差不缩小，应由调用方走
-/// [`crate::ledger::certify`] 拒压回退，而不是硬压出假数字。
 #[derive(Clone, Debug)]
 pub struct Compensated {
     /// 实际使用的低秩项秩（`rank` 与 SVD 可取秩的较小值）。
@@ -304,9 +279,6 @@ fn rebuild(
 }
 
 /// 一次分解的产物：秩、谱隙、低秩项、显式残差与整体范数同出一门。
-///
-/// 两条补偿路径（固定档 [`rebuild`] 与自适应档 `adaptive::compensate_adaptive`）据此共用同一次
-/// 分解：分别算一遍不只是慢，还会让「秩」与「残差」在某些输入上来自两个不同的分解。
 pub(crate) struct Components {
     pub(crate) rank: usize,
     pub(crate) sigma1: f64,

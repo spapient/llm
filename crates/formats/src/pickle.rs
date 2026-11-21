@@ -1,7 +1,5 @@
 //! 栈式 pickle 虚拟机：解释 `data.pkl` 流，拦截 `_rebuild_tensor_v2` 重建与 `BINPERSID`
 //! persistent storage，还原「名字 + 类型 + 形状 + 字节区间」。
-//!
-//! 未知 opcode / 不可识别可调用对象显式报错；不执行任意代码、不猜结果。
 
 pub(crate) mod stack;
 pub(crate) mod storage;

@@ -1,12 +1,4 @@
 //! 配置键闭集与取值类型：点号名、环境变量后缀、默认值、值解析、来源。
-//!
-//! 键表只有 [`keys!`] 调用这一份：点号名、环境变量名、类型分派、默认值、人读说明、槽位下标
-//! 全部由它派生，因此"加了一个键、忘了另一处"在结构上不可能。新增键只加一行。
-//!
-//! **不拥有**：优先级规则（在 [`crate::settings`]）、配置文件的发现在 [`crate::config`]。
-//!
-//! 路径根（[`Roots`]）与键闭集同住一处：路径类键的默认值就是 `roots.default_*_dir(APP)`，
-//! 两者拆开只会让"这个默认值从哪个目录来"需要跨文件追。
 
 use diagnostic::{Code, Error, Result};
 use std::fmt;
@@ -45,11 +37,6 @@ impl fmt::Display for SettingValue {
 }
 
 /// 全部键与它们的值类型、环境变量、默认值、说明一次写完：新增一个键只加一行。
-///
-/// 名字表只有这一份：点号名、环境变量后缀、值解析器、默认值、说明、槽位下标全部由它派生，
-/// `describe` 与"键未登记"报错里列出的清单也是同一张表，因此不会出现"加了一处、忘了另一处"。
-/// `parse_value` / `default_value` 的分派 match 在宏体内（宏体不参与圈复杂度门），
-/// 每种类型的解析逻辑在宏外的小函数里（`parse_path` 等）。
 macro_rules! keys {
     ($roots:ident; $($variant:ident => $dotted:literal, [$($env:literal),*], $parser:path, $default:expr, $doc:literal;)*) => {
         /// 配置键闭集。

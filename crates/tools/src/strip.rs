@@ -1,9 +1,4 @@
 //! 扫描前预处理：剔除 `#[cfg(test)]` 条目并保留行号。
-//!
-//! 基于 [`crate::lex`] token 树定位条目，而不是逐行匹配大括号：字符串/原始字符串/字符/注释里的
-//! `{`、`}` 不会被当成真实括号。`#[cfg(test)]`、`#[cfg(all(.. test ..))]` 与
-//! `#[cfg(any(.. test ..))]` 标注的整个条目被空行替换（行号不变）；outer `#[..]` 与 inner
-//! `#![..]` 两种属性都认，`#[cfg(not(test))]` 不算。
 
 use crate::lex::{Delim, Token, parse};
 use diagnostic::Result;
@@ -23,20 +18,11 @@ pub fn strip_tests(src: &str) -> Result<String> {
 }
 
 /// 文件顶层以 `#[cfg(test)] mod 名字;` 挂载的子模块名。
-///
-/// 分号形式挂载的模块是独立文件，[`strip_tests`] 只能剔除**本文件内**的 cfg(test) 条目，
-/// 看不到被挂载文件的内容；调用方按这些名字定位文件，才能把它们当测试代码对待。
-///
-/// 只认顶层声明：`lib.rs`/`main.rs`/`mod.rs` 与被挂载文件自身顶层都覆盖得到。嵌套在别的
-/// `mod { .. }` 里的挂载不在此列——那里的路径由外层模块链决定，不在本函数的判据内。
 pub fn test_modules(src: &str) -> Result<Vec<String>> {
     modules(src, true)
 }
 
 /// 文件顶层 `mod 名字;` 声明的全部子模块名，不看 cfg 口径。
-///
-/// 用于「整份文件已判定为测试代码」的传播：文件只在 `cfg(test)` 下编译，它的子模块也就只在
-/// `cfg(test)` 下编译，无须再逐个标注 `#[cfg(test)]`。
 pub fn submodules(src: &str) -> Result<Vec<String>> {
     modules(src, false)
 }
@@ -68,9 +54,6 @@ fn declared(item: &[Token], only_test: bool, test: bool) -> Option<String> {
 }
 
 /// 条目是否 `mod 名字;` 形态：返回模块名，带体形式（`mod 名字 { .. }`）与其他条目返回 `None`。
-///
-/// 判据只看「以分号收尾」+「`mod` 与名字两个相邻标识符」，`pub mod`/`pub(crate) mod` 的可见性
-/// 前缀因此不需要单独分支。
 fn declared_module(item: &[Token]) -> Option<String> {
     let last = item.last()?;
     if !matches!(last, Token::Punct { ch: ';', .. }) {
@@ -139,8 +122,6 @@ fn collect(tokens: &[Token], blank: &mut [bool]) {
 }
 
 /// 属性起始：返回 `#` 下标与方括号分组下标。
-///
-/// 认两种形态：outer `#[..]` 与 inner `#![..]`；其余位置不是属性。
 fn attr_at(tokens: &[Token], idx: usize) -> Option<(usize, usize)> {
     let Some(Token::Punct { ch: '#', .. }) = tokens.get(idx) else {
         return None;

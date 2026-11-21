@@ -1,7 +1,4 @@
 //! 反向公式表里的 36 条解析公式与共享数值助手。
-//!
-//! 几何交给 [`Geometry`]，公式本身只负责"取实例、回传"或逐元素/块级局部雅可比；声明档
-//! 与实例化共用同一份算术，不存在"前向一套、反向另一套"。
 
 use super::{Context, SITE};
 use diagnostic::{Code, Error, Result};
@@ -9,8 +6,6 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 /// 经典算子的反向公式：几何交给 [`Geometry`]，公式本身只剩"取实例、回传"。
-///
-/// 这十条例程同构，用一张表展开。
 macro_rules! instance_backward {
     ($($name:ident => $op:literal),* $(,)?) => {$(
         pub(super) fn $name(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
@@ -338,9 +333,6 @@ type RotationCache = RefCell<Option<(usize, Rc<[(f32, f32)]>)>>;
 thread_local! {
     /// 段长 → 旋转表。`θ_i = ROPE_POS·base^(-2i/d)` 只依赖 `d`，与数据无关，所以 `(sin, cos)`
     /// 也可以一次性算好：逐对重算 `powf` 与 `sin_cos` 是这条路径上唯一的纯浪费。
-    ///
-    /// 频率直接取前向那张表（`op::rope_f32::frequencies`），不另写一份 `powf`；角度与三角
-    /// 都是同一批表达式的同一批结果，逐位不变。
     static ROTATIONS: RotationCache = const { RefCell::new(None) };
 }
 

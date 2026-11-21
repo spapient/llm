@@ -16,10 +16,6 @@
 //! 设备前端（`ccec` / `clang -cl-std`）由 `cutile::gate` 与设备 crate 自己的用例管。
 
 /// 把一台设备的片段层判据摊成 `#[test]` 函数。
-///
-/// 调用点必须已经引入生成表：`DEVICE`（档案行）、`FRAGMENTS`、`PRIMS`（`build.rs` 编出来的
-/// 两张表）、`ROOT`（片段目录）。参数是 P0 闭集，即 `crates/op/ops/*.k` 真的会 `@` 到的
-/// 九个原语；它留在各设备 crate 里，因为"这份模板在这台设备上真的能拼出来"是设备知识。
 #[macro_export]
 macro_rules! device_suite {
     ($p0:expr) => {

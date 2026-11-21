@@ -1,22 +1,10 @@
 //! 数值对拍的**逐元素与方向**判据：绝对误差、绝对+相对双项容差、有限值谓词与余弦方向一致性。
-//!
-//! 整批（一个全局分母）的相对误差口径在 [`crate::rel`]，它答的是「整批数合在一起差多少」，
-//! 与这里的逐元素判据不可混用。三档判据的适用面：同尺度逐元素对拍用 [`approx_eq`]；量化
-//! logits 的方向一致性用 [`cosine_similarity`] + [`COSINE_GUARD`]；解析梯度 vs 数值梯度这类
-//! 随量级缩放的比对走 [`close`] 的「绝对 + 相对」双项预算，不套绝对容差。
 
 /// 量化 logits 与 f32 参考的余弦回归下界（方向一致性，尺度不变）。
-///
-/// 合成基准与未来的真实样本集共用这一条阈值，避免各用例各抄一个数字、判据悄悄漂移。
 pub const COSINE_GUARD: f32 = 0.999;
 
 /// 逐个元素**绝对误差**比较：两套同尺度算法变体对拍走这一档。`NaN` 与 `NaN` 视为相等
 /// （对拍时它两边同源，不该因为 `NaN != NaN` 失败）。
-///
-/// 两个**相同的无限大**也算相等：`inf - inf` 是 `NaN`，只看差值的判定会把「两边同为无穷」
-/// 判成不等，而它与 `NaN` 对 `NaN` 是同一个理由。
-///
-/// 长度不同直接返回 `false`：对拍的首要条件是形状一致。
 pub fn approx_eq(left: &[f32], right: &[f32], tolerance: f32) -> bool {
     if left.len() != right.len() {
         return false;
@@ -30,8 +18,6 @@ pub fn approx_eq(left: &[f32], right: &[f32], tolerance: f32) -> bool {
 }
 
 /// 双项容差标量判定：`|a-b| ≤ abs + rel·max(|a|,|b|)`。
-///
-/// 两侧同为 NaN、同为同号无穷算相等；异号无穷不算相等。
 pub(crate) fn close_scalar(a: f32, b: f32, abs: f32, rel: f32) -> bool {
     if a == b {
         return true;
@@ -50,9 +36,6 @@ pub(crate) fn close_scalar(a: f32, b: f32, abs: f32, rel: f32) -> bool {
 }
 
 /// 绝对 + 相对双项容差逐元素对拍：随量级缩放的比对（解析梯度 vs 数值梯度）走这一档。
-///
-/// 判据分三档：同尺度逐元素用 [`approx_eq`]；方向一致性用 [`cosine_similarity`]；
-/// 量级相关的误差预算用本函数。长度不同直接返回 `false`。
 pub fn close(left: &[f32], right: &[f32], abs: f32, rel: f32) -> bool {
     if left.len() != right.len() {
         return false;
@@ -99,9 +82,6 @@ pub fn all_finite(values: &[f32]) -> bool {
 }
 
 /// 两条同长向量的余弦相似度；长度不同、或任一向量范数为零时返回 [`None`]。
-///
-/// 回归判据用：量化前向的 logits 与 f32 参考比对方向一致性（不要求逐元素相等）。累加在 `f64`
-/// 完成，避免长向量上 `f32` 平方和与点积的累加误差把相似度压低；返回值落在 `[-1, 1]`。
 #[must_use]
 pub fn cosine_similarity(left: &[f32], right: &[f32]) -> Option<f32> {
     if left.len() != right.len() {

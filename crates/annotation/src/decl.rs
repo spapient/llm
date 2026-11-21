@@ -1,8 +1,5 @@
 //! 三种声明的**键表**与解析产物：层（`#[spec]` 静态形态）、语义表（`#[model]`）、
 //! 层（`#[spec]` 运行时形态）。
-//!
-//! 一个声明就是一种表的实例：`name`/`out`/`ops` 这些键在三种形态里的**含义**相同，取值文法不同，
-//! 于是"加一个键"是加一行、加一种形态是加一张表，而不是加一个解析器。
 
 use crate::syntax::{
     Bracket, Cursor, Error, FIELDS, Hole, KeySpec, Position, Token, Value, checked_name, collect,
@@ -179,10 +176,6 @@ fn closed_value(
 }
 
 /// `skeleton` 闭集：决定生成的 `MODEL` 走哪副算子骨架。
-///
-/// 每个成员在 `render` 的骨架表里都有**自己的一行**（`every_skeleton_has_a_branch` 逐项渲染核对）；
-/// `gemm` 特殊：模块名用注册名，名字必须先在 [`GEMM_SKELETON_NAMES`] 里。缺省值是 `gemv`：早期版本把
-/// 缺省写成 `gemm`，而 `gemm` 又靠「名字不是 `gemm_*` 就落到 gemv」收尾——声明与行为各说一套。
 pub(crate) const SKELETONS: [&str; 15] = [
     "gemv",
     "gemm",
@@ -205,9 +198,6 @@ pub(crate) const SKELETONS: [&str; 15] = [
 pub(crate) const GEMM_SKELETON_NAMES: [&str; 4] = ["gemm_f32", "gemm_i8", "gemm_i4", "gemm_i2"];
 
 /// `#[model(..)]` 的 `dtype` 闭集：对拍**有阈值**的那几种输出类型。
-///
-/// 它与 `cutile::reference::tolerance` 给出非零阈值的 `DType` 集合**逐项相等**（`tests/contracts.rs`），
-/// 于是新增一种可对拍的浮点输出时，失败的是"注解写不出它"，而不是它悄悄地无法被声明。
 pub(crate) const DTYPES: [&str; 3] = ["f16", "bf16", "f32"];
 
 /// `#[model(..)]` 解析后的五件事：注册名、生产形状、输出类型、骨架、生成常量名，都是编译期常量。

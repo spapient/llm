@@ -1,7 +1,4 @@
 //! `safetensors` 的头部字段机制：JSON 字段槽位收集、必填校验与 `Entry` 组装。
-//!
-//! 从 [`crate::safetensors`] 拆出：公开面只管内存/文件两种读取路径，这里只管「一条 JSON
-//! 张量记录怎么落成 [`Entry`]」的纯解析，两边通过少量 `pub(crate)` 入口相连。
 
 use crate::bad;
 use diagnostic::{Code, Error, Result};

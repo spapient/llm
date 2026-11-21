@@ -1,8 +1,4 @@
 //! 中性词表值对象：格式无关的词片表、特殊句柄与族附属数据。
-//!
-//! 词表只持有可反查的纯数据；算法归并/切分规则由具体实现消费，构造期闭合
-//! 双向查表、编号范围与族附属表三类不变量。适配器在装配点把包内字段映射成
-//! [`VocabSource`]，本结构不出现任何格式键名或容器字节。
 
 use crate::{SpecialTokens, Token};
 use diagnostic::{Code, Error, Result};
@@ -189,8 +185,6 @@ impl Vocab {
     }
 
     /// 把闭合词表折成对应算法的分词器；族无实现时报 [`Code::Unsupported`]。
-    ///
-    /// 这是"词表 → 算法"的唯一闭集扇出：上层只认 [`crate::Tokenizer`]，不关心具体实现名。
     pub fn into_tokenizer(self) -> Result<Box<dyn crate::Tokenizer>> {
         let family = self.family;
         let ctor = FAMILY_CTOR[family as usize].ok_or_else(|| unsupported(family))?;
@@ -398,8 +392,6 @@ mod fingerprint {
     const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
     /// 一份词表的只读身份：族名、词表大小与描述摘要的非加密摘要。
-    ///
-    /// 同族同描述产出同一指纹；词表内容或算法标识一变，摘要随之改变。
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct Fingerprint {
         family: &'static str,

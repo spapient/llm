@@ -1,11 +1,4 @@
 //! 构建期代码生成：一个设备目录 → 一份编译期表（`$OUT_DIR/tables.rs`）。
-//!
-//! 一趟三件事，按数据流排列：**扫描**（目录 → 「这台设备此刻带着什么」的事实，含四条构建期
-//! 校验）、**镜像**（`witness.<ext>` → 中间产物 → 镜像，以及"这次构建到底带上了什么"）、
-//! **写表**（事实 → `tables.rs` 的 `FRAGMENTS` / `PRIMS` / `DEVICE`）。对外只有一行
-//! [`device`]——设备 crate 的 `build.rs` 就调它。
-//!
-//! 本模块只在 `build` feature 下编译，运行期二进制里没有它。
 
 use std::env;
 use std::fmt::Write as _;
@@ -19,11 +12,6 @@ use crate::prof::{Emit, Profile};
 // ── scan ──────────────────────────────────────────────────────────────
 
 /// 生成器入口：`CARGO_MANIFEST_DIR/src` 里的片段 → `$OUT_DIR/tables.rs`。
-///
-/// 只给 `build.rs` 用：它读 `CARGO_MANIFEST_DIR` / `OUT_DIR` / `CARGO_FEATURE_DEVICE_IMAGE`，并往
-/// stdout 写 `cargo:` 指令。`vendor` 必须与 `crates/prof/devices/<vendor>.toml` 同名——它是内嵌表的
-/// 键，也是档案里 `witness.file` 的前缀；目录名可以与之不同（`crates/opencl` 装的是 `intel` 的
-/// OpenCL 片段），所以显式传入，不从路径推断。
 pub fn device(vendor: &str) {
     let dir = PathBuf::from(variable("CARGO_MANIFEST_DIR")).join("src");
     let out = PathBuf::from(variable("OUT_DIR"));
@@ -54,8 +42,6 @@ fn variable(name: &str) -> String {
 }
 
 /// 一台设备：片段与路径（正文由生成的 `include_str!` 读）。
-///
-/// 只在本模块内构造（[`scan`] 是唯一出处），写表与镜像两趟读它。
 struct Device {
     /// vendor 名，与 `crates/prof/devices/<vendor>.toml` 的文件名一致。
     name: String,
@@ -90,9 +76,6 @@ fn files_in(dir: &Path) -> Vec<PathBuf> {
 }
 
 /// 扫描一台设备的目录：`<prim>.<ext>` 若干 + 一份 `witness.<ext>`。
-///
-/// 同目录还放着清单、构建脚本与文档，它们不是片段层的一部分：扩展名不符的一律跳过，
-/// 但**名字在原语闭集内而扩展名不符**的要报——那是把片段放错了语言。
 fn scan(dir: &Path, vendor: &str) -> Device {
     let files = files_in(dir);
     let witness = witness_of(&files, dir);
@@ -147,10 +130,6 @@ fn fragment_ext(witness: &Path) -> String {
 }
 
 /// 一个文件是不是这台设备的片段：是就返回 `(原语, 见证入口)`，不是就 `None`。
-///
-/// 两种情况都不是片段：没有扩展名（文档、构建脚本），以及名字合法但扩展名不符——后者若名字落在
-/// 原语闭集内就要报，那是把片段放错了语言。扩展名对而名字不在闭集内同样要报：目录里只允许
-/// `<prim>.<ext>` 与 `witness.<ext>`。
 fn fragment_of(path: &Path, ext: &str, profile: &Profile) -> Option<(Prim, String)> {
     let prim = Prim::parse(stem(path)?);
     if extension(path).as_deref() != Some(ext) {
@@ -200,8 +179,6 @@ fn profile_of(vendor: &str, ext: &str) -> Profile {
 }
 
 /// 片段第一行的签名声明：`/* cutile-sign: <prim>/<impl> */`。
-///
-/// 剥壳与切分走 [`crate::sign`] 的共享规则（ADR 0027 §5）；这里只补原语比对与构建失败。
 fn signature(prim: Prim, source: &str, path: &Path) -> String {
     let first = source.lines().next().unwrap_or_default();
     let declared = crate::sign::strip_marker(first).unwrap_or_else(|| {
@@ -291,11 +268,6 @@ fn index(prim: Prim) -> usize {
 }
 
 /// 构建期失败：报给 `cargo` 并以非零码结束，`build.rs` 因此失败。
-///
-/// 不用 `panic!`：生成器住在 `crates/prof/src`，与其余生产代码同一套预算（`crates/*/src` 里
-/// `panic!` / `unwrap` / `expect` 的预算是 0）。构建脚本要的只是"停下 + 打出原因"，不需要栈回溯；
-/// 也没有资源要收，所以失败点直接收尾，而不是像 `diagnostic::buildgen` 那样把错误上抛给调用方
-/// ——那边要按用途分别处理，这里只有一种用途。
 fn fail(message: impl std::fmt::Display) -> ! {
     eprintln!("prof::codegen: {message}");
     std::process::exit(1)
@@ -334,10 +306,6 @@ fn outcome(device: &Device, out: &Path, images: bool) -> Outcome {
 }
 
 /// 编译一台设备的见证：`[tools] <compile> <link> <inspect>`。
-///
-/// 不传 `[compile].flags` / `preamble`：见证是 **host C ABI**（`int func(float *out)`），与片段
-/// 语言无关，`cutile verify` 的本机自检也因为同一个原因跳过它们。`metal` 的 `-std=metal3.1`
-/// 会要求指针写明地址空间，而见证里的 `float *` 故意没有——那是 host C 的写法。
 fn compile(device: &Device, recipe: &Recipe, out: &Path) -> Result<Outcome, Reason> {
     let Some((program, prefix)) = tool(&device.profile.meta.tool) else {
         return Err(Reason(format!(
@@ -384,10 +352,6 @@ fn compile(device: &Device, recipe: &Recipe, out: &Path) -> Result<Outcome, Reas
 }
 
 /// 一条语言级的构建配方：怎么把一份翻译单元变成设备镜像。
-///
-/// 只有 `metal` 有配方，原因是数据本身：见证是 `int func(float *out)` 的完整翻译单元，
-/// MSL 允许这样的普通函数进 `metallib`；CUDA / OpenCL / AscendC 的镜像只收 `__global__` /
-/// `__kernel__` 入口，把 host 见证编进去只会得到一份空产物——那比"没有"更糟。
 struct Recipe {
     /// 编译参数（`$src` / `$obj`）。
     compile: &'static [&'static str],
@@ -466,8 +430,6 @@ fn shorten(text: &str) -> String {
 }
 
 /// `CUTILE_REQUIRE_IMAGE` 要求了这台设备就必须真的带上镜像。
-///
-/// 清单里别的设备由它们自己的 crate 负责——一次构建只跑一个 crate 的 `build.rs`。
 fn require(device: &Device, outcome: &Outcome) {
     let required = env::var("CUTILE_REQUIRE_IMAGE").ok().is_some_and(|text| {
         text.split(',')

@@ -6,10 +6,6 @@ pub use order::Order;
 pub use strides::Strides;
 
 /// 轴长度的整数类型：元素数乘积 [`product`] 需要的最小接口。
-///
-/// 只有 `usize` 与 `u64` 两臂：前者是本层 [`Shape`] 的轴宽，后者是权重文件头的轴宽（线上格式
-/// 就是 `u64`）。两臂共用同一条饱和乘积，既不在小位宽目标上因「先换算再乘」提前饱和，也不给
-/// 第二份 `fold(saturating_mul)` 留下自己漂移的机会。
 pub trait AxisLen: Copy {
     /// 乘法单位元：空轴序列（标量）的元素个数。
     const ONE: Self;
@@ -35,10 +31,6 @@ impl AxisLen for u64 {
 }
 
 /// 各轴长度的饱和乘积；空切片为 1（标量）。
-///
-/// 全仓元素个数的唯一实现：`Shape::numel` 与权重段的 `numel` 都走这里。溢出时**饱和**而不
-/// 回绕——形状可以来自权重文件头这类不受信任的输入，回绕会让一个巨大形状报出很小的元素数
-/// （例如 `[2^32, 2^32]` 得到 0），于是「缓冲够长」的校验被绕过。
 #[must_use]
 pub fn product<A: AxisLen>(dims: &[A]) -> A {
     dims.iter().fold(A::ONE, |acc, dim| acc.mul_saturated(*dim))
@@ -70,20 +62,11 @@ impl Shape {
     }
 
     /// 元素个数：各轴长度之积，空形状为 1。
-    ///
-    /// 溢出的饱和口径由 [`product`] 唯一给出：回绕会让一个巨大形状报出很小的 `numel`（例如
-    /// `[2^32, 2^32]` 得到 0），于是 [`crate::Tensor::new`] / [`crate::View::new`] 的"缓冲够长"判定
-    /// 被绕过，得到一个形状与缓冲不符的张量。饱和之后下游只会按"缓冲不够"拒绝，而
-    /// `checked_mul` 的调用点照旧能看见溢出。
     pub fn numel(&self) -> usize {
         product(&self.0)
     }
 
     /// 该元素类型下需要的字节数（按位向上取整，`U4` 会小于 `numel`）。
-    ///
-    /// 公式的唯一实现在 L1 的 [`DType::bytes_for`]：这里只把 `usize` 的元素数搬进它接受
-    /// 的 `u64`，再把结果搬回来——两处各写一遍 `(numel * bits).div_ceil(8)` 迟早会漂移，
-    /// 而装载方的缓冲校验正是按 `numel` 与字节数比对。
     pub fn element_bytes(&self, dtype: DType) -> usize {
         let numel = u64::try_from(self.numel()).unwrap_or(u64::MAX);
         usize::try_from(dtype.bytes_for(numel)).unwrap_or(usize::MAX)
@@ -92,9 +75,6 @@ impl Shape {
 
 mod order {
     //! 排列顺序：同一组元素在扁平缓冲里沿哪个轴相邻。
-    //!
-    //! 这是纯形状元数据，不涉及缓冲与分配，因此归 `tensor`；`storage` 把它随布局再导出，
-    //! 不另持一份枚举。
 
     /// 元素在扁平缓冲里的排列顺序。
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -123,9 +103,6 @@ mod strides {
         }
 
         /// 按排列顺序推出的连续步长：行主序反向累乘，列主序正向累乘。
-        ///
-        /// 累积存在串行依赖（下一轴 = 本轴长度 × 当前累积），保留循环；形状维度数据相关，
-        /// 无法整块展开。饱和乘积与 [`Shape::numel`](crate::Shape::numel) 同一套溢出口径。
         pub fn ordered(shape: &Shape, order: Order) -> Self {
             let dims = shape.dims();
             let mut strides = vec![0; dims.len()];

@@ -1,11 +1,4 @@
 //! 训练目标（损失）选择：把三种损失族的正向度量统一到一个配置化入口。
-//!
-//! [`crate::loss`]（分类）、[`crate::distill`]（蒸馏）、[`crate::rl`]（RL）各自提供纯函数；本模块
-//! 用 [`Loss`] 枚举按配置分发，`compute` 返回统一的 [`Outcome`]（loss + 命中条数），供编排器与
-//! 看板用同一种口径取评估量。三种损失族仍可直接调用纯函数，[`Loss`] 只是把「选哪个」也做成数据。
-//!
-//! RL 的逐 token log-prob 由调用方经 [`crate::rl::log_prob`] 预计算后传入，`compute` 不做分配；
-//! RL 无分类命中，`correct` 恒为 0（蒸馏仍有硬标签命中，取 argmax(student) 对硬标签）。
 
 use diagnostic::Result;
 
@@ -23,10 +16,6 @@ pub struct Outcome {
 }
 
 /// 训练/评估损失选择：统一分类、蒸馏与 RL 三种损失族的正向度量。
-///
-/// `logits` 恒为学生/策略 logits，`labels` 恒为硬标签（分类/蒸馏）或采样动作（RL）。蒸馏额外
-/// 携带教师 logits，RL 额外携带预计算的当前策略 log-prob、行为策略 log-prob、advantage 与
-/// 参考 KL。
 pub enum Loss<'a> {
     /// 硬标签交叉熵。
     Classify,

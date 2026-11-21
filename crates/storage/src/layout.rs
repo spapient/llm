@@ -33,9 +33,6 @@ impl Layout {
 }
 
 /// 把 `src` 从 `from` 布局重排成 `to` 布局。
-///
-/// 两种布局必须覆盖同一个形状；`src` 至少要够长。实现是逐元素搬运，所以它既能用于
-/// 行↔列主序的转换，也能用于任何由形状推出的布局——不需要为每种转换写一条路径。
 pub fn remap<T: Copy>(src: &[T], from: &Layout, to: &Layout) -> Result<Vec<T>> {
     if from.shape() != to.shape() {
         return Err(Error::new(

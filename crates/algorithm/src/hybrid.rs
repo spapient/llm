@@ -69,9 +69,6 @@ pub struct Query<'a, S> {
 }
 
 /// 一层：MLA 注意力 + MoE 前馈 + mHC 多流残差。
-///
-/// 三件都是构造期定格的（不持可变参数），一层里唯一的运行期状态是调用方手里的 `streams` 与
-/// 页账上的 `cache`——于是「这一步算了什么」完全由入参决定，本层不做隐藏的累积。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Hybrid<S: Scalar = f32> {
     attention: Mla<S>,
@@ -378,15 +375,9 @@ fn interleave<S: Scalar>(attention: Vec<Hybrid<S>>, memory: Vec<crate::kda::Kda>
 }
 
 /// K3 的层配比：每 `MEMORY_PER_ATTENTION` 个通道记忆层配 1 个混合层。
-///
-/// 配比是**结构**而不是超参：三个记忆层读到的东西进同一条主路，第四个混合层才有注意力与专家，
-/// 于是「这一组里出现过几次注意力」在 [`Tower::order`] 上可以逐格读出来，不靠注释承诺。
 pub const MEMORY_PER_ATTENTION: usize = 3;
 
 /// 一个记忆层一步的输入：逐通道遗忘门、写入强度、键、值与读出查询。
-///
-/// 五段都由装配侧的投影给出，本层不持参数——与 [`crate::kda::Kda`] 的分工一样：它算「一步怎么写」，
-/// 谁给出这几段数不归它管。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MemoryStep<'a, S> {
     /// 逐通道遗忘门，宽 `d_k`，取值 `[0, 1]`。
@@ -411,9 +402,6 @@ pub enum Kind {
 }
 
 /// 层栈的随序列状态：每个记忆层一份，没有别的。
-///
-/// KV 缓存**不在**这里——它住 [`Latent`]，按页账走；本状态只跟着序列长度累积，与页无关。两份状态
-/// 分开的后果是：`Tower::step` 不需要页号，`write_kv` 不需要记忆几何。
 #[derive(Debug, Clone, PartialEq)]
 pub struct State<S: Scalar = f32> {
     memories: Vec<crate::kda::Memory<S>>,

@@ -1,7 +1,4 @@
 //! 片段拼接（README §4.2、§10.1、§10.2 的 ④）。
-//!
-//! 词法（`{{槽位}}` / `@原语(...)` 怎么切）属于声明层，在 [`op::tpl`]；本模块只把切出来的片段
-//! 换成取值与片段文本。
 
 use crate::decl::{OpDecl, TileCombo};
 use std::collections::BTreeMap;
@@ -30,10 +27,6 @@ pub(crate) fn missing_fragment(
 }
 
 /// ④ substitute：模板槽位 ← 轴/布局取值，`@原语(...)` ← 片段文本。
-///
-/// 字符串路径是**结构化路径的薄包装**：`ast::render(&ast::build(..))`。词法、槽位解析、占位符
-/// 替换与缩进对齐因此各只有一份实现，两条"路径"的逐字节相同是结构性的；`ast_renders_byte_identical_text`
-/// 仍然守着，它防的是将来有人给其中一步再补一份规则。
 pub fn render(
     op: &OpDecl,
     combo: &TileCombo,
@@ -45,8 +38,6 @@ pub fn render(
 }
 
 /// 把一段片段放进输出：去掉模板已提供的重复 `;`，并按调用点当前缩进对齐多行片段。
-///
-/// 只有这一份：字符串路径（[`render`]）走的就是 `ast::render`，两条路径不会各写一遍规则。
 pub(crate) fn place(text: &mut String, expanded: &str) {
     let trimmed = expanded.trim_end();
     let trimmed = trimmed.strip_suffix(';').unwrap_or(trimmed);
@@ -59,9 +50,6 @@ pub(crate) fn place(text: &mut String, expanded: &str) {
 }
 
 /// 片段占位符替换：`$0`..`$9` 是位置参数，`$name` 是命名参数。
-///
-/// 词法占位符的替换规则只有这一份：字符串路径（[`render`]）与结构化路径（`ast::build`）
-/// 都调用它，保证两条路径对同一片段得到完全相同的展开。
 pub(crate) fn splice(fragment: &str, args: &[Arg<'_>], line: usize) -> diagnostic::Result<String> {
     let table = Args::new(args);
     let mut out = String::with_capacity(fragment.len());
@@ -76,8 +64,6 @@ pub(crate) fn splice(fragment: &str, args: &[Arg<'_>], line: usize) -> diagnosti
 }
 
 /// 一段片段里的占位符切成“字面量 + 名字”：位置参数是 `$0`，命名参数是 `$name`。
-///
-/// 返回下一处占位符前面的文本、名字与剩下的部分；没有占位符时返回 `None`，剩下的文本原样输出。
 fn next_hole(text: &str) -> Option<(&str, &str, &str)> {
     let mut from = 0;
     loop {

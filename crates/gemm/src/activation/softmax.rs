@@ -1,7 +1,4 @@
 //! Softmax：`y[n] = exp(x[n] - max(x)) / sum_k exp(x[k] - max(x))`。
-//!
-//! 三趟遍历同一行：先求最大值（数值稳定，减去它再取指数不会溢出），再求指数和，最后归一化。
-//! 本模块自带形状、代价、样本、标量参考与遍历，`#[annotation::model]` 装配成 `MODEL`。
 use crate::model::{Buffer, Cost, Sample, ShapeContext, Values, cost_n, x_buffer};
 use diagnostic::{Code, Error};
 

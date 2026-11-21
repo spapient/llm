@@ -1,7 +1,4 @@
 //! 行级排版原件：参数写法、计数措辞、片段判定、档案头与 `cache gc` 报告。
-//!
-//! 这些是**一行**（或一个短段）的措辞，被编排入口与 [`super::section`]、[`super::matrix`] 反复调用；
-//! 判定全在库里，这里只选词——同一个数在报告不同段落里不会被说成两种结论。
 
 use cutile::cache::Gc;
 use cutile::dirs::Dirs;
@@ -11,9 +8,6 @@ use llm_optim::doctor::Doctor;
 use std::fmt::Write as _;
 
 /// 编译参数的一行写法：空列表也要有话说，否则报告里会出现一对空括号。
-///
-/// 参数是能力的第三个维度（片段、工具链、参数）：同一份片段换一组参数就是另一次代码生成，
-/// 所以结论行、证据行与产物行都把它写出来，而不是只留一个哈希。
 pub(super) fn params_note(flags: &str) -> String {
     if flags.is_empty() {
         "无".to_string()
@@ -32,9 +26,6 @@ pub(super) fn counted(count: usize, flags: &str) -> String {
 }
 
 /// `cache gc` 的整份报告：四行账 + 三条按需说明。
-///
-/// 哪条说明出现只看库给的计数（残留项、在用项、回收后与上限的差），本模块不重新判定
-/// "该不该回收"——阈值的语义在 `cutile::cache`。
 pub(super) fn cache_gc(report: &Gc, dirs: &Dirs) -> String {
     let mut out = Panel::new(format!(
         "cache gc | 上限 {}",

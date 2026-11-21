@@ -1,12 +1,4 @@
 //! 对拍口径的**唯一性**门禁：夹具层的读数与生产侧 `cutile::reference` 必须是同一个判据。
-//!
-//! 两份实现并存是结构性的：`llm-testkit` 的库体零依赖（夹具不能把 `cutile` 拉进来），而
-//! `cutile::reference` 是生产侧口径（`cli` 的 verify、`engine` 的设备基准都直接用它，不能只
-//! 活在测试里）。口径只允许有一条，于是留一道门禁把两者逐位钉住——分母、非有限值的分类、
-//! 长度处理、全零参考任何一处漂移都会在这里红。
-//!
-//! 阈值本身不在这里另设一张表：精度分档只由 `cutile::reference::tolerance` 拥有，本门禁只
-//! 校验 `within_ratio(got, want, tolerance(dt))` 与该分档一致。
 
 use crate::{Scale, max_rel_err, rel_err, rel_err_with, within_ratio};
 use cutile::atom::DType;

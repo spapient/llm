@@ -1,8 +1,4 @@
 //! `gemv_f32` 的算子语义：稠密 f32 权重投影。
-//!
-//! 骨架在 [`crate::gemv`]，本模块只有"稠密权重"这一份逐元素配置：表达式、操作数位宽、分块宽度
-//! 与元素反量化。模板在 `ops/gemv_f32.k`，本模块是它的第二份实现：片段只与这里对拍。
-//! 内核实参不在这里手写：它由 `.k` 的签名与样本派生（[`crate::sig`]）。
 use crate::einsum::{Bits, FormulaCache, OperandSpec};
 use crate::gemv::{self, Plain, PlainFmt};
 

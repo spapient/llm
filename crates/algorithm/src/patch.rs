@@ -1,27 +1,4 @@
 //! byte-latent 的动态 patch 编码（§5.17，第 11 款标杆的编码侧）。
-//!
-//! byte-latent 不是换 tokenizer，而是换前向：**字节 → 动态 patch → latent transformer → 逐字节解码**。
-//! 没有固定词表，于是"哪些字节该被同一次全局前向一起看"必须先由一条**因果**规则决定。本模块只做
-//! 这一步：把逐字节的信息量序列切成 patch 区间，并把"全局前向要跑几次"的记账放在结果上。两端的
-//! 本地层在 [`crate::codec`]（`Boundary` 的分数与 patch 表示的编码、`Patches` 被逐 patch 编码），
-//! 中间那层全局 transformer（复用既有 [`nn::Attention`] / [`crate::BlockTable`]）在装配侧。
-//!
-//! 两套边界规则都来自 §5.17：
-//!
-//! - [`Boundary::Entropy`]（BLT）：边界 = `H_i > θ_g` 或 `H_i − H_{i−1} > θ_r`。熵由一个小自回归
-//!   模型算，阈值是人工旋钮；`θ_g` / `θ_r` 进配置之日按 §5.16 走 schema 演进，不默默填默认值。
-//! - [`Boundary::Rate`]（ByteFlow）：按编码率取 Top-K，**没有人工阈值**。真实 ByteFlow 的 K 是整块
-//!   上的，那要用到"还没到的字节"；而 §5.17 把**增量性**列为第一性质（同一前缀在生成的每一步都
-//!   必须仍是同一个切分，否则 KV 与 patch 一起重算）。所以这里把 Top-K 落成**尾窗内的秩判定**：
-//!   `H_i` 在最近 `window` 个分数里排进前 `top` 名就是边界——同一句话，只用了过去。
-//!
-//! 这一层有两个契约，都是可测的而非约定的：**覆盖**（区间首尾相接、无空 patch）与**前缀稳定**
-//! （对前缀的切分等于完整切分截到该处），后者正是"边界只看过去"的形态。计算量记账也放在
-//! [`Patches`] 上：全局 transformer 每个 patch 跑一次，[`Patches::len`] 就是次数，
-//! [`Patches::mean_len`] 就是 §5.17 那条"patch 平均 8 字节"的左边。
-//!
-//! 用 `f32` 跑前向、`f64` 对拍，两档共用同一份泛型实现（[`op::scan::Scalar`]）：分数是熵还是
-//! 信息密度由调用方给，本模块不替它选模型。
 
 use std::ops::Range;
 
@@ -34,8 +11,6 @@ use crate::csa::finite;
 const SITE: &str = "algorithm::patch";
 
 /// 边界规则闭集：两套机制各自的参数。
-///
-/// 参数随变体走，于是"规则是熵、却拿着 window"这类状态在类型上就不存在——不是靠校验挡住的。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Boundary<S: Scalar = f32> {
     /// BLT 熵规则：`global` 是全局阈值 `θ_g`，`rise` 是突增阈值 `θ_r`，都非负。
@@ -103,8 +78,6 @@ impl<S: Scalar> Boundary<S> {
     }
 
     /// 入口校验：参数、下标与**本字节及前一个字节**的分数都在定义域内。
-    ///
-    /// 首字节只看自己：它恒为起点，没有「前一个」可问。
     fn probe(self, scores: &[S], index: usize) -> Result<()> {
         self.check()?;
         if index >= scores.len() {
@@ -138,9 +111,6 @@ impl<S: Scalar> Boundary<S> {
     }
 
     /// 第 `i` 个字节（`i ≥ 1`）是否开一个新的 patch。
-    ///
-    /// 熵规则的两条都是严格大于：阈值是下限而不是上限，取等不算越界。秩判定用"尾窗里严格大于它的
-    /// 个数"当名次，取等时名次不后退，于是同一段序列的切分与遍历方向无关。
     fn breaks(self, scores: &[S], i: usize) -> bool {
         let score = scores[i];
         match self {
@@ -158,9 +128,6 @@ impl<S: Scalar> Boundary<S> {
 }
 
 /// 一次切分的结果：patch 的行区间与记账。
-///
-/// 只存起点（终点是下一个起点，末段收在总字节数上），所以"区间首尾相接、无空 patch"由构造保证，
-/// 不是一条要维护的断言。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Patches {
     starts: Vec<usize>,
@@ -189,8 +156,6 @@ impl Patches {
     }
 
     /// 全部 patch 的区间，按起点升序、末段收在总字节数上：遍历切分的唯一形态。
-    ///
-    /// 编码侧按这条遍历走（每个 patch 一行表示），于是"行数等于 patch 数"由单一来源给出。
     pub fn ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {
         (0..self.starts.len()).map(move |i| self.span(i))
     }

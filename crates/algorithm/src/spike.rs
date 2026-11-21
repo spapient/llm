@@ -37,8 +37,6 @@ fn ternary(spike: i8) -> bool {
 }
 
 /// 输出侧梯度判据：长度与输出通道一致，取值有限。
-///
-/// `NaN` 必须挡在入口：它进了乘法就一路污染到每条权重，事后从结果里看不出是哪一格带进来的。
 fn check_gradient(d_out: &[f32], outputs: usize) -> Result<()> {
     if d_out.len() != outputs {
         return Err(bad(format!(

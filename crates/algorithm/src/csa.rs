@@ -1,14 +1,4 @@
 //! V4 CSA/HCA 超长注意力（§5.8.3）：序列分块压缩 + 稀疏/稠密注意力。
-//!
-//! CSA：每 `m=4` token 压成 1 条，再 DSA top-k（Flash 512 / Pro 1024）；HCA：每 `m'=128` token 压成
-//! 1 条，稠密注意。有效长 `n/m`、`n/m'`（数学验证 41）。这是 α 通道的**序列压缩注意力**，与 MLA
-//! 潜在维压缩分列，禁止写成 `O(n)` 扫描（Mamba-3 轴）。
-//!
-//! 纯数学函数统一走 [`op::scan::Scalar`] 泛型（与 [`crate::mix`] / [`crate::policy`] / [`crate::mix::pulse`]
-//! 同一闭集）：`f32` 供前向、`f64` 供验证对拍，不因精度复制两份实现。
-//!
-//! [`BlockTable`] 是这套公式的**执行侧**：压缩 K/V 进表，再按因果口径寻址（整块 + 滑窗），
-//! 一步就能算出注意力输出。没有它，压缩与 top-k 只是没人调用的纯函数。
 
 use core::cmp::Ordering;
 use diagnostic::{Code, Error, Result};
@@ -74,9 +64,6 @@ pub fn dense_softmax<S: Scalar>(scores: &mut [S], rows: usize, cols: usize) {
 }
 
 /// 单行 softmax：先减最大值再指数，和为零时保持原值（全 `-inf` 的退化行）。
-///
-/// `pub(crate)` 而不是私有：[`crate::mla`] 的潜在注意力要在同一口径上归一化，
-/// 再写一份就等于给 softmax 两个定义。
 pub(crate) fn softmax_row<S: Scalar>(row: &mut [S]) {
     let max = row
         .iter()
@@ -146,18 +133,6 @@ pub fn is_doubly_stochastic<S: Scalar>(mat: &[S], n: usize, tol: S) -> bool {
 }
 
 /// 块表：一段 K/V 按块因子压缩后的键值表，以及它的因果寻址口径。
-///
-/// [`compress`] 只回答"怎么压"，这张表回答"压完之后谁来用"——§5.8.3 里 α 通道的检索面。
-/// 原始行与压缩行同时留着，同一份数据因此能给出两种注意力：压缩块（检索）与滑窗原始行
-/// （补块内因果）。寻址两级缺一不可：
-///
-/// - **整块**：只取完全落在查询位置之前的块（`(b+1)·m ≤ t`）。块里混了未来行，整块可见就等于
-///   提前看见未来；
-/// - **滑窗**：再补 `[t+1−win, t]` 的原始行。块压缩把块内的相对顺序抹平，这一窗把它补回来。
-///
-/// `m = 1` 且 `win = 1` 时可见槽恰好是 `0..=t`，输出与稠密因果注意力一致（单测钉住）。`m` 取
-/// [`CSA_M`]、`win` 取 [`WIN`]、`topk = Some(CSA_TOPK_FLASH)` 即 CSA；`m` 取 [`HCA_M`] 且
-/// `topk = None` 即 HCA 的稠密块。
 #[derive(Debug, Clone, PartialEq)]
 pub struct BlockTable<S: Scalar = f32> {
     dim: usize,
@@ -178,9 +153,6 @@ pub struct BlockTable<S: Scalar = f32> {
 const SITE: &str = "algorithm::csa::BlockTable";
 
 /// 可寻址宽度 `seq × dim`：任一几何为零时算不出宽度，乘法溢出同样拒绝。
-///
-/// 单独一函数是因为它是「表能不能建」的第一道判据：宽度是后面长度校验与压缩切块的共同依据，
-/// 与「K/V 给对没有」是两件事。
 fn geometry(seq: usize, dim: usize, m: usize, win: usize) -> Result<usize> {
     let width = seq.checked_mul(dim).ok_or_else(|| {
         Error::new(Code::Invalid, format!("seq × dim 溢出（{seq} × {dim}）")).with(SITE)
@@ -209,9 +181,6 @@ fn lengths<S>(keys: &[S], values: &[S], width: usize) -> Result<()> {
 
 impl<S: Scalar> BlockTable<S> {
     /// 由 `seq` 行 K/V 建表：`keys` / `values` 都是行主序 `[seq, dim]`，压缩按 [`compress`]。
-    ///
-    /// `dim`、`m`、`win` 必须非零，K/V 长度必须是 `seq · dim`；任何一条不成立都是
-    /// `Code::Invalid`——块表带着错的几何活下去，之后每一次寻址都错。
     pub fn new(
         keys: &[S],
         values: &[S],
@@ -265,18 +234,12 @@ impl<S: Scalar> BlockTable<S> {
     }
 
     /// 查询位置 `t` 的可见槽：完全落在 `t` 之前的整块数，与滑窗原始行的起点。
-    ///
-    /// 两者共同决定槽序（先整块、后滑窗行），也是因果性的全部依据：`t` 之后的行既不在整块里
-    /// （块必须整块在 `t` 之前），也不在窗口里。
     pub fn visible(&self, t: usize) -> (usize, usize) {
         let whole = (t / self.m).min(self.blocks());
         (whole, t.saturating_sub(self.win - 1))
     }
 
     /// 因果注意力：查询 `q` 在位置 `t` 的输出。
-    ///
-    /// 槽序先压缩块、后滑窗行；`topk` 只保留分数最大的 `k` 个槽（CSA 取
-    /// [`CSA_TOPK_FLASH`]），`None`、`Some(0)` 或 `k ≥ 槽数` 都是稠密（没有可丢的槽）。
     pub fn attend(&self, q: &[S], t: usize, topk: Option<usize>) -> Result<Vec<S>> {
         if t >= self.seq || q.len() != self.dim {
             return Err(Error::new(
@@ -330,9 +293,6 @@ impl<S: Scalar> BlockTable<S> {
 }
 
 /// 只留分数最大的 `k` 个槽，其余置 `−∞`。
-///
-/// 与 [`dsa_topk`] 的区别是**不改槽序**：这里的分支随后要拿权重乘 `V`，而 `V` 不会跟着重排，
-/// 任何换位都会让分数与值错配。因此只取第 `k` 大的值做阈值，并列者按原序保留。
 fn keep_topk<S: Scalar>(scores: &mut [S], k: usize) {
     let mut ranked = scores.to_vec();
     ranked.select_nth_unstable_by(k - 1, |a, b| b.partial_cmp(a).unwrap_or(Ordering::Equal));
@@ -345,9 +305,6 @@ fn keep_topk<S: Scalar>(scores: &mut [S], k: usize) {
 }
 
 /// 是否有限：`NaN` 与 `±∞` 都让 `v − v` 不等于零。
-///
-/// `pub(crate)` 而不是私有：MoE 的路由分布、mHC 的混合矩阵、byte-latent 的分数与 KDA 的门都要在入口
-/// 挡非有限值，再各写一份判据就等于给「有限」两个定义。
 pub(crate) fn finite<S: Scalar>(v: S) -> bool {
     v.sub(v) == S::ZERO
 }

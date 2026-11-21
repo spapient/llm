@@ -1,13 +1,4 @@
 //! 生成的两个协作者与它的结局：[`Predict`]、[`Sampling`]、[`Greedy`]、[`Generation`]、[`Ending`]。
-//!
-//! 这里只把两个接口定下来，好让端点把它们与调度器接起来；模型实现收在 [`crate::model`]
-//! 模块内（CPU 内核桥），选 token 的策略与接口解耦：
-//!
-//! - [`Predict`] 给一步 logits（序列进、分数出）；
-//! - [`Sampling`] 从分数里选一个 token，或说"到此为止"（`None`）。
-//!
-//! 把采样放成 trait 而不是一个 `argmax` 调用，是因为"贪心"只是其中一种：温度、top-k、重复
-//! 惩罚都会改变"什么时候停"。端点因此不需要知道策略，策略也不需要知道页账。
 
 use crate::macros::name_set;
 use diagnostic::{Code, Error, Result};
@@ -15,11 +6,6 @@ use rng::Rng;
 use std::cmp::Ordering;
 
 /// 一步前向：给定序列与批页账视图，给出下一个位置的 logits。
-///
-/// 序列本身只读：前向不该推进计数（页账与计数都由调度器推进）。历史 K/V 经 `batch` 从页池
-/// 读回，当前步 K/V 写回对应页行；一次调用内只持一个 `&mut Batch`，只读的序列事实由调用方
-/// 先取走再进入可变借用。长度与形状由实现按 [`engine::Sequence::len`] 自行决定——本层不假设
-/// 词表大小。
 pub trait Predict {
     /// 计算下一个位置的 logits；返回值长度由模型决定。
     ///
@@ -53,9 +39,6 @@ pub trait Predict {
 
     /// 端点第一步先用它做预算：不支持时根本不向页池要页，也不必等到第一个位置写入失败
     /// 才发现「这个模型没有预填充」。
-    ///
-    /// 默认 `false`，与 [`prefill`](Self::prefill) 的默认实现一致；两者必须同真同假，
-    /// 否则预填充会在写入路径上白花一次页预算。
     fn prefills(&self) -> bool {
         false
     }
@@ -102,9 +85,6 @@ pub trait Sampling {
 const DEFAULT_TEMPERATURE: f32 = 1.0;
 
 /// 贪心采样：取最大 logit，等值时取编号最小的那个。
-///
-/// "等值取最小下标"是确定性要求：否则同一份 logits 在不同实现上会给出不同 token，
-/// 对拍与回归都会变成"有时通过"。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Greedy;
 
@@ -115,10 +95,6 @@ impl Sampling for Greedy {
 }
 
 /// 经典采样参数闭集档案：温度 / top-k / top-p；`None` 表示该档不启用。
-///
-/// 参数在装配采样器时一次性给定（闭集档案），不随步变化；越界值在采样时对照候选条数校验。
-/// 档案只有类型化槽位，不持字符串键名表，热路径也不做查表。随机采样不在本刀：截断之后仍是
-/// 确定性 argmax（等值取最小编号），与 [`Greedy`] 同一套可复现口径。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SamplingParams {
     /// 温度；`None` 等价 `1.0`。
@@ -232,9 +208,6 @@ impl Default for SamplingParams {
 }
 
 /// 经典采样：温度缩放 → top-k 截断 → top-p 核采样 → 保留集 argmax。
-///
-/// 不接随机数：截断后的选择仍是确定性 argmax（等值取最小编号）；随机采样留后续档位，
-/// 本刀不预埋 RNG。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Classical {
     params: SamplingParams,
@@ -269,13 +242,6 @@ impl Sampling for Classical {
 }
 
 /// 多项式采样：截断保留集上按 softmax 概率逆变换抽一个 token。
-///
-/// 与 [`Classical`] 共用温度 / top-k / top-p 截断；差别在保留集的选择：经典采样是
-/// 确定性 argmax，本刀按归一化概率抽样。随机流由构造时给定的种子经显式 [`Rng`]
-/// 派生，不读全局熵源；同种子、同 logits 序列逐位可复现。
-///
-/// 并行后端的等价口径是 Gumbel-max（逐候选 `logit/T + gumbel` 后 argmax，不建累积表）；
-/// 本轮 CPU 路径用累积概率逆变换，二者概率分布等价。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Multinomial {
     params: SamplingParams,
@@ -309,9 +275,6 @@ impl Sampling for Multinomial {
 }
 
 /// 保留集上按 softmax 概率逆变换抽样：减 max 求指数并累计，抽一个均匀量落进对应段。
-///
-/// 指数与累计有串行依赖，保留折叠与遍历；`scaled` 整块读入，不写回调用方缓冲。
-/// 浮点兜底：阈值被累积误差推到末尾时取最后一个候选。
 fn sample_categorical(scaled: &[f32], candidates: Vec<usize>, rng: &mut Rng) -> Result<usize> {
     if candidates.is_empty() {
         return Err(empty("serve::Multinomial"));
@@ -329,9 +292,6 @@ fn sample_categorical(scaled: &[f32], candidates: Vec<usize>, rng: &mut Rng) -> 
 }
 
 /// 采样公共管线：预检 → 参数校验 → 温度缩放 → 截断 → 选择器；返回选中 token 编号。
-///
-/// 两种选择器（确定性 argmax、概率逆变换）只在保留集上的取法不同，预检、校验、缩放与
-/// 截断序列共用这一份；选择器以编译期闭包注入，单态化无 dyn 开销。
 fn pipeline(
     params: &SamplingParams,
     logits: &[f32],
@@ -401,8 +361,6 @@ fn empty(scope: &str) -> Error {
 }
 
 /// 保留集减最大值的指数权重与未归一化总和；top-p 排序与多项式逆变换共用同一份 softmax 权重。
-///
-/// 减最大值只为数值稳定，不改变相对权重；返回未归一化指数，归一化由消费方按用途决定。
 fn exp_weights(scaled: &[f32], candidates: &[usize]) -> (Vec<f32>, f32) {
     let max = candidates
         .iter()
@@ -417,8 +375,6 @@ fn exp_weights(scaled: &[f32], candidates: &[usize]) -> (Vec<f32>, f32) {
 }
 
 /// top-p 核采样：按 softmax 概率降序累计，保留累计概率不超过 `p` 的最小前缀（含越出阈值的第一项）。
-///
-/// 归约与排序有串行依赖，保留遍历；`scaled` 整块读入，指数与累计不写回调用方缓冲。
 fn nucleus(scaled: &[f32], mut candidates: Vec<usize>, p: f32) -> Vec<usize> {
     let (weights, total) = exp_weights(scaled, &candidates);
     let mut ranked: Vec<(usize, f32)> = candidates.drain(..).zip(weights).collect();
@@ -459,9 +415,6 @@ impl Generation {
     }
 
     /// 线格式：每个 token 4 字节小端，顺序与 [`Generation::tokens`] 一致。
-    ///
-    /// 与 `serve::Response::ok(sequence.id().to_le_bytes())` 用同一套字节序：端点返回的
-    /// 载荷不需要第二种编码。输出长度已知（`tokens.len() * 4`），一次性预分配，不再逐元素扩容。
     pub fn frame(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.tokens.len() * 4);
         for token in &self.tokens {
@@ -507,9 +460,6 @@ fn usable(logits: &[f32]) -> Result<()> {
 }
 
 /// 最大 logit 的最小下标；空输入与非有限值都报错。
-///
-/// 与 [`speculate`](crate::speculate) 共用：投机校验要看"目标模型会选哪个"，那个判据必须与
-/// 生成时用的是同一处，否则草稿与校验各按一套 argmax 判，接受数就没有意义了。
 pub(crate) fn best(logits: &[f32]) -> Result<u32> {
     usable(logits)?;
     let index = argmax_index(logits, (0..logits.len()).collect(), "serve::Greedy")?;

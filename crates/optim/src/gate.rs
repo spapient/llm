@@ -1,8 +1,4 @@
 //! 语法门：设备不在本机时，用一门语言自己的解析器把见证过一遍。
-//!
-//! 它不是执行，也不改任何 `grade`：只证明"这段见证在它自己声称的语言里语法成立"。缺了它会有
-//! 具体的假绿——`metal/witness.metal` 曾写成 `float *out`，host `cc` 能过，而 MSL 没有默认
-//! 地址空间，于是那份证据从未在自己声称的语言里存在过。
 
 use crate::runner::driver::{scratch, write_text};
 use crate::toolchain::{Toolchain, clang, probe_declared};
@@ -16,14 +12,6 @@ use std::fmt;
 use std::path::Path;
 
 /// 见证在**它自己声称的语言**里的合法性。
-///
-/// 这是第三种结论：设备执行（[`crate::witness::Scope::Device`]）说"这台机器跑得动"，本机自检（[`crate::witness::Scope::Host`]）
-/// 说"这段代码在 host C 里算得对"，语法门说"这份文件在它声称的语言里编得过"。中间的缝隙不是
-/// 理论问题：`prim/metal/witness.metal` 曾长期只有 host `cc` 看过，而 MSL 根本接受不了
-/// `float *out`（没有默认地址空间）。
-///
-/// 门不执行任何一行，所以**不改变 `grade`**；但被拒绝是证据本身的缺陷，[`crate::witness::establish`] 把它记进
-/// [`crate::witness::Evidence::failure`]，与"本机编不了"分得清清楚楚。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LanguageGate {
     /// 设备执行已经覆盖这份见证（`c` / `metal`）：门不必再开，能真跑的就不只解析。
@@ -115,11 +103,6 @@ const GATES: &[GateSpec] = &[
 
 impl GateSpec {
     /// 有效检查参数：表内固定的语法检查参数 + 档案自己声明的语言版本开关。
-    ///
-    /// 语言版本是设备的事实（`compile.flags` 里的 `-cl-std=` / `-std=`），门不许再声明一遍：
-    /// 写死一份就有两个事实源，门验的语言和设备编的语言可能不是一门——Intel 的档案是 CL2.0，
-    /// 通用指针到 `__global` 的显式转换在 CL2.0 合法、在 CL3.0 被拒绝，两边版本一错就成假门。
-    /// 档案不声明时用前端自己的默认（clang 的默认就是 CL3.0），不替它补。
     fn check<'a>(&'a self, profile: &'a Profile) -> Vec<&'a str> {
         let mut arguments: Vec<&str> = self.check.to_vec();
         arguments.extend(
@@ -145,9 +128,6 @@ fn front(spec: &GateSpec) -> Option<Toolchain> {
 }
 
 /// 用一台设备**自己声称的语言**把它的全部已声明见证过一遍。
-///
-/// 设备执行跑得到的设备（`c` / `metal`）返回 [`LanguageGate::Covered`]：门是自检的替代品，
-/// 能真跑的就不再只解析。其余设备按 `emit` 找语言前端；找不到就说找不到，不降级成别的东西。
 #[must_use]
 pub fn language_gate(profile: &Profile, dirs: &Dirs) -> LanguageGate {
     if device_available(profile) {
@@ -173,10 +153,6 @@ pub fn language_gate(profile: &Profile, dirs: &Dirs) -> LanguageGate {
 }
 
 /// 语法门的执行器：表行决定程序与参数，这里只负责“逐份文件过一遍、失败带第一行报错回来”。
-///
-/// 源码一律经 [`source`] 取：内嵌副本与 `data.root` 覆盖都由它决定。先前这里直接把
-/// `dirs.data().unwrap().join(file)` 交给 clang，于是在没有源码树的发布机上会报成
-/// “见证被自己的语言拒绝”——真相是“本机没有那份源码”，分类与指向的人都错了。
 fn parse_all(spec: &GateSpec, profile: &Profile, dirs: &Dirs) -> diagnostic::Result<LanguageGate> {
     let selected = declared_witnesses(profile)?;
     if selected.is_empty() {

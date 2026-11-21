@@ -5,9 +5,6 @@ pub const EPS: f32 = op::batch_norm::EPS;
 pub(crate) const MOMENTUM: f32 = 0.1;
 
 /// BatchNorm 的滚动统计：训练期按 batch 统计与动量递推，推理期直接用这一份。
-///
-/// 更新口径与 `op::norm::BatchNorm2d::forward_train` 一致：方差按无偏值进滑动统计，
-/// 归一化本身仍用有偏方差。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Running {
     /// 每通道滚动均值。

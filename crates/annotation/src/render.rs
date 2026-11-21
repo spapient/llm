@@ -1,16 +1,9 @@
 //! 渲染：把一份声明拼成源码。只做字符串拼接、不维护状态、不接触 `proc_macro`，因此可以用纯文本断言测试。
-//!
-//! 三块输出共用一条规则：**生成的名字一律带 `__layer_` / `__model_` 前缀**，宏展开不该占用用户可能
-//! 想用的普通名字。拼接只往一个预留了容量的 `String` 里写（`write!` 而非 `format!` + 拷贝），
-//! 于是"渲染一份"是一次分配。
 
 use crate::decl::{DTYPES, Declaration, ModelDecl, RuntimeDecl, SKELETONS};
 use std::fmt::Write;
 
 /// 三块输出的预留容量：按最长的真实声明留足余量，于是"渲染一次 = 一次分配"真的成立。
-///
-/// 容量是预算而不是常量表：`String::with_capacity` 精确报出所请求的容量，写超一次就会翻倍增长，
-/// 所以 `render_tests::one_render_allocates_exactly_once` 能用 `capacity()` 把这三个数钉住。
 pub(crate) const STATIC_ROOM: usize = 3072;
 pub(crate) const MODEL_ROOM: usize = 1536;
 pub(crate) const RUNTIME_ROOM: usize = 512;
@@ -106,9 +99,6 @@ fn check(code: &mut String, declaration: &Declaration, ty: &str) {
 
 /// 运行时形态只生成一个构造宏：`spec` 字段由适配层注入，`impl ::nn::Contract` 仍由
 /// `spec_accessors!` 从 `self.spec` 读取，与静态形态逐字相同。
-///
-/// 生成宏而不是函数，是因为错误类型 `diagnostic::Error` 不在注解的依赖面里：宏展开到调用点，
-/// `?` 对着被标注 crate 自己的构造函数签名推断，生成的代码只指向 `::nn` 与 `::std`。
 pub(crate) fn render_runtime(declaration: &RuntimeDecl, ty: &str) -> String {
     let mut code = String::with_capacity(RUNTIME_ROOM);
     code.push_str("#[doc(hidden)]\n#[allow(non_snake_case, unused_macros)]\n");
@@ -154,9 +144,6 @@ fn holes(declaration: &RuntimeDecl) -> impl Iterator<Item = &String> {
 }
 
 /// 去重且保持首次出现顺序：`out = [$dim, $dim]` 只占一个宏参数，却在形状里写两次。
-///
-/// 容量取自 [`holes`] 链式迭代器的上界（`once` 与切片迭代器都精确），因此这份临时集合同样
-/// **只分配一次**：`Vec::new()` 会随 push 重新分配，正好抵消掉本层"一次分配"的预算。
 fn unique<'a>(names: impl Iterator<Item = &'a String>) -> Vec<&'a str> {
     let mut seen: Vec<&str> = Vec::with_capacity(names.size_hint().1.unwrap_or(0));
     for name in names {
@@ -168,10 +155,6 @@ fn unique<'a>(names: impl Iterator<Item = &'a String>) -> Vec<&'a str> {
 }
 
 /// 把 `#[model(..)]` 渲染成 `MODEL` + 编译期契约断言（不生成运行期测试，见 [`asserts`]）。
-///
-/// `MODEL` 不是逐字段拼出来的第二份事实：它就是 `Operator` 的投影（`model_of::<T>()`）。注解里的
-/// 注册名、生产形状与输出类型仍要写，但只在编译期与 `Operator` 的常量对齐——写错是 `cargo check`
-/// 失败，而不是生成一份绑错算子的表。
 pub(crate) fn render_model(declaration: &ModelDecl, ty: &str) -> String {
     if let Some(closure) = closed(declaration) {
         return closure;
@@ -214,10 +197,6 @@ fn closed(declaration: &ModelDecl) -> Option<String> {
 
 /// 注解字面量与 `Operator` 常量之间的编译期契约：名字与输出类型逐字节相同、形状相同、`M` 是
 /// 粒度整数倍。
-///
-/// 只引用契约 crate（`llm_spec`）的项：注解展开在哪个 crate 都成立，不需要该 crate 认识注册表
-/// 或某个执行核。「注册表里的那一条就是这份 `MODEL`」由 `op` 的注册表驱动的测试核对——那里是唯一
-/// 同时看得见注册表与全部内核的类型表的地方。
 fn asserts(code: &mut String, declaration: &ModelDecl, ty: &str) {
     let [m, n] = declaration.shape;
     let _ = writeln!(

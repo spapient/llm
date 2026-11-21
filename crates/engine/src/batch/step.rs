@@ -173,17 +173,11 @@ impl Batch {
     }
 
     /// 批内第 `index` 条序列（只读）：位置即 [`Batch::sequences`] 的准入顺序。
-    ///
-    /// 批量视图按序号取视图：模型侧按批内几何逐条前向时，用序号对齐本轮结果，不必自己再按
-    /// id 重排。`index` 越界返回 `None`，批内顺序在同一轮 `step` 内稳定。
     pub fn sequence_at(&self, index: usize) -> Option<&Sequence> {
         self.sequences.get(index)
     }
 
     /// 本步批量结局：每条在跑序列一条进度，按准入顺序排列，与 [`Batch::sequences`] 一一对应。
-    ///
-    /// 批量结果视图不另存历史：进度只回答"这一步生成没生成"，历史仍在各自的 [`Sequence`] 里，
-    /// 两条序列的 `tokens` 不会在这个视图里串台。调用方按序号与 [`Batch::sequence_at`] 对齐。
     pub fn outcomes(&self, step: &[Progress]) -> Vec<SequenceOutcome<'_>> {
         self.sequences
             .iter()
@@ -238,15 +232,6 @@ impl Batch {
 
     /// 写到第 `token` 行之后登记：已落定的行数就是这一行之后的行数。
     /// 把已落定 `rows` 行里凑满的块登记进前缀树。
-    ///
-    /// 只登记**整块且整块落在已落定行数之内**的前缀：块内 token 从序列上下文切（前缀树比对的
-    /// 就是这些数），页号从页表取——两者都只在"这一块已经算进页里"之后才有意义。哪些块算数只由
-    /// `rows` 决定，调用方负责让它等于已落定的行数，因此这里不再自己推偏移。
-    ///
-    /// 扫描从第 0 块开始而不是从"新落定的第一块"开始：登记对已登记的块返回 `false`、不加第二份
-    /// 引用，重扫只花一次比对；代价远小于"从哪开始"这个参数写错一次就漏掉一块。
-    ///
-    /// 不登记的部分不是错误：不足一块的尾巴、或已被别人登记过的块，都只是"这次没有新前缀"。
     pub(super) fn settle_through(&mut self, id: u64, rows: usize) -> Result<()> {
         let Self {
             scheduler,
@@ -273,9 +258,6 @@ impl Batch {
     }
 
     /// 一条序列在本轮 `step` 后的批量结局视图：它自己的序列事实与本步进度成对持有。
-    ///
-    /// 视图是只读借片：历史（[`Sequence::tokens`]）与进度分属两条序列，不会跨条合并；批量结果
-    /// 只负责把本轮 [`Batch::step`] 的结局按准入顺序对齐到每条序列。
     pub fn outcome(&self, index: usize, progress: Progress) -> Option<SequenceOutcome<'_>> {
         self.sequences
             .get(index)
@@ -305,20 +287,11 @@ impl Batch {
     }
 
     /// 这条序列在这个页池里有没有可能跑完（与 [`Scheduler::fits`] 同源）。
-    ///
-    /// 服务层据此区分"现在满"（可重试）与"永远装不下"（改请求才有用）；判据本身只有一份。
     pub fn fits(&self, sequence: &Sequence) -> bool {
         self.scheduler.fits(sequence)
     }
 
     /// 这一轮按 IFB 预算该跑哪些行：`Packed.rows` 是**本轮的行与序**（生成在前、上下文在后）。
-    ///
-    /// 相位由序列自身的事实决定，不由调用方挑：提示段没算完就是上下文（块大小走
-    /// [`crate::ifb::chunk`] 的页对齐算式），算完了就是生成（一轮一行）。于是"先跑谁"不是调度参数，
-    /// 而是 [`crate::ifb::pack`] 在预算下的一条算式——挤压时只挤上下文，生成行一条不丢。
-    ///
-    /// 零行的候选不进结果：`chunk` 返回 0 是"这一轮不做上下文"（剩余不足一整页），把它当成
-    /// 一条 0 行候选排进来，调用方就得自己再判一次"这行要不要跑"。
     #[must_use]
     pub fn round(&self, budget: crate::ifb::Budget) -> crate::ifb::Verdict {
         let candidates: Vec<crate::ifb::Candidate> = self

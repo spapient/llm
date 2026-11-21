@@ -1,15 +1,4 @@
 //! 训练会话：tape → 反传计划 → 梯度需求分类 → 梯度缓冲 → 优化器步的最小闭环。
-//!
-//! **拥有**：[`TrainConfig`]、[`ParamSlot`]、[`Session`]。**不拥有**：前向算子语义（`op`）、
-//! 反向公式（autograd 只出 tape / plan / Replay）、分词与打包策略（`data`）。**依赖**：`autograd`、
-//! `data`、`nn`、`diagnostic`、本层的 [`Buffers`](crate::Buffers) 与 [`Optimizer`](crate::Optimizer)。
-//!
-//! 职责收口：
-//!
-//! - 参数槽按 [`ParamRole`] 登记，角色从层声明派生，优化器不按字段名猜组；
-//! - 梯度缓冲由 [`Buffers`](crate::Buffers) 扩展自持，autograd 不持梯度存储；
-//! - 反传计划只取 [`Requirement::Grad`](autograd::Requirement::Grad) 终点；不可达参数不进优化器；
-//! - 学习率走本层 [`Schedule`](crate::Schedule)，会话只在每步取当前值。
 
 use autograd::{Requirement, Sizes, Tape, Var};
 use diagnostic::{Code, Error, Result};
@@ -28,8 +17,6 @@ use snapshot::{GradAccum, Ties};
 pub(crate) const SITE: &str = "train::Session";
 
 /// 训练配置：学习率峰值、warmup、总步数、裁剪与梯度累积窗口。
-///
-/// 裁剪与累积窗口先收下口径；裁剪在优化器内执行，累积汇总见 T1-5。
 #[derive(Debug, Clone, PartialEq)]
 pub struct TrainConfig {
     /// 学习率峰值（warmup 结束时）。
@@ -91,9 +78,6 @@ impl TrainConfig {
     }
 
     /// 按可选覆盖构造：未给的字段取 [`Default`]。
-    ///
-    /// 默认值只在 [`Default`] 一份；调用方把缺项留成 `None` 透传，不复制第二份常数。校验仍走
-    /// [`Self::new`]。
     pub fn with_overrides(
         learning_rate: Option<f32>,
         warmup_steps: Option<u64>,
@@ -118,15 +102,9 @@ impl TrainConfig {
 }
 
 /// 取视图时按槽号记下的元数据：变量、角色、矩阵形状。
-///
-/// 单独起名的理由是可读性而不是洁癖：`Vec<(Var, ParamRole, Option<(usize, usize)>)>` 写出来
-/// 读者要数三层括号才知道自己在看什么。
 type SlotMeta = (Var, ParamRole, Option<(usize, usize)>);
 
 /// 一个已登记的参数槽：变量编号、角色与常驻参数值。
-///
-/// 梯度不在这里，梯度缓冲由 [`Buffers`](crate::Buffers) 自持；参数值是优化器就地写回的对象，
-/// 每步前向再镜像回激活缓冲。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParamSlot {
     var: Var,
@@ -147,9 +125,6 @@ impl ParamSlot {
     }
 
     /// 矩阵形状 `(rows, cols)`：登记形状是二阶张量时给出，否则 `None`。
-    ///
-    /// 它随参数槽一起走，因为 [`Optimizer`] 的矩阵类实现（[`crate::Muon`]）要在矩阵上做正交化；
-    /// 形状只从图上的登记形状派生，不从参数长度反推（`4` 既可以是 `2 × 2`，也可以是 `4 × 1`）。
     pub fn matrix(&self) -> Option<(usize, usize)> {
         self.matrix
     }
@@ -166,8 +141,6 @@ impl ParamSlot {
 }
 
 /// 一次训练会话：复用同一张图、同一批缓冲与同一个优化器，逐 micro-batch 推进。
-///
-/// `C` 是分布式通信后端（[`Collective`]）；单进程恒等回路用 [`Distributed::none`] 占位。
 pub struct Session<K: Kernel, O: Optimizer, C: Collective = shard::Remote> {
     tape: Tape,
     sizes: Sizes,
@@ -520,8 +493,6 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
     }
 
     /// 登记权重绑定：回填时 `tied` 槽整块复制 `source` 槽的当前参数值（嵌入表与输出头共享权重的接缝）。
-    ///
-    /// 两端都必须是已登记参数槽，且长度一致；长度不符是 [`Code::Invalid`]。
     pub fn register_tie(&mut self, source: Var, tied: Var) -> Result<()> {
         let source = self.slot_index(source)?;
         let tied = self.slot_index(tied)?;
@@ -556,9 +527,6 @@ mod restore;
 mod views;
 
 /// 登记形状 → 矩阵形状：只有二阶张量是矩阵，其余（标量/向量/更高阶）一律 `None`。
-///
-/// 不从元素数反推：`4` 既可以是 `2 × 2`，也可以是 `4 × 1`，反推出来的行列会让 [`crate::Muon`]
-/// 对一个其实不是矩阵的参数做正交化，却不会有任何一处报错。
 fn matrix_of(shape: &Shape) -> Option<(usize, usize)> {
     match shape.dims() {
         &[rows, cols] => Some((rows, cols)),

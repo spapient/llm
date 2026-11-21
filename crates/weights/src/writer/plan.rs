@@ -1,7 +1,4 @@
 //! 写出计划的展开：把 [`crate::writer::Writer`] 排好的段序列落成描述符与数据区。
-//!
-//! 从 [`crate::writer`] 拆出：那边是「顺序、去重、对齐」的决策，这里是「决策怎么变成字节」，
-//! 于是同一份 [`Plan`] 可以同时喂给内存缓冲、文件与测量三种 sink。
 
 use std::borrow::Cow;
 use std::io::{self, Write};

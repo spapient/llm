@@ -1,11 +1,4 @@
 //! 顶层命令文法：`llm` 的一级子命令、选项表与解析。
-//!
-//! 表即文法：一个子命令一行（名字、选项表、组装），新增子命令只加一行；「这个选项是必需还是
-//! 可缺省」写在表的形态列里，因此组装函数里没有一处 `if 缺失` 分支。
-//! 解析器本体在 [`crate::flag`]：`cutile` 的子命令（[`crate::kernel`]）与本层共用同一份。
-//!
-//! **不拥有**：取值语义。本层只搬字符串（f32 / 步数 / 路径由编排层解析），因此「`train` 的
-//! `--lr` 默认多少」这种问题在这里找不到答案——它属于调度表。
 
 use crate::flag::{Flags, Grammar, Words, required, value, words};
 use diagnostic::{Code, Error, Result};
@@ -121,10 +114,6 @@ pub enum Command<'a> {
 }
 
 /// 命令表的一行：名字、选项表、组装。
-///
-/// 表即文法：`status` 只认 `--weights`，`import` 要 `--in` 与 `--out`——差别全在表里，
-/// 分派函数因此只有一次查表。
-/// 组装函数：对每个 `'a` 都把借来的取值搬进同一寿命的命令。
 type Build = for<'a> fn(&mut Flags<'a>) -> Result<Command<'a>>;
 
 type Row = (&'static str, Grammar, Build);

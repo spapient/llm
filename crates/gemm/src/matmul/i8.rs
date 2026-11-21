@@ -7,9 +7,6 @@ pub use super::{
 };
 
 /// 输出块行数：4 行共用每一条 `B` 行块的读取。
-///
-/// 4 是实测最优点（64×256×4096，M5 Pro）：2 行时 `B` 的读放大仍高，8 行的 4×16 累加器
-/// 与地址算术挤占寄存器后反而变慢。
 const BLOCK_ROWS: usize = 4;
 
 /// 输出块列数：一行的累加器是 16 个 `i32`，4 行共 8 个 NEON 向量寄存器。
@@ -52,9 +49,6 @@ fn blocked(a: &[i8], b: &[i8], m: usize, n: usize, k: usize, out: &mut [i32]) {
 }
 
 /// 一个 `4×16` 输出块：`B` 的每个 p 行块只读一次、只拓宽一次，再广播给 4 行。
-///
-/// `wide` 先落成 `[i32; 16]` 是有意的：逐行直接 `i32::from(row[j])` 会让 LLVM 每行重做一遍
-/// 拓宽，向量化只剩一半；先拓宽一次再乘加，实测 64×256×4096 从 2.4 ms 降到 1.6 ms。
 fn block(a: &[i8], b: &[i8], out: &mut [i32], at: (usize, usize), n: usize, k: usize) {
     let (i0, j0) = at;
     let mut acc = [[0i32; BLOCK_COLS]; BLOCK_ROWS];
@@ -145,9 +139,6 @@ pub fn reference(sample: &Sample) -> Result<Vec<f32>> {
 pub struct MatmulI8Op;
 
 /// 语义表由注解生成：生产形状 `256×256`，收缩轴 [`K`]，`i32` 精确累加后输出 f32。
-///
-/// 与稠密版共用 `matmul` 骨架，但模块必须是自己那一份（注解层为注册名 `matmul_i8`
-/// 登记了模块覆盖），否则参考实现会去找稠密版而把有符号码当浮点算。
 #[annotation::model(name = "matmul_i8", shape = [256, 256], dtype = "f32", skeleton = "matmul")]
 pub type MatmulI8 = MatmulI8Op;
 

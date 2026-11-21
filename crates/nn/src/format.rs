@@ -1,21 +1,4 @@
 //! 权重编码：层的"存储事实"，以及它决定了哪个算子。
-//!
-//! 在此之前，量化格式被钉死在 [`Linear::OP`] 一个常量上：任何秩 2 的权重条目都按 int4 计价，
-//! 哪怕文件里写的是 `F32`。那不是一个"更松的下界"，而是**声明与文件不符**——一份 4096 方阵的
-//! f32 权重有 64 MiB，按 int4 报出来只有 10 MiB，差 6.4 倍，而数字看起来仍然漂亮。
-//!
-//! 所以格式必须是层的事实，而不是全局默认值：
-//!
-//! - 格式来自权重条目自己（`weights::Entry::dtype`），由 [`WeightFormat::of_dtype`] 翻译；
-//! - 格式 → 算子名由 [`WeightFormat::operator`] 给出；**没有**对应算子的格式返回 `None`，
-//!   层于是"已声明、无法计价"，而不是拿另一个格式的算子凑一个数；
-//! - `U4` 的**分组**不在元素类型里，因此 [`WeightFormat::of_dtype`] 只给出 [`WeightFormat::Packed4`]
-//!   （"4 位打包，分组未声明"）；要计价必须显式构造 [`WeightFormat::int4`]，不猜。
-//!
-//! 目前有算子（也就是有语义表）的格式是 int4（[`WeightFormat::INT4`]）、对称 int8
-//! （[`WeightFormat::INT8`]）与 f32（[`WeightFormat::F32`]）。f16 / bf16 / 裸 i8 还没有分组声明，
-//! 那些层仍然算不出下界——这是如实报告，不是回归：它们的元素宽度与 f32 不同（16 位 vs 32 位），
-//! 套上去会把读下界报成两倍。
 
 use std::fmt;
 
@@ -47,9 +30,6 @@ pub enum WeightFormat {
 }
 
 /// 元素类型 ↔ 权重编码的唯一事实源：`of_dtype` 与 `dtype()` 是它的两个方向。
-///
-/// 表里只有「编码就是元素类型本身」的五种；[`WeightFormat::Int4`] 刻意不在表里，
-/// 因为它多了一个元素类型表达不了的事实（分组），落到哪个元素类型由 `dtype()` 说。
 const FORMATS: &[(DType, WeightFormat)] = &[
     (DType::F32, WeightFormat::F32),
     (DType::F16, WeightFormat::F16),
@@ -60,19 +40,12 @@ const FORMATS: &[(DType, WeightFormat)] = &[
 
 impl WeightFormat {
     /// 量化侧的默认格式：int4 + 32 元素分组，即 [`crate::Linear::OP`] 的输入格式。
-    ///
-    /// 这只是"声明层默认用什么"的便利常量；它是否与算子语义表里的分组一致，由
-    /// [`WeightFormat::operator`] 与测试共同保证。
     pub const INT4: Self = Self::Int4 { group: 32 };
 
     /// 对称 int8 的默认格式：32 元素分组，即 [`crate::Linear::I8`] 的输入格式。
     pub const INT8: Self = Self::Int8 { group: 32 };
 
     /// 由权重的元素类型推出格式：查 `FORMATS` 的那一个方向。
-    ///
-    /// `U4` 只给出 [`WeightFormat::Packed4`]：分组没有出现在元素类型里，任何具体数字都只能是
-    /// 猜的。需要计价时用 [`WeightFormat::int4`] 明确声明分组；闭集里的其他类型不是权重
-    /// 存储格式，调用方按未覆盖处理。
     #[must_use]
     pub fn of_dtype(dtype: DType) -> Option<Self> {
         FORMATS
@@ -92,9 +65,6 @@ impl WeightFormat {
     }
 
     /// 这种编码在内存里的元素类型：查 `FORMATS` 的另一个方向。
-    ///
-    /// [`WeightFormat::Int4`] / [`WeightFormat::Int8`] 不在表里，分组不是元素宽度：前者落到 `U4`、
-    /// 后者落到 `I8`。
     pub fn dtype(self) -> DType {
         match self {
             Self::Int4 { .. } => DType::U4,
@@ -107,10 +77,6 @@ impl WeightFormat {
     }
 
     /// 本格式对应的已声明算子；`None` = 还没有这个格式的算子，因此这一层无法计价。
-    ///
-    /// 量化格式的分组从算子语义表里读（`op::model(...).group`），而不是在这里再写一个
-    /// 32：那会变成两条可能互相矛盾的"事实"。格式的分组与算子声明的分组不一致时返回 `None`，
-    /// 而不是把一个不同分组的算子套上去。
     pub fn operator(self) -> Option<&'static str> {
         match self {
             Self::F32 => Some(crate::Linear::DENSE),
@@ -122,15 +88,6 @@ impl WeightFormat {
     }
 
     /// 为什么这种编码取不到算子：一句话说清"缺什么"，而不是只说"没有"。
-    ///
-    /// 与 [`WeightFormat::operator`] 严格互补：取得到算子时它的理由不会被调用，取不到时才拼出
-    /// 诊断。三类理由分别对应三种真实文件：
-    ///
-    /// - 元素类型根本没有算子（f16 / bf16 / 裸 i8）——16 位的元素宽度与 f32 不同，套用稠密算子
-    ///   会把读下界正好报成两倍；
-    /// - 4 位打包但没有标度伙伴，分组不明（[`WeightFormat::Packed4`]）；
-    /// - 有分组，但与内核声明的分组不同（[`WeightFormat::Int4`] / [`WeightFormat::Int8`]）——这是
-    ///   最容易被误判成"能算"的一类，套上去只会得到一个用错分组的流量。
     pub fn unpriced_reason(self) -> String {
         match self {
             Self::Packed4 => "是 4 位打包，但找不到它的标度条目，分组不明".to_string(),

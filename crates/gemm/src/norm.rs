@@ -1,11 +1,4 @@
 //! 归一化层：`BatchNorm2d`、`GroupNorm`、`InstanceNorm`、`LayerNorm`（NHWC，精度由 `S: Scalar` 决定）。
-//!
-//! 四种归一化只差"统计在哪些轴上做"：BatchNorm 在 `(N,H,W)` 上按通道统计，GroupNorm 在
-//! `(C/G,H,W)` 上按组统计，InstanceNorm 是 `G = C` 的 GroupNorm，LayerNorm 在最后一维统计。
-//! 因此它们共用同一段"减均值、除标准差、再仿射"的骨架，统计范围由结构体参数决定。
-//!
-//! BatchNorm 的 `train` 路径用批内统计并更新滑动统计，`eval` 路径只用滑动统计——两条路径
-//! 分开成两个函数，避免一个 `bool` 参数把"是否改状态"藏进签名里。
 
 use crate::Scalar;
 use crate::guard::check_all;

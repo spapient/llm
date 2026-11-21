@@ -24,8 +24,6 @@ impl Scheduler {
     }
 
     /// 生成的前置判据：序列必须在批里、还没结束、页宽与页池一致。
-    ///
-    /// 返回它在批里的下标；三种不符都是调用方的状态错误，而不是「页不够」。
     pub(super) fn check_advance(&self, sequence: &Sequence) -> Result<usize> {
         let index = self.position(sequence.id()).ok_or_else(|| {
             Error::new(
@@ -45,8 +43,6 @@ impl Scheduler {
     }
 
     /// 把第 `index` 条页表扩到 `needed` 页；池不够时返回 `false`，三者都不动。
-    ///
-    /// 先看池够不够，再动容量与分配：不够时页池、页表、序列全不变，调用方可以原样重试。
     pub(super) fn extend(
         &mut self,
         index: usize,
@@ -83,11 +79,6 @@ impl Scheduler {
     }
 
     /// 现在拿不到页、必须先等别人结束的序列（按插入顺序）。
-    ///
-    /// 这是 [`Scheduler::advance`] 会返回 [`Progress::Blocked`] 的那些序列，所以"这一批卡在
-    /// 谁身上"是一个批级问题、不需要再问调用方要 [`Sequence`]。判据是精确的而不是估算：
-    /// 页表一直按 `len` 刚好够用，所以下一步最多多要一页，于是"要新页且空闲为零"就是全部
-    /// 阻塞条件。
     pub fn blocked(&self) -> Vec<u64> {
         if self.pager.free_pages() > 0 {
             return Vec::new();
@@ -100,9 +91,6 @@ impl Scheduler {
     }
 
     /// 结束一个序列并归还它的页；返回它是否在批里。
-    ///
-    /// 归还走[`kv::Table::truncate`]：摘页与还页成对发生，因此"最后一页"不会因为循环写到
-    /// `len - 1` 而被漏掉。
     pub fn finish(&mut self, id: u64) -> Result<bool> {
         let Some(index) = self.position(id) else {
             return Ok(false);
@@ -218,10 +206,6 @@ impl Scheduler {
     }
 
     /// 写到下一个 token 需要的页数：这一步落在 `len()` 这个位置，所以页表要盖住 `len + 1` 个位置。
-    ///
-    /// [`Scheduler::advance`] 与 [`Scheduler::needs_page`] 都从这里取：两处各写一遍
-    /// `pages_for(len + 1)` 时，任一处改成 `len` 或 `>=`，[`Scheduler::blocked`] 就会把无辜的
-    /// 序列报成受害者，而调用方会据此结束错的序列。
     pub(super) fn next_pages(&self, sequence: &Sequence) -> usize {
         pages_for(sequence.len() + 1, self.pager.page_size())
     }

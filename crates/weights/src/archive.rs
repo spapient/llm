@@ -178,12 +178,6 @@ impl<'a> Archive<'a> {
 }
 
 /// 按段 codec 把原始存储帧解为逻辑字节：`store` 零拷贝借用，`rans`/`axes` 解压为新缓冲。
-///
-/// 长度核对放在这里、对三种 codec 一视同仁，而不是只让解压路径自查：`store` 的帧长由容器
-/// 自己声明，**没有**任何一步会拿它和描述符（shape × dtype）推出的逻辑长度比对，于是"段说
-/// 自己有 4 MB、实际只存了 4 字节"的文件能一路解码成功。度量只读描述符（`lossless_entry`
-/// 不看字节），届时会照样报 `lossless=true`——两个视图对同一份字节给出不同结论。一条不变量
-/// 收在一处，`load` 的回答才与 `settle` 的 `bitwise` 同义。
 fn decode_frame<'a>(raw: &'a [u8], codec: Codec, want: usize) -> Result<Cow<'a, [u8]>> {
     let bytes = codec.decode(raw, want)?;
     if bytes.len() != want {
@@ -199,9 +193,6 @@ fn decode_frame<'a>(raw: &'a [u8], codec: Codec, want: usize) -> Result<Cow<'a, 
 pub const VOCAB_NAME: &str = "llm.vocab";
 
 /// E8 体积门：`ratio_param ≤ 1/24`（LLD §E8「24× 无损」）。
-///
-/// 门槛写成常量而不是配置项：它是验收定义本身，可调的门就不叫门。改这个值等于改验收，
-/// 必须同时改 [`docs/lld.md`](../../../docs/lld.md) 的 §E8 与历史账。
 pub const E8_RATIO: f64 = 1.0 / 24.0;
 
 /// 度量累加器：逐段把 numel、FP16 参考体积、无损判定与 REF 命中/节省字节收拢到一处。
@@ -262,9 +253,6 @@ impl MetricsAcc {
 }
 
 /// 容器度量：条目数、参数总数、体积对比与无损口径；全部在打开容器后现算。
-///
-/// 不读文件内保存的度量字段，也不替量化条目下"无损"结论：带量化方案的条目按既有
-/// [`crate::quant::Quant`] 语义判为有损，未识别的 codec 同样不计入无损。
 #[derive(Debug, Clone)]
 pub struct Metrics {
     pub(crate) entries: usize,
@@ -304,11 +292,6 @@ impl Metrics {
     }
 
     /// 参数级体积比 `V_artifact / (params × 2)`，即 LLD §E8 的 `ratio_param`。
-    ///
-    /// 与 [`Self::ratio`] 的分母在今天的实现里数值相同（`v_fp16` 就是 `Σ numel × 2`），
-    /// 但口径不同：`v_fp16` 是"参考体积"，会随参考格式演进而变；`params × 2` 只由张量
-    /// 元素数决定，跨格式可复算。E8 的验收走这一条——否则参考体积口径一改，历史结论
-    /// 就会莫名其妙地失效。`params` 为 0 时记 0（无参容器没有可比的参数级体积）。
     pub fn ratio_param(&self) -> f64 {
         let denom = self.params.saturating_mul(2);
         if denom == 0 {
@@ -318,13 +301,6 @@ impl Metrics {
     }
 
     /// E8 裁决：24× 体积门与逐位无损**同时**成立才算通过（LLD §E8「必须且不可降级」）。
-    ///
-    /// 空容器（`params == 0`）一律判否：`ratio_param` 在无分母时记 0，若不加这一条，
-    /// 一份 0 字节的容器就会"通过"24× 门——那是假阳性，不是证据。
-    ///
-    /// 这里判的是**账**：`lossless` 来自条目声明的 codec，`ratio_param` 来自落盘字节。
-    /// 真正的"解码后逐位相等"由解码头（`Archive::load`）负责兑现，裁决方必须先跑完
-    /// 整表解码再引用本函数，不能只凭本函数的返回值对外宣称"已验证"。
     pub fn e8_pass(&self) -> bool {
         self.params > 0 && self.lossless && self.ratio_param() <= E8_RATIO
     }

@@ -8,10 +8,6 @@ use crate::dialect::{Cuda, Dialect, launch_args, length_scalar, readback_bits};
 use super::*;
 
 /// host 驱动的公共骨架：文件头 → `main` → 缓冲分配 → 一次派发 → 回读 → 释放 → 返回。
-///
-/// 六个驱动（单线程语义门、逐点网格、循环注入、分块归约、分块归一化、分块扫描）只在「文件头」
-/// 与「派发那一行」上不同；同步报错、回读与释放清单必须逐字同源——各写一份时，加一个 include
-/// 就会漏掉其中一族。
 pub(crate) struct Driver<'a> {
     signature: &'a Signature,
     sample: &'a Sample,

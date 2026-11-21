@@ -1,10 +1,4 @@
 //! 文法引擎：token 模型、游标、表驱动的读键机、字面量原子与被标注项判据。
-//!
-//! 不碰 `proc_macro`，因此每条错误路径都能在 `cargo test` 里跑到。三种声明形态（层 / 语义表 /
-//! 运行时）共用这一台读键机：一个键就是 [`KeySpec`] 表里的一行，于是"加一个键"是加一行。
-//!
-//! 本模块只回答两件事：**注解本体怎么读**（`键 = 值 (, 键 = 值)*`）与**被标注项能不能标**
-//! （只有具体类型/别名，不含泛型与行为）。声明解析后的产物与键表在 `decl`，渲染在 `render`。
 
 /// token 在输入里的下标；错误用它指回用户写的那一处，再由适配层换成 span。
 pub(crate) type Position = usize;
@@ -80,8 +74,6 @@ impl Error {
 pub(crate) type Hole = (String, Position);
 
 /// 一个键解析出的值；`Empty` 只表示可选键没写。
-///
-/// 运行时形态把单个洞也写成 [`Value::Holes`]（长度 1），于是两种形态共用同一组槽位。
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) enum Value {
     Empty,

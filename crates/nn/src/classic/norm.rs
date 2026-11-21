@@ -1,13 +1,8 @@
 //! `classic` 的归一化层族：Batch/Group/Instance/Layer。
-//!
-//! 规格、`Contract` 实现与形状校验在本文件内闭环；共用校验留在父模块。
 
 use super::*;
 
 /// 批归一化层（NHWC，最后维 `channels`）。
-///
-/// 规格构造口径同 [`MaxPool1d`]：归一化没有可代理的已注册算子（RMSNorm 不含减均值，语义不同），
-/// 因此登记为 0 算子层。
 #[derive(Debug, Clone, PartialEq)]
 pub struct BatchNorm2d {
     spec: ContractSpec,

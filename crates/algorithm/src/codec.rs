@@ -1,29 +1,4 @@
 //! byte-latent 的表示侧与解码侧（§5.17，第 11 款标杆的另外两层）。
-//!
-//! [`crate::patch`] 只回答第一个问题——"哪些字节该被同一次全局前向一起看"。一次 byte-latent 前向是
-//! 三段：**字节 → 动态 patch → latent transformer → 逐字节解码**；切分之外的两段里与字节直接打交道的
-//! 那两层在本模块：
-//!
-//! - [`ByteEncoder`]：local encoder 的表示侧。每个字节先取 `n = 3..=8` 的哈希 N-gram 嵌入（阶闭集
-//!   [`ORDERS`]，桶表复用 [`Table`]，哈希与查表不另写一份），再在 patch 内做注意力池化
-//!   ——查询取**边界字节**（它就是这条切分的决策点），键值取本 patch 每个字节的 N-gram 向量。
-//! - [`ByteDecoder`]：local decoder 的输出头。一个 patch 表示乘一次 `[BYTES, dim]` 投影，给出
-//!   256-way 分布（[`ByteDecoder::probs`]）与贪心字节（[`ByteDecoder::byte`]）。
-//!
-//! 中间那层全局 transformer 不在这里：它就是在 patch 序列上跑的 [`nn::Attention`]，**每 patch 一次**
-//! 而不是每字节一次，遍数就是 [`crate::Patches::len`]。
-//!
-//! 两处与论文口径的差别写在这里，免得读者以为漏了：
-//!
-//! 1. N-gram 窗口取**已有后缀**，不补零也不补 BOS 符号：补零会让首字节的表示与"前面真有一个 0 字节"
-//!    混为一谈（与 [`nn::Bypass`]"历史不足就不加、不拿零向量补位"同一条判据）。窗口是回看的，所以
-//!    一个字节的影响是前向的：它进的是自己与之后至多 `WIDEST − 1` 个字节的窗口。
-//! 2. 两层之间的数值栈各有主人：[`crate::Global`] 在 patch 列上跑因果自注意力，[`crate::Backread`]
-//!    让每个字节回读它可见的 patch 表示，逐字节的自回归循环由 [`crate::Emitter`] 串起。这一层只做
-//!    "一个 patch 表示 → 一条 256-way 分布"；权重由调用方给，与 [`crate::Mla`] 同一种分工：本模块不持
-//!    训练状态，也不给写侧（训练 / 蒸馏）留接口。
-//!
-//! 纯算术统一走 [`op::scan::Scalar`] 泛型：`f32` 供前向、`f64` 供对拍，不因精度复制两份实现。
 
 use std::ops::Range;
 
@@ -47,16 +22,11 @@ const WIDEST: usize = ORDERS[ORDERS.len() - 1];
 pub const BYTES: usize = 256;
 
 /// 第 `i` 个字节处的六个窗口，从窄到宽：`bytes[..=i]` 的后缀，长度 `min(n, i + 1)`。
-///
-/// 历史不足 `n` 时就给那一小段，不补零：补零让"首字节"与"前面真有个 0 字节"变成同一份输入。
 fn windows(bytes: &[u8], i: usize) -> [&[u8]; ORDERS.len()] {
     ORDERS.map(|order| &bytes[(i + 1).saturating_sub(order)..=i])
 }
 
 /// local encoder 的表示侧：N-gram 桶嵌入 + patch 内注意力池化。
-///
-/// 表与种子都由调用方给，本层只读：同一句字节在同一张表上永远给出同一份表示——"表示"是确定的，
-/// 不是随机的。桶表、哈希与查表沿用 [`Table`] 那套（表长取素数、`O(1)` 槽寻址）。
 #[derive(Debug, Clone)]
 pub struct ByteEncoder<S: Scalar = f32> {
     table: Table<S>,
@@ -172,9 +142,6 @@ impl<S: Scalar> ByteEncoder<S> {
     }
 
     /// 第 `i` 个字节的 N-gram 向量：六阶窗口的桶向量之和除以阶数。
-    ///
-    /// 每阶用 `seed ^ 阶` 当哈希种子，六阶因此不会挤进同一批槽；窗口取 `bytes[..=i]` 的后缀
-    /// （[`windows`]），所以这一行只依赖 `0..=i`。
     fn vector(&self, bytes: &[u8], i: usize, out: &mut [S]) {
         out.fill(S::ZERO);
         let mut gram = [0_u32; WIDEST];
@@ -195,13 +162,6 @@ impl<S: Scalar> ByteEncoder<S> {
     }
 
     /// 一个 patch 的表示：以边界字节的向量为查询，对本 patch 内每个字节的向量做注意力加权求和。
-    ///
-    /// 查询取最后一个字节，而不是外部的可学习查询向量：边界字节就是这条切分的决策点
-    /// （[`crate::Boundary`] 在它上面判出"断"），于是表示仍然只用过去，并且不需要再引入一份权重。
-    /// 键值只取本 patch 内的字节，所以"一个 patch 一行"不是约定而是寻址本身。
-    ///
-    /// `vectors` 是本 patch 的逐字节向量（下标相对区间起点，行数即 patch 长度）：区间本身不再作为
-    /// 参数，也就不存在"向量与区间指向不同一段字节"这种错位。
     fn pool(&self, vectors: &[S], out: &mut [S]) {
         let dim = self.dim();
         let scale = S::ONE.div(S::from_f64((dim as f64).sqrt()));
@@ -219,9 +179,6 @@ impl<S: Scalar> ByteEncoder<S> {
 }
 
 /// local decoder 的输出头：patch 表示 → 256-way 字节分布。
-///
-/// 投影按 `[BYTES, dim]` 行主序存放：第 `b` 行是字节 `b` 的输出行，于是"分布的第几个通道"与
-/// "哪个字节取值"是同一个下标，不需要额外的码本把通道映射回字节。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ByteDecoder<S: Scalar = f32> {
     width: usize,
@@ -340,9 +297,6 @@ impl<S: Scalar> ByteDecoder<S> {
 }
 
 /// 通道下标里的最大值：并列时取最小字节值，所以严格大于才算新最优。
-///
-/// 分数与分数过 softmax 后的分布共用这一份：softmax 单调，两个序列上的 argmax 因此是同一个字节，
-/// 不因换算式而变。
 fn argmax<S: Scalar>(scores: &[S]) -> u8 {
     let best = scores.iter().enumerate().fold(
         0,

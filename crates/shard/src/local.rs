@@ -1,15 +1,4 @@
 //! 进程内集合通信：[`Local`]。
-//!
-//! [`Collective`] 是后端契约，但它今天一个实现都没有——于是"TP 的归约到底做对没有"只能靠读代码。
-//! [`Local`] 把"每个 rank 各有一份缓冲"放进同一个进程：先 [`Local::load`] 每个 rank 的输入，
-//! 再 [`Collective::all_reduce`] 拿到组内归约结果。数值语义与真实后端一致（先归约、再写回
-//! 每个成员），差别只在没有网络——所以它可以由 `cargo test` 直接验证。
-//!
-//! 归约顺序固定按 [`Group`] 的 rank 升序（`Group` 构造期已保证升序）：浮点加法不满足结合律，
-//! 顺序一变，最后几位就随启动顺序变化，对拍会变成"有时通过"。
-//!
-//! 一次 `all_reduce` 之后，组内每个 rank 的镜像与调用方缓冲都一样——这正是 all-reduce 与
-//! reduce-scatter 的分界；只写调用方那一份会让"第二个 rank 再读一次"读到未被归约的旧值。
 
 use crate::collective::{Collective, Group, Reduce};
 use crate::topology::Topology;

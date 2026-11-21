@@ -1,15 +1,4 @@
 //! 显存计划：[`Plan`] 把"反向图 + 每变量字节数 + 预算"变成一组显存决策。
-//!
-//! 三个问题：[`Plan::saved`] 留谁；[`Plan::release`] 何时释放——"最后一次被需要"，含重算；
-//! [`Plan::replayed`] 与 [`Plan::peak`] 代价多大，`peak <= budget` 由构造保证。预算不够时按字节
-//! 等分切段：段界留检查点、段内丢弃后就地重放，段长由预算解出来，不是常数。
-//!
-//! 一般 DAG 的最优是 PSPACE 难的，所以这里不声称最优，只给三个可核对的数：保守峰值、
-//! [`Plan::floor`]（任何计划都绕不过的下界）、重放步数。
-//!
-//! 计划的输入与旋钮同在这一个模块：[`Budget`] 是硬约束，[`MemoryPolicy`] / [`Choice`] 是策略与
-//! 实际走的路，[`Footprint`] / [`Sizes`] 把变量编号映射成字节数，[`Config`] 把排序与显存策略
-//! 收成一份纯数据。它们都只描述"怎么规划"，不含数值，也不认识设备。
 
 use diagnostic::Result;
 use tensor::{DType, Shape};
@@ -237,9 +226,6 @@ impl MemoryPolicy {
 }
 
 /// 一个变量的值占多少字节。
-///
-/// 形状不在反向图里（[`crate::Var`] 只是编号），所以字节数由调用方给：`nn` 用层的形状表，
-/// `train` 用真实缓冲的容量。泛型而不是 `dyn`——`Plan::of` 每个变量只查一次，没有动态分派。
 pub trait Footprint {
     /// 字节数；`0` 表示不需要为它留显存（标量、或者调用方还没登记形状）。
     fn bytes(&self, var: Var) -> u64;
@@ -315,9 +301,6 @@ impl Footprint for Sizes {
 }
 
 /// 一次规划的配置：排序策略 + 显存策略。
-///
-/// 闭集枚举、可比较、可缓存，不持有缓冲、不认识设备：排序进入 [`Schedule`]，显存策略进入
-/// [`Plan`]。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct Config {
     ordering: Ordering,

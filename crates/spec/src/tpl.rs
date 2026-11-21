@@ -65,8 +65,6 @@ impl Arg<'_> {
 }
 
 /// 一次词法的结果：切好的片段。
-///
-/// 这是装载期三次校验共用的视图（[`Self::slots`]、[`Self::calls`]），也是 [`lex`] 的容器。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Template<'a> {
     segments: Vec<Segment<'a>>,
@@ -74,9 +72,6 @@ pub struct Template<'a> {
 
 impl<'a> Template<'a> {
     /// 切分模板正文。
-    ///
-    /// 只认两种构造：`{{名字}}` 与 `@名字(...)`。其余文本原样保留——包括"看起来像原语但名字
-    /// 不在闭集里"的写法，它与"参数括号不配对"一样退回成文本，由后续校验按文本处理。
     pub fn parse(template: &'a str) -> Self {
         let mut segments = Vec::new();
         let mut cursor = 0usize;
@@ -133,9 +128,6 @@ impl<'a> Template<'a> {
 }
 
 /// 模板拼接错误（只给行号，不给列）。
-///
-/// 模板是输入，所以类别固定为 [`diagnostic::Code::Invalid`]；行号作为一层上下文，文件由调用方补。
-/// 报错构造只有 `crate::parse::line_error` 一份，这里是 `op::tpl::error` 的公开入口。
 pub fn error(line: usize, message: impl Into<String>) -> Error {
     crate::parse::line_error(line, message)
 }
@@ -146,9 +138,6 @@ pub fn lex(template: &str) -> Vec<Segment<'_>> {
 }
 
 /// 跳过一个构造：推进 `consumed` 个字节，并把其中的换行计入行号。
-///
-/// 行号必须在这里跟上：`@bar(\n    tok\n)` 之后的片段落在新行上，漏掉这一步后面每条诊断都会
-/// 指回上一次换行——诊断精度就没了。
 fn advance(template: &str, from: usize, consumed: usize, line: &mut usize) -> usize {
     let to = from + consumed;
     *line += crate::parse::count_newlines(&template[from..to]);
@@ -172,9 +161,6 @@ fn slot<'a>(rest: &'a str, line: usize) -> Option<(usize, Segment<'a>)> {
 }
 
 /// 识别 `@原语(...)`，返回 `(消费的字节数, 原语, 参数)`。
-///
-/// 名字不在闭集里、调用没开括号、括号不配对——三种「不像一个构造」都返回 `None`，
-/// 由 [`Template::parse`] 退回成文本，而不是猜一半再报错。
 fn call<'a>(rest: &'a str) -> Option<(usize, Prim, Vec<Arg<'a>>)> {
     let after = rest.strip_prefix('@')?;
     let (name_len, prim) = named(after)?;
@@ -225,10 +211,6 @@ fn is_key(key: &str) -> bool {
 
 pub mod parse {
     //! 声明层解析原语：括号深度、行号与带行号的错误。
-    //!
-    //! `decl` / `sig` / `sch` / `tpl` 四个解析器各自解析一种声明文本（TOML 表、C 签名、
-    //! 调度串、模板词法），但共用同一套「括号配对 / 行号 / 行号错误」的底层原语。这里是它们
-    //! 的唯一实现；新增声明解析器只从这里取原语，不再各自写一遍。
 
     use diagnostic::{Code, Error};
 
@@ -242,8 +224,6 @@ pub mod parse {
     }
 
     /// 带行号的解析错误：`Error::new(Code::Invalid, message)` 再挂一个「第 N 行」上下文。
-    ///
-    /// 绝对行号（`sig`）与增量行号（`tpl`）各自跟踪行，但报错的构造方式只有这一份。
     pub(crate) fn line_error(line: usize, message: impl Into<String>) -> Error {
         Error::new(Code::Invalid, message).with(format!("第 {line} 行"))
     }
@@ -254,8 +234,6 @@ pub mod parse {
     }
 
     /// 从 `open` 处的 `(` 找配对的 `)`：深度归零的那一格就是答案，返回绝对下标。
-    ///
-    /// 调用方保证 `text[open..]` 以 `(` 开头；配对失败（右括号不够）返回 `None`。
     pub(crate) fn matching_paren(text: &str, open: usize) -> Option<usize> {
         let mut depth = 0usize;
         for (index, ch) in text[open..].char_indices() {
@@ -268,9 +246,6 @@ pub mod parse {
     }
 
     /// 按顶层逗号切分：括号内的逗号不算顶层。返回每个片段的 `(字节偏移, 原文)`。
-    ///
-    /// 括号不配对按「没看见」处理（切分不校验，配对交给 [`matching_paren`]）；片段不裁剪、
-    /// 不丢弃，由调用方决定各自的 trim / 过滤口径。
     pub(crate) fn split_top_level(inner: &str) -> Vec<(usize, &str)> {
         let mut parts = Vec::new();
         let mut depth = 0usize;
@@ -294,19 +269,10 @@ mod tests;
 
 pub mod formula {
     //! 骨架的表达式协议：一条 einsum 表达式、一张操作数表、一个按实现分开的缓存单元格。
-    //!
-    //! 六族骨架（`unary::Unary` / `elementwise::Binary` / `reduce::Reduce` / `gemv::Format` /
-    //! `gemv::Plain`，都在 `gemm`）在「表达式从哪来」上是同一件事：族给出表达式
-    //! 与操作数表，实现只决定算术。协议收在这里，族 trait 只声明随语义变化的那部分（ADR 0050 §2）。
-    //!
-    //! `gemm` 不在其列：它的代价由分块几何现算，没有表达式可缓存。
     use crate::einsum::{Formula, FormulaCache, OperandSpec};
     use diagnostic::Error;
 
     /// 表达式的主人：一副骨架怎么声明表达式、缓存在哪、解析失败报什么帧。
-    ///
-    /// 实现者是族 trait 的实现（标记类型，以及 `gemv::Packed` 这类配置驱动类型）：它们只给
-    /// 三个常量与一个单元格，[`FormulaOwner::formula`] 是全仓唯一一份解析与缓存逻辑。
     pub trait FormulaOwner {
         /// 一条 einsum 表达式。
         const EXPR: &'static str;
@@ -318,9 +284,6 @@ pub mod formula {
         const FRAME: &'static str;
 
         /// 本实现的缓存单元格。
-        ///
-        /// 必须**每个实现一份**：写在泛型骨架里的 `static` 在 Rust 里只有一份，先解析的表达式与操作数
-        /// 表会被后跑的格式复用（位宽串档）。函数体写成 [`formula_cell!`]，全仓一个写法。
         fn cache() -> &'static FormulaCache;
 
         /// 表达式：第一次调用时解析并校验，之后复用。
@@ -334,9 +297,6 @@ pub mod formula {
     }
 
     /// 一个实现自己的表达式缓存单元格。
-    ///
-    /// 展开成一段块表达式：`static` 落在展开处，于是每个 `impl` 拿到自己的单元格，而不是全仓共用
-    /// 一个——见 [`FormulaOwner::cache`] 的说明。
     #[macro_export]
     macro_rules! formula_cell {
         () => {{
@@ -349,9 +309,6 @@ pub mod formula {
 
 pub mod guard {
     //! 缓冲长度校验：`(实际, 需要, 名称)` 逐条比对，失败即带名称与两个数字返回。
-    //!
-    //! 归一化、循环与转置卷积三类层共用同一套报错口径，此前各自抄了一份 `check` / `check_all`。
-    //! 三处都只关心"够不够"，不关心多余的尾部（调用方可以带更大的缓冲），所以判据是 `>=` 而不是 `==`。
     use diagnostic::{Code, Error, Result};
 
     /// 一条长度约束：缓冲不足时报出名称、实际长度与下限。

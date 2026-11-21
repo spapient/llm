@@ -26,8 +26,6 @@ pub fn physical(profile: &Profile, space: Space) -> &str {
 }
 
 /// 档案声明的容量；`None` 表示这一层不受档案限制（`GM`，或档案没有声明字节数）。
-///
-/// 容量只有这一个出处：`check_capacity` 用它判定，报告用它打印，两者不会各算一份。
 pub fn capacity(profile: &Profile, space: Space) -> Option<u64> {
     let bytes = match space {
         Space::Fast => profile.mem.fast_bytes,
@@ -38,9 +36,6 @@ pub fn capacity(profile: &Profile, space: Space) -> Option<u64> {
 }
 
 /// 容量校验：`FAST` 与 `REG` 的用量不得超过档案声明的字节数。
-///
-/// 超出容量不是“实现写得不好”，而是“这份声明与这台设备的组合不存在”——类别是
-/// [`Code::Unsupported`]，与协商拒绝同一个意思。
 pub fn check_capacity(profile: &Profile, uses: &[SpaceUse]) -> diagnostic::Result<()> {
     for usage in uses {
         let Some(limit) = capacity(profile, usage.space) else {

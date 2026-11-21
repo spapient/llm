@@ -1,28 +1,10 @@
 //! 满块前缀树：[`Radix`] 把「写满的一页」登记成一条边，跨请求复用同一段前缀的 KV。
-//!
-//! 它住在页池旁边而不是页池里面：页池回答「哪一页借给谁、几个人在看」，树回答「哪段 token 前缀
-//! 对应哪一页」。两者共用 [`Page`]，回收判据却不同——页池看引用计数，树看自己是不是叶。
-//!
-//! **拥有**：`Radix`（前缀树）。**不拥有**注意力算子与行内布局（归模型与 `cutile`）。
-//! **依赖**：`kv::{Page, Pager}`、`diagnostic`。**被依赖**：`engine::Batch`（登记满块）
-//! 与 `Scheduler::admit`（采纳前缀页）。
 
 use diagnostic::{Code, Error, Result};
 
 use crate::kv::{Page, Pager};
 
 /// 满块前缀树：token 块 → 那一页的 KV，跨请求复用。
-///
-/// 此前前缀复用只有[批内线性扫描](crate::Batch)：源序列一结束、页一归还，就再没有第二个请求
-/// 能命中它。这里让树本身成为页的一个持有者：块写满时登记进树，树对该页多持一个引用；请求
-/// 结束归还自己那份，页仍活着，下一个带同样前缀的请求经 [`Radix::longest`] 直接采纳。
-///
-/// 只记满块（每块 `page_size` 个 token）：不满一页的尾巴混着非前缀 token，若按半个页共享，
-/// 两个请求就会共用同一页里的不同偏移，「引用计数归 0 才回收」不再等于「这页没人看」。
-/// 树的每条边恰是一个块，所以最长前缀命中就是从根往下的一条路径，逐层比对块内 token。
-///
-/// 回收只有一种形态：LRU 叶。叶没有孩子，摘掉它不会让仍被引用的深层块从树上失联；每次命中
-/// 沿路径刷新时序戳，于是「最久没被再命中的前缀」先走。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Radix {
     /// 节点槽位：`None` 是已释放的空位，复用它避免按下标无限增长。
@@ -64,8 +46,6 @@ impl Radix {
     }
 
     /// 最长满块前缀命中的页，按块序；页可直接采纳进新页表（调用方按 `share` 加计数）。
-    ///
-    /// `page_size` 为 0 或整段不足一块时返回空：不满一页的前缀不共享，理由见类型文档。
     pub fn longest(&mut self, tokens: &[u32], page_size: usize) -> Vec<Page> {
         let mut pages = Vec::new();
         let mut at: Option<usize> = None;
@@ -284,8 +264,6 @@ pub(super) fn block_tokens(tokens: &[u32], page_size: usize, block: usize) -> Op
 }
 
 /// 第 `level` 块的 token 段：页宽为零与块越界是两种调用方错误，各有各的话。
-///
-/// 寻径与登记共用这一处，于是「哪一块」只有一种算法，报错也只有一种口径。
 pub(super) fn span_of(tokens: &[u32], page_size: usize, level: usize) -> Result<&[u32]> {
     if page_size == 0 {
         return Err(zero_page());

@@ -24,8 +24,6 @@ pub struct Entry {
 
 impl Entry {
     /// 由名字、类型与形状构造（偏移默认 0，用 [`Entry::at`] 指定）。
-    ///
-    /// 字节长度不单独存：它由 `shape.element_bytes(dtype)` 推出，避免两处漂移。
     pub fn new(name: impl Into<String>, dtype: DType, shape: Shape) -> Self {
         Self {
             name: name.into(),
@@ -128,8 +126,6 @@ impl Header {
 }
 
 /// 单条目的两条判据：名字不能重复、起点不能早于数据段。
-///
-/// 「区间不重叠」不在这里：它要按偏移排序后才能判，排序是 [`Header::new`] 的事。
 fn check_entry<'a>(
     seen: &mut BTreeSet<&'a str>,
     entry: &'a Entry,
@@ -172,18 +168,12 @@ fn check_overlap(left: &Entry, right: &Entry) -> Result<()> {
 }
 
 /// 零拷贝后端：把条目字节**借**出来（内存切片、映射或测试夹具）。
-///
-/// 只有这一个方法：头部解析、校验与张量构造都在别处完成，读端不需要知道格式。借用意味着
-/// "后端必须活得比返回值长"，所以文件这类"字节不经我手"的来源只能用 [`Loader`]。
 pub trait Reader {
     /// 读出条目的原始字节；长度必须与 `entry.len()` 一致。
     fn read(&self, entry: &Entry) -> Result<&[u8]>;
 }
 
 /// 按需后端：把条目字节**拷进**调用方给的缓冲区（文件、压缩包、远端分块）。
-///
-/// 只有 [`Loader::copy_into`] 是必须实现的，[`Loader::load`] 是它的分配封装——两种后端都不必
-/// 重写，因此"长度对不对、越界没越界"只有一处判断，不会出现第二份边界检查。
 pub trait Loader {
     /// 把条目字节写进 `out`；`out` 必须正好等于 `entry.len()` 字节。
     ///
@@ -194,9 +184,6 @@ pub trait Loader {
     fn copy_into(&self, entry: &Entry, out: &mut [u8]) -> Result<()>;
 
     /// 分配并读出条目字节。
-    ///
-    /// 分配大小由 `entry.len()` 决定，不由后端决定：读端想限制内存就只能自己调
-    /// [`Loader::copy_into`]，这个默认实现不做额外预算。
     fn load(&self, entry: &Entry) -> Result<Vec<u8>> {
         let mut buffer = vec![0u8; entry.len()];
         self.copy_into(entry, &mut buffer)?;
@@ -230,9 +217,6 @@ pub fn decode_f32(bytes: &[u8]) -> Result<Vec<f32>> {
 
 /// 把一条 F32 条目解码进驻留 `f32` 缓冲：装载期一次性读出并解包，生成循环内不再读文件、
 /// 也不二次分配元素缓冲。
-///
-/// 类型判据与字节解包都收口在这里：非 F32 条目不进 f32 缓冲（返回 [`Code::Unsupported`]，
-/// 由装配层按格式拒绝），余字节非零的半字节目节在 [`decode_f32`] 报 [`Code::Invalid`]。
 pub fn load_f32(entry: &Entry, loader: &impl Loader) -> Result<Vec<f32>> {
     let bytes = loader.load(entry)?;
     decode_entry_f32(entry, &bytes)

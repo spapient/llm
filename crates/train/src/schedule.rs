@@ -1,7 +1,4 @@
 //! 学习率调度：warmup 升到峰值，之后按 [`Anneal`] 曲线降到下限比例。
-//!
-//! 曲线是纯数据闭集，[`lr`](Self::lr) 是纯函数：同一份 [`Schedule`] 每次算出同一条曲线，
-//! 便于对拍、缓存与落盘复现。下限比例 `min_ratio` 只压住线性/余弦的谷底，恒定曲线不受其压。
 
 use diagnostic::{Code, Error, Result};
 

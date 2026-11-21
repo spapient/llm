@@ -1,7 +1,4 @@
 //! Metal 后端：`Codegen` 出 MSL、`Driver` 跑 `xcrun metal` + `metallib`。
-//!
-//! 从 [`crate::backends`] 拆出——那里同时装 Metal / CUDA / 昇腾三套厂商链，行数已过单文件上限，
-//! 而三条链之间没有共享状态。共用的基准几何与见证回读留在父模块。
 
 use crate::metal::host::run_metal;
 pub use crate::metal::host::{compile_run_metal, metal_driver, metal_kernel};

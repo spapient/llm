@@ -77,9 +77,6 @@ pub mod hash {
     const CRC_POLY: u32 = 0xEDB8_8320;
 
     /// CRC-32 的逐字节参考定义。
-    ///
-    /// 逐位循环是 CRC 移位寄存器的固有串行依赖：每一位的余数由上一位移出的比特决定，
-    /// 无法整块查表；这一份刻意保留位级写法，作为查表实现的独立对拍基准。
     #[must_use]
     pub fn crc32_bitwise(bytes: &[u8]) -> u32 {
         let mut crc = !0u32;
@@ -199,9 +196,6 @@ pub mod scratch {
     use std::path::PathBuf;
 
     /// 一个已创建的空临时目录，标签用于区分用例。
-    ///
-    /// 目录名带进程号，避免并行测试互相踩。建不出来不在这里终止测试进程：返回的路径照样交给
-    /// 调用方，它紧接着的写入会带出带路径与 io 类别的错误，比一句「创建失败」更有用。
     pub fn scratch_dir(tag: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!("llm-testkit-{}-{tag}", std::process::id()));
         if let Err(error) = std::fs::create_dir_all(&path) {
@@ -211,9 +205,6 @@ pub mod scratch {
     }
 
     /// 先删掉旧目录再建一个空目录：进入用例时目录里不该带上一次运行的残留。
-    ///
-    /// 与 [`scratch_dir`] 的复用语义不同，这里每次都清空；适用于要逐条枚举目录内容
-    /// （如"写回后目录里只有这一个产物"）的对拍。目录名带进程号，并行测试互不踩。
     pub fn scratch_clean(tag: &str) -> PathBuf {
         let path =
             std::env::temp_dir().join(format!("llm-testkit-clean-{}-{tag}", std::process::id()));
@@ -256,9 +247,6 @@ pub mod scratch {
 }
 
 /// 按 safetensors 布局拼一份完整文件：8 字节小端头长 + 头部 JSON + 依序拼接的数据段。
-///
-/// `data` 的顺序必须与 `json` 里 `data_offsets` 的偏移一致；条目名用于在调试构建里核对头部
-/// 确实声明了这段数据（不引入 JSON 解析器，守住本 crate 的零依赖）。
 #[must_use]
 pub fn safetensors_bytes(json: &str, data: &[(&str, Vec<u8>)]) -> Vec<u8> {
     for (name, _) in data {
@@ -273,9 +261,6 @@ pub fn safetensors_bytes(json: &str, data: &[(&str, Vec<u8>)]) -> Vec<u8> {
 }
 
 /// 把 `bits` 位有符号码按低 `bits` 位打包：`zero = 2^(bits-1)` 平移，低 `bits` 位落在字节内。
-///
-/// 一个字节按 `8 / bits` 个槽从低到高排；尾组不足一槽时补零码。位宽取 1..=8（整除 8 的
-/// 2/4/8 是常规用法），与 `op` 的量化 GEMV 参考共用同一口径。
 #[must_use]
 pub fn pack_codes(bits: usize, values: &[i8]) -> Vec<u8> {
     let per_byte = 8 / bits;
@@ -293,9 +278,6 @@ pub fn pack_codes(bits: usize, values: &[i8]) -> Vec<u8> {
 }
 
 /// 确定性测试样本：`sample(len, salt)` 生成 `[-1, 1)` 的 f32，同一 `(len, salt)` 永远同一批值。
-///
-/// 三种逐元素层（归一化 / 循环 / 转置卷积）的单元测试此前各写一份同款生成器；集中到这里，
-/// 让"值域压到 `[-1,1)` 才能验证有界性"这条口径只有一处，换种子也只改调用点。
 #[must_use]
 pub fn sample(len: usize, salt: u32) -> Vec<f32> {
     (0..len)

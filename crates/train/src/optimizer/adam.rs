@@ -4,9 +4,6 @@ use super::{Optimizer, SITE, Slot, check_slots, clip_scale, decay_rate, global_n
 use diagnostic::{Code, Error, Result};
 
 /// Adam（AdamW 解耦衰减 + 偏差修正 + 全局范数裁剪）。
-///
-/// 一阶矩 `m`、二阶矩 `v` 按槽位编号自持：槽位编号即 `step` 调用里的下标，首次见到的槽位
-/// 惰性分配零向量。偏差修正用优化器全局步数；矩状态可在 T1-4 快照导出/回载。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Adam {
     beta1: f32,

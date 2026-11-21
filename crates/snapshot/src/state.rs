@@ -1,7 +1,4 @@
 //! 优化器矩状态、累积窗口梯度与权重绑定表的快照类型、编码与解码。
-//!
-//! 各份表平行入快照：矩状态归优化器自持，累积梯度与绑定关系归训练会话；快照只搬运 f32 表、
-//! 计数与下标对，不在这一层解释算术。
 
 use diagnostic::{Code, Error, Result};
 use wire::sink::Sink;
@@ -47,8 +44,6 @@ impl SlotMoments {
 }
 
 /// 优化器矩状态表：按槽位编号排列，外加优化器全局步数（偏差修正分母）。
-///
-/// 无矩状态的优化器（SGD）写 [`Moments::empty`]；矩状态是优化器自持的，快照只搬运这一份表。
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Moments {
     slots: Vec<SlotMoments>,
@@ -78,8 +73,6 @@ impl Moments {
 }
 
 /// 累积窗口内尚未步进的梯度汇总：按槽位编号排列的 f32 表，外加窗口内已汇总的 micro-batch 数。
-///
-/// 与 [`Moments`] 平行：窗口未满时恢复后要把这份汇总接着用，不能丢掉重算。
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct GradAccum {
     slots: Vec<Vec<f32>>,
@@ -109,8 +102,6 @@ impl GradAccum {
 }
 
 /// 权重绑定表：`(源槽下标, 回填槽下标)` 对，与会话登记的 `register_tie` 同口径。
-///
-/// 下标按恢复后重新登记的参数槽顺序对齐；快照只搬运绑定关系，不在这一层解释共享权重算术。
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Ties {
     pairs: Vec<(usize, usize)>,

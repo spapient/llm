@@ -1,8 +1,5 @@
 //! `train` 命令：把 cli 搬下来的字符串解析成 [`train::TrainConfig`]，`--load` 从快照恢复事实、
 //! 矩状态、累积窗口与权重绑定表。
-//!
-//! 前向/反传会话循环在 `train::Session`（夹具级闭环见 train 测试）；本组装点不复制模型装载，
-//! 真实权重通路仍属未接入范围。本模块只解析到 [`Option`]，不复制第二份默认值。
 
 use diagnostic::render::Panel;
 use diagnostic::{Code, Error, Result};

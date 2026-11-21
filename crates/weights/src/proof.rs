@@ -1,8 +1,4 @@
 //! 完整性证明：零依赖 SHA-256 摘要 + 逐张量 Merkle 树与包含证明。
-//!
-//! 哈希实现 FIPS 180-4（消息填充、64 轮压缩、消息调度），输出 32 字节定长摘要；
-//! 正确性由标准向量（空输入、`"abc"`、双块长度）对拍钉住。Merkle 叶子绑定张量名，
-//! 单张量包含证明 O(log n) 可离线验证。
 
 /// 摘要长度（字节）。
 pub const HASH_LEN: usize = 32;
@@ -255,9 +251,6 @@ pub(crate) fn leaf(name: &str, data: &[u8]) -> Digest {
 }
 
 /// 纯字节摘要：域前缀 0x02，不绑名字；供写端 REF 去重的代表表做哈希键。
-///
-/// 哈希只做快速分流，不等于复用判据：命中后仍要逐位比对元数据与字节，碰撞只错过复用，
-/// 不会错配（见 `writer` 的代表表）。
 #[must_use]
 pub(crate) fn hash_bytes(data: &[u8]) -> Digest {
     let mut ctx = Sha256::new();

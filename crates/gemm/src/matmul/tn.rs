@@ -5,8 +5,6 @@ use diagnostic::{Code, Error, Result};
 use super::{TN_COLS, TN_K, TN_ROWS};
 
 /// 标量参考（线性层布局）：`out[r, j] = Σ_p x[r, p]·w[j, p]`，每个元素按 `p` 顺序独立累加。
-///
-/// 不读 `out` 的初值（直接赋值），是 [`matmul_tn_tiled`] 的对拍真值。
 pub fn matmul_tn_scalar(x: &[f32], w: &[f32], rows: usize, n: usize, k: usize, out: &mut [f32]) {
     for r in 0..rows {
         let xrow = &x[r * k..][..k];
@@ -23,10 +21,6 @@ pub fn matmul_tn_scalar(x: &[f32], w: &[f32], rows: usize, n: usize, k: usize, o
 }
 
 /// 分块 tile（线性层布局）：[`TN_ROWS`] 行 × [`TN_COLS`] 列的输出块，收缩轴按 [`TN_K`] 切。
-///
-/// 输出列块在最外层，于是每个权重列块（`TN_COLS × k`，prefill 下约 1 MiB）在一次外循环里被行块反复
-/// 复用、只从内存读一遍；行块在内层，块内累加器是 [`TN_ROWS`]×[`TN_COLS`] 的定长栈缓冲。逐行调
-/// `gemv` 的做法把同一份权重按行数重复读，那个倍数正好是本核省掉的量。
 pub fn matmul_tn_tiled(x: &[f32], w: &[f32], rows: usize, n: usize, k: usize, out: &mut [f32]) {
     let mut block = [0.0f32; TN_ROWS * TN_COLS];
     let mut j0 = 0;
@@ -67,11 +61,6 @@ struct TnTile {
 }
 
 /// 块内累加：`acc[row, j] += Σ_p x[row, p]·w[j, p]`，`acc` 的行宽是 [`TN_COLS`]。
-///
-/// `k` 是权重与输入的行宽：区间是绝对下标，行主序下 `[row, p]` 仍是 `row * k + p`。
-///
-/// 收缩块取 [`TN_K`] 是这一层的关键：累加器每块只被读改写一次（整段 `k` 上共 `k / TN_K` 次），
-/// 块内全是连续点积；块再窄就变成「累加器往返」而不是「乘加」。
 fn accumulate_tn_tile(x: &[f32], w: &[f32], acc: &mut [f32], tile: &TnTile, k: usize) {
     for j in tile.cols.clone() {
         let wchunk = &w[j * k + tile.contraction.start..j * k + tile.contraction.end];
@@ -87,14 +76,6 @@ fn accumulate_tn_tile(x: &[f32], w: &[f32], acc: &mut [f32], tile: &TnTile, k: u
 const LANES: usize = 8;
 
 /// 多点积：`LANES` 条独立累加链。
-///
-/// 尾数（`len` 不是 `LANES` 的倍数）并入标量尾部——链内顺序与标量路径不同，只会带来末位舍入差，
-/// 而公开对拍容差（1e-3 相对误差）足以吸收它；换来的是内层 `LANES` 倍指令级并行，这一项才是
-/// 分块内核相对逐行 `gemv` 不落下风的前提（实测 1.8×，见 `crates/benchmarks/src/matmul.rs`）。
-///
-/// 它是本工作区里唯一的多链点积：矩阵乘 tile 与两条注意力内核（`conv` 的 `attention` /
-/// `attention::tiled`）都调这一份，否则同一个归约循环会被写成四份、向量化程度也四份不一样。
-/// 跨 crate 可见是刻意的：把 `dot_lanes` 复制到 `conv` 就等于放弃"只有一处归约"。
 pub fn dot_lanes(a: &[f32], b: &[f32]) -> f32 {
     let len = a.len().min(b.len());
     let (x_chunks, x_tail) = a[..len].as_chunks::<LANES>();

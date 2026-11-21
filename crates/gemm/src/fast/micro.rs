@@ -14,8 +14,6 @@ pub(super) struct Sweep<'a> {
 }
 
 /// 一个待算的 8×8 微内核块：左上角 `(row0, j)`、矩阵列宽 `n`、内积分块长 `kb`、是否首块。
-///
-/// 五数同行进出一个值，理由同 [`Span`]：拆回参数会让三份架构实现各把同一组坐标重拼一遍。
 #[derive(Clone, Copy)]
 pub(super) struct Tile {
     pub(super) row0: usize,
@@ -142,9 +140,6 @@ pub(super) fn micro_store(
 }
 
 /// 标量微内核：无 SIMD 的架构（以及 x86_64 上未检出 AVX2/FMA 的机器）的兜底。
-///
-/// 与 SIMD 微内核同一组累加口径：首块从 0 起手，非首块读回 `out` 续算。逐元素点积不做向量化，
-/// 只保证正确，不保证吞吐。
 #[cfg(not(target_arch = "aarch64"))]
 pub(super) fn micro_packed_scalar(panel: &[f32], b: &[f32], out: &mut [f32], tile: Tile) {
     let Tile {
@@ -167,10 +162,6 @@ pub(super) fn micro_packed_scalar(panel: &[f32], b: &[f32], out: &mut [f32], til
 }
 
 /// x86_64 的 8×8 微内核：AVX2 + FMA，8 个 `__m256` 累加器（每行一个、8 列一个向量）。
-///
-/// `panel` 布局 `[p][8]`（A 面板），`b` 布局 `[p][8]`（B 面板）。CPU 能力在运行时探测一次：
-/// 没有 AVX2/FMA 的 x86_64 机器回退 [`micro_packed_scalar`]，不在源码里对硬件能力做隐式假设。
-/// x86_64 微内核入口：运行时探测 AVX2+FMA，命中走向量核，否则退回标量核。
 #[cfg(target_arch = "x86_64")]
 pub(super) fn micro_packed(panel: &[f32], b: &[f32], out: &mut [f32], tile: Tile) {
     if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
@@ -266,9 +257,6 @@ pub(super) fn micro_packed(panel: &[f32], b: &[f32], out: &mut [f32], tile: Tile
 }
 
 /// 一个待算的标量尾块：左上角 `(i, j)`、覆盖 `mr × nr`，矩阵列宽 `n`、内积长 `k`。
-///
-/// 六个数合起来才描述得清「哪一块」，所以它们同行进出一个值——拆回参数会让每处调用把同一组
-/// 坐标重拼一遍，也让「块多大」这件事在两处各写一份。
 #[derive(Clone, Copy)]
 pub(super) struct Span {
     pub(super) i: usize,
@@ -282,9 +270,6 @@ pub(super) struct Span {
 }
 
 /// 权重布局：`Nt` 是收缩轴在前的 `b[k][n]`，`Tn` 是按输出行常驻的 `w[n][k]`。
-///
-/// 两种布局只在「权重怎么寻址」上不同，换算成同一组 `(基址, 内积步长, 列步长)` 后，
-/// 标量尾块与打包扫描都只留一份实现。
 #[derive(Clone, Copy)]
 pub(super) enum Layout {
     Nt,

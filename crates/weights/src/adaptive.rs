@@ -1,9 +1,4 @@
 //! 2–8bit 自适应组量化，以及它在谱隙补偿链路里的形态。
-//!
-//! 与父模块的分工：父模块回答「给定一档位宽怎么量化、怎么打包」，本模块只回答**每组该选哪一档**
-//! ——按误差预算从 `{2,3,4,8}` 里降档，使位宽图在给定 Frobenius 预算下近似最少码位（E5 的自适应
-//! 策略口径）。码本与编解码仍只有 `ptq` 那一份 [`crate::ptq::quantize`] / [`crate::ptq::dequantize`]，本模块
-//! 不另写算术，也不定义第二个位宽闭集。
 
 use std::ops::Range;
 
@@ -13,14 +8,9 @@ use diagnostic::Result;
 use crate::ptq::{I2, I3, I4, I8, Scheme, dequantize, quantize};
 
 /// 候选档位，位宽从低到高。
-///
-/// 次序即降档方向：`8 → 4 → 3 → 2`，每次只朝低一位走，因此舍入误差随档位单调增、码位数单调减，
-/// 贪心的每一步换来的都是「省下的 bit」与「多出来的误差」的确定交换。
 const LADDER: [Scheme; 4] = [I2, I3, I4, I8];
 
 /// 与 [`LADDER`] 一一对应的元素位宽。
-///
-/// 对外只暴露真实位宽，档位下标是内部记账：调用方拿 `2` 而不是 `0` 去理解一个组。
 const BITS: [u8; 4] = [2, 3, 4, 8];
 
 /// 起始档位：所有组都从最宽的 `I8` 起，降到哪由预算决定。
@@ -147,9 +137,6 @@ fn assemble(parts: crate::ptq::Components, adaptive: Adaptive) -> AdaptiveCompen
 }
 
 /// 入口三项契约：分组非零、输入有限、预算非负。
-///
-/// 负预算下**任何**位宽都算超支，降档会在第一步就停在 8bit——那不是「预算太紧」，而是调用方给错
-/// 了数，所以在这里拒绝而不是静默退化成固定 8bit。
 fn check_budget(group: usize, x: &[f32], target_err: f64) -> Result<()> {
     if group == 0 {
         return Err(bad("量化分组必须大于 0"));
@@ -189,9 +176,6 @@ fn maxima(group: usize, x: &[f32], groups: usize) -> Vec<f32> {
 }
 
 /// 第 `g` 组在档位 `level` 下的误差平方。
-///
-/// 均匀量化误差的解析期望是 `n·(max_abs/max_code)²/12`：只有 `max_code` 随档位变，因此降档的增误
-/// 完全由码域大小决定，不需要真量化一遍去测。
 fn group_err2(maxes: &[f32], group: usize, len: usize, g: usize, level: usize) -> f64 {
     let size = span(group, len, g).count() as f64;
     let scale = f64::from(maxes[g]) / f64::from(LADDER[level].max_code);
@@ -223,9 +207,6 @@ fn descend(
 }
 
 /// 这一轮最值得降的那一组：`(组号, 增误)`；没有组能在预算内降档时 `None`。
-///
-/// 排序按「每省 1 bit 的增误」而不是按绝对增误：8→4 省 4 bit、3→2 只省 1 bit，直接比增误会让宽档
-/// 永远排在前面，得到的位宽图就不是最少码位而是最宽位宽。
 fn cheapest(
     maxes: &[f32],
     group: usize,
@@ -258,9 +239,6 @@ fn rung(maxes: &[f32], group: usize, len: usize, g: usize, from: usize) -> Optio
 }
 
 /// 逐组按选定位宽量化再反解，拼出重构。
-///
-/// 编解码只走父模块那一份：自适应改变的是「每组用哪档」，不是「一档怎么算」，所以这里没有任何
-/// 自己的舍入与打包逻辑。
 fn reconstruct(group: usize, x: &[f32], levels: &[usize]) -> Result<Vec<f32>> {
     let mut recon = vec![0.0f32; x.len()];
     for (g, &level) in levels.iter().enumerate() {

@@ -26,10 +26,6 @@ use diagnostic::Result;
 use crate::ledger::{Bound, EpsMethod, Note, Stable};
 
 /// 一段网络的 L3 事实：一个可适用段的五个量。
-///
-/// 字段全部是**上界**（除 `offset` 是 `‖φ(0)‖₂` 本身），因此本结构不区分"实测值"与"估算值"——
-/// 但一个下界混进来会让整条链失效，所以五个量都必须由能出上界的手段给出（SVD 的 `σ₁`、
-/// 量化残差的 Frobenius 范数、证书里的 `ε` 等）。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rung {
     rho: f64,
@@ -62,14 +58,6 @@ impl Rung {
     }
 
     /// 从谱隙证书取 `ε`；`ρ`、`ρ̂`、`L`、`b` 仍由调用方给。
-    ///
-    /// `Note::eps` 是那次分解的**后验 Frobenius 残差**，而 `‖·‖₂ ≤ ‖·‖_F`，所以拿它当谱 `ε`
-    /// 是一个保守上界——可能偏松，但不会偏紧，这条方向性正是它可以进链的原因。
-    ///
-    /// 证书本身有三处先决条件：L0 门必须 Pass（谱隙不足以支撑秩选择时 `certify` 会 `Ok(None)`，
-    /// 拿到 `Note` 就说明有秩，但这里仍复核一遍，避免手工构造的 `Note` 绕过门）；那次写入必须
-    /// 逐位往返（`equal = false` 说明 `ε` 的载体本身没还原，`ε` 无从谈起）；且 `ε` 的方法与界
-    /// 类型都得是能当上界的那两种——候选筛查口径与 L0' 候选界只够排序，不能进这条链。
     pub fn from_note(
         note: &Note,
         rho: f64,
@@ -117,8 +105,6 @@ impl Rung {
     }
 
     /// 这一段自身是否无损：`ε` 精确为零。
-    ///
-    /// 注意这不是"artifact 逐位相等"——那要由调用方对真实字节做往返，见 [`Bracket::ruling`]。
     pub fn lossless(&self) -> bool {
         self.eps == 0.0
     }
@@ -144,8 +130,6 @@ impl Chain {
     }
 
     /// 声明有几段被移出 L3（LayerNorm / 残差 / 注意力 / SSM / MoE / 门控）。
-    ///
-    /// 这些段既不在定理范围内，就不能被"跳过"——记下来，网络级判定才不会冒充整网闭合。
     #[must_use]
     pub fn with_uncovered(mut self, count: usize) -> Self {
         self.uncovered = count;
@@ -168,8 +152,6 @@ impl Chain {
     }
 
     /// 合成两侧界：`a_L`（激活幅度上界）与 `e_L`（误差上界），以及适用时的闭式值。
-    ///
-    /// 任一中间量越出 `f64` 就是错：无穷大的"上界"不是上界，拿它当证书等于没有证书。
     pub fn bracket(&self) -> Result<Bracket> {
         let (activation, error) = walk(&self.rungs, self.input)?;
         Ok(Bracket {
@@ -204,9 +186,6 @@ impl Bracket {
     }
 
     /// 闭式 `R·Σ ε_i (Π_{j<i} ρ̂_j)(Π_{j>i} ρ_j)`；只在**所有** `L_i = 1` 且 `b_i = 0` 时给出。
-    ///
-    /// 任一段不满足就返回 `None`：闭式在这两种情形下会给出比递推更小的数（`L_i > 1` 时漏掉
-    /// 放大，`b_i > 0` 时漏掉偏置把 `a_{i-1}` 抬高那部分），照抄就是伪证。
     pub fn closed_form(&self) -> Option<f64> {
         self.closed
     }
@@ -222,9 +201,6 @@ impl Bracket {
     }
 
     /// 网络级判定：`bitwise` 是调用方对**真实 artifact** 的往返结论。
-    ///
-    /// 判定次序即 §4.5 的次序：先看有没有非零分项（有损就拒绝压缩并回退），再看往返（上界为零
-    /// 不能替代实测），最后看覆盖面（还有段在定理之外就不能叫整网无损）。
     pub fn ruling(&self, bitwise: bool) -> Ruling {
         if !self.lossless {
             return Ruling::Refuse;

@@ -1,8 +1,4 @@
 //! Embedding 查表层：`y[i, :] = table[idx[i], :]`（行向量 gather）。
-//!
-//! 层记录词表大小 `vocab`、行宽 `dim` 与一次查表的 token 数 `tokens`，用于对齐权重表
-//! `[vocab, dim]`；下界跟随 `embed_f32` 的语义表（按被访问的 token 计价），层不自行把权重表
-//! 整张读一遍——常驻表的流量口径属于算子代价模型，这里不写第二份公式。
 
 use diagnostic::{Code, Error, Result};
 

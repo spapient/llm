@@ -1,9 +1,4 @@
 //! 单轴层：逐元素、归一化、激活、位置编码与逐元素二元运算。
-//!
-//! 这些层共享同一副形状口径：一条轴 `n`（元素数），输入与输出等长；下界由对应算子的单轴
-//! 语义表推出（[`Bounds::of_context`]），层里不写流量常数。各具体层只固定自己的算子名，
-//! 规格校验、访问器委托与下界路径由 [`crate::axis::AxisCore`] 与 [`layer_delegate`] 收口一份；
-//! 类型本身在源码里显式声明，便于架构门禁按源码行核对所有权。
 
 use crate::ParamRole;
 use crate::axis::{AxisCore, OutputShape};
@@ -153,10 +148,6 @@ layer_delegate!(
 );
 mod reduce {
     //! 归约层：把一维输入折叠成单个标量输出。
-    //!
-    //! 与单轴族（[`crate::pointwise`]）共享 [`crate::axis::AxisCore`]，差别只在输出形状：归约消掉
-    //! 输入轴 `n`，输出轴 `o` 恒为 1，因此层的声明形状是标量 [`Shape`]（空轴）。下界仍由归约算子
-    //! 的语义表推出，层不手写公式。
 
     use crate::ParamRole;
     use crate::axis::{AxisCore, OutputShape};

@@ -1,11 +1,4 @@
 //! GGUF v3 只读解析：头部、KV 元数据、张量信息表与反量化。
-//!
-//! 布局：`magic "GGUF" + version(u32) + tensor_count(u64) + kv_count(u64)` → KV 表 → 张量信息表
-//! → 按 `general.alignment`（默认 32）对齐 → 数据区。本模块只消费调用方持有的字节切片，不做写入、
-//! 不做 I/O；所有偏移与长度都经过边界检查，未信任输入不会触发越界。
-//!
-//! 支持 GGML 类型码：`F32=0`、`F16=1`、`Q8_0=8`、`Q4_K=12`、`Q5_K=13`、`Q6_K=14`。
-//! 反量化只求正确，不做 SIMD；性能路径由上层决定。零第三方依赖，纯安全 Rust。
 
 pub(crate) mod dequant;
 pub(crate) mod reader;
@@ -44,17 +37,9 @@ pub enum Kind {
 }
 
 /// 一个已支持格式的布局来源：标量元素按 [`DType`] 计宽，块格式全部委托 [`QType`]。
-///
-/// 几何（`elems`/`span`/`bytes_for`）只有一份实现，住在 `dtype::Layout<B>`：这里只把块参数固化成
-/// [`QType`]，标量手臂与块手臂的几何都不再另写一份。
 pub type Layout = dtype::Layout<QType>;
 
 /// 本解码器**已实现**反量化的格式表：GGML 码 → 布局来源。
-///
-/// 这是「支持哪些格式」的唯一事实：[`Kind::from_code`]、[`Kind::elems`] 与 [`Kind::span`]
-/// 都读这张表；新增一种可解码格式只加一行。`dtype` 的 [`QType`] 声明了 25 个块格式，
-/// 这里只实现其中 4 个，其余 21 个尚无解码器——这张表让「表里有、解不了」成为可读清单，
-/// 而不是散在几个 `match` 里的隐式事实。
 pub const SUPPORTED: &[(Kind, Layout)] = &[
     (Kind::F32, Layout::Scalar(DType::F32)),
     (Kind::F16, Layout::Scalar(DType::F16)),

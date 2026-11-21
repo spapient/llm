@@ -41,11 +41,6 @@ impl MetalDevice {
     }
 
     /// 把一段 MSL 源码编译成计算管线（+1 保留，`Drop` 释放）；入口函数名由源码自己说。
-    ///
-    /// 单段程序仍是 `kernel_main`，多段程序各段用 [`crate::dialect`] 定死的具名入口
-    /// （`kernel_partial` / `kernel_norm` / …）——同一翻译单元里两个 `kernel_main` 会撞重定义，
-    /// 所以这里不能写死名字。编译失败（源码非法 / 找不到入口函数）返回 `None`；本刀不把
-    /// `NSError` 文本带回 Rust 侧。
     pub fn compile(&self, source: &str) -> Option<MetalPipeline> {
         let entry = entry_of(source)?;
         let src = CString::new(source).ok()?;
@@ -67,10 +62,6 @@ impl MetalDevice {
     }
 
     /// 池内的编译主体：`newLibraryWithSource → newFunctionWithName → newComputePipelineState`。
-    ///
-    /// `metal4` 为真时挂一个 `MTLCompileOptions` 并把 `languageVersion` 抬到 4.0——张量核心内建
-    /// （`metal_tensor` 的 `mpp::tensor_ops`）只在 4.0 起可见，其余程序留在设备默认版本，避免
-    /// 无谓的语义迁移。失败时把 `NSError` 的描述打到 stderr：生成侧写错 MSL 时，这是唯一线索。
     fn compile_with_pool(
         &self,
         src: *const c_char,
@@ -130,8 +121,6 @@ pub(crate) const COMMAND_BUFFER_COMPLETED: usize = 4;
 pub(crate) const METAL4_VERSION: usize = 0x0004_0000;
 
 /// 构造抬到 4.0 的 `MTLCompileOptions`（+1 保留，调用方负责 `release`）。
-///
-/// `metal` crate 的枚举只到 3.1，这里自己发 `setLanguageVersion:`，避免用越界的枚举值。
 pub(crate) unsafe fn metal4_options() -> *mut c_void {
     let class = unsafe { objc_getClass(c"MTLCompileOptions".as_ptr()) };
     if class.is_null() {
@@ -163,9 +152,6 @@ pub(crate) unsafe fn report(error: &*mut c_void) {
 }
 
 /// 源码里的入口函数名：`kernel void <name>(` 的 `<name>`。
-///
-/// 一段 MSL 只有一个 kernel，取第一个即可。找不到 `kernel void` 或名字为空都返回 `None`——
-/// 那说明生成侧漂移了，编译无从谈起。
 pub(crate) fn entry_of(source: &str) -> Option<&str> {
     const MARK: &str = "kernel void ";
     let rest = source.split_once(MARK)?.1.trim_start();
@@ -180,17 +166,6 @@ impl Drop for MetalDevice {
 }
 
 /// Metal 设备执行器：实现 [`Executor`]，把一张图按序派发到本机 Metal GPU。
-///
-/// 与 [`CpuExecutor`](engine::exec::CpuExecutor) 的差异只在「排水」：CPU 把节点交给
-/// [`Program`](engine::exec::Program) 就地计算，Metal 把节点交给已编译的 [`MetalPipeline`] 派发。
-/// 提交仍只入队、[`Executor::sync`] 才真派发（同一流内按图序，别的流不动）。缓冲是共享存储
-/// （[`MetalBuffer`]）：输入在提交前由调用方写入、输出在 `sync` 后由调用方回读，全程不经第二份拷贝。
-///
-/// 两张运行期表：内核表按算子名登记（[`MetalExecutor::register`]，进程内编译 MSL），操作数表按编号
-/// 绑定设备缓冲（[`MetalExecutor::bind`]）。本层不引用 `op` 算子闭集、也不调用 `cutile` 生成 kernel
-/// （L6 禁止列），MSL 源码由装配层注入——本类型只负责「把图提交到设备」。
-///
-/// 句柄指针私有、不跨线程（四个句柄类型都不派生 `Send` / `Sync`），执行器整体也是单线程后端。
 pub struct MetalExecutor {
     pub(super) device: Device,
     pub(super) metal: MetalDevice,
@@ -202,8 +177,6 @@ pub struct MetalExecutor {
 
 impl MetalExecutor {
     /// 绑定本机默认 Metal 设备与其命令队列，构造空执行器；本机无 Metal 返回 `None`。
-    ///
-    /// `vendor` / `algorithm` 是登记标签（同 [`Device`]），不派生热路径分发。
     pub fn new(vendor: &str, arch: &str) -> Option<Self> {
         let metal = MetalDevice::system_default()?;
         let queue = metal.new_command_queue()?;
@@ -218,9 +191,6 @@ impl MetalExecutor {
     }
 
     /// 登记一段 MSL 内核源：进程内编译成计算管线并按 `name` 索引；同名已登记返回 `Invalid`。
-    ///
-    /// 入口函数名取源码里那个（[`MetalDevice::compile`] 的口径），因此单段与具名多段同一入口；
-    /// 源由装配层注入，本方法不生成任何算子内核。
     pub fn register(&mut self, name: &str, source: &str) -> Result<()> {
         if self.kernels.contains_key(name) {
             return Err(Error::new(Code::Invalid, format!("内核 `{name}` 已登记"))
@@ -240,8 +210,6 @@ impl MetalExecutor {
     }
 
     /// 分配一段 `len` 字节的共享缓冲并绑定到编号；返回被替换掉的旧缓冲，分配失败返回 `Internal`。
-    ///
-    /// 成功后调用方可经 [`MetalExecutor::buffer_mut`] 写入输入、`sync` 后回读输出。
     pub fn bind_bytes(&mut self, id: u32, len: usize) -> Result<Option<MetalBuffer>> {
         let buffer = self.metal.new_buffer(len).ok_or_else(|| {
             Error::new(Code::Internal, format!("分配 {len} 字节设备缓冲失败"))
@@ -334,9 +302,6 @@ impl Executor for MetalExecutor {
     }
 
     /// 排这一条流上已提交的节点：按入队顺序派发，成功一条才出队一条。
-    ///
-    /// 别的流不动（同 [`CpuExecutor::sync`](engine::exec::CpuExecutor::sync) 口径）。失败时出错的那条
-    /// 留在队列里，调用方能看到「它还没跑完」，而不是被悄悄丢掉。
     fn sync(&mut self, stream: Stream) -> Result<()> {
         let mut index = 0;
         while index < self.pending.len() {

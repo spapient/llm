@@ -1,21 +1,4 @@
 //! 质量门配置：从编译期生成的 `lints/vocabulary.toml` 表读取强类型阈值与存量棘轮。
-//!
-//! `build.rs` 在编译期把 `lints/vocabulary.toml` 展开成 `diagnostic::data::Table`，运行期只遍历
-//! 这棵树：本 crate 不读配置文件（配置解析只发生在 `cli::settings`，ADR 0048），语料仍在构建期
-//! 解析（ADR 0022）。与 burn 的 Config 同思想：标准是数据，
-//! 行为是纯函数。
-//!
-//! 三条边界缺一条，这套门禁就退化成「数字散落在调用方」：
-//!
-//! 1. **限值只有 [`Gate::limit`] 一个出口**。测量方只报「测到多少」，不持有阈值、也不决定
-//!    「哪个度量用哪个数」；`[gate]` 是闭集，拼错的键报错而不是被忽略。
-//! 2. **棘轮按（身份, 度量）结清**。同一函数登记了 `ccn` 与 `nloc` 时，改好其中一条就必须删掉
-//!    那一条，否则豁免会永久留在表里（[`Gate::stale`]）。
-//! 3. **新增必进表，恶化必失败**：全新身份、或某度量的值超过登记值即失败。
-//!
-//! 能保证的是「不留过期豁免、不允许恶化」。它**不**保证「登记过的项一定在变好」：仍超标但
-//! 比登记值改善的值会通过，因为静态门禁没有第二份历史事实可比——那属于版本库，属于 `git`，
-//! 不在这里假装拥有。
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
@@ -24,9 +7,6 @@ use diagnostic::data::Table;
 use diagnostic::{Code, Error, Result};
 
 /// 静态质量门：阈值与存量债基线。
-///
-/// 阈值字段私有是有意的：唯一出口是 [`Gate::limit`]，调用方拿到的是「某个度量的限值」，
-/// 而不是「三个可随意组合的数字」。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Gate {
     max_ccn: usize,
@@ -61,9 +41,6 @@ impl Debt {
     }
 
     /// 已登记的（度量, 登记值）对，顺序即棘轮逐条结清的顺序。
-    ///
-    /// 表写在用它的地方而不是导出一个 `Metric::ALL`：门禁只在这里需要「全部度量」，
-    /// 导出成公开闭集就得接 `prof::atom::Closed`，而 `tools` 是零业务的静态分析器。
     fn registered(self) -> impl Iterator<Item = (Metric, usize)> {
         [
             (Metric::Ccn, self.ccn),
@@ -77,8 +54,6 @@ impl Debt {
 }
 
 /// 度量类别。
-///
-/// 可排序：棘轮按（身份, 度量）结清，`Metric` 是 `BTreeSet` 的键，所以顺序必须由类型给出。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Metric {
     /// 圈复杂度。
@@ -92,8 +67,6 @@ pub enum Metric {
 }
 
 /// 一个当前观测到的超标项：身份、度量、当前值。
-///
-/// 限值不在里面：它是门禁的策略（[`Gate::limit`]），测量方只能提供「测到多少」。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Over {
     /// 身份键（文件用路径，函数用 `路径:名#序号`）。
@@ -126,9 +99,6 @@ impl Gate {
     }
 
     /// 某个度量适用的限值：门禁唯一的限值出口。
-    ///
-    /// `Call` 的限值是 0——`unwrap`/`expect`/`panic!` 在 `crates/*/src` 里没有预算，登记值只是
-    /// 存量；其余度量读 `[gate]` 的对应阈值。
     #[must_use]
     pub const fn limit(&self, metric: Metric) -> usize {
         match metric {
@@ -140,13 +110,6 @@ impl Gate {
     }
 
     /// 判定一个**已超限**的测量；返回 `Some(理由)` 即门禁失败。
-    ///
-    /// 调用方先用 [`Gate::limit`] 过滤：未超限的测量不是门禁的输入，它对应的「删除基线条目」
-    /// 由 [`Gate::stale`] 按度量逐条结清。
-    ///
-    /// 登记值必须等于实测值：**高于**实测即失败，要求同一提交里把基线降下来。这是「棘轮」真正
-    /// 的含义——登记表是快照，不是预算；只写「不许超过登记值」时，降到 6 的 ccn 可以顶着 47 的
-    /// 登记值一直活下去，降级永远不会被要求记账。
     #[must_use]
     pub fn check(&self, over: &Over) -> Option<String> {
         let allowed = self
@@ -170,9 +133,6 @@ impl Gate {
     }
 
     /// 已登记、但本次**没有观测到超限**的度量：都必须删除，避免永久豁免。
-    ///
-    /// `live` 是本次观测结果（身份 → 仍超限的度量）。按度量而不是按身份比较，是因为一个函数
-    /// 可以同时登记 `ccn` 与 `nloc`：只按身份比较时，改好其中一条也永远不会被要求删表。
     #[must_use]
     pub fn stale(&self, live: &BTreeMap<String, BTreeSet<Metric>>) -> Vec<String> {
         let empty = BTreeSet::new();

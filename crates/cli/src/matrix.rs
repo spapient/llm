@@ -1,6 +1,4 @@
 //! 台账的表格排版：证据汇总表、原语 × 后端矩阵、逐条说明与档案头/原语表。
-//!
-//! 只有表（`Sheet`）与它们的标题；判定与措辞的来源和 [`super::section`] 相同——库给结论，这里排版。
 
 use cutile::atom::Prim;
 use cutile::prof::Profile;

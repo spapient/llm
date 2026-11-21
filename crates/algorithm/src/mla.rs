@@ -1,23 +1,4 @@
 //! DeepSeek MLA 的潜在 KV（§5.8.1）：每 token 每层只缓存 `c^KV` 与解耦 RoPE 键 `k^R`。
-//!
-//! 标准 MHA/GQA 缓存的是一个位置的 `K` 与 `V`（`2 · n_h · d_h` 个元素）。MLA 把这两段改写成
-//! 两个低秩投影的**输入**：`k_h = W^{UK}_h c`、`v_h = W^{UV}_h c`，其中 `c ∈ R^{d_c}`；解耦的
-//! RoPE 键 `k^R ∈ R^{d_h^R}` 不进 `W^{UK}`，直接加进分数。缓存里因此只剩 `d_c + d_h^R`——
-//! `k^{no-nope}` 与 `V` 都由 `c` 现算，存它们等于把低秩投影的结果又存了一遍。
-//!
-//! 于是同一次注意力有两条**数学等价**的算法，本模块都实现：
-//!
-//! - [`Path::Upref`]（升维参考）：每步把 `c` 显式还原成 `k_h` / `v_h`，再按标准注意力算。
-//!   它是数值对拍用的那条，也是"潜在缓存到底等不等价"唯一能验证的写法。
-//! - [`Path::Absorb`]（吸收）：`q^T k_h = (W^{UK}_h{}^T q)^T c`，把 `W^{UK}` 吸到查询侧、
-//!   `W^{UV}` 吸到输出侧；每 token 只做一次 `d_c` 点积与一次 `d_h^R` 点积，`V` 始终不必还原。
-//!   这是解码期真跑的那条：吸收之后缓存的读取宽度就是 `d_c + d_h^R` 本身。
-//!
-//! 与 [`nn::Attention`] / [`crate::BlockTable`] 的分工：那两者分别压**头数**与**序列长度**，
-//! 本模块压**每个 token 的 KV 宽度**。三者不叠加——一次前向只选一条（`docs/lld.md` 规则 0.9）。
-//!
-//! 纯几何量（行宽、比例）走模块级函数，与 [`crate::csa::effective_len`] 同形：V3 的行宽算得出来
-//! 就不该先分配 8M 个权重再算。`f32` 供前向、`f64` 供对拍，共用一份泛型实现（[`op::scan::Scalar`]）。
 
 use diagnostic::{Code, Error, Result};
 use op::scan::Scalar;
@@ -49,9 +30,6 @@ pub fn dense_width(heads: usize, head_dim: usize) -> usize {
 }
 
 /// 行宽之比 `(d_c + d_h^R) / (2 · n_h · d_h)`。
-///
-/// 分母为零（几何不成立）时返回 `f64::INFINITY` 而不是 panic：这是个记账函数，调用方要的是
-/// "这个配置省不省"，不是"配置对不对"——配置对不对由 [`Mla::new`] 判。
 pub fn ratio(heads: usize, head_dim: usize, latent: usize, rope: usize) -> f64 {
     row_width(latent, rope) as f64 / dense_width(heads, head_dim) as f64
 }
@@ -76,13 +54,6 @@ impl Path {
 }
 
 /// 潜在 KV 缓存：每 token 只有 `c^KV`（`d_c`）与解耦 RoPE 键 `k^R`（`d_h^R`）两段。
-///
-/// 两段分开存而不是拼成一行，是因为它们的宽度由两个不同的超参给，且只有 `c^KV` 参与低秩投影——
-/// 拼起来会让人误以为 `k^R` 也要过 `W^{UK}`。交给 `engine` 的页池时按
-/// [`Latent::row_width`] 当行宽即可，两段本来就是连续的。
-///
-/// 从 [`Mla::empty_cache`] 起步、按 token [`Latent::push`]：解码每一步追加一行，这与 §5.8.1
-/// "只缓存 `(c^KV, k^R)`" 是同一句话。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Latent<S: Scalar = f32> {
     latent_width: usize,
@@ -171,10 +142,6 @@ impl<S: Scalar> Latent<S> {
 }
 
 /// MLA 层：超参 `(n_h, d_h, d_c, d_h^R)` 加上两条低秩投影 `W^{UK}` / `W^{UV}`。
-///
-/// 两个权重都按 `[n_h · d_h, d_c]` 行主序存放（第 `h` 个头的块是 `[h·d_h, (h+1)·d_h)` 这
-/// `d_h` 行）：`k_h = W^{UK}_h c`。`W^{UK}_h` 与 `W^{UV}_h` 各自的 `d_h` 行共享同一个 `c`，
-/// 所以按行存就能一次把整头算完，不需要为每个头切一份子矩阵。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Mla<S: Scalar = f32> {
     heads: usize,
@@ -392,9 +359,6 @@ impl<S: Scalar> Mla<S> {
     }
 
     /// 第 `h` 头在 `0..=t` 上的分数，末乘 `1/√(d_h + d_h^R)`。
-    ///
-    /// 两条路径的分数**逐项相同**，只是乘投影的时机不同：吸收式先把 `W^{UK}` 的转置乘进查询，
-    /// 于是每个 token 只剩一次 `d_c` 点积；升维参考每 token 先把 `c` 还原成 `k_h` 再点积。
     fn scores(
         &self,
         head: usize,

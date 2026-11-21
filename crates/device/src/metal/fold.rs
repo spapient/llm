@@ -1,15 +1,4 @@
 //! Metal 多段并行程序：分块族（归约 / 归一化 / 扫描）的「多段发射 + 主机折叠」。
-//!
-//! 分块族不是「一份源跑一次」：部分结果先落回输出缓冲的 `y[g]`，主机把它折成一个值，再按同一块
-//! 网格跑下一段。CUDA 侧这条路本来就在（[`crate::norm`] / [`crate::scan`]，单个 host 程序里做折叠），
-//! Metal 侧此前只有设备段、没有 host 串联，于是 verify 只能回落到单线程语义门——**算得对但形态没证**。
-//!
-//! 折叠公式与 `.k` 模板、CUDA 侧逐字同口径：RMSNorm 是 `sqrt(Σx²/N + 1e-6)`（f64 求和、写回前
-//! 收窄 f32），Softmax 是 `max` 与 `exp(x-max)` 求和，扫描是 `C_{g+1} = a^len·C_g + 尾态`（f64，
-//! `a^len` 用平方乘而不是 `pow`，块长最多 `chunk` 次乘法）。
-//!
-//! 段与入口名一一对应（`kernel_partial` / `kernel_expsum` / `kernel_norm` / `kernel_scan_*`），
-//! 由 [`crate::dialect`] 在生成段时定死；这里只按序发射，不再判断「该几段」。
 
 use crate::dialect::{
     EXPSUM, NORM, PARTIAL, RMS_EPS, SCAN_CORRECT, SCAN_LOCAL, carry_fold, length_scalar,
@@ -29,9 +18,6 @@ const SUM_STEP: &str = "acc += parts[g];";
 const MAX_STEP: &str = "if (parts[g] > acc) { acc = parts[g]; }";
 
 /// 一段程序的公共几何：长度、块数、输出缓冲名、全部缓冲名。
-///
-/// 四个分块族都要这四样，「块数可能少于长度」时缓冲要按取大者开满——这条判据只在
-/// [`Prep::span`] 里写一次。
 struct Prep<'a> {
     len: usize,
     blocks: usize,

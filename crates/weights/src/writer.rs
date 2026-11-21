@@ -1,8 +1,4 @@
 //! 写端：收集段，按对齐布局一次产出 canonical 字节，同一份编码可写内存或流式落盘。
-//!
-//! 所有正文都通过 [`sink::Sink`] 输出：[`Writer::encoded_len`] 用计数 Sink 跑同一编码路径，
-//! 与实际字节零漂移；[`Writer::write_to_path`] 用文件 Sink 边编码边写，整份容器从不进内存。
-//! 全局 CRC 用 [`sink::Sealed`] 覆盖正文每一个字节，文件路径下也不会漏字段。
 
 pub(crate) mod plan;
 

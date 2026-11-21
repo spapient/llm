@@ -1,12 +1,5 @@
 //! 统一基准记录结构（M1-C2）：一条算子 / 层 / 整模型基准的身份、形状、批次、精度、后端与
 //! roofline 上界。
-//!
-//! 本模块只持有**记录**，不测量、不写性能结论：实测值由调用方在跑完后填入，基线是否登记
-//! 由 [`regress::Baseline`](crate::regress::Baseline) 判定。没有登记基线的条目跳过回退判定，
-//! 不在此伪造基线数字；未测得的硬件峰值上界留 [`None`]，不预填。
-//!
-//! **拥有**：[`EntryKind`]、[`Harness`]、[`Roofline`]、[`Geometry`]、[`BenchRecord`]。
-//! **不拥有**：测量采样、基线台账、跨机对照结论。
 
 use diagnostic::{Code, Error, Result};
 
@@ -192,9 +185,6 @@ pub struct BenchRecord {
 
 impl BenchRecord {
     /// 构造一条尚未测量的记录。
-    ///
-    /// 校验：名字 / 后端非空；几何由 [`Geometry`] 自检。形状为整数维度，不存在负维度，
-    /// `usize` 已兜住越界方向。
     pub fn new(
         kind: EntryKind,
         name: impl Into<String>,

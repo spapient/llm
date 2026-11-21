@@ -1,7 +1,4 @@
 //! 声明表解析：`[op]`/`[axes]`/`[needs]`/`[layouts]`/`[grid]`/`[chunk]`/`[consts]` 各自一块。
-//!
-//! 每块一个函数，只做「取值 → 类型检查 → 结构」；跨块的语义校验（槽位、需求、参数）在
-//! [`super::build`]。字段级错误一律走 [`super::field`]，消息带 `variants[i].name` 式路径。
 use diagnostic::data::{Table, Value};
 
 use crate::layout::LayoutSpec;
@@ -137,9 +134,6 @@ pub(super) fn layout(key: &str, value: &Value) -> diagnostic::Result<(String, La
 }
 
 /// `[grid]`：Gemm 骨架的网格映射（仅 Gemm 声明，其余骨架不需要）。缺省返回 `None`。
-///
-/// 一个键族：`dims` 是 `"线程:标量"` 数组（网格维，按序）。线程名 = 模板里的循环变量名，标量名 =
-/// 该循环的边界。
 pub(super) fn grid(table: &Table) -> diagnostic::Result<Option<Grid>> {
     let Some(section) = table.table("grid") else {
         return Ok(None);

@@ -1,9 +1,6 @@
 use super::*;
 
 /// 一层的状态：每通道一条 [`Lif`]、一段复用的整数累加缓冲，以及本步发放前的膜电位。
-///
-/// 缓冲在状态里而不是每步新分配：`drive` 的稀疏性体现在「少做乘加」，不该被一次 `vec!` 抹平。
-/// `pre` 是反传的唯一入口：发放一提交，膜电位就被改写成 `reset`，那一刻的值只能靠前向顺手记下。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Membrane {
     pub(super) outputs: usize,

@@ -1,14 +1,4 @@
 //! 反向数值执行器：按 [`Schedule`] 的逆拓扑序把 loss 梯度回传到参数终点。
-//!
-//! [`autograd`] 只产出图结构、反向拓扑序与扇出账本，不含梯度数值；本模块把算子的解析反向
-//! 公式落到真实 f32 缓冲：从 loss 的上游梯度 `1` 出发，逐节点把 incoming 梯度按局部雅可比
-//! 分给各输入并累加，每收满一份贡献就结算一步。
-//!
-//! 反向公式表与前向内核表同构：算子名、元数与派生几何都在 [`FORMULAS`] 闭集里登记，未接
-//! 公式的算子遇到即返回 [`Code::Unsupported`]，执行循环不逐名字 `match` 散落分支。[`FORMULAS`]
-//! 与 [`op::REGISTRY`] 的 `differentiable` 标记在编译期互锁：可微算子缺公式、公式指向不可微
-//! 算子、或公式重复登记都是编译错误。量化权重 / 反量化算子（`gemv_i*` / `gemm_i*` /
-//! `dequant_i*`）的权重输入是 u8 码，属推理期解码，不参与训练反向，保持 [`Code::Unsupported`]。
 
 use autograd::{Node, Schedule, Tape, Var};
 use diagnostic::{Code, Error, Result};
@@ -213,10 +203,6 @@ const FORMULAS: [Entry; 36] = formulas![
 ];
 
 /// 编译期闭合：公式目录与 [`op::REGISTRY`] 的 `differentiable` 标记一一对应。
-///
-/// - 每个标记为可微的算子都有一条公式；
-/// - 每条公式都指向一个可微且已注册的算子；
-/// - 公式目录里没有重复算子名。
 const _: () = formulas_cover(&FORMULAS, &op::REGISTRY);
 
 /// 双向互锁：可微算子缺公式、公式指向不可微/未注册算子、或公式重复，都是编译错误。

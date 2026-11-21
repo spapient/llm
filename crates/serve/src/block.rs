@@ -1,7 +1,4 @@
 //! 注意力块装配：单头几何/宽度链/四投影权重校验，拆成 q/k/v/o + decode 注意力 + 残差子节点。
-//!
-//! 块内算子名沿用 nn 绑定的 prefill 族别，装配侧切成对应 decode 变体；历史 K/V 缓冲编号与
-//! `kv_width` 记进 [`BlockBinding`]，运行时由模型宿主按它装载历史、取回当前步写回页行。
 
 use diagnostic::{Code, Error, Result};
 use engine::exec::Launch;

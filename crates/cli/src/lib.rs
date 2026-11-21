@@ -55,21 +55,12 @@ use diagnostic::{Code, Error, Result};
 
 /// 命令分派：解析后的命令接到对应编排；输出由各编排函数落到 stdout，
 /// 错误交给二进制入口汇总成退出码。
-///
-/// 设备后端是进程级注册表，装配点必须在产品路径上（ADR 0025 §1、ADR 0035）：只在测试里
-/// 注册会让 `llm run --device cuda` 把"没装配"误报成"没有该后端"。`install` 幂等且只做三次
-/// 静态登记，因此不按命令分支——为一个不必要的条件跳过去换掉编译期证明不划算。
 pub fn entry(invocation: &Invocation<'_>) -> Result<()> {
     device::backends::install();
     route(invocation.command())
 }
 
 /// 一级分派：自处理的命令直接落地，其余按类别下推。
-///
-/// 十条变体为什么不写成一张平表：本包的生产函数受 `Ccn ≤ 5` 约束（`llm-tools` 的 `gate`）
-/// 平铺会顶到 11，所以分四层。代价是每层末尾需要一个 `_` 臂——它走不走得到**不靠文档声明**，
-/// 而靠 `tests/grammar.rs::every_command_variant_has_a_destination` 里那张不带 `_` 的平表：
-/// 新增 `Command` 变体时那道门编译失败，`cargo check --all-targets` 因此点名要求接线。
 fn route(command: &Command<'_>) -> Result<()> {
     match command {
         Command::Help => usage(),

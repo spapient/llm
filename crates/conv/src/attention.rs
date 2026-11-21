@@ -1,15 +1,4 @@
 //! 注意力：`O = softmax(QKᵀ/√d)·V`。
-//!
-//! 同一个形状（`s` 条序列、头宽 `d`）下给出两套实现，互相对拍：
-//!
-//! - `reference` / `forward`：朴素三阶段——先算全部分数 `QKᵀ/√d`，再对每行 softmax，最后乘 `V`。
-//!   它要一块 `s×s` 的完整分数矩阵，是数值参考；
-//! - [`flash_reference`] / [`flash_forward`]：online softmax 分块，维护 running max 与归一化和，
-//!   单遍扫描 `K/V`，不落地完整分数矩阵。两套结果必须逐元素相等（误差内）；
-//! - [`crate::attention::tiled`]：上面两条的分块 tile 版本，**执行侧走的那条**（`serve` / `train` 的适配
-//!   都指向它），与 `forward` / `flash_forward` 分别逐位一致，只是 K/V 块在行块内被复用。
-//!
-//! 样本、形状与代价两算子共用；`#[annotation::model]` 按注册名挑对应的参考函数。
 
 use crate::model::{AxisRole, AxisSpec, Buffer, Cost, Sample, ShapeContext, Values};
 use diagnostic::{Code, Error};
@@ -92,9 +81,6 @@ fn qkv(sample: &Sample) -> diagnostic::Result<(&[f32], &[f32], &[f32])> {
 }
 
 /// 行 `row` 与行 `col` 的点积：四个朴素/flash 实现共用，免得每处重写 `d` 长的累加循环。
-///
-/// 归约本身走 [`llm_gemm::matmul::dot_lanes`]——同一个多链点积在 `op` 里只有一份，否则注意力与
-/// 矩阵乘的向量化程度会各自漂移（实测：单链标量归约在 1024×64 注意力上比多链慢 1.4×）。
 fn dot(x: &[f32], y: &[f32], row: usize, col: usize, d: usize) -> f32 {
     llm_gemm::matmul::dot_lanes(&x[row * d..][..d], &y[col * d..][..d])
 }
@@ -108,9 +94,6 @@ fn check_width(d: usize) -> diagnostic::Result<()> {
 }
 
 /// 注意力的一行机器：三个操作数与 K/V 列几何（`cols`、`d`、`√d`），十个入口共用同一份算式。
-///
-/// `cols` 是 K/V 的列数：自注意力时等于序列长 `s`，decode 时等于缓存历史 `hist`。查询行数
-/// 由各入口的循环上界单独给出，不落进这里。
 struct Rows<'a> {
     q: &'a [f32],
     k: &'a [f32],
@@ -158,9 +141,6 @@ impl<'a> Rows<'a> {
     }
 
     /// online（flash）路径的一行：跑一遍 `col` 维护最大值、归一化分母与累加向量。
-    ///
-    /// 累加向量写进调用方传入的 `acc`（先清零再写回），返回归一化分母 `sum`。缓冲由
-    /// [`run_rows`] 预分配复用，避免热路径每行一次堆分配。
     fn online(&self, row: usize, acc: &mut [f32]) -> f32 {
         let mut max = f32::MIN;
         let mut sum = 0.0f32;

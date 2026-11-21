@@ -1,10 +1,4 @@
 //! 协议层基准：`Span::parse` 的四种写法与 `cap::negotiate` 的一次能力协商。
-//!
-//! 两者都是纯 CPU 路径，不起编译器、不碰设备，任意 CI 都能编译与运行。只出实测耗时；
-//! 是否回退由 `tests/regress` 的基线判定负责。
-//!
-//! 写法与用例名放在一张表里：四种写法的字面量只出现一次，装配阶段按同一张表校验，
-//! 测量阶段只搬运 `Result`。
 
 use crate::fixtures::{checked, found};
 use criterion::Criterion;

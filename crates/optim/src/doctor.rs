@@ -1,7 +1,4 @@
 //! `doctor`：把整条流水线的每一步都摊开，包括协商为什么失败（README §16 的可解释性）。
-//!
-//! 它是唯一"全部打印"的命令：头部、证据、逐变体复核、协商、估值、布局、存储与 emit 摘要都能逐行
-//! 对照 README。它不执行内核——"能生成"与"能算对"是两条判据，跑不跑由 `verify` / `bench` 决定。
 
 use crate::build;
 use crate::pipeline::Run;
@@ -133,9 +130,6 @@ pub struct Built {
 }
 
 /// 判据：每一步的产物是什么、协商为什么不行；不回答"跑得对不对"——它不执行内核。
-///
-/// 协商失败不是错误：`doctor` 的职责就是解释"为什么这台设备不行"，因此照样交报告，只是产物为空。
-/// 算子或设备档案不存在、配置读不出来、emit 失败时返回说明。
 pub fn doctor(
     catalogue: &Catalogue,
     dirs: &Dirs,
@@ -280,8 +274,6 @@ pub struct CacheWhy {
 
 impl CacheWhy {
     /// 判据：从未落盘 / 半截落盘 / 命中 / 有差异；不回答"差异在哪一项"（见 [`Self::changes`]）。
-    ///
-    /// 必须先把"半截落盘"分出来：它没有 `source`，逐项差异自然为空，但那不代表命中。
     #[must_use]
     pub fn state(&self) -> CacheState {
         let Some(entry) = &self.entry else {
@@ -312,9 +304,6 @@ pub enum CacheState {
 }
 
 /// 解释一个缓存键：本次构建的键与缓存里那份差在哪几个字段。
-///
-/// 字段名与取值都来自 [`CacheKey::fields`]，缓存侧来自 `meta.txt`——两边是同一份定义，
-/// 所以不需要拿两行拼接文本做人肉 diff。
 #[must_use]
 pub fn why(dirs: &Dirs, current: &CacheKey, hex: &str) -> CacheWhy {
     let entry = Cache::from_dirs(dirs).entry(hex);

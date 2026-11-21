@@ -1,15 +1,4 @@
 //! 生产态设备内核源：一条算子 → 一份后端可编译的设备源（外加派发要用的附加数据）。
-//!
-//! 与 [`super::execute`] 的分工：那里把设备源编译执行并当场对拍，回答"这条算子在这台机器上算得
-//! 对不对"；这里只到"源生成"为止，回答"这条算子该生成哪种内核"，因此本模块不做对拍。
-//!
-//! 入口只有 [`program`]：`(后端, 形态, 形状)` 决定降哪一种内核。17 个按骨架命名的
-//! `metal_*_program` / `cuda_*_program` 曾是同一段 `resolve → 前置判断 → lower → 取段` 的复制，
-//! 厂商名也因此漏进机制层的公开面（`testkit::boundary` 的厂商名基线）。现在厂商只是 [`Backend`]
-//! 的两个取值，语义差异全落在 [`Mode`] 的数据与它自带的前置条件上。
-//!
-//! 前置条件（块几何、签名、形状整除……）的契约写在 [`Lower`] 各变体自己的文档里，这里只判断
-//! "成立与否"：不成立就回落 [`Mode::declared`]，不重复第二遍契约。
 
 use super::{grid_dims, kind, lower_sources, resolve, single_kind};
 use crate::backend::{Lower, TensorGeometry};
@@ -54,9 +43,6 @@ impl Backend {
 }
 
 /// 一次形态产出的设备源 + 派发附加数据。
-///
-/// 段数随形态变（归一化两段、softmax 三段、循环注入附带网格各维），因此不按位置返回元组：
-/// 调用方按角色取名，多段与附加数据不再靠"第几个返回值"约定。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Stages {
     sources: Vec<String>,
@@ -116,9 +102,6 @@ fn pop_one(sources: &mut Vec<String>, role: &str) -> diagnostic::Result<String> 
 }
 
 /// 内核形态：目标 lowering 的来源 + 可选的形状前置条件。
-///
-/// 构造器名说的是**形态**（单源 / 多段 / 逐点 / 分块 / 张量核……），不说厂商：同一形态在两个
-/// 后端上只有方言不同，是同一份语义词。
 #[derive(Debug, Clone)]
 pub struct Mode {
     plan: Plan,
@@ -416,9 +399,6 @@ fn fragment_shape(run: &Run<'_>, m: usize, n: usize, row_frags: usize, col_frags
 }
 
 /// 张量核 GEMM：Gemm 骨架、几何参数成闭集、`M` 被 `tile_m` 整除。
-///
-/// `M` 的整除性是硬约束——`matmul2d` 按整块读 A，尾块会读越界；N 维不必对齐（装载零填、
-/// 写回裁边），K 维不必对齐（末块走 `dynamic_extent`）。线程组内存只随 `tile_n` 增长。
 fn tensor_ready(run: &Run<'_>, m: usize, n: usize, lower: &Lower) -> bool {
     let &Lower::TensorGemm { geometry } = lower else {
         return false;
@@ -446,8 +426,6 @@ fn int8_ready(run: &Run<'_>, m: usize, n: usize, lower: &Lower) -> bool {
 }
 
 /// 签名是不是 int8 GEMM：`(u8 *a, u8 *b, float *y, int M, int N, int K)`。
-///
-/// 按位置核对类型而不是按参数名：ABI 的顺序就是绑定顺序，名字只用于样本取值。
 fn int8_signature(run: &Run<'_>) -> bool {
     let params = run.op.signature.params();
     matches!(params, [a, b, y, m, n, k]

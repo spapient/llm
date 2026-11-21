@@ -1,7 +1,4 @@
 //! 通信后端要实现的东西：[`Collective`]。
-//!
-//! 只有 `all_reduce` 一个方法：它是 TP/DP 的全部需求（`all_gather` / `reduce_scatter` 都能由它
-//! 与切分拓扑组合出来）。后端实现不同，上层调用点不变。
 
 use diagnostic::Result;
 

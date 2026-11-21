@@ -1,7 +1,4 @@
 //! 层计划与族别分流：类型视图（投影/查表）优先，再按算子族别闭集归类等长族。
-//!
-//! 宽度链衔接、驻留权重条目齐备与形状相符都在装配期校验；本模块不出图接线，
-//! 图节点收口在 [`crate::assembly`](crate::assembly)，注意力块子节点在 [`crate::block`](crate::block)。
 
 use diagnostic::{Code, Error, Result};
 use nn::{Contract, Embedding, Linear, MemoryBlock, Shape, WEIGHT_SUFFIX, WeightFormat};
@@ -11,8 +8,6 @@ use crate::kernels::SITE;
 use crate::params::Params;
 
 /// 装配族：决定本层操作数怎么接线（输入路数、是否带驻留权重及权重形状）。
-///
-/// 族别按算子 arity 与权重形态归类，是接线方式的机械分类，不是后端厂商分支。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LayerKind {
     /// 投影：输入向量 + 驻留权重整块 `[out, in]` → 输出向量。
@@ -28,9 +23,6 @@ pub(crate) enum LayerKind {
     /// 位置编码：单路输入 → 等长输出；位置走标量槽（D9 / ADR 0043），无驻留权重。
     Rope,
     /// 条件记忆：主链输入 + 驻留表 `[buckets, width]` + 逐行槽号 → 等长输出（旁路加回）。
-    ///
-    /// 与其他族不同，它**不是单节点**：查表 → 门控缩放 → 加回主链三个节点在
-    /// [`crate::assembly`](crate::assembly) 接线，槽号与门控是宿主每步回填的批表。
     Memory,
 }
 
@@ -52,9 +44,6 @@ impl LayerKind {
 }
 
 /// 算子族别描述：一个算子名集合归到一个装配族。
-///
-/// 类型视图族（投影走 `Linear`、查表走 `Embedding`）不在这张表里——它们由类型化视图优先分流；
-/// 这张表只收按算子名归类的等长族。新增族别在此加一行，plan 构造与链轴规则随 [`LayerKind`] 走。
 struct OperatorFamily {
     kind: LayerKind,
     operators: &'static [&'static str],
@@ -109,9 +98,6 @@ pub(crate) struct LayerPlan {
 }
 
 /// 条件记忆的旁路几何：行宽已进 [`LayerPlan`]，这里只留“查哪一行、加多少”的四个数。
-///
-/// 阶与种子是槽函数的参数，与表槽数一起交给宿主回填槽表——只要有一个不是装配期定的，
-/// 旁路算出的槽就与写表时的槽不是同一个。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct MemorySpec {
     /// N-gram 阶 `N`。
@@ -185,9 +171,6 @@ fn check_chain(prev_out: Option<usize>, plan: &LayerPlan, name: &str) -> Result<
 }
 
 /// 核对驻留权重条目存在且长度符合族别；一元点wise无权重，直接通过。
-///
-/// 期望长度由权重/标度形状元素积派生（形状是唯一事实源）：稠密投影 `in × out`（f32 元素）、
-/// 量化投影打包字节 `out · in/cpb` + 标度 `out · in/group`、归一化 gamma `width`、查表 `vocab × dim`。
 pub(crate) fn check_weight(plan: &LayerPlan, params: &Params) -> Result<()> {
     let Some(entry) = &plan.entry else {
         return Ok(());
@@ -207,9 +190,6 @@ pub(crate) fn check_weight(plan: &LayerPlan, params: &Params) -> Result<()> {
 }
 
 /// 核对一条驻留权重 + 可选标度：稠密按 f32 元素数、量化按打包字节数 + 标度条数。
-///
-/// 标度条目名与标度条数必须同空/同有；只有其一说明标度没成对装载，按 `Missing` 拒绝。
-/// 块内 q/k/v/o 投影与普通投影共用这一份判据，不各写一套长度核对。
 pub(crate) fn check_weight_entry(
     params: &Params,
     entry: &str,
@@ -334,9 +314,6 @@ fn projection_plan(
 /// 投影的驻留权重与标度形状：稠密 `[out, in]` 整块 f32；量化给打包字节
 /// `[out, in/cpb]` 加标度 `[out, in/group]`。每字节码数读 [`op::quant::Row`] 配置表，
 /// 与 `op` 的 GEMV/GEMM/反量化同一事实源（`I4.cpb=2`、`I8.cpb=1`）；分组来自格式声明。
-///
-/// 量化输入宽度必须已被 [`validate_quantized_shape`] 校验为分组的整数倍；这里按精确除法取值，
-/// 不再兜底 `ceil`——声明分组与实际分组漂移的坏形状进不到这一步。
 pub(crate) fn projection_shapes(
     format: WeightFormat,
     in_features: usize,
@@ -356,9 +333,6 @@ pub(crate) fn projection_shapes(
 }
 
 /// 量化投影的整除校验：输入宽度必须是分组宽度（与每字节码数）的整数倍。
-///
-/// 内核按标度条数反推实际分组（`m / (scales/n)`），输入不能被分组整除时，声明分组与实际
-/// 分组会漂移——在装配期直接拒绝，而不是用 `ceil` 凑一个标度条数。
 pub(crate) fn validate_quantized_shape(format: WeightFormat, in_features: usize) -> Result<()> {
     let (cpb, group) = match format {
         WeightFormat::Int4 { group } => (I4.cpb, group),
@@ -401,9 +375,6 @@ fn width_plan(
 }
 
 /// 查表计划：索引序列 + 驻留权重表 `[vocab, dim]` → 行向量块 `[tokens, dim]` 展平。
-///
-/// 输出宽是 `tokens × dim`（`tokens` 个索引各查一行 `dim`）；查表内核由 `out.len() / idx.len()`
-/// 反推行宽，多 token 复用同一行 gather，装配层不按 token 数扇出第二套接线。
 fn embedding_plan(
     layer: &dyn Contract,
     emb: &Embedding,
@@ -425,9 +396,6 @@ fn embedding_plan(
 }
 
 /// 条件记忆计划：主链宽度不变，驻留条目是表 `[buckets, width]`，输出与输入等宽。
-///
-/// 首层直接拒绝：旁路要加回的是**主链上已有的隐向量**，没有主链就没有可加的东西；把它当
-/// “恒等 + 记忆”跑起来会让整段容量投在零向量上而不报错。
 fn memory_plan(
     layer: &dyn Contract,
     memory: &MemoryBlock,

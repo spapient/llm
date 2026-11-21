@@ -45,10 +45,6 @@ pub const LOCAL_MIN: usize = 6;
 pub const LOCAL_MAX: usize = 9;
 
 /// 一层：q / k / v / o 四张行主序方阵，宽度由使用它的栈校验。
-///
-/// `Layer` 不知道自己有多大——宽度属于**栈**（同一个 `width` 要同时对上列宽、残差与输出投影），
-/// 于是校验只有一处（[`Global::new`] / [`Backread::new`]），不会出现「层说宽 4、栈按宽 8 用」这种
-/// 只在乘法里才对不上的状态。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Layer<S: Scalar = f32> {
     q: Vec<S>,
@@ -107,9 +103,6 @@ impl<S: Scalar> Layer<S> {
 }
 
 /// patch 序列上的全局 transformer：块表因果自注意力 + 残差，一层接一层。
-///
-/// 输入是 `[patch, width]` 的列，输出同形。行数即遍数——这是 §5.17 把「按 patch 前向」和「按字节前向」
-/// 分开的那一层；层内不做前馈与归一化（它们在装配侧），于是这里能测的性质只有一条：**因果成立**。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Global<S: Scalar = f32> {
     width: usize,
@@ -148,8 +141,6 @@ impl<S: Scalar> Global<S> {
     }
 
     /// 只留每行分数最高的 `topk` 个槽（CSA 的那条压缩轴）；`None` 是全留。
-    ///
-    /// 阈值掩码而不是重排：掩掉的槽权重为零，槽序不变，于是「分数与值错配」这种错不可能出现。
     #[must_use]
     pub fn with_topk(mut self, topk: Option<usize>) -> Self {
         self.topk = topk;
@@ -215,10 +206,6 @@ impl<S: Scalar> Global<S> {
 }
 
 /// 字节侧的逆向 cross-attention 栈：每个字节回读「自己所在 patch 及更早」的表示。
-///
-/// 层数是闭集 [`LOCAL_MIN`]..=[`LOCAL_MAX`]（BLT 的 local decoder 是 6–9 层）。查询是字节自己的状态，
-/// 键值是本 patch 与更早 patch 的表示——与 [`Global`] 的方向相反：那里是 patch 读 patch，这里是字节读
-/// patch。残差使零权重成为恒等，于是「这一层到底读了什么」可以用差分测出来，不必靠注释承诺。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Backread<S: Scalar = f32> {
     width: usize,
@@ -281,9 +268,6 @@ impl<S: Scalar> Backread<S> {
     }
 
     /// 入口几何：表示一行一个 patch、本地向量一行一个字节，宽度由栈给出。
-    ///
-    /// 两处长度都先算成应有的值再比较：`glyph_stride` 只求一次，报错文案里也就不会再问一次（那里
-    /// 再问一次等于把同一份算式写成两处，且第二次还可能以同样的错因失败）。
     fn check(&self, reps: &[S], glyphs: &[S], patches: &Patches) -> Result<()> {
         let visible = rows(reps.len(), self.width)?;
         if visible != patches.len() {

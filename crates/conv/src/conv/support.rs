@@ -136,8 +136,6 @@ pub(crate) fn in_bounds(ii: isize, jj: isize, h: usize, w: usize) -> bool {
 }
 
 /// f32/i8 共用的 im2col：行 = `(n, oh, ow)`，列 = `(kh, kw, cin)`。
-///
-/// 行块之间互不重叠，直接按行切给线程；小矩阵不并行（一次 `scope` 的固定开销会超过拷贝本身）。
 pub(crate) fn im2col2d<T: Copy + Send + Sync + Default>(
     x: &[T],
     col: &mut [T],

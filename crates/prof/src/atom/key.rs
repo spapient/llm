@@ -1,10 +1,6 @@
 use super::*;
 
 /// 一条内核实现的登记键（ADR 0027 §1 七元组）。
-///
-/// 选择只走档案见证过的能力闭集；`algorithm` 与 `block` 是登记标签，不进热路径 `match`（ADR 0027
-/// 中性段）。P0/P1 句柄是 prim 片段文本 + 档案见证入口；P3 由独立后端边界 crate 挂设备内核，
-/// 本结构只承载身份，不持有可执行句柄。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct KernelKey {
     /// 原语闭集。

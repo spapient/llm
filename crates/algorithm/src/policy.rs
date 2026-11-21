@@ -1,8 +1,4 @@
 //! `π_t` / `γ_t` 因果决策律（§1.6，`O(1)`，I/II）。
-//!
-//! 特征只许用 `t` 及以前的量（与 M11 同一因果）：`ρ_t` 最近 `W` 步块表未命中率、`ν_t = n_t/n_ref`、
-//! `σ_t` 输入稀疏度。门控 `π_t = clip(ρ_t + (1+ν_t)⁻¹)`、`γ_t = clip(σ_t)`。短上下文或未命中抬 π
-//! 走 α 检索；输入稀疏抬 γ 走事件臂语义（IEEE 上编码仍恒等）。
 
 use std::collections::VecDeque;
 
@@ -87,10 +83,6 @@ impl Channel {
 }
 
 /// 一步的门控结果：合成系数与主导通道。
-///
-/// 系数 `((1−γ)π, (1−γ)(1−π), γ)` 是 §1.5 的单位剖分；通道只是它的 argmax，回答"这一步走哪条
-/// 路"，不替代合成——前向永远走 [`Gating::mix`] 的全合成，通道决定的是**该准备哪条路的输入**
-/// （是否查块表、是否查记忆、是否切事件臂）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Gating<S: Scalar = f32> {
     pi: S,
@@ -149,10 +141,6 @@ fn dominant<S: Scalar>(weights: [S; 3]) -> Channel {
 }
 
 /// 在线未命中率：最近 [`W`] 步块表未命中的因果窗口（`ρ_t`）。
-///
-/// §1.6 只给了 `ρ_t` 的定义（最近 `W` 步的未命中率），没给更新律；这里就是那条更新律：每步报告
-/// 一次"这一步命没命中块表"，窗口滑一格，超过 `W` 丢最旧的一步。窗口空时 `ρ_t = 0`——没有证据
-/// 就不因未命中抬 `π`，`π` 只由 `ν_t` 决定。
 #[derive(Debug, Clone)]
 pub struct MissRate {
     misses: VecDeque<bool>,
@@ -199,11 +187,6 @@ impl Default for MissRate {
 
 mod decision {
     //! `DecisionHead`：唯一门控实现（§1.11）。
-    //!
-    //! 输入是候选上的分数，输出是该集合上的分布。MoE 专家、题目选项、层间路由都是这个集合；随后的
-    //! TopK 只调用 L0（不在本模块）。默认校准名 `spherical`；`softmax` / `temperature` / `brier` 只在
-    //! 同一端口注册后才能被配置点名，未注册名字启动失败。§1.6 的 clip 公式不是第二个模块，而是
-    //! `head_layers = 0`（逐 token 默认）时的特征组合。
 
     use op::scan::Scalar;
 
@@ -283,8 +266,6 @@ mod decision {
     }
 
     /// Brier 严格适当评分：`B = (1/K) Σ (pᵢ − yᵢ)²`，`y` 为目标 one-hot（`target` 为命中下标）。
-    ///
-    /// 与 `spherical` 同属严格适当评分族，注册在 `DecisionHead` 的同一端口（§1.11）。
     pub fn brier<S: Scalar>(p: &[S], target: usize) -> S {
         debug_assert!(target < p.len());
         if p.is_empty() {

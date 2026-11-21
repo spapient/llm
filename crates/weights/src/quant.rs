@@ -1,24 +1,4 @@
 //! 量化：磁盘方案描述符 + 权重/标度成对推断。
-//!
-//! - [`Quant`]：显式仿射方案（`x ≈ scale · q + zero`），分组、零点与标度类型都是文件里的事实；
-//!   `axis == rank` 表示 per-tensor（单个标度，不沿任何真实轴），此时 `block` 必须为 0。
-//! - [`Quantized`]：打包权重 + 每个分组一个标度因子的成对结构；分组由标度条目形状推出。
-//!
-//! 真实的 4 位量化 checkout 里，一个投影张量**从不成对出现**：权重按 4 位打包，另有一个标度条目
-//! 存"每 `group` 个元素共享的缩放因子"。分组因此不是猜出来的，而是从标度条目的形状推出来的。
-//!
-//! `group = in / groups`。这条推断有两条硬约束，缺一条就不是"同一个东西"：
-//!
-//! 1. 打包权重必须是秩 2，标度必须是秩 2，且两者的输出维相等；
-//! 2. 标度的第二维必须整除输入维（`in % groups == 0`），否则 `group` 不是整数。
-//!
-//! 曾经想要的第三条是"字节数必须等于 `out × ceil(in / 2)`"，但它在本层是**结构性自证**的：
-//! [`Entry`] 的长度由 `shape × dtype` 推出，safetensors 又要求声明区间等于这个乘积，所以任何
-//! 从 [`Header`] 构造出来的条目都自动满足它——在这里再比一次，等于拿一个值与自己比。
-//!
-//! 8 位条目到底是"逐元素 int8"还是"两个 nibble 一个字节"，由元素类型的**符号性**分流：
-//! [`DType::I8`] 是逐元素有符号字节，第二维就是元素数；[`DType::U8`] 是无符号字节，一个字节
-//! 两个 nibble，第二维是字节数、宽度翻倍。分组仍由标度条目形状推出，weights 不认识算子分组档。
 
 use crate::bad;
 use diagnostic::{Code, Error, Result};
@@ -157,8 +137,6 @@ fn read_types(cur: &mut Cursor<'_>, zero: bool) -> Result<(Wire, Option<Wire>)> 
 // —— 权重/标度成对推断 ——
 
 /// 一次量化推断的结果：打包权重、它的标度条目与推出的分组。
-///
-/// 三个字段都是借用：推断不复制字节，也不缓存结论——缓存会让"改了一份权重再读"变成隐式状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Quantized<'a> {
     weight: &'a Entry,
@@ -184,10 +162,6 @@ impl<'a> Quantized<'a> {
     }
 
     /// 逻辑输入宽度（元素数）。
-    ///
-    /// **不要从 [`Quantized::weight`] 的形状里读这个数**：`U8` 打包条目的第二维是字节数（一个字节
-    /// 两个 nibble），`I8` 逐元素条目的第二维就是元素数。宽度与分组必须由同一处给出，否则会出现
-    /// "分组按 128 个元素算、宽度按 64 个元素算"的错配——那种错不会报错，只会把下界算成真值的一半。
     pub fn in_features(&self) -> usize {
         self.in_features
     }
@@ -269,10 +243,6 @@ fn scales_candidates(name: &str) -> Vec<String> {
 }
 
 /// 由一对条目推出分组：形状自相矛盾就报错，不是 4 位量化就返回 `None`。
-///
-/// 输入宽度不是直接读第二维：`U8` 打包条目的第二维是字节数（一个字节两个 nibble），`I8` 逐元素
-/// 与 `U4` 解包视图的第二维才是元素数。这条换算不是约定，是"safetensors 要求 `shape × dtype` 的
-/// 字节数等于声明区间"的直接后果：想用无符号字节表达 4 位打包，就只能把形状按字节写。
 fn analyze<'a>(weight: &'a Entry, scales: &'a Entry) -> Result<Option<Quantized<'a>>> {
     let context = format!(
         "量化条目 `{}` 与它的标度 `{}`",
@@ -294,8 +264,6 @@ fn analyze<'a>(weight: &'a Entry, scales: &'a Entry) -> Result<Option<Quantized<
 }
 
 /// 形状与类型口径：两个条目都必须是秩 2、输出维相等，标度必须是浮点。
-///
-/// 返回 `(权重第二维, 标度分组数)`；`None` 表示这是**另一种**方案（整数标度），不猜。
 fn dims(weight: &Entry, scales: &Entry, context: &str) -> Result<Option<(usize, usize)>> {
     let [out, second] = rank2(weight, "打包权重必须是秩 2（out × in）", context)?;
     let [scaled_out, groups] = rank2(scales, "标度必须是秩 2（out × 分组数）", context)?;

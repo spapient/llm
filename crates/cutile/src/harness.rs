@@ -1,9 +1,4 @@
 //! 被测内核的宿主 C 基准封装：把一份 `.k` 内核与样本拼成可计时的 `main()`。
-//!
-//! 计量口径见 README §12.1：单调时钟取样（POSIX 或 Windows）、warmup 不计入，批量校准在 C 侧、`min`/`p50` 在 Rust 侧。
-//! 样本由 `op::model` 给出、实参顺序由 `op::sig` 给出：本模块只按名字与类型把缓冲渲染成 C 数组，
-//! 不认识任何算子。Metal / CUDA 的语义对拍方言与生产态 lowering 已搬到 `engine`（L6），cutile 只留
-//! 这条宿主 C 参考车道与签名/样本渲染原语（后者也供 `engine` 的 vendor 后端复用）。
 
 use diagnostic::{Code, Error};
 use op::model::{Sample, Values};

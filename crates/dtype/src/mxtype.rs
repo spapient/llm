@@ -39,10 +39,6 @@ use crate::format::impl_serde;
 use crate::format::{BlockFormat, Format, impl_from_str};
 
 /// 一个 MX 元素格式的身份：规范名、Rust 变体名、位宽与标量对应。
-///
-/// 四者都必须显式声明：位宽不能从名字推出（`E2M1` 是 4 位，但 `Int8` 的 8 与
-/// 尾数/指数切分无关），而「有没有标量对应」是身份而非布局——所以和 [`MxType`] 的
-/// `SPECS` 一样，一行一个元素，位宽与映射都读这一行。
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub struct ElementSpec {
     /// 规范小写名（`e2m1`），用于档案与诊断。
@@ -56,8 +52,6 @@ pub struct ElementSpec {
 }
 
 /// MX 元素格式闭集（低精度浮点或整数），决定元素的位宽与指数/尾数切分。
-///
-/// 变体顺序与 [`Element::ALL`]、内部 `ELEMENT_SPECS` 表一致；`repr(u8)` 让判别值即行表下标。
 #[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 #[cfg_attr(
@@ -155,18 +149,12 @@ impl Element {
     }
 
     /// 由规范名还原；未知名字返回 `None`。
-    ///
-    /// 转调 [`Format::parse_name`]：解析的写法只有一份，inherent 这个方法只负责路径调用。
     #[must_use]
     pub fn parse_name(text: &str) -> Option<Self> {
         <Self as Format>::parse_name(text)
     }
 
     /// 对应的标量元素类型；MX 专有的 6 位格式没有标量对应，返回 `None`。
-    ///
-    /// `E2M1`/`E4M3`/`E5M2`/`Int8` 与 [`DType::F4`]/[`DType::F8E4M3`]/[`DType::F8E5M2`]/
-    /// [`DType::I8`] 是同一批格式的两个名字；`E2M3`/`E3M2` 没有对应的 Rust 标量类型，
-    /// 与 [`crate::QType::bits`] 的取舍相同：不对应就明说 `None`，不在下游另写一份映射。
     #[must_use]
     pub const fn dtype(self) -> Option<DType> {
         self.spec().dtype
@@ -240,10 +228,6 @@ pub struct MxTypeSpec {
 }
 
 /// 微缩放格式闭集：OCP MX 六个标准格式 + NVFP4 厂商扩展。
-///
-/// 变体顺序与 [`MxType::ALL`]、内部 `SPECS` 表一致；新增格式只能追加在末尾。
-///
-/// `repr(u8)` 让「判别值 = 行表下标」成为类型保证，`SPECS[self as usize]` 不会越界。
 #[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 #[cfg_attr(
@@ -264,10 +248,6 @@ pub enum MxType {
     /// MXINT8：8 位整数、块 32、E8M0 scale。
     MxInt8,
     /// NVFP4：4 位 E2M1 元素、块 16、E4M3 微块 scale + FP32 每张量 scale（NVIDIA 厂商扩展）。
-    ///
-    /// 这里是 NVIDIA 原生的 16 元素微块（9 字节）。GGML 的 `QK_NVFP4=64` 把 4 个微块拼成
-    /// 一块（4×9=36 字节），所以本格式在 64 元素上算出的 `bytes_for` 正好也是 36，
-    /// 两种粒度不冲突。
     NvFp4,
 }
 
@@ -339,8 +319,6 @@ impl MxType {
     blocked_accessors!(SPECS, MxTypeSpec);
 
     /// 由规范名还原；未知名字返回 `None`。
-    ///
-    /// 转调 [`Format::parse_name`]：解析的写法只有一份，inherent 这个方法只负责路径调用。
     #[must_use]
     pub fn parse_name(text: &str) -> Option<Self> {
         <Self as Format>::parse_name(text)

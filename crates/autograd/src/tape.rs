@@ -1,7 +1,4 @@
 //! 反向图的记录：[`Tape`] 按前向顺序追加节点，并可把 loss 的计划写进一个可复用的 [`Schedule`]。
-//!
-//! 编号是稠密的 `u32`，所以"需求 / 深度 / 生产者"都是平行数组上的一次下标，没有哈希；
-//! 新增一个节点是均摊 O(输入数)，已有节点一律不动。
 
 use std::sync::Arc;
 
@@ -141,9 +138,6 @@ impl Tape {
     }
 
     /// 整图审计：逐个节点复核输入存在、算子名非空、声明的需求与输入相容。
-    ///
-    /// 记录时这些校验已经逐条做过；本方法给"拿到一张外部拼出来的图"一个统一的复核入口，
-    /// 失败时上下文里带上出问题节点的编号与算子名，而不是等到反向中途才报错。
     pub fn validate(&self) -> Result<()> {
         for node in self.nodes() {
             self.checked(node.op(), node.inputs(), node.requirement())
@@ -196,8 +190,6 @@ impl Tape {
     }
 
     /// 为 `loss` 生成反向调度：只含可达节点，按深度降序排列。
-    ///
-    /// 每次调用都会新建一个 [`Schedule`]；训练循环里要复用缓冲请用 [`Tape::plan_into`]。
     pub fn backward(&self, loss: Var) -> Result<Schedule> {
         let mut schedule = Schedule::default();
         self.plan_into(&mut schedule, loss)?;

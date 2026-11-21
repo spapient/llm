@@ -1,6 +1,4 @@
 //! `classic` 的卷积层族：Conv1d/Conv2d 与转置卷积。
-//!
-//! 规格、`Contract` 实现与形状校验在本文件内闭环；共用校验留在父模块。
 
 use super::*;
 

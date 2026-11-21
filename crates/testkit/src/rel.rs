@@ -1,18 +1,8 @@
 //! 整批相对误差口径：一个全局分母下的最大误差、失败读数与阈值投影。
-//!
-//! 内核 vs 标量参考的整批对拍走这里——[`max_rel_err`] 与 `cutile::reference` 同一口径，只有
-//! 一个全局分母，答的是「整批数合在一起差多少」，不是逐元素各算各的；逐元素与方向判据在
-//! [`crate::compare`]，两者不可混用。
-//!
-//! 对拍失败时不要停在布尔值上：[`rel_err`] 回一份读数（误差、分母、最差元素），
-//! [`assert_within_rel`] 直接把这三样写进 panic 消息，门禁用例应当用它。
 
 use crate::compare::close_scalar;
 
 /// 误差最大的那个元素：`index` 是它在切片里的下标，`got` / `want` 是两边的原值。
-///
-/// 对拍失败时先看这一个点：整批的判据是「一个分母下的最大误差」，它一定落在某个元素上，
-/// 报出下标与两侧取值才能区分「某一路写错了」与「整体精度差一点」。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Worst {
     /// 元素在切片里的下标。
@@ -24,9 +14,6 @@ pub struct Worst {
 }
 
 /// 一次整批对拍的读数：[`RelErr::ratio`] 是判据本体，其余字段只为失败时定位。
-///
-/// 与 [`crate::compare::close`] 的逐元素预算不同，这里只有**一个**分母（`want` 的最大绝对值），所以它答的是
-/// 「整批数合在一起差多少」这一个数，而不是逐元素各算各的——这正是内核对拍要的那条判据。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RelErr {
     /// 最大绝对误差 `max|got − want|`（分母另存 [`RelErr::scale`]）。
@@ -42,10 +29,6 @@ pub struct RelErr {
 
 impl RelErr {
     /// 判据本体：`err / scale`，即 `max|got − want| / max|want|`。
-    ///
-    /// 长度不等或非有限值分类不一致时为 [`f64::INFINITY`]：那是「不是同一批数」，不是
-    /// 「误差很大」，两者在报告里必须能分开。`want` 全零时退化为绝对误差：分母为零的相对
-    /// 误差没有定义，报无穷会把「参考恰为零」误读成「对不上」。
     #[must_use]
     pub fn ratio(&self) -> f64 {
         if self.mismatched || self.scale == 0.0 {
@@ -63,14 +46,6 @@ impl RelErr {
 }
 
 /// 分母策略：判据 `|got − want| / 分母` 里的「分母」按哪条规矩取。
-///
-/// 两条口径相差的**只有分母**，其余（长度、非有限值定性、最差元素定位）逐字相同：
-///
-/// - [`Scale::Batch`]：整批最大参考幅度 `max|want|`，与 `cutile::reference` 同一口径。
-///   量级本身有意义时用它，但参考整体远小于 1 时会把绝对值上的小差放大成大相对误差。
-/// - [`Scale::Unit`]：每元素 `max(|want|, 1)`，给「参考自然小于 1」的输出留 1 的绝对地板
-///   （累加出来的、量级极小的注意力输出就是这一类）。它**不是**更松的那一版：参考幅度大于 1
-///   时它对小元素反而更严。选哪条由被测输出的量级决定，不是由「想不想过」决定。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scale {
     /// 整批最大参考幅度。
@@ -91,9 +66,6 @@ impl Scale {
 }
 
 /// 整批对拍的读数：最大误差、分母与它落在哪个元素上。
-///
-/// [`max_rel_err`] 只回一个数，是这里 [`RelErr::ratio`] 的投影；需要报「差在哪」时用本函数。
-/// 分母按 [`Scale::Batch`] 取——这与 `cutile::reference` 是同一条判据。
 #[must_use]
 pub fn rel_err(got: &[f32], want: &[f32]) -> RelErr {
     rel_err_with(got, want, Scale::Batch)
@@ -142,8 +114,6 @@ fn pairing_agrees(got: f32, want: f32) -> bool {
 }
 
 /// 单元素读数 `(判据值, 绝对误差, 分母, 该元素)`；逐元素相等时为 [`None`]（不占最差点）。
-///
-/// 分母为零（整批参考全零）时判据退化为绝对误差——与 [`RelErr::ratio`] 是同一处兜底。
 fn element_reading(
     index: usize,
     got: f32,
@@ -159,9 +129,6 @@ fn element_reading(
 }
 
 /// 长度已校验后的累加：第一处非有限值不一致立刻定论，否则取判据值最大的元素。
-///
-/// 非有限值不能直接进累加：NaN 会被 `max` 当缺席，漏报成「对上了」，所以逐对先定性。
-/// 对上号的两侧同为 NaN / 同号 Inf 时差值是 NaN，天然不计入误差也不占最差点。
 fn tally(got: &[f32], want: &[f32], scale: Scale, batch: f64) -> RelErr {
     let mut report = RelErr {
         err: 0.0,
@@ -193,9 +160,6 @@ fn tally(got: &[f32], want: &[f32], scale: Scale, batch: f64) -> RelErr {
 }
 
 /// 全局相对误差：`max|got − want| / max|want|`，与 `cutile::reference::max_rel_err` 同一口径。
-///
-/// 放在夹具层是为了让跨层测试不必为了这一个数字去依赖 `cutile`；两条实现由
-/// `tests/oracle.rs` 逐位钉死，改任一侧的口径都会在那里红。
 #[must_use]
 pub fn max_rel_err(got: &[f32], want: &[f32]) -> f64 {
     rel_err(got, want).ratio()
@@ -209,9 +173,6 @@ pub fn assert_within_rel(got: &[f32], want: &[f32], tolerance: f32, what: &str) 
 
 /// 指定分母策略的对拍断言：不通过时 panic，并把「差在哪」写进消息——判据读数、最差元素的
 /// 标号与两侧取值、以及用的是哪条分母。通过时什么也不做。
-///
-/// 门禁用例应当用它而不是 `assert!(within_rel(..))`：断言只留下一句「false」，而数值对拍
-/// 的失败几乎总要追问「第几个元素、差多少、是不是整体精度不够」。
 #[track_caller]
 pub fn assert_rel_with(scale: Scale, got: &[f32], want: &[f32], tolerance: f64, what: &str) {
     let report = rel_err_with(got, want, scale);
@@ -264,9 +225,6 @@ fn complaint(
 }
 
 /// 全局相对误差是否在阈值内：`max_rel_err(got, want) <= tolerance`。
-///
-/// [`max_rel_err`] 的布尔投影，与 `cutile::reference::within` 对应，但不绑定具体数据类型——
-/// 阈值由调用方按精度自定。
 #[must_use]
 pub fn within_rel(got: &[f32], want: &[f32], tolerance: f32) -> bool {
     within_ratio(got, want, f64::from(tolerance))

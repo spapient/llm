@@ -1,10 +1,5 @@
 //! 构建期共享内核：把“扫描语料 → 读取 TOML → 展开成 [`data`](crate::data) 构造表达式”
 //! 三段各 crate `build.rs` 重复的逻辑收敛到一处。
-//!
-//! 本模块只在 `build` feature 下编译，**不进入运行时**：默认 feature 仍是纯 std、零依赖，
-//! 运行期依旧没有任何 TOML 解析器（ADR 0022）。所有失败都以 [`Result`] 返回，由构建脚本
-//! 决定如何 panic——本模块不出现 `panic!` 或裸 `unwrap`，与仓库“错误即值”的纪律一致。
-//! 这里也不决定语料放在哪、外层如何包装，只提供四个正交的纯函数。
 
 use crate::{Code, Error, Result};
 use core::fmt::Write as _;
@@ -52,8 +47,6 @@ pub fn read(path: &Path) -> Result<toml::Table> {
 }
 
 /// 把一张 TOML 表展开成 `Table::from_pairs(vec![…])` 表达式。
-///
-/// `path` 是当前表的点号路径，仅用于在非法值（非有限浮点、日期时间）的错误里定位。
 pub fn emit(table: &toml::Table, path: &str) -> Result<String> {
     Ok(format!("Table::from_pairs({})", pairs(table, path)?))
 }

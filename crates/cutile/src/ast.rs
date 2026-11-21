@@ -1,9 +1,4 @@
 //! 单 kernel 级结构化 AST（ADR 0017 的 L1）。
-//!
-//! 这是模板渲染的**可见中间产物**：词法片段先提升成拥有所有权的节点序列（[`Node`]），再由 [`render`]
-//! 打印回文本。节点只对应模板级结构（文本 / 槽位 / 原语调用），不解析 C 语句本身——原语片段仍以文本
-//! 挂在 [`PrimCall::body`] 上。[`encode`] 给出确定性编码作为缓存指纹输入，不依赖 `Debug` 格式。
-//! 单一路径：`substitute::render` 就是 [`build`] + [`render`] 的薄包装，没有第二套字符串实现。
 
 use crate::decl::{OpDecl, TileCombo};
 use crate::substitute::{self, Arg, FragmentSet, Segment, error, lex};
@@ -191,8 +186,6 @@ fn resolve_slots(
 }
 
 /// 把节点序列打印回源文本：[`substitute::render`] 就是 [`build`] + 本函数的薄包装。
-///
-/// 原语片段是语句块，模板已提供 `;`：这里去掉重复终结符，并按调用点当前缩进对齐多行片段。
 #[must_use]
 pub fn render(nodes: &[Node]) -> String {
     let mut text = String::new();
@@ -207,8 +200,6 @@ pub fn render(nodes: &[Node]) -> String {
 }
 
 /// 节点序列的确定性规范编码（缓存指纹输入）。
-///
-/// 每个节点一行，前缀区分种类，字段经 `escape` 转义，换行、反斜杠与分隔符都不会产生歧义。
 #[must_use]
 pub fn encode(nodes: &[Node]) -> String {
     let mut out = String::new();

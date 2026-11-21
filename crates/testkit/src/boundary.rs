@@ -1,13 +1,4 @@
 //! 层边界规则：错误边界、厂商名归属、unsafe 岛与设备后端装配。
-//!
-//! 四条规则都是「某一层不得越过某条线」，靠源码文本与白名单核对：
-//!
-//! - 错误边界不得退回字符串（L7 直接调用的层必须持有错误类型）；
-//! - 厂商名只许出现在后端实现层（`device`），机制层（`cutile`）只持 `Backend` 缝；
-//! - `allow(unsafe_code)` 只许出现在 ADR 0035 §6 列出的越界岛；
-//! - 设备后端注册必须在**产品路径**上装配，不能只活在测试里。
-//!
-//! 白名单都写成常量表：加一条要有据可依，删一条要真删干净（过期条目本身就是判据失败）。
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -17,22 +8,11 @@ use crate::architecture::{
 use crate::ownership::{is_public_definition, public_item_name};
 
 /// 允许用 `String` 做**消息片段**的文件（不是"允许用 `String` 报错"）。
-///
-/// 现在是空的：唯一一份"把失败原因写成字符串"的实现是手写 TOML 解析器，它随 ADR 0022 一起
-/// 删除（语料改在构建期解析）。留着这张表是为了让下一条同类豁免有地方登记，而不是散在断言里。
 pub(crate) const MESSAGE_FRAGMENTS: &[&str] = &[];
 
 /// 错误边界不得退回字符串（`docs/ARCHITECTURE.md` 第三节）：凡是被 L7 直接调用的层——数据层
 /// （`op` / `prof` / `prim`）、内核层（`cutile`，含 `report`）——失败类型必须是
 /// `diagnostic::Error`，否则类别与退出码就失去了来源。
-///
-/// 扫描集**从层表派生**，不手写目录名：手写的清单在成员被合并或删除后会指向不存在的目录，
-/// 而 [`rust_files`] 对不存在的目录返回空——那会让本测试在"少扫一个成员"时静默通过。
-/// 反过来，层表里每个成员都必须扫出至少一个文件，否则同样失败。
-///
-/// 扫描的是"`Result<…, String>`"这一形态本身，不是某个函数：新加的函数同样被覆盖。
-/// 豁免表 [`MESSAGE_FRAGMENTS`] 现在是空的：随着手写 TOML 解析器删除，最后一处"把失败原因
-/// 写成字符串"的实现也没有了。
 #[test]
 pub(crate) fn the_error_boundary_does_not_fall_back_to_strings() {
     let contract = contract();
@@ -87,10 +67,6 @@ pub(crate) const VENDORS: [&str; 8] = [
 ];
 
 /// 越界岛白名单：`docs/adr/0035-unsafe-ffi-boundary.md` §6 的表格，路径 → `allow(unsafe_code)` 条数。
-///
-/// 三个逻辑岛：storage 的 mmap、device 的 Metal FFI、`op` 的 CPU 微内核。最后一个跨五个文件
-/// （`fast.rs` 拆成目录后按微内核族分落），是同一个 P1 待搬出的欠账岛：拆文件时每个微内核各自
-/// 重建切片，总数由 17 涨到 21，这属于要往下削的重复而不是新增许可。
 pub(crate) const UNSAFE_ISLANDS: &[(&str, usize)] = &[
     ("crates/device/src/metal/executor.rs", 1),
     ("crates/gemm/src/fast/i8.rs", 8),
@@ -101,9 +77,6 @@ pub(crate) const UNSAFE_ISLANDS: &[(&str, usize)] = &[
 ];
 
 /// 文档正文点名的 `crate::名字` 必须在源码里真的存在。
-///
-/// 三张契约表由 `cargo metadata` 守着，但正文里的引用没人管：模块改名或删掉后，
-/// `device::metal_pipeline` 这类引用可以一直指向一个不存在的名字，而门禁全绿。
 #[test]
 pub(crate) fn the_document_names_only_existing_items() {
     let (members, _) = workspace();
@@ -123,11 +96,6 @@ pub(crate) fn the_document_names_only_existing_items() {
 }
 
 /// 厂商名不得出现在机制层的公开面上：`cutile` 只持 `Backend` 缝，厂商实现归 L6（`device`）。
-///
-/// 判据是**公开项的名字**，不是"文件里出现过厂商字面量"——`device` 正是该写 `metal_*` / `cuda_*`
-/// 的那一层，因此豁免。`cutile` 原先那 17 个按厂商命名的 `*_program` 已收成一个泛型入口
-/// （`execution::program`，后端与形态作参数），基线随之清空。基线现在必须为空：新增厂商名
-/// 就报"多出"，与源码不同步的残留就报"过期"，两个方向都卡住。
 #[test]
 pub(crate) fn the_mechanism_layer_exposes_no_vendor_names() {
     let (members, _) = workspace();
@@ -165,10 +133,6 @@ pub(crate) fn the_mechanism_layer_exposes_no_vendor_names() {
 }
 
 /// `allow(unsafe_code)` 只允许出现在 ADR 0035 §6 列举的越界岛里。
-///
-/// 原先这张表只活在 ADR 正文里：`op::fast` 的 17 处越界（`fast.rs` 14 处 + `fast/pool.rs` 3 处）
-/// 既不在 §2 的禁令豁免里、也不在 §1 的 FFI 类别里，却能长期存在——因为没有任何东西比对
-/// "允许集"与"实际集"。
 #[test]
 pub(crate) fn unsafe_islands_are_the_ones_the_adr_lists() {
     let mut found = BTreeMap::new();
@@ -207,14 +171,6 @@ pub(crate) fn unsafe_islands_are_the_ones_the_adr_lists() {
 }
 
 /// 设备后端必须在**产品路径**上装配，不能只活在测试里。
-///
-/// 上一轮的形态是：`device::backends::install()` 只出现在 `crates/cli/tests/` 里，于是
-/// `llm run --device cuda` 把"没装配"报成"本机没有 cuda 后端"，而门禁全绿。
-///
-/// 装配点有两类，各自要有一条：`llm` 二进制的 `main` 只转调 `llm_cli::entry`，装配在库入口
-/// 那一处；`cutile` 的 `main` 不经过 `llm_cli::entry`，得自己装配。任何一处缺 `install()`，
-/// 用户拿到的都是“本机没有该后端”，而不是“装了没生效”。判据按**入口形态**认，不预设目录：
-/// 二进制入口从 `src/bin/` 平铺回 `src/` 之后，硬编码的路径会让门静默扫不到东西。
 #[test]
 pub(crate) fn the_device_backends_are_installed_on_the_product_path() {
     let mut entries = 0;

@@ -1,7 +1,4 @@
 //! 编译、执行与回读原语：把源文本编成可执行文件、跑一遍、把 stdout 位模式与 stderr 计时样本解出来。
-//!
-//! 编译产物可以落进缓存（`cutile::cache`）：命中时整步跳过，没有编译器也能跑已验证产物。这里不认识
-//! 算子，也不生成程序文本——那是 `cutile::harness` 与 `crate::device` 的职责。
 
 use cutile::dirs::Dirs;
 use cutile::prof::Profile;
@@ -108,10 +105,6 @@ pub fn compile_flags(profile: &Profile, dirs: &Dirs) -> diagnostic::Result<Vec<S
 }
 
 /// 把一份源文本交给 `tool` 编译成可执行文件，返回产物路径。
-///
-/// 源文本落在 `dir/kernel.c`、产物落在 `dir/kernel`：两者同目录，调用方给的 `dir` 就是这次
-/// 编译的临时作用域（[`driver::scratch`]）。编译失败不回退到解释执行——失败是声明/模板/片段里
-/// 写不对，类别归 invalid，诊断带完整命令行与输出。
 pub fn compile(
     tool: &str,
     flags: &[String],
@@ -236,10 +229,6 @@ mod tests;
 
 pub mod driver {
     //! 编译 / 执行 / 回读的共享机制原语：装载见证源、拼程序文本、起子进程、解码回读。
-    //!
-    //! 这是 cutile 的「机制」层，不认识任何设备厂商：C 宿主参考后端（`crate::device`）与
-    //! `engine` 里的 Metal / CUDA 后端都从这取同一套原语，避免三段后端各写一份「写文件 / 起进程 /
-    //! 解回读」。厂商差异只落在「源文本怎么拼」与「哪条工具链来编」，不进这层。
 
     use crate::backend::Readback;
     use crate::witness::Selected;

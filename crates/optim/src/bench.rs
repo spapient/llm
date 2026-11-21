@@ -1,8 +1,4 @@
 //! `bench`：量一次，并把它折成"达成率"这个可判定的数（README §12.3）。
-//!
-//! 它不产生新证据：计时之前必须已有见证，[`Bench::proven`] 记录跑通了几条，没有证据的能力不进入
-//! 计时。达成率按 `p50` 而非 `min`——单次抖动与 CPU 频率状态会把 `min` 抬成"最好情况"，那不是这条
-//! 判据要回答的问题；工作集装得下缓存时测到的是缓存带宽而不是主存峰值，判定时被排除。
 
 use crate::backend::Lower;
 use crate::build;
@@ -164,9 +160,6 @@ pub struct Peak {
 }
 
 /// 判据：这台设备的达成率台账（回答"是多少、分母凭什么"；不回答"实现该怎么改"）。
-///
-/// `shape` 是命令行覆盖，`None` 时用算子的生产形状（`Model::shape`）。形状非法、协商失败、缺编译器、
-/// 编译/执行失败或内核没有给出计时样本时返回说明。
 pub fn bench(
     catalogue: &Catalogue,
     dirs: &Dirs,
@@ -539,9 +532,6 @@ fn working_set(sample: &Sample, output: &str) -> u64 {
 }
 
 /// 判据：每秒搬了多少字节 / 算了多少次浮点、占档案峰值的几成；不回答"这个口径是否可比"。
-///
-/// `bytes / ns` 直接就是 GB/s、`flops / ns` 直接就是 GFLOP/s，但达成率必须换算回 B/s 再除以档案
-/// 峰值——直接用量纲不同的 GB/s 去除会差 1e9 倍。
 pub fn throughput(bytes: u64, flops: f64, per_run_ns: f64, peak_bw: Option<f64>) -> Throughput {
     if per_run_ns <= 0.0 {
         return Throughput {

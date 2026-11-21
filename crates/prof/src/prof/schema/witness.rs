@@ -78,9 +78,6 @@ pub(super) fn exec_attr(provide: &Provide) -> Option<&Attr> {
     provide.attrs.iter().find(is_exec)
 }
 /// 见证源码的定位方式：把 `witness.file`（`<vendor>/witness.<ext>`）解析成一个可读路径。
-///
-/// 片段层按设备拆成六个 crate 之后，"一个根"不再成立：`crates/cpu` 与 `crates/cuda` 各在自己
-/// 的源码树里。所以这里只约定"怎么问"，"在哪"由调用方回答（`prim::Layout`）。
 pub trait WitnessLookup {
     /// 见证文件的可读路径；`None` 表示这个 vendor 没有任何落盘位置。
     fn path(&self, file: &str) -> Option<PathBuf>;

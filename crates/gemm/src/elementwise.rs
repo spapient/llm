@@ -1,8 +1,4 @@
 //! 逐元素二元骨架：`y[n] = op(a[n], b[n])`。
-//!
-//! 与 [`crate::gemv`] 同构的一副骨架，差别只在没有规约轴：一次循环读两个数、做一次逐元素运算、
-//! 写一个数。`add_f32` / `mul_f32` 是同一副骨架的两种 [`Binary`] 实现，骨架（表达式缓存、代价、
-//! 样本、校验、遍历）只有一份，按实现类型单态化，`Model` 里仍是三个 `fn` 指针而不是热路径分发。
 
 use crate::formula::FormulaOwner;
 use crate::model::{Buffer, Cost, Sample, ShapeContext, Values};
@@ -12,9 +8,6 @@ use diagnostic::{Code, Error};
 pub use crate::unary::{AXES, project_shape};
 
 /// 逐元素二元算子随语义变化的那部分。
-///
-/// 表达式（`n,n,n->n`）、操作数表与缓存由 [`FormulaOwner`] 给出：二元逐元素形状只有这一种，
-/// 由装配宏统一声明，实现只决定算术。
 pub trait Binary: FormulaOwner {
     /// 逐元素运算：两个输入值，一个输出值。
     fn apply(x: f32, y: f32) -> f32;
@@ -184,9 +177,6 @@ pub(crate) mod test_support;
 
 pub mod add_f32 {
     //! 逐元素加法：`y[n] = a[n] + b[n]`。
-    //!
-    //! 语义表由 `#[annotation::model]` 生成（`tests/contracts.rs` 要求语义表只有这一个生产者），
-    //! 算术与遍历由 [`crate::elementwise`] 骨架按 [`Add`] 类型单态化。
 
     crate::binary_f32!(Add, AddF32, "add_f32", elementwise_binary_tests, |x, y| x
         + y);
@@ -194,9 +184,6 @@ pub mod add_f32 {
 
 pub mod sub_f32 {
     //! 逐元素减法：`y[n] = a[n] - b[n]`。
-    //!
-    //! 语义表由 `#[annotation::model]` 生成（`tests/contracts.rs` 要求语义表只有这一个生产者），
-    //! 算术与遍历由 [`crate::elementwise`] 骨架按 [`Sub`] 类型单态化。
 
     crate::binary_f32!(Sub, SubF32, "sub_f32", elementwise_binary_tests, |x, y| x
         - y);
@@ -204,8 +191,6 @@ pub mod sub_f32 {
 
 pub mod mul_f32 {
     //! 逐元素乘法：`y[n] = a[n] * b[n]`。
-    //!
-    //! 语义表由 `#[annotation::model]` 生成，算术与遍历由 [`crate::elementwise`] 骨架按 [`Mul`] 单态化。
 
     crate::binary_f32!(Mul, MulF32, "mul_f32", elementwise_binary_tests, |x, y| x
         * y);
@@ -213,17 +198,12 @@ pub mod mul_f32 {
 
 pub mod div_f32 {
     //! 逐元素除法：`y[n] = a[n] / b[n]`。
-    //!
-    //! 语义表由 `#[annotation::model]` 生成，算术与遍历由 [`crate::elementwise`] 骨架按 [`Div`] 单态化。
-    //! 除零按 IEEE-754 语义（`±inf` / `NaN`），不在算子层额外判错。
 
     crate::binary_f32!(Div, DivF32, "div_f32", elementwise_div_tests, |x, y| x / y);
 }
 
 pub mod max_f32 {
     //! 逐元素取大：`y[n] = max(a[n], b[n])`。
-    //!
-    //! 语义表由 `#[annotation::model]` 生成，算术与遍历由 [`crate::elementwise`] 骨架按 [`Max`] 单态化。
 
     crate::binary_f32!(Max, MaxF32, "max_f32", elementwise_binary_tests, |x, y| x
         .max(y));
@@ -231,8 +211,6 @@ pub mod max_f32 {
 
 pub mod min_f32 {
     //! 逐元素取小：`y[n] = min(a[n], b[n])`。
-    //!
-    //! 语义表由 `#[annotation::model]` 生成，算术与遍历由 [`crate::elementwise`] 骨架按 [`Min`] 单态化。
 
     crate::binary_f32!(Min, MinF32, "min_f32", elementwise_binary_tests, |x, y| x
         .min(y));
@@ -240,9 +218,6 @@ pub mod min_f32 {
 
 pub mod residual_add_f32 {
     //! 残差相加：`y[n] = a[n] + b[n]`。
-    //!
-    //! 语义表由 `#[annotation::model]` 生成，算术与遍历由 [`crate::elementwise`] 骨架按 [`Residual`]
-    //! 单态化。与 `add` 同一段加法，独立成类型以对应网络残差层，样本夹具不同。
 
     crate::binary_f32!(
         Residual,

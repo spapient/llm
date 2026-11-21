@@ -1,11 +1,4 @@
 //! 能力词汇表与参数化签名。
-//!
-//! 一篇文件装三件事，因为它们共用同一套闭集与位集，分开住只会互相 `use` 回去：
-//!
-//! - **闭集 machinery**：`Closed` 契约、`Set` 位集、`vocabulary!` 展开；`Prim` / `Space` /
-//!   `AttrKey` / `Grade` 四个闭集与 `DTypeSet` / `SpaceSet` 两个位集别名的声明；
-//! - **区间与属性**：`Span` 是闭区间，`Attr` 是属性键上的取值集合；
-//! - **参数化签名**：`Need` / `Provide` / `Witness` / `KernelKey` 与协商判定 `Mismatch`。
 
 use core::fmt;
 use core::hash::Hash;
@@ -130,9 +123,6 @@ impl<E: Closed, const WORDS: usize> fmt::Display for Set<E, WORDS> {
 }
 
 /// 为每个闭集补一份**同名**的固有转发：`Prim::ALL` / `prim.as_str()` / `Prim::parse(..)`。
-///
-/// 三个符号都转到 [`crate::atom::Closed`]，名字表仍然只有一份；调用方不必为了叫出名字去
-/// `use` 一个 trait。其他层（`op` 的骨架与调度）用同一份转发。
 #[macro_export]
 macro_rules! inherent_names {
     ($($ty:ty),* $(,)?) => {
@@ -219,9 +209,6 @@ impl Prim {
         matches!(self, Self::Load | Self::LoadAsync | Self::Store)
     }
     /// 这条原语的能力签名里允许出现的属性键（`exec` 之外），顺序即签名参数的顺序。
-    ///
-    /// 键不是全局通用的：`lanes` 对 `dot`/`shuffle` 有意义，对 `load` 没有。把"签名由哪些参数
-    /// 构成"写成每原语的闭集后，声明层与档案层对同一份签名给出同一个答案。
     pub fn attr_keys(self) -> &'static [AttrKey] {
         const ACCURACY: &[AttrKey] = &[AttrKey::Accuracy];
         const LANES: &[AttrKey] = &[AttrKey::Lanes];

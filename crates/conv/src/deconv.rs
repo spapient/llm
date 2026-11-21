@@ -1,8 +1,5 @@
 //! 转置卷积 `ConvTranspose2d`（解卷积/上采样），NHWC，权重布局对齐 PyTorch
 //! `[Cin, Cout, kh, kw]`。
-//!
-//! 前向 = `x · Wᵀ`（一次 GEMM）再把结果按核位置**散射累加**回输出网格（`col2im`）。
-//! 不写逐输出位置的双重循环：散射累加的算术与普通卷积同构，只是方向相反。
 
 use std::ops::AddAssign;
 
@@ -185,9 +182,6 @@ fn scatter<T: Copy + AddAssign>(
 }
 
 /// 一维反卷积：NHWC，权重布局对齐 PyTorch `[Cin, Cout, k]`。
-///
-/// 输出长度 `(l − 1)·s − 2p + k`；每个输入位置的 `cin` 向量乘上 `Cout×k` 的权重块，
-/// 再按 `i·s − p + ki` 散射累加。GEMM 与二维版同一支（列矩阵 `[l, cout·k]`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConvTranspose1d {
     /// 输入通道。

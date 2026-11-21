@@ -1,6 +1,4 @@
 //! 职责：会话快照回载——矩状态、累积窗口与绑定表按槽位对齐校验后回填。
-//!
-//! 回载不重建 tape / 参数槽 / 内核 / 权重；会话必须已按同一张图、同一槽位顺序装配。
 
 use diagnostic::{Code, Error, Result};
 use shard::Collective;

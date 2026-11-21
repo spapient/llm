@@ -1,11 +1,4 @@
 //! 归约种类闭集：[`Reduce`] 与它的算术。
-//!
-//! 归约的算术只有一份：[`Reduce::identity`]（单位元）与 [`Reduce::apply`]（二元运算）在这里定义，
-//! `fold` 与集合通信实现都从这两个派生。分开写会漂移——把 `Max` 的单位元写成 `f32::MIN`、
-//! 或在 `fold` 里对空输入返回单位元，都是只在全负输入或空缓冲上才露头的错。
-//!
-//! NaN 的口径写死为**传播**：`Max` / `Min` 用 `f32::max` / `f32::min` 会静默吃掉 NaN，
-//! 而"某一路算出 NaN，另一路把它抹掉"在梯度同步里是最难查的一类静默错误。
 
 /// 归约种类闭集。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -35,9 +28,6 @@ impl Reduce {
     }
 
     /// 单位元：与任何值 `apply` 之后都不改变它。
-    ///
-    /// `Max` / `Min` 的单位元是无穷而不是 `f32::MAX` / `f32::MIN`：后者会把"所有值都比它大"
-    /// 这一正常情形误判成一个具体的有限数。
     pub fn identity(self) -> f32 {
         match self {
             Self::Sum => 0.0,
@@ -58,9 +48,6 @@ impl Reduce {
     }
 
     /// 把一个非空切片折成一个值；空切片返回 `None`。
-    ///
-    /// 空输入不给单位元：`Max` 的空归约在数学上没有答案，返回 `-inf` 会让调用方以为
-    /// "这一组确实取到了负无穷"，而不是"没有数据"。
     pub fn fold(self, values: &[f32]) -> Option<f32> {
         let (first, rest) = values.split_first()?;
         Some(

@@ -99,7 +99,4 @@ pub mod substitute;
 // 只做"把三层数据变成源文本"这段无 IR 的前端（①②③④⑤）。
 
 /// crate 自身的 schema 版本；闭集变更时递增，旧 `plan` 表与缓存随即失效（README §6.4）。
-///
-/// v3：属性键闭集增加 `exec`，档案增加 `[units.<name>]`（执行单元与其可访问的存储层）。
-/// v4：缓存指纹锚定结构化 AST（`FNV(ast::encode)`），旧的裸模板哈希条目随即失效。
 pub const SCHEMA_VER: u16 = 4;

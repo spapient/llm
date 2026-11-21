@@ -1,7 +1,4 @@
 //! 字节级参考实现：每个 UTF-8 字节是一个 token，词表 256。
-//!
-//! 它在压缩率上没有价值，但给出两层基线：正确性基线（往返必须恒等）与长度基线
-//! （最坏情况 1 token/byte）。真词表落地后，测试可以用它交叉验证边界行为。
 
 use crate::{Encoding, Fingerprint, SpecialTokens, Token, Tokenizer};
 use diagnostic::{Code, Error, Result};

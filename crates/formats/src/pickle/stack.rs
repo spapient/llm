@@ -1,6 +1,4 @@
 //! pickle 的栈与对象图：出栈、memo、`REDUCE` 与 `_rebuild_tensor_v2` 的重建。
-//!
-//! 从 [`crate::pickle`] 拆出：那边只管 opcode 分派，这里只管「栈上的值怎么被组合成张量」。
 
 use diagnostic::Result;
 

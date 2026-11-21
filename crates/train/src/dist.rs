@@ -1,11 +1,4 @@
 //! 分布式训练编排：拓扑绑定 + 梯度同步后端，配置化挂到训练会话上。
-//!
-//! 训练侧只认 [`Collective`] 契约：数据并行组内把各槽梯度按 [`Reduce::Sum`] 归约（可选除组数
-//! 取平均），张量/流水并行的组划分由 [`Topology`] 派生。后端实现不同（进程内 [`Local`]、
-//! 远端占位 [`Remote`]、后续 NCCL/Gloo），上层调用点不变。
-//!
-//! 一条泛型装配路径：[`Distributed::none`] 是单进程恒等回路（不持有通信句柄）；接真实后端时
-//! 构造 [`Distributed::new`]，把拓扑、本 rank、通信后端一起登记进会话编排。
 
 use diagnostic::{Code, Error, Result};
 use shard::{Collective, Group, Parallel, Reduce, Topology};
@@ -14,8 +7,6 @@ use shard::{Collective, Group, Parallel, Reduce, Topology};
 pub(crate) const SITE: &str = "train::Distributed";
 
 /// 分布式编排配置：拓扑、本进程 rank 与通信后端；梯度同步口径随配置走。
-///
-/// `E` 是通信后端实现；单进程场景用 [`Distributed::none`]，不必套 `Option` 分支穿透会话。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Distributed<E: Collective> {
     topology: Topology,

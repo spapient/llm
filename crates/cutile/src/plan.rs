@@ -1,9 +1,4 @@
 //! ③ select：按声明顺序取 tile，roofline 只给估值（README §9、§12.1）。
-//!
-//! P0 不在 tile 候选之间比较：档案里没有能推导占用率或分块收益的常数（`[simt]` 只有组宽度），
-//! 与 tile 相关的量只有 `deq[GMAX]` 的栈占用，它不改 flops、不改 bytes——任何"这个 tile 更快"的
-//! 预测都只能编数字。所以轴取值的顺序就是优先级，与降级链同一口径：TOML 顺序即优先级，
-//! 不自动打分。plan 表、±1 档 3 候选微基准与失效指纹是 P3 交付物。
 
 use crate::cap::Path;
 use crate::decl::{OpDecl, TileCombo, expand};
@@ -57,10 +52,6 @@ impl fmt::Display for Plan {
 }
 
 /// roofline 预测：`max(flops/峰值, bytes/带宽) + 未掩盖项`。
-///
-/// 未掩盖项取自 [`Masking`] 而不是另算一遍：`doctor`/`bench` 打印的那个百分比，与这里加进去的
-/// 必须是同一个数（README §12.2 判据 1）。与 tile 无关——这是 §9 的 P0 明确不做候选比较的原因，
-/// 不是遗漏。
 pub fn predict(profile: &Profile, flops: f64, bytes: u64, masking: Masking) -> Option<f64> {
     let compute = profile
         .peak
@@ -84,9 +75,6 @@ pub fn predict(profile: &Profile, flops: f64, bytes: u64, masking: Masking) -> O
 }
 
 /// ③ select 本体：取轴展开出的**第一个** tile，再用算子给出的代价做 roofline 估值。
-///
-/// 代价（`flops`/`bytes`）由算子层 `op::model::Model::cost` 给出——流量公式属于算子语义，
-/// 机制层不认识任何算子。
 pub fn select(op: &OpDecl, profile: &Profile, path: &Path, cost: Cost) -> diagnostic::Result<Plan> {
     let masking = Masking::of(path.mma_share, &path.schedule);
     Ok(Plan {

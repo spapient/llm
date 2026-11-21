@@ -1,19 +1,5 @@
 //! 沉降账本：LLD §4.7 的 `config.json`——逐张量把"落盘后到底占了多少字节、为什么用这个编码"
 //! 写成一份可复核的账。
-//!
-//! 三条取舍写在这里，因为它们是判断这份账可不可信的全部依据：
-//!
-//! - **量的是落盘字节，不是写入意图**：条目从 [`Archive::parse`] 之后的段表与帧里现算，于是
-//!   "写的时候打算压"与"最后确实省了"不会混为一谈；写侧的决策不参与记账。
-//! - **`verify_bitwise_equal` 由解码往返判定**：`load` 成功且长度等于描述符给出的逻辑长度才算
-//!   逐位还原；解不开就是 [`Reason::Mismatch`]（拒绝），而不是"没量到"。
-//! - **`volume_ratio` 只算容器编码这一层**：量化省下的位宽记在 `quant_bits` 上，不重复计入体积比，
-//!   否则一次 4 位量化会让"熵编码到底省了多少"变成无法回答的问题。
-//!
-//! [`Reason`] 是闭集。LLD §4.7 列了六个值（`raw` / `rans` / `below_gain` / `incompressible` /
-//! `passthrough:small` / `fallback:mismatch`），本容器另有两种 LLD 未列、却必须如实命名的形态：
-//! 轴字典帧（`axes`）与去重引用（`deduplicated`）。把前者记成 `rans` 是把事实说错，把后者并进
-//! `raw` 是让"零字节"看起来像"没压动"——两者都会让账本失去复核价值，故显式登记。
 
 pub(crate) mod reason;
 pub(crate) mod text;
@@ -40,9 +26,6 @@ pub const GAIN_FLOOR: f64 = 0.02;
 pub const MAX_ENTROPY: f64 = 7.9;
 
 /// `codec_reason` 闭集：**为什么**这一条占了现在这些字节。
-///
-/// 判别值即 `NAMES` 的下标，于是"名字只有一份表"：增删变体时编译器会要求同时改表长，
-/// 不会出现"加了变体忘了写名字"那种只有账本产物才看得见的偏差。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Reason {
@@ -84,8 +67,6 @@ impl Reason {
 }
 
 /// 证书列：这条量的压缩有没有一张自洽的证书背书（LLD §4.7 的账本要说清「凭什么这么压」）。
-///
-/// 判别值即 `CERT_NAMES` 的下标，与 [`Reason`] 同一口径：名字只有一份表。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Cert {
@@ -188,9 +169,6 @@ impl Settled {
     }
 
     /// 账本里的判定：确实比原样小、且证书不自相矛盾，才叫 `compress`。
-    ///
-    /// 「省了字节」是度量事实，「有证书背书」是判决前提，两者缺一都退回 `reject`——否则一条
-    /// 自称秩压缩却读不出证书的段，会因为字节更小就在账本上冒充「压成了」。
     pub fn decision(&self) -> &'static str {
         if self.cert.refused() || self.volume >= self.raw_len {
             "reject"
@@ -321,10 +299,6 @@ pub(crate) fn settle_one(archive: &Archive<'_>, seg: &Stored) -> Result<Settled>
 }
 
 /// 证书列：段里带的证书自己说不说得通，与“省了多少字节”是两件事。
-///
-/// 只有秩轴段会签发证书，其余轴（字典 / 稀疏 / 量化）与去重引用本来就没有证书可言，记 `none`
-/// 不是“没查到”而是“本不该有”。秩轴段却读不出自洽证书时记 `refused`：那条压缩自称有谱隙
-/// 背书，而背书缺失或自相矛盾，字节再小也不能算“压成了”。
 fn certificate_of(archive: &Archive<'_>, seg: &Stored) -> Cert {
     if seg.is_ref() || seg.codec() != Codec::Axes {
         return Cert::None;
@@ -339,9 +313,6 @@ fn certificate_of(archive: &Archive<'_>, seg: &Stored) -> Cert {
 }
 
 /// 证书自洽才记 `l0_diagnostic`：不变式全过，且方法与界都是能当上界的那两种。
-///
-/// 写侧只产出这一种口径，所以读侧不再细分：落盘的不是实测残差或不是 L0 诊断界，都只可能是
-/// 别人改过或写坏了，一律按“背不住”处理。
 pub(crate) fn sound_cert(note: &ledger::Note) -> Cert {
     let usable =
         note.method == ledger::EpsMethod::Residual && note.bound == ledger::Bound::Diagnostic;

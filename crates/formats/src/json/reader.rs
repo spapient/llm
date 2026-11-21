@@ -1,7 +1,4 @@
 //! `json` 的文法实现：逐字节读取器与转义/数字/UTF-8 细节。
-//!
-//! 从 [`crate::json`] 拆出：公开面只留 [`crate::json::Value`] 与两个入口，这里管「一个字符
-//! 序列怎么变成一个值」的全部词法。
 
 use diagnostic::Result;
 use diagnostic::scan::Cursor;

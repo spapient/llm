@@ -1,7 +1,4 @@
 //! 段：一个权重张量的名字、类型、形状、可选量化方案与它的逻辑字节。
-//!
-//! 描述符走紧凑 LEB128；数据字节本身在数据区单独写。P1 只有 `store` 一种 codec（code 0），
-//! 因此 `data_len` 必须正好等于形状与类型推出的字节数。
 
 pub(crate) mod decode;
 
@@ -19,10 +16,6 @@ use wire::leb::{self, Cursor};
 use wire::sink::Sink;
 
 /// 段级编解码闭集：码位稳定，未知码在打开期拒绝。
-///
-/// - [`Codec::Store`]：原样存储，读端零拷贝；
-/// - [`Codec::Rans`]：`rans` 熵编码帧，仅在严格变小时才会被写端选用；
-/// - [`Codec::Axes`]：五轴无损选码帧（仅 f32 二维稠密权重），逐位还原且严格变小才选用。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Codec {
     /// 原样字节（code 0）。
@@ -168,9 +161,6 @@ impl Segment {
     }
 
     /// 自洽校验。
-    ///
-    /// 逐轴没有可判的东西：轴长度允许 0（零元素张量），`u64` 本来就非负，越界形状由 `numel` 的
-    /// 饱和乘与下面的字节数交叉校验兜住。真正有主体的只有三条：段名、rank 与数据长度。
     pub fn validate(&self) -> Result<()> {
         let rank = self.desc.rank()?;
         self.check_len()?;

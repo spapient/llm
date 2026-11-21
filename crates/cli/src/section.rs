@@ -1,9 +1,4 @@
 //! 审计输出的**段落**：证据、布局、存储、产物、协商、性能与 L2 结论行。
-//!
-//! 每个函数对应输出里的**一段**（`Panel` 的一段或一屏幕），判定全部来自库，这里只选词与缩进。
-//! 与 [`super::prose`]（词）、[`super::matrix`]（表）同属一种呈现粒度，三者按形分文件：词 / 表 / 段。
-//! 不叫 `report` 的理由：本模块只产"段"，而 `VerifyReport` / `Doctor` 是**输入**的名字，
-//! 同一个词既指类型又指模块时，`section::evidence_block(&report)` 会读成两种东西。
 
 use super::prose::{counted, fragment_note, params_note};
 use cutile::cap::VariantCheck;
@@ -100,8 +95,6 @@ pub(super) fn post_path_blocks(report: &Doctor) -> String {
 }
 
 /// `[协商]` 段：成功时逐变体给标记，失败时原样给出诊断。
-///
-/// 判定（`VariantCheck`）与错误文本（`NoPath`）都在库里，这里只负责标记与缩进。
 pub(super) fn negotiation(report: &Doctor) -> String {
     if let Some(no_path) = &report.no_path {
         return no_path.to_string();
@@ -149,10 +142,6 @@ fn variant_line(check: &VariantCheck, selected: usize, index: usize) -> String {
 }
 
 /// `[协商]` 汇总：cutile README §16 的「协商 3/3 命中首档」。
-///
-/// 这段与逐设备结果正交：执行需要真机，协商只看声明与档案——所以"本机没有该设备"的行
-/// 照样在这里有答案。判定（首档 / 降级 / 无路径 / 无档案）在库里（`Negotiation`），
-/// 这里只排版。
 pub(super) fn negotiation_summary(report: &VerifyReport) -> String {
     let (hits, total) = report.head_hits();
     let mut out = format!(
@@ -183,9 +172,6 @@ fn describe_negotiation(negotiation: &Negotiation) -> String {
 }
 
 /// §16 的性能判据：每次都给一行结论。
-///
-/// 判定在 `Performance`（达成率连同尺子一起给），这里只负责把每种结论翻译成一句话。
-/// 口径无效或没声明峰值时也要打印：一条只在失败时出声的判据，读者会把"什么都没说"当成通过。
 pub(super) fn performance_note(performance: Performance, peak: Option<&Peak>) -> String {
     let ratio = ratio_text(&performance);
     let ruler = ruler_text(peak);
@@ -225,8 +211,6 @@ fn ruler_text(peak: Option<&Peak>) -> String {
 }
 
 /// 一台设备的 L2 结论行。
-///
-/// 形状矩阵与见证条数必须打印：它们才是"这条 L2 是跑出来的"的证据，而不是档案里的自述。
 pub(super) fn passed_line(verified: &Verified) -> String {
     let shapes = shapes_text(verified);
     let artifacts = artifacts_text(verified);
@@ -302,8 +286,6 @@ fn checked_text(verified: &Verified) -> String {
 }
 
 /// `[缓存]` 段：本次构建的键，以及被问的那个键与它的关系。
-///
-/// 关系类别由 `CacheWhy::state` 给（半截落盘必须排在"差异为空"之前判），这里只选句子。
 pub(super) fn cache_why(report: &CacheWhy) -> String {
     let mut out = format!("\n[缓存] 本次 key {}\n", report.current);
     let Some(entry) = &report.entry else {

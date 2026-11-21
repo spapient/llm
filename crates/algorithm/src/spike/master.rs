@@ -1,10 +1,6 @@
 use super::*;
 
 /// 浮点主权重（QAT 口径）：训练留浮点，前向只看到它的 `i8` 量化视图。
-///
-/// 反传给的是浮点梯度，而前向层只认 `i8`——`Master` 就是两者中间那一层：[`Master::view`] 把
-/// 主权重量化成可执行层，[`Master::descend`] 在浮点侧走一步 SGD。尺度与动力学原样带走，不在
-/// 这一步改写。
 #[derive(Clone, Debug, PartialEq)]
 pub struct Master {
     pub(super) weights: Vec<f32>,

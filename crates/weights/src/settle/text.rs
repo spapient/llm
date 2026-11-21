@@ -1,7 +1,4 @@
 //! 账本正文的文本形态：一端 [`Settled::render`] 写，一端 [`verify_root`] 核回。
-//!
-//! 从 [`crate::settle`] 拆出：那里的 [`crate::settle::Settlement::render`] 只负责拼外壳，这里负责
-//! 「一格里该写什么字节」以及「读回来的那格是不是同一份」，写作与校验因此永远在同一份代码里。
 
 use std::fmt::Write as _;
 
@@ -151,8 +148,6 @@ fn field<'a>(fields: &'a [(String, Value)], key: &str, owner: &str) -> Result<&'
 }
 
 /// 值在文本里的写法：字符串取内容、布尔与 `null` 取字面、数字取原文。
-///
-/// 与 [`Settled::render`] 的写法是同一份约定——两边各写一套，逐格比对就变成两种格式之争。
 fn written(value: &Value) -> Result<String> {
     match value {
         Value::String(text) => Ok(text.clone()),

@@ -1,13 +1,4 @@
 //! 架构契约的事实面：`docs/ARCHITECTURE.md` 的三张表与 `cargo metadata` 的成员/边。
-//!
-//! 层表、依赖边与所有权表过去靠评审清单核对，30 个成员 × 每次改动 = 必然漂移。这里把
-//! `cargo metadata` 的事实与文档逐条解析出来，由 [`crate::layer`] / [`crate::ownership`] /
-//! [`crate::boundary`] 三个门禁各自比对一侧：改文档或改 `Cargo.toml` 而不同步另一侧即失败。
-//!
-//! 只读 `cargo metadata` 与源码，不修改任何东西；`cargo test` 因此就是守门人。
-//!
-//! 三张表的解析是**同一份**事实源（`DOC` 编译期嵌入），所以集中在这个模块里：门禁各自只持有
-//! 自己的判据，解析口径不复制第二遍。
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -20,9 +11,6 @@ pub fn workspace_root() -> PathBuf {
 }
 
 /// 递归列出 `dir` 下的全部 `.rs` 文件（顺序无关，只用于扫描）。
-///
-/// 目录不存在或读不到时返回空：扫描集派生方（如层表）必须另守"至少扫到一个文件"，
-/// 否则合并/删除成员会让守卫静默通过。
 pub fn rust_files(dir: &Path) -> Vec<PathBuf> {
     with_cache(|cache| match cache.dirs.get(dir) {
         Some(found) => found.clone(),
@@ -36,9 +24,6 @@ pub fn rust_files(dir: &Path) -> Vec<PathBuf> {
 }
 
 /// 读一份源文件；读不到时返回 `None`。
-///
-/// 与 [`rust_files`] 同理缓存：门禁是**只读**的（`scratch` 只往临时目录写，不碰 `crates/`），
-/// 一次测试运行里同一份文件的内容不会变，所以"每个门禁各自再读一遍"只是把同一份字节重算 N 次。
 pub fn source_text(path: &Path) -> Option<String> {
     with_cache(|cache| match cache.texts.get(path) {
         Some(text) => text.clone(),
@@ -103,9 +88,6 @@ pub(crate) fn short(name: &str) -> String {
 }
 
 /// 依赖 `dependency` 的成员集合（只算普通边，`+dev` 不算）。
-///
-/// 门禁里"哪些 crate 属于某个家族"一律从依赖边派生：按目录名前缀（`starts_with("op")`）认的写法
-/// 会在改名当刻静默归零，而改名恰恰是这套契约要承受的动作。
 pub(crate) fn dependents(dependency: &str) -> BTreeSet<String> {
     workspace()
         .1
@@ -116,10 +98,6 @@ pub(crate) fn dependents(dependency: &str) -> BTreeSet<String> {
 }
 
 /// 成员短名 → 源码根目录。
-///
-/// 包名与目录名**不必**相同（`llm-gemm` 住在 `crates/gemm`）：改名只动包名时，若门禁拿短名
-/// 当目录名，`crates/gemm/src` 不存在，所有权与边界校验会**静默跳过**。映射只从 `cargo metadata`
-/// 的 `manifest_path` 取，不猜前缀。
 pub(crate) fn src_root(member: &str) -> PathBuf {
     let dir = dirs()
         .get(member)
@@ -313,13 +291,6 @@ pub(crate) fn owned_types() -> Vec<(String, String)> {
 }
 
 /// 工作区成员与成员之间的依赖边（`cargo metadata` 是唯一事实源）。
-///
-/// 只取 `packages[].name` / `packages[].dependencies[].{name,kind}` 四个字段：成员集合来自前者，
-/// 边来自后者（`kind == "dev"` 即 `+dev` 边）。解析交给 `serde_json`，不自己写第二份 JSON 文法。
-///
-/// 结果按进程缓存一次：9 个门禁分散在 3 个模块里都要这份事实，而 `cargo metadata` 是一次
-/// 进程启动（本机实测 30 ms，占整套门禁运行时间约四成）。门禁只读不改工作区，缓存不会读到
-/// 过期事实；返回值仍是拥有所有权的副本，调用点不必知道缓存的存在。
 pub(crate) fn workspace() -> (BTreeSet<String>, BTreeSet<Edge>) {
     metadata().clone()
 }

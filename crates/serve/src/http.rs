@@ -1,10 +1,5 @@
 //! std-only HTTP/1.1 薄适配器：把 socket 字节交给 [`Router::call`]，再把
 //! [`Response::frame`] 包成最小响应写回。
-//!
-//! 这里**不**重写路由、请求文法、帧格式、CRC 或上限——它只是
-//! `socket 字节 → Router::call → Response::frame → socket 字节` 的薄胶水。首刀只认
-//! 请求行 + `Content-Length` + 主体，响应固定 `Connection: close`；排除 TLS / keep-alive /
-//! chunked / 多线程。gRPC 未来在同一条 [`Endpoint`] / [`Router`] 上再挂一个适配器即可，不动端点模型。
 
 use crate::Router;
 use diagnostic::Result;

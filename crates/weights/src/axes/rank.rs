@@ -1,7 +1,4 @@
 //! `axes` 的秩轴载荷：证书 + 两个低秩因子 + 残差的落盘与读回，读端自证。
-//!
-//! 秩由 [`crate::ledger`] 的谱隙证书给出，证书随载荷落盘并在 [`decode_rank`] 里被重算对质；
-//! 布局 `note_len | note | left_len | left | right_len | right | rest` 的全部长度前缀读写都在本模块。
 
 use diagnostic::Result;
 
@@ -13,17 +10,6 @@ use crate::axes::area;
 use crate::axes::codec::{bytes_to_f32, f32_bytes, pack_bytes, payload_cap, unpack_marked, word};
 
 /// 低秩载荷：秩由证书给出，证书不通过就不压，证书本身随载荷落盘。
-///
-/// 这里不再自己挑秩（旧版取 `min(m,n)/2`，与谱隙无关）：[`ledger::certify`] 用一次分解同时给出
-/// 受认证的秩与 `L`、`C`，`None` 就是「拒压」——秩轴对这张矩阵不适用，让给别的轴。
-///
-/// 布局：`note_len | note | left_len | left | right_len | right | rest`。低秩项不落 `L` 本身，
-/// 落它的两个因子 `left[m,r]`（`UΣ`）与 `right[r,n]`（`Vᵀ`）——`L` 是整张 `m×n`，存一遍等于没省；
-/// 因子只有 `(m+n)·r`，读端用 [`ledger::factor_low`] 这一份算式还原。
-///
-/// 秩不再是一个裸数字：证书自带秩，并且多带「凭什么」——模式、稳定性、谱隙、扰动、截断误差、
-/// 逐位往返。伪造一个更大的秩就得同时伪造谱隙，而谱隙那一条在读端会被载荷重算
-/// （[`ledger::audit`]）。
 pub(crate) fn rank_payload(w: &[f32], m: usize, n: usize) -> Option<Vec<u8>> {
     let cert = ledger::certify(w, m, n).ok().flatten()?;
     let mut p = framed(&cert.note.to_bytes());
@@ -102,8 +88,6 @@ pub(crate) fn rank_head(all: &[u8]) -> Result<RankHead> {
 }
 
 /// 读侧的长度前缀段：先读 `u32` 长度，再按它切出紧随其后的字节区间；越界一律按截断报错。
-///
-/// 秩载荷里的每段都走这一处，读端「区间越界」的算式因此只有一份；写侧对应的封装是 [`framed`]。
 fn sliced(all: &[u8], at: &mut usize, what: &str) -> Result<std::ops::Range<usize>> {
     let len = word(all, at, what)? as usize;
     let end = at

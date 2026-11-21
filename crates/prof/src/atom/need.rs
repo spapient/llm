@@ -129,9 +129,6 @@ impl Need {
 }
 
 /// 一条可执行的见证（cutile README §11.3）：源码、入口函数与期望输出。
-///
-/// 路径相对片段层根目录（`cpu/witness.c`）。函数统一为 `int func(float *out)`：返回写入的
-/// 元素个数，值按 f32 读回后与 [`Witness::expect`] 对拍。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Witness {
     /// 源码路径（相对片段层根）。

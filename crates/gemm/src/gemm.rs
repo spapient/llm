@@ -1,15 +1,4 @@
 //! GEMM 家族共享的轴契约、形状投影与格式无关的矩阵乘骨架。
-//!
-//! `gemm_f32`、`gemm_i8`、`gemm_i4` 是同一副三轴骨架（`m`/`k` 输入、`n` 输出）的三种
-//! 权重格式：轴的角色、收缩轴长度、形状投影、代价口径、样本装配、矩阵遍历与尺寸校验完全
-//! 相同，差异只在元素类型、位宽、样本取值、打包长度与点积算术。本模块通过 [`Gemm`] trait
-//! 收口这部分共享事实；各格式只写一份格式契约，并按格式单态化，不在热路径上引入运行时分发。
-//! 与 [`crate::gemv`] 的两轴骨架对称，只是这里多一条收缩轴。
-//!
-//! 算术有两条：执行路径 [`forward`] 按格式调 [`Gemm::mul`]——打包格式走 [`packed_tiled`]（位流
-//! 解一遍、再按 [`TILE_N`] 列块做整数累加，解包次数从 `m·n·K` 降到 `m·K + K·n`），稠密 f32 则
-//! 保持 [`matmul`] 的顺序遍历（`K = 8` 时分块实测更慢，见该处注释）；标量 [`matmul`] 同时保留为
-//! 与内核**相互独立**的对拍真值，四条路径逐位相等。
 
 use crate::einsum::Bits;
 use crate::gemv::Element;
@@ -21,16 +10,9 @@ use diagnostic::{Code, Error};
 pub const K: usize = 8;
 
 /// 输出列块宽度：B 的一个列块（`K × TILE_N` 个码）解包一次后被整段行复用。
-///
-/// 与 [`crate::matmul::TILE_N`] 不是同一个块：那条路径要切 `m`/`n`/`k` 三级、收缩轴由调用方
-/// 给定；这里收缩轴恒为 [`K`]，块只决定「B 的哪一段列驻留」，块宽取 64 使 `K` 段码与一行
-/// 累加器合起来仍在一级缓存里。
 pub const TILE_N: usize = 64;
 
 /// 每字节打包码数：位宽 ≤ 8 时按 `8 / bits` 算；8 位逐元素为 1。
-///
-/// 打包布局与 [`packed`] 同一口径：i2=4、i4=2、i8=1。桥接层几何反推用，避免各 lane 各抄
-/// 一遍除法。
 pub const fn codes_per_byte(bits: Bits) -> usize {
     8 / bits.bits() as usize
 }
@@ -61,9 +43,6 @@ pub fn project_shape(m: usize, n: usize) -> Result<ShapeContext, Error> {
 }
 
 /// 从形状上下文取一条轴；缺轴时按 `op` 标签报 [`Code::Invalid`]。
-///
-/// 三份格式对轴的判读逐字相同，只有诊断里点名的算子名不同——标签作为参数传入，避免三份
-/// 平行的取轴辅助各抄一遍。
 pub fn axis(shape: &ShapeContext, label: char, op: &str) -> Result<usize, Error> {
     shape
         .get(label)
@@ -71,10 +50,6 @@ pub fn axis(shape: &ShapeContext, label: char, op: &str) -> Result<usize, Error>
 }
 
 /// 矩阵乘格式：一条 GEMM 里随精度变化的那部分。
-///
-/// 实现者只写"这份格式用什么元素、什么位宽、怎么取样、怎么打包、怎么点积"；代价、样本装配、
-/// 矩阵遍历与尺寸校验由本模块骨架（[`cost`] / [`sample`] / [`reference()`] / [`forward`]）
-/// 收口。所有关联项都是编译期常量：没有一件需要运行期再判断一次。
 pub trait Gemm {
     /// 样本缓冲里的元素类型（[`Values`] 的两个闭集变体）。
     type Elem: Element;
@@ -86,10 +61,6 @@ pub trait Gemm {
     const BITS: Bits;
 
     /// 打包格式的静态配置（[`Row`]）：每字节码数、零点、样本偏移、对称码表单点收敛。
-    ///
-    /// 打包 lane（i2/i4）返回自身那一行；逐元素 lane（i8）返回 `None`，走 `codes` 按位模式
-    /// 解释。新增一档打包精度只在 `quant` 配置表加一行并把这里指过去，不在三条 lane 各抄除法、
-    /// 零点与偏移表。
     fn config() -> Option<Row> {
         None
     }
@@ -125,8 +96,6 @@ pub trait Gemm {
     }
 
     /// 输出位置 `(i, j)` 的点积：A 第 `i` 行（连续 `K` 个元素）与 B 第 `j` 列（跨步 `n`）。
-    ///
-    /// 打包格式走 [`packed::dot`]；逐元素格式自行实现本函数。
     fn dot(a: &[Self::Elem], b: &[Self::Elem], n: usize, i: usize, j: usize) -> f32 {
         let Some(row) = Self::config() else {
             return 0.0;
@@ -141,17 +110,9 @@ pub trait Gemm {
     }
 
     /// 内核本体：这份格式的 tile 矩阵乘，结果写满 `out`（`m × n`）。
-    ///
-    /// 打包格式把 A、B 的位流各解包一次再累加（[`packed_tiled`]），逐元素整数格式直接取码
-    /// （[`accumulate_tiled`]），稠密 f32 走 [`crate::matmul::matmul_tiled`]。三种形态都保持
-    /// 「每个输出元素按 `p` 升序累加」，于是与 [`matmul`] 的标量口径逐位相等。
-    ///
-    /// 没有默认实现：默认返回值会让「忘了覆盖」变成静默全零，而调用方拿不到任何信号。
     fn mul(a: &[Self::Elem], b: &[Self::Elem], m: usize, n: usize, out: &mut [f32]);
 
     /// 逐元素格式（不打包）的码值：测试侧闭式重算用；打包格式由骨架按位流解包，返回空切片。
-    ///
-    /// 与 [`dot`](Self::dot) 同一组码值口径，只是按元素铺开，不做点积。
     fn codes(values: &[Self::Elem]) -> Vec<i32> {
         let _ = values;
         Vec::new()
@@ -209,9 +170,6 @@ pub fn sample<G: Gemm>(m: usize, n: usize) -> Sample {
 }
 
 /// 打包量化格式（每字节 `CPB` 个码）的公共解包、取样与点积助手。
-///
-/// int2（4 码/字节）与 int4（2 码/字节）只在码宽、掩码、零点与取样偏移上不同；这些事实作为
-/// 参数传入，打包位域的字节布局、码位拆解与整数累加只写一份。int8 不打包，不走这里。
 pub mod packed;
 /// 矩阵遍历：外层只写一份，内层点积落在 [`Gemm::dot`]。
 pub fn matmul<G: Gemm>(a: &[G::Elem], b: &[G::Elem], m: usize, n: usize, out: &mut [f32]) {
@@ -255,8 +213,6 @@ pub fn forward<G: Gemm>(
 }
 
 /// 各打包 / 不打包格式共用的对拍：内核算出的结果必须与标量参考逐位一致。
-///
-/// 三条格式的测试体只有算子名不同，断言与尺寸口径收口到这里，避免三份平行用例各抄一遍。
 #[cfg(test)]
 pub(crate) fn matches_reference<G: Gemm>() {
     let sample = sample::<G>(16, 12);
@@ -269,10 +225,6 @@ pub(crate) fn matches_reference<G: Gemm>() {
 }
 
 /// 多形状对拍矩阵：每条格式在一档 `(m, n)` 配置上重放参考与内核，结果逐位一致。
-///
-/// 形状由配置表给出（单行单列、多行单列、单行多列、常规矩阵），覆盖收缩轴 `K` 之外的两类
-/// 边界；内核与参考是同一段算术，逐位相等是最低限度的口径，真正的独立闭式校验见
-/// [`hand_closed<G>`]。
 #[cfg(test)]
 pub(crate) fn matches_reference_over_shapes<G: Gemm>(shapes: &[(usize, usize)]) {
     for &(m, n) in shapes {
@@ -287,9 +239,6 @@ pub(crate) fn matches_reference_over_shapes<G: Gemm>(shapes: &[(usize, usize)]) 
 }
 
 /// 整数点积的独立闭式校验：不经过 `G::dot` 与 `matmul`，测试侧自己按收缩轴重算。
-///
-/// 参考与生产同一份代码时，对它俩对拍等于自己跟自己对；这条用例把每个输出元素的 `K` 项
-/// 乘积和在测试里重算一遍（`i32` 精确累加，与内核整数路径同口径），逐元素钉住算术。
 #[cfg(test)]
 pub(crate) fn hand_closed<G: Gemm>() {
     const M: usize = 5;
@@ -312,9 +261,6 @@ pub(crate) fn hand_closed<G: Gemm>() {
 }
 
 /// 把 A、B 解包成有符号整数码；测试侧独立读数，供 [`hand_closed`] 闭式重算。
-///
-/// 打包格式按 [`Gemm::config`] 一行配置解包（码数、零点随配置表），逐元素格式走 [`Gemm::codes`]；
-/// 不再按位宽 `match` 硬编码两套字节布局。
 #[cfg(test)]
 fn sample_unpacked<G: Gemm>(a: &[G::Elem], b: &[G::Elem], m: usize, n: usize) -> Vec<i32> {
     let mut values = Vec::with_capacity(m * K + K * n);

@@ -49,9 +49,6 @@ use crate::patch::{Boundary, Patches};
 const SITE: &str = "algorithm::emit";
 
 /// 生成停下来的原因。
-///
-/// 闭集而不是 `Option`：`None` 说不清"预算用完"与"一个字节都没走"的区别，而这两件事对上游的处置
-/// 不同——一个是截断，一个是空结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Halt {
     /// 字节预算用完。
@@ -71,9 +68,6 @@ impl Halt {
 }
 
 /// 一次生成的结果：这次新产出的字节，以及它为什么停下。
-///
-/// 只装**这一次**新产出的字节（不含预填充）；停止字节含在里面——它是模型真的产出的那一个，从结果
-/// 里抹掉会让"产出了什么"与"为什么停"互相对不上。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Emission {
     bytes: Vec<u8>,
@@ -103,9 +97,6 @@ impl Emission {
 }
 
 /// 逐字节自回归循环：一条切分规则 + 表示侧 + 输出头。
-///
-/// 状态只有"已产出的字节、它们的分数、patch 起点、已收口 patch 的表示"，没有可训练参数：本层是装配面
-/// （谁在什么时候调哪一段），不是又一层权重。
 #[derive(Debug, Clone)]
 pub struct Emitter<S: Scalar = f32> {
     rule: Boundary<S>,
@@ -203,8 +194,6 @@ impl<S: Scalar> Emitter<S> {
     }
 
     /// 追加一个字节与它的分数，并问边界：收口的那一刻就地编码。
-    ///
-    /// 生成与预填充共用这一处状态机：留一份、改写一份，`starts` 与 `reprs` 就会有一条路径忘了同步。
     fn append(&mut self, byte: u8, score: S) -> Result<()> {
         let index = self.bytes.len();
         self.bytes.push(byte);
@@ -269,8 +258,6 @@ impl<S: Scalar> Emitter<S> {
     }
 
     /// 已产出的字节（预填充 + 生成），按顺序。
-    ///
-    /// 只追加：一旦产出的字节不再被改写，这与"已收口的表示不重算"是同一件事的两面。
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
     }
@@ -289,8 +276,6 @@ impl<S: Scalar> Emitter<S> {
 
     /// 已收口 patch 的表示，紧凑排列、行宽 `dim`：行数 = [`Emitter::patches`] 的 `len` 减一（末段还没
     /// 收口）。
-    ///
-    /// 全局 transformer 就运行在这一列上：遍数是行数，不是字节数。
     pub fn reprs(&self) -> &[S] {
         &self.reprs
     }
@@ -307,8 +292,6 @@ impl<S: Scalar> Emitter<S> {
 }
 
 /// 重放一段字节的切分：边追加边问边界，收口的 patch 立刻编码。
-///
-/// 预填充与生成走同一条判定，于是“先预填再生成”与“连着生成”只差条件里的历史，不差切分口径。
 fn replay<S: Scalar>(
     rule: &Boundary<S>,
     encoder: &ByteEncoder<S>,
@@ -346,9 +329,6 @@ struct Replay<S: Scalar> {
 }
 
 /// 在 `index` 处开一个新 patch：上一条（若开着）就地收口，只编码它自己那一段。
-///
-/// 收口是**唯一**算表示的时刻：一条 patch 从开到最后一次追加字节，表示只在它被关掉时算一遍。首字节
-/// 时还没有开着的 patch，于是只记起点、什么都不编码。
 fn close<S: Scalar>(
     encoder: &ByteEncoder<S>,
     bytes: &[u8],

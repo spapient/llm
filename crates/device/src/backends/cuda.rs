@@ -1,6 +1,4 @@
 //! CUDA / MUSA 后端：`Codegen` 出 `.cu`、`Driver` 跑 `nvcc`。
-//!
-//! 从 [`crate::backends`] 拆出——三条厂商链之间没有共享状态。共用的基准几何与见证回读留在父模块。
 
 use crate::toolchain::{detect_musa, detect_nvcc, find_cl, musa_device};
 use std::path::Path;
@@ -225,9 +223,6 @@ fn cuda_lower(
 }
 
 /// 单段源码骨架的分派：pointwise / chunk-reduce / loop / wmma 各产出一段源码。
-///
-/// 两段族的骨架已在 [`cuda_lower`] 里分派，落到这里的只会有这四族之一；兜底臂不是「偷偷吞掉」，
-/// 它回答的是「这个骨架没有单段 CUDA 生产态 lowering」。
 fn cuda_single_source(
     kind: &Lower,
     kernel: &str,
@@ -289,9 +284,6 @@ fn push_cuda_kernel(program: &mut String, max: usize, selected: &[Selected<'_>])
 }
 
 /// 回读口径：逐见证打印位模式，再打一行 `witness N`。
-///
-/// CUDA 与昇腾的 host 驱动共用这一段字面：同一个 `driver::readback` 在两种产物上必须读出同一种
-/// 位模式。
 fn push_cuda_main(program: &mut String, max: usize, total: usize) {
     program.push_str(&format!(
         "int main() {{\n\

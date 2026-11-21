@@ -1,7 +1,4 @@
 //! 标量参考内核：把 [`crate::shape`] 的视图适配到 `op` 的标量参考实现。
-//!
-//! 算术全部复用 `op` 自己的参考语义；本层不定义算子、不决定显存计划。内核表长度与顺序同
-//! `op::REGISTRY` 在编译期锁死，"注册了算子却没有参考实现"是编译错误。
 
 use crate::shape::{Inputs, View, ViewMut, output_slice};
 use crate::store::SITE;
@@ -204,10 +201,6 @@ gemm!(
 );
 
 /// 大 K 稠密 GEMM：收缩轴取生产档 [`op::matmul::K`]，行数由输入长度推出。
-///
-/// 与上面的 `gemm!` 区别只在收缩轴不再固定为 `K = 8`：这里给的是 prefill 主链路的形状，
-/// 尺寸校验交给算子自己的入口（三条缓冲长度必须同时自洽）。算术走 [`op::fast::gemm_f32_checked`]
-/// —— NEON 微内核 + 多槽池，是 CPU 上吞吐最高的内核，而不是标量 tile。
 fn matmul_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
     let (a, b) = <(f32, f32) as Inputs>::unpack(inputs, "matmul_f32")?;
     let out = output_slice::<f32>("matmul_f32", output)?;
@@ -216,10 +209,6 @@ fn matmul_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
 }
 
 /// 大 K 对称 int8 GEMM：输入是承载有符号码的 `u8`，`i32` 精确累加后转 `f32`。
-///
-/// 与 [`op::matmul_i8::reference`] 同一段算术（后者从样本读，这里从视图读）；累加器是 i32，
-/// 所以对拍逐位相等，不像 `f32` 两版要留容差。算术走 [`op::fast::gemm_i8_checked`]（多槽池），
-/// 与本层原来调的 [`op::matmul_i8::forward_tiled`] 逐位一致——整数累加无重排舍入。
 fn matmul_i8(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
     let (a, b) = <(u8, u8) as Inputs>::unpack(inputs, "matmul_i8")?;
     let out = output_slice::<f32>("matmul_i8", output)?;
@@ -239,8 +228,6 @@ fn widen(acc: Vec<i32>, out: &mut [f32]) {
 }
 
 /// 行主序 GEMM 的行列数：`m = 左操作数长度 / k`，`n = 输出长度 / m`。
-///
-/// 稠密与 int8 两条参考内核共用同一处推导——收缩轴 `k` 是两者唯一的差别，算式不该抄两遍。
 fn matrix_geometry(site: &str, lhs: usize, out: usize, k: usize) -> Result<(usize, usize)> {
     let m = lhs / k;
     Ok((m, batches(site, out, m.max(1))?))

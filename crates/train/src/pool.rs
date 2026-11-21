@@ -1,7 +1,4 @@
 //! 分配与复用：等长空闲表 + [`Buffers`]，把 [`autograd::Store`] 落到真实内存。
-//!
-//! 块本身来自内部空闲表，稳定态不再向系统要内存；分配走 `try_reserve_exact`，形状可能来自
-//! 不受信任的权重文件头，分配失败是一条错误而不是 abort。
 
 use crate::geometry::{Geometry, Running};
 use crate::kernel::Kernel;
@@ -97,9 +94,6 @@ impl Pool {
 }
 
 /// 以 [`Var`] 为下标的真实缓冲：`autograd::Store` 在训练侧的实现。
-///
-/// 一个训练步里只有一个实例，逐图复用：`load` 装常驻值、`compute` 算激活、`free` 还激活，
-/// 步与步之间用 [`Buffers::clear`] 一次性归还；块本身来自内部空闲表，稳定态不再向系统要内存。
 #[derive(Debug)]
 pub struct Buffers<K: Kernel> {
     sizes: Sizes,
@@ -290,9 +284,6 @@ impl<K: Kernel> Buffers<K> {
     }
 
     /// 取走一个变量的梯度向量：整块移交所有权，避免同一缓冲重复可变借用。
-    ///
-    /// 调用方在优化器/同步结束后把结果放回 [`Self::put_back_gradient`]；中途失败也必须归还，
-    /// 否则该槽梯度会丢失。
     pub fn take_gradient(&mut self, var: Var) -> Option<Vec<f32>> {
         self.gradients
             .get_mut(var.id() as usize)

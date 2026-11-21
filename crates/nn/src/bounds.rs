@@ -26,9 +26,6 @@
 use diagnostic::{Code, Error, Result};
 
 /// 一次调用的性能下界：读、写两个方向的最少流量与最少浮点运算次数。
-///
-/// 下界**与实现无关**：它既不看片段怎么写，也不看设备有多少单元，因此可以在任何机器上离线
-/// 复现（与 `einsum` 的代价同源）。它也不承诺"能做到"——那是 `bench` 的事。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Bounds {
     read: u64,
@@ -121,10 +118,6 @@ impl Bounds {
     }
 
     /// 两笔下界相加：一串层（或一个复合算子）的总下界。
-    ///
-    /// 两个方向各自饱和相加；`flops` 用普通加法。这不是疏漏：`u64` 溢出时静默截断会给出
-    /// **偏小**的下界（"偏小"比"没有"更危险，它看起来仍然合理），所以宁可饱和；`f64` 溢出成
-    /// `inf` 本身就是响亮的信号，再套一层饱和只会掩盖它。
     pub fn plus(self, other: Self) -> Self {
         Self {
             read: self.read.saturating_add(other.read),
@@ -144,8 +137,6 @@ impl Bounds {
     }
 
     /// 最少流量（字节）：读与写合计的**派生**量。
-    ///
-    /// 判断 roofline 卡在哪一侧必须分别拿 [`Bounds::read`] 与 [`Bounds::write`] 去比峰值。
     pub fn bytes(&self) -> u64 {
         self.read.saturating_add(self.write)
     }
@@ -166,11 +157,6 @@ impl Bounds {
     }
 
     /// 本下界是否落在那笔下界之内：**每个方向**都不更高。
-    ///
-    /// 这是"融合到底赚了多少"的可检查形式：一个复合组件的下界只有在读、写、算三项上都不高于
-    /// 子组件之和，才谈得上更省；差额就是完美融合能省掉的中间流量。
-    ///
-    /// 反过来，总量相同但把读挪成写**不**落于其中——那不是省流量，只是换了一个瓶颈。
     pub fn moves_within(self, other: Self) -> bool {
         self.read <= other.read && self.write <= other.write && self.flops <= other.flops
     }

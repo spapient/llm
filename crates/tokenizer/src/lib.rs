@@ -30,9 +30,6 @@ mod delegates {
     /// 生成 `Tokenizer` 里五个只读委托：`decode`、`fingerprint`、`special_tokens`、
     /// `lookup`、`piece`。调用点在 `impl Tokenizer for X` 内，且该结构体必须持有
     /// `vocab: crate::Vocab` 字段。
-    ///
-    /// 参数：`$label` 是错误文案里的词表名（如 `"BPE"`），`$marker` 是错误调用点标记
-    /// （如 `"tokenizer::Bpe::decode"`）。
     macro_rules! vocab_tokenizer_delegates {
         ($label:literal, $marker:literal) => {
             fn decode(&self, tokens: &[crate::Token]) -> diagnostic::Result<String> {

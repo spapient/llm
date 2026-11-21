@@ -71,15 +71,6 @@ pub use crate::frame::{Envelope, Frame};
 
 pub mod macros {
     //! 编译期表驱动宏：闭集由一张表展开变体、`ALL` 与映射，同一个清单不再手抄多遍。
-    //!
-    //! 三类闭集按映射轴区分：
-    //!
-    //! - [`code_set!`]：只映射到 `u16` 编号（响应状态）；
-    //! - [`name_set!`]：只映射到稳定短名（生成结局）；
-    //! - [`code_name_set!`]：编号与短名双轴（帧类型），再由 `ALL` 派生 `from_code`。
-    //!
-    //! 表是唯一事实源：加变体只改表一行，`ALL`、`code`、`as_str`、`Display` 随之展开，
-    //! 不会出现"发端编得出去、收端认不出"的漏映射。
 
     /// 编号闭集：变体、`ALL` 与 `code()` 由同一张表展开。
     macro_rules! code_set {
@@ -159,8 +150,6 @@ pub mod macros {
             }
 
             /// 由编码还原；未知编码返回 `None`。
-            ///
-            /// 唯一事实源是 [`Self::code`]：这里的查找由 [`Self::ALL`] 驱动。
             $vis fn from_code(code: u16) -> Option<Self> {
                 Self::ALL.iter().find(|item| item.code() == code).copied()
             }
@@ -189,14 +178,9 @@ pub const HEADER_LEN: usize = 10;
 pub const TRAILER_LEN: usize = 4;
 
 /// 单帧载荷上限：1 MiB。
-///
-/// 这是协议常量而非配置项：接收方的上限必须与发送方一致，否则"本端写得出、对端收不下"就成了
-/// 一个只在特定连接上出现的失败。更大的载荷要切成多帧——一帧是一段字节块，不是一条完整请求。
 pub const MAX_PAYLOAD: usize = 1 << 20;
 
 /// 协议版本。
-///
-/// 版本决定一帧的**布局**，不决定语义：第 1 版没有校验尾，第 2 版起每帧末尾 4 字节 CRC-32。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Version(u16);
 
@@ -244,10 +228,6 @@ impl fmt::Display for Version {
 
 code_name_set! {
     /// 帧类型闭集。
-    ///
-    /// 加一个变体只改表内一行：类型是日志与对端行为的对外契约。[`Kind::from_code`] 由 `ALL`
-    /// 推出，不再单独维护一张解码表——那样漏一处只有发送端能编、接收端却认不出，正是跨版本
-    /// 互通最难查的一类问题。
     pub enum Kind {
         /// 一个请求的开始。
         Request => 1, "request",

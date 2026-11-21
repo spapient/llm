@@ -1,7 +1,4 @@
 //! 可恢复检查点：只记"要复现这次训练必须知道的东西"。
-//!
-//! [`Checkpoint`] 是内存里的最小事实集；字节格式归 [`snapshot`]，编码、版本与偏移校验
-//! 不在训练循环里再做一遍。[`resume`] 在恢复前拦住并行度不一致这类最贵的静默错位。
 
 use diagnostic::{Code, Error, Result};
 
@@ -102,9 +99,6 @@ impl Checkpoint {
     }
 
     /// 把这些事实与当前权重表组合成可落盘的快照。
-    ///
-    /// 文件格式由 [`snapshot`] 拥有：本层只回答"恢复需要知道什么"，编码、版本与偏移校验
-    /// 不在训练循环里再做一遍。
     pub fn snapshot(&self, weights: &weights::Header) -> Result<snapshot::Snapshot> {
         let facts = snapshot::Facts::new(
             self.step,
@@ -118,10 +112,6 @@ impl Checkpoint {
 }
 
 /// 一个检查点能否在同一结构上恢复。
-///
-/// 并行度、层数与批行数不一致，强行恢复只会读出形状正确、内容错位的权重——这是最贵的一类
-/// 静默错误，所以在这里逐项拦住。`layers` / `batch_rows` 是当前运行的对应事实，用于和快照
-/// 里记录的事实对账。
 pub fn resume(
     checkpoint: &Checkpoint,
     topology: &shard::Topology,
@@ -168,8 +158,6 @@ fn reconcile(context: &str, label: &str, unit: &str, saved: usize, current: usiz
 }
 
 /// 训练层的算子引用：`nn` 的层定义必须先通过 `op` 的闭集校验。
-///
-/// 这里只提供"取全部算子名"的只读便利，避免训练循环自己拼字符串。
 pub fn operators(layer: &dyn nn::Contract) -> &[String] {
     layer.spca().ops()
 }

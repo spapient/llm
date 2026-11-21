@@ -3,11 +3,6 @@
 use super::*;
 
 /// 一段可执行的内核体：按节点名字登记，在绑定好的缓冲上就地计算。
-///
-/// 本层不编译 kernel（那是 `cutile` 的 runner 与 `build`），也不解释操作数编号——
-/// `inputs` / `outputs` 是执行器按节点角色拆好的视图，与 [`Node::inputs`] /
-/// [`Node::outputs`] 一一对应、顺序一致。因此"哪个编号是张量"这件事到不了本层：
-/// 执行器只接线，内核只算数。
 pub trait Program {
     /// 与 [`Node::name`] 相同的内核名：注册表按它查，重名即注册失败。
     fn name(&self) -> &str;
@@ -17,9 +12,6 @@ pub trait Program {
 }
 
 /// 执行器持有的操作数表：编号 ↔ 平坦的 `f32` 缓冲。
-///
-/// 编号由编排层分配（ADR 0025 §2：本层只认不透明引用）。表按编号排序，因此诊断输出与
-/// 遍历顺序与插入顺序无关——同一张图的两次执行打印出来是同一份。
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Bindings {
     values: std::collections::BTreeMap<u32, Buffer>,
@@ -74,9 +66,6 @@ impl Bindings {
 }
 
 /// 执行器从 [`Bindings`] 里借出的一组缓冲：编号与内容成对，用完原样放回。
-///
-/// 借出/放回是"同时拿到只读输入与可写输出"的唯一安全办法：直接从同一张表里取
-/// `&[f32]` 与 `&mut [f32]`，借用检查器无法知道编号不重叠（编号是运行期的值）。
 #[derive(Default)]
 struct Taken {
     ids: Vec<u32>,
@@ -96,16 +85,6 @@ impl Taken {
 }
 
 /// CPU 执行器：把图提交到本地队列，并在 [`sync`](Executor::sync) 时按图序**真的**跑内核。
-///
-/// 与 [`LocalExecutor`] 的区别在于排水那一步：`LocalExecutor` 只把队列里的条目丢掉，
-/// [`CpuExecutor`] 会为每个节点找到登记过的 [`Program`]、把操作数从 [`Bindings`] 里借出来、
-/// 执行、再放回。于是同一个 [`Executor`] 契约下，CPU 后端是"提交即入队、同步才计算"，
-/// 而不是 `submit` 就同步算完——那会让上层无法按流写出正确的依赖顺序。
-///
-/// `sync` 只排**指定流**：别的流的条目原样留着（跨流先后不属于本层，见 [`Executor::sync`]）。
-/// 一条条目只有在执行成功之后才出队，所以失败时它仍然在队列里，"还没跑完"这件事查得到。
-///
-/// 执行顺序严格按 [`Graph::nodes`]：本层不做重排、不做融合（`cutile` 的"无 IR"前提）。
 pub struct CpuExecutor {
     device: Device,
     programs: Vec<Box<dyn Program>>,
@@ -232,9 +211,6 @@ impl CpuExecutor {
     }
 
     /// 把一组缓冲从操作数表里借出来；缺一个就整体放回（不留半个状态）。
-    ///
-    /// 同一编号在本节点重复作为只读输入（如逐元素二元两路借同一块残差流）：第二次取到的是
-    /// 已借出那份的克隆，输入视图互不持有可写引用；放回时按编号写回，不改动执行几何。
     fn take(&mut self, operands: &[Operand]) -> Taken {
         let mut ids = Vec::with_capacity(operands.len());
         let mut values = Vec::with_capacity(operands.len());
@@ -298,9 +274,6 @@ impl Executor for CpuExecutor {
     }
 
     /// 排这一条流上已提交的节点：按入队顺序执行，成功一条才出队一条。
-    ///
-    /// 别的流不动：跨流先后不属于本层（[`Executor::sync`] 只承诺"这条流上已提交的工作完成"）。
-    /// 失败时出错的那条留在队列里，调用方能看到"它还没跑完"，而不是被悄悄丢掉。
     fn sync(&mut self, stream: Stream) -> Result<()> {
         let mut index = 0;
         while index < self.queue.len() {

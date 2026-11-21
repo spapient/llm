@@ -1,9 +1,4 @@
 //! 见证执行器（README §11.3）：每条已声明的供给都要真的跑一次自己的见证。
-//!
-//! 档案校验只能证明"文件在、函数名写在源码里"；本模块把见证源码编成可执行文件，逐条调用
-//! `int func(float *out)` 并与 `witness.expect` 对拍。两种范围（[`Scope`]）合起来覆盖每条声明：
-//! [`run_all`] 是设备执行，[`self_check`] 只跑设备执行跑不到的、证明"算得对"而不改变 `grade`。
-//! 第三种结论是语法门（[`LanguageGate`]）：没有真机时交给 clang 的对应语言前端解析，仍不是设备证据。
 
 pub use cutile::prof::Emit;
 
@@ -22,9 +17,6 @@ pub use crate::gate::{LanguageGate, language_gate};
 /// 编译并真机运行一段 CUDA 程序，回读 `(计数, f32 位模式)`。供 cli 真机对拍复用：生成生产态网格
 /// 内核 → 经 `Backend` 缝（[`crate::backend::Driver::compile_run`]）编译执行 → 解析 stdout 的
 /// `printf("%u\n")` 输出。计数来自 stderr 的 `witness N` 行，值来自 stdout 的 u32 位模式。
-///
-/// 这是「机制层」的薄适配器：它只按 `emit` 取后端、调 [`crate::backend::Driver::compile_run`]，
-/// 不认识 CUDA 的任何编译细节——CUDA 后端由 L7 注入（`engine` 实现 `Backend`）。
 pub fn run_cuda(
     profile: &Profile,
     dirs: &Dirs,
@@ -177,9 +169,6 @@ pub(crate) fn self_checkable(profile: &Profile) -> Vec<Selected<'_>> {
 }
 
 /// 见证源码：内置设备读编译期内嵌副本（发布机没有源码树），`data.root` 或未登记的设备走磁盘。
-///
-/// 磁盘路径由 [`prim::Layout`] 解析：片段层按设备拆开之后，"哪台设备的见证在哪"不再是一条
-/// 拼在同一个根上的路径，而是每个设备 crate 一个源码根。
 pub(crate) fn source(witness: &Witness, dirs: &Dirs) -> diagnostic::Result<String> {
     let ext = Path::new(&witness.file)
         .extension()

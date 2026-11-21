@@ -5,9 +5,6 @@ use diagnostic::{Code, Error, Result};
 use crate::Buffer;
 
 /// 缓冲分配器：分配、释放、显式拷贝。
-///
-/// 分配与释放只经过本 trait；跨设备拷贝是同一方法的后端实现，框架层不发生隐式拷贝（ADR 0025 §3）。
-/// 具体后端实现放在独立边界 crate，依赖方向只能从边界 crate 指向本 trait（见 `docs/ARCHITECTURE.md` 第二节）。
 pub trait Allocator {
     /// 分配 `bytes` 字节并清零；`0` 得到空缓冲。
     fn alloc(&mut self, bytes: usize) -> Result<Buffer>;

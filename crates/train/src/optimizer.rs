@@ -1,19 +1,4 @@
 //! 优化器：对象安全 trait、矩状态按参数编号自持、按 [`ParamRole`](llm_nn::ParamRole) 取组。
-//!
-//! **拥有**：[`Optimizer`] trait、[`Group`] 分组闭集、[`Slot`] 槽位视图与 [`Sgd`] / [`Adam`] /
-//! [`Muon`] 三种实现。**不拥有**：学习率调度（[`crate::Schedule`]）、梯度缓冲
-//! （[`crate::Buffers`] 扩展）、快照格式（[`snapshot`]）。**依赖**：`nn`（角色闭集）、
-//! `diagnostic`。
-//!
-//! 三条收口口径：
-//!
-//! - 组归属只从角色派生：[`Group::from_role`] 是角色 → 组的唯一映射，优化器不按字段名、层名
-//!   前缀猜组；权重衰减豁免同样从 [`ParamRole::wd_exempt`] 派生。
-//! - 矩状态由优化器自己按槽位编号自持：autograd 只出 tape / plan / Replay，不持梯度存储；
-//!   优化器实例就是矩状态的唯一存放处，快照在 T1-4 从这里导出。
-//! - 矩阵形状随槽一起走（[`Slot::shape`]）：`Sgd` / `Adam` 逐元素更新、用不上形状，但 [`Muon`]
-//!   要在矩阵上做正交化——形状不在槽里，就只能靠调用方和优化器对暗号，而暗号对错了没人报错。
-//!   非矩阵槽的 `shape` 是 `None`，矩阵槽的 `rows × cols` 必须等于参数长度。
 
 use diagnostic::{Code, Error, Result};
 use nn::ParamRole;
@@ -62,9 +47,6 @@ impl Group {
 }
 
 /// 一个待更新参数槽的视图：参数值就地更新，梯度为该槽当前已累积/裁剪口径的结果。
-///
-/// 生命周期借用调用方的参数与梯度缓冲；优化器不拥有参数存储，只持有自己的矩状态。
-/// 梯度在分布式同步阶段需要就地改写（归约/平均），因此这里是可变借用；优化器步进仍只读。
 pub struct Slot<'a> {
     /// 参数值（就地写回）。
     pub params: &'a mut [f32],
@@ -73,16 +55,11 @@ pub struct Slot<'a> {
     /// 参数角色：分组与衰减豁免的派生依据。
     pub role: ParamRole,
     /// 矩阵形状 `(rows, cols)`：参数在图上登记为二阶张量时给出，否则 `None`。
-    ///
-    /// `Sgd` / `Adam` 用不上它（逐元素更新），[`Muon`] 的正交化只在矩阵上有定义——形状因此是
-    /// 更新口径的一部分，而不是调用方的私事。
     pub shape: Option<(usize, usize)>,
 }
 
 impl Slot<'_> {
     /// 参数与梯度长度必须一致，且矩阵槽的行列积必须等于参数长度。
-    ///
-    /// 不一致是调用方接线错误（[`Code::Invalid`]）：长度错了的梯度会整体错位，而不会有任何一处报错。
     fn check_len(&self) -> Result<()> {
         if self.params.len() != self.grads.len() {
             let message = format!(
@@ -132,9 +109,6 @@ impl OwnedSlot {
 }
 
 /// 对象安全优化器 trait：实现自持矩状态，按槽位编号（`slots` 下标）存取。
-///
-/// 方法无泛型、无 `Self` 返回，因此可装成 `&mut dyn Optimizer`；新增优化器只实现本 trait，
-/// 不另起一套参数组映射。
 pub trait Optimizer {
     /// 一步更新全部槽位；`lr` 是调度之后的当前有效学习率。
     ///
@@ -185,8 +159,6 @@ fn check_slots(slots: &[Slot<'_>]) -> Result<()> {
 }
 
 /// 普通 SGD（可选解耦权重衰减 + 全局范数裁剪）。
-///
-/// Sgd 与 Adam 共用的解耦衰减 / 范数裁剪构造器：同一份口径，不各写一遍。
 macro_rules! decay_clip {
     ($T:ty) => {
         impl $T {

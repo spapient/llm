@@ -1,8 +1,4 @@
 //! `run` 命令：用权重文件里的**真实数值**算一条前向链，每层一次真机内核（L7 bin 内模块）。
-//!
-//! 与 `status` 的分工：`status` 回答"这些层至少需要多少流量"（算术，不需要设备），本命令回答
-//! "这些层真的算出来是多少"（协商 → 拼接 → emit → 编译 → 执行 → 与标量参考对拍）。两者用同一份
-//! 层清单与同一张算子语义表，因此下界与结果不会各说一套。
 
 use diagnostic::render::Panel;
 use diagnostic::{Code, Error, Result};
@@ -286,10 +282,6 @@ fn drive(
 }
 
 /// 三个刻意的边界，都在输出里如实写出来而不是悄悄降级：
-///
-/// - 只跑**连续的一条链**：某一层的输入宽度与当前向量不等时停下，不再猜"是不是该换一份输入"；
-/// - 只跑有算子的编码：没有算子的格式（f16 / bf16 / i8 / 分组不明的 4 位打包）停下并说明缺什么；
-/// - 权重按需读：每层只读它自己那条条目，不把整份文件搬进内存。
 pub(crate) fn run(weights: &str, input: Option<&str>, device: Option<&str>) -> Result<()> {
     // 配置解析在命令行层、档案装载在核心里；本函数只决定"跑哪些层、用什么数据"。
     let device = device.unwrap_or("auto");
@@ -320,8 +312,6 @@ fn parse_word(word: &str) -> Result<f32> {
 }
 
 /// `--input a,b,c` → 向量；空段被跳过，段内空白被裁剪。
-///
-/// 解析放在组装点而不是 `cli`：文法层只搬运字符串，`f32` 的语法与报错措辞属于要使用它的地方。
 fn parse_input(text: &str) -> Result<Vec<f32>> {
     let mut values = Vec::new();
     for word in text.split(',') {

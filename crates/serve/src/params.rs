@@ -1,9 +1,4 @@
 //! 驻留权重表：装载期一次性解码条目，生成循环内不再读文件。
-//!
-//! 形状与条目名描述归 [`crate::descriptors`](crate::descriptors)；这里只持有
-//! `条目名 → 权重块`。权重块有两种：稠密 `f32`（[`Block::Dense`]）与量化打包字节
-//! （[`Block::Packed`]）；量化标度仍是 f32，作为独立条目按标度条目名登记，
-//! [`Params::scale_entry`] 记录权重条目到标度条目的对应，装配侧据此把两条绑到同一节点。
 
 use std::collections::BTreeMap;
 
@@ -50,9 +45,6 @@ impl Block {
 
 /// 条目装载后端的最小契约：把一条 F32 条目解包进驻留 `f32` 缓冲（非 F32 返回 `None`），
 /// 或取一条条目的原始字节（量化打包权重的存储形态就是字节，不做数值解码）。
-///
-/// 两种物理后端经薄适配实现本契约——[`Loader`] 拷字节、[`Reader`] 借字节，族别分流与
-/// 注意力块四路条目只写一份，不在后端之间复制装配规则。
 trait WeightSource {
     /// 解码条目；非 F32 返回 `Ok(None)`。
     fn f32(&self, entry: &WeightEntry) -> Result<Option<Vec<f32>>>;
@@ -265,9 +257,6 @@ impl Params {
 
 pub mod descriptors {
     //! 编号 ↔ 形状/条目名描述表（D10 / ADR 0044）：只留 serve 装配侧。
-    //!
-    //! engine [`Bindings`](engine::exec::Bindings) 仍是纯 `u32 → Vec<f32>`，不解释编号含义，
-    //! 也不加只读形状访问器；形状与条目名只在装配期由层声明推出，写进这张表供装配校验与诊断。
 
     use diagnostic::{Code, Error, Result};
 
@@ -286,8 +275,6 @@ pub mod descriptors {
     }
 
     /// 装配期自洽：描述表编号与权重/激活台账一一对应，形状积（权重）或单轴长度（激活）相符。
-    ///
-    /// 描述表是装配侧事实；引擎不读这张表，也不解释编号含义。
     pub(crate) fn check_all(
         descriptors: &[BindingDesc],
         params: &Params,

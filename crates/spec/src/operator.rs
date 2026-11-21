@@ -1,17 +1,8 @@
 //! 算子基座：语义变化点的唯一契约（ADR 0050）。
-//!
-//! 六族骨架（`Reduce`、`Unary`、`Binary`、`Format`、`Gemm`，实现都在 `gemm`）仍各自声明
-//! 族内装配配置；[`Operator`] 是它们之上的统一语义契约，也是 [`Model`] 的行为侧投影。每个具体
-//! 算子同时实现族 trait 与本 trait，方法体只转发，不写第二份算术。
-//!
-//! `#[annotation::model]` 生成的 `MODEL` 是这一契约的一份实例。迁移期两份并存，由
-//! 本文件末尾的投影一致性测试锁住漂移；每族迁移完成后 `MODEL` 改由 [`model_of`] 生成。
 
 use crate::model::{AxisSpec, Cost, DType, Model, Sample, ShapeContext};
 
 /// 一个算子的全部语义：名字、生产形状、精度、轴、可微性，以及代价/样本/参考三条行为。
-///
-/// 后端不进入本契约：执行变化点归 `cutile::backend`，跨层即破坏分层（ADR 0050）。
 pub trait Operator {
     /// 注册名：与 `ops/<name>.toml` 的文件名、`REGISTRY` 的一行一致。
     const NAME: &'static str;
@@ -26,8 +17,6 @@ pub trait Operator {
     /// 形状粒度：`m` 必须是它的整数倍；稠密算子为 1。
     const GROUP: u32 = 1;
     /// 输入缓冲个数（不含输出）：类型化 API 用它把输入写成定长数组。
-    ///
-    /// 由算子定义处的装配行给出；`arity_matches_the_samples` 再把它与样本里非 `y` 缓冲数对拍。
     const ARITY: usize;
 
     /// 把形状对 `(m, n)` 翻译成算子自己的具名轴上下文。
@@ -41,10 +30,6 @@ pub trait Operator {
 }
 
 /// 把 [`Operator`] 投影成语义表 [`Model`]。
-///
-/// 这是注解与基座之间唯一的翻译点：`#[annotation::model]` 生成
-/// `const MODEL: Model = model_of::<T>();` 之后，`MODEL` 不再是第二份事实。
-/// `const` 使表仍是编译期常量（ADR 0005），不引入运行期注册。
 pub const fn model_of<T: Operator>() -> Model {
     Model {
         group: T::GROUP,
@@ -82,11 +67,6 @@ macro_rules! operator_here {
 }
 
 /// [`Operator`] 的唯一生成点：名字、生产形状、精度、轴与三条行为全部由四个入口路径给出。
-///
-/// 两种形态：`grained` 把粒度对齐到骨架的 `Format::GRAIN`，
-/// 其余按稠密算子取 `1`；入口路径由调用方给（族骨架取 `$skel::*` 的泛型入口，
-/// 模块自带入口时取 `self::*`，见 [`operator_here!`]）。装配宏因此都不必再写
-/// 第二份 impl。
 #[macro_export]
 macro_rules! operator_via {
     ($ty:ty, $op:tt, $arity:literal, $shape:expr, $differentiable:literal, $skel:ident, $axes:expr) => {

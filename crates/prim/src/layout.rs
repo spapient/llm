@@ -1,11 +1,4 @@
 //! 片段层在哪：仓库内置（六台设备各在自己的 crate 里）或某个 `data.root` 的 `prim/`。
-//!
-//! 两种模式的差别只有**目录解析**，装载、校验、报错全部共用，所以"换一份片段"不会换一套
-//! 语义：[`Layout::builtin`] 是仓库内置，[`Layout::at`] 是 `data.root` 覆盖
-//! （`<data.root>/prim/<vendor>/<prim>.<ext>`）。两种模式走同一个装载入口
-//! [`Layout::fragments`]，因此"文件名不在闭集内 / 签名声明写错"在两种模式下报同一类错误。
-//!
-//! `witness.<ext>` 与片段同目录、同扩展名，但**不是片段**：装载时按 [`WITNESS_STEM`] 跳过它。
 
 use crate::builtin::{builtin, dir_of};
 use crate::{FragmentSet, Prim};
@@ -13,22 +6,14 @@ use diagnostic::{Code, Error};
 use std::path::{Path, PathBuf};
 
 /// 见证源码的文件名（不含扩展名）。
-///
-/// 它与片段同目录、同扩展名，但语义不同：片段是"某原语怎么写"，见证是"证据能跑"。
-/// 装载片段时按这个名字跳过它。
 pub const WITNESS_STEM: &str = "witness";
 
 /// 数据根对应的片段层根目录：`<data.root>/prim`。
-///
-/// 一个 `data.root` 同时含 `ops/`、`devices/`、`prim/` 三层，本 crate 只解释最后一层。
 pub fn layer_root(data_root: &Path) -> PathBuf {
     data_root.join("prim")
 }
 
 /// 片段层在哪：仓库内置（六台设备各在自己的 crate 里）或某个 `data.root` 的 `prim/`。
-///
-/// `data.root` 覆盖时布局是 `<data.root>/prim/<vendor>/<prim>.<ext>`，与内置的
-/// `<crate 根>/<prim>.<ext>` 只差 vendor 那层目录——因为一个目录一台设备，已经是内置的形态。
 #[derive(Debug, Clone, Copy)]
 pub struct Layout<'a> {
     /// `Some` 表示读磁盘上的 `data.root`；`None` 表示内置表。
@@ -73,9 +58,6 @@ impl<'a> Layout<'a> {
     }
 
     /// 见证文件 `witness.file`（`<vendor>/witness.<ext>`）的可读路径。
-    ///
-    /// 与 [`Layout::fragments`] 同一套解析：`data.root` 下是 `<root>/prim/<file>`，内置是
-    /// 那个设备 crate 的源码树。`None` 表示 vendor 不认识或 `file` 没有 `<vendor>/` 前缀。
     pub fn witness(&self, file: &str) -> Option<PathBuf> {
         let (vendor, name) = file.split_once('/')?;
         match self.data {
@@ -111,8 +93,6 @@ pub fn load(dir: &Path, vendor: &str, ext: &str) -> diagnostic::Result<FragmentS
 }
 
 /// 把一个目录项装进集合；不是片段就什么都不做。
-///
-/// 回答「这个文件算不算一段片段」，不回答「目录能不能读」——后者在 [`load`]。
 fn add(set: &mut FragmentSet, path: &Path, ext: &str) -> diagnostic::Result<()> {
     let Some(stem) = fragment_stem(path, ext) else {
         return Ok(());

@@ -1,14 +1,4 @@
 //! 设备侧分块 lowering：共享内存 GEMM 与（后续）分块注意力。
-//!
-//! **拥有**：中性 [`llm_optim::backend::Lower::TiledGemm`] 的 Metal 落地——把 GEMM 骨架的标量三重
-//! 循环换成 threadgroup 共享内存分块。**不拥有**：骨架分派（`llm_optim::execution`）、逐点/循环/
-//! 归约/扫描 lowering（`dialect` / `cuda` / `msl`）、张量核 WMMA（`wmma`，CUDA）。
-//!
-//! 与 `dialect` 分开的理由：`dialect` 的方言表与 vendor 驱动已接近单文件上限，而分块内核是
-//! 独立的 tiled 家族（共享内存 + 线程组屏障），把错误处理与索引算术收在一处更可读。
-//!
-//! 各族按内核分成 [`gemm`] / [`attn`] / [`flash`] / [`int8`] / [`tensor`] / [`misc`]；它们之间只共用
-//! 「签名 → 缓冲名与几何」这一组提取函数，因此提取函数留在本模块。
 
 use diagnostic::{Code, Error, Result};
 use op::model::Sample;
@@ -122,17 +112,6 @@ mod tests;
 use llm_optim::backend::TensorGeometry;
 
 /// 张量核 GEMM 的几何选型：按输出规模在两组实测配置间取优，并让规约块尽量整除 `K`。
-///
-/// 中小输出（`m·n ≤ 4 Mi`，即到 2048² 为止）在 20 核级别 GPU 上线程组数不足，占用率优先：
-/// `N` 跨度 64、4 个 simdgroup（128 线程/组），线程组数比大块几何翻倍。整块都很小时尾块分支
-/// 的占比最高，故这类形状优先挑能整除 `K` 的规约块（整除时生成无分支内核）。行跨度取能整除
-/// `M` 的最大档（`128` 优先，小 `M` 依次降到 `64`、`32`）。
-///
-/// 更大的输出本身线程组就够多，改取 `N` 跨度 128 配 8 个 simdgroup，换每块更高的 A/B 重用；
-/// 此时尾块开销被块数摊薄，规约块直接取装得下的最大档（`96`），不迁就整除。
-///
-/// 两组实测（M5 Pro，`GF/s`）：`1024³` 中小几何 `8.5–9.1k` 对大块几何 `8.3–8.4k`；
-/// `4096³` 大块几何 `23.6k`（`96`）对 `23.2k`（整除的 `64`）对中小几何 `22.9k`。
 #[must_use]
 pub fn tensor_geometry(m: usize, n: usize, k: usize) -> TensorGeometry {
     let small = m * n <= 4 * 1024 * 1024;
@@ -194,9 +173,6 @@ pub fn metal_tensor_gemm(
 const TENSOR_SITE: &str = "engine::tiled::metal_tensor_gemm";
 
 /// 张量核 GEMM 的几何前提：输出块的行/列跨度、规约块尺寸、simdgroup 数，以及 M 维必须整块对齐。
-///
-/// `M % tile_m == 0` 是硬约束：`matmul2d` 按整块读 A，尾块会把设备缓冲读越界（N 维不必对齐，
-/// 装载阶段零填、写回按 `min` 裁边）。
 fn check_tensor_geometry(m: usize, n: usize, k: usize, geometry: TensorGeometry) -> Result<()> {
     check_geometry(geometry)?;
     check_tensor_shape(m, n, k, geometry)?;
@@ -231,9 +207,6 @@ fn check_tensor_shape(m: usize, n: usize, k: usize, geometry: TensorGeometry) ->
 }
 
 /// 张量核 GEMM 的 MSL 正文：`M/N/K` 与几何全部烘成编译期常量，故无标量缓冲绑定。
-///
-/// 主循环每个 `k_tile` 把 B 的一竖条（`k_tile × tile`）搬进线程组内存，再让 `matmul2d` 在
-/// A、B 两块张量视图上累加；末块走 `dynamic_extent` 版本，规约轴长度是实际剩余。
 fn tensor_gemm_msl(
     a: &str,
     b: &str,

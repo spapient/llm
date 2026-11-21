@@ -98,9 +98,6 @@ pub use formula::{
     f32_io_operands,
 };
 /// 元素位宽闭集（bit）。
-///
-/// 闭集而不是 `u32`：位宽决定流量怎么算（`i4` 是半个字节），随手写一个 `7` 不该通过。
-/// 加一个变体要同步 [`Bits::ALL`] 与 [`Bits::bits`]——它们是这条口径的对外契约。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Bits {
     /// 4 位（打包的 int4 权重）。
@@ -125,9 +122,6 @@ const WIDTHS: [u32; Bits::ALL.len()] = [4, 8, 16, 32, 64, 2];
 
 /// `Bits` 的词汇表由 [`prof::atom::Closed`] 单点声明，`ALL` / `as_str` / `parse` 由
 /// [`prof::inherent_names!`] 以同名固有项转发。
-///
-/// 并入 `op` 之后不再保留自己的 `ALL` 数组：`op` 在 `prof` 下游，`tests/contracts.rs` 要求
-/// 下游成员把名字表交给 `Closed`（`lints/vocabulary.toml` 的 `[closed]` 白名单不给 `op` 开口子）。
 impl prof::atom::Closed for Bits {
     const ALL: &'static [Self] = &[
         Self::Four,
@@ -156,18 +150,12 @@ impl Bits {
     }
 
     /// 给定元素个数需要多少字节，**向上取整**。
-    ///
-    /// 打包权重按 nibble 计费：`3` 个 int4 元素要 2 字节，而不是 1 字节。
     pub const fn bytes_for(self, elements: u128) -> u128 {
         (elements * self.bits() as u128).div_ceil(8)
     }
 }
 
 /// 一次计算的标量代价，roofline 的分子（cutile README §12.1）。
-///
-/// 流量按**方向**分账：读与写的上限不是同一个数，把它们加成一个总量之后，任何"这层到底卡在
-/// 哪一侧"的结论都失去了依据，而"把读挪成写、总量不变"也会变得看起来等价（`nn::Bounds`
-/// 的 `moves_within` 正是靠这个区分来发现融合是否真的更省）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Cost {
     /// 浮点运算次数。
@@ -192,17 +180,11 @@ impl Cost {
     }
 
     /// 最少流量（字节）：读与写合计。
-    ///
-    /// 这是**派生**量，用来打印与对齐旧口径。判断 roofline 卡在哪一侧必须分别拿
-    /// [`Cost::read`] 与 [`Cost::write`] 去比峰值，而不是拿这个和。
     pub fn bytes(&self) -> u64 {
         self.read.saturating_add(self.write)
     }
 
     /// 两笔代价相加：复合算子的总代价。
-    ///
-    /// 每个方向各自相加——这正是"复合组件的下界在**每个方向**上都不高于子组件之和"那句话
-    /// 里的那个和。
     pub fn plus(self, other: Self) -> Self {
         Self {
             flops: self.flops + other.flops,

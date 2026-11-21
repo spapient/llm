@@ -4,9 +4,6 @@ use std::fmt;
 use std::str::FromStr;
 
 /// 解析后的爱因斯坦求和表达式：若干输入项 + 一个输出项。
-///
-/// 只保存**结构**（项与字母），不保存任何长度；长度由调用方给出的
-/// [`crate::einsum::Extents`] 决定，因此同一份表达式可以复用到任意形状。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Expr {
     text: String,
@@ -80,9 +77,6 @@ impl FromStr for Expr {
 }
 
 /// 轴字母的闭集：`a..z` / `A..Z`；[`crate::einsum::Extents`] 也用这一条。
-///
-/// 这里只回答"是不是"，不产出错误：这一层不产生 `String` 错误，文本由各调用点按自己的上下文给
-/// （`Expr` 说"第几项"，`Extents` 说"哪个轴"）。
 pub(crate) fn is_label(label: char) -> bool {
     label.is_ascii_alphabetic()
 }
@@ -95,8 +89,6 @@ fn bad(message: impl Into<String>) -> Error {
 }
 
 /// `->` 的左右两侧：表达式非空，箭头恰好一个。
-///
-/// 只回答"文本切不切得开"，不回答轴字母是否合法——那是 [`term_labels`]/[`output_labels`] 的事。
 fn sides(trimmed: &str) -> Result<(&str, &str), Error> {
     if trimmed.is_empty() {
         return Err(bad("表达式为空"));

@@ -59,9 +59,6 @@
 use diagnostic::{Code, Error, Result};
 
 /// 批几何：`rows`、`cols` 非零且乘积不溢出，返回每批 token 数（`rows * cols`）。
-///
-/// [`Batch::new`] 与 [`Chunks::new`] 共用这一份校验，同一对非法行列给出同一个 `Code::Invalid`。
-/// `site` 只用于错误出处，不改判定。
 fn stride(rows: usize, cols: usize, site: &str) -> Result<usize> {
     if rows == 0 {
         return Err(Error::new(Code::Invalid, "批行数不能为 0").with(site));
@@ -102,8 +99,6 @@ impl<'a> Batch<'a> {
     }
 
     /// 不变量已由调用方在构造期保证（`tokens.len() == rows * cols` 且两者非零）时使用。
-    ///
-    /// 形状只在 debug 构建里断言；release 下不会越界，因为切片长度由调用方给的跨度推导。
     fn exact(tokens: &'a [u32], rows: usize, cols: usize) -> Self {
         debug_assert_eq!(
             tokens.len(),
@@ -130,9 +125,6 @@ impl<'a> Batch<'a> {
 }
 
 /// 数据集：按批取样本。三个计数语义互不重叠：列宽、完整批总数、还没取走的完整批数。
-///
-/// 它是**对象安全**的（四个方法都只取 `&self` / `&mut self`，没有泛型参数），所以按批消费的代码
-/// 可以只依赖这个 trait，用 `&mut dyn Dataset<'a>` 接收任意实现。
 pub trait Dataset<'a> {
     /// 列宽（每行多少 token）。
     fn cols(&self) -> usize;
@@ -148,9 +140,6 @@ pub trait Dataset<'a> {
 }
 
 /// 最简实现：一段连续 token 流按固定几何切批。
-///
-/// 它不做打乱、不做跨样本拼接；那两件事只改变游标推进方式，不改变 [`Batch`] 的形状契约。
-/// 批几何与批总数都在构造期算好，所以取批只剩「取完了」一种失败。
 #[derive(Debug, Clone)]
 pub struct Chunks<'a> {
     tokens: &'a [u32],
@@ -165,9 +154,6 @@ pub struct Chunks<'a> {
 
 impl<'a> Chunks<'a> {
     /// 由 token 流、每批行数与列宽构造：三者任一不合法都报 `Code::Invalid`。
-    ///
-    /// 参数顺序是 `(rows, cols)`，与 [`Batch::new`] 一致：两种顺序都能通过几何校验，换个构造函数
-    /// 传入就可能是一次静默转置，因此两条路径必须同序。
     pub fn new(tokens: &'a [u32], rows: usize, cols: usize) -> Result<Self> {
         let stride = stride(rows, cols, "train::Chunks::new")?;
         Ok(Self {
@@ -182,9 +168,6 @@ impl<'a> Chunks<'a> {
 }
 
 /// 迭代器：`next` 就是 [`Dataset::next_batch`]，所以「还剩几条」只有一个来源。
-///
-/// `ExactSizeIterator` 不是装饰：`len()` 与 `size_hint()` 都取自 [`Dataset::remaining_batches`]，
-/// 于是 `collect()` 能一次分配到位，「还能产出几条」也不需要调用方自己再数一遍。
 impl<'a> Iterator for Chunks<'a> {
     type Item = Batch<'a>;
 

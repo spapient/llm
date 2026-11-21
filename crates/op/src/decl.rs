@@ -1,7 +1,4 @@
 //! 声明解析与轴展开（cutile README §4、§10.2 的 ①）。
-//!
-//! 文本来自声明层（磁盘与内嵌两种来源，见 [`crate::Op`]），本模块只解释内容、不决定数据放在哪。
-//! 解析的结果是 [`OpDecl`]：机制层（`cutile`）从这一步之后只消费它，不再看 TOML。
 
 use crate::layout::LayoutSpec;
 use crate::sch::Schedule;
@@ -64,12 +61,6 @@ pub struct Axis {
 }
 
 /// Gemm 骨架的网格映射：声明哪些串行外层循环按网格维拆线程（N 维、每维一个 `线程:标量` 对）。
-///
-/// 这是「配置化优先」的落点：串行模板的外层循环 `for (int t = 0; t < S; ++t)` 由机制层把循环头
-/// 绑定到线程下标（`t = tid.x`、循环只跑一次），正文里的跨步（`i*K`、`p*N`）原样保留——因此既能
-/// 覆盖 gemv 的一维行网格，也能覆盖 gemm 的二维网格（右操作数的规约维跨步 `p*N` 不被误压缩）。
-/// 线程名必须与模板里的循环变量同名，标量名是该循环的边界；两者都由声明层显式给出，机制层
-/// （cutile）只做循环头替换、不索引分析模板。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Grid {
     /// 网格维（按序）：每项 `(线程名, 边界标量名)`。线程名 = 模板循环变量名，网格大小 = 标量样本值。
@@ -77,11 +68,6 @@ pub struct Grid {
 }
 
 /// 分块并行声明：把长轴切成 `size` 元素一块，网格 = `ceil(N / size)`，每线程处理一块。
-///
-/// 与 [`Grid`]（循环头绑定到线程下标、正文跨步原样保留）的分工是「规约轴交给谁」：归约/扫描
-/// 的跨元素依赖不能靠逐元素拆线程（每线程会各算一整遍），只能切成连续块、每线程串行处理自己
-/// 那一块，再把块级部分结果交给主机折叠（归约）或做 carry 前缀（扫描）。块长由声明层显式给出，
-/// 机制层只做 `start = g*size` / `len = min(size, N-start)` 的切块，不索引分析模板。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Chunk {
     /// 块长（元素/线程）。
@@ -184,8 +170,6 @@ mod build;
 
 mod expand {
     //! 轴展开：把 [`OpDecl`] 的轴取值笛卡尔积物化成 [`TileCombo`] 候选，或只算候选数。
-    //!
-    //! 与声明解析（`decl.rs`）拆开：解析只产出 [`OpDecl`]，展开是机制层在拿到声明之后的第一刀。
     use diagnostic::Error;
 
     use super::{Axis, MAX_TILES, OpDecl, TileCombo, field};

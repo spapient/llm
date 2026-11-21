@@ -1,11 +1,4 @@
 //! CUDA 分块扫描 lowering：局部扫描 + 主机携带前缀 + 校正，以及 host 串联驱动。
-//!
-//! 扫描的递推 `s_t = a·s_{t-1} + b·x_t` 有跨元素依赖，切块只能做**局部扫描**：每块从 0 起算，
-//! 块末态是这一段的前缀；主机按 `C_{g+1} = a^len · C_g + 尾态` 折叠出每块的携带前缀（f64，
-//! 与 Metal 侧同一口径），再由校正段把 `C_g · a^(j+1)` 加回块内每个元素。
-//!
-//! 折叠在 C 里做（CUDA 的一次执行是单个 host 程序），`a^len` 用逐次乘法而不是 `pow`——
-//! 不引入 `math.h`/`-lm` 依赖，且块长在此处最多 `chunk` 次乘法。
 
 use crate::cuda::{cuda_host_buffers_grid, cuda_launch_params, cuda_readback, cuda_release};
 use crate::dialect::{
@@ -95,9 +88,6 @@ pub fn cuda_scan(
 }
 
 /// 分块扫描的完整 CUDA 程序：局部扫描 → 回读整段 → 主机折叠携带前缀 → 校正 → 回读输出。
-///
-/// 折叠序与 `.k` 模板同口径：`C_0 = 0`、`C_{g+1} = a^len · C_g + y[start+len-1]`（f64 计算，
-/// 写回设备前收窄为 f32）。
 pub fn cuda_scan_driver(
     segments: &[String],
     signature: &Signature,

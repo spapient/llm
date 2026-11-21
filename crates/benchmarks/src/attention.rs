@@ -1,9 +1,4 @@
 //! attention 基准：decode 单头、prefill 的 online / dense 与各自 tiled 对照。
-//!
-//! 每条用例只在调用点声明"哪个名字配哪条内核"；一次迭代做什么、`black_box` 落在哪一层，
-//! 由 [`one`] 与 [`decode_one`] 统一给出——九条基准共用那两处，遍历次序之外没有第二份说法。
-//! 预热、采样与测量时长由 criterion 配置决定。tile 与非 tile 两条路径逐位一致（对拍在
-//! `op::attention` 的测试里），本文件只比较遍历次序对墙钟的影响。
 
 use crate::fixtures::{Sample, checked};
 use criterion::measurement::WallTime;
@@ -33,9 +28,6 @@ fn read_bytes(s: usize) -> u64 {
 }
 
 /// 一条内核基准：`run` 拿四条等长切片做一次前向。
-///
-/// 几何在装配阶段用同一条 `run` 校验一次，测量阶段只把 `Result` 交给 `black_box`；
-/// `black_box` 落在四条切片入口，不落在样本上——内核只看得见切片，挡住这四层就挡住了全部读数。
 fn one<E: fmt::Display>(
     sample: &mut Sample,
     group: &mut BenchmarkGroup<'_, WallTime>,

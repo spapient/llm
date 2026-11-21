@@ -1,8 +1,4 @@
 //! 打包反量化骨架：每字节 `CPB` 个码，`y = scale · (code − zero)`。
-//!
-//! `dequant_i2`（4 码/字节）与 `dequant_i4`（2 码/字节）共用形状投影、确定性样本、标量参考与
-//! 打包内核；位宽、掩码、零点作为参数传入，解包与长度校验只写一份。`dequant_i8` 不打包
-//! （f32 承载量化值），不走本骨架。
 
 use crate::model::{Buffer, Cost, Sample, ShapeContext, Values};
 use diagnostic::{Code, Error};
@@ -213,9 +209,6 @@ pub(crate) mod test_support;
 
 pub mod dequant_i2 {
     //! 2 位反量化：打包字节 `q`（每字节四个 2 位码），`y = scale * (code - 2)`。
-    //!
-    //! 低 2 位在前、高位在后；码是无符号 0..3，按对称零点 2 转成 -2..=1。打包骨架在
-    //! [`crate::dequant`]，本模块只写位宽与零点，`#[annotation::model]` 装配。
 
     use crate::quant::I2;
 
@@ -224,9 +217,6 @@ pub mod dequant_i2 {
 
 pub mod dequant_i4 {
     //! 4 位反量化：打包字节 `q`（每字节两个 nibble），`y = scale * (nibble - 8)`。
-    //!
-    //! 低 4 位在前、高 4 位在后；nibble 是无符号 0..15，按对称零点 8 转有符号。打包骨架在
-    //! [`crate::dequant`]，本模块只写位宽与零点，`#[annotation::model]` 装配。
 
     use crate::quant::I4;
 
@@ -242,9 +232,6 @@ pub mod dequant_i4 {
 
 pub mod i8 {
     //! 8 位反量化：`y[n] = scale * (q[n] - zero)`。
-    //!
-    //! 量化值以 f32 承载（当前 `Values` 只有 f32 变体），`scale` 与 `zero` 由样本标量给出。
-    //! 本模块自带形状、代价、样本、参考与遍历，`#[annotation::model]` 装配。
     use crate::dequant;
     use crate::model::{Buffer, Cost, Sample, ShapeContext, Values, cost_n};
     use diagnostic::{Code, Error};

@@ -78,10 +78,6 @@ pub mod contract {
     const STABILITY: &str = "同一输入必须给出同一个结论";
 
     /// 跑一次并把 `Result` 归一成 [`Behaviour`]，让"接受/拒绝"的比较不依赖 `Error` 的内部结构。
-    ///
-    /// panic 也在这里归一：入口是不受信任输入的边界，`catch_unwind` 是唯一能让"第 7 条输入打死
-    /// 进程"变成"第 7 条输入是一条证据"的手段。`AssertUnwindSafe` 的前提是 [`Target::run`] 在
-    /// panic 之后不会被观察到半截状态——它是 `&self` 的纯判定，没有跨用例的状态需要恢复。
     pub fn judge(target: &dyn Target, input: &[u8]) -> Behaviour {
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| target.run(input))) {
             Ok(Ok(())) => Behaviour::Accepted,
@@ -96,10 +92,6 @@ pub mod contract {
     }
 
     /// 核对单条用例的三条契约；违约返回第一条证据。
-    ///
-    /// 顺序就是报告的优先级：先 panic（进程已死，其余判据没有意义），再空消息（拒绝了却说不清
-    /// 为什么），最后稳定性（同输入两次结论不一致）。harness 与 [`sweep`] 都走这一条，判据只有
-    /// 一处实现。
     pub fn check(target: &dyn Target, case: u64, input: Vec<u8>) -> Result<(), Finding> {
         let name = target.name().to_string();
         let first = judge(target, &input);
@@ -119,16 +111,11 @@ pub mod contract {
     }
 
     /// 跑 `cases` 个确定性用例；全部符合契约返回 `Ok(())`，否则返回第一条证据。
-    ///
-    /// `cases` 为 0 时不做任何事：遍历范围由调用方决定，本函数不猜"默认跑多少个"。
     pub fn sweep(target: &dyn Target, seed: &Seed, cases: u64) -> Result<(), Finding> {
         (0..cases).try_for_each(|case| check(target, case, seed.derive(case)))
     }
 
     /// 跑 `cases` 个确定性用例，收齐**全部**违约证据。
-    ///
-    /// [`sweep`] 只带第一条证据便于快速定位；需要一份完整回归清单（CI 汇总、按契约分组统计）
-    /// 时用这条，遍历成本与 [`sweep`] 相同，只是不提前退出。
     pub fn sweep_all(target: &dyn Target, seed: &Seed, cases: u64) -> Vec<Finding> {
         (0..cases)
             .filter_map(|case| check(target, case, seed.derive(case)).err())
@@ -194,9 +181,6 @@ pub mod finding {
             message: String,
         },
         /// 入口用 panic 结束——违约，附从 payload 取回的消息。
-        ///
-        /// `panic!` 不带字符串（如 `panic!()` 或断言失败的非字符串 payload）时是占位说明，
-        /// 同样是违约：能打死宿主的输入本身就该修。
         Panicked {
             /// payload 里的说明；取不到时是占位文本。
             message: String,
@@ -280,9 +264,6 @@ pub mod finding {
     }
 
     /// 输入的可读复现形式：能当 UTF-8 读就给 Rust 字符串字面量（带转义），否则给紧凑十六进制。
-    ///
-    /// 两种形态都能直接贴进 issue 或 harness 复现命令：字符串字面量保留可读字符，十六进制覆盖
-    /// 任意字节，不依赖终端能不能显示。
     #[derive(Debug, Clone, Copy)]
     pub struct Repro<'a>(&'a [u8]);
 
@@ -311,16 +292,8 @@ pub mod finding {
 
 pub mod seed {
     //! 确定性用例生成：一份合法范例 + 用例序号 → 跨平台可复现的扰动字节串。
-    //!
-    //! 生成器只做整数混合，不接随机源、不读时钟、不碰全局状态：同一个 `(seed, case)` 在任何
-    //! 机器、任何工具链版本下都得到同一串字节，失败输入才能原样复现。变异调度覆盖三类边角：
-    //! 位/字节翻转、边界字节替换与整数 ±1 扰动、长度增减（插入、删除、截断、追加、区段复制）
-    //! ——真实缺陷几乎总长在这些位置，而不是与范例毫无关系的纯噪声。
 
     /// 确定性种子：同一个种子永远派生同一批用例，失败才能复现。
-    ///
-    /// 持有一份**合法范例**字节：遍历从它的边角上长出错误路径，而不是与真实输入毫无关系的噪声。
-    /// 种子本身是否被目标接受，由集成测试单独核对（见 `tests/parsers.rs`）。
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct Seed(Vec<u8>);
 
@@ -369,9 +342,6 @@ pub mod seed {
         }
 
         /// 取 `[0, bound)` 内的确定性下标；`bound` 为 0 时返回 0（调用方据此判空）。
-        ///
-        /// 用乘移（`u64 × bound` 取高 64 位）而不是取模：小边界下取模会让余数偏小的下标
-        /// 概率略高，乘移在整个区间上均匀，且不需要拒绝采样回退流。
         fn below(&mut self, bound: usize) -> usize {
             match bound {
                 0 => 0,
@@ -386,9 +356,6 @@ pub mod seed {
     }
 
     /// 范例字节的 64 位指纹：FNV-1a 逐字节折叠，再过 SplitMix 终混。
-    ///
-    /// 旧实现把范例字节留在状态之外，改一个字节只影响该字节自身的异或掩码；这里让每一位输入都
-    /// 参与状态混合，范例的一位翻转会扩散到整条派生流。
     fn fingerprint(bytes: &[u8]) -> u64 {
         let mut hash: u64 = 0xCBF2_9CE4_8422_2325;
         for &byte in bytes {
@@ -425,10 +392,6 @@ pub mod seed {
 
     impl Seed {
         /// 派生第 `index` 个用例：范例的一份确定性扰动。
-        ///
-        /// 输出长度不再钉死在范例长度上：删除/截断能收出空串与前缀片段，插入/追加/复制能长出
-        /// 更长的串。长度上限由变异步本身约束（追加 ≤ 4 字节、区段复制不超过范例长度），遍历成本
-        /// 可预期。
         pub fn derive(&self, index: u64) -> Vec<u8> {
             let mut rng =
                 Rng::new(fingerprint(&self.0) ^ index.wrapping_mul(0x9E37_79B9_7F4A_7C15));
@@ -447,8 +410,6 @@ pub mod seed {
     }
 
     /// 对 `out` 做 1..=3 步复合变异；约一成用例原样保留，保住合法路径覆盖。
-    ///
-    /// 每一步都在空/单字节边界上退化安全，不会 panic；截断收出空串后，后续位置类步骤直接跳过。
     fn mutate(out: &mut Vec<u8>, rng: &mut Rng) {
         if rng.below(10) == 0 {
             return;
@@ -566,17 +527,9 @@ pub trait Target {
     fn name(&self) -> &str;
 
     /// 跑一次输入。
-    ///
-    /// 实现不得 `panic`；接受与拒绝都必须能被调用方原样复现（见 [`check`] 的三条契约）。
-    /// 万一真的 `panic` 了，[`contract::judge`] 会把它记成 [`Behaviour::Panicked`] 证据，
-    /// 而不是让整次遍历断在那里——这条兜底不改变"实现不得 `panic`"，只是让违约可定位、可复现。
     fn run(&self, input: &[u8]) -> Result<(), Error>;
 
     /// 单条输入跑完整三条契约核对。
-    ///
-    /// libfuzzer harness 调这条而不是直接调 [`run`](Self::run)：于是覆盖引导跑到的输入
-    /// 同样受"结论稳定 / 拒绝有话说"约束，不只是不 panic。违约以 [`Finding`] 返回，用例号记
-    /// 0——模糊输入不是派生用例。
     fn exercise(&self, input: &[u8]) -> Result<(), Finding>
     where
         Self: Sized,

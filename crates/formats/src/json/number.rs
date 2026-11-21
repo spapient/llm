@@ -1,7 +1,4 @@
 //! `json` 的数字层：整数/小数/指数的文法与原文保留。
-//!
-//! 单独成文件是因为数字的接受集是 [`crate::json::parse`] 与 [`crate::json::parse_ledger`] 的
-//! 唯一差别，独立之后「哪个入口允许什么」只需读这一个文件。
 
 use diagnostic::Result;
 

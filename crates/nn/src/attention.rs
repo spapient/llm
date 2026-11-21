@@ -1,8 +1,4 @@
 //! 注意力层：`O = softmax(QKᵀ/√d)·V`。
-//!
-//! 序列长 `seq`（轴 `s`）与头宽 `head_dim`（轴 `d`）由构造给出；算法选朴素或 Flash，分别绑定
-//! `attention_f32` 与 `flash_attention_f32`。两条算子共用同一副骨架与轴表，只有参考实现与中间
-//! 布局不同，下界都按投影口径交给算子语义表推出。
 
 use diagnostic::{Code, Error, Result};
 use tensor::Shape;

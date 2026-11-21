@@ -96,11 +96,6 @@ struct Entry {
 }
 
 /// 算子适配宏：按 arity 分支展开拆切片 + 调 `op::<op>::forward`。
-///
-/// - `unary`：一进一出；
-/// - `binary`：两进一出（两路是向量+向量，或向量/索引 + 驻留权重整块，算子签名相同）。
-///
-/// 适配函数名即算子名，注册名由 [`kernel_table!`] 从标识符派生，不再手抄第二份字符串。
 macro_rules! kernel {
     ($($run:ident),* ; unary) => {$(
         fn $run(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
@@ -160,20 +155,11 @@ fn attention_paths(
 }
 
 /// 朴素自注意力适配：走稠密分块 tile 路径。
-///
-/// 与 `op::attention::forward` 逐位一致（对拍见 `op::attention::tests::tiled_dense_matches_naive_bitwise`），
-/// 差别只在 K/V 的读取次数：非 tile 路径每行都要把整段 K/V 重走一遍，tile 让一个行块的查询共用
-/// 同一段 K/V 分块。
 fn attention_f32(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
     attention_paths(inputs, outputs, op::attention::tiled::forward)
 }
 
 /// prefill 自注意力适配：走分块 tile 路径。
-///
-/// 分块与 online 的结果逐位一致（同一条 column 累加次序，对拍见
-/// `op::attention::tests::tiled_flash_matches_online_bitwise`），差别只在块内复用：online 每处理
-/// 一行都要把整段 K/V 重走一遍，tile 让一块内的查询行共用同一段 K/V 分块。decode 仍走
-/// `decode_flash_attention_f32`（那里每步只有一行，没有可复用的行块）。
 fn flash_attention_f32(
     _launch: Launch,
     inputs: &[View<'_>],
@@ -303,14 +289,6 @@ fn gemv_inputs<'a, 'b>(
 }
 
 /// 行批投影：整块 `x` 按 `m` 切段、`out` 按 `n` 切段。
-///
-/// 一行（decode 口径）走 `gemv`：此时 `m` 就是权重行宽，没有可复用的行块。多行（prefill 口径）
-/// 走线性层布局的核——权重按输出行驻留、整份权重在一次外循环里只读一遍；逐行调 `gemv` 会把它按
-/// 行数重复读，那个倍数正是本函数省掉的量。
-///
-/// 多行的两条实现共用同一组累加口径，差别只在寄存器分块与线程：整块可用时走
-/// [`op::fast::gemm_f32_tn`]（8×8 寄存器分块 + 常驻池，实测大 K 下比按列 tile 快近 30 倍），
-/// 行数不足一个微内核行块时走 [`op::matmul::forward_tn_tiled`]（打包的转置成本摊不回来）。
 fn project_rows(x: &[f32], weights: &[f32], out: &mut [f32], m: usize, n: usize) -> Result<()> {
     let rows = row_batch_rows(x, out, m, n)?;
     if rows == 1 {
@@ -339,10 +317,6 @@ type GemvQuantBatchFn =
     fn(x: &[f32], w: &[u8], s: &[f32], geo: op::gemv::Geometry, out: &mut [f32]) -> Result<()>;
 
 /// `[x: f32, w: u8, scales: f32] → y: f32`：量化 GEMV 通用桥接，按批行数分流。
-///
-/// 一行（decode 口径）走 `single`：此时 `m` 就是权重行宽，没有可复用的行块。多行（prefill 口径）
-/// 走 `batch`：输出行在外、输入行在内，一行权重只解包一次。两条路径的累加顺序相同，批结果与逐行
-/// 调用逐位一致；差别只在权重的读取次数（1 遍 vs `rows` 遍）。
 fn gemv_quant(
     launch: Launch,
     x: &[f32],
@@ -366,8 +340,6 @@ fn gemv_quant(
 }
 
 /// 量化 GEMV 桥接适配：第 0 路 x、第 1 路打包权重、第 2 路标度、第 0 路输出。
-///
-/// 每条 lane 只需给出两个算术入口（单行 / 行批），拆视图、位宽差异与分流都在 [`gemv_quant`] 一处。
 macro_rules! gemv_quant_kernel {
     ($($run:ident => $batch:path),*) => {$(
         fn $run(launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
@@ -388,8 +360,6 @@ gemv_quant_kernel!(
 );
 
 /// 反量化桥接：打包字节 lane（i2/i4）输入 u8；i8 逐元素 lane 输入 f32。
-///
-/// scale/zero 取 `op::<lane>::SCALE` / `ZERO` 样本常量，与骨架同一份配置，不在桥接层抄数。
 macro_rules! dequant_packed {
     ($($run:ident),*) => {$(
         fn $run(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
@@ -414,10 +384,6 @@ fn dequant_i8(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>])
 type GemmQuantFn = fn(a: &[u8], b: &[u8], m: usize, n: usize, out: &mut [f32]) -> Result<()>;
 
 /// 量化 GEMM 通用桥接：`A: u8, B: u8 → Y: f32`，几何从静态收缩轴 `K` 与缓冲长度反推。
-///
-/// 每字节码数由位宽推出（`cpb = 8 / BITS.bits()`）：A 长度 `m·K/cpb`、B 长度 `K·n/cpb`，
-/// `m = a.len() / (K/cpb)`、`n = b.len() / (K/cpb)`，输出长度由 `forward` 复核。
-/// 三条位宽 lane 同形，标记类型承载位宽与收缩轴常量，算术入口注入。
 fn gemm_quant<G: op::gemm::Gemm<Elem = u8>>(
     a: &[u8],
     b: &[u8],
@@ -493,10 +459,6 @@ fn rope_single(launch: &Launch, x: &[f32], out: &mut [f32], head_dim: usize) -> 
 
 /// 内核表展开：每条例子取适配函数标识符，算子名由 `stringify!` 派生，避免名字与函数名各写一份。
 /// CPU 内核表：`op::REGISTRY` 的 f32 纯切片子集，不是全覆盖。
-///
-/// 对照 `train` 的参考全覆盖表（24/24 同序锁死）：本表只登记 serve CPU 通路实际用到的纯切片
-/// f32 适配器，未覆盖的算子执行时由 [`CpuExecutor`](engine::exec::CpuExecutor) 按名拒绝。
-/// 新算子进注册表时，两处表的职责不要混写——train 补参考覆盖，serve 只接自己通路用到的。
 const KERNELS: &[Entry] = &op::kernel_table![
     add_f32,
     attention_f32,
@@ -557,8 +519,6 @@ impl Program for Kernel {
 }
 
 /// 把表内全部 CPU 内核登记进执行器；重名由 [`Executor::register_program`] 拒绝。
-///
-/// 装配侧在构造 CPU 模型宿主时调用一次；之后执行器只收图与操作数编号，不再改内核表。
 pub fn register_cpu<E: Executor>(executor: &mut E) -> Result<()> {
     for entry in KERNELS {
         executor.register_program(Box::new(Kernel { entry }))?;

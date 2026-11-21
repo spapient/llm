@@ -127,9 +127,6 @@ impl Table {
     }
 
     /// 把容量抬高 `extra` 页（页表随序列增长）。
-    ///
-    /// 只改容量，不分配页：页来自 [`Cache`]，仍由调用方 [`Table::push`]。容量上限溢出时报错，
-    /// 而不是回绕成一个"能装很少页"的页表。
     pub fn grow(&mut self, extra: usize) -> Result<()> {
         let capacity = self.capacity.checked_add(extra).ok_or_else(|| {
             Error::new(
@@ -221,10 +218,6 @@ impl Slot {
 }
 
 /// 页号分配器：固定 `total` 页，每页 `page_size` 个 token 位。
-///
-/// `refs` 是按页编号索引的引用计数：`release` 因此能 O(1) 判"这页是否已经在空闲表里"，
-/// 也能回答"它还被几个持有者引用"。计数是稠密的，每页一个 `u32`；相对页里的 KV 数据可以忽略。
-/// 页里的数据不在本类型：那是 [`Pager`] 的事，本类型只管"哪些页被借出、被几个人借"。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cache {
     page_size: usize,
@@ -295,9 +288,6 @@ impl Cache {
     }
 
     /// 归还一页：越界、重复归还或计数下溢都是调用方的 bug，直接报错。
-    ///
-    /// 计数减 1，**只有归 0** 才把页退回空闲池；仍被引用时页保持存活、数据不动。返回
-    /// `true` 表示这是最后一个持有者（调用方据此清零页数据），`false` 表示仍有共享者。
     pub fn release(&mut self, page: Page) -> Result<bool> {
         let Some(count) = self.refs.get_mut(page.id() as usize) else {
             return Err(
@@ -350,9 +340,6 @@ impl Cache {
     }
 
     /// 这一页当前是否被借出（引用计数 > 0）。
-    ///
-    /// [`Pager`] 用它拒绝"往已归还的页里写"：[`Slot`] 是可以在 `finish` 之后继续存在的值，
-    /// 而它指向的页此时可能已经属于另一条序列——写进去就是一次静默的串数据。
     pub fn is_live(&self, page: Page) -> bool {
         self.reference_count(page) > 0
     }

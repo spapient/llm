@@ -12,10 +12,6 @@ pub enum Access {
 }
 
 /// 表达式里一个操作数的**编译期**形态：名字、元素位宽与读/写方向。
-///
-/// [`Operand`] 装着 `String`，构造不出常量；这里只放编译期就能定下的三件事，装载成 [`Operand`]
-/// 时再补上拥有型名字。它属于表达式层而不是某条骨架：四条骨架（GEMV / 逐元素 / 一元 / 归约）
-/// 都要声明操作数表，放在其中任何一条里都会让另外三条反向依赖它。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OperandSpec {
     /// 缓冲名（与 `.k` 的形参名一致，也是诊断里显示的名字）。
@@ -49,10 +45,6 @@ impl OperandSpec {
 }
 
 /// f32 一读一写的标准操作数：`a` 读、`y` 写（一元与归约共用同一份）。
-///
-/// 过去 `unary` 与 `reduce` 各写一份同名的 `f32_operands`，而 `elementwise` 同名却返回
-/// 三元素——同一个函数名、两种元数，改错一处只会在运行时才暴露。收口到这里之后，操作数表
-/// 与 `OperandSpec` 同层（表达式层），四条骨架按元数各取所需。
 #[must_use]
 pub const fn f32_io_operands() -> [OperandSpec; 2] {
     [
@@ -72,9 +64,6 @@ pub const fn f32_binary_operands() -> [OperandSpec; 3] {
 }
 
 /// 一个操作数：名字、元素位宽与读/写方向。
-///
-/// 名字只是诊断用的标签（与内核模板的形参名一致），但必须唯一：同名缓冲出现在两个位置会被
-/// 重复计费，而这在真实算子里从来不是本意。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Operand {
     name: String,
@@ -191,8 +180,6 @@ impl Formula {
     }
 
     /// 输出轴：角色看"有几个读操作数共享它"（多于一个即 batch）。
-    ///
-    /// 派生轴不能出现在输出里——它的长度是从基准轴推出来的，写回去等于把一个视图当缓冲。
     fn output_axes(&self, extents: &Extents) -> Result<Vec<Axis>, Error> {
         let mut axes: Vec<Axis> = Vec::with_capacity(extents.len());
         for &label in self.expr.output() {
@@ -279,8 +266,6 @@ impl Formula {
     }
 
     /// 一次算完：flops 与两个方向的流量。
-    ///
-    /// 两个方向各自累加：合成一个数之后，"读受限还是写受限"就再也推不出来了。
     fn estimate(&self, extents: &Extents, axes: &Axes) -> Result<Cost, Error> {
         let flops = axes.flops()?;
         let (read, write) = self.traffic(extents)?;

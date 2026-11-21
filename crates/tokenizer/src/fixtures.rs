@@ -1,7 +1,4 @@
 //! 合成词表夹具：单元测试、段编解码测试与跨 crate 的集成测试共用同一份构造。
-//!
-//! 只为测试存在（`#[doc(hidden)]`），不承诺 API 稳定：片列表与分数就是指纹的输入，
-//! 改一处等于换一份词表，下游的对拍与段字节都要据此重算。
 
 use crate::{Merge, SpecialTokens, VocabFamily, VocabSource};
 
@@ -20,8 +17,6 @@ pub fn bpe_source() -> VocabSource {
 }
 
 /// 合成 Unigram 词表：单字母 -1.0，`ab` -0.1（更优），`abc` -2.0，`<unk>` 0.0（编号 5）。
-///
-/// `register_unk` 为假时 `<unk>` 只占片位、不登记成特殊片，用于无未知片回退的词表。
 pub fn unigram_source(register_unk: bool) -> VocabSource {
     let special = SpecialTokens::empty().with_unk(5);
     VocabSource {

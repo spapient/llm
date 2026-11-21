@@ -107,9 +107,6 @@ impl Stored {
 }
 
 /// 单段是否无损：不带量化方案，且 codec 属于无损的 `Store`/`Rans`/`Axes`。
-///
-/// 只按描述符判定，不看字节：度量与沉降账本（[`crate::settle`]）都读这一份，于是"这一条算不算
-/// 无损"不会在容器的两个视图里给出两种结论；"解出来的字节对不对"是另一件事，由解码往返回答。
 pub(crate) fn lossless_entry(seg: &Stored) -> bool {
     seg.quant().is_none() && matches!(seg.codec(), Codec::Store | Codec::Rans | Codec::Axes)
 }

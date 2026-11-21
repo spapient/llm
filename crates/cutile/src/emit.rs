@@ -1,7 +1,4 @@
 //! ⑤ emit：把拼接结果包成最终源文件（README §10.2）。
-//!
-//! 这一层刻意只做"加头、加前导、拼正文"，不做任何重写——换 `emit` 语言时改的是片段，
-//! 不是模板（cutile README 风险 R6）。
 
 use crate::SCHEMA_VER;
 use crate::decl::{OpDecl, TileCombo, Variant};
@@ -37,10 +34,6 @@ pub const FRAGMENT_LIMIT: usize = 400;
 pub const FRAGMENT_GOAL: usize = 240;
 
 /// 一份生成的片段：行数与 §16 的口径。
-///
-/// 行数是 P0 里唯一能自动读出的“原语粒度”指标：超过上限不是“代码写得长”，而是这个算子的原语
-/// 切得太细，模板里开始堆特化代码。判定与数字同源（[`Fragment::within_limit`] 就是拿
-/// [`Fragment::lines`] 与 [`FRAGMENT_LIMIT`] 比），前端只负责选词。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Fragment {
     /// 行数。

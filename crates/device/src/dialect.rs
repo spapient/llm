@@ -1,11 +1,5 @@
 //! 厂商语法面 + 后端无关的 lowering 原语：把「同一条内核 body 拼成不同后端」的语法差异与
 //! lowering 逻辑都收进 [`Dialect`] trait。
-//!
-//! Metal 与 CUDA 两个 vendor 各给一份**手写实现**（[`Metal`] / [`Cuda`] 单元结构体），只声明
-//! 厂商差异面（地址空间 / 设备函数 / 缓冲声明 / 入口关键字 / 线程形参与下标语句）；后端无关的
-//! lowering 原语（逐点 / 循环注入 / 分块归约 / 分块扫描 / 串行）作为 trait 的**默认方法**在这里
-//! 一次实现。vendor 字面量（Metal 的 `device` / `kernel`、CUDA 的 `__device__` / `__global__`）
-//! 只经关联常量与方法进出，不散落任何一处。
 
 /// 分块多段程序的入口名：同一份源里每个核只能出现一次，因此段与段必须分开命名——
 /// CUDA 侧与 Metal 侧的 `PARTIAL` / `EXPSUM` / `NORM` / `SCAN_*` 同义，多段驱动按这些名字取
@@ -29,18 +23,6 @@ use op::sig::{Param, Signature};
 
 /// 厂商语法面：后端无关的 lowering 原语里需要厂商语法的那几处，抽成方法 + 关联常量，并把
 /// lowering 原语本身作为**默认方法**在这里一次实现。
-///
-/// 每个厂商差异成员只回答一个问题：
-///
-/// - [`address_space`](Dialect::address_space)：给一条 C 声明补地址空间限定词（Metal 在指针类型
-///   前插 `device`；CUDA 恒等）；
-/// - [`device_fn`](Dialect::device_fn)：给设备函数名返回限定词（CUDA `__device__`；Metal 恒等）；
-/// - [`buffer_decl`](Dialect::buffer_decl)：渲染一条缓冲形参声明（Metal 带 `[[buffer(slot)]]`）；
-/// - 关联常量们：入口关键字、逐点 / 网格的线程形参与线程下标语句，以及循环注入 / 分块扫描共用
-///   的线程下标形参与装配语句。
-///
-/// 默认方法（lowering 原语）只面向 trait，不持有任何厂商字面量：`Metal::grid_kernel(...)` 与
-/// `Cuda::grid_kernel(...)` 同一条 body，只经上面的差异成员换语法。
 pub(crate) trait Dialect {
     /// 给一条 C 声明补地址空间：Metal 在指针类型前插 `device`（`\u{1}` 哨兵先占住 `*`），CUDA
     /// 原样返回。限定词为空即恒等，所以 CUDA 的「无地址空间」与 Metal 的「六型规则」共用同一份

@@ -31,9 +31,6 @@ use crate::csa::finite;
 const SITE: &str = "algorithm::mamba";
 
 /// 一层指数梯形状态空间：`width` 个通道，每通道 `pairs` 个复值状态维、`rank` 组选择。
-///
-/// `decay` 是逐（通道, 状态维）的 `λ` 实部，必须 `≤ 0`——正实数部让状态每步放大，几步就到 `inf`；
-/// `phase` 是同一个位置的 `ω`。`skip` 是逐通道的直连系数 `D`。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Mamba<S: Scalar> {
     width: usize,
@@ -45,9 +42,6 @@ pub struct Mamba<S: Scalar> {
 }
 
 /// 跨步携带的状态：`width × pairs` 个复值块（`2` 个实值分量）加上上一个 token 的输入。
-///
-/// 没有公开构造函数：状态只能由 [`Mamba::state`] 给出，于是「状态的形状」与「层的形状」不可能
-/// 不一致；长度也与序列长无关——这是状态空间模型与注意力的结构性差别，由用例钉住而不是由注释承诺。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Carry<S: Scalar> {
     planes: Vec<S>,
@@ -56,8 +50,6 @@ pub struct Carry<S: Scalar> {
 
 impl<S: Scalar> Carry<S> {
     /// 状态的实值视图：按 `[通道, 状态维, 实/虚]` 行主序铺开。
-    ///
-    /// 快照与检查都读这一份；写入口只有 [`Mamba::step`]，所以不存在「视图改了但状态没跟上」。
     pub fn planes(&self) -> &[S] {
         &self.planes
     }
@@ -153,8 +145,6 @@ impl<S: Scalar> Mamba<S> {
     }
 
     /// 单通道的一步：`pairs` 个块各自 `h' = ā h + b̄·Σ_r B_r`，读数再对秩求和。
-    ///
-    /// 逐通道独立，因此内层没有分支、也没有跨通道的读写依赖；梯形左端取本层的 `taps`。
     fn advance(
         &self,
         carry: &mut Carry<S>,
@@ -217,8 +207,6 @@ fn mixed<S: Scalar>(select: &[S], pairs: usize, rank: usize, state: usize) -> S 
 }
 
 /// 几何三问：任一维为零、秩超过状态维、尺寸相乘溢出。
-///
-/// 秩那一问另有语义：行多于列的选择矩阵必有线性相关，多出来的那几组只是同一个方向的重复。
 fn check_shape(width: usize, pairs: usize, rank: usize) -> Result<()> {
     if [width, pairs, rank].contains(&0) {
         return Err(fail(format!(
@@ -281,9 +269,6 @@ fn check_lambda<S: Scalar>(cell: usize, real: S, imaginary: S) -> Result<()> {
 }
 
 /// 一组「叫什么、拿到多少、该是多少」的宽度断言，逐条给出第一个不符的名字。
-///
-/// 收集成表再判，是为了让调用方不必为每条长度各写一个 `?`——每个 `?` 都是一条分支，
-/// 八条长度合起来会把一个只做校验的函数的圈复杂度顶到门限之上。
 fn check_widths(expected: &[(&str, usize, usize)]) -> Result<()> {
     expected
         .iter()

@@ -1,15 +1,7 @@
 //! 确定性抽样一族：随机源、dropout 掩码与权重初始化。
-//!
-//! 三者共用同一条 `splitmix64` 口径——同一种子必得同一序列，于是"训练/推理差异"、"初始化是否复现"
-//! 都能被逐位对拍，而不是只能看统计。`op` 不引入外部 RNG crate，随机源自己带（零依赖）。
-//!
-//! 模块名 `rnd` / `dropout` / `init` 由 `lib.rs` 再导出，公开路径仍是 `crate::rnd::*` 等。
 
 pub mod rnd {
     //! 零依赖确定性随机源：splitmix64。
-    //!
-    //! 经典层的 `dropout` 与 `init` 都要抽样，但 `op` 不引入外部 RNG crate（保持零依赖）。
-    //! 这里只提供"同一种子必得同一序列"的最小口径，便于真机对拍与复现。
 
     /// splitmix64 状态。
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,9 +50,6 @@ pub mod rnd {
 
 pub mod dropout {
     //! Dropout：训练期按 `p` 置零、按 `1/(1-p)` 缩放；推理期为恒等。
-    //!
-    //! 抽样走 [`crate::rnd::SplitMix64`]，同一种子必得同一掩码——这让"训练/推理两条路径
-    //! 的差异"可以被逐位对拍，而不是只能看统计。
 
     use diagnostic::{Code, Error, Result};
 
@@ -109,9 +98,6 @@ pub mod dropout {
 
 pub mod init {
     //! 权重初始化：Xavier、Kaiming 与正交初始化（口径对齐 PyTorch 的 `nn.init`）。
-    //!
-    //! 全部只用 [`crate::rnd::SplitMix64`]，同一种子必得同一权重；函数签名是"形状 + 超参 + 种子"，
-    //! 返回按行主序排好的 `Vec<f32>`，调用方拿到即可直接当权重用。
 
     use diagnostic::{Code, Error, Result};
 

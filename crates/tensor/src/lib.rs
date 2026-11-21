@@ -27,10 +27,6 @@
 #![deny(unsafe_code)]
 
 /// 三个张量形态（[`OwnedTensor`] / [`Tensor`] / [`View`]）共用的元数据访问器。
-///
-/// `shape` / `strides` / `numel` 三者完全一致，收敛在 [`tensor_meta_shape!`]；只有 `dtype`
-/// 的来源不同——拥有/借用形态读 `self.dtype` 字段，元素视图读泛型 [`Element::DTYPE`]。用
-/// `field` / `elem` 两臂区分，避免把 `self` 传进宏（`self` 无法作为宏参数穿透）。
 macro_rules! tensor_meta {
     (field) => {
         /// 元素类型（`self.dtype` 字段）。
@@ -81,9 +77,6 @@ pub use tensor::{OwnedTensor, Tensor};
 pub use view::View;
 
 /// 计算层当前可消费的元素子集：闭集里的其他类型可以被容器存储，却不能构造进运行时张量。
-///
-/// 旧设计里 `DType` 本身只有 5 个变体、类型系统天然收口；枚举上移到 L1 后，改用这张
-/// 子集表在构造点显式校验，新增一种被内核支持的类型只需在这里加一项。
 pub const SUPPORTED: &[DType] = &[DType::F32, DType::F16, DType::BF16, DType::I8, DType::U4];
 
 /// 判定某个 `dtype` 是否属于计算层支持子集。
@@ -98,13 +91,6 @@ mod element {
     use crate::DType;
 
     /// 元素类型：把 Rust 标量映射到 [`DType`] 闭集，供 [`crate::View`] 做单态化视图。
-    ///
-    /// 只实现到 `DType` 已有的宽度：`f16` / `bf16` 没有稳定的 Rust 标量类型，
-    /// `U4` 是按位打包的存储形态（不是一种元素宽度），两者都不适合做视图的元素类型。
-    ///
-    /// 映射必须**逐个精确**：`u8` 就是 [`DType::U8`]，不是 `I8`。量化权重常以 `u8` 缓冲搬运，
-    /// 但那是装载方的字节视图（[`crate::Tensor`]），"语义是有符号 int8" 得在反量化时显式说出来；
-    /// 让无符号标量冒充有符号类型，会让上层按键取内核时静默选错分支。
     pub trait Element: Copy + 'static {
         /// 对应的元素类型。
         const DTYPE: DType;

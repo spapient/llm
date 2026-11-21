@@ -1,22 +1,4 @@
 //! `import` / `inspect` / `check` / `deploy` / `settle` / `audit` 六条 `.u` 容器命令的组装与汇报（L7 bin 内模块）。
-//!
-//! 分工与既有编排模块一致：本模块只装配库层调用、取值解析与人可读排版，不定义新领域类型；
-//! 条目流、编码、解码与度量口径都在 `weights` 层，这里不复制第二份规则。
-//!
-//! - `import`：源文件（`.safetensors` / `.gguf` / `.bin` / `.pt`）→ 中性段流 → [`Writer`]
-//!   逐段装入 → 流式落盘 `write_to_path(6, out)`；不支持的 wire / 块量化由 weights 层显式
-//!   `Unsupported`，本层不静默转换。落盘后再把字节读一遍现算账本，报告里的体积比与无损
-//!   因此是「读出来的」而不是「自以为写进去的」。
-//! - `inspect`：整份读进内存 → [`Archive::parse`] → `metrics()`；度量是打开后现场现算，
-//!   不读文件内保存的度量字段，也不出 Roofline / 设备数字。
-//! - `check`：`parse` 已在打开期校验段级 / 全局 CRC；逐段 `load` 触发解码与逐位还原，
-//!   输出解码条目数。坏文件按既有 [`diagnostic::Code`] 口径落成非零退出码。
-//! - `deploy`：E8 部署裁决（LLD §E8）。整表解码一遍（等价于 `check` 的证据）再由落盘
-//!   字节现算 `ratio_param = V_artifact / (params × 2)`，与无损标志一起过 `1/24` 门；
-//!   不达门按 [`Code::Invalid`] 返回非零，因此可以直接当验收门用。
-//! - `settle`：同一份字节 → 逐张量体积 / 熵 / 量化档位 / 无损与原因（`weights::settle`
-//!   现算）。账本 JSON 的文本只有一个来源，写盘与 stdout 用的是同一份。
-//! - `audit`：把落盘的账本读回，与同一份字节再算一遍的账逐格核对——账本唯一的消费方式。
 
 use std::path::Path;
 
@@ -28,9 +10,6 @@ use weights::{Archive, Settlement};
 const ALIGN_LOG: u8 = 6;
 
 /// `import`：按扩展名分派源格式，中性段流装入写者并流式写出 `.u` 容器。
-///
-/// 条目字段不自洽、wire 不在映射闭集内或源是未映射块量化时，weights 层显式报错，
-/// 本命令只把命令帧补到错误链上，不把未映射类型转成别的存储表示。
 pub(crate) fn import(input: &str, output: &str) -> Result<()> {
     let writer = write_container(input, output)?;
     // 导入自证：把刚写下的字节重新读一遍现算账本，“写成功”之外还有一句“写进去的是这个
@@ -127,9 +106,6 @@ fn lossless_label(lossless: bool) -> &'static str {
 }
 
 /// `settle`：读字节 → 逐张量账本；`out` 给出就落成 JSON，否则把同一份文本打到 stdout。
-///
-/// 账本从落盘字节现算（往返 + 描述符），不读文件里存的度量字段，也不向调用方猜一个产物
-/// 目录旁的默认文件名：没给 `--out` 就是“打到 stdout”，重定向的活留给 shell。
 pub(crate) fn settle(input: &str, output: Option<&str>) -> Result<()> {
     let ledger = ledger_of(input, "llm settle")?;
     let text = ledger.render();
@@ -156,9 +132,6 @@ fn write_ledger(path: &Path, text: &str) -> Result<()> {
 }
 
 /// `audit`：落盘账本 × 同一份字节 → 每格复核。
-///
-/// 报告里的数一律取自**读回并通过复核**的那份账（`Settlement::verify` 返回它），不是重新生成
-/// 一份“看起来一样”的账：核账与记账因此不可能是两条各自算路径。
 pub(crate) fn audit(input: &str, ledger: &str) -> Result<()> {
     let bytes = read_container(input, "llm audit")?;
     let text = read_ledger(ledger)?;
@@ -191,10 +164,6 @@ pub(crate) fn check(input: &str) -> Result<()> {
 }
 
 /// `deploy`：E8 部署裁决（LLD §E8）。
-///
-/// 先把整表解码一遍（触发两级 CRC、五轴展开与逐位还原），再由落盘字节现算参数级体积比。
-/// 两件证据缺一不可：只算体积比不叫无损，只解码不叫 24×。裁决不通过返回
-/// [`Code::Invalid`]——`deploy` 是要能当门用的，退出码必须能表达"没达标"。
 pub(crate) fn deploy(input: &str) -> Result<()> {
     let bytes = read_container(input, "llm deploy")?;
     let archive = Archive::parse(&bytes).map_err(|error| error.with("llm deploy"))?;

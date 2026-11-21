@@ -1,8 +1,4 @@
 //! ⑤ emit + cache：指纹 → 查缓存 → 取锁 → 拼接 → emit → 落盘（README §10.3）。
-//!
-//! 输入全是数据：算子声明、协商出的变体、tile 取值与配置；输出是源文本与它的缓存键。键覆盖真正喂给
-//! `cc` 的参数、片段文本、布局声明式与数据类型集合，因此"命中缓存"与"重新生成"必然等价。
-//! 本模块不认识任何命令：审计（`llm-audit`）与将来的落地流程都从 [`source`] 取文本，命令策略不在内核里。
 
 use crate::runner::{self, Outcome};
 use crate::toolchain::Toolchain;

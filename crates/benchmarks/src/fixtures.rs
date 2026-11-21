@@ -1,10 +1,4 @@
 //! 基准与测试共用的夹具：attention 的样例张量、一步 decode 的合成模型、夹具失败的统一出口。
-//!
-//! 只写一处，是因为 attention 的三组基准、`model` 的两组基准与 `tests/cases.rs` 压的是同一套
-//! 缓冲与同一个栈；夹具各留一份，"样例是什么"就会有第二、第三份说法。
-//!
-//! 校验只在装配阶段做一次，[`checked`] 是唯一出口：本目录是生产面，里面没有
-//! `unwrap` / `expect` / `panic!`，测量阶段的 `Result` 只交给 `black_box`。
 
 use nn::{Embedding, Linear, Stack, WeightFormat};
 use serve::model::{CpuModel, Params};
@@ -12,9 +6,6 @@ use std::fmt;
 use testkit::Rng;
 
 /// 夹具失败：把原因写到 stderr，再以非零码退出。
-///
-/// 基准是测量工具，"要么给出数、要么明确失败"就是它的全部契约。测量路径里 panic 会让
-/// criterion 的采样停在半途、临时文件留在磁盘上，退出码还会和门禁的断言失败混成同一个数。
 pub(crate) fn checked<T, E: fmt::Display>(result: Result<T, E>, what: &str) -> T {
     match result {
         Ok(value) => value,

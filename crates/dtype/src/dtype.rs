@@ -36,9 +36,6 @@ pub enum Class {
 }
 
 /// 一个标量类型的身份与布局：规范名、Rust 变体名、位宽、数值类别。
-///
-/// 四者都必须显式声明、都不能从别处推出：`bf16` 的变体名是 `BF16` 而不是机械首字母大写，
-/// 位宽也不等于名字里的数字（`F4` 是 4、`Bool` 是 1）。
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub struct DTypeSpec {
     /// 规范小写名（`f16`、`bf16`、`f8e4m3fnuz`），用于档案、注解与诊断。
@@ -52,12 +49,6 @@ pub struct DTypeSpec {
 }
 
 /// 元素类型闭集：布尔、无符号/有符号整数、浮点与亚字节打包类型。
-///
-/// 变体顺序就是 [`DType::code`] 的编码顺序；加新类型只能追加在 [`DType::ALL`] 末尾，
-/// 重排会破坏容器字节兼容。
-///
-/// `repr(u8)` 把「判别值 = 行表下标」从测试观察升级为类型保证：`SPECS[self as usize]`
-/// 不可能越界，判别值也不可能被默认成别的宽度。
 #[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 #[cfg_attr(
@@ -116,9 +107,6 @@ pub enum DType {
 }
 
 /// 每格式的身份与布局，按 [`DType::ALL`] 的声明顺序对齐（索引即判别值）。
-///
-/// 一行一个类型，改名、改位宽或改类别只动这一行；[`DType::name`]、[`DType::variant`]、
-/// [`DType::bits`] 与三个分类谓词都读这张表，四者不可能各持一份。
 const SPECS: [DTypeSpec; DType::ALL.len()] = [
     DTypeSpec {
         name: "bool",
@@ -302,9 +290,6 @@ impl DType {
     }
 
     /// 稳定线上 code（`1..=24`；`0` 保留不分配）。
-    ///
-    /// 判别值与 [`DType::ALL`] 的声明顺序一致（`Bool` 取 `1`，最后追加的 `F8E5M2FNUZ` 取
-    /// `24`），因此 code 就是判别值加一；内联测试 `identity_table_is_locked` 逐行锁死这份编码。
     #[must_use]
     pub const fn code(self) -> u16 {
         (self as u16) + 1
@@ -333,21 +318,12 @@ impl DType {
     }
 
     /// Rust 变体名（与 [`Debug`] 输出一致），供代码生成与门禁对齐用。
-    ///
-    /// 缩写词用全大写（`bf16 → BF16`），因此**不能**由 [`DType::name`] 机械首字母大写推出：
-    /// `bf16` 首字母大写会得到不存在的 `Bf16`。变体名与规范名住在同一行 `SPECS` 里，
-    /// 两个事实源不可能分家——annotation 的 `#[model(dtype = "..")]` 与 `tests/contracts.rs`
-    /// 都从这里取变体名，不再各自手写。
     #[must_use]
     pub const fn variant(self) -> &'static str {
         self.spec().variant
     }
 
     /// 由规范名还原；未知名字返回 `None`。
-    ///
-    /// 转调 [`Format::parse_name`]：解析的写法只有一份；inherent 这个方法只是让
-    /// `DType::parse_name(..)` 这种路径调用不必先 `use llm_dtype::Format`（`annotation`
-    /// 生成的代码与 `prof` 都按这个路径用）。
     #[must_use]
     pub fn parse_name(text: &str) -> Option<Self> {
         <Self as Format>::parse_name(text)

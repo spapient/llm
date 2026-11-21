@@ -1,8 +1,4 @@
 //! 职责：几何形状面——`Geometry` 各变体的形状核对、窗口几何与共享工具。
-//!
-//! 这些自由函数只被同模块的 [`super::Geometry`] 方法与 [`super::kernel`] 微核调用，不对外暴露。
-//! 形状核对与窗口几何（`Window`、`window1d/2d`、`pool_len`、`bounds`、`norm_group`）放一起，
-//! 因为二者共享同一组不变量：输出尺寸、步长取模、越界拒绝口径一致。
 
 use diagnostic::{Code, Error, Result};
 use op::conv::ConvGeom;

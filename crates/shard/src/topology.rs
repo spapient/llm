@@ -1,11 +1,4 @@
 //! 三维并行拓扑：[`Parallel`] 与 [`Topology`]。
-//!
-//! rank 的唯一布局规则写在这里：`rank = dp_index * (tp * pp) + pp_index * tp + tp_index`。
-//!
-//! 正反两个方向都从这一条规则派生：[`Topology::rank`] 由三个下标算 rank，
-//! [`Topology::indices`] 由 rank 反解三个下标，[`Topology::group`] 则把「某一维的第 `index` 组」
-//! 还原成三个下标再逐 rank 求值。于是"某个并行维的进程组"就是一串等差数列，
-//! [`crate::Group`] 的升序要求也自然满足——不需要第二套 stride/span 公式。
 
 use crate::collective::Group;
 use diagnostic::{Code, Error, Result};
@@ -36,11 +29,6 @@ impl Parallel {
 }
 
 /// 三维并行拓扑。
-///
-/// `world` 在构造时算好并校验过：三个维度的乘积必须能用 `u32` 表示。rank 在 [`Group`]（与
-/// `exec::Stream`）里是 `u32`，所以更大的拓扑本来就派不出一套合法的 rank 布局；让构造期报错，
-/// 好过让 [`Topology::world`] 退回成饱和值（"一共 `usize::MAX` 个进程"）而 [`Topology::group`]
-/// 用回绕的乘积发出一串看起来合法的 rank。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Topology {
     tp: usize,
@@ -106,9 +94,6 @@ impl Topology {
     }
 
     /// 总进程数。
-    ///
-    /// 构造期已经校验过它能用 `u32` 表示，所以这里是精确值，不存在"饱和成 `usize::MAX`"那种
-    /// 谎报——否则 [`Topology::check`] 也会跟着接受一个不可能的进程数。
     pub fn world(&self) -> usize {
         self.world
     }
@@ -157,10 +142,6 @@ impl Topology {
     }
 
     /// 第 `index` 个指定维度的进程组。
-    ///
-    /// - `Tensor`：`index` 是 `dp_index * pp + pp_index`，组大小 `tp`；
-    /// - `Pipeline`：`index` 是 `dp_index`，组大小 `tp * pp`；
-    /// - `Data`：`index` 是 `pp_index * tp + tp_index`，组大小 `dp`。
     pub fn group(&self, parallel: Parallel, index: usize) -> Result<Group> {
         Group::new(self.ranks(parallel, index)?)
     }
@@ -199,9 +180,6 @@ impl Topology {
     }
 
     /// 组的第 `step` 个成员在三个维上的下标：`index` 是组号，`step` 是组内下标。
-    ///
-    /// 三个维度共用一条布局规则（[`Topology::rank`]），这里只回答"这一步动的是哪一维"：
-    /// `Tensor` 动 tp、`Pipeline` 动 pp、`Data` 动 dp，另两维由组号定死。
     fn place(&self, parallel: Parallel, index: usize, step: usize) -> (usize, usize, usize) {
         match parallel {
             Parallel::Tensor => (step, index % self.pp, index / self.pp),

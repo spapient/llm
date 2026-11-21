@@ -19,8 +19,6 @@ use diagnostic::Result;
 macro_rules! typed_ops {
     ($($name:ident: $ty:ty => $template:literal),* $(,)?) => {
         /// 由 `op::for_each_operator!` 展开的类型化算子入口。
-        ///
-        /// 后端实现一次 [`apply`](Self::apply)，就拿到全部算子的定长输入方法。
         pub trait OperatorSetOps {
             /// 唯一原语：按注册名派发一次。
             ///

@@ -1,14 +1,8 @@
 //! `serve::completion` 的内部状态机：一块提示怎么推进、一轮批怎么走。
-//!
-//! 与端点分开是因为两者的变更理由不同：端点管「请求进、响应出」的协议边界，
-//! 这里管「页、批、预算」三者怎么在一轮里对齐。
 
 use super::*;
 
 /// 一块提示的推进结果。
-///
-/// 三种结局必须分开：`Done` 才能把已算位置推进到块尾；`Deferred` 是页紧（下一轮会好），
-/// `Unsupported` 是模型没这条路径（已经退化，不再重试）。合成一个 `bool` 会把"等一等"说成"没有"。
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Block {
     /// 这块算完并已登记。
@@ -94,9 +88,6 @@ where
     }
 
     /// 一步：算 logits、采样、推进页账。
-    ///
-    /// 采样在 `advance` 之前：先确认"这一步该是哪个 token"，再由页账为它占位。反过来（先占页
-    /// 再采样）在采样报错时会留下一个已经推进的序列。
     fn step(&mut self, id: u64) -> diagnostic::Result<Step> {
         let Some(logits) = self.logits(id)? else {
             return Ok(Step::Limit);
@@ -105,10 +96,6 @@ where
     }
 
     /// 算这一步的 logits；序列已经跑完时返回 `None`（那是"到上限了"，不是"没页"）。
-    ///
-    /// 借用必须分开：前向要把序列交给模型，又要持 `&mut Batch` 读写页账。序列是从 `batch`
-    /// 借出的，继续持有那个不可变借用会和可变借用冲突——这里先克隆一份只读的序列事实交出，
-    /// 不可变借用随即释放，再以 `&mut Batch` 进入模型。两个字段互不重叠，函数内部拆开就成立。
     fn logits(&mut self, id: u64) -> diagnostic::Result<Option<Vec<f32>>> {
         let State { model, batch, .. } = self;
         let Some(sequence) = batch.sequence(id).cloned() else {
@@ -146,16 +133,6 @@ where
     }
 
     /// 把一条已准入序列的提示段按块算进页账：这一轮最多推进 `quota` 行。
-    ///
-    /// 每块一次前向、每块之后才登记块：登记按"已算位置"而不是"写到哪一行"推进，因为写是提前
-    /// 一格的（第 `at` 步写第 `at + 1` 行）。顺序反过来会把还没算的块当成可复用的前缀。
-    ///
-    /// `quota` 是本轮打包给这条序列的行数（`engine::ifb::pack` 的拍板结果），它只**收紧**块大小、
-    /// 不放大：[`State::next_end`] 用同一份预算算式给块尾，两处取小的那个，于是"这一轮算多少行"
-    /// 只有一个来源。
-    ///
-    /// 模型没有分块预填充（[`Predict::prefill`] 的默认实现报 `Unsupported`）时把整段记为已算：
-    /// 端点退化回"提示段不进页"的旧行为，而不是拒绝服务——桩模型与只跑解码的通路照旧能跑。
     pub(super) fn prefill(&mut self, id: u64, quota: usize) -> diagnostic::Result<()> {
         if !self.prefill {
             return Ok(());
@@ -174,9 +151,6 @@ where
     }
 
     /// 推进提示段，最多推进 `quota` 行；已算完或这一轮没有整页预算就是一个字都不写。
-    ///
-    /// 循环留在这一层而不是提到一批：单选路径要一次把整段算完（`quota` 不定上限），批内路径
-    /// 则只给它分到的那几行——同一个入口、同一个块算式，差别只在预算。
     fn advance_prompt(
         &mut self,
         sequence: Sequence,
@@ -199,9 +173,6 @@ where
     }
 
     /// 这一轮从 `at` 起要算的那一块：配额耗尽或已算完就是 `None`。
-    ///
-    /// 「块尾」与「配额」在这里只取一次小的：[`State::next_end`] 给预算内的块尾，`left` 是本轮
-    /// 打包分给这条序列的行数，两者相等时循环自然收尾，不需要额外的计数判断。
     fn next_block(&self, sequence: &Sequence, at: usize, left: usize) -> Option<(usize, usize)> {
         let end = self
             .next_end(at, sequence.prompt_len())?
@@ -210,9 +181,6 @@ where
     }
 
     /// 下一块的块尾：`None` 是已算完，或这一轮没有可推进的整页预算。
-    ///
-    /// 块大小不在这里 `min` 一次就完事：[`engine::ifb::chunk`] 是唯一的算式，调用方只管用
-    /// 它给的数——对齐口径只能有一处，否则总有一处会把「整页」漏成「随便切」。
     fn next_end(&self, at: usize, prompt_len: usize) -> Option<usize> {
         let chunk = engine::ifb::chunk(
             prompt_len - at,
@@ -277,11 +245,6 @@ where
     }
 
     /// 批内一轮：按 [`Batch::round`] 的打包结果推进，再把生成行一次整批前向 + 逐行记账。
-    ///
-    /// 一轮只碰打包结果里的行：上下文候选各算自己分到的那一块，生成行一次提交。被挤掉的上下文
-    /// 候选这一轮一行不算、也不解码（历史不完整时解码读到的是零填充的"过去"），下一轮重新排队。
-    /// 前向失败发生在任何记账之前：归还本轮全部序列页再上抛。采样失败只归还报错那条，此前已
-    /// 采样记账的条目不回滚。序列快照在进入可变借用前一次性克隆取走，不持有 `batch` 的不可变借用。
     pub(super) fn step_batch(&mut self) -> diagnostic::Result<Vec<(u64, Generation)>> {
         let plan = self.round()?;
         self.prefill_context(&plan)?;
@@ -302,8 +265,6 @@ where
     }
 
     /// 先把拍板给上下文候选的那几块算掉：一行也没分到时它什么都不做。
-    ///
-    /// 上下文与生成分两步而不是一次过滤：提示段没算完的序列不进解码，因此两者不是一个集合。
     fn prefill_context(&mut self, plan: &[Candidate]) -> diagnostic::Result<()> {
         plan.iter()
             .filter(|candidate| candidate.phase() == Phase::Context)
@@ -311,13 +272,6 @@ where
     }
 
     /// 本轮的行与序：`Packed` 就是拍板结果，`Idle` 是空转。
-    ///
-    /// 预算先按本层一次提交的粒度收紧（[`PREFILL_CHUNK`]）：打包说这轮给 128 行，本层也只会
-    /// 一次提交 64 行，两边算出的块尾就会打架。收紧后两边算式同源，配额即块尾。
-    ///
-    /// `OverSeqs`/`OverTokens` 走到这里是内部矛盾而不是"这一轮很挤"：准入按 `min(B_max, T_max)`
-    /// 挡人，`pack` 只在"生成行自己就超过 `T_max`"时报这两条。静默空转会把一种配置错误伪装成
-    /// "没有请求"，因此上抛。
     fn round(&self) -> diagnostic::Result<Vec<Candidate>> {
         let budget =
             engine::ifb::Budget::new(self.budget.seqs(), self.budget.tokens().min(PREFILL_CHUNK));

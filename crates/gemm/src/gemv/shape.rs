@@ -1,7 +1,4 @@
 //! 形状上下文、确定性样本与标量参考：`#[annotation::model]` 要的三件产物。
-//!
-//! 参考实现只做「校验 + 交给格式」，与格式无关的检查（输出非空、输入/权重够长、标度有限）
-//! 都集中在这里，于是新增一份精度不需要重写它们。
 use diagnostic::{Code, Error};
 
 use crate::model::{Buffer, Cost, Sample, ShapeContext, Values};
@@ -21,9 +18,6 @@ pub(crate) fn scale_of(index: usize) -> f32 {
 }
 
 /// 把形状对翻译成投影骨架的具名轴上下文：`m` 是规约轴、`n` 是输出轴。
-///
-/// 这是 [`crate::model::Model::shape_ctx`] 在投影骨架上的实例：`verify` 不再假设每条算子都能
-/// 走 [`crate::model::Model::projection`]，非投影算子会提供各自的形状函数。
 pub fn project_shape(m: usize, n: usize) -> Result<ShapeContext, Error> {
     ShapeContext::new([('m', m), ('n', n)])
 }
@@ -46,9 +40,6 @@ pub fn cost<F: Format>(shape: &ShapeContext) -> Result<Cost, Error> {
 }
 
 /// 确定性样本：同一形状永远得到同一组输入。
-///
-/// 缓冲集合由格式决定（标度只在 [`Format::SCALES`] 给出时出现），标量 `gsz` 取
-/// [`Format::STEP`]：模板按它分块，参考实现按同一个数取标度，两者不会各算一套。
 pub fn sample<F: Format>(m: usize, n: usize) -> Sample {
     let mut buffers = vec![
         Buffer {
@@ -90,9 +81,6 @@ fn weights<F: Format>(sample: &Sample) -> diagnostic::Result<&[F::Elem]> {
 }
 
 /// 输出维度不能为 0：三条格式与参考实现共同的前置约束。
-///
-/// 写成返回值而不是就地 `if`：`?` 会在调用方的复杂度账上记一格，而这条判据的"为什么"
-/// （空输出让后面的 `chunks(0)` 与 `scales.len() / n` 都失去意义）只需要说一次。
 pub(crate) fn non_empty(n: usize) -> Result<(), Error> {
     if n == 0 {
         return Err(Error::new(Code::Invalid, "输出维度不能为 0"));
@@ -101,9 +89,6 @@ pub(crate) fn non_empty(n: usize) -> Result<(), Error> {
 }
 
 /// 带标度格式的公共前置约束：`scales` 能按行均分、分组能整除输入宽度。
-///
-/// 返回 `(groups, group)`——每行多少组、每组多少元素。int4 与 int8 只在"一行权重多少个元素"
-/// 与"分组必须是偶数"上不同，那两条留在各自的 `forward` 里：它们属于格式，不属于骨架。
 pub(crate) fn scaled_groups(m: usize, n: usize, scales: usize) -> Result<(usize, usize), Error> {
     non_empty(n)?;
     if !scales.is_multiple_of(n) {
@@ -123,8 +108,6 @@ pub(crate) fn scaled_groups(m: usize, n: usize, scales: usize) -> Result<(usize,
 }
 
 /// 标度值守卫：每组分标度必须是有限值；非有限标度会把整组乘积带进 NaN/Inf，且与格式无关。
-///
-/// 标度个数已由 [`scaled_groups`] 推过；这里只逐条判有限，不重复推分组。
 pub(crate) fn finite_scales(scales: &[f32], groups: usize) -> Result<(), Error> {
     let bad = scales.iter().any(|scale| !scale.is_finite());
     if bad {
@@ -137,10 +120,6 @@ pub(crate) fn finite_scales(scales: &[f32], groups: usize) -> Result<(), Error> 
 }
 
 /// 权重至少要够 `n` 行、每行 `row` 个元素，返回这个下界。
-///
-/// 三条格式与参考实现的说明逐字相同，判据也相同（`>=` 而不是 `==`：调用方可以带多余尾部），
-/// 所以它只有一份。上界用饱和乘：`n · row` 溢出时直接判为"长度不足"，而不是回绕成一个轻松
-/// 满足的小数。
 pub(crate) fn required_weights(weights: usize, n: usize, row: usize) -> Result<usize, Error> {
     let want = n.saturating_mul(row);
     if weights < want {

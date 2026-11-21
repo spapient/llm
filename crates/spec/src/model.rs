@@ -64,11 +64,6 @@ pub struct Buffer {
 }
 
 /// 一次运行用的样本：形状 + 具名缓冲 + 具名标量。
-///
-/// 名字与类型由 `.k` 的签名界定（[`crate::sig::Signature::check`]）：缓冲顺序**不**参与 ABI，
-/// 实参顺序由签名给出，样本只负责提供同名取值。
-///
-/// 样本必须确定性——同一形状永远得到同一组输入（cutile README §12.3 的"可复现"）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Sample {
     /// 规约维度。
@@ -241,9 +236,6 @@ fn fill(sample: &mut Sample, x: &[f32], w: &[f32]) -> diagnostic::Result<()> {
 }
 
 /// 一条基本轴的语义角色（闭集）。
-///
-/// 闭集而不是字符串：层按角色向算子要轴（"输入宽度填哪条轴"），写错角色应当是类型错误。
-/// 一个新层类型需要新角色时在这里加一个变体，并同时定义"层该怎么填它"。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AxisRole {
     /// 投影的规约轴：层用输入宽度填它。
@@ -253,9 +245,6 @@ pub enum AxisRole {
 }
 
 /// 算子的一条基本轴：角色 + 表达式里的字母。
-///
-/// 字母属于算子（同一条表达式 `nm,m,ng,n->n`），角色属于层（"输入宽度"）。两者分开之后，
-/// `nn::Linear` 不必知道自己的规约轴叫 `m` 还是 `k`，换一份表达式也不会把层一起改掉。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AxisSpec {
     /// 语义角色。
@@ -265,13 +254,6 @@ pub struct AxisSpec {
 }
 
 /// 一次调用的形状上下文：算子声明的**基本轴**及长度。
-///
-/// 调用方只填自己知道的轴（投影的输入/输出宽度、注意力的序列长度……）。派生轴不在这里：
-/// 量化分组 `g = m / GROUP` 由算子在 `cost` 里用 [`ShapeContext::extents_with_group`] 声明——
-/// 分组若由调用方填，每个层都要抄一遍 32，而且改分组时所有层都得跟着改。
-///
-/// 轴表的合法性（非零、不重复、字母在 `a..z` / `A..Z` 内）由 [`Extents`] 保证，本类型不重写
-/// 一遍判断。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ShapeContext {
     extents: Extents,
@@ -326,25 +308,14 @@ pub struct Model {
     pub group: u32,
     /// 生产形状 `(m, n)`：`doctor` 用它做 roofline 估值，`verify` 把它当形状矩阵里的生产形状，
     /// `bench` 在没有 `--shape` 时用它。必须是本算子的合法输入（`m` 是 [`Model::group`] 的整数倍）。
-    ///
-    /// 它属于算子数据而不是命令策略：换一个算子，生产形状跟着它走，审计不写第二个方阵。
     pub shape: (usize, usize),
     /// 输出（也是 tile 中转）的元素类型：`verify` 的对拍阈值与缓冲区读回宽度由它推出，不写死 f32。
     pub dtype: DType,
     /// 基本轴：层按角色取值，不必知道表达式里的字母。
-    ///
-    /// 投影算子声明 [`AxisRole::Input`] 与 [`AxisRole::Output`]；将来的 RMSNorm / Attention
-    /// 可以只声明自己需要的角色（或先留空，由调用方用 `nn::Bounds` 那侧的形状上下文自行构造）。
     pub axes: &'static [AxisSpec],
     /// 把形状对 `(m, n)` 翻译成算子自己的具名轴上下文。
-    ///
-    /// 投影算子指向按 `m/n` 构造的函数，逐元素/归约/规范化等非投影算子各自按骨架的轴构造，
-    /// 因此 `verify` 不需要假设每条算子都声明了投影的 Input/Output 轴。
     pub shape_ctx: fn(usize, usize) -> Result<ShapeContext, Error>,
     /// 给定形状上下文的标量代价。
-    ///
-    /// 可失败：表达式与形状不自洽（例如列数不是量化分组的整数倍）时返回带类别的错误，而不是
-    /// 在代价里悄悄截断一个因子。
     pub cost: fn(&ShapeContext) -> Result<Cost, Error>,
     /// 给定 `(m, n)` 的确定性样本。
     pub sample: fn(usize, usize) -> Sample,
@@ -417,9 +388,6 @@ pub fn x_buffer(len: usize) -> Buffer {
 }
 
 /// 线性确定性夹具：`base + step·i`，同一长度取值可复现。
-///
-/// 逐元素与归约骨架的默认输入都从这里出：样本必须确定性（cutile README §12.3），因此不接
-/// 随机源。骨架各写一份 `base/step` 不同的 `input`，但算术只有这一份。
 #[must_use]
 pub fn linear(len: usize, step: f32, base: f32) -> Vec<f32> {
     (0..len).map(|i| base + i as f32 * step).collect()
@@ -427,19 +395,9 @@ pub fn linear(len: usize, step: f32, base: f32) -> Vec<f32> {
 
 pub mod quant {
     //! 量化格式的编译期配置表：位宽、打包密度、对称零点、对称码表与样本偏移单点收敛。
-    //!
-    //! GEMV / GEMM / 反量化三族打包格式（`i2` / `i4` / `i8`）过去各抄一遍"每字节几个码、零点是
-    //! 几、码表怎么排、样本码值怎么取"。这些是**格式事实**，与设备、遍历、校验无关；收口到这里
-    //! 之后，新增一档精度只填一行 [`Row`]，三条骨架都按这张表读常量，不再各写一份除法与码表。
-    //!
-    //! 表内全部是 `const`：运行期一条指令都不留；逐元素格式（`i8`）不打包，码表退化为按
-    //! `i8` 解释位模式，由骨架分支处理，不在打包表里塞第二套抽象。
     use crate::einsum::Bits;
 
     /// 一档对称量化格式的静态配置。
-    ///
-    /// 字段都能在编译期求值：`bits` 决定流量计费与位域宽度，`cpb`（codes per byte）决定打包
-    /// 长度折算，`zero` 是无符号码点回退成有符号整数的平移量，`table` 是对称码表（打包格式）。
     #[derive(Debug, Clone, Copy, PartialEq)]
     pub struct Row {
         /// 元素位宽（闭集 [`Bits`]）。
@@ -501,9 +459,6 @@ pub mod quant {
     }
 
     /// 由每字节码数 `cpb` 推位宽：`8 / cpb`。
-    ///
-    /// 打包骨架只持有 `cpb`（从格式表传入），位域宽度由此单点派生；`gemv` 打包点积与未来设备
-    /// 片段生成都读这一份，不在骨架里再写一遍 `8 / cpb`。`cpb` 必须是 8 的正约数。
     pub const fn width_cpb(cpb: usize) -> usize {
         8 / cpb
     }

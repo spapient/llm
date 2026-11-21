@@ -26,9 +26,6 @@ use crate::atom::Prim;
 #[derive(Debug, Clone, Copy)]
 pub struct Device {
     /// 设备名，与 `devices/<vendor>.toml` 的文件名和 `meta.vendor` 一致。
-    ///
-    /// 它是内嵌表的键，也是档案里 `witness.file` 的前缀，因此**不随 crate 目录名变**：
-    /// `crates/opencl` 装的是 `intel`，`crates/rocm` 装的是 `ascend`。
     pub vendor: &'static str,
     /// 片段与见证的扩展名，由 `emit` 语言决定（`c` / `cu` / `cl` / `cpp` / `metal`）。
     pub ext: &'static str,
@@ -37,14 +34,8 @@ pub struct Device {
     /// 档案声明的编译工具（`[meta].tools`）。
     pub tool: &'static str,
     /// 档案声明的工具版本（`[meta].tool_ver`）：**登记值**，不是本机实测值。
-    ///
-    /// 本机实测值由 `cutile::toolchain::probe` 读 `--version` 得到，进产物身份（`命令@版本`）
-    /// 与 `verify` 报告；登记值只说明"这条证据按哪个版本记的"。
     pub tool_ver: &'static str,
     /// 原语枚举与映射表：这台设备有哪些原语，每个原语在镜像里的入口叫什么。
-    ///
-    /// 顺序与 [`Prim::ALL`] 一致；入口名来自档案里 `(原语, impl)` 那条供给的见证函数，
-    /// 所以它一定能在这台设备的 [`Device::source`] 里找到。
     pub prims: &'static [(Prim, &'static str)],
     /// 见证源码：调试模式下的设备侧代码，也是镜像的输入。
     pub source: &'static str,
@@ -75,9 +66,6 @@ impl Device {
 }
 
 /// 编译好的设备镜像。
-///
-/// 只有三个数：格式、字节、符号数。字节随二进制一起发布，格式决定谁来解释它，符号数是编译器
-/// 数出来的——"镜像里有几个入口"因此不靠自述。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Image {
     format: &'static str,

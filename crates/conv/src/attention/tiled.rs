@@ -1,8 +1,4 @@
 //! 分块 tile 的两条自注意力内核：Flash（online softmax）与稠密（先落地分数、再按块加权）。
-//!
-//! 两条都与 [`crate::attention`] 的同名路径**逐位一致**——每个 query 行的列累加次序不变，收益只来自
-//! 块内复用：[`TILE_S`]×`d` 的 K/V 块驻留缓存后被一个行块的查询共用，而不是每行重走一遍。分数与加权
-//! 两段都按块推进，于是常驻的永远是「K/V 块 + 行块内的分数轨」，没有 `s×s` 的整块落地。
 use crate::attention::check_decode_len;
 use diagnostic::Result;
 
@@ -13,9 +9,6 @@ pub const TILE_S: usize = 64;
 pub const TILE_ROWS: usize = 16;
 
 /// 行块分数轨的预算（元素数）：`s` 很大时按预算收窄行块。
-///
-/// 行块越大，K/V 被复用的次数越多；但分数轨是 `rows × s`，撑出缓存后每条分数都要回主存写一次。
-/// 两条约束在 `s ≈ 4096` 处正好交于 [`TILE_ROWS`]，更长的序列自动收窄而不是硬撑。
 const SCORE_BUDGET: usize = 1 << 16;
 
 /// Flash 分块 tile 内核：外层按 [`TILE_S`] 切历史 K/V，内层遍历全部 query。
@@ -145,9 +138,6 @@ impl TiledCtx<'_> {
     }
 
     /// 行块 `[first,end)` 的分数：K/V 列块在外、行块在内，一个列块只从主存读一遍。
-    ///
-    /// `scores` 按行主序存 `(end - first) × cols`；每行的列顺序仍是 `0..cols`，于是与朴素路径
-    /// 逐位一致。
     fn score_rows(&self, first: usize, end: usize, scores: &mut [f32]) {
         let cols = self.k.len() / self.d;
         let mut start = 0;
@@ -166,10 +156,6 @@ impl TiledCtx<'_> {
     }
 
     /// 一行分数 → 一行输出：`exp` 与归一化和一次算完，再按 K/V 列块做 AXPY。
-    ///
-    /// 列块内先按列把 `prob / sum` 除一次（所有头共用同一份权重，不是每头重除一遍），随后列在外、
-    /// 头在内：`V` 的每一列连续读、`out` 连续写，每头沿列仍是升序累加——
-    /// 与朴素路径逐位一致，但内层是可向量化的连续存取（固定头扫列会让每次读跨 `d` 个元素）。
     fn weight_row(&self, scores: &mut [f32], out: &mut [f32]) {
         let max = scores.iter().copied().fold(f32::MIN, f32::max);
         let mut sum = 0.0f32;

@@ -39,9 +39,6 @@ use crate::csa::{accumulate, dot, finite};
 const SITE: &str = "algorithm::kda";
 
 /// KDA 的递归记忆：行主序 `[值维, 键维]`，列是门的施加方向。
-///
-/// 没有公开构造函数：状态只能由 [`Kda::memory`] 给出，于是「状态的维度」与「层的维度」不可能不一致，
-/// 快照回载也不会有第二个几何来源。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Memory<S: Scalar = f32> {
     key_dim: usize,
@@ -75,9 +72,6 @@ impl<S: Scalar> Memory<S> {
 }
 
 /// 一层 KDA 的几何：键维 `d_k` 与值维 `d_v`。
-///
-/// 不持参数：门、写强度、键与值都来自上层（真实实现里各是一次线性投影），本层只负责「一次更新怎么算」。
-/// 方法对元素类型泛型，于是同一份几何既跑 `f32` 也跑 `f64`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Kda {
     key_dim: usize,
@@ -151,8 +145,6 @@ impl Kda {
     }
 
     /// 门、写强度与单位键：三处都是「写入之前的形状与取值契约」，合成一次调用。
-    ///
-    /// 门在写强度之前判：门是逐 token 由投影给出的，写强度是标量；先查门才能让报错定位到通道。
     fn gated_write<S: Scalar>(&self, gate: &[S], write: S, key: &[S]) -> Result<(S, Vec<S>)> {
         self.check_gates(gate)?;
         let write = self.write_strength(write)?;
@@ -257,8 +249,6 @@ impl Kda {
 }
 
 /// 一行的更新：先逐通道遗忘，再把残差 `v − S k̂` 按写强度写回。
-///
-/// 两步的顺序不能换：先写后忘会把刚写进去的纠错一起衰减掉，门就变成了写强度的双计。
 fn write_row<S: Scalar>(row: &mut [S], gate: &[S], write: S, key: &[S], value: S) {
     for (cell, &alpha) in row.iter_mut().zip(gate) {
         *cell = cell.mul(alpha);

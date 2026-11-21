@@ -1,7 +1,4 @@
 //! CPU 模型宿主：装配结果 + 驻留执行器，承载张量级前向与 [`Predict`](crate::Predict) 路线 B 入口。
-//!
-//! 图装配与台账留在 [`assembly`](crate::assembly)；本模块只负责每步取数、历史 K/V 装载与当前步
-//! K/V 写回，不另存模型侧 KV 账。
 
 use diagnostic::{Code, Error, Result};
 use engine::exec::{CpuExecutor, Device, Executor};
@@ -16,9 +13,6 @@ use crate::assembly::{
 use crate::kernels::SITE;
 
 /// CPU 模型宿主：驻留权重 + 装配好的图 + 登记了内核的执行器。
-///
-/// 执行器是 [`Executor`] 基座上的任意实现（`E`）；CPU 是默认值，装饰器（如
-/// [`engine::exec::Trace`]）以同一 trait 叠在它上面，模型代码不改（ADR 0051）。
 #[derive(Debug)]
 pub struct CpuModel<E: Executor = CpuExecutor> {
     executor: E,
@@ -79,9 +73,6 @@ impl CpuModel<CpuExecutor> {
 
 impl<E: Executor> CpuModel<E> {
     /// 用一个已经配好的执行器装配：图、权重与激活缓冲都绑到它的编号表。
-    ///
-    /// 内核登记是执行器自己的装配步骤（CPU 走 [`register_cpu`](crate::kernels::register_cpu)），
-    /// 本函数不替后端决定内核表——同一构造因此对测试替身与装饰器都成立。
     pub fn with_executor(stack: &Stack, params: &Params, mut executor: E) -> Result<Self> {
         let assembly = assemble(stack, params)?;
         bind_weights(&mut executor, &assembly, params)?;
@@ -90,8 +81,6 @@ impl<E: Executor> CpuModel<E> {
     }
 
     /// 一步张量级前向；输入长度必须等于首层输入宽度，返回末层激活。
-    ///
-    /// 权重在构造期驻留一次；每步只覆写输入与逐层激活缓冲，不重新分配。
     pub fn forward(&mut self, input: &[f32]) -> Result<Vec<f32>> {
         if input.len() != self.assembly.input_len {
             return Err(Error::new(
@@ -140,9 +129,6 @@ impl<E: Executor> CpuModel<E> {
     }
 
     /// 把输入与各逐层激活缓冲重绑到 `batch` 份单序列段长；驻留权重不乘批。
-    ///
-    /// 前向每步覆写输入、op 逐层覆写激活，无跨步残留；历史 K/V 块缓冲由
-    /// [`load_history`](Self::load_history) 单独重绑，不在本台账内。
     fn resize_for_batch(&mut self, batch: usize) {
         self.executor.bind_f32(
             self.assembly.input,
@@ -241,10 +227,6 @@ impl<E: Executor> CpuModel<E> {
     }
 
     /// 回填记忆层两张批表：各行尾部 N-gram 的槽号与逐行门控。
-    ///
-    /// 槽号沿查表算子的下标通道（`f32` 承载，精确到 `2^24`），表槽数的硬上界因此在装配期就定下；
-    /// 历史不足 `order` 的行门控记 0，与 [`nn::slot_of`] 返回 `None` 是同一句判据——「不猜记忆」
-    /// 只有一种语义，那一行也不是“换到另一个槽”而是不被使用。
     fn fill_memory(&mut self, rows: &[Row<'_>]) {
         let memories = self.assembly.memories.clone();
         for binding in memories {
@@ -320,11 +302,6 @@ impl<E: Executor> CpuModel<E> {
     }
 
     /// 在序列第 `at` 个位置做一次前向：解码与分块预填充共用这一条。
-    ///
-    /// 单行不自带几何：[`forward_batch`](Self::forward_batch) 按装配形态选路——没有块链时
-    /// 无处可读、也无可写；有块链时先按前 `at + 1` 行装填历史，提交后把这一行的 K/V 写回第
-    /// `at + 1` 行——下一步读历史时才看得到它。于是「算提示段」与「算下一个 token」不是两套
-    /// 几何，只是 `at` 不同，也不是两份实现。
     fn forward_at(
         &mut self,
         sequence: &Sequence,
@@ -340,8 +317,6 @@ impl<E: Executor> CpuModel<E> {
     }
 
     /// 按装配形态选前向路径：有块链才谈得上历史装填与页行写回，无块链走纯张量整批。
-    ///
-    /// 这条分派只做一次选择，行数不进判据——单行与整批走的是同一套几何，区别只在 `rows` 的长度。
     fn forward_batch(&mut self, rows: &[Row<'_>], batch: &mut Batch) -> Result<Vec<Vec<f32>>> {
         if self.assembly.blocks.is_empty() {
             return self.batch_forward(rows);
@@ -367,11 +342,6 @@ impl<E: Executor> CpuModel<E> {
 }
 
 /// 前向一行：一条序列 + 这次要算的位置 `at`（上下文下标）。
-///
-/// 历史行数、rope 位置与 K/V 写回行都由 `at` 推出，且都是 `at + 1`：解码是 `at = len − 1` 的
-/// 特例（算最后一个 token，历史含它自己那格，下一步才读得到），分块预填充逐位取
-/// `0..prompt_len`。位置跟着行走，不与序列列表另开一份并行下标——两套下标一旦错位，读到的历史
-/// 就属于别的序列。
 #[derive(Clone, Copy)]
 struct Row<'a> {
     sequence: &'a Sequence,
@@ -388,9 +358,6 @@ impl<'a> Row<'a> {
     }
 
     /// 本步写入的页行，也是本步的历史行数。
-    ///
-    /// 页行账是 1-based 位置：行 0 是准入前的空槽，第 `n` 个 token 落在行 `n`；`at` 是 0-based
-    /// 上下文索引，两者差一格，换算只在这里做一次。
     fn settled(&self) -> usize {
         self.at + 1
     }

@@ -47,9 +47,6 @@ use crate::{Bounds, Contract, Linear, WeightFormat};
 pub const WEIGHT_SUFFIX: &str = ".weight";
 
 /// 一条"是投影、但推不出下界"的层：名字 + 原因。
-///
-/// 原因不是装饰：`floor()` 的返回值要和 `uncovered` 一起被打印出来，读者才能判断"模型下界偏低"
-/// 是因为多了一张 LoRA 表、一张 f32 权重，还是因为某个形状确实没有合法内核。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unpriced {
     name: String,
@@ -82,9 +79,6 @@ impl fmt::Display for Unpriced {
 }
 
 /// 一次模型计价的结果：能加的那部分 + 加不进去的那部分。
-///
-/// 没有 `Result`：无法计价不是错误，而是**必须被如实报告**的事实。真正的错误（权重文件损坏、
-/// 层重名、零宽投影）在构造 [`Stack`] 时就已经报了。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Floor {
     total: Bounds,
@@ -191,9 +185,6 @@ impl Stack {
     }
 
     /// 总下界：各层下界之和，加上无法计价的层的清单。
-    ///
-    /// 单层的 `Err`（形状没有合法内核）或 `None`（没有可计价的形状）只让**那一层**进清单，
-    /// 不会让整张模型算不出来：这样一张 LoRA 表不会把其余 300 层的和一起清零。
     pub fn floor(&self) -> Floor {
         let mut total = Bounds::ZERO;
         let mut unpriced = Vec::new();
@@ -212,9 +203,6 @@ impl Stack {
 }
 
 /// 条目归到两侧：一次投影进层清单，其余进未覆盖清单。
-///
-/// `scales` 里的标度条目不是层：它的分组已经算进某条权重那一层的流量（算子语义里 `ng` 那条
-/// 派生轴），单独列进"未覆盖"只会让读者以为漏了东西，所以它两边都不进。
 fn classify(
     header: &Header,
     scales: &[&str],
@@ -234,15 +222,6 @@ fn classify(
 }
 
 /// 一个条目能否被视为一次投影：能则给出层，不能则返回 `None`（进未覆盖清单）。
-///
-/// 编码的判定分两步，顺序不能反：
-///
-/// 1. 文件里有没有这条权重的**标度伙伴**？有，分组就从标度的形状读出来（[`Header::quantization`]），
-///    于是 `WeightFormat::int4 { group }` 是实测值而不是默认值；
-/// 2. 没有伙伴，才退回按元素类型判断（f32 / f16 / i8 / 无分组的 4 位打包）。
-///
-/// 反过来的顺序（先按 dtype 定格式、再尝试修正）会让"默认 32 个一组"混进真实分组不同的模型里，
-/// 得到的下界看起来有数、其实算错了流量。
 fn projection(header: &Header, entry: &Entry) -> Result<Option<Linear>> {
     let name = layer_name(entry.name());
     // 量化条目先问标度：宽度、分组与位宽都从那一处来；这是本函数里唯一需要"先问"的理由。

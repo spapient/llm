@@ -1,14 +1,5 @@
 //! 昇腾侧的设备源与主机驱动拼装：`__aicore__` 单源翻译单元、`<<<blocks, nullptr, stream>>>`
 //! 发射、`aclrtMalloc` / `aclrtMemcpy` / `aclrtFree` 骨架与回读。
-//!
-//! 与 [`crate::cuda`] 是同一层的一件事：那里把 `.k` 循环体换成 `__device__` 单线程内核、
-//! 用 `cudaMalloc` 驱动；这里换成 `__aicore__` 内核、用 AscendCL 驱动。只换方言，不改语义：
-//! 回读口径（`float` 位模式逐行打印）必须与 CUDA 逐字一致，否则共用同一份
-//! [`llm_optim::runner::parse_bits`] 的两台设备会读出两种东西。
-//!
-//! 这是 `L2`（与参考对拍）在昇腾上的**入口**：见证程序只回答"片段在设备上跑得起来"，
-//! `verify` 的形状矩阵走的是这里——内核 + 单块发射 + 回读。等级仍是 `L0`：这份文本还没在
-//! 任何 910B 上编过，本节只是把那条证据链的最后一段接上。
 
 use crate::cuda::host_buffer_decl;
 use crate::dialect::readback_bits;
@@ -18,9 +9,6 @@ use op::model::{Sample, Values};
 use op::sig::{Param, Signature};
 
 /// AscendCL 的调用守卫：失败时报出是哪个调用并返回非零。
-///
-/// 见证程序（`backends` 的 `push_ascend_main`）与本模块的语义门 harness 共用这一份：两处各写
-/// 一套时，加一个 API 调用就会漏掉其中一处，而漏掉的那处失败会以"回读全是 0"的形式出现。
 pub(crate) const ACL_GUARD: &str = "static int cutile_acl(const char *what, aclError code) {\n\
      \x20   if (code == ACL_SUCCESS) return 0;\n\
      \x20   fprintf(stderr, \"acl %s: %d\\n\", what, (int)code);\n\
@@ -65,10 +53,6 @@ pub fn ascend_harness(
 /// 把模板翻译单元改成设备源：内核函数补 `__aicore__`，`[compile].preamble` 里的软件实现
 /// （`_cutile_sum_f32` 一族）同样要带——它们是 `@reduce` 的 `$func` 与几个软件数学函数的落点，
 /// 不加就是"AI Core 函数调用了宿主函数"，编译期会被拒。
-///
-/// 只改**函数**，不改变量：命名空间里的 `static const float` 是编译期可折叠的常量，给它加
-/// `__aicore__`（那是函数属性）只会把本来能编的源码改坏。与 CUDA 的
-/// [`crate::dialect::Dialect::device_fn`] 同一套写法，只是属性换名。
 pub(crate) fn ascend_device(text: &str, kernel: &str) -> String {
     text.replace(
         &format!("void {kernel}("),
@@ -78,10 +62,6 @@ pub(crate) fn ascend_device(text: &str, kernel: &str) -> String {
 }
 
 /// 设备侧入口：`extern "C" __global__ __aicore__` 的核函数，形参用 `GM_ADDR` 收显存指针。
-///
-/// 形参声明成 `GM_ADDR` 是为了让 `<<<>>>` 的实参形状与 CUDA 的 `void *` 同构；交给 P0 内核前
-/// 要补回元素类型的 `__gm__` 指针（`GM_ADDR` 只是 `__gm__ uint8_t *` 的别名，内核签名要的是
-/// `__gm__ const float *` 这类有类型的指针）。
 fn ascend_wrapper(kernel: &str, signature: &Signature, sample: &Sample) -> Result<String> {
     let params = signature
         .params()
@@ -126,9 +106,6 @@ fn ascend_argument(param: &Param, sample: &Sample) -> Result<String> {
 }
 
 /// host 驱动：AscendCL 分配 GM、单块发射、回读、释放。
-///
-/// 次序与 CUDA 的 `Driver::assemble` 一一对应（分配 → 入向拷贝 → 一次派发 → 回读 → 释放），
-/// 差别只在 API 名字：`aclrtMalloc` / `aclrtMemcpy` / `aclrtSynchronizeStream`。
 fn ascend_main(
     signature: &Signature,
     sample: &Sample,

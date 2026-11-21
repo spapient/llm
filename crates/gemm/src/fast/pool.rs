@@ -1,11 +1,4 @@
 //! 职责：常驻 GEMM 线程池——任务只发布裸指针 + 一次闸门，spawn 成本归零。
-//!
-//! 每次调用都 `thread::scope` 会产生「打包一次 + 计算一次」两拨线程创建；小形状
-//! （如 512×512×512，0.27 GFLOP）里这个固定开销能占到近半。这里改成：进程内
-//! 常驻 worker，任务只发布指针 + 一次闸门，spawn 成本归零。
-//! `unsafe` 仅用于把本次调用的裸指针交给 worker（主线程自旋等全部完成才返回）。
-//! worker 的任何 panic 都被就地隔离：记录后中止闸门，其余参与者与发布者都能退出，
-//! 常驻线程不丢、槽位不泄，panic 最终由主线程 `resume_unwind` 抛回调用方。
 
 use std::any::Any;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -13,8 +6,6 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 
 /// 一次 GEMM 调用的几何：`npad` 是 `n` 对齐到微内核列数后的补零宽（f32 与 i8 共用）。
-///
-/// `tn` 只对 f32 有意义：权重按输出行存放（线性层布局）时打包要转置，读步长从 `n` 变 `k`。
 #[derive(Clone, Copy)]
 pub(super) struct Shape {
     pub(super) m: usize,
@@ -64,10 +55,6 @@ unsafe impl Send for Job {}
 unsafe impl Sync for Job {}
 
 /// 可中止的参与闸门：`p` 个参与者到齐即放行；任一参与者 `abort()` 立即放行其余所有人。
-///
-/// `std::sync::Barrier` 要求 `p` 个参与者**全部**到齐才放行——若某个 worker 在打包段 panic，
-/// 它到不了闸门，其余 `p-1` 人永久阻塞。这里改成：panic 处理方调 `abort()` 广播放行，
-/// `wait` 返回「本次是否被中止」，被中止的参与者跳过 `calc`（结果反正要被丢弃）。
 struct Gate {
     state: Mutex<GateState>,
     cv: Condvar,

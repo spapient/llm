@@ -1,7 +1,4 @@
 //! 缓存的身份：键怎么由代码与参数算出、条目怎么判定新旧。
-//!
-//! 与生命周期（[`super`]）分开是因为两者变更理由不同：这里判「这是不是同一个产物」，
-//! 那里判「这个产物还留不留」。身份算错会命中错产物，回收算错只会多花磁盘。
 
 use crate::atom::{DTypeSet, Prim};
 use crate::emit::fnv1a;
@@ -193,9 +190,6 @@ impl ArtifactKey {
 pub const STALE_LOCK: Duration = Duration::from_secs(60);
 
 /// 缓存容量上限的兜底缺省值（README §10.3）：2 GiB。
-///
-/// 策略层（`cli::settings` 的 `cache.limit_bytes`，默认值与此相同）负责把配置投影成显式
-/// 上限；内核不读配置，只在调用方没有接线时用这个常量兜底。
 pub const CACHE_LIMIT: u64 = 2 * 1024 * 1024 * 1024;
 
 /// 一份缓存目录的状态。

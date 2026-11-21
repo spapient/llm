@@ -1,15 +1,4 @@
 //! 张量核特化的 f32 GEMM（WMMA）CUDA lowering。
-//!
-//! 每个 CTA 负责 `64×64` 的输出块：`BK=8` 一层、4 个 `32×32×8` 累积片段（`i`×`j` 四块）、
-//! 每层 4 次 `mma_sync`，线程固定 128（S4000 的 QY2 是 wave128 共持片段）。
-//!
-//! 布局与 S4000 实测口径一致：A 片按 `as[row][k]`（行主、k 连续）配 `row_major`/`ldm=BK`；
-//! B 片转置存 `bs[n][k]` 配 `col_major`/`ldm=BK`。
-//!
-//! **形状在生成期已知**：`M`/`N`/`K` 取自签名标量的样本值，直接写进生成文本。`M`/`N` 是 64 的
-//! 倍数时载入与写出都不带守卫（编译器把分支整体消掉）；否则载入按行/列守卫、写出先落共享内存
-//! 再带守卫拷回（`store_matrix_sync` 会写满整块 32×32，不能直接落在非对齐输出上）。
-//! `K % 8 != 0` 报 `Unsupported`，由调用方回落到循环注入的通用路径。
 
 use crate::cuda::{Driver, buffer_args, cuda_head, cuda_launch};
 use cutile::harness::output_name;

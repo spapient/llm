@@ -1,17 +1,10 @@
 //! 逐元素一元骨架：`y[n] = f(a[n])`。
-//!
-//! 与 [`crate::elementwise`] 同构，差别在只读一个张量：一次循环读一个数、做一次逐元素函数、
-//! 写一个数。`silu_f32` / `gelu_f32` 是同一副骨架的两种 [`Unary`] 实现，骨架（表达式缓存、
-//! 代价、样本、校验、遍历）只有一份，按实现类型单态化。
 
 use crate::formula::FormulaOwner;
 use crate::model::{AxisRole, AxisSpec, Buffer, Cost, Sample, ShapeContext, Values};
 use diagnostic::{Code, Error};
 
 /// 逐元素一元算子随语义变化的那部分。
-///
-/// 表达式（`n,n->n`）、操作数表与缓存由 [`FormulaOwner`] 给出：一元逐元素形状只有这一种，由
-/// 装配宏统一声明，实现只决定算术。
 pub trait Unary: FormulaOwner {
     /// 逐元素函数：一个输入值，一个输出值。
     fn apply(x: f32) -> f32;
@@ -165,11 +158,6 @@ pub(crate) mod test_support;
 
 pub mod exp_f32 {
     //! 逐元素指数：`y[n] = exp(a[n])`。
-    //!
-    //! 语义表由 `#[annotation::model]` 生成，算术与遍历由 [`crate::unary`] 骨架按 [`Exp`] 单态化。
-    //! 上溢/下溢按 IEEE-754 语义（`+inf` / `0`），不在算子层额外判错。
-    //! 样本夹具覆盖到 `[-8, 8]`：默认线性夹具在 4096x4096 形状下会 `exp(4.19e6)` 溢出成 `inf`，
-    //! 让真机对拍报 `max_rel_err inf`；有界周期夹具避开上溢，同时仍遍历正负两侧。
 
     crate::unary_f32!(
         Exp,
@@ -191,10 +179,6 @@ pub mod exp_f32 {
 
 pub mod log_f32 {
     //! 逐元素自然对数：`y[n] = ln(a[n])`。
-    //!
-    //! 语义表由 `#[annotation::model]` 生成，算术与遍历由 [`crate::unary`] 骨架按 [`Log`] 单态化。
-    //! 定义域为 `(0, +∞)`；`x <= 0` 按 IEEE-754 语义（`-inf` / `NaN`），不在算子层额外判错。
-    //! 样本夹具覆盖为正数，避免参考对拍里 `log(负数)` 产生 `NaN`。
 
     crate::unary_f32!(
         Log,
@@ -218,14 +202,8 @@ pub mod log_f32 {
 
 pub mod gelu_f32 {
     //! 逐元素 GELU 激活（精确 erf 版）：`y[n] = 0.5*a[n]*(1 + erf(a[n]/sqrt(2)))`。
-    //!
-    //! 语义表由 `#[annotation::model]` 生成，算术与遍历由 [`crate::unary`] 骨架按 [`Gelu`] 单态化。
-    //! C 侧与 Rust 侧用同一份 Abramowitz-Stegun 7.1.26 系数（绝对误差上界 1.5e-7），两侧只剩
-    //! f32 舍入级差异，对拍 max_rel_err 在 1e-10 量级。
 
     /// 标量误差函数：Abramowitz-Stegun 手册公式 7.1.26（`|误差| < 1.5e-7`）。
-    ///
-    /// 反向公式（`train::backprop` 的 GELU 梯度）与测试闭式重算共用这一份，避免三处各自抄系数。
     pub fn erf(x: f32) -> f32 {
         let sign = if x < 0.0 { -1.0 } else { 1.0 };
         let x = x.abs();
@@ -258,8 +236,6 @@ pub mod gelu_f32 {
 
 pub mod silu_f32 {
     //! 逐元素 SiLU 激活：`y[n] = a[n] * sigmoid(a[n])`。
-    //!
-    //! 语义表由 `#[annotation::model]` 生成，算术与遍历由 [`crate::unary`] 骨架按 [`Silu`] 单态化。
 
     crate::unary_f32!(
         Silu,
@@ -282,8 +258,6 @@ pub mod silu_f32 {
 
 pub mod leaky_relu_f32 {
     //! 逐元素 LeakyReLU：`y[n] = a[n]`（非负）或 `slope·a[n]`（负）。
-    //!
-    //! 语义表由 `#[annotation::model]` 生成，算术与遍历由 [`crate::unary`] 骨架按 [`LeakyRelu`] 单态化。
 
     /// 斜率常量：与内核模板、PyTorch 默认值一致。
     pub const SLOPE: f32 = 0.01;
@@ -307,8 +281,6 @@ pub mod leaky_relu_f32 {
 
 pub mod hard_sigmoid_f32 {
     //! 逐元素 HardSigmoid：`y[n] = clamp(a[n] / 6 + 0.5, 0, 1)`。
-    //!
-    //! 语义表由 `#[annotation::model]` 生成，算术与遍历由 [`crate::unary`] 骨架按 [`HardSigmoid`] 单态化。
 
     crate::unary_f32!(
         HardSigmoid,
@@ -333,9 +305,6 @@ pub mod hard_sigmoid_f32 {
 
 pub mod scale_f32 {
     //! 标量缩放：`y[n] = alpha * a[n]`。
-    //!
-    //! 语义表由 `#[annotation::model]` 生成，算术与遍历由 [`crate::unary`] 骨架按 [`Scale`] 单态化。
-    //! 标量参数框架只支持整数，故 `alpha` 写成与内核模板一致的常量。
 
     /// 样本固定的缩放系数（内核模板里写同一常量）。
     pub const ALPHA: f32 = 0.5;

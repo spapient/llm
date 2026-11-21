@@ -1,17 +1,8 @@
 //! `hybrid` 的层栈装配：K3 配比（每 3 个记忆层接 1 个混合层）与整栈一步。
-//!
-//! 算术全落在 [`Hybrid::step`]、[`crate::kda::Kda::step`] 与 [`crate::kda::Kda::read`] 三处唯一入口，
-//! 本文件只装层序、校验配比，并在副本上算完再一次性提交。
 
 use super::*;
 
 /// 按 K3 配比堆起来的层栈：每 [`MEMORY_PER_ATTENTION`] 个记忆层后接 1 个混合层。
-///
-/// 本层只做装配，算术全部落在被调的三处唯一入口上（[`crate::kda::Kda::step`]/[`read`]、[`Hybrid::step`]）。
-/// 一次 [`Tower::step`] 要么让整栈推进一个 token，要么一格都不动——流与记忆都在副本上算、末尾一次性提交，
-/// 于是「第 5 个记忆层参数错了」不会留下前 4 层已写过、后 2 层没写的状态。
-///
-/// [`read`]: crate::kda::Kda::read
 #[derive(Debug, Clone, PartialEq)]
 pub struct Tower<S: Scalar = f32> {
     layers: Vec<Gear<S>>,

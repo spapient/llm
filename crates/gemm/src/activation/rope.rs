@@ -19,21 +19,10 @@ pub const BASE: f32 = 10000.0;
 
 thread_local! {
     /// 段长 → 频率表。`freq_i = base^(-2i/d)` 只依赖 `d`，与位置、数据都无关。
-    ///
-    /// 单槽就够：一份模型的所有层、所有头、每一步用的都是同一个头宽，跨调用几乎必然命中；
-    /// 两个头宽交替时退化成"每次重建"，与没有这张表时同价——缓存只可能等价或更快。
-    /// 存的是 `&'static` 之外的纯函数值，不参与任何判定，所以确定性不变。
     static FREQUENCIES: RefCell<Option<(usize, Rc<[f32]>)>> = const { RefCell::new(None) };
 }
 
 /// 段长 `d` 的频率表：`d/2` 条，`freq[i] = base^(-2i/d)`。
-///
-/// 缓存的是**同一个表达式**的结果，而不是 `freq *= ratio` 那样的递推近似：递推会随 `i`
-/// 累积约 `d·eps` 的漂移（`d = 1024` 实测 7.7e-7），而这里与逐项 `powf` 逐位相同，
-/// `rope_matches_the_scalar_reference` 的逐位断言因此不受影响。
-///
-/// 每对一次 `powf` 是这条路径上最贵的一条指令：预计算把 `len = 1024` 的单头旋转从
-/// 2313 ns 降到 881 ns（2.6×），多头与批形态更是把它从 `heads` 次调用压到 1 次。
 pub fn frequencies(d: usize) -> Rc<[f32]> {
     FREQUENCIES.with(|slot| {
         let mut slot = slot.borrow_mut();
@@ -108,9 +97,6 @@ fn rotate_into(x: &[f32], pos: f32, out: &mut [f32]) -> diagnostic::Result<()> {
 }
 
 /// 按已备好的频率表旋转：`freq[i]` 就是第 `i` 对的频率，长度校验已在调用方做完。
-///
-/// 表由 [`frequencies`] 一次给出、多个头 / 多个序列复用，内层于是只剩 `mul`、`sin_cos`
-/// 与四条乘加——没有 `powf`，也没有长度判断。
 fn rotate_rows(x: &[f32], pos: f32, freq: &[f32], out: &mut [f32]) {
     let d = x.len();
     for (i, &f) in freq.iter().enumerate() {
@@ -165,8 +151,6 @@ pub fn forward_heads(
 }
 
 /// 按已备好的频率表旋转整段头优先块：`heads` 个头，每头 `head_dim`，段内下标从 0 重计。
-///
-/// 头与头之间只有偏移不同，频率表共用一份——`powf` 因此每段只算 `head_dim/2` 次，而不是每头一次。
 fn rotate_heads(pos: usize, x: &[f32], out: &mut [f32], head_dim: usize, freq: &[f32]) {
     for start in (0..x.len()).step_by(head_dim) {
         let span = start..start + head_dim;

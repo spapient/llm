@@ -45,9 +45,6 @@ impl<'a> Tensor<'a> {
 
 mod validate {
     //! 构造期共享校验：元素子集与字节缓冲长度。
-    //!
-    //! [`crate::Tensor`] 与 [`crate::OwnedTensor`] 的构造口径必须一致：同一批 `dtype` 子集、
-    //! 同一条「缓冲够长」判定。校验集中在这里，避免两个构造点各写一遍导致文案或阈值漂移。
 
     use diagnostic::{Code, Error, Result};
 
@@ -91,10 +88,6 @@ mod validate {
 
 mod owned {
     //! 拥有缓冲的可写张量：元数据 + 持有字节向量。
-    //!
-    //! 与只读 [`crate::Tensor<'a>`] 视图互补：`Tensor` 是调用方持有的零拷贝读路径，`OwnedTensor`
-    //! 是分配出来、可写入的拥有形态。`dtype` / `shape` / `strides` 与设备无关；设备地址
-    //! 藏在分配器返回的句柄里，本层不泄漏（ADR 0025 §2）。
 
     use diagnostic::{Code, Error, Result};
 

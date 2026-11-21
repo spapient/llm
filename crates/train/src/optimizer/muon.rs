@@ -4,23 +4,6 @@ use super::{Optimizer, SITE, Slot, check_slots, clip_scale, decay_rate, global_n
 use diagnostic::{Code, Error, Result};
 
 /// Muon（MomentUm Orthogonalized by Newton–Schulz）：矩阵参数的近似正交化更新。
-///
-/// 出处是 Keller Jordan 的 Muon（第 10 款标杆 K3 的训练侧，§5.8.2 把 muon 与 mHC 一起列为**共用**项）。
-/// 它只对**矩阵**参数有定义：偏置与归一化增益不在它的作用域里，这类槽的 [`Slot::shape`] 是 `None`，
-/// 本优化器**拒绝**它们而不是悄悄跳过——跳过是「这一步没更新」，跑一万步就是某个组从未被训练过，
-/// 而训练曲线不会告诉你少了谁。矩阵/向量的分派在装配侧（真实配方是 Muon 管矩阵、AdamW 管其余），
-/// `Session` 每步只调一种优化器。
-///
-/// 一步的口径：
-///
-/// 1. 动量缓冲 `u ← μ·u + g`；Nesterov 变体再取 `g + μ·u` 当方向。
-/// 2. 把 `u / (‖u‖_F + ε)` 用五次 Newton–Schulz 迭代推向正交阵——奇异值全部落在 1 附近，梯度谱再烂
-///    也不会让某几个方向独占步长。这是「保持更新不被少数方向垄断」的唯一手段，不是数值技巧。
-/// 3. `W ← W − lr·0.2·√max(rows, cols)·O − lr·decay·W`；缩放因子把正交更新的 RMS 拉回与 AdamW
-///    同量级（Muon 参考实现的 `match_rms_adamw` 口径），否则同一条学习率曲线在两族参数上不是一个意思。
-///
-/// 关键性质：更新量只由**方向**决定，与梯度的尺度无关（先按 Frobenius 范数归一）。梯度整体乘 1000，
-/// 一步走多远不变——这条有单测钉着（`the_update_ignores_the_gradient_scale`）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Muon {
     momentum: f32,
@@ -80,9 +63,6 @@ impl Muon {
     }
 
     /// 一个槽的推进：动量累加 →（可选 Nesterov）→ 正交化 → 写回。
-    ///
-    /// 标量先复制出来再取动量缓冲：`velocity` 借了整个 `self`，之后再读 `self.nesterov`
-    /// 就是同一块可变借用的第二份访问。
     fn advance(
         &mut self,
         index: usize,
@@ -169,9 +149,6 @@ impl Optimizer for Muon {
 }
 
 /// 每个槽的矩阵形状，**全部**先查完再返回。
-///
-/// 不能边查边写：查到第 7 个槽才发现它不是矩阵时，前 6 个参数已经写回去了，调用方拿到错误却
-/// 留下半步更新。
 fn shapes_of(slots: &[Slot<'_>]) -> Result<Vec<(usize, usize)>> {
     let mut shapes = Vec::with_capacity(slots.len());
     for (index, slot) in slots.iter().enumerate() {
@@ -190,8 +167,6 @@ fn nesterov_direction(velocity: &[f32], grads: &[f32], beta: f32, scale: f32) ->
 }
 
 /// 一个槽的矩阵形状：非矩阵、零维或梯度非有限都在这里拒绝。
-///
-/// 形状错、长度错、`NaN` 都会让正交化给出一个"看起来正常"的方向，报错点却离原因很远。
 fn matrix_of(index: usize, slot: &Slot<'_>) -> Result<(usize, usize)> {
     let Some((rows, cols)) = slot.shape else {
         let message = format!(
@@ -218,10 +193,6 @@ fn scale_factor(rows: usize, cols: usize) -> f32 {
 }
 
 /// 近似正交化：先按 Frobenius 范数归一，再迭代 [`NS_STEPS`] 次 Newton–Schulz。
-///
-/// 每次迭代用**小边**上的 Gram（`rows ≥ cols` 取 `XᵀX`，否则 `X Xᵀ`）：两条路径在数学上是同一个
-/// 迭代（`X(XᵀX) = (XXᵀ)X`），差别只是乘在左边还是右边、以及临时矩阵的阶数。零矩阵归一后仍是零，
-/// 于是「这一步没有梯度」自然给出零更新，不需要另开一个分支。
 pub(crate) fn orthogonalize(grad: &[f32], rows: usize, cols: usize, eps: f32) -> Vec<f32> {
     let norm = grad.iter().fold(0.0_f32, |acc, v| acc + v * v).sqrt();
     let scale = 1.0 / (norm + eps);

@@ -1,7 +1,4 @@
 //! 词汇表契约：闭集只声明一次、位集只有一份实现、设备前端都被登记。
-//!
-//! 每条契约都是「同一件事不许有第二份写法」，判据是扫 `crates/*/src` 的文本并对照
-//! `lints/vocabulary.toml` 的豁免表；豁免必须仍然命中，否则说明它已经过期。
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -43,11 +40,6 @@ pub(crate) fn sources() -> Vec<(String, PathBuf)> {
 }
 
 /// 找到算子模块的实体文件：先按 `pub use` 别名换成实体名，再在骨架旁的嵌套目录里找实体。
-///
-/// 注册表的模块名有三种来源，都得落到"带注解的那个文件"上：
-/// - 别名：`pub use classic::{adaptive_pool}` + `pub use pool::{adaptive as adaptive_pool}`；
-/// - 嵌套：`pub use gemv::{f32 as gemv_f32}`，实体在 `gemv/f32.rs`；
-/// - 直连：模块名就是文件名。
 pub(crate) fn locate_module(module: &str) -> Option<PathBuf> {
     locate(module, 0)
 }
@@ -77,12 +69,6 @@ fn cutile_path(relative: &str) -> PathBuf {
 }
 
 /// 算子家族的判据：**在 `src` 里写了 `#[annotation::model(..)]` 的 crate**。
-///
-/// 取自内容而不是名字。这个家族改过两次名（`op` 拆成 `op-spec` / `op-kernel` / `op-neural`，
-/// 三家又改成 `spec` / `gemm` / `conv`）：任何按名字前缀认的写法都在改名当刻把扫描面筛成
-/// 空集，而"零命中"在这里表现为"没有违规"——静默变绿比编译失败危险得多；写死成员名单则
-/// 会在家族新增一家时同样静默漏掉。注解是家族成员的**定义性特征**（没有注解就没有语义表），
-/// 所以它同时满足"改名不失效"与"新增不遗漏"。
 pub(crate) fn in_op_family(crate_name: &str) -> bool {
     family().contains(crate_name)
 }
@@ -190,13 +176,6 @@ fn locate(module: &str, depth: usize) -> Option<PathBuf> {
 
 /// `pub use` 表的别名：`adaptive as adaptive_pool` 说明注册名由实体名重导出。聚合后注册表的
 /// 模块名几乎都不是文件名（45 个里 44 个），所以解析必须跨过这一层，否则判据只会看到重导出行。
-///
-/// 路径按 `use` 树的前缀补全：`pub use activation::{softmax as softmax_f32}` 里的
-/// `softmax` 是 `activation::softmax`，不是 crate 根的 `activation` 骨架文件。
-///
-/// 一个名字可以有多个候选：`gemm_i8` 既是 `gemm::{i8 as gemm_i8}` 的算子模块，也是
-/// `fast::i8::gemm_i8` 这个纯函数——后者解析不到文件，所以候选要留一份列表逐个试，
-/// 不能先到先得。
 fn aliases() -> &'static std::collections::BTreeMap<String, Vec<String>> {
     static ALIASES: std::sync::OnceLock<std::collections::BTreeMap<String, Vec<String>>> =
         std::sync::OnceLock::new();
@@ -375,11 +354,6 @@ pub(crate) fn exempt(section: &str) -> Vec<(String, String)> {
 }
 
 /// 注解文法里的闭集表：`const <名字>: [&str; N] = [ "..", .. ];`。
-///
-/// 只能读源码：proc-macro crate 不导出非宏项，`decl::DTYPES` 在 crate 外不可见。按**名字**在
-/// 注解 crate 的 `src/` 全部文件里找，不预设它在哪个文件——crate 平铺后文件边界随时可动，
-/// 判据只认声明本身。扫描只认 `= [ .. ]` 之间的逗号分隔字面量，排版怎么折行都不影响；声明
-/// 里的 `N` 一并核对，防止“表删了一项、长度还写着 9”。
 pub(crate) fn annotation_list(name: &str) -> Vec<String> {
     let head = format!("const {name}: [&str;");
     let (_, text) = rust_files(&root().join("crates/annotation/src"))
@@ -554,14 +528,6 @@ pub(crate) fn bitsets_have_exactly_one_implementation() {
 }
 
 /// 注解的闭集必须由词汇表与对拍口径**推出来**，而不是第三份手抄表。
-///
-/// `DTYPES` 与「[`cutile::reference::tolerance`] 给出非零阈值」的 `DType` 集合逐项相等——
-/// 注解能写出的输出类型必须正好是对拍能给结论的那些：多一个，`verify` 会拿 0 当阈值，
-/// 少一个，那门输出就永远无法被声明成算子。
-///
-/// 变体名再核一遍：`render` 按 `DType::variant` 把名字翻成变体，
-/// 名字与变体一旦分家，生成代码会指向不存在的变体——错误会出现在被标注的 crate 里，
-/// 而不是写错字的那张表上。
 #[test]
 pub(crate) fn annotation_names_come_from_the_vocabulary() {
     // 输出类型：与「对拍有阈值」的那一组相等。

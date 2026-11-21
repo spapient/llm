@@ -1,8 +1,4 @@
 //! Embedding 行查表：`y[n, :] = table[idx[n], :]`（行向量 gather）。
-//!
-//! 索引以 f32 承载（当前 `Values` 只有 f32 变体），内核取下标时转成整数；权重表 `[V, D]` 按行
-//! 展平，输出 `[n, D]` 同样按行展平。行数 `V` 由表长除以行宽推出（样本档取 [`VOCAB`]），行宽 `D`
-//! 来自第二轴。本模块自带形状、代价、样本、参考与遍历。
 use crate::model::{AxisRole, AxisSpec, Buffer, Cost, Sample, ShapeContext, Values};
 use diagnostic::{Code, Error};
 

@@ -1,7 +1,4 @@
 //! 记账的 [`Reason`]：为什么选了这个 codec、有没有真的更小。
-//!
-//! 从 [`crate::settle`] 拆出：判定与产出的结论留在那边，这里只有一组把「实测字节」换算成
-//! 「理由」的纯函数，便于逐条单测而不用造整份归档。
 
 use crate::settle::{GAIN_FLOOR, MAX_ENTROPY, Reason, SMALL_BYTES};
 use crate::{Codec, Stored};

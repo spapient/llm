@@ -1,9 +1,4 @@
 //! 真机门控与跳过登记：测试专用的环境前提开关，不是产品配置。
-//!
-//! 这里的真机门控变量**不进 `cli::settings` 的键表**，生产代码不得读取它。真机用例的形态固定为
-//! "默认跳过、显式开门才跑"：前提不满足的用例必须走 [`skip`] 登记，禁止裸 `return` 空转——
-//! 跳过原因进进程内计数与结构化日志，设置 `LLM_TEST_SKIP_DIR` 时还会追加到该目录的
-//! `skips.log`，供 CI 汇总。
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -27,10 +22,6 @@ pub fn device_enabled(vendor: &str) -> bool {
 }
 
 /// 登记一条"环境前提不满足"的跳过；恒返回 `true`，调用方据此立即 `return`。
-///
-/// 每条跳过写一行结构化记录 `llm-testkit[skip]: <原因>`，并计入进程内计数；若设置了
-/// `LLM_TEST_SKIP_DIR`，同时追加到该目录的 `skips.log`，跨测试二进制汇总时按文件读取。
-/// 原因要写清缺什么（设备 / 编译器 / 样本目录 / 旧基线二进制），不留"不知道为什么没跑"。
 pub fn skip(reason: impl Into<String>) -> bool {
     let reason = reason.into();
     SKIPPED.fetch_add(1, Ordering::Relaxed);

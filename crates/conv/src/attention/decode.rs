@@ -1,16 +1,7 @@
 //! decode 注意力的两个面：内核算术（[`kernel`]）与语义表（[`semantics`]）。
-//!
-//! decode 缓冲长度校验：`q`/`out` 是 `q_rows·d`，`k`/`v` 是 `hist·d`；两边行数可以不同。
-//!
-//! 内核把 query 行数与 K/V 历史行数解耦之后的校验、逐行打分、online softmax 与按头/按批变体
-//! 集中在一处；语义侧只补形状上下文、确定性样本与代价。公开路径仍由 [`crate::attention`]
-//! 与 `lib.rs` 的 re-export 保持为 `attention::decode_forward*` 与 `op::decode_attention`。
 
 mod kernel {
     //! decode 内核族：query 行数（`q_rows`）与 K/V 历史行数（`hist`）解耦的通用路径。
-    //!
-    //! prefill 是 `q_rows = hist = s` 的特例；本文件把「行数解耦」之后的校验、逐行打分、
-    //! online softmax 与按头/按批变体集中在一处，语义表入口见 [`crate::attention::decode::semantics`]。
     use diagnostic::{Code, Error};
 
     use crate::attention::{Mode, Rows, check_width, run_rows};
@@ -387,11 +378,6 @@ mod kernel {
 
 pub mod semantics {
     //! decode 注意力语义：query 行数与 K/V 历史行数解耦。
-    //!
-    //! 典型 decode 一步 `q_rows = 1`，`hist` 是这条序列已经缓存的 K/V 行数，随生成增长。
-    //! 样本几何因此与 prefill [`crate::attention`] 不同：`q`/`y` 是 `q_rows·d`，`k`/`v` 是
-    //! `hist·d`，标量为 `Q_ROWS` / `HIST` / `D`。两套参考都复用 [`crate::attention`] 里已经
-    //! 校验过的 decode 算术，本模块只补形状上下文、确定性样本与代价。
     use crate::model::{AxisRole, AxisSpec, Cost, Sample, ShapeContext};
     use diagnostic::{Code, Error};
 

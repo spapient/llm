@@ -1,8 +1,4 @@
 //! `gemv_i8` 的算子语义：对称 8 位权重（不打包、零点 0）+ 每 [`GROUP`] 个元素一条标度。
-//!
-//! 骨架在 [`crate::gemv`]，本模块只有"对称 int8"这一份逐元素配置：表达式、操作数位宽、声明粒度、
-//! 标度取值与元素反量化。模板在 `ops/gemv_i8.k`，片段只与这里对拍。`u8` 承载 int8 位模式，
-//! 算术时按 `i8` 解释。
 use crate::einsum::FormulaCache;
 use crate::gemv::{self, Plain, PlainFmt};
 use crate::quant::I8;
@@ -62,8 +58,6 @@ pub fn forward(
 }
 
 /// 行批内核：`x` 是 `rows × m`、`out` 是 `rows × n`，一行权重只读一遍。
-///
-/// 与 [`forward`] 同一份 `scaled_dot` 算术，批结果与逐行调用逐位相同；省掉的是权重行的重复读。
 pub fn forward_batch(
     x: &[f32],
     weights: &[u8],

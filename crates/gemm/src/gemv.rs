@@ -26,9 +26,6 @@
 use crate::model::{AxisRole, AxisSpec};
 
 /// 本骨架的基本轴：`m` 是规约轴（输入宽度），`n` 是输出轴。
-///
-/// 字母属于表达式，角色属于层：`nn::Linear` 按 [`AxisRole::Input`] / [`AxisRole::Output`]
-/// 填宽度，不需要知道它们叫 `m` 和 `n`。
 pub const AXES: &[AxisSpec] = &[
     AxisSpec {
         role: AxisRole::Input,
@@ -41,13 +38,6 @@ pub const AXES: &[AxisSpec] = &[
 ];
 
 /// 样本缓冲里能装的元素类型：闭集 `f32` / `u8`（[`Values`] 的两个变体）。
-///
-/// 这是一条**编译期**契约：`Format::Elem` 只能是这里的两个实现之一，因此
-/// "从样本里取权重"不需要在 `reference` 里写 `match` 分发——`<F::Elem as Element>::borrow`
-/// 在单态化时就只剩一个分支。
-/// 带标度格式的操作数表：权重位宽取配置，其余三项恒为 32 位浮点。
-///
-/// 展开在 [`FormulaOwner`] 的实现里；[`Packed`] 与 [`SymI8`] 只差这一个数。
 macro_rules! scaled_operands {
     ($bits:expr) => {
         /// 三个输入都是读、只有输出是写；权重位宽取配置，其余为 32 位浮点。
@@ -57,9 +47,6 @@ macro_rules! scaled_operands {
 }
 
 /// 带标度格式的量化几何：粒度、派生轴、标度取值与步长。
-///
-/// 展开在 [`Format`] 与 [`Plain`] 的实现里。四条都从粒度算出来，调用方只给粒度：抄两遍就会让
-/// `DERIVED` 的除数与 `GRAIN` 各自漂移（判据见 [`derived_matches_grain`]）。
 macro_rules! scaled_grain {
     ($grain:expr) => {
         const GRAIN: usize = $grain;
@@ -149,9 +136,6 @@ macro_rules! gemv_packed {
         }
 
         /// 行批内核：`x` 是 `rows × m`、`out` 是 `rows × n`，一行权重只解包一次服务所有输入行。
-        ///
-        /// 与 [`forward`] 同一套算术与累加顺序，所以批结果与逐行调用逐位相同；差别只在权重的
-        /// 读取次数：这里是 1 遍，逐行调用是 `rows` 遍。
         pub fn forward_batch(
             x: &[f32],
             weights: &[u8],
@@ -204,10 +188,6 @@ pub mod i4;
 pub mod i8;
 
 /// 每个格式别名的契约自证都必须在**本 crate**里被求值一次。
-///
-/// [`Format::CHECK`] 是编译期判据，但它只有在被求值时才是判据：注解只负责生成 `MODEL`，
-/// 不再引用内核类型（契约层不认识内核），所以强制求值的责任回到格式的归属地。
-/// 这四个别名就是 `gemv_f32` / `gemv_i2` / `gemv_i4` / `gemv_i8`，写错粒度或派生轴除数直接编译不过。
 const _: () = <f32::F32 as Format>::CHECK;
 const _: () = <i2::I2 as Format>::CHECK;
 const _: () = <i4::I4 as Format>::CHECK;

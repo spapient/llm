@@ -45,9 +45,6 @@ pub use arch::{Arch, Host, Machine, Standing, Why, audit, require, standing};
 mod tests;
 
 /// 一行执行合同。**次序是合同的一部分**（规则 0.5）：CUDA / HIP / Metal / GPU / x86 / ARM。
-///
-/// `#[repr(usize)]` 与模块内那张规格表的下标一一对应；`specs_line_up_with_the_rows` 钉住这件事，
-/// 于是加一行必须同时改表、改长度断言、改所有权登记——想漏一行都做不到。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(usize)]
 pub enum Row {
@@ -75,8 +72,6 @@ pub enum Abi {
 }
 
 /// 一行的静态合同：名字、一等原语、ABI，以及"覆盖需不需要编译器证据"。
-///
-/// 私有：合同对外只经 [`Row`] 的访问器读出，调用方拿不到一个可以就地改字段的句柄。
 pub(crate) struct Spec {
     pub(super) name: &'static str,
     primitive: &'static str,
@@ -147,9 +142,6 @@ const LANGUAGES: &[(&str, Row)] = &[
 
 impl prof::atom::Closed for Row {
     /// 六行，**永不删行**（规则 0.5）：缺设备的行也在里面，只是状态为 [`Standing::Open`]。
-    ///
-    /// 次序即合同次序，也是那张规格表的下标（`#[repr(usize)]` 的判别式）；名字表的唯一来源是
-    /// 这里，`Row::as_str` / `Row::ALL` / `Row::parse` 都是它的转发。
     const ALL: &'static [Self] = &[
         Self::Cuda,
         Self::Hip,

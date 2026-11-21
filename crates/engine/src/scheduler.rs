@@ -1,17 +1,9 @@
 //! 连续批调度：[`Scheduler`] 的准入、页账、前缀复用与结束归还。
-//!
-//! 页号簿记（[`crate::kv::Pager`]）、满块前缀索引（[`crate::kv::Radix`]）与批内
-//! [`crate::sequence::Sequence`] 在这里收成一条不变量：生成必经页账，页不够返回
-//! [`crate::Progress::Blocked`] 且页池、页表、序列三者都不动。
 
 use crate::sequence::{Progress, Sequence, pages_for};
 use diagnostic::{Code, Error, Result};
 
 /// 批里一个正在跑的序列：它的页表就是它占的页。
-///
-/// `needs_page` 是"下一次 [`Scheduler::advance`] 要不要新页"的派生值，在 `admit` 与每次
-/// `advance` 之后刷新。它让 [`Scheduler::blocked`] 不必再问调用方要 `Sequence`——批级信号
-/// 只依赖批自己的状态。
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Running {
     id: u64,
@@ -39,9 +31,6 @@ mod step;
 
 impl Scheduler {
     /// 由 KV 页池构造：页号簿记与页里的数据一起进来。
-    ///
-    /// 行宽由装载模型的一侧决定（`2 · kv_heads · head_dim` 这类数），页池不替它猜；
-    /// 调度器只认"第几个 token 落在哪一页哪一格"，与行里装了什么无关。
     pub fn new(pager: crate::kv::Pager) -> Self {
         Self {
             pager,
@@ -92,9 +81,6 @@ impl Scheduler {
     }
 
     /// 一次准入要占的页：共享的前缀页与新建页，以及被接走的 token 数。
-    ///
-    /// 这一步只产出计划、不改外面可见的状态（页池与页表在 [`Scheduler::plan`] 内部已经落定），
-    /// 于是「装不下」永远是一条 `None`，而不是调用方要回的半截状态。
     pub(super) fn plan(&mut self, sequence: &Sequence) -> Result<Option<Plan>> {
         let needed = sequence.pages_needed();
         let width = self.pager.page_size();
@@ -190,9 +176,6 @@ impl Scheduler {
     }
 
     /// 往页表里追加 `extra` 个新页：分配与入表成对发生，缺页说明空闲页数已被推翻。
-    ///
-    /// 分配走 [`kv::Pager::alloc`] 而不是页号分配器：页号与页背后的数据是同一个池，
-    /// "借到了页却没有那块数据"因此没有可能。
     pub(super) fn fill(
         pager: &mut crate::kv::Pager,
         table: &mut crate::kv::Table,
@@ -209,10 +192,6 @@ impl Scheduler {
     }
 
     /// 这条序列在这个页池里有没有可能跑完：最坏情况的页数不超过页池总数。
-    ///
-    /// 这是 [`Scheduler::admit`] 里"永远跑不完就拒绝"的判据本身，单独暴露是因为服务层要
-    /// 据此区分两种拒绝：**现在满**（等别人结束，返回可重试的 503）与**永远装不下**
-    /// （`max_new` 太大，重试多少次都一样，该返回 400）。两处共用一个定义，规则不会漂。
     pub fn fits(&self, sequence: &Sequence) -> bool {
         sequence.pages_required() <= self.pager.total()
     }

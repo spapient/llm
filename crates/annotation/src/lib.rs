@@ -74,10 +74,6 @@ use proc_macro::{Delimiter, Group, Span, TokenStream, TokenTree};
 use syntax::{Bracket, Error as SyntaxError, Token};
 
 /// 把 `#[spec(name = "..", out = [..], in = .., ops = [".."])]` 展开成 `::nn::Contract` 的实现。
-///
-/// 被标注的类型必须是无泛型参数的 `struct` 或 `enum`：形状与算子列表在编译期固定，带泛型的类型
-/// 无法用一份注解覆盖所有实例化。任一个值写成 `$构造参数` 即切到运行时形态：适配层给命名字段
-/// `struct` 注入私有 `spec` 字段并生成构造宏，`in` 不属于运行时形态——下界由层自己实现。
 #[proc_macro_attribute]
 pub fn spec(attribute: TokenStream, item: TokenStream) -> TokenStream {
     if decl::is_runtime(&convert(&attribute.tokenize())) {
@@ -95,9 +91,6 @@ pub fn spec(attribute: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 /// 展开所需的四个动作：读 token、由源码产出、拼接、重新定位 span。
-///
-/// 生产实现是 [`proc_macro::TokenStream`]；测试实现是纯字符串。因此本文件里的每条分支
-/// （解析失败、生成失败）都不必在过程宏上下文里才能跑到。
 trait Streams: Sized {
     /// 取出顶层 token。
     fn tokenize(&self) -> Vec<TokenTree>;
@@ -112,8 +105,6 @@ trait Streams: Sized {
     fn respan(self, span: Option<Span>) -> Self;
 
     /// 在命名字段 `struct` 的字段体最前面插入一段字段（运行时 `#[spec]` 的 `spec` 字段）。
-    ///
-    /// 没有字段体时原样返回：调用前 [`decl::runtime_target`] 已把这种情况拒绝掉。
     fn insert_field(self, field: &str) -> Self;
 
     /// 报错文案拼不成 token 流时的退路：一条固定文案的 `compile_error!`。
@@ -172,16 +163,6 @@ impl Streams for TokenStream {
 
 /// 把 `#[model(name = "..", shape = [m, n], dtype = "..")]` 展开成 `MODEL` 常量与一组编译期
 /// 断言。
-///
-/// 注解承载的是**编译期数据**：注册表的键、生产形状、输出类型。行为不在注解里——它是被标注的
-/// `type` 别名指向的那份格式契约（`Quantized<32>` / `Dense<32>`）：生成的 `MODEL` 把
-/// `cost` / `sample` / `reference` 写成 `<名字 as Format>` 的单态化实例，`group` 取
-/// `Format::GRAIN`。于是"注解说的格式"与"实际实现的格式"不可能各说各的：别名不实现
-/// `Format` 就编译不过，生产形状不是粒度的整数倍也是编译错误。
-///
-/// 与 `#[spec]` 的分工一样，本注解不建注册表、也不引用注册表：注册表仍是 `REGISTRY` 一张，
-/// "注册表里的那一条就是这份 `MODEL`"由 `op` 侧一处注册表驱动的测试核对。于是注解展开在哪个
-/// crate 都成立——它只引用契约 crate 的项。
 #[proc_macro_attribute]
 pub fn model(attribute: TokenStream, item: TokenStream) -> TokenStream {
     expand_with(
@@ -195,9 +176,6 @@ pub fn model(attribute: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 /// 两道注解共用的一趟展开：解析 → 取类型名 → 渲染 → 拼接。
-///
-/// 文法与渲染以**具体函数**（不是 `dyn`）传进来：每一步都单态化，公共步骤——错误定位、
-/// "失败也要留下被标注项"、拼接顺序——只有一份实现，于是两道注解不会各错一处。
 fn expand_with<S, D>(
     attribute: S,
     item: S,
@@ -216,8 +194,6 @@ where
 }
 
 /// 两道注解共用的前半趟：解析注解、取被标注类型名；失败时返回「原被标注项 + 编译错误」。
-///
-/// 成功时把未改动的被标注项交回调用方——静态形态直接拼接，运行时形态先注入 `spec` 字段。
 fn resolve<S, D>(
     attribute: S,
     item: S,

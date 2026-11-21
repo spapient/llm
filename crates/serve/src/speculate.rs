@@ -1,17 +1,4 @@
 //! 投机解码的接受判定：草稿一次猜 `K` 个 token，目标模型按同一批位置出分布，取最长一致前缀。
-//!
-//! 口径只有一处：目标的 argmax 走 [`crate::generate`] 的 `best`（等值取编号最小），与 [`Greedy`]
-//! 同源。因此"草稿的 token 与目标的一致"在两边是同一个判据，不会出现草稿按一种 argmax 猜、
-//! 校验按另一种判的错配。
-//!
-//! 贪心目标下这条规则**严格无损**：被接受的每个 token 都是目标模型自己会给出的那一个；第一个
-//! 不一致的位置由目标模型补一个，然后从那里继续——于是接受数只影响"这一步走了多远"，不影响
-//! "走出来的序列是不是目标模型的序列"。
-//!
-//! 这一层只判"接受几个"，不写 KV：接受几个由分布决定，写几行由调用方按接受数写。两件事分开，
-//! "接受了 3 个却写了 4 行"这类错就不会从这一层漏出去。
-//!
-//! [`Greedy`]: crate::Greedy
 
 use diagnostic::{Code, Error, Result};
 
@@ -42,9 +29,6 @@ impl Verdict {
     }
 
     /// 这一步真正走出来的 token：被接受的草稿前缀 + 第一个不一致处目标模型的补位。
-    ///
-    /// 取 `accepted` 个而不是"草稿里等于目标的那几个"：接受判定是**前缀**语义，被接受的一定是
-    /// 从头连续的一段，中间一旦断开，后面的草稿即使碰巧对上也不再采信。
     #[must_use]
     pub fn produced(&self, draft: &[u32]) -> Vec<u32> {
         let mut out: Vec<u32> = draft.iter().take(self.accepted).copied().collect();
@@ -79,12 +63,6 @@ pub fn accept(draft: &[u32], rows: &[Vec<f32>]) -> Result<Verdict> {
 }
 
 /// 提示查找草稿器：拿历史里**最近一次**的相同后缀续写，不训草稿模型、也不引入第二个 argmax。
-///
-/// 只看已经算出来的历史：草稿要么来自"之前出现过同一段后缀"，要么干脆不给（空草稿）。于是它
-/// 不会把还没发生的 token 当成已知——与 [`nn::slot_of`]、`nn::Emitter` 是同一句判据。
-///
-/// 它不承诺"猜得准"：接受几个由 [`accept`] 按目标模型的 argmax 判，被拒的那一段一律作废。
-/// 草稿器的质量只影响"这一步走多远"，不影响"走出来的是不是目标模型自己的序列"。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Drafter {
     order: usize,
@@ -120,8 +98,6 @@ impl Drafter {
     }
 
     /// 按历史出草稿：最近一次相同后缀之后的那一段，最多 [`max`](Self::max) 个 token。
-    ///
-    /// 当前位置自己不算"上一次"：只在 `[0, len − order)` 里找，否则永远只匹配到自己。
     #[must_use]
     pub fn draft(&self, history: &[u32]) -> Vec<u32> {
         let Some(tail) = history.len().checked_sub(self.order) else {

@@ -56,10 +56,6 @@ fn main() -> ExitCode {
 }
 
 /// 失败：打印带类别的诊断，按 [`Code::exit_code`] 退出。
-///
-/// 类别 → 退出码只有一处定义（`diagnostic::Code::exit_code`）：`2` 输入/声明不合法、
-/// `3` 缺能力（设备、原语、证据等级）、`4` 缺东西、`5` 读写失败、`70` 内部不变量被破坏。
-/// 脚本因此能区分“这台设备就是没有这条能力”与“我把参数写错了”。
 fn fail(error: Error) -> ExitCode {
     eprintln!("{error}");
     ExitCode::from(error.code().exit_code())
@@ -85,12 +81,6 @@ fn run(command: &CutileCommand<'_>, settings: &Settings) -> diagnostic::Result<S
 }
 
 /// `cache gc`：回收结果全是数据，这里只负责排版与“还差多少”的一句话。
-///
-/// 残留与 LRU 删除分两行：残留不是"空间不够"的产物，它本来就不会命中，报在同一行里
-/// 会让人以为上限调大就能少删几条。
-///
-/// 上限来源：`--limit`（命令行层）最高，其次是配置键 `cache.limit_bytes`（策略层投影），
-/// 两者都没有时由内核 [`cutile::cache::CACHE_LIMIT`] 兜底。
 fn cache_gc(settings: &Settings, limit: Option<u64>) -> diagnostic::Result<String> {
     let dirs = settings.dirs();
     let limit = limit.or_else(|| settings.cache_limit_bytes());

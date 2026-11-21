@@ -1,10 +1,4 @@
 //! 配置文件层（ADR 0048）：发现顺序、TOML 展平、逐格入槽。
-//!
-//! 优先级最低的一层，因此这里只"写进槽位"，判定谁赢在 [`crate::settings`]。嵌套表展平到
-//! 点号键（`[cache] dir = "x"` 与 `cache.dir = "x"` 等价），深度上限写死在这里，因为它是
-//! **文件形态**的约束，不是解析策略。
-//!
-//! **不拥有**：优先级与来源打印（[`crate::settings`]）、键是否登记（[`crate::key`]）。
 
 use crate::key::{Key, Origin, dotted_key, invalid, rebase_value, value_of_text};
 use crate::settings::Settings;

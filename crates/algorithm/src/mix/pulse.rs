@@ -1,13 +1,4 @@
 //! γ 脉冲通道：事件编码 `Encode_event`（§1.5）与 INT8-Spiking 事件臂（E14 / E15）。
-//!
-//! IEEE 上 `Encode_event ≡ Id`（[`encode_id`]，Lipschitz 常数 `L_e = 1`）；FR-HW 走 [`Encoder`]——
-//! 对称 int8 量化 + 整数阈值发放，还原所需的步长随 [`Events`] 一起走，只对发放位置做整数累加
-//! （[`accumulate`]）。γ 通道不是可选装饰，而是跨平台统一契约的必要组成（§1.5 第 6 点）：它让
-//! 同一模型可跨 IEEE/FR-HW 迁移，并允许运行时按输入稀疏度切换事件臂。
-//!
-//! **三项实测在本模块，判定不在这里**：E14 的冻结稀疏度 `S = 1 − N_active/N_total` 由
-//! [`Events::sparsity`] 给出，重构损失由 [`Audit`] 给出，`L_e` 的样本估计由 [`steepest`] 给出。
-//! PASS/FAIL 属 `tools::card` 的协议卡——一列样本只能出一份判决，本模块不另开判定语汇。
 
 use diagnostic::{Code, Error, Result};
 use op::scan::Scalar;
@@ -18,15 +9,9 @@ use crate::csa::finite;
 const SITE: &str = "algorithm::mix::pulse";
 
 /// 对称 int8 的正码上限：码位是 `−127..=127`。
-///
-/// `−128` 不是码位——把它算进去，`code` 与 `−code` 就不再对称，`code·scale` 还原出来的偏差
-/// 会整体偏一格。
 const MAX_CODE: i32 = 127;
 
 /// LIF 神经元（FR-HW 事件臂）：膜电位积分 + 泄漏 + 阈值发放 + 重置。
-///
-/// 状态是膜电位 [`Lif::mem`]；每步 [`Lif::step`] 返回本步发放（`ONE`/`ZERO`），事件驱动的整数
-/// 累加由调用方把返回值累加（§1.4 第 5 类）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Lif<S> {
     threshold: S,
@@ -47,10 +32,6 @@ impl<S: Scalar> Lif<S> {
     }
 
     /// 推进后的膜电位 `mem·(1−leak) + u`：只算、不提交、不判发放。
-    ///
-    /// 拆出来的唯一理由是「发放前那一刻的电位」本身要被观测：反传的代理梯度按它判窗，
-    /// 而 [`Lif::step`] 一提交就把发放过的通道改写成 `reset`，那个值当场没了。让前向顺手
-    /// 记下 `peek` 的返回值，比事后按 `reset` 猜一遍要准。
     pub fn peek(&self, u: S) -> S {
         self.mem.mul(S::ONE.sub(self.leak)).add(u)
     }
@@ -71,8 +52,6 @@ impl<S: Scalar> Lif<S> {
     }
 
     /// 推进一步：`mem = mem·(1−leak) + u`，超阈值发放并重置。
-    ///
-    /// 返回本步发放（`ONE` = 发放，`ZERO` = 未发放）。
     pub fn step(&mut self, u: S) -> S {
         let potential = self.peek(u);
         self.commit(potential)
@@ -85,16 +64,11 @@ impl<S: Scalar> Lif<S> {
 }
 
 /// IEEE 事件编码恒等：`Encode_event(y) = y`（`L_e = 1`，§1.5）。
-///
-/// 逐元素恒等，因此 IEEE 六平台上 γ 混合与 `γ≡0/1` 输出一致（F0-2 门控同构）。
 pub fn encode_id<S: Scalar>(y: &[S]) -> Vec<S> {
     y.to_vec()
 }
 
 /// 稀疏事件：只记发放位置与整数码，未发放的位置不占记录。
-///
-/// 还原所需的步长也在里面（[`Events::decode`] 因此不需要编码器）：事件与「按什么步长还原」
-/// 分开存放时，拿另一层的 `Events` 去解会静默解出另一组数——内积照算，结果却不是这一层的。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Events<S: Scalar> {
     width: usize,
@@ -115,9 +89,6 @@ impl<S: Scalar> Events<S> {
     }
 
     /// E14 的冻结定义：`S = 1 − N_active/N_total`。
-    ///
-    /// 宽度为零记 `1`，不是 `0` 也不是 `NaN`：一个位置都没有，就没有一个位置需要算，这与
-    /// 「全不发放」是同一个稀疏度；`NaN` 还会在下游被当成最大稀疏度。
     pub fn sparsity(&self) -> f64 {
         if self.width == 0 {
             return 1.0;
@@ -141,9 +112,6 @@ impl<S: Scalar> Events<S> {
     }
 
     /// 还原成稠密张量：发放位置取 `code·scale`，其余位置为零。
-    ///
-    /// 未发放的位置还原成零而不是「保留原值」：事件臂能给出的信息只有发放的那些码，
-    /// 补上原值等于偷偷退回连续臂。
     pub fn decode(&self) -> Vec<S> {
         let mut y = vec![S::ZERO; self.width];
         for (&at, &code) in self.indices.iter().zip(&self.codes) {
@@ -154,9 +122,6 @@ impl<S: Scalar> Events<S> {
 }
 
 /// FR-HW 事件臂的编码器（`Encode_event` 的非恒等形态）：对称 int8 量化 + 整数阈值发放。
-///
-/// 只持两个参数：`scale` 是每个码的步长，`threshold` 是发放门槛。门槛按**码位**给而不是按
-/// 浮点值给，于是「发不发放」与 `scale` 解耦——换一个步长不会顺手把稀疏度换成另一个数。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Encoder<S> {
     scale: S,
@@ -233,8 +198,6 @@ impl<S: Scalar> Encoder<S> {
     }
 
     /// 一个浮点值 → 码位：`round(v/scale)` 夹取到 `±MAX_CODE`。
-    ///
-    /// 夹取而不是回绕：回绕把超量程的值折成另一个符号的合法码，看起来仍像一个数。
     fn quantize(&self, value: S) -> i8 {
         let raw = value.div(self.scale).round().to_f64();
         let limit = f64::from(MAX_CODE);
@@ -243,9 +206,6 @@ impl<S: Scalar> Encoder<S> {
 }
 
 /// 一段激活的事件臂实测两项：E14 稀疏度与相对重构损失 `‖ŷ − y‖₂ / ‖y‖₂`。
-///
-/// 只报数、不判门：SpB 2.0 的「64.31% 稀疏 / 0.69% 损失」是同口径的**外部锚点**，本仓的数要
-/// 自己测；判决由 `tools::card` 的协议卡出。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Audit {
     sparsity: f64,
