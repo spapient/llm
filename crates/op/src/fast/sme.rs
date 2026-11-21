@@ -168,7 +168,14 @@ fn pack_tiles(src: &[f32], dst: &mut [f32], k: usize, rowbase: usize, dstbase: u
 
 /// 尾段（不足 16 列）：逐元素标量搬移。
 #[cfg(target_arch = "aarch64")]
-fn pack_tail(src: &[f32], dst: &mut [f32], k: usize, rowbase: usize, dstbase: usize, mut kk0: usize) {
+fn pack_tail(
+    src: &[f32],
+    dst: &mut [f32],
+    k: usize,
+    rowbase: usize,
+    dstbase: usize,
+    mut kk0: usize,
+) {
     while kk0 < k {
         for r in 0..MR {
             dst[dstbase + kk0 * MR + r] = src[rowbase + r * k + kk0];
@@ -220,17 +227,12 @@ unsafe fn sme_tile(
     b_stride: usize,
 ) {
     let b_adv = b_stride - 3 * 64;
-    let mut c16 = c.add(16);
-    let mut c32 = c.add(32);
-    let mut c48 = c.add(48);
-    asm!(
+    unsafe {
+        asm!(
         "zero {{ za0.s }}",
         "zero {{ za1.s }}",
         "zero {{ za2.s }}",
         "zero {{ za3.s }}",
-        "mov {a}, {a_in}",
-        "mov {b}, {b_in}",
-        "mov {k}, {kcnt}",
         "2:",
         "ld1w {{ z0.s }}, p0/z, [{a}]",
         "add {a}, {a}, #64",
@@ -248,6 +250,12 @@ unsafe fn sme_tile(
         "fmopa za3.s, p0/m, p0/m, z0.s, z4.s",
         "subs {k}, {k}, #1",
         "b.ne 2b",
+        "mov {c16}, {c}",
+        "add {c16}, {c16}, #64",
+        "mov {c32}, {c}",
+        "add {c32}, {c32}, #128",
+        "mov {c48}, {c}",
+        "add {c48}, {c48}, #192",
         "mov w12, #0",
         "mov w13, #1",
         "mov w14, #2",
@@ -268,14 +276,14 @@ unsafe fn sme_tile(
         "cmp w12, #64",
         "b.ne 3b",
         a = inout(reg) a_p => _, b = inout(reg) b_p => _, c = inout(reg) c => _,
-        a_in = in(reg) a_p, b_in = in(reg) b_p,
-        k = out(reg) _, kcnt = in(reg) k,
+        k = inout(reg) k => _,
         nstride = in(reg) n_stride, b_adv = in(reg) b_adv,
-        c16 = inout(reg) c16 => _, c32 = inout(reg) c32 => _, c48 = inout(reg) c48 => _,
+        c16 = out(reg) _, c32 = out(reg) _, c48 = out(reg) _,
         out("z0") _, out("z1") _, out("z2") _, out("z3") _, out("z4") _,
         out("w12") _, out("w13") _, out("w14") _, out("w15") _, out("p0") _,
         options(nostack),
-    );
+        );
+    }
 }
 
 /// 进入流式模式并准备全真谓词 `p0`；必须在任何 SME 指令前调用，且每线程一次。
@@ -284,7 +292,9 @@ unsafe fn sme_tile(
 #[allow(unsafe_code)]
 #[inline(never)]
 unsafe fn enter_sm() {
-    asm!("smstart", "smstart za", "ptrue p0.s", options(nostack));
+    unsafe {
+        asm!("smstart", "smstart za", "ptrue p0.s", options(nostack));
+    }
 }
 
 /// 退出流式模式；与 [`enter_sm`] 成对，`sme_tile` 之间不得夹带 NEON。
@@ -293,35 +303,26 @@ unsafe fn enter_sm() {
 #[allow(unsafe_code)]
 #[inline(never)]
 unsafe fn exit_sm() {
-    asm!("smstop za", "smstop", options(nostack));
+    unsafe {
+        asm!("smstop za", "smstop", options(nostack));
+    }
 }
 
 #[cfg(all(test, target_arch = "aarch64"))]
 mod tests {
+    use super::super::tests::check_gemm;
     use super::gemm;
-    use crate::matmul::{close_enough, matmul_scalar};
-
-    fn sample(len: usize, salt: u32) -> Vec<f32> {
-        (0..len)
-            .map(|i| {
-                let x = (i as u32)
-                    .wrapping_mul(2654435761)
-                    .wrapping_add(salt.wrapping_mul(40503));
-                ((x >> 8) as f32) / 256.0 - 32.0
-            })
-            .collect()
-    }
 
     /// 直接调用 SME 内核（越过 `gemm_f32` 的分派），用刚过规模门槛的小形状覆盖：
     /// 多行块 × 多列组、单列组、单行块三种铺法。
     fn check(m: usize, n: usize, k: usize) {
-        let a = sample(m * k, 1);
-        let b = sample(k * n, 2);
-        let mut want = vec![0.0f32; m * n];
-        matmul_scalar(&a, &b, m, n, k, &mut want);
-        let mut got = vec![0.0f32; m * n];
-        assert!(gemm(&a, &b, m, n, k, &mut got), "SME 应接住整铺形状");
-        close_enough(&got, &want, 1e-3, 1e-3).expect("SME 与标量参考容差内一致");
+        check_gemm(
+            m,
+            n,
+            k,
+            |a, b, m, n, k, out| assert!(gemm(a, b, m, n, k, out), "SME 应接住整铺形状"),
+            "SME 与标量参考容差内一致",
+        );
     }
 
     #[test]

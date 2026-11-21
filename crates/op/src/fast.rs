@@ -1062,7 +1062,7 @@ mod tests {
         });
     }
 
-    fn sample(len: usize, salt: u32) -> Vec<f32> {
+    pub(super) fn sample(len: usize, salt: u32) -> Vec<f32> {
         (0..len)
             .map(|i| {
                 let x = (i as u32)
@@ -1073,14 +1073,23 @@ mod tests {
             .collect()
     }
 
-    fn check(m: usize, n: usize, k: usize) {
+    /// 生成确定性输入、跑标量参考、调用 `compute` 后与参考对拍。
+    /// `sme` 测试复用同一骨架，仅替换计算入口与断言文案。
+    pub(super) fn check_gemm<F>(m: usize, n: usize, k: usize, compute: F, msg: &str)
+    where
+        F: FnOnce(&[f32], &[f32], usize, usize, usize, &mut [f32]),
+    {
         let a = sample(m * k, 1);
         let b = sample(k * n, 2);
         let mut want = vec![0.0f32; m * n];
         matmul_scalar(&a, &b, m, n, k, &mut want);
         let mut got = vec![0.0f32; m * n];
-        gemm_f32(&a, &b, m, n, k, &mut got);
-        close_enough(&got, &want, 1e-3, 1e-3).expect("fast gemm 与标量参考容差内一致");
+        compute(&a, &b, m, n, k, &mut got);
+        close_enough(&got, &want, 1e-3, 1e-3).expect(msg);
+    }
+
+    fn check(m: usize, n: usize, k: usize) {
+        check_gemm(m, n, k, gemm_f32, "fast gemm 与标量参考容差内一致");
     }
 
     #[test]
