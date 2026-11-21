@@ -88,34 +88,61 @@ fn section_keys<'a>(manifest: &'a str, section: &str) -> Vec<&'a str> {
 /// 注释与字面量的三种开头字节；`/` 也可能是除号、`'` 也可能是生命周期，都要先看见再判定。
 const OPENERS: &[u8] = b"\"'/";
 
-/// 16 字节一步的字节搜索，语义等同 `bytes[from..].iter().position(needles.contains)`。
+/// 16 字节一步地找"第一个被 `probe` 接受的位置"；`probe` 返回 `None` 就清掉该命中道、在同一窗口里续找。
 ///
 /// 逐字节交给迭代器是把速度押在"编译器愿意自动向量化"上；这里把比较写成每道放一个字节的位并行：
 /// `word ^ 目标` 之后，借位链正好只在"该道为 0"处留下 `0x80`。多个目标的位图先 OR 再取最低命中道，
 /// 比逐个目标取最小快两成。误命中只会出现在真命中右侧（借位从低往高传），所以最低那一位永远是真的。
-fn scan(bytes: &[u8], from: usize, needles: &[u8]) -> Option<usize> {
+///
+/// "清位续找"是不退化的关键：源码里的 `/` 多为除号、`'` 多为生命周期，假候选若回到外层重开窗口，
+/// 每个 `/` 都要重读一整块（除号密集的语料实测慢 4 倍）；就地清位则整块只读一次。
+///
+/// 一律按小端读：内存里第一个字节必须是"最低有效道"，`trailing_zeros() / 8` 才等于块内偏移。
+/// 用本机序在 big-endian 上会把索引反过来——这条判据不做端序假设。
+fn find<T>(
+    bytes: &[u8],
+    from: usize,
+    needles: &[u8],
+    mut probe: impl FnMut(usize) -> Option<T>,
+) -> Option<T> {
     let mut cursor = from;
     while let Some(chunk) = bytes.get(cursor..cursor + 16) {
-        let word = u128::from_ne_bytes(chunk.try_into().expect("切片长度恰为 16"));
-        let lanes = needles.iter().fold(0, |lanes, &needle| {
+        let word = u128::from_le_bytes(chunk.try_into().expect("切片长度恰为 16"));
+        let mut lanes = needles.iter().fold(0, |lanes, &needle| {
             lanes | zero_lanes(word ^ spread(needle))
         });
-        if lanes != 0 {
-            return Some(cursor + (lanes.trailing_zeros() / 8) as usize);
+        while lanes != 0 {
+            let at = cursor + (lanes.trailing_zeros() / 8) as usize;
+            if let Some(found) = probe(at) {
+                return Some(found);
+            }
+            lanes &= lanes - 1;
         }
         cursor += 16;
     }
-    bytes[cursor..]
-        .iter()
-        .position(|byte| needles.contains(byte))
-        .map(|offset| cursor + offset)
+    (cursor..bytes.len())
+        .filter(|at| needles.contains(&bytes[*at]))
+        .find_map(&mut probe)
+}
+
+/// 只要位置、不做判定的 [`find`]：注释与字符串内部只关心"下一个定界符在哪"。
+fn scan(bytes: &[u8], from: usize, needles: &[u8]) -> Option<usize> {
+    find(bytes, from, needles, Some)
+}
+
+/// `from` 之后的第一个真注释 / 字面量：`(开头, 跳过后的位置)`。裸除号与生命周期在扫描层就被清掉，
+/// 外层只处理"确实要剔掉"的段。
+fn next_token(text: &str, from: usize) -> Option<(usize, usize)> {
+    find(text.as_bytes(), from, OPENERS, |at| {
+        skip(text, at).map(|end| (at, end))
+    })
 }
 
 /// 每道放一个 `0x01`：借位链的起点。
-const LANE_ONES: u128 = u128::from_ne_bytes([0x01; 16]);
+const LANE_ONES: u128 = u128::from_le_bytes([0x01; 16]);
 
 /// 每道放一个 `0x80`：借位链的终点，只留下"该道已归零"的标记位。
-const LANE_HIGHS: u128 = u128::from_ne_bytes([0x80; 16]);
+const LANE_HIGHS: u128 = u128::from_le_bytes([0x80; 16]);
 
 /// 哪几道是 0：减一之后仍小于 `0x80` 的道（减的借位传到它自己身上）就是 0。
 fn zero_lanes(word: u128) -> u128 {
@@ -123,31 +150,24 @@ fn zero_lanes(word: u128) -> u128 {
 }
 
 fn spread(byte: u8) -> u128 {
-    u128::from_ne_bytes([byte; 16])
+    u128::from_le_bytes([byte; 16])
 }
 
 /// 只留下代码：注释与字面量都剔掉。生成文本里就写着 `format!` / `.to_string()`，直接搜全文会把
 /// "被生成的代码"误判成"生成器的实现"；`'{'`、`'"'` 这类字面量还会把 [`body`] 的花括号配平带偏。
 ///
-/// 单趟字节游标：每圈用 [`scan`] 跳到下一个可能的开头，认成注释 / 字面量就把它之前那段代码整段
-/// 追加、游标跳到它后面；`/` 与 `'` 若不是注释或字面量就只挪一个字节。游标每圈严格前进（被吞下的
-/// 片段至少 1 字节），终止性由构造保证：不需要递归兜底，栈深与输入长度无关，中间也不分配 `String`。
-/// 行注释的换行留在代码里，剔除后行数与原文件一一对应。
+/// 单趟字节游标：每圈用 [`next_token`] 跳到下一个要剔掉的注释 / 字面量，把它之前那段代码整段追加、
+/// 游标跳到它后面。终止性由构造保证（被吞下的片段至少 1 字节），不需要递归兜底：栈深与输入长度无关，
+/// 中间也不分配 `String`。行注释的换行留在代码里，剔除后行数与原文件一一对应。
 fn code_only(text: &str) -> String {
-    let bytes = text.as_bytes();
     let mut out = String::with_capacity(text.len());
     let mut flushed = 0;
     let mut cursor = 0;
-    while let Some(at) = scan(bytes, cursor, OPENERS) {
-        match skip(text, at) {
-            Some(end) => {
-                debug_assert!(end > at, "被吞下的片段必须至少推进一个字节");
-                out.push_str(&text[flushed..at]);
-                flushed = end;
-                cursor = end;
-            }
-            None => cursor = at + 1,
-        }
+    while let Some((at, end)) = next_token(text, cursor) {
+        debug_assert!(end > at, "被吞下的片段必须至少推进一个字节");
+        out.push_str(&text[flushed..at]);
+        flushed = end;
+        cursor = end;
     }
     out.push_str(&text[flushed..]);
     out

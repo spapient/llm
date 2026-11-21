@@ -156,8 +156,12 @@ fn table(name: &str, words: &mut Words<'_>) -> Result<CutileCommand> {
 /// `doctor`：打印整条流水线。
 fn doctor(flags: &mut Flags<'_>) -> Result<CutileCommand> {
     Ok(CutileCommand::Doctor {
-        op: flags.take_text("--op").unwrap_or_else(|| DEFAULT_OP.to_string()),
-        device: flags.take_text("--device").unwrap_or_else(|| "auto".to_string()),
+        op: flags
+            .take_text("--op")
+            .unwrap_or_else(|| DEFAULT_OP.to_string()),
+        device: flags
+            .take_text("--device")
+            .unwrap_or_else(|| "auto".to_string()),
         why: flags.take_text("--why"),
     })
 }
@@ -165,7 +169,9 @@ fn doctor(flags: &mut Flags<'_>) -> Result<CutileCommand> {
 /// `verify`：逐设备验证。
 fn verify(flags: &mut Flags<'_>) -> Result<CutileCommand> {
     Ok(CutileCommand::Verify {
-        op: flags.take_text("--op").unwrap_or_else(|| DEFAULT_OP.to_string()),
+        op: flags
+            .take_text("--op")
+            .unwrap_or_else(|| DEFAULT_OP.to_string()),
         devices: devices(flags.take_text("--devices")),
         ledger: flags.switch("--emit-ledger"),
     })
@@ -174,7 +180,9 @@ fn verify(flags: &mut Flags<'_>) -> Result<CutileCommand> {
 /// `bench`：跑一次并报告达成率。
 fn bench(flags: &mut Flags<'_>) -> Result<CutileCommand> {
     Ok(CutileCommand::Bench {
-        op: flags.take_text("--op").unwrap_or_else(|| DEFAULT_OP.to_string()),
+        op: flags
+            .take_text("--op")
+            .unwrap_or_else(|| DEFAULT_OP.to_string()),
         shape: flags.take_text("--shape"),
         device: flags.take_text("--device"),
         repeat: flags

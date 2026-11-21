@@ -61,23 +61,68 @@ pub fn entry(invocation: &Invocation) -> Result<()> {
     // 设备后端是进程级注册表，装配点必须在产品路径上（ADR 0025 §1、ADR 0035）：
     // 只在测试里注册会让 `llm run --device cuda` 把“没装配”误报成“没有该后端”。
     engine::backends::install();
-    match invocation.command() {
-        Command::Help => {
-            print!("{USAGE}");
-            Ok(())
-        }
+    dispatch(invocation.command())
+}
+
+/// 命令 → 落点，只分四类；每一类的细节在下层函数里。
+///
+/// 每条命令都必须恰好落在一处，因此阶梯用 `other` 收尾：穷尽性由最后一层
+/// [`leftover`] 的 `other` 兜住，漏接一条命令会在那里被报出来，不会静默成功。
+fn dispatch(command: &Command) -> Result<()> {
+    match command {
+        Command::Help => usage(),
         Command::Platform => platform::report(),
+        Command::Status { .. } | Command::Run { .. } => compute(command),
+        other => pass(other),
+    }
+}
+
+/// 不写状态、只报事实或算一次的两条命令，以及交给下层的其余命令。
+fn pass(command: &Command) -> Result<()> {
+    match command {
+        Command::Verify { .. } | Command::Bench { .. } => elsewhere(),
+        Command::Train { .. } => compute(command),
+        other => objects(other),
+    }
+}
+
+/// 容器类命令：读、写、沉降一个 `.u` 文件。
+fn objects(command: &Command) -> Result<()> {
+    match command {
+        Command::Import { input, output } => archive::import(input, output),
+        Command::Inspect { input } | Command::Check { input } => container(input, command),
+        Command::Settle { input, output } => archive::settle(input, output.as_deref()),
+        other => leftover(other),
+    }
+}
+
+/// 阶梯末端的唯一一条：账本复核。
+fn leftover(command: &Command) -> Result<()> {
+    match command {
+        Command::Audit { input, ledger } => archive::audit(input, ledger),
+        other => Err(Error::new(
+            Code::Internal,
+            format!("命令 `{other:?}` 没有落点（分派阶梯漏了一条）"),
+        )
+        .with("cli::entry")),
+    }
+}
+
+/// 打印用法。
+fn usage() -> Result<()> {
+    print!("{USAGE}");
+    Ok(())
+}
+
+/// `status` 与 `run` 读权重，`train` 跑闭环：三者都在算，都归这里。
+fn compute(command: &Command) -> Result<()> {
+    match command {
         Command::Status { weights } => status::status(weights.as_deref()),
         Command::Run {
             weights,
             input,
             device,
         } => run::run(weights, input.as_deref(), device.as_deref()),
-        Command::Import { input, output } => archive::import(input, output),
-        Command::Inspect { input } => archive::inspect(input),
-        Command::Check { input } => archive::check(input),
-        Command::Settle { input, output } => archive::settle(input, output.as_deref()),
-        Command::Audit { input, ledger } => archive::audit(input, ledger),
         Command::Train {
             lr,
             warmup,
@@ -93,11 +138,27 @@ pub fn entry(invocation: &Invocation) -> Result<()> {
             accumulation.as_deref(),
             load.as_deref(),
         ),
-        // 这两个命令的实现在 `cutile` 二进制里：组装点不复制审计实现。
-        Command::Verify { .. } | Command::Bench { .. } => Err(Error::new(
-            Code::Invalid,
-            "该命令当前由 `cutile` 二进制提供（`llm` 只负责组装）",
+        other => Err(Error::new(
+            Code::Internal,
+            format!("命令 `{other:?}` 不是计算命令"),
         )
         .with("cli::entry")),
     }
+}
+
+/// `inspect` 与 `check` 只差一步验码：同一个入参，同一层。
+fn container(input: &str, command: &Command) -> Result<()> {
+    match command {
+        Command::Check { .. } => archive::check(input),
+        _ => archive::inspect(input),
+    }
+}
+
+/// `verify` / `bench` 的实现住在 `cutile` 二进制里：组装点不复制审计实现。
+fn elsewhere() -> Result<()> {
+    Err(Error::new(
+        Code::Invalid,
+        "该命令当前由 `cutile` 二进制提供（`llm` 只负责组装）",
+    )
+    .with("cli::entry"))
 }

@@ -109,23 +109,34 @@ impl<'a> Flags<'a> {
             owner,
             context,
         };
-        while let Some(word) = words.peek().copied() {
-            let index = flags.index(word).ok_or_else(|| flags.unknown(word))?;
-            let flag = grammar[index];
-            words.next();
-            flags.present |= 1 << index;
-            if flag.kind != Kind::Switch {
-                flags.slots[index] = Some(flags.take(words.next(), flag.name)?);
-            }
-        }
+        flags.absorb(words)?;
         flags.check_required()?;
         Ok(flags)
     }
 
+    /// 把游标上的选项逐个收进槽位；循环本体在 [`Flags::absorb_one`]，复杂度因此分成两处。
+    fn absorb(&mut self, words: &mut Words<'_>) -> Result<()> {
+        while let Some(word) = words.peek().copied() {
+            self.absorb_one(word, words)?;
+        }
+        Ok(())
+    }
+
+    /// 收一个选项：查表定位、记号出现位、带取值的再收一个词。
+    fn absorb_one(&mut self, word: &str, words: &mut Words<'_>) -> Result<()> {
+        let index = self.index(word).ok_or_else(|| self.unknown(word))?;
+        let flag = self.grammar[index];
+        words.next();
+        self.present |= 1 << index;
+        if flag.kind != Kind::Switch {
+            self.slots[index] = Some(self.take(words.next(), flag.name)?);
+        }
+        Ok(())
+    }
+
     /// 可缺省选项的取值；没出现就是 `None`。取值被取走，组装完的 `Flags` 不再持有它。
     pub(crate) fn take_text(&mut self, name: &str) -> Option<String> {
-        self.index(name)
-            .and_then(|index| self.slots[index].take())
+        self.index(name).and_then(|index| self.slots[index].take())
     }
 
     /// 取值的借用形态：`number` 这类"用完就丢"的读者不必为解析先分配一份副本。
@@ -134,10 +145,12 @@ impl<'a> Flags<'a> {
             .and_then(|index| self.slots[index].as_deref())
     }
 
-    /// 必需选项的取值：[`Flags::parse`] 已核对过，缺了不可能发生。
-    pub(crate) fn take_need(&mut self, name: &str) -> String {
-        self.take_text(name)
-            .expect("parse 已核对必需项，且 name 来自文法表")
+    /// 必需选项的取值：`parse` 已核对过，缺了是文法表写错，仍按错误返回而不是 panic。
+    pub(crate) fn take_need(&mut self, name: &str) -> Result<String> {
+        let owner = self.owner;
+        self.take_text(name).ok_or_else(|| {
+            self.invalid(format!("`{owner}` 的必需项 `{name}` 没有落到槽位（文法表与组装点不一致）"))
+        })
     }
 
     /// 开关是否出现。

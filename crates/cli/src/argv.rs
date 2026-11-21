@@ -128,24 +128,24 @@ pub enum Command {
 ///
 /// 表即文法：`status` 只认 `--weights`，`import` 要 `--in` 与 `--out`——差别全在表里，
 /// 分派函数因此只有一次查表。
-type Row = (&'static str, Grammar, fn(&mut Flags<'_>) -> Command);
+type Row = (&'static str, Grammar, fn(&mut Flags<'_>) -> Result<Command>);
 
 /// 顶层子命令表。必需哪几个选项由 [`required`] 标明，组装函数因此直接取值。
 const COMMANDS: &[Row] = &[
     ("status", &[value("--weights", "文件")], |flags| {
-        Command::Status {
+        Ok(Command::Status {
             weights: flags.take_text("--weights"),
-        }
+        })
     }),
     ("verify", &[value("--op", "算子")], |flags| {
-        Command::Verify {
+        Ok(Command::Verify {
             op: flags.take_text("--op"),
-        }
+        })
     }),
     ("bench", &[value("--op", "算子")], |flags| {
-        Command::Bench {
+        Ok(Command::Bench {
             op: flags.take_text("--op"),
-        }
+        })
     }),
     (
         "run",
@@ -154,11 +154,11 @@ const COMMANDS: &[Row] = &[
             value("--input", "数值列表"),
             value("--device", "设备"),
         ],
-        |flags| Command::Run {
-            weights: flags.take_need("--weights"),
+        |flags| Ok(Command::Run {
+            weights: flags.take_need("--weights")?,
             input: flags.take_text("--input"),
             device: flags.take_text("--device"),
-        },
+        }),
     ),
     (
         "train",
@@ -170,49 +170,49 @@ const COMMANDS: &[Row] = &[
             value("--accumulation", "步数"),
             value("--load", "检查点"),
         ],
-        |flags| Command::Train {
+        |flags| Ok(Command::Train {
             lr: flags.take_text("--lr"),
             warmup: flags.take_text("--warmup"),
             steps: flags.take_text("--steps"),
             clip: flags.take_text("--clip"),
             accumulation: flags.take_text("--accumulation"),
             load: flags.take_text("--load"),
-        },
+        }),
     ),
     (
         "import",
         &[required("--in", "源"), required("--out", "文件")],
-        |flags| Command::Import {
-            input: flags.take_need("--in"),
-            output: flags.take_need("--out"),
-        },
+        |flags| Ok(Command::Import {
+            input: flags.take_need("--in")?,
+            output: flags.take_need("--out")?,
+        }),
     ),
     ("inspect", &[required("--in", "文件")], |flags| {
-        Command::Inspect {
-            input: flags.take_need("--in"),
-        }
+        Ok(Command::Inspect {
+            input: flags.take_need("--in")?,
+        })
     }),
     ("check", &[required("--in", "文件")], |flags| {
-        Command::Check {
-            input: flags.take_need("--in"),
-        }
+        Ok(Command::Check {
+            input: flags.take_need("--in")?,
+        })
     }),
     (
         "settle",
         &[required("--in", "文件"), value("--out", "文件")],
-        |flags| Command::Settle {
-            input: flags.take_need("--in"),
+        |flags| Ok(Command::Settle {
+            input: flags.take_need("--in")?,
             output: flags.take_text("--out"),
-        },
+        }),
     ),
-    ("platform", &[], |_| Command::Platform),
+    ("platform", &[], |_| Ok(Command::Platform)),
     (
         "audit",
         &[required("--in", "文件"), required("--ledger", "账本")],
-        |flags| Command::Audit {
-            input: flags.take_need("--in"),
-            ledger: flags.take_need("--ledger"),
-        },
+        |flags| Ok(Command::Audit {
+            input: flags.take_need("--in")?,
+            ledger: flags.take_need("--ledger")?,
+        }),
     ),
 ];
 
@@ -265,7 +265,7 @@ fn table(name: &str, words: &mut Words<'_>) -> Result<Command> {
             known.join("、")
         )));
     };
-    Ok(build(&mut Flags::parse(words, grammar, name, CONTEXT)?))
+    build(&mut Flags::parse(words, grammar, name, CONTEXT)?)
 }
 
 /// 一条顶层命令文法的诊断：上下文固定在这一层。

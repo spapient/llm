@@ -375,3 +375,4 @@ fn fragment_stem<'a>(path: &'a Path, ext: &str) -> Option<&'a str> {
 
 #[cfg(test)]
 mod tests;
+mod generate;

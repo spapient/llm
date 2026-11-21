@@ -200,7 +200,15 @@ fn parsing_takes_one_allocation_per_given_value() {
 #[test]
 #[ignore = "计时探针，只在需要数字时手动跑"]
 fn parse_throughput() {
-    let argv = args(&["run", "--weights", "w.safetensors", "--input", "1,2", "--device", "cpu"]);
+    let argv = args(&[
+        "run",
+        "--weights",
+        "w.safetensors",
+        "--input",
+        "1,2",
+        "--device",
+        "cpu",
+    ]);
     let rounds = 2_000_000;
     let start = std::time::Instant::now();
     for _ in 0..rounds {

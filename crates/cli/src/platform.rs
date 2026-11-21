@@ -18,14 +18,14 @@ fn render() -> String {
     let host = Machine;
     let mut text = String::from("六平台执行合同（设备 + 编译器两件证据，ADR 0052）\n");
     for (row, standing) in Row::ALL.iter().zip(audit(&host).iter()) {
-        writeln!(
+        // 写 `String` 不会失败（`fmt::Write` 只在载体报错时失败），忽略返回值的错误位。
+        let _ = writeln!(
             text,
             "  {:<14} {:<8} {}",
             row.as_str(),
             standing.as_str(),
             detail(standing)
-        )
-        .expect("写入 String 不会失败");
+        );
     }
     text
 }
