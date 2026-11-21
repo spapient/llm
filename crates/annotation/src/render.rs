@@ -248,15 +248,21 @@ fn model_check(code: &mut String, declaration: &ModelDecl, ty: &str) {
 fn registry(code: &mut String, declaration: &ModelDecl, ty: &str) {
     let model = &declaration.const_name;
     let [m, n] = declaration.shape;
-    code.push_str("        let op = ::llm_op::builtin_named(");
-    literal(code, &declaration.name);
-    code.push_str(").expect(\"算子已注册\");\n");
-    code.push_str("        let signature = ::llm_op::sig::Signature::parse(");
-    literal(code, &declaration.name);
-    code.push_str(", op.template()).expect(\"签名可解析\");\n");
-    code.push_str("        let registered = ::llm_op::model(");
-    literal(code, &declaration.name);
-    code.push_str(").expect(\"语义已注册\");\n");
+    let _ = writeln!(
+        code,
+        "        let op = ::llm_op::builtin_named({}).expect(\"算子已注册\");",
+        Quoted(&declaration.name)
+    );
+    let _ = writeln!(
+        code,
+        "        let signature = ::llm_op::sig::Signature::parse({}, op.template()).expect(\"签名可解析\");",
+        Quoted(&declaration.name)
+    );
+    let _ = writeln!(
+        code,
+        "        let registered = ::llm_op::model({}).expect(\"语义已注册\");",
+        Quoted(&declaration.name)
+    );
     // 注册名与生产形状属于**声明**；`MODEL` 由 `Operator` 投影，所以这两条把声明与投影绑在一起，
     // 防止只改一侧。
     let _ = writeln!(
