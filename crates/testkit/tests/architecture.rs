@@ -432,10 +432,11 @@ const VENDORS: [&str; 8] = [
 /// 越界岛白名单：`docs/adr/0035-unsafe-ffi-boundary.md` §6 的表格，路径 → `allow(unsafe_code)` 条数。
 ///
 /// 四个文件、三个逻辑岛：storage 的 mmap、engine 的 Metal FFI、`op` 的 CPU 微内核（后者跨
-/// `fast.rs` 与 `fast/pool.rs` 两文件，是同一个 P1 待搬出的欠账岛）。
+/// `fast.rs` 与 `fast/pool.rs` 两文件，是同一个 P1 待搬出的欠账岛；`fast.rs` 的 14 处含 NEON
+/// 与 AVX2 两段 SIMD 微内核，同一组不变量）。
 const UNSAFE_ISLANDS: &[(&str, usize)] = &[
     ("crates/engine/src/metal/executor.rs", 1),
-    ("crates/op/src/fast.rs", 11),
+    ("crates/op/src/fast.rs", 14),
     ("crates/op/src/fast/pool.rs", 3),
     ("crates/storage/src/lib.rs", 1),
 ];
@@ -506,7 +507,7 @@ fn the_mechanism_layer_exposes_no_vendor_names() {
 
 /// `allow(unsafe_code)` 只允许出现在 ADR 0035 §6 列举的越界岛里。
 ///
-/// 原先这张表只活在 ADR 正文里：`op::fast` 的 14 处越界（`fast.rs` 11 处 + `fast/pool.rs` 3 处）
+/// 原先这张表只活在 ADR 正文里：`op::fast` 的 17 处越界（`fast.rs` 14 处 + `fast/pool.rs` 3 处）
 /// 既不在 §2 的禁令豁免里、也不在 §1 的 FFI 类别里，却能长期存在——因为没有任何东西比对
 /// "允许集"与"实际集"。
 #[test]

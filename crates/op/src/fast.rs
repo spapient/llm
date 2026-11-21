@@ -1,9 +1,10 @@
-//! 高吞吐 CPU GEMM：多线程 + A 列面板打包 + NEON 8×8 寄存器分块。
+//! 高吞吐 CPU GEMM：多线程 + A 列面板打包 + 8×8 寄存器分块。
 //! 语义同 [`crate::matmul::matmul_scalar`]，浮点累加顺序不同，按 IEEE 容差对拍（不做逐位相等）。
 //!
 //! 关键在「打包」：A 行主序下按列取 8 行会跨 8 条 cache line、每条只用 4 字节，微内核会被访存打穿。
 //! 先把每个 8 行块转置成 `[p][8]` 面板，微内核每条 `p` 只做两次**连续**向量加载，再用 `lane` 广播
-//! 到 8 个累加器；`unsafe` 只在 aarch64 的 NEON 微内核这一小段（`#[allow(unsafe_code)]`）。
+//! 到 8 个累加器；微内核按目标架构选择：aarch64 走 NEON，x86_64 走 AVX2+FMA（运行时探测，缺
+//! 能力回退标量），其余架构走标量。`unsafe` 只在这两段 SIMD 微内核（`#[allow(unsafe_code)]`）。
 
 use std::thread;
 
@@ -408,8 +409,12 @@ fn micro_store(
     }
 }
 
+/// 标量微内核：无 SIMD 的架构（以及 x86_64 上未检出 AVX2/FMA 的机器）的兜底。
+///
+/// 与 SIMD 微内核同一组累加口径：首块从 0 起手，非首块读回 `out` 续算。逐元素点积不做向量化，
+/// 只保证正确，不保证吞吐。
 #[cfg(not(target_arch = "aarch64"))]
-fn micro_packed(
+fn micro_packed_scalar(
     panel: &[f32],
     b: &[f32],
     out: &mut [f32],
@@ -429,6 +434,107 @@ fn micro_packed(
             out[slot] = acc;
         }
     }
+}
+
+/// x86_64 的 8×8 微内核：AVX2 + FMA，8 个 `__m256` 累加器（每行一个、8 列一个向量）。
+///
+/// `panel` 布局 `[p][8]`（A 面板），`b` 布局 `[p][8]`（B 面板）。CPU 能力在运行时探测一次：
+/// 没有 AVX2/FMA 的 x86_64 机器回退 [`micro_packed_scalar`]，不在源码里对硬件能力做隐式假设。
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code)]
+fn micro_packed(
+    panel: &[f32],
+    b: &[f32],
+    out: &mut [f32],
+    row0: usize,
+    j: usize,
+    n: usize,
+    kb: usize,
+    first: bool,
+) {
+    use std::arch::x86_64::*;
+    if !is_x86_feature_detected!("avx2") || !is_x86_feature_detected!("fma") {
+        micro_packed_scalar(panel, b, out, row0, j, n, kb, first);
+        return;
+    }
+    unsafe {
+        let zero = _mm256_setzero_ps();
+        let pp = panel.as_ptr();
+        let bp = b.as_ptr();
+        let mut acc = if first {
+            [zero; 8]
+        } else {
+            micro_load(out, row0, n, j)
+        };
+        for p in 0..kb {
+            let bv = _mm256_loadu_ps(bp.add(p * NR));
+            for r in 0..MR {
+                acc[r] = _mm256_fmadd_ps(_mm256_set1_ps(*pp.add(p * MR + r)), bv, acc[r]);
+            }
+        }
+        micro_store(out, row0, n, j, acc);
+    }
+}
+
+/// 读回上一步的 8 个累加向量（x86_64 非首块续算用）。
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code)]
+fn micro_load(
+    out: &[f32],
+    row0: usize,
+    n: usize,
+    j: usize,
+) -> [std::arch::x86_64::__m256; 8] {
+    unsafe {
+        use std::arch::x86_64::*;
+        let prev = out.as_ptr();
+        let r = row0;
+        [
+            _mm256_loadu_ps(prev.add(r * n + j)),
+            _mm256_loadu_ps(prev.add((r + 1) * n + j)),
+            _mm256_loadu_ps(prev.add((r + 2) * n + j)),
+            _mm256_loadu_ps(prev.add((r + 3) * n + j)),
+            _mm256_loadu_ps(prev.add((r + 4) * n + j)),
+            _mm256_loadu_ps(prev.add((r + 5) * n + j)),
+            _mm256_loadu_ps(prev.add((r + 6) * n + j)),
+            _mm256_loadu_ps(prev.add((r + 7) * n + j)),
+        ]
+    }
+}
+
+/// 把 8 个累加向量写回 `out` 的 8×8 块（x86_64）。
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code)]
+fn micro_store(
+    out: &mut [f32],
+    row0: usize,
+    n: usize,
+    j: usize,
+    acc: [std::arch::x86_64::__m256; 8],
+) {
+    unsafe {
+        use std::arch::x86_64::*;
+        let op = out.as_mut_ptr();
+        let r = row0;
+        for (i, v) in acc.into_iter().enumerate() {
+            _mm256_storeu_ps(op.add((r + i) * n + j), v);
+        }
+    }
+}
+
+/// 无 SIMD 的架构：直接走标量微内核（`micro_packed_scalar` 在这些目标上不会被别处引用）。
+#[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+fn micro_packed(
+    panel: &[f32],
+    b: &[f32],
+    out: &mut [f32],
+    row0: usize,
+    j: usize,
+    n: usize,
+    kb: usize,
+    first: bool,
+) {
+    micro_packed_scalar(panel, b, out, row0, j, n, kb, first);
 }
 
 /// 一个待算的标量尾块：左上角 `(i, j)`、覆盖 `mr × nr`，矩阵列宽 `n`、内积长 `k`。
