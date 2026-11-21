@@ -256,6 +256,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `RUSTDOCFLAGS=-D warnings cargo doc` | CI `doc` job | 文档坏链接、未文档化的公开项 |
 | `cargo test --workspace` | CI `test` job | 行为回归 |
 | `crates/cutile/src/gate.rs` + `tests/fragments_tests.rs` | CI `test` job | 片段正文没被设备自己的语言接受：`GATES` 给每门语言登记一个语法前端，用例把六台设备的每个算子 × 每个 tile 组合真正拼成翻译单元（`substitute::render` → `emit::assemble`，与出厂文本逐字节同源）再交给前端解析；语言版本取自档案 `compile.flags`（`GateSpec::check`），门不许自己再写一份。片段正文写坏时反向用例必红——"占位不报错"在这里不成立 |
+| `crates/prim/src/tests.rs::every_verified_provide_has_a_fragment_body` | `cargo test -p llm-prim` | **档案替一台设备吹的牛**：`L2` 及以上的 `provides` 会被协商选中并真的 emit，因此必须有同名片段正文；`L0`/`L1` 是能力目录（"未验证视为不具备"），允许只有见证、没有正文。反方向（正文签名 → 档案供给）由各设备 `build.rs` 里的 `prof::codegen::scan::entry_of` 在构建期硬失败。把一条没有正文的供给写成 `L2`，用例必红——从 8+8+8+8+5+11 条目录条目里挑任意一条升等级即可复现 |
 | `crates/testkit/src/{layer,ownership,boundary}.rs` | `cargo test -p llm-testkit --lib` | 成员集合、边集合与方向、所有权表与 `cargo metadata` / 源码不一致；`op` / `prof` / `prim` / `cutile` 退回 `Result<_, String>`；本文正文点名的 `crate::名字` 不存在；`allow(unsafe_code)` 不在 ADR 0035 §6 的白名单里；机制层（`cutile`）的公开项以厂商名起头；设备后端没在 `cli` 的产品路径上装配 |
 | `crates/testkit/src/{contracts,mirror}.rs` + `.config/lints/vocabulary.toml` | `cargo test -p llm-testkit --lib` | 闭集 / 位集被手写第二份、白名单过期、注解与注册表不互为镜像 |
 | `#[model]` 生成的两个 `const` + 一条测试 | 被标注 crate 的 `cargo test` | 格式自证不成立（粒度 ≤ 0、派生轴除数 ≠ 粒度）；注解的 `dtype` 与 `.k` 可写输出不是同一个类型 |
