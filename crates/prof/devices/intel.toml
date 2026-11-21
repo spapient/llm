@@ -100,21 +100,26 @@ group   = ["32"]
 grade   = "L1"
 witness = { file = "intel/witness.cl", func = "witness_quant", expect = [-4.0, 3.5] }
 
+# `load` 在这个拼接点上是**绑地址**：模板把 `w + n*M` 绑进私有指针，读发生在 `@dot` 的循环体里。
+# 签名因此写 `bind` 而不是 `vload`——`vloadN` 要求地址空间已知，模板形参未限定（clang 视为
+# `__private`），在这里调它只能凑出"看起来用了向量指令"的代码。`src = GM` 是地址指向的空间，
+# `dst = REG` 是指针自己落的空间：GM 侧一个字节都没动。
 [[provides]]
 prim    = "load"
-impl    = "vload"
+impl    = "bind"
 m       = "<=4096"
 dt      = ["i4", "u8", "f32"]
 space   = ["GM", "FAST"]
 src     = ["GM"]
-dst     = ["GM"]
+dst     = ["REG"]
 grade   = "L1"
 witness = { file = "intel/witness.cl", func = "witness_load", expect = [1.0] }
 
-# `load_async` 的 GM→SLM 是真异步，目标是 GM 时退化为预取 + 普通加载（同 `cpu` 的口径）。
+# `async_work_group_copy` 只搬 GM ↔ SLM；目标是私有指针时没有 DMA 可发，能发的是 `prefetch`
+# （core 于 OpenCL 2.0，不改语义、不阻塞）。签名写实际发出的那条指令。
 [[provides]]
 prim    = "load_async"
-impl    = "async_work_group_copy+prefetch"
+impl    = "prefetch"
 m       = "<=4096"
 dt      = ["i4", "u8", "f32"]
 space   = ["GM", "FAST"]
@@ -126,7 +131,7 @@ witness = { file = "intel/witness.cl", func = "witness_load_async", expect = [1.
 
 [[provides]]
 prim    = "commit_wait"
-impl    = "work_group_barrier"
+impl    = "mem_fence"
 grade   = "L1"
 witness = { file = "intel/witness.cl", func = "witness_commit_wait", expect = [0.0] }
 

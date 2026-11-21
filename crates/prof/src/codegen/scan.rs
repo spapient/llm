@@ -36,14 +36,14 @@ use crate::prof::Profile;
 use super::image;
 use super::table;
 
-/// 生成器入口：`CARGO_MANIFEST_DIR` 里的片段 → `$OUT_DIR/tables.rs`。
+/// 生成器入口：`CARGO_MANIFEST_DIR/src` 里的片段 → `$OUT_DIR/tables.rs`。
 ///
 /// 只给 `build.rs` 用：它读 `CARGO_MANIFEST_DIR` / `OUT_DIR` / `CARGO_FEATURE_DEVICE_IMAGE`，并往
 /// stdout 写 `cargo:` 指令。`vendor` 必须与 `crates/prof/devices/<vendor>.toml` 同名——它是内嵌表的
 /// 键，也是档案里 `witness.file` 的前缀；目录名可以与之不同（`crates/opencl` 装的是 `intel` 的
 /// OpenCL 片段），所以显式传入，不从路径推断。
 pub fn device(vendor: &str) {
-    let dir = PathBuf::from(variable("CARGO_MANIFEST_DIR"));
+    let dir = PathBuf::from(variable("CARGO_MANIFEST_DIR")).join("src");
     let out = PathBuf::from(variable("OUT_DIR"));
     let images = env::var_os("CARGO_FEATURE_DEVICE_IMAGE").is_some();
 

@@ -55,56 +55,26 @@ use diagnostic::{Code, Error, Result};
 /// 命令分派：解析后的命令接到对应编排；输出由各编排函数落到 stdout，
 /// 错误交给二进制入口汇总成退出码。
 ///
-/// 这里是一次穷尽的匹配，不设 `other =>` 兜底臂：新增 `Command` 变体时编译器会指名道姓地
-/// 要求在这里接上编排，「加了命令但没接线」因此不可能编译通过。
+/// 设备后端是进程级注册表，装配点必须在产品路径上（ADR 0025 §1、ADR 0035）：只在测试里
+/// 注册会让 `llm run --device cuda` 把"没装配"误报成"没有该后端"。`install` 幂等且只做三次
+/// 静态登记，因此不按命令分支——为一个不必要的条件跳过去换掉编译期证明不划算。
 pub fn entry(invocation: &Invocation) -> Result<()> {
-    // 设备后端是进程级注册表，装配点必须在产品路径上（ADR 0025 §1、ADR 0035）：
-    // 只在测试里注册会让 `llm run --device cuda` 把“没装配”误报成“没有该后端”。
     engine::backends::install();
-    dispatch(invocation.command())
+    route(invocation.command())
 }
 
-/// 命令 → 落点，只分四类；每一类的细节在下层函数里。
+/// 一级分派：自处理的命令直接落地，其余按类别下推。
 ///
-/// 每条命令都必须恰好落在一处，因此阶梯用 `other` 收尾：穷尽性由最后一层
-/// [`leftover`] 的 `other` 兜住，漏接一条命令会在那里被报出来，不会静默成功。
-fn dispatch(command: &Command) -> Result<()> {
+/// 十二条变体为什么不写成一张平表：本包的生产函数受 `Ccn ≤ 5` 约束（`llm-tools` 的 `gate`）
+/// 平铺会顶到 11，所以分四层。代价是每层末尾需要一个 `_` 臂——它走不走得到**不靠文档声明**，
+/// 而靠 `tests/grammar.rs::every_command_variant_has_a_destination` 里那张不带 `_` 的平表：
+/// 新增 `Command` 变体时那道门编译失败，`cargo check --all-targets` 因此点名要求接线。
+fn route(command: &Command) -> Result<()> {
     match command {
         Command::Help => usage(),
         Command::Platform => platform::report(),
-        Command::Status { .. } | Command::Run { .. } => compute(command),
-        other => pass(other),
-    }
-}
-
-/// 不写状态、只报事实或算一次的两条命令，以及交给下层的其余命令。
-fn pass(command: &Command) -> Result<()> {
-    match command {
-        Command::Verify { .. } | Command::Bench { .. } => elsewhere(),
-        Command::Train { .. } => compute(command),
+        Command::Status { .. } | Command::Run { .. } | Command::Train { .. } => compute(command),
         other => objects(other),
-    }
-}
-
-/// 容器类命令：读、写、沉降一个 `.u` 文件。
-fn objects(command: &Command) -> Result<()> {
-    match command {
-        Command::Import { input, output } => archive::import(input, output),
-        Command::Inspect { input } | Command::Check { input } => container(input, command),
-        Command::Settle { input, output } => archive::settle(input, output.as_deref()),
-        other => leftover(other),
-    }
-}
-
-/// 阶梯末端的唯一一条：账本复核。
-fn leftover(command: &Command) -> Result<()> {
-    match command {
-        Command::Audit { input, ledger } => archive::audit(input, ledger),
-        other => Err(Error::new(
-            Code::Internal,
-            format!("命令 `{other:?}` 没有落点（分派阶梯漏了一条）"),
-        )
-        .with("cli::entry")),
     }
 }
 
@@ -114,7 +84,7 @@ fn usage() -> Result<()> {
     Ok(())
 }
 
-/// `status` 与 `run` 读权重，`train` 跑闭环：三者都在算，都归这里。
+/// 读权重、跑闭环：三者都在算，都归这里。
 fn compute(command: &Command) -> Result<()> {
     match command {
         Command::Status { weights } => status::status(weights.as_deref()),
@@ -138,25 +108,42 @@ fn compute(command: &Command) -> Result<()> {
             accumulation.as_deref(),
             load.as_deref(),
         ),
-        other => Err(
-            Error::new(Code::Internal, format!("命令 `{other:?}` 不是计算命令")).with("cli::entry"),
-        ),
+        other => stray(other),
     }
 }
 
-/// `inspect` 与 `check` 只差一步验码：同一个入参，同一层。
-fn container(input: &str, command: &Command) -> Result<()> {
+/// 容器类命令：读、写、沉降一个 `.u` 文件。
+fn objects(command: &Command) -> Result<()> {
     match command {
-        Command::Check { .. } => archive::check(input),
-        _ => archive::inspect(input),
+        Command::Import { input, output } => archive::import(input, output),
+        Command::Settle { input, output } => archive::settle(input, output.as_deref()),
+        Command::Audit { input, ledger } => archive::audit(input, ledger),
+        other => examine(other),
     }
 }
 
-/// `verify` / `bench` 的实现住在 `cutile` 二进制里：组装点不复制审计实现。
+/// `inspect` / `check` 只差一步验码；`verify` / `bench` 的实现住在同包的另一个入口 `cutile` 里，
+/// 组装点不复制审计实现。
+fn examine(command: &Command) -> Result<()> {
+    match command {
+        Command::Inspect { input } => archive::inspect(input),
+        Command::Check { input } => archive::check(input),
+        Command::Verify { .. } | Command::Bench { .. } => elsewhere(),
+        other => stray(other),
+    }
+}
+
+/// 阶梯末端：上面的编译期证明说这里走不到。留一条诊断而不是 `unreachable!`——真漏了也该
+/// 是内部错误码，不该让用户看到 panic。
+fn stray(command: &Command) -> Result<()> {
+    Err(Error::new(Code::Internal, format!("命令 `{command:?}` 没有落点")).with("cli::entry"))
+}
+
+/// `verify` / `bench` 的实现住在同包的 `cutile` 二进制里（`src/cutile.rs`）：`llm` 只负责组装。
 fn elsewhere() -> Result<()> {
     Err(Error::new(
         Code::Invalid,
-        "该命令当前由 `cutile` 二进制提供（`llm` 只负责组装）",
+        "该命令由本包的 `cutile` 入口提供（`cutile verify` / `cutile bench`）",
     )
     .with("cli::entry"))
 }

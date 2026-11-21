@@ -188,16 +188,23 @@ impl Settings {
 
     /// 缓存根目录。
     pub fn cache_dir(&self) -> PathBuf {
-        self.resolved(Key::CacheDir)
-            .and_then(|(value, _)| value.into_path())
+        self.path(Key::CacheDir)
             .unwrap_or_else(|| self.roots.default_cache_dir(APP))
     }
 
     /// 临时工作目录。
     pub fn work_dir(&self) -> PathBuf {
-        self.resolved(Key::WorkDir)
-            .and_then(|(value, _)| value.into_path())
+        self.path(Key::WorkDir)
             .unwrap_or_else(|| self.roots.default_work_dir(APP))
+    }
+
+    /// 槽位里的路径取值；不做来源追踪也不复制来源——这三个访问器在每次启动的必经路径上，
+    /// 只有 `describe` 需要来源，因此只在那里走 [`Settings::resolved`]。
+    fn path(&self, key: Key) -> Option<PathBuf> {
+        self.slots[key.index()]
+            .as_ref()
+            .and_then(|slot| slot.value.as_path())
+            .map(Path::to_path_buf)
     }
 
     /// 声明层 / 档案层 / 片段层的替代根目录；`None` 表示用被调用方的内置数据。

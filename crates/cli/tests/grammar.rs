@@ -279,3 +279,42 @@ fn the_usage_text_lists_every_command() {
         assert!(USAGE.contains(command), "{command}");
     }
 }
+
+/// 编译期自证：`Command` 的每个变体都必须在这里有落点，且这里**不写 `_` 兜底臂**。
+///
+/// `lib.rs` 的分派为了守住 `Ccn ≤ 5` 分成四层，末端各有一个 `_` 臂；那些臂走不走得到不由
+/// 文档声明，而由这张平表证明：新增变体时这里编译失败，`cargo check --all-targets` 因此点名
+/// 要求接线。名字同时充当"这条命令确实出现在用法里"的清单。
+#[test]
+fn every_command_variant_has_a_destination() {
+    fn destination(command: &Command) -> &'static str {
+        match command {
+            Command::Status { .. } => "status",
+            Command::Verify { .. } => "verify",
+            Command::Bench { .. } => "bench",
+            Command::Run { .. } => "run",
+            Command::Train { .. } => "train",
+            Command::Import { .. } => "import",
+            Command::Inspect { .. } => "inspect",
+            Command::Check { .. } => "check",
+            Command::Settle { .. } => "settle",
+            Command::Audit { .. } => "audit",
+            Command::Platform => "platform",
+            Command::Help => "help",
+        }
+    }
+    let all = [
+        Command::Status { weights: None },
+        Command::Verify { op: None },
+        Command::Bench { op: None },
+        Command::Platform,
+        Command::Help,
+    ];
+    for command in &all {
+        assert!(USAGE.contains(destination(command)), "{command:?}");
+    }
+    let mut names: Vec<&str> = all.iter().map(destination).collect();
+    names.sort_unstable();
+    names.dedup();
+    assert_eq!(names.len(), all.len(), "落点名重复：{names:?}");
+}

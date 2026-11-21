@@ -25,6 +25,6 @@
 #![deny(unsafe_code)]
 
 /// 本 crate 的根目录：片段与见证就在这个目录下，`prim` 按它读磁盘。
-pub const ROOT: &str = env!("CARGO_MANIFEST_DIR");
+pub const ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
 
 include!(concat!(env!("OUT_DIR"), "/tables.rs"));
