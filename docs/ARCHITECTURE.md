@@ -119,7 +119,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Cert` / `Settled` / `Settlement` / `Reason` | `weights`（`settle` 模块） | 逐张量沉降账本（LLD §4.7）：体积、熵、实际位宽、无损与原因全部由**落盘字节**现算，不读文件里存的度量字段；`lossless` 与 `Metrics` 共用同一份 `lossless_entry`，于是容器的两个视图不会对同一条给出两种“无损”。“原因”只答“为什么是这个体积”（引用去重 / 小段 / 轴字典 / 不可压），不答“够不够 Must”——后者归协议卡；本层只读产物，不重写产物。账本的读回也归本层：`Settlement::verify` 用同一份字节现算的账逐格核对（按规范写法比、不能少也不能多），因此“记账”与“核账”不可能各自算一遍；CLI 的 `audit` 只是把这条读回出口接到命令行 |
 | `Tape` / `Var` / `Node` / `Requirement` / `Role` | `autograd` | 反向图的记录：变量需求、出身、边与深度 |
 | `Schedule` / `Account` / `Ordering` / `Config` | `autograd` | 反向调度（可达剪枝 + 可配置排序 + 同深度分层）与扇出账本；都在原对象上重填，训练循环不必每步新建 |
-| `Plan` / `Budget` / `Choice` / `Footprint` / `Sizes` / `MemoryPolicy` | `autograd` | 显存计划：只读 `Tape`、`Schedule` 与形状表，不分配、不执行。与 `cutile::Plan`（单条 kernel 选哪个 tile）不是同一件事 |
+| `Plan` / `Budget` / `Choice` / `Footprint` / `Sizes` / `MemoryPolicy` | `autograd` | 显存计划：只读 `Tape`、`Schedule` 与形状表，不分配、不执行。与 `cutile::plan::Plan`（单条 kernel 选哪个 tile）不是同一件事 |
 | `Replay` / `Store` | `autograd` | 重放执行：把计划编成扁平序列表；`Store` 是唯一口子，真实缓冲归 `train` |
 | `Summary` | `autograd` | 图规模与可达性的只读计数快照，供诊断、缓存键与容量预估 |
 | `Contract` / `ContractSpec` / `Linear` / `LmHead` / `WeightFormat` / `ParamRole` | `nn` | 层定义与契约校验：产出的算子名必须存在于 `op`；`WeightFormat` 是格式 → 算子名的唯一事实源，`ParamRole` 让权重衰减豁免与可训练判定从角色派生 |
@@ -162,7 +162,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Completion` / `Router` | `serve` | 第一条真实端点：解析 → 编词 → 准入 → 逐步前向 + 采样 → 归还页 → 包帧；客户端错误落 400、页不够落 503，失败路径同样归还页 |
 | `Verdict` / `accept` / `Drafter` | `serve`（`speculate` 模块） | 投机解码的接受判定：取最长一致前缀，第一个不一致的位置由目标模型补一个；只判"接受几个"、不写 KV |
 | `Httpd` | `serve` | std-only HTTP/1.1 薄适配器：单线程一问一答，固定 `Connection: close`；换传输层只需在同一个 `Router` 上再挂一个适配器 |
-| `CpuModel` / `Params` / `Block` | `serve` | CPU 模型宿主与驻留参数表：装载期一次解码、生成循环不再读文件；七个层族装配成 `engine::Graph`，执行器泛化为 `E: Executor`；`from_path` 按 `Reader` / `Loader` 在装配点分流 |
+| `CpuModel` / `Params` / `Block` | `serve` | CPU 模型宿主与驻留参数表：装载期一次解码、生成循环不再读文件；七个层族装配成 `engine::exec::Graph`，执行器泛化为 `E: Executor`；`from_path` 按 `Reader` / `Loader` 在装配点分流 |
 | `Command` / `Invocation` / `USAGE` | `cli` | 命令行文法（argv / env → 强类型调用参数）与编排分派 |
 | `Report` / `join_names` | `tool` | 人可读输出；只接字符串，不接领域类型 |
 | `Token` / `Pos` / `Delim` / `Finding` / `Gate` | `tool` | 零依赖词法 token 树、单函数复杂度 finding 与配置化阈值；分析器只产出数据，不打印不退出 |
@@ -239,7 +239,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `clippy -D warnings` | CI `clippy` job | 缺元数据、缺文档、`unsafe` 风格 |
 | `RUSTDOCFLAGS=-D warnings cargo doc` | CI `doc` job | 文档坏链接、未文档化的公开项 |
 | `cargo test --workspace` | CI `test` job | 行为回归 |
-| `crates/testkit/tests/architecture.rs` | CI `test` job | 成员集合、边集合与方向、所有权表与 `cargo metadata` / 源码不一致；`op` / `prof` / `prim` / `cutile` 退回 `Result<_, String>` |
+| `crates/testkit/tests/architecture.rs` | CI `test` job | 成员集合、边集合与方向、所有权表与 `cargo metadata` / 源码不一致；`op` / `prof` / `prim` / `cutile` 退回 `Result<_, String>`；本文正文点名的 `crate::名字` 不存在；`allow(unsafe_code)` 不在 ADR 0035 §6 的白名单里；机制层（`cutile`）的公开项以厂商名起头；设备后端没在 `cli` 的产品路径上装配 |
 | `crates/testkit/tests/contracts.rs` + `.config/lints/vocabulary.toml` | CI `test` job | 闭集 / 位集被手写第二份、白名单过期、注解与注册表不互为镜像 |
 | `#[model]` 生成的两个 `const` + 一条测试 | 被标注 crate 的 `cargo test` | 格式自证不成立（粒度 ≤ 0、派生轴除数 ≠ 粒度）；注解的 `dtype` 与 `.k` 可写输出不是同一个类型 |
 

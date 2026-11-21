@@ -131,7 +131,7 @@ fn conv2d_matches_naive() {
         let bias = sample(cout, 3);
         let mut got = vec![0.0f32; n * oh * ow * cout];
         let mut want = vec![0.0f32; n * oh * ow * cout];
-        conv.forward_f32(&x, &wgt, &bias, n, h, w, &mut got)
+        conv.forward_f32(&x, &wgt, &bias, n, (h, w), &mut got)
             .unwrap();
         naive2d(&x, &wgt, &bias, &conv, n, h, w, &mut want);
         close(&got, &want);
@@ -173,7 +173,7 @@ fn conv2d_i8_matches_exact() {
     let wgt = sample_i8(geom.patch(cin) * cout, 2);
     let bias = vec![0i32; cout];
     let mut got = vec![0i32; n * oh * ow * cout];
-    conv.forward_i8(&x, &wgt, &bias, n, h, w, &mut got).unwrap();
+    conv.forward_i8(&x, &wgt, &bias, n, (h, w), &mut got).unwrap();
 
     let mut want = vec![0i32; n * oh * ow * cout];
     for ni in 0..n {
@@ -295,16 +295,16 @@ fn bench_conv() {
         let w8 = sample_i8(patch * cout, 2);
         let b8 = vec![0i32; cout];
         let mut o8 = vec![0i32; rows * cout];
-        conv.forward_i8(&x8, &w8, &b8, n, h, w, &mut o8).unwrap();
+        conv.forward_i8(&x8, &w8, &b8, n, (h, w), &mut o8).unwrap();
         let mut best = f64::INFINITY;
         let mut bestcol = f64::INFINITY;
-        let mut buf = Vec::new();
+        let mut buf = vec![0i8; rows * patch];
         for _ in 0..5 {
             let t = Instant::now();
-            conv.forward_i8(&x8, &w8, &b8, n, h, w, &mut o8).unwrap();
+            conv.forward_i8(&x8, &w8, &b8, n, (h, w), &mut o8).unwrap();
             best = best.min(t.elapsed().as_nanos() as f64);
             let t = Instant::now();
-            conv.forward_i8_with(&x8, &w8, &b8, n, h, w, &mut o8, &mut buf)
+            conv.forward_i8_with(&x8, &w8, &b8, n, (h, w), &mut o8, &mut buf)
                 .unwrap();
             bestcol = bestcol.min(t.elapsed().as_nanos() as f64);
         }
@@ -314,7 +314,7 @@ fn bench_conv() {
         for col in 0..5 {
             let _ = col;
             let t = Instant::now();
-            im2col2d_i8(&x8, &mut buf, n, (h, w), &conv, (oh, ow));
+            im2col2d(&x8, &mut buf, n, (h, w), &conv, (oh, ow));
             tcol = tcol.min(t.elapsed().as_nanos() as f64);
             let t = Instant::now();
             fast::gemm_i8(&buf, &w8, rows, cout, patch, &mut o8);
@@ -333,12 +333,12 @@ fn bench_conv() {
         let w32 = sample(patch * cout, 2);
         let b32 = sample(cout, 3);
         let mut o32 = vec![0.0f32; rows * cout];
-        conv.forward_f32(&x32, &w32, &b32, n, h, w, &mut o32)
+        conv.forward_f32(&x32, &w32, &b32, n, (h, w), &mut o32)
             .unwrap();
         let mut best32 = f64::INFINITY;
         for _ in 0..5 {
             let t = Instant::now();
-            conv.forward_f32(&x32, &w32, &b32, n, h, w, &mut o32)
+            conv.forward_f32(&x32, &w32, &b32, n, (h, w), &mut o32)
                 .unwrap();
             best32 = best32.min(t.elapsed().as_nanos() as f64);
         }

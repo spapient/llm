@@ -22,8 +22,7 @@ use diagnostic::{Code, Error};
 use llm_cli::cutile_command::CutileCommand;
 use llm_cli::settings::Settings;
 use std::process::ExitCode;
-use tool::Report;
-
+#[path = "cutile/report.rs"]
 mod report;
 
 fn main() -> ExitCode {
@@ -94,35 +93,7 @@ fn cache_gc(settings: &Settings, limit: Option<u64>) -> diagnostic::Result<Strin
     let dirs = settings.dirs();
     let limit = limit.or_else(|| settings.cache_limit_bytes());
     let report = cutile::cache::cache_gc(&dirs, limit)?;
-    let mut out = Report::new(format!(
-        "cache gc | 上限 {}",
-        tool::human_bytes(report.limit)
-    ))
-    .row("目录", dirs.cache().display().to_string())
-    .row("回收前", tool::human_bytes(report.before))
-    .row("回收后", tool::human_bytes(report.after))
-    .row("按 LRU 删除", format!("{} 项", report.removed))
-    .render();
-    if report.residue.items > 0 {
-        out.push_str(&format!(
-            "  清理残留 {} 项（{}）：半截落盘，本来就不会命中\n",
-            report.residue.items,
-            tool::human_bytes(report.residue.bytes)
-        ));
-    }
-    if report.skipped > 0 {
-        out.push_str(&format!(
-            "  {} 项仍在使用，已跳过：锁释放后再跑一次\n",
-            report.skipped
-        ));
-    }
-    if report.after > report.limit {
-        out.push_str(&format!(
-            "  仍高于上限：还需再删 {}\n",
-            tool::human_bytes(report.after - report.limit)
-        ));
-    }
-    Ok(out)
+    Ok(report::cache_gc(&report, &dirs))
 }
 
 /// 跨档案台账：聚合现有见证证据，渲染成矩阵 markdown。

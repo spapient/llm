@@ -526,7 +526,7 @@ fn parallel_rows<T: Copy + Send + Sync>(
     col: &mut [T],
     rows: usize,
     patch: usize,
-    fill: impl Fn(&[T], &mut [T], usize) + Sync + Copy,
+    fill: impl Fn(&[T], &mut [T], usize) + Sync + Send + Copy,
 ) {
     let threads = thread_count(rows, patch);
     if threads <= 1 {
@@ -539,14 +539,22 @@ fn parallel_rows<T: Copy + Send + Sync>(
     thread::scope(|s| {
         for (bi, chunk) in col.chunks_mut(per * patch).enumerate() {
             let r0 = bi * per;
-            s.spawn(move || {
-                let cnt = chunk.len() / patch;
-                for base in 0..cnt {
-                    fill(x, &mut chunk[base * patch..(base + 1) * patch], r0 + base);
-                }
-            });
+            s.spawn(move || fill_rows(x, chunk, patch, r0, fill));
         }
     });
+}
+
+/// 一个分片上把行逐一交给 `fill`：`chunk` 覆盖 `r0` 起的连续行。
+fn fill_rows<T: Copy>(
+    x: &[T],
+    chunk: &mut [T],
+    patch: usize,
+    r0: usize,
+    fill: impl Fn(&[T], &mut [T], usize) + Sync + Copy,
+) {
+    for base in 0..chunk.len() / patch {
+        fill(x, &mut chunk[base * patch..(base + 1) * patch], r0 + base);
+    }
 }
 
 /// 展开一行：`row_idx = (ni, oi, oj)` 对应的一整块 `(kh, kw, cin)` 拷贝，越界补零。

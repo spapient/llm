@@ -6,7 +6,7 @@
 
 ## 背景
 
-workspace lints 在根 [`../../Cargo.toml`](../../Cargo.toml) 全局 `unsafe_code = "deny"`；全仓生产核心不出现裸指针与 FFI。唯一生产 unsafe/FFI 岛是 storage 的只读内存映射 [`../../crates/storage/src/lib.rs`](../../crates/storage/src/lib.rs) 的内联 `mmap` 模块：模块级 `#![allow(unsafe_code)]`，对外只暴露拥有型、只读的 `&[u8]` 视图，不变量（只读、私有映射、`Drop` 归还、线程归属）写在模块头注释里。
+workspace lints 在根 [`../../Cargo.toml`](../../Cargo.toml) 全局 `unsafe_code = "deny"`；全仓生产核心不出现裸指针与 FFI。当时的唯一生产 unsafe/FFI 岛是 storage 的只读内存映射（存量白名单见 §6） [`../../crates/storage/src/lib.rs`](../../crates/storage/src/lib.rs) 的内联 `mmap` 模块：模块级 `#![allow(unsafe_code)]`，对外只暴露拥有型、只读的 `&[u8]` 视图，不变量（只读、私有映射、`Drop` 归还、线程归属）写在模块头注释里。
 
 P3 要在边界 crate 挂 Metal/CUDA 后端（ADR 0025 §1、§9；ADR 0028 §3 触发条件）：设备句柄、命令队列、缓冲映射、kernel launch 与事件同步必然触及裸指针、设备句柄与平台 FFI。ADR 0025 §9 只预告「unsafe/FFI 只允许出现在后端边界 crate」，没有给出白名单式的边界规则：哪些函数/句柄可以越过安全边界、`allow` 收敛在哪一层、不变量由谁写、校验放哪一侧。规则不定，后端代码里就会到处散落 `#[allow(unsafe_code)]`，审计面无法枚举，也与既有 mmap 岛的收敛形态不一致。
 
@@ -28,7 +28,7 @@ P3 要在边界 crate 挂 Metal/CUDA 后端（ADR 0025 §1、§9；ADR 0028 §3 
 
 - 允许点只出现在边界 crate 的边界模块或边界函数；模块头注释必须写明：越界理由、适用的安全不变量（指针生命周期、对齐、有效性、线程归属）、对外暴露的安全类型是什么。
 - 其余核心继续保持 workspace `unsafe_code = "deny"`；不在核心成员（`engine` / `tensor` / `storage` 除既有 mmap 岛外 / `op` / `nn` / `shard` / `serve` 等）新增 `allow(unsafe_code)`。
-- 既有 storage mmap 岛是本规则的既有实例：模块级 allow + 头注释不变量 + 对外只读视图；新边界模块照同一形态写。
+- 既有 storage mmap 岛是本规则的既有实例：模块级 allow + 头注释不变量 + 对外只读视图；新边界模块照同一形态写。存量越界点的全表见 §6。
 
 ### 3. 依赖方向
 
@@ -43,6 +43,22 @@ P3 要在边界 crate 挂 Metal/CUDA 后端（ADR 0025 §1、§9；ADR 0028 §3 
 ### 5. 与分层、数据/机制边界的关系
 
 本 ADR 不改变 ADR 0025 的分层归属与 ADR 0028 的数据/机制边界：L2 片段与档案、L3 机制编排、运行时后端落点的归属裁决照旧；本 ADR 只补充「哪些操作被许可越过安全边界、许可收敛在哪一层」的规则，不新增成员、不改 trait 形状。
+
+### 6. 现状越界点（可枚举白名单）
+
+§2 管的是「新增」；存量越界点如果不列举，这条规则就只剩口头约束。`crates/*/src` 里 `allow(unsafe_code)`
+的现状穷尽为下表，由 [`../../crates/testkit/tests/architecture.rs`](../../crates/testkit/tests/architecture.rs)
+逐文件比对：多一行（新岛）或少一行（基线过期）都失败。`crates/*/tests` 不在口径内——测试夹具不是越界岛。
+
+| 位置 | 越界对象（§1 类别） | 不变量与对外视图 |
+|---|---|---|
+| `crates/storage/src/lib.rs`（内联 `mmap` 模块） | mmap 映射 | 模块级 allow；只读、私有映射、`Drop` 归还、线程归属；对外只暴露拥有型 `&[u8]` 视图 |
+| `crates/engine/src/metal_executor.rs`（模块级） | FFI 调用 + 设备缓冲句柄 | 手写 `objc_msgSend` 与 Metal 运行时符号；+1 保留的对象在 `Drop` 恰好 `-release` 一次，句柄私有、不跨线程，自动释放对象由 autorelease 池收口；对外是 `Executor` / `Allocator` 的安全实现 |
+| `crates/op/src/fast.rs`（11 处，函数级） | 裸指针切片重建 + NEON intrinsics | 只在 `aarch64` 的 NEON 微内核与打包/回写段。`op` 是 L2 数据层，**这不是许可而是欠账**：CPU 微内核应随 P1 搬出 `op` |
+| `crates/op/src/fast/fast_pool.rs`（3 处，函数级） | 裸指针跨线程发布 | 任务只发布指针 + 一次 `Barrier`，主线程自旋等到全部 worker 完成才返回；同样随 P1 搬出 `op` |
+
+`op` 那两行是**存量冻结**：只许减少，不许增加。要新增第五行，先改本表，并说明这个越界点为什么
+不能落在边界 crate。
 
 ## 备选方案
 
@@ -82,3 +98,4 @@ P3 要在边界 crate 挂 Metal/CUDA 后端（ADR 0025 §1、§9；ADR 0028 §3 
 
 - 2026-11-17：初稿，回应 G13；白名单四类、allow 收敛点、依赖方向、unsafe 块最小化规则落档，实现随 P3 边界 crate。
 - 2026-11-18：评审通过（G1/G2/G3）并置 Accepted：① trait 清单订正为四 trait（`Executor`/`Program`/`Allocator`/`Collective`）且 `Device` 为 struct；② 白名单增第 5 类「通信/进程级库句柄」；③ 补 FFI 绑定默认策略（手写 `extern "C"`、零依赖）。
+- 2026-11-21：补 §6「现状越界点」：四个文件（`storage` mmap、`engine::metal_executor`、`op::fast` 两处）穷尽为可执行白名单，门禁落在 `testkit/tests/architecture.rs`；`op` 的 14 处明确为 P1 待搬出的存量冻结。
