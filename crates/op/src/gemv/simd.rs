@@ -222,3 +222,157 @@ fn layout(x: &[f32], scales: &[f32], ctx: ScaledRow, cpb: usize) -> Vec<f32> {
     }
     input
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gemv::packed::{dot_row, forward_batch as batch_leaf, forward_rows as row_leaf, weights};
+    use crate::quant;
+
+    /// 标量叶的对拍基准：一行 `dot_row`，与 [`forward`] 走的是两份独立实现。
+    fn scalar(
+        x: &[f32],
+        w: &[u8],
+        scales: &[f32],
+        ctx: ScaledRow,
+        cpb: usize,
+        dequant: &[f32],
+    ) -> Vec<f32> {
+        (0..scales.len() / ctx.groups)
+            .map(|j| {
+                let row = &w[j * ctx.row..][..ctx.row];
+                let s = &scales[j * ctx.groups..][..ctx.groups];
+                dot_row(row, x, s, ctx.group / cpb, ctx.group, cpb, dequant)
+            })
+            .collect()
+    }
+
+    fn context(m: usize, cpb: usize, group: usize) -> ScaledRow {
+        ScaledRow {
+            groups: m / group,
+            group,
+            row: m / cpb,
+        }
+    }
+
+    fn scales(n: usize, groups: usize, step: f32) -> Vec<f32> {
+        (0..n * groups)
+            .map(|i| step * (1.0 + (i % 4) as f32))
+            .collect()
+    }
+
+    /// 反量化表的仿射零就是配置表里的对称零点，非仿射表一律回退。
+    #[test]
+    fn the_affine_zero_is_the_table_zero() {
+        assert_eq!(affine_zero(quant::I2.table, 1 << 2), Some(2.0));
+        assert_eq!(affine_zero(quant::I4.table, 1 << 4), Some(8.0));
+        // 表长不对、或表不是仿射关系，都不该被当成对称表。
+        assert_eq!(affine_zero(quant::I4.table, 1 << 2), None);
+        assert_eq!(affine_zero(&[-1.0, 0.5, 2.0, 3.5], 4), None);
+        assert_eq!(affine_zero(&[], 0), None);
+    }
+
+    /// 行宽不是 16 字节的整数倍时本通道不该接手（尾部零头会散掉"窗口内 16 个码"的前提）。
+    #[test]
+    fn shapes_without_a_whole_window_fall_back() {
+        let ctx = ScaledRow {
+            groups: 1,
+            group: 32,
+            row: 8,
+        };
+        let scales = [1.0f32];
+        let mut out = vec![0.0f32; 8];
+        assert!(!forward(
+            &[1.0; 32],
+            &weights(32, 8, 4),
+            &scales,
+            &mut out,
+            4,
+            ctx,
+            quant::I2.table
+        ));
+        // 输出列数不足 4 列时四列累加器摊不掉入口那一遍，也不该接手。
+        let mut one = vec![0.0f32; 1];
+        assert!(!forward(
+            &[1.0; 64],
+            &weights(64, 1, 2),
+            &[1.0],
+            &mut one,
+            2,
+            context(64, 2, 32),
+            quant::I4.table
+        ));
+    }
+
+    /// 取值都能精确表示时（整数码 × 整数 `x` × 2 的幂标度），重排累加不引入任何舍入：
+    /// 两条通道必须逐位相同。这条测试是"重排只改浮点关联"这句话的判据——关联改了而值没改。
+    #[test]
+    fn exactly_representable_values_are_bit_identical() {
+        for (cpb, dequant) in [(2usize, quant::I4.table), (4, quant::I2.table)] {
+            let (m, n, group) = (256usize, 12usize, 32usize);
+            let ctx = context(m, cpb, group);
+            let w = weights(m, n, cpb);
+            let x: Vec<f32> = (0..m).map(|i| (i % 7) as f32 - 3.0).collect();
+            let scales = scales(n, ctx.groups, 0.25);
+
+            let mut out = vec![f32::NAN; n];
+            assert!(forward(&x, &w, &scales, &mut out, cpb, ctx, dequant));
+            assert_eq!(out, scalar(&x, &w, &scales, ctx, cpb, dequant), "cpb = {cpb}");
+        }
+    }
+
+    /// 取值不可精确表示时，两条通道只该差在舍入上：相对差远小于任何一个码改变带来的差。
+    #[test]
+    fn inexact_values_agree_to_rounding() {
+        for (cpb, dequant) in [(2usize, quant::I4.table), (4, quant::I2.table)] {
+            let (m, n, group) = (512usize, 11usize, 32usize);
+            let ctx = context(m, cpb, group);
+            let w = weights(m, n, cpb);
+            let x: Vec<f32> = (0..m).map(|i| (i as f32 * 0.125).sin()).collect();
+            let scales = scales(n, ctx.groups, 0.125);
+
+            let mut out = vec![f32::NAN; n];
+            assert!(forward(&x, &w, &scales, &mut out, cpb, ctx, dequant));
+            let expected = scalar(&x, &w, &scales, ctx, cpb, dequant);
+            for (j, (got, want)) in out.iter().zip(&expected).enumerate() {
+                let limit = 1e-4 * want.abs().max(1.0);
+                assert!((got - want).abs() <= limit, "第 {j} 列 {got} vs {want}（cpb = {cpb}）");
+            }
+        }
+    }
+
+    /// 行批与逐行调用逐位相同——包括尾部不足 4 列的那几列（它们共用同一个 `R = 1` 的 `dot`）。
+    #[test]
+    fn a_row_batch_equals_row_by_row_calls() {
+        let (m, n, group, rows) = (256usize, 11usize, 32usize, 3usize);
+        let w = weights(m, n, 2);
+        let scales = scales(n, m / group, 0.5);
+        let x: Vec<f32> = (0..rows * m).map(|i| (i as f32 * 0.25).sin()).collect();
+
+        let mut batched = vec![0.0f32; rows * n];
+        batch_leaf(
+            &x,
+            &w,
+            &scales,
+            super::super::Geometry::new(rows, m, n),
+            &mut batched,
+            2,
+            quant::I4.table,
+        )
+        .expect("行批可算");
+
+        let mut stepwise = vec![0.0f32; rows * n];
+        for r in 0..rows {
+            row_leaf(
+                &x[r * m..][..m],
+                &w,
+                &scales,
+                &mut stepwise[r * n..][..n],
+                2,
+                quant::I4.table,
+            )
+            .expect("单行可算");
+        }
+        assert_eq!(batched, stepwise, "行批必须与逐行调用逐位相同");
+    }
+}
