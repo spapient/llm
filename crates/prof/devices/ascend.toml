@@ -147,6 +147,9 @@ exec     = ["mte"]
 grade    = "L0"
 witness  = { file = "ascend/witness.cpp", func = "witness_load_copy_gm_to_l1", expect = [1.0] }
 
+# 目录条目：昇腾的 MTE 两级搬运有见证、**没有片段正文**，所以只能是 `L0`（未验证视为不具备）。
+# 保留它是为了让"本档案只登记 1 级"有对照；真要启用，得先补正文再升到 `L2`——
+# `every_verified_provide_has_a_fragment_body` 会拦住只有等级、没有正文的写法。
 [[provides]]
 prim     = "load_async"
 impl     = "copy_gm_to_l1_async"
@@ -265,7 +268,7 @@ dt      = ["i4", "u8", "f16", "f32"]
 space   = ["GM", "FAST"]
 src     = ["GM"]
 dst     = ["GM", "FAST"]
-stages  = ["2"]
+stages  = ["1"]
 exec    = ["scalar"]
 grade   = "L0"
 witness = { file = "ascend/witness.cpp", func = "witness_load_async_scalar_stage", expect = [1.0] }

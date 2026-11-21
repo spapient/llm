@@ -127,8 +127,7 @@ fn the_training_buffer_computes_the_scalar_reference_of_the_same_weights() {
     let bytes = fixture();
     let archive = Archive::parse(&bytes).expect("解析");
     let entry = archive.header().get(NAMES[0]).expect("秩 2 条目");
-    let weight =
-        decode(<Archive<'_> as weights::Reader>::read(&archive, entry).expect("取到字节"));
+    let weight = decode(<Archive<'_> as weights::Reader>::read(&archive, entry).expect("取到字节"));
 
     // 三层共用同一份形状：容器 → 层声明 → 图。任何一处不一致，`set` 与 `compute` 会有一处报错。
     let stack = Stack::from_header(archive.header()).expect("归因");
@@ -240,8 +239,8 @@ fn assert_quantized<E: std::fmt::Debug>(
     let mut packed = Vec::with_capacity(scheme.packed_len(N * M));
     let mut scales = Vec::with_capacity(N * M.div_ceil(GROUP));
     for row in 0..N {
-        let (p, s) = ptq::quantize(scheme, GROUP, &weights[row * M..(row + 1) * M])
-            .expect("行内 PTQ 可算");
+        let (p, s) =
+            ptq::quantize(scheme, GROUP, &weights[row * M..(row + 1) * M]).expect("行内 PTQ 可算");
         packed.extend(p);
         scales.extend(s);
     }

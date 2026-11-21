@@ -6,9 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::architecture::{
-    contract, owned_types, rust_files, workspace, workspace_root,
-};
+use crate::architecture::{contract, owned_types, rust_files, workspace, workspace_root};
 
 /// 一行顶层的 `struct|enum|trait|union` 定义，返回（是否是 `pub`，名字）。
 pub(crate) fn type_definition(line: &str) -> Option<(bool, &str)> {

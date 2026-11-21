@@ -101,9 +101,9 @@ fn the_registry_and_the_model_annotations_are_mirrors() {
     for (name, at) in &annotated {
         if !names.contains(&name.as_str()) {
             failures.push(format!(
-            "{at}: 标了 `#[annotation::model]` 生成 `MODEL`，但 `REGISTRY` 里没有 `{name}`：\
+                "{at}: 标了 `#[annotation::model]` 生成 `MODEL`，但 `REGISTRY` 里没有 `{name}`：\
              发布出去的二进制里没有这条算子"
-        ));
+            ));
         }
     }
 

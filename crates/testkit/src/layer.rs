@@ -65,8 +65,7 @@ fn every_edge_points_to_a_lower_layer_or_to_the_left() {
     for edge in &edges {
         // 工具成员没有运行时层级，它们的边不参与方向判定（ARCHITECTURE §一）。
         // `+dev` 边只服务测试/夹具，不进任何产品二进制，同样不约束运行时分层方向。
-        if edge.dev || contract.tools.contains(&edge.from) || contract.tools.contains(&edge.to)
-        {
+        if edge.dev || contract.tools.contains(&edge.from) || contract.tools.contains(&edge.to) {
             continue;
         }
         let from = contract

@@ -68,42 +68,66 @@ fn with_contract<T>(body: impl FnOnce(&Contract<'_>) -> T) -> T {
 
 #[test]
 fn the_fragment_layer_is_exactly_the_p0_set() {
-    with_contract(|contract| contract.assert_p0_set());
+    with_contract(|contract| contract.check_p0_set().expect("片段层必须恰好是 P0 闭集"));
 }
 
 #[test]
 fn every_signature_is_a_profile_provide_that_has_a_witness() {
-    with_contract(|contract| contract.assert_signatures());
+    with_contract(|contract| {
+        contract
+            .check_signatures()
+            .expect("每条签名必须是一条有见证的供给")
+    });
 }
 
 #[test]
 fn every_witness_function_is_claimed_by_exactly_one_entry() {
-    with_contract(|contract| contract.assert_witness_entries());
+    with_contract(|contract| {
+        contract
+            .check_witness_entries()
+            .expect("每个见证函数必须恰好被一条入口认领")
+    });
 }
 
 #[test]
 fn every_provision_rests_on_a_fragment_or_a_witness() {
-    with_contract(|contract| contract.assert_evidence());
+    with_contract(|contract| {
+        contract
+            .check_evidence()
+            .expect("每条供给必须有片段正文或见证")
+    });
 }
 
 #[test]
 fn the_fragment_directory_is_a_closed_set() {
-    with_contract(|contract| contract.assert_closed_directory());
+    with_contract(|contract| {
+        contract
+            .check_closed_directory()
+            .expect("片段目录必须是闭集")
+    });
 }
 
 #[test]
 fn every_expectation_fits_the_readback_buffer() {
-    with_contract(|contract| contract.assert_expectations());
+    with_contract(|contract| {
+        contract
+            .check_expectations()
+            .expect("期望值必须放得进回读缓冲")
+    });
 }
 
 #[test]
 fn the_witness_compiles_wherever_it_is_copied_to() {
-    with_contract(|contract| contract.assert_self_contained());
+    with_contract(|contract| contract.check_self_contained().expect("见证必须自足"));
 }
 
 #[test]
 fn every_witness_computes_what_the_profile_expects() {
-    with_contract(|contract| contract.assert_witnesses());
+    with_contract(|contract| {
+        contract
+            .check_witnesses()
+            .expect("每条见证必须算出档案写的值")
+    });
 }
 
 #[test]

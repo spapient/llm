@@ -126,10 +126,9 @@ impl<'a> Contract<'a> {
     /// 第一条"正文与见证都缺"的供给返回原因。
     pub fn check_evidence(&self) -> Result<(), String> {
         for provide in self.provides {
-            let fragmented = self
-                .fragments
-                .iter()
-                .any(|(_, body)| sign(body).is_ok_and(|sign| sign == (provide.prim, provide.impl_name)));
+            let fragmented = self.fragments.iter().any(|(_, body)| {
+                sign(body).is_ok_and(|sign| sign == (provide.prim, provide.impl_name))
+            });
             if fragmented || provide.witness.is_some() {
                 continue;
             }
@@ -154,8 +153,8 @@ impl<'a> Contract<'a> {
             .map_err(|error| format!("`{}` 的片段目录不可读：{error}", self.id))?;
         let mut found = Vec::new();
         for entry in entries {
-            let entry = entry
-                .map_err(|error| format!("`{}` 的片段目录项不可读：{error}", self.id))?;
+            let entry =
+                entry.map_err(|error| format!("`{}` 的片段目录项不可读：{error}", self.id))?;
             let name = entry.file_name().to_string_lossy().into_owned();
             if !name.ends_with(".rs") {
                 found.push(name);
@@ -218,7 +217,10 @@ impl<'a> Contract<'a> {
         let prims: &'a [(&'a str, &'a str)] = self.prims;
         let found = prims.iter().find(|(name, _)| *name == prim);
         found.map(|(_, func)| *func).ok_or_else(|| {
-            format!("`{}` 的 `{prim}` 有片段却没有入口：镜像里查不到它的见证", self.id)
+            format!(
+                "`{}` 的 `{prim}` 有片段却没有入口：镜像里查不到它的见证",
+                self.id
+            )
         })
     }
 
@@ -351,7 +353,9 @@ mod tests {
         let fragments = [("load", "/* cutile-sign: load/vectorized */\n$0 = $1;")];
         let defect = probe(&fragments, "").check_signatures();
         assert!(
-            defect.as_ref().is_err_and(|reason| reason.contains("没有对应供给")),
+            defect
+                .as_ref()
+                .is_err_and(|reason| reason.contains("没有对应供给")),
             "无人认领的实现必须被发现：{defect:?}"
         );
     }
@@ -363,7 +367,9 @@ mod tests {
                       int witness_orphan(float *out) { out[0] = 1.0f; return 1; }\n";
         let defect = probe(&fragments, source).check_witness_entries();
         assert!(
-            defect.as_ref().is_err_and(|reason| reason.contains("没有任何供给认领")),
+            defect
+                .as_ref()
+                .is_err_and(|reason| reason.contains("没有任何供给认领")),
             "没人认领的见证必须被发现：{defect:?}"
         );
     }
@@ -385,7 +391,9 @@ mod tests {
         };
         let defect = contract.check_evidence();
         assert!(
-            defect.as_ref().is_err_and(|reason| reason.contains("无凭无据")),
+            defect
+                .as_ref()
+                .is_err_and(|reason| reason.contains("无凭无据")),
             "只有一行声明、正文与见证都缺的供给必须被发现：{defect:?}"
         );
     }
@@ -395,7 +403,9 @@ mod tests {
         let fragments = [("load", SIGNED), ("load", SIGNED)];
         let defect = probe(&fragments, "").check_p0_set();
         assert!(
-            defect.as_ref().is_err_and(|reason| reason.contains("抢同一个原语")),
+            defect
+                .as_ref()
+                .is_err_and(|reason| reason.contains("抢同一个原语")),
             "同一原语两份正文必须被发现：{defect:?}"
         );
     }

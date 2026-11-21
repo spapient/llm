@@ -75,7 +75,7 @@ fn layout(
 ) -> Result<PathBuf, String> {
     let main = dir.join(format!("main.{}", main_ext(ext)));
     write(&dir.join("witness.h"), source)?;
-    write(&main, program(calls))?;
+    write(&main, &program(calls))?;
     Ok(main)
 }
 

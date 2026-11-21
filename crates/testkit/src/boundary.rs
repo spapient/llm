@@ -11,9 +11,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::architecture::{
-    DOC, backticks, contract, rust_files, workspace, workspace_root,
-};
+use crate::architecture::{DOC, backticks, contract, rust_files, workspace, workspace_root};
 use crate::ownership::{is_public_definition, public_item_name};
 
 /// 允许用 `String` 做**消息片段**的文件（不是"允许用 `String` 报错"）。
