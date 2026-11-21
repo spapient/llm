@@ -271,6 +271,11 @@ git status --short                    # 只允许本轮认领文件
   **`contracts.rs` 自扫假阳性**：`sources()` 扫 `crates/*/src` 时把 testkit 自己的谓词字面量（注释里的
   `const ALL: [`、`Set(u32)`）当成违规命中。testkit 的 `src/` 全是门禁代码、不是被检的生产词汇表，`sources()`
   现在显式排除本 crate，判据强度不变（其余 12 个成员的闭集/位集口径照旧逐文件核对）。
+  **所有权门的过期判定收紧为限定名**：本 crate 新增 `Witness` / `Call` 进表后，门反报 `prof:Witness` 与
+  `tools:Call` 两条基线"已进所有权表"——因为它们与本 crate 的两个同名类型撞名。根因是过期判定只认裸名字，
+  于是**任何一个 crate 的同名类型进表，都会静默注销另一个 crate 的基线**，等于偷偷放宽门禁。现在过期判定按
+  「主人 + 名字」认（`owned_types()` 本来就返回二元组，之前被 `map(|(_, name)| name)` 抹掉了主人）。未登记判定
+  仍只认裸名字并有注释说明理由：存量表里有 42 个历史缺口靠名字对齐，一并收紧要重写整张表，属另一件事。
   **配对门复跑**：`cargo test -p llm-testkit --lib` 64 passed；`clippy -D warnings` 绿；`fmt --check` 绿；
   `name-lint` 0 命中；`jscpd crates/testkit/src` 16 文件 0 克隆；`loc-budget` 无超标（最大 `rel.rs` 398 行）。
   `kernel.rs`（原 `tests/support/cutile_x_kernel.rs`，被 `cutile` / `engine` 的 3 处 `#[path]` 引用）改成
