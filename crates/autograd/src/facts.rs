@@ -72,11 +72,7 @@ impl Facts {
     }
 
     /// 全留：预算装得下时这是唯一不引入重放的计划。
-    pub(crate) fn keep_all(
-        mut self,
-        budget: Budget,
-        policy: MemoryPolicy,
-    ) -> Plan {
+    pub(crate) fn keep_all(mut self, budget: Budget, policy: MemoryPolicy) -> Plan {
         let mut keep = vec![false; self.bytes.len()];
         self.candidates
             .iter()

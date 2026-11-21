@@ -136,33 +136,45 @@ pub(crate) mod weights {
         let (path, names) = fixture();
         let file = checked(File::open(&path), "打开");
         let mut group = c.benchmark_group("weights/load");
-        let all = Throughput::Bytes(TOTAL_BYTES as u64);
-        let first = Throughput::Bytes(BYTES_PER_SEGMENT as u64);
-
-        group.throughput(all);
-        group.bench_function("read_all_reopen", |bench| {
-            bench.iter(|| {
-                let file = checked(File::open(black_box(&path)), "冷开");
-                loads(&file, &names, false)
-            })
-        });
-        group.bench_function("read_all_open", |bench| {
-            bench.iter(|| loads(&file, &names, false))
-        });
-
-        group.throughput(first);
-        group.bench_function("read_first_reopen", |bench| {
-            bench.iter(|| {
-                let file = checked(File::open(black_box(&path)), "冷开");
-                loads(&file, &names, true)
-            })
-        });
-        group.bench_function("read_first_open", |bench| {
-            bench.iter(|| loads(&file, &names, true))
-        });
+        plan(
+            &mut group,
+            "read",
+            |first| {
+                loads(
+                    &checked(File::open(black_box(&path)), "冷开"),
+                    &names,
+                    first,
+                )
+            },
+            |first| loads(&file, &names, first),
+        );
         mapped(&mut group, &path, &names);
         group.finish();
         checked(std::fs::remove_file(&path), "删除临时文件");
+    }
+
+    /// 装载用例的两条轴：全量 8 条对首条 1 条；字节数与 `tests/table.rs` 同源。
+    const SPANS: [(&str, bool, u64); 2] = [
+        ("all", false, TOTAL_BYTES as u64),
+        ("first", true, BYTES_PER_SEGMENT as u64),
+    ];
+
+    /// 四条用例的骨架：`*_reopen` 每迭代重开（冷），`*_open` 复用已打开源（热）。
+    ///
+    /// 只换"怎么开"（`cold` / `hot`）与"怎么读"（调用点的 `loads` / `views`），
+    /// 条目名、首条 / 全量与吞吐口径只有一份。
+    fn plan<C, H>(group: &mut BenchmarkGroup<'_, WallTime>, prefix: &str, cold: C, hot: H)
+    where
+        C: Fn(bool) -> usize,
+        H: Fn(bool) -> usize,
+    {
+        for (span, first, bytes) in SPANS {
+            group.throughput(Throughput::Bytes(bytes));
+            let reopen = format!("{prefix}_{span}_reopen");
+            let reuse = format!("{prefix}_{span}_open");
+            group.bench_function(reopen, |b| b.iter(|| black_box(cold(first))));
+            group.bench_function(reuse, |b| b.iter(|| black_box(hot(first))));
+        }
     }
 
     /// 文件流后端的一次装载：`first` 为真时只读首条。
@@ -176,32 +188,22 @@ pub(crate) mod weights {
         black_box(produced)
     }
 
-    /// 映射后端的四条用例：共享 `loads` 的条目选择与吞吐口径，只换开与读。
+    /// 映射后端的四条用例：与 `load` 共用 `plan`，只换开与读。
     #[cfg(unix)]
     fn mapped(group: &mut BenchmarkGroup<'_, WallTime>, path: &PathBuf, names: &[String]) {
         let source = checked(MmapSource::open(path), "映射");
-        let all = Throughput::Bytes(TOTAL_BYTES as u64);
-        let first = Throughput::Bytes(BYTES_PER_SEGMENT as u64);
-        group.throughput(all);
-        group.bench_function("mmap_all_reopen", |bench| {
-            bench.iter(|| {
-                let source = checked(MmapSource::open(black_box(path)), "冷映射");
-                views(&source, names, false)
-            })
-        });
-        group.bench_function("mmap_all_open", |bench| {
-            bench.iter(|| views(&source, names, false))
-        });
-        group.throughput(first);
-        group.bench_function("mmap_first_reopen", |bench| {
-            bench.iter(|| {
-                let source = checked(MmapSource::open(black_box(path)), "冷映射");
-                views(&source, names, true)
-            })
-        });
-        group.bench_function("mmap_first_open", |bench| {
-            bench.iter(|| views(&source, names, true))
-        });
+        plan(
+            group,
+            "mmap",
+            |first| {
+                views(
+                    &checked(MmapSource::open(black_box(path)), "冷映射"),
+                    names,
+                    first,
+                )
+            },
+            |first| views(&source, names, first),
+        );
     }
 
     /// 映射后端一次借用读取。
