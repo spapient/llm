@@ -243,6 +243,40 @@ git status --short                    # 只允许本轮认领文件
 
 ## 15. 变更记录
 
+- **v2.5（testkit S++ 收敛：门禁搬进 `src/`，`tests/` 归零）**：`crates/testkit` 的 `tests/` 目录整体消灭，
+  7 个集成测试文件 + 2 个 support 辅助文件按**主题**重组成 `src/` 下 10 个门禁模块（`architecture` 只留事实面
+  `workspace_root` / `rust_files` / `walk` / `DOC`；断言分到 `layer` / `ownership` / `boundary` / `contracts` /
+  `mirror` / `e2e` / `l3` / `oracle` / `kernel`），全部挂在 `#[cfg(test)] mod ...` 之下，跑 `cargo test -p
+  llm-testkit --lib` 即覆盖全套。**这条例外是用户显式要求的**：N12「`src/` 只放生产代码」在 cli 那轮被落成
+  `src/` 无内联测试的结构门，本轮按要求反向执行 —— testkit 是**纯门禁 crate**，它没有生产逻辑可放，把门禁留在
+  `tests/` 只是把同一件事分散到两个目录。结构门因此不适用于本 crate（`src/` 下每个文件都在 `cfg(test)` 内，
+  `use llm_testkit` 的运行时构建看不到其中任何一行）。
+  **减码**：3,412 → 2,494 行（−918，−26.9%），文件 9 → 13（含 3 个生产文件 `compare` / `rel` / `gating` /
+  `witness` / `device` / `hash` / `rng` / `scratch`）。最大减项是**手写 JSON 解析器整体删除**（原
+  `tests/architecture.rs` 的 230 行手搓 `cargo metadata` 解析，改成 `serde_json` 一行 `from_slice` +
+  字段投影）；其次是 `support/paths.rs` 的 35 行路径工具内联进 `architecture.rs`，不再单独成文件。
+  **`compare.rs` 588 行拆成 `compare.rs` 200 + `rel.rs` 398**：一条线两套口径混在一起 —— 逐元素/方向判据
+  （`approx_eq` / `close` / `all_finite` / `cosine_similarity`）与整批相对误差（`RelErr` / `Worst` / `Scale` /
+  `rel_err` / `within_rel` / `assert_within_rel`）的适用面相反（前者逐元素各算各的，后者只有一个全局分母），
+  失败读数只属于后者。20 条测试按被测对象分成 9 + 11，两文件各自 `use super::*`，无重复夹具；`lib.rs` 的
+  `pub use` 按模块分开，`llm_testkit::max_rel_err` 这类扁平路径**逐字不变**（下游零改动，
+  `cargo check --workspace --all-targets` 绿）。
+  **修掉两条因平铺而静默失效的判据**（判据本身没错，是它假设的目录形态被前面的 cli / annotation 收敛改掉了）：
+  （a）设备后端装配门原来硬编码扫 `crates/cli/src/bin`，而 cli 平铺后两个二进制入口就在 `src/main.rs` 与
+  `src/cutile.rs` —— 门直接 assert 失败在"一个源文件都没扫到"，等于整条判据失效。现在按**入口形态**认：
+  `pub fn entry(` 算库入口、`fn main(` 且不转调 `llm_cli::entry` 算独立二进制入口，各自必须有一条
+  `engine::backends::install()`，并断言入口数 ≥2（删掉入口也要红）。`main.rs` 只转调库入口，装配点在库那处，
+  不重复装。（b）注解闭集表门硬编码扫 `crates/annotation/src/syntax.rs`，annotation 平铺后 `DTYPES` 落在
+  `decl.rs` —— 改成按**名字**在注解 crate 的 `src/` 全部文件里找声明，不预设文件名。
+  **`contracts.rs` 自扫假阳性**：`sources()` 扫 `crates/*/src` 时把 testkit 自己的谓词字面量（注释里的
+  `const ALL: [`、`Set(u32)`）当成违规命中。testkit 的 `src/` 全是门禁代码、不是被检的生产词汇表，`sources()`
+  现在显式排除本 crate，判据强度不变（其余 12 个成员的闭集/位集口径照旧逐文件核对）。
+  **配对门复跑**：`cargo test -p llm-testkit --lib` 64 passed；`clippy -D warnings` 绿；`fmt --check` 绿；
+  `name-lint` 0 命中；`jscpd crates/testkit/src` 16 文件 0 克隆；`loc-budget` 无超标（最大 `rel.rs` 398 行）。
+  `kernel.rs`（原 `tests/support/cutile_x_kernel.rs`，被 `cutile` / `engine` 的 3 处 `#[path]` 引用）改成
+  **条目级** `#[cfg(test)]` 而不是文件级 `#![cfg(test)]`：外部 `#[path]` 用户的单测构建里条目可见，而静态门的
+  `blank_if_test` 会把它们全部置空，Call 门（禁 `.expect`）看不见。`scripts/ci.sh` 与
+  `.github/workflows/ci.yml` 的 `--test architecture` 同步改成 `--lib`，否则 CI 在 `tests/` 消失后直接红。
 - **v2.4（cli S++ 收敛：平铺 + 单次分派 + 分配契约）**：`crates/cli` 从 11 个 `.rs` / 5,533 行重排成 23 个平铺文件 / 6,365 行，`src/` 与 `src/bin/` 各只有一层，生产文件全部 ≤400 行（最大 `src/bin/report.rs` 384），测试文件全部 ≤800（最大 `tests/device.rs` 712）。行数微增 832 行全部来自模块文档与 `pub(crate)` 样板，**代码路径减少**：`lib.rs`（1,193 行、五个 `if` 分支分派）拆成文法表 `argv.rs` + 统一选项解析器 `flag.rs` + `kernel.rs`，门面 `lib.rs` 降到 103 行并只剩一次穷尽 `match`；`settings.rs`（1,038 行）按"优先级/键闭集/根目录/配置文件层"四分；`prose.rs`（675 行）按输出形态三分（行/段/表）；全部内联测试外移到 `tests/` 经 `#[path]` 挂回，`src/` 里零 `#[test]`。`platform.rs` 六次 `println!` 合成一次 `print!`。
   **性能**：取值不再"先存再克隆"。旧路每出现一个选项分配两次（`take` 存 `Some<String>`、组装时 `text()` 再 `to_string` 一份）；现在 `take_text` / `take_need` 把 slot `take()` 走，**每个选项恰一次分配**，`number` 走借用 `slot()` 连这次也省掉，`--op` 这类"缺省即常量"的取值不再为缺席情形分配。实测（`--release`，2,000,000 次，`black_box`）：`Invocation::parse` 处理 7 词 4 选项 **66 ns/次**；同机进程级 `llm help` 中位 **3,874 µs**、`llm status` **3,624 µs** —— 解析占启动 **≈0.002%**，即启动成本全在进程创建，解析已进噪声地板。因此本轮不把计时写成门（会抖），改写**可判定的分配契约**。
   **新增结构门与分配门 `tests/audit.rs`（7 项，独立 `[[test]]`）**：`src/` 生产文件 ≤400 行、`tests/` ≤800 行、`src/` 只允许 `src/`+`src/bin/` 两层（无分组目录）、文件名无下划线、`src/` 里无内联测试（只许 `#[path]` 钩子）、`Invocation::parse` 对无取值命令**零分配**、对给定取值**每值恰一次分配**。分配数用**线程本地**计数分配器数出（本 crate 是集成测试目标，可 `#![allow(unsafe_code)]`；先前用全局原子计数会被并行测试线程串味，`status` 一度数出 6 次）。两条反向验证皆已做：把 `take_text` 改回克隆 → `parsing_takes_one_allocation_per_given_value` 由 2 变 4 立刻红；往 `src/` 塞一行 `#[test]` → `production_files_only_hook_tests_in` 立刻红。另留一个 `#[ignore]` 的 `parse_throughput` 探针，要数字时手动跑，不参与门禁。

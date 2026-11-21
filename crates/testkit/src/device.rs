@@ -137,6 +137,25 @@ impl<'a> Contract<'a> {
         }
     }
 
+    /// 没有片段正文的供给必须带见证。扫描器一台设备一种语言、一个原语至多一份正文，所以
+    /// 硬件具备但 P0 模板用不上的能力只能停在档案里；这类供给若连见证都没有，就只剩一行
+    /// 声明——正文说"怎么写"、见证说"写成什么"，两样都缺的能力不该出现在档案里。
+    pub fn assert_evidence(&self) {
+        for provide in self.provides {
+            let fragmented = self
+                .fragments
+                .iter()
+                .any(|(_, body)| sign(body) == (provide.prim, provide.impl_name));
+            assert!(
+                fragmented || provide.witness.is_some(),
+                "`{}` 的 `{}/{}` 既没有片段正文也没有见证：这条能力无凭无据",
+                self.id,
+                provide.prim,
+                provide.impl_name
+            );
+        }
+    }
+
     /// 目录是闭集：只有 P0 的九个 `<prim>.<ext>` 与一个 `witness.<ext>`。`prof::codegen` 的扫描器
     /// 只认这两种名字，多出来的文件会在构建期被拒——这里提前说清是哪个文件。
     pub fn assert_closed_directory(&self) {
@@ -199,7 +218,7 @@ impl<'a> Contract<'a> {
         let readings = match run(self.source, self.ext, &calls) {
             Ok(readings) => readings,
             Err(error) if error.contains("不可执行") => {
-                assert!(crate::gating::skip(&format!("本机没有编译器：{error}")));
+                assert!(crate::gating::skip(format!("本机没有编译器：{error}")));
                 return;
             }
             Err(error) => panic!("`{}` 的见证源码过不了本机编译器：{error}", self.id),
@@ -321,5 +340,43 @@ mod tests {
         contract.assert_signatures();
         let failed = std::panic::catch_unwind(|| contract.assert_witness_entries());
         assert!(failed.is_err(), "没人认领的见证必须被发现");
+    }
+
+    #[test]
+    fn a_provision_without_any_evidence_is_a_defect() {
+        let fragments = [("load", "/* cutile-sign: load/scalar_copy */\n$0 = $1;")];
+        let prims = [("load", "witness_load")];
+        let copied = Provision {
+            prim: "load",
+            impl_name: "scalar_copy",
+            witness: Some(Witness {
+                func: "witness_load",
+                expect: &[1.0],
+            }),
+        };
+        let contract = |mma: Option<Witness<'_>>| Contract {
+            id: "probe",
+            ext: "c",
+            dir: ".",
+            p0: &["load"],
+            fragments: &fragments,
+            prims: &prims,
+            provides: &[
+                copied,
+                Provision {
+                    prim: "mma",
+                    impl_name: "cube",
+                    witness: mma,
+                },
+            ],
+            source: "",
+        };
+        std::panic::catch_unwind(|| contract(None).assert_evidence())
+            .expect_err("只有一行声明、没有正文也没有见证的供给必须被发现");
+        contract(Some(Witness {
+            func: "witness_mma",
+            expect: &[13.0],
+        }))
+        .assert_evidence();
     }
 }

@@ -43,6 +43,11 @@ pub struct Reading {
 /// `ext` 决定语言：`cpp` 走 C++，其余（`c` / `cl`）走 C。编译器取 `CC` / `CXX`，缺省是
 /// `cc` / `c++`；两者都不在 `PATH` 上时返回 `Err`，由调用方登记跳过而不是静默通过。
 ///
+/// 源码写进临时目录时一律叫 `witness.h`：驱动文件的扩展名才是宿主编译器认的语言依据，
+/// 而 `.cl` 会被 clang 直接当成 OpenCL（于是拒绝 `-std=c99`、也链接不出可执行文件）。
+/// 见证正文因此按扩展名写、按宿主语言编，两者分离；设备前端是否接受原名那份文件，由
+/// `cutile::witness` 的语言门单独回答。
+///
 /// # Errors
 ///
 /// 临时目录不可写、编译器缺席、编译失败、程序非零退出、输出行数不足时返回可读的原因。
@@ -51,11 +56,11 @@ pub fn run(source: &str, ext: &str, calls: &[Call<'_>]) -> Result<Vec<Reading>, 
     let main_ext = if cpp { "cpp" } else { "c" };
     let dir = scratch(&format!("{ext}-{main_ext}"));
     let _guard = Guard(dir.clone());
-    let witness = dir.join(format!("witness.{ext}"));
+    let witness = dir.join("witness.h");
     let main = dir.join(format!("main.{main_ext}"));
     std::fs::write(&witness, source)
         .map_err(|error| format!("见证源码不可写 `{}`：{error}", witness.display()))?;
-    std::fs::write(&main, program(calls, ext))
+    std::fs::write(&main, program(calls))
         .map_err(|error| format!("临时程序不可写 `{}`：{error}", main.display()))?;
 
     let binary = dir.join("witness");
@@ -94,11 +99,11 @@ pub fn run(source: &str, ext: &str, calls: &[Call<'_>]) -> Result<Vec<Reading>, 
 }
 
 /// 生成的程序：把见证源码原样 `#include` 进来，于是辅助函数与 `static` 都保持同一份。
-fn program(calls: &[Call<'_>], ext: &str) -> String {
+fn program(calls: &[Call<'_>]) -> String {
     let mut text = String::from("/* 由 testkit::witness 生成：一条见证一行读数。 */\n");
     let _ = writeln!(text, "#define MAX_OUT {MAX_OUT}");
     text.push_str("#include <stdio.h>\n");
-    let _ = writeln!(text, "#include \"witness.{ext}\"");
+    let _ = writeln!(text, "#include \"witness.h\"");
     text.push_str("\nint main(void) {\n float out[MAX_OUT];\n int n;\n");
     for call in calls {
         let _ = writeln!(text, " n = {}(out);", call.func);
@@ -140,21 +145,6 @@ fn read(stdout: &str, calls: &[Call<'_>]) -> Result<Vec<Reading>, String> {
         });
     }
     Ok(readings)
-}
-
-/// 最大相对误差：分母取期望值的绝对值，两个都是 0 时为 0（同 `compare::close` 的口径）。
-/// 读数要的是一个**数**（报告里写 `3.1e-07`），所以不复用只回答真假的 `close`。
-fn relative(got: &[f32], want: &[f32]) -> f64 {
-    got.iter().zip(want).fold(0.0_f64, |worst, (got, want)| {
-        let got = f64::from(*got);
-        let want = f64::from(*want);
-        let error = if got == want {
-            0.0
-        } else {
-            (got - want).abs() / want.abs().max(f64::MIN_POSITIVE)
-        };
-        worst.max(error)
-    })
 }
 
 /// 一次执行的临时目录；`Drop` 时整棵删掉，编译失败也不留垃圾。
