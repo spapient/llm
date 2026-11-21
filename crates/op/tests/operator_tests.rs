@@ -85,10 +85,10 @@ fn gemm_projection_matches_the_registered_model() {
 
 #[test]
 fn normalization_and_shape_projection_matches_the_registered_model() {
-    assert_projection_matches_registry::<crate::softmax::softmax::Softmax>();
-    assert_projection_matches_registry::<crate::softmax::rmsnorm::RmsNorm>();
-    assert_projection_matches_registry::<crate::softmax::rope::Rope>();
-    assert_projection_matches_registry::<crate::softmax::embed::Embed>();
+    assert_projection_matches_registry::<crate::activation::softmax::Softmax>();
+    assert_projection_matches_registry::<crate::activation::rmsnorm::RmsNorm>();
+    assert_projection_matches_registry::<crate::activation::rope::Rope>();
+    assert_projection_matches_registry::<crate::activation::embed::Embed>();
     assert_projection_matches_registry::<crate::scan::f32::Scan>();
 }
 

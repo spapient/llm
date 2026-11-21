@@ -144,8 +144,8 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Stack` / `Floor` / `Unpriced` | `nn` | 层栈与它的总下界；未覆盖与无法计价两类清单都不允许静默丢弃，也不让整张模型算不出下界 |
 | `Calib` / `Lif` / `Encoder` / `Events` / `Audit` | `algorithm` | 决策与脉冲的参考语义：`Calib` 是唯一决策端口（DecisionHead / MoE / 层间路由共用），`Lif` 是漏积分-发放神经元，事件臂只管码位与稀疏度。不拥有判定语汇：PASS/FAIL 仍只由 `tool::card` 出 |
 | `Spiking` / `Membrane` / `Gradients` / `Surrogate` / `Master` | `algorithm` | 脉冲三段（`src/spike.rs`）：`Spiking` 持 i8 权重与动力学，`Membrane` 是状态（电位 + 发放前电位 `pre`，反传只认这个值，发放一提交它就被写成 `reset`），`Gradients` 是权重/尺度/电流三条梯度，`Surrogate` 是代理导数（矩形/三角窗，面积 1、窗外 0），`Master` 是 QAT 的浮点主权重（`view` 量化、`descend` 一步 SGD）。形状、码位与梯度布局在同一组判据上拒绝；不拥有 STE 之外的整条反传链、批调度与设备后端 |
-| `BlockTable` / `Channel` / `Gating` / `MissRate` | `algorithm` | §5.8.2 / §5.8.3 / §1.5–1.6 的执行侧：块表因果寻址、α/β/γ 通道与一步门控、`ρ_t` 的因果窗口；不持参数、不注册算子 |
-| `Bypass` / `MemoryBlock` | `nn` | 条件记忆旁路与可装配的 `MemoryBlock`：层的装配骨架留在 `nn`，寻址与门控语义在 `algorithm`；不持参数、不注册算子 |
+| `BlockTable` / `Channel` / `Gating` / `MissRate` | `algorithm` | §5.8.2 / §5.8.3 的执行侧：块表因果寻址、α/β/γ 通道与一步门控、`ρ_t` 的因果窗口；三者不持参数、不注册算子 |
+| `Bypass` / `MemoryBlock` | `nn` | §1.5–1.6 的条件记忆旁路：可装配的 `MemoryBlock` 只读、失败不回写，形状与槽位由 `engram` 唯一给出；旁路的装配骨架留在 `nn`（它产出 `ContractSpec`），块表寻址与门控语义在 `algorithm`；不持参数、不注册算子 |
 | `Mla` / `Latent` / `Path` | `algorithm` | MLA 的 KV 记账从公式变成结构：`Latent` 只有 `c^{KV}` 与解耦 RoPE 键，两条路径按 §5.8.1 逐元素对拍；不拥有分页与批调度 |
 | `Moe` / `K3_EXPERTS` / `K3_ACTIVE` | `algorithm` | 专家侧：路由走唯一端口 `policy::Calib`，选中集重新归一，共享专家恒参与且不占 top-k 名额；不拥有门控标量、专家参数与训练状态 |
 | `Mhc` / `MHC_STREAMS` | `algorithm` | 残差侧：双随机矩阵重组残差流，非负性是入口硬条件（否则"实测 ≤ 1"会假通过）；不拥有门控标量、层参数与训练状态 |

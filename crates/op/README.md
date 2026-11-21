@@ -14,17 +14,27 @@ crates/op/
 │   ├── gemv_f32.k       # 模板：分块点积，未量化
 │   ├── gemv_i4.toml     # 声明：weight-only int4 解码 GEMV（[consts] 给共享模板喂打包常量）
 │   └── gemv_packed.k    # 共享模板：gemv_i2/i4 二合一，C 文本 + {{插值}} + @原语 槽位
-└── src/
+└── src/                 # 44 → 42 个文件：每个语义族一个文件，只有确实需要独立编译单元时才留子文件
     ├── lib.rs           # 注册表（REGISTRY）与它的两张投影（builtin / model）；声明表取自构建期生成物
     ├── decl.rs          # `<name>.toml` 的解析与轴展开：OpDecl / Variant / Axis / TileCombo
-    ├── sch.rs           # 布局构造子闭集（`layout` 模块：row / col / swz / pad）与调度模板闭集（direct / pipe / ws / pingpong）及降级链判据
+    ├── sch.rs           # 布局构造子闭集与调度模板闭集及降级链判据（layout 子模块：row / col / swz / pad）
     ├── tpl.rs           # 模板词法：文本 / {{槽位}} / @原语(...) 与行号；借用正文，装载期只切一遍
     ├── model.rs         # 算子语义的类型：样本 Sample、语义表 Model（生产形状 / 输出类型 / Cost）
     ├── sig.rs           # `.k` 入口签名的解析与样本对齐（ABI 的唯一事实源）
-    ├── gemv.rs          # GEMV 骨架 + 权重格式契约（Format / Element）与各格式共用的输入校验；f32/i2/i4/i8 格式实现同文件
+    ├── operator.rs      # Operator / Registration 与装配宏（operator_via / operator_here）
     ├── einsum.rs        # 求和表达式：Expr / Formula / OperandSpec，以及四条骨架共用的 FormulaCache
-    └── f32_small.rs     # 形态族 f32 内核：softmax / rmsnorm / embed / rope
+    ├── activation.rs    # 单行激活四合一：softmax / rmsnorm / embed / rope（内联四个子模块）
+    ├── classic.rs       # 经典卷积族：conv2d / pool / norm / interpolate（后两者各自留文件）
+    ├── conv.rs          # 卷积 / 转置卷积 / 几何 / 采样器：声明、校验、代价与遍历
+    ├── gemv.rs          # GEMV 骨架 + 权重格式契约；f32/i2/i4/i8 格式实现同文件（format / simd 各留文件）
+    ├── gemm.rs          # GEMM 骨架：f32/i2/i4/i8/packed 同一文件，按 Format 单态化
+    ├── fast.rs          # 打包 GEMM 的编排：面板暂存、线程池、微内核派发（micro / pool / sme / tn / i8 各留文件）
+    └── …                # unary / elementwise / reduce / attention / matmul / scan / dequant / norm / init / rnd / dropout
 ```
+
+合并的原则是"一个语义族一个文件"，不是压缩行数：内联的只剩纯转发层（`softmax/f32.rs` 这种只写
+`pub mod` 的一层）与叶模块；**`unsafe` 岛（`fast/{micro,pool,sme}.rs`、`fast/i8.rs`）与热路径上的
+交付件（`gemv/simd.rs`）保持独立文件**，因为它们各自是审计单元，文件边界就是审计边界。
 
 同一个算子的两个文件必须**同名成对**（`<name>.toml` ↔ `<name>.k`）：`<name>.toml` 在**构建期**由
 `build.rs` 解析成 `Table` 字面量写进 `$OUT_DIR/declared.rs`，`<name>.k` 由 `include_str!` 编进二进制；
@@ -43,7 +53,7 @@ crates/op/
 [cutile README §4](../cutile/README.md)。声明与模板的**解析**在 `op::decl`（并在这里做闭集校验），
 `cutile` 只接住 `OpDecl`——所以 schema 只有一份，改动它不会出现第二处需要同步的地方。
 
-语义（`src/` 下按族合并的算子模块，如 `f32_small.rs` / `unary.rs` / `elementwise.rs`）是声明的第二份实现：一条**求和表达式**（`EXPR`，如 `nm,m,ng,n->n`）加每个
+语义（`src/` 下按族合并的算子模块，如 `activation.rs` / `unary.rs` / `elementwise.rs`）是声明的第二份实现：一条**求和表达式**（`EXPR`，如 `nm,m,ng,n->n`）加每个
 操作数的位宽/方向，就能让 `einsum` 推出 roofline 要的 `(flops, bytes)`——本 crate 不再写任何流量常数；
 `sample` 给确定性的输入，`reference` 是标量参考（片段只与它对拍）；`shape` / `dtype` 声明生产形状与
 输出类型——审计的形状矩阵、`bench` 的缺省形状、`verify` 的对拍阈值都取自它们，而不是在命令层
@@ -116,7 +126,7 @@ crates/op/
 | GEMM | `gemm_f32` / `gemm_i4` / `gemm_i8` | 轴契约在 `gemm::AXES`，每个格式自带 `cost` / `sample` / `reference` |
 | 逐元素 | `add_f32` / `mul_f32` / `scale_f32` / `residual_add_f32` | `Binary` / `Unary` trait，轴集合是 `AXES` |
 | 归约 | `reduce_sum_f32` / `reduce_max_f32` | `Reduce` trait |
-| 形态 | `rmsnorm_f32` / `softmax_f32` / `rope_f32` / `silu_f32` / `gelu_f32` / `embed_f32` | `f32_small.rs`（前四者）与 `unary.rs`（silu/gelu）的 `#[model]` 语义 |
+| 形态 | `rmsnorm_f32` / `softmax_f32` / `rope_f32` / `silu_f32` / `gelu_f32` / `embed_f32` | `activation.rs`（前四者）与 `unary.rs`（silu/gelu）的 `#[model]` 语义 |
 | 注意力 | `attention_f32` / `flash_attention_f32` | 同模块两算子，`#[model(const = "FLASH_MODEL")]` 分名；decode 两条同理 |
 | 解量化 | `dequant_i4` / `dequant_i8` | 打包粒度 2 / 1，各占一个模块 |
 
@@ -128,7 +138,7 @@ GEMV 那三条**只差数据**：同一副骨架、同一批 CPU 原语（9 条 
 ## 新增一个算子
 
 1. 在 `ops/` 下写 `<name>.toml` 与 `<name>.k`；
-2. 在对应的语义族文件（如形态族 `src/softmax.rs`、一元 `src/unary.rs`）写语义：`EXPR`（求和表达式）+ 操作数（位宽/方向）、`sample` / `reference`，
+2. 在对应的语义族文件（如形态族 `src/activation.rs`、一元 `src/unary.rs`）写语义：`EXPR`（求和表达式）+ 操作数（位宽/方向）、`sample` / `reference`，
    并以 `#[annotation::model(..)]` 标注生成 `MODEL`（不要手写 `Model { .. }`）；样本里的缓冲名与
    标量名必须和 `.k` 签名一致，实参列表不在这里写；
 3. 在 `src/lib.rs` 的 `REGISTRY` 里补一条 `Registration`（名字 + `include_str!` 模板 + `MODEL`）：

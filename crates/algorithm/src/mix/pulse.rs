@@ -15,7 +15,7 @@ use op::scan::Scalar;
 use crate::csa::finite;
 
 /// 报错出处：参数、几何与非有限值都在入口失败。
-const SITE: &str = "nn::mix::pulse";
+const SITE: &str = "algorithm::mix::pulse";
 
 /// 对称 int8 的正码上限：码位是 `−127..=127`。
 ///

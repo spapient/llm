@@ -14,9 +14,9 @@ use engine::kv::{Cache, Pager};
 use engine::{Batch, Sequence};
 use serve::Predict;
 use serve::model::CpuModel;
+use snapshot::{Facts, Snapshot};
 use std::hint::black_box;
 use tensor::{DType, Shape};
-use snapshot::{Facts, Snapshot};
 use train::{Anneal, Buffers, Data, Reference, Schedule};
 use weights::{Entry, Header};
 

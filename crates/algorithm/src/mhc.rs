@@ -28,7 +28,7 @@ use op::scan::Scalar;
 use crate::csa::{accumulate, finite, sinkhorn, spectral_norm};
 
 /// 报错出处：几何与取值都在构造期失败，不留到混合的中途。
-const SITE: &str = "nn::mhc";
+const SITE: &str = "algorithm::mhc";
 
 /// Engram-27B / V4 的残差流数 `M`。
 pub const MHC_STREAMS: usize = 4;

@@ -36,7 +36,7 @@ use crate::csa::{BlockTable, accumulate, dot, softmax_row};
 use crate::patch::Patches;
 
 /// 报错出处：几何在入口失败，不留到前向中途。
-const SITE: &str = "nn::latent";
+const SITE: &str = "algorithm::latent";
 
 /// 本地解码层的下限：BLT 的 local decoder 是 6–9 层（§5.17），取闭集而不是任意层数。
 pub const LOCAL_MIN: usize = 6;

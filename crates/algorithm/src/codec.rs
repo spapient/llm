@@ -31,11 +31,11 @@ use diagnostic::{Code, Error, Result};
 use op::scan::Scalar;
 
 use crate::csa::{accumulate, dot, softmax_row};
-use nn::Table;
 use crate::patch::Patches;
+use nn::Table;
 
 /// 报错出处：几何与宽度的问题都在入口失败，不留到池化或投影的中途。
-const SITE: &str = "nn::codec";
+const SITE: &str = "algorithm::codec";
 
 /// 哈希 N-gram 的阶闭集：BLT 取 `n = 3..=8`（§5.17）。
 pub const ORDERS: [usize; 6] = [3, 4, 5, 6, 7, 8];

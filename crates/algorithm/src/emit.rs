@@ -46,7 +46,7 @@ use crate::codec::{ByteDecoder, ByteEncoder};
 use crate::patch::{Boundary, Patches};
 
 /// 报错出处：宽度与种子在入口失败，不留到生成中途。
-const SITE: &str = "nn::emit";
+const SITE: &str = "algorithm::emit";
 
 /// 生成停下来的原因。
 ///

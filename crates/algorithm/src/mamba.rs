@@ -28,7 +28,7 @@ use op::scan::{Scalar, exp_trapezoid};
 use crate::csa::finite;
 
 /// 报错出处：几何、步长与选择量都在入口失败，不留到状态更新中途。
-const SITE: &str = "nn::mamba";
+const SITE: &str = "algorithm::mamba";
 
 /// 一层指数梯形状态空间：`width` 个通道，每通道 `pairs` 个复值状态维、`rank` 组选择。
 ///

@@ -31,7 +31,7 @@ use op::scan::Scalar;
 use crate::csa::finite;
 
 /// 报错出处：参数与输入的问题都在入口失败，不留到切分中途。
-const SITE: &str = "nn::patch";
+const SITE: &str = "algorithm::patch";
 
 /// 边界规则闭集：两套机制各自的参数。
 ///

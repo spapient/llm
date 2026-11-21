@@ -27,7 +27,7 @@ use op::scan::Scalar;
 use crate::csa::{accumulate, dot, finite, softmax_row};
 
 /// 报错出处：来源簿记、几何与取值都在入口失败，不留到混合中途。
-const SITE: &str = "nn::attnres";
+const SITE: &str = "algorithm::attnres";
 
 /// 注意力相对残差：在前几层输出上按一次注意力取凸组合。
 ///

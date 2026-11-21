@@ -36,7 +36,7 @@ use op::scan::Scalar;
 use crate::csa::{accumulate, dot, finite};
 
 /// 报错出处：几何、门、写强度与键都在入口失败，不留到更新中途。
-const SITE: &str = "nn::kda";
+const SITE: &str = "algorithm::kda";
 
 /// KDA 的递归记忆：行主序 `[值维, 键维]`，列是门的施加方向。
 ///

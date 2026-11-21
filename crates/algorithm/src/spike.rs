@@ -26,7 +26,7 @@ use crate::csa::finite;
 use crate::mix::{Events, Lif};
 
 /// 报错出处：几何、动力学与脉冲取值都在入口失败，不留到膜电位推进中途。
-const SITE: &str = "nn::spike";
+const SITE: &str = "algorithm::spike";
 
 /// `i8` 权重的最大绝对值：整数累加上界由它与输入宽度算。
 const WEIGHT_MAGNITUDE: usize = 127;

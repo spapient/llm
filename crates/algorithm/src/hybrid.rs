@@ -56,7 +56,7 @@ use crate::mla::{Latent, Mla, Path};
 use crate::moe::Moe;
 
 /// 报错出处：几何与位置判定都收在装配的入口，不留到矩阵乘的中途。
-const SITE: &str = "nn::hybrid";
+const SITE: &str = "algorithm::hybrid";
 
 /// 本 token 的查询两段。分开传是因为它们**不是**同一张投影的切片：`q^{no-nope}` 进吸收式路径，
 /// `q^R` 直接与解耦 RoPE 键点积（见 [`Mla::attend`]）。

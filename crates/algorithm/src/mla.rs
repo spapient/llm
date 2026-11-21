@@ -25,7 +25,7 @@ use op::scan::Scalar;
 use crate::csa::{accumulate, dot, softmax_row};
 
 /// 报错出处：几何、长度与寻址越界都在入口失败，不留到数值阶段。
-const SITE: &str = "nn::mla";
+const SITE: &str = "algorithm::mla";
 
 /// V3 公开超参：解耦 RoPE 键宽 `d_h^R`。
 pub const V3_ROPE: usize = 64;

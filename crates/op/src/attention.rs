@@ -473,9 +473,10 @@ pub fn flash_forward(
     decode(q, k, v, out, s, s, d, Mode::Online)
 }
 
-/// decode 缓冲长度校验：`q`/`out` 是 `q_rows·d`，`k`/`v` 是 `hist·d`；两边行数可以不同。
 mod decode {
     //! decode 注意力的两个面：内核算术（[`kernel`]）与语义表（[`semantics`]）。
+    //!
+    //! decode 缓冲长度校验：`q`/`out` 是 `q_rows·d`，`k`/`v` 是 `hist·d`；两边行数可以不同。
     //!
     //! 内核把 query 行数与 K/V 历史行数解耦之后的校验、逐行打分、online softmax 与按头/按批变体
     //! 集中在一处；语义侧只补形状上下文、确定性样本与代价。公开路径仍由 [`crate::attention`]

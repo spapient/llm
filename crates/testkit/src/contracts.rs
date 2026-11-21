@@ -44,7 +44,7 @@ pub(crate) fn sources() -> Vec<(String, PathBuf)> {
 ///
 /// 注册表的模块名有三种来源，都得落到"带注解的那个文件"上：
 /// - 别名：`pub use classic::{adaptive_pool}` + `pub use pool::{adaptive as adaptive_pool}`；
-/// - 嵌套：`pub use softmax::f32::{softmax as softmax_f32}`，实体在 `softmax/f32/softmax.rs`；
+/// - 嵌套：`pub use gemv::{f32 as gemv_f32}`，实体在 `gemv/f32.rs`；
 /// - 直连：模块名就是文件名。
 pub(crate) fn locate_module(module: &str) -> Option<PathBuf> {
     locate(module, 0)
@@ -65,7 +65,7 @@ fn locate(module: &str, depth: usize) -> Option<PathBuf> {
         if explicit.exists() {
             return Some(explicit);
         }
-        // 内联模块（`softmax.rs` 里的 `pub mod embed { … }`）没有自己的文件，注解与实体都在
+        // 内联模块（`activation.rs` 里的 `pub mod embed { … }`）没有自己的文件，注解与实体都在
         // 外层骨架里：丢掉**一段**，落到父模块文件。只许丢一段——丢两段会把
         // `fast::i8::gemm_i8` 这个纯函数错认成 `fast/i8.rs` 的算子实体。
         let mut segments: Vec<&str> = module.split("::").collect();
@@ -114,8 +114,8 @@ fn locate(module: &str, depth: usize) -> Option<PathBuf> {
 /// `pub use` 表的别名：`adaptive as adaptive_pool` 说明注册名由实体名重导出。聚合后注册表的
 /// 模块名几乎都不是文件名（45 个里 44 个），所以解析必须跨过这一层，否则判据只会看到重导出行。
 ///
-/// 路径按 `use` 树的前缀补全：`pub use softmax::f32::{softmax as softmax_f32}` 里的
-/// `softmax` 是 `softmax::f32::softmax`，不是 crate 根的 `softmax` 骨架文件。
+/// 路径按 `use` 树的前缀补全：`pub use activation::{softmax as softmax_f32}` 里的
+/// `softmax` 是 `activation::softmax`，不是 crate 根的 `activation` 骨架文件。
 ///
 /// 一个名字可以有多个候选：`gemm_i8` 既是 `gemm::{i8 as gemm_i8}` 的算子模块，也是
 /// `fast::i8::gemm_i8` 这个纯函数——后者解析不到文件，所以候选要留一份列表逐个试，

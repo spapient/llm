@@ -63,6 +63,7 @@
 // `extern crate self as nn` 同一条约定：注解绑定它所属契约的路径，而不是硬编码调用方的名字）。
 extern crate self as llm_op;
 
+pub mod activation;
 pub mod attention;
 pub mod classic;
 pub mod conv;
@@ -83,7 +84,6 @@ pub mod model;
 pub mod norm;
 pub mod operator;
 pub mod rnd;
-pub mod softmax;
 pub(crate) use tpl::parse;
 pub mod reduce;
 pub mod scan;
@@ -93,6 +93,9 @@ pub mod tpl;
 pub mod unary;
 
 // 一元 / 二元 / 归约 / 反量化 / GEMV / GEMM / 注意力骨架内的声明式子模块，re-export 到 crate 根保持 `op::<name>::MODEL` / `forward` 路径。
+pub use activation::{
+    embed as embed_f32, rmsnorm as rmsnorm_f32, rope as rope_f32, softmax as softmax_f32,
+};
 pub use attention::decode_attention;
 pub use classic::{
     adaptive_pool, avg_pool2d, batch_norm, conv2d, group_norm, instance_norm, interpolate,
@@ -107,9 +110,6 @@ pub use model::quant;
 pub use reduce::{reduce_max_f32, reduce_sum_f32};
 pub use scan::{Scalar, f32 as scan_f32};
 pub use sch::layout;
-pub use softmax::{
-    embed as embed_f32, rmsnorm as rmsnorm_f32, rope as rope_f32, softmax as softmax_f32,
-};
 pub use unary::{
     exp_f32, gelu_f32, hard_sigmoid_f32, leaky_relu_f32, log_f32, scale_f32, silu_f32,
 };

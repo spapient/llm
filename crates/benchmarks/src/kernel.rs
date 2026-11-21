@@ -106,7 +106,9 @@ pub(crate) fn gemv_quant(c: &mut Criterion) {
     let row = ROW / I4_CPB;
     let groups = ROW / GROUP;
     let weights: Vec<u8> = (0..ROW * row).map(|i| ((i * 37) % 251) as u8).collect();
-    let scales: Vec<f32> = (0..ROW * groups).map(|i| 0.5 + ((i * 7) % 13) as f32 * 0.0625).collect();
+    let scales: Vec<f32> = (0..ROW * groups)
+        .map(|i| 0.5 + ((i * 7) % 13) as f32 * 0.0625)
+        .collect();
     let x: Vec<f32> = (0..ROW).map(|i| (i as f32 * 0.002).cos()).collect();
     let mut out = vec![0.0f32; ROW];
 
@@ -130,7 +132,10 @@ pub(crate) fn gemv_quant(c: &mut Criterion) {
     checked(gemv_i4::forward(&x, &weights, &scales, &mut out), GEOM);
     for (j, (&got, &want)) in out.iter().zip(&expected).enumerate() {
         let slack = 1e-5 * want.abs().max(1.0);
-        assert!((got - want).abs() <= slack, "第 {j} 列：向量通道 {got} 偏离标量叶 {want}");
+        assert!(
+            (got - want).abs() <= slack,
+            "第 {j} 列：向量通道 {got} 偏离标量叶 {want}"
+        );
     }
 
     let mut group = c.benchmark_group("gemv_i4");

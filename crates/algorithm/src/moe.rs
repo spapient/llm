@@ -26,7 +26,7 @@ use crate::csa::{accumulate, dot, finite};
 use crate::policy::Calib;
 
 /// 报错出处：路由的几何与取值都在入口失败，不留到矩阵乘的中途。
-const SITE: &str = "nn::moe";
+const SITE: &str = "algorithm::moe";
 
 /// 第 10 款标杆（Kimi K3）的路由专家总数。
 pub const K3_EXPERTS: usize = 896;

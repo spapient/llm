@@ -175,7 +175,7 @@ pub struct BlockTable<S: Scalar = f32> {
 }
 
 /// 块表报错的出处：几何与查询越界都在构造/寻址期失败，不留到数值阶段。
-const SITE: &str = "nn::csa::BlockTable";
+const SITE: &str = "algorithm::csa::BlockTable";
 
 /// 可寻址宽度 `seq × dim`：任一几何为零时算不出宽度，乘法溢出同样拒绝。
 ///
