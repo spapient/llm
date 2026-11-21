@@ -1,7 +1,9 @@
-//! `verify` 报告的分段排版：证据、布局、存储、产物、协商、性能与 L2 结论行。
+//! 审计输出的**段落**：证据、布局、存储、产物、协商、性能与 L2 结论行。
 //!
-//! 每个函数对应报告里的**一段**（`Panel` 的一段或一屏幕），判定全部来自库，这里只选词与缩进。
-//! 行级原件（参数写法、片段判定、计数措辞）在 [`super::prose`]，台账表格在 [`super::matrix`]。
+//! 每个函数对应输出里的**一段**（`Panel` 的一段或一屏幕），判定全部来自库，这里只选词与缩进。
+//! 与 [`super::prose`]（词）、[`super::matrix`]（表）同属一种呈现粒度，三者按形分文件：词 / 表 / 段。
+//! 不叫 `report` 的理由：本模块只产"段"，而 `VerifyReport` / `Doctor` 是**输入**的名字，
+//! 同一个词既指类型又指模块时，`section::evidence_block(&report)` 会读成两种东西。
 
 use super::prose::{counted, fragment_note, params_note};
 use cutile::bench::{Bench, Peak, Performance, Verdict};
