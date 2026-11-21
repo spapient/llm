@@ -14,7 +14,7 @@ mod pack;
 mod pool;
 mod scratch;
 use pack::{b_groups, pack_b_f32_into, pack_b_f32_par_into, pack_panels};
-use pool::{Job, Shape, pool, run_pooled};
+use pool::{Buffers, Job, Shape, pool, run_pooled};
 mod tn;
 pub use tn::{MIN_ROWS, gemm_f32_tn};
 
@@ -45,10 +45,12 @@ pub fn gemm_f32(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f
     scratch::with_panels(npad * k, |buf| {
         if run_pooled(
             pool(),
-            a.as_ptr() as *const u8,
-            b.as_ptr() as *const u8,
-            buf.as_mut_ptr() as *mut u8,
-            out.as_ptr() as *mut u8,
+            Buffers {
+                a: a.as_ptr() as *const u8,
+                b: b.as_ptr() as *const u8,
+                buf: buf.as_mut_ptr() as *mut u8,
+                out: out.as_ptr() as *mut u8,
+            },
             Shape {
                 m,
                 n,
@@ -196,17 +198,19 @@ fn sweep_columns(sweep: Sweep<'_>, out: &mut [f32], k0: usize, kb: usize, first:
         let nr = NR.min(n - j);
         if nr == NR {
             let start = (j / NR) * k * NR + k0 * NR;
-            let tile = &bpack[start..start + kb * NR];
+            let b_tile = &bpack[start..start + kb * NR];
             for blk in 0..full {
                 micro_packed(
                     &apack[blk * k * MR + k0 * MR..],
-                    tile,
+                    b_tile,
                     out,
-                    blk * MR,
-                    j,
-                    n,
-                    kb,
-                    first,
+                    Tile {
+                        row0: blk * MR,
+                        j,
+                        n,
+                        kb,
+                        first,
+                    },
                 );
             }
         } else {
@@ -243,19 +247,29 @@ struct Sweep<'a> {
     k: usize,
 }
 
-/// 打包面板上的 NEON 8×8 微内核（A 面板 `[p][8]`、B 面板 `[p][8]`，一次算 8 行 8 列）。
-#[cfg(target_arch = "aarch64")]
-#[allow(unsafe_code)]
-fn micro_packed(
-    panel: &[f32],
-    b: &[f32],
-    out: &mut [f32],
+/// 一个待算的 8×8 微内核块：左上角 `(row0, j)`、矩阵列宽 `n`、内积分块长 `kb`、是否首块。
+///
+/// 五数同行进出一个值，理由同 [`Span`]：拆回参数会让三份架构实现各把同一组坐标重拼一遍。
+#[derive(Clone, Copy)]
+struct Tile {
     row0: usize,
     j: usize,
     n: usize,
     kb: usize,
     first: bool,
-) {
+}
+
+/// 打包面板上的 NEON 8×8 微内核（A 面板 `[p][8]`、B 面板 `[p][8]`，一次算 8 行 8 列）。
+#[cfg(target_arch = "aarch64")]
+#[allow(unsafe_code)]
+fn micro_packed(panel: &[f32], b: &[f32], out: &mut [f32], tile: Tile) {
+    let Tile {
+        row0,
+        j,
+        n,
+        kb,
+        first,
+    } = tile;
     use std::arch::aarch64::*;
     unsafe {
         let zero = vdupq_n_f32(0.0);
@@ -366,16 +380,14 @@ fn micro_store(
 /// 与 SIMD 微内核同一组累加口径：首块从 0 起手，非首块读回 `out` 续算。逐元素点积不做向量化，
 /// 只保证正确，不保证吞吐。
 #[cfg(not(target_arch = "aarch64"))]
-fn micro_packed_scalar(
-    panel: &[f32],
-    b: &[f32],
-    out: &mut [f32],
-    row0: usize,
-    j: usize,
-    n: usize,
-    kb: usize,
-    first: bool,
-) {
+fn micro_packed_scalar(panel: &[f32], b: &[f32], out: &mut [f32], tile: Tile) {
+    let Tile {
+        row0,
+        j,
+        n,
+        kb,
+        first,
+    } = tile;
     for r in 0..MR {
         for c in 0..NR {
             let slot = (row0 + r) * n + j + c;
@@ -394,36 +406,25 @@ fn micro_packed_scalar(
 /// 没有 AVX2/FMA 的 x86_64 机器回退 [`micro_packed_scalar`]，不在源码里对硬件能力做隐式假设。
 /// x86_64 微内核入口：运行时探测 AVX2+FMA，命中走向量核，否则退回标量核。
 #[cfg(target_arch = "x86_64")]
-fn micro_packed(
-    panel: &[f32],
-    b: &[f32],
-    out: &mut [f32],
-    row0: usize,
-    j: usize,
-    n: usize,
-    kb: usize,
-    first: bool,
-) {
+fn micro_packed(panel: &[f32], b: &[f32], out: &mut [f32], tile: Tile) {
     if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
-        micro_packed_avx2(panel, b, out, row0, j, n, kb, first);
+        micro_packed_avx2(panel, b, out, tile);
     } else {
-        micro_packed_scalar(panel, b, out, row0, j, n, kb, first);
+        micro_packed_scalar(panel, b, out, tile);
     }
 }
 
 /// 8×8 AVX2+FMA 微内核：每行一个 `__m256` 累加器，逐收缩步广播 A 值 × B 向量做 FMA。
 #[cfg(target_arch = "x86_64")]
 #[allow(unsafe_code)]
-fn micro_packed_avx2(
-    panel: &[f32],
-    b: &[f32],
-    out: &mut [f32],
-    row0: usize,
-    j: usize,
-    n: usize,
-    kb: usize,
-    first: bool,
-) {
+fn micro_packed_avx2(panel: &[f32], b: &[f32], out: &mut [f32], tile: Tile) {
+    let Tile {
+        row0,
+        j,
+        n,
+        kb,
+        first,
+    } = tile;
     use std::arch::x86_64::*;
     unsafe {
         let zero = _mm256_setzero_ps();
@@ -487,17 +488,8 @@ fn micro_store(
 
 /// 无 SIMD 的架构：直接走标量微内核（`micro_packed_scalar` 在这些目标上不会被别处引用）。
 #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
-fn micro_packed(
-    panel: &[f32],
-    b: &[f32],
-    out: &mut [f32],
-    row0: usize,
-    j: usize,
-    n: usize,
-    kb: usize,
-    first: bool,
-) {
-    micro_packed_scalar(panel, b, out, row0, j, n, kb, first);
+fn micro_packed(panel: &[f32], b: &[f32], out: &mut [f32], tile: Tile) {
+    micro_packed_scalar(panel, b, out, tile);
 }
 
 /// 一个待算的标量尾块：左上角 `(i, j)`、覆盖 `mr × nr`，矩阵列宽 `n`、内积长 `k`。
@@ -665,10 +657,12 @@ pub fn gemm_i8(a: &[i8], b: &[i8], m: usize, n: usize, k: usize, out: &mut [i32]
     let mut bpack = vec![0i8; npad * k];
     if run_pooled(
         pool(),
-        a.as_ptr() as *const u8,
-        b.as_ptr() as *const u8,
-        bpack.as_mut_ptr() as *mut u8,
-        out.as_mut_ptr() as *mut u8,
+        Buffers {
+            a: a.as_ptr() as *const u8,
+            b: b.as_ptr() as *const u8,
+            buf: bpack.as_mut_ptr() as *mut u8,
+            out: out.as_mut_ptr() as *mut u8,
+        },
         Shape {
             m,
             n,

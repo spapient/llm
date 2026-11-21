@@ -380,7 +380,7 @@ __global__ void kernel_main({params}) {{
 /// CUDA 串行（零维网格）与循环注入：由 [`Dialect::serial_kernel`] / [`Dialect::injected_kernel`]
 /// 以 `Cuda` 方言落地，缓冲声明取 [`Dialect::buffers`]，标量由 `launch_args` 内联进内部内核，
 /// `kernel_main` 不再重复声明标量形参。
-
+///
 /// 生产态 CUDA 循环注入的 host 驱动：按 `dims` 组成 `dim3` 网格发射 `kernel_main`，
 /// 分配/拷贝/回读与 [`cuda_grid_driver`] 同一口径（输出长度取样本值）。
 ///

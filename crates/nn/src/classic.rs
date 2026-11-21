@@ -57,7 +57,7 @@ fn check_eps(eps: f32, layer: &str) -> Result<()> {
 fn check_group_norm(groups: usize, channels: usize, layer: &str) -> Result<()> {
     nonzero(groups, "groups", layer)?;
     nonzero(channels, "channels", layer)?;
-    if channels % groups != 0 {
+    if !channels.is_multiple_of(groups) {
         return Err(Error::new(
             Code::Invalid,
             format!("{layer}: `channels`({channels}) 不能被 `groups`({groups}) 整除"),

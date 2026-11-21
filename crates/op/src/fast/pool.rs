@@ -24,6 +24,15 @@ pub(super) struct Shape {
     pub(super) tn: bool,
 }
 
+/// 一次任务的四条数据指针：输入 A/B、打包面板、输出。一并发布，池只认这一个入口。
+#[derive(Clone, Copy)]
+pub(super) struct Buffers {
+    pub(super) a: *const u8,
+    pub(super) b: *const u8,
+    pub(super) buf: *mut u8,
+    pub(super) out: *mut u8,
+}
+
 pub(super) struct Job {
     pub(super) a: *const u8,
     pub(super) b: *const u8,
@@ -303,16 +312,14 @@ fn resume_panic(job: &Job) {
 #[allow(unsafe_code)]
 pub(super) fn run_pooled(
     pool: &'static Pool,
-    a: *const u8,
-    b: *const u8,
-    buf: *mut u8,
-    out: *mut u8,
+    buffers: Buffers,
     shape: Shape,
     mr: usize,
     t: usize,
     stage: fn(&Job, usize),
     calc: fn(&Job, usize),
 ) -> bool {
+    let Buffers { a, b, buf, out } = buffers;
     let Shape { m, n, k, npad, tn } = shape;
     let live = pool.live.load(Ordering::Acquire);
     let p = t.min(live + 1);
@@ -361,10 +368,10 @@ mod tests {
 
     /// 以最小几何发布一次任务；`stage`/`calc` 由测试注入（可为 panic / no-op）。
     fn run(pool: &'static Pool, stage: fn(&Job, usize), calc: fn(&Job, usize), t: usize) -> bool {
-        let a = vec![0u8; 64];
-        let b = vec![0u8; 64];
-        let mut buf = vec![0u8; 64];
-        let mut out = vec![0u8; 64];
+        let a = [0u8; 64];
+        let b = [0u8; 64];
+        let mut buf = [0u8; 64];
+        let mut out = [0u8; 64];
         let shape = Shape {
             m: 1,
             n: 1,
@@ -374,10 +381,12 @@ mod tests {
         };
         run_pooled(
             pool,
-            a.as_ptr(),
-            b.as_ptr(),
-            buf.as_mut_ptr(),
-            out.as_mut_ptr(),
+            Buffers {
+                a: a.as_ptr(),
+                b: b.as_ptr(),
+                buf: buf.as_mut_ptr(),
+                out: out.as_mut_ptr(),
+            },
             shape,
             1,
             t,

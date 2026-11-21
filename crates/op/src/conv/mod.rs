@@ -451,6 +451,7 @@ fn run<S: Scalar, F: Fold<S>>(
 }
 
 /// 按 `(n, oh, ow, c)` 四重遍历写满输出；窗口归约仍由 `fold` 注入。
+#[allow(clippy::too_many_arguments)]
 fn scatter<S: Scalar, F: Fold<S>>(
     geom: &ConvGeom,
     x: &[S],

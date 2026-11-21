@@ -92,6 +92,7 @@ impl ConvTranspose2d {
     /// # Errors
     ///
     /// 缓冲长度与形状不符时返回说明。
+    #[allow(clippy::too_many_arguments)]
     pub fn forward_f32(
         &self,
         x: &[f32],
@@ -241,6 +242,7 @@ impl ConvTranspose1d {
     /// # Errors
     ///
     /// 缓冲长度与几何不符时返回说明。
+    #[allow(clippy::too_many_arguments)]
     pub fn forward_f32(
         &self,
         x: &[f32],

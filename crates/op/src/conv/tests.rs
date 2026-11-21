@@ -25,6 +25,7 @@ fn sample_i8(len: usize, salt: u32) -> Vec<i8> {
 }
 
 /// 朴素二维卷积：四重循环直算，作为唯一参考口径。
+#[allow(clippy::too_many_arguments)]
 fn naive2d(
     x: &[f32],
     wgt: &[f32],

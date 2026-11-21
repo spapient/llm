@@ -113,6 +113,7 @@ impl<S: Scalar> BatchNorm2d<S> {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn geometry(
         &self,
         x: &[S],
@@ -155,7 +156,7 @@ impl<S: Scalar> GroupNorm<S> {
         out: &mut [S],
     ) -> Result<()> {
         let c = self.channels;
-        if self.groups == 0 || c % self.groups != 0 {
+        if self.groups == 0 || !c.is_multiple_of(self.groups) {
             return Err(Error::new(
                 Code::Invalid,
                 format!("GroupNorm: {c} 个通道不能分成 {} 组", self.groups),
@@ -215,7 +216,7 @@ impl<S: Scalar> LayerNorm<S> {
     /// 缓冲长度不是 `width` 整数倍或仿射参数长度不符时返回说明。
     pub fn forward(&self, x: &[S], gamma: &[S], beta: &[S], out: &mut [S]) -> Result<()> {
         let width = self.width;
-        if width == 0 || x.len() % width != 0 {
+        if width == 0 || !x.len().is_multiple_of(width) {
             return Err(Error::new(
                 Code::Invalid,
                 format!("LayerNorm: {} 不是宽度 {width} 的整数倍", x.len()),
@@ -254,6 +255,7 @@ fn batch_stats<S: Scalar>(x: &[S], c: usize, count: usize) -> (Vec<S>, Vec<S>) {
 }
 
 /// 统一仿射：`(x−mean)/√(var+eps)·γ+β`，`mean`/`var` 按通道索引。
+#[allow(clippy::too_many_arguments)]
 fn affine<S: Scalar>(
     x: &[S],
     gamma: &[S],
@@ -275,6 +277,7 @@ fn affine<S: Scalar>(
 }
 
 /// 按组遍历并逐组归一化（`GroupNorm` 的骨架）。
+#[allow(clippy::too_many_arguments)]
 fn normalize_groups<S: Scalar>(
     x: &[S],
     gamma: &[S],
@@ -295,6 +298,7 @@ fn normalize_groups<S: Scalar>(
 }
 
 /// 单组 `(C/G,H,W)` 内的减均值、除标准差、仿射。
+#[allow(clippy::too_many_arguments)]
 fn normalize_group<S: Scalar>(
     x: &[S],
     gamma: &[S],

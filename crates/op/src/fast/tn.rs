@@ -9,7 +9,7 @@
 //! 但没有寄存器分块与多线程，实测差 20 倍以上。
 
 use super::pack::pack_panels;
-use super::pool::{Shape, pool, run_pooled};
+use super::pool::{Buffers, Shape, pool, run_pooled};
 use super::scratch;
 use super::{KB, MR, NR, Span, micro_packed, threads_override};
 
@@ -68,10 +68,12 @@ fn pooled_tn(
     scratch::with_panels(npad * k, |buf| {
         run_pooled(
             pool(),
-            x.as_ptr() as *const u8,
-            w.as_ptr() as *const u8,
-            buf.as_mut_ptr() as *mut u8,
-            out.as_mut_ptr() as *mut u8,
+            Buffers {
+                a: x.as_ptr() as *const u8,
+                b: w.as_ptr() as *const u8,
+                buf: buf.as_mut_ptr() as *mut u8,
+                out: out.as_mut_ptr() as *mut u8,
+            },
             Shape {
                 m: rows,
                 n,
@@ -217,17 +219,19 @@ fn sweep_columns_tn(
         let nr = NR.min(n - j);
         if nr == NR {
             let start = (j / NR) * k * NR + k0 * NR;
-            let tile = &bpack[start..start + kb * NR];
+            let b_tile = &bpack[start..start + kb * NR];
             for blk in 0..full {
                 micro_packed(
                     &apack[blk * k * MR + k0 * MR..],
-                    tile,
+                    b_tile,
                     out,
-                    blk * MR,
-                    j,
-                    n,
-                    kb,
-                    first,
+                    super::Tile {
+                        row0: blk * MR,
+                        j,
+                        n,
+                        kb,
+                        first,
+                    },
                 );
             }
         } else {

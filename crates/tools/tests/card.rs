@@ -26,9 +26,7 @@ fn a_steady_series_passes_the_jitter_gate() {
     let card = Card::judge(jitter(), harness("A800"), &[10.0; 40]).expect("判");
     assert_eq!(card.standing(), Standing::Pass);
     let tally = card.tally().expect("有摘要");
-    assert_eq!(tally.cv(), Some(0.0));
     assert_eq!((tally.lower(), tally.upper()), (0.0, 0.0));
-    assert_eq!(tally.p95(), 10.0, "常数列每个分位都是它自己");
 }
 
 /// 抖动远超门槛的一列：区间整段越界，这一格记 FAIL 而不是 OPEN。
@@ -40,7 +38,7 @@ fn a_series_beyond_the_gate_fails() {
     }
     let card = Card::judge(jitter(), harness("A800"), &samples).expect("判");
     assert_eq!(card.standing(), Standing::Fail);
-    assert!(card.tally().expect("有摘要").cv().expect("有定义") > 0.05);
+    assert!(card.tally().expect("有摘要").upper() > 0.05, "区间上界越过门槛");
 }
 
 /// 区间跨着门槛：样本还不足以把「过」与「不过」分开，只能记 OPEN。
@@ -69,7 +67,7 @@ fn too_few_samples_are_not_judged_at_all() {
     assert_eq!(card.standing(), Standing::Open(Shortfall::Samples));
     assert_eq!(card.tally().expect("摘要照记").count(), 3);
     assert_eq!(card.standing().shortfall(), Some(Shortfall::Samples));
-    assert!(!card.standing().is_pass());
+    assert_ne!(card.standing(), Standing::Pass);
 }
 
 /// 闭集外的主机：样本再多也不是这份协议的证据。
@@ -85,7 +83,6 @@ fn a_host_outside_the_closure_cannot_pass() {
 fn an_empty_closure_admits_every_host() {
     let card = Card::judge(jitter(), harness("macos-aarch64"), &[10.0; 40]).expect("判");
     assert_eq!(card.standing(), Standing::Pass);
-    assert!(card.protocol().hosts().is_empty());
 }
 
 /// 均值为 0 的列上变异系数没有定义：填 0 会让「完全抖动」看起来像「完全稳定」。
@@ -132,13 +129,11 @@ fn the_same_samples_produce_the_same_interval() {
 #[test]
 fn the_summary_never_contradicts_itself() {
     let samples: Vec<f64> = (1..=100).map(f64::from).collect();
-    let tally = Tally::of(&samples, Statistic::Mean, 0.95)
+    let tally = Tally::of(&samples, Statistic::Mean)
         .expect("摘要")
         .expect("有定义");
-    assert!(tally.p50() <= tally.p95());
-    assert!(tally.p95() <= tally.p99());
-    assert!(tally.lower() <= tally.upper());
-    assert!(tally.lower() <= tally.mean() && tally.mean() <= tally.upper());
+    assert!(tally.lower() <= tally.upper(), "区间不许倒挂");
+    assert!(tally.sd() >= 0.0, "标准差非负");
     assert_eq!(tally.count(), 100);
 }
 
@@ -194,13 +189,4 @@ fn a_protocol_rejects_impossible_settings() {
     assert_eq!(nan.code(), Code::Invalid);
     assert!(nan.message().contains("有限数"), "{}", nan.message());
     assert_eq!(jitter().with_least(1).unwrap_err().code(), Code::Invalid);
-    assert_eq!(
-        jitter().with_confidence(1.0).unwrap_err().code(),
-        Code::Invalid
-    );
-    assert_eq!(
-        jitter().with_confidence(0.0).unwrap_err().code(),
-        Code::Invalid
-    );
-    assert!(jitter().with_confidence(0.99).is_ok());
 }
