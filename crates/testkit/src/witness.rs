@@ -52,18 +52,41 @@ pub struct Reading {
 ///
 /// 临时目录不可写、编译器缺席、编译失败、程序非零退出、输出行数不足时返回可读的原因。
 pub fn run(source: &str, ext: &str, calls: &[Call<'_>]) -> Result<Vec<Reading>, String> {
-    let cpp = ext == "cpp";
-    let main_ext = if cpp { "cpp" } else { "c" };
-    let dir = scratch(&format!("{ext}-{main_ext}"));
+    let dir = scratch(&format!("{ext}-{}", main_ext(ext)));
     let _guard = Guard(dir.clone());
-    let witness = dir.join("witness.h");
-    let main = dir.join(format!("main.{main_ext}"));
-    std::fs::write(&witness, source)
-        .map_err(|error| format!("见证源码不可写 `{}`：{error}", witness.display()))?;
-    std::fs::write(&main, program(calls))
-        .map_err(|error| format!("临时程序不可写 `{}`：{error}", main.display()))?;
-
+    let main = layout(&dir, ext, source, calls)?;
     let binary = dir.join("witness");
+    compile(ext, &main, &binary)?;
+    let stdout = execute(&binary)?;
+    read(&stdout, calls)
+}
+
+/// 驱动文件的扩展名：C++ 见证要按 C++ 编，其余按 C 编。
+fn main_ext(ext: &str) -> &'static str {
+    if ext == "cpp" { "cpp" } else { "c" }
+}
+
+/// 把见证源码与驱动程序写进临时目录，返回驱动程序的路径。
+fn layout(
+    dir: &std::path::Path,
+    ext: &str,
+    source: &str,
+    calls: &[Call<'_>],
+) -> Result<PathBuf, String> {
+    let main = dir.join(format!("main.{}", main_ext(ext)));
+    write(&dir.join("witness.h"), source)?;
+    write(&main, program(calls))?;
+    Ok(main)
+}
+
+/// 写文件；失败时带上路径。
+fn write(path: &std::path::Path, text: &str) -> Result<(), String> {
+    std::fs::write(path, text).map_err(|error| format!("`{}` 不可写：{error}", path.display()))
+}
+
+/// 编成可执行文件；编译器取 `CC` / `CXX`，缺省是 `cc` / `c++`。
+fn compile(ext: &str, main: &std::path::Path, binary: &std::path::Path) -> Result<(), String> {
+    let cpp = ext == "cpp";
     let compiler = if cpp {
         std::env::var_os("CXX").unwrap_or_else(|| "c++".into())
     } else {
@@ -74,19 +97,23 @@ pub fn run(source: &str, ext: &str, calls: &[Call<'_>]) -> Result<Vec<Reading>, 
         .arg("-O1")
         .arg(standard)
         .arg("-o")
-        .arg(&binary)
-        .arg(&main)
+        .arg(binary)
+        .arg(main)
         .output()
         .map_err(|error| format!("编译器 `{}` 不可执行：{error}", compiler.to_string_lossy()))?;
-    if !compiled.status.success() {
-        return Err(format!(
-            "`{} {standard}` 拒绝了见证源码：{}",
-            compiler.to_string_lossy(),
-            String::from_utf8_lossy(&compiled.stderr).trim()
-        ));
+    if compiled.status.success() {
+        return Ok(());
     }
+    Err(format!(
+        "`{} {standard}` 拒绝了见证源码：{}",
+        compiler.to_string_lossy(),
+        String::from_utf8_lossy(&compiled.stderr).trim()
+    ))
+}
 
-    let executed = Command::new(&binary)
+/// 跑一遍编出来的程序，返回它的标准输出。
+fn execute(binary: &std::path::Path) -> Result<String, String> {
+    let executed = Command::new(binary)
         .output()
         .map_err(|error| format!("见证程序不可执行 `{}`：{error}", binary.display()))?;
     if !executed.status.success() {
@@ -95,7 +122,7 @@ pub fn run(source: &str, ext: &str, calls: &[Call<'_>]) -> Result<Vec<Reading>, 
             String::from_utf8_lossy(&executed.stderr).trim()
         ));
     }
-    read(&String::from_utf8_lossy(&executed.stdout), calls)
+    Ok(String::from_utf8_lossy(&executed.stdout).into_owned())
 }
 
 /// 生成的程序：把见证源码原样 `#include` 进来，于是辅助函数与 `static` 都保持同一份。
@@ -120,31 +147,42 @@ fn program(calls: &[Call<'_>]) -> String {
 /// 逐行解析：首列是个数，其余是值；行数由 `calls` 决定，少一行就是见证没被调用。
 fn read(stdout: &str, calls: &[Call<'_>]) -> Result<Vec<Reading>, String> {
     let mut lines = stdout.lines();
-    let mut readings = Vec::with_capacity(calls.len());
-    for call in calls {
-        let line = lines
-            .next()
-            .ok_or_else(|| format!("`{}` 没有回报读数：程序输出比见证少", call.func))?;
-        let mut fields = line.split_whitespace();
-        let count: i32 = fields
-            .next()
-            .and_then(|field| field.parse().ok())
-            .ok_or_else(|| format!("`{}` 的读数首列不是个数：`{line}`", call.func))?;
-        let values: Vec<f32> = fields.filter_map(|field| field.parse().ok()).collect();
-        let matches = usize::try_from(count).is_ok_and(|count| count == call.expect.len());
-        let max_rel_err = if matches && values.len() == call.expect.len() {
-            crate::rel::max_rel_err(&values, call.expect)
-        } else {
-            f64::INFINITY
-        };
-        readings.push(Reading {
-            func: call.func.to_string(),
-            count,
-            values,
-            max_rel_err,
-        });
+    calls
+        .iter()
+        .map(|call| {
+            let line = lines
+                .next()
+                .ok_or_else(|| format!("`{}` 没有回报读数：程序输出比见证少", call.func))?;
+            reading(call, line)
+        })
+        .collect()
+}
+
+/// 一行读数：首列是个数，其余是值。
+fn reading(call: &Call<'_>, line: &str) -> Result<Reading, String> {
+    let mut fields = line.split_whitespace();
+    let count: i32 = fields
+        .next()
+        .and_then(|field| field.parse().ok())
+        .ok_or_else(|| format!("`{}` 的读数首列不是个数：`{line}`", call.func))?;
+    let values: Vec<f32> = fields.filter_map(|field| field.parse().ok()).collect();
+    let max_rel_err = deviation(&values, call.expect, count);
+    Ok(Reading {
+        func: call.func.to_string(),
+        count,
+        values,
+        max_rel_err,
+    })
+}
+
+/// 与期望值的最大相对误差：个数不符时是无穷大（"少写一个元素"与"值错了"必须可区分）。
+fn deviation(values: &[f32], expect: &[f32], count: i32) -> f64 {
+    let matches = usize::try_from(count).is_ok_and(|count| count == expect.len());
+    if matches && values.len() == expect.len() {
+        crate::rel::max_rel_err(values, expect)
+    } else {
+        f64::INFINITY
     }
-    Ok(readings)
 }
 
 /// 一次执行的临时目录；`Drop` 时整棵删掉，编译失败也不留垃圾。

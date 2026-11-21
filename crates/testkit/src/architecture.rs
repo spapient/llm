@@ -12,6 +12,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 
 /// 仓根：本模块住在 `crates/<crate>/src/`，仓根是清单目录上两级。
 pub fn workspace_root() -> PathBuf {
@@ -228,7 +229,20 @@ pub(crate) fn owned_types() -> Vec<(String, String)> {
 ///
 /// 只取 `packages[].name` / `packages[].dependencies[].{name,kind}` 四个字段：成员集合来自前者，
 /// 边来自后者（`kind == "dev"` 即 `+dev` 边）。解析交给 `serde_json`，不自己写第二份 JSON 文法。
+///
+/// 结果按进程缓存一次：9 个门禁分散在 3 个模块里都要这份事实，而 `cargo metadata` 是一次
+/// 进程启动（本机实测 30 ms，占整套门禁运行时间约四成）。门禁只读不改工作区，缓存不会读到
+/// 过期事实；返回值仍是拥有所有权的副本，调用点不必知道缓存的存在。
 pub(crate) fn workspace() -> (BTreeSet<String>, BTreeSet<Edge>) {
+    metadata().clone()
+}
+
+fn metadata() -> &'static (BTreeSet<String>, BTreeSet<Edge>) {
+    static CACHE: OnceLock<(BTreeSet<String>, BTreeSet<Edge>)> = OnceLock::new();
+    CACHE.get_or_init(load_workspace)
+}
+
+fn load_workspace() -> (BTreeSet<String>, BTreeSet<Edge>) {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let output = Command::new(cargo)
         .args(["metadata", "--no-deps", "--format-version", "1"])
