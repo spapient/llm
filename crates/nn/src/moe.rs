@@ -291,4 +291,4 @@ fn check_matrix<S: Scalar>(what: &str, width: usize, matrix: &[S]) -> Result<()>
 
 #[cfg(test)]
 #[path = "../tests/moe_tests.rs"]
-mod tests;
+mod moe_tests;

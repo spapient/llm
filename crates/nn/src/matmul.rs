@@ -62,4 +62,4 @@ impl Contract for MatMul {
 
 #[cfg(test)]
 #[path = "../tests/matmul_tests.rs"]
-mod tests;
+mod matmul_tests;

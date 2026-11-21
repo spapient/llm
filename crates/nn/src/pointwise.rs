@@ -187,10 +187,6 @@ mod reduce {
         OutputShape::Scalar,
         ParamRole::Trainable
     );
-
-#[cfg(test)]
-#[path = "../tests/pointwise_tests.rs"]
-mod tests;
 }
 
 pub use reduce::{ReduceMax, ReduceSum};
@@ -295,3 +291,7 @@ mod tests {
         assert!(layer.bounds().expect("合法").is_some());
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/pointwise_tests.rs"]
+mod pointwise_tests;

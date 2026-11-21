@@ -2,6 +2,9 @@
 use super::*;
 use crate::gguf::dequant::f16_to_f32;
 
+#[path = "gguf_fixture.rs"]
+mod fixture;
+
 #[test]
 fn half_specials() {
     assert_eq!(f16_to_f32(0x0001), 5.960_464_5e-8);
@@ -158,157 +161,16 @@ fn undecoded_qtypes_are_explicit() {
     }
 }
 
-fn text(out: &mut Vec<u8>, value: &str) {
-    out.extend_from_slice(&(value.len() as u64).to_le_bytes());
+#[test]
+fn parses_scalar_only_fixture() {
+    let raw = fixture::plain();
 
-    out.extend_from_slice(value.as_bytes());
-}
-
-fn word(out: &mut Vec<u8>, value: u32) {
-    out.extend_from_slice(&value.to_le_bytes());
-}
-
-fn wide(out: &mut Vec<u8>, value: u64) {
-    out.extend_from_slice(&value.to_le_bytes());
-}
-
-fn key(out: &mut Vec<u8>, name: &str, kind: u32) {
-    text(out, name);
-
-    word(out, kind);
-}
-
-fn build() -> Vec<u8> {
-    let f32s: Vec<u8> = [1.0f32, -0.5, 3.25, 0.0]
-        .into_iter()
-        .flat_map(f32::to_le_bytes)
-        .collect();
-
-    let halves: Vec<u8> = [0x3800u16, 0xC000, 0, 0x3E00]
-        .into_iter()
-        .flat_map(u16::to_le_bytes)
-        .collect();
-
-    let mut q8 = 0x3C00u16.to_le_bytes().to_vec();
-
-    q8.extend((0..32).map(|i| (i as i8) - 16).map(|q| q as u8));
-
-    let mut q4 = 0x3C00u16.to_le_bytes().to_vec();
-
-    q4.extend(0u16.to_le_bytes());
-
-    q4.extend([1u8; 12]);
-
-    q4.extend([0x21u8; 128]);
-
-    let mut q6 = vec![0x21u8; 128];
-
-    q6.extend([0u8; 64]);
-
-    q6.extend([1u8; 16]);
-
-    q6.extend(0x3C00u16.to_le_bytes());
-
-    let pieces = vec![
-        ("f32.weight", vec![2, 2], Kind::F32, f32s),
-        ("half.weight", vec![4], Kind::F16, halves),
-        ("q8.weight", vec![32], Kind::Q8_0, q8),
-        ("q4.weight", vec![256], Kind::Q4_K, q4),
-        ("q6.weight", vec![256], Kind::Q6_K, q6),
-    ];
-
-    assemble(&pieces)
-}
-
-/// 只有标量 F32/F16 的最小夹具：供导入通路的成功路径对拍。
-fn plain_build() -> Vec<u8> {
-    let f32s: Vec<u8> = [1.0f32, -0.5]
-        .into_iter()
-        .flat_map(f32::to_le_bytes)
-        .collect();
-
-    let halves: Vec<u8> = [0x3800u16, 0xC000]
-        .into_iter()
-        .flat_map(u16::to_le_bytes)
-        .collect();
-
-    let pieces = vec![
-        ("f32.weight", vec![2], Kind::F32, f32s),
-        ("half.weight", vec![2], Kind::F16, halves),
-    ];
-
-    assemble(&pieces)
-}
-
-fn assemble(pieces: &[(&str, Vec<u64>, Kind, Vec<u8>)]) -> Vec<u8> {
-    let mut head = Vec::new();
-
-    head.extend_from_slice(&MAGIC);
-
-    word(&mut head, VERSION);
-
-    wide(&mut head, pieces.len() as u64);
-
-    wide(&mut head, 4);
-
-    key(&mut head, "general.name", 8);
-
-    text(&mut head, "fixture");
-
-    key(&mut head, "general.architecture", 8);
-
-    text(&mut head, "llama");
-
-    key(&mut head, "general.alignment", 4);
-
-    word(&mut head, DEFAULT_ALIGN as u32);
-
-    key(&mut head, "llama.block_count", 4);
-
-    word(&mut head, 1);
-
-    let mut offset = 0u64;
-
-    let mut infos = Vec::new();
-
-    let mut body = Vec::new();
-
-    for (name, shape, kind, bytes) in pieces {
-        offset = offset.div_ceil(DEFAULT_ALIGN as u64) * DEFAULT_ALIGN as u64;
-
-        text(&mut infos, name);
-
-        word(&mut infos, shape.len() as u32);
-
-        for dim in shape {
-            wide(&mut infos, *dim);
-        }
-
-        word(&mut infos, kind.code());
-
-        wide(&mut infos, offset);
-
-        body.extend(std::iter::repeat_n(0, offset as usize - body.len()));
-
-        body.extend_from_slice(bytes);
-
-        offset += bytes.len() as u64;
-    }
-
-    head.extend(infos);
-
-    let fill = (DEFAULT_ALIGN - head.len() % DEFAULT_ALIGN) % DEFAULT_ALIGN;
-
-    head.extend(std::iter::repeat_n(0, fill));
-
-    head.extend(body);
-
-    head
+    assert_eq!(Gguf::parse(&raw).unwrap().tensors().len(), 2);
 }
 
 #[test]
 fn reads_header_and_metadata() {
-    let raw = build();
+    let raw = fixture::standard();
 
     let file = Gguf::parse(&raw).unwrap();
 
@@ -325,7 +187,7 @@ fn reads_header_and_metadata() {
 
 #[test]
 fn decodes_plain_types() {
-    let raw = build();
+    let raw = fixture::standard();
 
     let file = Gguf::parse(&raw).unwrap();
 
@@ -347,7 +209,7 @@ fn decodes_plain_types() {
 
 #[test]
 fn decodes_q4k_and_q6k() {
-    let raw = build();
+    let raw = fixture::standard();
 
     let file = Gguf::parse(&raw).unwrap();
 
@@ -362,7 +224,7 @@ fn decodes_q4k_and_q6k() {
 
 #[test]
 fn rejects_bad_magic_and_overflow() {
-    let mut raw = build();
+    let mut raw = fixture::standard();
 
     raw[0] = b'X';
 
@@ -383,7 +245,7 @@ fn rejects_bad_magic_and_overflow() {
 
 #[test]
 fn raw_rejects_an_offset_whose_length_overflows() {
-    let raw = build();
+    let raw = fixture::standard();
 
     let file = Gguf::parse(&raw).unwrap();
 
@@ -403,46 +265,4 @@ fn raw_rejects_an_offset_whose_length_overflows() {
         file.raw(&tensor).is_err(),
         "偏移 + 长度溢出必须走错误分支，而不是靠 debug 的算术溢出 panic"
     );
-}
-
-#[test]
-fn import_maps_scalar_tensors_to_neutral_segments() {
-    let raw = plain_build();
-
-    let file = Gguf::parse(&raw).unwrap();
-
-    let segments = crate::import::segments_from_gguf(&file).expect("标量张量可导入");
-
-    assert_eq!(segments.len(), 2);
-
-    let f32 = &segments[0];
-
-    assert_eq!(f32.name(), "f32.weight");
-
-    assert_eq!(f32.dtype(), DType::F32);
-
-    assert_eq!(f32.shape(), &[2]);
-
-    assert_eq!(f32.data.len(), 8);
-
-    let half = &segments[1];
-
-    assert_eq!(half.name(), "half.weight");
-
-    assert_eq!(half.dtype(), DType::F16);
-
-    assert_eq!(half.shape(), &[2]);
-
-    assert_eq!(half.data.len(), 4);
-}
-
-#[test]
-fn import_rejects_block_quantization_without_dequantizing() {
-    let raw = build();
-
-    let file = Gguf::parse(&raw).unwrap();
-
-    let error = crate::import::segments_from_gguf(&file).expect_err("块量化必须显式失败");
-
-    assert_eq!(error.code(), Code::Unsupported);
 }

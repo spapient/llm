@@ -12,7 +12,7 @@
 
 | 层 | 成员 | 职责 | 不允许出现 |
 |---|---|---|---|
-| L1 基础设施 | `diagnostic`、`rng`、`dtype`、`wire`、`tools` | 错误类型与声明数据树（`data`：构建期语料在运行期的形状，**没有解析器**）、计数器型确定性随机、精度闭集、与领域无关的字节码闭集（CRC-32 / LEB128 / Sink）、静态质量门与回退判定 | 任何运行时领域语义、任何 TOML 解析 |
+| L1 基础设施 | `diagnostic`、`rng`、`dtype`、`wire`、`formats`、`tools` | 错误类型与声明数据树（`data`：构建期语料在运行期的形状，**没有解析器**）、计数器型确定性随机、精度闭集、与领域无关的字节码闭集（CRC-32 / LEB128 / Sink / 对齐落位 / `Invalid` 构造点）、外部权重格式的只读适配（torch `.bin` 的 ZIP+pickle 栈机、GGUF、JSON，只吐四要素不判语义）、静态质量门与回退判定 | 任何运行时领域语义、任何 TOML 解析 |
 | L2 数据层 | `prof`、`op`、`cpu`、`cuda`、`metal`、`musa`、`opencl`、`rocm`、`prim` | 设备档案与能力闭集、算子声明与模板（布局 / 调度 / 模板词法）及其求和语义代价（`op::einsum`）、六份设备原语片段与各自见证（一台设备一个成员，语料在各自的 `build.rs` 里解析成 `FRAGMENTS` / `PRIMS` / `DEVICE` 三张表）、`prim` 只出机制：把六张表在编译期拼成一张聚合表，并按 `Layout` 决定读内嵌表还是读盘 | 任何机制代码（拼接、协商、emit）、任何设备知识 |
 | L3 内核 | `cutile` | 协商 → 拼接 → emit → 编译执行；`doctor` / `verify` / `bench` / `execution` 共用一条 `pipeline`，报告只是数据、排版在前端 | 设备厂商特判、运行时依赖 |
 | L4 运行时 | `tensor`、`storage`、`tokenizer` | 张量元数据、布局搬运、文本边界 | 模型语义、调度策略 |
@@ -39,7 +39,7 @@
 不再复述每一次的数字；配置层的现状见 [ADR 0022](adr/0022-build-time-corpora.md) 与
 [ADR 0023](adr/0023-settings-to-cli.md)。
 
-允许的边（当前全量，共 136 条，含 48 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benchmarks` / `testkit` 的边不参与运行时方向判定）：
+允许的边（当前全量，共 141 条，含 49 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benchmarks` / `testkit` 的边不参与运行时方向判定）：
 
 ```
 cutile   → diagnostic, op, prim, prof    +dev: testkit
@@ -56,7 +56,8 @@ dtype    → （叶：精度闭集，无运行期工作区依赖）    +dev: tes
 tensor   → diagnostic, dtype    +dev: testkit
 storage  → tensor, diagnostic
 tokenizer→ diagnostic
-weights  → tensor, diagnostic, dtype, wire, storage（`storage` 仅由 `mmap` feature 可选启用，复用其唯一 unsafe 岛）    +dev: storage, testkit
+formats  → diagnostic, dtype, wire    +dev: testkit
+weights  → tensor, diagnostic, dtype, wire, formats, storage（`storage` 仅由 `mmap` feature 可选启用，复用其唯一 unsafe 岛）    +dev: storage, testkit
 snapshot → diagnostic, tensor, weights, wire（检查点字节格式：只写相对上一条的差 + CRC-32 尾部，不认识训练循环）    +dev: testkit
 autograd → tensor, diagnostic    +dev: testkit
 nn       → tensor, op, weights, diagnostic, annotation

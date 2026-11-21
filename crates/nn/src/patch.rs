@@ -254,4 +254,4 @@ fn non_negative<S: Scalar>(value: S) -> bool {
 
 #[cfg(test)]
 #[path = "../tests/patch_tests.rs"]
-mod tests;
+mod patch_tests;

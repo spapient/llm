@@ -190,4 +190,4 @@ fn check_entries<S: Scalar>(mix: &[S]) -> Result<()> {
 
 #[cfg(test)]
 #[path = "../tests/mhc_tests.rs"]
-mod tests;
+mod mhc_tests;

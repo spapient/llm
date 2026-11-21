@@ -6,9 +6,9 @@
 pub(crate) mod stack;
 pub(crate) mod storage;
 
-use wire::{bad, or_bad};
 use diagnostic::Result;
 use dtype::DType;
+use wire::{bad, or_bad};
 
 use crate::bin::Tensor;
 use crate::pickle::storage::into_str;

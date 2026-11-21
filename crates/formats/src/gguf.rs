@@ -10,11 +10,11 @@
 pub(crate) mod dequant;
 pub(crate) mod reader;
 
-use wire::bad;
 use crate::gguf::dequant::dequantize;
 use crate::gguf::reader::{Reader, data_start, tables};
 use diagnostic::{Code, Error, Result};
 use dtype::{DType, QType};
+use wire::bad;
 
 /// 文件 magic。
 pub const MAGIC: [u8; 4] = *b"GGUF";

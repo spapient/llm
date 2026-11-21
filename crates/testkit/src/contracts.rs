@@ -40,8 +40,18 @@ pub(crate) fn sources() -> Vec<(String, PathBuf)> {
     out
 }
 
-/// 找到声明 `pub mod {module}` 的文件：优先同名文件；聚合后的算子声明在骨架文件里。
+/// 找到算子模块的实体文件：优先同名文件，其次是骨架文件旁的嵌套实体，最后跟着 `pub use` 别名走。
 pub(crate) fn locate_module(module: &str) -> Option<PathBuf> {
+    locate(module, 0)
+}
+
+/// 别名链上限：`adaptive as adaptive_pool` 只有一跳，留余量是为了让成环的别名表停在判定上。
+const ALIAS_DEPTH: usize = 4;
+
+fn locate(module: &str, depth: usize) -> Option<PathBuf> {
+    if depth > ALIAS_DEPTH {
+        return None;
+    }
     let direct = root().join("crates/op/src").join(format!("{module}.rs"));
     if direct.exists() {
         return Some(direct);
@@ -53,11 +63,54 @@ pub(crate) fn locate_module(module: &str) -> Option<PathBuf> {
         let Some(text) = source_text(&file) else {
             continue;
         };
-        if text.contains(&format!("pub mod {module}")) {
-            return Some(file);
+        if !text.contains(&format!("pub mod {module}")) {
+            continue;
         }
+        // 聚合布局：骨架文件 `classic/pool.rs` 声明 `pub mod adaptive;`，实体在骨架旁的
+        // `classic/pool/adaptive.rs`——注册表要的注解读的是实体，不是只做声明的骨架。
+        let body = file.with_extension("").join(format!("{module}.rs"));
+        return Some(if body.exists() { body } else { file });
     }
-    None
+    let source = aliases().get(module)?;
+    (source != module).then(|| locate(source, depth + 1)).flatten()
+}
+
+/// `pub use` 表里的别名：`adaptive as adaptive_pool` 说明注册名由实体名重导出。聚合后注册表的
+/// 模块名大多不是文件名（45 个里 44 个），所以解析必须跨过这一层，否则判据只会看到重导出行。
+fn aliases() -> &'static std::collections::BTreeMap<String, String> {
+    static ALIASES: std::sync::OnceLock<std::collections::BTreeMap<String, String>> =
+        std::sync::OnceLock::new();
+    ALIASES.get_or_init(|| {
+        let mut out = std::collections::BTreeMap::new();
+        for (crate_name, file) in sources() {
+            if crate_name != "op" {
+                continue;
+            }
+            let Some(text) = source_text(&file) else {
+                continue;
+            };
+            for line in text.lines() {
+                let words: Vec<&str> = line.split_whitespace().collect();
+                for pair in words.windows(3) {
+                    if pair[1] != "as" {
+                        continue;
+                    }
+                    let (source, alias) = (ident(pair[0]), ident(pair[2]));
+                    if !source.is_empty() && !alias.is_empty() {
+                        out.insert(alias.to_string(), source.to_string());
+                    }
+                }
+            }
+        }
+        out
+    })
+}
+
+/// 取词尾的标识符：`adaptive,` → `adaptive`，`gemm::f32` → `f32`，`{adaptive` → `adaptive`。
+fn ident(word: &str) -> &str {
+    word.rsplit(|c: char| !c.is_alphanumeric() && c != '_')
+        .find(|part| !part.is_empty())
+        .unwrap_or("")
 }
 
 /// 命中 `predicate` 的行。

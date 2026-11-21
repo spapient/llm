@@ -388,4 +388,4 @@ impl Contract for MemoryBlock {
 
 #[cfg(test)]
 #[path = "../tests/engram_tests.rs"]
-mod tests;
+mod engram_tests;

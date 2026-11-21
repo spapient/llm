@@ -204,7 +204,7 @@ impl<'a> Reader<'a> {
         true
     }
 
-    /// 一个键值对：键、`:`、值；重复键在这里拒（与 [`crate::Header`] 拒绝重名条目同一原则）。
+    /// 一个键值对：键、`:`、值；重复键在这里拒（与 `weights` 的 `Header` 拒绝重名条目同一原则）。
     fn field(&mut self, depth: usize, seen: &[(String, Value)]) -> Result<(String, Value)> {
         self.cursor.skip_space();
         let at = self.cursor.pos();

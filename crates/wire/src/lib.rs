@@ -11,10 +11,9 @@
 #![deny(unsafe_code)]
 
 pub mod crc;
+pub mod fault;
 pub mod leb;
 pub mod sink;
-
-pub mod fault;
 
 pub use fault::{bad, or_bad};
 

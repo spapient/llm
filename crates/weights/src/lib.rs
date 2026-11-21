@@ -2,11 +2,13 @@
 //! safetensors 的两种后端（[`safetensors::Archive`] 借用整份字节、[`safetensors::File`] 只读头部）。
 //!
 //! **拥有**：`Header`/`Entry`/`Reader`/`Loader` 三条契约，`safetensors` 的两种后端，自有的 `.u`
-//! 容器 v2（`writer`/`archive`/`seg`/`proof`/`rans`；CRC/LEB/Sink 已归 L1 `wire`）以及只能由
-//! 本层判断的格式适配器与量化方案（`bin` 栈机含 ZIP_STORED 读取、`gguf`、`json`、`quant`）。
-//! **不拥有**：dtype 闭集（`dtype`）、张量元数据（`tensor`）、物理布局（`storage`）。
-//! **依赖**：`dtype`、`diagnostic`、`tensor`、`wire`（`storage` 经可选 `mmap` feature 引入，
-//! 只在 Unix 上提供映射源；`+dev`：`testkit`）。
+//! 容器 v2（`writer`/`archive`/`seg`/`proof`/`rans`；CRC/LEB/Sink 已归 L1 `wire`）、量化方案
+//! `quant`/`ptq`，以及“外部格式 → 中性段流”的桥接（`lifecycle::import`）。
+//! **不拥有**：外部格式的字节解析（`bin`/`gguf`/`json` 归 L1 `formats`，本层只重导出，于是
+//! 下游 `weights::bin::*` 等路径不变）、dtype 闭集（`dtype`）、张量元数据（`tensor`）、物理布局
+//! （`storage`）。
+//! **依赖**：`dtype`、`diagnostic`、`tensor`、`wire`、`formats`（`storage` 经可选 `mmap` feature
+//! 引入，只在 Unix 上提供映射源；`+dev`：`testkit`）。
 //! **被依赖**：`train`、`nn`、`llm`（`+dev`：`fuzz`）。
 //!
 //! 两条读取契约的分工是所有权而不是风格：[`Reader`] 把字节**借**出来（内存切片、映射），
@@ -35,7 +37,7 @@
 #![deny(unsafe_code)]
 
 /// 全 crate 的“非法输入”构造点转发自 L1 [`wire`]：判据与上下文标注各只有一处实现。
-pub(crate) use wire::{bad, or_bad};
+pub(crate) use wire::bad;
 
 // —— 自有 `.u` 容器 v2：描述符、读/写、帧编码、增量补丁与双模式 ——
 mod archive;

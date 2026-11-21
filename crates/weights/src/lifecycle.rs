@@ -299,3 +299,7 @@ pub mod import {
 #[cfg(test)]
 #[path = "../tests/lifecycle.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../tests/import_bridge.rs"]
+mod import_bridge;

@@ -104,14 +104,17 @@ pub(crate) const VENDORS: [&str; 8] = [
 
 /// 越界岛白名单：`docs/adr/0035-unsafe-ffi-boundary.md` §6 的表格，路径 → `allow(unsafe_code)` 条数。
 ///
-/// 四个文件、三个逻辑岛：storage 的 mmap、device 的 Metal FFI、`op` 的 CPU 微内核（后者跨
-/// `fast.rs` 与 `fast/pool.rs` 两文件，是同一个 P1 待搬出的欠账岛；`fast.rs` 的 14 处含 NEON
-/// 与 AVX2 两段 SIMD 微内核，同一组不变量）。
+/// 三个逻辑岛：storage 的 mmap、device 的 Metal FFI、`op` 的 CPU 微内核。最后一个跨五个文件
+/// （`fast.rs` 拆成目录后按微内核族分落），是同一个 P1 待搬出的欠账岛：拆文件时每个微内核各自
+/// 重建切片，总数由 17 涨到 21，这属于要往下削的重复而不是新增许可。
 pub(crate) const UNSAFE_ISLANDS: &[(&str, usize)] = &[
     ("crates/device/src/metal/executor.rs", 1),
-    ("crates/op/src/fast.rs", 14),
+    ("crates/op/src/fast/i8.rs", 4),
+    ("crates/op/src/fast/i8/kernel.rs", 4),
+    ("crates/op/src/fast/micro.rs", 6),
     ("crates/op/src/fast/pool.rs", 3),
-    ("crates/storage/src/lib.rs", 1),
+    ("crates/op/src/fast/sme.rs", 4),
+    ("crates/storage/src/mmap.rs", 1),
 ];
 
 /// 文档正文点名的 `crate::名字` 必须在源码里真的存在。

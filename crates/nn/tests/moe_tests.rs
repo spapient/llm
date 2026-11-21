@@ -127,8 +127,7 @@ fn an_unselected_expert_cannot_move_the_output() {
 #[test]
 fn the_shared_expert_runs_once_and_unscaled() {
     let shared = experts::<f64>(1, 4).remove(0);
-    let with =
-        Moe::new(4, 2, router(3, 4), experts(3, 4), Some(shared.clone())).expect("几何合法");
+    let with = Moe::new(4, 2, router(3, 4), experts(3, 4), Some(shared.clone())).expect("几何合法");
     let x = input();
     let baseline = moe(2).forward(&x).expect("几何合法");
     for (i, (a, b)) in with

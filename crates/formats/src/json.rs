@@ -7,12 +7,12 @@
 //! 于是账本的规范文本可以逐字比对。
 //!
 //! 报错一律带字节位置：头部是一个巨大的单行 JSON，没有位置就等于没有诊断。重复键也在这里被
-//! 拒绝（与 [`crate::Header`] 拒绝重名条目同一原则）：否则"取第一个还是最后一个"会变成隐式约定。
+//! 拒绝（与 `weights` 的 `Header` 拒绝重名条目同一原则）：否则"取第一个还是最后一个"会变成隐式约定。
 //!
 //! # 例子
 //!
 //! ```
-//! use llm_weights::json::{self, Value};
+//! use llm_formats::json::{self, Value};
 //!
 //! let value = json::parse(r#"{"a": [1, 2], "b": "x"}"#).expect("合法");
 //! let fields = value.object().expect("顶层是对象");

@@ -100,4 +100,4 @@ impl Contract for Attention {
 
 #[cfg(test)]
 #[path = "../tests/attention_tests.rs"]
-mod tests;
+mod attention_tests;

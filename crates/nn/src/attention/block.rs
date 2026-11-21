@@ -214,4 +214,4 @@ impl Contract for AttentionBlock {
 
 #[cfg(test)]
 #[path = "../../tests/block_tests.rs"]
-mod tests;
+mod block_tests;

@@ -283,4 +283,4 @@ impl Sources {
 
 #[cfg(test)]
 #[path = "../tests/attnres_tests.rs"]
-mod tests;
+mod attnres_tests;

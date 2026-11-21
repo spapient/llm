@@ -75,4 +75,4 @@ impl Contract for Embedding {
 
 #[cfg(test)]
 #[path = "../tests/embed_tests.rs"]
-mod tests;
+mod embed_tests;

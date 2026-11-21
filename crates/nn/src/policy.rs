@@ -298,10 +298,6 @@ mod decision {
         }
         sum.div(S::from_f64(p.len() as f64))
     }
-
-#[cfg(test)]
-#[path = "../tests/policy_tests.rs"]
-mod tests;
 }
 
 pub use decision::{Calib, HEAD_LAYERS_TOKEN, brier};
@@ -430,3 +426,7 @@ mod tests {
         assert_eq!(Channel::Gamma.as_str(), "gamma");
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/policy_tests.rs"]
+mod policy_tests;
