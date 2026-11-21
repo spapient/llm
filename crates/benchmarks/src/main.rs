@@ -1,8 +1,8 @@
-//! 统一基准入口：一个 bench target 声明全部 src 分组。
+//! 统一基准入口：一个 bench target 声明全部 criterion 分组。
 //!
 //! 合并前 23 个 `[[bench]]` 目标各自链接、各起一个进程；合并后只链接一次、起一个进程。
-//! 分组名与用例名逐字保留，`target/src/<group>/<benchmark>/new/estimates.json` 的路径
-//! 不变，`tests/regress` 照旧按路径读取。选跑某一组仍可用 src 的过滤参数：
+//! 分组名与用例名逐字保留，`target/criterion/<group>/<benchmark>/new/estimates.json` 的路径
+//! 不变，`tests/regress` 照旧按路径读取。选跑某一组仍可用 criterion 的过滤参数：
 //! `cargo bench -p llm-benchmarks -- gemv_f32`。
 
 mod attention;

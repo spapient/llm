@@ -1,6 +1,6 @@
 //! 逐元素与行内算子基准：elementwise、gemv、softmax、rope、rmsnorm、silu。
 //!
-//! 六组都只声明"一次迭代做什么"与每迭代元素数；预热、采样与测量时长由 src 配置决定。
+//! 六组都只声明"一次迭代做什么"与每迭代元素数；预热、采样与测量时长由 criterion 配置决定。
 //! 基线判定在 `tests/regress`，本文件不写性能目标数字。
 
 use criterion::{Criterion, Throughput};

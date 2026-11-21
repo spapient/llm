@@ -1,6 +1,6 @@
 //! attention 基准：decode 单头、prefill 的 online / dense 与各自 tiled 对照。
 //!
-//! 报 ns/iter（越小越好）与每迭代扫过的元素数或读入字节数；预热、采样与测量时长由 src
+//! 报 ns/iter（越小越好）与每迭代扫过的元素数或读入字节数；预热、采样与测量时长由 criterion
 //! 配置决定。tile 与非 tile 两条路径逐位一致（对拍在 `op::attention` 的测试里），本文件只比较
 //! 遍历次序对墙钟的影响。
 

@@ -1,14 +1,14 @@
 //! 登记表：场景 / 基线 / 负载与解码场景 / 主机档案 / 上界。
 
-/// 一条回归基线场景：src 被测面 + 归档元数据。
+/// 一条回归基线场景：criterion 被测面 + 归档元数据。
 ///
 /// 基线数值不写在结构里（基线随主机变化），由 [`baseline_for`] 按 `(host, backend, scenario)`
 /// 查 [`BASELINES`]；结构只描述"测哪条基准、报告怎么写"。分组 / 用例名 / 算子 / 上下界是
-/// src 侧的测量定位信息，不进 [`BenchRecord`]。
+/// criterion 侧的测量定位信息，不进 [`BenchRecord`]。
 pub(crate) struct Scenario {
-    /// src 分组名（`target/src/<group>/...`）。
+    /// criterion 分组名（`target/criterion/<group>/...`）。
     pub(crate) group: &'static str,
-    /// src 用例名（`.../<benchmark>/new/estimates.json`）。
+    /// criterion 用例名（`.../<benchmark>/new/estimates.json`）。
     pub(crate) benchmark: &'static str,
     /// 场景名：`<算子>/<形状>`，同时是 regress `Case` 名、记录名与归档口径的一部分。
     pub(crate) scenario: &'static str,
@@ -340,9 +340,9 @@ pub(crate) const MODEL_OUT: usize = 8;
 ///
 /// 不进基线表：跨机绝对值不可比，记录只承载本机一次测量与身份（见模块文档「三条不可比」）。
 pub(crate) struct LoadScenario {
-    /// src 分组名。
+    /// criterion 分组名。
     pub(crate) group: &'static str,
-    /// src 用例名。
+    /// criterion 用例名。
     pub(crate) benchmark: &'static str,
     /// 记录名：`<分组>/<用例>`。
     pub(crate) scenario: &'static str,
@@ -452,9 +452,9 @@ pub(crate) const LOAD_SCENARIOS: &[LoadScenario] = &[
 ///
 /// 不进基线表：整模型一步的 TPOT 与吞吐只承载本机一次测量，回退判定留给后续刀。
 pub(crate) struct DecodeScenario {
-    /// src 分组名。
+    /// criterion 分组名。
     pub(crate) group: &'static str,
-    /// src 用例名。
+    /// criterion 用例名。
     pub(crate) benchmark: &'static str,
     /// 记录名：`<分组>/<用例>`。
     pub(crate) scenario: &'static str,
