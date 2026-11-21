@@ -27,7 +27,7 @@
 //! 16 条查表 + 16 条串行加。
 
 use std::simd::prelude::{SimdFloat, SimdUint};
-use std::simd::{f32x16, u8x16};
+use std::simd::{f32x16, u8x16, StdFloat};
 
 use super::{ScaledRow, Geometry};
 use crate::matmul::TN_COLS;
