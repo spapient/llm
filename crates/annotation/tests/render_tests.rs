@@ -6,7 +6,7 @@ use crate::decl::{
     DTYPES, Declaration, ModelDecl, RuntimeDecl, SKELETONS, parse, parse_model, parse_runtime,
 };
 use crate::fixture::lex;
-use crate::render::{render, render_model, render_runtime};
+use crate::render::{MODEL_ROOM, RUNTIME_ROOM, STATIC_ROOM, render, render_model, render_runtime};
 
 fn declaration(text: &str) -> Declaration {
     parse(&lex(text)).expect("合法注解")
@@ -228,6 +228,45 @@ fn every_form_renders_balanced_delimiters() {
             assert_balanced(&render_model(&model(&text), "M"));
         }
     }
+}
+
+/// "渲染一次只分配一次"是可验证的结构事实，不是计时结论：`String::with_capacity(n)` 的容量恰好
+/// 是 `n`，一旦写超就翻倍增长。所以 `capacity()` 仍等于预留值，就证明最长的一层也没溢出——
+/// 把预留量调小、或某块渲染偷偷多存一次，这条断言都会红。
+#[test]
+fn one_render_allocates_exactly_once() {
+    let layer = declaration(
+        r#"name = "multi_head_attention_projection_layer",
+           out = [512, 64, 12, 4096],
+           ops = ["operator_0", "operator_1", "operator_2", "operator_3", "operator_4", "operator_5"]"#,
+    );
+    let code = render(&layer, "crate::layers::attention::MultiHeadAttention");
+    assert_eq!(
+        code.capacity(),
+        STATIC_ROOM,
+        "静态渲染写超了预留容量（多一次 realloc，长度 {}）",
+        code.len()
+    );
+
+    let runtime = runtime_declaration(
+        r#"name = $name, out = [$dim, $dim], ops = [$matmul, $bias], role = $role"#,
+    );
+    let code = render_runtime(&runtime, "crate::MultiHeadAttention");
+    assert_eq!(
+        code.capacity(),
+        RUNTIME_ROOM,
+        "运行时渲染写超了预留容量（多一次 realloc，长度 {}）",
+        code.len()
+    );
+
+    let projection = model(r#"name = "gemm_f32", shape = [4096, 4096], dtype = "f32""#);
+    let code = render_model(&projection, "crate::layers::attention::Projection");
+    assert_eq!(
+        code.capacity(),
+        MODEL_ROOM,
+        "语义表渲染写超了预留容量（多一次 realloc，长度 {}）",
+        code.len()
+    );
 }
 
 #[test]

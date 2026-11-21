@@ -7,9 +7,17 @@
 use crate::decl::{DTYPES, Declaration, ModelDecl, RuntimeDecl, SKELETONS};
 use std::fmt::Write;
 
+/// 三块输出的预留容量：按最长的真实声明留足余量，于是"渲染一次 = 一次分配"真的成立。
+///
+/// 容量是预算而不是常量表：`String::with_capacity` 精确报出所请求的容量，写超一次就会翻倍增长，
+/// 所以 `render_tests::one_render_allocates_exactly_once` 能用 `capacity()` 把这三个数钉住。
+pub(crate) const STATIC_ROOM: usize = 3072;
+pub(crate) const MODEL_ROOM: usize = 4096;
+pub(crate) const RUNTIME_ROOM: usize = 512;
+
 /// 静态形态：私有构造函数 + `impl ::nn::Contract` + 一条 `#[cfg(test)]` 校验。
 pub(crate) fn render(declaration: &Declaration, ty: &str) -> String {
-    let mut code = String::with_capacity(3072);
+    let mut code = String::with_capacity(STATIC_ROOM);
     spec(&mut code, declaration, ty);
     contract(&mut code, declaration, ty);
     check(&mut code, declaration, ty);
@@ -102,7 +110,7 @@ fn check(code: &mut String, declaration: &Declaration, ty: &str) {
 /// 生成宏而不是函数，是因为错误类型 `diagnostic::Error` 不在注解的依赖面里：宏展开到调用点，
 /// `?` 对着被标注 crate 自己的构造函数签名推断，生成的代码只指向 `::nn` 与 `::std`。
 pub(crate) fn render_runtime(declaration: &RuntimeDecl, ty: &str) -> String {
-    let mut code = String::with_capacity(512);
+    let mut code = String::with_capacity(RUNTIME_ROOM);
     code.push_str("#[doc(hidden)]\n#[allow(non_snake_case, unused_macros)]\n");
     let _ = writeln!(code, "macro_rules! __layer_spec_{ty} {{");
     code.push_str("    (");
@@ -138,7 +146,7 @@ pub(crate) fn render_runtime(declaration: &RuntimeDecl, ty: &str) -> String {
 }
 
 /// 宏参数的空位：名字、轴宽、算子、角色，按首次出现顺序排好，交给 [`unique`] 去重。
-pub(crate) fn holes(declaration: &RuntimeDecl) -> impl Iterator<Item = &String> {
+fn holes(declaration: &RuntimeDecl) -> impl Iterator<Item = &String> {
     std::iter::once(&declaration.name)
         .chain(declaration.out.iter())
         .chain(declaration.ops.iter())
@@ -149,7 +157,7 @@ pub(crate) fn holes(declaration: &RuntimeDecl) -> impl Iterator<Item = &String> 
 ///
 /// 容量取自 [`holes`] 链式迭代器的上界（`once` 与切片迭代器都精确），因此这份临时集合同样
 /// **只分配一次**：`Vec::new()` 会随 push 重新分配，正好抵消掉本层"一次分配"的预算。
-pub(crate) fn unique<'a>(names: impl Iterator<Item = &'a String>) -> Vec<&'a str> {
+fn unique<'a>(names: impl Iterator<Item = &'a String>) -> Vec<&'a str> {
     let mut seen: Vec<&str> = Vec::with_capacity(names.size_hint().1.unwrap_or(0));
     for name in names {
         if !seen.contains(&name.as_str()) {
@@ -168,7 +176,7 @@ pub(crate) fn render_model(declaration: &ModelDecl, ty: &str) -> String {
     if let Some(closure) = closed(declaration) {
         return closure;
     }
-    let mut code = String::with_capacity(4096);
+    let mut code = String::with_capacity(MODEL_ROOM);
     let _ = writeln!(
         code,
         "#[doc = \"`{ty}` 的语义表（`#[model]` 生成）：`Operator` 的投影。\"]"

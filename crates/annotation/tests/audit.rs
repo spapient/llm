@@ -118,7 +118,7 @@ fn code_into(rest: &str, out: &mut String) {
 
 /// 从注释 / 字面量开头算起要吞掉的字节数；裸 `/` 与生命周期 `'a` 都不是注释或字面量，返回 `None`。
 ///
-/// `code` 是已经收下的代码：raw string 的 `r##` 前缀都已按代码追加，数它尾随的 `#` 就是收尾定界符。
+/// `code` 是开引子之前那段纯代码：raw string 的 `r##` 前缀原样在里面，数它尾随的 `#` 就是收尾定界符。
 fn skip(rest: &str, code: &str) -> Option<usize> {
     let hashes = code.len() - code.trim_end_matches('#').len();
     match *rest.as_bytes() {

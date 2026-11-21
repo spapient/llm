@@ -243,6 +243,26 @@ git status --short                    # 只允许本轮认领文件
 
 ## 15. 变更记录
 
+- **v2.3（annotation 证据与容量预算）**：三件事。
+  （a）`tests/audit.rs::code_only` 重写。旧实现只认 `//` 与 `"`，不认字符字面量，于是 `syntax.rs` 的
+  `'"'` 会被当成字符串开头，把后面两张引号之间的**真实代码**整段吞掉，`'{'` 还会让花括号配平多一层 ——
+  三条门当时是"碰巧绿的"。新实现覆盖完整词法面：行/块注释（含嵌套，`depth` 计数）、字符串、raw string
+  （`#` 数由已收下的代码尾随 `#` 得到）、字符字面量与生命周期（长度卡到 12 字节，转义分支 + 宽度分支），
+  单趟跳转式扫描、零中间分配，并自带等价类测试 `code_only_strips_every_literal_form`。反向验证：注入注释与
+  字符串里的 `format!` / `.to_string()` / `String::new()` / `collect()` / `let _brace = '{';` → 门仍绿；
+  注入真实 `format!` → 立刻红；注释里写 `HashMap` → 绿，`use std::collections::HashMap;` → 红。
+  `body()` 同时去掉 `format!("fn {name}")` 分配（改 `match_indices` + 标识符边界判定）。
+  （b）容量预算。预留量原先按短样例拍，实测最长的层 1940 B、语义表 3102 B，都超过预留（1536 / 3072），
+  于是"只分配一次"一直是"分配 + realloc + memcpy"，`render_model` 的溢出是旧代码就有的 bug。按实测上界
+  重定 `STATIC_ROOM` 1536→3072、`MODEL_ROOM` 3072→4096（`RUNTIME_ROOM` 512 维持，实测 337 B），并把裸
+  数字收成三个常量。`--release`、200k、5 轮中位：长层 528.2 → 420.8 ns（−20.3%）、语义表 552.5 → 464.1 ns
+  （−16.0%）、短层 236.3 → 227.7 ns（−3.6%）。`unique` 改按 `holes` 上界预留，消掉每份运行时声明两次
+  realloc —— A/B 23.0 vs 22.4 ns，落在噪声里，登记为结构正确性而非提速项。
+  （c）新确定性门 `render_tests::one_render_allocates_exactly_once`：断言渲染完 `capacity()` 仍等于对应
+  `*_ROOM`。`String::with_capacity(n)` 精确给出 `n`，写超一次就翻倍增长，所以这条断言等价于"没有 realloc"，
+  不依赖计时也不依赖计数分配器（本 crate `#![forbid(unsafe_code)]` 挂不了）。反向验证：把常量调回旧值，
+  1775 B 与 3105 B 两个夹具分别变红。42 lib 测试 + 4 audit 门全绿，clippy `-D warnings`、`fmt --check` 绿。
+
 - **v2.2（annotation S++ 收敛）**：`crates/annotation` 渲染器热路径去掉全部中间 `String`，每份声明只分配一个输出缓冲。手法三条：`spec` / `check` / `render_runtime` 全量内联为 `write!` 直写；新增 `Quoted<'a>(&'a str)`（`Display` = `{:?}`）让字面量零分配嵌进格式串；新增 `comma(code, iter, each)` 闭包，调用点只描述"每一项长什么样"，不再先攒 `Vec<String>` 再 `join`（`params` / `join` 随之删除，`shape_of` 改签名收 `&mut String` + 闭包）。`--release`、每形态 200k 次、`black_box`、5 轮中位数（只计渲染，夹具词法器不计入）：层 324.7 → 158.6 ns（−51.1%）、运行时 478.8 → 189.0 ns（−60.5%）、语义表 507.2 → 495.3 ns（−2.3%，文本量最大且多为固定前缀，去分配占比小）；层 `lex + parse + render` 全链 927.8 → 741.3 ns（−20.1%）。生成文本**逐字不变**（42 个 lib 测试 + 3 个 audit 门全绿，clippy `-D warnings` 绿）。
   **新增量化性能门** `tests/audit.rs::rendering_allocates_only_its_output_buffer`：对三个渲染函数体（剔除字符串字面量与注释后按花括号配平提取）断言不出现 `format!` / `.to_string()` / `.to_owned()` / `String::new()`，超容量分配只许 `String::with_capacity` 一次。走结构门而非计时门的原因：本 crate 是 `#![forbid(unsafe_code)]`，挂不了计数分配器；计时在 CI 上会抖，而"热路径不许分配中间字符串"是**可判定的性质**，不是数字。该门已做反向验证 —— 往 `spec` 里塞回一个 `format!` 立即红，删除即复绿。
   **N3 的两处超线判定为合规**：`syntax.rs` 497 行（代码 391）、`decl.rs` 481 行（代码 384），均落在 400–600 的"须出内聚证明"分支。证明：两文件代码行都 < 400，余下全是逐项不变量注释（错误路径与闭集口径各占一条，删掉就等于删掉判据）；职责各自唯一 —— `syntax.rs` 是文法引擎（token 模型、游标、逐键取值、目标类型判据），`decl.rs` 是键表与解析产物，二者被 `syntax ← decl` 的单向依赖钉住，再切必然引入反向依赖或把文法半张表搬走。已试过把三处"关键字 → 泛型 → 名字"的重复收敛成一个 `checked_target`，净增 14 行（正是 §6 禁止的"减 30 加 40"），已回退。

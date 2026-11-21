@@ -317,19 +317,16 @@ fn projection(c: &mut Criterion) {
             ))
         })
     });
-    group.bench_function("scalar", |iter| {
+    group.bench_function("packed", |iter| {
         iter.iter(|| {
-            black_box(checked(
-                matmul::forward_tn_scalar(
-                    black_box(&x),
-                    black_box(&w),
-                    black_box(rows),
-                    black_box(N),
-                    black_box(K),
-                    black_box(&mut out),
-                ),
-                GEOM,
-            ))
+            fast::gemm_f32_tn(
+                black_box(&x),
+                black_box(&w),
+                black_box(rows),
+                black_box(N),
+                black_box(K),
+                black_box(&mut out),
+            )
         })
     });
     group.finish();

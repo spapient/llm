@@ -75,6 +75,22 @@
   出现 `format!` / `.to_string()` / `.to_owned()` / `String::new()` 即失败，因为本 crate 是
   `#![forbid(unsafe_code)]`，挂不了计数分配器，计时门在 CI 上又会抖。
 
+  第二轮量的是**容量预算**。预留量原先按短样例拍的，实测最长的层要 1940 B、语义表要 3102 B，都超过
+  预留 —— 于是"只分配一次"其实一直是"分配 + realloc + memcpy"。按实测上界重定（`STATIC_ROOM`
+  1536→3072、`MODEL_ROOM` 3072→4096；`RUNTIME_ROOM` 512 维持，实测只用到 337 B）：
+
+  | 形态 | 重定前 | 重定后 | 变化 |
+  |---|---|---|---|
+  | 长层（34 字符名、4 轴、6 算子） | 528.2 ns | 420.8 ns | −20.3% |
+  | 语义表（`gemm_f32` 整张表） | 552.5 ns | 464.1 ns | −16.0% |
+
+  同一轮还把 `unique` 的临时集合改成按 `holes` 的上界预留，消掉每份运行时声明两次 realloc；A/B 实测
+  23.0 vs 22.4 ns，落在噪声里 —— 这条是结构正确性（"只分配一次"这句自述现在真的成立），不是提速项。
+
+  预留量也不是拍的：`tests/render_tests.rs::one_render_allocates_exactly_once` 用 `capacity()` 断言
+  "渲染完容量仍是预留值"。`String::with_capacity(n)` 精确给出 `n`，写超一次就翻倍增长，所以这条断言
+  把三个常量钉死 —— 把预留量调回旧值立刻红（1775 B 与 3105 B 两个夹具都反向验证过）。
+
 ## 状态
 
 API 对内稳定，尚未发布到 crates.io（`publish = false`）：发布意味着 MSRV 与 semver 承诺，本仓库
