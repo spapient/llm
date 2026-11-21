@@ -35,7 +35,8 @@ pub(crate) fn negotiate(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("cutile/negotiate");
     group.bench_function("gemv_i4_on_cpu", |bench| {
-        bench.iter(|| cap::negotiate(black_box(op), black_box(profile)).expect("cpu 档案应命中首档"))
+        bench
+            .iter(|| cap::negotiate(black_box(op), black_box(profile)).expect("cpu 档案应命中首档"))
     });
     group.finish();
 }

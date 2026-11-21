@@ -107,7 +107,8 @@ pub(crate) fn silu(c: &mut Criterion) {
     let mut group = c.benchmark_group("silu_f32");
     group.throughput(Throughput::Elements(ROW as u64));
     group.bench_function("decode_1x4096", |bench| {
-        bench.iter(|| silu_f32::forward(black_box(&x), black_box(&mut out)).expect("输入与输出等长"))
+        bench
+            .iter(|| silu_f32::forward(black_box(&x), black_box(&mut out)).expect("输入与输出等长"))
     });
     group.finish();
 }

@@ -29,7 +29,9 @@ pub(crate) fn dense(c: &mut Criterion) {
     let mut out = vec![0.0f32; M * N];
 
     let mut group = c.benchmark_group("matmul_f32_256x256_k4096");
-    group.throughput(Throughput::Bytes(((a.len() + b.len()) * size_of::<f32>()) as u64));
+    group.throughput(Throughput::Bytes(
+        ((a.len() + b.len()) * size_of::<f32>()) as u64,
+    ));
     group.bench_function("scalar", |bench| {
         bench.iter(|| {
             matmul::forward_scalar(
@@ -74,7 +76,9 @@ fn projection(c: &mut Criterion) {
     let mut out = vec![0.0f32; rows * N];
 
     let mut group = c.benchmark_group("matmul_tn_f32_256x256_k4096");
-    group.throughput(Throughput::Bytes(((x.len() + w.len()) * size_of::<f32>()) as u64));
+    group.throughput(Throughput::Bytes(
+        ((x.len() + w.len()) * size_of::<f32>()) as u64,
+    ));
     group.bench_function("row_by_row_gemv", |bench| {
         bench.iter(|| {
             for row in 0..rows {
@@ -122,7 +126,9 @@ pub(crate) fn int8(c: &mut Criterion) {
     let mut out = vec![0i32; M * N];
 
     let mut group = c.benchmark_group("matmul_i8_256x256_k4096");
-    group.throughput(Throughput::Bytes(((a.len() + b.len()) * size_of::<i8>()) as u64));
+    group.throughput(Throughput::Bytes(
+        ((a.len() + b.len()) * size_of::<i8>()) as u64,
+    ));
     group.bench_function("scalar", |bench| {
         bench.iter(|| {
             matmul_i8::forward_scalar(
@@ -235,8 +241,15 @@ fn i8_paths(group: &mut BenchmarkGroup<'_, WallTime>) {
         group.bench_function(BenchmarkId::new("i8_threads", &shape), |bencher| {
             bencher.iter(|| {
                 spread(m, n, &mut out, |start, rows, part| {
-                    matmul_i8::forward_tiled(&a[start * k..(start + rows) * k], &b, rows, n, k, part)
-                        .expect("几何对齐");
+                    matmul_i8::forward_tiled(
+                        &a[start * k..(start + rows) * k],
+                        &b,
+                        rows,
+                        n,
+                        k,
+                        part,
+                    )
+                    .expect("几何对齐");
                 });
                 black_box(&out);
             });

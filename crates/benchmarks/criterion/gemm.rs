@@ -26,7 +26,9 @@ pub(crate) fn dense(c: &mut Criterion) {
     let mut out = vec![0.0f32; M * N];
 
     let mut group = c.benchmark_group("gemm_f32");
-    group.throughput(Throughput::Bytes(((a.len() + b.len()) * size_of::<f32>()) as u64));
+    group.throughput(Throughput::Bytes(
+        ((a.len() + b.len()) * size_of::<f32>()) as u64,
+    ));
     group.bench_function("prefill_256x256_k8", |bench| {
         bench.iter(|| {
             gemm_f32::forward(

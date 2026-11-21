@@ -65,8 +65,12 @@ pub(crate) fn archive(c: &mut Criterion) {
     group.bench_function("parse", |b| {
         b.iter(|| Archive::parse(black_box(&bytes)).expect("解析"))
     });
-    group.bench_function("merkle_root", |b| b.iter(|| parsed.merkle_root().expect("根")));
-    group.bench_function("prove", |b| b.iter(|| parsed.prove(black_box(0)).expect("证明")));
+    group.bench_function("merkle_root", |b| {
+        b.iter(|| parsed.merkle_root().expect("根"))
+    });
+    group.bench_function("prove", |b| {
+        b.iter(|| parsed.prove(black_box(0)).expect("证明"))
+    });
     group.bench_function("verify", |b| {
         b.iter(|| parsed.verify(0, &proof, &root).expect("校验"))
     });

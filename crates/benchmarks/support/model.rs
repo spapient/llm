@@ -1,6 +1,6 @@
 //! 一步 decode 的合成模型：查表首层 + 一层 f32 投影，权重由确定性 PRNG 生成。
 //!
-//! 基准（`criterion/model_decode.rs`）与卡片测试（`tests/cards.rs`）压的是同一个栈，只有
+//! 基准（`criterion/model.rs`）与卡片测试（`tests/regress/cases.rs`）压的是同一个栈，只有
 //! 批的规模不同；装配因此只写一处，序列与页池各自留在自己的文件里。
 
 use nn::{Embedding, Linear, Stack, WeightFormat};
