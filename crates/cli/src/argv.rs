@@ -18,8 +18,6 @@ pub const USAGE: &str = "\
   status                 打印各层状态（默认）
   platform               打印六平台执行合同的六行裁决（设备 + 编译器两件证据）
   run    --weights <文件> 用真实权重算一次前向（每条链一层内核）
-  verify --op <算子>      校验一个算子的协商与对拍
-  bench  --op <算子>      测量一个算子的带宽与达成率
   train [选项]            跑训练闭环（配置数值由组装点解析，本层只搬字符串）
   import --in <源> --out <文件> 把 safetensors / gguf / bin 条目流写成自有 `.u` 容器
   inspect --in <文件>     读 `.u` 容器：条目清单与现场现算的度量
@@ -28,8 +26,10 @@ pub const USAGE: &str = "\
   audit  --in <文件> --ledger <账本> 把落盘账本读回，与同一份字节现算的账逐格核对
   help                   打印本说明
 
+内核审计（逐算子协商 / 对拍 / 带宽）由本包的 `cutile` 入口提供：
+  cutile verify --op <算子>   cutile bench --op <算子>   cutile doctor
+
 选项：
-  --op <算子>             算子名（`verify` / `bench` 用，缺省为 `gemv_i4`）
   --weights <文件>        safetensors 权重文件（`status` / `run` 用；`run` 必需）
   --in <文件>             输入路径（`import` 的 safetensors 源；`inspect` / `check` / `settle` / `audit` 的 `.u` 容器；五者都必需）
   --out <文件>            输出路径（`import` 的 `.u` 容器，必需）；`settle` 的账本文件（可选）
@@ -52,16 +52,6 @@ pub enum Command {
     Status {
         /// safetensors 权重文件路径；`None` 表示只用声明层。
         weights: Option<String>,
-    },
-    /// 校验一个算子。
-    Verify {
-        /// 算子名；`None` 表示用命令的默认值。
-        op: Option<String>,
-    },
-    /// 测量一个算子。
-    Bench {
-        /// 算子名；`None` 表示用命令的默认值。
-        op: Option<String>,
     },
     /// 用真实权重算一次。
     Run {
@@ -135,16 +125,6 @@ const COMMANDS: &[Row] = &[
     ("status", &[value("--weights", "文件")], |flags| {
         Ok(Command::Status {
             weights: flags.take_text("--weights"),
-        })
-    }),
-    ("verify", &[value("--op", "算子")], |flags| {
-        Ok(Command::Verify {
-            op: flags.take_text("--op"),
-        })
-    }),
-    ("bench", &[value("--op", "算子")], |flags| {
-        Ok(Command::Bench {
-            op: flags.take_text("--op"),
         })
     }),
     (

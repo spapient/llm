@@ -65,7 +65,7 @@ pub fn entry(invocation: &Invocation) -> Result<()> {
 
 /// 一级分派：自处理的命令直接落地，其余按类别下推。
 ///
-/// 十二条变体为什么不写成一张平表：本包的生产函数受 `Ccn ≤ 5` 约束（`llm-tools` 的 `gate`）
+/// 十条变体为什么不写成一张平表：本包的生产函数受 `Ccn ≤ 5` 约束（`llm-tools` 的 `gate`）
 /// 平铺会顶到 11，所以分四层。代价是每层末尾需要一个 `_` 臂——它走不走得到**不靠文档声明**，
 /// 而靠 `tests/grammar.rs::every_command_variant_has_a_destination` 里那张不带 `_` 的平表：
 /// 新增 `Command` 变体时那道门编译失败，`cargo check --all-targets` 因此点名要求接线。
@@ -122,13 +122,11 @@ fn objects(command: &Command) -> Result<()> {
     }
 }
 
-/// `inspect` / `check` 只差一步验码；`verify` / `bench` 的实现住在同包的另一个入口 `cutile` 里，
-/// 组装点不复制审计实现。
+/// `inspect` / `check` 只差一步验码：同一个入参，同一层。
 fn examine(command: &Command) -> Result<()> {
     match command {
         Command::Inspect { input } => archive::inspect(input),
         Command::Check { input } => archive::check(input),
-        Command::Verify { .. } | Command::Bench { .. } => elsewhere(),
         other => stray(other),
     }
 }
@@ -137,13 +135,4 @@ fn examine(command: &Command) -> Result<()> {
 /// 是内部错误码，不该让用户看到 panic。
 fn stray(command: &Command) -> Result<()> {
     Err(Error::new(Code::Internal, format!("命令 `{command:?}` 没有落点")).with("cli::entry"))
-}
-
-/// `verify` / `bench` 的实现住在同包的 `cutile` 二进制里（`src/cutile.rs`）：`llm` 只负责组装。
-fn elsewhere() -> Result<()> {
-    Err(Error::new(
-        Code::Invalid,
-        "该命令由本包的 `cutile` 入口提供（`cutile verify` / `cutile bench`）",
-    )
-    .with("cli::entry"))
 }

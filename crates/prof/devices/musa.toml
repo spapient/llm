@@ -58,6 +58,7 @@ flags = [
 # 工具链垫片：生成的程序只写一种头文件名，MUSA 只提供 `musa_*.h`，映射写在档案里。
 # 两个编译路径（算子产物 / 见证）都从这张表落地，不再各写一份。
 preamble = """
+#include <math.h>
 #ifndef __host__
 #define __host__
 #endif

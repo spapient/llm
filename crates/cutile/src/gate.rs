@@ -93,6 +93,17 @@ const GATES: &[GateSpec] = &[
         check: &["-x", "cl", "-fsyntax-only"],
     },
     GateSpec {
+        emit: Emit::C,
+        tool: &["clang"],
+        check: &["-x", "c", "-fsyntax-only"],
+    },
+    GateSpec {
+        emit: Emit::Metal,
+        // `metal` 只在 Xcode 工具链里，经 `xcrun` 找：`tool` 多词写法由 [`probe_declared`] 拆开。
+        tool: &["xcrun", "-sdk", "macosx", "metal"],
+        check: &["-fsyntax-only"],
+    },
+    GateSpec {
         emit: Emit::Ascendc,
         // `-xcce` 让 ccec 按昇腾设备语言解析这份翻译单元（不带它，ccec 只当普通宿主 C++ 编，
         // 见证里的 `__aicore__` 会被无声忽略）；`dav-c220` 是 `id = "910b"` 那一档的核芯名。
@@ -358,3 +369,7 @@ mod tests {
 #[cfg(test)]
 #[path = "../tests/fragments_tests.rs"]
 mod fragments_tests;
+
+#[cfg(test)]
+#[path = "../tests/zz_tmp.rs"]
+mod zz_tmp;
