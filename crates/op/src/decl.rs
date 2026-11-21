@@ -161,25 +161,36 @@ pub struct Fusion {
     pub seams: Vec<Seam>,
 }
 
+impl Fusion {
+    /// 本融合要求生产者产出的槽位，按 `from` 去重（保持声明顺序）。
+    ///
+    /// 同一输出可以桥接到消费者的多个读槽位（一条输出、两条缝），因此**缝数不等于输出数**：
+    /// 对拍必须按这个分组逐条桥接，只桥一条就等于测了另一个程序。
+    pub fn outputs(&self) -> Vec<&str> {
+        let mut out: Vec<&str> = Vec::new();
+        for seam in &self.seams {
+            if !out.contains(&seam.from.as_str()) {
+                out.push(&seam.from);
+            }
+        }
+        out
+    }
+
+    /// 某个生产者输出桥接到的全部消费者读槽位。
+    pub fn targets<'a>(&'a self, from: &'a str) -> impl Iterator<Item = &'a str> + 'a {
+        self.seams
+            .iter()
+            .filter(move |seam| seam.from == from)
+            .map(|seam| seam.to.as_str())
+    }
+
+    /// 是不是自融合：同一算子拼到自己前面是循环携带依赖，不是缝。
+    pub fn is_self(&self) -> bool {
+        self.producer == self.consumer
+    }
+}
+
 impl OpDecl {
-    /// 读槽位：签名里 `const` 缓冲形参的名字（顺序 = 签名顺序）。派生自签名，不冗余存储。
-    pub fn reads(&self) -> impl Iterator<Item = &str> {
-        self.signature
-            .params()
-            .iter()
-            .filter(|param| param.ctype.is_buffer() && !param.mutable)
-            .map(|param| param.name.as_str())
-    }
-
-    /// 写槽位：签名里可写缓冲形参的名字（`check_single_output` 保证恰好一个）。
-    pub fn writes(&self) -> impl Iterator<Item = &str> {
-        self.signature
-            .params()
-            .iter()
-            .filter(|param| param.ctype.is_buffer() && param.mutable)
-            .map(|param| param.name.as_str())
-    }
-
     /// 槽位的声明类型：缓冲形参才有；标量或未知名返回 `None`。
     pub fn slot_type(&self, name: &str) -> Option<crate::sig::CType> {
         self.signature
@@ -192,10 +203,16 @@ impl OpDecl {
 
 /// 槽位代数：判定"生产者 A 能不能拼到消费者 B 前面"（cutile README §9 的槽位代数）。
 ///
-/// 合法当且仅当存在至少一条**缝**——A 的某个写阶段写出一个槽位，B 的某个读阶段读入一个
-/// **同类型**的槽位（名字不必相同：融合时以临时缓冲桥接）。写写、写读都对不上或类型不一致
-/// 返回 `None`（不是错误：融合是候选剪枝，不是输入不合法）。
+/// 合法当且仅当 A、B 是**不同**算子且存在至少一条**缝**——A 的某个写阶段写出一个槽位，B 的某个
+/// 读阶段读入一个**同类型**的槽位（名字不必相同：融合时以临时缓冲桥接）。写写、写读都对不上、
+/// 类型不一致、或 `A == B` 都返回 `None`（不是错误：融合是候选剪枝，不是输入不合法）。
+///
+/// 自融合被排除是代数层面的要求，不是偏保守：A 读的槽位要等 A 这一轮写完才有值，那是循环携带
+/// 依赖，拼出来的"融合核"无法定义执行顺序；把它放进候选表还会白占一个预算名额。
 pub fn compose(producer: &OpDecl, consumer: &OpDecl) -> Option<Fusion> {
+    if producer.name == consumer.name {
+        return None;
+    }
     let mut seams = Vec::new();
     for phase in &producer.phases {
         for from in &phase.writes {

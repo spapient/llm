@@ -52,6 +52,25 @@ impl Values {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// 元素类型的名字（诊断用）。
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::F32(_) => "F32",
+            Self::U8(_) => "U8",
+        }
+    }
+
+    /// 两份取值是不是同一种元素类型。
+    ///
+    /// 换入缓冲时长度对得上还不够：把 `F32` 塞进声明的 `U8` 槽位，下游 reference 会按错误的
+    /// 变体读它——长度一致让它悄无声息地通过。类型必须单独判。
+    pub fn same_kind(&self, other: &Self) -> bool {
+        matches!(
+            (self, other),
+            (Self::F32(_), Self::F32(_)) | (Self::U8(_), Self::U8(_))
+        )
+    }
 }
 
 /// 一份具名缓冲；名字就是内核模板里的形参名。
@@ -133,7 +152,8 @@ impl Sample {
     ///
     /// # Errors
     ///
-    /// 缓冲不存在（[`Code::Missing`]）或长度与算子声明的形状不符（[`Code::Invalid`]）时返回说明。
+    /// 缓冲不存在（[`Code::Missing`]）、元素类型与声明不符（[`Code::Invalid`]）或长度与算子
+    /// 声明的形状不符（[`Code::Invalid`]）时返回说明。
     pub fn set(&mut self, name: &str, values: Values) -> diagnostic::Result<()> {
         let buffer = self
             .buffers
@@ -143,6 +163,17 @@ impl Sample {
                 Error::new(Code::Missing, format!("样本里没有缓冲 `{name}`"))
                     .with("op::model::Sample::set")
             })?;
+        if !buffer.values.same_kind(&values) {
+            return Err(Error::new(
+                Code::Invalid,
+                format!(
+                    "缓冲 `{name}` 是 {}，换入的是 {}",
+                    buffer.values.kind(),
+                    values.kind()
+                ),
+            )
+            .with("op::model::Sample::set"));
+        }
         let (want, got) = (buffer.values.len(), values.len());
         if want != got {
             return Err(Error::new(

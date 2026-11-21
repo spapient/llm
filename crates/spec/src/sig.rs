@@ -113,6 +113,15 @@ impl Signature {
             .map(|param| param.ctype)
     }
 
+    /// 缓冲形参名，按方向筛：`mutable` 为真取可写输出，为假取只读输入；标量形参不在此列。
+    pub fn buffer_names(&self, mutable: bool) -> Vec<String> {
+        self.params
+            .iter()
+            .filter(|param| param.ctype.is_buffer() && param.mutable == mutable)
+            .map(|param| param.name.clone())
+            .collect()
+    }
+
     /// 把签名与样本逐项对齐：缓冲要同名同类型，标量要有取值，样本也不能多出签名之外的名字。
     ///
     /// # Errors

@@ -125,8 +125,11 @@ fn the_default_phase_is_derived_from_the_signature() {
     let phase = &op.phases[0];
     assert_eq!(phase.name, "gemv_f32");
     assert_eq!(phase.writes, ["y"], "可写输出缓冲恰好一个");
-    let reads: Vec<String> = op.reads().map(str::to_string).collect();
-    assert_eq!(reads, phase.reads, "读槽位与签名 const 缓冲一致");
+    assert_eq!(
+        op.signature.buffer_names(false),
+        phase.reads,
+        "读槽位与签名 const 缓冲一致"
+    );
 }
 
 /// 类型不一致不拼：生产者只写 `u8`，消费者只读 `f32`，没有任何缝。

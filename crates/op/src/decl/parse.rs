@@ -244,8 +244,8 @@ pub(super) fn phases(
     let Some(rows) = table.table_array("phases") else {
         return Ok(vec![Phase {
             name: op.to_string(),
-            reads: buffer_names(signature, false),
-            writes: buffer_names(signature, true),
+            reads: signature.buffer_names(false),
+            writes: signature.buffer_names(true),
         }]);
     };
     rows.iter().map(|row| phase(op, row, signature)).collect()
@@ -289,14 +289,4 @@ fn slot_names(
         }
     }
     Ok(names.into_iter().map(str::to_string).collect())
-}
-
-/// 签名里的缓冲形参名，按方向（`mutable`）筛。
-fn buffer_names(signature: &crate::sig::Signature, mutable: bool) -> Vec<String> {
-    signature
-        .params()
-        .iter()
-        .filter(|param| param.ctype.is_buffer() && param.mutable == mutable)
-        .map(|param| param.name.clone())
-        .collect()
 }
