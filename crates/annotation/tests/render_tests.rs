@@ -3,7 +3,7 @@
 //! 断言的是文本，不是行为：渲染器只拼字符串，于是"生成的代码长什么样"可以被逐字钉住。
 
 use crate::decl::{
-    parse, parse_model, parse_runtime, Declaration, ModelDecl, RuntimeDecl, DTYPES, SKELETONS,
+    DTYPES, Declaration, ModelDecl, RuntimeDecl, SKELETONS, parse, parse_model, parse_runtime,
 };
 use crate::fixture::lex;
 use crate::render::{render, render_model, render_runtime};

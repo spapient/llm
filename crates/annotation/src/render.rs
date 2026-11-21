@@ -4,7 +4,7 @@
 //! 想用的普通名字。拼接只往一个预留了容量的 `String` 里写（`write!` 而非 `format!` + 拷贝），
 //! 于是"渲染一份"是一次分配。
 
-use crate::decl::{Declaration, ModelDecl, RuntimeDecl, DTYPES, SKELETONS};
+use crate::decl::{DTYPES, Declaration, ModelDecl, RuntimeDecl, SKELETONS};
 use std::fmt::Write;
 
 /// 静态形态：私有构造函数 + `impl ::nn::Contract` + 一条 `#[cfg(test)]` 校验。

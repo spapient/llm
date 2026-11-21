@@ -53,12 +53,31 @@ fn one<F, E: fmt::Debug>(
     });
 }
 
+/// decode 路径的签名：`q`、`k`、`v`、`out` 加 `(head, hist, d)`。
+///
+/// 参数生命周期由省略写法各自独立推出——共用一个会让 `out` 的可变借用被要求活到 `q/k/v` 那么久。
+type Decode<E> = fn(&[f32], &[f32], &[f32], &mut [f32], usize, usize, usize) -> Result<(), E>;
+
+/// 把 fn item 坍成同一张函数指针类型，好让签名相同的两条路径放进同一张表。
+///
+/// 直接写 `[("naive", f), ("flash", g)]` 编译不过：两个 fn item 是不同的零尺寸类型，没有共同
+/// 类型。显式标注那个七参数签名又会触发 `clippy::type_complexity`；这里的 `E` 由每条路径的真实
+/// 返回类型推出，调用点因此不必命名错误类型（bench 不依赖 `diagnostic`）。
+fn uniform<E: fmt::Debug>(run: Decode<E>) -> Decode<E> {
+    run
+}
+
 /// `flash_forward`：decode 单头 128 行 KV 的单遍 online softmax。
 pub(crate) fn flash_decode(c: &mut Criterion) {
     let mut sample = Sample::new(DECODE_S * D);
     let mut group = c.benchmark_group("attention_f32");
     group.throughput(Throughput::Elements((DECODE_S * D) as u64));
-    let lanes = (&sample.q[..], &sample.k[..], &sample.v[..], &mut sample.out);
+    let lanes = (
+        &sample.q[..],
+        &sample.k[..],
+        &sample.v[..],
+        &mut sample.out[..],
+    );
     one(lanes, &mut group, "flash_decode_128x64", |q, k, v, out| {
         attention::flash_forward(q, k, v, out, DECODE_S, D)
     });
@@ -72,22 +91,34 @@ pub(crate) fn prefill(c: &mut Criterion) {
 
     let mut online = c.benchmark_group("attention_prefill_f32");
     online.throughput(Throughput::Bytes(bytes));
-    one(lanes(&mut sample), &mut online, "online_1024x64", |q, k, v, out| {
-        attention::flash_forward(q, k, v, out, PREFILL_S, D)
-    });
-    one(lanes(&mut sample), &mut online, "tiled_1024x64", |q, k, v, out| {
-        attention::tiled::flash_tiled_forward(q, k, v, out, PREFILL_S, D)
-    });
+    one(
+        lanes(&mut sample),
+        &mut online,
+        "online_1024x64",
+        |q, k, v, out| attention::flash_forward(q, k, v, out, PREFILL_S, D),
+    );
+    one(
+        lanes(&mut sample),
+        &mut online,
+        "tiled_1024x64",
+        |q, k, v, out| attention::tiled::flash_tiled_forward(q, k, v, out, PREFILL_S, D),
+    );
     online.finish();
 
     let mut dense = c.benchmark_group("attention_dense_f32");
     dense.throughput(Throughput::Bytes(bytes));
-    one(lanes(&mut sample), &mut dense, "naive_1024x64", |q, k, v, out| {
-        attention::forward(q, k, v, out, PREFILL_S, D)
-    });
-    one(lanes(&mut sample), &mut dense, "tiled_1024x64", |q, k, v, out| {
-        attention::tiled::forward(q, k, v, out, PREFILL_S, D)
-    });
+    one(
+        lanes(&mut sample),
+        &mut dense,
+        "naive_1024x64",
+        |q, k, v, out| attention::forward(q, k, v, out, PREFILL_S, D),
+    );
+    one(
+        lanes(&mut sample),
+        &mut dense,
+        "tiled_1024x64",
+        |q, k, v, out| attention::tiled::forward(q, k, v, out, PREFILL_S, D),
+    );
     dense.finish();
 }
 
@@ -107,16 +138,23 @@ pub(crate) fn decode(c: &mut Criterion) {
 fn hist_pair(c: &mut Criterion, hist: usize) {
     let kv_len = hist * D;
     let q: Vec<f32> = (0..D).map(|index| -0.5 + index as f32 * 0.13).collect();
-    let k: Vec<f32> = (0..kv_len).map(|index| 0.4 - index as f32 * 0.009).collect();
-    let v: Vec<f32> = (0..kv_len).map(|index| -0.2 + index as f32 * 0.011).collect();
+    let k: Vec<f32> = (0..kv_len)
+        .map(|index| 0.4 - index as f32 * 0.009)
+        .collect();
+    let v: Vec<f32> = (0..kv_len)
+        .map(|index| -0.2 + index as f32 * 0.011)
+        .collect();
     let mut out = vec![0.0f32; D];
 
     let mut group = c.benchmark_group("decode_attention_f32");
     group.throughput(Throughput::Elements(kv_len as u64));
-    let pair = [("naive", attention::decode_forward), ("flash", attention::decode_flash_forward)];
+    let pair = [
+        ("naive", uniform(attention::decode_forward)),
+        ("flash", uniform(attention::decode_flash_forward)),
+    ];
     for (label, run) in pair {
         let name = format!("{label}_hist{hist}x{D}");
-        let lanes = (&q[..], &k[..], &v[..], &mut out);
+        let lanes = (&q[..], &k[..], &v[..], &mut out[..]);
         one(lanes, &mut group, &name, |q, k, v, out| {
             run(q, k, v, out, 1, hist, D)
         });

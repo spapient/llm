@@ -4,11 +4,11 @@
 //! 加一个键、加一种取值文法，断言的落点是同一个文件。
 
 use crate::decl::{
-    is_runtime, parse, parse_model, parse_runtime, runtime_target, GEMM_SKELETON_NAMES, KEYS,
+    GEMM_SKELETON_NAMES, KEYS, is_runtime, parse, parse_model, parse_runtime, runtime_target,
 };
 use crate::fixture::lex;
 use crate::syntax::{
-    checked_name, model_target, string, target_name, unsigned, Bracket, Error, Token, Value,
+    Bracket, Error, Token, Value, checked_name, model_target, string, target_name, unsigned,
 };
 
 /// 断言 `result` 的报错里出现 `needle`，并把错误交回给调用方断位置。

@@ -5,8 +5,8 @@
 //! 于是"加一个键"是加一行、加一种形态是加一张表，而不是加一个解析器。
 
 use crate::syntax::{
-    checked_name, collect, declared_name, elements, generic, require, row, string, target_with,
-    unsigned, Bracket, Cursor, Error, Hole, KeySpec, Position, Token, Value, FIELDS,
+    Bracket, Cursor, Error, FIELDS, Hole, KeySpec, Position, Token, Value, checked_name, collect,
+    declared_name, elements, generic, require, row, string, target_with, unsigned,
 };
 
 /// 注解允许的键；顺序即错误信息里的提示顺序。
