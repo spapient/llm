@@ -13,7 +13,9 @@ use op::conv::{AdaptiveAvgPool2d, AvgPool2d, Conv2d, Interpolate, MaxPool1d, Max
 use op::norm::{BatchNorm2d, GroupNorm, LayerNorm};
 
 mod kernel;
+mod shape;
 use kernel::*;
+use shape::*;
 
 /// 归一化 eps：与 `op::classic` 四个声明档模块的 `EPS` 同值（算术来源留在 op 侧）。
 pub const EPS: f32 = op::batch_norm::EPS;
