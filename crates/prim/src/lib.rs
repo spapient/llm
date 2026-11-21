@@ -1,25 +1,29 @@
-//! 片段层：`<vendor>/<prim>.<ext>`——某台设备上某个原语的具体写法，以及它的见证源码。
+//! 片段层：某台设备上某个原语的具体写法，以及它的见证源码。
 //!
-//! **拥有**：`Builtin`（内嵌片段表）、`Fragment` / `FragmentSet`（装载后的片段）、`Device` /
-//! `Image` / `Status`（设备侧代码：源码 + 可选的镜像）。**不拥有**：设备能力区间（`prof`）、
-//! 拼接与 emit（`cutile`）、运行时缓冲与数值（各自的层）。**依赖**：`prof`（原语闭集与档案）、
-//! `diagnostic`（错误类别由本层给，装载失败因此带类别而不是字符串）。
-//! **被依赖**：`cutile`。
+//! **拥有**：`Builtin`（合成表）、`Fragment` / `FragmentSet`（装载后的片段）、[`Layout`]
+//! （片段层在哪）。**不拥有**：片段文本本身（六个设备 crate：`cpu` / `cuda` / `metal` /
+//! `musa` / `opencl` / `rocm`）、`Device` / `Image` / `Status` 与设备能力区间（`prof`）、
+//! 拼接与 emit（`cutile`）。**依赖**：六个设备 crate、`prof`（原语闭集与档案）、
+//! `diagnostic`（错误类别由本层给，装载失败因此带类别而不是字符串）。**被依赖**：`cutile`。
 //!
-//! 这一层是**内容**而不是机制：一台设备的某条原语怎么写，全部是 `<vendor>/<prim>.<ext>` 里的
-//! 文本；`cutile` 只负责把它拼进模板、emit 成源文件并编译执行。因此新增设备、替换一段实现都不
-//! 必改机制代码，片段也不会与拼接器混在同一个 crate 里。
+//! 这一层是**机制**：怎么找、怎么装载、怎么校验签名声明。一台设备的某条原语怎么写，全部是
+//! 那个设备 crate 里的 `<prim>.<ext>` 文本，本 crate 一行片段都没有。于是"加一台设备"是加
+//! 一个设备 crate 再加 [`BUILTIN`] 里一行，机制代码不动；片段也不会与拼接器挤在同一个 crate。
 //!
-//! 本 crate 就是数据根的 `prim/` 那一层：`<root>/<vendor>/<prim>.<ext>`。仓库里 `<root>` 是
-//! [`dir`]，换 `data.root` 时是 `<data.root>/prim`（见 [`layer_root`]）。文件名必须落在原语
-//! 闭集 [`Prim`] 内，否则装载即报错——片段与词汇表同源，写错名字不会静默生效。
+//! # 片段在哪
+//!
+//! [`Layout::builtin`] 是仓库内置（六台设备各在自己的 crate 里），[`Layout::at`] 是 `data.root`
+//! 覆盖（`<data.root>/prim/<vendor>/<prim>.<ext>`）。两种模式走同一个装载入口
+//! [`Layout::fragments`]，所以"文件名不在闭集内 / 签名声明写错"在两种模式下报同一类错误。
+//! 文件名必须落在原语闭集 [`Prim`] 内，否则装载即报错——片段与词汇表同源。
 //!
 //! # 内嵌表是编译期生成的
 //!
-//! [`BUILTIN`] / [`WITNESS`] / [`DEVICES`] 不是手写登记：`build.rs` 在编译期扫描 `<vendor>/`，
-//! 按 [`Prim`] 校验文件名、按档案校验每段片段声明的签名（`/* cutile-sign: <prim>/<impl> */`），
-//! 再把三张表写进 `$OUT_DIR/tables.rs`。于是"发布出去的二进制里没有它"这类漂移不再靠人记得补
-//! 一行 `include_str!`：加设备只需要放文件，`<vendor>` 与 `prof/devices/<vendor>.toml` 同名。
+//! 每个设备 crate 的 `build.rs` 都 `include!` 同一份生成器（`crates/prim/generate.rs`）：它在
+//! 编译期扫描那个 crate 的目录，按 [`Prim`] 校验文件名、按档案校验每段片段声明的签名
+//! （`/* cutile-sign: <prim>/<impl> */`），生成该 crate 的 `FRAGMENTS` / `PRIMS` / `DEVICE`。
+//! 本 crate 的 [`BUILTIN`] / [`WITNESS`] / [`DEVICES`] 只是六份的合成，没有自己的构建脚本，
+//! 因此"发布出去的二进制里没有它"这类漂移不再靠人记得补一行 `include_str!`。
 //!
 //! # 两种模式：源码调试 / 设备镜像发布
 //!
@@ -35,7 +39,7 @@
 //! 不会晚到构建期、更不会静默用错算法。
 //!
 //! `witness.<ext>` 是见证源码（L2 证据），**不是片段**：装载时跳过它，档案里的 `witness` 用
-//! `{ file, func, expect }` 指向同一目录下的这个文件、入口函数与期望输出。
+//! `{ file, func, expect }` 指向同一个目录下的这个文件、入口函数与期望输出。
 //!
 //! # 例子
 //!
@@ -47,6 +51,9 @@
 //! let device = llm_prim::device("metal").expect("内置设备");
 //! assert_eq!(device.ext, "metal", "扩展名由档案的 emit 语言决定");
 //! assert!(device.entry(llm_prim::Prim::Dot).is_some(), "每个原语都有入口");
+//!
+//! let layout = llm_prim::Layout::builtin();
+//! assert!(layout.witness("cpu/witness.c").is_some(), "内置见证在设备 crate 里");
 //! ```
 
 #![deny(unsafe_code)]
@@ -55,14 +62,13 @@ use diagnostic::{Code, Error};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-mod device;
-/// 签名声明的纯字符串规则；与 `build.rs` 经 `include!` 共用同一份源码（ADR 0027 §5）。
+/// 签名声明的纯字符串规则；与生成器 `generate.rs` 经 `include!` 共用同一份源码（ADR 0027 §5）。
 mod signature;
 mod tables;
 
-pub use device::{Device, Image, Status, device, devices};
 pub use prof::atom::Prim;
-pub use tables::{BUILTIN, DEVICES, WITNESS};
+pub use prof::{Device, Image, Status};
+pub use tables::{BUILTIN, DEVICES, ROOTS, WITNESS, device, devices};
 
 /// 见证源码的文件名（不含扩展名）。
 ///
