@@ -127,29 +127,15 @@ impl Conv1d {
         let cin = self.cin;
         let cout = self.cout;
         let patch = self.geom.patch(cin);
-        check(x.len(), n * l * cin, "输入")?;
-        check(weight.len(), patch * cout, "权重")?;
-        check(bias.len(), cout, "偏置")?;
-        check(out.len(), n * ol * cout, "输出")?;
+        check_shapes(&[
+            (x.len(), n * l * cin, "输入"),
+            (weight.len(), patch * cout, "权重"),
+            (bias.len(), cout, "偏置"),
+            (out.len(), n * ol * cout, "输出"),
+        ])?;
 
         let mut col = vec![0.0f32; n * ol * patch];
-        // im2col：行 = (n, ol)，列 = (kw, cin)。
-        for ni in 0..n {
-            for oi in 0..ol {
-                let row = &mut col[(ni * ol + oi) * patch..(ni * ol + oi + 1) * patch];
-                for ki in 0..self.geom.kw {
-                    let src = (oi * self.geom.sw + ki) as isize - self.geom.pw as isize;
-                    for ci in 0..cin {
-                        let slot = &mut row[(ki * cin + ci)..][..1];
-                        slot[0] = if src < 0 || src as usize >= l {
-                            0.0
-                        } else {
-                            x[(ni * l + src as usize) * cin + ci]
-                        };
-                    }
-                }
-            }
-        }
+        im2col1d(x, &mut col, n, l, ol, self.geom, cin);
         gemm(&col, weight, n * ol, cout, patch, out);
         add_bias(out, bias, cout);
         Ok(())
@@ -193,18 +179,19 @@ impl Conv2d {
         weight: &[f32],
         bias: &[f32],
         n: usize,
-        h: usize,
-        w: usize,
+        (h, w): (usize, usize),
         out: &mut [f32],
     ) -> Result<()> {
         let (oh, ow) = self.shape(h, w)?;
         let cin = self.cin;
         let cout = self.cout;
         let patch = self.geom.patch(cin);
-        check(x.len(), n * h * w * cin, "输入")?;
-        check(weight.len(), patch * cout, "权重")?;
-        check(bias.len(), cout, "偏置")?;
-        check(out.len(), n * oh * ow * cout, "输出")?;
+        check_shapes(&[
+            (x.len(), n * h * w * cin, "输入"),
+            (weight.len(), patch * cout, "权重"),
+            (bias.len(), cout, "偏置"),
+            (out.len(), n * oh * ow * cout, "输出"),
+        ])?;
 
         let rows = n * oh * ow;
         let mut col = vec![0.0f32; rows * patch];
@@ -238,46 +225,24 @@ impl Conv2d {
         let (cin, cout) = (self.cin, self.cout);
         let patch = self.geom.patch(cin);
         let rows = n * oh * ow;
-        check(x.len(), n * h * w * cin, "输入")?;
-        check(weight.len(), patch * cout, "权重")?;
-        check(dy.len(), rows * cout, "上游梯度")?;
-        check(dx.len(), n * h * w * cin, "输入梯度")?;
-        check(dweight.len(), patch * cout, "权重梯度")?;
-        check(dbias.len(), cout, "偏置梯度")?;
+        check_shapes(&[
+            (x.len(), n * h * w * cin, "输入"),
+            (weight.len(), patch * cout, "权重"),
+            (dy.len(), rows * cout, "上游梯度"),
+            (dx.len(), n * h * w * cin, "输入梯度"),
+            (dweight.len(), patch * cout, "权重梯度"),
+            (dbias.len(), cout, "偏置梯度"),
+        ])?;
 
         let mut col = vec![0.0f32; rows * patch];
         im2col2d(x, &mut col, n, (h, w), self, (oh, ow));
         dx.fill(0.0);
         dweight.fill(0.0);
         dbias.fill(0.0);
-        for r in 0..rows {
-            let dy_row = &dy[r * cout..(r + 1) * cout];
-            for (slot, value) in dbias.iter_mut().zip(dy_row) {
-                *slot += *value;
-            }
-            // 权重梯度按行累加：`dweight[k, co] += col[r, k] · dy[r, co]`。
-            let col_row = &col[r * patch..(r + 1) * patch];
-            for (k, &value) in col_row.iter().enumerate() {
-                if value == 0.0 {
-                    continue;
-                }
-                let dw = &mut dweight[k * cout..(k + 1) * cout];
-                for (slot, upstream) in dw.iter_mut().zip(dy_row) {
-                    *slot += value * *upstream;
-                }
-            }
-        }
-        // 输入梯度走同一份 col 的转置乘：`dcol[r, k] = Σ_co dy[r, co] · weight[k, co]`。
+        accumulate_weight_grad(dy, &col, dbias, dweight, rows, cout, patch);
         let mut dcol = vec![0.0f32; rows * patch];
-        for r in 0..rows {
-            let dy_row = &dy[r * cout..(r + 1) * cout];
-            let dcol_row = &mut dcol[r * patch..(r + 1) * patch];
-            for (k, slot) in dcol_row.iter_mut().enumerate() {
-                let w_row = &weight[k * cout..(k + 1) * cout];
-                *slot = dy_row.iter().zip(w_row).map(|(a, b)| a * b).sum();
-            }
-        }
-        col2im2d(&dcol, dx, n, (h, w), self, (oh, ow));
+        compute_dcol(dy, weight, &mut dcol, rows, cout, patch);
+        col2im2d(&dcol, dx, (h, w), self, (oh, ow));
         Ok(())
     }
 
@@ -298,28 +263,25 @@ impl Conv2d {
         weight: &[i8],
         bias: &[i32],
         n: usize,
-        h: usize,
-        w: usize,
+        (h, w): (usize, usize),
         out: &mut [i32],
         col: &mut Vec<i8>,
     ) -> Result<()> {
         let (oh, ow) = self.shape(h, w)?;
         let cout = self.cout;
         let patch = self.geom.patch(self.cin);
-        check(x.len(), n * h * w * self.cin, "输入")?;
-        check(weight.len(), patch * cout, "权重")?;
-        check(bias.len(), cout, "偏置")?;
-        check(out.len(), n * oh * ow * cout, "输出")?;
+        check_shapes(&[
+            (x.len(), n * h * w * self.cin, "输入"),
+            (weight.len(), patch * cout, "权重"),
+            (bias.len(), cout, "偏置"),
+            (out.len(), n * oh * ow * cout, "输出"),
+        ])?;
 
         let rows = n * oh * ow;
         col.resize(rows * patch, 0);
-        im2col2d_i8(x, col, n, (h, w), self, (oh, ow));
+        im2col2d(x, col, n, (h, w), self, (oh, ow));
         fast::gemm_i8(col, weight, rows, cout, patch, out);
-        for r in 0..rows {
-            for c in 0..cout {
-                out[r * cout + c] += bias[c];
-            }
-        }
+        add_bias(out, bias, cout);
         Ok(())
     }
 
@@ -330,31 +292,10 @@ impl Conv2d {
         weight: &[i8],
         bias: &[i32],
         n: usize,
-        h: usize,
-        w: usize,
+        (h, w): (usize, usize),
         out: &mut [i32],
     ) -> Result<()> {
-        let (oh, ow) = self.shape(h, w)?;
-        let cin = self.cin;
-        let cout = self.cout;
-        let patch = self.geom.patch(cin);
-        check(x.len(), n * h * w * cin, "输入")?;
-        check(weight.len(), patch * cout, "权重")?;
-        check(bias.len(), cout, "偏置")?;
-        check(out.len(), n * oh * ow * cout, "输出")?;
-
-        thread_local! {
-            /// 大形状下 im2col 缓冲达几十 MB，跨调用复用可以省掉每次的零页分配与缺页。
-            static COL: std::cell::RefCell<Vec<i8>> = const { std::cell::RefCell::new(Vec::new()) };
-        }
-        COL.with(|cell| {
-            let mut loan = cell.try_borrow_mut();
-            match loan.as_mut() {
-                Ok(col) => self.forward_i8_with(x, weight, bias, n, h, w, out, col),
-                // 同线程嵌套调用（借出中）时才退回一次性缓冲。
-                Err(_) => self.forward_i8_with(x, weight, bias, n, h, w, out, &mut Vec::new()),
-            }
-        })
+        with_scratch_col(|col| self.forward_i8_with(x, weight, bias, n, (h, w), out, col))
     }
 }
 
@@ -399,35 +340,57 @@ impl MaxPool2d {
         out: &mut [S],
     ) -> Result<()> {
         let (oh, ow) = self.shape(h, w)?;
-        check(x.len(), n * h * w * c, "输入")?;
-        check(out.len(), n * oh * ow * c, "输出")?;
+        check_shapes(&[
+            (x.len(), n * h * w * c, "输入"),
+            (out.len(), n * oh * ow * c, "输出"),
+        ])?;
+        self.pool_max(x, out, n, (h, w), c, (oh, ow));
+        Ok(())
+    }
+
+    fn pool_max<S: Scalar>(
+        &self,
+        x: &[S],
+        out: &mut [S],
+        n: usize,
+        (h, w): (usize, usize),
+        c: usize,
+        (oh, ow): (usize, usize),
+    ) {
         for ni in 0..n {
             for oi in 0..oh {
                 for oj in 0..ow {
                     for ci in 0..c {
-                        let mut best = S::NEG_INFINITY;
-                        for ki in 0..self.geom.kh {
-                            let ii = (oi * self.geom.sh + ki) as isize - self.geom.ph as isize;
-                            if ii < 0 || ii as usize >= h {
-                                continue;
-                            }
-                            for kj in 0..self.geom.kw {
-                                let jj = (oj * self.geom.sw + kj) as isize - self.geom.pw as isize;
-                                if jj < 0 || jj as usize >= w {
-                                    continue;
-                                }
-                                let v = x[((ni * h + ii as usize) * w + jj as usize) * c + ci];
-                                if v > best {
-                                    best = v;
-                                }
-                            }
-                        }
-                        out[((ni * oh + oi) * ow + oj) * c + ci] = best;
+                        out[((ni * oh + oi) * ow + oj) * c + ci] =
+                            self.window_max(x, (ni, oi, oj, ci), (h, w), c);
                     }
                 }
             }
         }
-        Ok(())
+    }
+
+    fn window_max<S: Scalar>(
+        &self,
+        x: &[S],
+        (ni, oi, oj, ci): (usize, usize, usize, usize),
+        (h, w): (usize, usize),
+        c: usize,
+    ) -> S {
+        let mut best = S::NEG_INFINITY;
+        for ki in 0..self.geom.kh {
+            let ii = (oi * self.geom.sh + ki) as isize - self.geom.ph as isize;
+            if !in_bounds_1d(ii, h) {
+                continue;
+            }
+            for kj in 0..self.geom.kw {
+                let jj = (oj * self.geom.sw + kj) as isize - self.geom.pw as isize;
+                if !in_bounds_1d(jj, w) {
+                    continue;
+                }
+                best = best.max(x[((ni * h + ii as usize) * w + jj as usize) * c + ci]);
+            }
+        }
+        best
     }
 }
 
@@ -456,48 +419,86 @@ impl AvgPool2d {
         out: &mut [S],
     ) -> Result<()> {
         let (oh, ow) = self.shape(h, w)?;
-        check(x.len(), n * h * w * c, "输入")?;
-        check(out.len(), n * oh * ow * c, "输出")?;
+        check_shapes(&[
+            (x.len(), n * h * w * c, "输入"),
+            (out.len(), n * oh * ow * c, "输出"),
+        ])?;
+        self.pool_avg(x, out, n, (h, w), c, (oh, ow));
+        Ok(())
+    }
+
+    fn pool_avg<S: Scalar>(
+        &self,
+        x: &[S],
+        out: &mut [S],
+        n: usize,
+        (h, w): (usize, usize),
+        c: usize,
+        (oh, ow): (usize, usize),
+    ) {
         for ni in 0..n {
             for oi in 0..oh {
                 for oj in 0..ow {
                     for ci in 0..c {
-                        let mut sum = S::ZERO;
-                        let mut count = 0usize;
-                        for ki in 0..self.geom.kh {
-                            let ii = (oi * self.geom.sh + ki) as isize - self.geom.ph as isize;
-                            if ii < 0 || ii as usize >= h {
-                                continue;
-                            }
-                            for kj in 0..self.geom.kw {
-                                let jj = (oj * self.geom.sw + kj) as isize - self.geom.pw as isize;
-                                if jj < 0 || jj as usize >= w {
-                                    continue;
-                                }
-                                sum = sum + x[((ni * h + ii as usize) * w + jj as usize) * c + ci];
-                                count += 1;
-                            }
-                        }
-                        let denom = if self.count_include_pad {
-                            S::from_usize(self.geom.kh * self.geom.kw)
-                        } else {
-                            S::from_usize(count.max(1))
-                        };
-                        out[((ni * oh + oi) * ow + oj) * c + ci] = sum / denom;
+                        out[((ni * oh + oi) * ow + oj) * c + ci] =
+                            self.window_avg(x, (ni, oi, oj, ci), (h, w), c);
                     }
                 }
             }
         }
-        Ok(())
+    }
+
+    fn window_avg<S: Scalar>(
+        &self,
+        x: &[S],
+        (ni, oi, oj, ci): (usize, usize, usize, usize),
+        (h, w): (usize, usize),
+        c: usize,
+    ) -> S {
+        let mut sum = S::ZERO;
+        let mut count = 0usize;
+        for ki in 0..self.geom.kh {
+            let ii = (oi * self.geom.sh + ki) as isize - self.geom.ph as isize;
+            if !in_bounds_1d(ii, h) {
+                continue;
+            }
+            for kj in 0..self.geom.kw {
+                let jj = (oj * self.geom.sw + kj) as isize - self.geom.pw as isize;
+                if !in_bounds_1d(jj, w) {
+                    continue;
+                }
+                sum = sum + x[((ni * h + ii as usize) * w + jj as usize) * c + ci];
+                count += 1;
+            }
+        }
+        sum / self.avg_denom(count)
+    }
+
+    fn avg_denom<S: Scalar>(&self, count: usize) -> S {
+        if self.count_include_pad {
+            S::from_usize(self.geom.kh * self.geom.kw)
+        } else {
+            S::from_usize(count.max(1))
+        }
     }
 }
 
-/// f32 im2col：行 = `(n, oh, ow)`，列 = `(kh, kw, cin)`。
+/// 一维边界判定。
+fn in_bounds_1d(idx: isize, len: usize) -> bool {
+    idx >= 0 && (idx as usize) < len
+}
+
+/// 二维边界判定。
+fn in_bounds(ii: isize, jj: isize, h: usize, w: usize) -> bool {
+    in_bounds_1d(ii, h) && in_bounds_1d(jj, w)
+}
+
+/// f32/i8 共用的 im2col：行 = `(n, oh, ow)`，列 = `(kh, kw, cin)`。
 ///
 /// 行块之间互不重叠，直接按行切给线程；小矩阵不并行（一次 `scope` 的固定开销会超过拷贝本身）。
-fn im2col2d(
-    x: &[f32],
-    col: &mut [f32],
+fn im2col2d<T: Copy + Send + Sync + Default>(
+    x: &[T],
+    col: &mut [T],
     n: usize,
     (h, w): (usize, usize),
     conv: &Conv2d,
@@ -505,25 +506,32 @@ fn im2col2d(
 ) {
     let patch = conv.geom.patch(conv.cin);
     let rows = n * oh * ow;
-    let threads = if rows * patch < (1 << 16) {
+    parallel_rows(x, col, rows, patch, |src, row, r| {
+        fill_row(src, row, r, (h, w), conv, (oh, ow));
+    });
+}
+
+/// 按可用并行度决定单线程还是线程池分片；小张量退化为顺序，避免并行负加速。
+fn thread_count(rows: usize, patch: usize) -> usize {
+    if rows * patch < (1 << 16) {
         1
     } else {
-        thread::available_parallelism()
-            .map(|v| v.get())
-            .unwrap_or(1)
-            .min(rows)
-    };
+        thread::available_parallelism().map(|v| v.get()).unwrap_or(1).min(rows)
+    }
+}
+
+/// 把 `rows` 行按线程分片后逐行调用 `fill`。
+fn parallel_rows<T: Copy + Send + Sync>(
+    x: &[T],
+    col: &mut [T],
+    rows: usize,
+    patch: usize,
+    fill: impl Fn(&[T], &mut [T], usize) + Sync + Copy,
+) {
+    let threads = thread_count(rows, patch);
     if threads <= 1 {
         for r in 0..rows {
-            fill_row(
-                x,
-                &mut col[r * patch..(r + 1) * patch],
-                r,
-                n,
-                (h, w),
-                conv,
-                (oh, ow),
-            );
+            fill(x, &mut col[r * patch..(r + 1) * patch], r);
         }
         return;
     }
@@ -534,29 +542,18 @@ fn im2col2d(
             s.spawn(move || {
                 let cnt = chunk.len() / patch;
                 for base in 0..cnt {
-                    let row_idx = r0 + base;
-                    fill_row(
-                        x,
-                        &mut chunk[base * patch..(base + 1) * patch],
-                        row_idx,
-                        n,
-                        (h, w),
-                        conv,
-                        (oh, ow),
-                    );
+                    fill(x, &mut chunk[base * patch..(base + 1) * patch], r0 + base);
                 }
             });
         }
     });
 }
 
-/// 展开一行：`row_idx = (ni, oi, oj)` 对应的一整块 `(kh, kw, cin)` 拷贝。
-#[allow(clippy::too_many_arguments)]
-fn fill_row(
-    x: &[f32],
-    row: &mut [f32],
+/// 展开一行：`row_idx = (ni, oi, oj)` 对应的一整块 `(kh, kw, cin)` 拷贝，越界补零。
+fn fill_row<T: Copy + Default>(
+    x: &[T],
+    row: &mut [T],
     row_idx: usize,
-    n: usize,
     (h, w): (usize, usize),
     conv: &Conv2d,
     (oh, ow): (usize, usize),
@@ -567,28 +564,41 @@ fn fill_row(
     let rem = row_idx % (oh * ow);
     let oi = rem / ow;
     let oj = rem % ow;
-    let _ = n;
     for ki in 0..g.kh {
         let ii = (oi * g.sh + ki) as isize - g.ph as isize;
         for kj in 0..g.kw {
             let jj = (oj * g.sw + kj) as isize - g.pw as isize;
             let tail = (ki * g.kw + kj) * cin;
-            if ii < 0 || ii as usize >= h || jj < 0 || jj as usize >= w {
-                row[tail..tail + cin].fill(0.0);
-            } else {
+            if in_bounds(ii, jj, h, w) {
                 let src = ((ni * h + ii as usize) * w + jj as usize) * cin;
                 row[tail..tail + cin].copy_from_slice(&x[src..src + cin]);
+            } else {
+                row[tail..tail + cin].fill(T::default());
             }
         }
     }
 }
 
-/// i8 im2col：口径与 [`im2col2d`] 一致，补零位置为 `i8` 的 0，同样按行块并行。
 /// `im2col` 的逆向：把每行的收缩梯度按同一窗口位置累加回输入（`stride < k` 的重叠位也要累加）。
 fn col2im2d(
     col: &[f32],
     dx: &mut [f32],
-    n: usize,
+    (h, w): (usize, usize),
+    conv: &Conv2d,
+    (oh, ow): (usize, usize),
+) {
+    let patch = conv.geom.patch(conv.cin);
+    let rows = col.len() / patch;
+    for row in 0..rows {
+        accumulate_col_row(col, dx, row, (h, w), conv, (oh, ow));
+    }
+}
+
+/// 散射一行（`row` 对应 `(ni, oi, oj)`）的列梯度。
+fn accumulate_col_row(
+    col: &[f32],
+    dx: &mut [f32],
+    row: usize,
     (h, w): (usize, usize),
     conv: &Conv2d,
     (oh, ow): (usize, usize),
@@ -596,112 +606,70 @@ fn col2im2d(
     let patch = conv.geom.patch(conv.cin);
     let cin = conv.cin;
     let g = conv.geom;
-    let _ = n;
-    for row in 0..oh * ow * (col.len() / (oh * ow * patch)) {
-        let ni = row / (oh * ow);
-        let rem = row % (oh * ow);
-        let oi = rem / ow;
-        let oj = rem % ow;
-        for ki in 0..g.kh {
-            let ii = (oi * g.sh + ki) as isize - g.ph as isize;
-            if ii < 0 || ii as usize >= h {
-                continue;
-            }
-            for kj in 0..g.kw {
-                let jj = (oj * g.sw + kj) as isize - g.pw as isize;
-                if jj < 0 || jj as usize >= w {
-                    continue;
-                }
-                let tail = (ki * g.kw + kj) * cin;
-                let dst = ((ni * h + ii as usize) * w + jj as usize) * cin;
-                let src = row * patch + tail;
-                for ci in 0..cin {
-                    dx[dst + ci] += col[src + ci];
-                }
-            }
-        }
-    }
-}
-
-fn im2col2d_i8(
-    x: &[i8],
-    col: &mut [i8],
-    n: usize,
-    (h, w): (usize, usize),
-    conv: &Conv2d,
-    (oh, ow): (usize, usize),
-) {
-    let patch = conv.geom.patch(conv.cin);
-    let rows = n * oh * ow;
-    let threads = if rows * patch < (1 << 16) {
-        1
-    } else {
-        thread::available_parallelism()
-            .map(|v| v.get())
-            .unwrap_or(1)
-            .min(rows)
-    };
-    if threads <= 1 {
-        for r in 0..rows {
-            fill_row_i8(
-                x,
-                &mut col[r * patch..(r + 1) * patch],
-                r,
-                (h, w),
-                conv,
-                (oh, ow),
-            );
-        }
-        return;
-    }
-    let per = rows.div_ceil(threads);
-    thread::scope(|s| {
-        for (bi, chunk) in col.chunks_mut(per * patch).enumerate() {
-            let r0 = bi * per;
-            s.spawn(move || {
-                let cnt = chunk.len() / patch;
-                for base in 0..cnt {
-                    let row_idx = r0 + base;
-                    fill_row_i8(
-                        x,
-                        &mut chunk[base * patch..(base + 1) * patch],
-                        row_idx,
-                        (h, w),
-                        conv,
-                        (oh, ow),
-                    );
-                }
-            });
-        }
-    });
-}
-
-/// i8 版单行展开。
-fn fill_row_i8(
-    x: &[i8],
-    row: &mut [i8],
-    row_idx: usize,
-    (h, w): (usize, usize),
-    conv: &Conv2d,
-    (oh, ow): (usize, usize),
-) {
-    let cin = conv.cin;
-    let g = conv.geom;
-    let ni = row_idx / (oh * ow);
-    let rem = row_idx % (oh * ow);
+    let ni = row / (oh * ow);
+    let rem = row % (oh * ow);
     let oi = rem / ow;
     let oj = rem % ow;
     for ki in 0..g.kh {
         let ii = (oi * g.sh + ki) as isize - g.ph as isize;
+        if !in_bounds_1d(ii, h) {
+            continue;
+        }
         for kj in 0..g.kw {
             let jj = (oj * g.sw + kj) as isize - g.pw as isize;
-            let tail = (ki * g.kw + kj) * cin;
-            if ii < 0 || ii as usize >= h || jj < 0 || jj as usize >= w {
-                row[tail..tail + cin].fill(0);
-            } else {
-                let src = ((ni * h + ii as usize) * w + jj as usize) * cin;
-                row[tail..tail + cin].copy_from_slice(&x[src..src + cin]);
+            if !in_bounds_1d(jj, w) {
+                continue;
             }
+            let tail = (ki * g.kw + kj) * cin;
+            let dst = ((ni * h + ii as usize) * w + jj as usize) * cin;
+            accumulate_cell(dx, col, dst, row * patch + tail, cin);
+        }
+    }
+}
+
+/// 把一个列片段的 `cin` 个值累加进 `dx`。
+fn accumulate_cell(dx: &mut [f32], col: &[f32], dst: usize, src: usize, cin: usize) {
+    for ci in 0..cin {
+        dx[dst + ci] += col[src + ci];
+    }
+}
+
+/// 一维 im2col：行 = `(n, ol)`，列 = `(kw, cin)`。
+fn im2col1d(
+    x: &[f32],
+    col: &mut [f32],
+    n: usize,
+    l: usize,
+    ol: usize,
+    g: ConvGeom,
+    cin: usize,
+) {
+    let patch = g.patch(cin);
+    for ni in 0..n {
+        for oi in 0..ol {
+            fill_row_1d(
+                x,
+                &mut col[(ni * ol + oi) * patch..(ni * ol + oi + 1) * patch],
+                ni,
+                oi,
+                l,
+                g,
+                cin,
+            );
+        }
+    }
+}
+
+/// 展开一维卷积的一行感受野。
+fn fill_row_1d(x: &[f32], row: &mut [f32], ni: usize, oi: usize, l: usize, g: ConvGeom, cin: usize) {
+    for ki in 0..g.kw {
+        let src = (oi * g.sw + ki) as isize - g.pw as isize;
+        for ci in 0..cin {
+            row[ki * cin + ci] = if in_bounds_1d(src, l) {
+                x[(ni * l + src as usize) * cin + ci]
+            } else {
+                0.0
+            };
         }
     }
 }
@@ -711,8 +679,8 @@ fn gemm(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f32]) {
     fast::gemm_f32(a, b, m, n, k, out);
 }
 
-/// 每行加同一个偏置向量。
-fn add_bias(out: &mut [f32], bias: &[f32], cout: usize) {
+/// 每行加同一个偏置向量，f32/i32 共用。
+fn add_bias<T: Copy + core::ops::AddAssign>(out: &mut [T], bias: &[T], cout: usize) {
     for row in out.chunks_mut(cout) {
         for (slot, b) in row.iter_mut().zip(bias.iter()) {
             *slot += *b;
@@ -720,15 +688,86 @@ fn add_bias(out: &mut [f32], bias: &[f32], cout: usize) {
     }
 }
 
-/// 缓冲长度校验。
-fn check(actual: usize, required: usize, what: &str) -> Result<()> {
-    if actual < required {
-        return Err(Error::new(
-            Code::Invalid,
-            format!("{what}: 缓冲 {actual}，需要 {required}"),
-        ));
+/// 批量缓冲长度校验：任一缓冲小于所需即报错，错误信息里带缓冲名。
+fn check_shapes(items: &[(usize, usize, &str)]) -> Result<()> {
+    for &(actual, required, what) in items {
+        if actual < required {
+            return Err(Error::new(
+                Code::Invalid,
+                format!("{what}: 缓冲 {actual}，需要 {required}"),
+            ));
+        }
     }
     Ok(())
+}
+
+/// 线程本地复用的 i8 im2col 缓冲：大形状下省掉每次的零页分配与缺页。
+fn with_scratch_col(f: impl FnOnce(&mut Vec<i8>) -> Result<()>) -> Result<()> {
+    thread_local! {
+        /// 大形状下 im2col 缓冲达几十 MB，跨调用复用可以省掉每次的零页分配与缺页。
+        static COL: std::cell::RefCell<Vec<i8>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    COL.with(|cell| {
+        let mut loan = cell.try_borrow_mut();
+        match loan.as_mut() {
+            Ok(col) => f(col),
+            // 同线程嵌套调用（借出中）时才退回一次性缓冲。
+            Err(_) => f(&mut Vec::new()),
+        }
+    })
+}
+
+/// 权重梯度累计：`dweight += col^T · dy`，`dbias += Σ dy`。
+fn accumulate_weight_grad(
+    dy: &[f32],
+    col: &[f32],
+    dbias: &mut [f32],
+    dweight: &mut [f32],
+    rows: usize,
+    cout: usize,
+    patch: usize,
+) {
+    for r in 0..rows {
+        add_row_bias(dbias, &dy[r * cout..(r + 1) * cout]);
+        accumulate_dweight_row(
+            &col[r * patch..(r + 1) * patch],
+            &dy[r * cout..(r + 1) * cout],
+            dweight,
+            cout,
+        );
+    }
+}
+
+fn add_row_bias(dbias: &mut [f32], dy_row: &[f32]) {
+    for (slot, value) in dbias.iter_mut().zip(dy_row) {
+        *slot += *value;
+    }
+}
+
+fn accumulate_dweight_row(col_row: &[f32], dy_row: &[f32], dweight: &mut [f32], cout: usize) {
+    for (k, &value) in col_row.iter().enumerate() {
+        if value == 0.0 {
+            continue;
+        }
+        for (slot, upstream) in dweight[k * cout..(k + 1) * cout].iter_mut().zip(dy_row) {
+            *slot += value * *upstream;
+        }
+    }
+}
+
+/// `dcol = dy · weight^T`，供 col2im 散射回 `dx`。
+fn compute_dcol(dy: &[f32], weight: &[f32], dcol: &mut [f32], rows: usize, cout: usize, patch: usize) {
+    for r in 0..rows {
+        let dy_row = &dy[r * cout..(r + 1) * cout];
+        let dcol_row = &mut dcol[r * patch..(r + 1) * patch];
+        for (k, slot) in dcol_row.iter_mut().enumerate() {
+            *slot = dot(dy_row, &weight[k * cout..(k + 1) * cout]);
+        }
+    }
+}
+
+fn dot(a: &[f32], b: &[f32]) -> f32 {
+    a.iter().zip(b).map(|(x, y)| *x * *y).sum()
 }
 
 /// 一维最大池化：NHWC，`(k, s, p)` 与二维同口径，补零位不参与比较。
@@ -772,33 +811,36 @@ impl MaxPool1d {
         out: &mut [S],
     ) -> Result<()> {
         let ol = self.len(l)?;
-        check(x.len(), n * l * c, "输入")?;
-        check(out.len(), n * ol * c, "输出")?;
+        check_shapes(&[
+            (x.len(), n * l * c, "输入"),
+            (out.len(), n * ol * c, "输出"),
+        ])?;
+        self.pool_max(x, out, n, l, c, ol);
+        Ok(())
+    }
+
+    fn pool_max<S: Scalar>(&self, x: &[S], out: &mut [S], n: usize, l: usize, c: usize, ol: usize) {
         for ni in 0..n {
             for oi in 0..ol {
-                let base = oi * self.s;
                 for ci in 0..c {
-                    let mut best = S::NEG_INFINITY;
-                    for ki in 0..self.k {
-                        let src = base + ki;
-                        if src < self.p || src - self.p >= l {
-                            continue;
-                        }
-                        let v = x[(ni * l + src - self.p) * c + ci];
-                        if v > best {
-                            best = v;
-                        }
-                    }
-                    // 整窗都落在补零上（只会在极端几何下出现）按 0 处理。
-                    out[(ni * ol + oi) * c + ci] = if best == S::NEG_INFINITY {
-                        S::ZERO
-                    } else {
-                        best
-                    };
+                    out[(ni * ol + oi) * c + ci] = self.window_max(x, ni, oi, ci, l, c);
                 }
             }
         }
-        Ok(())
+    }
+
+    fn window_max<S: Scalar>(&self, x: &[S], ni: usize, oi: usize, ci: usize, l: usize, c: usize) -> S {
+        let base = oi * self.s;
+        let mut best = S::NEG_INFINITY;
+        for ki in 0..self.k {
+            let src = base + ki;
+            if src < self.p || src - self.p >= l {
+                continue;
+            }
+            best = best.max(x[(ni * l + src - self.p) * c + ci]);
+        }
+        // 整窗都落在补零上（只会在极端几何下出现）按 0 处理。
+        if best == S::NEG_INFINITY { S::ZERO } else { best }
     }
 }
 
@@ -831,30 +873,54 @@ impl AdaptiveAvgPool2d {
         if self.oh == 0 || self.ow == 0 {
             return Err(Error::new(Code::Invalid, "自适应池化输出尺寸必须大于 0"));
         }
-        check(x.len(), n * h * w * c, "输入")?;
-        check(out.len(), n * self.oh * self.ow * c, "输出")?;
+        check_shapes(&[
+            (x.len(), n * h * w * c, "输入"),
+            (out.len(), n * self.oh * self.ow * c, "输出"),
+        ])?;
+        self.pool_avg(x, out, n, (h, w), c);
+        Ok(())
+    }
+
+    fn pool_avg<S: Scalar>(&self, x: &[S], out: &mut [S], n: usize, (h, w): (usize, usize), c: usize) {
         for ni in 0..n {
             for oi in 0..self.oh {
-                let h0 = oi * h / self.oh;
-                let h1 = ((oi + 1) * h).div_ceil(self.oh).min(h);
+                let (h0, h1) = adaptive_span(oi, h, self.oh);
                 for oj in 0..self.ow {
-                    let w0 = oj * w / self.ow;
-                    let w1 = ((oj + 1) * w).div_ceil(self.ow).min(w);
+                    let (w0, w1) = adaptive_span(oj, w, self.ow);
                     let area = S::from_usize((h1 - h0) * (w1 - w0));
                     for ci in 0..c {
-                        let mut sum = S::ZERO;
-                        for ii in h0..h1 {
-                            for jj in w0..w1 {
-                                sum = sum + x[((ni * h + ii) * w + jj) * c + ci];
-                            }
-                        }
-                        out[((ni * self.oh + oi) * self.ow + oj) * c + ci] = sum / area;
+                        out[((ni * self.oh + oi) * self.ow + oj) * c + ci] =
+                            cell_sum(x, (ni, ci), (h0, h1), (w0, w1), (h, w), c) / area;
                     }
                 }
             }
         }
-        Ok(())
     }
+}
+
+/// 自适应池化的连续输出区间 `[lo, hi)`。
+fn adaptive_span(i: usize, len: usize, out_len: usize) -> (usize, usize) {
+    let lo = i * len / out_len;
+    let hi = ((i + 1) * len).div_ceil(out_len).min(len);
+    (lo, hi)
+}
+
+/// 求和 `x` 上矩形区域 `[h0,h1)×[w0,w1)` 的通道 `ci`。
+fn cell_sum<S: Scalar>(
+    x: &[S],
+    (ni, ci): (usize, usize),
+    (h0, h1): (usize, usize),
+    (w0, w1): (usize, usize),
+    (h, w): (usize, usize),
+    c: usize,
+) -> S {
+    let mut sum = S::ZERO;
+    for ii in h0..h1 {
+        for jj in w0..w1 {
+            sum = sum + x[((ni * h + ii) * w + jj) * c + ci];
+        }
+    }
+    sum
 }
 
 /// 插值取样方式：最近邻（`align_corners=False` 的 floor 口径）或双线性。
@@ -892,71 +958,77 @@ impl Interpolate {
         c: usize,
         out: &mut [S],
     ) -> Result<()> {
+        self.ensure_nonzero(h, w)?;
+        check_shapes(&[
+            (x.len(), n * h * w * c, "输入"),
+            (out.len(), n * self.oh * self.ow * c, "输出"),
+        ])?;
+        match self.sampler {
+            Sampler::Nearest => self.forward_nearest(x, n, h, w, c, out),
+            Sampler::Linear => self.forward_linear(x, n, h, w, c, out),
+        }
+        Ok(())
+    }
+
+    fn ensure_nonzero(&self, h: usize, w: usize) -> Result<()> {
         if self.oh == 0 || self.ow == 0 {
             return Err(Error::new(Code::Invalid, "插值目标尺寸必须大于 0"));
         }
         if h == 0 || w == 0 {
             return Err(Error::new(Code::Invalid, "插值输入尺寸必须大于 0"));
         }
-        check(x.len(), n * h * w * c, "输入")?;
-        check(out.len(), n * self.oh * self.ow * c, "输出")?;
-        match self.sampler {
-            Sampler::Nearest => {
-                for ni in 0..n {
-                    for oi in 0..self.oh {
-                        let ii = (oi * h / self.oh).min(h - 1);
-                        for oj in 0..self.ow {
-                            let jj = (oj * w / self.ow).min(w - 1);
-                            let dst = ((ni * self.oh + oi) * self.ow + oj) * c;
-                            let src = ((ni * h + ii) * w + jj) * c;
-                            out[dst..dst + c].copy_from_slice(&x[src..src + c]);
-                        }
-                    }
+        Ok(())
+    }
+
+    fn forward_nearest<S: Scalar>(&self, x: &[S], n: usize, h: usize, w: usize, c: usize, out: &mut [S]) {
+        for ni in 0..n {
+            for oi in 0..self.oh {
+                let ii = (oi * h / self.oh).min(h - 1);
+                for oj in 0..self.ow {
+                    let jj = (oj * w / self.ow).min(w - 1);
+                    let dst = ((ni * self.oh + oi) * self.ow + oj) * c;
+                    let src = ((ni * h + ii) * w + jj) * c;
+                    out[dst..dst + c].copy_from_slice(&x[src..src + c]);
                 }
             }
-            Sampler::Linear => {
-                for ni in 0..n {
-                    for oi in 0..self.oh {
-                        let fy = ((S::from_usize(oi) + S::from_f64(0.5)) * S::from_usize(h)
-                            / S::from_usize(self.oh)
-                            - S::from_f64(0.5))
-                        .max(S::ZERO);
-                        let y0 = fy.floor().min(S::from_usize(h - 1)).to_usize();
-                        let y1 = (y0 + 1).min(h - 1);
-                        let ly = if y0 == y1 {
-                            S::ZERO
-                        } else {
-                            fy - S::from_usize(y0)
-                        };
-                        for oj in 0..self.ow {
-                            let fx = ((S::from_usize(oj) + S::from_f64(0.5)) * S::from_usize(w)
-                                / S::from_usize(self.ow)
-                                - S::from_f64(0.5))
-                            .max(S::ZERO);
-                            let x0 = fx.floor().min(S::from_usize(w - 1)).to_usize();
-                            let x1 = (x0 + 1).min(w - 1);
-                            let lx = if x0 == x1 {
-                                S::ZERO
-                            } else {
-                                fx - S::from_usize(x0)
-                            };
-                            let dst = ((ni * self.oh + oi) * self.ow + oj) * c;
-                            for ci in 0..c {
-                                let a = x[((ni * h + y0) * w + x0) * c + ci];
-                                let b = x[((ni * h + y0) * w + x1) * c + ci];
-                                let d = x[((ni * h + y1) * w + x0) * c + ci];
-                                let e = x[((ni * h + y1) * w + x1) * c + ci];
-                                let top = a + (b - a) * lx;
-                                let bot = d + (e - d) * lx;
-                                out[dst + ci] = top + (bot - top) * ly;
-                            }
-                        }
+        }
+    }
+
+    fn forward_linear<S: Scalar>(&self, x: &[S], n: usize, h: usize, w: usize, c: usize, out: &mut [S]) {
+        for ni in 0..n {
+            for oi in 0..self.oh {
+                let (y0, y1, ly) = axis_samples::<S>(oi, h, self.oh);
+                for oj in 0..self.ow {
+                    let (x0, x1, lx) = axis_samples::<S>(oj, w, self.ow);
+                    let dst = ((ni * self.oh + oi) * self.ow + oj) * c;
+                    for ci in 0..c {
+                        let a = x[((ni * h + y0) * w + x0) * c + ci];
+                        let b = x[((ni * h + y0) * w + x1) * c + ci];
+                        let d = x[((ni * h + y1) * w + x0) * c + ci];
+                        let e = x[((ni * h + y1) * w + x1) * c + ci];
+                        let top = a + (b - a) * lx;
+                        let bot = d + (e - d) * lx;
+                        out[dst + ci] = top + (bot - top) * ly;
                     }
                 }
             }
         }
-        Ok(())
     }
+}
+
+/// 插值单轴采样点：`(下界, 上界, 插值权重)`。
+fn axis_samples<S: Scalar>(i: usize, len: usize, out_len: usize) -> (usize, usize, S) {
+    let f = ((S::from_usize(i) + S::from_f64(0.5)) * S::from_usize(len) / S::from_usize(out_len)
+        - S::from_f64(0.5))
+    .max(S::ZERO);
+    let lo = f.floor().min(S::from_usize(len - 1)).to_usize();
+    let hi = (lo + 1).min(len - 1);
+    let lam = if lo == hi {
+        S::ZERO
+    } else {
+        f - S::from_usize(lo)
+    };
+    (lo, hi, lam)
 }
 
 #[cfg(test)]

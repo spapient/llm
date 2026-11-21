@@ -257,7 +257,7 @@ pub mod conv2d {
         let weight = sample.f32("weight")?;
         let bias = sample.f32("bias")?;
         let mut out = vec![0.0f32; OH * OW * COUT];
-        conv().forward_f32(x, weight, bias, 1, H, W, &mut out)?;
+        conv().forward_f32(x, weight, bias, 1, (H, W), &mut out)?;
         Ok(out)
     }
 
@@ -268,7 +268,7 @@ pub mod conv2d {
         bias: &[f32],
         out: &mut [f32],
     ) -> diagnostic::Result<()> {
-        conv().forward_f32(x, weight, bias, 1, H, W, out)
+        conv().forward_f32(x, weight, bias, 1, (H, W), out)
     }
 
     /// 标量代价：每输出 `2·K²·CIN` 次浮点运算；读 x/weight/bias 三遍、写 y 一遍。
