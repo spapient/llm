@@ -122,9 +122,10 @@ impl<'a> Flags<'a> {
         Ok(flags)
     }
 
-    /// 可缺省选项的取值；没出现就是 `None`。
-    pub(crate) fn text(&self, name: &str) -> Option<String> {
-        self.slot(name).map(str::to_string)
+    /// 可缺省选项的取值；没出现就是 `None`。取值被取走，组装完的 `Flags` 不再持有它。
+    pub(crate) fn take_text(&mut self, name: &str) -> Option<String> {
+        self.index(name)
+            .and_then(|index| self.slots[index].take())
     }
 
     /// 取值的借用形态：`number` 这类"用完就丢"的读者不必为解析先分配一份副本。
@@ -134,8 +135,8 @@ impl<'a> Flags<'a> {
     }
 
     /// 必需选项的取值：[`Flags::parse`] 已核对过，缺了不可能发生。
-    pub(crate) fn need(&self, name: &str) -> String {
-        self.text(name)
+    pub(crate) fn take_need(&mut self, name: &str) -> String {
+        self.take_text(name)
             .expect("parse 已核对必需项，且 name 来自文法表")
     }
 

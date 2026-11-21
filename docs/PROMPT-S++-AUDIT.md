@@ -243,6 +243,11 @@ git status --short                    # 只允许本轮认领文件
 
 ## 15. 变更记录
 
+- **v2.4（cli S++ 收敛：平铺 + 单次分派 + 分配契约）**：`crates/cli` 从 11 个 `.rs` / 5,533 行重排成 23 个平铺文件 / 6,365 行，`src/` 与 `src/bin/` 各只有一层，生产文件全部 ≤400 行（最大 `src/bin/report.rs` 384），测试文件全部 ≤800（最大 `tests/device.rs` 712）。行数微增 832 行全部来自模块文档与 `pub(crate)` 样板，**代码路径减少**：`lib.rs`（1,193 行、五个 `if` 分支分派）拆成文法表 `argv.rs` + 统一选项解析器 `flag.rs` + `kernel.rs`，门面 `lib.rs` 降到 103 行并只剩一次穷尽 `match`；`settings.rs`（1,038 行）按"优先级/键闭集/根目录/配置文件层"四分；`prose.rs`（675 行）按输出形态三分（行/段/表）；全部内联测试外移到 `tests/` 经 `#[path]` 挂回，`src/` 里零 `#[test]`。`platform.rs` 六次 `println!` 合成一次 `print!`。
+  **性能**：取值不再"先存再克隆"。旧路每出现一个选项分配两次（`take` 存 `Some<String>`、组装时 `text()` 再 `to_string` 一份）；现在 `take_text` / `take_need` 把 slot `take()` 走，**每个选项恰一次分配**，`number` 走借用 `slot()` 连这次也省掉，`--op` 这类"缺省即常量"的取值不再为缺席情形分配。实测（`--release`，2,000,000 次，`black_box`）：`Invocation::parse` 处理 7 词 4 选项 **66 ns/次**；同机进程级 `llm help` 中位 **3,874 µs**、`llm status` **3,624 µs** —— 解析占启动 **≈0.002%**，即启动成本全在进程创建，解析已进噪声地板。因此本轮不把计时写成门（会抖），改写**可判定的分配契约**。
+  **新增结构门与分配门 `tests/audit.rs`（7 项，独立 `[[test]]`）**：`src/` 生产文件 ≤400 行、`tests/` ≤800 行、`src/` 只允许 `src/`+`src/bin/` 两层（无分组目录）、文件名无下划线、`src/` 里无内联测试（只许 `#[path]` 钩子）、`Invocation::parse` 对无取值命令**零分配**、对给定取值**每值恰一次分配**。分配数用**线程本地**计数分配器数出（本 crate 是集成测试目标，可 `#![allow(unsafe_code)]`；先前用全局原子计数会被并行测试线程串味，`status` 一度数出 6 次）。两条反向验证皆已做：把 `take_text` 改回克隆 → `parsing_takes_one_allocation_per_given_value` 由 2 变 4 立刻红；往 `src/` 塞一行 `#[test]` → `production_files_only_hook_tests_in` 立刻红。另留一个 `#[ignore]` 的 `parse_throughput` 探针，要数字时手动跑，不参与门禁。
+  `crates/cli/Cargo.toml` 补 `autobins = false`（与既有 `autotests = false` 对称）：`src/bin/` 平铺后 cargo 会把每个 `.rs` 误认成 bin 目标，关掉后目标表精确为 2 bin + 3 test。`docs/ARCHITECTURE.md` 未登记 cli 内部模块，无需同步；`crates/testkit/tests/architecture.rs` 的两条 cli 断言（组合根不定义类型只扫 `run/status/train`；`engine::backends::install()` 在 `entry` 与 `main` 各一次）在平铺后仍绿。
+
 - **v2.3（annotation 证据与容量预算）**：三件事。
   （a）`tests/audit.rs::code_only` 重写。旧实现只认 `//` 与 `"`，不认字符字面量，于是 `syntax.rs` 的
   `'"'` 会被当成字符串开头，把后面两张引号之间的**真实代码**整段吞掉，`'{'` 还会让花括号配平多一层 ——

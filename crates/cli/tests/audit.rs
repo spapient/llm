@@ -4,9 +4,12 @@
 //! 分配门盯的是**启动路径**：`main` 每次跑都要走一遍解析，这条路上多一次 `String` 复制
 //! 就是每个进程都白付一次；次数用全局分配计数器数出来，因此判据是整数相等而非计时。
 
+// 分配计数只能通过全局分配器钩子实现，那是 unsafe trait；本文件只在测试里跑，不进产物。
+#![allow(unsafe_code)]
+
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// 生产文件上限：400 行以内不需要内聚证明（`docs/PROMPT-S++-AUDIT.md` N3）。
 const PRODUCTION_LIMIT: usize = 400;
@@ -16,11 +19,18 @@ const TEST_LIMIT: usize = 800;
 
 struct Counting;
 
-static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
+// 计数按线程分开：测试并行跑，别的线程的分配不该记到这条断言上。
+thread_local! {
+    static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
+}
+
+fn counted() {
+    let _ = ALLOCATIONS.try_with(|count| count.set(count.get() + 1));
+}
 
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        counted();
         unsafe { System.alloc(layout) }
     }
 
@@ -29,13 +39,21 @@ unsafe impl GlobalAlloc for Counting {
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        counted();
         unsafe { System.realloc(ptr, layout, new_size) }
     }
 }
 
 #[global_allocator]
 static ALLOCATOR: Counting = Counting;
+
+/// 本次调用在当前线程上分配了多少次。
+fn allocations<T>(run: impl FnOnce() -> T) -> (usize, T) {
+    let read = || ALLOCATIONS.with(Cell::get);
+    let before = read();
+    let value = run();
+    (read() - before, value)
+}
 
 fn crate_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -164,17 +182,33 @@ fn args(words: &[&str]) -> Vec<String> {
 #[test]
 fn parsing_a_bare_command_allocates_nothing() {
     let argv = args(&["status"]);
-    let before = ALLOCATIONS.load(Ordering::Relaxed);
-    let invocation = llm_cli::Invocation::parse(&argv).expect("`status` 是合法命令");
-    let after = ALLOCATIONS.load(Ordering::Relaxed);
-    assert_eq!(after - before, 0, "无取值命令不该分配：{invocation:?}");
+    let (count, invocation) =
+        allocations(|| llm_cli::Invocation::parse(&argv).expect("`status` 是合法命令"));
+    assert_eq!(count, 0, "无取值命令不该分配：{invocation:?}");
 }
 
 #[test]
 fn parsing_takes_one_allocation_per_given_value() {
-    let argv = args(&["run", "--weights", "w.safetensors", "--op", "gemv"]);
-    let before = ALLOCATIONS.load(Ordering::Relaxed);
-    let invocation = llm_cli::Invocation::parse(&argv).expect("文法接受两个选项");
-    let after = ALLOCATIONS.load(Ordering::Relaxed);
-    assert_eq!(after - before, 2, "两个取值只该各分配一次：{invocation:?}");
+    let argv = args(&["run", "--weights", "w.safetensors", "--input", "1,2"]);
+    let (count, invocation) =
+        allocations(|| llm_cli::Invocation::parse(&argv).expect("文法接受这两个选项"));
+    assert_eq!(count, 2, "两个取值只该各分配一次：{invocation:?}");
+}
+
+/// 吞吐探针：默认忽略，避免计时抖动进断言；要数字时用
+/// `cargo test -p llm-cli --release --test audit -- --ignored --nocapture` 跑一次。
+#[test]
+#[ignore = "计时探针，只在需要数字时手动跑"]
+fn parse_throughput() {
+    let argv = args(&["run", "--weights", "w.safetensors", "--input", "1,2", "--device", "cpu"]);
+    let rounds = 2_000_000;
+    let start = std::time::Instant::now();
+    for _ in 0..rounds {
+        std::hint::black_box(llm_cli::Invocation::parse(std::hint::black_box(&argv)).ok());
+    }
+    let elapsed = start.elapsed();
+    println!(
+        "Invocation::parse：{} ns/次（{rounds} 次取总时长）",
+        elapsed.as_nanos() / rounds
+    );
 }

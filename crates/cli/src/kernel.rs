@@ -83,7 +83,7 @@ pub enum CutileCommand {
 }
 
 /// 一个子命令的组装：把解析后的选项变成命令（取值非法时返回诊断）。
-type Build = fn(&Flags<'_>) -> Result<CutileCommand>;
+type Build = fn(&mut Flags<'_>) -> Result<CutileCommand>;
 
 /// 子命令表：名字、选项表、组装。
 ///
@@ -150,33 +150,33 @@ fn table(name: &str, words: &mut Words<'_>) -> Result<CutileCommand> {
     let Some((_, grammar, build)) = SUBCOMMANDS.iter().find(|(known, ..)| *known == name) else {
         return Err(invalid(format!("未知子命令 `{name}`")));
     };
-    build(&Flags::parse(words, grammar, name, CONTEXT)?)
+    build(&mut Flags::parse(words, grammar, name, CONTEXT)?)
 }
 
 /// `doctor`：打印整条流水线。
-fn doctor(flags: &Flags<'_>) -> Result<CutileCommand> {
+fn doctor(flags: &mut Flags<'_>) -> Result<CutileCommand> {
     Ok(CutileCommand::Doctor {
-        op: flags.text("--op").unwrap_or_else(|| DEFAULT_OP.to_string()),
-        device: flags.text("--device").unwrap_or_else(|| "auto".to_string()),
-        why: flags.text("--why"),
+        op: flags.take_text("--op").unwrap_or_else(|| DEFAULT_OP.to_string()),
+        device: flags.take_text("--device").unwrap_or_else(|| "auto".to_string()),
+        why: flags.take_text("--why"),
     })
 }
 
 /// `verify`：逐设备验证。
-fn verify(flags: &Flags<'_>) -> Result<CutileCommand> {
+fn verify(flags: &mut Flags<'_>) -> Result<CutileCommand> {
     Ok(CutileCommand::Verify {
-        op: flags.text("--op").unwrap_or_else(|| DEFAULT_OP.to_string()),
-        devices: devices(flags.text("--devices")),
+        op: flags.take_text("--op").unwrap_or_else(|| DEFAULT_OP.to_string()),
+        devices: devices(flags.take_text("--devices")),
         ledger: flags.switch("--emit-ledger"),
     })
 }
 
 /// `bench`：跑一次并报告达成率。
-fn bench(flags: &Flags<'_>) -> Result<CutileCommand> {
+fn bench(flags: &mut Flags<'_>) -> Result<CutileCommand> {
     Ok(CutileCommand::Bench {
-        op: flags.text("--op").unwrap_or_else(|| DEFAULT_OP.to_string()),
-        shape: flags.text("--shape"),
-        device: flags.text("--device"),
+        op: flags.take_text("--op").unwrap_or_else(|| DEFAULT_OP.to_string()),
+        shape: flags.take_text("--shape"),
+        device: flags.take_text("--device"),
         repeat: flags
             .number("--repeat", "`--repeat` 需要正整数")?
             .unwrap_or(50),
@@ -184,9 +184,9 @@ fn bench(flags: &Flags<'_>) -> Result<CutileCommand> {
 }
 
 /// `ledger`：跨档案能力台账。
-fn ledger(flags: &Flags<'_>) -> Result<CutileCommand> {
+fn ledger(flags: &mut Flags<'_>) -> Result<CutileCommand> {
     Ok(CutileCommand::Ledger {
-        out: flags.text("--out"),
+        out: flags.take_text("--out"),
     })
 }
 
@@ -198,14 +198,14 @@ fn cache(words: &mut Words<'_>) -> Result<CutileCommand> {
     if action != "gc" {
         return Err(invalid(format!("未知子命令 `cache {action}`")));
     }
-    let flags = Flags::parse(words, CACHE, "cache gc", CONTEXT)?;
+    let mut flags = Flags::parse(words, CACHE, "cache gc", CONTEXT)?;
     Ok(CutileCommand::Cache {
-        limit: limit(&flags)?,
+        limit: limit(&mut flags)?,
     })
 }
 
 /// 上限是字节数（与 `--repeat` 的次数不同），因此单独说明单位。
-fn limit(flags: &Flags<'_>) -> Result<Option<u64>> {
+fn limit(flags: &mut Flags<'_>) -> Result<Option<u64>> {
     flags.number("--limit", "`--limit` 需要字节数（十进制）")
 }
 
