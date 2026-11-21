@@ -3,7 +3,7 @@
 # 用法：
 #   scripts/ci.sh              # 全部门禁（格式 / clippy / 测试 / doc-test / 依赖卫生 / 架构 / 静态 / 命名 / 密度 / 基准编译）
 #   scripts/ci.sh --coverage  # 额外跑 llvm-cov nextest 覆盖率采集（慢，默认不开）
-#   scripts/ci.sh --perf      # 额外跑 criterion 全量采样并重判 S++ roofline 达成率与回归预算（慢，固定硬件上跑）
+#   scripts/ci.sh --perf      # 额外跑 src 全量采样并重判 S++ roofline 达成率与回归预算（慢，固定硬件上跑）
 #
 # fuzz（libFuzzer + ASan）与跨平台矩阵只在 CI 跑；本地不复制其 release 构建与 30s 引导。
 set -euo pipefail

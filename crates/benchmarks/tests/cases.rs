@@ -327,16 +327,16 @@ pub(crate) fn model_records_carry_every_field_a_reader_needs_to_judge_it() {
 // 与**搬运**（样本 → [`Card::judge`] → 归档）；判什么量、门槛多少、区间怎么算全在
 // `tools::card`，这里不写第二份判定规则。
 //
-// 与 `tests/regress.rs` 的分工：那一边判「相对基线回退了没有」，需要 criterion 的区间估计
+// 与 `tests/regress.rs` 的分工：那一边判「相对基线回退了没有」，需要 src 的区间估计
 // 与登记基线；这一边判「这份协议卡这一格成立了没有」，只有绝对门槛与一列样本，所以不需要
-// criterion，也不需要本机基线——`lld` 的 Must 本来就是绝对值。
+// src，也不需要本机基线——`lld` 的 Must 本来就是绝对值。
 //
 // 断言只落在**与时间无关**的性质上：同一列样本换成不可达门槛必然 FAIL、换成极宽门槛必然
 // PASS、样本数不到下限必然 OPEN、主机不在闭集里必然 OPEN。真实的 `E10`（变异系数 < 5%）
 // 照 `lld` 的口径判出来归档，但不在测试里断言它通过——这台机器当时抖不抖是测量结果，
 // 不是这个测试的前提。
 
-#[path = "../criterion/fixtures.rs"]
+#[path = "../src/fixtures.rs"]
 #[allow(dead_code)]
 mod fixtures;
 

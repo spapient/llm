@@ -1,4 +1,4 @@
-//! 由 criterion 估读出的本地分析件：几何 / 上界 / 模型记录 / 吞吐与 roofline。
+//! 由 src 估读出的本地分析件：几何 / 上界 / 模型记录 / 吞吐与 roofline。
 
 use super::*;
 
@@ -12,9 +12,9 @@ pub(crate) const BANDWIDTH_PERCENT: f64 = 85.0;
 /// 就是这台机器上这个内核已知能跑到的上界。
 pub(crate) const COMPUTE_PERCENT: f64 = 90.0;
 
-/// criterion 的 mean 点估计（`ns/iter`）。
+/// src 的 mean 点估计（`ns/iter`）。
 ///
-/// 只依赖 `estimates.json` 里两个键名（`mean` 与 `point_estimate`）：criterion 的统计口径演进过，
+/// 只依赖 `estimates.json` 里两个键名（`mean` 与 `point_estimate`）：src 的统计口径演进过，
 /// 但这两个名字是它对外报告的核心。读不出来就明说"读不出"，不猜一个数。
 pub(crate) fn mean_ns(text: &str) -> Option<f64> {
     let mean = text.find("\"mean\"")?;
@@ -30,9 +30,9 @@ pub(crate) fn mean_ns(text: &str) -> Option<f64> {
     number.parse().ok()
 }
 
-/// criterion 的输出目录：`target/criterion/<group>/<benchmark>/new/estimates.json`。
+/// src 的输出目录：`target/src/<group>/<benchmark>/new/estimates.json`。
 ///
-/// 目标目录在**工作区根**（`crates/benchmarks/../..`），不在本成员的目录下：criterion 由
+/// 目标目录在**工作区根**（`crates/benchmarks/../..`），不在本成员的目录下：src 由
 /// `cargo bench` 调用，写的是调用方的 `target/`。
 pub(crate) fn estimates(manifest: &Path, group: &str, benchmark: &str) -> PathBuf {
     manifest
@@ -54,7 +54,7 @@ pub(crate) fn observed_ns(path: &Path) -> Option<f64> {
     };
     Some(mean_ns(&text).unwrap_or_else(|| {
         panic!(
-            "读不出 {} 的 mean.point_estimate：criterion 的输出格式变了，判定口径要跟着改",
+            "读不出 {} 的 mean.point_estimate：src 的输出格式变了，判定口径要跟着改",
             path.display()
         )
     }))

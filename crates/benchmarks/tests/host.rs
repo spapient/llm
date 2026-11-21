@@ -1,4 +1,4 @@
-//! 主机档案查询、harness 构造与 criterion 估读。
+//! 主机档案查询、harness 构造与 src 估读。
 
 use super::*;
 
@@ -37,12 +37,12 @@ pub(crate) struct Ceiling {
     pub(crate) tier: &'static str,
     /// 搬运方向：`read` / `write`。读、写上限不是同一个数（只读权重的 GEMV 可以跑过拷贝上限）。
     pub(crate) traffic: &'static str,
-    /// criterion 分组与用例名，与 `criterion/memory.rs` 逐字一致。
+    /// src 分组与用例名，与 `src/memory.rs` 逐字一致。
     pub(crate) group: &'static str,
     pub(crate) benchmark: &'static str,
     /// 每迭代搬运的字节数，与基准里 `Throughput::Bytes` 同源。
     pub(crate) bytes: u64,
-    /// 实测 ns/iter（criterion mean）。
+    /// 实测 ns/iter（src mean）。
     pub(crate) ns: f64,
     /// 允许的相对回退百分比。
     pub(crate) budget_percent: f64,
@@ -143,7 +143,7 @@ pub(crate) fn tier(working_set: u64) -> &'static str {
     }
 }
 
-/// 本机标识：`os-arch`。criterion 的绝对值只在同一台机器上可比，标识也就到这一层。
+/// 本机标识：`os-arch`。src 的绝对值只在同一台机器上可比，标识也就到这一层。
 pub(crate) fn host() -> String {
     format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
 }

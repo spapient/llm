@@ -1,14 +1,14 @@
 //! 登记表：场景 / 基线 / 负载与解码场景 / 主机档案 / 上界。
 
-/// 一条回归基线场景：criterion 被测面 + 归档元数据。
+/// 一条回归基线场景：src 被测面 + 归档元数据。
 ///
 /// 基线数值不写在结构里（基线随主机变化），由 [`baseline_for`] 按 `(host, backend, scenario)`
 /// 查 [`BASELINES`]；结构只描述"测哪条基准、报告怎么写"。分组 / 用例名 / 算子 / 上下界是
-/// criterion 侧的测量定位信息，不进 [`BenchRecord`]。
+/// src 侧的测量定位信息，不进 [`BenchRecord`]。
 pub(crate) struct Scenario {
-    /// criterion 分组名（`target/criterion/<group>/...`）。
+    /// src 分组名（`target/src/<group>/...`）。
     pub(crate) group: &'static str,
-    /// criterion 用例名（`.../<benchmark>/new/estimates.json`）。
+    /// src 用例名（`.../<benchmark>/new/estimates.json`）。
     pub(crate) benchmark: &'static str,
     /// 场景名：`<算子>/<形状>`，同时是 regress `Case` 名、记录名与归档口径的一部分。
     pub(crate) scenario: &'static str,
@@ -26,7 +26,7 @@ pub(crate) struct Scenario {
     pub(crate) bounds: (usize, usize),
 }
 
-/// 全部接入基线判定的真实算子基准；分组 / 用例名与 `criterion/*.rs` 逐字一致。
+/// 全部接入基线判定的真实算子基准；分组 / 用例名与 `src/*.rs` 逐字一致。
 ///
 /// 七个场景的后端都是 `cpu-reference`：它们调用的是 `op` 里的标量参考实现。加真实后端时
 /// 只是在这张表里多一行同形状、不同 `backend` 的记录，判定与归档不动。
@@ -321,7 +321,7 @@ pub(crate) const BASELINES: &[Baseline] = &[
     },
 ];
 
-/// 装载基准夹具镜像：条目数 / 每条元素数，与 `criterion/weights.rs` 同源。
+/// 装载基准夹具镜像：条目数 / 每条元素数，与 `src/weights.rs` 同源。
 ///
 /// 台账复制基准常量而不是反过来读夹具：基准二进制不被测试目标依赖，分组 / 用例名与形状
 /// 同样逐字镜像（见 [`SCENARIOS`]）。
@@ -332,7 +332,7 @@ pub(crate) const LOAD_BYTES_FIRST: u64 = (LOAD_ELEMS * 4) as u64;
 /// 数据段总字节数（全量装载）。
 pub(crate) const LOAD_BYTES_ALL: u64 = LOAD_ENTRIES as u64 * LOAD_BYTES_FIRST;
 
-/// 整模型一步基准夹具镜像：隐藏宽 / 输出宽，与 `criterion/model.rs` 同源。
+/// 整模型一步基准夹具镜像：隐藏宽 / 输出宽，与 `src/model.rs` 同源。
 pub(crate) const MODEL_DIM: usize = 8;
 pub(crate) const MODEL_OUT: usize = 8;
 
@@ -340,9 +340,9 @@ pub(crate) const MODEL_OUT: usize = 8;
 ///
 /// 不进基线表：跨机绝对值不可比，记录只承载本机一次测量与身份（见模块文档「三条不可比」）。
 pub(crate) struct LoadScenario {
-    /// criterion 分组名。
+    /// src 分组名。
     pub(crate) group: &'static str,
-    /// criterion 用例名。
+    /// src 用例名。
     pub(crate) benchmark: &'static str,
     /// 记录名：`<分组>/<用例>`。
     pub(crate) scenario: &'static str,
@@ -358,7 +358,7 @@ pub(crate) struct LoadScenario {
     pub(crate) bytes: u64,
 }
 
-/// 装载基准台账；分组 / 用例名与 `criterion/weights.rs` 逐字一致。
+/// 装载基准台账；分组 / 用例名与 `src/weights.rs` 逐字一致。
 ///
 /// mmap 条目仅在 Unix 目标编译，与基准里的 `#[cfg(unix)]` 门控同源。
 pub(crate) const LOAD_SCENARIOS: &[LoadScenario] = &[
@@ -452,9 +452,9 @@ pub(crate) const LOAD_SCENARIOS: &[LoadScenario] = &[
 ///
 /// 不进基线表：整模型一步的 TPOT 与吞吐只承载本机一次测量，回退判定留给后续刀。
 pub(crate) struct DecodeScenario {
-    /// criterion 分组名。
+    /// src 分组名。
     pub(crate) group: &'static str,
-    /// criterion 用例名。
+    /// src 用例名。
     pub(crate) benchmark: &'static str,
     /// 记录名：`<分组>/<用例>`。
     pub(crate) scenario: &'static str,
@@ -466,7 +466,7 @@ pub(crate) struct DecodeScenario {
     pub(crate) pages: usize,
 }
 
-/// 整模型一步基准台账；分组 / 用例名与 `criterion/model.rs` 逐字一致。
+/// 整模型一步基准台账；分组 / 用例名与 `src/model.rs` 逐字一致。
 pub(crate) const DECODE_SCENARIOS: &[DecodeScenario] = &[
     DecodeScenario {
         group: "model_decode",

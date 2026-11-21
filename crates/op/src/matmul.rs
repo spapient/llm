@@ -334,7 +334,7 @@ const LANES: usize = 8;
 ///
 /// 尾数（`len` 不是 `LANES` 的倍数）并入标量尾部——链内顺序与标量路径不同，只会带来末位舍入差，
 /// 而公开对拍容差（1e-3 相对误差）足以吸收它；换来的是内层 `LANES` 倍指令级并行，这一项才是
-/// 分块内核相对逐行 `gemv` 不落下风的前提（实测 1.8×，见 `crates/benchmarks/criterion/matmul.rs`）。
+/// 分块内核相对逐行 `gemv` 不落下风的前提（实测 1.8×，见 `crates/benchmarks/src/matmul.rs`）。
 ///
 /// 它是 `op` 里唯一的多链点积：矩阵乘 tile 与两条注意力内核（`attention` / `attention::tiled`）
 /// 都调这一份，否则同一个归约循环会被写成四份、向量化程度也四份不一样。
