@@ -222,7 +222,7 @@ fn scale_factor(rows: usize, cols: usize) -> f32 {
 /// 每次迭代用**小边**上的 Gram（`rows ≥ cols` 取 `XᵀX`，否则 `X Xᵀ`）：两条路径在数学上是同一个
 /// 迭代（`X(XᵀX) = (XXᵀ)X`），差别只是乘在左边还是右边、以及临时矩阵的阶数。零矩阵归一后仍是零，
 /// 于是「这一步没有梯度」自然给出零更新，不需要另开一个分支。
-fn orthogonalize(grad: &[f32], rows: usize, cols: usize, eps: f32) -> Vec<f32> {
+pub(crate) fn orthogonalize(grad: &[f32], rows: usize, cols: usize, eps: f32) -> Vec<f32> {
     let norm = grad.iter().fold(0.0_f32, |acc, v| acc + v * v).sqrt();
     let scale = 1.0 / (norm + eps);
     let mut x: Vec<f32> = grad.iter().map(|v| v * scale).collect();

@@ -3,6 +3,9 @@
 use super::{Optimizer, SITE, Slot, check_slots, clip_scale, decay_rate, global_norm};
 use diagnostic::{Code, Error, Result};
 
+/// 无矩状态；衰减按 AdamW 同款解耦口径：`param -= lr · (grad + wd · param)`，角色豁免组
+/// 不加衰减项。
+#[derive(Debug, Clone, PartialEq)]
 pub struct Sgd {
     weight_decay: f32,
     clip_norm: Option<f32>,

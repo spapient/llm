@@ -273,8 +273,8 @@ fn the_imaginary_part_changes_the_output() {
 #[test]
 fn a_silent_rank_does_not_change_anything() {
     let shape = (vec![-0.5; 2], vec![0.4; 2], vec![0.5]);
-    let one = Mamba::new(1, 2, 1, shape.0.clone(), shape.1.clone(), shape.2.clone())
-        .expect("参数合法");
+    let one =
+        Mamba::new(1, 2, 1, shape.0.clone(), shape.1.clone(), shape.2.clone()).expect("参数合法");
     let two = Mamba::new(1, 2, 2, shape.0, shape.1, shape.2).expect("参数合法");
     let (mut a, mut b) = (one.state(), two.state());
     let (b1, c1) = ([0.7f64, 0.5], [0.3f64, -0.2]);
@@ -291,8 +291,7 @@ fn a_silent_rank_does_not_change_anything() {
 /// `f32` 上同一套算术跑得动：泛型不是只为 `f64` 测试写的。
 #[test]
 fn f32_runs_the_same_loop() {
-    let m =
-        Mamba::new(2, 2, 2, vec![-1.0f32; 4], vec![0.3; 4], vec![0.5; 2]).expect("参数合法");
+    let m = Mamba::new(2, 2, 2, vec![-1.0f32; 4], vec![0.3; 4], vec![0.5; 2]).expect("参数合法");
     let mut carry = m.state();
     let mut last = Vec::new();
     for _ in 0..8 {

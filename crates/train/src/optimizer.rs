@@ -205,9 +205,6 @@ macro_rules! decay_clip {
     };
 }
 
-/// 无矩状态；衰减按 AdamW 同款解耦口径：`param -= lr · (grad + wd · param)`，角色豁免组
-/// 不加衰减项。
-#[derive(Debug, Clone, PartialEq)]
 mod adam;
 mod muon;
 mod sgd;
@@ -215,6 +212,9 @@ mod sgd;
 pub use adam::Adam;
 pub use muon::Muon;
 pub use sgd::Sgd;
+
+#[cfg(test)]
+pub(crate) use muon::orthogonalize;
 
 #[cfg(test)]
 #[path = "../tests/optimizer_tests.rs"]

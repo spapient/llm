@@ -171,8 +171,8 @@ fn duplicate_names_after_stripping_the_suffix_are_rejected() {
 
 #[test]
 fn a_zero_width_projection_is_rejected() {
-    let error = Stack::from_header(&header(vec![entry("empty.weight", [0, 32], 0)]))
-        .expect_err("宽度为零");
+    let error =
+        Stack::from_header(&header(vec![entry("empty.weight", [0, 32], 0)])).expect_err("宽度为零");
     assert_eq!(error.code(), Code::Invalid);
     assert!(error.to_string().contains("empty"), "{error}");
 }

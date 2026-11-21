@@ -292,10 +292,7 @@ impl Audit {
 /// # Errors
 ///
 /// 某一对两段长度不等、或任一输入含非有限值——返回 `Code::Invalid`。
-pub fn steepest<S: Scalar>(
-    encoder: &Encoder<S>,
-    pairs: &[(&[S], &[S])],
-) -> Result<Option<f64>> {
+pub fn steepest<S: Scalar>(encoder: &Encoder<S>, pairs: &[(&[S], &[S])]) -> Result<Option<f64>> {
     let mut worst: Option<f64> = None;
     for &(u, v) in pairs {
         if let Some(ratio) = pair_gain(encoder, u, v)? {
