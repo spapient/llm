@@ -257,26 +257,23 @@ fn model_check(code: &mut String, declaration: &ModelDecl, ty: &str) {
 
 /// 注册表 ↔ 注解声明 ↔ `Operator` 投影：名字、形状、样本与代价。
 fn registry(code: &mut String, declaration: &ModelDecl, ty: &str) {
-    let name = literal(&declaration.name);
     let model = &declaration.const_name;
     let [m, n] = declaration.shape;
-    let _ = writeln!(
-        code,
-        "        let op = ::llm_op::builtin_named({name}).expect(\"算子已注册\");"
-    );
-    let _ = writeln!(
-        code,
-        "        let signature = ::llm_op::sig::Signature::parse({name}, op.template()).expect(\"签名可解析\");"
-    );
-    let _ = writeln!(
-        code,
-        "        let registered = ::llm_op::model({name}).expect(\"语义已注册\");"
-    );
+    code.push_str("        let op = ::llm_op::builtin_named(");
+    literal(code, &declaration.name);
+    code.push_str(").expect(\"算子已注册\");\n");
+    code.push_str("        let signature = ::llm_op::sig::Signature::parse(");
+    literal(code, &declaration.name);
+    code.push_str(", op.template()).expect(\"签名可解析\");\n");
+    code.push_str("        let registered = ::llm_op::model(");
+    literal(code, &declaration.name);
+    code.push_str(").expect(\"语义已注册\");\n");
     // 注册名与生产形状属于**声明**；`MODEL` 由 `Operator` 投影，所以这两条把声明与投影绑在一起，
     // 防止只改一侧。
     let _ = writeln!(
         code,
-        "        assert_eq!(<super::{ty} as ::llm_op::operator::Operator>::NAME, {name}, \"注解注册名必须与 Operator::NAME 一致\");"
+        "        assert_eq!(<super::{ty} as ::llm_op::operator::Operator>::NAME, {}), \"注解注册名必须与 Operator::NAME 一致\");",
+        Slice(&declaration.name)
     );
     let _ = writeln!(
         code,
