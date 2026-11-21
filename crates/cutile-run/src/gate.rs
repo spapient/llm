@@ -4,12 +4,12 @@
 //! 具体的假绿——`metal/witness.metal` 曾写成 `float *out`，host `cc` 能过，而 MSL 没有默认
 //! 地址空间，于是那份证据从未在自己声称的语言里存在过。
 
-use cutile::atom::Witness;
-use cutile::dirs::Dirs;
-use cutile::prof::{Emit, Profile};
 use crate::runner::driver::{scratch, write_text};
 use crate::toolchain::{Toolchain, clang, probe_declared};
 use crate::witness::{Selected, declared_witnesses, device_available, source};
+use cutile::atom::Witness;
+use cutile::dirs::Dirs;
+use cutile::prof::{Emit, Profile};
 use diagnostic::{Code, Error};
 use std::collections::BTreeSet;
 use std::fmt;

@@ -13,10 +13,10 @@
 
 use super::{grid_dims, kind, lower_sources, resolve, single_kind};
 use crate::backend::{Lower, TensorGeometry};
+use crate::pipeline::{Prepared, Run};
 use cutile::builtin::Catalogue;
 use cutile::decl::Skeleton;
 use cutile::dirs::Dirs;
-use crate::pipeline::{Prepared, Run};
 use cutile::prof::Emit;
 use diagnostic::{Code, Error};
 use op::decl::{Grid, OpDecl};

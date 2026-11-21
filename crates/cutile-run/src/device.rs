@@ -7,11 +7,11 @@
 
 use crate::backend::{Backend, Codegen, Driver, Readback};
 use crate::build;
-use cutile::dirs::Dirs;
-use cutile::prof::{Emit, Profile};
 use crate::runner::driver;
 use crate::toolchain;
 use crate::witness::{MAX_OUT, Scope, Selected};
+use cutile::dirs::Dirs;
+use cutile::prof::{Emit, Profile};
 use diagnostic::Result;
 use std::sync::{Mutex, OnceLock};
 

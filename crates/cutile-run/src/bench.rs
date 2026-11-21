@@ -6,14 +6,14 @@
 
 use crate::backend::Lower;
 use crate::build;
-use cutile::builtin::{AUTO_DEVICE, Catalogue};
 use crate::device;
-use cutile::dirs::Dirs;
 use crate::pipeline::{self, Run, model_for};
-use cutile::prof::{Emit, Profile};
 use crate::runner;
 use crate::toolchain;
 use crate::witness::{self, Evidence};
+use cutile::builtin::{AUTO_DEVICE, Catalogue};
+use cutile::dirs::Dirs;
+use cutile::prof::{Emit, Profile};
 use diagnostic::{Code, Error};
 use op::decl::OpDecl;
 use op::model::{Sample, Values};

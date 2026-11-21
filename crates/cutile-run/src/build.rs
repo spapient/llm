@@ -4,20 +4,20 @@
 //! `cc` 的参数、片段文本、布局声明式与数据类型集合，因此"命中缓存"与"重新生成"必然等价。
 //! 本模块不认识任何命令：审计（`llm-audit`）与将来的落地流程都从 [`source`] 取文本，命令策略不在内核里。
 
+use crate::runner::{self, Outcome};
+use crate::toolchain::Toolchain;
 use cutile::SCHEMA_VER;
 use cutile::ast;
 use cutile::atom::{DType, DTypeSet, Prim, Space};
 use cutile::cache::{Artifact, ArtifactKey, Cache, CacheKey, Lock};
 use cutile::cap::Path;
 use cutile::decl::{OpDecl, TileCombo};
-use cutile::space;
 use cutile::dirs::Dirs;
 use cutile::emit::{self, Source};
 use cutile::layout::LayoutSpec;
 use cutile::prof::Profile;
-use crate::runner::{self, Outcome};
+use cutile::space;
 use cutile::substitute::FragmentSet;
-use crate::toolchain::Toolchain;
 use diagnostic::{Code, Error};
 use std::io::{Error as IoError, ErrorKind};
 use std::path::{Path as StdPath, PathBuf};

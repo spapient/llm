@@ -203,10 +203,10 @@ int main(int argc, const char **argv) {{
     )
 }
 
-use cutile_run::backend::Readback;
 use cutile::dirs::Dirs;
-use cutile_run::driver;
 use cutile::prof::Profile;
+use cutile_run::backend::Readback;
+use cutile_run::driver;
 use cutile_run::witness::MAX_OUT;
 use diagnostic::{Code, Error, Result};
 use std::path::{Path, PathBuf};

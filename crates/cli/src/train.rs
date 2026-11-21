@@ -381,20 +381,40 @@ pub mod archive {
                 format!("ratio_param ≤ 1/24 = {:.6}", weights::E8_RATIO),
             )
             .row("e8_pass", lossless_label(pass));
-        print!("{}", report.render());
-        if pass {
+        // 裁决不通过时整份报告走 stderr：失败命令不该污染 stdout（管道下游读到的是"通过"的
+        // 内容），而 stderr 无缓冲，报告与其后的错误行天然保持先后。
+        announce(&report, &Ruling {
+            pass,
+            ratio: metrics.ratio_param(),
+            lossless: metrics.lossless(),
+        })
+    }
+
+    /// 裁决 → 输出路由 → 退出码，三件事是一件事：通过走 stdout 与 `Ok`，不通过走 stderr 与
+    /// [`Code::Invalid`]。拆开写就会出现"报告说通过、退出码说失败"的两份真相。
+    fn announce(report: &Panel, ruling: &Ruling) -> Result<()> {
+        if ruling.pass {
+            print!("{}", report.render());
             return Ok(());
         }
+        eprint!("{}", report.render());
         Err(Error::new(
             Code::Invalid,
             format!(
                 "E8 裁决未通过：ratio_param={:.6}（门 {:.6}），lossless={}",
-                metrics.ratio_param(),
+                ruling.ratio,
                 weights::E8_RATIO,
-                lossless_label(metrics.lossless())
+                lossless_label(ruling.lossless)
             ),
         )
         .with("llm deploy"))
+    }
+
+    /// 一份 E8 裁决的全部数：报告要展示的与退出码要判定的同一份，不各自算。
+    struct Ruling {
+        pass: bool,
+        ratio: f64,
+        lossless: bool,
     }
 
     /// 逐段解码还原全表，返回解码条目数；任一段解码失败按命令站点补诊断。

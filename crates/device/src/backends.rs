@@ -17,11 +17,11 @@ pub mod metal;
 pub use crate::metal::host::{compile_run_metal, metal_driver, metal_kernel};
 pub use cuda::compile_run_cuda;
 // 三条厂商链共用的导入面：子模块经 `use super::*` 取用，避免各写一份重复块。
+pub(crate) use cutile::dirs::Dirs;
+pub(crate) use cutile::prof::{Emit, Profile};
 pub(crate) use cutile_run::backend::Lower::*;
 pub(crate) use cutile_run::backend::{Backend, Codegen, Driver, Launch, Lower, Readback, Source};
-pub(crate) use cutile::dirs::Dirs;
 pub(crate) use cutile_run::driver;
-pub(crate) use cutile::prof::{Emit, Profile};
 pub(crate) use cutile_run::toolchain::Toolchain;
 pub(crate) use cutile_run::witness::{MAX_OUT, Scope, Selected};
 pub(crate) use diagnostic::{Code, Error, Result};

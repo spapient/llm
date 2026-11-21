@@ -422,12 +422,20 @@ mod metrics_tests {
 
         let mut decoded = 0usize;
 
+        let mut refs = 0usize;
+
         let (mut axes, mut rans, mut store) = (0usize, 0usize, 0usize);
 
         for segment in archive.segments() {
             archive.load(segment).expect("逐位解码");
 
             decoded += 1;
+
+            if segment.is_ref() {
+                refs += 1;
+
+                continue;
+            }
 
             match segment.codec() {
                 Codec::Axes => axes += 1,
@@ -439,17 +447,17 @@ mod metrics_tests {
         let metrics = archive.metrics().expect("度量");
 
         println!(
-            "E8 witness {source}: entries={} decoded={} V_artifact={} V_FP16={} \
-             ratio={:.6} ratio_param={:.6} lossless={} refs={} \
-             codecs[axes={axes} rans={rans} store={store}] e8_pass={}",
+            "E8 witness {source}: entries={} decoded={} refs={refs} inline={} \
+             V_artifact={} V_FP16={} ratio={:.6} ratio_param={:.6} lossless={} \
+             inline_codecs[axes={axes} rans={rans} store={store}] e8_pass={}",
             metrics.entries(),
             decoded,
+            metrics.entries() - refs,
             metrics.v_artifact(),
             metrics.v_fp16(),
             metrics.ratio(),
             metrics.ratio_param(),
             metrics.lossless(),
-            metrics.ref_hits(),
             metrics.e8_pass()
         );
 

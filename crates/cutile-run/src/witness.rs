@@ -7,9 +7,9 @@
 
 pub use cutile::prof::Emit;
 
+use crate::device::{self, HOST_FLAGS};
 use cutile::atom::{DType, Prim, Provide, Witness};
 use cutile::cap::Proof;
-use crate::device::{self, HOST_FLAGS};
 use cutile::dirs::Dirs;
 use cutile::prof::Profile;
 use cutile::reference;

@@ -4,17 +4,17 @@
 //! 对照 README。它不执行内核——"能生成"与"能算对"是两条判据，跑不跑由 `verify` / `bench` 决定。
 
 use crate::build;
+use crate::pipeline::Run;
+use crate::toolchain;
+use crate::witness::{self, Evidence};
 use cutile::builtin::Catalogue;
 use cutile::cache::{Cache, CacheKey, Changed, Entry};
 use cutile::cap::{self, NoPath, Path, VariantCheck};
-use cutile::space;
 use cutile::dirs::Dirs;
 use cutile::emit::Fragment;
-use crate::pipeline::Run;
 use cutile::plan::Plan;
 use cutile::prof::Profile;
-use crate::toolchain;
-use crate::witness::{self, Evidence};
+use cutile::space;
 use diagnostic::{Code, Error};
 use op::decl::{OpDecl, expand};
 use prof::atom::Space;

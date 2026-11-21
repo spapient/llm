@@ -4,17 +4,17 @@
 //! 算子"；本模块用调用方给的真实数据，回答"这份数据算出来的数对不对"。两者共用同一条
 //! `pipeline`，因此不存在第二套执行路径。
 
-use cutile::atom::{AttrKey, Prim};
 use crate::backend::{Launch, Lower};
 use crate::build;
+use crate::pipeline::{Prepared, Run};
+use crate::witness;
+use cutile::atom::{AttrKey, Prim};
 use cutile::builtin::Catalogue;
 use cutile::cap::{Path, Proof};
 use cutile::decl::Skeleton;
 use cutile::dirs::Dirs;
 use cutile::emit::Fragment;
-use crate::pipeline::{Prepared, Run};
 use cutile::prof::{Emit, Profile};
-use crate::witness;
 use diagnostic::{Code, Error};
 use op::decl::{Grid, OpDecl};
 use op::model::Sample;

@@ -166,6 +166,13 @@ fn archive_commands_carry_paths_through_without_opening_here() {
             .command(),
         &Command::Check { input: "model.u" }
     );
+    assert_eq!(
+        Invocation::parse(&args(&["deploy", "--in", "model.u"]))
+            .expect("合法")
+            .command(),
+        &Command::Deploy { input: "model.u" },
+        "E8 裁决与 check 同形：只差一次体积门"
+    );
 
     assert_eq!(
         Invocation::parse(&args(&["settle", "--in", "model.u"]))
@@ -252,7 +259,7 @@ fn unknown_words_and_flags_are_rejected_with_the_usage_hint() {
 fn the_usage_text_lists_every_command() {
     for command in [
         "status", "platform", "run", "train", "import", "inspect", "check", "settle", "audit",
-        "help",
+        "deploy", "help",
     ] {
         assert!(USAGE.contains(command), "{command}");
     }
@@ -275,6 +282,7 @@ fn every_command_variant_has_a_destination() {
             Command::Check { .. } => "check",
             Command::Settle { .. } => "settle",
             Command::Audit { .. } => "audit",
+            Command::Deploy { .. } => "deploy",
             Command::Platform => "platform",
             Command::Help => "help",
         }

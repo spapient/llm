@@ -341,8 +341,9 @@ fn the_first_layer_computes_the_hand_arithmetic_on_its_own_bytes() {
         .expect("默认设置");
     let dirs = settings.dirs();
     let catalogue = cutile::builtin::Catalogue::load(&dirs).expect("内置数据");
-    let executed = cutile_run::execution::execute(&catalogue, &dirs, nn::Linear::DENSE, "cpu", &sample)
-        .expect("执行");
+    let executed =
+        cutile_run::execution::execute(&catalogue, &dirs, nn::Linear::DENSE, "cpu", &sample)
+            .expect("执行");
     let want: Vec<f32> = (0..4)
         .map(|row| (0..8).map(|column| w[row * 8 + column] * x[column]).sum())
         .collect();

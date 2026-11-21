@@ -335,5 +335,3 @@ fn lock_is_exclusive_until_dropped() {
     drop(lock);
     assert!(cache.lock(&key()).is_ok(), "释放后可再次取锁");
 }
-
-

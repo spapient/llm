@@ -1,10 +1,10 @@
 use super::*;
 use crate::toolchain::msvc_version;
-use cutile_run::backend::{Codegen, Driver, Source};
 use cutile::dirs::Dirs;
+use cutile::prof::Profile;
+use cutile_run::backend::{Codegen, Driver, Source};
 use cutile_run::execution::Backend::Metal;
 use cutile_run::execution::{Mode, program};
-use cutile::prof::Profile;
 use cutile_run::witness::{MAX_OUT, Scope};
 use std::path::Path;
 

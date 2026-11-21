@@ -5,46 +5,61 @@
 
 ## 目录
 
+算子四层是四个 crate，构成一条单向部分序：`op-spec` → `op-kernel` → `op-neural` → `op`，
+箭头指向使用者，没有任何一层回指后面的层（`docs/ARCHITECTURE.md` 的依赖边就是这张表的投影）。
+
 ```
-crates/op/
+crates/op/                 # 2 个文件：声明解析与唯一注册表
 ├── Cargo.toml
-├── build.rs             # 构建期解析 ops/*.toml → $OUT_DIR/declared.rs（运行期没有 TOML 解析）
+├── build.rs               # 构建期解析 ops/*.toml → $OUT_DIR/declared.rs（运行期没有 TOML 解析）
 ├── ops/
-│   ├── gemv_f32.toml    # 声明：稠密 f32 投影（骨架 / 轴 / 需求 / 布局 / 降级链）
-│   ├── gemv_f32.k       # 模板：分块点积，未量化
-│   ├── gemv_i4.toml     # 声明：weight-only int4 解码 GEMV（[consts] 给共享模板喂打包常量）
-│   └── gemv_packed.k    # 共享模板：gemv_i2/i4 二合一，C 文本 + {{插值}} + @原语 槽位
-└── src/                 # 91 → 29 个文件：每个语义族一个文件，只有确实需要独立编译单元时才留子文件
-    ├── lib.rs           # 注册表（REGISTRY）与它的两张投影（builtin / model）；声明表取自构建期生成物
-    ├── decl.rs          # `<name>.toml` 的解析与轴展开：OpDecl / Variant / Axis / TileCombo
-    ├── sch.rs           # 布局构造子闭集与调度模板闭集及降级链判据（内联 layout 子模块：row / col / swz / pad）
-    ├── tpl.rs           # 模板词法 / 骨架表达式协议 / 缓冲长度校验（内联 formula、guard 子模块）
-    ├── model.rs         # 算子语义的类型：样本 Sample、语义表 Model（内联 quant 子模块）
-    ├── sig.rs           # `.k` 入口签名的解析与样本对齐（ABI 的唯一事实源）
-    ├── operator.rs      # Operator / Registration 与装配宏（operator_via / operator_here）
-    ├── einsum.rs        # 求和表达式：Expr / Formula / OperandSpec，以及四条骨架共用的 FormulaCache
-    ├── activation.rs    # 单行激活四合一：softmax / rmsnorm / embed / rope（内联四个子模块）
-    ├── classic.rs       # 经典卷积族：conv2d / pool / norm / interpolate（全部内联）
-    ├── conv.rs          # 卷积 / 转置卷积 / 几何 / 采样器：声明、校验、代价与遍历
-    ├── gemv.rs          # GEMV 骨架 + 权重格式契约（format / forward / shape / packed 内联；simd 与各格式留文件）
-    ├── gemm.rs          # GEMM 骨架：f32/i2/i4/i8/packed 同一文件，按 Format 单态化
-    ├── fast.rs          # 打包 GEMM 的编排：面板暂存、线程池、微内核派发（tn 内联；unsafe 岛各留文件）
-    ├── sample.rs        # 确定性抽样一族：rnd（splitmix64）/ dropout / init（内联三个子模块）
-    └── …                # unary / elementwise / reduce / scan / dequant / attention / matmul / norm / deconv
+│   ├── gemv_f32.toml      # 声明：稠密 f32 投影（骨架 / 轴 / 需求 / 布局 / 降级链）
+│   ├── gemv_f32.k         # 模板：分块点积，未量化
+│   ├── gemv_i4.toml       # 声明：weight-only int4 解码 GEMV（[consts] 给共享模板喂打包常量）
+│   └── gemv_packed.k      # 共享模板：gemv_i2/i4 二合一，C 文本 + {{插值}} + @原语 槽位
+└── src/
+    ├── lib.rs             # 注册表（REGISTRY）与两张投影（builtin / model）；把三个 crate 的模块整体再导出
+    └── decl.rs            # `<name>.toml` 的解析与轴展开（内联 build / parse / variant）
+
+crates/op-spec/src/        # 8 个文件：契约层，只认识 L1 与注解，不认识任何内核
+    ├── operator.rs        # Operator / Registration 与装配宏（operator_via / operator_here）
+    ├── sig.rs · tpl.rs    # `.k` 入口签名的解析与样本对齐（ABI 唯一事实源）；模板词法与骨架表达式协议
+    ├── sch.rs · model.rs  # 布局与调度闭集及降级链判据；样本 Sample 与语义表 Model
+    ├── einsum.rs          # 求和表达式：Expr / Formula / OperandSpec 与四条骨架共用的 FormulaCache
+    ├── sample.rs          # 确定性抽样一族：rnd（splitmix64）/ dropout / init
+    └── lib.rs
+
+crates/op-kernel/src/      # 16 个文件：稠密内核族，只借契约层，不认识 `op-neural`
+    ├── gemv.rs            # GEMV 骨架 + 权重格式契约（format / forward / shape / packed / simd / f32 / i2 / i4 / i8 全内联）
+    ├── gemm.rs · matmul.rs # GEMM 骨架按 Format 单态化；TN 与 i8 通路
+    ├── fast.rs            # 打包 GEMM 编排：面板暂存、线程池、微内核派发（pack / tn 内联）
+    ├── fast/{i8,micro,pool,sme}.rs   # unsafe 岛：策略 / 微内核 / 线程池 / SME
+    ├── activation.rs      # 单行激活四合一：softmax / rmsnorm / embed / rope
+    ├── dequant.rs · scalar.rs · elementwise.rs · unary.rs · reduce.rs · norm.rs
+    └── lib.rs
+
+crates/op-neural/src/      # 6 个文件：神经网络算子，只借用内核族的打包与几何
+    ├── conv.rs            # 卷积 / 几何 / 采样器：声明、校验、代价与遍历
+    ├── classic.rs         # 经典卷积族：conv2d / pool / norm / interpolate
+    ├── attention.rs       # 朴素 / 分块 / 在线 softmax 三档（decode 语义内联）
+    ├── scan.rs · deconv.rs
+    └── lib.rs
 ```
 
-合并的原则是"一个语义族一个文件"，不是压缩行数：内联的只剩纯转发层（只写 `pub mod` 的一层）与叶模块。
-合并后每个文件都 ≥160 行、都是真实现，没有一个是占位。**`unsafe` 岛（`fast/{micro,pool,sme}.rs`、
-`fast/i8.rs`）与热路径上的交付件（`gemv/simd.rs`）保持独立文件**，因为它们各自是审计单元，
-文件边界就是审计边界。
+合并的原则是"一个语义族一个文件"，不是压缩行数：内联掉的只剩纯转发层（只写 `pub mod` 的一层）
+与叶模块。四个 crate 合计 **32 个文件 / 16 213 行**，除四个 `lib.rs` 门面外每个文件都是 ≥150 行的
+真实现，没有一个是占位。**`unsafe` 岛（`fast/{micro,pool,sme}.rs`、`fast/i8.rs`）保持独立文件**，
+因为它们各自是审计单元，文件边界就是审计边界——`testkit::boundary` 的 `UNSAFE_ISLANDS` 表按
+"路径 + 越界条数"逐条对账。
 
-合并只搬文件边界，不动公开路径：被内联的子模块仍是 `pub mod`，`lib.rs` 用 `pub use` 把它们
-再导出，所以 `op::rnd::*`、`op::init::*`、`op::formula::*` 这些路径照旧可用。
+合并只搬文件边界，不动公开路径：被内联的子模块仍是 `pub mod`，各 `lib.rs` 用 `pub use` 把它们
+再导出，`crates/op/src/lib.rs` 最后把三个 crate 的模块整体搬回本 crate 根，所以
+`op::gemv::packed::dot_row`、`op::rnd::*`、`op::formula::*` 这些路径对 12 个下游 crate 零改动。
 
 同一个算子的两个文件必须**同名成对**（`<name>.toml` ↔ `<name>.k`）：`<name>.toml` 在**构建期**由
 `build.rs` 解析成 `Table` 字面量写进 `$OUT_DIR/declared.rs`，`<name>.k` 由 `include_str!` 编进二进制；
-运行期从不读 `ops/`，也不解析任何 TOML（ADR 0022）。表结构与闭集校验就在本 crate（`decl` + 三张闭集 +
-`tpl`）：`cutile` 只消费 `OpDecl`，它的 `layout`/`sch` 是 `pub use` 转发路径——闭集与解析各只有一份，
+运行期从不读 `ops/`，也不解析任何 TOML（ADR 0022）。表结构在 `op::decl`，闭集在 `op-spec`（`sch` / `tpl`）：
+`cutile` 只消费 `OpDecl`，它的 `layout`/`sch` 是 `pub use` 转发路径——闭集与解析各只有一份，
 改声明语法不必动机制层。
 
 ## 两个文件各写什么
@@ -58,8 +73,8 @@ crates/op/
 [cutile README §4](../cutile/README.md)。声明与模板的**解析**在 `op::decl`（并在这里做闭集校验），
 `cutile` 只接住 `OpDecl`——所以 schema 只有一份，改动它不会出现第二处需要同步的地方。
 
-语义（`src/` 下按族合并的算子模块，如 `activation.rs` / `unary.rs` / `elementwise.rs`）是声明的第二份实现：一条**求和表达式**（`EXPR`，如 `nm,m,ng,n->n`）加每个
-操作数的位宽/方向，就能让 `einsum` 推出 roofline 要的 `(flops, bytes)`——本 crate 不再写任何流量常数；
+语义（`op-kernel/src`、`op-neural/src` 下按族合并的算子模块，如 `activation.rs` / `unary.rs` / `elementwise.rs`）是声明的第二份实现：一条**求和表达式**（`EXPR`，如 `nm,m,ng,n->n`）加每个
+操作数的位宽/方向，就能让 `einsum` 推出 roofline 要的 `(flops, bytes)`——本层不再写任何流量常数；
 `sample` 给确定性的输入，`reference` 是标量参考（片段只与它对拍）；`shape` / `dtype` 声明生产形状与
 输出类型——审计的形状矩阵、`bench` 的缺省形状、`verify` 的对拍阈值都取自它们，而不是在命令层
 再写一份方阵或“每个元素 4 字节”。

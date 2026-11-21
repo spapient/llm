@@ -133,7 +133,8 @@ fn built(op: &OpDecl, dirs: &Dirs) -> (CacheKey, String, Sample) {
     let (source, key) = source(op, &profile, &path, &tile, dirs).expect("可构建");
     let sample = (op::model(&op.name).expect("算子模型").sample)(32, 1);
     op.signature.check(&sample).expect("ABI 对齐");
-    let harness = cutile::harness::harness(&source.text, &op.signature, &sample, 1).expect("可生成");
+    let harness =
+        cutile::harness::harness(&source.text, &op.signature, &sample, 1).expect("可生成");
     (key, harness, sample)
 }
 

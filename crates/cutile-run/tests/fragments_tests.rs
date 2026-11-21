@@ -1,6 +1,6 @@
 use super::*;
-use cutile::builtin::Catalogue;
 use crate::toolchain;
+use cutile::builtin::Catalogue;
 use cutile::{decl, emit, substitute};
 
 /// 一台设备全部算子 × 分块组合的最终源文件：`{算子}_{序号}` → 文本。

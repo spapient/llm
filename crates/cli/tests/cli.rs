@@ -11,8 +11,8 @@
 mod support;
 
 /// 用法文本里必须出现的那几行：命令表是 `llm help` 的唯一职责。
-const USAGE_COMMANDS: [&str; 8] = [
-    "status", "run", "train", "import", "inspect", "check", "settle", "audit",
+const USAGE_COMMANDS: [&str; 9] = [
+    "status", "run", "train", "import", "inspect", "check", "deploy", "settle", "audit",
 ];
 
 use std::path::PathBuf;

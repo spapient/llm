@@ -9,11 +9,11 @@
 //! 由 L6（`engine`）实现、L7（`cli`）装配注入（`docs/ARCHITECTURE.md` 的 L3 契约：机制层不出现
 //! 厂商特判与运行时依赖）。装配走 [`register`]，cutile 的机制层只从这张表取后端，不硬编码后端清单。
 
+use crate::toolchain::Toolchain;
+use crate::witness::{Scope, Selected};
 use cutile::decl::Grid;
 use cutile::dirs::Dirs;
 use cutile::prof::{Emit, Profile};
-use crate::toolchain::Toolchain;
-use crate::witness::{Scope, Selected};
 use diagnostic::{Code, Error, Result};
 use op::model::Sample;
 use op::sig::Signature;

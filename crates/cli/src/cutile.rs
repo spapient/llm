@@ -13,8 +13,8 @@
 //! cargo run --bin cutile -- cache gc --limit 1073741824
 //! ```
 
-use cutile_run::bench::{self, Bench};
 use cutile::builtin::Catalogue;
+use cutile_run::bench::{self, Bench};
 use cutile_run::doctor::{self, Doctor};
 use cutile_run::ledger;
 use cutile_run::verify::{self, Verified, VerifyEntry};

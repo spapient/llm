@@ -232,13 +232,18 @@ fn why_names_the_field_that_invalidated_the_cache() {
 /// 判据本身是 `cutile::cache` 的 GC，但只有跑过一条流水线才有可回收的东西。
 #[test]
 fn cache_gc_reclaims_through_the_cache_directory() {
-    let dirs = Dirs::under(std::env::temp_dir().join(format!("cutile-gc-cache-{}", std::process::id())));
+    let dirs =
+        Dirs::under(std::env::temp_dir().join(format!("cutile-gc-cache-{}", std::process::id())));
     let _ = std::fs::remove_dir_all(dirs.cache());
     let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
     let report = crate::doctor::doctor(&catalogue, &dirs, "gemv_i4", "cpu").expect("doctor");
     assert!(report.source.is_some(), "doctor 应已落盘");
     let before = cutile::cache::cache_gc(&dirs, None).expect("可回收");
-    assert_eq!(before.limit, cutile::cache::CACHE_LIMIT, "缺省上限是命令策略");
+    assert_eq!(
+        before.limit,
+        cutile::cache::CACHE_LIMIT,
+        "缺省上限是命令策略"
+    );
     assert!(before.before > 0, "doctor 刚落过盘：{before:?}");
     assert_eq!(before.removed, 0, "未超上限时不删：{before:?}");
     // 条目个数不再是"doctor 只落 1 条"：它现在还要把见证程序登记进缓存。

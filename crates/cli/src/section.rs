@@ -6,8 +6,8 @@
 //! 同一个词既指类型又指模块时，`section::evidence_block(&report)` 会读成两种东西。
 
 use super::prose::{counted, fragment_note, params_note};
-use cutile_run::bench::{Bench, Peak, Performance, Verdict};
 use cutile::cap::VariantCheck;
+use cutile_run::bench::{Bench, Peak, Performance, Verdict};
 use cutile_run::doctor::{Built, CacheState, CacheWhy, Doctor};
 use cutile_run::verify::{Negotiation, Verified, VerifyReport};
 use std::fmt::Write as _;

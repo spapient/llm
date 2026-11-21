@@ -241,10 +241,10 @@ pub mod driver {
     //! `engine` 里的 Metal / CUDA 后端都从这取同一套原语，避免三段后端各写一份「写文件 / 起进程 /
     //! 解回读」。厂商差异只落在「源文本怎么拼」与「哪条工具链来编」，不进这层。
 
-    use cutile::atom::{Prim, Witness};
     use crate::backend::Readback;
-    use cutile::dirs::Dirs;
     use crate::witness::Selected;
+    use cutile::atom::{Prim, Witness};
+    use cutile::dirs::Dirs;
     use diagnostic::{Code, Error, Result};
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};

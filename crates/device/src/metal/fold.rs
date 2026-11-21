@@ -18,8 +18,8 @@ use crate::metal::{
     MetalStage, metal_chunk_reduce, metal_chunk_rmsnorm, metal_chunk_scan, metal_chunk_softmax,
     metal_multistage_driver,
 };
-use cutile_run::backend::Source;
 use cutile::harness::output_name;
+use cutile_run::backend::Source;
 use diagnostic::{Code, Error, Result};
 use op::model::Sample;
 use op::sig::Signature;

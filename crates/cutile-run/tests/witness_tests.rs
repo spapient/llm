@@ -3,8 +3,8 @@
 //! 生产文件只留执行与判据，用例集中于此。
 
 use super::*;
-use cutile::builtin::Catalogue;
 use crate::toolchain;
+use cutile::builtin::Catalogue;
 
 fn dirs() -> Dirs {
     Dirs::under(std::env::temp_dir().join("cutile-witness-tests"))

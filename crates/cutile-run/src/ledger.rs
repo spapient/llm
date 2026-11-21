@@ -4,10 +4,10 @@
 //! 这里只做聚合。状态闭集与 [`Grade`] 分开：`grade` 是档案自述，[`Status`] 是这次执行到的结论，
 //! 自述不能冒充设备证据。渲染归前端，本模块只给结构化结论。
 
+use crate::witness::{self, Basis, Evidence};
 use cutile::builtin::Catalogue;
 use cutile::cap::Proof;
 use cutile::dirs::Dirs;
-use crate::witness::{self, Basis, Evidence};
 use prof::atom::{Grade, Prim, Provide};
 use prof::prof::Profile;
 use std::collections::BTreeMap;

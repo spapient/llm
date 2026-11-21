@@ -5,16 +5,16 @@
 //! `invalid`（退出码 2）。两条执行通道（本机 C、nvcc/CUDA）共用同一套步骤，设备差异收在 `Lane` 里。
 
 use crate::build;
+use crate::gate::LanguageGate;
+use crate::pipeline::{Prepared, Run, parse_shape, rejected_shapes, verify_shapes};
+use crate::witness;
+use crate::{runner, toolchain};
 use cutile::builtin::Catalogue;
 use cutile::cache::Artifact;
 use cutile::cap::{self, NoPath, Path, Proof};
 use cutile::dirs::Dirs;
 use cutile::emit::Fragment;
-use crate::gate::LanguageGate;
-use crate::pipeline::{Prepared, Run, parse_shape, rejected_shapes, verify_shapes};
 use cutile::prof::{Emit, Profile};
-use crate::witness;
-use crate::{runner, toolchain};
 use diagnostic::{Code, Error};
 use op::decl::OpDecl;
 use op::model::Sample;
