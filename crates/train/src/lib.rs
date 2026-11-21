@@ -2,8 +2,7 @@
 //!
 //! **拥有**：`Schedule`、`Anneal`、`Step`、`Checkpoint`、`Buffers`、`Kernel`、`Reference`、`Data`、
 //! `View`、`ViewMut`，以及承载静态契约的 `Kind`、`Lane`、`Inputs`；训练样本的三件套
-//! [`Batch`]、[`Dataset`]、[`Chunks`] 也在本 crate（`samples`）；`offload` 只留
-//! [`WeightOffload`] 暂缓接缝，真实换入换出通路未建。
+//! [`Batch`]、[`Dataset`]、[`Chunks`] 也在本 crate（`samples`）。
 //! **不拥有**：反传公式（`autograd` 记录顺序、算子表提供公式）、激活的显存
 //! 计划（`autograd::Plan`）、分词与打乱（`tokenizer`；打乱只改变游标推进方式）、层定义
 //! （`nn`）、参数（`weights`）、拓扑（`shard`）、算子语义（`op`）、检查点字节格式（`snapshot`）。
@@ -44,7 +43,6 @@ mod kernel;
 mod learner;
 mod loss;
 mod metrics;
-mod operators;
 mod optimizer;
 mod pool;
 mod rl;
@@ -68,71 +66,10 @@ pub use geometry::{Geometry, Running};
 pub use learner::{ForwardOut, Learner, Metric};
 pub use loss::{Loss, Outcome, argmax_hits, bce_with_logits, cross_entropy, hinge, huber, mse};
 pub use metrics::{MetricPoint, MetricsBoard};
-pub use offload::{DeferredOffload, WeightOffload};
-pub use operators::OperatorSetOps;
+pub use store::OperatorSetOps;
 pub use optimizer::{Adam, Group, Muon, Optimizer, OwnedSlot, Sgd, Slot};
 pub use rl::{Grpo, advantage, clipped_surrogate, entropy, grpo_loss, log_prob, policy_loss};
 pub use samples::{Batch, Chunks, Dataset};
 pub use schedule::{Anneal, Schedule};
 pub use session::{ParamSlot, Session, TrainConfig};
 pub use store::{Buffers, Data, Inputs, Kernel, Kind, Lane, Reference, View, ViewMut};
-
-pub(crate) mod offload {
-    //! 参数 offload 接缝（**暂缓**）。
-
-    use diagnostic::{Code, Error, Result};
-
-    /// 本模块诊断站点。
-    pub(crate) const SITE: &str = "train::offload";
-
-    /// 参数换入/换出接缝：槽位编号标识一块权重；方法签名是后续真实通路的形状占位。
-    ///
-    /// # 暂缓前置
-    ///
-    /// - **页池**：槽位/块编号 → 驻留页或后备页的映射表尚未建立；
-    /// - **权重驻留**：哪一块权重此刻在场、哪一块被换出的记账不存在；
-    /// - **换入/换出**：后备存储搬运、驻留命中判定与换入后的缓冲镜像都未接。
-    ///
-    /// 因此当前实现一律返回 [`Code::Unsupported`]，不做任何搬运，也不登记驻留状态；训练闭环
-    /// 不调用本 trait 的任何方法。
-    pub trait WeightOffload {
-        /// 把一块权重换出驻留内存到后备存储（接缝，暂缓）。
-        ///
-        /// # Errors
-        ///
-        /// 通路未建立：[`Code::Unsupported`]。
-        fn swap_out(&mut self, slot: usize) -> Result<()>;
-
-        /// 把一块权重换回驻留内存（接缝，暂缓）。
-        ///
-        /// # Errors
-        ///
-        /// 通路未建立：[`Code::Unsupported`]。
-        fn swap_in(&mut self, slot: usize) -> Result<()>;
-    }
-
-    /// 未接通路的占位实现：所有方法返回 [`Code::Unsupported`]，不持页池、不搬内存。
-    #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-    pub struct DeferredOffload;
-
-    impl WeightOffload for DeferredOffload {
-        fn swap_out(&mut self, slot: usize) -> Result<()> {
-            deferred(slot)
-        }
-
-        fn swap_in(&mut self, slot: usize) -> Result<()> {
-            deferred(slot)
-        }
-    }
-
-    /// 统一的暂缓错误：把前置缺口写进消息，避免调用方误以为"换出成功"。
-    fn deferred(slot: usize) -> Result<()> {
-        Err(Error::new(
-        Code::Unsupported,
-        format!(
-            "参数槽 {slot} 的 offload 换入/换出通路暂缓：页池、权重驻留记账与换入换出搬运尚未建立"
-        ),
-    )
-    .with(SITE))
-    }
-}
