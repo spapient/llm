@@ -6,10 +6,10 @@
 
 use super::*;
 #[cfg(target_os = "windows")]
-use Cuda;
+use cutile::execution::Backend::Cuda;
 #[cfg(target_os = "macos")]
-use Metal;
-use cutile::execution::{Backend, Mode, program};
+use cutile::execution::Backend::Metal;
+use cutile::execution::{Mode, program};
 
 /// 首个真机对拍闭环：`silu_f32` 走 op::REGISTRY → cutile emit → MetalExecutor 进程内编译 →
 /// 网格派发 → 回读，与标量参考对拍。证明「模板 → 拼接正文 → 网格包装 → Metal 执行」整条
