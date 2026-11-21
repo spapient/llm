@@ -406,22 +406,7 @@ pub(super) fn backward_interp(
     Ok(vec![dx])
 }
 
-pub(super) fn scatter_interp(
-    dx: &mut [f32],
-    incoming: &[f32],
-    at: (usize, usize, usize),
-    out: (usize, usize),
-    plane: (usize, usize, usize),
-    linear: bool,
-) {
-    if linear {
-        scatter_interp_linear(dx, incoming, at, out, plane);
-    } else {
-        scatter_interp_nearest(dx, incoming, at, out, plane);
-    }
-}
-
-/// 反传散射的输入格取值：`(at, out, plane)` 的下标记法只写一处，两种插值口径共用。
+/// 反传散射的输入格取值：`(at, out, plane)` 的下标记法只写一处。
 fn gain(
     incoming: &[f32],
     at: (usize, usize, usize),
@@ -434,49 +419,42 @@ fn gain(
     move |ci| incoming[((ni * oh + oi) * ow + oj) * c + ci]
 }
 
-pub(super) fn scatter_interp_linear(
+/// 反传散射：`linear` 走双线性四点分摊，否则按最近邻单点累加。两种口径共享形状分解与
+/// 输入格取值，只有采样位置与权重的算法不同。
+pub(super) fn scatter_interp(
     dx: &mut [f32],
     incoming: &[f32],
     at: (usize, usize, usize),
     out: (usize, usize),
     plane: (usize, usize, usize),
+    linear: bool,
 ) {
     let (ni, oi, oj) = at;
     let (oh, ow) = out;
     let (h, w, c) = plane;
     let g = gain(incoming, at, out, plane);
-    let fy = ((oi as f32 + 0.5) * h as f32 / oh as f32 - 0.5).max(0.0);
-    let y0 = fy.floor().min((h - 1) as f32) as usize;
-    let y1 = (y0 + 1).min(h - 1);
-    let ly = if y0 == y1 { 0.0 } else { fy - y0 as f32 };
-    let fx = ((oj as f32 + 0.5) * w as f32 / ow as f32 - 0.5).max(0.0);
-    let x0 = fx.floor().min((w - 1) as f32) as usize;
-    let x1 = (x0 + 1).min(w - 1);
-    let lx = if x0 == x1 { 0.0 } else { fx - x0 as f32 };
-    for ci in 0..c {
-        let weight = g(ci);
-        dx[((ni * h + y0) * w + x0) * c + ci] += weight * (1.0 - lx) * (1.0 - ly);
-        dx[((ni * h + y0) * w + x1) * c + ci] += weight * lx * (1.0 - ly);
-        dx[((ni * h + y1) * w + x0) * c + ci] += weight * (1.0 - lx) * ly;
-        dx[((ni * h + y1) * w + x1) * c + ci] += weight * lx * ly;
-    }
-}
-
-pub(super) fn scatter_interp_nearest(
-    dx: &mut [f32],
-    incoming: &[f32],
-    at: (usize, usize, usize),
-    out: (usize, usize),
-    plane: (usize, usize, usize),
-) {
-    let (ni, oi, oj) = at;
-    let (oh, ow) = out;
-    let (h, w, c) = plane;
-    let g = gain(incoming, at, out, plane);
-    let ii = (oi * h / oh).min(h - 1);
-    let jj = (oj * w / ow).min(w - 1);
-    for ci in 0..c {
-        dx[((ni * h + ii) * w + jj) * c + ci] += g(ci);
+    if linear {
+        let fy = ((oi as f32 + 0.5) * h as f32 / oh as f32 - 0.5).max(0.0);
+        let y0 = fy.floor().min((h - 1) as f32) as usize;
+        let y1 = (y0 + 1).min(h - 1);
+        let ly = if y0 == y1 { 0.0 } else { fy - y0 as f32 };
+        let fx = ((oj as f32 + 0.5) * w as f32 / ow as f32 - 0.5).max(0.0);
+        let x0 = fx.floor().min((w - 1) as f32) as usize;
+        let x1 = (x0 + 1).min(w - 1);
+        let lx = if x0 == x1 { 0.0 } else { fx - x0 as f32 };
+        for ci in 0..c {
+            let weight = g(ci);
+            dx[((ni * h + y0) * w + x0) * c + ci] += weight * (1.0 - lx) * (1.0 - ly);
+            dx[((ni * h + y0) * w + x1) * c + ci] += weight * lx * (1.0 - ly);
+            dx[((ni * h + y1) * w + x0) * c + ci] += weight * (1.0 - lx) * ly;
+            dx[((ni * h + y1) * w + x1) * c + ci] += weight * lx * ly;
+        }
+    } else {
+        let ii = (oi * h / oh).min(h - 1);
+        let jj = (oj * w / ow).min(w - 1);
+        for ci in 0..c {
+            dx[((ni * h + ii) * w + jj) * c + ci] += g(ci);
+        }
     }
 }
 
