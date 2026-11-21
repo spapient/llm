@@ -262,19 +262,15 @@ impl<'a> Gguf<'a> {
         self.meta("general.architecture").and_then(Value::text)
     }
 
-    /// 张量原始字节视图。
+    /// 张量原始字节视图：区间判据走共享的 [`slice`](crate::bytes::slice)，偏移越界与长度越界
+    /// 都由它一处拒。
     pub fn raw(&self, tensor: &Tensor) -> Result<&'a [u8]> {
         let offset = usize::try_from(tensor.offset).map_err(|_| bad("张量偏移溢出"))?;
         let start = self
             .data
             .checked_add(offset)
             .ok_or_else(|| bad("张量偏移溢出"))?;
-        let stop = start
-            .checked_add(tensor.bytes()?)
-            .ok_or_else(|| bad("张量字节越界"))?;
-        self.bytes
-            .get(start..stop)
-            .ok_or_else(|| bad("张量字节越界"))
+        crate::bytes::slice(self.bytes, start, tensor.bytes()?)
     }
 
     /// 按名反量化为 f32。

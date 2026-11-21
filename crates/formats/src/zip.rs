@@ -71,7 +71,8 @@ fn directory(bytes: &[u8]) -> Result<(usize, usize)> {
     if at == 0xFFFF_FFFF || total == 0xFFFF {
         return zip64_directory(bytes, eocd);
     }
-    Ok((at as usize, usize::from(total)))
+    let at = usize::try_from(at).map_err(|_| bad("中央目录偏移超出 usize"))?;
+    Ok((at, usize::from(total)))
 }
 
 fn zip64_directory(bytes: &[u8], eocd: usize) -> Result<(usize, usize)> {
@@ -162,33 +163,26 @@ fn zip64_extra(bytes: &[u8], extra_start: usize, extra_len: usize, field: usize)
         let size = usize::from(u16_at(bytes, at + 2)?);
         let body = at + 4;
         if header_id == 0x0001 {
-            return zip64_field(bytes, body, size, field);
+            let end = field
+                .checked_add(1)
+                .and_then(|slots| slots.checked_mul(8))
+                .ok_or_else(|| bad("ZIP64 字段序号溢出"))?;
+            if end > size {
+                return Err(bad("ZIP64 extra 声明长度不足，字段被截断"));
+            }
+            return u64_at(bytes, body.saturating_add(end - 8));
         }
         at = body.saturating_add(size);
     }
     Err(bad("缺少 ZIP64 extra 字段"))
 }
 
-fn zip64_field(bytes: &[u8], body: usize, size: usize, field: usize) -> Result<u64> {
-    let end = field
-        .checked_add(1)
-        .and_then(|slots| slots.checked_mul(8))
-        .ok_or_else(|| bad("ZIP64 字段序号溢出"))?;
-    if end > size {
-        return Err(bad("ZIP64 extra 声明长度不足，字段被截断"));
-    }
-    u64_at(bytes, body.saturating_add(end - 8))
-}
-
+/// EOCD 在文件尾部 22 + 65535 字节窗口内反向查找；窗口外一律拒（不猜其他签名）。
 fn locate_eocd(bytes: &[u8]) -> Result<usize> {
-    let window = bytes.len().min(22 + 65535);
-    find_sig_back(bytes, EOCD_SIG, bytes.len() - window)
-}
-
-fn find_sig_back(bytes: &[u8], sig: u32, from: usize) -> Result<usize> {
+    let from = bytes.len().saturating_sub(22 + 65535);
     let mut at = bytes.len().saturating_sub(4);
     while at >= from {
-        if u32_at(bytes, at)? == sig {
+        if u32_at(bytes, at)? == EOCD_SIG {
             return Ok(at);
         }
         if at == 0 {

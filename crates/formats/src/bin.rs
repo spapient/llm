@@ -5,7 +5,6 @@
 
 use diagnostic::Result;
 use dtype::DType;
-use wire::bad;
 
 use crate::zip::Zip;
 
@@ -60,20 +59,17 @@ impl<'a> Bin<'a> {
         self.tensors.iter().find(|t| t.name == name)
     }
 
+    /// 张量字节：`/data/<key>` 与 `data/<key>` 两种条目名都试；区间越界由共享的
+    /// [`slice`](crate::bytes::slice) 判据统一拒——偏移相加必须先查溢出，否则绕回小值
+    /// 会让越界区间变成「空的成功切片」。
     pub fn data(&self, tensor: &Tensor) -> Result<&'a [u8]> {
-        let suffix = format!("/data/{}", tensor.storage_key);
-        let storage = self.zip.data_suffix(&suffix);
-        let fallback = format!("data/{}", tensor.storage_key);
-        let storage = storage.or_else(|_| self.zip.data_suffix(&fallback))?;
-        storage
-            .get(window(tensor.offset, tensor.len))
-            .ok_or_else(|| bad("张量字节区间越界"))
+        let key = &tensor.storage_key;
+        let storage = self
+            .zip
+            .data_suffix(&format!("/data/{key}"))
+            .or_else(|_| self.zip.data_suffix(&format!("data/{key}")))?;
+        crate::bytes::slice(storage, tensor.offset, tensor.len)
     }
-}
-
-/// 张量的字节窗口：偏移相加必须先查溢出，否则绕回小值会让越界区间变成「空的成功切片」。
-fn window(offset: usize, len: usize) -> std::ops::Range<usize> {
-    offset..offset.saturating_add(len)
 }
 
 #[cfg(test)]

@@ -148,7 +148,8 @@ fn placeholder(vm: &mut Vm<'_>, op: u8) -> Result<()> {
 }
 
 fn string(vm: &mut Vm<'_>, op: u8) -> Result<()> {
-    let len = vm.cursor.uint(if op == b'X' { 4 } else { 1 })? as usize;
+    let len = usize::try_from(vm.cursor.uint(if op == b'X' { 4 } else { 1 })?)
+        .map_err(|_| bad("字符串长度溢出"))?;
     let text = vm.cursor.text(len)?;
     vm.stack.push(Value::Str(text));
     Ok(())
