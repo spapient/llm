@@ -603,6 +603,40 @@ fn gemv_row_batch_runs_each_row_against_the_shared_weight() {
     assert_close(&produced, &reference);
 }
 
+/// 行批跨过微内核行块（`op::fast::MIN_ROWS`）后换到 packed 入口：两侧各取一个批宽，否则这条分派
+/// 只有一侧被覆盖——2 行走按列 tile，`MIN_ROWS + 1` 行走 8×8 寄存器分块那条。
+#[test]
+fn gemv_row_batch_switches_to_the_packed_kernel_at_the_row_block() {
+    let (m, n) = (5, 7);
+    let w: Vec<f32> = (0..n * m).map(|i| (i % 9) as f32 * 0.25 - 1.0).collect();
+    for rows in [2, op::fast::MIN_ROWS + 1] {
+        let x: Vec<f32> = (0..rows * m).map(|i| (i % 5) as f32 * 0.5 - 1.0).collect();
+        let mut reference = vec![0.0; n * rows];
+        for row in 0..rows {
+            op::gemv_f32::forward(
+                &x[row * m..(row + 1) * m],
+                &w,
+                &mut reference[row * n..][..n],
+            )
+            .expect("参考行");
+        }
+
+        let mut executor = cpu();
+        bind(&mut executor, 0, &x);
+        bind(&mut executor, 1, &w);
+        let output = 2;
+        executor.bind(output, vec![0.0; n * rows]);
+        let mut node = Node::new("gemv_f32", Launch::new([1, 1, 1], [n as u32, m as u32, 1]));
+        node.bind_input(0);
+        node.bind_input(1);
+        node.bind_output(output);
+        executor.run(&node).expect("行批执行");
+        let produced = executor.get(output).expect("输出缓冲").to_vec();
+
+        assert_close(&produced, &reference);
+    }
+}
+
 /// 行批几何不自洽：输入不是行宽整数倍时拒绝，不静默截位。
 #[test]
 fn gemv_row_batch_rejects_inconsistent_geometry() {

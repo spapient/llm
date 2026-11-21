@@ -11,9 +11,10 @@ use std::thread;
 use diagnostic::{Code, Error, Result};
 
 mod pool;
+mod scratch;
 use pool::{Job, Shape, pool, run_pooled};
 mod tn;
-pub use tn::gemm_f32_tn;
+pub use tn::{MIN_ROWS, gemm_f32_tn};
 
 /// 微内核行数。
 const MR: usize = 8;
@@ -39,22 +40,23 @@ pub fn gemm_f32(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f
     }
     // 常驻池：打包与计算共用一次发布（一次 Barrier 隔开两阶段），无重复 spawn。
     let npad = n.div_ceil(NR) * NR;
-    let mut buf = vec![0.0f32; npad * k];
-    if run_pooled(
-        pool(),
-        a.as_ptr() as *const u8,
-        b.as_ptr() as *const u8,
-        buf.as_mut_ptr() as *mut u8,
-        out.as_mut_ptr() as *mut u8,
-        Shape { m, n, k, npad },
-        MR,
-        t,
-        f32_pack,
-        f32_calc,
-    ) {
-        return;
-    }
-    scoped_f32(a, b, out, m, n, k, t);
+    scratch::with_panels(npad * k, |buf| {
+        if run_pooled(
+            pool(),
+            a.as_ptr() as *const u8,
+            b.as_ptr() as *const u8,
+            buf.as_mut_ptr() as *mut u8,
+            out.as_ptr() as *mut u8,
+            Shape { m, n, k, npad },
+            MR,
+            t,
+            f32_pack,
+            f32_calc,
+        ) {
+            return;
+        }
+        scoped_f32(a, b, out, m, n, k, t);
+    });
 }
 
 /// 显式错误版稠密 f32 GEMM：三条缓冲与 `(m, n, k)` 严格相等才跑，不符返回 [`Code::Invalid`]，
@@ -95,25 +97,31 @@ fn check_dims(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &[f32]) {
 
 /// 兜底（池不可用）：B 打包一次后 shared 给 scope 线程。
 fn scoped_f32(a: &[f32], b: &[f32], out: &mut [f32], m: usize, n: usize, k: usize, t: usize) {
-    let (bpack, _npad) = pack_b_f32_par(b, n, k);
+    let npad = n.div_ceil(NR) * NR;
     let blocks = m.div_ceil(MR);
     // 行块按 MR 对齐：否则 18 线程切 256 行会得到 15 行/线程，8 行走微内核、7 行掉回标量尾块。
     let per = blocks.div_ceil(t) * MR;
-    thread::scope(|s| {
-        for (ti, block) in out[..m * n].chunks_mut(per * n).enumerate() {
-            let r0 = ti * per;
-            let rows = block.len() / n;
-            let a_t = &a[r0 * k..(r0 + rows) * k];
-            let bp = &bpack;
-            s.spawn(move || compute(a_t, bp, b, rows, n, k, block));
-        }
+    scratch::with_panels(npad * k, |bpack| {
+        pack_b_f32_par_into(bpack, b, n, k, t);
+        let bp: &[f32] = bpack;
+        thread::scope(|s| {
+            for (ti, block) in out[..m * n].chunks_mut(per * n).enumerate() {
+                let r0 = ti * per;
+                let rows = block.len() / n;
+                let a_t = &a[r0 * k..(r0 + rows) * k];
+                s.spawn(move || compute(a_t, bp, b, rows, n, k, block));
+            }
+        });
     });
 }
 
 /// 单线程稠密 f32 GEMM（基准确认内核质量用）：`out[m,n] = a[m,k] · b[k,n]`。
 pub fn gemm_f32_single(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f32]) {
-    let (bpack, _npad) = pack_b_f32(b, n, k);
-    compute(a, &bpack, b, m, n, k, out);
+    let npad = n.div_ceil(NR) * NR;
+    scratch::with_panels(npad * k, |bpack| {
+        pack_b_f32_into(bpack, b, n, k);
+        compute(a, bpack, b, m, n, k, out);
+    });
 }
 
 /// 单线程块计算：A 打包成 8 行面板，再 j 外层、面板内层跑微内核；残尾走标量。
@@ -181,10 +189,11 @@ fn pack_panels(a: &[f32], full: usize, k: usize) -> Vec<f32> {
 
 /// B 打包成 `[jblk][p][NR]`：微内核每条 `p` 只需两次连续向量加载（行主序 B 是每 `p` 跨一条行）。
 ///
-/// 返回 `(面板, n 补齐到 NR)`；`n` 不整除的部分补 0，只有列残尾（`nr < NR`）才回退到 `edge`。
-fn pack_b_f32(b: &[f32], n: usize, k: usize) -> (Vec<f32>, usize) {
+/// `n` 不整除的部分补 0，只有列残尾（`nr < NR`）才回退到 `edge`。写进调用方的面板（已清零），
+/// 不在这里分配：`n = k = 4096` 时这块是 67 MB，每次调用现分配是第 5 条要扇掉的成本。
+fn pack_b_f32_into(bpack: &mut [f32], b: &[f32], n: usize, k: usize) {
     let npad = n.div_ceil(NR) * NR;
-    let mut bpack = vec![0.0f32; npad * k];
+    debug_assert_eq!(bpack.len(), npad * k);
     for jb in 0..npad / NR {
         let first = jb * NR;
         let cols = if first < n { NR.min(n - first) } else { 0 };
@@ -193,27 +202,22 @@ fn pack_b_f32(b: &[f32], n: usize, k: usize) -> (Vec<f32>, usize) {
             bpack[dst..dst + cols].copy_from_slice(&b[p * n + first..p * n + first + cols]);
         }
     }
-    (bpack, npad)
 }
 
 /// 并行 B 打包：按 8 列组切线程。`k·n` 小的时候串行更划算（线程创建比转置贵）。
-fn pack_b_f32_par(b: &[f32], n: usize, k: usize) -> (Vec<f32>, usize) {
-    let npad = n.div_ceil(NR) * NR;
-    let groups = npad / NR;
-    let t = threads_override().min(groups);
-    if t <= 1 || npad * k < (1 << 16) {
-        return pack_b_f32(b, n, k);
+fn pack_b_f32_par_into(bpack: &mut [f32], b: &[f32], n: usize, k: usize, t: usize) {
+    let groups = n.div_ceil(NR);
+    if t <= 1 || n * k < (1 << 16) {
+        pack_b_f32_into(bpack, b, n, k);
+        return;
     }
-    let mut bpack = vec![0.0f32; npad * k];
     let per = groups.div_ceil(t);
     let span = per * NR * k;
     thread::scope(|s| {
         for (gi, chunk) in bpack.chunks_mut(span).enumerate() {
-            let blk0 = gi * per;
-            s.spawn(move || pack_b_f32_span(chunk, b, n, k, blk0));
+            s.spawn(move || pack_b_f32_span(chunk, b, n, k, gi * per));
         }
     });
-    (bpack, npad)
 }
 
 /// 一段连续的列组打包：`blk0` 起，每块 `NR · k`。

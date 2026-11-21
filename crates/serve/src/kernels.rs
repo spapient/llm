@@ -305,8 +305,12 @@ fn gemv_inputs<'a, 'b>(
 /// 行批投影：整块 `x` 按 `m` 切段、`out` 按 `n` 切段。
 ///
 /// 一行（decode 口径）走 `gemv`：此时 `m` 就是权重行宽，没有可复用的行块。多行（prefill 口径）
-/// 走线性层布局的分块核 [`op::matmul::forward_tn_tiled`]——权重按输出列块驻留、行块在块内累加，
-/// 于是整份权重在一次外循环里只读一遍；逐行调 `gemv` 会把它按行数重复读，那个倍数正是本函数省掉的量。
+/// 走线性层布局的核——权重按输出行驻留、整份权重在一次外循环里只读一遍；逐行调 `gemv` 会把它按
+/// 行数重复读，那个倍数正是本函数省掉的量。
+///
+/// 多行的两条实现共用同一组累加口径，差别只在寄存器分块与线程：整块可用时走
+/// [`op::fast::gemm_f32_tn`]（8×8 寄存器分块 + 常驻池，实测大 K 下比按列 tile 快近 30 倍），
+/// 行数不足一个微内核行块时走 [`op::matmul::forward_tn_tiled`]（打包的转置成本摊不回来）。
 fn project_rows(x: &[f32], weights: &[f32], out: &mut [f32], m: usize, n: usize) -> Result<()> {
     if m == 0 || !x.len().is_multiple_of(m) || out.len() != (x.len() / m) * n {
         return Err(Error::new(Code::Invalid, "gemv 行批几何不自洽").with(SITE));
@@ -314,6 +318,10 @@ fn project_rows(x: &[f32], weights: &[f32], out: &mut [f32], m: usize, n: usize)
     let rows = x.len() / m;
     if rows == 1 {
         return op::gemv_f32::forward(x, weights, out);
+    }
+    if rows >= op::fast::MIN_ROWS {
+        op::fast::gemm_f32_tn(x, weights, rows, n, m, out);
+        return Ok(());
     }
     op::matmul::forward_tn_tiled(x, weights, rows, n, m, out)
 }

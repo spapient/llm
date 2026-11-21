@@ -9,7 +9,12 @@
 //! 但没有寄存器分块与多线程，实测差 20 倍以上。
 
 use super::pool::{Job, Shape, pool, run_pooled};
+use super::scratch;
 use super::{KB, MR, NR, Span, micro_packed, pack_panels, threads_override};
+
+/// 走这条入口的最少行数：一个完整微内核行块。再少的批只有残行（标量），打包的转置成本摊不回来，
+/// 调用方应当继续用按列驻留的 tile 核。
+pub const MIN_ROWS: usize = MR;
 
 /// 多线程 TN 稠密 GEMM：`out[rows,n] = x[rows,k] · w[n,k]ᵀ`。
 ///
@@ -26,55 +31,62 @@ pub fn gemm_f32_tn(x: &[f32], w: &[f32], rows: usize, n: usize, k: usize, out: &
     );
     let blocks = rows.div_ceil(MR);
     let t = threads_override().min(blocks).max(1);
+    let npad = n.div_ceil(NR) * NR;
     if t <= 1 {
-        let bpack = pack_tn(w, n, k).0;
-        compute_tn(x, &bpack, w, rows, n, k, out);
+        scratch::with_panels(npad * k, |bpack| {
+            pack_tn_into(bpack, w, n, k);
+            compute_tn(x, bpack, w, rows, n, k, out);
+        });
         return;
     }
-    let npad = n.div_ceil(NR) * NR;
-    let mut buf = vec![0.0f32; npad * k];
-    if run_pooled(
-        pool(),
-        x.as_ptr() as *const u8,
-        w.as_ptr() as *const u8,
-        buf.as_mut_ptr() as *mut u8,
-        out.as_mut_ptr() as *mut u8,
-        Shape {
-            m: rows,
-            n,
-            k,
-            npad,
-        },
-        MR,
-        t,
-        tn_stage,
-        tn_calc,
-    ) {
+    let pooled = scratch::with_panels(npad * k, |buf| {
+        run_pooled(
+            pool(),
+            x.as_ptr() as *const u8,
+            w.as_ptr() as *const u8,
+            buf.as_mut_ptr() as *mut u8,
+            out.as_mut_ptr() as *mut u8,
+            Shape {
+                m: rows,
+                n,
+                k,
+                npad,
+            },
+            MR,
+            t,
+            tn_stage,
+            tn_calc,
+        )
+    });
+    if pooled {
         return;
     }
     // 兜底（池不可用）：打包一次后 shared 给 scope 线程，行块按 MR 对齐切。
-    let (bpack, _npad) = pack_tn(w, n, k);
     let per = blocks.div_ceil(t) * MR;
-    std::thread::scope(|s| {
-        for (ti, block) in out[..rows * n].chunks_mut(per * n).enumerate() {
-            let r0 = ti * per;
-            let got = block.len() / n;
-            let a_l = &x[r0 * k..(r0 + got) * k];
-            let bp = &bpack;
-            s.spawn(move || compute_tn(a_l, bp, w, got, n, k, block));
-        }
+    scratch::with_panels(npad * k, |bpack| {
+        pack_tn_into(bpack, w, n, k);
+        let bp: &[f32] = bpack;
+        std::thread::scope(|s| {
+            for (ti, block) in out[..rows * n].chunks_mut(per * n).enumerate() {
+                let r0 = ti * per;
+                let got = block.len() / n;
+                let a_l = &x[r0 * k..(r0 + got) * k];
+                s.spawn(move || compute_tn(a_l, bp, w, got, n, k, block));
+            }
+        });
     });
 }
 
 /// 整段打包（单槽、兜底路径与单线程用）：面板布局与父模块一致，只是源按 `[n][k]` 读。
-fn pack_tn(w: &[f32], n: usize, k: usize) -> (Vec<f32>, usize) {
+///
+/// 写进调用方的暂存区（已清零），不在这里分配：`n = k = 4096` 时这块是 67 MB。
+fn pack_tn_into(bpack: &mut [f32], w: &[f32], n: usize, k: usize) {
     let npad = n.div_ceil(NR) * NR;
-    let mut bpack = vec![0.0f32; npad * k];
+    debug_assert_eq!(bpack.len(), npad * k);
     for g in 0..npad / NR {
         let base = g * k * NR;
         fill_panel(&mut bpack[base..base + k * NR], w, n, k, g * NR);
     }
-    (bpack, npad)
 }
 
 /// 一个列组的转置打包：`w` 的 `first..first+NR` 行、每行 `k` 个元素 → 面板 `[q][NR]`。
@@ -131,7 +143,15 @@ fn tn_calc(j: &Job, slot: usize) {
 ///
 /// 与父模块的 `compute` 逐行对应，只有两处同构偏移：完整列块的微内核吃的是同一份 B 面板，
 /// 所以直接复用；列残尾与行残尾要对**原始权重**取值，那边索引从 `w[q*n + j]` 换成 `w[j*k + q]`。
-fn compute_tn(a: &[f32], bpack: &[f32], w: &[f32], rows: usize, n: usize, k: usize, out: &mut [f32]) {
+fn compute_tn(
+    a: &[f32],
+    bpack: &[f32],
+    w: &[f32],
+    rows: usize,
+    n: usize,
+    k: usize,
+    out: &mut [f32],
+) {
     let full = rows / MR;
     let apack = pack_panels(a, full, k);
     let mut first = true;
@@ -226,7 +246,8 @@ fn edge_tn(a: &[f32], w: &[f32], out: &mut [f32], span: Span, k0: usize, first: 
             let slot = (span.i + r) * span.n + span.j + c;
             let mut acc = if first { 0.0f32 } else { out[slot] };
             for p in 0..span.k {
-                acc += a[(span.i + r) * span.stride + k0 + p] * w[(span.j + c) * span.stride + k0 + p];
+                acc +=
+                    a[(span.i + r) * span.stride + k0 + p] * w[(span.j + c) * span.stride + k0 + p];
             }
             out[slot] = acc;
         }
@@ -240,8 +261,12 @@ mod tests {
     #[test]
     fn tn_matches_transposed_nt_bit_patterns() {
         for (rows, n, k) in [(1, 8, 64), (7, 13, 33), (16, 24, 256), (23, 8, 300)] {
-            let x: Vec<f32> = (0..rows * k).map(|i| ((i * 3) % 17) as f32 * 0.25 - 2.0).collect();
-            let w: Vec<f32> = (0..n * k).map(|i| ((i * 5) % 11) as f32 * 0.5 - 2.5).collect();
+            let x: Vec<f32> = (0..rows * k)
+                .map(|i| ((i * 3) % 17) as f32 * 0.25 - 2.0)
+                .collect();
+            let w: Vec<f32> = (0..n * k)
+                .map(|i| ((i * 5) % 11) as f32 * 0.5 - 2.5)
+                .collect();
             let mut wt = vec![0.0f32; k * n];
             for j in 0..n {
                 for q in 0..k {

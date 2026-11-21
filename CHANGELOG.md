@@ -6,6 +6,10 @@
 ## [Unreleased]
 ### Changed
 
+- **prefill 投影改走线性层布局的 8×8 内核，实测快 33.5×**：`serve::kernels::project_rows` 在 `rows ≥ op::fast::MIN_ROWS` 时直接调 `op::fast::gemm_f32_tn`（权重按输出行驻留的布局，打包阶段做一次「8 行 × 一段 k」的转置，微内核与「收缩轴在前」的 `gemm_f32` 同一份），不足一个微内核行块时仍走按列 tile（转置成本摊不回来），单行仍走 `gemv`。**实测**（macOS aarch64，release，`rows = 256, n = k = 4096` 即服务端投影几何，5 次迭代均值）：`matmul::forward_tn_tiled` 303.9 ms → **9.07 ms/iter（33.5×）**，最大相对误差 2.0e-7（同为 f32 累加，只是寄存器分块与线程不同）。**验证**：`llm-serve` 196 条（含行批跨 `MIN_ROWS` 的分派与逐行 `gemv` 参考对拍）、`llm-op` 404 条（含 `tn_matches_transposed_nt_bit_patterns`：TN 与「转置后喂 NT 入口」逐位相同）全绿。
+
+- **打包面板不再每次调用重分配 67 MB**：`op::fast` 的 B 面板是 `npad · k` 个 f32，服务端的投影几何（`n = k = 4096`）下正好 67 MB，而 decode 与 prefill 是同一线程反复调同一个几何——这块内存每步都用得上，却被每步丢弃一次。新增 `crates/op/src/fast/scratch.rs`：线程私有的 `RefCell<Vec<f32>>` 只增不减，`with_panels(len, f)` 借出前 `len` 个元素，扩容时只清零新增段（面板的补零列依赖它），借用期间再次借用则退化成一次性 `Vec` 而不 panic。五处分配全部改成写入它：`gemm_f32` 的常驻池路径、`scoped_f32` 兜底、`gemm_f32_single`，以及 `gemm_f32_tn` 的池路径与兜底；`pack_b_f32` / `pack_b_f32_par` / `pack_tn` 随之改成 `*_into(bpack, …)` 只写调用方缓冲、不再返回 `Vec`（并行打包仍按 8 列组切线程）。安全性只靠两条：池里的 worker 拿裸指针写的是各自分片，收回发生在 `with_panels` 返回之前；常驻量等于本线程见过的最大面板，与「每次分配再释放」的峰值一致。**实测**（`m = 256, n = k = 4096`，release，10 次迭代均值）：多线程 13.07 → **11.75 ms/iter**（−10%），单线程 91.1 → 95.0 ms（差异落在噪声内——`vec![0.0; len]` 走的是惰性零页，首次触页成本与复用写一次相同，省下的是 allocator 往返）。**验证**：`llm-op` 404 条与 `llm-serve` 196 条全绿（含 `tn_matches_transposed_nt_bit_patterns`、行批跨 `MIN_ROWS` 的分派对拍），`fast/scratch.rs` 自带三条（两次借用同址、扩容清零新增段、重入换块且不 panic），`cargo fmt --check` 与 `clippy` 无新增告警。
+
 - **`crates/tools` 回到"一文件一概念"：`gate` 拆成阈值与四个分析器，`card` 只留判定，统计与 JSON 转义各收成唯一出处**。
   原先 `gate.rs` 一个文件里躺着阈值（`Gate` / `Metric` / `Over`）、禁止调用形态扫描、markdown 相对链接扫描与
   文件行数棘轮四件事；`card.rs` 里混着均值/标准差/最近秩分位/重采样的实现和一张手写 JSON 转义表，而

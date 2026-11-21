@@ -96,6 +96,20 @@ fn projection(c: &mut Criterion) {
             .expect("缓冲尺寸与 m·n·k 一致")
         })
     });
+    // 服务端 prefill：同一份线性层布局走 8×8 寄存器分块 + 常驻池（`op::fast::gemm_f32_tn`）。
+    // 与 `tiled` 的差就是"有没有寄存器分块与多线程"，权重读的遍数两者都是 1。
+    group.bench_function("packed", |bench| {
+        bench.iter(|| {
+            op::fast::gemm_f32_tn(
+                black_box(&x),
+                black_box(&w),
+                black_box(rows),
+                black_box(N),
+                black_box(K),
+                black_box(&mut out),
+            )
+        })
+    });
     group.finish();
 }
 
