@@ -511,9 +511,8 @@ fn rival<'a>(
         })
         .map(|(_, profile)| profile)
 }
-mod check;
-mod parse;
-pub use check::WitnessLookup;
+mod schema;
+pub use schema::WitnessLookup;
 #[cfg(test)]
 #[path = "../tests/prof.rs"]
 mod tests;

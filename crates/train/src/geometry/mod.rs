@@ -685,5 +685,5 @@ const DECLARED: &[(&str, Geometry)] = &[
     ),
 ];
 #[cfg(test)]
-#[path = "../tests/geometry_tests.rs"]
+#[path = "../../tests/geometry_tests.rs"]
 mod tests;
