@@ -19,7 +19,7 @@
 
 use diagnostic::{Code, Error, Result};
 
-use crate::ledger_impl::{audit, certify, check};
+pub use crate::ledger_impl::{audit, certify, check};
 
 /// 账本 schema 标识。
 pub const SCHEMA: &str = "llm.cert.v1";
@@ -36,7 +36,7 @@ pub enum Stable {
 }
 
 impl Stable {
-    fn from_code(code: u8) -> Result<Self> {
+    pub(crate) fn from_code(code: u8) -> Result<Self> {
         match code {
             0 => Ok(Self::Pass),
             1 => Ok(Self::Fail),
@@ -59,7 +59,7 @@ pub enum EpsMethod {
 }
 
 impl EpsMethod {
-    fn from_code(code: u8) -> Result<Self> {
+    pub(crate) fn from_code(code: u8) -> Result<Self> {
         match code {
             0 => Ok(Self::Backward),
             1 => Ok(Self::Residual),
@@ -94,7 +94,7 @@ pub enum Bound {
 }
 
 impl Bound {
-    fn from_code(code: u8) -> Result<Self> {
+    pub(crate) fn from_code(code: u8) -> Result<Self> {
         match code {
             0 => Ok(Self::Diagnostic),
             1 => Ok(Self::Candidate),
@@ -124,7 +124,7 @@ pub enum Mode {
 }
 
 impl Mode {
-    fn from_code(code: u8) -> Result<Self> {
+    pub(crate) fn from_code(code: u8) -> Result<Self> {
         match code {
             0 => Ok(Self::Trunc),
             1 => Ok(Self::Residual),
