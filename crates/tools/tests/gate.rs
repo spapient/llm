@@ -664,3 +664,60 @@ fn ratchet_blocks_new_and_worse_allows_within_budget() {
         "全新身份直接失败"
     );
 }
+
+/// 架构变体对拍用例总数的下限：17 份逐族对拍、245 条用例（`algorithm` 恢复后的实测值）。
+///
+/// 这个数不是质量目标，是**存在证明**。`crates/algorithm` 曾被整目录删除而全仓没有一条用例
+/// 变红——因为"这些族是什么"只写在注释与治理表里，没有任何东西要求它存在；注释和表格都能
+/// 无声消失，用例数不能。族少一个、对拍被掏空一半，这里就红。
+const ARCHITECTURE_FAMILY_CASES: usize = 245;
+
+#[test]
+fn every_architecture_family_keeps_its_conformance_suite() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("workspace root");
+    let dir = root.join("crates/algorithm");
+    let mut suites = Vec::new();
+    walk(&dir.join("tests"), &mut suites, "rs", false, &|_| true);
+
+    let mut cases = 0;
+    let mut orphans = Vec::new();
+    for suite in &suites {
+        let text = std::fs::read_to_string(suite).expect("对拍文件可读");
+        cases += text.matches("#[test]").count();
+        if !mounted(&dir, suite) {
+            orphans.push(suite.display().to_string());
+        }
+    }
+
+    assert!(
+        orphans.is_empty(),
+        "对拍存在但没被挂载，等于没跑（孤儿文件不算覆盖）：{orphans:?}"
+    );
+    assert!(
+        cases >= ARCHITECTURE_FAMILY_CASES,
+        "架构变体对拍从 {ARCHITECTURE_FAMILY_CASES} 条降到 {cases} 条"
+    );
+}
+
+/// 这份对拍是否被 `src` 里某条 `#[path]` 真挂载：目标按所在目录解析后比较，路径写法不影响判定。
+fn mounted(dir: &Path, suite: &Path) -> bool {
+    let mut sources = Vec::new();
+    walk(&dir.join("src"), &mut sources, "rs", false, &|_| true);
+    let Ok(target) = std::fs::canonicalize(suite) else {
+        return false;
+    };
+    sources.iter().any(|source| {
+        let text = std::fs::read_to_string(source).unwrap_or_default();
+        let here = Path::new(source).parent();
+        text.match_indices("path = \"")
+            .filter_map(|(at, mark)| {
+                let rest = &text[at + mark.len()..];
+                let end = rest.find('"')?;
+                Some(here?.join(&rest[..end]))
+            })
+            .any(|path| std::fs::canonicalize(path).is_ok_and(|real| real == target))
+    })
+}
