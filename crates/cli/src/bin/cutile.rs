@@ -22,11 +22,8 @@ use diagnostic::{Code, Error};
 use llm_cli::kernel::CutileCommand;
 use llm_cli::settings::Settings;
 use std::process::ExitCode;
-#[path = "cutile/matrix.rs"]
 mod matrix;
-#[path = "cutile/prose.rs"]
 mod prose;
-#[path = "cutile/report.rs"]
 mod report;
 
 fn main() -> ExitCode {

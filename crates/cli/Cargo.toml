@@ -9,6 +9,7 @@ readme.workspace = true
 description = "Command-line combination root: parse argv and settings, assemble the kernel layers, and expose the `llm` binary."
 publish = false
 autotests = false
+autobins = false
 
 [[bin]]
 name = "llm"
