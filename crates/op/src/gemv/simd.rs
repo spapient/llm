@@ -89,8 +89,7 @@ pub(crate) fn forward(
         return false;
     }
     let input = [layout(x, ctx, cpb)];
-    let sums = [group_sums(x, ctx)];
-    run(cpb, ctx.group / cpb, weights, &input, &sums, ctx, zero, scales, out);
+    run(cpb, ctx.group / cpb, weights, &input, ctx, zero, scales, out);
     true
 }
 
@@ -116,9 +115,7 @@ pub(crate) fn forward_batch(
     }
     let input: Vec<Vec<f32>> =
         (0..geo.rows).map(|r| layout(&x[r * geo.m..][..geo.m], ctx, cpb)).collect();
-    let sums: Vec<Vec<f32>> =
-        (0..geo.rows).map(|r| group_sums(&x[r * geo.m..][..geo.m], ctx)).collect();
-    run(cpb, ctx.group / cpb, weights, &input, &sums, ctx, zero, scales, out);
+    run(cpb, ctx.group / cpb, weights, &input, ctx, zero, scales, out);
     true
 }
 
@@ -133,17 +130,16 @@ fn run(
     lanes: usize,
     weights: &[u8],
     inputs: &[Vec<f32>],
-    sums: &[Vec<f32>],
     ctx: ScaledRow,
     zero: f32,
     scales: &[f32],
     out: &mut [f32],
 ) {
     match (cpb, lanes) {
-        (2, 8) => columns::<2, 8>(weights, inputs, sums, ctx, zero, scales, out),
-        (2, _) => columns::<2, 16>(weights, inputs, sums, ctx, zero, scales, out),
-        (_, 8) => columns::<4, 8>(weights, inputs, sums, ctx, zero, scales, out),
-        _ => columns::<4, 16>(weights, inputs, sums, ctx, zero, scales, out),
+        (2, 8) => columns::<2, 8>(weights, inputs, ctx, zero, scales, out),
+        (2, _) => columns::<2, 16>(weights, inputs, ctx, zero, scales, out),
+        (_, 8) => columns::<4, 8>(weights, inputs, ctx, zero, scales, out),
+        _ => columns::<4, 16>(weights, inputs, ctx, zero, scales, out),
     }
 }
 
@@ -153,7 +149,6 @@ fn run(
 fn columns<const CPB: usize, const LANES: usize>(
     weights: &[u8],
     inputs: &[Vec<f32>],
-    sums: &[Vec<f32>],
     ctx: ScaledRow,
     zero: f32,
     scales: &[f32],
@@ -173,13 +168,12 @@ fn columns<const CPB: usize, const LANES: usize>(
                         core::array::from_fn(|i| &weights[(j + i) * row..][..row]);
                     let s: [&[f32]; COLS] =
                         core::array::from_fn(|i| &scales[(j + i) * groups..][..groups]);
-                    let total = dot::<CPB, LANES, COLS>(&w, &s, input, &sums[r], ctx.group, zero);
+                    let total = dot::<CPB, LANES, COLS>(&w, &s, input, ctx.group, zero);
                     dest.copy_from_slice(&total);
                 } else {
                     let row_w: [&[u8]; 1] = [&weights[j * row..][..row]];
                     let row_s: [&[f32]; 1] = [&scales[j * groups..][..groups]];
-                    let total =
-                        dot::<CPB, LANES, 1>(&row_w, &row_s, input, &sums[r], ctx.group, zero);
+                    let total = dot::<CPB, LANES, 1>(&row_w, &row_s, input, ctx.group, zero);
                     dest.copy_from_slice(&total);
                 }
             }
@@ -188,22 +182,27 @@ fn columns<const CPB: usize, const LANES: usize>(
     }
 }
 
-/// `R` 行的点积：一组一条 `LANES` 车道链，四行同时推进，组尾归约一次并乘上该组的标度。
+/// `R` 行的点积：一组一条 `LANES` 车道链，四行同时推进，**每行只在行尾归约一次**。
 ///
-/// 每读一个 16 字节窗口就按槽位拆开（`byte >> (slot · width)`，低位槽在前——与标量叶同一个
-/// 码序），每个槽位给 `LANES` 个码配 `LANES` 个 `x`：`cpb = 2` 时两块 16 车道、`cpb = 4` 时四块
-/// 8 车道，合起来覆盖一组。
+/// 归约是水平求和——串且长（`LANES` 车道要 `log2` 步一路加到底），一组归约一次就意味着每组
+/// 一次 ~20 周期的等待，`groups` 个组串起来能把内核按在 L1 里空等。这里用线性关系把它摊开：
+/// `Σ_g reduce(acc_g)·s_g = reduce(Σ_g acc_g·s_g)`——每组的 `LANES` 车道先乘上该组标度加进一条
+/// **跨组**的累加链（一条 `fma`，`LANES` 车道互不相干），归约推迟到行尾做一次。于是组循环里
+/// 只剩一条无等待的向量链，而不是 `groups` 条。
+///
+/// `zero` 折进码值（`Σ (code − zero)·x`），于是不需要每组再拿 `Σ x` 去修正——`x` 的和在两条
+/// 通道里都不再出现。
 fn dot<const CPB: usize, const LANES: usize, const R: usize>(
     w_rows: &[&[u8]; R],
     s_rows: &[&[f32]; R],
     input: &[f32],
-    sums: &[f32],
     group: usize,
     zero: f32,
 ) -> [f32; R] {
     let (row, per_group) = (input.len() / CPB, group / CPB);
-    let mut total = [0.0f32; R];
-    for (g, &sum) in sums.iter().enumerate() {
+    let shift = Simd::<f32, LANES>::splat(zero);
+    let mut running = [Simd::<f32, LANES>::splat(0.0); R];
+    for g in 0..input.len() / group {
         let at = g * per_group;
         let mut acc = [Simd::<f32, LANES>::splat(0.0); R];
         for slot in 0..CPB {
@@ -211,15 +210,16 @@ fn dot<const CPB: usize, const LANES: usize, const R: usize>(
                 let xs = Simd::<f32, LANES>::from_slice(&input[slot * row + chunk..][..LANES]);
                 for (r, packed) in w_rows.iter().enumerate() {
                     let bytes = Simd::<u8, LANES>::from_slice(&packed[chunk..][..LANES]);
-                    acc[r] = codes::<CPB, LANES>(bytes, slot).cast::<f32>().mul_add(xs, acc[r]);
+                    let value = codes::<CPB, LANES>(bytes, slot).cast::<f32>() - shift;
+                    acc[r] = value.mul_add(xs, acc[r]);
                 }
             }
         }
         for r in 0..R {
-            total[r] += (acc[r].reduce_sum() - zero * sum) * s_rows[r][g];
+            running[r] = acc[r].mul_add(Simd::splat(s_rows[r][g]), running[r]);
         }
     }
-    total
+    running.map(SimdFloat::reduce_sum)
 }
 
 /// 第 `slot` 个码的 `LANES` 个无符号码值：低位槽在前，`mask = (1 << width) - 1`。
@@ -243,11 +243,6 @@ fn layout(x: &[f32], ctx: ScaledRow, cpb: usize) -> Vec<f32> {
         }
     }
     input
-}
-
-/// 每组的 `x` 之和：`zero` 修正只需要它，与输出行无关，所以一行只算一遍。
-fn group_sums(x: &[f32], ctx: ScaledRow) -> Vec<f32> {
-    x.chunks_exact(ctx.group).map(|group| group.iter().sum()).collect()
 }
 
 #[cfg(test)]
