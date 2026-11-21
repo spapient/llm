@@ -71,7 +71,6 @@ pub mod model;
 pub mod norm;
 pub mod operator;
 pub mod rnd;
-pub mod rnn;
 pub mod softmax;
 pub(crate) use tpl::parse;
 pub mod reduce;

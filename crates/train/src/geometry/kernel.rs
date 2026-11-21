@@ -236,6 +236,17 @@ pub(super) fn pool2d_out(win: Window, h: usize, w: usize) -> Result<(usize, usiz
     ))
 }
 
+/// 池化反向的公共前奏：推输出形状、按样本数分配 `dx`。
+fn pool_backward_frame(
+    inputs: &[Vec<f32>],
+    win: Window,
+    plane: (usize, usize, usize),
+) -> Result<((usize, usize), usize, Vec<f32>)> {
+    let (h, w, c) = plane;
+    let n = inputs[0].len() / (h * w * c);
+    Ok(((pool2d_out(win, h, w)?), n, vec![0.0f32; inputs[0].len()]))
+}
+
 /// 二维最大池化反向：逐样本散射到 argmax 位。
 pub(super) fn backward_pool2d(
     inputs: &[Vec<f32>],
@@ -243,10 +254,7 @@ pub(super) fn backward_pool2d(
     win: Window,
     plane: (usize, usize, usize),
 ) -> Result<Vec<Vec<f32>>> {
-    let (h, w, c) = plane;
-    let (oh, ow) = pool2d_out(win, h, w)?;
-    let n = inputs[0].len() / (h * w * c);
-    let mut dx = vec![0.0f32; inputs[0].len()];
+    let ((oh, ow), n, mut dx) = pool_backward_frame(inputs, win, plane)?;
     for ni in 0..n {
         scatter_max2d(&mut dx, &inputs[0], incoming, ni, (oh, ow), plane, win);
     }
@@ -283,10 +291,7 @@ pub(super) fn backward_avg2d(
     plane: (usize, usize, usize),
     count_include_pad: bool,
 ) -> Result<Vec<Vec<f32>>> {
-    let (h, w, c) = plane;
-    let (oh, ow) = pool2d_out(win, h, w)?;
-    let n = inputs[0].len() / (h * w * c);
-    let mut dx = vec![0.0f32; inputs[0].len()];
+    let ((oh, ow), n, mut dx) = pool_backward_frame(inputs, win, plane)?;
     for ni in 0..n {
         for oi in 0..oh {
             for oj in 0..ow {
@@ -416,6 +421,19 @@ pub(super) fn scatter_interp(
     }
 }
 
+/// 反传散射的输入格取值：`(at, out, plane)` 的下标记法只写一处，两种插值口径共用。
+fn gain(
+    incoming: &[f32],
+    at: (usize, usize, usize),
+    out: (usize, usize),
+    plane: (usize, usize, usize),
+) -> impl Fn(usize) -> f32 + '_ {
+    let (ni, oi, oj) = at;
+    let (oh, ow) = out;
+    let c = plane.2;
+    move |ci| incoming[((ni * oh + oi) * ow + oj) * c + ci]
+}
+
 pub(super) fn scatter_interp_linear(
     dx: &mut [f32],
     incoming: &[f32],
@@ -423,10 +441,8 @@ pub(super) fn scatter_interp_linear(
     out: (usize, usize),
     plane: (usize, usize, usize),
 ) {
-    let (ni, oi, oj) = at;
-    let (oh, ow) = out;
     let (h, w, c) = plane;
-    let g = |ci: usize| incoming[((ni * oh + oi) * ow + oj) * c + ci];
+    let g = gain(incoming, at, out, plane);
     let fy = ((oi as f32 + 0.5) * h as f32 / oh as f32 - 0.5).max(0.0);
     let y0 = fy.floor().min((h - 1) as f32) as usize;
     let y1 = (y0 + 1).min(h - 1);
@@ -451,10 +467,8 @@ pub(super) fn scatter_interp_nearest(
     out: (usize, usize),
     plane: (usize, usize, usize),
 ) {
-    let (ni, oi, oj) = at;
-    let (oh, ow) = out;
     let (h, w, c) = plane;
-    let g = |ci: usize| incoming[((ni * oh + oi) * ow + oj) * c + ci];
+    let g = gain(incoming, at, out, plane);
     let ii = (oi * h / oh).min(h - 1);
     let jj = (oj * w / ow).min(w - 1);
     for ci in 0..c {

@@ -202,6 +202,21 @@ fn conv2d_i8_matches_exact() {
     assert_eq!(got, want, "量化卷积与整数直算逐位相同");
 }
 
+/// 池化用例的公共跑法：按输出形状造确定性样本与同形输出，前向由调用点注入。
+///
+/// 三个用例（最大池 / 平均池 / 平均池补零）此前各自重复"推形状、造样本、备缓冲、跑前向"
+/// 四步；收进一处后，用例只剩各自的断言口径。
+fn pooled(
+    (oh, ow): (usize, usize),
+    (n, h, w, c): (usize, usize, usize, usize),
+    forward: impl FnOnce(&[f32], &mut [f32]),
+) -> (Vec<f32>, Vec<f32>) {
+    let x = sample(n * h * w * c, 1);
+    let mut got = vec![0.0f32; n * oh * ow * c];
+    forward(&x, &mut got);
+    (x, got)
+}
+
 #[test]
 fn max_pool_matches_naive() {
     let pool = MaxPool2d {
@@ -216,10 +231,10 @@ fn max_pool_matches_naive() {
     };
     let (n, h, w, c) = (1, 4, 4, 2);
     let (oh, ow) = pool.shape(h, w).unwrap();
-    let x = sample(n * h * w * c, 1);
-    let mut got = vec![0.0f32; n * oh * ow * c];
-    pool.forward(&x, n, h, w, c, &mut got).unwrap();
-    let mut want = vec![0.0f32; n * oh * ow * c];
+    let (x, got) = pooled((oh, ow), (n, h, w, c), |x, out| {
+        pool.forward(x, n, h, w, c, out).unwrap();
+    });
+    let mut want = vec![0.0f32; got.len()];
     for ni in 0..n {
         for oi in 0..oh {
             for oj in 0..ow {
@@ -255,10 +270,10 @@ fn avg_pool_counts_only_real_cells() {
     };
     let (n, h, w, c) = (1, 3, 3, 1);
     let (oh, ow) = pool.shape(h, w).unwrap();
-    let x = sample(n * h * w * c, 1);
-    let mut got = vec![0.0f32; n * oh * ow * c];
-    pool.forward(&x, n, h, w, c, &mut got).unwrap();
-    assert_eq!((oh, ow), (2, 2));
+    assert_eq!((oh, ow), (2, 2), "3×3 / 2×2 / 补零 1 / 步长 2 的输出形状");
+    let (x, got) = pooled((oh, ow), (n, h, w, c), |x, out| {
+        pool.forward(x, n, h, w, c, out).unwrap();
+    });
     assert!((got[0] - x[0]).abs() < 1e-6, "剔除补零后只剩左上单元");
 }
 
