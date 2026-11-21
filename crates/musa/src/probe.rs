@@ -27,7 +27,7 @@ pub const FMA: Probe = Probe {
     name: "fma",
     about: "FP32 FMA 峰值（fmaf 乘加链，一条发射）",
     lane: "plain",
-    source: include_str!("../../assets/musa/peak.cu"),
+    source: include_str!("../assets/peak.cu"),
 };
 
 /// 手写分块 GEMM：`128×128` 分块 + 寄存器块，给生成器的循环注入一个手工上限。
@@ -35,7 +35,7 @@ pub const GEMM: Probe = Probe {
     name: "simt-gemm",
     about: "手写 128×128 分块 FP32 GEMM（寄存器块 + 共享内存）",
     lane: "plain",
-    source: include_str!("../../assets/musa/simt_gemm.cu"),
+    source: include_str!("../assets/simt_gemm.cu"),
 };
 
 /// muBLAS 对照：厂商库在同一个形状上的数，用来判断差距是"我们的内核"还是"整机"。
@@ -43,5 +43,5 @@ pub const MUBLAS: Probe = Probe {
     name: "mublas",
     about: "muBLAS FP32 GEMM（厂商库对照）",
     lane: "mublas",
-    source: include_str!("../../assets/musa/mublas.cu"),
+    source: include_str!("../assets/mublas.cu"),
 };

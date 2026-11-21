@@ -1,28 +1,51 @@
 use std::path::Path;
 
 use cutile::builtin::Catalogue;
+use cutile::dirs::Dirs;
 use diagnostic::{Code, Error, Result};
 
 use super::*;
 
+/// 全新空目录：没有任何 `verify` 产物。生成不读本机证据，用它才测得出这件事。
+fn scratch(tag: &str) -> Dirs {
+    let root = std::env::temp_dir().join(format!("llm-musa-{tag}-{}", std::process::id()));
+    Dirs::under(root)
+}
+
 #[test]
 fn a_pointwise_job_yields_a_runnable_program() -> Result<()> {
     let job = Job::of(&pointwise()?).shape(64, 64);
-    let generated = program(&job)?;
+    let generated = program(&job, &scratch("gen"))?;
     assert!(
         generated.device.contains("<<<"),
         "设备源里没有内核发射：驱动没有拼进 host 段"
     );
-    let reference = compare(&generated.reference, &generated.reference, 0.0)?;
-    assert!(reference.pass());
-    assert!(reference.compared > 0, "参考值为空，等于没测");
+    let text = lines(&generated.reference);
+    let outcome = compare(&text, &text, 0.0)?;
+    assert!(outcome.pass());
+    assert!(outcome.compared > 0, "参考值为空，等于没测");
     Ok(())
 }
 
 #[test]
+fn generation_does_not_need_local_execution_evidence() -> Result<()> {
+    // 空目录 = 这台机器没跑过 `verify`。生成仍要成立，否则"在这里生成、拿到目标机编译"就没了。
+    let empty = scratch("evidence");
+    let generated = program(&Job::of(&pointwise()?).shape(32, 32), &empty)?;
+    assert!(!generated.reference.is_empty(), "没生成参考值");
+    Ok(())
+}
+
+#[test]
+fn a_job_takes_its_whole_shape_at_once() {
+    let job = Job::of("add_f32").shape(8, 4);
+    assert_eq!((job.m, job.n), (8, 4));
+    assert_eq!(Job::of("add_f32"), Job::of("add_f32"));
+}
+
+#[test]
 fn timing_wraps_one_launch_and_reports_on_stderr() -> Result<()> {
-    let job = Job::of(&pointwise()?).shape(64, 64);
-    let generated = program(&job)?;
+    let generated = program(&Job::of(&pointwise()?).shape(64, 64), &scratch("timing"))?;
     let timed = timed(&generated.device, 16)?;
     assert!(timed.contains("for (int rep = 0; rep < 16; ++rep) {"));
     assert!(timed.contains("bench: %.4f ms/iter"));

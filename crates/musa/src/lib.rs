@@ -2,11 +2,9 @@
 //!
 //! 四步按数据流排列，每步只读写文件、不藏状态：
 //!
-//! 1. [`program`]：算子名 + 形状 → 设备源 + 参考值。设备源走 `cutile` / `engine` 的**生产**流水线
-//!    （逐点 `cuda_grid_program`、分块归一化 `cuda_rmsnorm_program` / `cuda_softmax_program`、
-//!    分块归约 `cuda_reduce_program`、循环注入 `cuda_gemm_program`、分块扫描 `cuda_scan_program`、
-//!    张量核 `cuda_wmma_gemm_program`），这里不重写任何 lowering——这条通道要回答的问题恰恰是
-//!    「生产流水线在 MUSA 上是否成立」，自己再拼一份程序就答不了。
+//! 1. [`program`]：算子名 + 形状 → 设备源 + 参考值。生成走**声明式协商**（不要求本机执行证据），
+//!    源文本由 `cutile` 的聚合给，host 驱动由 `engine::program` 按 `launch` 形态装——这条通道
+//!    要回答的问题恰恰是「生产流水线在 MUSA 上是否成立」，自己再拼一份程序就答不了。
 //! 2. [`Recipe`]：设备源 → `mcc` 命令行（车道决定开关）。
 //! 3. [`timed`]：在首次发射与末次回读之间夹入事件计时循环。
 //! 4. [`compare`]：程序按位打印的输出与参考值比对。
@@ -34,7 +32,7 @@ mod timing;
 
 pub use bits::{Outcome, compare};
 pub use compile::{Recipe, shim};
-pub use emit::{Job, Program, lanes, program};
+pub use emit::{Job, Program, lines, program};
 pub use probe::{PROBES, Probe};
 pub use timing::timed;
 

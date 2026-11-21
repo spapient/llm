@@ -16,11 +16,11 @@ use diagnostic::{Code, Error, Result};
 const SHIM: [(&str, &str); 2] = [
     (
         "cuda_runtime.h",
-        include_str!("../../assets/musa/shim/cuda_runtime.h"),
+        include_str!("../assets/shim/cuda_runtime.h"),
     ),
     (
         "cuda_fp16.h",
-        include_str!("../../assets/musa/shim/cuda_fp16.h"),
+        include_str!("../assets/shim/cuda_fp16.h"),
     ),
 ];
 

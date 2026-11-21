@@ -20,7 +20,7 @@
 | L6 调度与服务 | `train`、`engine`、`serve` | 训练样本与循环、检查点、连续批与 KV 页账、提交与执行体、设备后端实现（`engine::backends` / `metal_host` / `metal_fold`，实现 `cutile` 的 `Backend` 缝；`engine::metal_executor` 是唯一 `unsafe` 岛（[ADR 0035](adr/0035-unsafe-ffi-boundary.md)））、端点契约与线格式、CPU 模型宿主 | 直接调用 `cutile` 生成 kernel；执行任何业务 |
 | L7 入口 | `cli`（bin：`llm` 与 `cutile`） | 组合根：命令行文法、配置解析、各层装配、取值解析与人可读排版；编排入口不定义新类型 | 编排入口新增领域类型；在本层复制内核机制 |
 
-`annotation`（编译期注解）、`fuzz`（模糊测试契约）、`benchmarks`（集中测量容器）与 `testkit`（测试夹具与门禁）是**工具成员**：没有运行时层级，依赖边不参与方向判定。
+`annotation`（编译期注解）、`fuzz`（模糊测试契约）、`benchmarks`（集中测量容器）、`testkit`（测试夹具与门禁）与 `musa`（MUSA 真机测量通道）是**工具成员**：没有运行时层级，依赖边不参与方向判定。
 
 `testkit` 的库体只出浮点口径、随机数与暂存目录等夹具，跨层对拍与门禁在它的 `tests/` 下运行，
 被测内核只出现在 dev-dependencies 里，不进任何产品路径。
@@ -39,7 +39,7 @@
 不再复述每一次的数字；配置层的现状见 [ADR 0022](adr/0022-build-time-corpora.md) 与
 [ADR 0023](adr/0023-settings-to-cli.md)。
 
-允许的边（当前全量，共 111 条，含 42 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benchmarks` / `testkit` 的边不参与运行时方向判定）：
+允许的边（当前全量，共 116 条，含 42 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benchmarks` / `musa` / `testkit` 的边不参与运行时方向判定）：
 
 ```
 cutile   → diagnostic, op, prim, prof    +dev: testkit
@@ -57,10 +57,11 @@ shard    → diagnostic
 train    → nn, autograd, weights, shard, op, tensor, diagnostic, wire    +dev: testkit
 engine   → tensor, diagnostic, storage, cutile, op, prof    +dev: testkit
 serve    → engine, nn, op, rng, tokenizer, diagnostic, weights, wire    +dev: testkit
-cli      → cutile, diagnostic, engine, nn, op, prim, prof, serve, tensor, tokenizer, tools, train, weights（L7 组合根：只做命令分派与各层装配，不定义新类型）
+cli      → cutile, diagnostic, engine, nn, op, prim, prof, report, serve, tensor, tokenizer, tools, train, weights（L7 组合根：只做命令分派与各层装配，不定义新类型）
 fuzz     → diagnostic    +dev: cli, weights, train, serve, wire, tensor, tools（工具成员；`+dev` 是 `tests/support.rs` 里的驱动对象）
 benchmarks → +dev: prof, op, cutile, wire, weights, tokenizer, tools, testkit, train, autograd, tensor, nn, engine, serve（工具成员：只声明被测对象，测量配置归 criterion）
-tools     → diagnostic, report（配置驱动静态质量门 + 人可读排版 + 回退判定）    +dev: testkit
+musa     → cutile, diagnostic, engine, op, report（工具成员：MUSA 真机测量通道——生成 → 编译 → 计时 → 对拍；跨层用 L2/L3/L6 的公开缝而不重写 lowering）
+tools     → diagnostic（配置驱动静态质量门 + 回退判定）    +dev: testkit
 report    → （叶：人可读排版，零依赖）
 testkit  → +dev: autograd, cutile, nn, op, tensor, tools, train, weights（工具成员：夹具库 + 门禁；被测层只出现在 dev-dependencies）
 wire     → diagnostic（纯字节码闭集，不认识张量或容器布局）    +dev: testkit
@@ -170,7 +171,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Case` / `Baseline` / `Judgement` | `tools` | 回退判定（与基线相比有没有退）；不做测量 |
 | `EntryKind` / `Harness` / `Roofline` / `Geometry` / `BenchRecord` | `tools` | 统一基准记录结构：只持有记录，不测量、不下性能结论，未测得的峰值留 `None` |
 | `Protocol` / `Statistic` / `Tally` / `Standing` / `Shortfall` / `Card` | `tools` | 实测卡三态判定：闭集 → 样本量 → 统计量定义 → 区间与门槛，次序有意；样本与时钟来源归 `benchmarks` |
-| `Job` / `Recipe` | `tools` | MUSA 真机测量通道：`Job` 是一次测量作业（算子名 + 形状 + 是否走张量核特化），`Recipe` 是一次编译（工具链根 + 车道决定开关与链接库）；只读写文件，不藏状态 |
+| `Job` / `Program` / `Outcome` / `Recipe` / `Probe` | `musa` | MUSA 真机测量通道：`Job` 是一次测量作业（算子名 + 形状），`Recipe` 是一次编译（工具链根 + 车道决定开关与链接库），`Probe` 是随包发布的设备侧探针源。生成只走 `cutile` 的公开缝与 `engine::program::cuda`，不重写一条 lowering；只读写文件，不藏状态 |
 | `spec` / `model` 属性宏 | `annotation` | 把注解展开成契约实现 + 编译期断言 + 一条校验测试；**不持有运行期注册表**。`model` 生成 `MODEL` 并断言注解与 `Operator` 对齐；设备执行由 `cutile` 的 `const SPECS` / `const GATES` 描述符表按函数指针登记 |
 | `RelErr` / `Worst` / `Scale` | `testkit` | 夹具侧的浮点对拍读数：`RelErr` 只答「整批最大绝对误差 / 分母」与这个分母自己的值，`Worst` 只答「读数落在哪个元素」，`Scale` 只答「分母按整批最大幅度还是每元素留 1 的地板取」。比较归 `within_ratio` / `within_rel` / `assert_rel_with`，阈值仍只由 `cutile::reference::tolerance` 拥有——本行不设第二张分档表，`Scale::Batch` 与它由 `crates/testkit/tests/oracle.rs` 逐位钉住 |
 

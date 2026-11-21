@@ -32,9 +32,7 @@ pub fn timed(source: &str, reps: usize) -> Result<String> {
 
 /// 计时循环要包住的区间：首次发射所在行首 → 末次回读所在行首。
 fn body(source: &str) -> Result<(usize, usize)> {
-    let launch = source.find(LAUNCH).ok_or_else(|| absent(LAUNCH))?;
-    let read = source.rfind(READ_BACK).ok_or_else(|| absent(READ_BACK))?;
-    let (start, stop) = (line_start(source, launch), line_start(source, read));
+    let (start, stop) = bounds(source)?;
     if stop <= start {
         return Err(Error::new(
             Code::Invalid,
@@ -42,6 +40,25 @@ fn body(source: &str) -> Result<(usize, usize)> {
         ));
     }
     Ok((start, stop))
+}
+
+/// 两个行首偏移：首次发射与末次回读。
+fn bounds(source: &str) -> Result<(usize, usize)> {
+    Ok((
+        start_of(source, LAUNCH, false)?,
+        start_of(source, READ_BACK, true)?,
+    ))
+}
+
+/// 判据点所在行的行首；`last` 取最后一处（末次回读）而不是第一处。
+fn start_of(source: &str, marker: &str, last: bool) -> Result<usize> {
+    let at = if last {
+        source.rfind(marker)
+    } else {
+        source.find(marker)
+    };
+    let at = at.ok_or_else(|| absent(marker))?;
+    Ok(line_start(source, at))
 }
 
 /// 循环头：建事件、记起点、开 `reps` 次迭代。

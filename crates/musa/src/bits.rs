@@ -35,6 +35,12 @@ impl Outcome {
 pub fn compare(printed: &str, reference: &str, tol: f64) -> Result<Outcome> {
     let got = parse(printed, "程序输出")?;
     let want = parse(reference, "标量参考")?;
+    aligned(&got, &want)?;
+    Ok(summarize(&want, &got, tol))
+}
+
+/// 长度不等与空输入两条硬门：任一不成立，“全部通过”只会是假绿。
+fn aligned(got: &[f64], want: &[f64]) -> Result<()> {
     if got.len() != want.len() {
         return Err(Error::new(
             Code::Invalid,
@@ -48,9 +54,29 @@ pub fn compare(printed: &str, reference: &str, tol: f64) -> Result<Outcome> {
     if want.is_empty() {
         return Err(Error::new(Code::Invalid, "没有可比对的元素"));
     }
-    let (at, worst) = want
+    Ok(())
+}
+
+/// 逐元素误差的摘要：最大误差与超阈个数。
+fn summarize(want: &[f64], got: &[f64], tol: f64) -> Outcome {
+    let (at, worst) = largest(want, got);
+    let over = want
         .iter()
-        .zip(&got)
+        .zip(got)
+        .filter(|(want, got)| deviation(**got, **want) > tol)
+        .count();
+    Outcome {
+        compared: want.len(),
+        over,
+        worst: worst as f32,
+        at,
+    }
+}
+
+/// 最大相对误差及其下标。
+fn largest(want: &[f64], got: &[f64]) -> (usize, f64) {
+    want.iter()
+        .zip(got)
         .map(|(want, got)| deviation(*got, *want))
         .enumerate()
         .fold((0, f64::NEG_INFINITY), |(at, worst), (index, value)| {
@@ -59,18 +85,7 @@ pub fn compare(printed: &str, reference: &str, tol: f64) -> Result<Outcome> {
             } else {
                 (at, worst)
             }
-        });
-    let over = want
-        .iter()
-        .zip(&got)
-        .filter(|(want, got)| deviation(**got, **want) > tol)
-        .count();
-    Ok(Outcome {
-        compared: want.len(),
-        over,
-        worst: worst as f32,
-        at,
-    })
+        })
 }
 
 /// 一个元素的相对误差；位相同时为 0（覆盖 ±0 与同 `NaN`），任一侧是 `NaN` 时为无穷大。
