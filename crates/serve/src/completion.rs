@@ -687,5 +687,5 @@ fn misfit(why: String) -> diagnostic::Error {
 }
 
 #[cfg(test)]
-#[path = "completion_tests.rs"]
+#[path = "../tests/completion_tests.rs"]
 mod tests;

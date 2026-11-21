@@ -798,5 +798,5 @@ fn bad(why: impl Into<String>) -> Error {
 }
 
 #[cfg(test)]
-#[path = "spike_tests.rs"]
+#[path = "../tests/spike_tests.rs"]
 mod spike_tests;

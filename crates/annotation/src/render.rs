@@ -348,5 +348,5 @@ fn literal(text: &str) -> String {
 }
 
 #[cfg(test)]
-#[path = "render_tests.rs"]
+#[path = "../tests/render_tests.rs"]
 mod tests;

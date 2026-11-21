@@ -777,5 +777,5 @@ fn triple(mut sources: Vec<String>, role: &str) -> diagnostic::Result<(String, S
 }
 
 #[cfg(test)]
-#[path = "execution_tests.rs"]
+#[path = "../tests/execution_tests.rs"]
 mod tests;

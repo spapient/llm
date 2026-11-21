@@ -105,7 +105,7 @@ pub mod softmax_f32 {
 
     #[cfg(test)]
     mod tests {
-        include!("softmax_f32_tests.rs");
+        include!("../tests/softmax_f32_tests.rs");
     }
 }
 
@@ -300,7 +300,7 @@ pub mod rmsnorm_f32 {
 
     #[cfg(test)]
     mod tests {
-        include!("rmsnorm_f32_tests.rs");
+        include!("../tests/rmsnorm_f32_tests.rs");
     }
 }
 
@@ -455,7 +455,7 @@ pub mod embed_f32 {
 
     #[cfg(test)]
     mod tests {
-        include!("embed_f32_tests.rs");
+        include!("../tests/embed_f32_tests.rs");
     }
 }
 
@@ -655,6 +655,6 @@ pub mod rope_f32 {
 
     #[cfg(test)]
     mod tests {
-        include!("rope_f32_tests.rs");
+        include!("../tests/rope_f32_tests.rs");
     }
 }

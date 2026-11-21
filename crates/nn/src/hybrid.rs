@@ -602,5 +602,5 @@ impl<S: Scalar> Tower<S> {
 }
 
 #[cfg(test)]
-#[path = "hybrid_tests.rs"]
+#[path = "../tests/hybrid_tests.rs"]
 mod tests;
