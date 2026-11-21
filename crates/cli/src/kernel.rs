@@ -5,7 +5,7 @@
 //! （[`crate::settings`]），由驱动方在交给本模块之前摘走。
 //!
 //! 表即文法：一个子命令一行（名字、选项表、组装），新增子命令只加一行；解析器本体与一级命令共用
-//! [`crate::flag`]，因此两层对「缺取值 / 未知参数 / 缺必需项」的说法逐字一致。
+//! `crate::flag`，因此两层对「缺取值 / 未知参数 / 缺必需项」的说法逐字一致。
 
 use crate::flag::{Flags, Grammar, Words, switch, value, words};
 use diagnostic::{Code, Error, Result};

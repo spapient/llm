@@ -2,12 +2,12 @@
 //!
 //! 只有表（`Sheet`）与它们的标题；判定与措辞的来源和 [`super::section`] 相同——库给结论，这里排版。
 
-use std::fmt::Write as _;
 use cutile::atom::Prim;
 use cutile::ledger::{BackendRow, LedgerCell, Status};
 use cutile::prof::Profile;
 use cutile::verify::Verified;
 use diagnostic::render::{Align, Sheet};
+use std::fmt::Write as _;
 
 /// 台账矩阵：证据汇总表 + 原语×后端对照表 + 逐条证据说明。
 pub(super) fn ledger(rows: &[BackendRow]) -> String {
@@ -91,7 +91,9 @@ fn ledger_evidence_notes(rows: &[BackendRow]) -> String {
             if cell.status == Status::Unprovided {
                 continue;
             }
-            let _ = writeln!(out, "- `{}` {} · {} {} — {}",
+            let _ = writeln!(
+                out,
+                "- `{}` {} · {} {} — {}",
                 vendor, cell.prim, cell.impl_name, cell.grade, cell.note
             );
         }
@@ -110,7 +112,9 @@ pub(super) fn ledger_header(profile: &Profile, verified: &Verified, conclusion: 
         "# {} 能力台账（由 `cutile verify --emit-ledger` 生成）\n\n",
         profile.meta.vendor
     );
-    let _ = writeln!(text, "- 档案：`{}` ({})",
+    let _ = writeln!(
+        text,
+        "- 档案：`{}` ({})",
         profile.meta.id, profile.meta.checked
     );
     // 台账要能回答"这条证据是谁编出来的"：实测值来自 `--version`，登记值是人写的出处。
@@ -123,7 +127,9 @@ pub(super) fn ledger_header(profile: &Profile, verified: &Verified, conclusion: 
     } else {
         "，与登记值不一致"
     };
-    let _ = writeln!(text, "- 工具链：实测 `{actual}`，档案登记 `{}`{agrees}",
+    let _ = writeln!(
+        text,
+        "- 工具链：实测 `{actual}`，档案登记 `{}`{agrees}",
         verified.tool_ver
     );
     let _ = write!(text, "- 结论：{}", conclusion.trim());

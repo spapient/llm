@@ -13,7 +13,6 @@
 //! cargo run --bin cutile -- cache gc --limit 1073741824
 //! ```
 
-use std::fmt::Write as _;
 use cutile::bench::{self, Bench};
 use cutile::builtin::Catalogue;
 use cutile::doctor::{self, Doctor};
@@ -22,6 +21,7 @@ use cutile::verify::{self, Verified, VerifyEntry};
 use diagnostic::{Code, Error};
 use llm_cli::kernel::CutileCommand;
 use llm_cli::settings::Settings;
+use std::fmt::Write as _;
 use std::process::ExitCode;
 mod matrix;
 mod prose;
@@ -254,13 +254,19 @@ fn bench(
         measured.op, measured.repeat, measured.device
     );
     let _ = writeln!(out, "  plan  {}", measured.plan);
-    let _ = writeln!(out, "  证据  {} 条见证（这次执行，协商用的就是它）",
+    let _ = writeln!(
+        out,
+        "  证据  {} 条见证（这次执行，协商用的就是它）",
         measured.proven
     );
-    let _ = writeln!(out, "  对拍  max_rel_err {:.3e}（与标量参考）",
+    let _ = writeln!(
+        out,
+        "  对拍  max_rel_err {:.3e}（与标量参考）",
         measured.max_rel_err
     );
-    let _ = writeln!(out, "  实测  min {}, p50 {}（达成率按 p50）→ {:.1} GB/s, {:.1} GFLOP/s",
+    let _ = writeln!(
+        out,
+        "  实测  min {}, p50 {}（达成率按 p50）→ {:.1} GB/s, {:.1} GFLOP/s",
         ::diagnostic::render::per_run(measured.per_run_ns),
         ::diagnostic::render::per_run(measured.p50_ns),
         measured.measured.gb_s,

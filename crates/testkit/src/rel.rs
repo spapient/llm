@@ -7,6 +7,8 @@
 //! 对拍失败时不要停在布尔值上：[`rel_err`] 回一份读数（误差、分母、最差元素），
 //! [`assert_within_rel`] 直接把这三样写进 panic 消息，门禁用例应当用它。
 
+use crate::compare::close_scalar;
+
 /// 误差最大的那个元素：`index` 是它在切片里的下标，`got` / `want` 是两边的原值。
 ///
 /// 对拍失败时先看这一个点：整批的判据是「一个分母下的最大误差」，它一定落在某个元素上，
@@ -275,6 +277,7 @@ pub fn within_rel(got: &[f32], want: &[f32], tolerance: f32) -> bool {
 #[must_use]
 pub fn within_ratio(got: &[f32], want: &[f32], tolerance: f64) -> bool {
     rel_err(got, want).ratio() <= tolerance
+}
 
 #[cfg(test)]
 mod tests {

@@ -32,7 +32,7 @@ pub fn approx_eq(left: &[f32], right: &[f32], tolerance: f32) -> bool {
 /// 双项容差标量判定：`|a-b| ≤ abs + rel·max(|a|,|b|)`。
 ///
 /// 两侧同为 NaN、同为同号无穷算相等；异号无穷不算相等。
-fn close_scalar(a: f32, b: f32, abs: f32, rel: f32) -> bool {
+pub(crate) fn close_scalar(a: f32, b: f32, abs: f32, rel: f32) -> bool {
     if a == b {
         return true;
     }

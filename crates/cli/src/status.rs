@@ -2,11 +2,11 @@
 //!
 //! 判定与数值都来自各层库，本模块只装配、选词与分行；不定义新类型。
 
-use std::fmt::Write as _;
 use diagnostic::render::Panel;
 use diagnostic::{Code, Error, Result};
 use nn::Contract as _;
 use nn::LmHead;
+use std::fmt::Write as _;
 use tokenizer::Tokenizer as _;
 use weights::Loader as _;
 
@@ -105,7 +105,9 @@ fn model_floor(model: &nn::Stack) -> (String, Option<String>) {
         let _ = write!(summary, "；无法计价 {} 层", floor.unpriced().len());
     }
     if !model.uncovered().is_empty() {
-        let _ = write!(summary, "；未覆盖 {} 条：{}",
+        let _ = write!(
+            summary,
+            "；未覆盖 {} 条：{}",
             model.uncovered().len(),
             diagnostic::render::join_names(model.uncovered().iter().map(String::as_str))
         );

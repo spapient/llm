@@ -5,18 +5,20 @@
 //! 不叫 `report` 的理由：本模块只产"段"，而 `VerifyReport` / `Doctor` 是**输入**的名字，
 //! 同一个词既指类型又指模块时，`section::evidence_block(&report)` 会读成两种东西。
 
-use std::fmt::Write as _;
 use super::prose::{counted, fragment_note, params_note};
 use cutile::bench::{Bench, Peak, Performance, Verdict};
 use cutile::cap::VariantCheck;
 use cutile::doctor::{Built, CacheState, CacheWhy, Doctor};
 use cutile::verify::{Negotiation, Verified, VerifyReport};
+use std::fmt::Write as _;
 
 /// `[证据]` 段：依据类别、设备执行 / 本机自检条数与语言门；不成立的见证单列一行。
 pub(super) fn evidence_block(report: &Doctor) -> String {
     let mut out = String::from("\n[证据] 依据 ");
     out.push_str(&report.evidence.basis.to_string());
-    let _ = writeln!(out, " | 设备执行 {} | 本机自检 {} | 语言门 {}",
+    let _ = writeln!(
+        out,
+        " | 设备执行 {} | 本机自检 {} | 语言门 {}",
         counted(report.evidence.device, &report.evidence.device_params),
         counted(report.evidence.host, &report.evidence.host_params),
         report.evidence.language
@@ -54,7 +56,9 @@ pub(super) fn storage_block(report: &Doctor) -> Option<String> {
                     .collect::<Vec<_>>()
                     .join(" ")
             };
-            let _ = writeln!(out, "  {}={} 容量 {} | 声明 {}",
+            let _ = writeln!(
+                out,
+                "  {}={} 容量 {} | 声明 {}",
                 row.space, row.physical, capacity, declared
             );
         }
@@ -65,7 +69,9 @@ pub(super) fn storage_block(report: &Doctor) -> Option<String> {
 /// `[emit]` 段：片段口径、扩展名、缓存键与缓存目录。
 pub(super) fn source_block(source: &Built) -> String {
     let mut out = String::from("\n[emit] ");
-    let _ = writeln!(out, "{} | {} | cache key {}\n  {}",
+    let _ = writeln!(
+        out,
+        "{} | {} | cache key {}\n  {}",
         fragment_note(source.fragment),
         source.ext,
         source.key.hex(),
@@ -153,9 +159,7 @@ pub(super) fn negotiation_summary(report: &VerifyReport) -> String {
         "\n协商首档 {hits}/{total}（cutile README §16：首选没被选中说明 `needs` 粒度写错了）\n"
     );
     for (device, negotiation) in report.devices.iter().zip(&report.negotiations) {
-        let _ = writeln!(out, "  {device} = {}",
-            describe_negotiation(negotiation)
-        );
+        let _ = writeln!(out, "  {device} = {}", describe_negotiation(negotiation));
     }
     out
 }
@@ -318,16 +322,12 @@ pub(super) fn cache_why(report: &CacheWhy) -> String {
         }
         CacheState::Never | CacheState::Differs => {}
     }
-    let _ = writeln!(out, "  与本次构建不同（{} 项）：",
-        report.changes.len()
-    );
+    let _ = writeln!(out, "  与本次构建不同（{} 项）：", report.changes.len());
     for change in &report.changes {
         // 只在一侧出现的项也要打印：新版本加的字段与已删除的字段都是"为什么没命中"。
         let stored = change.stored.as_deref().unwrap_or("—");
         let current = change.current.as_deref().unwrap_or("—");
-        let _ = writeln!(out, "    {}：缓存 {stored} | 本次 {current}",
-            change.field
-        );
+        let _ = writeln!(out, "    {}：缓存 {stored} | 本次 {current}", change.field);
     }
     out
 }
