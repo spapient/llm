@@ -1,4 +1,5 @@
     use super::*;
+    use diagnostic::Code;
 
     /// 声明档样本的输入切片：卷积是 `(x, weight, bias)`，其余按一元/三元口径。
     fn declared_inputs(sample: &op::model::Sample, g: Geometry) -> Vec<&[f32]> {

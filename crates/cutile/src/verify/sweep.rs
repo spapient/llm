@@ -52,7 +52,9 @@ pub(crate) enum Lane {
 
 impl Lane {
     /// 档案声明的 `emit` 对应哪条通道，以及这条通道此刻能不能跑（`None` 表示没有编译器，只能复用产物）。本机没有执行路径时在这里 fail-fast。
-    pub(crate) fn ready(profile: &Profile) -> diagnostic::Result<(Self, Option<toolchain::Toolchain>)> {
+    pub(crate) fn ready(
+        profile: &Profile,
+    ) -> diagnostic::Result<(Self, Option<toolchain::Toolchain>)> {
         match profile.meta.emit {
             Emit::C => Ok((Self::Host, toolchain::detect())),
             Emit::Cuda => Self::ready_device(profile, Self::Cuda),

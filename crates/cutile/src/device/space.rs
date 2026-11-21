@@ -73,9 +73,7 @@ pub fn check_alignment(profile: &Profile, swizzle_bits: u8) -> diagnostic::Resul
     let Some(needed) = 1u64.checked_shl(u32::from(swizzle_bits)) else {
         return Err(Error::new(
             Code::Unsupported,
-            format!(
-                "swz<{swizzle_bits},…> 的 bank 粒度超出可表示范围，档案只有 {bank} 个 bank"
-            ),
+            format!("swz<{swizzle_bits},…> 的 bank 粒度超出可表示范围，档案只有 {bank} 个 bank"),
         ));
     };
     if needed > u64::from(bank) {

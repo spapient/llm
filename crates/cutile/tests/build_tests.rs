@@ -133,8 +133,7 @@ fn built(op: &OpDecl, dirs: &Dirs) -> (CacheKey, String, Sample) {
     let (source, key) = source(op, &profile, &path, &tile, dirs).expect("可构建");
     let sample = (op::model(&op.name).expect("算子模型").sample)(32, 1);
     op.signature.check(&sample).expect("ABI 对齐");
-    let harness =
-        crate::harness::harness(&source.text, &op.signature, &sample, 1).expect("可生成");
+    let harness = crate::harness::harness(&source.text, &op.signature, &sample, 1).expect("可生成");
     (key, harness, sample)
 }
 
@@ -227,11 +226,9 @@ fn a_new_compiler_version_does_not_reuse_the_old_artifact() {
     let new = fake("cc21.sh", "21.0.0");
     assert_ne!(old.id(), new.id(), "前提：两条工具链身份不同");
 
-    let (first, older) =
-        execute(&profile, Some(&old), &key, &harness, &dirs).expect("第一次编译");
+    let (first, older) = execute(&profile, Some(&old), &key, &harness, &dirs).expect("第一次编译");
     assert!(!older.reused, "{older:?}");
-    let (second, newer) =
-        execute(&profile, Some(&new), &key, &harness, &dirs).expect("第二次编译");
+    let (second, newer) = execute(&profile, Some(&new), &key, &harness, &dirs).expect("第二次编译");
     assert!(!newer.reused, "换工具链版本必须重新编译：{newer:?}");
     assert_ne!(older.path, newer.path, "两份产物不能共用路径");
     assert_eq!(first.bits, second.bits, "语义相同，结果必须逐位相同");

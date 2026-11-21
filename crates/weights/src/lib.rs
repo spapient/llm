@@ -64,6 +64,7 @@ pub mod svd;
 
 // —— 沉降账本：LLD §4.7 的逐张量体积 / 原因 / 无损判决，全部由落盘字节现算 ——
 pub mod settle;
+mod settle_impl;
 
 // —— L3 合成律：LLD §4.5 的逐段证书 → 网络级误差上界与适用域 ——
 pub mod l3;

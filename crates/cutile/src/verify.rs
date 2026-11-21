@@ -343,9 +343,9 @@ fn gate_parts(gate: &LanguageGate) -> Option<String> {
     }
 }
 
-
 mod sweep;
 
+#[cfg(test)]
 pub(crate) use sweep::Lane;
 pub use sweep::verify_one;
 

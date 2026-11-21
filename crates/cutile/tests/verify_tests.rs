@@ -49,8 +49,8 @@ fn verifying_ascend_without_the_device_reports_the_missing_device() {
     let profile = catalogue.profile("ascend").cloned().expect("ascend 档案");
     let op = catalogue.op("gemv_i4").expect("gemv_i4 声明");
     let dirs = Dirs::under(std::env::temp_dir().join("cutile-verify-ascend"));
-    let error = verify_one(op, &profile, &dirs, &crate::cap::Proof::none())
-        .expect_err("本机没有昇腾设备");
+    let error =
+        verify_one(op, &profile, &dirs, &crate::cap::Proof::none()).expect_err("本机没有昇腾设备");
     assert_eq!(error.code(), Code::Unsupported);
     assert_eq!(error.message(), NO_DEVICE);
 }

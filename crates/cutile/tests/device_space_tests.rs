@@ -28,8 +28,7 @@ fn capacity_is_the_archive_declaration() {
 fn capacity_is_enforced_against_profile() {
     let profile = profile();
     assert!(check_capacity(&profile, &[SpaceUse::new(Space::Fast, 1024)]).is_ok());
-    let error =
-        check_capacity(&profile, &[SpaceUse::new(Space::Fast, 1 << 30)]).unwrap_err();
+    let error = check_capacity(&profile, &[SpaceUse::new(Space::Fast, 1 << 30)]).unwrap_err();
     assert_eq!(error.code(), Code::Unsupported);
     assert!(error.to_string().contains("L2"), "{error}");
 }
