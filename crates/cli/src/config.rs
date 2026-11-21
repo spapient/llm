@@ -6,11 +6,24 @@
 //!
 //! **不拥有**：优先级与来源打印（[`crate::settings`]）、键是否登记（[`crate::key`]）。
 
-use crate::key::{Key, Origin, dotted_key, invalid, rebase_value, value_of_text};
-use crate::root::discover_files;
+use crate::key::{Key, Origin, dotted_key, home, invalid, rebase_value, value_of_text};
 use crate::settings::Settings;
 use diagnostic::{Code, Error, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// 配置文件的候选位置（不含显式 `--config` / `CUTILE_CONFIG`）；顺序即优先级。
+pub(crate) fn discover_files() -> Vec<PathBuf> {
+    let mut candidates = vec![PathBuf::from("cutile.toml")];
+    #[cfg(windows)]
+    if let Some(appdata) = std::env::var_os("APPDATA").filter(|value| !value.is_empty()) {
+        candidates.push(PathBuf::from(appdata).join("cutile").join("config.toml"));
+    }
+    #[cfg(not(windows))]
+    if let Some(home) = home() {
+        candidates.push(home.join(".config").join("cutile").join("config.toml"));
+    }
+    candidates
+}
 
 impl Settings {
     /// 配置文件层发现（ADR 0048）：`CUTILE_CONFIG` → `./cutile.toml` → 平台用户目录；

@@ -158,17 +158,13 @@ fn archive_commands_carry_paths_through_without_opening_here() {
         Invocation::parse(&args(&["inspect", "--in", "model.u"]))
             .expect("合法")
             .command(),
-        &Command::Inspect {
-            input: "model.u"
-        }
+        &Command::Inspect { input: "model.u" }
     );
     assert_eq!(
         Invocation::parse(&args(&["check", "--in", "model.u"]))
             .expect("合法")
             .command(),
-        &Command::Check {
-            input: "model.u"
-        }
+        &Command::Check { input: "model.u" }
     );
 
     assert_eq!(
@@ -269,7 +265,7 @@ fn the_usage_text_lists_every_command() {
 /// 要求接线。名字同时充当"这条命令确实出现在用法里"的清单。
 #[test]
 fn every_command_variant_has_a_destination() {
-    fn destination(command: &Command) -> &'static str {
+    fn destination(command: &Command<'_>) -> &'static str {
         match command {
             Command::Status { .. } => "status",
             Command::Run { .. } => "run",

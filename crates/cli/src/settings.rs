@@ -55,18 +55,18 @@
 //! ```
 
 //!
-//! 三个同伴模块按"改什么"分开：[`crate::key`] 是键闭集与取值类型，[`crate::root`] 是系统目录，
+//! 两个同伴模块按"改什么"分开：[`crate::key`] 是键闭集、取值类型与路径根，
 //! [`crate::config`] 是配置文件层；本模块只留优先级、来源与对外投影。
 
+use crate::key::APP;
+pub use crate::key::Roots;
 use crate::key::{
     KEY_COUNT, Key, Origin, Resolved, dotted_key, invalid, rebase_value, value_of_text,
 };
-use crate::root::APP;
 use diagnostic::Result;
 use std::path::{Path, PathBuf};
 
 pub use crate::key::SettingValue;
-pub use crate::root::Roots;
 
 /// 解析后的设置：值 + 来源 + 路径根。每个进程加载一次，之后按引用传递。
 #[derive(Debug, Clone, PartialEq)]

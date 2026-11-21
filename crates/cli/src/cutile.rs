@@ -64,7 +64,7 @@ fn fail(error: Error) -> ExitCode {
     ExitCode::from(error.code().exit_code())
 }
 
-fn run(command: &CutileCommand, settings: &Settings) -> diagnostic::Result<String> {
+fn run(command: &CutileCommand<'_>, settings: &Settings) -> diagnostic::Result<String> {
     match command {
         CutileCommand::Doctor { op, device, why } => doctor(settings, op, device, why.as_deref()),
         CutileCommand::Verify {

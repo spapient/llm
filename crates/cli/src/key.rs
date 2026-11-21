@@ -3,9 +3,11 @@
 //! 键表只有 [`keys!`] 调用这一份：点号名、环境变量名、类型分派、默认值、人读说明、槽位下标
 //! 全部由它派生，因此"加了一个键、忘了另一处"在结构上不可能。新增键只加一行。
 //!
-//! **不拥有**：优先级规则（在 [`crate::settings`]）、目录默认值（在 [`crate::root`]）。
+//! **不拥有**：优先级规则（在 [`crate::settings`]）、配置文件的发现在 [`crate::config`]。
+//!
+//! 路径根（[`Roots`]）与键闭集同住一处：路径类键的默认值就是 `roots.default_*_dir(APP)`，
+//! 两者拆开只会让"这个默认值从哪个目录来"需要跨文件追。
 
-use crate::root::{APP, Roots};
 use diagnostic::{Code, Error, Result};
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -24,14 +26,6 @@ pub enum SettingValue {
 }
 
 impl SettingValue {
-    /// 投影为路径；类型不符（键表声明下不可达，防御分支）给 `None`。
-    pub(crate) fn into_path(self) -> Option<PathBuf> {
-        match self {
-            Self::Path(path) => Some(path),
-            _ => None,
-        }
-    }
-
     /// 借出路径视图。
     pub(crate) fn as_path(&self) -> Option<&Path> {
         match self {
@@ -252,4 +246,102 @@ pub(crate) fn rebase_value(value: SettingValue, base: &Path) -> SettingValue {
 /// 一条配置错误：上下文固定为 `cli::settings`。
 pub(crate) fn invalid(message: impl Into<String>) -> Error {
     Error::new(Code::Invalid, message.into()).with("cli::settings")
+}
+
+// ---- 路径根：默认目录与相对路径基准 ----
+
+/// 应用子目录名：默认目录是 `<cache home>/cutile/{cache,work}`。
+pub(crate) const APP: &str = "cutile";
+
+/// 路径解析的根。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Roots {
+    cache_home: PathBuf,
+    base: PathBuf,
+}
+
+impl Roots {
+    /// 用同一个目录充当缓存根与相对路径基准；不读任何环境变量（测试与嵌入方用这个）。
+    pub fn new(home: impl Into<PathBuf>) -> Self {
+        let home = home.into();
+        Self {
+            cache_home: home.clone(),
+            base: home,
+        }
+    }
+
+    /// 生产入口：缓存取平台标准目录，相对路径以进程启动目录为基准。
+    pub fn discover() -> Self {
+        Self {
+            cache_home: cache_home(),
+            base: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+        }
+    }
+
+    /// 指定相对路径的解析基准。
+    #[must_use]
+    pub fn with_base(mut self, base: impl Into<PathBuf>) -> Self {
+        self.base = base.into();
+        self
+    }
+
+    /// 缓存根（其下是 `cutile/cache` 与 `cutile/work`）。
+    pub fn cache_home(&self) -> &Path {
+        &self.cache_home
+    }
+
+    /// 环境变量与 `--set` 里相对路径的解析基准：进程启动目录，符合 shell 习惯。
+    pub fn base(&self) -> &Path {
+        &self.base
+    }
+
+    /// 默认缓存目录：`<cache home>/<app>/cache`。
+    pub fn default_cache_dir(&self, app: &str) -> PathBuf {
+        self.cache_home.join(app).join("cache")
+    }
+
+    /// 默认工作目录：`<cache home>/<app>/work`（可被系统清理，不承载事实数据）。
+    pub fn default_work_dir(&self, app: &str) -> PathBuf {
+        self.cache_home.join(app).join("work")
+    }
+}
+
+pub(crate) fn home() -> Option<PathBuf> {
+    ["HOME", "USERPROFILE"]
+        .into_iter()
+        .filter_map(std::env::var_os)
+        .find(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn env_dir(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+fn fallback_home() -> PathBuf {
+    std::env::temp_dir()
+}
+
+#[cfg(target_os = "macos")]
+fn cache_home() -> PathBuf {
+    home()
+        .map(|home| home.join("Library").join("Caches"))
+        .unwrap_or_else(fallback_home)
+}
+
+#[cfg(windows)]
+fn cache_home() -> PathBuf {
+    env_dir("LOCALAPPDATA")
+        .or_else(|| home().map(|home| home.join("AppData").join("Local")))
+        .unwrap_or_else(fallback_home)
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+fn cache_home() -> PathBuf {
+    env_dir("XDG_CACHE_HOME")
+        .or_else(|| home().map(|home| home.join(".cache")))
+        .unwrap_or_else(fallback_home)
 }

@@ -95,7 +95,7 @@ int witness_bar(thread float *out) {
     return 1;
 }
 
-/* cvt/saturate_convert: (float)(int)3 = 3.0 */
+/* cvt/float_cast: (float)(int)3 = 3.0 */
 int witness_cvt(thread float *out) {
     int value = 3;
     out[0] = (float)value;

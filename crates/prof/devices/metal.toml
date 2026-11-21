@@ -169,9 +169,11 @@ witness = { file = "metal/witness.metal", func = "witness_bar", expect = [0.0] }
 
 [[provides]]
 prim    = "cvt"
-impl    = "saturate_convert"
+impl    = "float_cast"
 dt      = ["f32", "i32", "i8"]
-sat     = ["on", "off"]
+# 片段层一个原语只有一份正文（`FragmentSet::get`），正文做的是就近舍入、不饱和的转换。
+# 登记 `on` 会让只要求 `on` 的算子静默拿到不饱和结果，所以只写真能交付的这一侧。
+sat     = ["off"]
 grade   = "L2"
 witness = { file = "metal/witness.metal", func = "witness_cvt", expect = [3.0] }
 

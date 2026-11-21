@@ -1,6 +1,7 @@
 /* cutile-sign: cvt/convert_float */
-/* cvt: 累加器收敛。用 `convert_float` 而不是 C 的隐式转换：它是 OpenCL C 的显式转换，舍入方向
- * 由标准钉死（两侧同为 f32 时是恒等），签名与正文于是指同一条指令。
- * `sat = $sat` 不在正文里分支：饱和只在整型目标上有可饱和的端点，源与目标都是 f32 时
- * `convert_float_sat` 与 `convert_float` 逐位相同，两条设置走同一行才是正确的那一行。 */
+/* cvt: 累加器收敛。参数对是 i32 → f32：模板里 `@cvt(v, acc, sat: off)` 的 `v` 是 `float`、
+ * `acc` 是 `int`。正文写 `convert_float` 而不是 C 的隐式转换：它是 OpenCL C 的显式转换，舍入
+ * 方向由标准钉死（int→float 就近舍入，正是不表态时的默认），签名与正文于是指同一条指令。
+ * `$sat` 不进正文：`convert_float_sat` 在浮点目的地上把结果夹到 [0, 1]，而 `acc` 是可能为负的
+ * 带符号点积，夹过之后与 CPU 参考不再逐位相同——档案只登记 `off` 这一侧。 */
 ($0) = convert_float(($1));

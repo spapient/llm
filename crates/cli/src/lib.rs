@@ -41,7 +41,6 @@ mod config;
 mod flag;
 mod key;
 mod platform;
-mod root;
 mod run;
 mod status;
 mod train;
@@ -60,7 +59,7 @@ use diagnostic::{Code, Error, Result};
 /// 设备后端是进程级注册表，装配点必须在产品路径上（ADR 0025 §1、ADR 0035）：只在测试里
 /// 注册会让 `llm run --device cuda` 把"没装配"误报成"没有该后端"。`install` 幂等且只做三次
 /// 静态登记，因此不按命令分支——为一个不必要的条件跳过去换掉编译期证明不划算。
-pub fn entry(invocation: &Invocation) -> Result<()> {
+pub fn entry(invocation: &Invocation<'_>) -> Result<()> {
     engine::backends::install();
     route(invocation.command())
 }
@@ -71,7 +70,7 @@ pub fn entry(invocation: &Invocation) -> Result<()> {
 /// 平铺会顶到 11，所以分四层。代价是每层末尾需要一个 `_` 臂——它走不走得到**不靠文档声明**，
 /// 而靠 `tests/grammar.rs::every_command_variant_has_a_destination` 里那张不带 `_` 的平表：
 /// 新增 `Command` 变体时那道门编译失败，`cargo check --all-targets` 因此点名要求接线。
-fn route(command: &Command) -> Result<()> {
+fn route(command: &Command<'_>) -> Result<()> {
     match command {
         Command::Help => usage(),
         Command::Platform => platform::report(),
@@ -87,7 +86,7 @@ fn usage() -> Result<()> {
 }
 
 /// 读权重、跑闭环：三者都在算，都归这里。
-fn compute(command: &Command) -> Result<()> {
+fn compute(command: &Command<'_>) -> Result<()> {
     match command {
         Command::Status { weights } => status::status(weights.as_deref()),
         Command::Run {
@@ -115,7 +114,7 @@ fn compute(command: &Command) -> Result<()> {
 }
 
 /// 容器类命令：读、写、沉降一个 `.u` 文件。
-fn objects(command: &Command) -> Result<()> {
+fn objects(command: &Command<'_>) -> Result<()> {
     match command {
         Command::Import { input, output } => archive::import(input, output),
         Command::Settle { input, output } => archive::settle(input, output.as_deref()),
@@ -125,7 +124,7 @@ fn objects(command: &Command) -> Result<()> {
 }
 
 /// `inspect` / `check` 只差一步验码：同一个入参，同一层。
-fn examine(command: &Command) -> Result<()> {
+fn examine(command: &Command<'_>) -> Result<()> {
     match command {
         Command::Inspect { input } => archive::inspect(input),
         Command::Check { input } => archive::check(input),
@@ -135,6 +134,6 @@ fn examine(command: &Command) -> Result<()> {
 
 /// 阶梯末端：上面的编译期证明说这里走不到。留一条诊断而不是 `unreachable!`——真漏了也该
 /// 是内部错误码，不该让用户看到 panic。
-fn stray(command: &Command) -> Result<()> {
+fn stray(command: &Command<'_>) -> Result<()> {
     Err(Error::new(Code::Internal, format!("命令 `{command:?}` 没有落点")).with("cli::entry"))
 }

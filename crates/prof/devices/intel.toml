@@ -82,9 +82,11 @@ grade   = "L1"
 witness = { file = "intel/witness.cl", func = "witness_dot_i8", expect = [10.0] }
 
 # P0 模板的 `@dot` 是标量 f32 累加，与上面的整数点积不是同一个指令：单独一条签名。
+# 名字带 `4`：正文是四条互不相欠的 FMA 链（16-wide 步进、4-wide 收口），与 cuda/musa
+# 共享的单链 `fma` 不是同一份源码——`prim` 的同构判据按实现名分组，两者不能同名。
 [[provides]]
 prim    = "dot"
-impl    = "fma"
+impl    = "fma4"
 dt      = ["f32"]
 space   = ["REG"]
 lanes   = ["1"]
@@ -154,7 +156,9 @@ witness = { file = "intel/witness.cl", func = "witness_bar", expect = [0.0] }
 prim    = "cvt"
 impl    = "convert_float"
 dt      = ["f32", "i32", "i8"]
-sat     = ["on", "off"]
+# 片段层一个原语只有一份正文（`FragmentSet::get`），正文做的是就近舍入、不饱和的转换。
+# 登记 `on` 会让只要求 `on` 的算子静默拿到不饱和结果，所以只写真能交付的这一侧。
+sat     = ["off"]
 grade   = "L1"
 witness = { file = "intel/witness.cl", func = "witness_cvt", expect = [3.0] }
 

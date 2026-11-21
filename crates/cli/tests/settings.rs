@@ -3,8 +3,8 @@
 //! 经 `src/settings.rs` 的 `#[path]` 挂进 lib 单测（N12：`src/` 里不放测试）。
 
 use super::*;
+use crate::key::APP;
 use crate::key::Key;
-use crate::root::APP;
 use diagnostic::Code;
 use std::path::PathBuf;
 
