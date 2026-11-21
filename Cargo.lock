@@ -450,6 +450,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "llm-cpu"
+version = "0.1.0"
+dependencies = [
+ "llm-prof",
+]
+
+[[package]]
+name = "llm-cuda"
+version = "0.1.0"
+dependencies = [
+ "llm-prof",
+]
+
+[[package]]
 name = "llm-diagnostic"
 version = "0.1.0"
 dependencies = [
@@ -495,6 +509,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "llm-metal"
+version = "0.1.0"
+dependencies = [
+ "llm-prof",
+]
+
+[[package]]
+name = "llm-musa"
+version = "0.1.0"
+dependencies = [
+ "llm-prof",
+]
+
+[[package]]
 name = "llm-nn"
 version = "0.1.0"
 dependencies = [
@@ -519,6 +547,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "llm-opencl"
+version = "0.1.0"
+dependencies = [
+ "llm-prof",
+]
+
+[[package]]
 name = "llm-prim"
 version = "0.1.0"
 dependencies = [
@@ -540,6 +575,13 @@ version = "0.1.0"
 dependencies = [
  "llm-diagnostic",
  "llm-testkit",
+]
+
+[[package]]
+name = "llm-rocm"
+version = "0.1.0"
+dependencies = [
+ "llm-prof",
 ]
 
 [[package]]

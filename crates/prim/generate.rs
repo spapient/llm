@@ -21,7 +21,9 @@
 // 编译只能编出一段与真实调用无关的代码。能编成设备镜像的最小单位是 `witness.<ext>`——一份完整
 // 翻译单元、固定 ABI、每条签名一个入口。
 //
-// 本文件被 `include!` 进构建脚本，所以只能用 `//` 注释：`//!` 与 `///` 在 include 之后非法。
+// 本文件被 `include!` 进构建脚本，所以不能用 `//!`（内层文档注释在 include 之后非法）；`///`
+// 只能落在 `fn` / `struct` / `enum` 上，生成到 `tables.rs` 里的那三行刻意带 `///`——设备 crate
+// 打开 `missing_docs`，生成的公开常量也得有文档。
 
 use std::env;
 use std::fmt::Write as _;
@@ -259,7 +261,7 @@ fn entry_of(profile: &Profile, prim: Prim, implementation: &str, path: &Path) ->
 fn fragments(text: &mut String, device: &Device) {
     let _ = writeln!(
         text,
-        "// 片段：原语 → 文本，顺序与 `Prim::ALL` 一致。\n\
+        "/// 片段：原语 → 文本，顺序与 `Prim::ALL` 一致。\n\
          pub const FRAGMENTS: [(Prim, &'static str); {}] = [",
         device.fragments.len()
     );
@@ -278,7 +280,7 @@ fn fragments(text: &mut String, device: &Device) {
 fn device_table(text: &mut String, device: &Device, outcome: &Outcome) {
     let _ = writeln!(
         text,
-        "// 原语 → 见证里的入口名：镜像里查的就是这个名字。\n\
+        "/// 原语 → 见证里的入口名：镜像里查的就是这个名字。\n\
          pub const PRIMS: [(Prim, &'static str); {}] = [",
         device.entries.len()
     );
@@ -305,7 +307,7 @@ fn device_table(text: &mut String, device: &Device, outcome: &Outcome) {
 
     let _ = writeln!(
         text,
-        "// 设备行：`prim` 把它连同另外五台设备合成 `DEVICES`。\n\
+        "/// 设备行：`prim` 把它连同另外五台设备合成 `DEVICES`。\n\
          pub const DEVICE: prof::Device = prof::Device {{"
     );
     let _ = writeln!(text, "    vendor: {:?},", device.name);
