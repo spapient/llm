@@ -54,8 +54,9 @@
 #![cfg_attr(target_arch = "aarch64", feature(aarch64_unstable_target_feature))]
 #![cfg_attr(target_arch = "aarch64", feature(stdarch_aarch64_feature_detection))]
 // `fast::sme::pack_a` 用 `std::simd` 做安全的分块转置（`zip1`/`zip2`），免去手写 NEON
-// 内联汇编，同时保持 `unsafe_code = "deny"` 不扩大开岛范围。
-#![feature(portable_simd)]
+// 内联汇编，同时保持 `unsafe_code = "deny"` 不扩大开岛范围。唯一的使用者在 aarch64 上，
+// 其它目标声明它只会换来一条「特性已声明但未使用」的警告，所以同样按目标门控。
+#![cfg_attr(target_arch = "aarch64", feature(portable_simd))]
 
 // `#[annotation::model]` 生成的代码用 `::llm_op::..` 指回本 crate（与 `nn` 的
 // `extern crate self as nn` 同一条约定：注解绑定它所属契约的路径，而不是硬编码调用方的名字）。
