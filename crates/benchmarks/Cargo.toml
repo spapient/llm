@@ -11,9 +11,6 @@ publish = false
 # 测试按模块平铺在 `tests/` 下（`regress.rs` 是根，其余是它的子模块），
 # 只有 `[[test]]` 里列出的那个 target；关掉自动发现，平铺的模块文件才不会各成一个 target。
 autotests = false
-# 同理关掉 bin 自动发现：`src/main.rs` 是 bench 入口，不是可执行二进制。
-# （否则 cargo 会同时按 bin 编它一次，而 bin 图里没有 dev-dependencies，必然链接失败。）
-autobins = false
 
 # 测量容器只在 bench target 里用这些依赖：criterion 负责统计（预热、采样、测量时长
 # 都是它自己的配置），prof/op 是被测对象。
@@ -39,12 +36,14 @@ tool = { path = "../tools", package = "llm-tools" }
 testkit = { path = "../testkit", package = "llm-testkit" }
 
 # 显式关闭 libtest harness：criterion 提供自己的 main（criterion_main!）。
-# 全部 25 组基准由这一个 target 声明（`src/main.rs` + 同目录模块），只链接一次、
+# 源码放在 `bench/` 而不是 `src/`：本成员没有库、也不发布任何东西，全部是测量脚手架；
+# 放进 `src/` 会被静态质量门当成生产代码，也会占用 §N6 的 `crates/*/src` 行数预算。
+# 全部 25 组基准由这一个 target 声明（`bench/main.rs` + 同目录模块），只链接一次、
 # 只起一个进程；分组名与用例名逐字保留，`target/criterion/<group>/<benchmark>/` 路径不变。
 # 选跑某组用 criterion 的过滤参数：`cargo bench -p llm-benchmarks -- gemv_f32`。
 [[bench]]
 name = "workspace"
-path = "src/main.rs"
+path = "bench/main.rs"
 harness = false
 
 [lints]
