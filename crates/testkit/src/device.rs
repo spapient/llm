@@ -156,8 +156,27 @@ impl<'a> Contract<'a> {
         }
     }
 
+    /// 见证源码必须自足。夹具把它复制到临时目录里编译，`#include "..."` 在那份副本旁边解析
+    /// 不到——引号包含会在设备目录里静默成功、在宿主执行时静默失败；尖括号里的标准头不受影响。
+    pub fn assert_self_contained(&self) {
+        for (index, line) in self.source.lines().enumerate() {
+            let Some((_, rest)) = line.split_once("#include") else {
+                continue;
+            };
+            let target = rest.trim();
+            assert!(
+                !target.starts_with('"'),
+                "`{}` 的见证第 {} 行用引号包含了 `{target}`：副本编译时相对路径不存在",
+                self.id,
+                index + 1
+            );
+        }
+    }
+
     /// 目录是闭集：只有 P0 的九个 `<prim>.<ext>` 与一个 `witness.<ext>`。`prof::codegen` 的扫描器
-    /// 只认这两种名字，多出来的文件会在构建期被拒——这里提前说清是哪个文件。
+    /// 只认这两种名字，多出来的设备源文件会在构建期被拒——这里提前说清是哪个文件。
+    ///
+    /// `.rs` 不算内容：片段目录就是 crate 的 `src/`，`lib.rs` 与它住在一起。
     pub fn assert_closed_directory(&self) {
         let mut found: Vec<String> = std::fs::read_dir(self.dir)
             .unwrap_or_else(|error| panic!("`{}` 的片段目录不可读：{error}", self.id))
@@ -168,6 +187,7 @@ impl<'a> Contract<'a> {
                     .to_string_lossy()
                     .into_owned()
             })
+            .filter(|name| !name.ends_with(".rs"))
             .collect();
         found.sort();
         let mut want: Vec<String> = self
@@ -340,6 +360,28 @@ mod tests {
         contract.assert_signatures();
         let failed = std::panic::catch_unwind(|| contract.assert_witness_entries());
         assert!(failed.is_err(), "没人认领的见证必须被发现");
+    }
+
+    #[test]
+    fn a_quoted_include_in_a_witness_is_a_defect() {
+        let judge = |source: &str| {
+            Contract {
+                id: "probe",
+                ext: "c",
+                dir: ".",
+                p0: &[],
+                fragments: &[],
+                prims: &[],
+                provides: &[],
+                source,
+            }
+            .assert_self_contained();
+        };
+        judge("#include <math.h>\nint witness_a(float *out) { out[0] = 1.0f; return 1; }\n");
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            judge("#include \"preamble.h\"\nint witness_a(float *out) { out[0] = 1.0f; return 1; }\n")
+        }))
+        .expect_err("引号包含在副本旁边解析不到，必须被发现");
     }
 
     #[test]

@@ -139,7 +139,8 @@ pub(crate) mod tests {
     #[test]
     pub(crate) fn every_public_type_is_listed_or_baselined() {
         let contract = contract();
-        let listed: BTreeSet<String> = owned_types().into_iter().map(|(_, name)| name).collect();
+        let owned: BTreeSet<(String, String)> = owned_types().into_iter().collect();
+        let listed: BTreeSet<String> = owned.iter().map(|(_, name)| name.clone()).collect();
         let baseline = unlisted_baseline();
 
         let mut unlisted = Vec::new();
@@ -178,7 +179,11 @@ pub(crate) mod tests {
             let root = workspace_root().join("crates").join(member).join("src");
             let present = public_types(&rust_files(&root));
             for name in names {
-                if listed.contains(name) {
+                // 过期判定按「主人 + 名字」认，不能只认名字：`prof::Witness` 与 `testkit::Witness`
+                // 是两个类型，只看名字会让另一个 crate 进表时静默注销本条基线，等于偷偷放宽门禁。
+                // 反过来，上面的未登记判定仍只认名字——存量表里有 42 个历史缺口靠名字对齐，
+                // 收紧成限定名要重写整张表，属于另一件事。
+                if owned.contains(&(member.clone(), name.clone())) {
                     stale.push(format!("{member}:{name} 已进所有权表"));
                 } else if !present.contains(name) {
                     stale.push(format!(

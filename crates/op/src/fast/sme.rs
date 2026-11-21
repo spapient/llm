@@ -105,18 +105,58 @@ fn packed(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f32], t
     });
 }
 
-/// 打包 A 的一个行块段：`src[m,k]` → `dst[块][k][16]`，按 k 逐片转置让微内核连续加载。
+/// 打包 A 的一个行块段：`src[m,k]` → `dst[块][k][16]`，按 16×16 瓦片转置让微内核连续加载。
+///
+/// 逐列标量搬移在 16 行 × 4 KiB 跨距下受载入延迟拖累；改用 [`std::simd::f32x4`] 做 4×4
+/// 子块转置（编译器直接下沉成 `zip1`/`zip2`），配合 `copy_from_slice` 的 128 位连续读写，
+/// 全程安全代码，不触碰 `unsafe_code = "deny"` 的开岛边界。
 #[cfg(target_arch = "aarch64")]
 fn pack_a(src: &[f32], dst: &mut [f32], k: usize, mblk0: usize) {
+    use std::simd::{f32x4, simd_swizzle};
+
+    #[inline(always)]
+    fn transpose4(a0: f32x4, a1: f32x4, a2: f32x4, a3: f32x4) -> (f32x4, f32x4, f32x4, f32x4) {
+        let t0 = simd_swizzle!(a0, a1, [0, 4, 1, 5]);
+        let t1 = simd_swizzle!(a0, a1, [2, 6, 3, 7]);
+        let t2 = simd_swizzle!(a2, a3, [0, 4, 1, 5]);
+        let t3 = simd_swizzle!(a2, a3, [2, 6, 3, 7]);
+        (
+            simd_swizzle!(t0, t2, [0, 1, 4, 5]),
+            simd_swizzle!(t0, t2, [2, 3, 6, 7]),
+            simd_swizzle!(t1, t3, [0, 1, 4, 5]),
+            simd_swizzle!(t1, t3, [2, 3, 6, 7]),
+        )
+    }
+
     let blocks = dst.len() / (k * MR);
     for bi in 0..blocks {
-        let mi = mblk0 + bi;
-        let base = bi * k * MR;
-        for kk in 0..k {
-            let off = base + kk * MR;
-            for r in 0..MR {
-                dst[off + r] = src[(mi * MR + r) * k + kk];
+        let rowbase = (mblk0 + bi) * MR * k;
+        let dstbase = bi * k * MR;
+        let mut kk0 = 0usize;
+        while kk0 + 16 <= k {
+            for r in 0..4usize {
+                for c in 0..4usize {
+                    let rr = r * 4;
+                    let cc = kk0 + c * 4;
+                    let a0 = f32x4::from_slice(&src[rowbase + (rr + 0) * k + cc..][..4]);
+                    let a1 = f32x4::from_slice(&src[rowbase + (rr + 1) * k + cc..][..4]);
+                    let a2 = f32x4::from_slice(&src[rowbase + (rr + 2) * k + cc..][..4]);
+                    let a3 = f32x4::from_slice(&src[rowbase + (rr + 3) * k + cc..][..4]);
+                    let (b0, b1, b2, b3) = transpose4(a0, a1, a2, a3);
+                    let orow = kk0 + c * 4;
+                    dst[dstbase + (orow + 0) * MR + rr..][..4].copy_from_slice(&b0.to_array());
+                    dst[dstbase + (orow + 1) * MR + rr..][..4].copy_from_slice(&b1.to_array());
+                    dst[dstbase + (orow + 2) * MR + rr..][..4].copy_from_slice(&b2.to_array());
+                    dst[dstbase + (orow + 3) * MR + rr..][..4].copy_from_slice(&b3.to_array());
+                }
             }
+            kk0 += 16;
+        }
+        while kk0 < k {
+            for r in 0..MR {
+                dst[dstbase + kk0 * MR + r] = src[rowbase + r * k + kk0];
+            }
+            kk0 += 1;
         }
     }
 }

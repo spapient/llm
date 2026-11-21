@@ -28,3 +28,8 @@
 pub const ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
 
 include!(concat!(env!("OUT_DIR"), "/tables.rs"));
+
+/// 片段层与档案的对账：签名、见证入口、能力供给三者必须闭合。
+#[cfg(test)]
+#[path = "../tests/fragments.rs"]
+mod tests;

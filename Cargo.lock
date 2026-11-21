@@ -551,6 +551,7 @@ name = "llm-opencl"
 version = "0.1.0"
 dependencies = [
  "llm-prof",
+ "llm-testkit",
 ]
 
 [[package]]
@@ -588,6 +589,7 @@ name = "llm-rocm"
 version = "0.1.0"
 dependencies = [
  "llm-prof",
+ "llm-testkit",
 ]
 
 [[package]]
