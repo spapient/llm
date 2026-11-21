@@ -1,7 +1,9 @@
 use super::harness::*;
 use super::*;
 use cutile::backend::TensorGeometry;
-use cutile::execution::{Backend, Mode};
+#[cfg(target_os = "macos")]
+use cutile::execution::Backend::Metal;
+use cutile::execution::{Mode, program};
 
 /// 设备 → 命令队列 的进程内对象模型打通：能建、能释放，反复建放不崩溃、不重复释放。
 #[test]
@@ -224,7 +226,7 @@ fn metal_matmul_forward() {
 }
 
 /// 生产态分块 GEMM 对照：同一份 `matmul_f32`（K=4096）分别经
-/// [`cutile::execution::program`]（标量网格基线）与
+/// [`program`]（标量网格基线）与
 /// `Mode::tiled`（共享内存分块）生成 MSL，在真机 GPU 上跑
 /// 同一组输入、对拍 CPU 参考并报延迟与 GFLOP/s。
 ///
@@ -267,11 +269,11 @@ fn metal_tiled_gemm_k4096() {
         flop / grid_ns,
     );
     for (tile, per_thread) in [(8usize, 1usize), (16, 1), (32, 1), (32, 4)] {
-        let msl = cutile::execution::program(
+        let msl = program(
             &catalogue,
             &dirs,
             "matmul_f32",
-            Backend::Metal,
+            Metal,
             Mode::tiled(tile, per_thread),
             M,
             N,
@@ -421,43 +423,27 @@ fn metal_int8_gemm_cutile_k4096() {
     let mut bench = int8_gemm_bench(&device);
     let (m, n, k) = (bench.m, bench.n, bench.k);
     let (catalogue, dirs) = catalogue_and_dirs("engine-metal-int8-cutile");
-    let fallback = cutile::execution::program(
-        &catalogue,
-        &dirs,
-        "matmul_f32",
-        Backend::Metal,
-        Mode::int8(16),
-        m,
-        n,
-    )
-    .and_then(|stages| stages.one("int8"))
-    .expect("非 int8 算子应回落到网格/串行路径");
+    let fallback = program(&catalogue, &dirs, "matmul_f32", Metal, Mode::int8(16), m, n)
+        .and_then(|stages| stages.one("int8"))
+        .expect("非 int8 算子应回落到网格/串行路径");
     assert!(
         !fallback.contains("threadgroup int As"),
         "非 int8 签名不得走 int8 分块 lowering"
     );
-    let ragged = cutile::execution::program(
-        &catalogue,
-        &dirs,
-        "matmul_i8",
-        Backend::Metal,
-        Mode::int8(24),
-        m,
-        n,
-    )
-    .and_then(|stages| stages.one("int8"))
-    .expect("K 不整除时应回落到网格/串行路径");
+    let ragged = program(&catalogue, &dirs, "matmul_i8", Metal, Mode::int8(24), m, n)
+        .and_then(|stages| stages.one("int8"))
+        .expect("K 不整除时应回落到网格/串行路径");
     assert!(
         !ragged.contains("threadgroup int As"),
         "K 不被 tile 整除时不得走 int8 分块 lowering"
     );
 
     for tile in [8usize, 16, 32] {
-        let msl = cutile::execution::program(
+        let msl = program(
             &catalogue,
             &dirs,
             "matmul_i8",
-            Backend::Metal,
+            Metal,
             Mode::int8(tile),
             m,
             n,
@@ -489,7 +475,7 @@ fn metal_int8_gemm_cutile_k4096() {
 }
 
 /// 生产态分块注意力对照：同一份 `attention_f32`（S=512、D=64）分别经
-/// [`cutile::execution::program`]（每查询行一线程）与
+/// [`program`]（每查询行一线程）与
 /// `Mode::tiled_attention`（每行一个 threadgroup）生成 MSL，
 /// 在真机 GPU 上跑同一组 Q/K/V、对拍 CPU 参考并报延迟与吞吐。
 ///
@@ -518,11 +504,11 @@ fn metal_tiled_attention_s512() {
         D,
         "网格注意力",
     );
-    let tiled_msl = cutile::execution::program(
+    let tiled_msl = program(
         &catalogue,
         &dirs,
         "attention_f32",
-        Backend::Metal,
+        Metal,
         Mode::tiled_attention(THREADS),
         S,
         D,
@@ -566,11 +552,11 @@ fn metal_tiled_attention_s512() {
         grid_ns / tiled_ns,
     );
     for block in [512usize, 64, 128, 256] {
-        let flash_msl = cutile::execution::program(
+        let flash_msl = program(
             &catalogue,
             &dirs,
             "attention_f32",
-            Backend::Metal,
+            Metal,
             Mode::flash(THREADS, block),
             S,
             D,
@@ -648,11 +634,11 @@ fn metal_flash_attention_long() {
     );
     eprintln!("Metal 长序列 attention {S}×{D}：网格行线程={grid_ns:.1} ns");
 
-    let tiled_msl = cutile::execution::program(
+    let tiled_msl = program(
         &catalogue,
         &dirs,
         "attention_f32",
-        Backend::Metal,
+        Metal,
         Mode::tiled_attention(THREADS),
         S,
         D,
@@ -680,11 +666,11 @@ fn metal_flash_attention_long() {
     );
 
     for key_block in [64usize, 128, 256] {
-        let msl = cutile::execution::program(
+        let msl = program(
             &catalogue,
             &dirs,
             "attention_f32",
-            Backend::Metal,
+            Metal,
             Mode::flash(THREADS, key_block),
             S,
             D,
@@ -746,11 +732,11 @@ fn metal_tensor_gemm() {
         ];
         let mut pipes = Vec::new();
         for geometry in geometries {
-            let msl = cutile::execution::program(
+            let msl = program(
                 &catalogue,
                 &dirs,
                 "matmul_f32",
-                Backend::Metal,
+                Metal,
                 Mode::tensor(geometry),
                 m,
                 n,

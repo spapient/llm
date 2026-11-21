@@ -1,6 +1,8 @@
 use super::*;
 use cutile::backend::TensorGeometry;
-use cutile::execution::{Backend, Mode};
+#[cfg(target_os = "macos")]
+use cutile::execution::Backend::Metal;
+use cutile::execution::{Mode, program};
 
 pub(super) fn bench_device(hint: &str) -> Option<(MetalDevice, MetalCommandQueue)> {
     let Some(device) = MetalDevice::system_default() else {
@@ -99,17 +101,9 @@ pub(super) fn grid_pipeline(
     n: usize,
     what: &str,
 ) -> MetalPipeline {
-    let msl = cutile::execution::program(
-        catalogue,
-        dirs,
-        kernel,
-        Backend::Metal,
-        Mode::declared(),
-        m,
-        n,
-    )
-    .and_then(|stages| stages.one("降源"))
-    .unwrap_or_else(|_| panic!("{what} MSL 应能生成"));
+    let msl = program(catalogue, dirs, kernel, Metal, Mode::declared(), m, n)
+        .and_then(|stages| stages.one("降源"))
+        .unwrap_or_else(|_| panic!("{what} MSL 应能生成"));
     device
         .compile(&msl)
         .unwrap_or_else(|| panic!("{what} MSL 应能编译"))
@@ -125,11 +119,11 @@ pub(super) fn simdgroup_gemm_pipeline(
     row_frags: usize,
     col_frags: usize,
 ) -> (MetalPipeline, [u32; 3]) {
-    let msl = cutile::execution::program(
+    let msl = program(
         catalogue,
         dirs,
         "matmul_f32",
-        Backend::Metal,
+        Metal,
         Mode::simdgroup(row_frags, col_frags),
         m,
         n,
