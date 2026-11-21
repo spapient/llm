@@ -289,6 +289,3 @@ pub(crate) fn check_capacity(entry: &Entry, out: &[u8]) -> Result<()> {
     )
     .with("weights::Loader::copy_into"))
 }
-
-#[cfg(test)]
-#[path = "../tests/lib.rs"]

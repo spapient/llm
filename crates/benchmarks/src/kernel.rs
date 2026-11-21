@@ -12,8 +12,9 @@ use criterion::measurement::WallTime;
 use criterion::{BenchmarkGroup, BenchmarkId, Criterion, Throughput};
 use op::add_f32::Add;
 use op::gemm::{self, Gemm};
+use op::quant::I4;
 use op::{
-    elementwise, fast, gemm_f32, gemm_i2, gemm_i4, gemm_i8, gemv_f32, matmul, matmul_i8,
+    elementwise, fast, gemm_f32, gemm_i2, gemm_i4, gemm_i8, gemv_f32, gemv_i4, matmul, matmul_i8,
     rmsnorm_f32, rope_f32, silu_f32, softmax_f32,
 };
 use std::fmt;
@@ -35,6 +36,12 @@ const N: usize = 256;
 
 /// 大 K 的收缩轴（prefill 主链路代表值）。
 const K: usize = 4096;
+
+/// int4 每字节 2 个码（与 [`I4`] 的 `cpb` 同一个值）。
+const I4_CPB: usize = 2;
+
+/// 量化权重的分组元素数（生产格式固定 32）。
+const GROUP: usize = 32;
 
 /// 参与线程对照的形状 `(m, n, k)`：prefill 主链路与近方阵各一档。
 const SHAPES: [(usize, usize, usize); 2] = [(256, 256, 4096), (512, 512, 512)];
@@ -81,6 +88,62 @@ pub(crate) fn gemv(c: &mut Criterion) {
             black_box(gemv_f32::forward(
                 black_box(&x),
                 black_box(&weights),
+                black_box(&mut out),
+            ))
+        })
+    });
+    group.finish();
+}
+
+/// int4 decode 的两档：同一份打包权重、同一行 `x`，标量叶与向量通道。
+///
+/// 生产 decode 主链路就是这一档（[`gemv_i4`]），所以形状取 `1×4096×4096`：权重 `n` 行各
+/// [`ROW`]/2 个字节（int4 每字节 2 个码），标度 `n × groups` 逐行逐组不同——量化权重的真实读法。
+/// 两档指向同一份数据、同一个输出缓冲，差的只有内层算术：标量叶每码查表并串行累加，向量通道
+/// 按码值直接换算、4 列共享一次 `x` 载入、权重按列块驻留。开测前先核对两档给出同一个答案，
+/// 否则测的是两段不同的算术。
+pub(crate) fn gemv_quant(c: &mut Criterion) {
+    let row = ROW / I4_CPB;
+    let groups = ROW / GROUP;
+    let weights: Vec<u8> = (0..ROW * row).map(|i| ((i * 37) % 251) as u8).collect();
+    let scales: Vec<f32> = (0..ROW * groups).map(|i| 0.5 + ((i * 7) % 13) as f32 * 0.0625).collect();
+    let x: Vec<f32> = (0..ROW).map(|i| (i as f32 * 0.002).cos()).collect();
+    let mut out = vec![0.0f32; ROW];
+
+    // 标量叶：与打包格式回退路径调用的是同一个 `dot_row`。
+    let scalar = |out: &mut [f32]| {
+        for j in 0..ROW {
+            out[j] = op::gemv::packed::dot_row(
+                &weights[j * row..][..row],
+                &x,
+                &scales[j * groups..][..groups],
+                GROUP / I4_CPB,
+                GROUP,
+                I4_CPB,
+                I4.table,
+            );
+        }
+    };
+
+    scalar(&mut out);
+    let expected = out.clone();
+    checked(gemv_i4::forward(&x, &weights, &scales, &mut out), GEOM);
+    for (j, (&got, &want)) in out.iter().zip(&expected).enumerate() {
+        let slack = 1e-5 * want.abs().max(1.0);
+        assert!((got - want).abs() <= slack, "第 {j} 列：向量通道 {got} 偏离标量叶 {want}");
+    }
+
+    let mut group = c.benchmark_group("gemv_i4");
+    group.throughput(Throughput::Bytes((row * ROW + 4 * scales.len()) as u64));
+    group.bench_function("scalar_decode_1x4096x4096", |iter| {
+        iter.iter(|| black_box(scalar(black_box(&mut out))))
+    });
+    group.bench_function("vector_decode_1x4096x4096", |iter| {
+        iter.iter(|| {
+            black_box(gemv_i4::forward(
+                black_box(&x),
+                black_box(&weights),
+                black_box(&scales),
                 black_box(&mut out),
             ))
         })

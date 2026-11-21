@@ -1,6 +1,6 @@
 use super::*;
 
-use diagnostic::Code;
+use diagnostic::{Code, Result};
 use tensor::{DType, Shape};
 
 fn entry(name: &str, offset: usize) -> Entry {

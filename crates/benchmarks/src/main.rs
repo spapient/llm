@@ -21,6 +21,7 @@ criterion_group!(
     benches,
     kernel::elementwise,
     kernel::gemv,
+    kernel::gemv_quant,
     kernel::softmax,
     kernel::rope,
     kernel::rmsnorm,
