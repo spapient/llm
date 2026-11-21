@@ -13,7 +13,7 @@
 | 层 | 成员 | 职责 | 不允许出现 |
 |---|---|---|---|
 | L1 基础设施 | `diagnostic`、`rng`、`dtype`、`wire`、`tools` | 错误类型与声明数据树（`data`：构建期语料在运行期的形状，**没有解析器**）、计数器型确定性随机、精度闭集、与领域无关的字节码闭集（CRC-32 / LEB128 / Sink）、静态质量门与回退判定 | 任何运行时领域语义、任何 TOML 解析 |
-| L2 数据层 | `prof`、`op`、`prim` | 设备档案与能力闭集、算子声明与模板（布局 / 调度 / 模板词法）及其求和语义代价（`op::einsum`）、原语片段与见证；语料在各自 `build.rs` 里解析成表 | 任何机制代码（拼接、协商、emit）、任何设备知识 |
+| L2 数据层 | `prof`、`op`、`cpu`、`cuda`、`metal`、`musa`、`opencl`、`rocm`、`prim` | 设备档案与能力闭集、算子声明与模板（布局 / 调度 / 模板词法）及其求和语义代价（`op::einsum`）、六份设备原语片段与各自见证（一台设备一个成员，语料在各自的 `build.rs` 里解析成 `FRAGMENTS` / `PRIMS` / `DEVICE` 三张表）、`prim` 只出机制：把六张表在编译期拼成一张聚合表，并按 `Layout` 决定读内嵌表还是读盘 | 任何机制代码（拼接、协商、emit）、任何设备知识 |
 | L3 内核 | `cutile` | 协商 → 拼接 → emit → 编译执行；`doctor` / `verify` / `bench` / `execution` 共用一条 `pipeline`，报告只是数据、排版在前端 | 设备厂商特判、运行时依赖 |
 | L4 运行时 | `tensor`、`storage`、`tokenizer` | 张量元数据、布局搬运、文本边界 | 模型语义、调度策略 |
 | L5 模型与训练 | `weights`、`autograd`、`nn`、`shard` | 权重结构与自有 `.u` 容器、反向图与显存计划、层定义与执行侧机制、切分拓扑与集合通信 | 进程 / 服务语义 |
@@ -39,13 +39,19 @@
 不再复述每一次的数字；配置层的现状见 [ADR 0022](adr/0022-build-time-corpora.md) 与
 [ADR 0023](adr/0023-settings-to-cli.md)。
 
-允许的边（当前全量，共 114 条，含 42 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benchmarks` / `musa` / `testkit` 的边不参与运行时方向判定）：
+允许的边（当前全量，共 122 条，含 42 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benchmarks` / `testkit` 的边不参与运行时方向判定）：
 
 ```
 cutile   → diagnostic, op, prim, prof    +dev: testkit
 op       → annotation, diagnostic, prof    +dev: testkit（工具边：`#[model]` 注解，不参与方向判定）
-prim     → prof, diagnostic
+prim     → cpu, cuda, diagnostic, metal, musa, opencl, prof, rocm（机制：编译期把六张设备表拼成聚合表）
 prof     → diagnostic, dtype
+cpu      → prof（片段 + 见证；只依赖档案的 `Prim` / `Witness` 闭集，不认识 `prim`）
+cuda     → prof
+metal    → prof
+musa     → prof
+opencl   → prof
+rocm     → prof
 dtype    → （叶：精度闭集，无运行期工作区依赖）    +dev: testkit
 tensor   → diagnostic, dtype    +dev: testkit
 storage  → tensor, diagnostic
@@ -60,7 +66,6 @@ serve    → engine, nn, op, rng, tokenizer, diagnostic, weights, wire    +dev: 
 cli      → cutile, diagnostic, engine, nn, op, prim, prof, serve, tensor, tokenizer, tools, train, weights（L7 组合根：只做命令分派与各层装配，不定义新类型）
 fuzz     → diagnostic    +dev: cli, weights, train, serve, wire, tensor, tools（工具成员；`+dev` 是 `tests/support.rs` 里的驱动对象）
 benchmarks → +dev: prof, op, cutile, wire, weights, tokenizer, tools, testkit, train, autograd, tensor, nn, engine, serve（工具成员：只声明被测对象，测量配置归 criterion）
-musa     → cutile, diagnostic, engine, op（工具成员：MUSA 真机测量通道——生成 → 编译 → 计时 → 对拍；跨层用 L2/L3/L6 的公开缝而不重写 lowering）
 tools     → diagnostic（配置驱动静态质量门 + 回退判定）    +dev: testkit
 testkit  → +dev: autograd, cutile, nn, op, tensor, tools, train, weights（工具成员：夹具库 + 门禁；被测层只出现在 dev-dependencies）
 wire     → diagnostic（纯字节码闭集，不认识张量或容器布局）    +dev: testkit
@@ -90,8 +95,11 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `OpDecl` / `Template` / `Segment` / `Registration` / `LayoutSpec` / `Schedule` / `Masking` | `op` | 声明解析结果与三张闭集（模板词法 / 布局构造子 / 调度模板），以及唯一注册表 `REGISTRY`；`cutile` 只消费，不持第二份 |
 | `Scalar` / `Monoid` / `SsmStep` / `PlaneStep` / `Scan` | `op` | β 指数梯形扫描的数学底座与 `scan_f32` 算子：半群、两种离散化（`exp_zero_order` / `exp_trapezoid`）、复值状态的 2×2 实值块 |
 | `Profile` | `prof` | 设备档案；机制代码不得出现 `vendor == "..."` |
+| `Device` / `Image` / `Status` | `prof` | 一台设备这次构建带上的设备侧代码、编译产物与其结局（`Source` / `Compiled` / `NoRecipe` / `Skipped`）；放在最底层是为了让六份片段 crate 与 `prim` 都能引用同一份类型而不成环 |
+| `WitnessLookup` | `prof` | 「见证文件名 → 磁盘路径」的唯一缝：档案校验只问这一个方法，因此内嵌根（多 crate）与数据根（单目录）两种布局共用同一条校验路径 |
 | `Closed` / `Set` / `KernelKey` | `prof` | 词汇表契约、全仓唯一位集（容量在单态化时由 `const FITS` 断言）、以及一条内核实现的登记键（[ADR 0027](adr/0027-kernel-registry-and-fragment-contract.md) 七元组，只承载身份） |
-| `FragmentSet` / `Device` / `Image` / `Status` | `prim` | 原语片段与见证源码、每台设备这次构建带上的设备侧代码、编译产物与其结局；三张内嵌表由 `build.rs` 扫描生成，`src/` 里只有类型 |
+| `FragmentSet` / `Fragment` / `Layout` | `prim` | 原语片段与见证源码的读入形状（文件名落在 `prof` 的原语闭集内）、以及「内嵌根 / 数据根」二选一的布局；六张内嵌表由各设备 crate 的 `build.rs` 扫描生成，`prim/src` 里只有机制与编译期的聚合 |
+| 片段文本 + 见证 | `cuda`、`cpu`、`metal`、`musa`、`opencl`、`rocm` | 一台设备一份：片段文本、见证与 `build.rs` 生成的 `FRAGMENTS` / `PRIMS` / `DEVICE` 三张表都由该成员拥有；`prim` 只把它们拼起来，不认识任何厂商名 |
 | `Catalogue` | `cutile` | 已装载的三层数据（声明 + 档案 + 片段）与它们的交叉校验 |
 | `Backend` / `Codegen` / `Driver` / `Readback` / `Source` / `Lower` / `Launch` | `cutile` | 设备后端契约（`Backend = Codegen + Driver`）：`Codegen` 是纯函数，`Driver` 是唯一碰工具链 / FFI 的一半，运行期只经 `dyn` 分派；Metal / CUDA 的 `Driver` 由 `engine` 实现、`cli` 注入；`Lower` 是生产态 lowering 的中性请求，`Launch` 把「工作项数」`items` 与「每点线程数」`group` 拆成两个字段（合成一个数会让总线程数与工作项数无法同时表达），两者都只由 `execution::launch` 一处从声明与样本推出。`Backend::parallel` 的默认实现是 `Unsupported`——「这个后端没有并行网格程序」是一句诚实的回答，默认给一份逐点源会让「缺实现」伪装成「实现过」 |
 | `Plan` / `Path` / `NoPath` / `VariantCheck` / `Proof` / `Source` / `Usage` | `cutile` | kernel 层中间产物，全部可见、无 IR；只有 `NoPath` 自带文本（错误契约）；`Proof` 记这次真正执行过的供给，`Proof::declared` 只给解释性报告 |
@@ -170,7 +178,6 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Case` / `Baseline` / `Judgement` | `tools` | 回退判定（与基线相比有没有退）；不做测量 |
 | `EntryKind` / `Harness` / `Roofline` / `Geometry` / `BenchRecord` | `tools` | 统一基准记录结构：只持有记录，不测量、不下性能结论，未测得的峰值留 `None` |
 | `Protocol` / `Statistic` / `Tally` / `Standing` / `Shortfall` / `Card` | `tools` | 实测卡三态判定：闭集 → 样本量 → 统计量定义 → 区间与门槛，次序有意；样本与时钟来源归 `benchmarks` |
-| `Job` / `Program` / `Outcome` / `Recipe` / `Probe` | `musa` | MUSA 真机测量通道：`Job` 是一次测量作业（算子名 + 形状），`Recipe` 是一次编译（工具链根 + 车道决定开关与链接库），`Probe` 是随包发布的设备侧探针源。生成只走 `cutile` 的公开缝与 `engine::program::cuda`，不重写一条 lowering；只读写文件，不藏状态 |
 | `spec` / `model` 属性宏 | `annotation` | 把注解展开成契约实现 + 编译期断言 + 一条校验测试；**不持有运行期注册表**。`model` 生成 `MODEL` 并断言注解与 `Operator` 对齐；设备执行由 `cutile` 的 `const SPECS` / `const GATES` 描述符表按函数指针登记 |
 | `RelErr` / `Worst` / `Scale` | `testkit` | 夹具侧的浮点对拍读数：`RelErr` 只答「整批最大绝对误差 / 分母」与这个分母自己的值，`Worst` 只答「读数落在哪个元素」，`Scale` 只答「分母按整批最大幅度还是每元素留 1 的地板取」。比较归 `within_ratio` / `within_rel` / `assert_rel_with`，阈值仍只由 `cutile::reference::tolerance` 拥有——本行不设第二张分档表，`Scale::Batch` 与它由 `crates/testkit/tests/oracle.rs` 逐位钉住 |
 

@@ -330,7 +330,11 @@ fn a_reduction_fragment_must_fold_through_func() {
 #[test]
 fn the_device_image_feature_reaches_the_composed_table() {
     let metal = device("metal").expect("内置 metal");
-    assert_ne!(metal.status, Status::Source, "`device-image` 没有转发到设备 crate");
+    assert_ne!(
+        metal.status,
+        Status::Source,
+        "`device-image` 没有转发到设备 crate"
+    );
 }
 
 /// 关着 `device-image` 时每台设备都只有源码：镜像缺席是"这一步没走"，不是配置错误。
@@ -338,7 +342,16 @@ fn the_device_image_feature_reaches_the_composed_table() {
 #[test]
 fn without_the_feature_every_device_is_source_only() {
     for device in devices() {
-        assert_eq!(device.status, Status::Source, "`{}` 不该有镜像", device.vendor);
-        assert!(!device.has_image(), "`{}` 没有镜像就不该说它有", device.vendor);
+        assert_eq!(
+            device.status,
+            Status::Source,
+            "`{}` 不该有镜像",
+            device.vendor
+        );
+        assert!(
+            !device.has_image(),
+            "`{}` 没有镜像就不该说它有",
+            device.vendor
+        );
     }
 }
