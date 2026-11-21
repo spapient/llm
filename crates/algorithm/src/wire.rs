@@ -1,91 +1,164 @@
-//! 17 族 → 生产层栈的**接线台账**：哪些族已能落成 `nn` 层，哪些缺什么。
+//! 17 族 → 生产层栈的接线台账。
 //!
-//! 这张表存在的理由：族"存在但没接线"过去只是口头事实，靠删文件才被发现。现在每个族在表里
-//! 有且只有一行，缺的写明缺什么，[`tests/wire_tests.rs`] 对着 `src/` 核名——表和树对不上就红。
+//! 台账存在的理由：这 17 族都能在自己的测试里自证，但"它接到了 `nn` 的哪一层"过去只是口头
+//! 事实——只有把文件删掉才发现没人依赖它。于是每一族在这里留一行，写明它落成几个 `nn` 层、
+//! 还缺什么。缺的是什么必须具名，而且分三种，因为三种的补法完全不同：
 //!
-//! 三条阻塞口径都**不接受"用形状相近的层顶替"**：宁可如实缺席，不可冒充已通。
+//! - [`Blocked::Operator`]：算子层没有（要被 `op` 注册 + `ops/` 语料 + 内核模板），[`ledger`] 会用
+//!   [`op::builtin_named`] 复核——声明挡住了而算子其实已经存在时，台账就是过期了，测试会失败。
+//! - [`Blocked::Layer`]：算子有，但 `nn` 里没有能承载它的层，几何喂不进去。
+//! - [`Blocked::Geometry`]：层与算子都有，但这一族的某条路径与现有几何冲突（例如 MLA 的
+//!   `d_c + d_h^R` 不是头宽整数倍，`AttentionBlock` 的 `kv_width % head_dim == 0` 直接拒收）。
+//!
+//! 不写"差不多等价"的替身：三种阻塞都不许拿形状相近的层顶替，否则台账会变成一句空话。
 
 use diagnostic::Result;
-use nn::MatMul;
+use nn::{Contract, LatentAttention, MatMul};
 
-use crate::mhc::Mhc;
+use crate::{Hybrid, Mhc, Mla};
 
-/// 一个族接不进生产路径的具体原因。
+/// 一族还缺什么。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Blocked {
-    /// `op` 注册表没有这个算子，层声明过不了 `ContractSpec`。
+    /// 缺算子：名字是 `op` 注册表里**尚未**存在的那个。
     Operator(&'static str),
-    /// 算子齐了也表达不出结构：`nn` 缺这层声明。
+    /// 缺层：算子有，`nn` 没有能承载它的层。
     Layer(&'static str),
-    /// 族自身不暴露这份几何，补宽度等于替它编一个模型。
+    /// 缺几何：层与算子都有，但这族的某条路径喂不进去。
     Geometry(&'static str),
 }
 
-/// 一个族的接线结论。
+/// 一族的接线状态：落了几个层，以及还剩什么。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Wiring {
-    /// 能落成 `nn` 层，括号内是层数。
-    Wired(usize),
-    /// 接不进，原因具名。
-    Blocked(Blocked),
+pub struct Wiring {
+    layers: usize,
+    blocked: Option<Blocked>,
 }
 
-/// 台账的一行。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Family {
-    /// 族的源文件名（`src/<name>.rs`）。
-    pub name: &'static str,
-    /// 接线结论。
-    pub wiring: Wiring,
-}
+impl Wiring {
+    /// 整族接通。
+    pub const fn wired(layers: usize) -> Self {
+        Self {
+            layers,
+            blocked: None,
+        }
+    }
 
-const fn blocked(name: &'static str, why: Blocked) -> Family {
-    Family {
-        name,
-        wiring: Wiring::Blocked(why),
+    /// 一个层都没落成。
+    pub const fn blocked(why: Blocked) -> Self {
+        Self {
+            layers: 0,
+            blocked: Some(why),
+        }
+    }
+
+    /// 落成了部分层，剩下的路径被 `why` 挡住。
+    pub const fn partial(layers: usize, why: Blocked) -> Self {
+        Self {
+            layers,
+            blocked: Some(why),
+        }
+    }
+
+    /// 每个结构块落成的层数（`tower` 这类可重复的族按单块计，整塔层数 = 块数 × 本值）。
+    pub fn layers(&self) -> usize {
+        self.layers
+    }
+
+    /// 剩余阻塞；`None` 表示整族接通。
+    pub fn blocked_on(&self) -> Option<Blocked> {
+        self.blocked
+    }
+
+    /// 是否整族接通。
+    pub fn is_wired(&self) -> bool {
+        self.blocked.is_none()
     }
 }
 
-/// 17 族的接线台账，顺序即族的声明顺序。
-///
-/// 唯一已通的是 `mhc`：它的流重组就是 `streams × streams` 的定值矩阵，正是 [`nn::MatMul`]
-/// 的形状，两者不是"像"而是同一个运算。其余族缺的是算子或层，不是配置。
-#[must_use]
+/// 一族：名字与它的接线状态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Family {
+    /// 族名（与 `src/<name>.rs` 一致）。
+    pub name: &'static str,
+    /// 接线状态。
+    pub wiring: Wiring,
+}
+
+const fn f(name: &'static str, wiring: Wiring) -> Family {
+    Family { name, wiring }
+}
+
+/// 17 族台账。顺序与 `src/` 的文件序一致，方便对照。
 pub fn ledger() -> [Family; 17] {
     [
-        blocked("attnres", Blocked::Layer("nn 无按数据加权的残差混合层")),
-        blocked("codec", Blocked::Layer("nn 无字节编解码层")),
-        blocked("csa", Blocked::Operator("csa")),
-        blocked("emit", Blocked::Layer("自回归发射属 serve 的循环，不是层")),
-        blocked("hybrid", Blocked::Operator("latent_attention")),
-        blocked("tower", Blocked::Operator("kda")),
-        blocked("kda", Blocked::Operator("kda")),
-        blocked("latent", Blocked::Layer("nn 无潜空间补丁层")),
-        blocked("mamba", Blocked::Operator("ssm_scan")),
-        Family {
-            name: "mhc",
-            wiring: Wiring::Wired(1),
-        },
-        blocked("mix", Blocked::Operator("lif")),
-        blocked("mla", Blocked::Operator("latent_attention")),
-        blocked("moe", Blocked::Layer("nn 无专家路由层")),
-        blocked("patch", Blocked::Layer("nn 无补丁层")),
-        blocked("policy", Blocked::Layer("nn 无门控策略层")),
-        blocked("pulse", Blocked::Operator("lif")),
-        blocked("spike", Blocked::Operator("lif")),
+        f("mla", Wiring::wired(1)),
+        f(
+            "hybrid",
+            Wiring::partial(2, Blocked::Layer("nn 无专家路由层（Moe 不暴露 FFN 宽度）")),
+        ),
+        f("tower", Wiring::partial(2, Blocked::Operator("kda"))),
+        f("mamba", Wiring::blocked(Blocked::Operator("ssm_scan"))),
+        f("spike", Wiring::blocked(Blocked::Operator("lif"))),
+        f("mix", Wiring::blocked(Blocked::Operator("lif"))),
+        f("pulse", Wiring::blocked(Blocked::Operator("lif"))),
+        f("kda", Wiring::blocked(Blocked::Operator("kda"))),
+        f("csa", Wiring::blocked(Blocked::Operator("csa"))),
+        f("mhc", Wiring::wired(1)),
+        f(
+            "attnres",
+            Wiring::blocked(Blocked::Layer("nn 无流内残差混合层")),
+        ),
+        f("moe", Wiring::blocked(Blocked::Layer("nn 无专家路由层"))),
+        f("patch", Wiring::blocked(Blocked::Layer("nn 无图像切块层"))),
+        f("codec", Wiring::blocked(Blocked::Layer("nn 无字节编解码层"))),
+        f("latent", Wiring::blocked(Blocked::Layer("nn 无潜变量采样层"))),
+        f("policy", Wiring::blocked(Blocked::Layer("nn 无动作采样层"))),
+        f("emit", Wiring::blocked(Blocked::Layer("nn 无生成回路"))),
     ]
 }
 
-/// `mhc` 的接线：流的双随机重组落成一层定值矩阵乘。
-///
-/// 重组矩阵是 `streams × streams`，作用在"流"这条轴上，与 [`nn::MatMul`] 的 `rows × cols`
-/// 同义；`width` 由调用方的批轴承担，不进层声明。这样 `N` 条流重建残差时**不需要**任何运行时
-/// 分支，`serve` / `cli` 的既有执行路径直接可跑。
+/// `mhc` 的流重组落成 `streams × streams` 的常量矩阵：双随机混合就是作用在流轴上的一次乘，
+/// `width` 只是批轴，运行时不需要分支。名字由调用方给，因为同一个混合块会在塔里出现多次。
 ///
 /// # Errors
 ///
-/// 流数为零（[`Blocked::Geometry`] 的口径：没有流就没有重组）。
-pub fn mhc_layer(m: &Mhc<f32>) -> Result<MatMul> {
-    let streams = m.streams();
-    MatMul::new("mhc.mix", streams, streams)
+/// 流数为零或矩阵层拒绝该几何。
+pub fn mhc_layer(m: &Mhc<f32>, name: &str) -> Result<MatMul> {
+    MatMul::new(name, m.streams(), m.streams())
+}
+
+/// `mla` 的注意力段落成 [`LatentAttention`]：压缩宽度就是 `latent`，头数把行数摊成 `seq · h`。
+///
+/// # Errors
+///
+/// 任一宽度为零或算子缺语义表。
+pub fn mla_layer(m: &Mla<f32>, seq: usize, name: &str) -> Result<LatentAttention> {
+    LatentAttention::new(name, seq, m.latent(), m.heads())
+}
+
+/// `hybrid` 的接线：注意力段 + 流重组，两段都是真层；专家 FFN 仍缺层。
+///
+/// # Errors
+///
+/// 任一宽度为零或算子缺语义表。
+pub fn hybrid_layer(h: &Hybrid<f32>, seq: usize, index: usize) -> Result<Vec<Box<dyn Contract>>> {
+    // 层名带位置：同一个混合块会在一座塔里出现多次，重名会被 `nn::Stack::of` 拒收。
+    let attn = mla_layer(h.attention(), seq, &format!("hybrid.{index}.attn"))?;
+    Ok(vec![Box::new(attn), Box::new(mhc_layer(h.residual(), &format!("hybrid.{index}.mix"))?)])
+}
+
+/// `tower` 的接线：每层压栈的 `hybrid` 各自两段。入参是构造塔时交进去的注意力层——塔内部按
+/// [`Gear`](crate::tower) 交错成私有列表，只吐 [`Kind`](crate::tower) 序，不吐层引用，所以从不
+/// 变量更强的入口取。KDA 记忆段不贡献层：算子还没有，所以只是部分接通。
+///
+/// # Errors
+///
+/// 任一宽度为零或算子缺语义表。
+pub fn tower_layers(attention: &[Hybrid<f32>], seq: usize) -> Result<Vec<Box<dyn Contract>>> {
+    let mut layers = Vec::new();
+    for (index, hybrid) in attention.iter().enumerate() {
+        layers.extend(hybrid_layer(hybrid, seq, index)?);
+    }
+    Ok(layers)
 }

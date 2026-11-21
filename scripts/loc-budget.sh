@@ -16,11 +16,20 @@ cd "$(dirname "$0")/.."
 # 不反过来：这次上调换来的是"删掉一整族会让 `crates/tools/tests/gate.rs` 的覆盖契约变红"，
 # 而不是"总量数字变好看"。再要上调必须先有同等量级的能力增项取证。
 #
+# 91800 → 92100：新增算子纵列 `latent_attention_f32`（MLA 的吸收式单步）。三处增量，全部是能力：
+# `crates/conv/src/attention/latent.rs` 172 行（标记类型 + 确定性样本 + 参考 + **可执行内核**，几何
+# 全部由长度折出，零标量）；`crates/nn/src/latent.rs` 74 行（把 `d_c` 口径落成层，头数摊进代价）；
+# `crates/train/src/kernel.rs` +11 行（适配 `(q,k,v) → y`，让新算子进 `KERNELS`）。取证：这一列
+# **没有带来第二台行机器**——`attention.rs` 的 `Rows` 加了写宽参数（+15 行）就同时服务稠密与潜空间，
+# 参考走 `online`、内核走 `naive`，对拍照旧比的是两种算法；为此删掉了初稿里重复的分数/softmax/加权
+# 三段（253 → 172 行）。剩余 248 行是"一族从语料走到运行期内核"的最小闭环，删任意一段都会让
+# `crates/nn` 的契约校验或 `crates/train` 的 `KERNELS` 长度断言变红。
+#
 # 91600 → 91800：`crates/algorithm/src/wire.rs`（91 行）把"族存在但没接线"从口头事实变成
 # 机器可查的台账——17 个族每族一行，缺的写明缺算子还是缺层，并对着 `src/` 核名；`mhc` 的流重组
 # 落成 `nn::MatMul(streams, streams)`（实测量到的其余增量来自同一 checkout 上其他会话的
 # `crates/train` 在改）。这份台账换掉的是"靠删文件才发现某族没接"的失效模式，属能力增项。
-SRC_MAX=91800      # N6：crates/*/src 总行数
+SRC_MAX=92100      # N6：crates/*/src 总行数
 FILE_MAX=400       # N3：生产文件 S++ 线
 FILE_VETO=600      # N3：>600 一票否决
 CRATE_MAX=8000     # N2：单 crate

@@ -1,0 +1,34 @@
+# 潜空间注意力（MLA 吸收式单步）：行 = (查询行 × 头) 压平，键行宽 W 的尾部就是解耦 RoPE 段。
+#   O[r,c] = Σ_j softmax_j( q[r]·k[j] / √W ) · v[j,c]
+# 与 attention_f32 同构，差别只在"输出宽度 dc 可以小于读入宽度 W"：压缩存的是 W，写出的头内乘积是 dc，
+# 上投影 W^{UV} 折在这个口径差里。RoPE 段对同一查询行的各头相同，这一点由装配侧构造 q 时保证。
+# OpDecl 闭集没有注意力专用骨架，归到 elementwise（与 attention_f32 同族）。
+
+[op]
+name     = "latent_attention_f32"
+skeleton = "elementwise"
+summary  = "O = softmax(Q·Kᵀ/√W)·V，键行尾部为解耦 RoPE 段，输出宽 dc 可小于读入宽 W"
+
+[axes]
+N = [8]
+
+[needs]
+dot    = { dt = ["f32"], space = ["REG"], lanes = ["1"] }
+reduce = { axis = ["GMAX"], op = ["max"], dt = ["f32"] }
+store  = { bytes = "<=4096", dt = ["f32"], space = ["GM"] }
+
+[layouts]
+q = "row"
+k = "row"
+v = "row"
+y = "row"
+
+# 网格映射：按压平后的查询行拆线程（一维网格）。
+[grid]
+dims = ["i:R"]
+
+[[variants]]
+name      = "direct"
+order     = 1
+schedule  = "direct"
+mma_share = 0.0

@@ -323,19 +323,56 @@ impl MetricPoint {
     }
 }
 
-/// 指标累积表：逐点入账 + 加权聚合计数。
+/// 一份账表：训练序列与评估序列各持一份。聚合规则逐字相同，故只写一次——
+/// 两条序列的语义不可能各自漂移，加权均值/最优值的口径天然一致。
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct MetricsBoard {
+struct Ledger {
     points: Vec<MetricPoint>,
-    eval_points: Vec<MetricPoint>,
     samples: u64,
     loss_sum: f64,
     correct: u64,
-    best_loss: Option<f32>,
-    eval_samples: u64,
-    eval_loss_sum: f64,
-    eval_correct: u64,
-    best_eval_loss: Option<f32>,
+    best: Option<f32>,
+}
+
+impl Ledger {
+    /// 记一条指标：先校验，再累计样本、加权 loss 与命中条数，并刷新最优 loss。
+    fn push(&mut self, point: MetricPoint) -> Result<()> {
+        validate(&point)?;
+        let samples = point.samples as u64;
+        self.samples += samples;
+        self.loss_sum += point.loss as f64 * samples as f64;
+        self.correct += point.correct;
+        self.best = Some(match self.best {
+            Some(best) => best.min(point.loss),
+            None => point.loss,
+        });
+        self.points.push(point);
+        Ok(())
+    }
+
+    /// 样本加权平均 loss；无样本为 `None`。
+    fn mean_loss(&self) -> Option<f32> {
+        self.nonzero_samples()
+            .map(|samples| (self.loss_sum / samples as f64) as f32)
+    }
+
+    /// 样本加权命中率；无样本为 `None`。
+    fn mean_accuracy(&self) -> Option<f32> {
+        self.nonzero_samples()
+            .map(|samples| self.correct as f32 / samples as f32)
+    }
+
+    /// 累计样本数（大于 0 时才参与加权均值）。
+    fn nonzero_samples(&self) -> Option<u64> {
+        (self.samples > 0).then_some(self.samples)
+    }
+}
+
+/// 指标累积表：训练与评估两条序列各自逐点入账 + 加权聚合计数。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MetricsBoard {
+    train: Ledger,
+    eval: Ledger,
 }
 
 impl MetricsBoard {
@@ -350,17 +387,7 @@ impl MetricsBoard {
     ///
     /// 样本数为 0、loss 非有限数，或命中条数超过样本数时返回 [`Code::Invalid`]。
     pub fn record(&mut self, point: MetricPoint) -> Result<()> {
-        validate(&point)?;
-        let samples = point.samples as u64;
-        self.samples += samples;
-        self.loss_sum += point.loss as f64 * samples as f64;
-        self.correct += point.correct;
-        self.best_loss = Some(match self.best_loss {
-            Some(best) => best.min(point.loss),
-            None => point.loss,
-        });
-        self.points.push(point);
-        Ok(())
+        self.train.push(point)
     }
 
     /// 记一条评估步指标：独立账表，不并入训练序列的样本数、加权均值与最优 loss。
@@ -369,69 +396,52 @@ impl MetricsBoard {
     ///
     /// 样本数为 0、loss 非有限数，或命中条数超过样本数时返回 [`Code::Invalid`]。
     pub fn record_eval(&mut self, point: MetricPoint) -> Result<()> {
-        validate(&point)?;
-        let samples = point.samples as u64;
-        self.eval_samples += samples;
-        self.eval_loss_sum += point.loss as f64 * samples as f64;
-        self.eval_correct += point.correct;
-        self.best_eval_loss = Some(match self.best_eval_loss {
-            Some(best) => best.min(point.loss),
-            None => point.loss,
-        });
-        self.eval_points.push(point);
-        Ok(())
+        self.eval.push(point)
     }
 
     /// 已记账的训练指标点（按入账顺序）。
     pub fn points(&self) -> &[MetricPoint] {
-        &self.points
+        &self.train.points
     }
 
     /// 已记账的评估指标点（与训练序列分开）。
     pub fn eval_points(&self) -> &[MetricPoint] {
-        &self.eval_points
+        &self.eval.points
     }
 
     /// 已记账的点数。
     pub fn len(&self) -> usize {
-        self.points.len()
+        self.train.points.len()
     }
 
     /// 看板是否还没有任何指标。
     pub fn is_empty(&self) -> bool {
-        self.points.is_empty()
+        self.train.points.is_empty()
     }
 
     /// 最近一条指标；空看板为 `None`。
     pub fn latest(&self) -> Option<&MetricPoint> {
-        self.points.last()
+        self.train.points.last()
     }
 
     /// 样本加权平均 loss；无样本为 `None`。
     pub fn mean_loss(&self) -> Option<f32> {
-        self.nonzero_samples()
-            .map(|samples| (self.loss_sum / samples as f64) as f32)
+        self.train.mean_loss()
     }
 
     /// 样本加权命中率；无样本为 `None`。
     pub fn mean_accuracy(&self) -> Option<f32> {
-        self.nonzero_samples()
-            .map(|samples| self.correct as f32 / samples as f32)
+        self.train.mean_accuracy()
     }
 
     /// 各步最低训练 loss；空看板为 `None`。
     pub fn best_loss(&self) -> Option<f32> {
-        self.best_loss
+        self.train.best
     }
 
     /// 各步最低评估 loss；空看板为 `None`。
     pub fn best_eval_loss(&self) -> Option<f32> {
-        self.best_eval_loss
-    }
-
-    /// 累计样本数（大于 0 时才参与加权均值）。
-    fn nonzero_samples(&self) -> Option<u64> {
-        (self.samples > 0).then_some(self.samples)
+        self.eval.best
     }
 
     /// 渲染最近一条为可读行；空看板返回占位说明。

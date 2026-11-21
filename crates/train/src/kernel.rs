@@ -300,6 +300,17 @@ fn decode_flash_attention_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> 
     decode_paths(inputs, output, op::attention::decode_flash_forward)
 }
 
+/// 潜空间注意力适配：`[q, k, v: f32] → y: f32`，行宽取声明宽度，输出宽由输出长度反推。
+///
+/// 与 `attention_f32` 的区别只有输出宽可以更窄（上投影折在口径差里），所以适配层不做任何
+/// 头数/压缩比的假设——全部几何都由张量长度与声明宽度给出。
+fn latent_attention_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+    let (q, k, v) = <(f32, f32, f32) as Inputs>::unpack(inputs, "latent_attention_f32")?;
+    let out = output_slice::<f32>("latent_attention_f32", output)?;
+    let w = op::attention::latent::MODEL.shape.1;
+    op::attention::latent_forward(q, k, v, out, w)
+}
+
 /// 反量化适配：`[q] → y: f32`，scale/zero 取样本常量；打包与逐元素两档只差输入 lane。
 macro_rules! dequant {
     ($(($run:ident, $lane:ty)),* $(,)?) => {$(
@@ -349,6 +360,7 @@ const KERNELS: [Entry; op::REGISTRY.len()] = op::kernel_table![
     hard_sigmoid_f32,
     instance_norm_f32,
     interpolate_f32,
+    latent_attention_f32,
     layer_norm_f32,
     leaky_relu_f32,
     log_f32,

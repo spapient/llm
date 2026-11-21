@@ -142,6 +142,7 @@ macro_rules! for_each_operator {
             hard_sigmoid_f32: $crate::hard_sigmoid_f32::HardSigmoidF32 => "hard_sigmoid_f32",
             instance_norm_f32: $crate::instance_norm::InstanceNormModel => "instance_norm_f32",
             interpolate_f32: $crate::interpolate::InterpolateModel => "interpolate_f32",
+            latent_attention_f32: $crate::attention::LatentAttentionF32 => "latent_attention_f32",
             layer_norm_f32: $crate::layer_norm::LayerNormModel => "layer_norm_f32",
             leaky_relu_f32: $crate::leaky_relu_f32::LeakyReluF32 => "leaky_relu_f32",
             log_f32: $crate::log_f32::LogF32 => "log_f32",

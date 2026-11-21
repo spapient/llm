@@ -149,7 +149,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Replay` / `Store` | `autograd` | 重放执行：把计划编成扁平序列表；`Store` 是唯一口子，真实缓冲归 `train` |
 | `Summary` | `autograd` | 图规模与可达性的只读计数快照，供诊断、缓存键与容量预估 |
 | `Contract` / `ContractSpec` / `Linear` / `LmHead` / `WeightFormat` / `ParamRole` | `nn` | 层定义与契约校验：产出的算子名必须存在于 `op`；`WeightFormat` 是格式 → 算子名的唯一事实源，`ParamRole` 让权重衰减豁免与可训练判定从角色派生 |
-| `RmsNorm` / `Softmax` / `Gelu` / `Silu` / `Rope` / `Scale` / `Add` / `Mul` / `ResidualAdd` / `ReduceSum` / `ReduceMax` / `Embedding` / `Attention` / `AttentionAlgo` / `MatMul` | `nn` | 单算子层：只固定自己绑定的算子名与形状口径；下界仍由算子语义表推出，层里不写第二份流量常数 |
+| `RmsNorm` / `Softmax` / `Gelu` / `Silu` / `Rope` / `Scale` / `Add` / `Mul` / `ResidualAdd` / `ReduceSum` / `ReduceMax` / `Embedding` / `Attention` / `AttentionAlgo` / `LatentAttention` / `MatMul` | `nn` | 单算子层：只固定自己绑定的算子名与形状口径；下界仍由算子语义表推出，层里不写第二份流量常数 |
 | `Conv1d` / `Conv2d` / `ConvTranspose1d` / `ConvTranspose2d` / `MaxPool1d` / `MaxPool2d` / `AvgPool2d` / `AdaptiveAvgPool2d` / `Interpolate` / `BatchNorm2d` / `GroupNorm` / `InstanceNorm` / `LayerNorm` / `LeakyRelu` / `HardSigmoid` | `nn` | 经典 CNN 单算子层（`src/classic.rs` / `src/pointwise.rs`）：每个层只固定自己绑定的 `op` 算子名与形状口径，窗口 / 步长 / 分组等几何与数值算术都在 `op` 侧（`conv::conv` / `gemm::norm`），层里不写第二份流量常数 |
 | `AttentionBlock` | `nn` | 注意力组合块：Q/K/V 投影 + 注意力 + 输出投影内聚成一个 `Contract`，子层按 `{块名}.q` / `.k` / `.v` / `.attn` / `.o` 对齐权重条目 |
 | `Bounds` | `nn` | 层的性能下界：`read` / `write` / `flops` 三笔按方向分账，不认识设备峰值、不做 roofline 编排 |

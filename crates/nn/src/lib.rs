@@ -54,6 +54,7 @@ mod bounds;
 mod embed;
 mod engram;
 mod format;
+mod latent;
 mod lm_head {
     //! `lm_head`：由注解声明的固定形状层。
 
@@ -108,6 +109,7 @@ mod stack;
 
 #[doc(inline)]
 pub use attention::{Attention, AttentionAlgo, AttentionBlock};
+pub use latent::LatentAttention;
 
 #[doc(inline)]
 pub use bounds::Bounds;

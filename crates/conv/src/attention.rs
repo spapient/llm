@@ -93,13 +93,15 @@ fn check_width(d: usize) -> diagnostic::Result<()> {
     Ok(())
 }
 
-/// 注意力的一行机器：三个操作数与 K/V 列几何（`cols`、`d`、`√d`），十个入口共用同一份算式。
-struct Rows<'a> {
+/// 注意力的一行机器：三个操作数与 K/V 列几何（`cols`、读宽 `d`、写宽 `write`、`√d`）——
+/// 稠密注意力与潜空间注意力共用同一份算式，差只差在写宽可以比读宽窄。
+pub(crate) struct Rows<'a> {
     q: &'a [f32],
     k: &'a [f32],
     v: &'a [f32],
     cols: usize,
     d: usize,
+    write: usize,
     scale: f32,
 }
 
@@ -112,7 +114,16 @@ impl<'a> Rows<'a> {
             v,
             cols,
             d,
+            write: d,
             scale: (d as f32).sqrt(),
+        }
+    }
+
+    /// 窄写版本：读宽 `d`、写宽 `write`（`v` 的列宽与输出列宽都是 `write`）。
+    fn narrow(q: &'a [f32], k: &'a [f32], v: &'a [f32], cols: usize, d: usize, write: usize) -> Self {
+        Self {
+            write,
+            ..Self::new(q, k, v, cols, d)
         }
     }
 
@@ -131,12 +142,12 @@ impl<'a> Rows<'a> {
         let max = scores.iter().copied().fold(f32::MIN, f32::max);
         let exps: Vec<f32> = scores.iter().map(|score| (score - max).exp()).collect();
         let sum: f32 = exps.iter().sum();
-        for h in 0..self.d {
+        for h in 0..self.write {
             let mut acc = 0.0f32;
             for j in 0..self.cols {
-                acc += (exps[j] / sum) * self.v[j * self.d + h];
+                acc += (exps[j] / sum) * self.v[j * self.write + h];
             }
-            out[row * self.d + h] = acc;
+            out[row * self.write + h] = acc;
         }
     }
 
@@ -151,8 +162,8 @@ impl<'a> Rows<'a> {
             let reweight = (max - new_max).exp();
             let prob = (score - new_max).exp();
             sum = sum * reweight + prob;
-            for h in 0..self.d {
-                acc[h] = acc[h] * reweight + prob * self.v[col * self.d + h];
+            for h in 0..self.write {
+                acc[h] = acc[h] * reweight + prob * self.v[col * self.write + h];
             }
             max = new_max;
         }
@@ -162,7 +173,7 @@ impl<'a> Rows<'a> {
 
 /// 一行机器两种实现共用的执行开关：朴素直接写 `out`，online 先累加再除归一化和。
 #[derive(Clone, Copy)]
-enum Mode {
+pub(crate) enum Mode {
     /// 三阶段朴素：落地全部分数再 softmax。
     Naive,
     /// online softmax：单遍 K/V，不落地分数矩阵。
@@ -170,7 +181,7 @@ enum Mode {
 }
 
 /// 按执行模式跑 `rows_count` 行，结果写进 `out`。
-fn run_rows(rows: &Rows<'_>, rows_count: usize, out: &mut [f32], mode: Mode) {
+pub(crate) fn run_rows(rows: &Rows<'_>, rows_count: usize, out: &mut [f32], mode: Mode) {
     match mode {
         Mode::Naive => {
             for row in 0..rows_count {
@@ -180,11 +191,11 @@ fn run_rows(rows: &Rows<'_>, rows_count: usize, out: &mut [f32], mode: Mode) {
         Mode::Online => {
             // 预分配一条累加缓冲，所有行复用；online 每行 fill 清零后写回。
             // 消除热路径上「每行一次堆分配」，prefill（rows_count = s）收益随序列长增长。
-            let mut acc = vec![0.0f32; rows.d];
+            let mut acc = vec![0.0f32; rows.write];
             for row in 0..rows_count {
                 let sum = rows.online(row, &mut acc);
-                for h in 0..rows.d {
-                    out[row * rows.d + h] = acc[h] / sum;
+                for h in 0..rows.write {
+                    out[row * rows.write + h] = acc[h] / sum;
                 }
             }
         }
@@ -240,11 +251,13 @@ pub fn flash_forward(
 }
 
 mod decode;
+pub mod latent;
 pub use decode::{
     decode_flash_forward, decode_flash_forward_batch, decode_flash_forward_batch_var,
     decode_flash_forward_heads, decode_forward, decode_forward_batch, decode_forward_batch_var,
     decode_forward_heads,
 };
+pub use latent::{LatentAttention, LatentAttentionF32, forward as latent_forward};
 
 pub(crate) use decode::check_decode_len;
 use decode::decode;
@@ -281,3 +294,6 @@ crate::operator_here!(
 #[cfg(test)]
 #[path = "../tests/attention_tests.rs"]
 mod tests;
+#[cfg(test)]
+#[path = "../tests/latent_attention_tests.rs"]
+mod latent_attention_tests;
