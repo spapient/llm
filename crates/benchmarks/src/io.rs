@@ -4,7 +4,7 @@ pub(crate) mod weights {
     use crate::fixtures::{checked, found};
     use criterion::{BenchmarkGroup, Criterion, Throughput, measurement::WallTime};
     use std::hint::black_box;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use weights::safetensors::File;
     use weights::{Archive, Loader, Segment, Wire, Writer};
     #[cfg(unix)]
@@ -177,7 +177,7 @@ pub(crate) mod weights {
 
     /// 映射后端的四条用例：与 `load` 共用 `plan`，只换开与读。
     #[cfg(unix)]
-    fn mapped(group: &mut BenchmarkGroup<'_, WallTime>, path: &PathBuf, names: &[String]) {
+    fn mapped(group: &mut BenchmarkGroup<'_, WallTime>, path: &Path, names: &[String]) {
         let source = checked(MmapSource::open(path), "映射");
         plan(
             group,
@@ -207,7 +207,7 @@ pub(crate) mod weights {
 
     /// 非 Unix 目标上没有映射后端，装载组的骨架保持一致。
     #[cfg(not(unix))]
-    fn mapped(_: &mut BenchmarkGroup<'_, WallTime>, _: &PathBuf, _: &[String]) {}
+    fn mapped(_: &mut BenchmarkGroup<'_, WallTime>, _: &Path, _: &[String]) {}
 }
 
 pub(crate) mod text {

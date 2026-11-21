@@ -128,7 +128,7 @@ pub(crate) fn gemv_quant(c: &mut Criterion) {
     let mut group = c.benchmark_group("gemv_i4");
     group.throughput(Throughput::Bytes((row * ROW + 4 * scales.len()) as u64));
     group.bench_function("scalar_decode_1x4096x4096", |iter| {
-        iter.iter(|| black_box(scalar(black_box(&mut out))))
+        iter.iter(|| scalar(black_box(&mut out)))
     });
     group.bench_function("vector_decode_1x4096x4096", |iter| {
         iter.iter(|| {
@@ -203,14 +203,17 @@ pub(crate) fn silu(c: &mut Criterion) {
     group.finish();
 }
 
+/// 一档内核的签名：同一份 A/B 缓冲上写 `out`，失败原样返回。
+type Kernel<A, C, E> = fn(&[A], &[A], usize, usize, usize, &mut [C]) -> Result<(), E>;
+
 /// 同一份 A/B 缓冲上的两档内核：标量参考与分块执行路径。
 fn dual<A, C, E: fmt::Display>(
     group: &mut BenchmarkGroup<'_, WallTime>,
     (a, b, out): (&[A], &[A], &mut [C]),
     (m, n, k): (usize, usize, usize),
     names: [&str; 2],
-    scalar: fn(&[A], &[A], usize, usize, usize, &mut [C]) -> Result<(), E>,
-    tiled: fn(&[A], &[A], usize, usize, usize, &mut [C]) -> Result<(), E>,
+    scalar: Kernel<A, C, E>,
+    tiled: Kernel<A, C, E>,
 ) {
     checked(scalar(a, b, m, n, k, &mut *out), GEOM);
     group.bench_function(names[0], |iter| {
@@ -252,10 +255,10 @@ fn gemm_pair<G: Gemm>(
     });
     group.bench_function(tiled, |iter| {
         iter.iter(|| {
-            black_box(checked(
+            checked(
                 gemm::forward::<G>(black_box(a), black_box(b), m, n, black_box(&mut *out)),
                 GEOM,
-            ))
+            )
         })
     });
 }
