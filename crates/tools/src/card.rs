@@ -1,12 +1,9 @@
 //! 实测卡：把 `docs/lld.md` §10.10 的协议卡落成一次可复核的三态结论（PASS / FAIL / OPEN）。
-//!
-//! 拥有 `Protocol`（判哪个量、怎么聚、门槛、样本下限、主机闭集）、`Statistic`（均值 / 变异
-//! 系数）、`Tally`（样本摘要 + 统计量的重采样区间）、`Shortfall`（为什么 OPEN）、`Standing`
-//! （三态）、`Card`（协议 + 装置身份 + 摘要 + 结论）。不拥有样本本身、时钟、温度轨迹。
-//!
-//! 与 [`crate::regress::Judgement`] 分工：`Judgement` 判「相对基线回退没有」；本模块判「这份
-//! 协议卡这一格成立了没有」，门槛是绝对的。`lld` 规则 0.3：OPEN ≠ 降 Must——「没测出来」既
-//! 不许写 PASS，也不许写 FAIL。
+//! 拥有 `Protocol` / `Statistic` / `Tally` / `Shortfall` / `Standing` / `Card`，不拥有样本本身、
+//! 时钟、温度轨迹。与 [`crate::regress::Judgement`] 分工：`Judgement` 判「相对基线回退没有」，
+//! 本模块判「协议卡这一格成立了没有」，门槛绝对。`lld` 规则 0.3：OPEN ≠ 降 Must。
+
+use std::fmt::Write as _;
 
 use diagnostic::{Code, Error, Result};
 
@@ -68,11 +65,7 @@ pub struct Protocol {
 }
 
 impl Protocol {
-    /// 按「名字 / 被测量 / 聚合方式 / 方向 / 门槛」构造；样本下限取默认，主机闭集为空。
-    ///
-    /// # Errors
-    ///
-    /// 名字或量名为空、门槛非有限数时返回 `invalid`。
+    /// 按「名字 / 被测量 / 聚合方式 / 方向 / 门槛」构造；名或量为空、门槛非有限数时返回 `invalid`。
     pub fn of(
         name: &'static str,
         metric: &'static str,
@@ -97,11 +90,7 @@ impl Protocol {
         })
     }
 
-    /// 改样本下限：少于这个数就记 OPEN。
-    ///
-    /// # Errors
-    ///
-    /// 小于 2 时返回 `invalid`：一个样本既算不出标准差，也算不出区间。
+    /// 改样本下限：少于这个数记 OPEN；小于 2 时返回 `invalid`（一个样本算不出区间）。
     pub fn with_least(self, least: usize) -> Result<Self> {
         if least < 2 {
             return Err(invalid("least", format!("样本下限至少 2，得到 {least}")));
@@ -195,13 +184,14 @@ pub struct Tally {
 }
 
 impl Tally {
-    /// 摘要一列样本；统计量无定义（空白列、变异系数的均值为 0）时返回 `Ok(None)`。
-    ///
-    /// # Errors
-    ///
-    /// 样本含非有限数时返回 `invalid`：那是采集坏了，静默跳过会把时间序列断裂藏进一张正常的卡。
+    /// 摘要一列样本；统计量无定义时返回 `Ok(None)`，样本含非有限数时返回 `invalid`。
     pub fn of(samples: &[f64], statistic: Statistic) -> Result<Option<Self>> {
-        finite(samples)?;
+        if let Some(bad) = samples.iter().find(|value| !value.is_finite()) {
+            return Err(invalid(
+                "of",
+                format!("样本必须是有限数，得到 {bad}（采集坏了，不是没测到）"),
+            ));
+        }
         let Some(draws) = stats::interval(samples, |drawn| statistic.value(drawn)) else {
             return Ok(None);
         };
@@ -254,11 +244,7 @@ pub struct Card {
 }
 
 impl Card {
-    /// 判一张卡：先聚摘要，再按门槛落成三态。判定次序：装置闭集 → 样本量 → 统计量定义 → 区间与门槛。
-    ///
-    /// # Errors
-    ///
-    /// 样本含非有限数时返回 `invalid`（见 [`Tally::of`]）。
+    /// 判一张卡：先聚摘要，再按门槛落成三态；样本含非有限数时返回 `invalid`（见 [`Tally::of`]）。
     pub fn judge(protocol: Protocol, harness: Harness, samples: &[f64]) -> Result<Self> {
         let tally = Tally::of(samples, protocol.statistic)?;
         let standing = standing_of(&protocol, &harness, samples.len(), tally.as_ref());
@@ -303,8 +289,6 @@ impl Card {
     }
 }
 
-use std::fmt::Write as _;
-
 /// 顶层 `"键": "值",`。
 fn string_field(out: &mut String, key: &str, value: &str) {
     let _ = write!(out, "  \"{key}\": ");
@@ -314,7 +298,7 @@ fn string_field(out: &mut String, key: &str, value: &str) {
 
 /// 顶层 `"键": <数>,`。
 fn number_field(out: &mut String, key: &str, value: impl std::fmt::Display) {
-    let _ = write!(out, "  \"{key}\": {value},\n");
+    let _ = writeln!(out, "  \"{key}\": {value},");
 }
 
 /// 装置段：`lld` §10.2 要求「同装置对照」，所以身份与数一起归档。
@@ -350,7 +334,7 @@ fn tally_field(out: &mut String, tally: Option<&Tally>) {
         return;
     };
     out.push_str("{\n    \"count\": ");
-    let _ = write!(out, "{},\n", tally.count);
+    let _ = writeln!(out, "{},", tally.count);
     real(out, "mean", tally.mean);
     real(out, "sd", tally.sd);
     match tally.cv {
@@ -398,31 +382,13 @@ fn standing_of(
     let Some(tally) = tally else {
         return Standing::Open(Shortfall::Degenerate);
     };
-    against(protocol.direction, tally, protocol.bound)
-}
-
-/// 区间与门槛的关系：整段在内侧 PASS、整段在外侧 FAIL、跨着门槛只能 OPEN。
-fn against(direction: Direction, tally: &Tally, bound: f64) -> Standing {
-    let (inner, outer) = match direction {
-        Direction::Higher => (tally.lower >= bound, tally.upper < bound),
-        Direction::Lower => (tally.upper < bound, tally.lower >= bound),
+    let (inner, outer) = match protocol.direction {
+        Direction::Higher => (tally.lower >= protocol.bound, tally.upper < protocol.bound),
+        Direction::Lower => (tally.upper < protocol.bound, tally.lower >= protocol.bound),
     };
-    if inner {
-        Standing::Pass
-    } else if outer {
-        Standing::Fail
-    } else {
-        Standing::Open(Shortfall::Straddle)
-    }
-}
-
-/// 样本必须是有限数：混进 `NaN` 说明采集坏了，不是「这一格没测出来」。
-fn finite(samples: &[f64]) -> Result<()> {
-    match samples.iter().find(|value| !value.is_finite()) {
-        None => Ok(()),
-        Some(bad) => Err(invalid(
-            "of",
-            format!("样本必须是有限数，得到 {bad}（采集坏了，不是没测到）"),
-        )),
+    match (inner, outer) {
+        (true, _) => Standing::Pass,
+        (false, true) => Standing::Fail,
+        (false, false) => Standing::Open(Shortfall::Straddle),
     }
 }

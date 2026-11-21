@@ -575,6 +575,21 @@ kernel_smoke!(
     }
 );
 
+/// 走一次 `gemv_f32` 节点：`m` 行宽、`n` 列数、`rows` 行，返回执行器产出的整段输出。
+fn run_gemv_rows(x: &[f32], w: &[f32], m: usize, n: usize, rows: usize) -> Vec<f32> {
+    let mut executor = cpu();
+    bind(&mut executor, 0, x);
+    bind(&mut executor, 1, w);
+    let output = 2;
+    executor.bind(output, vec![0.0; n * rows]);
+    let mut node = Node::new("gemv_f32", Launch::new([1, 1, 1], [n as u32, m as u32, 1]));
+    node.bind_input(0);
+    node.bind_input(1);
+    node.bind_output(output);
+    executor.run(&node).expect("行批执行");
+    executor.get(output).expect("输出缓冲").to_vec()
+}
+
 /// 行批投影：整块两行共享同一份权重，逐行 gemv 与串行参考逐行重算对拍。
 #[test]
 fn gemv_row_batch_runs_each_row_against_the_shared_weight() {
@@ -588,17 +603,7 @@ fn gemv_row_batch_runs_each_row_against_the_shared_weight() {
         op::gemv_f32::forward(xs, &w, &mut reference[row * n..(row + 1) * n]).expect("参考行");
     }
 
-    let mut executor = cpu();
-    bind(&mut executor, 0, &x);
-    bind(&mut executor, 1, &w);
-    let output = 2;
-    executor.bind(output, vec![0.0; n * 2]);
-    let mut node = Node::new("gemv_f32", Launch::new([1, 1, 1], [n as u32, m as u32, 1]));
-    node.bind_input(0);
-    node.bind_input(1);
-    node.bind_output(output);
-    executor.run(&node).expect("行批执行");
-    let produced = executor.get(output).expect("输出缓冲").to_vec();
+    let produced = run_gemv_rows(&x, &w, m, n, 2);
 
     assert_close(&produced, &reference);
 }
@@ -621,17 +626,7 @@ fn gemv_row_batch_switches_to_the_packed_kernel_at_the_row_block() {
             .expect("参考行");
         }
 
-        let mut executor = cpu();
-        bind(&mut executor, 0, &x);
-        bind(&mut executor, 1, &w);
-        let output = 2;
-        executor.bind(output, vec![0.0; n * rows]);
-        let mut node = Node::new("gemv_f32", Launch::new([1, 1, 1], [n as u32, m as u32, 1]));
-        node.bind_input(0);
-        node.bind_input(1);
-        node.bind_output(output);
-        executor.run(&node).expect("行批执行");
-        let produced = executor.get(output).expect("输出缓冲").to_vec();
+        let produced = run_gemv_rows(&x, &w, m, n, rows);
 
         assert_close(&produced, &reference);
     }

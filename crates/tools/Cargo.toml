@@ -30,3 +30,7 @@ path = "tests/gate.rs"
 [[test]]
 name = "card"
 path = "tests/card.rs"
+
+[[test]]
+name = "lex"
+path = "tests/lex.rs"

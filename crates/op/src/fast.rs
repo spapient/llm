@@ -147,10 +147,11 @@ fn compute(a: &[f32], bpack: &[f32], b: &[f32], rows: usize, n: usize, k: usize,
                 a,
                 apack: &apack,
                 bpack,
-                b,
+                w: b,
                 full,
                 n,
                 k,
+                layout: Layout::Nt,
             },
             out,
             k0,
@@ -178,6 +179,7 @@ fn compute(a: &[f32], bpack: &[f32], b: &[f32], rows: usize, n: usize, k: usize,
             },
             0,
             true,
+            Layout::Nt,
         );
     }
 }
@@ -188,10 +190,11 @@ fn sweep_columns(sweep: Sweep<'_>, out: &mut [f32], k0: usize, kb: usize, first:
         a,
         apack,
         bpack,
-        b,
+        w,
         full,
         n,
         k,
+        layout,
     } = sweep;
     let mut j = 0;
     while j < n {
@@ -216,7 +219,7 @@ fn sweep_columns(sweep: Sweep<'_>, out: &mut [f32], k0: usize, kb: usize, first:
         } else {
             edge(
                 a,
-                b,
+                w,
                 out,
                 Span {
                     i: 0,
@@ -229,6 +232,7 @@ fn sweep_columns(sweep: Sweep<'_>, out: &mut [f32], k0: usize, kb: usize, first:
                 },
                 k0,
                 first,
+                layout,
             );
         }
         j += NR;
@@ -241,10 +245,11 @@ struct Sweep<'a> {
     a: &'a [f32],
     apack: &'a [f32],
     bpack: &'a [f32],
-    b: &'a [f32],
+    w: &'a [f32],
     full: usize,
     n: usize,
     k: usize,
+    layout: Layout,
 }
 
 /// 一个待算的 8×8 微内核块：左上角 `(row0, j)`、矩阵列宽 `n`、内积分块长 `kb`、是否首块。
@@ -508,14 +513,34 @@ struct Span {
     stride: usize,
 }
 
+/// 权重布局：`Nt` 是收缩轴在前的 `b[k][n]`，`Tn` 是按输出行常驻的 `w[n][k]`。
+///
+/// 两种布局只在「权重怎么寻址」上不同，换算成同一组 `(基址, 内积步长, 列步长)` 后，
+/// 标量尾块与打包扫描都只留一份实现。
+#[derive(Clone, Copy)]
+enum Layout {
+    Nt,
+    Tn,
+}
+
+/// 权重在 `w` 里的寻址三元组：`(基址, 内积步长, 列步长)`——两种布局在这一处收敛。
+fn weight_stride(span: Span, k0: usize, layout: Layout) -> (usize, usize, usize) {
+    match layout {
+        Layout::Nt => (k0 * span.n + span.j, span.n, 1),
+        Layout::Tn => (span.j * span.stride + k0, 1, span.stride),
+    }
+}
+
 /// 标量尾块：`out[i..i+mr, j..j+nr]` 逐元素点积（与微内核同一组累加口径，容差内一致）。
-fn edge(a: &[f32], b: &[f32], out: &mut [f32], span: Span, k0: usize, first: bool) {
+fn edge(a: &[f32], w: &[f32], out: &mut [f32], span: Span, k0: usize, first: bool, layout: Layout) {
+    let (base, dp, dc) = weight_stride(span, k0, layout);
     for r in 0..span.mr {
         for c in 0..span.nr {
             let slot = (span.i + r) * span.n + span.j + c;
             let mut acc = if first { 0.0f32 } else { out[slot] };
+            let wc = base + c * dc;
             for p in 0..span.k {
-                acc += a[(span.i + r) * span.stride + k0 + p] * b[(k0 + p) * span.n + span.j + c];
+                acc += a[(span.i + r) * span.stride + k0 + p] * w[wc + p * dp];
             }
             out[slot] = acc;
         }

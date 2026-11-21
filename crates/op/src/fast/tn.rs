@@ -11,7 +11,7 @@
 use super::pack::pack_panels;
 use super::pool::{Buffers, Shape, pool, run_pooled};
 use super::scratch;
-use super::{KB, MR, NR, Span, micro_packed, threads_override};
+use super::{KB, Layout, MR, NR, Span, Sweep, edge, sweep_columns, threads_override};
 
 /// 走这条入口的最少行数：一个完整微内核行块。再少的批只有残行（标量），打包的转置成本摊不回来，
 /// 调用方应当继续用按列驻留的 tile 核。
@@ -173,14 +173,29 @@ pub(super) fn compute_tn(
     let mut k0 = 0;
     while k0 < k {
         let kb = KB.min(k - k0);
-        sweep_columns_tn(a, &apack, bpack, w, full, n, k, out, k0, kb, first);
+        sweep_columns(
+            Sweep {
+                a,
+                apack: &apack,
+                bpack,
+                w,
+                full,
+                n,
+                k,
+                layout: Layout::Tn,
+            },
+            out,
+            k0,
+            kb,
+            first,
+        );
         first = false;
         k0 += kb;
     }
     // 残行（≤ MR−1 行）一次走完整段 K，不参与分块累加——与父模块同一条边界。
     let tail = full * MR;
     if tail < rows {
-        edge_tn(
+        edge(
             a,
             w,
             out,
@@ -195,79 +210,8 @@ pub(super) fn compute_tn(
             },
             0,
             true,
+            Layout::Tn,
         );
-    }
-}
-
-/// 按列扫：完整 8 列走微内核，列残尾（`n % NR`）走 [`edge_tn`]。
-#[allow(clippy::too_many_arguments)]
-fn sweep_columns_tn(
-    a: &[f32],
-    apack: &[f32],
-    bpack: &[f32],
-    w: &[f32],
-    full: usize,
-    n: usize,
-    k: usize,
-    out: &mut [f32],
-    k0: usize,
-    kb: usize,
-    first: bool,
-) {
-    let mut j = 0;
-    while j < n {
-        let nr = NR.min(n - j);
-        if nr == NR {
-            let start = (j / NR) * k * NR + k0 * NR;
-            let b_tile = &bpack[start..start + kb * NR];
-            for blk in 0..full {
-                micro_packed(
-                    &apack[blk * k * MR + k0 * MR..],
-                    b_tile,
-                    out,
-                    super::Tile {
-                        row0: blk * MR,
-                        j,
-                        n,
-                        kb,
-                        first,
-                    },
-                );
-            }
-        } else {
-            edge_tn(
-                a,
-                w,
-                out,
-                Span {
-                    i: 0,
-                    j,
-                    mr: full * MR,
-                    nr,
-                    n,
-                    k: kb,
-                    stride: k,
-                },
-                k0,
-                first,
-            );
-        }
-        j += nr;
-    }
-}
-
-/// 标量尾块的 TN 口径：与父模块的 `edge` 同一组累加次序，只有权重取值改成 `w[j][q]`。
-fn edge_tn(a: &[f32], w: &[f32], out: &mut [f32], span: Span, k0: usize, first: bool) {
-    for r in 0..span.mr {
-        for c in 0..span.nr {
-            let slot = (span.i + r) * span.n + span.j + c;
-            let mut acc = if first { 0.0f32 } else { out[slot] };
-            for p in 0..span.k {
-                acc +=
-                    a[(span.i + r) * span.stride + k0 + p] * w[(span.j + c) * span.stride + k0 + p];
-            }
-            out[slot] = acc;
-        }
     }
 }
 

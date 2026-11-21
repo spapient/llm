@@ -1,7 +1,7 @@
 //! 词法器集成测试：只用公开面，不读实现即可换掉实现。
 
 use diagnostic::Code;
-use llm_tools::lex::{parse, Delim, Token};
+use llm_tools::lex::{Token, parse};
 
 /// 前 N 个顶层 token 的调试文本。
 fn outline(tokens: &[Token], max: usize) -> String {

@@ -38,7 +38,10 @@ fn a_series_beyond_the_gate_fails() {
     }
     let card = Card::judge(jitter(), harness("A800"), &samples).expect("判");
     assert_eq!(card.standing(), Standing::Fail);
-    assert!(card.tally().expect("有摘要").upper() > 0.05, "区间上界越过门槛");
+    assert!(
+        card.tally().expect("有摘要").upper() > 0.05,
+        "区间上界越过门槛"
+    );
 }
 
 /// 区间跨着门槛：样本还不足以把「过」与「不过」分开，只能记 OPEN。
