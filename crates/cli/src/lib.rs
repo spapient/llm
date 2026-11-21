@@ -25,9 +25,11 @@
 //! let invocation = Invocation::parse(&[]).expect("空参数即默认命令");
 //! assert_eq!(invocation.command(), &Command::Status { weights: None });
 //!
-//! let inspect = Invocation::parse(&["inspect".to_string(), "--in".to_string(), "model.u".to_string()])
-//!     .expect("合法参数");
-//! assert_eq!(inspect.command(), &Command::Inspect { input: "model.u".to_string() });
+//! let argv = ["inspect", "--in", "model.u"].map(str::to_string);
+//! let inspect = Invocation::parse(&argv).expect("合法参数");
+//!
+//! // 取值借用 `argv`，解析不复制：`matches!` 这一句里没有任何分配。
+//! assert_eq!(inspect.command(), &Command::Inspect { input: "model.u" });
 //!
 //! assert!(Invocation::parse(&["frobnicate".to_string()]).is_err(), "未知命令不猜");
 //! ```

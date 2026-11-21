@@ -9,8 +9,8 @@ fn parses_each_subcommand_with_its_defaults() {
     assert_eq!(
         CutileCommand::parse(&args(&["doctor"])).unwrap(),
         CutileCommand::Doctor {
-            op: DEFAULT_OP.to_string(),
-            device: "auto".to_string(),
+            op: DEFAULT_OP,
+            device: "auto",
             why: None
         }
     );
@@ -24,9 +24,9 @@ fn parses_each_subcommand_with_its_defaults() {
         ]))
         .unwrap(),
         CutileCommand::Doctor {
-            op: DEFAULT_OP.to_string(),
-            device: "cpu".to_string(),
-            why: Some("83a3ecdb31cd1225".to_string())
+            op: DEFAULT_OP,
+            device: "cpu",
+            why: Some("83a3ecdb31cd1225")
         }
     );
     assert_eq!(
@@ -42,7 +42,7 @@ fn parses_each_subcommand_with_its_defaults() {
     assert_eq!(
         CutileCommand::parse(&args(&["verify", "--devices", "cpu,cuda", "--emit-ledger"])).unwrap(),
         CutileCommand::Verify {
-            op: DEFAULT_OP.to_string(),
+            op: DEFAULT_OP,
             devices: vec!["cpu".to_string(), "cuda".to_string()],
             ledger: true
         }
@@ -50,8 +50,8 @@ fn parses_each_subcommand_with_its_defaults() {
     assert_eq!(
         CutileCommand::parse(&args(&["bench", "--shape", "1024x64", "--repeat", "3"])).unwrap(),
         CutileCommand::Bench {
-            op: DEFAULT_OP.to_string(),
-            shape: Some("1024x64".to_string()),
+            op: DEFAULT_OP,
+            shape: Some("1024x64"),
             device: None,
             repeat: 3
         }
@@ -64,7 +64,7 @@ fn bench_without_shape_leaves_it_to_the_operator() {
     assert_eq!(
         CutileCommand::parse(&args(&["bench"])).unwrap(),
         CutileCommand::Bench {
-            op: DEFAULT_OP.to_string(),
+            op: DEFAULT_OP,
             shape: None,
             device: None,
             repeat: 50

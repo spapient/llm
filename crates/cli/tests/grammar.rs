@@ -38,7 +38,7 @@ fn a_weights_file_is_carried_through_without_being_opened() {
             .expect("合法")
             .command(),
         &Command::Status {
-            weights: Some("model.safetensors".to_string())
+            weights: Some("model.safetensors")
         }
     );
     let missing = Invocation::parse(&args(&["status", "--weights"])).expect_err("缺取值");
@@ -63,9 +63,9 @@ fn run_carries_its_options_in_any_order_and_refuses_to_guess_the_file() {
         .expect("合法")
         .command(),
         &Command::Run {
-            weights: "model.safetensors".to_string(),
-            input: Some("1,2,3".to_string()),
-            device: Some("cpu".to_string()),
+            weights: "model.safetensors",
+            input: Some("1,2,3"),
+            device: Some("cpu"),
         }
     );
     let missing = Invocation::parse(&args(&["run", "--input", "1,2"])).expect_err("缺 --weights");
@@ -96,12 +96,12 @@ fn train_carries_its_options_without_parsing_numbers() {
         .expect("合法")
         .command(),
         &Command::Train {
-            lr: Some("0.01".to_string()),
-            warmup: Some("10".to_string()),
-            steps: Some("100".to_string()),
-            clip: Some("1.0".to_string()),
-            accumulation: Some("2".to_string()),
-            load: Some("ckpt.snap".to_string()),
+            lr: Some("0.01"),
+            warmup: Some("10"),
+            steps: Some("100"),
+            clip: Some("1.0"),
+            accumulation: Some("2"),
+            load: Some("ckpt.snap"),
         }
     );
     // 不带任何选项也是合法命令：数值缺省由组装点的训练配置决定。
@@ -150,8 +150,8 @@ fn archive_commands_carry_paths_through_without_opening_here() {
         .expect("合法")
         .command(),
         &Command::Import {
-            input: "model.safetensors".to_string(),
-            output: "model.u".to_string(),
+            input: "model.safetensors",
+            output: "model.u",
         }
     );
     assert_eq!(
@@ -159,7 +159,7 @@ fn archive_commands_carry_paths_through_without_opening_here() {
             .expect("合法")
             .command(),
         &Command::Inspect {
-            input: "model.u".to_string()
+            input: "model.u"
         }
     );
     assert_eq!(
@@ -167,7 +167,7 @@ fn archive_commands_carry_paths_through_without_opening_here() {
             .expect("合法")
             .command(),
         &Command::Check {
-            input: "model.u".to_string()
+            input: "model.u"
         }
     );
 
@@ -176,7 +176,7 @@ fn archive_commands_carry_paths_through_without_opening_here() {
             .expect("合法")
             .command(),
         &Command::Settle {
-            input: "model.u".to_string(),
+            input: "model.u",
             output: None,
         },
         "不给 --out 就是打到 stdout，不猜默认路径"
@@ -192,8 +192,8 @@ fn archive_commands_carry_paths_through_without_opening_here() {
         .expect("顺序自由")
         .command(),
         &Command::Settle {
-            input: "model.u".to_string(),
-            output: Some("config.json".to_string()),
+            input: "model.u",
+            output: Some("config.json"),
         }
     );
     assert_eq!(
@@ -207,8 +207,8 @@ fn archive_commands_carry_paths_through_without_opening_here() {
         .expect("合法")
         .command(),
         &Command::Audit {
-            input: "model.u".to_string(),
-            ledger: "ledger.json".to_string(),
+            input: "model.u",
+            ledger: "ledger.json",
         }
     );
     assert_eq!(
@@ -222,8 +222,8 @@ fn archive_commands_carry_paths_through_without_opening_here() {
         .expect("顺序自由")
         .command(),
         &Command::Audit {
-            input: "model.u".to_string(),
-            ledger: "ledger.json".to_string(),
+            input: "model.u",
+            ledger: "ledger.json",
         }
     );
 

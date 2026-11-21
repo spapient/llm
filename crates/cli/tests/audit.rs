@@ -187,12 +187,19 @@ fn parsing_a_bare_command_allocates_nothing() {
     assert_eq!(count, 0, "无取值命令不该分配：{invocation:?}");
 }
 
+/// 取值一律借用 `argv`，因此取值个数不影响分配次数：多一个选项就多一次分配的写法在这里是缺陷。
 #[test]
-fn parsing_takes_one_allocation_per_given_value() {
-    let argv = args(&["run", "--weights", "w.safetensors", "--input", "1,2"]);
-    let (count, invocation) =
-        allocations(|| llm_cli::Invocation::parse(&argv).expect("文法接受这两个选项"));
-    assert_eq!(count, 2, "两个取值只该各分配一次：{invocation:?}");
+fn parsing_borrows_every_value_instead_of_copying_it() {
+    for words in [
+        &["run", "--weights", "w.safetensors", "--input", "1,2"][..],
+        &["train", "--lr", "0.01", "--warmup", "10", "--steps", "20"][..],
+        &["import", "--in", "a.safetensors", "--out", "a.u"][..],
+    ] {
+        let argv = args(words);
+        let (count, invocation) =
+            allocations(|| llm_cli::Invocation::parse(&argv).expect("文法接受这些选项"));
+        assert_eq!(count, 0, "{words:?} 不该分配：{invocation:?}");
+    }
 }
 
 /// 吞吐探针：默认忽略，避免计时抖动进断言；要数字时用
