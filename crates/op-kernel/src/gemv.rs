@@ -202,3 +202,13 @@ pub mod f32;
 pub mod i2;
 pub mod i4;
 pub mod i8;
+
+/// 每个格式别名的契约自证都必须在**本 crate**里被求值一次。
+///
+/// [`Format::CHECK`] 是编译期判据，但它只有在被求值时才是判据：注解只负责生成 `MODEL`，
+/// 不再引用内核类型（契约层不认识内核），所以强制求值的责任回到格式的归属地。
+/// 这四个别名就是 `gemv_f32` / `gemv_i2` / `gemv_i4` / `gemv_i8`，写错粒度或派生轴除数直接编译不过。
+const _: () = <f32::F32 as Format>::CHECK;
+const _: () = <i2::I2 as Format>::CHECK;
+const _: () = <i4::I4 as Format>::CHECK;
+const _: () = <i8::I8 as Format>::CHECK;

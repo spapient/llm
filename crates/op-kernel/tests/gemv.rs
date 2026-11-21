@@ -2,7 +2,6 @@ use super::*;
 use crate::gemv::Format;
 use crate::model::{ShapeContext, Values};
 use diagnostic::Code;
-use prof::atom::DType;
 
 fn shape(m: usize, n: usize) -> ShapeContext {
     MODEL.projection(m, n).expect("两个投影轴都声明了")
@@ -131,5 +130,22 @@ fn call_arguments_follow_the_template_signature() {
     assert_eq!(signature.output(), Some("y"));
 }
 
-/// 与 [`MODEL`] 同源：证明 `Model::group` 确实来自 [`Format::GRAIN`]，而不是注解另写了一个数。
-const FORMAT_GRAIN: usize = <F32 as Format>::GRAIN;
+
+/// `Model::group` 必须来自 [`Format::GRAIN`]，不是注解另写的一个数。
+///
+/// 这条断言原先写在注册表侧（那里同时看得见 `MODEL` 与格式），拆 crate 后注册表看不见内核类型，
+/// 于是它回到内核：格式的粒度由格式自己回答，注册表只需照抄。
+fn grain_is_what_the_model_declares<G: Format>() {
+    assert_eq!(
+        crate::operator::model_of::<G>().group,
+        u32::try_from(<G as Format>::GRAIN).expect("粒度落在 u32 内")
+    );
+}
+
+#[test]
+fn the_declared_group_is_the_format_grain() {
+    grain_is_what_the_model_declares::<F32>();
+    grain_is_what_the_model_declares::<crate::gemv::i2::I2>();
+    grain_is_what_the_model_declares::<crate::gemv::i4::I4>();
+    grain_is_what_the_model_declares::<crate::gemv::i8::I8>();
+}

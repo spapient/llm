@@ -13,7 +13,7 @@
 //! [`exp_zero_order`] 是两条**不同**的式子（后者步内输入取常数，前者用 `x_{t−1}` 与 `x_t` 的平均），
 //! 名字按各自的实际算式取，不互相借用。
 
-use llm_op_kernel::Scalar;
+pub use llm_op_kernel::Scalar;
 
 /// 幺半群：`combine` 满足结合律，[`Monoid::IDENT`] 是幺元。
 ///
