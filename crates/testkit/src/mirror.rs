@@ -192,7 +192,8 @@ fn macro_bodies() -> std::collections::BTreeMap<String, String> {
                 continue;
             }
             if let Some((name, body)) = current.as_mut() {
-                if line.trim() == "}" && !body.is_empty() {
+                // 收尾的 `}` 必须顶格：宏体内部函数的右括号在缩进里，认错会截断半个宏体。
+                if line == "}" && !body.is_empty() {
                     out.insert(name.clone(), std::mem::take(body));
                     current = None;
                     continue;
