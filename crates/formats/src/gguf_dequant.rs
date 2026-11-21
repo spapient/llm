@@ -8,31 +8,17 @@ use crate::gguf::Kind;
 
 /// 把一个张量的原始字节反量化进 `out`；长度不符或布局不符显式报错。
 pub(crate) fn dequantize(kind: Kind, raw: &[u8], out: &mut [f32]) -> Result<()> {
-    check_len(kind, raw.len(), out.len())?;
+    if raw.len() != kind.bytes_of(out.len())? {
+        return Err(bad("张量字节长度与块布局不符"));
+    }
     match kind {
         Kind::F32 => decode_scalar::<4>(raw, out, "f32", f32::from_le_bytes),
         Kind::F16 => decode_scalar::<2>(raw, out, "f16", |b| f16_to_f32(u16::from_le_bytes(b))),
-        block => decode_block(block, raw, out),
-    }
-}
-
-/// 块格式（Q8_0 与 K 超块）的分派；两个标量格式已在 [`dequantize`] 就地分派。
-fn decode_block(kind: Kind, raw: &[u8], out: &mut [f32]) -> Result<()> {
-    match kind {
         Kind::Q8_0 => decode_q8(raw, out),
         Kind::Q4_K => decode_k(raw, out, 144, 0),
         Kind::Q5_K => decode_k(raw, out, 176, 32),
         _ => decode_q6k(raw, out),
     }
-}
-
-/// 字节长度必须正好等于块布局推出的值：短了会读出半个张量，长了会把下一条混进来；
-/// 元素数不整除块长同样必须拒（尾部元素没有所属块，否则会被静默留成 0）。
-fn check_len(kind: Kind, raw: usize, count: usize) -> Result<()> {
-    if raw == kind.bytes_of(count)? {
-        return Ok(());
-    }
-    Err(bad("张量字节长度与块布局不符"))
 }
 
 /// 标量格式：固定宽度小端，逐元素转换；长度不符即报错（`what` 是类型名）。
