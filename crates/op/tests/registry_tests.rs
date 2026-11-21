@@ -41,3 +41,33 @@ fn the_two_operators_differ_only_in_their_declared_quantization() {
 /// 与 `model_of::<F32>()` 同源：证明 `Model::group` 确实来自 [`gemv::Format::GRAIN`]，
 /// 而不是注解另写了一个数。
 const FORMAT_GRAIN: usize = <F32 as gemv::Format>::GRAIN;
+
+/// 每个算子的样本 -> 参考必须自洽（参考不能报错，长度与 `y` 缓冲一致）。
+///
+/// 这一问横跨两层：样本由 `MODEL` 生成、参考由 `op-neural` 的标量实现给出，只有注册表这侧
+/// 同时看得见两者，所以它在这里而不是在 `op-neural` 里。
+fn sample_and_reference_agree(name: &str) {
+    let model = model(name).expect("已注册");
+    let sample = (model.sample)(model.shape.0, model.shape.1);
+    let values = (model.reference)(&sample).expect("参考可计算");
+    let y = sample.f32("y").expect("y 存在");
+    assert_eq!(values.len(), y.len(), "{name}: 参考长度必须等于 y 缓冲");
+}
+
+#[test]
+fn every_classic_sample_matches_its_reference() {
+    for name in [
+        "max_pool1d_f32",
+        "max_pool2d_f32",
+        "avg_pool2d_f32",
+        "adaptive_pool_f32",
+        "interpolate_f32",
+        "batch_norm_f32",
+        "group_norm_f32",
+        "instance_norm_f32",
+        "layer_norm_f32",
+    ] {
+        sample_and_reference_agree(name);
+    }
+}
+
