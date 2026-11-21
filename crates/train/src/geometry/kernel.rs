@@ -62,14 +62,6 @@ pub(super) fn backward_pool1d(
     Ok(vec![dx])
 }
 
-/// 池化输出边长：`(len + 2p − k)/s + 1`，两轴一起求，供核对与反向复用。
-pub(super) fn pool2d_out(win: Window, h: usize, w: usize) -> Result<(usize, usize)> {
-    Ok((
-        pool_len(h, win.k, win.s, win.p)?,
-        pool_len(w, win.k, win.s, win.p)?,
-    ))
-}
-
 /// 池化反向的公共前奏：推输出形状、按样本数分配 `dx`。
 fn pool_backward_frame(
     inputs: &[Vec<f32>],

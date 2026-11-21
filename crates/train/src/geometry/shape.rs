@@ -5,7 +5,7 @@
 //! 因为二者共享同一组不变量：输出尺寸、步长取模、越界拒绝口径一致。
 
 use diagnostic::{Code, Error, Result};
-use op::conv::{Conv2d, ConvGeom};
+use op::conv::ConvGeom;
 
 use super::{EPS, Geometry};
 
@@ -196,6 +196,14 @@ pub(super) fn pool_len(len: usize, k: usize, s: usize, p: usize) -> Result<usize
         )));
     }
     Ok((len + 2 * p - k) / s + 1)
+}
+
+/// 池化输出边长：`(len + 2p − k)/s + 1`，两轴一起求，供核对与反向复用。
+pub(super) fn pool2d_out(win: Window, h: usize, w: usize) -> Result<(usize, usize)> {
+    Ok((
+        pool_len(h, win.k, win.s, win.p)?,
+        pool_len(w, win.k, win.s, win.p)?,
+    ))
 }
 
 /// 输出位在第 `axis` 维上的有效窗口（闭区间）。
