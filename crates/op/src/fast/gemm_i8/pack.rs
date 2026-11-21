@@ -1,5 +1,4 @@
 use super::super::*;
-use super::super::pool::Job;
 use super::I8_NR;
 
 pub(super) fn pack_b(b: &[i8], n: usize, k: usize) -> (Vec<i8>, usize) {
@@ -60,5 +59,3 @@ pub(super) fn pack_b_tile(dst: &mut [i8], b: &[i8], n: usize, k: usize, first: u
         }
     }
 }
-
-

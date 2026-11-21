@@ -6,7 +6,6 @@
 use crate::settle::{GAIN_FLOOR, MAX_ENTROPY, Reason, SMALL_BYTES};
 use crate::{Codec, Stored};
 
-
 /// 每元素实际占的位数：按打包后的字节数四舍五入，不读方案里的"名义位宽"。
 pub(crate) fn bits_per(seg: &Stored, volume: usize) -> u32 {
     let numel = tensor::product(seg.shape());

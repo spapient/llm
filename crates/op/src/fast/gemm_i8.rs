@@ -230,9 +230,8 @@ pub fn gemm_i8_single(a: &[i8], b: &[i8], m: usize, n: usize, k: usize, out: &mu
 }
 
 /// B 转置打包成 `[nblk][nb][k]`（同列 k 连续），返回 `(面板, n 补齐到 8)`。
-
 mod kernel;
 mod pack;
 
-use kernel::{compute_i8_packed, pair_one};
+use kernel::compute_i8_packed;
 use pack::{pack_b, pack_b_par};
