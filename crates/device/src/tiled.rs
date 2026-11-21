@@ -1,7 +1,7 @@
 //! 设备侧分块 lowering：共享内存 GEMM 与（后续）分块注意力。
 //!
-//! **拥有**：中性 [`cutile::backend::Lower::TiledGemm`] 的 Metal 落地——把 GEMM 骨架的标量三重
-//! 循环换成 threadgroup 共享内存分块。**不拥有**：骨架分派（`cutile::execution`）、逐点/循环/
+//! **拥有**：中性 [`cutile_run::backend::Lower::TiledGemm`] 的 Metal 落地——把 GEMM 骨架的标量三重
+//! 循环换成 threadgroup 共享内存分块。**不拥有**：骨架分派（`cutile_run::execution`）、逐点/循环/
 //! 归约/扫描 lowering（`dialect` / `cuda` / `msl`）、张量核 WMMA（`wmma`，CUDA）。
 //!
 //! 与 `dialect` 分开的理由：`dialect` 的方言表与 vendor 驱动已接近单文件上限，而分块内核是
@@ -119,7 +119,7 @@ fn attention_dims(signature: &Signature, sample: &Sample) -> Result<(usize, usiz
 #[path = "../tests/tiled.rs"]
 mod tests;
 
-use cutile::backend::TensorGeometry;
+use cutile_run::backend::TensorGeometry;
 
 /// 张量核 GEMM 的几何选型：按输出规模在两组实测配置间取优，并让规约块尽量整除 `K`。
 ///

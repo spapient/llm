@@ -5,7 +5,7 @@
 
 use cutile::cache::Gc;
 use cutile::dirs::Dirs;
-use cutile::doctor::Doctor;
+use cutile_run::doctor::Doctor;
 use cutile::emit::Fragment;
 use diagnostic::render::Panel;
 use std::fmt::Write as _;

@@ -1,7 +1,7 @@
 use super::*;
-use cutile::backend::TensorGeometry;
-use cutile::execution::Backend::Metal;
-use cutile::execution::{Mode, program};
+use cutile_run::backend::TensorGeometry;
+use cutile_run::execution::Backend::Metal;
+use cutile_run::execution::{Mode, program};
 
 pub(super) fn bench_device(hint: &str) -> Option<(MetalDevice, MetalCommandQueue)> {
     let Some(device) = MetalDevice::system_default() else {

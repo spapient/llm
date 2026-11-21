@@ -3,9 +3,9 @@
 //! 只有表（`Sheet`）与它们的标题；判定与措辞的来源和 [`super::section`] 相同——库给结论，这里排版。
 
 use cutile::atom::Prim;
-use cutile::ledger::{BackendRow, LedgerCell, Status};
+use cutile_run::ledger::{BackendRow, LedgerCell, Status};
 use cutile::prof::Profile;
-use cutile::verify::Verified;
+use cutile_run::verify::Verified;
 use diagnostic::render::{Align, Sheet};
 use std::fmt::Write as _;
 

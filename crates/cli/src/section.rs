@@ -6,10 +6,10 @@
 //! 同一个词既指类型又指模块时，`section::evidence_block(&report)` 会读成两种东西。
 
 use super::prose::{counted, fragment_note, params_note};
-use cutile::bench::{Bench, Peak, Performance, Verdict};
+use cutile_run::bench::{Bench, Peak, Performance, Verdict};
 use cutile::cap::VariantCheck;
-use cutile::doctor::{Built, CacheState, CacheWhy, Doctor};
-use cutile::verify::{Negotiation, Verified, VerifyReport};
+use cutile_run::doctor::{Built, CacheState, CacheWhy, Doctor};
+use cutile_run::verify::{Negotiation, Verified, VerifyReport};
 use std::fmt::Write as _;
 
 /// `[证据]` 段：依据类别、设备执行 / 本机自检条数与语言门；不成立的见证单列一行。

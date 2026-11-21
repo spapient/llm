@@ -36,10 +36,11 @@ path = "tests/audit.rs"
 
 [features]
 # 发布模式：构建期把能编译的设备编成镜像并嵌入（见 `crates/prim/build.rs`）。
-device-image = ["cutile/device-image"]
+device-image = ["cutile/device-image", "cutile-run/device-image"]
 
 [dependencies]
 cutile = { path = "../cutile" }
+cutile-run = { path = "../cutile-run" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 engine = { path = "../engine", package = "llm-engine" }
 device = { path = "../device", package = "llm-device" }

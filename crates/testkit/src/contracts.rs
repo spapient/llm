@@ -94,7 +94,12 @@ fn locate(module: &str, depth: usize) -> Option<PathBuf> {
     }
     let roots = op_roots();
     // 按相对路径在家族各家根下探测：名字在谁家就返回谁家的实体。
-    let find = |relative: String| roots.iter().map(|src| src.join(&relative)).find(|cand| cand.exists());
+    let find = |relative: String| {
+        roots
+            .iter()
+            .map(|src| src.join(&relative))
+            .find(|cand| cand.exists())
+    };
     // 带路径的模块名（`classic::pool::adaptive`）按目录走就是实体文件。
     if module.contains("::") {
         if let Some(explicit) = find(format!("{}.rs", module.replace("::", "/"))) {

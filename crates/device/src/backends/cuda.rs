@@ -351,7 +351,7 @@ fn cuda_compile(exe: &Path, src: &Path, profile: &Profile, dirs: &Dirs) -> Resul
     let mut command = Command::new(tool);
     // 头文件垫片归档案（`[compile.headers]`）：生成程序里的 `<cuda_runtime.h>` 与工具链实际提供的
     // `<musa_runtime.h>` 之间的映射写在 `devices/musa.toml`，本层只负责把它变成 `-I`。
-    command.args(cutile::compile_flags(profile, dirs)?);
+    command.args(cutile_run::compile_flags(profile, dirs)?);
     cuda_ccbin(tool, &mut command)?;
     command.arg("-o").arg(exe).arg(src);
     driver::run_tool(tool, &mut command, src)

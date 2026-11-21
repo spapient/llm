@@ -190,7 +190,7 @@ fn submit_read(
 fn metal_harness(tag: &str) -> Option<(cutile::builtin::Catalogue, cutile::dirs::Dirs)> {
     ensure_backends();
     let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
-    if !cutile::witness::device_available(catalogue.profile("metal").expect("metal 档案")) {
+    if !cutile_run::witness::device_available(catalogue.profile("metal").expect("metal 档案")) {
         return None;
     }
     let dirs =
@@ -204,7 +204,7 @@ fn cuda_harness(tag: &str) -> Option<(cutile::builtin::Catalogue, cutile::dirs::
     ensure_backends();
     let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
     let profile = catalogue.profile("nvidia").cloned().expect("nvidia 档案");
-    if !cutile::witness::device_available(&profile) {
+    if !cutile_run::witness::device_available(&profile) {
         return None;
     }
     let dirs =
@@ -306,7 +306,7 @@ fn chunk_setup(
 
 #[test]
 fn a_real_weight_file_runs_through_generated_kernels() {
-    if cutile::toolchain::detect().is_none() {
+    if cutile_run::toolchain::detect().is_none() {
         // 没有 C 编译器就没有执行证据；这条用例在这里不成立，不是通过。
         return;
     }
@@ -320,7 +320,7 @@ fn a_real_weight_file_runs_through_generated_kernels() {
 
 #[test]
 fn the_first_layer_computes_the_hand_arithmetic_on_its_own_bytes() {
-    if cutile::toolchain::detect().is_none() {
+    if cutile_run::toolchain::detect().is_none() {
         return;
     }
     let path = write_dense_model("llm-run-arithmetic.safetensors", &[("blk.0.attn_q", 4, 8)]);
@@ -341,7 +341,7 @@ fn the_first_layer_computes_the_hand_arithmetic_on_its_own_bytes() {
         .expect("默认设置");
     let dirs = settings.dirs();
     let catalogue = cutile::builtin::Catalogue::load(&dirs).expect("内置数据");
-    let executed = cutile::execution::execute(&catalogue, &dirs, nn::Linear::DENSE, "cpu", &sample)
+    let executed = cutile_run::execution::execute(&catalogue, &dirs, nn::Linear::DENSE, "cpu", &sample)
         .expect("执行");
     let want: Vec<f32> = (0..4)
         .map(|row| (0..8).map(|column| w[row * 8 + column] * x[column]).sum())

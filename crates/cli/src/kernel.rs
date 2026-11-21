@@ -1,7 +1,7 @@
 //! `cutile` 子命令的参数文法：内核层审计（doctor / verify / bench / ledger / cache gc）。
 //!
 //! 语法只有一份：内核层的驱动方（`cargo run --bin cutile`）与 `llm cutile ...` 都走这里，
-//! 执行在 `cutile::{doctor, verify, bench, cache}`，排版在驱动方。`--set key=value` 属于配置层
+//! 执行在 `cutile_run::{doctor, verify, bench}` + `cutile::cache`，排版在驱动方。`--set key=value` 属于配置层
 //! （[`crate::settings`]），由驱动方在交给本模块之前摘走。
 //!
 //! 表即文法：一个子命令一行（名字、选项表、组装），新增子命令只加一行；解析器本体与一级命令共用

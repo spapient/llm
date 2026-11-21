@@ -67,8 +67,13 @@ reason = "命令文法内部类型；`cli` 的公开面是 `Invocation`/`Command
 
 [[ownership.unlisted]]
 crate = "cutile"
-names = ["CallArg", "ChainStep", "FragmentGap", "LanguageGate", "Lock", "NeedReport", "PrimCall", "Scope", "SpaceUse", "TensorGeometry", "Timing", "Unlock"]
-reason = "内核 DSL 的协商、执行前端（含张量核几何 `TensorGeometry`）与结果类型；按 `crates/cutile/README.md` 的分节归类，待分节稳定后逐节进表"
+names = ["CallArg", "ChainStep", "FragmentGap", "Lock", "NeedReport", "PrimCall", "SpaceUse", "Unlock"]
+reason = "内核 DSL 的协商前端与结果类型；按 `crates/cutile/README.md` 的分节归类，待分节稳定后逐节进表（执行期五个名字随拆分迁到 `cutile-run`）"
+
+[[ownership.unlisted]]
+crate = "cutile-run"
+names = ["LanguageGate", "Scope", "TensorGeometry", "Timing"]
+reason = "执行期前端：`LanguageGate` 是一门设备语言的入口条件、`Scope` 是见证的作用域、`TensorGeometry` 是张量核几何、`Timing` 是一次实测的时间口径；四者随 `cutile` 的「机制 / 运行」拆分迁来，待 `cutile-run` 的 README 分节稳定后进表"
 
 [[ownership.unlisted]]
 crate = "dtype"

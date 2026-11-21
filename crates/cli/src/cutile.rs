@@ -1,7 +1,7 @@
 //! 内核层审计的驱动方：解析 → 执行 → 排版 → 退出码（L7 入口，不定义新类型）。
 //!
 //! 三件事分别有各自的归属：语法与配置来自 `llm_cli::kernel` / `llm_cli::settings`，计算来自
-//! `cutile::{bench, doctor, verify}`，人可读行文聚簇在 [`prose`] 模块。本文件只把它们
+//! `cutile_run::{bench, doctor, verify}`，人可读行文聚簇在 [`prose`] 模块。本文件只把它们
 //! 接起来并收退出码，因此 `cutile` 不再持有第二套命令行文法、也不决定缓存目录在哪，命令模块也不再
 //! 拼字符串。
 //!
@@ -13,11 +13,11 @@
 //! cargo run --bin cutile -- cache gc --limit 1073741824
 //! ```
 
-use cutile::bench::{self, Bench};
+use cutile_run::bench::{self, Bench};
 use cutile::builtin::Catalogue;
-use cutile::doctor::{self, Doctor};
-use cutile::ledger;
-use cutile::verify::{self, Verified, VerifyEntry};
+use cutile_run::doctor::{self, Doctor};
+use cutile_run::ledger;
+use cutile_run::verify::{self, Verified, VerifyEntry};
 use diagnostic::{Code, Error};
 use llm_cli::kernel::CutileCommand;
 use llm_cli::settings::Settings;

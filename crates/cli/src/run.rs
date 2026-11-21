@@ -111,13 +111,13 @@ fn run_variant(
     operator: &str,
     device: &str,
     sample: &op::model::Sample,
-) -> Result<cutile::execution::Execution> {
-    cutile::execution::execute(catalogue, dirs, operator, device, sample)
+) -> Result<cutile_run::execution::Execution> {
+    cutile_run::execution::execute(catalogue, dirs, operator, device, sample)
 }
 
 /// 一层的报告行：形状、算子、变体、tile、误差、片段行数与缓存键。
 fn variant_row(
-    executed: &cutile::execution::Execution,
+    executed: &cutile_run::execution::Execution,
     m: usize,
     n: usize,
     operator: &str,

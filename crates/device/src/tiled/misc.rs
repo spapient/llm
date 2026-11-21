@@ -181,7 +181,7 @@ fn int8_mismatch() -> Error {
     .with(INT8_SITE)
 }
 
-/// 逐位核对 int8 GEMM 的形参类型（与 `cutile::execution` 的同一判据保持一致）。
+/// 逐位核对 int8 GEMM 的形参类型（与 `cutile_run::execution` 的同一判据保持一致）。
 fn int8_signature(signature: &Signature) -> bool {
     let types: Vec<CType> = signature.params().iter().map(|param| param.ctype).collect();
     types

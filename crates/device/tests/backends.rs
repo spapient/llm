@@ -1,15 +1,15 @@
 use super::*;
 use crate::toolchain::msvc_version;
-use cutile::backend::{Codegen, Driver, Source};
+use cutile_run::backend::{Codegen, Driver, Source};
 use cutile::dirs::Dirs;
-use cutile::execution::Backend::Metal;
-use cutile::execution::{Mode, program};
+use cutile_run::execution::Backend::Metal;
+use cutile_run::execution::{Mode, program};
 use cutile::prof::Profile;
-use cutile::witness::{MAX_OUT, Scope};
+use cutile_run::witness::{MAX_OUT, Scope};
 use std::path::Path;
 
 /// 装配 Metal / CUDA 后端（幂等，进程级只装一次）。引擎测试直接调 `MetalBackend`/`CudaBackend` 的
-/// `Codegen`/`Driver` 方法；经 `cutile::witness::device_available` 判断真机在场时，先注入注册表。
+/// `Codegen`/`Driver` 方法；经 `cutile_run::witness::device_available` 判断真机在场时，先注入注册表。
 fn ensure_backends() {
     use std::sync::OnceLock;
     static INSTALLED: OnceLock<()> = OnceLock::new();
@@ -156,12 +156,12 @@ fn device_benchmark_drivers_measure_gpu_time_and_emit_output() {
 fn every_metal_witness_runs_on_the_gpu() {
     ensure_backends();
     let profile = metal_profile();
-    if !cutile::witness::device_available(&profile) {
+    if !cutile_run::witness::device_available(&profile) {
         testkit::skip("engine: Metal 设备不在本机，GPU 见证用例未运行");
         return;
     }
     let dirs = Dirs::under(std::env::temp_dir().join("engine-metal-witness"));
-    let runs = cutile::witness::run_all(&profile, &dirs).expect("Metal 见证必须全部通过");
+    let runs = cutile_run::witness::run_all(&profile, &dirs).expect("Metal 见证必须全部通过");
     assert_eq!(runs.len(), profile.provides.len(), "每条声明都要有结果");
     assert!(
         runs.iter().all(|run| run.scope == Scope::Device),
@@ -173,7 +173,7 @@ fn every_metal_witness_runs_on_the_gpu() {
 #[test]
 fn the_metal_front_end_demands_an_explicit_address_space() {
     ensure_backends();
-    if !cutile::witness::device_available(&metal_profile()) {
+    if !cutile_run::witness::device_available(&metal_profile()) {
         testkit::skip("engine: Metal 设备不在本机，MSL 前端用例未运行");
         return;
     }
@@ -209,7 +209,7 @@ fn generated_device_program_braces_are_balanced() {
         let Some(profile) = catalogue.profile(vendor).cloned() else {
             continue;
         };
-        let selected = cutile::witness::declared_witnesses(&profile).expect("见证");
+        let selected = cutile_run::witness::declared_witnesses(&profile).expect("见证");
         let text = front
             .program(&profile, &dirs, &selected, Scope::Device)
             .expect("可生成");
@@ -234,7 +234,7 @@ fn an_ascend_program_is_a_single_ascendc_translation_unit() {
     ensure_backends();
     let dirs = Dirs::under(std::env::temp_dir().join("engine-ascend-program"));
     let profile = ascend_profile();
-    let selected = cutile::witness::declared_witnesses(&profile).expect("见证");
+    let selected = cutile_run::witness::declared_witnesses(&profile).expect("见证");
     let text = ASCEND_BACKEND
         .program(&profile, &dirs, &selected, Scope::Device)
         .expect("可生成");
@@ -294,7 +294,7 @@ fn the_ascend_backend_needs_both_the_compiler_and_the_device() {
     let ready = detect_cce().is_some() && ascend_device();
     assert_eq!(ASCEND_BACKEND.available(&profile), ready);
     assert_eq!(
-        cutile::witness::device_available(&profile),
+        cutile_run::witness::device_available(&profile),
         ready,
         "注册表里的可用性要与后端自己的判定一致"
     );
@@ -308,7 +308,7 @@ fn the_ascend_backend_needs_both_the_compiler_and_the_device() {
         // 注册是进程级的一张表：没注册时 `device::spec(ascendc)` 是 `None`，报的是"本机没有该设备"
         // 并列出已接的前端。注册之后同一台机器仍不可用，只可能因为它自己判定的那个理由。
         let dirs = Dirs::under(std::env::temp_dir().join("engine-ascend-registry"));
-        let error = cutile::witness::run_all(&profile, &dirs).expect_err("本机没有 ccec / NPU");
+        let error = cutile_run::witness::run_all(&profile, &dirs).expect_err("本机没有 ccec / NPU");
         let text = error.to_string();
         assert!(
             !text.contains("本机没有该设备"),
@@ -434,7 +434,7 @@ fn production_grid_kernel_compiles_for_a_real_op() {
     let dirs = Dirs::under(std::env::temp_dir().join("engine-metal-grid"));
     let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
     let profile = metal_profile();
-    if !cutile::witness::device_available(&profile) {
+    if !cutile_run::witness::device_available(&profile) {
         testkit::skip("engine: Metal 工具链不在本机，生产态内核编译用例未运行");
         return;
     }
@@ -452,7 +452,7 @@ fn production_reduce_kernel_compiles_for_a_real_op() {
     let dirs = Dirs::under(std::env::temp_dir().join("engine-metal-reduce"));
     let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
     let profile = metal_profile();
-    if !cutile::witness::device_available(&profile) {
+    if !cutile_run::witness::device_available(&profile) {
         testkit::skip("engine: Metal 工具链不在本机，归约内核编译用例未运行");
         return;
     }
@@ -482,7 +482,7 @@ fn production_scan_kernel_compiles_for_a_real_op() {
     let dirs = Dirs::under(std::env::temp_dir().join("engine-metal-scan"));
     let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
     let profile = metal_profile();
-    if !cutile::witness::device_available(&profile) {
+    if !cutile_run::witness::device_available(&profile) {
         testkit::skip("engine: Metal 工具链不在本机，扫描内核编译用例未运行");
         return;
     }
@@ -516,7 +516,7 @@ fn production_rmsnorm_kernel_compiles_for_a_real_op() {
     let dirs = Dirs::under(std::env::temp_dir().join("engine-metal-rmsnorm"));
     let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
     let profile = metal_profile();
-    if !cutile::witness::device_available(&profile) {
+    if !cutile_run::witness::device_available(&profile) {
         testkit::skip("engine: Metal 工具链不在本机，两趟内核编译用例未运行");
         return;
     }
@@ -561,7 +561,7 @@ fn production_softmax_kernel_compiles_for_a_real_op() {
     let dirs = Dirs::under(std::env::temp_dir().join("engine-metal-softmax"));
     let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
     let profile = metal_profile();
-    if !cutile::witness::device_available(&profile) {
+    if !cutile_run::witness::device_available(&profile) {
         testkit::skip("engine: Metal 工具链不在本机，softmax 内核编译用例未运行");
         return;
     }
@@ -597,7 +597,7 @@ fn production_gemv_kernel_compiles_for_a_real_op() {
     let dirs = Dirs::under(std::env::temp_dir().join("engine-metal-gemv"));
     let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
     let profile = metal_profile();
-    if !cutile::witness::device_available(&profile) {
+    if !cutile_run::witness::device_available(&profile) {
         testkit::skip("engine: Metal 工具链不在本机，gemv 内核编译用例未运行");
         return;
     }
@@ -627,7 +627,7 @@ fn production_gemm_kernel_compiles_for_a_real_op() {
     let dirs = Dirs::under(std::env::temp_dir().join("engine-metal-gemm"));
     let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
     let profile = metal_profile();
-    if !cutile::witness::device_available(&profile) {
+    if !cutile_run::witness::device_available(&profile) {
         testkit::skip("engine: Metal 工具链不在本机，gemm 内核编译用例未运行");
         return;
     }
@@ -679,7 +679,7 @@ fn production_attention_kernel_compiles_for_a_real_op() {
     let dirs = Dirs::under(std::env::temp_dir().join("engine-metal-attention"));
     let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
     let profile = metal_profile();
-    if !cutile::witness::device_available(&profile) {
+    if !cutile_run::witness::device_available(&profile) {
         testkit::skip("engine: Metal 工具链不在本机，attention 内核编译用例未运行");
         return;
     }
@@ -708,7 +708,7 @@ fn production_flash_attention_kernel_compiles_for_a_real_op() {
     let dirs = Dirs::under(std::env::temp_dir().join("engine-metal-flash-attention"));
     let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
     let profile = metal_profile();
-    if !cutile::witness::device_available(&profile) {
+    if !cutile_run::witness::device_available(&profile) {
         testkit::skip("engine: Metal 工具链不在本机，flash_attention 内核编译用例未运行");
         return;
     }
@@ -736,7 +736,7 @@ fn production_quantized_gemv_compiles(op_name: &str) {
     let dirs = Dirs::under(std::env::temp_dir().join("engine-metal-gemv-quant"));
     let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
     let profile = metal_profile();
-    if !cutile::witness::device_available(&profile) {
+    if !cutile_run::witness::device_available(&profile) {
         testkit::skip(format!(
             "engine: Metal 工具链不在本机，{op_name} 内核编译用例未运行"
         ));

@@ -573,6 +573,7 @@ version = "0.1.0"
 dependencies = [
  "assert_cmd",
  "cutile",
+ "cutile-run",
  "llm-device",
  "llm-diagnostic",
  "llm-engine",
@@ -609,6 +610,7 @@ name = "llm-device"
 version = "0.1.0"
 dependencies = [
  "cutile",
+ "cutile-run",
  "llm-diagnostic",
  "llm-engine",
  "llm-op",
