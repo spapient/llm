@@ -87,7 +87,7 @@ reason = "模糊测试的目标、种子、行为描述与复现样本；工具�
 
 [[ownership.unlisted]]
 crate = "op"
-names = ["Access", "Arg", "Axis", "AxisRole", "AxisSpec", "Binary", "Chunk", "ConvGeom", "CType", "DecodeAttention", "DecodeFlashAttention", "Dense", "DequantI8", "Embed", "FlashAttention", "Formula", "Gemm", "Grid", "Gru", "Lstm", "Matmul", "MatmulI8Op", "Packed", "PackedRow", "Param", "Plain", "PlainFmt", "QuantI4", "Rnn", "Sampler", "ShapeContext", "Skeleton", "SplitMix64", "SymI8", "TileCombo", "Unary", "Values", "Variant"]
+names = ["Access", "Arg", "Axis", "AxisRole", "AxisSpec", "Binary", "Chunk", "ConvGeom", "CType", "DecodeAttention", "DecodeFlashAttention", "Dense", "DequantI8", "Embed", "FlashAttention", "Formula", "Gemm", "Grid", "Matmul", "MatmulI8Op", "Packed", "PackedRow", "Param", "Plain", "PlainFmt", "QuantI4", "Sampler", "ShapeContext", "Skeleton", "SplitMix64", "SymI8", "TileCombo", "Unary", "Values", "Variant"]
 reason = "算子声明、语义与经典层采样辅助的内部类型（每个算子一个模块、一张行表）；公开面是 `REGISTRY`。经典 CNN 算子与 `nn` 同名层共享名字（`Conv1d`/`Conv2d`/`BatchNorm2d` 等）——所有权门按名字全局判重，故这些名字由 `nn` 的所有权行覆盖，`op` 侧不重复登记（与 `tool::Geometry`/`train::Geometry` 同一处置）。消歧义命名是 X2 的 P2 待办"
 
 [[ownership.unlisted]]

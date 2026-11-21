@@ -437,11 +437,11 @@ pub(super) fn scatter_interp(
         let fy = ((oi as f32 + 0.5) * h as f32 / oh as f32 - 0.5).max(0.0);
         let y0 = fy.floor().min((h - 1) as f32) as usize;
         let y1 = (y0 + 1).min(h - 1);
-        let ly = if y0 == y1 { 0.0 } else { fy - y0 as f32 };
+        let ly = (y0 != y1) as u8 as f32 * (fy - y0 as f32);
         let fx = ((oj as f32 + 0.5) * w as f32 / ow as f32 - 0.5).max(0.0);
         let x0 = fx.floor().min((w - 1) as f32) as usize;
         let x1 = (x0 + 1).min(w - 1);
-        let lx = if x0 == x1 { 0.0 } else { fx - x0 as f32 };
+        let lx = (x0 != x1) as u8 as f32 * (fx - x0 as f32);
         for ci in 0..c {
             let weight = g(ci);
             dx[((ni * h + y0) * w + x0) * c + ci] += weight * (1.0 - lx) * (1.0 - ly);

@@ -535,6 +535,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "llm-report"
+version = "0.1.0"
+
+[[package]]
 name = "llm-rng"
 version = "0.1.0"
 dependencies = [
