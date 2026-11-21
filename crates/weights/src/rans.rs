@@ -116,7 +116,7 @@ fn counts(src: &[u8]) -> [u32; NSYMBOLS] {
     // 偏斜输入（比如 80% 是同一个符号）会让"同一个 bin 的 `+= 1`"退化成一条串行的
     // store-to-load 转发链，实测占编码总时间的一半以上。用 4 份独立直方图按位置分流，
     // 相邻字节落到不同副本上，依赖链被打断；最后合并只是 256×4 次加法。
-    const WAYS: usize = 4;
+    const WAYS: usize = 8;
     let mut lanes = [[0u32; NSYMBOLS]; WAYS];
     let mut chunks = src.chunks_exact(WAYS);
     for chunk in &mut chunks {
