@@ -34,8 +34,8 @@
 
 #![deny(unsafe_code)]
 // —— 自有 `.u` 容器 v2：描述符、读/写、帧编码、增量补丁与双模式 ——
-mod container;
 mod archive;
+mod container;
 mod lifecycle;
 mod rans;
 mod seg;
@@ -65,10 +65,10 @@ pub mod settle;
 pub mod l3;
 
 // —— 外部格式只读适配：safetensors/gguf/bin/json ——
-mod pickle;
-mod zip;
 pub mod bin;
 pub mod gguf;
+mod pickle;
+mod zip;
 pub use lifecycle::import;
 pub mod json;
 pub mod safetensors;
@@ -122,7 +122,9 @@ pub use seg::Segment;
 pub use settle::{Reason, Settled, Settlement};
 pub use writer::Writer;
 
-pub use container::{Entry, Header, Loader, Reader, decode_entry_f32, decode_f32, load_f32, read_f32};
+pub use container::{
+    Entry, Header, Loader, Reader, decode_entry_f32, decode_f32, load_f32, read_f32,
+};
 pub(crate) use container::{align_up, check_capacity, read_wire};
 
 #[cfg(all(feature = "mmap", unix))]

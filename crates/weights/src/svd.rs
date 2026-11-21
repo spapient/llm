@@ -145,15 +145,7 @@ fn rotate_pair(u: &mut [f64], v: &mut [f64], m: usize, n: usize, p: usize, q: us
 }
 
 /// 对 `mat` 的第 p、q 列施加旋转 `(c, s)`；`cols` 是行跨度。
-fn rotate_columns(
-    mat: &mut [f64],
-    rows: usize,
-    cols: usize,
-    p: usize,
-    q: usize,
-    c: f64,
-    s: f64,
-) {
+fn rotate_columns(mat: &mut [f64], rows: usize, cols: usize, p: usize, q: usize, c: f64, s: f64) {
     for row in 0..rows {
         let x = mat[row * cols + p];
         let y = mat[row * cols + q];

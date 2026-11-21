@@ -270,7 +270,8 @@ pub(crate) fn read_wire(cur: &mut Cursor<'_>) -> Result<DType> {
     let code = cur.read::<u32>()?;
     let code = u16::try_from(code)
         .map_err(|_| Error::new(Code::Invalid, "wire code 超出 u16").with("weights"))?;
-    DType::from_code(code).ok_or_else(|| Error::new(Code::Invalid, "未知 wire code").with("weights"))
+    DType::from_code(code)
+        .ok_or_else(|| Error::new(Code::Invalid, "未知 wire code").with("weights"))
 }
 
 /// 缓冲区长度必须与条目声明一致：短了会读出半个张量，长了会把相邻条目混进来。

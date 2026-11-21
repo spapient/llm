@@ -367,7 +367,6 @@ pub(crate) fn validate_compensate(m: usize, n: usize, w: &[f32]) -> Result<()> {
     Ok(())
 }
 
-
 #[cfg(test)]
 #[path = "../tests/ptq.rs"]
 mod tests;

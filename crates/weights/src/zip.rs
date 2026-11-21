@@ -170,12 +170,7 @@ fn zip64_sizes(
     Ok((data_len, local))
 }
 
-fn next_offset(
-    at: usize,
-    name_len: usize,
-    extra_len: usize,
-    comment_len: usize,
-) -> Result<usize> {
+fn next_offset(at: usize, name_len: usize, extra_len: usize, comment_len: usize) -> Result<usize> {
     at.checked_add(46 + name_len + extra_len + comment_len)
         .ok_or_else(|| bad("中央目录偏移溢出"))
 }
@@ -206,12 +201,7 @@ fn data_range(bytes: &[u8], start: usize, data_len: u64) -> Result<usize> {
     Ok(len)
 }
 
-fn zip64_extra(
-    bytes: &[u8],
-    extra_start: usize,
-    extra_len: usize,
-    field: usize,
-) -> Result<usize> {
+fn zip64_extra(bytes: &[u8], extra_start: usize, extra_len: usize, field: usize) -> Result<usize> {
     let stop = extra_start.saturating_add(extra_len);
     let mut at = extra_start;
     while at.checked_add(4).is_some_and(|end| end <= stop) {

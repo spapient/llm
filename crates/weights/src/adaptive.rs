@@ -104,7 +104,7 @@ pub fn compensate_adaptive(
     target_snr_db: f64,
 ) -> Result<Option<AdaptiveCompensated>> {
     validate(m, n, w, target_snr_db)?;
-    let Some(parts) =     crate::ptq::decompose(w, m, n)? else {
+    let Some(parts) = crate::ptq::decompose(w, m, n)? else {
         return Ok(None);
     };
     let adaptive = adaptive_for(group, &parts, target_snr_db)?;
@@ -118,7 +118,11 @@ fn validate(m: usize, n: usize, w: &[f32], target_snr_db: f64) -> Result<()> {
 }
 
 /// 按目标信噪比推出误差预算并量化残差。
-fn adaptive_for(group: usize, parts: &crate::ptq::Components, target_snr_db: f64) -> Result<Adaptive> {
+fn adaptive_for(
+    group: usize,
+    parts: &crate::ptq::Components,
+    target_snr_db: f64,
+) -> Result<Adaptive> {
     let target_err = parts.norm * 10f64.powf(-target_snr_db / 20.0);
     adaptive_quantize(group, &parts.rest, target_err)
 }
