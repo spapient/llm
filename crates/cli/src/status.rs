@@ -2,8 +2,8 @@
 //!
 //! 判定与数值都来自各层库，本模块只装配、选词与分行；不定义新类型。
 
-use diagnostic::{Code, Error, Result};
 use diagnostic::render::Panel;
+use diagnostic::{Code, Error, Result};
 use nn::Contract as _;
 use nn::LmHead;
 use tokenizer::Tokenizer as _;

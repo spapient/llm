@@ -13,7 +13,7 @@ use cutile::emit::Fragment;
 use cutile::ledger::{BackendRow, LedgerCell, Status};
 use cutile::prof::Profile;
 use cutile::verify::{Negotiation, Verified, VerifyReport};
-use diagnostic::render::{Align, Sheet, Panel};
+use diagnostic::render::{Align, Panel, Sheet};
 
 /// 编译参数的一行写法：空列表也要有话说，否则报告里会出现一对空括号。
 ///

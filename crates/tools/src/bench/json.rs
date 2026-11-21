@@ -11,6 +11,7 @@ use diagnostic::scan::Cursor;
 use diagnostic::{Code, Error, Result};
 
 use crate::bench::{BenchRecord, EntryKind, Geometry, Harness, Roofline};
+use crate::escape::quote;
 
 /// 嵌套上限：归档记录只有「对象 → 几何 / 档案对象 → 形状数组」三层，超过它的一定是输入有问题。
 const MAX_DEPTH: usize = 16;
@@ -23,11 +24,11 @@ const MAX_DEPTH: usize = 16;
 pub fn to_json(record: &BenchRecord) -> String {
     let mut out = String::new();
     out.push_str("{\n  \"kind\": ");
-    write_string(&mut out, record.kind().as_str());
+    quote(&mut out, record.kind().as_str());
     out.push_str(",\n  \"name\": ");
-    write_string(&mut out, record.name());
+    quote(&mut out, record.name());
     out.push_str(",\n  \"backend\": ");
-    write_string(&mut out, record.backend());
+    quote(&mut out, record.backend());
     write_geometry(&mut out, record.geometry());
     write_harness(&mut out, record.harness());
     write_roofline(&mut out, record.roofline());
@@ -49,23 +50,23 @@ fn write_geometry(out: &mut String, geometry: &Geometry) {
     out.push_str("],\n    \"batch\": ");
     out.push_str(&geometry.batch().to_string());
     out.push_str(",\n    \"dtype\": ");
-    write_string(out, geometry.dtype());
+    quote(out, geometry.dtype());
     out.push_str("\n  }");
 }
 
 fn write_harness(out: &mut String, harness: &Harness) {
     out.push_str(",\n  \"harness\": {\n    \"host\": ");
-    write_string(out, harness.host());
+    quote(out, harness.host());
     out.push_str(",\n    \"cpu\": ");
-    write_string(out, harness.cpu());
+    quote(out, harness.cpu());
     out.push_str(",\n    \"os\": ");
-    write_string(out, harness.os());
+    quote(out, harness.os());
     out.push_str(",\n    \"arch\": ");
-    write_string(out, harness.arch());
+    quote(out, harness.arch());
     out.push_str(",\n    \"toolchain\": ");
-    write_string(out, harness.toolchain());
+    quote(out, harness.toolchain());
     out.push_str(",\n    \"driver\": ");
-    write_string(out, harness.driver());
+    quote(out, harness.driver());
     out.push_str("\n  }");
 }
 
@@ -82,43 +83,6 @@ fn write_number_or_null(out: &mut String, value: Option<f64>) {
     match value {
         Some(number) => out.push_str(&number.to_string()),
         None => out.push_str("null"),
-    }
-}
-
-/// 写一个 JSON 字符串：引号、反斜杠与控制字符转义，其余 UTF-8 原样透出。
-fn write_string(out: &mut String, text: &str) {
-    out.push('"');
-    for ch in text.chars() {
-        match escaped(ch) {
-            Some(literal) => out.push_str(literal),
-            None if ch.is_control() => write_control(out, ch),
-            None => out.push(ch),
-        }
-    }
-    out.push('"');
-}
-
-/// 必须转义的结构字符 → JSON 转义字面量；其余字符返回 `None`。
-fn escaped(ch: char) -> Option<&'static str> {
-    match ch {
-        '"' => Some("\\\""),
-        '\\' => Some("\\\\"),
-        _ => None,
-    }
-}
-
-/// 控制字符：换行 / 回车 / 制表用短转义，其余按码位写 `\uXXXX`。
-fn write_control(out: &mut String, ch: char) {
-    let literal = match ch {
-        '\n' => "\\n",
-        '\r' => "\\r",
-        '\t' => "\\t",
-        _ => "",
-    };
-    if literal.is_empty() {
-        out.push_str(&format!("\\u{:04x}", ch as u32));
-    } else {
-        out.push_str(literal);
     }
 }
 

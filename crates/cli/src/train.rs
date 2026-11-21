@@ -4,8 +4,8 @@
 //! 前向/反传会话循环在 `train::Session`（夹具级闭环见 train 测试）；本组装点不复制模型装载，
 //! 真实权重通路仍属未接入范围。本模块只解析到 [`Option`]，不复制第二份默认值。
 
-use diagnostic::{Code, Error, Result};
 use diagnostic::render::Panel;
+use diagnostic::{Code, Error, Result};
 
 /// `train` 分派：解析配置、按 `--load` 决定汇报恢复事实还是配置。
 pub(crate) fn train_run(
@@ -174,8 +174,8 @@ pub mod archive {
 
     use std::path::Path;
 
-    use diagnostic::{Code, Error, Result};
     use diagnostic::render::Panel;
+    use diagnostic::{Code, Error, Result};
     use weights::{Archive, Settlement};
 
     /// 容器对齐指数：6 = 64 B，与既有落盘口径一致。

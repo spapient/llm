@@ -4,8 +4,8 @@
 //! "这些层真的算出来是多少"（协商 → 拼接 → emit → 编译 → 执行 → 与标量参考对拍）。两者用同一份
 //! 层清单与同一张算子语义表，因此下界与结果不会各说一套。
 
-use diagnostic::{Code, Error, Result};
 use diagnostic::render::Panel;
+use diagnostic::{Code, Error, Result};
 use nn::Contract as _;
 
 /// 打开权重文件；打开失败把命令帧补到错误链上。

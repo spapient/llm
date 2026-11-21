@@ -477,13 +477,19 @@ mod tests {
 
         let text = cache_gc(&settings, None).expect("空缓存可回收");
         assert!(
-            text.starts_with(&format!("cache gc | 上限 {}", ::diagnostic::render::human_bytes(1024))),
+            text.starts_with(&format!(
+                "cache gc | 上限 {}",
+                ::diagnostic::render::human_bytes(1024)
+            )),
             "{text}"
         );
 
         let text = cache_gc(&settings, Some(2048)).expect("命令行覆盖");
         assert!(
-            text.starts_with(&format!("cache gc | 上限 {}", ::diagnostic::render::human_bytes(2048))),
+            text.starts_with(&format!(
+                "cache gc | 上限 {}",
+                ::diagnostic::render::human_bytes(2048)
+            )),
             "{text}"
         );
 

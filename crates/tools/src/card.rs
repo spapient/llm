@@ -41,13 +41,9 @@
 use diagnostic::{Code, Error, Result};
 
 use crate::bench::Harness;
+use crate::escape::quote;
 pub use crate::regress::Direction;
-
-/// 重采样次数：协议卡报的是 95% 区间，两千次抽样的分位点已经稳定到卡片精度之内。
-const RESAMPLES: usize = 2000;
-
-/// 重采样种子固定：**同一份样本只会得到一份卡片**，复核时能逐位对拍，报告也不随机漂移。
-const SEED: u64 = 0x9E37_79B9_7F4A_7C15;
+use crate::stats;
 
 /// 协议卡默认的样本下限：`lld` §10.10 各卡要求的「预注册窗口」在机器上通常有几十个以上，
 /// 少于这个数谈不上区间，直接 OPEN。
@@ -82,10 +78,10 @@ impl Statistic {
     /// 这一列样本上的统计量；无定义时 `None`（由调用方记 OPEN，而不是填一个假数）。
     fn value(self, samples: &[f64]) -> Option<f64> {
         match self {
-            Self::Mean => (!samples.is_empty()).then(|| mean(samples)),
+            Self::Mean => (!samples.is_empty()).then(|| stats::mean(samples)),
             Self::Cv => {
-                let center = mean(samples);
-                (samples.len() >= 2 && center != 0.0).then(|| std_dev(samples) / center)
+                let center = stats::mean(samples);
+                (samples.len() >= 2 && center != 0.0).then(|| stats::sd(samples) / center)
             }
         }
     }
@@ -305,24 +301,24 @@ impl Tally {
     /// 把时间序列的断裂藏进一张看起来正常的卡里。
     pub fn of(samples: &[f64], statistic: Statistic, confidence: f64) -> Result<Option<Self>> {
         finite(samples)?;
-        let Some(draws) = interval(samples, statistic) else {
+        let Some(draws) = stats::interval(samples, |drawn| statistic.value(drawn)) else {
             return Ok(None);
         };
         let mut sorted = samples.to_vec();
         sorted.sort_by(f64::total_cmp);
         let tail = (1.0 - confidence) / 2.0;
-        let center = mean(samples);
-        let sd = std_dev(samples);
+        let center = stats::mean(samples);
+        let sd = stats::sd(samples);
         Ok(Some(Self {
             count: samples.len(),
             mean: center,
             sd,
             cv: (samples.len() >= 2 && center != 0.0).then(|| sd / center),
-            p50: quantile(&sorted, 0.50),
-            p95: quantile(&sorted, 0.95),
-            p99: quantile(&sorted, 0.99),
-            lower: quantile(&draws, tail),
-            upper: quantile(&draws, 1.0 - tail),
+            p50: stats::quantile(&sorted, 0.50),
+            p95: stats::quantile(&sorted, 0.95),
+            p99: stats::quantile(&sorted, 0.99),
+            lower: stats::quantile(&draws, tail),
+            upper: stats::quantile(&draws, 1.0 - tail),
         }))
     }
 
@@ -439,13 +435,13 @@ impl Card {
 /// 协议段：判什么、怎么聚、往哪边、门槛多少、要几个样本。
 fn protocol_fields(out: &mut String, protocol: &Protocol) {
     out.push_str("  \"protocol\": ");
-    write_string(out, protocol.name);
+    quote(out, protocol.name);
     out.push_str(",\n  \"metric\": ");
-    write_string(out, protocol.metric);
+    quote(out, protocol.metric);
     out.push_str(",\n  \"statistic\": ");
-    write_string(out, protocol.statistic.as_str());
+    quote(out, protocol.statistic.as_str());
     out.push_str(",\n  \"direction\": ");
-    write_string(out, protocol.direction.as_str());
+    quote(out, protocol.direction.as_str());
     out.push_str(",\n  \"bound\": ");
     out.push_str(&protocol.bound.to_string());
     out.push_str(",\n  \"least\": ");
@@ -471,9 +467,9 @@ fn harness_fields(out: &mut String, harness: &Harness) {
             out.push_str(",\n");
         }
         out.push_str("    ");
-        write_string(out, key);
+        quote(out, key);
         out.push_str(": ");
-        write_string(out, value);
+        quote(out, value);
     }
     out.push_str("\n  },\n");
 }
@@ -508,7 +504,7 @@ fn tally_fields(out: &mut String, tally: &Tally) {
 /// 一个实数域：前置逗号与换行，键名与值都按 JSON 写。
 fn real(out: &mut String, key: &str, value: f64) {
     out.push_str(",\n    ");
-    write_string(out, key);
+    quote(out, key);
     out.push_str(": ");
     out.push_str(&value.to_string());
 }
@@ -516,11 +512,11 @@ fn real(out: &mut String, key: &str, value: f64) {
 /// 结论段：三态名 + 理由；PASS / FAIL 的理由写 `null`。
 fn standing_fields(out: &mut String, standing: Standing) {
     out.push_str("  \"standing\": ");
-    write_string(out, standing.as_str());
+    quote(out, standing.as_str());
     out.push_str(",\n  \"shortfall\": ");
     match standing.shortfall() {
         None => out.push_str("null"),
-        Some(shortfall) => write_string(out, shortfall.as_str()),
+        Some(shortfall) => quote(out, shortfall.as_str()),
     }
     out.push('\n');
 }
@@ -571,105 +567,6 @@ fn finite(samples: &[f64]) -> Result<()> {
             format!("样本必须是有限数，得到 {bad}（采集坏了，不是没测到）"),
         )),
     }
-}
-
-/// 统计量的重采样区间（已排序）；统计量无定义或有效抽样太少时 `None`。
-fn interval(samples: &[f64], statistic: Statistic) -> Option<Vec<f64>> {
-    statistic.value(samples)?;
-    let mut draws = resample(samples, statistic);
-    if draws.len() < RESAMPLES / 2 {
-        return None;
-    }
-    draws.sort_by(f64::total_cmp);
-    Some(draws)
-}
-
-/// 对统计量做有放回重采样，返回每次抽样上的取值；无定义的抽样直接丢弃。
-fn resample(samples: &[f64], statistic: Statistic) -> Vec<f64> {
-    if samples.is_empty() {
-        return Vec::new();
-    }
-    let mut state = SEED;
-    let mut drawn = Vec::with_capacity(samples.len());
-    let mut values = Vec::with_capacity(RESAMPLES);
-    for _ in 0..RESAMPLES {
-        drawn.clear();
-        drawn.extend(
-            samples
-                .iter()
-                .map(|_| samples[index(&mut state, samples.len())]),
-        );
-        if let Some(value) = statistic.value(&drawn) {
-            values.push(value);
-        }
-    }
-    values
-}
-
-/// splitmix64：状态只有 64 位，重采样可复现，不引入随机依赖。
-fn index(state: &mut u64, len: usize) -> usize {
-    *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-    let mut z = *state;
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    let z = z ^ (z >> 31);
-    (z % len as u64) as usize
-}
-
-/// 样本均值；空列返回 0（调用方在此之前已排除空列）。
-fn mean(samples: &[f64]) -> f64 {
-    if samples.is_empty() {
-        return 0.0;
-    }
-    samples.iter().sum::<f64>() / samples.len() as f64
-}
-
-/// 样本标准差（`n − 1` 分母）；少于 2 个样本时返回 0。
-fn std_dev(samples: &[f64]) -> f64 {
-    if samples.len() < 2 {
-        return 0.0;
-    }
-    let center = mean(samples);
-    let sum: f64 = samples.iter().map(|value| (value - center).powi(2)).sum();
-    (sum / (samples.len() - 1) as f64).sqrt()
-}
-
-/// 最近秩分位：`q` 落进哪个秩就取哪个秩，不做插值（样本量小的时候插值会让分位看起来更稳）。
-fn quantile(sorted: &[f64], q: f64) -> f64 {
-    let last = sorted.len() as f64;
-    let rank = (q * last).ceil().clamp(1.0, last);
-    sorted[rank as usize - 1]
-}
-
-/// JSON 字符串里必须换写法的五个字符。
-const ESCAPES: [(char, &str); 5] = [
-    ('"', "\\\""),
-    ('\\', "\\\\"),
-    ('\n', "\\n"),
-    ('\r', "\\r"),
-    ('\t', "\\t"),
-];
-
-/// 写一个 JSON 字符串：常见转义查表，其余控制字符按 `\u00XX`，其他原样。
-fn write_string(out: &mut String, text: &str) {
-    out.push('"');
-    for ch in text.chars() {
-        push_char(out, ch);
-    }
-    out.push('"');
-}
-
-/// 一个字符的 JSON 写法。
-fn push_char(out: &mut String, ch: char) {
-    if let Some((_, code)) = ESCAPES.iter().find(|(from, _)| *from == ch) {
-        out.push_str(code);
-        return;
-    }
-    if ch < ' ' {
-        out.push_str(&format!("\\u{:04x}", ch as u32));
-        return;
-    }
-    out.push(ch);
 }
 
 #[cfg(test)]

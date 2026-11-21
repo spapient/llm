@@ -39,7 +39,7 @@
 不再复述每一次的数字；配置层的现状见 [ADR 0022](adr/0022-build-time-corpora.md) 与
 [ADR 0023](adr/0023-settings-to-cli.md)。
 
-允许的边（当前全量，共 116 条，含 42 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benchmarks` / `musa` / `testkit` 的边不参与运行时方向判定）：
+允许的边（当前全量，共 114 条，含 42 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benchmarks` / `musa` / `testkit` 的边不参与运行时方向判定）：
 
 ```
 cutile   → diagnostic, op, prim, prof    +dev: testkit

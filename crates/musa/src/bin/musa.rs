@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Output};
 
 use cutile::dirs::Dirs;
-use diagnostic::{Code, Error, Result};
 use diagnostic::render::Panel;
+use diagnostic::{Code, Error, Result};
 
 use llm_musa::{Job, Outcome, PROBES, Probe, Recipe, compare, lines, probe, program, shim, timed};
 
