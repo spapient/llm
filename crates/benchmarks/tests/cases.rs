@@ -543,12 +543,19 @@ pub(crate) fn no_measurement_is_filed_under_an_unregistered_group() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let root = manifest.join("../..").join("target/criterion");
     let Ok(entries) = std::fs::read_dir(&root) else {
-        testkit::skip(format!("benchmarks: 还没跑过基准（{} 不存在）", root.display()));
+        testkit::skip(format!(
+            "benchmarks: 还没跑过基准（{} 不存在）",
+            root.display()
+        ));
         return;
     };
 
-    let groups: Vec<&Path> = ...;
-    let registered: Vec<(&str, &str, &str)> = SCENARIOS
+    let groups: Vec<PathBuf> = entries
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    let registered = SCENARIOS
         .iter()
         .map(|sc| (sc.scenario, sc.group, sc.benchmark))
         .chain(
@@ -560,6 +567,26 @@ pub(crate) fn no_measurement_is_filed_under_an_unregistered_group() {
             DECODE_SCENARIOS
                 .iter()
                 .map(|sc| (sc.scenario, sc.group, sc.benchmark)),
-        )
-        .collect();
+        );
+
+    for (scenario, group, benchmark) in registered {
+        if estimates(manifest, group, benchmark).exists() {
+            continue;
+        }
+        // 同一用例已经测出、却不是登记的那个分组：判定按登记路径永远读不到，会一直登记跳过。
+        let filed: Vec<&Path> = groups
+            .iter()
+            .filter(|dir| {
+                dir.join(on_disk(benchmark))
+                    .join("new/estimates.json")
+                    .exists()
+            })
+            .map(|dir| dir.strip_prefix(&root).unwrap_or(dir))
+            .collect();
+        assert!(
+            filed.is_empty(),
+            "{scenario} 的测量落在 {filed:?}，登记的却是 `{group}`（落盘名 `{}`）：判定会永远跳过它",
+            on_disk(group)
+        );
+    }
 }
