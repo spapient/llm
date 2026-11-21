@@ -45,12 +45,14 @@
 //! ```
 
 #![deny(unsafe_code)]
-// `fast::sme` 的 SME 通道依赖两个不稳定特性，均只在 aarch64 上被引用：
+// `fast::sme` 的 SME 通道依赖两个不稳定特性，且**这两个特性名只在 aarch64 上存在**：
+// x86_64 等其它目标根本不认识它们，直接 `#![feature(...)]` 会 E0635（unknown feature）。
+// 因此用 `cfg_attr` 只在 aarch64 上声明，而非"声明了但在别的架构上无作用"——
+// 特性门不是惰性的，名字在编译目标上不认识就是硬错误。
 // - `aarch64_unstable_target_feature`：放行 `#[target_feature(enable = "sme")]`（尚未稳定）。
 // - `stdarch_aarch64_feature_detection`：放行运行时探测 `is_aarch64_feature_detected!("sme")`。
-// 其它架构不引用这两个宏，特性门保持惰性（声明但无作用，不触发 unused）。
-#![feature(aarch64_unstable_target_feature)]
-#![feature(stdarch_aarch64_feature_detection)]
+#![cfg_attr(target_arch = "aarch64", feature(aarch64_unstable_target_feature))]
+#![cfg_attr(target_arch = "aarch64", feature(stdarch_aarch64_feature_detection))]
 // `fast::sme::pack_a` 用 `std::simd` 做安全的分块转置（`zip1`/`zip2`），免去手写 NEON
 // 内联汇编，同时保持 `unsafe_code = "deny"` 不扩大开岛范围。
 #![feature(portable_simd)]
