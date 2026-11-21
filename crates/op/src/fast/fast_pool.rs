@@ -112,7 +112,9 @@ fn spin(id: usize, pool: &'static Pool) {
             }
             g.take()
         };
-        let Some((j, slot)) = task else { continue; };
+        let Some((j, slot)) = task else {
+            continue;
+        };
         part(&j, slot);
         j.done.fetch_add(1, Ordering::AcqRel);
         // 归还槽位：先置回空闲位，再通知等待空闲槽的发布者。

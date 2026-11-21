@@ -46,7 +46,7 @@ fn main() -> diagnostic::Result<()> {
                 .and_then(|param| sample.scalar(&param.name))
                 .expect("归约长度标量") as usize;
             let grid = len.div_ceil(chunk);
-            engine::codegen::cuda_grid_driver(&device, &decl.signature, &sample, grid, grid)?
+            engine::cuda::cuda_grid_driver(&device, &decl.signature, &sample, grid, grid)?
         }
         "scan_f32" => {
             let (local, correct, decay) =
@@ -57,11 +57,13 @@ fn main() -> diagnostic::Result<()> {
         _ if name.starts_with("gemv_") || name.starts_with("gemm_") => {
             let (device, dims) =
                 cutile::execution::cuda_gemm_program(&catalogue, &dirs, &name, m, n)?;
-            engine::codegen::cuda_loop_driver(&device, &decl.signature, &sample, &dims)?
+            engine::cuda::cuda_loop_driver(&device, &decl.signature, &sample, &dims)?
         }
         _ => {
             let device = cutile::execution::cuda_grid_program(&catalogue, &dirs, &name, m, n)?;
-            engine::codegen::cuda_point_driver(&device, &decl.signature, &sample)?
+            let threads = 256;
+            let blocks = out_len.div_ceil(threads);
+            engine::cuda::cuda_point_driver(&device, &decl.signature, &sample, blocks, threads)?
         }
     };
     std::fs::write("C:/Users/fei/fw.cu", &program)

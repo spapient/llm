@@ -295,7 +295,10 @@ fn metal_special(
 ) -> Result<Vec<String>> {
     use cutile::backend::Lower::*;
     match kind {
-        TiledGemm { .. } | SimdGroupGemm { .. } | TensorGemm { .. } | Int8Gemm { .. }
+        TiledGemm { .. }
+        | SimdGroupGemm { .. }
+        | TensorGemm { .. }
+        | Int8Gemm { .. }
         | WmmaGemm => metal_gemm_lower(kernel, signature, sample, kind),
         TiledAttention { .. } | FlashAttention { .. } => {
             metal_attention_lower(kernel, signature, sample, kind)

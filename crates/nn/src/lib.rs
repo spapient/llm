@@ -160,12 +160,12 @@ mod param_role {
         }
     }
 }
+mod classic;
 mod codec;
 mod emit;
 mod hybrid;
 mod latent;
 mod patch;
-mod classic;
 mod pointwise;
 mod policy;
 mod spike;

@@ -173,7 +173,8 @@ fn conv2d_i8_matches_exact() {
     let wgt = sample_i8(geom.patch(cin) * cout, 2);
     let bias = vec![0i32; cout];
     let mut got = vec![0i32; n * oh * ow * cout];
-    conv.forward_i8(&x, &wgt, &bias, n, (h, w), &mut got).unwrap();
+    conv.forward_i8(&x, &wgt, &bias, n, (h, w), &mut got)
+        .unwrap();
 
     let mut want = vec![0i32; n * oh * ow * cout];
     for ni in 0..n {

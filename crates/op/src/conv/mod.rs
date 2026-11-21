@@ -516,7 +516,10 @@ fn thread_count(rows: usize, patch: usize) -> usize {
     if rows * patch < (1 << 16) {
         1
     } else {
-        thread::available_parallelism().map(|v| v.get()).unwrap_or(1).min(rows)
+        thread::available_parallelism()
+            .map(|v| v.get())
+            .unwrap_or(1)
+            .min(rows)
     }
 }
 
@@ -643,15 +646,7 @@ fn accumulate_cell(dx: &mut [f32], col: &[f32], dst: usize, src: usize, cin: usi
 }
 
 /// 一维 im2col：行 = `(n, ol)`，列 = `(kw, cin)`。
-fn im2col1d(
-    x: &[f32],
-    col: &mut [f32],
-    n: usize,
-    l: usize,
-    ol: usize,
-    g: ConvGeom,
-    cin: usize,
-) {
+fn im2col1d(x: &[f32], col: &mut [f32], n: usize, l: usize, ol: usize, g: ConvGeom, cin: usize) {
     let patch = g.patch(cin);
     for ni in 0..n {
         for oi in 0..ol {
@@ -669,7 +664,15 @@ fn im2col1d(
 }
 
 /// 展开一维卷积的一行感受野。
-fn fill_row_1d(x: &[f32], row: &mut [f32], ni: usize, oi: usize, l: usize, g: ConvGeom, cin: usize) {
+fn fill_row_1d(
+    x: &[f32],
+    row: &mut [f32],
+    ni: usize,
+    oi: usize,
+    l: usize,
+    g: ConvGeom,
+    cin: usize,
+) {
     for ki in 0..g.kw {
         let src = (oi * g.sw + ki) as isize - g.pw as isize;
         for ci in 0..cin {
@@ -764,7 +767,14 @@ fn accumulate_dweight_row(col_row: &[f32], dy_row: &[f32], dweight: &mut [f32], 
 }
 
 /// `dcol = dy · weight^T`，供 col2im 散射回 `dx`。
-fn compute_dcol(dy: &[f32], weight: &[f32], dcol: &mut [f32], rows: usize, cout: usize, patch: usize) {
+fn compute_dcol(
+    dy: &[f32],
+    weight: &[f32],
+    dcol: &mut [f32],
+    rows: usize,
+    cout: usize,
+    patch: usize,
+) {
     for r in 0..rows {
         let dy_row = &dy[r * cout..(r + 1) * cout];
         let dcol_row = &mut dcol[r * patch..(r + 1) * patch];
@@ -837,7 +847,15 @@ impl MaxPool1d {
         }
     }
 
-    fn window_max<S: Scalar>(&self, x: &[S], ni: usize, oi: usize, ci: usize, l: usize, c: usize) -> S {
+    fn window_max<S: Scalar>(
+        &self,
+        x: &[S],
+        ni: usize,
+        oi: usize,
+        ci: usize,
+        l: usize,
+        c: usize,
+    ) -> S {
         let base = oi * self.s;
         let mut best = S::NEG_INFINITY;
         for ki in 0..self.k {
@@ -848,7 +866,11 @@ impl MaxPool1d {
             best = best.max(x[(ni * l + src - self.p) * c + ci]);
         }
         // 整窗都落在补零上（只会在极端几何下出现）按 0 处理。
-        if best == S::NEG_INFINITY { S::ZERO } else { best }
+        if best == S::NEG_INFINITY {
+            S::ZERO
+        } else {
+            best
+        }
     }
 }
 
@@ -889,7 +911,14 @@ impl AdaptiveAvgPool2d {
         Ok(())
     }
 
-    fn pool_avg<S: Scalar>(&self, x: &[S], out: &mut [S], n: usize, (h, w): (usize, usize), c: usize) {
+    fn pool_avg<S: Scalar>(
+        &self,
+        x: &[S],
+        out: &mut [S],
+        n: usize,
+        (h, w): (usize, usize),
+        c: usize,
+    ) {
         for ni in 0..n {
             for oi in 0..self.oh {
                 let (h0, h1) = adaptive_span(oi, h, self.oh);
@@ -988,7 +1017,15 @@ impl Interpolate {
         Ok(())
     }
 
-    fn forward_nearest<S: Scalar>(&self, x: &[S], n: usize, h: usize, w: usize, c: usize, out: &mut [S]) {
+    fn forward_nearest<S: Scalar>(
+        &self,
+        x: &[S],
+        n: usize,
+        h: usize,
+        w: usize,
+        c: usize,
+        out: &mut [S],
+    ) {
         for ni in 0..n {
             for oi in 0..self.oh {
                 let ii = (oi * h / self.oh).min(h - 1);
@@ -1002,7 +1039,15 @@ impl Interpolate {
         }
     }
 
-    fn forward_linear<S: Scalar>(&self, x: &[S], n: usize, h: usize, w: usize, c: usize, out: &mut [S]) {
+    fn forward_linear<S: Scalar>(
+        &self,
+        x: &[S],
+        n: usize,
+        h: usize,
+        w: usize,
+        c: usize,
+        out: &mut [S],
+    ) {
         for ni in 0..n {
             for oi in 0..self.oh {
                 let (y0, y1, ly) = axis_samples::<S>(oi, h, self.oh);

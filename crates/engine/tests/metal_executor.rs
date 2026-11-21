@@ -1075,7 +1075,12 @@ fn metal_tensor_gemm() {
     let (catalogue, dirs) = catalogue_and_dirs("engine-metal-tensor");
 
     // 形状只放开 M/N：`matmul_f32` 的规约轴由算子语义固定为 4096。
-    let shapes = [(512, 512, 4096), (1024, 1024, 4096), (2048, 2048, 4096), (4096, 4096, 4096)];
+    let shapes = [
+        (512, 512, 4096),
+        (1024, 1024, 4096),
+        (2048, 2048, 4096),
+        (4096, 4096, 4096),
+    ];
     for (m, n, k) in shapes {
         // 首项是 `tensor_geometry` 的自适应选型，另两档留作对照（大块几何 / 小方块几何）。
         let geometries = [
@@ -1122,7 +1127,12 @@ fn metal_tensor_gemm() {
                 simdgroups,
             } = geometry;
             let msl = cutile::execution::metal_tensor_gemm_program(
-                &catalogue, &dirs, "matmul_f32", m, n, geometry,
+                &catalogue,
+                &dirs,
+                "matmul_f32",
+                m,
+                n,
+                geometry,
             )
             .expect("张量核 MSL 应能生成");
             assert!(
@@ -1157,7 +1167,13 @@ fn metal_tensor_gemm() {
         let mut passes = vec![Vec::new(); pipes.len()];
         for _ in 0..3 {
             for (slot, (_, pipe, grid, block, _)) in passes.iter_mut().zip(&pipes) {
-                slot.push(measure(&queue, pipe, &[&a_buf, &bt_buf, &y_buf], *grid, *block));
+                slot.push(measure(
+                    &queue,
+                    pipe,
+                    &[&a_buf, &bt_buf, &y_buf],
+                    *grid,
+                    *block,
+                ));
             }
         }
         for (slot, (label, _, _, _, _)) in passes.iter_mut().zip(&pipes) {
@@ -1188,8 +1204,7 @@ fn metal_tensor_kernel_gemm() {
     let Some((device, queue)) = bench_device("张量核立方 GEMM") else {
         return;
     };
-    let declaration =
-        "void cutile_bench_kernel(const float *a, const float *b, float *y, int M, int N, int K) {}";
+    let declaration = "void cutile_bench_kernel(const float *a, const float *b, float *y, int M, int N, int K) {}";
     let signature = Signature::parse("bench", declaration).expect("自建签名应能解析");
     for (m, n, k) in [(1024, 1024, 1024), (2048, 2048, 2048), (4096, 4096, 4096)] {
         // 首项是 `tensor_geometry` 的自适应选型；另两档为对照（大块几何 / 与 llm.u 同构的档位）。
@@ -1267,7 +1282,13 @@ fn metal_tensor_kernel_gemm() {
         let mut passes = vec![Vec::new(); pipes.len()];
         for _ in 0..3 {
             for (slot, (_, pipe, grid, block)) in passes.iter_mut().zip(&pipes) {
-                slot.push(measure(&queue, pipe, &[&a_buf, &bt_buf, &y_buf], *grid, *block));
+                slot.push(measure(
+                    &queue,
+                    pipe,
+                    &[&a_buf, &bt_buf, &y_buf],
+                    *grid,
+                    *block,
+                ));
             }
         }
         for (slot, (label, _, _, _)) in passes.iter_mut().zip(&pipes) {

@@ -65,7 +65,7 @@ fmaf、多 tile。硬件边界:S4000(mp_22)**无 cp.async**(SINCE_MP_43);5.2 工
 ### 通道
 
 1. **生成**(Windows,有 nvcc 使能 nvidia 设备协商):`gen-cuda/` 调公开 API
-   `cutile::execution::cuda_grid_program`(设备源)+ `engine::codegen::cuda_grid_driver`(host 驱动)
+   `cutile::execution::cuda_grid_program`(设备源)+ `engine::cuda::cuda_grid_driver`(host 驱动)
    → 单文件 + `(model.reference)` 标量参考。
    - 注意:生成器 Cargo.toml 末尾的 `[workspace]` 是必需的——win 家目录存在旧版
      `C:\Users\fei\Cargo.toml` workspace 根,不加会被误当成员。
@@ -96,7 +96,7 @@ fmaf、多 tile。硬件边界:S4000(mp_22)**无 cp.async**(SINCE_MP_43);5.2 工
 **框架侧已无 `Unsupported` 骨架**:逐点、分块归约、分块归一化(两段/三段)、循环注入(gemv/gemm)、
 分块扫描、WMMA gemm 特化全部落地。
 
-- 循环注入:设备源 `cuda_gemm_program`(含各维网格)+ `engine::codegen::cuda_loop_driver`。
+- 循环注入:设备源 `cuda_gemm_program`(含各维网格)+ `engine::cuda::cuda_loop_driver`。
 - 分块扫描:设备源 `cuda_scan_program`(两段 + decay)+ `engine::scan::cuda_scan_driver`。
 - WMMA 特化:`cuda_wmma_gemm_program` + `engine::wmma::gemm_driver`;形状在生成期写死,`M/N` 整除
   64 时无守卫,否则载入按行列守卫、写出经共享内存 staging 拷回。编译需

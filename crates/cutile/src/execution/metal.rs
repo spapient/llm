@@ -226,7 +226,9 @@ pub fn metal_tensor_gemm_program(
         return lower(&run, &prepared, m, n);
     }
     single(
-        lower_sources(Emit::Metal, &Lower::TensorGemm { geometry },
+        lower_sources(
+            Emit::Metal,
+            &Lower::TensorGemm { geometry },
             &run,
             &prepared,
             m,

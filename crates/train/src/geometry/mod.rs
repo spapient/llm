@@ -429,8 +429,14 @@ impl Geometry {
         else {
             return Ok(());
         };
-        Conv2d::new(cin, cout, square(k, s, p))
-            .forward_f32(inputs[0], inputs[1], inputs[2], 1, (h, w), out)
+        Conv2d::new(cin, cout, square(k, s, p)).forward_f32(
+            inputs[0],
+            inputs[1],
+            inputs[2],
+            1,
+            (h, w),
+            out,
+        )
     }
 
     /// 推理前向：`Norm` 用给定的滚动统计归一化、不改状态；其余变体与训练一致。

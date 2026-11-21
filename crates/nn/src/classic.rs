@@ -14,11 +14,11 @@
 
 use diagnostic::{Code, Error, Result};
 use op::conv::ConvGeom;
-use op::deconv::{ConvTranspose1d as OpDeconv1, ConvTranspose2d as OpDeconv2};
 use op::conv::{
     AdaptiveAvgPool2d as OpAdaptive, Conv1d as OpConv1, Conv2d as OpConv2, Interpolate as OpInterp,
     MaxPool1d as OpPool1, MaxPool2d as OpPool2,
 };
+use op::deconv::{ConvTranspose1d as OpDeconv1, ConvTranspose2d as OpDeconv2};
 // 归一化层现在是 `Scalar` 泛型；经典层登记只针对 `f32` 声明档，这里给出一份具体别名。
 type OpBatch = op::norm::BatchNorm2d<f32>;
 type OpGroup = op::norm::GroupNorm<f32>;
@@ -26,8 +26,8 @@ type OpInst = op::norm::InstanceNorm<f32>;
 type OpLayer = op::norm::LayerNorm<f32>;
 use tensor::Shape;
 
-use crate::{Bounds, BoundsResult, Contract, ContractSpec, ParamRole, spec_accessors};
 use crate::ContractSpec as Spec;
+use crate::{Bounds, BoundsResult, Contract, ContractSpec, ParamRole, spec_accessors};
 
 /// 一维卷积与转置卷积绑定的算子：im2col 之后就是一次矩阵乘。
 const GEMM: &str = "gemm_f32";
@@ -38,11 +38,9 @@ const CONV: &str = "conv2d_f32";
 /// 校验非零并在失败时点名层与字段。
 fn nonzero(value: usize, field: &str, layer: &str) -> Result<usize> {
     if value == 0 {
-        return Err(Error::new(
-            Code::Invalid,
-            format!("{layer}: `{field}` 必须非零"),
-        )
-        .with("nn::classic"));
+        return Err(
+            Error::new(Code::Invalid, format!("{layer}: `{field}` 必须非零")).with("nn::classic"),
+        );
     }
     Ok(value)
 }
@@ -340,12 +338,23 @@ impl MaxPool1d {
     /// # Errors
     ///
     /// 窗口/步长为零，或输入短于窗口时返回说明。
-    pub fn new(name: impl Into<String>, k: usize, s: usize, p: usize, l: usize, c: usize) -> Result<Self> {
+    pub fn new(
+        name: impl Into<String>,
+        k: usize,
+        s: usize,
+        p: usize,
+        l: usize,
+        c: usize,
+    ) -> Result<Self> {
         let layer = "nn::MaxPool1d::new";
         nonzero(c, "channels", layer)?;
         let pool = OpPool1 { k, s, p };
         let ol = pool.len(l)?;
-        let spec = Spec::new(name, crate::Shape::new([ol, c]), vec!["max_pool1d_f32".to_string()])?;
+        let spec = Spec::new(
+            name,
+            crate::Shape::new([ol, c]),
+            vec!["max_pool1d_f32".to_string()],
+        )?;
         Ok(Self { spec, pool, ol, c })
     }
 
@@ -385,12 +394,22 @@ impl MaxPool2d {
     /// # Errors
     ///
     /// 窗口/步长为零，或输入短于窗口时返回说明。
-    pub fn new(name: impl Into<String>, geom: ConvGeom, h: usize, w: usize, c: usize) -> Result<Self> {
+    pub fn new(
+        name: impl Into<String>,
+        geom: ConvGeom,
+        h: usize,
+        w: usize,
+        c: usize,
+    ) -> Result<Self> {
         let layer = "nn::MaxPool2d::new";
         nonzero(c, "channels", layer)?;
         let pool = OpPool2 { geom };
         let (oh, ow) = pool.shape(h, w)?;
-        let spec = Spec::new(name, crate::Shape::new([oh, ow, c]), vec!["max_pool2d_f32".to_string()])?;
+        let spec = Spec::new(
+            name,
+            crate::Shape::new([oh, ow, c]),
+            vec!["max_pool2d_f32".to_string()],
+        )?;
         Ok(Self {
             spec,
             pool,
@@ -444,15 +463,17 @@ impl AvgPool2d {
     ) -> Result<Self> {
         let layer = "nn::AvgPool2d::new";
         nonzero(c, "channels", layer)?;
-        let pool = op::conv::AvgPool2d { geom, count_include_pad };
+        let pool = op::conv::AvgPool2d {
+            geom,
+            count_include_pad,
+        };
         let (oh, ow) = pool.shape(h, w)?;
-        let spec = Spec::new(name, crate::Shape::new([oh, ow, c]), vec!["avg_pool2d_f32".to_string()])?;
-        Ok(Self {
-            spec,
-            oh,
-            ow,
-            c,
-        })
+        let spec = Spec::new(
+            name,
+            crate::Shape::new([oh, ow, c]),
+            vec!["avg_pool2d_f32".to_string()],
+        )?;
+        Ok(Self { spec, oh, ow, c })
     }
 
     /// 输出边长。
@@ -494,7 +515,11 @@ impl AdaptiveAvgPool2d {
         nonzero(ow, "ow", layer)?;
         nonzero(c, "channels", layer)?;
         let pool = OpAdaptive { oh, ow };
-        let spec = Spec::new(name, crate::Shape::new([oh, ow, c]), vec!["adaptive_pool_f32".to_string()])?;
+        let spec = Spec::new(
+            name,
+            crate::Shape::new([oh, ow, c]),
+            vec!["adaptive_pool_f32".to_string()],
+        )?;
         Ok(Self { spec, pool, c })
     }
 
@@ -543,7 +568,11 @@ impl Interpolate {
         nonzero(ow, "ow", layer)?;
         nonzero(c, "channels", layer)?;
         let interp = OpInterp { sampler, oh, ow };
-        let spec = Spec::new(name, crate::Shape::new([oh, ow, c]), vec!["interpolate_f32".to_string()])?;
+        let spec = Spec::new(
+            name,
+            crate::Shape::new([oh, ow, c]),
+            vec!["interpolate_f32".to_string()],
+        )?;
         Ok(Self { spec, interp, c })
     }
 
@@ -588,17 +617,22 @@ impl BatchNorm2d {
         nonzero(channels, "channels", layer)?;
         check_eps(eps, layer)?;
         if !(0.0..=1.0).contains(&momentum) {
-            return Err(
-                Error::new(Code::Invalid, format!("{layer}: `momentum` 必须落在 [0, 1]"))
-                    .with(layer),
-            );
+            return Err(Error::new(
+                Code::Invalid,
+                format!("{layer}: `momentum` 必须落在 [0, 1]"),
+            )
+            .with(layer));
         }
         let norm = OpBatch {
             channels,
             eps,
             momentum,
         };
-        let spec = Spec::new(name, crate::Shape::new([channels]), vec!["batch_norm_f32".to_string()])?;
+        let spec = Spec::new(
+            name,
+            crate::Shape::new([channels]),
+            vec!["batch_norm_f32".to_string()],
+        )?;
         Ok(Self {
             spec,
             norm,
@@ -643,7 +677,11 @@ impl GroupNorm {
             channels,
             eps,
         };
-        let spec = Spec::new(name, crate::Shape::new([channels]), vec!["group_norm_f32".to_string()])?;
+        let spec = Spec::new(
+            name,
+            crate::Shape::new([channels]),
+            vec!["group_norm_f32".to_string()],
+        )?;
         Ok(Self {
             spec,
             norm,
@@ -684,7 +722,11 @@ impl InstanceNorm {
         nonzero(channels, "channels", layer)?;
         check_eps(eps, layer)?;
         let norm = OpInst { channels, eps };
-        let spec = Spec::new(name, crate::Shape::new([channels]), vec!["instance_norm_f32".to_string()])?;
+        let spec = Spec::new(
+            name,
+            crate::Shape::new([channels]),
+            vec!["instance_norm_f32".to_string()],
+        )?;
         Ok(Self {
             spec,
             norm,
@@ -725,7 +767,11 @@ impl LayerNorm {
         nonzero(width, "width", layer)?;
         check_eps(eps, layer)?;
         let norm = OpLayer { width, eps };
-        let spec = Spec::new(name, crate::Shape::new([width]), vec!["layer_norm_f32".to_string()])?;
+        let spec = Spec::new(
+            name,
+            crate::Shape::new([width]),
+            vec!["layer_norm_f32".to_string()],
+        )?;
         Ok(Self { spec, norm, width })
     }
 
@@ -785,8 +831,21 @@ mod tests {
     #[test]
     fn conv1d_and_transpose_lengths_follow_the_geometry() {
         // 一维卷积只吃 `kw/sw/pw`：核 2、步长 1、无补零，长度 9 → 8。
-        let layer = Conv1d::new("a", 4, 8, ConvGeom { kh: 1, kw: 2, sh: 1, sw: 1, ph: 0, pw: 0 }, 9)
-            .expect("合法");
+        let layer = Conv1d::new(
+            "a",
+            4,
+            8,
+            ConvGeom {
+                kh: 1,
+                kw: 2,
+                sh: 1,
+                sw: 1,
+                ph: 0,
+                pw: 0,
+            },
+            9,
+        )
+        .expect("合法");
         assert_eq!(layer.len(), 8);
         assert_eq!(layer.output().dims(), [8, 8]);
 

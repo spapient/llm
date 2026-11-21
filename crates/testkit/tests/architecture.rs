@@ -600,8 +600,9 @@ fn declares_any(crate_name: &str, name: &str) -> bool {
     let root = workspace_root().join("crates").join(crate_name).join("src");
     rust_files(&root).into_iter().any(|path| {
         std::fs::read_to_string(path).is_ok_and(|text| {
-            text.lines()
-                .any(|line| is_public_definition(line, name, &KINDS) || is_module_or_macro(line, name))
+            text.lines().any(|line| {
+                is_public_definition(line, name, &KINDS) || is_module_or_macro(line, name)
+            })
         })
     })
 }
@@ -654,7 +655,12 @@ fn vendor_prefix(name: &str, vendor: &str) -> bool {
 }
 
 /// `files` 里定义了 `marker` 却没装设备后端的源文件；`in_bin` 把二进制入口与库入口分开。
-fn files_without_install(files: &[PathBuf], marker: &str, in_bin: bool, bin_root: &Path) -> Vec<String> {
+fn files_without_install(
+    files: &[PathBuf],
+    marker: &str,
+    in_bin: bool,
+    bin_root: &Path,
+) -> Vec<String> {
     files
         .iter()
         .filter(|path| path.starts_with(bin_root) == in_bin)

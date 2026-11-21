@@ -276,13 +276,7 @@ unsafe fn metal4_options() -> *mut c_void {
     if options.is_null() {
         return null_mut();
     }
-    unsafe {
-        msg_void_1u(
-            options,
-            selector(b"setLanguageVersion:\0"),
-            METAL4_VERSION,
-        )
-    };
+    unsafe { msg_void_1u(options, selector(b"setLanguageVersion:\0"), METAL4_VERSION) };
     options
 }
 

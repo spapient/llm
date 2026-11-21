@@ -75,9 +75,8 @@ pub fn execute(
 mod metal;
 pub use metal::{
     metal_flash_attention_program, metal_grid_program, metal_int8_gemm_program,
-    metal_rmsnorm_program, metal_scan_program, metal_simdgroup_gemm_program,
-    metal_softmax_program, metal_tensor_gemm_program, metal_tiled_attention_program,
-    metal_tiled_gemm_program,
+    metal_rmsnorm_program, metal_scan_program, metal_simdgroup_gemm_program, metal_softmax_program,
+    metal_tensor_gemm_program, metal_tiled_attention_program, metal_tiled_gemm_program,
 };
 
 /// 生产态 CUDA 逐点网格内核源：走完整条流水线后把逐点内核包成按网格派发的 `kernel_main`。

@@ -279,7 +279,11 @@ fn micro_packed(
         let pp = panel.as_ptr();
         let bp = b.as_ptr();
         // 后续内积分块接着上一块的累加器算：首块用 0 起手，否则读回 `out` 的 16 个向量。
-        let mut acc = if first { [zero; 16] } else { micro_load(out, row0, n, j) };
+        let mut acc = if first {
+            [zero; 16]
+        } else {
+            micro_load(out, row0, n, j)
+        };
         for p in 0..kb {
             let av0 = vld1q_f32(pp.add(p * MR));
             let av1 = vld1q_f32(pp.add(p * MR + 4));
