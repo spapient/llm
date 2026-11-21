@@ -1,11 +1,14 @@
 //! 分类损失与命中统计：前向评估量的纯计算函数。
 
-use crate::distill::{Distill, distillation_loss};
 use crate::rl::{Grpo, grpo_loss};
 use diagnostic::{Code, Error, Result};
 
 /// 本模块诊断站点。
 pub(crate) const SITE: &str = "train::loss";
+
+/// 蒸馏目标的诊断站点：本文件承载"目标函数"这一轴，站名沿用蒸馏自己的名字，
+/// 使几何校验失败与蒸馏超参非法在诊断里仍可区分。
+pub(crate) const DISTILL_SITE: &str = "train::distill";
 
 /// 校验标签是闭区间 `[0, vocab)` 内的非负整数；返回标签行数。
 ///
@@ -286,7 +289,7 @@ pub enum Loss<'a> {
         old_logp: &'a [f32],
         /// 逐 token advantage（GRPO 中同 completion 共享）。
         advantages: &'a [f32],
-        /// 逐 token 参考 KL（由 [`crate::distill::kl_per_row`] 预计算）。
+        /// 逐 token 参考 KL（由 [`kl_per_row`] 预计算）。
         ref_kl: &'a [f32],
         /// GRPO 配置（裁剪 `ε` 与 KL 惩罚 `β`）。
         config: Grpo,
@@ -348,3 +351,177 @@ pub(crate) fn grpo(
     Ok(Outcome { loss, correct: 0 })
 }
 
+// ---- 蒸馏目标：温度、α 混合与逐 token 参考 KL ----
+/// 蒸馏损失配置：软目标温度 `T` 与软损失权重 `α`（Hinton 2015 约定）。
+#[derive(Clone, Copy, Debug)]
+pub struct Distill {
+    temperature: f32,
+    alpha: f32,
+}
+
+impl Distill {
+    /// 构造蒸馏配置；`temperature`/`alpha` 的合法性在损失入口校验（保持 `const`）。
+    pub const fn new(temperature: f32, alpha: f32) -> Self {
+        Self { temperature, alpha }
+    }
+
+    /// 软目标温度 `T`（正数）。
+    pub const fn temperature(self) -> f32 {
+        self.temperature
+    }
+
+    /// 软损失权重 `α`，取值 `[0,1]`。
+    pub const fn alpha(self) -> f32 {
+        self.alpha
+    }
+}
+
+/// 温度必须是正的有限数。
+fn check_temperature(temperature: f32) -> Result<()> {
+    if temperature <= 0.0 || !temperature.is_finite() {
+        return Err(
+            Error::new(Code::Invalid, format!("温度 {temperature} 必须是正有限数"))
+                .with(DISTILL_SITE),
+        );
+    }
+    Ok(())
+}
+
+/// 软损失权重 α 必须在闭区间 `[0, 1]`。
+fn check_alpha(alpha: f32) -> Result<()> {
+    if !(0.0..=1.0).contains(&alpha) || !alpha.is_finite() {
+        return Err(
+            Error::new(Code::Invalid, format!("软损失权重 α={alpha} 必须在 [0,1]"))
+                .with(DISTILL_SITE),
+        );
+    }
+    Ok(())
+}
+
+/// 校验 logits 几何（词表/行数/长度/`out` 等长），返回行数。
+fn check_logits_shape(logits_len: usize, out_len: usize, vocab: usize) -> Result<usize> {
+    check_vocab(vocab)?;
+    let rows = logits_len / vocab;
+    check_rows(rows)?;
+    check_logits_len(logits_len, rows, vocab)?;
+    check_len(out_len, logits_len, "out")?;
+    Ok(rows)
+}
+
+/// 校验一对 logits 的几何（词表/等长/行数/长度），返回行数。
+fn check_pair_shape(student_len: usize, teacher_len: usize, vocab: usize) -> Result<usize> {
+    check_vocab(vocab)?;
+    check_len(student_len, teacher_len, "教师 logits")?;
+    let rows = student_len / vocab;
+    check_rows(rows)?;
+    check_logits_len(student_len, rows, vocab)?;
+    Ok(rows)
+}
+
+/// 单行 log-softmax：`o = slice − logsumexp(slice)`。
+fn row_log_softmax(slice: &[f32], o: &mut [f32]) {
+    let lse = logsumexp(slice);
+    for (o, &v) in o.iter_mut().zip(slice) {
+        *o = v - lse;
+    }
+}
+
+/// 单行 KL：`sum_v softmax(s/T)[v] · (log softmax(s/T)[v] − log softmax(t/T)[v])`。
+fn row_kl(s: &[f32], t: &[f32], temperature: f32) -> f32 {
+    let inv = 1.0 / temperature;
+    let (s_max, s_sum) = exp_sum(s, inv);
+    let (t_max, t_sum) = exp_sum(t, inv);
+    let (s_lse, t_lse) = (s_max + s_sum.ln(), t_max + t_sum.ln());
+
+    let mut kl = 0.0f32;
+    for (&sv, &tv) in s.iter().zip(t) {
+        let log_ps = sv * inv - s_lse;
+        let log_pt = tv * inv - t_lse;
+        kl += (log_ps - log_pt) * log_ps.exp();
+    }
+    kl
+}
+
+/// 行内 log-softmax，数值稳定：`out = logits − logsumexp(logits)`。
+///
+/// `logits` 按行展平成 `[rows, vocab]`，`out` 与 `logits` 等长、逐元素写回；`exp(out)` 每行和为 1。
+///
+/// # Errors
+///
+/// 词表为 0、无行、logits 长度不是 `vocab` 的整数倍、或 `out` 与 `logits` 不等长时返回
+/// [`Code::Invalid`]。
+pub fn log_softmax(logits: &[f32], out: &mut [f32], vocab: usize) -> Result<()> {
+    check_logits_shape(logits.len(), out.len(), vocab)?;
+    for (o_row, s_row) in out.chunks_exact_mut(vocab).zip(logits.chunks_exact(vocab)) {
+        row_log_softmax(s_row, o_row);
+    }
+    Ok(())
+}
+
+/// 温度缩放的 KL 散度均值：`KL(softmax(student/T) ‖ softmax(teacher/T))`。
+///
+/// 逐行计算后取算术平均（与 [`crate::loss::cross_entropy`] 的均值约定一致）。KL ≥ 0，
+/// 学生与教师同分布时为 0。
+///
+/// # Errors
+///
+/// 词表为 0、温度非正、两个 logits 不等长、长度不是 `vocab` 整数倍、或无行时返回 [`Code::Invalid`]。
+pub fn kl_div(student: &[f32], teacher: &[f32], vocab: usize, temperature: f32) -> Result<f32> {
+    check_temperature(temperature)?;
+    let rows = check_pair_shape(student.len(), teacher.len(), vocab)?;
+    let mut kl_sum = 0.0f64;
+    for (s, t) in student.chunks_exact(vocab).zip(teacher.chunks_exact(vocab)) {
+        kl_sum += row_kl(s, t, temperature) as f64;
+    }
+    Ok((kl_sum / rows as f64) as f32)
+}
+
+/// 每行 KL 散度：`KL(softmax(student/T) ‖ softmax(teacher/T))`，逐行写回 `out`（长 `rows`）。
+///
+/// [`kl_div`] 是它的行均值；GRPO 需要每 token 的参考 KL，此处逐行输出，供逐 token 的
+/// KL 惩罚（`β·KL`）使用。
+///
+/// # Errors
+///
+/// 词表为 0、温度非正、两个 logits 不等长、长度不是 `vocab` 整数倍、无行、或 `out` 与行数
+/// 不等长时返回 [`Code::Invalid`]。
+pub fn kl_per_row(
+    student: &[f32],
+    teacher: &[f32],
+    vocab: usize,
+    temperature: f32,
+    out: &mut [f32],
+) -> Result<()> {
+    check_temperature(temperature)?;
+    let rows = check_pair_shape(student.len(), teacher.len(), vocab)?;
+    check_len(out.len(), rows, "out")?;
+    for (o, (s, t)) in out
+        .iter_mut()
+        .zip(student.chunks_exact(vocab).zip(teacher.chunks_exact(vocab)))
+    {
+        *o = row_kl(s, t, temperature);
+    }
+    Ok(())
+}
+
+/// Hinton 蒸馏损失：`(1−α)·CE(student, labels) + α·T²·KL(student/T ‖ teacher/T)`。
+///
+/// 硬标签交叉熵沿用 [`crate::loss::cross_entropy`]，软目标用温度缩放的 KL。`α=0` 退化为纯
+/// 交叉熵，`α=1` 退化为纯软蒸馏。
+///
+/// # Errors
+///
+/// 几何不自洽、标签越界、温度非正或 `α` 不在 `[0,1]` 时返回 [`Code::Invalid`]。
+pub fn distillation_loss(
+    student: &[f32],
+    teacher: &[f32],
+    labels: &[f32],
+    vocab: usize,
+    dist: Distill,
+) -> Result<f32> {
+    check_alpha(dist.alpha)?;
+    let hard = crate::loss::cross_entropy(student, labels, vocab)?;
+    let soft = kl_div(student, teacher, vocab, dist.temperature)?;
+    let scale = dist.temperature * dist.temperature;
+    Ok((1.0 - dist.alpha) * hard + dist.alpha * scale * soft)
+}

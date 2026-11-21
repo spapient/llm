@@ -101,4 +101,3 @@ impl<K: crate::Kernel> OperatorSetOps for crate::Buffers<K> {
         Store::compute(self, name, inputs, output)
     }
 }
-

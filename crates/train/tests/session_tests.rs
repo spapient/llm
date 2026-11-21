@@ -498,7 +498,6 @@ fn overrides_fall_back_to_default_without_duplicating_constants() {
 mod checkpoint {
     use crate::session::checkpoint::*;
 
-    use super::*;
     use diagnostic::Code;
     use tensor::Shape;
 

@@ -6,8 +6,7 @@ use autograd::Var;
 use shard::Collective;
 
 use crate::Dataset;
-use crate::distill::Distill;
-use crate::loss::{Outcome, classify, distill, grpo};
+use crate::loss::{Distill, Outcome, classify, distill, grpo};
 use crate::optimizer::Optimizer;
 use crate::rl::Grpo;
 use crate::{Kernel, Session};
@@ -300,7 +299,6 @@ fn next_token_labels(tokens: &[u32], rows: usize, cols: usize) -> Vec<f32> {
     }
     labels
 }
-
 
 /// 一条步指标：步号、本步样本数、平均 loss、命中条数。
 #[derive(Debug, Clone, Copy, PartialEq)]

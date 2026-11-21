@@ -310,7 +310,6 @@ fn records_grpo_loss_when_metric_is_grpo() -> Result<()> {
 mod schedule {
     use crate::schedule::*;
 
-    use super::*;
     use diagnostic::Code;
 
     #[test]
@@ -375,8 +374,6 @@ mod schedule {
 
 /// 指标看板：加权均值、最优 loss 与可读行的独立账表。
 mod metrics {
-    use super::*;
-
     use crate::{MetricPoint, MetricsBoard};
     use diagnostic::{Code, Result};
 

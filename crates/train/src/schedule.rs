@@ -117,4 +117,3 @@ impl Schedule {
         peak * self.anneal.factor(progress, self.min_ratio)
     }
 }
-

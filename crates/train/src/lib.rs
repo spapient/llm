@@ -24,7 +24,7 @@
 //! **依赖**：`nn`、`autograd`、`weights`、`shard`、`tensor`、`op`、`diagnostic`、`snapshot`。
 //! **被依赖**：`cli`、`benchmarks`、`fuzz`、`testkit`。
 //!
-//! 入口只做模块声明与再导出：实现按上面五条轴分布在 14 个子模块（`backprop`、`dist`、`distill`、
+//! 入口只做模块声明与再导出：实现按上面五条轴分布在 13 个子模块（`backprop`、`dist`、
 //! `geometry`、`kernel`、`learner`、`loss`、`optimizer`、`pool`、`rl`、`samples`、
 //! `schedule`、`session`、`store`）里。
 //!
@@ -43,7 +43,6 @@
 
 mod backprop;
 mod dist;
-mod distill;
 mod kernel;
 mod learner;
 mod loss;
@@ -64,10 +63,12 @@ mod store;
 mod support;
 
 pub use dist::{Distributed, Local, Remote};
-pub use distill::{Distill, distillation_loss, kl_div, kl_per_row, log_softmax};
 pub use geometry::{Geometry, Running};
 pub use learner::{ForwardOut, Learner, Metric, MetricPoint, MetricsBoard};
-pub use loss::{Loss, Outcome, argmax_hits, bce_with_logits, cross_entropy, hinge, huber, mse};
+pub use loss::{
+    Distill, Loss, Outcome, argmax_hits, bce_with_logits, cross_entropy, distillation_loss, hinge,
+    huber, kl_div, kl_per_row, log_softmax, mse,
+};
 pub use optimizer::{Adam, Group, Muon, Optimizer, OwnedSlot, Sgd, Slot};
 pub use rl::{Grpo, advantage, clipped_surrogate, entropy, grpo_loss, log_prob, policy_loss};
 pub use samples::{Batch, Chunks, Dataset};

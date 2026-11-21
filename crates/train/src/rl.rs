@@ -193,7 +193,7 @@ pub fn clipped_surrogate(
 /// GRPO 组合损失：`−mean(min(ratio·A, clamp(ratio)·A)) + β·mean(KL_ref)`。
 ///
 /// `new_logp`/`old_logp`/`advantages`/`ref_kl` 四数组等长（逐 token 对齐），`ref_kl` 由
-/// [`crate::distill::kl_per_row`] 预计算（每 token 的 `KL(π ‖ π_ref)`）。`β=0` 退化为纯
+/// [`crate::loss::kl_per_row`] 预计算（每 token 的 `KL(π ‖ π_ref)`）。`β=0` 退化为纯
 /// 裁剪策略梯度，`ε=0` 退化为无裁剪的 REINFORCE + KL 惩罚。
 ///
 /// # Errors
