@@ -297,7 +297,7 @@ fn dtype(code: &mut String, declaration: &ModelDecl) {
     let _ = writeln!(
         code,
         "            ::llm_op::model::DType::parse_name({}),\n            Some(super::{model}.dtype),\n            \"注解里的 `dtype` 必须解析成 `MODEL` 用的那个变体（词汇表是唯一名字源）\",\n        );",
-        literal(&declaration.dtype)
+        Quoted(&declaration.dtype)
     );
     code.push_str("        assert!(\n");
     let _ = writeln!(
