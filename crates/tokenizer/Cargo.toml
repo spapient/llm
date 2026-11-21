@@ -8,9 +8,14 @@ repository.workspace = true
 readme.workspace = true
 description = "Text/token boundary: the Tokenizer trait and a byte-level reference implementation."
 publish = false
+autotests = false
 
 [dependencies]
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "tokens"
+path = "tests/tokens.rs"

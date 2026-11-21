@@ -19,10 +19,10 @@ use std::fmt::Write as _;
 
 use diagnostic::{Code, Error, Result};
 
-use crate::archive::lossless_entry;
 use crate::axes;
 use crate::json::{self, Value};
 use crate::ledger::{self, SCHEMA};
+use crate::stored::lossless_entry;
 use crate::{Archive, Codec, Stored};
 
 /// 小于该字节数的段不值得编码，原样落盘（`passthrough:small`）。

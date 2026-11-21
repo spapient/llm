@@ -37,8 +37,11 @@
 mod archive;
 mod container;
 mod lifecycle;
+mod metrics;
+mod parse;
 mod rans;
 mod seg;
+mod stored;
 mod writer;
 
 // —— 量化方案：仿射方案与外部量化条目 ——
@@ -108,9 +111,10 @@ mod testutil;
 /// 词表段保留名（字节容器占位，不接 tokenizer）。
 pub use crate::archive::VOCAB_NAME;
 
-pub use archive::{Archive, Metrics, Stored};
+pub use archive::Archive;
 pub use dtype::DType as Wire;
 pub use l3::{Bracket, Chain, Ruling, Rung};
+pub use metrics::Metrics;
 pub use proof::Proof;
 pub use ptq::{
     Adaptive, AdaptiveCompensated, Compensated, I2, I3, I4, I8, Scheme, adaptive_quantize,
@@ -120,6 +124,7 @@ pub use quant::{Quant, Quantized};
 pub use seg::Codec;
 pub use seg::Segment;
 pub use settle::{Reason, Settled, Settlement};
+pub use stored::Stored;
 pub use writer::Writer;
 
 pub use container::{

@@ -189,4 +189,5 @@ pub trait Tokenizer {
 }
 
 #[cfg(test)]
+#[path = "../tests/tokenizer.rs"]
 mod tests;

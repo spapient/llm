@@ -515,4 +515,5 @@ mod check;
 mod parse;
 pub use check::WitnessLookup;
 #[cfg(test)]
+#[path = "../tests/prof.rs"]
 mod tests;

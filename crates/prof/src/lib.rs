@@ -56,4 +56,5 @@ mod generated {
 pub use generated::{embedded, names};
 
 #[cfg(test)]
+#[path = "../tests/embedded.rs"]
 mod tests;
