@@ -809,3 +809,94 @@ fn metal_tensor_kernel_gemm() {
         );
     }
 }
+
+/// 张量核**双缓冲**对拍：选一个两片 B 片装得进 32 KiB 的几何（软件流水生效），
+/// 证明「预取下一片 + 乘加当前片重叠」的 ping-pong 缓冲与 CPU 参考一致。
+///
+/// `(128, 64, 96, 8)` 的单缓冲 B 片是 12.8 KiB、双缓冲 25.6 KiB，都塞得进 32 KiB，
+/// 因此走双缓冲分支；`K=960` 被 96 整除走满块路径，`K=1024` 走尾块路径，两条都覆盖。
+/// 运行：`cargo test --release -p llm-device --lib -- metal_tensor_double_buffer --ignored --nocapture`
+#[test]
+#[ignore = "Metal 张量核双缓冲对拍：cargo test --release -p llm-device --lib -- metal_tensor_double_buffer --ignored --nocapture"]
+fn metal_tensor_double_buffer() {
+    use op::model::Sample;
+    use op::sig::Signature;
+
+    let Some((device, queue)) = bench_device("张量核双缓冲对拍") else {
+        return;
+    };
+    let declaration = "void cutile_bench_kernel(const float *a, const float *b, float *y, int M, int N, int K) {}";
+    let signature = Signature::parse("bench", declaration).expect("自建签名应能解析");
+    let geometry = TensorGeometry::new(128, 64, 96, 8);
+    for (m, n, k) in [(256, 256, 960), (256, 256, 1024)] {
+        let mut stage = tensor_stage(&device, &queue, (m, n, k), true);
+        let sample = Sample {
+            m,
+            n,
+            scalars: vec![("M", m as i64), ("N", n as i64), ("K", k as i64)],
+            buffers: Vec::new(),
+        };
+        let msl = crate::tiled::metal_tensor_gemm("bench", &signature, &sample, geometry)
+            .expect("张量核 MSL 应能生成");
+        assert!(
+            msl.contains("threadgroup half sb[2]"),
+            "两片 B 片装得下时应走双缓冲，实际 MSL：\n{msl}"
+        );
+        let pipe = tensor_pipe(&device, &queue, &stage, (m, n), geometry, &msl);
+        let label = format!("双缓冲对拍 {m}×{n}×{k} {}", pipe.label);
+        let error = stage.error(&label);
+        println!("{label} 误差 {error:.2e}");
+    }
+}
+
+/// 张量核**双缓冲 vs 单缓冲**吞吐对照：同一立方形状下，把 tile_n=64 的几何（两片 B 塞得进
+/// 32 KiB → 双缓冲软件流水）与 tile_n=128 的大块几何（只能单片）放到同一次重扫里取中位。
+///
+/// 双缓冲把每轮两次 barrier 减为一次并让 B 装载延迟与乘加重叠；对照用同 k_tile 的大块几何
+/// 隔离「缓冲策略」与「块大小」两个变量。运行：
+/// `cargo test --release -p llm-device --lib -- metal_tensor_double_buffer_sweep --ignored --nocapture`
+#[test]
+#[ignore = "Metal 张量核双缓冲吞吐：cargo test --release -p llm-device --lib -- metal_tensor_double_buffer_sweep --ignored --nocapture"]
+fn metal_tensor_double_buffer_sweep() {
+    use op::model::Sample;
+    use op::sig::Signature;
+
+    let Some((device, queue)) = bench_device("张量核双缓冲吞吐") else {
+        return;
+    };
+    let declaration = "void cutile_bench_kernel(const float *a, const float *b, float *y, int M, int N, int K) {}";
+    let signature = Signature::parse("bench", declaration).expect("自建签名应能解析");
+    for (m, n, k) in [(2048, 2048, 2048), (4096, 4096, 4096)] {
+        let stage = tensor_stage(&device, &queue, (m, n, k), false);
+        // tile_n=64 的双缓冲两档（k_tile 96/64）对比 tile_n=128 的同 k_tile 单缓冲大块，
+        // 隔离「缓冲策略」与「块大小」两个变量；大块双缓冲（k_tile=48）实测更慢，不入测点。
+        let geometries = [
+            TensorGeometry::new(128, 64, 96, 8),
+            TensorGeometry::new(128, 64, 64, 8),
+            TensorGeometry::new(128, 128, 96, 8),
+        ];
+        let sample = Sample {
+            m,
+            n,
+            scalars: vec![("M", m as i64), ("N", n as i64), ("K", k as i64)],
+            buffers: Vec::new(),
+        };
+        let mut pipes = Vec::new();
+        for geometry in geometries {
+            let msl = crate::tiled::metal_tensor_gemm("bench", &signature, &sample, geometry)
+                .expect("张量核 MSL 应能生成");
+            let double = msl.contains("threadgroup half sb[2]");
+            let pipe = tensor_pipe(&device, &queue, &stage, (m, n), geometry, &msl);
+            let label = format!("双缓冲吞吐 {m}³ {} {}", pipe.label, if double { "双片" } else { "单片" });
+            println!("{label}");
+            pipes.push(pipe);
+        }
+        sweep(
+            &queue,
+            &stage,
+            &pipes,
+            (m, n, k),
+            &format!("双缓冲吞吐 {m}³"),
+        );
+    }
+}
