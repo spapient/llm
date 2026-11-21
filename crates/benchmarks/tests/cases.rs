@@ -336,8 +336,9 @@ pub(crate) fn model_records_carry_every_field_a_reader_needs_to_judge_it() {
 // 照 `lld` 的口径判出来归档，但不在测试里断言它通过——这台机器当时抖不抖是测量结果，
 // 不是这个测试的前提。
 
-#[path = "../../support/model.rs"]
-mod support;
+#[path = "../criterion/fixtures.rs"]
+#[allow(dead_code)]
+mod fixtures;
 
 use std::hint::black_box;
 use std::time::Instant;
@@ -345,9 +346,9 @@ use std::time::Instant;
 use engine::exec::Stream;
 use engine::kv::{Cache, Pager};
 use engine::{Batch, Sequence};
+use fixtures::PROMPT;
 use serve::Predict;
 use serve::model::CpuModel;
-use support::PROMPT;
 use tool::card::{Card, Direction as CardDirection, Protocol, Shortfall, Standing, Statistic};
 
 /// 热身步数：不计入样本，只用来把首次分页与寄存器预热甩掉。
@@ -361,7 +362,7 @@ const PAGE_SIZE: usize = 4;
 
 /// 装配合成栈与一条序列；模型、批与序列在测量轮次间复用，前向内不重新分配权重。
 fn fixture() -> (CpuModel, Batch, Sequence) {
-    let model = support::synthetic_model();
+    let model = fixtures::synthetic_model();
 
     let pager = Pager::new(Cache::new(PAGES, PAGE_SIZE).expect("页池"), 2).expect("行宽");
     let mut batch = Batch::new(pager);

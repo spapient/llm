@@ -5,12 +5,8 @@
 //! 不变，`tests/regress` 照旧按路径读取。选跑某一组仍可用 criterion 的过滤参数：
 //! `cargo bench -p llm-benchmarks -- gemv_f32`。
 
-#[path = "../support/attention.rs"]
-mod attention_fixture;
-#[path = "../support/model.rs"]
-mod model_fixture;
-
 mod attention;
+mod fixtures;
 mod gemm;
 mod matmul;
 mod memory;

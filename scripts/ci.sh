@@ -3,6 +3,7 @@
 # 用法：
 #   scripts/ci.sh              # 全部门禁（格式 / clippy / 测试 / doc-test / 依赖卫生 / 架构 / 静态 / 命名 / 密度 / 基准编译）
 #   scripts/ci.sh --coverage  # 额外跑 llvm-cov nextest 覆盖率采集（慢，默认不开）
+#   scripts/ci.sh --perf      # 额外跑 criterion 全量采样并重判 S++ roofline 达成率与回归预算（慢，固定硬件上跑）
 #
 # fuzz（libFuzzer + ASan）与跨平台矩阵只在 CI 跑；本地不复制其 release 构建与 30s 引导。
 set -euo pipefail
@@ -15,9 +16,11 @@ step() {
 }
 
 COVERAGE=0
+PERF=0
 for arg in "$@"; do
     case "$arg" in
         --coverage) COVERAGE=1 ;;
+        --perf) PERF=1 ;;
         *) echo "未知参数: $arg" >&2; exit 2 ;;
     esac
 done
@@ -57,6 +60,16 @@ bash scripts/loc-budget.sh || echo "⚠ 密度超预算（N6 维度，R3 起转�
 
 step "基准可编译校验（实测与基线判定在固定硬件上跑，跨机器绝对值不可比）"
 cargo bench --workspace --all-features --locked --no-run
+
+step "基准判定（S++ roofline 达成率 ≥90% 算力 / ≥85% 带宽 + 回归预算；无测量产物的场景逐条跳过）"
+cargo test -p llm-benchmarks --all-features --locked --test regress -- --nocapture
+
+if [ "$PERF" -eq 1 ]; then
+    step "基准实测（criterion 全量采样：25 组，慢，只在固定硬件上开）"
+    cargo bench -p llm-benchmarks --all-features --locked
+    step "基准判定（用刚测出的 criterion 产物重判）"
+    cargo test -p llm-benchmarks --all-features --locked --test regress -- --nocapture
+fi
 
 if [ "$COVERAGE" -eq 1 ]; then
     step "覆盖率采集（llvm-cov nextest）"

@@ -1,43 +1,20 @@
-//! 把真实算子的实测值接进 `tools::regress` 的基线判定，并把「测到了什么」归档成一份可入 CI 的报告。
-//!
-//! 分工是刻意的：criterion 只负责测（预热、采样、区间估计），`tools::regress` 只负责判（方向、
-//! 相对预算、"回退"与"改进"），`nn::Bounds` 只负责给出**下界**（这层至少要搬多少、算多少），
-//! 本文件只负责**搬运**与**归档**。判定规则不在这里重写，代价公式也不在这里写第二份。
-//!
-//! # 记录与分析件的分工
-//!
-//! 每条基准先构造一条 [`tool::bench::BenchRecord`]：身份（场景名 / 后端）、几何（形状 / 批次 /
-//! 精度）、主机档案（[`Harness`]）、上界（[`RecordRoofline`]）与回填后的实测；达成率、瓶颈侧、
-//! MB/s、flops、档位、verdict、基线与预算这些**本地分析件**仍由 Report 侧派生，不塞进记录。
-//! [`Scenario`] 保留为 criterion 侧描述符：分组 / 用例名 / 算子 / 上下界这些测量定位信息不进
-//! BenchRecord。未测得的整机峰值带宽 / 算力在记录里留 `None`，不拿标称值顶替。
-//!
-//! # 三条"不可比"的处理
-//!
-//! - **跨机不可比**：基线按 `os-arch` 登记（见 [`baseline_for`]）。没有本机基线时跳过，而不是
-//!   拿别的机器的数判——那会把"A 机的单核速度"当成"这台机器的验收线"。
-//! - **跨口径不可比**：判的是 `ns/iter` 而不是 FLOPs 或 GiB/s。`gemv` 的二进制位宽随权重格式
-//!   变（f32 / i4 / 打包），同一形状的理论算力能差 4 倍；时间才是可比的量。
-//! - **跨版本不可比**：基线与实测必须在同一工具链下取；换了编译器就重新登记（档案里记了工具链）。
-//!
-//! # roofline 的分母也是测量
-//!
-//! 归档里除了实测，还有「这条基准最少该花多久」：`read` / `write` 两个方向分开由 `nn::Bounds`
-//! 从算子语义推出，再除以**同机、同工作集档位**的实测搬运速率（[`CEILINGS`]，来自
-//! `criterion/memory.rs`）。不用厂商峰值：那只是规格，不是这台机器上测得到的速率
-//! （`docs/lld.md` E6 把「仅有未验证的峰值规格」判为不可计算）。
-//!
-//! 于是报告能回答三个问题，而不只是一个 ns 数：这层卡在带宽上吗（`achieved_percent`）、卡在
-//! 哪一侧（`bottleneck_side`）、离本机同口径上界还有多少余量。归档本身仍然只含整数，因此可以
-//! 被仓库唯一的 JSON 解析器读回来自检。
-//!
-//! # 被测面与主机档案都写在表里
-//!
-//! 被测面在 [`SCENARIOS`] 里逐场景声明（criterion 分组 / 用例名与 `criterion/*.rs` 逐字一致，
-//! 后端标识也是其中一列）；机型、系统、工具链在 [`HOSTS`] 里声明。新增一条基准或一个新后端都
-//! 只是加一行，不复制判定流程；新增一台机器则连同上界一起登记，否则这份报告无法被别人复核。
-//!
-//! 归档在 `target/bench-report/<host>/<group>.json`，由 CI 的 bench job 收成 artifact。
+//! 回归套件的子模块装配：登记表 / 主机档案 / 分析件 / 记录 / 归档 / 用例。
 
-#[path = "regress/mod.rs"]
-mod suite;
+pub(crate) use std::path::{Path, PathBuf};
+pub(crate) use tool::bench::{
+    BenchRecord, EntryKind, Geometry, Harness, Roofline as RecordRoofline,
+};
+pub(crate) use tool::regress::{Case, Direction, Judgement};
+
+mod analysis;
+mod archive;
+mod cases;
+mod host;
+mod record;
+mod table;
+
+pub(crate) use analysis::*;
+pub(crate) use archive::*;
+pub(crate) use host::*;
+pub(crate) use record::*;
+pub(crate) use table::*;

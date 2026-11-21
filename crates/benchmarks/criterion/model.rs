@@ -5,7 +5,7 @@
 //!
 //! 后半：学习率调度求值、检查点快照编解码、激活缓冲池复用前向轮；同样只出本机测量。
 
-use crate::model_fixture::{PROMPT, synthetic_model};
+use crate::fixtures::{PROMPT, synthetic_model};
 use autograd::{Sizes, Store, Tape};
 use criterion::{Criterion, Throughput};
 use engine::exec::Stream;

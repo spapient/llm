@@ -141,8 +141,7 @@ fn a_model_declaration_carries_name_shape_dtype_and_skeleton() {
     assert_eq!(model.dtype, "f32");
     assert_eq!(model.skeleton, "gemv", "缺省值必须等于生成器实际走的分支");
     for name in GEMM_SKELETON_NAMES {
-        let text =
-            format!(r#"name = "{name}", shape = [4, 4], dtype = "f32", skeleton = "gemm""#);
+        let text = format!(r#"name = "{name}", shape = [4, 4], dtype = "f32", skeleton = "gemm""#);
         assert_eq!(parse_model(&lex(&text)).expect("合法").skeleton, "gemm");
     }
 }

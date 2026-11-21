@@ -104,6 +104,7 @@ mod render;
 mod syntax;
 
 #[cfg(test)]
+#[path = "../tests/fixture.rs"]
 mod fixture;
 
 use proc_macro::{Delimiter, Group, Span, TokenStream, TokenTree};
@@ -347,4 +348,5 @@ fn bracket(delimiter: Delimiter) -> Bracket {
 }
 
 #[cfg(test)]
+#[path = "../tests/adapter_tests.rs"]
 mod tests;

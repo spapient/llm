@@ -4,7 +4,7 @@
 //! 配置决定。tile 与非 tile 两条路径逐位一致（对拍在 `op::attention` 的测试里），本文件只比较
 //! 遍历次序对墙钟的影响。
 
-use crate::attention_fixture::Sample;
+use crate::fixtures::Sample;
 use criterion::{Criterion, Throughput};
 use op::attention;
 use std::hint::black_box;

@@ -1,11 +1,31 @@
-//! 一步 decode 的合成模型：查表首层 + 一层 f32 投影，权重由确定性 PRNG 生成。
+//! 基准与测试共用的夹具：attention 的样例张量与一步 decode 的合成模型。
 //!
-//! 基准（`criterion/model.rs`）与卡片测试（`tests/regress/cases.rs`）压的是同一个栈，只有
-//! 批的规模不同；装配因此只写一处，序列与页池各自留在自己的文件里。
+//! 只写一处，是因为 attention 的三组基准、`model` 的两组基准与 `tests/cases.rs` 压的是同一套
+//! 缓冲与同一个栈；夹具各留一份，"样例是什么"就会有第二、第三份说法。
 
 use nn::{Embedding, Linear, Stack, WeightFormat};
 use serve::model::{CpuModel, Params};
 use testkit::Rng;
+
+/// 一组等长样例：`q` / `k` / `v` 各 `len` 个标量，外加同样长的 `out`。
+pub(crate) struct Sample {
+    pub(crate) q: Vec<f32>,
+    pub(crate) k: Vec<f32>,
+    pub(crate) v: Vec<f32>,
+    pub(crate) out: Vec<f32>,
+}
+
+impl Sample {
+    /// 按 `len = s·d` 造一组：三条输入是互不相同的线性序列，`out` 全零。
+    pub(crate) fn new(len: usize) -> Self {
+        Self {
+            q: (0..len).map(|index| -0.5 + index as f32 * 0.13).collect(),
+            k: (0..len).map(|index| 0.4 - index as f32 * 0.09).collect(),
+            v: (0..len).map(|index| -0.2 + index as f32 * 0.11).collect(),
+            out: vec![0.0f32; len],
+        }
+    }
+}
 
 /// 词表大小。
 const VOCAB: usize = 16;

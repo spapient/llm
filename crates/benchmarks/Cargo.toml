@@ -8,6 +8,9 @@ repository.workspace = true
 readme.workspace = true
 description = "Measurement container: centralised criterion micro-benchmarks across the workspace."
 publish = false
+# 测试按模块平铺在 `tests/` 下（`regress.rs` 是根，其余是它的子模块），
+# 只有 `[[test]]` 里列出的那个 target；关掉自动发现，平铺的模块文件才不会各成一个 target。
+autotests = false
 
 # 测量容器只在 bench target 里用这些依赖：criterion 负责统计（预热、采样、测量时长
 # 都是它自己的配置），prof/op 是被测对象。
@@ -43,3 +46,9 @@ harness = false
 
 [lints]
 workspace = true
+
+# 一个测试 target：`tests/regress.rs` 装配同目录的 `table` / `host` / `analysis` /
+# `record` / `archive` / `cases` 六个模块。分组数据与用例分文件，target 只有一个。
+[[test]]
+name = "regress"
+path = "tests/regress.rs"
