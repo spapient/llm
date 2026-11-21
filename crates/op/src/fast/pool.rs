@@ -13,12 +13,15 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 
 /// 一次 GEMM 调用的几何：`npad` 是 `n` 对齐到微内核列数后的补零宽（f32 与 i8 共用）。
+///
+/// `tn` 只对 f32 有意义：权重按输出行存放（线性层布局）时打包要转置，读步长从 `n` 变 `k`。
 #[derive(Clone, Copy)]
 pub(super) struct Shape {
     pub(super) m: usize,
     pub(super) n: usize,
     pub(super) k: usize,
     pub(super) npad: usize,
+    pub(super) tn: bool,
 }
 
 pub(super) struct Job {
@@ -31,6 +34,7 @@ pub(super) struct Job {
     pub(super) n: usize,
     pub(super) k: usize,
     pub(super) npad: usize,
+    pub(super) tn: bool,
     pub(super) rows_per: usize,
     pub(super) p: usize,
     /// 打包阶段的分片体；类型差异只落在这两个函数里，池机制完全共享。
@@ -309,7 +313,7 @@ pub(super) fn run_pooled(
     stage: fn(&Job, usize),
     calc: fn(&Job, usize),
 ) -> bool {
-    let Shape { m, n, k, npad } = shape;
+    let Shape { m, n, k, npad, tn } = shape;
     let live = pool.live.load(Ordering::Acquire);
     let p = t.min(live + 1);
     if p < 2 {
@@ -328,6 +332,7 @@ pub(super) fn run_pooled(
         n,
         k,
         npad,
+        tn,
         rows_per,
         p,
         stage,
@@ -365,6 +370,7 @@ mod tests {
             n: 1,
             k: 1,
             npad: 1,
+            tn: false,
         };
         run_pooled(
             pool,

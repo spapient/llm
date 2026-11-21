@@ -190,8 +190,7 @@ fn the_short_names_are_stable() {
 fn a_protocol_rejects_impossible_settings() {
     let empty = Protocol::of("", "ns", Statistic::Mean, Direction::Lower, 1.0).unwrap_err();
     assert_eq!(empty.code(), Code::Invalid);
-    let nan =
-        Protocol::of("E1", "ns", Statistic::Mean, Direction::Lower, f64::NAN).unwrap_err();
+    let nan = Protocol::of("E1", "ns", Statistic::Mean, Direction::Lower, f64::NAN).unwrap_err();
     assert_eq!(nan.code(), Code::Invalid);
     assert!(nan.message().contains("有限数"), "{}", nan.message());
     assert_eq!(jitter().with_least(1).unwrap_err().code(), Code::Invalid);

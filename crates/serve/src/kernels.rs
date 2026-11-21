@@ -312,10 +312,7 @@ fn gemv_inputs<'a, 'b>(
 /// [`op::fast::gemm_f32_tn`]（8×8 寄存器分块 + 常驻池，实测大 K 下比按列 tile 快近 30 倍），
 /// 行数不足一个微内核行块时走 [`op::matmul::forward_tn_tiled`]（打包的转置成本摊不回来）。
 fn project_rows(x: &[f32], weights: &[f32], out: &mut [f32], m: usize, n: usize) -> Result<()> {
-    if m == 0 || !x.len().is_multiple_of(m) || out.len() != (x.len() / m) * n {
-        return Err(Error::new(Code::Invalid, "gemv 行批几何不自洽").with(SITE));
-    }
-    let rows = x.len() / m;
+    let rows = row_batch_rows(x, out, m, n)?;
     if rows == 1 {
         return op::gemv_f32::forward(x, weights, out);
     }
@@ -324,6 +321,14 @@ fn project_rows(x: &[f32], weights: &[f32], out: &mut [f32], m: usize, n: usize)
         return Ok(());
     }
     op::matmul::forward_tn_tiled(x, weights, rows, n, m, out)
+}
+
+/// 行批几何校验并给出输出行数：`x` 是 `rows × m`，`out` 必须是 `rows × n`。
+fn row_batch_rows(x: &[f32], out: &[f32], m: usize, n: usize) -> Result<usize> {
+    if m == 0 || !x.len().is_multiple_of(m) || out.len() != (x.len() / m) * n {
+        return Err(Error::new(Code::Invalid, "gemv 行批几何不自洽").with(SITE));
+    }
+    Ok(x.len() / m)
 }
 
 /// 量化 GEMV 单行算术入口：一个输入向量 → 一个输出向量。

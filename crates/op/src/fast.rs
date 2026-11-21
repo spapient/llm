@@ -10,8 +10,10 @@ use std::thread;
 
 use diagnostic::{Code, Error, Result};
 
+mod pack;
 mod pool;
 mod scratch;
+use pack::{b_groups, pack_b_f32_into, pack_b_f32_par_into, pack_panels};
 use pool::{Job, Shape, pool, run_pooled};
 mod tn;
 pub use tn::{MIN_ROWS, gemm_f32_tn};
@@ -47,7 +49,13 @@ pub fn gemm_f32(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f
             b.as_ptr() as *const u8,
             buf.as_mut_ptr() as *mut u8,
             out.as_ptr() as *mut u8,
-            Shape { m, n, k, npad },
+            Shape {
+                m,
+                n,
+                k,
+                npad,
+                tn: false,
+            },
             MR,
             t,
             f32_pack,
@@ -169,68 +177,6 @@ fn compute(a: &[f32], bpack: &[f32], b: &[f32], rows: usize, n: usize, k: usize,
             0,
             true,
         );
-    }
-}
-
-/// A 的每个 8 行块转置成 `[p][8]` 面板：微内核每条 `p` 只需两次连续向量加载。
-fn pack_panels(a: &[f32], full: usize, k: usize) -> Vec<f32> {
-    let mut apack = vec![0.0f32; full * k * MR];
-    for blk in 0..full {
-        let src = &a[blk * MR * k..(blk * MR + MR) * k];
-        let dst = &mut apack[blk * k * MR..blk * k * MR + k * MR];
-        for p in 0..k {
-            for r in 0..MR {
-                dst[p * MR + r] = src[r * k + p];
-            }
-        }
-    }
-    apack
-}
-
-/// B 打包成 `[jblk][p][NR]`：微内核每条 `p` 只需两次连续向量加载（行主序 B 是每 `p` 跨一条行）。
-///
-/// `n` 不整除的部分补 0，只有列残尾（`nr < NR`）才回退到 `edge`。写进调用方的面板（已清零），
-/// 不在这里分配：`n = k = 4096` 时这块是 67 MB，每次调用现分配是第 5 条要扇掉的成本。
-fn pack_b_f32_into(bpack: &mut [f32], b: &[f32], n: usize, k: usize) {
-    let npad = n.div_ceil(NR) * NR;
-    debug_assert_eq!(bpack.len(), npad * k);
-    for jb in 0..npad / NR {
-        let first = jb * NR;
-        let cols = if first < n { NR.min(n - first) } else { 0 };
-        for p in 0..k {
-            let dst = (jb * k + p) * NR;
-            bpack[dst..dst + cols].copy_from_slice(&b[p * n + first..p * n + first + cols]);
-        }
-    }
-}
-
-/// 并行 B 打包：按 8 列组切线程。`k·n` 小的时候串行更划算（线程创建比转置贵）。
-fn pack_b_f32_par_into(bpack: &mut [f32], b: &[f32], n: usize, k: usize, t: usize) {
-    let groups = n.div_ceil(NR);
-    if t <= 1 || n * k < (1 << 16) {
-        pack_b_f32_into(bpack, b, n, k);
-        return;
-    }
-    let per = groups.div_ceil(t);
-    let span = per * NR * k;
-    thread::scope(|s| {
-        for (gi, chunk) in bpack.chunks_mut(span).enumerate() {
-            s.spawn(move || pack_b_f32_span(chunk, b, n, k, gi * per));
-        }
-    });
-}
-
-/// 一段连续的列组打包：`blk0` 起，每块 `NR · k`。
-fn pack_b_f32_span(chunk: &mut [f32], b: &[f32], n: usize, k: usize, blk0: usize) {
-    let blocks = chunk.len() / (NR * k);
-    for bi in 0..blocks {
-        let first = (blk0 + bi) * NR;
-        let cols = if first < n { NR.min(n - first) } else { 0 };
-        let tile = &mut chunk[bi * NR * k..(bi + 1) * NR * k];
-        for p in 0..k {
-            let dst = p * NR;
-            tile[dst..dst + cols].copy_from_slice(&b[p * n + first..p * n + first + cols]);
-        }
     }
 }
 
@@ -657,27 +603,19 @@ fn i8_calc(j: &Job, slot: usize) {
 }
 
 /// f32 打包体：本槽负责的 8 列组按 `p` 步长轮转，写入 `[jblk][p][NR]`（零初始化覆盖补零列）。
+///
+/// 转置布局（[`tn`]）与行主序布局共用同一条池通道：两者只差一次读步长，所以差异收在
+/// [`pack::b_groups`] 与 [`tn::stage`] 里，池与闸门不必各备份。
 #[allow(unsafe_code)]
 fn f32_pack(j: &Job, slot: usize) {
-    let p = j.p;
-    let groups = j.npad / NR;
+    let (n, k, npad) = (j.n, j.k, j.npad);
     unsafe {
-        let b = j.b as *const f32;
-        let dst = j.buf as *mut f32;
-        let (n, k) = (j.n, j.k);
-        let mut g = slot;
-        while g < groups {
-            let first = g * NR;
-            let cols = if first < n { NR.min(n - first) } else { 0 };
-            let base = g * k * NR;
-            for q in 0..k {
-                let src = b.add(q * n + first);
-                let d = dst.add(base + q * NR);
-                for c in 0..cols {
-                    *d.add(c) = *src.add(c);
-                }
-            }
-            g += p;
+        let b = std::slice::from_raw_parts(j.b as *const f32, k * n);
+        let dst = std::slice::from_raw_parts_mut(j.buf as *mut f32, npad * k);
+        if j.tn {
+            tn::stage(b, dst, n, k, npad, j.p, slot);
+        } else {
+            b_groups(b, dst, n, k, npad, j.p, slot);
         }
     }
 }
@@ -697,7 +635,11 @@ fn f32_calc(j: &Job, slot: usize) {
         let b = std::slice::from_raw_parts(j.b as *const f32, j.k * j.n);
         let out = std::slice::from_raw_parts_mut(j.out as *mut f32, j.m * j.n);
         let out_l = &mut out[r0 * j.n..(r0 + rows) * j.n];
-        compute(a_l, bp, b, rows, j.n, j.k, out_l);
+        if j.tn {
+            tn::compute_tn(a_l, bp, b, rows, j.n, j.k, out_l);
+        } else {
+            compute(a_l, bp, b, rows, j.n, j.k, out_l);
+        }
     }
 }
 
@@ -727,7 +669,13 @@ pub fn gemm_i8(a: &[i8], b: &[i8], m: usize, n: usize, k: usize, out: &mut [i32]
         b.as_ptr() as *const u8,
         bpack.as_mut_ptr() as *mut u8,
         out.as_mut_ptr() as *mut u8,
-        Shape { m, n, k, npad },
+        Shape {
+            m,
+            n,
+            k,
+            npad,
+            tn: false,
+        },
         I8_MR,
         t,
         i8_pack,

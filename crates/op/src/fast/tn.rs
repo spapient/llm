@@ -8,9 +8,10 @@
 //! 权重。没有这个入口，服务端只能退回逐列 `forward_tn_tiled`——那份内核每个权重元素被读一遍没错，
 //! 但没有寄存器分块与多线程，实测差 20 倍以上。
 
-use super::pool::{Job, Shape, pool, run_pooled};
+use super::pack::pack_panels;
+use super::pool::{Shape, pool, run_pooled};
 use super::scratch;
-use super::{KB, MR, NR, Span, micro_packed, pack_panels, threads_override};
+use super::{KB, MR, NR, Span, micro_packed, threads_override};
 
 /// 走这条入口的最少行数：一个完整微内核行块。再少的批只有残行（标量），打包的转置成本摊不回来，
 /// 调用方应当继续用按列驻留的 tile 核。
@@ -25,21 +26,46 @@ pub const MIN_ROWS: usize = MR;
 ///
 /// 三条缓冲长度不足 `rows·k` / `n·k` / `rows·n` 时 panic（调用方先校验）。
 pub fn gemm_f32_tn(x: &[f32], w: &[f32], rows: usize, n: usize, k: usize, out: &mut [f32]) {
+    check_dims_tn(x, w, rows, n, k, out);
+    let t = threads_override().min(rows.div_ceil(MR)).max(1);
+    if t <= 1 {
+        single_tn(x, w, rows, n, k, out);
+        return;
+    }
+    if !pooled_tn(x, w, rows, n, k, out, t) {
+        scoped_tn(x, w, out, rows, n, k, t);
+    }
+}
+
+/// 尺寸校验：三条缓冲不足 `rows·k` / `n·k` / `rows·n` 时 panic。
+fn check_dims_tn(x: &[f32], w: &[f32], rows: usize, n: usize, k: usize, out: &[f32]) {
     assert!(
         x.len() >= rows * k && w.len() >= n * k && out.len() >= rows * n,
         "gemm_f32_tn 尺寸不符"
     );
-    let blocks = rows.div_ceil(MR);
-    let t = threads_override().min(blocks).max(1);
+}
+
+/// 单线程：整段打包一次，再按行块算完整段 K。
+fn single_tn(x: &[f32], w: &[f32], rows: usize, n: usize, k: usize, out: &mut [f32]) {
     let npad = n.div_ceil(NR) * NR;
-    if t <= 1 {
-        scratch::with_panels(npad * k, |bpack| {
-            pack_tn_into(bpack, w, n, k);
-            compute_tn(x, bpack, w, rows, n, k, out);
-        });
-        return;
-    }
-    let pooled = scratch::with_panels(npad * k, |buf| {
+    scratch::with_panels(npad * k, |bpack| {
+        pack_tn_into(bpack, w, n, k);
+        compute_tn(x, bpack, w, rows, n, k, out);
+    });
+}
+
+/// 常驻池路径；池不可用（参与数不足 2）时返回 `false`，由 [`scoped_tn`] 兜底。
+fn pooled_tn(
+    x: &[f32],
+    w: &[f32],
+    rows: usize,
+    n: usize,
+    k: usize,
+    out: &mut [f32],
+    t: usize,
+) -> bool {
+    let npad = n.div_ceil(NR) * NR;
+    scratch::with_panels(npad * k, |buf| {
         run_pooled(
             pool(),
             x.as_ptr() as *const u8,
@@ -51,18 +77,20 @@ pub fn gemm_f32_tn(x: &[f32], w: &[f32], rows: usize, n: usize, k: usize, out: &
                 n,
                 k,
                 npad,
+                tn: true,
             },
             MR,
             t,
-            tn_stage,
-            tn_calc,
+            super::f32_pack,
+            super::f32_calc,
         )
-    });
-    if pooled {
-        return;
-    }
-    // 兜底（池不可用）：打包一次后 shared 给 scope 线程，行块按 MR 对齐切。
-    let per = blocks.div_ceil(t) * MR;
+    })
+}
+
+/// 兜底（池不可用）：打包一次后 shared 给 scope 线程，行块按 MR 对齐切。
+fn scoped_tn(x: &[f32], w: &[f32], out: &mut [f32], rows: usize, n: usize, k: usize, t: usize) {
+    let npad = n.div_ceil(NR) * NR;
+    let per = rows.div_ceil(MR).div_ceil(t) * MR;
     scratch::with_panels(npad * k, |bpack| {
         pack_tn_into(bpack, w, n, k);
         let bp: &[f32] = bpack;
@@ -104,38 +132,23 @@ fn fill_panel(panel: &mut [f32], w: &[f32], n: usize, k: usize, first: usize) {
 }
 
 /// 本槽负责的列组按 `p` 步长轮转，别槽的列组由别槽打包（与父模块同一套分工）。
-fn tn_stage(j: &Job, slot: usize) {
-    let p = j.p;
-    let groups = j.npad / NR;
-    #[allow(unsafe_code)]
-    unsafe {
-        let w = std::slice::from_raw_parts(j.b as *const f32, j.n * j.k);
-        let buf = std::slice::from_raw_parts_mut(j.buf as *mut f32, j.npad * j.k);
-        let mut g = slot;
-        while g < groups {
-            let base = g * j.k * NR;
-            fill_panel(&mut buf[base..base + j.k * NR], w, j.n, j.k, g * NR);
-            g += p;
-        }
-    }
-}
-
-/// 本槽的行段：面板由闸门保证整块就绪后再算。
-fn tn_calc(j: &Job, slot: usize) {
-    let r0 = slot * j.rows_per;
-    if r0 >= j.m {
-        return;
-    }
-    let rows = (j.m - r0).min(j.rows_per);
-    #[allow(unsafe_code)]
-    unsafe {
-        let x = std::slice::from_raw_parts(j.a as *const f32, j.m * j.k);
-        let a_l = &x[r0 * j.k..(r0 + rows) * j.k];
-        let bp = std::slice::from_raw_parts(j.buf as *const f32, j.npad * j.k);
-        let w = std::slice::from_raw_parts(j.b as *const f32, j.n * j.k);
-        let out = std::slice::from_raw_parts_mut(j.out as *mut f32, j.m * j.n);
-        let out_l = &mut out[r0 * j.n..(r0 + rows) * j.n];
-        compute_tn(a_l, bp, w, rows, j.n, j.k, out_l);
+///
+/// 读 `w` 的步长是 `k`（按输出行存放），写面板是连续段：这正是与行主序打包唯一的差别。
+pub(super) fn stage(
+    w: &[f32],
+    buf: &mut [f32],
+    n: usize,
+    k: usize,
+    npad: usize,
+    p: usize,
+    slot: usize,
+) {
+    let groups = npad / NR;
+    let mut g = slot;
+    while g < groups {
+        let base = g * k * NR;
+        fill_panel(&mut buf[base..base + k * NR], w, n, k, g * NR);
+        g += p;
     }
 }
 
@@ -143,7 +156,7 @@ fn tn_calc(j: &Job, slot: usize) {
 ///
 /// 与父模块的 `compute` 逐行对应，只有两处同构偏移：完整列块的微内核吃的是同一份 B 面板，
 /// 所以直接复用；列残尾与行残尾要对**原始权重**取值，那边索引从 `w[q*n + j]` 换成 `w[j*k + q]`。
-fn compute_tn(
+pub(super) fn compute_tn(
     a: &[f32],
     bpack: &[f32],
     w: &[f32],

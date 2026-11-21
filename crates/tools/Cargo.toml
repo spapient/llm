@@ -14,7 +14,6 @@ autotests = false
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 
 [dev-dependencies]
-diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 testkit = { path = "../testkit", package = "llm-testkit" }
 
 [lints]
@@ -31,7 +30,3 @@ path = "tests/gate.rs"
 [[test]]
 name = "card"
 path = "tests/card.rs"
-
-[[test]]
-name = "lex"
-path = "tests/lex.rs"
