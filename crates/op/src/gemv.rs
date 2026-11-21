@@ -196,7 +196,7 @@ macro_rules! gemv_packed {
     };
 }
 
-pub mod gemv_f32;
-pub mod gemv_i2;
-pub mod gemv_i4;
-pub mod gemv_i8;
+pub mod f32;
+pub mod i2;
+pub mod i4;
+pub mod i8;

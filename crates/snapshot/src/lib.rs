@@ -1,9 +1,11 @@
-//! 检查点文件：[`Snapshot`] 把一次训练恢复所需的事实与权重条目表编成字节，字节自带校验。
+//! 检查点字节格式：[`Snapshot`] 把一次恢复所需的事实与权重条目表编成字节，字节自带校验。
 //!
 //! **拥有**：`Format`、`Facts`、`Snapshot`——字节布局、完整性校验与原子落盘。**不拥有**：训练循环
-//! 状态（[`crate::Checkpoint`] 是内存里的最小事实集）、参数数据（`weights::Header` 只被引用）、
-//! 张量存储（`tensor`）、检查点路径（`cli::settings` 决定根目录）。**依赖**：`weights`、`tensor`、
-//! `diagnostic`、`wire`（字节码闭集）。
+//! 状态（`train::Checkpoint` 是内存里的最小事实集，引用本成员而不是被本成员引用）、参数数据
+//! （`weights::Header` 只被引用）、张量存储（`tensor`）、检查点路径（`cli` 决定根目录）。
+//!
+//! **依赖**：`diagnostic`、`tensor`、`weights`、`wire`——四者都在本层之下，本成员不依赖任何训练侧
+//! 类型，因此可以脱离 `train` 单独替换实现（写出同样的字节即可）。
 //!
 //! 四条判据都属于"错了会很贵"那一类：**字节自证**（`LLMC` 魔数 + 版本 + CRC-32 尾部，截断或改一个
 //! 比特都读不出来）；**编码单射**（LEB128、偏移增量、名字与上一条共享前后缀、同布局只写标签 `0`；
@@ -13,12 +15,12 @@
 //! （[`Snapshot::verify`] 只验字节，[`Snapshot::check_weights`] 再确认条目表与手头的权重文件逐条相同）。
 //!
 //! 职责轴拆分：`cursor` 读取游标与错误词汇，`entry` 权重条目表编解码，`state` 矩状态、累积
-//! 梯度段与权重绑定段；字节格式仍是本模块单源。
+//! 梯度段与权重绑定段；字节格式仍是本成员单源。
 //!
 //! # 例子
 //!
 //! ```
-//! use llm_train::snapshot::{Facts, Snapshot};
+//! use snapshot::{Facts, Snapshot};
 //! use tensor::{DType, Shape};
 //! use weights::{Entry, Header};
 //!

@@ -337,3 +337,53 @@ fn frob_snr(w: &[f32], recon: &[f32]) -> f64 {
     }
     20.0 * (num.sqrt() / den.sqrt()).log10()
 }
+
+/// 量化/反解吞吐（`#[ignore]`）：
+/// `cargo test -p llm-weights --lib -- quant_dequant_throughput --release --ignored --nocapture`。
+///
+/// 8M 元素确定性张量按 g=32 做 I2/I3/I4/I8 的 `quantize` + `dequantize` 往返，报 ns/元素与
+/// MB/s（读写各一份 f32）。每档 5 轮取中位数，只出数字、不做断言——吞吐随机器浮动。
+#[test]
+#[ignore = "吞吐基准：cargo test -p llm-weights --lib -- quant_dequant_throughput --release --ignored --nocapture"]
+fn quant_dequant_throughput() {
+    let n = 8 * 1024 * 1024usize;
+    let x = lcg_f32(n, 0x1234_5678);
+    for scheme in [I2, I3, I4, I8] {
+        let (packed, scales) = quantize(scheme, 32, &x).expect("量化");
+        let mut out = vec![0.0f32; n];
+        let mut q_samples = [0.0f64; 5];
+        for slot in &mut q_samples {
+            let start = std::time::Instant::now();
+            let p = quantize(scheme, 32, &x).expect("量化");
+            std::hint::black_box(&p);
+            *slot = start.elapsed().as_secs_f64();
+        }
+        q_samples.sort_by(f64::total_cmp);
+        let mut d_samples = [0.0f64; 5];
+        for slot in &mut d_samples {
+            let start = std::time::Instant::now();
+            dequantize(scheme, &packed, &scales, 32, &mut out).expect("反解");
+            std::hint::black_box(&out);
+            *slot = start.elapsed().as_secs_f64();
+        }
+        d_samples.sort_by(f64::total_cmp);
+        let (q, d) = (q_samples[2], d_samples[2]);
+        println!(
+            "throughput[{}bit] n={n} quantize={:.3}ns/elem dequantize={:.3}ns/elem",
+            scheme.bits,
+            q * 1e9 / n as f64,
+            d * 1e9 / n as f64
+        );
+    }
+}
+
+/// 确定性 LCG f32（幅度约 [−1,1)，无外部依赖）。
+fn lcg_f32(n: usize, seed: u32) -> Vec<f32> {
+    let mut state = seed;
+    (0..n)
+        .map(|_| {
+            state = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            (state >> 8) as f32 / (1u32 << 23) as f32 - 1.0
+        })
+        .collect()
+}

@@ -107,8 +107,8 @@ reason = "内存映射视图；唯一 unsafe 岛，公开面等第一个真实�
 
 [[ownership.unlisted]]
 crate = "train"
-names = ["DeferredOffload", "Running", "Ties", "WeightOffload"]
-reason = "`Running` 是 BatchNorm 滚动统计值类型（每通道均值/方差），随 `Geometry::Norm` 前向读写搬运；`Ties` 是快照内的权重绑定表（`(源槽, 回填槽)` 下标对），只随快照写读搬运；`WeightOffload`/`DeferredOffload` 是参数换入换出的暂缓接缝与占位实现（通路未落地，闭环不调用）。公开训练面是 `Session`/`TrainConfig`"
+names = ["DeferredOffload", "Running", "WeightOffload"]
+reason = "`Running` 是 BatchNorm 滚动统计值类型（每通道均值/方差），随 `Geometry::Norm` 前向读写搬运；`WeightOffload`/`DeferredOffload` 是参数换入换出的暂缓接缝与占位实现（通路未落地，闭环不调用）。公开训练面是 `Session`/`TrainConfig`"
 
 [[ownership.unlisted]]
 crate = "tools"

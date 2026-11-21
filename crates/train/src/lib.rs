@@ -6,12 +6,13 @@
 //! [`WeightOffload`] 暂缓接缝，真实换入换出通路未建。
 //! **不拥有**：反传公式（`autograd` 记录顺序、算子表提供公式）、激活的显存
 //! 计划（`autograd::Plan`）、分词与打乱（`tokenizer`；打乱只改变游标推进方式）、层定义
-//! （`nn`）、参数（`weights`）、拓扑（`shard`）、算子语义（`op`）。**依赖**：`nn`、`autograd`、
-//! `weights`、`shard`、`tensor`、`op`、`diagnostic`。**被依赖**：`llm`。
+//! （`nn`）、参数（`weights`）、拓扑（`shard`）、算子语义（`op`）、检查点字节格式（`snapshot`）。
+//! **依赖**：`nn`、`autograd`、`weights`、`shard`、`tensor`、`op`、`diagnostic`、`snapshot`。
+//! **被依赖**：`llm`。
 //!
-//! 检查点的**字节格式**也在本 crate（[`snapshot`]）：它原是一个独立成员（`llm-checkpoint`），
-//! 唯一消费者就是这里的 [`Checkpoint`]；合并后"恢复需要知道哪些事实"只有一处定义。
-//! 训练样本也一样（`llm-data` → `samples`）：唯一消费者是 [`Learner`]，
+//! 检查点的**字节格式**已独立为 `snapshot` 成员（L5）：本 crate 只持有内存里的 [`Checkpoint`]
+//! 事实集，编码、版本与偏移校验不在训练循环里再做一遍，两者各自一事。训练样本的 [`Batch`]、
+//! [`Dataset`]、[`Chunks`] 仍在本 crate（`samples`）：唯一消费者是 [`Learner`]，
 //! "批几何与批总数在哪算"因此也只有一处。
 //!
 //! 这一层回答两件事：**训练到哪了、能不能恢复**——学习率是完全确定的函数，检查点记录的是
@@ -53,7 +54,8 @@ mod schedule;
 mod session;
 pub(crate) use kernel::shape;
 pub mod geometry;
-pub mod snapshot;
+/// 检查点字节格式：实现已独立为 `snapshot` 成员，这里只保留同名再导出。
+pub use snapshot;
 mod store;
 
 /// 训练侧测试共用的夹具图（`tests/support.rs`）：在 crate 根挂一次，测试模块引用它，

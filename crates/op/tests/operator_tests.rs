@@ -69,18 +69,18 @@ fn dequant_projection_matches_the_registered_model() {
 
 #[test]
 fn gemv_projection_matches_the_registered_model() {
-    assert_projection_matches_registry::<crate::gemv::gemv_i2::I2>();
-    assert_projection_matches_registry::<crate::gemv::gemv_i4::I4>();
-    assert_projection_matches_registry::<crate::gemv::gemv_i8::I8>();
-    assert_projection_matches_registry::<crate::gemv::gemv_f32::F32>();
+    assert_projection_matches_registry::<crate::gemv::i2::I2>();
+    assert_projection_matches_registry::<crate::gemv::i4::I4>();
+    assert_projection_matches_registry::<crate::gemv::i8::I8>();
+    assert_projection_matches_registry::<crate::gemv::f32::F32>();
 }
 
 #[test]
 fn gemm_projection_matches_the_registered_model() {
-    assert_projection_matches_registry::<crate::gemm::gemm_i2::GemmI2>();
-    assert_projection_matches_registry::<crate::gemm::gemm_i4::GemmI4>();
-    assert_projection_matches_registry::<crate::gemm::gemm_i8::GemmI8>();
-    assert_projection_matches_registry::<crate::gemm::gemm_f32::Dense>();
+    assert_projection_matches_registry::<crate::gemm::i2::GemmI2>();
+    assert_projection_matches_registry::<crate::gemm::i4::GemmI4>();
+    assert_projection_matches_registry::<crate::gemm::i8::GemmI8>();
+    assert_projection_matches_registry::<crate::gemm::f32::Dense>();
 }
 
 #[test]

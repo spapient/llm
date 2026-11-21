@@ -100,8 +100,8 @@ pub use classic::{
 };
 pub use dequant::{dequant_i2, dequant_i4, dequant_i8};
 pub use elementwise::{add_f32, div_f32, max_f32, min_f32, mul_f32, residual_add_f32, sub_f32};
-pub use gemm::{gemm_f32, gemm_i2, gemm_i4, gemm_i8};
-pub use gemv::{gemv_f32, gemv_i2, gemv_i4, gemv_i8};
+pub use gemm::{f32 as gemm_f32, i2 as gemm_i2, i4 as gemm_i4, i8 as gemm_i8};
+pub use gemv::{f32 as gemv_f32, i2 as gemv_i2, i4 as gemv_i4, i8 as gemv_i8};
 pub use matmul::matmul_i8;
 pub use model::quant;
 pub use reduce::{reduce_max_f32, reduce_sum_f32};

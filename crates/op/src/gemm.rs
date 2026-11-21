@@ -463,10 +463,10 @@ macro_rules! gemm_variant {
     };
 }
 
-pub mod gemm_i2;
+pub mod i2;
 
-pub mod gemm_i4;
+pub mod i4;
 
-pub mod gemm_i8;
+pub mod i8;
 
-pub mod gemm_f32;
+pub mod f32;

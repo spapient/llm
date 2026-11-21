@@ -225,3 +225,30 @@ fn uniform_data_is_not_amplified() {
 
     assert!(frame.len() >= src.len(), "均匀数据不应被 rans 压缩");
 }
+
+/// rANS 编解码吞吐（`#[ignore]`）：
+/// `cargo test -p llm-weights --lib -- rans_throughput --release --ignored --nocapture`。
+///
+/// 8M 字节偏斜分布（80% 为 0，其余 4 符号）`encode` + `decode` 往返，报 MB/s。5 轮取中位数，
+/// 只出数字、不做断言——吞吐随机器浮动。
+#[test]
+#[ignore = "吞吐基准：cargo test -p llm-weights --lib -- rans_throughput --release --ignored --nocapture"]
+fn rans_throughput() {
+    let n = 8 * 1024 * 1024usize;
+    let src: Vec<u8> = (0..n)
+        .map(|i| if i % 5 == 0 { (i % 4) as u8 + 1 } else { 0 })
+        .collect();
+    let mut samples = [0.0f64; 5];
+    for slot in &mut samples {
+        let start = std::time::Instant::now();
+        let frame = encode(&src);
+        let back = decode(&frame, src.len()).expect("解码");
+        assert_eq!(back.len(), src.len());
+        std::hint::black_box(&frame);
+        *slot = start.elapsed().as_secs_f64();
+    }
+    samples.sort_by(f64::total_cmp);
+    let med = samples[2];
+    let mb_s = (n as f64 / med) / 1e6;
+    println!("rans throughput n={n} median={med:.6}s MB/s={mb_s:.1}");
+}

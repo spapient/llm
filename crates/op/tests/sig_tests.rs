@@ -1,5 +1,5 @@
 use super::*;
-use crate::model::Buffer;
+use crate::model::{Buffer, Values};
 
 const TEMPLATE: &str = "typedef unsigned char u8;\n\
         void cutile_probe_kernel(const float *x, const u8 *w, const float *scales,\n\

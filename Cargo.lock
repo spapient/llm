@@ -625,6 +625,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "llm-snapshot"
+version = "0.1.0"
+dependencies = [
+ "llm-diagnostic",
+ "llm-tensor",
+ "llm-weights",
+ "llm-wire",
+]
+
+[[package]]
 name = "llm-storage"
 version = "0.1.0"
 dependencies = [
@@ -680,6 +690,7 @@ dependencies = [
  "llm-nn",
  "llm-op",
  "llm-shard",
+ "llm-snapshot",
  "llm-tensor",
  "llm-testkit",
  "llm-weights",
