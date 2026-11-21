@@ -230,7 +230,7 @@ impl Lexer {
     }
 
     fn word_or_punct(&mut self, ch: char) -> diagnostic::Result<Token> {
-        if ch == '_' || ch.is_alphabetic() {
+        if is_ident_start(ch) {
             return self.ident_or_string(ch);
         }
         if ch.is_ascii_digit() {
@@ -253,7 +253,7 @@ impl Lexer {
         }
         let mut text = String::new();
         while let Some(ch) = self.peek() {
-            if !(ch == '_' || ch.is_alphanumeric()) {
+            if !is_ident_cont(ch) {
                 break;
             }
             text.push(ch);
@@ -382,6 +382,14 @@ impl Lexer {
             },
         })
     }
+}
+
+fn is_ident_start(ch: char) -> bool {
+    ch == '_' || ch.is_alphabetic()
+}
+
+fn is_ident_cont(ch: char) -> bool {
+    ch == '_' || ch.is_alphanumeric()
 }
 
 fn open_delim(ch: char) -> Option<(Delim, char)> {
