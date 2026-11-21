@@ -235,11 +235,7 @@ fn write_one(
 }
 
 /// 解析一份翻译单元；失败时只带编译器的第一行报错（整段 stderr 进不了报告）。
-pub(crate) fn parse_one(
-    spec: &GateSpec,
-    arguments: &[&str],
-    path: &Path,
-) -> diagnostic::Result<()> {
+fn parse_one(spec: &GateSpec, arguments: &[&str], path: &Path) -> diagnostic::Result<()> {
     let program = spec.tool[0];
     let mut command = std::process::Command::new(program);
     command.args(&spec.tool[1..]).args(arguments).arg(path);
@@ -369,7 +365,3 @@ mod tests {
 #[cfg(test)]
 #[path = "../tests/fragments_tests.rs"]
 mod fragments_tests;
-
-#[cfg(test)]
-#[path = "../tests/zz_tmp.rs"]
-mod zz_tmp;

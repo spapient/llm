@@ -38,22 +38,25 @@ pub const USAGE: &str = "\
 /// 缺省算子名。
 pub const DEFAULT_OP: &str = "gemv_i4";
 
+/// 缺省设备名：按指纹选。
+pub const AUTO: &str = "auto";
+
 /// 内核层审计命令。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CutileCommand {
+pub enum CutileCommand<'a> {
     /// 打印整条流水线的每一步。
     Doctor {
         /// 算子名。
-        op: String,
+        op: &'a str,
         /// 设备名（`auto` 表示按指纹选）。
-        device: String,
+        device: &'a str,
         /// 要解释的缓存键（十六进制）；`None` 表示只打印本次构建的键。
-        why: Option<String>,
+        why: Option<&'a str>,
     },
     /// 逐设备验证。
     Verify {
         /// 算子名。
-        op: String,
+        op: &'a str,
         /// 设备列表。
         devices: Vec<String>,
         /// 是否写能力台账。
@@ -62,18 +65,18 @@ pub enum CutileCommand {
     /// 跑一次并报告达成率。
     Bench {
         /// 算子名。
-        op: String,
+        op: &'a str,
         /// 形状 `MxN`；`None` 表示用算子的生产形状。
-        shape: Option<String>,
+        shape: Option<&'a str>,
         /// 设备名或缺省（`auto` 按本机指纹挑）；与 `doctor --device` 同一套取值。
-        device: Option<String>,
+        device: Option<&'a str>,
         /// 重复次数。
         repeat: usize,
     },
     /// 跨档案能力台账。
     Ledger {
         /// 台账 markdown 落盘路径；`None` 只打印到 stdout。
-        out: Option<String>,
+        out: Option<&'a str>,
     },
     /// 缓存维护：把缓存回收到容量上限以内。
     Cache {
@@ -83,7 +86,8 @@ pub enum CutileCommand {
 }
 
 /// 一个子命令的组装：把解析后的选项变成命令（取值非法时返回诊断）。
-type Build = fn(&mut Flags<'_>) -> Result<CutileCommand>;
+/// 组装函数：对每个 `'a` 都把借来的取值搬进同一寿命的命令。
+type Build = for<'a> fn(&mut Flags<'a>) -> Result<CutileCommand<'a>>;
 
 /// 子命令表：名字、选项表、组装。
 ///
@@ -126,13 +130,13 @@ const CACHE: Grammar = &[value("--limit", "字节数")];
 /// 诊断帧：本层是内核审计命令的文法层。
 const CONTEXT: &str = "cli::kernel::parse";
 
-impl CutileCommand {
+impl<'a> CutileCommand<'a> {
     /// 解析参数（不含 `argv[0]`）。
     ///
     /// # Errors
     ///
     /// 缺子命令、未知子命令/选项、缺取值或取值非法都返回 [`Code::Invalid`]。
-    pub fn parse(args: &[String]) -> Result<Self> {
+    pub fn parse(args: &'a [String]) -> Result<Self> {
         let mut words = words(args);
         let Some(head) = words.next() else {
             return Err(invalid("缺子命令"));
@@ -146,7 +150,7 @@ impl CutileCommand {
 }
 
 /// 表内子命令：按名找行、收选项、组装；表外的名字不猜。
-fn table(name: &str, words: &mut Words<'_>) -> Result<CutileCommand> {
+fn table<'a>(name: &'a str, words: &mut Words<'a>) -> Result<CutileCommand<'a>> {
     let Some((_, grammar, build)) = SUBCOMMANDS.iter().find(|(known, ..)| *known == name) else {
         return Err(invalid(format!("未知子命令 `{name}`")));
     };
@@ -154,35 +158,35 @@ fn table(name: &str, words: &mut Words<'_>) -> Result<CutileCommand> {
 }
 
 /// `doctor`：打印整条流水线。
-fn doctor(flags: &mut Flags<'_>) -> Result<CutileCommand> {
+fn doctor<'a>(flags: &mut Flags<'a>) -> Result<CutileCommand<'a>> {
     Ok(CutileCommand::Doctor {
         op: flags
             .take_text("--op")
-            .unwrap_or_else(|| DEFAULT_OP.to_string()),
+            .unwrap_or(DEFAULT_OP),
         device: flags
             .take_text("--device")
-            .unwrap_or_else(|| "auto".to_string()),
+            .unwrap_or(AUTO),
         why: flags.take_text("--why"),
     })
 }
 
 /// `verify`：逐设备验证。
-fn verify(flags: &mut Flags<'_>) -> Result<CutileCommand> {
+fn verify<'a>(flags: &mut Flags<'a>) -> Result<CutileCommand<'a>> {
     Ok(CutileCommand::Verify {
         op: flags
             .take_text("--op")
-            .unwrap_or_else(|| DEFAULT_OP.to_string()),
+            .unwrap_or(DEFAULT_OP),
         devices: devices(flags.take_text("--devices")),
         ledger: flags.switch("--emit-ledger"),
     })
 }
 
 /// `bench`：跑一次并报告达成率。
-fn bench(flags: &mut Flags<'_>) -> Result<CutileCommand> {
+fn bench<'a>(flags: &mut Flags<'a>) -> Result<CutileCommand<'a>> {
     Ok(CutileCommand::Bench {
         op: flags
             .take_text("--op")
-            .unwrap_or_else(|| DEFAULT_OP.to_string()),
+            .unwrap_or(DEFAULT_OP),
         shape: flags.take_text("--shape"),
         device: flags.take_text("--device"),
         repeat: flags
@@ -192,14 +196,14 @@ fn bench(flags: &mut Flags<'_>) -> Result<CutileCommand> {
 }
 
 /// `ledger`：跨档案能力台账。
-fn ledger(flags: &mut Flags<'_>) -> Result<CutileCommand> {
+fn ledger<'a>(flags: &mut Flags<'a>) -> Result<CutileCommand<'a>> {
     Ok(CutileCommand::Ledger {
         out: flags.take_text("--out"),
     })
 }
 
 /// `cache`：唯一动作是 `gc`；缺动作与写错动作分开报错，不静默当成 `gc`。
-fn cache(words: &mut Words<'_>) -> Result<CutileCommand> {
+fn cache<'a>(words: &mut Words<'a>) -> Result<CutileCommand<'a>> {
     let Some(action) = words.next().filter(|word| !word.starts_with('-')) else {
         return Err(invalid("缺少子命令"));
     };
@@ -218,7 +222,7 @@ fn limit(flags: &mut Flags<'_>) -> Result<Option<u64>> {
 }
 
 /// 设备列表：逗号分隔、去空白、丢弃空项；一个都没有时退回 `cpu`（与缺省一致）。
-fn devices(text: Option<String>) -> Vec<String> {
+fn devices(text: Option<&str>) -> Vec<String> {
     let mut names: Vec<String> = text
         .unwrap_or_default()
         .split(',')

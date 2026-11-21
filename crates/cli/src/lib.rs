@@ -25,9 +25,9 @@
 //! let invocation = Invocation::parse(&[]).expect("空参数即默认命令");
 //! assert_eq!(invocation.command(), &Command::Status { weights: None });
 //!
-//! let verify = Invocation::parse(&["verify".to_string(), "--op".to_string(), "gemv_i4".to_string()])
+//! let inspect = Invocation::parse(&["inspect".to_string(), "--in".to_string(), "model.u".to_string()])
 //!     .expect("合法参数");
-//! assert_eq!(verify.command(), &Command::Verify { op: Some("gemv_i4".to_string()) });
+//! assert_eq!(inspect.command(), &Command::Inspect { input: "model.u".to_string() });
 //!
 //! assert!(Invocation::parse(&["frobnicate".to_string()]).is_err(), "未知命令不猜");
 //! ```

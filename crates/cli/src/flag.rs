@@ -13,7 +13,7 @@ use std::slice;
 
 /// 参数游标：按词推进，`peek` 用于「下一个词是不是某个选项」。
 ///
-/// 只借出 `&'a str`：文法层不持有 `String`，取值由需要它的组装函数克隆。
+/// 只借出 `&'a str`：整层不持有 `String`，取值同样以借用形式交给组装函数。
 pub(crate) type Words<'a> = Peekable<std::iter::Map<slice::Iter<'a, String>, fn(&String) -> &str>>;
 
 /// 把一次调用的参数切成本层认识的游标。
@@ -82,7 +82,7 @@ pub(crate) type Grammar = &'static [Flag];
 pub(crate) struct Flags<'a> {
     grammar: Grammar,
     present: u8,
-    slots: [Option<String>; WIDTH],
+    slots: [Option<&'a str>; WIDTH],
     /// 命令名：错误信息用它点名「谁不接受这个参数」。
     owner: &'a str,
     /// 诊断帧：这次失败发生在哪一层解析器。
@@ -96,7 +96,7 @@ impl<'a> Flags<'a> {
     ///
     /// 表外的词、缺取值、取值不合法、缺必需项都返回 [`Code::Invalid`]。
     pub(crate) fn parse(
-        words: &mut Words<'_>,
+        words: &mut Words<'a>,
         grammar: Grammar,
         owner: &'a str,
         context: &'static str,
@@ -115,7 +115,7 @@ impl<'a> Flags<'a> {
     }
 
     /// 把游标上的选项逐个收进槽位；循环本体在 [`Flags::absorb_one`]，复杂度因此分成两处。
-    fn absorb(&mut self, words: &mut Words<'_>) -> Result<()> {
+    fn absorb(&mut self, words: &mut Words<'a>) -> Result<()> {
         while let Some(word) = words.peek().copied() {
             self.absorb_one(word, words)?;
         }
@@ -123,7 +123,7 @@ impl<'a> Flags<'a> {
     }
 
     /// 收一个选项：查表定位、记号出现位、带取值的再收一个词。
-    fn absorb_one(&mut self, word: &str, words: &mut Words<'_>) -> Result<()> {
+    fn absorb_one(&mut self, word: &'a str, words: &mut Words<'a>) -> Result<()> {
         let index = self.index(word).ok_or_else(|| self.unknown(word))?;
         let flag = self.grammar[index];
         words.next();
@@ -135,18 +135,17 @@ impl<'a> Flags<'a> {
     }
 
     /// 可缺省选项的取值；没出现就是 `None`。取值被取走，组装完的 `Flags` 不再持有它。
-    pub(crate) fn take_text(&mut self, name: &str) -> Option<String> {
+    pub(crate) fn take_text(&mut self, name: &str) -> Option<&'a str> {
         self.index(name).and_then(|index| self.slots[index].take())
     }
 
     /// 取值的借用形态：`number` 这类"用完就丢"的读者不必为解析先分配一份副本。
-    fn slot(&self, name: &str) -> Option<&str> {
-        self.index(name)
-            .and_then(|index| self.slots[index].as_deref())
+    fn slot(&self, name: &str) -> Option<&'a str> {
+        self.index(name).and_then(|index| self.slots[index])
     }
 
     /// 必需选项的取值：`parse` 已核对过，缺了是文法表写错，仍按错误返回而不是 panic。
-    pub(crate) fn take_need(&mut self, name: &str) -> Result<String> {
+    pub(crate) fn take_need(&mut self, name: &str) -> Result<&'a str> {
         let owner = self.owner;
         self.take_text(name).ok_or_else(|| {
             self.invalid(format!(
@@ -206,14 +205,14 @@ impl<'a> Flags<'a> {
     }
 
     /// 收一个取值：不能缺失、不能为空、不能看起来像另一个选项。
-    fn take(&self, given: Option<&str>, flag: &str) -> Result<String> {
+    fn take(&self, given: Option<&'a str>, flag: &str) -> Result<&'a str> {
         let Some(text) = given else {
             return Err(self.invalid(format!("`{flag}` 缺少取值")));
         };
         if text.is_empty() || text.starts_with('-') {
             return Err(self.invalid(format!("`{flag}` 的取值不合法：`{text}`")));
         }
-        Ok(text.to_string())
+        Ok(text)
     }
 
     /// 必需项核对：缺哪个就点名哪个（含取值说明），不替调用方补默认值。

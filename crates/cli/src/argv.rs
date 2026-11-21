@@ -45,68 +45,68 @@ pub const USAGE: &str = "\
   -h, --help             等价于 `help`
 ";
 
-/// 顶层命令；只描述"要做什么"，不描述"怎么做"。
+/// 顶层命令；只描述"要做什么"，不描述"怎么做"。取值一律借用 `argv`，本层不分配。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Command {
+pub enum Command<'a> {
     /// 打印各层状态。
     Status {
         /// safetensors 权重文件路径；`None` 表示只用声明层。
-        weights: Option<String>,
+        weights: Option<&'a str>,
     },
     /// 用真实权重算一次。
     Run {
         /// safetensors 权重文件路径（必需）。
-        weights: String,
+        weights: &'a str,
         /// 输入向量（逗号分隔的 f32）；`None` 表示用确定性图案。
-        input: Option<String>,
+        input: Option<&'a str>,
         /// 设备名；`None` 表示 `auto`（按指纹选）。
-        device: Option<String>,
+        device: Option<&'a str>,
     },
     /// 跑训练闭环。配置只搬字符串：f32 / 整数的解析在组装点，文法层不猜默认值。
     Train {
         /// 峰值学习率；`None` 取调度表默认。
-        lr: Option<String>,
+        lr: Option<&'a str>,
         /// 学习率预热步数；`None` 取调度表默认。
-        warmup: Option<String>,
+        warmup: Option<&'a str>,
         /// 总训练步数；`None` 取配置默认。
-        steps: Option<String>,
+        steps: Option<&'a str>,
         /// 全局梯度裁剪范数；`None` 表示不裁剪。
-        clip: Option<String>,
+        clip: Option<&'a str>,
         /// 梯度累积步数；`None` 表示每步更新一次。
-        accumulation: Option<String>,
+        accumulation: Option<&'a str>,
         /// 恢复用快照路径；`None` 表示从零开始。
-        load: Option<String>,
+        load: Option<&'a str>,
     },
     /// 从 safetensors 源导入自有 `.u` 容器；两个路径都必需。
     Import {
         /// 源权重文件路径（按扩展名分派适配通路）。
-        input: String,
+        input: &'a str,
         /// 输出 `.u` 容器路径。
-        output: String,
+        output: &'a str,
     },
     /// 检查 `.u` 容器条目清单与现场度量；路径必需。
     Inspect {
         /// 待读 `.u` 容器路径。
-        input: String,
+        input: &'a str,
     },
     /// 逐段解码校验 `.u` 容器；路径必需。
     Check {
         /// 待校验 `.u` 容器路径。
-        input: String,
+        input: &'a str,
     },
     /// 逐张量沉降账本（LLD §4.7）：体积、原因与无损判定，全部由落盘字节现算。
     Settle {
         /// 待记账 `.u` 容器路径。
-        input: String,
+        input: &'a str,
         /// 账本 JSON 的输出路径；`None` 表示打到 stdout（不猜产物目录旁的默认文件名）。
-        output: Option<String>,
+        output: Option<&'a str>,
     },
     /// 账本复核：落盘账本与同一份字节现算的账逐格比对，不符即错。
     Audit {
         /// 待复核 `.u` 容器路径。
-        input: String,
+        input: &'a str,
         /// 待复核的账本路径（`settle --out` 写下的那一份）。
-        ledger: String,
+        ledger: &'a str,
     },
     /// 打印六平台执行合同的六行裁决；零选项。
     Platform,
@@ -118,7 +118,10 @@ pub enum Command {
 ///
 /// 表即文法：`status` 只认 `--weights`，`import` 要 `--in` 与 `--out`——差别全在表里，
 /// 分派函数因此只有一次查表。
-type Row = (&'static str, Grammar, fn(&mut Flags<'_>) -> Result<Command>);
+/// 组装函数：对每个 `'a` 都把借来的取值搬进同一寿命的命令。
+type Build = for<'a> fn(&mut Flags<'a>) -> Result<Command<'a>>;
+
+type Row = (&'static str, Grammar, Build);
 
 /// 顶层子命令表。必需哪几个选项由 [`required`] 标明，组装函数因此直接取值。
 const COMMANDS: &[Row] = &[
@@ -211,34 +214,34 @@ const CONTEXT: &str = "cli::argv::parse";
 
 /// 一次调用：解析后的命令。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Invocation {
-    command: Command,
+pub struct Invocation<'a> {
+    command: Command<'a>,
 }
 
-impl Invocation {
+impl<'a> Invocation<'a> {
     /// 解析参数（不含 `argv[0]`）。
     ///
     /// # Errors
     ///
     /// 未知命令、未知选项、缺少取值、缺少必需选项、多余参数都返回 [`Code::Invalid`]，
     /// 消息里点名出错的词——错误信息本身就是下一条命令的提示。
-    pub fn parse(args: &[String]) -> Result<Self> {
+    pub fn parse(args: &[String]) -> Result<Invocation<'_>> {
         let mut words = words(args);
         let command = command(words.next(), &mut words)?;
         if let Some(extra) = words.next() {
             return Err(invalid(format!("多余参数 `{extra}`")));
         }
-        Ok(Self { command })
+        Ok(Invocation { command })
     }
 
     /// 解析后的命令。
-    pub fn command(&self) -> &Command {
+    pub fn command(&self) -> &Command<'a> {
         &self.command
     }
 }
 
 /// 子命令名 → 命令；缺名字即默认命令 `status`。
-fn command(head: Option<&str>, words: &mut Words<'_>) -> Result<Command> {
+fn command<'a>(head: Option<&'a str>, words: &mut Words<'a>) -> Result<Command<'a>> {
     let name = head.unwrap_or("status");
     if matches!(name, "help" | "-h" | "--help") {
         return Ok(Command::Help);
@@ -247,7 +250,7 @@ fn command(head: Option<&str>, words: &mut Words<'_>) -> Result<Command> {
 }
 
 /// 表内子命令：按名找行、收选项、组装；表外的名字不猜。
-fn table(name: &str, words: &mut Words<'_>) -> Result<Command> {
+fn table<'a>(name: &'a str, words: &mut Words<'a>) -> Result<Command<'a>> {
     let Some((_, grammar, build)) = COMMANDS.iter().find(|(known, ..)| *known == name) else {
         let known: Vec<&str> = COMMANDS.iter().map(|(known, ..)| *known).collect();
         return Err(invalid(format!(

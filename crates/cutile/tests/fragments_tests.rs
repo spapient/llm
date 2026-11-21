@@ -113,7 +113,7 @@ fn a_fragment_body_the_language_rejects_is_a_defect() {
     let variant = op.variants.first().expect("降级链至少一档");
     let dir = std::env::temp_dir().join(format!("cutile-fragments-broken-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("临时目录");
-    let mut parse = |fragments: &prim::FragmentSet, tag: &str| {
+    let parse = |fragments: &prim::FragmentSet, tag: &str| {
         let body = substitute::render(op, &combo, fragments).expect("片段拼得进去");
         let source = emit::assemble(profile, op, variant, &combo, &body);
         let path = dir.join(format!("{tag}.cl"));
