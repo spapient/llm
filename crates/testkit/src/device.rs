@@ -346,6 +346,19 @@ mod tests {
     fn a_provision_without_any_evidence_is_a_defect() {
         let fragments = [("load", "/* cutile-sign: load/scalar_copy */\n$0 = $1;")];
         let prims = [("load", "witness_load")];
+        let judge = |provides: &[Provision<'_>]| {
+            Contract {
+                id: "probe",
+                ext: "c",
+                dir: ".",
+                p0: &["load"],
+                fragments: &fragments,
+                prims: &prims,
+                provides,
+                source: "",
+            }
+            .assert_evidence();
+        };
         let copied = Provision {
             prim: "load",
             impl_name: "scalar_copy",
@@ -354,29 +367,27 @@ mod tests {
                 expect: &[1.0],
             }),
         };
-        let contract = |mma: Option<Witness<'_>>| Contract {
-            id: "probe",
-            ext: "c",
-            dir: ".",
-            p0: &["load"],
-            fragments: &fragments,
-            prims: &prims,
-            provides: &[
-                copied,
-                Provision {
-                    prim: "mma",
-                    impl_name: "cube",
-                    witness: mma,
-                },
-            ],
-            source: "",
-        };
-        std::panic::catch_unwind(|| contract(None).assert_evidence())
-            .expect_err("只有一行声明、没有正文也没有见证的供给必须被发现");
-        contract(Some(Witness {
-            func: "witness_mma",
-            expect: &[13.0],
-        }))
-        .assert_evidence();
+        let bare = [
+            copied,
+            Provision {
+                prim: "mma",
+                impl_name: "cube",
+                witness: None,
+            },
+        ];
+        let backed = [
+            copied,
+            Provision {
+                prim: "mma",
+                impl_name: "cube",
+                witness: Some(Witness {
+                    func: "witness_mma",
+                    expect: &[13.0],
+                }),
+            },
+        ];
+        judge(&backed);
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| judge(&bare)))
+            .expect_err("只有一行声明、正文与见证都缺的供给必须被发现");
     }
 }
