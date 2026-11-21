@@ -29,54 +29,89 @@ pub(crate) fn into_str(value: &Value) -> Result<String> {
 
 /// persistent id：`("storage", <类名>, <key>)` → 存库名与元素类型。
 pub(crate) fn storage_handle(items: &[Value]) -> Result<(String, DType)> {
-    let Some(Value::Str(tag)) = items.first() else {
-        return Err(bad("pid 空"));
-    };
-    if tag != "storage" {
-        return Err(bad(format!("不支持的 persistent id `{tag}`")));
-    }
-    let Some(Value::Global { name: class, .. }) = items.get(1) else {
-        return Err(bad("pid 缺 storage 类"));
-    };
-    let dtype = STORAGE_DTYPES
-        .iter()
-        .find_map(|&(name, dtype)| (name == class).then_some(dtype))
-        .ok_or_else(|| bad(format!("不支持的 storage 类型 `{class}`")))?;
-    Ok((into_str(field(items, 2, "key")?)?, dtype))
+    tagged(items)?;
+    let class = storage_class(items)?;
+    Ok((text_at(items, 2, "key")?, storage_dtype(class)?))
 }
 
 /// `_rebuild_tensor_v2` 的实参 → 张量：五要素齐备且布局连续。
 pub(crate) fn tensor_of(items: &[Value]) -> Result<Tensor> {
+    let (key, dtype, wide) = head(items)?;
+    let (shape, count) = layout(items)?;
+    let width = dtype.bytes_for(1) as usize;
+    let offset = scaled(usize::try_from(wide).ok(), width, "offset 溢出")?;
+    Ok(Tensor {
+        name: String::new(),
+        dtype,
+        shape,
+        storage_key: key.clone(),
+        offset,
+        len: scaled(Some(count), width, "长度溢出")?,
+    })
+}
+
+/// pid 的首项必须是 `"storage"`：别种 persistent id 本模块不认识，静默当空会更糟。
+fn tagged(items: &[Value]) -> Result<()> {
+    let Some(Value::Str(tag)) = items.first() else {
+        return Err(bad("pid 空"));
+    };
+    match tag.as_str() {
+        "storage" => Ok(()),
+        other => Err(bad(format!("不支持的 persistent id `{other}`"))),
+    }
+}
+
+/// pid 的 storage 类名。
+fn storage_class(items: &[Value]) -> Result<&String> {
+    let Some(Value::Global { name: class, .. }) = items.get(1) else {
+        return Err(bad("pid 缺 storage 类"));
+    };
+    Ok(class)
+}
+
+/// storage 类名 → 元素类型。
+fn storage_dtype(class: &str) -> Result<DType> {
+    STORAGE_DTYPES
+        .iter()
+        .find_map(|&(name, dtype)| (name == class).then_some(dtype))
+        .ok_or_else(|| bad(format!("不支持的 storage 类型 `{class}`")))
+}
+
+/// 第 `index` 项的字符串视图。
+fn text_at(items: &[Value], index: usize, what: &str) -> Result<String> {
+    into_str(field(items, index, what)?)
+}
+
+/// rebuild 的前三要素：storage 键、元素类型、offset 原文。
+fn head(items: &[Value]) -> Result<(&String, DType, i64)> {
     let Some(Value::Storage { key, dtype }) = items.first() else {
         return Err(bad("rebuild 缺 storage"));
     };
     let Some(Value::Int(wide)) = items.get(1) else {
         return Err(bad("rebuild 缺 offset"));
     };
-    let width = dtype.bytes_for(1) as usize;
-    let shape = tuple_at(items, 2, "shape")?
-        .iter()
-        .map(dim)
-        .collect::<Result<Vec<u64>>>()?;
-    let steps = tuple_at(items, 3, "stride")?
-        .iter()
-        .map(step)
-        .collect::<Result<Vec<usize>>>()?;
+    Ok((key, *dtype, *wide))
+}
+
+/// 后两要素：形状与 stride 推出元素总数。
+fn layout(items: &[Value]) -> Result<(Vec<u64>, usize)> {
+    let shape = shape(items)?;
+    let steps = strides(items)?;
     let count = contiguous(&shape, &steps)?;
-    let offset = or_bad(
-        usize::try_from(*wide)
-            .ok()
-            .and_then(|n| n.checked_mul(width)),
-        "offset 溢出",
-    )?;
-    Ok(Tensor {
-        name: String::new(),
-        dtype: *dtype,
-        shape,
-        storage_key: key.clone(),
-        offset,
-        len: or_bad(count.checked_mul(width), "长度溢出")?,
-    })
+    Ok((shape, count))
+}
+
+fn shape(items: &[Value]) -> Result<Vec<u64>> {
+    tuple_at(items, 2, "shape")?.iter().map(dim).collect()
+}
+
+fn strides(items: &[Value]) -> Result<Vec<usize>> {
+    tuple_at(items, 3, "stride")?.iter().map(step).collect()
+}
+
+/// 元素数 × 字节宽：任何一步失败都是同一句"溢出"。
+fn scaled(count: Option<usize>, width: usize, what: &str) -> Result<usize> {
+    or_bad(count.and_then(|n| n.checked_mul(width)), what)
 }
 
 /// 第 `index` 项。
