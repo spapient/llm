@@ -94,8 +94,8 @@ const OPENERS: &[u8] = b"\"'/";
 /// `word ^ 目标` 之后，借位链正好只在"该道为 0"处留下 `0x80`。多个目标的位图先 OR 再取最低命中道，
 /// 比逐个目标取最小快两成。误命中只会出现在真命中右侧（借位从低往高传），所以最低那一位永远是真的。
 ///
-/// "清位续找"是不退化的关键：源码里的 `/` 多为除号、`'` 多为生命周期，假候选若回到外层重开窗口，
-/// 每个 `/` 都要重读一整块（除号密集的语料实测慢 4 倍）；就地清位则整块只读一次。
+/// "清位续找"是不退化的关键：源码里 `/` 多为除号、`'` 多为生命周期，假候选若回到外层重开窗口，
+/// 每个 `/` 都要重读一整块；就地清位则整块只读一次。
 ///
 /// 一律按小端读：内存里第一个字节必须是"最低有效道"，`trailing_zeros() / 8` 才等于块内偏移。
 /// 用本机序在 big-endian 上会把索引反过来——这条判据不做端序假设。
@@ -108,9 +108,9 @@ fn find(
     let mut cursor = from;
     while let Some(chunk) = bytes.get(cursor..cursor + 16) {
         let word = u128::from_le_bytes(chunk.try_into().expect("切片长度恰为 16"));
-        let mut lanes = needles.iter().fold(0, |lanes, &needle| {
-            lanes | zero_lanes(word ^ spread(needle))
-        });
+        let mut lanes = needles
+            .iter()
+            .fold(0, |lanes, &needle| lanes | zero_lanes(word ^ spread(needle)));
         while lanes != 0 {
             let at = cursor + (lanes.trailing_zeros() / 8) as usize;
             if accept(at) {
@@ -125,28 +125,7 @@ fn find(
         .find(|at| accept(*at))
 }
 
-/// 只要位置、不做判定的 [`find`]：注释与字符串内部只关心"下一个定界符在哪"。
-fn scan(bytes: &[u8], from: usize, needles: &[u8]) -> Option<usize> {
-    find(bytes, from, needles, |_| true)
-}
-
-/// `from` 之后的第一个真注释 / 字面量：`(开头, 跳过后的位置)`。裸除号与生命周期在扫描层就被清掉，
-/// 外层只处理"确实要剔掉"的段。
-fn next_token(text: &str, from: usize) -> Option<(usize, usize)> {
-    find(text.as_bytes(), from, OPENERS, |at| {
-        skip(text, at).map(|end| (at, end))
-    })
-}
-
-/// `from` 之后的第一个真注释 / 字面量：`(开头, 跳过后的位置)`。裸除号与生命周期在扫描层就被清掉，
-/// 外层只处理"确实要剔掉"的段。
-fn next_token(text: &str, from: usize) -> Option<(usize, usize)> {
-    let bytes = text.as_bytes();
-    match bytes[from..].iter().position(|byte| OPENERS.contains(byte)) {
-        Some(_) => None,
-        None => None,
-    }
-}
+/// 每道放一个 `0x01`：借位链的起点。
 const LANE_ONES: u128 = u128::from_le_bytes([0x01; 16]);
 
 /// 每道放一个 `0x80`：借位链的终点，只留下"该道已归零"的标记位。
@@ -157,8 +136,62 @@ fn zero_lanes(word: u128) -> u128 {
     word.wrapping_sub(LANE_ONES) & !word & LANE_HIGHS
 }
 
+/// 把一个字节铺满 16 道，好跟整个窗口一次异或。
 fn spread(byte: u8) -> u128 {
     u128::from_le_bytes([byte; 16])
+}
+
+/// 只要位置、不做判定的 [`find`]：注释与字符串内部只关心"下一个定界符在哪"。
+fn scan(bytes: &[u8], from: usize, needles: &[u8]) -> Option<usize> {
+    find(bytes, from, needles, |_| true)
+}
+
+/// 要剔掉的一段：形态由开头几字节定，正文长度等真要跳过时再算。
+///
+/// 分成"定性"与"量长"两半，是为了让 [`find`] 的窗口循环保持小：把正文扫描（可能是几十 KB 的
+/// 字符串或嵌套注释）内联进主循环会抬高寄存器压力，实测真实语料反而慢三成。
+#[derive(Clone, Copy)]
+enum Lexeme {
+    /// `//` 到行尾；换行本身留在代码里。
+    Line,
+    /// `/* … */`，可嵌套。
+    Block,
+    /// `"…"`，参数是开引子后的 `#` 数（raw string）。
+    Str(usize),
+    /// `'…'`。
+    Char,
+}
+
+impl Lexeme {
+    /// `at` 处的形态；裸 `/`（除号）与生命周期 `'a` 都不是注释或字面量，返回 `None`。
+    ///
+    /// 按首两字节分派，不切子串：`&text[at..]` 每次都要重算边界与长度，这里只读字节。
+    fn of(bytes: &[u8], at: usize) -> Option<Self> {
+        match bytes[at..] {
+            [b'/', b'/', ..] => Some(Self::Line),
+            [b'/', b'*', ..] => Some(Self::Block),
+            [b'"', ..] => Some(Self::Str(raw_hashes(bytes, at))),
+            [b'\'', ..] => char_end(bytes, at).map(|_| Self::Char),
+            _ => None,
+        }
+    }
+
+    /// 游标该停在哪。
+    fn end(self, bytes: &[u8], at: usize) -> usize {
+        match self {
+            Self::Line => scan(bytes, at, b"\n").unwrap_or(bytes.len()),
+            Self::Block => comment_end(bytes, at),
+            Self::Str(hashes) => quoted_end(bytes, at, hashes),
+            Self::Char => char_end(bytes, at).expect("定性时已确认是字符字面量"),
+        }
+    }
+}
+
+/// `from` 之后第一个要剔掉的注释 / 字面量：`(开头, 游标该停的位置)`。
+fn next_token(text: &str, from: usize) -> Option<(usize, usize)> {
+    let bytes = text.as_bytes();
+    let at = find(bytes, from, OPENERS, |at| Lexeme::of(bytes, at).is_some())?;
+    Some((at, Lexeme::of(bytes, at)?.end(bytes, at)))
 }
 
 /// 只留下代码：注释与字面量都剔掉。生成文本里就写着 `format!` / `.to_string()`，直接搜全文会把
@@ -179,20 +212,6 @@ fn code_only(text: &str) -> String {
     }
     out.push_str(&text[flushed..]);
     out
-}
-
-/// `at` 处的注释 / 字面量结束后游标该停在哪；裸 `/`（除号）与生命周期 `'a` 都不是，返回 `None`。
-///
-/// 按首两字节分派，不再切子串：`&text[at..]` 每次都要重算边界与长度，这里只读字节。
-fn skip(text: &str, at: usize) -> Option<usize> {
-    let bytes = text.as_bytes();
-    match bytes[at..] {
-        [b'/', b'/', ..] => Some(scan(bytes, at, b"\n").unwrap_or(bytes.len())),
-        [b'/', b'*', ..] => Some(comment_end(bytes, at)),
-        [b'"', ..] => Some(quoted_end(bytes, at, raw_hashes(bytes, at))),
-        [b'\'', ..] => char_end(text, at),
-        _ => None,
-    }
 }
 
 /// 块注释可嵌套（Rust 特性）：`/* a /* b */ c */` 整体只是一条注释。
@@ -260,24 +279,32 @@ fn raw_hashes(bytes: &[u8], at: usize) -> usize {
 /// 字符字面量的结束位置：`'{'` / `'\''` / `'\u{7f}'`；`'a` 是生命周期，返回 `None`。
 ///
 /// 长度必须卡死：放开长度就会让 `for<'a, 'b>` 里的 `'a, '` 被当成字面量，进而吞掉真实代码。
-fn char_end(text: &str, at: usize) -> Option<usize> {
+fn char_end(bytes: &[u8], at: usize) -> Option<usize> {
     /// `'\u{10FFFF}'` 是最长的字符字面量（13 字节），收尾引号不会晚于第 12 个字节。
     const LONGEST: usize = 12;
-    let rest = &text[at..];
-    let bytes = rest.as_bytes();
-    if *bytes.get(1)? == b'\\' {
-        let mut cursor = 1;
-        while cursor <= LONGEST {
+    if *bytes.get(at + 1)? == b'\\' {
+        let mut cursor = at + 1;
+        while cursor <= at + LONGEST {
             match *bytes.get(cursor)? {
                 b'\\' => cursor += 2,
-                b'\'' => return Some(at + cursor + 1),
+                b'\'' => return Some(cursor + 1),
                 _ => cursor += 1,
             }
         }
         return None;
     }
-    let width = rest[1..].chars().next()?.len_utf8();
-    (bytes.get(1 + width) == Some(&b'\'')).then_some(at + 2 + width)
+    let width = utf8_width(*bytes.get(at + 1)?);
+    (bytes.get(at + 1 + width) == Some(&b'\'')).then_some(at + 2 + width)
+}
+
+/// UTF-8 首字节的字符宽度：`'` 之后不是 ASCII 时要整字跳过才看得见收尾引号。
+fn utf8_width(first: u8) -> usize {
+    match first {
+        0x00..=0x7F => 1,
+        0xC0..=0xDF => 2,
+        0xE0..=0xEF => 3,
+        _ => 4,
+    }
 }
 
 /// 某个函数的函数体：从 `fn 名字` 起找第一个 `{`，再按花括号配平。泛型参数（`fn unique<'a>(`）

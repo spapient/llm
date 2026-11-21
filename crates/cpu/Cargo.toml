@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "CPU device fragments: the `cpu` primitive implementations and their witness."
+description = "cpu device fragments: the `cpu` primitive implementations (C) and their witness."
 publish = false
 autotests = false
 build = "build.rs"
@@ -19,7 +19,7 @@ prof = { path = "../prof", package = "llm-prof" }
 
 [features]
 default = []
-# 构建期把见证编成设备镜像并嵌入二进制；CPU 还没有镜像配方，开着只是 `Status::NoRecipe`。
+# 构建期把 `witness.c` 编成设备镜像并嵌入二进制；没有镜像配方时只是 `Status::NoRecipe`。
 device-image = []
 
 [lints]
