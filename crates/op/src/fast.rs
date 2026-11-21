@@ -13,6 +13,7 @@ use diagnostic::{Code, Error, Result};
 mod pack;
 mod pool;
 mod scratch;
+mod sme;
 use pack::{b_groups, pack_b_f32_into, pack_b_f32_par_into, pack_panels};
 use pool::{Buffers, Job, Shape, pool, run_pooled};
 mod tn;
@@ -34,6 +35,10 @@ const KB: usize = 256;
 /// 三条缓冲长度不足 `m·k` / `k·n` / `m·n` 时 panic（调用方先校验）。
 pub fn gemm_f32(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f32]) {
     check_dims(a, b, m, n, k, out);
+    // SME 通道：16×64 整铺的大 GEMM 交给 ZA 外积；小题或不可整铺时退回下方 NEON 通道。
+    if sme::gemm(a, b, m, n, k, out) {
+        return;
+    }
     let blocks = m.div_ceil(MR);
     let t = threads_override().min(blocks).max(1);
     if t <= 1 {

@@ -46,6 +46,13 @@
 
 #![deny(unsafe_code)]
 
+// `fast::sme` 的 SME 通道依赖两个不稳定特性，均只在 aarch64 上被引用：
+// - `aarch64_unstable_target_feature`：放行 `#[target_feature(enable = "sme")]`（尚未稳定）。
+// - `stdarch_aarch64_feature_detection`：放行运行时探测 `is_aarch64_feature_detected!("sme")`。
+// 其它架构不引用这两个宏，特性门保持惰性（声明但无作用，不触发 unused）。
+#![feature(aarch64_unstable_target_feature)]
+#![feature(stdarch_aarch64_feature_detection)]
+
 // `#[annotation::model]` 生成的代码用 `::llm_op::..` 指回本 crate（与 `nn` 的
 // `extern crate self as nn` 同一条约定：注解绑定它所属契约的路径，而不是硬编码调用方的名字）。
 extern crate self as llm_op;

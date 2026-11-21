@@ -6,8 +6,8 @@
 
 use std::fmt::Write as _;
 
+use super::scan::Device;
 use super::image::{self, Outcome};
-use super::Device;
 
 /// 文件头：说明这是生成物，并把 `Prim` 拉进作用域。
 pub(super) fn header(text: &mut String) {
@@ -27,7 +27,7 @@ pub(super) fn fragments(text: &mut String, device: &Device) {
     let _ = writeln!(
         text,
         "/// 片段：原语 → 文本，顺序与 `Prim::ALL` 一致。\n\
-         pub const FRAGMENTS: [(Prim, &'static str); {}] = [",
+         pub const FRAGMENTS: [(Prim, &str); {}] = [",
         device.fragments.len()
     );
     for (prim, path) in &device.fragments {
@@ -46,7 +46,7 @@ pub(super) fn device_line(text: &mut String, device: &Device, outcome: &Outcome)
     let _ = writeln!(
         text,
         "/// 原语 → 见证里的入口名：镜像里查的就是这个名字。\n\
-         pub const PRIMS: [(Prim, &'static str); {}] = [",
+         pub const PRIMS: [(Prim, &str); {}] = [",
         device.entries.len()
     );
     for (prim, entry) in &device.entries {
@@ -57,9 +57,10 @@ pub(super) fn device_line(text: &mut String, device: &Device, outcome: &Outcome)
     let (status, image) = match outcome {
         Outcome::Source => ("prof::Status::Source".to_string(), None),
         Outcome::NoRecipe => ("prof::Status::NoRecipe".to_string(), None),
-        Outcome::Skipped(reason) => {
-            (format!("prof::Status::Skipped {{ reason: {reason:?} }}"), None)
-        }
+        Outcome::Skipped(reason) => (
+            format!("prof::Status::Skipped {{ reason: {reason:?} }}"),
+            None,
+        ),
         Outcome::Compiled { path, symbols } => (
             "prof::Status::Compiled".to_string(),
             Some((path, *symbols, image::format(device.profile.meta.emit))),

@@ -10,7 +10,7 @@ use std::process::Command;
 
 use crate::prof::Emit;
 
-use super::{Device, fail};
+use super::scan::{Device, fail};
 
 /// 一台设备的镜像结局。
 pub(super) enum Outcome {
@@ -24,6 +24,10 @@ pub(super) enum Outcome {
     Compiled { path: PathBuf, symbols: usize },
 }
 
+/// 编不出来的一行原因：它是 `Status::Skipped { reason }` 的**数据**载荷，要写进生成的代码，
+/// 不是诊断——这条路径在构建期，不在 L7 的错误边界里，没有类别与退出码要承担。
+pub(super) struct Reason(pub(super) String);
+
 /// 按输出语言编设备镜像：`witness.<ext>` → 中间产物 → 镜像。
 pub(super) fn outcome(device: &Device, out: &Path, images: bool) -> Outcome {
     if !images {
@@ -34,7 +38,7 @@ pub(super) fn outcome(device: &Device, out: &Path, images: bool) -> Outcome {
     };
     match compile(device, &recipe, out) {
         Ok(outcome) => outcome,
-        Err(reason) => Outcome::Skipped(reason),
+        Err(Reason(reason)) => Outcome::Skipped(reason),
     }
 }
 
@@ -43,9 +47,12 @@ pub(super) fn outcome(device: &Device, out: &Path, images: bool) -> Outcome {
 /// 不传 `[compile].flags` / `preamble`：见证是 **host C ABI**（`int func(float *out)`），与片段
 /// 语言无关，`cutile verify` 的本机自检也因为同一个原因跳过它们。`metal` 的 `-std=metal3.1`
 /// 会要求指针写明地址空间，而见证里的 `float *` 故意没有——那是 host C 的写法。
-fn compile(device: &Device, recipe: &Recipe, out: &Path) -> Result<Outcome, String> {
+fn compile(device: &Device, recipe: &Recipe, out: &Path) -> Result<Outcome, Reason> {
     let Some((program, prefix)) = tool(&device.profile.meta.tool) else {
-        return Err(format!("`{}` 不是可执行的工具名", device.profile.meta.tool));
+        return Err(Reason(format!(
+            "`{}` 不是可执行的工具名",
+            device.profile.meta.tool
+        )));
     };
     let object = out.join(format!("{}.witness.{}", device.name, recipe.object_ext));
     let image = out.join(format!("{}.witness.{}", device.name, recipe.format));
@@ -136,11 +143,11 @@ fn expand(arg: &str, src: &Path, object: &Path, image: &Path) -> String {
 }
 
 /// 跑一个子进程；失败时把第一行 stderr 作为原因交回（构建不因此失败）。
-fn run(program: &str, args: &[String]) -> Result<String, String> {
+fn run(program: &str, args: &[String]) -> Result<String, Reason> {
     let output = Command::new(program)
         .args(args)
         .output()
-        .map_err(|error| format!("`{program}` 不可执行：{error}"))?;
+        .map_err(|error| Reason(format!("`{program}` 不可执行：{error}")))?;
     if output.status.success() {
         return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
     }
@@ -149,12 +156,12 @@ fn run(program: &str, args: &[String]) -> Result<String, String> {
         .lines()
         .find(|line| !line.trim().is_empty())
         .unwrap_or("");
-    Err(format!(
+    Err(Reason(format!(
         "`{program} {}` 失败（{}）：{}",
         args.join(" "),
         output.status,
         shorten(first)
-    ))
+    )))
 }
 
 /// 原因只留一行、最多 160 字符：它要进生成的代码。
@@ -171,9 +178,11 @@ fn shorten(text: &str) -> String {
 ///
 /// 清单里别的设备由它们自己的 crate 负责——一次构建只跑一个 crate 的 `build.rs`。
 pub(super) fn require(device: &Device, outcome: &Outcome) {
-    let required = env::var("CUTILE_REQUIRE_IMAGE")
-        .ok()
-        .is_some_and(|text| text.split(',').map(str::trim).any(|name| name == device.name));
+    let required = env::var("CUTILE_REQUIRE_IMAGE").ok().is_some_and(|text| {
+        text.split(',')
+            .map(str::trim)
+            .any(|name| name == device.name)
+    });
     if !required {
         return;
     }
