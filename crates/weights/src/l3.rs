@@ -404,6 +404,8 @@ mod tests {
         let bound = chain.bracket().expect("界");
         assert_eq!(bound.uncovered(), 2);
         assert_eq!(bound.ruling(true), Ruling::Partial);
+        // 缺往返证据先于覆盖缺口：没有"产物确实还原"就还谈不上覆盖面。
+        assert_eq!(bound.ruling(false), Ruling::Unverified);
     }
 
     #[test]

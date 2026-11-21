@@ -295,7 +295,10 @@ mod tests {
                 .is_empty()
         );
         assert!(
-            Schedule::parse("pipe<3>").unwrap().required_prims().is_empty(),
+            Schedule::parse("pipe<3>")
+                .unwrap()
+                .required_prims()
+                .is_empty(),
             "预取级数不引入屏障：正文里没有第二个人会看到的写"
         );
         let ws = Schedule::parse("ws<2,2>").unwrap().required_prims();

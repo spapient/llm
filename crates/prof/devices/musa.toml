@@ -159,6 +159,13 @@ stages  = ["1"]
 grade   = "L2"
 witness = { file = "musa/witness.cu", func = "witness_load_async", expect = [1.0] }
 
+# 目录条目：P0 direct/pipe 没有在途异步搬运，commit_wait 无可等 → 只登记 L0（未验证视为不具备）。
+[[provides]]
+prim    = "commit_wait"
+impl    = "noop"
+grade   = "L0"
+witness = { file = "musa/witness.cu", func = "witness_commit_wait", expect = [0.0] }
+
 [[provides]]
 prim    = "store"
 impl    = "st.global"
@@ -167,6 +174,13 @@ dt      = ["f32"]
 space   = ["GM"]
 grade   = "L2"
 witness = { file = "musa/witness.cu", func = "witness_store", expect = [3.25] }
+
+# 目录条目：P0 direct/pipe 没有共享落点，bar 无可挡 → 只登记 L0（未验证视为不具备）。
+[[provides]]
+prim    = "bar"
+impl    = "noop"
+grade   = "L0"
+witness = { file = "musa/witness.cu", func = "witness_bar", expect = [0.0] }
 
 [[provides]]
 prim    = "cvt"

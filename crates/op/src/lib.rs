@@ -541,8 +541,16 @@ mod tests {
         // 把 `load_async` 从算子级需求挪到只有 `pipe2` 的增量需求里：`direct` 仍然会 emit 出
         // `@load_async`，所以装载期必须拒绝，而不是等协商选中 `direct` 才在 substitute 里发现片段缺失。
         let mut broken = op.declaration().clone();
-        broken.table_mut("needs").expect("needs").remove("load_async");
-        variant_mut(&mut broken, "pipe2").set("extra_needs.load_async", Value::table(vec![]));
+        broken
+            .table_mut("needs")
+            .expect("needs")
+            .remove("load_async");
+        // `set` 按点号路径写，父级 `extra_needs` 缺失时静默不写；变体表里本来没有
+        // `extra_needs`，所以这里直接建整张子表，把 `load_async` 作为它的一个键写入。
+        variant_mut(&mut broken, "pipe2").set(
+            "extra_needs",
+            Value::table(vec![("load_async", Value::table(vec![]))]),
+        );
         let error =
             decl::OpDecl::parse(&broken, op.template()).expect_err("变体没有覆盖共享模板必须报错");
         assert!(error.to_string().contains("direct"), "{error}");

@@ -26,6 +26,18 @@
 
 ### Changed
 
+- **`testkit` 的 L3 跨层对拍按"一个文件答一个问题"拆开，手写 LCG 删除**。`crates/testkit/src/l3.rs`
+  （242 行）此前同时住着一个自造 `Lcg`、六个夹具与四类判据，文件头还声称随机源是本 crate 的 `Rng`——
+  实际是第二份生成器，与"唯一事实来源"直接冲突。现在 `l3.rs` 只剩引言与三个声明；`l3/measure.rs` 是
+  唯一夹具（样本直接取 `crate::sample`、`ε` 由 `weights::quantize` 打包再解回现算、`‖W‖₂ ≤ ‖W‖_F`
+  当 `ρ`、前向走 `op::matmul::forward_tn_tiled`）；`l3/bound.rs` 只答"界是否罩住同一条内核的实测
+  误差"（单层与整批 `√rows`，参考与压缩共用 `two_layer`，不再各自重跑一遍 ReLU 段）；`l3/ruling.rs`
+  只答"真实容器的逐位往返是否为 `Lossless` 的第二项先决条件"。两处纯代数判据（`ε > 0` 必 `Refuse`、
+  缺往返证据先于覆盖缺口）与 `weights::l3` 自带单测逐字重复，后者已在
+  `a_segment_outside_the_theorem_keeps_the_certificate_partial` 补上 `ruling(false) == Unverified`
+  这一行，`testkit` 侧不再重抄。**验证**：`cargo test -p llm-testkit -p llm-weights` 全绿（`l3::` 3 条、
+  `weights::l3` 14 条）。
+
 - **`prim` 收成纯机制，六台设备的片段各自成 crate；`prim/src/lib.rs` 440 → 65 行的薄入口**。
   `crates/prim` 原先既是机制又是六个厂家的语料仓库：`musa/` `metal/` `intel/` `ascend/` `cpu/` `nvidia/`
   六个目录、54 段片段、6 份见证、6 个 `build.rs` 全挤在一个 crate 里，`lib.rs` 里躺着装载、布局、内嵌表、
@@ -277,11 +289,11 @@
   拍：`Rung::from_note` 直接吃谱隙证书的 `Note::eps`（同一次分解的后验残差）；`L` **没有默认值**（1 不是
   "差不多"的默认，没有 Lipschitz 证据的段必须显式登记，否则静默把误差算小）；`ρ̂ ≠ ρ` 分开记，压缩把
   范数放大的那一段不会因为只乘左边而漏掉；闭式只在各级「放大或平移为正」时给出，否则只报递归界。
-  **跨层对拍**在 `crates/testkit/tests/l3.rs`（4 条）：4bit 量化后的真实误差（走
+  **跨层对拍**在 `crates/testkit/src/l3/`（3 条）：4bit 量化后的真实误差（走
   `op::matmul::forward_tn_tiled`，与 `serve`/`train` 同一条内核）确实落在上界内且非零、整批界按
   `√rows` 而非 `rows` 放大、真实容器的逐位往返是 `Lossless` 的第二项先决条件（同样 `ε = 0`，往返不
-  逐位即 `Unverified`）、`ε > 0` 时覆盖率再高也只到 `Refuse`。`llm-weights` 199 条（`l3` 14 条）、
-  `llm-testkit` 新增 4 条跨层用例。
+  逐位即 `Unverified`）。`llm-weights` 199 条（`l3` 14 条）、
+  `llm-testkit` 新增 3 条跨层用例。
 
 - **模型存储有了逐张量沉降账本：`weights::settle` 把 LLD §4.7 的"每个张量落在哪个体积、为什么、
   是否无损"从散落的度量字段收成一份由**落盘字节**现算的账，`llm settle --in <容器> [--out <账本>]`

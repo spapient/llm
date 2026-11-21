@@ -22,6 +22,69 @@ pub fn strip_tests(src: &str) -> Result<String> {
     Ok(out.join("\n"))
 }
 
+/// 文件顶层以 `#[cfg(test)] mod 名字;` 挂载的子模块名。
+///
+/// 分号形式挂载的模块是独立文件，[`strip_tests`] 只能剔除**本文件内**的 cfg(test) 条目，
+/// 看不到被挂载文件的内容；调用方按这些名字定位文件，才能把它们当测试代码对待。
+///
+/// 只认顶层声明：`lib.rs`/`main.rs`/`mod.rs` 与被挂载文件自身顶层都覆盖得到。嵌套在别的
+/// `mod { .. }` 里的挂载不在此列——那里的路径由外层模块链决定，不在本函数的判据内。
+pub fn test_modules(src: &str) -> Result<Vec<String>> {
+    modules(src, true)
+}
+
+/// 文件顶层 `mod 名字;` 声明的全部子模块名，不看 cfg 口径。
+///
+/// 用于「整份文件已判定为测试代码」的传播：文件只在 `cfg(test)` 下编译，它的子模块也就只在
+/// `cfg(test)` 下编译，无须再逐个标注 `#[cfg(test)]`。
+pub fn submodules(src: &str) -> Result<Vec<String>> {
+    modules(src, false)
+}
+
+/// 顶层 `mod 名字;` 声明；`only_test` 为真时只收 cfg(test) 标注过的。
+fn modules(src: &str, only_test: bool) -> Result<Vec<String>> {
+    let tokens = parse(src)?;
+    let mut out = Vec::new();
+    let mut attr = Attr::default();
+    let mut idx = 0;
+    while idx < tokens.len() {
+        if let Some((hash, bracket)) = attr_at(&tokens, idx) {
+            attr.absorb(&tokens[hash], &tokens[bracket]);
+            idx = bracket + 1;
+            continue;
+        }
+        let end = item_end(&tokens, idx);
+        out.extend(declared(&tokens[idx..=end], only_test, attr.is_test));
+        attr = Attr::default();
+        idx = end + 1;
+    }
+    Ok(out)
+}
+
+/// 一条条目贡献的模块名：`mod 名字;` 形态，且（未限定口径或该条目标注了 cfg(test)）。
+fn declared(item: &[Token], only_test: bool, test: bool) -> Option<String> {
+    let wanted = !only_test || test;
+    wanted.then(|| declared_module(item)).flatten()
+}
+
+/// 条目是否 `mod 名字;` 形态：返回模块名，带体形式（`mod 名字 { .. }`）与其他条目返回 `None`。
+///
+/// 判据只看「以分号收尾」+「`mod` 与名字两个相邻标识符」，`pub mod`/`pub(crate) mod` 的可见性
+/// 前缀因此不需要单独分支。
+fn declared_module(item: &[Token]) -> Option<String> {
+    let last = item.last()?;
+    if !matches!(last, Token::Punct { ch: ';', .. }) {
+        return None;
+    }
+    item.windows(2).find_map(|pair| match pair {
+        [
+            Token::Ident { text: keyword, .. },
+            Token::Ident { text: name, .. },
+        ] if keyword == "mod" => Some(name.clone()),
+        _ => None,
+    })
+}
+
 /// 一层里的属性归属：首个属性的起始行与是否 `cfg(test)`。
 #[derive(Default)]
 struct Attr {

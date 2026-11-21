@@ -9,7 +9,7 @@ use llm_tools::docs::{Link, links};
 use llm_tools::dup::file_lines;
 use llm_tools::gate::Gate;
 use llm_tools::lex::{Token, parse};
-use llm_tools::strip::strip_tests;
+use llm_tools::strip::{strip_tests, test_modules};
 use std::collections::BTreeMap;
 
 /// 前 N 个顶层 token 的调试文本。
@@ -146,6 +146,16 @@ fn braces_inside_strings_do_not_break_strip() {
     let stripped = strip_tests(src).expect("strip");
     assert!(!stripped.contains("void f"));
     assert!(stripped.contains("fn keep"));
+}
+
+/// 分号形式挂载的模块是独立文件，`strip_tests` 看不到其内容，只能由 `test_modules` 点名。
+#[test]
+fn names_only_the_modules_mounted_under_cfg_test() {
+    let src = "#[cfg(test)]\nmod mirror;\n#[cfg(test)]\npub(crate) mod boundary;\nmod production;\n#[cfg(not(test))]\nmod bench;\n#[cfg(test)]\nmod inline {\n    fn t() {}\n}\n";
+    assert_eq!(
+        test_modules(src).expect("mods"),
+        ["mirror".to_owned(), "boundary".to_owned()],
+    );
 }
 
 // ---------------------------------------------------------------------------

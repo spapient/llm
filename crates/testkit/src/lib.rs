@@ -53,10 +53,7 @@ mod e2e;
 // 测试）。在这里也声明一次，让 `op::sig` / `op::model` 的 API 变更在 testkit 自己的测试构建里
 // 立刻暴露，而不是等到下游 crate 红；条目级 `cfg(test)` 见文件头。
 #[cfg(test)]
-#[allow(dead_code)]
 mod kernel;
-#[cfg(test)]
-mod l3;
 #[cfg(test)]
 mod layer;
 #[cfg(test)]
@@ -65,6 +62,14 @@ mod mirror;
 mod oracle;
 #[cfg(test)]
 mod ownership;
+// L3 合成律的跨层对拍：只收「一层算不出来」的事实——`bound` 量真实内核上的界是否罩住实测误差，
+// `ruling` 量真实容器的逐位往返，`measure` 是两者共用的夹具（定理侧递推由 `weights::l3` 自测）。
+#[cfg(test)]
+mod l3_bound;
+#[cfg(test)]
+mod l3_measure;
+#[cfg(test)]
+mod l3_ruling;
 pub mod hash {
     //! 位级 CRC-32 参考定义：与各 crate 的查表实现独立，供对拍共享，免得每份测试重写一遍。
 

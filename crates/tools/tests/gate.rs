@@ -15,6 +15,8 @@
 //!   清理再纳入。
 //! - **外部集成测试**（`crates/*/tests/`）：测试代码惯例可用 `expect`/`unwrap`，只守门词法
 //!   能解析，不套生产限值。
+//! - **挂载的测试模块**（`src` 里 `#[cfg(test)] mod 名字;` 指向的文件）：与内联 cfg(test)
+//!   条目同理——运行时构建看不到它们，所以只守门词法，不套生产限值。
 //!
 //! 本仓不设 `examples/`：可演示的用法由测试夹具与集成测试承担，不再单开一类示例程序。
 //!
@@ -29,7 +31,7 @@ use diagnostic::data::{Table, Value};
 use llm_tools::{
     analyze, call, ccn, docs, dup,
     gate::{Gate, Metric, Over},
-    lex, strip_tests,
+    lex, strip_tests, submodules, test_modules,
 };
 
 const MIN_SOURCES: usize = 100;
@@ -45,6 +47,7 @@ fn every_source_passes_the_static_gate() {
     let crates = root.join("crates");
 
     let production = rust_files(&crates);
+    let mounted_tests = mounted_test_modules(&production);
     let build_scripts = build_script_files(&crates);
     let integration_tests = integration_test_files(&crates);
 
@@ -60,7 +63,11 @@ fn every_source_passes_the_static_gate() {
     let mut live = BTreeMap::new();
 
     for path in &production {
-        scan_production(&gate, root, path, &mut bad, &mut live);
+        if mounted_tests.contains(path) {
+            scan_integration_test(root, path, &mut bad);
+        } else {
+            scan_production(&gate, root, path, &mut bad, &mut live);
+        }
     }
     for path in &build_scripts {
         scan_build_script(&gate, root, path, &mut bad, &mut live);
@@ -261,6 +268,61 @@ fn is_production(path: &Path) -> bool {
     };
     let test_fixture = name == "tests.rs" || name.ends_with("_tests.rs");
     path.components().any(|part| part.as_os_str() == "src") && !test_fixture
+}
+
+/// `#[cfg(test)] mod 名字;` 挂载的文件集合；递归展开——被挂载的文件自己也可能挂载子模块，
+/// 那些子模块随父文件一起只在 `cfg(test)` 下编译。
+///
+/// 声明解析在 [`llm_tools::strip`]，本函数只负责把模块名映射回文件系统。
+fn mounted_test_modules(production: &[PathBuf]) -> BTreeSet<PathBuf> {
+    let mut out = BTreeSet::new();
+    let mut queue: Vec<(PathBuf, bool)> = production
+        .iter()
+        .map(|path| (path.clone(), false))
+        .collect();
+    while let Some((file, inherited)) = queue.pop() {
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        let names = if inherited {
+            submodules(&text)
+        } else {
+            test_modules(&text)
+        };
+        let Ok(names) = names else {
+            continue;
+        };
+        for name in names {
+            let target = mount_candidates(&file, &name)
+                .into_iter()
+                .find(|path| path.is_file());
+            if let Some(target) = target
+                && out.insert(target.clone())
+            {
+                queue.push((target, true));
+            }
+        }
+    }
+    out
+}
+
+/// `mod 名字;` 的两个可能落点：`目录/名字.rs` 与 `目录/名字/mod.rs`。
+fn mount_candidates(file: &Path, name: &str) -> [PathBuf; 2] {
+    let dir = module_dir(file);
+    [
+        dir.join(format!("{name}.rs")),
+        dir.join(name).join("mod.rs"),
+    ]
+}
+
+/// 声明文件的子模块目录：`lib.rs`/`main.rs`/`mod.rs` 的子模块与自身同目录，其余以文件名命名
+/// （`a/b.rs` 的子模块在 `a/b/` 下）。
+fn module_dir(file: &Path) -> PathBuf {
+    let parent = file.parent().unwrap_or_else(|| Path::new(""));
+    match file.file_stem().and_then(std::ffi::OsStr::to_str) {
+        Some("lib" | "main" | "mod") | None => parent.to_path_buf(),
+        Some(stem) => parent.join(stem),
+    }
 }
 
 /// 仓库内相对路径，失败时退回原样，保证坏消息里能定位文件。

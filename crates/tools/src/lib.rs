@@ -42,4 +42,4 @@ pub use ccn::{Finding, analyze};
 pub use gate::Gate;
 pub use generated::vocabulary;
 pub use lex::{Delim, Pos, Token, parse};
-pub use strip::strip_tests;
+pub use strip::{strip_tests, submodules, test_modules};

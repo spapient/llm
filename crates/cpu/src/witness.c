@@ -49,6 +49,18 @@ int witness_load_async(float *out) {
     return 1;
 }
 
+/* commit_wait/noop: P0 direct/pipe 没有在途异步搬运，无可等；见证返回名义 0.0。 */
+int witness_commit_wait(float *out) {
+    out[0] = 0.0f;
+    return 1;
+}
+
+/* bar/noop: P0 direct/pipe 没有共享落点，无可挡；见证返回名义 0.0。 */
+int witness_bar(float *out) {
+    out[0] = 0.0f;
+    return 1;
+}
+
 /* store: y[n] = out */
 int witness_store(float *out) {
     float y[2] = {0.0f, 0.0f};

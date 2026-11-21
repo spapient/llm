@@ -279,6 +279,17 @@ git status --short                    # 只允许本轮认领文件
   两个命名陷阱记在这里：`testkit` 自己有一个 `device` 模块，ARCHITECTURE 里指它必须写 `testkit::device::Contract`
   （裸 `device::` 现在会落到新 crate 上，`the_document_names_only_existing_items` 立刻红）；`cli/tests/run.rs`
   把 `tests/device.rs` 挂成 `mod device`，模块内指设备 crate 必须写 `::device::`，裸写会解析到测试子模块。
+  **⑦ 静态门补上「模块级 `cfg(test)`」这一类漏判**：`tools` 的静态门只剔除**本文件内联**的 cfg(test) 条目，
+  对 `src/` 里 `#[cfg(test)] mod 名字;` 挂载的独立文件完全无感 —— 于是 testkit 的 9 个自检模块
+  （`mirror` / `ownership` / `boundary` / `layer` / `contracts` / `architecture` / `l3` / `e2e` / `oracle`）
+  被当成生产代码量，一次报出几十条「新增 Ccn/Nloc/Call」（它们本来就是测试代码，运行时构建根本不编译）。
+  不是改基线豁免，而是补判据：`strip::test_modules`（cfg(test) 挂载的模块名）与 `strip::submodules`
+  （全部挂载名）由 lex token 树解析，`gate` 侧按 `lib.rs`/`main.rs`/`mod.rs` 与「文件名同名目录」两类规则
+  映射回文件，再**递归传播**——被挂载文件只在 cfg(test) 下编译，它的子模块就同样只在 cfg(test) 下编译
+  （`l3.rs` 的 `mod bound;` 无标注，靠这一步才正确归类）。归类为测试的文件仍过词法门，只是不套生产限值。
+  修完 `every_source_passes_the_static_gate` 的这批假阳清零，只剩 `crates/op/src/fast/sme.rs` 的
+  3 条真实超标（另一条并发工作线的 SM80 微内核，`gemm` Ccn 8、`pack_a` Ccn 7、`sme_tile` Nloc 66），
+  不在本轮范围。
 
 - **v2.6（testkit 架构与性能收口：去嵌套、进程级缓存、口径唯一化）**：`crates/testkit` 四项改动。
   **① 去掉 9 个门禁文件的冗余 `mod tests` 包裹层**：`architecture` / `boundary` / `contracts` / `e2e` / `l3` /
