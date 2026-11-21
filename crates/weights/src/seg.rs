@@ -312,8 +312,6 @@ impl Desc {
     }
 }
 
-/// 描述符元数据：名字/精度/形状先读成中性描述符，形态分支再决定尾部字段。
-
 #[cfg(test)]
 #[path = "../tests/seg.rs"]
 mod tests;

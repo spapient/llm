@@ -309,8 +309,6 @@ impl Writer {
     }
 }
 
-/// 五轴无损选码：仅 f32 二维稠密权重（无量化方案）且 artifact 严格更小时才返回。
-
 #[cfg(test)]
 #[path = "../tests/writer.rs"]
 mod tests;

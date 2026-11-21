@@ -12,6 +12,7 @@ use crate::quant::Quant;
 use crate::seg::{Codec, Descriptor};
 
 
+/// 描述符元数据：名字/精度/形状先读成中性描述符，形态分支再决定尾部字段。
 pub(crate) fn decode_meta(cur: &mut Cursor<'_>) -> Result<(Descriptor, u32)> {
     let (name, dtype) = decode_head(cur)?;
     let (shape, rank) = decode_shape_head(cur)?;

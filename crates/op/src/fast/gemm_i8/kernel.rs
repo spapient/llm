@@ -1,6 +1,9 @@
 use super::super::*;
+use super::{I8_MR, I8_NR};
 use super::super::pool::Job;
 
+/// 单线程块计算（B 面板已备）：**N 分组在最外层**，每组 8×k 的 B 瓦片常驻 L1，
+/// 被本线程所有行对复用——否则每行对都把整块 B 重读一遍，卡在内存带宽。
 pub(super) fn compute_i8_packed(
     a: &[i8],
     bpack: &[i8],

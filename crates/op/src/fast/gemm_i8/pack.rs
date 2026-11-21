@@ -1,5 +1,6 @@
 use super::super::*;
 use super::super::pool::Job;
+use super::I8_NR;
 
 pub(super) fn pack_b(b: &[i8], n: usize, k: usize) -> (Vec<i8>, usize) {
     let npad = n.div_ceil(I8_NR) * I8_NR;
@@ -60,6 +61,4 @@ pub(super) fn pack_b_tile(dst: &mut [i8], b: &[i8], n: usize, k: usize, first: u
     }
 }
 
-/// 单线程块计算（B 面板已备）：**N 分组在最外层**，每组 8×k 的 B 瓦片常驻 L1，
-/// 被本线程所有行对复用——否则每行对都把整块 B 重读一遍，卡在内存带宽。
 

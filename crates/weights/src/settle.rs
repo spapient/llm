@@ -349,8 +349,6 @@ pub(crate) fn sound_cert(note: &ledger::Note) -> Cert {
     }
 }
 
-/// 每元素实际占的位数：按打包后的字节数四舍五入，不读方案里的"名义位宽"。
-
 #[cfg(test)]
 #[path = "../tests/settle.rs"]
 mod tests;
