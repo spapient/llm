@@ -27,9 +27,9 @@
 
 use diagnostic::{Code, Error, Result};
 
-/// 配置错误：上下文统一带 `tool::regress::` 前缀。
+/// 配置错误：上下文统一带 `tools::regress::` 前缀。
 fn invalid(context: &str, message: impl Into<String>) -> Error {
-    Error::new(Code::Invalid, message).with(format!("tool::regress::{context}"))
+    Error::new(Code::Invalid, message).with(format!("tools::regress::{context}"))
 }
 
 /// 指标方向：越大越好，还是越小越好。
@@ -243,7 +243,7 @@ impl Baseline {
                         .join("、")
                 ),
             )
-            .with("tool::regress::Baseline::judge")
+            .with("tools::regress::Baseline::judge")
         })?;
         Ok(case.judge(observed))
     }

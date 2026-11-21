@@ -7,6 +7,7 @@
 use std::ops::AddAssign;
 
 use diagnostic::{Code, Error, Result};
+use crate::guard::check_all;
 
 use crate::conv::ConvGeom;
 use crate::fast;
@@ -182,24 +183,7 @@ fn scatter<T: Copy + AddAssign>(
     }
 }
 
-/// 缓冲长度校验。
-fn check(actual: usize, required: usize, what: &str) -> Result<()> {
-    if actual < required {
-        return Err(Error::new(
-            Code::Invalid,
-            format!("{what}: 缓冲 {actual}，需要 {required}"),
-        ));
-    }
-    Ok(())
-}
 
-/// 批量缓冲校验：把一组 `check` 折成一次调用，逐项短路。
-fn check_all(bounds: &[(usize, usize, &str)]) -> Result<()> {
-    for &(actual, required, what) in bounds {
-        check(actual, required, what)?;
-    }
-    Ok(())
-}
 
 /// 一维反卷积：NHWC，权重布局对齐 PyTorch `[Cin, Cout, k]`。
 ///
@@ -430,8 +414,8 @@ fn scatter_kernel_2d<T: Copy + AddAssign>(
     }
 }
 
-/// 一维权重转置 `[cin,cout,k]` → `[cin, cout·k]`（f32）。
-fn transpose_weight_1d(weight: &[f32], wt: &mut [f32], cin: usize, cout: usize, k: usize) {
+/// 一维权重转置 `[cin,cout,k]` → `[cin, cout·k]`。
+fn transpose_weight_1d<T: Copy>(weight: &[T], wt: &mut [T], cin: usize, cout: usize, k: usize) {
     let cols = cout * k;
     for ci in 0..cin {
         for co in 0..cout {
@@ -442,29 +426,8 @@ fn transpose_weight_1d(weight: &[f32], wt: &mut [f32], cin: usize, cout: usize, 
     }
 }
 
-/// 一维权重转置（i8，口径同 [`transpose_weight_1d`]）。
-fn transpose_weight_1d_i8(weight: &[i8], wt: &mut [i8], cin: usize, cout: usize, k: usize) {
-    let cols = cout * k;
-    for ci in 0..cin {
-        for co in 0..cout {
-            for ki in 0..k {
-                wt[ci * cols + ki * cout + co] = weight[(ci * cout + co) * k + ki];
-            }
-        }
-    }
-}
-
-/// 一维偏置累加：`out[n,ol,cout] += bias[cout]`（f32）。
-fn add_bias_1d(out: &mut [f32], bias: &[f32], n: usize, ol: usize, cout: usize) {
-    for pos in 0..n * ol {
-        for co in 0..cout {
-            out[pos * cout + co] += bias[co];
-        }
-    }
-}
-
-/// 一维偏置累加（i32，口径同 [`add_bias_1d`]）。
-fn add_bias_1d_i8(out: &mut [i32], bias: &[i32], n: usize, ol: usize, cout: usize) {
+/// 一维偏置累加：`out[n,ol,cout] += bias[cout]`。
+fn add_bias_1d<T: Copy + AddAssign>(out: &mut [T], bias: &[T], n: usize, ol: usize, cout: usize) {
     for pos in 0..n * ol {
         for co in 0..cout {
             out[pos * cout + co] += bias[co];
@@ -474,34 +437,9 @@ fn add_bias_1d_i8(out: &mut [i32], bias: &[i32], n: usize, ol: usize, cout: usiz
 
 /// 一维单个输入位置的散射：沿窗口 `k` 散射，越界位置裁掉。
 #[allow(clippy::too_many_arguments)]
-fn scatter1_at(
-    col: &[f32],
-    out: &mut [f32],
-    ol: usize,
-    conv: &ConvTranspose1d,
-    cout: usize,
-    ni: usize,
-    i: usize,
-    src: usize,
-) {
-    for ki in 0..conv.k {
-        let dst = (i * conv.s + ki) as isize - conv.p as isize;
-        if !in_range(dst, ol) {
-            continue;
-        }
-        let d = (ni * ol + dst as usize) * cout;
-        let src_k = src + ki * cout;
-        for co in 0..cout {
-            out[d + co] += col[src_k + co];
-        }
-    }
-}
-
-/// i8 版一维散射：累加在 i32，口径同 [`scatter1_at`]。
-#[allow(clippy::too_many_arguments)]
-fn scatter1_at_i8(
-    col: &[i32],
-    out: &mut [i32],
+fn scatter1_at<T: Copy + AddAssign>(
+    col: &[T],
+    out: &mut [T],
     ol: usize,
     conv: &ConvTranspose1d,
     cout: usize,
@@ -526,16 +464,6 @@ fn scatter1_at_i8(
 mod tests {
     use super::*;
 
-    fn sample(len: usize, salt: u32) -> Vec<f32> {
-        (0..len)
-            .map(|i| {
-                let z = (i as u32)
-                    .wrapping_mul(2654435761)
-                    .wrapping_add(salt.wrapping_mul(40503));
-                ((z >> 8) % 2048) as f32 / 1024.0 - 1.0
-            })
-            .collect()
-    }
 
     fn sample_i8(len: usize, salt: u32) -> Vec<i8> {
         (0..len)
@@ -598,11 +526,6 @@ mod tests {
         }
     }
 
-    fn close(a: &[f32], b: &[f32]) {
-        for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
-            let tol = 1e-4 + 1e-3 * y.abs();
-            assert!((x - y).abs() <= tol, "第 {i} 个元素 {x} vs {y}");
-        }
     }
 
     #[test]
@@ -646,14 +569,14 @@ mod tests {
             let de = ConvTranspose2d::new(cin, cout, geom);
             let oh = de.oh(h).unwrap();
             let ow = de.ow(w).unwrap();
-            let x = sample(n * h * w * cin, 1);
-            let wgt = sample(cin * cout * geom.kh * geom.kw, 2);
-            let bias = sample(cout, 3);
+            let x = testkit::sample(n * h * w * cin, 1);
+            let wgt = testkit::sample(cin * cout * geom.kh * geom.kw, 2);
+            let bias = testkit::sample(cout, 3);
             let mut got = vec![0.0f32; n * oh * ow * cout];
             let mut want = vec![0.0f32; n * oh * ow * cout];
             de.forward_f32(&x, &wgt, &bias, n, h, w, &mut got).unwrap();
             naive(&x, &wgt, &bias, &de, n, h, w, &mut want);
-            close(&got, &want);
+            testkit::assert_close(&got, &want, 1e-4, 1e-3);
         }
     }
 
@@ -795,9 +718,9 @@ mod tests {
         for (index, (k, s, p, cin, cout, l)) in cases.iter().enumerate() {
             let de = ConvTranspose1d::new(*cin, *cout, *k, *s, *p);
             let ol = de.len(*l).unwrap();
-            let x = sample(*l * *cin, 1 + index as u32);
-            let w = sample(*cin * *cout * *k, 7 + index as u32);
-            let b = sample(*cout, 3);
+            let x = testkit::sample(*l * *cin, 1 + index as u32);
+            let w = testkit::sample(*cin * *cout * *k, 7 + index as u32);
+            let b = testkit::sample(*cout, 3);
             let mut got = vec![0.0f32; ol * *cout];
             de.forward_f32(&x, &w, &b, 1, *l, &mut got).unwrap();
             let mut want = vec![0.0f32; ol * *cout];

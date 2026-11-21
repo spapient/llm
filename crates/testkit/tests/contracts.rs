@@ -92,7 +92,7 @@ fn hits(predicate: impl Fn(&str) -> bool) -> Vec<Hit> {
     out
 }
 
-/// 白名单里的 crate 与理由；配置来自 `tool` 构建期生成的词汇表（同一份文件只解析一次）。
+/// 白名单里的 crate 与理由；配置来自 `tools` 构建期生成的词汇表（同一份文件只解析一次）。
 fn exempt(section: &str) -> Vec<(String, String)> {
     let table = tool::vocabulary()
         .table(section)

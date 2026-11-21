@@ -169,7 +169,7 @@ impl ArtifactKey {
         let hex = |n: &str| fields.get(n).and_then(|t| u64::from_str_radix(t, 16).ok());
         Some(Self {
             source: fields.get("source")?.to_string(),
-            tool: fields.get("tool")?.to_string(),
+            tool: fields.get("tools")?.to_string(),
             params: hex("params")?,
             harness: hex("harness")?,
         })
@@ -179,7 +179,7 @@ impl ArtifactKey {
     #[must_use]
     pub fn describe(&self) -> String {
         format!(
-            "source={};tool={};params={:016x};harness={:016x}",
+            "source={};tools={};params={:016x};harness={:016x}",
             self.source, self.tool, self.params, self.harness
         )
     }
@@ -717,7 +717,7 @@ mod tests {
     #[test]
     fn the_source_key_ignores_the_archive_tool_registration() {
         let names: Vec<&str> = key().fields().into_iter().map(|(n, _)| n).collect();
-        assert!(!names.contains(&"tool"), "{names:?}");
+        assert!(!names.contains(&"tools"), "{names:?}");
         assert!(!names.contains(&"tool_ver"), "{names:?}");
     }
     #[test]
@@ -756,7 +756,7 @@ mod tests {
     /// 缺 `params=` 的产物不认：它是在参数还没进身份的那一轮编出来的，来历无从查起。
     #[test]
     fn an_artifact_without_parameters_has_no_identity() {
-        let text = "source=abc;tool=cc@21.0.0;harness=0000000000000001";
+        let text = "source=abc;tools=cc@21.0.0;harness=0000000000000001";
         assert!(ArtifactKey::parse(text).is_none(), "{text}");
     }
     #[test]

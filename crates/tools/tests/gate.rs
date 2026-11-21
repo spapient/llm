@@ -18,7 +18,7 @@
 //!
 //! 本仓不设 `examples/`：可演示的用法由测试夹具与集成测试承担，不再单开一类示例程序。
 //!
-//! 另有 CCN 跨实现对拍：以旧 `tool gate ccn`（syn 实现）为基线，验证零依赖新分析器在真实
+//! 另有 CCN 跨实现对拍：以旧 `tools gate ccn`（syn 实现）为基线，验证零依赖新分析器在真实
 //! 源文件上逐函数零漂移。旧仓库/二进制不在本机时静默跳过，保证 CI 可移植。
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -301,12 +301,12 @@ fn document_files(root: &Path) -> Vec<PathBuf> {
 // CCN 跨实现对拍
 // ---------------------------------------------------------------------------
 //
-// 以 llm.u 旧 `tool gate ccn`（syn 实现）为基线，验证零依赖新分析器在真实源文件上逐函数
+// 以 llm.u 旧 `tools gate ccn`（syn 实现）为基线，验证零依赖新分析器在真实源文件上逐函数
 // 零漂移。旧仓库/二进制不在本机时静默跳过，保证 CI 可移植。
 
 /// 旧仓库根与旧工具二进制（本机开发环境路径）。
 const OLD_ROOT: &str = "/Users/fei/code/llm.u";
-const OLD_BIN: &str = "/Users/fei/code/llm.u/target/debug/tool";
+const OLD_BIN: &str = "/Users/fei/code/llm.u/target/debug/tools";
 
 /// 对拍文件数下限：低于此数说明遍历坏了，而不是"仓库没有源文件"。
 const MIN_FILES: usize = 40;
@@ -314,7 +314,7 @@ const MIN_FILES: usize = 40;
 #[test]
 fn ccn_matches_the_syn_baseline_on_every_old_source() {
     if testkit::skip(format!(
-        "tool: 旧 tool 基线二进制不存在（{OLD_BIN}），CCN 对拍用例未运行"
+        "tools: 旧 tools 基线二进制不存在（{OLD_BIN}），CCN 对拍用例未运行"
     )) {
         return;
     }
@@ -364,7 +364,7 @@ fn baseline(files: &[PathBuf]) -> BTreeMap<String, BTreeMap<(String, usize), u32
         .arg("ccn")
         .args(files)
         .output()
-        .expect("run old tool");
+        .expect("run old tools");
     assert!(
         output.status.success(),
         "旧 gate ccn 失败：{}",

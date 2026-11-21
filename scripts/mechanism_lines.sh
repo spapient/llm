@@ -9,7 +9,7 @@
 #   4. 工具成员整体不计机制口径：`annotation`（编译期注解）、`fuzz`（模糊测试契约）、
 #      `benchmarks`（集中测量容器）——见 `docs/ARCHITECTURE.md` 分层表注。
 #   5. 内联 `#[cfg(test)] mod tests` 体内行不在本脚本目录级扣除；严格口径由
-#      `tool::strip_tests`（基于词法树剔除测试条目、保留行号）在审计/门禁侧再扣一次。
+#      `tools::strip_tests`（基于词法树剔除测试条目、保留行号）在审计/门禁侧再扣一次。
 #
 # 用法：scripts/mechanism_lines.sh        # 打印分层表与合计（目录级口径）
 #       scripts/mechanism_lines.sh --csv # 机器可读 CSV，便于回填基线表
@@ -26,7 +26,7 @@ LAYER_FILES=(0 0 0 0 0 0 0)
 # 分层归属（docs/ARCHITECTURE.md §一、design §3.1）。
 layer_index() {
     case "$1" in
-        diagnostic|testkit|rng|dtype|wire|tool) echo 0 ;;
+        diagnostic|testkit|rng|dtype|wire|tools) echo 0 ;;
         prof|op|prim) echo 1 ;;
         cutile) echo 2 ;;
         tensor|storage|tokenizer) echo 3 ;;
@@ -38,7 +38,7 @@ layer_index() {
 
 is_tool_member() {
     local member="$1"
-    for tool in $TOOL_MEMBERS; do
+    for tools in $TOOL_MEMBERS; do
         [ "$member" = "$tool" ] && return 0
     done
     return 1

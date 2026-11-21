@@ -1,8 +1,8 @@
 # 词汇表契约的门禁配置（`docs/ARCHITECTURE.md` 第三节「闭集与位集」）。
 #
-# 消费方：`crates/tool/build.rs` 在**构建期**用 `toml` 把本文件展开成 `Table` 字面量，运行期由
-# `tool::vocabulary()` 读取（ADR 0022）；`tests/contracts.rs`、`tests/architecture.rs` 与
-# `crates/tool` 的门禁共用这棵树，不再各自解析文本。
+# 消费方：`crates/tools/build.rs` 在**构建期**用 `toml` 把本文件展开成 `Table` 字面量，运行期由
+# `tools::vocabulary()` 读取（ADR 0022）；`tests/contracts.rs`、`tests/architecture.rs` 与
+# `crates/tools` 的门禁共用这棵树，不再各自解析文本。
 #
 # dylint 规则（HIR 版，`ui-toml` 配置指向本文件）是**计划中的**下一个消费方，用于在 IDE 里即时
 # 提示同一条契约；它尚未落地，所以本文件的任何改动都以 `cargo test --test contracts` 为准，
@@ -126,7 +126,7 @@ names = ["Count", "FileSink", "Measured", "Sink", "SliceSink", "Uint"]
 reason = "字节码闭集的接收器与无符号整数标记族；公开面是 CRC/LEB/Sink 这组函数与 trait，内部实现件待边界稳定后逐项进表。`leb::Cursor` 已作为读游标进入所有权表的 `Cursor` 行，不再留在基线里"
 
 [gate]
-# 静态质量门阈值（`tool` 分析器消费，`cargo test` 不可绕过）。
+# 静态质量门阈值（`tools` 分析器消费，`cargo test` 不可绕过）。
 # 重复块不在此列：jscpd 管重复率硬门，cargo dupes 管语义近重复。
 #
 # 闭集：只有下面三个阈值键与 `debt` 表，多一个键就构建期报错（`gate::unknown_keys`）。
@@ -140,5 +140,5 @@ file_max_lines = 1200 # 单文件行数硬上限（合并 einsum/gemv 后高内�
 
 # `[[gate.debt]]` 存量棘轮：只登记入口编排层既有超标（cli 的编排文件与 cutile 二进制入口）。
 # 登记表是实测快照：登记值必须等于实测值，改善后必须删掉对应度量条目（`Gate::stale`），
-# 恶化必失败。当前存量债务为零；入口排版/编排逻辑后续下沉 `tool` 后若再超标，按此表登记。
+# 恶化必失败。当前存量债务为零；入口排版/编排逻辑后续下沉 `tools` 后若再超标，按此表登记。
 # 运行时生产代码（`crates/*/src` 除 cli 入口外）没有债务条目：超限即新增，直接失败。

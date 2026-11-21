@@ -43,7 +43,7 @@ pub struct Device {
     pub ext: &'static str,
     /// 输出语言名（`Emit::as_str`）。
     pub emit: &'static str,
-    /// 档案声明的编译工具（`[meta].tool`）。
+    /// 档案声明的编译工具（`[meta].tools`）。
     pub tool: &'static str,
     /// 档案声明的工具版本（`[meta].tool_ver`）：**登记值**，不是本机实测值。
     ///

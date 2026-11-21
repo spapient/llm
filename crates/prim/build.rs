@@ -387,7 +387,7 @@ fn devices(
             "        emit: {:?},",
             vendor.profile.meta.emit.as_str()
         );
-        let _ = writeln!(text, "        tool: {:?},", vendor.profile.meta.tool);
+        let _ = writeln!(text, "        tools: {:?},", vendor.profile.meta.tool);
         let _ = writeln!(
             text,
             "        tool_ver: {:?},",
@@ -448,7 +448,7 @@ fn image_of(vendor: &Vendor, out: &Path, images: bool) -> Outcome {
     }
 }
 
-/// 编译一台设备的见证：`[tool] <compile> <link> <inspect>`。
+/// 编译一台设备的见证：`[tools] <compile> <link> <inspect>`。
 ///
 /// 不传 `[compile].flags` / `preamble`：见证是 **host C ABI**（`int func(float *out)`），与片段
 /// 语言无关，`cutile verify` 的本机自检也因为同一个原因跳过它们。`metal` 的 `-std=metal3.1`
@@ -526,7 +526,7 @@ fn recipe(emit: Emit) -> Option<Recipe> {
     }
 }
 
-/// `tool` 拆成程序与固定前缀参数（档案里写 `xcrun metal`）。
+/// `tools` 拆成程序与固定前缀参数（档案里写 `xcrun metal`）。
 fn tool(text: &str) -> Option<(String, Vec<String>)> {
     let mut parts = text.split_whitespace();
     let program = parts.next()?.to_string();

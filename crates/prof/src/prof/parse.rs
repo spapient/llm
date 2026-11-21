@@ -100,7 +100,7 @@ fn meta_identity(table: &Table) -> Result<(String, String), ProfileError> {
 /// 输出语言与工具名：`emit` 必须在 [`Emit`] 闭集里。
 fn meta_toolchain(table: &Table) -> Result<(Emit, String), ProfileError> {
     let emit = closed::<Emit>(text(table, "emit", "meta.emit")?, "meta.emit")?;
-    Ok((emit, text(table, "tool", "meta.tool")?.to_string()))
+    Ok((emit, text(table, "tools", "meta.tools")?.to_string()))
 }
 /// `[fingerprint]` 段：规则直接写在段下，或写在 `match = { ... }` 里（README §5.3）。
 fn parse_fingerprint(table: &Table) -> Result<Vec<(String, MatchRule)>, ProfileError> {

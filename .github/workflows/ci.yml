@@ -141,7 +141,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      # 硬门：重复率超过 .config/.jscpd.json 的 threshold（1.5%）即失败；配置由 jscpd 自动发现。
+      # 硬门：重复率超过 .config/.jscpd.json 的 threshold（0.16%）即失败；配置由 jscpd 自动发现。
       - name: jscpd hard gate
         run: npx --yes jscpd
       # 语义巡检：AST 归一化暴露近重复，只出报告不阻断（硬门已由 jscpd 负责）。
@@ -214,7 +214,7 @@ jobs:
       - name: Build benchmarks
         run: cargo bench --workspace --all-features --locked --no-run
       # 回退判定本身也要被编译与执行一次：没有本机基线/没有测量时它登记跳过（`llm-testkit[skip]`），
-      # 有基线的固定靶机上才会真的判 pass/regressed。判定规则只有 `tool::regress` 一份。
+      # 有基线的固定靶机上才会真的判 pass/regressed。判定规则只有 `tools::regress` 一份。
       - name: Judge the gemv_f32 baseline
         run: cargo test -p llm-benchmarks --test regress --locked -- --nocapture
       - name: Upload bench report

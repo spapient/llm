@@ -7,10 +7,10 @@
 # `tool_ver` 记 `mcc --version` 实际报的 clang 版本（14.0.0）；MUSA SDK 是 5.2.0，两者不是同一个编号，
 # 草案原先写 5.2.0，`doctor` 每次都报"档案登记与实测不一致"——档案记的是工具自报值，不是 SDK 名。
 #
-# 与 nvidia 的关系：**同一门输出语言**（`emit = "cuda"`），不同工具链（`tool = "mcc"`，clang-14 驱动）。
+# 与 nvidia 的关系：**同一门输出语言**（`emit = "cuda"`），不同工具链（`tools = "mcc"`，clang-14 驱动）。
 # 因此 `prim/musa` 的片段与 `prim/nvidia` 逐段同构、只在能证明更强的地方不同（`quant` 四位一组
 # 展开）；`dot` 的四链 ILP 会改变求和次序，属另一条签名，在没提供对应见证之前不冒充 `dot/fma`。
-# `engine` 侧的后端只按 `[meta].tool` 决定命令名与运行时头。
+# `engine` 侧的后端只按 `[meta].tools` 决定命令名与运行时头。
 
 [meta]
 vendor   = "musa"

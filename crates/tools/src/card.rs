@@ -56,9 +56,9 @@ const LEAST: usize = 30;
 /// 协议卡默认的置信水平（`lld` 的 95% CI 口径）。
 const CONFIDENCE: f64 = 0.95;
 
-/// 配置错误：上下文统一带 `tool::card::` 前缀。
+/// 配置错误：上下文统一带 `tools::card::` 前缀。
 fn invalid(context: &str, message: impl Into<String>) -> Error {
-    Error::new(Code::Invalid, message).with(format!("tool::card::{context}"))
+    Error::new(Code::Invalid, message).with(format!("tools::card::{context}"))
 }
 
 /// 卡片上那个数是怎么从样本聚出来的。

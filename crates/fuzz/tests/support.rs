@@ -55,7 +55,7 @@ pub mod drivers {
 
     impl Target for Lex {
         fn name(&self) -> &str {
-            "tool::lex::parse"
+            "tools::lex::parse"
         }
 
         fn run(&self, input: &[u8]) -> Result<(), Error> {

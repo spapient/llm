@@ -2,7 +2,7 @@
 //!
 //! 两条同源路径对照：`matmul_scalar`（朴素 i→j→p 参考）与 `matmul_tiled`（分块 rank-1 更新）。
 //! 同一输入、同一输出缓冲，只换遍历顺序；ns/iter 越小越好，另报读入字节吞吐。
-//! 基线判定（`tool::regress`）随靶机首次实测后登记，未登记前本基准只出测量、不回退判定。
+//! 基线判定（`tools::regress`）随靶机首次实测后登记，未登记前本基准只出测量、不回退判定。
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use op::matmul;

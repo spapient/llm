@@ -106,7 +106,7 @@ pub fn assemble(
         combo.summary()
     ));
     text.push_str(&format!(
-        "// emit={} tool={} {} | 由声明层 + 档案层 + 片段层生成，不要手改\n",
+        "// emit={} tools={} {} | 由声明层 + 档案层 + 片段层生成，不要手改\n",
         profile.meta.emit, profile.meta.tool, profile.meta.tool_ver
     ));
     if !profile.preamble.is_empty() {

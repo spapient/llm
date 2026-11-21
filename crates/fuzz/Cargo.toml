@@ -33,7 +33,7 @@ train = { path = "../train", package = "llm-train" }
 serve = { path = "../serve", package = "llm-serve" }
 wire = { path = "../wire", package = "llm-wire" }
 tensor = { path = "../tensor", package = "llm-tensor" }
-tool = { path = "../tool", package = "llm-tool" }
+tool = { path = "../tools", package = "llm-tool" }
 
 # 确定性 sweep 遍历：走 libtest，默认 feature 即可跑（`tests/support.rs` 由它 include）。
 [[test]]

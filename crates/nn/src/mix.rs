@@ -40,7 +40,7 @@ mod pulse {
     //!
     //! **三项实测在本模块，判定不在这里**：E14 的冻结稀疏度 `S = 1 − N_active/N_total` 由
     //! [`Events::sparsity`] 给出，重构损失由 [`Audit`] 给出，`L_e` 的样本估计由 [`steepest`] 给出。
-    //! PASS/FAIL 属 `tool::card` 的协议卡——一列样本只能出一份判决，本模块不另开判定语汇。
+    //! PASS/FAIL 属 `tools::card` 的协议卡——一列样本只能出一份判决，本模块不另开判定语汇。
 
     use diagnostic::{Code, Error, Result};
     use op::scan::Scalar;
@@ -278,7 +278,7 @@ mod pulse {
     /// 一段激活的事件臂实测两项：E14 稀疏度与相对重构损失 `‖ŷ − y‖₂ / ‖y‖₂`。
     ///
     /// 只报数、不判门：SpB 2.0 的「64.31% 稀疏 / 0.69% 损失」是同口径的**外部锚点**，本仓的数要
-    /// 自己测；判决由 `tool::card` 的协议卡出。
+    /// 自己测；判决由 `tools::card` 的协议卡出。
     #[derive(Debug, Clone, Copy, PartialEq)]
     pub struct Audit {
         sparsity: f64,

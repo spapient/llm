@@ -68,11 +68,6 @@ fn naive2d(
     }
 }
 
-fn close(a: &[f32], b: &[f32]) {
-    for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
-        let tol = 1e-4 + 1e-3 * y.abs();
-        assert!((x - y).abs() <= tol, "第 {i} 个元素 {x} vs {y}");
-    }
 }
 
 #[test]
@@ -134,7 +129,7 @@ fn conv2d_matches_naive() {
         conv.forward_f32(&x, &wgt, &bias, n, (h, w), &mut got)
             .unwrap();
         naive2d(&x, &wgt, &bias, &conv, n, h, w, &mut want);
-        close(&got, &want);
+        testkit::assert_close(&got, &want, 1e-4, 1e-3);
     }
 }
 
@@ -153,7 +148,7 @@ fn conv1d_matches_naive() {
     let conv2 = Conv2d::new(cin, cout, conv.geom);
     let mut want = vec![0.0f32; n * ol * cout];
     naive2d(&x, &wgt, &bias, &conv2, n, 1, l, &mut want);
-    close(&got, &want);
+    testkit::assert_close(&got, &want, 1e-4, 1e-3);
 }
 
 #[test]
@@ -241,7 +236,7 @@ fn max_pool_matches_naive() {
             }
         }
     }
-    close(&got, &want);
+    testkit::assert_close(&got, &want, 1e-4, 1e-3);
 }
 
 #[test]

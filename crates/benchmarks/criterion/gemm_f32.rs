@@ -7,7 +7,7 @@
 //! `matmul_tiled` 的三级块）实测慢 2~3 倍，故这条格式不分块——本基准把这一点留在台架上可复现，
 //! 而不是只在注释里承诺。量化格式的分块收益见 `gemm_quant`。
 //!
-//! 基线判定（`tool::regress`）随靶机首次实测后登记，未登记前本基准只出测量、不回退判定。
+//! 基线判定（`tools::regress`）随靶机首次实测后登记，未登记前本基准只出测量、不回退判定。
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use op::gemm;

@@ -107,7 +107,7 @@
 - **合入分支后回归的三处入口配置补齐，`cargo nextest run --workspace` 与静态门恢复可跑**。
   `crates/fuzz/tests/fuzz_http_head.rs`（HTTP 头解析 harness）未登记进 `.config/nextest.toml` 的
   `default-filter`，而它的 libFuzzer 主函数不接受 `--list --format terse`，于是 nextest 在**列举测试**阶段
-  整体失败（`The required directory "terse" does not exist`），全仓用例一条都跑不起来；`crates/tool/Cargo.toml`
+  整体失败（`The required directory "terse" does not exist`），全仓用例一条都跑不起来；`crates/tools`
   里指向已删除临时探针的 `[[test]] zz_probe_tmp` 让 `cargo test -p llm-tool` 直接因缺文件编不过；
   `engine::cuda_codegen` 的 `cuda_benchmark_driver` 文档在合并时把一节 `# Errors` 串进了四段模板清单中间，
   整理回「摘要 → 四段清单 → `# Errors`」的顺序。**验证**：`cargo nextest run --workspace --all-features --locked`
@@ -1080,7 +1080,7 @@
   `cache`/`device`/`backend`/`verify`/`witness` 五个最大文件逐一下降；`cargo test -p llm-tool --test gate` 绿且
   报告"已达标，删除基线条目"的 45 条全部结清（`cutile` 成员不再有任何复杂度/行长/裸调用豁免）。
 
-- **质量门成为真正的棘轮**。`crates/tool` 的静态质量门在实现里违反了自己的
+- **质量门成为真正的棘轮**。`crates/tools` 的静态质量门在实现里违反了自己的
   三条声明，本轮全部收口：① 限值只有 `Gate::limit(Metric)` 一个出口，阈值字段转私有，`Over` 不再携带
   调用方可任意填的 `limit`，测量方（`tests/gate.rs`）只报"测到多少"；② 棘轮按（身份, 度量）结清——
   `Gate::stale` 改收 `BTreeMap<String, BTreeSet<Metric>>`，一个函数改好 `ccn` 却还超标 `nloc` 时不再能
@@ -1089,7 +1089,7 @@
   0 抬高；例如 `verify_one` 的 `nloc 105 → 77`、`atom.rs` 的 `lines 1264 → 1199`）。同时删除从未被读到的
   `[gate] simd_nloc = 96` 档位（Rust 侧无 SIMD 微核，向量代码在 `prim` 的 C 片段里、由 `cc` 编译），
   `[gate]` 改为闭集、拼错的键直接报错；`unreachable!` 纳入禁止形态（它是 panic 路径且无 lint 兜底）。
-  `crates/tool/tests/gate.rs` 因此从"既测量又判定"退化为纯测量。
+  `crates/tools` 因此从"既测量又判定"退化为纯测量。
 
 - **`cutile` 的文档与代码收敛到同一份事实源：`DESIGN.md` 改名 `README.md`，且每一处旧引用都改到了它**。
   这份 1,179 行的文档既是 crate 的 README，也是整条流水线的设计契约，于是它过期就不再是文风问题、而是错误信息。
@@ -1107,7 +1107,7 @@
   代码侧同步：`cutile/src/lib.rs` 新增「模块地图」（五步流水线 → 具体模块，并写明 `device`/`gate`/`pipeline` 为何是
   私有接缝），`bench`/`doctor`/`verify`/`execution`/`gate`/`device` 六个模块的文档从一行扩成"证明什么、不证明什么"
   （例如 `gate` 只证明"见证在自己声称的语言里语法成立"，不改 `grade`；`doctor` 不执行内核，`verify` 的失败是错误
-  而不是跳过）。**门禁扩面**：`crates/tool/tests/gate.rs` 的链接漂移检查原先只扫 `docs/` 顶层，现在覆盖根 `README.md`、
+  而不是跳过）。**门禁扩面**：`crates/tools` 的链接漂移检查原先只扫 `docs/` 顶层，现在覆盖根 `README.md`、
   `docs/**/*.md`（含全部 ADR）与每个成员的 `README.md`，并加「至少 30 份文档」的防假绿下限——crate README 曾经不在
   门里，这正是上面那棵过期目录树能长期存在的原因；扩面后全仓零失效链接。
   验证：`cargo test -p cutile --all-features` **146 通过 + 2 doctest**、`cargo test -p llm-tool --test gate` 绿
@@ -1240,7 +1240,7 @@
 - 架构文档同步：`annotation` 作为工具成员列在 L1，`tensor` 的所有权扩展到 `View` / `Element`，`llm-config` 扩展到 `App`；当前 31 个成员 / 77 条依赖边（`einsum` 归位到 L2 最左，`audit` 作为独立成员列在 L3）。
 - **架构契约**：`docs/ARCHITECTURE.md`（七层表 + 依赖规则 + 所有权表 + 新增成员三步）；每成员至少一条边、全部 `publish = false`、仓库只有一个 `target/`；P0-3 起由 `tests/architecture.rs` 在 `cargo test` 里执行。
 - **16 个占位成员改成接口形状**（占位口径现见 `docs/ARCHITECTURE.md` 第五节）：`diagnostic`（`Error`/`Code`/`Result`）、`testkit`（`approx_eq`/`device_enabled`/`scratch_dir`）、`mem`（`Arena`/`Region`）、`tensor`（`Tensor`/`DType`/`Shape`/`Strides`）、`storage`（`Layout`/`Order`/`remap`）、`exec`（`Stream`/`Graph`/`Launch`/`Executor`）、`tokenizer`（`Tokenizer`/`Token`/`Bytes`）、`weights`（`Header`/`Entry`/`Reader`）、`kv`（`Page`/`Table`/`Cache`）、`autograd`（`Tape`/`Var`）、`comm`（`Group`/`Reduce`/`Collective`）、`proto`（`Envelope`/`Kind`/`Version`）、`data`（`Batch`/`Split`/`Dataset`）、`nn`（`Layer`/`LayerSpec`/`Linear`，层定义必须引用 `op` 已声明的算子）、`shard`（`Topology`/`Partition`，rank 布局与并行组）、`train`（`Schedule`/`Step`/`Checkpoint` + 恢复拓扑校验）、`engine`（`Sequence`/`Scheduler`，准入即占页）、`serve`（`Route`/`Endpoint`/`Response`）。
-- `tool` 成员（目录 `crates/tool`）：`Report` / `join_names`，把人可读输出从组装点里抽出来，避免三处各写一套排版。
+- `tool` 成员（目录 `crates/tools`）：`Report` / `join_names`，把人可读输出从组装点里抽出来，避免三处各写一套排版。
 - `benches` 成员（目录 `crates/benchmarks`）：`Case` / `Baseline` / `Judgement` / `Direction`，把“方向 / 相对预算 / 回退与改进”写进类型，供后续 bench job 直接判定。
 - 根包 `llm` 变成真正的组装点：逐层构造最小实例并打印一份摘要（`op` / `prof` / `tensor` / `weights` / `train` / `serve` / `tokenizer` / `kv` / `engine` / `exec` / `tool` / `diagnostic`），这也是“依赖图能编译且公共 API 可用”的端到端证据。
 

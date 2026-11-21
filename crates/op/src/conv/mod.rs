@@ -322,7 +322,7 @@ impl MaxPool2d {
     ///
     /// 形状不合法时返回说明。
     pub fn shape(&self, h: usize, w: usize) -> Result<(usize, usize)> {
-        Ok((self.geom.oh(h)?, self.geom.ow(w)?))
+        out_shape(&self.geom, h, w)
     }
 
     /// 前向：逐窗口取最大，补零位不参与。
@@ -339,58 +339,7 @@ impl MaxPool2d {
         c: usize,
         out: &mut [S],
     ) -> Result<()> {
-        let (oh, ow) = self.shape(h, w)?;
-        check_shapes(&[
-            (x.len(), n * h * w * c, "输入"),
-            (out.len(), n * oh * ow * c, "输出"),
-        ])?;
-        self.pool_max(x, out, n, (h, w), c, (oh, ow));
-        Ok(())
-    }
-
-    fn pool_max<S: Scalar>(
-        &self,
-        x: &[S],
-        out: &mut [S],
-        n: usize,
-        (h, w): (usize, usize),
-        c: usize,
-        (oh, ow): (usize, usize),
-    ) {
-        for ni in 0..n {
-            for oi in 0..oh {
-                for oj in 0..ow {
-                    for ci in 0..c {
-                        out[((ni * oh + oi) * ow + oj) * c + ci] =
-                            self.window_max(x, (ni, oi, oj, ci), (h, w), c);
-                    }
-                }
-            }
-        }
-    }
-
-    fn window_max<S: Scalar>(
-        &self,
-        x: &[S],
-        (ni, oi, oj, ci): (usize, usize, usize, usize),
-        (h, w): (usize, usize),
-        c: usize,
-    ) -> S {
-        let mut best = S::NEG_INFINITY;
-        for ki in 0..self.geom.kh {
-            let ii = (oi * self.geom.sh + ki) as isize - self.geom.ph as isize;
-            if !in_bounds_1d(ii, h) {
-                continue;
-            }
-            for kj in 0..self.geom.kw {
-                let jj = (oj * self.geom.sw + kj) as isize - self.geom.pw as isize;
-                if !in_bounds_1d(jj, w) {
-                    continue;
-                }
-                best = best.max(x[((ni * h + ii as usize) * w + jj as usize) * c + ci]);
-            }
-        }
-        best
+        run(&self.geom, x, n, (h, w), c, out, || MaxFold(S::NEG_INFINITY))
     }
 }
 
@@ -401,10 +350,10 @@ impl AvgPool2d {
     ///
     /// 形状不合法时返回说明。
     pub fn shape(&self, h: usize, w: usize) -> Result<(usize, usize)> {
-        Ok((self.geom.oh(h)?, self.geom.ow(w)?))
+        out_shape(&self.geom, h, w)
     }
 
-    /// 前向：窗口求和除窗口面积；`count_include_pad=false` 时只除有效位置。
+    /// 前向：窗口求和后按口径取分母；`count_include_pad=false` 时只除有效位置。
     ///
     /// # Errors
     ///
@@ -418,69 +367,119 @@ impl AvgPool2d {
         c: usize,
         out: &mut [S],
     ) -> Result<()> {
-        let (oh, ow) = self.shape(h, w)?;
-        check_shapes(&[
-            (x.len(), n * h * w * c, "输入"),
-            (out.len(), n * oh * ow * c, "输出"),
-        ])?;
-        self.pool_avg(x, out, n, (h, w), c, (oh, ow));
-        Ok(())
+        let fold = || AvgFold {
+            sum: S::ZERO,
+            count: 0,
+            area: self.geom.kh * self.geom.kw,
+            include_pad: self.count_include_pad,
+        };
+        run(&self.geom, x, n, (h, w), c, out, fold)
+    }
+}
+
+/// 池化窗口的归约口径：最大 / 平均。窗口遍历（补零裁剪、下标推导）全仓只有一份，
+/// 两条口径只在累加器与收尾不同；泛型化后各自单态展开，内层循环里没有分支。
+trait Fold<S: Scalar> {
+    /// 吸收一个窗口内的有效元素（越界补零位不调用）。
+    fn feed(&mut self, value: S);
+
+    /// 收尾成该窗口的输出值。
+    fn finish(self) -> S;
+}
+
+/// 取最大：起点 `-∞`，空窗口也返回 `-∞`。
+struct MaxFold<S>(S);
+
+impl<S: Scalar> Fold<S> for MaxFold<S> {
+    fn feed(&mut self, value: S) {
+        self.0 = self.0.max(value);
     }
 
-    fn pool_avg<S: Scalar>(
-        &self,
-        x: &[S],
-        out: &mut [S],
-        n: usize,
-        (h, w): (usize, usize),
-        c: usize,
-        (oh, ow): (usize, usize),
-    ) {
-        for ni in 0..n {
-            for oi in 0..oh {
-                for oj in 0..ow {
-                    for ci in 0..c {
-                        out[((ni * oh + oi) * ow + oj) * c + ci] =
-                            self.window_avg(x, (ni, oi, oj, ci), (h, w), c);
-                    }
+    fn finish(self) -> S {
+        self.0
+    }
+}
+
+/// 取平均：分母按 `include_pad` 取窗口面积或有效格数（下限 1，空窗口不除零）。
+struct AvgFold<S> {
+    sum: S,
+    count: usize,
+    area: usize,
+    include_pad: bool,
+}
+
+impl<S: Scalar> Fold<S> for AvgFold<S> {
+    fn feed(&mut self, value: S) {
+        self.sum = self.sum + value;
+        self.count += 1;
+    }
+
+    fn finish(self) -> S {
+        let denom = if self.include_pad {
+            self.area
+        } else {
+            self.count.max(1)
+        };
+        self.sum / S::from_usize(denom)
+    }
+}
+
+/// 池化输出形状：两个池化类型的 `shape` 共用。
+fn out_shape(geom: &ConvGeom, h: usize, w: usize) -> Result<(usize, usize)> {
+    Ok((geom.oh(h)?, geom.ow(w)?))
+}
+
+/// 池化前向骨架：形状推导、长度校验、遍历顺序共用，窗口归约由 `fold` 注入。
+fn run<S: Scalar, F: Fold<S>>(
+    geom: &ConvGeom,
+    x: &[S],
+    n: usize,
+    (h, w): (usize, usize),
+    c: usize,
+    out: &mut [S],
+    mut fold: impl FnMut() -> F,
+) -> Result<()> {
+    let (oh, ow) = out_shape(geom, h, w)?;
+    check_shapes(&[
+        (x.len(), n * h * w * c, "输入"),
+        (out.len(), n * oh * ow * c, "输出"),
+    ])?;
+    for ni in 0..n {
+        for oi in 0..oh {
+            for oj in 0..ow {
+                for ci in 0..c {
+                    out[((ni * oh + oi) * ow + oj) * c + ci] =
+                        window(geom, x, (ni, oi, oj, ci), (h, w), c, fold());
                 }
             }
         }
     }
+    Ok(())
+}
 
-    fn window_avg<S: Scalar>(
-        &self,
-        x: &[S],
-        (ni, oi, oj, ci): (usize, usize, usize, usize),
-        (h, w): (usize, usize),
-        c: usize,
-    ) -> S {
-        let mut sum = S::ZERO;
-        let mut count = 0usize;
-        for ki in 0..self.geom.kh {
-            let ii = (oi * self.geom.sh + ki) as isize - self.geom.ph as isize;
-            if !in_bounds_1d(ii, h) {
+/// 单个输出格的窗口归约：按 `(kh, kw)` 扫描，越界（补零）位置直接跳过。
+fn window<S: Scalar, F: Fold<S>>(
+    geom: &ConvGeom,
+    x: &[S],
+    (ni, oi, oj, ci): (usize, usize, usize, usize),
+    (h, w): (usize, usize),
+    c: usize,
+    mut fold: F,
+) -> S {
+    for ki in 0..geom.kh {
+        let ii = (oi * geom.sh + ki) as isize - geom.ph as isize;
+        if !in_bounds_1d(ii, h) {
+            continue;
+        }
+        for kj in 0..geom.kw {
+            let jj = (oj * geom.sw + kj) as isize - geom.pw as isize;
+            if !in_bounds_1d(jj, w) {
                 continue;
             }
-            for kj in 0..self.geom.kw {
-                let jj = (oj * self.geom.sw + kj) as isize - self.geom.pw as isize;
-                if !in_bounds_1d(jj, w) {
-                    continue;
-                }
-                sum = sum + x[((ni * h + ii as usize) * w + jj as usize) * c + ci];
-                count += 1;
-            }
-        }
-        sum / self.avg_denom(count)
-    }
-
-    fn avg_denom<S: Scalar>(&self, count: usize) -> S {
-        if self.count_include_pad {
-            S::from_usize(self.geom.kh * self.geom.kw)
-        } else {
-            S::from_usize(count.max(1))
+            fold.feed(x[((ni * h + ii as usize) * w + jj as usize) * c + ci]);
         }
     }
+    fold.finish()
 }
 
 /// 一维边界判定。

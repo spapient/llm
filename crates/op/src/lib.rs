@@ -64,6 +64,7 @@ pub mod fast;
 pub mod formula;
 pub mod gemm;
 pub mod gemv;
+mod guard;
 pub mod init;
 pub mod matmul;
 pub mod model;

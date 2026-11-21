@@ -4,7 +4,8 @@
 //! 权重布局统一为 `[in, gates·hidden]` / `[hidden, gates·hidden]`，门顺序取 PyTorch 口径
 //! （LSTM 为 `i,f,g,o`；GRU 为 `r,z,n`），`bias` 为已合并的 `bᵢₕ + bₕₕ`。
 
-use diagnostic::{Code, Error, Result};
+use diagnostic::Result;
+use crate::guard::check_all;
 
 use crate::fast;
 
@@ -35,6 +36,27 @@ pub struct Gru {
     pub hidden: usize,
 }
 
+/// 单步缓冲校验：`Rnn` 与 `Gru` 的 `step` 共六个缓冲，只在门数倍率上不同。
+fn check_step(
+    (input, hidden, gates): (usize, usize, usize),
+    x: &[f32],
+    w_ih: &[f32],
+    w_hh: &[f32],
+    b: &[f32],
+    h: &[f32],
+    out: &[f32],
+    batch: usize,
+) -> Result<()> {
+    check_all(&[
+        (x.len(), batch * input, "x"),
+        (w_ih.len(), input * gates, "w_ih"),
+        (w_hh.len(), hidden * gates, "w_hh"),
+        (b.len(), gates, "b"),
+        (h.len(), batch * hidden, "h"),
+        (out.len(), batch * hidden, "out"),
+    ])
+}
+
 impl Rnn {
     /// 单步：`x` 为 `[batch, input]`，`h` 为 `[batch, hidden]`，写回 `out` 同形。
     ///
@@ -52,14 +74,7 @@ impl Rnn {
         out: &mut [f32],
     ) -> Result<()> {
         let (i, hd) = (self.input, self.hidden);
-        check_all(&[
-            (x.len(), batch * i, "x"),
-            (w_ih.len(), i * hd, "w_ih"),
-            (w_hh.len(), hd * hd, "w_hh"),
-            (b.len(), hd, "b"),
-            (h.len(), batch * hd, "h"),
-            (out.len(), batch * hd, "out"),
-        ])?;
+        check_step((i, hd, hd), x, w_ih, w_hh, b, h, out, batch)?;
         linear(x, w_ih, h, w_hh, b, batch, i, hd, hd, out);
         tanh_in_place(out);
         Ok(())
@@ -162,14 +177,7 @@ impl Gru {
     ) -> Result<()> {
         let (i, hd) = (self.input, self.hidden);
         let gates = 3 * hd;
-        check_all(&[
-            (x.len(), batch * i, "x"),
-            (w_ih.len(), i * gates, "w_ih"),
-            (w_hh.len(), hd * gates, "w_hh"),
-            (b.len(), gates, "b"),
-            (h.len(), batch * hd, "h"),
-            (out.len(), batch * hd, "out"),
-        ])?;
+        check_step((i, hd, gates), x, w_ih, w_hh, b, h, out, batch)?;
 
         // x 侧三门一次算完；h 侧只需 r、n 两门（z 直接作用于最终插值）。
         let mut pre = vec![0.0f32; batch * gates];
@@ -242,40 +250,12 @@ fn add_bias(pre: &mut [f32], b: &[f32], batch: usize, gates: usize) {
     }
 }
 
-/// 缓冲长度校验。
-fn check(actual: usize, required: usize, what: &str) -> Result<()> {
-    if actual < required {
-        return Err(Error::new(
-            Code::Invalid,
-            format!("{what}: 缓冲 {actual}，需要 {required}"),
-        ));
-    }
-    Ok(())
-}
 
-/// 一组 `(实际, 需要, 名称)` 长度约束，一次失败即短路；把逐条 `?` 收进一条出口。
-fn check_all(constraints: &[(usize, usize, &str)]) -> Result<()> {
-    for &(actual, required, what) in constraints {
-        check(actual, required, what)?;
-    }
-    Ok(())
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn sample(len: usize, salt: u32) -> Vec<f32> {
-        (0..len)
-            .map(|i| {
-                let z = (i as u32)
-                    .wrapping_mul(2654435761)
-                    .wrapping_add(salt.wrapping_mul(40503));
-                // 值域压到 [−1, 1]：门控激活不饱和，才能验证"有界"而不是"恒为 1"。
-                ((z >> 8) % 2048) as f32 / 1024.0 - 1.0
-            })
-            .collect()
-    }
 
     #[test]
     fn rnn_step_matches_hand_computation() {
@@ -301,10 +281,10 @@ mod tests {
             input: 2,
             hidden: 2,
         };
-        let w_ih = sample(2 * 8, 1);
-        let w_hh = sample(2 * 8, 2);
-        let b = sample(8, 3);
-        let x = sample(2, 4);
+        let w_ih = testkit::sample(2 * 8, 1);
+        let w_hh = testkit::sample(2 * 8, 2);
+        let b = testkit::sample(8, 3);
+        let x = testkit::sample(2, 4);
         let h = vec![0.0f32; 2];
         let c = vec![0.0f32; 2];
         let mut oh = vec![0.0f32; 2];
@@ -339,11 +319,11 @@ mod tests {
             input: 3,
             hidden: 4,
         };
-        let w_ih = sample(12, 1);
-        let w_hh = sample(16, 2);
-        let b = sample(4, 3);
+        let w_ih = testkit::sample(12, 1);
+        let w_hh = testkit::sample(16, 2);
+        let b = testkit::sample(4, 3);
         let h0 = vec![0.0f32; 4];
-        let x = sample(5 * 3, 4);
+        let x = testkit::sample(5 * 3, 4);
         let trace = rnn.run(&x, &w_ih, &w_hh, &b, &h0, 5, 1).unwrap();
         assert_eq!(trace.len(), 5 * 4);
     }

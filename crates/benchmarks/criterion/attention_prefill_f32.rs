@@ -3,7 +3,7 @@
 //! 每组的两条路径结果逐位一致（对拍见 `op::attention::tests::tiled_dense_matches_naive_bitwise`
 //! 与 `tiled_flash_matches_online_bitwise`），本基准只比较遍历次序对墙钟的影响：非 tile 路径每行
 //! 重走一遍整段 K/V，tile 让一个行块（或全部查询）共用同一段 K/V 分块。ns/iter 越小越好，另报
-//! 读入字节吞吐。基线判定（`tool::regress`）随靶机首次实测后登记，未登记前只出测量、不回退。
+//! 读入字节吞吐。基线判定（`tools::regress`）随靶机首次实测后登记，未登记前只出测量、不回退。
 
 #[path = "../support/attention.rs"]
 mod support;

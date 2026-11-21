@@ -249,8 +249,24 @@ pub fn pack_codes(bits: usize, values: &[i8]) -> Vec<u8> {
         .collect()
 }
 
+/// 确定性测试样本：`sample(len, salt)` 生成 `[-1, 1)` 的 f32，同一 `(len, salt)` 永远同一批值。
+///
+/// 三种逐元素层（归一化 / 循环 / 转置卷积）的单元测试此前各写一份同款生成器；集中到这里，
+/// 让"值域压到 `[-1,1)` 才能验证有界性"这条口径只有一处，换种子也只改调用点。
+#[must_use]
+pub fn sample(len: usize, salt: u32) -> Vec<f32> {
+    (0..len)
+        .map(|i| {
+            let z = (i as u32)
+                .wrapping_mul(2654435761)
+                .wrapping_add(salt.wrapping_mul(40503));
+            ((z >> 8) % 2048) as f32 / 1024.0 - 1.0
+        })
+        .collect()
+}
+
 pub use compare::{
-    COSINE_GUARD, RelErr, Scale, Worst, all_finite, approx_eq, assert_rel_with, assert_within_rel,
+    COSINE_GUARD, RelErr, Scale, Worst, all_finite, approx_eq, assert_close, assert_rel_with, assert_within_rel,
     close, cosine_similarity, max_rel_err, rel_err, rel_err_with, within_ratio, within_rel,
 };
 pub use gating::{device_enabled, device_or_skip, skip, skip_count, skip_none, skipped_reasons};

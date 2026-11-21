@@ -18,7 +18,7 @@ cutile = { path = "../cutile" }
 nn = { path = "../nn", package = "llm-nn" }
 op = { path = "../op", package = "llm-op" }
 tensor = { path = "../tensor", package = "llm-tensor" }
-tool = { path = "../tool", package = "llm-tool" }
+tool = { path = "../tools", package = "llm-tool" }
 train = { path = "../train", package = "llm-train" }
 weights = { path = "../weights", package = "llm-weights" }
 

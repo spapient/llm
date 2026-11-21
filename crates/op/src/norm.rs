@@ -9,6 +9,7 @@
 
 use crate::Scalar;
 use diagnostic::{Code, Error, Result};
+use crate::guard::check_all;
 
 /// 二维批归一化：通道数、数值稳定项与滑动统计的动量。
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -273,24 +274,7 @@ fn affine<S: Scalar>(
     }
 }
 
-/// 缓冲长度校验。
-fn check(actual: usize, required: usize, what: &str) -> Result<()> {
-    if actual < required {
-        return Err(Error::new(
-            Code::Invalid,
-            format!("{what}: 缓冲 {actual}，需要 {required}"),
-        ));
-    }
-    Ok(())
-}
 
-/// 一组 `(实际, 需要, 名称)` 长度约束，一次失败即短路；把逐条 `?` 收进一条出口。
-fn check_all(constraints: &[(usize, usize, &str)]) -> Result<()> {
-    for &(actual, required, what) in constraints {
-        check(actual, required, what)?;
-    }
-    Ok(())
-}
 
 /// 按组遍历并逐组归一化（`GroupNorm` 的骨架）。
 fn normalize_groups<S: Scalar>(
@@ -377,16 +361,6 @@ fn normalize_row<S: Scalar>(
 mod tests {
     use super::*;
 
-    fn sample(len: usize, salt: u32) -> Vec<f32> {
-        (0..len)
-            .map(|i| {
-                let z = (i as u32)
-                    .wrapping_mul(2654435761)
-                    .wrapping_add(salt.wrapping_mul(40503));
-                ((z >> 8) % 2048) as f32 / 1024.0 - 1.0
-            })
-            .collect()
-    }
 
     /// 逐通道的均值与方差（有偏），测试用独立口径，避免复用被测代码。
     fn stats(x: &[f32], c: usize, count: usize) -> (Vec<f32>, Vec<f32>) {
@@ -417,7 +391,7 @@ mod tests {
         };
         let (n, h, w, c) = (2, 2, 2, 3);
         let count = n * h * w;
-        let x = sample(count * c, 1);
+        let x = testkit::sample(count * c, 1);
         let gamma = vec![1.0f32; c];
         let beta = vec![0.0f32; c];
         let mut rm = vec![0.0f32; c];
@@ -466,7 +440,7 @@ mod tests {
             eps: 1e-5,
             momentum: 0.1,
         };
-        let x = sample(4 * 2, 2);
+        let x = testkit::sample(4 * 2, 2);
         let gamma = [1.0f32, 2.0];
         let beta = [0.5f32, -0.5];
         let rm = [0.25f32, -0.75];
@@ -491,7 +465,7 @@ mod tests {
             eps: 1e-5,
         };
         let (n, spatial, c) = (2, 5, 4);
-        let x = sample(n * spatial * c, 3);
+        let x = testkit::sample(n * spatial * c, 3);
         let gamma = vec![1.0f32; c];
         let beta = vec![0.0f32; c];
         let mut out = vec![0.0f32; n * spatial * c];
@@ -519,7 +493,7 @@ mod tests {
     #[test]
     fn instancenorm_equals_groupnorm_with_c_groups() {
         let (n, spatial, c) = (1, 4, 3);
-        let x = sample(n * spatial * c, 4);
+        let x = testkit::sample(n * spatial * c, 4);
         let gamma = vec![1.0f32; c];
         let beta = vec![0.0f32; c];
         let mut a = vec![0.0f32; n * spatial * c];
@@ -546,7 +520,7 @@ mod tests {
             width: 5,
             eps: 1e-5,
         };
-        let x = sample(15, 5);
+        let x = testkit::sample(15, 5);
         let gamma = vec![1.0f32; 5];
         let beta = vec![0.0f32; 5];
         let mut out = vec![0.0f32; 15];

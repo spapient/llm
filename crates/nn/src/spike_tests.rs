@@ -163,7 +163,7 @@ fn dense_pulses_outside_the_ternary_set_are_rejected() {
 /// 不必假设稀疏度。两条臂在同一份权重上用同一段脉冲，墙钟差才是「少做多少个乘加」的实测。
 ///
 /// 注意两份耗时里都含相同的一份固定开销（`outputs` 次反量化 + LIF 推进），因此加速比**低于**
-/// 乘加比；这条只报数，判决仍归 `tool::card` 的协议卡。
+/// 乘加比；这条只报数，判决仍归 `tools::card` 的协议卡。
 #[test]
 #[ignore = "E14 事件臂实测：cargo test -p llm-nn --lib -- spike_arm_costs --release --ignored --nocapture"]
 fn spike_arm_costs() {

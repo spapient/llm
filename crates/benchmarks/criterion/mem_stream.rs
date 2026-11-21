@@ -13,7 +13,7 @@
 //! 「这层卡在哪一侧」就再也判断不了（`nn::Bounds` 的分账口径与此相同）。
 //!
 //! 口径仍是 **ns/iter，越小越好**，`Throughput::Bytes` 报的是每迭代搬运的字节数；判定走
-//! `tool::regress`，与算子基准同一套规则（见 `tests/regress.rs`）。
+//! `tools::regress`，与算子基准同一套规则（见 `tests/regress.rs`）。
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use std::hint::black_box;

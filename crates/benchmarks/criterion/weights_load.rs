@@ -1,11 +1,11 @@
 //! 装载基准：文件流后端（[`File`] / [`Loader`]）与映射后端（[`MmapSource`] / [`Reader`]）的
 //! 首条与全量装载对照。
 //!
-//! 只出 ns/iter 与字节吞吐；是否回退由 `tool::regress` 的基线判定负责，本基准**不登记基线
+//! 只出 ns/iter 与字节吞吐；是否回退由 `tools::regress` 的基线判定负责，本基准**不登记基线
 //! 数值**——跨机绝对值不可比，沿用 `model_decode.rs` 先例。RSS 进程读数没有公开接口，本基准
 //! 只记可观测字节账目，不虚构峰值内存；进程级采样留给后续刀。
 //!
-//! 测量结果归档为 `tool::bench::BenchRecord`（`EntryKind::Op`）：台账与记录构造在
+//! 测量结果归档为 `tools::bench::BenchRecord`（`EntryKind::Op`）：台账与记录构造在
 //! `tests/regress.rs` 的 `LOAD_SCENARIOS`；记录只承载本机一次测量与身份，字节吞吐由 Report 侧
 //! 按字节账目与实测 ns 换算，不进记录。
 //!

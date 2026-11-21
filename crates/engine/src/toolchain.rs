@@ -1,7 +1,7 @@
 //! 厂商工具链探测：`nvcc` / `ccec` / `mcc` / `xcrun metal` / MSVC `cl.exe`。
 //!
 //! 这一层只回答「这台机器上有没有这个编译器」，不生成任何源、不跑任何内核——具体后端在
-//! [`crate::backends`] 里按档案的 `[meta].tool` 取这里的探测结果。探测按进程缓存一次
+//! [`crate::backends`] 里按档案的 `[meta].tools` 取这里的探测结果。探测按进程缓存一次
 //! （`OnceLock`）：同一台机器上「装了没有」在一次运行里不会变，重复 fork 子进程只会让
 //! `llm platform` 变慢。
 //!
@@ -56,7 +56,7 @@ pub(crate) fn ascend_device() -> bool {
 /// 探测 mcc（MUSA 编译器，clang-14 驱动）。
 ///
 /// MUSA 与 CUDA 是**同一门输出语言**（`Emit::Cuda`）的两个工具链：生成的 `.cu` 只差运行时头，
-/// 因此后端只按档案的 `[meta].tool` 选命令名，不为它单开一个 `Emit` 变体。
+/// 因此后端只按档案的 `[meta].tools` 选命令名，不为它单开一个 `Emit` 变体。
 pub(crate) fn detect_musa() -> Option<Toolchain> {
     MUSA.get_or_init(|| probe("mcc")).clone()
 }

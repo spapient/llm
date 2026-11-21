@@ -3,9 +3,9 @@
 //! 两个变体：单序列一步、四条序列同批逐序列走一步。口径只出 ns/iter 与每步 token 吞吐
 //! （tokens/s 由 criterion 按元素吞吐换算）；内存只记可观测账目——占用页数（页池 `in_use`），
 //! 不虚构峰值字节数，也不统计执行器内部绑定缓冲（那一侧没有公开读数）。本基准只出测量，
-//! 不进 `tool::regress` 基线表，沿用 `train.rs` 先例。
+//! 不进 `tools::regress` 基线表，沿用 `train.rs` 先例。
 //!
-//! 测量结果归档为 `tool::bench::BenchRecord`（`EntryKind::Model`）：台账与记录构造在
+//! 测量结果归档为 `tools::bench::BenchRecord`（`EntryKind::Model`）：台账与记录构造在
 //! `tests/regress.rs` 的 `DECODE_SCENARIOS`；记录只承载本机一次测量与身份，tokens/s 与页数
 //! 由 Report 侧按账目与实测 ns 换算 / 登记，不进记录。
 //!

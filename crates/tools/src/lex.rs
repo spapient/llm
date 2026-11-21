@@ -216,7 +216,7 @@ impl Lexer {
                 self.bump();
             }
             if self.bump().is_none() {
-                return Err(Error::new(Code::Invalid, "块注释未闭合").with("tool::lex"));
+                return Err(Error::new(Code::Invalid, "块注释未闭合").with("tools::lex"));
             }
         }
         Ok(())
@@ -297,7 +297,7 @@ impl Lexer {
         }
         let hashes = text.matches('#').count();
         if self.peek() != Some('"') {
-            return Err(Error::new(Code::Invalid, "原始字符串缺少开引号").with("tool::lex"));
+            return Err(Error::new(Code::Invalid, "原始字符串缺少开引号").with("tools::lex"));
         }
         text.push('"');
         self.bump();
@@ -319,7 +319,7 @@ impl Lexer {
             }
             return Ok(());
         }
-        Err(Error::new(Code::Invalid, "原始字符串未闭合").with("tool::lex"))
+        Err(Error::new(Code::Invalid, "原始字符串未闭合").with("tools::lex"))
     }
 
     /// 当前位置的 `"` 后是否恰好跟 `hashes` 个 `#`（再多一个 `#` 属更长闭合）。
@@ -335,7 +335,7 @@ impl Lexer {
         self.bump();
         loop {
             let Some(ch) = self.peek() else {
-                return Err(Error::new(Code::Invalid, format!("{what}未闭合")).with("tool::lex"));
+                return Err(Error::new(Code::Invalid, format!("{what}未闭合")).with("tools::lex"));
             };
             text.push(ch);
             self.bump();
@@ -405,7 +405,7 @@ fn eof(close: Option<char>, items: Vec<Token>) -> diagnostic::Result<Vec<Token>>
     if close.is_none() {
         return Ok(items);
     }
-    Err(Error::new(Code::Invalid, "括号未闭合").with("tool::lex"))
+    Err(Error::new(Code::Invalid, "括号未闭合").with("tools::lex"))
 }
 
 fn is_ident_start(ch: char) -> bool {

@@ -63,7 +63,7 @@ impl Debt {
     /// 已登记的（度量, 登记值）对，顺序即棘轮逐条结清的顺序。
     ///
     /// 表写在用它的地方而不是导出一个 `Metric::ALL`：门禁只在这里需要「全部度量」，
-    /// 导出成公开闭集就得接 `prof::atom::Closed`，而 `tool` 是零业务的静态分析器。
+    /// 导出成公开闭集就得接 `prof::atom::Closed`，而 `tools` 是零业务的静态分析器。
     fn registered(self) -> impl Iterator<Item = (Metric, usize)> {
         [
             (Metric::Ccn, self.ccn),
@@ -217,9 +217,9 @@ fn new_entry(over: &Over) -> String {
     format!("{}: 新增 {:?}={}", over.key, over.metric, over.value)
 }
 
-/// 一条门禁配置错误：与旧的运行期解析同一套文案，上下文固定为 `tool::gate`。
+/// 一条门禁配置错误：与旧的运行期解析同一套文案，上下文固定为 `tools::gate`。
 fn invalid(message: &str) -> Error {
-    Error::new(Code::Invalid, message).with("tool::gate")
+    Error::new(Code::Invalid, message).with("tools::gate")
 }
 
 fn int(table: &Table, key: &str) -> Result<usize> {
@@ -690,7 +690,7 @@ pub mod docs {
 
         #[test]
         fn relative_links_are_collected_and_anchors_stripped() {
-            let doc = "见 [架构](ARCHITECTURE.md#二) 与 [代码](../crates/tool/src/lib.rs)。";
+            let doc = "见 [架构](ARCHITECTURE.md#二) 与 [代码](../crates/tools/src/lib.rs)。";
             assert_eq!(
                 links(doc),
                 vec![
@@ -699,7 +699,7 @@ pub mod docs {
                         line: 1
                     },
                     Link {
-                        target: "../crates/tool/src/lib.rs".to_string(),
+                        target: "../crates/tools/src/lib.rs".to_string(),
                         line: 1
                     },
                 ]

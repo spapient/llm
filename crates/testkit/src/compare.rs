@@ -66,6 +66,31 @@ pub fn close(left: &[f32], right: &[f32], abs: f32, rel: f32) -> bool {
         .all(|(a, b)| close_scalar(*a, *b, abs, rel))
 }
 
+/// 绝对 + 相对双项容差断言：判据与 [`close`] 同源（`|a−b| ≤ abs + rel·|b|`），
+/// 失败时把首个越界元素的下标与两侧取值写进 panic 消息——只留一句 `false` 的断言
+/// 在逐元素核上无法定位是哪一格写错。
+///
+/// # Panics
+///
+/// 长度不同或任一元素越界时 panic。
+#[track_caller]
+pub fn assert_close(left: &[f32], right: &[f32], abs: f32, rel: f32) {
+    assert_eq!(
+        left.len(),
+        right.len(),
+        "对拍两侧长度不同（got {}，want {}）",
+        left.len(),
+        right.len()
+    );
+    for (index, (got, want)) in left.iter().zip(right).enumerate() {
+        let tolerance = abs + rel * want.abs();
+        assert!(
+            (got - want).abs() <= tolerance,
+            "第 {index} 个元素 {got} vs {want}（容差 {tolerance}）"
+        );
+    }
+}
+
 /// 误差最大的那个元素：`index` 是它在切片里的下标，`got` / `want` 是两边的原值。
 ///
 /// 对拍失败时先看这一个点：整批的判据是「一个分母下的最大误差」，它一定落在某个元素上，

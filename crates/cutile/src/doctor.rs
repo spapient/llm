@@ -99,7 +99,7 @@ pub struct DeviceInfo {
     pub tool: String,
     /// 档案登记的工具版本（人写的证据出处，不参与缓存键）。
     pub tool_ver: String,
-    /// 实测的工具链身份（`命令@版本`）：探测的是档案声明的那个命令（`[meta].tool`，可带固定前缀
+    /// 实测的工具链身份（`命令@版本`）：探测的是档案声明的那个命令（`[meta].tools`，可带固定前缀
     /// 参数），本机没装它时为 `None`。`verify` 报的是另一件事——真正编出产物的那条。
     pub toolchain: Option<String>,
     /// 编译参数（档案的 `[compile].flags`）：能力是「片段 + 工具链 + 参数」三元组。

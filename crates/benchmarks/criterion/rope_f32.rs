@@ -4,7 +4,7 @@
 //! `10000`、位置取 decode 约定的 7；预热、采样与测量时长由 criterion 配置决定，本文件只
 //! 声明一次迭代做什么。
 //!
-//! 基线判定（`tool::regress`）随靶机首次实测后登记，未登记前本基准只出测量、不回退判定。
+//! 基线判定（`tools::regress`）随靶机首次实测后登记，未登记前本基准只出测量、不回退判定。
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use op::rope_f32;

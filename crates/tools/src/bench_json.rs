@@ -298,7 +298,7 @@ struct Reader<'a> {
 impl<'a> Reader<'a> {
     fn new(text: &'a str) -> Self {
         Self {
-            cursor: Cursor::new(text, "tool::bench_json::from_json"),
+            cursor: Cursor::new(text, "tools::bench_json::from_json"),
             depth: 0,
         }
     }
@@ -804,7 +804,7 @@ fn require<T>(option: Option<T>, field: &str) -> Result<T> {
 /// 带位置前缀的解析错误；台账层错误不带位置，另走 [`invalid`]。
 /// 台账 / 类型校验错误；类别与上下文沿用 bench 层口径。
 fn invalid(message: impl Into<String>) -> Error {
-    Error::new(Code::Invalid, message).with("tool::bench_json::from_json")
+    Error::new(Code::Invalid, message).with("tools::bench_json::from_json")
 }
 
 /// `\X` 的第二个字节 → 字符；表里没有就是未知转义。

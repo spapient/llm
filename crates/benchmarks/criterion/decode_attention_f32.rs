@@ -5,7 +5,7 @@
 //! 预热、采样与测量时长由 criterion 自身配置决定，本文件只声明一次迭代做什么；不写性能
 //! 目标数字，也不与外部框架比倍数。代表历史长度取 128 / 512，头宽 64。
 //!
-//! 基线判定（`tool::regress`）只接 128 两条；512 两条在同一文件里出测量，不进基线表。
+//! 基线判定（`tools::regress`）只接 128 两条；512 两条在同一文件里出测量，不进基线表。
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use op::attention;

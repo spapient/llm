@@ -4,7 +4,7 @@
 //! `build.rs` 在编译期用构建期依赖读出并展开成 `Table` 字面量（ADR 0022），运行期只遍历这棵树。
 //!
 //! 保留"表 + 值"这一层，是因为字段含义属于各层自己的语义：`[axes]` 属于 `op`，`[[provides]]`
-//! 属于 `prof`，门禁阈值属于 `tool`——本 crate 不解释任何领域含义，也不决定语料放在哪。
+//! 属于 `prof`，门禁阈值属于 `tools`——本 crate 不解释任何领域含义，也不决定语料放在哪。
 //!
 //! 构造入口分两组：[`Table::from_pairs`] 与 `Value::text` / `int` / `real` / `flag` / `array` /
 //! `table` 给生成的代码用；[`Table::set`]、[`Table::push`]、[`Table::remove`]、[`Table::at_mut`]

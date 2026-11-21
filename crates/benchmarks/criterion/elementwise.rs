@@ -3,7 +3,7 @@
 //! 预热轮数、测量时长与采样次数都不在这里写死：criterion 按自己的配置决定
 //! （`--warm-up-time` / `--measurement-time` / `--sample-size`），本文件只声明
 //! "一次迭代做什么"与"一次迭代处理多少元素"（`Throughput::Elements`，报告因此直接是 elems/s）。
-//! 与 `span_parse` 同一分工：bench 只产出实测值，是否回退由 `tool::regress` 的基线判定负责。
+//! 与 `span_parse` 同一分工：bench 只产出实测值，是否回退由 `tools::regress` 的基线判定负责。
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use op::add_f32::Add;

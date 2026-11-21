@@ -105,7 +105,7 @@ pub fn for_profile(profile: &crate::prof::Profile) -> Option<Toolchain> {
     }
 }
 
-/// 按 `[meta].tool` 的**声明**探测：声明可以带固定前缀参数（`xcrun metal`），这仍是档案写的那条
+/// 按 `[meta].tools` 的**声明**探测：声明可以带固定前缀参数（`xcrun metal`），这仍是档案写的那条
 /// 命令，不是退回合主编译器。命令名与参数以空白分隔，身份里保留声明原文，报告才能与档案对账。
 #[must_use]
 pub fn probe_declared(declared: &str) -> Option<Toolchain> {
@@ -308,7 +308,7 @@ mod tests {
         let mut rng = testkit::Rng::new(0x7E57);
         for _ in 0..64 {
             let line = format!(
-                "tool {} release {}.{} build {}",
+                "tools {} release {}.{} build {}",
                 rng.below(999),
                 rng.below(999),
                 rng.below(999),

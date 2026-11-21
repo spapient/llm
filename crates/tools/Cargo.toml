@@ -1,5 +1,5 @@
 [package]
-name = "llm-tool"
+name = "llm-tools"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

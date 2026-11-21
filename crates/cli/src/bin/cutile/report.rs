@@ -102,7 +102,7 @@ pub(super) fn device_value(report: &Doctor) -> String {
         .as_deref()
         .unwrap_or("未知（没有编译器，只能复用已落盘产物）");
     format!(
-        "{}({}) emit={} tool={} 档案 {} 实测 {} 参数 {}",
+        "{}({}) emit={} tools={} 档案 {} 实测 {} 参数 {}",
         report.device.vendor,
         report.device.id,
         report.device.emit,

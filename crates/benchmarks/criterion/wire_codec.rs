@@ -1,6 +1,6 @@
 //! `wire` 字节码闭集的微基准：CRC 更新、LEB128 编码/解码、密封 Sink。
 //!
-//! 只产出实测耗时与吞吐；是否回退由 `tool::regress` 的基线判定负责，bench 本身不写性能目标数字。
+//! 只产出实测耗时与吞吐；是否回退由 `tools::regress` 的基线判定负责，bench 本身不写性能目标数字。
 //! 预热、测量时长、采样次数沿用 criterion 自身配置；吞吐口径用 [`Throughput`] 声明，报告直接出 bytes/s 或 elems/s。
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
