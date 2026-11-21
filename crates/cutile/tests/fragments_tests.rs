@@ -121,7 +121,7 @@ fn a_fragment_body_the_language_rejects_is_a_defect() {
         parse_one(spec, &arguments, &path)
     };
     parse(&honest, "honest").expect("原样的片段必须过门");
-    let broken = corrupted(&honest, prim::Prim::Bar);
+    let broken = corrupted(&honest, prim::Prim::Dot);
     let rejected = parse(&broken, "broken").expect_err("改坏的正文必须被语言拒绝");
     let _ = std::fs::remove_dir_all(&dir);
     assert!(rejected.to_string().contains("broken.cl"), "{rejected}");

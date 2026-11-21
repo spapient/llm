@@ -13,14 +13,12 @@
 //! 折叠公式与 `.k` 模板逐字同口径：RMSNorm 的 `sqrt(sum_sq / N + 1e-6f)`、Softmax 的
 //! `max` 与 `exp(x - max)` 求和；误差口径由同一份标量参考对拍。
 
+use crate::cuda::{buffer_args, cuda_host_buffers_grid, cuda_readback, cuda_release};
+use crate::dialect::{Cuda, Dialect, RMS_EPS, chunk_head, length_scalar, scalar_name};
+use cutile::harness::output_name;
 use diagnostic::{Code, Error, Result};
 use op::model::Sample;
 use op::sig::Signature;
-
-use cutile::harness::output_name;
-
-use crate::cuda::{buffer_args, cuda_host_buffers_grid, cuda_readback, cuda_release};
-use crate::dialect::{Cuda, Dialect, RMS_EPS, chunk_head, length_scalar, scalar_name};
 
 /// 部分归约段入口（部分平方和 / 部分最大值）。
 pub(crate) const PARTIAL: &str = "kernel_partial";

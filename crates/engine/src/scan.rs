@@ -7,18 +7,16 @@
 //! 折叠在 C 里做（CUDA 的一次执行是单个 host 程序），`a^len` 用逐次乘法而不是 `pow`——
 //! 不引入 `math.h`/`-lm` 依赖，且块长在此处最多 `chunk` 次乘法。
 
-use diagnostic::Result;
-use op::model::Sample;
-use op::sig::Signature;
-
-use cutile::harness::output_name;
-
 use crate::cuda::{cuda_host_buffers_grid, cuda_launch_params, cuda_readback, cuda_release};
 use crate::dialect::{
     Cuda, Dialect, bind_chunk_loop, carry_fold, chunk_head, inject_chunk_preamble, launch_args,
     length_scalar, scalar_name, scan_correct_body, thread_param_typed,
 };
 use crate::norm::{launch, length_usize, program_head};
+use cutile::harness::output_name;
+use diagnostic::Result;
+use op::model::Sample;
+use op::sig::Signature;
 
 /// 校正段入口（把携带前缀的衰减贡献加回块内）。
 pub(crate) const CORRECT: &str = "kernel_correct";

@@ -3,23 +3,14 @@
 //! 从 [`crate::backends`] 拆出——那里同时装 Metal / CUDA / 昇腾三套厂商链，行数已过单文件上限，
 //! 而三条链之间没有共享状态。共用的基准几何与见证回读留在父模块。
 
-use crate::toolchain::{
-    ascend_device, detect_cce, detect_metal, detect_musa, detect_nvcc, find_cl, musa_device,
-};
-use cutile::backend::{Backend, Codegen, Driver, Launch, Lower, Readback, Source};
-use cutile::dirs::Dirs;
-use cutile::driver;
-use cutile::prof::{Emit, Profile};
-use cutile::toolchain::Toolchain;
-use cutile::witness::{MAX_OUT, Scope, Selected};
-use diagnostic::{Code, Error, Result};
-use op::model::Sample;
-use op::sig::Signature;
-use super::{benchmark_output_len, benchmark_grid};
+use crate::metal::host::run_metal;
+pub use crate::metal::host::{compile_run_metal, metal_driver, metal_kernel};
+use crate::toolchain::detect_metal;
+
+use super::*;
 
 /// MSL 的形参必须带地址空间：MSL 没有默认地址空间，裸 `float *` 在那里是语法错误。
 const MSL_PARAMS: &str = "thread float *";
-
 
 fn metal_bench_geometry(
     signature: &Signature,
@@ -145,7 +136,6 @@ fn metal_lower(
     sample: &Sample,
     kind: &Lower,
 ) -> Result<Vec<String>> {
-    use cutile::backend::Lower::*;
     match kind {
         Pointwise => crate::metal::metal_grid_kernel(kernel, signature, sample).map(|s| vec![s]),
         QuantizedGemvI4 { .. } => Err(Error::new(
@@ -176,7 +166,6 @@ fn metal_special(
     sample: &Sample,
     kind: &Lower,
 ) -> Result<Vec<String>> {
-    use cutile::backend::Lower::*;
     match kind {
         TiledGemm { .. }
         | SimdGroupGemm { .. }
@@ -200,7 +189,6 @@ fn metal_gemm_lower(
     sample: &Sample,
     kind: &Lower,
 ) -> Result<Vec<String>> {
-    use cutile::backend::Lower::*;
     match kind {
         TiledGemm { tile, per_thread } => {
             crate::tiled::metal_tiled_gemm(kernel, signature, sample, *tile, *per_thread)
@@ -223,7 +211,6 @@ fn metal_gemm_lower(
 
 /// GEMM lowering 不在 Metal 生产态内的错误：WMMA 属未覆盖，其余是调用方走错入口。
 fn gemm_unsupported(kind: &Lower) -> Error {
-    use cutile::backend::Lower::*;
     match kind {
         WmmaGemm => Error::new(
             Code::Unsupported,
@@ -243,7 +230,6 @@ fn metal_attention_lower(
     sample: &Sample,
     kind: &Lower,
 ) -> Result<Vec<String>> {
-    use cutile::backend::Lower::*;
     match kind {
         TiledAttention { threads } => {
             crate::tiled::metal_tiled_attention(kernel, signature, sample, *threads)
@@ -268,7 +254,6 @@ fn metal_chunk_lower(
     sample: &Sample,
     kind: &Lower,
 ) -> Result<Vec<String>> {
-    use cutile::backend::Lower::*;
     match kind {
         ChunkReduce { chunk, func } => {
             crate::metal::metal_chunk_reduce(kernel, signature, sample, *chunk, func)
@@ -331,6 +316,3 @@ fn push_metal_kernel(program: &mut String, max: usize, selected: &[Selected<'_>]
 // Metal 主机侧胶水在 [`crate::metal::host`]：设备源 → `metallib` → host 驱动 → 回读。
 // 与 CUDA 那条链并列留在本模块会把单文件撑过行数上限，两套厂商工具链之间也没有共享状态，
 // 因此单独成模块；对外入口仍从这里 re-export，原路径不变。
-pub use crate::metal::host::{compile_run_metal, metal_driver, metal_kernel};
-
-use crate::metal::host::run_metal;

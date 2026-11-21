@@ -119,10 +119,10 @@ witness = { file = "intel/witness.cl", func = "witness_load", expect = [1.0] }
 
 # `async_work_group_copy` 只搬 GM ↔ SLM；目标是私有指针时没有 DMA 可发，能发的是 `prefetch`
 # （core 于 OpenCL 2.0，不改语义、不阻塞）。签名写实际发出的那条指令。
-# `load_async` / `commit_wait` / `bar` 三条的 `impl` 记的是正文真正发出来的东西，不是设备
-# 会不会那条指令：P0 的 emit 没有 shared 落点，屏障与等待都没有对象可挡可等，异步搬运也只
-# 能落 shared——所以三条只剩同步加载与空操作（intel 例外：`prefetch` 是语言内建，真的发）。
-# `stages` 因此记 1：正文每轮只发一次加载。`pipe<2>`/`pipe<3>` 的级数是调度侧建模，不在能力签名里。
+# `load_async` 的 `impl` 记的是正文真正发出来的东西，不是设备会不会那条指令：P0 的 emit 没有
+# shared 落点，异步搬运也只能落 shared——所以这条只剩同步加载（intel 例外：`prefetch` 是语言
+# 内建，真的发）。`stages` 因此记 1：正文每轮只发一次加载。`pipe<2>`/`pipe<3>` 的级数是调度侧
+# 建模，不在能力签名里。
 [[provides]]
 prim    = "load_async"
 impl    = "prefetch"
@@ -136,12 +136,6 @@ grade   = "L1"
 witness = { file = "intel/witness.cl", func = "witness_load_async", expect = [1.0] }
 
 [[provides]]
-prim    = "commit_wait"
-impl    = "noop"
-grade   = "L1"
-witness = { file = "intel/witness.cl", func = "witness_commit_wait", expect = [0.0] }
-
-[[provides]]
 prim    = "store"
 impl    = "global_store"
 m       = "<=4096"
@@ -149,12 +143,6 @@ dt      = ["f32"]
 space   = ["GM"]
 grade   = "L1"
 witness = { file = "intel/witness.cl", func = "witness_store", expect = [3.25] }
-
-[[provides]]
-prim    = "bar"
-impl    = "noop"
-grade   = "L1"
-witness = { file = "intel/witness.cl", func = "witness_bar", expect = [0.0] }
 
 [[provides]]
 prim    = "cvt"

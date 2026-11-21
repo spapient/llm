@@ -3,6 +3,205 @@
 //! 从 [`crate::backends`] 拆出：那里同时装 CUDA 与 Metal 两套厂商工具链，行数已过单文件上限，
 //! 而两套胶水之间没有共享状态——拆开后每条链各自一屏读得完。`backends` 仍是 [`cutile::backend`]
 //! 的 `Backend` 实现，并通过 re-export 保持这些入口的原路径不变。
+//!
+//! 多段驱动（[`MetalStage`]）同住这里：段与段之间只隔一段主机折叠代码，拼装口径与单段模板逐字同源。
+
+use super::*;
+
+/// 多段驱动的一段：入口名、按 `buffer(i)` 顺序的缓冲变量名（带 `b_` 前缀）、派发几何、段后主机代码。
+///
+/// `fold` 是这一段落定之后、下一段之前的主机折叠（部分和 → 总和、部分平方和 → `rms`、
+/// 携带前缀推进），空串表示这一段不需要折叠。几何按「工作项数」给，线程组恒为 `(1,1,1)`：
+/// 分块族是每线程一块，块内串行走完。
+pub(crate) struct MetalStage<'a> {
+    pub entry: &'a str,
+    pub buffers: &'a [&'a str],
+    pub grid: [usize; 3],
+    pub fold: &'a str,
+}
+
+/// 多段并行驱动：装载一次 metallib，按段依次发射，段间插入主机折叠，最后回读输出。
+///
+/// `capacity` 是**输出缓冲按元素开的长度**：分块族的部分结果先写进输出缓冲（`y[g]`），
+/// 块数可能大于最终输出长度（归约是 1 个标量），因此分配与回读分开给。
+/// `scratch` 是折叠用的中间缓冲（`rms` / `max` / `sum` / 携带态），一律 f32。
+///
+/// # Errors
+///
+/// 签名与样本不一致、或某段找不到入口函数时返回说明（入口函数缺失由 host 侧返回码 5 报出）。
+pub(crate) fn metal_multistage_driver(
+    signature: &Signature,
+    sample: &Sample,
+    capacity: usize,
+    read: usize,
+    scratch: &[(&str, usize)],
+    stages: &[MetalStage<'_>],
+) -> Result<String> {
+    let output = output_name(signature)?;
+    let (data, allocs) = metal_buffers(signature, sample, capacity, scratch)?;
+    let body = metal_stages(stages);
+    Ok(format!(
+        r#"#import <Foundation/Foundation.h>
+#import <Metal/Metal.h>
+#include <stdio.h>
+#include <math.h>
+
+{data}
+int main(int argc, const char **argv) {{
+    @autoreleasepool {{
+        if (argc < 2) {{ fprintf(stderr, "usage: driver <metallib>\n"); return 2; }}
+{library}{allocs}        id<MTLCommandQueue> queue = [device newCommandQueue];
+{body}        const float *out = (const float *)b_{output}.contents;
+{readback}
+    }}
+    return 0;
+}}
+"#,
+        data = data,
+        library = host_library(),
+        allocs = allocs,
+        body = body,
+        output = output,
+        readback = readback_bits("out", read, "        "),
+    ))
+}
+
+/// 缓冲装载：只读缓冲落字面量、可写缓冲按 `capacity` 开满，折叠用的中间缓冲另开 f32。
+fn metal_buffers(
+    signature: &Signature,
+    sample: &Sample,
+    capacity: usize,
+    scratch: &[(&str, usize)],
+) -> Result<(String, String)> {
+    let mut data = String::new();
+    let mut allocs = String::new();
+    for param in signature
+        .params()
+        .iter()
+        .filter(|param| param.ctype.is_buffer())
+    {
+        let (literal, alloc) = metal_param(param, sample, capacity)?;
+        data.push_str(&literal);
+        allocs.push_str(&alloc);
+    }
+    for (name, len) in scratch {
+        allocs.push_str(&output_alloc(name, "float", *len));
+    }
+    Ok((data, allocs))
+}
+
+/// 段体：每段一份发射 + 该段自己的主机折叠（折叠串由调用方给，不在驱动里拼第二份算式）。
+fn metal_stages(stages: &[MetalStage<'_>]) -> String {
+    let mut body = String::new();
+    for (index, stage) in stages.iter().enumerate() {
+        body.push_str(&metal_stage(index, stage));
+        body.push_str(stage.fold);
+    }
+    body
+}
+
+/// 一个缓冲参数的两段：只读的落地为字面量，可写的按 `capacity` 开满。
+fn metal_param(param: &Param, sample: &Sample, capacity: usize) -> Result<(String, String)> {
+    let base = param.ctype.c_name();
+    if param.mutable {
+        return Ok((String::new(), output_alloc(&param.name, base, capacity)));
+    }
+    let buffer = sample
+        .buffer(&param.name)
+        .ok_or_else(|| Error::new(Code::Internal, "签名与样本已对齐（漂移）"))?;
+    Ok((
+        literal_decl(&param.name, base, &buffer.values),
+        input_alloc(&param.name),
+    ))
+}
+
+/// 单段发射：取入口函数、建管线、设缓冲、派发、提交并等待。
+fn metal_stage(index: usize, stage: &MetalStage<'_>) -> String {
+    let mut sets = String::new();
+    for (slot, name) in stage.buffers.iter().enumerate() {
+        sets.push_str(&format!(
+            "            [encoder{index} setBuffer:b_{name} offset:0 atIndex:{slot}];\n"
+        ));
+    }
+    format!(
+        r#"        {{
+            id<MTLFunction> function{index} = [library newFunctionWithName:@"{entry}"];
+            if (!function{index}) {{ fprintf(stderr, "metallib 里没有 {entry}\n"); return 5; }}
+            id<MTLComputePipelineState> pipeline{index} = [device newComputePipelineStateWithFunction:function{index} error:&error];
+            if (!pipeline{index}) {{ fprintf(stderr, "管线创建失败：%s\n", error.localizedDescription.UTF8String); return 6; }}
+            id<MTLCommandBuffer> buffer{index} = [queue commandBuffer];
+            id<MTLComputeCommandEncoder> encoder{index} = [buffer{index} computeCommandEncoder];
+            [encoder{index} setComputePipelineState:pipeline{index}];
+{sets}            [encoder{index} dispatchThreads:MTLSizeMake({gx}, {gy}, {gz}) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+            [encoder{index} endEncoding];
+            [buffer{index} commit];
+            [buffer{index} waitUntilCompleted];
+            if (buffer{index}.error) {{ fprintf(stderr, "内核执行失败：%s\n", buffer{index}.error.localizedDescription.UTF8String); return 7; }}
+        }}
+"#,
+        entry = stage.entry,
+        sets = sets,
+        gx = stage.grid[0],
+        gy = stage.grid[1],
+        gz = stage.grid[2],
+    )
+}
+
+/// 一轮调度：建 command buffer、设缓冲与管线、按 16 批发射、提交并等待。
+///
+/// 预热与计时两段只在尾巴上分叉（错误文本与返回码），所以这一轮本身只写一份：
+/// 占位符在插入后由同一批 [`str::replace`] 补齐（`@ROUND@` 先于 `@SETS@` 等）。
+/// 驱动正文模板：只拼字面与已算好的片段，不含循环与错误处理（那些留在 `metal_driver`）。
+#[allow(clippy::too_many_arguments)]
+pub(super) fn metal_driver_template(
+    data: &str,
+    allocs: &str,
+    sets: &str,
+    output: &str,
+    out_len: usize,
+    entry: &str,
+    grid: [usize; 3],
+    block: [usize; 3],
+) -> String {
+    format!(
+        r#"#import <Foundation/Foundation.h>
+#import <Metal/Metal.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+{data}
+int main(int argc, const char **argv) {{
+    @autoreleasepool {{
+        if (argc < 2) {{ fprintf(stderr, "usage: driver <metallib>\n"); return 2; }}
+{prologue}{allocs}        id<MTLCommandQueue> queue = [device newCommandQueue];
+        id<MTLCommandBuffer> buffer = [queue commandBuffer];
+        id<MTLComputeCommandEncoder> encoder = [buffer computeCommandEncoder];
+        [encoder setComputePipelineState:pipeline];
+{sets}        [encoder dispatchThreads:MTLSizeMake({gx}, {gy}, {gz}) threadsPerThreadgroup:MTLSizeMake({bx}, {by}, {bz})];
+        [encoder endEncoding];
+        [buffer commit];
+        [buffer waitUntilCompleted];
+        if (buffer.error) {{ fprintf(stderr, "内核执行失败：%s\n", buffer.error.localizedDescription.UTF8String); return 7; }}
+        const float *out = (const float *)b_{output}.contents;
+{readback}
+    }}
+    return 0;
+}}
+"#,
+        data = data,
+        allocs = allocs,
+        prologue = host_prologue(entry),
+        sets = sets,
+        output = output,
+        readback = readback_bits("out", out_len, "        "),
+        gx = grid[0],
+        gy = grid[1],
+        gz = grid[2],
+        bx = block[0],
+        by = block[1],
+        bz = block[2]
+    )
+}
 
 use cutile::backend::Readback;
 use cutile::dirs::Dirs;

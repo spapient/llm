@@ -11,12 +11,6 @@
 //! 段与入口名一一对应（`kernel_partial` / `kernel_expsum` / `kernel_norm` / `kernel_scan_*`），
 //! 由 [`crate::dialect`] 在生成段时定死；这里只按序发射，不再判断「该几段」。
 
-use cutile::backend::Source;
-use cutile::harness::output_name;
-use diagnostic::{Code, Error, Result};
-use op::model::Sample;
-use op::sig::Signature;
-
 use crate::dialect::{
     EXPSUM, NORM, PARTIAL, RMS_EPS, SCAN_CORRECT, SCAN_LOCAL, carry_fold, length_scalar,
 };
@@ -24,6 +18,11 @@ use crate::metal::{
     MetalStage, metal_chunk_reduce, metal_chunk_rmsnorm, metal_chunk_scan, metal_chunk_softmax,
     metal_multistage_driver,
 };
+use cutile::backend::Source;
+use cutile::harness::output_name;
+use diagnostic::{Code, Error, Result};
+use op::model::Sample;
+use op::sig::Signature;
 
 /// 折叠的一步：与 `.k` 模板的 `reduce.op` 同口径，`sum` / `max` 两个闭集表达。
 const SUM_STEP: &str = "acc += parts[g];";

@@ -243,6 +243,30 @@ git status --short                    # 只允许本轮认领文件
 
 ## 15. 变更记录
 
+- **v2.7（engine S++ 收敛：`src/` 归零测试、21 组合并、单文件全 ≤400）**：`crates/engine` 从
+  26 个 `.rs` / 15,404 行收到 **38 个 `.rs` / 10,600 行**（−4,804 行、−31%），`src/` 生产文件**全部 ≤400 行**
+  （最大 `norm.rs` 398），测试文件全部 ≤800（最大 `tests/metal_executor.rs` 796），**`src/` 里零 `#[test]`**。
+  **① `src/` 只放生产代码**：`batch` / `kv` / `platform` / `program` / `radix` 五处 `mod tests` 与 `ifb` 的内联
+  测试块共 1,705 行全部外移到 `tests/`，父模块只留 `#[cfg(test)] #[path = "../tests/<name>.rs"] mod tests;`
+  —— 与 v2.4（cli）/ v2.6（testkit）同一条结构门，测试数量不变（151 lib + 14 `schedule` + 3 = 168 全绿）。
+  **② 13 个超 400 行文件按项边界拆分 + 21 组兄弟/父子模块合并**：`dialect/text`、`exec/queue`、`cuda/driver`、
+  `batch/step`、`tiled/flash|gemm|misc`、`platform/arch`、`metal/executor/{device}` 等；第二轮把
+  `radix←tree`、`program←cuda`、`scheduler←admit`、`cuda←kernel`、`exec←submit`、`dialect←spec`、
+  `platform←row`、`tiled←tensor`、`metal/host←stage`、`backends←ascend`、`kv←page` 逐个吸收，文件数降但**行数净减**
+  （合并只为消掉"一个概念两处存放"，不靠增行换结构）。
+  **③ 抽象层唯一化**：三条厂商链（Metal / CUDA / 昇腾）原本各写一份 12 行导入块（jscpd 有 1 处克隆），
+  收进 `backends.rs` 的 `pub(crate) use` 共用前导后子模块只剩 `use super::*`，jscpd 回到 **0 克隆 / 0.00%**。
+  **④ 死代码与公开面**：227 个命名公开项逐个核调用方，仅 3 个访问器（`Trace::inner_mut`、
+  `Value::u8_mut`、`Batch::scheduler_mut`）无调用方且都带契约文档（服务层准入/释放用），按 N11 保留并标注；
+  合并导致降级的可见性（`cuda::cuda_harness`、`metal::executor::*`、`scheduler::Plan`）逐条恢复，
+  `cargo check --all-targets` **0 warning**（HEAD 基线有 6 条 unused import，顺带清零）。
+  **⑤ 前端夹具缺陷**：`xcrun -sdk macosx metal -c` 对**不带 `kernel` 限定符**的普通 C 函数返回 exit=0
+  （只是不生成入口点），因此"MSL 要求显式地址空间"的测试原本恒绿；改成 `kernel void` 后该测试才真的
+  验证到 `invalid address space qualification`，测试名改为 `the_metal_front_end_demands_an_explicit_address_space`。
+  **⑥ 未闭合**：N2（crate ≤8,000 行）仍超 2,600 行 —— engine 现有 10,600 行里约 3,900 行是设备源 lowering
+  （`cuda` / `metal` / `ascend` / `dialect` / `tiled` / `norm` / `scan` / `wmma` / `program`），与 `Cargo.toml`
+  自述的"Serving state machine"职责不符，要过 N2 只有"拆 crate"或"移出 lowering"两条路，需先定方向。
+
 - **v2.6（testkit 架构与性能收口：去嵌套、进程级缓存、口径唯一化）**：`crates/testkit` 四项改动。
   **① 去掉 9 个门禁文件的冗余 `mod tests` 包裹层**：`architecture` / `boundary` / `contracts` / `e2e` / `l3` /
   `layer` / `mirror` / `oracle` / `ownership` 原本整文件被 `pub(crate) mod tests { ... }` 又包了一层，而 `lib.rs`

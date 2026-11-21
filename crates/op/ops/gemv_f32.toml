@@ -25,11 +25,9 @@ load   = { bytes = "<=4096", space = ["GM", "FAST"], src = ["GM"], dst = ["GM"] 
 store  = { bytes = "<=4096", dt = ["f32"], space = ["GM"] }
 cvt    = { dt = ["f32", "i32"], sat = ["off"] }
 reduce = { axis = ["GMAX"], op = ["sum"], dt = ["f32"] }
-# 搬运与同步原语属于所有变体：模板只有一份，`direct` emit 出来同样会调用它们。
+# 搬运原语属于所有变体：模板只有一份，`direct` emit 出来同样会调用 `@load_async`。
 # 不写 `stages`：级数属于调度（`schedule = "pipe<2>"`），正文每轮只发一次 `@load_async`。
 load_async  = { bytes = "<=4096", space = ["GM", "FAST"], src = ["GM"], dst = ["GM", "FAST"] }
-commit_wait = {}
-bar         = {}
 
 # 布局契约：权重与输入都按行连续。稠密权重没有分组，也没有标度，所以只有两个槽位。
 [layouts]

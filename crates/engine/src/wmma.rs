@@ -11,13 +11,11 @@
 //! 再带守卫拷回（`store_matrix_sync` 会写满整块 32×32，不能直接落在非对齐输出上）。
 //! `K % 8 != 0` 报 `Unsupported`，由调用方回落到循环注入的通用路径。
 
+use crate::cuda::{Driver, buffer_args, cuda_head, cuda_launch};
+use cutile::harness::output_name;
 use diagnostic::{Code, Error, Result};
 use op::model::Sample;
 use op::sig::Signature;
-
-use cutile::harness::output_name;
-
-use crate::cuda::{Driver, buffer_args, cuda_head, cuda_launch};
 
 /// 输出块边长。
 const TILE: usize = 64;

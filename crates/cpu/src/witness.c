@@ -45,24 +45,7 @@ int witness_load(float *out) {
 int witness_load_async(float *out) {
     const float src[2] = {1.0f, 2.0f};
     const float *copy = src;
-    int token = 0;
-    (void)token;
     out[0] = (copy == src) ? 1.0f : 0.0f;
-    return 1;
-}
-
-/* commit_wait / bar: 空操作不改变任何值 */
-int witness_commit_wait(float *out) {
-    int token = 0;
-    (void)token;
-    out[0] = 0.0f;
-    return 1;
-}
-
-int witness_bar(float *out) {
-    int token = 0;
-    (void)(token);
-    out[0] = 0.0f;
     return 1;
 }
 

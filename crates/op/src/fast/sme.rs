@@ -61,45 +61,34 @@ pub(super) fn gemm(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut
     }
 }
 
-/// 一次整铺 SME GEMM：先并行打包 A/B 面板，再并行外积累加写回。
+/// 一次整铺 SME GEMM：单次铺线程，先并行打包 A 面板，屏障同步后并行外积累加写回。
+///
+/// B 不打包：`B[k,n]` 行主序里每个 64 列组的连续 64 元素本就满足微内核的连续加载，内核改按
+/// k 步长 `n*4` 直接读原始 B，省掉 B 面板的转置拷贝与其缓冲。A 必须转置成 `[块][k][16]` 让
+/// `ld1w` 连续加载，且每个线程只打包、只计算自己的行块 —— A 面板独占、B 只读、输出独占，
+/// 三者互不重叠，因此整次 GEMM 只需一次 [`std::thread::scope`]，把二次铺线程的固定开销
+/// （每次约 100µs）直接砍掉一半。
 #[cfg(target_arch = "aarch64")]
 fn packed(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f32], t: usize) {
     let mblk = m / MR;
-    let nblk = n / NR;
     let alen = mblk * k * MR;
-    let blen = nblk * k * NR;
-    super::scratch::with_panels(alen + blen, |buf| {
-        let (abuf, bbuf) = buf.split_at_mut(alen);
-
-        // 打包：A 按行块、B 按列组切给 t 个线程，一次 scope 里并行做完。
+    super::scratch::with_panels(alen, |abuf| {
         thread::scope(|s| {
+            let barrier = std::sync::Barrier::new(t);
+            let barrier = &barrier;
             let mut a_rest = &mut *abuf;
-            let mut b_rest = &mut *bbuf;
+            let mut o_rest = &mut *out;
             for slot in 0..t {
-                let (a0, a1) = (slot * mblk / t, (slot + 1) * mblk / t);
-                let (b0, b1) = (slot * nblk / t, (slot + 1) * nblk / t);
-                let (a_chunk, a_tail) = a_rest.split_at_mut((a1 - a0) * k * MR);
-                let (b_chunk, b_tail) = b_rest.split_at_mut((b1 - b0) * k * NR);
+                let (r0, r1) = (slot * mblk / t, (slot + 1) * mblk / t);
+                let (a_chunk, a_tail) = a_rest.split_at_mut((r1 - r0) * k * MR);
+                let (o_chunk, o_tail) = o_rest.split_at_mut((r1 - r0) * MR * n);
                 a_rest = a_tail;
-                b_rest = b_tail;
-                s.spawn(move || {
-                    pack_a(a, a_chunk, k, a0);
-                    pack_b(b, b_chunk, n, k, b0);
-                });
-            }
-        });
-
-        // 计算：每个线程进入流式模式，算自己的行块组，退出前写回。
-        let abuf: &[f32] = abuf;
-        let bbuf: &[f32] = bbuf;
-        thread::scope(|s| {
-            let mut o_rest = &mut out[..];
-            for slot in 0..t {
-                let m0 = slot * mblk / t;
-                let m1 = (slot + 1) * mblk / t;
-                let (ochunk, o_tail) = o_rest.split_at_mut((m1 - m0) * MR * n);
                 o_rest = o_tail;
-                s.spawn(move || compute(abuf, bbuf, ochunk, n, k, m0));
+                s.spawn(move || {
+                    pack_a(a, a_chunk, k, r0);
+                    barrier.wait();
+                    compute_stage(&*a_chunk, b, o_chunk, n, k);
+                });
             }
         });
     });
@@ -176,17 +165,20 @@ fn pack_b(src: &[f32], dst: &mut [f32], n: usize, k: usize, nblk0: usize) {
     }
 }
 
-/// 计算一个行块段：进入流式模式 → 逐块外积累加 → 写回 → 退出流式模式。
+/// 计算一段连续行块：进入流式模式 → 逐行块逐列组外积累加 → 写回 → 退出流式模式。
 #[cfg(target_arch = "aarch64")]
 #[allow(unsafe_code)]
-fn compute(abuf: &[f32], bbuf: &[f32], out: &mut [f32], n: usize, k: usize, mblk0: usize) {
+fn compute_stage(a_stage: &[f32], bbuf: &[f32], o_stage: &mut [f32], n: usize, k: usize) {
     let nblk = bbuf.len() / (k * NR);
-    let blocks = out.len() / (n * MR);
+    let blocks = a_stage.len() / (k * MR);
+    if blocks == 0 {
+        return;
+    }
     unsafe {
         enter_sm();
         for bi in 0..blocks {
-            let a_p = abuf.as_ptr().add((mblk0 + bi) * k * MR);
-            let c_base = out.as_mut_ptr().add(bi * MR * n);
+            let a_p = a_stage.as_ptr().add(bi * k * MR);
+            let c_base = o_stage.as_mut_ptr().add(bi * MR * n);
             for g in 0..nblk {
                 let b_p = bbuf.as_ptr().add(g * k * NR);
                 sme_tile(k, a_p, b_p, c_base.add(g * NR), n * 4);

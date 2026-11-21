@@ -64,17 +64,7 @@ int witness_load(thread float *out) {
 int witness_load_async(thread float *out) {
     const float src[2] = {1.0f, 2.0f};
     thread const float *copy = src;
-    int token = 0;
-    (void)token;
     out[0] = (copy == src) ? 1.0f : 0.0f;
-    return 1;
-}
-
-/* commit_wait/async_copy_commit: 等待不改变任何值 */
-int witness_commit_wait(thread float *out) {
-    int token = 0;
-    (void)token;
-    out[0] = 0.0f;
     return 1;
 }
 
@@ -84,14 +74,6 @@ int witness_store(thread float *out) {
     const float value = 3.25f;
     y[1] = value;
     out[0] = y[1];
-    return 1;
-}
-
-/* bar/simdgroup_barrier: 屏障本身不改变值 */
-int witness_bar(thread float *out) {
-    int token = 0;
-    (void)token;
-    out[0] = 0.0f;
     return 1;
 }
 

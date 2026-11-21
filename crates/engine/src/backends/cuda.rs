@@ -2,21 +2,11 @@
 //!
 //! 从 [`crate::backends`] 拆出——三条厂商链之间没有共享状态。共用的基准几何与见证回读留在父模块。
 
-use crate::toolchain::{
-    ascend_device, detect_cce, detect_metal, detect_musa, detect_nvcc, find_cl, musa_device,
-};
-use cutile::backend::{Backend, Codegen, Driver, Launch, Lower, Readback, Source};
-use cutile::dirs::Dirs;
-use cutile::driver;
-use cutile::prof::{Emit, Profile};
-use cutile::toolchain::Toolchain;
-use cutile::witness::{MAX_OUT, Scope, Selected};
-use diagnostic::{Code, Error, Result};
-use op::model::Sample;
-use op::sig::Signature;
+use crate::toolchain::{detect_musa, detect_nvcc, find_cl, musa_device};
 use std::path::Path;
 use std::process::Command;
-use super::{benchmark_output_len, benchmark_grid, witness_readback};
+
+use super::*;
 
 fn cuda_bench_geometry(
     signature: &Signature,
@@ -215,7 +205,6 @@ fn cuda_lower(
     sample: &Sample,
     kind: &Lower,
 ) -> Result<Vec<String>> {
-    use cutile::backend::Lower::*;
     match kind {
         // 逐块归一化两族与扫描自己就产出多段源码，不经过下面的单文件包装。
         ChunkRmsnorm { chunk } => {
@@ -245,7 +234,6 @@ fn cuda_single_source(
     signature: &Signature,
     sample: &Sample,
 ) -> Result<String> {
-    use cutile::backend::Lower::*;
     match kind {
         Pointwise => crate::cuda::cuda_grid_kernel(kernel, signature, sample),
         ChunkReduce { chunk, func } => {

@@ -81,8 +81,6 @@ int witness_load_scalar_copy(float *out) {
 int witness_load_async_copy_gm_to_l1(float *out) {
     const float src[2] = {1.0f, 2.0f};
     const float *copy = src;
-    int token = 0;
-    (void)token;
     out[0] = (copy == src) ? 1.0f : 0.0f;
     return 1;
 }
@@ -91,17 +89,7 @@ int witness_load_async_copy_gm_to_l1(float *out) {
 int witness_load_async_scalar_stage(float *out) {
     const float src[2] = {1.0f, 2.0f};
     const float *copy = src;
-    int token = 0;
-    (void)token;
     out[0] = (copy == src) ? 1.0f : 0.0f;
-    return 1;
-}
-
-/* commit_wait/wait_flag: 等待不改变任何值 */
-int witness_commit_wait(float *out) {
-    int token = 0;
-    (void)token;
-    out[0] = 0.0f;
     return 1;
 }
 
@@ -111,14 +99,6 @@ int witness_store(float *out) {
     const float value = 3.25f;
     y[1] = value;
     out[0] = y[1];
-    return 1;
-}
-
-/* bar/pipe_barrier: 流水屏障本身不改变值 */
-int witness_bar(float *out) {
-    int token = 0;
-    (void)token;
-    out[0] = 0.0f;
     return 1;
 }
 

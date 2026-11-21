@@ -538,15 +538,15 @@ mod tests {
     #[test]
     fn every_variant_must_cover_the_shared_template() {
         let op = int4();
-        // 把 `bar` 从算子级需求挪到只有 `pipe2` 的增量需求里：`direct` 仍然会 emit 出 `@bar`，
-        // 所以装载期必须拒绝，而不是等协商选中 `direct` 才在 substitute 里发现片段缺失。
+        // 把 `load_async` 从算子级需求挪到只有 `pipe2` 的增量需求里：`direct` 仍然会 emit 出
+        // `@load_async`，所以装载期必须拒绝，而不是等协商选中 `direct` 才在 substitute 里发现片段缺失。
         let mut broken = op.declaration().clone();
-        broken.table_mut("needs").expect("needs").remove("bar");
-        variant_mut(&mut broken, "pipe2").set("extra_needs.bar", Value::table(vec![]));
+        broken.table_mut("needs").expect("needs").remove("load_async");
+        variant_mut(&mut broken, "pipe2").set("extra_needs.load_async", Value::table(vec![]));
         let error =
             decl::OpDecl::parse(&broken, op.template()).expect_err("变体没有覆盖共享模板必须报错");
         assert!(error.to_string().contains("direct"), "{error}");
-        assert!(error.to_string().contains("bar"), "{error}");
+        assert!(error.to_string().contains("load_async"), "{error}");
     }
 
     /// 判据 1（cutile README §12.2）：首选变体必须把非 MMA 工作盖住，否则该换 S3/S4。

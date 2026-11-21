@@ -20,15 +20,13 @@ load   = { bytes = "<=4096", space = ["GM", "FAST"], src = ["GM"], dst = ["GM"] 
 store  = { bytes = "<=4096", dt = ["f32"], space = ["GM"] }
 cvt    = { dt = ["f32", "i32"], sat = ["off"] }
 reduce = { axis = ["GMAX"], op = ["sum"], dt = ["f32"] }
-# 模板里出现的搬运/同步原语属于**所有**变体：模板只有一份，`direct` emit 出来同样会调用
-# `@load_async` / `@commit_wait` / `@bar`。因此它们必须写在算子级需求里，装载期按变体逐条
-# 校验。变体级 `extra_needs` 只能在此基础上加严，不能少写模板用到的原语。
+# 模板里出现的搬运原语属于**所有**变体：模板只有一份，`direct` emit 出来同样会调用
+# `@load_async`。因此它必须写在算子级需求里，装载期按变体逐条校验。变体级 `extra_needs`
+# 只能在此基础上加严，不能少写模板用到的原语。
 # 需求里**不写** `stages`：预取级数是调度的建模参数（`schedule = "pipe<2>"`），不是设备能力
 # 签名。P0 正文每轮只发一次 `@load_async`，档案据此登记 `stages = ["1"]`；哪台设备的正文真
 # 做 2 级预取并在自己档案里登记 `stages = ["2"]`，那时才把这条需求写进 `pipe2.extra_needs`。
 load_async  = { bytes = "<=4096", space = ["GM", "FAST"], src = ["GM"], dst = ["GM", "FAST"] }
-commit_wait = {}
-bar         = {}
 
 # 布局契约：槽位 → 闭集构造子。
 [layouts]

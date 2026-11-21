@@ -46,7 +46,7 @@ space = ["GM", "FAST", "REG"]
 
 # 工具链参数与前置声明。`preamble` 是模板 `@reduce` 的 `$func` 与几个软件数学函数在**设备源码**里
 # 的定义：缺了它，片段一旦真的调用 `_cutile_sum_f32`（与 cpu/nvidia 同构），汇编出的内核就编不过。
-# 内容与 `cpu` 档案同源——P0 片段的语义就是标量 C（`load` 是指针赋值、`bar` 是空表达式），前置声明
+# 内容与 `cpu` 档案同源——P0 片段的语义就是标量 C（`load` 是指针赋值），前置声明
 # 跟着片段语言走。语义门（`engine::ascend`）会把这里**每个函数**补上 `__aicore__`（不补就是
 # "AI Core 函数调用了宿主函数"，ccec 编译期拒），所以下面的纯算术实现（`_cutile_exp_f32`、四个归约
 # 入口）可以直接落设备；`logf` / `sqrtf` / `sinf` / `cosf` / `powf` 那五个仍指向宿主编译器的 libm，
@@ -164,13 +164,6 @@ grade    = "L0"
 witness  = { file = "ascend/witness.cpp", func = "witness_load_async_copy_gm_to_l1", expect = [1.0] }
 
 [[provides]]
-prim    = "commit_wait"
-impl    = "noop"
-exec    = ["mte"]
-grade   = "L0"
-witness = { file = "ascend/witness.cpp", func = "witness_commit_wait", expect = [0.0] }
-
-[[provides]]
 prim    = "store"
 impl    = "fixpipe_out"
 m       = "<=65536"
@@ -179,13 +172,6 @@ space   = ["REG", "GM"]
 exec    = ["fixpipe"]
 grade   = "L0"
 witness = { file = "ascend/witness.cpp", func = "witness_store", expect = [3.25] }
-
-[[provides]]
-prim    = "bar"
-impl    = "noop"
-exec    = ["scalar"]
-grade   = "L0"
-witness = { file = "ascend/witness.cpp", func = "witness_bar", expect = [0.0] }
 
 [[provides]]
 prim    = "cvt"
@@ -256,10 +242,10 @@ exec    = ["scalar"]
 grade   = "L0"
 witness = { file = "ascend/witness.cpp", func = "witness_load_scalar_copy", expect = [1.0] }
 
-# `load_async` / `commit_wait` / `bar` 三条的 `impl` 记的是正文真正发出来的东西，不是设备
-# 会不会那条指令：P0 的 emit 没有 shared 落点，屏障与等待都没有对象可挡可等，异步搬运也只
-# 能落 shared——所以三条只剩同步加载与空操作（intel 例外：`prefetch` 是语言内建，真的发）。
-# `stages` 因此记 1：正文每轮只发一次加载。`pipe<2>`/`pipe<3>` 的级数是调度侧建模，不在能力签名里。
+# `load_async` 的 `impl` 记的是正文真正发出来的东西，不是设备会不会那条指令：P0 的 emit 没有
+# shared 落点，异步搬运也只能落 shared——所以这条只剩同步加载（intel 例外：`prefetch` 是语言
+# 内建，真的发）。`stages` 因此记 1：正文每轮只发一次加载。`pipe<2>`/`pipe<3>` 的级数是调度侧
+# 建模，不在能力签名里。
 [[provides]]
 prim    = "load_async"
 impl    = "sync_load"

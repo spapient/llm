@@ -1,5 +1,9 @@
 use super::*;
 use crate::toolchain::msvc_version;
+use cutile::backend::{Codegen, Driver, Source};
+use cutile::dirs::Dirs;
+use cutile::prof::Profile;
+use cutile::witness::{MAX_OUT, Scope};
 use std::path::Path;
 
 /// 装配 Metal / CUDA 后端（幂等，进程级只装一次）。引擎测试直接调 `MetalBackend`/`CudaBackend` 的

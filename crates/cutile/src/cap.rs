@@ -648,8 +648,8 @@ mod tests {
         profile
     }
 
-    /// 一个模板只用 `dot` 的合成声明：内置 `gemv_i4` 的模板由所有变体共享，`load_async` /
-    /// `commit_wait` / `bar` 因此是算子级需求，演示不了"缺一个原语就降级"，差异只能落在 `extra_needs`。
+    /// 一个模板只用 `dot` 的合成声明：内置 `gemv_i4` 的模板由所有变体共享，`load_async` 是算子级
+    /// 需求，演示不了"缺一个原语就降级"，差异只能落在 `extra_needs`。
     fn downgrade_op() -> OpDecl {
         // 合成声明只需要一份可解析的签名：协商不读 ABI，但 `OpDecl` 的不变量要求它存在。
         let template = "void cutile_probe_kernel(float *y) { @dot(acc, a, b, k); }\n";
@@ -672,7 +672,7 @@ mod tests {
                     order: 1,
                     schedule: Schedule::parse("pipe<2>").expect("调度"),
                     mma_share: 0.62,
-                    extra_needs: vec![Need::of(Prim::LoadAsync), Need::of(Prim::CommitWait)],
+                    extra_needs: vec![Need::of(Prim::LoadAsync)],
                 },
                 Variant {
                     name: "direct".to_string(),
@@ -705,8 +705,8 @@ mod tests {
 
     #[test]
     fn variant_level_needs_drive_downgrade() {
-        // 去掉 load_async / commit_wait：pipe2 需要它们，direct 不需要 —— 这正是 extra_needs 的意义。
-        let profile = cpu_without(&[Prim::LoadAsync, Prim::CommitWait]);
+        // 去掉 load_async：pipe2 需要它，direct 不需要 —— 这正是 extra_needs 的意义。
+        let profile = cpu_without(&[Prim::LoadAsync]);
         let path = negotiate(&downgrade_op(), &profile).expect("应降级到 direct");
         assert_eq!(path.variant, "direct");
         assert!(!path.schedule.uses_async());
@@ -742,8 +742,10 @@ mod tests {
     fn the_unlock_advice_lists_each_atom_once() {
         let mut op = downgrade_op();
         op.needs = vec![Need::of(Prim::Bar)];
+        // pingpong 调度本身也索取 bar：与公共 needs 重复时，建议只列一次。
+        op.variants[0].schedule = Schedule::parse("pingpong<2>").expect("调度");
         op.variants.truncate(1);
-        let error = negotiate(&op, &cpu_without(&[Prim::Bar])).unwrap_err();
+        let error = negotiate(&op, &cpu()).unwrap_err();
         let unlock = error.unlock.as_ref().expect("应当给出解锁路径");
         assert_eq!(unlock.missing, vec![Prim::Bar], "{unlock:?}");
         let text = error.to_string();
@@ -862,11 +864,14 @@ mod tests {
 
     #[test]
     fn schedule_primitives_are_part_of_the_requirement() {
-        // 只剩 direct 可用时 bar 不再被需要。
-        let path = negotiate(&downgrade_op(), &cpu_without(&[Prim::Bar])).expect("应降级到 direct");
+        // pingpong 调度自带 bar：它计入需求，与档案是否声明 bar 无关（当前档案都不声明）。
+        let mut op = downgrade_op();
+        op.variants[0].schedule = Schedule::parse("pingpong<2>").expect("调度");
+        // pingpong 那档因缺 bar 不可行，只剩 direct 可用。
+        let path = negotiate(&op, &cpu()).expect("应降级到 direct");
         assert_eq!(path.variant, "direct");
-        // 再去掉公共需求里的 dot：两条链都不可行，诊断必须点名 bar（来自 pipe<2> 调度）。
-        let error = negotiate(&downgrade_op(), &cpu_without(&[Prim::Bar, Prim::Dot])).unwrap_err();
+        // 再去掉公共需求里的 dot：两条链都不可行，诊断必须点名 bar（来自 pingpong 调度）。
+        let error = negotiate(&op, &cpu_without(&[Prim::Dot])).unwrap_err();
         assert!(error.to_string().contains("bar"), "{error}");
     }
 

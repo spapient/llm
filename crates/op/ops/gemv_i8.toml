@@ -17,8 +17,6 @@ cvt    = { dt = ["f32", "i32"], sat = ["off"] }
 reduce = { axis = ["GMAX"], op = ["sum"], dt = ["f32"] }
 # 不写 `stages`：级数属于调度（`schedule = "pipe<2>"`），正文每轮只发一次 `@load_async`。
 load_async  = { bytes = "<=4096", space = ["GM", "FAST"], src = ["GM"], dst = ["GM", "FAST"] }
-commit_wait = {}
-bar         = {}
 
 [layouts]
 w = "row"
