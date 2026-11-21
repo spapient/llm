@@ -5,8 +5,8 @@
 //! 于是"加一个键"是加一行、加一种形态是加一张表，而不是加一个解析器。
 
 use crate::syntax::{
-    Bracket, Cursor, Error, Hole, KeySpec, Position, Token, Value, checked_name, collect, declared_name,
-    elements, generic, require, row, string, target_with, unsigned, FIELDS,
+    Bracket, Cursor, Error, FIELDS, Hole, KeySpec, Position, Token, Value, checked_name, collect,
+    declared_name, elements, generic, require, row, string, target_with, unsigned,
 };
 
 /// 注解允许的键；顺序即错误信息里的提示顺序。
@@ -30,7 +30,12 @@ const LAYER: [KeySpec<'static>; 4] = [
     row(KEYS[0], text_value, "名字只能声明一次", Some(" = \"..\"")),
     row(KEYS[1], axes_value, "输出形状只能声明一次", Some(" = [..]")),
     row(KEYS[2], in_value, "输入宽度只能声明一次", None),
-    row(KEYS[3], ops_value, "算子列表只能声明一次", Some(" = [\"..\"]")),
+    row(
+        KEYS[3],
+        ops_value,
+        "算子列表只能声明一次",
+        Some(" = [\"..\"]"),
+    ),
 ];
 
 /// 解析注解本体；任何一处不合文法都只产出一条带位置的错误。
@@ -142,7 +147,11 @@ fn dtype_value(cursor: &mut Cursor<'_>, at: Position, spec: &KeySpec<'_>) -> Res
 }
 
 /// `skeleton = ".."`：骨架闭集。
-fn skeleton_value(cursor: &mut Cursor<'_>, at: Position, spec: &KeySpec<'_>) -> Result<Value, Error> {
+fn skeleton_value(
+    cursor: &mut Cursor<'_>,
+    at: Position,
+    spec: &KeySpec<'_>,
+) -> Result<Value, Error> {
     closed_value(cursor, at, spec, "骨架", &SKELETONS)
 }
 
@@ -218,9 +227,24 @@ pub(crate) struct ModelDecl {
 
 /// `#[model(..)]` 的键表：注册名、生产形状、输出类型、骨架、生成的常量名。
 const MODEL: [KeySpec<'static>; 5] = [
-    row("name", text_value, "一条语义只有一个注册名", Some(" = \"..\"")),
-    row("shape", axes_value, "生产形状只能声明一次", Some(" = [m, n]")),
-    row("dtype", dtype_value, "输出类型只能声明一次", Some(" = \"..\"")),
+    row(
+        "name",
+        text_value,
+        "一条语义只有一个注册名",
+        Some(" = \"..\""),
+    ),
+    row(
+        "shape",
+        axes_value,
+        "生产形状只能声明一次",
+        Some(" = [m, n]"),
+    ),
+    row(
+        "dtype",
+        dtype_value,
+        "输出类型只能声明一次",
+        Some(" = \"..\""),
+    ),
     row("skeleton", skeleton_value, "一条语义只有一个骨架", None),
     row("const", text_value, "生成的常量名只能声明一次", None),
 ];
@@ -297,8 +321,18 @@ pub(crate) struct RuntimeDecl {
 /// `#[spec(..)]` 的运行时键表：每个值只能是 `$构造参数`；`in` 不在表里——下界由层自己实现。
 const RUNTIME: [KeySpec<'static>; 4] = [
     row("name", hole_value, "名字只能声明一次", Some(" = $参数")),
-    row("out", runtime_holes, "输出形状只能声明一次", Some(" = [$参数]")),
-    row("ops", runtime_ops, "算子列表只能声明一次", Some(" = [$参数]")),
+    row(
+        "out",
+        runtime_holes,
+        "输出形状只能声明一次",
+        Some(" = [$参数]"),
+    ),
+    row(
+        "ops",
+        runtime_ops,
+        "算子列表只能声明一次",
+        Some(" = [$参数]"),
+    ),
     row("role", hole_value, "参数角色只能声明一次", None),
 ];
 
@@ -341,11 +375,10 @@ fn distinct(values: &[Value]) -> Result<(), Error> {
     ];
     for (left, left_name) in groups {
         for (right, right_name) in groups.iter().skip(left + 1) {
-            for (name, at) in values[left].holes() {
-                let reused = values[*right]
-                    .holes()
-                    .iter()
-                    .any(|(other, _)| other == name);
+            let (holes, _) = values[left].holes();
+            let (others, _) = values[*right].holes();
+            for (name, at) in holes {
+                let reused = others.iter().any(|(other, _)| other == name);
                 if reused {
                     return Err(Error::at(
                         *at,

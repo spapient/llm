@@ -56,7 +56,7 @@ fn a_rejected_annotation_keeps_the_annotated_item() {
         text(r#"name = "x""#),
         text("pub struct Head;"),
         "spec",
-        syntax::parse,
+        decl::parse,
         render::render,
         syntax::target_name,
     );

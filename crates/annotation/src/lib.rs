@@ -73,6 +73,11 @@ mod fixture;
 use proc_macro::{Delimiter, Group, Span, TokenStream, TokenTree};
 use syntax::{Bracket, Error as SyntaxError, Token};
 
+/// 把 `#[spec(name = "..", out = [..], in = .., ops = [".."])]` 展开成 `::nn::Contract` 的实现。
+///
+/// 被标注的类型必须是无泛型参数的 `struct` 或 `enum`：形状与算子列表在编译期固定，带泛型的类型
+/// 无法用一份注解覆盖所有实例化。任一个值写成 `$构造参数` 即切到运行时形态：适配层给命名字段
+/// `struct` 注入私有 `spec` 字段并生成构造宏，`in` 不属于运行时形态——下界由层自己实现。
 #[proc_macro_attribute]
 pub fn spec(attribute: TokenStream, item: TokenStream) -> TokenStream {
     if decl::is_runtime(&convert(&attribute.tokenize())) {
@@ -84,7 +89,7 @@ pub fn spec(attribute: TokenStream, item: TokenStream) -> TokenStream {
             "spec",
             decl::parse,
             render::render,
-            decl::target_name,
+            syntax::target_name,
         )
     }
 }
@@ -184,7 +189,7 @@ pub fn model(attribute: TokenStream, item: TokenStream) -> TokenStream {
         "model",
         decl::parse_model,
         render::render_model,
-        decl::model_target,
+        syntax::model_target,
     )
 }
 
@@ -302,6 +307,17 @@ fn bracket(delimiter: Delimiter) -> Bracket {
 }
 
 #[cfg(test)]
+#[path = "../tests/decl_tests.rs"]
+mod decl_tests;
+
+#[cfg(test)]
+#[path = "../tests/render_tests.rs"]
+mod render_tests;
+
+#[cfg(test)]
 #[path = "../tests/adapter_tests.rs"]
 mod tests;
 
+#[cfg(test)]
+#[path = "../tests/perf_probe.rs"]
+mod perf_probe;

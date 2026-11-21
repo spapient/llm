@@ -1,13 +1,19 @@
-use super::*;
+//! 渲染层的单元测试：生成源码的每一处契约（以及它**不该**出现的那些东西）。
+//!
+//! 断言的是文本，不是行为：渲染器只拼字符串，于是"生成的代码长什么样"可以被逐字钉住。
+
+use crate::decl::{
+    Declaration, ModelDecl, RuntimeDecl, SKELETONS, parse, parse_model, parse_runtime,
+};
 use crate::fixture::lex;
-use crate::syntax;
+use crate::render::{render, render_model, render_runtime};
 
 fn declaration(text: &str) -> Declaration {
-    syntax::parse(&lex(text)).expect("合法注解")
+    parse(&lex(text)).expect("合法注解")
 }
 
 fn runtime_declaration(text: &str) -> RuntimeDecl {
-    syntax::parse_runtime(&lex(text)).expect("合法运行时注解")
+    parse_runtime(&lex(text)).expect("合法运行时注解")
 }
 
 #[test]
@@ -191,7 +197,7 @@ fn a_missing_operator_is_reported_with_the_layer_name() {
     );
 }
 fn model(text: &str) -> ModelDecl {
-    syntax::parse_model(&lex(text)).expect("合法注解")
+    parse_model(&lex(text)).expect("合法注解")
 }
 
 #[test]
@@ -276,7 +282,7 @@ fn a_named_const_gives_two_models_distinct_names_in_one_module() {
 /// 一条 `compile_error!`，而这条测试让它先在注解层自己红掉。
 #[test]
 fn every_skeleton_projects_through_the_same_contract() {
-    for skeleton in syntax::SKELETONS {
+    for skeleton in SKELETONS {
         let name = if skeleton == "gemm" {
             "gemm_f32"
         } else {

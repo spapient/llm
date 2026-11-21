@@ -1,9 +1,15 @@
-//! 注解文法的单元测试：键顺序、必填键、闭集、错误位置与词法边角。
+//! 声明层的单元测试：键表、必填键、闭集、错误位置、词法边角、运行时形态与目标类型判据。
 //!
-//! 与 `syntax.rs` 分开放，是为了让生产文件只含生产代码——两边的行数各自可读，也各自受门禁约束。
+//! 静态形态与运行时形态测的是同一件事的两半——"注解里写的"被读成什么——所以放在一起：
+//! 加一个键、加一种取值文法，断言的落点是同一个文件。
 
-use super::*;
+use crate::decl::{
+    GEMM_SKELETON_NAMES, KEYS, is_runtime, parse, parse_model, parse_runtime, runtime_target,
+};
 use crate::fixture::lex;
+use crate::syntax::{
+    Bracket, Error, Token, Value, checked_name, model_target, string, target_name, unsigned,
+};
 
 /// 断言 `result` 的报错里出现 `needle`，并把错误交回给调用方断位置。
 fn reject<T: std::fmt::Debug>(result: Result<T, Error>, needle: &str) -> Error {
@@ -316,4 +322,74 @@ fn a_deterministic_sweep_keeps_every_parser_resilient_and_stable() {
         sweep_one(parse, &text, case);
         sweep_one(parse_model, &text, case);
     }
+}
+
+#[test]
+fn a_runtime_annotation_carries_parameter_names_in_order() {
+    let text = r#"name = $name, out = [$tokens, $dim], ops = [$op], role = $role"#;
+    let declaration = parse_runtime(&lex(text)).expect("合法");
+    assert_eq!(declaration.name, "name");
+    assert_eq!(declaration.out, ["tokens", "dim"]);
+    assert_eq!(declaration.ops, ["op"]);
+    assert_eq!(declaration.role.as_deref(), Some("role"));
+
+    let square =
+        parse_runtime(&lex(r#"name = $n, out = [$dim, $dim], ops = [$op]"#)).expect("合法");
+    assert_eq!(square.out, ["dim", "dim"], "同一轴宽可以出现两次");
+    assert_eq!(square.role, None, "没写角色走默认值");
+    assert!(is_runtime(&lex(text)), "`$` 是运行时形态的唯一判据");
+    assert!(!is_runtime(&lex(r#"name = "x", out = [1], ops = ["o"]"#)));
+}
+
+/// 运行时形态的每一条错误：字面量、裸 `$`、缺键、重复、跨类复用、`in` 不在表里。
+#[test]
+fn every_bad_runtime_annotation_is_rejected_with_an_actionable_message() {
+    let cases = [
+        (r#"name = "x", out = [$a], ops = [$o]"#, "`$`"),
+        (r#"name = $, out = [$a], ops = [$o]"#, "参数名"),
+        (r#"name = $n, out = [$a], ops = []"#, "至少要引用一个"),
+        (r#"name = $n, out = [$a], ops = [$o, $o]"#, "出现了两次"),
+        (r#"name = $n, out = [$n], ops = [$o]"#, "两种类型"),
+        (r#"name = $n, out = [$a], ops = [$o], role = "norm""#, "`$`"),
+        (r#"name = $n, out = [$a], ops = [$o], in = 4"#, "in"),
+        (r#"out = [$a], ops = [$o]"#, "name"),
+        (r#"name = $n, ops = [$o]"#, "out"),
+        (r#"name = $n, out = [$a]"#, "ops"),
+        (r#"name = $n, name = $m, out = [$a], ops = [$o]"#, "重复"),
+        (r#"name = $n, out = [$a $b], ops = [$o]"#, "`,`"),
+    ];
+    for (text, needle) in cases {
+        reject(parse_runtime(&lex(text)), needle);
+    }
+}
+
+/// 运行时形态只标命名字段 struct：枚举、元组结构体与缺字段体都在注入前被拒。
+#[test]
+fn a_runtime_target_must_be_a_named_field_struct() {
+    let named_fields = [
+        ident("pub"),
+        ident("struct"),
+        ident("Layer"),
+        Token::Group(
+            Bracket::Brace,
+            vec![ident("width"), punct(':'), ident("usize")],
+        ),
+    ];
+    assert_eq!(
+        runtime_target(&named_fields, "spec").expect("命名字段"),
+        "Layer"
+    );
+    reject(
+        runtime_target(&lex("pub enum Layer { A }"), "spec"),
+        "struct",
+    );
+    reject(runtime_target(&lex("pub struct Layer;"), "spec"), "字段体");
+    reject(
+        runtime_target(&lex("pub struct Layer(usize);"), "spec"),
+        "字段体",
+    );
+    reject(
+        runtime_target(&lex("struct Layer<T> { x: T }"), "spec"),
+        "泛型",
+    );
 }

@@ -45,7 +45,7 @@ pub(crate) enum Token {
 
 impl Token {
     /// 错误信息里怎么读它。
-    fn describe(&self) -> String {
+    pub(crate) fn describe(&self) -> String {
         match self {
             Self::Ident(word) => format!("`{word}`"),
             Self::Punct(punct) => format!("`{punct}`"),
@@ -419,10 +419,7 @@ pub(crate) fn target_with<'a>(
     let Some((position, word)) = keyword(tokens) else {
         return Err(Error::at(
             0,
-            format!(
-                "`#[{attribute}]` 只能标注 {}：找不到类型定义",
-                allowed.what
-            ),
+            format!("`#[{attribute}]` 只能标注 {}：找不到类型定义", allowed.what),
         ));
     };
     if allowed.words.contains(&word) {
@@ -438,7 +435,7 @@ pub(crate) fn target_with<'a>(
 }
 
 /// 关键字后的名字；`word` 只用于「后应当紧跟…」这句提示。
-fn declared_name(
+pub(crate) fn declared_name(
     tokens: &[Token],
     position: Position,
     word: &str,
@@ -451,7 +448,7 @@ fn declared_name(
 }
 
 /// 泛型参数被拒：形状必须在编译期固定，一份注解覆盖不了所有实例化。
-fn generic(tokens: &[Token], position: Position, message: String) -> Result<(), Error> {
+pub(crate) fn generic(tokens: &[Token], position: Position, message: String) -> Result<(), Error> {
     match tokens.get(position + 2) {
         Some(Token::Punct('<')) => Err(Error::at(position + 1, message)),
         _ => Ok(()),

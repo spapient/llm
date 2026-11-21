@@ -30,6 +30,31 @@ pub(crate) fn mean_ns(text: &str) -> Option<f64> {
     number.parse().ok()
 }
 
+/// criterion 落盘名的长度上限，与 `criterion::report::MAX_DIRECTORY_NAME_LEN` 同值。
+const NAME_LIMIT: usize = 64;
+
+/// 分组名 / 用例名在磁盘上的形态：criterion 的 `report::make_filename_safe` 把
+/// `? " / \ * < > : | ^` 逐个换成 `_`，再在 64 字节的字符边界处截断。
+///
+/// 这一层必须镜像，不能省：分组名带 `/`（如 `weights/load`）落盘成 `weights_load`，
+/// 判定若按原名拼路径，就永远读不到测量、永远登记跳过——门禁假装绿了，其实那条基准
+/// 一次都没被判过。
+pub(crate) fn on_disk(name: &str) -> String {
+    let mut safe: String = name
+        .chars()
+        .map(|c| match c {
+            '?' | '"' | '/' | '\\' | '*' | '<' | '>' | ':' | '|' | '^' => '_',
+            other => other,
+        })
+        .collect();
+    let mut cut = safe.len().min(NAME_LIMIT);
+    while !safe.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    safe.truncate(cut);
+    safe
+}
+
 /// criterion 的输出目录：`target/criterion/<group>/<benchmark>/new/estimates.json`。
 ///
 /// 目标目录在**工作区根**（`crates/benchmarks/../..`），不在本成员的目录下：criterion 由
@@ -38,8 +63,8 @@ pub(crate) fn estimates(manifest: &Path, group: &str, benchmark: &str) -> PathBu
     manifest
         .join("../..")
         .join("target/criterion")
-        .join(group)
-        .join(benchmark)
+        .join(on_disk(group))
+        .join(on_disk(benchmark))
         .join("new/estimates.json")
 }
 

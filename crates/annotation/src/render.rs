@@ -19,13 +19,21 @@ pub(crate) fn render(declaration: &Declaration, ty: &str) -> String {
 /// 第一块：`__layer_spec()` 用 `OnceLock` 保证 `ContractSpec` 只构造一次。
 fn spec(code: &mut String, declaration: &Declaration, ty: &str) {
     let name = literal(&declaration.name);
-    let shape = shape_of(join(declaration.out.iter().map(|dim| format!("{dim}usize"))));
-    let ops = join(declaration.ops.iter().map(|op| format!("{}.to_string()", literal(op))));
+    let shape = shape_of(join(
+        declaration.out.iter().map(|dim| format!("{dim}usize")),
+    ));
+    let ops = join(
+        declaration
+            .ops
+            .iter()
+            .map(|op| format!("{}.to_string()", literal(op))),
+    );
     code.push_str("#[automatically_derived]\n");
     let _ = writeln!(code, "impl {ty} {{");
     code.push_str("    #[doc(hidden)]\n");
     code.push_str("    fn __layer_spec() -> &'static ::nn::ContractSpec {\n");
-    code.push_str(CONST + "\n");
+    code.push_str(CONST);
+    code.push('\n');
     code.push_str("        SPEC.get_or_init(|| {\n");
     let _ = writeln!(
         code,
@@ -43,7 +51,10 @@ fn spec(code: &mut String, declaration: &Declaration, ty: &str) {
 
 /// 第二块：三个访问器只转发给 [`spec`] 生成的那份 `ContractSpec`。
 fn contract(code: &mut String, declaration: &Declaration, ty: &str) {
-    let _ = writeln!(code, "#[automatically_derived]\nimpl ::nn::Contract for {ty} {{");
+    let _ = writeln!(
+        code,
+        "#[automatically_derived]\nimpl ::nn::Contract for {ty} {{"
+    );
     code.push_str("    fn name(&self) -> &str {\n        <Self>::__layer_spec().name()\n    }\n");
     code.push_str(
         "    fn output(&self) -> &::nn::Shape {\n        <Self>::__layer_spec().output()\n    }\n",
@@ -73,8 +84,16 @@ fn check(code: &mut String, declaration: &Declaration, ty: &str) {
     code.push_str("    #[test]\n    fn the_annotation_still_matches_the_declared_operators() {\n");
     let _ = writeln!(code, "        let spec = <super::{ty}>::__layer_spec();");
     let _ = writeln!(code, "        assert_eq!(spec.name(), {name});");
-    let _ = writeln!(code, "        assert_eq!(spec.output().dims(), &{:?});", declaration.out);
-    let _ = writeln!(code, "        assert_eq!(spec.ops(), &{:?});", declaration.ops);
+    let _ = writeln!(
+        code,
+        "        assert_eq!(spec.output().dims(), &{:?});",
+        declaration.out
+    );
+    let _ = writeln!(
+        code,
+        "        assert_eq!(spec.ops(), &{:?});",
+        declaration.ops
+    );
     code.push_str("    }\n}\n");
 }
 
@@ -96,7 +115,12 @@ pub(crate) fn render_runtime(declaration: &RuntimeDecl, ty: &str) -> String {
     let _ = writeln!(code, "            ${},", declaration.name);
     let axes = join(declaration.out.iter().map(|axis| format!("${axis}")));
     let _ = writeln!(code, "            {},", shape_of(axes));
-    let ops = join(declaration.ops.iter().map(|op| format!("${op}.to_string()")));
+    let ops = join(
+        declaration
+            .ops
+            .iter()
+            .map(|op| format!("${op}.to_string()")),
+    );
     let _ = writeln!(code, "            ::std::vec![{ops}],");
     if let Some(role) = &declaration.role {
         let _ = writeln!(code, "            ${role},");
@@ -111,7 +135,11 @@ fn params(declaration: &RuntimeDecl) -> String {
         .chain(declaration.out.iter())
         .chain(declaration.ops.iter())
         .chain(declaration.role.iter());
-    join(unique(holes).map(|hole| format!("${hole}:expr")))
+    join(
+        unique(holes)
+            .into_iter()
+            .map(|hole| format!("${hole}:expr")),
+    )
 }
 
 /// 去重且保持首次出现顺序：`out = [$dim, $dim]` 只占一个宏参数，却在形状里写两次。
@@ -152,16 +180,23 @@ pub(crate) fn render_model(declaration: &ModelDecl, ty: &str) -> String {
 /// 闭集被绕过时（手写构造了一个未映射的 `dtype` / 未列出的骨架）生成一条 `compile_error!`：
 /// 让注解层自己先红，而不是生成一份指向不存在模块的代码。
 fn closed(declaration: &ModelDecl) -> Option<String> {
-    let (value, what, set) = match DTYPES.contains(&declaration.dtype.as_str()) {
-        false => (&declaration.dtype, "输出类型", DTYPES.as_slice()),
-        true if !SKELETONS.contains(&declaration.skeleton.as_str()) => {
-            (&declaration.skeleton, "骨架", SKELETONS.as_slice())
-        }
-        true => return None,
+    let message = match (
+        DTYPES.contains(&declaration.dtype.as_str()),
+        SKELETONS.contains(&declaration.skeleton.as_str()),
+    ) {
+        (true, true) => return None,
+        (false, _) => format!(
+            "注解层内部错误：`{}` 不是可对拍的 DType（可用：{}）",
+            declaration.dtype,
+            DTYPES.join("、")
+        ),
+        (_, false) => format!(
+            "注解层内部错误：骨架 `{}` 不在闭集内（可用：{}）",
+            declaration.skeleton,
+            SKELETONS.join("、")
+        ),
     };
-    Some(format!(
-        "compile_error!(\"注解层内部错误：{what}`{{}}` 不在闭集内（可用：{{}}）\", {value:?}, {set:?});\n"
-    ))
+    Some(format!("compile_error!({message:?});\n"))
 }
 
 /// 注解字面量与 `Operator` 常量之间的编译期契约：名字逐字节相同、形状相同、`M` 是粒度整数倍。
@@ -191,7 +226,10 @@ fn asserts(code: &mut String, declaration: &ModelDecl, ty: &str) {
         "    assert!({m}usize / group * group == {m}usize, \"生产形状的 M 必须是形状粒度的整数倍\");\n}};\n"
     );
     if declaration.skeleton == "gemv" {
-        let _ = writeln!(code, "const _: () = <{ty} as ::llm_op::gemv::Format>::CHECK;\n");
+        let _ = writeln!(
+            code,
+            "const _: () = <{ty} as ::llm_op::gemv::Format>::CHECK;\n"
+        );
     }
 }
 
@@ -269,12 +307,13 @@ fn dtype(code: &mut String, declaration: &ModelDecl) {
         "            \"注解写 `dtype = {}`，但 `.k` 的可写输出是 `{{}}`：回读按 `MODEL.dtype` 解释，两者必须是同一个类型\",",
         declaration.dtype
     );
-    code.push_str("            signature.output_type().map_or(\"-\", |ctype| ctype.c_name()),\n        );\n");
+    code.push_str(
+        "            signature.output_type().map_or(\"-\", |ctype| ctype.c_name()),\n        );\n",
+    );
 }
 
 /// `__layer_spec()` 里那行 `OnceLock` 静态量；单独提出来只为让 [`spec`] 的 nloc 留在门禁内。
-const CONST: &str =
-    "        static SPEC: ::std::sync::OnceLock<::nn::ContractSpec> = ::std::sync::OnceLock::new();";
+const CONST: &str = "        static SPEC: ::std::sync::OnceLock<::nn::ContractSpec> = ::std::sync::OnceLock::new();";
 
 /// 形状表达式：空形状必须显式给 `Vec<usize>`——`Shape::new([])` 推断不出元素类型。
 fn shape_of(axes: String) -> String {
