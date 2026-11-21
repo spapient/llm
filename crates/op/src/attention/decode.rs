@@ -49,7 +49,7 @@ pub(crate) fn check_decode_len(
 
 /// decode 内核共享：`decode_forward` 与 `decode_flash_forward` 只差 softmax 策略（[`Mode`]）。
 #[allow(clippy::too_many_arguments)]
-fn decode(
+pub(super) fn decode(
     q: &[f32],
     k: &[f32],
     v: &[f32],
@@ -370,4 +370,3 @@ decode_shape_pair!(
     d: usize,
     heads: usize
 );
-

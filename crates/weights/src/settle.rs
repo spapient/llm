@@ -19,9 +19,13 @@ use std::fmt::Write as _;
 
 use diagnostic::Result;
 
-use crate::Archive;
+use crate::axes;
 use crate::json;
-use crate::ledger::SCHEMA;
+use crate::ledger::{self, SCHEMA};
+use crate::stored::lossless_entry;
+use crate::settle_reason::{bits_per, entropy_of, layer_of, reason_of};
+use crate::settle_text::{escape, verify_root};
+use crate::{Archive, Codec, Stored};
 
 /// 小于该字节数的段不值得编码，原样落盘（`passthrough:small`）。
 pub const SMALL_BYTES: usize = 128;
@@ -287,9 +291,65 @@ impl Settlement {
     }
 }
 
-#[cfg(test)]
-pub(crate) use crate::settle_impl::sound_cert;
-pub(crate) use crate::settle_impl::{escape, settle_one, verify_root};
+/// 单段记账：解码往返先定 `bitwise`，再由 codec 与实测字节定量给出原因。
+pub(crate) fn settle_one(archive: &Archive<'_>, seg: &Stored) -> Result<Settled> {
+    let raw_len = seg.logical_len()?;
+    // 引用段的 `len()` 是代表段的帧长；它自己一个字节都不占，所以体积要按 0 记。
+    let volume = if seg.is_ref() { 0 } else { seg.len() };
+    let (entropy, bitwise) = match archive.load(seg) {
+        Ok(bytes) => (entropy_of(&bytes), bytes.len() == raw_len),
+        // 解不开也是账本的一部分：这一条就是"压缩形态没能还原"，而不是"没量到"。
+        Err(_) => (0.0, false),
+    };
+    Ok(Settled {
+        name: seg.name().to_string(),
+        layer: layer_of(seg.name()),
+        raw_len,
+        volume,
+        entropy,
+        quant: seg
+            .quant()
+            .map(|quant| (bits_per(seg, volume), quant.block)),
+        bitwise,
+        lossless: lossless_entry(seg) && bitwise,
+        reason: reason_of(seg, raw_len, volume, entropy, bitwise),
+        cert: certificate_of(archive, seg),
+    })
+}
+
+/// 证书列：段里带的证书自己说不说得通，与“省了多少字节”是两件事。
+///
+/// 只有秩轴段会签发证书，其余轴（字典 / 稀疏 / 量化）与去重引用本来就没有证书可言，记 `none`
+/// 不是“没查到”而是“本不该有”。秩轴段却读不出自洽证书时记 `refused`：那条压缩自称有谱隙
+/// 背书，而背书缺失或自相矛盾，字节再小也不能算“压成了”。
+fn certificate_of(archive: &Archive<'_>, seg: &Stored) -> Cert {
+    if seg.is_ref() || seg.codec() != Codec::Axes {
+        return Cert::None;
+    }
+    match axes::certificate(archive.read(seg)) {
+        Ok(Some(note)) => sound_cert(&note),
+        // 能解成别的轴，说明这条根本没用秩选择。
+        Ok(None) => Cert::None,
+        // 自己的帧都读不成轴，而 `load` 又成功了：证书不在段里。
+        Err(_) => Cert::Refused,
+    }
+}
+
+/// 证书自洽才记 `l0_diagnostic`：不变式全过，且方法与界都是能当上界的那两种。
+///
+/// 写侧只产出这一种口径，所以读侧不再细分：落盘的不是实测残差或不是 L0 诊断界，都只可能是
+/// 别人改过或写坏了，一律按“背不住”处理。
+pub(crate) fn sound_cert(note: &ledger::Note) -> Cert {
+    let usable =
+        note.method == ledger::EpsMethod::Residual && note.bound == ledger::Bound::Diagnostic;
+    if usable && ledger::check(note).is_ok() {
+        Cert::Diagnostic
+    } else {
+        Cert::Refused
+    }
+}
+
+/// 每元素实际占的位数：按打包后的字节数四舍五入，不读方案里的"名义位宽"。
 
 #[cfg(test)]
 #[path = "../tests/settle.rs"]

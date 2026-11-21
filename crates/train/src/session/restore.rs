@@ -5,11 +5,11 @@
 use diagnostic::{Code, Error, Result};
 use shard::Collective;
 
+use crate::Kernel;
 use crate::optimizer::Optimizer;
 use crate::snapshot::{GradAccum, Moments, SlotMoments, Snapshot, Ties};
-use crate::Kernel;
 
-use super::{Session, SITE};
+use super::{SITE, Session};
 
 impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
     /// 把快照状态回载到这个**已装配**会话：矩状态走优化器 restore，累积窗口汇总、绑定表与

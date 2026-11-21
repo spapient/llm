@@ -286,27 +286,26 @@ impl<K: Kernel, O: Optimizer, C: Collective> Learner<K, O, C> {
         grpo(&new_logp, &old_logp, &advantages, &ref_kl, config)
     }
 
-    /// 按度量计算 loss 与命中并记进训练看板。
-    fn record(&mut self, prepared: &Prepared) -> Result<()> {
+    /// 按度量算出一个待记账点：loss、命中、样本数与当前训练步。
+    fn point(&mut self, prepared: &Prepared) -> Result<MetricPoint> {
         let outcome = self.compute_metric(prepared)?;
-        let point = MetricPoint {
+        Ok(MetricPoint {
             step: self.session.step(),
             samples: prepared.labels.len(),
             loss: outcome.loss,
             correct: outcome.correct,
-        };
+        })
+    }
+
+    /// 按度量计算 loss 与命中并记进训练看板。
+    fn record(&mut self, prepared: &Prepared) -> Result<()> {
+        let point = self.point(prepared)?;
         self.board.record(point).map_err(|error| error.with(SITE))
     }
 
     /// 按度量计算 loss 与命中并记进评估独立账表；步号沿用当前训练步，仅作对账标记。
     fn record_eval(&mut self, prepared: &Prepared) -> Result<()> {
-        let outcome = self.compute_metric(prepared)?;
-        let point = MetricPoint {
-            step: self.session.step(),
-            samples: prepared.labels.len(),
-            loss: outcome.loss,
-            correct: outcome.correct,
-        };
+        let point = self.point(prepared)?;
         self.board
             .record_eval(point)
             .map_err(|error| error.with(SITE))

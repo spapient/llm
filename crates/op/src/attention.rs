@@ -261,11 +261,12 @@ pub fn flash_forward(
 }
 
 /// decode 缓冲长度校验：`q`/`out` 是 `q_rows·d`，`k`/`v` 是 `hist·d`；两边行数可以不同。
-
 mod decode;
 
 pub use decode::{
-    decode_flash_forward, decode_flash_forward_heads, decode_forward, decode_forward_heads,
+    decode_flash_forward, decode_flash_forward_batch, decode_flash_forward_batch_var,
+    decode_flash_forward_heads, decode_forward, decode_forward_batch, decode_forward_batch_var,
+    decode_forward_heads,
 };
 
 pub(crate) use decode::check_decode_len;

@@ -550,7 +550,6 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
                 Error::new(Code::Invalid, format!("变量 {} 不是已登记参数槽", var.id())).with(SITE)
             })
     }
-
 }
 
 mod restore;

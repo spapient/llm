@@ -34,7 +34,6 @@
 //! assert!(store.value(y).and_then(|view| view.f32()).is_some());
 //! ```
 
-
 /// 本模块的诊断站点：出错时用它标明"是这一层拒绝了这次请求"。
 pub(crate) const SITE: &str = "train::Buffers";
 

@@ -8,8 +8,7 @@ use diagnostic::{Code, Error, Result};
 
 /// 经典算子的反向公式：几何交给 [`Geometry`]，公式本身只剩"取实例、回传"。
 ///
-/// 声明档与实例化共用同一份算术——声明档就是 `Geometry::declared` 的取值，不存在
-/// "前向一套、反向另一套"的可能。这十条"取实例回传"的例程同构，用一张表展开。
+/// 这十条例程同构，用一张表展开。
 macro_rules! instance_backward {
     ($($name:ident => $op:literal),* $(,)?) => {$(
         pub(super) fn $name(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
@@ -98,44 +97,31 @@ pub(super) fn log(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
 
 /// y = min(a,b)：梯度给较小者；相等给 `a`（避免双计）。
 pub(super) fn min(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
-    let a = &ctx.inputs[0];
-    let b = &ctx.inputs[1];
-    let da = ctx
-        .incoming
-        .iter()
-        .zip(a)
-        .zip(b)
-        .map(|((&g, &x), &y)| if x <= y { g } else { 0.0 })
-        .collect();
-    let db = ctx
-        .incoming
-        .iter()
-        .zip(a)
-        .zip(b)
-        .map(|((&g, &x), &y)| if y < x { g } else { 0.0 })
-        .collect();
-    Ok(vec![da, db])
+    extremum(ctx, |x, y| x <= y, |x, y| y < x)
 }
 
 /// y = max(a,b)：梯度给较大者；相等给 `a`（避免双计）。
 pub(super) fn max(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
+    extremum(ctx, |x, y| x >= y, |x, y| y > x)
+}
+
+/// `min`/`max` 共用的选点反向：`a_wins` / `b_wins` 各自判"该元素拿走上游梯度"，等号只归 `a`。
+fn extremum(
+    ctx: Context<'_>,
+    a_wins: impl Fn(f32, f32) -> bool,
+    b_wins: impl Fn(f32, f32) -> bool,
+) -> Result<Vec<Vec<f32>>> {
     let a = &ctx.inputs[0];
     let b = &ctx.inputs[1];
-    let da = ctx
-        .incoming
-        .iter()
-        .zip(a)
-        .zip(b)
-        .map(|((&g, &x), &y)| if x >= y { g } else { 0.0 })
-        .collect();
-    let db = ctx
-        .incoming
-        .iter()
-        .zip(a)
-        .zip(b)
-        .map(|((&g, &x), &y)| if y > x { g } else { 0.0 })
-        .collect();
-    Ok(vec![da, db])
+    let pick = |wins: &dyn Fn(f32, f32) -> bool| -> Vec<f32> {
+        ctx.incoming
+            .iter()
+            .zip(a)
+            .zip(b)
+            .map(|((&g, &x), &y)| if wins(x, y) { g } else { 0.0 })
+            .collect()
+    };
+    Ok(vec![pick(&a_wins), pick(&b_wins)])
 }
 
 /// y = x·σ(x)：y′ = σ + x·σ(1−σ)，dA = in·y′。

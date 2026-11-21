@@ -1,13 +1,69 @@
-//! [`json`](crate::json) 的机制层：逐字节读取器与数字/转义文法，
-//! 公开面只有 [`parse_with`]，由 [`parse`](crate::json::parse) 与 [`parse_ledger`](crate::json::parse_ledger) 调用。
+//! `json` 的文法实现：逐字节读取器与转义/数字/UTF-8 细节。
+//!
+//! 从 [`crate::json`] 拆出：公开面只留 [`crate::json::Value`] 与两个入口，这里管「一个字符
+//! 序列怎么变成一个值」的全部词法。
 
-use diagnostic::Result;
 use diagnostic::scan::Cursor;
+use diagnostic::Result;
 
-use crate::json::{
-    MAX_DEPTH, Value, code_point, integer_value, is_high_surrogate, is_low_surrogate,
-    sequence_width, simple_escape,
+use crate::json::{MAX_DEPTH, Value};
+
+/// 简单转义表：`\X` 的第二个字节 → 字符，`'\0'` 表示不是简单转义（`u` 另行处理）。
+pub(crate) const SIMPLE: [char; 128] = {
+    let mut table = ['\0'; 128];
+    table[b'"' as usize] = '"';
+    table[b'\\' as usize] = '\\';
+    table[b'/' as usize] = '/';
+    table[b'b' as usize] = '\u{8}';
+    table[b'f' as usize] = '\u{c}';
+    table[b'n' as usize] = '\n';
+    table[b'r' as usize] = '\r';
+    table[b't' as usize] = '\t';
+    table
 };
+
+/// `\X` 的字符：表里没有（或超出 ASCII）就是未知转义。
+pub(crate) fn simple_escape(byte: u8) -> Option<char> {
+    SIMPLE.get(byte as usize).copied().filter(|&ch| ch != '\0')
+}
+
+/// UTF-8 起始字节 → 序列宽度；`None` 表示非法起始字节。
+pub(crate) fn sequence_width(byte: u8) -> Option<usize> {
+    match byte {
+        0x00..=0x7f => Some(1),
+        0xc0..=0xdf => Some(2),
+        0xe0..=0xef => Some(3),
+        0xf0..=0xf7 => Some(4),
+        _ => None,
+    }
+}
+
+/// 码位 → 字符：代理区之外并不都是合法标量值，所以这一步也可能失败。
+pub(crate) fn code_point(cursor: &Cursor<'_>, at: usize, code: u32) -> Result<char> {
+    char::from_u32(code).ok_or_else(|| cursor.fail_at(at, format!("U+{code:04X} 不是合法字符")))
+}
+
+/// 高位代理：`U+D800..=U+DBFF`，后面必须跟一个低位代理。
+pub(crate) fn is_high_surrogate(code: u32) -> bool {
+    (0xd800..=0xdbff).contains(&code)
+}
+
+/// 低位代理：`U+DC00..=U+DFFF`，只有紧跟高位代理时才合法。
+pub(crate) fn is_low_surrogate(code: u32) -> bool {
+    (0xdc00..=0xdfff).contains(&code)
+}
+
+/// 整数字节 → `i64`：前导零在本地拒，范围与解析口径交给 `str::parse`。
+pub(crate) fn integer_value(cursor: &Cursor<'_>, at: usize, bytes: &[u8]) -> Result<i64> {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return Err(cursor.fail_at(at, "整数不是 ASCII"));
+    };
+    if text.len() > 1 && text.trim_start_matches('-').starts_with('0') {
+        return Err(cursor.fail_at(at, format!("整数 `{text}` 不能有前导零")));
+    }
+    text.parse::<i64>()
+        .map_err(|_| cursor.fail_at(at, format!("整数 `{text}` 超出 i64 范围")))
+}
 
 /// 两个入口的唯一差别：[`Reader`] 是否接受小数与指数。
 pub(crate) fn parse_with(text: &str, fractional: bool) -> Result<Value> {
@@ -21,10 +77,10 @@ pub(crate) fn parse_with(text: &str, fractional: bool) -> Result<Value> {
 }
 
 /// 逐字节推进的读取器：[`Cursor`] 负责字节与位置（位置同时是报错坐标），这里只有文法。
-struct Reader<'a> {
-    cursor: Cursor<'a>,
+pub(crate) struct Reader<'a> {
+    pub(crate) cursor: Cursor<'a>,
     /// 数字里是否允许小数与指数：头部不允许（形状与偏移都是整数），账本允许。
-    fractional: bool,
+    pub(crate) fractional: bool,
 }
 
 impl<'a> Reader<'a> {
@@ -282,88 +338,5 @@ impl<'a> Reader<'a> {
         (byte as char)
             .to_digit(16)
             .ok_or_else(|| self.cursor.fail_at(at, "`\\u` 需要 4 位十六进制"))
-    }
-
-    /// 一个数字：整数走 `i64`，小数与指数（只有账本模式接受）按原文保留。
-    fn number(&mut self) -> Result<Value> {
-        let start = self.cursor.pos();
-        let digits = self.integer(start)?;
-        if !matches!(self.cursor.peek(), Some(b'.' | b'e' | b'E')) {
-            let text = &self.cursor.bytes()[start..self.cursor.pos()];
-            return integer_value(&self.cursor, start, text).map(Value::Integer);
-        }
-        if !self.fractional {
-            return Err(self
-                .cursor
-                .fail_at(start, "只接受整数：头部里的形状与偏移不能是小数或指数"));
-        }
-        let whole = self.cursor.pos();
-        self.fraction(start)?;
-        self.decimal(start, digits, whole).map(Value::Decimal)
-    }
-
-    /// 整数部分：可选负号 + 至少一位数字，返回数字起点。
-    fn integer(&mut self, start: usize) -> Result<usize> {
-        self.cursor
-            .advance(usize::from(self.cursor.peek() == Some(b'-')));
-        let digits = self.cursor.pos();
-        if self.mantissa() {
-            return Ok(digits);
-        }
-        Err(self.cursor.fail_at(start, "数字缺少整数部分"))
-    }
-
-    /// 小数与指数部分：`.` 后至少一位数字，`e`/`E` 后可带符号、同样至少一位数字。
-    fn fraction(&mut self, start: usize) -> Result<()> {
-        self.dot(start)?;
-        self.exponent(start)
-    }
-
-    /// 小数部分（可缺）：`.` 之后必须至少一位数字。
-    fn dot(&mut self, start: usize) -> Result<()> {
-        if self.cursor.peek() != Some(b'.') {
-            return Ok(());
-        }
-        self.cursor.advance(1);
-        if self.mantissa() {
-            return Ok(());
-        }
-        Err(self.cursor.fail_at(start, "小数点后缺少数字"))
-    }
-
-    /// 指数部分（可缺）：`e`/`E` 后可带符号，同样必须至少一位数字。
-    fn exponent(&mut self, start: usize) -> Result<()> {
-        if !matches!(self.cursor.peek(), Some(b'e' | b'E')) {
-            return Ok(());
-        }
-        self.cursor.advance(1);
-        self.cursor
-            .advance(usize::from(matches!(self.cursor.peek(), Some(b'+' | b'-'))));
-        if self.mantissa() {
-            return Ok(());
-        }
-        Err(self.cursor.fail_at(start, "指数缺少数字"))
-    }
-
-    /// 数字原文，顺带挡掉前导零（`0.5` 合法，`01.5` 不合法）。
-    fn decimal(&self, start: usize, digits: usize, whole: usize) -> Result<String> {
-        let text = &self.cursor.bytes()[start..self.cursor.pos()];
-        let head = &text[digits - start..whole - start];
-        if head.len() > 1 && head.starts_with(b"0") {
-            let shown = String::from_utf8_lossy(text);
-            return Err(self
-                .cursor
-                .fail_at(start, format!("数字 `{shown}` 不能有前导零")));
-        }
-        Ok(String::from_utf8_lossy(text).into_owned())
-    }
-
-    /// 连续数字段；至少吃到一个才返回 `true`。
-    fn mantissa(&mut self) -> bool {
-        let start = self.cursor.pos();
-        while matches!(self.cursor.peek(), Some(b'0'..=b'9')) {
-            self.cursor.advance(1);
-        }
-        self.cursor.pos() > start
     }
 }

@@ -62,8 +62,10 @@ mod metrics;
 mod parse;
 mod rans;
 mod seg;
+mod seg_decode;
 mod stored;
 mod writer;
+mod writer_plan;
 
 // —— 量化方案：仿射方案与外部量化条目 ——
 pub mod quant;
@@ -79,13 +81,16 @@ mod proof;
 
 // —— 谱隙证书链：f64 单边 Jacobi SVD、谱隙判定账本、五轴无损选码（.u v2 张量级压缩侧车）——
 pub mod axes;
+mod axes_codec;
+mod axes_rank;
 pub mod ledger;
-mod ledger_impl;
+mod ledger_note;
 pub mod svd;
 
 // —— 沉降账本：LLD §4.7 的逐张量体积 / 原因 / 无损判决，全部由落盘字节现算 ——
 pub mod settle;
-mod settle_impl;
+mod settle_reason;
+mod settle_text;
 
 // —— L3 合成律：LLD §4.5 的逐段证书 → 网络级误差上界与适用域 ——
 pub mod l3;
@@ -93,12 +98,18 @@ pub mod l3;
 // —— 外部格式只读适配：safetensors/gguf/bin/json ——
 pub mod bin;
 pub mod gguf;
+mod gguf_dequant;
+mod gguf_reader;
 mod pickle;
+mod pickle_stack;
+mod pickle_storage;
 mod zip;
 pub use lifecycle::import;
 pub mod json;
 mod json_impl;
+mod json_number;
 pub mod safetensors;
+mod safetensors_impl;
 
 // 只读内存映射源：feature + Unix 双门控，复用 `storage` 的唯一 unsafe 岛。
 #[cfg(all(feature = "mmap", unix))]

@@ -10,14 +10,17 @@ use crate::optimizer::{Optimizer, OwnedSlot};
 use crate::pool::Buffers;
 use crate::{Data, Kernel};
 
-use super::{ParamSlot, Session, SlotMeta, SITE};
+use super::{ParamSlot, SITE, Session, SlotMeta};
 
 impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
     /// 汇总各槽的参数/梯度可变视图；任一槽梯度未装入即报错。
     ///
     /// 梯度向量按槽整块取走（[`Buffers::take_gradient`]），步进结束后在
     /// [`Self::return_views`] 归还；参数槽与梯度表因此各只建立一条可变借用。
-    pub(super) fn collect_views(slots: &mut [ParamSlot], buffers: &mut Buffers<K>) -> Result<Vec<OwnedSlot>> {
+    pub(super) fn collect_views(
+        slots: &mut [ParamSlot],
+        buffers: &mut Buffers<K>,
+    ) -> Result<Vec<OwnedSlot>> {
         let meta: Vec<SlotMeta> = slots
             .iter()
             .map(|slot| (slot.var(), slot.role(), slot.matrix()))
@@ -46,7 +49,11 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
 
     /// 把 [`Self::collect_views`] 取走的视图按槽号归位：更新后的参数真值回填进槽，梯度向量
     /// 归还缓冲；是否清空梯度由步进收尾决定。
-    pub(super) fn return_views(slots: &mut [ParamSlot], buffers: &mut Buffers<K>, views: Vec<OwnedSlot>) {
+    pub(super) fn return_views(
+        slots: &mut [ParamSlot],
+        buffers: &mut Buffers<K>,
+        views: Vec<OwnedSlot>,
+    ) {
         for (slot, view) in slots.iter_mut().zip(views) {
             slot.params.copy_from_slice(&view.params);
             buffers.put_back_gradient(slot.var(), view.grads);

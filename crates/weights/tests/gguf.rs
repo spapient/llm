@@ -1,6 +1,6 @@
 //! `gguf` 模块的单元测试。
 use super::*;
-use crate::gguf::f16_to_f32;
+use crate::gguf_dequant::f16_to_f32;
 
 #[test]
 fn half_specials() {

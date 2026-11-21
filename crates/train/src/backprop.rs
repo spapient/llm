@@ -146,8 +146,6 @@ struct Context<'a> {
 
 impl Context<'_> {
     /// 本节点的实例几何：显式登记过就用它，否则取该算子的声明档实例（对拍基准）。
-    ///
-    /// 前向与反向都经 [`Geometry`] 的同一份算术，声明档只是它的一个取值。
     fn instance(&self, op: &str) -> Result<Geometry> {
         match self.geometry {
             Some(geometry) => Ok(geometry),

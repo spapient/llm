@@ -1,10 +1,5 @@
 //! 训练样本：[`Batch`]、[`Dataset`] 与最简实现 [`Chunks`]。
 //!
-//! 这三件套原来是独立成员 `llm-data`：唯一消费者就是本 crate（[`crate::Learner`] 经
-//! `&mut dyn Dataset` 取批、[`crate::Checkpoint`] 记录批形状），因此按"单一消费者"
-//! 判据并入本 crate——样本与训练循环状态同居一个成员，`train → data` 与 `data → diagnostic`
-//! 两条边一起消失，也不再有一个只为 `train` 存在的成员。
-//!
 //! **拥有**：`Batch`、`Dataset`、`Chunks`。**不拥有**：分词（`tokenizer`）、打乱、打包与训练/验证集
 //! 切分（打乱与打包只改变 [`Chunks`] 里游标的推进方式，切分是调用方按行区间的选择）。
 //!
@@ -65,8 +60,8 @@ use diagnostic::{Code, Error, Result};
 
 /// 批几何：`rows`、`cols` 非零且乘积不溢出，返回每批 token 数（`rows * cols`）。
 ///
-/// 两个构造函数共用这一份校验——此前 `Batch::new` 与 `Chunks::new` 各写一套，同一对非法行列在
-/// 两条路径上给出不同措辞。`site` 只用于错误出处，不改判定。
+/// [`Batch::new`] 与 [`Chunks::new`] 共用这一份校验，同一对非法行列给出同一个 `Code::Invalid`。
+/// `site` 只用于错误出处，不改判定。
 fn stride(rows: usize, cols: usize, site: &str) -> Result<usize> {
     if rows == 0 {
         return Err(Error::new(Code::Invalid, "批行数不能为 0").with(site));
@@ -171,9 +166,8 @@ pub struct Chunks<'a> {
 impl<'a> Chunks<'a> {
     /// 由 token 流、每批行数与列宽构造：三者任一不合法都报 `Code::Invalid`。
     ///
-    /// 参数顺序是 `(rows, cols)`，与 [`Batch::new`] 一致。两个构造函数
-    /// 曾经一个收 `(rows, cols)`、另一个收 `(cols, rows)`，而两种顺序都通得过校验——同一对数字换个
-    /// 构造函数就是一次静默转置，正是这套类型要挡住的那类错值。
+    /// 参数顺序是 `(rows, cols)`，与 [`Batch::new`] 一致：两种顺序都能通过几何校验，换个构造函数
+    /// 传入就可能是一次静默转置，因此两条路径必须同序。
     pub fn new(tokens: &'a [u32], rows: usize, cols: usize) -> Result<Self> {
         let stride = stride(rows, cols, "train::Chunks::new")?;
         Ok(Self {

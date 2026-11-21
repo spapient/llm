@@ -64,12 +64,12 @@ pub fn forward_rows(
     cpb: usize,
     dequant: &[f32],
 ) -> diagnostic::Result<()> {
-    let ctx = super::scaled_row_context(x.len(), out.len(), scales, weights.len(), cpb)?;
+    let ctx = super::forward::scaled_row_context(x.len(), out.len(), scales, weights.len(), cpb)?;
     if let Some(affine) = super::simd::admit(cpb, out.len(), ctx, dequant) {
         super::simd::forward(x, weights, scales, affine, out);
         return Ok(());
     }
-    super::forward_rows_scaled(x, weights, scales, out, ctx, row_dot(cpb, dequant));
+    super::forward::forward_rows_scaled(x, weights, scales, out, ctx, row_dot(cpb, dequant));
     Ok(())
 }
 
@@ -81,18 +81,26 @@ pub fn forward_batch(
     x: &[f32],
     weights: &[u8],
     scales: &[f32],
-    geo: super::Geometry,
+    geo: super::forward::Geometry,
     out: &mut [f32],
     cpb: usize,
     dequant: &[f32],
 ) -> diagnostic::Result<()> {
-    super::batch_geometry(x.len(), out.len(), geo)?;
-    let ctx = super::scaled_row_context(geo.m, geo.n, scales, weights.len(), cpb)?;
+    super::forward::batch_geometry(x.len(), out.len(), geo)?;
+    let ctx = super::forward::scaled_row_context(geo.m, geo.n, scales, weights.len(), cpb)?;
     if let Some(affine) = super::simd::admit(cpb, geo.n, ctx, dequant) {
         let rows: Vec<&[f32]> = x.chunks(geo.m).collect();
         super::simd::forward_batch(&rows, weights, scales, affine, out);
         return Ok(());
     }
-    super::forward_batch_rows_scaled(x, weights, scales, geo, out, ctx, row_dot(cpb, dequant));
+    super::forward::forward_batch_rows_scaled(
+        x,
+        weights,
+        scales,
+        geo,
+        out,
+        ctx,
+        row_dot(cpb, dequant),
+    );
     Ok(())
 }

@@ -58,9 +58,7 @@ impl<'a> Loss<'a> {
     pub fn compute(&self, logits: &[f32], labels: &[f32], vocab: usize) -> Result<Outcome> {
         match self {
             Self::Classify => classify(logits, labels, vocab),
-            Self::Distill { teacher, config } => {
-                distill(logits, teacher, labels, vocab, *config)
-            }
+            Self::Distill { teacher, config } => distill(logits, teacher, labels, vocab, *config),
             Self::Grpo {
                 new_logp,
                 old_logp,

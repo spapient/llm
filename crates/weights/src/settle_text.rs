@@ -1,17 +1,16 @@
-//! [`settle`](crate::settle) 的机制层：单段记账、证书判定与账本逐格复核，
-//! 公开面由 [`settle`](crate::settle) 以 `pub(crate)` 再导出。
+//! 账本正文的文本形态：一端 [`Settled::render`] 写，一端 [`verify_root`] 核回。
+//!
+//! 从 [`crate::settle`] 拆出：那里的 [`crate::settle::Settlement::render`] 只负责拼外壳，这里负责
+//! 「一格里该写什么字节」以及「读回来的那格是不是同一份」，写作与校验因此永远在同一份代码里。
 
 use std::fmt::Write as _;
 
-use crate::bad;
 use diagnostic::Result;
 
-use crate::axes;
+use crate::bad;
 use crate::json::Value;
-use crate::ledger::{self, SCHEMA};
-use crate::settle::{Cert, GAIN_FLOOR, MAX_ENTROPY, Reason, SMALL_BYTES, Settled, Settlement};
-use crate::stored::lossless_entry;
-use crate::{Archive, Codec, Stored};
+use crate::ledger::SCHEMA;
+use crate::settle::{Settled, Settlement};
 
 impl Settled {
     /// 单条目的规范 JSON（六格缩进，与 [`Settlement::render`] 拼在一起）。
@@ -71,150 +70,6 @@ fn push_char(out: &mut String, ch: char) {
     } else {
         out.push(ch);
     }
-}
-
-/// 单段记账：解码往返先定 `bitwise`，再由 codec 与实测字节定量给出原因。
-pub(crate) fn settle_one(archive: &Archive<'_>, seg: &Stored) -> Result<Settled> {
-    let raw_len = seg.logical_len()?;
-    // 引用段的 `len()` 是代表段的帧长；它自己一个字节都不占，所以体积要按 0 记。
-    let volume = if seg.is_ref() { 0 } else { seg.len() };
-    let (entropy, bitwise) = match archive.load(seg) {
-        Ok(bytes) => (entropy_of(&bytes), bytes.len() == raw_len),
-        // 解不开也是账本的一部分：这一条就是"压缩形态没能还原"，而不是"没量到"。
-        Err(_) => (0.0, false),
-    };
-    Ok(Settled {
-        name: seg.name().to_string(),
-        layer: layer_of(seg.name()),
-        raw_len,
-        volume,
-        entropy,
-        quant: seg
-            .quant()
-            .map(|quant| (bits_per(seg, volume), quant.block)),
-        bitwise,
-        lossless: lossless_entry(seg) && bitwise,
-        reason: reason_of(seg, raw_len, volume, entropy, bitwise),
-        cert: certificate_of(archive, seg),
-    })
-}
-
-/// 证书列：段里带的证书自己说不说得通，与“省了多少字节”是两件事。
-///
-/// 只有秩轴段会签发证书，其余轴（字典 / 稀疏 / 量化）与去重引用本来就没有证书可言，记 `none`
-/// 不是“没查到”而是“本不该有”。秩轴段却读不出自洽证书时记 `refused`：那条压缩自称有谱隙
-/// 背书，而背书缺失或自相矛盾，字节再小也不能算“压成了”。
-fn certificate_of(archive: &Archive<'_>, seg: &Stored) -> Cert {
-    if seg.is_ref() || seg.codec() != Codec::Axes {
-        return Cert::None;
-    }
-    match axes::certificate(archive.read(seg)) {
-        Ok(Some(note)) => sound_cert(&note),
-        // 能解成别的轴，说明这条根本没用秩选择。
-        Ok(None) => Cert::None,
-        // 自己的帧都读不成轴，而 `load` 又成功了：证书不在段里。
-        Err(_) => Cert::Refused,
-    }
-}
-
-/// 证书自洽才记 `l0_diagnostic`：不变式全过，且方法与界都是能当上界的那两种。
-///
-/// 写侧只产出这一种口径，所以读侧不再细分：落盘的不是实测残差或不是 L0 诊断界，都只可能是
-/// 别人改过或写坏了，一律按“背不住”处理。
-pub(crate) fn sound_cert(note: &ledger::Note) -> Cert {
-    let usable =
-        note.method == ledger::EpsMethod::Residual && note.bound == ledger::Bound::Diagnostic;
-    if usable && ledger::check(note).is_ok() {
-        Cert::Diagnostic
-    } else {
-        Cert::Refused
-    }
-}
-
-/// 每元素实际占的位数：按打包后的字节数四舍五入，不读方案里的"名义位宽"。
-fn bits_per(seg: &Stored, volume: usize) -> u32 {
-    let numel = tensor::product(seg.shape());
-    if numel == 0 {
-        return 0;
-    }
-    // `+ numel / 2` 是四舍五入：1.5 bit 记 2，不把逐组打包的余量说成"没量化"。
-    let bits = (volume as u64).saturating_mul(8).saturating_add(numel / 2) / numel;
-    u32::try_from(bits).unwrap_or(u32::MAX)
-}
-
-/// 原因判定：先看往返，再按容器形态分开答，同一条只落进一档。
-fn reason_of(seg: &Stored, raw_len: usize, volume: usize, entropy: f64, bitwise: bool) -> Reason {
-    if !bitwise {
-        return Reason::Mismatch;
-    }
-    if seg.is_ref() {
-        return Reason::Deduplicated;
-    }
-    // 小段先答：编码的固定开销与熵无关，先判大小才不会把 8 字节的偏置说成"不可压"。
-    if raw_len < SMALL_BYTES {
-        return Reason::Small;
-    }
-    frame_reason(seg.codec(), raw_len, volume, entropy)
-}
-
-/// 按帧形态答：轴字典是被选中的无损形态，`store`/`rans` 才有"省没省"的问题。
-fn frame_reason(codec: Codec, raw_len: usize, volume: usize, entropy: f64) -> Reason {
-    match codec {
-        Codec::Axes => Reason::Axes,
-        Codec::Store => store_reason(entropy),
-        Codec::Rans => rans_reason(raw_len, volume),
-    }
-}
-
-/// `store` 帧：熵到顶说明内容真的没冗余，否则是"有冗余但没编"。
-fn store_reason(entropy: f64) -> Reason {
-    if entropy >= MAX_ENTROPY {
-        Reason::Incompressible
-    } else {
-        Reason::Raw
-    }
-}
-
-/// `rans` 帧：省下的比例够不够抵一次重编码。
-fn rans_reason(raw_len: usize, volume: usize) -> Reason {
-    if gain(raw_len, volume) < GAIN_FLOOR {
-        Reason::BelowGain
-    } else {
-        Reason::Rans
-    }
-}
-
-/// 省下的比例：`1 − volume / raw_len`；逻辑长度为 0 时视作没省。
-fn gain(raw_len: usize, volume: usize) -> f64 {
-    if raw_len == 0 {
-        return 0.0;
-    }
-    1.0 - volume as f64 / raw_len as f64
-}
-
-/// 字节流的 Shannon 熵（bit/byte）：256 桶直方图，空流记 0。
-fn entropy_of(bytes: &[u8]) -> f64 {
-    let mut counts = [0u64; 256];
-    for &byte in bytes {
-        counts[byte as usize] += 1;
-    }
-    let total = bytes.len() as f64;
-    if total == 0.0 {
-        return 0.0;
-    }
-    counts
-        .iter()
-        .filter(|&&count| count > 0)
-        .map(|&count| {
-            let p = count as f64 / total;
-            -p * p.log2()
-        })
-        .sum()
-}
-
-/// 名字里第一个整数分量：`backbone.layers.12.mlp.w` 给 12，`embed` 给 `None`。
-fn layer_of(name: &str) -> Option<u32> {
-    name.split('.').find_map(|part| part.parse().ok())
 }
 
 /// 顶层三格 + 条目数：多一格、少一格、数目不符都在这里作答。
