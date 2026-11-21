@@ -3,9 +3,10 @@
 
 use diagnostic::Result;
 use dtype::DType;
-use wire::{bad, or_bad};
+use wire::bad;
 
 use crate::bin::Tensor;
+use crate::bytes::slice;
 use crate::pickle_storage::into_str;
 
 #[derive(Clone)]
@@ -23,18 +24,73 @@ pub(crate) enum Value {
 }
 
 #[derive(Default)]
-pub(crate) struct Vm {
+pub(crate) struct Vm<'a> {
     pub(crate) stack: Vec<Value>,
     pub(crate) memo: Vec<Value>,
     pub(crate) at: usize,
-    pub(crate) pkl: Vec<u8>,
+    pub(crate) pkl: &'a [u8],
     pub(crate) tensors: Vec<Tensor>,
 }
 
-impl Vm {
-    pub(crate) fn run(pkl: &[u8]) -> Result<Vec<Tensor>> {
+/// 一个 opcode 的处理函数。opcode 字节本身也要传进去：`K`/`M`、`X`/`\x8c`、`q`/`r`/`h`/`j`
+/// 都是一套处理覆盖多个码。
+type Handler = for<'v> fn(&mut Vm<'v>, u8) -> Result<()>;
+
+/// opcode → 处理函数。整张表就是 pickle 的能力清单：删掉一行，那条 opcode 就退化成「未知」错误。
+static OPS: [Option<Handler>; 256] = ops();
+
+const fn ops() -> [Option<Handler>; 256] {
+    let mut table: [Option<Handler>; 256] = [None; 256];
+    // 协议框架：版本号 1 字节、帧长 8 字节，都不影响重建结果。
+    table[b'\x80' as usize] = Some(Vm::skip);
+    table[b'\x95' as usize] = Some(Vm::skip);
+    // 空容器与标记：`(` 是 MARK，其余是空 dict/list 与 `()`。
+    table[b'(' as usize] = Some(Vm::placeholder);
+    table[b'}' as usize] = Some(Vm::placeholder);
+    table[b']' as usize] = Some(Vm::placeholder);
+    table[b')' as usize] = Some(Vm::placeholder);
+    table[b'\x89' as usize] = Some(Vm::placeholder);
+    table[b'\x88' as usize] = Some(Vm::placeholder);
+    table[b'\x81' as usize] = Some(Vm::newobj);
+    // 文本：长度前缀 4 字节（`X`）或 1 字节（`\x8c`）。
+    table[b'X' as usize] = Some(Vm::string);
+    table[b'\x8c' as usize] = Some(Vm::string);
+    // 全局名与不可达值。
+    table[b'G' as usize] = Some(Vm::float);
+    table[b'c' as usize] = Some(Vm::global);
+    table[b'\x93' as usize] = Some(Vm::global_stack);
+    // 整数：`K`/`M` 无符号 1/2 字节，`J` 补码 4 字节，`\x8a`/`\x8b` 变长补码。
+    table[b'K' as usize] = Some(Vm::push_uint);
+    table[b'M' as usize] = Some(Vm::push_uint);
+    table[b'J' as usize] = Some(Vm::push_binint);
+    table[b'\x8a' as usize] = Some(Vm::long);
+    table[b'\x8b' as usize] = Some(Vm::long);
+    // 元组：`t` 读 MARK 起的一段，`\x85..\x87` 按 1/2/3 个成员。
+    table[b't' as usize] = Some(Vm::tuple);
+    table[b'\x85' as usize] = Some(Vm::tuple);
+    table[b'\x86' as usize] = Some(Vm::tuple);
+    table[b'\x87' as usize] = Some(Vm::tuple);
+    // memo 与对象图。
+    table[b'q' as usize] = Some(Vm::memo_op);
+    table[b'r' as usize] = Some(Vm::memo_op);
+    table[b'\x94' as usize] = Some(Vm::memo_op);
+    table[b'h' as usize] = Some(Vm::memo_op);
+    table[b'j' as usize] = Some(Vm::memo_op);
+    table[b'Q' as usize] = Some(Vm::persistent_load);
+    table[b'R' as usize] = Some(Vm::reduce);
+    // 容器写入与出栈。
+    table[b'u' as usize] = Some(Vm::set_item);
+    table[b's' as usize] = Some(Vm::set_item);
+    table[b'a' as usize] = Some(Vm::append);
+    table[b'e' as usize] = Some(Vm::append);
+    table[b'b' as usize] = Some(Vm::discard);
+    table
+}
+
+impl<'a> Vm<'a> {
+    pub(crate) fn run(pkl: &'a [u8]) -> Result<Vec<Tensor>> {
         let mut vm = Vm {
-            pkl: pkl.to_vec(),
+            pkl,
             ..Vm::default()
         };
         vm.execute()?;
@@ -47,106 +103,54 @@ impl Vm {
             if op == b'.' {
                 return Ok(());
             }
-            self.step(op)?;
+            let handler = OPS[usize::from(op)]
+                .ok_or_else(|| bad(format!("未知 pickle opcode 0x{op:02X}")))?;
+            handler(self, op)?;
         }
     }
 
     pub(crate) fn byte(&mut self) -> Result<u8> {
-        let b = *or_bad(self.pkl.get(self.at), "pickle 意外结束")?;
+        let b = *diag::required(self.pkl.get(self.at), "pickle 意外结束")?;
         self.at += 1;
         Ok(b)
     }
 
-    pub(crate) fn bytes(&mut self, n: usize) -> Result<Vec<u8>> {
-        let stop = self
-            .at
-            .checked_add(n)
-            .ok_or_else(|| bad("pickle 字段偏移溢出"))?;
-        let slice = or_bad(self.pkl.get(self.at..stop), "pickle 字段越界")?;
-        self.at = stop;
-        Ok(slice.to_vec())
+    pub(crate) fn bytes(&mut self, n: usize) -> Result<&'a [u8]> {
+        let out = slice(self.pkl, self.at, n)?;
+        self.at += n;
+        Ok(out)
     }
 
     pub(crate) fn uint(&mut self, n: usize) -> Result<u64> {
         let raw = self.bytes(n)?;
-        let value = raw
+        Ok(raw
             .iter()
             .rev()
-            .fold(0u64, |acc, &b| (acc << 8) | u64::from(b));
-        Ok(value)
+            .fold(0u64, |acc, &b| (acc << 8) | u64::from(b)))
     }
 
     pub(crate) fn text(&mut self, n: usize) -> Result<String> {
         let raw = self.bytes(n)?;
-        String::from_utf8(raw).map_err(|_| bad("字符串不是 UTF-8"))
+        std::str::from_utf8(raw)
+            .map(str::to_owned)
+            .map_err(|_| bad("字符串不是 UTF-8"))
     }
 
     pub(crate) fn line(&mut self) -> Result<String> {
         let stop = self
             .pkl
             .get(self.at..)
-            .and_then(|s| s.iter().position(|&b| b == b'\n'));
-        let stop = or_bad(stop, "GLOBAL 缺换行")?;
-        let raw = self.bytes(stop)?;
+            .and_then(|tail| tail.iter().position(|&b| b == b'\n'));
+        let raw = self.bytes(diag::required(stop, "GLOBAL 缺换行")?)?;
         self.byte()?; // 消费换行
-        String::from_utf8(raw).map_err(|_| bad("GLOBAL 不是 UTF-8"))
+        std::str::from_utf8(raw)
+            .map(str::to_owned)
+            .map_err(|_| bad("GLOBAL 不是 UTF-8"))
     }
 
-    pub(crate) fn step(&mut self, op: u8) -> Result<()> {
-        match op {
-            b'\x80' => self.bytes(1).map(drop),
-            b'\x95' => self.bytes(8).map(drop),
-            b'(' | b'}' | b']' | b')' | b'\x89' | b'\x88' => self.placeholder(op),
-            b'\x81' => self.newobj(),
-            _ => self.step_text(op),
-        }
-    }
-
-    pub(crate) fn step_text(&mut self, op: u8) -> Result<()> {
-        match op {
-            b'X' | b'\x8c' => self.string(op),
-            b'G' => self.float(),
-            b'c' => self.global(),
-            _ => self.step_global(op),
-        }
-    }
-
-    pub(crate) fn step_global(&mut self, op: u8) -> Result<()> {
-        match op {
-            b'\x93' => self.global_stack(),
-            b'K' | b'M' => self.push_uint(op),
-            b'J' => self.push_binint(),
-            _ => self.step_sized(op),
-        }
-    }
-
-    /// 带尺寸的操作：`LONG1`/`LONG4` 按 1/4 字节读长度，`TUPLE`/`TUPLE1..3` 读成员。
-    fn step_sized(&mut self, op: u8) -> Result<()> {
-        match op {
-            b'\x8a' => self.long(1),
-            b'\x8b' => self.long(4),
-            b't' | b'\x85'..=b'\x87' => self.tuple(op),
-            _ => self.step_tuple(op),
-        }
-    }
-
-    pub(crate) fn step_tuple(&mut self, op: u8) -> Result<()> {
-        match op {
-            b'q' | b'r' | b'\x94' | b'h' | b'j' => self.memo_op(op),
-            b'Q' => self.persistent_load(),
-            b'R' => self.reduce(),
-            _ => self.step_command(op),
-        }
-    }
-
-    pub(crate) fn step_command(&mut self, op: u8) -> Result<()> {
-        match op {
-            b'u' => self.set_items(),
-            b's' => self.set_item(),
-            b'a' | b'e' => self.append(op),
-            b'b' => self.pop().map(drop),
-            other => Err(bad(format!("未知 pickle opcode 0x{other:02X}"))),
-        }
+    /// `PROTO` 的 1 字节版本号与 `FRAME` 的 8 字节帧长：值不参与重建，字节必须完整存在。
+    pub(crate) fn skip(&mut self, op: u8) -> Result<()> {
+        self.bytes(if op == b'\x95' { 8 } else { 1 }).map(drop)
     }
 
     pub(crate) fn newobj(&mut self) -> Result<()> {
@@ -180,10 +184,10 @@ impl Vm {
         Ok(())
     }
 
-    /// `LONG1`/`LONG4`：小端二进制补码、长度可变；超过 8 字节的整数装不进 `i64`，
+    /// `LONG1`/`LONG4`：长度分别是 1/4 字节，正文是变长小端补码；超过 8 字节装不进 `i64`，
     /// 由 [`Vm::integer`] 统一拒掉。
-    pub(crate) fn long(&mut self, width: usize) -> Result<()> {
-        let len = self.uint(width)? as usize;
+    pub(crate) fn long(&mut self, op: u8) -> Result<()> {
+        let len = self.uint(if op == b'\x8b' { 4 } else { 1 })? as usize;
         let raw = self.bytes(len)?;
         self.integer(raw, true)
     }
@@ -215,13 +219,13 @@ impl Vm {
 
     /// 小端补码字节 → `i64`：`signed` 时按最高位符号扩展（`BININT`/`LONG*`），否则零扩展
     /// （`BININT1`/`BININT2`）；超过 8 字节装不进 `i64`，显式失败。
-    fn integer(&mut self, raw: Vec<u8>, signed: bool) -> Result<()> {
+    fn integer(&mut self, raw: &[u8], signed: bool) -> Result<()> {
         if raw.len() > 8 {
             return Err(bad("整数超过 i64 宽度"));
         }
         let negative = signed && raw.last().is_some_and(|&last| last & 0x80 != 0);
         let mut buf = [if negative { 0xFF } else { 0 }; 8];
-        buf[..raw.len()].copy_from_slice(&raw);
+        buf[..raw.len()].copy_from_slice(raw);
         self.stack.push(Value::Int(i64::from_le_bytes(buf)));
         Ok(())
     }
@@ -233,6 +237,11 @@ impl Vm {
         };
         self.stack.push(Value::Tuple(items));
         Ok(())
+    }
+
+    /// `POP`：丢弃栈顶。
+    pub(crate) fn discard(&mut self) -> Result<()> {
+        self.pop().map(drop)
     }
 }
 
