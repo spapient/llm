@@ -68,13 +68,6 @@ pub mod attention;
 pub mod classic;
 pub mod conv;
 pub mod decl;
-// 契约层（签名、布局、模板词法、代价表达式、语义模型、样本、算子契约）在 `op-spec`：
-// 这一层只回答"算子是什么"，因此可被 `op-kernel` / `op-neural` / `op` 三方同时依赖而不成环。
-// 用 `pub use` 兜住模块路径，12 个下游 crate 的 `op::model::…` / `op::sig::…` 零改动。
-pub use llm_op_spec::{einsum, model, operator, sample, sch, sig, tpl};
-pub use llm_op_spec::same_bytes;
-pub use llm_op_spec::tpl::{formula, parse};
-pub(crate) use llm_op_spec::tpl::guard;
 pub mod deconv;
 pub mod dequant;
 pub mod elementwise;
@@ -100,6 +93,13 @@ pub use dequant::{dequant_i2, dequant_i4, i8 as dequant_i8};
 pub use elementwise::{add_f32, div_f32, max_f32, min_f32, mul_f32, residual_add_f32, sub_f32};
 pub use gemm::{f32 as gemm_f32, i2 as gemm_i2, i4 as gemm_i4, i8 as gemm_i8};
 pub use gemv::{f32 as gemv_f32, i2 as gemv_i2, i4 as gemv_i4, i8 as gemv_i8};
+// 契约层（签名、布局、模板词法、代价表达式、语义模型、样本、算子契约）在 `op-spec`：
+// 这一层只回答"算子是什么"，被 `op-kernel` / `op-neural` / `op` 三方同时依赖而不成环。
+// 用 `pub use` 兜住模块路径，12 个下游 crate 的 `op::model::…` / `op::sig::…` 零改动。
+pub use llm_op_spec::same_bytes;
+pub use llm_op_spec::tpl::{formula, parse};
+pub use llm_op_spec::{einsum, model, operator, sample, sch, sig, tpl};
+pub(crate) use llm_op_spec::tpl::guard;
 pub use matmul::i8 as matmul_i8;
 pub use model::quant;
 pub use reduce::{reduce_max_f32, reduce_sum_f32};

@@ -28,10 +28,6 @@
 
 #![deny(unsafe_code)]
 
-// `#[annotation::model]` 生成的代码用 `::llm_op_spec::..` 指回本 crate：契约路径必须由注解层的
-// 使用者解析得到，而不是硬编码调用方的 crate 名。
-extern crate self as llm_op_spec;
-
 pub mod einsum;
 pub mod model;
 pub mod operator;
