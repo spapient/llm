@@ -61,6 +61,7 @@ pub mod axes;
 mod axes_codec;
 mod axes_rank;
 pub mod ledger;
+mod ledger_impl;
 pub mod svd;
 
 // —— 沉降账本：LLD §4.7 的逐张量体积 / 原因 / 无损判决，全部由落盘字节现算 ——
