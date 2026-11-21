@@ -52,10 +52,10 @@
 
 ### 5. 签名解析单源化
 
-抽一份零依赖、纯字符串的签名规则到 `crates/prim/src/signature.rs`：剥 `/* */` 外壳、去 `cutile-sign:` 标记、按 `/` 切 `(prim, impl)`。
+抽一份零依赖、纯字符串的签名规则到 `crates/prof/src/sign.rs`：剥 `/* */` 外壳、去 `cutile-sign:` 标记、按 `/` 切 `(prim, impl)`。
 
-- `prim` crate 经 `mod` 引入；`build.rs` 经 `include!("src/signature.rs")` 引入同一份文本。构建脚本不能依赖正在构建的 crate 编译产物，但可以 include 同一份纯函数源码——规则因此只有一份，不再双份抄写。
-- 共享层不认识原语闭集、不构造诊断错误：闭集比对、impl 非空判定、错误格式化留在各自调用方（crate 用 `diagnostic::Error`，build.rs 用 `fail`）。
+- `prim`（装载期）与 `prof::codegen`（构建期）各经 `mod` 引入，不再 `include!` 另一 crate 的源文本。生成器原本住在 `crates/prim/generate.rs`，两边靠 `include!("src/signature.rs")` 共用一份纯函数；拆出六个设备 crate 之后，生成器搬进 `prof::codegen`（`prof` 的 `build` feature 之后），因为六台设备都依赖 `prof`——让生成器依赖 `prim` 会绕成环。搬进同一 crate 后，共享靠 `use crate::sign`，`include!` 与随之而来的"同一份文本被编进两个 crate"一起消失。
+- 共享层不认识原语闭集、不构造诊断错误：闭集比对、impl 非空判定、错误格式化留在各自调用方（装载期用 `diagnostic::Error`，构建期用 `codegen::fail`，后者以 `compile_error!` 收尾）。
 
 ### 6. 缓存指纹纳入内核身份
 
