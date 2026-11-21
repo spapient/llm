@@ -248,6 +248,9 @@ pub fn forward_tiled<P: Precision>(
     Ok(())
 }
 
+mod tn;
+
+pub(crate) use tn::dot_lanes;
 pub use tn::{forward_tn_scalar, forward_tn_tiled, matmul_tn_scalar, matmul_tn_tiled};
 
 /// IEEE 容差对拍：`|a - e| ≤ atol + rtol·|e|`。`rtol/atol` 与 lld §10.4 的 IEEE 口径同源。
