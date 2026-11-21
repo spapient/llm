@@ -112,7 +112,7 @@ impl Proof {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         match &self.state {
-            ProofState::Declared(_) => false,
+            ProofState::Declared(count) => *count == 0,
             ProofState::Holds(map) => map.is_empty(),
         }
     }
@@ -245,16 +245,7 @@ impl<'a> Offer<'a> {
     }
 }
 
-/// 同一原语可能有多条签名（`dot` 的 `dp4a` 与标量 `fma`），挑一条来比对：先看覆盖，再看证据，都不覆盖时取差异最少。
-pub(crate) fn select(
-    prof: &Profile,
-    need: &Need,
-    proof: &Proof,
-) -> Option<(Provide, Vec<Mismatch>)> {
-    select_borrowed(prof, need, proof).map(|offer| (offer.have.clone(), offer.diff))
-}
-
-/// 挑出胜出候选，只借档案里的供给、不克隆；确认为失败的报告才在 [`select`] 或构造器里克隆。
+/// 挑出胜出候选，只借档案里的供给、不克隆；确认为失败的报告才在构造器里克隆。
 fn select_borrowed<'a>(prof: &'a Profile, need: &Need, proof: &Proof) -> Option<Offer<'a>> {
     let mut best: Option<Offer<'_>> = None;
     for have in prof.providers(need.prim) {
@@ -294,15 +285,25 @@ pub fn fragment_gaps<'a>(
     prof: &Profile,
     declared: impl Fn(Prim) -> Option<&'a str>,
 ) -> Vec<FragmentGap> {
+    let proof = Proof::declared(prof);
     let mut gaps: Vec<FragmentGap> = Vec::new();
     for variant in &op.variants {
         for need in all_needs(op, variant) {
+            let chosen = select_borrowed(prof, &need, &proof);
+            let declared = declared(need.prim);
+            // 对齐时不构造任何字符串：这是 verify 的常态分支。
+            if matches!(
+                (chosen.as_ref(), declared),
+                (Some(offer), Some(text)) if offer.have.impl_name == text
+            ) {
+                continue;
+            }
             let gap = FragmentGap {
                 prim: need.prim,
-                chosen: select(prof, &need, &Proof::declared(prof)).map(|(have, _)| have),
-                declared: declared(need.prim).map(str::to_string),
+                chosen: chosen.map(|offer| offer.have.clone()),
+                declared: declared.map(str::to_string),
             };
-            if !gap.is_aligned() && !gaps.contains(&gap) {
+            if !gaps.contains(&gap) {
                 gaps.push(gap);
             }
         }

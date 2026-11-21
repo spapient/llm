@@ -41,12 +41,17 @@ pub fn render(
 pub(crate) fn place(text: &mut String, expanded: &str) {
     let trimmed = expanded.trim_end();
     let trimmed = trimmed.strip_suffix(';').unwrap_or(trimmed);
-    let indent: String = text
-        .rsplit('\n')
-        .next()
-        .map(|prefix| " ".repeat(prefix.chars().count()))
-        .unwrap_or_default();
-    text.push_str(&trimmed.replace('\n', &format!("\n{indent}")));
+    // 缩进取自插入点的当前行；单行片段只追加一次，不 `repeat` 缩进、也不走 `replace`。
+    let indent = text.rsplit('\n').next().map_or(0, |prefix| prefix.chars().count());
+    let mut lines = trimmed.split('\n');
+    text.push_str(lines.next().unwrap_or_default());
+    for line in lines {
+        text.push('\n');
+        for _ in 0..indent {
+            text.push(' ');
+        }
+        text.push_str(line);
+    }
 }
 
 /// 片段占位符替换：`$0`..`$9` 是位置参数，`$name` 是命名参数。

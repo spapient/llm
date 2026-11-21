@@ -7,7 +7,7 @@ use crate::prof::Detected;
 use crate::prof::Profile;
 use diagnostic::{Code, Error};
 use op::Op;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 /// 保留的设备名：不走档案查找，按本机探测挑一份档案。命令行默认值在 `cli` 侧另存一份，这里是库内比对口径。
 pub const AUTO_DEVICE: &str = "auto";
@@ -19,12 +19,14 @@ static CATALOGUE: OnceLock<diagnostic::Result<Catalogue>> = OnceLock::new();
 /// 声明 + 档案的集合。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Catalogue {
-    ops: Vec<OpDecl>,
-    profiles: Vec<Profile>,
+    ops: Arc<Vec<OpDecl>>,
+    profiles: Arc<Vec<Profile>>,
 }
 
 impl Catalogue {
     /// 内置集合。失败原样返回：本 crate 的生产代码没有 panic 边界，`builtin_data_is_valid` 才是"内置数据必须能解析"的执行者。
+    ///
+    /// 两份表都存在 [`Arc`] 后面，重复调用只做一次引用计数递增，不再逐条深拷贝整张声明表。
     pub fn try_builtin() -> diagnostic::Result<Self> {
         CATALOGUE
             .get_or_init(|| Self::assemble(op::builtin(), Self::builtin_profiles()?))
@@ -96,8 +98,8 @@ impl Catalogue {
             parsed.push(declaration);
         }
         Ok(Self {
-            ops: parsed,
-            profiles,
+            ops: Arc::new(parsed),
+            profiles: Arc::new(profiles),
         })
     }
 
@@ -162,7 +164,7 @@ impl Catalogue {
     /// 档案自身的问题：类别由档案层给（`ProfileError::code`），这里只补"哪份档案"。
     fn profile_errors(&self, layout: &prim::Layout<'_>) -> Vec<Error> {
         let mut errors = Vec::new();
-        for profile in &self.profiles {
+        for profile in self.profiles.iter() {
             let witnesses = layout as &dyn prof::prof::WitnessLookup;
             if let Err(profile_errors) = profile.validate(Some(witnesses)) {
                 for error in profile_errors {
@@ -177,7 +179,7 @@ impl Catalogue {
     /// 写错签名的文本能通过全部校验，直到构建期才炸。判定与 `cap::negotiate` 同源。
     fn fragment_errors(&self, layout: &prim::Layout<'_>) -> Vec<Error> {
         let mut errors = Vec::new();
-        for profile in &self.profiles {
+        for profile in self.profiles.iter() {
             let ext = profile.meta.emit.ext();
             let set = match layout.fragments(&profile.meta.vendor, ext) {
                 Ok(set) => set,
@@ -186,7 +188,7 @@ impl Catalogue {
                     continue;
                 }
             };
-            for op in &self.ops {
+            for op in self.ops.iter() {
                 errors.extend(gaps_of(op, profile, &set));
             }
         }

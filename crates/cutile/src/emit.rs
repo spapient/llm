@@ -3,6 +3,7 @@
 use crate::SCHEMA_VER;
 use crate::decl::{OpDecl, TileCombo, Variant};
 use crate::prof::{Emit, Profile};
+use core::fmt::Write as _;
 
 /// 一次 emit 的产物：语言 + 文本。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,21 +88,19 @@ pub fn assemble(
     combo: &TileCombo,
     body: &str,
 ) -> Source {
+    // 直接写入 `text`：`format!` 会先分配再拷贝，成文路径上每次 emit 白搭两次分配。
     let mut text = String::new();
-    text.push_str(&format!(
-        "// cutile schema v{SCHEMA_VER} | op={} | skeleton={} | device={}({}) | variant={} | schedule={} | tile=[{}]\n",
-        op.name,
-        op.skeleton,
-        profile.meta.vendor,
-        profile.meta.id,
-        variant.name,
-        variant.schedule,
-        combo.summary()
-    ));
-    text.push_str(&format!(
-        "// emit={} tools={} {} | 由声明层 + 档案层 + 片段层生成，不要手改\n",
+    let _ = writeln!(
+        text,
+        "// cutile schema v{SCHEMA_VER} | op={} | skeleton={} | device={}({}) | variant={} | schedule={} | tile=[{}]",
+        op.name, op.skeleton, profile.meta.vendor, profile.meta.id, variant.name,
+        variant.schedule, combo.summary()
+    );
+    let _ = writeln!(
+        text,
+        "// emit={} tools={} {} | 由声明层 + 档案层 + 片段层生成，不要手改",
         profile.meta.emit, profile.meta.tool, profile.meta.tool_ver
-    ));
+    );
     if !profile.preamble.is_empty() {
         text.push_str(&profile.preamble);
         if !profile.preamble.ends_with('\n') {
