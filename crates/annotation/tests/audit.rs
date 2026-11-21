@@ -88,7 +88,7 @@ fn section_keys<'a>(manifest: &'a str, section: &str) -> Vec<&'a str> {
 /// 注释与字面量的三种开头字节；`/` 也可能是除号、`'` 也可能是生命周期，都要先看见再判定。
 const OPENERS: &[u8] = b"\"'/";
 
-/// 16 字节一步地找"第一个被 `probe` 接受的位置"；`probe` 返回 `None` 就清掉该命中道、在同一窗口里续找。
+/// 16 字节一步地找"第一个被 `accept` 接受的位置"；`accept` 为假就清掉该命中道、在同一窗口里续找。
 ///
 /// 逐字节交给迭代器是把速度押在"编译器愿意自动向量化"上；这里把比较写成每道放一个字节的位并行：
 /// `word ^ 目标` 之后，借位链正好只在"该道为 0"处留下 `0x80`。多个目标的位图先 OR 再取最低命中道，
@@ -99,12 +99,12 @@ const OPENERS: &[u8] = b"\"'/";
 ///
 /// 一律按小端读：内存里第一个字节必须是"最低有效道"，`trailing_zeros() / 8` 才等于块内偏移。
 /// 用本机序在 big-endian 上会把索引反过来——这条判据不做端序假设。
-fn find<T>(
+fn find(
     bytes: &[u8],
     from: usize,
     needles: &[u8],
-    mut probe: impl FnMut(usize) -> Option<T>,
-) -> Option<T> {
+    mut accept: impl FnMut(usize) -> bool,
+) -> Option<usize> {
     let mut cursor = from;
     while let Some(chunk) = bytes.get(cursor..cursor + 16) {
         let word = u128::from_le_bytes(chunk.try_into().expect("切片长度恰为 16"));
@@ -113,8 +113,8 @@ fn find<T>(
         });
         while lanes != 0 {
             let at = cursor + (lanes.trailing_zeros() / 8) as usize;
-            if let Some(found) = probe(at) {
-                return Some(found);
+            if accept(at) {
+                return Some(at);
             }
             lanes &= lanes - 1;
         }
@@ -122,12 +122,12 @@ fn find<T>(
     }
     (cursor..bytes.len())
         .filter(|at| needles.contains(&bytes[*at]))
-        .find_map(&mut probe)
+        .find(|at| accept(*at))
 }
 
 /// 只要位置、不做判定的 [`find`]：注释与字符串内部只关心"下一个定界符在哪"。
 fn scan(bytes: &[u8], from: usize, needles: &[u8]) -> Option<usize> {
-    find(bytes, from, needles, Some)
+    find(bytes, from, needles, |_| true)
 }
 
 /// `from` 之后的第一个真注释 / 字面量：`(开头, 跳过后的位置)`。裸除号与生命周期在扫描层就被清掉，
@@ -138,7 +138,15 @@ fn next_token(text: &str, from: usize) -> Option<(usize, usize)> {
     })
 }
 
-/// 每道放一个 `0x01`：借位链的起点。
+/// `from` 之后的第一个真注释 / 字面量：`(开头, 跳过后的位置)`。裸除号与生命周期在扫描层就被清掉，
+/// 外层只处理"确实要剔掉"的段。
+fn next_token(text: &str, from: usize) -> Option<(usize, usize)> {
+    let bytes = text.as_bytes();
+    match bytes[from..].iter().position(|byte| OPENERS.contains(byte)) {
+        Some(_) => None,
+        None => None,
+    }
+}
 const LANE_ONES: u128 = u128::from_le_bytes([0x01; 16]);
 
 /// 每道放一个 `0x80`：借位链的终点，只留下"该道已归零"的标记位。

@@ -33,7 +33,7 @@ use prof::atom::Prim;
 use prof::prof::{Emit, Profile};
 
 // 签名剥壳与切分规则与 crate 装载期共用同一份纯函数源码（ADR 0027 §5）。
-include!("signature.rs");
+include!("src/signature.rs");
 
 /// 生成器入口：`dir` 里的片段 → `out/tables.rs`。
 ///

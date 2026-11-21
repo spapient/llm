@@ -149,7 +149,9 @@ impl<'a> Flags<'a> {
     pub(crate) fn take_need(&mut self, name: &str) -> Result<String> {
         let owner = self.owner;
         self.take_text(name).ok_or_else(|| {
-            self.invalid(format!("`{owner}` 的必需项 `{name}` 没有落到槽位（文法表与组装点不一致）"))
+            self.invalid(format!(
+                "`{owner}` 的必需项 `{name}` 没有落到槽位（文法表与组装点不一致）"
+            ))
         })
     }
 

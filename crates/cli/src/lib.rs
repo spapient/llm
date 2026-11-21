@@ -138,11 +138,9 @@ fn compute(command: &Command) -> Result<()> {
             accumulation.as_deref(),
             load.as_deref(),
         ),
-        other => Err(Error::new(
-            Code::Internal,
-            format!("命令 `{other:?}` 不是计算命令"),
-        )
-        .with("cli::entry")),
+        other => Err(
+            Error::new(Code::Internal, format!("命令 `{other:?}` 不是计算命令")).with("cli::entry"),
+        ),
     }
 }
 

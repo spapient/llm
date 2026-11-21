@@ -154,11 +154,13 @@ const COMMANDS: &[Row] = &[
             value("--input", "数值列表"),
             value("--device", "设备"),
         ],
-        |flags| Ok(Command::Run {
-            weights: flags.take_need("--weights")?,
-            input: flags.take_text("--input"),
-            device: flags.take_text("--device"),
-        }),
+        |flags| {
+            Ok(Command::Run {
+                weights: flags.take_need("--weights")?,
+                input: flags.take_text("--input"),
+                device: flags.take_text("--device"),
+            })
+        },
     ),
     (
         "train",
@@ -170,22 +172,26 @@ const COMMANDS: &[Row] = &[
             value("--accumulation", "步数"),
             value("--load", "检查点"),
         ],
-        |flags| Ok(Command::Train {
-            lr: flags.take_text("--lr"),
-            warmup: flags.take_text("--warmup"),
-            steps: flags.take_text("--steps"),
-            clip: flags.take_text("--clip"),
-            accumulation: flags.take_text("--accumulation"),
-            load: flags.take_text("--load"),
-        }),
+        |flags| {
+            Ok(Command::Train {
+                lr: flags.take_text("--lr"),
+                warmup: flags.take_text("--warmup"),
+                steps: flags.take_text("--steps"),
+                clip: flags.take_text("--clip"),
+                accumulation: flags.take_text("--accumulation"),
+                load: flags.take_text("--load"),
+            })
+        },
     ),
     (
         "import",
         &[required("--in", "源"), required("--out", "文件")],
-        |flags| Ok(Command::Import {
-            input: flags.take_need("--in")?,
-            output: flags.take_need("--out")?,
-        }),
+        |flags| {
+            Ok(Command::Import {
+                input: flags.take_need("--in")?,
+                output: flags.take_need("--out")?,
+            })
+        },
     ),
     ("inspect", &[required("--in", "文件")], |flags| {
         Ok(Command::Inspect {
@@ -200,19 +206,23 @@ const COMMANDS: &[Row] = &[
     (
         "settle",
         &[required("--in", "文件"), value("--out", "文件")],
-        |flags| Ok(Command::Settle {
-            input: flags.take_need("--in")?,
-            output: flags.take_text("--out"),
-        }),
+        |flags| {
+            Ok(Command::Settle {
+                input: flags.take_need("--in")?,
+                output: flags.take_text("--out"),
+            })
+        },
     ),
     ("platform", &[], |_| Ok(Command::Platform)),
     (
         "audit",
         &[required("--in", "文件"), required("--ledger", "账本")],
-        |flags| Ok(Command::Audit {
-            input: flags.take_need("--in")?,
-            ledger: flags.take_need("--ledger")?,
-        }),
+        |flags| {
+            Ok(Command::Audit {
+                input: flags.take_need("--in")?,
+                ledger: flags.take_need("--ledger")?,
+            })
+        },
     ),
 ];
 
