@@ -517,7 +517,8 @@ fn op_chunked_reduce_matches_reference(op_name: &str) {
 }
 
 /// CUDA 逐点网格真机对拍：纯逐点算子走 [`cutile::execution::cuda_grid_program`]
-/// （`kernel_main<<<N,1>>>` 逐点网格），nvcc 编译 + GPU 派发 + 回读，与标量参考对拍。
+/// （`kernel_main<<<ceil(N/256), 256>>>` 逐点网格，块内 256 线程、末块由守卫挡住），
+/// nvcc 编译 + GPU 派发 + 回读，与标量参考对拍。
 /// 与 Metal 侧的 [`op_matches_reference`] 同口径，只是发射/回读经 `compile_run_cuda`。
 #[cfg(target_os = "windows")]
 fn op_matches_reference_cuda(op_name: &str) {
@@ -537,8 +538,11 @@ fn op_matches_reference_cuda(op_name: &str) {
 
     let device = cutile::execution::cuda_grid_program(&catalogue, &dirs, op_name, m, n)
         .expect("内核应能生成");
-    let program = engine::cuda::cuda_point_driver(&device, &decl.signature, &sample)
-        .expect("host 驱动应能生成");
+    let threads: usize = 256;
+    let blocks = (scalar_len(&decl, &sample) as usize).div_ceil(threads);
+    let program =
+        engine::cuda::cuda_point_driver(&device, &decl.signature, &sample, blocks, threads)
+            .expect("host 驱动应能生成");
     let (_counts, bits) =
         cutile::witness::run_cuda(&profile, &dirs, &program, op_name).expect("CUDA 真机执行");
 
