@@ -9,7 +9,7 @@
 mod support;
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use op::{attention, attention::tiled};
+use op::attention;
 use std::hint::black_box;
 
 /// 序列长 `s`（prefill 代表值）。

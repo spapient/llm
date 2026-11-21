@@ -11,7 +11,7 @@ submission contract — and the one place that asks "can this machine run this r
 | `radix` | which prefix is already computed? (radix block tree over page tables) |
 | `ifb` | which three constraints are being decided? (`Budget` / `Candidate` / `Phase` / `pack`) |
 | `dialect` / `cuda` / `msl` | what source runs this family? (`Dialect` lowering primitives; CUDA + Metal vendor drivers) |
-| `metal_host` | how does a Metal kernel reach the GPU? (`xcrun metal` → `metallib` → host driver → readback) |
+| `metal::host` | how does a Metal kernel reach the GPU? (`xcrun metal` → `metallib` → host driver → readback) |
 | `metal_pipeline` | which stages and host folds does a chunked family need? (`reduce` / `rmsnorm` / `softmax` / `scan`) |
 | `tiled` | how is a launch shaped? (`Flash { seq, dim, threads, block }`, `lanes` / `tail`) |
 | `backends` | which compiler and device exist here? (`nvcc` / `xcrun metal` / MSVC probe) |
