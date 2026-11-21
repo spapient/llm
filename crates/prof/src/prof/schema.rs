@@ -57,34 +57,74 @@ fn split(text: &str, delimiter: char) -> Vec<String> {
 impl Profile {
     /// 从构建期展开的表解析（表由 [`crate::embedded`] 给出）；闭集与见证校验留给 [`Profile::validate`]。
     pub fn parse(table: &Table) -> Result<Self, ProfileError> {
-        let meta = table.table("meta").ok_or_else(|| missing("meta"))?;
-        let meta = parse_meta(meta)?;
+        let meta = meta_of(table)?;
+        let device = fingerprint_and_spaces(table)?;
+        let capability = capability_sections(table)?;
         let (flags, preamble, headers) = parse_compile(table);
         Ok(Self {
             meta,
-            fingerprint: parse_fingerprint(table)?,
-            spaces: parse_spaces(table)?,
+            fingerprint: device.fingerprint,
+            spaces: device.spaces,
             mem: parse_mem(table),
             simt: parse_simt(table),
-            units: parse_units(table)?,
-            provides: parse_provides(table)?,
-            peak: parse_peak(table)?,
+            units: capability.units,
+            provides: capability.provides,
+            peak: capability.peak,
             flags,
             preamble,
             headers,
         })
     }
 }
+/// `[meta]` 段定位：缺段报 `meta`，其余交给 [`parse_meta`]。
+fn meta_of(table: &Table) -> Result<Meta, ProfileError> {
+    let meta = table.table("meta").ok_or_else(|| missing("meta"))?;
+    parse_meta(meta)
+}
 /// `[meta]` 段：厂商、型号、输出语言、工具名与核对日期；不核对工具链与本机是否一致。
 fn parse_meta(table: &Table) -> Result<Meta, ProfileError> {
     Ok(Meta {
-        vendor: text(table, "vendor", "meta.vendor")?.to_string(),
-        id: text(table, "id", "meta.id")?.to_string(),
-        emit: closed::<Emit>(text(table, "emit", "meta.emit")?, "meta.emit")?,
-        tool: text(table, "tools", "meta.tools")?.to_string(),
+        vendor: named(table, "vendor", "meta.vendor")?,
+        id: named(table, "id", "meta.id")?,
+        emit: emit_of(table)?,
+        tool: named(table, "tools", "meta.tools")?,
         tool_ver: or_dash(table, "tool_ver"),
         checked: or_dash(table, "checked"),
     })
+}
+/// 一段必填字符串：缺键或不是字符串都报 `meta.<键>` 定位。
+fn named(table: &Table, key: &str, field: &str) -> Result<String, ProfileError> {
+    Ok(text(table, key, field)?.to_string())
+}
+/// `[meta].emit`：必须在 [`Emit`] 闭集里。
+fn emit_of(table: &Table) -> Result<Emit, ProfileError> {
+    closed::<Emit>(text(table, "emit", "meta.emit")?, "meta.emit")
+}
+/// 指纹与存储层：[`Self::parse`] 的两段定位描述，失败信息互不牵连。
+fn fingerprint_and_spaces(table: &Table) -> Result<Device, ProfileError> {
+    Ok(Device {
+        fingerprint: parse_fingerprint(table)?,
+        spaces: parse_spaces(table)?,
+    })
+}
+/// 设备段的前两节：指纹规则与存储层名字映射。
+struct Device {
+    fingerprint: Vec<(String, MatchRule)>,
+    spaces: Vec<(Space, String)>,
+}
+/// 能力三件套：执行单元、峰值与 `[[provides]]`（协商只看这三段）。
+fn capability_sections(table: &Table) -> Result<Capability, ProfileError> {
+    Ok(Capability {
+        units: parse_units(table)?,
+        peak: parse_peak(table)?,
+        provides: parse_provides(table)?,
+    })
+}
+/// 设备段的后三节：执行单元、峰值与能力条目。
+struct Capability {
+    units: Vec<Unit>,
+    peak: Peak,
+    provides: Vec<Provide>,
 }
 /// `[fingerprint]` 段：规则直接写在段下，或写在 `match = { ... }` 里（README §5.3）。
 fn parse_fingerprint(table: &Table) -> Result<Vec<(String, MatchRule)>, ProfileError> {

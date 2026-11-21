@@ -9,17 +9,23 @@ pub(super) fn each_name(
 ) -> Result<(), ProfileError> {
     match value {
         Value::Str(text) => each(text),
-        Value::Array(items) => {
-            for item in items {
-                let Value::Str(text) = item else {
-                    return Err(bad(&field, "数组里只能是字符串"));
-                };
-                each(text)?;
-            }
-            Ok(())
-        }
+        Value::Array(items) => each_in_array(field, items, each),
         _ => Err(bad(field, "只接受字符串或字符串数组")),
     }
+}
+/// 数组形态：逐项必须是字符串，遇到别的类型就报错（不静默跳过）。
+fn each_in_array(
+    field: impl fmt::Display,
+    items: &[Value],
+    mut each: impl FnMut(&str) -> Result<(), ProfileError>,
+) -> Result<(), ProfileError> {
+    for item in items {
+        let Value::Str(text) = item else {
+            return Err(bad(&field, "数组里只能是字符串"));
+        };
+        each(text)?;
+    }
+    Ok(())
 }
 /// 一组存储层名字：每个都必须在 [`Space`] 闭集里。
 pub(super) fn parse_space_set(
@@ -34,21 +40,36 @@ pub(super) fn parse_space_set(
 }
 /// 一条 `[[provides]]`：认得的键各有分支，其余一律当属性（键还要过 [`AttrKey`] 闭集）。
 pub(super) fn parse_provide(entry: &Table, index: usize) -> Result<Provide, ProfileError> {
+    let mut provide = head_of(entry, index)?;
+    provide_axes(&mut provide, entry, index)?;
+    provide_types(&mut provide, entry, index)?;
+    provide_tail(&mut provide, entry, index)?;
+    Ok(provide)
+}
+/// 一条 `[[provides]]` 的头两项：`prim` 必填且必须在闭集里，`impl` 缺省为 `-`。
+fn head_of(entry: &Table, index: usize) -> Result<Provide, ProfileError> {
     let field = at(index, "prim");
     let prim = closed::<Prim>(text(entry, "prim", field)?, field)?;
-    let mut provide = Provide::of(prim, entry.string("impl").unwrap_or("-"));
-    // 三条区间：主维度（`m` / `bytes` / `extent` 三选一）与 `n` / `k`。
+    Ok(Provide::of(prim, entry.string("impl").unwrap_or("-")))
+}
+/// 三条区间：主维度（`m` / `bytes` / `extent` 三选一）与 `n` / `k`。
+fn provide_axes(provide: &mut Provide, entry: &Table, index: usize) -> Result<(), ProfileError> {
     provide.extent = span_of(entry, index, &["m", "bytes", "extent"], EXTENT_DETAIL)?;
     provide.n = span_of(entry, index, &["n"], AXIS_DETAIL)?;
     provide.k = span_of(entry, index, &["k"], AXIS_DETAIL)?;
-    // `dt` / `space` 缺省为空集，`grade` 必填。
+    Ok(())
+}
+/// `dt` / `space` 缺省为空集，`grade` 必填。
+fn provide_types(provide: &mut Provide, entry: &Table, index: usize) -> Result<(), ProfileError> {
     provide.dt = dtype_set(entry, index)?;
     provide.space = space_set(entry, index)?;
     provide.grade = grade_of(entry, index)?;
-    // 见证与其余属性：两者都只在签名写完之后才看得懂。
+    Ok(())
+}
+/// 见证与其余属性：两者都只在签名写完之后才看得懂。
+fn provide_tail(provide: &mut Provide, entry: &Table, index: usize) -> Result<(), ProfileError> {
     provide.witness = witness_of(entry, index)?;
-    attrs(entry, index, &mut provide)?;
-    Ok(provide)
+    attrs(entry, index, provide)
 }
 /// 一组同义维度：没写就是不限，多写就是错，写了就要能解析。
 pub(super) fn span_of(

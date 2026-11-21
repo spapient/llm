@@ -70,26 +70,24 @@ pub mod conv;
 pub mod decl;
 pub mod deconv;
 pub mod dequant;
-pub mod dropout;
 pub mod einsum;
 pub mod elementwise;
 pub mod fast;
-pub mod formula;
 pub mod gemm;
 pub mod gemv;
-mod guard;
-pub mod init;
 pub mod matmul;
 pub mod model;
 pub mod norm;
 pub mod operator;
-pub mod rnd;
 pub(crate) use tpl::parse;
 pub mod reduce;
+pub mod sample;
 pub mod scan;
 pub mod sch;
 pub mod sig;
 pub mod tpl;
+pub use tpl::formula;
+pub(crate) use tpl::guard;
 pub mod unary;
 
 // 一元 / 二元 / 归约 / 反量化 / GEMV / GEMM / 注意力骨架内的声明式子模块，re-export 到 crate 根保持 `op::<name>::MODEL` / `forward` 路径。
@@ -108,6 +106,7 @@ pub use gemv::{f32 as gemv_f32, i2 as gemv_i2, i4 as gemv_i4, i8 as gemv_i8};
 pub use matmul::i8 as matmul_i8;
 pub use model::quant;
 pub use reduce::{reduce_max_f32, reduce_sum_f32};
+pub use sample::{dropout, init, rnd};
 pub use scan::{Scalar, f32 as scan_f32};
 pub use sch::layout;
 pub use unary::{

@@ -1,4 +1,4 @@
-//! 解包点积的向量通道：`n·m` 点积、4 列累加器、权重按 [`BLOCK`]（即 [`TN_COLS`]）驻留。
+//! 解包点积的向量通道：`n·m` 点积、4 列累加器、4 行权重与一份 `x` 窗口在 L1 里轮转。
 //!
 //! 标量叶（[`super::packed::dot_row`]）每读一个码要做三件事：查反量化表、乘 `x`、加进**同一条**
 //! 串行累加链。后两件是延迟问题——一行的和必须按顺序进同一个 `f32`，后一项要等前一项舍入，
@@ -44,16 +44,11 @@ use std::simd::prelude::{SimdFloat, SimdUint};
 use std::simd::{Simd, StdFloat};
 
 use super::ScaledRow;
-use crate::matmul::TN_COLS;
-
-/// 一次驻留的权重行数（列块宽度），与 prefill 线性层同一个 [`TN_COLS`]。
-///
-/// 一个块内 [`TN_COLS`] 行权重按 16 字节窗口轮转：块内权重窗口 `32 × 16 B = 512 B`、一行的 `x`
-/// 窗口 `16 码 × 4 B = 64 B` 都在 L1。块宽是 prefill 线性层已经量过的同一个预算——再大就开始
-/// 挤掉 `x`。
-const BLOCK: usize = TN_COLS;
 
 /// 4 列累加器：一次算 4 行，4 条向量链各持一组寄存器，一份 `x` 载入摊到 4 行。
+///
+/// 4 行权重按 16 字节窗口轮转：权重窗口 `4 × 16 B = 64 B`、一行的 `x` 窗口 `16 码 × 4 B = 64 B`
+/// 都远在 L1 之内。列数再加密不再有收益——`COLS = 8` 因 16 条累加链溢出到栈帧，实测慢 47%。
 const COLS: usize = 4;
 
 /// 反量化表的仿射零：`table[code] == code - zero` 时返回 `zero`，否则 `None`（走标量叶）。
@@ -171,49 +166,39 @@ fn run(plan: &Plan<'_>, out: &mut [f32]) {
     }
 }
 
-/// 列块遍历：每 [`BLOCK`] 列一块，块内 4 列一组、每组 4 行权重与一行的 `x` 窗口在 L1 里轮转。
-///
-/// 不足 4 列的尾部回到 `R = 1`（同一个 `dot`、同一副累加器形态），所以 `n` 不必是 4 的倍数。
+/// 列遍历：整块走 `R = COLS`，不足一块的尾部逐列走 `R = 1`（同一个 `dot`、同一副累加器
+/// 形态），所以 `n` 不必是 `COLS` 的倍数。
 fn columns<const CPB: usize, const LANES: usize>(plan: &Plan<'_>, out: &mut [f32]) {
+    let n = out.len() / plan.inputs.len();
+    let mut j = 0;
+    while j + COLS <= n {
+        strip::<CPB, LANES, COLS>(plan, out, n, j);
+        j += COLS;
+    }
+    if j < n {
+        strip::<CPB, LANES, 1>(plan, out, n, j);
+    }
+}
+
+/// 一列块：`R` 行权重与同一段 `x` 窗口在 L1 里轮转；权重与标度切片与行无关，只在块首取一次。
+fn strip<const CPB: usize, const LANES: usize, const R: usize>(
+    plan: &Plan<'_>,
+    out: &mut [f32],
+    n: usize,
+    j: usize,
+) {
     let (row, groups, group) = (
         plan.affine.ctx.row,
         plan.affine.ctx.groups,
         plan.affine.ctx.group,
     );
-    let n = out.len() / plan.inputs.len();
-    let mut j = 0;
-    while j < n {
-        let block = (j + BLOCK).min(n);
-        while j < block {
-            let width = if block - j >= COLS { COLS } else { 1 };
-            for (r, input) in plan.inputs.iter().enumerate() {
-                let dest = &mut out[r * n + j..][..width];
-                let (w, s) = (
-                    &plan.weights[j * row..][..width * row],
-                    &plan.scales[j * groups..][..width * groups],
-                );
-                if width == COLS {
-                    dest.copy_from_slice(&dot::<CPB, LANES, COLS>(
-                        w,
-                        row,
-                        s,
-                        input,
-                        group,
-                        plan.affine.zero,
-                    ));
-                } else {
-                    dest.copy_from_slice(&dot::<CPB, LANES, 1>(
-                        w,
-                        row,
-                        s,
-                        input,
-                        group,
-                        plan.affine.zero,
-                    ));
-                }
-            }
-            j += width;
-        }
+    let (w, s) = (
+        &plan.weights[j * row..][..R * row],
+        &plan.scales[j * groups..][..R * groups],
+    );
+    for (r, input) in plan.inputs.iter().enumerate() {
+        let dest = &mut out[r * n + j..][..R];
+        dest.copy_from_slice(&dot::<CPB, LANES, R>(w, row, s, input, group, plan.affine.zero));
     }
 }
 
@@ -240,27 +225,38 @@ fn dot<const CPB: usize, const LANES: usize, const R: usize>(
     assert!(groups > 0, "一组都凑不满的形状在 admit 就该被挡下");
     let shift = Simd::<f32, LANES>::splat(zero);
     let mut running = [Simd::<f32, LANES>::splat(0.0); R];
-    // 组号在 R 行之间共用（每行都有这一组的标度、权重行也都按同一组号切），不是"遍历某一条
-    // 切片"——按下标走组号，行号由内层 `r` 给出。
-    #[allow(clippy::needless_range_loop)]
     for g in 0..groups {
         let at = g * per_group;
-        let mut acc = [Simd::<f32, LANES>::splat(0.0); R];
-        for slot in 0..CPB {
-            for chunk in (at..at + per_group).step_by(LANES) {
-                let xs = Simd::<f32, LANES>::from_slice(&input[slot * row + chunk..][..LANES]);
-                for (r, acc) in acc.iter_mut().enumerate() {
-                    let bytes = Simd::<u8, LANES>::from_slice(&w[r * row + chunk..][..LANES]);
-                    let value = codes::<CPB, LANES>(bytes, slot).cast::<f32>() - shift;
-                    *acc = value.mul_add(xs, *acc);
-                }
-            }
-        }
+        let acc = group_acc::<CPB, LANES, R>(w, row, input, at, per_group, shift);
         for (r, (acc, running)) in acc.iter().zip(running.iter_mut()).enumerate() {
             *running = acc.mul_add(Simd::splat(s[r * groups + g]), *running);
         }
     }
     running.map(SimdFloat::reduce_sum)
+}
+
+/// 一组：`CPB` 个槽位 × `per_group / LANES` 段，`R` 条车道链各累加一份。
+#[inline]
+fn group_acc<const CPB: usize, const LANES: usize, const R: usize>(
+    w: &[u8],
+    row: usize,
+    input: &[f32],
+    at: usize,
+    per_group: usize,
+    shift: Simd<f32, LANES>,
+) -> [Simd<f32, LANES>; R] {
+    let mut acc = [Simd::<f32, LANES>::splat(0.0); R];
+    for slot in 0..CPB {
+        for chunk in (at..at + per_group).step_by(LANES) {
+            let xs = Simd::<f32, LANES>::from_slice(&input[slot * row + chunk..][..LANES]);
+            for (r, acc) in acc.iter_mut().enumerate() {
+                let bytes = Simd::<u8, LANES>::from_slice(&w[r * row + chunk..][..LANES]);
+                let value = codes::<CPB, LANES>(bytes, slot).cast::<f32>() - shift;
+                *acc = value.mul_add(xs, *acc);
+            }
+        }
+    }
+    acc
 }
 
 /// 第 `slot` 个码的 `LANES` 个无符号码值：低位槽在前，`mask = (1 << width) - 1`。

@@ -73,7 +73,9 @@ pub use mamba::{Carry, Mamba};
 pub use mhc::{MHC_STREAMS, Mhc};
 
 #[doc(inline)]
-pub use mix::{Audit, Encoder, Events, Lif, accumulate, encode_id, steepest};
+pub use mix::{
+    Audit, Encoder, Events, Lif, accumulate, cont, encode_id, gate, steepest, synthesize,
+};
 
 #[doc(inline)]
 pub use mla::{

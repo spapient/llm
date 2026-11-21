@@ -90,7 +90,7 @@ pub fn signal_rank(sigma: &[f64]) -> Option<usize> {
 
 /// 对行主序 `a[m*n]` 做 SVD。
 pub fn compute(a: &[f64], m: usize, n: usize) -> Result<Svd> {
-    if m == 0 || n == 0 || a.len() != m * n {
+    if !fits(a.len(), m, n) {
         return Err(Error::new(
             Code::Invalid,
             format!("SVD: 形状不合法 m={m} n={n} len={}", a.len()),
@@ -98,8 +98,21 @@ pub fn compute(a: &[f64], m: usize, n: usize) -> Result<Svd> {
         .with("svd::compute"));
     }
     let k = m.min(n);
-    // 工作矩阵用列主序：Jacobi 全程都在列对上做点积/旋转，列连续存放才能命中缓存
-    // （行主序下 n=1024 的列访问步长 8KiB，每次都是缓存未命中）。输出仍按约定行主序。
+    let (mut u, mut v) = column_major(a, m, n);
+    orthogonalize(&mut u, &mut v, m, n);
+    let sigma = singular_values(&mut u, m, n);
+    let (sigma, u, v) = sorted_columns(&sigma, &u, &v, m, n, k);
+    Ok(Svd { sigma, u, v, m, n })
+}
+
+/// 形状自洽：零维与长度不符是同一类调用错误，分开写只会让 `compute` 多两条分支。
+fn fits(len: usize, m: usize, n: usize) -> bool {
+    m != 0 && n != 0 && len == m * n
+}
+
+/// 工作矩阵 `u` 转列主序、`v` 置单位阵：Jacobi 全程都在列对上做点积/旋转，列连续存放才能
+/// 命中缓存（行主序下 n=1024 的列访问步长 8KiB，每次都是缓存未命中）。输出仍按约定行主序。
+fn column_major(a: &[f64], m: usize, n: usize) -> (Vec<f64>, Vec<f64>) {
     let mut u = vec![0.0f64; m * n];
     for j in 0..n {
         for i in 0..m {
@@ -110,10 +123,7 @@ pub fn compute(a: &[f64], m: usize, n: usize) -> Result<Svd> {
     for j in 0..n {
         v[j * n + j] = 1.0;
     }
-    orthogonalize(&mut u, &mut v, m, n);
-    let sigma = singular_values(&mut u, m, n);
-    let (sigma, u, v) = sorted_columns(&sigma, &u, &v, m, n, k);
-    Ok(Svd { sigma, u, v, m, n })
+    (u, v)
 }
 
 /// 反复扫描直到收敛；硬上限防止病态输入死循环。
