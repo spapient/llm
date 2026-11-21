@@ -63,8 +63,14 @@ fn the_measured_p50_backfills_effective_cost_coefficients() {
     // 0.7 MB / 1.467 ms ≈ 0.477 GB/s → 4.77e8 B/s；2.1 MFLOP / 1.467 ms ≈ 1.43 GFLOP/s。
     let coefficients = cost_coefficients(700_000, 2.1e6, 1.467e6).expect("有效计时");
     assert!((coefficients.bw - 0.477e9).abs() < 1e7, "{coefficients:?}");
-    assert!((coefficients.flops - 1.43e9).abs() < 1e7, "{coefficients:?}");
-    assert!(cost_coefficients(1, 1.0, 0.0).is_none(), "耗时为 0 无法回填");
+    assert!(
+        (coefficients.flops - 1.43e9).abs() < 1e7,
+        "{coefficients:?}"
+    );
+    assert!(
+        cost_coefficients(1, 1.0, 0.0).is_none(),
+        "耗时为 0 无法回填"
+    );
 }
 
 #[test]

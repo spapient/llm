@@ -1,4 +1,4 @@
-//! 单 kernel 级结构化 AST（ADR 0017 的 L1）。
+//! 职责：单 kernel 级结构化 AST（ADR 0017 的 L1）。
 
 use crate::decl::{OpDecl, TileCombo};
 use crate::substitute::{self, Arg, FragmentSet, Segment, error, lex};

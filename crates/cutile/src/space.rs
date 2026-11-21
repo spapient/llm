@@ -1,4 +1,4 @@
-//! 三级存储：语义名映射、容量校验、对齐校验（README §6.3）。
+//! 职责：三级存储：语义名映射、容量校验、对齐校验（README §6.3）。
 
 use crate::atom::Space;
 use crate::prof::Profile;

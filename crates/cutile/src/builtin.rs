@@ -1,4 +1,4 @@
-//! 内置声明与档案：随 crate 编译，不依赖工作目录。
+//! 职责：内置声明与档案：随 crate 编译，不依赖工作目录。
 
 use crate::cap;
 use crate::decl::OpDecl;

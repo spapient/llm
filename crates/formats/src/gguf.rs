@@ -323,13 +323,13 @@ fn list(cursor: &mut Cursor<'_>, depth: usize) -> Result<Value> {
         return Err(bad("数组嵌套过深"));
     }
     let kind = cursor.word()?;
-    let count = usize::try_from(cursor.wide()?).map_err(|_| bad("数组长度溢出"))?;
-    if count > cursor.rest() {
+    let count = cursor.wide()?;
+    if count > cursor.rest() as u64 {
         return Err(bad("数组元素数超过剩余字节"));
     }
     Ok(Value::Arr(records(
         cursor,
-        count as u64,
+        count,
         "数组长度溢出",
         |at| value(at, kind, depth + 1),
     )?))

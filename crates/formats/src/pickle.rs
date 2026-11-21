@@ -306,24 +306,14 @@ fn persistent_load(vm: &mut Vm<'_>, _op: u8) -> Result<()> {
     Ok(())
 }
 
-/// `REDUCE`：弹出实参与可调用对象，只认张量重建与 `OrderedDict` 两种构造。
+/// `REDUCE`：弹出实参与可调用对象，只认张量重建与 `OrderedDict` 两种构造——
+/// 可调用对象必须是 `GLOBAL`，其余一律显式失败。
 fn reduce(vm: &mut Vm<'_>, _op: u8) -> Result<()> {
     let args = vm.pop()?;
-    let (module, name) = global_of(vm)?;
-    dispatch_reduce(vm, args, &module, &name)
-}
-
-/// 可调用对象必须是 `GLOBAL`。
-fn global_of(vm: &mut Vm<'_>) -> Result<(String, String)> {
-    match vm.pop()? {
-        Value::Global { module, name } => Ok((module, name)),
-        _ => Err(bad("REDUCE 的可调用对象不是 GLOBAL")),
-    }
-}
-
-/// 按全局名分派到张量重建或 `OrderedDict` 构造。
-fn dispatch_reduce(vm: &mut Vm<'_>, args: Value, module: &str, name: &str) -> Result<()> {
-    match (module, name) {
+    let Value::Global { module, name } = vm.pop()? else {
+        return Err(bad("REDUCE 的可调用对象不是 GLOBAL"));
+    };
+    match (module.as_str(), name.as_str()) {
         ("torch._utils", "_rebuild_tensor_v2") => vm.rebuild_tensor(args),
         ("collections", "OrderedDict") => {
             vm.stack.push(Value::Dict(Vec::new()));

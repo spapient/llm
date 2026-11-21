@@ -1,4 +1,4 @@
-//! ③ select：按声明顺序取 tile，roofline 只给估值（README §9、§12.1）。
+//! 职责：③ select：按声明顺序取 tile，roofline 只给估值（README §9、§12.1）。
 
 use crate::cap::Path;
 use crate::decl::{Fusion, OpDecl, TileCombo, compose, expand};

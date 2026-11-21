@@ -1,4 +1,4 @@
-//! 被测内核的宿主 C 基准封装：把一份 `.k` 内核与样本拼成可计时的 `main()`。
+//! 职责：被测内核的宿主 C 基准封装：把一份 `.k` 内核与样本拼成可计时的 `main()`。
 
 use diagnostic::{Code, Error};
 use op::model::{Sample, Values};

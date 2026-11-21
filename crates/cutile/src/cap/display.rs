@@ -1,4 +1,4 @@
-//! 失败诊断的排版：`NoPath` 与 `FragmentGap` 的对外文本。
+//! 职责：失败诊断的排版：`NoPath` 与 `FragmentGap` 的对外文本。
 
 use super::*;
 use core::fmt;

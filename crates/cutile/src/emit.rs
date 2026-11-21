@@ -1,4 +1,4 @@
-//! ⑤ emit：把拼接结果包成最终源文件（README §10.2）。
+//! 职责：⑤ emit：把拼接结果包成最终源文件（README §10.2）。
 
 use crate::SCHEMA_VER;
 use crate::decl::{OpDecl, TileCombo, Variant};

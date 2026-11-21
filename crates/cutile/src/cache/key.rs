@@ -1,4 +1,4 @@
-//! 缓存的身份：键怎么由代码与参数算出、条目怎么判定新旧。
+//! 职责：缓存的身份：键怎么由代码与参数算出、条目怎么判定新旧。
 
 use crate::atom::{DTypeSet, Prim};
 use crate::emit::fnv1a;

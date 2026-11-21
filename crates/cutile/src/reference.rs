@@ -1,4 +1,4 @@
-//! 对拍口径（README §11.1）。
+//! 职责：对拍口径（README §11.1）。
 
 use crate::atom::DType;
 use op::model::{Model, Sample, Values};

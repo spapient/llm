@@ -1,4 +1,4 @@
-//! 片段拼接（README §4.2、§10.1、§10.2 的 ④）。
+//! 职责：片段拼接（README §4.2、§10.1、§10.2 的 ④）。
 
 use crate::decl::{OpDecl, TileCombo};
 use std::collections::BTreeMap;

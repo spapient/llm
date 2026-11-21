@@ -1,4 +1,4 @@
-//! 设备探测：只如实探测，不做判断（README §5.3、§13 的 `probe`）。
+//! 职责：设备探测：只如实探测，不做判断（README §5.3、§13 的 `probe`）。
 
 use crate::prof::{Detected, Profile};
 

@@ -1,4 +1,4 @@
-//! cutile —— 设备无关的替换式 kernel DSL。
+//! 职责：cutile —— 设备无关的替换式 kernel DSL。
 //!
 //! 本 crate 实现 [`README.md`](../README.md) 的 P0 纵切面：
 //!
