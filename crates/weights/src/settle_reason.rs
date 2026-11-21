@@ -17,7 +17,13 @@ pub(crate) fn bits_per(seg: &Stored, volume: usize) -> u32 {
 }
 
 /// 原因判定：先看往返，再按容器形态分开答，同一条只落进一档。
-pub(crate) fn reason_of(seg: &Stored, raw_len: usize, volume: usize, entropy: f64, bitwise: bool) -> Reason {
+pub(crate) fn reason_of(
+    seg: &Stored,
+    raw_len: usize,
+    volume: usize,
+    entropy: f64,
+    bitwise: bool,
+) -> Reason {
     if !bitwise {
         return Reason::Mismatch;
     }

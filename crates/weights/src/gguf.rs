@@ -8,10 +8,10 @@
 //! 反量化只求正确，不做 SIMD；性能路径由上层决定。零第三方依赖，纯安全 Rust。
 
 use crate::bad;
-use diagnostic::{Code, Error, Result};
-use dtype::{DType, QType};
 use crate::gguf_dequant::dequantize;
 use crate::gguf_reader::{Reader, data_start, tables};
+use diagnostic::{Code, Error, Result};
+use dtype::{DType, QType};
 
 /// 文件 magic。
 pub const MAGIC: [u8; 4] = *b"GGUF";

@@ -7,8 +7,8 @@ use crate::{bad, or_bad};
 use diagnostic::Result;
 use dtype::DType;
 
-use crate::pickle_storage::into_str;
 use crate::bin::Tensor;
+use crate::pickle_storage::into_str;
 
 #[derive(Clone)]
 pub(crate) enum Value {

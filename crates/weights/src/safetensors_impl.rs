@@ -203,7 +203,11 @@ pub(crate) fn header_slice(bytes: &[u8]) -> Result<(usize, &[u8])> {
 }
 
 /// 数据段：必须正好被条目覆盖，不许多余字节。
-pub(crate) fn data_after<'b>(bytes: &'b [u8], header: &Header, header_end: usize) -> Result<&'b [u8]> {
+pub(crate) fn data_after<'b>(
+    bytes: &'b [u8],
+    header: &Header,
+    header_end: usize,
+) -> Result<&'b [u8]> {
     let data = &bytes[header_end..];
     let covered = header.data_bytes();
     if covered == data.len() {

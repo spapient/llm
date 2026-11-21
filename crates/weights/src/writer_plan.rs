@@ -72,7 +72,11 @@ pub(crate) fn write_one_desc(
 }
 
 /// 数据区：内联段先按对齐补零再写存储帧；引用段不占数据区。
-pub(crate) fn write_data<S: Sink>(plan: &[Plan<'_>], align_log: u8, measured: &mut Measured<'_, S>) {
+pub(crate) fn write_data<S: Sink>(
+    plan: &[Plan<'_>],
+    align_log: u8,
+    measured: &mut Measured<'_, S>,
+) {
     let align = 1usize << align_log;
     for item in plan {
         let Plan::Inline { stored, .. } = item else {

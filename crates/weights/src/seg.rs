@@ -6,15 +6,13 @@
 use crate::bad;
 use diagnostic::{Code, Error, Result};
 
-use crate::seg_decode::{
-    check_frame, check_quant, decode_meta, decode_quant, decode_tail,
-};
+use crate::seg_decode::{check_frame, check_quant, decode_meta, decode_quant, decode_tail};
 
-#[cfg(test)]
-pub(crate) use crate::seg_decode::{MAX_RANK, decode_shape};
 use crate::Wire;
 use crate::leb::{self, Cursor};
 use crate::quant::Quant;
+#[cfg(test)]
+pub(crate) use crate::seg_decode::{MAX_RANK, decode_shape};
 use crate::sink::Sink;
 
 /// 段级编解码闭集：码位稳定，未知码在打开期拒绝。

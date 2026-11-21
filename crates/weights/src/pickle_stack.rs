@@ -4,9 +4,9 @@
 
 use diagnostic::Result;
 
-use crate::{bad, or_bad};
 use crate::pickle::{Value, Vm};
 use crate::pickle_storage::{as_tuple, storage_handle, tensor_of};
+use crate::{bad, or_bad};
 
 impl Vm {
     pub(crate) fn pops(&mut self, n: usize) -> Result<Vec<Value>> {

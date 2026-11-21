@@ -38,10 +38,10 @@ use diagnostic::{Code, Error, Result};
 use tensor::DType;
 
 use crate::json::{self, Value};
-use crate::{Entry, Header, Loader, Reader, check_capacity};
 use crate::safetensors_impl::{
     build, collect_fields, data_after, header_slice, internal, required_fields,
 };
+use crate::{Entry, Header, Loader, Reader, check_capacity};
 
 /// 头部里与条目并列的元数据键：不是条目，跳过。
 pub const METADATA: &str = "__metadata__";

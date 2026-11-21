@@ -3,8 +3,8 @@
 //! 从 [`crate::json`] 拆出：公开面只留 [`crate::json::Value`] 与两个入口，这里管「一个字符
 //! 序列怎么变成一个值」的全部词法。
 
-use diagnostic::scan::Cursor;
 use diagnostic::Result;
+use diagnostic::scan::Cursor;
 
 use crate::json::{MAX_DEPTH, Value};
 
