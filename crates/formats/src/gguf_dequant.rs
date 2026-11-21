@@ -27,14 +27,9 @@ fn decode_block(kind: Kind, raw: &[u8], out: &mut [f32]) -> Result<()> {
 }
 
 /// 字节长度必须正好等于块布局推出的值：短了会读出半个张量，长了会把下一条混进来；
-/// 元素数不整除块长时尾部元素没有所属块，同样必须拒（否则会被静默留成 0）。
+/// 元素数不整除块长同样必须拒（尾部元素没有所属块，否则会被静默留成 0）。
 fn check_len(kind: Kind, raw: usize, count: usize) -> Result<()> {
-    let elems = kind.elems()?;
-    if count % elems != 0 {
-        return Err(bad("元素数不是量化块长的整数倍"));
-    }
-    let expect = kind.span()? * (count / elems);
-    if raw == expect {
+    if raw == kind.bytes_of(count)? {
         return Ok(());
     }
     Err(bad("张量字节长度与块布局不符"))

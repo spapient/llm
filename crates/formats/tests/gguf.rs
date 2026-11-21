@@ -1,6 +1,6 @@
 //! `gguf` 模块的单元测试。
 use super::*;
-use crate::gguf::dequant::f16_to_f32;
+use crate::gguf_dequant::f16_to_f32;
 
 #[path = "gguf_fixture.rs"]
 mod fixture;
@@ -272,5 +272,5 @@ fn a_partial_quantized_block_is_an_error_not_a_zero_tail() {
     let raw = [0u8; 34];
     let mut out = [1.0f32; 33];
     let error = dequantize(Kind::Q8_0, &raw, &mut out).expect_err("33 不是 32 的整数倍");
-    assert!(error.to_string().contains("整除"), "{error}");
+    assert!(error.to_string().contains("整数倍"), "{error}");
 }

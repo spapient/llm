@@ -21,12 +21,9 @@
 //! assert!(json::parse(r#"{"a": 1.5}"#).is_err(), "头部里的数字必须是整数");
 //! ```
 
-pub(crate) mod number;
-pub(crate) mod reader;
-
 use diagnostic::{Code, Error, Result};
 
-use crate::json::reader::parse_with;
+use crate::json_reader::parse_with;
 
 /// 嵌套上限：头部只有"对象 → 条目对象 → 数组"三层，超过它的一定是输入有问题。
 pub(crate) const MAX_DEPTH: usize = 16;

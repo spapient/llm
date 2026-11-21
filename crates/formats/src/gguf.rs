@@ -1,10 +1,7 @@
 //! GGUF v3 只读解析：头部、KV 元数据、张量信息表与反量化。
 
-pub(crate) mod dequant;
-pub(crate) mod reader;
-
-use crate::gguf::dequant::dequantize;
-use crate::gguf::reader::{Reader, data_start, tables};
+use crate::gguf_dequant::dequantize;
+use crate::gguf_reader::{Reader, data_start, tables};
 use diagnostic::{Code, Error, Result};
 use dtype::{DType, QType};
 use wire::bad;
@@ -82,6 +79,18 @@ impl Kind {
     /// 每块字节数：块格式取 [`QType::block_bytes`]，标量元素取 [`DType::bytes_for`] 的单元素值。
     pub fn span(self) -> Result<usize> {
         Ok(self.layout()?.span() as usize)
+    }
+
+    /// 元素数 → 磁盘字节数：块布局必须整除元素数，乘法溢出显式失败。
+    /// 反量化与 [`Tensor::bytes`] 共用这一个判据，避免两处各写一遍整除。
+    pub fn bytes_of(self, count: usize) -> Result<usize> {
+        let elems = self.elems()?;
+        if !count.is_multiple_of(elems) {
+            return Err(bad("元素数不是量化块长的整数倍"));
+        }
+        (count / elems)
+            .checked_mul(self.span()?)
+            .ok_or_else(|| bad("张量大小溢出"))
     }
 }
 
@@ -191,19 +200,7 @@ impl Tensor {
 
     /// 磁盘字节数；量化块必须整除元素数。
     pub fn bytes(&self) -> Result<usize> {
-        let count = self.count()?;
-        let elem = self.kind.elems()?;
-        self.blocks(count, elem)
-    }
-
-    /// 块数 × 每块字节数；块大小必须整除元素数，乘法溢出显式失败。
-    fn blocks(&self, count: usize, elem: usize) -> Result<usize> {
-        if !count.is_multiple_of(elem) {
-            return Err(bad("量化块大小不整除元素数"));
-        }
-        (count / elem)
-            .checked_mul(self.kind.span()?)
-            .ok_or_else(|| bad("张量大小溢出"))
+        self.kind.bytes_of(self.count()?)
     }
 }
 

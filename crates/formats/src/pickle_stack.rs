@@ -1,8 +1,8 @@
-//! pickle 的栈与对象图：出栈、memo、`REDUCE` 与 `_rebuild_tensor_v2` 的重建。
+//! 职责：pickle 的栈与对象图——出栈、memo、`REDUCE` 与 `_rebuild_tensor_v2` 的重建。
 
 use diagnostic::Result;
 
-use crate::pickle::storage::{as_tuple, storage_handle, tensor_of};
+use crate::pickle_storage::{as_tuple, storage_handle, tensor_of};
 use crate::pickle::{Value, Vm};
 use wire::{bad, or_bad};
 

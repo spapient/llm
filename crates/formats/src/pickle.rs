@@ -1,21 +1,17 @@
 //! 栈式 pickle 虚拟机：解释 `data.pkl` 流，拦截 `_rebuild_tensor_v2` 重建与 `BINPERSID`
 //! persistent storage，还原「名字 + 类型 + 形状 + 字节区间」。
 
-pub(crate) mod stack;
-pub(crate) mod storage;
-
 use diagnostic::Result;
 use dtype::DType;
 use wire::{bad, or_bad};
 
 use crate::bin::Tensor;
-use crate::pickle::storage::into_str;
+use crate::pickle_storage::into_str;
 
 #[derive(Clone)]
 pub(crate) enum Value {
     Str(String),
     Int(i64),
-    Float(f64),
     Scalar,
     Tuple(Vec<Value>),
     List(Vec<Value>),
@@ -170,12 +166,10 @@ impl Vm {
         Ok(())
     }
 
-    /// `BINFLOAT`：8 字节**大端** IEEE 双精度，解开后按浮点进栈（不是"不可知的标量"）。
+    /// `BINFLOAT`：8 字节**大端** IEEE 双精度；张量重建不使用这个值，但字节必须完整存在。
     pub(crate) fn float(&mut self) -> Result<()> {
-        let raw = self.bytes(8)?;
-        let mut buf = [0u8; 8];
-        buf.copy_from_slice(&raw);
-        self.stack.push(Value::Float(f64::from_be_bytes(buf)));
+        self.bytes(8).map(drop)?;
+        self.stack.push(Value::Scalar);
         Ok(())
     }
 
