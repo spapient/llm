@@ -250,7 +250,10 @@ pub mod archive {
         let mut report = Report::new("llm —— `.u` 容器清单与度量")
             .row("条目数", format!("{}", metrics.entries()))
             .row("参数总数", format!("{}", metrics.params()))
-            .row("V_artifact", report::human_bytes(metrics.v_artifact() as u64))
+            .row(
+                "V_artifact",
+                report::human_bytes(metrics.v_artifact() as u64),
+            )
             .row("V_FP16", report::human_bytes(metrics.v_fp16()))
             .row("ratio", format!("{:.3}", metrics.ratio()))
             .row("lossless", lossless_label(metrics.lossless()))

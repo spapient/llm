@@ -89,20 +89,12 @@ fn emitted(
 /// 声明与档案：协商的两端，缺任一就报名字而不是退回空档案。
 fn anchored<'a>(catalogue: &'a Catalogue, name: &str) -> Result<(&'a OpDecl, &'a Profile)> {
     let op = catalogue.op(name).ok_or_else(|| missing_op(name))?;
-    let profile = catalogue
-        .profile("nvidia")
-        .ok_or_else(missing_profile)?;
+    let profile = catalogue.profile("nvidia").ok_or_else(missing_profile)?;
     Ok((op, profile))
 }
 
 /// 聚合后的设备源文本：协商 → 规划 → 片段拼接。
-fn source(
-    op: &OpDecl,
-    profile: &Profile,
-    job: &Job,
-    model: &Model,
-    dirs: &Dirs,
-) -> Result<String> {
+fn source(op: &OpDecl, profile: &Profile, job: &Job, model: &Model, dirs: &Dirs) -> Result<String> {
     let path = negotiated(op, profile)?;
     let plan = planned(op, profile, &path, job, model)?;
     let (text, _) = cutile::build::source(op, profile, &path, &plan.tile, dirs)?;

@@ -58,8 +58,8 @@ fn timing_wraps_one_launch_and_reports_on_stderr() -> Result<()> {
 
 #[test]
 fn timing_refuses_what_it_cannot_wrap() {
-    assert!(matches!(timed("int main() { return 0; }", 8), Err(_)));
-    assert!(matches!(timed("<<<", 0), Err(_)));
+    assert!(timed("int main() { return 0; }", 8).is_err());
+    assert!(timed("<<<", 0).is_err());
 }
 
 #[test]
@@ -76,9 +76,9 @@ fn a_single_element_over_threshold_fails_the_whole_run() -> Result<()> {
 
 #[test]
 fn length_mismatch_and_empty_runs_are_errors() {
-    assert!(matches!(compare("1.0\n", "1.0\n2.0\n", 1e-6), Err(_)));
-    assert!(matches!(compare("\n", "\n", 1e-6), Err(_)));
-    assert!(matches!(compare("1.0\n", "abc\n", 1e-6), Err(_)));
+    assert!(compare("1.0\n", "1.0\n2.0\n", 1e-6).is_err());
+    assert!(compare("\n", "\n", 1e-6).is_err());
+    assert!(compare("1.0\n", "abc\n", 1e-6).is_err());
 }
 
 #[test]

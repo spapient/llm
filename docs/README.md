@@ -10,6 +10,7 @@ backlog 矩阵）不随代码长期存放——结论要么落成代码与测试
 | [`../README.md`](../README.md) | 怎么编译、怎么跑、目录长什么样 | 人工；示例命令随 CI 冒烟 |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | 谁属于哪一层、允许依赖谁、每个类型归谁 | [`crates/testkit/tests/architecture.rs`](../crates/testkit/tests/architecture.rs)：读 `cargo metadata` 与源码，逐条核对 |
 | [`lld.md`](lld.md) | 数学建模与算子判据：`E*` 出口、规则 `0.x`、形状与精度口径 | 代码注释按编号引用（`E6`/`E7`、规则 `0.3`、§`10.10`、§`16`），编号因此冻结 |
+| [`MUSA.md`](MUSA.md) | S4000 真机测量通道：四段命令、三条工具链要点、精度口径与三路对照 | [`crates/musa`](../crates/musa) 的 `musa verify` / `run` 复跑同一批算子 |
 | [`adr/`](adr/) | 为什么这样而不是那样：一份决策一个文件，只留仍被代码按编号引用的那几条 | 引用点就是判据——删一条 ADR 必须同一次提交改完全部引用方 |
 | `crates/<name>/README.md`、`src/lib.rs` 的 `//!` | 一个成员**怎么实现**：拥有什么、不拥有什么、依赖谁、被谁依赖 | crate 文档测试（`--workspace` 的 doctest）与各成员自带断言 |
 | [`../CHANGELOG.md`](../CHANGELOG.md) | 版本与行为变更 | 发布时追加 |

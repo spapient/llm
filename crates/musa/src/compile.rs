@@ -18,10 +18,7 @@ const SHIM: [(&str, &str); 2] = [
         "cuda_runtime.h",
         include_str!("../assets/shim/cuda_runtime.h"),
     ),
-    (
-        "cuda_fp16.h",
-        include_str!("../assets/shim/cuda_fp16.h"),
-    ),
+    ("cuda_fp16.h", include_str!("../assets/shim/cuda_fp16.h")),
 ];
 
 /// 编译车道：决定开关与链接库。
@@ -122,7 +119,10 @@ impl Recipe {
 
     /// 完整头的目录：优先 `<根目录的父目录>/musa-5.2.0/include`，不存在时退回 `<根目录>/include`。
     fn complete_headers(&self) -> PathBuf {
-        let versioned = self.root.parent().map(|parent| parent.join("musa-5.2.0/include"));
+        let versioned = self
+            .root
+            .parent()
+            .map(|parent| parent.join("musa-5.2.0/include"));
         versioned
             .filter(|dir| dir.is_dir())
             .unwrap_or_else(|| self.root.join("include"))

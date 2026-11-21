@@ -1,14 +1,13 @@
 [package]
-name = "llm-report"
+name = "llm-console"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 readme.workspace = true
-description = "Human-readable layout: two-column key/value blocks, byte sizes, name lists and per-run timings."
+description = "Std-only L1 leaf: human-readable output — titled key/value panels, Markdown tables, byte sizes, name lists and per-run timings."
 publish = false
-autotests = false
 
 [dependencies]
 

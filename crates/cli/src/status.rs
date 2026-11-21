@@ -5,8 +5,8 @@
 use diagnostic::{Code, Error, Result};
 use nn::Contract as _;
 use nn::LmHead;
-use tokenizer::Tokenizer as _;
 use report::Report;
+use tokenizer::Tokenizer as _;
 use weights::Loader as _;
 
 /// 每台设备的设备侧代码这次构建带了什么：只有源码，还是连镜像一起带上了。

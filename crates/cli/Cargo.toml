@@ -37,7 +37,7 @@ nn = { path = "../nn", package = "llm-nn" }
 op = { path = "../op", package = "llm-op" }
 prim = { path = "../prim", package = "llm-prim" }
 prof = { path = "../prof", package = "llm-prof" }
-report = { path = "../report", package = "llm-report" }
+report = { path = "../console", package = "llm-report" }
 serve = { path = "../serve", package = "llm-serve" }
 tensor = { path = "../tensor", package = "llm-tensor" }
 tokenizer = { path = "../tokenizer", package = "llm-tokenizer" }

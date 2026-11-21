@@ -6,6 +6,22 @@
 ## [Unreleased]
 ### Changed
 
+- **MUSA 测量通道从脚本目录收成成员 `crates/musa`（`llm-musa`），根 `tools/` 随之删除**。原先 `tools/musa-harness/`
+  是"生成器（仓库外的独立 crate）+ `build.sh` + `bench_patch.py` + `check_bits.py` + 14 个 `t_*.cu` 实验片段"，
+  四段靠人手串、中间产物落固定路径；现在四段各是一个子命令——`gen`（声明 → 协商 → 规划 → 设备源 + 标量参考）、
+  `build`（`mcc` 一次编译，转发头随源落地）、`bench`（夹住「首发射 → 末回读」注入 `cudaEvent` 计时）、
+  `verify`（逐元素相对误差，一个超阈即退出码 2），`run` 把四段按数据流串起来并把产物落临时目录、跑完删除。
+  **生成器不再按算子名分派**：旧实现自己判"逐点 / 归一化 / 张量核特化"三条路再拼 host 驱动，现在唯一形态来源是
+  `cutile::execution::launch(op, sample)`，聚合走 `cutile::build::source`，装配走 `engine::program::cuda`——
+  这与 `cutile` 的 `[chunk]` / `[grid]` 声明同源，不会再在两处各自漂移。**新增 11 条单测**钉住四件事：
+  生成只依赖声明（`Proof::declared`，不需要本机跑过验证）、参考值读回逐位相等、计时注入把发射夹在循环里且
+  非整除守卫不被破坏、对拍在长度不等/空输入/超阈/非有限值上的判定。**`tools` 成员因此回到单职责**：只剩
+  `lex` / `ccn` / `dup` / `call` / `docs` / `strip` / `gate` / `regress` / `bench` / `card` 这些静态分析与判定，
+  不再依赖 `cutile` / `engine` / `op` / `report` 四条运行时边。工具链三条坑（`__MUSA_QY2_MMA__` 宏、mp_22、
+  完整头的路径）、精度口径（tf32 是 `1e-3` 级、3xTF32 长 K 超线性）、三路性能对照与探针表迁进
+  `docs/MUSA.md`，`docs/README.md` 与根 `README.md` 的文档表各加一行。`ARCHITECTURE.md` 的成员表与边集
+  记为工具成员 `musa`（`→ cutile, diagnostic, engine, op, report`），`tools` 的边去掉 `report`。
+
 - **对拍工具（`testkit::compare`）收成一条判据：读数只算一次，分母变成显式策略**。此前同一件事实有三处
   各自实现：`max_rel_err` 与 `assert_within_rel` 各算一遍分母，`engine::metal_tests` 里还带着一份
   per-element 判定——而它们要的其实只是**分母选哪条**。现在唯一实现是

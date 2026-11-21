@@ -11,7 +11,7 @@ use cutile::dirs::Dirs;
 use diagnostic::{Code, Error, Result};
 use report::Report;
 
-use llm_musa::{Job, Outcome, Probe, PROBES, Recipe, compare, lines, probe, program, shim, timed};
+use llm_musa::{Job, Outcome, PROBES, Probe, Recipe, compare, lines, probe, program, shim, timed};
 
 /// 缺省工具链根目录（`bin/mcc` 与 `lib/` 在它下面）。
 const DEFAULT_ROOT: &str = "/usr/local/musa";
@@ -45,8 +45,11 @@ fn dispatch(mut args: Vec<String>) -> Result<()> {
     )
 }
 
+/// 一个子命令的入口：吃剩下的参数。
+type Action = fn(&mut Vec<String>) -> Result<()>;
+
 /// 子命令表：一段编排一个入口；`list` 不吃参数，故不进表。
-const ACTIONS: [(&str, fn(&mut Vec<String>) -> Result<()>); 6] = [
+const ACTIONS: [(&str, Action); 6] = [
     ("gen", generate),
     ("probe", probe_cmd),
     ("build", build),
@@ -56,7 +59,7 @@ const ACTIONS: [(&str, fn(&mut Vec<String>) -> Result<()>); 6] = [
 ];
 
 /// 表里查子命令。
-fn action(name: &str) -> Option<fn(&mut Vec<String>) -> Result<()>> {
+fn action(name: &str) -> Option<Action> {
     ACTIONS
         .iter()
         .find(|(command, _)| *command == name)
@@ -268,9 +271,14 @@ fn emit_work(generated: &llm_musa::Program, reps: usize, work: &Path) -> Result<
 /// 编译计时版并运行；回进程输出（`stdout` 是结果，`stderr` 是计时行）。
 fn measure(session: &Session, work: &Path) -> Result<Output> {
     let binary = work.join("program");
-    Recipe::at(&session.root, &session.lane)?
-        .compile(&work.join("bench.cu"), &binary, &headers(work)?)?;
-    Command::new(&binary).output().map_err(|err| io(&binary, err))
+    Recipe::at(&session.root, &session.lane)?.compile(
+        &work.join("bench.cu"),
+        &binary,
+        &headers(work)?,
+    )?;
+    Command::new(&binary)
+        .output()
+        .map_err(|err| io(&binary, err))
 }
 
 /// `run` 的报告。
@@ -281,7 +289,10 @@ fn run_report(session: &Session, work: &Path, outcome: &Outcome, output: &Output
         .row("车道", session.lane.as_str())
         .row("元素数", outcome.compared.to_string())
         .row("最大相对误差", format!("{:.3e}", outcome.worst))
-        .row("链路耗时", bench_line(&String::from_utf8_lossy(&output.stderr)))
+        .row(
+            "链路耗时",
+            bench_line(&String::from_utf8_lossy(&output.stderr)),
+        )
         .row("目录", work.display().to_string())
 }
 
@@ -309,7 +320,10 @@ fn report_outcome(outcome: &llm_musa::Outcome, tol: f64) -> Result<()> {
         "{}",
         Report::new("musa verify")
             .row("元素数", outcome.compared.to_string())
-            .row("超阈元素", format!("{} / {}", outcome.over, outcome.compared))
+            .row(
+                "超阈元素",
+                format!("{} / {}", outcome.over, outcome.compared)
+            )
             .row("最大相对误差", format!("{:.3e}", outcome.worst))
             .row("出现位置", format!("第 {} 个", outcome.at))
             .row("阈值", format!("{tol:.0e}"))
@@ -416,7 +430,10 @@ fn bench_line(stderr: &str) -> String {
     stderr
         .lines()
         .find(|line| line.starts_with("bench:"))
-        .map_or_else(|| "（程序没有打印计时行）".to_string(), |line| line.trim().to_string())
+        .map_or_else(
+            || "（程序没有打印计时行）".to_string(),
+            |line| line.trim().to_string(),
+        )
 }
 
 /// 探针清单：`名字（说明）` 一行。

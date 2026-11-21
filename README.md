@@ -144,6 +144,7 @@ cargo new --lib crates/<name>       # 或 cargo new --bin
 | [`docs/README.md`](docs/README.md) | 文档地图与写作规则（一份事实只写一次） |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | 分层、依赖规则、所有权表、如何被守住 |
 | [`docs/lld.md`](docs/lld.md) | 数学建模与算子判据（`E*` 出口、规则 `0.x`） |
+| [`docs/MUSA.md`](docs/MUSA.md) | MUSA 真机测量通道：四段命令、工具链要点、精度与性能对照 |
 | [`docs/adr/`](docs/adr/) | 架构决策记录，索引见 `docs/README.md` |
 | [`crates/cutile/README.md`](crates/cutile/README.md) | kernel 层机制：三层数据、闭集、无 IR lowering、证据分级 |
 | [`CHANGELOG.md`](CHANGELOG.md) | 变更记录 |
