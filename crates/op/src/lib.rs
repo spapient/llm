@@ -51,7 +51,6 @@
 extern crate self as llm_op;
 
 pub mod attention;
-pub mod attention_tiled;
 pub mod classic;
 pub mod conv;
 pub mod decl;

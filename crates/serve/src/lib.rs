@@ -40,7 +40,7 @@ mod speculate;
 mod assembly;
 mod block;
 mod kernels;
-mod model_host;
+pub mod model;
 mod params;
 mod plan;
 
@@ -67,13 +67,6 @@ pub use request::Request;
 pub use router::Router;
 pub use speculate::{Drafter, Verdict, accept};
 pub use vocab::tokenizer_from_segment;
-
-/// 兼容旧路径：CPU 模型内核桥与装配宿主。
-pub mod model {
-    pub use crate::kernels::register_cpu;
-    pub use crate::model_host::CpuModel;
-    pub use crate::params::Params;
-}
 
 /// 兼容旧路径：端点契约的线格式。
 pub mod proto {

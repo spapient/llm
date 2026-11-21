@@ -49,7 +49,6 @@ pub use annotation::spec;
 use diagnostic::{Code, Error, Result};
 
 mod attention;
-mod attention_block;
 mod attnres;
 mod axis;
 mod bounds;

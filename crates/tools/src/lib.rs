@@ -16,7 +16,6 @@
 #![deny(unsafe_code)]
 
 pub mod bench;
-pub mod bench_json;
 pub mod card;
 pub mod ccn;
 pub mod gate;

@@ -89,7 +89,6 @@ mod special;
 mod strategy;
 mod unigram;
 mod vocab;
-mod vocab_codec;
 
 pub use bpe::Bpe;
 pub use bytes::Bytes;

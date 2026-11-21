@@ -14,6 +14,8 @@
 use crate::model::{AxisRole, AxisSpec, Buffer, Cost, Sample, ShapeContext, Values};
 use diagnostic::{Code, Error};
 
+pub mod tiled;
+
 /// 两条基本轴：序列轴 `s`、头宽轴 `d`，都既是输入也是输出。
 pub const AXES: &[AxisSpec] = &[
     AxisSpec {

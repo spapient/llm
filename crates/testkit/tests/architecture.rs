@@ -431,9 +431,9 @@ const VENDORS: [&str; 8] = [
 
 /// 越界岛白名单：`docs/adr/0035-unsafe-ffi-boundary.md` §6 的表格，路径 → `allow(unsafe_code)` 条数。
 const UNSAFE_ISLANDS: &[(&str, usize)] = &[
-    ("crates/engine/src/metal_executor.rs", 1),
+    ("crates/engine/src/metal/executor.rs", 1),
     ("crates/op/src/fast.rs", 11),
-    ("crates/op/src/fast/fast_pool.rs", 3),
+    ("crates/op/src/fast/pool.rs", 3),
     ("crates/storage/src/lib.rs", 1),
 ];
 

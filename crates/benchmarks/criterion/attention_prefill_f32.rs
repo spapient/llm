@@ -9,7 +9,7 @@
 mod support;
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use op::{attention, attention_tiled};
+use op::{attention, attention::tiled};
 use std::hint::black_box;
 
 /// 序列长 `s`（prefill 代表值）。
@@ -40,7 +40,7 @@ fn bench(c: &mut Criterion) {
     });
     group.bench_function("tiled_1024x64", |bench| {
         bench.iter(|| {
-            attention_tiled::flash_tiled_forward(
+            attention::tiled::flash_tiled_forward(
                 black_box(&sample.q),
                 black_box(&sample.k),
                 black_box(&sample.v),
@@ -59,7 +59,7 @@ fn bench(c: &mut Criterion) {
 /// 稠密三阶段（先落地全部分数）的对照：朴素逐行 vs 列块 + 行块 tile。
 ///
 /// 两条路径的分数、`exp`、归一化和与加权累加次序完全相同，于是输出逐位相等；差别只在 K/V 的读取
-/// 次数——朴素路径每行读一遍整段 K/V，tile 路径一个行块（[`attention_tiled::TILE_ROWS`] 行）读一遍。
+/// 次数——朴素路径每行读一遍整段 K/V，tile 路径一个行块（[`attention::tiled::TILE_ROWS`] 行）读一遍。
 fn dense(c: &mut Criterion) {
     let len = S * D;
     let mut sample = support::Sample::new(len);
@@ -82,7 +82,7 @@ fn dense(c: &mut Criterion) {
     });
     group.bench_function("tiled_1024x64", |bench| {
         bench.iter(|| {
-            attention_tiled::forward(
+            attention::tiled::forward(
                 black_box(&sample.q),
                 black_box(&sample.k),
                 black_box(&sample.v),

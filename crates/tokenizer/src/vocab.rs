@@ -8,6 +8,7 @@ use crate::{SpecialTokens, Token};
 use diagnostic::{Code, Error, Result};
 use std::collections::{HashMap, HashSet};
 
+pub mod codec;
 pub use fingerprint::Fingerprint;
 
 /// 词表算法族。判别值即稳定 wire 序号，勿重排、勿改号。

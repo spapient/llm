@@ -10,6 +10,8 @@
 
 use diagnostic::{Code, Error, Result};
 
+pub mod json;
+
 /// 配置错误：上下文统一带 `tools::bench::` 前缀。
 fn invalid(context: &str, message: impl Into<String>) -> Error {
     Error::new(Code::Invalid, message).with(format!("tools::bench::{context}"))

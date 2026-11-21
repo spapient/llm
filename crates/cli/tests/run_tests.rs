@@ -91,7 +91,7 @@ fn read_f32(bytes: &[u8], len: usize) -> Vec<f32> {
 
 /// 把 f32 切片按 LE 字节序写进执行器缓冲（绑槽 + 落位）。
 #[cfg(target_os = "macos")]
-fn bind_f32(executor: &mut engine::metal_executor::MetalExecutor, slot: u32, values: &[f32]) {
+fn bind_f32(executor: &mut engine::metal::executor::MetalExecutor, slot: u32, values: &[f32]) {
     executor
         .bind_bytes(slot, values.len() * 4)
         .expect("f32 缓冲");
@@ -103,7 +103,7 @@ fn bind_f32(executor: &mut engine::metal_executor::MetalExecutor, slot: u32, val
 
 /// 把 u8 切片写进执行器缓冲（绑槽 + 拷贝）。
 #[cfg(target_os = "macos")]
-fn bind_u8(executor: &mut engine::metal_executor::MetalExecutor, slot: u32, values: &[u8]) {
+fn bind_u8(executor: &mut engine::metal::executor::MetalExecutor, slot: u32, values: &[u8]) {
     executor.bind_bytes(slot, values.len()).expect("u8 缓冲");
     let bytes = executor.buffer_mut(slot).expect("u8 可写").as_mut_bytes();
     bytes.copy_from_slice(values);
@@ -111,7 +111,7 @@ fn bind_u8(executor: &mut engine::metal_executor::MetalExecutor, slot: u32, valu
 
 /// 把单个 f32 标量写进执行器缓冲（4 字节）。
 #[cfg(target_os = "macos")]
-fn bind_scalar(executor: &mut engine::metal_executor::MetalExecutor, slot: u32, value: f32) {
+fn bind_scalar(executor: &mut engine::metal::executor::MetalExecutor, slot: u32, value: f32) {
     bind_f32(executor, slot, &[value]);
 }
 
@@ -119,7 +119,7 @@ fn bind_scalar(executor: &mut engine::metal_executor::MetalExecutor, slot: u32, 
 /// （f32/u8）逐元素写输入字节。逐点与分块对拍共用这一份绑缓冲样板。
 #[cfg(target_os = "macos")]
 fn bind_decl_buffers(
-    executor: &mut engine::metal_executor::MetalExecutor,
+    executor: &mut engine::metal::executor::MetalExecutor,
     node: &mut engine::exec::Node,
     decl: &op::decl::OpDecl,
     sample: &op::model::Sample,
@@ -158,7 +158,7 @@ fn bind_decl_buffers(
 /// 提交单个节点并同步，回读 `len` 个 f32 输出。逐点与分块归约对拍的发射/回读样板。
 #[cfg(target_os = "macos")]
 fn submit_read(
-    executor: &mut engine::metal_executor::MetalExecutor,
+    executor: &mut engine::metal::executor::MetalExecutor,
     node: engine::exec::Node,
     decl: &op::decl::OpDecl,
     len: usize,
@@ -420,7 +420,7 @@ fn op_matches_reference_at(op_name: &str, shape: Option<(usize, usize)>) {
     let msl = cutile::execution::metal_grid_program(&catalogue, &dirs, op_name, m, n)
         .expect("内核应能生成");
 
-    let Some(mut executor) = engine::metal_executor::MetalExecutor::new("metal", "arm64") else {
+    let Some(mut executor) = engine::metal::executor::MetalExecutor::new("metal", "arm64") else {
         return;
     };
     executor.register(op_name, &msl).expect("注册内核");
@@ -499,7 +499,7 @@ fn op_chunked_reduce_matches_reference(op_name: &str) {
 
     let msl = cutile::execution::metal_grid_program(&catalogue, &dirs, op_name, m, n)
         .expect("内核应能生成");
-    let Some(mut executor) = engine::metal_executor::MetalExecutor::new("metal", "arm64") else {
+    let Some(mut executor) = engine::metal::executor::MetalExecutor::new("metal", "arm64") else {
         return;
     };
     executor.register(op_name, &msl).expect("注册内核");
@@ -622,7 +622,7 @@ fn op_chunked_scan_matches_reference(op_name: &str) {
     let (local_msl, correct_msl) =
         cutile::execution::metal_scan_program(&catalogue, &dirs, op_name, m, n)
             .expect("分块扫描内核应能生成");
-    let Some(mut executor) = engine::metal_executor::MetalExecutor::new("metal", "arm64") else {
+    let Some(mut executor) = engine::metal::executor::MetalExecutor::new("metal", "arm64") else {
         return;
     };
     executor
@@ -714,7 +714,7 @@ fn op_chunked_rmsnorm_matches_reference(op_name: &str) {
     let (partial_msl, map_msl) =
         cutile::execution::metal_rmsnorm_program(&catalogue, &dirs, op_name, m, n)
             .expect("分块 rmsnorm 内核应能生成");
-    let Some(mut executor) = engine::metal_executor::MetalExecutor::new("metal", "arm64") else {
+    let Some(mut executor) = engine::metal::executor::MetalExecutor::new("metal", "arm64") else {
         return;
     };
     executor
@@ -797,7 +797,7 @@ fn op_chunked_softmax_matches_reference(op_name: &str) {
     let (max_msl, expsum_msl, map_msl) =
         cutile::execution::metal_softmax_program(&catalogue, &dirs, op_name, m, n)
             .expect("分块 softmax 内核应能生成");
-    let Some(mut executor) = engine::metal_executor::MetalExecutor::new("metal", "arm64") else {
+    let Some(mut executor) = engine::metal::executor::MetalExecutor::new("metal", "arm64") else {
         return;
     };
     executor
@@ -819,7 +819,7 @@ fn op_chunked_softmax_matches_reference(op_name: &str) {
 
     let stream = engine::exec::Stream::new(0);
     let launch = engine::exec::Launch::new([grid_size, 1, 1], [1, 1, 1]);
-    let read_partials = |executor: &mut engine::metal_executor::MetalExecutor| {
+    let read_partials = |executor: &mut engine::metal::executor::MetalExecutor| {
         let bytes = executor.buffer_mut(1).expect("部分结果可读").as_mut_bytes();
         read_f32(bytes, grid_size as usize)
     };

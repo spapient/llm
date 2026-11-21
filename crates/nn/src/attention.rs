@@ -8,6 +8,8 @@ use diagnostic::{Code, Error, Result};
 
 use crate::{Bounds, BoundsResult, Contract, spec_accessors};
 
+pub mod block;
+
 /// 注意力实现算法。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttentionAlgo {

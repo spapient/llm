@@ -265,7 +265,7 @@ impl<'a> Cursor<'a> {
 }
 
 fn invalid(message: impl Into<String>) -> Error {
-    Error::new(Code::Invalid, message).with("tokenizer::vocab_codec")
+    Error::new(Code::Invalid, message).with("tokenizer::vocab::codec")
 }
 
 #[cfg(test)]
