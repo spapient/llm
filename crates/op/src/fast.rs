@@ -12,6 +12,8 @@ use diagnostic::{Code, Error, Result};
 
 mod pool;
 use pool::{Job, Shape, pool, run_pooled};
+mod tn;
+pub use tn::gemm_f32_tn;
 
 /// 微内核行数。
 const MR: usize = 8;
