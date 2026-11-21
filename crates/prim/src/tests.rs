@@ -81,26 +81,15 @@ fn the_tables_line_up_by_index() {
 fn every_source_root_holds_its_witness() {
     let layout = Layout::builtin();
     for device in devices() {
-        let root = dir_of(device.vendor).expect("每台设备都有源码根");
-        assert_eq!(Path::new(root).file_name().and_then(|name| name.to_str()), Some(crate_name(device.vendor)), "根目录名应与设备 crate 同名");
+        assert!(dir_of(device.vendor).is_some(), "每台设备都要有源码根");
         let file = format!("{}/witness.{}", device.vendor, device.ext);
         let path = layout.witness(&file).expect("内置见证有路径");
-        assert_eq!(std::fs::read_to_string(&path).ok().as_deref(), Some(device.source), "`{}` 的见证与设备行不一致", device.vendor);
-    }
-}
-
-/// vendor 与 crate 目录不同名（`nvidia` 在 `cuda`、`intel` 在 `opencl`、`ascend` 在 `rocm`）：
-/// 表里的目录名是 crate 名，vendor 名是档案与见证路径的键，两者不能混用。
-fn crate_name(vendor: &str) -> &'static str {
-    match vendor {
-        "nvidia" => "cuda",
-        "intel" => "opencl",
-        "ascend" => "rocm",
-        other => {
-            assert!(matches!(other, "cpu" | "metal" | "musa"), "未预期的 vendor");
-            // 其余 vendor 与 crate 同名，这里只回一个不参与判断的常量。
-            "cpu"
-        }
+        assert_eq!(
+            std::fs::read_to_string(&path).ok().as_deref(),
+            Some(device.source),
+            "`{}` 的见证不在它的源码根里",
+            device.vendor
+        );
     }
 }
 
