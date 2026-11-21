@@ -27,8 +27,19 @@ pub fn gate<S: Scalar>(yc: &[S], yg: &[S], gamma: S) -> Vec<S> {
 }
 
 /// 全合成：`y_t = (1−γ)(π·y_α + (1−π)·y_β) + γ·y_γ`。
+///
+/// 单趟融合而不是 `gate(&cont(..))`：省掉中间向量的一次分配与一次全量读写。运算次序与两步写法
+/// 逐项相同，故结果逐位一致（由 `mix_tests` 的等价测试锁定）。
 pub fn synthesize<S: Scalar>(ya: &[S], yb: &[S], yg: &[S], pi: S, gamma: S) -> Vec<S> {
-    gate(&cont(ya, yb, pi), yg, gamma)
+    debug_assert_eq!(ya.len(), yb.len());
+    debug_assert_eq!(ya.len(), yg.len());
+    let om_pi = S::ONE.sub(pi);
+    let om_g = S::ONE.sub(gamma);
+    ya.iter()
+        .zip(yb)
+        .zip(yg)
+        .map(|((&a, &b), &g)| a.mul(pi).add(b.mul(om_pi)).mul(om_g).add(g.mul(gamma)))
+        .collect()
 }
 mod pulse;
 

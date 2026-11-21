@@ -51,6 +51,21 @@ fn ieee_gamma_mix_is_continuous() {
     }
 }
 
+/// 融合写法必须与两步合成逐位一致：省的是分配，不是精度。
+#[test]
+fn synthesized_matches_the_two_step_composition() {
+    let ya: Vec<f64> = vec![0.5, -1.25, 3.0, 0.0, 1e-9];
+    let yb: Vec<f64> = vec![2.0, 0.75, -0.5, 4.0, 1.0];
+    let yg: Vec<f64> = vec![-1.0, 0.125, 2.5, 1.5, -3.0];
+    for pi in [0.0, 0.125, 0.5, 0.875, 1.0] {
+        for gamma in [0.0, 0.125, 0.5, 0.875, 1.0] {
+            let fused = synthesize(&ya, &yb, &yg, pi, gamma);
+            let two_step = gate(&cont(&ya, &yb, pi), &yg, gamma);
+            assert_eq!(fused, two_step, "pi={pi} gamma={gamma}");
+        }
+    }
+}
+
 /// 输出落在各通道值的凸包（min/max）内。
 #[test]
 fn output_in_convex_hull() {
