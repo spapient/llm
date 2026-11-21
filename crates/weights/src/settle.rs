@@ -17,11 +17,11 @@
 
 use std::fmt::Write as _;
 
-use diagnostic::{Code, Error, Result};
+use diagnostic::Result;
 
+use crate::Archive;
 use crate::json;
 use crate::ledger::SCHEMA;
-use crate::Archive;
 
 /// 小于该字节数的段不值得编码，原样落盘（`passthrough:small`）。
 pub const SMALL_BYTES: usize = 128;
@@ -287,11 +287,9 @@ impl Settlement {
     }
 }
 
-/// 账本类错误：全部 [`Code::Invalid`]，来源标 `weights::settle`。
-
-pub(crate) use crate::settle_impl::{escape, settle_one, verify_root};
 #[cfg(test)]
 pub(crate) use crate::settle_impl::sound_cert;
+pub(crate) use crate::settle_impl::{escape, settle_one, verify_root};
 
 #[cfg(test)]
 #[path = "../tests/settle.rs"]

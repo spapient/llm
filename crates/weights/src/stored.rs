@@ -1,8 +1,8 @@
 //! 已解析段条目：共享描述符 + 重算出的绝对字节区间，以及单段无损口径。
 
+use crate::bad;
 use diagnostic::Result;
 
-use crate::archive::invalid;
 use crate::quant::Quant;
 use crate::seg::Descriptor;
 use crate::{Codec, Wire};

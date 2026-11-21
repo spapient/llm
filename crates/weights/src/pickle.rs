@@ -3,10 +3,11 @@
 //!
 //! 未知 opcode / 不可识别可调用对象显式报错；不执行任意代码、不猜结果。
 
+use crate::{bad, or_bad};
 use diagnostic::Result;
 use dtype::DType;
 
-use crate::bin::{Tensor, bad, or_bad};
+use crate::bin::Tensor;
 
 #[derive(Clone)]
 enum Value {
@@ -132,7 +133,7 @@ impl Vm {
             b's' => self.set_item(),
             b'a' | b'e' => self.append(op),
             b'b' => self.pop().map(drop),
-            other => Err(bad(&format!("未知 pickle opcode 0x{other:02X}"))),
+            other => Err(bad(format!("未知 pickle opcode 0x{other:02X}"))),
         }
     }
 
@@ -286,7 +287,7 @@ impl Vm {
                 self.stack.push(Value::Dict(Vec::new()));
                 Ok(())
             }
-            _ => Err(bad(&format!("不支持的可调用对象 {module}.{name}"))),
+            _ => Err(bad(format!("不支持的可调用对象 {module}.{name}"))),
         }
     }
 
@@ -359,7 +360,7 @@ impl Vm {
                 list.extend(items);
                 Ok(())
             }
-            _ => Err(bad(&format!("{label} 目标不是 list"))),
+            _ => Err(bad(format!("{label} 目标不是 list"))),
         }
     }
 }
@@ -384,7 +385,7 @@ fn check_tag(items: &[Value]) -> Result<()> {
     if tag == "storage" {
         return Ok(());
     }
-    Err(bad(&format!("不支持的 persistent id `{tag}`")))
+    Err(bad(format!("不支持的 persistent id `{tag}`")))
 }
 
 fn storage_class(items: &[Value]) -> Result<&str> {
@@ -466,7 +467,7 @@ fn storage_dtype(name: &str) -> Result<DType> {
     STORAGE_DTYPES
         .iter()
         .find_map(|&(class, dtype)| (class == name).then_some(dtype))
-        .ok_or_else(|| bad(&format!("不支持的 storage 类型 `{name}`")))
+        .ok_or_else(|| bad(format!("不支持的 storage 类型 `{name}`")))
 }
 
 const STORAGE_DTYPES: [(&str, DType); 9] = [

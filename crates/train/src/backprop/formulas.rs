@@ -6,59 +6,30 @@
 use super::{Context, SITE};
 use diagnostic::{Code, Error, Result};
 
-/// 经典算子的九条反向公式：几何交给 [`Geometry`]，公式本身只剩"取实例、回传"。
+/// 经典算子的反向公式：几何交给 [`Geometry`]，公式本身只剩"取实例、回传"。
 ///
-/// 这样声明档与实例化共用同一份算术——声明档就是 `Geometry::declared` 的取值，不存在
-/// "前向一套、反向另一套"的可能。
-pub(super) fn max_pool1d(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
-    ctx.instance("max_pool1d_f32")?
-        .backward(ctx.inputs, ctx.incoming)
+/// 声明档与实例化共用同一份算术——声明档就是 `Geometry::declared` 的取值，不存在
+/// "前向一套、反向另一套"的可能。这十条"取实例回传"的例程同构，用一张表展开。
+macro_rules! instance_backward {
+    ($($name:ident => $op:literal),* $(,)?) => {$(
+        pub(super) fn $name(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
+            ctx.instance($op)?.backward(ctx.inputs, ctx.incoming)
+        }
+    )*};
 }
 
-pub(super) fn max_pool2d(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
-    ctx.instance("max_pool2d_f32")?
-        .backward(ctx.inputs, ctx.incoming)
-}
-
-pub(super) fn avg_pool2d(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
-    ctx.instance("avg_pool2d_f32")?
-        .backward(ctx.inputs, ctx.incoming)
-}
-
-pub(super) fn adaptive_pool(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
-    ctx.instance("adaptive_pool_f32")?
-        .backward(ctx.inputs, ctx.incoming)
-}
-
-pub(super) fn interpolate(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
-    ctx.instance("interpolate_f32")?
-        .backward(ctx.inputs, ctx.incoming)
-}
-
-pub(super) fn batch_norm(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
-    ctx.instance("batch_norm_f32")?
-        .backward(ctx.inputs, ctx.incoming)
-}
-
-pub(super) fn conv2d(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
-    ctx.instance("conv2d_f32")?
-        .backward(ctx.inputs, ctx.incoming)
-}
-
-pub(super) fn group_norm(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
-    ctx.instance("group_norm_f32")?
-        .backward(ctx.inputs, ctx.incoming)
-}
-
-pub(super) fn instance_norm(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
-    ctx.instance("instance_norm_f32")?
-        .backward(ctx.inputs, ctx.incoming)
-}
-
-pub(super) fn layer_norm(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
-    ctx.instance("layer_norm_f32")?
-        .backward(ctx.inputs, ctx.incoming)
-}
+instance_backward!(
+    max_pool1d => "max_pool1d_f32",
+    max_pool2d => "max_pool2d_f32",
+    avg_pool2d => "avg_pool2d_f32",
+    adaptive_pool => "adaptive_pool_f32",
+    interpolate => "interpolate_f32",
+    batch_norm => "batch_norm_f32",
+    conv2d => "conv2d_f32",
+    group_norm => "group_norm_f32",
+    instance_norm => "instance_norm_f32",
+    layer_norm => "layer_norm_f32",
+);
 
 /// y = a + b：两条路径都原样回传上游梯度。
 pub(super) fn passthrough(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {

@@ -2,6 +2,7 @@
 use super::*;
 use crate::testutil::{archive, f32_segment};
 use crate::writer::Writer;
+use diagnostic::Code;
 
 #[test]
 fn release_strips_opt_and_marks_infer() {

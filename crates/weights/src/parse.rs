@@ -2,9 +2,9 @@
 //!
 //! 段的绝对偏移不进文件，由「数据区起点 + 对齐规则 + 各段长度」重算，再核对填充与两级 CRC。
 
+use crate::bad;
 use diagnostic::{Code, Error, Result};
 
-use crate::archive::invalid;
 use crate::leb::Cursor;
 use crate::seg::{Desc, DescBody, Descriptor};
 use crate::stored::{Stored, StoredInner};
@@ -45,9 +45,7 @@ fn check_version(version: u16) -> Result<()> {
         .with("weights::Archive"));
     }
     if version < VERSION {
-        return Err(bad(format!(
-            "版本 {version} 已不再支持，当前为 {VERSION}"
-        )));
+        return Err(bad(format!("版本 {version} 已不再支持，当前为 {VERSION}")));
     }
     Ok(())
 }
@@ -60,9 +58,7 @@ fn flags_align(bytes: &[u8]) -> Result<(u32, usize)> {
     }
     let align_log = bytes[10];
     if align_log > MAX_ALIGN_LOG {
-        return Err(bad(format!(
-            "align_log {align_log} 超过 {MAX_ALIGN_LOG}"
-        )));
+        return Err(bad(format!("align_log {align_log} 超过 {MAX_ALIGN_LOG}")));
     }
     Ok((flags, 1usize << align_log))
 }
@@ -235,9 +231,7 @@ fn validate_ref_target(index: usize, rep: usize, descs: &[Desc]) -> Result<()> {
     }
     let target = &descs[rep];
     if !matches!(target.body(), DescBody::Inline { .. }) {
-        return Err(bad(format!(
-            "引用段 `{name}` 的代表段 `{rep}` 本身是引用"
-        )));
+        return Err(bad(format!("引用段 `{name}` 的代表段 `{rep}` 本身是引用")));
     }
     if !descs[index].descriptor().same_value(target.descriptor()) {
         return Err(bad(format!(
@@ -299,9 +293,9 @@ fn resolve_one(stored: &[Stored], index: usize, rep: usize) -> Result<(Codec, us
             len,
             crc,
         } => Ok((*codec, *start, *len, *crc)),
-        StoredInner::Ref { .. } => Err(bad(format!(
-            "引用段 `{index}` 的代表段 `{rep}` 本身是引用"
-        ))),
+        StoredInner::Ref { .. } => {
+            Err(bad(format!("引用段 `{index}` 的代表段 `{rep}` 本身是引用")))
+        }
     }
 }
 
@@ -322,10 +316,7 @@ fn place_inline(
         .get(cursor..start)
         .is_some_and(|pad| pad.iter().all(|b| *b == 0));
     if !pad_ok {
-        return Err(bad(format!(
-            "段 `{}` 之前的对齐填充含非零字节",
-            meta.name
-        )));
+        return Err(bad(format!("段 `{}` 之前的对齐填充含非零字节", meta.name)));
     }
     let len = usize::try_from(data_len).map_err(|_| bad("段长度超 usize"))?;
     let Some(end) = start.checked_add(len) else {

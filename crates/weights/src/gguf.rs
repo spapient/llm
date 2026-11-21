@@ -7,6 +7,7 @@
 //! 支持 GGML 类型码：`F32=0`、`F16=1`、`Q8_0=8`、`Q4_K=12`、`Q5_K=13`、`Q6_K=14`。
 //! 反量化只求正确，不做 SIMD；性能路径由上层决定。零第三方依赖，纯安全 Rust。
 
+use crate::bad;
 use diagnostic::{Code, Error, Result};
 use dtype::{DType, QType};
 
@@ -298,10 +299,9 @@ impl<'a> Gguf<'a> {
     /// 按名取张量信息；缺失时显式报错（[`Gguf::tensor`] 的 `Option` 留给调用方自己决定）。
     fn named(&self, name: &str) -> Result<&Tensor> {
         self.tensor(name)
-            .ok_or_else(|| bad(&format!("无张量 `{name}`")))
+            .ok_or_else(|| bad(format!("无张量 `{name}`")))
     }
 }
-
 
 /// 数组最大嵌套深度（防未信任输入递归耗尽栈）。
 const DEPTH: usize = 8;
@@ -482,7 +482,7 @@ fn stamp(reader: &mut Reader<'_>) -> Result<()> {
     let version = reader.word()?;
     match version == VERSION {
         true => Ok(()),
-        false => Err(bad(&format!("版本 {version}，期望 {VERSION}"))),
+        false => Err(bad(format!("版本 {version}，期望 {VERSION}"))),
     }
 }
 
@@ -558,7 +558,7 @@ fn decode_scalar<const N: usize>(
 ) -> Result<()> {
     let (chunks, tail) = raw.as_chunks::<N>();
     if !tail.is_empty() || chunks.len() != out.len() {
-        return Err(bad(&format!("{what} 长度不符")));
+        return Err(bad(format!("{what} 长度不符")));
     }
     for (slot, block) in out.iter_mut().zip(chunks) {
         *slot = convert(*block);

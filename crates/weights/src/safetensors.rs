@@ -33,6 +33,7 @@ use std::fs::File as Source;
 use std::io::{Read as _, Seek as _, SeekFrom};
 use std::path::Path;
 
+use crate::bad;
 use diagnostic::{Code, Error, Result};
 use tensor::{DType, Shape};
 
@@ -343,7 +344,7 @@ fn collect_entries(fields: &[(String, Value)], data_start: usize) -> Result<Vec<
 
 /// 头部 JSON 根值；不是 UTF-8 或文法坏都在这里报错。
 fn root_value(text: &[u8]) -> Result<Value> {
-    let text = std::str::from_utf8(text).map_err(|_| bad("头部不是 UTF-8".to_string()))?;
+    let text = std::str::from_utf8(text).map_err(|_| bad("头部不是 UTF-8"))?;
     json::parse(text).map_err(|error| error.with("weights::safetensors 头部"))
 }
 
@@ -358,7 +359,7 @@ fn check_metadata(value: &Value) -> Result<()> {
 /// 把一条 JSON 条目解析成 [`Entry`]：字段闭集、形状与区间必须自洽。
 fn entry(name: &str, value: &Value, data_start: usize) -> Result<Entry> {
     if name.is_empty() {
-        return Err(bad("条目名不能为空".to_string()).with("weights::safetensors"));
+        return Err(bad("条目名不能为空").with("weights::safetensors"));
     }
     let context = format!("权重条目 `{name}`");
     let fields = value.object().map_err(|error| error.with(&context))?;
@@ -509,10 +510,8 @@ fn offsets_of(value: &Value) -> Result<(usize, usize)> {
     let begin = offset(begin)?;
     let end = offset(end)?;
     if begin > end {
-        return Err(
-            bad(format!("`data_offsets` 的起点 {begin} 晚于终点 {end}"))
-                .with("字段 `data_offsets`"),
-        );
+        return Err(bad(format!("`data_offsets` 的起点 {begin} 晚于终点 {end}"))
+            .with("字段 `data_offsets`"));
     }
     Ok((begin, end))
 }
@@ -578,7 +577,6 @@ fn data_after<'b>(bytes: &'b [u8], header: &Header, header_end: usize) -> Result
 fn internal(message: String) -> Error {
     Error::new(Code::Internal, message).with("weights::safetensors::Archive::read")
 }
-
 
 #[cfg(test)]
 #[path = "../tests/safetensors.rs"]

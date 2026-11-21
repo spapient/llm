@@ -17,7 +17,8 @@
 //! （`axes` 里取 `min(m,n)/2`）：证书因此只能事后记录、从不参与决策。现在秩由证书给出，判定与产出
 //! 同源，[`certify`] 返回 `None` 就是「拒压」本身。
 
-use diagnostic::{Code, Error, Result};
+use crate::bad;
+use diagnostic::Result;
 
 /// 账本 schema 标识。
 pub const SCHEMA: &str = "llm.cert.v1";
@@ -39,7 +40,7 @@ impl Stable {
             0 => Ok(Self::Pass),
             1 => Ok(Self::Fail),
             2 => Ok(Self::Open),
-            other => Err(bad(&format!("未知 Stable 码 {other}"))),
+            other => Err(bad(format!("未知 Stable 码 {other}"))),
         }
     }
 }
@@ -62,7 +63,7 @@ impl EpsMethod {
             0 => Ok(Self::Backward),
             1 => Ok(Self::Residual),
             2 => Ok(Self::Candidate),
-            other => Err(bad(&format!("未知 EpsMethod 码 {other}"))),
+            other => Err(bad(format!("未知 EpsMethod 码 {other}"))),
         }
     }
 
@@ -97,7 +98,7 @@ impl Bound {
             0 => Ok(Self::Diagnostic),
             1 => Ok(Self::Candidate),
             2 => Ok(Self::None),
-            other => Err(bad(&format!("未知 Bound 码 {other}"))),
+            other => Err(bad(format!("未知 Bound 码 {other}"))),
         }
     }
 
@@ -126,7 +127,7 @@ impl Mode {
         match code {
             0 => Ok(Self::Trunc),
             1 => Ok(Self::Residual),
-            other => Err(bad(&format!("未知 Mode 码 {other}"))),
+            other => Err(bad(format!("未知 Mode 码 {other}"))),
         }
     }
 }

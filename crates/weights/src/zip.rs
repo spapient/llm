@@ -4,7 +4,7 @@
 
 use diagnostic::Result;
 
-use crate::bin::bad;
+use crate::bad;
 
 const EOCD_SIG: u32 = 0x0605_4B50;
 const CD_SIG: u32 = 0x0201_4B50;
@@ -52,7 +52,7 @@ impl<'a> Zip<'a> {
     pub(crate) fn data_suffix(&self, suffix: &str) -> Result<&'a [u8]> {
         let entry = self
             .get_suffix(suffix)
-            .ok_or_else(|| bad(&format!("无后缀条目 `{suffix}`")))?;
+            .ok_or_else(|| bad(format!("无后缀条目 `{suffix}`")))?;
         self.data(entry)
     }
 

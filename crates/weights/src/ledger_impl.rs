@@ -1,11 +1,12 @@
 //! [`ledger`](crate::ledger) 的机制层：分解、秩判定、编码/解码、证书校验与复核，
 //! 公开面只有 [`certify`]、[`check`] 与 [`audit`]，由 [`ledger`](crate::ledger) 再导出。
 
+use crate::bad;
 use diagnostic::Result;
 
 use crate::leb::{self, Cursor};
 use crate::ledger::{
-    bad, certified_rank, factor_low, stable, Bound, Certified, EpsMethod, Mode, Note, Stable,
+    Bound, Certified, EpsMethod, Mode, Note, Stable, certified_rank, factor_low, stable,
 };
 use crate::sink::Sink;
 use crate::svd;
@@ -119,7 +120,7 @@ fn norm(values: impl Iterator<Item = f64>) -> f64 {
 /// 形状判据：`m`、`n` 非零且元素数与乘积一致；返回奇异值个数 `min(m,n)`。
 fn shape(len: usize, m: usize, n: usize) -> Result<usize> {
     if m == 0 || n == 0 || m.checked_mul(n) != Some(len) {
-        return Err(bad(&format!("形状不合法 m={m} n={n} len={len}")));
+        return Err(bad(format!("形状不合法 m={m} n={n} len={len}")));
     }
     Ok(m.min(n))
 }
@@ -355,7 +356,7 @@ pub fn audit(note: &Note, m: usize, n: usize, low: &[f32], rest: &[f32]) -> Resu
             .map(|(&l, &r)| f64::from(l) + f64::from(r)),
     );
     if (truncation - note.decomp).abs() > 1e-6 * (note.decomp.abs() + weight) {
-        return Err(bad(&format!(
+        return Err(bad(format!(
             "截断误差与载荷不符：证书 {}，载荷 {truncation}",
             note.decomp
         )));

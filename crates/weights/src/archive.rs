@@ -3,7 +3,8 @@
 use std::borrow::Cow;
 use std::sync::OnceLock;
 
-use diagnostic::{Code, Error, Result};
+use crate::bad;
+use diagnostic::Result;
 
 use crate::metrics::{Metrics, MetricsAcc};
 use crate::parse::{FOOTER_LEN, fixed, layout, read_descs};
@@ -176,7 +177,6 @@ impl<'a> Archive<'a> {
         Ok(acc.finish(self.segs.len(), self.bytes.len()))
     }
 }
-
 
 /// 按段 codec 把原始存储帧解为逻辑字节：`store` 零拷贝借用，`rans`/`axes` 解压为新缓冲。
 fn decode_frame<'a>(raw: &'a [u8], codec: Codec, want: usize) -> Result<Cow<'a, [u8]>> {

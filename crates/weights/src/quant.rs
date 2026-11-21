@@ -20,6 +20,7 @@
 //! [`DType::I8`] 是逐元素有符号字节，第二维就是元素数；[`DType::U8`] 是无符号字节，一个字节
 //! 两个 nibble，第二维是字节数、宽度翻倍。分组仍由标度条目形状推出，weights 不认识算子分组档。
 
+use crate::bad;
 use diagnostic::{Code, Error, Result};
 use tensor::DType;
 
@@ -152,7 +153,6 @@ fn read_types(cur: &mut Cursor<'_>, zero: bool) -> Result<(Wire, Option<Wire>)> 
     };
     Ok((scale_ty, zp_ty))
 }
-
 
 // —— 权重/标度成对推断 ——
 
@@ -351,7 +351,6 @@ fn width(weight: &Entry, second: usize, context: &str) -> Result<Option<usize>> 
         _ => Ok(None),
     }
 }
-
 
 #[cfg(test)]
 #[path = "../tests/quant.rs"]

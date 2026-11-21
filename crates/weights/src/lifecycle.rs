@@ -3,7 +3,8 @@
 //! 模式判定与剥离只依赖已读 [`Archive`]；补丁是自逆 XOR：base 缺失或不等长按全量保留，
 //! 不做第二份容错。
 
-use diagnostic::{Code, Error, Result};
+use crate::bad;
+use diagnostic::Result;
 
 use crate::{Archive, Segment, Stored, Wire};
 
@@ -33,7 +34,7 @@ impl Mode {
         match code {
             0 => Ok(Mode::Train),
             1 => Ok(Mode::Infer),
-            other => Err(bad(&format!("mode: 未知码 {other}"))),
+            other => Err(bad(format!("mode: 未知码 {other}"))),
         }
     }
 
@@ -91,7 +92,6 @@ fn keep_segment(src: &Archive<'_>, seg: &Stored) -> Result<Segment> {
     let data = src.load(seg)?.into_owned();
     to_segment(seg, data)
 }
-
 
 // —— 增量补丁：逐字节 XOR，读端按 base 自逆合成 ——
 

@@ -21,6 +21,7 @@
 //! assert!(json::parse(r#"{"a": 1.5}"#).is_err(), "头部里的数字必须是整数");
 //! ```
 
+use diagnostic::scan::Cursor;
 use diagnostic::{Code, Error, Result};
 
 /// 嵌套上限：头部只有"对象 → 条目对象 → 数组"三层，超过它的一定是输入有问题。
@@ -170,7 +171,63 @@ pub fn parse(text: &str) -> Result<Value> {
 pub fn parse_ledger(text: &str) -> Result<Value> {
     crate::json_impl::parse_with(text, true)
 }
+/// 简单转义表：`\X` 的第二个字节 → 字符，`'\0'` 表示不是简单转义（`u` 另行处理）。
+pub(crate) const SIMPLE: [char; 128] = {
+    let mut table = ['\0'; 128];
+    table[b'"' as usize] = '"';
+    table[b'\\' as usize] = '\\';
+    table[b'/' as usize] = '/';
+    table[b'b' as usize] = '\u{8}';
+    table[b'f' as usize] = '\u{c}';
+    table[b'n' as usize] = '\n';
+    table[b'r' as usize] = '\r';
+    table[b't' as usize] = '\t';
+    table
+};
+
+/// `\X` 的字符：表里没有（或超出 ASCII）就是未知转义。
+pub(crate) fn simple_escape(byte: u8) -> Option<char> {
+    SIMPLE.get(byte as usize).copied().filter(|&ch| ch != '\0')
+}
+
+/// UTF-8 起始字节 → 序列宽度；`None` 表示非法起始字节。
+pub(crate) fn sequence_width(byte: u8) -> Option<usize> {
+    match byte {
+        0x00..=0x7f => Some(1),
+        0xc0..=0xdf => Some(2),
+        0xe0..=0xef => Some(3),
+        0xf0..=0xf7 => Some(4),
+        _ => None,
+    }
+}
+
+/// 码位 → 字符：代理区之外并不都是合法标量值，所以这一步也可能失败。
+pub(crate) fn code_point(cursor: &Cursor<'_>, at: usize, code: u32) -> Result<char> {
+    char::from_u32(code).ok_or_else(|| cursor.fail_at(at, format!("U+{code:04X} 不是合法字符")))
+}
+
+/// 高位代理：`U+D800..=U+DBFF`，后面必须跟一个低位代理。
+pub(crate) fn is_high_surrogate(code: u32) -> bool {
+    (0xd800..=0xdbff).contains(&code)
+}
+
+/// 低位代理：`U+DC00..=U+DFFF`，只有紧跟高位代理时才合法。
+pub(crate) fn is_low_surrogate(code: u32) -> bool {
+    (0xdc00..=0xdfff).contains(&code)
+}
+
+/// 整数字节 → `i64`：前导零在本地拒，范围与解析口径交给 `str::parse`。
+pub(crate) fn integer_value(cursor: &Cursor<'_>, at: usize, bytes: &[u8]) -> Result<i64> {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return Err(cursor.fail_at(at, "整数不是 ASCII"));
+    };
+    if text.len() > 1 && text.trim_start_matches('-').starts_with('0') {
+        return Err(cursor.fail_at(at, format!("整数 `{text}` 不能有前导零")));
+    }
+    text.parse::<i64>()
+        .map_err(|_| cursor.fail_at(at, format!("整数 `{text}` 超出 i64 范围")))
+}
+
 #[cfg(test)]
 #[path = "../tests/json.rs"]
 mod tests;
-

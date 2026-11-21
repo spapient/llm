@@ -168,151 +168,50 @@ struct Entry {
 /// 已接反向公式的可微算子目录；其余算子（量化权重 / 反量化）在 [`apply_formula`] 处回
 /// [`Code::Unsupported`]。与 [`op::REGISTRY`] 的 `differentiable` 标记一一对应，由下方 `const`
 /// 断言在编译期守住。
-const FORMULAS: [Entry; 36] = [
-    Entry {
-        op: "adaptive_pool_f32",
-        formula: adaptive_pool,
-    },
-    Entry {
-        op: "add_f32",
-        formula: passthrough,
-    },
-    Entry {
-        op: "residual_add_f32",
-        formula: passthrough,
-    },
-    Entry {
-        op: "mul_f32",
-        formula: mul,
-    },
-    Entry {
-        op: "scale_f32",
-        formula: scale,
-    },
-    Entry {
-        op: "sub_f32",
-        formula: sub,
-    },
-    Entry {
-        op: "div_f32",
-        formula: div,
-    },
-    Entry {
-        op: "exp_f32",
-        formula: exp,
-    },
-    Entry {
-        op: "log_f32",
-        formula: log,
-    },
-    Entry {
-        op: "min_f32",
-        formula: min,
-    },
-    Entry {
-        op: "max_f32",
-        formula: max,
-    },
-    Entry {
-        op: "max_pool1d_f32",
-        formula: max_pool1d,
-    },
-    Entry {
-        op: "max_pool2d_f32",
-        formula: max_pool2d,
-    },
-    Entry {
-        op: "silu_f32",
-        formula: silu,
-    },
-    Entry {
-        op: "gelu_f32",
-        formula: gelu,
-    },
-    Entry {
-        op: "hard_sigmoid_f32",
-        formula: hard_sigmoid,
-    },
-    Entry {
-        op: "instance_norm_f32",
-        formula: instance_norm,
-    },
-    Entry {
-        op: "interpolate_f32",
-        formula: interpolate,
-    },
-    Entry {
-        op: "layer_norm_f32",
-        formula: layer_norm,
-    },
-    Entry {
-        op: "leaky_relu_f32",
-        formula: leaky_relu,
-    },
-    Entry {
-        op: "reduce_sum_f32",
-        formula: reduce_sum,
-    },
-    Entry {
-        op: "reduce_max_f32",
-        formula: reduce_max,
-    },
-    Entry {
-        op: "softmax_f32",
-        formula: softmax,
-    },
-    Entry {
-        op: "gemv_f32",
-        formula: gemv,
-    },
-    Entry {
-        op: "group_norm_f32",
-        formula: group_norm,
-    },
-    Entry {
-        op: "gemm_f32",
-        formula: gemm,
-    },
-    Entry {
-        op: "embed_f32",
-        formula: embed,
-    },
-    Entry {
-        op: "rmsnorm_f32",
-        formula: rmsnorm,
-    },
-    Entry {
-        op: "rope_f32",
-        formula: rope,
-    },
-    Entry {
-        op: "attention_f32",
-        formula: attention,
-    },
-    Entry {
-        op: "avg_pool2d_f32",
-        formula: avg_pool2d,
-    },
-    Entry {
-        op: "batch_norm_f32",
-        formula: batch_norm,
-    },
-    Entry {
-        op: "conv2d_f32",
-        formula: conv2d,
-    },
-    Entry {
-        op: "flash_attention_f32",
-        formula: attention,
-    },
-    Entry {
-        op: "decode_attention_f32",
-        formula: decode_attention,
-    },
-    Entry {
-        op: "decode_flash_attention_f32",
-        formula: decode_attention,
-    },
+/// 展开公式目录：`op => formula` 一行一条，数组长度由下方 [`FORMULAS`] 的声明给定。
+macro_rules! formulas {
+    ($($op:literal => $formula:ident),* $(,)?) => {
+        [$(Entry { op: $op, formula: $formula }),*]
+    };
+}
+
+const FORMULAS: [Entry; 36] = formulas![
+    "adaptive_pool_f32" => adaptive_pool,
+    "add_f32" => passthrough,
+    "residual_add_f32" => passthrough,
+    "mul_f32" => mul,
+    "scale_f32" => scale,
+    "sub_f32" => sub,
+    "div_f32" => div,
+    "exp_f32" => exp,
+    "log_f32" => log,
+    "min_f32" => min,
+    "max_f32" => max,
+    "max_pool1d_f32" => max_pool1d,
+    "max_pool2d_f32" => max_pool2d,
+    "silu_f32" => silu,
+    "gelu_f32" => gelu,
+    "hard_sigmoid_f32" => hard_sigmoid,
+    "instance_norm_f32" => instance_norm,
+    "interpolate_f32" => interpolate,
+    "layer_norm_f32" => layer_norm,
+    "leaky_relu_f32" => leaky_relu,
+    "reduce_sum_f32" => reduce_sum,
+    "reduce_max_f32" => reduce_max,
+    "softmax_f32" => softmax,
+    "gemv_f32" => gemv,
+    "group_norm_f32" => group_norm,
+    "gemm_f32" => gemm,
+    "embed_f32" => embed,
+    "rmsnorm_f32" => rmsnorm,
+    "rope_f32" => rope,
+    "attention_f32" => attention,
+    "avg_pool2d_f32" => avg_pool2d,
+    "batch_norm_f32" => batch_norm,
+    "conv2d_f32" => conv2d,
+    "flash_attention_f32" => attention,
+    "decode_attention_f32" => decode_attention,
+    "decode_flash_attention_f32" => decode_attention,
 ];
 
 /// 编译期闭合：公式目录与 [`op::REGISTRY`] 的 `differentiable` 标记一一对应。

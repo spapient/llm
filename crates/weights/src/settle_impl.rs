@@ -3,14 +3,13 @@
 
 use std::fmt::Write as _;
 
+use crate::bad;
 use diagnostic::Result;
 
 use crate::axes;
 use crate::json::Value;
 use crate::ledger::{self, SCHEMA};
-use crate::settle::{
-    bad, Cert, Reason, Settled, Settlement, GAIN_FLOOR, MAX_ENTROPY, SMALL_BYTES,
-};
+use crate::settle::{Cert, GAIN_FLOOR, MAX_ENTROPY, Reason, SMALL_BYTES, Settled, Settlement};
 use crate::stored::lossless_entry;
 use crate::{Archive, Codec, Stored};
 
@@ -246,7 +245,7 @@ fn verify_count(listed: &[Value], actual: usize) -> Result<()> {
     if listed.len() == actual {
         return Ok(());
     }
-    Err(bad(&format!(
+    Err(bad(format!(
         "账本列了 {} 个张量，这份字节有 {actual} 段",
         listed.len()
     )))
@@ -270,7 +269,7 @@ fn only(fields: &[(String, Value)], allowed: &[&str], owner: &str) -> Result<()>
         .find(|(name, _)| !allowed.contains(&name.as_str()))
     {
         None => Ok(()),
-        Some((extra, _)) => Err(bad(&format!(
+        Some((extra, _)) => Err(bad(format!(
             "{owner} 的账本多出 `{extra}`：这份字节没有这一格"
         ))),
     }
@@ -282,7 +281,7 @@ fn check(fields: &[(String, Value)], key: &str, want: &str, owner: &str) -> Resu
     if text == want {
         return Ok(());
     }
-    Err(bad(&format!(
+    Err(bad(format!(
         "{owner} 的 `{key}` 是 `{text}`，这份字节现算的是 `{want}`"
     )))
 }
@@ -293,7 +292,7 @@ fn field<'a>(fields: &'a [(String, Value)], key: &str, owner: &str) -> Result<&'
         .iter()
         .find(|(name, _)| name == key)
         .map(|(_, value)| value)
-        .ok_or_else(|| bad(&format!("{owner} 的账本缺 `{key}`")))
+        .ok_or_else(|| bad(format!("{owner} 的账本缺 `{key}`")))
 }
 
 /// 值在文本里的写法：字符串取内容、布尔与 `null` 取字面、数字取原文。
@@ -305,10 +304,7 @@ fn written(value: &Value) -> Result<String> {
         Value::Bool(flag) => Ok(flag.to_string()),
         Value::Null => Ok("null".to_string()),
         Value::Integer(_) | Value::Decimal(_) => value.number_text(),
-        other => Err(bad(&format!(
-            "账本的这一格必须是标量，得到{}",
-            other.kind()
-        ))),
+        other => Err(bad(format!("账本的这一格必须是标量，得到{}", other.kind()))),
     }
 }
 

@@ -7,9 +7,10 @@
 
 use std::ops::Range;
 
+use crate::bad;
 use diagnostic::Result;
 
-use crate::ptq::{I2, I3, I4, I8, Scheme, dequantize, invalid, quantize};
+use crate::ptq::{I2, I3, I4, I8, Scheme, dequantize, quantize};
 
 /// 候选档位，位宽从低到高。
 ///

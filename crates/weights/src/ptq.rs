@@ -14,8 +14,9 @@
 
 pub use crate::adaptive::{Adaptive, AdaptiveCompensated, adaptive_quantize, compensate_adaptive};
 
+use crate::bad;
 use crate::svd;
-use diagnostic::{Code, Error, Result};
+use diagnostic::Result;
 
 /// 一档对称量化格式的运行时事实。
 ///
@@ -218,7 +219,6 @@ fn unpack_bits(packed: &[u8], index: usize, width: u8) -> u8 {
     }
     (value & ((1u32 << width) - 1)) as u8
 }
-
 
 /// 秩-r 低秩 + 残差量化补偿的结果：`Ŵ = L_r + Q(W − L_r)`。
 ///

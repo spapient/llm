@@ -10,7 +10,8 @@
 //! rANS 要求解码顺序与编码相反，因此每条 lane 的字节流在 [`encode`] 末尾整体翻转，
 //! [`decode`] 从头正向消费即可。所有算术只用 `u32/u64`，无浮点、无 `unsafe`。
 
-use diagnostic::{Code, Error, Result};
+use crate::bad;
+use diagnostic::Result;
 
 /// 字母表大小（字节）。
 const NSYMBOLS: usize = 256;
@@ -388,12 +389,10 @@ fn decode_one(
 fn declared_len(cur: &mut &[u8], cap: usize) -> Result<usize> {
     let len = u32::from_le_bytes(take::<4>(cur)?) as usize;
     if len > cap {
-        return Err(bad(&format!("rANS 帧声明 {len} 字节，超过上限 {cap}")));
+        return Err(bad(format!("rANS 帧声明 {len} 字节，超过上限 {cap}")));
     }
     Ok(len)
 }
-
-/// 构造一个内部错误，统一携带模块定位。
 
 #[cfg(test)]
 #[path = "../tests/rans.rs"]

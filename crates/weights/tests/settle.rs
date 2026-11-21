@@ -3,6 +3,7 @@ use super::*;
 
 use crate::ledger;
 use crate::seg::Segment;
+use diagnostic::Code;
 
 use crate::testutil::{f32_matrix, f32_segment};
 

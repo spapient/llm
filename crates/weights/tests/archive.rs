@@ -1,6 +1,7 @@
 //! `archive` 模块的单元测试。
 use super::*;
 
+use diagnostic::Code;
 use std::borrow::Cow;
 
 use crate::{Codec, Quant, Segment, Wire};

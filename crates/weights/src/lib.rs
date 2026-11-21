@@ -97,6 +97,7 @@ mod pickle;
 mod zip;
 pub use lifecycle::import;
 pub mod json;
+mod json_impl;
 pub mod safetensors;
 
 // 只读内存映射源：feature + Unix 双门控，复用 `storage` 的唯一 unsafe 岛。

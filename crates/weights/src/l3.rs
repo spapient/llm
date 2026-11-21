@@ -20,7 +20,8 @@
 //! - **上界为零不等于逐位还原**：`ε = 0` 只说明证书这一项为零，`Ŵ = W` 要由实际 artifact 的往返
 //!   给出；缺了后者就是 [`Ruling::Unverified`]，而不是悄悄算成功。
 
-use diagnostic::{Code, Error, Result};
+use crate::bad;
+use diagnostic::Result;
 
 use crate::ledger::{Bound, EpsMethod, Note, Stable};
 
@@ -271,7 +272,7 @@ fn walk(rungs: &[Rung], input: f64) -> Result<(f64, f64)> {
         error = rung.lipschitz * (rung.rho * error + rung.eps * activation);
         activation = rung.lipschitz * rung.rho_hat * activation + rung.offset;
         if !(error.is_finite() && activation.is_finite()) {
-            return Err(bad(&format!("第 {index} 段越出 f64：无穷大的上界不是上界")));
+            return Err(bad(format!("第 {index} 段越出 f64：无穷大的上界不是上界")));
         }
     }
     Ok((activation, error))
@@ -307,12 +308,10 @@ fn latent_sum(rungs: &[Rung]) -> f64 {
 /// 单个量必须是有限非负数：负的范数不是"更紧的界"，`NaN` 更会让整条比较链静默失效。
 fn check(label: &str, value: f64) -> Result<()> {
     if !value.is_finite() || value < 0.0 {
-        return Err(bad(&format!("{label} 必须是有限的非负数，实际 {value}")));
+        return Err(bad(format!("{label} 必须是有限的非负数，实际 {value}")));
     }
     Ok(())
 }
-
-/// 错误只此一种来源：`Code::Invalid` 加模块标签，措辞在调用点给。
 
 #[cfg(test)]
 #[path = "../tests/l3.rs"]

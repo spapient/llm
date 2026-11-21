@@ -13,7 +13,8 @@
 //! 账目，而是与两段残差同受一条 CRC 保护的载荷内容，读端 [`decode`] 用载荷自己把证书的断言重算
 //! 一遍（[`ledger::audit`]），对不上就拒绝——「可证压缩」因此有一个可执行的判据。
 
-use diagnostic::{Code, Error, Result};
+use crate::bad;
+use diagnostic::{Error, Result};
 
 use crate::leb::Cursor;
 use crate::ledger;
@@ -132,7 +133,7 @@ impl Axis {
     fn from_code(code: u8) -> Result<Self> {
         AXES.get(usize::from(code))
             .map(|cfg| cfg.kind())
-            .ok_or_else(|| bad(&format!("未知轴码 {code}")))
+            .ok_or_else(|| bad(format!("未知轴码 {code}")))
     }
 }
 
@@ -220,7 +221,7 @@ pub fn certificate(artifact: &[u8]) -> Result<Option<ledger::Note>> {
 /// 形状判据：`m`、`n` 非零且元素数与乘积一致；不回答权重内容。
 fn check_shape(w: &[f32], m: usize, n: usize) -> Result<()> {
     if m == 0 || n == 0 || w.len() != m * n {
-        return Err(bad(&format!("形状不合法 m={m} n={n} len={}", w.len())));
+        return Err(bad(format!("形状不合法 m={m} n={n} len={}", w.len())));
     }
     Ok(())
 }
@@ -263,7 +264,6 @@ fn verified(pick: &Pick, w: &[f32]) -> bool {
     })
 }
 
-
 /// 标记位：0 = store（原样），1 = rans 帧。
 const STORE_MARK: u8 = 0;
 const RANS_MARK: u8 = 1;
@@ -291,7 +291,7 @@ fn unpack_body(mark: u8, body: &[u8], cap: usize) -> Result<Vec<u8>> {
     match mark {
         STORE_MARK => Ok(body.to_vec()),
         RANS_MARK => rans::decode(body, cap),
-        other => Err(bad(&format!("未知熵编码标记 {other}"))),
+        other => Err(bad(format!("未知熵编码标记 {other}"))),
     }
 }
 
@@ -470,7 +470,7 @@ pub(crate) fn f32_bytes(w: &[f32]) -> Vec<u8> {
 
 pub(crate) fn bytes_to_f32(bytes: &[u8], want: usize) -> Result<Vec<f32>> {
     if bytes.len() != want * 4 {
-        return Err(bad(&format!(
+        return Err(bad(format!(
             "f32 字节 {} != 期望 {}",
             bytes.len(),
             want * 4
@@ -634,7 +634,7 @@ fn sliced(all: &[u8], at: &mut usize, what: &str) -> Result<std::ops::Range<usiz
         .checked_add(len)
         .filter(|&e| e <= all.len())
         .ok_or_else(|| {
-            bad(&format!(
+            bad(format!(
                 "{what} 越界：长 {len}，余 {}",
                 all.len().saturating_sub(*at)
             ))
@@ -673,7 +673,7 @@ pub(crate) fn f64_bytes(values: &[f64]) -> Vec<u8> {
 fn factor_part(frame: &[u8], want: usize) -> Result<Vec<f64>> {
     let bytes = unpack_marked(frame, payload_cap(want * 2))?;
     if bytes.len() != want * 8 {
-        return Err(bad(&format!(
+        return Err(bad(format!(
             "因子字节 {} != 期望 {}",
             bytes.len(),
             want * 8

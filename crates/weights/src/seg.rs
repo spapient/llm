@@ -3,6 +3,7 @@
 //! 描述符走紧凑 LEB128；数据字节本身在数据区单独写。P1 只有 `store` 一种 codec（code 0），
 //! 因此 `data_len` 必须正好等于形状与类型推出的字节数。
 
+use crate::bad;
 use diagnostic::{Code, Error, Result};
 
 use crate::Wire;
@@ -167,7 +168,7 @@ impl Segment {
         if actual == expected {
             return Ok(());
         }
-        Err(bad(&format!(
+        Err(bad(format!(
             "段 `{}` 的数据是 {} 字节，{:?} {:?} 推出 {expected} 字节",
             self.desc.name,
             self.data.len(),
@@ -260,7 +261,7 @@ impl Desc {
         match form {
             FORM_INLINE => Self::decode_inline(cur, desc, rank),
             FORM_REF => Self::decode_ref(cur, desc, rank),
-            other => Err(bad(&format!("未知描述符形态 {other}"))),
+            other => Err(bad(format!("未知描述符形态 {other}"))),
         }
     }
 
@@ -357,7 +358,7 @@ fn decode_shape_head(cur: &mut Cursor<'_>) -> Result<(Vec<u64>, u32)> {
 /// `rank` 个轴长度；维数先过 [`MAX_RANK`] 守卫。
 fn decode_shape(cur: &mut Cursor<'_>, rank: u32) -> Result<Vec<u64>> {
     if rank > MAX_RANK {
-        return Err(bad(&format!("张量维数 {rank} 超过 {MAX_RANK}")));
+        return Err(bad(format!("张量维数 {rank} 超过 {MAX_RANK}")));
     }
     let mut shape = Vec::with_capacity(rank as usize);
     for _ in 0..rank {
@@ -377,7 +378,7 @@ fn decode_quant(cur: &mut Cursor<'_>, rank: u32) -> Result<Option<Quant>> {
     match cur.read_u8()? {
         0 => Ok(None),
         1 => Ok(Some(Quant::decode(cur, rank)?)),
-        other => Err(bad(&format!("quant present 标志只能是 0/1，实际 {other}"))),
+        other => Err(bad(format!("quant present 标志只能是 0/1，实际 {other}"))),
     }
 }
 
@@ -390,7 +391,7 @@ fn check_frame(name: &str, codec: Codec, data_len: u64, expected: u64) -> Result
     if valid {
         Ok(())
     } else {
-        Err(bad(&format!(
+        Err(bad(format!(
             "段 `{name}` 声明 {data_len} 字节，{codec:?} 段不符合 {expected} 字节口径"
         )))
     }
@@ -405,7 +406,6 @@ fn check_quant(quant: Option<&Quant>, rank: u32) -> Result<()> {
     }
     Ok(())
 }
-
 
 #[cfg(test)]
 #[path = "../tests/seg.rs"]
