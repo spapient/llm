@@ -135,7 +135,7 @@ fn call_arguments_follow_the_template_signature() {
 ///
 /// 这条断言原先写在注册表侧（那里同时看得见 `MODEL` 与格式），拆 crate 后注册表看不见内核类型，
 /// 于是它回到内核：格式的粒度由格式自己回答，注册表只需照抄。
-fn grain_is_what_the_model_declares<G: Format>() {
+fn grain_is_what_the_model_declares<G: Format + crate::operator::Operator>() {
     assert_eq!(
         crate::operator::model_of::<G>().group,
         u32::try_from(<G as Format>::GRAIN).expect("粒度落在 u32 内")
