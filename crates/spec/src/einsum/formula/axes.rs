@@ -1,3 +1,4 @@
+//! 职责：求和下标轴角色：批/收缩/输出分类。
 use super::arith::multiply;
 use super::*;
 

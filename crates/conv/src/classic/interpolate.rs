@@ -1,3 +1,4 @@
+//! 职责：interpolate 声明档输入形状常量（H/W）。
 use super::*;
 
 /// 声明档输入边长。

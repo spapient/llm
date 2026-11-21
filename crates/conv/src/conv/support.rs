@@ -1,3 +1,4 @@
+//! 职责：卷积共享支撑：打包、切片与线程分派。
 use std::thread;
 
 use diagnostic::{Code, Error, Result};

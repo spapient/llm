@@ -1,3 +1,4 @@
+//! 职责：生成一个 token：预留落点页并推进序列计数器。
 use super::*;
 
 impl Scheduler {

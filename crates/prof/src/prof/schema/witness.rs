@@ -1,3 +1,4 @@
+//! 职责：见证重复检查：同名实现诊断串。
 use super::super::*;
 
 pub(super) fn dup_impl(first: usize, provide: &Provide) -> String {

@@ -1,3 +1,4 @@
+//! 职责：双线性插值采样与坐标重映射。
 use diagnostic::{Code, Error, Result};
 
 use crate::Scalar;

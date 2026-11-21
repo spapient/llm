@@ -1,3 +1,4 @@
+//! 职责：方言源码文本：CUDA/Metal 源串拼接。
 use super::Dialect;
 use diagnostic::{Code, Error, Result};
 use op::decl::Grid;

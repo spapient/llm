@@ -1,3 +1,4 @@
+//! 职责：i8 矩阵乘的标量/分块出口与形状投影。
 use diagnostic::Result;
 
 use crate::model::{Cost, Sample, ShapeContext, Values};

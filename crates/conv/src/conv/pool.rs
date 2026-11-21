@@ -1,3 +1,4 @@
+//! 职责：池化：max/avg 窗口归约与输出体量。
 use diagnostic::{Code, Error, Result};
 
 use crate::Scalar;

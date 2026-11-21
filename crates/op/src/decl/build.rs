@@ -1,3 +1,4 @@
+//! 职责：算子声明构建：模板实参与布局规格的实例化。
 use diagnostic::Error;
 use diagnostic::data::{Table, Value};
 

@@ -1,3 +1,4 @@
+//! 职责：TN 矩阵乘：转置打包与行主序分块。
 use std::ops::Range;
 
 use diagnostic::{Code, Error, Result};
