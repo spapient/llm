@@ -15,6 +15,7 @@ use crate::pickle::storage::into_str;
 pub(crate) enum Value {
     Str(String),
     Int(i64),
+    Float(f64),
     Scalar,
     Tuple(Vec<Value>),
     List(Vec<Value>),
@@ -61,8 +62,12 @@ impl Vm {
     }
 
     pub(crate) fn bytes(&mut self, n: usize) -> Result<Vec<u8>> {
-        let slice = or_bad(self.pkl.get(self.at..self.at + n), "pickle 字段越界")?;
-        self.at += n;
+        let stop = self
+            .at
+            .checked_add(n)
+            .ok_or_else(|| bad("pickle 字段偏移溢出"))?;
+        let slice = or_bad(self.pkl.get(self.at..stop), "pickle 字段越界")?;
+        self.at = stop;
         Ok(slice.to_vec())
     }
 
@@ -115,6 +120,8 @@ impl Vm {
             b'\x93' => self.global_stack(),
             b'K' | b'M' => self.push_uint(op),
             b'J' => self.push_binint(),
+            b'\x8a' => self.long(1),
+            b'\x8b' => self.long(4),
             b't' | b'\x85'..=b'\x87' => self.tuple(op),
             _ => self.step_tuple(op),
         }
@@ -163,9 +170,26 @@ impl Vm {
         Ok(())
     }
 
+    /// `BINFLOAT`：8 字节**大端** IEEE 双精度，解开后按浮点进栈（不是"不可知的标量"）。
     pub(crate) fn float(&mut self) -> Result<()> {
-        self.bytes(8).map(drop)?;
-        self.stack.push(Value::Scalar);
+        let raw = self.bytes(8)?;
+        let mut buf = [0u8; 8];
+        buf.copy_from_slice(&raw);
+        self.stack.push(Value::Float(f64::from_be_bytes(buf)));
+        Ok(())
+    }
+
+    /// `LONG1`/`LONG4`：小端二进制补码、长度可变；超过 8 字节的整数装不进 `i64`，显式失败。
+    pub(crate) fn long(&mut self, width: usize) -> Result<()> {
+        let len = self.uint(width)? as usize;
+        if len > 8 {
+            return Err(bad("LONG 超过 i64 宽度"));
+        }
+        let raw = self.bytes(len)?;
+        let sign = raw.last().is_some_and(|&last| last & 0x80 != 0);
+        let mut buf = [if sign { 0xFF } else { 0 }; 8];
+        buf[..len].copy_from_slice(&raw);
+        self.stack.push(Value::Int(i64::from_le_bytes(buf)));
         Ok(())
     }
 

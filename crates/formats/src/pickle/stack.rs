@@ -98,18 +98,20 @@ impl Vm {
     pub(crate) fn rebuild_tensor(&mut self, args: Value) -> Result<()> {
         let items = as_tuple(args, "rebuild 参数不是元组")?;
         let mut tensor = tensor_of(&items)?;
-        tensor.name = self.tensor_name()?;
+        tensor.name = self.tensor_name();
         self.tensors.push(tensor);
         self.stack.push(Value::Tensor);
         Ok(())
     }
 
-    pub(crate) fn tensor_name(&self) -> Result<String> {
-        let name = self.stack.iter().rev().find_map(|v| match v {
-            Value::Str(s) => Some(s),
-            _ => None,
-        });
-        or_bad(name.cloned(), "找不到张量名")
+    /// 张量名：`REDUCE` 的实参与可调用对象弹出后，栈顶若是字符串，它就是 `state_dict`
+    /// 里紧邻这个值的键；否则按出现序号命名，避免借用上一个张量残留的键把两个张量
+    /// 叫成同一个名字（`torch.save([t1, t2])` 就是这一形状）。
+    pub(crate) fn tensor_name(&self) -> String {
+        match self.stack.last() {
+            Some(Value::Str(name)) => name.clone(),
+            _ => self.tensors.len().to_string(),
+        }
     }
 
     pub(crate) fn pop_pairs(&mut self) -> Result<Vec<(Value, Value)>> {

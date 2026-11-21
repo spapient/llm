@@ -65,10 +65,13 @@ impl<'a> Bin<'a> {
         let storage = self.zip.data_suffix(&suffix);
         let fallback = format!("data/{}", tensor.storage_key);
         let storage = storage.or_else(|_| self.zip.data_suffix(&fallback))?;
-        storage
-            .get(tensor.offset..tensor.offset + tensor.len)
-            .ok_or_else(|| bad("张量字节区间越界"))
+        storage.get(window(tensor.offset, tensor.len)).ok_or_else(|| bad("张量字节区间越界"))
     }
+}
+
+/// 张量的字节窗口：偏移相加必须先查溢出，否则绕回小值会让越界区间变成「空的成功切片」。
+fn window(offset: usize, len: usize) -> std::ops::Range<usize> {
+    offset..offset.saturating_add(len)
 }
 
 #[cfg(test)]

@@ -86,8 +86,12 @@ fn zip64_directory(bytes: &[u8], eocd: usize) -> Result<(usize, usize)> {
 }
 
 fn zip64_record(bytes: &[u8], eocd: usize) -> Result<usize> {
-    let locator = find_sig_back(bytes, EOCD64_LOCATOR_SIG, eocd.saturating_sub(20))?;
-    let z64 = u32::from_le_bytes(le(bytes, locator + 8)?) as usize;
+    let locator = eocd.checked_sub(20).ok_or_else(|| bad("ZIP64 定位器不完整"))?;
+    if u32::from_le_bytes(le(bytes, locator)?) != EOCD64_LOCATOR_SIG {
+        return Err(bad("ZIP64 定位器签名不符"));
+    }
+    let z64 = usize::try_from(u64::from_le_bytes(le(bytes, locator + 8)?))
+        .map_err(|_| bad("ZIP64 EOCD 偏移超出 usize"))?;
     if u32::from_le_bytes(le(bytes, z64)?) != ZIP64_SIG {
         return Err(bad("ZIP64 EOCD 签名不符"));
     }
@@ -122,7 +126,7 @@ impl Central {
         let extra_len = u16::from_le_bytes([fixed[30], fixed[31]]) as usize;
         let comment_len = u16::from_le_bytes([fixed[32], fixed[33]]) as usize;
         let name = entry_name(bytes, at, name_len)?;
-        let (csize, local) = zip64_sizes(bytes, at, name_len, extra_len, fixed)?;
+        let (csize, local) = zip64_sizes(bytes, at, name_len, fixed)?;
         Ok(Self {
             name,
             method: u16::from_le_bytes([fixed[10], fixed[11]]),
@@ -145,27 +149,31 @@ fn entry_name(bytes: &[u8], at: usize, len: usize) -> Result<String> {
     String::from_utf8(slice(bytes, at + 46, len)?.to_vec()).map_err(|_| bad("条目名不是 UTF-8"))
 }
 
-fn zip64_sizes(
-    bytes: &[u8],
-    at: usize,
-    name_len: usize,
-    extra_len: usize,
-    fixed: &[u8],
-) -> Result<(u64, usize)> {
+/// 中央目录的 32 位尺寸字段超限时写成 `0xFFFF_FFFF`，真值按 APPNOTE 的固定顺序
+/// （原长、压缩长、本地头偏移）落在 ZIP64 extra 里，且**只**收下被截断的那些——
+/// 于是槽位是「前面被截断的字段个数」，不是字段序号。
+fn zip64_sizes(bytes: &[u8], at: usize, name_len: usize, fixed: &[u8]) -> Result<(u64, usize)> {
     let extra = at + 46 + name_len;
-    let local_off = u32::from_le_bytes([fixed[42], fixed[43], fixed[44], fixed[45]]) as usize;
-    let local = if local_off == 0xFFFF_FFFF {
-        zip64_extra(bytes, extra, extra_len, 0)?
-    } else {
-        local_off
-    };
-    let csize = u32::from_le_bytes([fixed[20], fixed[21], fixed[22], fixed[23]]);
-    let data_len = if csize == 0xFFFF_FFFF {
-        zip64_extra(bytes, extra, extra_len, 1)? as u64
-    } else {
-        u64::from(csize)
-    };
-    Ok((data_len, local))
+    let extra_len = u16::from_le_bytes([fixed[30], fixed[31]]) as usize;
+    let mut slot = 0usize;
+    let mut wide = [0u64; 3];
+    for (index, offset) in [24, 20, 42].into_iter().enumerate() {
+        let narrow = u32::from_le_bytes([
+            fixed[offset],
+            fixed[offset + 1],
+            fixed[offset + 2],
+            fixed[offset + 3],
+        ]);
+        wide[index] = if narrow == 0xFFFF_FFFF {
+            let value = zip64_extra(bytes, extra, extra_len, slot)? as u64;
+            slot += 1;
+            value
+        } else {
+            u64::from(narrow)
+        };
+    }
+    let local = usize::try_from(wide[2]).map_err(|_| bad("本地头偏移超出 usize"))?;
+    Ok((wide[1], local))
 }
 
 fn next_offset(at: usize, name_len: usize, extra_len: usize, comment_len: usize) -> Result<usize> {
@@ -192,7 +200,7 @@ fn local_lengths(bytes: &[u8], local: usize) -> Result<(usize, usize)> {
 }
 
 fn data_range(bytes: &[u8], start: usize, data_len: u64) -> Result<usize> {
-    let len = data_len as usize;
+    let len = usize::try_from(data_len).map_err(|_| bad("条目长度超出 usize"))?;
     if start.checked_add(len).is_none_or(|stop| stop > bytes.len()) {
         return Err(bad("条目数据超出归档"));
     }

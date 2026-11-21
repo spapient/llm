@@ -3,6 +3,8 @@
 use diagnostic::Result;
 use diagnostic::scan::Cursor;
 
+use std::collections::HashSet;
+
 use crate::json::{MAX_DEPTH, Value};
 
 /// 简单转义表：`\X` 的第二个字节 → 字符，`'\0'` 表示不是简单转义（`u` 另行处理）。
@@ -51,11 +53,13 @@ pub(crate) fn is_low_surrogate(code: u32) -> bool {
 }
 
 /// 整数字节 → `i64`：前导零在本地拒，范围与解析口径交给 `str::parse`。
+/// 注意 `-0` 是合法 JSON：符号后单独一个 `0` 不算前导零。
 pub(crate) fn integer_value(cursor: &Cursor<'_>, at: usize, bytes: &[u8]) -> Result<i64> {
     let Ok(text) = std::str::from_utf8(bytes) else {
         return Err(cursor.fail_at(at, "整数不是 ASCII"));
     };
-    if text.len() > 1 && text.trim_start_matches('-').starts_with('0') {
+    let digits = text.strip_prefix('-').unwrap_or(text);
+    if digits.len() > 1 && digits.starts_with('0') {
         return Err(cursor.fail_at(at, format!("整数 `{text}` 不能有前导零")));
     }
     text.parse::<i64>()
@@ -146,11 +150,12 @@ impl<'a> Reader<'a> {
         let open = self.cursor.pos();
         self.cursor.eat(b'{')?;
         let mut fields: Vec<(String, Value)> = Vec::new();
+        let mut seen = HashSet::new();
         if self.close(b'}') {
             return Ok(Value::Object(fields));
         }
         loop {
-            let (field, more) = self.member(open, depth + 1, &fields)?;
+            let (field, more) = self.member(open, depth + 1, &mut seen)?;
             fields.push(field);
             if !more {
                 return Ok(Value::Object(fields));
@@ -179,7 +184,7 @@ impl<'a> Reader<'a> {
         &mut self,
         open: usize,
         depth: usize,
-        seen: &[(String, Value)],
+        seen: &mut HashSet<String>,
     ) -> Result<((String, Value), bool)> {
         let field = self.field(depth, seen)?;
         Ok((field, self.separator(open, b'}', "对象")?))
@@ -202,11 +207,11 @@ impl<'a> Reader<'a> {
     }
 
     /// 一个键值对：键、`:`、值；重复键在这里拒（与 `weights` 的 `Header` 拒绝重名条目同一原则）。
-    fn field(&mut self, depth: usize, seen: &[(String, Value)]) -> Result<(String, Value)> {
+    fn field(&mut self, depth: usize, seen: &mut HashSet<String>) -> Result<(String, Value)> {
         self.cursor.skip_space();
         let at = self.cursor.pos();
         let key = self.string()?;
-        if seen.iter().any(|(existing, _)| *existing == key) {
+        if !seen.insert(key.clone()) {
             return Err(self.cursor.fail_at(at, format!("对象里出现重复键 `{key}`")));
         }
         self.cursor.skip_space();
