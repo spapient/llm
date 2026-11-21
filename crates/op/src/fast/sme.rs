@@ -2,7 +2,7 @@
 //!
 //! 与 [`super`] 里的 NEON 8×8 通道并列，只服务「16 行 × 64 列整铺」的大 GEMM。SME 的收益来自
 //! 16×16 外积在 ZA 里就地累加、K 方向无需回写（四个瓦片交错隐藏 `fmopa` 延迟）；但 `smstart` /
-//! `smstop` 与 A/B 面板打包的固定成本在小题上会吞掉收益，因此入口 [`gemm`] 里有规模门槛。
+//! `smstop` 与 A 面板打包的固定成本在小题上会吞掉收益，因此入口 [`gemm`] 里有规模门槛。
 //!
 //! `unsafe` 只出现在三段内联汇编（`enter_sm` / `sme_tile` / `exit_sm`），全部 `#[allow(unsafe_code)]`
 //! 且由 `available` 的运行时探测保证只在 SME 存在时进入；非 aarch64 上整条内核不参与编译。
@@ -73,8 +73,8 @@ fn packed(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f32], t
     let mblk = m / MR;
     let alen = mblk * k * MR;
     super::scratch::with_panels(alen, |abuf| {
+        let barrier = std::sync::Barrier::new(t);
         thread::scope(|s| {
-            let barrier = std::sync::Barrier::new(t);
             let barrier = &barrier;
             let mut a_rest = &mut *abuf;
             let mut o_rest = &mut *out;
@@ -150,26 +150,14 @@ fn pack_a(src: &[f32], dst: &mut [f32], k: usize, mblk0: usize) {
     }
 }
 
-/// 打包 B 的一个列组段：`src[k,n]` → `dst[组][k][64]`，按 k 逐片拷贝让微内核连续加载。
-#[cfg(target_arch = "aarch64")]
-fn pack_b(src: &[f32], dst: &mut [f32], n: usize, k: usize, nblk0: usize) {
-    let blocks = dst.len() / (k * NR);
-    for bi in 0..blocks {
-        let g = nblk0 + bi;
-        let base = bi * k * NR;
-        for kk in 0..k {
-            let off = base + kk * NR;
-            let row = kk * n + g * NR;
-            dst[off..off + NR].copy_from_slice(&src[row..row + NR]);
-        }
-    }
-}
-
 /// 计算一段连续行块：进入流式模式 → 逐行块逐列组外积累加 → 写回 → 退出流式模式。
+///
+/// B 直接读原始 `[k,n]` 行主序：第 `g` 列的连续 64 元素从 `b + g*NR` 起，k 方向步长 `n*4`
+/// 字节由 [`sme_tile`] 处理，省去 B 面板的转置拷贝。
 #[cfg(target_arch = "aarch64")]
 #[allow(unsafe_code)]
-fn compute_stage(a_stage: &[f32], bbuf: &[f32], o_stage: &mut [f32], n: usize, k: usize) {
-    let nblk = bbuf.len() / (k * NR);
+fn compute_stage(a_stage: &[f32], b: &[f32], o_stage: &mut [f32], n: usize, k: usize) {
+    let nblk = n / NR;
     let blocks = a_stage.len() / (k * MR);
     if blocks == 0 {
         return;
@@ -180,8 +168,8 @@ fn compute_stage(a_stage: &[f32], bbuf: &[f32], o_stage: &mut [f32], n: usize, k
             let a_p = a_stage.as_ptr().add(bi * k * MR);
             let c_base = o_stage.as_mut_ptr().add(bi * MR * n);
             for g in 0..nblk {
-                let b_p = bbuf.as_ptr().add(g * k * NR);
-                sme_tile(k, a_p, b_p, c_base.add(g * NR), n * 4);
+                let b_p = b.as_ptr().add(g * NR);
+                sme_tile(k, a_p, b_p, c_base.add(g * NR), n * 4, n * 4);
             }
         }
         exit_sm();
@@ -196,7 +184,15 @@ fn compute_stage(a_stage: &[f32], bbuf: &[f32], o_stage: &mut [f32], n: usize, k
 #[target_feature(enable = "sme")]
 #[allow(unsafe_code)]
 #[inline(never)]
-unsafe fn sme_tile(k: usize, a_p: *const f32, b_p: *const f32, c: *mut f32, n_stride: usize) {
+unsafe fn sme_tile(
+    k: usize,
+    a_p: *const f32,
+    b_p: *const f32,
+    c: *mut f32,
+    n_stride: usize,
+    b_stride: usize,
+) {
+    let b_adv = b_stride - 3 * 64;
     unsafe {
         asm!(
         "zero {{ za0.s }}",
@@ -216,7 +212,7 @@ unsafe fn sme_tile(k: usize, a_p: *const f32, b_p: *const f32, c: *mut f32, n_st
         "ld1w {{ z3.s }}, p0/z, [{b}]",
         "add {b}, {b}, #64",
         "ld1w {{ z4.s }}, p0/z, [{b}]",
-        "add {b}, {b}, #64",
+        "add {b}, {b}, {b_adv}",
         "fmopa za0.s, p0/m, p0/m, z0.s, z1.s",
         "fmopa za1.s, p0/m, p0/m, z0.s, z2.s",
         "fmopa za2.s, p0/m, p0/m, z0.s, z3.s",
@@ -256,6 +252,7 @@ unsafe fn sme_tile(k: usize, a_p: *const f32, b_p: *const f32, c: *mut f32, n_st
         k = out(reg) _,
         kcnt = in(reg) k,
         nstride = in(reg) n_stride,
+        b_adv = in(reg) b_adv,
         c16 = out(reg) _, c32 = out(reg) _, c48 = out(reg) _,
         out("z0") _, out("z1") _, out("z2") _, out("z3") _, out("z4") _,
         out("w12") _, out("w13") _, out("w14") _, out("w15") _,

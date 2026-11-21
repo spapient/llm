@@ -263,9 +263,22 @@ git status --short                    # 只允许本轮认领文件
   **⑤ 前端夹具缺陷**：`xcrun -sdk macosx metal -c` 对**不带 `kernel` 限定符**的普通 C 函数返回 exit=0
   （只是不生成入口点），因此"MSL 要求显式地址空间"的测试原本恒绿；改成 `kernel void` 后该测试才真的
   验证到 `invalid address space qualification`，测试名改为 `the_metal_front_end_demands_an_explicit_address_space`。
-  **⑥ 未闭合**：N2（crate ≤8,000 行）仍超 2,600 行 —— engine 现有 10,600 行里约 3,900 行是设备源 lowering
-  （`cuda` / `metal` / `ascend` / `dialect` / `tiled` / `norm` / `scan` / `wmma` / `program`），与 `Cargo.toml`
-  自述的"Serving state machine"职责不符，要过 N2 只有"拆 crate"或"移出 lowering"两条路，需先定方向。
+  **⑥ 拆出 `llm-device` 过 N2**：10,600 行里 7,184 行是设备源 lowering（`cuda` / `metal` / `ascend` / `dialect` /
+  `tiled` / `norm` / `scan` / `wmma` / `program` / `platform` / `backends` / `toolchain`），与 `Cargo.toml` 自述的
+  "Serving state machine"职责不符，因此按**已有的缝**切开而不是按行数切：`engine::exec` 早已定义
+  `Executor` / `Device` / `Stream` / `Graph` / `Node` 契约，厂商实现一直只是填空 —— 于是 **契约留 `engine`、实现去
+  `device`**，依赖单边 `device → engine`，无环。切完 `engine` **13 文件 / 3,416 行**、`device` **26 文件 / 7,224 行**，
+  双双过 N2（`loc-budget.sh` 的 `>8000 行 crate` 由 6 降到 5），两侧单文件最大 398 / 398（N3 全过），
+  168 条测试按 102 + 66 分布不变，`device` 侧 jscpd 仍 **0 克隆**。
+  缝上的两处变化：`engine::exec::{enqueue, check_operands}` 由 `pub(crate)` 升为 `pub` —— 它们原本只服务
+  crate 内的三个执行器，现在 Metal 执行器跨 crate 调用，是真正的契约面（不升就得在 `device` 里复制一份入队口径）；
+  `engine` 的 `cutile` / `op` / `prof` 依赖整条移到 `device`，`engine` 只剩 `tensor` / `diagnostic` / `storage`。
+  契约面同步：`docs/ARCHITECTURE.md` 的层表 L6、边表（128 条 / 45 条 `+dev`，`engine` 减 3 条、`device` 增 6 条、
+  `cli` 增 1 条）与所有权表三处（`MetalDevice` 一族、`Abi` 一族归 `device`）；ADR 0035 §6 白名单、
+  ADR 0052 的 `device::platform`、ADR 0053 的 `device::tiled`、CI 的 metal 与 ASan 两个 job 一并改指 `llm-device`。
+  两个命名陷阱记在这里：`testkit` 自己有一个 `device` 模块，ARCHITECTURE 里指它必须写 `testkit::device::Contract`
+  （裸 `device::` 现在会落到新 crate 上，`the_document_names_only_existing_items` 立刻红）；`cli/tests/run.rs`
+  把 `tests/device.rs` 挂成 `mod device`，模块内指设备 crate 必须写 `::device::`，裸写会解析到测试子模块。
 
 - **v2.6（testkit 架构与性能收口：去嵌套、进程级缓存、口径唯一化）**：`crates/testkit` 四项改动。
   **① 去掉 9 个门禁文件的冗余 `mod tests` 包裹层**：`architecture` / `boundary` / `contracts` / `e2e` / `l3` /

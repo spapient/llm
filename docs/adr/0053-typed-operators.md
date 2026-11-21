@@ -111,7 +111,7 @@ gemm_i4: $crate::gemm_i4::GemmI4Model => "gemm_packed",
 | CPU int8 GEMM 64×256×4096 | 5 050 750 ns | 1 346 917 ns | 3.75（本仓慢） |
 | Metal int8 GEMM 64×256×4096 | 302 542 ns | 1 060 688 ns | **3.51（本仓快）** |
 
-设备侧 int8 内核是本轮新增：`engine::tiled::metal_int8_gemm_program`（共享内存分块、
+设备侧 int8 内核是本轮新增：`device::tiled::metal_int8_gemm_program`（共享内存分块、
 `i8` 载入、`i32` 累加、`f32` 写回），tile=16 时 221.8 G int-op/s，输出与
 `op::matmul_i8::forward_tiled` 的 CPU 参考逐元素相等。它目前是引擎级设备内核，
 **尚未**被 `cutile` 的 lowering 与档案协商选中，生产接入选型仍是 OPEN。
@@ -144,7 +144,7 @@ API；Metal 上注意力持平、int8 GEMM 领先 3.51×，来源是融合整数
   依赖图、CI 与 `cargo test --workspace`。结论即上面四张表，按 `docs/README.md` 写作规则 3
   （"删除也是维护"）在评审结束后不再随代码存放；重跑只需按同一形状、同一输入式
   （`a[i] = (i % 5)·0.25 − 0.5`、`b[i] = (i % 7)·0.2 − 0.4`）与同版本 Burn 重建两个包，本仓一侧用
-  `llm-engine` 的 `#[ignore]` 设备用例。
+  `llm-device` 的 `#[ignore]` 设备用例。
 
 ## 后果
 

@@ -1,6 +1,6 @@
 # 0052：六平台执行合同——六行闭集 + 三态裁决，把"哪台机器能跑"变成可复核的结构
 
-- 状态：已采纳（本轮落地 `engine::platform`）
+- 状态：已采纳（本轮落地 `device::platform`）
 - 日期：2026-11-20
 - 相关：[0025](0025-runtime-backend-abstraction.md)（运行时后端三件套）、[0035](0035-unsafe-ffi-boundary.md)（设备后端的越界边界）、[0051](0051-execution-backend-base.md)（执行基座）、ADR 0002（单一主人）
 
@@ -11,7 +11,7 @@
 | 现状 | 它回答的问题 | 缺的是什么 |
 |---|---|---|
 | `cutile::profile::Profile` 设备档案闭集 | "这份档案声明了什么能力" | 声明不等于可执行；档案与这台机器能不能跑是两件事 |
-| `engine::backends::{probe_metal, probe_cuda}` | "这台机器上探测到了什么" | 探测是 `bool`，说不清"设备在但编译器不在" |
+| `device::backends::{probe_metal, probe_cuda}` | "这台机器上探测到了什么" | 探测是 `bool`，说不清"设备在但编译器不在" |
 | `cutile::doctor` | "这份产物这条流水线过没过" | 逐档案、逐阶段，不是"平台 × 角色"的裁决 |
 
 于是"六平台支持到什么程度"只能靠翻代码或读发布说明。目标形态要的是**一张六行的表**：每行一个平台，每格一个三态结论（覆盖 / 未覆盖 + 理由），且结论只能由实测证据给出，不能由"我打算支持"给出。
@@ -86,4 +86,4 @@ pub fn require(row, &impl Host) -> Result<&'static str>  // 缺证据 → E-PLAT
 
 ## 修订
 
-- 2026-11-20：初稿即采纳。落地形态为 `engine::platform`（`Row` / `Arch` / `Abi` / `Host` / `Machine` / `Standing` / `Why` / `audit` / `require`），11 条用例覆盖六行顺序、GPU 行吸收 vulkan/sycl、设备行两件证据、CPU 行单件证据、GPU 行自证不重复、假机器九种组合、`require` 报 E-PLAT 而非静默通过。
+- 2026-11-20：初稿即采纳。落地形态为 `device::platform`（`Row` / `Arch` / `Abi` / `Host` / `Machine` / `Standing` / `Why` / `audit` / `require`），11 条用例覆盖六行顺序、GPU 行吸收 vulkan/sycl、设备行两件证据、CPU 行单件证据、GPU 行自证不重复、假机器九种组合、`require` 报 E-PLAT 而非静默通过。

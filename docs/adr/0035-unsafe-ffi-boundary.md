@@ -53,7 +53,7 @@ P3 要在边界 crate 挂 Metal/CUDA 后端（ADR 0025 §1、§9；ADR 0028 §3 
 | 位置 | 越界对象（§1 类别） | 不变量与对外视图 |
 |---|---|---|
 | `crates/storage/src/lib.rs`（内联 `mmap` 模块） | mmap 映射 | 模块级 allow；只读、私有映射、`Drop` 归还、线程归属；对外只暴露拥有型 `&[u8]` 视图 |
-| `crates/engine/src/metal/executor.rs`（模块级） | FFI 调用 + 设备缓冲句柄 | 手写 `objc_msgSend` 与 Metal 运行时符号；+1 保留的对象在 `Drop` 恰好 `-release` 一次，句柄私有、不跨线程，自动释放对象由 autorelease 池收口；对外是 `Executor` / `Allocator` 的安全实现 |
+| `crates/device/src/metal/executor.rs`（模块级） | FFI 调用 + 设备缓冲句柄 | 手写 `objc_msgSend` 与 Metal 运行时符号；+1 保留的对象在 `Drop` 恰好 `-release` 一次，句柄私有、不跨线程，自动释放对象由 autorelease 池收口；对外是 `Executor` / `Allocator` 的安全实现 |
 | `crates/op/src/fast.rs`（14 处，函数级） | 裸指针切片重建 + SIMD intrinsics | 只在 `aarch64` 的 NEON 微内核、`x86_64` 的 AVX2/FMA 微内核与打包/回写段。`op` 是 L2 数据层，**这不是许可而是欠账**：CPU 微内核应随 P1 搬出 `op` |
 | `crates/op/src/fast/pool.rs`（3 处，函数级） | 裸指针跨线程发布 | 任务只发布指针 + 一次 `Barrier`，主线程自旋等到全部 worker 完成才返回；同样随 P1 搬出 `op` |
 
@@ -102,5 +102,5 @@ P3 要在边界 crate 挂 Metal/CUDA 后端（ADR 0025 §1、§9；ADR 0028 §3 
 
 - 2026-11-17：初稿，回应 G13；白名单四类、allow 收敛点、依赖方向、unsafe 块最小化规则落档，实现随 P3 边界 crate。
 - 2026-11-18：评审通过（G1/G2/G3）并置 Accepted：① trait 清单订正为四 trait（`Executor`/`Program`/`Allocator`/`Collective`）且 `Device` 为 struct；② 白名单增第 5 类「通信/进程级库句柄」；③ 补 FFI 绑定默认策略（手写 `extern "C"`、零依赖）。
-- 2026-11-21：补 §6「现状越界点」：四个文件（`storage` mmap、`engine::metal::executor`、`op::fast` 两处）穷尽为可执行白名单，门禁落在 `testkit/tests/architecture.rs`；`op` 的 14 处明确为 P1 待搬出的存量冻结。
+- 2026-11-21：补 §6「现状越界点」：四个文件（`storage` mmap、`device::metal::executor`、`op::fast` 两处）穷尽为可执行白名单，门禁落在 `testkit/tests/architecture.rs`；`op` 的 14 处明确为 P1 待搬出的存量冻结。
 - 2026-11-22：`op::fast` 增 x86_64 AVX2/FMA 微内核（与 NEON 同一组不变量，仍属同一逻辑岛），`fast.rs` 11 → 14 处，`op` 合计 17 处；白名单与门禁同步更新，未放宽任何阈值。

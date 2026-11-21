@@ -7,11 +7,11 @@
 //! 另含 vendor 内核白盒对拍：CUDA harness 与 Metal 网格内核的文本判据。
 
 use diagnostic::Code;
-use llm_device::cuda::cuda_harness;
-use llm_device::metal::metal_grid_kernel;
 use engine::exec::Stream;
 use engine::kv::{Cache, Pager};
 use engine::{Progress, Scheduler, Sequence};
+use llm_device::cuda::cuda_harness;
+use llm_device::metal::metal_grid_kernel;
 use op::model::{Buffer, Sample, Values};
 use op::sig::Signature;
 

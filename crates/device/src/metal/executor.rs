@@ -25,8 +25,8 @@
 
 #![allow(unsafe_code)]
 
-use engine::exec::{Device, Executor, Graph, Node, Queued, Stream, check_operands, enqueue};
 use diagnostic::{Code, Error, Result};
+use engine::exec::{Device, Executor, Graph, Node, Queued, Stream, check_operands, enqueue};
 use std::collections::BTreeMap;
 use std::ffi::{CString, c_char, c_void};
 use std::ptr::null_mut;

@@ -197,7 +197,7 @@ pub fn cuda_softmax_program(
 ///
 /// 返回 `(设备源, 各维网格大小)`：网格大小按 `[grid]` 声明的标量从样本取值（`dims[i]` 对应
 /// `kernel_main<<<dim3(dims[0], dims[1], dims[2]), 1>>>` 的 x/y/z）；host 驱动由调用方用
-/// `engine::cuda::cuda_loop_driver` 拼——设备段与驱动分属两层，机制层不生成 host C 文本。
+/// `device::cuda::cuda_loop_driver` 拼——设备段与驱动分属两层，机制层不生成 host C 文本。
 ///
 /// # Errors
 ///
@@ -269,7 +269,7 @@ fn dim_size(scalar: &str, sample: &Sample) -> diagnostic::Result<usize> {
 /// 生产态 CUDA 张量核（WMMA）GEMM 内核源：`64×64` 输出块、`BK=8`、4 个 `32×32×8` 片段。
 ///
 /// 形状在生成期写死（每形状一份产物）：`M`/`N` 整除 `64` 时无守卫，否则载入/写出带行列守卫。
-/// host 驱动由调用方用 `engine::wmma::gemm_driver` 生成；`K % 8 != 0` 时回落
+/// host 驱动由调用方用 `device::wmma::gemm_driver` 生成；`K % 8 != 0` 时回落
 /// [`cuda_gemm_program`] 的循环注入路径。
 ///
 /// # Errors

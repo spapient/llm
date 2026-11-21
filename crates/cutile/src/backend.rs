@@ -56,7 +56,7 @@ pub struct Launch {
 ///
 /// 四个量互相牵制——线程组内存只随 `tile_n` 与 `k_tile` 涨，线程组数随 `tile_m`、`tile_n`
 /// 反向变——故捆成一个值对象一起传，调用点只谈「几何」而不散装四个数。具体取哪一档由后端
-/// 按形状实测选型（`engine::tiled::tensor_geometry`），本类型只描述「是什么」。
+/// 按形状实测选型（`device::tiled::tensor_geometry`），本类型只描述「是什么」。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TensorGeometry {
     /// 输出块的行跨度（`M` 方向）。

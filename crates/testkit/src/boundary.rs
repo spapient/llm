@@ -117,7 +117,7 @@ pub(crate) const UNSAFE_ISLANDS: &[(&str, usize)] = &[
 /// 文档正文点名的 `crate::名字` 必须在源码里真的存在。
 ///
 /// 三张契约表由 `cargo metadata` 守着，但正文里的引用没人管：模块改名或删掉后，
-/// `engine::metal_pipeline` 这类引用可以一直指向一个不存在的名字，而门禁全绿。
+/// `device::metal_pipeline` 这类引用可以一直指向一个不存在的名字，而门禁全绿。
 #[test]
 pub(crate) fn the_document_names_only_existing_items() {
     let (members, _) = workspace();

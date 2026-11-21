@@ -641,8 +641,13 @@ fn op_normalized_matches_reference_cuda(op_name: &str) {
             let (max, expsum, norm) =
                 cutile::execution::cuda_softmax_program(&catalogue, &dirs, op_name, m, n)
                     .expect("分块 softmax 三段应能生成");
-            ::device::norm::cuda_softmax_driver(&[max, expsum, norm], &decl.signature, &sample, chunk)
-                .expect("host 串联驱动应能生成")
+            ::device::norm::cuda_softmax_driver(
+                &[max, expsum, norm],
+                &decl.signature,
+                &sample,
+                chunk,
+            )
+            .expect("host 串联驱动应能生成")
         }
         other => panic!("`{other}` 不是归一化算子"),
     };

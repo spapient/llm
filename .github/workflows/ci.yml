@@ -85,7 +85,7 @@ jobs:
         with:
           toolchain: "nightly-2026-09-01"
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test -p llm-engine --lib --locked metal
+      - run: cargo test -p llm-device --lib --locked metal
 
   address-sanitizer-macos:
     name: address sanitizer (macOS)
@@ -96,7 +96,7 @@ jobs:
         with:
           toolchain: "nightly-2026-09-01"
       - uses: Swatinem/rust-cache@v2
-      - run: RUSTFLAGS="-Zsanitizer=address" cargo test -p llm-engine --lib --locked
+      - run: RUSTFLAGS="-Zsanitizer=address" cargo test -p llm-device --lib --locked
 
   msrv:
     name: msrv (1.100.0)

@@ -11,7 +11,7 @@ use op::sig::CType;
 use super::{chunk_size, lower, lower_sources, pair, resolve, scan_chunked, single, triple};
 
 /// 生产态 Metal 内核源：把一条算子走完整条流水线（见证建立证据 → 协商 → prepare → 骨架 lowering），
-/// 返回可交给 `engine::metal::executor::MetalExecutor::register` 进程内编译的 MSL。
+/// 返回可交给 `device::metal::executor::MetalExecutor::register` 进程内编译的 MSL。
 ///
 /// 与 [`execute`] 的分工：`execute` 在 C 宿主车道编译执行并当场对拍；本函数只产出生产态的 Metal
 /// 内核源，执行与对拍发生在调用方（L7 组合根把这段 MSL 注入设备后端）。因此本函数不做对拍，
@@ -204,7 +204,7 @@ fn fragment_shape(run: &Run<'_>, m: usize, n: usize, row_frags: usize, col_frags
 /// 协同算完，规约轴按 `k_tile` 切片，乘加走硬件的矩阵乘单元。
 ///
 /// **布局前置**：张量核要的 B 是「规则约轴连续、按 half 存」的 `N×K` 权重（见
-/// `engine::tiled::metal_transpose_half`），与模板里 `K×N` 的 f32 B 不同形。调用方必须先跑
+/// `device::tiled::metal_transpose_half`），与模板里 `K×N` 的 f32 B 不同形。调用方必须先跑
 /// 一遍布局前置，再拿本入口生成的主内核反复派发；本入口只负责描述乘加本身。
 ///
 /// 只对「Gemm 骨架 + `M` 被 `tile_m` 整除 + 几何参数合法」的形状走张量核，其余回落到
