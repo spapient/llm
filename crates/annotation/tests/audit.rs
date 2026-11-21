@@ -79,6 +79,108 @@ fn section_keys<'a>(manifest: &'a str, section: &str) -> Vec<&'a str> {
     keys
 }
 
+/// 只留下代码：字符串字面量与行注释都剔掉。生成文本里就写着 `format!` / `.to_string()`，
+/// 直接搜全文会把"被生成的代码"误判成"生成器的实现"。
+fn code_only(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(current) = chars.next() {
+        match current {
+            '"' => {
+                out.push('"');
+                while let Some(inner) = chars.next() {
+                    match inner {
+                        '\\' => {
+                            chars.next();
+                        }
+                        '"' => break,
+                        _ => {}
+                    }
+                }
+            }
+            '/' if chars.peek() == Some(&'/') => {
+                while chars.peek().is_some_and(|next| *next != '\n') {
+                    chars.next();
+                }
+            }
+            _ => out.push(current),
+        }
+    }
+    out
+}
+
+/// 某个函数的函数体：从 `fn 名字` 起找第一个 `{`，再按花括号配平。泛型参数（`fn unique<'a>(`）
+/// 也认，但 `fn render` 不会命中 `fn render_model`。
+fn body<'a>(code: &'a str, name: &str) -> &'a str {
+    let marker = format!("fn {name}");
+    let start = code
+        .match_indices(&marker)
+        .find(|(offset, _)| {
+            matches!(
+                code[offset + marker.len()..].chars().next(),
+                Some('(' | '<')
+            )
+        })
+        .unwrap_or_else(|| panic!("`render.rs` 里没有 `{name}`"))
+        .0
+        + marker.len();
+    let rest = &code[start..];
+    let open = rest.find('{').expect("函数有函数体");
+    let mut depth = 0usize;
+    for (offset, character) in rest[open..].char_indices() {
+        match character {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &rest[open..=open + offset];
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("`{name}` 的函数体没有配平");
+}
+
+/// 热路径每次生成**只分配一个输出缓冲**：三个入口各是一处 `String::with_capacity`，且除错误
+/// 路径 [`closed`] 外不再出现 `format!` / `to_string` / `collect` 这类中间分配。
+///
+/// 这条判据比计时更硬：`forbid(unsafe_code)` 下挂不了计数分配器，而毫秒数在 CI 上会抖；"每份声明
+/// 只分配一次"是结构事实，代码一退化就红。
+#[test]
+fn rendering_allocates_only_its_output_buffer() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/render.rs");
+    let code = code_only(&fs::read_to_string(&path).expect("源码可读"));
+    for entry in ["render", "render_model", "render_runtime"] {
+        let count = body(&code, entry).matches("String::with_capacity").count();
+        assert_eq!(count, 1, "`{entry}` 必须只分配一个输出缓冲，实际 {count}");
+    }
+    let hot = [
+        "spec",
+        "contract",
+        "check",
+        "render_runtime",
+        "render_model",
+        "asserts",
+        "registry",
+        "dtype",
+        "unique",
+        "holes",
+        "shape_of",
+        "comma",
+        "literal",
+    ];
+    for name in hot {
+        let text = body(&code, name);
+        for forbidden in ["format!", ".to_string()", ".collect()", "String::new()"] {
+            assert!(
+                !text.contains(forbidden),
+                "`{name}` 在热路径上，不得出现 `{forbidden}`：中间 `String` 会让每份声明多分配几次"
+            );
+        }
+    }
+}
+
 /// 运行期依赖为空：注解文法手写解析，`MODEL` 由 `Operator` 投影，不再需要任何基座 crate。
 #[test]
 fn runtime_dependency_surface_is_empty() {

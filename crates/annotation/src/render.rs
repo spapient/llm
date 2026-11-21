@@ -267,7 +267,7 @@ fn registry(code: &mut String, declaration: &ModelDecl, ty: &str) {
     // 防止只改一侧。
     let _ = writeln!(
         code,
-        "        assert_eq!(<super::{ty} as ::llm_op::operator::Operator>::NAME, {}), \"注解注册名必须与 Operator::NAME 一致\");",
+        "        assert_eq!(<super::{ty} as ::llm_op::operator::Operator>::NAME, {}, \"注解注册名必须与 Operator::NAME 一致\");",
         Quoted(&declaration.name)
     );
     let _ = writeln!(

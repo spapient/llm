@@ -3,7 +3,7 @@
 //! 断言的是文本，不是行为：渲染器只拼字符串，于是"生成的代码长什么样"可以被逐字钉住。
 
 use crate::decl::{
-    Declaration, ModelDecl, RuntimeDecl, SKELETONS, parse, parse_model, parse_runtime,
+    DTYPES, Declaration, ModelDecl, RuntimeDecl, SKELETONS, parse, parse_model, parse_runtime,
 };
 use crate::fixture::lex;
 use crate::render::{render, render_model, render_runtime};
@@ -158,38 +158,75 @@ fn the_check_module_calls_the_inherent_helper_not_a_receiver_less_trait_method()
     );
 }
 
-/// 生成代码的花括号必须配平，且中途不出现多余的 `}`。
-fn assert_balanced_braces(code: &str) {
-    let mut depth: i32 = 0;
-    for character in code.chars() {
+/// 生成代码的三种分隔符必须严格配对。
+///
+/// 只数花括号会漏掉 `assert_eq!(a, b), "…")` 这类**多出来的 `)`**：它让整份生成物不是合法 token
+/// 流，而 `contains` 断言照样全绿，直到某个真实的 `#[annotation::model]` 消费方编译才暴露。
+fn assert_balanced(code: &str) {
+    let mut open: Vec<char> = Vec::new();
+    let mut chars = code.chars();
+    while let Some(character) = chars.next() {
         match character {
-            '{' => depth += 1,
-            '}' => depth -= 1,
+            '"' => quoted(&mut chars),
+            '(' | '[' | '{' => open.push(character),
+            ')' | ']' | '}' => assert_eq!(
+                open.pop().map(closing),
+                Some(character),
+                "分隔符不配对（`{character}`）：{code}"
+            ),
             _ => {}
         }
-        assert!(depth >= 0, "出现了多余的 `}}`：{code}");
     }
-    assert_eq!(depth, 0, "花括号没有配平：{code}");
+    assert!(open.is_empty(), "分隔符没有闭合：{code}");
 }
 
-/// 三种形态都必须配平：括号在字符串里被逐个计数，中途出现多余的 `}` 也算失败。
+/// 开括号期待的闭括号。
+fn closing(open: char) -> char {
+    match open {
+        '(' => ')',
+        '[' => ']',
+        _ => '}',
+    }
+}
+
+/// 跳过一段字符串字面量：里面的分隔符是文案，不是代码结构。
+fn quoted(chars: &mut std::str::Chars<'_>) {
+    while let Some(character) = chars.next() {
+        match character {
+            '\\' => {
+                chars.next();
+            }
+            '"' => return,
+            _ => {}
+        }
+    }
+}
+
+/// 三种形态、每个骨架、每种 dtype 都要配平：生成物会被原样喂给 `TokenStream::from_str`，
+/// 所以"多一个 `)`"与"少一个 `}`"是同一级别的故障。只挑一个代表骨架会漏掉分支差异。
 #[test]
-fn every_form_renders_balanced_braces() {
-    let layer = render(
+fn every_form_renders_balanced_delimiters() {
+    assert_balanced(&render(
         &declaration(r#"name = "q", out = [2, 3], ops = ["gemv_i4"]"#),
         "Q",
-    );
-    assert_balanced_braces(&layer);
-    let runtime = render_runtime(
+    ));
+    assert_balanced(&render_runtime(
         &runtime_declaration(r#"name = $name, out = [$a, $b], ops = [$op, $op2], role = $r"#),
         "R",
-    );
-    assert_balanced_braces(&runtime);
-    let model = render_model(
-        &model(r#"name = "gemv_i4", shape = [4, 4], dtype = "f32""#),
-        "M",
-    );
-    assert_balanced_braces(&model);
+    ));
+    for skeleton in SKELETONS {
+        // `gemm` 骨架用注册名选模块，名字必须落在 gemm 家族里；其余骨架用自身名字即可。
+        let name = if skeleton == "gemm" {
+            "gemm_f32"
+        } else {
+            skeleton
+        };
+        for dtype in DTYPES {
+            let text =
+                format!(r#"name = "{name}", shape = [8, 4], dtype = "{dtype}", skeleton = "{skeleton}""#);
+            assert_balanced(&render_model(&model(&text), "M"));
+        }
+    }
 }
 
 #[test]
@@ -312,7 +349,7 @@ fn every_skeleton_projects_through_the_same_contract() {
 #[test]
 fn the_generated_model_code_has_balanced_braces() {
     let code = render_model(&model(r#"name = "q", shape = [8, 4], dtype = "f16""#), "Q");
-    assert_balanced_braces(&code);
+    assert_balanced(&code);
 }
 
 /// 闭集一旦被绕过（例如手写构造了一个未映射的 `dtype`），生成器早退回 `compile_error!`，
@@ -329,6 +366,7 @@ fn an_unmapped_dtype_falls_back_to_a_compile_error() {
     let code = render_model(&decl, "M");
     assert!(code.contains("compile_error!"), "{code}");
     assert!(code.contains("DType"), "{code}");
+    assert_balanced(&code);
 }
 
 /// 骨架表里没有的名字同样早退回编译错误：不允许落到一个默认分支去绑错模型。
@@ -344,4 +382,5 @@ fn an_unlisted_skeleton_falls_back_to_a_compile_error() {
     let code = render_model(&decl, "M");
     assert!(code.contains("compile_error!"), "{code}");
     assert!(code.contains("骨架"), "{code}");
+    assert_balanced(&code);
 }
