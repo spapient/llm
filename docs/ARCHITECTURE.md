@@ -17,7 +17,7 @@
 | L3 内核 | `cutile` | 协商 → 拼接 → emit → 编译执行；`doctor` / `verify` / `bench` / `execution` 共用一条 `pipeline`，报告只是数据、排版在前端 | 设备厂商特判、运行时依赖 |
 | L4 运行时 | `tensor`、`storage`、`tokenizer` | 张量元数据、布局搬运、文本边界 | 模型语义、调度策略 |
 | L5 模型与训练 | `weights`、`autograd`、`nn`、`shard` | 权重结构与自有 `.u` 容器、反向图与显存计划、层定义与执行侧机制、切分拓扑与集合通信 | 进程 / 服务语义 |
-| L6 调度与服务 | `train`、`engine`、`serve` | 训练样本与循环、检查点、连续批与 KV 页账、提交与执行体、设备后端实现（`engine::backends` / `metal_host` / `metal_pipeline`，实现 `cutile` 的 `Backend` 缝；`engine::metal` 是唯一 `unsafe` 岛）、端点契约与线格式、CPU 模型宿主 | 直接调用 `cutile` 生成 kernel；执行任何业务 |
+| L6 调度与服务 | `train`、`engine`、`serve` | 训练样本与循环、检查点、连续批与 KV 页账、提交与执行体、设备后端实现（`engine::backends` / `metal_host` / `metal_fold`，实现 `cutile` 的 `Backend` 缝；`engine::metal_executor` 是唯一 `unsafe` 岛（[ADR 0035](adr/0035-unsafe-ffi-boundary.md)））、端点契约与线格式、CPU 模型宿主 | 直接调用 `cutile` 生成 kernel；执行任何业务 |
 | L7 入口 | `cli`（bin：`llm` 与 `cutile`） | 组合根：命令行文法、配置解析、各层装配、取值解析与人可读排版；编排入口不定义新类型 | 编排入口新增领域类型；在本层复制内核机制 |
 
 `annotation`（编译期注解）、`fuzz`（模糊测试契约）、`benchmarks`（集中测量容器）与 `testkit`（测试夹具与门禁）是**工具成员**：没有运行时层级，依赖边不参与方向判定。
@@ -70,7 +70,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 ## 三、所有权表
 
 一个概念只能有一个主人；这张表**双向**校验：表里写的必须在 `crates/<主人>/src` 里有 `pub` 定义，
-源码里每个 `pub struct|enum|trait` 也必须在表里（或登记在 `lints/vocabulary.toml` 的
+源码里每个 `pub struct|enum|trait` 也必须在表里（或登记在 `.config/lints/vocabulary.toml` 的
 `[[ownership.unlisted]]` 存量基线，且基线不允许过期）。L7 组装点另有单独一条：`src/**/*.rs`
 不得定义任何类型。
 
@@ -111,7 +111,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Budget` / `Candidate` / `Phase` / `Verdict` | `engine`（`ifb` 模块） | 一次迭代的可行域与相位：`pack` 判"这一轮塞得下几行"，与 `admit` 判"这辈子跑不跑得完"分开；相位是序列自己的事实，不是调用方贴的标签。唯一消费者是 `serve::Completion` 的批调度：`round` 先把本层一次提交的粒度收进预算、再把 `Packed` 的行原样下发，于是"这一轮算几行"只有一个来源（打包给配额、`chunk` 给块尾，取小的那个） |
 | `Executor` / `Trace` / `Program` / `Bindings` / `Buffer` / `View` / `ViewMut` / `CpuExecutor` | `engine` | CPU 执行体（[ADR 0051](adr/0051-execution-backend-base.md)）：`Program` 按名字登记、重名拒绝，`Bindings` 是编号 ↔ 缓冲的操作数表，`CpuExecutor` 入队并在 `sync` 时就地执行；`Trace` 只记录不改语义 |
 | `MetalDevice` / `MetalCommandQueue` / `MetalBuffer` / `MetalPipeline` / `MetalExecutor` | `engine` | 设备后端边界（[ADR 0035](adr/0035-unsafe-ffi-boundary.md) 白名单第五类「进程级库句柄」，越界岛，不单独成 crate）：句柄私有、不跨线程，MSL 由装配层注入，本层不调用 `cutile` |
-| `Abi` / `Arch` / `Host` / `Machine` / `Row` / `Standing` / `Why` | `engine`（`platform` 模块） | 六平台执行合同（[ADR 0052](adr/0052-execution-platform-contract.md)）：`Row` 是执行族闭集（CPU / Metal / CUDA / ROCm-HIP / Vulkan-SYCL 合一的 GPU 行，顺序即合同登记顺序），`Standing` 是三态裁决（覆盖 + 证据 或 未覆盖 + `Why`），`Why` 只分 `NoDevice` / `NoToolchain`——两者处置不同（换机器 vs 装工具链），混成一个"未覆盖"就丢了唯一的行动信息。`audit` 每次都出六行（少一行会让"未覆盖"与"根本没问"变成同一输出），`require` 才报 `E-PLAT`；它只判**平台有没有资格跑**，不判内核在某台设备上是否正确（那是 `cutile::verify` 与 `tool::card` 的事）。`Host` 是注入缝（架构 + 该行工具链），`Machine` 是这台机器的实现：架构取 `std::env::consts`、工具链复用 `backends` 那份进程级快照探测（不新开第二次 `--version`），于是测试能用一台假机器摆出九种组合。**不拥有**设备探测实现、设备后端代码（Metal / CUDA 的越界边界见 [ADR 0035](adr/0035-unsafe-ffi-boundary.md)，本层只裁决"能不能跑"）、性能与正确性结论（E1–E15 归协议卡）、以及设备档案本身（那是 `cutile::profile` 的声明层） |
+| `Abi` / `Arch` / `Host` / `Machine` / `Row` / `Standing` / `Why` | `engine`（`platform` 模块） | 六平台执行合同（[ADR 0052](adr/0052-execution-platform-contract.md)）：`Row` 是执行族闭集（CPU / Metal / CUDA / ROCm-HIP / Vulkan-SYCL 合一的 GPU 行，顺序即合同登记顺序），`Standing` 是三态裁决（覆盖 + 证据 或 未覆盖 + `Why`），`Why` 只分 `NoDevice` / `NoToolchain`——两者处置不同（换机器 vs 装工具链），混成一个"未覆盖"就丢了唯一的行动信息。`audit` 每次都出六行（少一行会让"未覆盖"与"根本没问"变成同一输出），`require` 才报 `E-PLAT`；它只判**平台有没有资格跑**，不判内核在某台设备上是否正确（那是 `cutile::verify` 与 `tool::card` 的事）。`Host` 是注入缝（架构 + 该行工具链），`Machine` 是这台机器的实现：架构取 `std::env::consts`、工具链复用 `backends` 那份进程级快照探测（不新开第二次 `--version`），于是测试能用一台假机器摆出九种组合。**不拥有**设备探测实现、设备后端代码（Metal / CUDA 的越界边界见 [ADR 0035](adr/0035-unsafe-ffi-boundary.md)，本层只裁决"能不能跑"）、性能与正确性结论（E1–E15 归协议卡）、以及设备档案本身（那是 `prof` 的声明层） |
 | `Tokenizer` / `Token` / `Bytes` / `Bpe` / `Unigram` / `SpecialTokens` / `Encoding` / `Strategy` / `Truncation` / `Padding` / `PadDirection` / `Fingerprint` / `DecoderStream` / `Vocab` / `VocabSource` / `VocabFamily` / `Merge` | `tokenizer` | 文本 ↔ token 的唯一边界：编号、编码对齐记录、序列策略、词表身份指纹与 UTF-8 边界安全的流式解码 |
 | `Adaptive` / `AdaptiveCompensated` / `Header` / `Entry` / `Reader` / `Loader` / `Archive` / `File` / `MmapSource` / `Quantized` / `Scheme` / `Compensated` / `Writer` / `Stored` / `Segment` / `Quant` / `Codec` / `Proof` / `Metrics` | `weights` | 权重文件：外部 safetensors 只读适配（`Reader` 借出 / `Loader` 拷贝两条契约）+ 自有 `.u` 容器 v2 读写（rANS、Merkle 证明、两级 CRC、原子写、现场度量）；`Quantized` 的分组、输入宽度与输出宽度出自同一次推断 |
 | `Certified` / `Note` / `Stable` / `Mode` / `EpsMethod` / `Bound` | `weights` | `ledger` 的谱隙证书与它门控的秩选择：判定与产出出自同一次分解，证书写在 `AX03` 的 `rank` 段并由 `audit` 重算，对不上就拒读；证书自报 `ε` 的**方法**（`EpsMethod`）与这张界的**类型**（`Bound`，L0 诊断 vs L0' 候选），于是「幂迭代只够排序」与「候选界不签无损」是可执行约束而不是注释；`E_decomp` 与 `E_comp` 分开记，合成误差只有 `Note::synth` 一处算式 |
@@ -193,14 +193,14 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 - `prof::inherent_names!(X)` 生成同名固有转发，调用点写法不变、逻辑仍只有一份；
 - `Set<E, WORDS>` 是唯一位集：容量在单态化时由 `const FITS` 断言，"加第 65 个原语"是编译错误；
 - 契约不可达的成员（`diagnostic` / `tensor` / `shard` / `serve` 在 `prof` 之下，反向依赖会成环）
-  可以把词汇表留在本地，但必须登记在 `lints/vocabulary.toml` 并写明理由。
+  可以把词汇表留在本地，但必须登记在 `.config/lints/vocabulary.toml` 并写明理由。
 
 由 `crates/testkit/tests/contracts.rs` 执行：禁止新增手写 `const ALL` 与手写位集，禁止白名单过期，
 并要求扫描到的源文件数不为零（避免"空门禁假绿"）。
 
 #### 注解里的名字也是词汇表的名字
 
-属性宏收字符串（`dtype = "f32"`），词汇表里是变体，`codegen` 按 `DType::variant` 转换。三处必须同时
+属性宏收字符串（`dtype = "f32"`），词汇表里是变体，注解宏按 `DType::variant` 转换。三处必须同时
 成立：`annotation` 的 `DTYPES` 与 `cutile::reference` 给出非零阈值的 `DType` 集合逐项**相等**；
 注解调用点生成的 `#[cfg(test)]` 把字面量与变体、`Model::dtype` 与 `.k` 的可写输出类型对齐；变体名
 取 `DType::variant` 而不是在注解里手写映射。`annotation` 只依赖 `dtype` 这个 L1 零依赖基座，
@@ -240,7 +240,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `RUSTDOCFLAGS=-D warnings cargo doc` | CI `doc` job | 文档坏链接、未文档化的公开项 |
 | `cargo test --workspace` | CI `test` job | 行为回归 |
 | `crates/testkit/tests/architecture.rs` | CI `test` job | 成员集合、边集合与方向、所有权表与 `cargo metadata` / 源码不一致；`op` / `prof` / `prim` / `cutile` 退回 `Result<_, String>` |
-| `crates/testkit/tests/contracts.rs` + `lints/vocabulary.toml` | CI `test` job | 闭集 / 位集被手写第二份、白名单过期、注解与注册表不互为镜像 |
+| `crates/testkit/tests/contracts.rs` + `.config/lints/vocabulary.toml` | CI `test` job | 闭集 / 位集被手写第二份、白名单过期、注解与注册表不互为镜像 |
 | `#[model]` 生成的两个 `const` + 一条测试 | 被标注 crate 的 `cargo test` | 格式自证不成立（粒度 ≤ 0、派生轴除数 ≠ 粒度）；注解的 `dtype` 与 `.k` 可写输出不是同一个类型 |
 
 `cargo metadata` 只能告诉你"谁依赖谁"，不能告诉你"方向对不对"——后者由本文的层表定义，再由

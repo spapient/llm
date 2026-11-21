@@ -24,7 +24,6 @@ use llm_cli::settings::Settings;
 use std::process::ExitCode;
 use tool::Report;
 
-#[path = "cutile_report.rs"]
 mod report;
 
 fn main() -> ExitCode {

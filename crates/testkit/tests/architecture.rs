@@ -374,11 +374,6 @@ fn the_error_boundary_does_not_fall_back_to_strings() {
         );
         paths.extend(files);
     }
-    let cli_tests = workspace_root().join("crates/cli/tests");
-    for entry in ["cutile_bin.rs", "cutile_report.rs"] {
-        paths.push(cli_tests.join(entry));
-    }
-
     let mut offences = Vec::new();
     for path in paths {
         if MESSAGE_FRAGMENTS

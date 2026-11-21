@@ -1,6 +1,6 @@
 //! 组合根（L7）与命令行文法层：把 `argv` 与环境变量解析成 [`Command`] 与 [`settings::Settings`]，
 //! 再由 [`entry`] 分派到 `run` / `status` / `train` 编排入口；两个二进制 `llm` 与 `cutile` 都在本包
-//! （入口见 `src/main.rs` 与 `src/cutile_bin.rs`）。
+//! （入口见 `src/main.rs` 与 `src/bin/cutile.rs`）。
 //!
 //! **拥有**：`Command`、`Invocation`、`USAGE`、`parse`、内核层审计的子命令文法 [`cutile_command::CutileCommand`]，
 //! 三个目录开关的解析策略 [`settings`]（默认值、`CUTILE_*`、`--set`、来源追踪），以及编排分派。
@@ -821,6 +821,9 @@ fn invalid(message: impl Into<String>) -> Error {
 /// 命令分派：解析后的命令接到对应编排；输出由各编排函数落到 stdout，
 /// 错误交给二进制入口汇总成退出码。
 pub fn entry(invocation: &Invocation) -> Result<()> {
+    // 设备后端是进程级注册表，装配点必须在产品路径上（ADR 0025 §1、ADR 0035）：
+    // 只在测试里注册会让 `llm run --device cuda` 把“没装配”误报成“没有该后端”。
+    engine::backends::install();
     match invocation.command() {
         Command::Help => {
             print!("{USAGE}");
