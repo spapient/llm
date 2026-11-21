@@ -122,7 +122,8 @@ fn the_device_row_is_the_profile_it_was_generated_from() {
         "登记的工具版本不能与档案漂移"
     );
     assert_eq!(
-        DEVICE.prims, &PRIMS[..],
+        DEVICE.prims,
+        &PRIMS[..],
         "设备行里的原语入口必须就是生成表那份"
     );
 }

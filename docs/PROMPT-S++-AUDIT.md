@@ -281,7 +281,8 @@ git status --short                    # 只允许本轮认领文件
   「主人 + 名字」认（`owned_types()` 本来就返回二元组，之前被 `map(|(_, name)| name)` 抹掉了主人）。未登记判定
   仍只认裸名字并有注释说明理由：存量表里有 42 个历史缺口靠名字对齐，一并收紧要重写整张表，属另一件事。
   **配对门复跑**：`cargo test -p llm-testkit --lib` 64 passed；`clippy -D warnings` 绿；`fmt --check` 绿；
-  `name-lint` 0 命中；`jscpd crates/testkit/src` 16 文件 0 克隆；`loc-budget` 无超标（最大 `rel.rs` 398 行）。
+  `name-lint` 0 命中；`jscpd crates/testkit/src` 16 文件 0 克隆；`loc-budget` 无超标（本轮产出的最大文件
+  `rel.rs` 398 行，在 N3 的 400 线内；`device.rs` 435 行是并发新增的特性文件，超 N3，需其自行收敛或出内聚证明）。
   `kernel.rs`（原 `tests/support/cutile_x_kernel.rs`，被 `cutile` / `engine` 的 3 处 `#[path]` 引用）改成
   **条目级** `#[cfg(test)]` 而不是文件级 `#![cfg(test)]`：外部 `#[path]` 用户的单测构建里条目可见，而静态门的
   `blank_if_test` 会把它们全部置空，Call 门（禁 `.expect`）看不见。`scripts/ci.sh` 与

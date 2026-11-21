@@ -146,11 +146,20 @@ host 自检），值不对就整台设备失败。
 `profile.validate` 把这条变成装载期判据（只对**写了** `[simt]` 的档案生效——`ascend` 没有这一段，
 它的 lane 交换由向量单元 `vgather`/`vbroadcast` 承担）。
 
+**片段层的闭合由设备 crate 自己判定**：`testkit::device::Contract` 把一台设备的三张生成表
+（`FRAGMENTS` / `PRIMS` / `DEVICE`）与它在档案里的 `[[provides]]` 摊到同一份契约上，逐条断言——
+P0 九条不多不少、每条签名都是带见证的供给且入口名与 `PRIMS` 那条一致、每个见证函数被恰好一条
+签名认领（多出来的是死代码）、目录是 `<prim>.<ext>` 加 `witness.<ext>` 的闭集、期望值不超回读
+上限、见证自足（没有引号包含，所以复制到临时目录里也编得过）、每条供给至少有正文或见证之一；
+最后把每条见证真的编成可执行文件执行一遍，与 `expect` 对拍。判据只有一份、六台设备共用，
+新增设备只加数据（`tests/fragments.rs` 里一张 `P0` 清单），判据一行不改。
+
 ## 新增设备 / 新增执行单元
 
 1. 在 `devices/` 下写 `<name>.toml`（键必须属于闭集，写错字段会在解析期报错）；
 2. 在 `src/lib.rs` 的 `BUILTIN` 里补一行 `include_str!`（否则发布出去的二进制里没有它）；
 3. `cargo test -p prof` —— `every_embedded_entry_is_a_device_archive` 会把"生成表里缺一份档案"直接判为失败；
+   `cargo test -p llm-<name>` 再对一遍片段层契约（见上），它同时把每条见证在本机执行一次；
 4. `cargo run --bin cutile -- doctor --op gemv_i4 --device <name>` 看协商结果（`units:` 那一行就是本档案的执行单元）；
 5. 有真机时 `cargo run --bin cutile -- verify --op gemv_i4 --devices <name>` 对拍并回填 `grade` / `witness`。
 

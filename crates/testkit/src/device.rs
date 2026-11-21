@@ -379,7 +379,9 @@ mod tests {
         };
         judge("#include <math.h>\nint witness_a(float *out) { out[0] = 1.0f; return 1; }\n");
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            judge("#include \"preamble.h\"\nint witness_a(float *out) { out[0] = 1.0f; return 1; }\n")
+            judge(
+                "#include \"preamble.h\"\nint witness_a(float *out) { out[0] = 1.0f; return 1; }\n",
+            )
         }))
         .expect_err("引号包含在副本旁边解析不到，必须被发现");
     }

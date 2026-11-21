@@ -8,7 +8,8 @@
 //! （`prof::codegen`）一行不改。文件名即原语名，第一行的签名声明
 //! `/* cutile-sign: <prim>/<impl> */` 在构建期与档案里的 `provides` 对齐。
 //!
-//! 输出语言是 OpenCL，工具链是`clang` 工具链。
+//! 输出语言是 OpenCL，工具链是`clang` 工具链。片段层与档案的对账在 `tests/fragments.rs`：
+//! 签名、见证入口、能力供给三者必须闭合，每条见证在本机编出来执行一次，另过一遍 `clang -x cl`。
 //!
 //! # 例子
 //!

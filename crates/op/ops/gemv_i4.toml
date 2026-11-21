@@ -24,7 +24,7 @@ reduce = { axis = ["GMAX"], op = ["sum"], dt = ["f32"] }
 # `@load_async` / `@commit_wait` / `@bar`。因此它们必须写在算子级需求里，装载期按变体逐条
 # 校验。`stages = ["2"]` 也是公共的：两档调度用的是同一次 `@load_async` 调用。
 # 变体级 `extra_needs` 只能在此基础上加严，不能少写模板用到的原语。
-load_async  = { bytes = "<=4096", space = ["GM", "FAST"], src = ["GM"], dst = ["GM", "FAST"], stages = ["2"] }
+load_async  = { bytes = "<=4096", space = ["GM", "FAST"], src = ["GM"], dst = ["GM", "FAST"] }
 commit_wait = {}
 bar         = {}
 

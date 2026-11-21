@@ -248,7 +248,7 @@ dt      = ["i4", "u8", "f32"]
 space   = ["GM", "FAST"]
 src     = ["GM"]
 dst     = ["GM", "FAST"]
-stages  = ["2", "3"]
+stages  = ["1"]
 align   = ["1"]
 grade   = "L2"
 witness = { file = "cpu/witness.c", func = "witness_load_async", expect = [1.0] }

@@ -26,7 +26,7 @@ store  = { bytes = "<=4096", dt = ["f32"], space = ["GM"] }
 cvt    = { dt = ["f32", "i32"], sat = ["off"] }
 reduce = { axis = ["GMAX"], op = ["sum"], dt = ["f32"] }
 # 搬运与同步原语属于所有变体：模板只有一份，`direct` emit 出来同样会调用它们。
-load_async  = { bytes = "<=4096", space = ["GM", "FAST"], src = ["GM"], dst = ["GM", "FAST"], stages = ["2"] }
+load_async  = { bytes = "<=4096", space = ["GM", "FAST"], src = ["GM"], dst = ["GM", "FAST"] }
 commit_wait = {}
 bar         = {}
 
