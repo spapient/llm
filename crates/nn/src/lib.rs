@@ -178,7 +178,7 @@ pub use attnres::{AttnRes, Sources, splice};
 pub use attention::{Attention, AttentionAlgo};
 
 #[doc(inline)]
-pub use attention_block::AttentionBlock;
+pub use attention::block::AttentionBlock;
 
 #[doc(inline)]
 pub use bounds::Bounds;
@@ -405,7 +405,7 @@ pub trait Contract {
     ///
     /// 默认 `None`：装配侧经此取回 Q/K/V/注意力/输出投影五个子层与块几何，不在外层按层名前缀
     /// 分组扇出。
-    fn attention_block(&self) -> Option<&crate::attention_block::AttentionBlock> {
+    fn attention_block(&self) -> Option<&crate::attention::block::AttentionBlock> {
         None
     }
 

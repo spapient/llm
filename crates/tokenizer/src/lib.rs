@@ -98,7 +98,7 @@ pub use special::SpecialTokens;
 pub use strategy::{PadDirection, Padding, Strategy, Truncation};
 pub use unigram::Unigram;
 pub use vocab::{Fingerprint, Merge, Vocab, VocabFamily, VocabSource};
-pub use vocab_codec::{decode_vocab, encode_vocab};
+pub use vocab::codec::{decode_vocab, encode_vocab};
 
 use diagnostic::Result;
 

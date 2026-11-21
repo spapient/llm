@@ -336,7 +336,7 @@ const LANES: usize = 8;
 /// 而公开对拍容差（1e-3 相对误差）足以吸收它；换来的是内层 `LANES` 倍指令级并行，这一项才是
 /// 分块内核相对逐行 `gemv` 不落下风的前提（实测 1.8×，见 `crates/benchmarks/criterion/matmul_f32.rs`）。
 ///
-/// 它是 `op` 里唯一的多链点积：矩阵乘 tile 与两条注意力内核（`attention` / `attention_tiled`）
+/// 它是 `op` 里唯一的多链点积：矩阵乘 tile 与两条注意力内核（`attention` / `attention::tiled`）
 /// 都调这一份，否则同一个归约循环会被写成四份、向量化程度也四份不一样。
 pub(crate) fn dot_lanes(a: &[f32], b: &[f32]) -> f32 {
     let len = a.len().min(b.len());

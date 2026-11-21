@@ -165,7 +165,7 @@ fn attention_paths(
 /// 差别只在 K/V 的读取次数：非 tile 路径每行都要把整段 K/V 重走一遍，tile 让一个行块的查询共用
 /// 同一段 K/V 分块。
 fn attention_f32(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
-    attention_paths(inputs, outputs, op::attention_tiled::forward)
+    attention_paths(inputs, outputs, op::attention::tiled::forward)
 }
 
 /// prefill 自注意力适配：走分块 tile 路径。
@@ -179,7 +179,7 @@ fn flash_attention_f32(
     inputs: &[View<'_>],
     outputs: &mut [ViewMut<'_>],
 ) -> Result<()> {
-    attention_paths(inputs, outputs, op::attention_tiled::flash_tiled_forward)
+    attention_paths(inputs, outputs, op::attention::tiled::flash_tiled_forward)
 }
 
 /// decode 三路适配：`q/hist_k/hist_v → out`；第四路输入为 ragged 段长表（ADR 0046 §8）走批段

@@ -6,7 +6,7 @@
 //!   它要一块 `s×s` 的完整分数矩阵，是数值参考；
 //! - [`flash_reference`] / [`flash_forward`]：online softmax 分块，维护 running max 与归一化和，
 //!   单遍扫描 `K/V`，不落地完整分数矩阵。两套结果必须逐元素相等（误差内）；
-//! - [`crate::attention_tiled`]：上面两条的分块 tile 版本，**执行侧走的那条**（`serve` / `train` 的适配
+//! - [`crate::attention::tiled`]：上面两条的分块 tile 版本，**执行侧走的那条**（`serve` / `train` 的适配
 //!   都指向它），与 `forward` / `flash_forward` 分别逐位一致，只是 K/V 块在行块内被复用。
 //!
 //! 样本、形状与代价两算子共用；`#[annotation::model]` 按注册名挑对应的参考函数。
@@ -716,7 +716,7 @@ mod tests {
                 let mut naive = vec![0.0f32; s * d];
                 forward(q, k, v, &mut naive, s, d).expect("朴素内核");
                 let mut tiled = vec![0.0f32; s * d];
-                crate::attention_tiled::forward(q, k, v, &mut tiled, s, d).expect("稠密 tile");
+                crate::attention::tiled::forward(q, k, v, &mut tiled, s, d).expect("稠密 tile");
                 assert_eq!(tiled, naive, "s={s},d={d} 稠密 tile 必须与朴素路径逐位一致");
             },
         );
@@ -726,10 +726,10 @@ mod tests {
     #[test]
     fn tiled_dense_rejects_bad_geometry() {
         let mut out = vec![0.0f32; 16];
-        assert!(crate::attention_tiled::forward(&[], &[], &[], &mut out, 4, 0).is_err());
-        assert!(crate::attention_tiled::forward(&[], &[], &[], &mut out, 0, 4).is_err());
+        assert!(crate::attention::tiled::forward(&[], &[], &[], &mut out, 4, 0).is_err());
+        assert!(crate::attention::tiled::forward(&[], &[], &[], &mut out, 0, 4).is_err());
         assert!(
-            crate::attention_tiled::forward(&[1.0; 12], &[1.0; 16], &[1.0; 16], &mut out, 4, 4)
+            crate::attention::tiled::forward(&[1.0; 12], &[1.0; 16], &[1.0; 16], &mut out, 4, 4)
                 .is_err()
         );
     }
@@ -743,7 +743,7 @@ mod tests {
                 let mut online = vec![0.0f32; s * d];
                 let mut tiled = vec![0.0f32; s * d];
                 flash_forward(q, k, v, &mut online, s, d).expect("flash online");
-                crate::attention_tiled::flash_tiled_forward(q, k, v, &mut tiled, s, d)
+                crate::attention::tiled::flash_tiled_forward(q, k, v, &mut tiled, s, d)
                     .expect("flash tiled");
                 assert_eq!(
                     tiled, online,

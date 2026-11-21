@@ -1,8 +1,8 @@
-//! 装配管线：把 `nn` 层栈与驻留参数表接成 engine [`Graph`]，再由 [`CpuModel`](crate::model_host::CpuModel) 宿主执行。
+//! 装配管线：把 `nn` 层栈与驻留参数表接成 engine [`Graph`]，再由 [`CpuModel`](crate::model::host::CpuModel) 宿主执行。
 //!
 //! 内核适配表留在 [`kernels`](crate::kernels)；层计划与族别分流在 [`plan`](crate::plan)，
 //! 注意力块子节点接线在 [`block`](crate::block)，本模块只收口图、台账与编号分配。前向取数与
-//! K/V 读写在 [`model_host`](crate::model_host)，不认识算子内核算式。
+//! K/V 读写在 [`model_host`](crate::model::host)，不认识算子内核算式。
 
 use diagnostic::{Code, Error, Result};
 use engine::exec::{Executor, Graph, Launch, Node, Stream};

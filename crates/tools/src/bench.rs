@@ -290,7 +290,7 @@ fn check_shape_batch(shape: &[usize], batch: u32) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bench_json::{from_json, to_json};
+    use crate::bench::json::{from_json, to_json};
     use diagnostic::Code;
 
     fn harness() -> Harness {

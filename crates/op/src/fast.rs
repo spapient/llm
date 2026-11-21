@@ -7,8 +7,8 @@
 
 use std::thread;
 
-mod fast_pool;
-use fast_pool::{Job, Shape, pool, run_pooled};
+mod pool;
+use pool::{Job, Shape, pool, run_pooled};
 
 /// 微内核行数。
 const MR: usize = 8;
