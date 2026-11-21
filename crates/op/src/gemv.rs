@@ -73,9 +73,599 @@ macro_rules! scaled_grain {
 }
 
 mod format;
-mod forward;
-pub mod packed;
-mod shape;
+
+mod forward {
+    //! 前向内核：按行（解码）与按批（prefill）两条路径，点积本身分「带标度」与「稠密」两种。
+    //!
+    //! 两条路径都把「权重行 × 输入向量」叫成一行计算，差别只在输入是单向量还是批；点积的
+    //! lane 数（[`LANES`]）按格式的元素宽度挑，保证每轮取满一条向量寄存器。
+    use diagnostic::{Code, Error};
+
+    use super::format::Plain;
+    use super::shape::{finite_scales, required_weights, scaled_groups};
+
+    /// 带标度行骨架：分组、粒度、权重与标度守卫连同行切片统一收口，逐行点积由 `row_dot` 给出。
+    ///
+    /// `cpb` 是「一个权重单位里有多少个元素」：打包格式给每字节码数（`2` / `4`），不打包的逐元素
+    /// 格式给 `1`——那时行宽就是 `m` 个元素，粒度倍数守卫恒真。于是打包与不打包只差这一处行宽
+    /// 折算和一份逐行算术，守卫、切片与遍历是同一份代码，按元素类型单态化。
+    pub(super) fn forward_rows<E>(
+        x: &[f32],
+        weights: &[E],
+        scales: &[f32],
+        out: &mut [f32],
+        cpb: usize,
+        row_dot: impl Fn(&[E], &[f32], &[f32], usize) -> f32,
+    ) -> diagnostic::Result<()> {
+        let ctx = scaled_row_context(x.len(), out.len(), scales, weights.len(), cpb)?;
+        forward_rows_scaled(x, weights, scales, out, ctx, row_dot);
+        Ok(())
+    }
+
+    /// 逐行遍历一遍，算术由 `row_dot` 给：守卫已经过了（`ctx` 就是证据），这里只剩切片与调用。
+    ///
+    /// 单独一支是因为叶有时要把好几行算在一起（`gemv::simd` 的四列累加器），那时 `row_dot`
+    /// 这一行一个值的接口不合适；叶拿着同一个 `ctx` 自己走遍历，且**不必重跑守卫**——
+    /// [`scaled_row_context`] 里的标度有限性判定是 `O(n·groups)`，在 4096² 上重复一次就是内核
+    /// 算术的两成。
+    pub(crate) fn forward_rows_scaled<E>(
+        x: &[f32],
+        weights: &[E],
+        scales: &[f32],
+        out: &mut [f32],
+        ctx: ScaledRow,
+        row_dot: impl Fn(&[E], &[f32], &[f32], usize) -> f32,
+    ) {
+        for (index, value) in out.iter_mut().enumerate() {
+            let w_row = &weights[index * ctx.row..][..ctx.row];
+            let s_row = &scales[index * ctx.groups..][..ctx.groups];
+            *value = row_dot(w_row, x, s_row, ctx.group);
+        }
+    }
+
+    /// 行批骨架：输出行在外、输入行在里，一行权重只读一遍。
+    ///
+    /// 与 [`forward_rows`] 是同一个遍历的两种嵌套：那里输入是向量（一层），这里输入是
+    /// `rows × m` 的行批（两层）。输入行放内层就是"权重复用"的全部内容——权重行只从内存读一遍、
+    /// 解包一遍，而不是按行数重复；逐行调用单行入口会把同一份权重读 `rows` 遍。`cpb` 见
+    /// [`forward_rows`]：打包与不打包共用这一副嵌套。
+    fn forward_batch_rows<E>(
+        x: &[f32],
+        weights: &[E],
+        scales: &[f32],
+        geo: Geometry,
+        out: &mut [f32],
+        cpb: usize,
+        row_dot: impl Fn(&[E], &[f32], &[f32], usize) -> f32,
+    ) -> diagnostic::Result<()> {
+        batch_geometry(x.len(), out.len(), geo)?;
+        let ctx = scaled_row_context(geo.m, geo.n, scales, weights.len(), cpb)?;
+        forward_batch_rows_scaled(x, weights, scales, geo, out, ctx, row_dot);
+        Ok(())
+    }
+
+    /// 行批的逐行遍历，算术由 `row_dot` 给：与 [`forward_rows_scaled`] 同一个"守卫已过"约定。
+    pub(crate) fn forward_batch_rows_scaled<E>(
+        x: &[f32],
+        weights: &[E],
+        scales: &[f32],
+        geo: Geometry,
+        out: &mut [f32],
+        ctx: ScaledRow,
+        row_dot: impl Fn(&[E], &[f32], &[f32], usize) -> f32,
+    ) {
+        for j in 0..geo.n {
+            let w_row = &weights[j * ctx.row..][..ctx.row];
+            let s_row = &scales[j * ctx.groups..][..ctx.groups];
+            for r in 0..geo.rows {
+                out[r * geo.n + j] = row_dot(w_row, &x[r * geo.m..][..geo.m], s_row, ctx.group);
+            }
+        }
+    }
+
+    /// 带标度格式的行守卫：分组、粒度倍数、权重长度与标度有限四项一次判齐，返回 `(groups, group)`。
+    ///
+    /// 单行与行批两条入口共用这一处：批入口只是先判几何。先判结构（分组、倍数、长度）再判取值
+    /// （标度有限），于是报错指向第一处真正不对的地方；`cpb = 1` 时不打包格式的倍数守卫恒真。
+    pub(super) fn scaled_row_context(
+        m: usize,
+        n: usize,
+        scales: &[f32],
+        weights: usize,
+        cpb: usize,
+    ) -> diagnostic::Result<ScaledRow> {
+        let (groups, group) = scaled_groups(m, n, scales.len())?;
+        if !group.is_multiple_of(cpb) {
+            return Err(Error::new(
+                Code::Invalid,
+                format!("分组 {group} 必须是 {cpb} 的倍数"),
+            ));
+        }
+        required_weights(weights, n, m / cpb)?;
+        finite_scales(scales, groups)?;
+        Ok(ScaledRow {
+            groups,
+            group,
+            row: m / cpb,
+        })
+    }
+
+    /// 已过守卫的带标度行上下文：每行多少组、每组多少元素、每行多少个权重单位。
+    ///
+    /// 这是"守卫已经过了"的证据而不是三个裸 `usize`——裸数传进叶里，"它们一定对"就成了一句注释；
+    /// 收成一个值之后，重跑守卫（尤其 `O(n·groups)` 的标度判定）就不再有理由，叶只需要读权重与
+    /// 标度。构造只有 [`scaled_row_context`] 一条路。
+    #[derive(Clone, Copy, Debug)]
+    pub(crate) struct ScaledRow {
+        /// 每行多少组。
+        pub groups: usize,
+        /// 每组多少元素（必须是 `cpb` 的倍数）。
+        pub group: usize,
+        /// 每行多少个权重单位（打包格式是 `m / cpb` 个字节）。
+        pub row: usize,
+    }
+
+    /// 行批逐元素入口：按配置选择带标度 / 无标度两条骨架，与 [`Format::forward`] 同一分叉。
+    pub fn forward_plain_batch<C: Plain>(
+        x: &[f32],
+        weights: &[C::Elem],
+        scales: &[f32],
+        geo: Geometry,
+        out: &mut [f32],
+    ) -> diagnostic::Result<()> {
+        if C::SCALES.is_some() {
+            forward_batch_rows(x, weights, scales, geo, out, 1, scaled_dot::<C>)
+        } else {
+            if !scales.is_empty() {
+                return Err(Error::new(
+                    Code::Invalid,
+                    format!("稠密格式没有标度，收到 {} 个", scales.len()),
+                ));
+            }
+            forward_batch_rows(x, weights, scales, geo, out, 1, |w, x, _, _| {
+                dense_dot::<C>(w, x)
+            })
+        }
+    }
+
+    /// 行批几何：`rows` 行输入、输入行宽 `m`、输出行宽 `n`。
+    ///
+    /// 三个数必须同时自洽（`x.len() == rows·m`、`out.len() == rows·n`），且都只对行批有意义；
+    /// 分开传三个同型 `usize` 既容易在调用点换位，也让每个入口都多出两个参数。收成一个值后，
+    /// 几何的校只在入口守卫一处，量化与逐元素两条骨架传同一个类型。
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct Geometry {
+        /// 输入行数。
+        pub rows: usize,
+        /// 输入行宽（权重行宽）。
+        pub m: usize,
+        /// 输出行宽。
+        pub n: usize,
+    }
+
+    impl Geometry {
+        /// 由三个数直接构造；合法性留给入口守卫，构造本身不报错。
+        pub const fn new(rows: usize, m: usize, n: usize) -> Self {
+            Self { rows, m, n }
+        }
+    }
+
+    /// 行批几何：行数非零，输入与输出的长度分别对上 `rows × m` 与 `rows × n`。
+    ///
+    /// 三处一起判而不分判：批次调用时三个数必须同时自洽，单独对上一个没有意义。
+    pub(super) fn batch_geometry(x: usize, out: usize, geo: Geometry) -> diagnostic::Result<()> {
+        if geo.rows == 0 {
+            return Err(Error::new(Code::Invalid, "行批至少一行"));
+        }
+        let (want_x, want_out) = (
+            geo.rows.saturating_mul(geo.m),
+            geo.rows.saturating_mul(geo.n),
+        );
+        if x != want_x || out != want_out {
+            return Err(Error::new(
+                Code::Invalid,
+                format!(
+                    "行批尺寸不符：x={x}，out={out}，期望 {}×{}={want_x}、{}×{}={want_out}",
+                    geo.rows, geo.m, geo.rows, geo.n
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    /// 无标度逐元素格式的行遍历：换错算子（给了标度）必须报错，而不是静默忽略。
+    pub(super) fn forward_dense<C: Plain>(
+        x: &[f32],
+        weights: &[C::Elem],
+        scales: &[f32],
+        out: &mut [f32],
+    ) -> diagnostic::Result<()> {
+        if !scales.is_empty() {
+            return Err(Error::new(
+                Code::Invalid,
+                format!("稠密格式没有标度，收到 {} 个", scales.len()),
+            ));
+        }
+        let (m, n) = (x.len(), out.len());
+        required_weights(weights.len(), n, m)?;
+        for (row, value) in out.iter_mut().enumerate() {
+            let w_row = &weights[row * m..][..m];
+            *value = dense_dot::<C>(w_row, x);
+        }
+        Ok(())
+    }
+
+    /// 一行的带标度点积：按组推进，每组解包点积一次乘标度（[`dot`] 承担单元素反量化）。
+    pub(super) fn scaled_dot<C: Plain>(
+        w_row: &[C::Elem],
+        x: &[f32],
+        s_row: &[f32],
+        group: usize,
+    ) -> f32 {
+        let mut acc = 0.0f32;
+        for ((w_chunk, scale), x_chunk) in w_row.chunks(group).zip(s_row).zip(x.chunks(group)) {
+            acc += dot::<C>(w_chunk, x_chunk) * scale;
+        }
+        acc
+    }
+
+    /// 累加链数：16 条 = 4 条 NEON 寄存器（x86 的 AVX2 上是 2 条 `ymm`）。
+    ///
+    /// 这个数不是凑出来的：`crates/benchmarks/src/kernel.rs` 的 `gemv_f32/decode_1x4096x4096`
+    /// （1×4096×4096 decode 步，权重一遍 64 MiB）换链数实测 4 条链 3.8 ms、8 条 1.3 ms、12 条
+    /// 3.7 ms、16 条 0.89 ms、24 条 2.4 ms、32 条 0.91 ms——
+    /// 只有 2 的幂的条数能被展开成整条向量指令，16 条在多一个寄存器轮转之后就不再获益。
+    const LANES: usize = 16;
+
+    /// 一行的无标度点积：`LANES` 条独立累加链，内层编译成整条向量乘加。
+    ///
+    /// 与 [`dot`] 的 `sum` 差在归约的形状：`sum` 是严格的左折叠，f32 没有 fast-math，LLVM 只能一次
+    /// 加一个——上面那组实测里它就是 2.85 ms 那一档，decode 的带宽全被它挡住。`LANES` 条链彼此独立，
+    /// 同样的权重读一遍算出整条向量的宽度（实测 3.2×）；链内顺序与左折叠不同，只带来末位舍入差，
+    /// 确定性样本的取值落在 2 的幂网格上，两者逐位相同。
+    fn dense_dot<C: Plain>(w_row: &[C::Elem], x: &[f32]) -> f32 {
+        let (w_chunks, w_tail) = w_row.as_chunks::<LANES>();
+        let (x_chunks, x_tail) = x.as_chunks::<LANES>();
+        let mut lanes = [0.0f32; LANES];
+        for (w, x) in w_chunks.iter().zip(x_chunks) {
+            let mut lane = 0;
+            while lane < LANES {
+                lanes[lane] += C::to_f32(w[lane]) * x[lane];
+                lane += 1;
+            }
+        }
+        let mut acc = lanes.iter().sum::<f32>();
+        for (w, x) in w_tail.iter().zip(x_tail) {
+            acc += C::to_f32(*w) * *x;
+        }
+        acc
+    }
+
+    /// 一段逐元素点积：`sum(to_f32(w) · x)`，按配置的单元素反量化。
+    fn dot<C: Plain>(w: &[C::Elem], x: &[f32]) -> f32 {
+        w.iter()
+            .zip(x)
+            .map(|(elem, xv)| C::to_f32(*elem) * xv)
+            .sum()
+    }
+}
+
+pub mod packed {
+    //! 打包权重（每字节 `cpb` 个码）的取样与解包点积助手。
+    //!
+    //! int2（4 码/字节）与 int4（2 码/字节）只在码宽、查表与粒度倍数上不同；打包位域的字节布局
+    //! 与按行点积收口到这里，避免两条打包格式各抄一遍。行遍历、守卫与行切片在骨架
+    //! `gemv::forward_rows` 里只有一份——本模块只把“行宽按 `cpb` 折算”接上去。
+    //! int8 不打包，不走本模块。
+    /// 确定性打包权重：`n` 行、每行 `m / cpb` 个字节，同一形状取值可复现。
+    pub fn weights(m: usize, n: usize, cpb: usize) -> Vec<u8> {
+        (0..n * (m / cpb))
+            .map(|index| ((index * 37) % 251) as u8)
+            .collect()
+    }
+
+    /// 一行的点积：按分组推进，组内解包 `cpb` 个码查 `dequant` 表，整组共用同一个标度。
+    ///
+    /// 累加顺序与朴素写法逐位一致（同一字节的低位码在前）；每组 `group` 为 `cpb` 倍数，
+    /// 解包只读整组码，不触碰补齐位。
+    pub fn dot_row(
+        packed_row: &[u8],
+        x: &[f32],
+        s_row: &[f32],
+        per_group: usize,
+        group: usize,
+        cpb: usize,
+        dequant: &[f32],
+    ) -> f32 {
+        // 位宽走配置表派生：`width = 8 / cpb`，与 [`crate::quant::width_cpb`] 同一公式，不在这里第二份除法。
+        let width = crate::quant::width_cpb(cpb);
+        let mask = (1u8 << width) - 1;
+        let mut acc = 0.0f32;
+        for ((packed, scale), xs) in packed_row
+            .chunks_exact(per_group)
+            .zip(s_row)
+            .zip(x.chunks_exact(group))
+        {
+            let mut dot = 0.0f32;
+            for (byte, codes) in packed.iter().zip(xs.chunks(cpb)) {
+                for (slot, &code_slot) in codes.iter().enumerate() {
+                    let code = usize::from((byte >> (slot * width)) & mask);
+                    dot += dequant[code] * code_slot;
+                }
+            }
+            acc += dot * scale;
+        }
+        acc
+    }
+
+    /// 把骨架的逐行点积接口接到 [`dot_row`]：骨架只给分组元素数 `group`，解包点积还要每组字节数
+    /// `group / cpb`、每字节码数与反量化表。
+    fn row_dot(cpb: usize, dequant: &[f32]) -> impl Fn(&[u8], &[f32], &[f32], usize) -> f32 + '_ {
+        move |w_row, x, s_row, group| dot_row(w_row, x, s_row, group / cpb, group, cpb, dequant)
+    }
+
+    /// 打包格式的单行入口：行宽按 `cpb` 折算，逐行点积走 `row_dot`。
+    ///
+    /// 守卫、行切片与遍历都在骨架 `gemv::forward_rows` 里；这里只接上“一行 `m / cpb` 个字节”
+    /// 与解包算术，解包位域与累加顺序和 [`dot_row`] 同一套，参考与内核对拍逐位一致。
+    pub fn forward_rows(
+        x: &[f32],
+        weights: &[u8],
+        scales: &[f32],
+        out: &mut [f32],
+        cpb: usize,
+        dequant: &[f32],
+    ) -> diagnostic::Result<()> {
+        let ctx =
+            super::forward::scaled_row_context(x.len(), out.len(), scales, weights.len(), cpb)?;
+        if let Some(affine) = super::simd::admit(cpb, out.len(), ctx, dequant) {
+            super::simd::forward(x, weights, scales, affine, out);
+            return Ok(());
+        }
+        super::forward::forward_rows_scaled(x, weights, scales, out, ctx, row_dot(cpb, dequant));
+        Ok(())
+    }
+
+    /// 打包格式的行批入口：与 [`forward_rows`] 同一套算术与同一份 `row_dot`，只换遍历嵌套。
+    ///
+    /// 输出行 `j` 在外（权重行 `j` 由此只解包一次），输入行 `r` 在内——量化权重在 prefill 下不会
+    /// 被按行数重复读，而每个元素仍是同一累加顺序，批结果与逐行调用逐位相同。
+    pub fn forward_batch(
+        x: &[f32],
+        weights: &[u8],
+        scales: &[f32],
+        geo: super::forward::Geometry,
+        out: &mut [f32],
+        cpb: usize,
+        dequant: &[f32],
+    ) -> diagnostic::Result<()> {
+        super::forward::batch_geometry(x.len(), out.len(), geo)?;
+        let ctx = super::forward::scaled_row_context(geo.m, geo.n, scales, weights.len(), cpb)?;
+        if let Some(affine) = super::simd::admit(cpb, geo.n, ctx, dequant) {
+            let rows: Vec<&[f32]> = x.chunks(geo.m).collect();
+            super::simd::forward_batch(&rows, weights, scales, affine, out);
+            return Ok(());
+        }
+        super::forward::forward_batch_rows_scaled(
+            x,
+            weights,
+            scales,
+            geo,
+            out,
+            ctx,
+            row_dot(cpb, dequant),
+        );
+        Ok(())
+    }
+}
+
+mod shape {
+    //! 形状上下文、确定性样本与标量参考：`#[annotation::model]` 要的三件产物。
+    //!
+    //! 参考实现只做「校验 + 交给格式」，与格式无关的检查（输出非空、输入/权重够长、标度有限）
+    //! 都集中在这里，于是新增一份精度不需要重写它们。
+    use diagnostic::{Code, Error};
+
+    use crate::model::{Buffer, Cost, Sample, ShapeContext, Values};
+
+    use super::format::{Element, Format};
+
+    /// 与权重格式无关的输入向量：两条算子共用同一份取值。
+    fn input(m: usize) -> Vec<f32> {
+        (0..m)
+            .map(|index| ((index * 7) % 13) as f32 * 0.25 - 1.0)
+            .collect()
+    }
+
+    /// 量化格式共用的标度取值：`0.03125` 的 1..=4 倍，落在 2 的负幂网格，f32 精确。
+    pub(crate) fn scale_of(index: usize) -> f32 {
+        0.031_25 * (1 + (index % 4)) as f32
+    }
+
+    /// 把形状对翻译成投影骨架的具名轴上下文：`m` 是规约轴、`n` 是输出轴。
+    ///
+    /// 这是 [`crate::model::Model::shape_ctx`] 在投影骨架上的实例：`verify` 不再假设每条算子都能
+    /// 走 [`crate::model::Model::projection`]，非投影算子会提供各自的形状函数。
+    pub fn project_shape(m: usize, n: usize) -> Result<ShapeContext, Error> {
+        ShapeContext::new([('m', m), ('n', n)])
+    }
+
+    /// 标量代价：完全由 [`FormulaOwner::EXPR`] 与操作数位宽推出，本函数不含任何流量常数。
+    ///
+    /// 调用方只给基本轴；派生轴由格式自己声明——分组是算子语义，不是每个层都该抄一遍的常数。
+    ///
+    /// # Errors
+    ///
+    /// 形状与表达式不自洽（缺轴、长度为 0，或 `m` 不是 [`Format::GRAIN`] 的整数倍）时返回说明。
+    pub fn cost<F: Format>(shape: &ShapeContext) -> Result<Cost, Error> {
+        let extents = match F::DERIVED {
+            Some((label, base, divisor)) => shape.extents_with_group(label, base, divisor)?,
+            None => shape.extents().clone(),
+        };
+        F::formula()?
+            .cost(&extents)
+            .map_err(|error| error.with("op::gemv::cost"))
+    }
+
+    /// 确定性样本：同一形状永远得到同一组输入。
+    ///
+    /// 缓冲集合由格式决定（标度只在 [`Format::SCALES`] 给出时出现），标量 `gsz` 取
+    /// [`Format::STEP`]：模板按它分块，参考实现按同一个数取标度，两者不会各算一套。
+    pub fn sample<F: Format>(m: usize, n: usize) -> Sample {
+        let mut buffers = vec![
+            Buffer {
+                name: "x",
+                values: Values::F32(input(m)),
+            },
+            F::Elem::buffer("w", F::weights(m, n)),
+        ];
+        if let Some(scale) = F::SCALES {
+            let groups = m / F::GRAIN.max(1);
+            buffers.push(Buffer {
+                name: "scales",
+                values: Values::F32((0..n * groups).map(scale).collect()),
+            });
+        }
+        buffers.push(Buffer {
+            name: "y",
+            values: Values::F32(vec![0.0; n]),
+        });
+        Sample {
+            m,
+            n,
+            scalars: vec![("M", m as i64), ("N", n as i64), ("gsz", F::STEP as i64)],
+            buffers,
+        }
+    }
+
+    /// 从样本里取权重：名字固定是 `w`，元素类型由格式给出。
+    fn weights<F: Format>(sample: &Sample) -> diagnostic::Result<&[F::Elem]> {
+        let buffer = sample
+            .buffer("w")
+            .ok_or_else(|| Error::new(Code::Missing, "样本里没有缓冲 `w`"))?;
+        F::Elem::borrow(&buffer.values).ok_or_else(|| {
+            Error::new(
+                Code::Invalid,
+                format!("缓冲 `w` 不是 {}：这份格式的权重元素类型", F::Elem::NAME),
+            )
+        })
+    }
+
+    /// 输出维度不能为 0：三条格式与参考实现共同的前置约束。
+    ///
+    /// 写成返回值而不是就地 `if`：`?` 会在调用方的复杂度账上记一格，而这条判据的"为什么"
+    /// （空输出让后面的 `chunks(0)` 与 `scales.len() / n` 都失去意义）只需要说一次。
+    pub(crate) fn non_empty(n: usize) -> Result<(), Error> {
+        if n == 0 {
+            return Err(Error::new(Code::Invalid, "输出维度不能为 0"));
+        }
+        Ok(())
+    }
+
+    /// 带标度格式的公共前置约束：`scales` 能按行均分、分组能整除输入宽度。
+    ///
+    /// 返回 `(groups, group)`——每行多少组、每组多少元素。int4 与 int8 只在"一行权重多少个元素"
+    /// 与"分组必须是偶数"上不同，那两条留在各自的 `forward` 里：它们属于格式，不属于骨架。
+    pub(crate) fn scaled_groups(
+        m: usize,
+        n: usize,
+        scales: usize,
+    ) -> Result<(usize, usize), Error> {
+        non_empty(n)?;
+        if !scales.is_multiple_of(n) {
+            return Err(Error::new(
+                Code::Invalid,
+                format!("scale 长度 {scales} 不是 {n} 的整数倍"),
+            ));
+        }
+        let groups = scales / n;
+        if groups == 0 || !m.is_multiple_of(groups) {
+            return Err(Error::new(
+                Code::Invalid,
+                format!("scale 长度 {scales} 推不出能整除 {m} 的分组数"),
+            ));
+        }
+        Ok((groups, m / groups))
+    }
+
+    /// 标度值守卫：每组分标度必须是有限值；非有限标度会把整组乘积带进 NaN/Inf，且与格式无关。
+    ///
+    /// 标度个数已由 [`scaled_groups`] 推过；这里只逐条判有限，不重复推分组。
+    pub(crate) fn finite_scales(scales: &[f32], groups: usize) -> Result<(), Error> {
+        let bad = scales.iter().any(|scale| !scale.is_finite());
+        if bad {
+            return Err(Error::new(
+                Code::Invalid,
+                format!("标度含非有限值（{groups} 组）"),
+            ));
+        }
+        Ok(())
+    }
+
+    /// 权重至少要够 `n` 行、每行 `row` 个元素，返回这个下界。
+    ///
+    /// 三条格式与参考实现的说明逐字相同，判据也相同（`>=` 而不是 `==`：调用方可以带多余尾部），
+    /// 所以它只有一份。上界用饱和乘：`n · row` 溢出时直接判为"长度不足"，而不是回绕成一个轻松
+    /// 满足的小数。
+    pub(crate) fn required_weights(weights: usize, n: usize, row: usize) -> Result<usize, Error> {
+        let want = n.saturating_mul(row);
+        if weights < want {
+            return Err(Error::new(
+                Code::Invalid,
+                format!("权重长度 {weights} < {want}"),
+            ));
+        }
+        Ok(want)
+    }
+
+    /// 标量参考：校验由骨架给出，算术由格式给出。
+    ///
+    /// 骨架负责的部分与格式无关——输出非空、输入够长、权重够长、结果写进一块新缓冲；格式负责
+    /// 自己的解包与分组约束。于是"再加一份精度"不需要重写这些检查。
+    ///
+    /// # Errors
+    ///
+    /// 缓冲缺失、元素类型不符、长度不足，或格式自己的约束（分组、标度个数）不成立时返回说明。
+    pub fn reference<F: Format>(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
+        let x = sample.f32("x")?;
+        let weights = weights::<F>(sample)?;
+        let scales = scales::<F>(sample)?;
+        let (m, n) = (sample.m, sample.n);
+        gauge(x.len(), m, n)?;
+        run::<F>(&x[..m], weights, scales, m, n)
+    }
+
+    /// 标度缓冲：只有格式声明了 [`Format::SCALES`] 才读；没有标度的格式拿空切片。
+    fn scales<F: Format>(sample: &Sample) -> diagnostic::Result<&[f32]> {
+        match F::SCALES {
+            Some(_) => sample.f32("scales"),
+            None => Ok(&[]),
+        }
+    }
+
+    /// 骨架侧的尺寸判据：输出非空、输入够长。只问答不答格式——权重够不够由 [`run`] 判。
+    fn gauge(x: usize, m: usize, n: usize) -> diagnostic::Result<()> {
+        non_empty(n)?;
+        if x < m {
+            return Err(Error::new(Code::Invalid, format!("输入长度 {x} < {m}")));
+        }
+        Ok(())
+    }
+
+    /// 权重下界够了之后，把结果交给格式自己的算术（分配也在这里，格式只写缓冲）。
+    fn run<F: Format>(
+        x: &[f32],
+        weights: &[F::Elem],
+        scales: &[f32],
+        m: usize,
+        n: usize,
+    ) -> diagnostic::Result<Vec<f32>> {
+        let want = required_weights(weights.len(), n, F::row(m))?;
+        let mut y = vec![0.0f32; n];
+        F::forward(x, &weights[..want], scales, &mut y)?;
+        Ok(y)
+    }
+}
 mod simd;
 
 pub use format::{
@@ -196,7 +786,221 @@ macro_rules! gemv_packed {
     };
 }
 
-pub mod f32;
-pub mod i2;
-pub mod i4;
-pub mod i8;
+pub mod f32 {
+    //! `gemv_f32` 的算子语义：稠密 f32 权重投影。
+    //!
+    //! 骨架在 [`crate::gemv`]，本模块只有"稠密权重"这一份逐元素配置：表达式、操作数位宽、分块宽度
+    //! 与元素反量化。模板在 `ops/gemv_f32.k`，本模块是它的第二份实现：片段只与这里对拍。
+    //! 内核实参不在这里手写：它由 `.k` 的签名与样本派生（[`crate::sig`]）。
+    use crate::einsum::{Bits, FormulaCache, OperandSpec};
+    use crate::gemv::{self, Plain, PlainFmt};
+
+    /// 分块宽度：模板每轮处理这么多元素，标量参考按同一个宽度分块累加。
+    pub const BLOCK: usize = 32;
+
+    /// 稠密逐元素的配置：`f32` 权重、无标度、任意输入宽度，按 [`BLOCK`] 分块累加。
+    impl<const B: usize> crate::formula::FormulaOwner for gemv::Dense<B> {
+        /// `w[nm] · x[m] → y[n]`：无派生轴，宽度不参与分组。
+        const EXPR: &'static str = "nm,m,n->n";
+
+        /// 三个操作数都是 f32：`w` 是 `m·n` 个元素、`x` 是 `m` 个、`y` 是 `n` 个。
+        const OPERANDS: &'static [OperandSpec] = &[
+            OperandSpec::read("w", Bits::ThirtyTwo),
+            OperandSpec::read("x", Bits::ThirtyTwo),
+            OperandSpec::write("y", Bits::ThirtyTwo),
+        ];
+
+        const FRAME: &'static str = "op::gemv::formula";
+
+        fn cache() -> &'static FormulaCache {
+            crate::formula_cell!()
+        }
+    }
+
+    /// 稠密 f32 的样本与反量化（恒等）：骨架的一切算术都由 [`PlainFmt`] 那一份给出。
+    impl<const B: usize> Plain for gemv::Dense<B> {
+        type Elem = f32;
+
+        /// 稠密算子的形状粒度是 1：一条只为对齐 nibble 的约束不该溢出到 f32 权重上。
+        const GRAIN: usize = 1;
+
+        const DERIVED: Option<(char, char, usize)> = None;
+
+        const SCALES: Option<fn(usize) -> f32> = None;
+
+        /// 模板每轮推进的元素数就是分块宽度（样本里的 `gsz` 与分块累加的宽度同源）。
+        const STEP: usize = B;
+
+        fn weights(m: usize, n: usize) -> Vec<f32> {
+            (0..n * m)
+                .map(|index| ((index * 37) % 251) as f32 * 0.125 - 8.0)
+                .collect()
+        }
+
+        fn to_f32(elem: f32) -> f32 {
+            elem
+        }
+    }
+
+    /// 稠密格式的语义类型：分块宽度 [`BLOCK`]、任意输入宽度都合法。
+    #[annotation::model(name = "gemv_f32", shape = [4096, 4096], dtype = "f32")]
+    pub type F32 = PlainFmt<gemv::Dense<BLOCK>>;
+
+    // 基座契约（ADR 0050）：粒度与三条行为从格式契约转发。
+    crate::operator_via!(grained F32, "gemv_f32", 2, (4096, 4096), true, gemv, gemv::AXES);
+
+    /// 内核本体：`m = x.len()`、`n = out.len()`，结果写进调用方给的缓冲。
+    pub fn forward(x: &[f32], weights: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
+        <F32 as gemv::Format>::forward(x, weights, &[], out)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        include!("../tests/gemv.rs");
+    }
+}
+
+pub mod i2 {
+    //! `gemv_i2` 的算子语义：2 位打包权重 + 每 [`GROUP`] 个元素一条标度。
+    //!
+    //! 骨架在 [`crate::gemv`]，本模块只有"2 位打包"这一份配置：位宽、别名与测试挂载。
+    //! 四个 2 位码共用一个字节（低 2 位在前），因此输入宽度 `m` 必须是 4 的倍数且整除分组，
+    //! 非 4 倍数尾码在解包前拦下；解包与分组推进的算术都在 [`crate::gemv::Packed`]。
+    use crate::quant::I2;
+
+    crate::gemv_packed!(
+        I2Conf,
+        I2,
+        "gemv_i2",
+        I2,
+        2,
+        1,
+        16,
+        "权重 4 MiB + 输入 16 KiB + 缩放 2 MiB",
+        [1, -1, 0, 1],
+        0.5,
+        [1, -1, 0, 1, 1, -1, 0, 1, -2, -1, 0, 1, -2, -1, 0, 1],
+        [0.25, 0.5, 1.0, -1.0],
+        |y: &[f32]| {
+            assert!(y[0].is_finite());
+            assert!(y[1].is_finite());
+        },
+        [1, -1, 0, 1, 1, -1, 0, 1, -2, -1, 0, 1, -2, -1, 0, 1],
+        [1.0, -1.0, 0.0, 1.0, 1.0, -1.0, 0.0, 1.0],
+        [-2.0, -1.0, 0.0, 1.0, -2.0, -1.0, 0.0, 1.0]
+    );
+}
+
+pub mod i4 {
+    //! `gemv_i4` 的算子语义：4 位打包权重 + 每 [`GROUP`] 个元素一条标度。
+    //!
+    //! 骨架在 [`crate::gemv`]，本模块只有"4 位打包"这一份配置：位宽、别名与测试挂载。
+    //! 两个 4 位码共用一个字节（低 4 位在前），因此输入宽度 `m` 必须是 2 的倍数且整除分组，
+    //! 奇数尾码在解包前拦下；解包与分组推进的算术都在 [`crate::gemv::Packed`]。
+    use crate::quant::I4;
+
+    crate::gemv_packed!(
+        I4Conf,
+        I4,
+        "gemv_i4",
+        I4,
+        4,
+        2,
+        32,
+        "权重 8 MiB + 输入 16 KiB + 缩放 2 MiB",
+        [1, 2, 3, 4],
+        5.0,
+        [1, 2, 3, 4, 5, 6, 7, 8, 1, 1, 1, 1, 2, 2, 2, 2],
+        [0.25, 0.5, 1.0, 1.0],
+        |y: &[f32]| {
+            assert!(y[0] > 0.0);
+            assert!(y[1] > y[0], "第二行权重更大");
+        },
+        [1, 2, 3, 4, 5, 6, 7, -8, -1, 0, 1, 2, 3, -4, 5, -6],
+        [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, -8.0],
+        [-1.0, 0.0, 1.0, 2.0, 3.0, -4.0, 5.0, -6.0]
+    );
+}
+
+pub mod i8 {
+    //! `gemv_i8` 的算子语义：对称 8 位权重（不打包、零点 0）+ 每 [`GROUP`] 个元素一条标度。
+    //!
+    //! 骨架在 [`crate::gemv`]，本模块只有"对称 int8"这一份逐元素配置：表达式、操作数位宽、声明粒度、
+    //! 标度取值与元素反量化。模板在 `ops/gemv_i8.k`，片段只与这里对拍。`u8` 承载 int8 位模式，
+    //! 算术时按 `i8` 解释。
+    use crate::einsum::FormulaCache;
+    use crate::gemv::{self, Plain, PlainFmt};
+    use crate::quant::I8;
+
+    /// 量化分组（声明粒度）：唯一事实源在 [`GROUP`](crate::gemv::GROUP)。
+    pub const GROUP: usize = gemv::GROUP;
+
+    /// 逐元素对称 int8 的配置：`u8` 承载位模式、按 `i8` 反量化、每 [`GROUP`] 个元素一条标度。
+    impl<const G: usize> crate::formula::FormulaOwner for gemv::SymI8<G> {
+        /// `w[nm] · x[m] · scales[ng] → y[n]`：`g` 是 `m` 每 [`GROUP`] 个元素切出的派生轴。
+        const EXPR: &'static str = "nm,m,ng,n->n";
+
+        // 权重是 8 位（每元素 1 字节），其余同打包格式：操作数表走同一条展开。
+        scaled_operands!(I8.bits);
+
+        const FRAME: &'static str = "op::gemv::formula";
+
+        fn cache() -> &'static FormulaCache {
+            crate::formula_cell!()
+        }
+    }
+
+    /// 逐元素对称 int8 的配置：样本取对称小整数，反量化按 `i8` 解释位模式。
+    impl<const G: usize> Plain for gemv::SymI8<G> {
+        type Elem = u8;
+
+        scaled_grain!(G);
+
+        fn weights(m: usize, n: usize) -> Vec<u8> {
+            // 取对称小整数（-8..7）的 int8 位模式，避免大整数在 f32 网格外引入舍入。
+            (0..n * m)
+                .map(|index| ((index * 37) % 16) as i8 - 8)
+                .map(|value| value as u8)
+                .collect()
+        }
+
+        fn to_f32(elem: u8) -> f32 {
+            (elem as i8) as f32
+        }
+    }
+
+    /// 对称 int8 格式的语义类型：声明粒度 [`GROUP`]、每行 `m` 个字节。
+    #[annotation::model(name = "gemv_i8", shape = [4096, 4096], dtype = "f32")]
+    pub type I8 = PlainFmt<gemv::SymI8<GROUP>>;
+
+    // 基座契约（ADR 0050）：粒度与三条行为从格式契约转发；量化算子不可微。
+    crate::operator_via!(grained I8, "gemv_i8", 3, (4096, 4096), false, gemv, gemv::AXES);
+
+    /// 内核本体：`m = x.len()`、`n = out.len()`，结果写进调用方给的缓冲。
+    pub fn forward(
+        x: &[f32],
+        weights: &[u8],
+        scales: &[f32],
+        out: &mut [f32],
+    ) -> diagnostic::Result<()> {
+        <I8 as gemv::Format>::forward(x, weights, scales, out)
+    }
+
+    /// 行批内核：`x` 是 `rows × m`、`out` 是 `rows × n`，一行权重只读一遍。
+    ///
+    /// 与 [`forward`] 同一份 `scaled_dot` 算术，批结果与逐行调用逐位相同；省掉的是权重行的重复读。
+    pub fn forward_batch(
+        x: &[f32],
+        weights: &[u8],
+        scales: &[f32],
+        geo: gemv::Geometry,
+        out: &mut [f32],
+    ) -> diagnostic::Result<()> {
+        gemv::forward_plain_batch::<gemv::SymI8<GROUP>>(x, weights, scales, geo, out)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        include!("../tests/gemv_i8.rs");
+    }
+}

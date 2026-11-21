@@ -77,8 +77,7 @@ pub fn metal_tiled_attention(
     Ok(tiled_attention_msl(q, k, v, y, s, d, threads))
 }
 
-/// 四条缓冲名（按签名序：Q、K、V、Y）。
-
+/// 分块注意力的 MSL 正文：只拼字面与已解出的维度，不含错误处理。
 fn tiled_attention_msl(
     q: &str,
     k: &str,

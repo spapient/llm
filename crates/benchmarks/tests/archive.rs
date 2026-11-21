@@ -111,7 +111,7 @@ pub(crate) fn report_json(
     fields.push(("cpu", Field::Str(meta.cpu.to_string())));
     fields.push(("os", Field::Str(meta.os.to_string())));
     fields.push(("toolchain", Field::Str(meta.toolchain.to_string())));
-    fields.push(("arch", Field::Str(meta.arch.to_string())));
+    fields.push(("algorithm", Field::Str(meta.arch.to_string())));
     fields.push(("profile", Field::Str("bench".to_string())));
 
     let inner = fields
@@ -137,7 +137,7 @@ impl Report<'_> {
              \"shape\": {},\n  \"batch\": {},\n  \"dtype\": \"{}\",\n  \
              \"read_bytes\": {},\n  \"write_bytes\": {},\n  \"working_set_bytes\": {},\n  \
              \"cache_tier\": \"{}\",\n  \"flops\": {},\n  \
-             \"metric\": \"ns_per_iter\",\n  \"direction\": \"{}\",\n             \"budget_percent\": {},\n             \"baseline_ns\": {},\n             \"observed_ns\": {},\n             \"verdict\": \"{}\",\n             \"host\": \"{}\",\n             \"cpu\": \"{}\",\n             \"os\": \"{}\",\n             \"toolchain\": \"{}\",\n             \"arch\": \"{}\",\n             \"read_ceiling_mbps\": {},\n             \"write_ceiling_mbps\": {},\n             \"roofline_ns\": {},\n             \"bottleneck_side\": \"{}\",\n             \"achieved_percent\": {},\n             \"declared_ns\": {},\n             \"ceiling_percent\": {},\n             \"s_plus_percent\": {},\n             \"s_plus_line\": {},\n             \"mflops_per_s\": {},\n             \"bottleneck\": \"{}\",\n             \
+             \"metric\": \"ns_per_iter\",\n  \"direction\": \"{}\",\n             \"budget_percent\": {},\n             \"baseline_ns\": {},\n             \"observed_ns\": {},\n             \"verdict\": \"{}\",\n             \"host\": \"{}\",\n             \"cpu\": \"{}\",\n             \"os\": \"{}\",\n             \"toolchain\": \"{}\",\n             \"algorithm\": \"{}\",\n             \"read_ceiling_mbps\": {},\n             \"write_ceiling_mbps\": {},\n             \"roofline_ns\": {},\n             \"bottleneck_side\": \"{}\",\n             \"achieved_percent\": {},\n             \"declared_ns\": {},\n             \"ceiling_percent\": {},\n             \"s_plus_percent\": {},\n             \"s_plus_line\": {},\n             \"mflops_per_s\": {},\n             \"bottleneck\": \"{}\",\n             \
              \"profile\": \"bench\"\n}}\n",
             scenario.group,
             scenario.benchmark,

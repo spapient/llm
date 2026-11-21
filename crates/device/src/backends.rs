@@ -307,7 +307,7 @@ fn ascend_in_dir(
 fn ascend_compile(exe: &Path, src: &Path, profile: &Profile, dirs: &Dirs) -> Result<()> {
     let tool = profile.meta.tool.as_str();
     let mut command = Command::new(tool);
-    // `-xcce` / `--cce-aicore-arch` 归档案的 `[compile].flags`：那是"哪个核芯"的声明，本层不猜
+    // `-xcce` / `--cce-aicore-algorithm` 归档案的 `[compile].flags`：那是"哪个核芯"的声明，本层不猜
     // （`dav-c220` 只对 `id = "910b"` 成立）。唯一的分拣是顺序：`-l` 类参数被转给链接器，排在源
     // 文件之前就是"undefined reference to aclInit"，所以它们挪到源文件之后。
     let flags = cutile::compile_flags(profile, dirs)?;

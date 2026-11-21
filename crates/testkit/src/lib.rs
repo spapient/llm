@@ -50,10 +50,7 @@ mod contracts;
 #[cfg(test)]
 mod e2e;
 // 三条外部 `#[path]` 用户的取值来源（`cutile` 单测、`device` 单测、`device` 的 schedule 集成
-// 测试）。在这里也声明一次，让 `op::sig` / `op::model` 的 API 变更在 testkit 自己的测试构建里
-// 立刻暴露，而不是等到下游 crate 红；条目级 `cfg(test)` 见文件头。
-#[cfg(test)]
-mod kernel;
+// 测试）已在 `crates/testkit/tests/kernel.rs`：它只被那三处编译，`src/` 里不留测试夹具。
 #[cfg(test)]
 mod layer;
 #[cfg(test)]

@@ -15,10 +15,8 @@ use op::model::Sample;
 use op::sig::Signature;
 
 #[cfg(test)]
-#[path = "../../testkit/src/kernel.rs"]
+#[path = "../../testkit/tests/kernel.rs"]
 mod cutile_x_kernel;
-
-/// CUDA 并行程序：按形态装配设备源与 host 驱动，整份可直接 `mcc` / `nvcc` 编译执行。
 
 fn fold_of(func: &str) -> &'static str {
     if func.contains("max") { "max" } else { "sum" }
@@ -37,6 +35,7 @@ fn unsupported(vendor: &str, kind: &Lower) -> Error {
 #[path = "../tests/program.rs"]
 mod tests;
 
+/// CUDA 并行程序：按形态装配设备源与 host 驱动，整份可直接 `mcc` / `nvcc` 编译执行。
 ///
 /// # Errors
 ///

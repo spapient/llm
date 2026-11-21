@@ -107,7 +107,7 @@ pub use model::quant;
 pub use reduce::{reduce_max_f32, reduce_sum_f32};
 pub use scan::{Scalar, f32 as scan_f32};
 pub use sch::layout;
-pub use softmax::f32::{
+pub use softmax::{
     embed as embed_f32, rmsnorm as rmsnorm_f32, rope as rope_f32, softmax as softmax_f32,
 };
 pub use unary::{

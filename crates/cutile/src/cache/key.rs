@@ -55,7 +55,7 @@ impl CacheKey {
             ("schema", self.schema_ver.to_string()),
             ("emit", self.emit.to_string()),
             ("flags", format!("{:016x}", self.flags_hash)),
-            ("arch", self.arch.clone()),
+            ("algorithm", self.arch.clone()),
             ("impl", self.impl_name.clone()),
             ("block", self.block.clone()),
             ("ast", format!("{:016x}", self.ast_hash)),

@@ -5,10 +5,10 @@ use super::*;
 /// 一台机器的档案：标识、机型、系统、工具链。
 ///
 /// 机型写成数据而不是注释，是因为它必须随报告归档：上一轮的注释把 M5 Pro 写成 M4 Pro，
-/// 而 `os-arch` 完全看不出这个差别。没有档案的主机不判——跨机数字不可比。档案经构造器填进
+/// 而 `os-algorithm` 完全看不出这个差别。没有档案的主机不判——跨机数字不可比。档案经构造器填进
 /// [`Harness`]，本结构不再直接进 JSON 渲染。
 pub(crate) struct HostProfile {
-    /// `os-arch` 标识，与 [`host`] 的返回值一致。
+    /// `os-algorithm` 标识，与 [`host`] 的返回值一致。
     pub(crate) host: &'static str,
     /// 机型：登记基线时从本机读（macOS `sysctl -n machdep.cpu.brand_string`）。
     pub(crate) cpu: &'static str,
@@ -143,7 +143,7 @@ pub(crate) fn tier(working_set: u64) -> &'static str {
     }
 }
 
-/// 本机标识：`os-arch`。criterion 的绝对值只在同一台机器上可比，标识也就到这一层。
+/// 本机标识：`os-algorithm`。criterion 的绝对值只在同一台机器上可比，标识也就到这一层。
 pub(crate) fn host() -> String {
     format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
 }
@@ -167,7 +167,7 @@ pub(crate) fn ceiling_for(host: &str, tier: &str, traffic: &str) -> Option<&'sta
         .find(|c| c.host == host && c.tier == tier && c.traffic == traffic)
 }
 
-/// 由主机档案与后端标识构造记录的 [`Harness`]：arch 取运行环境，driver 填后端标识。
+/// 由主机档案与后端标识构造记录的 [`Harness`]：algorithm 取运行环境，driver 填后端标识。
 pub(crate) fn harness_of(host: &HostProfile, driver: &str) -> Harness {
     Harness::new(
         host.host,

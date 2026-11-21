@@ -8,7 +8,7 @@ use crate::prof::MatchRule;
 use diagnostic::Code;
 
 /// 假指纹：回归测试替身。指纹从档案自己的 `[fingerprint]` 反查，不另写厂商表——规则语义只在
-/// `prof` 里定义一次，这里只填一个能满足规则的值；档案里没有该 vendor 时退回 `arch = <vendor>`，
+/// `prof` 里定义一次，这里只填一个能满足规则的值；档案里没有该 vendor 时退回 `algorithm = <vendor>`，
 /// [`select`] 照常报"没有档案匹配"，不静默给能命中的指纹。
 fn fake(vendor: &str) -> Detected {
     let Some(profile) = ::prof::names()
@@ -17,7 +17,7 @@ fn fake(vendor: &str) -> Detected {
         .filter_map(|table| Profile::parse(table).ok())
         .find(|profile| profile.meta.vendor == vendor)
     else {
-        return Detected::new().with("arch", vendor);
+        return Detected::new().with("algorithm", vendor);
     };
     profile
         .fingerprint
@@ -42,7 +42,7 @@ fn example_of(rule: &MatchRule) -> String {
 fn cpu_detection_matches_the_cpu_profile() {
     let catalogue = Catalogue::try_builtin().expect("内置数据");
     let detected = detect_cpu();
-    assert_eq!(detected.get("arch"), Some(std::env::consts::ARCH));
+    assert_eq!(detected.get("algorithm"), Some(std::env::consts::ARCH));
     let profile = select(catalogue.profiles(), &detected).expect("必须命中");
     assert_eq!(profile.meta.vendor, "cpu");
 }

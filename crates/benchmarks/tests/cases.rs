@@ -221,7 +221,7 @@ pub(crate) fn load_records_carry_every_field_a_reader_needs_to_judge_it() {
                 "\"cpu\"",
                 "\"os\"",
                 "\"toolchain\"",
-                "\"arch\"",
+                "\"algorithm\"",
             ],
             "装载",
         );
@@ -294,7 +294,7 @@ pub(crate) fn model_records_carry_every_field_a_reader_needs_to_judge_it() {
                 "\"cpu\"",
                 "\"os\"",
                 "\"toolchain\"",
-                "\"arch\"",
+                "\"algorithm\"",
             ],
             "模型",
         );

@@ -49,14 +49,11 @@ pub use annotation::spec;
 use diagnostic::{Code, Error, Result};
 
 mod attention;
-mod attnres;
 mod axis;
 mod bounds;
-mod csa;
 mod embed;
 mod engram;
 mod format;
-mod kda;
 mod lm_head {
     //! `lm_head`：由注解声明的固定形状层。
     //!
@@ -74,12 +71,7 @@ mod lm_head {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
     pub struct LmHead;
 }
-mod mamba;
 mod matmul;
-mod mhc;
-mod mix;
-mod mla;
-mod moe;
 mod param_role {
     //! 参数角色闭集：一个参数槽归哪个优化器组（D11；权重衰减豁免与可训练判定由角色派生）。
     //!
@@ -124,42 +116,14 @@ mod param_role {
     }
 }
 mod classic;
-mod codec;
-mod emit;
-mod hybrid;
-mod latent;
-mod patch;
 mod pointwise;
-mod policy;
-mod spike;
 mod stack;
 
 #[doc(inline)]
-pub use attnres::{AttnRes, Sources, splice};
-
-#[doc(inline)]
-pub use attention::{Attention, AttentionAlgo};
-
-#[doc(inline)]
-pub use attention::block::AttentionBlock;
+pub use attention::{Attention, AttentionAlgo, AttentionBlock};
 
 #[doc(inline)]
 pub use bounds::Bounds;
-
-#[doc(inline)]
-pub use codec::{BYTES, ByteDecoder, ByteEncoder, ORDERS};
-
-#[doc(inline)]
-pub use emit::{Emission, Emitter, Halt};
-
-#[doc(inline)]
-pub use csa::{
-    BlockTable, CSA_M, CSA_TOPK_FLASH, CSA_TOPK_PRO, HCA_M, WIN, compress, dense_softmax, dsa_topk,
-    effective_len, is_doubly_stochastic, sinkhorn, spectral_norm,
-};
-
-#[doc(inline)]
-pub use policy::{Calib, HEAD_LAYERS_TOKEN, brier};
 
 #[doc(inline)]
 pub use embed::Embedding;
@@ -168,43 +132,16 @@ pub use embed::Embedding;
 pub use engram::{Bypass, MemoryBlock, Table, allocate, next_prime, phi, slot_of, slots};
 
 #[doc(inline)]
-pub use hybrid::{Hybrid, Kind, MEMORY_PER_ATTENTION, MemoryStep, Query, State, Tower};
-
-#[doc(inline)]
-pub use kda::{Kda, Memory};
-
-#[doc(inline)]
-pub use latent::{Backread, Global, LOCAL_MAX, LOCAL_MIN, Layer};
-
-#[doc(inline)]
 pub use lm_head::LmHead;
 
 #[doc(inline)]
-pub use mamba::{Carry, Mamba};
-
-#[doc(inline)]
 pub use matmul::MatMul;
-
-#[doc(inline)]
-pub use mhc::{MHC_STREAMS, Mhc};
-
-#[doc(inline)]
-pub use mla::{
-    Latent, Mla, Path, V3_HEAD_DIM, V3_HEADS, V3_LATENT, V3_LAYERS, V3_ROPE, dense_width, ratio,
-    row_width,
-};
-
-#[doc(inline)]
-pub use moe::{K3_ACTIVE, K3_EXPERTS, Moe};
 
 #[doc(inline)]
 pub use format::WeightFormat;
 
 #[doc(inline)]
 pub use param_role::ParamRole;
-
-#[doc(inline)]
-pub use patch::{Boundary, Patches};
 
 #[doc(inline)]
 pub use classic::{
@@ -216,18 +153,7 @@ pub use pointwise::{
 };
 
 #[doc(inline)]
-pub use policy::{
-    Channel, Gating, MissRate, N_REF, TAU_SCALE, W, gamma, nu, pi, rms, sparsity, tau,
-};
-
-#[doc(inline)]
-pub use mix::{Audit, Encoder, Events, Lif, accumulate, encode_id, steepest};
-
-#[doc(inline)]
 pub use pointwise::{ReduceMax, ReduceSum};
-
-#[doc(inline)]
-pub use spike::{Gradients, Master, Membrane, Spiking, Surrogate};
 
 #[doc(inline)]
 pub use stack::{Floor, Stack, Unpriced, WEIGHT_SUFFIX};
@@ -368,7 +294,7 @@ pub trait Contract {
     ///
     /// 默认 `None`：装配侧经此取回 Q/K/V/注意力/输出投影五个子层与块几何，不在外层按层名前缀
     /// 分组扇出。
-    fn attention_block(&self) -> Option<&crate::attention::block::AttentionBlock> {
+    fn attention_block(&self) -> Option<&crate::attention::AttentionBlock> {
         None
     }
 
@@ -509,4 +435,5 @@ impl Contract for Linear {
 mod param_role_tests;
 
 #[cfg(test)]
+#[path = "../tests/lib_tests.rs"]
 mod tests;

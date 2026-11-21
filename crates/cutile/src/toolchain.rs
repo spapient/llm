@@ -93,7 +93,7 @@ pub fn detect() -> Option<Toolchain> {
 }
 
 /// 按**档案声明的工具**探测：除便携 C 之外，产物只能由档案里写的那个编译器编（`nvcc` / `mcc` /
-/// `ccec` / `xcrun metal`），宿主的 `cc` 不认识 `--cuda-gpu-arch`，拿它去编只会把"这台设备没有
+/// `ccec` / `xcrun metal`），宿主的 `cc` 不认识 `--cuda-gpu-algorithm`，拿它去编只会把"这台设备没有
 /// 工具链"报成一条 C 语法错误。声明不可用时返回 `None`（如实"没有"），不退回合主编译器——那会把
 /// 缺工具链伪装成编译失败。
 #[must_use]

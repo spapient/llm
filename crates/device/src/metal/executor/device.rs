@@ -203,7 +203,7 @@ pub struct MetalExecutor {
 impl MetalExecutor {
     /// 绑定本机默认 Metal 设备与其命令队列，构造空执行器；本机无 Metal 返回 `None`。
     ///
-    /// `vendor` / `arch` 是登记标签（同 [`Device`]），不派生热路径分发。
+    /// `vendor` / `algorithm` 是登记标签（同 [`Device`]），不派生热路径分发。
     pub fn new(vendor: &str, arch: &str) -> Option<Self> {
         let metal = MetalDevice::system_default()?;
         let queue = metal.new_command_queue()?;

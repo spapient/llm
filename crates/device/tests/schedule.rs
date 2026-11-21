@@ -260,7 +260,7 @@ fn a_reused_page_does_not_leak_the_previous_sequences_kv() {
 // 这里测 vendor 生产态源文本。
 
 /// 夹具模块：共享文件里的 `signature()` / `sample()`，本文件不另外给出一份。
-#[path = "../../testkit/src/kernel.rs"]
+#[path = "../../testkit/tests/kernel.rs"]
 mod cutile_x_kernel;
 
 use cutile_x_kernel::{sample, signature};

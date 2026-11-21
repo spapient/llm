@@ -10,13 +10,13 @@
 //! - [`ByteDecoder`]：local decoder 的输出头。一个 patch 表示乘一次 `[BYTES, dim]` 投影，给出
 //!   256-way 分布（[`ByteDecoder::probs`]）与贪心字节（[`ByteDecoder::byte`]）。
 //!
-//! 中间那层全局 transformer 不在这里：它就是在 patch 序列上跑的 [`crate::Attention`]，**每 patch 一次**
+//! 中间那层全局 transformer 不在这里：它就是在 patch 序列上跑的 [`nn::Attention`]，**每 patch 一次**
 //! 而不是每字节一次，遍数就是 [`crate::Patches::len`]。
 //!
 //! 两处与论文口径的差别写在这里，免得读者以为漏了：
 //!
 //! 1. N-gram 窗口取**已有后缀**，不补零也不补 BOS 符号：补零会让首字节的表示与"前面真有一个 0 字节"
-//!    混为一谈（与 [`crate::Bypass`]"历史不足就不加、不拿零向量补位"同一条判据）。窗口是回看的，所以
+//!    混为一谈（与 [`nn::Bypass`]"历史不足就不加、不拿零向量补位"同一条判据）。窗口是回看的，所以
 //!    一个字节的影响是前向的：它进的是自己与之后至多 `WIDEST − 1` 个字节的窗口。
 //! 2. 两层之间的数值栈各有主人：[`crate::Global`] 在 patch 列上跑因果自注意力，[`crate::Backread`]
 //!    让每个字节回读它可见的 patch 表示，逐字节的自回归循环由 [`crate::Emitter`] 串起。这一层只做
@@ -31,7 +31,7 @@ use diagnostic::{Code, Error, Result};
 use op::scan::Scalar;
 
 use crate::csa::{accumulate, dot, softmax_row};
-use crate::engram::Table;
+use nn::Table;
 use crate::patch::Patches;
 
 /// 报错出处：几何与宽度的问题都在入口失败，不留到池化或投影的中途。

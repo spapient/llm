@@ -308,7 +308,7 @@ fn harness_fields(out: &mut String, harness: &Harness) {
         ("host", harness.host()),
         ("cpu", harness.cpu()),
         ("os", harness.os()),
-        ("arch", harness.arch()),
+        ("algorithm", harness.arch()),
         ("toolchain", harness.toolchain()),
         ("driver", harness.driver()),
     ]

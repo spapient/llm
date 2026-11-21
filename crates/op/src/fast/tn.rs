@@ -10,7 +10,6 @@
 
 use super::pack::pack_panels;
 use super::pool::{Buffers, Shape, pool, run_pooled};
-use super::scratch;
 use super::{KB, Layout, MR, NR, Span, Sweep, edge, sweep_columns, threads_override};
 
 /// 走这条入口的最少行数：一个完整微内核行块。再少的批只有残行（标量），打包的转置成本摊不回来，
@@ -48,7 +47,7 @@ fn check_dims_tn(x: &[f32], w: &[f32], rows: usize, n: usize, k: usize, out: &[f
 /// 单线程：整段打包一次，再按行块算完整段 K。
 fn single_tn(x: &[f32], w: &[f32], rows: usize, n: usize, k: usize, out: &mut [f32]) {
     let npad = n.div_ceil(NR) * NR;
-    scratch::with_panels(npad * k, |bpack| {
+    super::with_panels(npad * k, |bpack| {
         pack_tn_into(bpack, w, n, k);
         compute_tn(x, bpack, w, rows, n, k, out);
     });
@@ -65,7 +64,7 @@ fn pooled_tn(
     t: usize,
 ) -> bool {
     let npad = n.div_ceil(NR) * NR;
-    scratch::with_panels(npad * k, |buf| {
+    super::with_panels(npad * k, |buf| {
         run_pooled(
             pool(),
             Buffers {
@@ -93,7 +92,7 @@ fn pooled_tn(
 fn scoped_tn(x: &[f32], w: &[f32], out: &mut [f32], rows: usize, n: usize, k: usize, t: usize) {
     let npad = n.div_ceil(NR) * NR;
     let per = rows.div_ceil(MR).div_ceil(t) * MR;
-    scratch::with_panels(npad * k, |bpack| {
+    super::with_panels(npad * k, |bpack| {
         pack_tn_into(bpack, w, n, k);
         let bp: &[f32] = bpack;
         std::thread::scope(|s| {

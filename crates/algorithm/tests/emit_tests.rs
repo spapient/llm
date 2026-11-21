@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::codec::{BYTES, ORDERS};
-use crate::engram::Table;
+use nn::Table;
 
 /// 一张每槽都不同的表：全零表会让"哪个字节"永远分不出来，测试也就测不出错位。
 fn table<S: Scalar>(len: usize, dim: usize) -> Table<S> {

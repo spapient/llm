@@ -212,8 +212,98 @@ pub fn sample<G: Gemm>(m: usize, n: usize) -> Sample {
 ///
 /// int2（4 码/字节）与 int4（2 码/字节）只在码宽、掩码、零点与取样偏移上不同；这些事实作为
 /// 参数传入，打包位域的字节布局、码位拆解与整数累加只写一份。int8 不打包，不走这里。
-pub mod packed;
+pub mod packed {
+    use super::K;
 
+    /// 打包配置：取样/长度/点积共用一行 [`Row`](crate::quant::Row) 的位宽事实。
+    pub struct Conf {
+        /// 每字节码数。
+        pub cpb: usize,
+        /// 对称零点（无符号码点回退有符号整数的平移量）。
+        pub zero: i32,
+        /// 样本码值偏移，长度等于 `cpb`。
+        pub offsets: &'static [u32],
+    }
+
+    impl From<&crate::quant::Row> for Conf {
+        fn from(row: &crate::quant::Row) -> Self {
+            Self {
+                cpb: row.cpb,
+                zero: row.zero,
+                offsets: row.offsets,
+            }
+        }
+    }
+
+    /// 解包字节内第 `slot` 个码，按对称零点回退成有符号整数。
+    pub fn unpack(byte: u8, slot: usize, cpb: usize, zero: i32) -> i8 {
+        let width = crate::quant::width_cpb(cpb);
+        let mask = (1u8 << width) - 1;
+        let value = (byte >> (slot * width)) & mask;
+        (value as i32 - zero) as i8
+    }
+
+    /// 确定性打包位模式：`len` 个码按 `cpb` 每字节装一行；码值取
+    /// `(字节下标 · seed + offsets[c]) mod 2^width`。
+    pub fn pack(len: usize, seed: usize, cpb: usize, offsets: &[u32]) -> Vec<u8> {
+        let width = crate::quant::width_cpb(cpb);
+        let modulus = 1usize << width;
+        (0..len / cpb)
+            .map(|byte| {
+                (0..cpb).fold(0u8, |acc, code| {
+                    let value = ((byte * seed + offsets[code] as usize) % modulus) as u8;
+                    acc | (value << (code * width))
+                })
+            })
+            .collect()
+    }
+
+    /// 打包矩阵点积：A 第 `i` 行与 B 第 `j` 列，收缩轴固定 [`K`]，整数累加后转 f32。
+    pub fn dot(a: &[u8], b: &[u8], n: usize, i: usize, j: usize, conf: &Conf) -> f32 {
+        let bytes_per_row = K / conf.cpb;
+        let mut acc: i32 = 0;
+        for p in 0..K {
+            let x = unpack(
+                a[i * bytes_per_row + p / conf.cpb],
+                p % conf.cpb,
+                conf.cpb,
+                conf.zero,
+            ) as i32;
+            let y_pos = p * n + j;
+            let y = unpack(b[y_pos / conf.cpb], y_pos % conf.cpb, conf.cpb, conf.zero) as i32;
+            acc += x * y;
+        }
+        acc as f32
+    }
+
+    /// A（`m×K`）确定性打包取样；seed 固定，同一形状取值可复现。
+    pub fn packed_sample_a(m: usize, conf: &Conf) -> Vec<u8> {
+        pack(m * K, 37, conf.cpb, conf.offsets)
+    }
+
+    /// B（`K×n`）确定性打包取样。
+    pub fn packed_sample_b(n: usize, conf: &Conf) -> Vec<u8> {
+        pack(K * n, 53, conf.cpb, conf.offsets)
+    }
+
+    /// A 打包后字节数：`m·K/cpb`。
+    pub fn packed_a_len(m: usize, conf: &Conf) -> usize {
+        m * K / conf.cpb
+    }
+
+    /// B 打包后字节数：`K·n/cpb`。
+    pub fn packed_b_len(n: usize, conf: &Conf) -> usize {
+        K * n / conf.cpb
+    }
+
+    /// 按元素位流解包一串打包字节：每字节 `cpb` 个码，低槽在前，码值减 `zero`。
+    pub fn unpack_stream(bytes: &[u8], cpb: usize, zero: i32) -> Vec<i32> {
+        bytes
+            .iter()
+            .flat_map(|&byte| (0..cpb).map(move |slot| unpack(byte, slot, cpb, zero) as i32))
+            .collect()
+    }
+}
 /// 矩阵遍历：外层只写一份，内层点积落在 [`Gemm::dot`]。
 pub fn matmul<G: Gemm>(a: &[G::Elem], b: &[G::Elem], m: usize, n: usize, out: &mut [f32]) {
     for i in 0..m {
@@ -463,10 +553,143 @@ macro_rules! gemm_variant {
     };
 }
 
-pub mod i2;
+pub mod i2 {
+    //! `gemm_i2`：对称 int2 矩阵乘。骨架在 [`crate::gemm`]，本模块只有"对称 int2"这一份格式
+    //! 契约：A、B 是打包 2 位码（每字节 4 个，低 2 位在前），对称零点取配置表 [`I2`]；取样、
+    //! 打包长度与整数点积由骨架按 [`I2`] 一行配置读出，点积在 `i32` 上精确累加后转 f32。
+    pub use crate::gemm::{AXES, K, project_shape};
 
-pub mod i4;
+    use crate::quant::I2;
 
-pub mod i8;
+    crate::gemm_variant!(
+        GemmI2,
+        GemmI2Model,
+        "gemm_i2",
+        gemm_packed_tests,
+        false,
+        u8,
+        I2.bits,
+        fn config() -> Option<crate::quant::Row> {
+            Some(I2)
+        },
+        fn mul(a: &[u8], b: &[u8], m: usize, n: usize, out: &mut [f32]) {
+            crate::gemm::packed_tiled(a, b, m, n, &crate::gemm::packed::Conf::from(&I2), out)
+        },
+    );
+}
 
-pub mod f32;
+pub mod i4 {
+    //! `gemm_i4`：对称 int4 矩阵乘。骨架在 [`crate::gemm`]，本模块只有"对称 int4"这一份格式
+    //! 契约：A、B 是打包 nibble（每字节 2 个，低 4 位在前、高 4 位在后），对称零点取配置表
+    //! [`I4`]；取样、打包长度与整数点积由骨架按 [`I4`] 一行配置读出，点积在 `i32` 上精确累加。
+    pub use crate::gemm::{AXES, K, project_shape};
+
+    use crate::quant::I4;
+
+    crate::gemm_variant!(
+        GemmI4,
+        GemmI4Model,
+        "gemm_i4",
+        gemm_packed_tests,
+        false,
+        u8,
+        I4.bits,
+        fn config() -> Option<crate::quant::Row> {
+            Some(I4)
+        },
+        fn mul(a: &[u8], b: &[u8], m: usize, n: usize, out: &mut [f32]) {
+            crate::gemm::packed_tiled(a, b, m, n, &crate::gemm::packed::Conf::from(&I4), out)
+        },
+    );
+}
+
+pub mod i8 {
+    //! `gemm_i8`：对称 int8 矩阵乘。骨架在 [`crate::gemm`]，本模块只有"对称 int8"这一份格式
+    //! 契约：`u8` 承载 int8 位模式，点积先在 `i32` 上精确累加（对应 CUDA `dp4a`：每 4 对 int8
+    //! 乘积累加进一个 int32），再收敛成 f32。CPU 没有 dp4a，退化为标量整数点积。
+    pub use crate::gemm::{AXES, K, project_shape};
+
+    use crate::quant::I8;
+
+    crate::gemm_variant!(
+        GemmI8,
+        GemmI8Model,
+        "gemm_i8",
+        gemm_packed_tests,
+        false,
+        u8,
+        I8.bits,
+        fn sample_a(m: usize) -> Vec<u8> {
+            (0..m * K)
+                .map(|i| (((i * 37) % 16) as i8 - 8) as u8)
+                .collect()
+        },
+        fn sample_b(n: usize) -> Vec<u8> {
+            (0..K * n)
+                .map(|i| (((i * 53) % 16) as i8 - 8) as u8)
+                .collect()
+        },
+        fn a_len(m: usize) -> usize {
+            m * K
+        },
+        fn b_len(n: usize) -> usize {
+            K * n
+        },
+        fn dot(a: &[u8], b: &[u8], n: usize, i: usize, j: usize) -> f32 {
+            let row = &a[i * K..][..K];
+            let acc: i32 = row
+                .iter()
+                .enumerate()
+                .map(|(p, packed)| (*packed as i8) as i32 * (b[p * n + j] as i8) as i32)
+                .sum();
+            acc as f32
+        },
+        fn codes(values: &[u8]) -> Vec<i32> {
+            crate::gemm::signed_codes(values)
+        },
+        fn mul(a: &[u8], b: &[u8], m: usize, n: usize, out: &mut [f32]) {
+            let codes_a = crate::gemm::signed_codes(a);
+            let codes_b = crate::gemm::signed_codes(b);
+            crate::gemm::accumulate_tiled(&codes_a, &codes_b, m, n, out)
+        },
+    );
+}
+
+pub mod f32 {
+    //! `gemm_f32`：稠密 f32 矩阵乘。骨架在 [`crate::gemm`]，本模块只有"稠密 f32"这一份格式
+    //! 契约：元素类型、位宽、样本取值与点积算术。CPU 片段没有 MMA 原语，算术走通用稠密 tile
+    //! （[`crate::matmul::matmul_tiled`]），与标量双重循环逐位一致。
+    pub use crate::gemm::{AXES, K, project_shape};
+
+    crate::gemm_variant!(
+        Dense,
+        GemmF32,
+        "gemm_f32",
+        gemm_dense_tests,
+        true,
+        f32,
+        crate::einsum::Bits::ThirtyTwo,
+        fn sample_a(m: usize) -> Vec<f32> {
+            (0..m * K).map(|i| ((i % 5) as f32) * 0.25 - 0.5).collect()
+        },
+        fn sample_b(n: usize) -> Vec<f32> {
+            (0..K * n).map(|i| ((i % 7) as f32) * 0.2 - 0.4).collect()
+        },
+        fn a_len(m: usize) -> usize {
+            m * K
+        },
+        fn b_len(n: usize) -> usize {
+            K * n
+        },
+        fn dot(a: &[f32], b: &[f32], n: usize, i: usize, j: usize) -> f32 {
+            let row = &a[i * K..][..K];
+            row.iter().enumerate().map(|(p, x)| x * b[p * n + j]).sum()
+        },
+        fn mul(a: &[f32], b: &[f32], m: usize, n: usize, out: &mut [f32]) {
+            // 稠密 f32 不分块：`K = 8` 时一行 A 的 8 个权重就在寄存器里，分块（64 列块或
+            // `matmul_tiled` 的三级块）只会多出累加器驻留与写回，实测反而慢 2~3 倍
+            // （`gemm_f32` 基准的三档对照）。顺序累加同时保证与标量参考逐位相等。
+            crate::gemm::matmul::<Self>(a, b, m, n, out)
+        },
+    );
+}

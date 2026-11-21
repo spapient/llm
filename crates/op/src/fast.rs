@@ -10,9 +10,138 @@ use std::thread;
 
 use diagnostic::{Code, Error, Result};
 
-mod pack;
+mod pack {
+    //! 打包：把 A 的行块转成 `[p][MR]`、把 B 的列组转成 `[jblk][p][NR]` 面板。
+    //!
+    //! 微内核每条 `p` 只做两次**连续**加载，前提就是这里的重排。面板写进调用方的暂存区
+    //! （[`super::scratch`]，已清零），不在这里分配：`n = k = 4096` 时这块是 67 MB。
+    use std::thread;
+
+    use super::{MR, NR};
+
+    /// A 的每个 8 行块转置成 `[p][8]` 面板：微内核每条 `p` 只需两次连续向量加载。
+    pub(super) fn pack_panels(a: &[f32], full: usize, k: usize) -> Vec<f32> {
+        let mut apack = vec![0.0f32; full * k * MR];
+        for blk in 0..full {
+            let src = &a[blk * MR * k..(blk * MR + MR) * k];
+            let dst = &mut apack[blk * k * MR..blk * k * MR + k * MR];
+            for p in 0..k {
+                for r in 0..MR {
+                    dst[p * MR + r] = src[r * k + p];
+                }
+            }
+        }
+        apack
+    }
+
+    /// B 打包成 `[jblk][p][NR]`：微内核每条 `p` 只需两次连续向量加载（行主序 B 是每 `p` 跨一条行）。
+    ///
+    /// `n` 不整除的部分补 0，只有列残尾（`nr < NR`）才回退到 `edge`。写进调用方的面板（已清零），
+    /// 不在这里分配：`n = k = 4096` 时这块是 67 MB，每次调用现分配是第 5 条要扇掉的成本。
+    pub(super) fn pack_b_f32_into(bpack: &mut [f32], b: &[f32], n: usize, k: usize) {
+        let npad = n.div_ceil(NR) * NR;
+        debug_assert_eq!(bpack.len(), npad * k);
+        for jb in 0..npad / NR {
+            let first = jb * NR;
+            let cols = if first < n { NR.min(n - first) } else { 0 };
+            for p in 0..k {
+                let dst = (jb * k + p) * NR;
+                bpack[dst..dst + cols].copy_from_slice(&b[p * n + first..p * n + first + cols]);
+            }
+        }
+    }
+
+    /// 并行 B 打包：按 8 列组切线程。`k·n` 小的时候串行更划算（线程创建比转置贵）。
+    pub(super) fn pack_b_f32_par_into(bpack: &mut [f32], b: &[f32], n: usize, k: usize, t: usize) {
+        let groups = n.div_ceil(NR);
+        if t <= 1 || n * k < (1 << 16) {
+            pack_b_f32_into(bpack, b, n, k);
+            return;
+        }
+        let per = groups.div_ceil(t);
+        let span = per * NR * k;
+        thread::scope(|s| {
+            for (gi, chunk) in bpack.chunks_mut(span).enumerate() {
+                s.spawn(move || pack_b_f32_span(chunk, b, n, k, gi * per));
+            }
+        });
+    }
+
+    /// 一段连续的列组打包：`blk0` 起，每块 `NR · k`。
+    fn pack_b_f32_span(chunk: &mut [f32], b: &[f32], n: usize, k: usize, blk0: usize) {
+        let blocks = chunk.len() / (NR * k);
+        for bi in 0..blocks {
+            let first = (blk0 + bi) * NR;
+            let cols = if first < n { NR.min(n - first) } else { 0 };
+            let tile = &mut chunk[bi * NR * k..(bi + 1) * NR * k];
+            for p in 0..k {
+                let dst = p * NR;
+                tile[dst..dst + cols].copy_from_slice(&b[p * n + first..p * n + first + cols]);
+            }
+        }
+    }
+
+    /// 池化打包的分片体：本槽负责的 8 列组按 `p` 步长轮转，写入 `[jblk][p][NR]`（零初始化覆盖补零列）。
+    pub(super) fn b_groups(
+        b: &[f32],
+        buf: &mut [f32],
+        n: usize,
+        k: usize,
+        npad: usize,
+        p: usize,
+        slot: usize,
+    ) {
+        let groups = npad / NR;
+        let mut g = slot;
+        while g < groups {
+            let first = g * NR;
+            let cols = if first < n { NR.min(n - first) } else { 0 };
+            let base = g * k * NR;
+            for q in 0..k {
+                let src = q * n + first;
+                let dst = base + q * NR;
+                buf[dst..dst + cols].copy_from_slice(&b[src..src + cols]);
+            }
+            g += p;
+        }
+    }
+}
 mod pool;
-mod scratch;
+
+// 打包面板的暂存区：按线程复用，用完即还。
+//
+// 打包出来的是「整段 B 面板」，`n = k = 4096` 时是 `4096 × 4096 × 4 B = 67 MB`。每次调用现分配，
+// 光 `calloc` 与首次触页就要几十毫秒，而 decode 与 prefill 都是**同一线程反复调**同一个几何，
+// 这块内存每步都用得上，却每步被丢掉一次。这里让每个调用线程留一块只增不减的缓冲：
+//
+// - **只按线程共享，不跨线程**：并发调用各占一个线程私有的缓冲，不存在两次调用同时写同一块；
+//   池里的 worker 只是拿到主线程的裸指针去写自己的分片，收回发生在 [`with_panels`] 返回之前。
+// - **只扩容，不缩小**：几何变了就扩容一次，之后小几何沿用它前面的部分。常驻量等于本线程见过的
+//   最大面板，与「每次分配再释放」的峰值一致（面板本来就要整块驻留）。
+// - **重入退化为临时缓冲**：若某个打包路径在一次借用期间又调 [`with_panels`]，`RefCell` 已经在
+//   借出状态，这里退化成一次性 `Vec`——宁可多分配一次，也不 panic。
+thread_local! {
+    /// 本线程的面板暂存区；长度只增不减。
+    static PANELS: std::cell::RefCell<Vec<f32>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// 借一块长度 `len` 的 f32 暂存区（不足则扩容并清零新增部分），返回 `f` 的结果。
+///
+/// 清零只针对**新增**的那一段：面板的每个字节都会被打包阶段覆写，但列残尾之外的补零区
+/// （`n % NR` 的补齐列）与 `edge` 的读路径依赖 0，复用旧内容时必须在扩容时清一次。
+fn with_panels<R>(len: usize, f: impl FnOnce(&mut [f32]) -> R) -> R {
+    PANELS.with(|cell| match cell.try_borrow_mut() {
+        Ok(mut buf) => {
+            if buf.len() < len {
+                buf.resize(len, 0.0);
+            }
+            f(&mut buf[..len])
+        }
+        // 重入（同一次调用里又借一次）：这一次用临时缓冲，语义不变。
+        Err(_) => f(&mut vec![0.0f32; len]),
+    })
+}
+
 mod sme;
 use pack::{pack_b_f32_into, pack_b_f32_par_into, pack_panels};
 use pool::{Buffers, Shape, pool, run_pooled};
@@ -47,7 +176,7 @@ pub fn gemm_f32(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f
     }
     // 常驻池：打包与计算共用一次发布（一次 Barrier 隔开两阶段），无重复 spawn。
     let npad = n.div_ceil(NR) * NR;
-    scratch::with_panels(npad * k, |buf| {
+    with_panels(npad * k, |buf| {
         if run_pooled(
             pool(),
             Buffers {
@@ -116,7 +245,7 @@ fn scoped_f32(a: &[f32], b: &[f32], out: &mut [f32], m: usize, n: usize, k: usiz
     let blocks = m.div_ceil(MR);
     // 行块按 MR 对齐：否则 18 线程切 256 行会得到 15 行/线程，8 行走微内核、7 行掉回标量尾块。
     let per = blocks.div_ceil(t) * MR;
-    scratch::with_panels(npad * k, |bpack| {
+    with_panels(npad * k, |bpack| {
         pack_b_f32_par_into(bpack, b, n, k, t);
         let bp: &[f32] = bpack;
         thread::scope(|s| {
@@ -133,7 +262,7 @@ fn scoped_f32(a: &[f32], b: &[f32], out: &mut [f32], m: usize, n: usize, k: usiz
 /// 单线程稠密 f32 GEMM（基准确认内核质量用）：`out[m,n] = a[m,k] · b[k,n]`。
 pub fn gemm_f32_single(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f32]) {
     let npad = n.div_ceil(NR) * NR;
-    scratch::with_panels(npad * k, |bpack| {
+    with_panels(npad * k, |bpack| {
         pack_b_f32_into(bpack, b, n, k);
         compute(a, bpack, b, m, n, k, out);
     });
@@ -254,3 +383,7 @@ use micro::{Layout, Span, Sweep, Tile, edge, micro_packed};
 #[cfg(test)]
 #[path = "../tests/fast_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../tests/scratch_tests.rs"]
+mod scratch_tests;

@@ -65,6 +65,17 @@ fn locate(module: &str, depth: usize) -> Option<PathBuf> {
         if explicit.exists() {
             return Some(explicit);
         }
+        // 内联模块（`softmax.rs` 里的 `pub mod embed { … }`）没有自己的文件，注解与实体都在
+        // 外层骨架里：丢掉**一段**，落到父模块文件。只许丢一段——丢两段会把
+        // `fast::i8::gemm_i8` 这个纯函数错认成 `fast/i8.rs` 的算子实体。
+        let mut segments: Vec<&str> = module.split("::").collect();
+        segments.pop();
+        if !segments.is_empty() {
+            let parent = src.join(format!("{}.rs", segments.join("/")));
+            if parent.exists() {
+                return Some(parent);
+            }
+        }
     }
     let direct = src.join(format!("{module}.rs"));
     if direct.exists() {
@@ -85,12 +96,19 @@ fn locate(module: &str, depth: usize) -> Option<PathBuf> {
         let body = file.with_extension("").join(format!("{module}.rs"));
         return Some(if body.exists() { body } else { file });
     }
-    let source = aliases().get(module.rsplit("::").next().unwrap_or(module))?;
-    (source != module).then(|| locate(source, depth + 1)).flatten()
-}
-
-pub(crate) fn aliases_debug() -> &'static std::collections::BTreeMap<String, String> {
-    aliases()
+    // 候选按路径段数从少到多试：`gemm_i8` 既是 `gemm::{i8 as gemm_i8}` 的算子实体，也是
+    // `fast::i8::gemm_i8` 这个纯函数的重导出，短的才是注册表要的那份。
+    let tail = module.rsplit("::").next().unwrap_or(module);
+    let mut candidates: Vec<&String> = aliases().get(tail).into_iter().flatten().collect();
+    candidates.sort_by_key(|source| source.matches("::").count());
+    for source in candidates {
+        if source != module
+            && let Some(found) = locate(source, depth + 1)
+        {
+            return Some(found);
+        }
+    }
+    None
 }
 
 /// `pub use` 表的别名：`adaptive as adaptive_pool` 说明注册名由实体名重导出。聚合后注册表的
@@ -98,11 +116,16 @@ pub(crate) fn aliases_debug() -> &'static std::collections::BTreeMap<String, Str
 ///
 /// 路径按 `use` 树的前缀补全：`pub use softmax::f32::{softmax as softmax_f32}` 里的
 /// `softmax` 是 `softmax::f32::softmax`，不是 crate 根的 `softmax` 骨架文件。
-fn aliases() -> &'static std::collections::BTreeMap<String, String> {
-    static ALIASES: std::sync::OnceLock<std::collections::BTreeMap<String, String>> =
+///
+/// 一个名字可以有多个候选：`gemm_i8` 既是 `gemm::{i8 as gemm_i8}` 的算子模块，也是
+/// `fast::i8::gemm_i8` 这个纯函数——后者解析不到文件，所以候选要留一份列表逐个试，
+/// 不能先到先得。
+fn aliases() -> &'static std::collections::BTreeMap<String, Vec<String>> {
+    static ALIASES: std::sync::OnceLock<std::collections::BTreeMap<String, Vec<String>>> =
         std::sync::OnceLock::new();
     ALIASES.get_or_init(|| {
-        let mut out = std::collections::BTreeMap::new();
+        let mut out: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
         for (crate_name, file) in sources() {
             if crate_name != "op" {
                 continue;
@@ -113,9 +136,10 @@ fn aliases() -> &'static std::collections::BTreeMap<String, String> {
             let owner = module_path_of(&file);
             for statement in use_statements(&text) {
                 for (source, alias) in use_tree(&statement, &owner) {
-                    // 近处的重导出更接近实体（`classic.rs` 的 `pool::adaptive` 胜过 `lib.rs` 的
-                    // `classic::adaptive_pool`），扫描集按文件路径排序，先到先得即可。
-                    out.entry(alias).or_insert(source);
+                    let candidates = out.entry(alias).or_default();
+                    if !candidates.contains(&source) {
+                        candidates.push(source);
+                    }
                 }
             }
         }
@@ -125,7 +149,9 @@ fn aliases() -> &'static std::collections::BTreeMap<String, String> {
 
 /// 文件自己的模块路径（`classic/pool.rs` → `classic::pool`，`lib.rs` → 空）。
 fn module_path_of(file: &std::path::Path) -> String {
-    let rel = file.strip_prefix(root().join("crates/op/src")).unwrap_or(file);
+    let rel = file
+        .strip_prefix(root().join("crates/op/src"))
+        .unwrap_or(file);
     let parts: Vec<String> = rel
         .with_extension("")
         .components()
@@ -169,7 +195,7 @@ fn use_tree(statement: &str, owner: &str) -> Vec<(String, String)> {
             .strip_prefix("crate::")
             .or_else(|| (prefix == "crate").then_some(""));
         match absolute {
-            Some(tail) if tail.is_empty() => name.to_string(),
+            Some("") => name.to_string(),
             Some(tail) => format!("{tail}::{name}"),
             None if owner.is_empty() => format!("{prefix}::{name}"),
             None => format!("{owner}::{prefix}::{name}"),

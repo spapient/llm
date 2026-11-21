@@ -92,10 +92,17 @@ pub fn compute(a: &[f64], m: usize, n: usize) -> Result<Svd> {
         .with("svd::compute"));
     }
     let k = m.min(n);
-    let mut u = a.to_vec();
+    // 工作矩阵用列主序：Jacobi 全程都在列对上做点积/旋转，列连续存放才能命中缓存
+    // （行主序下 n=1024 的列访问步长 8KiB，每次都是缓存未命中）。输出仍按约定行主序。
+    let mut u = vec![0.0f64; m * n];
+    for j in 0..n {
+        for i in 0..m {
+            u[j * m + i] = a[i * n + j];
+        }
+    }
     let mut v = vec![0.0f64; n * n];
-    for i in 0..n {
-        v[i * n + i] = 1.0;
+    for j in 0..n {
+        v[j * n + j] = 1.0;
     }
     orthogonalize(&mut u, &mut v, m, n);
     let sigma = singular_values(&mut u, m, n);
@@ -125,12 +132,14 @@ fn sweep(u: &mut [f64], v: &mut [f64], m: usize, n: usize) -> bool {
     converged
 }
 
-/// 一对列：已正交返回 `false`，做了旋转返回 `true`。
+/// 一对列：已正交返回 `false`，做了旋转返回 `true`。`u`/`v` 均为列主序。
 fn rotate_pair(u: &mut [f64], v: &mut [f64], m: usize, n: usize, p: usize, q: usize) -> bool {
     let (mut alpha, mut beta, mut gamma) = (0.0, 0.0, 0.0);
+    let up = p * m;
+    let uq = q * m;
     for row in 0..m {
-        let x = u[row * n + p];
-        let y = u[row * n + q];
+        let x = u[up + row];
+        let y = u[uq + row];
         alpha += x * x;
         beta += y * y;
         gamma += x * y;
@@ -139,53 +148,58 @@ fn rotate_pair(u: &mut [f64], v: &mut [f64], m: usize, n: usize, p: usize, q: us
         return false;
     }
     let (c, s) = rotation(alpha, beta, gamma);
-    rotate_columns(u, m, n, p, q, c, s);
-    rotate_columns(v, n, n, p, q, c, s);
+    rotate_columns(u, m, p, q, c, s);
+    rotate_columns(v, n, p, q, c, s);
     true
 }
 
-/// 对 `mat` 的第 p、q 列施加旋转 `(c, s)`；`cols` 是行跨度。
-fn rotate_columns(mat: &mut [f64], rows: usize, cols: usize, p: usize, q: usize, c: f64, s: f64) {
-    for row in 0..rows {
-        let x = mat[row * cols + p];
-        let y = mat[row * cols + q];
-        mat[row * cols + p] = c * x - s * y;
-        mat[row * cols + q] = s * x + c * y;
+/// 对列主序 `mat` 的第 p、q 列施加旋转 `(c, s)`；`stride` 是每列长度（行数）。
+fn rotate_columns(mat: &mut [f64], stride: usize, p: usize, q: usize, c: f64, s: f64) {
+    let bp = p * stride;
+    let bq = q * stride;
+    for row in 0..stride {
+        let x = mat[bp + row];
+        let y = mat[bq + row];
+        mat[bp + row] = c * x - s * y;
+        mat[bq + row] = s * x + c * y;
     }
 }
 
-/// 列长度即奇异值；随后把 U 的列归一化。
+/// 列长度即奇异值；随后把 U 的列归一化。`u` 为列主序。
 fn singular_values(u: &mut [f64], m: usize, n: usize) -> Vec<f64> {
     let mut sigma = vec![0.0f64; n];
     for (j, value) in sigma.iter_mut().enumerate() {
-        *value = column_norm(u, m, n, j);
+        *value = column_norm(u, m, j);
     }
     for (j, &sigma) in sigma.iter().enumerate() {
-        normalize_column(u, m, n, j, sigma);
+        normalize_column(u, m, j, sigma);
     }
     sigma
 }
 
 /// 一列的欧氏长度。
-fn column_norm(u: &[f64], m: usize, n: usize, j: usize) -> f64 {
+fn column_norm(u: &[f64], m: usize, j: usize) -> f64 {
+    let base = j * m;
     let mut norm = 0.0;
-    for row in 0..m {
-        norm += u[row * n + j].powi(2);
+    for i in 0..m {
+        let x = u[base + i];
+        norm += x * x;
     }
     norm.sqrt()
 }
 
 /// 列除以它的长度；零列保持为零。
-fn normalize_column(u: &mut [f64], m: usize, n: usize, j: usize, sigma: f64) {
+fn normalize_column(u: &mut [f64], m: usize, j: usize, sigma: f64) {
     if sigma <= 0.0 {
         return;
     }
-    for row in 0..m {
-        u[row * n + j] /= sigma;
+    let base = j * m;
+    for i in 0..m {
+        u[base + i] /= sigma;
     }
 }
 
-/// 按奇异值降序重排 U、V 的列，只保留前 k 列。
+/// 按奇异值降序重排 U、V 的列，只保留前 k 列。输入 `u`/`v` 为列主序，输出转回行主序。
 fn sorted_columns(
     sigma: &[f64],
     u: &[f64],
@@ -200,25 +214,14 @@ fn sorted_columns(
     let mut sorted_u = vec![0.0f64; m * k];
     let mut sorted_v = vec![0.0f64; n * k];
     for (new_col, &old_col) in order.iter().take(k).enumerate() {
-        copy_column(u, m, n, &mut sorted_u, k, old_col, new_col);
-        copy_column(v, n, n, &mut sorted_v, k, old_col, new_col);
+        for i in 0..m {
+            sorted_u[i * k + new_col] = u[old_col * m + i];
+        }
+        for i in 0..n {
+            sorted_v[i * k + new_col] = v[old_col * n + i];
+        }
     }
     (sorted_sigma, sorted_u, sorted_v)
-}
-
-/// 把 `src` 的第 `from` 列拷进 `dst` 的第 `to` 列。
-fn copy_column(
-    src: &[f64],
-    rows: usize,
-    src_stride: usize,
-    dst: &mut [f64],
-    dst_stride: usize,
-    from: usize,
-    to: usize,
-) {
-    for row in 0..rows {
-        dst[row * dst_stride + to] = src[row * src_stride + from];
-    }
 }
 
 /// 由列 Gram 参数算 Jacobi 旋转系数 `(c, s)`。

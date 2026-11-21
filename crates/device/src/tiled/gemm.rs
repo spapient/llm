@@ -31,8 +31,7 @@ pub fn metal_tiled_gemm(
     Ok(tiled_gemm_msl(a, b, y, n, k, tile, per_thread))
 }
 
-/// 三条缓冲名（按签名序：A、B、Y）。
-
+/// 按每线程输出块大小选简单分块（`1`）或 4×4 寄存器分块（`4`）。
 fn tiled_gemm_msl(
     a: &str,
     b: &str,

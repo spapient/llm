@@ -183,6 +183,10 @@ pub(super) struct Int8GemmBench {
     pub(super) grid: [u32; 3],
 }
 
+/// int8 GEMM 基准的固定几何与输入：64×256×4096，`i8` 输入、`i32` 精确累加、`f32` 参考。
+///
+/// 两个 int8 用例共用同一份样本，它们对拍的对象因此逐位相同——换一组数不该改变结论。
+///
 /// 上传 [`int8_gemm`] 的 A/B，再开一路只有 GPU 写的 Y 输出。
 pub(super) fn int8_gemm_bench(device: &MetalDevice) -> Int8GemmBench {
     let fixture = int8_gemm();

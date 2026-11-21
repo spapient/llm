@@ -107,9 +107,9 @@ const GATES: &[GateSpec] = &[
         emit: Emit::Ascendc,
         // `-xcce` 让 ccec 按昇腾设备语言解析这份翻译单元（不带它，ccec 只当普通宿主 C++ 编，
         // 见证里的 `__aicore__` 会被无声忽略）；`dav-c220` 是 `id = "910b"` 那一档的核芯名。
-        // 认证别的核芯时这一行要按 arch 拆开登记，不能沿用 910B 的名字。
+        // 认证别的核芯时这一行要按 algorithm 拆开登记，不能沿用 910B 的名字。
         tool: &["ccec"],
-        check: &["-xcce", "--cce-aicore-arch=dav-c220", "-fsyntax-only"],
+        check: &["-xcce", "--cce-aicore-algorithm=dav-c220", "-fsyntax-only"],
     },
 ];
 

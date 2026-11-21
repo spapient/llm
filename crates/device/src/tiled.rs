@@ -28,6 +28,7 @@ pub use misc::{
 // 签名 → 缓冲名与几何：各族共用
 // ---------------------------------------------------------------------------
 
+/// 三条缓冲名（按签名序：A、B、Y）。
 fn gemm_buffers(signature: &Signature) -> Result<(&str, &str, &str)> {
     let buffers: Vec<&Param> = signature
         .params()
@@ -77,8 +78,7 @@ fn dim(sample: &Sample, param: &Param) -> Result<usize> {
         .map_err(|error| error.with("engine::tiled::metal_tiled_gemm"))
 }
 
-/// 按每线程输出块大小选简单分块（`1`）或 4×4 寄存器分块（`4`）。
-
+/// 四条缓冲名（按签名序：Q、K、V、Y）。
 fn attention_buffers(signature: &Signature) -> Result<(&str, &str, &str, &str)> {
     let buffers: Vec<&Param> = signature
         .params()
@@ -114,8 +114,6 @@ fn attention_dims(signature: &Signature, sample: &Sample) -> Result<(usize, usiz
     }
     Ok((dim(sample, scalars[0])?, dim(sample, scalars[1])?))
 }
-
-/// 分块注意力的 MSL 正文：只拼字面与已解出的维度，不含错误处理。
 
 #[cfg(test)]
 #[path = "../tests/tiled.rs"]

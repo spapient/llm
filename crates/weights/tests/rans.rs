@@ -229,7 +229,7 @@ fn uniform_data_is_not_amplified() {
 /// rANS 编解码吞吐（`#[ignore]`）：
 /// `cargo test -p llm-weights --lib -- rans_throughput --release --ignored --nocapture`。
 ///
-/// 8M 字节偏斜分布（80% 为 0，其余 4 符号）`encode` + `decode` 往返，报 MB/s。5 轮取中位数，
+/// 8M 字节偏斜分布（80% 为 0，其余 4 符号）`encode` 与 `decode` 分别计时，报 MB/s。5 轮取中位数，
 /// 只出数字、不做断言——吞吐随机器浮动。
 #[test]
 #[ignore = "吞吐基准：cargo test -p llm-weights --lib -- rans_throughput --release --ignored --nocapture"]
@@ -238,17 +238,27 @@ fn rans_throughput() {
     let src: Vec<u8> = (0..n)
         .map(|i| if i % 5 == 0 { (i % 4) as u8 + 1 } else { 0 })
         .collect();
-    let mut samples = [0.0f64; 5];
-    for slot in &mut samples {
+    let mut enc = [0.0f64; 5];
+    let mut dec = [0.0f64; 5];
+    for slot in &mut enc {
         let start = std::time::Instant::now();
         let frame = encode(&src);
-        let back = decode(&frame, src.len()).expect("解码");
-        assert_eq!(back.len(), src.len());
         std::hint::black_box(&frame);
         *slot = start.elapsed().as_secs_f64();
     }
-    samples.sort_by(f64::total_cmp);
-    let med = samples[2];
-    let mb_s = (n as f64 / med) / 1e6;
-    println!("rans throughput n={n} median={med:.6}s MB/s={mb_s:.1}");
+    let frame = encode(&src);
+    for slot in &mut dec {
+        let start = std::time::Instant::now();
+        let back = decode(&frame, src.len()).expect("解码");
+        assert_eq!(back.len(), src.len());
+        std::hint::black_box(&back);
+        *slot = start.elapsed().as_secs_f64();
+    }
+    enc.sort_by(f64::total_cmp);
+    dec.sort_by(f64::total_cmp);
+    println!(
+        "rans throughput n={n} encode={:.1} MB/s decode={:.1} MB/s",
+        (n as f64 / enc[2]) / 1e6,
+        (n as f64 / dec[2]) / 1e6
+    );
 }

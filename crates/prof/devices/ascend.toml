@@ -55,10 +55,10 @@ space = ["GM", "FAST", "REG"]
 # `exp` 用位精确的软件实现，其余走 libm（相对误差 <1 ulp，远小于 P0 阈值 1e-5）。
 #
 # 设备语言与核芯：`-xcce` 让 ccec 把这份翻译单元按 AscendC 编（不带它，`__aicore__` /
-# `AscendC::GetBlockIdx()` 在宿主 C++ 里就是未定义标识符）；`--cce-aicore-arch=dav-c220` 是
+# `AscendC::GetBlockIdx()` 在宿主 C++ 里就是未定义标识符）；`--cce-aicore-algorithm=dav-c220` 是
 # `id = "910b"` 那一档的核芯名；`-lascendcl` 是 host 侧发射 / 显存管理的运行库（单源 `<<<>>>`
 # 流程也要连它）。本机没有 ccec，这三项拼写取自 CANN 的编译文档、未经真机核对：第一次上机
-# 若报"未知架构"，先核对 `--cce-aicore-arch` 的取值再改档案，别在数据里留第二个猜测。
+# 若报"未知架构"，先核对 `--cce-aicore-algorithm` 的取值再改档案，别在数据里留第二个猜测。
 [compile]
 flags = ["-xcce", "--cce-aicore-arch=dav-c220", "-O2", "-lascendcl"]
 preamble = """

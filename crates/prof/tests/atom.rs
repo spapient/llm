@@ -245,6 +245,6 @@ fn kernel_key_signature_keeps_the_adrd_order() {
     );
     assert_eq!(
         key.signature(),
-        "dot{dt:f32, space:FAST, lanes:4, arch:cpu, block:16}/impl:scalar_f32"
+        "dot{dt:f32, space:FAST, lanes:4, algorithm:cpu, block:16}/impl:scalar_f32"
     );
 }

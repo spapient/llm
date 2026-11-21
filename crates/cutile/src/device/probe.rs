@@ -31,7 +31,7 @@ pub fn detect_cpu() -> Detected {
         }
     }
     Detected::new()
-        .with("arch", arch)
+        .with("algorithm", arch)
         .with("features", features.join("+"))
 }
 

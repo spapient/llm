@@ -88,7 +88,7 @@ fn tiled(m: usize, n: usize) -> bool {
 fn packed(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f32], t: usize) {
     let mblk = m / MR;
     let alen = mblk * k * MR;
-    super::scratch::with_panels(alen, |abuf| {
+    super::with_panels(alen, |abuf| {
         let barrier = std::sync::Barrier::new(t);
         thread::scope(|s| {
             let barrier = &barrier;

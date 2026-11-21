@@ -1,0 +1,19 @@
+[package]
+name = "llm-algorithm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "Reference semantics of architecture variants: attention, state-space, memory, routing and byte-level generation."
+publish = false
+autotests = false
+
+[dependencies]
+diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
+nn = { path = "../nn", package = "llm-nn" }
+op = { path = "../op", package = "llm-op" }
+
+[lints]
+workspace = true

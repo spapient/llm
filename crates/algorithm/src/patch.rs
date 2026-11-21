@@ -4,7 +4,7 @@
 //! 没有固定词表，于是"哪些字节该被同一次全局前向一起看"必须先由一条**因果**规则决定。本模块只做
 //! 这一步：把逐字节的信息量序列切成 patch 区间，并把"全局前向要跑几次"的记账放在结果上。两端的
 //! 本地层在 [`crate::codec`]（`Boundary` 的分数与 patch 表示的编码、`Patches` 被逐 patch 编码），
-//! 中间那层全局 transformer（复用既有 [`crate::Attention`] / [`crate::BlockTable`]）在装配侧。
+//! 中间那层全局 transformer（复用既有 [`nn::Attention`] / [`crate::BlockTable`]）在装配侧。
 //!
 //! 两套边界规则都来自 §5.17：
 //!

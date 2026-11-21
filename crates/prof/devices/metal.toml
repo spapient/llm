@@ -7,7 +7,7 @@
 # 位宽参数（cpb/width/zero）由模板注入。
 #
 # 指纹按 cutile README §5.3 的 Apple 行：机器名含 `Apple M`，GPU 核数落在 M 系列的量级（10..80）。
-# 设计表原写的 `os >= 26` 没有进指纹：`cutile::probe` 目前只采集 CPU 的 `arch`/`features`，
+# 设计表原写的 `os >= 26` 没有进指纹：`cutile::probe` 目前只采集 CPU 的 `algorithm`/`features`，
 # 尚未采集 `sw_vers`；写一条当前永远无法满足的条件，只会让档案看起来更严格、实际更难命中。
 # 两级存储的物理名是 MSL 的地址空间：GM = `device`，FAST = `threadgroup`，REG = `thread`。
 # 同一原语可以有多条 `provides`：`dot` 的 `simd_dp4a`（i8×4）与 `simd_fma`（标量 f32）是两种

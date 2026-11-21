@@ -69,7 +69,7 @@ fn clip<S: Scalar>(v: S) -> S {
 pub enum Channel {
     /// α：压缩块检索（[`crate::BlockTable`]）。
     Alpha,
-    /// β：条件记忆（[`crate::Bypass`]）。
+    /// β：条件记忆（[`nn::Bypass`]）。
     Beta,
     /// γ：事件臂（IEEE 上 [`crate::encode_id`] 恒等）。
     Gamma,

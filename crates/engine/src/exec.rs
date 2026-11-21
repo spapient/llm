@@ -313,7 +313,7 @@ impl Stream {
     }
 }
 
-/// 设备标识与能力标签：`vendor` / `arch` 是登记标签，不持有设备私有句柄的具体类型
+/// 设备标识与能力标签：`vendor` / `algorithm` 是登记标签，不持有设备私有句柄的具体类型
 /// （ADR 0025 §1）。与 `prof` 设备档案的对应由编排层完成，本层不反向依赖档案闭集。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Device {
