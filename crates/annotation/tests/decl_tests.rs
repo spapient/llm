@@ -252,7 +252,7 @@ fn value_accessors_are_empty_outside_their_own_variant() {
     assert!(width.axes().0.is_empty());
     assert!(width.holes().0.is_empty());
 
-    let holes = Value::Holes(&[], 4);
+    let holes = Value::Holes(Vec::new(), 4);
     assert_eq!(holes.text(), "");
     assert!(holes.names().is_empty());
     assert!(holes.axes().0.is_empty());
