@@ -1,13 +1,17 @@
 //! attention 基准：decode 单头、prefill 的 online / dense 与各自 tiled 对照。
 //!
-//! 报 ns/iter（越小越好）与每迭代扫过的元素数或读入字节数；预热、采样与测量时长由 criterion
-//! 配置决定。tile 与非 tile 两条路径逐位一致（对拍在 `op::attention` 的测试里），本文件只比较
-//! 遍历次序对墙钟的影响。
+//! 每条用例只在调用点声明"哪个名字配哪条内核"；一次迭代做什么、`black_box` 落在哪一层，
+//! 由 [`one`] 统一给出——九条基准共用那一处，遍历次序之外没有第二份说法。预热、采样与
+//! 测量时长由 criterion 配置决定。tile 与非 tile 两条路径逐位一致（对拍在 `op::attention`
+//! 的测试里），本文件只比较遍历次序对墙钟的影响。
+
+use criterion::measurement::WallTime;
+use criterion::{BenchmarkGroup, Criterion, Throughput};
+use op::attention;
+use std::fmt;
+use std::hint::black_box;
 
 use crate::fixtures::Sample;
-use criterion::{Criterion, Throughput};
-use op::attention;
-use std::hint::black_box;
 
 /// decode 的代表 KV 长度。
 const DECODE_S: usize = 128;
@@ -18,145 +22,104 @@ const PREFILL_S: usize = 1024;
 /// 头宽（head_dim）。
 const D: usize = 64;
 
+/// decode 的历史长度两档：128 进基线，512 只出测量。
+const HISTS: [usize; 2] = [128, 512];
+
+/// 缓冲长度对不上时的失败文案（`s·d` 是四条切片的公共长度）。
+const SIZED: &str = "缓冲尺寸与 s·d 一致";
+
 /// q/k/v/out 各 `s·d` 时一次前向读入的字节数。
 fn read_bytes(s: usize) -> u64 {
     (s * D * 3 * size_of::<f32>()) as u64
 }
 
+/// 一条内核基准：`run` 拿四条切片做一次前向。
+///
+/// `black_box` 落在四条切片入口，不落在样本上：内核只看得见切片，挡住这四层就挡住了全部
+/// 读数。失败文案由调用点给出——`op` 的错误类型不跨 crate 命名，这里只判成败。
+fn one<F, E: fmt::Debug>(
+    (q, k, v, out): (&[f32], &[f32], &[f32], &mut [f32]),
+    group: &mut BenchmarkGroup<'_, WallTime>,
+    name: &str,
+    run: F,
+) where
+    F: Fn(&[f32], &[f32], &[f32], &mut [f32]) -> Result<(), E>,
+{
+    group.bench_function(name, move |bench| {
+        bench.iter(|| {
+            let out = black_box(&mut out[..]);
+            run(black_box(q), black_box(k), black_box(v), out).expect(SIZED)
+        })
+    });
+}
+
 /// `flash_forward`：decode 单头 128 行 KV 的单遍 online softmax。
 pub(crate) fn flash_decode(c: &mut Criterion) {
-    let len = DECODE_S * D;
-    let mut sample = Sample::new(len);
-
+    let mut sample = Sample::new(DECODE_S * D);
     let mut group = c.benchmark_group("attention_f32");
-    group.throughput(Throughput::Elements(len as u64));
-    group.bench_function("flash_decode_128x64", |bench| {
-        bench.iter(|| {
-            attention::flash_forward(
-                black_box(&sample.q),
-                black_box(&sample.k),
-                black_box(&sample.v),
-                black_box(&mut sample.out),
-                DECODE_S,
-                D,
-            )
-            .expect("q/k/v/out 等长且为 s·d")
-        })
+    group.throughput(Throughput::Elements((DECODE_S * D) as u64));
+    let lanes = (&sample.q[..], &sample.k[..], &sample.v[..], &mut sample.out);
+    one(lanes, &mut group, "flash_decode_128x64", |q, k, v, out| {
+        attention::flash_forward(q, k, v, out, DECODE_S, D)
     });
     group.finish();
 }
 
 /// prefill：online 与 dense 两条路径，各自与 tiled 版本对照。
 pub(crate) fn prefill(c: &mut Criterion) {
-    let len = PREFILL_S * D;
-    let mut sample = Sample::new(len);
+    let mut sample = Sample::new(PREFILL_S * D);
     let bytes = read_bytes(PREFILL_S);
 
     let mut online = c.benchmark_group("attention_prefill_f32");
     online.throughput(Throughput::Bytes(bytes));
-    online.bench_function("online_1024x64", |bench| {
-        bench.iter(|| {
-            attention::flash_forward(
-                black_box(&sample.q),
-                black_box(&sample.k),
-                black_box(&sample.v),
-                black_box(&mut sample.out),
-                black_box(PREFILL_S),
-                black_box(D),
-            )
-            .expect("缓冲尺寸与 s·d 一致")
-        })
+    one(lanes(&mut sample), &mut online, "online_1024x64", |q, k, v, out| {
+        attention::flash_forward(q, k, v, out, PREFILL_S, D)
     });
-    online.bench_function("tiled_1024x64", |bench| {
-        bench.iter(|| {
-            attention::tiled::flash_tiled_forward(
-                black_box(&sample.q),
-                black_box(&sample.k),
-                black_box(&sample.v),
-                black_box(&mut sample.out),
-                black_box(PREFILL_S),
-                black_box(D),
-            )
-            .expect("缓冲尺寸与 s·d 一致")
-        })
+    one(lanes(&mut sample), &mut online, "tiled_1024x64", |q, k, v, out| {
+        attention::tiled::flash_tiled_forward(q, k, v, out, PREFILL_S, D)
     });
     online.finish();
 
     let mut dense = c.benchmark_group("attention_dense_f32");
     dense.throughput(Throughput::Bytes(bytes));
-    dense.bench_function("naive_1024x64", |bench| {
-        bench.iter(|| {
-            attention::forward(
-                black_box(&sample.q),
-                black_box(&sample.k),
-                black_box(&sample.v),
-                black_box(&mut sample.out),
-                black_box(PREFILL_S),
-                black_box(D),
-            )
-            .expect("缓冲尺寸与 s·d 一致")
-        })
+    one(lanes(&mut sample), &mut dense, "naive_1024x64", |q, k, v, out| {
+        attention::forward(q, k, v, out, PREFILL_S, D)
     });
-    dense.bench_function("tiled_1024x64", |bench| {
-        bench.iter(|| {
-            attention::tiled::forward(
-                black_box(&sample.q),
-                black_box(&sample.k),
-                black_box(&sample.v),
-                black_box(&mut sample.out),
-                black_box(PREFILL_S),
-                black_box(D),
-            )
-            .expect("缓冲尺寸与 s·d 一致")
-        })
+    one(lanes(&mut sample), &mut dense, "tiled_1024x64", |q, k, v, out| {
+        attention::tiled::forward(q, k, v, out, PREFILL_S, D)
     });
     dense.finish();
 }
 
-/// 单查询行对变长历史的朴素与 Flash 两条 decode 内核：历史取 128（进基线）与 512（只出测量）。
+/// 样本的四条切片：每次调用点重新借一次，`q`/`k`/`v` 只读、`out` 独占。
+fn lanes(sample: &mut Sample) -> (&[f32], &[f32], &[f32], &mut [f32]) {
+    (&sample.q, &sample.k, &sample.v, &mut sample.out)
+}
+
+/// 单查询行对变长历史的朴素与 Flash 两条 decode 内核。
 pub(crate) fn decode(c: &mut Criterion) {
-    for hist in [128, 512] {
+    for hist in HISTS {
         hist_pair(c, hist);
     }
 }
 
-/// 一个历史长度的一对内核：q 单行，k/v 各 `hist·d`。
+/// 一个历史长度的一对内核：q 单行 `d`，k/v 按 `hist·d`，out 回到单行。
 fn hist_pair(c: &mut Criterion, hist: usize) {
     let kv_len = hist * D;
-    let q: Vec<f32> = (0..D).map(|i| -0.5 + i as f32 * 0.13).collect();
-    let k: Vec<f32> = (0..kv_len).map(|i| 0.4 - i as f32 * 0.009).collect();
-    let v: Vec<f32> = (0..kv_len).map(|i| -0.2 + i as f32 * 0.011).collect();
+    let q: Vec<f32> = (0..D).map(|index| -0.5 + index as f32 * 0.13).collect();
+    let k: Vec<f32> = (0..kv_len).map(|index| 0.4 - index as f32 * 0.009).collect();
+    let v: Vec<f32> = (0..kv_len).map(|index| -0.2 + index as f32 * 0.011).collect();
     let mut out = vec![0.0f32; D];
 
     let mut group = c.benchmark_group("decode_attention_f32");
     group.throughput(Throughput::Elements(kv_len as u64));
-    group.bench_function(format!("naive_hist{hist}x{D}"), |bench| {
-        bench.iter(|| {
-            attention::decode_forward(
-                black_box(&q),
-                black_box(&k),
-                black_box(&v),
-                black_box(&mut out),
-                1,
-                hist,
-                D,
-            )
-            .expect("q/k/v/out 几何为 1·d / hist·d")
-        })
-    });
-    group.bench_function(format!("flash_hist{hist}x{D}"), |bench| {
-        bench.iter(|| {
-            attention::decode_flash_forward(
-                black_box(&q),
-                black_box(&k),
-                black_box(&v),
-                black_box(&mut out),
-                1,
-                hist,
-                D,
-            )
-            .expect("q/k/v/out 几何为 1·d / hist·d")
-        })
-    });
+    let pair = [("naive", attention::decode_forward), ("flash", attention::decode_flash_forward)];
+    for (label, run) in pair {
+        let name = format!("{label}_hist{hist}x{D}");
+        let lanes = (&q[..], &k[..], &v[..], &mut out);
+        one(lanes, &mut group, &name, |q, k, v, out| {
+            run(q, k, v, out, 1, hist, D)
+        });
+    }
     group.finish();
 }
