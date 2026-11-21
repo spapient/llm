@@ -38,9 +38,9 @@ pub fn project_shape(q_rows: usize, d: usize) -> Result<ShapeContext, Error> {
 ///
 /// 缺轴时返回说明。
 pub fn cost(shape: &ShapeContext) -> Result<Cost, Error> {
-    let q = super::axis(shape, "decode attention", 'q')?;
-    let d = super::axis(shape, "decode attention", 'd')?;
-    let h = super::axis(shape, "decode attention", 'h')?;
+    let q = crate::attention::axis(shape, "decode attention", 'q')?;
+    let d = crate::attention::axis(shape, "decode attention", 'd')?;
+    let h = crate::attention::axis(shape, "decode attention", 'h')?;
     Ok(Cost {
         flops: (q as f64) * (h as f64) * ((d as f64) * 2.0 + 3.0),
         read: (q as u64) * (d as u64) * 4 + (h as u64) * (d as u64) * 4 * 2,
@@ -59,7 +59,7 @@ pub fn sample(q_rows: usize, d: usize) -> Sample {
             ("HIST", hist as i64),
             ("D", d as i64),
         ],
-        buffers: super::sample_buffers(q_rows * d, hist * d),
+        buffers: crate::attention::sample_buffers(q_rows * d, hist * d),
     }
 }
 
@@ -82,7 +82,7 @@ fn geometry(sample: &Sample) -> diagnostic::Result<(usize, usize, usize)> {
 /// 朴素参考：query 对历史 K/V 做一遍数值稳定 softmax，再对 `V` 加权。
 pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
     let (q_rows, hist, d) = geometry(sample)?;
-    let (q, k, v) = super::qkv(sample)?;
+    let (q, k, v) = crate::attention::qkv(sample)?;
     let mut out = vec![0.0; q_rows * d];
     crate::attention::decode_forward(q, k, v, &mut out, q_rows, hist, d)?;
     Ok(out)
@@ -91,7 +91,7 @@ pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
 /// Flash 参考：online softmax 单遍扫历史 K/V；flash 别名模块的参考入口指向这里。
 pub fn decode_flash_reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
     let (q_rows, hist, d) = geometry(sample)?;
-    let (q, k, v) = super::qkv(sample)?;
+    let (q, k, v) = crate::attention::qkv(sample)?;
     let mut out = vec![0.0; q_rows * d];
     crate::attention::decode_flash_forward(q, k, v, &mut out, q_rows, hist, d)?;
     Ok(out)

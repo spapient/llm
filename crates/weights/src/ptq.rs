@@ -101,9 +101,11 @@ pub fn quantize(scheme: Scheme, group: usize, x: &[f32]) -> Result<(Vec<u8>, Vec
         let slice = &x[lo..hi];
         let scale = group_scale(scheme, slice);
         scales.push(scale);
+        // 每元素乘倒数替代除法：一次求倒数摊到整组，组内逐元素只用乘法。
+        let inv = 1.0 / scale;
 
         for (i, &v) in slice.iter().enumerate() {
-            let signed = (v / scale).round() as i32;
+            let signed = (v * inv).round() as i32;
             let signed = signed.clamp(-(scheme.max_code as i32), scheme.max_code as i32);
             pack_bits(
                 &mut packed,

@@ -20,7 +20,7 @@
 //! # 例子
 //!
 //! ```
-//! use snapshot::{Facts, Snapshot};
+//! use llm_snapshot::{Facts, Snapshot};
 //! use tensor::{DType, Shape};
 //! use weights::{Entry, Header};
 //!

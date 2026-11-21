@@ -272,6 +272,9 @@ pub use decode::{
 pub(crate) use decode::check_decode_len;
 use decode::decode;
 
+// 语义表对外的名字保持 `attention::decode_attention`（`op::decode_attention` 由 lib.rs 再导出）。
+pub use decode::semantics as decode_attention;
+
 /// 标记类型：承载 `#[model]` 语义。
 pub struct Attention;
 
@@ -302,4 +305,3 @@ crate::operator_here!(
 #[path = "../tests/attention_tests.rs"]
 mod tests;
 
-pub mod decode_attention;

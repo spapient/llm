@@ -18,7 +18,6 @@ op = { path = "../op", package = "llm-op" }
 shard = { path = "../shard", package = "llm-shard" }
 tensor = { path = "../tensor", package = "llm-tensor" }
 weights = { path = "../weights", package = "llm-weights" }
-wire = { path = "../wire", package = "llm-wire" }
 snapshot = { path = "../snapshot", package = "llm-snapshot" }
 
 [dev-dependencies]

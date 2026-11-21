@@ -57,11 +57,11 @@ tensor   → diagnostic, dtype    +dev: testkit
 storage  → tensor, diagnostic
 tokenizer→ diagnostic
 weights  → tensor, diagnostic, dtype, wire, storage（`storage` 仅由 `mmap` feature 可选启用，复用其唯一 unsafe 岛）    +dev: storage, testkit
-snapshot → diagnostic, tensor, weights, wire（检查点字节格式：只写相对上一条的差 + CRC-32 尾部，不认识训练循环）
+snapshot → diagnostic, tensor, weights, wire（检查点字节格式：只写相对上一条的差 + CRC-32 尾部，不认识训练循环）    +dev: testkit
 autograd → tensor, diagnostic    +dev: testkit
 nn       → tensor, op, weights, diagnostic, annotation
 shard    → diagnostic
-train    → nn, autograd, weights, shard, op, tensor, diagnostic, wire, snapshot    +dev: testkit
+train    → nn, autograd, weights, shard, op, tensor, diagnostic, snapshot    +dev: testkit
 engine   → tensor, diagnostic, storage    +dev: testkit
 device   → engine, cutile, op, prof, diagnostic    +dev: testkit
 serve    → engine, nn, op, rng, tokenizer, diagnostic, weights, wire    +dev: testkit

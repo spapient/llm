@@ -16,5 +16,8 @@ tensor = { path = "../tensor", package = "llm-tensor" }
 weights = { path = "../weights", package = "llm-weights" }
 wire = { path = "../wire", package = "llm-wire" }
 
+[dev-dependencies]
+testkit = { path = "../testkit", package = "llm-testkit" }
+
 [lints]
 workspace = true
