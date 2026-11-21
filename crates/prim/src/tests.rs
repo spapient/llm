@@ -1,10 +1,16 @@
 use super::*;
 
+/// 临时目录：`<tmp>/prim-<name>-<pid>`。
+fn temp(name: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("prim-{name}-{}", std::process::id()))
+}
+
 /// 内嵌表与磁盘一致：生成器漏扫一个目录，这里就会失败。
 #[test]
 fn builtin_matches_disk() {
     for entry in BUILTIN {
-        let disk = load(&dir(), entry.vendor, entry.ext).expect("磁盘片段可装载");
+        let dir = dir_of(entry.vendor).expect("每台设备都有源码根");
+        let disk = load(Path::new(dir), entry.vendor, entry.ext).expect("磁盘片段可装载");
         assert_eq!(
             disk.len(),
             entry.fragments.len(),
@@ -31,8 +37,11 @@ fn lookup_needs_both_vendor_and_ext() {
 
 #[test]
 fn builtin_witness_matches_disk() {
+    let layout = Layout::builtin();
     for (vendor, ext, source) in WITNESS {
-        let path = dir().join(vendor).join(format!("witness.{ext}"));
+        let path = layout
+            .witness(&format!("{vendor}/witness.{ext}"))
+            .expect("每台设备都有见证路径");
         let disk = std::fs::read_to_string(&path).expect("磁盘见证可读");
         assert_eq!(disk, source, "`{vendor}` 的内嵌见证与磁盘不一致");
     }
@@ -44,16 +53,93 @@ fn witness_is_not_a_fragment() {
         .iter()
         .find(|entry| entry.vendor == "cpu")
         .expect("内置 cpu 片段");
-    let set = load(&dir(), "cpu", "c").expect("witness.c 必须被跳过");
+    let dir = dir_of("cpu").expect("cpu 有源码根");
+    let set = load(Path::new(dir), "cpu", "c").expect("witness.c 必须被跳过");
     assert_eq!(set.len(), cpu.fragments.len());
     assert!(set.get(Prim::Load).is_some());
+}
+
+/// 四张表按下标同源：`DEVICES` 的一行、`BUILTIN` 的一项、`WITNESS` / `ROOTS` 的一项必须指同一台设备。
+///
+/// 合成是手写的 `const` 数组：漏行编译器会数出来，但写错顺序不会——这条用例守的就是顺序。
+#[test]
+fn the_tables_line_up_by_index() {
+    let len = devices().len();
+    assert_eq!(BUILTIN.len(), len, "片段表与设备表不等长");
+    assert_eq!(WITNESS.len(), len, "见证表与设备表不等长");
+    assert_eq!(ROOTS.len(), len, "源码根表与设备表不等长");
+    for (index, device) in devices().iter().enumerate() {
+        assert_eq!(BUILTIN[index].vendor, device.vendor);
+        assert_eq!(WITNESS[index].0, device.vendor);
+        assert_eq!(ROOTS[index].0, device.vendor);
+    }
+}
+
+/// 每台设备的源码根必须真的存在，且根里有它的见证：拆成六个 crate 之后，"片段层根"是六条
+/// 路径，写错一条就是发布机读不到见证——这里在测试期把它读一遍。
+#[test]
+fn every_source_root_holds_its_witness() {
+    let layout = Layout::builtin();
+    for device in devices() {
+        let root = dir_of(device.vendor).expect("每台设备都有源码根");
+        assert_eq!(Path::new(root).file_name().and_then(|name| name.to_str()), Some(crate_name(device.vendor)), "根目录名应与设备 crate 同名");
+        let file = format!("{}/witness.{}", device.vendor, device.ext);
+        let path = layout.witness(&file).expect("内置见证有路径");
+        assert_eq!(std::fs::read_to_string(&path).ok().as_deref(), Some(device.source), "`{}` 的见证与设备行不一致", device.vendor);
+    }
+}
+
+/// vendor 与 crate 目录不同名（`nvidia` 在 `cuda`、`intel` 在 `opencl`、`ascend` 在 `rocm`）：
+/// 表里的目录名是 crate 名，vendor 名是档案与见证路径的键，两者不能混用。
+fn crate_name(vendor: &str) -> &'static str {
+    match vendor {
+        "nvidia" => "cuda",
+        "intel" => "opencl",
+        "ascend" => "rocm",
+        other => {
+            assert!(matches!(other, "cpu" | "metal" | "musa"), "未预期的 vendor");
+            // 其余 vendor 与 crate 同名，这里只回一个不参与判断的常量。
+            "cpu"
+        }
+    }
+}
+
+/// `data.root` 覆盖：`<root>/prim/<vendor>/` 下的同名文件替换内置片段，见证也走同一套解析。
+#[test]
+fn a_data_root_layout_reads_the_override() {
+    let root = temp("layout");
+    let vendor_dir = layer_root(&root).join("cpu");
+    std::fs::create_dir_all(&vendor_dir).expect("建临时目录");
+    std::fs::write(
+        vendor_dir.join("load.c"),
+        "/* cutile-sign: load/override */\n{ $0 = 1; }\n",
+    )
+    .expect("写片段");
+    let layout = Layout::at(&root);
+    let set = layout.fragments("cpu", "c").expect("覆盖层可装载");
+    assert_eq!(set.len(), 1, "覆盖层只有写进去的那一份");
+    assert_eq!(set.implementation(Prim::Load), Some("override"));
+    assert_eq!(layout.witness("cpu/witness.c"), Some(vendor_dir.join("witness.c")));
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// 不认识的 vendor 没有布局：`missing` 带类别，不是"读到了空目录"。
+#[test]
+fn an_unknown_vendor_has_no_layout() {
+    let layout = Layout::builtin();
+    let error = layout.fragments("absent", "c").expect_err("未知 vendor 必须报错");
+    assert_eq!(error.code(), Code::Missing, "{error}");
+    assert!(layout.witness("absent/witness.c").is_none());
+    assert!(layout.witness("cpu").is_none(), "缺 `<vendor>/` 前缀时没有路径");
 }
 
 /// 每段片段都声明自己的签名：一个原语可以有多条签名，文本必须说清写的是哪一条。
 #[test]
 fn builtin_signs_are_declared() {
     for entry in BUILTIN {
-        let set = builtin(entry.vendor, entry.ext).expect("内嵌片段可装载");
+        let set = Layout::builtin()
+            .fragments(entry.vendor, entry.ext)
+            .expect("内置布局可装载");
         for (prim, _) in entry.fragments {
             assert!(
                 set.implementation(*prim).is_some_and(|imp| !imp.is_empty()),
@@ -66,8 +152,7 @@ fn builtin_signs_are_declared() {
 
 #[test]
 fn a_file_name_must_be_in_the_primitive_closed_set() {
-    let root = std::env::temp_dir().join(format!("prim-test-{}", std::process::id()));
-    let vendor_dir = root.join("fake");
+    let vendor_dir = temp("names").join("fake");
     std::fs::create_dir_all(&vendor_dir).expect("建临时目录");
     std::fs::write(
         vendor_dir.join("load.c"),
@@ -75,26 +160,25 @@ fn a_file_name_must_be_in_the_primitive_closed_set() {
     )
     .expect("写片段");
     std::fs::write(vendor_dir.join("not_a_prim.c"), "").expect("写非法片段");
-    let error = load(&root, "fake", "c").expect_err("闭集外的文件名必须报错");
+    let error = load(&vendor_dir, "fake", "c").expect_err("闭集外的文件名必须报错");
     assert_eq!(
         error.code(),
         Code::Invalid,
         "文件名是声明，不是 io：{error}"
     );
     assert!(error.to_string().contains("not_a_prim"), "{error}");
-    std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_dir_all(vendor_dir.parent().expect("有父目录")).ok();
 }
 
 /// 片段第一行必须是签名声明：没有它的片段无法与档案交叉校验，所以装载期就拒绝。
 #[test]
 fn a_fragment_must_declare_its_signature() {
-    let root = std::env::temp_dir().join(format!("prim-sign-test-{}", std::process::id()));
-    let vendor_dir = root.join("fake");
+    let vendor_dir = temp("sign").join("fake");
     std::fs::create_dir_all(&vendor_dir).expect("建临时目录");
     std::fs::write(vendor_dir.join("load.c"), "{ $0 = $1; }\n").expect("写片段");
-    let error = load(&root, "fake", "c").expect_err("没有签名声明的片段必须报错");
+    let error = load(&vendor_dir, "fake", "c").expect_err("没有签名声明的片段必须报错");
     assert!(error.to_string().contains(SIGN_MARKER), "{error}");
-    std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_dir_all(vendor_dir.parent().expect("有父目录")).ok();
 }
 
 /// 声明里的原语名与文件名不一致：多半是复制粘贴，装载期就要报。
