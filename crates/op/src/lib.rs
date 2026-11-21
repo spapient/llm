@@ -45,7 +45,6 @@
 //! ```
 
 #![deny(unsafe_code)]
-
 // `fast::sme` 的 SME 通道依赖两个不稳定特性，均只在 aarch64 上被引用：
 // - `aarch64_unstable_target_feature`：放行 `#[target_feature(enable = "sme")]`（尚未稳定）。
 // - `stdarch_aarch64_feature_detection`：放行运行时探测 `is_aarch64_feature_detected!("sme")`。

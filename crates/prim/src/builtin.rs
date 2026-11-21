@@ -2,7 +2,8 @@
 //!
 //! 每台设备的片段文本、见证源码与设备行都由那个设备 crate 的 `build.rs` 生成（规则住在
 //! [`prof::codegen`]），本 crate 只**合成**：`BUILTIN` / `WITNESS` / `DEVICES` / `ROOTS` 四张表按
-//! 同一个下标同源。于是"加一台设备"＝加一个设备 crate 再加这里一行，机制不动。
+//! 同一个下标同源。于是"加一台设备"＝加一个设备 crate，再在这里给四张表各补一行；顺序由
+//! `the_tables_line_up_by_index` 守着，漏行编译器会数出来。
 //!
 //! 本 crate 没有自己的构建脚本：四张表都是普通 Rust 常量，不是 `include_str!` 拼出来的。
 
