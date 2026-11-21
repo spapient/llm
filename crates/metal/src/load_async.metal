@@ -1,7 +1,5 @@
-/* cutile-sign: load_async/async_threadgroup_copy */
-/* load_async: `async_threadgroup_copy` 只能把数据搬进 `threadgroup`，P0 的目标是 GM ——
- * 退化为预取 + 普通加载。
- *
- * 令牌照旧传回调用方（`$2` 是 `tok`），`commit_wait` 因此仍然配平；真正的
- * `async_copy` 流水线（Metal 3 的双缓冲）是 P3 的落点。 */
+/* cutile-sign: load_async/sync_load */
+/* load_async: 同步加载。`async_copy` 只能把数据搬进 `threadgroup`，本拼接点的目标是 GM 上的私有
+ * 指针，没有 DMA 可发；于是绑指针 + 交还令牌，值当场到位——语义与异步等价，少的只是重叠。
+ * 重叠要有东西才立得住（把 tile 搬进 `threadgroup` 再算），那条路径是一条独立签名。 */
 $0 = $1; (void)($2);

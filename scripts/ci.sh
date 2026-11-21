@@ -49,8 +49,8 @@ npx --yes jscpd
 step "静态门（源文件圈复杂度 / 行数 / 命名 / unsafe 计数 / Call 门等硬阈值，ratchet：新增必进表、恶化必失败）"
 cargo test -p llm-tools --test gate --locked
 
-step "架构门（层表 / 边集 / 所有权 / 入口不定义类型 / 错误边界不回落字符串，与 ARCHITECTURE.md 单一来源比对）"
-cargo test -p llm-testkit --test architecture --locked
+step "架构门（层表 / 边集 / 所有权 / 词汇表镜像 / 越界岛 / 对拍口径，与 ARCHITECTURE.md 单一来源比对）"
+cargo test -p llm-testkit --lib --locked
 
 step "命名门（下划线文件名 / 后缀残留 / 泛名函数 / Op 后缀，零命中，已清零保持阻断）"
 bash scripts/name-lint.sh

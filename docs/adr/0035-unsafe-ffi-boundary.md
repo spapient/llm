@@ -47,7 +47,7 @@ P3 要在边界 crate 挂 Metal/CUDA 后端（ADR 0025 §1、§9；ADR 0028 §3 
 ### 6. 现状越界点（可枚举白名单）
 
 §2 管的是「新增」；存量越界点如果不列举，这条规则就只剩口头约束。`crates/*/src` 里 `allow(unsafe_code)`
-的现状穷尽为下表，由 [`../../crates/testkit/tests/architecture.rs`](../../crates/testkit/tests/architecture.rs)
+的现状穷尽为下表，由 [`../../crates/testkit/src/boundary.rs`](../../crates/testkit/src/boundary.rs)
 逐文件比对：多一行（新岛）或少一行（基线过期）都失败。`crates/*/tests` 不在口径内——测试夹具不是越界岛。
 
 | 位置 | 越界对象（§1 类别） | 不变量与对外视图 |

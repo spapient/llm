@@ -1,3 +1,5 @@
-/* cutile-sign: load_async/memcpy_prefetch */
-/* load_async: CPU 没有真正的异步搬运，退化为同步拷贝；令牌统一为 0（cutile README §5.1 的 P3/P4/P5 三件套） */
+/* cutile-sign: load_async/sync_load */
+/* load_async: 同步加载。CPU 这一层没有可以叠在计算下面的搬运通道（`memcpy` 也是同步的），所以绑
+ * 指针 + 交还令牌，值当场到位——语义与异步等价，少的只是重叠。重叠要有东西才立得住（真的把 tile
+ * 拷进缓冲区再算），那条路径是一条独立签名。 */
 $0 = $1; (void)($2);

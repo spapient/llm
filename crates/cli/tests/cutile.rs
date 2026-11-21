@@ -29,7 +29,7 @@ fn the_performance_line_is_printed_even_when_nothing_was_measured() {
         src: "2*8*2666e6".to_string(),
     };
 
-    let reached = report::performance_note(
+    let reached = section::performance_note(
         cutile::bench::Performance::new(Some(0.72), false),
         Some(&peak),
     );
@@ -37,7 +37,7 @@ fn the_performance_line_is_printed_even_when_nothing_was_measured() {
     assert!(reached.contains("达到 70% 门槛"), "{reached}");
     assert!(reached.contains("不是“相对原生库的 85%”"), "{reached}");
 
-    let below = report::performance_note(
+    let below = section::performance_note(
         cutile::bench::Performance::new(Some(0.0069), false),
         Some(&peak),
     );
@@ -45,7 +45,7 @@ fn the_performance_line_is_printed_even_when_nothing_was_measured() {
     assert!(below.contains("低于 70% 门槛"), "{below}");
     assert!(below.contains("特化代码"), "{below}");
 
-    let cached = report::performance_note(
+    let cached = section::performance_note(
         cutile::bench::Performance::new(Some(0.19), true),
         Some(&peak),
     );
@@ -53,7 +53,7 @@ fn the_performance_line_is_printed_even_when_nothing_was_measured() {
     assert!(cached.contains("不参与 §16 判定"), "{cached}");
 
     // 没有峰值：判据没有尺子，仍要说清“未测量”，而不是静默通过。
-    let unknown = report::performance_note(cutile::bench::Performance::new(None, false), None);
+    let unknown = section::performance_note(cutile::bench::Performance::new(None, false), None);
     assert!(unknown.contains("未测量"), "{unknown}");
     assert!(unknown.contains("不参与 Go/No-Go"), "{unknown}");
     assert!(!unknown.contains("门槛"), "{unknown}");
@@ -176,7 +176,7 @@ fn the_ledger_lists_every_declared_primitive() {
     let note = write_ledger(
         &catalogue,
         &verified,
-        &report::passed_line(&verified),
+        &section::passed_line(&verified),
         &settings().dirs(),
     )
     .expect("应写出台账");

@@ -133,7 +133,7 @@ witness = { file = "intel/witness.cl", func = "witness_load_async", expect = [1.
 
 [[provides]]
 prim    = "commit_wait"
-impl    = "mem_fence"
+impl    = "noop"
 grade   = "L1"
 witness = { file = "intel/witness.cl", func = "witness_commit_wait", expect = [0.0] }
 
@@ -148,7 +148,7 @@ witness = { file = "intel/witness.cl", func = "witness_store", expect = [3.25] }
 
 [[provides]]
 prim    = "bar"
-impl    = "barrier"
+impl    = "noop"
 grade   = "L1"
 witness = { file = "intel/witness.cl", func = "witness_bar", expect = [0.0] }
 

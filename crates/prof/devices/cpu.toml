@@ -239,7 +239,7 @@ witness = { file = "cpu/witness.c", func = "witness_load", expect = [1.0] }
 
 [[provides]]
 prim    = "load_async"
-impl    = "memcpy_prefetch"
+impl    = "sync_load"
 m       = "<=65536"
 dt      = ["i4", "u8", "f32"]
 space   = ["GM", "FAST"]

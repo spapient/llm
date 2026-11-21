@@ -1,8 +1,7 @@
-/* cutile-sign: commit_wait/mem_fence */
-/* commit_wait: 等一次搬运落地。OpenCL 里能等的只有 `wait_group_events`，而它只配平
- * `async_work_group_copy`——本拼接点没有发出过任何 DMA（见 `load_async`），于是同步点由内存
- * 围栏给出：GLOBAL 围栏让之前的读不被重排到之后的 `@dot` 之后，重排会把"预取到的值"换回旧值。
- * `$0` 是令牌，`mem_fence` 不接收令牌，消费掉它只是让模板的 `@load_async ... @commit_wait` 配对
- * 在两种设备上形状一致。 */
-mem_fence(CLK_GLOBAL_MEM_FENCE);
+/* cutile-sign: commit_wait/noop */
+/* commit_wait: 没有在飞的搬运可等。能等的只有 `wait_group_events`，而它只配平
+ * `async_work_group_copy`——本拼接点没有发出过任何 DMA（见 `load_async`：目标是私有指针），
+ * 值在上一句就已经到位，所以等待是空操作。不加 `mem_fence` 也是同一条理由：没有第二个工作项
+ * 会看到这里的写，围栏挡的可见性/重排都不涉及。令牌照旧消费掉，让模板的
+ * `@load_async … @commit_wait` 配对在任何设备上是同一形状。 */
 (void)($0);

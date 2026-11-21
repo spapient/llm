@@ -163,10 +163,11 @@ jobs:
       # ratchet：新增身份必进表、已登记值恶化必失败，与 `.config/lints/vocabulary.toml` 单一来源一致。
       - name: Static gate
         run: cargo test -p llm-tools --test gate --locked
-      # 架构门：层表 / 边集 / 所有权 / 入口不定义类型 / 错误边界不回落字符串，
-      # 与 docs/ARCHITECTURE.md 边集逐条比对（单一来源）。
+      # 架构门：层表 / 边集 / 所有权 / 词汇表镜像 / 越界岛 / 对拍口径，
+      # 与 docs/ARCHITECTURE.md 逐条比对（单一来源）。门禁是 testkit 的单测，
+      # 跑 `--lib` 就覆盖全部主题（分工见 `crates/testkit/src/lib.rs` 的模块表）。
       - name: Architecture gate
-        run: cargo test -p llm-testkit --test architecture --locked
+        run: cargo test -p llm-testkit --lib --locked
       # 命名门：下划线文件名 / 后缀残留 / 泛名函数 / Op 后缀，零命中（已清零，保持阻断）。
       - name: Name lint
         run: bash scripts/name-lint.sh

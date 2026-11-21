@@ -145,7 +145,7 @@ witness = { file = "musa/witness.cu", func = "witness_load", expect = [1.0] }
 
 [[provides]]
 prim    = "load_async"
-impl    = "cp.async+prefetch"
+impl    = "sync_load"
 m       = "<=4096"
 dt      = ["i4", "u8", "f32"]
 space   = ["GM", "FAST"]
@@ -157,7 +157,7 @@ witness = { file = "musa/witness.cu", func = "witness_load_async", expect = [1.0
 
 [[provides]]
 prim    = "commit_wait"
-impl    = "cp.async.commit_group"
+impl    = "noop"
 grade   = "L2"
 witness = { file = "musa/witness.cu", func = "witness_commit_wait", expect = [0.0] }
 
@@ -172,7 +172,7 @@ witness = { file = "musa/witness.cu", func = "witness_store", expect = [3.25] }
 
 [[provides]]
 prim    = "bar"
-impl    = "bar.sync"
+impl    = "noop"
 grade   = "L2"
 witness = { file = "musa/witness.cu", func = "witness_bar", expect = [0.0] }
 

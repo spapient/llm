@@ -24,7 +24,7 @@ use llm_cli::settings::Settings;
 use std::process::ExitCode;
 mod matrix;
 mod prose;
-mod report;
+mod section;
 
 fn main() -> ExitCode {
     // 装配设备后端：Metal / CUDA 由 engine 实现，cutile 只认 Backend 缝；在跑任何 verify / bench /
@@ -130,7 +130,7 @@ fn doctor_why(
             format!("没有可行变体，无法解释缓存键 `{hex}`"),
         )
     })?;
-    Ok(report::cache_why(&doctor::why(dirs, &built.key, hex)))
+    Ok(section::cache_why(&doctor::why(dirs, &built.key, hex)))
 }
 
 fn doctor(
@@ -147,16 +147,16 @@ fn doctor(
     out.push('\n');
     out.push_str(&settings.describe());
 
-    out.push_str(&report::evidence_block(&report));
+    out.push_str(&section::evidence_block(&report));
 
     out.push_str("\n[协商]\n");
-    out.push_str(&report::negotiation(&report));
+    out.push_str(&section::negotiation(&report));
 
     if report.path.is_none() {
         out.push_str("\n[emit] 无可行变体，未生成源文件\n");
         return Ok(out);
     }
-    out.push_str(&report::post_path_blocks(&report));
+    out.push_str(&section::post_path_blocks(&report));
     out.push_str(&doctor_why(&dirs, &report, why)?);
     Ok(out)
 }
@@ -170,7 +170,7 @@ fn entry_line(
 ) -> diagnostic::Result<String> {
     match entry {
         VerifyEntry::Passed(verified) => {
-            let line = report::passed_line(verified);
+            let line = section::passed_line(verified);
             let mut out = line.clone();
             if ledger {
                 out.push_str(&write_ledger(catalogue, verified, &line, dirs)?);
@@ -210,7 +210,7 @@ fn verify(
     for entry in &report.entries {
         out.push_str(&entry_line(&catalogue, &dirs, entry, ledger)?);
     }
-    out.push_str(&report::negotiation_summary(&report));
+    out.push_str(&section::negotiation_summary(&report));
 
     let failures = report.failures();
     finish_verify(out, &failures)
@@ -268,13 +268,13 @@ fn bench(
         measured.measured.gb_s,
         measured.measured.gflops
     ));
-    out.push_str(&report::working_set_line(&measured));
-    out.push_str(&report::performance_note(
+    out.push_str(&section::working_set_line(&measured));
+    out.push_str(&section::performance_note(
         measured.performance(),
         measured.peak.as_ref(),
     ));
-    out.push_str(&report::artifact_line(&measured));
-    out.push_str(&report::cache_dir_line(&measured));
+    out.push_str(&section::artifact_line(&measured));
+    out.push_str(&section::cache_dir_line(&measured));
     Ok(out)
 }
 

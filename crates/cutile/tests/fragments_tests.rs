@@ -153,6 +153,11 @@ fn zz_dump() {
         let op = catalogue.ops().iter().find(|o| o.name == "gemv_f32").unwrap();
         let combo = decl::expand(op).unwrap()[0].clone();
         let body = substitute::render(op, &combo, &fragments).unwrap();
-        println!("{}", emit::assemble(profile, op, &op.variants[0], &combo, &body).text);
+        for v in op.variants.iter() {
+            let b = substitute::render(op, &combo, &fragments).unwrap();
+            let s = emit::assemble(profile, op, v, &combo, &b);
+            println!("=== variant {} schedule {} hash {:x}", v.name, v.schedule, emit::fnv1a(&s.text));
+            println!("{}", s.text);
+        }
     }
 }

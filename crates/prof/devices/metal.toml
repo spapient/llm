@@ -136,7 +136,7 @@ witness = { file = "metal/witness.metal", func = "witness_load", expect = [1.0] 
 
 [[provides]]
 prim    = "load_async"
-impl    = "async_threadgroup_copy"
+impl    = "sync_load"
 m       = "<=32768"
 dt      = ["i4", "u8", "f32"]
 space   = ["GM", "FAST"]
@@ -148,7 +148,7 @@ witness = { file = "metal/witness.metal", func = "witness_load_async", expect = 
 
 [[provides]]
 prim    = "commit_wait"
-impl    = "async_copy_commit"
+impl    = "noop"
 grade   = "L2"
 witness = { file = "metal/witness.metal", func = "witness_commit_wait", expect = [0.0] }
 
@@ -163,7 +163,7 @@ witness = { file = "metal/witness.metal", func = "witness_store", expect = [3.25
 
 [[provides]]
 prim    = "bar"
-impl    = "simdgroup_barrier"
+impl    = "noop"
 grade   = "L2"
 witness = { file = "metal/witness.metal", func = "witness_bar", expect = [0.0] }
 

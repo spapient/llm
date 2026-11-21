@@ -1,7 +1,7 @@
 # 架构契约
 
 这份文档回答三个问题：**谁属于哪一层、允许依赖谁、每个类型归谁**。它不是评审清单，而是
-**可执行的契约**——[`crates/testkit/tests/architecture.rs`](../crates/testkit/tests/architecture.rs)
+**可执行的契约**——[`crates/testkit/src/architecture.rs`](../crates/testkit/src/architecture.rs)（事实面与断言按主题分在 `src/` 下的 `layer.rs` / `ownership.rs` / `boundary.rs`，随本 crate 的单测一起跑）
 读 `cargo metadata` 与源码，把下面第一节的成员表、第二节的边集（含总数与 `+dev` 数）、
 第三节的所有权表逐条比对；不一致时 `cargo test` 直接失败。
 
@@ -179,7 +179,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `EntryKind` / `Harness` / `Roofline` / `Geometry` / `BenchRecord` | `tools` | 统一基准记录结构：只持有记录，不测量、不下性能结论，未测得的峰值留 `None` |
 | `Protocol` / `Statistic` / `Tally` / `Standing` / `Shortfall` / `Card` | `tools` | 实测卡三态判定：闭集 → 样本量 → 统计量定义 → 区间与门槛，次序有意；样本与时钟来源归 `benchmarks` |
 | `spec` / `model` 属性宏 | `annotation` | 把注解展开成契约实现 + 编译期断言 + 一条校验测试；**不持有运行期注册表**。`model` 生成 `MODEL` 并断言注解与 `Operator` 对齐；设备执行由 `cutile` 的 `const SPECS` / `const GATES` 描述符表按函数指针登记 |
-| `RelErr` / `Worst` / `Scale` | `testkit` | 夹具侧的浮点对拍读数：`RelErr` 只答「整批最大绝对误差 / 分母」与这个分母自己的值，`Worst` 只答「读数落在哪个元素」，`Scale` 只答「分母按整批最大幅度还是每元素留 1 的地板取」。比较归 `within_ratio` / `within_rel` / `assert_rel_with`，阈值仍只由 `cutile::reference::tolerance` 拥有——本行不设第二张分档表，`Scale::Batch` 与它由 `crates/testkit/tests/oracle.rs` 逐位钉住 |
+| `RelErr` / `Worst` / `Scale` | `testkit` | 夹具侧的浮点对拍读数：`RelErr` 只答「整批最大绝对误差 / 分母」与这个分母自己的值，`Worst` 只答「读数落在哪个元素」，`Scale` 只答「分母按整批最大幅度还是每元素留 1 的地板取」。比较归 `within_ratio` / `within_rel` / `assert_rel_with`，阈值仍只由 `cutile::reference::tolerance` 拥有——本行不设第二张分档表，`Scale::Batch` 与它由 `crates/testkit/src/oracle.rs` 逐位钉住 |
 
 几个**同名不同物**的邻居，评审时容易混淆：
 
@@ -204,7 +204,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 - 契约不可达的成员（`diagnostic` / `tensor` / `shard` / `serve` 在 `prof` 之下，反向依赖会成环）
   可以把词汇表留在本地，但必须登记在 `.config/lints/vocabulary.toml` 并写明理由。
 
-由 `crates/testkit/tests/contracts.rs` 执行：禁止新增手写 `const ALL` 与手写位集，禁止白名单过期，
+由 `crates/testkit/src/contracts.rs` 执行：禁止新增手写 `const ALL` 与手写位集，禁止白名单过期，
 并要求扫描到的源文件数不为零（避免"空门禁假绿"）。
 
 #### 注解里的名字也是词汇表的名字
@@ -219,7 +219,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 
 `#[annotation::model(name = .., shape = [..], dtype = ..)]` 标在 `type 名字 = <具体格式>;` 上，生成
 `MODEL`、`const _: () = <名字 as Format>::CHECK;` 与一条校验测试；注册表里的 `model:` 只能写
-`..::MODEL`。两侧互为镜像，由 `crates/testkit/tests/contracts.rs` 判，且**没有豁免节**：标了却不注册
+`..::MODEL`。两侧互为镜像，由 `crates/testkit/src/contracts.rs` 与 `src/mirror.rs` 判，且**没有豁免节**：标了却不注册
 永远错（发布出去的二进制里没有这条算子），注册的语义表不是注解生成的也永远错——出现例外说明契约
 本身该改，而不是某个 crate 该豁免。
 
@@ -253,8 +253,8 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `RUSTDOCFLAGS=-D warnings cargo doc` | CI `doc` job | 文档坏链接、未文档化的公开项 |
 | `cargo test --workspace` | CI `test` job | 行为回归 |
 | `crates/cutile/src/gate.rs` + `tests/fragments_tests.rs` | CI `test` job | 片段正文没被设备自己的语言接受：`GATES` 给每门语言登记一个语法前端，用例把六台设备的每个算子 × 每个 tile 组合真正拼成翻译单元（`substitute::render` → `emit::assemble`，与出厂文本逐字节同源）再交给前端解析；语言版本取自档案 `compile.flags`（`GateSpec::check`），门不许自己再写一份。片段正文写坏时反向用例必红——"占位不报错"在这里不成立 |
-| `crates/testkit/tests/architecture.rs` | CI `test` job | 成员集合、边集合与方向、所有权表与 `cargo metadata` / 源码不一致；`op` / `prof` / `prim` / `cutile` 退回 `Result<_, String>`；本文正文点名的 `crate::名字` 不存在；`allow(unsafe_code)` 不在 ADR 0035 §6 的白名单里；机制层（`cutile`）的公开项以厂商名起头；设备后端没在 `cli` 的产品路径上装配 |
-| `crates/testkit/tests/contracts.rs` + `.config/lints/vocabulary.toml` | CI `test` job | 闭集 / 位集被手写第二份、白名单过期、注解与注册表不互为镜像 |
+| `crates/testkit/src/{layer,ownership,boundary}.rs` | `cargo test -p llm-testkit --lib` | 成员集合、边集合与方向、所有权表与 `cargo metadata` / 源码不一致；`op` / `prof` / `prim` / `cutile` 退回 `Result<_, String>`；本文正文点名的 `crate::名字` 不存在；`allow(unsafe_code)` 不在 ADR 0035 §6 的白名单里；机制层（`cutile`）的公开项以厂商名起头；设备后端没在 `cli` 的产品路径上装配 |
+| `crates/testkit/src/{contracts,mirror}.rs` + `.config/lints/vocabulary.toml` | `cargo test -p llm-testkit --lib` | 闭集 / 位集被手写第二份、白名单过期、注解与注册表不互为镜像 |
 | `#[model]` 生成的两个 `const` + 一条测试 | 被标注 crate 的 `cargo test` | 格式自证不成立（粒度 ≤ 0、派生轴除数 ≠ 粒度）；注解的 `dtype` 与 `.k` 可写输出不是同一个类型 |
 
 `cargo metadata` 只能告诉你"谁依赖谁"，不能告诉你"方向对不对"——后者由本文的层表定义，再由
