@@ -36,7 +36,6 @@
 #![deny(unsafe_code)]
 
 mod backprop;
-mod checkpoint;
 mod dist;
 mod distill;
 mod kernel;
@@ -59,7 +58,7 @@ mod store;
 #[path = "../tests/support.rs"]
 mod support;
 
-pub use checkpoint::{Checkpoint, Step, operators, resume};
+pub use session::checkpoint::{Checkpoint, Step, operators, resume};
 pub use dist::{Distributed, Local, Remote};
 pub use distill::{Distill, distillation_loss, kl_div, kl_per_row, log_softmax};
 pub use geometry::{Geometry, Running};
