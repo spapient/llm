@@ -1,5 +1,14 @@
 use super::*;
 
+/// 几何反向对拍：前向取元素和，交给 `check_geometry_grad` 做中心差分。
+fn sum_grad(op: &str, geometry: Geometry, x0: &[f32]) -> Result<()> {
+    check_geometry_grad(op, geometry, x0, |px| {
+        let mut y = vec![0.0f32; geometry.outputs()];
+        geometry.forward(&[px], &mut y).expect("前向");
+        y.iter().sum()
+    })
+}
+
 #[test]
 fn max_pool1d_matches_central_differences() -> Result<()> {
     let total = op::max_pool1d::L;
@@ -116,11 +125,7 @@ fn shaped_max_pool1d_matches_central_differences() -> Result<()> {
         c: 1,
     };
     let x0 = ramp(7);
-    check_geometry_grad("max_pool1d_f32", geometry, &x0, |px| {
-        let mut y = vec![0.0f32; geometry.outputs()];
-        geometry.forward(&[px], &mut y).expect("前向");
-        y.iter().sum()
-    })
+    sum_grad("max_pool1d_f32", geometry, &x0)
 }
 
 #[test]
@@ -134,11 +139,7 @@ fn shaped_max_pool2d_matches_central_differences() -> Result<()> {
         c: 2,
     };
     let x0 = ramp(5 * 5 * 2);
-    check_geometry_grad("max_pool2d_f32", geometry, &x0, |px| {
-        let mut y = vec![0.0f32; geometry.outputs()];
-        geometry.forward(&[px], &mut y).expect("前向");
-        y.iter().sum()
-    })
+    sum_grad("max_pool2d_f32", geometry, &x0)
 }
 
 #[test]
@@ -153,11 +154,7 @@ fn shaped_avg_pool2d_matches_central_differences() -> Result<()> {
         count_include_pad: false,
     };
     let x0 = ramp(5 * 5);
-    check_geometry_grad("avg_pool2d_f32", geometry, &x0, |px| {
-        let mut y = vec![0.0f32; geometry.outputs()];
-        geometry.forward(&[px], &mut y).expect("前向");
-        y.iter().sum()
-    })
+    sum_grad("avg_pool2d_f32", geometry, &x0)
 }
 
 #[test]
@@ -170,11 +167,7 @@ fn shaped_adaptive_pool_matches_central_differences() -> Result<()> {
         c: 1,
     };
     let x0 = ramp(36);
-    check_geometry_grad("adaptive_pool_f32", geometry, &x0, |px| {
-        let mut y = vec![0.0f32; geometry.outputs()];
-        geometry.forward(&[px], &mut y).expect("前向");
-        y.iter().sum()
-    })
+    sum_grad("adaptive_pool_f32", geometry, &x0)
 }
 
 #[test]
@@ -188,11 +181,7 @@ fn shaped_interpolate_matches_central_differences() -> Result<()> {
         linear: true,
     };
     let x0 = ramp(9);
-    check_geometry_grad("interpolate_f32", geometry, &x0, |px| {
-        let mut y = vec![0.0f32; geometry.outputs()];
-        geometry.forward(&[px], &mut y).expect("前向");
-        y.iter().sum()
-    })
+    sum_grad("interpolate_f32", geometry, &x0)
 }
 
 #[test]

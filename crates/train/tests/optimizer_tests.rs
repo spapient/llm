@@ -28,15 +28,11 @@ fn matrix_slots<'a>(
     roles: &[ParamRole],
     shape: (usize, usize),
 ) -> Vec<Slot<'a>> {
-    params
-        .iter_mut()
-        .zip(grads.iter_mut())
-        .zip(roles.iter())
-        .map(|((params, grads), role)| Slot {
-            params,
-            grads,
-            role: *role,
+    slots(params, grads, roles)
+        .into_iter()
+        .map(|slot| Slot {
             shape: Some(shape),
+            ..slot
         })
         .collect()
 }

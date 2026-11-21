@@ -161,6 +161,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Mla` / `Latent` / `Path` | `algorithm` | MLA 的 KV 记账从公式变成结构：`Latent` 只有 `c^{KV}` 与解耦 RoPE 键，两条路径按 §5.8.1 逐元素对拍；不拥有分页与批调度 |
 | `Moe` / `K3_EXPERTS` / `K3_ACTIVE` | `algorithm` | 专家侧：路由走唯一端口 `policy::Calib`，选中集重新归一，共享专家恒参与且不占 top-k 名额；不拥有门控标量、专家参数与训练状态 |
 | `Mhc` / `MHC_STREAMS` | `algorithm` | 残差侧：双随机矩阵重组残差流，非负性是入口硬条件（否则"实测 ≤ 1"会假通过）；不拥有门控标量、层参数与训练状态 |
+| `Family` / `Wiring` / `Blocked` | `algorithm` | 接线台账：17 族每族一行，缺算子还是缺层都具名，`mhc` 的流重组落成 `nn::MatMul(streams, streams)`；不拥有层声明、算子实现与执行路径 |
 | `Hybrid` / `Query` | `algorithm` | 装配：一层 = 层首混流 → MLA 注意力残差 → MoE 前馈残差，三件都调各自模块的唯一入口；增量只加回主路（同一份增量加给每条流会让多流退化成单流），缓存只读、失败不回写；不拥有投影矩阵、归一化算术、KV 页账与训练状态 |
 | `Tower` / `State` / `Kind` / `MemoryStep` / `MEMORY_PER_ATTENTION` | `algorithm` | 层栈装配：每三个通道记忆层配一个混合层（配比是构造条件，不是注释），层序由 `Kind` 逐格读出；记忆状态与 KV 缓存分离（`State` 随序列长累积、`Latent` 按页账走），一次推进要么整栈走一步要么一格不动；不拥有投影、页账与训练状态 |
 | `Kda` / `Memory` | `algorithm` | 混合 delta 轴：纠错式写入（先减去记忆已预测的部分），逐通道门控；不拥有投影、层配方与训练状态 |

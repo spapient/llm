@@ -123,10 +123,11 @@ fn extremum(
 
 /// 一元逐元素算子：`y′` 只看本元素，`dA[i] = in[i]·f(x[i])`。
 fn unary(ctx: Context<'_>, grad: impl Fn(f32) -> f32) -> Result<Vec<Vec<f32>>> {
+    let x = &ctx.inputs[0];
     let da = ctx
         .incoming
         .iter()
-        .zip(ctx.inputs[0])
+        .zip(x)
         .map(|(&g, &v)| g * grad(v))
         .collect();
     Ok(vec![da])
@@ -156,24 +157,13 @@ pub(super) fn hard_sigmoid(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
     unary(ctx, |v| {
         let v = f64::from(v);
         let inside = (v / 6.0 + 0.5) > 0.0 && (v / 6.0 + 0.5) < 1.0;
-        if inside {
-            1.0 / 6.0
-        } else {
-            0.0
-        }
+        if inside { 1.0 / 6.0 } else { 0.0 }
     })
 }
 
 /// y = 0.5·x·(1 + erf(x/√2))：y′ = Φ(x) + x·φ(x)，φ 为标准正态密度、Φ 为累积分布。
 pub(super) fn gelu(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
-    let x = &ctx.inputs[0];
-    let da = ctx
-        .incoming
-        .iter()
-        .zip(x)
-        .map(|(&g, &v)| g * gelu_grad(v))
-        .collect();
-    Ok(vec![da])
+    unary(ctx, gelu_grad)
 }
 
 /// y = Σa：上游标量梯度广播回每个元素，dA[i] = in[0]。
