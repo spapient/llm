@@ -48,20 +48,31 @@ pub(super) fn gemm(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut
     }
     #[cfg(target_arch = "aarch64")]
     {
-        if m == 0
-            || n == 0
-            || k == 0
-            || !m.is_multiple_of(MR)
-            || !n.is_multiple_of(NR)
-            || m * n * k < MIN_ELEMS
-            || !available()
-        {
+        if rejects(m, n, k) {
             return false;
         }
         let t = super::threads_override().min(m / MR).min(n / NR).max(1);
         packed(a, b, m, n, k, out, t);
         true
     }
+}
+
+/// 拒绝走 SME 的形状：零维、非整铺、低于规模门槛，或本机无 SME。
+#[cfg(target_arch = "aarch64")]
+fn rejects(m: usize, n: usize, k: usize) -> bool {
+    degenerate(m, n, k) || !tiled(m, n) || m * n * k < MIN_ELEMS || !available()
+}
+
+/// 任一维为零。
+#[cfg(target_arch = "aarch64")]
+fn degenerate(m: usize, n: usize, k: usize) -> bool {
+    m == 0 || n == 0 || k == 0
+}
+
+/// 行/列是否满足整铺（`MR` 行 × `NR` 列的倍数）。
+#[cfg(target_arch = "aarch64")]
+fn tiled(m: usize, n: usize) -> bool {
+    m.is_multiple_of(MR) && n.is_multiple_of(NR)
 }
 
 /// 一次整铺 SME GEMM：单次铺线程，先并行打包 A 面板，屏障同步后并行外积累加写回。
@@ -104,52 +115,65 @@ fn packed(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f32], t
 /// 全程安全代码，不触碰 `unsafe_code = "deny"` 的开岛边界。
 #[cfg(target_arch = "aarch64")]
 fn pack_a(src: &[f32], dst: &mut [f32], k: usize, mblk0: usize) {
-    use std::simd::{f32x4, simd_swizzle};
-
-    #[inline(always)]
-    fn transpose4(a0: f32x4, a1: f32x4, a2: f32x4, a3: f32x4) -> (f32x4, f32x4, f32x4, f32x4) {
-        let t0 = simd_swizzle!(a0, a1, [0, 4, 1, 5]);
-        let t1 = simd_swizzle!(a0, a1, [2, 6, 3, 7]);
-        let t2 = simd_swizzle!(a2, a3, [0, 4, 1, 5]);
-        let t3 = simd_swizzle!(a2, a3, [2, 6, 3, 7]);
-        (
-            simd_swizzle!(t0, t2, [0, 1, 4, 5]),
-            simd_swizzle!(t0, t2, [2, 3, 6, 7]),
-            simd_swizzle!(t1, t3, [0, 1, 4, 5]),
-            simd_swizzle!(t1, t3, [2, 3, 6, 7]),
-        )
-    }
-
     let blocks = dst.len() / (k * MR);
     for bi in 0..blocks {
         let rowbase = (mblk0 + bi) * MR * k;
         let dstbase = bi * k * MR;
-        let mut kk0 = 0usize;
-        while kk0 + 16 <= k {
-            for r in 0..4usize {
-                for c in 0..4usize {
-                    let rr = r * 4;
-                    let cc = kk0 + c * 4;
-                    let a0 = f32x4::from_slice(&src[rowbase + rr * k + cc..][..4]);
-                    let a1 = f32x4::from_slice(&src[rowbase + (rr + 1) * k + cc..][..4]);
-                    let a2 = f32x4::from_slice(&src[rowbase + (rr + 2) * k + cc..][..4]);
-                    let a3 = f32x4::from_slice(&src[rowbase + (rr + 3) * k + cc..][..4]);
-                    let (b0, b1, b2, b3) = transpose4(a0, a1, a2, a3);
-                    let orow = kk0 + c * 4;
-                    dst[dstbase + orow * MR + rr..][..4].copy_from_slice(&b0.to_array());
-                    dst[dstbase + (orow + 1) * MR + rr..][..4].copy_from_slice(&b1.to_array());
-                    dst[dstbase + (orow + 2) * MR + rr..][..4].copy_from_slice(&b2.to_array());
-                    dst[dstbase + (orow + 3) * MR + rr..][..4].copy_from_slice(&b3.to_array());
-                }
+        let kk0 = pack_tiles(src, dst, k, rowbase, dstbase);
+        pack_tail(src, dst, k, rowbase, dstbase, kk0);
+    }
+}
+
+/// 4×4 子块转置：两轮 `zip1`/`zip2` 交错，供 [`pack_tiles`] 连续写出。
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+fn transpose4(a0: f32x4, a1: f32x4, a2: f32x4, a3: f32x4) -> (f32x4, f32x4, f32x4, f32x4) {
+    let t0 = simd_swizzle!(a0, a1, [0, 4, 1, 5]);
+    let t1 = simd_swizzle!(a0, a1, [2, 6, 3, 7]);
+    let t2 = simd_swizzle!(a2, a3, [0, 4, 1, 5]);
+    let t3 = simd_swizzle!(a2, a3, [2, 6, 3, 7]);
+    (
+        simd_swizzle!(t0, t2, [0, 1, 4, 5]),
+        simd_swizzle!(t0, t2, [2, 3, 6, 7]),
+        simd_swizzle!(t1, t3, [0, 1, 4, 5]),
+        simd_swizzle!(t1, t3, [2, 3, 6, 7]),
+    )
+}
+
+/// 16 对齐的整段：按 16×16 瓦片做 4×4 转置，返回尾部起点。
+#[cfg(target_arch = "aarch64")]
+fn pack_tiles(src: &[f32], dst: &mut [f32], k: usize, rowbase: usize, dstbase: usize) -> usize {
+    let mut kk0 = 0usize;
+    while kk0 + 16 <= k {
+        for r in 0..4usize {
+            for c in 0..4usize {
+                let rr = r * 4;
+                let cc = kk0 + c * 4;
+                let a0 = f32x4::from_slice(&src[rowbase + rr * k + cc..][..4]);
+                let a1 = f32x4::from_slice(&src[rowbase + (rr + 1) * k + cc..][..4]);
+                let a2 = f32x4::from_slice(&src[rowbase + (rr + 2) * k + cc..][..4]);
+                let a3 = f32x4::from_slice(&src[rowbase + (rr + 3) * k + cc..][..4]);
+                let (b0, b1, b2, b3) = transpose4(a0, a1, a2, a3);
+                let orow = kk0 + c * 4;
+                dst[dstbase + orow * MR + rr..][..4].copy_from_slice(&b0.to_array());
+                dst[dstbase + (orow + 1) * MR + rr..][..4].copy_from_slice(&b1.to_array());
+                dst[dstbase + (orow + 2) * MR + rr..][..4].copy_from_slice(&b2.to_array());
+                dst[dstbase + (orow + 3) * MR + rr..][..4].copy_from_slice(&b3.to_array());
             }
-            kk0 += 16;
         }
-        while kk0 < k {
-            for r in 0..MR {
-                dst[dstbase + kk0 * MR + r] = src[rowbase + r * k + kk0];
-            }
-            kk0 += 1;
+        kk0 += 16;
+    }
+    kk0
+}
+
+/// 尾段（不足 16 列）：逐元素标量搬移。
+#[cfg(target_arch = "aarch64")]
+fn pack_tail(src: &[f32], dst: &mut [f32], k: usize, rowbase: usize, dstbase: usize, mut kk0: usize) {
+    while kk0 < k {
+        for r in 0..MR {
+            dst[dstbase + kk0 * MR + r] = src[rowbase + r * k + kk0];
         }
+        kk0 += 1;
     }
 }
 
@@ -196,8 +220,10 @@ unsafe fn sme_tile(
     b_stride: usize,
 ) {
     let b_adv = b_stride - 3 * 64;
-    unsafe {
-        asm!(
+    let mut c16 = c.add(16);
+    let mut c32 = c.add(32);
+    let mut c48 = c.add(48);
+    asm!(
         "zero {{ za0.s }}",
         "zero {{ za1.s }}",
         "zero {{ za2.s }}",
@@ -222,12 +248,6 @@ unsafe fn sme_tile(
         "fmopa za3.s, p0/m, p0/m, z0.s, z4.s",
         "subs {k}, {k}, #1",
         "b.ne 2b",
-        "mov {c16}, {c}",
-        "add {c16}, {c16}, #64",
-        "mov {c32}, {c}",
-        "add {c32}, {c32}, #128",
-        "mov {c48}, {c}",
-        "add {c48}, {c48}, #192",
         "mov w12, #0",
         "mov w13, #1",
         "mov w14, #2",
@@ -247,22 +267,15 @@ unsafe fn sme_tile(
         "add w15, w15, #4",
         "cmp w12, #64",
         "b.ne 3b",
-        a = inout(reg) a_p => _,
-        b = inout(reg) b_p => _,
-        c = inout(reg) c => _,
-        a_in = in(reg) a_p,
-        b_in = in(reg) b_p,
-        k = out(reg) _,
-        kcnt = in(reg) k,
-        nstride = in(reg) n_stride,
-        b_adv = in(reg) b_adv,
-        c16 = out(reg) _, c32 = out(reg) _, c48 = out(reg) _,
+        a = inout(reg) a_p => _, b = inout(reg) b_p => _, c = inout(reg) c => _,
+        a_in = in(reg) a_p, b_in = in(reg) b_p,
+        k = out(reg) _, kcnt = in(reg) k,
+        nstride = in(reg) n_stride, b_adv = in(reg) b_adv,
+        c16 = inout(reg) c16 => _, c32 = inout(reg) c32 => _, c48 = inout(reg) c48 => _,
         out("z0") _, out("z1") _, out("z2") _, out("z3") _, out("z4") _,
-        out("w12") _, out("w13") _, out("w14") _, out("w15") _,
-        out("p0") _,
-        options(nostack)
-        );
-    }
+        out("w12") _, out("w13") _, out("w14") _, out("w15") _, out("p0") _,
+        options(nostack),
+    );
 }
 
 /// 进入流式模式并准备全真谓词 `p0`；必须在任何 SME 指令前调用，且每线程一次。
@@ -271,9 +284,7 @@ unsafe fn sme_tile(
 #[allow(unsafe_code)]
 #[inline(never)]
 unsafe fn enter_sm() {
-    unsafe {
-        asm!("smstart", "smstart za", "ptrue p0.s", options(nostack));
-    }
+    asm!("smstart", "smstart za", "ptrue p0.s", options(nostack));
 }
 
 /// 退出流式模式；与 [`enter_sm`] 成对，`sme_tile` 之间不得夹带 NEON。
@@ -282,9 +293,7 @@ unsafe fn enter_sm() {
 #[allow(unsafe_code)]
 #[inline(never)]
 unsafe fn exit_sm() {
-    unsafe {
-        asm!("smstop za", "smstop", options(nostack));
-    }
+    asm!("smstop za", "smstop", options(nostack));
 }
 
 #[cfg(all(test, target_arch = "aarch64"))]
