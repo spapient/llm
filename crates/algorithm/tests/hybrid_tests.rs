@@ -495,6 +495,31 @@ fn the_tower_never_touches_the_cache() {
     assert_eq!((cache.seq(), cache.cache_elements()), before);
 }
 
+/// 跑一次必定失败的一步：流与全部记忆都必须原样退回（后写的层不能留、前几层写过的也不能留）。
+fn failed_step_rolls_back(
+    tower: &Tower<f64>,
+    cache: &Latent<f64>,
+    steps: &[MemoryStep<'_, f64>],
+    why: &str,
+) {
+    let mut state = tower.state();
+    let mut streams = vec![vec![1.0, 2.0, 3.0, 4.0]];
+    let original = streams.clone();
+    let err = tower
+        .step(
+            &mut streams,
+            &mut state,
+            cache,
+            &query(),
+            steps,
+            Path::Absorb,
+        )
+        .expect_err(why);
+    assert_eq!(err.code(), Code::Invalid);
+    assert_eq!(streams, original, "失败之后流必须原样退回");
+    assert!(state.is_pristine(), "前几层写过的记忆也不能留下");
+}
+
 /// 某一格失败时，流与全部记忆都原样退回：前几层写过的也不留。
 #[test]
 fn a_bad_memory_input_rolls_the_whole_layer_stack_back() {
@@ -510,22 +535,7 @@ fn a_bad_memory_input_rolls_the_whole_layer_stack_back() {
         ..steps[2]
     };
 
-    let mut state = tower.state();
-    let mut streams = vec![vec![1.0, 2.0, 3.0, 4.0]];
-    let original = streams.clone();
-    let err = tower
-        .step(
-            &mut streams,
-            &mut state,
-            &cache,
-            &query(),
-            &steps,
-            Path::Absorb,
-        )
-        .expect_err("门宽 3 不等于键维 2");
-    assert_eq!(err.code(), Code::Invalid);
-    assert_eq!(streams, original, "失败之后流必须原样退回");
-    assert!(state.is_pristine(), "前两层写过的记忆也不能留下");
+    failed_step_rolls_back(&tower, &cache, &steps, "门宽 3 不等于键维 2");
 }
 
 /// 记忆输入的份数必须等于记忆层个数：少一份是错位，多一份是无主数据。
@@ -538,22 +548,7 @@ fn the_number_of_memory_inputs_must_match_the_memory_layers() {
     for count in [MEMORY_PER_ATTENTION - 1, MEMORY_PER_ATTENTION + 1] {
         let steps: Vec<MemoryStep<'_, f64>> =
             (0..count).map(|_| full_write(&key, &value)).collect();
-        let mut state = tower.state();
-        let mut streams = vec![vec![1.0, 2.0, 3.0, 4.0]];
-        let original = streams.clone();
-        let err = tower
-            .step(
-                &mut streams,
-                &mut state,
-                &cache,
-                &query(),
-                &steps,
-                Path::Absorb,
-            )
-            .expect_err("份数不对不该通过");
-        assert_eq!(err.code(), Code::Invalid);
-        assert_eq!(streams, original);
-        assert!(state.is_pristine());
+        failed_step_rolls_back(&tower, &cache, &steps, "份数不对不该通过");
     }
 }
 
