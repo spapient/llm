@@ -1,4 +1,11 @@
+//! 适配层的单元测试：`Streams` 是替换缝，测试替身把"流"退化成字符串，于是适配层不必进入过程宏上下文。
+//!
+//! 覆盖边界是显式的：`expand_*` 的**成功**路径要 `tokenize` 出真实 `TokenTree`，而过程宏 API 在
+//! 上下文之外不可用，所以这里只钉住它调用的每一步及其顺序；生成文本由 `render_tests` 逐字钉，
+//! 真实的宏调用由本仓 89 个算子与各层结构体的编译本身覆盖。
+
 use super::*;
+use crate::fixture::lex;
 
 /// 测试用"流"：字符串本身即容器，因此适配层不必进入过程宏上下文。
 ///
@@ -98,8 +105,11 @@ fn the_error_message_survives_the_round_trip() {
 
 #[test]
 fn a_transparent_group_is_not_mistaken_for_a_bracket_group() {
-    assert_eq!(bracket(Delimiter::None), Bracket::Invisible);
-    assert_ne!(bracket(Delimiter::None), Bracket::Square);
+    assert_eq!(
+        bracket(Delimiter::None),
+        Bracket::Invisible,
+        "透明组没有可见括号"
+    );
 }
 
 #[test]
@@ -112,6 +122,34 @@ fn a_runtime_annotation_rejection_keeps_the_annotated_item() {
     assert!(
         expanded.0.contains("pub struct Head { len: usize }"),
         "被标注项必须原样保留：{}",
+        expanded.0
+    );
+}
+
+/// `expand_runtime` 执行的组合顺序：先注入字段，再把构造器宏接在后面。
+///
+/// 成功路径本身在单测里不可达——`resolve` 要 `tokenize` 出真实 `TokenTree`，而 `Span::call_site()`
+/// 在过程宏上下文之外 panic；这条用例钉住的是那两步行之有效的组合与顺序。
+#[test]
+fn the_runtime_expansion_inserts_the_slot_before_the_constructor() {
+    let declaration =
+        decl::parse_runtime(&lex(r#"name = $name, out = [$tokens, $dim], ops = [$op]"#))
+            .expect("合法运行时注解");
+    let item = text("pub struct Head { len: usize }");
+    let expanded = attach(
+        item.insert_field("spec: ::nn::ContractSpec,"),
+        &render::render_runtime(&declaration, "Head"),
+    );
+    assert!(
+        expanded
+            .0
+            .starts_with("pub struct Head { spec: ::nn::ContractSpec, len: usize }"),
+        "参数槽位是第一个字段：{}",
+        expanded.0
+    );
+    assert!(
+        expanded.0.contains("macro_rules! __layer_spec_Head"),
+        "构造器宏接在被标注项之后：{}",
         expanded.0
     );
 }

@@ -16,6 +16,14 @@ fn runtime_declaration(text: &str) -> RuntimeDecl {
     parse_runtime(&lex(text)).expect("合法运行时注解")
 }
 
+/// 一个最小线性层的生成结果：多条用例共享这份夹具，各自只加一条契约。
+fn q() -> String {
+    render(
+        &declaration(r#"name = "q", out = [8], ops = ["gemv_i4"]"#),
+        "Q",
+    )
+}
+
 #[test]
 fn a_runtime_declaration_generates_a_constructor_macro() {
     let code = render_runtime(
@@ -93,10 +101,7 @@ fn an_input_width_generates_the_same_floor_path_as_a_linear_layer() {
 
 #[test]
 fn without_an_input_width_no_bounds_method_is_generated() {
-    let code = render(
-        &declaration(r#"name = "q", out = [8], ops = ["gemv_i4"]"#),
-        "Q",
-    );
+    let code = q();
     assert!(
         !code.contains("fn bounds("),
         "没给形状就不要生成一个“空”实现：契约的默认值已经说明了这件事：{code}"
@@ -118,10 +123,7 @@ fn a_scalar_shape_is_written_with_an_explicit_element_type() {
 
 #[test]
 fn the_check_module_runs_only_under_cfg_test() {
-    let code = render(
-        &declaration(r#"name = "q", out = [8], ops = ["gemv_i4"]"#),
-        "Q",
-    );
+    let code = q();
     assert!(
         code.contains("#[cfg(test)]\n#[allow(non_snake_case)]\nmod __layer_check_Q {"),
         "{code}"
@@ -135,10 +137,7 @@ fn the_check_module_runs_only_under_cfg_test() {
 
 #[test]
 fn generated_identifiers_are_prefixed_so_they_cannot_collide_with_user_methods() {
-    let code = render(
-        &declaration(r#"name = "q", out = [8], ops = ["gemv_i4"]"#),
-        "Q",
-    );
+    let code = q();
     assert!(code.contains("__layer_spec"), "{code}");
     assert!(
         !code.contains("fn declaration("),
@@ -148,10 +147,7 @@ fn generated_identifiers_are_prefixed_so_they_cannot_collide_with_user_methods()
 
 #[test]
 fn the_check_module_calls_the_inherent_helper_not_a_receiver_less_trait_method() {
-    let code = render(
-        &declaration(r#"name = "q", out = [8], ops = ["gemv_i4"]"#),
-        "Q",
-    );
+    let code = q();
     assert!(
         code.contains("let spec = <super::Q>::__layer_spec();"),
         "{code}"
@@ -176,21 +172,29 @@ fn assert_balanced_braces(code: &str) {
     assert_eq!(depth, 0, "花括号没有配平：{code}");
 }
 
+/// 三种形态都必须配平：括号在字符串里被逐个计数，中途出现多余的 `}` 也算失败。
 #[test]
-fn the_generated_braces_are_balanced() {
-    let code = render(
+fn every_form_renders_balanced_braces() {
+    let layer = render(
         &declaration(r#"name = "q", out = [2, 3], ops = ["gemv_i4"]"#),
         "Q",
     );
-    assert_balanced_braces(&code);
+    assert_balanced_braces(&layer);
+    let runtime = render_runtime(
+        &runtime_declaration(r#"name = $name, out = [$a, $b], ops = [$op, $op2], role = $r"#),
+        "R",
+    );
+    assert_balanced_braces(&runtime);
+    let model = render_model(
+        &model(r#"name = "gemv_i4", shape = [4, 4], dtype = "f32""#),
+        "M",
+    );
+    assert_balanced_braces(&model);
 }
 
 #[test]
 fn a_missing_operator_is_reported_with_the_layer_name() {
-    let code = render(
-        &declaration(r#"name = "q", out = [8], ops = ["gemv_i4"]"#),
-        "Q",
-    );
+    let code = q();
     assert!(
         code.contains(r#"::std::panic!("注解声明的层"#),
         "运行期失败也要说清是哪个层：{code}"

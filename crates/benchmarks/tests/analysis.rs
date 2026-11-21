@@ -63,7 +63,7 @@ pub(crate) fn estimates(manifest: &Path, group: &str, benchmark: &str) -> PathBu
     manifest
         .join("../..")
         .join("target/criterion")
-        .join(group)
+        .join(on_disk(group))
         .join(on_disk(benchmark))
         .join("new/estimates.json")
 }
