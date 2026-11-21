@@ -169,8 +169,8 @@ impl Report<'_> {
             roofline.achieved_percent.round() as i64,
             roofline.declared_ns.round() as i64,
             roofline.ceiling_percent.round() as i64,
-            roofline.s_plus_percent.round() as i64,
-            roofline.s_plus_line.round() as i64,
+            roofline.s_plus_percent().round() as i64,
+            roofline.s_plus_line().round() as i64,
             roofline.mflops_per_s.round() as i64,
             roofline.bottleneck(),
         )
