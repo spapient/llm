@@ -6,7 +6,7 @@ use prof::atom::Need;
 
 use super::build::parse_need;
 use super::variant::variants;
-use super::{Axis, Chunk, Grid, Skeleton, Variant, field};
+use super::{Axis, Chunk, Grid, Phase, Skeleton, Variant, field};
 
 /// 算子名：`[op].name`，非空。
 pub(super) fn op_name(op: &Table) -> diagnostic::Result<String> {
@@ -233,4 +233,66 @@ pub(super) type Extras = (Vec<(String, String)>, Option<Grid>, Option<Chunk>);
 /// `[consts]` 与 `[grid]`、`[chunk]`：声明表里三块可选的补丁，一起解析成 `(常量, 网格, 分块)`。
 pub(super) fn extras(table: &Table) -> diagnostic::Result<Extras> {
     Ok((consts(table)?, grid(table)?, chunk(table)?))
+}
+
+/// `[[phases]]`：数据流阶段（可选）。缺省 = 单阶段：名字取算子名，读/写槽位取自签名。
+pub(super) fn phases(
+    table: &Table,
+    op: &str,
+    signature: &crate::sig::Signature,
+) -> diagnostic::Result<Vec<Phase>> {
+    let Some(rows) = table.table_array("phases") else {
+        return Ok(vec![Phase {
+            name: op.to_string(),
+            reads: buffer_names(signature, false),
+            writes: buffer_names(signature, true),
+        }]);
+    };
+    rows.iter().map(|row| phase(op, row, signature)).collect()
+}
+
+/// 一条阶段：`name` 必填，`reads`/`writes` 是槽位名数组，每个名字都必须是签名的缓冲形参。
+fn phase(op: &str, row: &Table, signature: &crate::sig::Signature) -> diagnostic::Result<Phase> {
+    let name = row
+        .string("name")
+        .map(str::to_string)
+        .ok_or_else(|| field(&format!("{op}.phases.name"), "缺失"))?;
+    let reads = slot_names(op, row, "reads", signature)?;
+    let writes = slot_names(op, row, "writes", signature)?;
+    Ok(Phase { name, reads, writes })
+}
+
+/// 阶段里的槽位名数组：每个名字都必须是签名的缓冲形参，否则拼装期就拦下（而不是漏缝）。
+fn slot_names(
+    op: &str,
+    row: &Table,
+    key: &str,
+    signature: &crate::sig::Signature,
+) -> diagnostic::Result<Vec<String>> {
+    let Some(names) = row.string_array(key) else {
+        return Ok(Vec::new());
+    };
+    for name in &names {
+        let known = signature
+            .params()
+            .iter()
+            .any(|param| param.ctype.is_buffer() && param.name == *name);
+        if !known {
+            return Err(field(
+                &format!("{op}.phases.{key}"),
+                format!("`{name}` 不是签名的缓冲形参"),
+            ));
+        }
+    }
+    Ok(names.into_iter().map(str::to_string).collect())
+}
+
+/// 签名里的缓冲形参名，按方向（`mutable`）筛。
+fn buffer_names(signature: &crate::sig::Signature, mutable: bool) -> Vec<String> {
+    signature
+        .params()
+        .iter()
+        .filter(|param| param.ctype.is_buffer() && param.mutable == mutable)
+        .map(|param| param.name.clone())
+        .collect()
 }

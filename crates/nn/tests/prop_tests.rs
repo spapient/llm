@@ -77,7 +77,7 @@ fn assert_near(got: f64, want: f64, tol: f64, what: &str) {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 128, max_shrink_iters: 4_096, ..ProptestConfig::default() })]
+    #![proptest_config(testkit::prop::config())]
 
     /// 总和与层在清单里的先后无关：`bytes` 是加法，不是"最后一层说了算"。
     #[test]

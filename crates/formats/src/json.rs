@@ -1,4 +1,4 @@
-//! 受限 JSON 读取器：服务权重文件的头部（safetensors）与沉降账本（`llm.cert.v1`）。
+//! 职责：受限 JSON 读取器——服务权重文件的头部（safetensors）与沉降账本（`llm.cert.v1`）。
 //!
 //! 全仓零外部依赖，所以这里手写一个只认结构、不追求通用的读取器：它接受完整 JSON 文法，但只
 //! 产出这几处需要的几种值（`null` / 布尔 / 数字 / 字符串 / 数组 / 对象）。两个入口的唯一差别是
@@ -191,46 +191,28 @@ struct Reader<'a> {
 }
 
 impl Reader<'_> {
-    /// 一个值：按开头字节分派到标量、容器与三个字面量，深度在这里统一设上限。
+    /// 一个值：按开头字节分派（字符串、数字、两种容器、三个字面量），深度在这里统一设上限。
     fn value(&mut self, depth: usize) -> Result<Value> {
         if depth > MAX_DEPTH {
             return Err(self.cursor.fail(format!("嵌套超过 {MAX_DEPTH} 层")));
         }
         self.cursor.skip_space();
-        let opened = self.peek_value()?;
-        self.value_from(opened, depth)
-    }
-
-    /// 值的开头字节：先跳过空白，再取一个字节，末尾即报错。
-    fn peek_value(&mut self) -> Result<u8> {
-        self.cursor
-            .peek()
-            .ok_or_else(|| self.cursor.fail("期望一个值，但已到末尾"))
-    }
-
-    /// 字符串、数字与容器：按开头字节分派，其余交给字面量。
-    fn value_from(&mut self, opened: u8, depth: usize) -> Result<Value> {
-        match opened {
-            b'"' => self.string().map(Value::String),
-            b'-' | b'0'..=b'9' => self.number(),
-            b'{' => self.object(depth),
-            b'[' => self.array(depth),
-            _ => self.word_value(opened),
-        }
-    }
-
-    /// 三个字面量：`true` / `false` / `null`。
-    fn word_value(&mut self, opened: u8) -> Result<Value> {
-        match opened {
-            b't' => self.literal("true", Value::Bool(true)),
-            b'f' => self.literal("false", Value::Bool(false)),
-            b'n' => self.literal("null", Value::Null),
-            _ => Err(self.cursor.fail("无法识别值的开头")),
-        }
-    }
-
-    fn literal(&mut self, word: &str, value: Value) -> Result<Value> {
         let at = self.cursor.pos();
+        match self.cursor.peek() {
+            Some(b'"') => self.string().map(Value::String),
+            Some(b'-' | b'0'..=b'9') => self.number(),
+            Some(b'{') => self.object(depth),
+            Some(b'[') => self.array(depth),
+            Some(b't') => self.literal(at, "true", Value::Bool(true)),
+            Some(b'f') => self.literal(at, "false", Value::Bool(false)),
+            Some(b'n') => self.literal(at, "null", Value::Null),
+            Some(_) => Err(self.cursor.fail("无法识别值的开头")),
+            None => Err(self.cursor.fail("期望一个值，但已到末尾")),
+        }
+    }
+
+    /// 三个字面量：从 `at` 起必须逐字节等于 `word`，'内容不足'与'对不上'分开报。
+    fn literal(&mut self, at: usize, word: &str, value: Value) -> Result<Value> {
         let end = at + word.len();
         let slice = self.cursor.bytes().get(at..end).ok_or_else(|| {
             self.cursor
@@ -248,40 +230,26 @@ impl Reader<'_> {
         self.cursor.eat(b'{')?;
         let mut fields: Vec<(String, Value)> = Vec::new();
         let mut seen = HashSet::new();
-        while self.object_item(open, depth, &mut seen, &mut fields)? {}
-        Ok(Value::Object(fields))
-    }
-
-    /// 一个键值对之后的分隔：空对象直接收尾，否则读一对再按分隔符继续。
-    fn object_item(
-        &mut self,
-        open: usize,
-        depth: usize,
-        seen: &mut HashSet<String>,
-        fields: &mut Vec<(String, Value)>,
-    ) -> Result<bool> {
-        if self.close(b'}') {
-            return Ok(false);
+        while !self.close(b'}') {
+            fields.push(self.field(depth + 1, &mut seen)?);
+            if !self.separator(open, b'}', "对象")? {
+                break;
+            }
         }
-        fields.push(self.field(depth + 1, seen)?);
-        self.separator(open, b'}', "对象")
+        Ok(Value::Object(fields))
     }
 
     fn array(&mut self, depth: usize) -> Result<Value> {
         let open = self.cursor.pos();
         self.cursor.eat(b'[')?;
         let mut items = Vec::new();
-        while self.array_item(open, depth, &mut items)? {}
-        Ok(Value::Array(items))
-    }
-
-    /// 一个元素之后的分隔：空数组直接收尾，否则读一个值再按分隔符继续。
-    fn array_item(&mut self, open: usize, depth: usize, items: &mut Vec<Value>) -> Result<bool> {
-        if self.close(b']') {
-            return Ok(false);
+        while !self.close(b']') {
+            items.push(self.value(depth + 1)?);
+            if !self.separator(open, b']', "数组")? {
+                break;
+            }
         }
-        items.push(self.value(depth + 1)?);
-        self.separator(open, b']', "数组")
+        Ok(Value::Array(items))
     }
 
     /// 空容器：`skip_space` 后紧跟闭合符就吃掉它。
@@ -329,44 +297,24 @@ impl Reader<'_> {
         let mut text = String::new();
         loop {
             let at = self.cursor.pos();
-            let byte = self.bump_at(open, "字符串没有闭合")?;
-            if !self.string_byte(open, at, byte, &mut text)? {
-                return Ok(text);
+            let Some(byte) = self.cursor.bump() else {
+                return Err(self.cursor.fail_at(open, "字符串没有闭合"));
+            };
+            match byte {
+                b'"' => return Ok(text),
+                b'\\' => text.push(self.escape(open, at)?),
+                0x00..=0x1f => return Err(self.cursor.fail_at(at, "控制字符必须转义")),
+                _ => text.push(self.plain(at)?),
             }
         }
     }
 
-    /// 读一个字节：末尾即报错，报错位置用 `at` 而不是当前位置。
-    fn bump_at(&mut self, at: usize, message: &str) -> Result<u8> {
-        self.cursor
-            .bump()
-            .ok_or_else(|| self.cursor.fail_at(at, message))
-    }
-
-    /// 一个字符串字节：闭合引号收尾（`false`），其余推进。
-    fn string_byte(&mut self, open: usize, at: usize, byte: u8, text: &mut String) -> Result<bool> {
-        if byte == b'"' {
-            return Ok(false);
-        }
-        if byte == b'\\' {
-            text.push(self.escape(open, at)?);
-            return Ok(true);
-        }
-        self.string_plain(at, byte, text)
-    }
-
-    /// 非转义字符：控制字符必须转义，其余按 UTF-8 取一个完整字符。
-    fn string_plain(&mut self, at: usize, byte: u8, text: &mut String) -> Result<bool> {
-        if matches!(byte, 0x00..=0x1f) {
-            return Err(self.cursor.fail_at(at, "控制字符必须转义"));
-        }
-        text.push(self.plain(at)?);
-        Ok(true)
-    }
-
     /// 一个转义序列：`\` 之后的一个字节；`u` 走四位十六进制与代理对，其余查固定表。
     fn escape(&mut self, open: usize, at: usize) -> Result<char> {
-        let escaped = self.bump_at(at, "转义序列不完整")?;
+        let escaped = self
+            .cursor
+            .bump()
+            .ok_or_else(|| self.cursor.fail_at(at, "转义序列不完整"))?;
         if escaped == b'u' {
             return self.unicode_escape(open);
         }
@@ -382,66 +330,45 @@ impl Reader<'_> {
 
     /// 一个非转义字符：按起始字节定宽度取一个完整字符（输入是 `&str`，切片不会截断字符）。
     fn plain(&mut self, at: usize) -> Result<char> {
-        let width = self.char_width(at)?;
-        let text = self.char_at(at, width)?;
-        self.cursor.seek(at + width);
-        Ok(text)
-    }
-
-    /// 起始字节 → 字符宽度；不是合法起始字节即报错。
-    fn char_width(&self, at: usize) -> Result<usize> {
-        match self.cursor.bytes().get(at) {
-            Some(0x00..=0x7f) => Ok(1),
-            Some(0xc0..=0xdf) => Ok(2),
-            Some(0xe0..=0xef) => Ok(3),
-            Some(0xf0..=0xf7) => Ok(4),
-            _ => Err(self.cursor.fail_at(at, "非法的 UTF-8 起始字节")),
-        }
-    }
-
-    /// 按宽度取一个完整字符；字节序列非法即报错。
-    fn char_at(&self, at: usize, width: usize) -> Result<char> {
-        self.cursor
+        let width = match self.cursor.bytes().get(at) {
+            Some(0x00..=0x7f) => 1,
+            Some(0xc0..=0xdf) => 2,
+            Some(0xe0..=0xef) => 3,
+            Some(0xf0..=0xf7) => 4,
+            _ => return Err(self.cursor.fail_at(at, "非法的 UTF-8 起始字节")),
+        };
+        let text = self
+            .cursor
             .bytes()
             .get(at..at + width)
             .and_then(|raw| std::str::from_utf8(raw).ok())
             .and_then(|raw| raw.chars().next())
-            .ok_or_else(|| self.cursor.fail_at(at, "非法的 UTF-8 序列"))
+            .ok_or_else(|| self.cursor.fail_at(at, "非法的 UTF-8 序列"))?;
+        self.cursor.seek(at + width);
+        Ok(text)
     }
 
-    /// `\uXXXX`：普通码位直接取，高位代理必须配一个低位代理，孤立低位代理拒。
+    /// `\uXXXX`：普通码位直接取，高位代理必须紧跟一个低位代理，孤立低位代理拒。
     fn unicode_escape(&mut self, open: usize) -> Result<char> {
         let mut code = self.hex4()?;
         if (0xdc00..=0xdfff).contains(&code) {
             return Err(self.cursor.fail_at(open, "孤立的低位代理"));
         }
-        code = self.surrogate_pair(code)?;
+        if (0xd800..=0xdbff).contains(&code) {
+            let at = self.cursor.pos();
+            if self.cursor.bump() != Some(b'\\') || self.cursor.bump() != Some(b'u') {
+                return Err(self.cursor.fail_at(at, "高位代理后必须紧跟 `\\u` 低位代理"));
+            }
+            let low = self.hex4()?;
+            if !(0xdc00..=0xdfff).contains(&low) {
+                return Err(self.cursor.fail_at(at, "低位代理必须落在 U+DC00..U+DFFF"));
+            }
+            code = 0x1_0000 + ((code - 0xd800) << 10) + (low - 0xdc00);
+        }
         char::from_u32(code).ok_or_else(|| {
             self.cursor
                 .fail_at(open, format!("U+{code:04X} 不是合法字符"))
         })
-    }
-
-    /// 高位代理：必须紧跟 `\u` + 低位代理，否则原样返回。
-    fn surrogate_pair(&mut self, code: u32) -> Result<u32> {
-        if !(0xd800..=0xdbff).contains(&code) {
-            return Ok(code);
-        }
-        let at = self.cursor.pos();
-        self.expect_escape(at)?;
-        let low = self.hex4()?;
-        if !(0xdc00..=0xdfff).contains(&low) {
-            return Err(self.cursor.fail_at(at, "低位代理必须落在 U+DC00..U+DFFF"));
-        }
-        Ok(0x1_0000 + ((code - 0xd800) << 10) + (low - 0xdc00))
-    }
-
-    /// 高位代理后的 `\u` 前缀。
-    fn expect_escape(&mut self, at: usize) -> Result<()> {
-        if self.cursor.bump() != Some(b'\\') || self.cursor.bump() != Some(b'u') {
-            return Err(self.cursor.fail_at(at, "高位代理后必须紧跟 `\\u` 低位代理"));
-        }
-        Ok(())
     }
 
     /// 四位十六进制：不足 4 位与非十六进制字符用同一句报错。
@@ -471,12 +398,6 @@ impl Reader<'_> {
         let whole = self.cursor.pos();
         let dotted = self.suffix(start, b".", false, "小数点后缺少数字")?;
         let exponent = self.suffix(start, b"eE", true, "指数缺少数字")?;
-        self.check_leading_zero(start, digits, whole)?;
-        self.number_value(start, dotted, exponent)
-    }
-
-    /// 整数部分不得有前导零（`0` 本身除外）。
-    fn check_leading_zero(&self, start: usize, digits: usize, whole: usize) -> Result<()> {
         let head = self.cursor.bytes().get(digits..whole).unwrap_or_default();
         if head.len() > 1 && head[0] == b'0' {
             let shown =
@@ -485,31 +406,26 @@ impl Reader<'_> {
                 .cursor
                 .fail_at(start, format!("数字 `{shown}` 不能有前导零")));
         }
-        Ok(())
-    }
-
-    /// 把已扫过的原文折算成整数或小数（小数/指数只有账本模式收）。
-    fn number_value(&self, start: usize, dotted: bool, exponent: bool) -> Result<Value> {
         let text = self
             .cursor
             .bytes()
             .get(start..self.cursor.pos())
             .unwrap_or_default();
-        if !(dotted || exponent) {
-            let Ok(shown) = std::str::from_utf8(text) else {
-                return Err(self.cursor.fail_at(start, "整数不是 ASCII"));
-            };
-            return shown.parse::<i64>().map(Value::Integer).map_err(|_| {
-                self.cursor
-                    .fail_at(start, format!("整数 `{shown}` 超出 i64 范围"))
-            });
+        if dotted || exponent {
+            if !self.fractional {
+                return Err(self
+                    .cursor
+                    .fail_at(start, "只接受整数：头部里的形状与偏移不能是小数或指数"));
+            }
+            return Ok(Value::Decimal(String::from_utf8_lossy(text).into_owned()));
         }
-        if !self.fractional {
-            return Err(self
-                .cursor
-                .fail_at(start, "只接受整数：头部里的形状与偏移不能是小数或指数"));
-        }
-        Ok(Value::Decimal(String::from_utf8_lossy(text).into_owned()))
+        let Ok(shown) = std::str::from_utf8(text) else {
+            return Err(self.cursor.fail_at(start, "整数不是 ASCII"));
+        };
+        shown.parse::<i64>().map(Value::Integer).map_err(|_| {
+            self.cursor
+                .fail_at(start, format!("整数 `{shown}` 超出 i64 范围"))
+        })
     }
 
     /// 小数与指数（都可缺）：标记符之后（指数可带符号）必须至少一位数字。

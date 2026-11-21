@@ -84,11 +84,7 @@ fn assert_vec_near(got: &[f64], want: &[f64], tol: f64, what: &str) {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig {
-        cases: 128,
-        max_shrink_iters: 4_096,
-        .. ProptestConfig::default()
-    })]
+    #![proptest_config(testkit::prop::config())]
 
     /// 合成律是**加权和**，权重和为 1：三条通道整体平移 `+s`，输出也必须平移 `+s`。
     /// 平移不变性是"门控不是分段函数、没有隐藏的偏置项"的判据。

@@ -162,7 +162,8 @@ impl<'a> Vm<'a> {
         Ok(())
     }
 
-    pub(crate) fn rebuild_tensor(&mut self, args: Value) -> Result<()> {
+    /// `REDUCE` 的张量重建：实参 → 张量，名字取栈顶，并把 `Tensor` 占位压回栈。
+    fn rebuild_tensor(&mut self, args: Value) -> Result<()> {
         let items = as_tuple(args, "rebuild 参数不是元组")?;
         let mut tensor = tensor_of(&items)?;
         tensor.name = self.tensor_name();
@@ -174,7 +175,6 @@ impl<'a> Vm<'a> {
     /// 张量名：`REDUCE` 的实参与可调用对象弹出后，栈顶若是字符串，它就是 `state_dict`
     /// 里紧邻这个值的键；否则按出现序号命名，避免借用上一个张量残留的键把两个张量
     /// 叫成同一个名字（`torch.save([t1, t2])` 就是这一形状）。
-
     pub(crate) fn tensor_name(&self) -> String {
         match self.stack.last() {
             Some(Value::Str(name)) => name.clone(),

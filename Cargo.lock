@@ -517,6 +517,7 @@ dependencies = [
  "llm-diagnostic",
  "llm-nn",
  "llm-op",
+ "llm-testkit",
  "proptest",
 ]
 
@@ -710,6 +711,7 @@ dependencies = [
  "llm-diagnostic",
  "llm-op",
  "llm-tensor",
+ "llm-testkit",
  "llm-weights",
  "proptest",
 ]

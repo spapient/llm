@@ -39,7 +39,7 @@
 不再复述每一次的数字；配置层的现状见 [ADR 0022](adr/0022-build-time-corpora.md) 与
 [ADR 0023](adr/0023-settings-to-cli.md)。
 
-允许的边（当前全量，共 170 条，含 53 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benchmarks` / `testkit` 的边不参与运行时方向判定）：
+允许的边（当前全量，共 172 条，含 55 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benchmarks` / `testkit` 的边不参与运行时方向判定）：
 
 ```
 cutile   → diagnostic, op, prim, prof    +dev: testkit
@@ -64,8 +64,8 @@ formats  → diagnostic, dtype, wire    +dev: testkit
 weights  → tensor, diagnostic, dtype, wire, formats, storage（`storage` 仅由 `mmap` feature 可选启用，复用其唯一 unsafe 岛）    +dev: storage, testkit
 snapshot → diagnostic, tensor, weights, wire（检查点字节格式：只写相对上一条的差 + CRC-32 尾部，不认识训练循环）    +dev: testkit
 autograd → tensor, diagnostic    +dev: testkit
-nn       → tensor, op, weights, diagnostic, annotation
-algorithm → nn, op, diagnostic（架构变体的参考语义：产出张量流而非 `ContractSpec`，故不认识 `tensor` / `weights`）
+nn       → tensor, op, weights, diagnostic, annotation    +dev: testkit
+algorithm → nn, op, diagnostic    +dev: testkit（架构变体的参考语义：产出张量流而非 `ContractSpec`，故不认识 `tensor` / `weights`）
 shard    → diagnostic
 train    → nn, autograd, weights, shard, op, tensor, diagnostic, snapshot    +dev: testkit
 engine   → tensor, diagnostic, storage    +dev: testkit

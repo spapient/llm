@@ -123,6 +123,110 @@ pub struct OpDecl {
     pub template: String,
     /// 内核签名：从模板的入口函数解析，是 ABI 的唯一事实源。
     pub signature: crate::sig::Signature,
+    /// 数据流阶段：谁在哪一阶段读/写哪个槽位；单内核算子就是一段（名字 = 算子名）。
+    pub phases: Vec<Phase>,
+}
+
+/// 一个数据流阶段：把一次执行切成「读哪些槽位 → 写哪些槽位」的有序片段。`compose` 靠它判定
+/// 生产者的写阶段与消费者的读阶段能不能对成一条缝。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Phase {
+    /// 阶段名（缺省 = 算子名）。
+    pub name: String,
+    /// 本阶段读的槽位名（缓冲形参名）。
+    pub reads: Vec<String>,
+    /// 本阶段写的槽位名。
+    pub writes: Vec<String>,
+}
+
+/// 一条融合缝：生产者的写槽位与消费者的读槽位同类型，就是"能拼"的那一处。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Seam {
+    /// 生产者的写槽位名。
+    pub from: String,
+    /// 消费者的读槽位名（融合时以临时缓冲桥接，名字不必相同）。
+    pub to: String,
+    /// 缝上的类型（两侧一致才合法；只可能是缓冲类型 F32 / U8）。
+    pub ctype: crate::sig::CType,
+}
+
+/// 一次合法的生产者→消费者融合。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fusion {
+    /// 生产者算子名。
+    pub producer: String,
+    /// 消费者算子名。
+    pub consumer: String,
+    /// 全部融合缝（非空才有融合）。
+    pub seams: Vec<Seam>,
+}
+
+impl OpDecl {
+    /// 读槽位：签名里 `const` 缓冲形参的名字（顺序 = 签名顺序）。派生自签名，不冗余存储。
+    pub fn reads(&self) -> impl Iterator<Item = &str> {
+        self.signature
+            .params()
+            .iter()
+            .filter(|param| param.ctype.is_buffer() && !param.mutable)
+            .map(|param| param.name.as_str())
+    }
+
+    /// 写槽位：签名里可写缓冲形参的名字（`check_single_output` 保证恰好一个）。
+    pub fn writes(&self) -> impl Iterator<Item = &str> {
+        self.signature
+            .params()
+            .iter()
+            .filter(|param| param.ctype.is_buffer() && param.mutable)
+            .map(|param| param.name.as_str())
+    }
+
+    /// 槽位的声明类型：缓冲形参才有；标量或未知名返回 `None`。
+    pub fn slot_type(&self, name: &str) -> Option<crate::sig::CType> {
+        self.signature
+            .params()
+            .iter()
+            .find(|param| param.name == name && param.ctype.is_buffer())
+            .map(|param| param.ctype)
+    }
+}
+
+/// 槽位代数：判定"生产者 A 能不能拼到消费者 B 前面"（cutile README §9 的槽位代数）。
+///
+/// 合法当且仅当存在至少一条**缝**——A 的某个写阶段写出一个槽位，B 的某个读阶段读入一个
+/// **同类型**的槽位（名字不必相同：融合时以临时缓冲桥接）。写写、写读都对不上或类型不一致
+/// 返回 `None`（不是错误：融合是候选剪枝，不是输入不合法）。
+pub fn compose(producer: &OpDecl, consumer: &OpDecl) -> Option<Fusion> {
+    let mut seams = Vec::new();
+    for phase in &producer.phases {
+        for from in &phase.writes {
+            let Some(ctype) = producer.slot_type(from) else {
+                continue;
+            };
+            for cphase in &consumer.phases {
+                for to in &cphase.reads {
+                    if consumer.slot_type(to) == Some(ctype)
+                        && !seams
+                            .iter()
+                            .any(|seam: &Seam| seam.from == *from && seam.to == *to)
+                    {
+                        seams.push(Seam {
+                            from: from.clone(),
+                            to: to.clone(),
+                            ctype,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    if seams.is_empty() {
+        return None;
+    }
+    Some(Fusion {
+        producer: producer.name.clone(),
+        consumer: consumer.name.clone(),
+        seams,
+    })
 }
 
 /// 轴展开出的一组具体值。

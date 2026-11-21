@@ -8,7 +8,7 @@ use prof::atom::{Attr, AttrKey, Closed, DTypeSet, Need, Prim, Set, SpaceSet, Spa
 use prof::prof::scalar_texts;
 
 use super::expand::tiles;
-use super::parse::{extras, head, sections};
+use super::parse::{extras, head, phases, sections};
 use super::{Axis, OpDecl, Skeleton, Variant, field};
 
 impl OpDecl {
@@ -59,6 +59,7 @@ impl OpDecl {
         let (axes, needs, layouts, variants) = sections(table)?;
         let (consts, grid, chunk) = extras(table)?;
         let signature = crate::sig::Signature::parse(&name, template)?;
+        let phases = phases(table, &name, &signature)?;
         Ok(Self {
             name,
             skeleton,
@@ -72,6 +73,7 @@ impl OpDecl {
             variants,
             template: template.to_string(),
             signature,
+            phases,
         })
     }
 
@@ -79,9 +81,32 @@ impl OpDecl {
     fn verified(&self, template: &str) -> diagnostic::Result<()> {
         let segments = Template::parse(template);
         tiles(self)?;
+        self.check_phases()?;
         self.check_slots(&segments)?;
         self.check_needs(&segments)?;
         self.check_call_arguments(&segments)
+    }
+
+    /// 每个缓冲形参都必须出现在至少一个阶段里：漏写会让 `compose` 静默漏缝。
+    fn check_phases(&self) -> diagnostic::Result<()> {
+        for param in self
+            .signature
+            .params()
+            .iter()
+            .filter(|param| param.ctype.is_buffer())
+        {
+            let covered = self.phases.iter().any(|phase| {
+                phase.reads.iter().any(|slot| slot == &param.name)
+                    || phase.writes.iter().any(|slot| slot == &param.name)
+            });
+            if !covered {
+                return Err(field(
+                    &format!("{}.phases", self.name),
+                    format!("缓冲 `{}` 没有出现在任何阶段里", param.name),
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// 按名字取变体。

@@ -19,6 +19,7 @@ weights = { path = "../weights", package = "llm-weights" }
 
 [dev-dependencies]
 proptest = { workspace = true }
+testkit = { path = "../testkit", package = "llm-testkit" }
 
 [lints]
 workspace = true

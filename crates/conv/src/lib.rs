@@ -24,3 +24,7 @@ pub(crate) use llm_spec::tpl::guard;
 pub use llm_spec::{einsum, model, operator, sample, sch, sig, tpl};
 pub use llm_spec::{formula_cell, operator_here, operator_via};
 pub use model::quant;
+
+#[cfg(test)]
+#[path = "../tests/prop_numeric.rs"]
+mod prop_numeric;
