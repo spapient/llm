@@ -7,6 +7,8 @@
 
 use std::thread;
 
+use diagnostic::{Code, Error, Result};
+
 mod pool;
 use pool::{Job, Shape, pool, run_pooled};
 
@@ -50,6 +52,34 @@ pub fn gemm_f32(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f
         return;
     }
     scoped_f32(a, b, out, m, n, k, t);
+}
+
+/// 显式错误版稠密 f32 GEMM：三条缓冲与 `(m, n, k)` 严格相等才跑，不符返回 [`Code::Invalid`]，
+/// 不 panic。算术同 [`gemm_f32`]（NEON 微内核 + 多槽池）。
+pub fn gemm_f32_checked(
+    a: &[f32],
+    b: &[f32],
+    m: usize,
+    n: usize,
+    k: usize,
+    out: &mut [f32],
+) -> Result<()> {
+    if a.len() != m * k || b.len() != k * n || out.len() != m * n {
+        return Err(Error::new(
+            Code::Invalid,
+            format!(
+                "gemm_f32 缓冲尺寸不符：a={} b={} out={}，期望 m·k={} k·n={} m·n={}",
+                a.len(),
+                b.len(),
+                out.len(),
+                m * k,
+                k * n,
+                m * n
+            ),
+        ));
+    }
+    gemm_f32(a, b, m, n, k, out);
+    Ok(())
 }
 
 /// 尺寸校验：三条缓冲不足 `m·k` / `k·n` / `m·n` 时 panic。
@@ -583,6 +613,34 @@ pub fn gemm_i8(a: &[i8], b: &[i8], m: usize, n: usize, k: usize, out: &mut [i32]
         return;
     }
     scoped_i8(a, b, out, m, n, k, t);
+}
+
+/// 显式错误版对称 int8 GEMM：三条缓冲与 `(m, n, k)` 严格相等才跑，不符返回 [`Code::Invalid`]，
+/// 不 panic。算术同 [`gemm_i8`]（i32 精确累加，与 [`crate::matmul_i8::forward_tiled`] 逐位一致）。
+pub fn gemm_i8_checked(
+    a: &[i8],
+    b: &[i8],
+    m: usize,
+    n: usize,
+    k: usize,
+    out: &mut [i32],
+) -> Result<()> {
+    if a.len() != m * k || b.len() != k * n || out.len() != m * n {
+        return Err(Error::new(
+            Code::Invalid,
+            format!(
+                "gemm_i8 缓冲尺寸不符：a={} b={} out={}，期望 m·k={} k·n={} m·n={}",
+                a.len(),
+                b.len(),
+                out.len(),
+                m * k,
+                k * n,
+                m * n
+            ),
+        ));
+    }
+    gemm_i8(a, b, m, n, k, out);
+    Ok(())
 }
 
 /// 单线程路径：B 打包一次，直接算完整块。
