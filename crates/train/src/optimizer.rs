@@ -1,4 +1,7 @@
-//! 优化器：对象安全 trait、矩状态按参数编号自持、按 [`ParamRole`](llm_nn::ParamRole) 取组。
+//! 参数更新：对象安全 trait、矩状态按参数编号自持、按 [`ParamRole`](llm_nn::ParamRole) 取组。
+//!
+//! [`Sgd`] 与 [`Adam`] 各自一阶/二阶矩状态同住本文件（共用 `Slot`/`check_slots`/`decay_rate`/
+//! `clip_scale`/`global_norm` 那组助手）；[`Muon`] 因自带正交化与矩阵视图而单独成文件。
 
 use diagnostic::{Code, Error, Result};
 use nn::ParamRole;

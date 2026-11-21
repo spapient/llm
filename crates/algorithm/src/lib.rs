@@ -22,7 +22,12 @@
 //!
 //! 生产路径只用到 `nn` 的层声明与 `engram` 的 [`slot_of`](nn::slot_of)：本 crate 各族的判据由
 //! `tests/` 里的逐族对拍保持可执行，装配侧尚未接线。这不是"历史遗留"——每一族的入口都被本 crate
-//! 的用例直接调用，删除或改语义都会先让对拍变红。
+//! 的用例直接调用。
+//!
+//! 但"改语义会让对拍变红"只挡得住改，挡不住**删**：整目录删掉时对拍随之消失，全仓不会有一条用例
+//! 变红。所以存在性不靠本文件自证，而由 `crates/tools/tests/gate.rs` 的
+//! `every_architecture_family_keeps_its_conformance_suite` 从外部守：每份对拍必须被 `src` 的
+//! `#[path]` 真挂载，用例总数不得低于 245。
 
 #![deny(unsafe_code)]
 

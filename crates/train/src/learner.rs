@@ -1,4 +1,7 @@
 //! 独立训练编排器：把数据集遍历、前向评估、指标入账与优化步收拢到一个驱动对象。
+//!
+//! [`Metric`] 是本文件的入账目标枚举，[`MetricPoint`]/[`MetricsBoard`] 是它的账表：
+//! 编排与记账用同一个概念，故同住一处，而非各自成文件。
 
 use diagnostic::{Code, Error, Result};
 
