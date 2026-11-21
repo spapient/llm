@@ -5,20 +5,29 @@
 
 use diagnostic::Result;
 use engine::platform::{Machine, Row, Standing, audit};
+use std::fmt::Write as _;
 
 /// 打印一台机器上的六行裁决；返回 `()`，因为"这台机器没有 CUDA"不是错误。
 pub fn report() -> Result<()> {
+    print!("{}", render());
+    Ok(())
+}
+
+/// 整张表一次写屏：逐行 `println!` 会让同一份报告分七次抢锁，行之间也可能被别的输出插进来。
+fn render() -> String {
     let host = Machine;
-    println!("六平台执行合同（设备 + 编译器两件证据，ADR 0052）");
+    let mut text = String::from("六平台执行合同（设备 + 编译器两件证据，ADR 0052）\n");
     for (row, standing) in Row::ALL.iter().zip(audit(&host).iter()) {
-        println!(
+        writeln!(
+            text,
             "  {:<14} {:<8} {}",
             row.as_str(),
             standing.as_str(),
             detail(standing)
-        );
+        )
+        .expect("写入 String 不会失败");
     }
-    Ok(())
+    text
 }
 
 /// 一格里的第二列：覆盖给证据，未覆盖给理由的短名——两种状态各有一条唯一来源。
@@ -29,32 +38,7 @@ fn detail(standing: &Standing) -> &str {
     }
 }
 
+/// 契约表的单元测试。
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn every_row_renders_a_non_empty_detail() {
-        let host = Machine;
-        for (row, standing) in Row::ALL.iter().zip(audit(&host).iter()) {
-            assert!(
-                !detail(standing).is_empty(),
-                "`{}` 的那一格必须写明证据或理由",
-                row.as_str()
-            );
-        }
-    }
-
-    #[test]
-    fn a_covered_row_shows_its_evidence_and_an_open_row_shows_why() {
-        let covered = Standing::Covered {
-            evidence: "aarch64 · NEON/SME 有序点积".to_string(),
-        };
-        assert_eq!(detail(&covered), "aarch64 · NEON/SME 有序点积");
-        let open = Standing::Open {
-            why: engine::platform::Why::NoToolchain,
-        };
-        assert_eq!(detail(&open), "no-toolchain");
-        assert_eq!(detail(&open), engine::platform::Why::NoToolchain.as_str());
-    }
-}
+#[path = "../tests/platform.rs"]
+mod tests;
