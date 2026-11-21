@@ -1,0 +1,26 @@
+[package]
+name = "llm-cuda"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "nvidia device fragments: the `nvidia` primitive implementations (CUDA C) and their witness."
+publish = false
+autotests = false
+build = "build.rs"
+
+[dependencies]
+prof = { path = "../prof", package = "llm-prof" }
+
+# 构建脚本读同一份档案（输出语言、工具链、每条签名的见证入口），生成即校验。
+[build-dependencies]
+prof = { path = "../prof", package = "llm-prof" }
+
+[features]
+default = []
+# 构建期把 `witness.cu` 编成设备镜像并嵌入二进制；没有镜像配方时只是 `Status::NoRecipe`。
+device-image = []
+
+[lints]
+workspace = true
