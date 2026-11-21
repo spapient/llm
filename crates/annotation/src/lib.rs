@@ -317,4 +317,3 @@ mod render_tests;
 #[cfg(test)]
 #[path = "../tests/adapter_tests.rs"]
 mod tests;
-

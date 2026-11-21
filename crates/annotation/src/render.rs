@@ -4,7 +4,7 @@
 //! 想用的普通名字。拼接只往一个预留了容量的 `String` 里写（`write!` 而非 `format!` + 拷贝），
 //! 于是"渲染一份"是一次分配。
 
-use crate::decl::{DTYPES, Declaration, ModelDecl, RuntimeDecl, SKELETONS};
+use crate::decl::{Declaration, ModelDecl, RuntimeDecl, DTYPES, SKELETONS};
 use std::fmt::Write;
 
 /// 静态形态：私有构造函数 + `impl ::nn::Contract` + 一条 `#[cfg(test)]` 校验。
@@ -106,9 +106,13 @@ pub(crate) fn render_runtime(declaration: &RuntimeDecl, ty: &str) -> String {
     code.push_str("#[doc(hidden)]\n#[allow(non_snake_case, unused_macros)]\n");
     let _ = writeln!(code, "macro_rules! __layer_spec_{ty} {{");
     code.push_str("    (");
-    comma(&mut code, unique(holes(declaration)).into_iter(), |code, hole| {
-        let _ = write!(code, "${hole}:expr");
-    });
+    comma(
+        &mut code,
+        unique(holes(declaration)).into_iter(),
+        |code, hole| {
+            let _ = write!(code, "${hole}:expr");
+        },
+    );
     code.push_str(") => {\n");
     let constructor = match declaration.role {
         Some(_) => "new_with_role",
@@ -330,7 +334,11 @@ fn shape_of<T>(code: &mut String, axes: &[T], each: impl FnMut(&mut String, &T))
 }
 
 /// 逗号连接：调用点只描述"每一项长什么样"，中间不留一层 `Vec<String>`。
-fn comma<T>(code: &mut String, items: impl Iterator<Item = T>, mut each: impl FnMut(&mut String, T)) {
+fn comma<T>(
+    code: &mut String,
+    items: impl Iterator<Item = T>,
+    mut each: impl FnMut(&mut String, T),
+) {
     for (index, item) in items.enumerate() {
         if index > 0 {
             code.push_str(", ");

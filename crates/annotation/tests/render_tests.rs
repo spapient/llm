@@ -3,7 +3,7 @@
 //! 断言的是文本，不是行为：渲染器只拼字符串，于是"生成的代码长什么样"可以被逐字钉住。
 
 use crate::decl::{
-    DTYPES, Declaration, ModelDecl, RuntimeDecl, SKELETONS, parse, parse_model, parse_runtime,
+    parse, parse_model, parse_runtime, Declaration, ModelDecl, RuntimeDecl, DTYPES, SKELETONS,
 };
 use crate::fixture::lex;
 use crate::render::{render, render_model, render_runtime};
@@ -222,8 +222,9 @@ fn every_form_renders_balanced_delimiters() {
             skeleton
         };
         for dtype in DTYPES {
-            let text =
-                format!(r#"name = "{name}", shape = [8, 4], dtype = "{dtype}", skeleton = "{skeleton}""#);
+            let text = format!(
+                r#"name = "{name}", shape = [8, 4], dtype = "{dtype}", skeleton = "{skeleton}""#
+            );
             assert_balanced(&render_model(&model(&text), "M"));
         }
     }
