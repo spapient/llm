@@ -6,6 +6,19 @@
 ## [Unreleased]
 ### Changed
 
+- **`crates/tools` 回到"一文件一概念"：`gate` 拆成阈值与四个分析器，`card` 只留判定，统计与 JSON 转义各收成唯一出处**。
+  原先 `gate.rs` 一个文件里躺着阈值（`Gate` / `Metric` / `Over`）、禁止调用形态扫描、markdown 相对链接扫描与
+  文件行数棘轮四件事；`card.rs` 里混着均值/标准差/最近秩分位/重采样的实现和一张手写 JSON 转义表，而
+  `bench/json.rs` 还各有一份同样的转义。现在 `call.rs`（禁止调用形态）、`docs.rs`（文档漂移）、`dup.rs`
+  （单文件行数棘轮）各自独立，`gate.rs` 只剩判据与棘轮；`stats.rs` 收拢「均值 / 标准差 / 最近秩分位 / 对任意
+  统计量重采样」，统计量以闭包传入，区间与统计量同坐标；`escape.rs` 是 `card` 与 `bench::json` 共用的唯一
+  `quote`。**API 未变**：`llm_tools::{Gate, analyze, parse, strip_tests}` 与
+  `llm_tools::card::{Card, Protocol, Tally, Statistic, Standing, Shortfall}` 的签名一个没动，变化的只是
+  `gate::call` / `gate::docs` / `gate::dup` 三个子模块上移为顶层模块。`gate.rs` 762 → 459 行，顶层模块由 7 个
+  平铺成 12 个，嵌套只有 `bench/json.rs` 一处（写出侧改用共享的 `quote`，删掉自己那份转义表）。
+  **验证**：`cargo test -p llm-tools`（74 单测 + 2 doctest + 仓库静态门禁 2 条）与 `cargo test -p llm-testkit`
+  （含 `architecture` 12 条）全绿，`cargo clippy -p llm-tools --all-targets` 0 告警。
+
 - **MUSA 测量通道从脚本目录收成成员 `crates/musa`（`llm-musa`），根 `tools/` 随之删除**。原先 `tools/musa-harness/`
   是"生成器（仓库外的独立 crate）+ `build.sh` + `bench_patch.py` + `check_bits.py` + 14 个 `t_*.cu` 实验片段"，
   四段靠人手串、中间产物落固定路径；现在四段各是一个子命令——`gen`（声明 → 协商 → 规划 → 设备源 + 标量参考）、
