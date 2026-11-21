@@ -6,7 +6,7 @@
 //!
 //! **不拥有**：优先级与来源打印（[`crate::settings`]）、键是否登记（[`crate::key`]）。
 
-use crate::key::{Key, Origin, dotted_key, home, invalid, rebase_value, value_of_text};
+use crate::key::{Key, Origin, dotted_key, invalid, rebase_value, value_of_text};
 use crate::settings::Settings;
 use diagnostic::{Code, Error, Result};
 use std::path::{Path, PathBuf};
@@ -19,7 +19,7 @@ pub(crate) fn discover_files() -> Vec<PathBuf> {
         candidates.push(PathBuf::from(appdata).join("cutile").join("config.toml"));
     }
     #[cfg(not(windows))]
-    if let Some(home) = home() {
+    if let Some(home) = crate::key::home() {
         candidates.push(home.join(".config").join("cutile").join("config.toml"));
     }
     candidates

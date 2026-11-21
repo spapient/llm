@@ -866,12 +866,16 @@ fn compute_i8_packed(
 ///
 /// 五个数合起来才说清「算哪一块」，所以同行进出一个值；`kvec` 与 `k` 分开是为了让标量尾段有
 /// 一处明确的边界，而不是在微内核里再算一遍。
+///
+/// `kvec` 只有 aarch64 dotprod 通道读它（`blk` 沿 16 字节一拍走，余下 `kvec..k` 由标量补）：
+/// x86_64 的 SIMD 通道服务 f32，这条 i8 路径在这边本来就是标量，用不上分开的边界。
 #[derive(Clone, Copy)]
 struct Gram {
     r: usize,
     blk: usize,
     n: usize,
     k: usize,
+    #[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
     kvec: usize,
 }
 
