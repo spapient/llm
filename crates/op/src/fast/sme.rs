@@ -138,13 +138,13 @@ fn pack_a(src: &[f32], dst: &mut [f32], k: usize, mblk0: usize) {
                 for c in 0..4usize {
                     let rr = r * 4;
                     let cc = kk0 + c * 4;
-                    let a0 = f32x4::from_slice(&src[rowbase + (rr + 0) * k + cc..][..4]);
+                    let a0 = f32x4::from_slice(&src[rowbase + rr * k + cc..][..4]);
                     let a1 = f32x4::from_slice(&src[rowbase + (rr + 1) * k + cc..][..4]);
                     let a2 = f32x4::from_slice(&src[rowbase + (rr + 2) * k + cc..][..4]);
                     let a3 = f32x4::from_slice(&src[rowbase + (rr + 3) * k + cc..][..4]);
                     let (b0, b1, b2, b3) = transpose4(a0, a1, a2, a3);
                     let orow = kk0 + c * 4;
-                    dst[dstbase + (orow + 0) * MR + rr..][..4].copy_from_slice(&b0.to_array());
+                    dst[dstbase + orow * MR + rr..][..4].copy_from_slice(&b0.to_array());
                     dst[dstbase + (orow + 1) * MR + rr..][..4].copy_from_slice(&b1.to_array());
                     dst[dstbase + (orow + 2) * MR + rr..][..4].copy_from_slice(&b2.to_array());
                     dst[dstbase + (orow + 3) * MR + rr..][..4].copy_from_slice(&b3.to_array());

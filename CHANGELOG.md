@@ -4,6 +4,21 @@
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
 ## [Unreleased]
+### Added
+
+- **`crates/rocm`（`ascend`）与 `crates/opencl`（`intel`）的片段层开始有测试：两边从 0 条到 9 + 10 条**。
+  此前两个 crate 都是 `autotests = false` 且没有任何测试目标，`cargo test -p llm-rocm -p llm-opencl`
+  跑出 0 条——片段正文、见证入口与档案里的 `[[provides]]` 三者之间没有任何机器判据。现在一台设备的
+  三张生成表（`FRAGMENTS` / `PRIMS` / `DEVICE`）与它的档案摊到同一份契约上逐条对账：P0 九条不多不少、
+  每条签名都是带见证的供给且入口名与 `PRIMS` 一致、每个见证函数被恰好一条签名认领、目录是
+  `<prim>.<ext>` + `witness.<ext>` 的闭集、期望值不超回读上限、见证自足（没有引号包含）、每条供给
+  至少有正文或见证之一——最后由 `testkit::witness` 把见证真的编成可执行文件跑一遍，与档案里的
+  `expect` 对拍（`ascend` 20 条、`intel` 17 条，一条不漏）。判据本身在 `testkit::device`，六台设备共用
+  一套，新增设备只加一张 `P0` 清单，判据一行不改；`intel` 另有语言门，用 `clang -x cl -cl-std=CL2.0`
+  解析 `witness.cl`（宿主 `cc` 编得过它，只因为它写的是标量 C）。
+  **验证**：`cargo test -p llm-rocm`（9 + doctest 1）、`cargo test -p llm-opencl`（10 + doctest 1）、
+  `cargo test -p llm-testkit --lib`（含新夹具的 8 条自检）全绿。
+
 ### Changed
 
 - **`prim` 收成纯机制，六台设备的片段各自成 crate；`prim/src/lib.rs` 440 → 65 行的薄入口**。

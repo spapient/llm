@@ -251,10 +251,14 @@ git status --short                    # 只允许本轮认领文件
   `src/` 无内联测试的结构门，本轮按要求反向执行 —— testkit 是**纯门禁 crate**，它没有生产逻辑可放，把门禁留在
   `tests/` 只是把同一件事分散到两个目录。结构门因此不适用于本 crate（`src/` 下每个文件都在 `cfg(test)` 内，
   `use llm_testkit` 的运行时构建看不到其中任何一行）。
-  **减码**：3,412 → 2,494 行（−918，−26.9%），文件 9 → 13（含 3 个生产文件 `compare` / `rel` / `gating` /
-  `witness` / `device` / `hash` / `rng` / `scratch`）。最大减项是**手写 JSON 解析器整体删除**（原
-  `tests/architecture.rs` 的 230 行手搓 `cargo metadata` 解析，改成 `serde_json` 一行 `from_slice` +
-  字段投影）；其次是 `support/paths.rs` 的 35 行路径工具内联进 `architecture.rs`，不再单独成文件。
+  **减码**：迁移前 10 个 `.rs` / 3,412 行（`tests/` 7 个 2,417 行 + `src/` 3 个 995 行），迁移后 16 个 / 3,925 行，
+  全部平铺在 `src/` 下、无子目录。其中 `device.rs`（435）与 `witness.rs`（226）共 661 行是并发的设备契约特性
+  新增，与本轮搬迁无关；扣掉这两份，等价范围 3,412 → 3,264 行（**−148，−4.3%**）——在把 2,417 行测试搬进
+  `src/` 并拆掉 588 行的 `compare.rs` 之后仍然净减，靠的是两处真删：**手写 JSON 解析器整体删除**（原
+  `tests/architecture.rs` 里 230 行手搓 `cargo metadata` 解析，换成 `serde_json::from_slice` + 字段投影）与
+  `support/paths.rs` 的 35 行路径工具内联进 `architecture.rs`（不再单独成文件）。`architecture.rs` 1187 → 272
+  行是最大减项：它原本把"事实采集"和"断言"搅在一个文件里，现在只留事实面
+  （`workspace_root` / `rust_files` / `walk` / `DOC` / `owned_types`），断言按主题分到其余 9 个模块。
   **`compare.rs` 588 行拆成 `compare.rs` 200 + `rel.rs` 398**：一条线两套口径混在一起 —— 逐元素/方向判据
   （`approx_eq` / `close` / `all_finite` / `cosine_similarity`）与整批相对误差（`RelErr` / `Worst` / `Scale` /
   `rel_err` / `within_rel` / `assert_within_rel`）的适用面相反（前者逐元素各算各的，后者只有一个全局分母），
