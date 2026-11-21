@@ -1,5 +1,8 @@
 use super::*;
 
+use diagnostic::Code;
+use tensor::{DType, Shape};
+
 fn entry(name: &str, offset: usize) -> Entry {
     Entry::new(name, DType::F32, Shape::new([2, 3])).at(offset)
 }

@@ -46,9 +46,6 @@ const BLOCK: usize = TN_COLS;
 /// 4 列累加器：一次算 4 行，4 条向量链各持一组寄存器，一份 `x` 载入摊到 4 行。
 const COLS: usize = 4;
 
-/// 一个窗口的字节数：16 字节 = 每个槽位 16 个码，是 4 位码（16 车道）与 2 位码（8 车道）的公倍数。
-const WINDOW: usize = 16;
-
 /// 反量化表的仿射零：`table[code] == code - zero` 时返回 `zero`，否则 `None`（走标量叶）。
 ///
 /// 逐条核对整张表而不是拿首项猜：`zero = -table[0]` 对任何表都算得出，但只有整张表都落在这条
@@ -66,13 +63,13 @@ pub(crate) fn affine_zero(dequant: &[f32], codes: usize) -> Option<f32> {
     affine.then_some(zero)
 }
 
-/// 形状够不够走本通道：一组的码宽必须落成 8 或 16 个车道，行宽必须是整数个 16 字节窗口。
+/// 形状够不够走本通道：车道数落在 8 / 16 两档，且一组的字节数被它整除。
 ///
-/// 车道数是 `group / cpb`（一组里每个槽位多少码）。它同时是窗口的因数——8 与 16 都整除 16——
-/// 于是"一组恰好是整数个向量"成立，组尾才只需要一次归约。行宽不是 16 的倍数、或车道数不在这两档，
-/// 就回退标量叶：本通道的全部并行度都建立在这两个前提上。
-fn fits(cpb: usize, row: usize, lanes: usize) -> bool {
-    matches!((cpb, lanes), (2 | 4, 8 | 16)) && row.is_multiple_of(WINDOW)
+/// 车道数是 `group / cpb`（一组里每个槽位多少码）；一组的每槽字节数是 `per_group = group / cpb`，
+/// 与车道数同一个数——所以"一组恰好是整数个向量"恒成立，组尾才只需要一次归约。恒等之外的形状
+/// （一组凑不满一条向量，或凑出来不是 8 / 16 车道）回退标量叶。
+fn fits(cpb: usize, lanes: usize) -> bool {
+    matches!((cpb, lanes), (2 | 4, 8 | 16))
 }
 
 /// 单行入口：`out` 是 `n` 个输出；算得成返回 `true`，算不成（形状/表不符）返回 `false`。
@@ -88,7 +85,7 @@ pub(crate) fn forward(
     let Some(zero) = affine_zero(dequant, codes_of(cpb)) else {
         return false;
     };
-    if out.len() < COLS || !fits(cpb, ctx.row, ctx.group / cpb) {
+    if out.len() < COLS || !fits(cpb, ctx.group / cpb) {
         return false;
     }
     let input = [layout(x, ctx, cpb)];
@@ -114,7 +111,7 @@ pub(crate) fn forward_batch(
     let Some(zero) = affine_zero(dequant, codes_of(cpb)) else {
         return false;
     };
-    if geo.n < COLS || !fits(cpb, ctx.row, ctx.group / cpb) {
+    if geo.n < COLS || !fits(cpb, ctx.group / cpb) {
         return false;
     }
     let input: Vec<Vec<f32>> =
@@ -210,14 +207,11 @@ fn dot<const CPB: usize, const LANES: usize, const R: usize>(
         let at = g * per_group;
         let mut acc = [Simd::<f32, LANES>::splat(0.0); R];
         for slot in 0..CPB {
-            for window in (at..at + per_group).step_by(WINDOW) {
-                for chunk in (window..window + WINDOW).step_by(LANES) {
-                    let xs = Simd::<f32, LANES>::from_slice(&input[slot * row + chunk..][..LANES]);
-                    for (r, packed) in w_rows.iter().enumerate() {
-                        let bytes = Simd::<u8, LANES>::from_slice(&packed[chunk..][..LANES]);
-                        acc[r] =
-                            codes::<CPB, LANES>(bytes, slot).cast::<f32>().mul_add(xs, acc[r]);
-                    }
+            for chunk in (at..at + per_group).step_by(LANES) {
+                let xs = Simd::<f32, LANES>::from_slice(&input[slot * row + chunk..][..LANES]);
+                for (r, packed) in w_rows.iter().enumerate() {
+                    let bytes = Simd::<u8, LANES>::from_slice(&packed[chunk..][..LANES]);
+                    acc[r] = codes::<CPB, LANES>(bytes, slot).cast::<f32>().mul_add(xs, acc[r]);
                 }
             }
         }
@@ -329,11 +323,11 @@ mod tests {
 
     #[test]
     fn shapes_without_a_whole_window_fall_back() {
-        assert!(!fits(2, 8, 16), "行宽不足一个窗口");
-        assert!(!fits(4, 24, 8), "行宽不是 16 的倍数");
-        assert!(!fits(4, 64, 2), "一组凑不满一个车道向量");
-        assert!(fits(2, M / 2, 16));
-        assert!(fits(4, M / 4, 8));
+        assert!(fits(2, GROUP / 2), "4 位码：一组 16 字节、16 车道");
+        assert!(fits(4, GROUP / 4), "2 位码：一组 8 字节、8 车道");
+        // 一组 2 个码：凑不满一条 8 车道向量，也不在 8 / 16 两档之外加档。
+        assert!(!fits(4, 8 / 4));
+        assert!(!fits(8, GROUP / 8), "int8 不打包，不走本通道");
         // 走不到通道的形状必须由 `forward` 自己说“算不成”，而不是给出一个数。
         let (w, s, x) = (weights(8, 2, 2), scales(2, 8 / GROUP.max(1)), vec![0.0f32; 8]);
         let mut out = [0.0f32; 2];
