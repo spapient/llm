@@ -25,7 +25,7 @@
 
 #![allow(unsafe_code)]
 
-use crate::exec::{Device, Executor, Graph, Node, Queued, Stream, check_operands, enqueue};
+use engine::exec::{Device, Executor, Graph, Node, Queued, Stream, check_operands, enqueue};
 use diagnostic::{Code, Error, Result};
 use std::collections::BTreeMap;
 use std::ffi::{CString, c_char, c_void};

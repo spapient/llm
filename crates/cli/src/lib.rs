@@ -60,7 +60,7 @@ use diagnostic::{Code, Error, Result};
 /// 注册会让 `llm run --device cuda` 把"没装配"误报成"没有该后端"。`install` 幂等且只做三次
 /// 静态登记，因此不按命令分支——为一个不必要的条件跳过去换掉编译期证明不划算。
 pub fn entry(invocation: &Invocation<'_>) -> Result<()> {
-    engine::backends::install();
+    device::backends::install();
     route(invocation.command())
 }
 

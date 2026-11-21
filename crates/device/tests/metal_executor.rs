@@ -85,7 +85,7 @@ kernel void kernel_main(device float* out [[buffer(0)]], uint id [[thread_positi
 /// `submit` → `sync` 后输出 = 输入的 2 倍，证明「提交 → 派发 → 同步」整条 [`Executor`] 契约在真机成立。
 #[test]
 fn executor_runs_a_registered_kernel_through_the_graph() {
-    use crate::exec::Launch;
+    use engine::exec::Launch;
 
     let Some(mut exec) = MetalExecutor::new("metal", "apple") else {
         return;

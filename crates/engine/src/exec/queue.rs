@@ -213,7 +213,7 @@ impl LocalExecutor {
 }
 
 /// 入队提交：把图里每个节点按流入队。Local、Cpu 与 Metal 共用同一份口径。
-pub(crate) fn enqueue(queue: &mut Vec<Queued>, graph: &Graph, stream: Stream) {
+pub fn enqueue(queue: &mut Vec<Queued>, graph: &Graph, stream: Stream) {
     for node in graph.nodes() {
         queue.push(Queued {
             stream,
@@ -224,7 +224,7 @@ pub(crate) fn enqueue(queue: &mut Vec<Queued>, graph: &Graph, stream: Stream) {
 
 /// 节点操作数约束：每个编号都要已绑定，且输入与输出不能同号。`unbound` 判定"未绑定"，
 /// `context` 是执行器名（CPU / Metal 各自报自己的入口）。
-pub(crate) fn check_operands(
+pub fn check_operands(
     node: &Node,
     unbound: impl Fn(u32) -> bool,
     context: &'static str,

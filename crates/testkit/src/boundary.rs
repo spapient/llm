@@ -3,7 +3,7 @@
 //! 四条规则都是「某一层不得越过某条线」，靠源码文本与白名单核对：
 //!
 //! - 错误边界不得退回字符串（L7 直接调用的层必须持有错误类型）；
-//! - 厂商名只许出现在后端实现层（`engine`），机制层（`cutile`）只持 `Backend` 缝；
+//! - 厂商名只许出现在后端实现层（`device`），机制层（`cutile`）只持 `Backend` 缝；
 //! - `allow(unsafe_code)` 只许出现在 ADR 0035 §6 列出的越界岛；
 //! - 设备后端注册必须在**产品路径**上装配，不能只活在测试里。
 //!
@@ -95,7 +95,7 @@ pub(crate) const VENDOR_PUBLIC_BASELINE: &[(&str, &str)] = &[
 ];
 
 /// 允许公开项带厂商名的成员：后端实现层（L6），`cutile` 的 `Backend` 缝由它填。
-pub(crate) const VENDOR_OWNERS: [&str; 1] = ["engine"];
+pub(crate) const VENDOR_OWNERS: [&str; 1] = ["device"];
 
 /// 厂商名清单；判据是"公开项以 `厂商名_` 起头"。
 pub(crate) const VENDORS: [&str; 8] = [
@@ -104,11 +104,11 @@ pub(crate) const VENDORS: [&str; 8] = [
 
 /// 越界岛白名单：`docs/adr/0035-unsafe-ffi-boundary.md` §6 的表格，路径 → `allow(unsafe_code)` 条数。
 ///
-/// 四个文件、三个逻辑岛：storage 的 mmap、engine 的 Metal FFI、`op` 的 CPU 微内核（后者跨
+/// 四个文件、三个逻辑岛：storage 的 mmap、device 的 Metal FFI、`op` 的 CPU 微内核（后者跨
 /// `fast.rs` 与 `fast/pool.rs` 两文件，是同一个 P1 待搬出的欠账岛；`fast.rs` 的 14 处含 NEON
 /// 与 AVX2 两段 SIMD 微内核，同一组不变量）。
 pub(crate) const UNSAFE_ISLANDS: &[(&str, usize)] = &[
-    ("crates/engine/src/metal/executor.rs", 1),
+    ("crates/device/src/metal/executor.rs", 1),
     ("crates/op/src/fast.rs", 14),
     ("crates/op/src/fast/pool.rs", 3),
     ("crates/storage/src/lib.rs", 1),
@@ -136,9 +136,9 @@ pub(crate) fn the_document_names_only_existing_items() {
     );
 }
 
-/// 厂商名不得出现在机制层的公开面上：`cutile` 只持 `Backend` 缝，厂商实现归 L6（`engine`）。
+/// 厂商名不得出现在机制层的公开面上：`cutile` 只持 `Backend` 缝，厂商实现归 L6（`device`）。
 ///
-/// 判据是**公开项的名字**，不是"文件里出现过厂商字面量"——`engine` 正是该写 `metal_*` / `cuda_*`
+/// 判据是**公开项的名字**，不是"文件里出现过厂商字面量"——`device` 正是该写 `metal_*` / `cuda_*`
 /// 的那一层，因此豁免。`cutile` 的 17 个 `*_program` 是存量：同一段 resolve → lower → pair 的复制，
 /// 消费方只有测试。基线不许增长；P1 把它们收成一个泛型入口后逐条删掉（删了基线也要删，
 /// 否则本测试报"过期"）。
@@ -222,7 +222,7 @@ pub(crate) fn unsafe_islands_are_the_ones_the_adr_lists() {
 
 /// 设备后端必须在**产品路径**上装配，不能只活在测试里。
 ///
-/// 上一轮的形态是：`engine::backends::install()` 只出现在 `crates/cli/tests/` 里，于是
+/// 上一轮的形态是：`device::backends::install()` 只出现在 `crates/cli/tests/` 里，于是
 /// `llm run --device cuda` 把"没装配"报成"本机没有 cuda 后端"，而门禁全绿。
 ///
 /// 装配点有两类，各自要有一条：`llm` 二进制的 `main` 只转调 `llm_cli::entry`，装配在库入口
@@ -254,7 +254,7 @@ pub(crate) fn the_device_backends_are_installed_on_the_product_path() {
     );
     assert!(
         missing.is_empty(),
-        "这些产品入口没有装配设备后端（`engine::backends::install()`）：{missing:?}——\
+        "这些产品入口没有装配设备后端（`device::backends::install()`）：{missing:?}——\
      装配点只留在 `tests/` 时，用户拿到的是“本机没有该后端”这条错误信息"
     );
 }

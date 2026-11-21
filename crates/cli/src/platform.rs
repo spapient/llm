@@ -1,10 +1,10 @@
 //! `llm platform`：把六平台执行合同打成一张表（[ADR 0052](../../../docs/adr/0052-execution-platform-contract.md)）。
 //!
 //! 六行恒出，缺证据的行照实写成 `open` 并带上理由——少一行会让"未覆盖"与"根本没问"变成同一种输出。
-//! 本模块只排版：判定全在 [`engine::platform::audit`]，这里不重算任何一件证据。
+//! 本模块只排版：判定全在 [`device::platform::audit`]，这里不重算任何一件证据。
 
 use diagnostic::Result;
-use engine::platform::{Machine, Row, Standing, audit};
+use device::platform::{Machine, Row, Standing, audit};
 use std::fmt::Write as _;
 
 /// 打印一台机器上的六行裁决；返回 `()`，因为"这台机器没有 CUDA"不是错误。

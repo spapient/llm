@@ -76,7 +76,7 @@ fn op_matches_reference_at(op_name: &str, shape: Option<(usize, usize)>) {
     let msl = cutile::execution::metal_grid_program(&catalogue, &dirs, op_name, m, n)
         .expect("内核应能生成");
 
-    let Some(mut executor) = engine::metal::executor::MetalExecutor::new("metal", "arm64") else {
+    let Some(mut executor) = ::device::metal::executor::MetalExecutor::new("metal", "arm64") else {
         return;
     };
     executor.register(op_name, &msl).expect("注册内核");
@@ -155,7 +155,7 @@ fn op_chunked_reduce_matches_reference(op_name: &str) {
 
     let msl = cutile::execution::metal_grid_program(&catalogue, &dirs, op_name, m, n)
         .expect("内核应能生成");
-    let Some(mut executor) = engine::metal::executor::MetalExecutor::new("metal", "arm64") else {
+    let Some(mut executor) = ::device::metal::executor::MetalExecutor::new("metal", "arm64") else {
         return;
     };
     executor.register(op_name, &msl).expect("注册内核");
@@ -197,7 +197,7 @@ fn op_matches_reference_cuda(op_name: &str) {
     let threads: usize = 256;
     let blocks = (scalar_len(&decl, &sample) as usize).div_ceil(threads);
     let program =
-        engine::cuda::cuda_point_driver(&device, &decl.signature, &sample, blocks, threads)
+        ::device::cuda::cuda_point_driver(&device, &decl.signature, &sample, blocks, threads)
             .expect("host 驱动应能生成");
     let (_counts, bits) =
         cutile::witness::run_cuda(&profile, &dirs, &program, op_name).expect("CUDA 真机执行");
@@ -230,7 +230,7 @@ fn op_chunked_reduce_matches_reference_cuda(op_name: &str) {
 
     let device = cutile::execution::cuda_reduce_program(&catalogue, &dirs, op_name, m, n)
         .expect("内核应能生成");
-    let program = engine::cuda::cuda_grid_driver(&device, &decl.signature, &sample, grid, grid)
+    let program = ::device::cuda::cuda_grid_driver(&device, &decl.signature, &sample, grid, grid)
         .expect("host 驱动应能生成");
     let (_counts, bits) =
         cutile::witness::run_cuda(&profile, &dirs, &program, op_name).expect("CUDA 真机执行");
@@ -278,7 +278,7 @@ fn op_chunked_scan_matches_reference(op_name: &str) {
     let (local_msl, correct_msl) =
         cutile::execution::metal_scan_program(&catalogue, &dirs, op_name, m, n)
             .expect("分块扫描内核应能生成");
-    let Some(mut executor) = engine::metal::executor::MetalExecutor::new("metal", "arm64") else {
+    let Some(mut executor) = ::device::metal::executor::MetalExecutor::new("metal", "arm64") else {
         return;
     };
     executor
@@ -370,7 +370,7 @@ fn op_chunked_rmsnorm_matches_reference(op_name: &str) {
     let (partial_msl, map_msl) =
         cutile::execution::metal_rmsnorm_program(&catalogue, &dirs, op_name, m, n)
             .expect("分块 rmsnorm 内核应能生成");
-    let Some(mut executor) = engine::metal::executor::MetalExecutor::new("metal", "arm64") else {
+    let Some(mut executor) = ::device::metal::executor::MetalExecutor::new("metal", "arm64") else {
         return;
     };
     executor
@@ -453,7 +453,7 @@ fn op_chunked_softmax_matches_reference(op_name: &str) {
     let (max_msl, expsum_msl, map_msl) =
         cutile::execution::metal_softmax_program(&catalogue, &dirs, op_name, m, n)
             .expect("分块 softmax 内核应能生成");
-    let Some(mut executor) = engine::metal::executor::MetalExecutor::new("metal", "arm64") else {
+    let Some(mut executor) = ::device::metal::executor::MetalExecutor::new("metal", "arm64") else {
         return;
     };
     executor
@@ -475,7 +475,7 @@ fn op_chunked_softmax_matches_reference(op_name: &str) {
 
     let stream = engine::exec::Stream::new(0);
     let launch = engine::exec::Launch::new([grid_size, 1, 1], [1, 1, 1]);
-    let read_partials = |executor: &mut engine::metal::executor::MetalExecutor| {
+    let read_partials = |executor: &mut ::device::metal::executor::MetalExecutor| {
         let bytes = executor.buffer_mut(1).expect("部分结果可读").as_mut_bytes();
         read_f32(bytes, grid_size as usize)
     };
@@ -634,14 +634,14 @@ fn op_normalized_matches_reference_cuda(op_name: &str) {
             let (partial, norm) =
                 cutile::execution::cuda_rmsnorm_program(&catalogue, &dirs, op_name, m, n)
                     .expect("分块 rmsnorm 两段应能生成");
-            engine::norm::cuda_rmsnorm_driver(&[partial, norm], &decl.signature, &sample, chunk)
+            ::device::norm::cuda_rmsnorm_driver(&[partial, norm], &decl.signature, &sample, chunk)
                 .expect("host 串联驱动应能生成")
         }
         "softmax_f32" => {
             let (max, expsum, norm) =
                 cutile::execution::cuda_softmax_program(&catalogue, &dirs, op_name, m, n)
                     .expect("分块 softmax 三段应能生成");
-            engine::norm::cuda_softmax_driver(&[max, expsum, norm], &decl.signature, &sample, chunk)
+            ::device::norm::cuda_softmax_driver(&[max, expsum, norm], &decl.signature, &sample, chunk)
                 .expect("host 串联驱动应能生成")
         }
         other => panic!("`{other}` 不是归一化算子"),
@@ -674,7 +674,7 @@ fn op_looped_matches_reference_cuda(op_name: &str) {
 
     let (device, dims) = cutile::execution::cuda_gemm_program(&catalogue, &dirs, op_name, m, n)
         .expect("循环注入内核应能生成");
-    let program = engine::cuda::cuda_loop_driver(&device, &decl.signature, &sample, &dims)
+    let program = ::device::cuda::cuda_loop_driver(&device, &decl.signature, &sample, &dims)
         .expect("host 驱动应能生成");
     let (_counts, bits) =
         cutile::witness::run_cuda(&profile, &dirs, &program, op_name).expect("CUDA 真机执行");

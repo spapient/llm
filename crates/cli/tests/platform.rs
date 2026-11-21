@@ -23,10 +23,10 @@ fn a_covered_row_shows_its_evidence_and_an_open_row_shows_why() {
     };
     assert_eq!(detail(&covered), "aarch64 · NEON/SME 有序点积");
     let open = Standing::Open {
-        why: engine::platform::Why::NoToolchain,
+        why: device::platform::Why::NoToolchain,
     };
     assert_eq!(detail(&open), "no-toolchain");
-    assert_eq!(detail(&open), engine::platform::Why::NoToolchain.as_str());
+    assert_eq!(detail(&open), device::platform::Why::NoToolchain.as_str());
 }
 
 #[test]

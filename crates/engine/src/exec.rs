@@ -38,7 +38,7 @@ mod queue;
 pub use cpu::{Bindings, CpuExecutor, Program};
 pub use queue::{Buffer, View, ViewMut};
 pub use queue::{Executor, LocalExecutor, Queued, Trace};
-pub(crate) use queue::{check_operands, enqueue};
+pub use queue::{check_operands, enqueue};
 
 use diagnostic::{Code, Error, Result};
 use std::fmt;

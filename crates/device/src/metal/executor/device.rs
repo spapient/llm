@@ -181,8 +181,8 @@ impl Drop for MetalDevice {
 
 /// Metal 设备执行器：实现 [`Executor`]，把一张图按序派发到本机 Metal GPU。
 ///
-/// 与 [`CpuExecutor`](crate::exec::CpuExecutor) 的差异只在「排水」：CPU 把节点交给
-/// [`Program`](crate::exec::Program) 就地计算，Metal 把节点交给已编译的 [`MetalPipeline`] 派发。
+/// 与 [`CpuExecutor`](engine::exec::CpuExecutor) 的差异只在「排水」：CPU 把节点交给
+/// [`Program`](engine::exec::Program) 就地计算，Metal 把节点交给已编译的 [`MetalPipeline`] 派发。
 /// 提交仍只入队、[`Executor::sync`] 才真派发（同一流内按图序，别的流不动）。缓冲是共享存储
 /// （[`MetalBuffer`]）：输入在提交前由调用方写入、输出在 `sync` 后由调用方回读，全程不经第二份拷贝。
 ///
@@ -335,7 +335,7 @@ impl Executor for MetalExecutor {
 
     /// 排这一条流上已提交的节点：按入队顺序派发，成功一条才出队一条。
     ///
-    /// 别的流不动（同 [`CpuExecutor::sync`](crate::exec::CpuExecutor::sync) 口径）。失败时出错的那条
+    /// 别的流不动（同 [`CpuExecutor::sync`](engine::exec::CpuExecutor::sync) 口径）。失败时出错的那条
     /// 留在队列里，调用方能看到「它还没跑完」，而不是被悄悄丢掉。
     fn sync(&mut self, stream: Stream) -> Result<()> {
         let mut index = 0;

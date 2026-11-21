@@ -14,16 +14,9 @@ autotests = false
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 tensor = { path = "../tensor", package = "llm-tensor" }
 storage = { path = "../storage", package = "llm-storage" }
-cutile = { path = "../cutile", package = "cutile" }
-op = { path = "../op", package = "llm-op" }
-prof = { path = "../prof", package = "llm-prof" }
 
 [dev-dependencies]
 testkit = { path = "../testkit", package = "llm-testkit" }
 
 [lints]
 workspace = true
-
-[[test]]
-name = "schedule"
-path = "tests/schedule.rs"

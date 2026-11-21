@@ -1,10 +1,13 @@
 //! 服务侧状态机：[`Sequence`]、[`State`]、[`Scheduler`] 与连续批 [`Batch`]。
 //!
 //! **拥有**：`Sequence`、`Scheduler`、`Batch`、`Admission`、`State`，以及页账（[`kv`]）、
-//! 提交与执行（[`exec`]）、设备后端 FFI（[`metal`]，macOS 越界岛，Metal `Executor` 落点，不单独成 crate）。
-//! **不拥有**：采样策略（它只决定 `advance` 取哪个 token，不改变状态机）、
-//! kernel 编译（`cutile`）、缓冲分配（`storage`）。**依赖**：`tensor`、`diagnostic`、`storage`。
-//! **被依赖**：`serve`、`llm`。
+//! 提交与执行（[`exec`]）。
+//! **不拥有**：采样策略（它只决定 `advance` 取哪个 token，不改变状态机）、设备源 lowering 与厂商
+//! 后端（`llm-device`）、kernel 编译（`cutile`）、缓冲分配（`storage`）。
+//! **依赖**：`tensor`、`diagnostic`、`storage`。**被依赖**：`llm-device`、`serve`、`benchmarks`、`cli`。
+//!
+//! 设备侧的一切（方言、各算子源生成、CUDA / Metal / 昇腾三条厂商链、六平台执行合同）在
+//! `llm-device`：本 crate 只定义**缝**（[`exec::Executor`]），由它填实现，方向单边。
 //!
 //! 页账与提交契约原是两个独立成员（`llm-kv` / `llm-exec`）：它们的生产消费者只有本 crate，
 //! 合并后"谁在借页"与"谁在提交"的不变量在同一处断言，成员与依赖边各少一个。
@@ -65,29 +68,16 @@
 
 #![deny(unsafe_code)]
 
-mod ascend;
-pub mod backends;
 pub mod batch;
-pub mod cuda;
-mod dialect;
 pub mod exec;
 pub mod ifb;
 pub mod kv;
-pub mod metal;
-pub mod norm;
-pub mod platform;
-pub mod program;
 pub mod radix;
-pub mod scan;
 pub mod scheduler;
 pub mod sequence;
-pub mod tiled;
-mod toolchain;
-pub mod wmma;
 
 pub use batch::{Admission, Batch, SequenceOutcome};
 pub use ifb::{Budget, Candidate, Phase, Verdict, chunk, pack};
-pub use platform::{Abi, Arch, Host, Machine, Row, Standing, Why, audit, require, standing};
 pub use scheduler::Scheduler;
 pub use sequence::{Progress, Sequence, State};
 

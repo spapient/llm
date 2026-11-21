@@ -434,6 +434,7 @@ version = "0.1.0"
 dependencies = [
  "assert_cmd",
  "cutile",
+ "llm-device",
  "llm-diagnostic",
  "llm-engine",
  "llm-nn",
@@ -464,6 +465,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "llm-device"
+version = "0.1.0"
+dependencies = [
+ "cutile",
+ "llm-diagnostic",
+ "llm-engine",
+ "llm-op",
+ "llm-prof",
+ "llm-testkit",
+]
+
+[[package]]
 name = "llm-diagnostic"
 version = "0.1.0"
 dependencies = [
@@ -484,10 +497,7 @@ dependencies = [
 name = "llm-engine"
 version = "0.1.0"
 dependencies = [
- "cutile",
  "llm-diagnostic",
- "llm-op",
- "llm-prof",
  "llm-storage",
  "llm-tensor",
  "llm-testkit",

@@ -42,6 +42,7 @@ device-image = ["cutile/device-image"]
 cutile = { path = "../cutile" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 engine = { path = "../engine", package = "llm-engine" }
+device = { path = "../device", package = "llm-device" }
 nn = { path = "../nn", package = "llm-nn" }
 op = { path = "../op", package = "llm-op" }
 prim = { path = "../prim", package = "llm-prim" }

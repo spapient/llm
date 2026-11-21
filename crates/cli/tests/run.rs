@@ -5,7 +5,7 @@ use super::*;
 fn ensure_backends() {
     use std::sync::OnceLock;
     static INSTALLED: OnceLock<()> = OnceLock::new();
-    INSTALLED.get_or_init(engine::backends::install);
+    INSTALLED.get_or_init(::device::backends::install);
 }
 
 /// 写一份两层稠密权重（`[out, in]` 行主序），取值落在 2 的负幂网格上：乘积与累加在 f32
@@ -91,7 +91,7 @@ fn read_f32(bytes: &[u8], len: usize) -> Vec<f32> {
 
 /// 把 f32 切片按 LE 字节序写进执行器缓冲（绑槽 + 落位）。
 #[cfg(target_os = "macos")]
-fn bind_f32(executor: &mut engine::metal::executor::MetalExecutor, slot: u32, values: &[f32]) {
+fn bind_f32(executor: &mut ::device::metal::executor::MetalExecutor, slot: u32, values: &[f32]) {
     executor
         .bind_bytes(slot, values.len() * 4)
         .expect("f32 缓冲");
@@ -103,7 +103,7 @@ fn bind_f32(executor: &mut engine::metal::executor::MetalExecutor, slot: u32, va
 
 /// 把 u8 切片写进执行器缓冲（绑槽 + 拷贝）。
 #[cfg(target_os = "macos")]
-fn bind_u8(executor: &mut engine::metal::executor::MetalExecutor, slot: u32, values: &[u8]) {
+fn bind_u8(executor: &mut ::device::metal::executor::MetalExecutor, slot: u32, values: &[u8]) {
     executor.bind_bytes(slot, values.len()).expect("u8 缓冲");
     let bytes = executor.buffer_mut(slot).expect("u8 可写").as_mut_bytes();
     bytes.copy_from_slice(values);
@@ -111,7 +111,7 @@ fn bind_u8(executor: &mut engine::metal::executor::MetalExecutor, slot: u32, val
 
 /// 把单个 f32 标量写进执行器缓冲（4 字节）。
 #[cfg(target_os = "macos")]
-fn bind_scalar(executor: &mut engine::metal::executor::MetalExecutor, slot: u32, value: f32) {
+fn bind_scalar(executor: &mut ::device::metal::executor::MetalExecutor, slot: u32, value: f32) {
     bind_f32(executor, slot, &[value]);
 }
 
@@ -119,7 +119,7 @@ fn bind_scalar(executor: &mut engine::metal::executor::MetalExecutor, slot: u32,
 /// （f32/u8）逐元素写输入字节。逐点与分块对拍共用这一份绑缓冲样板。
 #[cfg(target_os = "macos")]
 fn bind_decl_buffers(
-    executor: &mut engine::metal::executor::MetalExecutor,
+    executor: &mut ::device::metal::executor::MetalExecutor,
     node: &mut engine::exec::Node,
     decl: &op::decl::OpDecl,
     sample: &op::model::Sample,
@@ -158,7 +158,7 @@ fn bind_decl_buffers(
 /// 提交单个节点并同步，回读 `len` 个 f32 输出。逐点与分块归约对拍的发射/回读样板。
 #[cfg(target_os = "macos")]
 fn submit_read(
-    executor: &mut engine::metal::executor::MetalExecutor,
+    executor: &mut ::device::metal::executor::MetalExecutor,
     node: engine::exec::Node,
     decl: &op::decl::OpDecl,
     len: usize,
@@ -350,5 +350,7 @@ fn the_first_layer_computes_the_hand_arithmetic_on_its_own_bytes() {
     assert_eq!(executed.max_rel_err, 0.0, "同一份舍入顺序应当逐位相等");
 }
 
+// 子模块名与 `llm-device` 的 extern 名同为 `device`：本模块内指设备 crate 时必须写
+// `::device::`，裸 `device::` 会落到这个测试子模块上。
 #[path = "device.rs"]
 mod device;
