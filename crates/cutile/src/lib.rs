@@ -104,9 +104,9 @@ pub mod witness;
 // 不进 cutile，机制层只经 [`backend::Codegen::lower`] / [`backend::Codegen::harness`] 缝分派
 // （`docs/ARCHITECTURE.md` 的 L3 契约：cutile 不出现厂商字面量）。
 //
-// 存量例外：`execution` 仍导出 17 个 `metal_*` / `cuda_*` 便捷入口（同一段 resolve → lower → pair
-// 的复制），消费方只有测试。它们在 `testkit::architecture` 的厂商名门禁里是冻结基线，只减不增：
-// P1 收成一个泛型入口后逐条删掉。
+// `execution` 因此只导出 [`execution::program`] 一个入口：后端用 [`execution::Backend`] 选，内核
+// 形状用 [`execution::Mode`] 点，设备源与派发附加数据由 [`execution::Stages`] 按角色取。原先按厂商
+// 命名的 17 个 `*_program` 已全部收进这条入口，`testkit::architecture` 的厂商名基线也随之清空。
 
 mod device;
 mod gate;

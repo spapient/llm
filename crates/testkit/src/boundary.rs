@@ -73,26 +73,10 @@ pub(crate) fn the_error_boundary_does_not_fall_back_to_strings() {
     );
 }
 
-/// 厂商名基线：`cutile` 的 17 个 `*_program`（P1 收成一个泛型入口后逐条删掉这里）。
-pub(crate) const VENDOR_PUBLIC_BASELINE: &[(&str, &str)] = &[
-    ("cutile", "cuda_gemm_program"),
-    ("cutile", "cuda_grid_program"),
-    ("cutile", "cuda_reduce_program"),
-    ("cutile", "cuda_rmsnorm_program"),
-    ("cutile", "cuda_scan_program"),
-    ("cutile", "cuda_softmax_program"),
-    ("cutile", "cuda_wmma_gemm_program"),
-    ("cutile", "metal_flash_attention_program"),
-    ("cutile", "metal_grid_program"),
-    ("cutile", "metal_int8_gemm_program"),
-    ("cutile", "metal_rmsnorm_program"),
-    ("cutile", "metal_scan_program"),
-    ("cutile", "metal_simdgroup_gemm_program"),
-    ("cutile", "metal_softmax_program"),
-    ("cutile", "metal_tensor_gemm_program"),
-    ("cutile", "metal_tiled_attention_program"),
-    ("cutile", "metal_tiled_gemm_program"),
-];
+/// 厂商名基线：机制层已无按厂商命名的公开入口（`cutile` 的 17 个 `*_program` 收成了
+/// `Backend` + `Mode` 一个泛型入口），因此这里保持为空——再有人加按厂商起名的公开项，门禁
+/// 直接报越界而不是记进基线。
+pub(crate) const VENDOR_PUBLIC_BASELINE: &[(&str, &str)] = &[];
 
 /// 允许公开项带厂商名的成员：后端实现层（L6），`cutile` 的 `Backend` 缝由它填。
 pub(crate) const VENDOR_OWNERS: [&str; 1] = ["device"];

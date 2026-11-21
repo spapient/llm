@@ -86,12 +86,13 @@ fn only_the_two_packed_widths_fit_the_lane_count() {
     assert!(admit(2, N, context(M, 2), &[0.0, 2.0, 4.0, 9.0]).is_none());
 }
 
-#[test]
-fn exactly_representable_values_are_bit_identical() {
-    // 整数码 × 整数 x × 2 的幂标度：每一步都不产生舍入，于是归约顺序无关，两条通道逐位相同。
+/// 跑一遍字节内核，把每行与标量叶 [`oracle`] 逐行比对；`agree` 决定该行的容差口径。
+///
+/// 两个用例只差 `values`（权重取值）与 `agree`（容差口径），装配与遍历这一份。
+fn compare_rows(values: fn(usize) -> Vec<f32>, agree: impl Fn(f32, f32, usize, usize)) {
     for cpb in [2, 4] {
         let ctx = context(M, cpb);
-        let (w, s, x) = (weights(M, N, cpb), scales(N, ctx.groups), whole(M));
+        let (w, s, x) = (weights(M, N, cpb), scales(N, ctx.groups), values(M));
         let mut out = vec![0.0f32; N];
         forward(&x, &w, &s, admitted(cpb, ctx), &mut out);
         for (j, &got) in out.iter().enumerate() {
@@ -102,34 +103,29 @@ fn exactly_representable_values_are_bit_identical() {
                 &s[j * ctx.groups..][..ctx.groups],
                 &x,
             );
-            assert_eq!(got, want, "cpb = {cpb} 第 {j} 行必须与标量叶逐位相同");
+            agree(got, want, cpb, j);
         }
     }
 }
 
 #[test]
+fn exactly_representable_values_are_bit_identical() {
+    // 整数码 × 整数 x × 2 的幂标度：每一步都不产生舍入，于是归约顺序无关，两条通道逐位相同。
+    compare_rows(whole, |got, want, cpb, j| {
+        assert_eq!(got, want, "cpb = {cpb} 第 {j} 行必须与标量叶逐位相同");
+    });
+}
+
+#[test]
 fn inexact_values_agree_within_rounding() {
     // 非精确取值：只有舍入关联不同，差值必须落在 f32 舍入的量级里。
-    for cpb in [2, 4] {
-        let ctx = context(M, cpb);
-        let (w, s, x) = (weights(M, N, cpb), scales(N, ctx.groups), fractional(M));
-        let mut out = vec![0.0f32; N];
-        forward(&x, &w, &s, admitted(cpb, ctx), &mut out);
-        for (j, &got) in out.iter().enumerate() {
-            let want = oracle(
-                M,
-                cpb,
-                &w[j * ctx.row..][..ctx.row],
-                &s[j * ctx.groups..][..ctx.groups],
-                &x,
-            );
-            let slack = 1e-5 * want.abs().max(1.0);
-            assert!(
-                (got - want).abs() <= slack,
-                "cpb = {cpb} 第 {j} 行：{got} vs {want}"
-            );
-        }
-    }
+    compare_rows(fractional, |got, want, cpb, j| {
+        let slack = 1e-5 * want.abs().max(1.0);
+        assert!(
+            (got - want).abs() <= slack,
+            "cpb = {cpb} 第 {j} 行：{got} vs {want}"
+        );
+    });
 }
 
 #[test]

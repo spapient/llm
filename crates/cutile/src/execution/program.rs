@@ -119,7 +119,7 @@ fn pop_one(sources: &mut Vec<String>, role: &str) -> diagnostic::Result<String> 
 ///
 /// 构造器名说的是**形态**（单源 / 多段 / 逐点 / 分块 / 张量核……），不说厂商：同一形态在两个
 /// 后端上只有方言不同，是同一份语义词。
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Mode {
     plan: Plan,
     gate: Option<Gate>,
@@ -127,7 +127,7 @@ pub struct Mode {
 }
 
 /// 目标 lowering 的来源。
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 enum Plan {
     /// 按声明派生：`multi` 取多段族（分块归约/归一化/扫描），否则单源（分块族退串行）。
     Declared {
@@ -207,11 +207,7 @@ impl Mode {
 
     /// flash attention：K/V 按块流式扫描，行内不保留完整分数向量。
     pub fn flash(threads: usize, block: usize) -> Self {
-        Self::gated(
-            Lower::FlashAttention { threads, block },
-            flash_ready,
-            false,
-        )
+        Self::gated(Lower::FlashAttention { threads, block }, flash_ready, false)
     }
 
     /// 无前置条件的形态。

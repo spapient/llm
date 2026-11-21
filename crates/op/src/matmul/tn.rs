@@ -1,6 +1,8 @@
-use diagnostic::Result;
+use std::ops::Range;
 
-use super::check_tn_dims;
+use diagnostic::{Code, Error, Result};
+
+use super::{TN_COLS, TN_K, TN_ROWS};
 
 /// 标量参考（线性层布局）：`out[r, j] = Σ_p x[r, p]·w[j, p]`，每个元素按 `p` 顺序独立累加。
 ///
