@@ -108,9 +108,9 @@ fn find(
     let mut cursor = from;
     while let Some(chunk) = bytes.get(cursor..cursor + 16) {
         let word = u128::from_le_bytes(chunk.try_into().expect("切片长度恰为 16"));
-        let mut lanes = needles
-            .iter()
-            .fold(0, |lanes, &needle| lanes | zero_lanes(word ^ spread(needle)));
+        let mut lanes = needles.iter().fold(0, |lanes, &needle| {
+            lanes | zero_lanes(word ^ spread(needle))
+        });
         while lanes != 0 {
             let at = cursor + (lanes.trailing_zeros() / 8) as usize;
             if accept(at) {
