@@ -237,6 +237,9 @@ align   = ["1"]
 grade   = "L2"
 witness = { file = "cpu/witness.c", func = "witness_load", expect = [1.0] }
 
+# `load_async` / `commit_wait` / `bar` 三条的 `impl` 记的是正文真正发出来的东西，不是设备
+# 会不会那条指令：P0 的 emit 没有 shared 落点，屏障与等待都没有对象可挡可等，异步搬运也只
+# 能落 shared——所以三条只剩同步加载与空操作（intel 例外：`prefetch` 是语言内建，真的发）。
 [[provides]]
 prim    = "load_async"
 impl    = "sync_load"

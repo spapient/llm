@@ -143,21 +143,3 @@ fn corrupted(base: &prim::FragmentSet, target: prim::Prim) -> prim::FragmentSet 
     }
     set
 }
-
-#[test]
-fn zz_dump() {
-    let catalogue = Catalogue::try_builtin().expect("内置数据");
-    for id in ["sm75"] {
-        let profile = catalogue.profiles().iter().find(|p| p.meta.id == id).unwrap();
-        let fragments = prim::builtin(profile.meta.vendor.as_str(), profile.meta.emit.ext()).unwrap();
-        let op = catalogue.ops().iter().find(|o| o.name == "gemv_f32").unwrap();
-        let combo = decl::expand(op).unwrap()[0].clone();
-        let body = substitute::render(op, &combo, &fragments).unwrap();
-        for v in op.variants.iter() {
-            let b = substitute::render(op, &combo, &fragments).unwrap();
-            let s = emit::assemble(profile, op, v, &combo, &b);
-            println!("=== variant {} schedule {} hash {:x}", v.name, v.schedule, emit::fnv1a(&s.text));
-            println!("{}", s.text);
-        }
-    }
-}
