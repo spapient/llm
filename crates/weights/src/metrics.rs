@@ -4,6 +4,12 @@ use diagnostic::Result;
 
 use crate::stored::{Stored, lossless_entry};
 
+/// E8 体积门：`ratio_param ≤ 1/24`（LLD §E8「24× 无损」）。
+///
+/// 门槛写成常量而不是配置项：它是验收定义本身，可调的门就不叫门。改这个值等于改验收，
+/// 必须同时改 [`docs/lld.md`](../../../docs/lld.md) 的 §E8 与历史账。
+pub const E8_RATIO: f64 = 1.0 / 24.0;
+
 /// 度量累加器：逐段把 numel、FP16 参考体积、无损判定与 REF 命中/节省字节收拢到一处。
 pub(crate) struct MetricsAcc {
     params: u64,
@@ -101,6 +107,32 @@ impl Metrics {
     /// 体积比：`V_artifact / V_FP16`；`V_FP16` 为 0 时记 0。
     pub fn ratio(&self) -> f64 {
         self.ratio
+    }
+
+    /// 参数级体积比 `V_artifact / (params × 2)`，即 LLD §E8 的 `ratio_param`。
+    ///
+    /// 与 [`Self::ratio`] 的分母在今天的实现里数值相同（`v_fp16` 就是 `Σ numel × 2`），
+    /// 但口径不同：`v_fp16` 是"参考体积"，会随参考格式演进而变；`params × 2` 只由张量
+    /// 元素数决定，跨格式可复算。E8 的验收走这一条——否则参考体积口径一改，历史结论
+    /// 就会莫名其妙地失效。`params` 为 0 时记 0（无参容器没有可比的参数级体积）。
+    pub fn ratio_param(&self) -> f64 {
+        let denom = self.params.saturating_mul(2);
+        if denom == 0 {
+            return 0.0;
+        }
+        self.v_artifact as f64 / denom as f64
+    }
+
+    /// E8 裁决：24× 体积门与逐位无损**同时**成立才算通过（LLD §E8「必须且不可降级」）。
+    ///
+    /// 空容器（`params == 0`）一律判否：`ratio_param` 在无分母时记 0，若不加这一条，
+    /// 一份 0 字节的容器就会"通过"24× 门——那是假阳性，不是证据。
+    ///
+    /// 这里判的是**账**：`lossless` 来自条目声明的 codec，`ratio_param` 来自落盘字节。
+    /// 真正的"解码后逐位相等"由解码头（`Archive::load`）负责兑现，裁决方必须先跑完
+    /// 整表解码再引用本函数，不能只凭本函数的返回值对外宣称"已验证"。
+    pub fn e8_pass(&self) -> bool {
+        self.params > 0 && self.lossless && self.ratio_param() <= E8_RATIO
     }
 
     /// 无损标志：所有条目都不带量化方案，且 codec 属于无损的 `Store`/`Rans`/`Axes`。

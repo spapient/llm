@@ -129,7 +129,7 @@ impl Changed {
     }
 }
 
-/// 一个编译产物的身份：源文本 + 实测工具链（[`crate::toolchain::Toolchain::id`]）+ 编译参数 + 主函数；缺一项都会复用成错误的产物。
+/// 一个编译产物的身份：源文本 + 实测工具链（`Toolchain::id`（在 `cutile-run`））+ 编译参数 + 主函数；缺一项都会复用成错误的产物。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArtifactKey {
     /// 源文本的缓存键（十六进制）。

@@ -336,28 +336,4 @@ fn lock_is_exclusive_until_dropped() {
     assert!(cache.lock(&key()).is_ok(), "释放后可再次取锁");
 }
 
-/// 独立缓存目录：GC 会真删东西，不能与其他用例共用。
-fn cache_dirs(name: &str) -> crate::dirs::Dirs {
-    let root = std::env::temp_dir().join(format!("cutile-gc-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    crate::dirs::Dirs::under(root)
-}
 
-#[test]
-fn cache_gc_reclaims_through_the_cache_directory() {
-    let dirs = cache_dirs("cache-gc");
-    let catalogue = crate::builtin::Catalogue::try_builtin().expect("内置数据");
-    let report = crate::doctor::doctor(&catalogue, &dirs, "gemv_i4", "cpu").expect("doctor");
-    assert!(report.source.is_some(), "doctor 应已落盘");
-    let before = cache_gc(&dirs, None).expect("可回收");
-    assert_eq!(before.limit, CACHE_LIMIT, "缺省上限是命令策略");
-    assert!(before.before > 0, "doctor 刚落过盘：{before:?}");
-    assert_eq!(before.removed, 0, "未超上限时不删：{before:?}");
-    // 条目个数不再是"doctor 只落 1 条"：它现在还要把见证程序登记进缓存。
-    let entries = Cache::from_dirs(&dirs).entries().len();
-    assert!(entries > 1, "内核源之外还有见证程序：{entries}");
-    let after = cache_gc(&dirs, Some(0)).expect("可回收");
-    assert_eq!(after.removed, entries, "{after:?}");
-    assert_eq!(after.after, 0, "{after:?}");
-    let _ = std::fs::remove_dir_all(dirs.cache());
-}

@@ -87,8 +87,23 @@ reason = "模糊测试的目标、种子、行为描述与复现样本；工具�
 
 [[ownership.unlisted]]
 crate = "op"
-names = ["Access", "Arg", "Axis", "AxisRole", "AxisSpec", "Binary", "Chunk", "ConvGeom", "CType", "DecodeAttention", "DecodeFlashAttention", "Dense", "DequantI8", "Embed", "FlashAttention", "Formula", "Gemm", "Grid", "Matmul", "MatmulI8Op", "Packed", "PackedRow", "Param", "Plain", "PlainFmt", "QuantI4", "Sampler", "ShapeContext", "Skeleton", "SplitMix64", "SymI8", "TileCombo", "Unary", "Values", "Variant"]
-reason = "算子声明、语义与经典层采样辅助的内部类型（每个算子一个模块、一张行表）；公开面是 `REGISTRY`。经典 CNN 算子与 `nn` 同名层共享名字（`Conv1d`/`Conv2d`/`BatchNorm2d` 等）——所有权门按名字全局判重，故这些名字由 `nn` 的所有权行覆盖，`op` 侧不重复登记（与 `tool::Geometry`/`train::Geometry` 同一处置）。消歧义命名是 X2 的 P2 待办"
+names = ["Axis", "Chunk", "Grid", "Skeleton", "TileCombo", "Variant"]
+reason = "声明解析结果（骨架 / 网格映射 / 轴候选 / tile 组合）与变体闭集的内部类型；公开面是 `REGISTRY`。`Axis` 与 `op-spec::einsum::formula::Axis` 同名不同概念（这里是模板槽位 `name`+`values`，那里是求和表达式的字母+长度+角色）——所有权门按名字全局判重，故两边各登记一次；候选槽位改名是 X2 的 P2 待办"
+
+[[ownership.unlisted]]
+crate = "op-kernel"
+names = ["Binary", "Dense", "DequantI8", "Embed", "Gemm", "Matmul", "MatmulI8Op", "Packed", "PackedRow", "Plain", "PlainFmt", "QuantI4", "SymI8", "Unary"]
+reason = "内核族与打包格式的实现类型（每个算子一个模块、一张行表）；随 L 拆分从 `op` 迁到 `op-kernel`，公开面仍是 `REGISTRY` 与 `Operator`。经典 CNN 算子与 `nn` 同名层共享名字（`Conv1d`/`Conv2d`/`BatchNorm2d` 等）——所有权门按名字全局判重，故这些名字由 `nn` 的所有权行覆盖，本侧不重复登记（与 `tool::Geometry`/`train::Geometry` 同一处置）"
+
+[[ownership.unlisted]]
+crate = "op-neural"
+names = ["ConvGeom", "DecodeAttention", "DecodeFlashAttention", "FlashAttention", "Sampler"]
+reason = "神经网络算子（卷积几何 / 注意力 / 解码采样）的实现类型；随 L 拆分从 `op` 迁到 `op-neural`，公开面仍是 `REGISTRY` 与 `Operator`"
+
+[[ownership.unlisted]]
+crate = "op-spec"
+names = ["Access", "Arg", "Axis", "AxisRole", "AxisSpec", "CType", "Formula", "Param", "ShapeContext", "SplitMix64", "Values"]
+reason = "契约层内部类型（访问模式、算子参数、轴角色与轴规格、C 类型、公式缓存句柄、形状上下文、计数器型随机）；随 L 拆分从 `op` 迁到 `op-spec`，公开面是 `Operator` / `Model` / 签名"
 
 [[ownership.unlisted]]
 crate = "prim"

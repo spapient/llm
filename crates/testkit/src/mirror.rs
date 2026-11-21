@@ -56,8 +56,10 @@ fn the_registry_and_the_model_annotations_are_mirrors() {
 
     // 注解侧：`name` 是第一个键（参数顺序由 `annotation::syntax` 定死，这里只读不猜）。
     let mut annotated: Vec<(String, String)> = Vec::new();
+    // 拆分后注解散在 `op` / `op-spec` / `op-kernel` / `op-neural` 里：按家族前缀认，
+    // 写死单个 `op` 会让扫描面在拆分后静默归零。
     for (crate_name, file) in sources() {
-        if crate_name != "op" {
+        if !crate_name.starts_with("op") {
             continue;
         }
         let Some(text) = source_text(&file) else {
@@ -173,7 +175,7 @@ fn model_macros() -> std::collections::BTreeSet<String> {
 fn macro_bodies() -> std::collections::BTreeMap<String, String> {
     let mut out = std::collections::BTreeMap::new();
     for (crate_name, file) in sources() {
-        if crate_name != "op" {
+        if !crate_name.starts_with("op") {
             continue;
         }
         let Some(text) = source_text(&file) else {

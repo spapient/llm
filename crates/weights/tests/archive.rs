@@ -334,4 +334,118 @@ mod metrics_tests {
 
         assert!(!archive.metrics().expect("度量").lossless());
     }
+
+    /// 按验收口径直造一份度量：`1/24` 门只有精确取值才谈得上边界，靠真实容器造不出来。
+    fn metrics_of(params: u64, v_artifact: usize, lossless: bool) -> Metrics {
+        let v_fp16 = params.saturating_mul(2);
+        let ratio = if v_fp16 == 0 {
+            0.0
+        } else {
+            v_artifact as f64 / v_fp16 as f64
+        };
+        Metrics {
+            entries: usize::from(params > 0),
+            params,
+            v_artifact,
+            v_fp16,
+            ratio,
+            lossless,
+            ref_hits: 0,
+            ref_saved_bytes: 0,
+        }
+    }
+
+    #[test]
+    fn ratio_param_divides_by_the_parameter_level_denominator() {
+        let metrics = metrics_of(12, 3, true);
+
+        assert_eq!(metrics.ratio_param(), 0.125);
+
+        // 与 `ratio` 同分母：参考体积就是 `params × 2`，今天两条口径数值必然相等。
+        assert_eq!(metrics.ratio_param(), metrics.ratio());
+    }
+
+    #[test]
+    fn the_e8_gate_accepts_exactly_one_over_twenty_four_and_not_one_byte_more() {
+        // 12 参数 ⇒ 分母 24 字节；1 字节正好落在门上，2 字节即出界。
+        assert_eq!(metrics_of(12, 1, true).ratio_param(), crate::E8_RATIO);
+
+        assert!(metrics_of(12, 1, true).e8_pass());
+
+        assert!(!metrics_of(12, 2, true).e8_pass());
+    }
+
+    #[test]
+    fn a_lossy_artifact_never_passes_the_e8_gate_however_small_it_is() {
+        assert!(!metrics_of(12, 1, false).e8_pass());
+    }
+
+    #[test]
+    fn an_empty_artifact_does_not_pass_the_e8_gate_vacuously() {
+        let empty = metrics_of(0, 0, true);
+
+        assert_eq!(empty.ratio_param(), 0.0);
+
+        assert!(!empty.e8_pass());
+    }
+
+    /// 真实 checkpoint 的端到端 E8 度量：给 `E8_WITNESS=<file.safetensors>` 才跑。
+    ///
+    /// 走的是生产同一条路——导入 → 写 `.u` → 解析 → **整表解码** → 由落盘字节现算度量与裁决。
+    /// 解码一步不省：`e8_pass` 是"账"，逐位还原才是"证"，两件一起打印才算一次 E8 运行。
+    /// 没给变量就直接返回（这条是基准而非回归用例，不该在没有样本的机器上失败）。
+    #[test]
+    #[ignore = "需要真实 safetensors：E8_WITNESS=<路径>"]
+    fn a_real_checkpoint_goes_through_the_e8_gate() {
+        let Ok(source) = std::env::var("E8_WITNESS") else {
+            return;
+        };
+
+        let segments = crate::import::segments_from_safetensors_file(std::path::Path::new(&source))
+            .expect("导入");
+
+        let out = std::env::temp_dir().join("llm-e8-witness.u");
+
+        let mut writer = crate::Writer::new();
+
+        for segment in segments {
+            writer.push(segment).expect("装入");
+        }
+
+        writer.write_to_path(6, &out).expect("落盘");
+
+        let bytes = std::fs::read(&out).expect("读回");
+
+        std::fs::remove_file(&out).expect("清理临时容器");
+
+        let archive = Archive::parse(&bytes).expect("合法容器");
+
+        let mut decoded = 0usize;
+
+        for segment in archive.segments() {
+            archive.load(segment).expect("逐位解码");
+
+            decoded += 1;
+        }
+
+        let metrics = archive.metrics().expect("度量");
+
+        println!(
+            "E8 witness {source}: entries={} decoded={} V_artifact={} V_FP16={} \
+             ratio={:.6} ratio_param={:.6} lossless={} refs={} e8_pass={}",
+            metrics.entries(),
+            decoded,
+            metrics.v_artifact(),
+            metrics.v_fp16(),
+            metrics.ratio(),
+            metrics.ratio_param(),
+            metrics.lossless(),
+            metrics.ref_hits(),
+            metrics.e8_pass()
+        );
+
+        assert_eq!(decoded, metrics.entries(), "整表都要解码过");
+
+        assert!(metrics.lossless(), "五轴选码与去重都必须逐位无损");
+    }
 }

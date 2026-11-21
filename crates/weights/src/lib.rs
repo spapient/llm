@@ -116,7 +116,7 @@ pub use crate::archive::VOCAB_NAME;
 pub use archive::Archive;
 pub use dtype::DType as Wire;
 pub use l3::{Bracket, Chain, Ruling, Rung};
-pub use metrics::Metrics;
+pub use metrics::{E8_RATIO, Metrics};
 pub use proof::Proof;
 pub use ptq::{
     Adaptive, AdaptiveCompensated, Compensated, I2, I3, I4, I8, Scheme, adaptive_quantize,

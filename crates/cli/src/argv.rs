@@ -22,6 +22,7 @@ pub const USAGE: &str = "\
   import --in <源> --out <文件> 把 safetensors / gguf / bin 条目流写成自有 `.u` 容器
   inspect --in <文件>     读 `.u` 容器：条目清单与现场现算的度量
   check --in <文件>       逐段解码还原 `.u` 容器，校验完整性
+  deploy --in <文件>      E8 裁决：逐段解码 + 参数级体积门（24× 无损），不达门退出码非零
   settle --in <文件> [--out <文件>]  逐张量沉降账本（体积 / 原因 / 无损）；`--out` 落成 JSON
   audit  --in <文件> --ledger <账本> 把落盘账本读回，与同一份字节现算的账逐格核对
   help                   打印本说明
@@ -31,7 +32,7 @@ pub const USAGE: &str = "\
 
 选项：
   --weights <文件>        safetensors 权重文件（`status` / `run` 用；`run` 必需）
-  --in <文件>             输入路径（`import` 的 safetensors 源；`inspect` / `check` / `settle` / `audit` 的 `.u` 容器；五者都必需）
+  --in <文件>             输入路径（`import` 的 safetensors 源；`inspect` / `check` / `deploy` / `settle` / `audit` 的 `.u` 容器；六者都必需）
   --out <文件>            输出路径（`import` 的 `.u` 容器，必需）；`settle` 的账本文件（可选）
   --ledger <文件>         `audit` 待复核的账本（必需）：`settle --out` 写下的那一份
   --input <a,b,c>         `run` 的输入向量（逗号分隔 f32；不给则用确定性图案）
@@ -92,6 +93,11 @@ pub enum Command<'a> {
     /// 逐段解码校验 `.u` 容器；路径必需。
     Check {
         /// 待校验 `.u` 容器路径。
+        input: &'a str,
+    },
+    /// E8 部署裁决（LLD §E8）：逐段解码 + 参数级体积门，两件证据同时成立才算通过。
+    Deploy {
+        /// 待裁决 `.u` 容器路径。
         input: &'a str,
     },
     /// 逐张量沉降账本（LLD §4.7）：体积、原因与无损判定，全部由落盘字节现算。
@@ -183,6 +189,11 @@ const COMMANDS: &[Row] = &[
     }),
     ("check", &[required("--in", "文件")], |flags| {
         Ok(Command::Check {
+            input: flags.take_need("--in")?,
+        })
+    }),
+    ("deploy", &[required("--in", "文件")], |flags| {
+        Ok(Command::Deploy {
             input: flags.take_need("--in")?,
         })
     }),

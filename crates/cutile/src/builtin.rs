@@ -7,7 +7,7 @@
 
 use crate::cap;
 use crate::decl::OpDecl;
-use crate::device::probe::select;
+use crate::probe::select;
 use crate::prof::Detected;
 use crate::prof::Profile;
 use diagnostic::{Code, Error};
@@ -15,7 +15,7 @@ use op::Op;
 use std::sync::OnceLock;
 
 /// 保留的设备名：不走档案查找，按本机探测挑一份档案。命令行默认值在 `cli` 侧另存一份，这里是库内比对口径。
-pub(crate) const AUTO_DEVICE: &str = "auto";
+pub const AUTO_DEVICE: &str = "auto";
 
 /// 内置集合解析结果的进程内缓存：声明表与档案表都是编译期内嵌的只读数据，
 /// 重复调用不该把每条 `OpDecl` / `Profile` 再解析一遍。类型全是自有数据，可跨线程共享。
@@ -76,7 +76,7 @@ impl Catalogue {
     /// 名字不存在或探测不出可用档案时返回说明。
     pub fn resolve(&self, device: &str) -> diagnostic::Result<&Profile> {
         if device == AUTO_DEVICE {
-            return self.select(&crate::device::probe::detect_cpu());
+            return self.select(&crate::probe::detect_cpu());
         }
         self.profile(device)
             .ok_or_else(|| Error::new(Code::Missing, format!("没有设备档案 `{device}`")))

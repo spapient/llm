@@ -50,6 +50,40 @@ pub(crate) fn locate_module(module: &str) -> Option<PathBuf> {
     locate(module, 0)
 }
 
+/// 内核机制与运行期的 `src` 根。`cutile` 拆成「纯机制」+「run（编译执行 / doctor / bench /
+/// verify）」两家后，契约文件会在两家之间搬；判据守的是结构契约（缝在、注册表在、注入点在），
+/// 不是文件坐标，所以按两家探测，谁家有就用谁家的。
+fn cutile_path(relative: &str) -> PathBuf {
+    let candidates: Vec<PathBuf> = ["cutile", "cutile-run"]
+        .iter()
+        .map(|name| root().join("crates").join(name).join("src").join(relative))
+        .collect();
+    candidates
+        .iter()
+        .find(|path| path.exists())
+        .cloned()
+        .unwrap_or_else(|| {
+            panic!(
+                "`{relative}` 在 cutile 与 cutile-run 的 `src` 里都不存在（查过 {}）",
+                candidates
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join("、")
+            )
+        })
+}
+
+/// 算子家族的 `src` 根。`op` 拆成四个 crate 后算子实体散在各家，路径探测必须逐家去试；
+/// 顺序固定，同一个文件名在两家都出现时以前者为准（`op` 是门面，实体在专责 crate）。
+fn op_roots() -> Vec<PathBuf> {
+    ["op", "op-spec", "op-kernel", "op-neural"]
+        .iter()
+        .map(|name| root().join("crates").join(name).join("src"))
+        .filter(|path| path.is_dir())
+        .collect()
+}
+
 /// 别名链上限：`classic::adaptive_pool` → `classic::pool::adaptive` 只有一跳，留余量是为了让
 /// 成环的别名表停在判定上而不是栈溢出。
 const ALIAS_DEPTH: usize = 4;
@@ -58,11 +92,12 @@ fn locate(module: &str, depth: usize) -> Option<PathBuf> {
     if depth > ALIAS_DEPTH {
         return None;
     }
-    let src = root().join("crates/op/src");
+    let roots = op_roots();
+    // 按相对路径在家族各家根下探测：名字在谁家就返回谁家的实体。
+    let find = |relative: String| roots.iter().map(|src| src.join(&relative)).find(|cand| cand.exists());
     // 带路径的模块名（`classic::pool::adaptive`）按目录走就是实体文件。
     if module.contains("::") {
-        let explicit = src.join(format!("{}.rs", module.replace("::", "/")));
-        if explicit.exists() {
+        if let Some(explicit) = find(format!("{}.rs", module.replace("::", "/"))) {
             return Some(explicit);
         }
         // 内联模块（`activation.rs` 里的 `pub mod embed { … }`）没有自己的文件，注解与实体都在
@@ -71,18 +106,16 @@ fn locate(module: &str, depth: usize) -> Option<PathBuf> {
         let mut segments: Vec<&str> = module.split("::").collect();
         segments.pop();
         if !segments.is_empty() {
-            let parent = src.join(format!("{}.rs", segments.join("/")));
-            if parent.exists() {
+            if let Some(parent) = find(format!("{}.rs", segments.join("/"))) {
                 return Some(parent);
             }
         }
     }
-    let direct = src.join(format!("{module}.rs"));
-    if direct.exists() {
+    if let Some(direct) = find(format!("{module}.rs")) {
         return Some(direct);
     }
     for (crate_name, file) in sources() {
-        if crate_name != "op" {
+        if !crate_name.starts_with("op") {
             continue;
         }
         let Some(text) = source_text(&file) else {
@@ -127,7 +160,7 @@ fn aliases() -> &'static std::collections::BTreeMap<String, Vec<String>> {
         let mut out: std::collections::BTreeMap<String, Vec<String>> =
             std::collections::BTreeMap::new();
         for (crate_name, file) in sources() {
-            if crate_name != "op" {
+            if !crate_name.starts_with("op") {
                 continue;
             }
             let Some(text) = source_text(&file) else {
@@ -409,8 +442,8 @@ pub(crate) fn closed_vocabularies_are_declared_once() {
 /// 这一种，且只发生在装配层（L7），不在机制层。
 #[test]
 pub(crate) fn every_device_front_end_is_entered() {
-    let device = root().join("crates/cutile/src/device.rs");
-    let text = fs::read_to_string(&device).expect("`crates/cutile/src/device.rs` 必须存在");
+    let device = cutile_path("device.rs");
+    let text = fs::read_to_string(&device).expect("`device.rs` 必须可读");
     assert!(
         text.contains("static REGISTRY"),
         "后端注册表 `static REGISTRY` 必须存在"
@@ -424,8 +457,8 @@ pub(crate) fn every_device_front_end_is_entered() {
         "注册表必须有注入点 `register`（L7 装配 Metal/CUDA）"
     );
 
-    let backend = root().join("crates/cutile/src/backend.rs");
-    let text = fs::read_to_string(&backend).expect("`crates/cutile/src/backend.rs` 必须存在");
+    let backend = cutile_path("backend.rs");
+    let text = fs::read_to_string(&backend).expect("`backend.rs` 必须可读");
     assert!(text.contains("pub trait Codegen"), "Codegen 缝必须存在");
     assert!(text.contains("fn emit"), "Codegen 必须要求语言身份 `emit`");
     assert!(

@@ -123,11 +123,12 @@ fn objects(command: &Command<'_>) -> Result<()> {
     }
 }
 
-/// `inspect` / `check` 只差一步验码：同一个入参，同一层。
+/// `inspect` / `check` / `deploy` 只差一步验码：同一个入参，同一层。
 fn examine(command: &Command<'_>) -> Result<()> {
     match command {
         Command::Inspect { input } => archive::inspect(input),
         Command::Check { input } => archive::check(input),
+        Command::Deploy { input } => archive::deploy(input),
         other => stray(other),
     }
 }

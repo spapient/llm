@@ -8,7 +8,7 @@ use crate::sch::Schedule;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// 档案身份标签：`厂商(编号)`；失败诊断与 verify 报告共用这一种写法，不在各自排版里另拼。
-pub(crate) fn device_label(profile: &Profile) -> String {
+pub fn device_label(profile: &Profile) -> String {
     format!("{}({})", profile.meta.vendor, profile.meta.id)
 }
 

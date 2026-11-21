@@ -1,6 +1,6 @@
 use super::*;
 use crate::decl::expand;
-use crate::device::probe;
+use crate::probe;
 use crate::substitute;
 use std::path::Path;
 

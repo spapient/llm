@@ -20,21 +20,17 @@
 //! | ③ 变体选择与 roofline 估值 | [`plan`] |
 //! | ④ 槽位与 `@原语` 替换 | [`substitute`]、[`ast`] |
 //! | ⑤ 成文与片段行数判据 | [`emit`] |
-//! | ⑤ 指纹、锁、落盘 | [`build`] |
 //! | ⑤ 指纹、锁、落盘与容量回收 | [`cache`] |
-//! | 设备探测、存储容量与寻址 | [`probe`]、[`space`] |
+//! | 设备探测与存储寻址 | [`probe`]、[`space`] |
 //! | 对拍口径（相对误差 + 按 dtype 阈值） | [`mod@reference`] |
-//! | 工具链探测与身份 | [`toolchain`] |
-//! | 编译/执行/回读原语 | `runner` |
-//! | 被测内核的基准封装（`cc` / `cuda`） | `harness` |
-//! | 统一设备：按 `Emit` 分发的描述符表与编排行 | `device` |
-//! | 见证执行与语言门 | [`witness`]、`gate` |
-//! | 四条命令共用的流水线 | `pipeline` |
-//! | 命令策略与结构化报告 | [`doctor`]、[`verify`]、[`mod@bench`]、[`execution`] |
+//! | 被测内核的基准封装（`cc` / `cuda`） | [`harness`] |
 //! | 输入形状：三个目录，纯数据 | [`dirs`] |
 //!
-//! 上表按"机制 / 命令策略"分界读：`runner`、`harness`、`device`、`gate`、`pipeline` 是私有模块，因为它们是接缝
-//! 而不是 API——外部只该看到"能跑/不能跑"的结论，不该直接拼一次编译。
+//! 上表到 `emit` + `cache` 为止：本 crate 是**无 IR 的编译前端**，它把三份输入折成源文本与缓存键，
+//! 不碰进程、不碰设备、不跑内核。凡是要拼一次编译、跑一次设备、或给出"能跑/不能跑"结论的模块
+//! （`backend`、`build`、`device`、`runner`、`gate`、`pipeline`、`toolchain`、`witness`、
+//! `verify`、`execution` 与 `doctor` / `bench` / `ledger` 三份报告）住在 `cutile-run`——那才是
+//! "机制 / 命令策略"的分界线：跨过去就必须有证据，而证据来自执行。
 //!
 //! # 例子
 //!
@@ -58,7 +54,7 @@
 //! ```
 //!
 //! 上面用的是**按档案自述**的协商：§16 的判据问的是声明粒度，不该随本机有没有这块卡而变。
-//! 执行路径（本 crate 的 `doctor` / `verify` / `bench`）用 [`cap::negotiate_with`]，它还要求供给
+//! 执行路径（`cutile-run` 的 `doctor` / `verify` / `bench`）用 [`cap::negotiate_with`]，它还要求供给
 //! 出现在这次执行得到的 [`cap::Proof`] 里——`grade` 是执行的结论，不是 TOML 的结论。
 //!
 //! # 工程条款（README §3.2）
@@ -82,43 +78,25 @@ pub use ::op::decl;
 pub use ::op::{layout, model, sch, sig};
 
 pub mod ast;
-pub mod backend;
-pub mod bench;
-pub mod build;
 pub mod builtin;
 pub mod cache;
 pub mod cap;
 pub mod dirs;
-pub mod doctor;
 pub mod emit;
-pub mod execution;
-pub mod ledger;
+pub mod harness;
 pub mod plan;
+pub mod probe;
 pub mod reference;
+pub mod space;
 pub mod substitute;
-pub mod toolchain;
-pub mod verify;
-pub mod witness;
 
 // 生产态内核发射与基准封装（M3-2 / M3-10）已搬到 `engine`（L6）：Metal / CUDA 的 vendor 语法
-// 不进 cutile，机制层只经 [`backend::Codegen::lower`] / [`backend::Codegen::harness`] 缝分派
-// （`docs/ARCHITECTURE.md` 的 L3 契约：cutile 不出现厂商字面量）。
+// 不进 cutile，机制层只经 `cutile_run::backend::Codegen::lower` / `cutile_run::backend::Codegen::harness`
+// 缝分派（`docs/ARCHITECTURE.md` 的 L3 契约：cutile 不出现厂商字面量）。
 //
-// `execution` 因此只导出 [`execution::program`] 一个入口：后端用 [`execution::Backend`] 选，内核
-// 形状用 [`execution::Mode`] 点，设备源与派发附加数据由 [`execution::Stages`] 按角色取。原先按厂商
-// 命名的 17 个 `*_program` 已全部收进这条入口，`testkit::architecture` 的厂商名基线也随之清空。
-
-mod device;
-mod gate;
-pub mod harness;
-mod pipeline;
-mod runner;
-
-// 合并后的模块仍保留 crate 级公开路径：`engine`（L6）按 `cutile::driver` 取这套机制原语，
-// `probe` / `space` 的公开面也不因搬进 `device` 而消失。
-pub use device::probe;
-pub use device::space;
-pub use runner::{compile_flags, driver};
+// 接缝与命令策略（`backend`、`build`、`device`、`gate`、`pipeline`、`runner`、`toolchain`、
+// `witness`、`verify`、`execution`）住在 `cutile-run`：它们要拼一次编译、跑一次设备，而本 crate
+// 只做"把三层数据变成源文本"这段无 IR 的前端（①②③④⑤）。
 
 /// crate 自身的 schema 版本；闭集变更时递增，旧 `plan` 表与缓存随即失效（README §6.4）。
 ///

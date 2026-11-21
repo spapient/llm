@@ -93,10 +93,10 @@ pub(crate) const VENDORS: [&str; 8] = [
 /// 重建切片，总数由 17 涨到 21，这属于要往下削的重复而不是新增许可。
 pub(crate) const UNSAFE_ISLANDS: &[(&str, usize)] = &[
     ("crates/device/src/metal/executor.rs", 1),
-    ("crates/op/src/fast/i8.rs", 8),
-    ("crates/op/src/fast/micro.rs", 6),
-    ("crates/op/src/fast/pool.rs", 3),
-    ("crates/op/src/fast/sme.rs", 4),
+    ("crates/op-kernel/src/fast/i8.rs", 8),
+    ("crates/op-kernel/src/fast/micro.rs", 6),
+    ("crates/op-kernel/src/fast/pool.rs", 3),
+    ("crates/op-kernel/src/fast/sme.rs", 4),
     ("crates/storage/src/mmap.rs", 1),
 ];
 

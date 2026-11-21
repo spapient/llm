@@ -155,7 +155,7 @@ where
 }
 
 pub mod archive {
-    //! `import` / `inspect` / `check` / `settle` 四条 `.u` 容器命令的组装与汇报（L7 bin 内模块）。
+    //! `import` / `inspect` / `check` / `deploy` / `settle` / `audit` 六条 `.u` 容器命令的组装与汇报（L7 bin 内模块）。
     //!
     //! 分工与既有编排模块一致：本模块只装配库层调用、取值解析与人可读排版，不定义新领域类型；
     //! 条目流、编码、解码与度量口径都在 `weights` 层，这里不复制第二份规则。
@@ -168,6 +168,9 @@ pub mod archive {
     //!   不读文件内保存的度量字段，也不出 Roofline / 设备数字。
     //! - `check`：`parse` 已在打开期校验段级 / 全局 CRC；逐段 `load` 触发解码与逐位还原，
     //!   输出解码条目数。坏文件按既有 [`diagnostic::Code`] 口径落成非零退出码。
+    //! - `deploy`：E8 部署裁决（LLD §E8）。整表解码一遍（等价于 `check` 的证据）再由落盘
+    //!   字节现算 `ratio_param = V_artifact / (params × 2)`，与无损标志一起过 `1/24` 门；
+    //!   不达门按 [`Code::Invalid`] 返回非零，因此可以直接当验收门用。
     //! - `settle`：同一份字节 → 逐张量体积 / 熵 / 量化档位 / 无损与原因（`weights::settle`
     //!   现算）。账本 JSON 的文本只有一个来源，写盘与 stdout 用的是同一份。
     //! - `audit`：把落盘的账本读回，与同一份字节再算一遍的账逐格核对——账本唯一的消费方式。
@@ -336,18 +339,69 @@ pub mod archive {
     pub(crate) fn check(input: &str) -> Result<()> {
         let bytes = read_container(input, "llm check")?;
         let archive = Archive::parse(&bytes).map_err(|error| error.with("llm check"))?;
-        let decoded = decode_all(&archive)?;
+        let decoded = decode_all(&archive, "llm check")?;
         println!("{decoded} tensors decoded");
         Ok(())
     }
 
+    /// `deploy`：E8 部署裁决（LLD §E8）。
+    ///
+    /// 先把整表解码一遍（触发两级 CRC、五轴展开与逐位还原），再由落盘字节现算参数级体积比。
+    /// 两件证据缺一不可：只算体积比不叫无损，只解码不叫 24×。裁决不通过返回
+    /// [`Code::Invalid`]——`deploy` 是要能当门用的，退出码必须能表达"没达标"。
+    pub(crate) fn deploy(input: &str) -> Result<()> {
+        let bytes = read_container(input, "llm deploy")?;
+        let archive = Archive::parse(&bytes).map_err(|error| error.with("llm deploy"))?;
+        let decoded = decode_all(&archive, "llm deploy")?;
+        let metrics = archive
+            .metrics()
+            .map_err(|error| error.with("llm deploy"))?;
+        let pass = metrics.e8_pass();
+        let report = Panel::new("llm —— E8 部署裁决（24× 无损）")
+            .row("容器", input)
+            .row("参数总数", format!("{}", metrics.params()))
+            .row(
+                "V_artifact",
+                diagnostic::render::human_bytes(metrics.v_artifact() as u64),
+            )
+            .row("V_FP16", diagnostic::render::human_bytes(metrics.v_fp16()))
+            .row("ratio_param", format!("{:.6}", metrics.ratio_param()))
+            .row("lossless", lossless_label(metrics.lossless()))
+            .row(
+                "REF 命中",
+                format!(
+                    "{}（节省 {}）",
+                    metrics.ref_hits(),
+                    diagnostic::render::human_bytes(metrics.ref_saved_bytes())
+                ),
+            )
+            .row("解码通过", format!("{decoded}/{}", metrics.entries()))
+            .row(
+                "门",
+                format!("ratio_param ≤ 1/24 = {:.6}", weights::E8_RATIO),
+            )
+            .row("e8_pass", lossless_label(pass));
+        print!("{}", report.render());
+        if pass {
+            return Ok(());
+        }
+        Err(Error::new(
+            Code::Invalid,
+            format!(
+                "E8 裁决未通过：ratio_param={:.6}（门 {:.6}），lossless={}",
+                metrics.ratio_param(),
+                weights::E8_RATIO,
+                lossless_label(metrics.lossless())
+            ),
+        )
+        .with("llm deploy"))
+    }
+
     /// 逐段解码还原全表，返回解码条目数；任一段解码失败按命令站点补诊断。
-    fn decode_all(archive: &Archive<'_>) -> Result<usize> {
+    fn decode_all(archive: &Archive<'_>, site: &str) -> Result<usize> {
         let mut decoded = 0usize;
         for segment in archive.segments() {
-            archive
-                .load(segment)
-                .map_err(|error| error.with("llm check"))?;
+            archive.load(segment).map_err(|error| error.with(site))?;
             decoded += 1;
         }
         Ok(decoded)
