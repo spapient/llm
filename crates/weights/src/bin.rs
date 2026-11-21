@@ -70,13 +70,7 @@ impl<'a> Bin<'a> {
     }
 }
 
-pub(crate) fn or_bad<T>(value: Option<T>, message: &str) -> Result<T> {
-    value.ok_or_else(|| bad(message))
-}
 
-pub(crate) fn bad(message: &str) -> Error {
-    Error::new(Code::Invalid, message).with("bin")
-}
 
 #[cfg(test)]
 #[path = "../tests/bin.rs"]

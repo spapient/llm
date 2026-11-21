@@ -92,9 +92,6 @@ fn keep_segment(src: &Archive<'_>, seg: &Stored) -> Result<Segment> {
     to_segment(seg, data)
 }
 
-fn bad(message: &str) -> Error {
-    Error::new(Code::Invalid, message).with("mode")
-}
 
 // —— 增量补丁：逐字节 XOR，读端按 base 自逆合成 ——
 

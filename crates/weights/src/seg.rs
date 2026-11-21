@@ -406,9 +406,6 @@ fn check_quant(quant: Option<&Quant>, rank: u32) -> Result<()> {
     Ok(())
 }
 
-fn bad(message: &str) -> Error {
-    Error::new(Code::Invalid, message).with("weights::seg")
-}
 
 #[cfg(test)]
 #[path = "../tests/seg.rs"]

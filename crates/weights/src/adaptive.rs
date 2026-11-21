@@ -151,13 +151,13 @@ fn assemble(parts: crate::ptq::Components, adaptive: Adaptive) -> AdaptiveCompen
 /// 了数，所以在这里拒绝而不是静默退化成固定 8bit。
 fn check_budget(group: usize, x: &[f32], target_err: f64) -> Result<()> {
     if group == 0 {
-        return Err(invalid("量化分组必须大于 0"));
+        return Err(bad("量化分组必须大于 0"));
     }
     if !x.iter().all(|v| v.is_finite()) {
-        return Err(invalid("输入必须是有限 f32"));
+        return Err(bad("输入必须是有限 f32"));
     }
     if target_err.is_nan() || target_err < 0.0 {
-        return Err(invalid("目标误差必须非负"));
+        return Err(bad("目标误差必须非负"));
     }
     Ok(())
 }
@@ -168,7 +168,7 @@ fn check_target(target_snr_db: f64) -> Result<()> {
     if target_snr_db.is_finite() {
         return Ok(());
     }
-    Err(invalid("目标 SNR 必须有限"))
+    Err(bad("目标 SNR 必须有限"))
 }
 
 /// 第 `g` 组在 `len` 个元素里的区间；末组可能短于 `group`。

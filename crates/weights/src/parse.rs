@@ -20,14 +20,14 @@ pub(crate) const FOOTER_LEN: usize = 4;
 /// 固定头：长度、魔数、版本、预留位与对齐逐项检查，不回答段布局。
 pub(crate) fn fixed(bytes: &[u8]) -> Result<(u32, usize)> {
     if bytes.len() < FIXED_HEAD + FOOTER_LEN + 1 {
-        return Err(invalid(format!(
+        return Err(bad(format!(
             "文件只有 {} 字节，读不出固定头、段计数与尾部",
             bytes.len()
         )));
     }
     let magic = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
     if magic != MAGIC {
-        return Err(invalid(format!(
+        return Err(bad(format!(
             "魔数不匹配：期望 {MAGIC:#010x}，得到 {magic:#010x}"
         )));
     }
@@ -45,7 +45,7 @@ fn check_version(version: u16) -> Result<()> {
         .with("weights::Archive"));
     }
     if version < VERSION {
-        return Err(invalid(format!(
+        return Err(bad(format!(
             "版本 {version} 已不再支持，当前为 {VERSION}"
         )));
     }
@@ -56,11 +56,11 @@ fn check_version(version: u16) -> Result<()> {
 fn flags_align(bytes: &[u8]) -> Result<(u32, usize)> {
     let flags = u32::from_le_bytes([bytes[6], bytes[7], bytes[8], bytes[9]]);
     if flags & !(GLOBAL_CRC | SEG_CRC) != 0 {
-        return Err(invalid("flags 含非零预留位"));
+        return Err(bad("flags 含非零预留位"));
     }
     let align_log = bytes[10];
     if align_log > MAX_ALIGN_LOG {
-        return Err(invalid(format!(
+        return Err(bad(format!(
             "align_log {align_log} 超过 {MAX_ALIGN_LOG}"
         )));
     }
@@ -76,10 +76,10 @@ const MAX_DESC_PREALLOC: usize = 4096;
 
 /// 段计数：读 u32 计数并按剩余字节粗查；谎报的巨大计数不换来巨额预分配。
 fn read_count(cur: &mut Cursor<'_>) -> Result<usize> {
-    let count = usize::try_from(cur.read::<u32>()?).map_err(|_| invalid("段数量超 usize"))?;
+    let count = usize::try_from(cur.read::<u32>()?).map_err(|_| bad("段数量超 usize"))?;
     let plausible = cur.remaining().len().saturating_div(MIN_DESC_BYTES);
     if count > plausible {
-        return Err(invalid("段数量超出剩余字节能容纳的规模"));
+        return Err(bad("段数量超出剩余字节能容纳的规模"));
     }
     Ok(count)
 }
@@ -125,7 +125,7 @@ fn place_all(
         cursor = end;
     }
     if cursor != footer_pos {
-        return Err(invalid(format!(
+        return Err(bad(format!(
             "数据区结束于 {cursor}，尾部在 {footer_pos}：存在多余字节"
         )));
     }
@@ -156,7 +156,7 @@ fn place_next(
                 *seg_crc,
             )?;
             if end > footer_pos {
-                return Err(invalid(format!(
+                return Err(bad(format!(
                     "段 `{}` 的区间超出数据区，文件被截断",
                     segment.name()
                 )));
@@ -185,7 +185,7 @@ fn validate_names(descs: &[Desc]) -> Result<()> {
     for desc in descs {
         let name = desc.descriptor().name.as_str();
         if !seen.insert(name) {
-            return Err(invalid(format!("段名 `{name}` 重复")));
+            return Err(bad(format!("段名 `{name}` 重复")));
         }
     }
     Ok(())
@@ -204,7 +204,7 @@ fn validate_refs(descs: &[Desc]) -> Result<()> {
 fn check_ref(index: usize, descs: &[Desc], colors: &mut [u8]) -> Result<()> {
     match colors[index] {
         2 => return Ok(()),
-        1 => return Err(invalid("引用段成环")),
+        1 => return Err(bad("引用段成环")),
         _ => {
             colors[index] = 1;
             walk_ref(index, descs, colors)?;
@@ -228,19 +228,19 @@ fn walk_ref(index: usize, descs: &[Desc], colors: &mut [u8]) -> Result<()> {
 fn validate_ref_target(index: usize, rep: usize, descs: &[Desc]) -> Result<()> {
     let name = descs[index].descriptor().name.clone();
     if rep >= descs.len() {
-        return Err(invalid(format!("引用段 `{name}` 指向越界下标 {rep}")));
+        return Err(bad(format!("引用段 `{name}` 指向越界下标 {rep}")));
     }
     if rep == index {
-        return Err(invalid(format!("引用段 `{name}` 自引用")));
+        return Err(bad(format!("引用段 `{name}` 自引用")));
     }
     let target = &descs[rep];
     if !matches!(target.body(), DescBody::Inline { .. }) {
-        return Err(invalid(format!(
+        return Err(bad(format!(
             "引用段 `{name}` 的代表段 `{rep}` 本身是引用"
         )));
     }
     if !descs[index].descriptor().same_value(target.descriptor()) {
-        return Err(invalid(format!(
+        return Err(bad(format!(
             "引用段 `{name}` 与代表段 `{rep}` 的类型/形状/量化元数据不一致"
         )));
     }
@@ -299,7 +299,7 @@ fn resolve_one(stored: &[Stored], index: usize, rep: usize) -> Result<(Codec, us
             len,
             crc,
         } => Ok((*codec, *start, *len, *crc)),
-        StoredInner::Ref { .. } => Err(invalid(format!(
+        StoredInner::Ref { .. } => Err(bad(format!(
             "引用段 `{index}` 的代表段 `{rep}` 本身是引用"
         ))),
     }
@@ -316,20 +316,20 @@ fn place_inline(
     seg_crc: u32,
 ) -> Result<(Stored, usize)> {
     let Some(start) = align_up(cursor, align) else {
-        return Err(invalid("对齐必须是 2 的幂且对齐后不溢出"));
+        return Err(bad("对齐必须是 2 的幂且对齐后不溢出"));
     };
     let pad_ok = bytes
         .get(cursor..start)
         .is_some_and(|pad| pad.iter().all(|b| *b == 0));
     if !pad_ok {
-        return Err(invalid(format!(
+        return Err(bad(format!(
             "段 `{}` 之前的对齐填充含非零字节",
             meta.name
         )));
     }
-    let len = usize::try_from(data_len).map_err(|_| invalid("段长度超 usize"))?;
+    let len = usize::try_from(data_len).map_err(|_| bad("段长度超 usize"))?;
     let Some(end) = start.checked_add(len) else {
-        return Err(invalid("段区间相加溢出"));
+        return Err(bad("段区间相加溢出"));
     };
     Ok((
         Stored {

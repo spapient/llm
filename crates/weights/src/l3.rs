@@ -313,9 +313,6 @@ fn check(label: &str, value: f64) -> Result<()> {
 }
 
 /// 错误只此一种来源：`Code::Invalid` 加模块标签，措辞在调用点给。
-fn bad(message: &str) -> Error {
-    Error::new(Code::Invalid, message).with("l3")
-}
 
 #[cfg(test)]
 #[path = "../tests/l3.rs"]

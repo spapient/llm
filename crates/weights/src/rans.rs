@@ -188,7 +188,7 @@ fn read_freq(cur: &mut &[u8]) -> Result<[u32; NSYMBOLS]> {
     }
     let sum = freq.iter().try_fold(0u32, |acc, &f| acc.checked_add(f));
     if sum != Some(TOTAL_FREQ) {
-        return Err(fault("rANS 频率表总和不为 2^16"));
+        return Err(bad("rANS 频率表总和不为 2^16"));
     }
     Ok(freq)
 }
@@ -197,7 +197,7 @@ fn read_freq(cur: &mut &[u8]) -> Result<[u32; NSYMBOLS]> {
 fn take<const N: usize>(cur: &mut &[u8]) -> Result<[u8; N]> {
     let (head, rest) = cur
         .split_first_chunk::<N>()
-        .ok_or_else(|| fault("rANS 流截断"))?;
+        .ok_or_else(|| bad("rANS 流截断"))?;
     *cur = rest;
     Ok(*head)
 }
@@ -247,7 +247,7 @@ fn trickle(state: &mut u32, stream: &mut &[u8]) -> Result<()> {
         if *state < STATE_MIN {
             let (byte, rest) = stream
                 .split_first()
-                .ok_or_else(|| fault("rANS 重规范化截断"))?;
+                .ok_or_else(|| bad("rANS 重规范化截断"))?;
             *state = (*state << 8) | u32::from(*byte);
             *stream = rest;
         }
@@ -342,14 +342,14 @@ fn lanes<'a>(
     for (stream, len) in streams.iter_mut().zip(&words[NLANES..]) {
         let (head, rest) = cur
             .split_at_checked(*len as usize)
-            .ok_or_else(|| fault("rANS lane 流截断"))?;
+            .ok_or_else(|| bad("rANS lane 流截断"))?;
         *stream = head;
         *cur = rest;
     }
     if cur.is_empty() {
         return Ok((states, streams));
     }
-    Err(fault("rANS 帧尾部有多余字节"))
+    Err(bad("rANS 帧尾部有多余字节"))
 }
 
 /// 与编码相反的次序解出全部符号：位置从末尾往前，`at % NLANES` 就给回编码时的 lane。
@@ -388,15 +388,12 @@ fn decode_one(
 fn declared_len(cur: &mut &[u8], cap: usize) -> Result<usize> {
     let len = u32::from_le_bytes(take::<4>(cur)?) as usize;
     if len > cap {
-        return Err(fault(&format!("rANS 帧声明 {len} 字节，超过上限 {cap}")));
+        return Err(bad(&format!("rANS 帧声明 {len} 字节，超过上限 {cap}")));
     }
     Ok(len)
 }
 
 /// 构造一个内部错误，统一携带模块定位。
-fn fault(message: &str) -> Error {
-    Error::new(Code::Invalid, message).with("weights::rans")
-}
 
 #[cfg(test)]
 #[path = "../tests/rans.rs"]

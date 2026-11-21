@@ -302,9 +302,6 @@ impl<'a> Gguf<'a> {
     }
 }
 
-pub(crate) fn bad(message: &str) -> Error {
-    Error::new(Code::Invalid, message).with("gguf")
-}
 
 /// 数组最大嵌套深度（防未信任输入递归耗尽栈）。
 const DEPTH: usize = 8;

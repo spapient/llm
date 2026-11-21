@@ -288,9 +288,6 @@ impl Settlement {
 }
 
 /// 账本类错误：全部 [`Code::Invalid`]，来源标 `weights::settle`。
-pub(crate) fn bad(message: &str) -> Error {
-    Error::new(Code::Invalid, message).with("weights::settle")
-}
 
 pub(crate) use crate::settle_impl::{escape, settle_one, verify_root};
 #[cfg(test)]

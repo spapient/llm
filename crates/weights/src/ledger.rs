@@ -230,9 +230,6 @@ pub struct Note {
     pub lossless: bool,
 }
 
-pub(crate) fn bad(message: &str) -> Error {
-    Error::new(Code::Invalid, message).with("ledger")
-}
 pub use crate::ledger_impl::{audit, certify, check};
 
 #[cfg(test)]

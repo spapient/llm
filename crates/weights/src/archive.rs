@@ -56,13 +56,13 @@ impl<'a> Archive<'a> {
         ]);
         if self.flags & GLOBAL_CRC == 0 {
             if stored != 0 {
-                return Err(invalid("全局 CRC 已关闭却写了非零值"));
+                return Err(bad("全局 CRC 已关闭却写了非零值"));
             }
             return Ok(());
         }
         let actual = crate::crc::crc32(&self.bytes[..footer_pos]);
         if actual != stored {
-            return Err(invalid(format!(
+            return Err(bad(format!(
                 "全局 CRC 不匹配：文件声明 {stored:#010x}，实算 {actual:#010x}"
             )));
         }
@@ -85,7 +85,7 @@ impl<'a> Archive<'a> {
     fn check_disabled_segment_crc(&self) -> Result<()> {
         let nonzero = self.segs.iter().any(|seg| seg.crc() != 0);
         if nonzero {
-            return Err(invalid("段级 CRC 已关闭却写了非零值"));
+            return Err(bad("段级 CRC 已关闭却写了非零值"));
         }
         Ok(())
     }
@@ -97,7 +97,7 @@ impl<'a> Archive<'a> {
         }
         let actual = crate::crc::crc32(&self.bytes[seg.start()..seg.start() + seg.len()]);
         if actual != seg.crc() {
-            return Err(invalid(format!(
+            return Err(bad(format!(
                 "段 `{}` 的 CRC 不匹配：声明 {:#010x}，实算 {actual:#010x}",
                 seg.name(),
                 seg.crc()
@@ -155,7 +155,7 @@ impl<'a> Archive<'a> {
     pub fn prove(&self, index: usize) -> Result<Proof> {
         let leaves = self.cached_leaves()?;
         crate::proof::prove(leaves, index)
-            .ok_or_else(|| invalid(format!("段下标 {index} 越界，共 {} 段", leaves.len())))
+            .ok_or_else(|| bad(format!("段下标 {index} 越界，共 {} 段", leaves.len())))
     }
 
     /// 仅用下标、证明与根验证归属，不接触其他张量。
@@ -177,9 +177,6 @@ impl<'a> Archive<'a> {
     }
 }
 
-pub(crate) fn invalid(message: impl Into<String>) -> Error {
-    Error::new(Code::Invalid, message).with("weights::Archive")
-}
 
 /// 按段 codec 把原始存储帧解为逻辑字节：`store` 零拷贝借用，`rans`/`axes` 解压为新缓冲。
 fn decode_frame<'a>(raw: &'a [u8], codec: Codec, want: usize) -> Result<Cow<'a, [u8]>> {
@@ -194,7 +191,7 @@ fn decode_frame<'a>(raw: &'a [u8], codec: Codec, want: usize) -> Result<Cow<'a, 
 fn decode_axes(raw: &[u8], want: usize) -> Result<Vec<u8>> {
     let bytes = crate::axes::expand(raw)?;
     if bytes.len() != want {
-        return Err(invalid("axes 帧解出的字节数与形状不符"));
+        return Err(bad("axes 帧解出的字节数与形状不符"));
     }
     Ok(bytes)
 }

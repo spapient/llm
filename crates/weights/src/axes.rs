@@ -263,9 +263,6 @@ fn verified(pick: &Pick, w: &[f32]) -> bool {
     })
 }
 
-pub(crate) fn bad(message: &str) -> Error {
-    Error::new(Code::Invalid, message).with("axes")
-}
 
 /// 标记位：0 = store（原样），1 = rans 帧。
 const STORE_MARK: u8 = 0;

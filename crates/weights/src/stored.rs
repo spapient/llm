@@ -95,7 +95,7 @@ impl Stored {
     /// 逻辑字节数：元素类型 × 元素个数，也是 `rans::decode` 的分配上限（来自描述符而非帧）。
     pub fn logical_len(&self) -> Result<usize> {
         usize::try_from(self.desc.dtype.bytes_for(tensor::product(&self.desc.shape)))
-            .map_err(|_| invalid("段的逻辑长度超 usize"))
+            .map_err(|_| bad("段的逻辑长度超 usize"))
     }
 
     /// 压缩比：存储字节 / 逻辑字节；逻辑字节为 0 时返回 `None`。

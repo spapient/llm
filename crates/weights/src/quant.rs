@@ -153,9 +153,6 @@ fn read_types(cur: &mut Cursor<'_>, zero: bool) -> Result<(Wire, Option<Wire>)> 
     Ok((scale_ty, zp_ty))
 }
 
-fn bad(message: &str) -> Error {
-    Error::new(Code::Invalid, message).with("weights::quant")
-}
 
 // —— 权重/标度成对推断 ——
 
@@ -303,7 +300,7 @@ fn dims(weight: &Entry, scales: &Entry, context: &str) -> Result<Option<(usize, 
     let [out, second] = rank2(weight, "打包权重必须是秩 2（out × in）", context)?;
     let [scaled_out, groups] = rank2(scales, "标度必须是秩 2（out × 分组数）", context)?;
     if scaled_out != out {
-        return Err(invalid(format!(
+        return Err(bad(format!(
             "标度的输出维 {scaled_out} 与权重的输出维 {out} 不等：分组无法对齐到每一行"
         ))
         .with(context));
@@ -317,7 +314,7 @@ fn rank2(entry: &Entry, expected: &str, context: &str) -> Result<[usize; 2]> {
     let dims = entry.shape().dims();
     match dims {
         [first, second] => Ok([*first, *second]),
-        _ => Err(invalid(format!("{expected}，实际 {dims:?}")).with(context)),
+        _ => Err(bad(format!("{expected}，实际 {dims:?}")).with(context)),
     }
 }
 
@@ -332,7 +329,7 @@ fn pack(
         return Ok(None);
     };
     if groups == 0 || !in_features.is_multiple_of(groups) {
-        return Err(invalid(format!(
+        return Err(bad(format!(
             "标度声明 {groups} 个分组，但输入宽度 {in_features} 不是它的整数倍"
         ))
         .with(context));
@@ -345,7 +342,7 @@ fn width(weight: &Entry, second: usize, context: &str) -> Result<Option<usize>> 
     match weight.dtype() {
         DType::U4 | DType::I8 => Ok(Some(second)),
         DType::U8 => second.checked_mul(2).map(Some).ok_or_else(|| {
-            invalid(format!(
+            bad(format!(
                 "形状 {:?} 的第二维 {second} 乘 2 时溢出",
                 weight.shape().dims()
             ))
@@ -355,9 +352,6 @@ fn width(weight: &Entry, second: usize, context: &str) -> Result<Option<usize>> 
     }
 }
 
-fn invalid(message: String) -> Error {
-    Error::new(Code::Invalid, message).with("weights::quant")
-}
 
 #[cfg(test)]
 #[path = "../tests/quant.rs"]

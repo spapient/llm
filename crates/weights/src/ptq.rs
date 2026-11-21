@@ -119,13 +119,13 @@ pub fn quantize(scheme: Scheme, group: usize, x: &[f32]) -> Result<(Vec<u8>, Vec
 /// 量化参数校验：分组、正码上限、输入有限性。
 fn validate_quantize(scheme: Scheme, group: usize, x: &[f32]) -> Result<()> {
     if group == 0 {
-        return Err(invalid("量化分组必须大于 0"));
+        return Err(bad("量化分组必须大于 0"));
     }
     if scheme.max_code <= 0.0 {
-        return Err(invalid("正码上限必须大于 0"));
+        return Err(bad("正码上限必须大于 0"));
     }
     if !x.iter().all(|v| v.is_finite()) {
-        return Err(invalid("输入必须是有限 f32"));
+        return Err(bad("输入必须是有限 f32"));
     }
     Ok(())
 }
@@ -173,13 +173,13 @@ fn validate_dequantize(
     out: &[f32],
 ) -> Result<()> {
     if group == 0 {
-        return Err(invalid("反解分组必须大于 0"));
+        return Err(bad("反解分组必须大于 0"));
     }
     if packed.len() != scheme.packed_len(out.len()) {
-        return Err(invalid("打包字节数与输出长度不一致"));
+        return Err(bad("打包字节数与输出长度不一致"));
     }
     if scales.len() != out.len().div_ceil(group) {
-        return Err(invalid("标度条数与分组数不一致"));
+        return Err(bad("标度条数与分组数不一致"));
     }
     Ok(())
 }
@@ -219,9 +219,6 @@ fn unpack_bits(packed: &[u8], index: usize, width: u8) -> u8 {
     (value & ((1u32 << width) - 1)) as u8
 }
 
-pub(crate) fn invalid(message: impl Into<String>) -> Error {
-    Error::new(Code::Invalid, message).with("weights::ptq")
-}
 
 /// 秩-r 低秩 + 残差量化补偿的结果：`Ŵ = L_r + Q(W − L_r)`。
 ///
@@ -359,10 +356,10 @@ pub(crate) fn validate_compensate(m: usize, n: usize, w: &[f32]) -> Result<()> {
         .checked_mul(n)
         .filter(|&cells| cells > 0 && cells == w.len());
     if cells.is_none() {
-        return Err(invalid(format!("形状不合法 m={m} n={n} len={}", w.len())));
+        return Err(bad(format!("形状不合法 m={m} n={n} len={}", w.len())));
     }
     if !w.iter().all(|v| v.is_finite()) {
-        return Err(invalid("输入必须是有限 f32"));
+        return Err(bad("输入必须是有限 f32"));
     }
     Ok(())
 }
