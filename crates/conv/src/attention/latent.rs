@@ -70,7 +70,10 @@ fn rows_of(r: usize, w: usize) -> usize {
     r * w + r * w + r * dc
 }
 
-/// 确定性缓冲：`q`/`k` 是 `r × W`，`v` 是 `r × W/2`（前视同构，kv 行数取 `r`），`y` 是 `r × W/2`。
+/// 确定性样本：`q`/`k` 是 `r × W`，`v` 是 `r × W/2`（前视同构，键行数取 `r`），`y` 是 `r × W/2`。
+///
+/// 四个标量是 `.k` 的签名实参（`R` 行数、`T` 键行数、`W` 读宽、`DC` 写宽）——它们是同一份几何的
+/// 另一处投影，不是额外的自由度：调用方按长度算出后传进去，与算子内部的折法一致。
 pub fn sample(m: usize, n: usize) -> Sample {
     let (r, w) = (m.max(1), n.max(1));
     let dc = w.div_ceil(2);
@@ -84,7 +87,12 @@ pub fn sample(m: usize, n: usize) -> Sample {
     Sample {
         m: r,
         n: w,
-        scalars: Vec::new(),
+        scalars: vec![
+            ("R", r as i64),
+            ("T", r as i64),
+            ("W", w as i64),
+            ("DC", dc as i64),
+        ],
         buffers: vec![
             buffer("q", det(-0.5, 0.13, r * w)),
             buffer("k", det(0.17, -0.05, r * w)),
