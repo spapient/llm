@@ -512,7 +512,6 @@ dependencies = [
  "llm-diagnostic",
  "llm-dtype",
  "llm-testkit",
- "llm-weights",
  "llm-wire",
 ]
 

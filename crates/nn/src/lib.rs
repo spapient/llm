@@ -123,9 +123,6 @@ mod param_role {
         }
     }
 
-#[cfg(test)]
-#[path = "../tests/nn_tests.rs"]
-mod tests;
 }
 mod classic;
 mod codec;
@@ -507,6 +504,10 @@ impl Contract for Linear {
         Bounds::of_op(operator, self.in_features, self.out_features).map(Some)
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/param_role_tests.rs"]
+mod param_role_tests;
 
 #[cfg(test)]
 mod tests;

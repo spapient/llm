@@ -1,4 +1,4 @@
-    use super::*;
+    use crate::ParamRole;
 
     /// 闭集四个角色都是参数槽：都进入可训练参数表。
     #[test]
