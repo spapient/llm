@@ -1,10 +1,9 @@
 //! 计划的事实与账本：`Facts` 只读调度与字节表，`Ledger` 汇总一次保留集的代价。
 
-use crate::budget::{Budget, Choice, MemoryPolicy};
 use crate::graph::{Node, Var};
 use crate::plan::Plan;
+use crate::plan::{Budget, Choice, Footprint, MemoryPolicy};
 use crate::schedule::Schedule;
-use crate::sizes::Footprint;
 use crate::tape::Tape;
 
 /// "没有"：既表示变量没有生产者，也表示它没有被消费过。

@@ -10,8 +10,8 @@
 
 use diagnostic::Result;
 
-use crate::error::{internal, invalid};
 use crate::{Node, Plan, Schedule, Tape, Var};
+use crate::{internal, invalid};
 
 /// 构造与执行各一个诊断站点。
 const BUILD: &str = "autograd::Replay::of";

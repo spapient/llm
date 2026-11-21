@@ -6,16 +6,18 @@
 //!
 //! 一般 DAG 的最优是 PSPACE 难的，所以这里不声称最优，只给三个可核对的数：保守峰值、
 //! [`Plan::floor`]（任何计划都绕不过的下界）、重放步数。
+//!
+//! 计划的输入与旋钮同在这一个模块：[`Budget`] 是硬约束，[`MemoryPolicy`] / [`Choice`] 是策略与
+//! 实际走的路，[`Footprint`] / [`Sizes`] 把变量编号映射成字节数，[`Config`] 把排序与显存策略
+//! 收成一份纯数据。它们都只描述"怎么规划"，不含数值，也不认识设备。
 
 use diagnostic::Result;
+use tensor::{DType, Shape};
 
 use crate::Var;
-use crate::budget::{Budget, Choice, MemoryPolicy};
-use crate::config::Config;
-use crate::error::invalid;
 use crate::facts::{Facts, NONE};
-use crate::schedule::Schedule;
-use crate::sizes::Footprint;
+use crate::invalid;
+use crate::schedule::{Ordering, Schedule};
 use crate::tape::Tape;
 
 /// 诊断来源：本模块只有一个入口。
@@ -181,6 +183,161 @@ impl Plan {
     /// 一次反向里要重放的步数合计：预算换来的计算代价。
     pub fn replayed(&self) -> u64 {
         self.replayed
+    }
+}
+
+/// 显存预算（字节）：只是一个数，不读环境变量也不读 TOML（配置在 `cli::settings`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Budget {
+    bytes: u64,
+}
+
+impl Budget {
+    /// 由字节数构造；`0` 也是合法值——它会以 [`diagnostic::Code::Invalid`] 报"放不下"，而不是被静默改写。
+    pub const fn new(bytes: u64) -> Self {
+        Self { bytes }
+    }
+
+    /// 预算字节数。
+    pub const fn bytes(self) -> u64 {
+        self.bytes
+    }
+}
+
+/// 计划走的是哪条路。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Choice {
+    /// 预算装得下全部激活：不留检查点，也不重放。
+    KeepAll,
+    /// 预算不够：按段保留检查点，段内重放。
+    Recompute,
+}
+
+/// 显存规划策略：预算是硬约束，策略决定在约束内偏好全留还是主动分段重放。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum MemoryPolicy {
+    /// 默认：预算装得下就全留，装不下才分段重放；策略让位于实测字节数。
+    #[default]
+    Auto,
+    /// 强制全留：忽略预算松紧，保留全部候选激活，不安排重放（峰值可能超过预算，由调用方兜底）。
+    KeepAll,
+    /// 强制分段：即使预算宽裕也放检查点、段内重放，用显存换可预测的峰值与释放节奏。
+    Recompute,
+}
+
+impl MemoryPolicy {
+    /// 策略短名：诊断与报告里的稳定标签。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::KeepAll => "keep-all",
+            Self::Recompute => "recompute",
+        }
+    }
+}
+
+/// 一个变量的值占多少字节。
+///
+/// 形状不在反向图里（[`crate::Var`] 只是编号），所以字节数由调用方给：`nn` 用层的形状表，
+/// `train` 用真实缓冲的容量。泛型而不是 `dyn`——`Plan::of` 每个变量只查一次，没有动态分派。
+pub trait Footprint {
+    /// 字节数；`0` 表示不需要为它留显存（标量、或者调用方还没登记形状）。
+    fn bytes(&self, var: Var) -> u64;
+}
+
+impl Footprint for [u64] {
+    fn bytes(&self, var: Var) -> u64 {
+        self.get(var.id() as usize).copied().unwrap_or(0)
+    }
+}
+
+impl Footprint for Vec<u64> {
+    fn bytes(&self, var: Var) -> u64 {
+        self.as_slice().bytes(var)
+    }
+}
+
+impl<F: Footprint + ?Sized> Footprint for &F {
+    fn bytes(&self, var: Var) -> u64 {
+        (**self).bytes(var)
+    }
+}
+
+/// 变量形状表：记录前向时顺手登记，`Plan` 直接换算成字节；只存形状与元素类型，不复制张量。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Sizes {
+    entries: Vec<Option<(Shape, DType)>>,
+}
+
+impl Sizes {
+    /// 空表，容量按变量数预分配。
+    pub fn new(vars: u32) -> Self {
+        Self {
+            entries: vec![None; vars as usize],
+        }
+    }
+
+    /// 登记一个变量的形状；编号可以跳跃（后创建的变量先登记也不会错位）。
+    pub fn set(&mut self, var: Var, shape: Shape, dtype: DType) {
+        let index = var.id() as usize;
+        if index >= self.entries.len() {
+            self.entries.resize(index + 1, None);
+        }
+        self.entries[index] = Some((shape, dtype));
+    }
+
+    /// 一个变量登记的形状与元素类型；没登记时为 `None`。
+    pub fn get(&self, var: Var) -> Option<(&Shape, DType)> {
+        self.entries
+            .get(var.id() as usize)
+            .and_then(Option::as_ref)
+            .map(|(shape, dtype)| (shape, *dtype))
+    }
+
+    /// 表的长度：覆盖到的变量数（含还没登记的槽位），与 `Tape::vars()` 同口径。
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// 是否还没有任何变量被登记过（表的长度为 0）。
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+impl Footprint for Sizes {
+    fn bytes(&self, var: Var) -> u64 {
+        self.entries
+            .get(var.id() as usize)
+            .and_then(Option::as_ref)
+            .map_or(0, |(shape, dtype)| shape.element_bytes(*dtype) as u64)
+    }
+}
+
+/// 一次规划的配置：排序策略 + 显存策略。
+///
+/// 闭集枚举、可比较、可缓存，不持有缓冲、不认识设备：排序进入 [`Schedule`]，显存策略进入
+/// [`Plan`]。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct Config {
+    ordering: Ordering,
+    policy: MemoryPolicy,
+}
+
+impl Config {
+    /// 按两个策略构造配置；默认 [`Ordering::Depth`] + [`MemoryPolicy::Auto`]。
+    pub const fn new(ordering: Ordering, policy: MemoryPolicy) -> Self {
+        Self { ordering, policy }
+    }
+
+    /// 反向步骤的排序策略。
+    pub const fn ordering(self) -> Ordering {
+        self.ordering
+    }
+
+    /// 显存规划策略。
+    pub const fn policy(self) -> MemoryPolicy {
+        self.policy
     }
 }
 

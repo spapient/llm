@@ -58,29 +58,32 @@
 #![deny(unsafe_code)]
 
 mod account;
-mod budget;
-mod config;
-mod error;
 mod facts;
 mod graph;
 mod plan;
 mod replay;
 mod schedule;
 mod segment;
-mod sizes;
-mod summary;
 mod tape;
 
 pub use account::Account;
-pub use budget::{Budget, Choice, MemoryPolicy};
-pub use config::Config;
 pub use graph::{Node, Requirement, Role, Var};
-pub use plan::Plan;
+pub use plan::{Budget, Choice, Config, Footprint, MemoryPolicy, Plan, Sizes};
 pub use replay::{Replay, Store};
-pub use schedule::{Ordering, Schedule};
-pub use sizes::{Footprint, Sizes};
-pub use summary::Summary;
+pub use schedule::{Ordering, Schedule, Summary};
 pub use tape::Tape;
+
+use diagnostic::{Code, Error};
+
+/// 调用顺序或声明写错了：引用不存在的变量、乱序结算、给不进图的节点要梯度。
+pub(crate) fn invalid(site: &'static str, message: impl Into<String>) -> Error {
+    Error::new(Code::Invalid, message).with(site)
+}
+
+/// 本层自己的不变量被破坏：扇出计数已经减到 0 却还在收贡献。
+pub(crate) fn internal(site: &'static str, message: impl Into<String>) -> Error {
+    Error::new(Code::Internal, message).with(site)
+}
 
 #[cfg(test)]
 #[path = "../tests/support.rs"]

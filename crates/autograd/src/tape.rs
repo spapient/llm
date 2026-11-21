@@ -7,9 +7,9 @@ use std::sync::Arc;
 
 use diagnostic::Result;
 
-use crate::config::Config;
-use crate::error::invalid;
 use crate::graph::{Node, Requirement, Role, Var};
+use crate::invalid;
+use crate::plan::Config;
 use crate::schedule::Schedule;
 
 /// 反向图：按插入顺序记录节点，逆序就是反向顺序；四个平行数组共用一套稠密编号（编号即下标）。

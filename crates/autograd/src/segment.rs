@@ -2,9 +2,9 @@
 
 use diagnostic::Result;
 
-use crate::budget::{Budget, MemoryPolicy};
-use crate::error::invalid;
 use crate::facts::{Facts, Ledger, NONE, Scratch};
+use crate::invalid;
+use crate::plan::{Budget, MemoryPolicy};
 use crate::plan::{Plan, SITE};
 use crate::schedule::Schedule;
 use crate::tape::Tape;

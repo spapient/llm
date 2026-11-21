@@ -1,13 +1,14 @@
 //! 反向调度的**事实**：[`Schedule`] 是一次 `backward` 的结果——哪些步骤、什么顺序、谁是终点。
 //!
 //! 调度只读、可重复使用：把同一张图的下一次前向重新规划进同一个 `Schedule`，缓冲留在原处。
+//! 同一份只读视角还有 [`Summary`]：图规模、角色计数与可达性，供诊断、缓存键与容量预估。
 
 use diagnostic::Result;
 
 use crate::account::Account;
-use crate::config::Config;
-use crate::error::invalid;
-use crate::graph::{Node, Requirement, Var};
+use crate::graph::{Node, Requirement, Role, Var};
+use crate::invalid;
+use crate::plan::Config;
 use crate::tape::Tape;
 
 /// 反向步骤的排序策略：两种都是合法的反向拓扑序，差别只在同层之间的次序。
@@ -242,6 +243,124 @@ fn compare(ordering: Ordering, left: &Node, right: &Node) -> core::cmp::Ordering
             .cmp(&left.depth())
             .then(right.output().id().cmp(&left.output().id())),
         Ordering::Insertion => right.output().id().cmp(&left.output().id()),
+    }
+}
+
+/// 一张图与一次反向规划的计数快照。
+///
+/// 字段全部是计数：不存变量列表、不存边表，避免随图规模线性复制。需要逐个变量时仍走
+/// [`Tape`] 的访问器。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Summary {
+    vars: u32,
+    nodes: usize,
+    edges: usize,
+    max_depth: u32,
+    parameters: usize,
+    constants: usize,
+    activations: usize,
+    steps: usize,
+    endpoints: usize,
+    reachable: usize,
+    dead: usize,
+}
+
+impl Summary {
+    /// 只统计磁带本身：反向相关计数（步骤、终点、可达、死分支）记为 0。
+    pub fn of(tape: &Tape) -> Self {
+        let mut summary = Self::default();
+        summary.collect_tape(tape);
+        summary
+    }
+
+    /// 连同反向调度一起统计：步骤、终点、可达变量与不可达分支从调度读出。
+    pub fn for_schedule(tape: &Tape, schedule: &Schedule) -> Self {
+        let mut summary = Self::of(tape);
+        summary.steps = schedule.steps().len();
+        summary.endpoints = schedule.endpoints().len();
+        summary.reachable = schedule.graph().iter().filter(|seen| **seen).count();
+        summary.dead = (summary.vars as usize).saturating_sub(summary.reachable);
+        summary
+    }
+
+    /// 变量总数（叶子加算子输出）。
+    pub fn vars(&self) -> u32 {
+        self.vars
+    }
+
+    /// 节点总数（算子输出的个数）。
+    pub fn nodes(&self) -> usize {
+        self.nodes
+    }
+
+    /// 输入边总数：所有节点的输入个数之和。
+    pub fn edges(&self) -> usize {
+        self.edges
+    }
+
+    /// 最深节点的深度；空图为 0。
+    pub fn max_depth(&self) -> u32 {
+        self.max_depth
+    }
+
+    /// 参数终点叶子个数。
+    pub fn parameters(&self) -> usize {
+        self.parameters
+    }
+
+    /// 不进反向的常量叶子个数。
+    pub fn constants(&self) -> usize {
+        self.constants
+    }
+
+    /// 算子输出（激活）个数。
+    pub fn activations(&self) -> usize {
+        self.activations
+    }
+
+    /// 反向步骤数（可达节点个数）；未连调度时为 0。
+    pub fn steps(&self) -> usize {
+        self.steps
+    }
+
+    /// 梯度终点个数；未连调度时为 0。
+    pub fn endpoints(&self) -> usize {
+        self.endpoints
+    }
+
+    /// 可达变量个数（终点加每个步骤输出）；未连调度时为 0。
+    pub fn reachable(&self) -> usize {
+        self.reachable
+    }
+
+    /// 不在 loss 可达集里的变量个数；未连调度时为 0。
+    pub fn dead(&self) -> usize {
+        self.dead
+    }
+
+    /// 从磁带收集变量、节点、边、深度与角色计数。
+    fn collect_tape(&mut self, tape: &Tape) {
+        self.vars = tape.vars();
+        self.nodes = tape.nodes().len();
+        for node in tape.nodes() {
+            self.edges += node.inputs().len();
+            self.max_depth = self.max_depth.max(node.depth());
+        }
+        for id in 0..self.vars {
+            let Some(role) = tape.role(Var::at(id)) else {
+                continue;
+            };
+            self.count_role(role);
+        }
+    }
+
+    /// 把一个变量的出身计入对应角色桶。
+    fn count_role(&mut self, role: Role) {
+        match role {
+            Role::Parameter => self.parameters += 1,
+            Role::Constant => self.constants += 1,
+            Role::Activation => self.activations += 1,
+        }
     }
 }
 

@@ -5,9 +5,9 @@
 
 use diagnostic::Result;
 
-use crate::error::{internal, invalid};
 use crate::graph::{Node, Var};
 use crate::schedule::Schedule;
+use crate::{internal, invalid};
 
 /// 反向执行的账本：扇出计数与"谁的梯度已经齐全"。
 ///
