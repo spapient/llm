@@ -445,12 +445,12 @@ fn push_metal_kernel(program: &mut String, max: usize, selected: &[Selected<'_>]
     driver::push_dispatch(program, max, selected, "}\n");
 }
 
-// Metal 主机侧胶水在 [`crate::metal_host`]：设备源 → `metallib` → host 驱动 → 回读。
+// Metal 主机侧胶水在 [`crate::metal::host`]：设备源 → `metallib` → host 驱动 → 回读。
 // 与 CUDA 那条链并列留在本模块会把单文件撑过行数上限，两套厂商工具链之间也没有共享状态，
 // 因此单独成模块；对外入口仍从这里 re-export，原路径不变。
-pub use crate::metal_host::{compile_run_metal, metal_driver, metal_kernel};
+pub use crate::metal::host::{compile_run_metal, metal_driver, metal_kernel};
 
-use crate::metal_host::run_metal;
+use crate::metal::host::run_metal;
 
 // ---------------------------------------------------------------------------
 // CUDA 后端

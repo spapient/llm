@@ -18,6 +18,11 @@ use crate::dialect::{
     length_scalar, readback_bits, scalar_name, scan_correct_body,
 };
 
+#[cfg(target_os = "macos")]
+pub mod executor;
+pub mod fold;
+pub mod host;
+
 // ---------------------------------------------------------------------------
 // Metal(MSL) lowering：`[grid]`/`[chunk]` 声明式骨架 → 设备源，只用 `Metal` 方言。
 // ---------------------------------------------------------------------------

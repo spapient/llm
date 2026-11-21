@@ -5,8 +5,8 @@
 //! 层清单与同一张算子语义表，因此下界与结果不会各说一套。
 
 use diagnostic::{Code, Error, Result};
+use diagnostic::render::Panel;
 use nn::Contract as _;
-use report::Report;
 
 /// 打开权重文件；打开失败把命令帧补到错误链上。
 fn open_file(weights: &str) -> Result<weights::safetensors::File> {
@@ -234,22 +234,17 @@ fn output_row(x: &[f32]) -> String {
 }
 
 /// 收尾：一层都没跑出来是错误；否则把输出向量与停止原因排成行并渲染。
-fn finish(
-    report: Report,
-    x: &[f32],
-    stopped: Option<String>,
-    executed_layers: usize,
-) -> Result<()> {
+fn finish(panel: Panel, x: &[f32], stopped: Option<String>, executed_layers: usize) -> Result<()> {
     if executed_layers == 0 {
         let reason = stopped.unwrap_or_else(|| "没有可执行的层".to_string());
         return Err(Error::new(Code::Missing, reason).with("llm run"));
     }
-    let report = report.row("输出    向量", output_row(x));
-    let report = match stopped {
-        Some(reason) => report.row("停下    原因", reason),
-        None => report,
+    let panel = panel.row("输出    向量", output_row(x));
+    let panel = match stopped {
+        Some(reason) => panel.row("停下    原因", reason),
+        None => panel,
     };
-    print!("{}", report.render());
+    print!("{}", panel.render());
     Ok(())
 }
 
@@ -261,7 +256,7 @@ fn prepare() -> Result<(cutile::dirs::Dirs, cutile::builtin::Catalogue)> {
     Ok((dirs, catalogue))
 }
 
-/// 沿层清单跑前向链；返回停止原因与已执行层数，报告行就地追加进 `report`。
+/// 沿层清单跑前向链；返回停止原因与已执行层数，报告行就地追加进 `panel`。
 fn drive(
     catalogue: &cutile::builtin::Catalogue,
     dirs: &cutile::dirs::Dirs,
@@ -269,15 +264,15 @@ fn drive(
     file: &weights::safetensors::File,
     layers: &[nn::Linear],
     x: &mut Vec<f32>,
-    report: Report,
-) -> Result<(Report, Option<String>, usize)> {
-    let mut report = report;
+    panel: Panel,
+) -> Result<(Panel, Option<String>, usize)> {
+    let mut panel = panel;
     let mut stopped: Option<String> = None;
     let mut executed = 0usize;
     for layer in layers {
         match advance(catalogue, dirs, device, file, layer, x)? {
             Step::Continue { output, row } => {
-                report = report.row(format!("层       {}", layer.name()), row);
+                panel = panel.row(format!("层       {}", layer.name()), row);
                 *x = output;
                 executed += 1;
             }
@@ -287,7 +282,7 @@ fn drive(
             }
         }
     }
-    Ok((report, stopped, executed))
+    Ok((panel, stopped, executed))
 }
 
 /// 三个刻意的边界，都在输出里如实写出来而不是悄悄降级：
@@ -302,12 +297,12 @@ pub(crate) fn run(weights: &str, input: Option<&str>, device: Option<&str>) -> R
     let (file, layers) = load_model(weights)?;
     let mut x = start_vector(input, &layers[0])?;
 
-    let report = Report::new("llm —— 用真实权重算一次（每层一条内核）")
+    let panel = Panel::new("llm —— 用真实权重算一次（每层一条内核）")
         .row("输入    向量", format!("{} 个 f32（{}）", x.len(), device));
-    let (report, stopped, executed_layers) =
-        drive(&catalogue, &dirs, device, &file, &layers, &mut x, report)?;
+    let (panel, stopped, executed_layers) =
+        drive(&catalogue, &dirs, device, &file, &layers, &mut x, panel)?;
 
-    finish(report, &x, stopped, executed_layers)
+    finish(panel, &x, stopped, executed_layers)
 }
 
 /// `--input` 单段：裁剪后解析为有限 f32；空段由 [`parse_input`] 跳过。

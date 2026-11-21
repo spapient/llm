@@ -1,7 +1,7 @@
 //! 内核层审计的驱动方：解析 → 执行 → 排版 → 退出码（L7 入口，不定义新类型）。
 //!
 //! 三件事分别有各自的归属：语法与配置来自 `llm_cli::cutile_command` / `llm_cli::settings`，计算来自
-//! `cutile::{bench, doctor, verify}`，人可读排版聚簇在 [`report`] 模块。本文件只把它们
+//! `cutile::{bench, doctor, verify}`，人可读行文聚簇在 [`prose`] 模块。本文件只把它们
 //! 接起来并收退出码，因此 `cutile` 不再持有第二套命令行文法、也不决定缓存目录在哪，命令模块也不再
 //! 拼字符串。
 //!
@@ -22,8 +22,8 @@ use diagnostic::{Code, Error};
 use llm_cli::cutile_command::CutileCommand;
 use llm_cli::settings::Settings;
 use std::process::ExitCode;
-#[path = "cutile/report.rs"]
-mod report;
+#[path = "cutile/prose.rs"]
+mod prose;
 
 fn main() -> ExitCode {
     // 装配设备后端：Metal / CUDA 由 engine 实现，cutile 只认 Backend 缝；在跑任何 verify / bench /
@@ -93,7 +93,7 @@ fn cache_gc(settings: &Settings, limit: Option<u64>) -> diagnostic::Result<Strin
     let dirs = settings.dirs();
     let limit = limit.or_else(|| settings.cache_limit_bytes());
     let report = cutile::cache::cache_gc(&dirs, limit)?;
-    Ok(report::cache_gc(&report, &dirs))
+    Ok(prose::cache_gc(&report, &dirs))
 }
 
 /// 跨档案台账：聚合现有见证证据，渲染成矩阵 markdown。
@@ -101,7 +101,7 @@ fn ledger(settings: &Settings, out: Option<&str>) -> diagnostic::Result<String> 
     let dirs = settings.dirs();
     let catalogue = Catalogue::load(&dirs)?;
     let rows = ledger::ledger(&catalogue, &dirs);
-    let text = report::ledger(&rows);
+    let text = prose::ledger(&rows);
     match out {
         Some(path) => {
             let path = std::path::Path::new(path);
@@ -129,7 +129,7 @@ fn doctor_why(
             format!("没有可行变体，无法解释缓存键 `{hex}`"),
         )
     })?;
-    Ok(report::cache_why(&doctor::why(dirs, &built.key, hex)))
+    Ok(prose::cache_why(&doctor::why(dirs, &built.key, hex)))
 }
 
 fn doctor(
@@ -142,20 +142,20 @@ fn doctor(
     let catalogue = Catalogue::load(&dirs)?;
     let report: Doctor = doctor::doctor(&catalogue, &dirs, op, device)?;
 
-    let mut out = report::doctor_head(&report).render();
+    let mut out = prose::doctor_head(&report).render();
     out.push('\n');
     out.push_str(&settings.describe());
 
-    out.push_str(&report::evidence_block(&report));
+    out.push_str(&prose::evidence_block(&report));
 
     out.push_str("\n[协商]\n");
-    out.push_str(&report::negotiation(&report));
+    out.push_str(&prose::negotiation(&report));
 
     if report.path.is_none() {
         out.push_str("\n[emit] 无可行变体，未生成源文件\n");
         return Ok(out);
     }
-    out.push_str(&report::post_path_blocks(&report));
+    out.push_str(&prose::post_path_blocks(&report));
     out.push_str(&doctor_why(&dirs, &report, why)?);
     Ok(out)
 }
@@ -169,7 +169,7 @@ fn entry_line(
 ) -> diagnostic::Result<String> {
     match entry {
         VerifyEntry::Passed(verified) => {
-            let line = report::passed_line(verified);
+            let line = prose::passed_line(verified);
             let mut out = line.clone();
             if ledger {
                 out.push_str(&write_ledger(catalogue, verified, &line, dirs)?);
@@ -209,7 +209,7 @@ fn verify(
     for entry in &report.entries {
         out.push_str(&entry_line(&catalogue, &dirs, entry, ledger)?);
     }
-    out.push_str(&report::negotiation_summary(&report));
+    out.push_str(&prose::negotiation_summary(&report));
 
     let failures = report.failures();
     finish_verify(out, &failures)
@@ -227,8 +227,8 @@ fn write_ledger(
     std::fs::create_dir_all(&dir)
         .map_err(|error| Error::new(Code::Io, format!("建 {} 失败：{error}", dir.display())))?;
     let path = dir.join(format!("{}.capability.md", profile.meta.vendor));
-    let mut text = report::ledger_header(profile, verified, conclusion);
-    text.push_str(&report::ledger_primitives(profile));
+    let mut text = prose::ledger_header(profile, verified, conclusion);
+    text.push_str(&prose::ledger_primitives(profile));
     std::fs::write(&path, text)
         .map_err(|error| Error::new(Code::Io, format!("写 {} 失败：{error}", path.display())))?;
     Ok(format!("    ledger → {}\n", path.display()))
@@ -262,18 +262,18 @@ fn bench(
     ));
     out.push_str(&format!(
         "  实测  min {}, p50 {}（达成率按 p50）→ {:.1} GB/s, {:.1} GFLOP/s\n",
-        ::report::per_run(measured.per_run_ns),
-        ::report::per_run(measured.p50_ns),
+        ::diagnostic::render::per_run(measured.per_run_ns),
+        ::diagnostic::render::per_run(measured.p50_ns),
         measured.measured.gb_s,
         measured.measured.gflops
     ));
-    out.push_str(&report::working_set_line(&measured));
-    out.push_str(&report::performance_note(
+    out.push_str(&prose::working_set_line(&measured));
+    out.push_str(&prose::performance_note(
         measured.performance(),
         measured.peak.as_ref(),
     ));
-    out.push_str(&report::artifact_line(&measured));
-    out.push_str(&report::cache_dir_line(&measured));
+    out.push_str(&prose::artifact_line(&measured));
+    out.push_str(&prose::cache_dir_line(&measured));
     Ok(out)
 }
 
@@ -306,7 +306,7 @@ mod tests {
             src: "2*8*2666e6".to_string(),
         };
 
-        let reached = report::performance_note(
+        let reached = prose::performance_note(
             cutile::bench::Performance::new(Some(0.72), false),
             Some(&peak),
         );
@@ -314,7 +314,7 @@ mod tests {
         assert!(reached.contains("达到 70% 门槛"), "{reached}");
         assert!(reached.contains("不是“相对原生库的 85%”"), "{reached}");
 
-        let below = report::performance_note(
+        let below = prose::performance_note(
             cutile::bench::Performance::new(Some(0.0069), false),
             Some(&peak),
         );
@@ -322,7 +322,7 @@ mod tests {
         assert!(below.contains("低于 70% 门槛"), "{below}");
         assert!(below.contains("特化代码"), "{below}");
 
-        let cached = report::performance_note(
+        let cached = prose::performance_note(
             cutile::bench::Performance::new(Some(0.19), true),
             Some(&peak),
         );
@@ -330,7 +330,7 @@ mod tests {
         assert!(cached.contains("不参与 §16 判定"), "{cached}");
 
         // 没有峰值：判据没有尺子，仍要说清“未测量”，而不是静默通过。
-        let unknown = report::performance_note(cutile::bench::Performance::new(None, false), None);
+        let unknown = prose::performance_note(cutile::bench::Performance::new(None, false), None);
         assert!(unknown.contains("未测量"), "{unknown}");
         assert!(unknown.contains("不参与 Go/No-Go"), "{unknown}");
         assert!(!unknown.contains("门槛"), "{unknown}");
@@ -453,7 +453,7 @@ mod tests {
         let note = write_ledger(
             &catalogue,
             &verified,
-            &report::passed_line(&verified),
+            &prose::passed_line(&verified),
             &settings().dirs(),
         )
         .expect("应写出台账");
@@ -477,13 +477,13 @@ mod tests {
 
         let text = cache_gc(&settings, None).expect("空缓存可回收");
         assert!(
-            text.starts_with(&format!("cache gc | 上限 {}", ::report::human_bytes(1024))),
+            text.starts_with(&format!("cache gc | 上限 {}", ::diagnostic::render::human_bytes(1024))),
             "{text}"
         );
 
         let text = cache_gc(&settings, Some(2048)).expect("命令行覆盖");
         assert!(
-            text.starts_with(&format!("cache gc | 上限 {}", ::report::human_bytes(2048))),
+            text.starts_with(&format!("cache gc | 上限 {}", ::diagnostic::render::human_bytes(2048))),
             "{text}"
         );
 
@@ -491,7 +491,7 @@ mod tests {
         assert!(
             text.starts_with(&format!(
                 "cache gc | 上限 {}",
-                ::report::human_bytes(cutile::cache::CACHE_LIMIT)
+                ::diagnostic::render::human_bytes(cutile::cache::CACHE_LIMIT)
             )),
             "{text}"
         );

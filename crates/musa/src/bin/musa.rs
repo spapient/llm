@@ -9,7 +9,7 @@ use std::process::{Command, ExitCode, Output};
 
 use cutile::dirs::Dirs;
 use diagnostic::{Code, Error, Result};
-use report::Report;
+use diagnostic::render::Panel;
 
 use llm_musa::{Job, Outcome, PROBES, Probe, Recipe, compare, lines, probe, program, shim, timed};
 
@@ -70,7 +70,7 @@ fn action(name: &str) -> Option<Action> {
 fn list() -> Result<()> {
     println!(
         "{}",
-        Report::new("musa list")
+        Panel::new("musa list")
             .row("生成", "声明式协商 → 规划 → 聚合 → 按 launch 形态装配")
             .row("探针", probe_names())
             .render()
@@ -95,8 +95,8 @@ fn emit_into(job: &Job, out: &Path) -> Result<()> {
 }
 
 /// `gen` 的报告。
-fn generate_report(job: &Job, out: &Path) -> Report {
-    Report::new("musa gen")
+fn generate_report(job: &Job, out: &Path) -> Panel {
+    Panel::new("musa gen")
         .row("算子", &job.op)
         .row("形状", shape(job))
         .row("设备源", out.join("program.cu").display().to_string())
@@ -120,8 +120,8 @@ fn entry_of(args: &mut Vec<String>) -> Result<&'static Probe> {
 }
 
 /// `probe` 的报告。
-fn probe_report(entry: &Probe, path: &Path) -> Report {
-    Report::new("musa probe")
+fn probe_report(entry: &Probe, path: &Path) -> Panel {
+    Panel::new("musa probe")
         .row("探针", entry.name)
         .row("内容", entry.about)
         .row("车道", entry.lane)
@@ -282,8 +282,8 @@ fn measure(session: &Session, work: &Path) -> Result<Output> {
 }
 
 /// `run` 的报告。
-fn run_report(session: &Session, work: &Path, outcome: &Outcome, output: &Output) -> Report {
-    Report::new("musa run")
+fn run_report(session: &Session, work: &Path, outcome: &Outcome, output: &Output) -> Panel {
+    Panel::new("musa run")
         .row("算子", &session.job.op)
         .row("形状", shape(&session.job))
         .row("车道", session.lane.as_str())
@@ -318,7 +318,7 @@ fn verdict(outcome: &Outcome, output: &Output, tol: f64) -> Result<()> {
 fn report_outcome(outcome: &llm_musa::Outcome, tol: f64) -> Result<()> {
     println!(
         "{}",
-        Report::new("musa verify")
+        Panel::new("musa verify")
             .row("元素数", outcome.compared.to_string())
             .row(
                 "超阈元素",

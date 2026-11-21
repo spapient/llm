@@ -280,7 +280,7 @@ fn scan_parts(
 fn length(signature: &Signature, sample: &Sample) -> Result<usize> {
     usize::try_from(length_scalar(signature, sample)?).map_err(|_| {
         Error::new(Code::Invalid, "长度标量不是非负整数".to_owned())
-            .with("engine::metal_fold::length")
+            .with("engine::metal::fold::length")
     })
 }
 
@@ -316,7 +316,7 @@ fn normalization_reads(signature: &Signature) -> Result<(&str, &str)> {
                 Code::Invalid,
                 "RMSNorm 需要两个只读缓冲（x, gamma）".to_owned(),
             )
-            .with("engine::metal_fold::rmsnorm")
+            .with("engine::metal::fold::rmsnorm")
         })
 }
 
@@ -324,7 +324,7 @@ fn normalization_reads(signature: &Signature) -> Result<(&str, &str)> {
 fn only_read(signature: &Signature) -> Result<&str> {
     readonly_names(signature).first().copied().ok_or_else(|| {
         Error::new(Code::Invalid, "Softmax 需要一个只读缓冲（x）".to_owned())
-            .with("engine::metal_fold::softmax")
+            .with("engine::metal::fold::softmax")
     })
 }
 
@@ -351,7 +351,7 @@ fn concat(first: &str, more: &[(&str, &str)]) -> Result<String> {
                 Code::Internal,
                 format!("段 `{entry}` 不在生成的设备源里（漂移）"),
             )
-            .with("engine::metal_fold::concat")
+            .with("engine::metal::fold::concat")
         })?;
         text.push_str("\n\n");
         text.push_str(&segment[at..]);

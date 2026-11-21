@@ -13,7 +13,7 @@ use cutile::emit::Fragment;
 use cutile::ledger::{BackendRow, LedgerCell, Status};
 use cutile::prof::Profile;
 use cutile::verify::{Negotiation, Verified, VerifyReport};
-use report::Report;
+use diagnostic::render::{Align, Sheet, Panel};
 
 /// 编译参数的一行写法：空列表也要有话说，否则报告里会出现一对空括号。
 ///
@@ -41,20 +41,20 @@ pub(super) fn counted(count: usize, flags: &str) -> String {
 /// 哪条说明出现只看库给的计数（残留项、在用项、回收后与上限的差），本模块不重新判定
 /// "该不该回收"——阈值的语义在 `cutile::cache`。
 pub(super) fn cache_gc(report: &Gc, dirs: &Dirs) -> String {
-    let mut out = Report::new(format!(
+    let mut out = Panel::new(format!(
         "cache gc | 上限 {}",
-        ::report::human_bytes(report.limit)
+        ::diagnostic::render::human_bytes(report.limit)
     ))
     .row("目录", dirs.cache().display().to_string())
-    .row("回收前", ::report::human_bytes(report.before))
-    .row("回收后", ::report::human_bytes(report.after))
+    .row("回收前", ::diagnostic::render::human_bytes(report.before))
+    .row("回收后", ::diagnostic::render::human_bytes(report.after))
     .row("按 LRU 删除", format!("{} 项", report.removed))
     .render();
     if report.residue.items > 0 {
         out.push_str(&format!(
             "  清理残留 {} 项（{}）：半截落盘，本来就不会命中\n",
             report.residue.items,
-            ::report::human_bytes(report.residue.bytes)
+            ::diagnostic::render::human_bytes(report.residue.bytes)
         ));
     }
     if report.skipped > 0 {
@@ -66,7 +66,7 @@ pub(super) fn cache_gc(report: &Gc, dirs: &Dirs) -> String {
     if report.after > report.limit {
         out.push_str(&format!(
             "  仍高于上限：还需再删 {}\n",
-            ::report::human_bytes(report.after - report.limit)
+            ::diagnostic::render::human_bytes(report.after - report.limit)
         ));
     }
     out
@@ -135,8 +135,8 @@ pub(super) fn declaration_value(report: &Doctor) -> String {
 }
 
 /// 报告头部：schema、设备、容量档、units 可选行与声明行。
-pub(super) fn doctor_head(report: &Doctor) -> Report {
-    let mut head = Report::new(format!(
+pub(super) fn doctor_head(report: &Doctor) -> Panel {
+    let mut head = Panel::new(format!(
         "cutile schema v{} | op={} | skeleton={} | {}",
         cutile::SCHEMA_VER,
         report.op.name,
@@ -492,8 +492,8 @@ pub(super) fn working_set_line(measured: &Bench) -> String {
     };
     format!(
         "  工作集 {} / FAST {}（{verdict}）\n",
-        ::report::human_bytes(measured.working_set),
-        ::report::human_bytes(measured.fast_bytes)
+        ::diagnostic::render::human_bytes(measured.working_set),
+        ::diagnostic::render::human_bytes(measured.fast_bytes)
     )
 }
 
@@ -542,60 +542,65 @@ pub(super) fn ledger(rows: &[BackendRow]) -> String {
 
 /// 设备证据表：本轮执行到的依据、设备/自检计数、语言门结论与本机可用性。
 fn ledger_evidence_table(rows: &[BackendRow]) -> String {
-    let mut out = String::new();
-    out.push_str("## 设备证据（本轮执行）\n\n");
-    out.push_str("| 设备 | 型号 | emit | 登记工具链 | 依据 | 设备见证 | 自检 | 语言门 | 本机 |\n");
-    out.push_str("|---|---|---|---|---|---:|---:|---|---|\n");
+    let mut table = Sheet::new([
+        "设备",
+        "型号",
+        "emit",
+        "登记工具链",
+        "依据",
+        "设备见证",
+        "自检",
+        "语言门",
+        "本机",
+    ])
+    .align([
+        Align::Left,
+        Align::Left,
+        Align::Left,
+        Align::Left,
+        Align::Left,
+        Align::Right,
+        Align::Right,
+        Align::Left,
+        Align::Left,
+    ]);
     for row in rows {
         let meta = &row.profile.meta;
-        out.push_str(&format!(
-            "| `{}` | {} | {} | {} {} | {} | {} | {} | {} | {} |\n",
-            meta.vendor,
-            meta.id,
-            meta.emit,
-            meta.tool,
-            meta.tool_ver,
-            row.basis,
-            row.device,
-            row.host,
-            row.gate,
-            if row.available { "是" } else { "否" },
-        ));
+        table = table.row([
+            format!("`{}`", meta.vendor),
+            meta.id.to_string(),
+            meta.emit.to_string(),
+            format!("{} {}", meta.tool, meta.tool_ver),
+            row.basis.to_string(),
+            row.device.to_string(),
+            row.host.to_string(),
+            row.gate.clone(),
+            if row.available { "是" } else { "否" }.to_string(),
+        ]);
     }
-    out
+    format!("## 设备证据（本轮执行）\n\n{}", table.render())
 }
 
 /// 原语 × 后端对照表：一格一条供给，多条用 `<br>` 叠在格里。
 fn ledger_prim_matrix(rows: &[BackendRow]) -> String {
-    let vendors: Vec<&str> = rows
-        .iter()
-        .map(|row| row.profile.meta.vendor.as_str())
-        .collect();
-
-    let mut out = String::new();
-    out.push_str("\n## 原语 × 后端\n\n| 原语 | ");
-    out.push_str(&vendors.join(" | "));
-    out.push_str(" |\n| --- | ");
-    for _ in &vendors {
-        out.push_str("--- | ");
-    }
-    out.push('\n');
-
+    let mut head = vec![String::from("原语")];
+    head.extend(rows.iter().map(|row| row.profile.meta.vendor.to_string()));
+    let mut table = Sheet::new(head);
     for prim in Prim::ALL {
-        out.push_str(&format!("| `{prim}` | "));
+        let mut cells = vec![format!("`{prim}`")];
         for row in rows {
-            let cell = row
-                .cells
-                .iter()
-                .filter(|cell| cell.prim == *prim)
-                .map(ledger_cell_text)
-                .collect::<Vec<_>>()
-                .join("<br>");
-            out.push_str(&format!("{cell} | "));
+            cells.push(
+                row.cells
+                    .iter()
+                    .filter(|cell| cell.prim == *prim)
+                    .map(ledger_cell_text)
+                    .collect::<Vec<_>>()
+                    .join("<br>"),
+            );
         }
-        out.push('\n');
+        table = table.row(cells);
     }
-    out
+    format!("\n## 原语 × 后端\n\n{}", table.render())
 }
 
 /// 逐条证据说明：未声明的格子不进说明，实现名与理由只在这里展开。
@@ -652,17 +657,19 @@ pub(super) fn ledger_header(profile: &Profile, verified: &Verified, conclusion: 
 
 /// 台账原语表：逐条列出实现、等级与见证出处。
 pub(super) fn ledger_primitives(profile: &Profile) -> String {
-    let mut text = String::from("\n\n| 原语 | 实现 | 等级 | 见证 |\n|---|---|---|---|\n");
+    let mut table = Sheet::new(["原语", "实现", "等级", "见证"]);
     for have in &profile.provides {
         let witness = have
             .witness
             .as_ref()
             .map(|witness| format!("{}({})", witness.file, witness.func))
             .unwrap_or_else(|| "—".to_string());
-        text.push_str(&format!(
-            "| `{}` | {} | {} | {} |\n",
-            have.prim, have.impl_name, have.grade, witness
-        ));
+        table = table.row([
+            format!("`{}`", have.prim),
+            have.impl_name.to_string(),
+            have.grade.to_string(),
+            witness,
+        ]);
     }
-    text
+    format!("\n\n{}", table.render())
 }

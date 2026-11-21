@@ -5,7 +5,7 @@
 //! 真实权重通路仍属未接入范围。本模块只解析到 [`Option`]，不复制第二份默认值。
 
 use diagnostic::{Code, Error, Result};
-use report::Report;
+use diagnostic::render::Panel;
 
 /// `train` 分派：解析配置、按 `--load` 决定汇报恢复事实还是配置。
 pub(crate) fn train_run(
@@ -66,7 +66,7 @@ fn report_recovered(path: &str, config: &train::TrainConfig) -> Result<()> {
     let snapshot = train::snapshot::Snapshot::read(std::path::Path::new(path))?;
     let facts = snapshot.facts();
     let moments = snapshot.moments();
-    let report = Report::new("llm —— 从检查点恢复")
+    let report = Panel::new("llm —— 从检查点恢复")
         .row("步数", format!("第 {} 步", facts.step()))
         .row(
             "批形状",
@@ -103,7 +103,7 @@ fn report_recovered(path: &str, config: &train::TrainConfig) -> Result<()> {
 
 /// 无 `--load`：排版配置；会话闭环由 `train::Session` 装配。
 fn report_train_config(config: &train::TrainConfig) {
-    let report = Report::new("llm —— 训练配置（会话闭环由 train::Session 装配）")
+    let report = Panel::new("llm —— 训练配置（会话闭环由 train::Session 装配）")
         .row("学习率", format!("{}", config.learning_rate))
         .row(
             "调度",
@@ -175,7 +175,7 @@ pub mod archive {
     use std::path::Path;
 
     use diagnostic::{Code, Error, Result};
-    use report::Report;
+    use diagnostic::render::Panel;
     use weights::{Archive, Settlement};
 
     /// 容器对齐指数：6 = 64 B，与既有落盘口径一致。
@@ -212,8 +212,8 @@ pub mod archive {
     }
 
     /// 导入报告：条目数出自写者，体积比与无损出自**重读一遍**的账本。
-    fn import_report(input: &str, output: &str, entries: usize, ledger: &Settlement) -> Report {
-        Report::new("llm —— safetensors 导入 `.u` 容器")
+    fn import_report(input: &str, output: &str, entries: usize, ledger: &Settlement) -> Panel {
+        Panel::new("llm —— safetensors 导入 `.u` 容器")
             .row("源", input)
             .row("输出", output)
             .row("条目", format!("{entries} 段"))
@@ -246,15 +246,15 @@ pub mod archive {
     }
 
     /// 度量行 + 条目清单行；度量是打开后现场现算，不读文件内保存字段。
-    fn metrics_report(archive: &Archive<'_>, metrics: &weights::Metrics) -> Report {
-        let mut report = Report::new("llm —— `.u` 容器清单与度量")
+    fn metrics_report(archive: &Archive<'_>, metrics: &weights::Metrics) -> Panel {
+        let mut report = Panel::new("llm —— `.u` 容器清单与度量")
             .row("条目数", format!("{}", metrics.entries()))
             .row("参数总数", format!("{}", metrics.params()))
             .row(
                 "V_artifact",
-                report::human_bytes(metrics.v_artifact() as u64),
+                diagnostic::render::human_bytes(metrics.v_artifact() as u64),
             )
-            .row("V_FP16", report::human_bytes(metrics.v_fp16()))
+            .row("V_FP16", diagnostic::render::human_bytes(metrics.v_fp16()))
             .row("ratio", format!("{:.3}", metrics.ratio()))
             .row("lossless", lossless_label(metrics.lossless()))
             .row(
@@ -262,7 +262,7 @@ pub mod archive {
                 format!(
                     "{}（节省 {}）",
                     metrics.ref_hits(),
-                    report::human_bytes(metrics.ref_saved_bytes())
+                    diagnostic::render::human_bytes(metrics.ref_saved_bytes())
                 ),
             );
         for segment in archive.segments() {
@@ -288,7 +288,7 @@ pub mod archive {
             return Ok(());
         };
         write_ledger(Path::new(path), &text)?;
-        let report = Report::new("llm —— 沉降账本")
+        let report = Panel::new("llm —— 沉降账本")
             .row("容器", input)
             .row("账本", path)
             .row("条目数", format!("{}", ledger.tensors().len()))
@@ -314,7 +314,7 @@ pub mod archive {
         let bytes = read_container(input, "llm audit")?;
         let text = read_ledger(ledger)?;
         let checked = Settlement::verify(&text, &bytes).map_err(|error| error.with("llm audit"))?;
-        let report = Report::new("llm —— 账本复核")
+        let report = Panel::new("llm —— 账本复核")
             .row("容器", input)
             .row("账本", ledger)
             .row("条目数", format!("{} 段", checked.tensors().len()))

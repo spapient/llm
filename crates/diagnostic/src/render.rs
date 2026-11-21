@@ -1,19 +1,16 @@
-//! 人可读输出：带标题的两列面板、Markdown 表、名字列表、字节量与单次耗时。
+//! 人读渲染：带标题的两列面板、Markdown 表、顿号列表、字节量与单次耗时。
 //!
-//! **拥有**：把已经算好的数排成人读文本的全部原语 —— [`Panel`]（标题 + 标签/值两列）、
-//! [`Table`]（Markdown 表头 / 对齐 / 行）、[`join_names`]（顿号连接，空列表写 `—`）、
+//! **拥有**：把已经算好的数排成人读文本的原语 —— [`Panel`]（标题 + 标签/值两列）、
+//! [`Sheet`]（Markdown 表：表头 / 分隔行 / 逐列对齐）、[`join_names`]（顿号连接，空列表写 `—`）、
 //! [`human_bytes`]（1024 进制，B / KiB / MiB / GiB）、[`per_run`]（亚微秒用 ns，否则 ms）。
 //! **不拥有**：任何判定与任何领域数据；这里只排版，量纲口径、该不该出现某一行都由调用方给。
-//! **依赖**：无（L1 叶，零依赖）。
 //!
-//! 单独成成员的理由是收敛依赖方向：人读输出同时被 L7 组合根（`cli`）与工具成员（`musa`）使用，
-//! 无论留在哪一边，另一边都会为了几个字符串函数而依赖它的全部依赖——历史形态是
-//! `cli → tools` 一条运行时边，把静态分析器拖进了产品二进制。
+//! 与 [`crate::error`] 共处一个 crate 的理由同样是依赖方向：错误文本与报告文本都是“给人看的
+//! 一段字”，都必须比任何数据层更低；两个消费者（L7 组合根 `cli` 与工具成员 `musa`）本来就
+//! 依赖本 crate，因此这里不再单独成成员，也不再出现第三个只装几个字符串函数的叶。
 //!
 //! 同一组数在入口里只有一个单位：`cache gc` 的上限、工作集与基准台账的耗时都从这里取，
-//! 不会出现同一次测量被说成两种单位；表头与分隔行的写法也只有 [`Table`] 这一份。
-
-#![deny(unsafe_code)]
+//! 不会出现同一次测量被说成两种单位；表头与分隔行的写法也只有 [`Sheet`] 这一份。
 
 /// 一份带标题的面板：标题一行，之后每行一个“标签 + 值”，标签按最宽者对齐。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -70,13 +67,13 @@ pub enum Align {
 /// 表头与分隔行只在这里拼：调用方给数据，不给分隔行的字面量——否则同一个
 /// `|---|:---|` 会在每个报告函数里各写一遍，列数一变就有地方漏改。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Table {
+pub struct Sheet {
     head: Vec<String>,
     align: Vec<Align>,
     rows: Vec<Vec<String>>,
 }
 
-impl Table {
+impl Sheet {
     /// 由表头构造；列宽与列数由表头定，分隔行随之生成。
     pub fn new(head: impl IntoIterator<Item = impl Into<String>>) -> Self {
         Self {
@@ -155,5 +152,71 @@ pub fn per_run(ns: f64) -> String {
         format!("{ns:.1} ns/次")
     } else {
         format!("{:.3} ms/次", ns / 1e6)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn panel_pads_labels_to_the_widest_row() {
+        let panel = Panel::new("标题").row("op", "gemv").row("device", "cpu");
+        let text = panel.render();
+        assert_eq!(text.lines().count(), 3);
+        assert!(text.starts_with("标题\n"));
+        let rows: Vec<&str> = text.lines().skip(1).collect();
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("op") && row.contains("gemv"))
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("device") && row.contains("cpu"))
+        );
+    }
+
+    #[test]
+    fn panel_with_only_title_renders_one_line() {
+        assert_eq!(Panel::new("空").render(), "空\n");
+    }
+
+    #[test]
+    fn sheet_writes_header_separator_and_rows_in_one_place() {
+        let grid = Sheet::new(["原语", "实现", "次数"])
+            .align([Align::Left, Align::Left, Align::Right])
+            .row(["`gemv`", "i8", "3"])
+            .row(["`gemm`", "f32", "7"]);
+        assert_eq!(
+            grid.render(),
+            "| 原语 | 实现 | 次数 |\n|---|---|---:|\n| `gemv` | i8 | 3 |\n| `gemm` | f32 | 7 |\n"
+        );
+    }
+
+    #[test]
+    fn sheet_pads_short_rows_and_truncates_long_ones() {
+        let grid = Sheet::new(["a", "b"]).row(["only"]).row(["x", "y", "z"]);
+        let text = grid.render();
+        assert!(text.contains("| only |  |\n"), "{text}");
+        assert!(text.contains("| x | y |\n"), "{text}");
+    }
+
+    #[test]
+    fn join_names_separates_with_dunhao_and_dashes_empty() {
+        assert_eq!(join_names(std::iter::empty::<&str>()), "—");
+        assert_eq!(join_names(["a", "b"].iter().copied()), "a、b");
+    }
+
+    #[test]
+    fn byte_sizes_are_printable_next_to_the_fast_capacity() {
+        assert_eq!(human_bytes(148), "148 B");
+        assert_eq!(human_bytes(10_485_760), "10.0 MiB");
+        assert_eq!(human_bytes(524_288), "512.0 KiB");
+    }
+
+    #[test]
+    fn a_sub_microsecond_kernel_is_reported_in_nanoseconds() {
+        assert_eq!(per_run(1.9), "1.9 ns/次");
+        assert_eq!(per_run(13_300_000.0), "13.300 ms/次");
     }
 }

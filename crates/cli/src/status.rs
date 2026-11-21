@@ -3,9 +3,9 @@
 //! 判定与数值都来自各层库，本模块只装配、选词与分行；不定义新类型。
 
 use diagnostic::{Code, Error, Result};
+use diagnostic::render::Panel;
 use nn::Contract as _;
 use nn::LmHead;
-use report::Report;
 use tokenizer::Tokenizer as _;
 use weights::Loader as _;
 
@@ -34,8 +34,8 @@ fn device_images() -> String {
 ///
 /// `weights` 是 `--weights <文件>` 给的 safetensors 路径：给了就读真实条目，不给就只用声明层。
 pub(crate) fn status(weights: Option<&str>) -> Result<()> {
-    let report = build_report(weights)?;
-    print!("{}", report.render());
+    let panel = build_report(weights)?;
+    print!("{}", panel.render());
     Ok(())
 }
 
@@ -45,7 +45,7 @@ fn ops_row() -> String {
     format!(
         "{} 个算子（{}）",
         ops.len(),
-        report::join_names(ops.iter().map(op::Op::name))
+        diagnostic::render::join_names(ops.iter().map(op::Op::name))
     )
 }
 
@@ -55,7 +55,7 @@ fn prof_row() -> String {
     format!(
         "{} 份设备档案（{}）",
         profiles.len(),
-        report::join_names(profiles.iter().copied())
+        diagnostic::render::join_names(profiles.iter().copied())
     )
 }
 
@@ -64,7 +64,7 @@ fn prim_row() -> String {
     format!(
         "{} 台设备（{}）；设备侧代码：{}",
         prim::devices().len(),
-        report::join_names(prim::devices().iter().map(|device| device.vendor)),
+        diagnostic::render::join_names(prim::devices().iter().map(|device| device.vendor)),
         device_images()
     )
 }
@@ -107,7 +107,7 @@ fn model_floor(model: &nn::Stack) -> (String, Option<String>) {
         summary.push_str(&format!(
             "；未覆盖 {} 条：{}",
             model.uncovered().len(),
-            report::join_names(model.uncovered().iter().map(String::as_str))
+            diagnostic::render::join_names(model.uncovered().iter().map(String::as_str))
         ));
     }
     let unpriced_row = if !floor.unpriced().is_empty() {
@@ -126,21 +126,21 @@ fn model_floor(model: &nn::Stack) -> (String, Option<String>) {
 }
 
 /// 权重与模型下界两行：读文件（或声明层），再排汇总与未计价理由。
-fn model_rows(report: Report, weights: Option<&str>) -> Result<Report> {
+fn model_rows(panel: Panel, weights: Option<&str>) -> Result<Panel> {
     let (model, weights_row) = load_model(weights)?;
-    let report = report.row("权重    weights", weights_row);
+    let panel = panel.row("权重    weights", weights_row);
     let (model_row, unpriced_row) = model_floor(&model);
-    let report = report.row("下界    模型", model_row);
+    let panel = panel.row("下界    模型", model_row);
     Ok(match unpriced_row {
-        Some(reason) => report.row("无法计价 nn", reason),
-        None => report,
+        Some(reason) => panel.row("无法计价 nn", reason),
+        None => panel,
     })
 }
 
 /// 张量与视图两行：最小实例布局。
-fn data_rows(report: Report) -> Result<Report> {
+fn data_rows(panel: Panel) -> Result<Panel> {
     let tensor = tensor::Tensor::new(tensor::DType::F32, tensor::Shape::new([2, 2]), &[0u8; 16])?;
-    let report = report.row(
+    let panel = panel.row(
         "张量    tensor",
         format!(
             "{:?} {:?} = {} 元素，连续布局：{}",
@@ -152,7 +152,7 @@ fn data_rows(report: Report) -> Result<Report> {
     );
     let buffer = vec![0.5f32, 0.25, 0.125, 0.0625];
     let view = tensor::View::new(tensor::Shape::new([2, 2]), &buffer)?;
-    Ok(report.row(
+    Ok(panel.row(
         "视图    tensor::View",
         format!(
             "{:?} {:?}，第 1 行和 = {:.3}（借用调用方 {} 个元素，不复制）",
@@ -167,9 +167,9 @@ fn data_rows(report: Report) -> Result<Report> {
 }
 
 /// 训练行：起一个最小训练计划实例。
-fn train_row(report: Report) -> Result<Report> {
+fn train_row(panel: Panel) -> Result<Panel> {
     let schedule = train::Schedule::new(10, 100)?;
-    Ok(report.row(
+    Ok(panel.row(
         "训练    train",
         format!(
             "warmup {}/{} 步，第 0 步 lr = {:.3}",
@@ -181,10 +181,10 @@ fn train_row(report: Report) -> Result<Report> {
 }
 
 /// 服务行：解析一条路由并编最小提示词。
-fn serve_row(report: Report) -> Result<Report> {
+fn serve_row(panel: Panel) -> Result<Panel> {
     let route = serve::Route::parse("POST /v1/completions")?;
     let tokens = tokenizer::Bytes.encode("hi")?;
-    Ok(report.row(
+    Ok(panel.row(
         "服务    serve",
         format!(
             "{} {}，提示 \"hi\" → {} 个 token",
@@ -196,11 +196,11 @@ fn serve_row(report: Report) -> Result<Report> {
 }
 
 /// 调度行：起页池与一条序列，走一次准入。
-fn engine_row(report: Report) -> Result<Report> {
+fn engine_row(panel: Panel) -> Result<Panel> {
     let mut scheduler = engine::Scheduler::new(status_pager()?);
     let sequence = engine::Sequence::new(0, &[0; 8], 4, 16, engine::exec::Stream::new(0))?;
     let response = serve::admit(&mut scheduler, &sequence)?;
-    Ok(report.row(
+    Ok(panel.row(
         "调度    engine",
         format!(
             "准入 {} 个序列，占用 {} 页（页宽 {}），响应 {}",
@@ -213,23 +213,23 @@ fn engine_row(report: Report) -> Result<Report> {
 }
 
 /// 训练、服务、调度三行：各自起一个最小实例。
-fn runtime_rows(report: Report) -> Result<Report> {
-    let report = train_row(report)?;
-    let report = serve_row(report)?;
-    engine_row(report)
+fn runtime_rows(panel: Panel) -> Result<Panel> {
+    let panel = train_row(panel)?;
+    let panel = serve_row(panel)?;
+    engine_row(panel)
 }
 
 /// 组装整份状态报告：各领域一行一段，错误传播收敛到各自助手。
-fn build_report(weights: Option<&str>) -> Result<Report> {
-    let report = Report::new("llm —— 组装点（各层最小实例）")
+fn build_report(weights: Option<&str>) -> Result<Panel> {
+    let panel = Panel::new("llm —— 组装点（各层最小实例）")
         .row("声明层  op", ops_row())
         .row("档案层  prof", prof_row())
         .row("片段层  prim", prim_row())
         .row("层定义  nn", lmhead_row())
         .row("下界    层", projection_row()?);
-    let report = model_rows(report, weights)?;
-    let report = data_rows(report)?;
-    runtime_rows(report)
+    let panel = model_rows(panel, weights)?;
+    let panel = data_rows(panel)?;
+    runtime_rows(panel)
 }
 
 /// `status` 用的 KV 页池：这里没有模型，行宽取 1——页里的数不参与账目。

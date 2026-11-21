@@ -101,7 +101,7 @@ fn cuda_segments(
 
 /// Metal 并行程序：单源族（逐点 / 循环注入）各有一份 `kernel_main`，分块族是多段源 + 主机折叠。
 ///
-/// 分块族的段数与折叠是一体的，因此每臂只调 [`crate::metal_fold`] 里各自的合成入口，
+/// 分块族的段数与折叠是一体的，因此每臂只调 [`crate::metal::fold`] 里各自的合成入口，
 /// 与 CUDA 侧的 `cuda_segments` 分法一致：这层只管「什么形态配哪份程序」。
 ///
 /// # Errors
@@ -128,22 +128,22 @@ fn metal_segments(
 ) -> Option<Result<Source>> {
     let kind = &launch.kind;
     if let Lower::ChunkReduce { chunk, func } = kind {
-        return Some(crate::metal_fold::reduce(
+        return Some(crate::metal::fold::reduce(
             kernel, signature, sample, *chunk, func,
         ));
     }
     if let Lower::ChunkRmsnorm { chunk } = kind {
-        return Some(crate::metal_fold::rmsnorm(
+        return Some(crate::metal::fold::rmsnorm(
             kernel, signature, sample, *chunk,
         ));
     }
     if let Lower::ChunkSoftmax { chunk } = kind {
-        return Some(crate::metal_fold::softmax(
+        return Some(crate::metal::fold::softmax(
             kernel, signature, sample, *chunk,
         ));
     }
     if let Lower::ChunkScan { chunk, decay } = kind {
-        return Some(crate::metal_fold::scan(
+        return Some(crate::metal::fold::scan(
             kernel, signature, sample, *chunk, *decay,
         ));
     }
@@ -372,7 +372,7 @@ mod tests {
 
     #[test]
     fn a_block_family_on_metal_is_stages_plus_a_host_fold() {
-        // 分块族在 Metal 侧的落点是 [`crate::metal_fold`]：段与折叠一体，不是「不支持」。
+        // 分块族在 Metal 侧的落点是 [`crate::metal::fold`]：段与折叠一体，不是「不支持」。
         let Source::Pair { device, host } = metal(
             cutile_x_kernel::SOURCE,
             &gemv().0,
