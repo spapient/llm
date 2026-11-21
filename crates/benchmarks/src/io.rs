@@ -66,11 +66,19 @@ pub(crate) mod weights {
         group.bench_function("verify", |bench| {
             bench.iter(|| black_box(checked(parsed.verify(0, &proof, &root), "校验")))
         });
+        group.finish();
+        lookup(c, &parsed);
+        write_group(c);
+    }
+
+    /// 按名取段：证明索引可用，`finish` 之后仍可随机访问。
+    fn lookup(c: &mut Criterion, parsed: &Archive<'_>) {
+        let mut group = c.benchmark_group("weights/archive");
+        group.throughput(Throughput::Bytes(BYTES_PER_SEGMENT as u64));
         group.bench_function("get_by_name", |bench| {
             bench.iter(|| black_box(found(parsed.get(black_box("seg_32")), "段存在")))
         });
         group.finish();
-        write_group(c);
     }
 
     /// 写出组：`finish` 是唯一写路径，64 段各 1 KiB。
@@ -262,33 +270,49 @@ pub(crate) mod text {
     }
 
     /// 分词器五组：编码（基线 / BPE）、计数、解码（基线 / BPE）、详细对齐、流式增量。
+    ///
+    /// 每组一个函数：`criterion` 的 `iter` 要一个空闭包，而空闭包在复杂度口径里算一个条件
+    /// 分支，所以一组一函数既是语义边界，也让每组停在 `Ccn` 上限以内。
     pub(crate) fn tokenizer(c: &mut Criterion) {
         let text = sample();
         let encoder = bpe_encoder();
-        let bytes_of = text.len() as u64;
-        let bpe_tokens = checked(encoder.encode(&text), "预置编码");
-        let tokens = checked(Bytes.encode(&text), "预置编码");
-        let plain: Vec<u8> = tokens.iter().map(|token| token.id() as u8).collect();
+        let plain = plain(&text);
+        encode(c, &text, &encoder);
+        count(c, &text);
+        decode(c, &text, &encoder);
+        detailed(c, &text);
+        stream(c, &plain);
+    }
 
+    /// 编码：合成 BPE 与单字节基线，同一份 4 KiB 语料。
+    fn encode(c: &mut Criterion, text: &str, encoder: &Bpe) {
         let mut group = c.benchmark_group("tokenizer/encode");
-        group.throughput(Throughput::Bytes(bytes_of));
+        group.throughput(Throughput::Bytes(text.len() as u64));
         group.bench_function("bpe_synth_4kib", |bench| {
-            bench.iter(|| black_box(checked(encoder.encode(black_box(&text)), "编码")))
+            bench.iter(|| black_box(checked(encoder.encode(black_box(text)), "编码")))
         });
         group.bench_function("bytes_4kib", |bench| {
-            bench.iter(|| black_box(checked(Bytes.encode(black_box(&text)), "编码")))
+            bench.iter(|| black_box(checked(Bytes.encode(black_box(text)), "编码")))
         });
         group.finish();
+    }
 
+    /// 计数：只数不分配。
+    fn count(c: &mut Criterion, text: &str) {
         let mut group = c.benchmark_group("tokenizer/count");
-        group.throughput(Throughput::Bytes(bytes_of));
+        group.throughput(Throughput::Bytes(text.len() as u64));
         group.bench_function("bytes_4kib", |bench| {
-            bench.iter(|| black_box(checked(Bytes.count(black_box(&text)), "计数")))
+            bench.iter(|| black_box(checked(Bytes.count(black_box(text)), "计数")))
         });
         group.finish();
+    }
 
+    /// 解码：先按各自方式编码一次再回解，两边输入同一份 4 KiB 语料。
+    fn decode(c: &mut Criterion, text: &str, encoder: &Bpe) {
+        let bpe_tokens = checked(encoder.encode(text), "预置编码");
+        let tokens = checked(Bytes.encode(text), "预置编码");
         let mut group = c.benchmark_group("tokenizer/decode");
-        group.throughput(Throughput::Bytes(bytes_of));
+        group.throughput(Throughput::Bytes(text.len() as u64));
         group.bench_function("bpe_synth_4kib", |bench| {
             bench.iter(|| black_box(checked(encoder.decode(black_box(&bpe_tokens)), "解码")))
         });
@@ -296,14 +320,20 @@ pub(crate) mod text {
             bench.iter(|| black_box(checked(Bytes.decode(black_box(&tokens)), "解码")))
         });
         group.finish();
+    }
 
+    /// 详细编码：每 token 带字节区间，供对齐与调试。
+    fn detailed(c: &mut Criterion, text: &str) {
         let mut group = c.benchmark_group("tokenizer/encode_detailed");
-        group.throughput(Throughput::Bytes(bytes_of));
+        group.throughput(Throughput::Bytes(text.len() as u64));
         group.bench_function("bytes_4kib", |bench| {
-            bench.iter(|| black_box(checked(Bytes.encode_detailed(black_box(&text)), "详细编码")))
+            bench.iter(|| black_box(checked(Bytes.encode_detailed(black_box(text)), "详细编码")))
         });
         group.finish();
+    }
 
+    /// 流式增量解码：32 字节一块推进，`finish` 收尾。
+    fn stream(c: &mut Criterion, plain: &[u8]) {
         let mut group = c.benchmark_group("tokenizer/stream");
         group.throughput(Throughput::Bytes(plain.len() as u64));
         group.bench_function("push_32b_chunks", |bench| {
@@ -316,6 +346,12 @@ pub(crate) mod text {
             })
         });
         group.finish();
+    }
+
+    /// 单字节基线的 token 位模式，供流式解码按 32 字节切块。
+    fn plain(text: &str) -> Vec<u8> {
+        let tokens = checked(Bytes.encode(text), "预置编码");
+        tokens.iter().map(|token| token.id() as u8).collect()
     }
 
     /// LEB128 往返用的取值集合：覆盖 1..10 字节各档长度。
@@ -360,28 +396,36 @@ pub(crate) mod text {
         group.finish();
     }
 
-    /// LEB128 编码与解码，各跑一遍全部八档。
+    /// LEB128 编解码：两档各一个函数，共用同一份八档取值。
     fn leb(c: &mut Criterion) {
-        let count = Throughput::Elements(VALUES.len() as u64);
+        leb_encode(c);
+        leb_decode(c);
+    }
+
+    /// 编码：八档长度（1..10 字节）各写一遍。
+    fn leb_encode(c: &mut Criterion) {
         let mut group = c.benchmark_group("wire/leb");
-        group.throughput(count.clone());
+        group.throughput(Throughput::Elements(VALUES.len() as u64));
         group.bench_function("encode_values", |bench| {
             bench.iter(|| {
-                let mut count = Count(0);
+                let mut sink = Count(0);
                 for value in VALUES {
-                    write(&mut count, black_box(value));
+                    write(&mut sink, black_box(value));
                 }
-                black_box(count.0)
+                black_box(sink.0)
             })
         });
         group.finish();
+    }
 
+    /// 解码：同一份取值先编码成缓冲，再逐条读回。
+    fn leb_decode(c: &mut Criterion) {
         let mut buffer = Vec::new();
         for value in VALUES {
             write(&mut buffer, value);
         }
         let mut group = c.benchmark_group("wire/leb");
-        group.throughput(count);
+        group.throughput(Throughput::Elements(VALUES.len() as u64));
         group.bench_function("decode_values", |bench| {
             bench.iter(|| {
                 let mut cursor = Cursor::new(black_box(&buffer));

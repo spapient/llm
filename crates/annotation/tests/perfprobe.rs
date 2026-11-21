@@ -1,5 +1,5 @@
-use crate::decl::{Declaration, RuntimeDecl};
-use crate::render::{render, render_runtime};
+use crate::decl::{Declaration, ModelDecl, RuntimeDecl};
+use crate::render::{holes, render, render_model, render_runtime, unique};
 use std::hint::black_box;
 use std::time::Instant;
 
@@ -44,13 +44,66 @@ fn long_layer() -> Declaration {
     }
 }
 
+fn old_unique<'a>(names: impl Iterator<Item = &'a String>) -> Vec<&'a str> {
+    let mut seen: Vec<&str> = Vec::new();
+    for name in names {
+        if !seen.contains(&name.as_str()) {
+            seen.push(name);
+        }
+    }
+    seen
+}
+
+#[test]
+fn unique_ab() {
+    let runtime = runtime();
+    report("unique new", || {
+        black_box(unique(holes(black_box(&runtime))));
+    });
+    report("unique old", || {
+        black_box(old_unique(holes(black_box(&runtime))));
+    });
+    report("unique new", || {
+        black_box(unique(holes(black_box(&runtime))));
+    });
+    report("unique old", || {
+        black_box(old_unique(holes(black_box(&runtime))));
+    });
+}
+
 #[test]
 fn overflow_report() {
     let declaration = long_layer();
     let code = render(&declaration, "crate::layers::attention::MultiHeadAttention");
     println!("render(long)   len {:>5} cap 1536", code.len());
     report("render(long)", || {
-        black_box(render(black_box(&declaration), "crate::layers::attention::MultiHeadAttention"));
+        black_box(render(
+            black_box(&declaration),
+            "crate::layers::attention::MultiHeadAttention",
+        ));
+    });
+}
+
+fn model() -> ModelDecl {
+    ModelDecl {
+        name: "attention_projection_gemm".into(),
+        shape: [4096, 4096],
+        dtype: "f32".into(),
+        skeleton: "gemm".into(),
+        const_name: "MODEL".into(),
+    }
+}
+
+#[test]
+fn model_report() {
+    let declaration = model();
+    let code = render_model(&declaration, "crate::layers::attention::Projection");
+    println!("render_model   len {:>5} cap 3072", code.len());
+    report("render_model", || {
+        black_box(render_model(
+            black_box(&declaration),
+            "crate::layers::attention::Projection",
+        ));
     });
 }
 

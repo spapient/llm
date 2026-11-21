@@ -85,28 +85,35 @@ fn section_keys<'a>(manifest: &'a str, section: &str) -> Vec<&'a str> {
     keys
 }
 
+/// 注释与字面量的三种开头；`/` 也可能是除号、`'` 也可能是生命周期，都要先看见再判定。
+const OPENERS: &[char] = &['"', '\'', '/'];
+
 /// 只留下代码：注释与字面量都剔掉。生成文本里就写着 `format!` / `.to_string()`，直接搜全文会把
 /// "被生成的代码"误判成"生成器的实现"；`'{'`、`'"'` 这类字面量还会把 [`body`] 的花括号配平带偏。
 ///
-/// 遇到注释或字面量就整段跳过，其余代码片段一次性追加：单趟线性，剔除本身不分配中间 `String`。
+/// 每层只处理"下一个真正要跳过的开头"：它之前那段是纯代码，整段追加；它之后的部分交给下一层。
+/// 除号与生命周期不算跳过，就地留在代码里，不额外占一层。单趟线性，不分配中间 `String`。
 fn code_only(text: &str) -> String {
-    const OPENERS: &[char] = &['"', '\'', '/'];
     let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(at) = rest.find(OPENERS) {
-        out.push_str(&rest[..at]);
-        rest = &rest[at..];
-        match skip(rest, &out) {
-            Some(len) => rest = &rest[len..],
-            None => {
-                let head = rest.chars().next().expect("游标停在非空处");
-                out.push(head);
-                rest = &rest[head.len_utf8()..];
-            }
-        }
-    }
-    out.push_str(rest);
+    code_into(text, &mut out);
     out
+}
+
+/// [`code_only`] 的一层：把 `rest` 开头那段纯代码追进 `out`，跳过它之后的注释 / 字面量再自递归。
+///
+/// 递归深度等于"注释 + 字面量"的个数（不是字节数，也不是候选个数），每层 `rest` 都严格变短，
+/// 所以必然终止；也因为没有可变游标，"跳过量算错导致原地打转"这类失败模式不存在。
+fn code_into(rest: &str, out: &mut String) {
+    // 候选逐个试：`skip` 返回 `None` 说明那个 `/` 或 `'` 其实是代码，继续往后找下一个候选。
+    let opening = rest
+        .match_indices(OPENERS)
+        .find_map(|(at, _)| skip(&rest[at..], &rest[..at]).map(|len| (at, len)));
+    let Some((at, len)) = opening else {
+        out.push_str(rest);
+        return;
+    };
+    out.push_str(&rest[..at]);
+    code_into(&rest[at + len..], out);
 }
 
 /// 从注释 / 字面量开头算起要吞掉的字节数；裸 `/` 与生命周期 `'a` 都不是注释或字面量，返回 `None`。
