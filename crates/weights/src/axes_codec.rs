@@ -42,6 +42,12 @@ pub(crate) fn unpack_bytes(cur: &mut Cursor<'_>, cap: usize) -> Result<Vec<u8>> 
     unpack_body(mark, cur.remaining(), cap)
 }
 
+/// 对一段带标记的完整帧解码（用于 rank 里已知边界的 low/rest）。
+pub(crate) fn unpack_marked(frame: &[u8], cap: usize) -> Result<Vec<u8>> {
+    let (&mark, body) = frame.split_first().ok_or_else(|| bad("空熵帧"))?;
+    unpack_body(mark, body, cap)
+}
+
 /// 唯一值排序表 + 等长索引序列：排序去重后二分定位，零关联容器依赖。
 pub(crate) fn dict_payload(w: &[f32]) -> Option<Vec<u8>> {
     let mut vals: Vec<u32> = w.iter().map(|v| v.to_bits()).collect();

@@ -637,8 +637,9 @@ fn scaled_dot<C: Plain>(w_row: &[C::Elem], x: &[f32], s_row: &[f32], group: usiz
 
 /// 累加链数：16 条 = 4 条 NEON 寄存器（x86 的 AVX2 上是 2 条 `ymm`）。
 ///
-/// 这个数不是凑出来的：`crates/benchmarks/src/vector.rs` 的 1×4096×4096 decode 步在本机
-/// 实测 4 条链 3.8 ms、8 条 1.3 ms、12 条 3.7 ms、16 条 0.89 ms、24 条 2.4 ms、32 条 0.91 ms——
+/// 这个数不是凑出来的：`crates/benchmarks/src/kernel.rs` 的 `gemv_f32/decode_1x4096x4096`
+/// （1×4096×4096 decode 步，权重一遍 64 MiB）换链数实测 4 条链 3.8 ms、8 条 1.3 ms、12 条
+/// 3.7 ms、16 条 0.89 ms、24 条 2.4 ms、32 条 0.91 ms——
 /// 只有 2 的幂的条数能被展开成整条向量指令，16 条在多一个寄存器轮转之后就不再获益。
 const LANES: usize = 16;
 

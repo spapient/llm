@@ -7,8 +7,10 @@
 //!
 //! * **查表换成整数码的直接换算。** 打包格式的反量化表恒为 `table[code] = code - zero`
 //!   （[`crate::quant::Row`] 的 `I2` 是 `{-2, -1, 0, 1}`、`I4` 是 `{-8..=7}`；[`affine_zero`]
-//!   逐条核对整张表，不是假设），于是
-//!   `Σ (code − zero)·x = Σ code·x − zero·Σ x`：左半进内层的乘法，右半每组只做一次。
+//!   逐条核对整张表，不是假设），于是每个码只剩"移位、掩码、换算成 `f32`、减零点"四步纯算术，
+//!   四次访存变成零次。零点按车道减（一条 `fsub` 摊在 `LANES` 个码上）；也可以按组修正
+//!   （`Σ (code − zero)·x = Σ code·x − zero·Σ x`，右半每组一次），但那样每组多一条标量链、
+//!   还要预先备好每组的 `Σ x`，实测不更快，所以码值就地减零点。
 //! * **串行累加换成一条向量链。** 一组的码宽刚好装满 `LANES = group / cpb` 个车道——`group = 32`
 //!   时 4 位码是 16 车道、2 位码是 8 车道；一条 `fmla` 同时算 `LANES` 个码，归约只在组尾做一次。
 //! * **4 列共享一次 `x` 载入。** 解码的输出宽度是 `n`（生产形状 4096），四行的权重落在同一批
@@ -29,11 +31,19 @@
 //! 落地：`std::simd` 是架构无关的源码，aarch64 上落成 NEON（`fmla` / `ucvtf` / `ldr q`），
 //! x86_64 上落成 SSE2 基线。两处编译的是同一份算术，于是两条验证链验的是同一段代码；整条通道
 //! 不用 `unsafe`（`unsafe_code = "deny"` 不动）。
+//!
+//! 实测（`crates/benchmarks/src/kernel.rs` 的 `gemv_i4` 组，生产形状 `1×4096×4096`、权重一遍
+//! 9.8 MB）：标量叶 2.73 ms / 3.58 GiB/s，本通道 1.87 ms / 5.21 GiB/s，**1.46×**。剩下的时间
+//! 几乎全在换算上——每 16 个码要 4 条 `ucvtf` 加 4 条拓宽，约 0.6 条指令/码，乘加只占
+//! 0.06 条；按这个账内核已跑到该形态约 85% 的吞吐上限。列数加密不再有收益：`COLS = 8` 因
+//! 16 条累加链溢出到栈帧，实测慢 47%；`COLS = 2` 落在噪声内。真要再上一个量级得靠 `sdot`
+//! 的整数点积（8 位码 × 8 位 `x`，一条指令 16 个乘加），那需要 `unsafe` 内建函数，与
+//! `unsafe_code = "deny"` 冲突，故本通道止于可移植的这一档。
 
 use std::simd::prelude::{SimdFloat, SimdUint};
 use std::simd::{Simd, StdFloat};
 
-use super::{Geometry, ScaledRow};
+use super::ScaledRow;
 use crate::matmul::TN_COLS;
 
 /// 一次驻留的权重行数（列块宽度），与 prefill 线性层同一个 [`TN_COLS`]。
@@ -72,25 +82,47 @@ fn fits(cpb: usize, lanes: usize) -> bool {
     matches!((cpb, lanes), (2 | 4, 8 | 16))
 }
 
-/// 单行入口：`out` 是 `n` 个输出；算得成返回 `true`，算不成（形状/表不符）返回 `false`。
-pub(crate) fn forward(
-    x: &[f32],
-    weights: &[u8],
-    scales: &[f32],
-    out: &mut [f32],
-    cpb: usize,
+/// 通过校验之后的通道参数：形状（[`ScaledRow`]）、码宽、车道数、反量化表的仿射零点。
+///
+/// 把"校验过了"做成一个**值**，而不是三个平行的 `usize` 加一个 `bool` 返回值：拿到了 `Affine`
+/// 就说明表是仿射的、形状凑得满整条向量、输出宽度够分 [`COLS`] 列，内核于是不必再判一次，
+/// 也不可能拿到一组互相矛盾的参数。
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Affine {
     ctx: ScaledRow,
-    dequant: &[f32],
-) -> bool {
-    let Some(zero) = affine_zero(dequant, codes_of(cpb)) else {
-        return false;
-    };
-    if out.len() < COLS || !fits(cpb, ctx.group / cpb) {
-        return false;
-    }
-    let input = [layout(x, ctx, cpb)];
-    run(cpb, ctx.group / cpb, weights, &input, ctx, zero, scales, out);
-    true
+    cpb: usize,
+    lanes: usize,
+    zero: f32,
+}
+
+/// 校验并构造 [`Affine`]：`n` 是输出宽度（权重行数），`ctx` 是入口已经量好的行形状。
+///
+/// 三件事都在这里一次定下来——反量化表逐条核对是否 `table[code] == code - zero`
+/// （[`affine_zero`]）、一组的字节数是否落在车道数的整档上（[`fits`]）、输出宽度是否够一整组
+/// （[`COLS`]）。任一条不成立就返回 `None`，调用方回退标量叶：本通道是加速，不是唯一实现。
+pub(crate) fn admit(cpb: usize, n: usize, ctx: ScaledRow, dequant: &[f32]) -> Option<Affine> {
+    let zero = affine_zero(dequant, codes_of(cpb))?;
+    let lanes = ctx.group / cpb;
+    (n >= COLS && fits(cpb, lanes)).then_some(Affine {
+        ctx,
+        cpb,
+        lanes,
+        zero,
+    })
+}
+
+/// 单行入口：`out` 是 `n` 个输出。
+pub(crate) fn forward(x: &[f32], weights: &[u8], scales: &[f32], affine: Affine, out: &mut [f32]) {
+    let input = [layout(x, affine)];
+    run(
+        &Plan {
+            weights,
+            inputs: &input,
+            affine,
+            scales,
+        },
+        out,
+    );
 }
 
 /// 行批入口：与 [`forward`] 同一段算术、同一份列块遍历，只是一次带上所有输入行。
@@ -98,25 +130,22 @@ pub(crate) fn forward(
 /// 遍历嵌套与标量叶一致：列块在外、输入行在内——同一批权重窗口供每个输入行用一遍，权重只读
 /// 一遍；而逐列组的 `dot` 与输入行走在哪一层无关，于是批结果与逐行调用逐位相同。
 pub(crate) fn forward_batch(
-    x: &[f32],
+    rows: &[&[f32]],
     weights: &[u8],
     scales: &[f32],
-    geo: Geometry,
+    affine: Affine,
     out: &mut [f32],
-    cpb: usize,
-    ctx: ScaledRow,
-    dequant: &[f32],
-) -> bool {
-    let Some(zero) = affine_zero(dequant, codes_of(cpb)) else {
-        return false;
-    };
-    if geo.n < COLS || !fits(cpb, ctx.group / cpb) {
-        return false;
-    }
-    let input: Vec<Vec<f32>> =
-        (0..geo.rows).map(|r| layout(&x[r * geo.m..][..geo.m], ctx, cpb)).collect();
-    run(cpb, ctx.group / cpb, weights, &input, ctx, zero, scales, out);
-    true
+) {
+    let input: Vec<Vec<f32>> = rows.iter().map(|row| layout(row, affine)).collect();
+    run(
+        &Plan {
+            weights,
+            inputs: &input,
+            affine,
+            scales,
+        },
+        out,
+    );
 }
 
 /// 码表长度：`1 << width`，`width = 8 / cpb`（与 [`crate::quant::width_cpb`] 同一公式）。
@@ -124,57 +153,63 @@ fn codes_of(cpb: usize) -> usize {
     1 << crate::quant::width_cpb(cpb)
 }
 
+/// 内核的全部输入：权重、排好版的输入行、通道参数、标度。
+struct Plan<'a> {
+    weights: &'a [u8],
+    inputs: &'a [Vec<f32>],
+    affine: Affine,
+    scales: &'a [f32],
+}
+
 /// 按 `cpb` 与车道数单态化：槽位循环与组尾归约的形态都由这两个常量决定，编译期摊平。
-fn run(
-    cpb: usize,
-    lanes: usize,
-    weights: &[u8],
-    inputs: &[Vec<f32>],
-    ctx: ScaledRow,
-    zero: f32,
-    scales: &[f32],
-    out: &mut [f32],
-) {
-    match (cpb, lanes) {
-        (2, 8) => columns::<2, 8>(weights, inputs, ctx, zero, scales, out),
-        (2, _) => columns::<2, 16>(weights, inputs, ctx, zero, scales, out),
-        (_, 8) => columns::<4, 8>(weights, inputs, ctx, zero, scales, out),
-        _ => columns::<4, 16>(weights, inputs, ctx, zero, scales, out),
+fn run(plan: &Plan<'_>, out: &mut [f32]) {
+    match (plan.affine.cpb, plan.affine.lanes) {
+        (2, 8) => columns::<2, 8>(plan, out),
+        (2, _) => columns::<2, 16>(plan, out),
+        (_, 8) => columns::<4, 8>(plan, out),
+        _ => columns::<4, 16>(plan, out),
     }
 }
 
 /// 列块遍历：每 [`BLOCK`] 列一块，块内 4 列一组、每组 4 行权重与一行的 `x` 窗口在 L1 里轮转。
 ///
 /// 不足 4 列的尾部回到 `R = 1`（同一个 `dot`、同一副累加器形态），所以 `n` 不必是 4 的倍数。
-fn columns<const CPB: usize, const LANES: usize>(
-    weights: &[u8],
-    inputs: &[Vec<f32>],
-    ctx: ScaledRow,
-    zero: f32,
-    scales: &[f32],
-    out: &mut [f32],
-) {
-    let (row, groups) = (ctx.row, ctx.groups);
-    let n = out.len() / inputs.len();
+fn columns<const CPB: usize, const LANES: usize>(plan: &Plan<'_>, out: &mut [f32]) {
+    let (row, groups, group) = (
+        plan.affine.ctx.row,
+        plan.affine.ctx.groups,
+        plan.affine.ctx.group,
+    );
+    let n = out.len() / plan.inputs.len();
     let mut j = 0;
     while j < n {
         let block = (j + BLOCK).min(n);
         while j < block {
             let width = if block - j >= COLS { COLS } else { 1 };
-            for (r, input) in inputs.iter().enumerate() {
+            for (r, input) in plan.inputs.iter().enumerate() {
                 let dest = &mut out[r * n + j..][..width];
+                let (w, s) = (
+                    &plan.weights[j * row..][..width * row],
+                    &plan.scales[j * groups..][..width * groups],
+                );
                 if width == COLS {
-                    let w: [&[u8]; COLS] =
-                        core::array::from_fn(|i| &weights[(j + i) * row..][..row]);
-                    let s: [&[f32]; COLS] =
-                        core::array::from_fn(|i| &scales[(j + i) * groups..][..groups]);
-                    let total = dot::<CPB, LANES, COLS>(&w, &s, input, ctx.group, zero);
-                    dest.copy_from_slice(&total);
+                    dest.copy_from_slice(&dot::<CPB, LANES, COLS>(
+                        w,
+                        row,
+                        s,
+                        input,
+                        group,
+                        plan.affine.zero,
+                    ));
                 } else {
-                    let row_w: [&[u8]; 1] = [&weights[j * row..][..row]];
-                    let row_s: [&[f32]; 1] = [&scales[j * groups..][..groups]];
-                    let total = dot::<CPB, LANES, 1>(&row_w, &row_s, input, ctx.group, zero);
-                    dest.copy_from_slice(&total);
+                    dest.copy_from_slice(&dot::<CPB, LANES, 1>(
+                        w,
+                        row,
+                        s,
+                        input,
+                        group,
+                        plan.affine.zero,
+                    ));
                 }
             }
             j += width;
@@ -193,30 +228,36 @@ fn columns<const CPB: usize, const LANES: usize>(
 /// `zero` 折进码值（`Σ (code − zero)·x`），于是不需要每组再拿 `Σ x` 去修正——`x` 的和在两条
 /// 通道里都不再出现。
 fn dot<const CPB: usize, const LANES: usize, const R: usize>(
-    w_rows: &[&[u8]; R],
-    s_rows: &[&[f32]; R],
+    w: &[u8],
+    row: usize,
+    s: &[f32],
     input: &[f32],
     group: usize,
     zero: f32,
 ) -> [f32; R] {
-    let (row, per_group) = (input.len() / CPB, group / CPB);
+    let per_group = group / CPB;
+    let groups = input.len() / group;
+    assert!(groups > 0, "一组都凑不满的形状在 admit 就该被挡下");
     let shift = Simd::<f32, LANES>::splat(zero);
     let mut running = [Simd::<f32, LANES>::splat(0.0); R];
-    for g in 0..input.len() / group {
+    // 组号在 R 行之间共用（每行都有这一组的标度、权重行也都按同一组号切），不是"遍历某一条
+    // 切片"——按下标走组号，行号由内层 `r` 给出。
+    #[allow(clippy::needless_range_loop)]
+    for g in 0..groups {
         let at = g * per_group;
         let mut acc = [Simd::<f32, LANES>::splat(0.0); R];
         for slot in 0..CPB {
             for chunk in (at..at + per_group).step_by(LANES) {
                 let xs = Simd::<f32, LANES>::from_slice(&input[slot * row + chunk..][..LANES]);
-                for (r, packed) in w_rows.iter().enumerate() {
-                    let bytes = Simd::<u8, LANES>::from_slice(&packed[chunk..][..LANES]);
+                for (r, acc) in acc.iter_mut().enumerate() {
+                    let bytes = Simd::<u8, LANES>::from_slice(&w[r * row + chunk..][..LANES]);
                     let value = codes::<CPB, LANES>(bytes, slot).cast::<f32>() - shift;
-                    acc[r] = value.mul_add(xs, acc[r]);
+                    *acc = value.mul_add(xs, *acc);
                 }
             }
         }
-        for r in 0..R {
-            running[r] = acc[r].mul_add(Simd::splat(s_rows[r][g]), running[r]);
+        for (r, (acc, running)) in acc.iter().zip(running.iter_mut()).enumerate() {
+            *running = acc.mul_add(Simd::splat(s[r * groups + g]), *running);
         }
     }
     running.map(SimdFloat::reduce_sum)
@@ -235,11 +276,12 @@ fn codes<const CPB: usize, const LANES: usize>(
 ///
 /// 元素 `e` 落在槽位 `e % cpb`、行内字节 `e / cpb`。重排与行无关（所以只做一遍），标度不进
 /// 这一步（每组标度逐行不同，见模块文档）。内层读 `x` 连续、写 `cpb` 个连续流。
-fn layout(x: &[f32], ctx: ScaledRow, cpb: usize) -> Vec<f32> {
+fn layout(x: &[f32], affine: Affine) -> Vec<f32> {
+    let (row, cpb) = (affine.ctx.row, affine.cpb);
     let mut input = vec![0.0f32; x.len()];
-    for byte in 0..ctx.row {
+    for byte in 0..row {
         for slot in 0..cpb {
-            input[slot * ctx.row + byte] = x[byte * cpb + slot];
+            input[slot * row + byte] = x[byte * cpb + slot];
         }
     }
     input
@@ -269,11 +311,22 @@ mod tests {
 
     /// `n` 行 × `groups` 组的标度，逐行逐组不同；2 的幂，便于逐位比较。
     fn scales(n: usize, groups: usize) -> Vec<f32> {
-        (0..n * groups).map(|i| [0.25f32, 0.5, 1.0, 2.0][(i * 5) % 4]).collect()
+        (0..n * groups)
+            .map(|i| [0.25f32, 0.5, 1.0, 2.0][(i * 5) % 4])
+            .collect()
     }
 
     fn context(m: usize, cpb: usize) -> ScaledRow {
-        ScaledRow { groups: m / GROUP, group: GROUP, row: m / cpb }
+        ScaledRow {
+            groups: m / GROUP,
+            group: GROUP,
+            row: m / cpb,
+        }
+    }
+
+    /// 标准样本（`M` 个元素、`N` 列、整张表）过得了 `admit`——测试从这里取通道参数。
+    fn admitted(cpb: usize, ctx: ScaledRow) -> Affine {
+        admit(cpb, N, ctx, table(cpb)).expect("标准样本必须落在通道内")
     }
 
     /// 一条输入行：整数，`|x| <= 8`。
@@ -283,27 +336,15 @@ mod tests {
 
     /// 一条输入行：带小数的通用取值。
     fn fractional(m: usize) -> Vec<f32> {
-        (0..m).map(|i| ((i * 37 % 29) as f32 - 14.0) * 0.037_037).collect()
+        (0..m)
+            .map(|i| ((i * 37 % 29) as f32 - 14.0) * 0.037_037)
+            .collect()
     }
 
     /// 标量叶（[`super::packed::dot_row`]）对一行给出的值——独立于本通道的第二实现。
-    fn oracle(
-        m: usize,
-        cpb: usize,
-        w_row: &[u8],
-        s_row: &[f32],
-        x: &[f32],
-    ) -> f32 {
+    fn oracle(m: usize, cpb: usize, w_row: &[u8], s_row: &[f32], x: &[f32]) -> f32 {
         let ctx = context(m, cpb);
-        super::super::packed::dot_row(
-            w_row,
-            x,
-            s_row,
-            ctx.group / cpb,
-            ctx.group,
-            cpb,
-            table(cpb),
-        )
+        super::super::packed::dot_row(w_row, x, s_row, ctx.group / cpb, ctx.group, cpb, table(cpb))
     }
 
     #[test]
@@ -317,16 +358,23 @@ mod tests {
     }
 
     #[test]
-    fn shapes_without_a_whole_window_fall_back() {
+    fn only_the_two_packed_widths_fit_the_lane_count() {
         assert!(fits(2, GROUP / 2), "4 位码：一组 16 字节、16 车道");
         assert!(fits(4, GROUP / 4), "2 位码：一组 8 字节、8 车道");
         // 一组 2 个码：凑不满一条 8 车道向量，也不在 8 / 16 两档之外加档。
         assert!(!fits(4, 8 / 4));
         assert!(!fits(8, GROUP / 8), "int8 不打包，不走本通道");
-        // 走不到通道的形状必须由 `forward` 自己说“算不成”，而不是给出一个数。
-        let (w, s, x) = (weights(8, 2, 2), scales(2, 8 / GROUP.max(1)), vec![0.0f32; 8]);
-        let mut out = [0.0f32; 2];
-        assert!(!forward(&x, &w, &s, &mut out, 2, context(8, 2), table(2)));
+        // 走不到通道的形状必须在 `admit` 就被挡下，而不是让内核给出一个数。
+        assert!(admit(2, N, context(M, 2), table(2)).is_some());
+        assert!(admit(4, N, context(M, 4), table(4)).is_some());
+        // 一组 2 个码的形状（`m = 8`、2 位码）：凑不满一条向量，`admit` 必须拒绝。
+        assert!(admit(4, 2, context(8, 4), table(4)).is_none());
+        // int8 不打包，不走本通道。
+        assert!(admit(1, N, context(M, 1), table(1)).is_none());
+        // 输出宽度不足一列组：尾部没有 `COLS` 行可并，回退。
+        assert!(admit(2, COLS - 1, context(M, 2), table(2)).is_none());
+        // 表不落在仿射关系上：查表换不成算式的形状，回退。
+        assert!(admit(2, N, context(M, 2), &[0.0, 2.0, 4.0, 9.0]).is_none());
     }
 
     #[test]
@@ -336,9 +384,15 @@ mod tests {
             let ctx = context(M, cpb);
             let (w, s, x) = (weights(M, N, cpb), scales(N, ctx.groups), whole(M));
             let mut out = vec![0.0f32; N];
-            assert!(forward(&x, &w, &s, &mut out, cpb, ctx, table(cpb)));
+            forward(&x, &w, &s, admitted(cpb, ctx), &mut out);
             for (j, &got) in out.iter().enumerate() {
-                let want = oracle(M, cpb, &w[j * ctx.row..][..ctx.row], &s[j * ctx.groups..][..ctx.groups], &x);
+                let want = oracle(
+                    M,
+                    cpb,
+                    &w[j * ctx.row..][..ctx.row],
+                    &s[j * ctx.groups..][..ctx.groups],
+                    &x,
+                );
                 assert_eq!(got, want, "cpb = {cpb} 第 {j} 行必须与标量叶逐位相同");
             }
         }
@@ -351,11 +405,20 @@ mod tests {
             let ctx = context(M, cpb);
             let (w, s, x) = (weights(M, N, cpb), scales(N, ctx.groups), fractional(M));
             let mut out = vec![0.0f32; N];
-            assert!(forward(&x, &w, &s, &mut out, cpb, ctx, table(cpb)));
+            forward(&x, &w, &s, admitted(cpb, ctx), &mut out);
             for (j, &got) in out.iter().enumerate() {
-                let want = oracle(M, cpb, &w[j * ctx.row..][..ctx.row], &s[j * ctx.groups..][..ctx.groups], &x);
+                let want = oracle(
+                    M,
+                    cpb,
+                    &w[j * ctx.row..][..ctx.row],
+                    &s[j * ctx.groups..][..ctx.groups],
+                    &x,
+                );
                 let slack = 1e-5 * want.abs().max(1.0);
-                assert!((got - want).abs() <= slack, "cpb = {cpb} 第 {j} 行：{got} vs {want}");
+                assert!(
+                    (got - want).abs() <= slack,
+                    "cpb = {cpb} 第 {j} 行：{got} vs {want}"
+                );
             }
         }
     }
@@ -371,13 +434,18 @@ mod tests {
         for r in 0..rows {
             x.extend(base.iter().map(|v| v + r as f32));
         }
-        let geo = Geometry { rows, m: M, n: N };
+        let affine = admitted(cpb, ctx);
+        let rows_of_x: Vec<&[f32]> = x.chunks(M).collect();
         let mut batched = vec![0.0f32; rows * N];
-        assert!(forward_batch(&x, &w, &s, geo, &mut batched, cpb, ctx, table(cpb)));
+        forward_batch(&rows_of_x, &w, &s, affine, &mut batched);
         for r in 0..rows {
             let mut single = vec![0.0f32; N];
-            assert!(forward(&x[r * M..][..M], &w, &s, &mut single, cpb, ctx, table(cpb)));
-            assert_eq!(batched[r * N..][..N], *single, "第 {r} 行：批与逐行调用必须逐位相同");
+            forward(&x[r * M..][..M], &w, &s, affine, &mut single);
+            assert_eq!(
+                batched[r * N..][..N],
+                *single,
+                "第 {r} 行：批与逐行调用必须逐位相同"
+            );
         }
     }
 }
