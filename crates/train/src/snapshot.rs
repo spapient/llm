@@ -515,7 +515,7 @@ fn read_accum_ties(cursor: &mut Cursor<'_>) -> Result<(GradAccum, Ties)> {
 
 /// 正文开头整数与权重条目表。
 fn head_and_weights(cursor: &mut Cursor<'_>) -> Result<(Facts, Header)> {
-    let facts = facts(cursor)?;
+    let facts = decode_facts(cursor)?;
     let weights = read_weights_header(cursor)?;
     Ok((facts, weights))
 }
@@ -543,7 +543,7 @@ fn reject_tail(cursor: &Cursor<'_>) -> Result<()> {
 }
 
 /// 五个恢复事实，顺序即格式顺序；四个形状计数共用一条读取循环。
-fn facts(cursor: &mut Cursor<'_>) -> Result<Facts> {
+fn decode_facts(cursor: &mut Cursor<'_>) -> Result<Facts> {
     let step = cursor.varint()?;
     let labels = ["并行度", "层数", "批行数", "批列宽"];
     let mut counts = [0usize; 4];

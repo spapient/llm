@@ -343,13 +343,13 @@ impl From<ProfileError> for Error {
     }
 }
 impl std::error::Error for ProfileError {}
-fn missing(field: &str) -> ProfileError {
+fn missing(field: impl fmt::Display) -> ProfileError {
     ProfileError::Missing {
         field: field.to_string(),
     }
 }
 /// 闭集外取值；`allowed` 是闭集成员的名字表。
-fn unknown(field: &str, value: &str, allowed: &[&str]) -> ProfileError {
+fn unknown(field: impl fmt::Display, value: &str, allowed: &[&str]) -> ProfileError {
     ProfileError::Unknown {
         field: field.to_string(),
         value: value.to_string(),
@@ -357,9 +357,9 @@ fn unknown(field: &str, value: &str, allowed: &[&str]) -> ProfileError {
     }
 }
 /// 字段非法：`detail` 说明为什么非法，不重复字段名。
-fn bad(field: impl Into<String>, detail: impl Into<String>) -> ProfileError {
+fn bad(field: impl fmt::Display, detail: impl Into<String>) -> ProfileError {
     ProfileError::BadValue {
-        field: field.into(),
+        field: field.to_string(),
         detail: detail.into(),
     }
 }
@@ -379,26 +379,68 @@ fn dtype_names() -> Vec<&'static str> {
     DType::ALL.iter().map(|dt| dt.name()).collect()
 }
 /// 解析闭集里的名字；闭集外一律 `Unknown`，并把闭集内容一起报出来。
-fn closed<E: Closed>(name: &str, path: &str) -> Result<E, ProfileError> {
-    E::parse(name).ok_or_else(|| unknown(path, name, &closed_names(E::ALL)))
+fn closed<E: Closed>(name: &str, field: impl fmt::Display) -> Result<E, ProfileError> {
+    E::parse(name).ok_or_else(|| unknown(field, name, &closed_names(E::ALL)))
 }
-fn at(index: usize, key: &str) -> String {
-    format!("provides[{index}].{key}")
+/// 字段路径的惰性写法。一次 `Profile::parse` 会走几十条供给、每条十几个字段，
+/// 成功路径上不该为诊断拼任何字符串——`format!` 只在真出错时才发生。
+#[derive(Clone, Copy)]
+enum Field<'a> {
+    /// `provides[<下标>].<key>`；`witness` 为真时多一层 `witness.`。
+    Provide {
+        index: usize,
+        key: &'a str,
+        witness: bool,
+    },
+    /// `provides[<原语名>].<key>`：校验按原语而不是下标报位置。
+    Prim { prim: Prim, key: &'a str },
 }
-fn witness_at(index: usize, key: &str) -> String {
-    format!("provides[{index}].witness.{key}")
+impl fmt::Display for Field<'_> {
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::Provide {
+                index,
+                key,
+                witness: true,
+            } => write!(out, "provides[{index}].witness.{key}"),
+            Self::Provide {
+                index,
+                key,
+                witness: false,
+            } => write!(out, "provides[{index}].{key}"),
+            Self::Prim { prim, key } => write!(out, "provides[{prim}].{key}"),
+        }
+    }
 }
-fn prim_at(prim: Prim, key: &str) -> String {
-    format!("provides[{prim}].{key}")
+const fn at(index: usize, key: &str) -> Field<'_> {
+    Field::Provide {
+        index,
+        key,
+        witness: false,
+    }
 }
-fn text<'a>(table: &'a Table, key: &str, path: &str) -> Result<&'a str, ProfileError> {
-    table.string(key).ok_or_else(|| missing(path))
+const fn witness_at(index: usize, key: &str) -> Field<'_> {
+    Field::Provide {
+        index,
+        key,
+        witness: true,
+    }
+}
+const fn prim_at(prim: Prim, key: &str) -> Field<'_> {
+    Field::Prim { prim, key }
+}
+fn text<'a>(table: &'a Table, key: &str, field: impl fmt::Display) -> Result<&'a str, ProfileError> {
+    table.string(key).ok_or_else(|| missing(field))
 }
 fn or_dash(table: &Table, key: &str) -> String {
     table.string(key).unwrap_or("-").to_string()
 }
-fn list<'a>(table: &'a Table, key: &str, path: &str) -> Result<Vec<&'a str>, ProfileError> {
-    table.string_array(key).ok_or_else(|| missing(path))
+fn list<'a>(
+    table: &'a Table,
+    key: &str,
+    field: impl fmt::Display,
+) -> Result<Vec<&'a str>, ProfileError> {
+    table.string_array(key).ok_or_else(|| missing(field))
 }
 /// 逐项解析一张表的每个键值对：解析段里所有"按键"段落共用这一种形状。
 fn entries<T>(

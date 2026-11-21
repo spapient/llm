@@ -393,24 +393,24 @@ fn skip_sign(bytes: &[u8], cursor: &mut usize) {
     }
 }
 /// 一个"名字集合"字段：标量字符串或字符串数组，与 `[needs]` 侧同一口径，形状不对直接报错。
-fn names(path: &str, value: &Value) -> Result<Vec<String>, ProfileError> {
+fn names(path: impl fmt::Display, value: &Value) -> Result<Vec<String>, ProfileError> {
     match value {
         Value::Str(text) => Ok(vec![text.clone()]),
-        Value::Array(items) => items.iter().map(|item| one_name(path, item)).collect(),
+        Value::Array(items) => items.iter().map(|item| one_name(&path, item)).collect(),
         _ => Err(bad(path, "只接受字符串或字符串数组")),
     }
 }
-fn one_name(path: &str, item: &Value) -> Result<String, ProfileError> {
+fn one_name(path: impl fmt::Display, item: &Value) -> Result<String, ProfileError> {
     match item {
         Value::Str(text) => Ok(text.clone()),
         _ => Err(bad(path, "数组里只能是字符串")),
     }
 }
 /// 一组存储层名字：每个都必须在 [`Space`] 闭集里。
-fn parse_space_set(field: &str, items: &[&str]) -> Result<SpaceSet, ProfileError> {
+fn parse_space_set(field: impl fmt::Display, items: &[&str]) -> Result<SpaceSet, ProfileError> {
     let mut set = SpaceSet::empty();
     for item in items {
-        set.insert(closed::<Space>(item, field)?);
+        set.insert(closed::<Space>(item, &field)?);
     }
     Ok(set)
 }
@@ -484,7 +484,7 @@ fn dtype_set(entry: &Table, index: usize) -> Result<DTypeSet, ProfileError> {
     Ok(set)
 }
 /// 一个数据类型名：`DType` 是 L1 外部类型，按它的规范名解析。
-fn closed_dtype(path: &str, name: &str) -> Result<DType, ProfileError> {
+fn closed_dtype(path: impl fmt::Display, name: &str) -> Result<DType, ProfileError> {
     DType::parse_name(name).ok_or_else(|| unknown(path, name, &dtype_names()))
 }
 /// `space`：标量或数组都接受，缺省是空集（无存储层约束）。
@@ -526,7 +526,7 @@ fn expect_values(table: &Table, index: usize) -> Result<Vec<f32>, ProfileError> 
     let number = |value: &Value| expect_number(value, &path);
     items.iter().map(number).collect()
 }
-fn expect_number(value: &Value, path: &str) -> Result<f32, ProfileError> {
+fn expect_number(value: &Value, path: impl fmt::Display) -> Result<f32, ProfileError> {
     match value {
         Value::Float(number) => Ok(*number as f32),
         Value::Int(number) => Ok(*number as f32),
@@ -562,18 +562,18 @@ fn attr_values(index: usize, key: &str, value: &Value) -> Result<Vec<String>, Pr
     }
 }
 /// 单个标量属性值：字符串原样，整数/浮点/布尔按字面写。
-fn one_scalar(path: &str, value: &Value) -> Result<Vec<String>, ProfileError> {
+fn one_scalar(path: impl fmt::Display, value: &Value) -> Result<Vec<String>, ProfileError> {
     scalar_texts(value).ok_or_else(|| bad(path, "属性不能是表"))
 }
-fn one_string(path: &str, item: &Value) -> Result<String, ProfileError> {
+fn one_string(path: impl fmt::Display, item: &Value) -> Result<String, ProfileError> {
     match item {
         Value::Str(text) => Ok(text.clone()),
         _ => Err(bad(path, "属性数组里只能是字符串")),
     }
 }
 /// 区间文本：解析失败时把原话带上，字段路径由调用方给全。
-fn parse_span(field: &str, text: &str) -> Result<Span, ProfileError> {
-    Span::parse(text).map_err(|error| bad(field.to_string(), error.message().to_string()))
+fn parse_span(field: impl fmt::Display, text: &str) -> Result<Span, ProfileError> {
+    Span::parse(text).map_err(|error| bad(&field, error.message().to_string()))
 }
 
 // ── check ─────────────────────────────────────────────────────────────
@@ -684,13 +684,13 @@ impl Profile {
         errors
     }
     /// `exec` 取值能触及的存储层并集；本档案没声明的单元逐个报 `Unknown`。
-    fn exec_reach(&self, field: &str, values: &[String]) -> (SpaceSet, Vec<ProfileError>) {
+    fn exec_reach(&self, field: impl fmt::Display, values: &[String]) -> (SpaceSet, Vec<ProfileError>) {
         let allowed: Vec<&str> = self.units.iter().map(|unit| unit.name.as_str()).collect();
         let (mut reachable, mut undefined) = (SpaceSet::empty(), Vec::new());
         for value in values {
             match self.units.iter().find(|unit| unit.name == *value) {
                 Some(unit) => unit.space.iter().for_each(|space| reachable.insert(space)),
-                None => undefined.push(unknown(field, value, &allowed)),
+                None => undefined.push(unknown(&field, value, &allowed)),
             }
         }
         (reachable, undefined)
