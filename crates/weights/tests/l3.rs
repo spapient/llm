@@ -1,15 +1,12 @@
 //! `l3` 模块的单元测试。
-
 use super::*;
 
 /// 一段的简写：`(ρ, ρ̂, ε, L, b)`。
-
 fn rung(rho: f64, rho_hat: f64, eps: f64, lipschitz: f64, offset: f64) -> Rung {
     Rung::new(rho, rho_hat, eps, lipschitz, offset).expect("段")
 }
 
 /// 恒等激活的那一段：`L = 1`、`b = 0`，`ρ = ρ̂ = 1`，只有 `ε` 在变。
-
 fn lossy(eps: f64) -> Rung {
     rung(1.0, 1.0, eps, 1.0, 0.0)
 }
@@ -19,7 +16,6 @@ fn bracket(input: f64, rungs: Vec<Rung>) -> Bracket {
 }
 
 #[test]
-
 fn the_witness_from_the_spec_comes_out_as_two_e_minus_four() {
     // §4.5 给的数值见证：两段、L = 1、ρ = ρ̂ = 1、ε = 1e-4、R = 1 → 2e-4。
 
@@ -39,7 +35,6 @@ fn the_witness_from_the_spec_comes_out_as_two_e_minus_four() {
 }
 
 #[test]
-
 fn a_growing_lipschitz_amplifies_every_later_epsilon() {
     // L = 2：e₁ = 2e-4、e₂ = 8e-4、e₃ = 2.4e-3；闭式必须整条不给。
 
@@ -55,7 +50,6 @@ fn a_growing_lipschitz_amplifies_every_later_epsilon() {
 }
 
 #[test]
-
 fn a_bias_alone_withdraws_the_closed_form() {
     // b ≠ 0 时递推里 a_{i-1} 更高，闭式会低估；判定上就是"不给闭式"。
 
@@ -71,7 +65,6 @@ fn a_bias_alone_withdraws_the_closed_form() {
 }
 
 #[test]
-
 fn rho_hat_is_not_substituted_for_rho() {
     // 压缩把范数放大了（ρ̂ = 3 > ρ = 2）：只有左侧乘 ρ̂ 才会反映到后面几段上。
 
@@ -93,7 +86,6 @@ fn rho_hat_is_not_substituted_for_rho() {
 }
 
 #[test]
-
 fn a_zero_epsilon_stack_brackets_zero_error() {
     let bound = bracket(7.0, vec![lossy(0.0), lossy(0.0)]);
 
@@ -107,7 +99,6 @@ fn a_zero_epsilon_stack_brackets_zero_error() {
 }
 
 #[test]
-
 fn a_zero_bound_without_a_round_trip_is_unverified() {
     // §4.5：上界为零不能替代 artifact 往返。
 
@@ -117,7 +108,6 @@ fn a_zero_bound_without_a_round_trip_is_unverified() {
 }
 
 #[test]
-
 fn a_segment_outside_the_theorem_keeps_the_certificate_partial() {
     let chain = Chain::new(1.0, vec![lossy(0.0)])
         .expect("链")
@@ -135,7 +125,6 @@ fn a_segment_outside_the_theorem_keeps_the_certificate_partial() {
 }
 
 #[test]
-
 fn a_lossy_rung_is_refused_before_the_round_trip_is_consulted() {
     let bound = bracket(1.0, vec![lossy(0.0), lossy(1e-9)]);
 
@@ -145,7 +134,6 @@ fn a_lossy_rung_is_refused_before_the_round_trip_is_consulted() {
 }
 
 #[test]
-
 fn an_empty_chain_is_the_identity() {
     let bound = bracket(2.5, Vec::new());
 
@@ -159,7 +147,6 @@ fn an_empty_chain_is_the_identity() {
 }
 
 #[test]
-
 fn the_closed_form_agrees_with_the_recursion_wherever_it_applies() {
     // 每条链都满足 L = 1、b = 0，于是两个算式必须给同一个数（浮点顺序不同，取 1e-12 相对差）。
 
@@ -188,7 +175,6 @@ fn the_closed_form_agrees_with_the_recursion_wherever_it_applies() {
 }
 
 #[test]
-
 fn every_negative_or_non_finite_fact_is_rejected() {
     for value in [-1.0, f64::NAN, f64::INFINITY] {
         assert!(Rung::new(value, 1.0, 0.0, 1.0, 0.0).is_err(), "ρ = {value}");
@@ -208,7 +194,6 @@ fn every_negative_or_non_finite_fact_is_rejected() {
 }
 
 #[test]
-
 fn an_overflowing_bound_is_not_a_certificate() {
     let huge = rung(f64::MAX, f64::MAX, f64::MAX, 2.0, 0.0);
 
@@ -218,7 +203,6 @@ fn an_overflowing_bound_is_not_a_certificate() {
 }
 
 #[test]
-
 fn a_certificate_supplies_the_epsilon_of_its_own_decomposition() {
     // 对角阵：σ = [4, 2, 0.5, 0.25]，最后一点谱隙在 r = 3 之后。
 
@@ -280,7 +264,6 @@ fn a_certificate_supplies_the_epsilon_of_its_own_decomposition() {
 }
 
 #[test]
-
 fn the_ruling_names_are_stable() {
     let names: Vec<&str> = [
         Ruling::Lossless,

@@ -1,9 +1,7 @@
 //! `json` 模块的单元测试。
-
 use super::*;
 
 #[test]
-
 fn an_object_keeps_its_written_order() {
     let value = parse(r#"{"b": 1, "a": 2}"#).expect("合法");
 
@@ -17,7 +15,6 @@ fn an_object_keeps_its_written_order() {
 }
 
 #[test]
-
 fn every_shape_the_header_uses_round_trips() {
     let text = r#"{"__metadata__": {"format": "pt"}, "w": {"dtype": "F32", "shape": [2, 3], "data_offsets": [0, 24]}}"#;
 
@@ -40,7 +37,6 @@ fn every_shape_the_header_uses_round_trips() {
 }
 
 #[test]
-
 fn escapes_including_surrogate_pairs_are_decoded() {
     let value = parse(r#""a\"b\\c\/d\ne\u0041\ud83d\ude00""#).expect("合法");
 
@@ -48,7 +44,6 @@ fn escapes_including_surrogate_pairs_are_decoded() {
 }
 
 #[test]
-
 fn non_integers_are_rejected_with_their_position() {
     for text in [r#"{"a": 1.5}"#, r#"{"a": 1e3}"#] {
         let error = parse(text).expect_err("小数或指数");
@@ -67,7 +62,6 @@ fn non_integers_are_rejected_with_their_position() {
 }
 
 #[test]
-
 fn duplicate_keys_are_rejected_rather_than_silently_merged() {
     let error = parse(r#"{"a": 1, "a": 2}"#).expect_err("重复键");
 
@@ -77,7 +71,6 @@ fn duplicate_keys_are_rejected_rather_than_silently_merged() {
 }
 
 #[test]
-
 fn truncated_and_trailing_input_is_rejected() {
     for text in [r#"{"a": 1"#, r#"{"a": "#, r#"{"a": 1} x"#, ""] {
         assert!(parse(text).is_err(), "{text:?}");
@@ -89,7 +82,6 @@ fn truncated_and_trailing_input_is_rejected() {
 }
 
 #[test]
-
 fn deep_nesting_is_refused_instead_of_overflowing_the_stack() {
     let text = format!("{}{}", "[".repeat(MAX_DEPTH + 2), "]".repeat(MAX_DEPTH + 2));
 
@@ -99,7 +91,6 @@ fn deep_nesting_is_refused_instead_of_overflowing_the_stack() {
 }
 
 #[test]
-
 fn accessors_report_the_actual_kind() {
     let value = parse(r#""x""#).expect("合法");
 
@@ -113,7 +104,6 @@ fn accessors_report_the_actual_kind() {
 }
 
 #[test]
-
 fn the_ledger_reader_keeps_a_decimal_as_written() {
     let value = parse_ledger(r#"{"volume_ratio": 0.500000, "n": 3}"#).expect("合法");
 
@@ -133,7 +123,6 @@ fn the_ledger_reader_keeps_a_decimal_as_written() {
 }
 
 #[test]
-
 fn the_ledger_reader_still_rejects_malformed_numbers() {
     for text in [
         r#"{"a": 00.5}"#,

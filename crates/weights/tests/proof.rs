@@ -1,9 +1,7 @@
 //! `proof` 模块的单元测试。
-
 use super::*;
 
 /// 测试用一次性摘要，包装流式结构。
-
 fn hash(data: &[u8]) -> Digest {
     let mut ctx = Sha256::new();
 
@@ -17,7 +15,6 @@ fn hex(digest: Digest) -> String {
 }
 
 #[test]
-
 fn empty_vector() {
     assert_eq!(
         hex(hash(b"")),
@@ -26,7 +23,6 @@ fn empty_vector() {
 }
 
 #[test]
-
 fn abc_vector() {
     assert_eq!(
         hex(hash(b"abc")),
@@ -35,7 +31,6 @@ fn abc_vector() {
 }
 
 #[test]
-
 fn two_block_vector() {
     // 448 位（56 字节）恰好落在填充边界，外加多块长度，覆盖双块路径。
 
@@ -48,7 +43,6 @@ fn two_block_vector() {
 }
 
 #[test]
-
 fn streaming_equals_one_shot() {
     let data = vec![0x5au8; 200];
 
@@ -68,7 +62,6 @@ fn streaming_equals_one_shot() {
 }
 
 #[test]
-
 fn distinct_inputs_distinct_hashes() {
     assert_ne!(hash(b"x"), hash(b"y"));
 }
@@ -82,7 +75,6 @@ fn leaves(names: &[&str]) -> Vec<Digest> {
 }
 
 #[test]
-
 fn every_index_proves_against_root() {
     let names = ["a", "b", "c", "d", "e", "f", "g"];
 
@@ -105,7 +97,6 @@ fn every_index_proves_against_root() {
 }
 
 #[test]
-
 fn proof_rejects_tampered_leaf() {
     let tree = leaves(&["a", "b", "c", "d"]);
 
@@ -119,7 +110,6 @@ fn proof_rejects_tampered_leaf() {
 }
 
 #[test]
-
 fn proof_rejects_wrong_root() {
     let tree = leaves(&["a", "b", "c"]);
 
@@ -131,7 +121,6 @@ fn proof_rejects_wrong_root() {
 }
 
 #[test]
-
 fn out_of_range_proof_is_none() {
     let tree = leaves(&["a", "b"]);
 
@@ -139,7 +128,6 @@ fn out_of_range_proof_is_none() {
 }
 
 #[test]
-
 fn name_binding_blocks_swap() {
     // 同内容不同名的叶子哈希必须不同。
 
@@ -147,7 +135,6 @@ fn name_binding_blocks_swap() {
 }
 
 #[test]
-
 fn empty_root_is_zero() {
     assert_eq!(root(&[]), [0u8; 32]);
 }

@@ -19,10 +19,10 @@ use std::fmt::Write as _;
 
 use diagnostic::{Code, Error, Result};
 
+use crate::Archive;
 use crate::json;
 use crate::ledger::SCHEMA;
 use crate::settle_impl::{settle_one, verify_root};
-use crate::Archive;
 
 /// 小于该字节数的段不值得编码，原样落盘（`passthrough:small`）。
 pub const SMALL_BYTES: usize = 128;

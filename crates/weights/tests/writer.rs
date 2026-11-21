@@ -1,5 +1,4 @@
 //! `writer` 模块的单元测试。
-
 use super::*;
 
 use crate::Wire;
@@ -11,7 +10,6 @@ fn seg(name: &str, data: Vec<u8>) -> Segment {
 }
 
 #[test]
-
 fn an_empty_container_round_trips_with_a_footer() {
     let bytes = Writer::new().finish(6).expect("空容器");
 
@@ -19,7 +17,6 @@ fn an_empty_container_round_trips_with_a_footer() {
 }
 
 #[test]
-
 fn encoded_len_matches_finish() {
     let mut writer = Writer::new();
 
@@ -34,7 +31,6 @@ fn encoded_len_matches_finish() {
 }
 
 #[test]
-
 fn duplicate_names_are_rejected() {
     let mut writer = Writer::new();
 
@@ -44,13 +40,11 @@ fn duplicate_names_are_rejected() {
 }
 
 #[test]
-
 fn a_bad_align_log_is_rejected() {
     assert!(Writer::new().finish(17).is_err());
 }
 
 #[test]
-
 fn encode_into_writes_exact_bytes() {
     let writer = Writer::new();
 
@@ -66,7 +60,6 @@ fn encode_into_writes_exact_bytes() {
 }
 
 #[test]
-
 fn encode_into_rejects_small_buffer() {
     let writer = Writer::new();
 

@@ -1,9 +1,7 @@
 //! `ledger` 模块的单元测试。
-
 use super::*;
 
 /// diag(3, 2, 1, 0.5)：谱隙 1、1、0.5 都远离机器精度，判定结果可逐点预算。
-
 fn diag4() -> Vec<f32> {
     let mut w = vec![0.0f32; 16];
 
@@ -15,11 +13,8 @@ fn diag4() -> Vec<f32> {
 }
 
 /// 6×6 精确秩 2：两行线性无关，其余行全零，因此 σ3 = … = σ6 = 0。
-
 ///
-
 /// 行取整数是为了让 f64 → f32 的重构精确：夹具自己不能引入误差，否则测的就不是证书。
-
 fn rank_two() -> Vec<f32> {
     let mut w = vec![0.0f32; 36];
 
@@ -31,7 +26,6 @@ fn rank_two() -> Vec<f32> {
 }
 
 #[test]
-
 fn stability_threshold_is_strict() {
     assert_eq!(stable(1.0, 0.1), Stable::Pass);
 
@@ -43,7 +37,6 @@ fn stability_threshold_is_strict() {
 }
 
 #[test]
-
 fn certified_rank_stops_at_the_spectral_gap() {
     let sigma = [10.0, 5.0, 1.0, 0.0];
 
@@ -63,7 +56,6 @@ fn certified_rank_stops_at_the_spectral_gap() {
 }
 
 #[test]
-
 fn the_payload_audit_rejects_a_certificate_that_names_another_measurement() {
     let cert = certify(&diag4(), 4, 4).expect("可认证").expect("有谱隙");
 
@@ -105,7 +97,6 @@ fn the_payload_audit_rejects_a_certificate_that_names_another_measurement() {
 }
 
 #[test]
-
 fn certify_reports_the_gated_rank_and_a_lossless_note() {
     let cert = certify(&diag4(), 4, 4).expect("可认证").expect("有谱隙");
 
@@ -140,9 +131,7 @@ fn certify_reports_the_gated_rank_and_a_lossless_note() {
 }
 
 /// 精确秩 2 的矩阵：认证出的秩就是 2，残差到机器精度、往返逐位。
-
 #[test]
-
 fn a_low_rank_matrix_certifies_at_its_exact_rank() {
     let cert = certify(&rank_two(), 6, 6).expect("可认证").expect("有谱隙");
 
@@ -166,7 +155,6 @@ fn a_low_rank_matrix_certifies_at_its_exact_rank() {
 }
 
 #[test]
-
 fn a_matrix_without_a_gap_is_rejected() {
     // 全零：所有奇异值为 0，谱隙 0 不大于 2ε = 0 → 拒压，而不是假装无损。
 
@@ -178,7 +166,6 @@ fn a_matrix_without_a_gap_is_rejected() {
 }
 
 #[test]
-
 fn a_bad_shape_is_an_error() {
     assert_eq!(
         certify(&[1.0, 2.0, 3.0], 2, 2).unwrap_err().code(),
@@ -194,7 +181,6 @@ fn a_bad_shape_is_an_error() {
 }
 
 /// 一张自洽的证书：L0 诊断界、残差方法、无补偿误差。
-
 fn valid() -> Note {
     Note {
         rank: 2,
@@ -224,7 +210,6 @@ fn valid() -> Note {
 }
 
 #[test]
-
 fn note_roundtrips_through_bytes() {
     let note = valid();
 
@@ -242,7 +227,6 @@ fn note_roundtrips_through_bytes() {
 }
 
 #[test]
-
 fn an_unknown_method_or_bound_code_is_rejected() {
     // 秩 2 只占 1 字节，于是布局是 rank|used|mode|stable|method|bound|…：方法码在 4、界码在 5。
 
@@ -262,7 +246,6 @@ fn an_unknown_method_or_bound_code_is_rejected() {
 }
 
 #[test]
-
 fn the_synthesis_error_adds_the_two_disjoint_terms() {
     // §4.8：`E_decomp` 与 `E_comp` 来自不同产物，相加就是 `ε_synth`，不重复计入。
 
@@ -287,7 +270,6 @@ fn the_synthesis_error_adds_the_two_disjoint_terms() {
 }
 
 #[test]
-
 fn a_candidate_only_measurement_cannot_sign_a_pass() {
     // §4.2.1：幂迭代这类只够排序的 `ε` 不能当证书。
 
@@ -311,7 +293,6 @@ fn a_candidate_only_measurement_cannot_sign_a_pass() {
 }
 
 #[test]
-
 fn an_l0_prime_candidate_bound_cannot_sign_lossless() {
     let note = Note {
         bound: Bound::Candidate,
@@ -335,7 +316,6 @@ fn an_l0_prime_candidate_bound_cannot_sign_lossless() {
 }
 
 #[test]
-
 fn a_rank_choice_must_name_its_bound() {
     let note = Note {
         bound: Bound::None,
@@ -359,7 +339,6 @@ fn a_rank_choice_must_name_its_bound() {
 }
 
 #[test]
-
 fn a_compensation_error_only_belongs_to_the_residual_mode() {
     // 纯截断只丢低秩项，没有补偿产物，就没有补偿误差。
 
@@ -377,7 +356,6 @@ fn a_compensation_error_only_belongs_to_the_residual_mode() {
 }
 
 #[test]
-
 fn a_bitwise_roundtrip_forbids_counting_the_compensation_twice() {
     let note = Note {
         comp: 1e-9,
@@ -389,7 +367,6 @@ fn a_bitwise_roundtrip_forbids_counting_the_compensation_twice() {
 }
 
 #[test]
-
 fn every_name_is_stable_and_distinct() {
     let methods: Vec<&str> = [
         EpsMethod::Backward,
@@ -418,7 +395,6 @@ fn every_name_is_stable_and_distinct() {
 }
 
 #[test]
-
 fn invariant_violations_are_rejected() {
     let base = Note {
         gap: 0.1, // Pass 但 gap 不 > 2eps

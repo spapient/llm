@@ -1,5 +1,4 @@
 //! `pickle` 的单元测试：栈式 pickle 虚拟机。
-
 use super::*;
 
 #[test]

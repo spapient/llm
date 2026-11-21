@@ -1,9 +1,7 @@
 //! `rans` 模块的单元测试。
-
 use super::*;
 
 /// 任意字节往返：解码必须与输入逐字节相等。
-
 fn assert_roundtrip(src: &[u8]) {
     let frame = encode(src);
 
@@ -13,25 +11,21 @@ fn assert_roundtrip(src: &[u8]) {
 }
 
 #[test]
-
 fn empty_roundtrips() {
     assert_roundtrip(b"");
 }
 
 #[test]
-
 fn single_byte_roundtrips() {
     assert_roundtrip(&[42]);
 }
 
 #[test]
-
 fn repeated_value_roundtrips() {
     assert_roundtrip(&vec![7u8; 10_000]);
 }
 
 #[test]
-
 fn all_symbols_roundtrips() {
     let src: Vec<u8> = (0..=255u16).map(|b| b as u8).collect();
 
@@ -41,7 +35,6 @@ fn all_symbols_roundtrips() {
 }
 
 #[test]
-
 fn pseudo_random_roundtrips() {
     // 线性同余生成确定性的"高熵"字节，覆盖近似均匀分布。
 
@@ -59,7 +52,6 @@ fn pseudo_random_roundtrips() {
 }
 
 #[test]
-
 fn skewed_distribution_roundtrips() {
     // 90% 为 0，其余少量符号，压缩后应明显变小。
 
@@ -79,7 +71,6 @@ fn skewed_distribution_roundtrips() {
 }
 
 #[test]
-
 fn truncated_frame_is_rejected() {
     let frame = encode(&vec![3u8; 1000]);
 
@@ -92,13 +83,11 @@ fn truncated_frame_is_rejected() {
 }
 
 #[test]
-
 fn garbage_is_rejected() {
     assert!(decode(&[0xFF; 64], 64).is_err());
 }
 
 #[test]
-
 fn a_trailing_extra_byte_is_rejected() {
     let mut frame = encode(&vec![3u8; 1000]);
 
@@ -110,7 +99,6 @@ fn a_trailing_extra_byte_is_rejected() {
 }
 
 #[test]
-
 fn a_lying_length_is_rejected_before_allocating() {
     // 帧头的原始长度来自文件，不能当分配依据：把它改成 u32::MAX 之后必须当场拒绝，
 
@@ -126,7 +114,6 @@ fn a_lying_length_is_rejected_before_allocating() {
 }
 
 #[test]
-
 fn normalized_freq_sums_exactly() {
     let raw = [
         counts(&[1u8, 1, 2, 3, 3, 3]),
@@ -141,7 +128,6 @@ fn normalized_freq_sums_exactly() {
 }
 
 /// 香农熵（bits/符号），无损压缩的物理下界。
-
 fn entropy(src: &[u8]) -> f64 {
     let n = src.len() as f64;
 
@@ -159,7 +145,6 @@ fn entropy(src: &[u8]) -> f64 {
 }
 
 /// 从帧头解析出纯 rans payload 长度（8 条 lane 流之和）。
-
 fn payload_len(frame: &[u8]) -> usize {
     let mut cur = frame;
 
@@ -187,7 +172,6 @@ fn payload_len(frame: &[u8]) -> usize {
 }
 
 #[test]
-
 fn payload_approaches_entropy_bound() {
     // 确定性的偏斜分布：80% 为 0，其余在 4 个符号间，约 1 bit/符号。
 
@@ -222,7 +206,6 @@ fn payload_approaches_entropy_bound() {
 }
 
 #[test]
-
 fn uniform_data_is_not_amplified() {
     // 近似均匀（熵≈8 bit）的数据：rans 帧不会比原始短，写端因此回退 store。
 

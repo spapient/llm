@@ -1,5 +1,4 @@
 //! `archive` 模块的单元测试。
-
 use super::*;
 
 use std::borrow::Cow;
@@ -7,17 +6,13 @@ use std::borrow::Cow;
 use crate::{Codec, Quant, Segment, Wire};
 
 #[cfg(test)]
-
 mod malformed_tests {
 
     use super::*;
 
     /// fuzz 实测崩溃产物：段计数被篡改为 `u32::MAX`，剩余字节远不够这么多描述符。
-
     /// 旧实现按计数直接 `with_capacity` 触发约 39 GiB 分配；现在计数先按剩余字节粗查。
-
     /// 夹具按 v2 `.u` 魔数与版本写头，正文沿用原崩溃字节。
-
     const FUZZ_CRASH: [u8; 114] = [
         0x2E, 0x75, 0x00, 0x00, 0x02, 0x00, 0x03, 0x00, 0x00, 0x00, 0x06, 0xff, 0xff, 0xff, 0xff,
         0x01, 0x01, 0x77, 0x14, 0x02, 0x02, 0x03, 0x00, 0x00, 0x18, 0xa2, 0x94, 0x87, 0x9e, 0x0a,
@@ -30,7 +25,6 @@ mod malformed_tests {
     ];
 
     #[test]
-
     fn a_count_exceeding_remaining_bytes_is_rejected_not_an_oom() {
         let error = Archive::parse(&FUZZ_CRASH).expect_err("谎报计数必须报错");
 
@@ -41,7 +35,6 @@ mod malformed_tests {
 }
 
 #[cfg(test)]
-
 mod cow_tests {
 
     use super::*;
@@ -53,9 +46,7 @@ mod cow_tests {
     use crate::writer::Writer;
 
     /// 关闭压缩写出的段必然是 `Store`：`load` 必须返回 `Cow::Borrowed`，不复制逻辑字节。
-
     #[test]
-
     fn store_segment_loads_as_borrowed() {
         let mut w = Writer::new();
 
@@ -78,9 +69,7 @@ mod cow_tests {
     }
 
     /// 高偏斜 U8 段经 rANS 严格变小，写端选 `Rans`：`load` 必须返回 `Cow::Owned` 解压缓冲。
-
     #[test]
-
     fn rans_segment_loads_as_owned() {
         let mut sparse = vec![0u8; 4000];
 
@@ -109,7 +98,6 @@ mod cow_tests {
 }
 
 #[cfg(test)]
-
 mod ref_tests {
 
     use super::*;
@@ -125,7 +113,6 @@ mod ref_tests {
     use crate::writer::{GLOBAL_CRC, MAGIC, SEG_CRC, VERSION};
 
     /// 手拼描述符条目：内联段带存储帧，引用段只带代表段下标。
-
     enum Raw {
         Inline(Segment, Vec<u8>),
 
@@ -137,7 +124,6 @@ mod ref_tests {
     }
 
     /// 按 v2 布局手拼容器：align_log=0（无填充），两级 CRC 开启。
-
     fn encode_raw(raw: &[Raw]) -> Vec<u8> {
         let mut body = Vec::new();
 
@@ -178,7 +164,6 @@ mod ref_tests {
     }
 
     #[test]
-
     fn equal_segments_share_one_inline_frame() {
         let a = f32_segment("a", &[1.0, 2.0]);
 
@@ -215,7 +200,6 @@ mod ref_tests {
     }
 
     #[test]
-
     fn dangling_reference_is_rejected() {
         let raw = [
             Raw::Inline(f32_segment("a", &[1.0]), f32_segment("a", &[1.0]).data),
@@ -230,7 +214,6 @@ mod ref_tests {
     }
 
     #[test]
-
     fn self_reference_is_rejected() {
         let raw = [
             Raw::Inline(f32_segment("a", &[1.0]), f32_segment("a", &[1.0]).data),
@@ -245,7 +228,6 @@ mod ref_tests {
     }
 
     #[test]
-
     fn reference_to_reference_is_rejected() {
         let raw = [
             Raw::Inline(f32_segment("a", &[1.0]), f32_segment("a", &[1.0]).data),
@@ -261,7 +243,6 @@ mod ref_tests {
     }
 
     #[test]
-
     fn reference_cycle_is_rejected() {
         let raw = [
             Raw::Ref(f32_segment("a", &[1.0]), 1),
@@ -274,7 +255,6 @@ mod ref_tests {
     }
 
     #[test]
-
     fn mismatched_reference_metadata_is_rejected() {
         let raw = [
             Raw::Inline(
@@ -292,7 +272,6 @@ mod ref_tests {
     }
 
     #[test]
-
     fn duplicate_names_are_rejected() {
         let raw = [
             Raw::Inline(f32_segment("w", &[1.0]), f32_segment("w", &[1.0]).data),
@@ -308,7 +287,6 @@ mod ref_tests {
 }
 
 #[cfg(test)]
-
 mod metrics_tests {
 
     use super::*;
@@ -316,7 +294,6 @@ mod metrics_tests {
     use crate::testutil::{archive, f32_segment};
 
     #[test]
-
     fn metrics_are_computed_from_live_bytes() {
         let segment = f32_segment("w", &[1.0, 2.0, 3.0]);
 
@@ -344,7 +321,6 @@ mod metrics_tests {
     }
 
     #[test]
-
     fn a_quantized_segment_is_not_lossless() {
         let quant = Quant::new(1, 0, 32, false, Wire::F16, None).expect("方案");
 

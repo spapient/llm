@@ -1,10 +1,8 @@
 //! `axes` 模块的单元测试。
-
 use super::*;
 use crate::axes_rank::{f64_bytes, framed};
 
 #[test]
-
 fn raw_baseline_roundtrips() {
     let w: Vec<f32> = (0..64).map(|i| (i as f32 * 0.37).sin() * 1.3).collect();
 
@@ -24,7 +22,6 @@ fn raw_baseline_roundtrips() {
 }
 
 #[test]
-
 fn dict_wins_on_low_cardinality() {
     // 200 个互不相同、尾数随机的 f32 周期排布：同一尺度网格上量化不着、64×64 上秩轴要给
 
@@ -44,7 +41,6 @@ fn dict_wins_on_low_cardinality() {
 }
 
 #[test]
-
 fn sparse_roundtrips_zero_heavy() {
     let mut w = vec![0.0f32; 4096];
 
@@ -60,7 +56,6 @@ fn sparse_roundtrips_zero_heavy() {
 }
 
 #[test]
-
 fn quant_wins_on_exact_grid() {
     let w: Vec<f32> = (0..4096)
         .map(|i| {
@@ -76,7 +71,6 @@ fn quant_wins_on_exact_grid() {
 }
 
 #[test]
-
 fn rank_inexact_is_dropped_not_faked() {
     let w: Vec<f32> = (0..64)
         .map(|i| ((i as f32 * 1.7).cos() * 0.9) + 0.01)
@@ -90,17 +84,11 @@ fn rank_inexact_is_dropped_not_faked() {
 }
 
 /// 有谱隙的矩阵：秩轴产出载荷，载荷自带秩与残差、能逐位还原。
-
 ///
-
 /// 这里不假设"秩轴一定在五轴里胜出"——显式残差是每个元素 4 字节，只有在矩阵**精确**低秩
-
 /// （残差全零）时才比原字节便宜，那是结构性质而不是门控性质。门控性质只保证一件事：证书
-
 /// 不过就没有这个候选。
-
 #[test]
-
 fn a_certified_matrix_yields_a_rank_payload_that_roundtrips() {
     // `w[i][j] = 64·i + j`：秩 2、值两两不同，且 f32 精确。
 
@@ -116,9 +104,7 @@ fn a_certified_matrix_yields_a_rank_payload_that_roundtrips() {
 }
 
 /// 没有谱隙的矩阵不存在可信的秩：证书拒压，秩轴整轴不参与（不是压出一个近似值）。
-
 #[test]
-
 fn a_matrix_without_a_spectral_gap_skips_the_rank_axis() {
     let zeros = vec![0.0f32; 4096];
 
@@ -143,9 +129,7 @@ fn a_matrix_without_a_spectral_gap_skips_the_rank_axis() {
 }
 
 /// 证书随载荷落盘：不解码权重也能读到它，读到的就是写端那一张（不是重新算的）。
-
 #[test]
-
 fn the_rank_payload_carries_its_certificate() {
     let w: Vec<f32> = (0..4096).map(|k| k as f32).collect();
 
@@ -167,17 +151,11 @@ fn the_rank_payload_carries_its_certificate() {
 }
 
 /// 证书被改写就解不出来：读端把截断误差当断言，而不是相信写端的声称。
-
 ///
-
 /// 伪造的两处都落在「证书 + 载荷」两方对质能查出、而单看证书自身 `check` 查不出的位置：
-
 /// 改写 `decomp`（`check` 只看它有限且与 `lossless` 一致），把 `stable` 翻成 `Fail`
-
 /// （`check` 允许 `Fail`，但一条 `Fail` 的证书根本不该被落盘）。
-
 #[test]
-
 fn a_tampered_certificate_is_rejected_on_read() {
     let w: Vec<f32> = (0..4096).map(|k| k as f32).collect();
 
@@ -235,9 +213,7 @@ fn a_tampered_certificate_is_rejected_on_read() {
 }
 
 /// 旧布局（秩裸数字在最前）不再是合法载荷：第一段被读成证书长度，随后的字节读不成证书。
-
 #[test]
-
 fn the_rank_payload_requires_a_certificate() {
     let w: Vec<f32> = (0..4096).map(|k| k as f32).collect();
 
@@ -261,7 +237,6 @@ fn the_rank_payload_requires_a_certificate() {
 }
 
 #[test]
-
 fn malformed_artifacts_are_errors() {
     assert!(decode(b"").is_err());
 
@@ -271,7 +246,6 @@ fn malformed_artifacts_are_errors() {
 }
 
 #[test]
-
 fn bad_shape_is_an_error() {
     assert!(search(&[1.0], 3, 1).is_err());
 }

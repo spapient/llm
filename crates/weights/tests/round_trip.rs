@@ -1,6 +1,5 @@
 //! 端到端契约：全 wire 类型往返、量化段往返、对齐布局，以及两级 CRC 对损坏/截断的拦截；
 //! 另覆盖 safetensors 字节 → 中性段流 → `.u` 容器的导入往返。
-
 use std::time::SystemTime;
 
 use diagnostic::Code;

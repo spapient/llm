@@ -1,13 +1,8 @@
 //! `mmap` 模块的单元测试。
-
 //! M1-A2：映射源 [`MmapSource`] 借用生命周期与零拷贝证据。
-
 //!
-
 //! 父模块已在 `mmap` feature + Unix 双门控内；其它平台该类型不存在，测试整块剔除，
-
 //! 不提供假装映射的空实现。
-
 use std::path::PathBuf;
 
 use diagnostic::Code;
@@ -15,7 +10,6 @@ use diagnostic::Code;
 use crate::{MmapSource, Reader};
 
 /// 按 safetensors 布局拼一份临时文件：8 字节长度前缀 + 头部 JSON + 数据段。
-
 fn write_file(json: &str, data: &[u8]) -> PathBuf {
     let mut bytes = (json.len() as u64).to_le_bytes().to_vec();
 
@@ -38,7 +32,6 @@ fn write_file(json: &str, data: &[u8]) -> PathBuf {
 }
 
 #[test]
-
 fn read_borrows_from_the_mapped_region() {
     let data: Vec<u8> = (0..24u8).collect();
 
@@ -79,7 +72,6 @@ fn read_borrows_from_the_mapped_region() {
 }
 
 #[test]
-
 fn a_missing_file_is_an_io_error() {
     let path = PathBuf::from("/nonexistent/path/llm_mmap_source_no_such_file");
 
@@ -89,7 +81,6 @@ fn a_missing_file_is_an_io_error() {
 }
 
 #[test]
-
 fn a_malformed_header_is_rejected_at_open() {
     let path = write_file(
         r#"{"w": {"dtype": "F32", "shape": [2], "data_offsets": [0, 48]}}"#,

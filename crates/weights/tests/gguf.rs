@@ -1,10 +1,8 @@
 //! `gguf` 模块的单元测试。
-
 use super::*;
 use crate::gguf_dequant::f16_to_f32;
 
 #[test]
-
 fn half_specials() {
     assert_eq!(f16_to_f32(0x0001), 5.960_464_5e-8);
 
@@ -16,7 +14,6 @@ fn half_specials() {
 }
 
 #[test]
-
 fn value_views_match_variant() {
     assert_eq!(Value::Int(-7).int(), Some(-7));
 
@@ -44,7 +41,6 @@ fn value_views_match_variant() {
 }
 
 #[test]
-
 fn kind_maps_ggml_codes_and_delegates_layout() {
     const CODES: [(u32, Kind); 6] = [
         (0, Kind::F32),
@@ -133,7 +129,6 @@ fn kind_maps_ggml_codes_and_delegates_layout() {
 }
 
 #[test]
-
 fn undecoded_qtypes_are_explicit() {
     let decoded: Vec<QType> = SUPPORTED
         .iter()
@@ -226,7 +221,6 @@ fn build() -> Vec<u8> {
 }
 
 /// 只有标量 F32/F16 的最小夹具：供导入通路的成功路径对拍。
-
 fn plain_build() -> Vec<u8> {
     let f32s: Vec<u8> = [1.0f32, -0.5]
         .into_iter()
@@ -313,7 +307,6 @@ fn assemble(pieces: &[(&str, Vec<u64>, Kind, Vec<u8>)]) -> Vec<u8> {
 }
 
 #[test]
-
 fn reads_header_and_metadata() {
     let raw = build();
 
@@ -331,7 +324,6 @@ fn reads_header_and_metadata() {
 }
 
 #[test]
-
 fn decodes_plain_types() {
     let raw = build();
 
@@ -354,7 +346,6 @@ fn decodes_plain_types() {
 }
 
 #[test]
-
 fn decodes_q4k_and_q6k() {
     let raw = build();
 
@@ -370,7 +361,6 @@ fn decodes_q4k_and_q6k() {
 }
 
 #[test]
-
 fn rejects_bad_magic_and_overflow() {
     let mut raw = build();
 
@@ -392,7 +382,6 @@ fn rejects_bad_magic_and_overflow() {
 }
 
 #[test]
-
 fn raw_rejects_an_offset_whose_length_overflows() {
     let raw = build();
 
@@ -417,7 +406,6 @@ fn raw_rejects_an_offset_whose_length_overflows() {
 }
 
 #[test]
-
 fn import_maps_scalar_tensors_to_neutral_segments() {
     let raw = plain_build();
 
@@ -449,7 +437,6 @@ fn import_maps_scalar_tensors_to_neutral_segments() {
 }
 
 #[test]
-
 fn import_rejects_block_quantization_without_dequantizing() {
     let raw = build();
 

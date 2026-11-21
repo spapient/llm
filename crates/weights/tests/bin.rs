@@ -1,5 +1,4 @@
 //! `bin` 的单元测试：Tensor/Bin 只读解析与导入。
-
 use super::*;
 use crate::testutil::real_bin_bytes;
 use dtype::DType;

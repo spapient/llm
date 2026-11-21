@@ -1,5 +1,4 @@
 //! `ptq` 的单元测试：量化、反解与自适应补偿。
-
 use super::{
     I2, I3, I4, I8, adaptive_quantize, compensate, compensate_adaptive, dequantize, quantize,
 };

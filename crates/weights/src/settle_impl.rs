@@ -9,7 +9,6 @@ use crate::settle::{
     Cert, GAIN_FLOOR, MAX_ENTROPY, Reason, SMALL_BYTES, Settled, Settlement, bad, layer_json,
 };
 use crate::stored::lossless_entry;
-use crate::tensor;
 use crate::{Archive, Codec, Stored};
 
 /// 单段记账：解码往返先定 `bitwise`，再由 codec 与实测字节定量给出原因。
@@ -60,7 +59,7 @@ fn certificate_of(archive: &Archive<'_>, seg: &Stored) -> Cert {
 ///
 /// 写侧只产出这一种口径，所以读侧不再细分：落盘的不是实测残差或不是 L0 诊断界，都只可能是
 /// 别人改过或写坏了，一律按“背不住”处理。
-fn sound_cert(note: &ledger::Note) -> Cert {
+pub(crate) fn sound_cert(note: &ledger::Note) -> Cert {
     let usable =
         note.method == ledger::EpsMethod::Residual && note.bound == ledger::Bound::Diagnostic;
     if usable && ledger::check(note).is_ok() {

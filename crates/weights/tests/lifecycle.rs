@@ -1,5 +1,4 @@
 //! `lifecycle` 的单元测试：mode 与 patch 两条路径。
-
 use super::*;
 use crate::testutil::{archive, f32_segment};
 use crate::writer::Writer;

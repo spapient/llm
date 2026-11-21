@@ -1,5 +1,4 @@
 //! `quant` 的单元测试：方案自洽与量化条目配对两条路径。
-
 use super::*;
 use tensor::Shape;
 

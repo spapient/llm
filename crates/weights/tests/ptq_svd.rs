@@ -1,5 +1,4 @@
 //! `ptq::svd` 的单元测试：Jacobi SVD 的分解与重建。
-
 use super::*;
 
 fn frob_resid(a: &[f64], back: &[f64]) -> f64 {

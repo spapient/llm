@@ -1,9 +1,7 @@
 //! `safetensors` 模块的单元测试。
-
 use super::*;
 
 /// 按 safetensors 的布局拼一个文件：8 字节长度前缀 + 头部 + 数据段。
-
 fn file(json: &str, data: &[u8]) -> Vec<u8> {
     let mut bytes = (json.len() as u64).to_le_bytes().to_vec();
 
@@ -15,7 +13,6 @@ fn file(json: &str, data: &[u8]) -> Vec<u8> {
 }
 
 #[test]
-
 fn two_entries_are_read_back_byte_for_byte() {
     let json = r#"{"a": {"dtype": "F32", "shape": [2, 3], "data_offsets": [0, 24]},
 
@@ -43,7 +40,6 @@ fn two_entries_are_read_back_byte_for_byte() {
 }
 
 #[test]
-
 fn metadata_is_skipped_but_must_still_be_an_object() {
     let json = r#"{"__metadata__": {"format": "pt"}, "w": {"dtype": "I8", "shape": [2], "data_offsets": [0, 2]}}"#;
 
@@ -62,7 +58,6 @@ fn metadata_is_skipped_but_must_still_be_an_object() {
 }
 
 #[test]
-
 fn an_unknown_dtype_is_unsupported_rather_than_guessed() {
     let json = r#"{"w": {"dtype": "I16", "shape": [1], "data_offsets": [0, 2]}}"#;
 
@@ -79,7 +74,6 @@ fn an_unknown_dtype_is_unsupported_rather_than_guessed() {
 }
 
 #[test]
-
 fn an_unsigned_byte_entry_keeps_the_unsigned_eight_bit_type() {
     // 真实的 4 位量化权重存成 `U8`（两个 nibble 一个字节）：符号性保留，不与逐元素 `I8` 混同。
 
@@ -97,7 +91,6 @@ fn an_unsigned_byte_entry_keeps_the_unsigned_eight_bit_type() {
 }
 
 #[test]
-
 fn a_declared_interval_must_match_the_shape() {
     let json = r#"{"w": {"dtype": "F32", "shape": [2, 3], "data_offsets": [0, 16]}}"#;
 
@@ -109,7 +102,6 @@ fn a_declared_interval_must_match_the_shape() {
 }
 
 #[test]
-
 fn unknown_and_missing_fields_are_rejected() {
     let unknown =
         r#"{"w": {"dtype": "F32", "shape": [1], "data_offsets": [0, 4], "layout": "row"}}"#;
@@ -129,7 +121,6 @@ fn unknown_and_missing_fields_are_rejected() {
 }
 
 #[test]
-
 fn a_data_section_that_does_not_match_the_header_is_rejected() {
     let json = r#"{"w": {"dtype": "F32", "shape": [1], "data_offsets": [0, 4]}}"#;
 
@@ -141,7 +132,6 @@ fn a_data_section_that_does_not_match_the_header_is_rejected() {
 }
 
 #[test]
-
 fn a_broken_length_prefix_is_rejected() {
     assert!(Archive::parse(&[0u8; 4]).is_err(), "不足 8 字节");
 
@@ -157,7 +147,6 @@ fn a_broken_length_prefix_is_rejected() {
 }
 
 #[test]
-
 fn overlapping_and_reversed_intervals_are_rejected() {
     let overlap = r#"{"a": {"dtype": "F32", "shape": [2], "data_offsets": [0, 8]},
 
@@ -175,7 +164,6 @@ fn overlapping_and_reversed_intervals_are_rejected() {
 }
 
 #[test]
-
 fn an_empty_archive_is_a_valid_zero_byte_file() {
     let bytes = file("{}", &[]);
 
@@ -193,7 +181,6 @@ fn path(name: &str) -> std::path::PathBuf {
 }
 
 /// 落一个数据段长度为 `data_len` 的文件：数据段用 `set_len` 拉开（稀疏文件，不占内存）。
-
 fn sparse(name: &str, json: &str, data_len: usize) -> std::path::PathBuf {
     use std::io::Write as _;
 
@@ -213,7 +200,6 @@ fn sparse(name: &str, json: &str, data_len: usize) -> std::path::PathBuf {
 }
 
 #[test]
-
 fn a_gigabyte_of_weights_is_opened_by_reading_only_the_header() {
     // 1 GiB 数据段 + 尾部一个 4 字节条目：打开只读前缀与头部，读小条目只读那 4 字节。
 
@@ -255,7 +241,6 @@ fn a_gigabyte_of_weights_is_opened_by_reading_only_the_header() {
 }
 
 #[test]
-
 fn a_truncated_or_padded_file_is_rejected_when_it_is_opened() {
     let json = r#"{"w": {"dtype": "F32", "shape": [2, 3], "data_offsets": [0, 24]}}"#;
 
@@ -279,7 +264,6 @@ fn a_truncated_or_padded_file_is_rejected_when_it_is_opened() {
 }
 
 #[test]
-
 fn a_prefix_that_promises_more_than_the_file_holds_is_rejected() {
     let short = path("short.safetensors");
 
@@ -303,7 +287,6 @@ fn a_prefix_that_promises_more_than_the_file_holds_is_rejected() {
 }
 
 #[test]
-
 fn a_missing_file_is_an_io_error_not_a_panic() {
     let error = File::open("/nonexistent/llm.safetensors").expect_err("打不开");
 
@@ -313,7 +296,6 @@ fn a_missing_file_is_an_io_error_not_a_panic() {
 }
 
 #[test]
-
 fn both_backends_produce_the_same_header_and_the_same_bytes() {
     let json = r#"{"a": {"dtype": "F32", "shape": [2, 3], "data_offsets": [0, 24]},
 
@@ -346,7 +328,6 @@ fn both_backends_produce_the_same_header_and_the_same_bytes() {
 }
 
 #[test]
-
 fn a_wrong_sized_buffer_is_rejected_by_the_slice_backend_too() {
     let json = r#"{"w": {"dtype": "F32", "shape": [1], "data_offsets": [0, 4]}}"#;
 
