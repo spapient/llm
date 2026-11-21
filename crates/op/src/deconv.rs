@@ -4,10 +4,38 @@
 //! 前向 = `x · Wᵀ`（一次 GEMM）再把结果按核位置**散射累加**回输出网格（`col2im`）。
 //! 不写逐输出位置的双重循环：散射累加的算术与普通卷积同构，只是方向相反。
 
+use std::ops::AddAssign;
+
 use diagnostic::{Code, Error, Result};
 
 use crate::conv::ConvGeom;
 use crate::fast;
+
+/// 前向标量缝：f32 与对称 i8（i32 累加）共用同一套前向/散射算法，
+/// 只有 GEMM 后端与零值随类型切换。换后端只需新增一个 impl，调用方不变。
+trait DeconvScalar: Copy + Default {
+    /// 累加/输出类型：f32 → f32，i8 → i32。
+    type Acc: Copy + Default + AddAssign;
+
+    /// 列矩阵 GEMM：`col = x · wt`，收缩维为 `inner`。
+    fn gemm(x: &[Self], wt: &[Self], rows: usize, cols: usize, inner: usize, col: &mut [Self::Acc]);
+}
+
+impl DeconvScalar for f32 {
+    type Acc = f32;
+
+    fn gemm(x: &[f32], wt: &[f32], rows: usize, cols: usize, inner: usize, col: &mut [f32]) {
+        fast::gemm_f32(x, wt, rows, cols, inner, col);
+    }
+}
+
+impl DeconvScalar for i8 {
+    type Acc = i32;
+
+    fn gemm(x: &[i8], wt: &[i8], rows: usize, cols: usize, inner: usize, col: &mut [i32]) {
+        fast::gemm_i8(x, wt, rows, cols, inner, col);
+    }
+}
 
 /// 二维转置卷积：输入 `[n,h,w,cin]`，权重 `[cin,cout,kh,kw]`，输出 `[n,oh,ow,cout]`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,28 +101,7 @@ impl ConvTranspose2d {
         w: usize,
         out: &mut [f32],
     ) -> Result<()> {
-        let oh = self.oh(h)?;
-        let ow = self.ow(w)?;
-        let (cin, cout) = (self.cin, self.cout);
-        let karea = self.geom.kh * self.geom.kw;
-        check_all(&[
-            (x.len(), n * h * w * cin, "x"),
-            (weight.len(), cin * cout * karea, "weight"),
-            (bias.len(), cout, "bias"),
-            (out.len(), n * oh * ow * cout, "out"),
-        ])?;
-
-        let rows = n * h * w;
-        let cols = cout * karea;
-        let mut wt = vec![0.0f32; cin * cols];
-        transpose_weight_2d(weight, &mut wt, cin, cout, self.geom.kh, self.geom.kw);
-        let mut col = vec![0.0f32; rows * cols];
-        fast::gemm_f32(x, &wt, rows, cols, cin, &mut col);
-
-        out[..n * oh * ow * cout].fill(0.0);
-        scatter(&col, out, n, (h, w), (oh, ow), self, cout);
-        add_bias_2d(out, bias, n, oh, ow, cout);
-        Ok(())
+        forward(self, x, weight, bias, n, h, w, out)
     }
 
     /// i8 前向（对称量化）：GEMM 走多槽池，散射累加在 i32 上。
@@ -113,35 +120,50 @@ impl ConvTranspose2d {
         w: usize,
         out: &mut [i32],
     ) -> Result<()> {
-        let oh = self.oh(h)?;
-        let ow = self.ow(w)?;
-        let (cin, cout) = (self.cin, self.cout);
-        let karea = self.geom.kh * self.geom.kw;
-        check_all(&[
-            (x.len(), n * h * w * cin, "x"),
-            (weight.len(), cin * cout * karea, "weight"),
-            (bias.len(), cout, "bias"),
-            (out.len(), n * oh * ow * cout, "out"),
-        ])?;
-
-        let rows = n * h * w;
-        let cols = cout * karea;
-        let mut wt = vec![0i8; cin * cols];
-        transpose_weight_2d_i8(weight, &mut wt, cin, cout, self.geom.kh, self.geom.kw);
-        let mut col = vec![0i32; rows * cols];
-        fast::gemm_i8(x, &wt, rows, cols, cin, &mut col);
-
-        out[..n * oh * ow * cout].fill(0);
-        scatter_i8(&col, out, n, (h, w), (oh, ow), self, cout);
-        add_bias_2d_i8(out, bias, n, oh, ow, cout);
-        Ok(())
+        forward(self, x, weight, bias, n, h, w, out)
     }
 }
 
-/// f32 散射：把列矩阵 `[n·h·w, cout·kh·kw]` 的第 `(ki,kj,co)` 项累加到 `(hi·sh−ph+ki, wi·sw−pw+kj)`。
-fn scatter(
-    col: &[f32],
-    out: &mut [f32],
+/// 二维前向核心：标量类型经 [`DeconvScalar`] 参数化，f32/i8 共用同一份算法。
+#[allow(clippy::too_many_arguments)]
+fn forward<S: DeconvScalar>(
+    conv: &ConvTranspose2d,
+    x: &[S],
+    weight: &[S],
+    bias: &[S::Acc],
+    n: usize,
+    h: usize,
+    w: usize,
+    out: &mut [S::Acc],
+) -> Result<()> {
+    let oh = conv.oh(h)?;
+    let ow = conv.ow(w)?;
+    let (cin, cout) = (conv.cin, conv.cout);
+    let karea = conv.geom.kh * conv.geom.kw;
+    check_all(&[
+        (x.len(), n * h * w * cin, "x"),
+        (weight.len(), cin * cout * karea, "weight"),
+        (bias.len(), cout, "bias"),
+        (out.len(), n * oh * ow * cout, "out"),
+    ])?;
+
+    let rows = n * h * w;
+    let cols = cout * karea;
+    let mut wt = vec![S::default(); cin * cols];
+    transpose_weight_2d(weight, &mut wt, cin, cout, conv.geom.kh, conv.geom.kw);
+    let mut col = vec![S::Acc::default(); rows * cols];
+    S::gemm(x, &wt, rows, cols, cin, &mut col);
+
+    out[..n * oh * ow * cout].fill(S::Acc::default());
+    scatter(&col, out, n, (h, w), (oh, ow), conv, cout);
+    add_bias_2d(out, bias, n, oh, ow, cout);
+    Ok(())
+}
+
+/// 散射：把列矩阵 `[n·h·w, cout·kh·kw]` 的第 `(ki,kj,co)` 项累加到 `(hi·sh−ph+ki, wi·sw−pw+kj)`。
+fn scatter<T: Copy + AddAssign>(
+    col: &[T],
+    out: &mut [T],
     n: usize,
     (h, w): (usize, usize),
     (oh, ow): (usize, usize),
@@ -155,28 +177,6 @@ fn scatter(
             for wi in 0..w {
                 let row = &col[((ni * h + hi) * w + wi) * karea..][..karea];
                 scatter_row_2d(row, out, g, oh, ow, cout, ni, hi, wi);
-            }
-        }
-    }
-}
-
-/// i8 散射：口径与 [`scatter`] 一致，累加在 i32。
-fn scatter_i8(
-    col: &[i32],
-    out: &mut [i32],
-    n: usize,
-    (h, w): (usize, usize),
-    (oh, ow): (usize, usize),
-    conv: &ConvTranspose2d,
-    cout: usize,
-) {
-    let g = conv.geom;
-    let karea = cout * g.kh * g.kw;
-    for ni in 0..n {
-        for hi in 0..h {
-            for wi in 0..w {
-                let row = &col[((ni * h + hi) * w + wi) * karea..][..karea];
-                scatter_row_2d_i8(row, out, g, oh, ow, cout, ni, hi, wi);
             }
         }
     }
@@ -369,10 +369,10 @@ fn in_range(idx: isize, n: usize) -> bool {
     idx >= 0 && idx < n as isize
 }
 
-/// 二维权重转置 `[cin,cout,kh,kw]` → `[cin, cout·kh·kw]`（f32）。
-fn transpose_weight_2d(
-    weight: &[f32],
-    wt: &mut [f32],
+/// 二维权重转置 `[cin,cout,kh,kw]` → `[cin, cout·kh·kw]`。
+fn transpose_weight_2d<T: Copy>(
+    weight: &[T],
+    wt: &mut [T],
     cin: usize,
     cout: usize,
     kh: usize,
@@ -391,39 +391,15 @@ fn transpose_weight_2d(
     }
 }
 
-/// 二维权重转置（i8，口径同 [`transpose_weight_2d`]）。
-fn transpose_weight_2d_i8(
-    weight: &[i8],
-    wt: &mut [i8],
-    cin: usize,
+/// 二维偏置累加：`out[n,oh,ow,cout] += bias[cout]`。
+fn add_bias_2d<T: Copy + AddAssign>(
+    out: &mut [T],
+    bias: &[T],
+    n: usize,
+    oh: usize,
+    ow: usize,
     cout: usize,
-    kh: usize,
-    kw: usize,
 ) {
-    let cols = cout * kh * kw;
-    for ci in 0..cin {
-        for co in 0..cout {
-            for ki in 0..kh {
-                for kj in 0..kw {
-                    let src = ((ci * cout + co) * kh + ki) * kw + kj;
-                    wt[ci * cols + (ki * kw + kj) * cout + co] = weight[src];
-                }
-            }
-        }
-    }
-}
-
-/// 二维偏置累加：`out[n,oh,ow,cout] += bias[cout]`（f32）。
-fn add_bias_2d(out: &mut [f32], bias: &[f32], n: usize, oh: usize, ow: usize, cout: usize) {
-    for p in 0..n * oh * ow {
-        for co in 0..cout {
-            out[p * cout + co] += bias[co];
-        }
-    }
-}
-
-/// 二维偏置累加（i32，口径同 [`add_bias_2d`]）。
-fn add_bias_2d_i8(out: &mut [i32], bias: &[i32], n: usize, oh: usize, ow: usize, cout: usize) {
     for p in 0..n * oh * ow {
         for co in 0..cout {
             out[p * cout + co] += bias[co];
@@ -433,9 +409,9 @@ fn add_bias_2d_i8(out: &mut [i32], bias: &[i32], n: usize, oh: usize, ow: usize,
 
 /// 单个输入行的散射：沿核高 `kh` 散射，越界行裁掉。
 #[allow(clippy::too_many_arguments)]
-fn scatter_row_2d(
-    row: &[f32],
-    out: &mut [f32],
+fn scatter_row_2d<T: Copy + AddAssign>(
+    row: &[T],
+    out: &mut [T],
     g: ConvGeom,
     oh: usize,
     ow: usize,
@@ -453,60 +429,11 @@ fn scatter_row_2d(
     }
 }
 
-/// i8 版行散射：累加在 i32，口径同 [`scatter_row_2d`]。
-#[allow(clippy::too_many_arguments)]
-fn scatter_row_2d_i8(
-    row: &[i32],
-    out: &mut [i32],
-    g: ConvGeom,
-    oh: usize,
-    ow: usize,
-    cout: usize,
-    ni: usize,
-    hi: usize,
-    wi: usize,
-) {
-    for ki in 0..g.kh {
-        let ii = (hi * g.sh + ki) as isize - g.ph as isize;
-        if !in_range(ii, oh) {
-            continue;
-        }
-        scatter_kernel_2d_i8(row, out, g, oh, ow, cout, ni, ii as usize, wi, ki);
-    }
-}
-
 /// 单个核位置的散射：沿核宽 `kw` 散射，越界列裁掉，`cout` 通道逐个累加。
 #[allow(clippy::too_many_arguments)]
-fn scatter_kernel_2d(
-    row: &[f32],
-    out: &mut [f32],
-    g: ConvGeom,
-    oh: usize,
-    ow: usize,
-    cout: usize,
-    ni: usize,
-    ii: usize,
-    wi: usize,
-    ki: usize,
-) {
-    for kj in 0..g.kw {
-        let jj = (wi * g.sw + kj) as isize - g.pw as isize;
-        if !in_range(jj, ow) {
-            continue;
-        }
-        let dst = ((ni * oh + ii) * ow + jj as usize) * cout;
-        let src = (ki * g.kw + kj) * cout;
-        for co in 0..cout {
-            out[dst + co] += row[src + co];
-        }
-    }
-}
-
-/// i8 版核散射：累加在 i32，口径同 [`scatter_kernel_2d`]。
-#[allow(clippy::too_many_arguments)]
-fn scatter_kernel_2d_i8(
-    row: &[i32],
-    out: &mut [i32],
+fn scatter_kernel_2d<T: Copy + AddAssign>(
+    row: &[T],
+    out: &mut [T],
     g: ConvGeom,
     oh: usize,
     ow: usize,
