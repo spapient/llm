@@ -58,18 +58,17 @@ pub mod decl;
 pub use llm_op_kernel::{
     activation, dequant, elementwise, fast, gemm, gemv, matmul, norm, reduce, unary,
 };
-pub use llm_op_neural::{attention, classic, conv, deconv, scan};
 pub use llm_op_kernel::{
     add_f32, dequant_i2, dequant_i4, dequant_i8, div_f32, embed_f32, exp_f32, gelu_f32, gemm_f32,
     gemm_i2, gemm_i4, gemm_i8, gemv_f32, gemv_i2, gemv_i4, gemv_i8, hard_sigmoid_f32,
-    leaky_relu_f32, log_f32, matmul_i8, max_f32, min_f32, mul_f32, reduce_max_f32,
-    reduce_sum_f32, residual_add_f32, rmsnorm_f32, rope_f32, scale_f32, silu_f32, softmax_f32,
-    sub_f32,
+    leaky_relu_f32, log_f32, matmul_i8, max_f32, min_f32, mul_f32, reduce_max_f32, reduce_sum_f32,
+    residual_add_f32, rmsnorm_f32, rope_f32, scale_f32, silu_f32, softmax_f32, sub_f32,
 };
 pub use llm_op_neural::{
-    adaptive_pool, avg_pool2d, batch_norm, conv2d, decode_attention, group_norm, instance_norm,
-    interpolate, layer_norm, max_pool1d, max_pool2d, scan_f32, Scalar,
+    Scalar, adaptive_pool, avg_pool2d, batch_norm, conv2d, decode_attention, group_norm,
+    instance_norm, interpolate, layer_norm, max_pool1d, max_pool2d, scan_f32,
 };
+pub use llm_op_neural::{attention, classic, conv, deconv, scan};
 
 // 契约层（签名、布局、模板词法、代价表达式、语义模型、样本、算子契约）在 `op-spec`：
 // 这一层只回答"算子是什么"，被 `op-kernel` / `op-neural` / `op` 三方同时依赖而不成环。
@@ -77,9 +76,9 @@ pub use llm_op_neural::{
 pub use llm_op_spec::same_bytes;
 // `$crate::formula_cell!` / `$crate::operator_via!` 在骨架宏里按 crate 根解析，这里把 spec 导出的
 // 两个宏搬回本 crate 根：12 个下游与本 crate 内部的 `#[model]` 展开都不必改路径。
-pub use llm_op_spec::{formula_cell, operator_here, operator_via};
 pub use llm_op_spec::tpl::{formula, parse};
 pub use llm_op_spec::{einsum, model, operator, sample, sch, sig, tpl};
+pub use llm_op_spec::{formula_cell, operator_here, operator_via};
 pub use model::quant;
 pub use sample::{dropout, init, rnd};
 pub use sch::layout;

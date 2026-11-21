@@ -70,4 +70,3 @@ fn every_classic_sample_matches_its_reference() {
         sample_and_reference_agree(name);
     }
 }
-

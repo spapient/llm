@@ -28,7 +28,7 @@ pub use scan::f32 as scan_f32;
 // 契约层在 `op-spec`：本 crate 的骨架宏与语义表按 crate 根解析契约路径，这里搬回来，
 // 于是源码里写的是 `crate::model::…` / `crate::operator_here!` 而不是到处写依赖 crate 名。
 pub use llm_op_spec::same_bytes;
-pub use llm_op_spec::{formula_cell, operator_here, operator_via};
-pub use llm_op_spec::{einsum, model, operator, sample, sch, sig, tpl};
 pub(crate) use llm_op_spec::tpl::guard;
+pub use llm_op_spec::{einsum, model, operator, sample, sch, sig, tpl};
+pub use llm_op_spec::{formula_cell, operator_here, operator_via};
 pub use model::quant;

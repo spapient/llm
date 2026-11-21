@@ -340,7 +340,8 @@ pub mod formula {
     #[macro_export]
     macro_rules! formula_cell {
         () => {{
-            static CACHE: ::llm_op_spec::einsum::FormulaCache = ::llm_op_spec::einsum::FormulaCache::new();
+            static CACHE: ::llm_op_spec::einsum::FormulaCache =
+                ::llm_op_spec::einsum::FormulaCache::new();
             &CACHE
         }};
     }

@@ -216,7 +216,10 @@ macro_rules! packed_gemv_config_tests {
         fn call_arguments_follow_the_template_signature() {
             let signature = crate::sig::Signature::parse(
                 $op,
-                include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../op/ops/gemv_packed.k")),
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../op/ops/gemv_packed.k"
+                )),
             )
             .expect("签名可解析");
             assert_eq!(
