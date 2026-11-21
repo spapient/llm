@@ -69,9 +69,9 @@
 - 反例（本仓实证）：`codegen` 子系统已在 `engine` 侧更名为 `cuda`（`engine::cuda::cuda_grid_driver`）+ `program`，但 `tools/musa-harness/gen-cuda/src/main.rs` 仍在调 `engine::codegen::cuda_grid_driver / cuda_loop_driver / cuda_point_driver` 三个已不存在的路径，`tools/musa-harness/README.md` 也仍在写 `engine::codegen`。**"codegen 早就不用了"这句话在代码层没闭环。**
 
 ### N11 度量门（全绿才算交付）
-- 规则：`cargo fmt --all --check`、`cargo check --workspace --all-targets`、`cargo test -p llm-tool --test gate`、`cargo test -p llm-testkit --test architecture`、`npx --yes jscpd`（目标 ≤ 0.16%）五项全绿。任何一项为绿而放宽阈值，判为**未完成**。
+- 规则：`cargo fmt --all --check`、`cargo check --workspace --all-targets`、`cargo test -p llm-tools --test gate`、`cargo test -p llm-testkit --test architecture`、`npx --yes jscpd`（阈值 0，目标 0 行 / 0%）五项全绿。任何一项为绿而放宽阈值，判为**未完成**。
 - 判据：五项原始输出并列贴出，含总行数与重复行数。
-- 反例：当前 jscpd 363 行 / 0.26%，目标 0.16%（≈ 158 行 / 99k 行）。
+- 反例：jscpd 曾为 363 行 / 0.26%、303 行 / 0.22%；阈值 0 的验收目标是 **0 clone**，不是"低于某个百分比"。
 
 ### N12 命名
 - 规则：单单词优先；超 6 字母取关键字母；Unix 共识缩写（`len` `iter` `buf` `max` `arg` `src` `dst` `fmt` `cfg`）；禁自造缩写、禁前后缀（`arm_` / `DEV_` / `xxx_impl`）；领域词保持全称。

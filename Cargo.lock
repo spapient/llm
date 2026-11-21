@@ -422,7 +422,7 @@ dependencies = [
  "llm-tensor",
  "llm-testkit",
  "llm-tokenizer",
- "llm-tool",
+ "llm-tools",
  "llm-train",
  "llm-weights",
  "llm-wire",
@@ -443,7 +443,7 @@ dependencies = [
  "llm-serve",
  "llm-tensor",
  "llm-tokenizer",
- "llm-tool",
+ "llm-tools",
  "llm-train",
  "llm-weights",
  "toml",
@@ -488,7 +488,7 @@ dependencies = [
  "llm-diagnostic",
  "llm-serve",
  "llm-tensor",
- "llm-tool",
+ "llm-tools",
  "llm-train",
  "llm-weights",
  "llm-wire",
@@ -590,7 +590,7 @@ dependencies = [
  "llm-nn",
  "llm-op",
  "llm-tensor",
- "llm-tool",
+ "llm-tools",
  "llm-train",
  "llm-weights",
 ]
@@ -603,7 +603,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "llm-tool"
+name = "llm-tools"
 version = "0.1.0"
 dependencies = [
  "llm-diagnostic",

@@ -526,8 +526,6 @@ mod tests {
         }
     }
 
-    }
-
     #[test]
     fn matches_naive_across_geometries() {
         let cases = [

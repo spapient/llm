@@ -428,27 +428,27 @@ fn check_binary_grad(
     Ok(())
 }
 
-/// `loss = reduce_sum(op(p))` 的公共夹具：单路参数中心差分，`loss(p)` 给整标量。
-/// `exp`/`log`/`rope` 这类"单参数、单算子、reduce_sum 收尾"的反向对拍共用。
-fn check_unary_grad(op: &str, p0: &[f32], loss: impl Fn(&[f32]) -> f32) -> Result<()> {
+/// `loss = reduce_sum(op(p))` 的单路反向夹具：建图、落参数、跑 `compute` 与 `sum_backward`，返回 `p` 的梯度。
+///
+/// 一元算子的两类对拍（中心差分、饱和点解析断言）与"长度会变"的算子（池化 / 插值）此前
+/// 各写一份这四步；`output_len` 就是为后者准备的。
+fn unary_grad(op: &str, p0: &[f32], output_len: usize) -> Result<Vec<f32>> {
     let mut tape = Tape::new();
     let p = tape.parameter();
     let y = tape.record(op, &[p]).expect("记录 y");
     let out = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
-
-    let sizes = support::sizes_of(&tape, &[(p, N), (y, N), (out, 1)]);
-
+    let sizes = support::sizes_of(&tape, &[(p, p0.len()), (y, output_len), (out, 1)]);
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(p, ParamRole::Trainable, p0.to_vec())?;
     session.buffers().compute(op, &[p], y)?;
     sum_backward(&mut session, y, out)?;
+    Ok(session.buffers().gradient(p).expect("p 梯度应在场").to_vec())
+}
 
-    check_grad(
-        session.buffers().gradient(p).expect("p 梯度应在场"),
-        p0,
-        "p",
-        loss,
-    );
+/// `loss = reduce_sum(op(p))` 的公共夹具：单路参数中心差分，`loss(p)` 给整标量。
+/// `exp`/`log`/`rope` 这类"单参数、单算子、reduce_sum 收尾"的反向对拍共用。
+fn check_unary_grad(op: &str, p0: &[f32], loss: impl Fn(&[f32]) -> f32) -> Result<()> {
+    check_grad(&unary_grad(op, p0, p0.len())?, p0, "p", loss);
     Ok(())
 }
 
@@ -888,50 +888,16 @@ fn leaky_relu_chain_matches_central_differences() -> Result<()> {
 /// `loss = reduce_sum(hard_sigmoid(p))`：线性区梯度恒为 1/6；饱和点解析梯度为 0。
 #[test]
 fn hard_sigmoid_chain_matches_central_differences() -> Result<()> {
-    let mut tape = Tape::new();
-    let p = tape.parameter();
-    let h = tape.record("hard_sigmoid_f32", &[p]).expect("记录 h");
-    let loss = tape.record("reduce_sum_f32", &[h]).expect("记录 loss");
-
-    let sizes = support::sizes_of(&tape, &[(p, N), (h, N), (loss, 1)]);
-    let p0 = vec![-1.5_f32, 0.4, 1.1];
-    let chain_loss = |params: &[f32]| {
-        params
-            .iter()
-            .map(|&x| (x / 6.0 + 0.5).clamp(0.0, 1.0))
-            .sum::<f32>()
-    };
-
-    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
-    session.register_parameter(p, ParamRole::Trainable, p0.clone())?;
-    session.buffers().compute("hard_sigmoid_f32", &[p], h)?;
-    sum_backward(&mut session, h, loss)?;
-
-    check_grad(
-        session.buffers().gradient(p).expect("参数梯度应在场"),
-        &p0,
-        "p",
-        chain_loss,
-    );
-    Ok(())
+    let chain_loss =
+        |params: &[f32]| params.iter().map(|&x| (x / 6.0 + 0.5).clamp(0.0, 1.0)).sum::<f32>();
+    check_unary_grad("hard_sigmoid_f32", &[-1.5, 0.4, 1.1], chain_loss)
 }
 
 /// 饱和点（|x| > 3）的解析梯度必须为 0，且不是差分近似能测得的小数。
 #[test]
 fn hard_sigmoid_is_flat_outside_the_linear_band() -> Result<()> {
-    let mut tape = Tape::new();
-    let p = tape.parameter();
-    let h = tape.record("hard_sigmoid_f32", &[p]).expect("记录 h");
-    let loss = tape.record("reduce_sum_f32", &[h]).expect("记录 loss");
-
-    let sizes = support::sizes_of(&tape, &[(p, N), (h, N), (loss, 1)]);
-    let p0 = vec![-4.0_f32, 0.0, 4.0];
-    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
-    session.register_parameter(p, ParamRole::Trainable, p0)?;
-    session.buffers().compute("hard_sigmoid_f32", &[p], h)?;
-    sum_backward(&mut session, h, loss)?;
-
-    let grad = session.buffers().gradient(p).expect("参数梯度应在场");
+    let p0 = [-4.0_f32, 0.0, 4.0];
+    let grad = unary_grad("hard_sigmoid_f32", &p0, p0.len())?;
     assert_eq!(grad[0], 0.0, "下饱和梯度");
     assert!((grad[1] - 1.0 / 6.0).abs() < 1e-6, "中心梯度 {}", grad[1]);
     assert_eq!(grad[2], 0.0, "上饱和梯度");
@@ -945,21 +911,7 @@ fn check_shaped_grad(
     output: usize,
     loss: impl Fn(&[f32]) -> f32,
 ) -> Result<()> {
-    let mut tape = Tape::new();
-    let p = tape.parameter();
-    let y = tape.record(op, &[p]).expect("记录 y");
-    let out = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
-    let sizes = support::sizes_of(&tape, &[(p, input.len()), (y, output), (out, 1)]);
-    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
-    session.register_parameter(p, ParamRole::Trainable, input.to_vec())?;
-    session.buffers().compute(op, &[p], y)?;
-    sum_backward(&mut session, y, out)?;
-    check_grad(
-        session.buffers().gradient(p).expect("参数梯度应在场"),
-        input,
-        "p",
-        loss,
-    );
+    check_grad(&unary_grad(op, input, output)?, input, "p", loss);
     Ok(())
 }
 

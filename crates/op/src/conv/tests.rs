@@ -68,8 +68,6 @@ fn naive2d(
     }
 }
 
-}
-
 #[test]
 fn conv2d_matches_naive() {
     let cases = [

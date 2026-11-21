@@ -29,7 +29,7 @@ engine = { path = "../engine", package = "llm-engine" }
 serve = { path = "../serve", package = "llm-serve" }
 # 基线判定与报告归档：`tests/regress.rs` 用 `tools::regress` 判、用 `weights::json` 读
 # criterion 的 estimates.json（本成员没有生产依赖，全部在 dev）。
-tool = { path = "../tools", package = "llm-tool" }
+tool = { path = "../tools", package = "llm-tools" }
 testkit = { path = "../testkit", package = "llm-testkit" }
 
 # 显式关闭 libtest harness：criterion 提供自己的 main（criterion_main!）。

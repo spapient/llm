@@ -40,7 +40,7 @@ cargo deny check
 step "未使用的依赖（cargo-machete）"
 cargo machete
 
-step "代码重复率（jscpd 硬门，阈值与输出目录由 .config/.jscpd.json 自动发现）"
+step "代码重复率（jscpd 硬门，阈值 0 = 零容忍，与输出目录均由 .config/.jscpd.json 自动发现）"
 npx --yes jscpd
 
 step "基准可编译校验（实测与基线判定在固定硬件上跑，跨机器绝对值不可比）"
