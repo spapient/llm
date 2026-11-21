@@ -216,4 +216,46 @@ fn owned_types() -> Vec<(String, String)> {
     }
     rows
 }
+
+/// 工作区成员与成员之间的依赖边（`cargo metadata` 是唯一事实源）。
+///
+/// 只取 `packages[].name` / `packages[].dependencies[].{name,kind}` 四个字段：成员集合来自前者，
+/// 边来自后者（`kind == "dev"` 即 `+dev` 边）。解析交给 `serde_json`，不自己写第二份 JSON 文法。
+fn workspace() -> (BTreeSet<String>, BTreeSet<Edge>) {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let output = Command::new(cargo)
+        .args(["metadata", "--no-deps", "--format-version", "1"])
+        .current_dir(workspace_root())
+        .output()
+        .expect("cargo metadata 可执行");
+    assert!(
+        output.status.success(),
+        "cargo metadata 失败：{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("`cargo metadata` 输出 JSON");
+    let packages = metadata["packages"].as_array().expect("metadata 有 packages");
+    let named = |value: &serde_json::Value| short(value["name"].as_str().expect("包名"));
+    let members: BTreeSet<String> = packages.iter().map(named).collect();
+    let mut edges = BTreeSet::new();
+    for package in packages {
+        let from = named(package);
+        for dependency in package["dependencies"]
+            .as_array()
+            .expect("每个包都有 dependencies")
+        {
+            let to = named(dependency);
+            if !members.contains(&to) {
+                continue;
+            }
+            edges.insert(Edge {
+                from: from.clone(),
+                to,
+                dev: dependency["kind"].as_str() == Some("dev"),
+            });
+        }
+    }
+    (members, edges)
+}
 }
