@@ -322,3 +322,23 @@ fn a_reduction_fragment_must_fold_through_func() {
         );
     }
 }
+
+/// `device-image` 开在本 crate 上必须真的转发给设备 crate：漏转发时设备 crate 自己编了镜像，
+/// 而 `prim` 合成出来的表还是纯源码——两边说的不是同一件事。开启后 `metal` 有配方，所以它不再
+/// 停在 [`Status::Source`]（编成 [`Status::Compiled`] 还是 [`Status::Skipped`] 取决于本机工具链）。
+#[cfg(feature = "device-image")]
+#[test]
+fn the_device_image_feature_reaches_the_composed_table() {
+    let metal = device("metal").expect("内置 metal");
+    assert_ne!(metal.status, Status::Source, "`device-image` 没有转发到设备 crate");
+}
+
+/// 关着 `device-image` 时每台设备都只有源码：镜像缺席是"这一步没走"，不是配置错误。
+#[cfg(not(feature = "device-image"))]
+#[test]
+fn without_the_feature_every_device_is_source_only() {
+    for device in devices() {
+        assert_eq!(device.status, Status::Source, "`{}` 不该有镜像", device.vendor);
+        assert!(!device.has_image(), "`{}` 没有镜像就不该说它有", device.vendor);
+    }
+}
