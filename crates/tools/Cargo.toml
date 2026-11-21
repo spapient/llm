@@ -34,3 +34,7 @@ path = "tests/card.rs"
 [[test]]
 name = "lex"
 path = "tests/lex.rs"
+
+[[test]]
+name = "scan_tmp"
+path = "tests/scan_tmp.rs"

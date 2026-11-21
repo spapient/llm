@@ -292,10 +292,7 @@ pub fn fragment_gaps<'a>(
             let chosen = select_borrowed(prof, &need, &proof);
             let declared = declared(need.prim);
             // 对齐时不构造任何字符串：这是 verify 的常态分支。
-            if matches!(
-                (chosen.as_ref(), declared),
-                (Some(offer), Some(text)) if offer.have.impl_name == text
-            ) {
+            if aligned(chosen.as_ref(), declared) {
                 continue;
             }
             let gap = FragmentGap {
@@ -309,6 +306,14 @@ pub fn fragment_gaps<'a>(
         }
     }
     gaps
+}
+
+/// 声明的原语名与档案选中的那一个逐字相同：`verify` 的常态，此时不必构造任何字符串。
+fn aligned(chosen: Option<&Offer<'_>>, declared: Option<&str>) -> bool {
+    match (chosen, declared) {
+        (Some(offer), Some(text)) => offer.have.impl_name == text,
+        _ => false,
+    }
 }
 
 /// 档案里没有这个原语的任何签名：唯一可报的就是"缺失"，既不是等级不足也不是欠执行。

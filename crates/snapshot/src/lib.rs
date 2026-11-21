@@ -491,21 +491,26 @@ impl Snapshot {
     }
 }
 
-/// 正文解析：按格式顺序读事实、条目表、矩状态、累积梯度与绑定段，尾部余量必须为零——
-/// 顺序本身就是格式，拆成多级转发只会让"读到哪一段"要跨五个函数拼。
+/// 正文解析：按格式顺序读事实、条目表，再读状态三段——顺序本身就是格式。
 fn body(payload: &[u8]) -> Result<(Facts, Header, Moments, GradAccum, Ties)> {
     let mut cursor = Cursor::new(payload, Format::HEADER_BYTES)?;
     let facts = decode_facts(&mut cursor)?;
     let weights = read_weights_header(&mut cursor)?;
-    let moments = read_moments(&mut cursor)?;
-    let accum = read_grad_accum(&mut cursor)?;
-    let ties = read_ties(&mut cursor)?;
-    // 条目表之后若还有未消费字节，就是半截或多写。
+    let (moments, accum, ties) = read_state(&mut cursor)?;
+    Ok((facts, weights, moments, accum, ties))
+}
+
+/// 状态三段（矩 / 累积梯度 / 绑定）是正文的最后一段（`closure/state`，恢复时读）：读完后
+/// 若还有未消费字节，就是半截或多写，故尾部归零判定跟着它，而不是另起一个只看余量的函数。
+fn read_state(cursor: &mut Cursor<'_>) -> Result<(Moments, GradAccum, Ties)> {
+    let moments = read_moments(cursor)?;
+    let accum = read_grad_accum(cursor)?;
+    let ties = read_ties(cursor)?;
     let leftover = cursor.remaining();
     if leftover > 0 {
         return Err(invalid(format!("检查点尾部多出 {leftover} 字节")));
     }
-    Ok((facts, weights, moments, accum, ties))
+    Ok((moments, accum, ties))
 }
 
 /// 权重数据段起点、条目计数对账后重建条目表并装配 [`Header`]。
