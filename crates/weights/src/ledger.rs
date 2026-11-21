@@ -599,7 +599,6 @@ fn read_f64(cur: &mut Cursor<'_>) -> Result<f64> {
     Ok(f64::from_le_bytes(bytes))
 }
 
-
 #[cfg(test)]
 #[path = "../tests/ledger.rs"]
 mod tests;
