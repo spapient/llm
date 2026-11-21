@@ -83,3 +83,21 @@ pub const ROOTS: [(&str, &str); 6] = [
     (musa::DEVICE.vendor, musa::ROOT),
     (cuda::DEVICE.vendor, cuda::ROOT),
 ];
+
+/// 每台设备一行（顺序同 [`DEVICES`]）。
+pub fn devices() -> &'static [prof::Device] {
+    &DEVICES
+}
+
+/// 按 vendor 查设备行；没有登记时 `None`。
+pub fn device(vendor: &str) -> Option<&'static prof::Device> {
+    DEVICES.iter().find(|device| device.vendor == vendor)
+}
+
+/// 按 vendor 查片段源码根（那个设备 crate 的目录）；没有登记时 `None`。
+pub fn dir_of(vendor: &str) -> Option<&'static str> {
+    ROOTS
+        .iter()
+        .find(|(have, _)| *have == vendor)
+        .map(|(_, root)| *root)
+}
