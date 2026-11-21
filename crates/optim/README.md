@@ -1,4 +1,4 @@
-# `cutile-run`
+# `optim`
 
 `cutile` DSL 的执行半边：接缝、证据与四份报告。
 
@@ -40,7 +40,7 @@ cutile::{emit, cache}  ──┐
 
 ## 依赖位置
 
-L3，位于 `cutile` 右侧：`… → op → cutile → cutile-run`。层表与边集由
+L3，位于 `cutile` 右侧：`… → op → cutile → optim`。层表与边集由
 `cargo test -p llm-testkit` 的门核对（`docs/ARCHITECTURE.md`），不靠文档自觉维护。
 
 ## 状态

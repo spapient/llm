@@ -193,10 +193,10 @@ crates/cutile/                  # 前端（无 IR）：装载、协商、替换�
     ├── reference.rs            # 对拍口径：相对误差 + 按数据类型的阈值
     ├── harness.rs              # 被测内核的 C / CUDA 基准封装生成（两种方言同模块）
     ├── dirs.rs                 # 三个目录的纯数据值对象（默认路径在调用方，本模块不读环境变量）
-    ├── probe.rs / space.rs     # 设备探测与形状空间（纯数据；起进程在 `cutile-run`）
+    ├── probe.rs / space.rs     # 设备探测与形状空间（纯数据；起进程在 `optim`）
     └── cache/                  # 缓存条目、锁与回收的细分模块
 
-crates/cutile-run/              # 执行半边：编译、执行、见证、语言门与四份报告
+crates/optim/                  # 执行半边：编译、执行、见证、语言门与四份报告
 └── src/
     ├── toolchain.rs            # 编译器/驱动探测与身份（cc/clang/gcc、nvcc、xcrun metal、MSVC cl）
     ├── runner.rs               # 编译、执行与回读原语（可执行文件、Outcome、分位样本、位模式解码）

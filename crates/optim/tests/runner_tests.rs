@@ -62,7 +62,7 @@ fn compiler_gets_the_flags_it_was_given() {
     ) {
         return;
     }
-    let workdir = std::env::temp_dir().join(format!("cutile-runner-{}", std::process::id()));
+    let workdir = std::env::temp_dir().join(format!("optim-runner-{}", std::process::id()));
     let source = "#include <stdio.h>\n\
 int main(void) { printf(\"%u\\n\", (unsigned)FLAG_MARK); return 0; }\n";
     let exe =
