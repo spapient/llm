@@ -74,12 +74,6 @@ impl Encoding {
     pub fn is_empty(&self) -> bool {
         self.ids.is_empty()
     }
-
-    /// 拆开编号序列，丢弃对齐元数据。
-    #[must_use]
-    pub fn into_ids(self) -> Vec<Token> {
-        self.ids
-    }
 }
 
 mod stream {

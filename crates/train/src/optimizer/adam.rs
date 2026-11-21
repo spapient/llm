@@ -22,18 +22,6 @@ impl Adam {
         Self::default()
     }
 
-    /// 设置 `β1`（一阶矩衰减系数）。
-    pub fn with_beta1(mut self, beta1: f32) -> Self {
-        self.beta1 = beta1;
-        self
-    }
-
-    /// 设置 `β2`（二阶矩衰减系数）。
-    pub fn with_beta2(mut self, beta2: f32) -> Self {
-        self.beta2 = beta2;
-        self
-    }
-
     /// 设置 `ε`（分母保护项）。
     pub fn with_eps(mut self, eps: f32) -> Self {
         self.eps = eps;

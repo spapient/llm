@@ -443,11 +443,18 @@ fn attention_row(ctx: &AttentionCtx<'_>, i: usize, hist: usize) -> AttentionRow 
 
 /// 数值稳定的 softmax 概率：先减行内最大分数再取指数，与前向同口径。
 fn probabilities(q: &[f32], k: &[f32], i: usize, hist: usize, d: usize, scale: f32) -> Vec<f32> {
-    let scores = score_row(q, k, i, hist, d, scale);
-    let max = scores.iter().copied().fold(f32::MIN, f32::max);
-    let exps: Vec<f32> = scores.iter().map(|s| (s - max).exp()).collect();
-    let sum: f32 = exps.iter().sum();
-    exps.iter().map(|e| e / sum).collect()
+    // 分数缓冲原地转成概率：三条 `Vec` 变一条，取指/求和顺序不变，逐位与分流版一致。
+    let mut probs = score_row(q, k, i, hist, d, scale);
+    let max = probs.iter().copied().fold(f32::MIN, f32::max);
+    let mut sum = 0.0f32;
+    for slot in probs.iter_mut() {
+        *slot = (*slot - max).exp();
+        sum += *slot;
+    }
+    for slot in probs.iter_mut() {
+        *slot /= sum;
+    }
+    probs
 }
 
 /// 一行分数 `S[i,j] = q[i]·k[j]/√d`。

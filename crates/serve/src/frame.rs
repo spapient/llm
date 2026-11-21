@@ -232,11 +232,6 @@ impl Envelope {
         &self.payload
     }
 
-    /// 取走载荷，不复制。
-    pub fn into_payload(self) -> Vec<u8> {
-        self.payload
-    }
-
     /// 整帧字节数（帧头 + 载荷 + 校验尾）。
     pub fn encoded_len(&self) -> Result<usize> {
         self.check()

@@ -59,14 +59,5 @@ pub const fn same_bytes(left: &str, right: &str) -> bool {
 }
 
 #[cfg(test)]
-mod spec_tests {
-    use super::same_bytes;
-
-    #[test]
-    fn same_bytes_compares_content_not_identity() {
-        assert!(same_bytes("gemv_i4", "gemv_i4"));
-        assert!(!same_bytes("gemv_i4", "gemv_i8"));
-        assert!(!same_bytes("gemv", "gemv_i4"));
-        assert!(same_bytes("", ""));
-    }
-}
+#[path = "../tests/support/lib_spec_tests.rs"]
+mod spec_tests;

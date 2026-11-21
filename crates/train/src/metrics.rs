@@ -126,16 +126,6 @@ impl MetricsBoard {
         self.best_loss
     }
 
-    /// 评估账表样本加权平均 loss；无评估样本为 `None`。
-    pub fn mean_eval_loss(&self) -> Option<f32> {
-        (self.eval_samples > 0).then_some((self.eval_loss_sum / self.eval_samples as f64) as f32)
-    }
-
-    /// 评估账表样本加权命中率；无评估样本为 `None`。
-    pub fn mean_eval_accuracy(&self) -> Option<f32> {
-        (self.eval_samples > 0).then_some(self.eval_correct as f32 / self.eval_samples as f32)
-    }
-
     /// 各步最低评估 loss；空看板为 `None`。
     pub fn best_eval_loss(&self) -> Option<f32> {
         self.best_eval_loss

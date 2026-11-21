@@ -140,13 +140,6 @@ impl<S: Scalar> Global<S> {
         })
     }
 
-    /// 只留每行分数最高的 `topk` 个槽（CSA 的那条压缩轴）；`None` 是全留。
-    #[must_use]
-    pub fn with_topk(mut self, topk: Option<usize>) -> Self {
-        self.topk = topk;
-        self
-    }
-
     /// 列宽。
     pub fn width(&self) -> usize {
         self.width

@@ -196,12 +196,6 @@ impl Provide {
         self.grade = grade;
         self
     }
-    /// 设置见证。
-    #[must_use]
-    pub fn with_witness(mut self, witness: Witness) -> Self {
-        self.witness = Some(witness);
-        self
-    }
     /// 是否覆盖某个需求。
     pub fn covers(&self, need: &Need) -> bool {
         self.diff(need).is_empty()

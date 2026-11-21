@@ -217,11 +217,6 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
         &self.distributed
     }
 
-    /// 分布式编排（可变：替换后端、调整归约口径走这里）。
-    pub fn distributed_mut(&mut self) -> &mut Distributed<C> {
-        &mut self.distributed
-    }
-
     /// 登记一个可训练参数槽：变量必须是 [`Requirement::Grad`] 终点，初始值长度与登记形状一致。
     ///
     /// # Errors

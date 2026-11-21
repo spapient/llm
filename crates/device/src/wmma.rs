@@ -1,6 +1,5 @@
 //! 张量核特化的 f32 GEMM（WMMA）CUDA lowering。
 
-use crate::cuda::{Driver, buffer_args, cuda_head, cuda_launch};
 use cutile::harness::output_name;
 use diagnostic::{Code, Error, Result};
 use op::model::Sample;
@@ -230,25 +229,4 @@ fn scalar_of(param: &op::sig::Param, sample: &Sample) -> Result<usize> {
         )
         .with("engine::wmma::shape")
     })
-}
-
-/// WMMA GEMM 的 host 驱动：`dim3(ceil(M/64), ceil(N/64))`、128 线程，分配/回读与
-/// [`cuda_grid_driver`](crate::cuda::cuda_grid_driver) 同口径（输出长度取样本值）。
-///
-/// # Errors
-///
-/// 缺输出或形状标量时返回说明。
-pub fn gemm_driver(device_source: &str, signature: &Signature, sample: &Sample) -> Result<String> {
-    let y = output_name(signature)?;
-    let (m, n, _) = shape(signature, sample)?;
-    let (output, values) = cutile::harness::output_of(signature, sample)?;
-    debug_assert_eq!(output, y);
-    let emit = cuda_launch(
-        "kernel_main",
-        &format!("dim3({}, {})", n.div_ceil(TILE), m.div_ceil(TILE)),
-        THREADS,
-        &buffer_args(signature),
-    );
-    let head = cuda_head("#include <cstdio>\n", device_source);
-    Driver::new(signature, sample, output, values.len()).assemble(&head, &emit)
 }

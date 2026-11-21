@@ -115,14 +115,6 @@ pub mod init {
 
     /// Xavier 正态：`N(0, σ)`，`σ = sqrt(2 / (fan_in + fan_out))`。
     ///
-    /// # Errors
-    ///
-    /// `fan_in`/`fan_out` 为 0 时返回说明。
-    pub fn xavier_normal(fan_in: usize, fan_out: usize, seed: u64) -> Result<Vec<f32>> {
-        let std = xavier_std(fan_in, fan_out)?;
-        Ok(normal(fan_in * fan_out, std, seed))
-    }
-
     /// Kaiming 均匀：`U(-a, a)`，`a = sqrt(3)·gain / sqrt(fan_in)`，`gain = sqrt(2/(1+leak²))`。
     ///
     /// # Errors
@@ -225,14 +217,6 @@ pub mod init {
             return Err(Error::new(Code::Invalid, "Xavier 不接受 0 维"));
         }
         Ok((6.0 / (fan_in + fan_out) as f32).sqrt())
-    }
-
-    /// Xavier 的标准差 `sqrt(2/(fan_in+fan_out))`。
-    fn xavier_std(fan_in: usize, fan_out: usize) -> Result<f32> {
-        if fan_in == 0 || fan_out == 0 {
-            return Err(Error::new(Code::Invalid, "Xavier 不接受 0 维"));
-        }
-        Ok((2.0 / (fan_in + fan_out) as f32).sqrt())
     }
 
     /// Kaiming 的标准差 `gain/sqrt(fan_in)`。

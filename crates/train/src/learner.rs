@@ -7,8 +7,8 @@ use shard::Collective;
 
 use crate::Dataset;
 use crate::distill::Distill;
+use crate::loss::{Outcome, classify, distill, grpo};
 use crate::metrics::{MetricPoint, MetricsBoard};
-use crate::objective::{Outcome, classify, distill, grpo};
 use crate::optimizer::Optimizer;
 use crate::rl::Grpo;
 use crate::{Kernel, Session};
@@ -84,19 +84,9 @@ impl<K: Kernel, O: Optimizer, C: Collective> Learner<K, O, C> {
         &self.session
     }
 
-    /// 会话状态（可变：登记参数、装权重、回载快照等装配动作走这里）。
-    pub fn session_mut(&mut self) -> &mut Session<K, O, C> {
-        &mut self.session
-    }
-
     /// 指标看板（只读）。
     pub fn board(&self) -> &MetricsBoard {
         &self.board
-    }
-
-    /// 拆解回收会话：快照导出/回载等需要裸会话的场景取走会话本体。
-    pub fn into_session(self) -> Session<K, O, C> {
-        self.session
     }
 
     /// 跑指定 epoch 数；每个完整批走一次前向评估、入账与优化步。

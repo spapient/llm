@@ -2,7 +2,7 @@
 
 use diagnostic::{Code, Error, Result};
 
-use crate::loss::{check_len, check_logits_len, check_rows, check_vocab};
+use crate::loss::{check_len, check_logits_len, check_rows, check_vocab, exp_sum, logsumexp};
 
 /// 本模块诊断站点。
 pub(crate) const SITE: &str = "train::distill";
@@ -73,20 +73,18 @@ fn check_pair_shape(student_len: usize, teacher_len: usize, vocab: usize) -> Res
 
 /// 单行 log-softmax：`o = slice − logsumexp(slice)`。
 fn row_log_softmax(slice: &[f32], o: &mut [f32]) {
-    let max = slice.iter().copied().fold(f32::MIN, f32::max);
-    let logsumexp = max + slice.iter().map(|v| (v - max).exp()).sum::<f32>().ln();
+    let lse = logsumexp(slice);
     for (o, &v) in o.iter_mut().zip(slice) {
-        *o = v - logsumexp;
+        *o = v - lse;
     }
 }
 
 /// 单行 KL：`sum_v softmax(s/T)[v] · (log softmax(s/T)[v] − log softmax(t/T)[v])`。
 fn row_kl(s: &[f32], t: &[f32], temperature: f32) -> f32 {
     let inv = 1.0 / temperature;
-    let s_max = s.iter().copied().fold(f32::MIN, f32::max) * inv;
-    let s_lse = s_max + s.iter().map(|v| (v * inv - s_max).exp()).sum::<f32>().ln();
-    let t_max = t.iter().copied().fold(f32::MIN, f32::max) * inv;
-    let t_lse = t_max + t.iter().map(|v| (v * inv - t_max).exp()).sum::<f32>().ln();
+    let (s_max, s_sum) = exp_sum(s, inv);
+    let (t_max, t_sum) = exp_sum(t, inv);
+    let (s_lse, t_lse) = (s_max + s_sum.ln(), t_max + t_sum.ln());
 
     let mut kl = 0.0f32;
     for (&sv, &tv) in s.iter().zip(t) {

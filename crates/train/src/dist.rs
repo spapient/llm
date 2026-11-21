@@ -59,12 +59,6 @@ impl<E: Collective> Distributed<E> {
         self
     }
 
-    /// 归约种类；默认 [`Reduce::Sum`]（梯度同步的标准选择）。
-    pub fn with_reduce(mut self, reduce: Reduce) -> Self {
-        self.reduce = reduce;
-        self
-    }
-
     /// 拓扑只读投影。
     pub fn topology(&self) -> Topology {
         self.topology

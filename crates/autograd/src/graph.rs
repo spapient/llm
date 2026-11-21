@@ -29,16 +29,6 @@ impl Role {
         matches!(self, Self::Parameter)
     }
 
-    /// 不参与反向的常量叶子。
-    pub fn is_constant(self) -> bool {
-        matches!(self, Self::Constant)
-    }
-
-    /// 算子调用产生的中间结果。
-    pub fn is_activation(self) -> bool {
-        matches!(self, Self::Activation)
-    }
-
     /// 短名：诊断与报告里的稳定标签，与变体一一对应。
     pub fn as_str(self) -> &'static str {
         match self {

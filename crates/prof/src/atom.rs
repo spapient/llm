@@ -204,10 +204,6 @@ impl Prim {
     pub const fn has_dtype(self) -> bool {
         !matches!(self, Self::CommitWait | Self::Bar)
     }
-    /// 是否属于搬运三件套（`load` / `load_async` / `store`）。
-    pub const fn is_transfer(self) -> bool {
-        matches!(self, Self::Load | Self::LoadAsync | Self::Store)
-    }
     /// 这条原语的能力签名里允许出现的属性键（`exec` 之外），顺序即签名参数的顺序。
     pub fn attr_keys(self) -> &'static [AttrKey] {
         const ACCURACY: &[AttrKey] = &[AttrKey::Accuracy];

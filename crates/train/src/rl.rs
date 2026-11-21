@@ -2,7 +2,9 @@
 
 use diagnostic::{Code, Error, Result};
 
-use crate::loss::{check_geometry, check_len, check_logits_len, check_rows, check_vocab};
+use crate::loss::{
+    check_geometry, check_len, check_logits_len, check_rows, check_vocab, exp_sum, logsumexp,
+};
 
 /// 本模块诊断站点。
 pub(crate) const SITE: &str = "train::rl";
@@ -18,20 +20,17 @@ fn check_logits_shape(logits_len: usize, vocab: usize) -> Result<usize> {
 
 /// 单行 log-prob：`logits[action] − logsumexp(logits)`。
 fn row_log_prob(slice: &[f32], action: usize) -> f32 {
-    let max = slice.iter().copied().fold(f32::MIN, f32::max);
-    let logsumexp = max + slice.iter().map(|v| (v - max).exp()).sum::<f32>().ln();
-    slice[action] - logsumexp
+    slice[action] - logsumexp(slice)
 }
 
 /// 单行熵：`−Σ softmax·log softmax = logsumexp − Σ softmax·logits`。
 fn row_entropy(row: &[f32]) -> f32 {
-    let max = row.iter().copied().fold(f32::MIN, f32::max);
-    let sum_exp: f32 = row.iter().map(|v| (v - max).exp()).sum();
-    let logsumexp = max + sum_exp.ln();
+    let (max, sum) = exp_sum(row, 1.0);
+    let lse = max + sum.ln();
     let mut h = 0.0f32;
     for &v in row {
-        let p = (v - max).exp() / sum_exp;
-        h -= p * (v - logsumexp);
+        let p = (v - max).exp() / sum;
+        h -= p * (v - lse);
     }
     h
 }
