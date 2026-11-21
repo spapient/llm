@@ -8,9 +8,11 @@
 //! 阈值本身不在这里另设一张表：精度分档只由 `cutile::reference::tolerance` 拥有，本门禁只
 //! 校验 `within_ratio(got, want, tolerance(dt))` 与该分档一致。
 
+#[cfg(test)]
+pub(crate) mod tests {
 use cutile::atom::DType;
 use cutile::reference;
-use llm_testkit::{Scale, max_rel_err, rel_err, rel_err_with, within_ratio};
+use crate::{Scale, max_rel_err, rel_err, rel_err_with, within_ratio};
 
 /// 参与交叉对拍的样本：覆盖空批、全零参考、跨 8 车道边界、次正规、溢出与三类非有限值。
 fn samples() -> Vec<Vec<f32>> {
@@ -105,4 +107,5 @@ fn the_two_denominators_differ_only_in_the_floor() {
         rel_err_with(&got, &want, Scale::Unit).ratio() > rel_err(&got, &want).ratio() * 10.0,
         "参考幅度大于 1 时单位口径更严：两条是不同的问题，不是松紧两档"
     );
+}
 }

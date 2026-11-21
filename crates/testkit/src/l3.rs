@@ -8,8 +8,10 @@
 //! - 有段没被覆盖时，整网一律不得宣称无损（[`a_segment_outside_the_theorem_never_claims_the_whole_network`]）。
 //!
 //! 误差量的是 `op::matmul::forward_tn_tiled` 的输出差——与 `serve`/`train` 同一条内核，
-//! 不是另写一份参考乘法。
+//! 不是另写一份参考乘法。随机源用本 crate 的 [`llm_testkit::Rng`]，不在这里养第二个生成器。
 
+#[cfg(test)]
+pub(crate) mod tests {
 use weights::l3::{Chain, Ruling, Rung};
 use weights::{Archive, I4, Segment, Wire, Writer};
 
@@ -238,4 +240,5 @@ fn a_segment_outside_the_theorem_never_claims_the_whole_network() {
 /// 一条分项全零的单段链：`with_uncovered` 会消耗链，故每次现造一条。
 fn exact() -> Chain {
     Chain::new(1.0, vec![Rung::new(1.0, 1.0, 0.0, 1.0, 0.0).expect("段")]).expect("链")
+}
 }

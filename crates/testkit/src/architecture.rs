@@ -10,15 +10,12 @@
 //! 自己的判据，解析口径不复制第二遍。
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-
-use std::path::{Path, PathBuf};
-
-/// 仓根：本测试住在 `crates/<crate>/tests/`，仓根是清单目录上两级。
+/// 仓根：本模块住在 `crates/<crate>/src/`，仓根是清单目录上两级。
 pub fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
@@ -33,29 +30,43 @@ pub fn rust_files(dir: &Path) -> Vec<PathBuf> {
     found
 }
 
+pub(crate) fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            walk(&path, out);
+        } else if path.extension().and_then(|value| value.to_str()) == Some("rs") {
+            out.push(path);
+        }
+    }
+}
+
 /// 契约文本编译期嵌入：测试不依赖当前工作目录，也不会读到另一份副本。
-const DOC: &str = include_str!("../../../docs/ARCHITECTURE.md");
+pub(crate) const DOC: &str = include_str!("../../../docs/ARCHITECTURE.md");
 
 /// 层表：成员 → (层号, 层内位置)；同层位置决定“可以依赖谁”。
-struct Contract {
-    layers: BTreeMap<String, (usize, usize)>,
-    tools: BTreeSet<String>,
+pub(crate) struct Contract {
+    pub(crate) layers: BTreeMap<String, (usize, usize)>,
+    pub(crate) tools: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct Edge {
-    from: String,
-    to: String,
-    dev: bool,
+pub(crate) struct Edge {
+    pub(crate) from: String,
+    pub(crate) to: String,
+    pub(crate) dev: bool,
 }
 
 /// `llm-op` 与文档里的 `op` 指同一个成员（包名带 `llm-` 前缀，层表用短名）。
-fn short(name: &str) -> String {
+pub(crate) fn short(name: &str) -> String {
     let name = name.trim();
     name.strip_prefix("llm-").unwrap_or(name).to_string()
 }
 
-fn contract() -> Contract {
+pub(crate) fn contract() -> Contract {
     let mut layers = BTreeMap::new();
     for line in DOC.lines() {
         let Some(rest) = line.strip_prefix("| L") else {
@@ -92,7 +103,7 @@ fn contract() -> Contract {
 
 
 /// 解析“允许的边”代码块，返回边集与文档声称的总数 / `+dev` 数。
-fn declared_edges() -> (BTreeSet<Edge>, usize, usize) {
+pub(crate) fn declared_edges() -> (BTreeSet<Edge>, usize, usize) {
     let mut edges = BTreeSet::new();
     let mut entries: Vec<String> = Vec::new();
     let mut inside = false;
@@ -157,7 +168,7 @@ fn declared_edges() -> (BTreeSet<Edge>, usize, usize) {
     (edges, total, dev)
 }
 
-fn names(part: &str) -> Vec<String> {
+pub(crate) fn names(part: &str) -> Vec<String> {
     part.split(',')
         .map(|name| name.split('（').next().unwrap_or_default())
         .map(short)
@@ -165,7 +176,7 @@ fn names(part: &str) -> Vec<String> {
         .collect()
 }
 
-fn backticks(text: &str) -> Vec<String> {
+pub(crate) fn backticks(text: &str) -> Vec<String> {
     text.split('`')
         .skip(1)
         .step_by(2)
@@ -174,7 +185,7 @@ fn backticks(text: &str) -> Vec<String> {
 }
 
 
-fn count_after(text: &str, prefix: &str) -> usize {
+pub(crate) fn count_after(text: &str, prefix: &str) -> usize {
     let start = text
         .find(prefix)
         .unwrap_or_else(|| panic!("文档缺 `{prefix}`"))
@@ -188,7 +199,7 @@ fn count_after(text: &str, prefix: &str) -> usize {
 }
 
 /// 所有权表：主人 → 它声称拥有的每个类型名。
-fn owned_types() -> Vec<(String, String)> {
+pub(crate) fn owned_types() -> Vec<(String, String)> {
     let mut rows = Vec::new();
     let mut inside = false;
     for line in DOC.lines() {
@@ -221,7 +232,7 @@ fn owned_types() -> Vec<(String, String)> {
 ///
 /// 只取 `packages[].name` / `packages[].dependencies[].{name,kind}` 四个字段：成员集合来自前者，
 /// 边来自后者（`kind == "dev"` 即 `+dev` 边）。解析交给 `serde_json`，不自己写第二份 JSON 文法。
-fn workspace() -> (BTreeSet<String>, BTreeSet<Edge>) {
+pub(crate) fn workspace() -> (BTreeSet<String>, BTreeSet<Edge>) {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let output = Command::new(cargo)
         .args(["metadata", "--no-deps", "--format-version", "1"])

@@ -5,12 +5,24 @@
 //! 该改，而不是这里该豁免。
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
 use std::fs;
 
 use crate::architecture::tests::workspace_root as root;
 use crate::contracts::tests::{locate_module, sources};
 
+/// 语义表的**唯一生产者**：注册表里的 `MODEL` 必须由注解生成，注解标注的格式必须在注册表里。
+///
+/// 类型系统守住了"注解说的是哪份格式"（`<别名 as gemv::Format>`，写错就编译不过），守不住两件
+/// 纯文本事故：
+///
+/// 1. 标注了 `#[annotation::model(..)]` 却忘了在 `REGISTRY` 里补一行——`MODEL` 常量照样生成，
+///    但注册表里没有这条算子，`verify --op <名字>` 报"未知算子"，而写算子的人以为已经接上了；
+/// 2. 注册表里的 `model:` 手写成 `Model { .. }` 字面量——语义表就有了第二份来源，生成的那一份
+///    与它漂移时没有任何判据（这正是 P0-4 之前 `call_args` 的老毛病）。
+///
+/// 两条规则互为反面，都没有合法例外（标注了却不注册永远错；注册的语义表不是常量也永远错），
+/// 所以不进白名单：出现例外说明契约本身该改，而不是这个 crate 该豁免。
 #[test]
 fn the_registry_and_the_model_annotations_are_mirrors() {
     // 规则的另一种写法：新增一副骨架时，把它的注解名加进这里，规则跟着扩。
@@ -130,7 +142,6 @@ fn the_registry_and_the_model_annotations_are_mirrors() {
 /// `op/src` 里会展开出 `#[annotation::model]` 的宏名：宏体里的 `name = $op` 不是字面量，
 /// 扫描器不认，但调用这些宏的算子模块同样满足"注解是唯一生产者"。判据是宏体里出现了
 /// `#[annotation::model(name = $..)`——逐文件追踪最近的 `macro_rules!` 名，不展开宏。
-
 fn model_macros() -> std::collections::BTreeSet<String> {
     let mut macros = std::collections::BTreeSet::new();
     for (crate_name, file) in sources() {
@@ -173,7 +184,6 @@ fn invokes_model_macro(text: &str, macros: &std::collections::BTreeSet<String>) 
 /// 再核对可写输出的 C 类型与 `Model::dtype` 指同一个类型（前者说内核写什么，后者说回读按什么
 /// 解释）。错配在测试期拒绝，而不是等到 `cc` 报 C 的指针类型不兼容。生成的 `__model_check`
 /// 逐条再守一遍；本测试是注册表级的整表扫，防止某条注解展开被剥离后只剩单条防线。
-
 #[test]
 fn every_registered_kernel_signature_matches_its_model_sample() {
     let mut checked = 0;

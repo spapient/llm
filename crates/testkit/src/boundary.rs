@@ -10,17 +10,20 @@
 //! 白名单都写成常量表：加一条要有据可依，删一条要真删干净（过期条目本身就是判据失败）。
 
 #[cfg(test)]
-mod tests {
-use std::path::Path;
+pub(crate) mod tests {
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 
-use crate::architecture::tests::{DOC, rust_files, workspace_root};
-use crate::ownership::tests::{declares_public, public_item_name};
+use crate::architecture::tests::{
+    DOC, backticks, contract, rust_files, workspace, workspace_root,
+};
+use crate::ownership::tests::{is_public_definition, public_item_name};
 
 /// 允许用 `String` 做**消息片段**的文件（不是"允许用 `String` 报错"）。
 ///
 /// 现在是空的：唯一一份"把失败原因写成字符串"的实现是手写 TOML 解析器，它随 ADR 0022 一起
 /// 删除（语料改在构建期解析）。留着这张表是为了让下一条同类豁免有地方登记，而不是散在断言里。
-const MESSAGE_FRAGMENTS: &[&str] = &[];
+pub(crate) const MESSAGE_FRAGMENTS: &[&str] = &[];
 
 /// 错误边界不得退回字符串（`docs/ARCHITECTURE.md` 第三节）：凡是被 L7 直接调用的层——数据层
 /// （`op` / `prof` / `prim`）、内核层（`cutile`，含 `report`）——失败类型必须是
@@ -34,7 +37,7 @@ const MESSAGE_FRAGMENTS: &[&str] = &[];
 /// 豁免表 [`MESSAGE_FRAGMENTS`] 现在是空的：随着手写 TOML 解析器删除，最后一处"把失败原因
 /// 写成字符串"的实现也没有了。
 #[test]
-fn the_error_boundary_does_not_fall_back_to_strings() {
+pub(crate) fn the_error_boundary_does_not_fall_back_to_strings() {
     let contract = contract();
     let mut paths = Vec::new();
     for member in contract.layers.keys() {
@@ -74,7 +77,7 @@ fn the_error_boundary_does_not_fall_back_to_strings() {
 }
 
 /// 厂商名基线：`cutile` 的 17 个 `*_program`（P1 收成一个泛型入口后逐条删掉这里）。
-const VENDOR_PUBLIC_BASELINE: &[(&str, &str)] = &[
+pub(crate) const VENDOR_PUBLIC_BASELINE: &[(&str, &str)] = &[
     ("cutile", "cuda_gemm_program"),
     ("cutile", "cuda_grid_program"),
     ("cutile", "cuda_reduce_program"),
@@ -95,10 +98,10 @@ const VENDOR_PUBLIC_BASELINE: &[(&str, &str)] = &[
 ];
 
 /// 允许公开项带厂商名的成员：后端实现层（L6），`cutile` 的 `Backend` 缝由它填。
-const VENDOR_OWNERS: [&str; 1] = ["engine"];
+pub(crate) const VENDOR_OWNERS: [&str; 1] = ["engine"];
 
 /// 厂商名清单；判据是"公开项以 `厂商名_` 起头"。
-const VENDORS: [&str; 8] = [
+pub(crate) const VENDORS: [&str; 8] = [
     "ascend", "cuda", "hip", "metal", "musa", "rocm", "sycl", "vulkan",
 ];
 
@@ -107,7 +110,7 @@ const VENDORS: [&str; 8] = [
 /// 四个文件、三个逻辑岛：storage 的 mmap、engine 的 Metal FFI、`op` 的 CPU 微内核（后者跨
 /// `fast.rs` 与 `fast/pool.rs` 两文件，是同一个 P1 待搬出的欠账岛；`fast.rs` 的 14 处含 NEON
 /// 与 AVX2 两段 SIMD 微内核，同一组不变量）。
-const UNSAFE_ISLANDS: &[(&str, usize)] = &[
+pub(crate) const UNSAFE_ISLANDS: &[(&str, usize)] = &[
     ("crates/engine/src/metal/executor.rs", 1),
     ("crates/op/src/fast.rs", 14),
     ("crates/op/src/fast/pool.rs", 3),
@@ -120,7 +123,7 @@ const UNSAFE_ISLANDS: &[(&str, usize)] = &[
 /// 三张契约表由 `cargo metadata` 守着，但正文里的引用没人管：模块改名或删掉后，
 /// `engine::metal_pipeline` 这类引用可以一直指向一个不存在的名字，而门禁全绿。
 #[test]
-fn the_document_names_only_existing_items() {
+pub(crate) fn the_document_names_only_existing_items() {
     let (members, _) = workspace();
     let mut missing = BTreeSet::new();
     for span in backticks(DOC) {
@@ -144,7 +147,7 @@ fn the_document_names_only_existing_items() {
 /// 消费方只有测试。基线不许增长；P1 把它们收成一个泛型入口后逐条删掉（删了基线也要删，
 /// 否则本测试报"过期"）。
 #[test]
-fn the_mechanism_layer_exposes_no_vendor_names() {
+pub(crate) fn the_mechanism_layer_exposes_no_vendor_names() {
     let (members, _) = workspace();
     let mut found = BTreeSet::new();
     for member in &members {
@@ -185,7 +188,7 @@ fn the_mechanism_layer_exposes_no_vendor_names() {
 /// 既不在 §2 的禁令豁免里、也不在 §1 的 FFI 类别里，却能长期存在——因为没有任何东西比对
 /// "允许集"与"实际集"。
 #[test]
-fn unsafe_islands_are_the_ones_the_adr_lists() {
+pub(crate) fn unsafe_islands_are_the_ones_the_adr_lists() {
     let mut found = BTreeMap::new();
     for member in workspace().0 {
         let root = workspace_root().join("crates").join(&member).join("src");
@@ -221,26 +224,38 @@ fn unsafe_islands_are_the_ones_the_adr_lists() {
     );
 }
 
-/// 设备后端注册表必须在**产品路径**上装配。
+/// 设备后端必须在**产品路径**上装配，不能只活在测试里。
 ///
 /// 上一轮的形态是：`engine::backends::install()` 只出现在 `crates/cli/tests/` 里，于是
 /// `llm run --device cuda` 把"没装配"报成"本机没有 cuda 后端"，而门禁全绿。
+///
+/// 装配点有两类，各自要有一条：`llm` 二进制的 `main` 只转调 `llm_cli::entry`，装配在库入口
+/// 那一处；`cutile` 的 `main` 不经过 `llm_cli::entry`，得自己装配。任何一处缺 `install()`，
+/// 用户拿到的都是“本机没有该后端”，而不是“装了没生效”。判据按**入口形态**认，不预设目录：
+/// 二进制入口从 `src/bin/` 平铺回 `src/` 之后，硬编码的路径会让门静默扫不到东西。
 #[test]
-fn the_device_backends_are_installed_on_the_product_path() {
-    let cli_src = workspace_root().join("crates/cli/src");
-    let bin = cli_src.join("bin");
-    let files = rust_files(&cli_src);
+pub(crate) fn the_device_backends_are_installed_on_the_product_path() {
+    let mut entries = 0;
+    let mut missing = Vec::new();
+    for path in rust_files(&workspace_root().join("crates/cli/src")) {
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        // 库入口：`pub fn entry(`。二进制入口：`fn main(` 且不转调库入口（转调的由库那处装着）。
+        let library = body.contains("pub fn entry(");
+        let standalone = body.contains("fn main(") && !body.contains("llm_cli::entry");
+        if !library && !standalone {
+            continue;
+        }
+        entries += 1;
+        if !body.contains("backends::install()") {
+            missing.push(path.display().to_string());
+        }
+    }
     assert!(
-        files.iter().any(|path| path.starts_with(&bin)),
-        "`{}` 下一个源文件都没扫到：本测试必须扫得到二进制入口",
-        bin.display()
+        entries >= 2,
+        "只扫到 {entries} 个产品入口：`llm` 与 `cutile` 两个二进制各自要有一条产品路径"
     );
-    // `llm` 走 `main` → `entry`；`cutile` 自己的 `main` 不经过 `llm_cli::entry`，两者都要各自装配。
-    let missing = [
-        files_without_install(&files, "pub fn entry(", false, &bin),
-        files_without_install(&files, "fn main(", true, &bin),
-    ]
-    .concat();
     assert!(
         missing.is_empty(),
         "这些产品入口没有装配设备后端（`engine::backends::install()`）：{missing:?}——\
@@ -248,11 +263,6 @@ fn the_device_backends_are_installed_on_the_product_path() {
     );
 }
 
-
-/// `` `crate::名字` `` → (`crate`, `名字`)。
-///
-/// 首段必须全是小写/数字/下划线，才当成"点名的符号"；`cutile::reference::tolerance` 这类多段
-/// 路径只看第一段（后面的段由该模块自己负责）。
 fn reference(span: &str) -> Option<(&str, &str)> {
     let (head, tail) = span.split_once("::")?;
     let is_crate = !head.is_empty()
@@ -269,10 +279,6 @@ fn reference(span: &str) -> Option<(&str, &str)> {
     (!name.is_empty()).then_some((head, name))
 }
 
-/// `名字` 是否在 `crate_name` 的源码里可被点名：公开定义、任意可见性的模块、`macro_rules!`。
-///
-/// 私有模块也算：文档会点名 `serve::protocol` 的 `//!`（线格式的唯一说明处），
-/// 存在性才是这条判据要守的东西。
 fn declares_any(crate_name: &str, name: &str) -> bool {
     const KINDS: [&str; 8] = [
         "struct", "enum", "trait", "type", "fn", "const", "union", "mod",
@@ -287,7 +293,6 @@ fn declares_any(crate_name: &str, name: &str) -> bool {
     })
 }
 
-/// 一行是否为 `mod 名字`（含私有）或 `macro_rules! 名字`。
 fn is_module_or_macro(line: &str, name: &str) -> bool {
     let trimmed = line.trim_start();
     let rest = trimmed
@@ -300,7 +305,6 @@ fn is_module_or_macro(line: &str, name: &str) -> bool {
     })
 }
 
-/// `text` 是否就是标识符 `name`（后面不能再接字母、数字或下划线）。
 fn ident_is(text: &str, name: &str) -> bool {
     text.strip_prefix(name).is_some_and(|after| {
         after
@@ -310,28 +314,8 @@ fn ident_is(text: &str, name: &str) -> bool {
     })
 }
 
-
-/// `name` 是否以厂商名起头（`metal_*` / `cuda_*` …）。
 fn vendor_prefix(name: &str, vendor: &str) -> bool {
     name.strip_prefix(vendor)
         .is_some_and(|after| after.starts_with('_'))
-}
-
-/// `files` 里定义了 `marker` 却没装设备后端的源文件；`in_bin` 把二进制入口与库入口分开。
-fn files_without_install(
-    files: &[PathBuf],
-    marker: &str,
-    in_bin: bool,
-    bin_root: &Path,
-) -> Vec<String> {
-    files
-        .iter()
-        .filter(|path| path.starts_with(bin_root) == in_bin)
-        .filter_map(|path| {
-            let text = std::fs::read_to_string(path).ok()?;
-            let missing = text.contains(marker) && !text.contains("backends::install()");
-            missing.then(|| path.display().to_string())
-        })
-        .collect()
 }
 }

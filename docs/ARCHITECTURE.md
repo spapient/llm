@@ -229,6 +229,10 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 函数体后填。判断标准是"删掉它会谁编译失败"——如果谁都不失败，它就该从 `members` 里移出去，而不是
 留在 workspace 里复制同一个占位函数。
 
+片段层没有这条余地：片段正文是**要被设备编译器读的代码**，不是形状。判据见第七节的语法门——
+每台设备的每个片段都必须在该设备档案声明的语言与版本下解析通过，正文写坏时门是红的，
+注释里写"留待以后"不算实现。
+
 ## 六、新增一个成员的三步
 
 1. `crates/<name>/Cargo.toml`：`version/edition/rust-version/license/repository/readme` 全部
@@ -248,6 +252,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `clippy -D warnings` | CI `clippy` job | 缺元数据、缺文档、`unsafe` 风格 |
 | `RUSTDOCFLAGS=-D warnings cargo doc` | CI `doc` job | 文档坏链接、未文档化的公开项 |
 | `cargo test --workspace` | CI `test` job | 行为回归 |
+| `crates/cutile/src/gate.rs` + `tests/fragments_tests.rs` | CI `test` job | 片段正文没被设备自己的语言接受：`GATES` 给每门语言登记一个语法前端，用例把六台设备的每个算子 × 每个 tile 组合真正拼成翻译单元（`substitute::render` → `emit::assemble`，与出厂文本逐字节同源）再交给前端解析；语言版本取自档案 `compile.flags`（`GateSpec::check`），门不许自己再写一份。片段正文写坏时反向用例必红——"占位不报错"在这里不成立 |
 | `crates/testkit/tests/architecture.rs` | CI `test` job | 成员集合、边集合与方向、所有权表与 `cargo metadata` / 源码不一致；`op` / `prof` / `prim` / `cutile` 退回 `Result<_, String>`；本文正文点名的 `crate::名字` 不存在；`allow(unsafe_code)` 不在 ADR 0035 §6 的白名单里；机制层（`cutile`）的公开项以厂商名起头；设备后端没在 `cli` 的产品路径上装配 |
 | `crates/testkit/tests/contracts.rs` + `.config/lints/vocabulary.toml` | CI `test` job | 闭集 / 位集被手写第二份、白名单过期、注解与注册表不互为镜像 |
 | `#[model]` 生成的两个 `const` + 一条测试 | 被标注 crate 的 `cargo test` | 格式自证不成立（粒度 ≤ 0、派生轴除数 ≠ 粒度）；注解的 `dtype` 与 `.k` 可写输出不是同一个类型 |

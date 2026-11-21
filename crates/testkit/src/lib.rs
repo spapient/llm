@@ -7,7 +7,8 @@
 //! `skip`、`skip_none`、`skip_count`、`skipped_reasons`（[`gating`]）；`scratch_dir`、
 //! `scratch_clean`（[`scratch`]）；
 //! [`Rng`]（[`rng`]）；`crc32_bitwise`（[`hash`]）；`safetensors_bytes` 与 `pack_codes`
-//! （本文件，格式夹具）。**不拥有**：任何生产逻辑——它是测试
+//! （本文件，格式夹具）；`witness::run`、`Call`、`Reading`（[`witness`]）——设备 crate 的
+//! 见证源码在本机编译执行并与期望值对拍。**不拥有**：任何生产逻辑——它是测试
 //! 夹具，不进任何二进制。**依赖**：无（夹具不该把被测 crate 拉进来）。
 //! **被依赖**：各成员的 `[dev-dependencies]`。
 //!
@@ -27,6 +28,34 @@
 
 pub mod compare;
 pub mod gating;
+pub mod witness;
+
+// 工作区级的跨层对拍与契约门禁。它们只靠 `dev-dependencies` 里的被测层编译，所以每条都在
+// `cfg(test)` 之下——`use llm_testkit` 的运行时构建看不到其中任何一行。
+#[cfg(test)]
+mod architecture;
+#[cfg(test)]
+mod boundary;
+#[cfg(test)]
+mod contracts;
+#[cfg(test)]
+mod e2e;
+// 三条外部 `#[path]` 用户的取值来源（`cutile` 单测、`engine` 单测、`engine` 的 schedule 集成
+// 测试）。在这里也声明一次，让 `op::sig` / `op::model` 的 API 变更在 testkit 自己的测试构建里
+// 立刻暴露，而不是等到下游 crate 红；条目级 `cfg(test)` 见文件头。
+#[cfg(test)]
+#[allow(dead_code)]
+mod kernel;
+#[cfg(test)]
+mod l3;
+#[cfg(test)]
+mod layer;
+#[cfg(test)]
+mod mirror;
+#[cfg(test)]
+mod oracle;
+#[cfg(test)]
+mod ownership;
 pub mod hash {
     //! 位级 CRC-32 参考定义：与各 crate 的查表实现独立，供对拍共享，免得每份测试重写一遍。
 

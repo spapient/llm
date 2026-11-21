@@ -15,7 +15,7 @@ use op::model::Sample;
 use op::sig::Signature;
 
 #[cfg(test)]
-#[path = "../../testkit/tests/support/cutile_x_kernel.rs"]
+#[path = "../../testkit/src/kernel.rs"]
 mod cutile_x_kernel;
 
 /// CUDA 并行程序：按形态装配设备源与 host 驱动，整份可直接 `mcc` / `nvcc` 编译执行。
@@ -237,7 +237,7 @@ mod tests {
 
     const POINT_SOURCE: &str = "void cutile_scale_f32_kernel(const float *a, float *y, int N) {}\n";
 
-    /// gemv 形签名与样本：与 `crates/testkit/tests/support/cutile_x_kernel.rs` 共用一份取值。
+    /// gemv 形签名与样本：与 `crates/testkit/src/kernel.rs` 共用一份取值。
     ///
     /// 用它是因为它的声明是**零维网格**（串行语义门那一档）且属可被拒绝的族，正好覆盖
     /// 「没有并行实现」的两条分支；逐点那条另用 [`pointwise`]，两者签名宽度不同。

@@ -113,7 +113,7 @@ m       = "<=4096"
 dt      = ["i4", "u8", "f32"]
 space   = ["GM", "FAST"]
 src     = ["GM"]
-dst     = ["REG"]
+dst     = ["GM"]
 grade   = "L1"
 witness = { file = "intel/witness.cl", func = "witness_load", expect = [1.0] }
 

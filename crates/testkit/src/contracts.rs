@@ -4,19 +4,22 @@
 //! `lints/vocabulary.toml` 的豁免表；豁免必须仍然命中，否则说明它已经过期。
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
 use std::fs;
 use std::path::PathBuf;
 
 use crate::architecture::tests::{rust_files, workspace_root as root};
 
-const MIN_SOURCES: usize = 70;
+/// 扫描下限：近 30 个 crate、80+ 个源文件；低于此数说明遍历逻辑坏了（而不是"没有违规"）。
+pub(crate) const MIN_SOURCES: usize = 70;
 
 /// 一份扫描结果：`(crate, 文件, 行号, 该行原文)`。
-type Hit = (String, PathBuf, usize, String);
+pub(crate) type Hit = (String, PathBuf, usize, String);
 
 /// `crates/<crate>/src/**/*.rs` 下的全部源文件。
-fn sources() -> Vec<(String, PathBuf)> {
+pub(crate) fn sources() -> Vec<(String, PathBuf)> {
+    // `testkit` 自己不在扫描集里：它的 `src/` 全部是检验器自身的代码（每个文件都是
+    // `#[cfg(test)] mod tests`），不是被检验的生产词汇表；扫进来只会让判据命中自己的谓词文本。
     let crates = root().join("crates");
     let mut out = Vec::new();
     let Ok(entries) = fs::read_dir(&crates) else {
@@ -27,6 +30,7 @@ fn sources() -> Vec<(String, PathBuf)> {
         .filter(|entry| entry.path().is_dir())
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
         .collect();
+    names.retain(|name| name != "testkit");
     names.sort();
     for name in names {
         let mut files = rust_files(&crates.join(&name).join("src"));
@@ -39,7 +43,7 @@ fn sources() -> Vec<(String, PathBuf)> {
 }
 
 /// 找到声明 `pub mod {module}` 的文件：优先同名文件；聚合后的算子声明在骨架文件里。
-fn locate_module(module: &str) -> Option<PathBuf> {
+pub(crate) fn locate_module(module: &str) -> Option<PathBuf> {
     let direct = root().join("crates/op/src").join(format!("{module}.rs"));
     if direct.exists() {
         return Some(direct);
@@ -59,7 +63,7 @@ fn locate_module(module: &str) -> Option<PathBuf> {
 }
 
 /// 命中 `predicate` 的行。
-fn hits(predicate: impl Fn(&str) -> bool) -> Vec<Hit> {
+pub(crate) fn hits(predicate: impl Fn(&str) -> bool) -> Vec<Hit> {
     let mut out = Vec::new();
     for (name, file) in sources() {
         let Ok(text) = fs::read_to_string(&file) else {
@@ -80,7 +84,7 @@ fn hits(predicate: impl Fn(&str) -> bool) -> Vec<Hit> {
 }
 
 /// 白名单里的 crate 与理由；配置来自 `tools` 构建期生成的词汇表（同一份文件只解析一次）。
-fn exempt(section: &str) -> Vec<(String, String)> {
+pub(crate) fn exempt(section: &str) -> Vec<(String, String)> {
     let table = tool::vocabulary()
         .table(section)
         .unwrap_or_else(|| panic!("`lints/vocabulary.toml` 缺 `[{section}]`"));
@@ -106,16 +110,22 @@ fn exempt(section: &str) -> Vec<(String, String)> {
 
 /// 注解文法里的闭集表：`const <名字>: [&str; N] = [ "..", .. ];`。
 ///
-/// 只能读源码：proc-macro crate 不导出非宏项，`syntax::DTYPES` 在 crate 外
-/// 不可见。扫描只认 `= [ .. ]` 之间的逗号分隔字面量，排版怎么折行都不影响；声明里的 `N`
-/// 一并核对，防止“表删了一项、长度还写着 9”。
-fn annotation_list(name: &str) -> Vec<String> {
-    let path = root().join("crates/annotation/src/syntax.rs");
-    let text = fs::read_to_string(&path).expect("`crates/annotation/src/syntax.rs` 必须存在");
+/// 只能读源码：proc-macro crate 不导出非宏项，`decl::DTYPES` 在 crate 外不可见。按**名字**在
+/// 注解 crate 的 `src/` 全部文件里找，不预设它在哪个文件——crate 平铺后文件边界随时可动，
+/// 判据只认声明本身。扫描只认 `= [ .. ]` 之间的逗号分隔字面量，排版怎么折行都不影响；声明
+/// 里的 `N` 一并核对，防止“表删了一项、长度还写着 9”。
+pub(crate) fn annotation_list(name: &str) -> Vec<String> {
     let head = format!("const {name}: [&str;");
-    let start = text.find(&head).unwrap_or_else(|| {
-        panic!("注解文法里没有 `{name}`：它是注解与词汇表之间契约的一半，不能改名或删除")
-    });
+    let (_, text) = rust_files(&root().join("crates/annotation/src"))
+        .into_iter()
+        .find_map(|path| {
+            let body = fs::read_to_string(&path).ok()?;
+            body.contains(&head).then_some((path, body))
+        })
+        .unwrap_or_else(|| {
+            panic!("注解文法里没有 `{name}`：它是注解与词汇表之间契约的一半，不能改名或删除")
+        });
+    let start = text.find(&head).expect("上面刚按同一个串找到");
 
     let after = &text[start..];
     let open = start + after.find("= [").expect("闭集表必须写成 `= [ .. ]`") + 3;
@@ -148,7 +158,7 @@ fn annotation_list(name: &str) -> Vec<String> {
     items
 }
 
-fn describe(hits: &[Hit]) -> String {
+pub(crate) fn describe(hits: &[Hit]) -> String {
     hits.iter()
         .map(|(name, file, line, text)| format!("\n  {name} {}:{line}: {text}", file.display()))
         .collect()
@@ -156,7 +166,7 @@ fn describe(hits: &[Hit]) -> String {
 
 /// 命中里除去 `vocabulary.toml` 该节豁免的名字，剩下的就是要报的违规项；白名单一并返回，
 /// 供"豁免不能过期"那一半契约复用。
-fn offenders_of(section: &str, hits: &[Hit]) -> (Vec<(String, String)>, Vec<Hit>) {
+pub(crate) fn offenders_of(section: &str, hits: &[Hit]) -> (Vec<(String, String)>, Vec<Hit>) {
     let allowed = exempt(section);
     let names: Vec<&str> = allowed.iter().map(|(name, _)| name.as_str()).collect();
     let offenders = hits
@@ -168,7 +178,7 @@ fn offenders_of(section: &str, hits: &[Hit]) -> (Vec<(String, String)>, Vec<Hit>
 }
 
 #[test]
-fn closed_vocabularies_are_declared_once() {
+pub(crate) fn closed_vocabularies_are_declared_once() {
     // 手写的闭集表：数组形式 `pub const ALL: [Self; N]`。切片形式 `&'static [Self]` 是
     // `Closed` 的实现（`inherent_names!` 转发的那一份），不在此列。
     // 行内任意位置都算：`impl X { pub const ALL: [Self; N] = ..; }` 这种一行写法不该逃过。
@@ -218,7 +228,7 @@ fn closed_vocabularies_are_declared_once() {
 /// 注入。文本契约守的是：缝在、C 后端种子在、注入点在——"写了实现却忘了接线"只剩"没调 `register`"
 /// 这一种，且只发生在装配层（L7），不在机制层。
 #[test]
-fn every_device_front_end_is_entered() {
+pub(crate) fn every_device_front_end_is_entered() {
     let device = root().join("crates/cutile/src/device.rs");
     let text = fs::read_to_string(&device).expect("`crates/cutile/src/device.rs` 必须存在");
     assert!(
@@ -259,7 +269,7 @@ fn every_device_front_end_is_entered() {
 }
 
 #[test]
-fn bitsets_have_exactly_one_implementation() {
+pub(crate) fn bitsets_have_exactly_one_implementation() {
     // 手写位集：`struct FooSet(u32)` 一类。
     let hits = hits(|line| line.contains("struct ") && line.contains("Set(u32)"));
     let (_, offenders) = offenders_of("bitset", &hits);
@@ -287,7 +297,7 @@ fn bitsets_have_exactly_one_implementation() {
 /// 名字与变体一旦分家，生成代码会指向不存在的变体——错误会出现在被标注的 crate 里，
 /// 而不是写错字的那张表上。
 #[test]
-fn annotation_names_come_from_the_vocabulary() {
+pub(crate) fn annotation_names_come_from_the_vocabulary() {
     // 输出类型：与「对拍有阈值」的那一组相等。
     let dtypes = annotation_list("DTYPES");
     let mut comparable: Vec<&str> = cutile::atom::DType::ALL
@@ -315,17 +325,4 @@ fn annotation_names_come_from_the_vocabulary() {
         );
     }
 }
-
-/// 语义表的**唯一生产者**：注册表里的 `MODEL` 必须由注解生成，注解标注的格式必须在注册表里。
-///
-/// 类型系统守住了"注解说的是哪份格式"（`<别名 as gemv::Format>`，写错就编译不过），守不住两件
-/// 纯文本事故：
-///
-/// 1. 标注了 `#[annotation::model(..)]` 却忘了在 `REGISTRY` 里补一行——`MODEL` 常量照样生成，
-///    但注册表里没有这条算子，`verify --op <名字>` 报"未知算子"，而写算子的人以为已经接上了；
-/// 2. 注册表里的 `model:` 手写成 `Model { .. }` 字面量——语义表就有了第二份来源，生成的那一份
-///    与它漂移时没有任何判据（这正是 P0-4 之前 `call_args` 的老毛病）。
-///
-/// 两条规则互为反面，都没有合法例外（标注了却不注册永远错；注册的语义表不是常量也永远错），
-/// 所以不进白名单：出现例外说明契约本身该改，而不是这个 crate 该豁免。
 }

@@ -4,7 +4,11 @@
 //! 每条边只指向更低层或同层左侧、每个成员至少被用或被用。任一方向漂移都会在这里红。
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
+use std::collections::BTreeSet;
+
+use crate::architecture::tests::{Edge, contract, declared_edges, workspace};
+
 #[test]
 fn the_layer_table_lists_exactly_the_workspace_members() {
     let (members, _) = workspace();

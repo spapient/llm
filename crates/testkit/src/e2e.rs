@@ -3,8 +3,10 @@
 //! 单层测试各自只在自己的坐标系里自洽；这里把真实字节串起来，暴露跨层错位与量化/反量化
 //! 口径漂移。两段各自的说明与断言边界见对应小节的注释。
 
+#[cfg(test)]
+pub(crate) mod tests {
 use autograd::{Sizes, Store, Tape};
-use llm_testkit::{Rng, approx_eq, cosine_similarity};
+use crate::{Rng, approx_eq, cosine_similarity};
 use nn::{Contract, Stack};
 use op::{gemv_f32, gemv_i2, gemv_i4, gemv_i8};
 use tensor::{DType, Shape};
@@ -252,4 +254,5 @@ fn assert_quantized<E: std::fmt::Debug>(
         cosine >= min_cosine,
         "{name} 位 PTQ 融合反量化 logits 余弦 {cosine:.5} < {min_cosine}"
     );
+}
 }

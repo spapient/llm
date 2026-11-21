@@ -5,13 +5,13 @@
 //! 也不能漏项——只写一侧的话，漂移会从另一侧静默穿过。
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::architecture::tests::{contract, declared_edges, owned_types, rust_files, workspace, workspace_root};
+use crate::architecture::tests::{contract, owned_types, rust_files, workspace, workspace_root};
 
 /// 一行顶层的 `struct|enum|trait|union` 定义，返回（是否是 `pub`，名字）。
-fn type_definition(line: &str) -> Option<(bool, &str)> {
+pub(crate) fn type_definition(line: &str) -> Option<(bool, &str)> {
     let trimmed = line.trim_start();
     let (public, rest) = match trimmed.strip_prefix("pub ") {
         Some(rest) => (true, rest.trim_start()),
@@ -35,7 +35,7 @@ fn type_definition(line: &str) -> Option<(bool, &str)> {
 ///
 /// `vocabulary! { Name { ... } }` 宏展开出的 `pub enum`：名字在宏块后一行、行首没有 `pub`，
 /// 逐行正则看不到，这里按宏块结构补一份识别（prof 的四个闭集都走这个生成器）。
-fn public_types(files: &[std::path::PathBuf]) -> BTreeSet<String> {
+pub(crate) fn public_types(files: &[std::path::PathBuf]) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     for path in files {
         let Ok(text) = std::fs::read_to_string(path) else {
@@ -63,7 +63,7 @@ fn public_types(files: &[std::path::PathBuf]) -> BTreeSet<String> {
 }
 
 /// 宏块开头行 `Name {`：取 `{` 前的标识符，首字母大写才算类型名。
-fn macro_block_name(line: &str) -> Option<&str> {
+pub(crate) fn macro_block_name(line: &str) -> Option<&str> {
     let name = line.split('{').next()?.trim();
     (!name.is_empty() && name.chars().next()?.is_ascii_uppercase()).then_some(name)
 }
@@ -72,7 +72,7 @@ fn macro_block_name(line: &str) -> Option<&str> {
 ///
 /// 读 `llm_tool` 构建期生成的词汇表：同一份文件只解析一次，运行期没有解析器；与
 /// `tests/contracts.rs` 读的是同一棵树，不另写一份。
-fn unlisted_baseline() -> BTreeMap<String, BTreeSet<String>> {
+pub(crate) fn unlisted_baseline() -> BTreeMap<String, BTreeSet<String>> {
     let entries = tool::vocabulary()
         .table("ownership")
         .and_then(|ownership| ownership.table_array("unlisted"))
@@ -109,7 +109,7 @@ fn unlisted_baseline() -> BTreeMap<String, BTreeSet<String>> {
 
 
 #[test]
-fn every_owned_type_is_public_in_the_claimed_crate() {
+pub(crate) fn every_owned_type_is_public_in_the_claimed_crate() {
     let (members, _) = workspace();
     let contract = contract();
     for (owner, name) in owned_types() {
@@ -136,7 +136,7 @@ fn every_owned_type_is_public_in_the_claimed_crate() {
 /// 对应条目就必须删掉，否则「存量冻结」会慢慢退化成「表永远落后于代码」——那正是这条门禁
 /// 之前发现不了 `Chunks` 的原因。
 #[test]
-fn every_public_type_is_listed_or_baselined() {
+pub(crate) fn every_public_type_is_listed_or_baselined() {
     let contract = contract();
     let listed: BTreeSet<String> = owned_types().into_iter().map(|(_, name)| name).collect();
     let baseline = unlisted_baseline();
@@ -198,7 +198,7 @@ fn every_public_type_is_listed_or_baselined() {
 /// 上一个组装点里的类型（`LmHead`）就是这条规则失效的证据：它既不在所有权表里，也不违反
 /// 任何既有断言。类型属于产出它的层，编排入口只分派。
 #[test]
-fn the_entry_point_defines_no_types() {
+pub(crate) fn the_entry_point_defines_no_types() {
     let cli_src = workspace_root().join("crates/cli/src");
     let files = ["run.rs", "status.rs", "train.rs"]
         .iter()
@@ -229,7 +229,7 @@ fn the_entry_point_defines_no_types() {
 
 
 /// 一行 `pub` 定义的名字；不是 `pub` 定义就是 `None`。
-fn public_item_name(line: &str) -> Option<&str> {
+pub(crate) fn public_item_name(line: &str) -> Option<&str> {
     const KINDS: [&str; 8] = [
         "struct", "enum", "trait", "type", "fn", "const", "union", "mod",
     ];
@@ -248,7 +248,7 @@ fn public_item_name(line: &str) -> Option<&str> {
 
 
 /// `name` 是否在 `crate_name` 的源码里以 `pub` 形式定义。
-fn declares_public(crate_name: &str, name: &str) -> bool {
+pub(crate) fn declares_public(crate_name: &str, name: &str) -> bool {
     const KINDS: [&str; 8] = [
         "struct", "enum", "trait", "type", "fn", "const", "union", "mod",
     ];
@@ -278,7 +278,7 @@ fn declares_public(crate_name: &str, name: &str) -> bool {
     false
 }
 
-fn is_public_definition(line: &str, name: &str, kinds: &[&str]) -> bool {
+pub(crate) fn is_public_definition(line: &str, name: &str, kinds: &[&str]) -> bool {
     let Some(rest) = line.trim_start().strip_prefix("pub ") else {
         return false;
     };
