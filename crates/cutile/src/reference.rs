@@ -1,6 +1,9 @@
 //! 职责：对拍口径（README §11.1）。
 
 use crate::atom::DType;
+use crate::decl::Fusion;
+use crate::sig::CType;
+use diagnostic::{Code, Error};
 use op::model::{Model, Sample, Values};
 
 /// 对拍口径：`max|got − want| / max|want|`。
@@ -101,20 +104,102 @@ pub fn within(got: &[f32], want: &[f32], dt: DType) -> bool {
     max_rel_err(got, want) <= tolerance(dt)
 }
 
-/// 融合对拍：生产者的标量参考先跑，把输出按名字喂给消费者的输入，再跑消费者的参考。
+/// 一次融合对拍的读数。
 ///
-/// 每个被 [`crate::plan::fusions`] 接受的融合组合都必须能生成这样一条对拍——这是
-/// "律实例化必带对拍"的落地：`compose()` 判定"能不能拼"，`fused_reference` 给出
-/// "拼起来对不对"的标量 oracle，融合实现用 [`max_rel_err`] / [`tolerance`] 与它对拍。
-pub fn fused_reference(
+/// `got` 是消费者在**全部缝都桥接之后**的产出；`bridged` 是实际桥接的
+/// `(生产者输出槽位, 消费者读槽位)` 对。两者的完整性由 [`verify_fusion`] 保证：
+/// `bridged.len()` 恒等于 `fusion.seams.len()`——只桥一条就返回的旧口径会让对拍悄悄测另一个程序。
+pub struct Oracle {
+    /// 消费者产出。
+    pub got: Vec<f32>,
+    /// 实际桥接的缝。
+    pub bridged: Vec<(String, String)>,
+}
+
+/// 融合对拍：按 [`Fusion`] 的缝**逐条**桥接，生产者参考先跑，把输出喂给消费者的每个读槽位，
+/// 再跑消费者的参考。
+///
+/// 这是"律实例化必带对拍"里"对不对"的那一半，与 `compose()` 的"能不能拼"由同一个 [`Fusion`]
+/// 值串起来：缝从证据里来，不从调用点的字符串来。因此下列情况一律拒绝，而不是算一个近似值：
+///
+/// - 自融合（[`Fusion::is_self`]）：循环携带依赖，`compose` 不会产出它，手搓的也不接受；
+/// - 多输出生产者：标量参考只给一条输出（[`op::model::Model::reference`]），拼不出完整桥接；
+/// - 非 `F32` 缝：同一原因，`U8` 槽位没有字节级 oracle 值可喂。
+///
+/// 每条缝的读槽位还必须在样本里存在且长度与生产者输出一致——这是"缝上的形状也确实对得上"的
+/// 那一半证明，缺了它，长度不符会推迟到消费者 reference 内部以另一个错误出现。
+///
+/// # Errors
+///
+/// 融合值本身不合法（[`Code::Invalid`]）、超出本条机制能对拍的范围（[`Code::Unsupported`]）、
+/// 或样本缺槽位 / 长度不符（[`Code::Missing`] / [`Code::Invalid`]）时返回说明。
+pub fn verify_fusion(
     producer: &Model,
     consumer: &Model,
-    consumer_in: &str,
+    fusion: &Fusion,
     sample: &mut Sample,
-) -> diagnostic::Result<Vec<f32>> {
+) -> diagnostic::Result<Oracle> {
+    if fusion.seams.is_empty() {
+        return Err(reject("融合值为空：没有任何缝，就没有可对拍的程序"));
+    }
+    if fusion.is_self() {
+        return Err(reject("自融合不是融合：生产者与消费者是同一个算子"));
+    }
+    let outputs = fusion.outputs();
+    if outputs.len() != 1 {
+        return Err(unsupported(
+            "生产者有多条输出，标量参考只给一条，无法完整桥接",
+        ));
+    }
+    let from = outputs[0];
+    let targets: Vec<&str> = fusion.targets(from).collect();
+    if targets.is_empty() {
+        return Err(reject("融合值里没有指向消费者的缝"));
+    }
+    if fusion.seams.iter().any(|seam| seam.ctype != CType::F32) {
+        return Err(unsupported("只有 F32 缝能由标量参考桥接"));
+    }
+
     let mid = (producer.reference)(sample)?;
-    sample.set(consumer_in, Values::F32(mid))?;
-    (consumer.reference)(sample)
+    for to in &targets {
+        let buffer = sample
+            .buffer(to)
+            .ok_or_else(|| Error::new(Code::Missing, format!("样本里没有消费者槽位 `{to}`")))?;
+        if buffer.values.len() != mid.len() {
+            return Err(Error::new(
+                Code::Invalid,
+                format!(
+                    "缝 `{from} → {to}` 形状对不上：生产者产出 {} 个，消费者槽位声明 {} 个",
+                    mid.len(),
+                    buffer.values.len()
+                ),
+            ));
+        }
+        sample.set(to, Values::F32(mid.clone()))?;
+    }
+    let got = (consumer.reference)(sample)?;
+    debug_assert_eq!(
+        targets.len(),
+        fusion.seams.len(),
+        "每条缝都必须被桥接"
+    );
+    Ok(Oracle {
+        got,
+        bridged: targets
+            .into_iter()
+            .map(|to| (from.to_string(), to.to_string()))
+            .collect(),
+    })
+}
+
+/// 融合值自身不合法。
+fn reject(message: &str) -> Error {
+    Error::new(Code::Invalid, message.to_string()).with("cutile::reference::verify_fusion")
+}
+
+/// 融合值合法，但超出当前对拍机制能回答的范围。
+fn unsupported(message: &str) -> Error {
+    Error::new(Code::Unsupported, message.to_string()).with("cutile::reference::verify_fusion")
 }
 
 #[cfg(test)]

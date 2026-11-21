@@ -172,7 +172,7 @@ impl Signature {
                 self.op,
                 param.name,
                 param.ctype.c_name(),
-                describe(&buffer.values)
+                buffer.values.describe()
             ),
         ))
     }
@@ -310,13 +310,6 @@ impl Signature {
 mod check {
     use super::*;
     use crate::model::Values;
-
-    pub(super) fn describe(values: &Values) -> &'static str {
-        match values {
-            Values::F32(_) => "float",
-            Values::U8(_) => "unsigned char",
-        }
-    }
 
     pub(super) fn type_matches(ctype: CType, values: &Values) -> bool {
         matches!(

@@ -155,3 +155,25 @@ fn compose_rejects_a_dtype_mismatch() {
     );
     assert!(compose(&producer, &consumer).is_none(), "u8 写 ≠ f32 读");
 }
+
+/// 自融合不拼：`gemv_f32` 写 `y`、读 `w`/`x`，全是 F32，所以"gemv→gemv"在槽位上看起来有两条
+/// 缝（`y→w`、`y→x`）——但那是循环携带依赖，拼出来的融合核无法定义执行顺序，还会白占一个预算
+/// 名额。槽位代数必须自己排除它，不能指望调用方记得去重。
+#[test]
+fn compose_rejects_a_self_fusion() {
+    let gemv = builtin();
+    assert!(compose(&gemv, &gemv).is_none(), "同一算子不是一条缝");
+    let single_output = minimal(
+        "doubler",
+        "void cutile_doubler_kernel(const float *x, float *y) { }\n",
+        vec![Phase {
+            name: "doubler".to_string(),
+            writes: vec!["y".to_string()],
+            reads: vec!["x".to_string()],
+        }],
+    );
+    assert!(
+        compose(&single_output, &single_output).is_none(),
+        "名字相同即自融合，与槽位是否对得上无关"
+    );
+}

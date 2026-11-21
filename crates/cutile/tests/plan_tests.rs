@@ -141,6 +141,12 @@ fn pruning_caps_at_the_budget_and_keeps_a_composable_pair() {
     let ops = [gemv, gelu];
     let accepted = fusions(&ops, 2);
     assert_eq!(accepted.len(), 2, "预算 2 就只接受 2 条");
+    // 窗口 `ops[lo..hi]` 必然含生产者自己：自融合（`gemv_f32` 的 `y` 写回自己的 `w`/`x`）在槽位
+    // 上看起来合法，只能由 `compose` 排除。断言"没有自融合"才真正锁住剪枝质量。
+    assert!(
+        accepted.iter().all(|fusion| !fusion.is_self()),
+        "自融合是循环携带依赖，不能进候选表：{accepted:?}"
+    );
     assert!(
         accepted
             .iter()

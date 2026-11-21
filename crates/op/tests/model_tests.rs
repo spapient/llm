@@ -1,5 +1,7 @@
 use diagnostic::{Code, Error};
-use llm_spec::model::{AxisRole, AxisSpec, Cost, DType, Model, Sample, ShapeContext, bind};
+use llm_spec::model::{
+    AxisRole, AxisSpec, Cost, DType, Model, Sample, ShapeContext, Values, bind,
+};
 
 const fn zero_cost(_: &ShapeContext) -> Result<Cost, Error> {
     Ok(Cost::ZERO)
@@ -116,6 +118,35 @@ fn bind_refuses_packed_weights_instead_of_reading_them_as_f32() {
         bind(&model, 64, 2, &[0.0; 64], &[0.0; 128]).expect_err("量化算子的权重缓冲是打包字节");
     assert_eq!(error.code(), Code::Unsupported);
     assert!(error.to_string().contains("打包字节"), "{error}");
+}
+
+#[test]
+fn set_refuses_a_pointer_type_change_even_when_the_length_matches() {
+    let model = crate::model("gemv_f32").expect("稠密语义");
+    let mut sample = (model.sample)(8, 2);
+    let want = sample.f32("x").expect("输入").len();
+    // 长度对得上、类型对不上：旧口径会放它过去，下游 reference 便按错误变体读同一块数据。
+    let error = sample
+        .set("x", Values::U8(vec![0; want]))
+        .expect_err("float 槽位不能换成 unsigned char");
+    assert_eq!(error.code(), Code::Invalid);
+    let text = error.to_string();
+    assert!(text.contains("`x`"), "{text}");
+    assert!(text.contains("float"), "{text}");
+    assert!(text.contains("unsigned char"), "{text}");
+    // 换回同类型才算换成：类型检查不是"一律拒绝"。
+    sample
+        .set("x", Values::F32(vec![1.0; want]))
+        .expect("同类型换数据");
+    assert_eq!(sample.f32("x").expect("输入"), [1.0f32; 8]);
+    // 长度仍单独判：类型对了但个数不对，还是 Invalid。
+    assert_eq!(
+        sample
+            .set("x", Values::F32(vec![0.0; want + 1]))
+            .expect_err("长度不符")
+            .code(),
+        Code::Invalid
+    );
 }
 
 #[test]

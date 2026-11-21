@@ -53,11 +53,13 @@ impl Values {
         self.len() == 0
     }
 
-    /// 元素类型的名字（诊断用）。
-    pub fn kind(&self) -> &'static str {
+    /// 元素类型在 C 里的名字（诊断用）。
+    ///
+    /// 这是"样本给的到底是什么类型"的唯一说法：签名校验与桥接检查共用它，免得同一件事有两种叫法。
+    pub fn describe(&self) -> &'static str {
         match self {
-            Self::F32(_) => "F32",
-            Self::U8(_) => "U8",
+            Self::F32(_) => "float",
+            Self::U8(_) => "unsigned char",
         }
     }
 
@@ -167,9 +169,9 @@ impl Sample {
             return Err(Error::new(
                 Code::Invalid,
                 format!(
-                    "缓冲 `{name}` 是 {}，换入的是 {}",
-                    buffer.values.kind(),
-                    values.kind()
+                    "缓冲 `{name}` 是 `{}`，换入的是 `{}`",
+                    buffer.values.describe(),
+                    values.describe()
                 ),
             )
             .with("op::model::Sample::set"));

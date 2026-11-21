@@ -255,6 +255,32 @@ impl<T: dtype::Format> Closed for T {
 pub type DTypeSet = Set<DType, 1>;
 
 vocabulary! {
+    /// 内核写回尾块闭集：主循环之后、把累加器写回全局内存之前，依次施加的一串后处理步骤。
+    /// 顺序即施加顺序；只有 [`Epilogue::Store`] 有副作用（把结果写进输出缓冲）。
+    Epilogue {
+        #[doc = "偏置：`C[i,j] += bias[j]`，按列加偏置向量。"] Bias => "bias",
+        #[doc = "激活：按 [`ActKind`] 逐元素变换累加器。"] Act => "act",
+        #[doc = "残差：`C[i,j] += R[i,j]`，加跳过连接的残差输入。"] Residual => "residual",
+        #[doc = "缩放：`C[i,j] *= α`，标量缩放。"] Scale => "scale",
+        #[doc = "量化：把浮点累加器压到整数位宽再反量化，含舍入。"] Quant => "quant",
+        #[doc = "写回：把累加器写进输出缓冲。"] Store => "store",
+    }
+}
+inherent_names!(Epilogue);
+
+vocabulary! {
+    /// 激活函数闭集：`act:<kind>` 的参数，与 `gemm::unary` 的执行核一一对应。
+    ActKind {
+        #[doc = "ReLU：`max(x, 0)`。"] Relu => "relu",
+        #[doc = "GELU（erf 形式）。"] Gelu => "gelu",
+        #[doc = "SiLU / Swish：`x · σ(x)`。"] Silu => "silu",
+        #[doc = "Leaky ReLU：负半轴斜率 `0.01`。"] LeakyRelu => "leaky_relu",
+        #[doc = "硬 Sigmoid：`clamp(x/6 + 0.5, 0, 1)`。"] HardSigmoid => "hard_sigmoid",
+    }
+}
+inherent_names!(ActKind);
+
+vocabulary! {
     /// 三级存储的语义名（cutile README §6.3）：物理名由档案映射。
     Space {
         #[doc = "全局内存。"] Gm => "GM",
