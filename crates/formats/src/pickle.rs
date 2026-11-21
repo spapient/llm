@@ -173,18 +173,12 @@ impl Vm {
         Ok(())
     }
 
-    /// `LONG1`/`LONG4`：小端二进制补码、长度可变；超过 8 字节的整数装不进 `i64`，显式失败。
+    /// `LONG1`/`LONG4`：小端二进制补码、长度可变；超过 8 字节的整数装不进 `i64`，
+    /// 由 [`Vm::integer`] 统一拒掉。
     pub(crate) fn long(&mut self, width: usize) -> Result<()> {
         let len = self.uint(width)? as usize;
-        if len > 8 {
-            return Err(bad("LONG 超过 i64 宽度"));
-        }
         let raw = self.bytes(len)?;
-        let sign = raw.last().is_some_and(|&last| last & 0x80 != 0);
-        let mut buf = [if sign { 0xFF } else { 0 }; 8];
-        buf[..len].copy_from_slice(&raw);
-        self.stack.push(Value::Int(i64::from_le_bytes(buf)));
-        Ok(())
+        self.integer(raw, true)
     }
 
     pub(crate) fn global(&mut self) -> Result<()> {
@@ -201,16 +195,27 @@ impl Vm {
         Ok(())
     }
 
+    /// `BININT1`/`BININT2`（无符号）与 `BININT`（4 字节补码）共用一套符号规则。
     pub(crate) fn push_uint(&mut self, op: u8) -> Result<()> {
-        let width = if op == b'M' { 2 } else { 1 };
-        let value = self.uint(width)? as i64;
-        self.stack.push(Value::Int(value));
-        Ok(())
+        let raw = self.bytes(if op == b'M' { 2 } else { 1 })?;
+        self.integer(raw, false)
     }
 
     pub(crate) fn push_binint(&mut self) -> Result<()> {
-        let raw = self.uint(4)? as u32 as i32;
-        self.stack.push(Value::Int(i64::from(raw)));
+        let raw = self.bytes(4)?;
+        self.integer(raw, true)
+    }
+
+    /// 小端补码字节 → `i64`：`signed` 时按最高位符号扩展（`BININT`/`LONG*`），否则零扩展
+    /// （`BININT1`/`BININT2`）；超过 8 字节装不进 `i64`，显式失败。
+    fn integer(&mut self, raw: Vec<u8>, signed: bool) -> Result<()> {
+        if raw.len() > 8 {
+            return Err(bad("整数超过 i64 宽度"));
+        }
+        let negative = signed && raw.last().is_some_and(|&last| last & 0x80 != 0);
+        let mut buf = [if negative { 0xFF } else { 0 }; 8];
+        buf[..raw.len()].copy_from_slice(&raw);
+        self.stack.push(Value::Int(i64::from_le_bytes(buf)));
         Ok(())
     }
 

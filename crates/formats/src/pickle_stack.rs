@@ -2,8 +2,8 @@
 
 use diagnostic::Result;
 
-use crate::pickle_storage::{as_tuple, storage_handle, tensor_of};
 use crate::pickle::{Value, Vm};
+use crate::pickle_storage::{as_tuple, storage_handle, tensor_of};
 use wire::{bad, or_bad};
 
 impl Vm {

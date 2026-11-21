@@ -101,7 +101,9 @@ pub(crate) fn check_contiguous(shape: &[u64], steps: &[usize]) -> Result<()> {
     for (&size, &step) in shape.iter().zip(steps).rev() {
         let width = usize::try_from(size).map_err(|_| bad("形状维度溢出"))?;
         if width > 1 && step != expected {
-            return Err(bad(format!("非连续张量：stride {step}，连续布局应为 {expected}")));
+            return Err(bad(format!(
+                "非连续张量：stride {step}，连续布局应为 {expected}"
+            )));
         }
         expected = or_bad(expected.checked_mul(width), "形状乘积溢出")?;
     }

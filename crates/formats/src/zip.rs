@@ -86,7 +86,9 @@ fn zip64_directory(bytes: &[u8], eocd: usize) -> Result<(usize, usize)> {
 }
 
 fn zip64_record(bytes: &[u8], eocd: usize) -> Result<usize> {
-    let locator = eocd.checked_sub(20).ok_or_else(|| bad("ZIP64 定位器不完整"))?;
+    let locator = eocd
+        .checked_sub(20)
+        .ok_or_else(|| bad("ZIP64 定位器不完整"))?;
     if u32::from_le_bytes(le(bytes, locator)?) != EOCD64_LOCATOR_SIG {
         return Err(bad("ZIP64 定位器签名不符"));
     }

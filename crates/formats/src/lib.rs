@@ -5,9 +5,9 @@
 
 pub mod bin;
 pub mod gguf;
-pub mod json;
 pub(crate) mod gguf_dequant;
 pub(crate) mod gguf_reader;
+pub mod json;
 pub(crate) mod json_number;
 pub(crate) mod json_reader;
 pub(crate) mod pickle;

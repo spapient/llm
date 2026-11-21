@@ -65,7 +65,9 @@ impl<'a> Bin<'a> {
         let storage = self.zip.data_suffix(&suffix);
         let fallback = format!("data/{}", tensor.storage_key);
         let storage = storage.or_else(|_| self.zip.data_suffix(&fallback))?;
-        storage.get(window(tensor.offset, tensor.len)).ok_or_else(|| bad("张量字节区间越界"))
+        storage
+            .get(window(tensor.offset, tensor.len))
+            .ok_or_else(|| bad("张量字节区间越界"))
     }
 }
 

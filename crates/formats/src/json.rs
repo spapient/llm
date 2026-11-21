@@ -70,64 +70,44 @@ impl Value {
         }
     }
 
-    /// 按对象取出字段（保持书写顺序）。
-    ///
-    /// # Errors
-    ///
-    /// 值不是对象时返回 [`Code::Invalid`]。
+    /// 按对象取出字段（保持书写顺序）；不是对象即 [`Code::Invalid`]。
     pub fn object(&self) -> Result<&[(String, Value)]> {
         match self {
             Self::Object(fields) => Ok(fields),
-            other => Err(self.mismatch("对象", other)),
+            _ => Err(self.mismatch("对象")),
         }
     }
 
-    /// 按数组取出元素。
-    ///
-    /// # Errors
-    ///
-    /// 值不是数组时返回 [`Code::Invalid`]。
+    /// 按数组取出元素；不是数组即 [`Code::Invalid`]。
     pub fn array(&self) -> Result<&[Value]> {
         match self {
             Self::Array(items) => Ok(items),
-            other => Err(self.mismatch("数组", other)),
+            _ => Err(self.mismatch("数组")),
         }
     }
 
-    /// 按字符串取出文本。
-    ///
-    /// # Errors
-    ///
-    /// 值不是字符串时返回 [`Code::Invalid`]。
+    /// 按字符串取出文本；不是字符串即 [`Code::Invalid`]。
     pub fn string(&self) -> Result<&str> {
         match self {
             Self::String(text) => Ok(text),
-            other => Err(self.mismatch("字符串", other)),
+            _ => Err(self.mismatch("字符串")),
         }
     }
 
-    /// 按整数取出数值。
-    ///
-    /// # Errors
-    ///
-    /// 值不是整数时返回 [`Code::Invalid`]。
+    /// 按整数取出数值；不是整数即 [`Code::Invalid`]。
     pub fn integer(&self) -> Result<i64> {
         match self {
             Self::Integer(number) => Ok(*number),
-            other => Err(self.mismatch("整数", other)),
+            _ => Err(self.mismatch("整数")),
         }
     }
 
-    /// 取数字的原文写法：整数转成十进制文本，小数原样返回。
-    ///
-    /// # Errors
-    ///
-    /// 值不是数字时返回 [`Code::Invalid`]。
+    /// 数字的原文写法（整数转十进制文本，小数原样）；不是数字即 [`Code::Invalid`]。
     pub fn number_text(&self) -> Result<String> {
         match self {
             Self::Integer(number) => Ok(number.to_string()),
             Self::Decimal(text) => Ok(text.clone()),
-            other => Err(self.mismatch("数字", other)),
+            _ => Err(self.mismatch("数字")),
         }
     }
 
@@ -142,10 +122,11 @@ impl Value {
         }
     }
 
-    fn mismatch(&self, expected: &str, other: &Value) -> Error {
+    /// 类型不符：期望 `expected`，实际是 `self` 的种类（种类名由 [`Value::kind`] 唯一给出）。
+    fn mismatch(&self, expected: &str) -> Error {
         Error::new(
             Code::Invalid,
-            format!("期望{expected}，得到{}", other.kind()),
+            format!("期望{expected}，得到{}", self.kind()),
         )
         .with("weights::json")
     }

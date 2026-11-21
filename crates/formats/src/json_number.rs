@@ -20,7 +20,8 @@ impl<'a> Reader<'a> {
                 .fail_at(start, "只接受整数：头部里的形状与偏移不能是小数或指数"));
         }
         let whole = self.cursor.pos();
-        self.fraction(start)?;
+        self.dot(start)?;
+        self.exponent(start)?;
         self.decimal(start, digits, whole).map(Value::Decimal)
     }
 
@@ -33,12 +34,6 @@ impl<'a> Reader<'a> {
             return Ok(digits);
         }
         Err(self.cursor.fail_at(start, "数字缺少整数部分"))
-    }
-
-    /// 小数与指数部分：`.` 后至少一位数字，`e`/`E` 后可带符号、同样至少一位数字。
-    fn fraction(&mut self, start: usize) -> Result<()> {
-        self.dot(start)?;
-        self.exponent(start)
     }
 
     /// 小数部分（可缺）：`.` 之后必须至少一位数字。

@@ -244,27 +244,21 @@ impl<'a> Reader<'a> {
         Ok(text)
     }
 
-    /// 字符串的一段：闭合引号返回 `None`，否则返回这一段贡献的文本。
+    /// 字符串的一段：闭合引号返回 `None`；转义、控制字符（必须转义）与多字节字符各一条判据。
+    /// `open` 是字符串起点、`at` 是本片段起点，两者在报错时含义不同。
     fn chunk(&mut self, open: usize) -> Result<Option<String>> {
         let at = self.cursor.pos();
         let byte = self
             .cursor
             .bump()
             .ok_or_else(|| self.cursor.fail_at(open, "字符串没有闭合"))?;
-        if byte == b'"' {
-            return Ok(None);
-        }
-        Ok(Some(self.fragment(open, at, byte)?))
-    }
-
-    /// 字符串里的一个片段：转义、控制字符（必须转义）与多字节字符各一条判据。
-    /// `open` 是字符串起点、`at` 是本片段起点，两者在报错时含义不同。
-    fn fragment(&mut self, open: usize, at: usize, byte: u8) -> Result<String> {
-        match byte {
-            b'\\' => self.escape(open, at).map(String::from),
-            0x00..=0x1f => Err(self.cursor.fail_at(at, "控制字符必须转义")),
-            _ => self.utf8(at),
-        }
+        let text = match byte {
+            b'"' => return Ok(None),
+            b'\\' => String::from(self.escape(open, at)?),
+            0x00..=0x1f => return Err(self.cursor.fail_at(at, "控制字符必须转义")),
+            _ => self.utf8(at)?,
+        };
+        Ok(Some(text))
     }
 
     /// 一个转义序列：`\` 之后的一个字节；`u` 走四位十六进制与代理对。
