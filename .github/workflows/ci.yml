@@ -150,6 +150,32 @@ jobs:
           cargo install --git https://github.com/mpecan/cargo-dupes cargo-dupes --locked
           cargo dupes --exclude-tests report
 
+  gates:
+    name: S++ gates (static + architecture + name + density)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "nightly-2026-09-01"
+      - uses: Swatinem/rust-cache@v2
+      # 静态门：源文件圈复杂度 / 行数 / 命名 / unsafe 计数 / Call 门等硬阈值。
+      # ratchet：新增身份必进表、已登记值恶化必失败，与 `.config/lints/vocabulary.toml` 单一来源一致。
+      - name: Static gate
+        run: cargo test -p llm-tools --test gate --locked
+      # 架构门：层表 / 边集 / 所有权 / 入口不定义类型 / 错误边界不回落字符串，
+      # 与 docs/ARCHITECTURE.md 边集逐条比对（单一来源）。
+      - name: Architecture gate
+        run: cargo test -p llm-testkit --test architecture --locked
+      # 命名门：下划线文件名 / 后缀残留 / 泛名函数 / Op 后缀，零命中（已清零，保持阻断）。
+      - name: Name lint
+        run: bash scripts/name-lint.sh
+      # 密度预算：crates/*/src ≤90,000 行。R1–R2 报告不阻断，R3 起转阻断（阈值只收紧）。
+      # 不阻断是为了给净减留出窗口；报告输出仍可见，避免静默漂移。
+      - name: Density budget (report)
+        continue-on-error: true
+        run: bash scripts/loc-budget.sh
+
   deny:
     name: deny + machete
     runs-on: ubuntu-latest
@@ -234,7 +260,7 @@ jobs:
       FUZZ_TARGETS: >-
         fuzz_cli fuzz_weights_json fuzz_weights_safetensors fuzz_weights_archive
         fuzz_train_snapshot fuzz_serve_frames fuzz_wire_sealed fuzz_wire_leb
-      fuzz_http_head fuzz_lex
+        fuzz_http_head fuzz_lex
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master

@@ -589,11 +589,33 @@ fn scaled_dot<C: Plain>(w_row: &[C::Elem], x: &[f32], s_row: &[f32], group: usiz
     acc
 }
 
-/// 一行的无标度点积：按 [`Plain::STEP`] 分块累加（块宽是热路径常数，利于展开向量化）。
+/// 累加链数：16 条 = 4 条 NEON 寄存器（x86 的 AVX2 上是 2 条 `ymm`）。
+///
+/// 这个数不是凑出来的：`crates/benchmarks/criterion/gemv_f32.rs` 的 1×4096×4096 decode 步在本机
+/// 实测 4 条链 3.8 ms、8 条 1.3 ms、12 条 3.7 ms、16 条 0.89 ms、24 条 2.4 ms、32 条 0.91 ms——
+/// 只有 2 的幂的条数能被展开成整条向量指令，16 条在多一个寄存器轮转之后就不再获益。
+const LANES: usize = 16;
+
+/// 一行的无标度点积：`LANES` 条独立累加链，内层编译成整条向量乘加。
+///
+/// 与 [`dot`] 的 `sum` 差在归约的形状：`sum` 是严格的左折叠，f32 没有 fast-math，LLVM 只能一次
+/// 加一个——上面那组实测里它就是 2.85 ms 那一档，decode 的带宽全被它挡住。`LANES` 条链彼此独立，
+/// 同样的权重读一遍算出整条向量的宽度（实测 3.2×）；链内顺序与左折叠不同，只带来末位舍入差，
+/// 确定性样本的取值落在 2 的幂网格上，两者逐位相同。
 fn dense_dot<C: Plain>(w_row: &[C::Elem], x: &[f32]) -> f32 {
-    let mut acc = 0.0f32;
-    for (w_chunk, x_chunk) in w_row.chunks(C::STEP).zip(x.chunks(C::STEP)) {
-        acc += dot::<C>(w_chunk, x_chunk);
+    let (w_chunks, w_tail) = w_row.as_chunks::<LANES>();
+    let (x_chunks, x_tail) = x.as_chunks::<LANES>();
+    let mut lanes = [0.0f32; LANES];
+    for (w, x) in w_chunks.iter().zip(x_chunks) {
+        let mut lane = 0;
+        while lane < LANES {
+            lanes[lane] += C::to_f32(w[lane]) * x[lane];
+            lane += 1;
+        }
+    }
+    let mut acc = lanes.iter().sum::<f32>();
+    for (w, x) in w_tail.iter().zip(x_tail) {
+        acc += C::to_f32(*w) * *x;
     }
     acc
 }
