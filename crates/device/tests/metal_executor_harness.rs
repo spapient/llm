@@ -1,6 +1,5 @@
 use super::*;
 use cutile::backend::TensorGeometry;
-#[cfg(target_os = "macos")]
 use cutile::execution::Backend::Metal;
 use cutile::execution::{Mode, program};
 

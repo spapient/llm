@@ -690,10 +690,21 @@ dependencies = [
  "half",
  "llm-annotation",
  "llm-diagnostic",
+ "llm-op-spec",
  "llm-prof",
  "llm-testkit",
  "num-traits",
  "toml",
+]
+
+[[package]]
+name = "llm-op-spec"
+version = "0.1.0"
+dependencies = [
+ "llm-annotation",
+ "llm-diagnostic",
+ "llm-prof",
+ "llm-testkit",
 ]
 
 [[package]]

@@ -1,6 +1,6 @@
 //! 模板词法：把 `<name>.k` 切成文本、`{{槽位}}` 与 `@原语(...)`（cutile README §4.2）。
 //!
-//! 词法属于声明层：它解释的是 `ops/` 里的文本格式，声明解析（[`crate::decl::OpDecl`]）要用它提前
+//! 词法属于声明层：它解释的是 `ops/` 里的文本格式，声明解析（`op::decl::OpDecl`，在 `op` crate）要用它提前
 //! 拦住 `{{GMAXX}}` 这类笔误。片段拼接（`@原语` → 片段文本）才是机制，留在 `cutile`。
 //!
 //! 位置信息只记行号——这是"诊断精度换解析器规模"的刻意取舍。
@@ -295,17 +295,17 @@ mod tests;
 pub mod formula {
     //! 骨架的表达式协议：一条 einsum 表达式、一张操作数表、一个按实现分开的缓存单元格。
     //!
-    //! 六族骨架（[`crate::unary::Unary`] / [`crate::elementwise::Binary`] / [`crate::reduce::Reduce`] /
-    //! [`crate::gemv::Format`] / [`crate::gemv::Plain`]）在「表达式从哪来」上是同一件事：族给出表达式
+    //! 六族骨架（`unary::Unary` / `elementwise::Binary` / `reduce::Reduce` / `gemv::Format` /
+    //! `gemv::Plain`，都在 `op-kernel`）在「表达式从哪来」上是同一件事：族给出表达式
     //! 与操作数表，实现只决定算术。协议收在这里，族 trait 只声明随语义变化的那部分（ADR 0050 §2）。
     //!
-    //! [`crate::gemm`] 不在其列：它的代价由分块几何现算，没有表达式可缓存。
+    //! `gemm` 不在其列：它的代价由分块几何现算，没有表达式可缓存。
     use crate::einsum::{Formula, FormulaCache, OperandSpec};
     use diagnostic::Error;
 
     /// 表达式的主人：一副骨架怎么声明表达式、缓存在哪、解析失败报什么帧。
     ///
-    /// 实现者是族 trait 的实现（标记类型，以及 [`crate::gemv::Packed`] 这类配置驱动类型）：它们只给
+    /// 实现者是族 trait 的实现（标记类型，以及 `gemv::Packed` 这类配置驱动类型）：它们只给
     /// 三个常量与一个单元格，[`FormulaOwner::formula`] 是全仓唯一一份解析与缓存逻辑。
     pub trait FormulaOwner {
         /// 一条 einsum 表达式。
@@ -320,7 +320,7 @@ pub mod formula {
         /// 本实现的缓存单元格。
         ///
         /// 必须**每个实现一份**：写在泛型骨架里的 `static` 在 Rust 里只有一份，先解析的表达式与操作数
-        /// 表会被后跑的格式复用（位宽串档）。函数体写成 [`formula_cell!`](crate::formula_cell)，全仓一个写法。
+        /// 表会被后跑的格式复用（位宽串档）。函数体写成 [`formula_cell!`]，全仓一个写法。
         fn cache() -> &'static FormulaCache;
 
         /// 表达式：第一次调用时解析并校验，之后复用。
@@ -346,7 +346,7 @@ pub mod formula {
     }
 }
 
-pub(crate) mod guard {
+pub mod guard {
     //! 缓冲长度校验：`(实际, 需要, 名称)` 逐条比对，失败即带名称与两个数字返回。
     //!
     //! 归一化、循环与转置卷积三类层共用同一套报错口径，此前各自抄了一份 `check` / `check_all`。
@@ -365,7 +365,7 @@ pub(crate) mod guard {
     }
 
     /// 一组约束，逐条短路；把多处 `?` 收进一个出口，调用点只写一次。
-    pub(crate) fn check_all(bounds: &[(usize, usize, &str)]) -> Result<()> {
+    pub fn check_all(bounds: &[(usize, usize, &str)]) -> Result<()> {
         for &(actual, required, what) in bounds {
             check(actual, required, what)?;
         }

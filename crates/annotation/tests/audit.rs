@@ -361,8 +361,6 @@ fn rendering_allocates_only_its_output_buffer() {
         "render_runtime",
         "render_model",
         "asserts",
-        "registry",
-        "dtype",
         "unique",
         "holes",
         "shape_of",

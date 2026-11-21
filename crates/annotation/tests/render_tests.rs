@@ -289,46 +289,60 @@ fn the_model_renderer_projects_the_operator_contract() {
     );
     assert!(
         code.contains(
-            "pub const MODEL: ::llm_op::model::Model = ::llm_op::operator::model_of::<I4>();"
+            "pub const MODEL: ::llm_op_spec::model::Model = ::llm_op_spec::operator::model_of::<I4>();"
         ),
         "MODEL 必须是 Operator 的投影：{code}"
     );
     assert!(
         code.contains(
-            r#"::llm_op::same_bytes(<I4 as ::llm_op::operator::Operator>::NAME, "gemv_i4")"#
+            r#"::llm_op_spec::same_bytes(<I4 as ::llm_op_spec::operator::Operator>::NAME, "gemv_i4")"#
         ),
         "注解注册名必须在编译期与 Operator::NAME 对齐：{code}"
     );
     assert!(
-        code.contains("<I4 as ::llm_op::operator::Operator>::SHAPE.0 == 4096usize"),
+        code.contains(
+            r#"::llm_op_spec::same_bytes(<I4 as ::llm_op_spec::operator::Operator>::DTYPE.name(), "f32")"#
+        ),
+        "注解里的 `dtype` 必须在编译期与 Operator::DTYPE 对齐（不再靠运行期解析）：{code}"
+    );
+    assert!(
+        code.contains("<I4 as ::llm_op_spec::operator::Operator>::SHAPE.0 == 4096usize"),
         "注解生产形状必须在编译期与 Operator::SHAPE 对齐：{code}"
     );
     assert!(
-        code.contains("let group = <I4 as ::llm_op::operator::Operator>::GROUP as usize;")
+        code.contains("let group = <I4 as ::llm_op_spec::operator::Operator>::GROUP as usize;")
             && code.contains("4096usize / group * group == 4096usize"),
         "粒度来自 Operator::GROUP，生产形状整除性仍是编译期断言：{code}"
-    );
-    assert!(
-        code.contains("const _: () = <I4 as ::llm_op::gemv::Format>::CHECK;"),
-        "格式自证要由格式自己声明、在别名上被求值：{code}"
     );
     assert!(
         !code.contains("group: <I4"),
         "MODEL 不再逐字段渲染，粒度不该出现第二份：{code}"
     );
     assert!(
-        code.contains("signature.output_type().and_then(|ctype| ctype.dtype())")
-            && code.contains("Some(super::MODEL.dtype)"),
-        "注解的 dtype 必须与 `.k` 的可写输出交叉核对：{code}"
-    );
-    assert!(code.contains("mod __model_check_model {"), "{code}");
-    assert!(
-        code.contains(r#"::llm_op::model::DType::parse_name("f32")"#),
-        "注解里的 `dtype` 必须解析成 `MODEL` 用的那个变体：{code}"
-    );
-    assert!(
         !code.contains("allow("),
-        "生成的模块名是固定标识符，不需要豁免任何 lint：{code}"
+        "生成的代码是固定标识符，不需要豁免任何 lint：{code}"
+    );
+}
+
+/// 注解只认识契约 crate：展开到任何 crate 都成立。它不该提到注册表（`builtin_named` / `model(..)`）、
+/// 某个执行核（`gemv::Format`）或 `.k` 签名——那些事实分别属于 `op` 与 `op-kernel`，由各自的测试核对。
+#[test]
+fn the_model_expansion_names_only_the_contract_crate() {
+    let code = render_model(
+        &model(r#"name = "gemv_i4", shape = [4096, 4096], dtype = "f32""#),
+        "I4",
+    );
+    assert!(
+        !code.contains("::llm_op::"),
+        "展开里不该出现注册表 crate 的路径：{code}"
+    );
+    assert!(
+        !code.contains("builtin_named") && !code.contains("Signature::parse"),
+        "注解不核对注册表与签名：{code}"
+    );
+    assert!(
+        !code.contains("__model_check") && !code.contains("#[cfg(test)]"),
+        "注解不生成测试模块（注册表驱动的一致性是 `op` 的测试）：{code}"
     );
 }
 
@@ -342,7 +356,7 @@ fn a_named_const_gives_two_models_distinct_names_in_one_module() {
         "FlashAttention",
     );
     assert!(
-        code.contains("pub const FLASH_MODEL: ::llm_op::model::Model"),
+        code.contains("pub const FLASH_MODEL: ::llm_op_spec::model::Model"),
         "{code}"
     );
     assert!(
@@ -350,12 +364,8 @@ fn a_named_const_gives_two_models_distinct_names_in_one_module() {
         "写了 const 键就不该再生成默认名：{code}"
     );
     assert!(
-        code.contains("mod __model_check_flash_model {"),
-        "检查模块要用 const 名派生，避免同模块两算子撞名：{code}"
-    );
-    assert!(
-        code.contains("super::FLASH_MODEL"),
-        "检查体引用的语义常量要与声明名一致：{code}"
+        code.contains("::llm_op_spec::operator::model_of::<FlashAttention>()"),
+        "const 名只改常量标识符，投影的仍是同一个 Operator：{code}"
     );
 }
 
@@ -380,7 +390,7 @@ fn every_skeleton_projects_through_the_same_contract() {
             "骨架 `{skeleton}` 没有投影出 MODEL：{code}"
         );
         assert!(
-            code.contains("::llm_op::operator::model_of::<M>()"),
+            code.contains("::llm_op_spec::operator::model_of::<M>()"),
             "所有骨架走同一条投影：{code}"
         );
     }

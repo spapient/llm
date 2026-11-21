@@ -12,7 +12,7 @@ use std::fmt::Write;
 /// 容量是预算而不是常量表：`String::with_capacity` 精确报出所请求的容量，写超一次就会翻倍增长，
 /// 所以 `render_tests::one_render_allocates_exactly_once` 能用 `capacity()` 把这三个数钉住。
 pub(crate) const STATIC_ROOM: usize = 3072;
-pub(crate) const MODEL_ROOM: usize = 4096;
+pub(crate) const MODEL_ROOM: usize = 1536;
 pub(crate) const RUNTIME_ROOM: usize = 512;
 
 /// 静态形态：私有构造函数 + `impl ::nn::Contract` + 一条 `#[cfg(test)]` 校验。
@@ -167,7 +167,7 @@ fn unique<'a>(names: impl Iterator<Item = &'a String>) -> Vec<&'a str> {
     seen
 }
 
-/// 把 `#[model(..)]` 渲染成 `MODEL` + 编译期契约断言 + 一条校验测试。
+/// 把 `#[model(..)]` 渲染成 `MODEL` + 编译期契约断言（不生成运行期测试，见 [`asserts`]）。
 ///
 /// `MODEL` 不是逐字段拼出来的第二份事实：它就是 `Operator` 的投影（`model_of::<T>()`）。注解里的
 /// 注册名、生产形状与输出类型仍要写，但只在编译期与 `Operator` 的常量对齐——写错是 `cargo check`
@@ -183,11 +183,10 @@ pub(crate) fn render_model(declaration: &ModelDecl, ty: &str) -> String {
     );
     let _ = writeln!(
         code,
-        "pub const {}: ::llm_op::model::Model = ::llm_op::operator::model_of::<{ty}>();\n",
+        "pub const {}: ::llm_op_spec::model::Model = ::llm_op_spec::operator::model_of::<{ty}>();\n",
         declaration.const_name
     );
     asserts(&mut code, declaration, ty);
-    model_check(&mut code, declaration, ty);
     code
 }
 
@@ -213,119 +212,41 @@ fn closed(declaration: &ModelDecl) -> Option<String> {
     Some(format!("compile_error!({});\n", Quoted(&message)))
 }
 
-/// 注解字面量与 `Operator` 常量之间的编译期契约：名字逐字节相同、形状相同、`M` 是粒度整数倍。
+/// 注解字面量与 `Operator` 常量之间的编译期契约：名字与输出类型逐字节相同、形状相同、`M` 是
+/// 粒度整数倍。
+///
+/// 只引用契约 crate（`llm_op_spec`）的项：注解展开在哪个 crate 都成立，不需要该 crate 认识注册表
+/// 或某个执行核。「注册表里的那一条就是这份 `MODEL`」由 `op` 的注册表驱动的测试核对——那里是唯一
+/// 同时看得见注册表与全部内核的类型表的地方。
 fn asserts(code: &mut String, declaration: &ModelDecl, ty: &str) {
     let [m, n] = declaration.shape;
     let _ = writeln!(
         code,
-        "const _: () = assert!(::llm_op::same_bytes(<{ty} as ::llm_op::operator::Operator>::NAME, {}), \"注解注册名必须与 Operator::NAME 一致\");",
+        "const _: () = assert!(::llm_op_spec::same_bytes(<{ty} as ::llm_op_spec::operator::Operator>::NAME, {}), \"注解注册名必须与 Operator::NAME 一致\");",
         Quoted(&declaration.name)
+    );
+    let _ = writeln!(
+        code,
+        "const _: () = assert!(::llm_op_spec::same_bytes(<{ty} as ::llm_op_spec::operator::Operator>::DTYPE.name(), {}), \"注解里的 `dtype` 必须与 Operator::DTYPE 一致\");",
+        Quoted(&declaration.dtype)
     );
     code.push_str("const _: () = {\n    ");
     let _ = writeln!(
         code,
-        "assert!(<{ty} as ::llm_op::operator::Operator>::SHAPE.0 == {m}usize, \"注解生产形状必须与 Operator::SHAPE 一致\");"
+        "assert!(<{ty} as ::llm_op_spec::operator::Operator>::SHAPE.0 == {m}usize, \"注解生产形状必须与 Operator::SHAPE 一致\");"
     );
     let _ = writeln!(
         code,
-        "    assert!(<{ty} as ::llm_op::operator::Operator>::SHAPE.1 == {n}usize, \"注解生产形状必须与 Operator::SHAPE 一致\");"
+        "    assert!(<{ty} as ::llm_op_spec::operator::Operator>::SHAPE.1 == {n}usize, \"注解生产形状必须与 Operator::SHAPE 一致\");"
     );
     let _ = writeln!(
         code,
-        "    let group = <{ty} as ::llm_op::operator::Operator>::GROUP as usize;"
+        "    let group = <{ty} as ::llm_op_spec::operator::Operator>::GROUP as usize;"
     );
     code.push_str("    assert!(group > 0, \"形状粒度必须大于 0\");\n");
     let _ = writeln!(
         code,
         "    assert!({m}usize / group * group == {m}usize, \"生产形状的 M 必须是形状粒度的整数倍\");\n}};\n"
-    );
-    if declaration.skeleton == "gemv" {
-        let _ = writeln!(
-            code,
-            "const _: () = <{ty} as ::llm_op::gemv::Format>::CHECK;\n"
-        );
-    }
-}
-
-/// `#[cfg(test)] mod __model_check_*`：把注解、注册表与 `.k` 签名三份事实对齐。模块名带 `const`
-/// 名，多算子同模块时两个检查各占一个测试模块，不撞名。
-fn model_check(code: &mut String, declaration: &ModelDecl, ty: &str) {
-    let check = declaration.const_name.to_ascii_lowercase();
-    code.push_str("#[cfg(test)]\n");
-    let _ = writeln!(code, "mod __model_check_{check} {{");
-    code.push_str("    #[test]\n    fn the_annotation_agrees_with_the_registered_kernel() {\n");
-    registry(code, declaration, ty);
-    dtype(code, declaration);
-    code.push_str("    }\n}\n");
-}
-
-/// 注册表 ↔ 注解声明 ↔ `Operator` 投影：名字、形状、样本与代价。
-fn registry(code: &mut String, declaration: &ModelDecl, ty: &str) {
-    let model = &declaration.const_name;
-    let [m, n] = declaration.shape;
-    let _ = writeln!(
-        code,
-        "        let op = ::llm_op::builtin_named({}).expect(\"算子已注册\");",
-        Quoted(&declaration.name)
-    );
-    let _ = writeln!(
-        code,
-        "        let signature = ::llm_op::sig::Signature::parse({}, op.template()).expect(\"签名可解析\");",
-        Quoted(&declaration.name)
-    );
-    let _ = writeln!(
-        code,
-        "        let registered = ::llm_op::model({}).expect(\"语义已注册\");",
-        Quoted(&declaration.name)
-    );
-    // 注册名与生产形状属于**声明**；`MODEL` 由 `Operator` 投影，所以这两条把声明与投影绑在一起，
-    // 防止只改一侧。
-    let _ = writeln!(
-        code,
-        "        assert_eq!(<super::{ty} as ::llm_op::operator::Operator>::NAME, {}, \"注解注册名必须与 Operator::NAME 一致\");",
-        Quoted(&declaration.name)
-    );
-    let _ = writeln!(
-        code,
-        "        assert_eq!(super::{model}.shape, ({m}usize, {n}usize), \"注解生产形状必须与 Operator::SHAPE 一致\");"
-    );
-    for field in ["group", "shape", "dtype"] {
-        let _ = writeln!(
-            code,
-            "        assert_eq!(registered.{field}, super::{model}.{field}, \"注册表必须指向这份语义\");"
-        );
-    }
-    code.push_str(
-        "        let sample = (registered.sample)(registered.shape.0, registered.shape.1);\n",
-    );
-    code.push_str("        signature.check(&sample).expect(\"样本与 .k 签名一致\");\n");
-    code.push_str("        assert_eq!((registered.sample)(registered.shape.0, registered.shape.1), sample, \"样本必须可复现\");\n");
-    code.push_str("        let shape = (registered.shape_ctx)(registered.shape.0, registered.shape.1).expect(\"形状上下文可构造\");\n");
-    code.push_str("        (registered.cost)(&shape).expect(\"生产形状必须能算出代价\");\n");
-}
-
-/// 注解的 `dtype` 字符串 ↔ `MODEL.dtype` 变体 ↔ `.k` 的可写输出类型：三者是同一件事的三种说法。
-/// 只剩一半时（`.k` 写 `u8 *y` 而注解写 f32，或反过来）对拍会按另一种宽度解读缓冲。
-fn dtype(code: &mut String, declaration: &ModelDecl) {
-    let model = &declaration.const_name;
-    code.push_str("        assert_eq!(\n");
-    let _ = writeln!(
-        code,
-        "            ::llm_op::model::DType::parse_name({}),\n            Some(super::{model}.dtype),\n            \"注解里的 `dtype` 必须解析成 `MODEL` 用的那个变体（词汇表是唯一名字源）\",\n        );",
-        Quoted(&declaration.dtype)
-    );
-    code.push_str("        assert!(\n");
-    let _ = writeln!(
-        code,
-        "            signature.output_type().and_then(|ctype| ctype.dtype()) == Some(super::{model}.dtype),"
-    );
-    let _ = writeln!(
-        code,
-        "            \"注解写 `dtype = {}`，但 `.k` 的可写输出是 `{{}}`：回读按 `MODEL.dtype` 解释，两者必须是同一个类型\",",
-        declaration.dtype
-    );
-    code.push_str(
-        "            signature.output_type().map_or(\"-\", |ctype| ctype.c_name()),\n        );\n",
     );
 }
 

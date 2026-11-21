@@ -1,7 +1,7 @@
 //! 注解层：把"声明"写成属性，由编译器检查，而不是手写 trait 样板再靠人复核。
 //!
 //! **拥有**：`#[spec]` / `#[model]` 两道属性宏。**不拥有**：任何领域类型——宏只在调用点的 crate 里
-//! 展开，生成的代码指向契约路径（`::nn::Contract` / `::llm_op::model::Model`），因此本 crate 对它们
+//! 展开，生成的代码指向契约路径（`::nn::Contract` / `::llm_op_spec::model::Model`），因此本 crate 对它们
 //! 没有依赖，也没有任何外部依赖（不引入 `syn` / `quote` / `proc-macro2`）。
 //!
 //! 注解承载的只是**可静态判定**的契约：层是（名字、输出形状、算子），语义表是（注册名、生产形状、
@@ -170,8 +170,8 @@ impl Streams for TokenStream {
     }
 }
 
-/// 把 `#[model(name = "..", shape = [m, n], dtype = "..")]` 展开成 `MODEL` 常量、两条编译期
-/// 断言与一条校验测试。
+/// 把 `#[model(name = "..", shape = [m, n], dtype = "..")]` 展开成 `MODEL` 常量与一组编译期
+/// 断言。
 ///
 /// 注解承载的是**编译期数据**：注册表的键、生产形状、输出类型。行为不在注解里——它是被标注的
 /// `type` 别名指向的那份格式契约（`Quantized<32>` / `Dense<32>`）：生成的 `MODEL` 把
@@ -179,8 +179,9 @@ impl Streams for TokenStream {
 /// `Format::GRAIN`。于是"注解说的格式"与"实际实现的格式"不可能各说各的：别名不实现
 /// `Format` 就编译不过，生产形状不是粒度的整数倍也是编译错误。
 ///
-/// 与 `#[spec]` 的分工一样，本注解不建注册表：注册表仍是 `REGISTRY` 一张，
-/// 生成的测试只核对"注册表里的那一条就是这份 `MODEL`"，不另存一份事实。
+/// 与 `#[spec]` 的分工一样，本注解不建注册表、也不引用注册表：注册表仍是 `REGISTRY` 一张，
+/// "注册表里的那一条就是这份 `MODEL`"由 `op` 侧一处注册表驱动的测试核对。于是注解展开在哪个
+/// crate 都成立——它只引用契约 crate 的项。
 #[proc_macro_attribute]
 pub fn model(attribute: TokenStream, item: TokenStream) -> TokenStream {
     expand_with(

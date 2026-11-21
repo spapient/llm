@@ -68,26 +68,23 @@ pub mod attention;
 pub mod classic;
 pub mod conv;
 pub mod decl;
+// 契约层（签名、布局、模板词法、代价表达式、语义模型、样本、算子契约）在 `op-spec`：
+// 这一层只回答"算子是什么"，因此可被 `op-kernel` / `op-neural` / `op` 三方同时依赖而不成环。
+// 用 `pub use` 兜住模块路径，12 个下游 crate 的 `op::model::…` / `op::sig::…` 零改动。
+pub use llm_op_spec::{einsum, model, operator, sample, sch, sig, tpl};
+pub use llm_op_spec::same_bytes;
+pub use llm_op_spec::tpl::{formula, parse};
+pub(crate) use llm_op_spec::tpl::guard;
 pub mod deconv;
 pub mod dequant;
-pub mod einsum;
 pub mod elementwise;
 pub mod fast;
 pub mod gemm;
 pub mod gemv;
 pub mod matmul;
-pub mod model;
 pub mod norm;
-pub mod operator;
-pub(crate) use tpl::parse;
 pub mod reduce;
-pub mod sample;
 pub mod scan;
-pub mod sch;
-pub mod sig;
-pub mod tpl;
-pub use tpl::formula;
-pub(crate) use tpl::guard;
 pub mod unary;
 
 // 一元 / 二元 / 归约 / 反量化 / GEMV / GEMM / 注意力骨架内的声明式子模块，re-export 到 crate 根保持 `op::<name>::MODEL` / `forward` 路径。
@@ -266,25 +263,6 @@ pub const fn contains(name: &str) -> bool {
     false
 }
 
-/// `const` 上下文里逐字节比两个名字（没有可用的 `str` 比较）。
-///
-/// 全仓共用这一份：`train` 的内核表、注册表清单与 `Operator::NAME` 的编译期对拍、以及 `train`
-/// 的内核表对拍都调它，不再各写一遍。
-pub const fn same_bytes(left: &str, right: &str) -> bool {
-    let (left, right) = (left.as_bytes(), right.as_bytes());
-    if left.len() != right.len() {
-        return false;
-    }
-    let mut index = 0;
-    while index < left.len() {
-        if left[index] != right[index] {
-            return false;
-        }
-        index += 1;
-    }
-    true
-}
-
 /// 算子语义注册表：声明层有的算子，这里必须有它的代价、样本与标量参考。
 ///
 /// 语义表和声明同属一条注册（[`REGISTRY`]），因此两者不会漂移，`cutile` 一侧不动。
@@ -368,3 +346,13 @@ pub fn builtin() -> Vec<Op> {
 #[cfg(test)]
 #[path = "../tests/op_tests.rs"]
 mod tests;
+
+/// 注册表 ↔ 语义表：注解不再生成运行期测试，两者的一致性收在这一处核对。
+#[cfg(test)]
+#[path = "../tests/model_tests.rs"]
+mod model_tests;
+
+/// 各内核 `Operator` 投影与注册表逐字段一致（ADR 0050 §2）。
+#[cfg(test)]
+#[path = "../tests/operator_tests.rs"]
+mod operator_tests;

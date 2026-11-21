@@ -11,6 +11,44 @@ use cutile::execution::Backend::Cuda;
 use cutile::execution::Backend::Metal;
 use cutile::execution::{Mode, program};
 
+/// Metal 执行器（真机不在场时 `None`；没有设备不是失败）。
+#[cfg(target_os = "macos")]
+fn metal_executor() -> Option<::device::metal::executor::MetalExecutor> {
+    ::device::metal::executor::MetalExecutor::new("metal", "arm64")
+}
+
+/// 生成 `Mode::declared()` 的单通道 Metal 源并注册成 `op_name`。
+#[cfg(target_os = "macos")]
+fn declared_metal(
+    catalogue: &cutile::builtin::Catalogue,
+    dirs: &cutile::dirs::Dirs,
+    op_name: &str,
+    m: usize,
+    n: usize,
+) -> Option<::device::metal::executor::MetalExecutor> {
+    let msl = program(catalogue, dirs, op_name, Metal, Mode::declared(), m, n)
+        .and_then(|s| s.one("降源"))
+        .expect("内核应能生成");
+    let mut executor = metal_executor()?;
+    executor.register(op_name, &msl).expect("注册内核");
+    Some(executor)
+}
+
+/// 生成 `Mode::segmented()` 的两段 Metal 源；注册名由调用方按语义决定。
+#[cfg(target_os = "macos")]
+fn segmented_metal(
+    catalogue: &cutile::builtin::Catalogue,
+    dirs: &cutile::dirs::Dirs,
+    op_name: &str,
+    m: usize,
+    n: usize,
+) -> Option<(::device::metal::executor::MetalExecutor, String, String)> {
+    let (first, second) = program(catalogue, dirs, op_name, Metal, Mode::segmented(), m, n)
+        .and_then(|s| s.two("分段"))
+        .expect("分段内核应能生成");
+    metal_executor().map(|e| (e, first, second))
+}
+
 /// 首个真机对拍闭环：`silu_f32` 走 op::REGISTRY → cutile emit → MetalExecutor 进程内编译 →
 /// 网格派发 → 回读，与标量参考对拍。证明「模板 → 拼接正文 → 网格包装 → Metal 执行」整条
 /// 生产链路在真机上产出正确数值，而不只是编译通过。
@@ -78,14 +116,9 @@ fn op_matches_reference_at(op_name: &str, shape: Option<(usize, usize)>) {
     let expected = (model.reference)(&sample).expect("标量参考");
     let decl = catalogue.op(op_name).expect("算子声明");
 
-    let msl = program(&catalogue, &dirs, op_name, Metal, Mode::declared(), m, n)
-        .and_then(|s| s.one("降源"))
-        .expect("内核应能生成");
-
-    let Some(mut executor) = ::device::metal::executor::MetalExecutor::new("metal", "arm64") else {
+    let Some(mut executor) = declared_metal(&catalogue, &dirs, op_name, m, n) else {
         return;
     };
-    executor.register(op_name, &msl).expect("注册内核");
 
     // 派发网格：`[grid]` 声明的各维标量取样本值；逐点算子（无归约/点积、单标量）走逐点网格
     // 快路径，线程下标即元素下标、网格覆盖整行（`N`）；其余缺省单线程串行。
@@ -159,13 +192,9 @@ fn op_chunked_reduce_matches_reference(op_name: &str) {
         grid_size,
     } = setup;
 
-    let msl = program(&catalogue, &dirs, op_name, Metal, Mode::declared(), m, n)
-        .and_then(|s| s.one("降源"))
-        .expect("内核应能生成");
-    let Some(mut executor) = ::device::metal::executor::MetalExecutor::new("metal", "arm64") else {
+    let Some(mut executor) = declared_metal(&catalogue, &dirs, op_name, m, n) else {
         return;
     };
-    executor.register(op_name, &msl).expect("注册内核");
 
     let launch = engine::exec::Launch::new([grid_size, 1, 1], [1, 1, 1]);
     let mut node = engine::exec::Node::new(op_name, launch);
@@ -284,11 +313,9 @@ fn op_chunked_scan_matches_reference(op_name: &str) {
         .and_then(|(_, value)| value.parse::<f64>().ok())
         .expect("扫描衰减 a");
 
-    let (local_msl, correct_msl) =
-        program(&catalogue, &dirs, op_name, Metal, Mode::segmented(), m, n)
-            .and_then(|s| s.two("分段"))
-            .expect("分段内核应能生成");
-    let Some(mut executor) = ::device::metal::executor::MetalExecutor::new("metal", "arm64") else {
+    let Some((mut executor, local_msl, correct_msl)) =
+        segmented_metal(&catalogue, &dirs, op_name, m, n)
+    else {
         return;
     };
     executor
@@ -377,11 +404,9 @@ fn op_chunked_rmsnorm_matches_reference(op_name: &str) {
         ..
     } = setup;
 
-    let (partial_msl, map_msl) =
-        program(&catalogue, &dirs, op_name, Metal, Mode::segmented(), m, n)
-            .and_then(|s| s.two("分段"))
-            .expect("分段内核应能生成");
-    let Some(mut executor) = ::device::metal::executor::MetalExecutor::new("metal", "arm64") else {
+    let Some((mut executor, partial_msl, map_msl)) =
+        segmented_metal(&catalogue, &dirs, op_name, m, n)
+    else {
         return;
     };
     executor
@@ -621,7 +646,7 @@ fn a_reduce_sum_op_runs_on_cuda_and_matches_the_reference() {
 }
 
 /// CUDA 分块归一化（RMSNorm 两段 / Softmax 三段）真机对拍：设备段来自公开流水线
-/// （`cuda_rmsnorm_program` / `cuda_softmax_program`），host 串联驱动在 C 里折叠部分和，
+/// （`program(.., Cuda, Mode::segmented(), ..)` 的分段源），host 串联驱动在 C 里折叠部分和，
 /// 一次编译执行整条链路，输出与标量参考逐元素对拍。
 #[cfg(target_os = "windows")]
 fn op_normalized_matches_reference_cuda(op_name: &str) {
@@ -673,7 +698,8 @@ fn op_normalized_matches_reference_cuda(op_name: &str) {
 }
 
 /// CUDA 循环注入网格（`Gemm` 骨架：gemv 一维 / gemm 二维）真机对拍：设备段来自公开流水线
-/// （`cuda_gemm_program` 返回设备源 + 各维网格），host 驱动用 `cuda_loop_driver` 按 `dim3` 发射，
+/// （`program(.., Cuda, Mode::loop_injected(), ..)` 返回设备源 + 各维网格），host 驱动用
+/// `cuda_loop_driver` 按 `dim3` 发射，
 /// 输出与标量参考逐元素对拍。小形状（64×64）避免样本内嵌体积膨胀。
 #[cfg(target_os = "windows")]
 fn op_looped_matches_reference_cuda(op_name: &str) {

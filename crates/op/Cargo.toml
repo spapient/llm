@@ -14,6 +14,7 @@ autotests = false
 annotation = { path = "../annotation", package = "llm-annotation" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 half = { workspace = true, features = ["num-traits"] }
+llm-op-spec = { path = "../op-spec" }
 num-traits = { workspace = true }
 prof = { path = "../prof", package = "llm-prof" }
 

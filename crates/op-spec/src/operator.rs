@@ -1,6 +1,6 @@
 //! 算子基座：语义变化点的唯一契约（ADR 0050）。
 //!
-//! 六族骨架（[`Reduce`](crate::reduce::Reduce)、`Unary`、`Binary`、`Format`、`Gemm`）仍各自声明
+//! 六族骨架（`Reduce`、`Unary`、`Binary`、`Format`、`Gemm`，实现都在 `op-kernel`）仍各自声明
 //! 族内装配配置；[`Operator`] 是它们之上的统一语义契约，也是 [`Model`] 的行为侧投影。每个具体
 //! 算子同时实现族 trait 与本 trait，方法体只转发，不写第二份算术。
 //!
@@ -61,7 +61,7 @@ pub const fn model_of<T: Operator>() -> Model {
 /// 为「模块自带具体入口」的算子装配 [`Operator`]（ADR 0050 §3）：`AXES` / `project_shape` /
 /// `cost` / `sample` / `reference` 都取当前模块的同名项，装配行只剩类型、注册名、生产形状、
 /// 可微性与参考入口。族骨架的泛型入口（reduce / unary / binary / gemv / gemm）走
-/// [`operator_via!`](crate::operator_via)。
+/// [`operator_via!`]。
 #[macro_export]
 macro_rules! operator_here {
     ($ty:ty, $op:tt, $arity:literal, $shape:expr, $differentiable:literal, $reference:path) => {
@@ -83,9 +83,9 @@ macro_rules! operator_here {
 
 /// [`Operator`] 的唯一生成点：名字、生产形状、精度、轴与三条行为全部由四个入口路径给出。
 ///
-/// 两种形态：`grained` 把粒度对齐到骨架的 [`Format::GRAIN`](crate::gemv::Format::GRAIN)，
+/// 两种形态：`grained` 把粒度对齐到骨架的 `Format::GRAIN`，
 /// 其余按稠密算子取 `1`；入口路径由调用方给（族骨架取 `$crate::$skel::*` 的泛型入口，
-/// 模块自带入口时取 `self::*`，见 [`operator_here!`](crate::operator_here)）。装配宏因此都不必再写
+/// 模块自带入口时取 `self::*`，见 [`operator_here!`]）。装配宏因此都不必再写
 /// 第二份 impl。
 #[macro_export]
 macro_rules! operator_via {
@@ -155,7 +155,3 @@ macro_rules! operator_via {
         }
     };
 }
-
-#[cfg(test)]
-#[path = "../tests/operator_tests.rs"]
-mod tests;

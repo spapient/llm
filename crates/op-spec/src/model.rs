@@ -425,10 +425,6 @@ pub fn linear(len: usize, step: f32, base: f32) -> Vec<f32> {
     (0..len).map(|i| base + i as f32 * step).collect()
 }
 
-#[cfg(test)]
-#[path = "../tests/model_tests.rs"]
-mod tests;
-
 pub mod quant {
     //! 量化格式的编译期配置表：位宽、打包密度、对称零点、对称码表与样本偏移单点收敛。
     //!

@@ -125,9 +125,9 @@ pub(crate) fn the_document_names_only_existing_items() {
 /// 厂商名不得出现在机制层的公开面上：`cutile` 只持 `Backend` 缝，厂商实现归 L6（`device`）。
 ///
 /// 判据是**公开项的名字**，不是"文件里出现过厂商字面量"——`device` 正是该写 `metal_*` / `cuda_*`
-/// 的那一层，因此豁免。`cutile` 的 17 个 `*_program` 是存量：同一段 resolve → lower → pair 的复制，
-/// 消费方只有测试。基线不许增长；P1 把它们收成一个泛型入口后逐条删掉（删了基线也要删，
-/// 否则本测试报"过期"）。
+/// 的那一层，因此豁免。`cutile` 原先那 17 个按厂商命名的 `*_program` 已收成一个泛型入口
+/// （`execution::program`，后端与形态作参数），基线随之清空。基线现在必须为空：新增厂商名
+/// 就报"多出"，与源码不同步的残留就报"过期"，两个方向都卡住。
 #[test]
 pub(crate) fn the_mechanism_layer_exposes_no_vendor_names() {
     let (members, _) = workspace();

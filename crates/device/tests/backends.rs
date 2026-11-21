@@ -2,7 +2,6 @@ use super::*;
 use crate::toolchain::msvc_version;
 use cutile::backend::{Codegen, Driver, Source};
 use cutile::dirs::Dirs;
-#[cfg(target_os = "macos")]
 use cutile::execution::Backend::Metal;
 use cutile::execution::{Mode, program};
 use cutile::prof::Profile;
