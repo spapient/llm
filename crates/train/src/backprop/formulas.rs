@@ -121,48 +121,47 @@ fn extremum(
     Ok(vec![pick(&a_wins), pick(&b_wins)])
 }
 
-/// y = x·σ(x)：y′ = σ + x·σ(1−σ)，dA = in·y′。
-pub(super) fn silu(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
-    let x = &ctx.inputs[0];
+/// 一元逐元素算子：`y′` 只看本元素，`dA[i] = in[i]·f(x[i])`。
+fn unary(ctx: Context<'_>, grad: impl Fn(f32) -> f32) -> Result<Vec<Vec<f32>>> {
     let da = ctx
         .incoming
         .iter()
-        .zip(x)
-        .map(|(&g, &v)| {
-            let sigmoid = 1.0 / (1.0 + (-v).exp());
-            g * (sigmoid + v * sigmoid * (1.0 - sigmoid))
-        })
+        .zip(ctx.inputs[0])
+        .map(|(&g, &v)| g * grad(v))
         .collect();
     Ok(vec![da])
+}
+
+/// y = x·σ(x)：y′ = σ + x·σ(1−σ)，dA = in·y′。
+pub(super) fn silu(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
+    unary(ctx, |v| {
+        let sigmoid = 1.0 / (1.0 + (-v).exp());
+        sigmoid + v * sigmoid * (1.0 - sigmoid)
+    })
 }
 
 /// y = x（x ≥ 0）或 slope·x：y′ = 1 或 slope，dA = in·y′。
 pub(super) fn leaky_relu(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
-    let x = &ctx.inputs[0];
-    let slope = op::leaky_relu_f32::SLOPE;
-    let da = ctx
-        .incoming
-        .iter()
-        .zip(x)
-        .map(|(&g, &v)| g * if v >= 0.0 { 1.0 } else { slope })
-        .collect();
-    Ok(vec![da])
+    unary(ctx, |v| {
+        if v >= 0.0 {
+            1.0
+        } else {
+            op::leaky_relu_f32::SLOPE
+        }
+    })
 }
 
 /// y = clamp(x/6 + 0.5, 0, 1)：饱和区梯度为 0，线性区为 1/6。
 pub(super) fn hard_sigmoid(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
-    let x = &ctx.inputs[0];
-    let da = ctx
-        .incoming
-        .iter()
-        .zip(x)
-        .map(|(&g, &v)| {
-            let v = v as f64;
-            let inside = (v / 6.0 + 0.5) > 0.0 && (v / 6.0 + 0.5) < 1.0;
-            g * if inside { 1.0 / 6.0 } else { 0.0 }
-        })
-        .collect();
-    Ok(vec![da])
+    unary(ctx, |v| {
+        let v = f64::from(v);
+        let inside = (v / 6.0 + 0.5) > 0.0 && (v / 6.0 + 0.5) < 1.0;
+        if inside {
+            1.0 / 6.0
+        } else {
+            0.0
+        }
+    })
 }
 
 /// y = 0.5·x·(1 + erf(x/√2))：y′ = Φ(x) + x·φ(x)，φ 为标准正态密度、Φ 为累积分布。

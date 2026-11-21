@@ -22,36 +22,80 @@ pub(crate) fn backprop<K: Kernel>(
     tape: &Tape,
     schedule: &Schedule,
 ) -> Result<()> {
-    seed_loss(buffers, schedule.loss())?;
+    // 暂存从缓冲区里借出：`Context` 持只读快照、`apply_formula` 要 `&mut buffers`，
+    // 同一结构无法同时借，故把暂存放在独立结构里逐节点复用——稳态不再向分配器要内存。
+    let mut scratch = std::mem::take(&mut buffers.scratch);
+    seed_loss(buffers, schedule.loss(), &mut scratch)?;
     let mut account = schedule.account();
     for step in schedule.steps() {
-        reverse_step(buffers, tape, step)?;
+        reverse_step(buffers, tape, step, &mut scratch)?;
         account.settle(step).map_err(|error| error.with(SITE))?;
     }
+    buffers.scratch = scratch;
     Ok(())
 }
 
 /// 单节点反向：取上游梯度、装配公式上下文，查表执行并把逐输入贡献喂回梯度槽。
-fn reverse_step<K: Kernel>(buffers: &mut Buffers<K>, tape: &Tape, step: &Node) -> Result<()> {
-    let incoming = incoming(buffers, step)?.to_vec();
-    let input_values = collect_inputs(buffers, step)?;
-    let output = values(buffers, step.output())?.to_vec();
+fn reverse_step<K: Kernel>(
+    buffers: &mut Buffers<K>,
+    tape: &Tape,
+    step: &Node,
+    scratch: &mut Scratch,
+) -> Result<()> {
+    copy_into(&mut scratch.incoming, incoming(buffers, step)?);
+    collect_inputs(buffers, step, &mut scratch.inputs)?;
+    copy_into(&mut scratch.output, values(buffers, step.output())?);
     let context = Context {
-        incoming: &incoming,
-        inputs: &input_values,
-        output: &output,
+        incoming: &scratch.incoming,
+        inputs: &scratch.inputs,
+        output: &scratch.output,
         geometry: buffers.geometry(step.output()),
     };
-    apply_formula(buffers, tape, step, context)?;
-    Ok(())
+    apply_formula(buffers, tape, step, context)
+}
+
+/// 反向逐节点复用的暂存：容量只增不减，热路径上不再逐节点向分配器要内存。
+///
+/// 三者都是本节点前向快照的只读副本，故与 `Buffers` 分开持有：一份借不冲突的读视图，
+/// 一份可写缓冲区，36 条公式因此仍然只吃 `Context`、不碰 `Buffers`。
+#[derive(Debug, Default)]
+pub(crate) struct Scratch {
+    incoming: Vec<f32>,
+    inputs: Vec<Vec<f32>>,
+    output: Vec<f32>,
+    ones: Vec<f32>,
+}
+
+impl Scratch {
+    /// 暂存的实际占用（**容量**之和）：容量只增不减，故容量不变即"没有重新分配"。
+    #[cfg(test)]
+    pub(crate) fn footprint(&self) -> usize {
+        self.incoming.capacity()
+            + self.output.capacity()
+            + self.ones.capacity()
+            + self.inputs.capacity()
+            + self.inputs.iter().map(Vec::capacity).sum::<usize>()
+    }
+}
+
+/// 整块覆盖写：保留已有容量，只改变长度与内容。
+fn copy_into(dst: &mut Vec<f32>, src: &[f32]) {
+    dst.clear();
+    dst.extend_from_slice(src);
 }
 
 /// 把各输入的前向值整块拷出只读快照；任一前向值不在场即回缺失。
-fn collect_inputs<K: Kernel>(buffers: &Buffers<K>, step: &Node) -> Result<Vec<Vec<f32>>> {
-    step.inputs()
-        .iter()
-        .map(|&input| values(buffers, input).map(|value| value.to_vec()))
-        .collect()
+fn collect_inputs<K: Kernel>(
+    buffers: &Buffers<K>,
+    step: &Node,
+    out: &mut Vec<Vec<f32>>,
+) -> Result<()> {
+    let inputs = step.inputs();
+    out.resize_with(inputs.len(), Vec::new);
+    for (slot, &input) in out.iter_mut().zip(inputs) {
+        copy_into(slot, values(buffers, input)?);
+    }
+    Ok(())
 }
 
 /// 按算子名查公式目录执行，把返回的逐输入贡献喂回对应梯度槽；未登记公式即拒绝。
@@ -88,10 +132,12 @@ fn feed<K: Kernel>(
 }
 
 /// loss 起点梯度：每个前向元素都从上游 `1` 出发。
-fn seed_loss<K: Kernel>(buffers: &mut Buffers<K>, loss: Var) -> Result<()> {
+fn seed_loss<K: Kernel>(buffers: &mut Buffers<K>, loss: Var, scratch: &mut Scratch) -> Result<()> {
     let width = values(buffers, loss)?.len();
+    scratch.ones.clear();
+    scratch.ones.resize(width, 1.0);
     buffers
-        .load_gradient(loss, &vec![1.0; width])
+        .load_gradient(loss, &scratch.ones)
         .map_err(|error| error.with(SITE))?;
     Ok(())
 }

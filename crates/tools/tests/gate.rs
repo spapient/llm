@@ -670,7 +670,7 @@ fn ratchet_blocks_new_and_worse_allows_within_budget() {
 /// 这个数不是质量目标，是**存在证明**。`crates/algorithm` 曾被整目录删除而全仓没有一条用例
 /// 变红——因为"这些族是什么"只写在注释与治理表里，没有任何东西要求它存在；注释和表格都能
 /// 无声消失，用例数不能。族少一个、对拍被掏空一半，这里就红。
-const ARCHITECTURE_FAMILY_CASES: usize = 245;
+const ARCHITECTURE_FAMILY_CASES: usize = 248;
 
 #[test]
 fn every_architecture_family_keeps_its_conformance_suite() {

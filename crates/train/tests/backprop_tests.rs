@@ -409,3 +409,38 @@ mod pool;
 
 #[path = "backprop_train_tests.rs"]
 mod train;
+
+/// 暂存复用：第二次反传不再向分配器要内存（容量之和与热身后的完全一致）。
+///
+/// 反向每个节点都要一份"上游梯度 / 各输入前向值 / 输出前向值"的只读快照，因为这些快照与
+/// `&mut buffers` 冲突；快照放在 `Buffers` 自持的 `Scratch` 里逐节点复用，于是稳态零分配。
+/// 此断言盯的正是这一点：容量只增不减，故"容量不变"等价于"没有重新分配"。
+#[test]
+fn a_warm_backward_pass_reuses_its_scratch() -> Result<()> {
+    let p0 = [0.5f32, -1.5, 2.0];
+    let mut tape = Tape::new();
+    let p = tape.parameter();
+    let y = tape.record("silu_f32", &[p]).expect("记录 y");
+    let out = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
+    let sizes = support::sizes_of(&tape, &[(p, N), (y, N), (out, 1)]);
+    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
+    session.register_parameter(p, ParamRole::Trainable, p0.to_vec())?;
+    session.buffers().compute("silu_f32", &[p], y)?;
+    assert_eq!(
+        session.buffers().scratch.footprint(),
+        0,
+        "反传前暂存应当还是空的"
+    );
+
+    sum_backward(&mut session, y, out)?;
+    let warm = session.buffers().scratch.footprint();
+    assert!(warm > 0, "热过一次之后暂存应当已占下容量");
+
+    sum_backward(&mut session, y, out)?;
+    assert_eq!(
+        session.buffers().scratch.footprint(),
+        warm,
+        "第二次反传不得再增长暂存（容量不变即没有重新分配）"
+    );
+    Ok(())
+}

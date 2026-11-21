@@ -108,6 +108,9 @@ pub struct Buffers<K: Kernel> {
     running: Vec<Option<Running>>,
     live: u64,
     peak: u64,
+    /// 反向逐节点复用的暂存：由 [`backprop`](crate::backprop) 借出、用完归还，
+    /// 使反传在稳态不再逐节点向分配器要内存。
+    pub(crate) scratch: crate::backprop::Scratch,
 }
 
 impl<K: Kernel> Buffers<K> {
@@ -124,6 +127,7 @@ impl<K: Kernel> Buffers<K> {
             pool: Pool::default(),
             live: 0,
             peak: 0,
+            scratch: Default::default(),
         }
     }
 

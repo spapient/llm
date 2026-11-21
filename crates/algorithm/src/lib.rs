@@ -47,6 +47,9 @@ mod patch;
 mod policy;
 mod spike;
 
+/// 17 族 → 生产层栈的接线台账。
+pub mod wire;
+
 #[doc(inline)]
 pub use attnres::{AttnRes, Sources, splice};
 
@@ -106,3 +109,7 @@ pub use spike::{Gradients, Master, Membrane, Spiking, Surrogate};
 #[cfg(test)]
 #[path = "../tests/prop_tests.rs"]
 mod prop_tests;
+
+#[cfg(test)]
+#[path = "../tests/wire_tests.rs"]
+mod wire_tests;
