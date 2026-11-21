@@ -191,6 +191,8 @@ impl Lexeme {
 fn next_token(text: &str, from: usize) -> Option<(usize, usize)> {
     let bytes = text.as_bytes();
     let at = find(bytes, from, OPENERS, |at| Lexeme::of(bytes, at).is_some())?;
+    // 位置找回来之后再定性一次：`find` 只回传位置，让判据把形态带出来会给窗口循环多一个返回值，
+    // 而定性只看开头两字节，重复一次比多一层交接便宜。
     Some((at, Lexeme::of(bytes, at)?.end(bytes, at)))
 }
 

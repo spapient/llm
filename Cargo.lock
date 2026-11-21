@@ -557,8 +557,14 @@ dependencies = [
 name = "llm-prim"
 version = "0.1.0"
 dependencies = [
+ "llm-cpu",
+ "llm-cuda",
  "llm-diagnostic",
+ "llm-metal",
+ "llm-musa",
+ "llm-opencl",
  "llm-prof",
+ "llm-rocm",
 ]
 
 [[package]]

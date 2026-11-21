@@ -152,8 +152,8 @@ fn two_names_for_one_dimension_are_an_error() {
 #[test]
 fn builtin_cpu_profile_is_schema_valid() {
     let profile = Profile::parse(cpu()).expect("可解析");
-    // 见证文件属于片段层（`crates/prim`），本 crate 只校验 schema 与 `[units]`；
-    // "见证真的存在"由 `cutile` 的 `Catalogue::validate(Some(root))` 负责。
+    // 见证文件属于片段层（`crates/<device>`），本 crate 只校验 schema 与 `[units]`；
+    // "见证真的存在"由 `cutile` 的 `Catalogue::validate` 负责。
     profile.validate(None).expect("CPU 档案必须自洽");
 }
 
@@ -446,7 +446,7 @@ fn the_witness_function_must_exist_in_the_file() {
     .expect("写见证");
     let mut profile = Profile::parse(cpu()).expect("可解析");
     profile.provides[0].witness.as_mut().expect("见证").func = "witness_absent".to_string();
-    let errors = profile.validate(Some(&dir.0)).unwrap_err();
+    let errors = profile.validate_in(&dir.0).unwrap_err();
     assert!(
         errors
             .iter()
@@ -460,7 +460,7 @@ fn the_witness_function_must_exist_in_the_file() {
 fn a_missing_witness_file_is_missing() {
     let dir = temp_dir("witness-missing");
     let profile = Profile::parse(cpu()).expect("可解析");
-    let errors = profile.validate(Some(&dir.0)).unwrap_err();
+    let errors = profile.validate_in(&dir.0).unwrap_err();
     assert!(
         errors.iter().any(|error| error.code() == Code::Missing),
         "见证文件不在应是 `missing`：{errors:?}"
@@ -494,7 +494,7 @@ fn a_declared_witness_is_validated_below_l2() {
         .expect("dot 供给");
     assert_eq!(dot.grade, Grade::L1, "前提：这条签名还没到 L2");
     dot.witness.as_mut().expect("见证").func = "witness_absent".to_string();
-    let errors = profile.validate(Some(&dir.0)).unwrap_err();
+    let errors = profile.validate_in(&dir.0).unwrap_err();
     assert!(
         errors
             .iter()

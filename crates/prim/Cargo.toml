@@ -5,26 +5,36 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Fragment layer: per-device primitive implementations consumed by cutile."
+description = "Fragment mechanism: composes the six per-device fragment crates and loads a data-root override."
 readme = "README.md"
 publish = false
 autotests = false
-build = "build.rs"
 
+# 六台设备各在自己的 crate 里：本 crate 只做合成（`src/tables.rs`），不含任何片段文本，
+# 也没有构建脚本。加一台设备 = 加一个设备 crate + 这里一行。
 [dependencies]
+cuda = { path = "../cuda", package = "llm-cuda" }
+cpu = { path = "../cpu", package = "llm-cpu" }
+metal = { path = "../metal", package = "llm-metal" }
+musa = { path = "../musa", package = "llm-musa" }
+opencl = { path = "../opencl", package = "llm-opencl" }
+rocm = { path = "../rocm", package = "llm-rocm" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
-prof = { path = "../prof", package = "llm-prof" }
-
-# 构建脚本读同一份档案（工具链、编译参数、每条签名的见证入口）与同一份原语闭集，
-# 所以它不是第二个事实源，只是把 `prof` 的内容搬进生成的表。
-[build-dependencies]
 prof = { path = "../prof", package = "llm-prof" }
 
 [features]
 default = []
 # 构建期把能编译的设备见证编成设备镜像（`metal` → `metallib`）并嵌入二进制。
 # 关着是"源码调试"：只有片段与见证源码，运行期再编译；打开是"镜像发布"。
-device-image = []
+# 转发给六台设备：谁有镜像配方谁就带上，没有的只是 `Status::NoRecipe`。
+device-image = [
+    "cuda/device-image",
+    "cpu/device-image",
+    "metal/device-image",
+    "musa/device-image",
+    "opencl/device-image",
+    "rocm/device-image",
+]
 
 [lints]
 workspace = true

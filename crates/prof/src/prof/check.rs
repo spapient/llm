@@ -6,9 +6,9 @@ use super::*;
 const EXEC_DETAIL: &str = "写 `exec` 前必须先用 `[units.<name>]` 声明执行单元";
 impl Profile {
     /// 闭集与见证校验：只回答"档案自己是否自洽"，不判断它是否能在某台机器上跑对。
-    pub fn validate(&self, witness_root: Option<&Path>) -> Result<(), Vec<ProfileError>> {
+    pub fn validate(&self, witnesses: Option<&dyn WitnessLookup>) -> Result<(), Vec<ProfileError>> {
         let mut errors = self.head_errors();
-        let mut files = WitnessFiles::new(witness_root);
+        let mut files = WitnessFiles::new(witnesses);
         for provide in &self.provides {
             errors.extend(witness_shape(provide));
             errors.extend(files.probe(provide));
@@ -18,6 +18,10 @@ impl Profile {
         errors.extend(self.exec_units());
         let passed = errors.is_empty().then_some(());
         passed.ok_or(errors)
+    }
+    /// 单一根下的校验：见证文件都相对 `root` 解析（`<root>/<vendor>/witness.<ext>`）。
+    pub fn validate_in(&self, root: &Path) -> Result<(), Vec<ProfileError>> {
+        self.validate(Some(&Root(root)))
     }
     /// 跨供给的重复项与属性键闭集：`impl` 重名、见证复用、无关属性键。
     fn head_errors(&self) -> Vec<ProfileError> {
@@ -193,10 +197,25 @@ fn exec_attr(provide: &Provide) -> Option<&Attr> {
     let is_exec = |attr: &&Attr| attr.key() == AttrKey::Exec;
     provide.attrs.iter().find(is_exec)
 }
+/// 见证源码的定位方式：把 `witness.file`（`<vendor>/witness.<ext>`）解析成一个可读路径。
+///
+/// 片段层按设备拆成六个 crate 之后，"一个根"不再成立：`crates/cpu` 与 `crates/cuda` 各在自己
+/// 的源码树里。所以这里只约定"怎么问"，"在哪"由调用方回答（`prim::Layout`）。
+pub trait WitnessLookup {
+    /// 见证文件的可读路径；`None` 表示这个 vendor 没有任何落盘位置。
+    fn path(&self, file: &str) -> Option<PathBuf>;
+}
+/// 单一根下的定位：`file` 直接拼在根上。
+struct Root<'a>(&'a Path);
+impl WitnessLookup for Root<'_> {
+    fn path(&self, file: &str) -> Option<PathBuf> {
+        Some(self.0.join(file))
+    }
+}
 /// 见证文件的一次性读取缓存：同一份源码只读一次，同一个缺失文件只报一次。
 struct WitnessFiles<'a> {
-    /// 片段层根；`None` 表示本轮不做文件检查（单元测试）。
-    root: Option<&'a Path>,
+    /// 定位方式；`None` 表示本轮不做文件检查（单元测试）。
+    witnesses: Option<&'a dyn WitnessLookup>,
     /// 文件 → 源码；`None` 表示不存在或不可读。
     sources: BTreeMap<String, Option<String>>,
     /// 已经报过的缺失路径。
@@ -204,35 +223,40 @@ struct WitnessFiles<'a> {
 }
 impl<'a> WitnessFiles<'a> {
     /// 空缓存。
-    fn new(root: Option<&'a Path>) -> Self {
+    fn new(witnesses: Option<&'a dyn WitnessLookup>) -> Self {
         Self {
-            root,
+            witnesses,
             sources: BTreeMap::new(),
             reported: BTreeSet::new(),
         }
     }
     /// 一条供给的文件级判据：文件要在，且真的声明了那个入口函数；不判断跑不跑得通。
     fn probe(&mut self, provide: &Provide) -> Vec<ProfileError> {
-        let (Some(root), Some(witness)) = (self.root, provide.witness.as_ref()) else {
+        let (Some(witnesses), Some(witness)) = (self.witnesses, provide.witness.as_ref()) else {
             return Vec::new();
         };
-        let source = self.source(root, &witness.file);
+        let source = self.source(witnesses, &witness.file);
         let found = source.map(|text| declares(text, witness));
         match found {
-            None => self.report(root, &witness.file),
+            None => self.report(witnesses, &witness.file),
             Some(false) => vec![witness_error(provide, absent_function(witness))],
             Some(true) => Vec::new(),
         }
     }
     /// 读一份见证源码：每个文件最多读一次盘。
-    fn source(&mut self, root: &Path, file: &str) -> Option<&str> {
+    fn source(&mut self, witnesses: &dyn WitnessLookup, file: &str) -> Option<&str> {
         let text = self.sources.entry(file.to_string());
-        let text = text.or_insert_with(|| std::fs::read_to_string(root.join(file)).ok());
+        let text = text.or_insert_with(|| {
+            let path = witnesses.path(file)?;
+            std::fs::read_to_string(path).ok()
+        });
         text.as_deref()
     }
     /// 缺失文件只报第一次：多条供给引用同一份缺失文件时，原因只有一个。
-    fn report(&mut self, root: &Path, file: &str) -> Vec<ProfileError> {
-        let path = root.join(file).display().to_string();
+    fn report(&mut self, witnesses: &dyn WitnessLookup, file: &str) -> Vec<ProfileError> {
+        let path = witnesses
+            .path(file)
+            .map_or_else(|| file.to_string(), |path| path.display().to_string());
         if !self.reported.insert(path.clone()) {
             return Vec::new();
         }
