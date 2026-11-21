@@ -705,10 +705,9 @@ mod tests {
         }
     }
 
-    /// 声明档实例与 `op::classic` 的声明档样本长度逐一对齐：前向缓冲与样本同长。
-    #[test]
-    fn declared_geometries_match_the_sample_lengths() {
-        for (op, sample) in [
+    /// 十种声明档算子及其样本，供形状对齐与前向对拍两个测试共用。
+    fn declared_samples() -> [(&'static str, op::model::Sample); 10] {
+        [
             ("max_pool1d_f32", op::max_pool1d::sample(1, 1)),
             ("max_pool2d_f32", op::max_pool2d::sample(1, 1)),
             ("avg_pool2d_f32", op::avg_pool2d::sample(1, 1)),
@@ -719,7 +718,13 @@ mod tests {
             ("group_norm_f32", op::group_norm::sample(1, 1)),
             ("instance_norm_f32", op::instance_norm::sample(1, 1)),
             ("layer_norm_f32", op::layer_norm::sample(1, 1)),
-        ] {
+        ]
+    }
+
+    /// 声明档实例与 `op::classic` 的声明档样本长度逐一对齐：前向缓冲与样本同长。
+    #[test]
+    fn declared_geometries_match_the_sample_lengths() {
+        for (op, sample) in declared_samples() {
             let g = Geometry::declared(op).expect("声明档实例");
             let y = sample.f32("y").expect("y");
             let inputs = declared_inputs(&sample, g);
@@ -731,18 +736,7 @@ mod tests {
     /// 前向：实例几何的结果必须与 `op::classic` 的 reference 逐位一致（同一份算术的两次执行）。
     #[test]
     fn declared_forward_matches_the_reference() {
-        for (op, sample) in [
-            ("max_pool1d_f32", op::max_pool1d::sample(1, 1)),
-            ("max_pool2d_f32", op::max_pool2d::sample(1, 1)),
-            ("avg_pool2d_f32", op::avg_pool2d::sample(1, 1)),
-            ("adaptive_pool_f32", op::adaptive_pool::sample(1, 1)),
-            ("interpolate_f32", op::interpolate::sample(1, 1)),
-            ("batch_norm_f32", op::batch_norm::sample(1, 1)),
-            ("conv2d_f32", op::conv2d::sample(1, 1)),
-            ("group_norm_f32", op::group_norm::sample(1, 1)),
-            ("instance_norm_f32", op::instance_norm::sample(1, 1)),
-            ("layer_norm_f32", op::layer_norm::sample(1, 1)),
-        ] {
+        for (op, sample) in declared_samples() {
             let g = Geometry::declared(op).expect("声明档实例");
             let mut out = vec![0.0f32; g.outputs()];
             g.forward(&declared_inputs(&sample, g), &mut out)
