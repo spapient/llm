@@ -387,7 +387,7 @@ fn devices(
             "        emit: {:?},",
             vendor.profile.meta.emit.as_str()
         );
-        let _ = writeln!(text, "        tools: {:?},", vendor.profile.meta.tool);
+        let _ = writeln!(text, "        tool: {:?},", vendor.profile.meta.tool);
         let _ = writeln!(
             text,
             "        tool_ver: {:?},",

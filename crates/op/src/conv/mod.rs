@@ -439,7 +439,7 @@ fn run<S: Scalar, F: Fold<S>>(
     (h, w): (usize, usize),
     c: usize,
     out: &mut [S],
-    mut fold: impl FnMut() -> F,
+    fold: impl FnMut() -> F,
 ) -> Result<()> {
     let (oh, ow) = out_shape(geom, h, w)?;
     check_shapes(&[

@@ -441,6 +441,8 @@ pub(super) fn scatter_interp_linear(
     out: (usize, usize),
     plane: (usize, usize, usize),
 ) {
+    let (ni, oi, oj) = at;
+    let (oh, ow) = out;
     let (h, w, c) = plane;
     let g = gain(incoming, at, out, plane);
     let fy = ((oi as f32 + 0.5) * h as f32 / oh as f32 - 0.5).max(0.0);
@@ -467,6 +469,8 @@ pub(super) fn scatter_interp_nearest(
     out: (usize, usize),
     plane: (usize, usize, usize),
 ) {
+    let (ni, oi, oj) = at;
+    let (oh, ow) = out;
     let (h, w, c) = plane;
     let g = gain(incoming, at, out, plane);
     let ii = (oi * h / oh).min(h - 1);

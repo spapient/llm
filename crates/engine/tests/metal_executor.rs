@@ -1,4 +1,5 @@
 use super::*;
+use cutile::backend::TensorGeometry;
 
 /// 设备 → 命令队列 的进程内对象模型打通：能建、能释放，反复建放不崩溃、不重复释放。
 #[test]
@@ -1201,8 +1202,6 @@ fn sweep(
 #[test]
 #[ignore = "Metal 张量核 GEMM：cargo test --release -p llm-engine --lib -- metal_tensor_gemm --ignored --nocapture"]
 fn metal_tensor_gemm() {
-    use cutile::backend::TensorGeometry;
-
     let Some((device, queue)) = bench_device("张量核 GEMM") else {
         return;
     };
@@ -1262,7 +1261,6 @@ fn metal_tensor_gemm() {
 #[test]
 #[ignore = "Metal 张量核立方 GEMM：cargo test --release -p llm-engine --lib -- metal_tensor_kernel_gemm --ignored --nocapture"]
 fn metal_tensor_kernel_gemm() {
-    use cutile::backend::TensorGeometry;
     use op::model::Sample;
     use op::sig::Signature;
 
