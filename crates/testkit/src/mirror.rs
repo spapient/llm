@@ -139,9 +139,37 @@ fn the_registry_and_the_model_annotations_are_mirrors() {
 
 /// `op/src` 里会展开出 `#[annotation::model]` 的宏名：宏体里的 `name = $op` 不是字面量，
 /// 扫描器不认，但调用这些宏的算子模块同样满足"注解是唯一生产者"。判据是宏体里出现了
-/// `#[annotation::model(name = $..)`——逐文件追踪最近的 `macro_rules!` 名，不展开宏。
+/// `#[annotation::model(name = $..)`，再沿**宏调用链**取传递闭包——装配骨架一层层加间接
+/// （`window_op!` → `classic_op!` → 注解），只认一跳的话，每加一层间接算子就被判成"没有注解"。
 fn model_macros() -> std::collections::BTreeSet<String> {
-    let mut macros = std::collections::BTreeSet::new();
+    let bodies = macro_bodies();
+    let mut macros: std::collections::BTreeSet<String> = bodies
+        .iter()
+        .filter(|(_, body)| {
+            body.lines()
+                .any(|line| line.contains("#[annotation::model(") && line.contains("name = $"))
+        })
+        .map(|(name, _)| name.clone())
+        .collect();
+    loop {
+        let reached: Vec<String> = bodies
+            .iter()
+            .filter(|(name, body)| {
+                !macros.contains(*name)
+                    && macros.iter().any(|known| body.contains(&format!("{known}!")))
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        if reached.is_empty() {
+            return macros;
+        }
+        macros.extend(reached);
+    }
+}
+
+/// 每个 `macro_rules!` 的宏体：定义行到收尾的 `}`，不展开。
+fn macro_bodies() -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
     for (crate_name, file) in sources() {
         if crate_name != "op" {
             continue;
@@ -149,25 +177,35 @@ fn model_macros() -> std::collections::BTreeSet<String> {
         let Some(text) = source_text(&file) else {
             continue;
         };
-        let mut current: Option<String> = None;
+        let mut current: Option<(String, String)> = None;
         for line in text.lines() {
             if let Some(rest) = line.trim().strip_prefix("macro_rules! ") {
-                current = Some(
-                    rest.split(|ch: char| !(ch.is_alphanumeric() || ch == '_'))
-                        .next()
-                        .unwrap_or("")
-                        .to_string(),
-                );
+                if let Some((name, body)) = current.take() {
+                    out.insert(name, body);
+                }
+                let name = rest
+                    .split(|ch: char| !(ch.is_alphanumeric() || ch == '_'))
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
+                current = Some((name, String::new()));
+                continue;
             }
-            if line.contains("#[annotation::model(")
-                && line.contains("name = $")
-                && let Some(name) = &current
-            {
-                macros.insert(name.clone());
+            if let Some((name, body)) = current.as_mut() {
+                if line.trim() == "}" && !body.is_empty() {
+                    out.insert(name.clone(), std::mem::take(body));
+                    current = None;
+                    continue;
+                }
+                body.push_str(line);
+                body.push('\n');
             }
         }
+        if let Some((name, body)) = current.take() {
+            out.insert(name, body);
+        }
     }
-    macros
+    out
 }
 
 /// 模块文件是否调用了某个会展开出 `#[annotation::model]` 的宏（`crate::binary_f32!` 这类）。

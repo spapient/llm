@@ -40,19 +40,33 @@ pub(crate) fn sources() -> Vec<(String, PathBuf)> {
     out
 }
 
-/// 找到算子模块的实体文件：优先同名文件，其次是骨架文件旁的嵌套实体，最后跟着 `pub use` 别名走。
+/// 找到算子模块的实体文件：先按 `pub use` 别名换成实体名，再在骨架旁的嵌套目录里找实体。
+///
+/// 注册表的模块名有三种来源，都得落到"带注解的那个文件"上：
+/// - 别名：`pub use classic::{adaptive_pool}` + `pub use pool::{adaptive as adaptive_pool}`；
+/// - 嵌套：`pub use softmax::f32::{softmax as softmax_f32}`，实体在 `softmax/f32/softmax.rs`；
+/// - 直连：模块名就是文件名。
 pub(crate) fn locate_module(module: &str) -> Option<PathBuf> {
     locate(module, 0)
 }
 
-/// 别名链上限：`adaptive as adaptive_pool` 只有一跳，留余量是为了让成环的别名表停在判定上。
+/// 别名链上限：`classic::adaptive_pool` → `classic::pool::adaptive` 只有一跳，留余量是为了让
+/// 成环的别名表停在判定上而不是栈溢出。
 const ALIAS_DEPTH: usize = 4;
 
 fn locate(module: &str, depth: usize) -> Option<PathBuf> {
     if depth > ALIAS_DEPTH {
         return None;
     }
-    let direct = root().join("crates/op/src").join(format!("{module}.rs"));
+    let src = root().join("crates/op/src");
+    // 带路径的模块名（`classic::pool::adaptive`）按目录走就是实体文件。
+    if module.contains("::") {
+        let explicit = src.join(format!("{}.rs", module.replace("::", "/")));
+        if explicit.exists() {
+            return Some(explicit);
+        }
+    }
+    let direct = src.join(format!("{module}.rs"));
     if direct.exists() {
         return Some(direct);
     }
@@ -71,12 +85,15 @@ fn locate(module: &str, depth: usize) -> Option<PathBuf> {
         let body = file.with_extension("").join(format!("{module}.rs"));
         return Some(if body.exists() { body } else { file });
     }
-    let source = aliases().get(module)?;
+    let source = aliases().get(module.rsplit("::").next().unwrap_or(module))?;
     (source != module).then(|| locate(source, depth + 1)).flatten()
 }
 
-/// `pub use` 表里的别名：`adaptive as adaptive_pool` 说明注册名由实体名重导出。聚合后注册表的
-/// 模块名大多不是文件名（45 个里 44 个），所以解析必须跨过这一层，否则判据只会看到重导出行。
+/// `pub use` 表的别名：`adaptive as adaptive_pool` 说明注册名由实体名重导出。聚合后注册表的
+/// 模块名几乎都不是文件名（45 个里 44 个），所以解析必须跨过这一层，否则判据只会看到重导出行。
+///
+/// 路径按 `use` 树的前缀补全：`pub use softmax::f32::{softmax as softmax_f32}` 里的
+/// `softmax` 是 `softmax::f32::softmax`，不是 crate 根的 `softmax` 骨架文件。
 fn aliases() -> &'static std::collections::BTreeMap<String, String> {
     static ALIASES: std::sync::OnceLock<std::collections::BTreeMap<String, String>> =
         std::sync::OnceLock::new();
@@ -89,21 +106,103 @@ fn aliases() -> &'static std::collections::BTreeMap<String, String> {
             let Some(text) = source_text(&file) else {
                 continue;
             };
-            for line in text.lines() {
-                let words: Vec<&str> = line.split_whitespace().collect();
-                for pair in words.windows(3) {
-                    if pair[1] != "as" {
-                        continue;
-                    }
-                    let (source, alias) = (ident(pair[0]), ident(pair[2]));
-                    if !source.is_empty() && !alias.is_empty() {
-                        out.insert(alias.to_string(), source.to_string());
-                    }
+            let owner = module_path_of(&file);
+            for statement in use_statements(&text) {
+                for (source, alias) in use_tree(&statement, &owner) {
+                    // 近处的重导出更接近实体（`classic.rs` 的 `pool::adaptive` 胜过 `lib.rs` 的
+                    // `classic::adaptive_pool`），扫描集按文件路径排序，先到先得即可。
+                    out.entry(alias).or_insert(source);
                 }
             }
         }
         out
     })
+}
+
+/// 文件自己的模块路径（`classic/pool.rs` → `classic::pool`，`lib.rs` → 空）。
+fn module_path_of(file: &std::path::Path) -> String {
+    let rel = file.strip_prefix(root().join("crates/op/src")).unwrap_or(file);
+    let parts: Vec<String> = rel
+        .with_extension("")
+        .components()
+        .map(|part| part.as_os_str().to_string_lossy().into_owned())
+        .filter(|part| part != "lib" && part != "mod")
+        .collect();
+    parts.join("::")
+}
+
+/// 文件里的每条 `use` 语句（多行也算一条，直到分号）。
+fn use_statements(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut buffer = String::new();
+    for line in text.lines() {
+        let line = line.trim();
+        let starts = line.starts_with("pub use ") || line.starts_with("use ");
+        if buffer.is_empty() && !starts {
+            continue;
+        }
+        buffer.push_str(line);
+        if line.ends_with(';') {
+            out.push(std::mem::take(&mut buffer));
+        } else {
+            buffer.push(' ');
+        }
+    }
+    out
+}
+
+/// 一条 `use` 语句拆成 `(实体路径, 注册名)`：支持花括号别名与直接别名。
+fn use_tree(statement: &str, owner: &str) -> Vec<(String, String)> {
+    let body = statement
+        .split_once("use ")
+        .map(|(_, rest)| rest.trim_end_matches(';').trim())
+        .unwrap_or("");
+    let join = |prefix: &str, name: &str| {
+        if prefix.is_empty() {
+            return name.to_string();
+        }
+        let absolute = prefix
+            .strip_prefix("crate::")
+            .or_else(|| (prefix == "crate").then_some(""));
+        match absolute {
+            Some(tail) if tail.is_empty() => name.to_string(),
+            Some(tail) => format!("{tail}::{name}"),
+            None if owner.is_empty() => format!("{prefix}::{name}"),
+            None => format!("{owner}::{prefix}::{name}"),
+        }
+    };
+    let mut out = Vec::new();
+    match body.split_once('{') {
+        Some((prefix, rest)) => {
+            let prefix = prefix.trim_end_matches(':').trim_end_matches("::");
+            for item in rest.split('}').next().unwrap_or("").split(',') {
+                let item = item.trim();
+                if item.is_empty() || item.contains('{') {
+                    continue;
+                }
+                let (source, alias) = split_alias(item);
+                out.push((join(prefix, source), alias.to_string()));
+            }
+        }
+        None => {
+            let (source, alias) = split_alias(body);
+            let (prefix, name) = match source.rsplit_once("::") {
+                Some((prefix, name)) => (prefix, name),
+                None => ("", source),
+            };
+            out.push((join(prefix, name), alias.to_string()));
+        }
+    }
+    out
+}
+
+/// `adaptive as adaptive_pool` → `("adaptive", "adaptive_pool")`；没有 `as` 时别名就是尾名。
+fn split_alias(item: &str) -> (&str, &str) {
+    let item = item.trim();
+    match item.rsplit_once(" as ") {
+        Some((source, alias)) => (ident(source), ident(alias)),
+        None => (ident(item), ident(item)),
+    }
 }
 
 /// 取词尾的标识符：`adaptive,` → `adaptive`，`gemm::f32` → `f32`，`{adaptive` → `adaptive`。
