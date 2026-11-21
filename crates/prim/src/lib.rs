@@ -62,4 +62,5 @@ pub use prof::atom::Prim;
 pub use prof::{Device, Image, Status};
 
 #[cfg(test)]
+#[path = "../tests/prim_tests.rs"]
 mod tests;

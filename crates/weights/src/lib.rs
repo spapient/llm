@@ -33,6 +33,27 @@
 //! ```
 
 #![deny(unsafe_code)]
+
+use std::panic::Location;
+
+use diagnostic::{Code, Error, Result};
+
+/// 构造 [`Code::Invalid`] 错误，并以调用点（`文件:行号`）作为上下文帧。
+///
+/// 全 crate 唯一的“非法输入”构造点：各模块不再各自维护带模块标签的 `bad`/`invalid`/`fault`，
+/// 统一走这里，由 [`Location::caller`] 自动标注发现点——比手写模块名更精确且不会漏改。
+#[track_caller]
+pub(crate) fn bad(message: impl AsRef<str>) -> Error {
+    let site = Location::caller();
+    Error::new(Code::Invalid, message.as_ref()).with(format!("{}:{}", site.file(), site.line()))
+}
+
+/// `Option` → `Result`：有值取之，无值按 [`bad`] 报错。
+#[track_caller]
+pub(crate) fn or_bad<T>(value: Option<T>, message: &str) -> Result<T> {
+    value.ok_or_else(|| bad(message))
+}
+
 // —— 自有 `.u` 容器 v2：描述符、读/写、帧编码、增量补丁与双模式 ——
 mod archive;
 mod container;

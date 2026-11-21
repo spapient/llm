@@ -586,4 +586,5 @@ pub trait Target {
 }
 
 #[cfg(test)]
+#[path = "../tests/fuzz_tests.rs"]
 mod tests;
