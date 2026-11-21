@@ -150,7 +150,7 @@ macro_rules! binary_f32 {
             2,
             (4096, 4096),
             true,
-            elementwise,
+            crate::elementwise,
             $crate::elementwise::AXES
         );
 

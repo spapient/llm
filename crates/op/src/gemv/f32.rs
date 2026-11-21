@@ -58,7 +58,7 @@ impl<const B: usize> Plain for gemv::Dense<B> {
 pub type F32 = PlainFmt<gemv::Dense<BLOCK>>;
 
 // 基座契约（ADR 0050）：粒度与三条行为从格式契约转发。
-crate::operator_via!(grained F32, "gemv_f32", 2, (4096, 4096), true, gemv, gemv::AXES);
+crate::operator_via!(grained F32, "gemv_f32", 2, (4096, 4096), true, crate::gemv, gemv::AXES);
 
 /// 内核本体：`m = x.len()`、`n = out.len()`，结果写进调用方给的缓冲。
 pub fn forward(x: &[f32], weights: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {

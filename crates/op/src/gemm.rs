@@ -364,7 +364,7 @@ macro_rules! gemm_variant {
         }
 
         // 基座契约（ADR 0050）：三条行为从 `Gemm` 骨架转发，粒度由注解的骨架默认值给出。
-        $crate::operator_via!($name, $op, 2, (16, 16), $differentiable, gemm, $crate::gemm::AXES);
+        $crate::operator_via!($name, $op, 2, (16, 16), $differentiable, crate::gemm, $crate::gemm::AXES);
 
         #[doc = concat!("`", $op, "` 内核本体：结果写进调用方给的缓冲。")]
         pub fn forward(

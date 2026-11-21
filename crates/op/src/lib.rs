@@ -97,6 +97,9 @@ pub use gemv::{f32 as gemv_f32, i2 as gemv_i2, i4 as gemv_i4, i8 as gemv_i8};
 // 这一层只回答"算子是什么"，被 `op-kernel` / `op-neural` / `op` 三方同时依赖而不成环。
 // 用 `pub use` 兜住模块路径，12 个下游 crate 的 `op::model::…` / `op::sig::…` 零改动。
 pub use llm_op_spec::same_bytes;
+// `$crate::formula_cell!` / `$crate::operator_via!` 在骨架宏里按 crate 根解析，这里把 spec 导出的
+// 两个宏搬回本 crate 根：12 个下游与 all内部的 `#[model]` 展开都不必改路径。
+pub use llm_op_spec::{formula_cell, operator_here, operator_via};
 pub use llm_op_spec::tpl::{formula, parse};
 pub use llm_op_spec::{einsum, model, operator, sample, sch, sig, tpl};
 pub(crate) use llm_op_spec::tpl::guard;

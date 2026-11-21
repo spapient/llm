@@ -65,7 +65,7 @@ pub const fn model_of<T: Operator>() -> Model {
 #[macro_export]
 macro_rules! operator_here {
     ($ty:ty, $op:tt, $arity:literal, $shape:expr, $differentiable:literal, $reference:path) => {
-        $crate::operator_via!(
+        ::llm_op_spec::operator_via!(
             @impl $ty,
             $op,
             $arity,
@@ -84,13 +84,13 @@ macro_rules! operator_here {
 /// [`Operator`] 的唯一生成点：名字、生产形状、精度、轴与三条行为全部由四个入口路径给出。
 ///
 /// 两种形态：`grained` 把粒度对齐到骨架的 `Format::GRAIN`，
-/// 其余按稠密算子取 `1`；入口路径由调用方给（族骨架取 `$crate::$skel::*` 的泛型入口，
+/// 其余按稠密算子取 `1`；入口路径由调用方给（族骨架取 `$skel::*` 的泛型入口，
 /// 模块自带入口时取 `self::*`，见 [`operator_here!`]）。装配宏因此都不必再写
 /// 第二份 impl。
 #[macro_export]
 macro_rules! operator_via {
-    ($ty:ty, $op:tt, $arity:literal, $shape:expr, $differentiable:literal, $skel:ident, $axes:expr) => {
-        $crate::operator_via!(
+    ($ty:ty, $op:tt, $arity:literal, $shape:expr, $differentiable:literal, $skel:path, $axes:expr) => {
+        ::llm_op_spec::operator_via!(
             @impl $ty,
             $op,
             $arity,
@@ -98,36 +98,36 @@ macro_rules! operator_via {
             $differentiable,
             1,
             $axes,
-            $crate::$skel::project_shape,
-            $crate::$skel::cost::<$ty>,
-            $crate::$skel::sample::<$ty>,
-            $crate::$skel::reference::<$ty>
+            $skel::project_shape,
+            $skel::cost::<$ty>,
+            $skel::sample::<$ty>,
+            $skel::reference::<$ty>
         );
     };
-    (grained $ty:ty, $op:tt, $arity:literal, $shape:expr, $differentiable:literal, $skel:ident, $axes:expr) => {
-        $crate::operator_via!(
+    (grained $ty:ty, $op:tt, $arity:literal, $shape:expr, $differentiable:literal, $skel:path, $axes:expr) => {
+        ::llm_op_spec::operator_via!(
             @impl $ty,
             $op,
             $arity,
             $shape,
             $differentiable,
-            <$ty as $crate::$skel::Format>::GRAIN as u32,
+            <$ty as $skel::Format>::GRAIN as u32,
             $axes,
-            $crate::$skel::project_shape,
-            $crate::$skel::cost::<$ty>,
-            $crate::$skel::sample::<$ty>,
-            $crate::$skel::reference::<$ty>
+            $skel::project_shape,
+            $skel::cost::<$ty>,
+            $skel::sample::<$ty>,
+            $skel::reference::<$ty>
         );
     };
     (
         @impl $ty:ty, $op:tt, $arity:literal, $shape:expr, $differentiable:literal, $group:expr,
         $axes:expr, $project:path, $cost:path, $sample:path, $reference:path
     ) => {
-        impl $crate::operator::Operator for $ty {
+        impl ::llm_op_spec::operator::Operator for $ty {
             const NAME: &'static str = $op;
             const SHAPE: (usize, usize) = $shape;
-            const DTYPE: $crate::model::DType = $crate::model::DType::F32;
-            const AXES: &'static [$crate::model::AxisSpec] = $axes;
+            const DTYPE: ::llm_op_spec::model::DType = ::llm_op_spec::model::DType::F32;
+            const AXES: &'static [::llm_op_spec::model::AxisSpec] = $axes;
             const DIFFERENTIABLE: bool = $differentiable;
             const GROUP: u32 = $group;
             const ARITY: usize = $arity;
@@ -135,21 +135,21 @@ macro_rules! operator_via {
             fn shape_ctx(
                 m: usize,
                 n: usize,
-            ) -> ::core::result::Result<$crate::model::ShapeContext, ::diagnostic::Error> {
+            ) -> ::core::result::Result<::llm_op_spec::model::ShapeContext, ::diagnostic::Error> {
                 $project(m, n)
             }
 
             fn cost(
-                shape: &$crate::model::ShapeContext,
-            ) -> ::core::result::Result<$crate::model::Cost, ::diagnostic::Error> {
+                shape: &::llm_op_spec::model::ShapeContext,
+            ) -> ::core::result::Result<::llm_op_spec::model::Cost, ::diagnostic::Error> {
                 $cost(shape)
             }
 
-            fn sample(m: usize, n: usize) -> $crate::model::Sample {
+            fn sample(m: usize, n: usize) -> ::llm_op_spec::model::Sample {
                 $sample(m, n)
             }
 
-            fn reference(sample: &$crate::model::Sample) -> ::diagnostic::Result<Vec<f32>> {
+            fn reference(sample: &::llm_op_spec::model::Sample) -> ::diagnostic::Result<Vec<f32>> {
                 $reference(sample)
             }
         }
