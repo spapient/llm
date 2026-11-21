@@ -32,7 +32,7 @@ fn spec(code: &mut String, declaration: &Declaration, ty: &str) {
         let _ = write!(code, "{dim}usize");
     });
     code.push_str(", ::std::vec![");
-    comma(code, declaration.ops.iter(), |code, op| {
+    comma(&mut code, declaration.ops.iter(), |code, op| {
         literal(code, op);
         code.push_str(".to_string()");
     });
@@ -106,7 +106,7 @@ pub(crate) fn render_runtime(declaration: &RuntimeDecl, ty: &str) -> String {
     code.push_str("#[doc(hidden)]\n#[allow(non_snake_case, unused_macros)]\n");
     let _ = writeln!(code, "macro_rules! __layer_spec_{ty} {{");
     code.push_str("    (");
-    comma(code, unique(holes(declaration)), |code, hole| {
+    comma(&mut code, unique(holes(declaration)), |code, hole| {
         let _ = write!(code, "${hole}:expr");
     });
     code.push_str(") => {\n");
@@ -117,12 +117,12 @@ pub(crate) fn render_runtime(declaration: &RuntimeDecl, ty: &str) -> String {
     let _ = writeln!(code, "        ::nn::ContractSpec::{constructor}(");
     let _ = writeln!(code, "            ${},", declaration.name);
     code.push_str("            ");
-    shape_of(code, &declaration.out, |code, axis| {
+    shape_of(&mut code, &declaration.out, |code, axis| {
         let _ = write!(code, "${axis}");
     });
     code.push_str(",\n");
     code.push_str("            ::std::vec![");
-    comma(code, declaration.ops.iter(), |code, op| {
+    comma(&mut code, declaration.ops.iter(), |code, op| {
         let _ = write!(code, "${op}.to_string()");
     });
     code.push_str("],\n");
