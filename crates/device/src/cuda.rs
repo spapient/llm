@@ -72,6 +72,11 @@ __global__ void kernel_main({params}) {{
 /// 生产态 CUDA 循环注入的 host 驱动：按 `dims` 组成 `dim3` 网格发射 `kernel_main`，
 /// 分配/拷贝/回读与 [`cuda_grid_driver`] 同一口径（输出长度取样本值）。
 ///
+/// 实参只传缓冲：`kernel_main` 的形参表由 [`Dialect::tid_kernel_main`] 生成，只有缓冲——
+/// 标量在 `tid_kernel_main` 里已按样本值内联进内部内核调用，不再进发射实参。这里若跟着
+/// [`launch_args`] 传全套形参，就会出现「实参 7 个、形参 4 个」的编译错误（`nvcc`/`mcc` 同报
+/// `too many arguments`），而这正是真机上才暴露的那类漂移。
+///
 /// # Errors：缺输出缓冲、输出不是 f32、样本缺缓冲时返回说明。
 pub fn cuda_loop_driver(
     device_source: &str,
@@ -81,7 +86,7 @@ pub fn cuda_loop_driver(
 ) -> Result<String> {
     let (output, values) = output_of(signature, sample)?;
     let grid = cuda_grid(dims);
-    let args = launch_args(sample, signature.params())?;
+    let args = buffer_args(signature);
     let emit = cuda_launch(
         "kernel_main",
         &format!("dim3({}, {}, {})", grid[0], grid[1], grid[2]),
