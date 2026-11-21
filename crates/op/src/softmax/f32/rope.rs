@@ -104,12 +104,18 @@ fn rotate_into(x: &[f32], pos: f32, out: &mut [f32]) -> diagnostic::Result<()> {
             format!("缓冲长度不一致：x {}、out {}", x.len(), out.len()),
         ));
     }
+    rotate_rows(x, pos, frequencies(x.len()).as_ref(), out);
+    Ok(())
+}
+
+/// 按已备好的频率表旋转：`freq[i]` 就是第 `i` 对的频率，长度校验已在调用方做完。
+///
+/// 表由 [`frequencies`] 一次给出、多个头 / 多个序列复用，内层于是只剩 `mul`、`sin_cos`
+/// 与四条乘加——没有 `powf`，也没有长度判断。
+fn rotate_rows(x: &[f32], pos: f32, freq: &[f32], out: &mut [f32]) {
     let d = x.len();
-    let pairs = d / 2;
-    for i in 0..pairs {
-        let freq = BASE.powf(-((2 * i) as f32) / d as f32);
-        let angle = pos * freq;
-        let (sin, cos) = angle.sin_cos();
+    for (i, &f) in freq.iter().enumerate() {
+        let (sin, cos) = (pos * f).sin_cos();
         let (e, o) = (x[2 * i], x[2 * i + 1]);
         out[2 * i] = e * cos - o * sin;
         out[2 * i + 1] = e * sin + o * cos;
@@ -117,7 +123,6 @@ fn rotate_into(x: &[f32], pos: f32, out: &mut [f32]) -> diagnostic::Result<()> {
     if d % 2 == 1 {
         out[d - 1] = x[d - 1];
     }
-    Ok(())
 }
 
 /// 内核本体：结果写进调用方给的缓冲。
@@ -156,10 +161,11 @@ pub fn forward_heads(
     head_dim: usize,
 ) -> diagnostic::Result<()> {
     let heads = rope_heads(x, out, head_dim)?;
+    let freq = frequencies(head_dim);
     for head in 0..heads {
         let start = head * head_dim;
         let span = start..start + head_dim;
-        rotate_into(&x[span.clone()], pos as f32, &mut out[span])?;
+        rotate_rows(&x[span.clone()], pos as f32, freq.as_ref(), &mut out[span]);
     }
     Ok(())
 }
