@@ -29,8 +29,9 @@ macro_rules! device_suite {
         fn profile() -> Result<Profile, String> {
             let wanted = DEVICE.vendor;
             builtin_profiles()
-                .into_iter()
+                .iter()
                 .find(|profile| profile.meta.vendor == wanted)
+                .cloned()
                 .ok_or_else(|| format!("档案里没有厂商 `{wanted}`"))
         }
 

@@ -10,6 +10,7 @@ use diagnostic::data::{Table, Value};
 use diagnostic::{Code, Error};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 /// 输出语言闭集（cutile README §5.4 的 `emit` 列）。设备与输出语言是两个维度：
 /// 同一条 `cuda` emit 同时服务 NVIDIA 与 MUSA。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -458,12 +459,19 @@ impl Profile {
 ///
 /// 编排层（组合根）探测本机后把这份列表交给 [`select`]；档案清单从这里取一份，
 /// 不在调用方重复 `names → embedded → parse` 三段遍历。
-pub fn builtin_profiles() -> Vec<Profile> {
-    crate::names()
-        .iter()
-        .filter_map(|name| crate::embedded(name))
-        .filter_map(|table| Profile::parse(table).ok())
-        .collect()
+///
+/// 结果在进程内只算一次：档案表是编译期内嵌的只读数据，每次调用都重新解析等于把同一份
+/// 字符串重新拼成几十个 `String`/`Vec`。返回 `&'static` 让调用方不必为"再看一眼"付克隆代价
+/// （设备 crate 的用例每条都取一次档案）。
+pub fn builtin_profiles() -> &'static [Profile] {
+    static PROFILES: OnceLock<Vec<Profile>> = OnceLock::new();
+    PROFILES.get_or_init(|| {
+        crate::names()
+            .iter()
+            .filter_map(|name| crate::embedded(name))
+            .filter_map(|table| Profile::parse(table).ok())
+            .collect()
+    })
 }
 
 /// 按探测指纹从一组档案里挑出唯一命中、且规则最具体的一份。

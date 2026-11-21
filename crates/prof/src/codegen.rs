@@ -36,16 +36,16 @@ pub fn device(vendor: &str) {
 
     let device = scan(&dir, vendor);
     // 镜像结局只算一次：生成的表与 `CUTILE_REQUIRE_IMAGE` 门禁读的是同一次编译的结果。
-    let outcome = image::outcome(&device, &out, images);
+    let outcome = outcome(&device, &out, images);
 
     let mut text = String::new();
-    table::header(&mut text);
-    table::fragments(&mut text, &device);
-    table::device_line(&mut text, &device, &outcome);
+    header(&mut text);
+    fragments(&mut text, &device);
+    device_line(&mut text, &device, &outcome);
     fs::write(out.join("tables.rs"), text)
         .unwrap_or_else(|error| fail(format!("写 tables.rs 失败：{error}")));
 
-    image::require(&device, &outcome);
+    require(&device, &outcome);
 }
 
 /// 构建脚本必带的环境变量；缺了说明调用方不是 `build.rs`，直接失败而不是猜一个目录。
@@ -303,7 +303,6 @@ fn fail(message: impl std::fmt::Display) -> ! {
 
 // ── image ─────────────────────────────────────────────────────────────
 
-
 /// 一台设备的镜像结局。
 enum Outcome {
     /// 未开启 `device-image`：只有源码。
@@ -497,7 +496,6 @@ fn require(device: &Device, outcome: &Outcome) {
 
 // ── table ─────────────────────────────────────────────────────────────
 
-
 /// 文件头：说明这是生成物，并把 `Prim` 拉进作用域。
 fn header(text: &mut String) {
     let _ = writeln!(
@@ -573,7 +571,7 @@ fn prims(text: &mut String, device: &Device) {
 fn image_line(text: &mut String, device: &Device, outcome: &Outcome) {
     match outcome {
         Outcome::Compiled { path, symbols } => {
-            let format = image::format(device.profile.meta.emit);
+            let format = format(device.profile.meta.emit);
             let _ = writeln!(
                 text,
                 "    image: Some(prof::Image::new({format:?}, include_bytes!({:?}), {symbols})),",
