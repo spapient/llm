@@ -318,9 +318,7 @@ fn e5_width_map() {
 
         println!(
 
-            "  target {target} dB：rank={} gap={:.3e} sigma1={:.1} bpw={:.3} met={} \
-
-             位宽图 2/3/4/8 = {}/{}/{}/{}，权重空间 SNR={snr:.2} dB",
+            "  target {target} dB：rank={} gap={:.3e} sigma1={:.1} bpw={:.3} met={} 位宽图 2/3/4/8 = {}/{}/{}/{}，权重空间 SNR={snr:.2} dB",
 
             card.rank,
 

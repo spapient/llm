@@ -7,6 +7,7 @@
 //! `unsafe` 只出现在三段内联汇编（`enter_sm` / `sme_tile` / `exit_sm`），全部 `#[allow(unsafe_code)]`
 //! 且由 `available` 的运行时探测保证只在 SME 存在时进入；非 aarch64 上整条内核不参与编译。
 
+#[cfg(target_arch = "aarch64")]
 use std::thread;
 
 #[cfg(target_arch = "aarch64")]
@@ -16,24 +17,25 @@ use std::arch::asm;
 use std::simd::{f32x4, simd_swizzle};
 
 /// SME 微内核行数：一个 16×16 ZA 瓦片覆盖 16 行。
+#[cfg(target_arch = "aarch64")]
 const MR: usize = 16;
 
 /// SME 微内核列数：4 个 ZA 瓦片各 16 列，一次写回 64 列。
+#[cfg(target_arch = "aarch64")]
 const NR: usize = 64;
 
 /// 规模门槛（元素数）：低于此值的 GEMM，`smstart`/`smstop` 与打包的固定成本超过外积收益，
 /// 交给 NEON 更划算。
+#[cfg(target_arch = "aarch64")]
 const MIN_ELEMS: usize = 1 << 20;
 
 /// 运行时探测：本机是否存在 SME（Apple M4/M5 起）。
+///
+/// 只在 aarch64 上存在：非 aarch64 整条内核不参与编译，[`gemm`] 直接返回 `false`，因此这里
+/// 不留一份永远返回 `false` 的替身——那在 x86_64 上只会变成死代码。
 #[cfg(target_arch = "aarch64")]
 fn available() -> bool {
     std::arch::is_aarch64_feature_detected!("sme")
-}
-
-#[cfg(not(target_arch = "aarch64"))]
-fn available() -> bool {
-    false
 }
 
 /// 16×64 整铺 SME GEMM：`out[m,n] = a[m,k] · b[k,n]`。
