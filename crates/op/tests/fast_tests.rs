@@ -1,0 +1,179 @@
+use super::*;
+use crate::matmul::{close_enough, matmul_scalar};
+
+fn sample_i8(len: usize, salt: u32) -> Vec<i8> {
+    (0..len)
+        .map(|i| {
+            let x = (i as u32)
+                .wrapping_mul(2654435761)
+                .wrapping_add(salt.wrapping_mul(40503));
+            ((x % 251) as i32 - 125) as i8
+        })
+        .collect()
+}
+
+fn check_i8(m: usize, n: usize, k: usize) {
+    let a = sample_i8(m * k, 1);
+    let b = sample_i8(k * n, 2);
+    let mut want = vec![0i32; m * n];
+    crate::matmul_i8::forward_tiled(&a, &b, m, n, k, &mut want).unwrap();
+    let mut got = vec![0i32; m * n];
+    gemm_i8(&a, &b, m, n, k, &mut got);
+    assert_eq!(got, want, "gemm_i8 与参考逐元素相等（整数无舍入）");
+}
+
+#[test]
+fn i8_matches_on_panel_multiples() {
+    check_i8(64, 64, 96);
+}
+
+#[test]
+fn i8_matches_on_ragged_tails() {
+    check_i8(37, 19, 33);
+}
+
+#[test]
+fn i8_matches_on_prefill_shape() {
+    check_i8(256, 256, 4096);
+}
+
+#[test]
+fn i8_concurrent_calls_are_isolated() {
+    // 多槽池：并发调用各租一组空闲槽，必须互不干扰且不挂死。
+    let shapes = [(64usize, 64usize, 96usize), (80, 32, 128), (96, 48, 64)];
+    thread::scope(|s| {
+        for (m, n, k) in shapes {
+            let a = sample_i8(m * k, 1);
+            let b = sample_i8(k * n, 2);
+            let mut want = vec![0i32; m * n];
+            crate::matmul_i8::forward_tiled(&a, &b, m, n, k, &mut want).unwrap();
+            s.spawn(move || {
+                for _ in 0..200 {
+                    let mut got = vec![0i32; m * n];
+                    gemm_i8(&a, &b, m, n, k, &mut got);
+                    assert_eq!(got, want);
+                }
+            });
+        }
+    });
+}
+
+pub(super) fn sample(len: usize, salt: u32) -> Vec<f32> {
+    (0..len)
+        .map(|i| {
+            let x = (i as u32)
+                .wrapping_mul(2654435761)
+                .wrapping_add(salt.wrapping_mul(40503));
+            ((x >> 8) as f32) / 256.0 - 32.0
+        })
+        .collect()
+}
+
+/// 生成确定性输入、跑标量参考、调用 `compute` 后与参考对拍。
+/// `sme` 测试复用同一骨架，仅替换计算入口与断言文案。
+pub(super) fn check_gemm<F>(m: usize, n: usize, k: usize, compute: F, msg: &str)
+where
+    F: FnOnce(&[f32], &[f32], usize, usize, usize, &mut [f32]),
+{
+    let a = sample(m * k, 1);
+    let b = sample(k * n, 2);
+    let mut want = vec![0.0f32; m * n];
+    matmul_scalar(&a, &b, m, n, k, &mut want);
+    let mut got = vec![0.0f32; m * n];
+    compute(&a, &b, m, n, k, &mut got);
+    close_enough(&got, &want, 1e-3, 1e-3).expect(msg);
+}
+
+fn check(m: usize, n: usize, k: usize) {
+    check_gemm(m, n, k, gemm_f32, "fast gemm 与标量参考容差内一致");
+}
+
+#[test]
+fn matches_scalar_on_tile_multiples() {
+    check(64, 64, 96);
+}
+
+#[test]
+fn matches_scalar_on_ragged_edges() {
+    check(100, 70, 4093);
+}
+
+#[test]
+fn matches_scalar_trivial() {
+    check(1, 1, 1);
+    check(7, 3, 5);
+}
+
+#[test]
+fn matches_scalar_on_prefill_shape() {
+    check(256, 256, 4096);
+}
+
+/// 吞吐基线：`cargo test --release -p llm-op --lib fast::bench_throughput -- --ignored --nocapture`
+#[test]
+#[ignore = "吞吐基线，手动跑"]
+fn bench_throughput() {
+    use std::time::Instant;
+    let shapes = [
+        (256usize, 256usize, 4096usize),
+        (512, 512, 512),
+        (1024, 1024, 1024),
+    ];
+    println!(
+        "threads={}",
+        std::thread::available_parallelism()
+            .map(|x| x.get())
+            .unwrap_or(1)
+    );
+    let g = |ns: f64, m: usize, n: usize, k: usize| 2.0 * m as f64 * n as f64 * k as f64 / ns;
+    for (m, n, k) in shapes {
+        let a = sample_i8(m * k, 1);
+        let b = sample_i8(k * n, 2);
+        let mut out = vec![0i32; m * n];
+        gemm_i8(&a, &b, m, n, k, &mut out);
+        let mut best = f64::INFINITY;
+        for _ in 0..20 {
+            let t = Instant::now();
+            gemm_i8(&a, &b, m, n, k, &mut out);
+            best = best.min(t.elapsed().as_nanos() as f64);
+        }
+        let mt = g(best, m, n, k);
+        gemm_i8_single(&a, &b, m, n, k, &mut out);
+        let mut best1 = f64::INFINITY;
+        for _ in 0..5 {
+            let t = Instant::now();
+            gemm_i8_single(&a, &b, m, n, k, &mut out);
+            best1 = best1.min(t.elapsed().as_nanos() as f64);
+        }
+        println!(
+            "  i8 {m}x{n}x{k}: fast {mt:.1} GF/s | fast单 {:.1} GF/s | 单/多 {:.2}",
+            g(best1, m, n, k),
+            g(best1, m, n, k) / mt
+        );
+    }
+    for (m, n, k) in shapes {
+        let a: Vec<f32> = (0..m * k).map(|i| ((i as f32) * 0.013).sin()).collect();
+        let b: Vec<f32> = (0..k * n).map(|i| ((i as f32) * 0.007).cos()).collect();
+        let mut out = vec![0.0f32; m * n];
+        gemm_f32(&a, &b, m, n, k, &mut out);
+        let mut best = f64::INFINITY;
+        for _ in 0..20 {
+            let t = Instant::now();
+            gemm_f32(&a, &b, m, n, k, &mut out);
+            best = best.min(t.elapsed().as_nanos() as f64);
+        }
+        let mt = g(best, m, n, k);
+        gemm_f32_single(&a, &b, m, n, k, &mut out);
+        let mut best1 = f64::INFINITY;
+        for _ in 0..5 {
+            let t = Instant::now();
+            gemm_f32_single(&a, &b, m, n, k, &mut out);
+            best1 = best1.min(t.elapsed().as_nanos() as f64);
+        }
+        println!(
+            "  f32 {m}x{n}x{k}: fast {mt:.1} GF/s | fast单 {:.1} GF/s | 单/多 {:.2}",
+            g(best1, m, n, k),
+            g(best1, m, n, k) / mt
+        );
+    }
+}
