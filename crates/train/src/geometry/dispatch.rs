@@ -1,4 +1,5 @@
-//! 职责：`Geometry` 的检查/前向/反向方法分派——形状核对与逐变体数值实现。
+//! 职责：`Geometry` 的方法分派——形状核对交给 [`shape`](super::shape)、逐变体数值交给
+//! [`kernel`](super::kernel)，本文件只做路由，不重复实现两者。
 
 use diagnostic::Result;
 use op::conv::{AdaptiveAvgPool2d, AvgPool2d, Conv2d, Interpolate, MaxPool1d, MaxPool2d, Sampler};
@@ -35,7 +36,7 @@ impl Geometry {
     ///
     /// # Errors
     ///
-    /// 任一处不符返回 [`Code::Invalid`]。
+    /// 任一处不符返回 [`Code::Invalid`](diagnostic::Code::Invalid)。
     pub fn check_shape(self, lens: &[usize], out: usize) -> Result<()> {
         if lens.len() != self.arity() {
             return Err(invalid(format!(
@@ -312,7 +313,7 @@ impl Geometry {
     ///
     /// # Errors
     ///
-    /// 形状与实例不符时返回 [`Code::Invalid`]。
+    /// 形状与实例不符时返回 [`Code::Invalid`](diagnostic::Code::Invalid)。
     pub fn backward(self, inputs: &[Vec<f32>], incoming: &[f32]) -> Result<Vec<Vec<f32>>> {
         self.check_shape(
             &inputs.iter().map(Vec::len).collect::<Vec<_>>(),

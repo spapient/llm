@@ -18,15 +18,23 @@ pub(crate) fn dequantize(kind: Kind, raw: &[u8], out: &mut [f32]) -> Result<()> 
     decode(kind, raw, out)
 }
 
-/// 按类型分派：标量格式走定宽转换，分块格式走各自的位解包。
+/// 按类型分派：两种标量格式留在这里，分块格式下沉一层。
 fn decode(kind: Kind, raw: &[u8], out: &mut [f32]) -> Result<()> {
     match kind {
         Kind::F32 => decode_scalar::<4>(raw, out, "f32", f32::from_le_bytes),
         Kind::F16 => decode_scalar::<2>(raw, out, "f16", |b| f16_to_f32(u16::from_le_bytes(b))),
+        _ => blocked(kind, raw, out),
+    }
+}
+
+/// 四种分块格式：各自的位解包；参数是同块字节数与前 32 个量化点的偏移。
+fn blocked(kind: Kind, raw: &[u8], out: &mut [f32]) -> Result<()> {
+    match kind {
         Kind::Q8_0 => decode_q8(raw, out),
         Kind::Q4_K => decode_k(raw, out, 144, 0),
         Kind::Q5_K => decode_k(raw, out, 176, 32),
         Kind::Q6_K => decode_q6k(raw, out),
+        _ => Err(bad(format!("{kind:?} 不是分块格式"))),
     }
 }
 

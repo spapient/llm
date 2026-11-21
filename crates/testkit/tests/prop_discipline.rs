@@ -3,7 +3,7 @@
 //! [`super::prop_config`] 验"装置本身对不对"，这里验"有没有人绕过装置"。
 //! 分两份是因为前者改装置时红、后者改任何 crate 时红，故障定位不同。
 //!
-//! 为什么值得一道门：`nn` 等 crate 曾经各有一份手抄的 `ProptestConfig`，
+//! 为什么值得一道门：`nn` 与 `algorithm` 曾经各有一份手抄的 `ProptestConfig`，
 //! 两份的 `cases` 不同、`max_shrink_iters` 也不同，于是同一性质在两个 crate 里
 //! 的失败率与最小反例都不一样。把配置收成一处只是修好当下；让第二处**无法出现**
 //! 才是纪律。手抄配置不会让任何测试变红——它只会让性质测试静默地变弱。
@@ -171,7 +171,7 @@ fn every_property_crate_reaches_the_shared_configuration() {
 #[test]
 fn the_scan_actually_sees_the_property_crates() {
     let found = property_crates();
-    for expected in ["gemm", "conv", "nn", "rng"] {
+    for expected in ["gemm", "conv", "nn", "algorithm", "rng"] {
         assert!(
             found.contains(&expected.to_string()),
             "扫描面漏了 `{expected}`：清单里确实声明了 proptest，说明这条路没有真的读文件"

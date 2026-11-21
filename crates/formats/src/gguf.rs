@@ -322,37 +322,50 @@ fn list(cursor: &mut Cursor<'_>, depth: usize) -> Result<Value> {
     if depth >= DEPTH {
         return Err(bad("数组嵌套过深"));
     }
+    let (kind, count) = length(cursor)?;
+    Ok(Value::Arr(records(cursor, count, "数组长度溢出", |at| {
+        value(at, kind, depth + 1)
+    })?))
+}
+
+/// 数组头：元素类型码 + 计数，计数不得超过剩余字节（每元素至少 1 字节）。
+fn length(cursor: &mut Cursor<'_>) -> Result<(u32, u64)> {
     let kind = cursor.word()?;
     let count = cursor.wide()?;
     if count > cursor.rest() as u64 {
         return Err(bad("数组元素数超过剩余字节"));
     }
-    Ok(Value::Arr(records(
-        cursor,
-        count,
-        "数组长度溢出",
-        |at| value(at, kind, depth + 1),
-    )?))
+    Ok((kind, count))
 }
 
-/// 标量：`class << 4 | 宽度`，整数按有无符号扩展（左移后算术右移），浮点 f32 升 f64。
+/// 标量：`class << 4 | 宽度`，整数按有无符号扩展，浮点 f32 升 f64。
 fn scalar(cursor: &mut Cursor<'_>, kind: u32) -> Result<Value> {
-    let packed = NUMBERS.get(kind as usize).copied().unwrap_or(0);
-    if packed == 0 {
-        return Err(bad("未知值类型码"));
-    }
+    let packed = packed_code(kind)?;
     let width = usize::from(packed & 0x0F);
     let raw = cursor.take(width)?;
     let mut buf = [0u8; 8];
     buf[..width].copy_from_slice(raw);
-    let bits = u64::from_le_bytes(buf);
+    Ok(decode(packed, u64::from_le_bytes(buf)))
+}
+
+/// 值类型码 → `class << 4 | 宽度`；`0` 表示这不是标量码。
+fn packed_code(kind: u32) -> Result<u8> {
+    match NUMBERS.get(kind as usize).copied() {
+        Some(0) | None => Err(bad("未知值类型码")),
+        Some(packed) => Ok(packed),
+    }
+}
+
+/// 定宽位模式 → 值：整数左移后算术右移即符号扩展。
+fn decode(packed: u8, bits: u64) -> Value {
+    let width = usize::from(packed & 0x0F);
     let shift = 64 - width * 8;
-    Ok(match packed >> 4 {
-        0 => Value::Uint(bits),
-        1 => Value::Int(((bits << shift) as i64) >> shift),
-        _ if width == 4 => Value::Float(f64::from(f32::from_bits(bits as u32))),
+    match (packed >> 4, width) {
+        (0, _) => Value::Uint(bits),
+        (1, _) => Value::Int(((bits << shift) as i64) >> shift),
+        (_, 4) => Value::Float(f64::from(f32::from_bits(bits as u32))),
         _ => Value::Float(f64::from_bits(bits)),
-    })
+    }
 }
 
 /// 读 `count` 条记录；容量按 [`MAX_PREALLOC`] 封顶——谎报的巨大计数不会换来一次巨额分配。
@@ -380,14 +393,19 @@ fn pair(cursor: &mut Cursor<'_>) -> Result<(String, Value)> {
 /// 一条张量信息：名字、形状、元素类型与数据区偏移（偏移相对数据区起点）。
 fn tensor(cursor: &mut Cursor<'_>) -> Result<Tensor> {
     let name = text(cursor)?;
-    let shape = shape(cursor)?;
-    let kind = Kind::from_code(cursor.word()?)?;
+    let (shape, kind) = geometry(cursor)?;
     Ok(Tensor {
         name,
         kind,
         shape,
         offset: cursor.wide()?,
     })
+}
+
+/// 名字之后的几何信息：形状与元素类型，两者都在偏移之前。
+fn geometry(cursor: &mut Cursor<'_>) -> Result<(Vec<u64>, Kind)> {
+    let shape = shape(cursor)?;
+    Ok((shape, Kind::from_code(cursor.word()?)?))
 }
 
 /// 形状：维数上限 `MAX_RANK`，每维一个 `u64`。
@@ -413,11 +431,15 @@ fn stamp(cursor: &mut Cursor<'_>) -> Result<()> {
 
 /// 头部与两张表：magic/版本、两个计数（张量条目数、KV 对数），接着 KV 表与张量信息表。
 pub(crate) fn tables(cursor: &mut Cursor<'_>) -> Result<(Vec<Tensor>, Meta)> {
-    stamp(cursor)?;
-    let tensor_count = cursor.wide()?;
-    let kv_count = cursor.wide()?;
+    let (tensor_count, kv_count) = counts(cursor)?;
     let meta = records(cursor, kv_count, "KV 计数溢出", pair)?;
     Ok((records(cursor, tensor_count, "张量计数溢出", tensor)?, meta))
+}
+
+/// magic 与版本之后是两个计数：张量条目数在前、KV 对数在后。
+fn counts(cursor: &mut Cursor<'_>) -> Result<(u64, u64)> {
+    stamp(cursor)?;
+    Ok((cursor.wide()?, cursor.wide()?))
 }
 
 /// 数据区起点：按 `general.alignment` 对齐（未声明或非法时退回 [`DEFAULT_ALIGN`]），且不得越过末尾。

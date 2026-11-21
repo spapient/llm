@@ -1,26 +1,32 @@
-//! 训练循环的状态：[`Schedule`]、[`Step`]、[`Checkpoint`]，以及激活缓冲 [`Buffers`]。
+//! 训练栈：一次训练从"学什么"到"学到哪了、能不能恢复"的全部事实。
 //!
-//! **拥有**：`Schedule`、`Anneal`、`Step`、`Checkpoint`、`Buffers`、`Kernel`、`Reference`、`Data`、
-//! `View`、`ViewMut`，以及承载静态契约的 `Kind`、`Lane`、`Inputs`；训练样本的三件套
-//! [`Batch`]、[`Dataset`]、[`Chunks`] 也在本 crate（`samples`）。
-//! **不拥有**：反传公式（`autograd` 记录顺序、算子表提供公式）、激活的显存
-//! 计划（`autograd::Plan`）、分词与打乱（`tokenizer`；打乱只改变游标推进方式）、层定义
-//! （`nn`）、参数（`weights`）、拓扑（`shard`）、算子语义（`op`）、检查点字节格式（`snapshot`）。
+//! 五条语义轴，各占一组子模块，互不越界：
+//!
+//! 1. **循环状态**——[`Schedule`]/[`Anneal`]（学习率是完全确定的函数）、[`Session`]/[`TrainConfig`]、
+//!    [`Step`]/[`Checkpoint`]（"恢复所需的最小事实集"：步数、图规模、批形状、层数、权重条目数、
+//!    并行度，少任何一项恢复出来的都不是原来那次训练）、[`Distributed`]、[`Learner`]/[`MetricsBoard`]、
+//!    [`Batch`]/[`Dataset`]/[`Chunks`]（`samples`；唯一消费者是 [`Learner`]，故批几何与批总数只有一处算）。
+//! 2. **目标函数**——[`Loss`]/[`Outcome`] 与分类/回归损失、蒸馏族（[`Distill`]、`kl_div`、
+//!    `log_softmax`）、策略族（[`Grpo`]、`policy_loss`、`clipped_surrogate`、`entropy`）。三族共用
+//!    `loss` 的几何校验与数值助手，因此只有一份长度/词表/行数契约。
+//! 3. **参数更新**——[`Optimizer`] 契约与 [`Sgd`]/[`Adam`]/[`Muon`]；[`Group`] 按 `ParamRole` 分组，
+//!    矩状态按参数下标对齐，与激活槽平行。
+//! 4. **反向**——`backprop` 按 `Schedule` 的逆拓扑序把梯度走回参数端点；`backprop::formulas` 是
+//!    各算子的**参考公式数值体**（`op` 提供算子名/输入个数/声明档语义，本 crate 提供算得出的那条式子）。
+//! 5. **激活缓冲与几何**——[`Buffers`] 是 [`autograd::Store`] 在训练侧的实现：等长空闲表，稳态零
+//!    分配（装入新值即把旧块还表），`live`/`peak` 与 [`autograd::Plan`] 对账；[`Kernel`] 把它适配到
+//!    标量参考实现，`geometry` 是各经典算子的实例几何与前向/反向参考数值（梯度对拍的基准）。
+//!
+//! **拥有**：上面点名的全部类型，加上承载静态契约的 `Kind`、`Lane`、`Inputs` 与 [`OperatorSetOps`]。
+//! **不拥有**：图与记录顺序、激活的显存计划（`autograd`）、算子注册表与声明档语义（`op`）、
+//! 分词与打乱（`tokenizer`；打乱只改变游标推进方式）、层定义（`nn`）、参数（`weights`）、
+//! 拓扑与集合通信（`shard`）、检查点字节格式（`snapshot`；编码、版本与偏移校验不在训练循环里再做一遍）。
 //! **依赖**：`nn`、`autograd`、`weights`、`shard`、`tensor`、`op`、`diagnostic`、`snapshot`。
-//! **被依赖**：`llm`。
+//! **被依赖**：`cli`、`benchmarks`、`fuzz`、`testkit`。
 //!
-//! 检查点的**字节格式**已独立为 `snapshot` 成员（L5）：本 crate 只持有内存里的 [`Checkpoint`]
-//! 事实集，编码、版本与偏移校验不在训练循环里再做一遍，两者各自一事。训练样本的 [`Batch`]、
-//! [`Dataset`]、[`Chunks`] 仍在本 crate（`samples`）：唯一消费者是 [`Learner`]，
-//! "批几何与批总数在哪算"因此也只有一处。
-//!
-//! 这一层回答两件事：**训练到哪了、能不能恢复**——学习率是完全确定的函数，检查点记录的是
-//! "恢复所需的最小事实集"（步数、图规模、批形状、层数、权重条目数、并行度），少任何一项恢复出来
-//! 的都不是原来那次训练；**激活放在哪、什么时候还**——[`Buffers`] 是 `autograd::Store` 在训练侧
-//! 的实现，把重放要的值放进真实内存，算的部分交给 [`Kernel`]。
-//!
-//! 入口只做模块声明与再导出；实现按语义轴落在 `schedule`、`checkpoint`、`samples` 与 `store`
-//! 四个子模块。
+//! 入口只做模块声明与再导出：实现按上面五条轴分布在 14 个子模块（`backprop`、`dist`、`distill`、
+//! `geometry`、`kernel`、`learner`、`loss`、`optimizer`、`pool`、`rl`、`samples`、
+//! `schedule`、`session`、`store`）里。
 //!
 //! # 例子
 //!
@@ -41,7 +47,6 @@ mod distill;
 mod kernel;
 mod learner;
 mod loss;
-mod metrics;
 mod optimizer;
 mod pool;
 mod rl;
@@ -61,9 +66,8 @@ mod support;
 pub use dist::{Distributed, Local, Remote};
 pub use distill::{Distill, distillation_loss, kl_div, kl_per_row, log_softmax};
 pub use geometry::{Geometry, Running};
-pub use learner::{ForwardOut, Learner, Metric};
+pub use learner::{ForwardOut, Learner, Metric, MetricPoint, MetricsBoard};
 pub use loss::{Loss, Outcome, argmax_hits, bce_with_logits, cross_entropy, hinge, huber, mse};
-pub use metrics::{MetricPoint, MetricsBoard};
 pub use optimizer::{Adam, Group, Muon, Optimizer, OwnedSlot, Sgd, Slot};
 pub use rl::{Grpo, advantage, clipped_surrogate, entropy, grpo_loss, log_prob, policy_loss};
 pub use samples::{Batch, Chunks, Dataset};

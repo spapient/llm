@@ -233,30 +233,47 @@ fn string(vm: &mut Vm<'_>, op: u8) -> Result<()> {
 /// 全局名：模块在前、名字在后。`GLOBAL` 直接读两行（模块、类名）；`STACK_GLOBAL` 的两个
 /// 字符串压栈时是「模块、类名」，所以弹出的第一个是类名、第二个才是模块。
 fn global(vm: &mut Vm<'_>, op: u8) -> Result<()> {
-    let (module, name) = if op == b'c' {
-        (vm.line()?, vm.line()?)
-    } else {
-        let name = into_str(&vm.pop()?)?;
-        (into_str(&vm.pop()?)?, name)
+    let (module, name) = match op {
+        b'c' => line_global(vm)?,
+        _ => stacked_global(vm)?,
     };
     vm.stack.push(Value::Global { module, name });
     Ok(())
 }
 
+/// `GLOBAL`：模块与类名各占一行。
+fn line_global(vm: &mut Vm<'_>) -> Result<(String, String)> {
+    Ok((vm.line()?, vm.line()?))
+}
+
+/// `STACK_GLOBAL`：先弹的是类名，后弹的才是模块。
+fn stacked_global(vm: &mut Vm<'_>) -> Result<(String, String)> {
+    let name = into_str(&vm.pop()?)?;
+    Ok((into_str(&vm.pop()?)?, name))
+}
+
 /// 整数：`BININT1`/`BININT2` 无符号 1/2 字节、`BININT` 补码 4 字节、`LONG1`/`LONG4`
-/// 1/4 字节长度前缀 + 小端补码正文。`signed` 按最高位符号扩展，否则零扩展；超过 8 字节
-/// 装不进 `i64`，显式失败。
+/// 1/4 字节长度前缀 + 小端补码正文。
 fn integer(vm: &mut Vm<'_>, op: u8) -> Result<()> {
-    let (width, signed) = match op {
-        b'M' => (2, false),
-        b'J' => (4, true),
-        b'\x8a' | b'\x8b' => {
-            let len = usize::try_from(vm.cursor.uint(if op == b'\x8b' { 4 } else { 1 })?)
-                .map_err(|_| bad("整数长度超出 usize"))?;
-            (len, true)
-        }
-        _ => (1, false),
-    };
+    let value = match op {
+        b'M' => widen(vm, 2, false),
+        b'J' => widen(vm, 4, true),
+        b'\x8a' | b'\x8b' => long_width(vm, op).and_then(|width| widen(vm, width, true)),
+        _ => widen(vm, 1, false),
+    }?;
+    vm.stack.push(Value::Int(value));
+    Ok(())
+}
+
+/// `LONG1`/`LONG4` 的长度前缀：1 或 4 字节。
+fn long_width(vm: &mut Vm<'_>, op: u8) -> Result<usize> {
+    let size = if op == b'\x8b' { 4 } else { 1 };
+    let len = vm.cursor.uint(size)?;
+    usize::try_from(len).map_err(|_| bad("整数长度超出 usize"))
+}
+
+/// 定宽小端整数：`signed` 按最高位符号扩展，否则零扩展；超过 8 字节装不进 `i64`，显式失败。
+fn widen(vm: &mut Vm<'_>, width: usize, signed: bool) -> Result<i64> {
     if width > 8 {
         return Err(bad("整数超过 i64 宽度"));
     }
@@ -264,8 +281,7 @@ fn integer(vm: &mut Vm<'_>, op: u8) -> Result<()> {
     let negative = signed && raw.last().is_some_and(|&last| last & 0x80 != 0);
     let mut buf = [if negative { 0xFF } else { 0 }; 8];
     buf[..width].copy_from_slice(raw);
-    vm.stack.push(Value::Int(i64::from_le_bytes(buf)));
-    Ok(())
+    Ok(i64::from_le_bytes(buf))
 }
 
 fn tuple(vm: &mut Vm<'_>, op: u8) -> Result<()> {
@@ -286,16 +302,24 @@ fn discard(vm: &mut Vm<'_>, _op: u8) -> Result<()> {
 /// `q`/`h` 读 1 字节，`r`/`j` 读 4 字节，`\x94` 直接用当前栈长。
 fn memo_op(vm: &mut Vm<'_>, op: u8) -> Result<()> {
     let idx = match op {
-        b'q' | b'h' => usize::from(vm.cursor.byte()?),
-        b'r' | b'j' => {
-            usize::try_from(vm.cursor.uint(4)?).map_err(|_| bad("memo 索引超出 usize"))?
-        }
+        b'q' | b'h' => memo_index(vm, 1)?,
+        b'r' | b'j' => memo_index(vm, 4)?,
         _ => vm.memo.len(),
     };
-    match op {
-        b'h' | b'j' => vm.recall_memo(idx),
-        _ => vm.store_memo(idx),
+    recall(vm, idx, matches!(op, b'h' | b'j'))
+}
+
+/// memo 索引：`size` 字节无符号。
+fn memo_index(vm: &mut Vm<'_>, size: usize) -> Result<usize> {
+    usize::try_from(vm.cursor.uint(size)?).map_err(|_| bad("memo 索引超出 usize"))
+}
+
+/// 取回（`h`/`j`）还是存入（`q`/`r`/`\x94`）。
+fn recall(vm: &mut Vm<'_>, idx: usize, get: bool) -> Result<()> {
+    if get {
+        return vm.recall_memo(idx);
     }
+    vm.store_memo(idx)
 }
 
 /// `BINPERSID`：栈顶是 persistent id 元组，换成 [`Value::Storage`] 留在栈上。
@@ -313,7 +337,12 @@ fn reduce(vm: &mut Vm<'_>, _op: u8) -> Result<()> {
     let Value::Global { module, name } = vm.pop()? else {
         return Err(bad("REDUCE 的可调用对象不是 GLOBAL"));
     };
-    match (module.as_str(), name.as_str()) {
+    invoke(vm, &module, &name, args)
+}
+
+/// 两种可调用对象：张量重建与空 `OrderedDict`；其余一律显式失败。
+fn invoke(vm: &mut Vm<'_>, module: &str, name: &str, args: Value) -> Result<()> {
+    match (module, name) {
         ("torch._utils", "_rebuild_tensor_v2") => vm.rebuild_tensor(args),
         ("collections", "OrderedDict") => {
             vm.stack.push(Value::Dict(Vec::new()));
@@ -325,26 +354,35 @@ fn reduce(vm: &mut Vm<'_>, _op: u8) -> Result<()> {
 
 /// 栈顶 dict 写入：`SETITEM` 弹一队键值，`SETITEMS` 弹 MARK 起的一段（项数必须为偶数）。
 fn set_item(vm: &mut Vm<'_>, op: u8) -> Result<()> {
-    let (pairs, label) = if op == b's' {
+    let (pairs, what) = if op == b's' {
         let value = vm.pop()?;
         (vec![(vm.pop()?, value)], "SETITEM")
     } else {
-        let items = vm.pop_until_marker()?;
-        if !items.len().is_multiple_of(2) {
-            return Err(bad("SETITEMS 的项数为奇数"));
-        }
-        let pairs = items
-            .chunks(2)
-            .map(|pair| (pair[0].clone(), pair[1].clone()))
-            .collect();
-        (pairs, "SETITEMS")
+        (split_items(vm)?, "SETITEMS")
     };
+    write_dict(vm, pairs, what)
+}
+
+/// `SETITEMS` 的键值对：MARK 起的一段，项数必须为偶数。
+fn split_items(vm: &mut Vm<'_>) -> Result<Vec<(Value, Value)>> {
+    let items = vm.pop_until_marker()?;
+    if !items.len().is_multiple_of(2) {
+        return Err(bad("SETITEMS 的项数为奇数"));
+    }
+    Ok(items
+        .chunks(2)
+        .map(|pair| (pair[0].clone(), pair[1].clone()))
+        .collect())
+}
+
+/// 栈顶必须是 dict，否则按 `what` 报错。
+fn write_dict(vm: &mut Vm<'_>, pairs: Vec<(Value, Value)>, what: &str) -> Result<()> {
     match vm.stack.last_mut() {
         Some(Value::Dict(entries)) => {
             entries.extend(pairs);
             Ok(())
         }
-        _ => Err(bad(format!("{label} 目标不是 dict"))),
+        _ => Err(bad(format!("{what} 目标不是 dict"))),
     }
 }
 

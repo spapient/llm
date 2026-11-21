@@ -22,7 +22,7 @@
 
 ## 位级一致性（K12）覆盖
 
-逐位对拍（`assert_eq!(x.to_bits(), y.to_bits())`）已覆盖：`crates/dtype/tests/{dtype,qtype,mxtype}_tests.rs`（块量化编码），`crates/tensor/tests/tensor_tests.rs`。这些是「整数语义 / 编码」路径，天然可逐位；浮点 SIMD 求和路径（GEMM/GEMV/softmax）因重排顺序不承诺逐位相等，按 A1 以 `γ_n` 界 + 实测容差（上表）为契约，不造假逐位。
+逐位对拍（`assert_eq!(x.to_bits(), y.to_bits())`）已覆盖：`crates/algorithm/tests/spike_tests.rs`（INT8 脉冲 LIF 整数累加 + 代理梯度），`crates/dtype/tests/{dtype,qtype,mxtype}_tests.rs`（块量化编码），`crates/tensor/tests/tensor_tests.rs`。这些是「整数语义 / 编码」路径，天然可逐位；浮点 SIMD 求和路径（GEMM/GEMV/softmax）因重排顺序不承诺逐位相等，按 A1 以 `γ_n` 界 + 实测容差（上表）为契约，不造假逐位。
 
 ## 开口（仍未闭合，及闭合前提）
 
