@@ -97,3 +97,7 @@ pub use policy::{
 
 #[doc(inline)]
 pub use spike::{Gradients, Master, Membrane, Spiking, Surrogate};
+
+#[cfg(test)]
+#[path = "../tests/prop_tests.rs"]
+mod prop_tests;

@@ -15,5 +15,8 @@ diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 nn = { path = "../nn", package = "llm-nn" }
 op = { path = "../op", package = "llm-op" }
 
+[dev-dependencies]
+proptest = "1"
+
 [lints]
 workspace = true

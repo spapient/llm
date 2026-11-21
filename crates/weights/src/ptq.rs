@@ -158,9 +158,19 @@ pub fn dequantize(
 ) -> Result<()> {
     validate_dequantize(scheme, packed, scales, group, out)?;
 
-    for (i, slot) in out.iter_mut().enumerate() {
-        let field = unpack_bits(packed, i, scheme.bits);
-        *slot = scales[i / group] * decode_code(scheme, field);
+    // 按组取 scale：`scales[g]` 在整组内不变，逐元素 `i / group` 是一次多余的整数除法，
+    // 且把尺度的读取变成随索引跳动的访存。按组切片后每组只取一次 scale。
+    let len = out.len();
+    for (g, &scale) in scales.iter().enumerate() {
+        let lo = g * group;
+        let hi = (lo + group).min(len);
+        if lo >= hi {
+            break;
+        }
+        for (offset, slot) in out[lo..hi].iter_mut().enumerate() {
+            let field = unpack_bits(packed, lo + offset, scheme.bits);
+            *slot = scale * decode_code(scheme, field);
+        }
     }
     Ok(())
 }

@@ -1138,7 +1138,6 @@ macro_rules! gemv_packed {
     };
 }
 
-
 pub mod f32;
 pub mod i2;
 pub mod i4;
