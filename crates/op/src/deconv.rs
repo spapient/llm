@@ -321,10 +321,9 @@ fn forward_1d<S: DeconvScalar>(
 }
 
 /// 列矩阵 `[n·l, cout·k]` 散射累加到 `[n, ol, cout]`：越界位置裁掉。
-#[allow(clippy::too_many_arguments)]
-fn scatter1(
-    col: &[f32],
-    out: &mut [f32],
+fn scatter1<T: Copy + AddAssign>(
+    col: &[T],
+    out: &mut [T],
     n: usize,
     l: usize,
     ol: usize,
@@ -335,24 +334,6 @@ fn scatter1(
         for i in 0..l {
             let src = (ni * l + i) * cout * conv.k;
             scatter1_at(col, out, ol, conv, cout, ni, i, src);
-        }
-    }
-}
-
-/// i8 版散射：累加在 i32 上。
-fn scatter1_i8(
-    col: &[i32],
-    out: &mut [i32],
-    n: usize,
-    l: usize,
-    ol: usize,
-    conv: &ConvTranspose1d,
-    cout: usize,
-) {
-    for ni in 0..n {
-        for i in 0..l {
-            let src = (ni * l + i) * cout * conv.k;
-            scatter1_at_i8(col, out, ol, conv, cout, ni, i, src);
         }
     }
 }
