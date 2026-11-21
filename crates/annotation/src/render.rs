@@ -43,8 +43,7 @@ fn spec(code: &mut String, declaration: &Declaration, ty: &str) {
     code.push_str("                ::core::result::Result::Ok(spec) => spec,\n");
     let _ = writeln!(
         code,
-        "                ::core::result::Result::Err(error) => {{ {panic}(\"注解声明的层 `{{}}` 引用了未声明的算子：{{}}\", {name}, error) }}",
-        panic = "::std::panic!"
+        "                ::core::result::Result::Err(error) => {{ ::std::panic!(\"注解声明的层 `{{}}` 引用了未声明的算子：{{}}\", {name}, error) }}"
     );
     code.push_str("            }\n        })\n    }\n}\n\n");
 }
