@@ -11,9 +11,21 @@ pub(crate) fn dequantize(kind: Kind, raw: &[u8], out: &mut [f32]) -> Result<()> 
     if raw.len() != kind.bytes_of(out.len())? {
         return Err(bad("张量字节长度与块布局不符"));
     }
+    decode(kind, raw, out)
+}
+
+/// 按类型分派：标量格式走定宽转换，分块格式走各自的布局。
+fn decode(kind: Kind, raw: &[u8], out: &mut [f32]) -> Result<()> {
     match kind {
         Kind::F32 => decode_scalar::<4>(raw, out, "f32", f32::from_le_bytes),
         Kind::F16 => decode_scalar::<2>(raw, out, "f16", |b| f16_to_f32(u16::from_le_bytes(b))),
+        _ => decode_block(kind, raw, out),
+    }
+}
+
+/// 分块量化格式：Q8_0 / Q4_K / Q5_K / Q6_K。
+fn decode_block(kind: Kind, raw: &[u8], out: &mut [f32]) -> Result<()> {
+    match kind {
         Kind::Q8_0 => decode_q8(raw, out),
         Kind::Q4_K => decode_k(raw, out, 144, 0),
         Kind::Q5_K => decode_k(raw, out, 176, 32),

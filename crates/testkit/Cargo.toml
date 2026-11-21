@@ -14,6 +14,10 @@ autotests = false
 
 [dependencies]
 
+# 性质测试装置（`prop`）：配置、受约束生成器、精确相等断言。proptest 本身是测试库，而 testkit
+# 只作各成员的 dev-dependency，所以这条依赖进不了任何二进制——夹具「不拉被测 crate」的约束仍在。
+proptest = { workspace = true }
+
 # 只服务 `src/` 里的跨层对拍与工作区契约门禁；不进夹具库运行时。
 [dev-dependencies]
 serde_json = "1.0.154"

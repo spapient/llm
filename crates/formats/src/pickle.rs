@@ -107,10 +107,15 @@ impl<'a> Vm<'a> {
             if op == b'.' {
                 return Ok(());
             }
-            let handler = OPS[usize::from(op)]
-                .ok_or_else(|| bad(format!("未知 pickle opcode 0x{op:02X}")))?;
-            handler(self, op)?;
+            self.dispatch(op)?;
         }
+    }
+
+    /// 查表并调用处理函数。
+    fn dispatch(&mut self, op: u8) -> Result<()> {
+        let handler =
+            OPS[usize::from(op)].ok_or_else(|| bad(format!("未知 pickle opcode 0x{op:02X}")))?;
+        handler(self, op)
     }
 
     /// `GLOBAL` 的两行名字：读到下一个 `\n` 为止（换行本身被消费）。
@@ -175,11 +180,16 @@ fn global(vm: &mut Vm<'_>, op: u8) -> Result<()> {
     let (module, name) = if op == b'c' {
         (vm.line()?, vm.line()?)
     } else {
-        let name = into_str(&vm.pop()?)?;
-        (into_str(&vm.pop()?)?, name)
+        stack_global(vm)?
     };
     vm.stack.push(Value::Global { module, name });
     Ok(())
+}
+
+/// `STACK_GLOBAL`：从栈上取两个字符串（名字在前、模块在后）。
+fn stack_global(vm: &mut Vm<'_>) -> Result<(String, String)> {
+    let name = into_str(&vm.pop()?)?;
+    Ok((into_str(&vm.pop()?)?, name))
 }
 
 /// `BININT1`/`BININT2`（无符号）与 `BININT`（4 字节补码）共用一套符号规则。

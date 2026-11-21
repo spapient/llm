@@ -75,17 +75,25 @@ impl<'a> Vm<'a> {
 
 /// memo 的 5 条 opcode：`q`/`r`/`\x94` 存当前栈顶，`h`/`j` 取回；`r`/`j` 的索引是 4 字节。
 pub(crate) fn memo_op(vm: &mut Vm<'_>, op: u8) -> Result<()> {
-    let idx = match op {
-        b'q' | b'h' => usize::from(vm.cursor.byte()?),
-        b'r' | b'j' => {
-            usize::try_from(vm.cursor.uint(4)?).map_err(|_| bad("memo 索引超出 usize"))?
-        }
-        _ => vm.memo.len(),
-    };
+    let idx = memo_index(vm, op)?;
     match op {
         b'h' | b'j' => vm.recall_memo(idx),
         _ => vm.store_memo(idx),
     }
+}
+
+/// 按 opcode 决定索引：`q`/`h` 读 1 字节，`r`/`j` 读 4 字节，`\x94` 用栈长。
+fn memo_index(vm: &mut Vm<'_>, op: u8) -> Result<usize> {
+    match op {
+        b'q' | b'h' => Ok(usize::from(vm.cursor.byte()?)),
+        b'r' | b'j' => wide_index(vm),
+        _ => Ok(vm.memo.len()),
+    }
+}
+
+/// 4 字节大端索引收窄到 `usize`。
+fn wide_index(vm: &mut Vm<'_>) -> Result<usize> {
+    usize::try_from(vm.cursor.uint(4)?).map_err(|_| bad("memo 索引超出 usize"))
 }
 
 /// `BINPERSID`：栈顶是 persistent id 元组，换成 [`Value::Storage`] 留在栈上。
@@ -99,11 +107,21 @@ pub(crate) fn persistent_load(vm: &mut Vm<'_>, _op: u8) -> Result<()> {
 /// `REDUCE`：弹出实参与可调用对象，只认张量重建与 `OrderedDict` 两种构造。
 pub(crate) fn reduce(vm: &mut Vm<'_>, _op: u8) -> Result<()> {
     let args = vm.pop()?;
-    let (module, name) = match vm.pop()? {
-        Value::Global { module, name } => (module, name),
-        _ => return Err(bad("REDUCE 的可调用对象不是 GLOBAL")),
-    };
-    match (module.as_str(), name.as_str()) {
+    let (module, name) = pop_global(vm)?;
+    apply_reduce(vm, args, &module, &name)
+}
+
+/// 可调用对象必须是 `GLOBAL`。
+fn pop_global(vm: &mut Vm<'_>) -> Result<(String, String)> {
+    match vm.pop()? {
+        Value::Global { module, name } => Ok((module, name)),
+        _ => Err(bad("REDUCE 的可调用对象不是 GLOBAL")),
+    }
+}
+
+/// 按全局名分派到张量重建或 `OrderedDict`。
+fn apply_reduce(vm: &mut Vm<'_>, args: Value, module: &str, name: &str) -> Result<()> {
+    match (module, name) {
         ("torch._utils", "_rebuild_tensor_v2") => vm.rebuild_tensor(args),
         ("collections", "OrderedDict") => {
             vm.stack.push(Value::Dict(Vec::new()));
@@ -115,20 +133,7 @@ pub(crate) fn reduce(vm: &mut Vm<'_>, _op: u8) -> Result<()> {
 
 /// 栈顶 dict 写入：`SETITEM` 弹一队键值，`SETITEMS` 弹 MARK 起的一段（项数必须为偶数）。
 pub(crate) fn set_item(vm: &mut Vm<'_>, op: u8) -> Result<()> {
-    let (pairs, label) = if op == b's' {
-        let value = vm.pop()?;
-        (vec![(vm.pop()?, value)], "SETITEM")
-    } else {
-        let items = vm.pop_until_marker()?;
-        if items.len() % 2 != 0 {
-            return Err(bad("SETITEMS 的项数为奇数"));
-        }
-        let pairs = items
-            .chunks(2)
-            .map(|pair| (pair[0].clone(), pair[1].clone()))
-            .collect();
-        (pairs, "SETITEMS")
-    };
+    let (pairs, label) = pairs_for(vm, op)?;
     match vm.stack.last_mut() {
         Some(Value::Dict(entries)) => {
             entries.extend(pairs);
@@ -136,6 +141,33 @@ pub(crate) fn set_item(vm: &mut Vm<'_>, op: u8) -> Result<()> {
         }
         _ => Err(bad(format!("{label} 目标不是 dict"))),
     }
+}
+
+/// 键值对与目标名：`SETITEM` 一队，`SETITEMS` 一段。
+fn pairs_for(vm: &mut Vm<'_>, op: u8) -> Result<(Vec<(Value, Value)>, &'static str)> {
+    if op == b's' {
+        return single_pair(vm);
+    }
+    marker_pairs(vm)
+}
+
+/// `SETITEM`：弹键与值各一。
+fn single_pair(vm: &mut Vm<'_>) -> Result<(Vec<(Value, Value)>, &'static str)> {
+    let value = vm.pop()?;
+    Ok((vec![(vm.pop()?, value)], "SETITEM"))
+}
+
+/// `SETITEMS`：弹 MARK 起的一段，项数必须为偶数。
+fn marker_pairs(vm: &mut Vm<'_>) -> Result<(Vec<(Value, Value)>, &'static str)> {
+    let items = vm.pop_until_marker()?;
+    if items.len() % 2 != 0 {
+        return Err(bad("SETITEMS 的项数为奇数"));
+    }
+    let pairs = items
+        .chunks(2)
+        .map(|pair| (pair[0].clone(), pair[1].clone()))
+        .collect();
+    Ok((pairs, "SETITEMS"))
 }
 
 /// 栈顶 list 追加：`APPEND` 弹一值，`APPENDS` 弹 MARK 起的一段。

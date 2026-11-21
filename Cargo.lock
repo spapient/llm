@@ -591,6 +591,7 @@ dependencies = [
  "llm-spec",
  "llm-testkit",
  "num-traits",
+ "proptest",
 ]
 
 [[package]]
@@ -684,6 +685,7 @@ dependencies = [
  "llm-spec",
  "llm-testkit",
  "num-traits",
+ "proptest",
 ]
 
 [[package]]
@@ -856,6 +858,7 @@ dependencies = [
  "llm-tools",
  "llm-train",
  "llm-weights",
+ "proptest",
  "serde_json",
 ]
 

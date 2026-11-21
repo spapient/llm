@@ -14,7 +14,8 @@
 //! 必须闭合，且每条见证在本机算得出档案写的值；`device_suite!`（[`suite`]）把九条判据
 //! 摊成设备 crate 的 `#[test]` 函数，于是"一台设备一遍"不必复制九次。
 //! **不拥有**：任何生产逻辑——它是测试夹具，不进任何二进制。
-//! **依赖**：无（夹具不该把被测 crate 拉进来）。
+//! **依赖**：`proptest`（仅 [`prop`]：性质测试装置）——夹具不拉被测 crate，复用测试库则比在
+//! 四个成员里各写一份配置更省，且 testkit 只作 dev-dependency，此依赖不进任何二进制。
 //! **被依赖**：各成员的 `[dev-dependencies]`。
 //!
 //! 这里的真机门控变量是**测试门控，不是产品配置**：它不进 `cli::settings` 的键表，
@@ -35,6 +36,7 @@ pub mod compare;
 pub mod device;
 pub mod evidence;
 pub mod gating;
+pub mod prop;
 pub mod rel;
 pub mod suite;
 pub mod witness;
@@ -59,6 +61,10 @@ mod mirror;
 mod oracle;
 #[cfg(test)]
 mod ownership;
+// 性质测试装置的自测：环境变量收口、生成器值域、精确相等断言的边界。
+#[cfg(test)]
+#[path = "../tests/prop_config.rs"]
+mod prop_config;
 // L3 合成律的跨层对拍：只收「一层算不出来」的事实——`bound` 量真实内核上的界是否罩住实测误差，
 // `ruling` 量真实容器的逐位往返，`measure` 是两者共用的夹具（定理侧递推由 `weights::l3` 自测）。
 #[cfg(test)]
