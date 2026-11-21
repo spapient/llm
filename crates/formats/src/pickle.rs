@@ -240,18 +240,18 @@ fn long(vm: &mut Vm<'_>, op: u8) -> Result<()> {
 
 /// 全局名：`GLOBAL` 从流里读两行，`STACK_GLOBAL` 从栈上取两个字符串（名字在前、模块在后）。
 fn global(vm: &mut Vm<'_>, op: u8) -> Result<()> {
-    let module = if op == b'c' {
-        vm.line()?
-    } else {
-        into_str(&vm.pop()?)?
-    };
-    let name = if op == b'c' {
-        vm.line()?
-    } else {
-        into_str(&vm.pop()?)?
-    };
+    let module = global_name(vm, op)?;
+    let name = global_name(vm, op)?;
     vm.stack.push(Value::Global { module, name });
     Ok(())
+}
+
+/// 一个全局名片段：`GLOBAL` 读一行，`STACK_GLOBAL` 弹一个字符串。
+fn global_name(vm: &mut Vm<'_>, op: u8) -> Result<String> {
+    if op == b'c' {
+        return vm.line();
+    }
+    into_str(&vm.pop()?)
 }
 
 /// `BININT1`/`BININT2`（无符号）与 `BININT`（4 字节补码）共用一套符号规则。
@@ -319,11 +319,21 @@ fn persistent_load(vm: &mut Vm<'_>, _op: u8) -> Result<()> {
 /// `REDUCE`：弹出实参与可调用对象，只认张量重建与 `OrderedDict` 两种构造。
 fn reduce(vm: &mut Vm<'_>, _op: u8) -> Result<()> {
     let args = vm.pop()?;
-    let (module, name) = match vm.pop()? {
-        Value::Global { module, name } => (module, name),
-        _ => return Err(bad("REDUCE 的可调用对象不是 GLOBAL")),
-    };
-    match (module.as_str(), name.as_str()) {
+    let (module, name) = global_of(vm)?;
+    dispatch_reduce(vm, args, &module, &name)
+}
+
+/// 可调用对象必须是 `GLOBAL`。
+fn global_of(vm: &mut Vm<'_>) -> Result<(String, String)> {
+    match vm.pop()? {
+        Value::Global { module, name } => Ok((module, name)),
+        _ => Err(bad("REDUCE 的可调用对象不是 GLOBAL")),
+    }
+}
+
+/// 按全局名分派到张量重建或 `OrderedDict` 构造。
+fn dispatch_reduce(vm: &mut Vm<'_>, args: Value, module: &str, name: &str) -> Result<()> {
+    match (module, name) {
         ("torch._utils", "_rebuild_tensor_v2") => vm.rebuild_tensor(args),
         ("collections", "OrderedDict") => {
             vm.stack.push(Value::Dict(Vec::new()));
@@ -340,7 +350,7 @@ fn set_item(vm: &mut Vm<'_>, op: u8) -> Result<()> {
         (vec![(vm.pop()?, value)], "SETITEM")
     } else {
         let items = vm.pop_until_marker()?;
-        if items.len() % 2 != 0 {
+        if !items.len().is_multiple_of(2) {
             return Err(bad("SETITEMS 的项数为奇数"));
         }
         let pairs = items

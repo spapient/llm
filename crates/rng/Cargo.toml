@@ -14,6 +14,7 @@ autotests = false
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 
 [dev-dependencies]
+proptest = { workspace = true }
 testkit = { path = "../testkit", package = "llm-testkit" }
 
 [lints]

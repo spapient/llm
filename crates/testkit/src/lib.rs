@@ -65,6 +65,10 @@ mod ownership;
 #[cfg(test)]
 #[path = "../tests/prop_config.rs"]
 mod prop_config;
+// 性质测试的工作区纪律：任何 crate 都不得自建 `ProptestConfig`（唯一来源是 `prop`）。
+#[cfg(test)]
+#[path = "../tests/prop_discipline.rs"]
+mod prop_discipline;
 // L3 合成律的跨层对拍：只收「一层算不出来」的事实——`bound` 量真实内核上的界是否罩住实测误差，
 // `ruling` 量真实容器的逐位往返，`measure` 是两者共用的夹具（定理侧递推由 `weights::l3` 自测）。
 #[cfg(test)]

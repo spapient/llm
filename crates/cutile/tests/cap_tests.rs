@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::atom::{Attr, AttrKey, DType, DTypeSet, Grade, Need, Prim, Provide};
-use crate::decl::{Axis, OpDecl, Skeleton, Variant};
+use crate::decl::{Axis, OpDecl, Phase, Skeleton, Variant};
 use crate::prof::Profile;
 use crate::sch::Schedule;
 use diagnostic::data::Value;
@@ -75,6 +75,11 @@ fn downgrade_op() -> OpDecl {
         ],
         template: template.to_string(),
         signature: op::sig::Signature::parse("probe", template).expect("签名"),
+        phases: vec![Phase {
+            name: "probe".to_string(),
+            reads: Vec::new(),
+            writes: vec!["y".to_string()],
+        }],
     }
 }
 

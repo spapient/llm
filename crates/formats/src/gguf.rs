@@ -327,11 +327,12 @@ fn list(cursor: &mut Cursor<'_>, depth: usize) -> Result<Value> {
     if count > cursor.rest() {
         return Err(bad("数组元素数超过剩余字节"));
     }
-    let mut out = Vec::with_capacity(count.min(MAX_PREALLOC));
-    for _ in 0..count {
-        out.push(value(cursor, kind, depth + 1)?);
-    }
-    Ok(Value::Arr(out))
+    Ok(Value::Arr(records(
+        cursor,
+        count as u64,
+        "数组长度溢出",
+        |at| value(at, kind, depth + 1),
+    )?))
 }
 
 /// 标量：`class << 4 | 宽度`，整数按有无符号扩展，浮点 f32 升 f64。

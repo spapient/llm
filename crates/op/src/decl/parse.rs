@@ -259,7 +259,11 @@ fn phase(op: &str, row: &Table, signature: &crate::sig::Signature) -> diagnostic
         .ok_or_else(|| field(&format!("{op}.phases.name"), "缺失"))?;
     let reads = slot_names(op, row, "reads", signature)?;
     let writes = slot_names(op, row, "writes", signature)?;
-    Ok(Phase { name, reads, writes })
+    Ok(Phase {
+        name,
+        reads,
+        writes,
+    })
 }
 
 /// 阶段里的槽位名数组：每个名字都必须是签名的缓冲形参，否则拼装期就拦下（而不是漏缝）。

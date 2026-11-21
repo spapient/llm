@@ -72,3 +72,83 @@ fn the_monotonic_chain_is_checked_on_borrowed_names() {
     let reversed = [("first", 0.4), ("second", 0.9)];
     assert!(sch::check_monotonic(&reversed).is_err());
 }
+
+/// 手搓一个最小算子：只填 `compose`/`reads`/`writes` 用得到的字段，签名从模板解析。
+fn minimal(name: &str, template: &str, phases: Vec<Phase>) -> OpDecl {
+    OpDecl {
+        name: name.to_string(),
+        skeleton: Skeleton::Elementwise,
+        summary: String::new(),
+        axes: Vec::new(),
+        needs: Vec::new(),
+        layouts: Vec::new(),
+        grid: None,
+        chunk: None,
+        consts: Vec::new(),
+        variants: Vec::new(),
+        template: template.to_string(),
+        signature: crate::sig::Signature::parse(name, template).expect("签名"),
+        phases,
+    }
+}
+
+/// 槽位代数：生产者写出的缓冲与消费者读入的同类型缓冲就是一条缝。
+#[test]
+fn compose_pairs_a_producer_write_with_a_consumer_read_of_the_same_dtype() {
+    let producer = crate::builtin_named("gemv_f32")
+        .map(|op| OpDecl::parse(op.declaration(), op.template()).expect("gemv_f32 自洽"))
+        .expect("gemv_f32 内置");
+    let consumer = crate::builtin_named("gelu_f32")
+        .map(|op| OpDecl::parse(op.declaration(), op.template()).expect("gelu_f32 自洽"))
+        .expect("gelu_f32 内置");
+    let fusion = compose(&producer, &consumer).expect("写→读同型可拼");
+    assert_eq!(fusion.producer, "gemv_f32");
+    assert_eq!(fusion.consumer, "gelu_f32");
+    assert!(!fusion.seams.is_empty(), "至少一条缝");
+    assert!(
+        fusion
+            .seams
+            .iter()
+            .all(|seam| seam.ctype == crate::sig::CType::F32)
+    );
+}
+
+/// 缺省阶段：单内核 = 单阶段，名字取算子名，读/写槽位从签名派生。
+#[test]
+fn the_default_phase_is_derived_from_the_signature() {
+    let op = builtin();
+    assert_eq!(
+        op.phases.len(),
+        1,
+        "gemv_f32 没有显式 [[phases]]，应派生单阶段"
+    );
+    let phase = &op.phases[0];
+    assert_eq!(phase.name, "gemv_f32");
+    assert_eq!(phase.writes, ["y"], "可写输出缓冲恰好一个");
+    let reads: Vec<String> = op.reads().map(str::to_string).collect();
+    assert_eq!(reads, phase.reads, "读槽位与签名 const 缓冲一致");
+}
+
+/// 类型不一致不拼：生产者只写 `u8`，消费者只读 `f32`，没有任何缝。
+#[test]
+fn compose_rejects_a_dtype_mismatch() {
+    let producer = minimal(
+        "u8w",
+        "void cutile_u8w_kernel(const float *x, u8 *y) { }\n",
+        vec![Phase {
+            name: "u8w".to_string(),
+            reads: vec!["x".to_string()],
+            writes: vec!["y".to_string()],
+        }],
+    );
+    let consumer = minimal(
+        "f32r",
+        "void cutile_f32r_kernel(const float *x, float *y) { }\n",
+        vec![Phase {
+            name: "f32r".to_string(),
+            reads: vec!["x".to_string()],
+            writes: vec!["y".to_string()],
+        }],
+    );
+    assert!(compose(&producer, &consumer).is_none(), "u8 写 ≠ f32 读");
+}

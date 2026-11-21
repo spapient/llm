@@ -53,6 +53,7 @@ pub(crate) fn tensor_of(items: &[Value]) -> Result<Tensor> {
     let Some(Value::Int(wide)) = items.get(1) else {
         return Err(bad("rebuild 缺 offset"));
     };
+    let width = dtype.bytes_for(1) as usize;
     let shape = tuple_at(items, 2, "shape")?
         .iter()
         .map(dim)
@@ -62,7 +63,6 @@ pub(crate) fn tensor_of(items: &[Value]) -> Result<Tensor> {
         .map(step)
         .collect::<Result<Vec<usize>>>()?;
     let count = contiguous(&shape, &steps)?;
-    let width = dtype.bytes_for(1) as usize;
     let offset = or_bad(
         usize::try_from(*wide)
             .ok()
@@ -115,15 +115,20 @@ fn contiguous(shape: &[u64], steps: &[usize]) -> Result<usize> {
     }
     let mut count = 1usize;
     for (&size, &step) in shape.iter().zip(steps).rev() {
-        let width = usize::try_from(size).map_err(|_| bad("形状维度溢出"))?;
-        if width > 1 && step != count {
-            return Err(bad(format!(
-                "非连续张量：stride {step}，连续布局应为 {count}"
-            )));
-        }
-        count = or_bad(count.checked_mul(width), "形状乘积溢出")?;
+        count = advance(count, size, step)?;
     }
     Ok(count)
+}
+
+/// 单一维的连续校验与累乘：尺寸为 1 跳过 stride 校验，乘积溢出显式失败。
+fn advance(count: usize, size: u64, step: usize) -> Result<usize> {
+    let width = usize::try_from(size).map_err(|_| bad("形状维度溢出"))?;
+    if width > 1 && step != count {
+        return Err(bad(format!(
+            "非连续张量：stride {step}，连续布局应为 {count}"
+        )));
+    }
+    or_bad(count.checked_mul(width), "形状乘积溢出")
 }
 
 /// torch 的 storage 类名 → 元素类型（Torch 与 `dtype` 的命名对应表）。

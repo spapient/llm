@@ -10,8 +10,10 @@ const EOCD_SIG: u32 = 0x0605_4B50;
 const CD_SIG: u32 = 0x0201_4B50;
 const LOCAL_SIG: u32 = 0x0403_4B50;
 const ZIP64_SIG: u32 = 0x0606_4B50;
-const STORED: u16 = 0;
 const EOCD64_LOCATOR_SIG: u32 = 0x0706_4B50;
+/// extra 字段里 ZIP64 的 header id。
+const ZIP64_EXTRA_ID: u16 = 0x0001;
+const STORED: u16 = 0;
 /// 条目最小 46+1 字节；预分配上限 4096，谎报计数先按剩余字节粗查。
 const MIN_ENTRY_BYTES: usize = 47;
 const MAX_ENTRY_PREALLOC: usize = 4096;
@@ -64,6 +66,7 @@ impl<'a> Zip<'a> {
     }
 }
 
+/// 中央目录起点与条目总数：EOCD 的两个字段都是 `0xFFFF…` 才是 ZIP64 溢出哨兵。
 fn directory(bytes: &[u8]) -> Result<(usize, usize)> {
     let eocd = locate_eocd(bytes)?;
     let (at, total) = eocd_counts(bytes, eocd)?;
@@ -81,38 +84,44 @@ fn eocd_counts(bytes: &[u8], eocd: usize) -> Result<(u32, u16)> {
 
 /// 两个字段都是 `0xFFFF…` 才是 ZIP64 溢出哨兵。
 fn zip64_overflow(at: u32, total: u16) -> bool {
-    at == 0xFFFF_FFFF || total == 0xFFFF
+    at == u32::MAX || total == u16::MAX
 }
 
+/// ZIP64 回退：定位器在 EOCD 前 20 字节，定位器再指向 64 位 EOCD；
+/// 条目数与中央目录偏移在 64 位 EOCD 的 +32 与 +48。
 fn zip64_directory(bytes: &[u8], eocd: usize) -> Result<(usize, usize)> {
     let z64 = zip64_eocd(bytes, eocd)?;
     zip64_counts(bytes, z64)
 }
 
-/// ZIP64 EOCD：定位器在前 20 字节，定位器再指向 64 位 EOCD。
+/// 定位 64 位 EOCD。
 fn zip64_eocd(bytes: &[u8], eocd: usize) -> Result<usize> {
-    let locator = eocd
-        .checked_sub(20)
-        .ok_or_else(|| bad("ZIP64 定位器不完整"))?;
+    let locator = locator_at(eocd)?;
     check_sig(bytes, locator, EOCD64_LOCATOR_SIG, "ZIP64 定位器签名不符")?;
     let z64 = zip64_offset(bytes, locator + 8)?;
     check_sig(bytes, z64, ZIP64_SIG, "ZIP64 EOCD 签名不符")?;
     Ok(z64)
 }
 
-/// ZIP64 EOCD 的条目数与中央目录偏移。
+/// ZIP64 定位器在 EOCD 前 20 字节。
+fn locator_at(eocd: usize) -> Result<usize> {
+    eocd.checked_sub(20)
+        .ok_or_else(|| bad("ZIP64 定位器不完整"))
+}
+
+/// 64 位 EOCD 的条目数与中央目录偏移。
 fn zip64_counts(bytes: &[u8], z64: usize) -> Result<(usize, usize)> {
     let total = zip64_size(bytes, z64 + 32, "条目数超出 usize")?;
     let at = zip64_size(bytes, z64 + 48, "中央目录偏移超出 usize")?;
     Ok((at, total))
 }
 
-/// 定位器指向的 ZIP64 EOCD 偏移。
+/// 定位器指向的 64 位 EOCD 偏移。
 fn zip64_offset(bytes: &[u8], at: usize) -> Result<usize> {
     usize::try_from(u64_at(bytes, at)?).map_err(|_| bad("ZIP64 EOCD 偏移超出 usize"))
 }
 
-/// ZIP64 EOCD 内的 64 位字段 → `usize`。
+/// 64 位 EOCD 内的 64 位字段 → `usize`。
 fn zip64_size(bytes: &[u8], at: usize, msg: &str) -> Result<usize> {
     usize::try_from(u64_at(bytes, at)?).map_err(|_| bad(msg))
 }
@@ -124,7 +133,7 @@ fn check_sig(bytes: &[u8], at: usize, sig: u32, msg: &str) -> Result<()> {
     Err(bad(msg))
 }
 
-/// 一条中央目录记录：签名、名字、方法、ZIP64 尺寸与本地头偏移，并给出下一条的起点。
+/// 一条中央目录记录：名字、方法、数据区间与下一条记录的起点；区间必须落在归档内。
 fn entry(bytes: &[u8], at: usize) -> Result<(ZipEntry, usize)> {
     check_sig(bytes, at, CD_SIG, "中央目录条目签名不符")?;
     let (name, extra_len, comment_len) = entry_name(bytes, at)?;
@@ -158,12 +167,11 @@ fn entry_lengths(bytes: &[u8], at: usize) -> Result<(usize, usize, usize)> {
     ))
 }
 
-/// 条目正文：尺寸、数据区间与压缩方法。
+/// 条目正文：数据区间与压缩方法。
 fn entry_body(bytes: &[u8], at: usize, name: &str) -> Result<(usize, usize, u16)> {
-    let (csize, local) = zip64_sizes(bytes, at, name.len())?;
+    let (csize, local) = sizes(bytes, at, name.len())?;
     let (start, len) = entry_range(bytes, local, csize)?;
-    let method = u16_at(bytes, at + 10)?;
-    Ok((start, len, method))
+    Ok((start, len, u16_at(bytes, at + 10)?))
 }
 
 /// 本地头起点与条目数据长度，长度不得越过归档。
@@ -190,8 +198,8 @@ fn entry_next(at: usize, name_len: usize, extra_len: usize, comment_len: usize) 
 
 /// 中央目录的 32 位尺寸字段超限时写成 `0xFFFF_FFFF`，真值按 APPNOTE 的固定顺序
 /// （原长、压缩长、本地头偏移）落在 ZIP64 extra 里，且**只**收下被截断的那些——
-/// 于是槽位是「前面被截断的字段个数」，不是字段序号。
-fn zip64_sizes(bytes: &[u8], at: usize, name_len: usize) -> Result<(u64, usize)> {
+/// 于是槽位是「前面被截断的字段个数」，不是字段序号。返回（压缩长，本地头偏移）。
+fn sizes(bytes: &[u8], at: usize, name_len: usize) -> Result<(u64, usize)> {
     let extra = at + 46 + name_len;
     let extra_len = usize::from(u16_at(bytes, at + 30)?);
     let wide = zip64_fields(bytes, at, extra, extra_len)?;
@@ -218,7 +226,7 @@ fn field_value(
     slot: &mut usize,
 ) -> Result<u64> {
     let narrow = u32_at(bytes, at)?;
-    if narrow != 0xFFFF_FFFF {
+    if narrow != u32::MAX {
         return Ok(u64::from(narrow));
     }
     let value = zip64_extra(bytes, extra, extra_len, *slot)?;
@@ -226,6 +234,7 @@ fn field_value(
     Ok(value)
 }
 
+/// 本地头起点：签名对得上，名字与 extra 之后就是数据。
 fn local_start(bytes: &[u8], local: usize) -> Result<usize> {
     check_sig(bytes, local, LOCAL_SIG, "本地头签名不符")?;
     let name_len = usize::from(u16_at(bytes, local + 26)?);
@@ -236,12 +245,13 @@ fn local_start(bytes: &[u8], local: usize) -> Result<usize> {
     Ok(start)
 }
 
+/// ZIP64 extra 里第 `field` 个 8 字节真值；遍历 extra 字段头，声明长度不足显式失败。
 fn zip64_extra(bytes: &[u8], extra_start: usize, extra_len: usize, field: usize) -> Result<u64> {
     let stop = extra_start.saturating_add(extra_len);
     let mut at = extra_start;
     while at.checked_add(4).is_some_and(|end| end <= stop) {
         let header = extra_header(bytes, at)?;
-        if header.id == 0x0001 {
+        if header.id == ZIP64_EXTRA_ID {
             return zip64_value(bytes, header.body, header.size, field);
         }
         at = header.body.saturating_add(header.size);

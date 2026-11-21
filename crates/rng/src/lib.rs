@@ -7,3 +7,7 @@ pub mod philox;
 
 pub use dist::{Bernoulli, Normal, Uniform};
 pub use philox::{Rng, block};
+
+#[cfg(test)]
+#[path = "../tests/prop_numeric.rs"]
+mod prop_numeric;
