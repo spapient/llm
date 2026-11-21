@@ -1,6 +1,7 @@
 //! 对拍口径（README §11.1）。
 
 use crate::atom::DType;
+use op::model::{Model, Sample, Values};
 
 /// 对拍口径：`max|got − want| / max|want|`。
 pub fn max_rel_err(got: &[f32], want: &[f32]) -> f64 {
@@ -98,6 +99,22 @@ pub fn tolerance(dt: DType) -> f64 {
 /// 是否在阈值内。
 pub fn within(got: &[f32], want: &[f32], dt: DType) -> bool {
     max_rel_err(got, want) <= tolerance(dt)
+}
+
+/// 融合对拍：生产者的标量参考先跑，把输出按名字喂给消费者的输入，再跑消费者的参考。
+///
+/// 每个被 [`crate::plan::fusions`] 接受的融合组合都必须能生成这样一条对拍——这是
+/// "律实例化必带对拍"的落地：`compose()` 判定"能不能拼"，`fused_reference` 给出
+/// "拼起来对不对"的标量 oracle，融合实现用 [`max_rel_err`] / [`tolerance`] 与它对拍。
+pub fn fused_reference(
+    producer: &Model,
+    consumer: &Model,
+    consumer_in: &str,
+    sample: &mut Sample,
+) -> diagnostic::Result<Vec<f32>> {
+    let mid = (producer.reference)(sample)?;
+    sample.set(consumer_in, Values::F32(mid))?;
+    (consumer.reference)(sample)
 }
 
 #[cfg(test)]

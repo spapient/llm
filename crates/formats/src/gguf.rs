@@ -335,7 +335,7 @@ fn list(cursor: &mut Cursor<'_>, depth: usize) -> Result<Value> {
     )?))
 }
 
-/// 标量：`class << 4 | 宽度`，整数按有无符号扩展，浮点 f32 升 f64。
+/// 标量：`class << 4 | 宽度`，整数按有无符号扩展（左移后算术右移），浮点 f32 升 f64。
 fn scalar(cursor: &mut Cursor<'_>, kind: u32) -> Result<Value> {
     let packed = NUMBERS.get(kind as usize).copied().unwrap_or(0);
     if packed == 0 {
@@ -345,19 +345,14 @@ fn scalar(cursor: &mut Cursor<'_>, kind: u32) -> Result<Value> {
     let raw = cursor.take(width)?;
     let mut buf = [0u8; 8];
     buf[..width].copy_from_slice(raw);
-    Ok(number(packed >> 4, u64::from_le_bytes(buf), width))
-}
-
-fn number(class: u8, bits: u64, width: usize) -> Value {
+    let bits = u64::from_le_bytes(buf);
     let shift = 64 - width * 8;
-    match class {
+    Ok(match packed >> 4 {
         0 => Value::Uint(bits),
         1 => Value::Int(((bits << shift) as i64) >> shift),
-        _ => Value::Float(match width {
-            4 => f64::from(f32::from_bits(bits as u32)),
-            _ => f64::from_bits(bits),
-        }),
-    }
+        _ if width == 4 => Value::Float(f64::from(f32::from_bits(bits as u32))),
+        _ => Value::Float(f64::from_bits(bits)),
+    })
 }
 
 /// 读 `count` 条记录；容量按 [`MAX_PREALLOC`] 封顶——谎报的巨大计数不会换来一次巨额分配。
@@ -401,11 +396,7 @@ fn shape(cursor: &mut Cursor<'_>) -> Result<Vec<u64>> {
     if rank > MAX_RANK {
         return Err(bad("张量维数超限"));
     }
-    let mut shape = Vec::with_capacity(rank as usize);
-    for _ in 0..rank {
-        shape.push(cursor.wide()?);
-    }
-    Ok(shape)
+    records(cursor, u64::from(rank), "张量维数超限", |c| c.wide())
 }
 
 /// 头部 magic 与版本：两个都对得上才继续，不做向后兼容猜测。

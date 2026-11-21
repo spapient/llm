@@ -122,3 +122,29 @@ fn profile_without_peaks_is_an_error() {
     assert_eq!(error.code(), Code::Unsupported);
     assert!(error.to_string().contains("roofline"), "{error}");
 }
+
+#[test]
+fn the_window_radius_is_solved_from_the_budget() {
+    assert_eq!(window_radius(1), 1);
+    assert_eq!(window_radius(4), 2);
+    assert_eq!(window_radius(10), 4, "√10 = 3.16 → 向上取整 4");
+}
+
+#[test]
+fn pruning_caps_at_the_budget_and_keeps_a_composable_pair() {
+    let parse = |name: &str| {
+        let source = op::builtin_named(name).expect("内置");
+        OpDecl::parse(source.declaration(), source.template()).expect("声明")
+    };
+    let gemv = parse("gemv_f32");
+    let gelu = parse("gelu_f32");
+    let ops = [gemv, gelu];
+    let accepted = fusions(&ops, 2);
+    assert_eq!(accepted.len(), 2, "预算 2 就只接受 2 条");
+    assert!(
+        accepted
+            .iter()
+            .any(|fusion| fusion.producer == "gemv_f32" && fusion.consumer == "gelu_f32"),
+        "可拼的生产者→消费者对必须留下"
+    );
+}

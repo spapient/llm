@@ -1,7 +1,7 @@
 //! ③ select：按声明顺序取 tile，roofline 只给估值（README §9、§12.1）。
 
 use crate::cap::Path;
-use crate::decl::{OpDecl, TileCombo, expand};
+use crate::decl::{Fusion, OpDecl, TileCombo, compose, expand};
 use crate::prof::Profile;
 use crate::sch::Masking;
 use core::fmt;
@@ -109,6 +109,53 @@ fn predicted_s(profile: &Profile, cost: Cost, masking: Masking) -> diagnostic::R
             ),
         )
     })
+}
+
+/// 窗口半径由预算解出：`radius = √budget`（向上取整）。
+///
+/// 全目录 `N` 个算子有 `N²` 个有序对，但只有 `compose` 判“能拼”的才有资格进 roofline 打分。
+/// 半径把每个生产者的邻域收窄到 `±radius` 的窗口，`N · (2r + 1)` 次判定的量级随 `√budget` 涨，
+/// 而不是随 `N²` 涨——这就是压住组合爆炸的闸（cutile README §9 的“窗口半径由预算解出”）。
+pub fn window_radius(budget: usize) -> usize {
+    (budget as f64).sqrt().ceil() as usize
+}
+
+/// 候选剪枝：在算子表上枚举生产者→消费者对，先过 `compose`（只留“能拼”），再用窗口半径
+/// 压邻域，最多接受 `budget` 条。`compose` 返回的 [`Fusion`] 才进 roofline 打分。
+pub fn fusions(ops: &[OpDecl], budget: usize) -> Vec<Fusion> {
+    if ops.len() < 2 || budget == 0 {
+        return Vec::new();
+    }
+    let radius = window_radius(budget);
+    let mut accepted = Vec::new();
+    for (i, producer) in ops.iter().enumerate() {
+        collect_window(ops, producer, i, radius, budget, &mut accepted);
+        if accepted.len() == budget {
+            break;
+        }
+    }
+    accepted
+}
+
+/// 单个生产者在窗口半径内的邻居里找「能拼」的消费者，最多补到预算上限。
+fn collect_window(
+    ops: &[OpDecl],
+    producer: &OpDecl,
+    i: usize,
+    radius: usize,
+    budget: usize,
+    accepted: &mut Vec<Fusion>,
+) {
+    let lo = i.saturating_sub(radius);
+    let hi = (i + radius + 1).min(ops.len());
+    for consumer in &ops[lo..hi] {
+        if let Some(fusion) = compose(producer, consumer) {
+            accepted.push(fusion);
+            if accepted.len() == budget {
+                return;
+            }
+        }
+    }
 }
 
 #[cfg(test)]

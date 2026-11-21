@@ -12,7 +12,7 @@ use cutile::dirs::Dirs;
 use cutile::prof::{Emit, Profile};
 use diagnostic::{Code, Error};
 use op::decl::OpDecl;
-use op::model::{Sample, Values};
+use op::model::{Cost, Sample, Values};
 use std::path::PathBuf;
 
 /// L3 达成率门槛（README §12.3）：低于它就是"没有可用证据"。
@@ -69,6 +69,18 @@ impl Bench {
     /// 工作集是否落在档案声明的 FAST 容量内（重复执行会命中缓存）。
     pub fn in_fast(&self) -> bool {
         self.fast_bytes > 0 && self.working_set <= self.fast_bytes
+    }
+
+    /// 用实测 p50 回填这台设备的有效带宽/算力系数（B/s 与 FLOP/s）；耗时为 0 时没有可回填的系数。
+    pub fn coefficients(&self) -> Option<CostCoefficients> {
+        cost_coefficients(self.plan.bytes, self.plan.flops, self.p50_ns)
+    }
+
+    /// 用回填系数对一份代价做 roofline 预测（秒）：`max(flops/有效算力, bytes/有效带宽)`。
+    /// 分母是这台设备实测出来的，不是档案峰值——这是"校准"与"预估"的差别。
+    pub fn predict_calibrated(&self, cost: &Cost) -> Option<f64> {
+        let coefficients = self.coefficients()?;
+        Some((cost.flops / coefficients.flops).max(cost.bytes() as f64 / coefficients.bw))
     }
 }
 
@@ -549,6 +561,27 @@ pub fn throughput(bytes: u64, flops: f64, per_run_ns: f64, peak_bw: Option<f64>)
         gflops: flops / per_run_ns,
         bandwidth_ratio,
     }
+}
+
+/// 校准系数：用实测 p50 反推出的有效带宽（B/s）与算力（FLOP/s），回填进 roofline 当分母，
+/// 替代档案里的峰值（README §12.3 的「实跑回填代价系数」）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CostCoefficients {
+    /// 有效带宽（B/s）。
+    pub bw: f64,
+    /// 有效算力（FLOP/s）。
+    pub flops: f64,
+}
+
+/// 判据：把一次实测的流量/算力与 p50 折成这台设备能真实达成的系数；耗时为 0 即无法回填。
+pub fn cost_coefficients(bytes: u64, flops: f64, p50_ns: f64) -> Option<CostCoefficients> {
+    if p50_ns <= 0.0 {
+        return None;
+    }
+    Some(CostCoefficients {
+        bw: bytes as f64 / p50_ns * 1e9,
+        flops: flops / p50_ns * 1e9,
+    })
 }
 
 #[cfg(test)]

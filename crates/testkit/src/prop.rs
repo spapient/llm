@@ -12,6 +12,11 @@
 //!
 //! 环境变量只有两个，且只在本模块收口：`PROPTEST_CASES`、`PROPTEST_RNG_SEED`。取值非法时
 //! **响亮失败**而不是退回默认——静默降级会让门禁假装通过。
+//!
+//! 第四条纪律由 `prop_discipline` 这个门盯着：**任何 crate 都不得自建 [`ProptestConfig`]**，
+//! 有 `proptest` 依赖的 crate 必须也依赖本装置并真的调用它。手抄配置不会让任何测试变红，
+//! 它只会让同一性质在不同 crate 里用不同的样本数与收缩预算——静默地变弱。
+//! 深挖反例时用 `PROPTEST_CASES=4096 cargo test`，不必改代码。
 
 use proptest::prelude::*;
 use proptest::test_runner::RngSeed;

@@ -198,3 +198,39 @@ proptest! {
         }
     }
 }
+
+/// 找出首个 `next_f32` 恰为 0 的词序号：`(word >> 8) == 0` 即 `u = 0`。
+///
+/// 为什么必须显式构造：`Bernoulli::sample` 是 `u < p`，与 `u <= p` 的唯一区别
+/// 只在 `u == 0` 上；而 `next_f32 == 0` 的概率是 2⁻²⁴，随机抽样撞上的机会极小
+/// （8192 次里约 0.05%）。突变测试把 `<` 改成 `<=` 时随机版仍然全绿——这就是证据。
+/// 边界定律要么定点触发，要么等于没测。
+fn zero_draw_ordinal(seed: u64, budget: u64) -> Option<u64> {
+    for index in 0..budget {
+        for (slot, word) in block(seed, 0, index).iter().enumerate() {
+            if word >> 8 == 0 {
+                return Some(index * 4 + slot as u64);
+            }
+        }
+    }
+    None
+}
+
+#[test]
+fn p_zero_fails_exactly_at_the_zero_draw() {
+    let seed = 0x5EED_1DEA;
+    // 期望 2^22 个块出一次；预算给 4 倍，找不到就是引擎坏了。
+    let ordinal = zero_draw_ordinal(seed, 1 << 24).expect("2^26 个词里必有高 24 位全零的");
+    let word = block(seed, 0, ordinal / 4)[(ordinal % 4) as usize];
+    assert_eq!(word >> 8, 0, "定点失败：第 {ordinal} 个词不是零抽样");
+
+    let mut rng = Rng::new(seed);
+    for _ in 0..ordinal {
+        let _ = rng.next_u32();
+    }
+    let never = Bernoulli::new(0.0).expect("p = 0 合法");
+    assert!(
+        !never.sample(&mut rng),
+        "u = 0 时 p = 0 必须失败——`u <= p` 恰好在这里为真"
+    );
+}

@@ -7,6 +7,41 @@ fn an_odd_setitems_is_an_error_not_a_panic() {
     assert!(error.to_string().contains("奇数"), "{error}");
 }
 
+/// 一段协议 4 的流：`PROTO`/`FRAME`、`STACK_GLOBAL`（模块名先压、类名后压）、
+/// `BININT`/`BININT2`/`LONG1`/`LONG4` 四种整数编码与 `BINFLOAT`，最后重建一个 1×1 张量。
+fn protocol4_stream() -> Vec<u8> {
+    let mut out = b"\x80\x04\x95\x00\x00\x00\x00\x00\x00\x00\x00".to_vec();
+    out.extend(b"ctorch._utils\n_rebuild_tensor_v2\n(");
+    out.extend(b"\x8c\x07storage");
+    out.extend(b"\x8c\x08__main__");
+    out.extend(b"\x8c\x0cFloatStorage");
+    out.extend(b"\x93\x8c\x010\x87Q");
+    out.extend(b"J\x00\x00\x00\x00");
+    out.extend(b"M\x01\x00\x8a\x01\x01\x86");
+    out.extend(b"\x8b\x04\x00\x00\x00\x01\x00\x00\x00M\x01\x00\x86");
+    out.extend(b"G\x3f\xe0\x00\x00\x00\x00\x00\x00");
+    out.extend(b"\x89}tR.");
+    out
+}
+
+#[test]
+fn a_stack_global_names_the_class_that_was_pushed_last() {
+    let tensors = Vm::run(&protocol4_stream()).expect("协议 4 张量");
+    assert_eq!(tensors.len(), 1);
+    assert_eq!(
+        tensors[0].shape(),
+        &[1, 1],
+        "LONG1 与 BININT2 各解出一个维度"
+    );
+    assert_eq!(
+        tensors[0].dtype(),
+        dtype::DType::F32,
+        "storage 类名解成 F32"
+    );
+    assert_eq!(tensors[0].offset, 0, "BININT 偏移");
+    assert_eq!(tensors[0].len, 4, "LONG4 stride 与 1×1 元素数");
+}
+
 #[test]
 fn a_huge_memo_index_is_rejected_not_resized() {
     let error = Vm::run(b"K\x01r\xff\xff\xff\xff.").expect_err("memo 索引必须报错");

@@ -57,9 +57,7 @@ fn property_crates() -> Vec<String> {
     let (members, _) = workspace();
     members
         .iter()
-        .filter(|member| {
-            manifest_text(member).is_some_and(|text| text.contains("proptest"))
-        })
+        .filter(|member| manifest_text(member).is_some_and(|text| text.contains("proptest")))
         .cloned()
         .collect()
 }
@@ -173,12 +171,15 @@ fn every_property_crate_reaches_the_shared_configuration() {
 #[test]
 fn the_scan_actually_sees_the_property_crates() {
     let found = property_crates();
-    for expected in ["gemm", "conv", "nn", "algorithm"] {
+    for expected in ["gemm", "conv", "nn", "algorithm", "rng"] {
         assert!(
             found.contains(&expected.to_string()),
             "扫描面漏了 `{expected}`：清单里确实声明了 proptest，说明这条路没有真的读文件"
         );
     }
-    let total: usize = found.iter().map(|member| member_sources(member).len()).sum();
+    let total: usize = found
+        .iter()
+        .map(|member| member_sources(member).len())
+        .sum();
     assert!(total > 0, "一个源文件都没读到，扫描面是空的");
 }

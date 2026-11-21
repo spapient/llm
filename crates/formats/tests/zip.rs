@@ -1,6 +1,6 @@
 //! `zip` 的单元测试：ZIP_STORED 归档解析。
 use super::*;
-use crate::sample::real_bin_bytes;
+use crate::torch_sample::real_bin_bytes;
 
 #[test]
 fn parses_real_torch_zip() {

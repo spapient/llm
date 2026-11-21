@@ -1,6 +1,6 @@
 //! `torch` 的单元测试：torch.save 检查点（`Tensor` / `Checkpoint`）的只读解析。
 use super::*;
-use crate::sample::real_bin_bytes;
+use crate::torch_sample::real_bin_bytes;
 use dtype::DType;
 
 #[test]

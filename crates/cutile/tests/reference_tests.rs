@@ -43,3 +43,18 @@ fn non_finite_values_are_classified_not_averaged_away() {
     assert!(!within(&[f32::INFINITY], &[1.0], DType::F32));
     assert_eq!(max_rel_err(&[f32::NAN], &[0.0]), f64::INFINITY);
 }
+
+#[test]
+fn the_fused_oracle_runs_producer_then_consumer_on_one_sample() {
+    let mul = op::model("mul_f32").expect("mul_f32 已登记");
+    let add = op::model("add_f32").expect("add_f32 已登记");
+    let mut sample = (mul.sample)(8, 8);
+    let want: Vec<f32> = {
+        let a = sample.f32("a").expect("样本有 a").to_vec();
+        let b = sample.f32("b").expect("样本有 b").to_vec();
+        // 独立算一遍：mul(a,b) 的结果作为 add 的第一路输入，再与 b 相加。
+        a.iter().zip(&b).map(|(x, y)| (x * y) + y).collect()
+    };
+    let got = fused_reference(&mul, &add, "a", &mut sample).expect("融合参考可算");
+    assert!(within(&got, &want, DType::F32), "对拍失败");
+}

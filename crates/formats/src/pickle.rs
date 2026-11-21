@@ -43,8 +43,8 @@ static OPS: [Option<Handler>; 256] = ops();
 const fn ops() -> [Option<Handler>; 256] {
     let mut table: [Option<Handler>; 256] = [None; 256];
     // 协议框架：版本号 1 字节、帧长 8 字节，都不影响重建结果。
-    table[b'\x80' as usize] = Some(skip);
-    table[b'\x95' as usize] = Some(skip);
+    table[b'\x80' as usize] = Some(opaque);
+    table[b'\x95' as usize] = Some(opaque);
     // 空容器与标记：`(` 是 MARK，其余是空 dict/list 与 `()`。
     table[b'(' as usize] = Some(placeholder);
     table[b'}' as usize] = Some(placeholder);
@@ -57,15 +57,15 @@ const fn ops() -> [Option<Handler>; 256] {
     table[b'X' as usize] = Some(string);
     table[b'\x8c' as usize] = Some(string);
     // 浮点与全局名。
-    table[b'G' as usize] = Some(float);
+    table[b'G' as usize] = Some(opaque);
     table[b'c' as usize] = Some(global);
     table[b'\x93' as usize] = Some(global);
     // 整数：`K`/`M` 无符号 1/2 字节，`J` 补码 4 字节，`\x8a`/`\x8b` 长度前缀 1/4 字节。
-    table[b'K' as usize] = Some(push_int);
-    table[b'M' as usize] = Some(push_int);
-    table[b'J' as usize] = Some(push_int);
-    table[b'\x8a' as usize] = Some(long);
-    table[b'\x8b' as usize] = Some(long);
+    table[b'K' as usize] = Some(integer);
+    table[b'M' as usize] = Some(integer);
+    table[b'J' as usize] = Some(integer);
+    table[b'\x8a' as usize] = Some(integer);
+    table[b'\x8b' as usize] = Some(integer);
     // 元组：`t` 读 MARK 起的一段，`\x85..\x87` 按 1/2/3 个成员。
     table[b't' as usize] = Some(tuple);
     table[b'\x85' as usize] = Some(tuple);
@@ -193,9 +193,16 @@ impl<'a> Vm<'a> {
     }
 }
 
-/// `PROTO` 的 1 字节版本号与 `FRAME` 的 8 字节帧长：值不参与重建，字节必须完整存在。
-fn skip(vm: &mut Vm<'_>, op: u8) -> Result<()> {
-    vm.cursor.take(if op == b'\x95' { 8 } else { 1 }).map(drop)
+/// 不参与重建、但字节必须完整存在的定宽字段：`PROTO` 1 字节版本号、`FRAME` 8 字节帧长、
+/// `BINFLOAT` 8 字节大端双精度；只有 `BINFLOAT` 往栈上留一个占位。
+fn opaque(vm: &mut Vm<'_>, op: u8) -> Result<()> {
+    vm.cursor
+        .take(if op == b'\x80' { 1 } else { 8 })
+        .map(drop)?;
+    if op == b'G' {
+        vm.stack.push(Value::Scalar);
+    }
+    Ok(())
 }
 
 fn newobj(vm: &mut Vm<'_>, _op: u8) -> Result<()> {
@@ -223,50 +230,33 @@ fn string(vm: &mut Vm<'_>, op: u8) -> Result<()> {
     Ok(())
 }
 
-/// `BINFLOAT`：8 字节**大端** IEEE 双精度；张量重建不使用这个值，但字节必须完整存在。
-fn float(vm: &mut Vm<'_>, _op: u8) -> Result<()> {
-    vm.cursor.take(8).map(drop)?;
-    vm.stack.push(Value::Scalar);
-    Ok(())
-}
-
-/// `LONG1`/`LONG4`：长度分别是 1/4 字节，正文是变长小端补码；超过 8 字节装不进 `i64`，
-/// 由 [`integer`] 统一拒掉。
-fn long(vm: &mut Vm<'_>, op: u8) -> Result<()> {
-    let len = usize::try_from(vm.cursor.uint(if op == b'\x8b' { 4 } else { 1 })?)
-        .map_err(|_| bad("整数长度超出 usize"))?;
-    integer(vm, len, true)
-}
-
-/// 全局名：`GLOBAL` 从流里读两行，`STACK_GLOBAL` 从栈上取两个字符串（名字在前、模块在后）。
+/// 全局名：模块在前、名字在后。`GLOBAL` 直接读两行（模块、类名）；`STACK_GLOBAL` 的两个
+/// 字符串压栈时是「模块、类名」，所以弹出的第一个是类名、第二个才是模块。
 fn global(vm: &mut Vm<'_>, op: u8) -> Result<()> {
-    let module = global_name(vm, op)?;
-    let name = global_name(vm, op)?;
+    let (module, name) = if op == b'c' {
+        (vm.line()?, vm.line()?)
+    } else {
+        let name = into_str(&vm.pop()?)?;
+        (into_str(&vm.pop()?)?, name)
+    };
     vm.stack.push(Value::Global { module, name });
     Ok(())
 }
 
-/// 一个全局名片段：`GLOBAL` 读一行，`STACK_GLOBAL` 弹一个字符串。
-fn global_name(vm: &mut Vm<'_>, op: u8) -> Result<String> {
-    if op == b'c' {
-        return vm.line();
-    }
-    into_str(&vm.pop()?)
-}
-
-/// `BININT1`/`BININT2`（无符号）与 `BININT`（4 字节补码）共用一套符号规则。
-fn push_int(vm: &mut Vm<'_>, op: u8) -> Result<()> {
+/// 整数：`BININT1`/`BININT2` 无符号 1/2 字节、`BININT` 补码 4 字节、`LONG1`/`LONG4`
+/// 1/4 字节长度前缀 + 小端补码正文。`signed` 按最高位符号扩展，否则零扩展；超过 8 字节
+/// 装不进 `i64`，显式失败。
+fn integer(vm: &mut Vm<'_>, op: u8) -> Result<()> {
     let (width, signed) = match op {
         b'M' => (2, false),
         b'J' => (4, true),
+        b'\x8a' | b'\x8b' => {
+            let len = usize::try_from(vm.cursor.uint(if op == b'\x8b' { 4 } else { 1 })?)
+                .map_err(|_| bad("整数长度超出 usize"))?;
+            (len, true)
+        }
         _ => (1, false),
     };
-    integer(vm, width, signed)
-}
-
-/// 定宽小端补码字段 → `i64`：`signed` 按最高位符号扩展（`BININT`/`LONG*`），否则零扩展
-/// （`BININT1`/`BININT2`）；超过 8 字节装不进 `i64`，显式失败。
-fn integer(vm: &mut Vm<'_>, width: usize, signed: bool) -> Result<()> {
     if width > 8 {
         return Err(bad("整数超过 i64 宽度"));
     }
