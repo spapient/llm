@@ -13,7 +13,7 @@ use cutile::emit::Fragment;
 use cutile::ledger::{BackendRow, LedgerCell, Status};
 use cutile::prof::Profile;
 use cutile::verify::{Negotiation, Verified, VerifyReport};
-use tool::Report;
+use report::Report;
 
 /// 编译参数的一行写法：空列表也要有话说，否则报告里会出现一对空括号。
 ///
@@ -43,18 +43,18 @@ pub(super) fn counted(count: usize, flags: &str) -> String {
 pub(super) fn cache_gc(report: &Gc, dirs: &Dirs) -> String {
     let mut out = Report::new(format!(
         "cache gc | 上限 {}",
-        tool::human_bytes(report.limit)
+        ::report::human_bytes(report.limit)
     ))
     .row("目录", dirs.cache().display().to_string())
-    .row("回收前", tool::human_bytes(report.before))
-    .row("回收后", tool::human_bytes(report.after))
+    .row("回收前", ::report::human_bytes(report.before))
+    .row("回收后", ::report::human_bytes(report.after))
     .row("按 LRU 删除", format!("{} 项", report.removed))
     .render();
     if report.residue.items > 0 {
         out.push_str(&format!(
             "  清理残留 {} 项（{}）：半截落盘，本来就不会命中\n",
             report.residue.items,
-            tool::human_bytes(report.residue.bytes)
+            ::report::human_bytes(report.residue.bytes)
         ));
     }
     if report.skipped > 0 {
@@ -66,7 +66,7 @@ pub(super) fn cache_gc(report: &Gc, dirs: &Dirs) -> String {
     if report.after > report.limit {
         out.push_str(&format!(
             "  仍高于上限：还需再删 {}\n",
-            tool::human_bytes(report.after - report.limit)
+            ::report::human_bytes(report.after - report.limit)
         ));
     }
     out
@@ -492,8 +492,8 @@ pub(super) fn working_set_line(measured: &Bench) -> String {
     };
     format!(
         "  工作集 {} / FAST {}（{verdict}）\n",
-        tool::human_bytes(measured.working_set),
-        tool::human_bytes(measured.fast_bytes)
+        ::report::human_bytes(measured.working_set),
+        ::report::human_bytes(measured.fast_bytes)
     )
 }
 

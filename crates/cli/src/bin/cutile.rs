@@ -262,8 +262,8 @@ fn bench(
     ));
     out.push_str(&format!(
         "  实测  min {}, p50 {}（达成率按 p50）→ {:.1} GB/s, {:.1} GFLOP/s\n",
-        tool::per_run(measured.per_run_ns),
-        tool::per_run(measured.p50_ns),
+        ::report::per_run(measured.per_run_ns),
+        ::report::per_run(measured.p50_ns),
         measured.measured.gb_s,
         measured.measured.gflops
     ));
@@ -477,13 +477,13 @@ mod tests {
 
         let text = cache_gc(&settings, None).expect("空缓存可回收");
         assert!(
-            text.starts_with(&format!("cache gc | 上限 {}", tool::human_bytes(1024))),
+            text.starts_with(&format!("cache gc | 上限 {}", ::report::human_bytes(1024))),
             "{text}"
         );
 
         let text = cache_gc(&settings, Some(2048)).expect("命令行覆盖");
         assert!(
-            text.starts_with(&format!("cache gc | 上限 {}", tool::human_bytes(2048))),
+            text.starts_with(&format!("cache gc | 上限 {}", ::report::human_bytes(2048))),
             "{text}"
         );
 
@@ -491,7 +491,7 @@ mod tests {
         assert!(
             text.starts_with(&format!(
                 "cache gc | 上限 {}",
-                tool::human_bytes(cutile::cache::CACHE_LIMIT)
+                ::report::human_bytes(cutile::cache::CACHE_LIMIT)
             )),
             "{text}"
         );

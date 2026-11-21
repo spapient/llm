@@ -6,7 +6,7 @@
 
 use diagnostic::{Code, Error, Result};
 use nn::Contract as _;
-use tool::Report;
+use report::Report;
 
 /// 打开权重文件；打开失败把命令帧补到错误链上。
 fn open_file(weights: &str) -> Result<weights::safetensors::File> {

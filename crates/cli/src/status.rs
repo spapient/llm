@@ -6,7 +6,7 @@ use diagnostic::{Code, Error, Result};
 use nn::Contract as _;
 use nn::LmHead;
 use tokenizer::Tokenizer as _;
-use tool::Report;
+use report::Report;
 use weights::Loader as _;
 
 /// 每台设备的设备侧代码这次构建带了什么：只有源码，还是连镜像一起带上了。
@@ -45,7 +45,7 @@ fn ops_row() -> String {
     format!(
         "{} 个算子（{}）",
         ops.len(),
-        tool::join_names(ops.iter().map(op::Op::name))
+        report::join_names(ops.iter().map(op::Op::name))
     )
 }
 
@@ -55,7 +55,7 @@ fn prof_row() -> String {
     format!(
         "{} 份设备档案（{}）",
         profiles.len(),
-        tool::join_names(profiles.iter().copied())
+        report::join_names(profiles.iter().copied())
     )
 }
 
@@ -64,7 +64,7 @@ fn prim_row() -> String {
     format!(
         "{} 台设备（{}）；设备侧代码：{}",
         prim::devices().len(),
-        tool::join_names(prim::devices().iter().map(|device| device.vendor)),
+        report::join_names(prim::devices().iter().map(|device| device.vendor)),
         device_images()
     )
 }
@@ -107,7 +107,7 @@ fn model_floor(model: &nn::Stack) -> (String, Option<String>) {
         summary.push_str(&format!(
             "；未覆盖 {} 条：{}",
             model.uncovered().len(),
-            tool::join_names(model.uncovered().iter().map(String::as_str))
+            report::join_names(model.uncovered().iter().map(String::as_str))
         ));
     }
     let unpriced_row = if !floor.unpriced().is_empty() {

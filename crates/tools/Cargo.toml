@@ -11,7 +11,11 @@ publish = false
 autotests = false
 
 [dependencies]
+cutile = { path = "../cutile" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
+engine = { path = "../engine", package = "llm-engine" }
+op = { path = "../op", package = "llm-op" }
+report = { path = "../report", package = "llm-report" }
 
 [dev-dependencies]
 testkit = { path = "../testkit", package = "llm-testkit" }

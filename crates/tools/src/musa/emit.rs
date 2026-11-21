@@ -93,6 +93,11 @@ const LANES: [Lane; 7] = [
     ("gemm_", gemm),
 ];
 
+/// 认领了专用车道的算子前缀（`list` 打印用）；表序即优先级，未命中的按逐点处理。
+pub fn lanes() -> impl Iterator<Item = &'static str> {
+    LANES.iter().map(|(prefix, _)| *prefix)
+}
+
 /// 一条车道的输入。
 struct Ctx<'a> {
     catalogue: &'a Catalogue,
@@ -142,7 +147,7 @@ fn source(
         decl,
         sample,
     };
-    let lane = LANES
+    let lane: fn(&Ctx<'_>) -> Result<String> = LANES
         .iter()
         .find(|(prefix, _)| job.op.starts_with(prefix))
         .map_or(point, |(_, lane)| *lane);
@@ -224,10 +229,7 @@ impl Ctx<'_> {
             .signature
             .output()
             .ok_or_else(|| missing(&self.job.op, "可写输出"))?;
-        self.sample
-            .f32(output)
-            .map(<[f32]>::len)
-            .ok_or_else(|| missing(&self.job.op, "f32 输出缓冲"))
+        self.sample.f32(output).map(<[f32]>::len)
     }
 }
 

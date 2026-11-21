@@ -440,6 +440,7 @@ dependencies = [
  "llm-op",
  "llm-prim",
  "llm-prof",
+ "llm-report",
  "llm-serve",
  "llm-tensor",
  "llm-tokenizer",
@@ -610,7 +611,11 @@ dependencies = [
 name = "llm-tools"
 version = "0.1.0"
 dependencies = [
+ "cutile",
  "llm-diagnostic",
+ "llm-engine",
+ "llm-op",
+ "llm-report",
  "llm-testkit",
 ]
 

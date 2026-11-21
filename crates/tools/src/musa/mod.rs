@@ -34,7 +34,7 @@ mod timing;
 
 pub use bits::{Outcome, compare};
 pub use compile::{Recipe, shim};
-pub use emit::{Job, Program, program};
+pub use emit::{Job, Program, lanes, program};
 pub use probe::{PROBES, Probe};
 pub use timing::timed;
 

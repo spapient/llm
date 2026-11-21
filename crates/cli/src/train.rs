@@ -5,7 +5,7 @@
 //! 真实权重通路仍属未接入范围。本模块只解析到 [`Option`]，不复制第二份默认值。
 
 use diagnostic::{Code, Error, Result};
-use tool::Report;
+use report::Report;
 
 /// `train` 分派：解析配置、按 `--load` 决定汇报恢复事实还是配置。
 pub(crate) fn train_run(
@@ -175,7 +175,7 @@ pub mod archive {
     use std::path::Path;
 
     use diagnostic::{Code, Error, Result};
-    use tool::Report;
+    use report::Report;
     use weights::{Archive, Settlement};
 
     /// 容器对齐指数：6 = 64 B，与既有落盘口径一致。
@@ -250,8 +250,8 @@ pub mod archive {
         let mut report = Report::new("llm —— `.u` 容器清单与度量")
             .row("条目数", format!("{}", metrics.entries()))
             .row("参数总数", format!("{}", metrics.params()))
-            .row("V_artifact", tool::human_bytes(metrics.v_artifact() as u64))
-            .row("V_FP16", tool::human_bytes(metrics.v_fp16()))
+            .row("V_artifact", report::human_bytes(metrics.v_artifact() as u64))
+            .row("V_FP16", report::human_bytes(metrics.v_fp16()))
             .row("ratio", format!("{:.3}", metrics.ratio()))
             .row("lossless", lossless_label(metrics.lossless()))
             .row(
@@ -259,7 +259,7 @@ pub mod archive {
                 format!(
                     "{}（节省 {}）",
                     metrics.ref_hits(),
-                    tool::human_bytes(metrics.ref_saved_bytes())
+                    report::human_bytes(metrics.ref_saved_bytes())
                 ),
             );
         for segment in archive.segments() {

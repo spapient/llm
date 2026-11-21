@@ -12,7 +12,7 @@
 
 | 层 | 成员 | 职责 | 不允许出现 |
 |---|---|---|---|
-| L1 基础设施 | `diagnostic`、`rng`、`dtype`、`wire`、`tools` | 错误类型与声明数据树（`data`：构建期语料在运行期的形状，**没有解析器**）、计数器型确定性随机、精度闭集、与领域无关的字节码闭集（CRC-32 / LEB128 / Sink）、静态质量门与回退判定 | 任何运行时领域语义、任何 TOML 解析 |
+| L1 基础设施 | `diagnostic`、`rng`、`dtype`、`wire`、`report`、`tools` | 错误类型与声明数据树（`data`：构建期语料在运行期的形状，**没有解析器**）、计数器型确定性随机、精度闭集、与领域无关的字节码闭集（CRC-32 / LEB128 / Sink）、静态质量门与回退判定 | 任何运行时领域语义、任何 TOML 解析 |
 | L2 数据层 | `prof`、`op`、`prim` | 设备档案与能力闭集、算子声明与模板（布局 / 调度 / 模板词法）及其求和语义代价（`op::einsum`）、原语片段与见证；语料在各自 `build.rs` 里解析成表 | 任何机制代码（拼接、协商、emit）、任何设备知识 |
 | L3 内核 | `cutile` | 协商 → 拼接 → emit → 编译执行；`doctor` / `verify` / `bench` / `execution` 共用一条 `pipeline`，报告只是数据、排版在前端 | 设备厂商特判、运行时依赖 |
 | L4 运行时 | `tensor`、`storage`、`tokenizer` | 张量元数据、布局搬运、文本边界 | 模型语义、调度策略 |
@@ -39,7 +39,7 @@
 不再复述每一次的数字；配置层的现状见 [ADR 0022](adr/0022-build-time-corpora.md) 与
 [ADR 0023](adr/0023-settings-to-cli.md)。
 
-允许的边（当前全量，共 110 条，含 42 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benchmarks` / `testkit` 的边不参与运行时方向判定）：
+允许的边（当前全量，共 111 条，含 42 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benchmarks` / `testkit` 的边不参与运行时方向判定）：
 
 ```
 cutile   → diagnostic, op, prim, prof    +dev: testkit
@@ -60,7 +60,8 @@ serve    → engine, nn, op, rng, tokenizer, diagnostic, weights, wire    +dev: 
 cli      → cutile, diagnostic, engine, nn, op, prim, prof, serve, tensor, tokenizer, tools, train, weights（L7 组合根：只做命令分派与各层装配，不定义新类型）
 fuzz     → diagnostic    +dev: cli, weights, train, serve, wire, tensor, tools（工具成员；`+dev` 是 `tests/support.rs` 里的驱动对象）
 benchmarks → +dev: prof, op, cutile, wire, weights, tokenizer, tools, testkit, train, autograd, tensor, nn, engine, serve（工具成员：只声明被测对象，测量配置归 criterion）
-tools     → diagnostic（配置驱动静态质量门 + 人可读排版 + 回退判定）    +dev: testkit
+tools     → diagnostic, report（配置驱动静态质量门 + 人可读排版 + 回退判定）    +dev: testkit
+report    → （叶：人可读排版，零依赖）
 testkit  → +dev: autograd, cutile, nn, op, tensor, tools, train, weights（工具成员：夹具库 + 门禁；被测层只出现在 dev-dependencies）
 wire     → diagnostic（纯字节码闭集，不认识张量或容器布局）    +dev: testkit
 rng      → diagnostic（Philox4x32-10，显式种子 / 流号 / 下标派生，不持全局状态、不引 `rand`）    +dev: testkit
@@ -164,11 +165,12 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Httpd` | `serve` | std-only HTTP/1.1 薄适配器：单线程一问一答，固定 `Connection: close`；换传输层只需在同一个 `Router` 上再挂一个适配器 |
 | `CpuModel` / `Params` / `Block` | `serve` | CPU 模型宿主与驻留参数表：装载期一次解码、生成循环不再读文件；七个层族装配成 `engine::exec::Graph`，执行器泛化为 `E: Executor`；`from_path` 按 `Reader` / `Loader` 在装配点分流 |
 | `Command` / `Invocation` / `USAGE` | `cli` | 命令行文法（argv / env → 强类型调用参数）与编排分派 |
-| `Report` / `join_names` | `tools` | 人可读输出；只接字符串，不接领域类型 |
+| `Report` / `join_names` / `human_bytes` / `per_run` | `report` | 人可读输出：两列键值块与三个纯函数，只接字符串 / 数，不接领域类型（L1 叶，零依赖） |
 | `Token` / `Pos` / `Delim` / `Finding` / `Gate` | `tools` | 零依赖词法 token 树、单函数复杂度 finding 与配置化阈值；分析器只产出数据，不打印不退出 |
 | `Case` / `Baseline` / `Judgement` | `tools` | 回退判定（与基线相比有没有退）；不做测量 |
 | `EntryKind` / `Harness` / `Roofline` / `Geometry` / `BenchRecord` | `tools` | 统一基准记录结构：只持有记录，不测量、不下性能结论，未测得的峰值留 `None` |
 | `Protocol` / `Statistic` / `Tally` / `Standing` / `Shortfall` / `Card` | `tools` | 实测卡三态判定：闭集 → 样本量 → 统计量定义 → 区间与门槛，次序有意；样本与时钟来源归 `benchmarks` |
+| `Job` / `Recipe` | `tools` | MUSA 真机测量通道：`Job` 是一次测量作业（算子名 + 形状 + 是否走张量核特化），`Recipe` 是一次编译（工具链根 + 车道决定开关与链接库）；只读写文件，不藏状态 |
 | `spec` / `model` 属性宏 | `annotation` | 把注解展开成契约实现 + 编译期断言 + 一条校验测试；**不持有运行期注册表**。`model` 生成 `MODEL` 并断言注解与 `Operator` 对齐；设备执行由 `cutile` 的 `const SPECS` / `const GATES` 描述符表按函数指针登记 |
 | `RelErr` / `Worst` / `Scale` | `testkit` | 夹具侧的浮点对拍读数：`RelErr` 只答「整批最大绝对误差 / 分母」与这个分母自己的值，`Worst` 只答「读数落在哪个元素」，`Scale` 只答「分母按整批最大幅度还是每元素留 1 的地板取」。比较归 `within_ratio` / `within_rel` / `assert_rel_with`，阈值仍只由 `cutile::reference::tolerance` 拥有——本行不设第二张分档表，`Scale::Batch` 与它由 `crates/testkit/tests/oracle.rs` 逐位钉住 |
 

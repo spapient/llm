@@ -27,7 +27,7 @@ pub const FMA: Probe = Probe {
     name: "fma",
     about: "FP32 FMA 峰值（fmaf 乘加链，一条发射）",
     lane: "plain",
-    source: include_str!("../../assets/musa/fma_peak.cu"),
+    source: include_str!("../../assets/musa/peak.cu"),
 };
 
 /// 手写分块 GEMM：`128×128` 分块 + 寄存器块，给生成器的循环注入一个手工上限。
@@ -43,5 +43,5 @@ pub const MUBLAS: Probe = Probe {
     name: "mublas",
     about: "muBLAS FP32 GEMM（厂商库对照）",
     lane: "mublas",
-    source: include_str!("../../assets/musa/mublas_gemm.cu"),
+    source: include_str!("../../assets/musa/mublas.cu"),
 };
