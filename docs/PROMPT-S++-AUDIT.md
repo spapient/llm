@@ -244,5 +244,6 @@ git status --short                    # 只允许本轮认领文件
 ## 15. 变更记录
 
 - **v2.1（benchmarks S++ 收敛）**：`crates/benchmarks` 23 个 criterion 目标并成 1 个（`criterion/main.rs` + 9 个平铺模块，25 组名字逐字节不变，`target/criterion` 路径不动）；`support/` 2 个文件折进 `criterion/fixtures.rs`；`tests/regress.rs` 1783 行拆成 7 个平铺模块 + 58 行根，`tests/cards.rs` 折进 `cases.rs`。crate 内 `.rs` 27 → 18（bench 目标 23 → 1，测试目标 2 → 1，靠 `autotests = false` + 显式 `[[test]]` 保持平铺且每文件不各成目标）。性能门从「只归档达成率」改为双侧断言：`Roofline::meets_s_plus()` 在 `judge_one` 里对 `declared_ns` 判算力 ≥90% / 带宽 ≥85%，11 份存量报告全部过线（gemv 带宽 89%，算力型 121–216%）；`scripts/ci.sh` 新增 `--perf`（实测 + 重判），默认门只跑判定并逐场景登记跳过。
+  **本轮修掉一个静默洞**：`weights/load` 这类带 `/` 的分组，criterion 落盘成 `weights_load`，判定按原名拼路径 → 8 条装载基准从登记起就一直在"登记跳过"，门禁绿而无人被判过。现在路径统一过 `analysis::on_disk`（镜像 criterion `report::make_filename_safe` 的十字符替换 + 64 字节截断），并加 `cases::no_measurement_is_filed_under_an_unregistered_group`：同一用例已在别处测出、登记分组却读不到 → 直接失败。补测后 27 条登记基准 0 跳过（此前 24 条静默跳过）。
 - **v2.0（2026-11-21）**：十二维单档 S++；N1–N20；命名专章（含两个显式例外）；密度预算 + 删除优先六步；性能门（roofline / 对比 / 回归 / 三矩阵）；九项度量门（其中命名与密度两条已落成 `scripts/name-lint.sh`、`scripts/loc-budget.sh`）；协作纪律；当前基线与差距表。
 - **v1.0**：八维 A/B/C、N1–N12、P0→P6、反模式八条、证据规则、自省五步。
