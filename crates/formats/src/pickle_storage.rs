@@ -18,10 +18,6 @@ pub(crate) fn at<'v>(items: &'v [Value], index: usize, message: &str) -> Result<
     or_bad(items.get(index), message)
 }
 
-pub(crate) fn at_str(items: &[Value], index: usize, message: &str) -> Result<String> {
-    into_str(at(items, index, message)?)
-}
-
 pub(crate) fn storage_handle(items: &[Value]) -> Result<(String, DType)> {
     let tag = into_str(at(items, 0, "pid 空")?)?;
     if tag != "storage" {
@@ -32,7 +28,7 @@ pub(crate) fn storage_handle(items: &[Value]) -> Result<(String, DType)> {
         _ => return Err(bad("storage 类不是 GLOBAL")),
     };
     let dtype = storage_dtype(class)?;
-    let key = at_str(items, 2, "pid 缺 key")?;
+    let key = into_str(at(items, 2, "pid 缺 key")?)?;
     Ok((key, dtype))
 }
 
@@ -121,30 +117,6 @@ pub(crate) fn tensor_of(items: &[Value]) -> Result<Tensor> {
         offset,
         len,
     })
-}
-
-fn storage_and_offset(items: &[Value]) -> Result<(String, DType, usize)> {
-    let (storage_key, dtype) = storage_of(items)?;
-    let offset = offset_of(items)?;
-    Ok((storage_key, dtype, offset))
-}
-
-fn checked_shape(items: &[Value]) -> Result<(Vec<u64>, usize)> {
-    let (shape, count) = shape_of(items)?;
-    check_contiguous(&shape, &stride_of(items)?)?;
-    Ok((shape, count))
-}
-
-fn storage_and_offset(items: &[Value]) -> Result<(String, DType, usize)> {
-    let (storage_key, dtype) = storage_of(items)?;
-    let offset = offset_of(items)?;
-    Ok((storage_key, dtype, offset))
-}
-
-fn checked_shape(items: &[Value]) -> Result<(Vec<u64>, usize)> {
-    let (shape, count) = shape_of(items)?;
-    check_contiguous(&shape, &stride_of(items)?)?;
-    Ok((shape, count))
 }
 
 pub(crate) fn into_str(value: &Value) -> Result<String> {
