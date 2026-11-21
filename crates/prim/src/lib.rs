@@ -68,7 +68,7 @@ mod tables;
 
 pub use prof::atom::Prim;
 pub use prof::{Device, Image, Status};
-pub use tables::{BUILTIN, DEVICES, ROOTS, WITNESS, device, devices};
+pub use tables::{BUILTIN, DEVICES, ROOTS, WITNESS, device, devices, dir_of};
 
 /// 见证源码的文件名（不含扩展名）。
 ///
