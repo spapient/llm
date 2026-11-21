@@ -1,3 +1,4 @@
+use super::arith::multiply;
 use super::*;
 
 /// 一条轴在这次计算里的角色。
@@ -25,9 +26,9 @@ pub enum AxisRole {
 /// 一条轴：字母、长度与角色。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Axis {
-    label: char,
-    extent: usize,
-    role: AxisRole,
+    pub(super) label: char,
+    pub(super) extent: usize,
+    pub(super) role: AxisRole,
 }
 
 impl Axis {
@@ -50,7 +51,7 @@ impl Axis {
 /// 表达式的轴分解：输出轴在前（按输出顺序），规约轴在后（按首次出现顺序）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Axes {
-    axes: Vec<Axis>,
+    pub(super) axes: Vec<Axis>,
 }
 
 impl Axes {

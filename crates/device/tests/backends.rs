@@ -437,7 +437,7 @@ fn production_grid_kernel_compiles_for_a_real_op() {
         return;
     }
     let (m, n) = op::model("silu_f32").expect("silu_f32 语义表").shape;
-    let msl = cutile::execution::metal_grid_program(&catalogue, &dirs, "silu_f32", m, n)
+    let msl = cutile::execution::program(&catalogue, &dirs, "silu_f32", cutile::execution::Backend::Metal, Mode::loop_injected(), m, n).and_then(|stages| stages.one("网格"))
         .expect("生产态网格内核应能生成");
     assert!(msl.contains("kernel_main"), "{msl}");
     assert_metal_compiles("engine-metal-grid", &msl, &profile.flags);
@@ -456,7 +456,7 @@ fn production_reduce_kernel_compiles_for_a_real_op() {
     let (m, n) = op::model("reduce_sum_f32")
         .expect("reduce_sum_f32 语义表")
         .shape;
-    let msl = cutile::execution::metal_grid_program(&catalogue, &dirs, "reduce_sum_f32", m, n)
+    let msl = cutile::execution::program(&catalogue, &dirs, "reduce_sum_f32", cutile::execution::Backend::Metal, Mode::loop_injected(), m, n).and_then(|stages| stages.one("网格"))
         .expect("归约网格内核应能生成");
     assert!(msl.contains("kernel_main"), "{msl}");
     assert!(msl.contains("thread_position_in_grid"), "{msl}");
@@ -476,7 +476,7 @@ fn production_scan_kernel_compiles_for_a_real_op() {
     }
     let (m, n) = op::model("scan_f32").expect("scan_f32 语义表").shape;
     let (local, correct) =
-        cutile::execution::metal_scan_program(&catalogue, &dirs, "scan_f32", m, n)
+        cutile::execution::program(&catalogue, &dirs, "scan_f32", cutile::execution::Backend::Metal, Mode::segmented(), m, n).and_then(|stages| stages.two("扫描"))
             .expect("分块扫描内核应能生成");
     assert!(local.contains("kernel void kernel_scan_local"), "{local}");
     assert!(local.contains("thread_position_in_grid"), "{local}");
@@ -501,12 +501,12 @@ fn production_rmsnorm_kernel_compiles_for_a_real_op() {
         return;
     }
     let (m, n) = op::model("rmsnorm_f32").expect("rmsnorm_f32 语义表").shape;
-    let msl = cutile::execution::metal_grid_program(&catalogue, &dirs, "rmsnorm_f32", m, n)
+    let msl = cutile::execution::program(&catalogue, &dirs, "rmsnorm_f32", cutile::execution::Backend::Metal, Mode::loop_injected(), m, n).and_then(|stages| stages.one("网格"))
         .expect("两趟内核应能生成");
     assert!(msl.contains("kernel_main"), "{msl}");
     assert!(!msl.contains("thread_position_in_grid"), "{msl}");
     let (partial, map) =
-        cutile::execution::metal_rmsnorm_program(&catalogue, &dirs, "rmsnorm_f32", m, n)
+        cutile::execution::program(&catalogue, &dirs, "rmsnorm_f32", cutile::execution::Backend::Metal, Mode::segmented(), m, n).and_then(|stages| stages.two("归一化"))
             .expect("分块 rmsnorm 内核应能生成");
     assert!(partial.contains("_cutile_sumsq_f32"), "{partial}");
     assert!(
@@ -530,7 +530,7 @@ fn production_softmax_kernel_compiles_for_a_real_op() {
     }
     let (m, n) = op::model("softmax_f32").expect("softmax_f32 语义表").shape;
     let (max, expsum, map) =
-        cutile::execution::metal_softmax_program(&catalogue, &dirs, "softmax_f32", m, n)
+        cutile::execution::program(&catalogue, &dirs, "softmax_f32", cutile::execution::Backend::Metal, Mode::segmented(), m, n).and_then(|stages| stages.three("softmax"))
             .expect("分块 softmax 内核应能生成");
     assert!(max.contains("_cutile_max_f32"), "{max}");
     assert!(
@@ -556,7 +556,7 @@ fn production_gemv_kernel_compiles_for_a_real_op() {
         testkit::skip("engine: Metal 工具链不在本机，gemv 内核编译用例未运行");
         return;
     }
-    let msl = cutile::execution::metal_grid_program(&catalogue, &dirs, "gemv_f32", 64, 4)
+    let msl = cutile::execution::program(&catalogue, &dirs, "gemv_f32", cutile::execution::Backend::Metal, Mode::loop_injected(), 64, 4).and_then(|stages| stages.one("网格"))
         .expect("gemv 网格内核应能生成");
     assert!(msl.contains("kernel_main"), "{msl}");
     assert!(msl.contains("thread_position_in_grid"), "{msl}");
@@ -577,7 +577,7 @@ fn production_gemm_kernel_compiles_for_a_real_op() {
         testkit::skip("engine: Metal 工具链不在本机，gemm 内核编译用例未运行");
         return;
     }
-    let msl = cutile::execution::metal_grid_program(&catalogue, &dirs, "gemm_f32", 16, 16)
+    let msl = cutile::execution::program(&catalogue, &dirs, "gemm_f32", cutile::execution::Backend::Metal, Mode::loop_injected(), 16, 16).and_then(|stages| stages.one("网格"))
         .expect("gemm 网格内核应能生成");
     assert!(msl.contains("kernel_main"), "{msl}");
     assert!(
@@ -620,7 +620,7 @@ fn production_attention_kernel_compiles_for_a_real_op() {
         testkit::skip("engine: Metal 工具链不在本机，attention 内核编译用例未运行");
         return;
     }
-    let msl = cutile::execution::metal_grid_program(&catalogue, &dirs, "attention_f32", 8, 8)
+    let msl = cutile::execution::program(&catalogue, &dirs, "attention_f32", cutile::execution::Backend::Metal, Mode::loop_injected(), 8, 8).and_then(|stages| stages.one("网格"))
         .expect("attention 网格内核应能生成");
     assert!(msl.contains("kernel_main"), "{msl}");
     assert!(
@@ -640,7 +640,7 @@ fn production_flash_attention_kernel_compiles_for_a_real_op() {
         testkit::skip("engine: Metal 工具链不在本机，flash_attention 内核编译用例未运行");
         return;
     }
-    let msl = cutile::execution::metal_grid_program(&catalogue, &dirs, "flash_attention_f32", 8, 8)
+    let msl = cutile::execution::program(&catalogue, &dirs, "flash_attention_f32", cutile::execution::Backend::Metal, Mode::loop_injected(), 8, 8).and_then(|stages| stages.one("网格"))
         .expect("flash_attention 网格内核应能生成");
     assert!(msl.contains("kernel_main"), "{msl}");
     assert!(
@@ -661,7 +661,7 @@ fn production_quantized_gemv_compiles(op_name: &str) {
         ));
         return;
     }
-    let msl = cutile::execution::metal_grid_program(&catalogue, &dirs, op_name, 64, 4)
+    let msl = cutile::execution::program(&catalogue, &dirs, op_name, cutile::execution::Backend::Metal, Mode::loop_injected(), 64, 4).and_then(|stages| stages.one("网格"))
         .unwrap_or_else(|error| panic!("{op_name} 网格内核应能生成：{error}"));
     assert!(msl.contains("kernel_main"), "{msl}");
     assert!(

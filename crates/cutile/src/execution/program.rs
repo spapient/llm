@@ -11,10 +11,7 @@
 //! 前置条件（块几何、签名、形状整除……）的契约写在 [`Lower`] 各变体自己的文档里，这里只判断
 //! "成立与否"：不成立就回落 [`Mode::declared`]，不重复第二遍契约。
 
-use super::{
-    kind, lower_sources, reduce_kind, resolve, scan_kind, single_kind, grid_dims,
-};
-use crate::atom::CType;
+use super::{grid_dims, kind, lower_sources, resolve, single_kind};
 use crate::backend::{Lower, TensorGeometry};
 use crate::builtin::Catalogue;
 use crate::decl::Skeleton;
@@ -24,6 +21,7 @@ use crate::prof::Emit;
 use diagnostic::{Code, Error};
 use op::decl::{Grid, OpDecl};
 use op::model::Sample;
+use op::sig::CType;
 
 /// 错误定位：所有形态共用这一个站点（换形态不改定位）。
 const SITE: &str = "cutile::execution::program";

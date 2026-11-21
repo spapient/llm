@@ -73,7 +73,7 @@ fn op_matches_reference_at(op_name: &str, shape: Option<(usize, usize)>) {
     let expected = (model.reference)(&sample).expect("标量参考");
     let decl = catalogue.op(op_name).expect("算子声明");
 
-    let msl = cutile::execution::metal_grid_program(&catalogue, &dirs, op_name, m, n)
+    let msl = cutile::execution::program(&catalogue, &dirs, op_name, cutile::execution::Backend::Metal, Mode::loop_injected(), m, n).and_then(|stages| stages.one("网格"))
         .expect("内核应能生成");
 
     let Some(mut executor) = ::device::metal::executor::MetalExecutor::new("metal", "arm64") else {
@@ -153,7 +153,7 @@ fn op_chunked_reduce_matches_reference(op_name: &str) {
         grid_size,
     } = setup;
 
-    let msl = cutile::execution::metal_grid_program(&catalogue, &dirs, op_name, m, n)
+    let msl = cutile::execution::program(&catalogue, &dirs, op_name, cutile::execution::Backend::Metal, Mode::loop_injected(), m, n).and_then(|stages| stages.one("网格"))
         .expect("内核应能生成");
     let Some(mut executor) = ::device::metal::executor::MetalExecutor::new("metal", "arm64") else {
         return;
@@ -172,7 +172,7 @@ fn op_chunked_reduce_matches_reference(op_name: &str) {
     assert_close("分块归约", op_name, &output, &want, model.dtype);
 }
 
-/// CUDA 逐点网格真机对拍：纯逐点算子走 [`cutile::execution::cuda_grid_program`]
+/// CUDA 逐点网格真机对拍：纯逐点算子走 [`cutile::execution::program`]
 /// （`kernel_main<<<ceil(N/256), 256>>>` 逐点网格，块内 256 线程、末块由守卫挡住），
 /// nvcc 编译 + GPU 派发 + 回读，与标量参考对拍。
 /// 与 Metal 侧的 [`op_matches_reference`] 同口径，只是发射/回读经 `compile_run_cuda`。
@@ -192,7 +192,7 @@ fn op_matches_reference_cuda(op_name: &str) {
         return;
     };
 
-    let device = cutile::execution::cuda_grid_program(&catalogue, &dirs, op_name, m, n)
+    let device = cutile::execution::program(&catalogue, &dirs, op_name, cutile::execution::Backend::Cuda, Mode::pointwise(), m, n).and_then(|stages| stages.one("逐点"))
         .expect("内核应能生成");
     let threads: usize = 256;
     let blocks = (scalar_len(&decl, &sample) as usize).div_ceil(threads);
@@ -228,7 +228,7 @@ fn op_chunked_reduce_matches_reference_cuda(op_name: &str) {
     let chunk = decl.chunk.as_ref().expect("[chunk] 声明").size as u32;
     let grid = scalar_len(&decl, &sample).div_ceil(chunk) as usize;
 
-    let device = cutile::execution::cuda_reduce_program(&catalogue, &dirs, op_name, m, n)
+    let device = cutile::execution::program(&catalogue, &dirs, op_name, cutile::execution::Backend::Cuda, Mode::segmented(), m, n).and_then(|stages| stages.one("归约"))
         .expect("内核应能生成");
     let program = ::device::cuda::cuda_grid_driver(&device, &decl.signature, &sample, grid, grid)
         .expect("host 驱动应能生成");
@@ -276,7 +276,7 @@ fn op_chunked_scan_matches_reference(op_name: &str) {
         .expect("扫描衰减 a");
 
     let (local_msl, correct_msl) =
-        cutile::execution::metal_scan_program(&catalogue, &dirs, op_name, m, n)
+        cutile::execution::program(&catalogue, &dirs, op_name, cutile::execution::Backend::Metal, Mode::segmented(), m, n).and_then(|stages| stages.two("扫描"))
             .expect("分块扫描内核应能生成");
     let Some(mut executor) = ::device::metal::executor::MetalExecutor::new("metal", "arm64") else {
         return;
@@ -368,7 +368,7 @@ fn op_chunked_rmsnorm_matches_reference(op_name: &str) {
     } = setup;
 
     let (partial_msl, map_msl) =
-        cutile::execution::metal_rmsnorm_program(&catalogue, &dirs, op_name, m, n)
+        cutile::execution::program(&catalogue, &dirs, op_name, cutile::execution::Backend::Metal, Mode::segmented(), m, n).and_then(|stages| stages.two("归一化"))
             .expect("分块 rmsnorm 内核应能生成");
     let Some(mut executor) = ::device::metal::executor::MetalExecutor::new("metal", "arm64") else {
         return;
@@ -451,7 +451,7 @@ fn op_chunked_softmax_matches_reference(op_name: &str) {
     } = setup;
 
     let (max_msl, expsum_msl, map_msl) =
-        cutile::execution::metal_softmax_program(&catalogue, &dirs, op_name, m, n)
+        cutile::execution::program(&catalogue, &dirs, op_name, cutile::execution::Backend::Metal, Mode::segmented(), m, n).and_then(|stages| stages.three("softmax"))
             .expect("分块 softmax 内核应能生成");
     let Some(mut executor) = ::device::metal::executor::MetalExecutor::new("metal", "arm64") else {
         return;
@@ -632,14 +632,14 @@ fn op_normalized_matches_reference_cuda(op_name: &str) {
     let program = match op_name {
         "rmsnorm_f32" => {
             let (partial, norm) =
-                cutile::execution::cuda_rmsnorm_program(&catalogue, &dirs, op_name, m, n)
+                cutile::execution::program(&catalogue, &dirs, op_name, cutile::execution::Backend::Cuda, Mode::segmented(), m, n).and_then(|stages| stages.two("归一化"))
                     .expect("分块 rmsnorm 两段应能生成");
             ::device::norm::cuda_rmsnorm_driver(&[partial, norm], &decl.signature, &sample, chunk)
                 .expect("host 串联驱动应能生成")
         }
         "softmax_f32" => {
             let (max, expsum, norm) =
-                cutile::execution::cuda_softmax_program(&catalogue, &dirs, op_name, m, n)
+                cutile::execution::program(&catalogue, &dirs, op_name, cutile::execution::Backend::Cuda, Mode::segmented(), m, n).and_then(|stages| stages.three("softmax"))
                     .expect("分块 softmax 三段应能生成");
             ::device::norm::cuda_softmax_driver(
                 &[max, expsum, norm],
@@ -677,8 +677,18 @@ fn op_looped_matches_reference_cuda(op_name: &str) {
         return;
     };
 
-    let (device, dims) = cutile::execution::cuda_gemm_program(&catalogue, &dirs, op_name, m, n)
-        .expect("循环注入内核应能生成");
+    let stages = cutile::execution::program(
+        &catalogue,
+        &dirs,
+        op_name,
+        cutile::execution::Backend::Cuda,
+        Mode::loop_injected(),
+        m,
+        n,
+    )
+    .expect("循环注入内核应能生成");
+    let dims = stages.dims().expect("循环注入应回网格各维").to_vec();
+    let device = stages.one("循环注入").expect("循环注入设备源");
     let program = ::device::cuda::cuda_loop_driver(&device, &decl.signature, &sample, &dims)
         .expect("host 驱动应能生成");
     let (_counts, bits) =

@@ -130,6 +130,9 @@ mod arith;
 mod axes;
 mod check;
 
+use arith::{accumulate, bytes, extent, term_elements};
+use check::{single_write, unique, writes_only_outputs};
+
 pub use axes::{Axes, Axis, AxisRole};
 
 /// 一份可估算的语义：表达式 + 每个操作数的位宽与方向。
@@ -303,97 +306,4 @@ impl Formula {
         }
         Ok((read, write))
     }
-}
-
-/// 同名缓冲只允许出现一次：否则同一块内存会被重复计费。
-fn unique(operands: &[Operand]) -> Result<(), Error> {
-    let mut names: Vec<&str> = Vec::with_capacity(operands.len());
-    for operand in operands {
-        if names.contains(&operand.name()) {
-            return Err(Error::new(
-                Code::Invalid,
-                format!(
-                    "操作数 `{}` 出现了两次：同名缓冲会被重复计费",
-                    operand.name()
-                ),
-            )
-            .with("einsum::Formula::new"));
-        }
-        names.push(operand.name());
-    }
-    Ok(())
-}
-
-/// 一次计算只有一个出口。
-fn single_write(operands: &[Operand]) -> Result<(), Error> {
-    let writes = operands
-        .iter()
-        .filter(|operand| operand.access() == Access::Write)
-        .count();
-    if writes > 1 {
-        return Err(
-            Error::new(Code::Invalid, "有多个写入操作数：一次计算只有一个出口")
-                .with("einsum::Formula::new"),
-        );
-    }
-    Ok(())
-}
-
-/// 写入操作数只能写输出轴：写回中间量不是算子语义。
-fn writes_only_outputs(expr: &Expr, operands: &[Operand]) -> Result<(), Error> {
-    for (operand, term) in operands.iter().zip(expr.terms()) {
-        if operand.access() != Access::Write {
-            continue;
-        }
-        if let Some(label) = term.iter().find(|label| !expr.output().contains(label)) {
-            return Err(Error::new(
-                Code::Invalid,
-                format!(
-                    "写入操作数 `{}` 的轴 `{label}` 不在输出里：写回中间量不是算子语义",
-                    operand.name()
-                ),
-            )
-            .with("einsum::Formula::new"));
-        }
-    }
-    Ok(())
-}
-
-/// 一项的元素数：该项每条轴长度的乘积。
-fn term_elements(extents: &Extents, term: &[char]) -> Result<u128, Error> {
-    term.iter().try_fold(1u128, |total, label| {
-        multiply(total, extent(extents, *label)?)
-    })
-}
-
-/// 按方向累加：两个计数器各自溢出都要报。
-fn accumulate(total: &mut u128, bytes: u128) -> Result<(), Error> {
-    *total = total.checked_add(bytes).ok_or_else(overflow)?;
-    Ok(())
-}
-
-/// 流量收口到 `u64`：`Cost` 的字段是 `u64`，装不下说明形状不可能是真的。
-fn bytes(value: u128, kind: &str) -> Result<u64, Error> {
-    u64::try_from(value).map_err(|_| {
-        Error::new(Code::Invalid, format!("{kind}流量 {value} 字节超出 u64"))
-            .with("einsum::Formula::cost")
-    })
-}
-
-fn extent(extents: &Extents, label: char) -> Result<usize, Error> {
-    extents.get(label).ok_or_else(|| {
-        Error::new(
-            Code::Invalid,
-            format!("轴 `{label}` 没有长度：表达式里的每个字母都必须给出轴长度"),
-        )
-        .with("einsum::Formula::axes")
-    })
-}
-
-fn multiply(total: u128, length: usize) -> Result<u128, Error> {
-    total.checked_mul(length as u128).ok_or_else(overflow)
-}
-
-fn overflow() -> Error {
-    Error::new(Code::Invalid, "维度乘积或流量超出 u128：形状不可能是真的").with("einsum::Formula")
 }
