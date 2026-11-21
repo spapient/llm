@@ -14,7 +14,7 @@
 //! # 例子
 //!
 //! ```
-//! use llm_tool::regress::{Baseline, Case, Direction, Judgement};
+//! use llm_tools::regress::{Baseline, Case, Direction, Judgement};
 //!
 //! let case = Case::new("gemv_i4/cpu", 10.0, 5.0, Direction::Higher).expect("场景");
 //! let baseline = Baseline::new(vec![case]).expect("基线");

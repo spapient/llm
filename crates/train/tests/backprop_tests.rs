@@ -442,7 +442,11 @@ fn unary_grad(op: &str, p0: &[f32], output_len: usize) -> Result<Vec<f32>> {
     session.register_parameter(p, ParamRole::Trainable, p0.to_vec())?;
     session.buffers().compute(op, &[p], y)?;
     sum_backward(&mut session, y, out)?;
-    Ok(session.buffers().gradient(p).expect("p 梯度应在场").to_vec())
+    Ok(session
+        .buffers()
+        .gradient(p)
+        .expect("p 梯度应在场")
+        .to_vec())
 }
 
 /// `loss = reduce_sum(op(p))` 的公共夹具：单路参数中心差分，`loss(p)` 给整标量。
@@ -888,8 +892,12 @@ fn leaky_relu_chain_matches_central_differences() -> Result<()> {
 /// `loss = reduce_sum(hard_sigmoid(p))`：线性区梯度恒为 1/6；饱和点解析梯度为 0。
 #[test]
 fn hard_sigmoid_chain_matches_central_differences() -> Result<()> {
-    let chain_loss =
-        |params: &[f32]| params.iter().map(|&x| (x / 6.0 + 0.5).clamp(0.0, 1.0)).sum::<f32>();
+    let chain_loss = |params: &[f32]| {
+        params
+            .iter()
+            .map(|&x| (x / 6.0 + 0.5).clamp(0.0, 1.0))
+            .sum::<f32>()
+    };
     check_unary_grad("hard_sigmoid_f32", &[-1.5, 0.4, 1.1], chain_loss)
 }
 

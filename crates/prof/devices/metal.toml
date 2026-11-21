@@ -17,7 +17,7 @@
 vendor   = "metal"
 id       = "m5"
 emit     = "metal"
-tool     = "xcrun metal"
+tools    = "xcrun metal"
 tool_ver = "32023.922"
 checked  = "2026-11-12"
 

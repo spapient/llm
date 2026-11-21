@@ -19,8 +19,8 @@
 //! # 例子
 //!
 //! ```
-//! use llm_tool::bench::Harness;
-//! use llm_tool::card::{Card, Direction, Protocol, Standing, Statistic};
+//! use llm_tools::bench::Harness;
+//! use llm_tools::card::{Card, Direction, Protocol, Standing, Statistic};
 //!
 //! let protocol = Protocol::of("E10", "decode_step_ns", Statistic::Cv, Direction::Lower, 0.05)
 //!     .expect("协议")

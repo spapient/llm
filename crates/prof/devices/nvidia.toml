@@ -9,7 +9,7 @@
 vendor   = "nvidia"
 id       = "sm75"
 emit     = "cuda"
-tool     = "nvcc"
+tools    = "nvcc"
 tool_ver = "13.3"
 checked  = "2026-11-12"
 

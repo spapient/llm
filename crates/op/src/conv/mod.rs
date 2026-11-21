@@ -339,7 +339,9 @@ impl MaxPool2d {
         c: usize,
         out: &mut [S],
     ) -> Result<()> {
-        run(&self.geom, x, n, (h, w), c, out, || MaxFold(S::NEG_INFINITY))
+        run(&self.geom, x, n, (h, w), c, out, || {
+            MaxFold(S::NEG_INFINITY)
+        })
     }
 }
 
@@ -444,6 +446,21 @@ fn run<S: Scalar, F: Fold<S>>(
         (x.len(), n * h * w * c, "输入"),
         (out.len(), n * oh * ow * c, "输出"),
     ])?;
+    scatter(geom, x, n, (h, w), c, out, (oh, ow), fold);
+    Ok(())
+}
+
+/// 按 `(n, oh, ow, c)` 四重遍历写满输出；窗口归约仍由 `fold` 注入。
+fn scatter<S: Scalar, F: Fold<S>>(
+    geom: &ConvGeom,
+    x: &[S],
+    n: usize,
+    (h, w): (usize, usize),
+    c: usize,
+    out: &mut [S],
+    (oh, ow): (usize, usize),
+    mut fold: impl FnMut() -> F,
+) {
     for ni in 0..n {
         for oi in 0..oh {
             for oj in 0..ow {
@@ -454,7 +471,6 @@ fn run<S: Scalar, F: Fold<S>>(
             }
         }
     }
-    Ok(())
 }
 
 /// 单个输出格的窗口归约：按 `(kh, kw)` 扫描，越界（补零）位置直接跳过。

@@ -266,8 +266,9 @@ pub fn sample(len: usize, salt: u32) -> Vec<f32> {
 }
 
 pub use compare::{
-    COSINE_GUARD, RelErr, Scale, Worst, all_finite, approx_eq, assert_close, assert_rel_with, assert_within_rel,
-    close, cosine_similarity, max_rel_err, rel_err, rel_err_with, within_ratio, within_rel,
+    COSINE_GUARD, RelErr, Scale, Worst, all_finite, approx_eq, assert_close, assert_rel_with,
+    assert_within_rel, close, cosine_similarity, max_rel_err, rel_err, rel_err_with, within_ratio,
+    within_rel,
 };
 pub use gating::{device_enabled, device_or_skip, skip, skip_count, skip_none, skipped_reasons};
 pub use hash::{assert_table_matches_bitwise, crc32_bitwise};

@@ -8,7 +8,7 @@
 vendor   = "ascend"
 id       = "910b"
 emit     = "ascendc"
-tool     = "ccec"
+tools    = "ccec"
 checked  = "2026-11-12"
 
 [fingerprint]

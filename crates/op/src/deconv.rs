@@ -6,8 +6,8 @@
 
 use std::ops::AddAssign;
 
-use diagnostic::{Code, Error, Result};
 use crate::guard::check_all;
+use diagnostic::{Code, Error, Result};
 
 use crate::conv::ConvGeom;
 use crate::fast;
@@ -182,8 +182,6 @@ fn scatter<T: Copy + AddAssign>(
         }
     }
 }
-
-
 
 /// 一维反卷积：NHWC，权重布局对齐 PyTorch `[Cin, Cout, k]`。
 ///
@@ -463,7 +461,6 @@ fn scatter1_at<T: Copy + AddAssign>(
 #[cfg(test)]
 mod tests {
     use super::*;
-
 
     fn sample_i8(len: usize, salt: u32) -> Vec<i8> {
         (0..len)

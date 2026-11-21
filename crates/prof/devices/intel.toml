@@ -8,7 +8,7 @@
 vendor   = "intel"
 id       = "gen12"
 emit     = "opencl"
-tool     = "clang"
+tools    = "clang"
 tool_ver = "17.0"
 checked  = "2026-11-11"
 

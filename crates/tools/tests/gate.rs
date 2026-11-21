@@ -4,7 +4,7 @@
 //! 新增与恶化失败，存量只准降，已达标的基线必须删除。
 //!
 //! 这个文件只**测量**：限值一律问 `Gate::limit`，本文件不持有阈值、也不决定「哪个度量用
-//! 哪个数」。判定与结清都在 `llm_tool::gate` 里，因此换阈值不需要动这里。
+//! 哪个数」。判定与结清都在 `llm_tools::gate` 里，因此换阈值不需要动这里。
 //!
 //! 扫描分四类，适用的度量不同：
 //!
@@ -25,7 +25,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use llm_tool::{
+use llm_tools::{
     analyze, call, ccn, docs, dup,
     gate::{Gate, Metric, Over},
     lex, strip_tests,

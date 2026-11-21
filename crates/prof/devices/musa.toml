@@ -16,7 +16,7 @@
 vendor   = "musa"
 id       = "mp_22"
 emit     = "cuda"
-tool     = "mcc"
+tools    = "mcc"
 tool_ver = "14.0.0"
 checked  = "2026-11-20"
 

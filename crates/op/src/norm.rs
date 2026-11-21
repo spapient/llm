@@ -8,8 +8,8 @@
 //! 分开成两个函数，避免一个 `bool` 参数把"是否改状态"藏进签名里。
 
 use crate::Scalar;
-use diagnostic::{Code, Error, Result};
 use crate::guard::check_all;
+use diagnostic::{Code, Error, Result};
 
 /// 二维批归一化：通道数、数值稳定项与滑动统计的动量。
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -274,8 +274,6 @@ fn affine<S: Scalar>(
     }
 }
 
-
-
 /// 按组遍历并逐组归一化（`GroupNorm` 的骨架）。
 fn normalize_groups<S: Scalar>(
     x: &[S],
@@ -360,7 +358,6 @@ fn normalize_row<S: Scalar>(
 #[cfg(test)]
 mod tests {
     use super::*;
-
 
     /// 逐通道的均值与方差（有偏），测试用独立口径，避免复用被测代码。
     fn stats(x: &[f32], c: usize, count: usize) -> (Vec<f32>, Vec<f32>) {

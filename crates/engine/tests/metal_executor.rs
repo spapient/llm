@@ -1065,9 +1065,9 @@ impl TensorStage {
     /// 与 CPU 参考对拍并返回误差（无参考时 NaN）；拆借 `y` 与 `reference` 两个字段避免借用冲突。
     fn error(&mut self, label: &str) -> f64 {
         let Self { y, reference, .. } = self;
-        reference
-            .as_ref()
-            .map_or(f64::NAN, |want| assert_relaxed_matches(label, want, y.as_mut_bytes()))
+        reference.as_ref().map_or(f64::NAN, |want| {
+            assert_relaxed_matches(label, want, y.as_mut_bytes())
+        })
     }
 }
 
@@ -1244,7 +1244,13 @@ fn metal_tensor_gemm() {
             println!("{label} 误差 {:.2e}", stage.error(&label));
             pipes.push(pipe);
         }
-        sweep(&queue, &stage, &pipes, (m, n, k), &format!("张量核 {m}×{n}×{k}"));
+        sweep(
+            &queue,
+            &stage,
+            &pipes,
+            (m, n, k),
+            &format!("张量核 {m}×{n}×{k}"),
+        );
     }
 }
 
@@ -1263,8 +1269,7 @@ fn metal_tensor_kernel_gemm() {
     let Some((device, queue)) = bench_device("张量核立方 GEMM") else {
         return;
     };
-    let declaration =
-        "void cutile_bench_kernel(const float *a, const float *b, float *y, int M, int N, int K) {}";
+    let declaration = "void cutile_bench_kernel(const float *a, const float *b, float *y, int M, int N, int K) {}";
     let signature = Signature::parse("bench", declaration).expect("自建签名应能解析");
     for (m, n, k) in [(1024, 1024, 1024), (2048, 2048, 2048), (4096, 4096, 4096)] {
         let mut stage = tensor_stage(&device, &queue, (m, n, k), m <= 1024);
@@ -1289,6 +1294,12 @@ fn metal_tensor_kernel_gemm() {
             println!("{label} 误差 {:.2e}", stage.error(&label));
             pipes.push(pipe);
         }
-        sweep(&queue, &stage, &pipes, (m, n, k), &format!("张量核立方 {m}³"));
+        sweep(
+            &queue,
+            &stage,
+            &pipes,
+            (m, n, k),
+            &format!("张量核立方 {m}³"),
+        );
     }
 }
