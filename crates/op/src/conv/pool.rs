@@ -1,4 +1,3 @@
-
 use diagnostic::{Code, Error, Result};
 
 use crate::Scalar;
@@ -7,6 +6,7 @@ use super::support::*;
 
 use super::geom::ConvGeom;
 
+/// 二维最大池化：补零位置不参与比较（与框架语义一致）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MaxPool2d {
     /// 池化核、步长、补零（补零位置不参与比较）。

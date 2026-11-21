@@ -1,11 +1,10 @@
-
 use diagnostic::{Code, Error, Result};
 
-use crate::Scalar;
 use crate::fast;
 
 use super::support::*;
 
+/// 卷积几何参数：核、步长、补零。1d 层把 `kh`/`sh` 固定为 1 以复用 2d 的展开。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConvGeom {
     /// 卷积核高（1d 恒为 1）。

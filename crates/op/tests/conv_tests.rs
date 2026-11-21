@@ -1,5 +1,7 @@
 //! 职责：卷积/池化/插值算子测试（从 conv/mod.rs 拆出，见父模块职责）。
 
+use crate::fast;
+
 use super::support::*;
 use super::*;
 

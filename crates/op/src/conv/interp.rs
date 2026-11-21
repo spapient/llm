@@ -1,4 +1,3 @@
-
 use diagnostic::{Code, Error, Result};
 
 use crate::Scalar;
