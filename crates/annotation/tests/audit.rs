@@ -85,87 +85,123 @@ fn section_keys<'a>(manifest: &'a str, section: &str) -> Vec<&'a str> {
     keys
 }
 
-/// 注释与字面量的三种开头；`/` 也可能是除号、`'` 也可能是生命周期，都要先看见再判定。
-const OPENERS: &[char] = &['"', '\'', '/'];
+/// 注释与字面量的三种开头字节；`/` 也可能是除号、`'` 也可能是生命周期，都要先看见再判定。
+fn is_opener(byte: u8) -> bool {
+    matches!(byte, b'"' | b'\'' | b'/')
+}
 
 /// 只留下代码：注释与字面量都剔掉。生成文本里就写着 `format!` / `.to_string()`，直接搜全文会把
 /// "被生成的代码"误判成"生成器的实现"；`'{'`、`'"'` 这类字面量还会把 [`body`] 的花括号配平带偏。
 ///
-/// 每层只处理"下一个真正要跳过的开头"：它之前那段是纯代码，整段追加；它之后的部分交给下一层。
-/// 除号与生命周期不算跳过，就地留在代码里，不额外占一层。单趟线性，不分配中间 `String`。
+/// 单趟字节游标：命中注释 / 字面量就把它之前那段代码整段追加、游标跳到它后面；`/` 与 `'` 若不是
+/// 注释或字面量就只挪一个字节。游标每圈严格前进（任何被吞下的片段都至少 1 字节），所以终止性由
+/// 构造保证，不需要递归兜底：栈深与输入长度无关，中间也不分配 `String`。行注释的换行留在代码里，
+/// 输出行数与原文件一致。
 fn code_only(text: &str) -> String {
+    let bytes = text.as_bytes();
     let mut out = String::with_capacity(text.len());
-    code_into(text, &mut out);
+    let mut flushed = 0;
+    let mut cursor = 0;
+    while let Some(at) = next_opener(bytes, cursor) {
+        match skip(text, at) {
+            Some(end) => {
+                debug_assert!(end > at, "被吞下的片段必须至少推进一个字节");
+                out.push_str(&text[flushed..at]);
+                flushed = end;
+                cursor = end;
+            }
+            None => cursor = at + 1,
+        }
+    }
+    out.push_str(&text[flushed..]);
     out
 }
 
-/// [`code_only`] 的一层：把 `rest` 开头那段纯代码追进 `out`，跳过它之后的注释 / 字面量再自递归。
+/// `from` 之后第一个可能是注释 / 字面量开头的字节位置。
 ///
-/// 递归深度等于"注释 + 字面量"的个数（不是字节数，也不是候选个数），每层 `rest` 都严格变短，
-/// 所以必然终止；也因为没有可变游标，"跳过量算错导致原地打转"这类失败模式不存在。
-fn code_into(rest: &str, out: &mut String) {
-    // 候选逐个试：`skip` 返回 `None` 说明那个 `/` 或 `'` 其实是代码，继续往后找下一个候选。
-    let opening = rest
-        .match_indices(OPENERS)
-        .find_map(|(at, _)| skip(&rest[at..], &rest[..at]).map(|len| (at, len)));
-    let Some((at, len)) = opening else {
-        out.push_str(rest);
-        return;
-    };
-    out.push_str(&rest[..at]);
-    code_into(&rest[at + len..], out);
+/// 三个开引子都是 ASCII，而 UTF-8 的续字节全在 `0x80` 以上，所以按字节找永远不会切进多字节字符，
+/// 命中的一定是字符边界；判据写成一次 `position`，扫描段落因此是可向量化的线性搜索。
+fn next_opener(bytes: &[u8], from: usize) -> Option<usize> {
+    bytes[from..]
+        .iter()
+        .position(|byte| is_opener(*byte))
+        .map(|offset| from + offset)
 }
 
-/// 从注释 / 字面量开头算起要吞掉的字节数；裸 `/` 与生命周期 `'a` 都不是注释或字面量，返回 `None`。
+/// `at` 处的注释 / 字面量结束后游标该停在哪；裸 `/`（除号）与生命周期 `'a` 都不是，返回 `None`。
 ///
-/// `code` 是开引子之前那段纯代码：raw string 的 `r##` 前缀原样在里面，数它尾随的 `#` 就是收尾定界符。
-fn skip(rest: &str, code: &str) -> Option<usize> {
-    let hashes = code.len() - code.trim_end_matches('#').len();
-    match *rest.as_bytes() {
-        [b'/', b'/', ..] => Some(rest.find('\n').unwrap_or(rest.len())),
-        [b'/', b'*', ..] => Some(comment_end(rest)),
-        [b'"', ..] => Some(quoted_end(rest, hashes)),
-        [b'\'', ..] => char_end(rest),
+/// 按首两字节分派，不再切子串：`&text[at..]` 每次都要重算边界与长度，这里只读字节。
+fn skip(text: &str, at: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    match bytes[at..] {
+        [b'/', b'/', ..] => Some(line_end(bytes, at)),
+        [b'/', b'*', ..] => Some(comment_end(bytes, at)),
+        [b'"', ..] => Some(quoted_end(bytes, at, raw_hashes(bytes, at))),
+        [b'\'', ..] => char_end(text, at),
         _ => None,
     }
 }
 
-/// 块注释可嵌套（Rust 特性）：`/* a /* b */ c */` 整体只是一条注释。
-fn comment_end(rest: &str) -> usize {
-    let bytes = rest.as_bytes();
-    let mut depth = 0u32;
-    let mut at = 0;
-    while at + 1 < bytes.len() {
-        match (bytes[at], bytes[at + 1]) {
-            (b'/', b'*') => {
-                depth += 1;
-                at += 2;
-            }
-            (b'*', b'/') => {
-                depth -= 1;
-                at += 2;
-                if depth == 0 {
-                    return at;
-                }
-            }
-            _ => at += 1,
-        }
-    }
-    rest.len()
+/// 行注释到换行为止；换行本身留作代码，剔除后行数与原文件一一对应。
+fn line_end(bytes: &[u8], at: usize) -> usize {
+    bytes[at..]
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .map_or(bytes.len(), |offset| at + offset)
 }
 
-/// 字符串的结尾；`hashes` 是开引子后的 `#` 数：`r##"…"##` 为 2，普通 `"…"` 为 0。
-fn quoted_end(rest: &str, hashes: usize) -> usize {
-    let bytes = rest.as_bytes();
-    let mut at = 1;
-    while at < bytes.len() {
-        match bytes[at] {
-            b'\\' if hashes == 0 => at += 2,
-            b'"' if closes_with(&bytes[at + 1..], hashes) => return at + 1 + hashes,
-            _ => at += 1,
+/// 块注释可嵌套（Rust 特性）：`/* a /* b */ c */` 整体只是一条注释。
+///
+/// 只停在 `*` 与 `/` 上：开合定界符都在这两个字节处开始，注释正文一次搜索跳过，不逐字节走状态机。
+fn comment_end(bytes: &[u8], at: usize) -> usize {
+    let mut depth = 1u32;
+    let mut cursor = at + 2;
+    loop {
+        let Some(offset) = bytes[cursor..]
+            .iter()
+            .position(|byte| *byte == b'*' || *byte == b'/')
+        else {
+            return bytes.len();
+        };
+        let marker = cursor + offset;
+        match bytes.get(marker + 1).copied() {
+            Some(b'*') if bytes[marker] == b'/' => {
+                depth += 1;
+                cursor = marker + 2;
+            }
+            Some(b'/') if bytes[marker] == b'*' => {
+                depth -= 1;
+                cursor = marker + 2;
+                if depth == 0 {
+                    return cursor;
+                }
+            }
+            _ => cursor = marker + 1,
         }
     }
-    rest.len()
+}
+
+/// 字符串的结束位置；`hashes` 是开引子后的 `#` 数：`r##"…"##` 为 2，普通 `"…"` 为 0。
+///
+/// 普通字符串只在 `"` 与反斜杠上停（转义要整对跳过），raw string 里 `\` 是普通字符，只看 `"`：
+/// 两种情况都是一次搜索越过整段正文。
+fn quoted_end(bytes: &[u8], at: usize, hashes: usize) -> usize {
+    let escapes = hashes == 0;
+    let mut cursor = at + 1;
+    while let Some(offset) = bytes[cursor..]
+        .iter()
+        .position(|byte| *byte == b'"' || (escapes && *byte == b'\\'))
+    {
+        let stop = cursor + offset;
+        if bytes[stop] == b'\\' {
+            cursor = (stop + 2).min(bytes.len());
+        } else if closes_with(&bytes[stop + 1..], hashes) {
+            return stop + 1 + hashes;
+        } else {
+            cursor = stop + 1;
+        }
+    }
+    bytes.len()
 }
 
 /// raw string 的收尾定界符是 `"` 后跟与开引子同数量的 `#`。
@@ -173,26 +209,36 @@ fn closes_with(rest: &[u8], hashes: usize) -> bool {
     rest.len() >= hashes && rest[..hashes].iter().all(|byte| *byte == b'#')
 }
 
-/// 字符字面量的结尾：`'{'` / `'\''` / `'\u{7f}'`；`'a` 是生命周期，返回 `None`。
+/// `"` 前紧邻的 `#` 数：`r##"…"##` 是 2，普通 `"…"` 是 0。只给 `"` 候选算，除号与生命周期不白扫。
+fn raw_hashes(bytes: &[u8], at: usize) -> usize {
+    bytes[..at]
+        .iter()
+        .rev()
+        .take_while(|byte| **byte == b'#')
+        .count()
+}
+
+/// 字符字面量的结束位置：`'{'` / `'\''` / `'\u{7f}'`；`'a` 是生命周期，返回 `None`。
 ///
 /// 长度必须卡死：放开长度就会让 `for<'a, 'b>` 里的 `'a, '` 被当成字面量，进而吞掉真实代码。
-fn char_end(rest: &str) -> Option<usize> {
+fn char_end(text: &str, at: usize) -> Option<usize> {
     /// `'\u{10FFFF}'` 是最长的字符字面量（13 字节），收尾引号不会晚于第 12 个字节。
     const LONGEST: usize = 12;
+    let rest = &text[at..];
     let bytes = rest.as_bytes();
     if *bytes.get(1)? == b'\\' {
-        let mut at = 1;
-        while at <= LONGEST {
-            match *bytes.get(at)? {
-                b'\\' => at += 2,
-                b'\'' => return Some(at + 1),
-                _ => at += 1,
+        let mut cursor = 1;
+        while cursor <= LONGEST {
+            match *bytes.get(cursor)? {
+                b'\\' => cursor += 2,
+                b'\'' => return Some(at + cursor + 1),
+                _ => cursor += 1,
             }
         }
         return None;
     }
     let width = rest[1..].chars().next()?.len_utf8();
-    (bytes.get(1 + width) == Some(&b'\'')).then_some(2 + width)
+    (bytes.get(1 + width) == Some(&b'\'')).then_some(at + 2 + width)
 }
 
 /// 某个函数的函数体：从 `fn 名字` 起找第一个 `{`，再按花括号配平。泛型参数（`fn unique<'a>(`）
@@ -300,6 +346,30 @@ fn code_only_strips_every_literal_form() {
         code.matches('}').count(),
         "字面量里的花括号不得参与配平：{code}"
     );
+}
+
+/// 游标是单趟的：十万段字面量也不占一帧栈。旧的自递归实现在这里会把测试线程的栈撑爆，而栈溢出是
+/// abort 而不是断言失败，所以"栈深与输入无关"这条只能靠这种规模用例观测。
+#[test]
+fn code_only_is_flat_over_many_literals() {
+    const COUNT: usize = 100_000;
+    let mut source = "\"x\" ".repeat(COUNT);
+    source.push_str("done");
+    let code = code_only(&source);
+    assert_eq!(
+        code.len(),
+        COUNT + "done".len(),
+        "每段字面量只应剩下一个分隔空格"
+    );
+    assert!(code.ends_with("done"), "字面量之后的代码不得丢失");
+}
+
+/// 没有收尾的注释 / 字面量只能吞到文件末尾：游标不许越过末尾，否则切片就 panic。
+#[test]
+fn code_only_stops_at_end_on_unterminated_forms() {
+    assert_eq!(code_only("a /* b"), "a ");
+    assert_eq!(code_only("let s = \"abc"), "let s = ");
+    assert_eq!(code_only("let raw = r\"###tail"), "let raw = r");
 }
 
 /// 运行期依赖为空：注解文法手写解析，`MODEL` 由 `Operator` 投影，不再需要任何基座 crate。

@@ -73,9 +73,7 @@ impl Facts {
 
     /// 全留：预算装得下时这是唯一不引入重放的计划。
     pub(crate) fn keep_all(
-        &self,
-        tape: &Tape,
-        schedule: &Schedule,
+        mut self,
         budget: Budget,
         policy: MemoryPolicy,
     ) -> Plan {
@@ -83,22 +81,15 @@ impl Facts {
         self.candidates
             .iter()
             .for_each(|id| keep[*id as usize] = true);
-        let mut scratch = Scratch::new(self.bytes.len());
-        let ledger = self.account(tape, schedule, &keep, &mut scratch);
+        // 没有丢弃的输入：瞬时工作集与重放步数都是 0，释放点就是直接的最后一次消费，
+        // 沿被丢弃的链传播在这里必定是空转，可以整段省掉。
+        let ledger = Ledger {
+            retained: self.total,
+            peak: self.total,
+            replayed: 0,
+            release: std::mem::take(&mut self.last_use),
+        };
         self.assemble(keep, ledger, budget, policy)
-    }
-
-    /// 用同一份账核对一个保留集：保留量、峰值（保守）、重放步数、释放点。
-    pub(crate) fn account(
-        &self,
-        tape: &Tape,
-        schedule: &Schedule,
-        keep: &[bool],
-        scratch: &mut Scratch,
-    ) -> Ledger {
-        let mut ledger = self.measure(schedule, keep, scratch);
-        ledger.release = self.release(tape, keep);
-        ledger
     }
 
     /// 只算代价，不算释放点：分段试算只关心峰值，释放点留给最终选中的方案。

@@ -92,9 +92,9 @@ impl Plan {
     ) -> Result<Self> {
         let facts = Facts::new(tape, schedule, &footprint);
         match policy {
-            MemoryPolicy::KeepAll => Ok(facts.keep_all(tape, schedule, budget, policy)),
+            MemoryPolicy::KeepAll => Ok(facts.keep_all(budget, policy)),
             MemoryPolicy::Auto if facts.total <= budget.bytes() => {
-                Ok(facts.keep_all(tape, schedule, budget, policy))
+                Ok(facts.keep_all(budget, policy))
             }
             MemoryPolicy::Auto | MemoryPolicy::Recompute => {
                 Self::check_floor(&facts, budget)?;
