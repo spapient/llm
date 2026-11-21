@@ -165,14 +165,17 @@ fn every_metal_witness_runs_on_the_gpu() {
 }
 
 #[test]
-fn a_plain_c_signature_does_not_survive_the_metal_front_end() {
+fn the_metal_front_end_demands_an_explicit_address_space() {
     ensure_backends();
     if !cutile::witness::device_available(&metal_profile()) {
         testkit::skip("engine: Metal 设备不在本机，MSL 前端用例未运行");
         return;
     }
+    // 必须带 `kernel`：不带限定符的函数在 MSL 里是普通 C 函数，`xcrun metal` 会照收不误、
+    // 只是不会生成入口点，于是失败被推迟到执行期（"metallib 里没有 cutile_witness"），
+    // 那条路径测不到"显式地址空间"这条不变量。
     let program = "#include <metal_stdlib>\nusing namespace metal;\n\
-               int witness_bad(float *out) { out[0] = 1.0f; return 1; }\n";
+               kernel void cutile_witness(float *out) { out[0] = 1.0f; }\n";
     let profile = metal_profile();
     let dirs = Dirs::under(std::env::temp_dir().join("engine-metal-frontend"));
     let error = MetalBackend
