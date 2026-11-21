@@ -9,7 +9,7 @@ use crate::sink::Sink;
 use crate::svd;
 
 use crate::ledger::{
-    bad, certified_rank, factor_low, stable, Bound, Certified, EpsMethod, Mode, Note, Stable,
+    Bound, Certified, EpsMethod, Mode, Note, Stable, bad, certified_rank, factor_low, stable,
 };
 
 /// L0 门：压前判定，通过则一次给出受认证的秩与两项产物。

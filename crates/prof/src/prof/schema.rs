@@ -49,65 +49,34 @@ fn split(text: &str, delimiter: char) -> Vec<String> {
 impl Profile {
     /// 从构建期展开的表解析（表由 [`crate::embedded`] 给出）；闭集与见证校验留给 [`Profile::validate`]。
     pub fn parse(table: &Table) -> Result<Self, ProfileError> {
-        let (meta, fingerprint) = parse_head(table)?;
-        let (spaces, units) = parse_floor(table)?;
-        let (provides, peak) = parse_capability(table)?;
+        let meta = table.table("meta").ok_or_else(|| missing("meta"))?;
+        let meta = parse_meta(meta)?;
         let (flags, preamble, headers) = parse_compile(table);
         Ok(Self {
             meta,
-            fingerprint,
-            spaces,
+            fingerprint: parse_fingerprint(table)?,
+            spaces: parse_spaces(table)?,
             mem: parse_mem(table),
             simt: parse_simt(table),
-            units,
-            provides,
-            peak,
+            units: parse_units(table)?,
+            provides: parse_provides(table)?,
+            peak: parse_peak(table)?,
             flags,
             preamble,
             headers,
         })
     }
 }
-/// `[meta]` 与 `[fingerprint]` 两段。
-fn parse_head(table: &Table) -> Result<(Meta, Vec<(String, MatchRule)>), ProfileError> {
-    let meta = table.table("meta").ok_or_else(|| missing("meta"))?;
-    let meta = parse_meta(meta)?;
-    Ok((meta, parse_fingerprint(table)?))
-}
-/// 静态形状的两半：存储映射与执行单元。
-type Floor = (Vec<(Space, String)>, Vec<Unit>);
-/// `[space]` 与 `[units]` 两段。
-fn parse_floor(table: &Table) -> Result<Floor, ProfileError> {
-    let spaces = parse_spaces(table)?;
-    Ok((spaces, parse_units(table)?))
-}
-/// `[[provides]]` 与 `[peak]` 两段。
-fn parse_capability(table: &Table) -> Result<(Vec<Provide>, Peak), ProfileError> {
-    let provides = parse_provides(table)?;
-    Ok((provides, parse_peak(table)?))
-}
 /// `[meta]` 段：厂商、型号、输出语言、工具名与核对日期；不核对工具链与本机是否一致。
 fn parse_meta(table: &Table) -> Result<Meta, ProfileError> {
-    let (vendor, id) = meta_identity(table)?;
-    let (emit, tool) = meta_toolchain(table)?;
     Ok(Meta {
-        vendor,
-        id,
-        emit,
-        tool,
+        vendor: text(table, "vendor", "meta.vendor")?.to_string(),
+        id: text(table, "id", "meta.id")?.to_string(),
+        emit: closed::<Emit>(text(table, "emit", "meta.emit")?, "meta.emit")?,
+        tool: text(table, "tools", "meta.tools")?.to_string(),
         tool_ver: or_dash(table, "tool_ver"),
         checked: or_dash(table, "checked"),
     })
-}
-/// 厂商与型号：两个字符串字段。
-fn meta_identity(table: &Table) -> Result<(String, String), ProfileError> {
-    let vendor = text(table, "vendor", "meta.vendor")?.to_string();
-    Ok((vendor, text(table, "id", "meta.id")?.to_string()))
-}
-/// 输出语言与工具名：`emit` 必须在 [`Emit`] 闭集里。
-fn meta_toolchain(table: &Table) -> Result<(Emit, String), ProfileError> {
-    let emit = closed::<Emit>(text(table, "emit", "meta.emit")?, "meta.emit")?;
-    Ok((emit, text(table, "tools", "meta.tools")?.to_string()))
 }
 /// `[fingerprint]` 段：规则直接写在段下，或写在 `match = { ... }` 里（README §5.3）。
 fn parse_fingerprint(table: &Table) -> Result<Vec<(String, MatchRule)>, ProfileError> {
@@ -149,7 +118,7 @@ fn require_spaces(spaces: &[(Space, String)]) -> Result<(), ProfileError> {
 }
 fn unfilled_space(space: Space) -> ProfileError {
     let name = space.as_str();
-    missing(&format!("space.{name}（三级存储的语义名必须齐全）"))
+    missing(format!("space.{name}（三级存储的语义名必须齐全）"))
 }
 /// `[mem]` 段：容量与 bank 数，缺项按 0。
 fn parse_mem(table: &Table) -> Mem {
@@ -251,7 +220,7 @@ fn parse_constant(table: &Table, key: &str) -> Result<Option<Constant>, ProfileE
 fn constant(table: &Table, field: &str) -> Result<Constant, ProfileError> {
     let path = format!("{field}.value");
     let value = table.float("value").ok_or(missing(&path))?;
-    let src = text(table, "src", &format!("{field}.src"))?.to_string();
+    let src = text(table, "src", format!("{field}.src"))?.to_string();
     let derived = derive(field, &src)?;
     // 允许字面量的常规舍入（如 `2.1e12`），但容不下 10% 量级的"抄错一位"。
     if (derived - value).abs() > value.abs().max(1.0) * 1e-6 {
@@ -392,18 +361,25 @@ fn skip_sign(bytes: &[u8], cursor: &mut usize) {
         *cursor += 1;
     }
 }
-/// 一个"名字集合"字段：标量字符串或字符串数组，与 `[needs]` 侧同一口径，形状不对直接报错。
-fn names(path: impl fmt::Display, value: &Value) -> Result<Vec<String>, ProfileError> {
+/// 一个"名字集合"字段：标量字符串或字符串数组，逐项交给 `each`。
+/// `dt` 与 `space` 是同一形状，且都只把名字解析成位集——这里不克隆 `String`。
+fn each_name(
+    field: impl fmt::Display,
+    value: &Value,
+    mut each: impl FnMut(&str) -> Result<(), ProfileError>,
+) -> Result<(), ProfileError> {
     match value {
-        Value::Str(text) => Ok(vec![text.clone()]),
-        Value::Array(items) => items.iter().map(|item| one_name(&path, item)).collect(),
-        _ => Err(bad(path, "只接受字符串或字符串数组")),
-    }
-}
-fn one_name(path: impl fmt::Display, item: &Value) -> Result<String, ProfileError> {
-    match item {
-        Value::Str(text) => Ok(text.clone()),
-        _ => Err(bad(path, "数组里只能是字符串")),
+        Value::Str(text) => each(text),
+        Value::Array(items) => {
+            for item in items {
+                let Value::Str(text) = item else {
+                    return Err(bad(&field, "数组里只能是字符串"));
+                };
+                each(text)?;
+            }
+            Ok(())
+        }
+        _ => Err(bad(field, "只接受字符串或字符串数组")),
     }
 }
 /// 一组存储层名字：每个都必须在 [`Space`] 闭集里。
@@ -416,33 +392,18 @@ fn parse_space_set(field: impl fmt::Display, items: &[&str]) -> Result<SpaceSet,
 }
 /// 一条 `[[provides]]`：认得的键各有分支，其余一律当属性（键还要过 [`AttrKey`] 闭集）。
 fn parse_provide(entry: &Table, index: usize) -> Result<Provide, ProfileError> {
-    let path = at(index, "prim");
-    let prim = closed::<Prim>(text(entry, "prim", &path)?, &path)?;
+    let field = at(index, "prim");
+    let prim = closed::<Prim>(text(entry, "prim", field)?, field)?;
     let mut provide = Provide::of(prim, entry.string("impl").unwrap_or("-"));
-    provide_shape(entry, index, &mut provide)?;
-    provide_sets(entry, index, &mut provide)?;
-    provide_tail(entry, index, provide)
-}
-/// 三条区间：主维度（`m` / `bytes` / `extent` 三选一）与 `n` / `k`。
-fn provide_shape(entry: &Table, index: usize, provide: &mut Provide) -> Result<(), ProfileError> {
+    // 三条区间：主维度（`m` / `bytes` / `extent` 三选一）与 `n` / `k`。
     provide.extent = span_of(entry, index, &["m", "bytes", "extent"], EXTENT_DETAIL)?;
     provide.n = span_of(entry, index, &["n"], AXIS_DETAIL)?;
     provide.k = span_of(entry, index, &["k"], AXIS_DETAIL)?;
-    Ok(())
-}
-/// `dt` / `space` / `grade`：前两项缺省为空集，`grade` 必填。
-fn provide_sets(entry: &Table, index: usize, provide: &mut Provide) -> Result<(), ProfileError> {
+    // `dt` / `space` 缺省为空集，`grade` 必填。
     provide.dt = dtype_set(entry, index)?;
     provide.space = space_set(entry, index)?;
     provide.grade = grade_of(entry, index)?;
-    Ok(())
-}
-/// `witness` 与其余属性：两者都只在签名写完之后才看得懂。
-fn provide_tail(
-    entry: &Table,
-    index: usize,
-    mut provide: Provide,
-) -> Result<Provide, ProfileError> {
+    // 见证与其余属性：两者都只在签名写完之后才看得懂。
     provide.witness = witness_of(entry, index)?;
     attrs(entry, index, &mut provide)?;
     Ok(provide)
@@ -467,20 +428,21 @@ fn span_of(
     }
     let field = at(index, alias);
     let Some(text) = entry.string(alias) else {
-        return Err(bad(&field, detail));
+        return Err(bad(field, detail));
     };
-    parse_span(&field, text)
+    parse_span(field, text)
 }
 /// `dt`：标量或数组都接受，闭集外取值报 `Unknown`。
 fn dtype_set(entry: &Table, index: usize) -> Result<DTypeSet, ProfileError> {
     let Some(value) = entry.get("dt") else {
         return Ok(DTypeSet::empty());
     };
-    let path = at(index, "dt");
+    let field = at(index, "dt");
     let mut set = DTypeSet::empty();
-    for item in names(&path, value)? {
-        set.insert(closed_dtype(&path, &item)?);
-    }
+    each_name(field, value, |name| {
+        set.insert(closed_dtype(field, name)?);
+        Ok(())
+    })?;
     Ok(set)
 }
 /// 一个数据类型名：`DType` 是 L1 外部类型，按它的规范名解析。
@@ -492,15 +454,18 @@ fn space_set(entry: &Table, index: usize) -> Result<SpaceSet, ProfileError> {
     let Some(value) = entry.get("space") else {
         return Ok(SpaceSet::empty());
     };
-    let path = at(index, "space");
-    let owned = names(&path, value)?;
-    let items: Vec<&str> = owned.iter().map(String::as_str).collect();
-    parse_space_set(&path, &items)
+    let field = at(index, "space");
+    let mut set = SpaceSet::empty();
+    each_name(field, value, |name| {
+        set.insert(closed::<Space>(name, field)?);
+        Ok(())
+    })?;
+    Ok(set)
 }
 /// `grade`：必填，闭集外取值报 `Unknown`。
 fn grade_of(entry: &Table, index: usize) -> Result<Grade, ProfileError> {
     let path = at(index, "grade");
-    closed::<Grade>(text(entry, "grade", &path)?, &path)
+    closed::<Grade>(text(entry, "grade", path)?, &path)
 }
 /// `witness`：内联表 `{ file, func, expect }`；只有路径的见证无法执行。
 fn witness_of(entry: &Table, index: usize) -> Result<Option<Witness>, ProfileError> {
@@ -514,16 +479,16 @@ fn witness_of(entry: &Table, index: usize) -> Result<Option<Witness>, ProfileErr
 }
 /// 见证的三个字段：`file` / `func` 必填，`expect` 是数值数组。
 fn witness_fields(table: &Table, index: usize) -> Result<Witness, ProfileError> {
-    let file = text(table, "file", &witness_at(index, "file"))?.to_string();
-    let func = text(table, "func", &witness_at(index, "func"))?.to_string();
+    let file = text(table, "file", witness_at(index, "file"))?.to_string();
+    let func = text(table, "func", witness_at(index, "func"))?.to_string();
     let expect = expect_values(table, index)?;
     Ok(Witness { file, func, expect })
 }
 /// `expect`：数值数组，按顺序与见证输出对拍。
 fn expect_values(table: &Table, index: usize) -> Result<Vec<f32>, ProfileError> {
     let path = witness_at(index, "expect");
-    let items = table.array("expect").ok_or_else(|| missing(&path))?;
-    let number = |value: &Value| expect_number(value, &path);
+    let items = table.array("expect").ok_or_else(|| missing(path))?;
+    let number = |value: &Value| expect_number(value, path);
     items.iter().map(number).collect()
 }
 fn expect_number(value: &Value, path: impl fmt::Display) -> Result<f32, ProfileError> {
@@ -556,9 +521,9 @@ fn one_attr(index: usize, key: &str, value: &Value) -> Result<Attr, ProfileError
 fn attr_values(index: usize, key: &str, value: &Value) -> Result<Vec<String>, ProfileError> {
     let path = at(index, key);
     match value {
-        Value::Array(items) => items.iter().map(|item| one_string(&path, item)).collect(),
+        Value::Array(items) => items.iter().map(|item| one_string(path, item)).collect(),
         Value::Table(_) => Err(bad(path, "属性不能是表")),
-        scalar => one_scalar(&path, scalar),
+        scalar => one_scalar(path, scalar),
     }
 }
 /// 单个标量属性值：字符串原样，整数/浮点/布尔按字面写。
@@ -675,7 +640,7 @@ impl Profile {
         if self.units.is_empty() {
             return vec![bad(field, EXEC_DETAIL)];
         }
-        let (reachable, mut errors) = self.exec_reach(&field, exec.values());
+        let (reachable, mut errors) = self.exec_reach(field, exec.values());
         if !provide.space.is_subset(reachable) {
             let unreachable = provide.space.difference(reachable);
             let detail = reach_missing(exec, unreachable);
@@ -684,7 +649,11 @@ impl Profile {
         errors
     }
     /// `exec` 取值能触及的存储层并集；本档案没声明的单元逐个报 `Unknown`。
-    fn exec_reach(&self, field: impl fmt::Display, values: &[String]) -> (SpaceSet, Vec<ProfileError>) {
+    fn exec_reach(
+        &self,
+        field: impl fmt::Display,
+        values: &[String],
+    ) -> (SpaceSet, Vec<ProfileError>) {
         let allowed: Vec<&str> = self.units.iter().map(|unit| unit.name.as_str()).collect();
         let (mut reachable, mut undefined) = (SpaceSet::empty(), Vec::new());
         for value in values {
@@ -766,7 +735,7 @@ fn attr_key_error(provide: &Provide, key: AttrKey) -> ProfileError {
     let keys = provide.prim.attr_keys();
     let mut allowed: Vec<&str> = keys.iter().map(|key| key.as_str()).collect();
     allowed.push("exec");
-    unknown(&prim_at(provide.prim, key.as_str()), key.as_str(), &allowed)
+    unknown(prim_at(provide.prim, key.as_str()), key.as_str(), &allowed)
 }
 /// 一条供给声明的执行单元列表；没写 `exec` 就没有这条判据。
 fn exec_attr(provide: &Provide) -> Option<&Attr> {

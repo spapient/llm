@@ -429,7 +429,11 @@ const fn witness_at(index: usize, key: &str) -> Field<'_> {
 const fn prim_at(prim: Prim, key: &str) -> Field<'_> {
     Field::Prim { prim, key }
 }
-fn text<'a>(table: &'a Table, key: &str, field: impl fmt::Display) -> Result<&'a str, ProfileError> {
+fn text<'a>(
+    table: &'a Table,
+    key: &str,
+    field: impl fmt::Display,
+) -> Result<&'a str, ProfileError> {
     table.string(key).ok_or_else(|| missing(field))
 }
 fn or_dash(table: &Table, key: &str) -> String {
