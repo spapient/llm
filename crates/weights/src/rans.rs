@@ -113,9 +113,25 @@ fn divrem(x: u32, f: u32, rcp: u32) -> (u32, u32) {
 
 /// 统计字节出现次数。
 fn counts(src: &[u8]) -> [u32; NSYMBOLS] {
-    let mut out = [0u32; NSYMBOLS];
-    for &b in src {
-        out[b as usize] += 1;
+    // 偏斜输入（比如 80% 是同一个符号）会让"同一个 bin 的 `+= 1`"退化成一条串行的
+    // store-to-load 转发链，实测占编码总时间的一半以上。用 4 份独立直方图按位置分流，
+    // 相邻字节落到不同副本上，依赖链被打断；最后合并只是 256×4 次加法。
+    const WAYS: usize = 4;
+    let mut lanes = [[0u32; NSYMBOLS]; WAYS];
+    let mut chunks = src.chunks_exact(WAYS);
+    for chunk in &mut chunks {
+        for way in 0..WAYS {
+            lanes[way][chunk[way] as usize] += 1;
+        }
+    }
+    for &b in chunks.remainder() {
+        lanes[0][b as usize] += 1;
+    }
+    let mut out = lanes[0];
+    for lane in lanes.iter().skip(1) {
+        for (slot, &count) in out.iter_mut().zip(lane.iter()) {
+            *slot += count;
+        }
     }
     out
 }
@@ -284,8 +300,18 @@ fn encode_lanes(src: &[u8], table: &Table) -> ([u32; NLANES], [Vec<u8>; NLANES])
 /// 压缩为自描述帧；返回字节数（含头部），调用方据此判断是否值得保留。
 pub(crate) fn encode(src: &[u8]) -> Vec<u8> {
     let t0 = std::time::Instant::now();
-    let table = Table::build(normalize(&counts(src)));
+    let raw = counts(src);
+    let t0b = std::time::Instant::now();
+    let norm = normalize(&raw);
+    let t0c = std::time::Instant::now();
+    let table = Table::build(norm);
     let t1 = std::time::Instant::now();
+    eprintln!(
+        "PROBE counts={:?} normalize={:?} build={:?}",
+        t0b - t0,
+        t0c - t0b,
+        t1 - t0c
+    );
     let (states, mut buffers) = encode_lanes(src, &table);
     let t2 = std::time::Instant::now();
 
