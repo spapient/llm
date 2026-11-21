@@ -403,7 +403,7 @@ let y_host = y.unpartition().to_host_vec()?;
 ### 5.1 原语闭集
 
 原语是模板唯一能调用的东西，也是片段唯一的实现单位。**16 个，不多不少**；加第 17 个要走设计变更。
-这份闭集与档案 schema 的事实源在 `crates/prof`（`src/atom.rs`、`src/prof.rs`），`cutile` 只 re-export——词汇表与设备数据同住，机制层改不动它们。
+这份闭集与档案 schema 的事实源在 `crates/prof`（`src/atom/`、`src/prof.rs`），`cutile` 只 re-export——词汇表与设备数据同住，机制层改不动它们。
 
 | # | 原语 | 语义契约 | 关键参数 | 布局要求 |
 |---|---|---|---|---|

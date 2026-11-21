@@ -8,7 +8,8 @@ repository.workspace = true
 readme.workspace = true
 description = "Test fixtures shared across the workspace: float comparison, device gating, scratch dirs, and workspace-level contract gates."
 publish = false
-# 全部测试都躺在 `src/` 里（各文件的 `#[cfg(test)] mod tests`），没有 `tests/` 目录。
+# 测试文件住在 `tests/`，由 `src/` 里的 `#[cfg(test)] #[path = "../tests/…"] mod …` 钩子挂载
+# 成单元测试（`super`/`crate` 仍指向本 crate）；`autotests = false` 关闭 `tests/` 的自动集成测试。
 autotests = false
 
 [dependencies]

@@ -72,6 +72,8 @@ pub mod l3;
 // —— 外部格式只读适配：safetensors/gguf/bin/json ——
 pub mod bin;
 pub mod gguf;
+mod gguf_dequant;
+mod gguf_reader;
 mod pickle;
 mod zip;
 pub use lifecycle::import;

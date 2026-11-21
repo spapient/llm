@@ -20,8 +20,6 @@ use crate::axes_codec::{
     payload_cap, quant_payload, sparse_payload, unpack_bytes,
 };
 use crate::axes_rank::{decode_rank, rank_head, rank_payload};
-// 白盒测试面：测试构造 tamper 载荷时直达帧封装与 `f64` 因子字节原语。
-pub(crate) use crate::axes_rank::{f64_bytes, framed};
 use crate::leb::Cursor;
 use crate::ledger;
 

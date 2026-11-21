@@ -447,6 +447,8 @@ fn micro_packed_avx2(panel: &[f32], b: &[f32], out: &mut [f32], tile: Tile) {
         };
         for p in 0..kb {
             let bv = _mm256_loadu_ps(bp.add(p * NR));
+            // 手写 FMA 微内核：下标形式比迭代器形式更贴近指令序列，便于逐条核对。
+            #[allow(clippy::needless_range_loop)]
             for r in 0..MR {
                 acc[r] = _mm256_fmadd_ps(_mm256_set1_ps(*pp.add(p * MR + r)), bv, acc[r]);
             }

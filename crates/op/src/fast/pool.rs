@@ -249,8 +249,18 @@ fn lease_free(pool: &'static Pool, need: usize) -> u64 {
                 Err(actual) => free = actual,
             },
             None => {
-                let g = pool.free_lock.lock().unwrap_or_else(|e| e.into_inner());
-                let _g = pool.free_cv.wait(g).unwrap_or_else(|e| e.into_inner());
+                // 拿锁后必须重查位图：worker 是「先置位、再取锁、再 notify」的，若置位与本次
+                // 加锁之间发生归还，那次 notify 落在「还没人睡下」的空档里，唤醒就丢了——
+                // 睡下去要等到下一次任务结束才醒，并发调用者会互等到卡住。
+                // 所以先持锁复核一次，确认仍然没有空槽，才允许睡。
+                let guard = pool.free_lock.lock().unwrap_or_else(|e| e.into_inner());
+                free = pool.free.load(Ordering::Acquire);
+                if pick_free(free, need).is_some() {
+                    drop(guard);
+                    continue;
+                }
+                let guard = pool.free_cv.wait(guard).unwrap_or_else(|e| e.into_inner());
+                drop(guard);
                 free = pool.free.load(Ordering::Acquire);
             }
         }
@@ -441,5 +451,37 @@ mod tests {
     #[test]
     fn caller_panic_releases_workers_and_pool_survives() {
         assert_panic_propagates_and_pool_survives(panic_in_caller, noop);
+    }
+
+    /// 并发发布时「归还 → 唤醒」不得丢。
+    ///
+    /// 两个调用方同时要满池：后者必然睡在 `free_cv` 上，等前者归还。若唤醒丢失，它会一直睡到
+    /// 下一次任务结束——单次任务下就是永久等待。用带超时的收信把「挂死」判成「失败」，不让
+    /// 门禁被一个死锁拖住（这正是 `lease_free` 拿锁后重查位图要挡的那条路径）。
+    #[test]
+    fn concurrent_callers_do_not_miss_wakeups() {
+        let p = build_pool(4);
+        let live = p.live.load(Ordering::Acquire);
+        if live < 2 {
+            return; // 起不到两个 worker 就没有可争的槽，跳过而不是误报
+        }
+        let t = live + 1;
+        let (tx, rx) = std::sync::mpsc::channel();
+        for id in 0..2 {
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                for _ in 0..40 {
+                    assert!(run(p, noop, noop, t), "池可用时必须走池化路径");
+                }
+                let _ = tx.send(id);
+            });
+        }
+        drop(tx);
+        for _ in 0..2 {
+            assert!(
+                rx.recv_timeout(std::time::Duration::from_secs(20)).is_ok(),
+                "并发调用方在 20s 内未全部返回：唤醒丢失，等槽者卡在 condvar 上"
+            );
+        }
     }
 }

@@ -46,7 +46,7 @@ pub(super) fn gemm(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut
     #[cfg(not(target_arch = "aarch64"))]
     {
         let _ = (a, b, m, n, k, out);
-        return false;
+        false
     }
     #[cfg(target_arch = "aarch64")]
     {

@@ -208,8 +208,8 @@ pub(crate) fn closed_vocabularies_are_declared_once() {
     }
 
     // 契约的另一半：`Closed` 的实现必须写成切片，这样才能与 `ALL` 的顺序、`index` 的下标一致。
-    let prof = root().join("crates/prof/src/atom.rs");
-    let text = fs::read_to_string(&prof).expect("`crates/prof/src/atom.rs` 必须存在");
+    let prof = root().join("crates/prof/src/atom/vocab.rs");
+    let text = fs::read_to_string(&prof).expect("`crates/prof/src/atom/vocab.rs` 必须存在");
     assert!(
         text.contains("const ALL: &'static [Self]"),
         "`prof::atom` 的闭集表必须写成切片"
@@ -277,8 +277,8 @@ pub(crate) fn bitsets_have_exactly_one_implementation() {
         describe(&offenders)
     );
 
-    let atom = fs::read_to_string(root().join("crates/prof/src/atom.rs"))
-        .expect("`crates/prof/src/atom.rs` 必须存在");
+    let atom = fs::read_to_string(root().join("crates/prof/src/atom/vocab.rs"))
+        .expect("`crates/prof/src/atom/vocab.rs` 必须存在");
     assert!(
         atom.contains("pub struct Set<E: Closed, const WORDS: usize>"),
         "唯一实现 `Set<E, WORDS>` 不见了：这条规则的替代品是空的"
