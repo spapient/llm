@@ -198,7 +198,14 @@ fn strip<const CPB: usize, const LANES: usize, const R: usize>(
     );
     for (r, input) in plan.inputs.iter().enumerate() {
         let dest = &mut out[r * n + j..][..R];
-        dest.copy_from_slice(&dot::<CPB, LANES, R>(w, row, s, input, group, plan.affine.zero));
+        dest.copy_from_slice(&dot::<CPB, LANES, R>(
+            w,
+            row,
+            s,
+            input,
+            group,
+            plan.affine.zero,
+        ));
     }
 }
 

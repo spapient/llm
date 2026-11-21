@@ -366,7 +366,6 @@ mod tn {
     mod tests {
         include!("../tests/tn_tests.rs");
     }
-
 }
 pub use tn::{MIN_ROWS, gemm_f32_tn};
 

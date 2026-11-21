@@ -5,7 +5,6 @@
 //!
 //! 模块名 `rnd` / `dropout` / `init` 由 `lib.rs` 再导出，公开路径仍是 `crate::rnd::*` 等。
 
-
 pub mod rnd {
     //! 零依赖确定性随机源：splitmix64。
     //!
@@ -55,7 +54,6 @@ pub mod rnd {
     mod tests {
         include!("../tests/rnd_tests.rs");
     }
-
 }
 
 pub mod dropout {
@@ -107,7 +105,6 @@ pub mod dropout {
     mod tests {
         include!("../tests/dropout_tests.rs");
     }
-
 }
 
 pub mod init {
@@ -145,7 +142,12 @@ pub mod init {
     /// # Errors
     ///
     /// `fan_in` 为 0 时返回说明。
-    pub fn kaiming_uniform(fan_in: usize, fan_out: usize, leak: f32, seed: u64) -> Result<Vec<f32>> {
+    pub fn kaiming_uniform(
+        fan_in: usize,
+        fan_out: usize,
+        leak: f32,
+        seed: u64,
+    ) -> Result<Vec<f32>> {
         let std = kaiming_std(fan_in, leak)?;
         Ok(uniform(fan_in * fan_out, bound_of(std), seed))
     }
@@ -280,5 +282,4 @@ pub mod init {
     mod tests {
         include!("../tests/init_tests.rs");
     }
-
 }

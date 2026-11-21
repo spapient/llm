@@ -669,7 +669,15 @@ pub mod i8 {
     }
 
     /// 列尾（`j0..n`）：块内按行标量累加，结果与分块逐位一致。
-    fn edge_cols(a: &[i8], b: &[i8], out: &mut [i32], i0: usize, mut j0: usize, n: usize, k: usize) {
+    fn edge_cols(
+        a: &[i8],
+        b: &[i8],
+        out: &mut [i32],
+        i0: usize,
+        mut j0: usize,
+        n: usize,
+        k: usize,
+    ) {
         while j0 < n {
             for r in 0..BLOCK_ROWS {
                 let mut acc = 0i32;
@@ -756,5 +764,4 @@ pub mod i8 {
     mod tests {
         include!("../tests/matmul_i8_tests.rs");
     }
-
 }

@@ -334,5 +334,4 @@ pub mod i8 {
     mod tests {
         include!("../tests/dequant_i8_tests.rs");
     }
-
 }

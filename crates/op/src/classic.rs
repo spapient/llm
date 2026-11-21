@@ -278,7 +278,6 @@ pub mod conv2d {
     classic_op!(Conv2dModel, Conv2d, "conv2d_f32", 3, 16, 3);
 }
 
-/// 窗口族：最大池化、平均池化、自适应池化。
 pub mod pool {
     //! 窗口族：最大池化（1d/2d）、平均池化与自适应池化，共用 [`crate::classic`] 的 `window_op!` 装配。
     /// 自适应平均池化（声明档 4×4 → 2×2）。
@@ -421,10 +420,8 @@ pub mod pool {
             4
         );
     }
-
 }
 
-/// 归一化族：批 / 组 / 实例 / 层。
 pub mod norm {
     //! 归一化族：批 / 组 / 实例 / 层，四种统计范围共用 [`crate::classic`] 的 `norm_op!` 装配。
     /// 批归一化（声明档 `C=4, spatial=2, n=2`，训练口径：批统计自上而下、滑动统计按动量混入）。
@@ -612,7 +609,6 @@ pub mod norm {
             3
         );
     }
-
 }
 /// 双线性插值（声明档 2×2 → 4×4，`align_corners = false`）。
 pub mod interpolate {
