@@ -38,15 +38,21 @@ fn named(index: usize) -> String {
 
 /// 一组层：`(输入宽度, 输出宽度)`，宽度都对齐到分组因子。
 fn pool() -> impl Strategy<Value = Vec<(usize, usize)>> {
-    prop::collection::vec((units(), units()), 1..=6)
-        .prop_map(|pairs| pairs.into_iter().map(|(a, b)| (aligned(a), aligned(b))).collect())
+    prop::collection::vec((units(), units()), 1..=6).prop_map(|pairs| {
+        pairs
+            .into_iter()
+            .map(|(a, b)| (aligned(a), aligned(b)))
+            .collect()
+    })
 }
 
 fn priced(pairs: &[(usize, usize)]) -> Vec<Linear> {
     pairs
         .iter()
         .enumerate()
-        .map(|(index, &(ins, out))| Linear::new(named(index), ins, out).expect("分组对齐的宽度必然可构造"))
+        .map(|(index, &(ins, out))| {
+            Linear::new(named(index), ins, out).expect("分组对齐的宽度必然可构造")
+        })
         .collect()
 }
 
