@@ -1,6 +1,6 @@
 //! β 指数梯形扫描语义（§5.6，数学验证 5）：幺半群前缀扫描 + 对角 SSM 半群离散化。
 //!
-//! 与 [`llm_op_kernel::reduce`] 同属「算子语义/骨架」层，不注册成内核算子：`cutile` 的 `Skeleton::Scan`
+//! 与 [`llm_gemm::reduce`] 同属「算子语义/骨架」层，不注册成内核算子：`cutile` 的 `Skeleton::Scan`
 //! 执行路径尚未接线（`execution.rs` 对 Scan 返回错误）。本模块提供扫描的**第二份实现**——半群
 //! 结合律、串行金标、Blelloch 并行扫描与指数梯形离散化——作为未来 `scan_f32` 算子的标量参考。
 //!
@@ -13,7 +13,7 @@
 //! [`exp_zero_order`] 是两条**不同**的式子（后者步内输入取常数，前者用 `x_{t−1}` 与 `x_t` 的平均），
 //! 名字按各自的实际算式取，不互相借用。
 
-pub use llm_op_kernel::Scalar;
+pub use llm_gemm::Scalar;
 
 /// 幺半群：`combine` 满足结合律，[`Monoid::IDENT`] 是幺元。
 ///
@@ -233,7 +233,7 @@ pub mod f32 {
     use diagnostic::{Code, Error};
 
     // 单轴定义与形状投影复用 unary 骨架：时间轴 `n` 既是输入轴也是输出轴。
-    pub use llm_op_kernel::unary::{AXES, project_shape};
+    pub use llm_gemm::unary::{AXES, project_shape};
 
     /// 对角衰减系数 `ā = exp(λ·dt)`（模板常量 `{{a}}`）。
     const DECAY: f32 = 0.5;

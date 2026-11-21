@@ -1,6 +1,6 @@
 //! 职责：卷积/池化/插值算子测试（从 conv/mod.rs 拆出，见父模块职责）。
 
-use llm_op_kernel::fast;
+use llm_gemm::fast;
 
 use super::support::*;
 use super::*;

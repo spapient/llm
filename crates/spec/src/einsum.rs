@@ -56,7 +56,7 @@
 //! # 例子
 //!
 //! ```
-//! use llm_op_spec::einsum::{Bits, Expr, Extents, Formula, Operand};
+//! use llm_spec::einsum::{Bits, Expr, Extents, Formula, Operand};
 //!
 //! // int4 权重、按 32 个元素一组缩放的 GEMV：
 //! let expr = Expr::parse("nm,m,ng,n->n").expect("表达式合法");

@@ -5,10 +5,10 @@
 
 use crate::decl::OpDecl;
 use crate::model;
-use llm_op_kernel::gemv;
-use llm_op_kernel::gemv::f32::F32;
-use llm_op_spec::model::DType;
-use llm_op_spec::operator::model_of;
+use llm_gemm::gemv;
+use llm_gemm::gemv::f32::F32;
+use llm_spec::model::DType;
+use llm_spec::operator::model_of;
 use prof::atom::Prim;
 
 /// 这条算子与 `gemv_i4` 共用同一批原语，只少一个 `quant`：差异全在数据里。
@@ -44,8 +44,8 @@ const FORMAT_GRAIN: usize = <F32 as gemv::Format>::GRAIN;
 
 /// 每个算子的样本 -> 参考必须自洽（参考不能报错，长度与 `y` 缓冲一致）。
 ///
-/// 这一问横跨两层：样本由 `MODEL` 生成、参考由 `op-neural` 的标量实现给出，只有注册表这侧
-/// 同时看得见两者，所以它在这里而不是在 `op-neural` 里。
+/// 这一问横跨两层：样本由 `MODEL` 生成、参考由 `conv` 的标量实现给出，只有注册表这侧
+/// 同时看得见两者，所以它在这里而不是在 `conv` 里。
 fn sample_and_reference_agree(name: &str) {
     let model = model(name).expect("已注册");
     let sample = (model.sample)(model.shape.0, model.shape.1);

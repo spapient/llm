@@ -1,9 +1,9 @@
 //! 稠密计算核：矩阵乘族（`gemm` / `gemv` / `matmul`）、激活（`activation`）、归一化（`norm`）、
 //! 反量化（`dequant`）、逐元素（`elementwise` / `unary`）、归约（`reduce`）与 SIMD/SME 通道（`fast`）。
 //!
-//! 这一层只认识[`llm_op_spec`]给的契约（[`sig`]、[`sch`]、[`tpl`]、[`model`]、[`einsum`]），
+//! 这一层只认识[`llm_spec`]给的契约（[`sig`]、[`sch`]、[`tpl`]、[`model`]、[`einsum`]），
 //! 不认识声明语料、注册表与 emit：内核不知道自己是「哪个算子」，只回答「给定这批缓冲，怎么算」。
-//! 契约 → 内核 → 神经算子 → 注册表是单向的，`op-kernel` 不依赖 `op-neural`、也不依赖 `op`，
+//! 契约 → 内核 → 神经算子 → 注册表是单向的，`gemm` 不依赖 `conv`、也不依赖 `op`，
 //! 于是「内核能否违反声明」这一问在编译期就有答案（它根本没有声明可看）。
 //!
 //! 同一副骨架的多种精度写在这里：一份泛型实现（求和、代价、样本、校验、遍历）+ 每个格式
@@ -54,14 +54,14 @@ pub use unary::{
     exp_f32, gelu_f32, hard_sigmoid_f32, leaky_relu_f32, log_f32, scale_f32, silu_f32,
 };
 
-// 契约层在 `op-spec`：内核与本 crate 的骨架宏都按 crate 根解析契约路径，这里把它们搬回来，
+// 契约层在 `spec`：内核与本 crate 的骨架宏都按 crate 根解析契约路径，这里把它们搬回来，
 // 于是内核源码里写的是 `crate::model::…` / `crate::operator_via!`，而不是到处写依赖 crate 名。
-pub use llm_op_spec::same_bytes;
+pub use llm_spec::same_bytes;
 // `$crate::formula_cell!` / `$crate::operator_via!` 在骨架宏里按 crate 根解析，这里把 spec 导出的
 // 宏搬回本 crate 根：内核里几十处 `#[model]` 展开都不必改路径。
-pub(crate) use llm_op_spec::tpl::guard;
-pub use llm_op_spec::tpl::{formula, parse};
-pub use llm_op_spec::{einsum, model, operator, sample, sch, sig, tpl};
-pub use llm_op_spec::{formula_cell, operator_here, operator_via};
+pub(crate) use llm_spec::tpl::guard;
+pub use llm_spec::tpl::{formula, parse};
+pub use llm_spec::{einsum, model, operator, sample, sch, sig, tpl};
+pub use llm_spec::{formula_cell, operator_here, operator_via};
 pub use model::quant;
 pub use sch::layout;

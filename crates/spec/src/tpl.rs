@@ -296,7 +296,7 @@ pub mod formula {
     //! 骨架的表达式协议：一条 einsum 表达式、一张操作数表、一个按实现分开的缓存单元格。
     //!
     //! 六族骨架（`unary::Unary` / `elementwise::Binary` / `reduce::Reduce` / `gemv::Format` /
-    //! `gemv::Plain`，都在 `op-kernel`）在「表达式从哪来」上是同一件事：族给出表达式
+    //! `gemv::Plain`，都在 `gemm`）在「表达式从哪来」上是同一件事：族给出表达式
     //! 与操作数表，实现只决定算术。协议收在这里，族 trait 只声明随语义变化的那部分（ADR 0050 §2）。
     //!
     //! `gemm` 不在其列：它的代价由分块几何现算，没有表达式可缓存。
@@ -340,8 +340,8 @@ pub mod formula {
     #[macro_export]
     macro_rules! formula_cell {
         () => {{
-            static CACHE: ::llm_op_spec::einsum::FormulaCache =
-                ::llm_op_spec::einsum::FormulaCache::new();
+            static CACHE: ::llm_spec::einsum::FormulaCache =
+                ::llm_spec::einsum::FormulaCache::new();
             &CACHE
         }};
     }

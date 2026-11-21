@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::architecture::{
-    contract, owned_types, rust_files, source_text, workspace, workspace_root,
+    contract, owned_types, rust_files, source_text, src_root, workspace, workspace_root,
 };
 
 /// 一行顶层的 `struct|enum|trait|union` 定义，返回（是否是 `pub`，名字）。
@@ -143,7 +143,7 @@ pub(crate) fn every_public_type_is_listed_or_baselined() {
 
     let mut unlisted = Vec::new();
     for member in contract.layers.keys().chain(contract.tools.iter()) {
-        let root = workspace_root().join("crates").join(member).join("src");
+        let root = src_root(member);
         let files = rust_files(&root);
         if contract.layers.contains_key(member) {
             assert!(
@@ -174,7 +174,7 @@ pub(crate) fn every_public_type_is_listed_or_baselined() {
 
     let mut stale = Vec::new();
     for (member, names) in &baseline {
-        let root = workspace_root().join("crates").join(member).join("src");
+        let root = src_root(member);
         let present = public_types(&rust_files(&root));
         for name in names {
             // 过期判定按「主人 + 名字」认，不能只认名字：`prof::Witness` 与 `testkit::Witness`
@@ -253,7 +253,7 @@ pub(crate) fn declares_public(crate_name: &str, name: &str) -> bool {
     const KINDS: [&str; 8] = [
         "struct", "enum", "trait", "type", "fn", "const", "union", "mod",
     ];
-    let root = workspace_root().join("crates").join(crate_name).join("src");
+    let root = src_root(crate_name);
     let mut pending = vec![root];
     while let Some(directory) = pending.pop() {
         let Ok(entries) = std::fs::read_dir(directory) else {

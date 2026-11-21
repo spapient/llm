@@ -592,6 +592,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "llm-conv"
+version = "0.1.0"
+dependencies = [
+ "half",
+ "llm-annotation",
+ "llm-diagnostic",
+ "llm-gemm",
+ "llm-prof",
+ "llm-spec",
+ "llm-testkit",
+ "num-traits",
+]
+
+[[package]]
 name = "llm-cpu"
 version = "0.1.0"
 dependencies = [
@@ -672,6 +686,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "llm-gemm"
+version = "0.1.0"
+dependencies = [
+ "half",
+ "llm-annotation",
+ "llm-diagnostic",
+ "llm-prof",
+ "llm-spec",
+ "llm-testkit",
+ "num-traits",
+]
+
+[[package]]
 name = "llm-metal"
 version = "0.1.0"
 dependencies = [
@@ -702,50 +729,13 @@ name = "llm-op"
 version = "0.1.0"
 dependencies = [
  "llm-annotation",
+ "llm-conv",
  "llm-diagnostic",
- "llm-op-kernel",
- "llm-op-neural",
- "llm-op-spec",
+ "llm-gemm",
  "llm-prof",
+ "llm-spec",
  "llm-testkit",
  "toml",
-]
-
-[[package]]
-name = "llm-op-kernel"
-version = "0.1.0"
-dependencies = [
- "half",
- "llm-annotation",
- "llm-diagnostic",
- "llm-op-spec",
- "llm-prof",
- "llm-testkit",
- "num-traits",
-]
-
-[[package]]
-name = "llm-op-neural"
-version = "0.1.0"
-dependencies = [
- "half",
- "llm-annotation",
- "llm-diagnostic",
- "llm-op-kernel",
- "llm-op-spec",
- "llm-prof",
- "llm-testkit",
- "num-traits",
-]
-
-[[package]]
-name = "llm-op-spec"
-version = "0.1.0"
-dependencies = [
- "llm-annotation",
- "llm-diagnostic",
- "llm-prof",
- "llm-testkit",
 ]
 
 [[package]]
@@ -825,6 +815,16 @@ dependencies = [
  "llm-testkit",
  "llm-weights",
  "llm-wire",
+]
+
+[[package]]
+name = "llm-spec"
+version = "0.1.0"
+dependencies = [
+ "llm-annotation",
+ "llm-diagnostic",
+ "llm-prof",
+ "llm-testkit",
 ]
 
 [[package]]

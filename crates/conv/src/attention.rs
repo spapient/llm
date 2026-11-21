@@ -144,7 +144,7 @@ pub mod tiled {
             let arow = &mut acc[row * self.d..][..self.d];
             for col in start..end {
                 let kcol = &self.k[col * self.d..][..self.d];
-                let score = llm_op_kernel::matmul::dot_lanes(qrow, kcol) / self.scale;
+                let score = llm_gemm::matmul::dot_lanes(qrow, kcol) / self.scale;
                 let new_max = m.max(score);
                 let reweight = (m - new_max).exp();
                 let prob = (score - new_max).exp();
@@ -182,7 +182,7 @@ pub mod tiled {
                     let qrow = &self.q[row * self.d..][..self.d];
                     let span = &mut line[start..stop];
                     for (slot, key) in span.iter_mut().zip(keys.chunks_exact(self.d)) {
-                        *slot = llm_op_kernel::matmul::dot_lanes(qrow, key) / self.scale;
+                        *slot = llm_gemm::matmul::dot_lanes(qrow, key) / self.scale;
                     }
                 }
                 start = stop;
@@ -307,10 +307,10 @@ fn qkv(sample: &Sample) -> diagnostic::Result<(&[f32], &[f32], &[f32])> {
 
 /// 行 `row` 与行 `col` 的点积：四个朴素/flash 实现共用，免得每处重写 `d` 长的累加循环。
 ///
-/// 归约本身走 [`llm_op_kernel::matmul::dot_lanes`]——同一个多链点积在 `op` 里只有一份，否则注意力与
+/// 归约本身走 [`llm_gemm::matmul::dot_lanes`]——同一个多链点积在 `op` 里只有一份，否则注意力与
 /// 矩阵乘的向量化程度会各自漂移（实测：单链标量归约在 1024×64 注意力上比多链慢 1.4×）。
 fn dot(x: &[f32], y: &[f32], row: usize, col: usize, d: usize) -> f32 {
-    llm_op_kernel::matmul::dot_lanes(&x[row * d..][..d], &y[col * d..][..d])
+    llm_gemm::matmul::dot_lanes(&x[row * d..][..d], &y[col * d..][..d])
 }
 
 /// 头宽不能为 0：`√d` 作分数除数，`d=0` 会让每条分数除零成 NaN。

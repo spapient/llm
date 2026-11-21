@@ -13,7 +13,7 @@
 | 层 | 成员 | 职责 | 不允许出现 |
 |---|---|---|---|
 | L1 基础设施 | `diagnostic`、`rng`、`dtype`、`wire`、`formats`、`tools` | 错误类型与声明数据树（`data`：构建期语料在运行期的形状，**没有解析器**）、计数器型确定性随机、精度闭集、与领域无关的字节码闭集（CRC-32 / LEB128 / Sink / 对齐落位 / `Invalid` 构造点）、外部权重格式的只读适配（torch `.bin` 的 ZIP+pickle 栈机、GGUF、JSON，只吐四要素不判语义）、静态质量门与回退判定 | 任何运行时领域语义、任何 TOML 解析 |
-| L2 数据层 | `prof`、`op-spec`、`op-kernel`、`op-neural`、`op`、`cpu`、`cuda`、`metal`、`musa`、`opencl`、`rocm`、`prim` | 设备档案与能力闭集、算子四层：`op-spec` 出契约（签名 / 样本 / 语义表 / 求和表达式与模板词法）、`op-kernel` 出内核族（打包格式、经典几何、微内核）、`op-neural` 出神经网络算子（卷积 / 归一化 / 注意力 / 扫描）、`op` 出声明解析与唯一注册表 `REGISTRY`，求和语义代价由 `op-spec::einsum` 推出；六份设备原语片段与各自见证（一台设备一个成员，语料在各自的 `build.rs` 里解析成 `FRAGMENTS` / `PRIMS` / `DEVICE` 三张表）、`prim` 只出机制：把六张表在编译期拼成一张聚合表，并按 `Layout` 决定读内嵌表还是读盘 | 任何机制代码（拼接、协商、emit）、任何设备知识 |
+| L2 数据层 | `prof`、`spec`、`gemm`、`conv`、`op`、`cpu`、`cuda`、`metal`、`musa`、`opencl`、`rocm`、`prim` | 设备档案与能力闭集、算子四层：`spec` 出契约（签名 / 样本 / 语义表 / 求和表达式与模板词法）、`gemm` 出内核族（打包格式、经典几何、微内核）、`conv` 出神经网络算子（卷积 / 归一化 / 注意力 / 扫描）、`op` 出声明解析与唯一注册表 `REGISTRY`，求和语义代价由 `spec::einsum` 推出；六份设备原语片段与各自见证（一台设备一个成员，语料在各自的 `build.rs` 里解析成 `FRAGMENTS` / `PRIMS` / `DEVICE` 三张表）、`prim` 只出机制：把六张表在编译期拼成一张聚合表，并按 `Layout` 决定读内嵌表还是读盘 | 任何机制代码（拼接、协商、emit）、任何设备知识 |
 | L3 内核 | `cutile`、`cutile-run` | 前半纯机制：协商 → 拼接 → emit → 缓存指纹，一行也不执行；后半编译执行：`doctor` / `verify` / `bench` / `execution` 共用一条 `pipeline`，报告只是数据、排版在前端。拆开的理由是"能不能执行"这条边界：`cutile` 只产设备源与指纹，换掉工具链不影响它；`cutile-run` 才碰编译器与设备，换掉执行方式不影响框架 | 设备厂商特判、运行时依赖 |
 | L4 运行时 | `tensor`、`storage`、`tokenizer` | 张量元数据、布局搬运、文本边界 | 模型语义、调度策略 |
 | L5 模型与训练 | `weights`、`snapshot`、`autograd`、`nn`、`algorithm`、`shard` | 权重结构与自有 `.u` 容器、检查点字节格式、反向图与显存计划、层定义与执行侧机制、架构变体的参考语义（不产出 `ContractSpec`）、切分拓扑与集合通信 | 进程 / 服务语义 |
@@ -32,7 +32,7 @@
 于是：向上依赖不可能通过（`op` 无法依赖 `cutile`，`tensor` 无法依赖 `engine`）；同层内仍有先后
 （`prim → prof`，因为片段文件名必须落在原语闭集内）；环一定被拒绝（层号与表内顺序构成偏序，
 严格递减无法成环）；数据层永远不知道机制（`op` / `prof` / `prim` 的依赖只有彼此与 L1）；
-语义先于设备（`op-spec` 只写"一条求和表达式 + 操作数位宽"，`flops` / `bytes` 由 `op-spec::einsum` 推出，
+语义先于设备（`spec` 只写"一条求和表达式 + 操作数位宽"，`flops` / `bytes` 由 `spec::einsum` 推出，
 `cutile` 的 roofline 只消费这个数对，不认识任何算子名）。
 
 历史的成员合并（七条吸收链、配置层拆分、样本并入 `train`）都已落地，**当前成员数与边数以本节为准**，
@@ -44,10 +44,10 @@
 ```
 cutile   → diagnostic, op, prim, prof    +dev: testkit
 cutile-run → cutile, diagnostic, op, prim, prof    +dev: testkit（运行期：编译 / 执行 / 测速 / 见证；只经 `cutile` 的器械做，不重写协商）
-op       → annotation, diagnostic, op-kernel, op-neural, op-spec, prof    +dev: testkit（工具边：`#[model]` 注解，不参与方向判定）
-op-kernel → annotation, diagnostic, op-spec, prof    +dev: testkit（声明解析结果与内核族的落点；不含 `op`，注册表只在 `op`）
-op-neural → annotation, diagnostic, op-kernel, op-spec, prof    +dev: testkit（神经网络算子只借用内核族的打包与几何，不反向）
-op-spec  → annotation, diagnostic, prof    +dev: testkit（契约层：只认识 L1 与注解，不认识任何内核）
+op       → annotation, conv, diagnostic, gemm, prof, spec    +dev: testkit（工具边：`#[model]` 注解，不参与方向判定）
+gemm     → annotation, diagnostic, prof, spec    +dev: testkit（声明解析结果与内核族的落点；不含 `op`，注册表只在 `op`）
+conv     → annotation, diagnostic, gemm, prof, spec    +dev: testkit（神经网络算子只借用内核族的打包与几何，不反向）
+spec     → annotation, diagnostic, prof    +dev: testkit（契约层：只认识 L1 与注解，不认识任何内核）
 prim     → cpu, cuda, diagnostic, metal, musa, opencl, prof, rocm（机制：编译期把六张设备表拼成聚合表）
 prof     → diagnostic, dtype
 cpu      → prof（片段 + 见证；只依赖档案的 `Prim` / `Witness` 闭集，不认识 `prim`）
@@ -97,16 +97,16 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `DType` / `QType` / `MxType` / `Element` | `dtype` | 全仓唯一精度事实源，三轴分文件（标量 / GGML 块量化 / OCP MX）；只放身份与布局元数据，反量化算法留在 `weights` |
 | `Dirs` | `cutile` | 内核要的三个目录（缓存根 / 工作目录 / 可选数据根）——纯数据，不带默认值、不读环境变量、不认识命令行 |
 | `Settings` / `Roots` / `SettingValue` | `cli` | 配置键的解析策略：来源分层与追踪、平台默认目录、相对路径基准；键表一行一个，`describe` 与"未登记键"都从同一张表派生 |
-| `Expr` / `Extents` / `Operand` / `Axes` / `Bits` / `Cost` / `Buffer` | `op-spec` | 求和表达式的语义：一条式子推出 `flops` 与最少流量；`Buffer` 是内核样本的具名缓冲。不认识设备、tile 或片段 |
-| `Signature` / `Sample` / `Model` | `op-spec` | 算子声明与语义（签名 / 样本 / 标量参考）；签名是 ABI 的唯一事实源，实参顺序、输出名与输出类型都由它派生；`bind` 是真实数据进入样本的唯一入口 |
+| `Expr` / `Extents` / `Operand` / `Axes` / `Bits` / `Cost` / `Buffer` | `spec` | 求和表达式的语义：一条式子推出 `flops` 与最少流量；`Buffer` 是内核样本的具名缓冲。不认识设备、tile 或片段 |
+| `Signature` / `Sample` / `Model` | `spec` | 算子声明与语义（签名 / 样本 / 标量参考）；签名是 ABI 的唯一事实源，实参顺序、输出名与输出类型都由它派生；`bind` 是真实数据进入样本的唯一入口 |
 | `Op` | `op` | 算子的注册身份：注册名与可微性由 `Operator` 派生，注册表 `REGISTRY` 是它唯一投影 |
-| `Precision` | `op-kernel` | 收缩轴可变 GEMM 的精度契约（元素类型 + 累加器 + 一次乘加），遍历与尺寸校验只写一份 |
-| `OperandSpec` / `FormulaCache` / `FormulaOwner` / `Row` / `Operator` | `op-spec` | 打包格式的静态表（`Row` 全 `const`）、表达式缓存，以及六族骨架之上的统一语义契约（[ADR 0050](adr/0050-operator-base.md)）。`FormulaOwner` 是一条求和表达式的唯一载体：`EXPR` / `OPERANDS` / `FRAME` 加**每个实现一份**的缓存单元格——写在泛型骨架里的 `static` 只有一份，先解析的式子会覆盖后面的，故缓存按实现分而不是按骨架分 |
-| `Format` / `Element` / `Conf` | `op-kernel` | 打包格式的派生配置（`Conf` 只收骨架运行期要的 `cpb` / `zero` / `offsets`）与样本缓冲元素闭集 |
-| `Template` / `Segment` / `LayoutSpec` / `Schedule` / `Masking` | `op-spec` | 声明侧的三张闭集：模板词法、布局构造子与调度模板；`cutile` 只消费，不持第二份 |
+| `Precision` | `gemm` | 收缩轴可变 GEMM 的精度契约（元素类型 + 累加器 + 一次乘加），遍历与尺寸校验只写一份 |
+| `OperandSpec` / `FormulaCache` / `FormulaOwner` / `Row` / `Operator` | `spec` | 打包格式的静态表（`Row` 全 `const`）、表达式缓存，以及六族骨架之上的统一语义契约（[ADR 0050](adr/0050-operator-base.md)）。`FormulaOwner` 是一条求和表达式的唯一载体：`EXPR` / `OPERANDS` / `FRAME` 加**每个实现一份**的缓存单元格——写在泛型骨架里的 `static` 只有一份，先解析的式子会覆盖后面的，故缓存按实现分而不是按骨架分 |
+| `Format` / `Element` / `Conf` | `gemm` | 打包格式的派生配置（`Conf` 只收骨架运行期要的 `cpb` / `zero` / `offsets`）与样本缓冲元素闭集 |
+| `Template` / `Segment` / `LayoutSpec` / `Schedule` / `Masking` | `spec` | 声明侧的三张闭集：模板词法、布局构造子与调度模板；`cutile` 只消费，不持第二份 |
 | `OpDecl` / `Registration` | `op` | 声明解析结果与唯一注册表 `REGISTRY`；`cutile` 只消费，不持第二份 |
-| `Scalar` | `op-kernel` | 元素运算超 trait（`Add` / `Sub` / `Mul` / `Div`）：让泛型内核写 `a + b` 而不是逐方法调用，否则「泛型化」只把 `as f32` 换成 `S::mul` |
-| `Monoid` / `SsmStep` / `PlaneStep` / `Scan` | `op-neural` | β 指数梯形扫描的数学底座与 `scan_f32` 算子：半群、两种离散化（`exp_zero_order` / `exp_trapezoid`）、复值状态的 2×2 实值块 |
+| `Scalar` | `gemm` | 元素运算超 trait（`Add` / `Sub` / `Mul` / `Div`）：让泛型内核写 `a + b` 而不是逐方法调用，否则「泛型化」只把 `as f32` 换成 `S::mul` |
+| `Monoid` / `SsmStep` / `PlaneStep` / `Scan` | `conv` | β 指数梯形扫描的数学底座与 `scan_f32` 算子：半群、两种离散化（`exp_zero_order` / `exp_trapezoid`）、复值状态的 2×2 实值块 |
 | `Profile` | `prof` | 设备档案；机制代码不得出现 `vendor == "..."` |
 | `Device` / `Image` / `Status` | `prof` | 一台设备这次构建带上的设备侧代码、编译产物与其结局（`Source` / `Compiled` / `NoRecipe` / `Skipped`）；放在最底层是为了让六份片段 crate 与 `prim` 都能引用同一份类型而不成环 |
 | `WitnessLookup` | `prof` | 「见证文件名 → 磁盘路径」的唯一缝：档案校验只问这一个方法，因此内嵌根（多 crate）与数据根（单目录）两种布局共用同一条校验路径 |
@@ -148,7 +148,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Summary` | `autograd` | 图规模与可达性的只读计数快照，供诊断、缓存键与容量预估 |
 | `Contract` / `ContractSpec` / `Linear` / `LmHead` / `WeightFormat` / `ParamRole` | `nn` | 层定义与契约校验：产出的算子名必须存在于 `op`；`WeightFormat` 是格式 → 算子名的唯一事实源，`ParamRole` 让权重衰减豁免与可训练判定从角色派生 |
 | `RmsNorm` / `Softmax` / `Gelu` / `Silu` / `Rope` / `Scale` / `Add` / `Mul` / `ResidualAdd` / `ReduceSum` / `ReduceMax` / `Embedding` / `Attention` / `AttentionAlgo` / `MatMul` | `nn` | 单算子层：只固定自己绑定的算子名与形状口径；下界仍由算子语义表推出，层里不写第二份流量常数 |
-| `Conv1d` / `Conv2d` / `ConvTranspose1d` / `ConvTranspose2d` / `MaxPool1d` / `MaxPool2d` / `AvgPool2d` / `AdaptiveAvgPool2d` / `Interpolate` / `BatchNorm2d` / `GroupNorm` / `InstanceNorm` / `LayerNorm` / `LeakyRelu` / `HardSigmoid` | `nn` | 经典 CNN 单算子层（`src/classic.rs` / `src/pointwise.rs`）：每个层只固定自己绑定的 `op` 算子名与形状口径，窗口 / 步长 / 分组等几何与数值算术都在 `op` 侧（`op-neural::conv` / `op-kernel::norm`），层里不写第二份流量常数 |
+| `Conv1d` / `Conv2d` / `ConvTranspose1d` / `ConvTranspose2d` / `MaxPool1d` / `MaxPool2d` / `AvgPool2d` / `AdaptiveAvgPool2d` / `Interpolate` / `BatchNorm2d` / `GroupNorm` / `InstanceNorm` / `LayerNorm` / `LeakyRelu` / `HardSigmoid` | `nn` | 经典 CNN 单算子层（`src/classic.rs` / `src/pointwise.rs`）：每个层只固定自己绑定的 `op` 算子名与形状口径，窗口 / 步长 / 分组等几何与数值算术都在 `op` 侧（`conv::conv` / `gemm::norm`），层里不写第二份流量常数 |
 | `AttentionBlock` | `nn` | 注意力组合块：Q/K/V 投影 + 注意力 + 输出投影内聚成一个 `Contract`，子层按 `{块名}.q` / `.k` / `.v` / `.attn` / `.o` 对齐权重条目 |
 | `Bounds` | `nn` | 层的性能下界：`read` / `write` / `flops` 三笔按方向分账，不认识设备峰值、不做 roofline 编排 |
 | `Stack` / `Floor` / `Unpriced` | `nn` | 层栈与它的总下界；未覆盖与无法计价两类清单都不允许静默丢弃，也不让整张模型算不出下界 |

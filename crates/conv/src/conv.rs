@@ -1,6 +1,6 @@
 //! 经典卷积与池化：NHWC 布局的 `Conv1d`/`Conv2d`、`MaxPool2d`/`AvgPool2d`。
 //!
-//! 卷积不写双重循环：先 `im2col` 把每个输出位置展开成一行，再交给 [`llm_op_kernel::fast`] 的
+//! 卷积不写双重循环：先 `im2col` 把每个输出位置展开成一行，再交给 [`llm_gemm::fast`] 的
 //! GEMM 微核。语义与逐点直算逐位对齐 f32 容差，性能走 SIMD 通道（i8 量化路径见
 //! [`Conv2d::forward_i8`]，复用 `fast::gemm_i8` 的多槽池）。
 //!
@@ -10,7 +10,7 @@
 mod geom {
     use diagnostic::{Code, Error, Result};
 
-    use llm_op_kernel::fast;
+    use llm_gemm::fast;
 
     use super::support::*;
 
@@ -712,7 +712,7 @@ mod support {
     use diagnostic::{Code, Error, Result};
 
     use crate::Scalar;
-    use llm_op_kernel::fast;
+    use llm_gemm::fast;
 
     use super::geom::{Conv2d, ConvGeom};
 

@@ -13,9 +13,9 @@ autotests = false
 [dependencies]
 annotation = { path = "../annotation", package = "llm-annotation" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
-llm-op-kernel = { path = "../op-kernel" }
-llm-op-neural = { path = "../op-neural" }
-llm-op-spec = { path = "../op-spec" }
+llm-gemm = { path = "../gemm" }
+llm-conv = { path = "../conv" }
+llm-spec = { path = "../spec" }
 prof = { path = "../prof", package = "llm-prof" }
 
 [lints]

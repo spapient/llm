@@ -56,7 +56,7 @@ fn the_registry_and_the_model_annotations_are_mirrors() {
 
     // 注解侧：`name` 是第一个键（参数顺序由 `annotation::syntax` 定死，这里只读不猜）。
     let mut annotated: Vec<(String, String)> = Vec::new();
-    // 拆分后注解散在 `op` / `op-spec` / `op-kernel` / `op-neural` 里：按家族前缀认，
+    // 拆分后注解散在 `op` / `spec` / `gemm` / `conv` 里：按家族前缀认，
     // 写死单个 `op` 会让扫描面在拆分后静默归零。
     for (crate_name, file) in sources() {
         if !crate_name.starts_with("op") {

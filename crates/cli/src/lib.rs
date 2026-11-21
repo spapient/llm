@@ -36,6 +36,7 @@
 
 #![deny(unsafe_code)]
 
+mod archive;
 mod argv;
 mod config;
 mod flag;
@@ -48,7 +49,6 @@ mod train;
 pub mod kernel;
 pub mod settings;
 
-pub(crate) use self::train::archive;
 pub use argv::{Command, Invocation, USAGE};
 
 use diagnostic::{Code, Error, Result};

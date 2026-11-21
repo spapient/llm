@@ -20,7 +20,7 @@ use crate::Scalar;
 use crate::conv::ConvGeom;
 use crate::model::{Buffer, Cost, Sample, ShapeContext, Values, x_buffer};
 use diagnostic::Error;
-use llm_op_kernel::unary::{AXES, project_shape};
+use llm_gemm::unary::{AXES, project_shape};
 
 /// 一次算子装配：标记类型、语义别名与 [`crate::operator_here`] 的基座实现，外加 `#[annotation::model]`
 /// 自检常量。`$m`/`$n` 同时喂给 `operator_here!`（元组形状）与注解（数组形状），两处从同一对字面量派生。
@@ -483,7 +483,7 @@ pub mod norm {
             let mut mean = vec![S::ZERO; C];
             let mut var = vec![S::ONE; C];
             // 声明档是 `n=2, h=1, w=2`：`h·w = spatial`。
-            llm_op_kernel::norm::BatchNorm2d {
+            llm_gemm::norm::BatchNorm2d {
                 channels: C,
                 eps: S::from_f64(EPS as f64),
                 momentum: S::from_f64(0.1),
@@ -530,7 +530,7 @@ pub mod norm {
             beta: &[S],
             out: &mut [S],
         ) -> diagnostic::Result<()> {
-            llm_op_kernel::norm::GroupNorm {
+            llm_gemm::norm::GroupNorm {
                 groups: G,
                 channels: C,
                 eps: S::from_f64(EPS as f64),
@@ -580,7 +580,7 @@ pub mod norm {
             beta: &[S],
             out: &mut [S],
         ) -> diagnostic::Result<()> {
-            llm_op_kernel::norm::InstanceNorm {
+            llm_gemm::norm::InstanceNorm {
                 channels: C,
                 eps: S::from_f64(EPS as f64),
             }
@@ -622,7 +622,7 @@ pub mod norm {
             beta: &[S],
             out: &mut [S],
         ) -> diagnostic::Result<()> {
-            llm_op_kernel::norm::LayerNorm {
+            llm_gemm::norm::LayerNorm {
                 width: W,
                 eps: S::from_f64(EPS as f64),
             }

@@ -1,11 +1,11 @@
 [package]
-name = "llm-op-neural"
+name = "llm-gemm"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Neural network operators: convolution/deconvolution, attention, pooling and normative layers."
+description = "Dense compute kernels: matmul/gemm/gemv families, activation, normalization and quantization."
 readme = "README.md"
 publish = false
 autotests = false
@@ -14,8 +14,7 @@ autotests = false
 annotation = { path = "../annotation", package = "llm-annotation" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 half = { workspace = true, features = ["num-traits"] }
-llm-op-kernel = { path = "../op-kernel" }
-llm-op-spec = { path = "../op-spec" }
+llm-spec = { path = "../spec" }
 num-traits = { workspace = true }
 prof = { path = "../prof", package = "llm-prof" }
 

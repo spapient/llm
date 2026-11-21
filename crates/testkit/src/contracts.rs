@@ -77,7 +77,7 @@ fn cutile_path(relative: &str) -> PathBuf {
 /// 算子家族的 `src` 根。`op` 拆成四个 crate 后算子实体散在各家，路径探测必须逐家去试；
 /// 顺序固定，同一个文件名在两家都出现时以前者为准（`op` 是门面，实体在专责 crate）。
 fn op_roots() -> Vec<PathBuf> {
-    ["op", "op-spec", "op-kernel", "op-neural"]
+    ["op", "spec", "gemm", "conv"]
         .iter()
         .map(|name| root().join("crates").join(name).join("src"))
         .filter(|path| path.is_dir())

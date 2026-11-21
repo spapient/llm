@@ -1,6 +1,6 @@
 //! 算子基座：语义变化点的唯一契约（ADR 0050）。
 //!
-//! 六族骨架（`Reduce`、`Unary`、`Binary`、`Format`、`Gemm`，实现都在 `op-kernel`）仍各自声明
+//! 六族骨架（`Reduce`、`Unary`、`Binary`、`Format`、`Gemm`，实现都在 `gemm`）仍各自声明
 //! 族内装配配置；[`Operator`] 是它们之上的统一语义契约，也是 [`Model`] 的行为侧投影。每个具体
 //! 算子同时实现族 trait 与本 trait，方法体只转发，不写第二份算术。
 //!
@@ -65,7 +65,7 @@ pub const fn model_of<T: Operator>() -> Model {
 #[macro_export]
 macro_rules! operator_here {
     ($ty:ty, $op:tt, $arity:literal, $shape:expr, $differentiable:literal, $reference:path) => {
-        ::llm_op_spec::operator_via!(
+        ::llm_spec::operator_via!(
             @impl $ty,
             $op,
             $arity,
@@ -90,7 +90,7 @@ macro_rules! operator_here {
 #[macro_export]
 macro_rules! operator_via {
     ($ty:ty, $op:tt, $arity:literal, $shape:expr, $differentiable:literal, $skel:ident, $axes:expr) => {
-        ::llm_op_spec::operator_via!(
+        ::llm_spec::operator_via!(
             @impl $ty,
             $op,
             $arity,
@@ -105,7 +105,7 @@ macro_rules! operator_via {
         );
     };
     (grained $ty:ty, $op:tt, $arity:literal, $shape:expr, $differentiable:literal, $skel:ident, $axes:expr) => {
-        ::llm_op_spec::operator_via!(
+        ::llm_spec::operator_via!(
             @impl $ty,
             $op,
             $arity,
@@ -123,11 +123,11 @@ macro_rules! operator_via {
         @impl $ty:ty, $op:tt, $arity:literal, $shape:expr, $differentiable:literal, $group:expr,
         $axes:expr, $project:path, $cost:path, $sample:path, $reference:path
     ) => {
-        impl ::llm_op_spec::operator::Operator for $ty {
+        impl ::llm_spec::operator::Operator for $ty {
             const NAME: &'static str = $op;
             const SHAPE: (usize, usize) = $shape;
-            const DTYPE: ::llm_op_spec::model::DType = ::llm_op_spec::model::DType::F32;
-            const AXES: &'static [::llm_op_spec::model::AxisSpec] = $axes;
+            const DTYPE: ::llm_spec::model::DType = ::llm_spec::model::DType::F32;
+            const AXES: &'static [::llm_spec::model::AxisSpec] = $axes;
             const DIFFERENTIABLE: bool = $differentiable;
             const GROUP: u32 = $group;
             const ARITY: usize = $arity;
@@ -135,21 +135,21 @@ macro_rules! operator_via {
             fn shape_ctx(
                 m: usize,
                 n: usize,
-            ) -> ::core::result::Result<::llm_op_spec::model::ShapeContext, ::diagnostic::Error> {
+            ) -> ::core::result::Result<::llm_spec::model::ShapeContext, ::diagnostic::Error> {
                 $project(m, n)
             }
 
             fn cost(
-                shape: &::llm_op_spec::model::ShapeContext,
-            ) -> ::core::result::Result<::llm_op_spec::model::Cost, ::diagnostic::Error> {
+                shape: &::llm_spec::model::ShapeContext,
+            ) -> ::core::result::Result<::llm_spec::model::Cost, ::diagnostic::Error> {
                 $cost(shape)
             }
 
-            fn sample(m: usize, n: usize) -> ::llm_op_spec::model::Sample {
+            fn sample(m: usize, n: usize) -> ::llm_spec::model::Sample {
                 $sample(m, n)
             }
 
-            fn reference(sample: &::llm_op_spec::model::Sample) -> ::diagnostic::Result<Vec<f32>> {
+            fn reference(sample: &::llm_spec::model::Sample) -> ::diagnostic::Result<Vec<f32>> {
                 $reference(sample)
             }
         }

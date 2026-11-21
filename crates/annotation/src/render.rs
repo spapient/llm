@@ -183,7 +183,7 @@ pub(crate) fn render_model(declaration: &ModelDecl, ty: &str) -> String {
     );
     let _ = writeln!(
         code,
-        "pub const {}: ::llm_op_spec::model::Model = ::llm_op_spec::operator::model_of::<{ty}>();\n",
+        "pub const {}: ::llm_spec::model::Model = ::llm_spec::operator::model_of::<{ty}>();\n",
         declaration.const_name
     );
     asserts(&mut code, declaration, ty);
@@ -215,33 +215,33 @@ fn closed(declaration: &ModelDecl) -> Option<String> {
 /// 注解字面量与 `Operator` 常量之间的编译期契约：名字与输出类型逐字节相同、形状相同、`M` 是
 /// 粒度整数倍。
 ///
-/// 只引用契约 crate（`llm_op_spec`）的项：注解展开在哪个 crate 都成立，不需要该 crate 认识注册表
+/// 只引用契约 crate（`llm_spec`）的项：注解展开在哪个 crate 都成立，不需要该 crate 认识注册表
 /// 或某个执行核。「注册表里的那一条就是这份 `MODEL`」由 `op` 的注册表驱动的测试核对——那里是唯一
 /// 同时看得见注册表与全部内核的类型表的地方。
 fn asserts(code: &mut String, declaration: &ModelDecl, ty: &str) {
     let [m, n] = declaration.shape;
     let _ = writeln!(
         code,
-        "const _: () = assert!(::llm_op_spec::same_bytes(<{ty} as ::llm_op_spec::operator::Operator>::NAME, {}), \"注解注册名必须与 Operator::NAME 一致\");",
+        "const _: () = assert!(::llm_spec::same_bytes(<{ty} as ::llm_spec::operator::Operator>::NAME, {}), \"注解注册名必须与 Operator::NAME 一致\");",
         Quoted(&declaration.name)
     );
     let _ = writeln!(
         code,
-        "const _: () = assert!(::llm_op_spec::same_bytes(<{ty} as ::llm_op_spec::operator::Operator>::DTYPE.name(), {}), \"注解里的 `dtype` 必须与 Operator::DTYPE 一致\");",
+        "const _: () = assert!(::llm_spec::same_bytes(<{ty} as ::llm_spec::operator::Operator>::DTYPE.name(), {}), \"注解里的 `dtype` 必须与 Operator::DTYPE 一致\");",
         Quoted(&declaration.dtype)
     );
     code.push_str("const _: () = {\n    ");
     let _ = writeln!(
         code,
-        "assert!(<{ty} as ::llm_op_spec::operator::Operator>::SHAPE.0 == {m}usize, \"注解生产形状必须与 Operator::SHAPE 一致\");"
+        "assert!(<{ty} as ::llm_spec::operator::Operator>::SHAPE.0 == {m}usize, \"注解生产形状必须与 Operator::SHAPE 一致\");"
     );
     let _ = writeln!(
         code,
-        "    assert!(<{ty} as ::llm_op_spec::operator::Operator>::SHAPE.1 == {n}usize, \"注解生产形状必须与 Operator::SHAPE 一致\");"
+        "    assert!(<{ty} as ::llm_spec::operator::Operator>::SHAPE.1 == {n}usize, \"注解生产形状必须与 Operator::SHAPE 一致\");"
     );
     let _ = writeln!(
         code,
-        "    let group = <{ty} as ::llm_op_spec::operator::Operator>::GROUP as usize;"
+        "    let group = <{ty} as ::llm_spec::operator::Operator>::GROUP as usize;"
     );
     code.push_str("    assert!(group > 0, \"形状粒度必须大于 0\");\n");
     let _ = writeln!(

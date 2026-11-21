@@ -102,6 +102,43 @@ pub(crate) fn short(name: &str) -> String {
     name.strip_prefix("llm-").unwrap_or(name).to_string()
 }
 
+/// 成员短名 → 源码根目录。
+///
+/// 包名与目录名**不必**相同（`llm-gemm` 住在 `crates/gemm`）：改名只动包名时，若门禁拿短名
+/// 当目录名，`crates/gemm/src` 不存在，所有权与边界校验会**静默跳过**。映射只从 `cargo metadata`
+/// 的 `manifest_path` 取，不猜前缀。
+pub(crate) fn src_root(member: &str) -> PathBuf {
+    let dir = dirs()
+        .get(member)
+        .map(|path| path.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("crates").join(member));
+    workspace_root().join(dir).join("src")
+}
+
+/// 成员短名 → 相对仓根的清单目录（`crates/gemm`）。
+fn dirs() -> &'static BTreeMap<String, PathBuf> {
+    static CACHE: OnceLock<BTreeMap<String, PathBuf>> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        // `workspace_root()` 含 `../..`，与 `cargo metadata` 给的真实路径不是词法前缀，
+        // 不归一化的话 `strip_prefix` 恒失败、映射恒回落成 `crates/<短名>`——即静默失效。
+        let root = std::fs::canonicalize(workspace_root()).unwrap_or_else(|error| {
+            panic!("仓根可归一化：{error}");
+        });
+        let mut dirs = BTreeMap::new();
+        for package in packages() {
+            let name = package["name"].as_str().expect("包名");
+            let manifest = package["manifest_path"].as_str().expect("清单路径");
+            let dir = Path::new(manifest)
+                .parent()
+                .and_then(|parent| parent.strip_prefix(&root).ok())
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from("crates").join(short(name)));
+            dirs.insert(short(name), dir);
+        }
+        dirs
+    })
+}
+
 pub(crate) fn contract() -> Contract {
     let mut layers = BTreeMap::new();
     for line in DOC.lines() {
@@ -279,23 +316,32 @@ fn metadata() -> &'static (BTreeSet<String>, BTreeSet<Edge>) {
     CACHE.get_or_init(load_workspace)
 }
 
+/// `cargo metadata` 的包数组：一次调用，成员表、边集与目录映射共用同一份事实。
+fn packages() -> &'static [serde_json::Value] {
+    static CACHE: OnceLock<Vec<serde_json::Value>> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+        let output = Command::new(cargo)
+            .args(["metadata", "--no-deps", "--format-version", "1"])
+            .current_dir(workspace_root())
+            .output()
+            .expect("cargo metadata 可执行");
+        assert!(
+            output.status.success(),
+            "cargo metadata 失败：{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let metadata: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("`cargo metadata` 输出 JSON");
+        metadata["packages"]
+            .as_array()
+            .expect("metadata 有 packages")
+            .clone()
+    })
+}
+
 fn load_workspace() -> (BTreeSet<String>, BTreeSet<Edge>) {
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let output = Command::new(cargo)
-        .args(["metadata", "--no-deps", "--format-version", "1"])
-        .current_dir(workspace_root())
-        .output()
-        .expect("cargo metadata 可执行");
-    assert!(
-        output.status.success(),
-        "cargo metadata 失败：{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let metadata: serde_json::Value =
-        serde_json::from_slice(&output.stdout).expect("`cargo metadata` 输出 JSON");
-    let packages = metadata["packages"]
-        .as_array()
-        .expect("metadata 有 packages");
+    let packages = packages();
     let named = |value: &serde_json::Value| short(value["name"].as_str().expect("包名"));
     let members: BTreeSet<String> = packages.iter().map(named).collect();
     let mut edges = BTreeSet::new();

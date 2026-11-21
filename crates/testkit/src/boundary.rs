@@ -12,7 +12,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::architecture::{
-    DOC, backticks, contract, rust_files, source_text, workspace, workspace_root,
+    DOC, backticks, contract, rust_files, source_text, src_root, workspace, workspace_root,
 };
 use crate::ownership::{is_public_definition, public_item_name};
 
@@ -38,7 +38,7 @@ pub(crate) fn the_error_boundary_does_not_fall_back_to_strings() {
     let contract = contract();
     let mut paths = Vec::new();
     for member in contract.layers.keys() {
-        let root = workspace_root().join("crates").join(member).join("src");
+        let root = src_root(member);
         let files = rust_files(&root);
         assert!(
             !files.is_empty(),
@@ -93,10 +93,10 @@ pub(crate) const VENDORS: [&str; 8] = [
 /// 重建切片，总数由 17 涨到 21，这属于要往下削的重复而不是新增许可。
 pub(crate) const UNSAFE_ISLANDS: &[(&str, usize)] = &[
     ("crates/device/src/metal/executor.rs", 1),
-    ("crates/op-kernel/src/fast/i8.rs", 8),
-    ("crates/op-kernel/src/fast/micro.rs", 6),
-    ("crates/op-kernel/src/fast/pool.rs", 3),
-    ("crates/op-kernel/src/fast/sme.rs", 4),
+    ("crates/gemm/src/fast/i8.rs", 8),
+    ("crates/gemm/src/fast/micro.rs", 6),
+    ("crates/gemm/src/fast/pool.rs", 3),
+    ("crates/gemm/src/fast/sme.rs", 4),
     ("crates/storage/src/mmap.rs", 1),
 ];
 
@@ -136,7 +136,7 @@ pub(crate) fn the_mechanism_layer_exposes_no_vendor_names() {
         if VENDOR_OWNERS.contains(&member.as_str()) {
             continue;
         }
-        let root = workspace_root().join("crates").join(member).join("src");
+        let root = src_root(member);
         for path in rust_files(&root) {
             let Some(text) = source_text(&path) else {
                 continue;
@@ -173,7 +173,7 @@ pub(crate) fn the_mechanism_layer_exposes_no_vendor_names() {
 pub(crate) fn unsafe_islands_are_the_ones_the_adr_lists() {
     let mut found = BTreeMap::new();
     for member in workspace().0 {
-        let root = workspace_root().join("crates").join(&member).join("src");
+        let root = src_root(&member);
         for path in rust_files(&root) {
             let Some(text) = source_text(&path) else {
                 continue;
@@ -265,7 +265,7 @@ fn declares_any(crate_name: &str, name: &str) -> bool {
     const KINDS: [&str; 8] = [
         "struct", "enum", "trait", "type", "fn", "const", "union", "mod",
     ];
-    let root = workspace_root().join("crates").join(crate_name).join("src");
+    let root = src_root(crate_name);
     rust_files(&root).into_iter().any(|path| {
         source_text(&path).is_some_and(|text| {
             text.lines().any(|line| {
