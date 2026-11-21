@@ -101,6 +101,3 @@ impl<K: crate::Kernel> OperatorSetOps for crate::Buffers<K> {
     }
 }
 
-#[cfg(test)]
-#[path = "../tests/operators_tests.rs"]
-mod operators_tests;

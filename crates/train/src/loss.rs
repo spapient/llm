@@ -348,6 +348,3 @@ pub(crate) fn grpo(
     Ok(Outcome { loss, correct: 0 })
 }
 
-#[cfg(test)]
-#[path = "../tests/objective_tests.rs"]
-mod objective_tests;

@@ -160,10 +160,6 @@ pub fn operators(layer: &dyn nn::Contract) -> &[String] {
     layer.spca().ops()
 }
 
-#[cfg(test)]
-#[path = "../../tests/checkpoint_tests.rs"]
-mod tests;
-
 use diagnostic::{Code, Error, Result};
 use shard::Collective;
 

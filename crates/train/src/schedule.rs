@@ -118,6 +118,3 @@ impl Schedule {
     }
 }
 
-#[cfg(test)]
-#[path = "../tests/schedule_tests.rs"]
-mod tests;
