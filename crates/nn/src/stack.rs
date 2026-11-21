@@ -199,7 +199,7 @@ impl Stack {
         let mut unpriced = Vec::new();
         for layer in &self.layers {
             match layer.bounds() {
-                Ok(Some(bounds)) => total = total.plus(bounds),
+                Ok(Some(bounds)) => total = bounds,
                 Ok(None) => unpriced.push(Unpriced::new(
                     layer.name(),
                     "没有可计价的形状（缺输入宽度）",

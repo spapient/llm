@@ -283,8 +283,11 @@ fn encode_lanes(src: &[u8], table: &Table) -> ([u32; NLANES], [Vec<u8>; NLANES])
 
 /// 压缩为自描述帧；返回字节数（含头部），调用方据此判断是否值得保留。
 pub(crate) fn encode(src: &[u8]) -> Vec<u8> {
+    let t0 = std::time::Instant::now();
     let table = Table::build(normalize(&counts(src)));
+    let t1 = std::time::Instant::now();
     let (states, mut buffers) = encode_lanes(src, &table);
+    let t2 = std::time::Instant::now();
 
     let mut out = Vec::new();
     let src_len = u32::try_from(src.len()).unwrap_or(u32::MAX);
@@ -298,12 +301,21 @@ pub(crate) fn encode(src: &[u8]) -> Vec<u8> {
         let len = u32::try_from(buffer.len()).unwrap_or(u32::MAX);
         out.extend_from_slice(&len.to_le_bytes());
     }
+    let t3 = std::time::Instant::now();
 
     // rANS 解码顺序相反：逐条翻转后再落盘。
     for buffer in &mut buffers {
         buffer.reverse();
         out.extend_from_slice(buffer);
     }
+    let t4 = std::time::Instant::now();
+    eprintln!(
+        "PROBE table={:?} lanes={:?} header={:?} reverse={:?}",
+        t1 - t0,
+        t2 - t1,
+        t3 - t2,
+        t4 - t3
+    );
     out
 }
 

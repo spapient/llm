@@ -437,3 +437,7 @@ mod param_role_tests;
 #[cfg(test)]
 #[path = "../tests/lib_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../tests/prop_tests.rs"]
+mod prop_tests;

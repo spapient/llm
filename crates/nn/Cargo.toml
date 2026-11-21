@@ -17,5 +17,8 @@ op = { path = "../op", package = "llm-op" }
 tensor = { path = "../tensor", package = "llm-tensor" }
 weights = { path = "../weights", package = "llm-weights" }
 
+[dev-dependencies]
+proptest = "1"
+
 [lints]
 workspace = true

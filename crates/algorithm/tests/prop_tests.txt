@@ -1,0 +1,11 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc cc2bbf053ad15c28af0eee71856fcb7bda6442183ecea4b3936ae353b9036fa9 # shrinks to (ya, yb, yg, pi, gamma) = ([4.0], [4.0], [3.6371335456980365e-151], 0.0, 0.0)
+cc 16bc0345bec55c6f5185d296c0139bb5745b5d9e163d1a168a0e1dae61fca7eb # shrinks to (ya, yb, yg, pi, gamma) = ([4.0], [4.0], [4.0], 0.0, 0.0)
+cc 3110aafd70844cd9119c24061f036748c9d5c8c6f5bdf486b53f179c7989f163 # shrinks to (ya, yb, yg, pi, gamma) = ([1.268349084019478e-81], [4.0], [4.0], 0.0, 0.0), shift = 2.1178744427925538
+cc c9af8a52005a11280978ca134d31b1003a106946ba92b4a1d56746e4fac322cc # shrinks to (ya, yb, yg, _, _) = ([1.3023326462918312e-119], [4.0], [5.979633918605014e-204], 0.0, 0.0)
+cc 07fade79fb3bd1d7e241ba1537133c1b376360944d6d6f60cc64ed8633289282 # shrinks to d = 1, n = 1, m = 2

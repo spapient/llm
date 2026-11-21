@@ -91,8 +91,8 @@ fn locate(module: &str, depth: usize) -> Option<PathBuf> {
         if !text.contains(&format!("pub mod {module}")) {
             continue;
         }
-        // 聚合布局：骨架文件 `classic/pool.rs` 声明 `pub mod adaptive;`，实体在骨架旁的
-        // `classic/pool/adaptive.rs`——注册表要的注解读的是实体，不是只做声明的骨架。
+        // 聚合布局：骨架文件 `gemv.rs` 声明 `pub mod f32;`，实体在骨架旁的
+        // `gemv/f32.rs`——注册表要的注解读的是实体，不是只做声明的骨架。
         let body = file.with_extension("").join(format!("{module}.rs"));
         return Some(if body.exists() { body } else { file });
     }
@@ -147,7 +147,7 @@ fn aliases() -> &'static std::collections::BTreeMap<String, Vec<String>> {
     })
 }
 
-/// 文件自己的模块路径（`classic/pool.rs` → `classic::pool`，`lib.rs` → 空）。
+/// 文件自己的模块路径（`gemv/f32.rs` → `gemv::f32`，`lib.rs` → 空）。
 fn module_path_of(file: &std::path::Path) -> String {
     let rel = file
         .strip_prefix(root().join("crates/op/src"))

@@ -680,6 +680,7 @@ dependencies = [
  "llm-op",
  "llm-tensor",
  "llm-weights",
+ "proptest",
 ]
 
 [[package]]
