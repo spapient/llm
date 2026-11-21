@@ -125,7 +125,9 @@ impl Ctx<'_> {
     }
 }
 
-/// 按车道表拼设备源；没有车道认领前缀时报错，不退回逐点车道（那会把形状错误算成精度错误）。
+/// 按车道表拼设备源。表里没命中的算子按逐点处理（算子里绝大多数是逐点形态），
+/// 若它其实不是逐点，`cuda_grid_program` 自己会报「没有逐点形态」——判据留在 `cutile`，
+/// 这里不猜。
 fn source(
     catalogue: &Catalogue,
     dirs: &Dirs,
@@ -143,13 +145,8 @@ fn source(
     let lane = LANES
         .iter()
         .find(|(prefix, _)| job.op.starts_with(prefix))
-        .ok_or_else(|| {
-            Error::new(
-                Code::Unsupported,
-                format!("`{}` 没有对应的设备源车道（见 musa::emit::LANES）", job.op),
-            )
-        })?;
-    (lane.1)(&ctx)
+        .map_or(point, |(_, lane)| *lane);
+    lane(&ctx)
 }
 
 /// 分块归一化：两段（部分和/最大值回读折叠后再归一化），host 驱动把两段拼成一文件。
