@@ -137,7 +137,7 @@ impl Report<'_> {
              \"shape\": {},\n  \"batch\": {},\n  \"dtype\": \"{}\",\n  \
              \"read_bytes\": {},\n  \"write_bytes\": {},\n  \"working_set_bytes\": {},\n  \
              \"cache_tier\": \"{}\",\n  \"flops\": {},\n  \
-             \"metric\": \"ns_per_iter\",\n  \"direction\": \"{}\",\n             \"budget_percent\": {},\n             \"baseline_ns\": {},\n             \"observed_ns\": {},\n             \"verdict\": \"{}\",\n             \"host\": \"{}\",\n             \"cpu\": \"{}\",\n             \"os\": \"{}\",\n             \"toolchain\": \"{}\",\n             \"arch\": \"{}\",\n             \"read_ceiling_mbps\": {},\n             \"write_ceiling_mbps\": {},\n             \"roofline_ns\": {},\n             \"bottleneck_side\": \"{}\",\n             \"achieved_percent\": {},\n             \"mflops_per_s\": {},\n             \"bottleneck\": \"{}\",\n             \
+             \"metric\": \"ns_per_iter\",\n  \"direction\": \"{}\",\n             \"budget_percent\": {},\n             \"baseline_ns\": {},\n             \"observed_ns\": {},\n             \"verdict\": \"{}\",\n             \"host\": \"{}\",\n             \"cpu\": \"{}\",\n             \"os\": \"{}\",\n             \"toolchain\": \"{}\",\n             \"arch\": \"{}\",\n             \"read_ceiling_mbps\": {},\n             \"write_ceiling_mbps\": {},\n             \"roofline_ns\": {},\n             \"bottleneck_side\": \"{}\",\n             \"achieved_percent\": {},\n             \"declared_ns\": {},\n             \"ceiling_percent\": {},\n             \"s_plus_percent\": {},\n             \"s_plus_line\": {},\n             \"mflops_per_s\": {},\n             \"bottleneck\": \"{}\",\n             \
              \"profile\": \"bench\"\n}}\n",
             scenario.group,
             scenario.benchmark,
@@ -167,6 +167,10 @@ impl Report<'_> {
             roofline.ns.round() as i64,
             roofline.side,
             roofline.achieved_percent.round() as i64,
+            roofline.declared_ns.round() as i64,
+            roofline.ceiling_percent.round() as i64,
+            roofline.s_plus_percent.round() as i64,
+            roofline.s_plus_line.round() as i64,
             roofline.mflops_per_s.round() as i64,
             roofline.bottleneck(),
         )
@@ -195,7 +199,7 @@ pub(crate) fn judge_one(manifest: &Path, host: &HostProfile, scenario: &Scenario
     let report = Report {
         scenario,
         record: record_for(host, scenario, observed),
-        roofline: Roofline::of(host, scenario, observed),
+        roofline: Roofline::of(host, scenario, baseline.ns, observed),
         verdict: judgement.as_str(),
         baseline_ns: baseline.ns,
         budget_percent: baseline.budget_percent,
@@ -204,6 +208,20 @@ pub(crate) fn judge_one(manifest: &Path, host: &HostProfile, scenario: &Scenario
     // 自检：归档必须是能被仓库唯一 JSON 解析器读懂的文档（整数约定见模块文档）。
     weights::json::parse(&rendered).expect("归档必须是合法 JSON");
     std::fs::write(dir.join(format!("{}.json", scenario.group)), &rendered).expect("归档可写");
+
+    if !report.roofline.meets_s_plus() {
+        panic!(
+            "{} 没到 S++ 线：{} 侧达成率 {:.0}% < {:.0}%（实测 {observed:.0} ns，\
+             声明上界 {:.0} ns，带宽上界 {:.0} ns）。\
+             慢在内核就优化内核；慢在上界就说明上界登记过期，按新测量重登",
+            scenario.scenario,
+            report.roofline.side,
+            report.roofline.s_plus_percent(),
+            report.roofline.s_plus_line(),
+            baseline.ns,
+            report.roofline.ns,
+        );
+    }
 
     if judgement.is_pass() {
         return Some(());

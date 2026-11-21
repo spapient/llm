@@ -2,6 +2,16 @@
 
 use super::*;
 
+/// 带宽侧 S++ 线：实测吞吐相对本机实测搬运上界的达成率（%）不低于这个数，
+/// 才算"顶到带宽上界"（`docs/PROMPT-S++-AUDIT.md` §8）。
+pub(crate) const BANDWIDTH_PERCENT: f64 = 85.0;
+
+/// 算力侧 S++ 线：实测相对**每内核声明上界**（登记基线）的达成率（%）不低于这个数。
+///
+/// 分母用登记基线而不是理论峰值：§8 明令禁止拿理论峰值冒充 roofline，登记表里那一行
+/// 就是这台机器上这个内核已知能跑到的上界。
+pub(crate) const COMPUTE_PERCENT: f64 = 90.0;
+
 /// criterion 的 mean 点估计（`ns/iter`）。
 ///
 /// 只依赖 `estimates.json` 里两个键名（`mean` 与 `point_estimate`）：criterion 的统计口径演进过，
@@ -99,8 +109,13 @@ pub(crate) struct Roofline {
     pub(crate) ns: f64,
     /// 慢的那一侧：`read` / `write`。
     pub(crate) side: &'static str,
-    /// 达成率（%）：上界时间 / 实测时间。超过 100 说明上界登记过期，不是"超越硬件"。
+    /// 带宽侧达成率（%）：roofline 上界时间 / 实测时间。超过 100 说明上界登记过期，
+    /// 不是"超越硬件"。
     pub(crate) achieved_percent: f64,
+    /// 声明上界（ns）：登记基线，即这个内核在本机上已知能跑到的上界。
+    pub(crate) declared_ns: f64,
+    /// 算力侧达成率（%）：声明上界 / 实测时间。
+    pub(crate) ceiling_percent: f64,
     /// 实测算力（MFLOP/s）：带宽达成率低时，这个数才说得清"代价花在算上"。
     pub(crate) mflops_per_s: f64,
 }
@@ -111,7 +126,12 @@ impl Roofline {
     /// 工作集决定档位：16 KiB 量级的行宽算子按 `l1` 判，几百 KiB 的 `gemm` / `attention` 按
     /// `l2` 判，`gemv` 那 64 MiB 权重按 `dram` 判。档位定错会把"L1 里的往返"拿去比主存带宽，
     /// 达成率就没有意义。
-    pub(crate) fn of(host: &HostProfile, scenario: &Scenario, observed_ns: f64) -> Self {
+    pub(crate) fn of(
+        host: &HostProfile,
+        scenario: &Scenario,
+        declared_ns: f64,
+        observed_ns: f64,
+    ) -> Self {
         let bounds = nn::Bounds::of_context(scenario.op, scenario.bounds.0, scenario.bounds.1)
             .unwrap_or_else(|error| {
                 panic!(
@@ -157,6 +177,12 @@ impl Roofline {
             } else {
                 0.0
             },
+            declared_ns,
+            ceiling_percent: if observed_ns > 0.0 {
+                declared_ns / observed_ns * 100.0
+            } else {
+                0.0
+            },
             mflops_per_s: if observed_ns > 0.0 {
                 bounds.flops() / observed_ns * 1e3
             } else {
@@ -165,9 +191,32 @@ impl Roofline {
         }
     }
 
-    /// 是否已经顶到带宽上界：85% 的门槛与 `docs/lld.md` E7 的带宽达成率同一口径。
+    /// 是否已经顶到带宽上界：门槛与 `docs/lld.md` E7 的带宽达成率同一口径。
     pub(crate) fn bandwidth_bound(&self) -> bool {
-        self.achieved_percent >= 85.0
+        self.achieved_percent >= BANDWIDTH_PERCENT
+    }
+
+    /// 这一条基准该比哪一侧的达成率、门槛是多少：顶到带宽上界就比带宽，否则比声明上界。
+    pub(crate) fn s_plus_line(&self) -> f64 {
+        if self.bandwidth_bound() {
+            BANDWIDTH_PERCENT
+        } else {
+            COMPUTE_PERCENT
+        }
+    }
+
+    /// S++ 达成率（%）：与 [`Roofline::s_plus_line`] 同一侧的分母。
+    pub(crate) fn s_plus_percent(&self) -> f64 {
+        if self.bandwidth_bound() {
+            self.achieved_percent
+        } else {
+            self.ceiling_percent
+        }
+    }
+
+    /// 是否达到 §8 的 S++ 线。
+    pub(crate) fn meets_s_plus(&self) -> bool {
+        self.s_plus_percent() >= self.s_plus_line()
     }
 
     /// 瓶颈分类：只有顶到带宽上界才写 `bandwidth`，否则明确写 `not-bandwidth`。

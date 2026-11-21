@@ -100,7 +100,7 @@ pub(crate) fn the_report_carries_every_field_a_reader_needs_to_judge_it() {
         let report = Report {
             scenario,
             record,
-            roofline: Roofline::of(host, scenario, 2_000_000.0),
+            roofline: Roofline::of(host, scenario, 2_000_000.0, 2_000_000.0),
             verdict: Judgement::Improved {
                 observed: 1.0,
                 baseline: 2.0,
@@ -137,6 +137,10 @@ pub(crate) fn the_report_carries_every_field_a_reader_needs_to_judge_it() {
                 "\"roofline_ns\"",
                 "\"bottleneck_side\"",
                 "\"achieved_percent\"",
+                "\"declared_ns\"",
+                "\"ceiling_percent\"",
+                "\"s_plus_percent\"",
+                "\"s_plus_line\"",
                 "\"mflops_per_s\"",
                 "\"bottleneck\"",
             ],
