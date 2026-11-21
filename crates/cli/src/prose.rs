@@ -6,8 +6,8 @@
 use cutile::cache::Gc;
 use cutile::dirs::Dirs;
 use cutile::emit::Fragment;
-use cutile_run::doctor::Doctor;
 use diagnostic::render::Panel;
+use llm_optim::doctor::Doctor;
 use std::fmt::Write as _;
 
 /// 编译参数的一行写法：空列表也要有话说，否则报告里会出现一对空括号。

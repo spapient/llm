@@ -22,7 +22,7 @@
 //! # 三条厂商链互不共享状态
 //!
 //! Metal 是「设备源（`.metal`）+ host 驱动（`.m`）」两段文本，CUDA 是单段 `.cu`，昇腾是 CCE。
-//! 这个差异收在 [`cutile_run::backend::Source`] 里，由各自的 `Driver::compile_run` 解包，不外泄到机制层；
+//! 这个差异收在 [`llm_optim::backend::Source`] 里，由各自的 `Driver::compile_run` 解包，不外泄到机制层；
 //! 三条链共用且只有两段字面（基准几何、见证回读），留在 [`backends`] 父模块，其余共用的导入面
 //! 同样收在父模块的前导里，兄弟文件只写 `use super::*`。
 //!

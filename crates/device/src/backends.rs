@@ -1,12 +1,12 @@
-//! Metal / CUDA 设备后端：实现 [`cutile_run::backend::Backend`]（`Codegen` 出源 + `Driver` 跑源）。
+//! Metal / CUDA 设备后端：实现 [`llm_optim::backend::Backend`]（`Codegen` 出源 + `Driver` 跑源）。
 //!
 //! 这是 L6 的设备落地：唯一碰 `nvcc` / `xcrun metal` / `metallib` / MSVC `cl.exe` 的地方。
 //! 厂商编译器的**探测**在 `crate::toolchain`，本模块只按档案取探测结果、拼命令行、跑源。
-//! cutile（L3 机制层）只认 [`cutile_run::backend::Backend`] 缝，不认识这里的任何厂商符号；本模块经
+//! cutile（L3 机制层）只认 [`llm_optim::backend::Backend`] 缝，不认识这里的任何厂商符号；本模块经
 //! [`install`] 把 Metal / CUDA 后端注册进 cutile 的进程级表，由 L7（`cli`）在启动时调用。
 //!
 //! 双源说明：Metal 是「设备源（.metal）+ host 驱动（.m）」两段文本，CUDA 是单段 `.cu`；这个差异
-//! 收在 [`cutile_run::backend::Source`] 里，由各自的 [`Driver::compile_run`] 解包，不外泄到机制层。
+//! 收在 [`llm_optim::backend::Source`] 里，由各自的 [`Driver::compile_run`] 解包，不外泄到机制层。
 //!
 //! 三条厂商链各自成文件（[`metal`] / [`cuda`] / [`ascend`]）——它们之间没有共享状态，只有基准几何
 //! 与见证回读这两段字面共用，因此留在本模块；本模块还剩装配（[`install`]）与三家的原路径再导出。
@@ -19,12 +19,12 @@ pub use cuda::compile_run_cuda;
 // 三条厂商链共用的导入面：子模块经 `use super::*` 取用，避免各写一份重复块。
 pub(crate) use cutile::dirs::Dirs;
 pub(crate) use cutile::prof::{Emit, Profile};
-pub(crate) use cutile_run::backend::Lower::*;
-pub(crate) use cutile_run::backend::{Backend, Codegen, Driver, Launch, Lower, Readback, Source};
-pub(crate) use cutile_run::driver;
-pub(crate) use cutile_run::toolchain::Toolchain;
-pub(crate) use cutile_run::witness::{MAX_OUT, Scope, Selected};
 pub(crate) use diagnostic::{Code, Error, Result};
+pub(crate) use llm_optim::backend::Lower::*;
+pub(crate) use llm_optim::backend::{Backend, Codegen, Driver, Launch, Lower, Readback, Source};
+pub(crate) use llm_optim::driver;
+pub(crate) use llm_optim::toolchain::Toolchain;
+pub(crate) use llm_optim::witness::{MAX_OUT, Scope, Selected};
 pub(crate) use op::model::Sample;
 pub(crate) use op::sig::Signature;
 
@@ -97,9 +97,9 @@ static ASCEND_BACKEND: AscendBackend = AscendBackend;
 
 /// 把 Metal / CUDA / 昇腾后端注册进 cutile 的进程级表（幂等）。L7（`cli`）在启动时调用一次。
 pub fn install() {
-    cutile_run::backend::register(&METAL_BACKEND);
-    cutile_run::backend::register(&CUDA_BACKEND);
-    cutile_run::backend::register(&ASCEND_BACKEND);
+    llm_optim::backend::register(&METAL_BACKEND);
+    llm_optim::backend::register(&CUDA_BACKEND);
+    llm_optim::backend::register(&ASCEND_BACKEND);
 }
 
 #[cfg(test)]
@@ -310,7 +310,7 @@ fn ascend_compile(exe: &Path, src: &Path, profile: &Profile, dirs: &Dirs) -> Res
     // `-xcce` / `--cce-aicore-algorithm` 归档案的 `[compile].flags`：那是"哪个核芯"的声明，本层不猜
     // （`dav-c220` 只对 `id = "910b"` 成立）。唯一的分拣是顺序：`-l` 类参数被转给链接器，排在源
     // 文件之前就是"undefined reference to aclInit"，所以它们挪到源文件之后。
-    let flags = cutile_run::compile_flags(profile, dirs)?;
+    let flags = llm_optim::compile_flags(profile, dirs)?;
     let (links, options): (Vec<String>, Vec<String>) =
         flags.into_iter().partition(|flag| flag.starts_with("-l"));
     command

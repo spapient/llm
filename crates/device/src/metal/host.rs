@@ -1,7 +1,7 @@
 //! Metal 主机侧胶水：`xcrun metal` 编设备源、`clang` 链接主机驱动、执行与回读。
 //!
 //! 从 [`crate::backends`] 拆出：那里同时装 CUDA 与 Metal 两套厂商工具链，行数已过单文件上限，
-//! 而两套胶水之间没有共享状态——拆开后每条链各自一屏读得完。`backends` 仍是 [`cutile_run::backend`]
+//! 而两套胶水之间没有共享状态——拆开后每条链各自一屏读得完。`backends` 仍是 [`llm_optim::backend`]
 //! 的 `Backend` 实现，并通过 re-export 保持这些入口的原路径不变。
 //!
 //! 多段驱动（[`MetalStage`]）同住这里：段与段之间只隔一段主机折叠代码，拼装口径与单段模板逐字同源。
@@ -205,10 +205,10 @@ int main(int argc, const char **argv) {{
 
 use cutile::dirs::Dirs;
 use cutile::prof::Profile;
-use cutile_run::backend::Readback;
-use cutile_run::driver;
-use cutile_run::witness::MAX_OUT;
 use diagnostic::{Code, Error, Result};
+use llm_optim::backend::Readback;
+use llm_optim::driver;
+use llm_optim::witness::MAX_OUT;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -247,7 +247,7 @@ pub fn metal_kernel(dir: &Path, program: &str, flags: &[String]) -> Result<PathB
 }
 
 /// 编译并执行一次 Metal 生产态内核（设备源 + host 驱动），返回 `(stdout, stderr)` 原文。
-/// 与 [`cutile_run::backend::Driver::compile_run`] 同口径：一次性目录，用完即删。
+/// 与 [`llm_optim::backend::Driver::compile_run`] 同口径：一次性目录，用完即删。
 pub fn compile_run_metal(
     profile: &Profile,
     dirs: &Dirs,
@@ -280,7 +280,7 @@ fn metal_driver_exe_from(
     stem: &str,
     role: &str,
 ) -> Result<PathBuf> {
-    let Some(compiler) = cutile_run::toolchain::detect() else {
+    let Some(compiler) = llm_optim::toolchain::detect() else {
         return Err(Error::new(
             Code::Unsupported,
             format!("缺少 host C 编译器：Metal {role}需要一个 host 驱动把内核发射到 GPU"),

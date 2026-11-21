@@ -6,10 +6,10 @@
 
 use super::*;
 #[cfg(target_os = "windows")]
-use cutile_run::execution::Backend::Cuda;
+use llm_optim::execution::Backend::Cuda;
 #[cfg(target_os = "macos")]
-use cutile_run::execution::Backend::Metal;
-use cutile_run::execution::{Mode, program};
+use llm_optim::execution::Backend::Metal;
+use llm_optim::execution::{Mode, program};
 
 /// Metal 执行器（真机不在场时 `None`；没有设备不是失败）。
 #[cfg(target_os = "macos")]
@@ -208,7 +208,7 @@ fn op_chunked_reduce_matches_reference(op_name: &str) {
     assert_close("分块归约", op_name, &output, &want, model.dtype);
 }
 
-/// CUDA 逐点网格真机对拍：纯逐点算子走 [`cutile_run::execution::program`]
+/// CUDA 逐点网格真机对拍：纯逐点算子走 [`llm_optim::execution::program`]
 /// （`kernel_main<<<ceil(N/256), 256>>>` 逐点网格，块内 256 线程、末块由守卫挡住），
 /// nvcc 编译 + GPU 派发 + 回读，与标量参考对拍。
 /// 与 Metal 侧的 [`op_matches_reference`] 同口径，只是发射/回读经 `compile_run_cuda`。
@@ -237,7 +237,7 @@ fn op_matches_reference_cuda(op_name: &str) {
         ::device::cuda::cuda_point_driver(&device, &decl.signature, &sample, blocks, threads)
             .expect("host 驱动应能生成");
     let (_counts, bits) =
-        cutile_run::witness::run_cuda(&profile, &dirs, &driver, op_name).expect("CUDA 真机执行");
+        llm_optim::witness::run_cuda(&profile, &dirs, &driver, op_name).expect("CUDA 真机执行");
 
     let expected = (model.reference)(&sample).expect("参考值");
     assert_close("CUDA 逐点", op_name, &bits, &expected, model.dtype);
@@ -271,7 +271,7 @@ fn op_chunked_reduce_matches_reference_cuda(op_name: &str) {
     let driver = ::device::cuda::cuda_grid_driver(&device, &decl.signature, &sample, grid, grid)
         .expect("host 驱动应能生成");
     let (_counts, bits) =
-        cutile_run::witness::run_cuda(&profile, &dirs, &driver, op_name).expect("CUDA 真机执行");
+        llm_optim::witness::run_cuda(&profile, &dirs, &driver, op_name).expect("CUDA 真机执行");
 
     let input = sample.f32("a").expect("归约输入");
     let (output, want) = fold_reduce(op_name, &bits, input);
@@ -692,7 +692,7 @@ fn op_normalized_matches_reference_cuda(op_name: &str) {
     };
 
     let (_counts, bits) =
-        cutile_run::witness::run_cuda(&profile, &dirs, &driver, op_name).expect("CUDA 真机执行");
+        llm_optim::witness::run_cuda(&profile, &dirs, &driver, op_name).expect("CUDA 真机执行");
     let expected = (model.reference)(&sample).expect("参考值");
     assert_close("CUDA 分块归一化", op_name, &bits, &expected, model.dtype);
 }
@@ -732,7 +732,7 @@ fn op_looped_matches_reference_cuda(op_name: &str) {
     let driver = ::device::cuda::cuda_loop_driver(&device, &decl.signature, &sample, &dims)
         .expect("host 驱动应能生成");
     let (_counts, bits) =
-        cutile_run::witness::run_cuda(&profile, &dirs, &driver, op_name).expect("CUDA 真机执行");
+        llm_optim::witness::run_cuda(&profile, &dirs, &driver, op_name).expect("CUDA 真机执行");
 
     let expected = (model.reference)(&sample).expect("参考值");
     assert_close("CUDA 循环注入", op_name, &bits, &expected, model.dtype);

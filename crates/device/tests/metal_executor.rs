@@ -1,8 +1,8 @@
 use super::harness::*;
 use super::*;
-use cutile_run::backend::TensorGeometry;
-use cutile_run::execution::Backend::Metal;
-use cutile_run::execution::{Mode, program};
+use llm_optim::backend::TensorGeometry;
+use llm_optim::execution::Backend::Metal;
+use llm_optim::execution::{Mode, program};
 
 /// 设备 → 命令队列 的进程内对象模型打通：能建、能释放，反复建放不崩溃、不重复释放。
 #[test]

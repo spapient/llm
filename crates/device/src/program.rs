@@ -1,15 +1,15 @@
 //! 声明 → 并行程序：把 cutile 推出的 [`Launch`] 装配成「设备源 + 按网格发射的 host 驱动」。
 //!
 //! 本模块只回答**怎么装配**，不回答「并行还是串行」——形态与派发几何都来自
-//! `cutile_run::execution::launch`（唯一分派点）。按算子名在这里挑驱动会形成第二份分派，与 `[chunk]` /
+//! `llm_optim::execution::launch`（唯一分派点）。按算子名在这里挑驱动会形成第二份分派，与 `[chunk]` /
 //! `[grid]` 声明漂移：声明改了而这里没改，验证会拿错的形状去比，结论还照样是「通过」。
 //!
 //! 装配只做三件事：把同一份内核降成该形态要的段数、按段数拼上对应的 host 驱动、把 `launch.items`
 //! 原样交给驱动发射。段数与驱动本来就是一体的（两段扫描 / 三段 softmax 各有一份主机折叠），
 //! 因此这里的分派**只由形态决定**，不看 `m` / `n`，也不看算子名。
 
-use cutile_run::backend::{Launch, Lower, Source};
 use diagnostic::{Code, Error, Result};
+use llm_optim::backend::{Launch, Lower, Source};
 use op::decl::Grid;
 use op::model::Sample;
 use op::sig::Signature;

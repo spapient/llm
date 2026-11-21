@@ -46,7 +46,7 @@
 //! let op = cat.op("gemv_i4").expect("内置算子");
 //! // 报告层要的是"这次执行到的结论"，不是档案自述：`ledger` 逐档案建立证据再折成闭集状态。
 //! let dirs = cutile::dirs::Dirs::under(std::env::temp_dir().join("optim-doc"));
-//! let rows = cutile_run::ledger::ledger(&cat, &dirs);
+//! let rows = llm_optim::ledger::ledger(&cat, &dirs);
 //! assert_eq!(rows.len(), cat.profiles().len());
 //! # Ok(())
 //! # }

@@ -9,7 +9,7 @@
 //! [`detect_cce`] / [`ascend_device`]、[`detect_musa`] / [`musa_device`] 各自成对而不合成一个布尔：
 //! 合成后唯一的行动信息（装编译器 vs 换机器）就丢了。
 
-use cutile_run::toolchain::{Toolchain, parse_version, probe};
+use llm_optim::toolchain::{Toolchain, parse_version, probe};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;

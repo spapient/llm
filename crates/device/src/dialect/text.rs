@@ -59,7 +59,7 @@ pub(crate) fn launch_args(sample: &Sample, params: &[Param]) -> Result<String> {
 
 /// 回读的浮点位模式打印循环：`union` 保持 float→uint 位级保真，`src[i]` 是第 i 个元素的取值
 /// 表达式（CUDA/昇腾是 `h_<name>[i]`，Metal 是 `out[i]`）。三端共用：回读口径必须逐字一致，
-/// 否则 `cutile_run::runner::parse_bits` 会读出不同的位模式。
+/// 否则 `llm_optim::runner::parse_bits` 会读出不同的位模式。
 pub(crate) fn readback_bits(src: &str, len: usize, indent: &str) -> String {
     format!(
         "{indent}for (int i = 0; i < {len}; ++i) {{\n\

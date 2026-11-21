@@ -13,7 +13,7 @@ autotests = false
 [dependencies]
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 cutile = { path = "../cutile", package = "cutile" }
-cutile-run = { path = "../optim" }
+llm-optim = { path = "../optim" }
 op = { path = "../op", package = "llm-op" }
 prof = { path = "../prof", package = "llm-prof" }
 engine = { path = "../engine", package = "llm-engine" }

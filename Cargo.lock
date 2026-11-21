@@ -337,18 +337,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cutile-run"
-version = "0.1.0"
-dependencies = [
- "cutile",
- "llm-diagnostic",
- "llm-op",
- "llm-prim",
- "llm-prof",
- "llm-testkit",
-]
-
-[[package]]
 name = "difflib"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -573,12 +561,12 @@ version = "0.1.0"
 dependencies = [
  "assert_cmd",
  "cutile",
- "cutile-run",
  "llm-device",
  "llm-diagnostic",
  "llm-engine",
  "llm-nn",
  "llm-op",
+ "llm-optim",
  "llm-prim",
  "llm-prof",
  "llm-serve",
@@ -624,10 +612,10 @@ name = "llm-device"
 version = "0.1.0"
 dependencies = [
  "cutile",
- "cutile-run",
  "llm-diagnostic",
  "llm-engine",
  "llm-op",
+ "llm-optim",
  "llm-prof",
  "llm-testkit",
 ]
@@ -742,6 +730,18 @@ dependencies = [
 name = "llm-opencl"
 version = "0.1.0"
 dependencies = [
+ "llm-prof",
+ "llm-testkit",
+]
+
+[[package]]
+name = "llm-optim"
+version = "0.1.0"
+dependencies = [
+ "cutile",
+ "llm-diagnostic",
+ "llm-op",
+ "llm-prim",
  "llm-prof",
  "llm-testkit",
 ]

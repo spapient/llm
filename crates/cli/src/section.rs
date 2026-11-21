@@ -7,9 +7,9 @@
 
 use super::prose::{counted, fragment_note, params_note};
 use cutile::cap::VariantCheck;
-use cutile_run::bench::{Bench, Peak, Performance, Verdict};
-use cutile_run::doctor::{Built, CacheState, CacheWhy, Doctor};
-use cutile_run::verify::{Negotiation, Verified, VerifyReport};
+use llm_optim::bench::{Bench, Peak, Performance, Verdict};
+use llm_optim::doctor::{Built, CacheState, CacheWhy, Doctor};
+use llm_optim::verify::{Negotiation, Verified, VerifyReport};
 use std::fmt::Write as _;
 
 /// `[证据]` 段：依据类别、设备执行 / 本机自检条数与语言门；不成立的见证单列一行。
