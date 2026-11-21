@@ -311,7 +311,7 @@ mod expr {
 
     #[cfg(test)]
     mod tests {
-        include!("../tests/einsum_tests.rs");
+        include!("tests/einsum.rs");
     }
 }
 mod extents {

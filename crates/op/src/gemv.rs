@@ -823,7 +823,7 @@ fn run<F: Format>(
 }
 
 #[cfg(test)]
-#[path = "../tests/gemv_test_support.rs"]
+#[path = "tests/packed_test_support.rs"]
 pub(crate) mod packed_test_support;
 
 /// 量化分组（声明粒度）：`gemv_i2` / `gemv_i4` / `gemv_i8` 三档共用同一份，避免双份常量漂移。
@@ -1074,7 +1074,7 @@ pub mod gemv_i8 {
 
     #[cfg(test)]
     mod tests {
-        include!("../tests/gemv_i8_tests.rs");
+        include!("tests/gemv_i8.rs");
     }
 }
 
@@ -1149,6 +1149,6 @@ pub mod gemv_f32 {
 
     #[cfg(test)]
     mod tests {
-        include!("../tests/gemv_f32_tests.rs");
+        include!("tests/gemv.rs");
     }
 }

@@ -120,7 +120,7 @@ fn the_shared_skeleton_rejects_a_weight_of_the_wrong_element_type() {
 
 #[test]
 fn call_arguments_follow_the_template_signature() {
-    let signature = crate::sig::Signature::parse("gemv_f32", include_str!("../ops/gemv_f32.k"))
+    let signature = crate::sig::Signature::parse("gemv_f32", include_str!("../../ops/gemv_f32.k"))
         .expect("签名可解析");
     assert_eq!(
         signature
