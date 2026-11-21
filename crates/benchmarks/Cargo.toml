@@ -11,6 +11,9 @@ publish = false
 # 测试按模块平铺在 `tests/` 下（`regress.rs` 是根，其余是它的子模块），
 # 只有 `[[test]]` 里列出的那个 target；关掉自动发现，平铺的模块文件才不会各成一个 target。
 autotests = false
+# `src/main.rs` 是 criterion 入口而不是产品二进制：关掉 bin 自动发现，否则 cargo 会把它当
+# 一个库外的可执行文件去链接（那时还没有 dev-dependencies，也拿不到 criterion 的 main）。
+autobins = false
 
 # 测量容器只在 bench target 里用这些依赖：criterion 负责统计（预热、采样、测量时长
 # 都是它自己的配置），prof/op 是被测对象。
@@ -36,14 +39,15 @@ tool = { path = "../tools", package = "llm-tools" }
 testkit = { path = "../testkit", package = "llm-testkit" }
 
 # 显式关闭 libtest harness：criterion 提供自己的 main（criterion_main!）。
-# 源码放在 `bench/` 而不是 `src/`：本成员没有库、也不发布任何东西，全部是测量脚手架；
-# 放进 `src/` 会被静态质量门当成生产代码，也会占用 §N6 的 `crates/*/src` 行数预算。
-# 全部 25 组基准由这一个 target 声明（`bench/main.rs` + 同目录模块），只链接一次、
+# 源码平铺在 `src/` 一层，与其他成员同一套布局；本成员没有库、不发布任何东西，全部是测量
+# 脚手架，因此同样受生产门约束（`Call` 上限 0、`Ccn ≤ 5`、`Nloc ≤ 60`）——夹具失败一律走
+# `fixtures::checked`，`src/` 里没有 `unwrap` / `expect` / `panic!`。
+# 全部 24 组基准由这一个 target 声明（`src/main.rs` + 同目录五个模块），只链接一次、
 # 只起一个进程；分组名与用例名逐字保留，`target/criterion/<group>/<benchmark>/` 路径不变。
 # 选跑某组用 criterion 的过滤参数：`cargo bench -p llm-benchmarks -- gemv_f32`。
 [[bench]]
 name = "workspace"
-path = "bench/main.rs"
+path = "src/main.rs"
 harness = false
 
 [lints]

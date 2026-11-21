@@ -336,7 +336,7 @@ pub(crate) fn model_records_carry_every_field_a_reader_needs_to_judge_it() {
 // 照 `lld` 的口径判出来归档，但不在测试里断言它通过——这台机器当时抖不抖是测量结果，
 // 不是这个测试的前提。
 
-#[path = "../bench/fixtures.rs"]
+#[path = "../src/fixtures.rs"]
 #[allow(dead_code)]
 mod fixtures;
 
