@@ -7,25 +7,25 @@ use crate::pickle_storage::{as_tuple, storage_handle, tensor_of};
 use wire::{bad, or_bad};
 
 impl Vm {
+    /// 弹出栈顶 `n` 个值并保持原来的压栈顺序。
     pub(crate) fn pops(&mut self, n: usize) -> Result<Vec<Value>> {
-        let mut items = Vec::new();
-        for _ in 0..n {
-            items.push(self.pop()?);
-        }
-        items.reverse();
-        Ok(items)
+        let at = self
+            .stack
+            .len()
+            .checked_sub(n)
+            .ok_or_else(|| bad("栈下溢"))?;
+        Ok(self.stack.split_off(at))
     }
 
-    pub(crate) fn memo_index(&mut self, op: u8) -> Result<usize> {
-        match op {
-            b'q' | b'h' => Ok(usize::from(self.byte()?)),
-            b'r' | b'j' => Ok(self.uint(4)? as usize),
-            _ => Ok(self.memo.len()),
-        }
-    }
-
+    /// memo 的 5 条 opcode：`q`/`r`/`\x94` 存当前栈顶，`h`/`j` 取回；`r`/`j` 的索引是 4 字节。
     pub(crate) fn memo_op(&mut self, op: u8) -> Result<()> {
-        let idx = self.memo_index(op)?;
+        let idx = match op {
+            b'q' | b'h' => usize::from(self.byte()?),
+            b'r' | b'j' => {
+                usize::try_from(self.uint(4)?).map_err(|_| bad("memo 索引超出 usize"))?
+            }
+            _ => self.memo.len(),
+        };
         match op {
             b'h' | b'j' => self.recall_memo(idx),
             _ => self.store_memo(idx),
@@ -68,24 +68,21 @@ impl Vm {
         Ok(())
     }
 
-    pub(crate) fn persistent_load(&mut self) -> Result<()> {
+    pub(crate) fn persistent_load(&mut self, _op: u8) -> Result<()> {
         let items = as_tuple(self.pop()?, "persistent id 不是元组")?;
         let (key, dtype) = storage_handle(&items)?;
         self.stack.push(Value::Storage { key, dtype });
         Ok(())
     }
 
-    pub(crate) fn reduce(&mut self) -> Result<()> {
+    /// `REDUCE`：弹出实参与可调用对象，只认张量重建与 `OrderedDict` 两种构造。
+    pub(crate) fn reduce(&mut self, _op: u8) -> Result<()> {
         let args = self.pop()?;
         let (module, name) = match self.pop()? {
             Value::Global { module, name } => (module, name),
             _ => return Err(bad("REDUCE 的可调用对象不是 GLOBAL")),
         };
-        self.reduced(&module, &name, args)
-    }
-
-    pub(crate) fn reduced(&mut self, module: &str, name: &str, args: Value) -> Result<()> {
-        match (module, name) {
+        match (module.as_str(), name.as_str()) {
             ("torch._utils", "_rebuild_tensor_v2") => self.rebuild_tensor(args),
             ("collections", "OrderedDict") => {
                 self.stack.push(Value::Dict(Vec::new()));
@@ -114,53 +111,38 @@ impl Vm {
         }
     }
 
-    pub(crate) fn pop_pairs(&mut self) -> Result<Vec<(Value, Value)>> {
-        let items = self.pop_until_marker()?;
-        if items.len() % 2 != 0 {
-            return Err(bad("SETITEMS 的项数为奇数"));
-        }
-        Ok(items
-            .chunks(2)
-            .map(|pair| (pair[0].clone(), pair[1].clone()))
-            .collect())
-    }
-
-    pub(crate) fn set_items(&mut self) -> Result<()> {
-        let pairs = self.pop_pairs()?;
-        let dict = self
-            .stack
-            .last_mut()
-            .ok_or_else(|| bad("SETITEMS 缺目标 dict"))?;
-        if let Value::Dict(entries) = dict {
-            entries.extend(pairs);
-            Ok(())
+    /// 栈顶 dict 写入：`SETITEM` 弹一队键值，`SETITEMS` 弹 MARK 起的一段（项数必须为偶数）。
+    pub(crate) fn set_item(&mut self, op: u8) -> Result<()> {
+        let (pairs, label) = if op == b's' {
+            let value = self.pop()?;
+            (vec![(self.pop()?, value)], "SETITEM")
         } else {
-            Err(bad("SETITEMS 目标不是 dict"))
-        }
-    }
-
-    pub(crate) fn set_item(&mut self) -> Result<()> {
-        let value = self.pop()?;
-        let key = self.pop()?;
+            let items = self.pop_until_marker()?;
+            if items.len() % 2 != 0 {
+                return Err(bad("SETITEMS 的项数为奇数"));
+            }
+            let pairs = items
+                .chunks(2)
+                .map(|pair| (pair[0].clone(), pair[1].clone()))
+                .collect();
+            (pairs, "SETITEMS")
+        };
         match self.stack.last_mut() {
             Some(Value::Dict(entries)) => {
-                entries.push((key, value));
+                entries.extend(pairs);
                 Ok(())
             }
-            _ => Err(bad("SETITEM 目标不是 dict")),
+            _ => Err(bad(format!("{label} 目标不是 dict"))),
         }
     }
 
+    /// 栈顶 list 追加：`APPEND` 弹一值，`APPENDS` 弹 MARK 起的一段。
     pub(crate) fn append(&mut self, op: u8) -> Result<()> {
         let (items, label) = if op == b'a' {
             (vec![self.pop()?], "APPEND")
         } else {
             (self.pop_until_marker()?, "APPENDS")
         };
-        self.extend_list(items, label)
-    }
-
-    pub(crate) fn extend_list(&mut self, items: Vec<Value>, label: &str) -> Result<()> {
         match self.stack.last_mut() {
             Some(Value::List(list)) => {
                 list.extend(items);

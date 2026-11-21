@@ -3,7 +3,7 @@
 
 use diagnostic::Result;
 use dtype::DType;
-use wire::bad;
+use wire::{bad, or_bad};
 
 use crate::bin::Tensor;
 use crate::bytes::slice;
@@ -24,17 +24,17 @@ pub(crate) enum Value {
 }
 
 #[derive(Default)]
-pub(crate) struct Vm<'a> {
+pub(crate) struct Vm {
     pub(crate) stack: Vec<Value>,
     pub(crate) memo: Vec<Value>,
     pub(crate) at: usize,
-    pub(crate) pkl: &'a [u8],
+    pub(crate) pkl: Vec<u8>,
     pub(crate) tensors: Vec<Tensor>,
 }
 
-/// 一个 opcode 的处理函数。opcode 字节本身也要传进去：`K`/`M`、`X`/`\x8c`、`q`/`r`/`h`/`j`
-/// 都是一套处理覆盖多个码。
-type Handler = for<'v> fn(&mut Vm<'v>, u8) -> Result<()>;
+/// 一个 opcode 的处理函数。opcode 字节始终传入：`K`/`M`/`J`、`X`/`\x8c`、`q`/`r`/`h`/`j`
+/// 都是一套处理覆盖多个码，统一签名后整张表才只是「opcode → 函数」的平表。
+type Handler = fn(&mut Vm, u8) -> Result<()>;
 
 /// opcode → 处理函数。整张表就是 pickle 的能力清单：删掉一行，那条 opcode 就退化成「未知」错误。
 static OPS: [Option<Handler>; 256] = ops();
@@ -55,14 +55,14 @@ const fn ops() -> [Option<Handler>; 256] {
     // 文本：长度前缀 4 字节（`X`）或 1 字节（`\x8c`）。
     table[b'X' as usize] = Some(Vm::string);
     table[b'\x8c' as usize] = Some(Vm::string);
-    // 全局名与不可达值。
+    // 浮点与全局名。
     table[b'G' as usize] = Some(Vm::float);
     table[b'c' as usize] = Some(Vm::global);
-    table[b'\x93' as usize] = Some(Vm::global_stack);
-    // 整数：`K`/`M` 无符号 1/2 字节，`J` 补码 4 字节，`\x8a`/`\x8b` 变长补码。
-    table[b'K' as usize] = Some(Vm::push_uint);
-    table[b'M' as usize] = Some(Vm::push_uint);
-    table[b'J' as usize] = Some(Vm::push_binint);
+    table[b'\x93' as usize] = Some(Vm::global);
+    // 整数：`K`/`M` 无符号 1/2 字节，`J` 补码 4 字节，`\x8a`/`\x8b` 长度前缀 1/4 字节。
+    table[b'K' as usize] = Some(Vm::push_int);
+    table[b'M' as usize] = Some(Vm::push_int);
+    table[b'J' as usize] = Some(Vm::push_int);
     table[b'\x8a' as usize] = Some(Vm::long);
     table[b'\x8b' as usize] = Some(Vm::long);
     // 元组：`t` 读 MARK 起的一段，`\x85..\x87` 按 1/2/3 个成员。
@@ -87,10 +87,10 @@ const fn ops() -> [Option<Handler>; 256] {
     table
 }
 
-impl<'a> Vm<'a> {
-    pub(crate) fn run(pkl: &'a [u8]) -> Result<Vec<Tensor>> {
+impl Vm {
+    pub(crate) fn run(pkl: &[u8]) -> Result<Vec<Tensor>> {
         let mut vm = Vm {
-            pkl,
+            pkl: pkl.to_vec(),
             ..Vm::default()
         };
         vm.execute()?;
@@ -110,13 +110,13 @@ impl<'a> Vm<'a> {
     }
 
     pub(crate) fn byte(&mut self) -> Result<u8> {
-        let b = *diag::required(self.pkl.get(self.at), "pickle 意外结束")?;
+        let b = *or_bad(self.pkl.get(self.at), "pickle 意外结束")?;
         self.at += 1;
         Ok(b)
     }
 
-    pub(crate) fn bytes(&mut self, n: usize) -> Result<&'a [u8]> {
-        let out = slice(self.pkl, self.at, n)?;
+    pub(crate) fn bytes(&mut self, n: usize) -> Result<&[u8]> {
+        let out = slice(&self.pkl, self.at, n)?;
         self.at += n;
         Ok(out)
     }
@@ -131,21 +131,15 @@ impl<'a> Vm<'a> {
 
     pub(crate) fn text(&mut self, n: usize) -> Result<String> {
         let raw = self.bytes(n)?;
-        std::str::from_utf8(raw)
-            .map(str::to_owned)
-            .map_err(|_| bad("字符串不是 UTF-8"))
+        String::from_utf8(raw.to_vec()).map_err(|_| bad("字符串不是 UTF-8"))
     }
 
     pub(crate) fn line(&mut self) -> Result<String> {
-        let stop = self
-            .pkl
-            .get(self.at..)
-            .and_then(|tail| tail.iter().position(|&b| b == b'\n'));
-        let raw = self.bytes(diag::required(stop, "GLOBAL 缺换行")?)?;
+        let tail = or_bad(self.pkl.get(self.at..), "GLOBAL 偏移越界")?;
+        let len = or_bad(tail.iter().position(|&b| b == b'\n'), "GLOBAL 缺换行")?;
+        let text = self.text(len)?;
         self.byte()?; // 消费换行
-        std::str::from_utf8(raw)
-            .map(str::to_owned)
-            .map_err(|_| bad("GLOBAL 不是 UTF-8"))
+        Ok(text)
     }
 
     /// `PROTO` 的 1 字节版本号与 `FRAME` 的 8 字节帧长：值不参与重建，字节必须完整存在。
@@ -153,7 +147,7 @@ impl<'a> Vm<'a> {
         self.bytes(if op == b'\x95' { 8 } else { 1 }).map(drop)
     }
 
-    pub(crate) fn newobj(&mut self) -> Result<()> {
+    pub(crate) fn newobj(&mut self, _op: u8) -> Result<()> {
         self.pop()?;
         self.pop()?;
         Err(bad("NEWOBJ 不支持的类"))
@@ -178,7 +172,7 @@ impl<'a> Vm<'a> {
     }
 
     /// `BINFLOAT`：8 字节**大端** IEEE 双精度；张量重建不使用这个值，但字节必须完整存在。
-    pub(crate) fn float(&mut self) -> Result<()> {
+    pub(crate) fn float(&mut self, _op: u8) -> Result<()> {
         self.bytes(8).map(drop)?;
         self.stack.push(Value::Scalar);
         Ok(())
@@ -187,45 +181,44 @@ impl<'a> Vm<'a> {
     /// `LONG1`/`LONG4`：长度分别是 1/4 字节，正文是变长小端补码；超过 8 字节装不进 `i64`，
     /// 由 [`Vm::integer`] 统一拒掉。
     pub(crate) fn long(&mut self, op: u8) -> Result<()> {
-        let len = self.uint(if op == b'\x8b' { 4 } else { 1 })? as usize;
-        let raw = self.bytes(len)?;
-        self.integer(raw, true)
+        let len = usize::try_from(self.uint(if op == b'\x8b' { 4 } else { 1 })?)
+            .map_err(|_| bad("整数长度超出 usize"))?;
+        self.integer(len, true)
     }
 
-    pub(crate) fn global(&mut self) -> Result<()> {
-        let module = self.line()?;
-        let name = self.line()?;
-        self.stack.push(Value::Global { module, name });
-        Ok(())
-    }
-
-    pub(crate) fn global_stack(&mut self) -> Result<()> {
-        let name = into_str(&self.pop()?)?;
-        let module = into_str(&self.pop()?)?;
+    /// 全局名：`GLOBAL` 从流里读两行，`STACK_GLOBAL` 从栈上取两个字符串（模块在前）。
+    pub(crate) fn global(&mut self, op: u8) -> Result<()> {
+        let (module, name) = if op == b'c' {
+            (self.line()?, self.line()?)
+        } else {
+            let name = into_str(&self.pop()?)?;
+            (into_str(&self.pop()?)?, name)
+        };
         self.stack.push(Value::Global { module, name });
         Ok(())
     }
 
     /// `BININT1`/`BININT2`（无符号）与 `BININT`（4 字节补码）共用一套符号规则。
-    pub(crate) fn push_uint(&mut self, op: u8) -> Result<()> {
-        let raw = self.bytes(if op == b'M' { 2 } else { 1 })?;
-        self.integer(raw, false)
+    pub(crate) fn push_int(&mut self, op: u8) -> Result<()> {
+        let (width, signed) = match op {
+            b'M' => (2, false),
+            b'J' => (4, true),
+            _ => (1, false),
+        };
+        self.integer(width, signed)
     }
 
-    pub(crate) fn push_binint(&mut self) -> Result<()> {
-        let raw = self.bytes(4)?;
-        self.integer(raw, true)
-    }
-
-    /// 小端补码字节 → `i64`：`signed` 时按最高位符号扩展（`BININT`/`LONG*`），否则零扩展
+    /// 定宽小端补码字段 → `i64`：`signed` 按最高位符号扩展（`BININT`/`LONG*`），否则零扩展
     /// （`BININT1`/`BININT2`）；超过 8 字节装不进 `i64`，显式失败。
-    fn integer(&mut self, raw: &[u8], signed: bool) -> Result<()> {
-        if raw.len() > 8 {
+    fn integer(&mut self, width: usize, signed: bool) -> Result<()> {
+        if width > 8 {
             return Err(bad("整数超过 i64 宽度"));
         }
+        let raw = slice(&self.pkl, self.at, width)?;
+        self.at += width;
         let negative = signed && raw.last().is_some_and(|&last| last & 0x80 != 0);
         let mut buf = [if negative { 0xFF } else { 0 }; 8];
-        buf[..raw.len()].copy_from_slice(raw);
+        buf[..width].copy_from_slice(raw);
         self.stack.push(Value::Int(i64::from_le_bytes(buf)));
         Ok(())
     }
@@ -240,7 +233,7 @@ impl<'a> Vm<'a> {
     }
 
     /// `POP`：丢弃栈顶。
-    pub(crate) fn discard(&mut self) -> Result<()> {
+    pub(crate) fn discard(&mut self, _op: u8) -> Result<()> {
         self.pop().map(drop)
     }
 }

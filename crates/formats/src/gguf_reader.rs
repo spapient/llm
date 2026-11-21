@@ -83,7 +83,6 @@ impl<'a> Reader<'a> {
         Ok(Value::Arr(out))
     }
 
-
     fn scalar(&mut self, kind: u32) -> Result<Value> {
         let packed = NUMBERS.get(kind as usize).copied().unwrap_or(0);
         if packed == 0 {
@@ -161,7 +160,6 @@ fn shape(reader: &mut Reader<'_>) -> Result<Vec<u64>> {
     }
     Ok(shape)
 }
-
 
 /// 头部 magic 与版本：两个都对得上才继续，不做向后兼容猜测。
 fn stamp(reader: &mut Reader<'_>) -> Result<()> {

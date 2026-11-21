@@ -154,7 +154,6 @@ fn zip64_sizes(bytes: &[u8], at: usize, name_len: usize) -> Result<(u64, usize)>
     Ok((wide[1], local))
 }
 
-
 fn local_start(bytes: &[u8], local: usize) -> Result<usize> {
     check_sig(bytes, local, LOCAL_SIG, "本地头签名不符")?;
     let name_len = usize::from(u16_at(bytes, local + 26)?);
