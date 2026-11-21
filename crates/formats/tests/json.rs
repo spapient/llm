@@ -150,3 +150,28 @@ fn the_ledger_reader_still_rejects_malformed_numbers() {
 
     assert!(parse(r#"{"a": 1e3}"#).is_err());
 }
+
+#[test]
+fn minus_zero_is_still_an_integer() {
+    let value = parse(r#"{"a": -0}"#).expect("`-0` 是合法整数");
+
+    assert_eq!(value.get("a").and_then(|it| it.integer().ok()), Some(0));
+
+    for text in [r#"{"a": 00}"#, r#"{"a": -00}"#, r#"{"a": -01}"#] {
+        assert!(parse(text).is_err(), "{text}");
+    }
+}
+
+#[test]
+fn a_header_with_many_keys_is_deduplicated_in_one_pass() {
+    let mut text = String::from("{");
+    for index in 0..8_000 {
+        text.push_str(&format!("\"w{index}\": {index},"));
+    }
+    text.pop();
+    text.push('}');
+
+    let value = parse(&text).expect("合法");
+
+    assert_eq!(value.object().expect("对象").len(), 8_000);
+}

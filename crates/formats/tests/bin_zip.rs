@@ -39,3 +39,67 @@ fn zip64_extra_handles_absurd_lengths_without_overflow() {
     assert!(zip64_extra(&bytes, 0, usize::MAX, 0).is_ok());
     assert!(zip64_extra(&bytes, usize::MAX - 2, 12, 0).is_err());
 }
+
+/// 最小 ZIP：一条 STORED 条目，中央目录里 `csize`/`usize`/本地头偏移全写成
+/// `0xFFFF_FFFF`，真值按 APPNOTE 顺序（原长、压缩长、本地头偏移）放进 ZIP64 extra。
+fn zip64_archive(name: &str, payload: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend(0x0403_4B50u32.to_le_bytes());
+    out.extend(45u16.to_le_bytes());
+    out.extend(0u16.to_le_bytes());
+    out.extend(0u16.to_le_bytes());
+    out.extend(0u16.to_le_bytes());
+    out.extend(0u16.to_le_bytes());
+    out.extend(0u32.to_le_bytes());
+    out.extend((payload.len() as u32).to_le_bytes());
+    out.extend((payload.len() as u32).to_le_bytes());
+    out.extend((name.len() as u16).to_le_bytes());
+    out.extend(0u16.to_le_bytes());
+    out.extend(name.as_bytes());
+    out.extend(payload);
+    let cd_start = out.len();
+    out.extend(0x0201_4B50u32.to_le_bytes());
+    out.extend(45u16.to_le_bytes());
+    out.extend(45u16.to_le_bytes());
+    out.extend(0u16.to_le_bytes());
+    out.extend(0u16.to_le_bytes());
+    out.extend(0u16.to_le_bytes());
+    out.extend(0u16.to_le_bytes());
+    out.extend(0u32.to_le_bytes());
+    out.extend(0xFFFF_FFFFu32.to_le_bytes());
+    out.extend(0xFFFF_FFFFu32.to_le_bytes());
+    out.extend((name.len() as u16).to_le_bytes());
+    out.extend(24u16.to_le_bytes());
+    out.extend(0u16.to_le_bytes());
+    out.extend(0u16.to_le_bytes());
+    out.extend(0u16.to_le_bytes());
+    out.extend(0u32.to_le_bytes());
+    out.extend(0xFFFF_FFFFu32.to_le_bytes());
+    out.extend(name.as_bytes());
+    out.extend(0x0001u16.to_le_bytes());
+    out.extend(24u16.to_le_bytes());
+    out.extend((payload.len() as u64).to_le_bytes());
+    out.extend((payload.len() as u64).to_le_bytes());
+    out.extend(0u64.to_le_bytes());
+    let cd_size = out.len() - cd_start;
+    out.extend(0x0605_4B50u32.to_le_bytes());
+    out.extend(0u16.to_le_bytes());
+    out.extend(0u16.to_le_bytes());
+    out.extend(1u16.to_le_bytes());
+    out.extend(1u16.to_le_bytes());
+    out.extend((cd_size as u32).to_le_bytes());
+    out.extend((cd_start as u32).to_le_bytes());
+    out.extend(0u16.to_le_bytes());
+    out
+}
+
+#[test]
+fn zip64_fields_are_indexed_by_presence_not_by_field_number() {
+    let raw = zip64_archive("/data/0", &[0xAA, 0xBB, 0xCC, 0xDD]);
+    let zip = Zip::parse(&raw).expect("解析 ZIP64 归档");
+    assert_eq!(
+        zip.data_suffix("/data/0").expect("数据"),
+        &[0xAA, 0xBB, 0xCC, 0xDD],
+        "本地头偏移是 extra 里的第 3 个（槽位 2），不是槽位 0"
+    );
+}

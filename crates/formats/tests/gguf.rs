@@ -266,3 +266,11 @@ fn raw_rejects_an_offset_whose_length_overflows() {
         "偏移 + 长度溢出必须走错误分支，而不是靠 debug 的算术溢出 panic"
     );
 }
+
+#[test]
+fn a_partial_quantized_block_is_an_error_not_a_zero_tail() {
+    let raw = [0u8; 34];
+    let mut out = [1.0f32; 33];
+    let error = dequantize(Kind::Q8_0, &raw, &mut out).expect_err("33 不是 32 的整数倍");
+    assert!(error.to_string().contains("整除"), "{error}");
+}
