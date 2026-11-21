@@ -19,6 +19,8 @@ pub struct Tape {
     requirement: Vec<Requirement>,
     depth: Vec<u32>,
     producer: Vec<Option<u32>>,
+    /// 每个变量是否被任何节点当作输入引用过；`retain` 的 O(1) 判定。
+    referenced: Vec<bool>,
     next: u32,
 }
 
@@ -34,6 +36,7 @@ impl Tape {
         self.requirement.clear();
         self.depth.clear();
         self.producer.clear();
+        self.referenced.clear();
         self.next = 0;
     }
 
@@ -74,8 +77,10 @@ impl Tape {
 
     /// 记录一次算子调用，需求由输入推出：有输入要梯度就是反向步，全不要就不进图。
     pub fn record(&mut self, op: impl Into<String>, inputs: &[Var]) -> Result<Var> {
-        let requirement = self.infer(inputs, "autograd::Tape::record")?;
-        self.record_with(op, inputs, requirement)
+        let (requirement, deepest) = self.survey(inputs, "autograd::Tape::record")?;
+        let op = op.into();
+        self.named(&op)?;
+        Ok(self.push(op, inputs, requirement, deepest))
     }
 
     /// 记录一次算子调用并显式声明输出的需求；`None` 即 detach，梯度到此为止。
@@ -86,30 +91,19 @@ impl Tape {
         requirement: Requirement,
     ) -> Result<Var> {
         let op = op.into();
-        self.checked(&op, inputs, requirement)?;
-        let depth = match requirement.requires() {
-            true => self.deepest(inputs) + 1,
-            false => 0,
-        };
-        let output = self.fresh(requirement, depth);
-        let index = self.nodes.len() as u32;
-        self.producer[output.id() as usize] = Some(index);
-        self.nodes.push(Node::new(
-            output,
-            Arc::from(op),
-            Arc::from(inputs),
-            depth,
-            requirement,
-        ));
-        Ok(output)
+        let (_, deepest) = self.checked(&op, inputs, requirement)?;
+        Ok(self.push(op, inputs, requirement, deepest))
     }
 
     /// 记录的公共校验：算子名非空、输入存在、声明的需求与输入相容。
-    fn checked(&self, op: &str, inputs: &[Var], requirement: Requirement) -> Result<()> {
-        if op.trim().is_empty() {
-            return Err(invalid("autograd::Tape::record_with", "算子名不能为空"));
-        }
-        let inferred = self.infer(inputs, "autograd::Tape::record_with")?;
+    fn checked(
+        &self,
+        op: &str,
+        inputs: &[Var],
+        requirement: Requirement,
+    ) -> Result<(Requirement, u32)> {
+        self.named(op)?;
+        let (inferred, deepest) = self.survey(inputs, "autograd::Tape::record_with")?;
         if requirement.requires() && !inferred.requires() {
             return Err(invalid(
                 "autograd::Tape::record_with",
@@ -118,6 +112,14 @@ impl Tape {
                     requirement.name()
                 ),
             ));
+        }
+        Ok((inferred, deepest))
+    }
+
+    /// 算子名非空；空名会让诊断与调度都失去可读性。
+    fn named(&self, op: &str) -> Result<()> {
+        if op.trim().is_empty() {
+            return Err(invalid("autograd::Tape::record_with", "算子名不能为空"));
         }
         Ok(())
     }
@@ -145,6 +147,7 @@ impl Tape {
     pub fn validate(&self) -> Result<()> {
         for node in self.nodes() {
             self.checked(node.op(), node.inputs(), node.requirement())
+                .map(|_| ())
                 .map_err(|error| {
                     error.with(format!(
                         "节点 {}（算子 `{}`）",
@@ -218,35 +221,47 @@ impl Tape {
         self.requirement.push(requirement);
         self.depth.push(depth);
         self.producer.push(None);
+        self.referenced.push(false);
         var
     }
 
-    /// 输入里的最大深度；没有输入时返回 0（叶子之上的一层）。
-    fn deepest(&self, inputs: &[Var]) -> u32 {
-        inputs
-            .iter()
-            .map(|input| self.depth[input.id() as usize])
-            .max()
-            .unwrap_or(0)
+    /// 分配编号并追加节点；输入边在这里一次标好，后续 `retain` 不再扫全图。
+    fn push(&mut self, op: String, inputs: &[Var], requirement: Requirement, deepest: u32) -> Var {
+        let depth = match requirement.requires() {
+            true => deepest.saturating_add(1),
+            false => 0,
+        };
+        let output = self.fresh(requirement, depth);
+        let index = self.nodes.len() as u32;
+        self.producer[output.id() as usize] = Some(index);
+        for input in inputs {
+            self.referenced[input.id() as usize] = true;
+        }
+        self.nodes.push(Node::new(
+            output,
+            Arc::from(op),
+            Arc::from(inputs),
+            depth,
+            requirement,
+        ));
+        output
     }
 
-    /// 校验输入变量并推出需求；不存在的编号在这里失败，避免反向时"梯度莫名丢失"。
-    fn infer(&self, inputs: &[Var], site: &'static str) -> Result<Requirement> {
+    /// 校验输入变量并推出需求与最大深度；不存在的编号在这里失败，避免反向时"梯度莫名丢失"。
+    fn survey(&self, inputs: &[Var], site: &'static str) -> Result<(Requirement, u32)> {
         let mut merged = Requirement::None;
+        let mut deepest = 0;
         for input in inputs {
             let index = self.check(*input, site)?;
             merged = merged.merged(self.requirement[index]);
+            deepest = deepest.max(self.depth[index]);
         }
-        Ok(merged)
+        Ok((merged, deepest))
     }
 
     /// 该变量是否被任何节点当作输入引用过。
     fn consumed(&self, index: usize) -> bool {
-        self.nodes.iter().any(|node| {
-            node.inputs()
-                .iter()
-                .any(|input| input.id() as usize == index)
-        })
+        self.referenced.get(index).copied().unwrap_or(false)
     }
 
     /// 编号校验：越界即"引用了一个还没创建的变量"。

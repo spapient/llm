@@ -146,8 +146,7 @@ fn chained(length: usize, budget: u64) -> (Tape, Schedule, Vec<u64>, Plan) {
     let (tape, loss) = chain(length);
     let schedule = tape.backward(loss).expect("在图上");
     let bytes = vec![8u64; tape.vars() as usize];
-    let plan =
-        Plan::of(&tape, &schedule, bytes.as_slice(), Budget::new(budget)).expect("可计划");
+    let plan = Plan::of(&tape, &schedule, bytes.as_slice(), Budget::new(budget)).expect("可计划");
     (tape, schedule, bytes, plan)
 }
 
@@ -223,8 +222,7 @@ fn a_checkpoint_lives_until_its_last_need() {
     let loss = tape.record("reduce_sum", &[joined]).expect("记录");
     let schedule = tape.backward(loss).expect("在图上");
     let bytes = vec![8u64; tape.vars() as usize];
-    let plan =
-        Plan::of(&tape, &schedule, bytes.as_slice(), Budget::new(1 << 20)).expect("放得下");
+    let plan = Plan::of(&tape, &schedule, bytes.as_slice(), Budget::new(1 << 20)).expect("放得下");
 
     let truth = forward(&tape, &[1.0, 1.0]);
     let mut table = Table::new(&tape, &plan, &truth, &bytes);

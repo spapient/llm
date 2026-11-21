@@ -58,24 +58,27 @@
 #![deny(unsafe_code)]
 
 mod account;
+mod budget;
 mod config;
-
 mod error;
-
+mod facts;
 mod graph;
 mod plan;
 mod replay;
 mod schedule;
+mod segment;
+mod sizes;
 mod summary;
-
 mod tape;
 
 pub use account::Account;
+pub use budget::{Budget, Choice, MemoryPolicy};
 pub use config::Config;
 pub use graph::{Node, Requirement, Role, Var};
-pub use plan::{Budget, Choice, Footprint, MemoryPolicy, Plan, Sizes};
+pub use plan::Plan;
 pub use replay::{Replay, Store};
 pub use schedule::{Ordering, Schedule};
+pub use sizes::{Footprint, Sizes};
 pub use summary::Summary;
 pub use tape::Tape;
 

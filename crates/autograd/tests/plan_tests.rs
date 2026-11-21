@@ -1,6 +1,6 @@
 use crate::{
-    Budget, Choice, Config, Footprint, MemoryPolicy, Ordering, Plan, Requirement, Schedule,
-    Sizes, Tape, Var,
+    Budget, Choice, Config, Footprint, MemoryPolicy, Ordering, Plan, Requirement, Schedule, Sizes,
+    Tape, Var,
 };
 use diagnostic::Code;
 use tensor::{DType, Shape};
@@ -26,8 +26,7 @@ fn uniform(tape: &Tape, bytes: u64) -> Vec<u64> {
 #[test]
 fn keep_all_when_the_budget_fits_everything() {
     let (tape, schedule) = chain(4);
-    let plan =
-        Plan::of(&tape, &schedule, uniform(&tape, 8), Budget::new(1 << 20)).expect("放得下");
+    let plan = Plan::of(&tape, &schedule, uniform(&tape, 8), Budget::new(1 << 20)).expect("放得下");
     assert_eq!(plan.choice(), Choice::KeepAll);
     assert_eq!(plan.replayed(), 0);
     // 四个 relu 的输出被消费，loss 的输出没人消费：峰值就是这四块。
@@ -123,8 +122,7 @@ fn a_budget_below_the_floor_is_unsupported() {
 #[test]
 fn a_tight_budget_buys_replay_instead_of_memory() {
     let (tape, schedule) = chain(16);
-    let plan =
-        Plan::of(&tape, &schedule, uniform(&tape, 16), Budget::new(200)).expect("可分段");
+    let plan = Plan::of(&tape, &schedule, uniform(&tape, 16), Budget::new(200)).expect("可分段");
     assert_eq!(plan.choice(), Choice::Recompute);
     assert!(plan.peak() <= 200, "峰值 {} 超预算", plan.peak());
     assert!(plan.replayed() > 0, "省下的显存必须用重放换");
@@ -146,8 +144,7 @@ fn release_points_follow_the_last_consumer_not_the_scope() {
     let joined = tape.record("add", &[left, right]).expect("记录");
     let loss = tape.record("reduce_sum", &[joined]).expect("记录");
     let schedule = tape.backward(loss).expect("在图上");
-    let plan =
-        Plan::of(&tape, &schedule, uniform(&tape, 4), Budget::new(1 << 20)).expect("放得下");
+    let plan = Plan::of(&tape, &schedule, uniform(&tape, 4), Budget::new(1 << 20)).expect("放得下");
 
     // 反向顺序是 loss(0)、joined(1)、right(2)、left(3)、shared(4)：共享的激活活到第 3 步。
     assert_eq!(
@@ -167,8 +164,7 @@ fn release_points_follow_the_last_consumer_not_the_scope() {
 #[test]
 fn a_zero_budget_cannot_hold_anything() {
     let (tape, schedule) = chain(3);
-    let error =
-        Plan::of(&tape, &schedule, uniform(&tape, 8), Budget::new(0)).expect_err("放不下");
+    let error = Plan::of(&tape, &schedule, uniform(&tape, 8), Budget::new(0)).expect_err("放不下");
     assert_eq!(error.code(), Code::Invalid);
     assert!(error.to_string().contains("预算 0"), "{error}");
 }
@@ -176,10 +172,8 @@ fn a_zero_budget_cannot_hold_anything() {
 #[test]
 fn the_plan_is_deterministic() {
     let (tape, schedule) = chain(12);
-    let first =
-        Plan::of(&tape, &schedule, uniform(&tape, 16), Budget::new(160)).expect("可分段");
-    let second =
-        Plan::of(&tape, &schedule, uniform(&tape, 16), Budget::new(160)).expect("可分段");
+    let first = Plan::of(&tape, &schedule, uniform(&tape, 16), Budget::new(160)).expect("可分段");
+    let second = Plan::of(&tape, &schedule, uniform(&tape, 16), Budget::new(160)).expect("可分段");
     assert_eq!(first, second);
 }
 
@@ -218,8 +212,7 @@ fn a_dead_branch_stays_out_of_the_plan() {
     let live = tape.record("relu", &[x]).expect("记录");
     let loss = tape.record("reduce_sum", &[live]).expect("记录");
     let schedule = tape.backward(loss).expect("在图上");
-    let plan =
-        Plan::of(&tape, &schedule, uniform(&tape, 8), Budget::new(1 << 20)).expect("放得下");
+    let plan = Plan::of(&tape, &schedule, uniform(&tape, 8), Budget::new(1 << 20)).expect("放得下");
     assert!(
         !plan.keep(dead),
         "不进图的分支没有反向步骤，也就不进显存计划"
@@ -257,12 +250,10 @@ fn a_detached_value_consumed_by_a_live_step_is_kept_and_never_dropped() {
 fn a_deep_chain_does_not_recurse_and_fits_a_tight_budget() {
     let (tape, schedule) = chain(20_000);
     let bytes = uniform(&tape, 1);
-    let large =
-        Plan::of(&tape, &schedule, bytes.as_slice(), Budget::new(1 << 20)).expect("全留");
+    let large = Plan::of(&tape, &schedule, bytes.as_slice(), Budget::new(1 << 20)).expect("全留");
     assert_eq!(large.choice(), Choice::KeepAll);
 
-    let tight =
-        Plan::of(&tape, &schedule, bytes.as_slice(), Budget::new(2_000)).expect("可分段");
+    let tight = Plan::of(&tape, &schedule, bytes.as_slice(), Budget::new(2_000)).expect("可分段");
     assert!(tight.peak() <= 2_000, "峰值 {} 超预算", tight.peak());
     assert!(tight.replayed() > 0);
 }
@@ -306,19 +297,12 @@ fn random_graphs_never_exceed_their_budget() {
 }
 
 /// 固定图形与预算下的计划摘要：`saved`/`release`/`replayed`/`peak` 逐值冻结。
-fn summarize(
-    case: &str,
-    tape: &Tape,
-    schedule: &Schedule,
-    bytes: &[u64],
-    budget: u64,
-) -> String {
+fn summarize(case: &str, tape: &Tape, schedule: &Schedule, bytes: &[u64], budget: u64) -> String {
     let Ok(plan) = Plan::of(tape, schedule, bytes, Budget::new(budget)) else {
         return format!("{case}/{budget}: 放不下");
     };
     let saved: Vec<u32> = plan.saved().iter().map(|var| var.id()).collect();
-    let release: Vec<Option<usize>> =
-        plan.saved().iter().map(|var| plan.release(*var)).collect();
+    let release: Vec<Option<usize>> = plan.saved().iter().map(|var| plan.release(*var)).collect();
     format!(
         "{case}/{budget}: {:?} saved={saved:?} release={release:?} replayed={} peak={}",
         plan.choice(),

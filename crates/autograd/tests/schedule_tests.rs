@@ -323,9 +323,10 @@ fn reference(tape: &Tape, loss: Var) -> (BTreeSet<u32>, BTreeSet<u32>) {
         if let Some(node) = tape.node(var) {
             nodes.insert(var.id());
             stack.extend(
-                node.inputs().iter().copied().filter(|input| {
-                    tape.requirement(*input).is_some_and(Requirement::requires)
-                }),
+                node.inputs()
+                    .iter()
+                    .copied()
+                    .filter(|input| tape.requirement(*input).is_some_and(Requirement::requires)),
             );
         }
     }

@@ -178,7 +178,7 @@ impl Schedule {
     /// 一个节点的可达性已经由它全部消费者决定：这正是拓扑序的逆序，不需要显式栈，
     /// 也不需要递归——两万层的前向与两层一样走一遍。
     fn mark(&mut self, tape: &Tape, loss: Var) {
-        self.graph.fill(false);
+        // `reset` 已把位图补成等长的全 false，这里不再整表清零。
         self.graph[loss.id() as usize] = true;
         for node in tape.nodes().iter().rev() {
             if !self.graph[node.output().id() as usize] {
@@ -207,13 +207,25 @@ impl Schedule {
             ordering,
             ..
         } = self;
-        steps.extend(
-            tape.nodes()
-                .iter()
-                .filter(|node| graph[node.output().id() as usize])
-                .cloned(),
-        );
-        steps.sort_by(|left, right| compare(*ordering, left, right));
+        match ordering {
+            // 插入序就是前向逆序，倒着过滤一遍即可，省掉一次排序。
+            Ordering::Insertion => steps.extend(
+                tape.nodes()
+                    .iter()
+                    .rev()
+                    .filter(|node| graph[node.output().id() as usize])
+                    .cloned(),
+            ),
+            Ordering::Depth => {
+                steps.extend(
+                    tape.nodes()
+                        .iter()
+                        .filter(|node| graph[node.output().id() as usize])
+                        .cloned(),
+                );
+                steps.sort_unstable_by(|left, right| compare(*ordering, left, right));
+            }
+        }
         endpoints.extend(graph.iter().enumerate().filter_map(|(index, seen)| {
             let var = Var::at(index as u32);
             let endpoint = *seen && tape.requirement(var) == Some(Requirement::Grad);

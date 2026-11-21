@@ -4,7 +4,7 @@
 //! 设备。排序策略决定步骤之间的次序，显存策略决定在预算内偏好全留还是分段重放；两者互不
 //! 耦合，分别进入 [`crate::Schedule`] 与 [`crate::Plan`]。
 
-use crate::plan::MemoryPolicy;
+use crate::budget::MemoryPolicy;
 use crate::schedule::Ordering;
 
 /// 一次规划的配置：排序策略 + 显存策略。

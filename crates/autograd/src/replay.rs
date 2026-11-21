@@ -104,7 +104,7 @@ impl Replay {
     {
         let mut computed = 0u64;
         for (index, step) in schedule.steps().iter().enumerate() {
-            computed += self.recompute(tape, store, index)?;
+            computed = computed.saturating_add(self.recompute(tape, store, index)?);
             backward(store, step)?;
             // 交还放在反向公式之后：一个激活的寿命就是"直到最后一次被需要"。
             slice(&self.free, &self.free_at, index)
@@ -137,7 +137,7 @@ impl Replay {
                 .node(var)
                 .ok_or_else(|| internal(RUN, format!("变量 {} 没有生产者，无法重算", var.id())))?;
             store.compute(node.op(), node.inputs(), var)?;
-            computed += 1;
+            computed = computed.saturating_add(1);
         }
         Ok(computed)
     }
@@ -191,9 +191,9 @@ impl<'a> Builder<'a> {
             current: 0,
             steps,
             replay: Replay {
-                compute: Vec::new(),
+                compute: Vec::with_capacity(plan.replayed() as usize),
                 compute_at: vec![0; steps + 1],
-                free: Vec::new(),
+                free: Vec::with_capacity(plan.replayed() as usize + plan.saved().len()),
                 free_at: vec![0; steps + 1],
                 expected: plan.replayed(),
             },
