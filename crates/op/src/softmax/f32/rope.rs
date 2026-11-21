@@ -9,11 +9,47 @@
 //!
 //! 常量 `base = 10000`。本模块自带形状、代价、样本、标量参考与遍历，`#[annotation::model]` 装配。
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use crate::model::{Buffer, Cost, Sample, ShapeContext, Values, cost_n, x_buffer};
 use diagnostic::{Code, Error};
 
 /// 频率底数。
 pub const BASE: f32 = 10000.0;
+
+thread_local! {
+    /// 段长 → 频率表。`freq_i = base^(-2i/d)` 只依赖 `d`，与位置、数据都无关。
+    ///
+    /// 单槽就够：一份模型的所有层、所有头、每一步用的都是同一个头宽，跨调用几乎必然命中；
+    /// 两个头宽交替时退化成"每次重建"，与没有这张表时同价——缓存只可能等价或更快。
+    /// 存的是 `&'static` 之外的纯函数值，不参与任何判定，所以确定性不变。
+    static FREQUENCIES: RefCell<Option<(usize, Rc<[f32]>)>> = const { RefCell::new(None) };
+}
+
+/// 段长 `d` 的频率表：`d/2` 条，`freq[i] = base^(-2i/d)`。
+///
+/// 缓存的是**同一个表达式**的结果，而不是 `freq *= ratio` 那样的递推近似：递推会随 `i`
+/// 累积约 `d·eps` 的漂移（`d = 1024` 实测 7.7e-7），而这里与逐项 `powf` 逐位相同，
+/// `rope_matches_the_scalar_reference` 的逐位断言因此不受影响。
+///
+/// 每对一次 `powf` 是这条路径上最贵的一条指令：预计算把 `len = 1024` 的单头旋转从
+/// 2313 ns 降到 881 ns（2.6×），多头与批形态更是把它从 `heads` 次调用压到 1 次。
+pub fn frequencies(d: usize) -> Rc<[f32]> {
+    FREQUENCIES.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if let Some((cached, table)) = slot.as_ref()
+            && *cached == d
+        {
+            return Rc::clone(table);
+        }
+        let table: Rc<[f32]> = (0..d / 2)
+            .map(|i| BASE.powf(-((2 * i) as f32) / d as f32))
+            .collect();
+        *slot = Some((d, Rc::clone(&table)));
+        table
+    })
+}
 
 // 单轴定义与形状投影复用 unary 骨架。
 pub use crate::unary::{AXES, project_shape};

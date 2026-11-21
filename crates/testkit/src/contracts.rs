@@ -89,6 +89,10 @@ fn locate(module: &str, depth: usize) -> Option<PathBuf> {
     (source != module).then(|| locate(source, depth + 1)).flatten()
 }
 
+pub(crate) fn aliases_debug() -> &'static std::collections::BTreeMap<String, String> {
+    aliases()
+}
+
 /// `pub use` 表的别名：`adaptive as adaptive_pool` 说明注册名由实体名重导出。聚合后注册表的
 /// 模块名几乎都不是文件名（45 个里 44 个），所以解析必须跨过这一层，否则判据只会看到重导出行。
 ///

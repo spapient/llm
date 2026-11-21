@@ -262,3 +262,15 @@ fn line_number(text: &str, line: &str) -> String {
         .position(|candidate| candidate == line)
         .map_or_else(|| "-".to_string(), |index| (index + 1).to_string())
 }
+
+#[cfg(test)]
+mod debug_locate {
+    #[test]
+    fn tmp() {
+        for name in ["gemm_i8", "i8", "adaptive_pool", "add_f32"] {
+            println!("{name} -> {:?}", crate::contracts::locate_module(name));
+        }
+        let map = crate::contracts::aliases_debug();
+        println!("alias gemm_i8 = {:?}", map.get("gemm_i8"));
+    }
+}
