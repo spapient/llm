@@ -49,7 +49,7 @@ impl<const G: usize> Plain for gemv::SymI8<G> {
 pub type I8 = PlainFmt<gemv::SymI8<GROUP>>;
 
 // 基座契约（ADR 0050）：粒度与三条行为从格式契约转发；量化算子不可微。
-crate::operator_via!(grained I8, "gemv_i8", 3, (4096, 4096), false, crate::gemv, gemv::AXES);
+crate::operator_via!(grained I8, "gemv_i8", 3, (4096, 4096), false, super, gemv::AXES);
 
 /// 内核本体：`m = x.len()`、`n = out.len()`，结果写进调用方给的缓冲。
 pub fn forward(

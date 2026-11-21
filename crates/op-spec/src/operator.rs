@@ -89,7 +89,7 @@ macro_rules! operator_here {
 /// 第二份 impl。
 #[macro_export]
 macro_rules! operator_via {
-    ($ty:ty, $op:tt, $arity:literal, $shape:expr, $differentiable:literal, $skel:path, $axes:expr) => {
+    ($ty:ty, $op:tt, $arity:literal, $shape:expr, $differentiable:literal, $skel:ident, $axes:expr) => {
         ::llm_op_spec::operator_via!(
             @impl $ty,
             $op,
@@ -104,7 +104,7 @@ macro_rules! operator_via {
             $skel::reference::<$ty>
         );
     };
-    (grained $ty:ty, $op:tt, $arity:literal, $shape:expr, $differentiable:literal, $skel:path, $axes:expr) => {
+    (grained $ty:ty, $op:tt, $arity:literal, $shape:expr, $differentiable:literal, $skel:ident, $axes:expr) => {
         ::llm_op_spec::operator_via!(
             @impl $ty,
             $op,

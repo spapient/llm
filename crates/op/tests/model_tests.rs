@@ -1,4 +1,5 @@
-use super::*;
+use diagnostic::{Code, Error};
+use llm_op_spec::model::{AxisRole, AxisSpec, Cost, DType, Model, Sample, ShapeContext, bind};
 
 const fn zero_cost(_: &ShapeContext) -> Result<Cost, Error> {
     Ok(Cost::ZERO)

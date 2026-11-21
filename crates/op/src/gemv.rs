@@ -130,7 +130,7 @@ macro_rules! gemv_packed {
             3,
             (4096, 4096),
             false,
-            gemv,
+            super,
             $crate::gemv::AXES
         );
 

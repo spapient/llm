@@ -59,10 +59,6 @@
 // SSE2 基线，两个目标编译的是同一份算术，于是两条验证链跑的是同一段代码。
 #![feature(portable_simd)]
 
-// `#[annotation::model]` 生成的代码用 `::llm_op::..` 指回本 crate（与 `nn` 的
-// `extern crate self as nn` 同一条约定：注解绑定它所属契约的路径，而不是硬编码调用方的名字）。
-extern crate self as llm_op;
-
 pub mod activation;
 pub mod attention;
 pub mod classic;
@@ -359,3 +355,11 @@ mod model_tests;
 #[cfg(test)]
 #[path = "../tests/operator_tests.rs"]
 mod operator_tests;
+
+#[cfg(test)]
+#[path = "../tests/dropout_tests.rs"]
+mod dropout_tests;
+
+#[cfg(test)]
+#[path = "../tests/einsum_tests.rs"]
+mod einsum_tests;
