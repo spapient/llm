@@ -6,8 +6,8 @@
 
 use std::fmt::Write as _;
 
-use super::scan::Device;
 use super::image::{self, Outcome};
+use super::scan::Device;
 
 /// 文件头：说明这是生成物，并把 `Prim` 拉进作用域。
 pub(super) fn header(text: &mut String) {

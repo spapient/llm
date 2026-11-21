@@ -9,6 +9,9 @@
 
 use std::thread;
 
+#[cfg(target_arch = "aarch64")]
+use std::arch::asm;
+
 /// SME 微内核行数：一个 16×16 ZA 瓦片覆盖 16 行。
 const MR: usize = 16;
 
@@ -70,8 +73,8 @@ fn packed(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f32], t
 
         // 打包：A 按行块、B 按列组切给 t 个线程，一次 scope 里并行做完。
         thread::scope(|s| {
-            let mut a_rest = abuf;
-            let mut b_rest = bbuf;
+            let mut a_rest = &mut *abuf;
+            let mut b_rest = &mut *bbuf;
             for slot in 0..t {
                 let (a0, a1) = (slot * mblk / t, (slot + 1) * mblk / t);
                 let (b0, b1) = (slot * nblk / t, (slot + 1) * nblk / t);
@@ -164,7 +167,8 @@ fn compute(abuf: &[f32], bbuf: &[f32], out: &mut [f32], n: usize, k: usize, mblk
 #[allow(unsafe_code)]
 #[inline(never)]
 unsafe fn sme_tile(k: usize, a_p: *const f32, b_p: *const f32, c: *mut f32, n_stride: usize) {
-    asm!(
+    unsafe {
+        asm!(
         "zero {{ za0.s }}",
         "zero {{ za1.s }}",
         "zero {{ za2.s }}",

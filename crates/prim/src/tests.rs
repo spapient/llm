@@ -1,6 +1,5 @@
 use super::*;
 use diagnostic::Code;
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// 临时目录：`<tmp>/prim-<name>-<pid>`。
