@@ -110,28 +110,17 @@ fn synchronize<E: Collective>(
     average: bool,
     slots: &mut [&mut [f32]],
 ) -> Result<()> {
-    reduce_slots(collective, group, reduce, slots)?;
-    if average {
-        average_slots(slots, group)?;
-    }
-    Ok(())
-}
-
-/// 组内对每个槽位梯度按 [`Reduce`] 归约；后端错误原样透传。
-fn reduce_slots<E: Collective>(
-    collective: &mut E,
-    group: &Group,
-    reduce: Reduce,
-    slots: &mut [&mut [f32]],
-) -> Result<()> {
     for grads in slots.iter_mut() {
         collective.all_reduce(group, reduce, grads)?;
     }
+    if average {
+        scale(slots, group)?;
+    }
     Ok(())
 }
 
-/// 归约后按数据并行组数取平均；组大小为 0 是装配口径错误。
-fn average_slots(slots: &mut [&mut [f32]], group: &Group) -> Result<()> {
+/// 按组大小缩小平坦后的梯度；组大小为 0 是构造错误，不是可降级情形。
+fn scale(slots: &mut [&mut [f32]], group: &Group) -> Result<()> {
     let divisor = group.size() as f32;
     if divisor == 0.0 {
         return Err(Error::new(Code::Internal, "数据并行组大小为 0").with(SITE));

@@ -486,7 +486,7 @@ fn walk_sources(dir: &Path, out: &mut Vec<PathBuf>) {
 // ---------------------------------------------------------------------------
 
 /// 本仓库三个阈值的键与值；改动它们就改 `lints/vocabulary.toml`。
-const GATE_KEYS: [(&str, i64); 3] = [("ccn_max", 5), ("nloc_max", 60), ("file_max_lines", 1200)];
+const GATE_KEYS: [(&str, i64); 3] = [("ccn_max", 5), ("nloc_max", 60), ("file_max_lines", 600)];
 
 /// 一份与仓库同阈值、没有存量债的 `[gate]` 表。
 fn sound_gate() -> Table {
@@ -525,7 +525,7 @@ fn the_project_config_lists_only_root_entry_legacy_debt() {
         [Metric::Ccn, Metric::Nloc, Metric::Lines, Metric::Call].map(|metric| gate.limit(metric));
     assert_eq!(
         limits,
-        [5, 60, 1200, 0],
+        [5, 60, 600, 0],
         "阈值来自构建期生成的 `lints/vocabulary.toml`；`Call` 没有预算"
     );
     for msg in gate.stale(&BTreeMap::new()) {

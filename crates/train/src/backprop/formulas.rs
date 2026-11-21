@@ -457,31 +457,26 @@ fn probabilities(q: &[f32], k: &[f32], i: usize, hist: usize, d: usize, scale: f
     probs
 }
 
-/// 一行分数 `S[i,j] = q[i]·k[j]/√d`。
-fn score_row(q: &[f32], k: &[f32], i: usize, hist: usize, d: usize, scale: f32) -> Vec<f32> {
-    let mut scores = vec![0.0; hist];
-    for (j, slot) in scores.iter_mut().enumerate() {
-        *slot = dot_rows(q, k, i, j, d) * scale;
-    }
-    scores
+/// 行 `idx` 的切片（行宽 `d`）：行起始地址只算一次，内层循环不再带下标乘法。
+fn row(values: &[f32], idx: usize, d: usize) -> &[f32] {
+    &values[idx * d..(idx + 1) * d]
 }
 
-/// 两行向量的点积：`a[i]·b[j]`，均按行宽 `d` 的行主序展开。
-fn dot_rows(a: &[f32], b: &[f32], i: usize, j: usize, d: usize) -> f32 {
-    let mut sum = 0.0;
-    for h in 0..d {
-        sum += a[i * d + h] * b[j * d + h];
-    }
-    sum
+/// 两条等长行的点积；`zip` 让边界检查落在行首一次，累加顺序与逐元素下标版一致。
+fn dot(a: &[f32], b: &[f32]) -> f32 {
+    a.iter().zip(b).map(|(x, y)| x * y).sum()
+}
+
+/// 一行分数 `S[i,j] = q[i]·k[j]/√d`。
+fn score_row(q: &[f32], k: &[f32], i: usize, hist: usize, d: usize, scale: f32) -> Vec<f32> {
+    let qrow = row(q, i, d);
+    (0..hist).map(|j| dot(qrow, row(k, j, d)) * scale).collect()
 }
 
 /// `dP[i,j] = Σ_h dO[i,h]·v[j,h]`。
 fn output_grad_row(dout: &[f32], v: &[f32], i: usize, hist: usize, d: usize) -> Vec<f32> {
-    let mut dp = vec![0.0; hist];
-    for (j, slot) in dp.iter_mut().enumerate() {
-        *slot = dot_rows(dout, v, i, j, d);
-    }
-    dp
+    let drow = row(dout, i, d);
+    (0..hist).map(|j| dot(drow, row(v, j, d))).collect()
 }
 
 /// softmax 反向：`dS[i,j] = p[i,j]·(dP[i,j] − Σ_j p[i,j]·dP[i,j])`。
