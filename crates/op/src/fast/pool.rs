@@ -123,6 +123,41 @@ pub(super) struct Pool {
 
 static POOL: OnceLock<&'static Pool> = OnceLock::new();
 
+/// 造 `n` 个空 worker 槽位（每个槽一个 job 锁 + 一个私有条件变量）。
+fn make_cells(n: usize) -> Vec<Cell> {
+    (0..n)
+        .map(|_| Cell {
+            job: Mutex::new(None),
+            cv: Condvar::new(),
+        })
+        .collect()
+}
+
+/// 由给定槽位建常驻池、起 worker（命名前缀 `prefix`），置好 `live`/`free` 后返回。
+fn spawn_pool(cells: Vec<Cell>, prefix: &str) -> &'static Pool {
+    let n = cells.len();
+    let p: &'static Pool = Box::leak(Box::new(Pool {
+        cells,
+        free: AtomicU64::new(0),
+        free_lock: Mutex::new(()),
+        free_cv: Condvar::new(),
+        live: AtomicUsize::new(0),
+    }));
+    let mut live = 0usize;
+    for id in 0..n {
+        if thread::Builder::new()
+            .name(format!("{prefix}-{id}"))
+            .spawn(move || spin(id, p))
+            .is_ok()
+        {
+            live += 1;
+        }
+    }
+    p.live.store(live, Ordering::Release);
+    p.free.store((1u64 << live) - 1, Ordering::Release);
+    p
+}
+
 /// 常驻池（首次调用时创建 `cpu-1` 个常驻 worker，之后只唤醒不复建）。
 pub(super) fn pool() -> &'static Pool {
     POOL.get_or_init(|| {
@@ -131,32 +166,7 @@ pub(super) fn pool() -> &'static Pool {
             .unwrap_or(1)
             .saturating_sub(1)
             .min(64);
-        let cells = (0..want)
-            .map(|_| Cell {
-                job: Mutex::new(None),
-                cv: Condvar::new(),
-            })
-            .collect();
-        let p: &'static Pool = Box::leak(Box::new(Pool {
-            cells,
-            free: AtomicU64::new(0),
-            free_lock: Mutex::new(()),
-            free_cv: Condvar::new(),
-            live: AtomicUsize::new(0),
-        }));
-        let mut live = 0usize;
-        for id in 0..want {
-            if thread::Builder::new()
-                .name(format!("llm-gemm-{id}"))
-                .spawn(move || spin(id, p))
-                .is_ok()
-            {
-                live += 1;
-            }
-        }
-        p.live.store(live, Ordering::Release);
-        p.free.store((1u64 << live) - 1, Ordering::Release);
-        p
+        spawn_pool(make_cells(want), "llm-gemm")
     })
 }
 
@@ -243,6 +253,48 @@ fn part(j: &Job, slot: usize) {
     }
 }
 
+/// 把任务发到租来的每个槽：槽号 `1..=need` 对应 worker 在 job 里的分片编号。
+fn dispatch(pool: &'static Pool, job: &Arc<Job>, mut mask: u64) {
+    let mut slot = 1usize;
+    while mask != 0 {
+        let id = mask.trailing_zeros() as usize;
+        mask &= mask - 1;
+        {
+            let mut g = pool.cells[id].job.lock().unwrap_or_else(|e| e.into_inner());
+            *g = Some((job.clone(), slot));
+        }
+        pool.cells[id].cv.notify_one();
+        slot += 1;
+    }
+}
+
+/// 一个参与者（主线程或 worker）的恐慌隔离执行：panic 记录后中止闸门，其余参与者与发布者
+/// 都能退出而不是卡在闸门 / `done` 自旋上。成功与 panic 两条路径都由调用方无条件收尾。
+fn run_part(job: &Job, slot: usize) {
+    if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| part(job, slot)))
+    {
+        job.panic
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_or_insert(payload);
+        job.gate.abort();
+    }
+}
+
+/// 等全部 worker 完成（成功或 panic 都 `done += 1`），再进入收尾。
+fn await_done(job: &Job, p: usize) {
+    while job.done.load(Ordering::Acquire) < p - 1 {
+        std::hint::spin_loop();
+    }
+}
+
+/// 等全部槽归还后再把 panic 抛回调用方：此刻没有 worker 再碰 job 的裸指针。
+fn resume_panic(job: &Job) {
+    if let Some(payload) = job.panic.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        std::panic::resume_unwind(payload);
+    }
+}
+
 /// 池化执行；参与数不足 2 时返回 `false`，由调用方走 scope 兜底。
 #[allow(unsafe_code)]
 pub(super) fn run_pooled(
@@ -285,36 +337,10 @@ pub(super) fn run_pooled(
         panic: Mutex::new(None),
     });
 
-    // 把任务发到租来的每个槽；槽号 1..=need 对应 worker 在 job 里的分片编号。
-    let mut mm = mask;
-    let mut slot = 1usize;
-    while mm != 0 {
-        let id = mm.trailing_zeros() as usize;
-        mm &= mm - 1;
-        {
-            let mut g = pool.cells[id].job.lock().unwrap_or_else(|e| e.into_inner());
-            *g = Some((job.clone(), slot));
-        }
-        pool.cells[id].cv.notify_one();
-        slot += 1;
-    }
-
-    // 主线程自己的分片（slot 0）也纳入恐慌隔离：主线程 panic 若不中止闸门，其余 worker
-    // 会卡在闸门上；记录后与 worker panic 走同一条收尾路径。
-    if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| part(&job, 0))) {
-        job.panic
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get_or_insert(payload);
-        job.gate.abort();
-    }
-    while job.done.load(Ordering::Acquire) < p - 1 {
-        std::hint::spin_loop();
-    }
-    // 等全部槽归还后再把 panic 抛回调用方：此刻没有 worker 再碰 job 的裸指针。
-    if let Some(payload) = job.panic.lock().unwrap_or_else(|e| e.into_inner()).take() {
-        std::panic::resume_unwind(payload);
-    }
+    dispatch(pool, &job, mask);
+    run_part(&job, 0);
+    await_done(&job, p);
+    resume_panic(&job);
     true
 }
 
@@ -325,32 +351,7 @@ mod tests {
 
     /// 造一个专用池（固定 worker 数，与机器核数无关），测完即弃。
     fn build_pool(n: usize) -> &'static Pool {
-        let cells: Vec<Cell> = (0..n)
-            .map(|_| Cell {
-                job: Mutex::new(None),
-                cv: Condvar::new(),
-            })
-            .collect();
-        let p: &'static Pool = Box::leak(Box::new(Pool {
-            cells,
-            free: AtomicU64::new(0),
-            free_lock: Mutex::new(()),
-            free_cv: Condvar::new(),
-            live: AtomicUsize::new(0),
-        }));
-        let mut live = 0usize;
-        for id in 0..n {
-            if thread::Builder::new()
-                .name(format!("llm-gemm-test-{id}"))
-                .spawn(move || spin(id, p))
-                .is_ok()
-            {
-                live += 1;
-            }
-        }
-        p.live.store(live, Ordering::Release);
-        p.free.store((1u64 << live) - 1, Ordering::Release);
-        p
+        spawn_pool(make_cells(n), "llm-gemm-test")
     }
 
     /// 以最小几何发布一次任务；`stage`/`calc` 由测试注入（可为 panic / no-op）。

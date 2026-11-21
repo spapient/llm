@@ -440,8 +440,8 @@ fn micro_packed_scalar(
 ///
 /// `panel` 布局 `[p][8]`（A 面板），`b` 布局 `[p][8]`（B 面板）。CPU 能力在运行时探测一次：
 /// 没有 AVX2/FMA 的 x86_64 机器回退 [`micro_packed_scalar`]，不在源码里对硬件能力做隐式假设。
+/// x86_64 微内核入口：运行时探测 AVX2+FMA，命中走向量核，否则退回标量核。
 #[cfg(target_arch = "x86_64")]
-#[allow(unsafe_code)]
 fn micro_packed(
     panel: &[f32],
     b: &[f32],
@@ -452,11 +452,27 @@ fn micro_packed(
     kb: usize,
     first: bool,
 ) {
-    use std::arch::x86_64::*;
-    if !is_x86_feature_detected!("avx2") || !is_x86_feature_detected!("fma") {
+    if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+        micro_packed_avx2(panel, b, out, row0, j, n, kb, first);
+    } else {
         micro_packed_scalar(panel, b, out, row0, j, n, kb, first);
-        return;
     }
+}
+
+/// 8×8 AVX2+FMA 微内核：每行一个 `__m256` 累加器，逐收缩步广播 A 值 × B 向量做 FMA。
+#[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code)]
+fn micro_packed_avx2(
+    panel: &[f32],
+    b: &[f32],
+    out: &mut [f32],
+    row0: usize,
+    j: usize,
+    n: usize,
+    kb: usize,
+    first: bool,
+) {
+    use std::arch::x86_64::*;
     unsafe {
         let zero = _mm256_setzero_ps();
         let pp = panel.as_ptr();
