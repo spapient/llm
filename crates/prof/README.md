@@ -21,8 +21,12 @@ crates/prof/
 │   └── nvidia.toml      # P0 只有 L0/L1：见证已声明，未执行的能力视为不具备
 └── src/
     ├── atom.rs          # 能力词汇表：16 原语、位集、Need/Provide、AttrKey 闭集（含 exec）
+    ├── codegen.rs       # 构建期：devices/*.toml → 生成的表（只在 --features build 下编译）
+    ├── device.rs        # 设备行：档案元数据 + 见证源码 + 可选镜像（Device / Image / Status）
     ├── lib.rs           # 构建期生成的档案表（embedded / names）：运行期不解析 TOML、不读目录
-    └── prof.rs          # 档案 schema：解析、闭集字段、[units] 一致性、见证校验
+    ├── prof.rs          # 档案 schema：类型、匹配规则、选择与错误
+    ├── prof/schema.rs   # 解析 + 校验：闭集字段、[units] 一致性、见证可达性
+    └── sign.rs          # 片段签名行规则 `/* cutile-sign: <prim>/<impl> */`（ADR 0027 §5）
 ```
 
 ## 一份档案写什么

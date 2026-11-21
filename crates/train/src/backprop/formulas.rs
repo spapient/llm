@@ -269,7 +269,7 @@ pub(super) fn gemv(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
 }
 
 /// `dW[n,k] = in[n]·x[k]`：外层行号决定被广播的上游分量，内层整块复制输入行。
-pub(super) fn gemv_weight(
+fn gemv_weight(
     weight: &[f32],
     input: &[f32],
     incoming: &[f32],
@@ -287,7 +287,7 @@ pub(super) fn gemv_weight(
 }
 
 /// `dx[k] = Σ_n in[n]·W[n,k]`：按列累加，W 按行主序展开。
-pub(super) fn gemv_input(weight: &[f32], incoming: &[f32], rows: usize, cols: usize) -> Vec<f32> {
+fn gemv_input(weight: &[f32], incoming: &[f32], rows: usize, cols: usize) -> Vec<f32> {
     let mut dinput = vec![0.0; cols];
     for n in 0..rows {
         for k in 0..cols {
@@ -345,7 +345,7 @@ pub(super) fn rmsnorm(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
 }
 
 /// RMSNorm 反向本体：均方根与加权和先各算一遍，逐元素公式用迭代器表达，不展开第二套循环。
-pub(super) fn rmsnorm_grad(x: &[f32], gamma: &[f32], grad: &[f32]) -> Result<(Vec<f32>, Vec<f32>)> {
+fn rmsnorm_grad(x: &[f32], gamma: &[f32], grad: &[f32]) -> Result<(Vec<f32>, Vec<f32>)> {
     let n = x.len();
     if n == 0 {
         return Err(Error::new(Code::Invalid, "rmsnorm 反向输入不能为空").with(SITE));
@@ -374,7 +374,7 @@ pub(super) fn rope(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
 }
 
 /// RoPE 反向本体：逐对把上游梯度按同一角度旋转回去；末尾不成对的元素原样透传。
-pub(super) fn rope_grad(x: &[f32], grad: &[f32]) -> Vec<f32> {
+fn rope_grad(x: &[f32], grad: &[f32]) -> Vec<f32> {
     let d = x.len();
     let pairs = d / 2;
     let mut dx = vec![0.0; d];
@@ -409,7 +409,7 @@ pub(super) fn decode_attention(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
 }
 
 /// 由公式上下文拼出注意力反向的只读视野。
-pub(super) fn attention_ctx<'a>(ctx: &Context<'a>, d: usize) -> AttentionCtx<'a> {
+fn attention_ctx<'a>(ctx: &Context<'a>, d: usize) -> AttentionCtx<'a> {
     AttentionCtx {
         q: &ctx.inputs[0],
         k: &ctx.inputs[1],
@@ -437,7 +437,7 @@ struct AttentionRow {
 }
 
 /// 注意力反向本体：逐查询行算概率与分数梯度，再散射回 `dq` / `dk` / `dv`。
-pub(super) fn attention_grad(
+fn attention_grad(
     ctx: AttentionCtx<'_>,
     q_rows: usize,
     hist: usize,
@@ -453,7 +453,7 @@ pub(super) fn attention_grad(
 }
 
 /// 一条查询行：`p = softmax(QKᵀ/√d)`、`dP = dO·V`、`dS = p·(dP − Σ p·dP)`。
-pub(super) fn attention_row(ctx: &AttentionCtx<'_>, i: usize, hist: usize) -> AttentionRow {
+fn attention_row(ctx: &AttentionCtx<'_>, i: usize, hist: usize) -> AttentionRow {
     let probs = probabilities(ctx.q, ctx.k, i, hist, ctx.d, ctx.scale);
     let dp = output_grad_row(ctx.dout, ctx.v, i, hist, ctx.d);
     let ds = score_grad_row(&probs, &dp);
@@ -461,7 +461,7 @@ pub(super) fn attention_row(ctx: &AttentionCtx<'_>, i: usize, hist: usize) -> At
 }
 
 /// 数值稳定的 softmax 概率：先减行内最大分数再取指数，与前向同口径。
-pub(super) fn probabilities(q: &[f32], k: &[f32], i: usize, hist: usize, d: usize, scale: f32) -> Vec<f32> {
+fn probabilities(q: &[f32], k: &[f32], i: usize, hist: usize, d: usize, scale: f32) -> Vec<f32> {
     let scores = score_row(q, k, i, hist, d, scale);
     let max = scores.iter().copied().fold(f32::MIN, f32::max);
     let exps: Vec<f32> = scores.iter().map(|s| (s - max).exp()).collect();
@@ -470,7 +470,7 @@ pub(super) fn probabilities(q: &[f32], k: &[f32], i: usize, hist: usize, d: usiz
 }
 
 /// 一行分数 `S[i,j] = q[i]·k[j]/√d`。
-pub(super) fn score_row(q: &[f32], k: &[f32], i: usize, hist: usize, d: usize, scale: f32) -> Vec<f32> {
+fn score_row(q: &[f32], k: &[f32], i: usize, hist: usize, d: usize, scale: f32) -> Vec<f32> {
     let mut scores = vec![0.0; hist];
     for (j, slot) in scores.iter_mut().enumerate() {
         *slot = dot_rows(q, k, i, j, d) * scale;
@@ -479,7 +479,7 @@ pub(super) fn score_row(q: &[f32], k: &[f32], i: usize, hist: usize, d: usize, s
 }
 
 /// 两行向量的点积：`a[i]·b[j]`，均按行宽 `d` 的行主序展开。
-pub(super) fn dot_rows(a: &[f32], b: &[f32], i: usize, j: usize, d: usize) -> f32 {
+fn dot_rows(a: &[f32], b: &[f32], i: usize, j: usize, d: usize) -> f32 {
     let mut sum = 0.0;
     for h in 0..d {
         sum += a[i * d + h] * b[j * d + h];
@@ -488,7 +488,7 @@ pub(super) fn dot_rows(a: &[f32], b: &[f32], i: usize, j: usize, d: usize) -> f3
 }
 
 /// `dP[i,j] = Σ_h dO[i,h]·v[j,h]`。
-pub(super) fn output_grad_row(dout: &[f32], v: &[f32], i: usize, hist: usize, d: usize) -> Vec<f32> {
+fn output_grad_row(dout: &[f32], v: &[f32], i: usize, hist: usize, d: usize) -> Vec<f32> {
     let mut dp = vec![0.0; hist];
     for (j, slot) in dp.iter_mut().enumerate() {
         *slot = dot_rows(dout, v, i, j, d);
@@ -497,7 +497,7 @@ pub(super) fn output_grad_row(dout: &[f32], v: &[f32], i: usize, hist: usize, d:
 }
 
 /// softmax 反向：`dS[i,j] = p[i,j]·(dP[i,j] − Σ_j p[i,j]·dP[i,j])`。
-pub(super) fn score_grad_row(probs: &[f32], dp: &[f32]) -> Vec<f32> {
+fn score_grad_row(probs: &[f32], dp: &[f32]) -> Vec<f32> {
     let weighted = dp.iter().zip(probs).map(|(d, p)| d * p).sum::<f32>();
     dp.iter()
         .zip(probs)
@@ -506,7 +506,7 @@ pub(super) fn score_grad_row(probs: &[f32], dp: &[f32]) -> Vec<f32> {
 }
 
 /// 把一条查询行的贡献散射进 `dq` / `dk` / `dv`。
-pub(super) fn scatter(
+fn scatter(
     row: &AttentionRow,
     ctx: &AttentionCtx<'_>,
     i: usize,
@@ -521,7 +521,7 @@ pub(super) fn scatter(
 }
 
 /// 单点散射：`dV += p·dO`，`dQ += dS·k/√d`，`dK += dS·q/√d`。
-pub(super) fn accumulate_row(
+fn accumulate_row(
     row: &AttentionRow,
     ctx: &AttentionCtx<'_>,
     i: usize,
@@ -539,7 +539,7 @@ pub(super) fn accumulate_row(
 }
 
 /// 行数派生：长度必须能被头宽整除，否则是装配口径问题。
-pub(super) fn divide(len: usize, d: usize, op: &str) -> Result<usize> {
+fn divide(len: usize, d: usize, op: &str) -> Result<usize> {
     if d == 0 || !len.is_multiple_of(d) {
         return Err(Error::new(
             Code::Invalid,
@@ -551,7 +551,7 @@ pub(super) fn divide(len: usize, d: usize, op: &str) -> Result<usize> {
 }
 
 /// `W[n,k]` 的行主序形状：`k` 由输入宽度给定，`n` 由权重长度整除推出；不整除是装配口径问题。
-pub(super) fn matrix_shape(weight: &[f32], cols: usize) -> Result<(usize, usize)> {
+fn matrix_shape(weight: &[f32], cols: usize) -> Result<(usize, usize)> {
     if cols == 0 || !weight.len().is_multiple_of(cols) {
         return Err(Error::new(
             Code::Invalid,
@@ -563,7 +563,7 @@ pub(super) fn matrix_shape(weight: &[f32], cols: usize) -> Result<(usize, usize)
 }
 
 /// 把一段梯度整块累加进目标槽；长度已由调用方对齐。
-pub(super) fn accumulate_into(dst: &mut [f32], offset: usize, source: &[f32]) -> Result<()> {
+fn accumulate_into(dst: &mut [f32], offset: usize, source: &[f32]) -> Result<()> {
     let Some(target) = dst.get_mut(offset..offset + source.len()) else {
         return Err(Error::new(
             Code::Internal,
@@ -578,7 +578,7 @@ pub(super) fn accumulate_into(dst: &mut [f32], offset: usize, source: &[f32]) ->
 }
 
 /// GELU 导数：`y = 0.5·x·(1+erf(x/√2))`，`y′ = Φ(x) + x·φ(x)`。
-pub(super) fn gelu_grad(x: f32) -> f32 {
+fn gelu_grad(x: f32) -> f32 {
     let normal = (-(x * x) / 2.0).exp() / (2.0 * std::f32::consts::PI).sqrt();
     let erf_term = 0.5 * (1.0 + op::gelu_f32::erf(x * std::f32::consts::FRAC_1_SQRT_2));
     erf_term + x * normal
