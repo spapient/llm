@@ -12,6 +12,9 @@ use std::thread;
 #[cfg(target_arch = "aarch64")]
 use std::arch::asm;
 
+#[cfg(target_arch = "aarch64")]
+use std::simd::{f32x4, simd_swizzle};
+
 /// SME 微内核行数：一个 16×16 ZA 瓦片覆盖 16 行。
 const MR: usize = 16;
 
