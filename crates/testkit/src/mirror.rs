@@ -6,7 +6,7 @@
 
 use std::fs;
 
-use crate::architecture::workspace_root as root;
+use crate::architecture::{source_text, workspace_root as root};
 use crate::contracts::{locate_module, sources};
 
 /// 语义表的**唯一生产者**：注册表里的 `MODEL` 必须由注解生成，注解标注的格式必须在注册表里。
@@ -60,7 +60,7 @@ fn the_registry_and_the_model_annotations_are_mirrors() {
         if crate_name != "op" {
             continue;
         }
-        let Ok(text) = fs::read_to_string(&file) else {
+        let Some(text) = source_text(&file) else {
             continue;
         };
         for line in text.lines() {
@@ -146,7 +146,7 @@ fn model_macros() -> std::collections::BTreeSet<String> {
         if crate_name != "op" {
             continue;
         }
-        let Ok(text) = fs::read_to_string(&file) else {
+        let Some(text) = source_text(&file) else {
             continue;
         };
         let mut current: Option<String> = None;

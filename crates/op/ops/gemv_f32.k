@@ -11,7 +11,6 @@
 // 是 100 也应当能算，只是最后一块短一点。
 void cutile_{{op}}_kernel(const float *x, const float *w, float *y,
                           int M, int N, int gsz) {
-    int tok = 0;
     for (int n = 0; n < N; ++n) {
         const float *row = 0;
         @load(row, w + (long)n * M);
@@ -21,11 +20,9 @@ void cutile_{{op}}_kernel(const float *x, const float *w, float *y,
             const int len = (M - base < gsz) ? (M - base) : gsz;
             const float *xs = 0;
             const float *wp = 0;
-            @load_async(xs, x + base, tok);
-            @load_async(wp, row + base, tok);
-            @commit_wait(tok);
+            @load_async(xs, x + base);
+            @load_async(wp, row + base);
             @dot(acc, wp, xs, len);
-            @bar(tok);
         }
 
         float v = 0.0f;

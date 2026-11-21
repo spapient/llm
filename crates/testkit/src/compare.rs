@@ -62,7 +62,12 @@ pub fn close(left: &[f32], right: &[f32], abs: f32, rel: f32) -> bool {
         .all(|(a, b)| close_scalar(*a, *b, abs, rel))
 }
 
-/// 绝对 + 相对双项容差断言：判据与 [`close`] 同源（`|a−b| ≤ abs + rel·|b|`），
+/// 绝对 + 相对双项容差断言，相对项按**参考侧**（`want`）取分母：`|got−want| ≤ abs + rel·|want|`。
+///
+/// 与 [`close`] **不是同一条判据**，两者不可互换：`close` 的相对项取 `max(|got|,|want|)`
+/// 的对称形式（"两边都可能有噪声"），本函数取单侧分母，与 `cutile::reference::max_rel_err`
+/// 的 `max|got−want| / max|want|` 同一取向（"参考是标准答案"）。测试用例把两个公式各自钉住。
+///
 /// 失败时把首个越界元素的下标与两侧取值写进 panic 消息——只留一句 `false` 的断言
 /// 在逐元素核上无法定位是哪一格写错。
 ///
@@ -197,5 +202,18 @@ mod tests {
             Some(1.0),
             "同向缩放不改方向"
         );
+    }
+
+    /// `close` 的相对项分母是 `max(|got|,|want|)`，`assert_close` 是 `|want|`：前者放行的
+    /// 元素后者必须拒绝。两者若被人"顺手统一"，这条会立刻红——那是在悄悄改容差语义。
+    #[test]
+    #[should_panic(expected = "容差")]
+    fn the_asymmetric_relative_budget_is_stricter_than_the_symmetric_one() {
+        let (got, want, abs, rel) = (1.5f32, 1.0f32, 0.0f32, 0.4f32);
+        assert!(
+            close(&[got], &[want], abs, rel),
+            "对称分母放行：0.5 ≤ 0.4·1.5"
+        );
+        assert_close(&[got], &[want], abs, rel);
     }
 }

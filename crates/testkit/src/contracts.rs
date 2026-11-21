@@ -6,7 +6,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use crate::architecture::{rust_files, workspace_root as root};
+use crate::architecture::{rust_files, source_text, workspace_root as root};
 
 /// 扫描下限：近 30 个 crate、80+ 个源文件；低于此数说明遍历逻辑坏了（而不是"没有违规"）。
 pub(crate) const MIN_SOURCES: usize = 70;
@@ -50,7 +50,7 @@ pub(crate) fn locate_module(module: &str) -> Option<PathBuf> {
         if crate_name != "op" {
             continue;
         }
-        let Ok(text) = fs::read_to_string(&file) else {
+        let Some(text) = source_text(&file) else {
             continue;
         };
         if text.contains(&format!("pub mod {module}")) {
@@ -64,7 +64,7 @@ pub(crate) fn locate_module(module: &str) -> Option<PathBuf> {
 pub(crate) fn hits(predicate: impl Fn(&str) -> bool) -> Vec<Hit> {
     let mut out = Vec::new();
     for (name, file) in sources() {
-        let Ok(text) = fs::read_to_string(&file) else {
+        let Some(text) = source_text(&file) else {
             continue;
         };
         for (index, line) in text.lines().enumerate() {

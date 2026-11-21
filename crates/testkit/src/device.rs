@@ -83,9 +83,47 @@ impl<'a> Contract<'a> {
     /// 第一条不闭合的签名返回原因；`Ok` 表示九条签名逐条对上了。
     pub fn check_signatures(&self) -> Result<(), String> {
         for (prim, body) in self.fragments {
-            self.check_signature(prim, body)?;
+            let signed = sign(body)
+                .map_err(|reason| format!("`{}` 的 `{prim}.{}`：{reason}", self.id, self.ext))?;
+            self.check_signed(prim, signed)?;
         }
         Ok(())
+    }
+
+    /// 一条签名：文件名与署名同一个词，然后交给档案对账。
+    fn check_signed(&self, prim: &str, signed: (&str, &str)) -> Result<(), String> {
+        let (signed_prim, signed_impl) = signed;
+        if signed_prim != prim {
+            return Err(format!(
+                "`{}` 的 `{prim}.{}` 签名写着 `{signed_prim}`：文件名即原语，两者必须是同一个词",
+                self.id, self.ext
+            ));
+        }
+        self.check_provide(signed_prim, signed_impl)
+    }
+
+    /// 署名在档案里必须有供给，那条供给必须有见证，且见证入口与生成表里的是同一个。
+    fn check_provide(&self, prim: &str, impl_name: &str) -> Result<(), String> {
+        let Some(provide) = self.find(prim, impl_name) else {
+            return Err(format!(
+                "`{}` 的片段署名 `{prim}/{impl_name}` 在档案里没有对应供给：正文写的实现无人认领",
+                self.id
+            ));
+        };
+        let Some(witness) = provide.witness else {
+            return Err(format!(
+                "`{}` 的 `{prim}/{impl_name}` 有片段正文却没有见证：这条签名不可执行，等级只能是 L0",
+                self.id
+            ));
+        };
+        let entry = self.entry(prim)?;
+        if entry == witness.func {
+            return Ok(());
+        }
+        Err(format!(
+            "`{}` 的 `{prim}` 入口 `{entry}` 与档案的见证 `{}` 不是同一条",
+            self.id, witness.func
+        ))
     }
 
     /// 见证文件里的每个 `int witness_*(float *out)` 都必须被某条供给认领，每个入口都必须在文件里
@@ -95,7 +133,7 @@ impl<'a> Contract<'a> {
     ///
     /// 入口缺席、重复，或有见证函数无人认领时返回原因。
     pub fn check_witness_entries(&self) -> Result<(), String> {
-        let defined = definitions(self.source);
+        let defined = crate::evidence::definitions(self.source);
         for (prim, func) in self.prims {
             let count = defined.iter().filter(|name| **name == *func).count();
             if count != 1 {
@@ -149,6 +187,20 @@ impl<'a> Contract<'a> {
     ///
     /// 目录不可读，或目录里出现了闭集之外的名字时返回原因。
     pub fn check_closed_directory(&self) -> Result<(), String> {
+        let found = self.found_names()?;
+        let mut want = self.expected_names();
+        want.sort();
+        if found == want {
+            return Ok(());
+        }
+        Err(format!(
+            "`{}` 的片段目录不是闭集：只允许 P0 的 `<prim>.{}` 与 `witness.{}`，实得 {found:?}",
+            self.id, self.ext, self.ext
+        ))
+    }
+
+    /// 片段目录里的全部文件名（`.rs` 除外），排序后返回。
+    fn found_names(&self) -> Result<Vec<String>, String> {
         let entries = std::fs::read_dir(self.dir)
             .map_err(|error| format!("`{}` 的片段目录不可读：{error}", self.id))?;
         let mut found = Vec::new();
@@ -161,67 +213,28 @@ impl<'a> Contract<'a> {
             }
         }
         found.sort();
-        let mut want = self.expected_names();
-        want.sort();
-        if found == want {
-            return Ok(());
-        }
-        Err(format!(
-            "`{}` 的片段目录不是闭集：只允许 P0 的 `<prim>.{}` 与 `witness.{}`，实得 {found:?}",
-            self.id, self.ext, self.ext
-        ))
-    }
-
-    /// 一条签名与档案的对账：文件名、署名、供给、见证入口四者必须是同一个词。
-    fn check_signature(&self, prim: &str, body: &str) -> Result<(), String> {
-        let (signed_prim, signed_impl) = sign(body)?;
-        if signed_prim != prim {
-            return Err(format!(
-                "`{}` 的 `{prim}.{}` 签名写着 `{signed_prim}`：文件名即原语，两者必须是同一个词",
-                self.id, self.ext
-            ));
-        }
-        let provide = self.provide(signed_prim, signed_impl)?;
-        let witness = provide.witness.ok_or_else(|| {
-            format!(
-                "`{}` 的 `{signed_prim}/{signed_impl}` 有片段正文却没有见证：这条签名不可执行，等级只能是 L0",
-                self.id
-            )
-        })?;
-        let entry = self.entry(signed_prim)?;
-        if entry == witness.func {
-            return Ok(());
-        }
-        Err(format!(
-            "`{}` 的 `{signed_prim}` 入口 `{entry}` 与档案的见证 `{}` 不是同一条",
-            self.id, witness.func
-        ))
+        Ok(found)
     }
 
     /// 档案里认领 `prim/impl_name` 的那条供给。
-    fn provide(&self, prim: &str, impl_name: &str) -> Result<&'a Provision<'a>, String> {
+    fn find(&self, prim: &str, impl_name: &str) -> Option<&'a Provision<'a>> {
         let provides: &'a [Provision<'a>] = self.provides;
-        let found = provides
+        provides
             .iter()
-            .find(|provide| provide.prim == prim && provide.impl_name == impl_name);
-        found.ok_or_else(|| {
-            format!(
-                "`{}` 的片段署名 `{prim}/{impl_name}` 在档案里没有对应供给：正文写的实现无人认领",
-                self.id
-            )
-        })
+            .find(|provide| provide.prim == prim && provide.impl_name == impl_name)
     }
 
     /// 生成表里 `prim` 的见证入口名。
     fn entry(&self, prim: &str) -> Result<&'a str, String> {
         let prims: &'a [(&'a str, &'a str)] = self.prims;
         let found = prims.iter().find(|(name, _)| *name == prim);
-        found.map(|(_, func)| *func).ok_or_else(|| {
-            format!(
+        match found {
+            Some((_, func)) => Ok(func),
+            None => Err(format!(
                 "`{}` 的 `{prim}` 有片段却没有入口：镜像里查不到它的见证",
                 self.id
-            )
-        })
+            )),
+        }
     }
 
     /// 某条见证函数是否被档案里的一条供给认领。
@@ -249,46 +262,19 @@ impl<'a> Contract<'a> {
 ///
 /// 片段没有签名声明、声明没有闭合，或声明不是两段时返回原因。
 fn sign(body: &str) -> Result<(&str, &str), String> {
-    let (_, rest) = body
-        .split_once("cutile-sign:")
-        .ok_or_else(|| String::from("片段缺签名声明 `/* cutile-sign: <prim>/<impl> */`"))?;
-    let (line, _) = rest
-        .split_once("*/")
-        .ok_or_else(|| String::from("签名声明没有闭合的 `*/`"))?;
+    let Some((_, rest)) = body.split_once("cutile-sign:") else {
+        return Err(String::from(
+            "片段缺签名声明 `/* cutile-sign: <prim>/<impl> */`",
+        ));
+    };
+    let Some((line, _)) = rest.split_once("*/") else {
+        return Err(String::from("签名声明没有闭合的 `*/`"));
+    };
     let line = line.trim();
-    let (prim, implementation) = line
-        .split_once('/')
-        .ok_or_else(|| format!("签名 `{line}` 不是 `<prim>/<impl>` 两段"))?;
+    let Some((prim, implementation)) = line.split_once('/') else {
+        return Err(format!("签名 `{line}` 不是 `<prim>/<impl>` 两段"));
+    };
     Ok((prim.trim(), implementation.trim()))
-}
-
-/// 见证文件里的 `int witness_*(float *out)` 定义名。注释里那种 `int witness_<name>(...)` 因为
-/// 名字里带着 `<`，在这里被过滤掉。
-fn definitions(source: &str) -> Vec<&str> {
-    let mut names = Vec::new();
-    for (index, _) in source.match_indices("int ") {
-        let name = defined_name(&source[index + 4..]);
-        if let Some(name) = name {
-            names.push(name);
-        }
-    }
-    names
-}
-
-/// 从 `int ` 之后的那段正文里读出函数名：只认 `witness_*` 且参数表里有 `float *out` 的定义。
-fn defined_name(rest: &str) -> Option<&str> {
-    let (head, tail) = rest.split_once('(')?;
-    let name = head.trim();
-    let (args, _) = tail.split_once(')')?;
-    (is_witness_name(name) && args.contains("float *out")).then_some(name)
-}
-
-/// 见证入口的命名形状：`witness_` 前缀，其余全是标识符字符（于是 `witness_<name>` 不算）。
-fn is_witness_name(name: &str) -> bool {
-    name.starts_with("witness_")
-        && name
-            .chars()
-            .all(|letter| letter.is_ascii_alphanumeric() || letter == '_')
 }
 
 #[cfg(test)]
@@ -334,7 +320,7 @@ mod tests {
         let source = "// 统一 ABI：`int witness_<name>(float *out)` 返回个数\n\
                       int witness_dot(float *out) { out[0] = 1.0f; return 1; }\n\
                       int helper(int x) { return x; }\n";
-        assert_eq!(definitions(source), ["witness_dot"]);
+        assert_eq!(crate::evidence::definitions(source), ["witness_dot"]);
     }
 
     #[test]

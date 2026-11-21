@@ -243,6 +243,36 @@ git status --short                    # 只允许本轮认领文件
 
 ## 15. 变更记录
 
+- **v2.6（testkit 架构与性能收口：去嵌套、进程级缓存、口径唯一化）**：`crates/testkit` 四项改动。
+  **① 去掉 9 个门禁文件的冗余 `mod tests` 包裹层**：`architecture` / `boundary` / `contracts` / `e2e` / `l3` /
+  `layer` / `mirror` / `oracle` / `ownership` 原本整文件被 `pub(crate) mod tests { ... }` 又包了一层，而 `lib.rs`
+  已对每个文件用 `#[cfg(test)] mod x;` 门控 —— **同一道 cfg 判了两次、还多一层缩进**，跨模块引用因此长成
+  `crate::architecture::tests::workspace_root`。剥掉后统一为 `crate::architecture::workspace_root`；
+  `kernel.rs` 因为是三处 `#[path]` 的公共零件，仍保留条目级 `#[cfg(test)]`。
+  **② `cargo metadata` 由每次 spawn 降为进程内一次**：`workspace()` 直接 `Command::new(cargo)` 起进程，实测单次
+  **30 ms**，全套门禁有 9 个调用点，合计约 270 ms（顺序计时；测试并发跑时被摊薄到数十毫秒）。改为
+  `workspace()` = `metadata().clone()`，`metadata()` 用 `static OnceLock` + `load_workspace()` 惰性求值一次；
+  返回类型不变，调用点零改动。
+  **③ 扫描与读文件进程级缓存**：门禁散在 9 个模块里，扫的是同一批目录、读的是同一批文件 —— `sources()` 被调
+  6 次（`contracts` 3、`mirror` 2、`locate_module` 1）、`rust_files` 约 13 个调用点、全模块 18 处
+  `read_to_string`。新增 `architecture::source_text`（缓存 `PathBuf → Option<String>`）并让 `rust_files` 缓存
+  `dir → Vec<PathBuf>`，共用一张 `Mutex<SourceCache>`；把 9 处**循环内**的读取换过去（`contracts` 2、`mirror` 2、
+  `boundary` 3、`ownership` 2），一次性读单份文件的地方仍走 `fs::read_to_string`（缓存无收益）。只读性由
+  `scratch` 只往临时目录写、不碰 `crates/` 保证，故同一进程内同一文件内容不会变。
+  **A/B 实测**（`--test-threads=1`，各 3 轮取最好）：无缓存 2.22 s → 有缓存 **1.82 s（−18%，−0.40 s）**。
+  **④ 项目级使用面收口**：
+  - `compare.rs` 里 `close`（相对项分母 `max(|got|,|want|)`）与 `assert_close`（分母 `|want|`）**不是同一条判据**，
+  旧文档却写着"判据与 `close` 同源"—— 改文档写清两者取向（后者对齐 `cutile::reference::max_rel_err` 的单侧
+  分母），并加 `the_asymmetric_relative_budget_is_stricter_than_the_symmetric_one` 把两个公式各自钉住；不合并
+  是因为 `op` 有 4 处调用 `assert_close`，合并等于悄悄改容差语义。
+  - `e2e.rs::fixture` 原本手搓 safetensors 头帧（长度前缀 + JSON + 两段数据），而 `lib.rs` 已导出
+  `safetensors_bytes` —— 改为调用它，容器帧只剩一份实现。
+  - `opencl/tests/fragments.rs` 用 `testkit::gating::skip`，其余 24 处调用点都走根重导出 `testkit::skip` —— 统一。
+  - 确认阈值主人仍唯一：精度分档只由 `cutile::reference::tolerance` 拥有，`testkit::rel` 只镜像公式、由
+  `oracle.rs` 逐位钉住；两台设备 crate 的契约文件已由 `testkit::device_suite!` 收到 opencl 48 行 / rocm 24 行。
+  **验证**：`cargo test -p llm-testkit --lib` **73 passed / 1 failed**（唯一红是 `op/fast/sme.rs` 的 4 处越界岛，
+  按 ADR 0035 §6 须先改 ADR 再进白名单，不属本 crate）；`clippy -D warnings`、`rustfmt --check` 对我拥有的文件全绿；
+  `cargo test -p llm-opencl -p llm-rocm --no-run` 通过。
 - **v2.5（testkit S++ 收敛：门禁搬进 `src/`，`tests/` 归零）**：`crates/testkit` 的 `tests/` 目录整体消灭，
   7 个集成测试文件 + 2 个 support 辅助文件按**主题**重组成 `src/` 下 10 个门禁模块（`architecture` 只留事实面
   `workspace_root` / `rust_files` / `walk` / `DOC`；断言分到 `layer` / `ownership` / `boundary` / `contracts` /

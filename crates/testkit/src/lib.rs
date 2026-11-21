@@ -9,9 +9,10 @@
 //! [`Rng`]（[`rng`]）；`crc32_bitwise`（[`hash`]）；`safetensors_bytes` 与 `pack_codes`
 //! （本文件，格式夹具）；`witness::run`、`Call`、`Reading`、`MAX_OUT`（[`witness`]）——设备
 //! crate 的见证源码在本机编译执行并与期望值对拍；`Contract`、`Provision`、`Witness`
-//! （[`device`]）与 `assert_expectations`、`assert_witnesses`、`assert_self_contained`、
+//! （[`device`]）与 `check_expectations`、`check_witnesses`、`check_self_contained`、
 //! `TOLERANCE`（[`evidence`]）——六台设备共用的片段层契约：签名、见证入口、档案供给三者
-//! 必须闭合，且每条见证在本机算得出档案写的值。
+//! 必须闭合，且每条见证在本机算得出档案写的值；`device_suite!`（[`suite`]）把九条判据
+//! 摊成设备 crate 的 `#[test]` 函数，于是"一台设备一遍"不必复制九次。
 //! **不拥有**：任何生产逻辑——它是测试夹具，不进任何二进制。
 //! **依赖**：无（夹具不该把被测 crate 拉进来）。
 //! **被依赖**：各成员的 `[dev-dependencies]`。
@@ -35,6 +36,7 @@ pub mod device;
 pub mod evidence;
 pub mod gating;
 pub mod rel;
+pub mod suite;
 pub mod witness;
 
 // 工作区级的跨层对拍与契约门禁。它们只靠 `dev-dependencies` 里的被测层编译，所以每条都在

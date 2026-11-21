@@ -12,7 +12,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 /// 仓根：本模块住在 `crates/<crate>/src/`，仓根是清单目录上两级。
 pub fn workspace_root() -> PathBuf {
@@ -24,9 +24,46 @@ pub fn workspace_root() -> PathBuf {
 /// 目录不存在或读不到时返回空：扫描集派生方（如层表）必须另守"至少扫到一个文件"，
 /// 否则合并/删除成员会让守卫静默通过。
 pub fn rust_files(dir: &Path) -> Vec<PathBuf> {
-    let mut found = Vec::new();
-    walk(dir, &mut found);
-    found
+    with_cache(|cache| match cache.dirs.get(dir) {
+        Some(found) => found.clone(),
+        None => {
+            let mut found = Vec::new();
+            walk(dir, &mut found);
+            cache.dirs.insert(dir.to_path_buf(), found.clone());
+            found
+        }
+    })
+}
+
+/// 读一份源文件；读不到时返回 `None`。
+///
+/// 与 [`rust_files`] 同理缓存：门禁是**只读**的（`scratch` 只往临时目录写，不碰 `crates/`），
+/// 一次测试运行里同一份文件的内容不会变，所以"每个门禁各自再读一遍"只是把同一份字节重算 N 次。
+pub fn source_text(path: &Path) -> Option<String> {
+    with_cache(|cache| match cache.texts.get(path) {
+        Some(text) => text.clone(),
+        None => {
+            let text = std::fs::read_to_string(path).ok();
+            cache.texts.insert(path.to_path_buf(), text.clone());
+            text
+        }
+    })
+}
+
+/// 扫描缓存：门禁分散在 9 个模块里，扫的是同一批目录、读的是同一批文件。
+#[derive(Default)]
+struct SourceCache {
+    dirs: BTreeMap<PathBuf, Vec<PathBuf>>,
+    texts: BTreeMap<PathBuf, Option<String>>,
+}
+
+fn with_cache<T>(body: impl FnOnce(&mut SourceCache) -> T) -> T {
+    static CACHE: OnceLock<Mutex<SourceCache>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(SourceCache::default()));
+    // 门禁里的断言会 panic，但都不在持锁期间：这里按中毒恢复处理，不让一个门禁的失败
+    // 连带把其余门禁判成"缓存中毒"。
+    let mut guard = cache.lock().unwrap_or_else(|poison| poison.into_inner());
+    body(&mut guard)
 }
 
 pub(crate) fn walk(dir: &Path, out: &mut Vec<PathBuf>) {

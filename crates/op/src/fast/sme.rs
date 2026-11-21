@@ -72,7 +72,6 @@ fn packed(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f32], t
         let (abuf, bbuf) = buf.split_at_mut(alen);
 
         // 打包：A 按行块、B 按列组切给 t 个线程，一次 scope 里并行做完。
-        let t_pack = std::time::Instant::now();
         thread::scope(|s| {
             let mut a_rest = &mut *abuf;
             let mut b_rest = &mut *bbuf;
@@ -91,8 +90,6 @@ fn packed(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f32], t
         });
 
         // 计算：每个线程进入流式模式，算自己的行块组，退出前写回。
-        let pack_ms = t_pack.elapsed().as_secs_f64() * 1e3;
-        let t_comp = std::time::Instant::now();
         let abuf: &[f32] = abuf;
         let bbuf: &[f32] = bbuf;
         thread::scope(|s| {
@@ -105,8 +102,6 @@ fn packed(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f32], t
                 s.spawn(move || compute(abuf, bbuf, ochunk, n, k, m0));
             }
         });
-        let comp_ms = t_comp.elapsed().as_secs_f64() * 1e3;
-        eprintln!("[phase] m={m} n={n} k={k} t={t} pack={pack_ms:.3}ms comp={comp_ms:.3}ms");
     });
 }
 

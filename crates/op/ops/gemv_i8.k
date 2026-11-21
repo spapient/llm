@@ -6,7 +6,6 @@ typedef unsigned char u8;
 
 void cutile_{{op}}_kernel(const float *x, const u8 *w, const float *scales,
                           float *y, int M, int N, int gsz) {
-    int tok = 0;
     for (int n = 0; n < N; ++n) {
         const u8 *row = 0;
         @load(row, w + (long)n * M);
@@ -18,8 +17,7 @@ void cutile_{{op}}_kernel(const float *x, const u8 *w, const float *scales,
             const float *xs = 0;
             const float *sc = scales + n * (M / gsz) + g;
 
-            @load_async(xs, x + g * gsz, tok);
-            @commit_wait(tok);
+            @load_async(xs, x + g * gsz);
             // i8 反量化：字节按有符号解释（对称零点 0），不乘标度，保持与 Rust 参考同一结合顺序。
             for (int k = 0; k < gsz; ++k) {
                 deq[k] = (float)(signed char)row[g * gsz + k];
@@ -27,7 +25,6 @@ void cutile_{{op}}_kernel(const float *x, const u8 *w, const float *scales,
             float dot = 0.0f;
             @dot(dot, deq, xs, gsz);
             acc += dot * sc[0];
-            @bar(tok);
         }
 
         float v = 0.0f;

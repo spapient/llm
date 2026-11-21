@@ -64,11 +64,7 @@ fn fixture() -> Vec<u8> {
         nw = weight.len(),
         total = weight.len() + norm.len(),
     );
-    let mut bytes = (header.len() as u64).to_le_bytes().to_vec();
-    bytes.extend_from_slice(header.as_bytes());
-    bytes.extend_from_slice(&weight);
-    bytes.extend_from_slice(&norm);
-    bytes
+    crate::safetensors_bytes(&header, &[(NAMES[0], weight), (NAMES[1], norm)])
 }
 
 #[test]

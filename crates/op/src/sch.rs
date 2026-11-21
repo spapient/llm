@@ -62,12 +62,15 @@ impl Schedule {
     }
 
     /// 该调度需要的原语（协商时逐条检查）。返回静态切片，不为每次协商分配 `Vec`。
+    ///
+    /// 只有真正会**发出指令**的原语才在这里：`pipe` 的正文每轮只发一次 `@load_async`，工作项
+    /// 之间没有共享量（`emit` 把行号绑到工作项，每个工作项只写自己的 `y[n]`、读 GM），
+    /// 屏障挡的那件事在这条路径上不存在，因此 `pipe` 不索取 `bar`——索取它只会让每台设备
+    /// 登记一条永远展开成空语句的 `provides`。带 SLM 分块的那条路径另立调度时再把 `bar` 加回来。
     pub fn required_prims(&self) -> &'static [Prim] {
         match self {
-            Self::Direct => &[],
-            Self::Pipe { .. } => &[Prim::Bar],
-            Self::WarpSpecialized { .. } => &[Prim::Bar, Prim::LoadAsync],
-            Self::PingPong { .. } => &[Prim::Bar],
+            Self::Direct | Self::Pipe { .. } | Self::PingPong { .. } => &[],
+            Self::WarpSpecialized { .. } => &[Prim::LoadAsync],
         }
     }
 
@@ -288,9 +291,9 @@ mod tests {
                 .required_prims()
                 .is_empty()
         );
-        assert_eq!(
-            Schedule::parse("pipe<3>").unwrap().required_prims(),
-            &[Prim::Bar]
+        assert!(
+            Schedule::parse("pipe<3>").unwrap().required_prims().is_empty(),
+            "预取级数不引入屏障：正文里没有第二个人会看到的写"
         );
         assert!(
             Schedule::parse("ws<2,2>")

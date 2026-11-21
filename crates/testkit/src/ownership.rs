@@ -6,7 +6,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::architecture::{contract, owned_types, rust_files, workspace, workspace_root};
+use crate::architecture::{
+    contract, owned_types, rust_files, source_text, workspace, workspace_root,
+};
 
 /// 一行顶层的 `struct|enum|trait|union` 定义，返回（是否是 `pub`，名字）。
 pub(crate) fn type_definition(line: &str) -> Option<(bool, &str)> {
@@ -36,7 +38,7 @@ pub(crate) fn type_definition(line: &str) -> Option<(bool, &str)> {
 pub(crate) fn public_types(files: &[std::path::PathBuf]) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     for path in files {
-        let Ok(text) = std::fs::read_to_string(path) else {
+        let Some(text) = source_text(path) else {
             continue;
         };
         let mut in_vocabulary = false;
@@ -262,7 +264,7 @@ pub(crate) fn declares_public(crate_name: &str, name: &str) -> bool {
             if path.is_dir() {
                 pending.push(path);
             } else if path.extension().is_some_and(|extension| extension == "rs") {
-                let Ok(text) = std::fs::read_to_string(&path) else {
+                let Some(text) = source_text(&path) else {
                     continue;
                 };
                 if text

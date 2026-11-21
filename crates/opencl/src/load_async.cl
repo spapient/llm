@@ -5,4 +5,4 @@
  * 那一次地址空间收敛是本行的前提：模板形参未限定，clang 视为 `__private`，运行期它指向 GM，
  * `-cl-std=CL2.0`（档案声明的那一版）允许这次收敛，CL3.0 起不允许——换到 CL3.0 时这一句要
  * 删掉，而不是把签名改回 `async_work_group_copy` 去凑。 */
-$0 = $1; prefetch((const __global float *)($1), 128); (void)($2);
+$0 = $1; prefetch((const __global float *)($1), 128);

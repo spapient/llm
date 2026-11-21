@@ -11,7 +11,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::architecture::{DOC, backticks, contract, rust_files, workspace, workspace_root};
+use crate::architecture::{
+    DOC, backticks, contract, rust_files, source_text, workspace, workspace_root,
+};
 use crate::ownership::{is_public_definition, public_item_name};
 
 /// 允许用 `String` 做**消息片段**的文件（不是"允许用 `String` 报错"）。
@@ -150,7 +152,7 @@ pub(crate) fn the_mechanism_layer_exposes_no_vendor_names() {
         }
         let root = workspace_root().join("crates").join(member).join("src");
         for path in rust_files(&root) {
-            let Ok(text) = std::fs::read_to_string(&path) else {
+            let Some(text) = source_text(&path) else {
                 continue;
             };
             for name in text.lines().filter_map(public_item_name) {
@@ -187,7 +189,7 @@ pub(crate) fn unsafe_islands_are_the_ones_the_adr_lists() {
     for member in workspace().0 {
         let root = workspace_root().join("crates").join(&member).join("src");
         for path in rust_files(&root) {
-            let Ok(text) = std::fs::read_to_string(&path) else {
+            let Some(text) = source_text(&path) else {
                 continue;
             };
             let count = text
@@ -279,7 +281,7 @@ fn declares_any(crate_name: &str, name: &str) -> bool {
     ];
     let root = workspace_root().join("crates").join(crate_name).join("src");
     rust_files(&root).into_iter().any(|path| {
-        std::fs::read_to_string(path).is_ok_and(|text| {
+        source_text(&path).is_some_and(|text| {
             text.lines().any(|line| {
                 is_public_definition(line, name, &KINDS) || is_module_or_macro(line, name)
             })

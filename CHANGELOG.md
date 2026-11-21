@@ -15,9 +15,14 @@
   至少有正文或见证之一——最后由 `testkit::witness` 把见证真的编成可执行文件跑一遍，与档案里的
   `expect` 对拍（`ascend` 20 条、`intel` 17 条，一条不漏）。判据本身在 `testkit::device`，六台设备共用
   一套，新增设备只加一张 `P0` 清单，判据一行不改；`intel` 另有语言门，用 `clang -x cl -cl-std=CL2.0`
-  解析 `witness.cl`（宿主 `cc` 编得过它，只因为它写的是标量 C）。
+  解析 `witness.cl`（宿主 `cc` 编得过它，只因为它写的是标量 C）。两台设备的用例正文逐字相同，所以
+  九条用例只写一次：`testkit::device_suite!(P0)` 把它们摊成 `#[test]` 函数，设备 crate 的
+  `tests/fragments.rs` 只剩 crate 文档、`P0` 清单与一行调用（`intel` 多一条前端用例）。
+  判据本身只**产出缺陷**（`Result<(), String>`），断言留在用例里——`src/` 上的静态门禁不给
+  `panic`/`expect` 留预算，夹具自己 panic 就是它在替调用方决定"什么算错"。
   **验证**：`cargo test -p llm-rocm`（9 + doctest 1）、`cargo test -p llm-opencl`（10 + doctest 1）、
-  `cargo test -p llm-testkit --lib`（含新夹具的 8 条自检）全绿。
+  `cargo test -p llm-testkit --lib -- device:: evidence:: witness::`（13 条自检：`device` 7、
+  `evidence` 3、`witness` 3）全绿；`npx --yes jscpd` 对这两个 crate 零 clone。
 
 ### Changed
 

@@ -134,6 +134,29 @@ fn expected<'a>(calls: &'a [Call<'a>], func: &str) -> &'a [f32] {
         .map_or(&[], |call| call.expect)
 }
 
+/// 见证文件里的 `int witness_*(float *out)` 定义名。注释里那种 `int witness_<name>(...)` 因为
+/// 名字里带着 `<`，在这里被过滤掉。
+pub(crate) fn definitions(source: &str) -> Vec<&str> {
+    source
+        .match_indices("int ")
+        .filter_map(|(index, _)| defined_name(&source[index + 4..]))
+        .collect()
+}
+
+/// 从 `int ` 之后的那段正文里读出函数名：只认 `witness_*` 且参数表里有 `float *out` 的定义。
+fn defined_name(rest: &str) -> Option<&str> {
+    let (name, args) = rest.split_once('(')?;
+    let args = args.split_once(')')?.0;
+    (is_witness_name(name) && args.contains("float *out")).then_some(name)
+}
+
+/// 见证入口的命名形状：`witness_` 前缀，其余全是标识符字符（于是 `witness_<name>` 不算）。
+fn is_witness_name(name: &str) -> bool {
+    name.strip_prefix("witness_").is_some_and(|rest| {
+        !rest.is_empty() && rest.chars().all(|c| c.is_alphanumeric() || c == '_')
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

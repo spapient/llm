@@ -87,12 +87,8 @@ fn write(path: &std::path::Path, text: &str) -> Result<(), String> {
 /// 编成可执行文件；编译器取 `CC` / `CXX`，缺省是 `cc` / `c++`。
 fn compile(ext: &str, main: &std::path::Path, binary: &std::path::Path) -> Result<(), String> {
     let cpp = ext == "cpp";
-    let compiler = if cpp {
-        std::env::var_os("CXX").unwrap_or_else(|| "c++".into())
-    } else {
-        std::env::var_os("CC").unwrap_or_else(|| "cc".into())
-    };
-    let standard = if cpp { "-std=c++17" } else { "-std=c99" };
+    let compiler = compiler(cpp);
+    let standard = standard(cpp);
     let compiled = Command::new(&compiler)
         .arg("-O1")
         .arg(standard)
@@ -109,6 +105,31 @@ fn compile(ext: &str, main: &std::path::Path, binary: &std::path::Path) -> Resul
         compiler.to_string_lossy(),
         String::from_utf8_lossy(&compiled.stderr).trim()
     ))
+}
+
+/// 主机上该语言的编译器：`CXX`/`CC` 优先，缺席时用 `c++`/`cc`。
+fn compiler(cpp: bool) -> std::ffi::OsString {
+    match cpp {
+        true => std::env::var_os("CXX"),
+        false => std::env::var_os("CC"),
+    }
+    .unwrap_or_else(|| default_compiler(cpp).into())
+}
+
+/// 该语言的方言旗标：C++17 与 C99。
+fn standard(cpp: bool) -> &'static str {
+    match cpp {
+        true => "-std=c++17",
+        false => "-std=c99",
+    }
+}
+
+/// 没有环境变量时的编译器名。
+fn default_compiler(cpp: bool) -> &'static str {
+    match cpp {
+        true => "c++",
+        false => "cc",
+    }
 }
 
 /// 跑一遍编出来的程序，返回它的标准输出。
