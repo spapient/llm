@@ -1,7 +1,8 @@
 //! GGUF v3 只读解析：头部、KV 元数据、张量信息表与反量化。
 
+use crate::bytes::Cursor;
 use crate::gguf_dequant::dequantize;
-use crate::gguf_reader::{Reader, data_start, tables};
+use crate::gguf_reader::{data_start, tables};
 use diagnostic::{Code, Error, Result};
 use dtype::{DType, QType};
 use wire::bad;
@@ -215,9 +216,9 @@ pub struct Gguf<'a> {
 impl<'a> Gguf<'a> {
     /// 解析头部、KV 与张量信息表，定位数据区。
     pub fn parse(bytes: &'a [u8]) -> Result<Self> {
-        let mut reader = Reader::new(bytes);
+        let mut reader = Cursor::new(bytes);
         let (tensors, meta) = tables(&mut reader)?;
-        let data = data_start(&meta, reader.pos, bytes.len())?;
+        let data = data_start(&meta, reader.pos(), bytes.len())?;
         Ok(Self {
             bytes,
             meta,
@@ -263,30 +264,29 @@ impl<'a> Gguf<'a> {
 
     /// 张量原始字节视图。
     pub fn raw(&self, tensor: &Tensor) -> Result<&'a [u8]> {
-        let offset = usize::try_from(tensor.offset).ok();
-        let start = offset
-            .and_then(|offset| self.data.checked_add(offset))
+        let offset = usize::try_from(tensor.offset).map_err(|_| bad("张量偏移溢出"))?;
+        let start = self
+            .data
+            .checked_add(offset)
             .ok_or_else(|| bad("张量偏移溢出"))?;
-        let len = tensor.bytes()?;
+        let stop = start
+            .checked_add(tensor.bytes()?)
+            .ok_or_else(|| bad("张量字节越界"))?;
         self.bytes
-            .get(start..start.saturating_add(len))
+            .get(start..stop)
             .ok_or_else(|| bad("张量字节越界"))
     }
 
     /// 按名反量化为 f32。
     pub fn floats(&self, name: &str) -> Result<Vec<f32>> {
-        let tensor = self.named(name)?;
+        let tensor = self
+            .tensor(name)
+            .ok_or_else(|| bad(format!("无张量 `{name}`")))?;
         let raw = self.raw(tensor)?;
         let count = tensor.count()?;
         let mut out = vec![0.0f32; count];
         dequantize(tensor.kind, raw, &mut out)?;
         Ok(out)
-    }
-
-    /// 按名取张量信息；缺失时显式报错（[`Gguf::tensor`] 的 `Option` 留给调用方自己决定）。
-    fn named(&self, name: &str) -> Result<&Tensor> {
-        self.tensor(name)
-            .ok_or_else(|| bad(format!("无张量 `{name}`")))
     }
 }
 

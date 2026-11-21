@@ -75,30 +75,17 @@ fn directory(bytes: &[u8]) -> Result<(usize, usize)> {
 }
 
 fn zip64_directory(bytes: &[u8], eocd: usize) -> Result<(usize, usize)> {
-    let z64 = zip64_record(bytes, eocd)?;
-    let total = usize::try_from(u64_at(bytes, z64 + 32)?).map_err(|_| bad("条目数超出 usize"))?;
-    let at =
-        usize::try_from(u64_at(bytes, z64 + 48)?).map_err(|_| bad("中央目录偏移超出 usize"))?;
-    Ok((at, total))
-}
-
-fn zip64_record(bytes: &[u8], eocd: usize) -> Result<usize> {
-    let locator = zip64_locator(bytes, eocd)?;
-    let z64 = zip64_offset(bytes, locator)?;
-    check_sig(bytes, z64, ZIP64_SIG, "ZIP64 EOCD 签名不符")?;
-    Ok(z64)
-}
-
-fn zip64_locator(bytes: &[u8], eocd: usize) -> Result<usize> {
     let locator = eocd
         .checked_sub(20)
         .ok_or_else(|| bad("ZIP64 定位器不完整"))?;
     check_sig(bytes, locator, EOCD64_LOCATOR_SIG, "ZIP64 定位器签名不符")?;
-    Ok(locator)
-}
-
-fn zip64_offset(bytes: &[u8], locator: usize) -> Result<usize> {
-    usize::try_from(u64_at(bytes, locator + 8)?).map_err(|_| bad("ZIP64 EOCD 偏移超出 usize"))
+    let z64 = usize::try_from(u64_at(bytes, locator + 8)?)
+        .map_err(|_| bad("ZIP64 EOCD 偏移超出 usize"))?;
+    check_sig(bytes, z64, ZIP64_SIG, "ZIP64 EOCD 签名不符")?;
+    let total = usize::try_from(u64_at(bytes, z64 + 32)?).map_err(|_| bad("条目数超出 usize"))?;
+    let at =
+        usize::try_from(u64_at(bytes, z64 + 48)?).map_err(|_| bad("中央目录偏移超出 usize"))?;
+    Ok((at, total))
 }
 
 fn check_sig(bytes: &[u8], at: usize, sig: u32, msg: &str) -> Result<()> {
@@ -118,7 +105,10 @@ fn entry(bytes: &[u8], at: usize) -> Result<(ZipEntry, usize)> {
         .map_err(|_| bad("条目名不是 UTF-8"))?;
     let (csize, local) = zip64_sizes(bytes, at, name_len)?;
     let start = local_start(bytes, local)?;
-    let len = data_range(bytes, start, csize)?;
+    let len = usize::try_from(csize).map_err(|_| bad("条目长度超出 usize"))?;
+    if start.checked_add(len).is_none_or(|stop| stop > bytes.len()) {
+        return Err(bad("条目数据超出归档"));
+    }
     let next = at
         .checked_add(46 + name_len + extra_len + comment_len)
         .ok_or_else(|| bad("中央目录偏移溢出"))?;
@@ -162,14 +152,6 @@ fn local_start(bytes: &[u8], local: usize) -> Result<usize> {
         return Err(bad("本地头偏移溢出"));
     };
     Ok(start)
-}
-
-fn data_range(bytes: &[u8], start: usize, data_len: u64) -> Result<usize> {
-    let len = usize::try_from(data_len).map_err(|_| bad("条目长度超出 usize"))?;
-    if start.checked_add(len).is_none_or(|stop| stop > bytes.len()) {
-        return Err(bad("条目数据超出归档"));
-    }
-    Ok(len)
 }
 
 fn zip64_extra(bytes: &[u8], extra_start: usize, extra_len: usize, field: usize) -> Result<u64> {
