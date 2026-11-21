@@ -25,7 +25,7 @@ pub struct Worst {
 
 /// 一次整批对拍的读数：[`RelErr::ratio`] 是判据本体，其余字段只为失败时定位。
 ///
-/// 与 [`close`] 的逐元素预算不同，这里只有**一个**分母（`want` 的最大绝对值），所以它答的是
+/// 与 [`crate::compare::close`] 的逐元素预算不同，这里只有**一个**分母（`want` 的最大绝对值），所以它答的是
 /// 「整批数合在一起差多少」这一个数，而不是逐元素各算各的——这正是内核对拍要的那条判据。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RelErr {
