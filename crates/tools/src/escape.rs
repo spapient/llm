@@ -25,32 +25,3 @@ pub fn quote(out: &mut String, text: &str) {
     }
     out.push('"');
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn quoted(text: &str) -> String {
-        let mut out = String::new();
-        quote(&mut out, text);
-        out
-    }
-
-    #[test]
-    fn quotes_and_backslashes_are_escaped_and_unicode_passes_through() {
-        assert_eq!(quoted("a\"b\\c"), "\"a\\\"b\\\\c\"");
-        assert_eq!(quoted("延迟"), "\"延迟\"");
-    }
-
-    #[test]
-    fn short_escapes_win_for_the_common_controls() {
-        assert_eq!(quoted("a\nb\tc\rd"), "\"a\\nb\\tc\\rd\"");
-    }
-
-    /// 其余控制字符（含 `\x07` 与 U+0085）一律走 `\u00XX`：裸放进 JSON 会让回读器读到非法字节。
-    #[test]
-    fn other_controls_become_unicode_escapes() {
-        assert_eq!(quoted("\u{7}"), "\"\\u0007\"");
-        assert_eq!(quoted("\u{85}"), "\"\\u0085\"");
-    }
-}

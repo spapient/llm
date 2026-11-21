@@ -459,8 +459,8 @@ fn debt_gate(ccn: i64, measured: usize) -> (Gate, Over) {
 #[test]
 fn the_project_config_lists_only_root_entry_legacy_debt() {
     let gate = Gate::load().expect("项目配置合法");
-    let limits = [Metric::Ccn, Metric::Nloc, Metric::Lines, Metric::Call]
-        .map(|metric| gate.limit(metric));
+    let limits =
+        [Metric::Ccn, Metric::Nloc, Metric::Lines, Metric::Call].map(|metric| gate.limit(metric));
     assert_eq!(
         limits,
         [5, 60, 1200, 0],

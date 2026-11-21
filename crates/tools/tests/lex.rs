@@ -1,7 +1,16 @@
-//! 词法器集成测试：只用公开面，不读实现即可换掉实现。
+//! 源分析原语的集成测试：词法、预处理、调用扫描、圈复杂度、文档链接、行数。
+//! 只用公开面，不读实现即可换掉实现。
 
 use diagnostic::Code;
+use diagnostic::data::{Table, Value};
+use llm_tools::call::{Kind, scan};
+use llm_tools::ccn::analyze;
+use llm_tools::docs::{Link, links};
+use llm_tools::dup::file_lines;
+use llm_tools::gate::Gate;
 use llm_tools::lex::{Token, parse};
+use llm_tools::strip::strip_tests;
+use std::collections::BTreeMap;
 
 /// 前 N 个顶层 token 的调试文本。
 fn outline(tokens: &[Token], max: usize) -> String {
@@ -86,4 +95,219 @@ fn boundary_inputs_reach_a_stable_verdict() {
     let long = "x".repeat(256);
     let tokens = parse(&long).expect("长标识符可解析");
     assert_eq!(tokens.len(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// strip：剔除测试条目，保留行号与真实代码
+// ---------------------------------------------------------------------------
+
+#[test]
+fn strips_test_items_with_attached_attributes() {
+    let src = "#[cfg(target_os = \"macos\")]\n#[cfg(test)]\nmod tests {\n    fn t() {}\n}\nfn keep() {}\n";
+    let stripped = strip_tests(src).expect("strip");
+    assert_eq!(stripped.lines().count(), src.lines().count());
+    assert!(!stripped.contains("mod tests"));
+    assert!(!stripped.contains("target_os"));
+    assert!(stripped.contains("fn keep"));
+}
+
+#[test]
+fn keeps_not_test_items() {
+    let src = "#[cfg(not(test))]\nfn real() {}\n";
+    assert!(strip_tests(src).expect("strip").contains("fn real"));
+}
+
+/// 通过公开的 `strip_tests` 验证复合 `cfg(test)` 判定：只有真正含 `test` 的条目被剔除。
+#[test]
+fn detects_compound_test_cfg() {
+    let stripped = |body: &str| {
+        let src = format!("#[cfg({body})]\nfn real() {{}}\n");
+        !strip_tests(&src).expect("strip").contains("fn real")
+    };
+    assert!(stripped("all(test, feature = \"x\")"));
+    assert!(stripped("any(test, feature = \"x\")"));
+    assert!(!stripped("not(test)"));
+    assert!(!stripped("any(not(test), feature)"));
+    assert!(!stripped("feature = \"testing\""));
+}
+
+#[test]
+fn strips_inner_cfg_test_attribute() {
+    let src = "#![cfg(test)]\nmod tests {\n    fn t() {}\n}\nfn keep() {}\n";
+    let stripped = strip_tests(src).expect("strip");
+    assert_eq!(stripped.lines().count(), src.lines().count());
+    assert!(!stripped.contains("mod tests"));
+    assert!(stripped.contains("fn keep"));
+}
+
+#[test]
+fn braces_inside_strings_do_not_break_strip() {
+    let src = "#[cfg(test)]\nmod tests {\n    let t = \"void f() { {{x}} }\";\n}\nfn keep() {}\n";
+    let stripped = strip_tests(src).expect("strip");
+    assert!(!stripped.contains("void f"));
+    assert!(stripped.contains("fn keep"));
+}
+
+// ---------------------------------------------------------------------------
+// call：禁止形态扫描
+// ---------------------------------------------------------------------------
+
+#[test]
+fn bare_unwrap_expect_and_panic_are_caught() {
+    let src = "fn f() { let a = x.unwrap(); let b = y.expect(\"m\"); panic!(\"p\"); }";
+    let kinds: Vec<Kind> = scan(src).unwrap().iter().map(|c| c.kind).collect();
+    assert_eq!(kinds, vec![Kind::Unwrap, Kind::Expect, Kind::Panic]);
+}
+
+#[test]
+fn unreachable_is_caught_but_its_plain_identifier_is_not() {
+    let src = "fn f() { let unreachable = 1; g(unreachable); unreachable!(\"x\"); }";
+    let kinds: Vec<Kind> = scan(src).unwrap().iter().map(|c| c.kind).collect();
+    assert_eq!(kinds, vec![Kind::Unreachable], "只有带 `!` 的那次是宏调用");
+}
+
+#[test]
+fn unwrap_inside_a_string_is_not_flagged() {
+    let src = "let s = \"x.unwrap()\";";
+    assert!(scan(src).unwrap().is_empty());
+}
+
+#[test]
+fn ufcs_unwrap_expect_are_caught() {
+    let src = "fn f() { let a = Option::unwrap(x); let b = Result::expect(y, \"m\"); }";
+    let kinds: Vec<Kind> = scan(src).unwrap().iter().map(|c| c.kind).collect();
+    assert_eq!(kinds, vec![Kind::Unwrap, Kind::Expect]);
+}
+
+#[test]
+fn ordinary_associated_function_is_not_flagged() {
+    let src = "fn f() { let v = Type::new(x); }";
+    assert!(scan(src).unwrap().is_empty());
+}
+
+#[test]
+fn result_returning_code_is_clean() {
+    let src = "fn f() -> Result<u32, E> { let v = ok()?; Ok(v) }";
+    assert!(scan(src).unwrap().is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// ccn：圈复杂度
+// ---------------------------------------------------------------------------
+
+fn cc(src: &str) -> Vec<(String, u32)> {
+    analyze(src)
+        .expect("analyze")
+        .into_iter()
+        .map(|f| (f.name, f.ccn))
+        .collect()
+}
+
+#[test]
+fn counts_conditions_like_lizard() {
+    let src = r#"
+fn branch(a: bool, b: bool) -> u32 {
+    if a && b { 1 } else { 2 }
+}
+fn choose(x: Option<u32>) -> u32 {
+    match x {
+        Some(0) => 0,
+        Some(v) => v,
+        None => 1,
+    }
+}
+fn fallible(v: Option<u32>) -> Result<u32, ()> {
+    let Some(x) = v else { return Err(()) };
+    Ok(x?)
+}
+"#;
+    assert_eq!(
+        cc(src),
+        vec![
+            ("branch".into(), 3),
+            ("choose".into(), 3),
+            ("fallible".into(), 3)
+        ]
+    );
+}
+
+#[test]
+fn function_pointer_types_are_not_definitions() {
+    let src = "fn real(f: fn(u8) -> u8) -> u8 { f(1) }";
+    let findings = analyze(src).expect("analyze");
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].name, "real");
+}
+
+#[test]
+fn nested_functions_keep_their_own_complexity() {
+    let src = "fn outer() { fn inner(a: bool) { if a { } } }";
+    let by_name: BTreeMap<String, u32> = analyze(src)
+        .expect("analyze")
+        .into_iter()
+        .map(|f| (f.name, f.ccn))
+        .collect();
+    assert_eq!(by_name["inner"], 2);
+    assert_eq!(by_name["outer"], 1);
+}
+
+#[test]
+fn two_top_level_functions_are_both_collected() {
+    let src = "fn first() {}\nfn second() {}\n";
+    assert_eq!(cc(src).len(), 2);
+}
+
+// ---------------------------------------------------------------------------
+// docs：文档相对链接
+// ---------------------------------------------------------------------------
+
+#[test]
+fn relative_links_are_collected_and_anchors_stripped() {
+    let doc = "见 [架构](ARCHITECTURE.md#二) 与 [代码](../crates/tools/src/lib.rs)。";
+    assert_eq!(
+        links(doc),
+        vec![
+            Link {
+                target: "ARCHITECTURE.md".to_string(),
+                line: 1
+            },
+            Link {
+                target: "../crates/tools/src/lib.rs".to_string(),
+                line: 1
+            },
+        ]
+    );
+}
+
+#[test]
+fn external_and_pure_anchor_links_are_skipped() {
+    let doc = "[site](https://x.io/a) [top](#section) [mail](mailto:a@b.c)";
+    assert!(links(doc).is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// dup：文件行数闸门
+// ---------------------------------------------------------------------------
+
+/// 一份只有阈值的 `[gate]`：行数上限故意收紧到 10，便于用短文本验证边界。
+fn line_gate() -> Gate {
+    let thresholds = vec![
+        ("ccn_max", Value::int(5)),
+        ("nloc_max", Value::int(60)),
+        ("file_max_lines", Value::int(10)),
+    ];
+    Gate::from_table(&Table::from_pairs(vec![("gate", Value::table(thresholds))]))
+        .expect("测试阈值合法")
+}
+
+#[test]
+fn an_oversized_file_is_flagged() {
+    let text = (0..12).map(|_| "x").collect::<Vec<_>>().join("\n");
+    assert_eq!(file_lines(&text, &line_gate()), Some(12));
+}
+
+#[test]
+fn a_file_within_budget_is_silent() {
+    let text = (0..8).map(|_| "x").collect::<Vec<_>>().join("\n");
+    assert_eq!(file_lines(&text, &line_gate()), None);
 }

@@ -382,13 +382,19 @@ fn standing_of(
     let Some(tally) = tally else {
         return Standing::Open(Shortfall::Degenerate);
     };
-    let (inner, outer) = match protocol.direction {
+    verdict(protocol, tally)
+}
+
+fn verdict(protocol: &Protocol, tally: &Tally) -> Standing {
+    let (pass, fail) = match protocol.direction {
         Direction::Higher => (tally.lower >= protocol.bound, tally.upper < protocol.bound),
         Direction::Lower => (tally.upper < protocol.bound, tally.lower >= protocol.bound),
     };
-    match (inner, outer) {
-        (true, _) => Standing::Pass,
-        (false, true) => Standing::Fail,
-        (false, false) => Standing::Open(Shortfall::Straddle),
+    if pass {
+        Standing::Pass
+    } else if fail {
+        Standing::Fail
+    } else {
+        Standing::Open(Shortfall::Straddle)
     }
 }

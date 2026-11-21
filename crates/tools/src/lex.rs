@@ -1,6 +1,5 @@
-//! 零依赖 Rust 词法器：把源码切成带分组与位置的 token 树；不依赖 syn/proc-macro2。
-//! 注释（含嵌套块注释）、字符串、原始字符串、字符字面量在词法层剔除，分析器不会把字符串
-//! 里的 `?` 或注释里的 `if` 误计为条件。位置从 1 起算，对齐 proc-macro2 的 `LineColumn`。
+//! 零依赖词法器：把源码切成带分组与位置的 token 树；注释、字符串、字符字面量在词法层剔除，
+//! 分析器不会把字符串里的 `?` 或注释里的 `if` 误计为条件；位置从 1 起算，对齐 proc-macro2。
 
 use diagnostic::{Code, Error};
 
@@ -11,12 +10,6 @@ pub struct Pos {
     pub line: usize,
     /// 列号（1-based）。
     pub col: usize,
-}
-
-impl Pos {
-    const fn new(line: usize, col: usize) -> Self {
-        Self { line, col }
-    }
 }
 
 /// 分组括号闭集。
@@ -129,7 +122,7 @@ impl Lexer {
     }
 
     fn pos(&self) -> Pos {
-        Pos::new(self.line, self.col)
+        Pos { line: self.line, col: self.col }
     }
     fn peek(&self) -> Option<char> {
         self.chars.get(self.at).copied()
@@ -138,7 +131,6 @@ impl Lexer {
         self.chars.get(self.at + ahead).copied()
     }
 
-    /// 消费一个字符并推进位置；换行复位列号。
     fn bump(&mut self) -> Option<char> {
         let ch = self.chars.get(self.at).copied()?;
         self.at += 1;
@@ -151,12 +143,10 @@ impl Lexer {
         Some(ch)
     }
 
-    /// 当前位置是否以 `first` + `second` 两个字符开头。
     fn at_pair(&self, first: char, second: char) -> bool {
         self.peek() == Some(first) && self.peek_at(1) == Some(second)
     }
 
-    /// 解析到对应闭括号（或 EOF）；`close` 为 None 表示顶层。
     fn parse_until(&mut self, close: Option<char>) -> diagnostic::Result<Vec<Token>> {
         let mut items = Vec::new();
         loop {
@@ -171,7 +161,6 @@ impl Lexer {
         }
     }
 
-    /// 跳过空白与注释（注释内换行同样推进行号）。
     fn skip_trivia(&mut self) -> diagnostic::Result<()> {
         loop {
             self.skip_space_and_line();
@@ -182,7 +171,6 @@ impl Lexer {
         }
     }
 
-    /// 跳过空白与 `//` 行注释（读到换行前停下）；块注释交给调用方。
     fn skip_space_and_line(&mut self) {
         loop {
             if self.peek().is_some_and(char::is_whitespace) {
@@ -198,7 +186,6 @@ impl Lexer {
         }
     }
 
-    /// 块注释：Rust 允许嵌套，深度归零即结束。
     fn block_comment(&mut self) -> diagnostic::Result<()> {
         self.bump();
         self.bump();
@@ -218,7 +205,6 @@ impl Lexer {
         Ok(())
     }
 
-    /// 取下一个非空白 token（调用前已跳过 trivia）：括号分组或叶子 token。
     fn next_token(&mut self, ch: char) -> diagnostic::Result<Token> {
         let Some((delim, closer)) = open_delim(ch) else {
             return match ch {
@@ -240,7 +226,6 @@ impl Lexer {
         })
     }
 
-    /// 标识符、数字与单字符标点。
     fn word_or_punct(&mut self, ch: char) -> diagnostic::Result<Token> {
         if is_ident_start(ch) {
             return self.ident_or_string(ch);
@@ -253,7 +238,6 @@ impl Lexer {
         Ok(Token::Punct { ch, pos })
     }
 
-    /// 标识符；带字符串前缀（`r#"`、`b"`）时改走字符串分支。
     fn ident_or_string(&mut self, first: char) -> diagnostic::Result<Token> {
         let start = self.pos();
         match self.string_prefix(first) {
@@ -275,7 +259,6 @@ impl Lexer {
         Ok(Token::Ident { text, pos: start })
     }
 
-    /// 前缀形态：`Some(true)` 原始字符串，`Some(false)` 普通字符串，`None` 普通标识符。
     fn string_prefix(&self, first: char) -> Option<bool> {
         match (first, self.peek_at(1)) {
             ('r', Some('"') | Some('#')) => Some(true),
@@ -285,7 +268,6 @@ impl Lexer {
         }
     }
 
-    /// 原始字符串：`r"..."`、`r#"..."#`、`br"..."`（含任意个 `#`）。
     fn raw_string(&mut self, start: Pos) -> diagnostic::Result<Token> {
         let mut text = String::new();
         while self.peek().is_some_and(|ch| matches!(ch, '#' | 'r' | 'b')) {
@@ -302,7 +284,6 @@ impl Lexer {
         Ok(Token::Literal { text, start, end })
     }
 
-    /// 读到与 `hashes` 个 `#` 匹配的闭引号；未闭合是错误。
     fn raw_body(&mut self, text: &mut String, hashes: usize) -> diagnostic::Result<()> {
         while let Some(ch) = self.peek() {
             if ch != '"' || !self.closes_raw(hashes) {
@@ -318,13 +299,11 @@ impl Lexer {
         Err(Error::new(Code::Invalid, "原始字符串未闭合").with("tools::lex"))
     }
 
-    /// 当前位置的 `"` 后是否恰好跟 `hashes` 个 `#`（再多一个 `#` 属更长闭合）。
     fn closes_raw(&self, hashes: usize) -> bool {
         (1..=hashes).all(|ahead| self.peek_at(ahead) == Some('#'))
             && self.peek_at(hashes + 1) != Some('#')
     }
 
-    /// 读到 `quote` 为止（`\` 后的一个字符整体跳过）；`what` 用于未闭合的错误文案。
     fn quoted(&mut self, quote: char, what: &str) -> diagnostic::Result<Token> {
         let start = self.pos();
         let mut text = String::from(quote);
@@ -345,7 +324,6 @@ impl Lexer {
         Ok(Token::Literal { text, start, end })
     }
 
-    /// 字符字面量 vs 生命周期：只按局部三个字符判定，不在整行内搜索闭合。
     fn quote_or_lifetime(&mut self) -> diagnostic::Result<Token> {
         let start = self.pos();
         let inner = self.peek_at(1);
@@ -371,12 +349,13 @@ impl Lexer {
         Ok(Token::Literal { text, start, end })
     }
 
-    /// 数字字面量：连续读到分隔符为止（含浮点、指数与类型后缀）。
     fn number(&mut self) -> Token {
         let start = self.pos();
         let mut text = String::new();
         while let Some(ch) = self.peek() {
-            if ch.is_whitespace() || is_open_or_close(ch) || self.at_pair('.', '.') {
+            if ch.is_whitespace() || open_delim(ch).is_some() || matches!(ch, ')' | '}' | ']')
+                || self.at_pair('.', '.')
+            {
                 break;
             }
             text.push(ch);
@@ -386,12 +365,11 @@ impl Lexer {
         Token::Literal { text, start, end }
     }
 
-    /// 按原文长度推算 token 终点位置（字面量可能跨行）。
     fn after_last(&self, text: &str, start: Pos) -> Pos {
         let keep = text.chars().count().saturating_sub(1);
         text.chars().take(keep).fold(start, |pos, ch| match ch {
-            '\n' => Pos::new(pos.line + 1, 1),
-            _ => Pos::new(pos.line, pos.col + 1),
+            '\n' => Pos { line: pos.line + 1, col: 1 },
+            _ => Pos { line: pos.line, col: pos.col + 1 },
         })
     }
 }
@@ -410,10 +388,6 @@ fn is_ident_start(ch: char) -> bool {
 
 fn is_ident_cont(ch: char) -> bool {
     ch == '_' || ch.is_alphanumeric()
-}
-
-fn is_open_or_close(ch: char) -> bool {
-    open_delim(ch).is_some() || matches!(ch, ')' | '}' | ']')
 }
 
 fn open_delim(ch: char) -> Option<(Delim, char)> {

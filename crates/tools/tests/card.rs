@@ -1,8 +1,12 @@
-//! 实测卡三态判定的集成测试：只用公开面，不读实现即可换掉实现。
+//! 实测卡的集成测试：三态判定、基准记录、回归基线、统计区间、JSON 转义。
+//! 只用公开面，不读实现即可换掉实现。
 
-use diagnostic::Code;
-use llm_tools::bench::Harness;
+use diagnostic::{Code, Result};
+use llm_tools::bench::{BenchRecord, EntryKind, Geometry, Harness, Roofline};
 use llm_tools::card::{Card, Direction, Protocol, Shortfall, Standing, Statistic, Tally};
+use llm_tools::escape::quote;
+use llm_tools::regress::{Baseline, Case, Direction as RegDir, Judgement};
+use llm_tools::stats::{interval, mean, quantile, resample, sd};
 
 /// 一台在闭集里的 A800：多数用例只关心门槛，不关心装置。
 fn harness(host: &str) -> Harness {
@@ -192,4 +196,272 @@ fn a_protocol_rejects_impossible_settings() {
     assert_eq!(nan.code(), Code::Invalid);
     assert!(nan.message().contains("有限数"), "{}", nan.message());
     assert_eq!(jitter().with_least(1).unwrap_err().code(), Code::Invalid);
+}
+
+// ---------------------------------------------------------------------------
+// bench：基准记录的构造与不变式
+// ---------------------------------------------------------------------------
+
+fn bench_harness() -> Harness {
+    Harness::new(
+        "host-a",
+        "cpu-x",
+        "macos",
+        "aarch64",
+        "rustc 1.82",
+        "cpu-reference",
+    )
+}
+
+fn bench_geometry(shape: Vec<usize>, batch: u32, dtype: &str) -> Result<Geometry> {
+    Geometry::new(shape, batch, dtype)
+}
+
+fn bench_record(name: &str, backend: &str, geom: Geometry) -> Result<BenchRecord> {
+    BenchRecord::new(
+        EntryKind::Op,
+        name,
+        backend,
+        geom,
+        bench_harness(),
+        Roofline::default(),
+    )
+}
+
+#[test]
+fn a_minimal_record_keeps_observed_and_roofline_optional() {
+    let geom = bench_geometry(vec![4096, 4096], 1, "f32").expect("几何合法");
+    let record = bench_record("gemv_f32", "cpu-reference", geom).expect("记录合法");
+    assert_eq!(record.kind(), EntryKind::Op);
+    assert_eq!(record.name(), "gemv_f32");
+    assert_eq!(record.backend(), "cpu-reference");
+    assert_eq!(record.geometry().shape(), &[4096, 4096]);
+    assert_eq!(record.geometry().batch(), 1);
+    assert_eq!(record.geometry().dtype(), "f32");
+    assert!(record.observed().is_none(), "未测量不预填实测");
+    assert!(record.roofline().peak_bw_gb_s().is_none());
+    assert!(record.roofline().peak_gflops().is_none());
+}
+
+#[test]
+fn observed_is_filled_only_when_measured() {
+    let geom = bench_geometry(vec![4096], 1, "f32").expect("几何合法");
+    let filled = bench_record("rope_f32", "cpu-reference", geom)
+        .expect("记录合法")
+        .with_observed(12.5)
+        .expect("实测有限");
+    assert_eq!(filled.observed(), Some(12.5));
+
+    let geom = bench_geometry(vec![4096], 1, "f32").expect("几何合法");
+    let nan = bench_record("rope_f32", "cpu-reference", geom)
+        .expect("记录合法")
+        .with_observed(f64::NAN);
+    assert!(nan.is_err(), "非有限实测不能回填");
+    assert_eq!(nan.unwrap_err().code(), Code::Invalid);
+}
+
+#[test]
+fn empty_identity_and_invalid_geometry_are_rejected() {
+    let cases: [(&str, &str, Result<Geometry>); 5] = [
+        ("", "cpu-reference", bench_geometry(vec![4], 1, "f32")),
+        ("gemv", "", bench_geometry(vec![4], 1, "f32")),
+        ("gemv", "cpu-reference", bench_geometry(vec![], 1, "f32")),
+        ("gemv", "cpu-reference", bench_geometry(vec![4], 0, "f32")),
+        ("gemv", "cpu-reference", bench_geometry(vec![4], 1, "")),
+    ];
+    for (name, backend, geom) in cases {
+        let geom = match geom {
+            Ok(geom) => geom,
+            Err(_) => continue,
+        };
+        let err = bench_record(name, backend, geom).expect_err("必须拒绝");
+        assert_eq!(err.code(), Code::Invalid, "输入：{name}/{backend}");
+    }
+}
+
+#[test]
+fn invalid_geometry_itself_is_an_error() {
+    assert!(bench_geometry(vec![], 1, "f32").is_err());
+    assert!(bench_geometry(vec![4], 0, "f32").is_err());
+    assert!(bench_geometry(vec![4], 1, "").is_err());
+}
+
+#[test]
+fn roofline_rejects_negative_or_nonfinite_peaks() {
+    assert!(Roofline::new(Some(-1.0), None).is_err());
+    assert!(Roofline::new(None, Some(f64::INFINITY)).is_err());
+    let ok = Roofline::new(Some(1024.0), Some(512.0)).expect("上界合法");
+    assert_eq!(ok.peak_bw_gb_s(), Some(1024.0));
+    assert_eq!(ok.peak_gflops(), Some(512.0));
+}
+
+#[test]
+fn entry_kind_short_names_are_stable() {
+    assert_eq!(EntryKind::Op.as_str(), "op");
+    assert_eq!(EntryKind::Layer.as_str(), "layer");
+    assert_eq!(EntryKind::Model.as_str(), "model");
+}
+
+// ---------------------------------------------------------------------------
+// regress：回归基线的判定
+// ---------------------------------------------------------------------------
+
+fn baseline() -> Baseline {
+    Baseline::new(vec![
+        Case::new("tput", 100.0, 5.0, RegDir::Higher).expect("场景"),
+        Case::new("latency", 50.0, 10.0, RegDir::Lower).expect("场景"),
+    ])
+    .expect("基线")
+}
+
+#[test]
+fn a_higher_is_better_case_regresses_only_below_its_limit() {
+    let baseline = baseline();
+    assert_eq!(baseline.judge("tput", 98.0), Ok(Judgement::Pass));
+    assert_eq!(baseline.judge("tput", 100.0), Ok(Judgement::Pass));
+    assert!(matches!(
+        baseline.judge("tput", 94.0),
+        Ok(Judgement::Regressed { .. })
+    ));
+    assert!(matches!(
+        baseline.judge("tput", 120.0),
+        Ok(Judgement::Improved { .. })
+    ));
+}
+
+#[test]
+fn a_lower_is_better_case_mirrors_the_comparison() {
+    let baseline = baseline();
+    assert_eq!(baseline.judge("latency", 52.0), Ok(Judgement::Pass));
+    assert!(matches!(
+        baseline.judge("latency", 56.0),
+        Ok(Judgement::Regressed { .. })
+    ));
+    assert!(matches!(
+        baseline.judge("latency", 40.0),
+        Ok(Judgement::Improved { .. })
+    ));
+}
+
+#[test]
+fn a_non_finite_measurement_never_passes() {
+    assert!(matches!(
+        baseline().judge("tput", f64::NAN),
+        Ok(Judgement::Regressed { .. })
+    ));
+}
+
+#[test]
+fn an_unknown_scenario_is_a_configuration_error() {
+    let error = baseline().judge("missing", 1.0).expect_err("未知场景");
+    assert_eq!(error.code(), Code::Missing);
+    assert!(error.to_string().contains("tput"), "{error}");
+}
+
+#[test]
+fn impossible_cases_are_rejected() {
+    assert_eq!(
+        Case::new("x", 0.0, 5.0, RegDir::Higher).unwrap_err().code(),
+        Code::Invalid
+    );
+    assert_eq!(
+        Case::new("x", 1.0, 101.0, RegDir::Higher)
+            .unwrap_err()
+            .code(),
+        Code::Invalid
+    );
+    assert_eq!(Baseline::new(Vec::new()).unwrap_err().code(), Code::Invalid);
+    let duplicated = Case::new("x", 1.0, 1.0, RegDir::Higher).expect("场景");
+    assert_eq!(
+        Baseline::new(vec![duplicated.clone(), duplicated])
+            .unwrap_err()
+            .code(),
+        Code::Invalid
+    );
+}
+
+#[test]
+fn judgements_and_directions_have_stable_names() {
+    assert_eq!(RegDir::Higher.as_str(), "higher-is-better");
+    assert_eq!(RegDir::Lower.as_str(), "lower-is-better");
+    assert_eq!(Judgement::Pass.as_str(), "pass");
+    assert!(
+        Judgement::Improved {
+            observed: 2.0,
+            baseline: 1.0
+        }
+        .is_pass()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// stats：闭式统计量
+// ---------------------------------------------------------------------------
+
+#[test]
+fn mean_and_sample_deviation_match_the_closed_form() {
+    let samples = [1.0, 2.0, 3.0, 4.0, 5.0];
+    assert_eq!(mean(&samples), 3.0);
+    assert!((sd(&samples) - 2.5_f64.sqrt()).abs() < 1e-12);
+}
+
+#[test]
+fn a_single_sample_has_no_spread() {
+    assert_eq!(sd(&[7.0]), 0.0);
+    assert_eq!(mean(&[]), 0.0);
+}
+
+#[test]
+fn quantiles_are_nearest_rank_not_interpolated() {
+    let sorted = [1.0, 2.0, 3.0, 4.0];
+    assert_eq!(quantile(&sorted, 0.50), 2.0);
+    assert_eq!(quantile(&sorted, 0.95), 4.0);
+    assert_eq!(quantile(&sorted, 0.0), 1.0, "下界夹住在最小秩");
+}
+
+#[test]
+fn resampling_is_reproducible() {
+    let samples = [9.0, 11.0, 10.5, 9.4, 12.0, 10.1, 9.9, 10.8];
+    let first = interval(&samples, |drawn| Some(mean(drawn)));
+    let second = interval(&samples, |drawn| Some(mean(drawn)));
+    assert_eq!(first, second);
+    let draws = first.expect("区间");
+    assert!(draws.windows(2).all(|pair| pair[0] <= pair[1]), "必须升序");
+    assert!(
+        draws[0] <= 10.0 && 10.0 <= draws[draws.len() - 1],
+        "区间应罩住真值"
+    );
+}
+
+#[test]
+fn an_undefined_statistic_has_no_interval() {
+    assert_eq!(interval(&[1.0, -1.0], |_| None), None);
+    assert!(resample(&[], |_| Some(0.0)).is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// escape：JSON 字符串转义
+// ---------------------------------------------------------------------------
+
+fn quoted(text: &str) -> String {
+    let mut out = String::new();
+    quote(&mut out, text);
+    out
+}
+
+#[test]
+fn quotes_and_backslashes_are_escaped_and_unicode_passes_through() {
+    assert_eq!(quoted("a\"b\\c"), "\"a\\\"b\\\\c\"");
+    assert_eq!(quoted("延迟"), "\"延迟\"");
+}
+
+#[test]
+fn short_escapes_win_for_the_common_controls() {
+    assert_eq!(quoted("a\nb\tc\rd"), "\"a\\nb\\tc\\rd\"");
+}
+
+#[test]
+fn other_controls_become_unicode_escapes() {
+    assert_eq!(quoted("\u{7}"), "\"\\u0007\"");
+    assert_eq!(quoted("\u{85}"), "\"\\u0085\"");
 }
