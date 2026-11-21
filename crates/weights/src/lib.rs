@@ -64,6 +64,9 @@ pub mod quant;
 // —— 2/4/8-bit 对称 PTQ：f32 → 打包码的正向量化与其反解（离线换算，ADR 0018） ——
 pub mod ptq;
 
+// 自适应档位分配：ptq 的子域，平铺到顶层以过 N3（原 `ptq/adaptive`）。
+mod adaptive;
+
 // —— 完整性证明：Merkle + SHA-256 ——
 mod proof;
 

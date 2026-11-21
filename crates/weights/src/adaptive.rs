@@ -2,14 +2,14 @@
 //!
 //! 与父模块的分工：父模块回答「给定一档位宽怎么量化、怎么打包」，本模块只回答**每组该选哪一档**
 //! ——按误差预算从 `{2,3,4,8}` 里降档，使位宽图在给定 Frobenius 预算下近似最少码位（E5 的自适应
-//! 策略口径）。码本与编解码仍只有父模块那一份 [`super::quantize`] / [`super::dequantize`]，本模块
+//! 策略口径）。码本与编解码仍只有 `ptq` 那一份 [`crate::ptq::quantize`] / [`crate::ptq::dequantize`]，本模块
 //! 不另写算术，也不定义第二个位宽闭集。
 
 use std::ops::Range;
 
 use diagnostic::Result;
 
-use super::{I2, I3, I4, I8, Scheme, dequantize, invalid, quantize};
+use crate::ptq::{I2, I3, I4, I8, Scheme, dequantize, invalid, quantize};
 
 /// 候选档位，位宽从低到高。
 ///
@@ -87,7 +87,7 @@ pub struct AdaptiveCompensated {
 
 /// 谱隙证书 + 2–8bit 自适应残差补偿：把 4bit 固定档换成按误差预算分配 `{2,3,4,8}`。
 ///
-/// 与 [`super::compensate`] 同一条低秩分解（`signal_rank` 选秩、无谱隙即拒压）；差别只在残差 `C`
+/// 与 [`crate::ptq::compensate`] 同一条低秩分解（`signal_rank` 选秩、无谱隙即拒压）；差别只在残差 `C`
 /// 用 [`adaptive_quantize`] 量化，目标误差按 `target_snr_db` 从 `‖W‖_F` 推出。输出 SNR 的实测口径
 /// 见调用方（Frobenius 口径对随机输入是输出空间 SNR 的下界，实测通常再高约 2 dB）。
 ///
@@ -104,7 +104,7 @@ pub fn compensate_adaptive(
     target_snr_db: f64,
 ) -> Result<Option<AdaptiveCompensated>> {
     validate(m, n, w, target_snr_db)?;
-    let Some(parts) = super::decompose(w, m, n)? else {
+    let Some(parts) =     crate::ptq::decompose(w, m, n)? else {
         return Ok(None);
     };
     let adaptive = adaptive_for(group, &parts, target_snr_db)?;
@@ -113,18 +113,18 @@ pub fn compensate_adaptive(
 
 /// 入口两项校验：矩阵几何与目标信噪比。
 fn validate(m: usize, n: usize, w: &[f32], target_snr_db: f64) -> Result<()> {
-    super::validate_compensate(m, n, w)?;
+    crate::ptq::validate_compensate(m, n, w)?;
     check_target(target_snr_db)
 }
 
 /// 按目标信噪比推出误差预算并量化残差。
-fn adaptive_for(group: usize, parts: &super::Components, target_snr_db: f64) -> Result<Adaptive> {
+fn adaptive_for(group: usize, parts: &crate::ptq::Components, target_snr_db: f64) -> Result<Adaptive> {
     let target_err = parts.norm * 10f64.powf(-target_snr_db / 20.0);
     adaptive_quantize(group, &parts.rest, target_err)
 }
 
 /// 把分解结果与量化结果合成一份反馈记录：低秩部分逐元素加回量化残差。
-fn assemble(parts: super::Components, adaptive: Adaptive) -> AdaptiveCompensated {
+fn assemble(parts: crate::ptq::Components, adaptive: Adaptive) -> AdaptiveCompensated {
     AdaptiveCompensated {
         rank: parts.rank,
         sigma1: parts.sigma1,

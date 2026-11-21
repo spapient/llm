@@ -185,3 +185,75 @@ fn the_unsupported_error_names_the_vendor_and_the_kind() {
     assert!(error.to_string().contains("Metal"), "{error}");
     assert!(error.to_string().contains("FlashAttention"), "{error}");
 }
+
+/// 循环注入的 host 驱动只传缓冲实参：`kernel_main` 的形参表由 `tid_kernel_main` 生成，只有缓冲
+/// （标量按样本值内联进内部内核调用）。两处各算一套时，形参与实参个数就会漂移，而这类错误只有真
+/// 设备编译器会报——`nvcc` / `mcc` 在 `kernel_main<<<...>>>(...)` 上给 `too many arguments`。
+///
+/// 用 `cutile_x_kernel` 的签名（4 缓冲 + 3 标量）覆盖这条判据：若驱动跟着 `launch_args` 传全套，
+/// 实参是 7 个而形参只有 4 个。
+#[test]
+fn a_loop_launch_passes_one_argument_per_declared_parameter() {
+    const LOOP_SOURCE: &str = "void cutile_x_kernel(const float *x, const unsigned char *w, const float *scales,\n\
+         float *y, int M, int N, int gsz) {\n\
+         \x20   for (int row = 0; row < M; ++row) { y[row] = x[row]; }\n\
+         }\n";
+    let (signature, sample) = gemv();
+    let grid = Grid {
+        dims: vec![("row".to_string(), "M".to_string())],
+    };
+    let device = crate::cuda::cuda_loop_kernel(LOOP_SOURCE, &signature, &sample, &grid)
+        .expect("一维循环注入内核应能生成");
+    let program = crate::cuda::cuda_loop_driver(&device, &signature, &sample, &[sample.m])
+        .expect("host 驱动应能生成");
+    assert_eq!(
+        parameters(&program).len(),
+        arguments(&program).len(),
+        "形参与实参个数必须一致（标量只内联进内部内核，不进发射实参）：\n{program}"
+    );
+    assert_eq!(parameters(&program).len(), 4, "只有 4 个缓冲形参");
+}
+
+/// `kernel_main(` 的形参名：缓冲统一带 `d_` 前缀，标量按声明名。只用于数个数，不做语义解析。
+fn parameters(program: &str) -> Vec<String> {
+    let head = "__global__ void kernel_main(";
+    let rest = program
+        .split_once(head)
+        .unwrap_or_else(|| panic!("程序里没有 `{head}`"))
+        .1;
+    let list = rest
+        .split_once(')')
+        .unwrap_or_else(|| panic!("`kernel_main` 形参表未闭合"))
+        .0;
+    names(list)
+}
+
+/// `kernel_main<<<...>>>(...)` 的实参名。
+fn arguments(program: &str) -> Vec<String> {
+    let (_, rest) = program
+        .split_once("kernel_main<<<")
+        .unwrap_or_else(|| panic!("程序里没有 `kernel_main<<<` 发射"));
+    let rest = rest
+        .split_once(">>>(")
+        .unwrap_or_else(|| panic!("发射行没有实参表"))
+        .1;
+    let list = rest
+        .split_once(')')
+        .unwrap_or_else(|| panic!("发射实参表未闭合"))
+        .0;
+    names(list)
+}
+
+/// 把形参/实参文本切成名字：去掉每项的声明类型（形参）或原样取（实参），跳过空白。
+fn names(list: &str) -> Vec<String> {
+    list.split(',')
+        .map(|item| {
+            let item = item.trim();
+            // 形参是 `const float *d_x` 这类声明：取最后一个标识符；实参本身就是一个标识符。
+            item.rsplit(|c: char| c.is_whitespace() || c == '*')
+                .find(|token| !token.is_empty() && token.chars().all(|c| c.is_alphanumeric() || c == '_'))
+                .unwrap_or_else(|| panic!("无法解析声明项 `{item}`"))
+                .to_string()
+        })
+        .collect()
+}

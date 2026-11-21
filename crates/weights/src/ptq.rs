@@ -12,9 +12,7 @@
 //! 码的线格式与反量化公式 `y = scale * (code - zero)` 完全一致。i2/i4 是**偏移码**（`code = signed + zero`，
 //! 无符号 nibble），i8 是**二补码字节**（`zero = 0`，`code = signed` 直接按 `i8` 解释）。
 
-mod adaptive;
-
-pub use adaptive::{Adaptive, AdaptiveCompensated, adaptive_quantize, compensate_adaptive};
+pub use crate::adaptive::{Adaptive, AdaptiveCompensated, adaptive_quantize, compensate_adaptive};
 
 use diagnostic::{Code, Error, Result};
 
@@ -220,7 +218,7 @@ fn unpack_bits(packed: &[u8], index: usize, width: u8) -> u8 {
     (value & ((1u32 << width) - 1)) as u8
 }
 
-fn invalid(message: impl Into<String>) -> Error {
+pub(crate) fn invalid(message: impl Into<String>) -> Error {
     Error::new(Code::Invalid, message).with("weights::ptq")
 }
 
@@ -301,17 +299,17 @@ fn rebuild(
 ///
 /// 两条补偿路径（固定档 [`rebuild`] 与自适应档 `adaptive::compensate_adaptive`）据此共用同一次
 /// 分解：分别算一遍不只是慢，还会让「秩」与「残差」在某些输入上来自两个不同的分解。
-struct Components {
-    rank: usize,
-    sigma1: f64,
-    gap: f64,
-    low: Vec<f32>,
-    rest: Vec<f32>,
-    norm: f64,
+pub(crate) struct Components {
+    pub(crate) rank: usize,
+    pub(crate) sigma1: f64,
+    pub(crate) gap: f64,
+    pub(crate) low: Vec<f32>,
+    pub(crate) rest: Vec<f32>,
+    pub(crate) norm: f64,
 }
 
 /// 一次 f64 SVD → 秩 / 低秩项 `L_r` / 显式残差 `C = W − L_r`；无谱隙即拒压。
-fn decompose(w: &[f32], m: usize, n: usize) -> Result<Option<Components>> {
+pub(crate) fn decompose(w: &[f32], m: usize, n: usize) -> Result<Option<Components>> {
     let a: Vec<f64> = w.iter().map(|&x| f64::from(x)).collect();
     let d = svd::compute(&a, m, n)?;
     let Some(rank) = svd::signal_rank(&d.sigma) else {
@@ -355,7 +353,7 @@ fn pack_residual(
 }
 
 /// 补偿入口的两项契约：形状、有限性，每项各答一个问题。
-fn validate_compensate(m: usize, n: usize, w: &[f32]) -> Result<()> {
+pub(crate) fn validate_compensate(m: usize, n: usize, w: &[f32]) -> Result<()> {
     let cells = m
         .checked_mul(n)
         .filter(|&cells| cells > 0 && cells == w.len());
