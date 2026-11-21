@@ -1,6 +1,6 @@
 //! 内核层审计的驱动方：解析 → 执行 → 排版 → 退出码（L7 入口，不定义新类型）。
 //!
-//! 三件事分别有各自的归属：语法与配置来自 `llm_cli::cutile_command` / `llm_cli::settings`，计算来自
+//! 三件事分别有各自的归属：语法与配置来自 `llm_cli::kernel` / `llm_cli::settings`，计算来自
 //! `cutile::{bench, doctor, verify}`，人可读行文聚簇在 [`prose`] 模块。本文件只把它们
 //! 接起来并收退出码，因此 `cutile` 不再持有第二套命令行文法、也不决定缓存目录在哪，命令模块也不再
 //! 拼字符串。
@@ -19,11 +19,15 @@ use cutile::doctor::{self, Doctor};
 use cutile::ledger;
 use cutile::verify::{self, Verified, VerifyEntry};
 use diagnostic::{Code, Error};
-use llm_cli::cutile_command::CutileCommand;
+use llm_cli::kernel::CutileCommand;
 use llm_cli::settings::Settings;
 use std::process::ExitCode;
+#[path = "cutile/matrix.rs"]
+mod matrix;
 #[path = "cutile/prose.rs"]
 mod prose;
+#[path = "cutile/report.rs"]
+mod report;
 
 fn main() -> ExitCode {
     // 装配设备后端：Metal / CUDA 由 engine 实现，cutile 只认 Backend 缝；在跑任何 verify / bench /
@@ -101,7 +105,7 @@ fn ledger(settings: &Settings, out: Option<&str>) -> diagnostic::Result<String> 
     let dirs = settings.dirs();
     let catalogue = Catalogue::load(&dirs)?;
     let rows = ledger::ledger(&catalogue, &dirs);
-    let text = prose::ledger(&rows);
+    let text = matrix::ledger(&rows);
     match out {
         Some(path) => {
             let path = std::path::Path::new(path);
@@ -129,7 +133,7 @@ fn doctor_why(
             format!("没有可行变体，无法解释缓存键 `{hex}`"),
         )
     })?;
-    Ok(prose::cache_why(&doctor::why(dirs, &built.key, hex)))
+    Ok(report::cache_why(&doctor::why(dirs, &built.key, hex)))
 }
 
 fn doctor(
@@ -146,16 +150,16 @@ fn doctor(
     out.push('\n');
     out.push_str(&settings.describe());
 
-    out.push_str(&prose::evidence_block(&report));
+    out.push_str(&report::evidence_block(&report));
 
     out.push_str("\n[协商]\n");
-    out.push_str(&prose::negotiation(&report));
+    out.push_str(&report::negotiation(&report));
 
     if report.path.is_none() {
         out.push_str("\n[emit] 无可行变体，未生成源文件\n");
         return Ok(out);
     }
-    out.push_str(&prose::post_path_blocks(&report));
+    out.push_str(&report::post_path_blocks(&report));
     out.push_str(&doctor_why(&dirs, &report, why)?);
     Ok(out)
 }
@@ -169,7 +173,7 @@ fn entry_line(
 ) -> diagnostic::Result<String> {
     match entry {
         VerifyEntry::Passed(verified) => {
-            let line = prose::passed_line(verified);
+            let line = report::passed_line(verified);
             let mut out = line.clone();
             if ledger {
                 out.push_str(&write_ledger(catalogue, verified, &line, dirs)?);
@@ -209,7 +213,7 @@ fn verify(
     for entry in &report.entries {
         out.push_str(&entry_line(&catalogue, &dirs, entry, ledger)?);
     }
-    out.push_str(&prose::negotiation_summary(&report));
+    out.push_str(&report::negotiation_summary(&report));
 
     let failures = report.failures();
     finish_verify(out, &failures)
@@ -227,8 +231,8 @@ fn write_ledger(
     std::fs::create_dir_all(&dir)
         .map_err(|error| Error::new(Code::Io, format!("建 {} 失败：{error}", dir.display())))?;
     let path = dir.join(format!("{}.capability.md", profile.meta.vendor));
-    let mut text = prose::ledger_header(profile, verified, conclusion);
-    text.push_str(&prose::ledger_primitives(profile));
+    let mut text = matrix::ledger_header(profile, verified, conclusion);
+    text.push_str(&matrix::ledger_primitives(profile));
     std::fs::write(&path, text)
         .map_err(|error| Error::new(Code::Io, format!("写 {} 失败：{error}", path.display())))?;
     Ok(format!("    ledger → {}\n", path.display()))
@@ -267,239 +271,17 @@ fn bench(
         measured.measured.gb_s,
         measured.measured.gflops
     ));
-    out.push_str(&prose::working_set_line(&measured));
-    out.push_str(&prose::performance_note(
+    out.push_str(&report::working_set_line(&measured));
+    out.push_str(&report::performance_note(
         measured.performance(),
         measured.peak.as_ref(),
     ));
-    out.push_str(&prose::artifact_line(&measured));
-    out.push_str(&prose::cache_dir_line(&measured));
+    out.push_str(&report::artifact_line(&measured));
+    out.push_str(&report::cache_dir_line(&measured));
     Ok(out)
 }
 
+/// 驱动方的单元测试：分派、退出码、排版。
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use cutile::emit::Fragment;
-
-    fn settings() -> Settings {
-        Settings::defaults(&llm_cli::settings::Roots::new(
-            std::env::temp_dir().join("cutile-driver-tests"),
-        ))
-    }
-
-    /// nvidia 在本机是否可执行（nvcc 在场）。T600 上为真，此时「缺设备即失败」的场景不成立，
-    /// 用例主动让位——设备在场时跑的是真机对拍（更强的证据），不是「缺设备」文案。
-    fn nvidia_present() -> bool {
-        let catalogue = Catalogue::load(&settings().dirs()).expect("内置数据");
-        catalogue
-            .profile("nvidia")
-            .map(cutile::witness::device_available)
-            .unwrap_or(false)
-    }
-
-    /// 性能判据每轮都要有一句结论：没声明峰值时说“未测量”，不能什么都不打印。
-    #[test]
-    fn the_performance_line_is_printed_even_when_nothing_was_measured() {
-        let peak = cutile::bench::Peak {
-            value: 68.0e9,
-            src: "2*8*2666e6".to_string(),
-        };
-
-        let reached = prose::performance_note(
-            cutile::bench::Performance::new(Some(0.72), false),
-            Some(&peak),
-        );
-        assert!(reached.contains("72.0%"), "{reached}");
-        assert!(reached.contains("达到 70% 门槛"), "{reached}");
-        assert!(reached.contains("不是“相对原生库的 85%”"), "{reached}");
-
-        let below = prose::performance_note(
-            cutile::bench::Performance::new(Some(0.0069), false),
-            Some(&peak),
-        );
-        assert!(below.contains("0.7%"), "{below}");
-        assert!(below.contains("低于 70% 门槛"), "{below}");
-        assert!(below.contains("特化代码"), "{below}");
-
-        let cached = prose::performance_note(
-            cutile::bench::Performance::new(Some(0.19), true),
-            Some(&peak),
-        );
-        assert!(cached.contains("口径无效"), "{cached}");
-        assert!(cached.contains("不参与 §16 判定"), "{cached}");
-
-        // 没有峰值：判据没有尺子，仍要说清“未测量”，而不是静默通过。
-        let unknown = prose::performance_note(cutile::bench::Performance::new(None, false), None);
-        assert!(unknown.contains("未测量"), "{unknown}");
-        assert!(unknown.contains("不参与 Go/No-Go"), "{unknown}");
-        assert!(!unknown.contains("门槛"), "{unknown}");
-    }
-
-    #[test]
-    fn doctor_prints_every_stage() {
-        let text = doctor(&settings(), "gemv_i4", "cpu", None).expect("doctor 应成功");
-        assert!(text.contains("path: pipe2"), "{text}");
-        assert!(text.contains("[布局]"), "{text}");
-        assert!(text.contains("[存储]"), "{text}");
-        assert!(text.contains("[emit]"), "{text}");
-        assert!(text.contains("cache key"), "{text}");
-        assert!(text.contains("[配置]"), "{text}");
-    }
-
-    #[test]
-    fn doctor_prints_the_capacity_next_to_the_declared_traffic() {
-        // 打印的必须是档案容量（判定的分母）与声明用量（分子的来源），不是中转缓冲的字节数。
-        let text = doctor(&settings(), "gemv_i4", "cpu", None).expect("doctor 应成功");
-        assert!(text.contains("容量 524288 B"), "{text}");
-        assert!(text.contains("声明 load<=4096 B"), "{text}");
-        assert!(text.contains("GM=main 容量 不限"), "{text}");
-    }
-
-    #[test]
-    fn doctor_explains_a_rejected_device_without_failing() {
-        if nvidia_present() {
-            return; // nvidia 可执行时，缺设备被拒场景不成立
-        }
-        let text = doctor(&settings(), "gemv_i4", "nvidia", None).expect("仍应打印诊断");
-        assert!(text.contains("没有可行变体"), "{text}");
-        assert!(text.contains("L2"), "{text}");
-    }
-
-    #[test]
-    fn doctor_explains_the_key_it_just_wrote() {
-        // `--why` 要回答的是“这份缓存为什么没命中”：同一份键只能说一致，不能编差异。
-        let settings = settings();
-        let first = doctor(&settings, "gemv_i4", "cpu", None).expect("doctor 应成功");
-        let hex = first
-            .split("cache key ")
-            .nth(1)
-            .and_then(|rest| rest.split_whitespace().next())
-            .expect("打印了键")
-            .to_string();
-        let text = doctor(&settings, "gemv_i4", "cpu", Some(&hex)).expect("doctor 应成功");
-        assert!(text.contains("[缓存]"), "{text}");
-        assert!(text.contains("与本次构建的键一致"), "{text}");
-    }
-
-    #[test]
-    fn doctor_explains_a_key_that_never_landed() {
-        let text =
-            doctor(&settings(), "gemv_i4", "cpu", Some("0000000000000000")).expect("doctor 应成功");
-        assert!(text.contains("[缓存]"), "{text}");
-        assert!(text.contains("从未落盘"), "{text}");
-    }
-
-    #[test]
-    fn doctor_reports_a_half_written_key_as_half_written() {
-        // `doctor` 会先把本次的键补齐，所以“半截落盘”只能对另一个键观察到——
-        // 那正是真实场景：另一个进程崩在 `put` 中间，留下 `meta.txt` 与 `source.tmp`。
-        let settings = settings();
-        let first = doctor(&settings, "gemv_i4", "cpu", None).expect("doctor 应成功");
-        let hex = first
-            .split("cache key ")
-            .nth(1)
-            .and_then(|rest| rest.split_whitespace().next())
-            .expect("打印了键")
-            .to_string();
-        let source = settings.cache_dir().join(&hex[..2]).join(&hex);
-        let half = settings.cache_dir().join("00").join("0000000000000001");
-        std::fs::create_dir_all(&half).expect("建目录");
-        std::fs::copy(source.join("meta.txt"), half.join("meta.txt")).expect("复制键快照");
-
-        let text = doctor(&settings, "gemv_i4", "cpu", Some("0000000000000001")).expect("doctor");
-        assert!(text.contains("只有半截落盘"), "{text}");
-        assert!(
-            !text.contains("与本次构建的键一致"),
-            "没有 source 不能算命中：{text}"
-        );
-        let _ = std::fs::remove_dir_all(&half);
-    }
-
-    #[test]
-    fn verify_reports_a_missing_device_as_a_failure() {
-        if nvidia_present() {
-            return; // nvidia 可执行时，缺设备即失败场景不成立
-        }
-        let devices = vec!["nvidia".to_string()];
-        let error = verify(&settings(), "gemv_i4", &devices, false).unwrap_err();
-        assert_eq!(error.code(), Code::Unsupported);
-        assert!(error.to_string().contains("缺设备即失败"), "{error}");
-    }
-
-    #[test]
-    fn the_ledger_lists_every_declared_primitive() {
-        let catalogue = Catalogue::load(&settings().dirs()).expect("内置数据");
-        let profile = catalogue.resolve("cpu").expect("cpu 档案");
-        let verified = Verified {
-            device: "cpu".to_string(),
-            channel: cutile::verify::Channel::Parallel,
-            vendor: profile.meta.vendor.to_string(),
-            id: profile.meta.id.to_string(),
-            variant: "pipe2".to_string(),
-            tile: "GMAX=32".to_string(),
-            shapes: vec![(32, 1), (4096, 4096)],
-            witnesses: 9,
-            self_checked: 0,
-            max_rel_err: 0.0,
-            fragment: Fragment::new(53),
-            tool_ver: profile.meta.tool_ver.clone(),
-            toolchain: Some("cc@21.0.0".to_string()),
-            toolchain_agrees: true,
-            flags: "-O3".to_string(),
-            key: "0".to_string(),
-            artifacts: Vec::new(),
-        };
-        let note = write_ledger(
-            &catalogue,
-            &verified,
-            &prose::passed_line(&verified),
-            &settings().dirs(),
-        )
-        .expect("应写出台账");
-        let path = note.trim().rsplit_once(' ').expect("路径").1;
-        let text = std::fs::read_to_string(path).expect("台账可读");
-        assert!(text.contains("| 原语 | 实现 | 等级 | 见证 |"), "{text}");
-        assert!(text.contains("pipe2"), "{text}");
-    }
-
-    /// `cache gc` 的上限来源：`--limit` 最高，其次是配置键 `cache.limit_bytes`，内核常量
-    /// 只在两者都缺时兜底；默认值与内核缺省同值（行为不变）。
-    #[test]
-    fn cache_gc_prefers_the_flag_then_the_settings_key() {
-        let roots = llm_cli::settings::Roots::new(
-            std::env::temp_dir().join(format!("cutile-gc-settings-{}", std::process::id())),
-        );
-        let mut settings = Settings::defaults(&roots);
-        settings
-            .apply_override("cache.limit_bytes=1024")
-            .expect("合法覆盖");
-
-        let text = cache_gc(&settings, None).expect("空缓存可回收");
-        assert!(
-            text.starts_with(&format!(
-                "cache gc | 上限 {}",
-                ::diagnostic::render::human_bytes(1024)
-            )),
-            "{text}"
-        );
-
-        let text = cache_gc(&settings, Some(2048)).expect("命令行覆盖");
-        assert!(
-            text.starts_with(&format!(
-                "cache gc | 上限 {}",
-                ::diagnostic::render::human_bytes(2048)
-            )),
-            "{text}"
-        );
-
-        let text = cache_gc(&Settings::defaults(&roots), None).expect("空缓存可回收");
-        assert!(
-            text.starts_with(&format!(
-                "cache gc | 上限 {}",
-                ::diagnostic::render::human_bytes(cutile::cache::CACHE_LIMIT)
-            )),
-            "{text}"
-        );
-    }
-}
+#[path = "../../tests/cutile.rs"]
+mod tests;
