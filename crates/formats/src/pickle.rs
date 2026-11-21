@@ -116,6 +116,13 @@ impl Vm {
             b'\x93' => self.global_stack(),
             b'K' | b'M' => self.push_uint(op),
             b'J' => self.push_binint(),
+            _ => self.step_sized(op),
+        }
+    }
+
+    /// 带尺寸的操作：`LONG1`/`LONG4` 按 1/4 字节读长度，`TUPLE`/`TUPLE1..3` 读成员。
+    fn step_sized(&mut self, op: u8) -> Result<()> {
+        match op {
             b'\x8a' => self.long(1),
             b'\x8b' => self.long(4),
             b't' | b'\x85'..=b'\x87' => self.tuple(op),

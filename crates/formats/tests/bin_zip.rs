@@ -40,17 +40,23 @@ fn zip64_extra_handles_absurd_lengths_without_overflow() {
     assert!(zip64_extra(&bytes, usize::MAX - 2, 12, 0).is_err());
 }
 
-/// 最小 ZIP：一条 STORED 条目，中央目录里 `csize`/`usize`/本地头偏移全写成
-/// `0xFFFF_FFFF`，真值按 APPNOTE 顺序（原长、压缩长、本地头偏移）放进 ZIP64 extra。
-fn zip64_archive(name: &str, payload: &[u8]) -> Vec<u8> {
-    let mut out = Vec::new();
-    out.extend(0x0403_4B50u32.to_le_bytes());
+/// 本地头与中央目录共用的固定字段：版本号、标志、压缩方法、修改时间
+/// （4 个零 u16）与 CRC32（零 u32）。
+fn header_fixed(out: &mut Vec<u8>) {
     out.extend(45u16.to_le_bytes());
     out.extend(0u16.to_le_bytes());
     out.extend(0u16.to_le_bytes());
     out.extend(0u16.to_le_bytes());
     out.extend(0u16.to_le_bytes());
     out.extend(0u32.to_le_bytes());
+}
+
+/// 最小 ZIP：一条 STORED 条目，中央目录里 `csize`/`usize`/本地头偏移全写成
+/// `0xFFFF_FFFF`，真值按 APPNOTE 顺序（原长、压缩长、本地头偏移）放进 ZIP64 extra。
+fn zip64_archive(name: &str, payload: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend(0x0403_4B50u32.to_le_bytes());
+    header_fixed(&mut out);
     out.extend((payload.len() as u32).to_le_bytes());
     out.extend((payload.len() as u32).to_le_bytes());
     out.extend((name.len() as u16).to_le_bytes());
@@ -60,12 +66,7 @@ fn zip64_archive(name: &str, payload: &[u8]) -> Vec<u8> {
     let cd_start = out.len();
     out.extend(0x0201_4B50u32.to_le_bytes());
     out.extend(45u16.to_le_bytes());
-    out.extend(45u16.to_le_bytes());
-    out.extend(0u16.to_le_bytes());
-    out.extend(0u16.to_le_bytes());
-    out.extend(0u16.to_le_bytes());
-    out.extend(0u16.to_le_bytes());
-    out.extend(0u32.to_le_bytes());
+    header_fixed(&mut out);
     out.extend(0xFFFF_FFFFu32.to_le_bytes());
     out.extend(0xFFFF_FFFFu32.to_le_bytes());
     out.extend((name.len() as u16).to_le_bytes());

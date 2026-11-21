@@ -4,6 +4,7 @@ use diagnostic::Result;
 
 use wire::bad;
 
+use crate::bytes::{slice, u32_at, u64_at};
 use crate::gguf::{DEFAULT_ALIGN, Kind, MAGIC, Meta, Tensor, VERSION, Value};
 
 /// 数组最大嵌套深度（防未信任输入递归耗尽栈）。
@@ -28,27 +29,21 @@ impl<'a> Reader<'a> {
     }
 
     fn take(&mut self, len: usize) -> Result<&'a [u8]> {
-        let stop = self.pos.checked_add(len).ok_or_else(|| bad("偏移溢出"))?;
-        let out = self
-            .bytes
-            .get(self.pos..stop)
-            .ok_or_else(|| bad("越界读取"))?;
-        self.pos = stop;
+        let out = slice(self.bytes, self.pos, len)?;
+        self.pos += len;
         Ok(out)
     }
 
     fn word(&mut self) -> Result<u32> {
-        let raw = self.take(4)?;
-        Ok(u32::from_le_bytes(
-            raw.try_into().map_err(|_| bad("越界读取"))?,
-        ))
+        let value = u32_at(self.bytes, self.pos)?;
+        self.pos += 4;
+        Ok(value)
     }
 
     fn wide(&mut self) -> Result<u64> {
-        let raw = self.take(8)?;
-        Ok(u64::from_le_bytes(
-            raw.try_into().map_err(|_| bad("越界读取"))?,
-        ))
+        let value = u64_at(self.bytes, self.pos)?;
+        self.pos += 8;
+        Ok(value)
     }
 
     fn text(&mut self) -> Result<String> {
@@ -78,7 +73,7 @@ impl<'a> Reader<'a> {
         if self.depth >= DEPTH {
             return Err(bad("数组嵌套过深"));
         }
-        let (kind, count) = self.header()?;
+        let (kind, count) = (self.word()?, self.array_count()?);
         self.depth += 1;
         let mut out = Vec::with_capacity(count.min(4096));
         for _ in 0..count {
@@ -88,10 +83,6 @@ impl<'a> Reader<'a> {
         Ok(Value::Arr(out))
     }
 
-    /// 数组头：元素类型码与元素数（元素数已按剩余字节粗查过）。
-    fn header(&mut self) -> Result<(u32, usize)> {
-        Ok((self.word()?, self.array_count()?))
-    }
 
     fn scalar(&mut self, kind: u32) -> Result<Value> {
         let packed = NUMBERS.get(kind as usize).copied().unwrap_or(0);
@@ -149,7 +140,7 @@ fn pair(reader: &mut Reader<'_>) -> Result<(String, Value)> {
 fn tensor(reader: &mut Reader<'_>) -> Result<Tensor> {
     let name = reader.text()?;
     let shape = shape(reader)?;
-    let kind = kind_of(reader)?;
+    let kind = Kind::from_code(reader.word()?)?;
     Ok(Tensor {
         name,
         kind,
@@ -171,10 +162,6 @@ fn shape(reader: &mut Reader<'_>) -> Result<Vec<u64>> {
     Ok(shape)
 }
 
-/// 元素类型码：闭集之外的码显式失败（判据在 [`Kind::from_code`]，这里只做“先读再解”）。
-fn kind_of(reader: &mut Reader<'_>) -> Result<Kind> {
-    Kind::from_code(reader.word()?)
-}
 
 /// 头部 magic 与版本：两个都对得上才继续，不做向后兼容猜测。
 fn stamp(reader: &mut Reader<'_>) -> Result<()> {
@@ -189,15 +176,11 @@ fn stamp(reader: &mut Reader<'_>) -> Result<()> {
     }
 }
 
-/// 头部两个计数：张量信息表条目数与 KV 对数。
-fn counts(reader: &mut Reader<'_>) -> Result<(u64, u64)> {
-    Ok((reader.wide()?, reader.wide()?))
-}
-
-/// 头部与两张表：magic/版本、两个计数，接着 KV 表与张量信息表。
+/// 头部与两张表：magic/版本、两个计数（张量条目数、KV 对数），接着 KV 表与张量信息表。
 pub(crate) fn tables(reader: &mut Reader<'_>) -> Result<(Vec<Tensor>, Meta)> {
     stamp(reader)?;
-    let (tensor_count, kv_count) = counts(reader)?;
+    let tensor_count = reader.wide()?;
+    let kv_count = reader.wide()?;
     let meta = records(reader, kv_count, "KV 计数溢出", pair)?;
     Ok((records(reader, tensor_count, "张量计数溢出", tensor)?, meta))
 }

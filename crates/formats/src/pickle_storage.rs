@@ -99,22 +99,25 @@ pub(crate) fn check_contiguous(shape: &[u64], steps: &[usize]) -> Result<()> {
     }
     let mut expected = 1usize;
     for (&size, &step) in shape.iter().zip(steps).rev() {
-        let width = usize::try_from(size).map_err(|_| bad("形状维度溢出"))?;
-        if width > 1 && step != expected {
-            return Err(bad(format!(
-                "非连续张量：stride {step}，连续布局应为 {expected}"
-            )));
-        }
-        expected = or_bad(expected.checked_mul(width), "形状乘积溢出")?;
+        expected = contiguous_dim(size, step, expected)?;
     }
     Ok(())
 }
 
+/// 单维连续判据：尺寸为 1 的维不参与；返回累计的期望 stride。
+fn contiguous_dim(size: u64, step: usize, expected: usize) -> Result<usize> {
+    let width = usize::try_from(size).map_err(|_| bad("形状维度溢出"))?;
+    if width > 1 && step != expected {
+        return Err(bad(format!(
+            "非连续张量：stride {step}，连续布局应为 {expected}"
+        )));
+    }
+    or_bad(expected.checked_mul(width), "形状乘积溢出")
+}
+
 pub(crate) fn tensor_of(items: &[Value]) -> Result<Tensor> {
-    let (storage_key, dtype) = storage_of(items)?;
-    let offset = offset_of(items)?;
-    let (shape, count) = shape_of(items)?;
-    check_contiguous(&shape, &stride_of(items)?)?;
+    let (storage_key, dtype, offset) = storage_and_offset(items)?;
+    let (shape, count) = checked_shape(items)?;
     let (offset, len) = span(offset, count, dtype.bytes_for(1) as usize)?;
     Ok(Tensor {
         name: String::new(),
@@ -124,6 +127,18 @@ pub(crate) fn tensor_of(items: &[Value]) -> Result<Tensor> {
         offset,
         len,
     })
+}
+
+fn storage_and_offset(items: &[Value]) -> Result<(String, DType, usize)> {
+    let (storage_key, dtype) = storage_of(items)?;
+    let offset = offset_of(items)?;
+    Ok((storage_key, dtype, offset))
+}
+
+fn checked_shape(items: &[Value]) -> Result<(Vec<u64>, usize)> {
+    let (shape, count) = shape_of(items)?;
+    check_contiguous(&shape, &stride_of(items)?)?;
+    Ok((shape, count))
 }
 
 pub(crate) fn into_str(value: &Value) -> Result<String> {

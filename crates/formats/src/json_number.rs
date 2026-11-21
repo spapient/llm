@@ -19,6 +19,11 @@ impl<'a> Reader<'a> {
                 .cursor
                 .fail_at(start, "只接受整数：头部里的形状与偏移不能是小数或指数"));
         }
+        self.decimal_tail(start, digits)
+    }
+
+    /// 整数部分之后的小数/指数尾部：读 `.` 与 `e`/`E`，按原文保留成 `Decimal`。
+    fn decimal_tail(&mut self, start: usize, digits: usize) -> Result<Value> {
         let whole = self.cursor.pos();
         self.dot(start)?;
         self.exponent(start)?;

@@ -4,6 +4,7 @@
 #![deny(unsafe_code)]
 
 pub mod bin;
+pub(crate) mod bytes;
 pub mod gguf;
 pub(crate) mod gguf_dequant;
 pub(crate) mod gguf_reader;

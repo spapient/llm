@@ -252,13 +252,19 @@ impl<'a> Reader<'a> {
             .cursor
             .bump()
             .ok_or_else(|| self.cursor.fail_at(open, "字符串没有闭合"))?;
-        let text = match byte {
-            b'"' => return Ok(None),
-            b'\\' => String::from(self.escape(open, at)?),
-            0x00..=0x1f => return Err(self.cursor.fail_at(at, "控制字符必须转义")),
-            _ => self.utf8(at)?,
-        };
-        Ok(Some(text))
+        if byte == b'"' {
+            return Ok(None);
+        }
+        self.chunk_byte(byte, open, at).map(Some)
+    }
+
+    /// 非闭合引号的一个字节 → 字符串内容：转义、控制字符与多字节字符各一条判据。
+    fn chunk_byte(&mut self, byte: u8, open: usize, at: usize) -> Result<String> {
+        match byte {
+            b'\\' => Ok(String::from(self.escape(open, at)?)),
+            0x00..=0x1f => Err(self.cursor.fail_at(at, "控制字符必须转义")),
+            _ => Ok(self.utf8(at)?),
+        }
     }
 
     /// 一个转义序列：`\` 之后的一个字节；`u` 走四位十六进制与代理对。
