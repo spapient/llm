@@ -176,7 +176,7 @@ pub(crate) fn collect<'a>(tokens: &[Token], table: &'a [KeySpec<'a>]) -> Result<
     Ok(values)
 }
 
-/// 读一对 `键 = 值` 并放回槽位：认键、查重、读值、吃分隔符。
+/// 读一个键：名字、`=`、值，然后吃掉分隔符（最后一个键之后没有分隔符）。
 fn read_one<'a>(
     cursor: &mut Cursor<'_>,
     table: &'a [KeySpec<'a>],
@@ -185,6 +185,13 @@ fn read_one<'a>(
     let at = cursor.index;
     let key = key_name(cursor, at)?;
     cursor.punct('=', "键与值之间的 `=`")?;
+    let index = slot(table, values, key, at)?;
+    values[index] = (table[index].grammar)(cursor, at, &table[index])?;
+    separator(cursor)
+}
+
+/// 键到槽位：不在闭集里点名它，槽位已经被写过则报重复。
+fn slot(table: &[KeySpec<'_>], values: &[Value], key: &str, at: Position) -> Result<usize, Error> {
     let index = table
         .iter()
         .position(|spec| spec.name == key)
@@ -195,7 +202,11 @@ fn read_one<'a>(
             format!("注解键 `{}` 重复：{}", table[index].name, table[index].dup),
         ));
     }
-    values[index] = (table[index].grammar)(cursor, at, &table[index])?;
+    Ok(index)
+}
+
+/// 键之间的分隔符：最后一个键之后允许省略。
+fn separator(cursor: &mut Cursor<'_>) -> Result<(), Error> {
     if cursor.is_empty() {
         return Ok(());
     }
