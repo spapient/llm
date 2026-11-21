@@ -1,4 +1,4 @@
-//! `bin::zip` 的单元测试：ZIP_STORED 归档解析。
+//! `zip` 的单元测试：ZIP_STORED 归档解析。
 
 use super::*;
 use crate::testutil::real_bin_bytes;

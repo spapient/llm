@@ -64,7 +64,12 @@ pub fn forward_rows(
     cpb: usize,
     dequant: &[f32],
 ) -> diagnostic::Result<()> {
-    super::forward_rows(x, weights, scales, out, cpb, row_dot(cpb, dequant))
+    let ctx = super::scaled_row_context(x.len(), out.len(), scales, weights.len(), cpb)?;
+    if super::simd::forward(x, weights, scales, out, cpb, ctx, dequant) {
+        return Ok(());
+    }
+    super::forward_rows_scaled(x, weights, scales, out, ctx, row_dot(cpb, dequant));
+    Ok(())
 }
 
 /// 打包格式的行批入口：与 [`forward_rows`] 同一套算术与同一份 `row_dot`，只换遍历嵌套。
@@ -80,5 +85,11 @@ pub fn forward_batch(
     cpb: usize,
     dequant: &[f32],
 ) -> diagnostic::Result<()> {
-    super::forward_batch_rows(x, weights, scales, geo, out, cpb, row_dot(cpb, dequant))
+    super::batch_geometry(x.len(), out.len(), geo)?;
+    let ctx = super::scaled_row_context(geo.m, geo.n, scales, weights.len(), cpb)?;
+    if super::simd::forward_batch(x, weights, scales, geo, out, cpb, ctx, dequant) {
+        return Ok(());
+    }
+    super::forward_batch_rows_scaled(x, weights, scales, geo, out, ctx, row_dot(cpb, dequant));
+    Ok(())
 }

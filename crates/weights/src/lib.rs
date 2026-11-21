@@ -82,6 +82,8 @@ pub mod settle;
 pub mod l3;
 
 // —— 外部格式只读适配：safetensors/gguf/bin/json ——
+mod pickle;
+mod zip;
 pub mod bin;
 pub mod gguf;
 pub use lifecycle::import;

@@ -1,4 +1,4 @@
-//! `bin::pickle` 的单元测试：栈式 pickle 虚拟机。
+//! `pickle` 的单元测试：栈式 pickle 虚拟机。
 
 use super::*;
 

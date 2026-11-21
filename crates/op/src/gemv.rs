@@ -428,15 +428,30 @@ fn forward_rows<E>(
     cpb: usize,
     row_dot: impl Fn(&[E], &[f32], &[f32], usize) -> f32,
 ) -> diagnostic::Result<()> {
-    let (m, n) = (x.len(), out.len());
-    let (groups, group) = scaled_row_context(m, n, scales, weights.len(), cpb)?;
-    let row = m / cpb;
-    for (index, value) in out.iter_mut().enumerate() {
-        let w_row = &weights[index * row..][..row];
-        let s_row = &scales[index * groups..][..groups];
-        *value = row_dot(w_row, x, s_row, group);
-    }
+    let ctx = scaled_row_context(x.len(), out.len(), scales, weights.len(), cpb)?;
+    forward_rows_scaled(x, weights, scales, out, ctx, row_dot);
     Ok(())
+}
+
+/// 逐行遍历一遍，算术由 `row_dot` 给：守卫已经过了（`ctx` 就是证据），这里只剩切片与调用。
+///
+/// 单独一支是因为叶有时要把好几行算在一起（`gemv::simd` 的四列累加器），那时 `row_dot`
+/// 这一行一个值的接口不合适；叶拿着同一个 `ctx` 自己走遍历，且**不必重跑守卫**——
+/// [`scaled_row_context`] 里的标度有限性判定是 `O(n·groups)`，在 4096² 上重复一次就是内核
+/// 算术的两成。
+pub(crate) fn forward_rows_scaled<E>(
+    x: &[f32],
+    weights: &[E],
+    scales: &[f32],
+    out: &mut [f32],
+    ctx: ScaledRow,
+    row_dot: impl Fn(&[E], &[f32], &[f32], usize) -> f32,
+) {
+    for (index, value) in out.iter_mut().enumerate() {
+        let w_row = &weights[index * ctx.row..][..ctx.row];
+        let s_row = &scales[index * ctx.groups..][..ctx.groups];
+        *value = row_dot(w_row, x, s_row, ctx.group);
+    }
 }
 
 /// 行批骨架：输出行在外、输入行在里，一行权重只读一遍。
@@ -455,16 +470,28 @@ fn forward_batch_rows<E>(
     row_dot: impl Fn(&[E], &[f32], &[f32], usize) -> f32,
 ) -> diagnostic::Result<()> {
     batch_geometry(x.len(), out.len(), geo)?;
-    let (groups, group) = scaled_row_context(geo.m, geo.n, scales, weights.len(), cpb)?;
-    let row = geo.m / cpb;
+    let ctx = scaled_row_context(geo.m, geo.n, scales, weights.len(), cpb)?;
+    forward_batch_rows_scaled(x, weights, scales, geo, out, ctx, row_dot);
+    Ok(())
+}
+
+/// 行批的逐行遍历，算术由 `row_dot` 给：与 [`forward_rows_scaled`] 同一个"守卫已过"约定。
+pub(crate) fn forward_batch_rows_scaled<E>(
+    x: &[f32],
+    weights: &[E],
+    scales: &[f32],
+    geo: Geometry,
+    out: &mut [f32],
+    ctx: ScaledRow,
+    row_dot: impl Fn(&[E], &[f32], &[f32], usize) -> f32,
+) {
     for j in 0..geo.n {
-        let w_row = &weights[j * row..][..row];
-        let s_row = &scales[j * groups..][..groups];
+        let w_row = &weights[j * ctx.row..][..ctx.row];
+        let s_row = &scales[j * ctx.groups..][..ctx.groups];
         for r in 0..geo.rows {
-            out[r * geo.n + j] = row_dot(w_row, &x[r * geo.m..][..geo.m], s_row, group);
+            out[r * geo.n + j] = row_dot(w_row, &x[r * geo.m..][..geo.m], s_row, ctx.group);
         }
     }
-    Ok(())
 }
 
 /// 带标度格式的行守卫：分组、粒度倍数、权重长度与标度有限四项一次判齐，返回 `(groups, group)`。
@@ -477,7 +504,7 @@ fn scaled_row_context(
     scales: &[f32],
     weights: usize,
     cpb: usize,
-) -> diagnostic::Result<(usize, usize)> {
+) -> diagnostic::Result<ScaledRow> {
     let (groups, group) = scaled_groups(m, n, scales.len())?;
     if !group.is_multiple_of(cpb) {
         return Err(Error::new(
@@ -487,7 +514,26 @@ fn scaled_row_context(
     }
     required_weights(weights, n, m / cpb)?;
     finite_scales(scales, groups)?;
-    Ok((groups, group))
+    Ok(ScaledRow {
+        groups,
+        group,
+        row: m / cpb,
+    })
+}
+
+/// 已过守卫的带标度行上下文：每行多少组、每组多少元素、每行多少个权重单位。
+///
+/// 这是"守卫已经过了"的证据而不是三个裸 `usize`——裸数传进叶里，"它们一定对"就成了一句注释；
+/// 收成一个值之后，重跑守卫（尤其 `O(n·groups)` 的标度判定）就不再有理由，叶只需要读权重与
+/// 标度。构造只有 [`scaled_row_context`] 一条路。
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ScaledRow {
+    /// 每行多少组。
+    pub groups: usize,
+    /// 每组多少元素（必须是 `cpb` 的倍数）。
+    pub group: usize,
+    /// 每行多少个权重单位（打包格式是 `m / cpb` 个字节）。
+    pub row: usize,
 }
 
 /// 行批逐元素入口：按配置选择带标度 / 无标度两条骨架，与 [`Format::forward`] 同一分叉。
@@ -757,6 +803,8 @@ pub(crate) fn finite_scales(scales: &[f32], groups: usize) -> Result<(), Error> 
 }
 
 pub mod packed;
+
+mod simd;
 
 /// 权重至少要够 `n` 行、每行 `row` 个元素，返回这个下界。
 ///
