@@ -4,8 +4,11 @@
 //! 于是同一份 [`Plan`] 可以同时喂给内存缓冲、文件与测量三种 sink。
 
 use std::borrow::Cow;
-use std::io;
-use std::path::PathBuf;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use diagnostic::Result;
 
 use crate::Codec;
 use crate::Wire;

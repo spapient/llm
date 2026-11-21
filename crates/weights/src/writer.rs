@@ -6,21 +6,18 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::io::{self, Write};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::io;
+use std::path::Path;
 
 use diagnostic::{Code, Error, Result};
 
 use crate::Codec;
-use crate::Wire;
-use crate::crc;
 use crate::leb;
 use crate::proof::Digest;
 use crate::rans;
 use crate::seg::Segment;
 use crate::writer_plan::{
-    Plan, axes_frame, flush_file, temp_path, write_data, write_descs, write_one_desc,
+    Plan, axes_frame, flush_file, temp_path, write_data, write_descs,
 };
 use crate::sink::{Count, FileSink, Measured, Sealed, Sink, SliceSink};
 
