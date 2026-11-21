@@ -188,5 +188,5 @@ pub struct RmsNorm;
 
 #[cfg(test)]
 mod tests {
-    include!("../../tests/rmsnorm.rs");
+    include!("../../../tests/rmsnorm.rs");
 }

@@ -1,6 +1,6 @@
 //! 可恢复检查点：只记"要复现这次训练必须知道的东西"。
 //!
-//! [`Checkpoint`] 是内存里的最小事实集；字节格式归 [`crate::snapshot`]，编码、版本与偏移校验
+//! [`Checkpoint`] 是内存里的最小事实集；字节格式归 [`snapshot`]，编码、版本与偏移校验
 //! 不在训练循环里再做一遍。[`resume`] 在恢复前拦住并行度不一致这类最贵的静默错位。
 
 use diagnostic::{Code, Error, Result};
@@ -103,17 +103,17 @@ impl Checkpoint {
 
     /// 把这些事实与当前权重表组合成可落盘的快照。
     ///
-    /// 文件格式由 [`crate::snapshot`] 拥有：本层只回答"恢复需要知道什么"，编码、版本与偏移校验
+    /// 文件格式由 [`snapshot`] 拥有：本层只回答"恢复需要知道什么"，编码、版本与偏移校验
     /// 不在训练循环里再做一遍。
-    pub fn snapshot(&self, weights: &weights::Header) -> Result<crate::snapshot::Snapshot> {
-        let facts = crate::snapshot::Facts::new(
+    pub fn snapshot(&self, weights: &weights::Header) -> Result<snapshot::Snapshot> {
+        let facts = snapshot::Facts::new(
             self.step,
             self.world,
             self.layers,
             self.batch_rows,
             self.batch_cols,
         )?;
-        Ok(crate::snapshot::Snapshot::new(facts, weights.clone()))
+        Ok(snapshot::Snapshot::new(facts, weights.clone()))
     }
 }
 

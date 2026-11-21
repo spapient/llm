@@ -21,8 +21,8 @@ use crate::dist::Distributed;
 use crate::optimizer::{Optimizer, Slot};
 use crate::pool::Buffers;
 use crate::schedule::Schedule as LrSchedule;
-use crate::snapshot::{GradAccum, Ties};
 use crate::{Data, Kernel};
+use snapshot::{GradAccum, Ties};
 
 /// 本模块诊断站点。
 pub(crate) const SITE: &str = "train::Session";

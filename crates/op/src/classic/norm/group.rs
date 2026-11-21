@@ -1,4 +1,4 @@
-use super::*;
+use super::super::*;
 
 /// 声明档组数。
 pub const G: usize = 2;

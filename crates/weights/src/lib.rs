@@ -34,25 +34,8 @@
 
 #![deny(unsafe_code)]
 
-use std::panic::Location;
-
-use diagnostic::{Code, Error, Result};
-
-/// 构造 [`Code::Invalid`] 错误，并以调用点（`文件:行号`）作为上下文帧。
-///
-/// 全 crate 唯一的“非法输入”构造点：各模块不再各自维护带模块标签的 `bad`/`invalid`/`fault`，
-/// 统一走这里，由 [`Location::caller`] 自动标注发现点——比手写模块名更精确且不会漏改。
-#[track_caller]
-pub(crate) fn bad(message: impl AsRef<str>) -> Error {
-    let site = Location::caller();
-    Error::new(Code::Invalid, message.as_ref()).with(format!("{}:{}", site.file(), site.line()))
-}
-
-/// `Option` → `Result`：有值取之，无值按 [`bad`] 报错。
-#[track_caller]
-pub(crate) fn or_bad<T>(value: Option<T>, message: &str) -> Result<T> {
-    value.ok_or_else(|| bad(message))
-}
+/// 全 crate 的“非法输入”构造点转发自 L1 [`wire`]：判据与上下文标注各只有一处实现。
+pub(crate) use wire::{bad, or_bad};
 
 // —— 自有 `.u` 容器 v2：描述符、读/写、帧编码、增量补丁与双模式 ——
 mod archive;
@@ -62,10 +45,8 @@ mod metrics;
 mod parse;
 mod rans;
 mod seg;
-mod seg_decode;
 mod stored;
 mod writer;
-mod writer_plan;
 
 // —— 量化方案：仿射方案与外部量化条目 ——
 pub mod quant;
@@ -81,16 +62,11 @@ mod proof;
 
 // —— 谱隙证书链：f64 单边 Jacobi SVD、谱隙判定账本、五轴无损选码（.u v2 张量级压缩侧车）——
 pub mod axes;
-mod axes_codec;
-mod axes_rank;
 pub mod ledger;
-mod ledger_note;
 pub mod svd;
 
 // —— 沉降账本：LLD §4.7 的逐张量体积 / 原因 / 无损判决，全部由落盘字节现算 ——
 pub mod settle;
-mod settle_reason;
-mod settle_text;
 
 // —— L3 合成律：LLD §4.5 的逐段证书 → 网络级误差上界与适用域 ——
 pub mod l3;
@@ -98,18 +74,11 @@ pub mod l3;
 // —— 外部格式只读适配：safetensors/gguf/bin/json ——
 pub mod bin;
 pub mod gguf;
-mod gguf_dequant;
-mod gguf_reader;
 mod pickle;
-mod pickle_stack;
-mod pickle_storage;
 mod zip;
 pub use lifecycle::import;
 pub mod json;
-mod json_impl;
-mod json_number;
 pub mod safetensors;
-mod safetensors_impl;
 
 // 只读内存映射源：feature + Unix 双门控，复用 `storage` 的唯一 unsafe 岛。
 #[cfg(all(feature = "mmap", unix))]

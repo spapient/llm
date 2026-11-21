@@ -93,3 +93,49 @@ fn signal_rank_separates_structure_from_noise() {
 
     assert_eq!(signal_rank(&[1.0]), None);
 }
+
+/// SVD 分解/重建吞吐（`#[ignore]`）：
+/// `cargo test -p llm-weights --lib -- svd_throughput --release --ignored --nocapture`。
+///
+/// 确定性 f64 方阵的 `compute`（Jacobi）与 `reconstruct(r=10)` 计时，报秒/矩阵。5 轮取中位数，
+/// 只出数字、不做断言——吞吐随机器浮动。`compute` 是 `compensate` 路径的主成本，此表用于
+/// 定位该路径的优化重点。
+#[test]
+#[ignore = "吞吐基准：cargo test -p llm-weights --lib -- svd_throughput --release --ignored --nocapture"]
+fn svd_throughput() {
+    for n in [256usize, 512, 1024] {
+        let a = svd_matrix(n, 0xabcd_1234);
+        let mut c_samples = [0.0f64; 5];
+        for slot in &mut c_samples {
+            let start = std::time::Instant::now();
+            let svd = compute(&a, n, n).expect("svd");
+            std::hint::black_box(&svd);
+            *slot = start.elapsed().as_secs_f64();
+        }
+        c_samples.sort_by(f64::total_cmp);
+        let svd = compute(&a, n, n).expect("svd");
+        let mut r_samples = [0.0f64; 5];
+        for slot in &mut r_samples {
+            let start = std::time::Instant::now();
+            let back = svd.reconstruct(10);
+            std::hint::black_box(&back);
+            *slot = start.elapsed().as_secs_f64();
+        }
+        r_samples.sort_by(f64::total_cmp);
+        println!(
+            "svd n={n} compute={:.4}s reconstruct(r=10)={:.5}s",
+            c_samples[2], r_samples[2]
+        );
+    }
+}
+
+/// 确定性 f64 方阵（幅度约 [−0.5,0.5)）。
+fn svd_matrix(n: usize, seed: u64) -> Vec<f64> {
+    let mut state = seed | 1;
+    (0..n * n)
+        .map(|_| {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            (state >> 40) as f64 / (1u64 << 24) as f64 - 0.5
+        })
+        .collect()
+}

@@ -15,7 +15,7 @@ pub mod drivers {
     //! 文本/字节边界的处理在两处悄悄漂移。
     //!
     //! 运行时只把"任意字节 → 接受/拒绝"的结果交回契约层；解析器本身在 `cli` / `weights` /
-    //! `train::snapshot` / `serve::proto` / `wire`，不变量本身在 `wire`。
+    //! `snapshot` / `serve::proto` / `wire`，不变量本身在 `wire`。
     //!
     //! 每个 harness 例子只取其中一个适配，未被该消费方引用的项是有意保留的整组定义，不报 dead_code。
     #![allow(dead_code)]
@@ -113,11 +113,11 @@ pub mod drivers {
 
     impl Target for Snapshot {
         fn name(&self) -> &str {
-            "train::snapshot::Snapshot"
+            "snapshot::Snapshot"
         }
 
         fn run(&self, input: &[u8]) -> Result<(), Error> {
-            train::snapshot::Snapshot::decode(input).map(|_| ())
+            snapshot::Snapshot::decode(input).map(|_| ())
         }
     }
 
@@ -241,10 +241,10 @@ pub mod seeds {
 
     /// 一份合法的检查点：事实五个数取最小合法值，一个 2×3 的 f32 条目。
     pub fn snapshot() -> Vec<u8> {
-        let facts = train::snapshot::Facts::new(1, 1, 1, 1, 1).expect("事实合法");
+        let facts = snapshot::Facts::new(1, 1, 1, 1, 1).expect("事实合法");
         let entry = weights::Entry::new("w", tensor::DType::F32, tensor::Shape::new([2, 3])).at(8);
         let header = weights::Header::new(vec![entry], 8).expect("条目表合法");
-        train::snapshot::Snapshot::new(facts, header)
+        snapshot::Snapshot::new(facts, header)
             .encode()
             .expect("编码合法检查点")
     }

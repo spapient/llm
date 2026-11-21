@@ -15,6 +15,9 @@
 //! 轴字典帧（`axes`）与去重引用（`deduplicated`）。把前者记成 `rans` 是把事实说错，把后者并进
 //! `raw` 是让"零字节"看起来像"没压动"——两者都会让账本失去复核价值，故显式登记。
 
+pub(crate) mod reason;
+pub(crate) mod text;
+
 use std::fmt::Write as _;
 
 use diagnostic::Result;
@@ -22,8 +25,8 @@ use diagnostic::Result;
 use crate::axes;
 use crate::json;
 use crate::ledger::{self, SCHEMA};
-use crate::settle_reason::{bits_per, entropy_of, layer_of, reason_of};
-use crate::settle_text::{escape, verify_root};
+use crate::settle::reason::{bits_per, entropy_of, layer_of, reason_of};
+use crate::settle::text::{escape, verify_root};
 use crate::stored::lossless_entry;
 use crate::{Archive, Codec, Stored};
 

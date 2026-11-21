@@ -6,7 +6,7 @@ use diagnostic::{Code, Error, Result};
 use wire::leb::Cursor as WireCursor;
 
 /// 解码失败的上下文：错误只由这一层产生，排查时不必再猜是哪一段。
-pub(crate) const CONTEXT: &str = "train::snapshot::Snapshot::decode";
+pub(crate) const CONTEXT: &str = "snapshot::Snapshot::decode";
 
 /// 取一段字节；不足时按起始偏移报截断。
 pub(crate) fn need(bytes: &[u8], span: Range<usize>, offset: usize) -> Result<&[u8]> {
@@ -28,7 +28,7 @@ pub(crate) fn invalid(message: impl Into<String>) -> Error {
 
 /// 检查点与手头的权重表不一致：只由 [`super::Snapshot::check_weights`] 产生。
 pub(crate) fn mismatch(message: impl Into<String>) -> Error {
-    Error::new(Code::Invalid, message).with("train::snapshot::Snapshot::check_weights")
+    Error::new(Code::Invalid, message).with("snapshot::Snapshot::check_weights")
 }
 
 /// 条目错误的上下文：一个几千条目的检查点里，"第 3 个条目"比"某个偏移"有用得多。

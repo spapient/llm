@@ -29,6 +29,7 @@ libfuzzer-sys = { version = "0.4.13", optional = true }
 [dev-dependencies]
 cli = { path = "../cli", package = "llm-cli" }
 weights = { path = "../weights", package = "llm-weights" }
+snapshot = { path = "../snapshot", package = "llm-snapshot" }
 train = { path = "../train", package = "llm-train" }
 serve = { path = "../serve", package = "llm-serve" }
 wire = { path = "../wire", package = "llm-wire" }

@@ -7,7 +7,7 @@ use shard::Collective;
 
 use crate::Kernel;
 use crate::optimizer::Optimizer;
-use crate::snapshot::{GradAccum, Moments, SlotMoments, Snapshot, Ties};
+use snapshot::{GradAccum, Moments, SlotMoments, Snapshot, Ties};
 
 use super::{SITE, Session};
 

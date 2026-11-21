@@ -16,7 +16,7 @@ use serve::Predict;
 use serve::model::CpuModel;
 use std::hint::black_box;
 use tensor::{DType, Shape};
-use train::snapshot::{Facts, Snapshot};
+use snapshot::{Facts, Snapshot};
 use train::{Anneal, Buffers, Data, Reference, Schedule};
 use weights::{Entry, Header};
 

@@ -11,12 +11,7 @@ use crate::leb::Cursor;
 
 const SITE: &str = "weights::Header::new";
 
-pub(crate) fn align_up(value: usize, align: usize) -> Option<usize> {
-    if align == 0 || !align.is_power_of_two() {
-        return None;
-    }
-    value.div_ceil(align).checked_mul(align)
-}
+pub(crate) use wire::align_up;
 
 /// 一个权重条目：名字、元素类型、形状与它在数据段里的字节区间。
 #[derive(Debug, Clone, PartialEq, Eq)]

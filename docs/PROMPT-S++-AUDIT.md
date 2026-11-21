@@ -38,7 +38,7 @@
 
 | # | 规则 | 判据 | 反例 |
 |---|---|---|---|
-| N1 | **依赖单向**：只能指向更低层；同层只能指向登记表更靠左的成员；新增边必须登记 | `cargo test -p llm-testkit --test architecture` 绿，且边集与 `docs/ARCHITECTURE.md` 逐条一致 | 任何"为省事直接跨层引用"的补丁 |
+| N1 | **依赖单向**：只能指向更低层；同层只能指向登记表更靠左的成员；新增边必须登记 | `cargo test -p llm-testkit` 绿，且边集与 `docs/ARCHITECTURE.md` 逐条一致 | 任何"为省事直接跨层引用"的补丁 |
 | N2 | **一 crate 一事**：职责句 ≤20 字、不含"以及/同时/和"；单 crate ≤8,000 行；最大/最小 crate 行数差 ≤2× | `wc -l crates/*/src` 逐 crate 汇总 + 职责句人工核对 | `op` 18,069 行、`nn` 13,630 行 vs `rng` 394 行（差 46×） |
 | N3 | **一文件一概念**：生产文件 ≤400 行；**>600 行一票否决**；400–600 行须出内聚证明 | `find crates/*/src -name '*.rs' -print0 \| xargs -0 wc -l \| awk '$1>600'` 必须空 | 现在 67 个 >600；最大 `op/attention.rs` 1198、`train/optimizer.rs` 1197、`op/fast.rs` 1170（`cli` 已于 v2.4 全部 ≤400，见 §15） |
 | N4 | **目录即模块**：文件名 = 单个概念词，禁下划线；限定词交给目录（`engine/src/metal/host.rs` 而非 `metal_host.rs`）；`mod.rs` ≤30 行且只做声明与导出 | `find crates/*/src -name '*_*.rs'` 必须空 | 现存 9 个：`metal_host`、`metal_executor`、`metal_fold`、`attention_block`、`attention_tiled`、`fast_pool`、`model_host`、`vocab_codec`、`bench_json` |
@@ -149,7 +149,7 @@ R1   | 118,920  | — | 263    | — | 0     | ...              | 9/9
 cargo fmt --all --check
 cargo check --workspace --all-targets
 cargo test -p llm-tools --test gate
-cargo test -p llm-testkit --test architecture
+cargo test -p llm-testkit
 npx --yes jscpd                       # .config/.jscpd.json threshold = 0
 bash scripts/name-lint.sh             # §5 四条 grep，零命中
 bash scripts/loc-budget.sh            # §6 预算表，超线即红

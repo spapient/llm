@@ -185,32 +185,22 @@ fn norm_reference(
 /// 二维卷积（声明档 `4×4, cin 2, cout 3, k=3, s=1, p=1`，same 输出）。
 pub mod conv2d;
 
-/// 一维最大池化（声明档几何 `k=2, s=2, p=0`，单通道）。
-pub mod max_pool1d;
+/// 窗口族：最大池化、平均池化、自适应池化。
+pub mod pool;
 
-/// 二维最大池化（声明档几何 `3×3, s=1, p=1`，4×4 输入、same 输出）。
-pub mod max_pool2d;
-
-/// 二维平均池化（声明档几何 `3×3, s=1, p=1`，补零不计入分母）。
-pub mod avg_pool2d;
-
-/// 自适应平均池化（声明档 4×4 → 2×2）。
-pub mod adaptive_pool;
+/// 归一化族：批 / 组 / 实例 / 层。
+pub mod norm;
 
 /// 双线性插值（声明档 2×2 → 4×4，`align_corners = false`）。
 pub mod interpolate;
 
-/// 批归一化（声明档 `C=4, spatial=2, n=2`，训练口径：批统计自上而下、滑动统计按动量混入）。
-pub mod batch_norm;
-
-/// 组归一化（声明档 `G=2, C=4, spatial=2, n=2`）。
-pub mod group_norm;
-
-/// 实例归一化（声明档 `C=4, spatial=2, n=2`）：等价于 `GroupNorm(G = C)`。
-pub mod instance_norm;
-
-/// 层归一化（声明档 `3 行 × 4 宽`）：逐行在最后一维统计。
-pub mod layer_norm;
+// 公开路径保持为 `classic::{max_pool1d, …, layer_norm}`，`lib.rs` 与测试据此取名。
+pub use norm::{
+    batch as batch_norm, group as group_norm, instance as instance_norm, layer as layer_norm,
+};
+pub use pool::{
+    adaptive as adaptive_pool, avg2d as avg_pool2d, max1d as max_pool1d, max2d as max_pool2d,
+};
 
 #[cfg(test)]
 #[path = "../tests/classic_tests.rs"]

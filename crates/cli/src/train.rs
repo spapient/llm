@@ -63,7 +63,7 @@ fn parse_train_uints(
 
 /// `--load`：从快照读出恢复事实、条目表、矩状态、累积窗口与权重绑定表并排版汇报。
 fn report_recovered(path: &str, config: &train::TrainConfig) -> Result<()> {
-    let snapshot = train::snapshot::Snapshot::read(std::path::Path::new(path))?;
+    let snapshot = snapshot::Snapshot::read(std::path::Path::new(path))?;
     let facts = snapshot.facts();
     let moments = snapshot.moments();
     let report = Panel::new("llm —— 从检查点恢复")

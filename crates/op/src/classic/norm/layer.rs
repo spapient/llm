@@ -1,4 +1,4 @@
-use super::*;
+use super::super::*;
 
 /// 声明档行数。
 pub const R: usize = 3;

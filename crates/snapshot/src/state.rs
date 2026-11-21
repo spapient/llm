@@ -30,9 +30,7 @@ impl SlotMoments {
                 m.len(),
                 v.len()
             );
-            return Err(
-                Error::new(Code::Invalid, message).with("train::snapshot::SlotMoments::new")
-            );
+            return Err(Error::new(Code::Invalid, message).with("snapshot::SlotMoments::new"));
         }
         Ok(Self { m, v })
     }

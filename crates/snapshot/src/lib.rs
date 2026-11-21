@@ -100,7 +100,7 @@ impl Format {
         )?;
         if magic != Self::MAGIC.as_slice() {
             let message = format!("检查点魔数不是 `LLMC`：{magic:?}");
-            return Err(Error::new(Code::Invalid, message).with("train::snapshot::Format::check"));
+            return Err(Error::new(Code::Invalid, message).with("snapshot::Format::check"));
         }
         let version = u16::from_le_bytes([raw[0], raw[1]]);
         if version == Self::VERSION {
@@ -120,7 +120,7 @@ fn version_error(version: u16) -> Error {
             "检查点版本 {version} 比当前版本 {current} 旧：本 crate 只读第 {current} 版，请重存一次"
         )
     };
-    Error::new(Code::Invalid, message).with("train::snapshot::Format::check")
+    Error::new(Code::Invalid, message).with("snapshot::Format::check")
 }
 
 /// 一次训练恢复后必须逐项相同的事实：步号、并行度、层数与批几何（行、列整体比较才是判据）。
@@ -190,7 +190,7 @@ impl Facts {
 fn require_nonzero(name: &str, value: usize) -> Result<()> {
     if value == 0 {
         let message = format!("检查点的{name}不能为 0");
-        return Err(Error::new(Code::Invalid, message).with("train::snapshot::Facts::new"));
+        return Err(Error::new(Code::Invalid, message).with("snapshot::Facts::new"));
     }
     Ok(())
 }
@@ -344,9 +344,7 @@ impl Snapshot {
         if sink.overflow() {
             let needed = self.counted(&tags);
             let message = format!("缓冲区 {capacity} 字节，检查点需要 {needed} 字节");
-            return Err(
-                Error::new(Code::Invalid, message).with("train::snapshot::Snapshot::encode_into")
-            );
+            return Err(Error::new(Code::Invalid, message).with("snapshot::Snapshot::encode_into"));
         }
         Ok(sink.written())
     }
@@ -359,7 +357,7 @@ impl Snapshot {
             // 半截临时文件比错误本身更麻烦：它会被下一次 `ls` 当成一个检查点。
             let _ = std::fs::remove_file(&temp);
             let message = format!("写入 {} 失败：{error}", path.display());
-            return Err(Error::new(Code::Io, message).with("train::snapshot::Snapshot::write"));
+            return Err(Error::new(Code::Io, message).with("snapshot::Snapshot::write"));
         }
         // 目录 fsync 尽力而为：为一个"可能不持久"的目录项把成功改判成失败，比不 fsync 更糟。
         if let Some(parent) = path.parent()

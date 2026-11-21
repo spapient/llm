@@ -141,7 +141,7 @@ fn status_reads_headers_from_a_weights_file() {
 
 /// 写一份合成快照：3 槽累积梯度、3 个 micro-batch、可选绑定对；权重段为空。
 fn write_snapshot(tag: &str, ties: Vec<(usize, usize)>) -> PathBuf {
-    use train::snapshot::{Facts, GradAccum, Moments, Snapshot, Ties};
+    use snapshot::{Facts, GradAccum, Moments, Snapshot, Ties};
     let facts = Facts::new(5, 1, 2, 1, 4).expect("恢复事实");
     let header = weights::Header::new(Vec::new(), 0).expect("空头部");
     let accum = GradAccum::new(vec![vec![1.0; 4], vec![2.0; 4], vec![3.0; 4]], 3);

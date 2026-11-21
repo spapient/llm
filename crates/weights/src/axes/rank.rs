@@ -10,7 +10,7 @@ use crate::leb::Cursor;
 use crate::ledger;
 
 use crate::axes::area;
-use crate::axes_codec::{bytes_to_f32, f32_bytes, pack_bytes, payload_cap, unpack_marked, word};
+use crate::axes::codec::{bytes_to_f32, f32_bytes, pack_bytes, payload_cap, unpack_marked, word};
 
 /// 低秩载荷：秩由证书给出，证书不通过就不压，证书本身随载荷落盘。
 ///

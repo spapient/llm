@@ -17,12 +17,14 @@
 //! （`axes` 里取 `min(m,n)/2`）：证书因此只能事后记录、从不参与决策。现在秩由证书给出，判定与产出
 //! 同源，[`certify`] 返回 `None` 就是「拒压」本身。
 
+pub(crate) mod note;
+
 use crate::bad;
 use diagnostic::Result;
 
 use crate::svd;
 
-pub use crate::ledger_note::{audit, check};
+pub use crate::ledger::note::{audit, check};
 
 /// 账本 schema 标识。
 pub const SCHEMA: &str = "llm.cert.v1";

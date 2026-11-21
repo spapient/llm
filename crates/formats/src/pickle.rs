@@ -3,12 +3,15 @@
 //!
 //! 未知 opcode / 不可识别可调用对象显式报错；不执行任意代码、不猜结果。
 
+pub(crate) mod stack;
+pub(crate) mod storage;
+
 use crate::{bad, or_bad};
 use diagnostic::Result;
 use dtype::DType;
 
 use crate::bin::Tensor;
-use crate::pickle_storage::into_str;
+use crate::pickle::storage::into_str;
 
 #[derive(Clone)]
 pub(crate) enum Value {

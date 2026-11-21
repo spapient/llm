@@ -3,16 +3,18 @@
 //! 描述符走紧凑 LEB128；数据字节本身在数据区单独写。P1 只有 `store` 一种 codec（code 0），
 //! 因此 `data_len` 必须正好等于形状与类型推出的字节数。
 
+pub(crate) mod decode;
+
 use crate::bad;
 use diagnostic::{Code, Error, Result};
 
-use crate::seg_decode::{check_frame, check_quant, decode_meta, decode_quant, decode_tail};
+use crate::seg::decode::{check_frame, check_quant, decode_meta, decode_quant, decode_tail};
 
 use crate::Wire;
 use crate::leb::{self, Cursor};
 use crate::quant::Quant;
 #[cfg(test)]
-pub(crate) use crate::seg_decode::{MAX_RANK, decode_shape};
+pub(crate) use crate::seg::decode::{MAX_RANK, decode_shape};
 use crate::sink::Sink;
 
 /// 段级编解码闭集：码位稳定，未知码在打开期拒绝。

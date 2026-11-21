@@ -240,4 +240,4 @@ pub mod dequant_i4 {
     );
 }
 
-pub mod dequant_i8;
+pub mod i8;

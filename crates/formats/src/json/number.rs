@@ -6,7 +6,7 @@
 use diagnostic::Result;
 
 use crate::json::Value;
-use crate::json_impl::{Reader, integer_value};
+use crate::json::reader::{Reader, integer_value};
 
 impl<'a> Reader<'a> {
     /// 一个数字：整数走 `i64`，小数与指数（只有账本模式接受）按原文保留。

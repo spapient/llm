@@ -29,6 +29,8 @@
 //! assert_eq!(header.get("w").map(|entry| entry.len()), Some(24));
 //! ```
 
+pub(crate) mod header;
+
 use std::fs::File as Source;
 use std::io::{Read as _, Seek as _, SeekFrom};
 use std::path::Path;
@@ -38,7 +40,7 @@ use diagnostic::{Code, Error, Result};
 use tensor::DType;
 
 use crate::json::{self, Value};
-use crate::safetensors_impl::{
+use crate::safetensors::header::{
     build, collect_fields, data_after, header_slice, internal, required_fields,
 };
 use crate::{Entry, Header, Loader, Reader, check_capacity};

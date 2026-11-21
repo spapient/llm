@@ -244,11 +244,11 @@ fn sweep_columns(sweep: Sweep<'_>, out: &mut [f32], k0: usize, kb: usize, first:
     }
 }
 
-mod gemm_i8;
+mod i8;
 mod micro;
 
-use gemm_i8::{f32_calc, f32_pack, threads_override};
-pub use gemm_i8::{gemm_i8, gemm_i8_checked, gemm_i8_single};
+use i8::{f32_calc, f32_pack, threads_override};
+pub use i8::{gemm_i8, gemm_i8_checked, gemm_i8_single};
 use micro::{Layout, Span, Sweep, Tile, edge, micro_packed};
 
 #[cfg(test)]

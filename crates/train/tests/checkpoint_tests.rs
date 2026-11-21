@@ -56,7 +56,7 @@ fn a_checkpoint_becomes_a_snapshot_that_round_trips() {
     let (checkpoint, header, _topology) = fixture();
     let snapshot = checkpoint.snapshot(&header).expect("快照");
     let bytes = snapshot.encode().expect("编码");
-    let restored = crate::snapshot::Snapshot::decode(&bytes).expect("解码");
+    let restored = snapshot::Snapshot::decode(&bytes).expect("解码");
     let facts = restored.facts();
     assert_eq!(facts.step(), checkpoint.step());
     assert_eq!(facts.world(), checkpoint.world());

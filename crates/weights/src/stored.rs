@@ -98,12 +98,6 @@ impl Stored {
             .map_err(|_| bad("段的逻辑长度超 usize"))
     }
 
-    /// 压缩比：存储字节 / 逻辑字节；逻辑字节为 0 时返回 `None`。
-    pub fn compression_ratio(&self) -> Option<f64> {
-        let logical = self.logical_len().ok()?;
-        (logical != 0).then(|| self.len() as f64 / logical as f64)
-    }
-
     /// 段级 CRC；引用段复制自代表段，不另存校验字段。
     pub(crate) fn crc(&self) -> u32 {
         match &self.inner {

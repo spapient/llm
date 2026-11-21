@@ -1,10 +1,10 @@
 use super::*;
 
-use crate::snapshot::{Facts, GradAccum, Moments, SlotMoments, Snapshot, Ties};
 use crate::{Chunks, Data, Dataset, Reference, Sgd};
 use autograd::{Sizes, Store, Tape, Var};
 use diagnostic::{Code, Result};
 use nn::ParamRole;
+use snapshot::{Facts, GradAccum, Moments, SlotMoments, Snapshot, Ties};
 use tensor::{DType, Shape};
 use weights::Header;
 

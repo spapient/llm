@@ -1,4 +1,4 @@
-use super::*;
+use super::super::*;
 
 /// 声明档输出位置数。
 pub const OL: usize = 8;

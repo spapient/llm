@@ -2,7 +2,7 @@
 //!
 //! **拥有**：[`Optimizer`] trait、[`Group`] 分组闭集、[`Slot`] 槽位视图与 [`Sgd`] / [`Adam`] /
 //! [`Muon`] 三种实现。**不拥有**：学习率调度（[`crate::Schedule`]）、梯度缓冲
-//! （[`crate::Buffers`] 扩展）、快照格式（[`crate::snapshot`]）。**依赖**：`nn`（角色闭集）、
+//! （[`crate::Buffers`] 扩展）、快照格式（[`snapshot`]）。**依赖**：`nn`（角色闭集）、
 //! `diagnostic`。
 //!
 //! 三条收口口径：

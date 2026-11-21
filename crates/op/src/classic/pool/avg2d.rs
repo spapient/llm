@@ -1,4 +1,4 @@
-use super::*;
+use super::super::*;
 
 /// 声明档输入边长。
 pub const H: usize = 4;

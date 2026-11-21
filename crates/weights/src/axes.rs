@@ -13,20 +13,23 @@
 //! 账目，而是与两段残差同受一条 CRC 保护的载荷内容，读端 [`decode`] 用载荷自己把证书的断言重算
 //! 一遍（[`ledger::audit`]），对不上就拒绝——「可证压缩」因此有一个可执行的判据。
 
+pub(crate) mod codec;
+pub(crate) mod rank;
+
 use crate::bad;
 use diagnostic::{Error, Result};
 
 use crate::leb::Cursor;
 use crate::ledger;
 
-use crate::axes_codec::{
+use crate::axes::codec::{
     bytes_to_f32, decode_dict, decode_quant, decode_sparse, dict_payload, f32_bytes, pack_bytes,
     payload_cap, quant_payload, sparse_payload, unpack_bytes,
 };
-use crate::axes_rank::{decode_rank, rank_head, rank_payload};
+use crate::axes::rank::{decode_rank, rank_head, rank_payload};
 
 #[cfg(test)]
-pub(crate) use crate::axes_rank::{f64_bytes, framed};
+pub(crate) use crate::axes::rank::{f64_bytes, framed};
 
 /// artifact 魔数（v4：`rank` 载荷改存低秩项的两个因子而非整张 `L`，v1–v3 不再可读）。
 const MAGIC: [u8; 4] = *b"AX04";

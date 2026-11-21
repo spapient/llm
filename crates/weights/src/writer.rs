@@ -4,6 +4,8 @@
 //! 与实际字节零漂移；[`Writer::write_to_path`] 用文件 Sink 边编码边写，整份容器从不进内存。
 //! 全局 CRC 用 [`sink::Sealed`] 覆盖正文每一个字节，文件路径下也不会漏字段。
 
+pub(crate) mod plan;
+
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io;
@@ -17,7 +19,7 @@ use crate::proof::Digest;
 use crate::rans;
 use crate::seg::Segment;
 use crate::sink::{Count, FileSink, Measured, Sealed, Sink, SliceSink};
-use crate::writer_plan::{Plan, axes_frame, flush_file, temp_path, write_data, write_descs};
+use crate::writer::plan::{Plan, axes_frame, flush_file, temp_path, write_data, write_descs};
 
 /// 魔数 `.u\0\0`：小端字节 `[0x2E, 0x75, 0x00, 0x00]`，第三、四字节 NUL 收尾（ADR 0045）。
 pub const MAGIC: u32 = 0x0000_752E;

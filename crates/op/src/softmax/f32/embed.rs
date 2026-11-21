@@ -148,5 +148,5 @@ crate::operator_here!(Embed, "embed_f32", 2, (8, 64), true, reference);
 
 #[cfg(test)]
 mod tests {
-    include!("../../tests/embed.rs");
+    include!("../../../tests/embed.rs");
 }

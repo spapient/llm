@@ -54,8 +54,6 @@ mod schedule;
 mod session;
 pub(crate) use kernel::shape;
 pub mod geometry;
-/// 检查点字节格式：实现已独立为 `snapshot` 成员，这里只保留同名再导出。
-pub use snapshot;
 mod store;
 
 /// 训练侧测试共用的夹具图（`tests/support.rs`）：在 crate 根挂一次，测试模块引用它，

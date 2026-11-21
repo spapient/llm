@@ -7,9 +7,12 @@
 //! 支持 GGML 类型码：`F32=0`、`F16=1`、`Q8_0=8`、`Q4_K=12`、`Q5_K=13`、`Q6_K=14`。
 //! 反量化只求正确，不做 SIMD；性能路径由上层决定。零第三方依赖，纯安全 Rust。
 
+pub(crate) mod dequant;
+pub(crate) mod reader;
+
 use crate::bad;
-use crate::gguf_dequant::dequantize;
-use crate::gguf_reader::{Reader, data_start, tables};
+use crate::gguf::dequant::dequantize;
+use crate::gguf::reader::{Reader, data_start, tables};
 use diagnostic::{Code, Error, Result};
 use dtype::{DType, QType};
 

@@ -25,6 +25,7 @@ op = { path = "../op", package = "llm-op" }
 wire = { path = "../wire", package = "llm-wire" }
 weights = { path = "../weights", package = "llm-weights", features = ["mmap"] }
 tokenizer = { path = "../tokenizer", package = "llm-tokenizer" }
+snapshot = { path = "../snapshot", package = "llm-snapshot" }
 train = { path = "../train", package = "llm-train" }
 autograd = { path = "../autograd", package = "llm-autograd" }
 tensor = { path = "../tensor", package = "llm-tensor" }

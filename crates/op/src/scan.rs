@@ -383,4 +383,4 @@ pub fn apply_scan<S: Scalar>(steps: &[SsmStep<S>], init: S) -> Vec<S> {
 #[path = "../tests/scan_tests.rs"]
 mod tests;
 
-pub mod scan_f32;
+pub mod f32;
