@@ -6,7 +6,7 @@ use diagnostic::Result;
 
 use crate::pickle::storage::{as_tuple, storage_handle, tensor_of};
 use crate::pickle::{Value, Vm};
-use crate::{bad, or_bad};
+use wire::{bad, or_bad};
 
 impl Vm {
     pub(crate) fn pops(&mut self, n: usize) -> Result<Vec<Value>> {

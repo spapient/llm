@@ -8,7 +8,7 @@ repository.workspace = true
 readme.workspace = true
 description = "Weight files: entries, header validation, plus safetensors archives (whole-buffer or header-only file backend)."
 publish = false
-# `bin.rs` 的 `pickle`/`zip` 子模块已内联进同一文件（不再有 `bin_*.rs` 平铺文件）；
+# 外部格式适配器（torch `.bin`/GGUF/JSON）已下沉到 L1 `llm-formats`，本 crate 只重导出；
 # 本 crate 没有可执行目标，禁用 bin 自动发现。
 autobins = false
 autotests = false
@@ -23,6 +23,7 @@ dtype = { path = "../dtype", package = "llm-dtype" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 tensor = { path = "../tensor", package = "llm-tensor" }
 wire = { path = "../wire", package = "llm-wire" }
+formats = { path = "../formats", package = "llm-formats" }
 storage = { path = "../storage", package = "llm-storage", optional = true }
 
 [dev-dependencies]

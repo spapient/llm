@@ -5,7 +5,7 @@
 
 use diagnostic::Result;
 
-use crate::bad;
+use wire::bad;
 
 use crate::gguf::{DEFAULT_ALIGN, Kind, MAGIC, Meta, Tensor, VERSION, Value};
 
@@ -217,7 +217,7 @@ pub(crate) fn alignment(meta: &[(String, Value)]) -> usize {
 
 /// 数据区起点：按 `general.alignment` 对齐，且不能越过文件末尾。
 pub(crate) fn data_start(meta: &[(String, Value)], pos: usize, len: usize) -> Result<usize> {
-    let Some(data) = crate::align_up(pos, alignment(meta)) else {
+    let Some(data) = wire::align_up(pos, alignment(meta)) else {
         return Err(bad("对齐必须是 2 的幂且对齐后不溢出"));
     };
     if data <= len {

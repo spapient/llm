@@ -10,7 +10,7 @@
 pub(crate) mod dequant;
 pub(crate) mod reader;
 
-use crate::bad;
+use wire::bad;
 use crate::gguf::dequant::dequantize;
 use crate::gguf::reader::{Reader, data_start, tables};
 use diagnostic::{Code, Error, Result};

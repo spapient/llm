@@ -6,7 +6,7 @@
 pub(crate) mod stack;
 pub(crate) mod storage;
 
-use crate::{bad, or_bad};
+use wire::{bad, or_bad};
 use diagnostic::Result;
 use dtype::DType;
 

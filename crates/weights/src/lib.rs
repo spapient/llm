@@ -71,13 +71,9 @@ pub mod settle;
 // —— L3 合成律：LLD §4.5 的逐段证书 → 网络级误差上界与适用域 ——
 pub mod l3;
 
-// —— 外部格式只读适配：safetensors/gguf/bin/json ——
-pub mod bin;
-pub mod gguf;
-mod pickle;
-mod zip;
+// —— 外部格式只读适配：全部实现在 L1 `formats`，这里只重导出，公开路径保持不变 ——
+pub use formats::{bin, gguf, json};
 pub use lifecycle::import;
-pub mod json;
 pub mod safetensors;
 
 // 只读内存映射源：feature + Unix 双门控，复用 `storage` 的唯一 unsafe 岛。

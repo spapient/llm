@@ -5,7 +5,7 @@
 
 use diagnostic::Result;
 
-use crate::bad;
+use wire::bad;
 
 use crate::gguf::Kind;
 

@@ -4,7 +4,7 @@
 
 use diagnostic::Result;
 
-use crate::bad;
+use wire::bad;
 
 const EOCD_SIG: u32 = 0x0605_4B50;
 const CD_SIG: u32 = 0x0201_4B50;

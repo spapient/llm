@@ -3,7 +3,7 @@
 //! `_rebuild_tensor_v2` 重建与 `BINPERSID` persistent storage，还原「名字 + 类型 + 形状 + 字节区间」；原始字节按需借用，未知 opcode / 不可识别可调用对象显式报错，不执行任意代码、不猜结果。
 #![allow(missing_docs)]
 
-use crate::bad;
+use wire::bad;
 use diagnostic::Result;
 use dtype::DType;
 

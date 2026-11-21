@@ -8,7 +8,7 @@ use dtype::DType;
 
 use crate::bin::Tensor;
 use crate::pickle::Value;
-use crate::{bad, or_bad};
+use wire::{bad, or_bad};
 
 pub(crate) fn as_tuple(value: Value, message: &str) -> Result<Vec<Value>> {
     match value {
