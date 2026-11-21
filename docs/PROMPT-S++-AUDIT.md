@@ -83,7 +83,7 @@
 ### N11 度量门（全绿才算交付）
 - 规则：`cargo fmt --all --check`、`cargo check --workspace --all-targets`、`cargo test -p llm-tools --test gate`、`cargo test -p llm-testkit --test architecture`、`npx --yes jscpd`（阈值 0，目标 0 clone / 0 行 / 0%）五项全绿。任何一项为绿而放宽阈值，判为**未完成**。
 - 判据：五项原始输出并列贴出，含总行数与重复行数。
-- 反例：jscpd 曾为 363 行 / 0.26%、303 行 / 0.22%；当前 86 行 / 0.06%（8 个 clone，14 万行）。阈值 0 的验收目标是 **0 clone**，不是"低于某个百分比"。
+- 反例：jscpd 曾为 363 行 / 0.26%、303 行 / 0.22%、178 行 / 0.13%；现行 0 clone / 0 行 / 0.00%（322 文件 / 139,983 行）。阈值 0 的验收目标就是 **0 clone**，不是"低于某个百分比"。
 
 ### N12 命名
 - 规则：单单词优先；超 6 字母取关键字母；Unix 共识缩写（`len` `iter` `buf` `max` `arg` `src` `dst` `fmt` `cfg`）；禁自造缩写、禁前后缀（`arm_` / `DEV_` / `xxx_impl`）；领域词保持全称。
@@ -170,7 +170,7 @@ crate: <name>            层: L<n>            src 行数: <n>   公开项: <n>
 - 错误与异常：**A–**（闭集 `Code` + 退出码契约 + 唯一 `unsafe` 岛 + Call 门归零）。
 - 零魔法：**B**（少数按名分派注释残留，跨仓引用未清）。
 - 测试组织：**C**（2,527 行测试巨石、10 个夹具在 `src`、重复集中在测试）。
-- 度量门：**C**（`file_max_lines` 由 899 放宽至 1200；jscpd 阈值 0 下仍有 8 clone 未清零，门未绿）。
+- 度量门：**B+**（jscpd 阈值 0 已真绿（0 clone / 139,983 行）且 fmt / workspace check / gate 绿；扣分项：`file_max_lines` 仍由 899 放宽至 1200，architecture 门在并发新增 crate 未登记时暂红）。
 
 **综合：契约与声明式组合（抽象层 + 操作表）是世界顶尖水平；落到代码形态的执行层是"强但未顶尖"。** 差距不在理念，在四个可枚举的落地项：口袋 crate、胖单体文件、测试无组合、删除不闭环。
 
