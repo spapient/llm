@@ -14,7 +14,7 @@ use crate::Codec;
 use crate::Wire;
 use crate::crc;
 use crate::seg::Segment;
-use crate::sink::{Measured, Sink};
+use wire::sink::{Measured, Sink};
 
 /// 五轴无损选码：仅 f32 二维稠密权重（无量化方案）且 artifact 严格更小时才返回。
 pub(crate) fn axes_frame(segment: &Segment) -> Option<Vec<u8>> {

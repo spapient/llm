@@ -1,8 +1,12 @@
 //! `lifecycle` 的单元测试：mode 与 patch 两条路径。
 use super::*;
-use crate::testutil::{archive, f32_segment};
+use crate::testutil::{archive, f32_segment, real_bin_bytes};
+use crate::bin::Bin;
+use crate::gguf::Gguf;
+use crate::import::{segments_from_bin, segments_from_gguf};
 use crate::writer::Writer;
 use diagnostic::Code;
+use dtype::DType;
 
 #[test]
 fn release_strips_opt_and_marks_infer() {
@@ -92,4 +96,58 @@ fn missing_base_is_full_not_garbage() {
     let patch = diff(&base, &cur).expect("diff");
     assert_eq!(patch[0].name(), "b");
     assert_eq!(patch[0].data, f32_segment("b", &[9.0]).data);
+}
+
+// —— 格式 → 中性段流的桥接：`import::segments_from_*` 依赖本 crate 的 `Segment`，用例只能留在这里。
+#[path = "../../formats/tests/gguf_fixture.rs"]
+mod fixture;
+
+#[test]
+fn keeps_torch_tensors_as_neutral_segments() {
+    let Some(raw) = real_bin_bytes() else {
+        return;
+    };
+    let bin = Bin::parse(&raw).expect("解析");
+    let segments = segments_from_bin(&bin).expect("导入中性段流");
+    assert_eq!(segments.len(), bin.tensors().len());
+    for (segment, tensor) in segments.iter().zip(bin.tensors()) {
+        assert_eq!(segment.name(), tensor.name());
+        assert_eq!(segment.dtype(), tensor.dtype());
+        assert_eq!(segment.shape(), tensor.shape());
+        assert_eq!(segment.data, bin.data(tensor).expect("字节"));
+    }
+}
+
+#[test]
+fn propagates_unreadable_bin() {
+    let error = Bin::parse(b"definitely not a torch bin").and_then(|bin| segments_from_bin(&bin));
+    assert!(error.is_err(), "读不通的 bin 必须显式失败");
+}
+
+#[test]
+fn maps_scalar_gguf_tensors_to_neutral_segments() {
+    let raw = fixture::plain();
+    let file = Gguf::parse(&raw).unwrap();
+    let segments = segments_from_gguf(&file).expect("标量张量可导入");
+    assert_eq!(segments.len(), 2);
+
+    let f32 = &segments[0];
+    assert_eq!(f32.name(), "f32.weight");
+    assert_eq!(f32.dtype(), DType::F32);
+    assert_eq!(f32.shape(), &[2]);
+    assert_eq!(f32.data.len(), 8);
+
+    let half = &segments[1];
+    assert_eq!(half.name(), "half.weight");
+    assert_eq!(half.dtype(), DType::F16);
+    assert_eq!(half.shape(), &[2]);
+    assert_eq!(half.data.len(), 4);
+}
+
+#[test]
+fn rejects_gguf_block_quantization_without_dequantizing() {
+    let raw = fixture::standard();
+    let file = Gguf::parse(&raw).unwrap();
+    let error = segments_from_gguf(&file).expect_err("块量化必须显式失败");
+    assert_eq!(error.code(), Code::Unsupported);
 }

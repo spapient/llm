@@ -5,7 +5,7 @@
 
 ## 目录
 
-算子四层是四个 crate，构成一条单向部分序：`op-spec` → `op-kernel` → `op-neural` → `op`，
+算子四层是四个 crate，构成一条单向部分序：`spec` → `gemm` → `conv` → `op`，
 箭头指向使用者，没有任何一层回指后面的层（`docs/ARCHITECTURE.md` 的依赖边就是这张表的投影）。
 
 ```
@@ -21,7 +21,7 @@ crates/op/                 # 2 个文件：声明解析与唯一注册表
     ├── lib.rs             # 注册表（REGISTRY）与两张投影（builtin / model）；把三个 crate 的模块整体再导出
     └── decl.rs            # `<name>.toml` 的解析与轴展开（内联 build / parse / variant）
 
-crates/op-spec/src/        # 8 个文件：契约层，只认识 L1 与注解，不认识任何内核
+crates/spec/src/        # 8 个文件：契约层，只认识 L1 与注解，不认识任何内核
     ├── operator.rs        # Operator / Registration 与装配宏（operator_via / operator_here）
     ├── sig.rs · tpl.rs    # `.k` 入口签名的解析与样本对齐（ABI 唯一事实源）；模板词法与骨架表达式协议
     ├── sch.rs · model.rs  # 布局与调度闭集及降级链判据；样本 Sample 与语义表 Model
@@ -29,7 +29,7 @@ crates/op-spec/src/        # 8 个文件：契约层，只认识 L1 与注解，
     ├── sample.rs          # 确定性抽样一族：rnd（splitmix64）/ dropout / init
     └── lib.rs
 
-crates/op-kernel/src/      # 16 个文件：稠密内核族，只借契约层，不认识 `op-neural`
+crates/gemm/src/      # 16 个文件：稠密内核族，只借契约层，不认识 `conv`
     ├── gemv.rs            # GEMV 骨架 + 权重格式契约（format / forward / shape / packed / simd / f32 / i2 / i4 / i8 全内联）
     ├── gemm.rs · matmul.rs # GEMM 骨架按 Format 单态化；TN 与 i8 通路
     ├── fast.rs            # 打包 GEMM 编排：面板暂存、线程池、微内核派发（pack / tn 内联）
@@ -38,7 +38,7 @@ crates/op-kernel/src/      # 16 个文件：稠密内核族，只借契约层，
     ├── dequant.rs · scalar.rs · elementwise.rs · unary.rs · reduce.rs · norm.rs
     └── lib.rs
 
-crates/op-neural/src/      # 6 个文件：神经网络算子，只借用内核族的打包与几何
+crates/conv/src/      # 6 个文件：神经网络算子，只借用内核族的打包与几何
     ├── conv.rs            # 卷积 / 几何 / 采样器：声明、校验、代价与遍历
     ├── classic.rs         # 经典卷积族：conv2d / pool / norm / interpolate
     ├── attention.rs       # 朴素 / 分块 / 在线 softmax 三档（decode 语义内联）
@@ -58,7 +58,7 @@ crates/op-neural/src/      # 6 个文件：神经网络算子，只借用内核�
 
 同一个算子的两个文件必须**同名成对**（`<name>.toml` ↔ `<name>.k`）：`<name>.toml` 在**构建期**由
 `build.rs` 解析成 `Table` 字面量写进 `$OUT_DIR/declared.rs`，`<name>.k` 由 `include_str!` 编进二进制；
-运行期从不读 `ops/`，也不解析任何 TOML（ADR 0022）。表结构在 `op::decl`，闭集在 `op-spec`（`sch` / `tpl`）：
+运行期从不读 `ops/`，也不解析任何 TOML（ADR 0022）。表结构在 `op::decl`，闭集在 `spec`（`sch` / `tpl`）：
 `cutile` 只消费 `OpDecl`，它的 `layout`/`sch` 是 `pub use` 转发路径——闭集与解析各只有一份，
 改声明语法不必动机制层。
 
@@ -73,7 +73,7 @@ crates/op-neural/src/      # 6 个文件：神经网络算子，只借用内核�
 [cutile README §4](../cutile/README.md)。声明与模板的**解析**在 `op::decl`（并在这里做闭集校验），
 `cutile` 只接住 `OpDecl`——所以 schema 只有一份，改动它不会出现第二处需要同步的地方。
 
-语义（`op-kernel/src`、`op-neural/src` 下按族合并的算子模块，如 `activation.rs` / `unary.rs` / `elementwise.rs`）是声明的第二份实现：一条**求和表达式**（`EXPR`，如 `nm,m,ng,n->n`）加每个
+语义（`gemm/src`、`conv/src` 下按族合并的算子模块，如 `activation.rs` / `unary.rs` / `elementwise.rs`）是声明的第二份实现：一条**求和表达式**（`EXPR`，如 `nm,m,ng,n->n`）加每个
 操作数的位宽/方向，就能让 `einsum` 推出 roofline 要的 `(flops, bytes)`——本层不再写任何流量常数；
 `sample` 给确定性的输入，`reference` 是标量参考（片段只与它对拍）；`shape` / `dtype` 声明生产形状与
 输出类型——审计的形状矩阵、`bench` 的缺省形状、`verify` 的对拍阈值都取自它们，而不是在命令层

@@ -6,8 +6,8 @@
 
 use std::fs;
 
-use crate::architecture::{source_text, workspace_root as root};
-use crate::contracts::{locate_module, sources};
+use crate::architecture::{dependents, source_text, workspace_root as root};
+use crate::contracts::{in_op_family, locate_module, sources};
 
 /// 语义表的**唯一生产者**：注册表里的 `MODEL` 必须由注解生成，注解标注的格式必须在注册表里。
 ///
@@ -56,10 +56,11 @@ fn the_registry_and_the_model_annotations_are_mirrors() {
 
     // 注解侧：`name` 是第一个键（参数顺序由 `annotation::syntax` 定死，这里只读不猜）。
     let mut annotated: Vec<(String, String)> = Vec::new();
-    // 拆分后注解散在 `op` / `spec` / `gemm` / `conv` 里：按家族前缀认，
-    // 写死单个 `op` 会让扫描面在拆分后静默归零。
+    // 注解散在算子四层里，且这四层的目录名会改：判据必须是"谁依赖 `annotation`"，
+    // 不是目录名前缀——前缀判断在改名当刻静默归零。
+    let producers = dependents("annotation");
     for (crate_name, file) in sources() {
-        if !crate_name.starts_with("op") {
+        if !producers.contains(&crate_name) {
             continue;
         }
         let Some(text) = source_text(&file) else {
@@ -175,7 +176,7 @@ fn model_macros() -> std::collections::BTreeSet<String> {
 fn macro_bodies() -> std::collections::BTreeMap<String, String> {
     let mut out = std::collections::BTreeMap::new();
     for (crate_name, file) in sources() {
-        if !crate_name.starts_with("op") {
+        if !in_op_family(&crate_name) {
             continue;
         }
         let Some(text) = source_text(&file) else {

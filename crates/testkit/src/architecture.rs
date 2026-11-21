@@ -102,6 +102,19 @@ pub(crate) fn short(name: &str) -> String {
     name.strip_prefix("llm-").unwrap_or(name).to_string()
 }
 
+/// 依赖 `dependency` 的成员集合（只算普通边，`+dev` 不算）。
+///
+/// 门禁里"哪些 crate 属于某个家族"一律从依赖边派生：按目录名前缀（`starts_with("op")`）认的写法
+/// 会在改名当刻静默归零，而改名恰恰是这套契约要承受的动作。
+pub(crate) fn dependents(dependency: &str) -> BTreeSet<String> {
+    workspace()
+        .1
+        .into_iter()
+        .filter(|edge| !edge.dev && edge.to == dependency)
+        .map(|edge| edge.from)
+        .collect()
+}
+
 /// 成员短名 → 源码根目录。
 ///
 /// 包名与目录名**不必**相同（`llm-gemm` 住在 `crates/gemm`）：改名只动包名时，若门禁拿短名

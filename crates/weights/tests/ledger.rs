@@ -1,8 +1,8 @@
 //! `ledger` 模块的单元测试。
 use super::*;
 
-use crate::leb::Cursor;
 use diagnostic::Code;
+use wire::leb::Cursor;
 
 /// diag(3, 2, 1, 0.5)：谱隙 1、1、0.5 都远离机器精度，判定结果可逐点预算。
 fn diag4() -> Vec<f32> {

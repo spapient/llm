@@ -6,8 +6,8 @@
 use diagnostic::Result;
 
 use crate::bad;
-use crate::leb::Cursor;
 use crate::ledger;
+use wire::leb::Cursor;
 
 use crate::axes::area;
 use crate::axes::codec::{bytes_to_f32, f32_bytes, pack_bytes, payload_cap, unpack_marked, word};

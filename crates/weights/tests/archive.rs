@@ -96,6 +96,28 @@ mod cow_tests {
 
         assert_eq!(&cow[..], &sparse[..]);
     }
+
+    /// `store` 的帧长由容器自己声明，没有别的环节会拿它和描述符推出的逻辑长度比对：一段宣称
+    /// 自己有 64 字节、实际只存了 4 字节的帧必须被 `load` 挡下，否则度量按描述符报
+    /// `lossless=true`、`settle` 按往返报 `bitwise=false`，同一份字节两种结论。
+    #[test]
+    fn a_store_frame_shorter_than_its_descriptor_is_rejected() {
+        let frame = [0u8; 4];
+
+        let error = decode_frame(&frame, Codec::Store, 64).expect_err("短帧必须被挡下");
+
+        assert_eq!(error.code(), Code::Invalid, "坏容器不是内部错误");
+    }
+
+    /// 长度一致时 `store` 仍是零拷贝借用——加核对不能把这条路径变成复制。
+    #[test]
+    fn a_store_frame_of_the_declared_length_still_borrows() {
+        let frame = [7u8; 8];
+
+        let cow = decode_frame(&frame, Codec::Store, 8).expect("长度一致");
+
+        assert!(matches!(cow, Cow::Borrowed(_)), "Store 段必须借用");
+    }
 }
 
 #[cfg(test)]
@@ -107,7 +129,7 @@ mod ref_tests {
 
     use crate::crc;
 
-    use crate::leb;
+    use wire::leb;
 
     use crate::testutil::f32_segment;
 

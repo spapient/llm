@@ -5,6 +5,8 @@
 
 use super::{Context, SITE};
 use diagnostic::{Code, Error, Result};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 /// 经典算子的反向公式：几何交给 [`Geometry`]，公式本身只剩"取实例、回传"。
 ///
@@ -330,17 +332,47 @@ pub(super) fn rope(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
     Ok(vec![rope_grad(&ctx.inputs[0], ctx.incoming)])
 }
 
+/// 旋转表缓存槽：段长 + 该段长下的 `(sin, cos)` 表。
+type RotationCache = RefCell<Option<(usize, Rc<[(f32, f32)]>)>>;
+
+thread_local! {
+    /// 段长 → 旋转表。`θ_i = ROPE_POS·base^(-2i/d)` 只依赖 `d`，与数据无关，所以 `(sin, cos)`
+    /// 也可以一次性算好：逐对重算 `powf` 与 `sin_cos` 是这条路径上唯一的纯浪费。
+    ///
+    /// 频率直接取前向那张表（`op::rope_f32::frequencies`），不另写一份 `powf`；角度与三角
+    /// 都是同一批表达式的同一批结果，逐位不变。
+    static ROTATIONS: RotationCache = const { RefCell::new(None) };
+}
+
+/// 段长 `d` 的旋转表：`d/2` 对 `(sin θ_i, cos θ_i)`，与逐对计算的 `angle.sin_cos()` 逐位相同。
+fn rotations(d: usize) -> Rc<[(f32, f32)]> {
+    ROTATIONS.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if let Some((cached, table)) = slot.as_ref()
+            && *cached == d
+        {
+            return Rc::clone(table);
+        }
+        let table: Rc<[(f32, f32)]> = op::rope_f32::frequencies(d)
+            .iter()
+            .map(|&freq| (ROPE_POS * freq).sin_cos())
+            .collect();
+        *slot = Some((d, Rc::clone(&table)));
+        table
+    })
+}
+
 /// RoPE 反向本体：逐对把上游梯度按同一角度旋转回去；末尾不成对的元素原样透传。
 fn rope_grad(x: &[f32], grad: &[f32]) -> Vec<f32> {
     let d = x.len();
     let pairs = d / 2;
     let mut dx = vec![0.0; d];
-    for i in 0..pairs {
-        let angle = ROPE_POS * op::rope_f32::BASE.powf(-(2.0 * i as f32) / d as f32);
-        let (sin, cos) = angle.sin_cos();
+    let rotations = rotations(d);
+    for (i, &(sin, cos)) in rotations.iter().enumerate() {
         dx[2 * i] = grad[2 * i] * cos + grad[2 * i + 1] * sin;
         dx[2 * i + 1] = -grad[2 * i] * sin + grad[2 * i + 1] * cos;
     }
+    debug_assert_eq!(rotations.len(), pairs);
     if d % 2 == 1 {
         dx[d - 1] = grad[d - 1];
     }

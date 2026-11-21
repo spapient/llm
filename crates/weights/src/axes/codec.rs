@@ -6,8 +6,8 @@
 use diagnostic::Result;
 
 use crate::bad;
-use crate::leb::Cursor;
 use crate::rans;
+use wire::leb::Cursor;
 
 /// 标记位：0 = store（原样），1 = rans 帧。
 const STORE_MARK: u8 = 0;

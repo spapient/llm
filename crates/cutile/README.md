@@ -1,7 +1,8 @@
 # cutile DSL —— 设备无关的替换式 kernel DSL
 
 > 版本 v1.1 · 2026-11-14 · 状态：P0 纵切面已落地，P1–P4 仍是 §17 的目标（替代 v0.3 的 `tess` 草案）
-> 落地位置：机制在 `crates/cutile`，三层数据在 `crates/op`、`crates/prof`、`crates/prim`；
+> 落地位置：前端机制在 `crates/cutile`，执行半边（编译/见证/报告）在 `crates/cutile-run`，
+> 三层数据在 `crates/op`、`crates/prof`、`crates/prim`；
 > 本文只定义 cutile，不涉及运行时之外的训练/服务层
 > 本文既是本 crate 的 README，也是整条流水线的设计契约：§0 给结论与现状，§3–§12 给机制，
 > §13–§16 给预算与判据，附录给行数口径与复现命令；`tess` 仅作为历史代号保留
@@ -177,7 +178,7 @@ crates/prim/                    # 片段层：纯数据，不含机制
     ├── device.rs               # 设备镜像：这次构建带上的源码与可选设备侧二进制
     └── tables.rs               # 构建期生成物的 include! 落点（只有数据）
 
-crates/cutile/                  # 机制 + 命令策略：协商、拼接、emit、编译执行、审计
+crates/cutile/                  # 前端（无 IR）：装载、协商、替换、发出、缓存
 ├── Cargo.toml
 ├── README.md                   # 本文
 └── src/
@@ -187,22 +188,30 @@ crates/cutile/                  # 机制 + 命令策略：协商、拼接、emit
     ├── ast.rs                  # 模板渲染的可见中间产物（ADR 0017 的 L1）
     ├── substitute.rs           # ④ 槽位与 `@原语` 替换
     ├── emit.rs                 # ⑤ 加头、加前导、拼正文；片段行数判据
-    ├── build.rs                # ⑤ 指纹 → 查缓存 → 取锁 → 拼接 → 落盘
     ├── cache.rs                # 缓存存储：身份键（源文本指纹、产物键、逐项差异）、条目、锁、原子落盘与 LRU 回收
-    ├── plan.rs                 # tile 取值与 roofline（设备探测在 `device.rs` 的 `probe` 模块）
+    ├── plan.rs                 # tile 取值与 roofline
     ├── reference.rs            # 对拍口径：相对误差 + 按数据类型的阈值
-    ├── toolchain.rs            # 编译器/驱动探测与身份（cc/clang/gcc、nvcc、xcrun metal、MSVC cl）
     ├── harness.rs              # 被测内核的 C / CUDA 基准封装生成（两种方言同模块）
-    ├── runner.rs              # 编译、执行与回读原语（可执行文件、Outcome、分位样本、位模式解码）
-    ├── dirs.rs                # 三个目录的纯数据值对象（默认路径在调用方，本模块不读环境变量）
-    ├── device.rs              # 统一设备：按 Emit 查描述符表；共享装载/起进程/回读 + C/CUDA/Metal 三段编排（无 unsafe）；内联 `probe` / `space` 模块
+    ├── dirs.rs                 # 三个目录的纯数据值对象（默认路径在调用方，本模块不读环境变量）
+    ├── probe.rs / space.rs     # 设备探测与形状空间（纯数据；起进程在 `cutile-run`）
+    └── cache/                  # 缓存条目、锁与回收的细分模块
+
+crates/cutile-run/              # 执行半边：编译、执行、见证、语言门与四份报告
+└── src/
+    ├── toolchain.rs            # 编译器/驱动探测与身份（cc/clang/gcc、nvcc、xcrun metal、MSVC cl）
+    ├── runner.rs               # 编译、执行与回读原语（可执行文件、Outcome、分位样本、位模式解码）
+    ├── build.rs                # ⑤ 指纹 → 查缓存 → 取锁 → 拼接 → 落盘
+    ├── device.rs               # 统一设备：按 Emit 查描述符表；共享装载/起进程/回读 + C/CUDA/Metal 三段编排（无 unsafe）
+    ├── backend.rs              # 后端缝（Codegen / Driver / Readback）与注册表
     ├── gate.rs / witness.rs    # 语言门与见证执行器
     ├── pipeline.rs             # 四条命令共用的流水线（Run / Prepared / …）
-    ├── ledger.rs                # 跨档案能力台账：证据行聚合与原语×后端矩阵格（不走 pipeline）
+    ├── ledger.rs               # 跨档案能力台账：证据行聚合与原语×后端矩阵格（不走 pipeline）
     └── doctor.rs / verify.rs / bench.rs / execution.rs   # 命令策略与结构化报告
 ```
 
-命令策略与机制同处 `crates/cutile`，但**分层不混**：`build` / `runner` / `toolchain` / `harness` / `cap` / `cache` / `emit`
+前端与执行分处 `crates/cutile` 与 `crates/cutile-run`，划线判据是**证据从哪来**：
+前端只回答"这段源文本长什么样"，跨过 `witness` 之后必须有"这台机器上真的跑出过这个结果"。
+执行半边内部**分层不混**：`build` / `runner` / `toolchain` / `device` / `cap` / `cache` / `emit`
 是机制（决定"产物长什么样"），`doctor` / `verify` / `bench` / `execution` 是命令策略；`ledger` 跨档案聚合证据行与矩阵格，不经 `pipeline`
 （决定"跑哪些形状、跑几次、工作目录怎么命名、达成率按什么口径算"），后者只经由 `pipeline`
 调用前者。这条接缝是可检验的：改"怎么审"不需要动任何一行生成逻辑，`pipeline.rs` 是唯一的

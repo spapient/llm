@@ -1,7 +1,7 @@
 # `llm-spec`
 
 Operator contract: everything that answers *what an operator is*, separated from *how it is
-computed*. Four crates form one partial order — `op-spec` → `op-kernel` → `op-neural` → `op`, with
+computed*. Four crates form one partial order — `spec` → `gemm` → `conv` → `op`, with
 the arrow pointing at the user, so no layer ever reaches back into a later one.
 
 | Layer | Crate | Owns |

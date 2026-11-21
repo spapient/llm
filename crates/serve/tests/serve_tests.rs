@@ -1,6 +1,9 @@
 use super::*;
+use diagnostic::{Code, Result};
 use engine::kv::{Cache, Pager};
 use engine::{Scheduler, Sequence};
+
+use crate::protocol::{Envelope, Kind};
 
 /// 页池：2 页、每页 16 个 token、每行 2 个元素。
 fn scheduler() -> Scheduler {

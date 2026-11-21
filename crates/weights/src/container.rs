@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use diagnostic::{Code, Error, Result};
 use tensor::{DType, Shape};
 
-use crate::leb::Cursor;
+use wire::leb::Cursor;
 
 const SITE: &str = "weights::Header::new";
 

@@ -37,18 +37,50 @@ impl Panel {
 
     /// 排成文本：标题一行，之后按“标签 + 值”两列输出，末尾带换行。
     pub fn render(&self) -> String {
-        let width = self
+        let widest = self
             .rows
             .iter()
-            .map(|(label, _)| label.chars().count())
+            .map(|(label, _)| span(label))
             .max()
             .unwrap_or(0);
         let mut text = format!("{}\n", self.title);
         for (label, value) in &self.rows {
-            let pad = width.saturating_sub(label.chars().count());
+            let pad = widest.saturating_sub(span(label));
             text.push_str(&format!("  {label}{}  {value}\n", " ".repeat(pad)));
         }
         text
+    }
+}
+
+/// 一段文本在等宽终端里占的列数。
+fn span(text: &str) -> usize {
+    text.chars().map(char_span).sum()
+}
+
+/// 单字符占的列数：宽/全角两列，组合符与零宽不占列，其余一列。
+///
+/// 按字节数或 `chars().count()` 量宽度都会把「条目数」量成 3 列（实际 6 列），中英混排的标签
+/// 于是逐行错开——而这些面板的读者是人，错开的第一眼就是坏掉的一眼。表只覆盖需要的那几段：
+/// 本工作区的标签是中文加拉丁，再加少量数学符号（`×`/`≤` 属歧义宽度，终端按一列排）。
+fn char_span(ch: char) -> usize {
+    match ch as u32 {
+        0x0300..=0x036F | 0x200B..=0x200F | 0xFEFF => 0,
+        0x1100..=0x115F
+        | 0x2E80..=0x303E
+        | 0x3041..=0x33FF
+        | 0x3400..=0x4DBF
+        | 0x4E00..=0x9FFF
+        | 0xA000..=0xA4CF
+        | 0xAC00..=0xD7A3
+        | 0xF900..=0xFAFF
+        | 0xFE10..=0xFE19
+        | 0xFE30..=0xFE6F
+        | 0xFF00..=0xFF60
+        | 0xFFE0..=0xFFE6
+        | 0x1F300..=0x1F64F
+        | 0x1F900..=0x1F9FF
+        | 0x20000..=0x3FFFD => 2,
+        _ => 1,
     }
 }
 

@@ -153,7 +153,7 @@ where
         // 上限取 `min(B_max, T_max)`：解码一轮每条序列占一行，于是 `T_max < B_max` 时后者才是
         // 真正的容量。只判 `B_max` 会放进"进得来、却永远排不进一轮"的序列（`pack` 报 `OverTokens`）。
         if state.batch.len() >= state.budget.seqs().min(state.budget.tokens()) {
-            return Ok(Response::error(Status::Unavailable, crate::FULL));
+            return Ok(Response::error(Status::Unavailable, crate::admit::FULL));
         }
         let sequence = self.sequence(state, request, prompt)?;
         crate::admit_batch(&mut state.batch, sequence)

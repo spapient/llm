@@ -98,17 +98,17 @@ reason = "声明解析结果（骨架 / 网格映射 / 轴候选 / tile 组合�
 [[ownership.unlisted]]
 crate = "gemm"
 names = ["Binary", "Dense", "DequantI8", "Embed", "Gemm", "Matmul", "MatmulI8Op", "Packed", "PackedRow", "Plain", "PlainFmt", "QuantI4", "SymI8", "Unary"]
-reason = "内核族与打包格式的实现类型（每个算子一个模块、一张行表）；随 L 拆分从 `op` 迁到 `gemm`（包名 `llm-gemm`，源码仍在 `crates/op-kernel`），公开面仍是 `REGISTRY` 与 `Operator`。经典 CNN 算子与 `nn` 同名层共享名字（`Conv1d`/`Conv2d`/`BatchNorm2d` 等）——所有权门按名字全局判重，故这些名字由 `nn` 的所有权行覆盖，本侧不重复登记（与 `tool::Geometry`/`train::Geometry` 同一处置）"
+reason = "内核族与打包格式的实现类型（每个算子一个模块、一张行表）；随 L 拆分从 `op` 迁到 `gemm`，公开面仍是 `REGISTRY` 与 `Operator`。经典 CNN 算子与 `nn` 同名层共享名字（`Conv1d`/`Conv2d`/`BatchNorm2d` 等）——所有权门按名字全局判重，故这些名字由 `nn` 的所有权行覆盖，本侧不重复登记（与 `tool::Geometry`/`train::Geometry` 同一处置）"
 
 [[ownership.unlisted]]
 crate = "conv"
 names = ["ConvGeom", "DecodeAttention", "DecodeFlashAttention", "FlashAttention", "Sampler"]
-reason = "神经网络算子（卷积几何 / 注意力 / 解码采样）的实现类型；随 L 拆分从 `op` 迁到 `conv`（包名 `llm-conv`，源码仍在 `crates/op-neural`），公开面仍是 `REGISTRY` 与 `Operator`"
+reason = "神经网络算子（卷积几何 / 注意力 / 解码采样）的实现类型；随 L 拆分从 `op` 迁到 `conv`，公开面仍是 `REGISTRY` 与 `Operator`"
 
 [[ownership.unlisted]]
 crate = "spec"
 names = ["Access", "Arg", "Axis", "AxisRole", "AxisSpec", "CType", "Formula", "Param", "ShapeContext", "SplitMix64", "Values"]
-reason = "契约层内部类型（访问模式、算子参数、轴角色与轴规格、C 类型、公式缓存句柄、形状上下文、计数器型随机）；随 L 拆分从 `op` 迁到 `spec`（包名 `llm-spec`，源码仍在 `crates/op-spec`），公开面是 `Operator` / `Model` / 签名"
+reason = "契约层内部类型（访问模式、算子参数、轴角色与轴规格、C 类型、公式缓存句柄、形状上下文、计数器型随机）；随 L 拆分从 `op` 迁到 `spec`，公开面是 `Operator` / `Model` / 签名"
 
 [[ownership.unlisted]]
 crate = "prim"

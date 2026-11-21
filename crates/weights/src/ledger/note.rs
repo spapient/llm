@@ -6,9 +6,9 @@
 use diagnostic::Result;
 
 use crate::bad;
-use crate::leb::{self, Cursor};
 use crate::ledger::{Bound, EpsMethod, Mode, Note, Stable, norm};
-use crate::sink::Sink;
+use wire::leb::{self, Cursor};
+use wire::sink::Sink;
 
 impl Note {
     /// 强类型 LEB128 编码。

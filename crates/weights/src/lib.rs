@@ -43,7 +43,6 @@ pub(crate) use wire::bad;
 mod archive;
 mod container;
 mod lifecycle;
-mod metrics;
 mod parse;
 mod rans;
 mod seg;
@@ -88,14 +87,6 @@ pub mod crc {
     pub use wire::crc::*;
 }
 
-mod leb {
-    pub(crate) use wire::leb::*;
-}
-
-mod sink {
-    pub(crate) use wire::sink::*;
-}
-
 /// 生命周期模式薄转发：实现见内部 `lifecycle` 模块。
 pub mod mode {
     pub use crate::lifecycle::{MODE_NAME, Mode, is_opt, mode_of, release};
@@ -113,10 +104,10 @@ mod testutil;
 /// 词表段保留名（字节容器占位，不接 tokenizer）。
 pub use crate::archive::VOCAB_NAME;
 
-pub use archive::Archive;
+pub use archive::{Archive, E8_RATIO, Metrics};
 pub use dtype::DType as Wire;
 pub use l3::{Bracket, Chain, Ruling, Rung};
-pub use metrics::{E8_RATIO, Metrics};
+
 pub use proof::Proof;
 pub use ptq::{
     Adaptive, AdaptiveCompensated, Compensated, I2, I3, I4, I8, Scheme, adaptive_quantize,

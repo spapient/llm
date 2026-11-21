@@ -3,8 +3,10 @@
 //! 每条契约都是「同一件事不许有第二份写法」，判据是扫 `crates/*/src` 的文本并对照
 //! `lints/vocabulary.toml` 的豁免表；豁免必须仍然命中，否则说明它已经过期。
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use crate::architecture::{rust_files, source_text, workspace_root as root};
 
@@ -74,11 +76,42 @@ fn cutile_path(relative: &str) -> PathBuf {
         })
 }
 
-/// 算子家族的 `src` 根。`op` 拆成四个 crate 后算子实体散在各家，路径探测必须逐家去试；
-/// 顺序固定，同一个文件名在两家都出现时以前者为准（`op` 是门面，实体在专责 crate）。
+/// 算子家族的判据：**在 `src` 里写了 `#[annotation::model(..)]` 的 crate**。
+///
+/// 取自内容而不是名字。这个家族改过两次名（`op` 拆成 `op-spec` / `op-kernel` / `op-neural`，
+/// 三家又改成 `spec` / `gemm` / `conv`）：任何按名字前缀认的写法都在改名当刻把扫描面筛成
+/// 空集，而"零命中"在这里表现为"没有违规"——静默变绿比编译失败危险得多；写死成员名单则
+/// 会在家族新增一家时同样静默漏掉。注解是家族成员的**定义性特征**（没有注解就没有语义表），
+/// 所以它同时满足"改名不失效"与"新增不遗漏"。
+pub(crate) fn in_op_family(crate_name: &str) -> bool {
+    family().contains(crate_name)
+}
+
+/// 算子家族的成员（目录名），只扫一遍：`sources()` 的文本已按文件缓存。
+fn family() -> &'static BTreeSet<String> {
+    static CACHE: OnceLock<BTreeSet<String>> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        sources()
+            .into_iter()
+            .filter(|(_, file)| {
+                source_text(file).is_some_and(|text| text.contains(MODEL_ANNOTATION))
+            })
+            .map(|(name, _)| name)
+            .collect()
+    })
+}
+
+/// 语义表的注解前缀：`#[annotation::model(` 必须带左括号，`#[annotation::model_of]` 这类
+/// 只提名字的散文不算声明。
+const MODEL_ANNOTATION: &str = "#[annotation::model(";
+
+/// 算子家族的 `src` 根。算子实体散在各家，路径探测必须逐家去试；门面排最前，
+/// 同一个文件名在两家都出现时以门面的 `pub use` 声明为准。
 fn op_roots() -> Vec<PathBuf> {
-    ["op", "spec", "gemm", "conv"]
-        .iter()
+    let mut names: Vec<&String> = family().iter().collect();
+    names.sort_by_key(|name| (name.as_str() != "op", name.to_string()));
+    names
+        .into_iter()
         .map(|name| root().join("crates").join(name).join("src"))
         .filter(|path| path.is_dir())
         .collect()
@@ -105,14 +138,20 @@ fn locate(module: &str, depth: usize) -> Option<PathBuf> {
         if let Some(explicit) = find(format!("{}.rs", module.replace("::", "/"))) {
             return Some(explicit);
         }
-        // 内联模块（`activation.rs` 里的 `pub mod embed { … }`）没有自己的文件，注解与实体都在
-        // 外层骨架里：丢掉**一段**，落到父模块文件。只许丢一段——丢两段会把
-        // `fast::i8::gemm_i8` 这个纯函数错认成 `fast/i8.rs` 的算子实体。
-        let mut segments: Vec<&str> = module.split("::").collect();
-        segments.pop();
-        if !segments.is_empty() {
-            if let Some(parent) = find(format!("{}.rs", segments.join("/"))) {
-                return Some(parent);
+        // 内联模块（`activation.rs` 里的 `pub mod embed { … }`、`classic.rs` 里的
+        // `pub mod pool { pub mod adaptive { … } }`）没有自己的文件，注解与实体都在外层骨架里：
+        // 逐级上溯到第一个**确实声明了下一段**的文件。这条判据是必要的——只按"文件存在"上溯，
+        // `fast::i8::gemm_i8` 这类纯函数重导出会被错认成 `fast/i8.rs` 的算子实体。
+        let segments: Vec<&str> = module.split("::").collect();
+        for cut in (1..segments.len()).rev() {
+            let Some(candidate) = find(format!("{}.rs", segments[..cut].join("/"))) else {
+                continue;
+            };
+            let Some(text) = source_text(&candidate) else {
+                continue;
+            };
+            if text.contains(&format!("pub mod {}", segments[cut])) {
+                return Some(candidate);
             }
         }
     }
@@ -120,7 +159,7 @@ fn locate(module: &str, depth: usize) -> Option<PathBuf> {
         return Some(direct);
     }
     for (crate_name, file) in sources() {
-        if !crate_name.starts_with("op") {
+        if !in_op_family(&crate_name) {
             continue;
         }
         let Some(text) = source_text(&file) else {
@@ -165,7 +204,7 @@ fn aliases() -> &'static std::collections::BTreeMap<String, Vec<String>> {
         let mut out: std::collections::BTreeMap<String, Vec<String>> =
             std::collections::BTreeMap::new();
         for (crate_name, file) in sources() {
-            if !crate_name.starts_with("op") {
+            if !in_op_family(&crate_name) {
                 continue;
             }
             let Some(text) = source_text(&file) else {
@@ -187,9 +226,18 @@ fn aliases() -> &'static std::collections::BTreeMap<String, Vec<String>> {
 
 /// 文件自己的模块路径（`gemv/f32.rs` → `gemv::f32`，`lib.rs` → 空）。
 fn module_path_of(file: &std::path::Path) -> String {
+    // 家族有四家，模块路径一律相对各自的 `crates/<crate>/src` 算：写死 `op` 会让另外三家的
+    // 路径多出一层 crate 名，`gemv/f32.rs` 就不再等于 `gemv::f32`。
     let rel = file
-        .strip_prefix(root().join("crates/op/src"))
-        .unwrap_or(file);
+        .strip_prefix(root().join("crates"))
+        .ok()
+        .and_then(|rest| {
+            let mut parts = rest.components();
+            parts.next()?;
+            parts.next().filter(|part| part.as_os_str() == "src")?;
+            Some(parts.as_path().to_path_buf())
+        })
+        .unwrap_or_else(|| file.to_path_buf());
     let parts: Vec<String> = rel
         .with_extension("")
         .components()

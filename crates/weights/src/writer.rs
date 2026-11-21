@@ -14,12 +14,12 @@ use std::path::Path;
 use diagnostic::{Code, Error, Result};
 
 use crate::Codec;
-use crate::leb;
 use crate::proof::Digest;
 use crate::rans;
 use crate::seg::Segment;
-use crate::sink::{Count, FileSink, Measured, Sealed, Sink, SliceSink};
 use crate::writer::plan::{Plan, axes_frame, flush_file, temp_path, write_data, write_descs};
+use wire::leb;
+use wire::sink::{Count, FileSink, Measured, Sealed, Sink, SliceSink};
 
 /// 魔数 `.u\0\0`：小端字节 `[0x2E, 0x75, 0x00, 0x00]`，第三、四字节 NUL 收尾（ADR 0045）。
 pub const MAGIC: u32 = 0x0000_752E;

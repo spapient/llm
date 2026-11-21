@@ -25,9 +25,9 @@ use diagnostic::{Code, Error, Result};
 use tensor::DType;
 
 use crate::Wire;
-use crate::leb::{self, Cursor};
-use crate::sink::Sink;
 use crate::{Entry, Header};
+use wire::leb::{self, Cursor};
+use wire::sink::Sink;
 
 // —— 仿射量化方案（磁盘描述符） ——
 

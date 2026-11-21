@@ -5,11 +5,11 @@
 use crate::bad;
 use diagnostic::{Code, Error, Result};
 
-use crate::leb::Cursor;
 use crate::seg::{Desc, DescBody, Descriptor};
 use crate::stored::{Stored, StoredInner};
 use crate::writer::{GLOBAL_CRC, MAGIC, MAX_ALIGN_LOG, SEG_CRC, VERSION};
 use crate::{Codec, align_up};
+use wire::leb::Cursor;
 
 /// 固定头长度：magic 4 + version 2 + flags 4 + align 1（count 是 LEB，不计入）。
 const FIXED_HEAD: usize = 11;

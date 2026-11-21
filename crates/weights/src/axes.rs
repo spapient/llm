@@ -19,8 +19,8 @@ pub(crate) mod rank;
 use crate::bad;
 use diagnostic::{Error, Result};
 
-use crate::leb::Cursor;
 use crate::ledger;
+use wire::leb::Cursor;
 
 use crate::axes::codec::{
     bytes_to_f32, decode_dict, decode_quant, decode_sparse, dict_payload, f32_bytes, pack_bytes,

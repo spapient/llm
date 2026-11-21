@@ -17,6 +17,23 @@ fn panel_pads_labels_to_the_widest_row() {
     );
 }
 
+/// 中英混排的面板按**显示列**对齐，不按字符数：「条目数」3 个字符占 6 列，与 10 列的
+/// `V_artifact` 并排时补 4 个空格才对齐。按 `chars().count()` 会补 7 个，两行的值列差 3 列。
+#[test]
+fn panel_aligns_east_asian_labels_by_display_columns() {
+    let panel = Panel::new("t").row("条目数", "1").row("V_artifact", "2");
+
+    assert_eq!(panel.render(), "t\n  条目数      1\n  V_artifact  2\n");
+}
+
+/// 数学符号属歧义宽度，终端按一列排：`×` 不能让整行多出一列。
+#[test]
+fn ambiguous_width_symbols_take_one_column() {
+    assert_eq!(span("a×b"), 3);
+    assert_eq!(span("条目数"), 6);
+    assert_eq!(span("MiB"), 3);
+}
+
 #[test]
 fn panel_with_only_title_renders_one_line() {
     assert_eq!(Panel::new("空").render(), "空\n");

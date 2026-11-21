@@ -7,9 +7,9 @@ use diagnostic::Result;
 
 use crate::Wire;
 use crate::bad;
-use crate::leb::Cursor;
 use crate::quant::Quant;
 use crate::seg::{Codec, Descriptor};
+use wire::leb::Cursor;
 
 /// 描述符元数据：名字/精度/形状先读成中性描述符，形态分支再决定尾部字段。
 pub(crate) fn decode_meta(cur: &mut Cursor<'_>) -> Result<(Descriptor, u32)> {

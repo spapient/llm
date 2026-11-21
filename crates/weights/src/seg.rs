@@ -11,11 +11,12 @@ use diagnostic::{Code, Error, Result};
 use crate::seg::decode::{check_frame, check_quant, decode_meta, decode_quant, decode_tail};
 
 use crate::Wire;
-use crate::leb::{self, Cursor};
 use crate::quant::Quant;
 #[cfg(test)]
 pub(crate) use crate::seg::decode::{MAX_RANK, decode_shape};
-use crate::sink::Sink;
+use std::borrow::Cow;
+use wire::leb::{self, Cursor};
+use wire::sink::Sink;
 
 /// 段级编解码闭集：码位稳定，未知码在打开期拒绝。
 ///
@@ -36,6 +37,15 @@ impl Codec {
     /// 线上码位。
     pub(crate) fn code(self) -> u8 {
         self as u8
+    }
+
+    /// 段体解码：codec 码位与解码器的对应只此一处。
+    pub(crate) fn decode<'a>(self, raw: &'a [u8], want: usize) -> Result<Cow<'a, [u8]>> {
+        Ok(match self {
+            Self::Store => Cow::Borrowed(raw),
+            Self::Rans => Cow::Owned(crate::rans::decode(raw, want)?),
+            Self::Axes => Cow::Owned(crate::axes::expand(raw)?),
+        })
     }
 
     /// 从码位解析；未知码显式报错而非静默回退。
