@@ -179,44 +179,33 @@ pub(crate) fn render_model(declaration: &ModelDecl, ty: &str) -> String {
 /// 闭集被绕过时（手写构造了一个未映射的 `dtype` / 未列出的骨架）生成一条 `compile_error!`：
 /// 让注解层自己先红，而不是生成一份指向不存在模块的代码。
 fn closed(declaration: &ModelDecl) -> Option<String> {
-    let mut message = String::new();
-    match (
+    let message = match (
         DTYPES.contains(&declaration.dtype.as_str()),
         SKELETONS.contains(&declaration.skeleton.as_str()),
     ) {
         (true, true) => return None,
-        (false, _) => {
-            let _ = write!(
-                message,
-                "注解层内部错误：`{}` 不是可对拍的 DType（可用：{}）",
-                declaration.dtype,
-                DTYPES.join("、")
-            );
-        }
-        (_, false) => {
-            let _ = write!(
-                message,
-                "注解层内部错误：骨架 `{}` 不在闭集内（可用：{}）",
-                declaration.skeleton,
-                SKELETONS.join("、")
-            );
-        }
-    }
-    let mut code = String::with_capacity(message.len() + 20);
-    code.push_str("compile_error!(");
-    literal(&mut code, &message);
-    code.push_str(");\n");
-    Some(code)
+        (false, _) => format!(
+            "注解层内部错误：`{}` 不是可对拍的 DType（可用：{}）",
+            declaration.dtype,
+            DTYPES.join("、")
+        ),
+        (_, false) => format!(
+            "注解层内部错误：骨架 `{}` 不在闭集内（可用：{}）",
+            declaration.skeleton,
+            SKELETONS.join("、")
+        ),
+    };
+    Some(format!("compile_error!({});\n", Quoted(&message)))
 }
 
 /// 注解字面量与 `Operator` 常量之间的编译期契约：名字逐字节相同、形状相同、`M` 是粒度整数倍。
 fn asserts(code: &mut String, declaration: &ModelDecl, ty: &str) {
     let [m, n] = declaration.shape;
-    code.push_str("const _: () = assert!(::llm_op::same_bytes(<");
-    code.push_str(ty);
-    code.push_str(" as ::llm_op::operator::Operator>::NAME, ");
-    literal(code, &declaration.name);
-    code.push_str("), \"注解注册名必须与 Operator::NAME 一致\");\n");
+    let _ = writeln!(
+        code,
+        "const _: () = assert!(::llm_op::same_bytes(<{ty} as ::llm_op::operator::Operator>::NAME, {}), \"注解注册名必须与 Operator::NAME 一致\");",
+        Quoted(&declaration.name)
+    );
     code.push_str("const _: () = {\n    ");
     let _ = writeln!(
         code,
