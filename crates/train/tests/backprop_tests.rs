@@ -972,6 +972,20 @@ fn check_affine_grad(
     total: usize,
     loss: impl Fn(&[f32], &[f32], &[f32]) -> f32,
 ) -> Result<()> {
+    check_affine(op, x0, g0, b0, total, None, loss)
+}
+
+/// 三元仿射对拍的共用骨架：声明档（`geometry = None` → `compute`）与实例几何
+/// （`Some(..)` → `compute_shaped`）只差这一步，收尾（plan + backward + 中心差分）一致。
+fn check_affine(
+    op: &str,
+    x0: &[f32],
+    g0: &[f32],
+    b0: &[f32],
+    total: usize,
+    geometry: Option<Geometry>,
+    loss: impl Fn(&[f32], &[f32], &[f32]) -> f32,
+) -> Result<()> {
     let mut tape = Tape::new();
     let x = tape.parameter();
     let g = tape.parameter();
@@ -992,7 +1006,12 @@ fn check_affine_grad(
     session.register_parameter(x, ParamRole::Trainable, x0.to_vec())?;
     session.register_parameter(g, ParamRole::Trainable, g0.to_vec())?;
     session.register_parameter(b, ParamRole::Trainable, b0.to_vec())?;
-    session.buffers().compute(op, &[x, g, b], y)?;
+    match geometry {
+        Some(geometry) => session
+            .buffers()
+            .compute_shaped(op, &[x, g, b], y, geometry)?,
+        None => session.buffers().compute(op, &[x, g, b], y)?,
+    }
     sum_backward(&mut session, y, out)?;
 
     let f = &loss;
@@ -1176,51 +1195,7 @@ fn check_geometry_affine(
     loss: impl Fn(&[f32], &[f32], &[f32]) -> f32,
 ) -> Result<()> {
     let total = geometry.outputs();
-    let mut tape = Tape::new();
-    let x = tape.parameter();
-    let g = tape.parameter();
-    let b = tape.parameter();
-    let y = tape.record(op, &[x, g, b]).expect("记录 y");
-    let out = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
-    let sizes = support::sizes_of(
-        &tape,
-        &[
-            (x, x0.len()),
-            (g, g0.len()),
-            (b, b0.len()),
-            (y, total),
-            (out, 1),
-        ],
-    );
-    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
-    session.register_parameter(x, ParamRole::Trainable, x0.to_vec())?;
-    session.register_parameter(g, ParamRole::Trainable, g0.to_vec())?;
-    session.register_parameter(b, ParamRole::Trainable, b0.to_vec())?;
-    session
-        .buffers()
-        .compute_shaped(op, &[x, g, b], y, geometry)?;
-    sum_backward(&mut session, y, out)?;
-
-    let f = &loss;
-    check_grad(
-        session.buffers().gradient(x).expect("x 梯度应在场"),
-        x0,
-        "x",
-        |px| f(px, g0, b0),
-    );
-    check_grad(
-        session.buffers().gradient(g).expect("gamma 梯度应在场"),
-        g0,
-        "gamma",
-        |pg| f(x0, pg, b0),
-    );
-    check_grad(
-        session.buffers().gradient(b).expect("beta 梯度应在场"),
-        b0,
-        "beta",
-        |pb| f(x0, g0, pb),
-    );
-    Ok(())
+    check_affine(op, x0, g0, b0, total, Some(geometry), loss)
 }
 
 #[test]
