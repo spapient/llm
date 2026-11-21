@@ -30,173 +30,43 @@ pub(crate) struct Scenario {
 ///
 /// 七个场景的后端都是 `cpu-reference`：它们调用的是 `op` 里的标量参考实现。加真实后端时
 /// 只是在这张表里多一行同形状、不同 `backend` 的记录，判定与归档不动。
+/// 台账行：`scenario` 由 `group` / `benchmark` 用 `concat!` 在编译期拼出，不再逐行重抄一遍
+/// （N6：记录名只有一份真相）；`group, benchmark => "记录名"` 只给历史上另起过名的六个条目。
+/// 字段写成 `名: 值` 而不是位置参数，是为了让一张表保持一行一行可读、可用 diff 审。
+macro_rules! row {
+    // 基线行没有分组 / 用例二分：记录名就是这个条目的身份。
+    ($t:ident, scenario $alias:literal $(, $field:ident : $value:expr)* $(,)?) => {
+        $t { scenario: $alias $(, $field: $value)* }
+    };
+    ($t:ident, $group:literal, $bench:literal => $alias:literal $(, $field:ident : $value:expr)* $(,)?) => {
+        $t { group: $group, benchmark: $bench, scenario: $alias $(, $field: $value)* }
+    };
+    ($t:ident, $group:literal, $bench:literal $(, $field:ident : $value:expr)* $(,)?) => {
+        $t {
+            group: $group,
+            benchmark: $bench,
+            scenario: concat!($group, "/", $bench) $(, $field: $value)*
+        }
+    };
+}
+
 pub(crate) const SCENARIOS: &[Scenario] = &[
-    Scenario {
-        group: "gemv_f32",
-        benchmark: "decode_1x4096x4096",
-        scenario: "gemv_f32/decode_1x4096x4096",
-        backend: "cpu-reference",
-        op: "gemv_f32",
-        shape: &[4096, 4096],
-        dtype: "f32",
-        batch: 1,
-        bounds: (4096, 4096),
-    },
-    Scenario {
-        group: "softmax_f32",
-        benchmark: "decode_1x4096",
-        scenario: "softmax_f32/decode_1x4096",
-        backend: "cpu-reference",
-        op: "softmax_f32",
-        shape: &[4096],
-        dtype: "f32",
-        batch: 1,
-        bounds: (4096, 1),
-    },
-    Scenario {
-        group: "rope_f32",
-        benchmark: "decode_1x4096",
-        scenario: "rope_f32/decode_1x4096",
-        backend: "cpu-reference",
-        op: "rope_f32",
-        shape: &[4096],
-        dtype: "f32",
-        batch: 1,
-        bounds: (4096, 1),
-    },
-    Scenario {
-        group: "rmsnorm_f32",
-        benchmark: "decode_1x4096",
-        scenario: "rmsnorm_f32/decode_1x4096",
-        backend: "cpu-reference",
-        op: "rmsnorm_f32",
-        shape: &[4096],
-        dtype: "f32",
-        batch: 1,
-        bounds: (4096, 1),
-    },
-    Scenario {
-        group: "attention_f32",
-        benchmark: "flash_decode_128x64",
-        scenario: "attention_f32/flash_decode_128x64",
-        backend: "cpu-reference",
-        op: "attention_f32",
-        shape: &[128, 64],
-        dtype: "f32",
-        batch: 1,
-        bounds: (128, 64),
-    },
-    Scenario {
-        group: "decode_attention_f32",
-        benchmark: "naive_hist128x64",
-        scenario: "decode_attention_f32/naive_hist128x64",
-        backend: "cpu-reference",
-        op: "decode_attention_f32",
-        shape: &[128, 64],
-        dtype: "f32",
-        batch: 1,
-        bounds: (1, 64),
-    },
-    Scenario {
-        group: "decode_attention_f32",
-        benchmark: "flash_hist128x64",
-        scenario: "decode_attention_f32/flash_hist128x64",
-        backend: "cpu-reference",
-        op: "decode_flash_attention_f32",
-        shape: &[128, 64],
-        dtype: "f32",
-        batch: 1,
-        bounds: (1, 64),
-    },
-    Scenario {
-        group: "gemm_f32",
-        benchmark: "prefill_256x256_k8",
-        scenario: "gemm_f32/prefill_256x256_k8",
-        backend: "cpu-reference",
-        op: "gemm_f32",
-        shape: &[256, 256],
-        dtype: "f32",
-        batch: 1,
-        bounds: (256, 256),
-    },
+    row!(Scenario, "gemv_f32", "decode_1x4096x4096", backend: "cpu-reference", op: "gemv_f32", shape: &[4096, 4096], dtype: "f32", batch: 1, bounds: (4096, 4096)),
+    row!(Scenario, "softmax_f32", "decode_1x4096", backend: "cpu-reference", op: "softmax_f32", shape: &[4096], dtype: "f32", batch: 1, bounds: (4096, 1)),
+    row!(Scenario, "rope_f32", "decode_1x4096", backend: "cpu-reference", op: "rope_f32", shape: &[4096], dtype: "f32", batch: 1, bounds: (4096, 1)),
+    row!(Scenario, "rmsnorm_f32", "decode_1x4096", backend: "cpu-reference", op: "rmsnorm_f32", shape: &[4096], dtype: "f32", batch: 1, bounds: (4096, 1)),
+    row!(Scenario, "attention_f32", "flash_decode_128x64", backend: "cpu-reference", op: "attention_f32", shape: &[128, 64], dtype: "f32", batch: 1, bounds: (128, 64)),
+    row!(Scenario, "decode_attention_f32", "naive_hist128x64", backend: "cpu-reference", op: "decode_attention_f32", shape: &[128, 64], dtype: "f32", batch: 1, bounds: (1, 64)),
+    row!(Scenario, "decode_attention_f32", "flash_hist128x64", backend: "cpu-reference", op: "decode_flash_attention_f32", shape: &[128, 64], dtype: "f32", batch: 1, bounds: (1, 64)),
+    row!(Scenario, "gemm_f32", "prefill_256x256_k8", backend: "cpu-reference", op: "gemm_f32", shape: &[256, 256], dtype: "f32", batch: 1, bounds: (256, 256)),
     // 量化 GEMM 的分块执行路径：位流解一遍、再按列块整数累加（旧遍历逐元素重解位流）。
-    Scenario {
-        group: "gemm_quant",
-        benchmark: "tiled_i2_256x256_k8",
-        scenario: "gemm_i2/prefill_256x256_k8",
-        backend: "cpu-reference",
-        op: "gemm_i2",
-        shape: &[256, 256],
-        dtype: "u8",
-        batch: 1,
-        bounds: (256, 256),
-    },
-    Scenario {
-        group: "gemm_quant",
-        benchmark: "tiled_i4_256x256_k8",
-        scenario: "gemm_i4/prefill_256x256_k8",
-        backend: "cpu-reference",
-        op: "gemm_i4",
-        shape: &[256, 256],
-        dtype: "u8",
-        batch: 1,
-        bounds: (256, 256),
-    },
-    Scenario {
-        group: "gemm_quant",
-        benchmark: "tiled_i8_256x256_k8",
-        scenario: "gemm_i8/prefill_256x256_k8",
-        backend: "cpu-reference",
-        op: "gemm_i8",
-        shape: &[256, 256],
-        dtype: "u8",
-        batch: 1,
-        bounds: (256, 256),
-    },
-    Scenario {
-        group: "matmul_f32_256x256_k4096",
-        benchmark: "tiled",
-        scenario: "matmul_f32/prefill_256x256_k4096_tiled",
-        backend: "cpu-reference",
-        op: "matmul_f32",
-        shape: &[256, 256, 4096],
-        dtype: "f32",
-        batch: 1,
-        bounds: (256, 256),
-    },
-    Scenario {
-        group: "matmul_i8_256x256_k4096",
-        benchmark: "tiled",
-        scenario: "matmul_i8/prefill_256x256_k4096_tiled",
-        backend: "cpu-reference",
-        op: "matmul_i8",
-        shape: &[256, 256, 4096],
-        dtype: "i8",
-        batch: 1,
-        bounds: (256, 256),
-    },
-    Scenario {
-        group: "attention_prefill_f32",
-        benchmark: "tiled_1024x64",
-        scenario: "attention_f32/prefill_1024x64_tiled",
-        backend: "cpu-reference",
-        op: "attention_f32",
-        shape: &[1024, 64],
-        dtype: "f32",
-        batch: 1,
-        bounds: (1024, 64),
-    },
-    Scenario {
-        group: "silu_f32",
-        benchmark: "decode_1x4096",
-        scenario: "silu_f32/decode_1x4096",
-        backend: "cpu-reference",
-        op: "silu_f32",
-        shape: &[4096],
-        dtype: "f32",
-        batch: 1,
-        bounds: (4096, 1),
-    },
+    row!(Scenario, "gemm_quant", "tiled_i2_256x256_k8" => "gemm_i2/prefill_256x256_k8", backend: "cpu-reference", op: "gemm_i2", shape: &[256, 256], dtype: "u8", batch: 1, bounds: (256, 256)),
+    row!(Scenario, "gemm_quant", "tiled_i4_256x256_k8" => "gemm_i4/prefill_256x256_k8", backend: "cpu-reference", op: "gemm_i4", shape: &[256, 256], dtype: "u8", batch: 1, bounds: (256, 256)),
+    row!(Scenario, "gemm_quant", "tiled_i8_256x256_k8" => "gemm_i8/prefill_256x256_k8", backend: "cpu-reference", op: "gemm_i8", shape: &[256, 256], dtype: "u8", batch: 1, bounds: (256, 256)),
+    row!(Scenario, "matmul_f32_256x256_k4096", "tiled" => "matmul_f32/prefill_256x256_k4096_tiled", backend: "cpu-reference", op: "matmul_f32", shape: &[256, 256, 4096], dtype: "f32", batch: 1, bounds: (256, 256)),
+    row!(Scenario, "matmul_i8_256x256_k4096", "tiled" => "matmul_i8/prefill_256x256_k4096_tiled", backend: "cpu-reference", op: "matmul_i8", shape: &[256, 256, 4096], dtype: "i8", batch: 1, bounds: (256, 256)),
+    row!(Scenario, "attention_prefill_f32", "tiled_1024x64" => "attention_f32/prefill_1024x64_tiled", backend: "cpu-reference", op: "attention_f32", shape: &[1024, 64], dtype: "f32", batch: 1, bounds: (1024, 64)),
+    row!(Scenario, "silu_f32", "decode_1x4096", backend: "cpu-reference", op: "silu_f32", shape: &[4096], dtype: "f32", batch: 1, bounds: (4096, 1)),
 ];
 
 /// 一条登记基线：哪台机器、哪个后端、哪个场景、多少 ns、允许多少相对偏差。
@@ -216,109 +86,31 @@ pub(crate) struct Baseline {
 /// 各主机登记的基线；数值来自真实测量，注释里写清机型与日期——"基线"必须能追溯到一次测量。
 pub(crate) const BASELINES: &[Baseline] = &[
     // Apple M5 Pro（2026-11-15，reference 实现 BLOCK=32）：100 次采样。
-    Baseline {
-        host: "macos-aarch64",
-        backend: "cpu-reference",
-        scenario: "gemv_f32/decode_1x4096x4096",
-        ns: 2_186_061.0,
-        budget_percent: 5.0,
-    },
+    row!(Baseline, scenario "gemv_f32/decode_1x4096x4096", host: "macos-aarch64", backend: "cpu-reference", ns: 2_186_061.0, budget_percent: 5.0),
     // Apple M5 Pro（2026-11-16，三趟标量参考）：噪声相对均值约 4.5%，预算取 10%。
-    Baseline {
-        host: "macos-aarch64",
-        backend: "cpu-reference",
-        scenario: "softmax_f32/decode_1x4096",
-        ns: 15_492.0,
-        budget_percent: 10.0,
-    },
+    row!(Baseline, scenario "softmax_f32/decode_1x4096", host: "macos-aarch64", backend: "cpu-reference", ns: 15_492.0, budget_percent: 10.0),
     // Apple M5 Pro（2026-11-16，成对旋转参考）：噪声相对均值约 6.4%，预算取 10%。
-    Baseline {
-        host: "macos-aarch64",
-        backend: "cpu-reference",
-        scenario: "rope_f32/decode_1x4096",
-        ns: 9_487.0,
-        budget_percent: 10.0,
-    },
+    row!(Baseline, scenario "rope_f32/decode_1x4096", host: "macos-aarch64", backend: "cpu-reference", ns: 9_487.0, budget_percent: 10.0),
     // Apple M5 Pro（2026-11-16，两趟标量参考）：噪声相对均值约 1.5%，预算取 10%。
-    Baseline {
-        host: "macos-aarch64",
-        backend: "cpu-reference",
-        scenario: "rmsnorm_f32/decode_1x4096",
-        ns: 2_374.0,
-        budget_percent: 10.0,
-    },
+    row!(Baseline, scenario "rmsnorm_f32/decode_1x4096", host: "macos-aarch64", backend: "cpu-reference", ns: 2_374.0, budget_percent: 10.0),
     // Apple M5 Pro（2026-11-16，online flash 参考 128×64）：噪声相对均值约 1.5%，预算取 10%。
-    Baseline {
-        host: "macos-aarch64",
-        backend: "cpu-reference",
-        scenario: "attention_f32/flash_decode_128x64",
-        ns: 517_442.0,
-        budget_percent: 10.0,
-    },
+    row!(Baseline, scenario "attention_f32/flash_decode_128x64", host: "macos-aarch64", backend: "cpu-reference", ns: 517_442.0, budget_percent: 10.0),
     // Apple M5 Pro（2026-11-16，三重循环参考 256×256，K=8）：噪声相对均值约 1.5%，预算取 10%。
-    Baseline {
-        host: "macos-aarch64",
-        backend: "cpu-reference",
-        scenario: "gemm_f32/prefill_256x256_k8",
-        ns: 16_599.0,
-        budget_percent: 10.0,
-    },
+    row!(Baseline, scenario "gemm_f32/prefill_256x256_k8", host: "macos-aarch64", backend: "cpu-reference", ns: 16_599.0, budget_percent: 10.0),
     // Apple M5 Pro（2026-11-20，三位流解一遍 + 列块整数累加，20 次采样）：逐元素重解 494.6 µs → tile 50.7 µs（9.8×）。
-    Baseline {
-        host: "macos-aarch64",
-        backend: "cpu-reference",
-        scenario: "gemm_i2/prefill_256x256_k8",
-        ns: 50_670.0,
-        budget_percent: 10.0,
-    },
+    row!(Baseline, scenario "gemm_i2/prefill_256x256_k8", host: "macos-aarch64", backend: "cpu-reference", ns: 50_670.0, budget_percent: 10.0),
     // Apple M5 Pro（2026-11-20，同一次采样）：逐元素重解 483.1 µs → tile 50.4 µs（9.6×）。
-    Baseline {
-        host: "macos-aarch64",
-        backend: "cpu-reference",
-        scenario: "gemm_i4/prefill_256x256_k8",
-        ns: 50_420.0,
-        budget_percent: 10.0,
-    },
+    row!(Baseline, scenario "gemm_i4/prefill_256x256_k8", host: "macos-aarch64", backend: "cpu-reference", ns: 50_420.0, budget_percent: 10.0),
     // Apple M5 Pro（2026-11-20，同一次采样）：逐元素重解 133.1 µs → tile 48.3 µs（2.8×）；8 位每字节只有一个码，解包本来就便宜。
-    Baseline {
-        host: "macos-aarch64",
-        backend: "cpu-reference",
-        scenario: "gemm_i8/prefill_256x256_k8",
-        ns: 48_330.0,
-        budget_percent: 10.0,
-    },
+    row!(Baseline, scenario "gemm_i8/prefill_256x256_k8", host: "macos-aarch64", backend: "cpu-reference", ns: 48_330.0, budget_percent: 10.0),
     // Apple M5 Pro（2026-11-20，tile 内核 256×256×4096，100 次采样）：scalar 307.33 ms → tiled 18.87 ms（16.3×）。
-    Baseline {
-        host: "macos-aarch64",
-        backend: "cpu-reference",
-        scenario: "matmul_f32/prefill_256x256_k4096_tiled",
-        ns: 18_867_825.0,
-        budget_percent: 10.0,
-    },
+    row!(Baseline, scenario "matmul_f32/prefill_256x256_k4096_tiled", host: "macos-aarch64", backend: "cpu-reference", ns: 18_867_825.0, budget_percent: 10.0),
     // Apple M5 Pro（2026-11-20，tile 内核 256×256×4096，100 次采样）：scalar 148.03 ms → tiled 20.76 ms（7.1×）。
-    Baseline {
-        host: "macos-aarch64",
-        backend: "cpu-reference",
-        scenario: "matmul_i8/prefill_256x256_k4096_tiled",
-        ns: 20_760_328.0,
-        budget_percent: 10.0,
-    },
+    row!(Baseline, scenario "matmul_i8/prefill_256x256_k4096_tiled", host: "macos-aarch64", backend: "cpu-reference", ns: 20_760_328.0, budget_percent: 10.0),
     // Apple M5 Pro（2026-11-20，分块 tile 1024×64，100 次采样）：online 18.40 ms → tiled 12.35 ms（1.49×）。
-    Baseline {
-        host: "macos-aarch64",
-        backend: "cpu-reference",
-        scenario: "attention_f32/prefill_1024x64_tiled",
-        ns: 12_350_014.0,
-        budget_percent: 10.0,
-    },
+    row!(Baseline, scenario "attention_f32/prefill_1024x64_tiled", host: "macos-aarch64", backend: "cpu-reference", ns: 12_350_014.0, budget_percent: 10.0),
     // Apple M5 Pro（2026-11-16，逐元素 SiLU 参考）：噪声相对均值约 1.5%，预算取 10%。
-    Baseline {
-        host: "macos-aarch64",
-        backend: "cpu-reference",
-        scenario: "silu_f32/decode_1x4096",
-        ns: 3_287.0,
-        budget_percent: 10.0,
-    },
+    row!(Baseline, scenario "silu_f32/decode_1x4096", host: "macos-aarch64", backend: "cpu-reference", ns: 3_287.0, budget_percent: 10.0),
 ];
 
 /// 装载基准夹具镜像：条目数 / 每条元素数，与 `src/weights.rs` 同源。
@@ -362,90 +154,14 @@ pub(crate) struct LoadScenario {
 ///
 /// mmap 条目仅在 Unix 目标编译，与基准里的 `#[cfg(unix)]` 门控同源。
 pub(crate) const LOAD_SCENARIOS: &[LoadScenario] = &[
-    LoadScenario {
-        group: "weights/load",
-        benchmark: "read_all_reopen",
-        scenario: "weights/load/read_all_reopen",
-        backend: "file-stream",
-        shape: &[LOAD_ELEMS],
-        batch: LOAD_ENTRIES as u32,
-        dtype: "f32",
-        bytes: LOAD_BYTES_ALL,
-    },
-    LoadScenario {
-        group: "weights/load",
-        benchmark: "read_first_reopen",
-        scenario: "weights/load/read_first_reopen",
-        backend: "file-stream",
-        shape: &[LOAD_ELEMS],
-        batch: 1,
-        dtype: "f32",
-        bytes: LOAD_BYTES_FIRST,
-    },
-    LoadScenario {
-        group: "weights/load",
-        benchmark: "read_all_open",
-        scenario: "weights/load/read_all_open",
-        backend: "file-stream",
-        shape: &[LOAD_ELEMS],
-        batch: LOAD_ENTRIES as u32,
-        dtype: "f32",
-        bytes: LOAD_BYTES_ALL,
-    },
-    LoadScenario {
-        group: "weights/load",
-        benchmark: "read_first_open",
-        scenario: "weights/load/read_first_open",
-        backend: "file-stream",
-        shape: &[LOAD_ELEMS],
-        batch: 1,
-        dtype: "f32",
-        bytes: LOAD_BYTES_FIRST,
-    },
-    #[cfg(unix)]
-    LoadScenario {
-        group: "weights/load",
-        benchmark: "mmap_all_reopen",
-        scenario: "weights/load/mmap_all_reopen",
-        backend: "mmap",
-        shape: &[LOAD_ELEMS],
-        batch: LOAD_ENTRIES as u32,
-        dtype: "f32",
-        bytes: LOAD_BYTES_ALL,
-    },
-    #[cfg(unix)]
-    LoadScenario {
-        group: "weights/load",
-        benchmark: "mmap_first_reopen",
-        scenario: "weights/load/mmap_first_reopen",
-        backend: "mmap",
-        shape: &[LOAD_ELEMS],
-        batch: 1,
-        dtype: "f32",
-        bytes: LOAD_BYTES_FIRST,
-    },
-    #[cfg(unix)]
-    LoadScenario {
-        group: "weights/load",
-        benchmark: "mmap_all_open",
-        scenario: "weights/load/mmap_all_open",
-        backend: "mmap",
-        shape: &[LOAD_ELEMS],
-        batch: LOAD_ENTRIES as u32,
-        dtype: "f32",
-        bytes: LOAD_BYTES_ALL,
-    },
-    #[cfg(unix)]
-    LoadScenario {
-        group: "weights/load",
-        benchmark: "mmap_first_open",
-        scenario: "weights/load/mmap_first_open",
-        backend: "mmap",
-        shape: &[LOAD_ELEMS],
-        batch: 1,
-        dtype: "f32",
-        bytes: LOAD_BYTES_FIRST,
-    },
+    row!(LoadScenario, "weights/load", "read_all_reopen", backend: "file-stream", shape: &[LOAD_ELEMS], batch: LOAD_ENTRIES as u32, dtype: "f32", bytes: LOAD_BYTES_ALL),
+    row!(LoadScenario, "weights/load", "read_first_reopen", backend: "file-stream", shape: &[LOAD_ELEMS], batch: 1, dtype: "f32", bytes: LOAD_BYTES_FIRST),
+    row!(LoadScenario, "weights/load", "read_all_open", backend: "file-stream", shape: &[LOAD_ELEMS], batch: LOAD_ENTRIES as u32, dtype: "f32", bytes: LOAD_BYTES_ALL),
+    row!(LoadScenario, "weights/load", "read_first_open", backend: "file-stream", shape: &[LOAD_ELEMS], batch: 1, dtype: "f32", bytes: LOAD_BYTES_FIRST),
+    row!(LoadScenario, "weights/load", "mmap_all_reopen", backend: "mmap", shape: &[LOAD_ELEMS], batch: LOAD_ENTRIES as u32, dtype: "f32", bytes: LOAD_BYTES_ALL),
+    row!(LoadScenario, "weights/load", "mmap_first_reopen", backend: "mmap", shape: &[LOAD_ELEMS], batch: 1, dtype: "f32", bytes: LOAD_BYTES_FIRST),
+    row!(LoadScenario, "weights/load", "mmap_all_open", backend: "mmap", shape: &[LOAD_ELEMS], batch: LOAD_ENTRIES as u32, dtype: "f32", bytes: LOAD_BYTES_ALL),
+    row!(LoadScenario, "weights/load", "mmap_first_open", backend: "mmap", shape: &[LOAD_ELEMS], batch: 1, dtype: "f32", bytes: LOAD_BYTES_FIRST),
 ];
 
 /// 一条整模型一步基准场景：单序列 / 同批四条。
@@ -468,20 +184,6 @@ pub(crate) struct DecodeScenario {
 
 /// 整模型一步基准台账；分组 / 用例名与 `src/model.rs` 逐字一致。
 pub(crate) const DECODE_SCENARIOS: &[DecodeScenario] = &[
-    DecodeScenario {
-        group: "model_decode",
-        benchmark: "single_step",
-        scenario: "model_decode/single_step",
-        batch: 1,
-        tokens: 1,
-        pages: 1,
-    },
-    DecodeScenario {
-        group: "model_decode",
-        benchmark: "batch4_step",
-        scenario: "model_decode/batch4_step",
-        batch: 4,
-        tokens: 4,
-        pages: 4,
-    },
+    row!(DecodeScenario, "model_decode", "single_step", batch: 1, tokens: 1, pages: 1),
+    row!(DecodeScenario, "model_decode", "batch4_step", batch: 4, tokens: 4, pages: 4),
 ];

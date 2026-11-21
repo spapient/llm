@@ -398,16 +398,11 @@ pub fn dir(key: &CacheKey, dirs: &Dirs) -> Option<PathBuf> {
 }
 
 /// 取片段层：配置了 `data.root` 就一律读磁盘（"不改代码替换数据"的入口），
-/// 否则先查内嵌片段表（按 vendor + 扩展名，不写死任何一个厂商），再退回磁盘的 `<vendor>/`。
+/// 否则读该设备自己的 crate（按 vendor + 扩展名，不写死任何一个厂商）。
 fn fragments(profile: &Profile, dirs: &Dirs) -> diagnostic::Result<FragmentSet> {
     let ext = profile.meta.emit.ext();
-    if dirs.data().is_none()
-        && let Some(set) = prim::builtin(&profile.meta.vendor, ext)
-    {
-        return Ok(set);
-    }
-    let root = dirs.data().map_or_else(prim::dir, prim::layer_root);
-    prim::load(&root, &profile.meta.vendor, ext)
+    dirs.prim()
+        .fragments(&profile.meta.vendor, ext)
         .map_err(|error| error.with(format!("`{}` 的片段层", profile.meta.vendor)))
 }
 

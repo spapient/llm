@@ -108,7 +108,10 @@ fn a_data_root_layout_reads_the_override() {
     let set = layout.fragments("cpu", "c").expect("覆盖层可装载");
     assert_eq!(set.len(), 1, "覆盖层只有写进去的那一份");
     assert_eq!(set.implementation(Prim::Load), Some("override"));
-    assert_eq!(layout.witness("cpu/witness.c"), Some(vendor_dir.join("witness.c")));
+    assert_eq!(
+        layout.witness("cpu/witness.c"),
+        Some(vendor_dir.join("witness.c"))
+    );
     std::fs::remove_dir_all(&root).ok();
 }
 
@@ -116,10 +119,15 @@ fn a_data_root_layout_reads_the_override() {
 #[test]
 fn an_unknown_vendor_has_no_layout() {
     let layout = Layout::builtin();
-    let error = layout.fragments("absent", "c").expect_err("未知 vendor 必须报错");
+    let error = layout
+        .fragments("absent", "c")
+        .expect_err("未知 vendor 必须报错");
     assert_eq!(error.code(), Code::Missing, "{error}");
     assert!(layout.witness("absent/witness.c").is_none());
-    assert!(layout.witness("cpu").is_none(), "缺 `<vendor>/` 前缀时没有路径");
+    assert!(
+        layout.witness("cpu").is_none(),
+        "缺 `<vendor>/` 前缀时没有路径"
+    );
 }
 
 /// 每段片段都声明自己的签名：一个原语可以有多条签名，文本必须说清写的是哪一条。

@@ -12,7 +12,6 @@ use crate::prof::Detected;
 use crate::prof::Profile;
 use diagnostic::{Code, Error};
 use op::Op;
-use std::path::Path;
 use std::sync::OnceLock;
 
 /// 保留的设备名：不走档案查找，按本机探测挑一份档案。命令行默认值在 `cli` 侧另存一份，这里是库内比对口径。
@@ -54,17 +53,17 @@ impl Catalogue {
         Ok(profiles)
     }
 
-    /// 按配置装载：两层语料都是编译期内嵌的生成表，`data.root` 只决定见证源码的校验根（`<data.root>/prim`）。
-    /// 磁盘上的文件只是构建输入：运行期不读目录、也没有 TOML 解析器（ADR 0022）。
+    /// 按配置装载：两层语料都是编译期内嵌的生成表，`data.root` 只决定片段与见证的校验根
+    /// （`<data.root>/prim`）。磁盘上的文件只是构建输入：运行期不读目录、也没有 TOML 解析器（ADR 0022）。
     ///
     /// # Errors
     ///
     /// 内置表缺项或交叉校验不通过时返回逐条说明。
     pub fn load(dirs: &crate::dirs::Dirs) -> diagnostic::Result<Self> {
-        let witness_root = dirs.data().map(prim::layer_root);
+        let layout = dirs.prim();
         let catalogue = Self::try_builtin()?;
         catalogue
-            .validate(witness_root.as_deref())
+            .validate(&layout)
             .map_err(merge)
             .map_err(|error| error.with("cutile::builtin::load"))?;
         Ok(catalogue)
@@ -136,11 +135,12 @@ impl Catalogue {
 
     /// 全量校验：重复标识、同一原语的同名实现、见证文件存在性。
     ///
-    /// 返回逐条错误而不是第一个：装载要一次报全，否则改一条重跑一次。
-    pub fn validate(&self, root: Option<&Path>) -> Result<(), Vec<Error>> {
+    /// 片段与见证都从 `layout` 取：与构建期同一个入口，否则"装载期校验通过"与"构建期取到的
+    /// 文本"可以是两份不同的数据。返回逐条错误而不是第一个——装载要一次报全，否则改一条重跑一次。
+    pub fn validate(&self, layout: &prim::Layout<'_>) -> Result<(), Vec<Error>> {
         let mut errors = self.duplicates();
-        errors.extend(self.profile_errors(root));
-        errors.extend(self.fragment_errors(root));
+        errors.extend(self.profile_errors(layout));
+        errors.extend(self.fragment_errors(layout));
         if errors.is_empty() {
             Ok(())
         } else {
@@ -168,10 +168,11 @@ impl Catalogue {
     }
 
     /// 档案自身的问题：类别由档案层给（`ProfileError::code`），这里只补"哪份档案"。
-    fn profile_errors(&self, root: Option<&Path>) -> Vec<Error> {
+    fn profile_errors(&self, layout: &prim::Layout<'_>) -> Vec<Error> {
         let mut errors = Vec::new();
         for profile in &self.profiles {
-            if let Err(profile_errors) = profile.validate(root) {
+            let witnesses = layout as &dyn prof::prof::WitnessLookup;
+            if let Err(profile_errors) = profile.validate(Some(witnesses)) {
                 for error in profile_errors {
                     errors.push(Error::from(error).with(format!("`{}`", profile.meta.vendor)));
                 }
@@ -182,10 +183,11 @@ impl Catalogue {
 
     /// `provides ↔ 片段文本`：协商会挑中的那条实现，片段必须真的写了。否则一份"协商可行"的档案配一段
     /// 写错签名的文本能通过全部校验，直到构建期才炸。判定与 `cap::negotiate` 同源。
-    fn fragment_errors(&self, root: Option<&Path>) -> Vec<Error> {
+    fn fragment_errors(&self, layout: &prim::Layout<'_>) -> Vec<Error> {
         let mut errors = Vec::new();
         for profile in &self.profiles {
-            let set = match fragments_for(profile, root) {
+            let ext = profile.meta.emit.ext();
+            let set = match layout.fragments(&profile.meta.vendor, ext) {
                 Ok(set) => set,
                 Err(error) => {
                     errors.push(error.with(format!("`{}`", profile.meta.vendor)));
@@ -232,30 +234,13 @@ fn merge(errors: Vec<Error>) -> Error {
     }
 }
 
-/// 校验用的片段层：与 `build::fragments` 的解析次序一致（内嵌优先，指定了根则读磁盘）——两条路径必须同源，
-/// 否则"装载期校验通过"与"构建期取到的文本"可以是两份不同的数据。
-fn fragments_for(profile: &Profile, root: Option<&Path>) -> diagnostic::Result<prim::FragmentSet> {
-    let ext = profile.meta.emit.ext();
-    match root {
-        Some(root) => prim::load(root, &profile.meta.vendor, ext),
-        None => prim::builtin(&profile.meta.vendor, ext).ok_or_else(|| {
-            Error::new(
-                Code::Missing,
-                format!(
-                    "内置片段层里没有 `{}`（`.{ext}`）：档案登记了这台设备，片段层却没有对应条目",
-                    profile.meta.vendor
-                ),
-            )
-        }),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::decl::expand;
     use crate::device::probe;
     use crate::substitute;
+    use std::path::Path;
 
     #[test]
     fn builtin_data_is_valid() {
@@ -275,7 +260,7 @@ mod tests {
     fn builtin_witness_files_exist() {
         let catalogue = Catalogue::try_builtin().expect("内置数据");
         catalogue
-            .validate(Some(&prim::dir()))
+            .validate(&prim::Layout::builtin())
             .expect("见证文件必须存在");
     }
 
@@ -367,8 +352,11 @@ mod tests {
     #[test]
     fn a_fragment_declaring_another_implementation_fails_the_load() {
         let root = std::env::temp_dir().join(format!("cutile-sign-{}", std::process::id()));
-        let prim_root = root.join("prim");
-        copy_dir(&prim::dir(), &prim_root);
+        let prim_root = prim::layer_root(&root);
+        for device in prim::devices() {
+            let dir = prim::dir_of(device.vendor).expect("每台设备都有源码根");
+            copy_dir(Path::new(dir), &prim_root.join(device.vendor));
+        }
         // `nvidia` 的 `dot` 协商会挑中 `fma`；把文本改成声明 `dp4a`（另一条签名，属 P3）。
         let path = prim_root.join("nvidia").join("dot.cu");
         let text = std::fs::read_to_string(&path).expect("片段可读");
@@ -377,7 +365,7 @@ mod tests {
 
         let catalogue = Catalogue::try_builtin().expect("内置数据");
         let errors = catalogue
-            .validate(Some(&prim_root))
+            .validate(&prim::Layout::at(&root))
             .expect_err("片段声明另一条签名必须报错");
         let rendered: Vec<String> = errors.iter().map(ToString::to_string).collect();
         let rendered = rendered.join("\n");
@@ -418,7 +406,7 @@ mod tests {
         std::fs::create_dir_all(&root).expect("建临时目录");
         let errors = Catalogue::try_builtin()
             .expect("内置数据")
-            .validate(Some(&root))
+            .validate(&prim::Layout::at(&root))
             .unwrap_err();
         assert!(!errors.is_empty(), "空片段层根必须报错");
         assert!(
@@ -441,7 +429,7 @@ mod tests {
         let mut catalogue = Catalogue::try_builtin().expect("内置数据");
         let clone = catalogue.profiles[0].clone();
         catalogue.profiles.push(clone);
-        let errors = catalogue.validate(Some(&prim::dir())).unwrap_err();
+        let errors = catalogue.validate(&prim::Layout::builtin()).unwrap_err();
         assert!(
             errors
                 .iter()

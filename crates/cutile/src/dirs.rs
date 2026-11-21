@@ -14,6 +14,7 @@
 //! assert_eq!(dirs.data(), None);
 //! ```
 
+use prim::Layout;
 use std::path::{Path, PathBuf};
 
 /// 一次调用要用的三个目录。
@@ -54,5 +55,14 @@ impl Dirs {
     #[must_use]
     pub fn data(&self) -> Option<&Path> {
         self.data.as_deref()
+    }
+
+    /// 片段层：有数据根时读 `<data.root>/prim/`，否则读六台设备各自的内置 crate。
+    ///
+    /// 片段层按设备拆开后，"片段层根"不再是一个目录，所以这里给的是能回答
+    /// "这台设备的片段在哪"的 [`Layout`]，而不是一条路径。
+    #[must_use]
+    pub fn prim(&self) -> Layout<'_> {
+        self.data().map_or_else(Layout::builtin, Layout::at)
     }
 }

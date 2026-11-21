@@ -143,7 +143,7 @@ pub fn language_gate(profile: &Profile, dirs: &Dirs) -> LanguageGate {
 /// 语法门的执行器：表行决定程序与参数，这里只负责“逐份文件过一遍、失败带第一行报错回来”。
 ///
 /// 源码一律经 [`source`] 取：内嵌副本与 `data.root` 覆盖都由它决定。先前这里直接把
-/// `witness_root(dirs).join(file)` 交给 clang，于是在没有源码树的发布机上会报成
+/// `dirs.data().unwrap().join(file)` 交给 clang，于是在没有源码树的发布机上会报成
 /// “见证被自己的语言拒绝”——真相是“本机没有那份源码”，分类与指向的人都错了。
 fn parse_all(spec: &GateSpec, profile: &Profile, dirs: &Dirs) -> diagnostic::Result<LanguageGate> {
     let selected = declared_witnesses(profile)?;

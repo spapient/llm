@@ -15,7 +15,7 @@ use crate::prof::Profile;
 use crate::reference;
 use diagnostic::{Code, Error};
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub use crate::gate::{LanguageGate, language_gate};
 
@@ -176,12 +176,10 @@ pub(crate) fn self_checkable(profile: &Profile) -> Vec<Selected<'_>> {
         .collect()
 }
 
-/// 见证源码的根目录：与 `Catalogue` 的装载根保持一致（`data.root` 优先）。
-pub(crate) fn witness_root(dirs: &Dirs) -> PathBuf {
-    dirs.data().map_or_else(prim::dir, prim::layer_root)
-}
-
 /// 见证源码：内置设备读编译期内嵌副本（发布机没有源码树），`data.root` 或未登记的设备走磁盘。
+///
+/// 磁盘路径由 [`prim::Layout`] 解析：片段层按设备拆开之后，"哪台设备的见证在哪"不再是一条
+/// 拼在同一个根上的路径，而是每个设备 crate 一个源码根。
 pub(crate) fn source(witness: &Witness, dirs: &Dirs) -> diagnostic::Result<String> {
     let ext = Path::new(&witness.file)
         .extension()
@@ -193,7 +191,15 @@ pub(crate) fn source(witness: &Witness, dirs: &Dirs) -> diagnostic::Result<Strin
     {
         return Ok(text.to_string());
     }
-    let path = witness_root(dirs).join(&witness.file);
+    let path = dirs.prim().witness(&witness.file).ok_or_else(|| {
+        Error::new(
+            Code::Missing,
+            format!(
+                "见证 `{}` 没有落盘位置：`{vendor}` 不在片段层里",
+                witness.file
+            ),
+        )
+    })?;
     std::fs::read_to_string(&path).map_err(|error| {
         Error::new(
             Code::Io,
