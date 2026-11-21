@@ -40,6 +40,12 @@ bw        = { value = 160.032e9, src = "128/8*2*5.001e9" }
 [compile]
 flags = ["-arch=sm_75", "-O3"]
 preamble = """
+#ifndef __host__
+#define __host__
+#endif
+#ifndef __device__
+#define __device__
+#endif
 __host__ __device__ float _cutile_exp_f32(float x) { return expf(x); }
 __host__ __device__ float _cutile_log_f32(float x) { return logf(x); }
 __host__ __device__ float _cutile_sum_f32(const float *a, int n, int stride) {
