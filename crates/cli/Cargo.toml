@@ -25,6 +25,10 @@ doc = false
 name = "cli"
 path = "tests/cli.rs"
 
+[[test]]
+name = "vault"
+path = "tests/vault.rs"
+
 [features]
 # 发布模式：构建期把能编译的设备编成镜像并嵌入（见 `crates/prim/build.rs`）。
 device-image = ["cutile/device-image"]

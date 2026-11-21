@@ -86,23 +86,60 @@ fn section_keys<'a>(manifest: &'a str, section: &str) -> Vec<&'a str> {
 }
 
 /// 注释与字面量的三种开头字节；`/` 也可能是除号、`'` 也可能是生命周期，都要先看见再判定。
-fn is_opener(byte: u8) -> bool {
-    matches!(byte, b'"' | b'\'' | b'/')
+const OPENERS: [u8; 3] = [b'"', b'\'', b'/'];
+
+/// 16 字节一步的字节搜索，语义等同 `bytes[from..].iter().position(needles.contains)`。
+///
+/// 逐字节交给迭代器是把速度押在"编译器愿意自动向量化"上；这里把比较写成每道放一个字节的位并行：
+/// `word ^ 目标` 之后，借位链正好只在"该道为 0"处留下 `0x80`。三个目标的位图先 OR 再取最低命中道，
+/// 比逐个目标取最小快一倍。误命中只会出现在真命中右侧（借位从低往高传），所以最低那一位永远是真的。
+fn scan<const N: usize>(bytes: &[u8], from: usize, needles: [u8; N]) -> Option<usize> {
+    let patterns = needles.map(spread);
+    let mut cursor = from;
+    while let Some(chunk) = bytes.get(cursor..cursor + 16) {
+        let word = u128::from_ne_bytes(chunk.try_into().expect("切片长度恰为 16"));
+        let lanes = patterns
+            .iter()
+            .fold(0, |lanes, pattern| lanes | zero_lanes(word ^ pattern));
+        if lanes != 0 {
+            return Some(cursor + (lanes.trailing_zeros() / 8) as usize);
+        }
+        cursor += 16;
+    }
+    bytes[cursor..]
+        .iter()
+        .position(|byte| needles.contains(byte))
+        .map(|offset| cursor + offset)
+}
+
+/// 每道放一个 `0x01`：借位链的起点。
+const LANE_ONES: u128 = u128::from_ne_bytes([0x01; 16]);
+
+/// 每道放一个 `0x80`：借位链的终点，只留下"该道已归零"的标记位。
+const LANE_HIGHS: u128 = u128::from_ne_bytes([0x80; 16]);
+
+/// 哪几道是 0：减一之后仍小于 `0x80` 的道（减的借位传到它自己身上）就是 0。
+fn zero_lanes(word: u128) -> u128 {
+    word.wrapping_sub(LANE_ONES) & !word & LANE_HIGHS
+}
+
+fn spread(byte: u8) -> u128 {
+    u128::from_ne_bytes([byte; 16])
 }
 
 /// 只留下代码：注释与字面量都剔掉。生成文本里就写着 `format!` / `.to_string()`，直接搜全文会把
 /// "被生成的代码"误判成"生成器的实现"；`'{'`、`'"'` 这类字面量还会把 [`body`] 的花括号配平带偏。
 ///
-/// 单趟字节游标：命中注释 / 字面量就把它之前那段代码整段追加、游标跳到它后面；`/` 与 `'` 若不是
-/// 注释或字面量就只挪一个字节。游标每圈严格前进（任何被吞下的片段都至少 1 字节），所以终止性由
-/// 构造保证，不需要递归兜底：栈深与输入长度无关，中间也不分配 `String`。行注释的换行留在代码里，
-/// 输出行数与原文件一致。
+/// 单趟字节游标：每圈用 [`scan`] 跳到下一个可能的开头，认成注释 / 字面量就把它之前那段代码整段
+/// 追加、游标跳到它后面；`/` 与 `'` 若不是注释或字面量就只挪一个字节。游标每圈严格前进（被吞下的
+/// 片段至少 1 字节），终止性由构造保证：不需要递归兜底，栈深与输入长度无关，中间也不分配 `String`。
+/// 行注释的换行留在代码里，剔除后行数与原文件一一对应。
 fn code_only(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut out = String::with_capacity(text.len());
     let mut flushed = 0;
     let mut cursor = 0;
-    while let Some(at) = next_opener(bytes, cursor) {
+    while let Some(at) = scan(bytes, cursor, OPENERS) {
         match skip(text, at) {
             Some(end) => {
                 debug_assert!(end > at, "被吞下的片段必须至少推进一个字节");
@@ -117,24 +154,13 @@ fn code_only(text: &str) -> String {
     out
 }
 
-/// `from` 之后第一个可能是注释 / 字面量开头的字节位置。
-///
-/// 三个开引子都是 ASCII，而 UTF-8 的续字节全在 `0x80` 以上，所以按字节找永远不会切进多字节字符，
-/// 命中的一定是字符边界；判据写成一次 `position`，扫描段落因此是可向量化的线性搜索。
-fn next_opener(bytes: &[u8], from: usize) -> Option<usize> {
-    bytes[from..]
-        .iter()
-        .position(|byte| is_opener(*byte))
-        .map(|offset| from + offset)
-}
-
 /// `at` 处的注释 / 字面量结束后游标该停在哪；裸 `/`（除号）与生命周期 `'a` 都不是，返回 `None`。
 ///
 /// 按首两字节分派，不再切子串：`&text[at..]` 每次都要重算边界与长度，这里只读字节。
 fn skip(text: &str, at: usize) -> Option<usize> {
     let bytes = text.as_bytes();
     match bytes[at..] {
-        [b'/', b'/', ..] => Some(line_end(bytes, at)),
+        [b'/', b'/', ..] => Some(scan(bytes, at, [b'\n']).unwrap_or(bytes.len())),
         [b'/', b'*', ..] => Some(comment_end(bytes, at)),
         [b'"', ..] => Some(quoted_end(bytes, at, raw_hashes(bytes, at))),
         [b'\'', ..] => char_end(text, at),
@@ -142,57 +168,43 @@ fn skip(text: &str, at: usize) -> Option<usize> {
     }
 }
 
-/// 行注释到换行为止；换行本身留作代码，剔除后行数与原文件一一对应。
-fn line_end(bytes: &[u8], at: usize) -> usize {
-    bytes[at..]
-        .iter()
-        .position(|byte| *byte == b'\n')
-        .map_or(bytes.len(), |offset| at + offset)
-}
-
 /// 块注释可嵌套（Rust 特性）：`/* a /* b */ c */` 整体只是一条注释。
 ///
-/// 只停在 `*` 与 `/` 上：开合定界符都在这两个字节处开始，注释正文一次搜索跳过，不逐字节走状态机。
+/// 开合定界符都从 `*` 或 `/` 开始，所以正文一次 [`scan`] 跳过，不逐字节走状态机。
 fn comment_end(bytes: &[u8], at: usize) -> usize {
     let mut depth = 1u32;
     let mut cursor = at + 2;
     loop {
-        let Some(offset) = bytes[cursor..]
-            .iter()
-            .position(|byte| *byte == b'*' || *byte == b'/')
-        else {
+        let Some(marker) = scan(bytes, cursor, [b'*', b'/']) else {
             return bytes.len();
         };
-        let marker = cursor + offset;
-        match bytes.get(marker + 1).copied() {
-            Some(b'*') if bytes[marker] == b'/' => {
-                depth += 1;
-                cursor = marker + 2;
+        let next = bytes.get(marker + 1);
+        let opens = bytes[marker] == b'/' && next == Some(&b'*');
+        let closes = bytes[marker] == b'*' && next == Some(&b'/');
+        if opens {
+            depth += 1;
+            cursor = marker + 2;
+        } else if closes {
+            depth -= 1;
+            cursor = marker + 2;
+            if depth == 0 {
+                return cursor;
             }
-            Some(b'/') if bytes[marker] == b'*' => {
-                depth -= 1;
-                cursor = marker + 2;
-                if depth == 0 {
-                    return cursor;
-                }
-            }
-            _ => cursor = marker + 1,
+        } else {
+            cursor = marker + 1;
         }
     }
 }
 
 /// 字符串的结束位置；`hashes` 是开引子后的 `#` 数：`r##"…"##` 为 2，普通 `"…"` 为 0。
-///
-/// 普通字符串只在 `"` 与反斜杠上停（转义要整对跳过），raw string 里 `\` 是普通字符，只看 `"`：
-/// 两种情况都是一次搜索越过整段正文。
 fn quoted_end(bytes: &[u8], at: usize, hashes: usize) -> usize {
     let escapes = hashes == 0;
     let mut cursor = at + 1;
-    while let Some(offset) = bytes[cursor..]
-        .iter()
-        .position(|byte| *byte == b'"' || (escapes && *byte == b'\\'))
-    {
-        let stop = cursor + offset;
+    while let Some(stop) = if escapes {
+        scan(bytes, cursor, [b'"', b'\\'])
+    } else {
+        scan(bytes, cursor, [b'"'])
+    } {
         if bytes[stop] == b'\\' {
             cursor = (stop + 2).min(bytes.len());
         } else if closes_with(&bytes[stop + 1..], hashes) {
