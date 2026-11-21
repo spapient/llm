@@ -273,7 +273,7 @@ fn registry(code: &mut String, declaration: &ModelDecl, ty: &str) {
     let _ = writeln!(
         code,
         "        assert_eq!(<super::{ty} as ::llm_op::operator::Operator>::NAME, {}), \"注解注册名必须与 Operator::NAME 一致\");",
-        Slice(&declaration.name)
+        Quoted(&declaration.name)
     );
     let _ = writeln!(
         code,
@@ -323,26 +323,38 @@ fn dtype(code: &mut String, declaration: &ModelDecl) {
 const CONST: &str = "        static SPEC: ::std::sync::OnceLock<::nn::ContractSpec> = ::std::sync::OnceLock::new();";
 
 /// 形状表达式：空形状必须显式给 `Vec<usize>`——`Shape::new([])` 推断不出元素类型。
-fn shape_of(axes: String) -> String {
-    match axes.is_empty() {
-        true => "::nn::Shape::new(::std::vec::Vec::<usize>::new())".to_string(),
-        false => format!("::nn::Shape::new([{axes}])"),
+fn shape_of<T>(code: &mut String, axes: &[T], each: impl FnMut(&mut String, &T)) {
+    match axes {
+        [] => code.push_str("::nn::Shape::new(::std::vec::Vec::<usize>::new())"),
+        _ => {
+            code.push_str("::nn::Shape::new([");
+            comma(code, axes.iter(), each);
+            code.push_str("])");
+        }
     }
 }
 
 /// 逗号连接：调用点只描述"每一项长什么样"，中间不留一层 `Vec<String>`。
-fn join(items: impl Iterator<Item = String>) -> String {
-    let mut out = String::new();
-    for item in items {
-        if !out.is_empty() {
-            out.push_str(", ");
+fn comma<T>(code: &mut String, items: impl Iterator<Item = T>, mut each: impl FnMut(&mut String, T)) {
+    for (index, item) in items.enumerate() {
+        if index > 0 {
+            code.push_str(", ");
         }
-        out.push_str(&item);
+        each(code, item);
     }
-    out
+}
+
+/// 借用视图：`Display` 即 `{:?}`，把字面量零分配地嵌进 `write!` 的格式串。
+#[derive(Clone, Copy)]
+struct Quoted<'a>(&'a str);
+
+impl std::fmt::Display for Quoted<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{:?}", self.0)
+    }
 }
 
 /// Rust 字符串字面量。解析层已拒绝转义序列，因此 `{:?}` 的输出与输入逐字相同。
-fn literal(text: &str) -> String {
-    format!("{text:?}")
+fn literal(code: &mut String, text: &str) {
+    let _ = write!(code, "{}", Quoted(text));
 }
