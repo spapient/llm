@@ -8,8 +8,17 @@ use prof::atom::{Attr, AttrKey, Closed, DTypeSet, Need, Prim, Set, SpaceSet, Spa
 use prof::prof::scalar_texts;
 
 use super::expand::tiles;
-use super::parse::{extras, head, phases, sections};
+use super::parse::{Extras, Sections, extras, head, phases, sections};
 use super::{Axis, OpDecl, Skeleton, Variant, field};
+
+/// 表里的全部段落一次取齐。`head`/`sections`/`extras` 各自的 `?` 收在这一处：
+/// 构造函数本身没有分支，圈复杂度不该被几个"不可能失败"的解析步骤堆上去。
+fn parts(table: &Table) -> diagnostic::Result<(Head, Sections, Extras)> {
+    Ok((head(table)?, sections(table)?, extras(table)?))
+}
+
+/// `head` 的三元组：名字、骨架、摘要。
+type Head = (String, Skeleton, String);
 
 impl OpDecl {
     /// 从编译期生成的声明表解析声明，并解析同名模板。
@@ -54,10 +63,8 @@ impl OpDecl {
 
     /// 声明本体：头、四个段与签名。模板侧校验不在这里（见 [`Self::verified`]）。
     fn declared(table: &Table, template: &str) -> diagnostic::Result<Self> {
-        let (name, skeleton, summary) = head(table)?;
-        // 返回顺序：轴、需求、布局、变体链。
-        let (axes, needs, layouts, variants) = sections(table)?;
-        let (consts, grid, chunk) = extras(table)?;
+        let ((name, skeleton, summary), (axes, needs, layouts, variants), (consts, grid, chunk)) =
+            parts(table)?;
         let signature = crate::sig::Signature::parse(&name, template)?;
         let phases = phases(table, &name, &signature)?;
         Ok(Self {
