@@ -6,6 +6,7 @@
 use crate::settle::{GAIN_FLOOR, MAX_ENTROPY, Reason, SMALL_BYTES};
 use crate::{Codec, Stored};
 
+
 pub(crate) fn bits_per(seg: &Stored, volume: usize) -> u32 {
     let numel = tensor::product(seg.shape());
     if numel == 0 {

@@ -16,6 +16,7 @@ use crate::crc;
 use crate::seg::Segment;
 use crate::sink::{Measured, Sink};
 
+
 pub(crate) fn axes_frame(segment: &Segment) -> Option<Vec<u8>> {
     let (m, n) = axes_dims(segment)?;
     crate::axes::compress(&segment.data, m, n).ok().flatten()

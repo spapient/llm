@@ -11,6 +11,7 @@ use crate::leb::Cursor;
 use crate::quant::Quant;
 use crate::seg::{Codec, Descriptor};
 
+
 pub(crate) fn decode_meta(cur: &mut Cursor<'_>) -> Result<(Descriptor, u32)> {
     let (name, dtype) = decode_head(cur)?;
     let (shape, rank) = decode_shape_head(cur)?;
