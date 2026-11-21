@@ -138,24 +138,6 @@ fn help_has_three_spellings() {
 }
 
 #[test]
-fn an_operator_is_carried_through_without_defaulting_here() {
-    assert_eq!(
-        Invocation::parse(&args(&["verify", "--op", "gemv_i4"]))
-            .expect("合法")
-            .command(),
-        &Command::Verify {
-            op: Some("gemv_i4".to_string())
-        }
-    );
-    assert_eq!(
-        Invocation::parse(&args(&["bench"]))
-            .expect("无选项")
-            .command(),
-        &Command::Bench { op: None }
-    );
-}
-
-#[test]
 fn archive_commands_carry_paths_through_without_opening_here() {
     assert_eq!(
         Invocation::parse(&args(&[
@@ -263,7 +245,7 @@ fn unknown_words_and_flags_are_rejected_with_the_usage_hint() {
     assert_eq!(unknown.code(), Code::Invalid);
     assert!(unknown.to_string().contains("frobnicate"), "{unknown}");
 
-    let flag = Invocation::parse(&args(&["verify", "--op"])).expect_err("缺取值");
+    let flag = Invocation::parse(&args(&["run", "--weights"])).expect_err("缺取值");
     assert!(flag.to_string().contains("缺少取值"), "{flag}");
 
     let extra = Invocation::parse(&args(&["status", "now"])).expect_err("多余参数");
@@ -273,8 +255,8 @@ fn unknown_words_and_flags_are_rejected_with_the_usage_hint() {
 #[test]
 fn the_usage_text_lists_every_command() {
     for command in [
-        "status", "platform", "run", "verify", "bench", "train", "import", "inspect", "check",
-        "settle", "audit", "help",
+        "status", "platform", "run", "train", "import", "inspect", "check", "settle", "audit",
+        "help",
     ] {
         assert!(USAGE.contains(command), "{command}");
     }
@@ -290,8 +272,6 @@ fn every_command_variant_has_a_destination() {
     fn destination(command: &Command) -> &'static str {
         match command {
             Command::Status { .. } => "status",
-            Command::Verify { .. } => "verify",
-            Command::Bench { .. } => "bench",
             Command::Run { .. } => "run",
             Command::Train { .. } => "train",
             Command::Import { .. } => "import",
@@ -305,8 +285,6 @@ fn every_command_variant_has_a_destination() {
     }
     let all = [
         Command::Status { weights: None },
-        Command::Verify { op: None },
-        Command::Bench { op: None },
         Command::Platform,
         Command::Help,
     ];

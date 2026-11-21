@@ -11,8 +11,8 @@
 mod support;
 
 /// 用法文本里必须出现的那几行：命令表是 `llm help` 的唯一职责。
-const USAGE_COMMANDS: [&str; 10] = [
-    "status", "run", "verify", "bench", "train", "import", "inspect", "check", "settle", "audit",
+const USAGE_COMMANDS: [&str; 8] = [
+    "status", "run", "train", "import", "inspect", "check", "settle", "audit",
 ];
 
 use std::path::PathBuf;
@@ -214,8 +214,9 @@ fn archive_commands_reject_missing_or_unknown_grammar() {
     assert_eq!(output.status.code(), Some(2), "多余参数是 invalid=2");
 }
 
+/// 内核审计不在 `llm` 的文法里：本层不认 `verify` / `bench`，但用法文本必须指出它在哪里。
 #[test]
-fn audit_commands_are_dispatched_elsewhere_and_say_so() {
+fn kernel_audit_commands_belong_to_the_other_entry_and_usage_says_so() {
     for command in ["verify", "bench"] {
         let output = llm().arg(command).output().expect("进程可派生");
         assert_eq!(
@@ -223,12 +224,13 @@ fn audit_commands_are_dispatched_elsewhere_and_say_so() {
             Some(2),
             "`{command}` 在组装点不是可用命令"
         );
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.contains("cutile"),
-            "必须指出去哪里跑，而不是只说「不支持」：{stderr:?}"
-        );
     }
+    let usage = llm().arg("help").output().expect("进程可派生");
+    let stdout = String::from_utf8_lossy(&usage.stdout);
+    assert!(
+        stdout.contains("cutile verify") && stdout.contains("cutile bench"),
+        "用法必须指出去哪里跑：{stdout:?}"
+    );
 }
 
 #[test]
