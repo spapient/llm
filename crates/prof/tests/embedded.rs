@@ -38,7 +38,7 @@ fn embedded_reports_a_missing_archive() {
 #[test]
 fn select_picks_the_profile_matching_local_arch() {
     let profiles = crate::prof::builtin_profiles();
-    let detected = crate::prof::Detected::new().with("algorithm", std::env::consts::ARCH);
+    let detected = crate::prof::Detected::new().with("arch", std::env::consts::ARCH);
     let chosen = crate::prof::select(profiles, &detected).expect("本机架构应命中一份档案");
     assert_eq!(chosen.meta.vendor, "cpu");
 }
@@ -46,7 +46,7 @@ fn select_picks_the_profile_matching_local_arch() {
 #[test]
 fn select_reports_unsupported_when_nothing_matches() {
     let profiles = crate::prof::builtin_profiles();
-    let detected = crate::prof::Detected::new().with("algorithm", "no-such-algorithm");
+    let detected = crate::prof::Detected::new().with("arch", "no-such-arch");
     let error = crate::prof::select(profiles, &detected).expect_err("无命中必须报错");
     assert_eq!(error.code(), diagnostic::Code::Unsupported);
 }

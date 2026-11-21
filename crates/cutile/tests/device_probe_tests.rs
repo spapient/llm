@@ -17,7 +17,7 @@ fn fake(vendor: &str) -> Detected {
         .filter_map(|table| Profile::parse(table).ok())
         .find(|profile| profile.meta.vendor == vendor)
     else {
-        return Detected::new().with("algorithm", vendor);
+        return Detected::new().with("arch", vendor);
     };
     profile
         .fingerprint
@@ -42,7 +42,7 @@ fn example_of(rule: &MatchRule) -> String {
 fn cpu_detection_matches_the_cpu_profile() {
     let catalogue = Catalogue::try_builtin().expect("内置数据");
     let detected = detect_cpu();
-    assert_eq!(detected.get("algorithm"), Some(std::env::consts::ARCH));
+    assert_eq!(detected.get("arch"), Some(std::env::consts::ARCH));
     let profile = select(catalogue.profiles(), &detected).expect("必须命中");
     assert_eq!(profile.meta.vendor, "cpu");
 }

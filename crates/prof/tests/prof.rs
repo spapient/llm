@@ -546,10 +546,10 @@ fn profile_matches_detected_fingerprint() {
     let profile = Profile::parse(cpu()).expect("可解析");
     let arch = std::env::consts::ARCH;
     let detected = Detected::new()
-        .with("algorithm", arch)
+        .with("arch", arch)
         .with("features", format!("{arch}+avx2"));
     assert!(profile.matches(&detected), "{detected}");
-    assert!(!profile.matches(&Detected::new().with("algorithm", "sparc")));
+    assert!(!profile.matches(&Detected::new().with("arch", "sparc")));
 }
 
 #[test]
