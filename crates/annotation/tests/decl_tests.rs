@@ -22,7 +22,8 @@ fn reject<T: std::fmt::Debug>(result: Result<T, Error>, needle: &str) -> Error {
 }
 
 /// 与真实词法相关的两件事：`0x10` 是一个字面量 token，`"a\nb"` 里的反斜杠是内容而不是转义。
-fn lexical_corners() {
+#[test]
+fn literals_are_content_not_syntax() {
     let hex = Token::Literal("0x10".to_string());
     let escaped = Token::Literal(r#""a\nb""#.to_string());
     reject(unsigned(&hex), "十进制");
@@ -86,7 +87,6 @@ fn every_bad_layer_annotation_is_rejected_with_an_actionable_message() {
     for key in KEYS {
         assert!(error.message.contains(key), "{error:?} 应列出 {key}");
     }
-    lexical_corners();
 }
 
 /// 报错指在写错的那一处：缺分隔符、未知键、方括号组各一例。
@@ -250,6 +250,12 @@ fn value_accessors_are_empty_outside_their_own_variant() {
     assert_eq!(width.text(), "");
     assert!(width.names().is_empty());
     assert!(width.axes().0.is_empty());
+    assert!(width.holes().0.is_empty());
+
+    let holes = Value::Holes(&[], 4);
+    assert_eq!(holes.text(), "");
+    assert!(holes.names().is_empty());
+    assert!(holes.axes().0.is_empty());
 }
 
 /// 名字既不能是空白，也不能含控制字符；两类坏字符各有一句指向名字本身的提示。
@@ -321,6 +327,7 @@ fn a_deterministic_sweep_keeps_every_parser_resilient_and_stable() {
         let text: String = (0..length).map(|_| rng.pick(&POOL)).collect();
         sweep_one(parse, &text, case);
         sweep_one(parse_model, &text, case);
+        sweep_one(parse_runtime, &text, case);
     }
 }
 

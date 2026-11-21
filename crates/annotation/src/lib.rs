@@ -317,7 +317,3 @@ mod render_tests;
 #[cfg(test)]
 #[path = "../tests/adapter_tests.rs"]
 mod tests;
-
-#[cfg(test)]
-#[path = "../tests/perf_probe.rs"]
-mod perf_probe;
