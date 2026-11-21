@@ -1,7 +1,7 @@
 //! `snapshot` 的规范编码与落盘：解码器判据强于编码器、手工拼字节、黄金向量与写盘对账。
 
-use super::*;
 use super::snapshot_support::*;
+use super::*;
 use tensor::Shape;
 use weights::Entry;
 /// 校验和挡得住"被改动"，挡不住"拿着正确工具重封了一个坏检查点"：条目表的判据必须在

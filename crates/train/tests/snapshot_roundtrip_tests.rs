@@ -1,7 +1,7 @@
 //! `snapshot` 的往返与完整性：编码对称、位级对拍、校验和、截断与版本判据。
 
-use super::*;
 use super::snapshot_support::*;
+use super::*;
 use tensor::Shape;
 use weights::Entry;
 #[test]
