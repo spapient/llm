@@ -304,6 +304,41 @@ fn same_primitive_bodies_are_isomorphic_across_vendors() {
     }
 }
 
+/// 可执行的提供必须有正文：`L2` 及以上的 `provides` 会被协商选中并真的 emit，没有片段就等于
+/// 声明了一条本仓库并不存在的指令。`L0`/`L1` 是能力目录（"未验证视为不具备"），允许只有见证、
+/// 没有正文；本用例把这条界限钉住，防止空口补一条 `grade = "L2"`。
+#[test]
+fn every_verified_provide_has_a_fragment_body() {
+    let mut matched = 0;
+    for profile in prof::prof::builtin_profiles() {
+        let Some(device) = devices()
+            .iter()
+            .find(|device| device.vendor == profile.meta.vendor)
+        else {
+            continue;
+        };
+        matched += 1;
+        let Some(set) = builtin(device.vendor, device.ext) else {
+            continue;
+        };
+        for provide in profile
+            .provides
+            .iter()
+            .filter(|provide| provide.grade.is_verified())
+        {
+            assert_eq!(
+                set.implementation(provide.prim),
+                Some(provide.impl_name.as_str()),
+                "`{}` 档案把 `{}/{}` 记为已验证，却没有这条正文",
+                profile.meta.vendor,
+                provide.prim,
+                provide.impl_name
+            );
+        }
+    }
+    assert_eq!(matched, devices().len(), "档案与设备应一一对应");
+}
+
 /// 归约片段必须真的折叠：`($0) = ($1)` 只在"归约长度 = 1"时成立，对 `softmax` / `reduce_*` 的
 /// 多元素归约会静默返回首元素。它与实现名无关（`scalar_loop` / `shfl.bfly` / `sub_group_reduce`
 /// 都是同一条语义），所以单列一条用例——按 `impl` 分组的同构判定看不到这种漂移。
