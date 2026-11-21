@@ -102,13 +102,13 @@ fn model_floor(model: &nn::Stack) -> (String, Option<String>) {
         floor_row(&floor.total())
     );
     if !floor.unpriced().is_empty() {
-        let _ = write!(summary, "；无法计价 {} 层", floor.unpriced().len();
+        let _ = write!(summary, "；无法计价 {} 层", floor.unpriced().len());
     }
     if !model.uncovered().is_empty() {
         let _ = write!(summary, "；未覆盖 {} 条：{}",
             model.uncovered().len(),
             diagnostic::render::join_names(model.uncovered().iter().map(String::as_str))
-        ;
+        );
     }
     let unpriced_row = if !floor.unpriced().is_empty() {
         Some(

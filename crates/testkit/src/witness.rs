@@ -128,7 +128,7 @@ fn read(stdout: &str, calls: &[Call<'_>]) -> Result<Vec<Reading>, String> {
         let values: Vec<f32> = fields.filter_map(|field| field.parse().ok()).collect();
         let matches = usize::try_from(count).is_ok_and(|count| count == call.expect.len());
         let max_rel_err = if matches && values.len() == call.expect.len() {
-            crate::compare::max_rel_err(&values, call.expect)
+            crate::rel::max_rel_err(&values, call.expect)
         } else {
             f64::INFINITY
         };
@@ -140,6 +140,21 @@ fn read(stdout: &str, calls: &[Call<'_>]) -> Result<Vec<Reading>, String> {
         });
     }
     Ok(readings)
+}
+
+/// 最大相对误差：分母取期望值的绝对值，两个都是 0 时为 0（同 `compare::close` 的口径）。
+/// 读数要的是一个**数**（报告里写 `3.1e-07`），所以不复用只回答真假的 `close`。
+fn relative(got: &[f32], want: &[f32]) -> f64 {
+    got.iter().zip(want).fold(0.0_f64, |worst, (got, want)| {
+        let got = f64::from(*got);
+        let want = f64::from(*want);
+        let error = if got == want {
+            0.0
+        } else {
+            (got - want).abs() / want.abs().max(f64::MIN_POSITIVE)
+        };
+        worst.max(error)
+    })
 }
 
 /// 一次执行的临时目录；`Drop` 时整棵删掉，编译失败也不留垃圾。

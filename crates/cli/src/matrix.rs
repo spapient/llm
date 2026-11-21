@@ -93,7 +93,7 @@ fn ledger_evidence_notes(rows: &[BackendRow]) -> String {
             }
             let _ = writeln!(out, "- `{}` {} · {} {} — {}",
                 vendor, cell.prim, cell.impl_name, cell.grade, cell.note
-            ;
+            );
         }
     }
     out
@@ -112,7 +112,7 @@ pub(super) fn ledger_header(profile: &Profile, verified: &Verified, conclusion: 
     );
     let _ = writeln!(text, "- 档案：`{}` ({})",
         profile.meta.id, profile.meta.checked
-    ;
+    );
     // 台账要能回答"这条证据是谁编出来的"：实测值来自 `--version`，登记值是人写的出处。
     let actual = verified
         .toolchain
@@ -125,8 +125,8 @@ pub(super) fn ledger_header(profile: &Profile, verified: &Verified, conclusion: 
     };
     let _ = writeln!(text, "- 工具链：实测 `{actual}`，档案登记 `{}`{agrees}",
         verified.tool_ver
-    ;
-    let _ = write!(text, "- 结论：{}", conclusion.trim();
+    );
+    let _ = write!(text, "- 结论：{}", conclusion.trim());
     text
 }
 

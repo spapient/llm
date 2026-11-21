@@ -49,17 +49,17 @@ pub(super) fn cache_gc(report: &Gc, dirs: &Dirs) -> String {
         let _ = writeln!(out, "  清理残留 {} 项（{}）：半截落盘，本来就不会命中",
             report.residue.items,
             ::diagnostic::render::human_bytes(report.residue.bytes)
-        ;
+        );
     }
     if report.skipped > 0 {
         let _ = writeln!(out, "  {} 项仍在使用，已跳过：锁释放后再跑一次",
             report.skipped
-        ;
+        );
     }
     if report.after > report.limit {
         let _ = writeln!(out, "  仍高于上限：还需再删 {}",
             ::diagnostic::render::human_bytes(report.after - report.limit)
-        ;
+        );
     }
     out
 }

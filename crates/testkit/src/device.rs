@@ -6,7 +6,7 @@
 //! 这里刻意不出现 `prof` 的类型：设备 crate 在测试里把档案摊成 [`Provision`]，于是 `testkit`
 //! 仍然只有 `std` 一个依赖，"夹具不进生产二进制"的边界不被打破。
 
-use crate::witness::{run, Call, MAX_OUT};
+use crate::witness::{Call, MAX_OUT, run};
 
 /// 见证对拍的容差，与 `cutile::witness` 同一个口径。
 pub const TOLERANCE: f64 = 1e-5;
@@ -151,7 +151,11 @@ impl<'a> Contract<'a> {
             })
             .collect();
         found.sort();
-        let mut want: Vec<String> = self.p0.iter().map(|prim| format!("{prim}.{}", self.ext)).collect();
+        let mut want: Vec<String> = self
+            .p0
+            .iter()
+            .map(|prim| format!("{prim}.{}", self.ext))
+            .collect();
         want.push(format!("witness.{}", self.ext));
         want.sort();
         assert_eq!(
@@ -186,12 +190,10 @@ impl<'a> Contract<'a> {
             .provides
             .iter()
             .filter_map(|provide| {
-                provide
-                    .witness
-                    .map(|witness| Call {
-                        func: witness.func,
-                        expect: witness.expect,
-                    })
+                provide.witness.map(|witness| Call {
+                    func: witness.func,
+                    expect: witness.expect,
+                })
             })
             .collect();
         let readings = match run(self.source, self.ext, &calls) {

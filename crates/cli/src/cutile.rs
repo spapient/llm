@@ -253,19 +253,19 @@ fn bench(
         "bench {} {m}x{n} repeat={} [{}]\n",
         measured.op, measured.repeat, measured.device
     );
-    let _ = writeln!(out, "  plan  {}", measured.plan;
+    let _ = writeln!(out, "  plan  {}", measured.plan);
     let _ = writeln!(out, "  证据  {} 条见证（这次执行，协商用的就是它）",
         measured.proven
-    ;
+    );
     let _ = writeln!(out, "  对拍  max_rel_err {:.3e}（与标量参考）",
         measured.max_rel_err
-    ;
+    );
     let _ = writeln!(out, "  实测  min {}, p50 {}（达成率按 p50）→ {:.1} GB/s, {:.1} GFLOP/s",
         ::diagnostic::render::per_run(measured.per_run_ns),
         ::diagnostic::render::per_run(measured.p50_ns),
         measured.measured.gb_s,
         measured.measured.gflops
-    ;
+    );
     out.push_str(&section::working_set_line(&measured));
     out.push_str(&section::performance_note(
         measured.performance(),

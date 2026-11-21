@@ -20,9 +20,9 @@ pub(super) fn evidence_block(report: &Doctor) -> String {
         counted(report.evidence.device, &report.evidence.device_params),
         counted(report.evidence.host, &report.evidence.host_params),
         report.evidence.language
-    ;
+    );
     if let Some(error) = &report.evidence.failure {
-        let _ = writeln!(out, "  见证不成立：{error}";
+        let _ = writeln!(out, "  见证不成立：{error}");
     }
     out
 }
@@ -31,7 +31,7 @@ pub(super) fn evidence_block(report: &Doctor) -> String {
 pub(super) fn layouts_block(report: &Doctor) -> String {
     let mut out = String::from("\n[布局]\n");
     for row in &report.layouts {
-        let _ = writeln!(out, "  {} = {}", row.slot, row.spec;
+        let _ = writeln!(out, "  {} = {}", row.slot, row.spec);
     }
     out
 }
@@ -56,7 +56,7 @@ pub(super) fn storage_block(report: &Doctor) -> Option<String> {
             };
             let _ = writeln!(out, "  {}={} 容量 {} | 声明 {}",
                 row.space, row.physical, capacity, declared
-            ;
+            );
         }
         out
     })
@@ -70,9 +70,9 @@ pub(super) fn source_block(source: &Built) -> String {
         source.ext,
         source.key.hex(),
         source.key.describe()
-    ;
+    );
     if let Some(dir) = &source.cache_dir {
-        let _ = writeln!(out, "  cache dir {}", dir.display();
+        let _ = writeln!(out, "  cache dir {}", dir.display());
     }
     out
 }
@@ -81,7 +81,7 @@ pub(super) fn source_block(source: &Built) -> String {
 pub(super) fn post_path_blocks(report: &Doctor) -> String {
     let mut out = String::new();
     if let Some(plan) = &report.plan {
-        let _ = writeln!(out, "\n[plan] {plan}";
+        let _ = writeln!(out, "\n[plan] {plan}");
     }
     out.push_str(&layouts_block(report));
     if let Some(storage) = storage_block(report) {
@@ -155,7 +155,7 @@ pub(super) fn negotiation_summary(report: &VerifyReport) -> String {
     for (device, negotiation) in report.devices.iter().zip(&report.negotiations) {
         let _ = writeln!(out, "  {device} = {}",
             describe_negotiation(negotiation)
-        ;
+        );
     }
     out
 }
@@ -306,7 +306,7 @@ pub(super) fn cache_why(report: &CacheWhy) -> String {
         out.push_str("  被问的键从未落盘：没构建过，或已被 `cache gc` 回收\n");
         return out;
     };
-    let _ = writeln!(out, "  被问的键 {}（{} B）", entry.hex, entry.bytes;
+    let _ = writeln!(out, "  被问的键 {}（{} B）", entry.hex, entry.bytes);
     match report.state() {
         CacheState::Match => {
             out.push_str("  与本次构建的键一致：命中的就是这份缓存\n");
@@ -320,14 +320,14 @@ pub(super) fn cache_why(report: &CacheWhy) -> String {
     }
     let _ = writeln!(out, "  与本次构建不同（{} 项）：",
         report.changes.len()
-    ;
+    );
     for change in &report.changes {
         // 只在一侧出现的项也要打印：新版本加的字段与已删除的字段都是"为什么没命中"。
         let stored = change.stored.as_deref().unwrap_or("—");
         let current = change.current.as_deref().unwrap_or("—");
         let _ = writeln!(out, "    {}：缓存 {stored} | 本次 {current}",
             change.field
-        ;
+        );
     }
     out
 }
