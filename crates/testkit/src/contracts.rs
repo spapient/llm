@@ -56,7 +56,7 @@ pub(crate) fn locate_module(module: &str) -> Option<PathBuf> {
 /// verify）」两家后，契约文件会在两家之间搬；判据守的是结构契约（缝在、注册表在、注入点在），
 /// 不是文件坐标，所以按两家探测，谁家有就用谁家的。
 fn cutile_path(relative: &str) -> PathBuf {
-    let candidates: Vec<PathBuf> = ["cutile", "cutile-run"]
+    let candidates: Vec<PathBuf> = ["cutile", "optim"]
         .iter()
         .map(|name| root().join("crates").join(name).join("src").join(relative))
         .collect();
@@ -66,7 +66,7 @@ fn cutile_path(relative: &str) -> PathBuf {
         .cloned()
         .unwrap_or_else(|| {
             panic!(
-                "`{relative}` 在 cutile 与 cutile-run 的 `src` 里都不存在（查过 {}）",
+                "`{relative}` 在 cutile 与 optim 的 `src` 里都不存在（查过 {}）",
                 candidates
                     .iter()
                     .map(|path| path.display().to_string())

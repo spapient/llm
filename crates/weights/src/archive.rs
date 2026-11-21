@@ -6,11 +6,11 @@ use std::sync::OnceLock;
 use crate::bad;
 use diagnostic::Result;
 
+use crate::Codec;
 use crate::parse::{FOOTER_LEN, fixed, layout, read_descs};
 use crate::proof::{Digest, Proof};
 use crate::stored::{Stored, lossless_entry};
 use crate::writer::{GLOBAL_CRC, SEG_CRC};
-use crate::Codec;
 
 /// 内存容器：绑定在输入字节上，不复制数据。
 #[derive(Debug)]

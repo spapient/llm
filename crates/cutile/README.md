@@ -1,7 +1,7 @@
 # cutile DSL —— 设备无关的替换式 kernel DSL
 
 > 版本 v1.1 · 2026-11-14 · 状态：P0 纵切面已落地，P1–P4 仍是 §17 的目标（替代 v0.3 的 `tess` 草案）
-> 落地位置：前端机制在 `crates/cutile`，执行半边（编译/见证/报告）在 `crates/cutile-run`，
+> 落地位置：前端机制在 `crates/cutile`，执行半边（编译/见证/报告）在 `../optim`，
 > 三层数据在 `crates/op`、`crates/prof`、`crates/prim`；
 > 本文只定义 cutile，不涉及运行时之外的训练/服务层
 > 本文既是本 crate 的 README，也是整条流水线的设计契约：§0 给结论与现状，§3–§12 给机制，
@@ -209,7 +209,7 @@ crates/cutile-run/              # 执行半边：编译、执行、见证、语�
     └── doctor.rs / verify.rs / bench.rs / execution.rs   # 命令策略与结构化报告
 ```
 
-前端与执行分处 `crates/cutile` 与 `crates/cutile-run`，划线判据是**证据从哪来**：
+前端与执行分处 `crates/cutile` 与 `../optim`，划线判据是**证据从哪来**：
 前端只回答"这段源文本长什么样"，跨过 `witness` 之后必须有"这台机器上真的跑出过这个结果"。
 执行半边内部**分层不混**：`build` / `runner` / `toolchain` / `device` / `cap` / `cache` / `emit`
 是机制（决定"产物长什么样"），`doctor` / `verify` / `bench` / `execution` 是命令策略；`ledger` 跨档案聚合证据行与矩阵格，不经 `pipeline`

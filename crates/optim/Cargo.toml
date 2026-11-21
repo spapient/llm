@@ -1,5 +1,5 @@
 [package]
-name = "cutile-run"
+name = "llm-optim"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

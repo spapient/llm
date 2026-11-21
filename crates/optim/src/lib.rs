@@ -1,4 +1,4 @@
-//! cutile-run —— cutile DSL 的执行半边：接缝、证据与三份报告。
+//! optim —— cutile DSL 的执行半边：接缝、证据与三份报告。
 //!
 //! [`cutile`] 是无 IR 的编译前端：三份输入（声明层、档案层、片段层）经 ① expand → ② negotiate →
 //! ③ select → ④ substitute → ⑤ emit 折成源文本与缓存键，全程是可见数据结构、不碰进程。本 crate
@@ -45,7 +45,7 @@
 //! let cat = Catalogue::try_builtin()?;
 //! let op = cat.op("gemv_i4").expect("内置算子");
 //! // 报告层要的是"这次执行到的结论"，不是档案自述：`ledger` 逐档案建立证据再折成闭集状态。
-//! let dirs = cutile::dirs::Dirs::under(std::env::temp_dir().join("cutile-run-doc"));
+//! let dirs = cutile::dirs::Dirs::under(std::env::temp_dir().join("optim-doc"));
 //! let rows = cutile_run::ledger::ledger(&cat, &dirs);
 //! assert_eq!(rows.len(), cat.profiles().len());
 //! # Ok(())

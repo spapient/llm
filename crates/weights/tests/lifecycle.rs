@@ -1,9 +1,9 @@
 //! `lifecycle` 的单元测试：mode 与 patch 两条路径。
 use super::*;
-use crate::testutil::{archive, f32_segment, real_bin_bytes};
 use crate::bin::Bin;
 use crate::gguf::Gguf;
 use crate::import::{segments_from_bin, segments_from_gguf};
+use crate::testutil::{archive, f32_segment, real_bin_bytes};
 use crate::writer::Writer;
 use diagnostic::Code;
 use dtype::DType;

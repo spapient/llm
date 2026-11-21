@@ -414,10 +414,13 @@ fn jitter() -> Protocol {
     .expect("样本下限")
 }
 
-/// 真实一列样本落成一张卡，并归档到 `target/bench-report/<host>/card-<protocol>.json`。
+/// 真实一列样本落成一张卡，并归档到工作区根的 `target/bench-report/<host>/card-<protocol>.json`。
+/// 测试进程的 CWD 是 crate 根，所以归档路径必须从 `CARGO_MANIFEST_DIR` 起算，否则卡片落进
+/// `crates/benchmarks/target/`，而 CI 从工作区根的 `target/bench-report/` 上传，报告静默丢失。
 fn archive(card: &Card) -> std::path::PathBuf {
-    let directory = std::path::Path::new("target")
-        .join("bench-report")
+    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("target/bench-report")
         .join(host());
     std::fs::create_dir_all(&directory).expect("归档目录");
     let path = directory.join(format!("card-{}.json", card.protocol().name()));

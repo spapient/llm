@@ -40,7 +40,7 @@ device-image = ["cutile/device-image", "cutile-run/device-image"]
 
 [dependencies]
 cutile = { path = "../cutile" }
-cutile-run = { path = "../cutile-run" }
+cutile-run = { path = "../optim" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 engine = { path = "../engine", package = "llm-engine" }
 device = { path = "../device", package = "llm-device" }
