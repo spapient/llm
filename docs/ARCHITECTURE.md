@@ -17,7 +17,7 @@
 | L3 内核 | `cutile` | 协商 → 拼接 → emit → 编译执行；`doctor` / `verify` / `bench` / `execution` 共用一条 `pipeline`，报告只是数据、排版在前端 | 设备厂商特判、运行时依赖 |
 | L4 运行时 | `tensor`、`storage`、`tokenizer` | 张量元数据、布局搬运、文本边界 | 模型语义、调度策略 |
 | L5 模型与训练 | `weights`、`snapshot`、`autograd`、`nn`、`shard` | 权重结构与自有 `.u` 容器、检查点字节格式、反向图与显存计划、层定义与执行侧机制、切分拓扑与集合通信 | 进程 / 服务语义 |
-| L6 调度与服务 | `train`、`engine`、`device`、`serve` | 训练样本与循环、检查点、连续批与 KV 页账、提交与执行体、设备源 lowering 与厂商后端（`device::backends` / `device::metal::host` / `device::metal::fold` / `device::cuda` / `device::dialect` / `device::platform`，实现 `cutile` 的 `Backend` 缝与 `engine` 的 `Executor` 缝；`device::metal::executor` 是唯一 `unsafe` 岛（[ADR 0035](adr/0035-unsafe-ffi-boundary.md)））、端点契约与线格式、CPU 模型宿主 | 直接调用 `cutile` 生成 kernel；执行任何业务 |
+| L6 调度与服务 | `train`、`engine`、`device`、`serve` | 训练样本与循环、检查点事实集、连续批与 KV 页账、提交与执行体、设备源 lowering 与厂商后端（`device::backends` / `device::metal::host` / `device::metal::fold` / `device::cuda` / `device::dialect` / `device::platform`，实现 `cutile` 的 `Backend` 缝与 `engine` 的 `Executor` 缝；`device::metal::executor` 是唯一 `unsafe` 岛（[ADR 0035](adr/0035-unsafe-ffi-boundary.md)））、端点契约与线格式、CPU 模型宿主 | 直接调用 `cutile` 生成 kernel；执行任何业务 |
 | L7 入口 | `cli`（bin：`llm` 与 `cutile`） | 组合根：命令行文法、配置解析、各层装配、取值解析与人可读排版；编排入口不定义新类型 | 编排入口新增领域类型；在本层复制内核机制 |
 
 `annotation`（编译期注解）、`fuzz`（模糊测试契约）、`benchmarks`（集中测量容器）与 `testkit`（测试夹具与门禁）是**工具成员**：没有运行时层级，依赖边不参与方向判定。

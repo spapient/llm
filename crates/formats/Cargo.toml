@@ -16,6 +16,7 @@ dtype = { path = "../dtype", package = "llm-dtype" }
 wire = { path = "../wire", package = "llm-wire" }
 
 [dev-dependencies]
+weights = { path = "../weights", package = "llm-weights" }
 testkit = { path = "../testkit", package = "llm-testkit" }
 
 [lints]
