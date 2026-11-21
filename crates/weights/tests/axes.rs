@@ -1,6 +1,6 @@
 //! `axes` 模块的单元测试。
 use super::*;
-use crate::axes_rank::{f64_bytes, framed};
+use crate::axes::{f64_bytes, framed};
 
 #[test]
 fn raw_baseline_roundtrips() {

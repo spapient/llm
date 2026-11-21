@@ -58,8 +58,6 @@ mod proof;
 
 // —— 谱隙证书链：f64 单边 Jacobi SVD、谱隙判定账本、五轴无损选码（.u v2 张量级压缩侧车）——
 pub mod axes;
-mod axes_codec;
-mod axes_rank;
 pub mod ledger;
 pub mod svd;
 
