@@ -5,7 +5,7 @@
 //! （`prof`）、拼接与 emit（`cutile`）。
 //!
 //! 一台设备一个 crate，因为片段是**内容**：加一台设备 = 加一个这样的 crate，机制
-//! （`crates/prim/generate.rs`）一行不改。文件名即原语名，第一行的签名声明
+//! （`prof::codegen`）一行不改。文件名即原语名，第一行的签名声明
 //! `/* cutile-sign: <prim>/<impl> */` 在构建期与档案里的 `provides` 对齐。
 //!
 //! 输出语言是 C，工具链是可移植的 C 与 `cc` 工具链。
@@ -17,7 +17,7 @@
 //! assert_eq!(device.vendor, "cpu");
 //! assert_eq!(device.ext, "c");
 //! assert!(
-//!     device.entry(llm_prof::atom::Prim::Load).is_some(),
+//!     device.entry(prof::atom::Prim::Load).is_some(),
 //!     "每台设备都要有载入的入口"
 //! );
 //! ```

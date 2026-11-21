@@ -1,7 +1,7 @@
 //! 设备行：每台设备这次构建带上的东西（档案元数据、见证源码，以及可选的设备侧二进制）。
 //!
 //! **拥有**：`Device`、`Image`、`Status`。**不拥有**：片段文本与见证的装载（`prim`）、
-//! 能力档案的解析（[`crate::prof`]）、编译配方与镜像产物（`crates/prim/generate.rs`）。
+//! 能力档案的解析（[`crate::prof`]）、编译配方与镜像产物（[`crate::codegen`]）。
 //!
 //! 三者的归属由依赖方向定：每台设备的片段目录住在自己的 crate 里（`cuda` / `cpu` / `opencl` /
 //! `metal` / `musa` / `rocm`），那些 crate 的 `build.rs` 生成一行 `Device` 并交给 `prim` 合成；
@@ -128,7 +128,7 @@ pub enum Status {
     Source,
     /// 已编译成设备镜像并内嵌（[`Device::image`] 必然是 `Some`）。
     Compiled,
-    /// 这台设备的输出语言还没有构建配方（见 `crates/prim/generate.rs` 的 `recipe`）。
+    /// 这台设备的输出语言还没有构建配方（见 [`crate::codegen`] 的配方表）。
     NoRecipe,
     /// 有配方，但工具链不在本机或编译失败：源码照旧可用。
     Skipped {

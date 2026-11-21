@@ -10,6 +10,11 @@ readme = "README.md"
 publish = false
 autotests = false
 
+[features]
+# 构建期代码生成（`codegen`）：六个设备 crate 的 `build.rs` 通过构建依赖打开它，
+# 运行期不编译这段代码。
+build = []
+
 [dependencies]
 dtype = { path = "../dtype", package = "llm-dtype" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }

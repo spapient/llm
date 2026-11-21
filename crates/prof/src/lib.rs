@@ -7,10 +7,12 @@
 //! - [`prof`] 是**唯一的 schema**：解析、闭集字段、见证与 `[units]` 一致性校验；
 //! - [`atom`] 是**唯一的能力词汇表**：16 个原语、类型/存储位集、参数化签名 `Need`/`Provide`
 //!   与属性键闭集 [`atom::AttrKey`]；
-//! - [`device`] 是**设备行的形状**：一台设备这次构建带上的元数据、见证源码与可选的镜像，
-//!   由各设备 crate（`cuda` / `cpu` / `opencl` / `metal` / `musa` / `rocm`）的 `build.rs` 生成，
-//!   由 `prim` 合成一张表。它在这里而不是在 `prim` 里，理由只有依赖方向：设备 crate 依赖本层，
-//!   `prim` 依赖设备 crate。
+//! - [`device`] 是**设备行的形状**：一台设备这次构建带上的元数据、见证源码与可选的镜像，由各设备
+//!   crate（`cuda` / `cpu` / `opencl` / `metal` / `musa` / `rocm`）的 `build.rs` 生成，由 `prim`
+//!   合成一张表。它在这里而不是在 `prim` 里，理由只有依赖方向：设备 crate 依赖本层，`prim` 依赖
+//!   设备 crate；
+//! - [`codegen`] 是那些 `build.rs` 唯一的实现（`build` feature，运行期不编译），[`sign`] 是它与
+//!   `prim` 装载期共用的签名声明规则。
 //!
 //! 档案语料在**构建期**由 [`build.rs`](../build.rs) 用构建依赖 `toml` 解析 `devices/*.toml`，
 //! 展开成 `diagnostic::data::{Table, Value}` 字面量写进 `$OUT_DIR/embedded.rs`，再由 [`embedded`]
@@ -37,6 +39,11 @@
 pub mod atom;
 pub mod device;
 pub mod prof;
+pub mod sign;
+
+/// 构建期代码生成：一台设备的目录 → 它的 `tables.rs`（`build` feature 下的构建依赖）。
+#[cfg(feature = "build")]
+pub mod codegen;
 
 pub use device::{Device, Image, Status};
 

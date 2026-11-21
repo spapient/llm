@@ -13,9 +13,9 @@ build = "build.rs"
 [dependencies]
 prof = { path = "../prof", package = "llm-prof" }
 
-# 构建脚本读同一份档案（输出语言、工具链、每条签名的见证入口），生成即校验。
+# 构建脚本用本层的 codegen：读同一份档案（输出语言、工具链、每条签名的见证入口），生成即校验。
 [build-dependencies]
-prof = { path = "../prof", package = "llm-prof" }
+prof = { path = "../prof", package = "llm-prof", features = ["build"] }
 
 [features]
 default = []

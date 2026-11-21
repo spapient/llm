@@ -19,9 +19,9 @@
 //!
 //! # 内嵌表是编译期生成的
 //!
-//! 每个设备 crate 的 `build.rs` 都 `include!` 同一份生成器（`crates/prim/generate.rs`）：它在
-//! 编译期扫描那个 crate 的目录，按 [`Prim`] 校验文件名、按档案校验每段片段声明的签名
-//! （`/* cutile-sign: <prim>/<impl> */`），生成该 crate 的 `FRAGMENTS` / `PRIMS` / `DEVICE`。
+//! 每个设备 crate 的 `build.rs` 都只调 [`prof::codegen::device`]：它在编译期扫描那个 crate 的目录，
+//! 按 [`Prim`] 校验文件名、按档案校验每段片段声明的签名（`/* cutile-sign: <prim>/<impl> */`），
+//! 生成该 crate 的 `FRAGMENTS` / `PRIMS` / `DEVICE`。
 //! 本 crate 的 [`BUILTIN`] / [`WITNESS`] / [`DEVICES`] 只是六份的合成，没有自己的构建脚本，
 //! 因此"发布出去的二进制里没有它"这类漂移不再靠人记得补一行 `include_str!`。
 //!
@@ -62,8 +62,6 @@ use diagnostic::{Code, Error};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// 签名声明的纯字符串规则；与生成器 `generate.rs` 经 `include!` 共用同一份源码（ADR 0027 §5）。
-mod signature;
 mod tables;
 
 pub use prof::atom::Prim;
@@ -97,8 +95,9 @@ pub fn builtin_witness(vendor: &str, ext: &str) -> Option<&'static str> {
 
 /// 签名声明的标记：片段第一行 `/* cutile-sign: <prim>/<impl> */` 里的 `cutile-sign:`。
 ///
-/// 与 `signature` 模块内的 `MARKER` 同值；共享规则见该模块。
-pub const SIGN_MARKER: &str = signature::MARKER;
+/// 与 [`prof::sign::MARKER`] 同一个字符串；解析规则也住在那层——设备 crate 的 `build.rs` 在构建期
+/// 比对同一条声明，两边共用一份实现（ADR 0027 §5）。
+pub const SIGN_MARKER: &str = prof::sign::MARKER;
 
 /// 一段片段：文本，以及它声明实现的那条签名。
 ///
@@ -178,9 +177,9 @@ fn split_declaration(source: &str, prim: Prim) -> diagnostic::Result<(&str, &str
 
 /// 声明行 → `<prim>/<impl>` 两半：注释外壳与 [`SIGN_MARKER`] 标记都要在这里对上。
 ///
-/// 剥壳与切分走 [`signature`] 共享规则；这里只补原语上下文与诊断错误。
+/// 剥壳与切分走 [`prof::sign`] 共享规则；这里只补原语上下文与诊断错误。
 fn declaration_parts(first: &str, prim: Prim) -> diagnostic::Result<(&str, &str)> {
-    let declared = signature::strip_marker(first).ok_or_else(|| {
+    let declared = prof::sign::strip_marker(first).ok_or_else(|| {
         Error::new(
             Code::Invalid,
             format!(
@@ -188,7 +187,7 @@ fn declaration_parts(first: &str, prim: Prim) -> diagnostic::Result<(&str, &str)
             ),
         )
     })?;
-    let (declared_prim, implementation) = signature::split_slash(declared).ok_or_else(|| {
+    let (declared_prim, implementation) = prof::sign::split_slash(declared).ok_or_else(|| {
         Error::new(
             Code::Invalid,
             format!("`{prim}` 的签名声明 `{declared}` 不是 `<prim>/<impl>`"),
