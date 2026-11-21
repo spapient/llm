@@ -16,7 +16,7 @@
 | L2 数据层 | `prof`、`spec`、`gemm`、`conv`、`op`、`cpu`、`cuda`、`metal`、`musa`、`opencl`、`rocm`、`prim` | 设备档案与能力闭集、算子四层：`spec` 出契约（签名 / 样本 / 语义表 / 求和表达式与模板词法）、`gemm` 出内核族（打包格式、经典几何、微内核）、`conv` 出神经网络算子（卷积 / 归一化 / 注意力 / 扫描）、`op` 出声明解析与唯一注册表 `REGISTRY`，求和语义代价由 `spec::einsum` 推出；六份设备原语片段与各自见证（一台设备一个成员，语料在各自的 `build.rs` 里解析成 `FRAGMENTS` / `PRIMS` / `DEVICE` 三张表）、`prim` 只出机制：把六张表在编译期拼成一张聚合表，并按 `Layout` 决定读内嵌表还是读盘 | 任何机制代码（拼接、协商、emit）、任何设备知识 |
 | L3 内核 | `cutile`、`optim` | 前半纯机制：协商 → 拼接 → emit → 缓存指纹，一行也不执行；后半编译执行：`doctor` / `verify` / `bench` / `execution` 共用一条 `pipeline`，报告只是数据、排版在前端。拆开的理由是"能不能执行"这条边界：`cutile` 只产设备源与指纹，换掉工具链不影响它；`optim` 才碰编译器与设备，换掉执行方式不影响框架 | 设备厂商特判、运行时依赖 |
 | L4 运行时 | `tensor`、`storage`、`tokenizer` | 张量元数据、布局搬运、文本边界 | 模型语义、调度策略 |
-| L5 模型与训练 | `weights`、`snapshot`、`autograd`、`nn`、`algorithm`、`shard` | 权重结构与自有 `.u` 容器、检查点字节格式、反向图与显存计划、层定义与执行侧机制、架构变体的参考语义（不产出 `ContractSpec`）、切分拓扑与集合通信 | 进程 / 服务语义 |
+| L5 模型与训练 | `weights`、`snapshot`、`autograd`、`nn`、`shard` | 权重结构与自有 `.u` 容器、检查点字节格式、反向图与显存计划、层定义与执行侧机制、切分拓扑与集合通信 | 进程 / 服务语义 |
 | L6 调度与服务 | `train`、`engine`、`device`、`serve` | 训练样本与循环、检查点事实集、连续批与 KV 页账、提交与执行体、设备源 lowering 与厂商后端（`device::backends` / `device::metal::host` / `device::metal::fold` / `device::cuda` / `device::dialect` / `device::platform`，实现 `cutile` 的 `Backend` 缝与 `engine` 的 `Executor` 缝；`device::metal::executor` 是唯一 `unsafe` 岛（[ADR 0035](adr/0035-unsafe-ffi-boundary.md)））、端点契约与线格式、CPU 模型宿主 | 直接调用 `cutile` 生成 kernel；执行任何业务 |
 | L7 入口 | `cli`（bin：`llm` 与 `cutile`） | 组合根：命令行文法、配置解析、各层装配、取值解析与人可读排版；编排入口不定义新类型 | 编排入口新增领域类型；在本层复制内核机制 |
 
@@ -39,7 +39,7 @@
 不再复述每一次的数字；配置层的现状见 [ADR 0022](adr/0022-build-time-corpora.md) 与
 [ADR 0023](adr/0023-settings-to-cli.md)。
 
-允许的边（当前全量，共 172 条，含 55 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benchmarks` / `testkit` 的边不参与运行时方向判定）：
+允许的边（当前全量，共 168 条，含 54 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benchmarks` / `testkit` 的边不参与运行时方向判定）：
 
 ```
 cutile   → diagnostic, op, prim, prof    +dev: testkit
@@ -65,7 +65,6 @@ weights  → tensor, diagnostic, dtype, wire, formats, storage（`storage` 仅�
 snapshot → diagnostic, tensor, weights, wire（检查点字节格式：只写相对上一条的差 + CRC-32 尾部，不认识训练循环）    +dev: testkit
 autograd → tensor, diagnostic    +dev: testkit
 nn       → tensor, op, weights, diagnostic, annotation    +dev: testkit
-algorithm → nn, op, diagnostic    +dev: testkit（架构变体的参考语义：产出张量流而非 `ContractSpec`，故不认识 `tensor` / `weights`）
 shard    → diagnostic
 train    → nn, autograd, weights, shard, op, tensor, diagnostic, snapshot    +dev: testkit
 engine   → tensor, diagnostic, storage    +dev: testkit
@@ -120,7 +119,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Usage` / `Toolchain` | `optim` | kernel 产物的**运行期**两份：`Usage` 记这次编译真正占了什么，`Toolchain` 是实测工具链身份——`CacheKey` 里没有它，`ArtifactKey` 才含（工具链一变就换一份产物） |
 | `CacheKey` / `Cache` / `Entry` / `State` / `Changed` / `Residue` / `Gc` / `ArtifactKey` / `Artifact` | `cutile` | 缓存指纹、编译产物与存量：`CacheKey::fields` 是哈希与差异比较的唯一来源且**不含工具链**，`ArtifactKey` 含实测工具链与编译参数，参数一变就换一份产物 |
 | `Doctor` / `OpInfo` / `DeviceInfo` / `LayoutRow` / `Storage` / `Declared` / `Built` / `CacheWhy` / `CacheState` | `optim` | `doctor` 的结构化结论：每步产物都是数据，排版在前端 |
-| `VerifyReport` / `VerifyEntry` / `Verified` / `Execution` / `WitnessRun` / `Evidence` / `Basis` | `optim` | `verify` 的逐设备结果与见证执行；失败如实记录，不写成"跳过"；`Evidence` 是三条命令共用的那一份证据。设备车道先问 `Backend::parallel`：拿到源就按 `Launch.items` / `group` 真发射网格，只在它明确答 `Unsupported` 时才回落语义门 harness——回落与否是证据里的一个字段而不是"反正都过了"的沉默，否则并行实现缺失会被读成设备已验证 |
+| `VerifyReport` / `VerifyEntry` / `Verified` / `Execution` / `WitnessRun` / `Evidence` / `Basis` / `Channel` | `optim` | `verify` 的逐设备结果与见证执行（`Channel` 记这次跑的是并行网格 / 回落单线程 / C 参考哪一份程序——回落与否是证据里的一个字段）；失败如实记录，不写成"跳过"；`Evidence` 是三条命令共用的那一份证据。设备车道先问 `Backend::parallel`：拿到源就按 `Launch.items` / `group` 真发射网格，只在它明确答 `Unsupported` 时才回落语义门 harness——回落与否是证据里的一个字段而不是"反正都过了"的沉默，否则并行实现缺失会被读成设备已验证 |
 | `LedgerCell` / `BackendRow` | `optim` | `ledger` 跨档案能力台账：只聚合 `witness` 已跑出的证据，不产生新证据 |
 | `Negotiation` | `optim` | 一台设备的协商结论（首档 / 降级 / 无路径 / 无档案）：只读声明与档案，与执行成败分开记 |
 | `Fragment` | `cutile` | 一份生成片段的行数与 §16 口径（`FRAGMENT_LIMIT` 上限管成败，`FRAGMENT_GOAL` 只是余量） |
@@ -154,22 +153,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `AttentionBlock` | `nn` | 注意力组合块：Q/K/V 投影 + 注意力 + 输出投影内聚成一个 `Contract`，子层按 `{块名}.q` / `.k` / `.v` / `.attn` / `.o` 对齐权重条目 |
 | `Bounds` | `nn` | 层的性能下界：`read` / `write` / `flops` 三笔按方向分账，不认识设备峰值、不做 roofline 编排 |
 | `Stack` / `Floor` / `Unpriced` | `nn` | 层栈与它的总下界；未覆盖与无法计价两类清单都不允许静默丢弃，也不让整张模型算不出下界 |
-| `Calib` / `Lif` / `Encoder` / `Events` / `Audit` | `algorithm` | 决策与脉冲的参考语义：`Calib` 是唯一决策端口（DecisionHead / MoE / 层间路由共用），`Lif` 是漏积分-发放神经元，事件臂只管码位与稀疏度。不拥有判定语汇：PASS/FAIL 仍只由 `tool::card` 出 |
-| `Spiking` / `Membrane` / `Gradients` / `Surrogate` / `Master` | `algorithm` | 脉冲三段（`src/spike.rs`）：`Spiking` 持 i8 权重与动力学，`Membrane` 是状态（电位 + 发放前电位 `pre`，反传只认这个值，发放一提交它就被写成 `reset`），`Gradients` 是权重/尺度/电流三条梯度，`Surrogate` 是代理导数（矩形/三角窗，面积 1、窗外 0），`Master` 是 QAT 的浮点主权重（`view` 量化、`descend` 一步 SGD）。形状、码位与梯度布局在同一组判据上拒绝；不拥有 STE 之外的整条反传链、批调度与设备后端 |
-| `BlockTable` / `Channel` / `Gating` / `MissRate` | `algorithm` | §5.8.2 / §5.8.3 的执行侧：块表因果寻址、α/β/γ 通道与一步门控、`ρ_t` 的因果窗口；三者不持参数、不注册算子 |
-| `Bypass` / `MemoryBlock` | `nn` | §1.5–1.6 的条件记忆旁路：可装配的 `MemoryBlock` 只读、失败不回写，形状与槽位由 `engram` 唯一给出；旁路的装配骨架留在 `nn`（它产出 `ContractSpec`），块表寻址与门控语义在 `algorithm`；不持参数、不注册算子 |
-| `Mla` / `Latent` / `Path` | `algorithm` | MLA 的 KV 记账从公式变成结构：`Latent` 只有 `c^{KV}` 与解耦 RoPE 键，两条路径按 §5.8.1 逐元素对拍；不拥有分页与批调度 |
-| `Moe` / `K3_EXPERTS` / `K3_ACTIVE` | `algorithm` | 专家侧：路由走唯一端口 `policy::Calib`，选中集重新归一，共享专家恒参与且不占 top-k 名额；不拥有门控标量、专家参数与训练状态 |
-| `Mhc` / `MHC_STREAMS` | `algorithm` | 残差侧：双随机矩阵重组残差流，非负性是入口硬条件（否则"实测 ≤ 1"会假通过）；不拥有门控标量、层参数与训练状态 |
-| `Hybrid` / `Query` | `algorithm` | 装配：一层 = 层首混流 → MLA 注意力残差 → MoE 前馈残差，三件都调各自模块的唯一入口；增量只加回主路（同一份增量加给每条流会让多流退化成单流），缓存只读、失败不回写；不拥有投影矩阵、归一化算术、KV 页账与训练状态 |
-| `Tower` / `State` / `Kind` / `MemoryStep` / `MEMORY_PER_ATTENTION` | `algorithm` | 层栈装配：每三个通道记忆层配一个混合层（配比是构造条件，不是注释），层序由 `Kind` 逐格读出；记忆状态与 KV 缓存分离（`State` 随序列长累积、`Latent` 按页账走），一次推进要么整栈走一步要么一格不动；不拥有投影、页账与训练状态 |
-| `Kda` / `Memory` | `algorithm` | 混合 delta 轴：纠错式写入（先减去记忆已预测的部分），逐通道门控；不拥有投影、层配方与训练状态 |
-| `Mamba` / `Carry` | `algorithm` | 指数梯形状态空间：状态存成 `2N` 个实值分量、低秩 MIMO、读数取本 token 更新之后的状态；与 delta 规则判据正交，两份实现互不借用语义 |
-| `AttnRes` / `Sources` / `splice` | `algorithm` | 深度轴：按注意力取深层残差（凸组合），`Sources` 按层号记来源，`splice` 保证并回是凸组合 |
-| `Boundary` / `Patches` | `algorithm` | byte-latent 编码侧：边界规则闭集（参数随变体走），`Patches` 只存起点与总字节数，因此"区间首尾相接"由构造保证 |
-| `ByteEncoder` / `ByteDecoder` | `algorithm` | byte-latent 的表示侧与解码侧：哈希 N-gram 桶向量 + patch 内注意力池化，一次投影给出 256-way 分布与贪心字节 |
-| `Emission` / `Emitter` / `Halt` | `algorithm` | byte-latent 生成侧：把边界 / 编码 / 解码串成一次生成，条件只取**已收口** patch；`Halt` 是闭集，`None` 说不清"截断"与"空结果" |
-| `Global` / `Backread` / `Layer` | `algorithm` | byte-latent 的潜在栈：`Global` 的遍数就是 patch 数，`Backread` 的可见集由 `Patches` 给出，`Layer` 的宽度由栈校验 |
+| `Bypass` / `MemoryBlock` | `nn` | §1.5–1.6 的条件记忆旁路：可装配的 `MemoryBlock` 只读、失败不回写，形状与槽位由 `engram` 唯一给出；旁路的装配骨架留在 `nn`（它产出 `ContractSpec`）；不持参数、不注册算子 |
 | `Group` / `Reduce` / `Collective` / `Topology` / `Parallel` / `Partition` | `shard` | 集合通信契约与 TP/PP/DP 拓扑；`world = tp · pp · dp` 在构造期算成精确值，因此不存在回绕出来的"合法" rank |
 | `Sharding` / `Tiling` | `shard` | 张量并行的两种线性层切法与一层权重的切分计划；切分必须整除，在构造期失败而不是摊余数 |
 | `Local` | `shard` | 进程内集合通信：每个 rank 一份镜像，让 TP/DP 的数值语义在没有 NCCL 的机器上也能被 `cargo test` 验证 |
