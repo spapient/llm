@@ -9,7 +9,7 @@ use std::fmt::Write;
 
 /// 静态形态：私有构造函数 + `impl ::nn::Contract` + 一条 `#[cfg(test)]` 校验。
 pub(crate) fn render(declaration: &Declaration, ty: &str) -> String {
-    let mut code = String::with_capacity(1536);
+    let mut code = String::with_capacity(2048);
     spec(&mut code, declaration, ty);
     contract(&mut code, declaration, ty);
     check(&mut code, declaration, ty);
@@ -146,8 +146,11 @@ fn holes(declaration: &RuntimeDecl) -> impl Iterator<Item = &String> {
 }
 
 /// 去重且保持首次出现顺序：`out = [$dim, $dim]` 只占一个宏参数，却在形状里写两次。
+///
+/// 容量取自 [`holes`] 链式迭代器的上界（`once` 与切片迭代器都精确），因此这份临时集合同样
+/// **只分配一次**：`Vec::new()` 会随 push 重新分配，正好抵消掉本层"一次分配"的预算。
 fn unique<'a>(names: impl Iterator<Item = &'a String>) -> Vec<&'a str> {
-    let mut seen: Vec<&str> = Vec::new();
+    let mut seen: Vec<&str> = Vec::with_capacity(names.size_hint().1.unwrap_or(0));
     for name in names {
         if !seen.contains(&name.as_str()) {
             seen.push(name);

@@ -110,11 +110,17 @@ fn feed(tape: &Tape, input: Var, contribution: f64, grads: &mut [f64]) {
     }
 }
 
-/// 依次结算整个计划，返回每个变量的梯度。
-fn gradients(case: &Case, schedule: &Schedule) -> Vec<f64> {
+/// 前向一遍并摆好 loss 的种子梯度；两条结算路径共用同一份初值。
+fn seeded(case: &Case, schedule: &Schedule) -> (Vec<f64>, Vec<f64>) {
     let values = case.forward(&case.values);
     let mut grads = vec![0.0; case.tape.vars() as usize];
     grads[schedule.loss().id() as usize] = 1.0;
+    (values, grads)
+}
+
+/// 依次结算整个计划，返回每个变量的梯度。
+fn gradients(case: &Case, schedule: &Schedule) -> Vec<f64> {
+    let (values, mut grads) = seeded(case, schedule);
     let mut account = schedule.account();
     for step in schedule.steps() {
         accumulate(&case.tape, step, &values, &mut grads);
@@ -126,9 +132,7 @@ fn gradients(case: &Case, schedule: &Schedule) -> Vec<f64> {
 
 /// 按 `levels()` 分批结算：同层顺序随意，结果必须与顺序执行逐位一致。
 fn gradients_by_level(case: &Case, schedule: &Schedule) -> Vec<f64> {
-    let values = case.forward(&case.values);
-    let mut grads = vec![0.0; case.tape.vars() as usize];
-    grads[schedule.loss().id() as usize] = 1.0;
+    let (values, mut grads) = seeded(case, schedule);
     let mut account = schedule.account();
     for level in schedule.levels() {
         for step in level.iter().rev() {

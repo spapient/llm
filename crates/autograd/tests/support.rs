@@ -4,18 +4,43 @@ use testkit::Rng;
 
 use crate::{Requirement, Schedule, Tape, Var};
 
-/// 菱形图 `loss = reduce_sum(add(relu(x), relu(x)))`：两条路径的贡献都回到 `x`，它的梯度
-/// 才算齐全。建好即 backward 出执行序，返回 `(x, left, right, joined, loss, 调度)`——
-/// 调度自带节点，磁带用完即可丢掉。
-pub(crate) fn diamond() -> (Var, Var, Var, Var, Var, Schedule) {
+/// 两条 `relu` 从同一个参数分叉；磁带留给调用方接下游。
+pub(crate) fn fork() -> (Tape, Var, Var, Var) {
     let mut tape = Tape::new();
     let x = tape.parameter();
     let left = tape.record("relu", &[x]).expect("记录");
     let right = tape.record("relu", &[x]).expect("记录");
+    (tape, x, left, right)
+}
+
+/// 菱形图 `loss = reduce_sum(add(relu(x), relu(x)))`：两条路径的贡献都回到 `x`，它的梯度
+/// 才算齐全。建好即 backward 出执行序，返回 `(x, left, right, joined, loss, 调度)`——
+/// 调度自带节点，磁带用完即可丢掉。
+pub(crate) fn diamond() -> (Var, Var, Var, Var, Var, Schedule) {
+    let (mut tape, x, left, right) = fork();
     let joined = tape.record("add", &[left, right]).expect("记录");
     let loss = tape.record("reduce_sum", &[joined]).expect("记录");
     let schedule = tape.backward(loss).expect("在图上");
     (x, left, right, joined, loss, schedule)
+}
+
+/// 两级线性链 `x → mul → add`：排序与配置测试的固定形状。
+pub(crate) fn pair() -> (Tape, Var, Var, Var) {
+    let mut tape = Tape::new();
+    let x = tape.parameter();
+    let y = tape.record("mul", &[x]).expect("记录");
+    let z = tape.record("add", &[y]).expect("记录");
+    (tape, x, y, z)
+}
+
+/// `parameter → relu → reduce_sum`：一个中间激活、一个 loss，账本测试的最小图。
+pub(crate) fn linear() -> (Tape, Var, Var, Var, Schedule) {
+    let mut tape = Tape::new();
+    let x = tape.parameter();
+    let y = tape.record("relu", &[x]).expect("记录");
+    let loss = tape.record("reduce_sum", &[y]).expect("记录");
+    let schedule = tape.backward(loss).expect("在图上");
+    (tape, x, y, loss, schedule)
 }
 
 /// 随机前向：`rounds` 轮里每轮取 1..=3 个已记录的变量作输入，按 `rng.below(10)` 的落点

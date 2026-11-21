@@ -40,7 +40,12 @@ fn fixture() -> (CpuModel, Batch, Vec<Sequence>) {
     let cache = checked(Cache::new(16, 4), "页池");
     let mut batch = Batch::new(checked(Pager::new(cache, 2), "行宽"));
     let sequences: Vec<Sequence> = (0..BATCH)
-        .map(|id| checked(Sequence::new(id as u64, PROMPT, 2, 4, Stream::new(0)), "序列"))
+        .map(|id| {
+            checked(
+                Sequence::new(id as u64, PROMPT, 2, 4, Stream::new(0)),
+                "序列",
+            )
+        })
         .collect();
     for sequence in &sequences {
         checked(batch.admit(sequence.clone()), "准入");
@@ -215,7 +220,7 @@ fn buffers(c: &mut Criterion) {
 }
 
 /// 一轮：先按表算全部节点，再一次性释放，最后取存活块数。
-fn round(store: &mut Buffers<Reference>, nodes: &[(String, Vec<Var>, Var)]) -> usize {
+fn round(store: &mut Buffers<Reference>, nodes: &[(String, Vec<Var>, Var)]) -> u64 {
     for (op, inputs, output) in nodes {
         checked(store.compute(op, inputs, *output), "前向可算");
     }

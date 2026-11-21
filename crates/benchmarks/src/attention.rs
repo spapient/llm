@@ -43,7 +43,12 @@ fn one<E: fmt::Display>(
     run: impl Fn(&[f32], &[f32], &[f32], &mut [f32]) -> Result<(), E>,
 ) {
     checked(run(&sample.q, &sample.k, &sample.v, &mut sample.out), SIZED);
-    bench(group, name, (&sample.q, &sample.k, &sample.v, &mut sample.out), run);
+    bench(
+        group,
+        name,
+        (&sample.q, &sample.k, &sample.v, &mut sample.out),
+        run,
+    );
 }
 
 /// decode 的一条内核：`q` 单行 `d`，`k`/`v` 按 `hist·d`，`out` 回到单行。
@@ -80,9 +85,12 @@ pub(crate) fn flash_decode(c: &mut Criterion) {
     let mut sample = Sample::new(DECODE_S * D);
     let mut group = c.benchmark_group("attention_f32");
     group.throughput(Throughput::Elements((DECODE_S * D) as u64));
-    one(&mut sample, &mut group, "flash_decode_128x64", |q, k, v, out| {
-        attention::flash_forward(q, k, v, out, DECODE_S, D)
-    });
+    one(
+        &mut sample,
+        &mut group,
+        "flash_decode_128x64",
+        |q, k, v, out| attention::flash_forward(q, k, v, out, DECODE_S, D),
+    );
     group.finish();
 }
 
@@ -93,9 +101,12 @@ pub(crate) fn prefill(c: &mut Criterion) {
 
     let mut online = c.benchmark_group("attention_prefill_f32");
     online.throughput(Throughput::Bytes(bytes));
-    one(&mut sample, &mut online, "online_1024x64", |q, k, v, out| {
-        attention::flash_forward(q, k, v, out, PREFILL_S, D)
-    });
+    one(
+        &mut sample,
+        &mut online,
+        "online_1024x64",
+        |q, k, v, out| attention::flash_forward(q, k, v, out, PREFILL_S, D),
+    );
     one(&mut sample, &mut online, "tiled_1024x64", |q, k, v, out| {
         attention::tiled::flash_tiled_forward(q, k, v, out, PREFILL_S, D)
     });
@@ -123,8 +134,12 @@ pub(crate) fn decode(c: &mut Criterion) {
 fn hist_pair(c: &mut Criterion, hist: usize) {
     let kv_len = hist * D;
     let q: Vec<f32> = (0..D).map(|index| -0.5 + index as f32 * 0.13).collect();
-    let k: Vec<f32> = (0..kv_len).map(|index| 0.4 - index as f32 * 0.009).collect();
-    let v: Vec<f32> = (0..kv_len).map(|index| -0.2 + index as f32 * 0.011).collect();
+    let k: Vec<f32> = (0..kv_len)
+        .map(|index| 0.4 - index as f32 * 0.009)
+        .collect();
+    let v: Vec<f32> = (0..kv_len)
+        .map(|index| -0.2 + index as f32 * 0.011)
+        .collect();
     let mut out = vec![0.0f32; D];
 
     let mut group = c.benchmark_group("decode_attention_f32");
@@ -134,6 +149,12 @@ fn hist_pair(c: &mut Criterion, hist: usize) {
     decode_one(&mut group, &name, lanes, hist, attention::decode_forward);
     let name = format!("flash_hist{hist}x{D}");
     let lanes: (&[f32], &[f32], &[f32], &mut [f32]) = (&q, &k, &v, &mut out);
-    decode_one(&mut group, &name, lanes, hist, attention::decode_flash_forward);
+    decode_one(
+        &mut group,
+        &name,
+        lanes,
+        hist,
+        attention::decode_flash_forward,
+    );
     group.finish();
 }

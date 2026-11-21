@@ -45,11 +45,7 @@ fn a_repeated_input_receives_one_contribution_per_position() {
 /// 乱序执行、重复结算、外来步骤都必须失败，而不是悄悄算错。
 #[test]
 fn settling_out_of_order_or_twice_is_rejected() {
-    let mut tape = Tape::new();
-    let x = tape.parameter();
-    let y = tape.record("relu", &[x]).expect("记录");
-    let loss = tape.record("reduce_sum", &[y]).expect("记录");
-    let schedule = tape.backward(loss).expect("在图上");
+    let (mut tape, x, _, _, schedule) = crate::testutil::linear();
     let steps = schedule.steps();
     let mut account = schedule.account();
     assert_eq!(
@@ -74,11 +70,7 @@ fn settling_out_of_order_or_twice_is_rejected() {
 /// 账本按计划重建：结算进度清零，扇出重新数一遍。
 #[test]
 fn rebuilding_starts_the_ledger_over() {
-    let mut tape = Tape::new();
-    let x = tape.parameter();
-    let y = tape.record("relu", &[x]).expect("记录");
-    let loss = tape.record("reduce_sum", &[y]).expect("记录");
-    let schedule = tape.backward(loss).expect("在图上");
+    let (_, _, y, _, schedule) = crate::testutil::linear();
     let mut account = Account::new();
     account.rebuild(&schedule);
     assert_eq!(account.settled(), 0);

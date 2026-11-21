@@ -1,13 +1,18 @@
 //! 性能与供应链静态门禁（`annotation` 局部）。
 //!
 //! 过程宏在编译期运行，输入只是一小段属性；它的性能风险不是绝对毫秒数，而是文法退化成关联
-//! 容器查找、正则回溯或引入重型初始化。下面两条测试把这几类回退挡在合并之前：
+//! 容器查找、正则回溯或引入重型初始化，渲染热路径上每次多分配几个中间 `String`。下面的门禁
+//! 把这几类回退挡在合并之前：
 //!
 //! - 生产源码不出现关联容器、正则或惰性/全局初始化；
+//! - 渲染热路径每次只分配一个输出缓冲；
 //! - 运行期依赖为空（`MODEL` 改为投影 `Operator` 后，连 `dtype` 基座也不再需要）。
+//!
+//! 前两条靠 [`code_only`] 先剔掉注释与字面量：生成文本里本身就写着 `format!`，不剔会把"被生成
+//! 的代码"当成"生成器的实现"。剔除器自己有等价类测试，认错一次就会让上面两条静默漏判。
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// 生产源码里禁止出现的重型结构：关联容器、正则、惰性 / 全局初始化。
 const FORBIDDEN: [&str; 10] = [
@@ -23,7 +28,7 @@ const FORBIDDEN: [&str; 10] = [
     "phf",
 ];
 
-fn walk(dir: &PathBuf, files: &mut Vec<PathBuf>) {
+fn walk(dir: &Path, files: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
@@ -38,6 +43,7 @@ fn walk(dir: &PathBuf, files: &mut Vec<PathBuf>) {
 }
 
 /// 生产源码不引入关联容器或正则：文法是游标单趟扫描，查名字只在闭集数组上线性包含。
+/// 只算代码——注释里提到 `HashMap`、字面量里写着 `"regex"` 都不构成依赖。
 #[test]
 fn production_source_has_no_associative_container_or_regex() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -46,7 +52,7 @@ fn production_source_has_no_associative_container_or_regex() {
 
     let mut offenders: Vec<String> = Vec::new();
     for path in files {
-        let text = fs::read_to_string(&path).expect("源码可读");
+        let text = code_only(&fs::read_to_string(&path).expect("源码可读"));
         for token in FORBIDDEN {
             if text.contains(token) {
                 offenders.push(format!("{} 含 `{token}`", path.display()));
@@ -79,51 +85,123 @@ fn section_keys<'a>(manifest: &'a str, section: &str) -> Vec<&'a str> {
     keys
 }
 
-/// 只留下代码：字符串字面量与行注释都剔掉。生成文本里就写着 `format!` / `.to_string()`，
-/// 直接搜全文会把"被生成的代码"误判成"生成器的实现"。
+/// 只留下代码：注释与字面量都剔掉。生成文本里就写着 `format!` / `.to_string()`，直接搜全文会把
+/// "被生成的代码"误判成"生成器的实现"；`'{'`、`'"'` 这类字面量还会把 [`body`] 的花括号配平带偏。
+///
+/// 遇到注释或字面量就整段跳过，其余代码片段一次性追加：单趟线性，剔除本身不分配中间 `String`。
 fn code_only(text: &str) -> String {
+    const OPENERS: &[char] = &['"', '\'', '/'];
     let mut out = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(current) = chars.next() {
-        match current {
-            '"' => {
-                out.push('"');
-                while let Some(inner) = chars.next() {
-                    match inner {
-                        '\\' => {
-                            chars.next();
-                        }
-                        '"' => break,
-                        _ => {}
-                    }
-                }
+    let mut rest = text;
+    while let Some(at) = rest.find(OPENERS) {
+        out.push_str(&rest[..at]);
+        rest = &rest[at..];
+        match skip(rest, &out) {
+            Some(len) => rest = &rest[len..],
+            None => {
+                let head = rest.chars().next().expect("游标停在非空处");
+                out.push(head);
+                rest = &rest[head.len_utf8()..];
             }
-            '/' if chars.peek() == Some(&'/') => {
-                while chars.peek().is_some_and(|next| *next != '\n') {
-                    chars.next();
-                }
-            }
-            _ => out.push(current),
         }
     }
+    out.push_str(rest);
     out
+}
+
+/// 从注释 / 字面量开头算起要吞掉的字节数；裸 `/` 与生命周期 `'a` 都不是注释或字面量，返回 `None`。
+///
+/// `code` 是已经收下的代码：raw string 的 `r##` 前缀都已按代码追加，数它尾随的 `#` 就是收尾定界符。
+fn skip(rest: &str, code: &str) -> Option<usize> {
+    let hashes = code.len() - code.trim_end_matches('#').len();
+    match *rest.as_bytes() {
+        [b'/', b'/', ..] => Some(rest.find('\n').unwrap_or(rest.len())),
+        [b'/', b'*', ..] => Some(comment_end(rest)),
+        [b'"', ..] => Some(quoted_end(rest, hashes)),
+        [b'\'', ..] => char_end(rest),
+        _ => None,
+    }
+}
+
+/// 块注释可嵌套（Rust 特性）：`/* a /* b */ c */` 整体只是一条注释。
+fn comment_end(rest: &str) -> usize {
+    let bytes = rest.as_bytes();
+    let mut depth = 0u32;
+    let mut at = 0;
+    while at + 1 < bytes.len() {
+        match (bytes[at], bytes[at + 1]) {
+            (b'/', b'*') => {
+                depth += 1;
+                at += 2;
+            }
+            (b'*', b'/') => {
+                depth -= 1;
+                at += 2;
+                if depth == 0 {
+                    return at;
+                }
+            }
+            _ => at += 1,
+        }
+    }
+    rest.len()
+}
+
+/// 字符串的结尾；`hashes` 是开引子后的 `#` 数：`r##"…"##` 为 2，普通 `"…"` 为 0。
+fn quoted_end(rest: &str, hashes: usize) -> usize {
+    let bytes = rest.as_bytes();
+    let mut at = 1;
+    while at < bytes.len() {
+        match bytes[at] {
+            b'\\' if hashes == 0 => at += 2,
+            b'"' if closes_with(&bytes[at + 1..], hashes) => return at + 1 + hashes,
+            _ => at += 1,
+        }
+    }
+    rest.len()
+}
+
+/// raw string 的收尾定界符是 `"` 后跟与开引子同数量的 `#`。
+fn closes_with(rest: &[u8], hashes: usize) -> bool {
+    rest.len() >= hashes && rest[..hashes].iter().all(|byte| *byte == b'#')
+}
+
+/// 字符字面量的结尾：`'{'` / `'\''` / `'\u{7f}'`；`'a` 是生命周期，返回 `None`。
+///
+/// 长度必须卡死：放开长度就会让 `for<'a, 'b>` 里的 `'a, '` 被当成字面量，进而吞掉真实代码。
+fn char_end(rest: &str) -> Option<usize> {
+    /// `'\u{10FFFF}'` 是最长的字符字面量（13 字节），收尾引号不会晚于第 12 个字节。
+    const LONGEST: usize = 12;
+    let bytes = rest.as_bytes();
+    if *bytes.get(1)? == b'\\' {
+        let mut at = 1;
+        while at <= LONGEST {
+            match *bytes.get(at)? {
+                b'\\' => at += 2,
+                b'\'' => return Some(at + 1),
+                _ => at += 1,
+            }
+        }
+        return None;
+    }
+    let width = rest[1..].chars().next()?.len_utf8();
+    (bytes.get(1 + width) == Some(&b'\'')).then_some(2 + width)
 }
 
 /// 某个函数的函数体：从 `fn 名字` 起找第一个 `{`，再按花括号配平。泛型参数（`fn unique<'a>(`）
 /// 也认，但 `fn render` 不会命中 `fn render_model`。
 fn body<'a>(code: &'a str, name: &str) -> &'a str {
-    let marker = format!("fn {name}");
     let start = code
-        .match_indices(&marker)
-        .find(|(offset, _)| {
-            matches!(
-                code[offset + marker.len()..].chars().next(),
-                Some('(' | '<')
-            )
+        .match_indices("fn ")
+        .find_map(|(offset, marker)| {
+            let tail = code[offset + marker.len()..].strip_prefix(name)?;
+            let joined = tail
+                .chars()
+                .next()
+                .is_some_and(|next| next.is_alphanumeric() || next == '_');
+            (!joined).then_some(offset + marker.len() + name.len())
         })
-        .unwrap_or_else(|| panic!("`render.rs` 里没有 `{name}`"))
-        .0
-        + marker.len();
+        .unwrap_or_else(|| panic!("`render.rs` 里没有 `fn {name}`"));
     let rest = &code[start..];
     let open = rest.find('{').expect("函数有函数体");
     let mut depth = 0usize;
@@ -179,6 +257,42 @@ fn rendering_allocates_only_its_output_buffer() {
             );
         }
     }
+}
+
+/// [`code_only`] 的等价类：五种形态各自要吞干净，生命周期和跨行代码一个字都不能少。
+///
+/// 剔除器认错一次，上面两条门禁就静默失效（`'"'` 会把下一行的代码当字符串吞掉，`'{'` 会让
+/// 花括号配平多出一层），所以它自带测试，而不是只靠门禁"看起来还是绿的"。
+#[test]
+fn code_only_strips_every_literal_form() {
+    let source = r##"
+        // format! 行注释
+        /* format! /* 嵌套块注释 */ format! */
+        let text = "format! \" //";
+        let raw = r#"format! "quoted" //"#;
+        let brace = '{';
+        let quote = '"';
+        let escaped = '\'';
+        fn unique<'a>(names: &'a str) -> &'a str { names }
+    "##;
+    let code = code_only(source);
+    for leaked in ["format!", "quoted", "//", "/*", "嵌套"] {
+        assert!(!code.contains(leaked), "`{leaked}` 漏进了代码：{code}");
+    }
+    for kept in [
+        "let brace",
+        "let quote",
+        "let escaped",
+        "fn unique<'a>",
+        "&'a str",
+    ] {
+        assert!(code.contains(kept), "`{kept}` 被误剔：{code}");
+    }
+    assert_eq!(
+        code.matches('{').count(),
+        code.matches('}').count(),
+        "字面量里的花括号不得参与配平：{code}"
+    );
 }
 
 /// 运行期依赖为空：注解文法手写解析，`MODEL` 由 `Operator` 投影，不再需要任何基座 crate。

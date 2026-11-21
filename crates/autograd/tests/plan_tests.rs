@@ -6,16 +6,20 @@ use diagnostic::Code;
 use tensor::{DType, Shape};
 use testkit::Rng;
 
+/// 从 `current` 再往下接 `length` 个 `relu`，以 `reduce_sum` 收尾并 backward。
+fn extend(tape: &mut Tape, current: &mut Var, length: usize) -> Schedule {
+    for _ in 0..length {
+        *current = tape.record("relu", &[*current]).expect("记录");
+    }
+    let loss = tape.record("reduce_sum", &[*current]).expect("记录");
+    tape.backward(loss).expect("在图上")
+}
+
 /// 一条链：`length` 个 `relu` 加一个 `reduce_sum`，反向顺序与深度都已知。
 fn chain(length: usize) -> (Tape, Schedule) {
     let mut tape = Tape::new();
-    let x = tape.parameter();
-    let mut current = x;
-    for _ in 0..length {
-        current = tape.record("relu", &[current]).expect("记录");
-    }
-    let loss = tape.record("reduce_sum", &[current]).expect("记录");
-    let schedule = tape.backward(loss).expect("在图上");
+    let mut current = tape.parameter();
+    let schedule = extend(&mut tape, &mut current, length);
     (tape, schedule)
 }
 
@@ -229,11 +233,7 @@ fn a_detached_value_consumed_by_a_live_step_is_kept_and_never_dropped() {
         .record_with("stop_gradient", &[x], Requirement::None)
         .expect("记录");
     let mut current = tape.record("relu", &[frozen, x]).expect("记录");
-    for _ in 0..8 {
-        current = tape.record("relu", &[current]).expect("记录");
-    }
-    let loss = tape.record("reduce_sum", &[current]).expect("记录");
-    let schedule = tape.backward(loss).expect("在图上");
+    let schedule = extend(&mut tape, &mut current, 8);
 
     // 10 个 8 字节的激活共 80 字节；预算 64 时必然要丢一些，但 frozen 无处可重放。
     let plan = Plan::of(&tape, &schedule, uniform(&tape, 8), Budget::new(64)).expect("可分段");

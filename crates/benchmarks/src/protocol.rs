@@ -6,7 +6,7 @@
 //! 写法与用例名放在一张表里：四种写法的字面量只出现一次，装配阶段按同一张表校验，
 //! 测量阶段只搬运 `Result`。
 
-use crate::fixtures::checked;
+use crate::fixtures::{checked, found};
 use criterion::Criterion;
 use cutile::builtin::Catalogue;
 use cutile::cap;
@@ -36,8 +36,8 @@ pub(crate) fn span(c: &mut Criterion) {
 /// 内置目录在 `cpu` 档案上协商 `gemv_i4`：应命中首档。
 pub(crate) fn negotiate(c: &mut Criterion) {
     let catalogue = checked(Catalogue::try_builtin(), "内置目录");
-    let op = checked(catalogue.op("gemv_i4"), "内置算子 gemv_i4");
-    let profile = checked(catalogue.profile("cpu"), "内置 cpu 档案");
+    let op = found(catalogue.op("gemv_i4"), "内置算子 gemv_i4");
+    let profile = found(catalogue.profile("cpu"), "内置 cpu 档案");
 
     let mut group = c.benchmark_group("cutile/negotiate");
     group.bench_function("gemv_i4_on_cpu", |bench| {

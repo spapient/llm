@@ -25,6 +25,23 @@ pub(crate) fn checked<T, E: fmt::Display>(result: Result<T, E>, what: &str) -> T
     }
 }
 
+/// 夹具查表失败：`Option` 版本，语义与 [`checked`] 相同（同样是唯一失败出口）。
+/// 测量路径上的 `Result` 出口：同一几何已在装配阶段由 [`checked`] 校验过一次，这里只把
+/// 状态压成 `bool` 交给 `black_box`——不在计时路径上第二次解释失败，也不吞掉错误。
+pub(crate) fn ok<E>(r: Result<(), E>) -> bool {
+    r.is_ok()
+}
+
+pub(crate) fn found<T>(option: Option<T>, what: &str) -> T {
+    match option {
+        Some(value) => value,
+        None => {
+            eprintln!("基准夹具失败（{what}）：查表未命中");
+            std::process::exit(1)
+        }
+    }
+}
+
 /// 一组等长样例：`q` / `k` / `v` 各 `len` 个标量，外加同样长的 `out`。
 pub(crate) struct Sample {
     pub(crate) q: Vec<f32>,

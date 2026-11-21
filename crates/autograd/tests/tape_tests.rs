@@ -110,10 +110,7 @@ fn an_empty_operator_name_is_rejected() {
 
 #[test]
 fn plan_config_follows_the_configured_ordering() {
-    let mut tape = Tape::new();
-    let x = tape.parameter();
-    let y = tape.record("mul", &[x]).expect("记录");
-    let z = tape.record("add", &[y]).expect("记录");
+    let (tape, _, _, z) = crate::testutil::pair();
     let config = Config::new(Ordering::Insertion, MemoryPolicy::Auto);
     let mut schedule = Schedule::default();
     tape.plan_config(&mut schedule, z, &config).expect("规划");

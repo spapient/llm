@@ -7,10 +7,7 @@ use super::*;
 
 #[test]
 fn insertion_order_is_the_reverse_record_order() {
-    let mut tape = Tape::new();
-    let x = tape.parameter();
-    let y = tape.record("mul", &[x]).expect("记录");
-    let z = tape.record("add", &[y]).expect("记录");
+    let (tape, _, y, z) = crate::testutil::pair();
     let mut schedule = Schedule::default();
     schedule
         .plan_with(&tape, z, Ordering::Insertion)
@@ -100,10 +97,7 @@ fn the_schedule_is_deterministic() {
 /// 复用同一个 `Schedule`：步骤表的缓冲地址不变，说明没有重新分配。
 #[test]
 fn planning_into_an_existing_schedule_reuses_its_buffers() {
-    let mut tape = Tape::new();
-    let x = tape.parameter();
-    let left = tape.record("relu", &[x]).expect("记录");
-    let right = tape.record("relu", &[x]).expect("记录");
+    let (mut tape, _, left, right) = crate::testutil::fork();
     let loss = tape.record("add", &[left, right]).expect("记录");
     let mut schedule = Schedule::new();
     tape.plan_into(&mut schedule, loss).expect("在图上");

@@ -7,7 +7,7 @@
 //! 报 ns/iter 与读入字节吞吐；`gemm_threads` 报乘加量吞吐（`GElem/s`），因为那几条路径读入
 //! 字节数相同、差别只在算术与并行度。回退判定在 `tests/regress`，本文件不写性能目标数字。
 
-use crate::fixtures::checked;
+use crate::fixtures::{checked, ok};
 use criterion::measurement::WallTime;
 use criterion::{BenchmarkGroup, BenchmarkId, Criterion, Throughput};
 use op::add_f32::Add;
@@ -187,6 +187,30 @@ fn dual<A, C, E: fmt::Display>(
     });
 }
 
+/// 同一份 A/B 缓冲上的两档 `gemm` 内核：标量参考与 tile 执行路径。
+///
+/// `gemm` 的收缩轴固定为 [`gemm::K`]，所以这里只传 `(m, n)`；标量路径 `gemm::matmul`
+/// 不返回 `Result`，几何由 tiled 路径的 `check_dims` 一次性校验。
+fn gemm_pair<G: Gemm>(
+    group: &mut BenchmarkGroup<'_, WallTime>,
+    (a, b, out): (&[G::Elem], &[G::Elem], &mut [f32]),
+    (m, n): (usize, usize),
+    (scalar, tiled): (&str, &str),
+) {
+    checked(gemm::forward::<G>(a, b, m, n, &mut *out), GEOM);
+    group.bench_function(scalar, |iter| {
+        iter.iter(|| gemm::matmul::<G>(black_box(a), black_box(b), m, n, black_box(&mut *out)))
+    });
+    group.bench_function(tiled, |iter| {
+        iter.iter(|| {
+            black_box(checked(
+                gemm::forward::<G>(black_box(a), black_box(b), m, n, black_box(&mut *out)),
+                GEOM,
+            ))
+        })
+    });
+}
+
 /// f32 小 K：`prefill_256x256_k8` 走执行路径，`scalar_*` 走标量参考。
 ///
 /// `K = 8` 时一行 A 就在寄存器里，分块实测慢 2~3 倍，所以这条格式不分块；本基准把这点留在
@@ -201,13 +225,11 @@ pub(crate) fn gemm_dense(c: &mut Criterion) {
     group.throughput(Throughput::Bytes(
         ((a.len() + b.len()) * size_of::<f32>()) as u64,
     ));
-    dual(
+    gemm_pair::<gemm_f32::GemmF32>(
         &mut group,
         (&a, &b, &mut out),
-        (M, N, k),
-        ["scalar_256x256_k8", "prefill_256x256_k8"],
-        gemm::matmul::<gemm_f32::GemmF32>,
-        gemm_f32::forward,
+        (M, N),
+        ("scalar_256x256_k8", "prefill_256x256_k8"),
     );
     group.finish();
 }
@@ -229,14 +251,7 @@ fn quant_pair<G: Gemm>(group: &mut BenchmarkGroup<'_, WallTime>, name: &str) {
     group.throughput(Throughput::Bytes((a.len() + b.len()) as u64));
     let scalar = format!("scalar_{name}");
     let tiled = format!("tiled_{name}");
-    dual(
-        group,
-        (&a, &b, &mut out),
-        (M, N, gemm::K),
-        [&scalar, &tiled],
-        gemm::matmul::<G>,
-        gemm::forward::<G>,
-    );
+    gemm_pair::<G>(group, (&a, &b, &mut out), (M, N), (&scalar, &tiled));
 }
 
 /// 大 K 稠密 f32：朴素 i→j→p 与分块 rank-1 更新。
@@ -268,7 +283,9 @@ pub(crate) fn matmul_dense(c: &mut Criterion) {
 /// `packed` 再叠加 8×8 寄存器分块与多线程。三者算术相同，输出逐位一致。
 fn projection(c: &mut Criterion) {
     let rows = M;
-    let x: Vec<f32> = (0..rows * K).map(|i| ((i % 5) as f32) * 0.25 - 0.5).collect();
+    let x: Vec<f32> = (0..rows * K)
+        .map(|i| ((i % 5) as f32) * 0.25 - 0.5)
+        .collect();
     let w: Vec<f32> = (0..N * K).map(|i| ((i % 7) as f32) * 0.2 - 0.4).collect();
     let mut out = vec![0.0f32; rows * N];
 
@@ -280,11 +297,11 @@ fn projection(c: &mut Criterion) {
     group.bench_function("row_by_row_gemv", |iter| {
         iter.iter(|| {
             for row in 0..rows {
-                black_box(gemv_f32::forward(
+                black_box(ok(gemv_f32::forward(
                     black_box(&x[row * K..][..K]),
                     black_box(&w),
                     black_box(&mut out[row * N..][..N]),
-                ));
+                )));
             }
         })
     });
@@ -300,15 +317,18 @@ fn projection(c: &mut Criterion) {
             ))
         })
     });
-    group.bench_function("packed", |iter| {
+    group.bench_function("scalar", |iter| {
         iter.iter(|| {
-            black_box(fast::gemm_f32_tn(
-                black_box(&x),
-                black_box(&w),
-                black_box(rows),
-                black_box(N),
-                black_box(K),
-                black_box(&mut out),
+            black_box(checked(
+                matmul::forward_tn_scalar(
+                    black_box(&x),
+                    black_box(&w),
+                    black_box(rows),
+                    black_box(N),
+                    black_box(K),
+                    black_box(&mut out),
+                ),
+                GEOM,
             ))
         })
     });
@@ -424,16 +444,16 @@ fn i8_paths(group: &mut BenchmarkGroup<'_, WallTime>, parallel: usize) {
         group.bench_function(BenchmarkId::new("i8_threads", &shape), |iter| {
             iter.iter(|| {
                 spread(parallel, m, n, &mut out, |start, rows, part| {
-                    black_box(matmul_i8::forward_tiled(
+                    black_box(ok(matmul_i8::forward_tiled(
                         &a[start * k..(start + rows) * k],
                         &b,
                         rows,
                         n,
                         k,
                         part,
-                    ));
+                    )));
                 });
-                black_box(&out)
+                black_box(out.len())
             })
         });
     }

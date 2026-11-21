@@ -8,14 +8,14 @@
 //! 的 `LOAD_SCENARIOS` 逐条对齐——组级一个总数会让台账与基准各说一套。
 
 pub(crate) mod weights {
-    use crate::fixtures::checked;
-    use criterion::{Criterion, Throughput};
+    use crate::fixtures::{checked, found};
+    use criterion::{BenchmarkGroup, Criterion, Throughput, measurement::WallTime};
     use std::hint::black_box;
     use std::path::PathBuf;
     use weights::safetensors::File;
-    use weights::{Archive, Segment, Wire, Writer};
+    use weights::{Archive, Loader, Segment, Wire, Writer};
     #[cfg(unix)]
-    use weights::MmapSource;
+    use weights::{MmapSource, Reader};
 
     /// 容器段数。
     const SEGMENTS: usize = 64;
@@ -67,7 +67,7 @@ pub(crate) mod weights {
             bench.iter(|| black_box(checked(parsed.verify(0, &proof, &root), "校验")))
         });
         group.bench_function("get_by_name", |bench| {
-            bench.iter(|| black_box(checked(parsed.get(black_box("seg_32")), "段存在")))
+            bench.iter(|| black_box(found(parsed.get(black_box("seg_32")), "段存在")))
         });
         group.finish();
         write_group(c);
@@ -114,7 +114,10 @@ pub(crate) mod weights {
             "系统时钟",
         )
         .as_nanos();
-        std::env::temp_dir().join(format!("llm_weights_load_{}_{nanos}.bin", std::process::id()))
+        std::env::temp_dir().join(format!(
+            "llm_weights_load_{}_{nanos}.bin",
+            std::process::id()
+        ))
     }
 
     /// 装载组：`*_reopen` 每迭代重开（冷），`*_open` 复用已打开源（热）；`mmap_*` 仅 Unix。
@@ -149,7 +152,7 @@ pub(crate) mod weights {
         group.bench_function("read_first_open", |bench| {
             bench.iter(|| loads(&file, &names, true))
         });
-        mapped(c, &mut group, &path, &names);
+        mapped(&mut group, &path, &names);
         group.finish();
         checked(std::fs::remove_file(&path), "删除临时文件");
     }
@@ -159,7 +162,7 @@ pub(crate) mod weights {
         let lanes = if first { &names[..1] } else { names };
         let mut produced = 0usize;
         for name in lanes {
-            let entry = checked(file.header().get(name.as_str()), "条目在位");
+            let entry = found(file.header().get(name.as_str()), "条目在位");
             produced += checked(file.load(entry), "装载").len();
         }
         black_box(produced)
@@ -167,7 +170,7 @@ pub(crate) mod weights {
 
     /// 映射后端的四条用例：共享 `loads` 的条目选择与吞吐口径，只换开与读。
     #[cfg(unix)]
-    fn mapped(c: &mut Criterion, group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>, path: &PathBuf, names: &[String]) {
+    fn mapped(group: &mut BenchmarkGroup<'_, WallTime>, path: &PathBuf, names: &[String]) {
         let source = checked(MmapSource::open(path), "映射");
         let all = Throughput::Bytes(TOTAL_BYTES as u64);
         let first = Throughput::Bytes(BYTES_PER_SEGMENT as u64);
@@ -199,7 +202,7 @@ pub(crate) mod weights {
         let lanes = if first { &names[..1] } else { names };
         let mut produced = 0usize;
         for name in lanes {
-            let entry = checked(source.header().get(name.as_str()), "条目在位");
+            let entry = found(source.header().get(name.as_str()), "条目在位");
             produced += checked(source.read(entry), "借用读取").len();
         }
         black_box(produced)
@@ -207,7 +210,7 @@ pub(crate) mod weights {
 
     /// 非 Unix 目标上没有映射后端，装载组的骨架保持一致。
     #[cfg(not(unix))]
-    fn mapped(_: &mut Criterion, _: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>, _: &PathBuf, _: &[String]) {}
+    fn mapped(_: &mut BenchmarkGroup<'_, WallTime>, _: &PathBuf, _: &[String]) {}
 }
 
 pub(crate) mod text {
@@ -361,7 +364,7 @@ pub(crate) mod text {
     fn leb(c: &mut Criterion) {
         let count = Throughput::Elements(VALUES.len() as u64);
         let mut group = c.benchmark_group("wire/leb");
-        group.throughput(count);
+        group.throughput(count.clone());
         group.bench_function("encode_values", |bench| {
             bench.iter(|| {
                 let mut count = Count(0);
@@ -403,7 +406,7 @@ pub(crate) mod text {
                     sink.put(black_box(chunk));
                 }
                 black_box(sink.checksum());
-                black_box(&out)
+                black_box(&out);
             })
         });
         group.finish();
