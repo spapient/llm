@@ -102,8 +102,6 @@ impl Token {
     }
 }
 
-/// 词法器：持有字符游标与当前位置。源码先收集成 `Vec<char>`，按字符而非字节计数列号，
-/// 前缀判定需要向前看一两个字符（[`Lexer::peek_at`]）；这是静态分析器，不追求零拷贝。
 struct Lexer {
     chars: Vec<char>,
     at: usize,
@@ -122,7 +120,10 @@ impl Lexer {
     }
 
     fn pos(&self) -> Pos {
-        Pos { line: self.line, col: self.col }
+        Pos {
+            line: self.line,
+            col: self.col,
+        }
     }
     fn peek(&self) -> Option<char> {
         self.chars.get(self.at).copied()
@@ -152,7 +153,9 @@ impl Lexer {
         loop {
             self.skip_trivia()?;
             let Some(ch) = self.peek() else {
-                return eof(close, items);
+                return close.map_or(Ok(items), |_| {
+                    Err(Error::new(Code::Invalid, "括号未闭合").with("tools::lex"))
+                });
             };
             if close == Some(ch) {
                 return Ok(items);
@@ -227,7 +230,7 @@ impl Lexer {
     }
 
     fn word_or_punct(&mut self, ch: char) -> diagnostic::Result<Token> {
-        if is_ident_start(ch) {
+        if ch == '_' || ch.is_alphabetic() {
             return self.ident_or_string(ch);
         }
         if ch.is_ascii_digit() {
@@ -250,7 +253,7 @@ impl Lexer {
         }
         let mut text = String::new();
         while let Some(ch) = self.peek() {
-            if !is_ident_cont(ch) {
+            if !(ch == '_' || ch.is_alphanumeric()) {
                 break;
             }
             text.push(ch);
@@ -353,7 +356,8 @@ impl Lexer {
         let start = self.pos();
         let mut text = String::new();
         while let Some(ch) = self.peek() {
-            if ch.is_whitespace() || open_delim(ch).is_some() || matches!(ch, ')' | '}' | ']')
+            if ch.is_whitespace()
+                || matches!(ch, '(' | ')' | '{' | '}' | '[' | ']')
                 || self.at_pair('.', '.')
             {
                 break;
@@ -368,26 +372,16 @@ impl Lexer {
     fn after_last(&self, text: &str, start: Pos) -> Pos {
         let keep = text.chars().count().saturating_sub(1);
         text.chars().take(keep).fold(start, |pos, ch| match ch {
-            '\n' => Pos { line: pos.line + 1, col: 1 },
-            _ => Pos { line: pos.line, col: pos.col + 1 },
+            '\n' => Pos {
+                line: pos.line + 1,
+                col: 1,
+            },
+            _ => Pos {
+                line: pos.line,
+                col: pos.col + 1,
+            },
         })
     }
-}
-
-/// 括号内到达 EOF 是错误，顶层是正常结束。
-fn eof(close: Option<char>, items: Vec<Token>) -> diagnostic::Result<Vec<Token>> {
-    if close.is_none() {
-        return Ok(items);
-    }
-    Err(Error::new(Code::Invalid, "括号未闭合").with("tools::lex"))
-}
-
-fn is_ident_start(ch: char) -> bool {
-    ch == '_' || ch.is_alphabetic()
-}
-
-fn is_ident_cont(ch: char) -> bool {
-    ch == '_' || ch.is_alphanumeric()
 }
 
 fn open_delim(ch: char) -> Option<(Delim, char)> {
