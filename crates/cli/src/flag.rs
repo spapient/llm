@@ -124,7 +124,13 @@ impl<'a> Flags<'a> {
 
     /// 可缺省选项的取值；没出现就是 `None`。
     pub(crate) fn text(&self, name: &str) -> Option<String> {
-        self.index(name).and_then(|index| self.slots[index].clone())
+        self.slot(name).map(str::to_string)
+    }
+
+    /// 取值的借用形态：`number` 这类"用完就丢"的读者不必为解析先分配一份副本。
+    fn slot(&self, name: &str) -> Option<&str> {
+        self.index(name)
+            .and_then(|index| self.slots[index].as_deref())
     }
 
     /// 必需选项的取值：[`Flags::parse`] 已核对过，缺了不可能发生。
@@ -145,7 +151,7 @@ impl<'a> Flags<'a> {
         name: &str,
         message: &str,
     ) -> Result<Option<T>> {
-        match self.text(name) {
+        match self.slot(name) {
             Some(text) => text.parse().map(Some).map_err(|_| self.invalid(message)),
             None => Ok(None),
         }
@@ -167,7 +173,7 @@ impl<'a> Flags<'a> {
         let mut accepted = String::new();
         for flag in self.grammar {
             if !accepted.is_empty() {
-                accepted.push_str("、");
+                accepted.push('、');
             }
             accepted.push_str(flag.name);
         }

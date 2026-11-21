@@ -86,21 +86,20 @@ fn section_keys<'a>(manifest: &'a str, section: &str) -> Vec<&'a str> {
 }
 
 /// 注释与字面量的三种开头字节；`/` 也可能是除号、`'` 也可能是生命周期，都要先看见再判定。
-const OPENERS: [u8; 3] = [b'"', b'\'', b'/'];
+const OPENERS: &[u8] = b"\"'/";
 
 /// 16 字节一步的字节搜索，语义等同 `bytes[from..].iter().position(needles.contains)`。
 ///
 /// 逐字节交给迭代器是把速度押在"编译器愿意自动向量化"上；这里把比较写成每道放一个字节的位并行：
-/// `word ^ 目标` 之后，借位链正好只在"该道为 0"处留下 `0x80`。三个目标的位图先 OR 再取最低命中道，
-/// 比逐个目标取最小快一倍。误命中只会出现在真命中右侧（借位从低往高传），所以最低那一位永远是真的。
-fn scan<const N: usize>(bytes: &[u8], from: usize, needles: [u8; N]) -> Option<usize> {
-    let patterns = needles.map(spread);
+/// `word ^ 目标` 之后，借位链正好只在"该道为 0"处留下 `0x80`。多个目标的位图先 OR 再取最低命中道，
+/// 比逐个目标取最小快两成。误命中只会出现在真命中右侧（借位从低往高传），所以最低那一位永远是真的。
+fn scan(bytes: &[u8], from: usize, needles: &[u8]) -> Option<usize> {
     let mut cursor = from;
     while let Some(chunk) = bytes.get(cursor..cursor + 16) {
         let word = u128::from_ne_bytes(chunk.try_into().expect("切片长度恰为 16"));
-        let lanes = patterns
-            .iter()
-            .fold(0, |lanes, pattern| lanes | zero_lanes(word ^ pattern));
+        let lanes = needles.iter().fold(0, |lanes, &needle| {
+            lanes | zero_lanes(word ^ spread(needle))
+        });
         if lanes != 0 {
             return Some(cursor + (lanes.trailing_zeros() / 8) as usize);
         }
@@ -160,7 +159,7 @@ fn code_only(text: &str) -> String {
 fn skip(text: &str, at: usize) -> Option<usize> {
     let bytes = text.as_bytes();
     match bytes[at..] {
-        [b'/', b'/', ..] => Some(scan(bytes, at, [b'\n']).unwrap_or(bytes.len())),
+        [b'/', b'/', ..] => Some(scan(bytes, at, b"\n").unwrap_or(bytes.len())),
         [b'/', b'*', ..] => Some(comment_end(bytes, at)),
         [b'"', ..] => Some(quoted_end(bytes, at, raw_hashes(bytes, at))),
         [b'\'', ..] => char_end(text, at),
@@ -175,7 +174,7 @@ fn comment_end(bytes: &[u8], at: usize) -> usize {
     let mut depth = 1u32;
     let mut cursor = at + 2;
     loop {
-        let Some(marker) = scan(bytes, cursor, [b'*', b'/']) else {
+        let Some(marker) = scan(bytes, cursor, b"*/") else {
             return bytes.len();
         };
         let next = bytes.get(marker + 1);
@@ -201,9 +200,9 @@ fn quoted_end(bytes: &[u8], at: usize, hashes: usize) -> usize {
     let escapes = hashes == 0;
     let mut cursor = at + 1;
     while let Some(stop) = if escapes {
-        scan(bytes, cursor, [b'"', b'\\'])
+        scan(bytes, cursor, b"\"\\")
     } else {
-        scan(bytes, cursor, [b'"'])
+        scan(bytes, cursor, b"\"")
     } {
         if bytes[stop] == b'\\' {
             cursor = (stop + 2).min(bytes.len());

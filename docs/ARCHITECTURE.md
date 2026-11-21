@@ -20,7 +20,7 @@
 | L6 调度与服务 | `train`、`engine`、`serve` | 训练样本与循环、检查点、连续批与 KV 页账、提交与执行体、设备后端实现（`engine::backends` / `engine::metal::host` / `engine::metal::fold`，实现 `cutile` 的 `Backend` 缝；`engine::metal::executor` 是唯一 `unsafe` 岛（[ADR 0035](adr/0035-unsafe-ffi-boundary.md)））、端点契约与线格式、CPU 模型宿主 | 直接调用 `cutile` 生成 kernel；执行任何业务 |
 | L7 入口 | `cli`（bin：`llm` 与 `cutile`） | 组合根：命令行文法、配置解析、各层装配、取值解析与人可读排版；编排入口不定义新类型 | 编排入口新增领域类型；在本层复制内核机制 |
 
-`annotation`（编译期注解）、`fuzz`（模糊测试契约）、`benchmarks`（集中测量容器）、`testkit`（测试夹具与门禁）与 `musa`（MUSA 真机测量通道）是**工具成员**：没有运行时层级，依赖边不参与方向判定。
+`annotation`（编译期注解）、`fuzz`（模糊测试契约）、`benchmarks`（集中测量容器）与 `testkit`（测试夹具与门禁）是**工具成员**：没有运行时层级，依赖边不参与方向判定。
 
 `testkit` 的库体只出浮点口径、随机数与暂存目录等夹具，跨层对拍与门禁在它的 `tests/` 下运行，
 被测内核只出现在 dev-dependencies 里，不进任何产品路径。

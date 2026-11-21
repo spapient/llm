@@ -495,16 +495,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "llm-musa"
-version = "0.1.0"
-dependencies = [
- "cutile",
- "llm-diagnostic",
- "llm-engine",
- "llm-op",
-]
-
-[[package]]
 name = "llm-nn"
 version = "0.1.0"
 dependencies = [

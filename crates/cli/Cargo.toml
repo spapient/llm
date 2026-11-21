@@ -30,6 +30,10 @@ path = "tests/cli.rs"
 name = "vault"
 path = "tests/vault.rs"
 
+[[test]]
+name = "audit"
+path = "tests/audit.rs"
+
 [features]
 # 发布模式：构建期把能编译的设备编成镜像并嵌入（见 `crates/prim/build.rs`）。
 device-image = ["cutile/device-image"]
