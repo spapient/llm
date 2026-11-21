@@ -301,9 +301,7 @@ pub(super) fn run_pooled(
 
     // 主线程自己的分片（slot 0）也纳入恐慌隔离：主线程 panic 若不中止闸门，其余 worker
     // 会卡在闸门上；记录后与 worker panic 走同一条收尾路径。
-    if let Err(payload) =
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| part(&job, 0)))
-    {
+    if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| part(&job, 0))) {
         job.panic
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -356,12 +354,7 @@ mod tests {
     }
 
     /// 以最小几何发布一次任务；`stage`/`calc` 由测试注入（可为 panic / no-op）。
-    fn run(
-        pool: &'static Pool,
-        stage: fn(&Job, usize),
-        calc: fn(&Job, usize),
-        t: usize,
-    ) -> bool {
+    fn run(pool: &'static Pool, stage: fn(&Job, usize), calc: fn(&Job, usize), t: usize) -> bool {
         let a = vec![0u8; 64];
         let b = vec![0u8; 64];
         let mut buf = vec![0u8; 64];
@@ -408,13 +401,11 @@ mod tests {
             p.live.load(Ordering::Acquire) >= 1,
             "本机需至少能起 1 个常驻 worker 才有可测的 panic 隔离面"
         );
-        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            run(p, stage, calc, 4)
-        }));
+        let caught =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(p, stage, calc, 4)));
         assert!(caught.is_err(), "参与方 panic 必须抛回调用方，不得静默吞掉");
-        let again = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            run(p, noop, noop, 4)
-        }));
+        let again =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(p, noop, noop, 4)));
         assert!(
             matches!(again, Ok(true)),
             "panic 后所有槽位必须已归还，池可复用（否则槽位泄漏）"
