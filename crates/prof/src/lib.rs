@@ -11,7 +11,7 @@
 //!   crate（`cuda` / `cpu` / `opencl` / `metal` / `musa` / `rocm`）的 `build.rs` 生成，由 `prim`
 //!   合成一张表。它在这里而不是在 `prim` 里，理由只有依赖方向：设备 crate 依赖本层，`prim` 依赖
 //!   设备 crate；
-//! - [`codegen`] 是那些 `build.rs` 唯一的实现（`build` feature，运行期不编译），[`sign`] 是它与
+//! - `codegen` 是那些 `build.rs` 唯一的实现（`build` feature，运行期不编译），[`sign`] 是它与
 //!   `prim` 装载期共用的签名声明规则。
 //!
 //! 档案语料在**构建期**由 [`build.rs`](../build.rs) 用构建依赖 `toml` 解析 `devices/*.toml`，

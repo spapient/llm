@@ -6,6 +6,33 @@
 ## [Unreleased]
 ### Changed
 
+- **`prim` 收成纯机制，六台设备的片段各自成 crate；`prim/src/lib.rs` 440 → 65 行的薄入口**。
+  `crates/prim` 原先既是机制又是六个厂家的语料仓库：`musa/` `metal/` `intel/` `ascend/` `cpu/` `nvidia/`
+  六个目录、54 段片段、6 份见证、6 个 `build.rs` 全挤在一个 crate 里，`lib.rs` 里躺着装载、布局、内嵌表、
+  片段类型四件事。现在一台设备一个成员 crate（`crates/{cpu,cuda,metal,musa,opencl,rocm}`，各自持有片段、
+  见证与 `ROOT`/`FRAGMENTS`/`DEVICE` 三个 `pub const`，只依赖 `prof`）；`prim` 里只剩三个文件——
+  `fragment.rs`（片段是什么）、`layout.rs`（片段从哪来）、`builtin.rs`（编译进来了什么，吸收原 `tables.rs`），
+  外加 65 行的 `lib.rs`：只有 crate 文档、`mod` 声明与 `pub use`，一行逻辑都没有。**公开路径一字未变**：
+  消费方照旧写 `prim::Layout` / `prim::FragmentSet` / `prim::builtin`，扁平再导出替它们兜住。顺带删掉
+  已无消费者的 `llm-musa` 工具 crate。`vendor` 与目录名不再绑定（`crates/rocm` 装 `ascend`、`crates/opencl`
+  装 `intel`、`crates/cuda` 装 `nvidia`），派生的 `devices()` / `device()` / `dir_of()` 仍按 vendor 查。
+  **验证**：`cargo test -p llm-prim -p llm-prof`（18 + 57 条 + doctest）、六个设备 crate 的 `clippy
+  --all-targets -D warnings`、`cargo build --workspace --all-targets` 全绿；架构门禁 12 道（成员集合、
+  边集合与方向、所有权表、错误边界、unsafe 白名单）逐条通过。
+
+- **片段生成器从 `prim` 搬进 `prof::codegen`，`include!` 另一 crate 源文本的修法随之消失**。删
+  `crates/prim/generate.rs`（552 行）与 `crates/prim/src/signature.rs`（26 行）：生成器要读 `prof::Device`、
+  要校验档案，而六个设备 crate 都依赖 `prof`——让生成器依赖 `prim` 会绕成环，故新家是
+  `crates/prof/src/codegen`（`prof` 的 `build` feature 之后，与 `diagnostic::buildgen` 同一套做法），
+  签名规则独立成 `prof::sign`（36 行）。`codegen` 按概念分四个文件：`mod.rs` 13 行只做声明、`scan.rs`
+  291 行（扫描 + 四条构建期校验）、`table.rs` 100 行（三张表的输出）、`image.rs` 204 行（设备镜像管线）。
+  六个 `build.rs` 从"抄一遍扫描逻辑"变成一行 `fn main() { prof::codegen::device("<vendor>"); }`，
+  生成结果与旧生成器**逐字节相同**（`FRAGMENTS` / `PRIMS` / `DEVICE` 三张表，只有表头注释指向新位置）。
+  顺手修掉一处真实告警：生成器在 `const` 里写 `&'static str`，`clippy::redundant-static-lifetimes` 在
+  `-D warnings` 下会红——改在输出侧（`&str`），而不是 `#[allow]`。**验证**：`llm-prof` 57 条 + `--features build`
+  的 `clippy -D warnings`、六个设备 crate 重新生成的表与旧产物逐字节对拍、架构门禁的"错误边界不得退回
+  `Result<_, String>`"（`Reason` newtype 承载 `Status::Skipped` 的原因文本，不做诊断）。
+
 - **审计门禁的剔除器去掉递归，改成 16 字节一步的位并行扫描（实测 5.0×）**。`crates/annotation/tests/audit.rs`
   的 `code_only` 要把注释与字面量剔掉，否则"被生成的代码"会被当成"生成器的实现"；此前实现是"找到下一个
   注释 / 字面量开头 → 追加它之前那段代码 → 对剩余部分自递归"，栈深等于注释 + 字面量的个数，而判据只是

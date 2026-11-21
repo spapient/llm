@@ -43,29 +43,7 @@ pub(super) fn fragments(text: &mut String, device: &Device) {
 
 /// 生成设备行：入口表 + 档案元数据 + 见证源码 + （可选的）镜像。
 pub(super) fn device_line(text: &mut String, device: &Device, outcome: &Outcome) {
-    let _ = writeln!(
-        text,
-        "/// 原语 → 见证里的入口名：镜像里查的就是这个名字。\n\
-         pub const PRIMS: [(Prim, &str); {}] = [",
-        device.entries.len()
-    );
-    for (prim, entry) in &device.entries {
-        let _ = writeln!(text, "    (Prim::{:?}, {entry:?}),", prim);
-    }
-    let _ = writeln!(text, "];\n");
-
-    let (status, image) = match outcome {
-        Outcome::Source => ("prof::Status::Source".to_string(), None),
-        Outcome::NoRecipe => ("prof::Status::NoRecipe".to_string(), None),
-        Outcome::Skipped(reason) => (
-            format!("prof::Status::Skipped {{ reason: {reason:?} }}"),
-            None,
-        ),
-        Outcome::Compiled { path, symbols } => (
-            "prof::Status::Compiled".to_string(),
-            Some((path, *symbols, image::format(device.profile.meta.emit))),
-        ),
-    };
+    prims(text, device);
 
     let _ = writeln!(
         text,
@@ -83,18 +61,48 @@ pub(super) fn device_line(text: &mut String, device: &Device, outcome: &Outcome)
         "    source: include_str!({:?}),",
         device.witness.display().to_string()
     );
-    match image {
-        None => {
-            let _ = writeln!(text, "    image: None,");
-        }
-        Some((path, symbols, format)) => {
+    image_line(text, device, outcome);
+    let _ = writeln!(text, "    status: {},", status(outcome));
+    let _ = writeln!(text, "}};");
+}
+
+/// 入口表：原语 → 见证里的入口名，顺序与 `Prim::ALL` 一致。
+fn prims(text: &mut String, device: &Device) {
+    let _ = writeln!(
+        text,
+        "/// 原语 → 见证里的入口名：镜像里查的就是这个名字。\n\
+         pub const PRIMS: [(Prim, &str); {}] = [",
+        device.entries.len()
+    );
+    for (prim, entry) in &device.entries {
+        let _ = writeln!(text, "    (Prim::{:?}, {entry:?}),", prim);
+    }
+    let _ = writeln!(text, "];\n");
+}
+
+/// 镜像行：只有本机真编出镜像的设备带 `Some(prof::Image::new(..))`，其余写 `None`。
+fn image_line(text: &mut String, device: &Device, outcome: &Outcome) {
+    match outcome {
+        Outcome::Compiled { path, symbols } => {
+            let format = image::format(device.profile.meta.emit);
             let _ = writeln!(
                 text,
                 "    image: Some(prof::Image::new({format:?}, include_bytes!({:?}), {symbols})),",
                 path.display().to_string()
             );
         }
+        _ => {
+            let _ = writeln!(text, "    image: None,");
+        }
     }
-    let _ = writeln!(text, "    status: {status},");
-    let _ = writeln!(text, "}};");
+}
+
+/// 结局闭集 → `prof::Status` 的构造表达式（"为什么没有镜像"永远有答案）。
+fn status(outcome: &Outcome) -> String {
+    match outcome {
+        Outcome::Source => "prof::Status::Source".to_string(),
+        Outcome::NoRecipe => "prof::Status::NoRecipe".to_string(),
+        Outcome::Skipped(reason) => format!("prof::Status::Skipped {{ reason: {reason:?} }}"),
+        Outcome::Compiled { .. } => "prof::Status::Compiled".to_string(),
+    }
 }

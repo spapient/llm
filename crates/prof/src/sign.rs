@@ -1,7 +1,7 @@
 //! 片段签名声明的纯字符串规则：`/* cutile-sign: <prim>/<impl> */`（ADR 0027 §5）。
 //!
 //! 同一条规则有两个调用点，而它们不能共用编译产物：设备 crate 的 `build.rs` 在构建期拿它比对
-//! 档案里的 `provides`（[`crate::codegen`]），`prim::Fragment::parse` 在装载期解析同一行。规则住在
+//! 档案里的 `provides`（`crate::codegen`），`prim::Fragment::parse` 在装载期解析同一行。规则住在
 //! 这里——两边都依赖本层——而不是各写一份。
 //!
 //! 本模块不认识原语闭集，也不构造诊断：闭集比对、`impl` 非空判定与错误格式化留给调用方。

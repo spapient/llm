@@ -43,10 +43,8 @@ use super::table;
 /// 键，也是档案里 `witness.file` 的前缀；目录名可以与之不同（`crates/opencl` 装的是 `intel` 的
 /// OpenCL 片段），所以显式传入，不从路径推断。
 pub fn device(vendor: &str) {
-    let dir = PathBuf::from(
-        env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR：只有 build.rs 会调用这个函数"),
-    );
-    let out = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR：只有 build.rs 会调用这个函数"));
+    let dir = PathBuf::from(variable("CARGO_MANIFEST_DIR"));
+    let out = PathBuf::from(variable("OUT_DIR"));
     let images = env::var_os("CARGO_FEATURE_DEVICE_IMAGE").is_some();
 
     // 整个 crate 目录都算输入：新增一段片段、换一份见证都必须让构建脚本重跑。
@@ -62,9 +60,15 @@ pub fn device(vendor: &str) {
     table::header(&mut text);
     table::fragments(&mut text, &device);
     table::device_line(&mut text, &device, &outcome);
-    fs::write(out.join("tables.rs"), text).expect("写 tables.rs");
+    fs::write(out.join("tables.rs"), text)
+        .unwrap_or_else(|error| fail(format!("写 tables.rs 失败：{error}")));
 
     image::require(&device, &outcome);
+}
+
+/// 构建脚本必带的环境变量；缺了说明调用方不是 `build.rs`，直接失败而不是猜一个目录。
+fn variable(name: &str) -> String {
+    env::var(name).unwrap_or_else(|_| fail(format!("{name} 未设置：只有 build.rs 会调用这个函数")))
 }
 
 /// 一台设备：片段与路径（正文由生成的 `include_str!` 读）。
@@ -109,48 +113,21 @@ fn files_in(dir: &Path) -> Vec<PathBuf> {
 /// 但**名字在原语闭集内而扩展名不符**的要报——那是把片段放错了语言。
 fn scan(dir: &Path, vendor: &str) -> Device {
     let files = files_in(dir);
-    let witness = files
-        .iter()
-        .find(|path| stem(path) == Some("witness"))
-        .cloned()
-        .unwrap_or_else(|| {
-            fail(format!(
-                "`{}` 里没有 `witness.<ext>`：设备目录必须带上见证，否则映射表没有入口可指",
-                dir.display()
-            ))
-        });
-    let ext =
-        extension(&witness).unwrap_or_else(|| fail(format!("`{}` 没有扩展名", witness.display())));
-
+    let witness = witness_of(&files, dir);
+    let ext = fragment_ext(&witness);
     let profile = profile_of(vendor, &ext);
+
+    // 见证与清单不是片段（扩展名不符的被跳过）；每段片段带上自己的见证入口。
     let mut fragments = Vec::new();
     let mut entries = Vec::new();
     for path in &files {
         if *path == witness {
             continue;
         }
-        let Some(name) = stem(path) else { continue };
-        let prim = Prim::parse(name);
-        if extension(path).as_deref() != Some(ext.as_str()) {
-            if prim.is_some() {
-                fail(format!(
-                    "`{}` 的扩展名与同目录的 `witness.{ext}` 不一致：一台设备只有一种输出语言",
-                    path.display()
-                ));
-            }
-            continue;
+        if let Some((prim, entry)) = fragment_of(path, &ext, &profile) {
+            fragments.push((prim, path.clone()));
+            entries.push((prim, entry));
         }
-        let Some(prim) = prim else {
-            fail(format!(
-                "`{}` 的文件名不在原语闭集内：片段层只认 `<prim>.{ext}` 与 `witness.{ext}`",
-                path.display()
-            ));
-        };
-        let source = read(path);
-        let implementation = signature(prim, &source, path);
-        let entry = entry_of(&profile, prim, &implementation, path);
-        fragments.push((prim, path.clone()));
-        entries.push((prim, entry));
     }
     if fragments.is_empty() {
         fail(format!("`{}` 里一段片段都没有", dir.display()));
@@ -166,6 +143,52 @@ fn scan(dir: &Path, vendor: &str) -> Device {
         witness,
         entries,
     }
+}
+
+/// 目录里那份见证：每台设备必须有，否则映射表没有入口可指。
+fn witness_of(files: &[PathBuf], dir: &Path) -> PathBuf {
+    files
+        .iter()
+        .find(|path| stem(path) == Some("witness"))
+        .cloned()
+        .unwrap_or_else(|| {
+            fail(format!(
+                "`{}` 里没有 `witness.<ext>`：设备目录必须带上见证，否则映射表没有入口可指",
+                dir.display()
+            ))
+        })
+}
+
+/// 这台设备的输出语言：扩展名由见证给出，片段必须与它一致。
+fn fragment_ext(witness: &Path) -> String {
+    extension(witness).unwrap_or_else(|| fail(format!("`{}` 没有扩展名", witness.display())))
+}
+
+/// 一个文件是不是这台设备的片段：是就返回 `(原语, 见证入口)`，不是就 `None`。
+///
+/// 两种情况都不是片段：没有扩展名（文档、构建脚本），以及名字合法但扩展名不符——后者若名字落在
+/// 原语闭集内就要报，那是把片段放错了语言。扩展名对而名字不在闭集内同样要报：目录里只允许
+/// `<prim>.<ext>` 与 `witness.<ext>`。
+fn fragment_of(path: &Path, ext: &str, profile: &Profile) -> Option<(Prim, String)> {
+    let prim = Prim::parse(stem(path)?);
+    if extension(path).as_deref() != Some(ext) {
+        if prim.is_some() {
+            fail(format!(
+                "`{}` 的扩展名与同目录的 `witness.{ext}` 不一致：一台设备只有一种输出语言",
+                path.display()
+            ));
+        }
+        return None;
+    }
+    let prim = prim.unwrap_or_else(|| {
+        fail(format!(
+            "`{}` 的文件名不在原语闭集内：片段层只认 `<prim>.{ext}` 与 `witness.{ext}`",
+            path.display()
+        ))
+    });
+    let implementation = signature(prim, &read(path), path);
+    let entry = entry_of(profile, prim, &implementation, path);
+    Some((prim, entry))
 }
 
 /// 目录对应的档案：`vendor` / `emit` 必须与目录一致。
@@ -285,7 +308,13 @@ fn index(prim: Prim) -> usize {
         .unwrap_or(Prim::ALL.len())
 }
 
-/// 构建期失败：`build.rs` 只能 panic，前缀让 `cargo` 的输出指向生成器。
+/// 构建期失败：报给 `cargo` 并以非零码结束，`build.rs` 因此失败。
+///
+/// 不用 `panic!`：生成器住在 `crates/prof/src`，与其余生产代码同一套预算（`crates/*/src` 里
+/// `panic!` / `unwrap` / `expect` 的预算是 0）。构建脚本要的只是"停下 + 打出原因"，不需要栈回溯；
+/// 也没有资源要收，所以失败点直接收尾，而不是像 `diagnostic::buildgen` 那样把错误上抛给调用方
+/// ——那边要按用途分别处理，这里只有一种用途。
 pub(super) fn fail(message: impl std::fmt::Display) -> ! {
-    panic!("prof::codegen: {message}")
+    eprintln!("prof::codegen: {message}");
+    std::process::exit(1)
 }

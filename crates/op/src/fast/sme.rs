@@ -48,8 +48,8 @@ pub(super) fn gemm(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut
         if m == 0
             || n == 0
             || k == 0
-            || m % MR != 0
-            || n % NR != 0
+            || !m.is_multiple_of(MR)
+            || !n.is_multiple_of(NR)
             || m * n * k < MIN_ELEMS
             || !available()
         {
@@ -131,9 +131,7 @@ fn pack_b(src: &[f32], dst: &mut [f32], n: usize, k: usize, nblk0: usize) {
         for kk in 0..k {
             let off = base + kk * NR;
             let row = kk * n + g * NR;
-            for r in 0..NR {
-                dst[off + r] = src[row + r];
-            }
+            dst[off..off + NR].copy_from_slice(&src[row..row + NR]);
         }
     }
 }
