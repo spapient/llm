@@ -523,7 +523,6 @@ pub(crate) fn data_start(meta: &[(String, Value)], pos: usize, len: usize) -> Re
     Err(bad("数据区偏移超出文件"))
 }
 
-
 /// 把一个张量的原始字节反量化进 `out`；长度不符或布局不符显式报错。
 pub(crate) fn dequantize(kind: Kind, raw: &[u8], out: &mut [f32]) -> Result<()> {
     check_len(kind, raw.len(), out.len())?;
@@ -672,7 +671,6 @@ fn decode_q6k(raw: &[u8], out: &mut [f32]) -> Result<()> {
     }
     Ok(())
 }
-
 
 #[cfg(test)]
 #[path = "../tests/gguf.rs"]

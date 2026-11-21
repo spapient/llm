@@ -539,7 +539,6 @@ pub(crate) fn word(buf: &[u8], at: &mut usize, missing: &str) -> Result<u32> {
     take::<4>(buf, at, missing).map(u32::from_le_bytes)
 }
 
-
 /// 低秩载荷：秩由证书给出，证书不通过就不压，证书本身随载荷落盘。
 ///
 /// 这里不再自己挑秩（旧版取 `min(m,n)/2`，与谱隙无关）：[`ledger::certify`] 用一次分解同时给出
@@ -686,7 +685,6 @@ fn factor_part(frame: &[u8], want: usize) -> Result<Vec<f64>> {
     let (chunks, _) = bytes.as_chunks::<8>();
     Ok(chunks.iter().map(|c| f64::from_le_bytes(*c)).collect())
 }
-
 
 #[cfg(test)]
 #[path = "../tests/axes.rs"]

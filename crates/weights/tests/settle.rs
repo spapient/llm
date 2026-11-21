@@ -4,7 +4,6 @@ use super::*;
 use crate::ledger;
 use crate::seg::Segment;
 
-
 use crate::testutil::{f32_matrix, f32_segment};
 
 use crate::writer::Writer;

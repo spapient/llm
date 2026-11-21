@@ -612,7 +612,6 @@ fn expected(entry: &Settled) -> [(&'static str, String); 13] {
     ]
 }
 
-
 #[cfg(test)]
 #[path = "../tests/settle.rs"]
 mod tests;
