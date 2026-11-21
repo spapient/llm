@@ -1,6 +1,6 @@
 //! `cutile` 驱动方的单元测试：语法分派、退出码、排版落到 stdout。
 //!
-//! 经 `src/bin/cutile.rs` 的 `#[path]` 挂进该 bin 的单测（N12：`src/` 里不放测试）。
+//! 经 `src/cutile.rs` 的 `#[path]` 挂进该 bin 的单测（N12：`src/` 里不放测试）。
 
 use super::*;
 use cutile::emit::Fragment;

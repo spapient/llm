@@ -280,5 +280,5 @@ fn bench(
 
 /// 驱动方的单元测试：分派、退出码、排版。
 #[cfg(test)]
-#[path = "../../tests/cutile.rs"]
+#[path = "../tests/cutile.rs"]
 mod tests;

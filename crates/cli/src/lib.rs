@@ -1,6 +1,6 @@
 //! 组合根（L7）与命令行文法层：把 `argv` 与环境变量解析成 [`Command`] 与 [`settings::Settings`]，
 //! 再由 [`entry`] 分派到 `run` / `status` / `train` 编排入口；两个二进制 `llm` 与 `cutile` 都在本包
-//! （入口见 `src/main.rs` 与 `src/bin/cutile.rs`）。
+//! （入口见 `src/main.rs` 与 `src/cutile.rs`）。
 //!
 //! **拥有**：一级命令文法 [`argv`]（`Command`、`Invocation`、`USAGE`）、内核层审计的子命令文法
 //! [`kernel::CutileCommand`]、两层共用的选项解析器 [`flag`]、三个目录开关的解析策略 [`settings`]

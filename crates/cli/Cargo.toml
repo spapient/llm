@@ -19,7 +19,7 @@ doc = false
 # 与 `crates/cutile` 同名：不产出它的文档，否则两者写到同一个 `target/doc/cutile/index.html`（cargo#6313）。
 [[bin]]
 name = "cutile"
-path = "src/bin/cutile.rs"
+path = "src/cutile.rs"
 doc = false
 
 [[test]]

@@ -120,7 +120,7 @@ fn every_test_file_fits_the_density_budget() {
     );
 }
 
-/// `src/` 只有一层（`src/bin` 算同一层的第二个入口目录），再往下就是分组，不是平铺。
+/// `src/` 只有一层：再往下就是分组，不是平铺。
 #[test]
 fn the_production_tree_stays_flat() {
     let source = crate_dir().join("src");

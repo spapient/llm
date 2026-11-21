@@ -1,4 +1,4 @@
-//! `llm` 二进制入口：只做"解析 → 分派 → 退出码"，装配与排版在 [`llm_cli::cmd`]。
+//! `llm` 二进制入口：只做"解析 → 分派 → 退出码"，装配与排版在 [`llm_cli::entry`]。
 
 use diagnostic::Result;
 use std::process::ExitCode;
