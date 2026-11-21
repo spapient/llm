@@ -259,7 +259,6 @@ impl ConvTranspose1d {
     /// # Errors
     ///
     /// 缓冲长度与几何不符时返回说明。
-    #[allow(clippy::too_many_arguments)]
     pub fn forward_f32(
         &self,
         x: &[f32],
@@ -269,25 +268,7 @@ impl ConvTranspose1d {
         l: usize,
         out: &mut [f32],
     ) -> Result<()> {
-        let ol = self.len(l)?;
-        let (cin, cout, k) = (self.cin, self.cout, self.k);
-        let cols = cout * k;
-        check_all(&[
-            (x.len(), n * l * cin, "x"),
-            (weight.len(), cin * cols, "weight"),
-            (bias.len(), cout, "bias"),
-            (out.len(), n * ol * cout, "out"),
-        ])?;
-
-        let mut wt = vec![0.0f32; cin * cols];
-        transpose_weight_1d(weight, &mut wt, cin, cout, k);
-        let mut col = vec![0.0f32; n * l * cols];
-        fast::gemm_f32(x, &wt, n * l, cols, cin, &mut col);
-
-        out[..n * ol * cout].fill(0.0);
-        scatter1(&col, out, n, l, ol, self, cout);
-        add_bias_1d(out, bias, n, ol, cout);
-        Ok(())
+        forward_1d(self, x, weight, bias, n, l, out)
     }
 
     /// i8 前向：GEMM 走多槽池，散射累加在 i32 上。
@@ -295,7 +276,6 @@ impl ConvTranspose1d {
     /// # Errors
     ///
     /// 缓冲长度与几何不符时返回说明。
-    #[allow(clippy::too_many_arguments)]
     pub fn forward_i8(
         &self,
         x: &[i8],
@@ -305,26 +285,39 @@ impl ConvTranspose1d {
         l: usize,
         out: &mut [i32],
     ) -> Result<()> {
-        let ol = self.len(l)?;
-        let (cin, cout, k) = (self.cin, self.cout, self.k);
-        let cols = cout * k;
-        check_all(&[
-            (x.len(), n * l * cin, "x"),
-            (weight.len(), cin * cols, "weight"),
-            (bias.len(), cout, "bias"),
-            (out.len(), n * ol * cout, "out"),
-        ])?;
-
-        let mut wt = vec![0i8; cin * cols];
-        transpose_weight_1d_i8(weight, &mut wt, cin, cout, k);
-        let mut col = vec![0i32; n * l * cols];
-        fast::gemm_i8(x, &wt, n * l, cols, cin, &mut col);
-
-        out[..n * ol * cout].fill(0);
-        scatter1_i8(&col, out, n, l, ol, self, cout);
-        add_bias_1d_i8(out, bias, n, ol, cout);
-        Ok(())
+        forward_1d(self, x, weight, bias, n, l, out)
     }
+}
+
+/// 一维前向核心：标量类型经 [`DeconvScalar`] 参数化，f32/i8 共用同一份算法。
+fn forward_1d<S: DeconvScalar>(
+    conv: &ConvTranspose1d,
+    x: &[S],
+    weight: &[S],
+    bias: &[S::Acc],
+    n: usize,
+    l: usize,
+    out: &mut [S::Acc],
+) -> Result<()> {
+    let ol = conv.len(l)?;
+    let (cin, cout, k) = (conv.cin, conv.cout, conv.k);
+    let cols = cout * k;
+    check_all(&[
+        (x.len(), n * l * cin, "x"),
+        (weight.len(), cin * cols, "weight"),
+        (bias.len(), cout, "bias"),
+        (out.len(), n * ol * cout, "out"),
+    ])?;
+
+    let mut wt = vec![S::default(); cin * cols];
+    transpose_weight_1d(weight, &mut wt, cin, cout, k);
+    let mut col = vec![S::Acc::default(); n * l * cols];
+    S::gemm(x, &wt, n * l, cols, cin, &mut col);
+
+    out[..n * ol * cout].fill(S::Acc::default());
+    scatter1(&col, out, n, l, ol, conv, cout);
+    add_bias_1d(out, bias, n, ol, cout);
+    Ok(())
 }
 
 /// 列矩阵 `[n·l, cout·k]` 散射累加到 `[n, ol, cout]`：越界位置裁掉。
