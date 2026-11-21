@@ -5,6 +5,7 @@
 //! 不叫 `report` 的理由：本模块只产"段"，而 `VerifyReport` / `Doctor` 是**输入**的名字，
 //! 同一个词既指类型又指模块时，`section::evidence_block(&report)` 会读成两种东西。
 
+use std::fmt::Write as _;
 use super::prose::{counted, fragment_note, params_note};
 use cutile::bench::{Bench, Peak, Performance, Verdict};
 use cutile::cap::VariantCheck;
@@ -15,14 +16,13 @@ use cutile::verify::{Negotiation, Verified, VerifyReport};
 pub(super) fn evidence_block(report: &Doctor) -> String {
     let mut out = String::from("\n[证据] 依据 ");
     out.push_str(&report.evidence.basis.to_string());
-    out.push_str(&format!(
-        " | 设备执行 {} | 本机自检 {} | 语言门 {}\n",
+    let _ = writeln!(out, " | 设备执行 {} | 本机自检 {} | 语言门 {}",
         counted(report.evidence.device, &report.evidence.device_params),
         counted(report.evidence.host, &report.evidence.host_params),
         report.evidence.language
-    ));
+    ;
     if let Some(error) = &report.evidence.failure {
-        out.push_str(&format!("  见证不成立：{error}\n"));
+        let _ = writeln!(out, "  见证不成立：{error}";
     }
     out
 }
@@ -31,7 +31,7 @@ pub(super) fn evidence_block(report: &Doctor) -> String {
 pub(super) fn layouts_block(report: &Doctor) -> String {
     let mut out = String::from("\n[布局]\n");
     for row in &report.layouts {
-        out.push_str(&format!("  {} = {}\n", row.slot, row.spec));
+        let _ = writeln!(out, "  {} = {}", row.slot, row.spec;
     }
     out
 }
@@ -54,10 +54,9 @@ pub(super) fn storage_block(report: &Doctor) -> Option<String> {
                     .collect::<Vec<_>>()
                     .join(" ")
             };
-            out.push_str(&format!(
-                "  {}={} 容量 {} | 声明 {}\n",
+            let _ = writeln!(out, "  {}={} 容量 {} | 声明 {}",
                 row.space, row.physical, capacity, declared
-            ));
+            ;
         }
         out
     })
@@ -66,15 +65,14 @@ pub(super) fn storage_block(report: &Doctor) -> Option<String> {
 /// `[emit]` 段：片段口径、扩展名、缓存键与缓存目录。
 pub(super) fn source_block(source: &Built) -> String {
     let mut out = String::from("\n[emit] ");
-    out.push_str(&format!(
-        "{} | {} | cache key {}\n  {}\n",
+    let _ = writeln!(out, "{} | {} | cache key {}\n  {}",
         fragment_note(source.fragment),
         source.ext,
         source.key.hex(),
         source.key.describe()
-    ));
+    ;
     if let Some(dir) = &source.cache_dir {
-        out.push_str(&format!("  cache dir {}\n", dir.display()));
+        let _ = writeln!(out, "  cache dir {}", dir.display();
     }
     out
 }
@@ -83,7 +81,7 @@ pub(super) fn source_block(source: &Built) -> String {
 pub(super) fn post_path_blocks(report: &Doctor) -> String {
     let mut out = String::new();
     if let Some(plan) = &report.plan {
-        out.push_str(&format!("\n[plan] {plan}\n"));
+        let _ = writeln!(out, "\n[plan] {plan}";
     }
     out.push_str(&layouts_block(report));
     if let Some(storage) = storage_block(report) {
@@ -155,10 +153,9 @@ pub(super) fn negotiation_summary(report: &VerifyReport) -> String {
         "\n协商首档 {hits}/{total}（cutile README §16：首选没被选中说明 `needs` 粒度写错了）\n"
     );
     for (device, negotiation) in report.devices.iter().zip(&report.negotiations) {
-        out.push_str(&format!(
-            "  {device} = {}\n",
+        let _ = writeln!(out, "  {device} = {}",
             describe_negotiation(negotiation)
-        ));
+        ;
     }
     out
 }
@@ -309,7 +306,7 @@ pub(super) fn cache_why(report: &CacheWhy) -> String {
         out.push_str("  被问的键从未落盘：没构建过，或已被 `cache gc` 回收\n");
         return out;
     };
-    out.push_str(&format!("  被问的键 {}（{} B）\n", entry.hex, entry.bytes));
+    let _ = writeln!(out, "  被问的键 {}（{} B）", entry.hex, entry.bytes;
     match report.state() {
         CacheState::Match => {
             out.push_str("  与本次构建的键一致：命中的就是这份缓存\n");
@@ -321,18 +318,16 @@ pub(super) fn cache_why(report: &CacheWhy) -> String {
         }
         CacheState::Never | CacheState::Differs => {}
     }
-    out.push_str(&format!(
-        "  与本次构建不同（{} 项）：\n",
+    let _ = writeln!(out, "  与本次构建不同（{} 项）：",
         report.changes.len()
-    ));
+    ;
     for change in &report.changes {
         // 只在一侧出现的项也要打印：新版本加的字段与已删除的字段都是"为什么没命中"。
         let stored = change.stored.as_deref().unwrap_or("—");
         let current = change.current.as_deref().unwrap_or("—");
-        out.push_str(&format!(
-            "    {}：缓存 {stored} | 本次 {current}\n",
+        let _ = writeln!(out, "    {}：缓存 {stored} | 本次 {current}",
             change.field
-        ));
+        ;
     }
     out
 }

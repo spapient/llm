@@ -3,6 +3,7 @@
 //! 这些是**一行**（或一个短段）的措辞，被 [`super::section`] 与 [`super::matrix`] 反复调用；
 //! 判定全在库里，这里只选词——同一个数在报告不同段落里不会被说成两种结论。
 
+use std::fmt::Write as _;
 use cutile::cache::Gc;
 use cutile::dirs::Dirs;
 use cutile::doctor::Doctor;
@@ -45,23 +46,20 @@ pub(super) fn cache_gc(report: &Gc, dirs: &Dirs) -> String {
     .row("按 LRU 删除", format!("{} 项", report.removed))
     .render();
     if report.residue.items > 0 {
-        out.push_str(&format!(
-            "  清理残留 {} 项（{}）：半截落盘，本来就不会命中\n",
+        let _ = writeln!(out, "  清理残留 {} 项（{}）：半截落盘，本来就不会命中",
             report.residue.items,
             ::diagnostic::render::human_bytes(report.residue.bytes)
-        ));
+        ;
     }
     if report.skipped > 0 {
-        out.push_str(&format!(
-            "  {} 项仍在使用，已跳过：锁释放后再跑一次\n",
+        let _ = writeln!(out, "  {} 项仍在使用，已跳过：锁释放后再跑一次",
             report.skipped
-        ));
+        ;
     }
     if report.after > report.limit {
-        out.push_str(&format!(
-            "  仍高于上限：还需再删 {}\n",
+        let _ = writeln!(out, "  仍高于上限：还需再删 {}",
             ::diagnostic::render::human_bytes(report.after - report.limit)
-        ));
+        ;
     }
     out
 }

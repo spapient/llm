@@ -8,8 +8,10 @@
 //! `scratch_clean`（[`scratch`]）；
 //! [`Rng`]（[`rng`]）；`crc32_bitwise`（[`hash`]）；`safetensors_bytes` 与 `pack_codes`
 //! （本文件，格式夹具）；`witness::run`、`Call`、`Reading`（[`witness`]）——设备 crate 的
-//! 见证源码在本机编译执行并与期望值对拍。**不拥有**：任何生产逻辑——它是测试
-//! 夹具，不进任何二进制。**依赖**：无（夹具不该把被测 crate 拉进来）。
+//! 见证源码在本机编译执行并与期望值对拍，`device::Contract` 是六台设备共用的片段层契约
+//! ——签名、见证入口、档案供给三者必须闭合（[`witness`] / [`device`]）。
+//! **不拥有**：任何生产逻辑——它是测试夹具，不进任何二进制。
+//! **依赖**：无（夹具不该把被测 crate 拉进来）。
 //! **被依赖**：各成员的 `[dev-dependencies]`。
 //!
 //! 这里的真机门控变量是**测试门控，不是产品配置**：它不进 `cli::settings` 的键表，
@@ -27,6 +29,7 @@
 #![deny(unsafe_code)]
 
 pub mod compare;
+pub mod device;
 pub mod gating;
 pub mod witness;
 

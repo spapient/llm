@@ -2,6 +2,7 @@
 //!
 //! 判定与数值都来自各层库，本模块只装配、选词与分行；不定义新类型。
 
+use std::fmt::Write as _;
 use diagnostic::render::Panel;
 use diagnostic::{Code, Error, Result};
 use nn::Contract as _;
@@ -101,14 +102,13 @@ fn model_floor(model: &nn::Stack) -> (String, Option<String>) {
         floor_row(&floor.total())
     );
     if !floor.unpriced().is_empty() {
-        summary.push_str(&format!("；无法计价 {} 层", floor.unpriced().len()));
+        let _ = write!(summary, "；无法计价 {} 层", floor.unpriced().len();
     }
     if !model.uncovered().is_empty() {
-        summary.push_str(&format!(
-            "；未覆盖 {} 条：{}",
+        let _ = write!(summary, "；未覆盖 {} 条：{}",
             model.uncovered().len(),
             diagnostic::render::join_names(model.uncovered().iter().map(String::as_str))
-        ));
+        ;
     }
     let unpriced_row = if !floor.unpriced().is_empty() {
         Some(
