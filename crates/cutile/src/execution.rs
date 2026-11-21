@@ -72,21 +72,8 @@ pub fn execute(
     one(&run, profile, dirs, sample)
 }
 
-mod metal;
-pub use metal::{
-    metal_flash_attention_program, metal_grid_program, metal_int8_gemm_program,
-    metal_rmsnorm_program, metal_scan_program, metal_simdgroup_gemm_program, metal_softmax_program,
-    metal_tensor_gemm_program, metal_tiled_attention_program, metal_tiled_gemm_program,
-};
-
-mod cuda;
-
-use cuda::{dim_size, grid_dims};
-
-pub use cuda::{
-    cuda_gemm_program, cuda_grid_program, cuda_reduce_program, cuda_rmsnorm_program,
-    cuda_scan_program, cuda_softmax_program, cuda_wmma_gemm_program,
-};
+mod program;
+pub use program::{program, Backend, Mode, Stages};
 
 /// 解析算子/档案/证据并编译出可执行产物：`(流水线, 产物)`。
 fn resolve<'a>(
@@ -303,8 +290,8 @@ fn reduce_func(op: &OpDecl) -> diagnostic::Result<String> {
     Ok(format!("_cutile_{op_name}_{dt}"))
 }
 
-/// 单份 MSL 的形态：分块归一化 / 分块扫描是多段源，单源入口没有主机折叠的位置，退串行（多段由
-/// `metal_rmsnorm_program` / `metal_softmax_program` / `metal_scan_program` 各自主张）。
+/// 单源形态：分块归一化 / 分块扫描是多段源，单源入口没有主机折叠的位置，退串行（多段形态走
+/// [`program::Mode::segmented`]）。
 fn single_kind(op: &OpDecl) -> diagnostic::Result<Lower> {
     match kind(op)? {
         Lower::ChunkRmsnorm { .. } | Lower::ChunkSoftmax { .. } | Lower::ChunkScan { .. } => {
@@ -312,34 +299,6 @@ fn single_kind(op: &OpDecl) -> diagnostic::Result<Lower> {
         }
         kind => Ok(kind),
     }
-}
-
-/// 生产态 MSL：声明 → 单份形态 → 降源。
-fn lower(run: &Run<'_>, prepared: &Prepared, m: usize, n: usize) -> diagnostic::Result<String> {
-    let sample = (run.model.sample)(m, n);
-    single(
-        backend(Emit::Metal)?.lower(
-            &prepared.source.text,
-            &run.op.signature,
-            &sample,
-            &single_kind(run.op)?,
-        )?,
-        "降源",
-    )
-}
-
-/// 扫描分块：声明了 `[chunk]` 的走「局部扫描 + 校正」两段内核，返回 `(局部扫描, 校正)`；未声明
-/// 时报错（串行由 [`metal_grid_program`] 的骨架兜底覆盖，此处只做分块）。
-fn scan_chunked(
-    run: &Run<'_>,
-    prepared: &Prepared,
-    m: usize,
-    n: usize,
-) -> diagnostic::Result<(String, String)> {
-    pair(
-        lower_sources(Emit::Metal, &scan_kind(run.op)?, run, prepared, m, n)?,
-        "扫描",
-    )
 }
 
 /// 扫描衰减 `a`：从 `[consts]` 的 `a` 槽读出（扫描的离散对角半群步），解析成 f32 供校正内核拼
@@ -489,56 +448,52 @@ fn lower_sources(
 }
 
 /// 声明里必带的 `[chunk]` 块大小；缺声明时报 [`Code::Unsupported`]（串行兜底另有路径，这里只做分块）。
-fn chunk_size(op: &OpDecl, location: &str) -> diagnostic::Result<usize> {
+fn chunk_size(op: &OpDecl) -> diagnostic::Result<usize> {
     let chunk = op.chunk.as_ref().ok_or_else(|| {
         Error::new(
             Code::Unsupported,
             format!("`{}` 没有声明 `[chunk]`", op.name),
         )
-        .with(location)
+        .with("cutile::execution::program")
     })?;
     Ok(chunk.size)
 }
 
 /// 分块归约的 [`Lower`] 描述：块大小来自 `[chunk]`、软件归约原语名来自 `[needs] reduce`。
 fn reduce_kind(op: &OpDecl) -> diagnostic::Result<Lower> {
-    let chunk = chunk_size(op, "cutile::execution::cuda_reduce_program")?;
+    let chunk = chunk_size(op)?;
     let func = reduce_func(op)?;
     Ok(Lower::ChunkReduce { chunk, func })
 }
 
 /// 分块扫描的 [`Lower`] 描述：块大小来自 `[chunk]`、衰减 `a` 来自 `[consts]`。
 fn scan_kind(op: &OpDecl) -> diagnostic::Result<Lower> {
-    let chunk = chunk_size(op, "cutile::execution::metal_scan_program")?;
+    let chunk = chunk_size(op)?;
     let decay = scan_decay(op)?;
     Ok(Lower::ChunkScan { chunk, decay })
 }
 
-/// 从 lowering 结果取一段设备源；缺段是后端违约，机制层不猜。
-fn pop_one(sources: &mut Vec<String>, role: &str) -> diagnostic::Result<String> {
-    sources
-        .pop()
-        .ok_or_else(|| Error::new(Code::Internal, format!("{role} lowering 少一段设备源")))
+/// 网格每一维的大小：把 `[grid]` 里的标量名按样本求值成 `usize`。
+pub(super) fn grid_dims(grid: &Grid, sample: &Sample) -> diagnostic::Result<Vec<usize>> {
+    grid.dims
+        .iter()
+        .map(|(_, scalar)| dim_size(scalar, sample))
+        .collect()
 }
 
-/// lowering 结果应恰好一段设备源。
-fn single(mut sources: Vec<String>, role: &str) -> diagnostic::Result<String> {
-    pop_one(&mut sources, role)
-}
-
-/// lowering 结果应恰好两段，按弹出顺序还原 `(第一段, 第二段)`。
-fn pair(mut sources: Vec<String>, role: &str) -> diagnostic::Result<(String, String)> {
-    let b = pop_one(&mut sources, role)?;
-    let a = pop_one(&mut sources, role)?;
-    Ok((a, b))
-}
-
-/// lowering 结果应恰好三段，按弹出顺序还原。
-fn triple(mut sources: Vec<String>, role: &str) -> diagnostic::Result<(String, String, String)> {
-    let c = pop_one(&mut sources, role)?;
-    let b = pop_one(&mut sources, role)?;
-    let a = pop_one(&mut sources, role)?;
-    Ok((a, b, c))
+/// 一个网格标量的大小：样本没有取值、或取值不是非负 `usize`，都算声明与样本对不上。
+pub(super) fn dim_size(scalar: &str, sample: &Sample) -> diagnostic::Result<usize> {
+    let size = sample.scalar(scalar).ok_or_else(|| {
+        Error::new(Code::Invalid, format!("网格标量 `{scalar}` 没有样本取值"))
+            .with("cutile::execution::program")
+    })?;
+    usize::try_from(size).map_err(|_| {
+        Error::new(
+            Code::Invalid,
+            format!("网格标量 `{scalar}` = {size} 不是非负 usize"),
+        )
+        .with("cutile::execution::program")
+    })
 }
 
 #[cfg(test)]
