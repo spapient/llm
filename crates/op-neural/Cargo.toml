@@ -1,0 +1,26 @@
+[package]
+name = "llm-op-neural"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Neural network operators: convolution/deconvolution, attention, pooling and normative layers."
+readme = "README.md"
+publish = false
+autotests = false
+
+[dependencies]
+annotation = { path = "../annotation", package = "llm-annotation" }
+diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
+half = { workspace = true, features = ["num-traits"] }
+llm-op-kernel = { path = "../op-kernel" }
+llm-op-spec = { path = "../op-spec" }
+num-traits = { workspace = true }
+prof = { path = "../prof", package = "llm-prof" }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+testkit = { path = "../testkit", package = "llm-testkit" }

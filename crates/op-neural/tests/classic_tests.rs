@@ -1,32 +1,6 @@
 use super::*;
 use half::{bf16, f16};
 
-/// 每个算子的样本 -> 参考必须自洽（参考不能报错，长度与 `y` 缓冲一致）。
-fn check(name: &str) {
-    let model = crate::model(name).expect("已注册");
-    let sample = (model.sample)(model.shape.0, model.shape.1);
-    let values = (model.reference)(&sample).expect("参考可计算");
-    let y = sample.f32("y").expect("y 存在");
-    assert_eq!(values.len(), y.len(), "{name}: 参考长度必须等于 y 缓冲");
-}
-
-#[test]
-fn every_classic_sample_matches_its_reference() {
-    for name in [
-        "max_pool1d_f32",
-        "max_pool2d_f32",
-        "avg_pool2d_f32",
-        "adaptive_pool_f32",
-        "interpolate_f32",
-        "batch_norm_f32",
-        "group_norm_f32",
-        "instance_norm_f32",
-        "layer_norm_f32",
-    ] {
-        check(name);
-    }
-}
-
 #[test]
 fn norm_references_are_statistically_sane() {
     // LayerNorm 参考：每行均值 0、方差 ≈ 1（eps 让方差略小于 1）。

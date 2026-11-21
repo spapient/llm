@@ -687,6 +687,20 @@ dependencies = [
 name = "llm-op"
 version = "0.1.0"
 dependencies = [
+ "llm-annotation",
+ "llm-diagnostic",
+ "llm-op-kernel",
+ "llm-op-neural",
+ "llm-op-spec",
+ "llm-prof",
+ "llm-testkit",
+ "toml",
+]
+
+[[package]]
+name = "llm-op-kernel"
+version = "0.1.0"
+dependencies = [
  "half",
  "llm-annotation",
  "llm-diagnostic",
@@ -694,7 +708,20 @@ dependencies = [
  "llm-prof",
  "llm-testkit",
  "num-traits",
- "toml",
+]
+
+[[package]]
+name = "llm-op-neural"
+version = "0.1.0"
+dependencies = [
+ "half",
+ "llm-annotation",
+ "llm-diagnostic",
+ "llm-op-kernel",
+ "llm-op-spec",
+ "llm-prof",
+ "llm-testkit",
+ "num-traits",
 ]
 
 [[package]]

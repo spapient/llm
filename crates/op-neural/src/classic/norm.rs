@@ -22,7 +22,7 @@ pub mod batch {
         let mut mean = vec![S::ZERO; C];
         let mut var = vec![S::ONE; C];
         // 声明档是 `n=2, h=1, w=2`：`h·w = spatial`。
-        crate::norm::BatchNorm2d {
+        llm_op_kernel::norm::BatchNorm2d {
             channels: C,
             eps: S::from_f64(EPS as f64),
             momentum: S::from_f64(0.1),
@@ -69,7 +69,7 @@ pub mod group {
         beta: &[S],
         out: &mut [S],
     ) -> diagnostic::Result<()> {
-        crate::norm::GroupNorm {
+        llm_op_kernel::norm::GroupNorm {
             groups: G,
             channels: C,
             eps: S::from_f64(EPS as f64),
@@ -119,7 +119,7 @@ pub mod instance {
         beta: &[S],
         out: &mut [S],
     ) -> diagnostic::Result<()> {
-        crate::norm::InstanceNorm {
+        llm_op_kernel::norm::InstanceNorm {
             channels: C,
             eps: S::from_f64(EPS as f64),
         }
@@ -161,7 +161,7 @@ pub mod layer {
         beta: &[S],
         out: &mut [S],
     ) -> diagnostic::Result<()> {
-        crate::norm::LayerNorm {
+        llm_op_kernel::norm::LayerNorm {
             width: W,
             eps: S::from_f64(EPS as f64),
         }

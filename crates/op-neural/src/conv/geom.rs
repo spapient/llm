@@ -1,6 +1,6 @@
 use diagnostic::{Code, Error, Result};
 
-use crate::fast;
+use llm_op_kernel::fast;
 
 use super::support::*;
 

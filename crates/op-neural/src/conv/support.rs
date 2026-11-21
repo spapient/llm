@@ -3,7 +3,7 @@ use std::thread;
 use diagnostic::{Code, Error, Result};
 
 use crate::Scalar;
-use crate::fast;
+use llm_op_kernel::fast;
 
 use super::geom::{Conv2d, ConvGeom};
 

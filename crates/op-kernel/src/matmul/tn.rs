@@ -92,9 +92,10 @@ const LANES: usize = 8;
 /// 而公开对拍容差（1e-3 相对误差）足以吸收它；换来的是内层 `LANES` 倍指令级并行，这一项才是
 /// 分块内核相对逐行 `gemv` 不落下风的前提（实测 1.8×，见 `crates/benchmarks/src/matmul.rs`）。
 ///
-/// 它是 `op` 里唯一的多链点积：矩阵乘 tile 与两条注意力内核（`attention` / `attention::tiled`）
-/// 都调这一份，否则同一个归约循环会被写成四份、向量化程度也四份不一样。
-pub(crate) fn dot_lanes(a: &[f32], b: &[f32]) -> f32 {
+/// 它是本工作区里唯一的多链点积：矩阵乘 tile 与两条注意力内核（`op-neural` 的 `attention` /
+/// `attention::tiled`）都调这一份，否则同一个归约循环会被写成四份、向量化程度也四份不一样。
+/// 跨 crate 可见是刻意的：把 `dot_lanes` 复制到 `op-neural` 就等于放弃"只有一处归约"。
+pub fn dot_lanes(a: &[f32], b: &[f32]) -> f32 {
     let len = a.len().min(b.len());
     let (x_chunks, x_tail) = a[..len].as_chunks::<LANES>();
     let (y_chunks, y_tail) = b[..len].as_chunks::<LANES>();

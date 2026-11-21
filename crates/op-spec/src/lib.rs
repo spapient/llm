@@ -73,31 +73,3 @@ mod spec_tests {
         assert!(same_bytes("", ""));
     }
 }
-
-#[cfg(test)]
-#[path = "../tests/init_tests.rs"]
-mod init_tests;
-
-#[cfg(test)]
-#[path = "../tests/layout_tests.rs"]
-mod layout_tests;
-
-#[cfg(test)]
-#[path = "../tests/quant_tests.rs"]
-mod quant_tests;
-
-#[cfg(test)]
-#[path = "../tests/rnd_tests.rs"]
-mod rnd_tests;
-
-#[cfg(test)]
-#[path = "../tests/sch_tests.rs"]
-mod sch_tests;
-
-#[cfg(test)]
-#[path = "../tests/sig_tests.rs"]
-mod sig_tests;
-
-#[cfg(test)]
-#[path = "../tests/tpl_tests.rs"]
-mod tpl_tests;

@@ -120,7 +120,7 @@ fn the_shared_skeleton_rejects_a_weight_of_the_wrong_element_type() {
 
 #[test]
 fn call_arguments_follow_the_template_signature() {
-    let signature = crate::sig::Signature::parse("gemv_f32", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/ops/gemv_f32.k")))
+    let signature = crate::sig::Signature::parse("gemv_f32", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../op/ops/gemv_f32.k")))
         .expect("签名可解析");
     assert_eq!(
         signature
@@ -129,37 +129,6 @@ fn call_arguments_follow_the_template_signature() {
         "x, w, y, 64, 4, 32"
     );
     assert_eq!(signature.output(), Some("y"));
-}
-
-/// 这条算子与 `gemv_i4` 共用同一批原语，只少一个 `quant`：差异全在数据里。
-#[test]
-fn the_two_operators_differ_only_in_their_declared_quantization() {
-    use crate::decl::OpDecl;
-    use crate::model;
-    use prof::atom::Prim;
-
-    let dense = crate::builtin_named("gemv_f32").expect("内置");
-    let quantized = crate::builtin_named("gemv_i4").expect("内置");
-    let dense_decl = OpDecl::parse(dense.declaration(), dense.template()).expect("稠密声明合法");
-    let quant_decl =
-        OpDecl::parse(quantized.declaration(), quantized.template()).expect("量化声明合法");
-
-    let prims = |decl: &OpDecl| -> Vec<Prim> { decl.needs.iter().map(|need| need.prim).collect() };
-    assert!(!prims(&dense_decl).contains(&Prim::Quant), "稠密算子不解包");
-    assert!(prims(&quant_decl).contains(&Prim::Quant));
-    assert_eq!(dense_decl.skeleton, quant_decl.skeleton, "同一条骨架");
-    assert_eq!(
-        model("gemv_f32").map(|model| model.axes),
-        model("gemv_i4").map(|model| model.axes),
-        "两条算子按同一组角色取轴：层不必知道权重是 4 位还是 32 位"
-    );
-    assert_eq!(
-        model("gemv_f32").map(|model| model.group),
-        Some(1),
-        "稠密的形状粒度是 1"
-    );
-    assert_eq!(MODEL.dtype, DType::F32, "样本的输出缓冲是 f32");
-    assert_eq!(FORMAT_GRAIN, 1, "格式自己的声明粒度也是 1");
 }
 
 /// 与 [`MODEL`] 同源：证明 `Model::group` 确实来自 [`Format::GRAIN`]，而不是注解另写了一个数。

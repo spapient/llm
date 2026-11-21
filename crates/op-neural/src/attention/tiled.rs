@@ -120,7 +120,7 @@ impl TiledCtx<'_> {
         let arow = &mut acc[row * self.d..][..self.d];
         for col in start..end {
             let kcol = &self.k[col * self.d..][..self.d];
-            let score = crate::matmul::dot_lanes(qrow, kcol) / self.scale;
+            let score = llm_op_kernel::matmul::dot_lanes(qrow, kcol) / self.scale;
             let new_max = m.max(score);
             let reweight = (m - new_max).exp();
             let prob = (score - new_max).exp();
@@ -158,7 +158,7 @@ impl TiledCtx<'_> {
                 let qrow = &self.q[row * self.d..][..self.d];
                 let span = &mut line[start..stop];
                 for (slot, key) in span.iter_mut().zip(keys.chunks_exact(self.d)) {
-                    *slot = crate::matmul::dot_lanes(qrow, key) / self.scale;
+                    *slot = llm_op_kernel::matmul::dot_lanes(qrow, key) / self.scale;
                 }
             }
             start = stop;

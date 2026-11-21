@@ -19,7 +19,7 @@
 use crate::Scalar;
 use crate::conv::ConvGeom;
 use crate::model::{Buffer, Cost, Sample, ShapeContext, Values, x_buffer};
-use crate::unary::{AXES, project_shape};
+use llm_op_kernel::unary::{AXES, project_shape};
 use diagnostic::Error;
 
 /// 一次算子装配：标记类型、语义别名与 [`crate::operator_here`] 的基座实现，外加 `#[annotation::model]`

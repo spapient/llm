@@ -10,7 +10,7 @@ use crate::guard::check_all;
 use diagnostic::{Code, Error, Result};
 
 use crate::conv::ConvGeom;
-use crate::fast;
+use llm_op_kernel::fast;
 
 /// 前向标量缝：f32 与对称 i8（i32 累加）共用同一套前向/散射算法，
 /// 只有 GEMM 后端与零值随类型切换。换后端只需新增一个 impl，调用方不变。

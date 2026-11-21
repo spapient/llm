@@ -1,4 +1,5 @@
-//! 声明层：算子声明（`ops/<name>.toml`）、模板（`ops/<name>.k`）与它们的解析。
+//! 声明层与注册表：算子声明（`ops/<name>.toml`）、模板（`ops/<name>.k`）、它们的解析，
+//! 以及「算子名 → 模板 → 语义表」的唯一一份注册表（[`REGISTRY`]）。
 //!
 //! 声明语料在**构建期**由 [`build.rs`](../build.rs) 用构建依赖 `toml` 解析 `ops/*.toml`，展开成
 //! `diagnostic::data::{Table, Value}` 字面量写进 `$OUT_DIR/declared.rs`，再由 [`declared`] / [`names`]
@@ -8,24 +9,27 @@
 //! 拼接片段、emit 与对拍。因此新增算子不必改 `cutile` 的任何一行代码，领域数据也不会
 //! 与机制代码混在同一个 crate 里。
 //!
-//! 两段文本的语义（骨架 / 轴 / 需求 / 布局 / 降级链，模板里的 `{{插值}}` 与 `@原语`）在这里
-//! 被解析成[`decl::OpDecl`]，词汇表（[`layout`]、[`sch`]、[`tpl`]、[`sig`]）也在这里：机制层只消费
-//! 解析结果，不再看 TOML。模板的入口签名是 ABI 的唯一事实源：实参顺序与输出缓冲名都从它派生。
-//! 闭集的内容与书写规则见 [`README.md`](../../cutile/README.md) §4。
+//! # 三 crate 分层
 //!
-//! 除了声明与模板，算子语义也在本 crate：求和表达式、确定性样本与标量参考（[`mod@model`]）。它们是
-//! 第二份实现，与声明、模板共同构成"正确性来自双源"（cutile README §11.1）；`cutile` 只提供对拍口径
-//! 与执行环境，不认识任何算子名。
+//! 本 crate 不做算术，只做装配。[`llm_op_spec`] 是契约（"算子是什么"：签名、布局、模板词法、
+//! 代价表达式、语义模型、样本），[`llm_op_kernel`] 是稠密核（"一行乘一列怎么算"），
+//! [`llm_op_neural`] 是神经算子（"窗口怎么滑过张量"）。依赖单向：
+//! `op-spec ← op-kernel ← op-neural ← op`，于是内核不可能读到声明（它没有声明可读），
+//! 「内核能否违反声明」这一问在编译期就有答案。
 //!
-//! 同一副骨架的多种精度写在 [`gemv`]：一份泛型实现（求和、代价、样本、校验、遍历）+ 每个格式
-//! 一份 [`gemv::Format`] 契约（权重元素、位宽、粒度、解包）。`gemv_i4` / `gemv_f32` 因此只写
-//! "这份格式是什么"，不重写骨架。它们的 `MODEL` 由 `#[annotation::model]` 注解生成：配置在编译期
-//! 定下，"注解说的是哪份格式"由类型（`Quantized<32>` / `Dense<32>`）保证，写错就编译不过。
+//! 三个 crate 的模块与类型别名都从本 crate 根用 `pub use` 整体再导出，所以 12 个下游
+//! 写的 `op::gemv::…` / `op::conv::…` / `op::gemv_f32` 一个字都不用改：门面是路径的承诺。
 //!
-//! 代价（`flops` / `bytes`）不在本 crate 里手写：算子只声明 `EXPR`（如 `nm,m,ng,n->n`）与每个操作数
-//! 的位宽/方向，由 [`einsum`] 推出；[`model::Cost`] 只是它的再导出（代价层并入本 crate 后
-//! 连再导出也不再是跨 crate 补丁）。这样新增算子
-//! 不会引入第二条流量公式，roofline 的分子也只有一处来源。
+//! 算子的标量参考与确定性样本在 [`mod@model`] 与 [`sample`]（第二份实现，与声明、模板共同构成
+//! "正确性来自双源"，cutile README §11.1）；`cutile` 只提供对拍口径与执行环境，不认识任何算子名。
+//!
+//! 同一副骨架的多种精度写在 [`gemv`]（`op-kernel` 内）：一份泛型实现 + 每个格式一份
+//! [`gemv::Format`] 契约。它们的 `MODEL` 由 `#[annotation::model]` 注解生成：配置在编译期定下，
+//! "注解说的是哪份格式"由类型（`Quantized<32>` / `Dense<32>`）保证，写错就编译不过。
+//!
+//! 代价（`flops` / `bytes`）不在任何一层里手写：算子只声明 `EXPR`（如 `nm,m,ng,n->n`）与每个操作数
+//! 的位宽/方向，由 [`einsum`] 推出；[`model::Cost`] 只是它的再导出。这样新增算子不会引入
+//! 第二条流量公式，roofline 的分子也只有一处来源。
 //!
 //! # 例子
 //!
@@ -45,69 +49,40 @@
 //! ```
 
 #![deny(unsafe_code)]
-// `fast::sme` 的 SME 通道依赖两个不稳定特性，且**这两个特性名只在 aarch64 上存在**：
-// x86_64 等其它目标根本不认识它们，直接 `#![feature(...)]` 会 E0635（unknown feature）。
-// 因此用 `cfg_attr` 只在 aarch64 上声明，而非"声明了但在别的架构上无作用"——
-// 特性门不是惰性的，名字在编译目标上不认识就是硬错误。
-// - `aarch64_unstable_target_feature`：放行 `#[target_feature(enable = "sme")]`（尚未稳定）。
-// - `stdarch_aarch64_feature_detection`：放行运行时探测 `is_aarch64_feature_detected!("sme")`。
-#![cfg_attr(target_arch = "aarch64", feature(aarch64_unstable_target_feature))]
-#![cfg_attr(target_arch = "aarch64", feature(stdarch_aarch64_feature_detection))]
-// `std::simd` 在两个地方用，且都靠它保持 `unsafe_code = "deny"` 不扩大开岛范围：
-// `fast::sme::pack_a` 的分块转置（只存在于 aarch64），以及 `gemv::simd` 的解包点积——
-// 后者**不按目标门控**，因为它是架构无关的 16 车道源码，aarch64 上落成 NEON、x86_64 上落成
-// SSE2 基线，两个目标编译的是同一份算术，于是两条验证链跑的是同一段代码。
-#![feature(portable_simd)]
 
-pub mod activation;
-pub mod attention;
-pub mod classic;
-pub mod conv;
 pub mod decl;
-pub mod deconv;
-pub mod dequant;
-pub mod elementwise;
-pub mod fast;
-pub mod gemm;
-pub mod gemv;
-pub mod matmul;
-pub mod norm;
-pub mod reduce;
-pub mod scan;
-pub mod unary;
 
-// 一元 / 二元 / 归约 / 反量化 / GEMV / GEMM / 注意力骨架内的声明式子模块，re-export 到 crate 根保持 `op::<name>::MODEL` / `forward` 路径。
-pub use activation::{
-    embed as embed_f32, rmsnorm as rmsnorm_f32, rope as rope_f32, softmax as softmax_f32,
+// 内核与神经算子各自成 crate（分层见 `docs/ARCHITECTURE.md` §二）：`op` 只留声明层与注册表。
+// 用 `pub use` 把两个 crate 的模块与别名整体搬回本 crate 根，12 个下游 crate 的
+// `op::gemv::…` / `op::conv::…` / `op::gemv_f32` 路径零改动——门面是路径的承诺，不是再实现。
+pub use llm_op_kernel::{
+    activation, dequant, elementwise, fast, gemm, gemv, matmul, norm, reduce, unary,
 };
-pub use attention::decode_attention;
-pub use classic::{
-    adaptive_pool, avg_pool2d, batch_norm, conv2d, group_norm, instance_norm, interpolate,
-    layer_norm, max_pool1d, max_pool2d,
+pub use llm_op_neural::{attention, classic, conv, deconv, scan};
+pub use llm_op_kernel::{
+    add_f32, dequant_i2, dequant_i4, dequant_i8, div_f32, embed_f32, exp_f32, gelu_f32, gemm_f32,
+    gemm_i2, gemm_i4, gemm_i8, gemv_f32, gemv_i2, gemv_i4, gemv_i8, hard_sigmoid_f32,
+    leaky_relu_f32, log_f32, matmul_i8, max_f32, min_f32, mul_f32, reduce_max_f32,
+    reduce_sum_f32, residual_add_f32, rmsnorm_f32, rope_f32, scale_f32, silu_f32, softmax_f32,
+    sub_f32,
 };
-pub use dequant::{dequant_i2, dequant_i4, i8 as dequant_i8};
-pub use elementwise::{add_f32, div_f32, max_f32, min_f32, mul_f32, residual_add_f32, sub_f32};
-pub use gemm::{f32 as gemm_f32, i2 as gemm_i2, i4 as gemm_i4, i8 as gemm_i8};
-pub use gemv::{f32 as gemv_f32, i2 as gemv_i2, i4 as gemv_i4, i8 as gemv_i8};
+pub use llm_op_neural::{
+    adaptive_pool, avg_pool2d, batch_norm, conv2d, decode_attention, group_norm, instance_norm,
+    interpolate, layer_norm, max_pool1d, max_pool2d, scan_f32, Scalar,
+};
+
 // 契约层（签名、布局、模板词法、代价表达式、语义模型、样本、算子契约）在 `op-spec`：
 // 这一层只回答"算子是什么"，被 `op-kernel` / `op-neural` / `op` 三方同时依赖而不成环。
 // 用 `pub use` 兜住模块路径，12 个下游 crate 的 `op::model::…` / `op::sig::…` 零改动。
 pub use llm_op_spec::same_bytes;
 // `$crate::formula_cell!` / `$crate::operator_via!` 在骨架宏里按 crate 根解析，这里把 spec 导出的
-// 两个宏搬回本 crate 根：12 个下游与 all内部的 `#[model]` 展开都不必改路径。
+// 两个宏搬回本 crate 根：12 个下游与本 crate 内部的 `#[model]` 展开都不必改路径。
 pub use llm_op_spec::{formula_cell, operator_here, operator_via};
 pub use llm_op_spec::tpl::{formula, parse};
 pub use llm_op_spec::{einsum, model, operator, sample, sch, sig, tpl};
-pub(crate) use llm_op_spec::tpl::guard;
-pub use matmul::i8 as matmul_i8;
 pub use model::quant;
-pub use reduce::{reduce_max_f32, reduce_sum_f32};
 pub use sample::{dropout, init, rnd};
-pub use scan::{Scalar, f32 as scan_f32};
 pub use sch::layout;
-pub use unary::{
-    exp_f32, gelu_f32, hard_sigmoid_f32, leaky_relu_f32, log_f32, scale_f32, silu_f32,
-};
 
 use diagnostic::data::Table;
 
@@ -356,10 +331,7 @@ mod model_tests;
 #[path = "../tests/operator_tests.rs"]
 mod operator_tests;
 
+/// 注册表 ↔ 内核的跨层核对：只有同时看得见声明层与内核的地方才能写这种测试。
 #[cfg(test)]
-#[path = "../tests/dropout_tests.rs"]
-mod dropout_tests;
-
-#[cfg(test)]
-#[path = "../tests/einsum_tests.rs"]
-mod einsum_tests;
+#[path = "../tests/registry_tests.rs"]
+mod registry_tests;
