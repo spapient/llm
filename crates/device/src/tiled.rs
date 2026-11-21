@@ -207,6 +207,10 @@ fn check_tensor_shape(m: usize, n: usize, k: usize, geometry: TensorGeometry) ->
 }
 
 /// 张量核 GEMM 的 MSL 正文：`M/N/K` 与几何全部烘成编译期常量，故无标量缓冲绑定。
+///
+/// 当两片 B 片（双缓冲）也装得进 32 KiB 线程组内存时走软件流水：预热第 0 片后每轮
+/// 预取下一片与当前片乘加重叠，barrier 由每轮两次减为一次，B 装载延迟不再裸露在
+/// 关键路径上；装不下则退回单片主循环。
 fn tensor_gemm_msl(
     a: &str,
     b: &str,
@@ -226,7 +230,21 @@ fn tensor_gemm_msl(
     // 省掉逐轮的边界判断与动态 extent 版本（小形状上这段开销不可忽略）。
     let exact = geometry.exact(k);
     let tail_decl = tensor_tail_decl(exact);
-    let mma = tensor_mma(a, exact);
+    // 双缓冲要两片 B 都塞进线程组内存，塞不下就退回单片。
+    let double = 2 * tile_n * (k_tile + 4) * 2 <= 32 * 1024;
+    let (sb, tb, body) = if double {
+        (
+            "    threadgroup half sb[2][NRN * KP];\n",
+            "sb[0]",
+            tensor_double_loop(a, b, exact),
+        )
+    } else {
+        (
+            "    threadgroup half sb[NRN * KP];\n",
+            "sb",
+            tensor_single_loop(a, b, exact),
+        )
+    };
     format!(
         "#include <metal_stdlib>\n\
          #include <metal_tensor>\n\
@@ -244,10 +262,10 @@ fn tensor_gemm_msl(
          \x20    constexpr int NRN = TSN, KP = TK + 4, NT = 32 * SG;\n\
          \x20    constexpr int IPR = TK / 16, WI = NRN * IPR;\n\
          \x20    const int ra = int(tgp.y) * TSM, rb = int(tgp.x) * NRN;\n\
-         \x20    threadgroup half sb[NRN * KP];\n\
+         {sb}\
          \x20    auto tA = tensor((device float*)d_{a} + (size_t)ra * K,\n\
          \x20                     dextents<int32_t, 2>(K, TSM), array<int, 2>{{1, K}});\n\
-         \x20    auto tB = tensor(sb, dextents<int32_t, 2>(TK, NRN), array<int, 2>{{1, KP}});\n\
+         \x20    auto tB = tensor({tb}, dextents<int32_t, 2>(TK, NRN), array<int, 2>{{1, KP}});\n\
          \x20    using D = mpp::tensor_ops::matmul2d_descriptor;\n\
          \x20    constexpr auto MA = D::mode::multiply_accumulate;\n\
          \x20    mpp::tensor_ops::matmul2d<D(TSM, NRN, TK, false, true, true, MA),\n\
@@ -255,29 +273,70 @@ fn tensor_gemm_msl(
          {tail_decl}\
          \x20    auto cT = mm_full.get_destination_cooperative_tensor<decltype(tA), decltype(tB), float>();\n\
          \x20    for (uint16_t i = 0; i < cT.get_capacity(); ++i) cT[i] = 0.0f;\n\
-         \x20    for (int k0 = 0; k0 < K; k0 += TK) {{\n\
-         \x20        for (int w = int(tiitg); w < WI; w += NT) {{\n\
-         \x20            const int row = w / IPR, col = (w % IPR) * 16, kp = k0 + col;\n\
-         \x20            const size_t base = (size_t)(rb + row) * K + kp;\n\
-         \x20            threadgroup half* dst = sb + row * KP + col;\n\
-         \x20            if (rb + row < N && kp + 15 < K && (base & 3) == 0) {{\n\
-         \x20                const device half4* src = (const device half4*)(d_{b} + base);\n\
-         \x20                threadgroup half4* out = (threadgroup half4*)dst;\n\
-         \x20                out[0] = src[0]; out[1] = src[1]; out[2] = src[2]; out[3] = src[3];\n\
-         \x20            }} else {{\n\
-         \x20                for (int i = 0; i < 16; ++i)\n\
-         \x20                    dst[i] = (rb + row < N && kp + i < K) ? d_{b}[base + (size_t)i] : (half)0;\n\
-         \x20            }}\n\
-         \x20        }}\n\
-         \x20        threadgroup_barrier(mem_flags::mem_threadgroup);\n\
-         {mma}\
-         \x20        threadgroup_barrier(mem_flags::mem_threadgroup);\n\
-         \x20    }}\n\
+         {body}\
          \x20    auto tD = tensor(d_{y} + (size_t)ra * N + rb,\n\
          \x20                     dextents<int32_t, 2>(min(NRN, N - rb), TSM), array<int, 2>{{1, N}});\n\
          \x20    cT.store(tD);\n\
          }}"
     )
+}
+
+/// B 片协同装载语句：`dst` 是线程组缓冲基址表达式（单片 `sb`、双片 `sb[buf]` 或 `sb[1 - buf]`），
+/// `koff` 是规约轴起点表达式（`0`、`k0` 或 `k0 + TK`），`base` 是首行缩进空格数。
+/// half4 快速路径要求整 16 元素在界内且目标 8 字节对齐，否则逐元素补齐（越界补 0）。
+fn tensor_load(b: &str, dst: &str, koff: &str, base: usize) -> String {
+    let i0 = " ".repeat(base);
+    let i1 = " ".repeat(base + 4);
+    let i2 = " ".repeat(base + 8);
+    let i3 = " ".repeat(base + 12);
+    [
+        format!("{i0}for (int w = int(tiitg); w < WI; w += NT) {{"),
+        format!("{i1}const int row = w / IPR, col = (w % IPR) * 16, kp = {koff} + col;"),
+        format!("{i1}const size_t base = (size_t)(rb + row) * K + kp;"),
+        format!("{i1}threadgroup half* dst = {dst} + row * KP + col;"),
+        format!("{i1}if (rb + row < N && kp + 15 < K && (base & 3) == 0) {{"),
+        format!("{i2}const device half4* src = (const device half4*)(d_{b} + base);"),
+        format!("{i2}threadgroup half4* out = (threadgroup half4*)dst;"),
+        format!("{i2}out[0] = src[0]; out[1] = src[1]; out[2] = src[2]; out[3] = src[3];"),
+        format!("{i1}}} else {{"),
+        format!("{i2}for (int i = 0; i < 16; ++i)"),
+        format!("{i3}dst[i] = (rb + row < N && kp + i < K) ? d_{b}[base + (size_t)i] : (half)0;"),
+        format!("{i1}}}"),
+        format!("{i0}}}"),
+    ]
+    .join("\n")
+}
+
+/// 单缓冲主循环：每轮 装载→barrier→乘加→barrier，B 装载延迟完全暴露在关键路径上。
+fn tensor_single_loop(a: &str, b: &str, exact: bool) -> String {
+    [
+        "    for (int k0 = 0; k0 < K; k0 += TK) {".to_string(),
+        tensor_load(b, "sb", "k0", 8),
+        "        threadgroup_barrier(mem_flags::mem_threadgroup);".to_string(),
+        tensor_mma(a, exact, "sb"),
+        "        threadgroup_barrier(mem_flags::mem_threadgroup);".to_string(),
+        "    }".to_string(),
+    ]
+    .join("\n")
+        + "\n"
+}
+
+/// 双缓冲主循环：预热第 0 片后每轮预取下一片与当前片乘加重叠，barrier 由两次减为一次。
+fn tensor_double_loop(a: &str, b: &str, exact: bool) -> String {
+    [
+        "    // 软件流水：预热第 0 片，此后预取下一片与当前片乘加重叠，双片轮流缓冲。".to_string(),
+        tensor_load(b, "sb[0]", "0", 4),
+        "    threadgroup_barrier(mem_flags::mem_threadgroup);".to_string(),
+        "    for (int k0 = 0, buf = 0; k0 < K; k0 += TK, buf ^= 1) {".to_string(),
+        "        if (k0 + TK < K) {".to_string(),
+        tensor_load(b, "sb[1 - buf]", "k0 + TK", 12),
+        "        }".to_string(),
+        tensor_mma(a, exact, "sb[buf]"),
+        "        threadgroup_barrier(mem_flags::mem_threadgroup);".to_string(),
+        "    }".to_string(),
+    ]
+    .join("\n")
+        + "\n"
 }
 
 /// 尾块声明：规约轴不被 `k_tile` 整除时，额外声明一个 `dynamic_extent` 的 matmul2d 描述符。
@@ -290,28 +349,28 @@ fn tensor_tail_decl(exact: bool) -> String {
 }
 
 /// 主循环体里的矩阵乘语句：整除时走满块描述符，否则按 `k0 + TK <= K` 分流尾块。
-fn tensor_mma(a: &str, exact: bool) -> String {
+/// `bbase` 是 B 片线程组缓冲基址表达式（单片 `sb`、双片 `sb[buf]`）。
+fn tensor_mma(a: &str, exact: bool, bbase: &str) -> String {
     if exact {
-        format!(
-            "        auto av = tensor((device float*)d_{a} + (size_t)ra * K + k0,\n\
-             \x20                          dextents<int32_t, 2>(TK, TSM), array<int, 2>{{1, K}});\n\
-             \x20        auto bv = tensor(sb, dextents<int32_t, 2>(TK, NRN), array<int, 2>{{1, KP}});\n\
-             \x20        mm_full.run(av, bv, cT);\n"
-        )
+        [
+            format!("        auto av = tensor((device float*)d_{a} + (size_t)ra * K + k0, dextents<int32_t, 2>(TK, TSM), array<int, 2>{{1, K}});"),
+            format!("        auto bv = tensor({bbase}, dextents<int32_t, 2>(TK, NRN), array<int, 2>{{1, KP}});"),
+            "        mm_full.run(av, bv, cT);".to_string(),
+        ]
+        .join("\n")
     } else {
-        format!(
-            "        if (k0 + TK <= K) {{\n\
-             \x20            auto av = tensor((device float*)d_{a} + (size_t)ra * K + k0,\n\
-             \x20                              dextents<int32_t, 2>(TK, TSM), array<int, 2>{{1, K}});\n\
-             \x20            auto bv = tensor(sb, dextents<int32_t, 2>(TK, NRN), array<int, 2>{{1, KP}});\n\
-             \x20            mm_full.run(av, bv, cT);\n\
-             \x20        }} else {{\n\
-             \x20            const int ke = K - k0;\n\
-             \x20            auto av = tensor((device float*)d_{a} + (size_t)ra * K + k0,\n\
-             \x20                              dextents<int32_t, 2>(ke, TSM), array<int, 2>{{1, K}});\n\
-             \x20            auto bv = tensor(sb, dextents<int32_t, 2>(ke, NRN), array<int, 2>{{1, KP}});\n\
-             \x20            mm_tail.run(av, bv, cT);\n\
-             \x20        }}\n"
-        )
+        [
+            "        if (k0 + TK <= K) {".to_string(),
+            format!("            auto av = tensor((device float*)d_{a} + (size_t)ra * K + k0, dextents<int32_t, 2>(TK, TSM), array<int, 2>{{1, K}});"),
+            format!("            auto bv = tensor({bbase}, dextents<int32_t, 2>(TK, NRN), array<int, 2>{{1, KP}});"),
+            "            mm_full.run(av, bv, cT);".to_string(),
+            "        } else {".to_string(),
+            "            const int ke = K - k0;".to_string(),
+            format!("            auto av = tensor((device float*)d_{a} + (size_t)ra * K + k0, dextents<int32_t, 2>(ke, TSM), array<int, 2>{{1, K}});"),
+            format!("            auto bv = tensor({bbase}, dextents<int32_t, 2>(ke, NRN), array<int, 2>{{1, KP}});"),
+            "            mm_tail.run(av, bv, cT);".to_string(),
+            "        }".to_string(),
+        ]
+        .join("\n")
     }
 }

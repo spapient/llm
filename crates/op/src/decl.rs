@@ -252,10 +252,7 @@ fn record_seam(seams: &mut Vec<Seam>, consumer: &OpDecl, pair: (&str, &str), cty
     if consumer.slot_type(to) != Some(ctype) {
         return;
     }
-    if seams
-        .iter()
-        .any(|seam| seam.from == from && seam.to == to)
-    {
+    if seams.iter().any(|seam| seam.from == from && seam.to == to) {
         return;
     }
     seams.push(Seam {

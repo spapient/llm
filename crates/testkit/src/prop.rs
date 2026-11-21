@@ -40,13 +40,15 @@ pub const MAX_SHRINK_ITERS: u32 = 4_096;
 /// 取值不是正整数时 panic，消息带上原始取值。
 #[must_use]
 pub fn cases_from(raw: Option<&str>) -> u32 {
-    match raw.map(str::trim) {
-        None | Some("") => DEFAULT_CASES,
-        Some(text) => match text.parse::<u32>() {
-            Ok(cases) if cases > 0 => cases,
-            _ => panic!("PROPTEST_CASES 必须是正整数，当前是 {text:?}"),
-        },
-    }
+    let Some(text) = raw.map(str::trim).filter(|text| !text.is_empty()) else {
+        return DEFAULT_CASES;
+    };
+    let cases = text.parse::<u32>().ok().filter(|cases| *cases > 0);
+    assert!(
+        cases.is_some(),
+        "PROPTEST_CASES 必须是正整数，当前是 {text:?}"
+    );
+    cases.unwrap_or(DEFAULT_CASES)
 }
 
 /// `PROPTEST_RNG_SEED` 的解析：空/缺省取 [`DEFAULT_SEED`]。
@@ -56,12 +58,15 @@ pub fn cases_from(raw: Option<&str>) -> u32 {
 /// 取值不是 `u64` 时 panic，消息带上原始取值。
 #[must_use]
 pub fn seed_from(raw: Option<&str>) -> u64 {
-    match raw.map(str::trim) {
-        None | Some("") => DEFAULT_SEED,
-        Some(text) => text
-            .parse::<u64>()
-            .unwrap_or_else(|_| panic!("PROPTEST_RNG_SEED 必须是 u64，当前是 {text:?}")),
-    }
+    let Some(text) = raw.map(str::trim).filter(|text| !text.is_empty()) else {
+        return DEFAULT_SEED;
+    };
+    let seed = text.parse::<u64>().ok();
+    assert!(
+        seed.is_some(),
+        "PROPTEST_RNG_SEED 必须是 u64，当前是 {text:?}"
+    );
+    seed.unwrap_or(DEFAULT_SEED)
 }
 
 /// 生效的样本数（读 `PROPTEST_CASES`）。
@@ -172,6 +177,6 @@ pub fn assert_exact(what: &str, got: &[f32], want: &[f32]) {
         want.len()
     );
     if let Some(index) = got.iter().zip(want).position(|(a, b)| a != b) {
-        panic!("{what}：第 {index} 项 {} ≠ {}", got[index], want[index]);
+        assert_eq!(got[index], want[index], "{what}：第 {index} 项不符");
     }
 }

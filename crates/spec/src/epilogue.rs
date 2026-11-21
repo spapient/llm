@@ -1,6 +1,6 @@
-//! 职责：写回尾块（epilogue）闭集文法——把 `bias; act:gelu; quant:i8` 解析成闭集步骤并给出标量参考。
+//! 职责：写回尾块（epilogue）闭集文法——把 `bias; act:gelu; quant:i8` 解析成闭集步骤，并可逆地渲染回文本。
 //!
-//! 语法（闭集，超出即 [`Code::Invalid`]）：
+//! 语法（闭集，超出即 [`diagnostic::Code::Invalid`]）：
 //!
 //! ```text
 //! epilogue := step ((';' | ',') step)*
@@ -10,18 +10,11 @@
 //! ```
 //!
 //! 与 [`crate::tpl`] + [`prof::atom::Prim`] 同构：闭集词汇在 `prof::atom`（[`Epilogue`] / [`ActKind`]），
-//! 文法与标量参考在此层。执行核（`gemm` / `conv` / `device` 的写回阶段）只消费解析结果，不各自再解析
-//! 一遍；`apply` 是唯一的标量参考，也是误差界（γₙ 与量化半格）的落点。
-//!
-//! # 误差界
-//!
-//! - `bias` / `residual`：两数相加，前向误差 ≤ γ₂·|x|（γ₂ = 2u/(1−2u)，u 为 f32 机器精度）。
-//! - `scale`：单次乘法，前向误差 ≤ γ₁·|x|（γ₁ = u）。
-//! - `act`：`relu` / `leaky_relu` / `hard_sigmoid` 无超越函数，逐点精确；`gelu` 用
-//!   Abramowitz–Stegun 7.1.26 近似 erf（绝对误差 < 1.5e-7），`silu` 用 `exp`（≤ 1 ulp）。
-//! - `quant`：round-half-away-from-zero 后夹到目标整数范围，误差 ≤ 0.5 格（饱和点外为截断）。
+//! 文法在此层。执行核（`gemm` / `conv` / `device` 的写回阶段）只消费解析结果，不各自再解析一遍。
+//! 各步骤的数值语义（列偏置广播、激活、量化）归 `gemm` 等算术拥有方：本层只描述「做了什么、按什么顺序」，
+//! 不复制算术。
 
-use diagnostic::{Code, Error, Result};
+use diagnostic::{Error, Result};
 use prof::atom::{ActKind, DType, Epilogue};
 
 /// 一个写回步骤：闭集操作 + 它的参数。每个变体自带参数，错误状态不可表达。
@@ -37,19 +30,8 @@ pub enum Step {
     Scale(f32),
     /// `quant:<i8|i4|i2>`：量化到整数位宽再反量化。
     Quant(DType),
-    /// `store`：写回（标量参考里是空操作，结果就是瓦片）。
+    /// `store`：写回（无参，无附加状态）。
     Store,
-}
-
-/// 标量参考的输入：累加器之外还需要列偏置与残差（缺省视作全 0）。
-#[derive(Debug, Clone, Copy)]
-pub struct Ctx<'a> {
-    /// 瓦片列数（决定 `bias` 的下标周期）。
-    pub n: usize,
-    /// 列偏置（长度 `n`）；`None` 视作全 0。
-    pub bias: Option<&'a [f32]>,
-    /// 残差（与瓦片同形状）；`None` 视作全 0。
-    pub residual: Option<&'a [f32]>,
 }
 
 /// 解析一段 epilogue 文本为闭集步骤序列。
@@ -57,7 +39,7 @@ pub struct Ctx<'a> {
 /// # Errors
 ///
 /// 任何一步超出闭集（未知步骤名、未知激活、`quant` 非 `i8/i4/i2`、`scale` 非有限数、
-/// 无参步骤带了参数）都返回 [`Code::Invalid`]，错误挂「第 N 行」上下文。
+/// 无参步骤带了参数）都返回 [`diagnostic::Code::Invalid`]，错误挂「第 N 行」上下文。
 pub fn parse(text: &str) -> Result<Vec<Step>> {
     let mut steps = Vec::new();
     for (line, piece) in split_steps(text) {
@@ -76,15 +58,6 @@ pub fn render(steps: &[Step]) -> String {
         write_step(&mut text, step);
     }
     text
-}
-
-/// 标量参考：把步骤序列依次施加到行主序瓦片上。所有形状校验先做一遍，之后的每步都不再失败。
-pub fn apply(steps: &[Step], tile: &mut [f32], ctx: Ctx<'_>) -> Result<()> {
-    check_ctx(tile, ctx)?;
-    for step in steps {
-        run(step, tile, ctx);
-    }
-    Ok(())
 }
 
 /// 按 `;` / `,` 切步骤，返回 `(行号, 去空白后的步骤文本)`，跳过空段。
@@ -184,132 +157,6 @@ fn quant_of(arg: Option<&str>, line: usize) -> Result<DType> {
 /// `quant` 只接受 i8 / i4 / i2 三种整数位宽。
 fn is_quant(dtype: DType) -> bool {
     matches!(dtype, DType::I8 | DType::I4 | DType::I2)
-}
-
-/// 形状校验：`bias` 长度 = 列数、`residual` 长度 = 瓦片长度。
-fn check_ctx(tile: &[f32], ctx: Ctx<'_>) -> Result<()> {
-    check_len(ctx.bias, ctx.n, "bias")?;
-    check_len(ctx.residual, tile.len(), "residual")?;
-    Ok(())
-}
-
-/// 一条可选缓冲的长度校验。
-fn check_len(buf: Option<&[f32]>, want: usize, name: &str) -> Result<()> {
-    if let Some(buf) = buf {
-        if buf.len() != want {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("{name} 缓冲 {}，需要 {want}", buf.len()),
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// 施加一个步骤（形状已在上游校验，这里不再失败）。
-fn run(step: &Step, tile: &mut [f32], ctx: Ctx<'_>) {
-    match step {
-        Step::Bias | Step::Residual => add_tile(tile, step, ctx),
-        Step::Act(kind) => activate(tile, *kind),
-        Step::Scale(value) => scale_all(tile, *value),
-        Step::Quant(dtype) => quant_all(tile, *dtype),
-        Step::Store => {}
-    }
-}
-
-/// `bias`（按列广播）与 `residual`（同形状相加）分派到各自实现。
-fn add_tile(tile: &mut [f32], step: &Step, ctx: Ctx<'_>) {
-    match step {
-        Step::Bias => add_bias(tile, ctx.bias),
-        _ => add_residual(tile, ctx.residual),
-    }
-}
-
-/// 列偏置按列广播：`tile[row * cols + col] += bias[col]`（缺省即不变）。
-fn add_bias(tile: &mut [f32], bias: Option<&[f32]>) {
-    let Some(bias) = bias else { return };
-    let cols = bias.len();
-    if cols == 0 {
-        return;
-    }
-    for (index, out) in tile.iter_mut().enumerate() {
-        *out += bias[index % cols];
-    }
-}
-
-/// 残差同形状相加（缺省即不变）。
-fn add_residual(tile: &mut [f32], residual: Option<&[f32]>) {
-    let Some(residual) = residual else { return };
-    for (out, value) in tile.iter_mut().zip(residual) {
-        *out += *value;
-    }
-}
-
-/// 逐元素激活。
-fn activate(tile: &mut [f32], kind: ActKind) {
-    for value in tile.iter_mut() {
-        *value = apply_act(*value, kind);
-    }
-}
-
-/// 单个激活的标量参考。
-fn apply_act(x: f32, kind: ActKind) -> f32 {
-    match kind {
-        ActKind::Relu => x.max(0.0),
-        ActKind::Gelu => 0.5 * x * (1.0 + erf(x * std::f32::consts::FRAC_1_SQRT_2)),
-        ActKind::Silu => x / (1.0 + (-x).exp()),
-        ActKind::LeakyRelu => leaky(x),
-        ActKind::HardSigmoid => (x / 6.0 + 0.5).clamp(0.0, 1.0),
-    }
-}
-
-/// LeakyReLU：非负恒等，负区按斜率 `0.01` 缩放（与 `gemm::unary` 的 `SLOPE` 一致）。
-fn leaky(x: f32) -> f32 {
-    if x >= 0.0 { x } else { 0.01 * x }
-}
-
-/// 标量缩放。
-fn scale_all(tile: &mut [f32], factor: f32) {
-    for value in tile.iter_mut() {
-        *value *= factor;
-    }
-}
-
-/// 量化到整数位宽再反量化（round-half-away-from-zero，夹到目标范围）。
-fn quant_all(tile: &mut [f32], dtype: DType) {
-    for value in tile.iter_mut() {
-        *value = round_trip(*value, dtype);
-    }
-}
-
-/// 单值的量化往返：四舍五入后夹到整数范围。
-fn round_trip(x: f32, dtype: DType) -> f32 {
-    let (lo, hi) = quant_bounds(dtype);
-    x.round().clamp(lo, hi)
-}
-
-/// `i8` / `i4` / `i2` 的整数范围。
-fn quant_bounds(dtype: DType) -> (f32, f32) {
-    match dtype {
-        DType::I8 => (-128.0, 127.0),
-        DType::I4 => (-8.0, 7.0),
-        _ => (-2.0, 1.0),
-    }
-}
-
-/// 标量误差函数：Abramowitz–Stegun 7.1.26（`|误差| < 1.5e-7`），与 `gemm::unary::gelu_f32::erf` 同源。
-fn erf(x: f32) -> f32 {
-    let sign = if x < 0.0 { -1.0 } else { 1.0 };
-    let x = x.abs();
-    let p = 0.327_591_1;
-    let a1 = 0.254_829_6;
-    let a2 = -0.284_496_72;
-    let a3 = 1.421_413_8;
-    let a4 = -1.453_152_1;
-    let a5 = 1.061_405_4;
-    let t = 1.0 / (1.0 + p * x);
-    let series = t * (a1 + t * (a2 + t * (a3 + t * (a4 + t * a5))));
-    sign * (1.0 - series * (-x * x).exp())
 }
 
 /// 一个步骤的渲染。

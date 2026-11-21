@@ -104,7 +104,6 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `OperandSpec` / `FormulaCache` / `FormulaOwner` / `Row` / `Operator` | `spec` | 打包格式的静态表（`Row` 全 `const`）、表达式缓存，以及六族骨架之上的统一语义契约（[ADR 0050](adr/0050-operator-base.md)）。`FormulaOwner` 是一条求和表达式的唯一载体：`EXPR` / `OPERANDS` / `FRAME` 加**每个实现一份**的缓存单元格——写在泛型骨架里的 `static` 只有一份，先解析的式子会覆盖后面的，故缓存按实现分而不是按骨架分 |
 | `Format` / `Element` / `Conf` | `gemm` | 打包格式的派生配置（`Conf` 只收骨架运行期要的 `cpb` / `zero` / `offsets`）与样本缓冲元素闭集 |
 | `Template` / `Segment` / `LayoutSpec` / `Schedule` / `Masking` | `spec` | 声明侧的三张闭集：模板词法、布局构造子与调度模板；`cutile` 只消费，不持第二份 |
-| `Ctx` | `spec` | 写回尾块标量参考的输入：瓦片列数加两条可选边带（列偏置、残差）。缺省走 `None` 而不是要求调用方造零缓冲，参考实现因此只需一份；`epilogue` 的步骤闭集由 `spec` 与执行侧共用，不持第二份 |
 | `OpDecl` / `Registration` | `op` | 声明解析结果与唯一注册表 `REGISTRY`；`cutile` 只消费，不持第二份 |
 | `Phase` / `Seam` / `Fusion` | `op` | 槽位代数：`compose` 判定生产者能否拼到消费者前面——`Phase` 是一段「读哪些槽位 → 写哪些槽位」，`Seam` 是两侧同类型的一处缝（`from` / `to` / `ctype`），`Fusion` 是一次合法融合（缝非空才成立，`None` 是候选剪枝而非错误）。`A == B` 的**自融合**恒为 `None`：读的槽位要等这一轮写完才有值，那是循环携带依赖，拼出来的核无法定义执行顺序，还会白占一个预算名额；`cutile` 只消费，不持第二份 |
 | `Scalar` | `gemm` | 元素运算超 trait（`Add` / `Sub` / `Mul` / `Div`）：让泛型内核写 `a + b` 而不是逐方法调用，否则「泛型化」只把 `as f32` 换成 `S::mul` |
