@@ -7,7 +7,7 @@
 #   3. 构建脚本 `build.rs` 位于 crate 根、不在 `src/` 内，扫描目录天然排除（编译期产物，
 #      不进运行时机制分母）。
 #   4. 工具成员整体不计机制口径：`annotation`（编译期注解）、`fuzz`（模糊测试契约）、
-#      `benchmarks`（集中测量容器）——见 `docs/ARCHITECTURE.md` 分层表注。
+#      `benchmarks`（集中测量容器）、`testkit`（测试夹具与门禁）——见 `docs/ARCHITECTURE.md` 分层表注。
 #   5. 内联 `#[cfg(test)] mod tests` 体内行不在本脚本目录级扣除；严格口径由
 #      `tools::strip_tests`（基于词法树剔除测试条目、保留行号）在审计/门禁侧再扣一次。
 #
@@ -17,7 +17,7 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 # 工具成员：整体排除机制分母。
-TOOL_MEMBERS="annotation fuzz benchmarks"
+TOOL_MEMBERS="annotation fuzz benchmarks testkit"
 
 LAYERS=(L1 L2 L3 L4 L5 L6 L7)
 LAYER_LINES=(0 0 0 0 0 0 0)
@@ -26,19 +26,20 @@ LAYER_FILES=(0 0 0 0 0 0 0)
 # 分层归属（docs/ARCHITECTURE.md §一、design §3.1）。
 layer_index() {
     case "$1" in
-        diagnostic|testkit|rng|dtype|wire|tools) echo 0 ;;
-        prof|op|prim) echo 1 ;;
-        cutile) echo 2 ;;
+        diagnostic|rng|dtype|wire|formats|tools) echo 0 ;;
+        prof|spec|gemm|conv|op|cpu|cuda|metal|musa|opencl|rocm|prim) echo 1 ;;
+        cutile|optim) echo 2 ;;
         tensor|storage|tokenizer) echo 3 ;;
-        weights|autograd|data|nn|shard) echo 4 ;;
-        train|engine|serve|cli) echo 5 ;;
+        weights|snapshot|autograd|nn|algorithm|shard) echo 4 ;;
+        train|engine|device|serve) echo 5 ;;
+        cli) echo 6 ;;
         *) echo -1 ;;
     esac
 }
 
 is_tool_member() {
     local member="$1"
-    for tools in $TOOL_MEMBERS; do
+    for tool in $TOOL_MEMBERS; do
         [ "$member" = "$tool" ] && return 0
     done
     return 1
@@ -105,5 +106,5 @@ else
     printf "%-6s %8d %8d\n" "合计" "$TOTAL_FILES" "$TOTAL_LINES"
     echo
     echo "注：目录级口径，未扣内联 #[cfg(test)] 体；严格口径经 tool::strip_tests 再扣。"
-    echo "注：工具成员 annotation / fuzz / benchmarks 与根 tests/、build.rs、target/ 已排除。"
+    echo "注：工具成员 annotation / fuzz / benchmarks / testkit 与根 tests/、build.rs、target/ 已排除。"
 fi
