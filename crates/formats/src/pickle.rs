@@ -1,17 +1,16 @@
-//! 职责：栈式 pickle 虚拟机——解释 `data.pkl` 流，拦截 `_rebuild_tensor_v2` 重建与
-//! `BINPERSID` persistent storage，还原「名字 + 类型 + 形状 + 字节区间」。
+//! 职责：栈式 pickle 虚拟机——解释 `data.pkl` 流，`_rebuild_tensor_v2` 重建与
+//! `BINPERSID` persistent storage 在此被拦截，还原「名字 + 类型 + 形状 + 字节区间」。
 //!
-//! 读取一律走 [`Cursor`]（借用调用方切片，不复制整份流）；每个 opcode 一个自由函数，
-//! 整张 [`OPS`] 表就是能力清单。
+//! 读取一律走 [`Cursor`]（借用调用方切片，不复制整份流）；每个 opcode 一个自由函数，整张
+//! [`OPS`] 表就是能力清单——表的顺序即文件里处理函数的顺序，找一条 opcode 不必跨文件。
 
 use diagnostic::Result;
 use dtype::DType;
 use wire::{bad, or_bad};
 
-use crate::bin::Tensor;
-use crate::bytes::Cursor;
-use crate::pickle_stack::{append, memo_op, persistent_load, reduce, set_item};
-use crate::pickle_storage::into_str;
+use crate::cursor::Cursor;
+use crate::pickle_tensor::{as_tuple, into_str, storage_handle, tensor_of};
+use crate::torch::Tensor;
 
 #[derive(Clone)]
 pub(crate) enum Value {
@@ -111,14 +110,78 @@ impl<'a> Vm<'a> {
         }
     }
 
-    /// 查表并调用处理函数。
-    fn dispatch(&mut self, op: u8) -> Result<()> {
+    /// 查表并调用处理函数；未知 opcode 在这里统一拒。
+    pub(crate) fn dispatch(&mut self, op: u8) -> Result<()> {
         let handler =
             OPS[usize::from(op)].ok_or_else(|| bad(format!("未知 pickle opcode 0x{op:02X}")))?;
         handler(self, op)
     }
 
-    /// `GLOBAL` 的两行名字：读到下一个 `\n` 为止（换行本身被消费）。
+    pub(crate) fn pops(&mut self, n: usize) -> Result<Vec<Value>> {
+        let at = self
+            .stack
+            .len()
+            .checked_sub(n)
+            .ok_or_else(|| bad("栈下溢"))?;
+        Ok(self.stack.split_off(at))
+    }
+
+    pub(crate) fn pop(&mut self) -> Result<Value> {
+        or_bad(self.stack.pop(), "栈下溢")
+    }
+
+    pub(crate) fn pop_until_marker(&mut self) -> Result<Vec<Value>> {
+        let mut items = Vec::new();
+        loop {
+            match self.pop()? {
+                Value::Marker => {
+                    items.reverse();
+                    return Ok(items);
+                }
+                other => items.push(other),
+            }
+        }
+    }
+
+    fn store_memo(&mut self, idx: usize) -> Result<()> {
+        let value = or_bad(self.stack.last(), "空栈无法写 memo")?.clone();
+        // memo 槽位由更早的存槽 opcode 占用，索引不可能超过流长度；谎报大索引先拒绝，避免稀疏巨表。
+        if idx > self.cursor.total() {
+            return Err(bad("memo 索引超出 pickle 流长度"));
+        }
+        if idx >= self.memo.len() {
+            self.memo.resize(idx + 1, Value::Scalar);
+        }
+        self.memo[idx] = value;
+        Ok(())
+    }
+
+    fn recall_memo(&mut self, idx: usize) -> Result<()> {
+        let value = or_bad(self.memo.get(idx), "memo 索引缺失")?.clone();
+        self.stack.push(value);
+        Ok(())
+    }
+
+    pub(crate) fn rebuild_tensor(&mut self, args: Value) -> Result<()> {
+        let items = as_tuple(args, "rebuild 参数不是元组")?;
+        let mut tensor = tensor_of(&items)?;
+        tensor.name = self.tensor_name();
+        self.tensors.push(tensor);
+        self.stack.push(Value::Tensor);
+        Ok(())
+    }
+
+    /// 张量名：`REDUCE` 的实参与可调用对象弹出后，栈顶若是字符串，它就是 `state_dict`
+    /// 里紧邻这个值的键；否则按出现序号命名，避免借用上一个张量残留的键把两个张量
+    /// 叫成同一个名字（`torch.save([t1, t2])` 就是这一形状）。
+
+    pub(crate) fn tensor_name(&self) -> String {
+        match self.stack.last() {
+            Some(Value::Str(name)) => name.clone(),
+            _ => self.tensors.len().to_string(),
+        }
+    }
+
     fn line(&mut self) -> Result<String> {
         let len = or_bad(
             self.cursor.tail().iter().position(|&byte| byte == b'\n'),
@@ -175,21 +238,20 @@ fn long(vm: &mut Vm<'_>, op: u8) -> Result<()> {
     integer(vm, len, true)
 }
 
-/// 全局名：`GLOBAL` 从流里读两行，`STACK_GLOBAL` 从栈上取两个字符串（模块在前）。
+/// 全局名：`GLOBAL` 从流里读两行，`STACK_GLOBAL` 从栈上取两个字符串（名字在前、模块在后）。
 fn global(vm: &mut Vm<'_>, op: u8) -> Result<()> {
-    let (module, name) = if op == b'c' {
-        (vm.line()?, vm.line()?)
+    let module = if op == b'c' {
+        vm.line()?
     } else {
-        stack_global(vm)?
+        into_str(&vm.pop()?)?
+    };
+    let name = if op == b'c' {
+        vm.line()?
+    } else {
+        into_str(&vm.pop()?)?
     };
     vm.stack.push(Value::Global { module, name });
     Ok(())
-}
-
-/// `STACK_GLOBAL`：从栈上取两个字符串（名字在前、模块在后）。
-fn stack_global(vm: &mut Vm<'_>) -> Result<(String, String)> {
-    let name = into_str(&vm.pop()?)?;
-    Ok((into_str(&vm.pop()?)?, name))
 }
 
 /// `BININT1`/`BININT2`（无符号）与 `BININT`（4 字节补码）共用一套符号规则。
@@ -230,6 +292,88 @@ fn discard(vm: &mut Vm<'_>, _op: u8) -> Result<()> {
     vm.pop().map(drop)
 }
 
+/// memo 的 5 条 opcode：`q`/`r`/`\x94` 存当前栈顶，`h`/`j` 取回。索引宽度随 opcode 变：
+/// `q`/`h` 读 1 字节，`r`/`j` 读 4 字节，`\x94` 直接用当前栈长。
+fn memo_op(vm: &mut Vm<'_>, op: u8) -> Result<()> {
+    let idx = match op {
+        b'q' | b'h' => usize::from(vm.cursor.byte()?),
+        b'r' | b'j' => {
+            usize::try_from(vm.cursor.uint(4)?).map_err(|_| bad("memo 索引超出 usize"))?
+        }
+        _ => vm.memo.len(),
+    };
+    match op {
+        b'h' | b'j' => vm.recall_memo(idx),
+        _ => vm.store_memo(idx),
+    }
+}
+
+/// `BINPERSID`：栈顶是 persistent id 元组，换成 [`Value::Storage`] 留在栈上。
+fn persistent_load(vm: &mut Vm<'_>, _op: u8) -> Result<()> {
+    let items = as_tuple(vm.pop()?, "persistent id 不是元组")?;
+    let (key, dtype) = storage_handle(&items)?;
+    vm.stack.push(Value::Storage { key, dtype });
+    Ok(())
+}
+
+/// `REDUCE`：弹出实参与可调用对象，只认张量重建与 `OrderedDict` 两种构造。
+fn reduce(vm: &mut Vm<'_>, _op: u8) -> Result<()> {
+    let args = vm.pop()?;
+    let (module, name) = match vm.pop()? {
+        Value::Global { module, name } => (module, name),
+        _ => return Err(bad("REDUCE 的可调用对象不是 GLOBAL")),
+    };
+    match (module.as_str(), name.as_str()) {
+        ("torch._utils", "_rebuild_tensor_v2") => vm.rebuild_tensor(args),
+        ("collections", "OrderedDict") => {
+            vm.stack.push(Value::Dict(Vec::new()));
+            Ok(())
+        }
+        _ => Err(bad(format!("不支持的可调用对象 {module}.{name}"))),
+    }
+}
+
+/// 栈顶 dict 写入：`SETITEM` 弹一队键值，`SETITEMS` 弹 MARK 起的一段（项数必须为偶数）。
+fn set_item(vm: &mut Vm<'_>, op: u8) -> Result<()> {
+    let (pairs, label) = if op == b's' {
+        let value = vm.pop()?;
+        (vec![(vm.pop()?, value)], "SETITEM")
+    } else {
+        let items = vm.pop_until_marker()?;
+        if items.len() % 2 != 0 {
+            return Err(bad("SETITEMS 的项数为奇数"));
+        }
+        let pairs = items
+            .chunks(2)
+            .map(|pair| (pair[0].clone(), pair[1].clone()))
+            .collect();
+        (pairs, "SETITEMS")
+    };
+    match vm.stack.last_mut() {
+        Some(Value::Dict(entries)) => {
+            entries.extend(pairs);
+            Ok(())
+        }
+        _ => Err(bad(format!("{label} 目标不是 dict"))),
+    }
+}
+
+/// 栈顶 list 追加：`APPEND` 弹一值，`APPENDS` 弹 MARK 起的一段。
+pub(crate) fn append(vm: &mut Vm<'_>, op: u8) -> Result<()> {
+    let (items, label) = if op == b'a' {
+        (vec![vm.pop()?], "APPEND")
+    } else {
+        (vm.pop_until_marker()?, "APPENDS")
+    };
+    match vm.stack.last_mut() {
+        Some(Value::List(list)) => {
+            list.extend(items);
+            Ok(())
+        }
+        _ => Err(bad(format!("{label} 目标不是 list"))),
+    }
+}
+
 #[cfg(test)]
-#[path = "../tests/bin_pickle.rs"]
+#[path = "../tests/pickle.rs"]
 mod tests;

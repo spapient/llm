@@ -415,7 +415,7 @@ impl Reader<'_> {
         if (0xdc00..=0xdfff).contains(&code) {
             return Err(self.cursor.fail_at(open, "孤立的低位代理"));
         }
-        code = self.surrogate_pair(open, code)?;
+        code = self.surrogate_pair(code)?;
         char::from_u32(code).ok_or_else(|| {
             self.cursor
                 .fail_at(open, format!("U+{code:04X} 不是合法字符"))
@@ -423,7 +423,7 @@ impl Reader<'_> {
     }
 
     /// 高位代理：必须紧跟 `\u` + 低位代理，否则原样返回。
-    fn surrogate_pair(&mut self, open: usize, code: u32) -> Result<u32> {
+    fn surrogate_pair(&mut self, code: u32) -> Result<u32> {
         if !(0xd800..=0xdbff).contains(&code) {
             return Ok(code);
         }

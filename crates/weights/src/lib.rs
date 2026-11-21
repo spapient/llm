@@ -4,8 +4,8 @@
 //! **拥有**：`Header`/`Entry`/`Reader`/`Loader` 三条契约，`safetensors` 的两种后端，自有的 `.u`
 //! 容器 v2（`writer`/`archive`/`seg`/`proof`/`rans`；CRC/LEB/Sink 已归 L1 `wire`）、量化方案
 //! `quant`/`ptq`，以及“外部格式 → 中性段流”的桥接（`lifecycle::import`）。
-//! **不拥有**：外部格式的字节解析（`bin`/`gguf`/`json` 归 L1 `formats`，本层只重导出，于是
-//! 下游 `weights::bin::*` 等路径不变）、dtype 闭集（`dtype`）、张量元数据（`tensor`）、物理布局
+//! **不拥有**：外部格式的字节解析（`torch`/`gguf`/`json` 归 L1 `formats`，本层只重导出，于是
+//! 下游 `weights::torch::*` 等路径不变）、dtype 闭集（`dtype`）、张量元数据（`tensor`）、物理布局
 //! （`storage`）。
 //! **依赖**：`dtype`、`diagnostic`、`tensor`、`wire`、`formats`（`storage` 经可选 `mmap` feature
 //! 引入，只在 Unix 上提供映射源；`+dev`：`testkit`）。
@@ -73,7 +73,7 @@ pub mod settle;
 pub mod l3;
 
 // —— 外部格式只读适配：全部实现在 L1 `formats`，这里只重导出，公开路径保持不变 ——
-pub use formats::{bin, gguf, json};
+pub use formats::{gguf, json, torch};
 pub use lifecycle::import;
 pub mod safetensors;
 

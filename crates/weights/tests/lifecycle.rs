@@ -1,9 +1,9 @@
 //! `lifecycle` 的单元测试：mode 与 patch 两条路径。
 use super::*;
-use crate::bin::Bin;
 use crate::gguf::Gguf;
-use crate::import::{segments_from_bin, segments_from_gguf};
+use crate::import::{segments_from_gguf, segments_from_torch};
 use crate::testutil::{archive, f32_segment, real_bin_bytes};
+use crate::torch::Checkpoint;
 use crate::writer::Writer;
 use diagnostic::Code;
 use dtype::DType;
@@ -107,21 +107,22 @@ fn keeps_torch_tensors_as_neutral_segments() {
     let Some(raw) = real_bin_bytes() else {
         return;
     };
-    let bin = Bin::parse(&raw).expect("解析");
-    let segments = segments_from_bin(&bin).expect("导入中性段流");
-    assert_eq!(segments.len(), bin.tensors().len());
-    for (segment, tensor) in segments.iter().zip(bin.tensors()) {
+    let file = Checkpoint::parse(&raw).expect("解析");
+    let segments = segments_from_torch(&file).expect("导入中性段流");
+    assert_eq!(segments.len(), file.tensors().len());
+    for (segment, tensor) in segments.iter().zip(file.tensors()) {
         assert_eq!(segment.name(), tensor.name());
         assert_eq!(segment.dtype(), tensor.dtype());
         assert_eq!(segment.shape(), tensor.shape());
-        assert_eq!(segment.data, bin.data(tensor).expect("字节"));
+        assert_eq!(segment.data, file.data(tensor).expect("字节"));
     }
 }
 
 #[test]
-fn propagates_unreadable_bin() {
-    let error = Bin::parse(b"definitely not a torch bin").and_then(|bin| segments_from_bin(&bin));
-    assert!(error.is_err(), "读不通的 bin 必须显式失败");
+fn propagates_unreadable_torch_checkpoint() {
+    let error = Checkpoint::parse(b"definitely not a torch bin")
+        .and_then(|file| segments_from_torch(&file));
+    assert!(error.is_err(), "读不通的检查点必须显式失败");
 }
 
 #[test]

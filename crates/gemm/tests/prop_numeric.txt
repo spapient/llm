@@ -1,0 +1,11 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 1e5e5f3da32097e1367c9fce30feb69e2b365d04696e645de2ac16dcb07a61bb # shrinks to x = [2.7518925e-12, 1.0493671e-30]
+cc b655a4bb7fbcd7c41fc051859e3a9c4a4eb473ae00a8b85c39d236e93c0375f5 # shrinks to x = [1.7695886e-5, 0.99999994, 6.757456e-31, 0.99999994, 0.99999994, 0.99999994, 0.99999994, 0.99999994, 3.0229538e-10, 1.7795105e-25, 0.99999994, 2.1550419e-14], gamma = [0.99999994, 2.0333337e-26, 1.7137376e-12, 0.9993419, 0.5190464, 0.99999994, 6.1572477e-25, 0.99999994, 0.99999994, 5.2310925e-6, 1.8050102e-35, 0.99999994]
+cc 5bcd99538010d555a2f76be85d7275fe9dbea3f019e14dfc60d3e614547b1c28 # shrinks to x = [3.5916447e-34], gamma = [5.7024984e-17]
+cc ae4654c7f9d14de757f2bbb81d3a7bd7596701a8218c817aa3f5e317c03b3bee # shrinks to x = [0.99999994, 2.5249569e-37, 2.5525116e-21, 0.99923086], gamma = [1.1275594e-35, 5.973869e-27, 7.739003e-25, 0.99999994]
+cc b59d4aee9415425972fabaf1fe4f6c9516534668a6904a6ea9aa828d1de27da0 # shrinks to x = [0.99999994, 1.0014065e-27, 5.460141e-21], gamma = [2.0659511e-38, 3.160209e-26]

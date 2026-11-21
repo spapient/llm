@@ -23,13 +23,13 @@ fn a_positive_case_count_is_honoured() {
 #[test]
 #[should_panic(expected = "PROPTEST_CASES 必须是正整数")]
 fn zero_cases_is_rejected_instead_of_silently_passing() {
-    prop::cases_from(Some("0"));
+    let _ = prop::cases_from(Some("0"));
 }
 
 #[test]
 #[should_panic(expected = "PROPTEST_CASES 必须是正整数")]
 fn a_malformed_case_count_is_rejected_instead_of_falling_back() {
-    prop::cases_from(Some("many"));
+    let _ = prop::cases_from(Some("many"));
 }
 
 #[test]
@@ -41,7 +41,7 @@ fn absent_seed_falls_back_to_the_fixed_default() {
 #[test]
 #[should_panic(expected = "PROPTEST_RNG_SEED 必须是 u64")]
 fn a_malformed_seed_is_rejected() {
-    prop::seed_from(Some("0x2a"));
+    let _ = prop::seed_from(Some("0x2a"));
 }
 
 /// 配置必须真的接到两个解析器上，否则 `PROPTEST_CASES` 就成了无效旋钮。
@@ -103,4 +103,45 @@ fn exact_equality_reports_the_first_mismatch() {
 #[should_panic(expected = "长度 2 ≠ 3")]
 fn exact_equality_rejects_length_mismatch_before_comparing() {
     prop::assert_exact("长度", &[1.0, 2.0], &[1.0, 2.0, 3.0]);
+}
+
+// squash 是生成器的数学本体：对**全部** `f32` 位模式（含 `NaN`、`±inf`）都必须给出
+// 严格落在 `(−limit, limit)` 的有限值——这条一破，生成器就会喂出 `NaN`。
+proptest! {
+    #![proptest_config(prop::config())]
+
+    #[test]
+    fn squash_is_total_and_strictly_bounded(
+        raw in any::<f32>(),
+        limit in prop::positive(),
+    ) {
+        let squashed = prop::squash(limit, raw);
+        prop_assert!(squashed.is_finite(), "{raw} → {squashed} 不是有限值");
+        prop_assert!(squashed.abs() < limit, "{raw} → {squashed} 越出 ±{limit}");
+    }
+
+    /// 保序（**非严格**）：f32 舍入会把相邻的极小数合并，所以收缩只能要求不减；反向的
+    /// 严格单调在 f32 上并不成立，写成 `<` 就是给合法实现判错。
+    #[test]
+    fn squash_is_monotone_and_odd(left in prop::finite(), right in prop::finite()) {
+        prop_assume!(left <= right);
+        prop_assert!(prop::squash(1.0, left) <= prop::squash(1.0, right), "{left} ≤ {right} 却逆序");
+        prop_assert_eq!(prop::squash(1.0, -left), -prop::squash(1.0, left));
+    }
+}
+
+/// 两端饱和点必须都严格在界内：`+MAX` 与 `-MAX` 是对称的两个极端。
+#[test]
+fn squash_saturates_strictly_below_the_limit_on_both_sides() {
+    for limit in [1.0f32, 4.0] {
+        assert!(
+            prop::squash(limit, f32::MAX) < limit,
+            "+MAX 未严格小于 {limit}"
+        );
+        assert!(
+            prop::squash(limit, f32::MIN) > -limit,
+            "-MAX 未严格大于 -{limit}"
+        );
+        assert_eq!(prop::squash(limit, 0.0), 0.0, "零映到零");
+    }
 }

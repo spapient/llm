@@ -133,9 +133,9 @@ pub mod import {
 
     use diagnostic::{Code, Error, Result};
 
-    use crate::bin::Bin;
     use crate::gguf::{Gguf, Kind};
     use crate::safetensors::{Archive as StArchive, File as StFile};
+    use crate::torch::Checkpoint;
     use crate::{Entry, Loader, Reader, Segment, Wire};
 
     /// 按扩展名把源文件分派到对应适配通路；不认识的后缀显式 [`Code::Unsupported`]，不猜格式、
@@ -152,7 +152,7 @@ pub mod import {
         match path.extension().and_then(|ext| ext.to_str()) {
             Some("safetensors") => segments_from_safetensors_file(path),
             Some("gguf") => load_gguf(path),
-            Some("bin") | Some("pt") => load_bin(path),
+            Some("bin" | "pt") => load_torch(path),
             other => Err(unsupported(other)),
         }
     }
@@ -175,10 +175,10 @@ pub mod import {
         segments_from_gguf(&Gguf::parse(&bytes)?)
     }
 
-    /// bin/pickle 通路：整份读入 → 解析 → 中性段流。
-    fn load_bin(path: &Path) -> Result<Vec<Segment>> {
+    /// torch 检查点通路（`data.pkl` + storage）：整份读入 → 解析 → 中性段流。
+    fn load_torch(path: &Path) -> Result<Vec<Segment>> {
         let bytes = read_file(path)?;
-        segments_from_bin(&Bin::parse(&bytes)?)
+        segments_from_torch(&Checkpoint::parse(&bytes)?)
     }
 
     /// 整份读入文件为自有字节；GGUF/bin 解析需要整份缓冲，safetensors 条目通路不走这里。
@@ -259,16 +259,16 @@ pub mod import {
         }
     }
 
-    /// bin-zip / bin-pickle 归档 → 同一中性段流；读不通的格式在 `bin` 解析层已显式失败，
+    /// torch 检查点 → 同一中性段流；读不通的归档或对象流在 `torch` 解析层已显式失败，
     /// 这里只做字段归一，不再补第二份容错。
     ///
     /// # Errors
     ///
     /// 条目字节区间或字段不自洽时按 [`Segment::new`] 既有规则拒绝。
-    pub fn segments_from_bin(bin: &Bin<'_>) -> Result<Vec<Segment>> {
-        let mut out = Vec::with_capacity(bin.tensors().len());
-        for tensor in bin.tensors() {
-            let raw = bin.data(tensor)?.to_vec();
+    pub fn segments_from_torch(file: &Checkpoint<'_>) -> Result<Vec<Segment>> {
+        let mut out = Vec::with_capacity(file.tensors().len());
+        for tensor in file.tensors() {
+            let raw = file.data(tensor)?.to_vec();
             out.push(segment_from_entry(
                 tensor.name(),
                 tensor.dtype(),

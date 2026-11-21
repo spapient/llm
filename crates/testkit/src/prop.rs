@@ -91,9 +91,24 @@ pub fn config() -> ProptestConfig {
 /// `1.0`，与"严格小于 `limit`"的契约不符，所以上界压到这里。
 const BELOW_ONE: f32 = 1.0 - f32::EPSILON / 2.0;
 
+/// 有界 squash：`limit · |v| / (1 + |v|)`，幅值压在 [`BELOW_ONE`]，再按 `v` 的符号还原。
+///
+/// 对**全部** `f32` 位模式都返回 `(−limit, limit)` 内的有限值：`±inf` 与 `NaN` 经
+/// `f32::min` 的"忽略 NaN"语义落回 `BELOW_ONE`，于是生成器不必先滤掉它们。
+#[must_use]
+pub fn squash(limit: f32, v: f32) -> f32 {
+    let magnitude = (v.abs() / (1.0 + v.abs())).min(BELOW_ONE);
+    let squashed = limit * magnitude;
+    if v.is_sign_negative() {
+        -squashed
+    } else {
+        squashed
+    }
+}
+
 /// 有界有限标量：`NORMAL` 平滑压进 `(−limit, limit)`。
 pub fn bounded(limit: f32) -> impl Strategy<Value = f32> {
-    prop::num::f32::NORMAL.prop_map(move |v| limit * (v / (1.0 + v.abs())).min(BELOW_ONE))
+    prop::num::f32::NORMAL.prop_map(move |v| squash(limit, v))
 }
 
 /// 最常用档：`(−1, 1)`，够覆盖符号、排序与抵消，又不至于把累加推到溢出边缘。
@@ -152,9 +167,6 @@ pub fn assert_exact(what: &str, got: &[f32], want: &[f32]) {
         want.len()
     );
     if let Some(index) = got.iter().zip(want).position(|(a, b)| a != b) {
-        panic!(
-            "{what}：第 {index} 项 {} ≠ {}",
-            got[index], want[index]
-        );
+        panic!("{what}：第 {index} 项 {} ≠ {}", got[index], want[index]);
     }
 }
