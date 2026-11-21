@@ -18,16 +18,6 @@ pub(crate) fn render(declaration: &Declaration, ty: &str) -> String {
 
 /// 第一块：`__layer_spec()` 用 `OnceLock` 保证 `ContractSpec` 只构造一次。
 fn spec(code: &mut String, declaration: &Declaration, ty: &str) {
-    let name = literal(&declaration.name);
-    let shape = shape_of(join(
-        declaration.out.iter().map(|dim| format!("{dim}usize")),
-    ));
-    let ops = join(
-        declaration
-            .ops
-            .iter()
-            .map(|op| format!("{}.to_string()", literal(op))),
-    );
     code.push_str("#[automatically_derived]\n");
     let _ = writeln!(code, "impl {ty} {{");
     code.push_str("    #[doc(hidden)]\n");
@@ -35,16 +25,25 @@ fn spec(code: &mut String, declaration: &Declaration, ty: &str) {
     code.push_str(CONST);
     code.push('\n');
     code.push_str("        SPEC.get_or_init(|| {\n");
-    let _ = writeln!(
-        code,
-        "            let declaration = ::nn::ContractSpec::new({name}, {shape}, ::std::vec![{ops}]);"
-    );
+    code.push_str("            let declaration = ::nn::ContractSpec::new(");
+    literal(code, &declaration.name);
+    code.push_str(", ");
+    shape_of(code, &declaration.out, |code, dim| {
+        let _ = write!(code, "{dim}usize");
+    });
+    code.push_str(", ::std::vec![");
+    comma(code, declaration.ops.iter(), |code, op| {
+        literal(code, op);
+        code.push_str(".to_string()");
+    });
+    code.push_str("]);\n");
     code.push_str("            match declaration {\n");
     code.push_str("                ::core::result::Result::Ok(spec) => spec,\n");
-    let _ = writeln!(
-        code,
-        "                ::core::result::Result::Err(error) => {{ ::std::panic!(\"注解声明的层 `{{}}` 引用了未声明的算子：{{}}\", {name}, error) }}"
+    code.push_str(
+        "                ::core::result::Result::Err(error) => { ::std::panic!(\"注解声明的层 `{}` 引用了未声明的算子：{}\", ",
     );
+    literal(code, &declaration.name);
+    code.push_str(", error) }\n");
     code.push_str("            }\n        })\n    }\n}\n\n");
 }
 
@@ -77,12 +76,13 @@ fn contract(code: &mut String, declaration: &Declaration, ty: &str) {
 
 /// 第三块：`#[cfg(test)]` 校验模块，核对"注解里的算子仍然存在"。
 fn check(code: &mut String, declaration: &Declaration, ty: &str) {
-    let name = literal(&declaration.name);
     code.push_str("#[cfg(test)]\n#[allow(non_snake_case)]\n");
     let _ = writeln!(code, "mod __layer_check_{ty} {{");
     code.push_str("    #[test]\n    fn the_annotation_still_matches_the_declared_operators() {\n");
     let _ = writeln!(code, "        let spec = <super::{ty}>::__layer_spec();");
-    let _ = writeln!(code, "        assert_eq!(spec.name(), {name});");
+    code.push_str("        assert_eq!(spec.name(), ");
+    literal(code, &declaration.name);
+    code.push_str(");\n");
     let _ = writeln!(
         code,
         "        assert_eq!(spec.output().dims(), &{:?});",
@@ -105,22 +105,27 @@ pub(crate) fn render_runtime(declaration: &RuntimeDecl, ty: &str) -> String {
     let mut code = String::with_capacity(512);
     code.push_str("#[doc(hidden)]\n#[allow(non_snake_case, unused_macros)]\n");
     let _ = writeln!(code, "macro_rules! __layer_spec_{ty} {{");
-    let _ = writeln!(code, "    ({}) => {{", params(declaration));
+    code.push_str("    (");
+    comma(code, unique(holes(declaration)), |code, hole| {
+        let _ = write!(code, "${hole}:expr");
+    });
+    code.push_str(") => {\n");
     let constructor = match declaration.role {
         Some(_) => "new_with_role",
         None => "new",
     };
     let _ = writeln!(code, "        ::nn::ContractSpec::{constructor}(");
     let _ = writeln!(code, "            ${},", declaration.name);
-    let axes = join(declaration.out.iter().map(|axis| format!("${axis}")));
-    let _ = writeln!(code, "            {},", shape_of(axes));
-    let ops = join(
-        declaration
-            .ops
-            .iter()
-            .map(|op| format!("${op}.to_string()")),
-    );
-    let _ = writeln!(code, "            ::std::vec![{ops}],");
+    code.push_str("            ");
+    shape_of(code, &declaration.out, |code, axis| {
+        let _ = write!(code, "${axis}");
+    });
+    code.push_str(",\n");
+    code.push_str("            ::std::vec![");
+    comma(code, declaration.ops.iter(), |code, op| {
+        let _ = write!(code, "${op}.to_string()");
+    });
+    code.push_str("],\n");
     if let Some(role) = &declaration.role {
         let _ = writeln!(code, "            ${role},");
     }
@@ -128,17 +133,12 @@ pub(crate) fn render_runtime(declaration: &RuntimeDecl, ty: &str) -> String {
     code
 }
 
-/// 宏参数表：名字、轴宽、算子、角色，按首次出现去重；同一个轴宽可以出现在多根轴上。
-fn params(declaration: &RuntimeDecl) -> String {
-    let holes = std::iter::once(&declaration.name)
+/// 宏参数的空位：名字、轴宽、算子、角色，按首次出现顺序排好，交给 [`unique`] 去重。
+fn holes(declaration: &RuntimeDecl) -> impl Iterator<Item = &String> {
+    std::iter::once(&declaration.name)
         .chain(declaration.out.iter())
         .chain(declaration.ops.iter())
-        .chain(declaration.role.iter());
-    join(
-        unique(holes)
-            .into_iter()
-            .map(|hole| format!("${hole}:expr")),
-    )
+        .chain(declaration.role.iter())
 }
 
 /// 去重且保持首次出现顺序：`out = [$dim, $dim]` 只占一个宏参数，却在形状里写两次。
