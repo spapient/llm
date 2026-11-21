@@ -104,8 +104,9 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `OperandSpec` / `FormulaCache` / `FormulaOwner` / `Row` / `Operator` | `spec` | 打包格式的静态表（`Row` 全 `const`）、表达式缓存，以及六族骨架之上的统一语义契约（[ADR 0050](adr/0050-operator-base.md)）。`FormulaOwner` 是一条求和表达式的唯一载体：`EXPR` / `OPERANDS` / `FRAME` 加**每个实现一份**的缓存单元格——写在泛型骨架里的 `static` 只有一份，先解析的式子会覆盖后面的，故缓存按实现分而不是按骨架分 |
 | `Format` / `Element` / `Conf` | `gemm` | 打包格式的派生配置（`Conf` 只收骨架运行期要的 `cpb` / `zero` / `offsets`）与样本缓冲元素闭集 |
 | `Template` / `Segment` / `LayoutSpec` / `Schedule` / `Masking` | `spec` | 声明侧的三张闭集：模板词法、布局构造子与调度模板；`cutile` 只消费，不持第二份 |
+| `Ctx` | `spec` | 写回尾块标量参考的输入：瓦片列数加两条可选边带（列偏置、残差）。缺省走 `None` 而不是要求调用方造零缓冲，参考实现因此只需一份；`epilogue` 的步骤闭集由 `spec` 与执行侧共用，不持第二份 |
 | `OpDecl` / `Registration` | `op` | 声明解析结果与唯一注册表 `REGISTRY`；`cutile` 只消费，不持第二份 |
-| `Phase` / `Seam` / `Fusion` | `op` | 槽位代数：`compose` 判定生产者能否拼到消费者前面——`Phase` 是一段「读哪些槽位 → 写哪些槽位」，`Seam` 是两侧同类型的一处缝（`from` / `to` / `ctype`），`Fusion` 是一次合法融合（缝非空才成立，`None` 是候选剪枝而非错误）；`cutile` 只消费，不持第二份 |
+| `Phase` / `Seam` / `Fusion` | `op` | 槽位代数：`compose` 判定生产者能否拼到消费者前面——`Phase` 是一段「读哪些槽位 → 写哪些槽位」，`Seam` 是两侧同类型的一处缝（`from` / `to` / `ctype`），`Fusion` 是一次合法融合（缝非空才成立，`None` 是候选剪枝而非错误）。`A == B` 的**自融合**恒为 `None`：读的槽位要等这一轮写完才有值，那是循环携带依赖，拼出来的核无法定义执行顺序，还会白占一个预算名额；`cutile` 只消费，不持第二份 |
 | `Scalar` | `gemm` | 元素运算超 trait（`Add` / `Sub` / `Mul` / `Div`）：让泛型内核写 `a + b` 而不是逐方法调用，否则「泛型化」只把 `as f32` 换成 `S::mul` |
 | `Monoid` / `SsmStep` / `PlaneStep` / `Scan` | `conv` | β 指数梯形扫描的数学底座与 `scan_f32` 算子：半群、两种离散化（`exp_zero_order` / `exp_trapezoid`）、复值状态的 2×2 实值块 |
 | `Profile` | `prof` | 设备档案；机制代码不得出现 `vendor == "..."` |
@@ -124,6 +125,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `LedgerCell` / `BackendRow` | `optim` | `ledger` 跨档案能力台账：只聚合 `witness` 已跑出的证据，不产生新证据 |
 | `Negotiation` | `optim` | 一台设备的协商结论（首档 / 降级 / 无路径 / 无档案）：只读声明与档案，与执行成败分开记 |
 | `Fragment` | `cutile` | 一份生成片段的行数与 §16 口径（`FRAGMENT_LIMIT` 上限管成败，`FRAGMENT_GOAL` 只是余量） |
+| `Oracle` | `cutile` | 融合对拍的读数：`got` 是消费者在**全部缝**都桥接之后的产出，`bridged` 是实际桥接的 `(生产者输出, 消费者槽位)` 对。`reference::verify_fusion` 是 `Fusion` 的唯一实例化入口——缝从代数的证据里来，不从调用点的字符串来；自融合、多输出生产者、非 `F32` 缝、缝上形状不符一律显式拒绝（`Invalid` / `Unsupported`），而不是算出一个「差不多」的值。README §9 的契约「每个被接受的融合都必须能生成一条对拍」由 `crates/cutile/tests/reference_tests.rs` 在整张内置注册表上执行 |
 | `Bench` / `Throughput` / `Peak` / `Verdict` / `Performance` / `CostCoefficients` | `optim` | `bench` 的实测口径与达成率判定；口径无效或没有峰值时 `is_measured` 为假。`CostCoefficients` 用实测 p50 反推有效带宽 / 算力，回填进 roofline 当分母（替代档案峰值） |
 | `Tensor` / `View` / `Element` / `Shape` / `Strides` / `Order` / `AxisLen` / `OwnedTensor` | `tensor` | `Tensor` 是**字节**视图，`View<E>` 是**元素**零拷贝视图；`SUPPORTED` 子集表声明本层可构造的精度；设备地址不泄漏到本层 |
 | `Layout` / `remap` / `Buffer` / `Allocator` / `CpuAllocator` | `storage` | 物理布局与搬运；`Allocator` 是分配 / 释放 / 显式拷贝的边界 trait，设备后端在边界 crate 实现同一 trait；本层不做隐式跨设备拷贝 |

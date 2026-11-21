@@ -27,30 +27,39 @@ pub(crate) fn type_definition(line: &str) -> Option<(bool, &str)> {
     (!name.is_empty()).then_some((public, name))
 }
 
-/// `files` 里出现的 `pub struct|enum|trait` 名字（`union` 不在所有权表的口径内）。
+/// 一段源码里的顶层 `pub` 类型名。`vocabulary!` 宏块开头那个名字也算：宏把它展开成
+/// `pub enum Name`，逐行读文本看不到那一行 `pub`——正文扫描与 `pub` 校验必须共用这一份口径，
+/// 否则「反向扫描认了、正向校验不认」的自相矛盾会出现。
+pub(crate) fn public_type_names(text: &str) -> BTreeSet<&str> {
+    let mut names = BTreeSet::new();
+    let mut in_vocabulary = false;
+    for line in text.lines() {
+        if let Some((true, name)) = type_definition(line) {
+            names.insert(name);
+        }
+        let trimmed = line.trim();
+        if trimmed.starts_with("vocabulary!") {
+            in_vocabulary = true;
+            continue;
+        }
+        if in_vocabulary && !trimmed.is_empty() && !trimmed.starts_with("///") {
+            if let Some(name) = macro_block_name(trimmed) {
+                names.insert(name);
+            }
+            in_vocabulary = false;
+        }
+    }
+    names
+}
+
+/// `files` 里出现的 `pub struct|enum|trait|union` 名字，口径由 [`public_type_names`] 定义。
 pub(crate) fn public_types(files: &[std::path::PathBuf]) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     for path in files {
         let Some(text) = source_text(path) else {
             continue;
         };
-        let mut in_vocabulary = false;
-        for line in text.lines() {
-            if let Some((true, name)) = type_definition(line) {
-                names.insert(name.to_string());
-            }
-            let trimmed = line.trim();
-            if trimmed.starts_with("vocabulary!") {
-                in_vocabulary = true;
-                continue;
-            }
-            if in_vocabulary && !trimmed.is_empty() && !trimmed.starts_with("///") {
-                if let Some(name) = macro_block_name(trimmed) {
-                    names.insert(name.to_string());
-                }
-                in_vocabulary = false;
-            }
-        }
+        names.extend(public_type_names(&text).into_iter().map(str::to_string));
     }
     names
 }
@@ -233,30 +242,18 @@ pub(crate) fn public_item_name(line: &str) -> Option<&str> {
 
 /// `name` 是否在 `crate_name` 的源码里以 `pub` 形式定义。
 pub(crate) fn declares_public(crate_name: &str, name: &str) -> bool {
-    const KINDS: [&str; 8] = [
-        "struct", "enum", "trait", "type", "fn", "const", "union", "mod",
-    ];
-    let root = src_root(crate_name);
-    let mut pending = vec![root];
-    while let Some(directory) = pending.pop() {
-        let Ok(entries) = std::fs::read_dir(directory) else {
+    /// 所有权表除类型外还允许登记这几种公开条目（类型别名、函数、常量、模块）。
+    const NON_TYPE_KINDS: [&str; 4] = ["type", "fn", "const", "mod"];
+    for path in rust_files(&src_root(crate_name)) {
+        let Some(text) = source_text(&path) else {
             continue;
         };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                pending.push(path);
-            } else if path.extension().is_some_and(|extension| extension == "rs") {
-                let Some(text) = source_text(&path) else {
-                    continue;
-                };
-                if text
-                    .lines()
-                    .any(|line| is_public_definition(line, name, &KINDS))
-                {
-                    return true;
-                }
-            }
+        if public_type_names(&text).contains(name)
+            || text
+                .lines()
+                .any(|line| is_public_definition(line, name, &NON_TYPE_KINDS))
+        {
+            return true;
         }
     }
     false

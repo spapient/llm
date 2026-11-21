@@ -105,13 +105,22 @@ fn the_dense_format_refuses_a_scales_buffer() {
     assert!(error.to_string().contains("标度"), "{error}");
 }
 
-/// 样本的权重类型由格式决定：稠密格式的 `w` 是 f32，换进来的 u8 会被骨架拒绝。
+/// 样本的权重类型由格式决定：稠密格式的 `w` 是 f32。两道闸都要在——`Sample::set` 拒绝换类型
+/// （桥接期的闸），骨架自己也拒绝（直接改出来的 `[u8]` 权重不能按 f32 读，那会算出一个看起来
+/// 对的数）。
 #[test]
 fn the_shared_skeleton_rejects_a_weight_of_the_wrong_element_type() {
     let mut sample = gemv::sample::<F32>(8, 2);
-    sample
+    let error = sample
         .set("w", Values::U8(vec![0; 16]))
-        .expect("长度相同即可换");
+        .expect_err("float 槽位不能换成字节");
+    assert_eq!(error.code(), Code::Invalid);
+    let wrong = sample
+        .buffers
+        .iter_mut()
+        .find(|buffer| buffer.name == "w")
+        .expect("稠密样本有 w");
+    wrong.values = Values::U8(vec![0; 16]);
     let error = gemv::reference::<F32>(&sample).expect_err("u8 不是 f32 权重");
     assert_eq!(error.code(), Code::Invalid);
     assert!(error.to_string().contains("f32"), "{error}");

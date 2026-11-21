@@ -1,7 +1,5 @@
 use diagnostic::{Code, Error};
-use llm_spec::model::{
-    AxisRole, AxisSpec, Cost, DType, Model, Sample, ShapeContext, Values, bind,
-};
+use llm_spec::model::{AxisRole, AxisSpec, Cost, DType, Model, Sample, ShapeContext, Values, bind};
 
 const fn zero_cost(_: &ShapeContext) -> Result<Cost, Error> {
     Ok(Cost::ZERO)

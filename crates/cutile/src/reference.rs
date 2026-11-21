@@ -178,11 +178,6 @@ pub fn verify_fusion(
         sample.set(to, Values::F32(mid.clone()))?;
     }
     let got = (consumer.reference)(sample)?;
-    debug_assert_eq!(
-        targets.len(),
-        fusion.seams.len(),
-        "每条缝都必须被桥接"
-    );
     Ok(Oracle {
         got,
         bridged: targets

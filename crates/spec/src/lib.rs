@@ -29,6 +29,7 @@
 #![deny(unsafe_code)]
 
 pub mod einsum;
+pub mod epilogue;
 pub mod model;
 pub mod operator;
 pub mod sample;
