@@ -5,6 +5,10 @@
 //! 不是失败。
 
 use super::*;
+#[cfg(target_os = "windows")]
+use Cuda;
+#[cfg(target_os = "macos")]
+use Metal;
 use cutile::execution::{Backend, Mode, program};
 
 /// 首个真机对拍闭环：`silu_f32` 走 op::REGISTRY → cutile emit → MetalExecutor 进程内编译 →
@@ -74,17 +78,9 @@ fn op_matches_reference_at(op_name: &str, shape: Option<(usize, usize)>) {
     let expected = (model.reference)(&sample).expect("标量参考");
     let decl = catalogue.op(op_name).expect("算子声明");
 
-    let msl = program(
-        &catalogue,
-        &dirs,
-        op_name,
-        Backend::Metal,
-        Mode::declared(),
-        m,
-        n,
-    )
-    .and_then(|s| s.one("降源"))
-    .expect("内核应能生成");
+    let msl = program(&catalogue, &dirs, op_name, Metal, Mode::declared(), m, n)
+        .and_then(|s| s.one("降源"))
+        .expect("内核应能生成");
 
     let Some(mut executor) = ::device::metal::executor::MetalExecutor::new("metal", "arm64") else {
         return;
@@ -163,17 +159,9 @@ fn op_chunked_reduce_matches_reference(op_name: &str) {
         grid_size,
     } = setup;
 
-    let msl = program(
-        &catalogue,
-        &dirs,
-        op_name,
-        Backend::Metal,
-        Mode::declared(),
-        m,
-        n,
-    )
-    .and_then(|s| s.one("降源"))
-    .expect("内核应能生成");
+    let msl = program(&catalogue, &dirs, op_name, Metal, Mode::declared(), m, n)
+        .and_then(|s| s.one("降源"))
+        .expect("内核应能生成");
     let Some(mut executor) = ::device::metal::executor::MetalExecutor::new("metal", "arm64") else {
         return;
     };
@@ -211,17 +199,9 @@ fn op_matches_reference_cuda(op_name: &str) {
         return;
     };
 
-    let device = program(
-        &catalogue,
-        &dirs,
-        op_name,
-        Backend::Cuda,
-        Mode::pointwise(),
-        m,
-        n,
-    )
-    .and_then(|s| s.one("降源"))
-    .expect("内核应能生成");
+    let device = program(&catalogue, &dirs, op_name, Cuda, Mode::pointwise(), m, n)
+        .and_then(|s| s.one("降源"))
+        .expect("内核应能生成");
     let threads: usize = 256;
     let blocks = (scalar_len(&decl, &sample) as usize).div_ceil(threads);
     let driver =
@@ -256,17 +236,9 @@ fn op_chunked_reduce_matches_reference_cuda(op_name: &str) {
     let chunk = decl.chunk.as_ref().expect("[chunk] 声明").size as u32;
     let grid = scalar_len(&decl, &sample).div_ceil(chunk) as usize;
 
-    let device = program(
-        &catalogue,
-        &dirs,
-        op_name,
-        Backend::Cuda,
-        Mode::segmented(),
-        m,
-        n,
-    )
-    .and_then(|s| s.one("降源"))
-    .expect("内核应能生成");
+    let device = program(&catalogue, &dirs, op_name, Cuda, Mode::segmented(), m, n)
+        .and_then(|s| s.one("降源"))
+        .expect("内核应能生成");
     let driver = ::device::cuda::cuda_grid_driver(&device, &decl.signature, &sample, grid, grid)
         .expect("host 驱动应能生成");
     let (_counts, bits) =
@@ -312,17 +284,10 @@ fn op_chunked_scan_matches_reference(op_name: &str) {
         .and_then(|(_, value)| value.parse::<f64>().ok())
         .expect("扫描衰减 a");
 
-    let (local_msl, correct_msl) = program(
-        &catalogue,
-        &dirs,
-        op_name,
-        Backend::Metal,
-        Mode::segmented(),
-        m,
-        n,
-    )
-    .and_then(|s| s.two("分段"))
-    .expect("分段内核应能生成");
+    let (local_msl, correct_msl) =
+        program(&catalogue, &dirs, op_name, Metal, Mode::segmented(), m, n)
+            .and_then(|s| s.two("分段"))
+            .expect("分段内核应能生成");
     let Some(mut executor) = ::device::metal::executor::MetalExecutor::new("metal", "arm64") else {
         return;
     };
@@ -412,17 +377,10 @@ fn op_chunked_rmsnorm_matches_reference(op_name: &str) {
         ..
     } = setup;
 
-    let (partial_msl, map_msl) = program(
-        &catalogue,
-        &dirs,
-        op_name,
-        Backend::Metal,
-        Mode::segmented(),
-        m,
-        n,
-    )
-    .and_then(|s| s.two("分段"))
-    .expect("分段内核应能生成");
+    let (partial_msl, map_msl) =
+        program(&catalogue, &dirs, op_name, Metal, Mode::segmented(), m, n)
+            .and_then(|s| s.two("分段"))
+            .expect("分段内核应能生成");
     let Some(mut executor) = ::device::metal::executor::MetalExecutor::new("metal", "arm64") else {
         return;
     };
@@ -503,17 +461,10 @@ fn op_chunked_softmax_matches_reference(op_name: &str) {
         ..
     } = setup;
 
-    let (max_msl, expsum_msl, map_msl) = program(
-        &catalogue,
-        &dirs,
-        op_name,
-        Backend::Metal,
-        Mode::segmented(),
-        m,
-        n,
-    )
-    .and_then(|s| s.three("softmax"))
-    .expect("分段内核应能生成");
+    let (max_msl, expsum_msl, map_msl) =
+        program(&catalogue, &dirs, op_name, Metal, Mode::segmented(), m, n)
+            .and_then(|s| s.three("softmax"))
+            .expect("分段内核应能生成");
     let Some(mut executor) = ::device::metal::executor::MetalExecutor::new("metal", "arm64") else {
         return;
     };
@@ -692,32 +643,18 @@ fn op_normalized_matches_reference_cuda(op_name: &str) {
 
     let driver = match op_name {
         "rmsnorm_f32" => {
-            let (partial, norm) = program(
-                &catalogue,
-                &dirs,
-                op_name,
-                Backend::Cuda,
-                Mode::segmented(),
-                m,
-                n,
-            )
-            .and_then(|s| s.two("分段"))
-            .expect("分段内核应能生成");
+            let (partial, norm) =
+                program(&catalogue, &dirs, op_name, Cuda, Mode::segmented(), m, n)
+                    .and_then(|s| s.two("分段"))
+                    .expect("分段内核应能生成");
             ::device::norm::cuda_rmsnorm_driver(&[partial, norm], &decl.signature, &sample, chunk)
                 .expect("host 串联驱动应能生成")
         }
         "softmax_f32" => {
-            let (max, expsum, norm) = program(
-                &catalogue,
-                &dirs,
-                op_name,
-                Backend::Cuda,
-                Mode::segmented(),
-                m,
-                n,
-            )
-            .and_then(|s| s.three("softmax"))
-            .expect("分段内核应能生成");
+            let (max, expsum, norm) =
+                program(&catalogue, &dirs, op_name, Cuda, Mode::segmented(), m, n)
+                    .and_then(|s| s.three("softmax"))
+                    .expect("分段内核应能生成");
             ::device::norm::cuda_softmax_driver(
                 &[max, expsum, norm],
                 &decl.signature,
@@ -758,7 +695,7 @@ fn op_looped_matches_reference_cuda(op_name: &str) {
         &catalogue,
         &dirs,
         op_name,
-        Backend::Cuda,
+        Cuda,
         Mode::loop_injected(),
         m,
         n,
