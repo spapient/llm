@@ -58,17 +58,17 @@ mod store;
 #[path = "../tests/support.rs"]
 mod support;
 
-pub use session::checkpoint::{Checkpoint, Step, operators, resume};
 pub use dist::{Distributed, Local, Remote};
 pub use distill::{Distill, distillation_loss, kl_div, kl_per_row, log_softmax};
 pub use geometry::{Geometry, Running};
 pub use learner::{ForwardOut, Learner, Metric};
 pub use loss::{Loss, Outcome, argmax_hits, bce_with_logits, cross_entropy, hinge, huber, mse};
 pub use metrics::{MetricPoint, MetricsBoard};
-pub use store::OperatorSetOps;
 pub use optimizer::{Adam, Group, Muon, Optimizer, OwnedSlot, Sgd, Slot};
 pub use rl::{Grpo, advantage, clipped_surrogate, entropy, grpo_loss, log_prob, policy_loss};
 pub use samples::{Batch, Chunks, Dataset};
 pub use schedule::{Anneal, Schedule};
+pub use session::checkpoint::{Checkpoint, Step, operators, resume};
 pub use session::{ParamSlot, Session, TrainConfig};
+pub use store::OperatorSetOps;
 pub use store::{Buffers, Data, Inputs, Kernel, Kind, Lane, Reference, View, ViewMut};

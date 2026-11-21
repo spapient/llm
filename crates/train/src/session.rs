@@ -518,7 +518,6 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
     }
 }
 
-
 /// 登记形状 → 矩阵形状：只有二阶张量是矩阵，其余（标量/向量/更高阶）一律 `None`。
 fn matrix_of(shape: &Shape) -> Option<(usize, usize)> {
     match shape.dims() {

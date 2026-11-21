@@ -167,9 +167,9 @@ mod tests;
 use diagnostic::{Code, Error, Result};
 use shard::Collective;
 
+use super::{ParamSlot, SITE, Session, SlotMeta};
 use crate::optimizer::{Optimizer, OwnedSlot};
 use crate::pool::Buffers;
-use super::{ParamSlot, SITE, Session, SlotMeta};
 use crate::{Data, Kernel};
 use snapshot::{GradAccum, Moments, SlotMoments, Snapshot, Ties};
 
