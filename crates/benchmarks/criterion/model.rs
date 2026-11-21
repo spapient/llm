@@ -1,15 +1,26 @@
-//! `train` 状态层的微基准：学习率调度求值、检查点快照编解码、激活缓冲池复用前向轮。
+//! 整模型一步前向与 `train` 状态层基准。
 //!
-//! 只产出本机实测耗时；是否回退由 `tools::regress` 的基线判定负责，bench 本身不写性能目标数字，
-//! 也不与任何外部框架比倍数。预热、测量时长与采样沿用 criterion 自身配置。
+//! 前半：合成小栈（查表首层 + 投影）走 `Predict::logits`，单序列一步与四条序列同批各一档；
+//! 内存只记可观测账目（页池 `in_use`），不虚构峰值字节数。前半不进基线表，沿用先例。
+//!
+//! 后半：学习率调度求值、检查点快照编解码、激活缓冲池复用前向轮；同样只出本机测量。
 
+use crate::model_fixture::{PROMPT, synthetic_model};
 use autograd::{Sizes, Store, Tape};
-use criterion::{Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{Criterion, Throughput};
+use engine::exec::Stream;
+use engine::kv::{Cache, Pager};
+use engine::{Batch, Sequence};
+use serve::Predict;
+use serve::model::CpuModel;
 use std::hint::black_box;
 use tensor::{DType, Shape};
 use train::snapshot::{Facts, Snapshot};
 use train::{Anneal, Buffers, Data, Reference, Schedule};
 use weights::{Entry, Header};
+
+/// 同批序列数（小批变体）。
+const BATCH: usize = 4;
 
 /// 调度曲线：100 步 warmup，1000 步余弦衰减到 0.1 谷底。
 const SCHEDULE_STEPS: u64 = 1_000;
@@ -22,7 +33,61 @@ const SNAPSHOT_DIM: usize = 4_096;
 const WIDTH: usize = 16;
 const LAYERS: usize = 4;
 
-fn bench_schedule(c: &mut Criterion) {
+/// 装配合成栈与一批序列；模型、批与序列在测量轮次间复用，前向内不重新分配权重。
+fn fixture() -> (CpuModel, Batch, Vec<Sequence>) {
+    let model = synthetic_model();
+
+    let pager = Pager::new(Cache::new(16, 4).expect("页池"), 2).expect("行宽");
+    let mut batch = Batch::new(pager);
+    let sequences: Vec<Sequence> = (0..BATCH)
+        .map(|id| Sequence::new(id as u64, PROMPT, 2, 4, Stream::new(0)).expect("序列"))
+        .collect();
+    for sequence in &sequences {
+        batch.admit(sequence.clone()).expect("准入");
+    }
+    (model, batch, sequences)
+}
+
+/// 单序列一步与批内逐序列一步；每步 token 数由 `Throughput` 声明。
+pub(crate) fn decode(c: &mut Criterion) {
+    let (mut model, mut batch, sequences) = fixture();
+    let pages = batch.scheduler().cache().in_use();
+
+    let mut group = c.benchmark_group("model_decode");
+    group.throughput(Throughput::Elements(1));
+    group.bench_function("single_step", |bench| {
+        bench.iter(|| {
+            black_box(
+                model
+                    .logits(black_box(&sequences[0]), black_box(&mut batch))
+                    .expect("一步前向"),
+            );
+        })
+    });
+
+    group.throughput(Throughput::Elements(BATCH as u64));
+    group.bench_function("batch4_step", |bench| {
+        bench.iter(|| {
+            let mut produced = 0usize;
+            for sequence in &sequences {
+                produced += model.logits(sequence, &mut batch).expect("一步前向").len();
+            }
+            black_box(produced);
+        })
+    });
+    group.finish();
+    black_box(pages);
+}
+
+/// 三组训练状态基准：调度、快照、缓冲池。
+pub(crate) fn train(c: &mut Criterion) {
+    schedule(c);
+    snapshot(c);
+    buffers(c);
+}
+
+/// `Schedule::lr`：1000 步全曲线求和，避免单点求值被常量折叠。
+fn schedule(c: &mut Criterion) {
     let schedule = Schedule::with(100, SCHEDULE_STEPS, Anneal::Cosine, 0.1).expect("调度合法");
     let mut group = c.benchmark_group("train/schedule");
     group.throughput(Throughput::Elements(SCHEDULE_STEPS));
@@ -38,7 +103,8 @@ fn bench_schedule(c: &mut Criterion) {
     group.finish();
 }
 
-fn snapshot_header() -> Header {
+/// 快照条目表：64 条、每条 4096 维，只压头部编解码。
+fn snapshot(c: &mut Criterion) {
     let entries = (0..SNAPSHOT_ENTRIES)
         .map(|index| {
             Entry::new(
@@ -49,33 +115,23 @@ fn snapshot_header() -> Header {
             .at(index * SNAPSHOT_DIM * 4)
         })
         .collect();
-    Header::new(entries, 0).expect("头部自洽")
-}
-
-fn bench_snapshot(c: &mut Criterion) {
-    let snapshot = Snapshot::new(
-        Facts::new(7, 1, SNAPSHOT_ENTRIES, 32, 32).expect("事实"),
-        snapshot_header(),
-    );
+    let facts = Facts::new(7, 1, SNAPSHOT_ENTRIES, 32, 32).expect("事实");
+    let snapshot = Snapshot::new(facts, Header::new(entries, 0).expect("头部自洽"));
     let bytes = snapshot.encode().expect("编码");
 
-    let mut encode = c.benchmark_group("train/snapshot");
-    encode.throughput(Throughput::Elements(SNAPSHOT_ENTRIES as u64));
-    encode.bench_function("encode", |b| {
+    let mut group = c.benchmark_group("train/snapshot");
+    group.throughput(Throughput::Elements(SNAPSHOT_ENTRIES as u64));
+    group.bench_function("encode", |b| {
         b.iter(|| black_box(snapshot.encode().expect("编码")))
     });
-    encode.finish();
-
-    let mut decode = c.benchmark_group("train/snapshot");
-    decode.throughput(Throughput::Elements(SNAPSHOT_ENTRIES as u64));
-    decode.bench_function("decode", |b| {
+    group.bench_function("decode", |b| {
         b.iter(|| black_box(Snapshot::decode(black_box(&bytes)).expect("解码")))
     });
-    decode.finish();
+    group.finish();
 }
 
 /// 一条 `gemv_i4` 链的形状表与常驻值；激活块在轮次间走空闲表复用。
-struct Fixture {
+struct Chain {
     tape: Tape,
     sizes: Sizes,
     x: autograd::Var,
@@ -83,7 +139,7 @@ struct Fixture {
     scales: autograd::Var,
 }
 
-impl Fixture {
+impl Chain {
     fn new() -> Self {
         let mut tape = Tape::new();
         let x = tape.parameter();
@@ -131,10 +187,11 @@ impl Fixture {
     }
 }
 
-fn bench_buffers(c: &mut Criterion) {
-    let fixture = Fixture::new();
-    let mut store = fixture.store();
-    let nodes: Vec<_> = fixture
+/// 缓冲池：一轮前向后释放全部中间块，下一轮复用同一批槽位。
+fn buffers(c: &mut Criterion) {
+    let chain = Chain::new();
+    let mut store = chain.store();
+    let nodes: Vec<_> = chain
         .tape
         .nodes()
         .iter()
@@ -156,6 +213,3 @@ fn bench_buffers(c: &mut Criterion) {
     });
     group.finish();
 }
-
-criterion_group!(benches, bench_schedule, bench_snapshot, bench_buffers);
-criterion_main!(benches);
