@@ -266,8 +266,9 @@ impl FileRemote {
     pub fn reduce_into(&self, group: &Group, reduce: Reduce, out: &mut [f32]) -> Result<()> {
         self.check_width("shard::FileRemote::reduce_into", out.len())?;
         out.fill(reduce.identity());
+        let mut slot = vec![0.0f32; self.width];
         for rank in group.ranks() {
-            let slot = self.read(*rank)?;
+            self.read_into(*rank, &mut slot)?;
             for (acc, value) in out.iter_mut().zip(&slot) {
                 *acc = reduce.apply(*acc, *value);
             }
@@ -319,7 +320,7 @@ impl FileRemote {
         })
     }
 
-    fn read(&self, rank: u32) -> Result<Vec<f32>> {
+    fn read_into(&self, rank: u32, out: &mut [f32]) -> Result<()> {
         let mut file = File::open(&self.backing).map_err(|error| {
             Error::new(
                 Code::Io,
@@ -340,10 +341,16 @@ impl FileRemote {
                 format!("读 `{}` 失败：{error}", self.backing.display()),
             )
         })?;
-        Ok(bytes
-            .chunks_exact(4)
-            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-            .collect())
+        for (slot, chunk) in out.iter_mut().zip(bytes.chunks_exact(4)) {
+            *slot = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        }
+        Ok(())
+    }
+
+    fn read(&self, rank: u32) -> Result<Vec<f32>> {
+        let mut slot = vec![0.0f32; self.width];
+        self.read_into(rank, &mut slot)?;
+        Ok(slot)
     }
 
     fn write(&self, rank: u32, values: &[f32]) -> Result<()> {
@@ -390,7 +397,7 @@ impl Collective for FileRemote {
             );
         }
         for (idx, rank) in group.ranks().iter().enumerate() {
-            buf[idx * width..(idx + 1) * width].copy_from_slice(&self.read(*rank)?);
+            self.read_into(*rank, &mut buf[idx * width..(idx + 1) * width])?;
         }
         Ok(())
     }
@@ -415,8 +422,9 @@ impl Collective for FileRemote {
             );
         }
         buf.fill(reduce.identity());
+        let mut slot = vec![0.0f32; self.width];
         for (idx, rank) in group.ranks().iter().enumerate() {
-            let slot = self.read(*rank)?;
+            self.read_into(*rank, &mut slot)?;
             for (out, value) in buf[idx * width..(idx + 1) * width].iter_mut().zip(&slot) {
                 *out = reduce.apply(*out, *value);
             }
