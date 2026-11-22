@@ -115,6 +115,20 @@ jobs:
       # llm-fuzz crate，其确定性 sweep 用例由 test job 的 nextest（按二进制名过滤）覆盖。
       - run: cargo test --workspace --all-features --locked --exclude llm-fuzz
 
+  # nightly 通道的守卫：`gemv::simd` 的手写车道与 `fast::sme` 的 ZA 外积都只在 `cfg(nightly)`
+  # 下编译，而默认工具链已是 stable——没有这条 job，那两条通道会静默腐坏而无人察觉。
+  # 跑在 macOS（aarch64）上才能真正编到 SME；`gemv::simd` 是架构无关的，两者一并覆盖。
+  nightly:
+    name: nightly channel
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "nightly"
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p llm-gemm --lib --all-features --locked
+
   doc:
     name: doc
     runs-on: ubuntu-latest
