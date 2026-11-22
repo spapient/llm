@@ -39,12 +39,7 @@ pub fn lower(emit: Emit, kernel: &Kernel, preamble: &str, sample: &Sample) -> Re
     let kernel = optimize(kernel)?;
     let kind = kind_of(&kernel);
     let (text, signature) = source(&kernel, preamble)?;
-    let backend = crate::device::spec(emit).ok_or_else(|| {
-        Error::new(
-            Code::Unsupported,
-            format!("本机没有 `{emit}` 语言的生产态后端"),
-        )
-    })?;
+    let backend = crate::device::require(emit)?;
     backend.lower(&text, &signature, sample, &kind)
 }
 
