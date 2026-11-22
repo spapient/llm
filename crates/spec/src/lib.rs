@@ -28,6 +28,7 @@
 
 #![deny(unsafe_code)]
 
+pub mod atom;
 pub mod einsum;
 pub mod epilogue;
 pub mod model;
@@ -35,6 +36,7 @@ pub mod operator;
 pub mod sample;
 pub mod sch;
 pub mod sig;
+pub mod span;
 pub mod tpl;
 
 pub use model::quant;

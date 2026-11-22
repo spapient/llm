@@ -24,7 +24,7 @@ serde_json = "1.0.154"
 autograd = { path = "../autograd", package = "llm-autograd" }
 cutile = { path = "../cutile" }
 nn = { path = "../nn", package = "llm-nn" }
-op = { path = "../op", package = "llm-op" }
+prof = { path = "../prof", package = "llm-prof" }
 tensor = { path = "../tensor", package = "llm-tensor" }
 tool = { path = "../tools", package = "llm-tools" }
 train = { path = "../train", package = "llm-train" }

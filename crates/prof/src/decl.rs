@@ -25,7 +25,7 @@ pub enum Skeleton {
     Scan,
 }
 
-impl prof::atom::Closed for Skeleton {
+impl crate::atom::Closed for Skeleton {
     /// 闭集全量。
     const ALL: &'static [Self] = &[Self::Elementwise, Self::Reduce, Self::Gemm, Self::Scan];
 
@@ -44,7 +44,7 @@ impl prof::atom::Closed for Skeleton {
     }
 }
 
-prof::inherent_names!(Skeleton);
+crate::inherent_names!(Skeleton);
 
 impl fmt::Display for Skeleton {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

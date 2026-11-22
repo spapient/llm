@@ -9,13 +9,13 @@
 //! arg      := act → 激活闭集名；quant → i8 / i4 / i2；scale → 有限十进制数
 //! ```
 //!
-//! 与 [`crate::tpl`] + [`prof::atom::Prim`] 同构：闭集词汇在 `prof::atom`（[`Epilogue`] / [`ActKind`]），
+//! 与 [`crate::tpl`] + [`crate::atom::Prim`] 同构：闭集词汇在 `crate::atom`（[`Epilogue`] / [`ActKind`]），
 //! 文法在此层。执行核（`gemm` / `conv` / `device` 的写回阶段）只消费解析结果，不各自再解析一遍。
 //! 各步骤的数值语义（列偏置广播、激活、量化）归 `gemm` 等算术拥有方：本层只描述「做了什么、按什么顺序」，
 //! 不复制算术。
 
 use diagnostic::{Error, Result};
-use prof::atom::{ActKind, DType, Epilogue};
+use crate::atom::{ActKind, DType, Epilogue};
 
 /// 一个写回步骤：闭集操作 + 它的参数。每个变体自带参数，错误状态不可表达。
 #[derive(Debug, Clone, PartialEq)]

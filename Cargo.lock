@@ -331,7 +331,6 @@ version = "0.1.0"
 dependencies = [
  "llm-annotation",
  "llm-diagnostic",
- "llm-op",
  "llm-prof",
  "llm-spec",
  "llm-testkit",
@@ -517,7 +516,7 @@ version = "0.1.0"
 dependencies = [
  "llm-diagnostic",
  "llm-nn",
- "llm-op",
+ "llm-prof",
  "llm-testkit",
  "proptest",
 ]
@@ -549,7 +548,6 @@ dependencies = [
  "llm-autograd",
  "llm-engine",
  "llm-nn",
- "llm-op",
  "llm-prof",
  "llm-serve",
  "llm-snapshot",
@@ -572,10 +570,9 @@ dependencies = [
  "llm-diagnostic",
  "llm-engine",
  "llm-nn",
- "llm-op",
- "llm-optim",
  "llm-prof",
  "llm-serve",
+ "llm-shard",
  "llm-snapshot",
  "llm-tensor",
  "llm-tokenizer",
@@ -592,9 +589,8 @@ dependencies = [
  "cutile",
  "llm-diagnostic",
  "llm-engine",
- "llm-op",
- "llm-optim",
  "llm-prof",
+ "llm-shard",
  "llm-testkit",
 ]
 
@@ -659,7 +655,6 @@ dependencies = [
  "half",
  "llm-annotation",
  "llm-diagnostic",
- "llm-op",
  "llm-prof",
  "llm-spec",
  "llm-tensor",
@@ -670,34 +665,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "llm-op"
-version = "0.1.0"
-dependencies = [
- "llm-annotation",
- "llm-diagnostic",
- "llm-prof",
- "llm-spec",
- "llm-testkit",
- "toml",
-]
-
-[[package]]
-name = "llm-optim"
-version = "0.1.0"
-dependencies = [
- "cutile",
- "llm-diagnostic",
- "llm-op",
- "llm-prof",
- "llm-testkit",
-]
-
-[[package]]
 name = "llm-prof"
 version = "0.1.0"
 dependencies = [
  "llm-diagnostic",
  "llm-dtype",
+ "llm-spec",
  "llm-testkit",
  "toml",
 ]
@@ -718,7 +691,7 @@ dependencies = [
  "llm-diagnostic",
  "llm-engine",
  "llm-nn",
- "llm-op",
+ "llm-prof",
  "llm-rng",
  "llm-tensor",
  "llm-testkit",
@@ -753,7 +726,7 @@ version = "0.1.0"
 dependencies = [
  "llm-annotation",
  "llm-diagnostic",
- "llm-prof",
+ "llm-dtype",
  "llm-testkit",
 ]
 
@@ -779,7 +752,7 @@ dependencies = [
  "cutile",
  "llm-autograd",
  "llm-nn",
- "llm-op",
+ "llm-prof",
  "llm-tensor",
  "llm-tools",
  "llm-train",
@@ -810,7 +783,7 @@ dependencies = [
  "llm-autograd",
  "llm-diagnostic",
  "llm-nn",
- "llm-op",
+ "llm-prof",
  "llm-shard",
  "llm-snapshot",
  "llm-tensor",

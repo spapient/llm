@@ -2,7 +2,7 @@
 
 use core::fmt;
 use diagnostic::{Code, Error};
-use prof::atom::Prim;
+use crate::atom::Prim;
 
 /// 调度模板闭集。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

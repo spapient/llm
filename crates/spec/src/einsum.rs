@@ -120,9 +120,9 @@ const NAMES: [&str; Bits::ALL.len()] = ["4", "8", "16", "32", "64", "2"];
 /// 与 [`Bits::ALL`] 同序的位宽表；下标即判别值。
 const WIDTHS: [u32; Bits::ALL.len()] = [4, 8, 16, 32, 64, 2];
 
-/// `Bits` 的词汇表由 [`prof::atom::Closed`] 单点声明，`ALL` / `as_str` / `parse` 由
+/// `Bits` 的词汇表由 [`crate::atom::Closed`] 单点声明，`ALL` / `as_str` / `parse` 由
 /// [`prof::inherent_names!`] 以同名固有项转发。
-impl prof::atom::Closed for Bits {
+impl crate::atom::Closed for Bits {
     const ALL: &'static [Self] = &[
         Self::Four,
         Self::Eight,
@@ -141,7 +141,7 @@ impl prof::atom::Closed for Bits {
     }
 }
 
-prof::inherent_names!(Bits);
+crate::inherent_names!(Bits);
 
 impl Bits {
     /// 每元素占多少位。

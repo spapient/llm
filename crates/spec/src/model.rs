@@ -23,7 +23,7 @@ use diagnostic::{Code, Error};
 
 /// 输出类型从 `prof` 再导出：`#[annotation::model]` 生成的 `Model` 与审计侧用同一个 `DType`，
 /// 不因为"谁先定义"而出现两条路径。
-pub use prof::atom::DType;
+pub use crate::atom::DType;
 
 #[doc(inline)]
 pub use crate::einsum::Cost;

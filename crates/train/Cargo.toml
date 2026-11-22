@@ -14,7 +14,7 @@ autotests = false
 autograd = { path = "../autograd", package = "llm-autograd" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 nn = { path = "../nn", package = "llm-nn" }
-op = { path = "../op", package = "llm-op" }
+prof = { path = "../prof", package = "llm-prof" }
 shard = { path = "../shard", package = "llm-shard" }
 tensor = { path = "../tensor", package = "llm-tensor" }
 weights = { path = "../weights", package = "llm-weights" }

@@ -14,7 +14,7 @@
 
 use crate::parse::{matching_paren, split_top_level};
 use diagnostic::Error;
-use prof::atom::Prim;
+use crate::atom::Prim;
 
 /// 模板片段。
 #[derive(Debug, Clone, PartialEq, Eq)]

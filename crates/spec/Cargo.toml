@@ -13,7 +13,7 @@ autotests = false
 [dependencies]
 annotation = { path = "../annotation", package = "llm-annotation" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
-prof = { path = "../prof", package = "llm-prof" }
+dtype = { path = "../dtype", package = "llm-dtype" }
 
 [dev-dependencies]
 testkit = { path = "../testkit", package = "llm-testkit" }

@@ -54,7 +54,17 @@
 
 #![deny(unsafe_code)]
 
-pub mod atom;
+/// 能力词汇表定义在 [`spec::atom`]（`spec` 在 `prof` 之上，词汇是双方共用的契约）；
+/// `prof` 侧再转出键、需求与跨度，`prof::atom::*` 的历史路径保持不变。
+pub mod atom {
+    pub use crate::key::KernelKey;
+    pub use crate::need::{Attr, Need, Provide, Witness};
+    pub use spec::span::Span;
+    pub use spec::atom::*;
+}
+
+pub use spec::inherent_names;
+
 pub mod device;
 pub mod prof;
 pub mod sign;
@@ -88,7 +98,6 @@ mod key;
 mod need;
 mod provide;
 mod schema;
-mod span;
 mod witness;
 
 #[cfg(test)]
@@ -185,86 +194,89 @@ mod templates {
 
 pub use templates::TEMPLATES;
 
-/// 按名字取模板正文；名字不在清单里时返回 `None`。
-pub fn template(name: &str) -> Option<&'static str> {
-    TEMPLATES
-        .iter()
-        .find(|(entry, _)| *entry == name)
-        .map(|(_, text)| *text)
-}
-
-/// 一次注册：一个算子的四件事——名字、模板、语义表、是否可微。
+/// 算子目录：`src/ops/*.toml` 的声明表，与 `<stem>.k` 的模板正文。
 ///
-/// 这是**注册表的值类型**：`nn::REGISTRY` 按 [`for_each_template!`] 的同一顺序逐条填它，
-/// 于是"有哪些算子"只有一份，`cutile` 与下游只认这个结构，不认识任何内核类型。
-#[derive(Debug, Clone, Copy)]
-pub struct Registration {
-    /// 算子名（与 `src/ops/<name>.toml` 的文件名一致）。
-    pub name: &'static str,
-    /// `<stem>.k` 的正文。
-    pub template: &'static str,
-    /// 代价、样本与标量参考。
-    pub model: spec::model::Model,
-    /// 训练反向图里是否可微：`true` 的算子必须配套一条反向公式。
-    pub differentiable: bool,
-}
+/// 与 [`builtin`] 的档案表并列但不同：档案表答"这台机器能跑什么"，目录答"有哪些算子"。
+pub mod catalogue {
+    pub use crate::declared_generated::names;
+    pub use crate::templates::TEMPLATES;
 
-/// 内核表装配：一行一个「算子名 → 适配函数」，展开成 `Entry { op, run }` 的数组字面量。
-#[macro_export]
-macro_rules! kernel_table {
-    ($($run:ident),* $(,)?) => {
-        [$( Entry { op: stringify!($run), run: $run } ),*]
-    };
-}
+    /// 按名字取模板正文；名字不在清单里时返回 `None`。
+    pub fn template(name: &str) -> Option<&'static str> {
+        TEMPLATES
+            .iter()
+            .find(|(entry, _)| *entry == name)
+            .map(|(_, text)| *text)
+    }
 
-/// 一份算子声明：编译期生成的声明表与同名 `<stem>.k` 模板。
-#[derive(Debug, Clone, PartialEq)]
-pub struct Op {
-    name: &'static str,
-    declaration: &'static diagnostic::data::Table,
-    template: &'static str,
-}
+    /// 一次注册：一个算子的四件事——名字、模板、语义表、是否可微。
+    ///
+    /// 这是**注册表的值类型**：`nn::REGISTRY` 按 [`for_each_template!`](crate::for_each_template)
+    /// 的同一顺序逐条填它，于是"有哪些算子"只有一份，`cutile` 与下游只认这个结构，不认识任何
+    /// 内核类型。
+    #[derive(Debug, Clone, Copy)]
+    pub struct Registration {
+        /// 算子名（与 `src/ops/<name>.toml` 的文件名一致）。
+        pub name: &'static str,
+        /// `<stem>.k` 的正文。
+        pub template: &'static str,
+        /// 代价、样本与标量参考。
+        pub model: spec::model::Model,
+        /// 训练反向图里是否可微：`true` 的算子必须配套一条反向公式。
+        pub differentiable: bool,
+    }
 
-impl Op {
-    /// 由名字、声明表与模板构造；名字取 `<name>.toml` 的文件名。
-    pub fn new(
+    /// 一份算子声明：编译期生成的声明表与同名 `<stem>.k` 模板。
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct Op {
         name: &'static str,
         declaration: &'static diagnostic::data::Table,
         template: &'static str,
-    ) -> Self {
-        Self {
-            name,
-            declaration,
-            template,
+    }
+
+    impl Op {
+        /// 由名字、声明表与模板构造；名字取 `<name>.toml` 的文件名。
+        pub fn new(
+            name: &'static str,
+            declaration: &'static diagnostic::data::Table,
+            template: &'static str,
+        ) -> Self {
+            Self {
+                name,
+                declaration,
+                template,
+            }
+        }
+
+        /// 算子名（与 `<name>.toml` 的文件名一致）。
+        pub fn name(&self) -> &'static str {
+            self.name
+        }
+
+        /// 声明表：`[op]` / `[axes]` / `[needs]` / `[layouts]` / `[[variants]]`。
+        pub fn declaration(&self) -> &'static diagnostic::data::Table {
+            self.declaration
+        }
+
+        /// 模板正文：C 风格文本 + `{{插值}}` + `@原语` 槽位。
+        pub fn template(&self) -> &'static str {
+            self.template
         }
     }
 
-    /// 算子名（与 `<name>.toml` 的文件名一致）。
-    pub fn name(&self) -> &'static str {
-        self.name
+    /// 按名字取一条内嵌算子；名字不在清单里时返回 `None`。
+    pub fn named(name: &str) -> Option<Op> {
+        let (entry, template) = TEMPLATES.iter().find(|(entry, _)| *entry == name)?;
+        Some(Op::new(entry, crate::declared(entry)?, template))
     }
 
-    /// 声明表：`[op]` / `[axes]` / `[needs]` / `[layouts]` / `[[variants]]`。
-    pub fn declaration(&self) -> &'static diagnostic::data::Table {
-        self.declaration
+    /// 全部内嵌算子，顺序与 [`TEMPLATES`] 一致。
+    pub fn all() -> Vec<Op> {
+        TEMPLATES
+            .iter()
+            .filter_map(|(name, template)| {
+                Some(Op::new(name, crate::declared(name)?, template))
+            })
+            .collect()
     }
-
-    /// 模板正文：C 风格文本 + `{{插值}}` + `@原语` 槽位。
-    pub fn template(&self) -> &'static str {
-        self.template
-    }
-}
-
-/// 按名字取一条内嵌算子；名字不在清单里时返回 `None`。
-pub fn builtin_named(name: &str) -> Option<Op> {
-    let (entry, template) = TEMPLATES.iter().find(|(entry, _)| *entry == name)?;
-    Some(Op::new(entry, declared(entry)?, template))
-}
-
-/// 内嵌声明，顺序与 [`TEMPLATES`] 一致。
-pub fn builtin() -> Vec<Op> {
-    TEMPLATES
-        .iter()
-        .filter_map(|(name, template)| Some(Op::new(name, declared(name)?, template)))
-        .collect()
 }
