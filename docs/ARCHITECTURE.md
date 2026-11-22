@@ -12,11 +12,11 @@
 
 | 层 | 成员 | 职责 | 不允许出现 |
 |---|---|---|---|
-| L1 基础设施 | `diagnostic`、`rng`、`dtype`、`wire`、`formats`、`tools` | 错误类型与声明数据树（`data`：构建期语料在运行期的形状，**没有解析器**）、计数器型确定性随机、精度闭集、与领域无关的字节码闭集（CRC-32 / LEB128 / Sink / 对齐落位 / `Invalid` 构造点）、外部权重格式的只读适配（torch `.bin` 的 ZIP+pickle 栈机、GGUF、JSON，只吐四要素不判语义）、静态质量门与回退判定 | 任何运行时领域语义、任何 TOML 解析 |
+| L1 基础设施 | `diagnostic`、`rng`、`dtype`、`wire`、`tools` | 错误类型与声明数据树（`data`：构建期语料在运行期的形状，**没有解析器**）、计数器型确定性随机、精度闭集、与领域无关的字节码闭集（CRC-32 / LEB128 / Sink / 对齐落位 / `Invalid` 构造点）、静态质量门与回退判定 | 任何运行时领域语义、任何 TOML 解析 |
 | L2 数据层 | `spec`、`prof` | 算子契约与设备档案。`spec` 出契约（签名 / 样本 / 语义表 / 求和表达式 / 模板词法，以及 `atom` / `need` / `key` / `span` 这一层词汇），`prof` 出声明层与模板正文：`OpDecl` 解析、`catalogue` 的 52 条算子模板、六台设备的原语片段与见证（一台设备一个模块，`src/<设备>/` 放语料，`build.rs` 一次把它解析成每台设备的 `FRAGMENTS` / `PRIMS` / `EPILOGUE` / `DEVICE` 表，并在编译期拼成一张聚合表，按 `Layout` 决定读内嵌表还是读盘），词汇从 `spec` 原样转出，下游只认 `prof` 一个名字就够 | 任何机制代码（拼接、协商、emit）、任何设备知识、任何内核正文 |
 | L3 内核 | `cutile` | 纯机制：协商 → 拼接 → emit → 缓存指纹，一行也不执行。只产设备源与指纹，换掉工具链不影响它；执行侧（工具链探测、编译、验见证、测速）随原 `optim` 并入 `shard`，因为那部分要碰编译器与设备，换掉执行方式不该动框架 | 设备厂商特判、运行时依赖 |
 | L4 运行时 | `tensor`、`storage`、`tokenizer` | 张量元数据、布局搬运、文本边界 | 模型语义、调度策略 |
-| L5 模型与训练 | `weights`、`snapshot`、`autograd`、`nn`、`algorithm`、`shard` | 权重结构与自有 `.u` 容器、检查点字节格式、反向图与显存计划、层定义与内核族（`nn` 同时拥有内核装配、神经算子与唯一注册表 `REGISTRY`——注册表必须持有内核类型才能装进语义表，故它与内核同住）、架构变体的参考语义（不产出 `ContractSpec`）、切分拓扑与集合通信、以及原 `optim` 的编译执行面 | 进程 / 服务语义 |
+| L5 模型与训练 | `weights`、`snapshot`、`autograd`、`nn`、`algorithm`、`shard` | 权重结构与自有 `.u` 容器、外部权重格式只读适配（torch `.bin` 的 ZIP+pickle 栈机、GGUF、JSON，只吐四要素不判语义）、检查点字节格式、反向图与显存计划、层定义与内核族（`nn` 同时拥有内核装配、神经算子与唯一注册表 `REGISTRY`——注册表必须持有内核类型才能装进语义表，故它与内核同住）、架构变体的参考语义（不产出 `ContractSpec`）、切分拓扑与集合通信、以及原 `optim` 的编译执行面 | 进程 / 服务语义 |
 | L6 调度与服务 | `train`、`engine`、`device`、`serve` | 训练样本与循环、检查点事实集、连续批与 KV 页账、提交与执行体、设备源 lowering 与厂商后端（`device::backends` / `device::metal::host` / `device::metal::fold` / `device::cuda` / `device::dialect` / `device::platform`，实现 `cutile` 的 `Backend` 缝与 `engine` 的 `Executor` 缝；`device::metal::executor` 是唯一 `unsafe` 岛（[ADR 0035](adr/0035-unsafe-ffi-boundary.md)））、端点契约与线格式、CPU 模型宿主 | 直接调用 `cutile` 生成 kernel；执行任何业务 |
 | L7 入口 | `cli`（bin：`llm` 与 `cutile`） | 组合根：命令行文法、配置解析、各层装配、取值解析与人可读排版；编排入口不定义新类型 | 编排入口新增领域类型；在本层复制内核机制 |
 
@@ -42,14 +42,13 @@
 
 **合并判据是「同构」，不是「消费者数量」。** 一个成员只有一条入边时，它通常是边界而不是肥肉：`storage` 独自持有全仓唯一的 `unsafe` 岛（`tensor` 是 `deny(unsafe_code)` 且有 11 个消费者），`algorithm` 刻意不产 `ContractSpec`（`nn` 专产），`shard` 坐 L5 而 `train` 坐 L6。可合并的硬信号只有一个——两个成员的 `lib.rs` / `build.rs` 除专名外**逐字相同**：六台设备 crate 并入 `frag` 时按这条判据删掉 512 行、补回 55 行，净省 457 行。反面的账同样要算：一次合并能省的至多是该 crate 的 `Cargo.toml`（全仓 1060 行 / 33 个，约 32 行）加一段头注释，指望靠合并兑现「代码大量减少」是算错账。裁决过程与测量数字见 [lld.md](lld.md) v3.0.90。
 
-允许的边（当前全量，共 137 条，含 51 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benchmarks` / `testkit` 的边不参与运行时方向判定）：
+允许的边（当前全量，共 132 条，含 50 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benchmarks` / `testkit` 的边不参与运行时方向判定）：
 
 ```
 diagnostic → （叶：错误类型 + `toml`，被大量成员消费；运行时出边为零；`+dev` 只登记夹具）
 rng        → diagnostic    +dev: testkit（叶：Philox4x32-10，显式种子 / 流号 / 下标派生，不持全局状态、不引 `rand`）
 dtype      → （叶    +dev: testkit（精度闭集）
 wire       → diagnostic    +dev: testkit（叶：纯字节码闭集，不认识张量或容器布局）
-formats    → diagnostic, dtype, wire    +dev: testkit（外部格式只读适配）
 tools      → diagnostic    +dev: testkit（配置驱动静态质量门 + 回退判定）
 spec       → annotation, diagnostic, dtype    +dev: testkit（契约层：只认识 L1 与注解，不认识任何内核）
 prof       → diagnostic, dtype, spec    +dev: testkit（档案 + 声明层 + 模板正文；片段与见证的语料在这里，机制也只有它）
@@ -57,7 +56,7 @@ cutile     → annotation, diagnostic, prof, spec    +dev: nn, testkit（机制�
 tensor     → dtype（`dtype` 之上的形状与索引代数）
 storage    → diagnostic, tensor（扁平缓冲与分配）
 tokenizer  → diagnostic（词表与分词）
-weights    → diagnostic, dtype, formats, storage, tensor, wire    +dev: storage, testkit（`storage` 由 `mmap` feature 可选启用，复用其唯一 unsafe 岛）
+weights    → diagnostic, dtype, storage, tensor, wire    +dev: storage, testkit（`storage` 由 `mmap` feature 可选启用，复用其唯一 unsafe 岛）
 snapshot   → diagnostic, tensor, weights, wire    +dev: testkit（检查点字节格式：只写相对上一条的差 + CRC-32 尾部，不认识训练循环）
 autograd   → diagnostic, tensor    +dev: testkit（反向图与显存计划）
 nn         → annotation, diagnostic, prof, spec, tensor, weights    +dev: cutile, testkit（内核装配 + 神经算子 + 唯一注册表；`cutile` 只在 dev 图里（写回尾块测试要真装配））

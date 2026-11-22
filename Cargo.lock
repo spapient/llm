@@ -624,16 +624,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "llm-formats"
-version = "0.1.0"
-dependencies = [
- "llm-diagnostic",
- "llm-dtype",
- "llm-testkit",
- "llm-wire",
-]
-
-[[package]]
 name = "llm-fuzz"
 version = "0.1.0"
 dependencies = [
@@ -803,7 +793,6 @@ version = "0.1.0"
 dependencies = [
  "llm-diagnostic",
  "llm-dtype",
- "llm-formats",
  "llm-storage",
  "llm-tensor",
  "llm-testkit",

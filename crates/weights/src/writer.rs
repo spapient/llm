@@ -1,7 +1,5 @@
 //! 写端：收集段，按对齐布局一次产出 canonical 字节，同一份编码可写内存或流式落盘。
 
-pub(crate) mod plan;
-
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io;
@@ -13,7 +11,7 @@ use crate::Codec;
 use crate::proof::Digest;
 use crate::rans;
 use crate::seg::Segment;
-use crate::writer::plan::{Plan, axes_frame, flush_file, temp_path, write_data, write_descs};
+use crate::plan::{Plan, axes_frame, flush_file, temp_path, write_data, write_descs};
 use wire::leb;
 use wire::sink::{Count, FileSink, Measured, Sealed, Sink, SliceSink};
 

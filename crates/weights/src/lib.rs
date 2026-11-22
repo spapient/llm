@@ -3,11 +3,10 @@
 //!
 //! **拥有**：`Header`/`Entry`/`Reader`/`Loader` 三条契约，`safetensors` 的两种后端，自有的 `.u`
 //! 容器 v2（`writer`/`archive`/`seg`/`proof`/`rans`；CRC/LEB/Sink 已归 L1 `wire`）、量化方案
-//! `quant`/`ptq`，以及“外部格式 → 中性段流”的桥接（`lifecycle::import`）。
-//! **不拥有**：外部格式的字节解析（`torch`/`gguf`/`json` 归 L1 `formats`，本层只重导出，于是
-//! 下游 `weights::torch::*` 等路径不变）、dtype 闭集（`dtype`）、张量元数据（`tensor`）、物理布局
-//! （`storage`）。
-//! **依赖**：`dtype`、`diagnostic`、`tensor`、`wire`、`formats`（`storage` 经可选 `mmap` feature
+//! `quant`/`ptq`，外部格式只读适配（`gguf`/`json`/`torch` 公开，`pickle`/`zip`/`dequant` 为
+//! crate 私有），以及“外部格式 → 中性段流”的桥接（`lifecycle::import`）。
+//! **不拥有**：dtype 闭集（`dtype`）、张量元数据（`tensor`）、物理布局（`storage`）。
+//! **依赖**：`dtype`、`diagnostic`、`tensor`、`wire`（`storage` 经可选 `mmap` feature
 //! 引入，只在 Unix 上提供映射源；`+dev`：`testkit`）。
 //! **被依赖**：`train`、`nn`、`llm`（`+dev`：`fuzz`）。
 //!
@@ -49,6 +48,16 @@ mod seg;
 mod stored;
 mod writer;
 
+// —— 平铺的子模块：原各父模块的单文件子目录，拍平到顶层 ——
+pub(crate) mod codec;
+pub(crate) mod decode;
+pub(crate) mod header;
+pub(crate) mod note;
+pub(crate) mod plan;
+pub(crate) mod rank;
+pub(crate) mod reason;
+pub(crate) mod text;
+
 // —— 量化方案：仿射方案与外部量化条目 ——
 pub mod quant;
 
@@ -72,8 +81,15 @@ pub mod settle;
 // —— L3 合成律：LLD §4.5 的逐段证书 → 网络级误差上界与适用域 ——
 pub mod l3;
 
-// —— 外部格式只读适配：全部实现在 L1 `formats`，这里只重导出，公开路径保持不变 ——
-pub use formats::{gguf, json, torch};
+// —— 外部格式只读适配：torch `.bin`（ZIP_STORED + pickle）、GGUF、受限 JSON ——
+pub mod gguf;
+pub mod json;
+pub mod torch;
+pub(crate) mod pickle;
+pub(crate) mod zip;
+mod dequant;
+pub(crate) mod cursor;
+
 pub use lifecycle::import;
 pub mod safetensors;
 

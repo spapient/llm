@@ -12,7 +12,7 @@
 //! # 例子
 //!
 //! ```
-//! use llm_formats::json::{self, Value};
+//! use llm_weights::json::{self, Value};
 //!
 //! let value = json::parse(r#"{"a": [1, 2], "b": "x"}"#).expect("合法");
 //! let fields = value.object().expect("顶层是对象");
@@ -322,30 +322,37 @@ impl Reader<'_> {
         self.chars(open)
     }
 
-    /// 字符串体：`None` 表示闭合引号，循环到此结束。
+    /// 字符串体：批量消费无转义的 ASCII 段，只在引号、反斜杠、控制字符与多字节处停顿。
     fn chars(&mut self, open: usize) -> Result<String> {
-        let mut text = String::new();
-        while let Some(ch) = self.unit(open)? {
-            text.push(ch);
-        }
-        Ok(text)
-    }
-
-    /// 开引号之后的一个字符：先把字节吃进来，再按它分类。
-    fn unit(&mut self, open: usize) -> Result<Option<char>> {
-        let at = self.cursor.pos();
-        let Some(byte) = self.cursor.bump() else {
-            return Err(self.cursor.fail_at(open, "字符串没有闭合"));
-        };
-        self.classify(open, at, byte)
-    }
-
-    /// 三类：闭合引号收尾、反斜杠转义、其余交给 [`Reader::plain`]（控制字符在那里拒）。
-    fn classify(&mut self, open: usize, at: usize, byte: u8) -> Result<Option<char>> {
-        match byte {
-            b'"' => Ok(None),
-            b'\\' => Ok(Some(self.escape(open, at)?)),
-            _ => Ok(Some(self.plain(at)?)),
+        let mut text = String::with_capacity(16);
+        loop {
+            let start = self.cursor.pos();
+            while let Some(byte) = self.cursor.peek() {
+                if byte == b'"' || byte == b'\\' || !(0x20..0x80).contains(&byte) {
+                    break;
+                }
+                self.cursor.advance(1);
+            }
+            if self.cursor.pos() > start {
+                let chunk = &self.cursor.bytes()[start..self.cursor.pos()];
+                text.push_str(std::str::from_utf8(chunk).expect("批量段是 ASCII"));
+            }
+            match self.cursor.peek() {
+                Some(b'"') => {
+                    self.cursor.advance(1);
+                    return Ok(text);
+                }
+                Some(b'\\') => {
+                    let at = self.cursor.pos();
+                    self.cursor.advance(1);
+                    text.push(self.escape(open, at)?);
+                }
+                Some(_) => {
+                    let at = self.cursor.pos();
+                    text.push(self.plain(at)?);
+                }
+                None => return Err(self.cursor.fail_at(open, "字符串没有闭合")),
+            }
         }
     }
 
