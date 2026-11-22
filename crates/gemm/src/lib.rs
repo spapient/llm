@@ -19,6 +19,7 @@
 pub mod activation;
 pub mod dequant;
 pub mod elementwise;
+pub mod epilogue;
 pub mod fast;
 pub mod gemm;
 pub mod gemv;
@@ -35,13 +36,14 @@ pub use activation::{
 };
 pub use dequant::{dequant_i2, dequant_i4, i8 as dequant_i8};
 pub use elementwise::{add_f32, div_f32, max_f32, min_f32, mul_f32, residual_add_f32, sub_f32};
+pub use epilogue::apply as apply_epilogue;
 pub use gemm::{f32 as gemm_f32, i2 as gemm_i2, i4 as gemm_i4, i8 as gemm_i8};
 pub use gemv::{f32 as gemv_f32, i2 as gemv_i2, i4 as gemv_i4, i8 as gemv_i8};
 pub use matmul::i8 as matmul_i8;
 pub use reduce::{reduce_max_f32, reduce_sum_f32};
 pub use scalar::Scalar;
 pub use unary::{
-    exp_f32, gelu_f32, hard_sigmoid_f32, leaky_relu_f32, log_f32, scale_f32, silu_f32,
+    exp_f32, gelu_f32, hard_sigmoid_f32, leaky_relu_f32, log_f32, relu_f32, scale_f32, silu_f32,
 };
 
 // 契约层在 `spec`：内核与本 crate 的骨架宏都按 crate 根解析契约路径，这里把它们搬回来，

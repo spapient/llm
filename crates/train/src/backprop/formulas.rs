@@ -368,6 +368,19 @@ pub(super) fn attention(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
     Ok(vec![dq, dk, dv])
 }
 
+/// 潜空间注意力（`latent_attention_f32`）：唯一差别是**写宽比读宽窄**——`dO` 与 `dV` 按压缩宽度
+/// `d_c` 走，`dQ` / `dK` 仍按读宽 `W` 走。`d_c` 由上游梯度长度与查询行数反推，不额外声明。
+pub(super) fn latent_attention(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
+    let w = op::attention::latent::MODEL.shape.1;
+    let q_rows = divide(ctx.inputs[0].len(), w, "latent_attention_f32")?;
+    let hist = divide(ctx.inputs[1].len(), w, "latent_attention_f32")?;
+    let write = ctx.incoming.len() / q_rows.max(1);
+    let mut view = attention_ctx(&ctx, w);
+    view.write = write;
+    let (dq, dk, dv) = attention_grad(view, q_rows, hist);
+    Ok(vec![dq, dk, dv])
+}
+
 /// decode 注意力（`decode_attention_f32` / `decode_flash_attention_f32` 共用）：查询行数与历史
 /// 行数解耦，返回 `[dq, dk, dv]`。
 pub(super) fn decode_attention(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
@@ -386,6 +399,7 @@ fn attention_ctx<'a>(ctx: &Context<'a>, d: usize) -> AttentionCtx<'a> {
         v: &ctx.inputs[2],
         dout: ctx.incoming,
         d,
+        write: d,
         scale: 1.0 / (d as f32).sqrt(),
     }
 }
@@ -397,6 +411,8 @@ struct AttentionCtx<'a> {
     v: &'a [f32],
     dout: &'a [f32],
     d: usize,
+    /// 写宽：`V` / `dO` / `dV` 的列宽；稠密注意力与读宽相同，潜空间注意力更窄。
+    write: usize,
     scale: f32,
 }
 
@@ -414,7 +430,7 @@ fn attention_grad(
 ) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
     let mut dq = vec![0.0; q_rows * ctx.d];
     let mut dk = vec![0.0; hist * ctx.d];
-    let mut dv = vec![0.0; hist * ctx.d];
+    let mut dv = vec![0.0; hist * ctx.write];
     for i in 0..q_rows {
         let row = attention_row(&ctx, i, hist);
         scatter(&row, &ctx, i, hist, &mut dq, &mut dk, &mut dv);
@@ -425,7 +441,7 @@ fn attention_grad(
 /// 一条查询行：`p = softmax(QKᵀ/√d)`、`dP = dO·V`、`dS = p·(dP − Σ p·dP)`。
 fn attention_row(ctx: &AttentionCtx<'_>, i: usize, hist: usize) -> AttentionRow {
     let probs = probabilities(ctx.q, ctx.k, i, hist, ctx.d, ctx.scale);
-    let dp = output_grad_row(ctx.dout, ctx.v, i, hist, ctx.d);
+    let dp = output_grad_row(ctx.dout, ctx.v, i, hist, ctx.write);
     let ds = score_grad_row(&probs, &dp);
     AttentionRow { probs, ds }
 }
@@ -462,7 +478,7 @@ fn score_row(q: &[f32], k: &[f32], i: usize, hist: usize, d: usize, scale: f32) 
     (0..hist).map(|j| dot(qrow, row(k, j, d)) * scale).collect()
 }
 
-/// `dP[i,j] = Σ_h dO[i,h]·v[j,h]`。
+/// `dP[i,j] = Σ_h dO[i,h]·v[j,h]`，`h` 走写宽（`V` 的列宽）。
 fn output_grad_row(dout: &[f32], v: &[f32], i: usize, hist: usize, d: usize) -> Vec<f32> {
     let drow = row(dout, i, d);
     (0..hist).map(|j| dot(drow, row(v, j, d))).collect()
@@ -503,10 +519,14 @@ fn accumulate_row(
     dv: &mut [f32],
 ) {
     let s = row.ds[j] * ctx.scale;
+    let (i_write, j_write) = (i * ctx.write, j * ctx.write);
+    for h in 0..ctx.write {
+        dv[j_write + h] += row.probs[j] * ctx.dout[i_write + h];
+    }
+    let (i_read, j_read) = (i * ctx.d, j * ctx.d);
     for h in 0..ctx.d {
-        dv[j * ctx.d + h] += row.probs[j] * ctx.dout[i * ctx.d + h];
-        dq[i * ctx.d + h] += s * ctx.k[j * ctx.d + h];
-        dk[j * ctx.d + h] += s * ctx.q[i * ctx.d + h];
+        dq[i_read + h] += s * ctx.k[j_read + h];
+        dk[j_read + h] += s * ctx.q[i_read + h];
     }
 }
 

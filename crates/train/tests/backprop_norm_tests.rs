@@ -105,6 +105,66 @@ fn attention_matches_central_differences() -> Result<()> {
     Ok(())
 }
 
+/// `loss = reduce_sum(latent_attention(q,k,v))`：读宽 `W`、写宽 `dc = W/2`，三路梯度闭式对拍。
+///
+/// 这一条守的是"写宽比读宽窄"口径：`dV` 比 `dK` 短，`dQ`/`dK` 仍按读宽散射，任何一处把两个宽度
+/// 混用都会在这里被中心差分抓到。
+#[test]
+fn latent_attention_matches_central_differences() -> Result<()> {
+    let w = op::attention::latent::MODEL.shape.1;
+    let (rows, hist, dc) = (2usize, 2usize, w / 2);
+    let (q_len, kv_len, out_len) = (rows * w, hist * w, rows * dc);
+    let mut tape = Tape::new();
+    let q = tape.parameter();
+    let k = tape.parameter();
+    let v = tape.parameter();
+    let y = tape
+        .record("latent_attention_f32", &[q, k, v])
+        .expect("记录 y");
+    let loss = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
+
+    let sizes = support::sizes_of(
+        &tape,
+        &[
+            (q, q_len),
+            (k, kv_len),
+            (v, hist * dc),
+            (y, out_len),
+            (loss, 1),
+        ],
+    );
+
+    let q0: Vec<f32> = (0..q_len).map(|i| 0.07 * i as f32 - 0.5).collect();
+    let k0: Vec<f32> = (0..kv_len).map(|i| -0.05 * i as f32 + 0.4).collect();
+    let v0: Vec<f32> = (0..hist * dc).map(|i| 0.09 * i as f32 - 0.3).collect();
+
+    let mut session = attention_session(tape, sizes, [q, k, v], [&q0, &k0, &v0])?;
+    session
+        .buffers()
+        .compute("latent_attention_f32", &[q, k, v], y)?;
+    sum_backward(&mut session, y, loss)?;
+
+    check_grad(
+        session.buffers().gradient(q).expect("q 梯度应在场"),
+        &q0,
+        "q",
+        |q| latent_loss(q, &k0, &v0, rows, hist, w, dc),
+    );
+    check_grad(
+        session.buffers().gradient(k).expect("k 梯度应在场"),
+        &k0,
+        "k",
+        |k| latent_loss(&q0, k, &v0, rows, hist, w, dc),
+    );
+    check_grad(
+        session.buffers().gradient(v).expect("v 梯度应在场"),
+        &v0,
+        "v",
+        |v| latent_loss(&q0, &k0, v, rows, hist, w, dc),
+    );
+    Ok(())
+}
+
 /// `loss = reduce_sum(decode_attention(q,k,v))`：查询一行、历史两行，三路梯度闭式对拍。
 #[test]
 fn decode_attention_matches_central_differences() -> Result<()> {

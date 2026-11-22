@@ -279,6 +279,26 @@ pub mod leaky_relu_f32 {
     );
 }
 
+pub mod relu_f32 {
+    //! 逐元素 ReLU：`y[n] = max(a[n], 0)`。
+
+    crate::unary_f32!(
+        Relu,
+        ReluF32,
+        "relu_f32",
+        unary_op_tests,
+        {
+            // 三个锚点：负区归零、零保持、正区恒等。
+            let mut out = [0.0; 3];
+            assert!(forward(&[-2.0, 0.0, 2.0], &mut out).is_ok(), "等长");
+            assert_eq!(out[0], 0.0, "负区归零");
+            assert_eq!(out[1], 0.0, "零点");
+            assert_eq!(out[2], 2.0, "正区恒等");
+        },
+        |x| x.max(0.0)
+    );
+}
+
 pub mod hard_sigmoid_f32 {
     //! 逐元素 HardSigmoid：`y[n] = clamp(a[n] / 6 + 0.5, 0, 1)`。
 

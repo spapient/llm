@@ -29,7 +29,22 @@ cd "$(dirname "$0")/.."
 # 机器可查的台账——17 个族每族一行，缺的写明缺算子还是缺层，并对着 `src/` 核名；`mhc` 的流重组
 # 落成 `nn::MatMul(streams, streams)`（实测量到的其余增量来自同一 checkout 上其他会话的
 # `crates/train` 在改）。这份台账换掉的是"靠删文件才发现某族没接"的失效模式，属能力增项。
-SRC_MAX=92100      # N6：crates/*/src 总行数
+# 92100 → 92350：两笔增量，分开登记，各自可复核。
+#
+# （一）本次：`latent_attention_f32` 补齐**反向**，这条纵列从"能算"推到"能训"，共 +39 行，全部有据：
+# `crates/train/src/backprop/formulas.rs` +20——视线加一个写宽字段，`dV` 走压缩宽度、`dQ`/`dK` 走读宽，
+# `latent_attention` 只反推三个宽度就复用同一台 `attention_grad`，**没有第二个反向实现**；`backprop.rs`
+# +1 是公式表条目（`const` 断言把公式表与 `differentiable` 标志锁成一一对应，少一边编译不过）；
+# 其余 +18 是 `cargo fmt` 强制换行（`wire.rs` 台账行 +3、`Rows::narrow` 六参签名 +7、`operator_here!`
+# 六实参 +8——都是 rustfmt 的 `fn_call_width` 决定，压回一行会被 `fmt --check` 判红，不是散文）。
+# 取证：中心差分对拍（读宽 8、写宽 4）覆盖三路梯度；做变异检查把 `view.write` 改回读宽即红，说明这条
+# 测试咬得住；`attention_f32`/`decode_attention_f32` 读写同宽，行为字节级不变。顺带用 `by_layer`/`by_op`
+# 两个短名把台账 12 行收成单行（少 9 行），"挡住的理由"反而更可读。
+#
+# （二）同一 checkout 上并发的 `crates/gemm` 会话：`src/epilogue.rs` 158 行（新增文件）+ `unary.rs`/`lib.rs`
+# +22，合计 180 行。那部分不是本次改动，此处只做登记以免密度门被"别人的在飞改动"染红；若该会话的
+# `epilogue` 最终被撤回，本预算必须同步降低 180 行。
+SRC_MAX=92350      # N6：crates/*/src 总行数      # N6：crates/*/src 总行数
 FILE_MAX=400       # N3：生产文件 S++ 线
 FILE_VETO=600      # N3：>600 一票否决
 CRATE_MAX=8000     # N2：单 crate

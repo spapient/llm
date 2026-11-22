@@ -2,7 +2,7 @@
 //! 只用公开面，不读实现即可换掉实现。
 
 use diagnostic::{Code, Result};
-use llm_tools::bench::{BenchRecord, EntryKind, Geometry, Harness, Roofline};
+use llm_tools::bench::{BenchRecord, Bottleneck, EntryKind, Geometry, Harness, Roofline};
 use llm_tools::card::{Card, Direction, Protocol, Shortfall, Standing, Statistic, Tally};
 use llm_tools::escape::quote;
 use llm_tools::regress::{Baseline, Case, Direction as RegDir, Judgement};
@@ -293,6 +293,47 @@ fn roofline_rejects_negative_or_nonfinite_peaks() {
     let ok = Roofline::new(Some(1024.0), Some(512.0)).expect("上界合法");
     assert_eq!(ok.peak_bw_gb_s(), Some(1024.0));
     assert_eq!(ok.peak_gflops(), Some(512.0));
+}
+
+#[test]
+fn score_is_bandwidth_bound_below_the_ridge_point() {
+    let roofline = Roofline::new(Some(1000.0), Some(500.0)).expect("上界合法");
+    let score = roofline.score(0.25, 125.0).expect("打分合法");
+    assert_eq!(score.side(), Bottleneck::Bandwidth);
+    assert_eq!(score.ceiling_gflops(), 250.0);
+    assert_eq!(score.percent(), 50.0);
+}
+
+#[test]
+fn score_is_compute_bound_at_or_above_the_ridge_point() {
+    let roofline = Roofline::new(Some(1000.0), Some(500.0)).expect("上界合法");
+    let score = roofline.score(2.0, 250.0).expect("打分合法");
+    assert_eq!(score.side(), Bottleneck::Compute);
+    assert_eq!(score.ceiling_gflops(), 500.0);
+    assert_eq!(score.percent(), 50.0);
+}
+
+#[test]
+fn score_rejects_nonfinite_or_negative_inputs() {
+    let roofline = Roofline::new(Some(1000.0), Some(500.0)).expect("上界合法");
+    assert!(roofline.score(-0.25, 125.0).is_err());
+    assert!(roofline.score(f64::NAN, 125.0).is_err());
+    assert!(roofline.score(0.25, f64::INFINITY).is_err());
+}
+
+#[test]
+fn score_requires_both_peaks() {
+    assert!(Roofline::default().score(0.25, 125.0).is_err());
+    let no_flops = Roofline::new(Some(1000.0), None).expect("上界合法");
+    assert!(no_flops.score(0.25, 125.0).is_err());
+    let no_bw = Roofline::new(None, Some(500.0)).expect("上界合法");
+    assert!(no_bw.score(0.25, 125.0).is_err());
+}
+
+#[test]
+fn bottleneck_short_names_are_stable() {
+    assert_eq!(Bottleneck::Bandwidth.as_str(), "bandwidth");
+    assert_eq!(Bottleneck::Compute.as_str(), "compute");
 }
 
 #[test]

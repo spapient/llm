@@ -120,7 +120,14 @@ impl<'a> Rows<'a> {
     }
 
     /// 窄写版本：读宽 `d`、写宽 `write`（`v` 的列宽与输出列宽都是 `write`）。
-    fn narrow(q: &'a [f32], k: &'a [f32], v: &'a [f32], cols: usize, d: usize, write: usize) -> Self {
+    fn narrow(
+        q: &'a [f32],
+        k: &'a [f32],
+        v: &'a [f32],
+        cols: usize,
+        d: usize,
+        write: usize,
+    ) -> Self {
         Self {
             write,
             ..Self::new(q, k, v, cols, d)
@@ -292,8 +299,8 @@ crate::operator_here!(
 );
 
 #[cfg(test)]
-#[path = "../tests/attention_tests.rs"]
-mod tests;
-#[cfg(test)]
 #[path = "../tests/latent_attention_tests.rs"]
 mod latent_attention_tests;
+#[cfg(test)]
+#[path = "../tests/attention_tests.rs"]
+mod tests;

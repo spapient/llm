@@ -54,7 +54,10 @@ fn the_rope_tail_moves_the_scores() {
     let (mut ya, mut yb) = (vec![0.0f32; 8], vec![0.0f32; 8]);
     forward(q, &base, v, &mut ya, 8).expect("长度自洽");
     forward(q, &moved, v, &mut yb, 8).expect("长度自洽");
-    assert!(ya.iter().zip(&yb).any(|(a, b)| (a - b).abs() > 1e-4), "尾段应当移动分数");
+    assert!(
+        ya.iter().zip(&yb).any(|(a, b)| (a - b).abs() > 1e-4),
+        "尾段应当移动分数"
+    );
 }
 
 #[test]

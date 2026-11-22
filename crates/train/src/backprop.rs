@@ -209,7 +209,7 @@ macro_rules! formulas {
     };
 }
 
-const FORMULAS: [Entry; 36] = formulas![
+const FORMULAS: [Entry; 37] = formulas![
     "adaptive_pool_f32" => adaptive_pool,
     "add_f32" => passthrough,
     "residual_add_f32" => passthrough,
@@ -240,6 +240,7 @@ const FORMULAS: [Entry; 36] = formulas![
     "rmsnorm_f32" => rmsnorm,
     "rope_f32" => rope,
     "attention_f32" => attention,
+    "latent_attention_f32" => latent_attention,
     "avg_pool2d_f32" => avg_pool2d,
     "batch_norm_f32" => batch_norm,
     "conv2d_f32" => conv2d,

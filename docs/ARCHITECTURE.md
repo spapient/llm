@@ -195,7 +195,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Command` / `Invocation` / `USAGE` | `cli` | 命令行文法（argv / env → 强类型调用参数）与编排分派 |
 | `Token` / `Pos` / `Delim` / `Finding` / `Gate` | `tools` | 零依赖词法 token 树、单函数复杂度 finding 与配置化阈值；分析器只产出数据，不打印不退出 |
 | `Case` / `Baseline` / `Judgement` | `tools` | 回退判定（与基线相比有没有退）；不做测量 |
-| `EntryKind` / `Harness` / `Roofline` / `Geometry` / `BenchRecord` | `tools` | 统一基准记录结构：只持有记录，不测量、不下性能结论，未测得的峰值留 `None` |
+| `EntryKind` / `Harness` / `Roofline` / `Bottleneck` / `Score` / `Geometry` / `BenchRecord` | `tools` | 统一基准记录结构：记录只持有身份、几何与峰值，未测得的峰值留 `None`；`Roofline::score` 把「峰值 + 算术强度 + 实测吞吐」折成占上界百分比与瓶颈侧，测量与上界登记仍归 `optim` / `benchmarks` |
 | `Protocol` / `Statistic` / `Tally` / `Standing` / `Shortfall` / `Card` | `tools` | 实测卡三态判定：闭集 → 样本量 → 统计量定义 → 区间与门槛，次序有意；样本与时钟来源归 `benchmarks` |
 | `spec` / `model` 属性宏 | `annotation` | 把注解展开成契约实现 + 编译期断言 + 一条校验测试；**不持有运行期注册表**。`model` 生成 `MODEL` 并断言注解与 `Operator` 对齐；设备执行由 `cutile` 的 `const SPECS` / `const GATES` 描述符表按函数指针登记 |
 | `Contract` / `Provision` / `Witness` | `testkit` | 设备片段层自述：`Contract` 只答「这台设备声明了哪些 P0 片段、拿哪些见证入口验」，`Provision` 只答「一条原语在这台设备上由哪个实现供给」，`Witness` 只答「用哪个 `witness_*` 入口、期望什么输出」。三者都只持 `&str` / `&[f32]` 借用、不持档案类型，于是夹具库不把 `prof` 拖进依赖，设备档案在测试侧摊平即用 |

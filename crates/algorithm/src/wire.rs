@@ -91,30 +91,30 @@ const fn f(name: &'static str, wiring: Wiring) -> Family {
 
 /// 17 族台账。顺序与 `src/` 的文件序一致，方便对照。
 pub fn ledger() -> [Family; 17] {
+    // 两个口径各一个短名：挡住的理由是"缺算子"或"缺层"，写成一行才看得出各族差在哪。
+    let by_layer = |why: &'static str| Wiring::blocked(Blocked::Layer(why));
+    let by_op = |name: &'static str| Wiring::blocked(Blocked::Operator(name));
     [
         f("mla", Wiring::wired(1)),
         f(
             "hybrid",
-            Wiring::partial(2, Blocked::Layer("nn 无专家路由层（Moe 不暴露 FFN 宽度）")),
+            Wiring::partial(2, Blocked::Layer("nn 无专家路由层（Moe 不给 FFN 宽）")),
         ),
         f("tower", Wiring::partial(2, Blocked::Operator("kda"))),
-        f("mamba", Wiring::blocked(Blocked::Operator("ssm_scan"))),
-        f("spike", Wiring::blocked(Blocked::Operator("lif"))),
-        f("mix", Wiring::blocked(Blocked::Operator("lif"))),
-        f("pulse", Wiring::blocked(Blocked::Operator("lif"))),
-        f("kda", Wiring::blocked(Blocked::Operator("kda"))),
-        f("csa", Wiring::blocked(Blocked::Operator("csa"))),
+        f("mamba", by_op("ssm_scan")),
+        f("spike", by_op("lif")),
+        f("mix", by_op("lif")),
+        f("pulse", by_op("lif")),
+        f("kda", by_op("kda")),
+        f("csa", by_op("csa")),
         f("mhc", Wiring::wired(1)),
-        f(
-            "attnres",
-            Wiring::blocked(Blocked::Layer("nn 无流内残差混合层")),
-        ),
-        f("moe", Wiring::blocked(Blocked::Layer("nn 无专家路由层"))),
-        f("patch", Wiring::blocked(Blocked::Layer("nn 无图像切块层"))),
-        f("codec", Wiring::blocked(Blocked::Layer("nn 无字节编解码层"))),
-        f("latent", Wiring::blocked(Blocked::Layer("nn 无潜变量采样层"))),
-        f("policy", Wiring::blocked(Blocked::Layer("nn 无动作采样层"))),
-        f("emit", Wiring::blocked(Blocked::Layer("nn 无生成回路"))),
+        f("attnres", by_layer("nn 无流内残差混合层")),
+        f("moe", by_layer("nn 无专家路由层")),
+        f("patch", by_layer("nn 无图像切块层")),
+        f("codec", by_layer("nn 无字节编解码层")),
+        f("latent", by_layer("nn 无潜变量采样层")),
+        f("policy", by_layer("nn 无动作采样层")),
+        f("emit", by_layer("nn 无生成回路")),
     ]
 }
 
@@ -145,7 +145,10 @@ pub fn mla_layer(m: &Mla<f32>, seq: usize, name: &str) -> Result<LatentAttention
 pub fn hybrid_layer(h: &Hybrid<f32>, seq: usize, index: usize) -> Result<Vec<Box<dyn Contract>>> {
     // 层名带位置：同一个混合块会在一座塔里出现多次，重名会被 `nn::Stack::of` 拒收。
     let attn = mla_layer(h.attention(), seq, &format!("hybrid.{index}.attn"))?;
-    Ok(vec![Box::new(attn), Box::new(mhc_layer(h.residual(), &format!("hybrid.{index}.mix"))?)])
+    Ok(vec![
+        Box::new(attn),
+        Box::new(mhc_layer(h.residual(), &format!("hybrid.{index}.mix"))?),
+    ])
 }
 
 /// `tower` 的接线：每层压栈的 `hybrid` 各自两段。入参是构造塔时交进去的注意力层——塔内部按

@@ -221,6 +221,35 @@ fn attention_loss(q: &[f32], k: &[f32], v: &[f32], q_rows: usize, hist: usize, d
     total
 }
 
+/// 潜空间注意力闭式：`O = softmax(QKᵀ/√W)·V`，但 `V` 与输出只有 `dc` 列（读宽 `W`、写宽 `dc`），
+/// 返回全部输出的和。
+fn latent_loss(
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    rows: usize,
+    hist: usize,
+    w: usize,
+    dc: usize,
+) -> f32 {
+    let scale = 1.0 / (w as f32).sqrt();
+    let mut total = 0.0;
+    for i in 0..rows {
+        let scores: Vec<f32> = (0..hist).map(|j| row_dot(q, k, i, j, w) * scale).collect();
+        let max = scores.iter().copied().fold(f32::MIN, f32::max);
+        let exps: Vec<f32> = scores.iter().map(|s| (s - max).exp()).collect();
+        let sum: f32 = exps.iter().sum();
+        total += (0..dc)
+            .map(|h| {
+                (0..hist)
+                    .map(|j| (exps[j] / sum) * v[j * dc + h])
+                    .sum::<f32>()
+            })
+            .sum::<f32>();
+    }
+    total
+}
+
 /// 注意力三路对拍共用的会话装配：开裸会话后把 `q` / `k` / `v` 按初值登记成可训练参数。
 fn attention_session(
     tape: Tape,

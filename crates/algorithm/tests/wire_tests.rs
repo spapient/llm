@@ -28,7 +28,10 @@ fn walk(dir: &Path, out: &mut BTreeSet<String>) {
 #[test]
 fn every_family_in_the_ledger_still_exists_in_the_tree_and_is_named_once() {
     let mut files = BTreeSet::new();
-    walk(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut files);
+    walk(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut files,
+    );
     let ledger = wire::ledger();
     let names: BTreeSet<&str> = ledger.iter().map(|family| family.name).collect();
     assert_eq!(names.len(), ledger.len(), "台账里族名不能重复");
@@ -84,8 +87,14 @@ fn fixtures() -> (Mla<f32>, Moe<f32>, Mhc<f32>) {
     let up = vec![0.5f32; heads * head_dim * latent];
     let mla = Mla::new(heads, head_dim, latent, rope, &up, &up).expect("MLA 超参合法");
     let width = heads * head_dim;
-    let moe = Moe::new(width, 1, vec![0.5; 2 * width], vec![vec![0.1; width * width]; 2], None)
-        .expect("专家几何合法");
+    let moe = Moe::new(
+        width,
+        1,
+        vec![0.5; 2 * width],
+        vec![vec![0.1; width * width]; 2],
+        None,
+    )
+    .expect("专家几何合法");
     let mhc = Mhc::identity(2).expect("流数非零");
     (mla, moe, mhc)
 }
@@ -101,14 +110,28 @@ fn the_wired_families_produce_layers_whose_operators_are_registered() {
         (
             1,
             "mla",
-            vec![Box::new(wire::mla_layer(&mla, 4, "mla.attn").expect("MLA 落层")) as Box<dyn Contract>],
+            vec![
+                Box::new(wire::mla_layer(&mla, 4, "mla.attn").expect("MLA 落层"))
+                    as Box<dyn Contract>,
+            ],
         ),
-        (1, "hybrid", wire::hybrid_layer(&hybrid, 4, 0).expect("混合块落层")),
-        (attention.len(), "tower", wire::tower_layers(&attention, 4).expect("塔落层")),
+        (
+            1,
+            "hybrid",
+            wire::hybrid_layer(&hybrid, 4, 0).expect("混合块落层"),
+        ),
+        (
+            attention.len(),
+            "tower",
+            wire::tower_layers(&attention, 4).expect("塔落层"),
+        ),
     ];
     let ledger = wire::ledger();
     for (blocks, name, layers) in cases {
-        let family = ledger.iter().find(|family| family.name == name).expect("台账有这一族");
+        let family = ledger
+            .iter()
+            .find(|family| family.name == name)
+            .expect("台账有这一族");
         assert_eq!(
             family.wiring.layers() * blocks,
             layers.len(),
@@ -126,7 +149,10 @@ fn the_wired_families_produce_layers_whose_operators_are_registered() {
         }
     }
     assert_eq!(
-        ledger.iter().filter(|family| family.wiring.is_wired()).count(),
+        ledger
+            .iter()
+            .filter(|family| family.wiring.is_wired())
+            .count(),
         2,
         "当前只有 `mla` 与 `mhc` 整族接通"
     );

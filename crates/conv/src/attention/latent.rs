@@ -176,5 +176,13 @@ pub struct LatentAttention;
 #[annotation::model(name = "latent_attention_f32", shape = [8, 8], dtype = "f32", skeleton = "attention")]
 pub type LatentAttentionF32 = LatentAttention;
 
-// 基座契约（ADR 0050）：三个操作数（q、k、v），输出 y；输出宽比读入宽窄，所以不可对称反传。
-crate::operator_here!(LatentAttention, "latent_attention_f32", 3, (8, 8), false, reference);
+// 基座契约（ADR 0050）：三个操作数（q、k、v），输出 y；写宽比读宽窄，反向按两口径散射
+// （dV 走压缩宽度、dQ/dK 走读入宽度），公式在 `crates/train` 的公式目录里。
+crate::operator_here!(
+    LatentAttention,
+    "latent_attention_f32",
+    3,
+    (8, 8),
+    true,
+    reference
+);

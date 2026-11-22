@@ -130,6 +130,83 @@ impl Roofline {
     pub fn peak_gflops(&self) -> Option<f64> {
         self.peak_gflops
     }
+
+    /// 打分：由算术强度（FLOP/byte）与实测吞吐（GFLOP/s）折成占端口峰值的百分比。
+    ///
+    /// 上界是带宽侧与算力侧两条 roofline 的较慢者：`min(峰值算力, 峰值带宽 × 算术强度)`。
+    /// 两个峰值都未登记时无法打分，返回错误而不是拿标称值顶替。
+    pub fn score(&self, arithmetic_intensity: f64, achieved_gflops: f64) -> Result<Score> {
+        check_ratio(arithmetic_intensity, "arithmetic_intensity")?;
+        check_ratio(achieved_gflops, "achieved_gflops")?;
+        let (peak_bw, peak_flops) = self.peaks()?;
+        let bandwidth_ceiling = peak_bw * arithmetic_intensity;
+        let (ceiling, side) = if bandwidth_ceiling < peak_flops {
+            (bandwidth_ceiling, Bottleneck::Bandwidth)
+        } else {
+            (peak_flops, Bottleneck::Compute)
+        };
+        let percent = achieved_gflops / ceiling * 100.0;
+        Ok(Score {
+            ceiling_gflops: ceiling,
+            percent,
+            side,
+        })
+    }
+
+    /// 两个峰值都要登记，否则无法折成百分比。
+    fn peaks(&self) -> Result<(f64, f64)> {
+        let Some(peak_bw) = self.peak_bw_gb_s else {
+            return Err(invalid("Roofline::score", "带宽峰值未登记，无法打分"));
+        };
+        let Some(peak_flops) = self.peak_gflops else {
+            return Err(invalid("Roofline::score", "算力峰值未登记，无法打分"));
+        };
+        Ok((peak_bw, peak_flops))
+    }
+}
+
+/// 瓶颈侧：roofline 里绑定上界的那一侧。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Bottleneck {
+    /// 带宽侧：`峰值带宽 × 算术强度` 低于峰值算力，访存是上界。
+    Bandwidth,
+    /// 算力侧：峰值算力更低，计算是上界。
+    Compute,
+}
+
+impl Bottleneck {
+    /// 稳定短名，写进报告。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Bandwidth => "bandwidth",
+            Self::Compute => "compute",
+        }
+    }
+}
+
+/// 一次 roofline 打分结果：上界吞吐、占上界百分比与瓶颈侧。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Score {
+    ceiling_gflops: f64,
+    percent: f64,
+    side: Bottleneck,
+}
+
+impl Score {
+    /// 上界吞吐（GFLOP/s）。
+    pub fn ceiling_gflops(&self) -> f64 {
+        self.ceiling_gflops
+    }
+
+    /// 占上界百分比（%）。
+    pub fn percent(&self) -> f64 {
+        self.percent
+    }
+
+    /// 瓶颈侧。
+    pub fn side(&self) -> Bottleneck {
+        self.side
+    }
 }
 
 /// 被测问题的几何：形状、批次与元素精度。
@@ -273,6 +350,17 @@ fn check_shape_batch(shape: &[usize], batch: u32) -> Result<()> {
     }
     if batch == 0 {
         return Err(invalid("Geometry::new", "批次不能为 0"));
+    }
+    Ok(())
+}
+
+/// 算术强度与实测吞吐必须是非负有限数。
+fn check_ratio(value: f64, label: &str) -> Result<()> {
+    if !value.is_finite() || value < 0.0 {
+        return Err(invalid(
+            "Roofline::score",
+            format!("{label} 必须是非负有限数，得到 {value}"),
+        ));
     }
     Ok(())
 }
