@@ -99,8 +99,9 @@ mod param_role {
         }
     }
 }
-mod classic;
+mod norm;
 mod single;
+mod spatial;
 mod stack;
 
 #[doc(inline)]
@@ -124,15 +125,19 @@ pub use format::WeightFormat;
 pub use param_role::ParamRole;
 
 #[doc(inline)]
-pub use classic::{
-    AdaptiveAvgPool2d, AvgPool2d, BatchNorm2d, Conv1d, Conv2d, ConvTranspose1d, ConvTranspose2d,
-    GroupNorm, InstanceNorm, Interpolate, LayerNorm, MaxPool1d, MaxPool2d,
+pub use norm::{BatchNorm2d, GroupNorm, InstanceNorm, LayerNorm};
+
+#[doc(inline)]
+pub use spatial::{
+    AdaptiveAvgPool2d, AvgPool2d, Conv1d, Conv2d, ConvTranspose1d, ConvTranspose2d, Interpolate,
+    MaxPool1d, MaxPool2d,
 };
 
 #[doc(inline)]
 pub use single::{
-    Add, Div, Embedding, Exp, Gauge, Gelu, HardSigmoid, LeakyRelu, Log, MatMul, Max, Min, Mul,
-    Precision, ReduceMax, ReduceSum, ResidualAdd, RmsNorm, Rope, Scale, Silu, Softmax, Sub,
+    Add, Dequant, Div, Embedding, Exp, Gauge, Gelu, HardSigmoid, LeakyRelu, Log, MatMul, Max, Min,
+    Mul, Precision, ReduceMax, ReduceSum, ResidualAdd, RmsNorm, Rope, Scale, Scan, Silu, Softmax,
+    Sub,
 };
 
 #[doc(inline)]
@@ -165,6 +170,17 @@ fn nonzero_all(site: &str, prefix: &str, axes: &[(&str, usize)]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// 校验单个「必须非零」的维度，失败时点名层与字段：经典几何层族共用。
+///
+/// 与 [`nonzero_all`] 的分工是调用形态不同——这里逐字段校验并**返回**该值供构造器继续用，
+/// `nonzero_all` 一次吃完一张表、只报第一个空轴。
+fn nonzero(value: usize, field: &str, layer: &str) -> Result<usize> {
+    if value == 0 {
+        return Err(Error::new(Code::Invalid, format!("{layer}: `{field}` 必须非零")).with("nn"));
+    }
+    Ok(value)
 }
 
 /// 层定义产出的声明：名字、输出形状、要用的算子名与参数角色。

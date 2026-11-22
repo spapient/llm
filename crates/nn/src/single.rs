@@ -390,15 +390,107 @@ impl Precision {
     /// 组合写成一张表而不是 `match` 分支：这里要表达的是「哪些格子里有内核」这个二维事实，
     /// 表里有就是有、没写就是没有，读者一眼能看出空着的那两格（int2 / int4 × `K = 4096`）。
     pub const fn operator(self, gauge: Gauge) -> Option<&'static str> {
-        let mut index = 0;
-        while index < RUNGS.len() {
-            let (precision, rung, operator) = RUNGS[index];
+        let mut idx = 0;
+        while idx < RUNGS.len() {
+            let (precision, rung, operator) = RUNGS[idx];
             if precision as u8 == self as u8 && rung as u8 == gauge as u8 {
                 return Some(operator);
             }
-            index += 1;
+            idx += 1;
         }
         None
+    }
+}
+
+impl Precision {
+    /// 反量化算子的三档；`F32` 没有反量化这一步——它正是还原之后的目标格式。
+    ///
+    /// 与 [`Precision::operator`] 的互补处值得记一笔：矩阵乘的 `F32` 有内核、反量化没有；
+    /// 反量化的 int2/int4/int8 都有内核、矩阵乘的 int2/int4 在长收缩轴上没有。两条轴共用
+    /// 一个枚举，但空格分布不同，故各有各的表。
+    pub const fn dequant(self) -> Option<&'static str> {
+        match self {
+            Self::Int2 => Some("dequant_i2"),
+            Self::Int4 => Some("dequant_i4"),
+            Self::Int8 => Some("dequant_i8"),
+            Self::F32 => None,
+        }
+    }
+}
+
+/// 前缀扫描层：`s_t = a·s_{t-1} + b·x_t`，沿单一时间轴串行递推。
+///
+/// 与逐元素层的差别不在形状而在**依赖**：每个输出都依赖前一个输出，因此算子表给了独立的
+/// `scan` 骨架与分块声明。层侧仍只声明长度，读写字节与算术量全部由算子语义表推出。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Scan {
+    inner: AxisCore,
+}
+layer_delegate!(
+    Scan,
+    "scan_f32",
+    "单轴层",
+    OutputShape::Single,
+    ParamRole::Trainable
+);
+
+/// 反量化层：把打包的定点编码还原成 f32，元素数与输出形状都不变。
+///
+/// 与 [`MatMul`] 共用 [`Precision`]，两条轴的空格正好互补：矩阵乘有 `F32` 档（不需要反量化），
+/// 反量化没有 `F32` 档（它要还原到的就是 f32）。`dequant_i*` 的语义表里 `cpb` / `width` /
+/// `zero` 就是打包宽度与零点，读字节数由表推出，层里不写第二份。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Dequant {
+    spec: ContractSpec,
+    len: usize,
+    precision: Precision,
+}
+
+impl Dequant {
+    /// 由层名、元素数与量化精度构造。
+    ///
+    /// # Errors
+    ///
+    /// `len` 为零（[`Code::Invalid`]）；精度为 [`Precision::F32`]（没有可还原的编码）。
+    pub fn new(name: impl Into<String>, len: usize, precision: Precision) -> Result<Self> {
+        crate::nonzero_all("nn::Dequant::new", "反量化层的 ", &[("len", len)])?;
+        let spec = ContractSpec::new(name, Shape::new([len]), precision.dequant())?;
+        Ok(Self {
+            spec,
+            len,
+            precision,
+        })
+    }
+
+    /// 是否为空：构造期已拒绝零长度，因此恒为 `false`。
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    crate::accessors! {
+        /// 元素数。
+        len -> usize = len,
+        /// 被还原的量化精度。
+        precision -> Precision = precision,
+    }
+}
+
+impl Contract for Dequant {
+    spec_accessors!();
+
+    fn bounds(&self) -> BoundsResult {
+        let Some(operator) = self.precision.dequant() else {
+            return Err(Error::new(
+                Code::Unsupported,
+                format!(
+                    "反量化层 `{}` 声明了 {} 精度，但 f32 没有可还原的编码",
+                    self.spec.name(),
+                    self.precision.name()
+                ),
+            )
+            .with("nn::Dequant::bounds"));
+        };
+        Bounds::of_ctx(operator, self.len, 1).map(Some)
     }
 }
 

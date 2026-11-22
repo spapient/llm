@@ -205,3 +205,66 @@ fn an_unregistered_precision_rung_says_which_half_is_missing() {
         assert!(message.contains("K = 4096"), "{message}");
     }
 }
+
+/// 前缀扫描层：绑 `scan_f32`，读写覆盖整条时间轴，算术量是每个元素的递推。
+#[test]
+fn the_prefix_scan_binds_its_recurrence_operator_and_prices_it() {
+    let scan = Scan::new("state", 16).expect("合法");
+    assert_eq!(scan.spca().ops(), [Scan::OP]);
+    assert_eq!(scan.output().dims(), [16], "扫描不改变长度");
+    let floor = scan.bounds().expect("合法").expect("有算子");
+    assert_eq!(floor, Bounds::of_ctx(Scan::OP, 16, 1).expect("同一份语义"));
+    // 递推每元素读一次、写一次，两者都是 f32 满宽。
+    assert_eq!(floor.read(), floor.write(), "读写各一次，各按 f32 满宽");
+    assert_eq!(floor.read(), 16 * 4, "16 个 f32");
+    assert!(floor.flops() > 0.0, "递推有算术，不是纯搬运");
+    assert!(Scan::new("state", 0).is_err(), "零长度在构造期拒绝");
+}
+
+/// 反量化层：三档各绑自己的算子；写侧与算术量**逐位相同**——反量化不改输出格式（仍是 f32），
+/// 只改读侧的打包宽度。i2 / i4 的读恰好是满位打包（`len·2/8` 与 `len·4/8`）。
+///
+/// i8 这一档的读按 f32 宽度出，而非 1 字节/元素：`crates/op/ops/dequant_i8.k` 把 `q` 声明成
+/// `const float *`，声明表也没有 `dt`，两处自洽但语义上不是「读 8 位码」。故本用例如实锁住
+/// **现状**，并在注释里点名——修 op 侧模板时应连带把这条断言改成 `len·1`。
+#[test]
+fn the_dequant_layer_undoes_each_packed_width_at_its_own_cost() {
+    let len = 32;
+    let i2 = Dequant::new("d", len, Precision::Int2).expect("合法");
+    let i4 = Dequant::new("d", len, Precision::Int4).expect("合法");
+    let i8 = Dequant::new("d", len, Precision::Int8).expect("合法");
+    assert_eq!(i2.spca().ops(), ["dequant_i2"]);
+    assert_eq!(i4.spca().ops(), ["dequant_i4"]);
+    assert_eq!(i8.spca().ops(), ["dequant_i8"]);
+
+    let read = |layer: &Dequant| layer.bounds().expect("合法").expect("有算子").read();
+    assert_eq!(read(&i2), (len * 2 / 8) as u64, "2 位码满位打包");
+    assert_eq!(read(&i4), (len * 4 / 8) as u64, "4 位码满位打包");
+    assert_eq!(
+        read(&i8),
+        (len * 4) as u64,
+        "现状：i8 模板读 float（见用例文档）"
+    );
+    assert!(read(&i2) < read(&i4), "位宽更窄，读更少");
+    assert!(read(&i4) < read(&i8), "位宽更宽，读更多");
+
+    let floor = i2.bounds().expect("合法").expect("有算子");
+    for other in [&i4, &i8] {
+        let probe = other.bounds().expect("合法").expect("有算子");
+        assert_eq!(probe.write(), floor.write(), "输出一律 f32");
+        assert_eq!(probe.flops(), floor.flops(), "反量化的算术量与位宽无关");
+    }
+    assert!(Dequant::new("d", 0, Precision::Int4).is_err(), "零长度拒绝");
+}
+
+/// f32 没有可还原的编码：这一档不是「下界为零」，是没有这一步。
+#[test]
+fn an_f32_dequant_declares_nothing_to_undo() {
+    let layer = Dequant::new("d", 16, Precision::F32).expect("仍是合法声明");
+    assert!(layer.spca().ops().is_empty(), "没有内核就没有算子名");
+    let error = layer.bounds().unwrap_err();
+    assert_eq!(error.code(), Code::Unsupported);
+    let message = error.to_string();
+    assert!(message.contains("f32"), "{message}");
+    assert!(message.contains("没有可还原的编码"), "{message}");
+}

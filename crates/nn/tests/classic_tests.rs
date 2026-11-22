@@ -1,8 +1,11 @@
-//! `classic` 的用例。
+//! 经典几何层族（`spatial` 与 `norm`）的用例。
 //!
 //! 生产文件只留执行与判据，用例集中于此；N3 行数门限不再受用例增删影响。
+//! 两族的用例同处一份：它们校验的是同一类构造期判据（非零、整除、eps 为正）。
 
 use super::*;
+
+use crate::{BatchNorm2d, GroupNorm, InstanceNorm, LayerNorm};
 
 fn geom3() -> ConvGeom {
     ConvGeom {

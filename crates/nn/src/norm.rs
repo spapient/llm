@@ -1,6 +1,39 @@
-//! `classic` 的归一化层族：Batch/Group/Instance/Layer。
+//! 经典几何层之二：归一化的契约登记。
+//!
+//! 与 `spatial` 同属经典几何层族。拆开的判据是这一族**不碰窗口**：没有滑窗几何，只有
+//! 通道与组的整除关系（`check_group_norm` 就是这条约束的校验），故两族的共享代数不重叠。
+//! 层只声明形状与算子归属，执行仍在 `op::norm`。
 
-use super::*;
+use diagnostic::{Code, Error, Result};
+// 归一化层现在是 `Scalar` 泛型；经典层登记只针对 `f32` 声明档，这里给出一份具体别名。
+type OpBatch = op::norm::BatchNorm2d<f32>;
+type OpGroup = op::norm::GroupNorm<f32>;
+type OpInst = op::norm::InstanceNorm<f32>;
+type OpLayer = op::norm::LayerNorm<f32>;
+use crate::ContractSpec as Spec;
+use crate::{Bounds, BoundsResult, Contract, ContractSpec, nonzero, spec_accessors};
+
+/// 校验 `eps` 为正且有限：所有归一化层共用。
+fn check_eps(eps: f32, layer: &str) -> Result<()> {
+    if eps <= 0.0 || eps.is_nan() {
+        return Err(Error::new(Code::Invalid, format!("{layer}: `eps` 必须为正")).with(layer));
+    }
+    Ok(())
+}
+
+/// 校验组归一化的结构：组数/通道非零且通道能被组数整除。
+fn check_group_norm(groups: usize, channels: usize, layer: &str) -> Result<()> {
+    nonzero(groups, "groups", layer)?;
+    nonzero(channels, "channels", layer)?;
+    if !channels.is_multiple_of(groups) {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("{layer}: `channels`({channels}) 不能被 `groups`({groups}) 整除"),
+        )
+        .with(layer));
+    }
+    Ok(())
+}
 
 /// 批归一化层（NHWC，最后维 `channels`）。
 #[derive(Debug, Clone, PartialEq)]
