@@ -1,11 +1,11 @@
 //! 声明解析与轴展开（cutile README §4、§10.2 的 ①）。
 
-use crate::layout::LayoutSpec;
-use crate::sch::Schedule;
-use crate::sig::CType;
+use spec::sch::layout::LayoutSpec;
+use spec::sch::Schedule;
+use spec::sig::CType;
 use core::fmt;
 use diagnostic::{Code, Error};
-use prof::atom::Need;
+use crate::atom::Need;
 
 /// 变体数上限（cutile README §4.1）。
 pub const MAX_VARIANTS: usize = 8;
@@ -123,7 +123,7 @@ pub struct OpDecl {
     /// 模板文本。
     pub template: String,
     /// 内核签名：从模板的入口函数解析，是 ABI 的唯一事实源。
-    pub signature: crate::sig::Signature,
+    pub signature: spec::sig::Signature,
     /// 数据流阶段：谁在哪一阶段读/写哪个槽位；单内核算子就是一段（名字 = 算子名）。
     pub phases: Vec<Phase>,
 }
@@ -148,7 +148,7 @@ pub struct Seam {
     /// 消费者的读槽位名（融合时以临时缓冲桥接，名字不必相同）。
     pub to: String,
     /// 缝上的类型（两侧一致才合法；只可能是缓冲类型 F32 / U8）。
-    pub ctype: crate::sig::CType,
+    pub ctype: spec::sig::CType,
 }
 
 /// 一次合法的生产者→消费者融合。
@@ -193,7 +193,7 @@ impl Fusion {
 
 impl OpDecl {
     /// 槽位的声明类型：缓冲形参才有；标量或未知名返回 `None`。
-    pub fn slot_type(&self, name: &str) -> Option<crate::sig::CType> {
+    pub fn slot_type(&self, name: &str) -> Option<spec::sig::CType> {
         self.signature
             .params()
             .iter()

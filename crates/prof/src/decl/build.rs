@@ -2,10 +2,10 @@
 use diagnostic::Error;
 use diagnostic::data::{Table, Value};
 
-use crate::layout::LayoutSpec;
-use crate::tpl::{Arg, Template};
-use prof::atom::{Attr, AttrKey, Closed, DTypeSet, Need, Prim, Set, SpaceSet, Span};
-use prof::prof::scalar_texts;
+use spec::sch::layout::LayoutSpec;
+use spec::tpl::{Arg, Template};
+use crate::atom::{Attr, AttrKey, Closed, DTypeSet, Need, Prim, Set, SpaceSet, Span};
+use crate::prof::scalar_texts;
 
 use super::expand::tiles;
 use super::parse::{Extras, Sections, extras, head, phases, sections};
@@ -65,7 +65,7 @@ impl OpDecl {
     fn declared(table: &Table, template: &str) -> diagnostic::Result<Self> {
         let ((name, skeleton, summary), (axes, needs, layouts, variants), (consts, grid, chunk)) =
             parts(table)?;
-        let signature = crate::sig::Signature::parse(&name, template)?;
+        let signature = spec::sig::Signature::parse(&name, template)?;
         let phases = phases(table, &name, &signature)?;
         Ok(Self {
             name,

@@ -1,8 +1,8 @@
 //! 声明表解析：`[op]`/`[axes]`/`[needs]`/`[layouts]`/`[grid]`/`[chunk]`/`[consts]` 各自一块。
 use diagnostic::data::{Table, Value};
 
-use crate::layout::LayoutSpec;
-use prof::atom::Need;
+use spec::sch::layout::LayoutSpec;
+use crate::atom::Need;
 
 use super::build::parse_need;
 use super::variant::variants;
@@ -239,7 +239,7 @@ pub fn extras(table: &Table) -> diagnostic::Result<Extras> {
 pub fn phases(
     table: &Table,
     op: &str,
-    signature: &crate::sig::Signature,
+    signature: &spec::sig::Signature,
 ) -> diagnostic::Result<Vec<Phase>> {
     let Some(rows) = table.table_array("phases") else {
         return Ok(vec![Phase {
@@ -252,7 +252,7 @@ pub fn phases(
 }
 
 /// 一条阶段：`name` 必填，`reads`/`writes` 是槽位名数组，每个名字都必须是签名的缓冲形参。
-fn phase(op: &str, row: &Table, signature: &crate::sig::Signature) -> diagnostic::Result<Phase> {
+fn phase(op: &str, row: &Table, signature: &spec::sig::Signature) -> diagnostic::Result<Phase> {
     let name = row
         .string("name")
         .map(str::to_string)
@@ -271,7 +271,7 @@ fn slot_names(
     op: &str,
     row: &Table,
     key: &str,
-    signature: &crate::sig::Signature,
+    signature: &spec::sig::Signature,
 ) -> diagnostic::Result<Vec<String>> {
     let Some(names) = row.string_array(key) else {
         return Ok(Vec::new());

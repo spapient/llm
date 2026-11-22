@@ -18,6 +18,8 @@ device-image = []
 [dependencies]
 dtype = { path = "../dtype", package = "llm-dtype" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
+# 声明语料的词法与签名（`tpl`/`sig`/`sch`）在契约层：本 crate 只解析，不定义语法。
+spec = { path = "../spec", package = "llm-spec" }
 
 [dev-dependencies]
 # 片段层对账用例（`device_suite!`）在独立集成测试里，以外部 `prof::` 引用本 crate；

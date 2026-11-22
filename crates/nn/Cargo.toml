@@ -20,7 +20,6 @@ diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 half = { workspace = true, features = ["num-traits"] }
 llm-spec = { path = "../spec" }
 num-traits = { workspace = true }
-op = { path = "../op", package = "llm-op" }
 prof = { path = "../prof", package = "llm-prof" }
 tensor = { path = "../tensor", package = "llm-tensor" }
 weights = { path = "../weights", package = "llm-weights" }

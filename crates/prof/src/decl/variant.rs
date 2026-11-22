@@ -1,9 +1,9 @@
 //! 变体链：`[variants]` 的解析与链路校验（数量、`order` 连续、共享比例范围）。
 use diagnostic::data::Table;
 
-use crate::sch;
-use crate::sch::Schedule;
-use prof::atom::Need;
+use spec::sch;
+use spec::sch::Schedule;
+use crate::atom::Need;
 
 use super::build::parse_need;
 use super::{MAX_VARIANTS, Variant, field};
