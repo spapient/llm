@@ -248,8 +248,8 @@ mod tests;
 
 pub mod layout {
     //! 布局：4 个构造子的闭集与声明式签名（cutile README §6）。
+    use crate::atom::invalid;
     use core::fmt;
-    use diagnostic::{Code, Error};
 
     /// 布局构造子闭集（cutile README §6.1）。`Swz`/`Pad` 只能包裹 `Row`/`Col`。
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -269,11 +269,6 @@ pub mod layout {
         },
         /// 在最后一维插入填充元素。
         Pad(u32),
-    }
-
-    /// 布局写法不合法：闭集外的取值一律是 `invalid`。
-    fn invalid(detail: impl Into<String>) -> Error {
-        Error::new(Code::Invalid, detail)
     }
 
     /// `swz<b,m,s>`：三个参数是位宽、块宽、步长，各一个 `u8`。

@@ -117,6 +117,10 @@ pub mod patch {
 #[path = "../tests/testutil.rs"]
 mod testutil;
 
+#[cfg(test)]
+#[path = "../tests/gguf_fixture.rs"]
+pub(crate) mod gguf_fixture;
+
 /// 词表段保留名（字节容器占位，不接 tokenizer）。
 pub use crate::archive::VOCAB_NAME;
 
@@ -134,7 +138,7 @@ pub use seg::Codec;
 pub use seg::Segment;
 pub use settle::{Reason, Settled, Settlement};
 pub use stored::Stored;
-pub use writer::Writer;
+pub use writer::{Config, Writer};
 
 pub use container::{
     Entry, Header, Loader, Reader, decode_entry_f32, decode_f32, load_f32, read_f32,

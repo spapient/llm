@@ -32,33 +32,62 @@ pub const MAX_ALIGN_LOG: u8 = 16;
 
 const WRITE_BUF: usize = 8 * 1024;
 
+/// 写端选项：两级 CRC 与自适应压缩，默认全开。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Config {
+    /// 两级 CRC（全局 + 段级）。
+    pub checksum: bool,
+    /// 自适应 rANS / 五轴压缩。
+    pub compress: bool,
+}
+
+impl Default for Config {
+    /// 默认开启两级 CRC 与自适应压缩。
+    fn default() -> Self {
+        Self {
+            checksum: true,
+            compress: true,
+        }
+    }
+}
+
 /// 权重写者。
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Writer {
     segs: Vec<Segment>,
-    checksum: bool,
-    compress: bool,
+    config: Config,
+}
+
+impl Default for Writer {
+    /// 与 [`Writer::new`] 同义：默认开启两级 CRC 与自适应压缩。
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Writer {
     /// 空写者，默认开启两级 CRC 与自适应压缩。
     pub fn new() -> Self {
+        Self::with(Config::default())
+    }
+
+    /// 用给定选项构造写者。
+    pub fn with(config: Config) -> Self {
         Self {
             segs: Vec::new(),
-            checksum: true,
-            compress: true,
+            config,
         }
     }
 
     /// 开关两级校验和（默认开）。
     pub fn checksum(&mut self, on: bool) -> &mut Self {
-        self.checksum = on;
+        self.config.checksum = on;
         self
     }
 
     /// 开关自适应 rANS 压缩（默认开）；关闭后所有段原样存储。
     pub fn compress(&mut self, on: bool) -> &mut Self {
-        self.compress = on;
+        self.config.compress = on;
         self
     }
 
@@ -134,7 +163,7 @@ impl Writer {
 
     /// 内联段存储表示：压缩开启时先试五轴无损选码，再退 rans 帧，都不更小则原样 `Store`。
     fn pack_inline<'a>(&self, segment: &'a Segment) -> Plan<'a> {
-        if self.compress {
+        if self.config.compress {
             if let Some(artifact) = axes_frame(segment) {
                 return Plan::Inline {
                     codec: Codec::Axes,
@@ -156,17 +185,17 @@ impl Writer {
     }
 
     fn flags(&self) -> u32 {
-        if self.checksum {
+        if self.config.checksum {
             GLOBAL_CRC | SEG_CRC
         } else {
             0
         }
     }
 
-    /// 把除全局 CRC 外的全部正文写进 `out`；位置由 [`Measured`] 精确跟踪以做对齐。
-    fn write_body(&self, out: &mut impl Sink, align_log: u8) -> Result<()> {
-        let plan = self.plan()?;
-        self.write_body_in(&plan, out, align_log)
+    /// 校验对齐并排好每段的存储表示：所有写出路径共用这一份计划，只算一次。
+    fn prepare(&self, align_log: u8) -> Result<Vec<Plan<'_>>> {
+        Self::check_align(align_log)?;
+        self.plan()
     }
 
     /// 用已算好的 `plan` 写正文；长度预演与实际写出共用同一份编码结果，避免再编一遍。
@@ -177,15 +206,14 @@ impl Writer {
         measured.put(&self.flags().to_le_bytes());
         measured.put(&[align_log]);
         leb::write(&mut measured, self.segs.len());
-        write_descs(&self.segs, plan, self.checksum, &mut measured)?;
+        write_descs(&self.segs, plan, self.config.checksum, &mut measured)?;
         write_data(plan, align_log, &mut measured);
         Ok(())
     }
 
     /// 产出容器字节；`align_log` 是对齐边界的 2 的幂指数（0..=16，常用 6 = 64 B）。
     pub fn finish(&self, align_log: u8) -> Result<Vec<u8>> {
-        Self::check_align(align_log)?;
-        let plan = self.plan()?;
+        let plan = self.prepare(align_log)?;
         let expected = self.expected_len(&plan, align_log)?;
         let mut buf = Vec::with_capacity(expected);
         self.write_sealed(&plan, align_log, &mut buf)?;
@@ -198,7 +226,11 @@ impl Writer {
         let global = {
             let mut sealed = Sealed::new(buf);
             self.write_body_in(plan, &mut sealed, align_log)?;
-            if self.checksum { sealed.checksum() } else { 0 }
+            if self.config.checksum {
+                sealed.checksum()
+            } else {
+                0
+            }
         };
         buf.extend_from_slice(&global.to_le_bytes());
         Ok(())
@@ -213,7 +245,7 @@ impl Writer {
 
     /// 整份容器的精确字节数；与 [`Writer::finish`] 走同一编码路径。
     pub fn encoded_len(&self, align_log: u8) -> Result<usize> {
-        let plan = self.plan()?;
+        let plan = self.prepare(align_log)?;
         let mut count = Count::default();
         self.write_body_in(&plan, &mut count, align_log)?;
         Ok(count.0 + 4)
@@ -221,12 +253,16 @@ impl Writer {
 
     /// 写进调用方固定缓冲，返回写入字节数；装不下时返回错误而不截断。
     pub fn encode_into(&self, align_log: u8, out: &mut [u8]) -> Result<usize> {
-        Self::check_align(align_log)?;
+        let plan = self.prepare(align_log)?;
         let mut sink = SliceSink::new(out);
         {
             let mut sealed = Sealed::new(&mut sink);
-            self.write_body(&mut sealed, align_log)?;
-            let global = if self.checksum { sealed.checksum() } else { 0 };
+            self.write_body_in(&plan, &mut sealed, align_log)?;
+            let global = if self.config.checksum {
+                sealed.checksum()
+            } else {
+                0
+            };
             sink.put(&global.to_le_bytes());
         }
         if sink.overflow() {
@@ -241,9 +277,9 @@ impl Writer {
 
     /// 原子地写到路径：同目录临时文件 → 边编码边写 → fsync → rename，崩溃不留半截文件。
     pub fn write_to_path(&self, align_log: u8, path: &Path) -> Result<()> {
-        Self::check_align(align_log)?;
+        let plan = self.prepare(align_log)?;
         let temp = temp_path(path);
-        if let Err(error) = self.write_temp(&temp, path, align_log) {
+        if let Err(error) = self.write_temp(&plan, &temp, path, align_log) {
             let _ = std::fs::remove_file(&temp);
             return Err(
                 Error::new(Code::Io, format!("写入 {} 失败：{error}", path.display()))
@@ -260,24 +296,35 @@ impl Writer {
     }
 
     /// 写临时文件、刷盘、改名为目标路径。
-    fn write_temp(&self, temp: &Path, target: &Path, align_log: u8) -> io::Result<()> {
+    fn write_temp(
+        &self,
+        plan: &[Plan<'_>],
+        temp: &Path,
+        target: &Path,
+        align_log: u8,
+    ) -> io::Result<()> {
         let file = std::fs::File::create(temp)?;
         let buffered = io::BufWriter::with_capacity(WRITE_BUF, file);
-        self.flush_sink(FileSink::new(buffered), align_log)?;
+        self.flush_sink(plan, FileSink::new(buffered), align_log)?;
         std::fs::rename(temp, target)
     }
 
     /// 边编码边写正文与全局 CRC，随后刷盘并 fsync。
     fn flush_sink(
         &self,
+        plan: &[Plan<'_>],
         mut file_sink: FileSink<io::BufWriter<std::fs::File>>,
         align_log: u8,
     ) -> io::Result<()> {
         let global = {
             let mut sealed = Sealed::new(&mut file_sink);
-            self.write_body(&mut sealed, align_log)
+            self.write_body_in(plan, &mut sealed, align_log)
                 .map_err(|error| io::Error::other(error.to_string()))?;
-            sealed.checksum()
+            if self.config.checksum {
+                sealed.checksum()
+            } else {
+                0
+            }
         };
         file_sink.put(&global.to_le_bytes());
         if let Some(error) = file_sink.error() {
@@ -285,7 +332,7 @@ impl Writer {
         }
         debug_assert_eq!(
             file_sink.written(),
-            self.encoded_len(align_log)
+            self.expected_len(plan, align_log)
                 .map_err(|error| io::Error::other(error.to_string()))?,
             "流式写出与长度承诺零漂移"
         );

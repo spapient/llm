@@ -7,6 +7,7 @@ use crate::bad;
 use diagnostic::Result;
 
 use crate::Codec;
+use crate::cursor::u32_at;
 use crate::parse::{FOOTER_LEN, fixed, layout, read_descs};
 use crate::proof::{Digest, Proof};
 use crate::stored::{Stored, lossless_entry};
@@ -48,12 +49,7 @@ impl<'a> Archive<'a> {
 
     /// 全局 CRC：开启时必须匹配，关闭时必须为 0。
     fn verify_global(&self, footer_pos: usize) -> Result<()> {
-        let stored = u32::from_le_bytes([
-            self.bytes[footer_pos],
-            self.bytes[footer_pos + 1],
-            self.bytes[footer_pos + 2],
-            self.bytes[footer_pos + 3],
-        ]);
+        let stored = u32_at(self.bytes, footer_pos)?;
         if self.flags & GLOBAL_CRC == 0 {
             if stored != 0 {
                 return Err(bad("全局 CRC 已关闭却写了非零值"));

@@ -330,7 +330,7 @@ fn unpack_q3_scales(raw: &[u8]) -> [i8; 16] {
     let tmp = aux[2];
     aux[2] = ((aux[0] >> 4) & KMASK2) | (((tmp >> 4) & KMASK1) << 4);
     aux[3] = ((aux[1] >> 4) & KMASK2) | (((tmp >> 6) & KMASK1) << 4);
-    aux[0] = (aux[0] & KMASK2) | (((tmp >> 0) & KMASK1) << 4);
+    aux[0] = (aux[0] & KMASK2) | ((tmp & KMASK1) << 4);
     aux[1] = (aux[1] & KMASK2) | (((tmp >> 2) & KMASK1) << 4);
     let mut scales = [0i8; 16];
     for (i, word) in aux.iter().enumerate() {

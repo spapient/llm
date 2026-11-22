@@ -3,6 +3,8 @@
 use crate::bad;
 use diagnostic::{Code, Error, Result};
 
+use crate::cursor::{u16_at, u32_at};
+
 use crate::seg::{Desc, DescBody, Descriptor};
 use crate::stored::{Stored, StoredInner};
 use crate::writer::{GLOBAL_CRC, MAGIC, MAX_ALIGN_LOG, SEG_CRC, VERSION};
@@ -23,13 +25,13 @@ pub(crate) fn fixed(bytes: &[u8]) -> Result<(u32, usize)> {
             bytes.len()
         )));
     }
-    let magic = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    let magic = u32_at(bytes, 0)?;
     if magic != MAGIC {
         return Err(bad(format!(
             "魔数不匹配：期望 {MAGIC:#010x}，得到 {magic:#010x}"
         )));
     }
-    check_version(u16::from_le_bytes([bytes[4], bytes[5]]))?;
+    check_version(u16_at(bytes, 4)?)?;
     flags_align(bytes)
 }
 
@@ -50,7 +52,7 @@ fn check_version(version: u16) -> Result<()> {
 
 /// 预留位必须为 0，对齐指数不得超出上限。
 fn flags_align(bytes: &[u8]) -> Result<(u32, usize)> {
-    let flags = u32::from_le_bytes([bytes[6], bytes[7], bytes[8], bytes[9]]);
+    let flags = u32_at(bytes, 6)?;
     if flags & !(GLOBAL_CRC | SEG_CRC) != 0 {
         return Err(bad("flags 含非零预留位"));
     }

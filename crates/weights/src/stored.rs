@@ -38,11 +38,28 @@ impl Stored {
         &self.desc.name
     }
 
+    /// 存储帧的取值视图（codec、绝对起点、帧长、段级 CRC）；内联与引用两种形态共用一次解构。
+    fn span(&self) -> (Codec, usize, usize, u32) {
+        match &self.inner {
+            StoredInner::Inline {
+                codec,
+                start,
+                len,
+                crc,
+            }
+            | StoredInner::Ref {
+                codec,
+                start,
+                len,
+                crc,
+                ..
+            } => (*codec, *start, *len, *crc),
+        }
+    }
+
     /// 存储编解码方式；引用段沿用代表段的 codec。
     pub fn codec(&self) -> Codec {
-        match &self.inner {
-            StoredInner::Inline { codec, .. } | StoredInner::Ref { codec, .. } => *codec,
-        }
+        self.span().0
     }
 
     /// 元素类型。
@@ -62,16 +79,12 @@ impl Stored {
 
     /// 数据起点；引用段沿用代表段的区间。
     pub fn start(&self) -> usize {
-        match &self.inner {
-            StoredInner::Inline { start, .. } | StoredInner::Ref { start, .. } => *start,
-        }
+        self.span().1
     }
 
     /// 存储字节数；引用段沿用代表段的帧长。
     pub fn len(&self) -> usize {
-        match &self.inner {
-            StoredInner::Inline { len, .. } | StoredInner::Ref { len, .. } => *len,
-        }
+        self.span().2
     }
 
     /// 是否零字节。
@@ -100,9 +113,7 @@ impl Stored {
 
     /// 段级 CRC；引用段复制自代表段，不另存校验字段。
     pub(crate) fn crc(&self) -> u32 {
-        match &self.inner {
-            StoredInner::Inline { crc, .. } | StoredInner::Ref { crc, .. } => *crc,
-        }
+        self.span().3
     }
 }
 

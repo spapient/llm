@@ -67,3 +67,65 @@ fn encode_into_rejects_small_buf() {
 
     assert!(writer.encode_into(6, &mut buf).is_err());
 }
+
+#[test]
+fn default_matches_new() {
+    let mut plain = Writer::default();
+    plain.push(seg("a", vec![1u8; 64])).expect("追加");
+
+    let mut fresh = Writer::new();
+    fresh.push(seg("a", vec![1u8; 64])).expect("追加");
+
+    assert_eq!(
+        plain.finish(6).expect("默认"),
+        fresh.finish(6).expect("新建")
+    );
+}
+
+#[test]
+fn with_config_matches_builders() {
+    let mut configured = Writer::with(Config {
+        checksum: false,
+        compress: false,
+    });
+    configured.push(seg("a", vec![1u8; 64])).expect("追加");
+
+    let mut built = Writer::new();
+    built.checksum(false).compress(false);
+    built.push(seg("a", vec![1u8; 64])).expect("追加");
+
+    assert_eq!(
+        configured.finish(6).expect("配置"),
+        built.finish(6).expect("builder")
+    );
+}
+
+#[test]
+fn encoded_len_rejects_bad_align() {
+    assert!(Writer::new().encoded_len(17).is_err());
+}
+
+#[test]
+fn write_to_path_without_checksums_round_trips() {
+    let target = std::env::temp_dir().join(format!(
+        "llm_weights_writer_{}_{}.u",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("时钟")
+            .as_nanos()
+    ));
+
+    let mut writer = Writer::with(Config {
+        checksum: false,
+        compress: false,
+    });
+    writer.push(seg("a", vec![7u8; 64])).expect("追加");
+    writer.write_to_path(6, &target).expect("落盘");
+
+    let bytes = std::fs::read(&target).expect("读回");
+    let archive = Archive::parse(&bytes).expect("校验关闭仍可解析");
+    assert_eq!(archive.segments().len(), 1);
+
+    let _ = std::fs::remove_file(&target);
+}

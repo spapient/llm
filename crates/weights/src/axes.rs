@@ -11,6 +11,7 @@ use crate::codec::{
     bytes_to_f32, decode_dict, decode_quant, decode_sparse, dict_payload, f32_bytes, pack_bytes,
     payload_cap, quant_payload, sparse_payload, unpack_bytes,
 };
+use crate::cursor::u32_at;
 use crate::rank::{decode_rank, rank_head, rank_payload};
 
 #[cfg(test)]
@@ -222,8 +223,8 @@ fn head(artifact: &[u8]) -> Result<(Axis, usize, usize)> {
         return Err(bad("artifact 头无效"));
     }
     let axis = Axis::from_code(artifact[4])?;
-    let m = u32::from_le_bytes([artifact[5], artifact[6], artifact[7], artifact[8]]) as usize;
-    let n = u32::from_le_bytes([artifact[9], artifact[10], artifact[11], artifact[12]]) as usize;
+    let m = u32_at(artifact, 5)? as usize;
+    let n = u32_at(artifact, 9)? as usize;
     m.checked_mul(n).ok_or_else(shape_overflow)?;
     Ok((axis, m, n))
 }

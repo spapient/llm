@@ -15,6 +15,7 @@
 //! 不复制算术。
 
 use crate::atom::{ActKind, DType, Epilogue};
+use crate::tpl::error;
 use diagnostic::{Error, Result};
 
 /// 一个写回步骤：闭集操作 + 它的参数。每个变体自带参数，错误状态不可表达。
@@ -200,11 +201,6 @@ fn write_scale(text: &mut String, factor: f32) {
 fn write_quant(text: &mut String, dtype: DType) {
     text.push_str("quant:");
     text.push_str(dtype.name());
-}
-
-/// 带行号的文法错误。
-fn error(line: usize, message: impl Into<String>) -> Error {
-    crate::tpl::parse::line_error(line, message)
 }
 
 #[cfg(test)]

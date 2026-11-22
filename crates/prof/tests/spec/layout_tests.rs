@@ -1,4 +1,5 @@
 use super::*;
+use diagnostic::Code;
 
 #[test]
 fn closed_set_round_trip() {

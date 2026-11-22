@@ -75,6 +75,7 @@ pub(crate) fn write_data<S: Sink>(
     align_log: u8,
     measured: &mut Measured<'_, S>,
 ) {
+    const ZEROS: [u8; 64] = [0; 64];
     let align = 1usize << align_log;
     for item in plan {
         let Plan::Inline { stored, .. } = item else {
@@ -82,9 +83,11 @@ pub(crate) fn write_data<S: Sink>(
         };
         let pos = measured.len();
         let aligned = pos.next_multiple_of(align);
-        let pad = aligned - pos;
-        if pad > 0 {
-            measured.put(&vec![0u8; pad]);
+        let mut left = aligned - pos;
+        while left > 0 {
+            let chunk = left.min(ZEROS.len());
+            measured.put(&ZEROS[..chunk]);
+            left -= chunk;
         }
         measured.put(stored);
     }

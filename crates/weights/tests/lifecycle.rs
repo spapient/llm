@@ -99,8 +99,7 @@ fn missing_base_is_full_not_garbage() {
 }
 
 // —— 格式 → 中性段流的桥接：`import::segments_from_*` 依赖本 crate 的 `Segment`，用例只能留在这里。
-#[path = "gguf_fixture.rs"]
-mod fixture;
+use crate::gguf_fixture as fixture;
 
 #[test]
 fn keeps_torch_tensors_as_neutral_segments() {

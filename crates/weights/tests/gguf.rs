@@ -1,9 +1,7 @@
 //! `gguf` 模块的单元测试。
 use super::*;
 use crate::dequant::f16_to_f32;
-
-#[path = "gguf_fixture.rs"]
-mod fixture;
+use crate::gguf_fixture as fixture;
 
 #[test]
 fn f16_to_f32_handles_subnormals_infinity_nan_and_zero() {

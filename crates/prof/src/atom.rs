@@ -5,7 +5,6 @@ use core::hash::Hash;
 use core::marker::PhantomData;
 
 pub use crate::need::{Attr, Need, Provide, Witness};
-pub use crate::span::Span;
 
 // ── vocab ──────────────────────────────────────────────────────────────
 
@@ -157,6 +156,83 @@ macro_rules! vocabulary {
         }
         impl fmt::Display for $name {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(self.as_str()) }
+        }
+    };
+}
+
+/// 声明一个闭集枚举：变体、`ALL`、名字表、`Display` 与固有 `parse` 由同一张表展开，
+/// 名字因此只有一份（与 [`vocabulary!`] 同构，多出「附加列」一臂）。
+///
+/// 变体顺序即 `ALL` 顺序、即位集下标（`idx = self as usize`）；`as_str` 按 `idx` 查同序名字表，
+/// 展开的查找与渲染都是表驱动（ccn = 1）。带附加列的形式（`ext: Cuda => ("cuda", "cu")`）
+/// 额外生成一个 `const fn ext(self) -> &'static str`，供 `Emit::ext` 这类"名字之外的列"用。
+///
+/// ```ignore
+/// closed_enum! {
+///     /// 输出语言闭集。
+///     Emit {
+///         ext: Cuda => ("cuda", "cu"), Metal => ("metal", "metal"),
+///     }
+///     Skeleton {
+///         Elementwise => "elementwise", Reduce => "reduce",
+///     }
+/// }
+/// ```
+#[macro_export]
+macro_rules! closed_enum {
+    (
+        $(#[$doc:meta])*
+        $name:ident { $extra:ident: $($variant:ident => ($text:literal, $value:literal)),* $(,)? }
+    ) => {
+        $crate::closed_enum! { $(#[$doc])* $name { $($variant => $text),* } }
+        impl $name {
+            /// 附加列取值（按闭集顺序）。
+            #[must_use]
+            pub const fn $extra(self) -> &'static str {
+                const VALUES: &[&str] = &[$($value),*];
+                // `Closed::idx` 是 trait 方法，不能出现在 `const fn` 里；闭集是 fieldless enum，
+                // 判别值就是 `ALL` 的下标，`as usize` 与 `idx()` 同值。
+                VALUES[self as usize]
+            }
+        }
+    };
+    (
+        $(#[$doc:meta])*
+        $name:ident { $($variant:ident => $text:literal),* $(,)? }
+    ) => {
+        $(#[$doc])*
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        // 变体的文档就是它的跨层名字：名字表只有一份，文档不该是第二份手抄。
+        pub enum $name { $(#[doc = $text] $variant,)* }
+
+        impl $crate::atom::Closed for $name {
+            const ALL: &'static [Self] = &[$(Self::$variant),*];
+            fn as_str(self) -> &'static str {
+                const NAMES: &[&str] = &[$($text),*];
+                NAMES[self.idx()]
+            }
+            fn idx(self) -> usize {
+                self as usize
+            }
+        }
+        impl core::fmt::Display for $name {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                f.write_str(self.as_str())
+            }
+        }
+        impl $name {
+            /// 闭集全量（见 [`crate::atom::Closed::ALL`]）。
+            pub const ALL: &'static [Self] = <Self as $crate::atom::Closed>::ALL;
+            /// 跨层名字（见 [`crate::atom::Closed::as_str`]）。
+            #[must_use]
+            pub fn as_str(self) -> &'static str {
+                <Self as $crate::atom::Closed>::as_str(self)
+            }
+            /// 按名字解析（见 [`crate::atom::Closed::parse`]）。
+            #[must_use]
+            pub fn parse(name: &str) -> Option<Self> {
+                <Self as $crate::atom::Closed>::parse(name)
+            }
         }
     };
 }
@@ -321,6 +397,108 @@ impl Grade {
     pub const fn is_verified(self) -> bool {
         matches!(self, Self::L2 | Self::L3)
     }
+}
+
+// ── span ──────────────────────────────────────────────────────────────
+
+/// 一个闭区间（含两端）。`exact(16)` 表示"只能 16"，`at_most(512)` 表示"≤ 512"。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Span {
+    lo: u32,
+    hi: u32,
+}
+impl Span {
+    /// 两端构造；四个构造口径共用的私有入口。
+    const fn new(lo: u32, hi: u32) -> Self {
+        Self { lo, hi }
+    }
+    /// 不限。
+    pub const fn any() -> Self {
+        Self::new(0, u32::MAX)
+    }
+    /// 精确值。
+    pub const fn exact(value: u32) -> Self {
+        Self::new(value, value)
+    }
+    /// 上界（下界 0）。
+    pub const fn at_most(value: u32) -> Self {
+        Self::new(0, value)
+    }
+    /// 下界（上界不限）。
+    pub const fn at_least(value: u32) -> Self {
+        Self::new(value, u32::MAX)
+    }
+    /// 区间；`lo > hi` 视为非法。
+    pub fn range(lo: u32, hi: u32) -> diagnostic::Result<Self> {
+        if lo > hi {
+            return Err(invalid(format!("区间下界 {lo} 大于上界 {hi}")));
+        }
+        Ok(Self { lo, hi })
+    }
+    /// 下界。
+    pub const fn lo(self) -> u32 {
+        self.lo
+    }
+    /// 上界。
+    pub const fn hi(self) -> u32 {
+        self.hi
+    }
+    /// 是否不限。
+    pub const fn is_any(self) -> bool {
+        self.lo == 0 && self.hi == u32::MAX
+    }
+    /// `self` 是否覆盖 `need`（区间包含）。
+    pub const fn covers(self, need: Self) -> bool {
+        self.lo <= need.lo && need.hi <= self.hi
+    }
+    /// 解析 `16`、`16..64`、`<=512`、`16..` 四种写法；越界或写法不认识时返回 `invalid`。
+    pub fn parse(text: &str) -> diagnostic::Result<Self> {
+        let text = text.trim();
+        if let Some(rest) = text.strip_prefix("<=") {
+            return parse_u32(rest).map(Self::at_most);
+        }
+        match text.split_once("..") {
+            Some((lo, hi)) => Self::parse_range(lo, hi),
+            None => parse_u32(text).map(Self::exact),
+        }
+    }
+    /// 区间写法 `lo..hi` / `lo..`（空上界表示不限）。
+    fn parse_range(lo: &str, hi: &str) -> diagnostic::Result<Self> {
+        let lo = parse_u32(lo)?;
+        if hi.trim().is_empty() {
+            return Ok(Self::at_least(lo));
+        }
+        Self::range(lo, parse_u32(hi)?)
+    }
+}
+fn parse_u32(text: &str) -> diagnostic::Result<u32> {
+    text.trim()
+        .parse::<u32>()
+        .map_err(|_| invalid(format!("`{}` 不是合法的非负整数", text.trim())))
+}
+impl fmt::Display for Span {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.is_any() {
+            return f.write_str("*");
+        }
+        if self.lo == self.hi {
+            return write!(f, "{}", self.lo);
+        }
+        if self.lo == 0 {
+            return write!(f, "<={}", self.hi);
+        }
+        if self.hi == u32::MAX {
+            return write!(f, "{}..", self.lo);
+        }
+        write!(f, "{}..{}", self.lo, self.hi)
+    }
+}
+
+/// 词汇层唯一的 `invalid` 构造点：闭集外取值、写法不合法、区间颠倒都从这里出门。
+///
+/// 收在一处是为了让"词汇层报错"只有一个口径（类别固定 `Invalid`），各模块不再各写一遍。
+pub(crate) fn invalid(detail: impl Into<String>) -> diagnostic::Error {
+    diagnostic::Error::new(diagnostic::Code::Invalid, detail)
 }
 
 // ── attr ──────────────────────────────────────────────────────────────

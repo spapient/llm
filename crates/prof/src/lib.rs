@@ -54,8 +54,6 @@
 
 #![deny(unsafe_code)]
 
-mod annotate;
-
 // ---- 词汇层：算子契约 ---------------------------------------------------------
 //
 // [`atom`] 是唯一的词汇表：原语闭集、存储位、数据类型、属性键、证据等级，以及需求/供给的
@@ -77,7 +75,6 @@ pub mod operator;
 pub mod sample;
 pub mod sch;
 pub mod sig;
-pub mod span;
 pub mod tpl;
 
 pub use model::quant;
@@ -100,9 +97,9 @@ pub mod stems {
 
 pub use atom::Prim;
 pub use device::{
-    Builtin, Device, Image, Status, builtin, builtin_witness, device, devices, dir_of,
+    Builtin, Device, Fragment, FragmentSet, Image, Layout, SIGN_MARKER, Status, WITNESS_STEM,
+    builtin, builtin_witness, device, devices, dir_of, layer_root, load,
 };
-pub use fragment::{Fragment, FragmentSet, Layout, SIGN_MARKER, WITNESS_STEM, layer_root, load};
 
 /// 构建期生成的档案表（`build.rs` 读 `src/<vendor>/<vendor>.toml` 展开成 `Table` 字面量）。
 #[allow(clippy::all, missing_docs)]
@@ -117,11 +114,7 @@ include!(concat!(env!("OUT_DIR"), "/tables.rs"));
 
 pub use generated::{embedded, names};
 
-mod fragment;
-
-mod eval;
 mod schema;
-mod witness;
 
 pub mod decl;
 #[cfg(test)]

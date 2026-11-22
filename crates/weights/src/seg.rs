@@ -192,13 +192,7 @@ impl Segment {
         out.put(&[FORM_INLINE]);
         self.encode_head(out)?;
         out.put(&[codec.code()]);
-        match &self.desc.quant {
-            None => out.put(&[0]),
-            Some(quant) => {
-                out.put(&[1]);
-                quant.encode(out, self.desc.shape.len() as u32)?;
-            }
-        }
+        self.encode_quant(out)?;
         leb::write(out, stored_len);
         leb::write(out, seg_crc);
         Ok(())
@@ -208,6 +202,13 @@ impl Segment {
     pub(crate) fn encode_ref_desc(&self, out: &mut impl Sink, rep: u32) -> Result<()> {
         out.put(&[FORM_REF]);
         self.encode_head(out)?;
+        self.encode_quant(out)?;
+        leb::write(out, rep);
+        Ok(())
+    }
+
+    /// 量化方案编码：存在标志后接方案本身；内联与引用两种描述符共用这一份。
+    fn encode_quant(&self, out: &mut impl Sink) -> Result<()> {
         match &self.desc.quant {
             None => out.put(&[0]),
             Some(quant) => {
@@ -215,7 +216,6 @@ impl Segment {
                 quant.encode(out, self.desc.shape.len() as u32)?;
             }
         }
-        leb::write(out, rep);
         Ok(())
     }
 

@@ -225,7 +225,10 @@ fn classify(
 fn partition<'a>(
     header: &'a Header,
     scales: &[&str],
-) -> (BTreeMap<&'a str, (usize, Vec<&'a Entry>)>, Vec<(usize, &'a Entry)>) {
+) -> (
+    BTreeMap<&'a str, (usize, Vec<&'a Entry>)>,
+    Vec<(usize, &'a Entry)>,
+) {
     let mut groups: BTreeMap<&str, (usize, Vec<&Entry>)> = BTreeMap::new();
     let mut rest: Vec<(usize, &Entry)> = Vec::new();
     for (at, entry) in header.entries().iter().enumerate() {
@@ -251,13 +254,15 @@ fn layers_of(
 ) -> Vec<(usize, Box<dyn Contract>)> {
     groups
         .into_iter()
-        .filter_map(|(block, (at, group))| match recurrent_layer(block, &group) {
-            Some(layer) => Some((at, Box::new(layer) as Box<dyn Contract>)),
-            None => {
-                uncovered.extend(group.iter().map(|entry| entry.name().to_string()));
-                None
-            }
-        })
+        .filter_map(
+            |(block, (at, group))| match recurrent_layer(block, &group) {
+                Some(layer) => Some((at, Box::new(layer) as Box<dyn Contract>)),
+                None => {
+                    uncovered.extend(group.iter().map(|entry| entry.name().to_string()));
+                    None
+                }
+            },
+        )
         .collect()
 }
 
@@ -334,11 +339,7 @@ fn build_layer(block: &str, entries: &[&Entry]) -> Option<Recurrent> {
 }
 
 /// 某一件某层某方向的二维形状；缺这一件或不是二维就返回 `None`。
-fn matrix_of(
-    block: &str,
-    entries: &[&Entry],
-    tensor: RecurrentTensor,
-) -> Option<(usize, usize)> {
+fn matrix_of(block: &str, entries: &[&Entry], tensor: RecurrentTensor) -> Option<(usize, usize)> {
     match shape_of(block, entries, tensor, 0, 0)?.as_slice() {
         [rows, cols] => Some((*rows, *cols)),
         _ => None,
@@ -354,9 +355,9 @@ fn shape_of(
     dir: usize,
 ) -> Option<Vec<usize>> {
     entries.iter().find_map(|entry| {
-        let (prefix, kind, at, side) = recurrent_parts(entry.name())?;
-        (prefix == block && kind == tensor && at == level && side == dir)
-            .then(|| entry.shape().dims().to_vec())
+        let found = recurrent_parts(entry.name())?;
+        // 四元组一次比完：层名、件、层号、方向，少一个都算别的条目。
+        (found == (block, tensor, level, dir)).then(|| entry.shape().dims().to_vec())
     })
 }
 
@@ -382,9 +383,9 @@ fn extent_of(block: &str, entries: &[&Entry]) -> (usize, usize) {
 fn recovered(block: &str, entries: &[&Entry]) -> Vec<(String, Shape)> {
     entries
         .iter()
-        .filter(|entry| {
-            matches!(recurrent_parts(entry.name()), Some((prefix, ..)) if prefix == block)
-        })
+        .filter(
+            |entry| matches!(recurrent_parts(entry.name()), Some((prefix, ..)) if prefix == block),
+        )
         .map(|entry| (entry.name().to_string(), entry.shape().clone()))
         .collect()
 }

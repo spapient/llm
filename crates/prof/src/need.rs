@@ -1,7 +1,6 @@
 //! 职责：属性键取值集合：需求方被供给方覆盖。
 
 use crate::atom::*;
-use crate::span::Span;
 
 /// 一个属性键上的取值集合；协商要求"需求方的取值全部被供给方覆盖"。
 #[derive(Debug, Clone, PartialEq, Eq)]

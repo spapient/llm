@@ -6,6 +6,27 @@ fn topology() -> Topology {
     Topology::new(2, 1, 2).expect("tp 2 · dp 2")
 }
 
+/// 两个 rank 各载入一段输入的 TP 2 局：返回局与唯一组。
+fn loaded_local(a: [f32; 2], b: [f32; 2]) -> (Local, Group) {
+    let topology = Topology::new(2, 1, 1).expect("tp 2");
+    let mut local = Local::new(topology, 2).expect("宽度非零");
+    local.load(0, &a).expect("rank 0");
+    local.load(1, &b).expect("rank 1");
+    let group = topology.group(Parallel::Tensor, 0).expect("唯一一组");
+    (local, group)
+}
+
+/// 两个 rank 的文件远端：共享一份以 `stem` 命名的临时文件，各载入一段输入。
+fn file_remotes(stem: &str) -> (std::path::PathBuf, FileRemote, Group) {
+    let backing = std::env::temp_dir().join(format!("{stem}{}", std::process::id()));
+    let mut r0 = FileRemote::open(0, 2, 2, &backing).expect("rank 0");
+    let mut r1 = FileRemote::open(1, 2, 2, &backing).expect("rank 1");
+    r0.load(0, &[5.0, 6.0]).expect("rank 0");
+    r1.load(1, &[7.0, 8.0]).expect("rank 1");
+    let group = Group::new([0, 1]).expect("双进程组");
+    (backing, r0, group)
+}
+
 #[test]
 fn a_group_must_be_sorted_and_unique() {
     let group = Group::new([0, 2, 4]).expect("升序");
@@ -320,11 +341,7 @@ fn file_remote_refuses_out_of_world_and_width_mismatch() {
 /// 全部收集按组内顺序拼接：每个 rank 的镜像写进自己那一分块，不是按调用顺序。
 #[test]
 fn all_gather_concatenates_the_group_in_order() {
-    let topology = Topology::new(2, 1, 1).expect("tp 2");
-    let mut local = Local::new(topology, 2).expect("宽度非零");
-    local.load(0, &[1.0, 2.0]).expect("rank 0");
-    local.load(1, &[3.0, 4.0]).expect("rank 1");
-    let group = topology.group(Parallel::Tensor, 0).expect("唯一一组");
+    let (mut local, group) = loaded_local([1.0, 2.0], [3.0, 4.0]);
     let mut buf = [0.0; 4];
     local.all_gather(&group, &mut buf).expect("收集");
     assert_eq!(buf, [1.0, 2.0, 3.0, 4.0], "按组内 rank 顺序拼接");
@@ -359,12 +376,7 @@ fn broadcast_copies_the_source_rank() {
 /// 文件后端同样支持收集与广播：槽位是跨进程共享的，语义与 [`Local`] 同构。
 #[test]
 fn file_remote_all_gathers_and_broadcasts() {
-    let backing = std::env::temp_dir().join(format!("shard-collective-ops-{}", std::process::id()));
-    let mut r0 = FileRemote::open(0, 2, 2, &backing).expect("rank 0");
-    let r1 = FileRemote::open(1, 2, 2, &backing).expect("rank 1");
-    r0.load(0, &[5.0, 6.0]).expect("rank 0");
-    r1.load(1, &[7.0, 8.0]).expect("rank 1");
-    let group = Group::new([0, 1]).expect("双进程组");
+    let (backing, mut r0, group) = file_remotes("shard-collective-ops-");
     let mut gathered = [0.0; 4];
     r0.all_gather(&group, &mut gathered).expect("收集");
     assert_eq!(gathered, [5.0, 6.0, 7.0, 8.0]);
@@ -402,11 +414,7 @@ fn the_placeholder_rejects_gather_and_broadcast() {
 /// 归约散布：每个 rank 的分片按组内顺序用 `reduce` 折进对应分块；分块不相交时退化为收集。
 #[test]
 fn reduce_scatter_folds_each_shard_into_its_chunk() {
-    let topology = Topology::new(2, 1, 1).expect("tp 2");
-    let mut local = Local::new(topology, 2).expect("宽度非零");
-    local.load(0, &[1.0, 2.0]).expect("rank 0");
-    local.load(1, &[3.0, 4.0]).expect("rank 1");
-    let group = topology.group(Parallel::Tensor, 0).expect("唯一一组");
+    let (mut local, group) = loaded_local([1.0, 2.0], [3.0, 4.0]);
     let mut buf = [0.0; 4];
     local
         .reduce_scatter(&group, Reduce::Sum, &mut buf)
@@ -425,12 +433,7 @@ fn reduce_scatter_folds_each_shard_into_its_chunk() {
 /// 文件后端的归约散布与 [`Local`] 同构：槽位是跨进程共享的，折进顺序由组决定。
 #[test]
 fn file_remote_reduce_scatters() {
-    let backing = std::env::temp_dir().join(format!("shard-collective-rs-{}", std::process::id()));
-    let mut r0 = FileRemote::open(0, 2, 2, &backing).expect("rank 0");
-    let r1 = FileRemote::open(1, 2, 2, &backing).expect("rank 1");
-    r0.load(0, &[5.0, 6.0]).expect("rank 0");
-    r1.load(1, &[7.0, 8.0]).expect("rank 1");
-    let group = Group::new([0, 1]).expect("双进程组");
+    let (backing, mut r0, group) = file_remotes("shard-collective-rs-");
     let mut buf = [0.0; 4];
     r0.reduce_scatter(&group, Reduce::Sum, &mut buf)
         .expect("归约散布");

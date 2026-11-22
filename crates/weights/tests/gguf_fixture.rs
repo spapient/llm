@@ -1,6 +1,6 @@
 //! 职责：GGUF 字节夹具——**独立写字节，不引用被测常量**，所以它同时是格式的对照口径。
 //!
-//! `weights` 的导入桥接用例（`tests/import_bridge.rs`）以跨 crate `#[path]` 复用本文件，
+//! `gguf` 与 `lifecycle` 两组用例经 crate 根的单点 `#[path]` 挂载（`crate::gguf_fixture`）共享本文件，
 //! 于是"标量导入 / 块量化显式失败"两条判据只有一份夹具。
 const MAGIC: [u8; 4] = *b"GGUF";
 
