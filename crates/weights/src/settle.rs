@@ -22,68 +22,41 @@ pub const GAIN_FLOOR: f64 = 0.02;
 /// 逻辑字节的熵达到这个值（bit/byte）即视为没有冗余（`incompressible`）。
 pub const MAX_ENTROPY: f64 = 7.9;
 
-/// `codec_reason` 闭集：**为什么**这一条占了现在这些字节。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(u8)]
-pub enum Reason {
-    /// `store` 帧，且内容有冗余但没压——写侧没开压缩。
-    Raw = 0,
-    /// `rans` 帧，且省下超过 [`GAIN_FLOOR`]。
-    Rans = 1,
-    /// `rans` 帧，但省下的不足以抵一次重编码的代价。
-    BelowGain = 2,
-    /// `store` 帧，熵已到 [`MAX_ENTROPY`]：内容真的没有冗余。
-    Incompressible = 3,
-    /// 段本身小于 [`SMALL_BYTES`]：编码的固定开销比省下的多。
-    Small = 4,
-    /// 解码往返不是逐位：压缩形态没能还原，必须拒绝。
-    Mismatch = 5,
-    /// 五轴无损选码帧（本容器特有形态）。
-    Axes = 6,
-    /// 去重引用：字节存在代表段里，本条目自身零字节。
-    Deduplicated = 7,
-}
-
-/// 原因码的规范短名，下标即判别值：这是账本格式的一部分，不是排版选择。
-const NAMES: [&str; 8] = [
-    "raw",
-    "rans",
-    "below_gain",
-    "incompressible",
-    "passthrough:small",
-    "fallback:mismatch",
-    "axes",
-    "deduplicated",
-];
-
-impl Reason {
-    /// 账本里的字符串写法（闭集，码位稳定）。
-    pub const fn as_str(self) -> &'static str {
-        NAMES[self as usize]
+named_enum! {
+    /// `codec_reason` 闭集：**为什么**这一条占了现在这些字节。
+    pub enum Reason {
+        /// `store` 帧，且内容有冗余但没压——写侧没开压缩。
+        Raw = 0 => "raw",
+        /// `rans` 帧，且省下超过 [`GAIN_FLOOR`]。
+        Rans = 1 => "rans",
+        /// `rans` 帧，但省下的不足以抵一次重编码的代价。
+        BelowGain = 2 => "below_gain",
+        /// `store` 帧，熵已到 [`MAX_ENTROPY`]：内容真的没有冗余。
+        Incompressible = 3 => "incompressible",
+        /// 段本身小于 [`SMALL_BYTES`]：编码的固定开销比省下的多。
+        Small = 4 => "passthrough:small",
+        /// 解码往返不是逐位：压缩形态没能还原，必须拒绝。
+        Mismatch = 5 => "fallback:mismatch",
+        /// 五轴无损选码帧（本容器特有形态）。
+        Axes = 6 => "axes",
+        /// 去重引用：字节存在代表段里，本条目自身零字节。
+        Deduplicated = 7 => "deduplicated",
     }
 }
 
-/// 证书列：这条量的压缩有没有一张自洽的证书背书（LLD §4.7 的账本要说清「凭什么这么压」）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(u8)]
-pub enum Cert {
-    /// 不是秩轴段：这条量没经过谱隙证书，其余轴本来就不签发。
-    None = 0,
-    /// 秩轴段且证书自洽：界是 L0 诊断、`ε` 来自实测残差，不变式全部通过。
-    Diagnostic = 1,
-    /// 秩轴段却读不出自洽证书：自称压了但背书缺失或自相矛盾。
-    Refused = 2,
+named_enum! {
+    /// 证书列：这条量的压缩有没有一张自洽的证书背书（LLD §4.7 的账本要说清「凭什么这么压」）。
+    pub enum Cert {
+        /// 不是秩轴段：这条量没经过谱隙证书，其余轴本来就不签发。
+        None = 0 => "none",
+        /// 秩轴段且证书自洽：界是 L0 诊断、`ε` 来自实测残差，不变式全部通过。
+        Diagnostic = 1 => "l0_diagnostic",
+        /// 秩轴段却读不出自洽证书：自称压了但背书缺失或自相矛盾。
+        Refused = 2 => "refused",
+    }
 }
-
-/// 证书列的规范短名，下标即判别值。
-const CERT_NAMES: [&str; 3] = ["none", "l0_diagnostic", "refused"];
 
 impl Cert {
-    /// 账本里的字符串写法（闭集，码位稳定）。
-    pub const fn as_str(self) -> &'static str {
-        CERT_NAMES[self as usize]
-    }
-
     /// 是否构成拒压：证书不是装饰，矛盾就退回原样。
     pub const fn refused(self) -> bool {
         matches!(self, Self::Refused)

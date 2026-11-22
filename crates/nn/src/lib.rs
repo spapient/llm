@@ -169,7 +169,8 @@ pub mod registry;
 /// 归一化**层**（契约登记）与空间层同居 `spatial`，`nn::kernel::norm` 才是它调用的**核**，
 /// 同名不同物，靠命名空间区分而不是改名。
 pub use kernel::{
-    activation, dequant, elementwise, epilogue, fast, gemm, gemv, matmul, reduce, scalar, unary,
+    dequant, elementwise, embed, epilogue, fast, gemm, gemv, matmul, reduce, rmsnorm, rope, scalar,
+    softmax, unary,
 };
 
 /// 卷积族模块按原路径转出：`nn::layer_norm` / `nn::adaptive_pool` / `nn::scan_f32` …

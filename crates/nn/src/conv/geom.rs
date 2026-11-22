@@ -6,7 +6,7 @@ use crate::kernel::fast;
 use super::support::*;
 
 /// 卷积几何参数：核、步长、补零。1d 层把 `kh`/`sh` 固定为 1 以复用 2d 的展开。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ConvGeom {
     /// 卷积核高（1d 恒为 1）。
     pub kh: usize,
@@ -60,7 +60,7 @@ impl ConvGeom {
 }
 
 /// 一维卷积：输入 `[n, l, cin]`、权重 `[kw, cin, cout]`、输出 `[n, ol, cout]`。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Conv1d {
     /// 输入/输出通道与核宽、步长、补零。
     pub cin: usize,
@@ -135,7 +135,7 @@ impl Conv1d {
 }
 
 /// 二维卷积：输入 `[n, h, w, cin]`、权重 `[kh, kw, cin, cout]`、输出 `[n, oh, ow, cout]`。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Conv2d {
     /// 输入通道。
     pub cin: usize,

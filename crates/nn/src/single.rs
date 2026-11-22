@@ -9,63 +9,73 @@ use diagnostic::{Code, Error, Result};
 use crate::axis;
 use crate::{Bounds, BoundsResult, Contract, ContractSpec, ParamRole, Shape, spec_accessors};
 
-/// 单轴层清单：一行一层——`类型, 算子名[, 参数角色]`，逐条带文档，展开后交给 [`axis!`]。
-///
-/// 这些层原本是十九个四行块：`axis!(`、文档、类型、算子名、`);`。块里真正有信息量的只有
-/// 「类型 / 算子 / 角色」三列，其余逐字相同；放进一张表之后，新增一层与增一行同宽，读的人
-/// 也不必逐块跳过样板才知道差异在哪。角色省略即 `Trainable`（由 [`axis!`] 的默认臂决定）。
-macro_rules! axis_table {
-    ($($(#[$doc:meta])* $ty:ident, $op:literal $(, $role:ident)?;)*) => {
-        $(
-            axis!($(#[$doc])* $ty, $op $(, $role)?);
-        )*
-    };
-}
-
-axis_table! {
+// 单轴层清单：一层三行——`axis!(`、文档、`类型, 算子名[, 参数角色]);`。
+//
+// 这十九层原本是四行块（`);` 单独占一行），块里真正有信息量的只有「类型 / 算子 / 角色」三列，
+// 其余逐字相同；把结尾的 `);` 收上来到参数行之后，一层就是三行、差异一眼可见。文档留在括号里
+// （宏的 `$(#[$meta])*` 会把它挂到展开出的结构体上），而不是写在调用点外——写在外面 rustdoc
+// 不认。角色省略即 `Trainable`（由 `axis!` 的默认臂决定）。
+axis!(
     /// RMSNorm 归一化：`y = γ · x / sqrt(mean(x²) + ε)`，沿最后一维 `len` 归一化。
-    RmsNorm, "rmsnorm_f32", Norm;
+    RmsNorm, "rmsnorm_f32", Norm);
+axis!(
     /// Softmax：沿最后一维 `len` 做数值稳定的归一化（减最大值后取指数再除和）。
-    Softmax, "softmax_f32";
+    Softmax, "softmax_f32");
+axis!(
     /// GELU 激活（精确 erf 版）：逐元素 `0.5·x·(1 + erf(x/√2))`。
-    Gelu, "gelu_f32";
+    Gelu, "gelu_f32");
+axis!(
     /// SiLU / Swish 激活：逐元素 `x · sigmoid(x)`。
-    Silu, "silu_f32";
+    Silu, "silu_f32");
+axis!(
     /// 逐元素指数：`y = exp(a)`。
-    Exp, "exp_f32";
+    Exp, "exp_f32");
+axis!(
     /// 逐元素自然对数：`y = ln(a)`。定义域由算子语义表负责（层不替内核判值域）。
-    Log, "log_f32";
+    Log, "log_f32");
+axis!(
     /// LeakyReLU 激活：`y = x`（非负）或 `0.01·x`（负区）。
-    LeakyRelu, "leaky_relu_f32";
+    LeakyRelu, "leaky_relu_f32");
+axis!(
     /// HardSigmoid 激活：`y = clamp(x/6 + 0.5, 0, 1)`。
-    HardSigmoid, "hard_sigmoid_f32";
+    HardSigmoid, "hard_sigmoid_f32");
+axis!(
     /// Sigmoid 激活：`y = 1 / (1 + exp(-x))`，输出落在 `(0, 1)`。
-    Sigmoid, "sigmoid_f32";
+    Sigmoid, "sigmoid_f32");
+axis!(
     /// Tanh 激活：`y = tanh(x)`，输出落在 `(-1, 1)`。
-    Tanh, "tanh_f32";
+    Tanh, "tanh_f32");
+axis!(
     /// ReLU 激活：`y = max(x, 0)`。
-    Relu, "relu_f32";
+    Relu, "relu_f32");
+axis!(
     /// RoPE 旋转位置编码：成对分量按位置做二维旋转；`len` 为头宽，奇数末尾原样透传。
-    Rope, "rope_f32";
+    Rope, "rope_f32");
+axis!(
     /// 标量缩放：逐元素 `α · x`，系数由算子样本固定。
-    Scale, "scale_f32";
+    Scale, "scale_f32");
+axis!(
     /// 逐元素加法：`y = a + b`，两路输入等长 `len`。
-    Add, "add_f32";
+    Add, "add_f32");
+axis!(
     /// 逐元素乘法：`y = a · b`，两路输入等长 `len`。
-    Mul, "mul_f32";
+    Mul, "mul_f32");
+axis!(
     /// 逐元素减法：`y = a - b`，两路输入等长 `len`。
-    Sub, "sub_f32";
+    Sub, "sub_f32");
+axis!(
     /// 逐元素除法：`y = a / b`，两路输入等长 `len`；除零语义归算子，层不越权改写。
-    Div, "div_f32";
+    Div, "div_f32");
+axis!(
     /// 逐元素取大：`y = max(a, b)`。
-    Max, "max_f32";
+    Max, "max_f32");
+axis!(
     /// 逐元素取小：`y = min(a, b)`。
-    Min, "min_f32";
-}
+    Min, "min_f32");
 
 /// 嵌入查表层。
 #[crate::spec(name = $name, out = [$tokens, $dim], ops = [$op], role = $role)]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Embedding {
     vocab: usize,
     dim: usize,
@@ -123,7 +133,7 @@ impl Contract for Embedding {
 /// 矩阵乘在算子表里按 `K` 分成两档：`gemm_*` 用 8，`matmul_*` 用 4096（prefill 主链路代表值）。
 /// 两档的下界相差 512 倍，所以档位必须由层**声明**——拿小档的算子给大档的层计价，
 /// 报出来的就是一条偏小 512 倍的下界。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Gauge {
     /// `K = 8`：小收缩轴（逐 token 的投影级矩阵乘）。
     Short,
@@ -137,7 +147,7 @@ pub enum Gauge {
 /// `gemv_*` 声明了 `needs.quant.group`（每 `group` 个元素配一个标度），`gemm_*` / `matmul_*`
 /// 没有这条声明。分组是投影侧的口径，矩阵乘侧只按精度选内核，所以这里是另一条轴，而不是
 /// 把 `WeightFormat` 的 `group` 字段勉强塞进来。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Precision {
     /// 稠密 32 位浮点。
     F32,
@@ -209,7 +219,7 @@ axis!(
 );
 
 /// 矩阵乘层：结果形状 `[rows, cols]`；收缩轴档位与元素精度共同决定用哪个算子。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MatMul {
     spec: ContractSpec,
     rows: usize,

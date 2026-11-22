@@ -6,7 +6,7 @@ use crate::Scalar;
 use super::support::*;
 
 /// 插值取样方式：最近邻（`align_corners=False` 的 floor 口径）或双线性。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Sampler {
     /// 取左上角样本，源坐标 `floor(i·h/oh)`。
     Nearest,
@@ -15,7 +15,7 @@ pub enum Sampler {
 }
 
 /// 二维上/下采样，NHWC。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Interpolate {
     /// 取样方式。
     pub sampler: Sampler,

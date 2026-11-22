@@ -211,3 +211,55 @@ fn short_names_match_the_variants() {
     assert_eq!(ParamRole::Norm.as_str(), "norm");
     assert_eq!(ParamRole::Embedding.as_str(), "embedding");
 }
+
+/// 运行期配置化层：算子名、长度与角色都是构造参数，而契约面必须与编译期类型层逐字一致。
+///
+/// 这不是"两条实现看起来差不多"，而是同一个 `AxisCore` 的两种入口：配置化若与类型化
+/// 有任何一处口径不同（算子、角色、输出形状、下界），装配侧就会按配置拼出一份「和类型层
+/// 说的不一样」的模型，而它看起来完全合法。
+#[test]
+fn a_configured_layer_declares_like_its_compiled_counterpart() {
+    let configured = OpLayer::new("blk.0.norm", RmsNorm::OP, 128, ParamRole::Norm).expect("合法");
+    let compiled = RmsNorm::new("blk.0.norm", 128).expect("合法");
+
+    assert_eq!(configured.name(), compiled.name());
+    assert_eq!(configured.output().dims(), compiled.output().dims());
+    assert_eq!(configured.spca(), compiled.spca());
+    assert_eq!(
+        configured.bounds().expect("合法"),
+        compiled.bounds().expect("合法")
+    );
+    assert_eq!(configured.op(), RmsNorm::OP);
+    assert_eq!(configured.len(), 128);
+    assert!(!configured.is_empty());
+}
+
+/// 配置化层拒绝零长度：与 `axis!` 生成的层同一条构造期判据。
+#[test]
+fn a_configured_layer_rejects_a_zero_length() {
+    let error = OpLayer::new("n", RmsNorm::OP, 0, ParamRole::Norm).expect_err("零长度");
+    assert_eq!(error.code(), Code::Invalid);
+}
+
+/// `Hash` 让层直接当配置表的键：同一份声明落到同一个桶，不同权重编码不合并。
+///
+/// 键相等必须与层相等同义——`Linear` 的 `format` 进 `PartialEq` 也进 `Hash`，否则
+/// int4 与 int8 两个只差编码的层会在表里互相顶掉。
+#[test]
+fn layers_are_usable_as_map_keys() {
+    use std::collections::HashMap;
+
+    let mut linear: HashMap<Linear, &str> = HashMap::new();
+    let int4 = Linear::new("blk.0.q", 8, 4).expect("合法");
+    let i8 = Linear::with_format("blk.0.q", WeightFormat::INT8, 8, 4).expect("合法");
+    linear.insert(int4.clone(), "int4");
+    linear.insert(i8.clone(), "int8");
+    assert_eq!(linear.get(&int4), Some(&"int4"));
+    assert_eq!(linear.get(&i8), Some(&"int8"));
+    assert_eq!(linear.len(), 2, "编码不同就是不同的键");
+
+    let mut configured: HashMap<OpLayer, usize> = HashMap::new();
+    let layer = OpLayer::new("n", RmsNorm::OP, 128, ParamRole::Norm).expect("合法");
+    configured.insert(layer.clone(), 1);
+    assert_eq!(configured.get(&layer), Some(&1));
+}

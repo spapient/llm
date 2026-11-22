@@ -3,7 +3,6 @@
 use crate::model::{AxisRole, AxisSpec, Buf, Cost, Sample, ShapeCtx, Values};
 use diagnostic::{Code, Error};
 
-pub mod tiled;
 /// 两条基本轴：序列轴 `s`、头宽轴 `d`，都既是输入也是输出。
 pub const AXES: &[AxisSpec] = &[
     AxisSpec {
@@ -270,7 +269,6 @@ pub use decode::{
 };
 pub use latent::{LatentAttention, LatentAttentionF32, forward as latent_forward};
 
-pub(crate) use decode::check_decode_len;
 use decode::decode;
 
 // 语义表对外的名字保持 `attention::decode_attention`（`nn::conv::decode_attention` 由 lib.rs 再导出）。

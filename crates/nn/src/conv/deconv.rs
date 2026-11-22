@@ -36,7 +36,7 @@ impl DeconvScalar for i8 {
 }
 
 /// 二维转置卷积：输入 `[n,h,w,cin]`，权重 `[cin,cout,kh,kw]`，输出 `[n,oh,ow,cout]`。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ConvTranspose2d {
     /// 输入通道。
     pub cin: usize,
@@ -182,7 +182,7 @@ fn scatter<T: Copy + AddAssign>(
 }
 
 /// 一维反卷积：NHWC，权重布局对齐 PyTorch `[Cin, Cout, k]`。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ConvTranspose1d {
     /// 输入通道。
     pub cin: usize,

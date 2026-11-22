@@ -27,23 +27,11 @@ closed_enum! {
     pub enum EpsMethod {
         /// 已验证的反向误差界。本仓不产出此值——`ε_mach·σ_1` 不是无条件界，而真正可证的向后误差
         /// 界还没有落地，留码位是为了读端能认出别人签的那种证书。
-        Backward = 0,
+        Backward = 0 => "verified_backward_error",
         /// 已验证残差：本次分解的后验 `‖A − UΣVᵀ‖_F`，[`certify`] 用的就是这条。
-        Residual = 1,
+        Residual = 1 => "verified_residual",
         /// 只够做候选筛查（幂迭代等）：**不能**支撑证书，见 [`check`]。
-        Candidate = 2,
-    }
-}
-
-impl EpsMethod {
-    /// 账本里的字符串写法（闭集，码位稳定）。
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Backward => "verified_backward_error",
-            Self::Residual => "verified_residual",
-            Self::Candidate => "candidate_only",
-        }
+        Candidate = 2 => "candidate_only",
     }
 }
 
@@ -51,23 +39,11 @@ closed_enum! {
     /// 这张证书用的是哪种界（§4.3.1 / §4.7 的 `bound_type`）。
     pub enum Bound {
         /// L0 诊断界：只回答「秩可不可判」，[`certify`] 产出的就是这个。
-        Diagnostic = 0,
+        Diagnostic = 0 => "l0_diagnostic",
         /// L0' 候选界：研究口径，只能当候选，不当证书。
-        Candidate = 1,
+        Candidate = 1 => "l0prime_candidate_open",
         /// 未声明界：只在没有使用秩选择时允许。
-        None = 2,
-    }
-}
-
-impl Bound {
-    /// 账本里的字符串写法（闭集，码位稳定）。
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Diagnostic => "l0_diagnostic",
-            Self::Candidate => "l0prime_candidate_open",
-            Self::None => "none",
-        }
+        None = 2 => "none",
     }
 }
 

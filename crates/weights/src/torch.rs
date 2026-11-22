@@ -11,7 +11,7 @@ use diagnostic::Result;
 use dtype::DType;
 use wire::{bad, or_bad};
 
-use crate::cursor::{slice, u16_at, u32_at, u64_at, Cursor};
+use crate::cursor::{Cursor, slice, u16_at, u32_at, u64_at};
 
 /// 张量目录条目：名字、元素类型、形状，加存储区在归档内的字节区间。
 #[derive(Debug, Clone)]
@@ -84,7 +84,6 @@ impl<'a> Checkpoint<'a> {
         slice(storage, tensor.offset, tensor.len)
     }
 }
-
 
 // —— pickle 虚拟机（原 `pickle`，与门面互为引用，平铺后消除环）——
 //

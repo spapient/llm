@@ -215,28 +215,17 @@ impl Bracket {
     }
 }
 
-/// 网络级四态判定（闭集，码位与短名稳定）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Ruling {
-    /// 所有段 `ε = 0`、无移出段、artifact 往返逐位：可以签发整网无损证书。
-    Lossless,
-    /// 所有段 `ε = 0` 且往返逐位，但有段在 L3 之外：只能签发"适用段无损"。
-    Partial,
-    /// 所有段 `ε = 0`，但缺 artifact 往返证据：上界为零不算还原。
-    Unverified,
-    /// 有非零分项：本次压缩有损，按 §4.5 拒绝并回退到无损路径。
-    Refuse,
-}
-
-impl Ruling {
-    /// 账本里的字符串写法（闭集，码位稳定）。
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Lossless => "lossless",
-            Self::Partial => "partial",
-            Self::Unverified => "unverified",
-            Self::Refuse => "refuse",
-        }
+named_enum! {
+    /// 网络级四态判定（闭集，码位与短名稳定）。
+    pub enum Ruling {
+        /// 所有段 `ε = 0`、无移出段、artifact 往返逐位：可以签发整网无损证书。
+        Lossless = 0 => "lossless",
+        /// 所有段 `ε = 0` 且往返逐位，但有段在 L3 之外：只能签发"适用段无损"。
+        Partial = 1 => "partial",
+        /// 所有段 `ε = 0`，但缺 artifact 往返证据：上界为零不算还原。
+        Unverified = 2 => "unverified",
+        /// 有非零分项：本次压缩有损，按 §4.5 拒绝并回退到无损路径。
+        Refuse = 3 => "refuse",
     }
 }
 

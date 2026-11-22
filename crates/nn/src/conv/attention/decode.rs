@@ -507,5 +507,4 @@ pub use kernel::{
     decode_forward_heads,
 };
 
-pub(crate) use kernel::check_decode_len;
 pub(super) use kernel::decode;

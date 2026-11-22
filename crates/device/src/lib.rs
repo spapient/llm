@@ -34,7 +34,6 @@
 
 #![deny(unsafe_code)]
 
-mod ascend;
 pub mod backends;
 pub mod cuda;
 mod dialect;
@@ -42,11 +41,9 @@ pub mod metal;
 pub mod norm;
 pub mod platform;
 pub mod program;
-pub mod scan;
 pub mod tiled;
-mod toolchain;
-pub mod wmma;
 #[cfg(target_os = "macos")]
+#[path = "metal/executor.rs"]
 pub mod executor;
 
 pub use platform::{Abi, Arch, Host, Machine, Row, Standing, Why, audit, require, standing};

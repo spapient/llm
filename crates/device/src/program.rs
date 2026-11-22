@@ -102,7 +102,7 @@ fn cuda_segments(
             crate::norm::cuda_softmax(kernel, signature, sample, *chunk)
         }
         Lower::ChunkScan { chunk, decay } => {
-            crate::scan::cuda_scan(kernel, signature, sample, *chunk, *decay)
+            crate::norm::cuda_scan(kernel, signature, sample, *chunk, *decay)
         }
         other => Err(unsupported("CUDA", other)),
     }

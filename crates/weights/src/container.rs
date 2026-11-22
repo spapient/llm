@@ -116,7 +116,9 @@ impl Header {
 
     /// 按名字查条目（一次解析期建名索引，之后每次查询 O(1)）。
     pub fn get(&self, name: &str) -> Option<&Entry> {
-        self.index.get(name).and_then(|&position| self.entries.get(position))
+        self.index
+            .get(name)
+            .and_then(|&position| self.entries.get(position))
     }
 
     /// 数据段起点（头部长度）。

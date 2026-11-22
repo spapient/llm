@@ -37,69 +37,6 @@ fn flash_and_plain_attention_agree_and_rows_are_distributions() {
     assert!(testkit::approx_eq(&flash_out, &flash, 1e-5));
 }
 
-/// 逐组 `(s, d)` 取确定性样本，把 `q`/`k`/`v` 交给 `run`：两套 tile 用例共用这一层取样。
-fn for_each_dense_case(
-    cases: &[(usize, usize)],
-    mut run: impl FnMut(usize, usize, &[f32], &[f32], &[f32]),
-) {
-    for &(s, d) in cases {
-        let sample = sample(s, d);
-        let q = sample.f32("q").unwrap();
-        let k = sample.f32("k").unwrap();
-        let v = sample.f32("v").unwrap();
-        run(s, d, q, k, v);
-    }
-}
-
-/// 稠密分块 tile 与朴素路径：K/V 列块 + 查询行块，两个方向都切，结果必须逐位相同。
-///
-/// 覆盖 tile 整数倍、非整数倍（`s = 17` 同时不是行块与列块的倍数）与大序列；行块按预算收窄的
-/// 分支（`s > SCORE_BUDGET / TILE_ROWS`）由最后一组 `s = 512` 之外的小 `d` 组合天然走过。
-#[test]
-fn tiled_dense_matches_naive_bitwise() {
-    for_each_dense_case(
-        &[(8, 8), (17, 5), (64, 16), (100, 64), (256, 32), (512, 32)],
-        |s, d, q, k, v| {
-            let mut naive = vec![0.0f32; s * d];
-            forward(q, k, v, &mut naive, s, d).expect("朴素内核");
-            let mut tiled = vec![0.0f32; s * d];
-            crate::conv::attention::tiled::forward(q, k, v, &mut tiled, s, d).expect("稠密 tile");
-            assert_eq!(tiled, naive, "s={s},d={d} 稠密 tile 必须与朴素路径逐位一致");
-        },
-    );
-}
-
-/// 稠密 tile 的几何拒绝：头宽 0、序列长 0、缓冲长度不符都在入口拦下。
-#[test]
-fn tiled_dense_rejects_bad_geometry() {
-    let mut out = vec![0.0f32; 16];
-    assert!(crate::conv::attention::tiled::forward(&[], &[], &[], &mut out, 4, 0).is_err());
-    assert!(crate::conv::attention::tiled::forward(&[], &[], &[], &mut out, 0, 4).is_err());
-    assert!(
-        crate::conv::attention::tiled::forward(&[1.0; 12], &[1.0; 16], &[1.0; 16], &mut out, 4, 4)
-            .is_err()
-    );
-}
-
-#[test]
-fn tiled_flash_matches_online_bitwise() {
-    // tile 整数倍、非整数倍边界、大序列；tiled 的 col 累加顺序与 online 相同，必须逐位一致。
-    for_each_dense_case(
-        &[(8, 8), (64, 16), (100, 64), (256, 32), (512, 32)],
-        |s, d, q, k, v| {
-            let mut online = vec![0.0f32; s * d];
-            let mut tiled = vec![0.0f32; s * d];
-            flash_forward(q, k, v, &mut online, s, d).expect("flash online");
-            crate::conv::attention::tiled::flash_tiled_forward(q, k, v, &mut tiled, s, d)
-                .expect("flash tiled");
-            assert_eq!(
-                tiled, online,
-                "s={s},d={d} 分块 tile 必须与 online 逐位一致"
-            );
-        },
-    );
-}
-
 /// 行主序确定性向量：`rows × d`，第 `i` 个元素取 `base + i·step`，便于逐行核对。
 fn det_rows(rows: usize, d: usize, base: f32, step: f32) -> Vec<f32> {
     (0..rows * d).map(|idx| base + idx as f32 * step).collect()

@@ -1,4 +1,4 @@
-//! 稠密计算核：矩阵乘族（`gemm` / `gemv` / `matmul`）、激活（`activation`）、归一化（`norm`）、
+//! 稠密计算核：矩阵乘族（`gemm` / `gemv` / `matmul`）、激活（`embed`/`rmsnorm`/`rope`/`softmax`）、归一化（`norm`）、
 //! 反量化（`dequant`）、逐元素（`elementwise` / `unary`）、归约（`reduce`）与 SIMD/SME 通道（`fast`）。
 
 // 不稳定特性一律挂在 `cfg(nightly)` 上（由本 crate 的 `build.rs` 按 `rustc --version` 判定）：
@@ -14,9 +14,9 @@
 //   `gemv::simd` 的解包点积。后者**不按目标门控**，因为它是架构无关的 16 车道源码：aarch64 上
 //   落成 NEON、x86_64 上落成 SSE2 基线，两个目标编译的是同一份算术。
 
-pub mod activation;
 pub mod dequant;
 pub mod elementwise;
+pub mod embed;
 pub mod epilogue;
 pub mod fast;
 pub mod gemm;
@@ -24,14 +24,14 @@ pub mod gemv;
 pub mod matmul;
 pub mod norm;
 pub mod reduce;
+pub mod rmsnorm;
+pub mod rope;
 pub mod scalar;
+pub mod softmax;
 pub mod unary;
 
 // 一元 / 二元 / 归约 / 反量化 / GEMV / GEMM 骨架内的声明式子模块，re-export 到 crate 根
 // 保持 `<crate>::<name>::MODEL` / `forward` 路径。
-pub use activation::{
-    embed as embed_f32, rmsnorm as rmsnorm_f32, rope as rope_f32, softmax as softmax_f32,
-};
 pub use dequant::{dequant_i2, dequant_i4, i8 as dequant_i8};
 pub use elementwise::{add_f32, div_f32, max_f32, min_f32, mul_f32, residual_add_f32, sub_f32};
 pub use epilogue::apply as apply_epilogue;
@@ -44,6 +44,7 @@ pub use unary::{
     exp_f32, gelu_f32, hard_sigmoid_f32, leaky_relu_f32, log_f32, relu_f32, scale_f32, sigmoid_f32,
     silu_f32, tanh_f32,
 };
+pub use {embed as embed_f32, rmsnorm as rmsnorm_f32, rope as rope_f32, softmax as softmax_f32};
 
 // 契约层在 `spec`：内核与本 crate 的骨架宏都按 crate 根解析契约路径，这里把它们搬回来，
 // 于是内核源码里写的是 `crate::model::…` / `crate::operator_via!`，而不是到处写依赖 crate 名。

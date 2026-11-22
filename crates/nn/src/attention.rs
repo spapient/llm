@@ -9,7 +9,7 @@ use crate::{
 };
 
 /// 注意力实现算法。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AttentionAlgo {
     /// 朴素路径：落地完整 `s×s` 分数矩阵，作为数值参考实现。
     Naive,
@@ -29,7 +29,7 @@ impl AttentionAlgo {
 
 /// 注意力层。
 #[crate::spec(name = $name, out = [$seq, $head_dim], ops = [$op])]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Attention {
     seq: usize,
     head_dim: usize,
@@ -95,7 +95,7 @@ impl Contract for Attention {
 
 /// 解码期注意力层：输出 `[q_rows, head_dim]`，历史长度由算子语义表的声明档给出。
 #[crate::spec(name = $name, out = [$q_rows, $head_dim], ops = [$op])]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DecodeAttention {
     q_rows: usize,
     head_dim: usize,
@@ -173,7 +173,7 @@ impl Contract for DecodeAttention {
 // `head_dim` 的整数倍。
 
 /// 一个注意力块：`hidden → [q, k, v] → attention → o → hidden`。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AttentionBlock {
     spec: ContractSpec,
     hidden: usize,
@@ -362,7 +362,7 @@ impl Contract for AttentionBlock {
 /// 上投影 `W^{UK}` / `W^{UV}` 不在本层：吸收式把它们折进查询与输出投影，稠密式则整块展开，
 /// 两种折法都在装配侧，层只管压缩存量与读法。
 #[crate::spec(name = $name, out = [$seq, $latent], ops = [$op])]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct LatentAttention {
     seq: usize,
     latent: usize,

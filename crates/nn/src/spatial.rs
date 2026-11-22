@@ -37,7 +37,7 @@ fn nonzero_channels(cin: usize, cout: usize, layer: &str) -> Result<()> {
 
 /// 一维卷积层：NHWC 输入 `[l, cin]`，输出 `[ol, cout]`。
 #[crate::spec(name = $name, out = [$ol, $cout], ops = [$op])]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Conv1d {
     cin: usize,
     cout: usize,
@@ -89,7 +89,7 @@ crate::priced!(Conv1d, GEMM);
 
 /// 二维卷积层：NHWC 输入 `[h, w, cin]`，输出 `[oh, ow, cout]`。
 #[crate::spec(name = $name, out = [$oh, $ow, $cout], ops = [$op])]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Conv2d {
     cin: usize,
     cout: usize,
@@ -146,7 +146,7 @@ crate::priced!(Conv2d, CONV);
 
 /// 一维反卷积层：`[l, cin]` → `[ol, cout]`，权重 `[cin, cout, k]`。
 #[crate::spec(name = $name, out = [$ol, $cout], ops = [$op])]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ConvTranspose1d {
     deconv: OpDeconv1,
     ol: usize,
@@ -191,7 +191,7 @@ crate::priced!(ConvTranspose1d, GEMM);
 
 /// 二维反卷积层：`[h, w, cin]` → `[oh, ow, cout]`，权重 `[cin, cout, kh, kw]`。
 #[crate::spec(name = $name, out = [$oh, $ow, $cout], ops = [$op])]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ConvTranspose2d {
     deconv: OpDeconv2,
     oh: usize,
@@ -240,7 +240,7 @@ impl ConvTranspose2d {
 crate::priced!(ConvTranspose2d, GEMM);
 
 /// 一维最大池化层：`[l, c]` → `[ol, c]`。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MaxPool1d {
     spec: ContractSpec,
     ol: usize,
@@ -291,7 +291,7 @@ crate::priced!(MaxPool1d, "max_pool1d_f32");
 macro_rules! planar {
     ($(#[$doc:meta])* $ty:ident, $op:literal) => {
         $(#[$doc])*
-        #[derive(Debug, Clone, PartialEq, Eq)]
+        #[derive(Debug, Clone, PartialEq, Eq, Hash)]
         pub struct $ty {
             spec: Spec,
             oh: usize,
@@ -408,7 +408,7 @@ impl AdaptiveAvgPool2d {
 ///
 /// 它比 `planar!` 那一族多一件**真状态**：`sampler` 不改输出边长，却决定算子怎么取样。
 /// 因此不塞进宏，而是显式带上——并且必须能读回（`sampler()`），否则它又会退化成死字段。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Interpolate {
     spec: Spec,
     sampler: crate::conv::Sampler,

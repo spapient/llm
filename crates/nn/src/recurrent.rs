@@ -20,7 +20,7 @@ use tensor::Shape;
 use crate::{Bounds, BoundsResult, Contract, ContractSpec, spec_accessors};
 
 /// 循环单元的门结构。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Cell {
     /// 单门：`h' = tanh(W·[x, h] + b)`。
     Rnn,
@@ -77,7 +77,7 @@ impl Cell {
 ///
 /// 融合成一块（比如 `weight_ihh`）会让真实权重对不上——输入侧与隐侧是两张矩阵，第二维不同
 /// （输入侧吃 `输入宽`，隐侧永远吃 `隐宽`），偏置也是两条而不是一条。因此按四件声明。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RecurrentTensor {
     /// 输入侧门矩阵 `[门数·隐宽, 输入宽]`。
     WeightIh,
@@ -125,7 +125,7 @@ impl RecurrentTensor {
 }
 
 /// 循环层：`layers` 层、每层 `dirs` 个方向，每层每方向一次门投影。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Recurrent {
     spec: ContractSpec,
     input: usize,
