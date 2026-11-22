@@ -98,17 +98,23 @@ pub struct Sample {
 }
 
 impl Sample {
-    /// 构造单轴 f32 输入/输出样本：`x` 使用确定性夹具，`y` 初始化为零。
-    pub fn f32_vector_io(len: usize, scalars: Vec<(&'static str, i64)>) -> Self {
+    /// 构造 f32 输入/输出样本：`x` 使用确定性夹具，`y` 初始化为零。
+    pub fn f32_io(
+        m: usize,
+        n: usize,
+        input_len: usize,
+        output_len: usize,
+        scalars: Vec<(&'static str, i64)>,
+    ) -> Self {
         Self {
-            m: len,
-            n: len,
+            m,
+            n,
             scalars,
             bufs: vec![
-                x_buf(len),
+                x_buf(input_len),
                 Buf {
                     name: "y",
-                    values: Values::F32(vec![0.0; len]),
+                    values: Values::F32(vec![0.0; output_len]),
                 },
             ],
         }

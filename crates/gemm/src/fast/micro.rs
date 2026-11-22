@@ -46,6 +46,27 @@ pub(super) fn micro_packed(panel: &[f32], b: &[f32], out: &mut [f32], tile: Tile
         } else {
             micro_load(out, row0, n, j)
         };
+        fma_step(&mut acc, pp, bp, kb);
+        micro_store(out, row0, n, j, acc);
+    }
+}
+
+/// 一个收缩步的 8×8 瓦片体：4 条 `vld1q` 取数 + 16 条 lane-indexed FMA。
+///
+/// 生产微内核 [`micro_packed`] 与取数受限端口探针 [`fma_block_rounds`] 共用**这一份**——
+/// 探针的全部意义是「与生产逐指令一致」，两份写法必然漂移（N5）。`pp` 是 A 面板每步
+/// `MR` 个 f32、`bp` 是 B 面板每步 `NR` 个 f32，两者步距都是 8 即 32 字节。
+#[cfg(target_arch = "aarch64")]
+#[allow(unsafe_code)]
+#[inline]
+unsafe fn fma_step(
+    acc: &mut [std::arch::aarch64::float32x4_t; 16],
+    pp: *const f32,
+    bp: *const f32,
+    kb: usize,
+) {
+    use std::arch::aarch64::*;
+    unsafe {
         for p in 0..kb {
             let av0 = vld1q_f32(pp.add(p * MR));
             let av1 = vld1q_f32(pp.add(p * MR + 4));
@@ -69,7 +90,92 @@ pub(super) fn micro_packed(panel: &[f32], b: &[f32], out: &mut [f32], tile: Tile
             acc[14] = vfmaq_laneq_f32::<3>(acc[14], bv0, av1);
             acc[15] = vfmaq_laneq_f32::<3>(acc[15], bv1, av1);
         }
-        micro_store(out, row0, n, j, acc);
+    }
+}
+
+/// 一个收缩步的乘加次数：16 条 FMA × 每向量 4 个 f32 通道。以 `k` 为单位命名，
+/// 因为取数受限探针按 `k` 步展开，纯端口探针正好一步。
+#[cfg(all(feature = "bench", target_arch = "aarch64"))]
+pub const FMA_MAC_PER_K: usize = 16 * 4;
+
+/// f32 FMA 端口峰值：`rounds` 步 × 16 条 lane-indexed FMA，**环内零 load 零 store**。
+///
+/// 这是 K7 分母里「理想上限」那一半，指令形状与生产瓦片体逐条一致（同 16 个累加器、
+/// 同 lane-indexed FMA），只差那 4 条 `vld1q`。`machine_peak` 虽也是 f32 峰值，但它是
+/// 自动向量化的标量循环（4 条链 × 16 lane），链数与寄存器分配都不同于手写瓦片，拿它当
+/// 「瓦片体的端口上限」是口径混用；本探针才是同一个形状。
+#[cfg(all(feature = "bench", target_arch = "aarch64"))]
+pub fn port_fma(rounds: usize) -> bool {
+    if rounds == 0 {
+        return false;
+    }
+    // 安全性：aarch64 基线含 NEON，函数体内只有寄存器运算，不触碰内存。
+    #[allow(unsafe_code)]
+    unsafe {
+        fma_pure_rounds(rounds);
+    }
+    true
+}
+
+/// 纯 FMA 循环：16 个累加器互不依赖，结果进 `black_box` 防整段消除。
+#[cfg(all(feature = "bench", target_arch = "aarch64"))]
+#[allow(unsafe_code)]
+#[inline(never)]
+unsafe fn fma_pure_rounds(rounds: usize) {
+    use std::arch::aarch64::*;
+    unsafe {
+        let mut acc = [vdupq_n_f32(0.0); 16];
+        let av = vdupq_n_f32(1.000_000_1);
+        for _ in 0..rounds {
+            for (i, chain) in acc.iter_mut().enumerate() {
+                *chain = vfmaq_laneq_f32::<{ 0 }>(*chain, av, av);
+                // 通道下标取自循环计数，保证 16 条互不依赖而非同一条的串行链。
+                std::hint::black_box(i);
+            }
+        }
+        std::hint::black_box(acc);
+    }
+}
+
+/// `fma_step` 的形状校验：`k` 非零，A/B 各留足 `NR * k` 个 f32。
+#[cfg(all(feature = "bench", target_arch = "aarch64"))]
+fn block_shaped(a: &[f32], b: &[f32], k: usize) -> bool {
+    k != 0 && a.len() >= NR * k && b.len() >= NR * k
+}
+
+/// f32 **取数受限**端口：与生产瓦片体逐指令一致，每步 4 条 `vld1q` + 16 条 FMA。
+///
+/// **为什么要它**：纯端口探针环内零 load，是理想上限；生产核每步要发 4 条 load。
+/// 两者之差就是取数代价，也是「K7 的缺口里多少是结构注定、多少是核外记账」的分界线。
+/// K8 的同一对照给出 i8 瓦片体单线程 99.3%、18 线程 84.1%，故那 84% 就是瓦片体的真实天花板。
+///
+/// `k` 取 1024 使地址在环内单调推进——地址不随循环变化时 LLVM 会把 load 整体提出循环，
+/// 那样测的是纯端口而非「取数受限」端口（i8 侧第一版就是这么错的，见 [`super::i8::port_sdot_block`]）。
+#[cfg(all(feature = "bench", target_arch = "aarch64"))]
+pub fn port_fma_block(rounds: usize, a: &[f32], b: &[f32], k: usize) -> bool {
+    if rounds == 0 || !block_shaped(a, b, k) {
+        return false;
+    }
+    // 安全性：A/B 各 `NR * k` 个 f32 已在上面校验。
+    #[allow(unsafe_code)]
+    unsafe {
+        fma_block_rounds(rounds, a.as_ptr(), b.as_ptr(), k);
+    }
+    true
+}
+
+/// 取数受限循环：每轮跑一次完整瓦片体，**零记账**（不读回 `out`、不写回 `out`）。
+#[cfg(all(feature = "bench", target_arch = "aarch64"))]
+#[allow(unsafe_code)]
+#[inline(never)]
+unsafe fn fma_block_rounds(rounds: usize, ap: *const f32, bp: *const f32, k: usize) {
+    use std::arch::aarch64::*;
+    unsafe {
+        let mut acc = [vdupq_n_f32(0.0); 16];
+        for _ in 0..rounds {
+            fma_step(&mut acc, ap, bp, k);
+        }
+        std::hint::black_box(acc);
     }
 }
 

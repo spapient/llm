@@ -53,7 +53,7 @@ pub fn cost(shape: &ShapeCtx) -> Result<Cost, Error> {
 
 /// 确定性样本：`x`、`y` 两个等长（偶数）缓冲，位置固定为 7。
 pub fn sample(len: usize, _: usize) -> Sample {
-    Sample::f32_vector_io(len, vec![("N", len as i64), ("pos", 7)])
+    Sample::f32_io(len, len, len, len, vec![("N", len as i64), ("pos", 7)])
 }
 
 /// 标量参考：与内核同一公式，位置取样本标量 `P`。

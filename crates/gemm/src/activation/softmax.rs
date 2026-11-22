@@ -16,7 +16,7 @@ pub fn cost(shape: &ShapeCtx) -> Result<Cost, Error> {
 
 /// 确定性样本：`x`、`y` 两个等长缓冲。
 pub fn sample(len: usize, _: usize) -> Sample {
-    Sample::f32_vector_io(len, vec![("N", len as i64)])
+    Sample::f32_io(len, len, len, len, vec![("N", len as i64)])
 }
 
 /// 标量参考：三趟，与内核同一公式。

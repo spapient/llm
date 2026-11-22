@@ -90,18 +90,13 @@ macro_rules! norm_op {
 
 /// 窗口骨架的确定性样本：`x`（长 `in_len`）与 `y`（长 `out_len`），`N` 记输出长度。
 fn window_sample(in_len: usize, out_len: usize) -> Sample {
-    Sample {
-        m: out_len,
-        n: out_len,
-        scalars: vec![("N", out_len as i64)],
-        bufs: vec![
-            x_buf(in_len),
-            Buf {
-                name: "y",
-                values: Values::F32(vec![0.0; out_len]),
-            },
-        ],
-    }
+    Sample::f32_io(
+        out_len,
+        out_len,
+        in_len,
+        out_len,
+        vec![("N", out_len as i64)],
+    )
 }
 
 /// 窗口骨架的标量参考：读 `x`、跑 `run`、返回 `y`。算术在 `run` 里，这里只做缓冲搬运。

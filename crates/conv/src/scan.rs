@@ -204,7 +204,7 @@ pub mod f32 {
 
     /// 确定性样本：`x`、`y` 两个等长缓冲，标量 `N` 是时间步数。
     pub fn sample(len: usize, _: usize) -> Sample {
-        Sample::f32_vector_io(len, vec![("N", len as i64)])
+        Sample::f32_io(len, len, len, len, vec![("N", len as i64)])
     }
 
     /// 标量参考：`s = ā·s + b̄·x[t]`，初态 `s = 0`，与内核同一公式。
