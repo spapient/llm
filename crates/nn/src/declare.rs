@@ -142,9 +142,6 @@ macro_rules! layer_delegate {
     };
 }
 
-/// 对"持有 `spec: ContractSpec` 字段"的层，把层名/输出形状/规格三件委托收口一份；
-/// 各层仍在自己的 `Contract` impl 里补类型化访问器与下界。
-#[doc(hidden)]
 /// 单轴层的整份声明：`struct { inner: AxisCore }`、`derive` 与 `layer_delegate!` 接线。
 ///
 /// 单轴层只有「绑哪个算子、扮演什么参数角色」两个自由度，其余逐字相同；把两者写成一行，
@@ -164,6 +161,8 @@ macro_rules! axis {
     };
 }
 
+/// 对「持有 `spec: ContractSpec` 字段」的层，把层名/输出形状/规格三件委托收口一份；
+/// 各层仍在自己的 `Contract` impl 里补类型化访问器与下界。
 #[macro_export]
 macro_rules! spec_accessors {
     () => {
