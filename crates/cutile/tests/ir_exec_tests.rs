@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 /// 每次对拍的固定长度：短到能在测试里逐位看完，长到能覆盖尾部与随机段。
 const LEN: usize = 37;
 
-fn buffer(name: &str, access: Access) -> Parameter {
+fn buf(name: &str, access: Access) -> Parameter {
     Parameter {
         name: name.to_string(),
         ty: ValueType::Buf {
@@ -54,8 +54,8 @@ fn affine() -> Kernel {
     Kernel::new(
         "affine",
         vec![
-            buffer("input", Access::Read),
-            buffer("output", Access::ReadWrite),
+            buf("input", Access::Read),
+            buf("output", Access::ReadWrite),
             scalar("scale"),
             length("extent"),
         ],
@@ -64,7 +64,11 @@ fn affine() -> Kernel {
         "output",
         binary(
             BinaryOp::Add,
-            binary(BinaryOp::Mul, load("input"), Expr::Scalar("scale".to_string())),
+            binary(
+                BinaryOp::Mul,
+                load("input"),
+                Expr::Scalar("scale".to_string()),
+            ),
             Expr::F32(3.0f32.to_bits()),
         ),
     )
@@ -75,8 +79,8 @@ fn scaled_negation() -> Kernel {
     Kernel::new(
         "scaled_negation",
         vec![
-            buffer("input", Access::Read),
-            buffer("output", Access::ReadWrite),
+            buf("input", Access::Read),
+            buf("output", Access::ReadWrite),
             length("extent"),
         ],
         "i",
@@ -95,9 +99,9 @@ fn dot() -> Reduce {
     Reduce::new(
         "dot",
         vec![
-            buffer("a", Access::Read),
-            buffer("b", Access::Read),
-            buffer("out", Access::ReadWrite),
+            buf("a", Access::Read),
+            buf("b", Access::Read),
+            buf("out", Access::ReadWrite),
             length("len"),
         ],
         "k",
@@ -204,7 +208,10 @@ fn run(name: &str, kernel: &str, main: &str) -> Run {
         .expect("`cc` is required to execute emitted kernels");
     assert!(compiled.success(), "cc failed for {name}");
     let output = Command::new(&exe).output().expect("run fixture");
-    assert!(output.status.success(), "fixture {name} exited with failure");
+    assert!(
+        output.status.success(),
+        "fixture {name} exited with failure"
+    );
     let text = String::from_utf8(output.stdout).expect("fixture stdout is utf8");
     let mut lines = text.lines();
     let first = lines.next().expect("fixture prints a status line");
@@ -223,7 +230,11 @@ fn run(name: &str, kernel: &str, main: &str) -> Run {
 fn pointwise_main(call: &str, input: &[f32]) -> String {
     let mut main = String::new();
     let _ = writeln!(main, "int main(void) {{");
-    let _ = writeln!(main, "    static const float input[] = {{{}}};", c_array(input));
+    let _ = writeln!(
+        main,
+        "    static const float input[] = {{{}}};",
+        c_array(input)
+    );
     let _ = writeln!(main, "    float output[{LEN}];");
     let _ = writeln!(
         main,
@@ -245,7 +256,10 @@ fn reduce_main(a: &[f32], b: &[f32], extent: usize) -> String {
     let _ = writeln!(main, "    static const float a[] = {{{}}};", c_array(a));
     let _ = writeln!(main, "    static const float b[] = {{{}}};", c_array(b));
     let _ = writeln!(main, "    float out[1] = {{0.0f}};");
-    let _ = writeln!(main, "    int rc = dot(a, {LEN}, b, {LEN}, out, 1, {extent});");
+    let _ = writeln!(
+        main,
+        "    int rc = dot(a, {LEN}, b, {LEN}, out, 1, {extent});"
+    );
     let _ = writeln!(main, "    printf(\"rc %d\\n\", rc);");
     let _ = writeln!(main, "    printf(\"%08x\\n\", bits(out[0]));");
     let _ = writeln!(main, "    return 0;\n}}");
@@ -315,7 +329,7 @@ fn reduce_emitted_c_accumulates_in_the_same_order() {
 }
 
 #[test]
-fn length_guards_reject_short_buffers_before_any_write() {
+fn length_guards_reject_short_bufs_before_any_write() {
     let input = adversarial();
     let sentinel = (-12345.0f32).to_bits();
     let call = format!("affine(input, {LEN}, output, {}, 1.5f, {LEN})", LEN - 1);
@@ -325,7 +339,10 @@ fn length_guards_reject_short_buffers_before_any_write() {
         &pointwise_main(&call, &input),
     );
     assert_eq!(run.rc, 1, "short output buffer must be reported");
-    assert!(run.bits.iter().all(|bits| *bits == sentinel), "no element may be written");
+    assert!(
+        run.bits.iter().all(|bits| *bits == sentinel),
+        "no element may be written"
+    );
 }
 
 #[test]
@@ -339,5 +356,31 @@ fn zero_extent_writes_nothing_and_reports_success() {
         &pointwise_main(&call, &input),
     );
     assert_eq!(run.rc, 0);
-    assert!(run.bits.iter().all(|bits| *bits == sentinel), "zero extent writes nothing");
+    assert!(
+        run.bits.iter().all(|bits| *bits == sentinel),
+        "zero extent writes nothing"
+    );
+}
+
+/// 前端宏与手写 IR 走同一条执行链：宏只负责把 Rust 形状翻译成 `Kernel`。
+#[crate::dsl]
+#[allow(dead_code)]
+fn fused(input: &[f32], output: &mut [f32], scale: f32, extent: usize) {
+    for i in 0..extent {
+        output[i] = input[i] * scale + 3.0;
+    }
+}
+
+#[test]
+fn macro_front_end_output_matches_rust_after_execution() {
+    let input = adversarial();
+    let call = format!("fused(input, {LEN}, output, {LEN}, 1.5f, {LEN})");
+    let run = run(
+        "fused",
+        &__dsl_ir_fused().emit_c().expect("macro IR emits C"),
+        &pointwise_main(&call, &input),
+    );
+    assert_eq!(run.rc, 0);
+    let expected: Vec<f32> = input.iter().map(|value| value * 1.5f32 + 3.0f32).collect();
+    assert_same(&run.bits, &expected, "fused");
 }

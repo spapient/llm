@@ -1,9 +1,9 @@
 //! 职责：缓存条目计数与 LRU 淘汰。
 
+use crate::cache::{Cache, CacheKey};
 use diagnostic::{Code, Error};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
-use crate::cache::{Cache, CacheKey};
 
 /// 陈旧判据：一次 emit 是毫秒级、等锁上限 5 s，一分钟没被动过的锁与半截目录只可能是崩溃遗留。
 pub const STALE_LOCK: Duration = Duration::from_secs(60);

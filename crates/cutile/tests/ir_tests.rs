@@ -206,9 +206,18 @@ fn reduce_emits_an_accumulating_loop_into_a_fixed_slot() {
         ),
         "{source}"
     );
-    assert!(source.contains("if (len > cutile_len_0) return 1;"), "{source}");
-    assert!(source.contains("if (len > cutile_len_1) return 1;"), "{source}");
-    assert!(source.contains("if (0 >= cutile_len_2) return 1;"), "{source}");
+    assert!(
+        source.contains("if (len > cutile_len_0) return 1;"),
+        "{source}"
+    );
+    assert!(
+        source.contains("if (len > cutile_len_1) return 1;"),
+        "{source}"
+    );
+    assert!(
+        source.contains("if (0 >= cutile_len_2) return 1;"),
+        "{source}"
+    );
     assert!(source.contains("out[0] += (a[k] * b[k]);"), "{source}");
 }
 

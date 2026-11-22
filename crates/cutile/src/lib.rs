@@ -92,12 +92,12 @@ pub mod dirs;
 pub mod emit;
 pub mod harness;
 pub mod ir;
+mod lru;
 pub mod plan;
 pub mod probe;
 pub mod reference;
 pub mod space;
 pub mod substitute;
-mod lru;
 // 生产态内核发射与基准封装（M3-2 / M3-10）已搬到 `engine`（L6）：Metal / CUDA 的 vendor 语法
 // 不进 cutile，机制层只经 `llm_optim::backend::Codegen::lower` / `llm_optim::backend::Codegen::harness`
 // 缝分派（`docs/ARCHITECTURE.md` 的 L3 契约：cutile 不出现厂商字面量）。

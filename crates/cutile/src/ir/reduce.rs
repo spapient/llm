@@ -6,8 +6,8 @@
 use core::fmt::Write as _;
 
 use super::{
-    buf_length_name, optimize_expr, verify_core, write_expr, write_signature, Expr, Parameter,
-    VerificationError,
+    Expr, Parameter, VerificationError, buf_length_name, optimize_expr, verify_core, write_expr,
+    write_signature,
 };
 
 /// One verified reduction kernel: accumulate `value` into a fixed output slot over a loop.

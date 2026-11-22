@@ -26,6 +26,24 @@
 
 ### Changed
 
+- **typed IR 有了执行级判据：发射出的 C 真的编译、真的跑，并与 Rust 逐位对拍**。
+  此前 `tests/ir_tests.rs` 只断言「生成的文本里含某个片段」——括号写错、长度守卫漏一条、常量折叠算错，
+  字符串断言都看不见。新增 `crates/cutile/tests/ir_exec_tests.rs`（6 条）：把 `emit_c` 的产物和一个
+  生成的 `main` 交给 `cc -std=c11 -O0` 真正编译执行，再用 `f32::to_bits` 逐元素与 Rust 参考实现比对。
+  覆盖逐点 `+ - * /` 与取负（含 `-0.0` 的符号位）、归约 `out[0] += a[k] * b[k]` 的累加顺序、
+  `extent` 大于缓冲（守卫返回非零且一个字节都不写）、`extent = 0`（写入零个元素），以及
+  `#[dsl]` 宏前端生成的 IR（`__dsl_ir_*` → C → 执行）。输入含 `±0.0`、次正规、`3e38`、`1e-45`
+  与固定种子 xorshift 填满的随机值。宏路径从此不再只有「能构造出 `Kernel`」这一条证据。
+  **验证**：`cargo test -p cutile` 119 条全绿（含这 6 条执行对拍）。
+
+- **`#[dsl]` 前端三个文件合并回一个：681 行 / 3 文件 → 596 行 / 1 文件（净 −85 行、−2 文件）**。
+  `dsl/{mod,types,render}.rs` 的切分原本只为压 600 行线，但 `types.rs` 只有 60 行、`render.rs` 只有
+  42 行，读一条 lowering 要在三个文件之间跳；合并后按「形参类型闭集 → 形状 → 表达式 → 装配」的顺序
+  排布，带 span 的报错文案与判定顺序逐字未改，`#[dsl]` 的语义因此与合并前完全等价。
+  **验证**：`cargo test -p llm-annotation` 50 条、`cargo test -p cutile` 119 条全绿；
+  `cargo fmt --check` 干净，`cargo clippy -p llm-annotation --all-targets -D warnings` 零告警；
+  `scripts/loc-budget.sh` 的 600 行否决项不再命中本文件。
+
 - **`#[dsl]` 与 typed IR 整改到仓库自己的质量门：命名归一到 `buf`/`idx`，圈复杂度全部 ≤ 5，`.expect` 清零**。
   上一轮落地的 `crates/annotation/src/dsl.rs` 与 `crates/cutile/src/ir.rs` 跑 `cargo test -p llm-tools --test gate`
   报出上百条违规：单函数圈复杂度最高 34（`parse_expr`，上限 5；`parse_loop` 22、`value_type` 18），

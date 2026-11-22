@@ -2,24 +2,20 @@
 //!
 //! 这一族只接受「一个 `for idx in 0..extent` 循环 + 一次 `output[idx] = expr` 赋值」的形状。
 //! 收窄输入比猜一个意思便宜：被拒绝的函数原样保留为 CPU 参考实现，只多一条编译期错误。
-
-mod render;
-mod types;
-
-use render::render;
-use types::parameter_kind;
+//! 一次 lowering 分三段：Rust 形状 → 表达式 → `Kernel::new` 装配；每段各自判错、各自报错。
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
-use quote::quote;
+use quote::{format_ident, quote};
 use syn::{
     BinOp, Error, Expr, ExprAssign, ExprBinary, ExprForLoop, ExprLit, ExprPath, ExprRange,
-    ExprUnary, Ident, ItemFn, Lit, Pat, PatIdent, Stmt, UnOp, spanned::Spanned,
+    ExprUnary, Ident, ItemFn, Lit, Pat, PatIdent, Stmt, Type, TypePath, TypeReference, UnOp,
+    spanned::Spanned,
 };
 
 /// 一个形参在 C 侧的身份：只读缓冲、可写缓冲、`f32` 标量、`usize` 长度。
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum ParamKind {
+enum ParamKind {
     BufRead,
     BufWrite,
     F32,
@@ -49,7 +45,7 @@ pub(crate) fn expand(attribute: TokenStream, item: TokenStream) -> TokenStream {
 
 /// 无论 lowering 成功还是失败，原函数都照原样再发一遍：失败时多挂一条 `compile_error!`。
 fn expand_function(function: &ItemFn, bare: bool) -> TokenStream2 {
-    match lowered(function, bare) {
+    match lower(function, bare) {
         Ok(ir_fn) => quote!(#function #ir_fn),
         Err(error) => {
             let error = error.to_compile_error();
@@ -58,18 +54,14 @@ fn expand_function(function: &ItemFn, bare: bool) -> TokenStream2 {
     }
 }
 
-fn lowered(function: &ItemFn, bare: bool) -> syn::Result<TokenStream2> {
+/// 四步：签名 → 循环 → 赋值 → 装配。每步一步到位，失败即整个 lowering 失败。
+fn lower(function: &ItemFn, bare: bool) -> syn::Result<TokenStream2> {
     if !bare {
         return Err(Error::new(
             function.sig.span(),
             "`#[dsl]` takes no arguments",
         ));
     }
-    lower(function)
-}
-
-/// 四步：签名 → 循环 → 赋值 → 装配。每步一步到位，失败即整个 lowering 失败。
-fn lower(function: &ItemFn) -> syn::Result<TokenStream2> {
     let params = parse_parameters(&function.sig)?;
     let loop_stmt = single_loop(function)?;
     let body = parse_body(loop_stmt, &params)?;
@@ -79,7 +71,8 @@ fn lower(function: &ItemFn) -> syn::Result<TokenStream2> {
 fn parse_body(loop_stmt: &ExprForLoop, params: &[Param]) -> syn::Result<Body> {
     let (idx, extent) = parse_loop(loop_stmt, params)?;
     let assign = single_assignment(loop_stmt)?;
-    let (output, value) = parse_assignment(assign, &idx, params)?;
+    let output = output_name(assign, &idx, params)?;
+    let value = parse_expr(assign.right.as_ref(), &idx, params)?;
     Ok(Body {
         idx,
         extent,
@@ -132,6 +125,70 @@ fn parse_parameter(argument: &syn::FnArg) -> syn::Result<Param> {
         name: portable_ident(&pattern.ident)?,
         kind: parameter_kind(&argument.ty)?,
     })
+}
+
+/// 形参类型闭集：`f32`、`usize`、`&[f32]`、`&mut [f32]`；其余在展开期报一条带 span 的错。
+fn parameter_kind(ty: &Type) -> syn::Result<ParamKind> {
+    match ty {
+        Type::Reference(reference) => reference_kind(reference),
+        Type::Path(path) if path.qself.is_none() => scalar_kind(path),
+        _ => Err(Error::new(
+            ty.span(),
+            "kernel parameters must be `f32`, `usize`, `&[f32]`, or `&mut [f32]`",
+        )),
+    }
+}
+
+fn scalar_kind(path: &TypePath) -> syn::Result<ParamKind> {
+    match path.path.get_ident().map(ToString::to_string).as_deref() {
+        Some("f32") => Ok(ParamKind::F32),
+        Some("usize") => Ok(ParamKind::Usize),
+        _ => Err(Error::new(
+            path.span(),
+            "scalar kernel parameters must be `f32` or `usize`",
+        )),
+    }
+}
+
+fn reference_kind(reference: &TypeReference) -> syn::Result<ParamKind> {
+    f32_element(slice_element(reference)?)?;
+    Ok(if reference.mutability.is_some() {
+        ParamKind::BufWrite
+    } else {
+        ParamKind::BufRead
+    })
+}
+
+fn slice_element(reference: &TypeReference) -> syn::Result<&Type> {
+    let Type::Slice(slice) = reference.elem.as_ref() else {
+        return Err(Error::new(
+            reference.span(),
+            "buffer parameters must be slices (`&[f32]` or `&mut [f32]`)",
+        ));
+    };
+    Ok(slice.elem.as_ref())
+}
+
+fn f32_element(ty: &Type) -> syn::Result<()> {
+    if matches!(ty, Type::Path(path) if path.qself.is_none() && path.path.is_ident("f32")) {
+        return Ok(());
+    }
+    Err(Error::new(ty.span(), "buffer element type must be `f32`"))
+}
+
+fn unique_parameters(params: &[Param], signature: &syn::Signature) -> syn::Result<()> {
+    let duplicate = params.iter().enumerate().find(|(idx, parameter)| {
+        params[..*idx]
+            .iter()
+            .any(|prior| prior.name == parameter.name)
+    });
+    match duplicate {
+        Some((_, parameter)) => Err(Error::new(
+            signature.span(),
+            format!("duplicate kernel parameter `{}`", parameter.name),
+        )),
+        None => Ok(()),
+    }
 }
 
 /// 参数与循环变量都必须是「光秃秃的标识符」：带 `ref` / `mut` / 子模式的形状摊不成 C 的形参。
@@ -259,9 +316,10 @@ fn half_open_range(expression: &Expr) -> syn::Result<&ExprRange> {
 }
 
 fn zero_start(range: &ExprRange) -> syn::Result<()> {
-    let Some(start) = range.start.as_deref() else {
-        return Err(Error::new(range.span(), "loop range must start at zero"));
-    };
+    let start = range
+        .start
+        .as_deref()
+        .ok_or_else(|| Error::new(range.span(), "loop range must start at zero"))?;
     let Expr::Lit(ExprLit {
         lit: Lit::Int(start),
         ..
@@ -269,30 +327,19 @@ fn zero_start(range: &ExprRange) -> syn::Result<()> {
     else {
         return Err(Error::new(start.span(), "loop range must start at zero"));
     };
-    if start.base10_parse::<u64>()? != 0 {
-        return Err(Error::new(start.span(), "loop range must start at zero"));
+    match start.base10_parse::<u64>()? {
+        0 => Ok(()),
+        _ => Err(Error::new(start.span(), "loop range must start at zero")),
     }
-    Ok(())
 }
 
 fn extent_name(range: &ExprRange, params: &[Param]) -> syn::Result<String> {
-    let end = extent_end(range)?;
-    let name = path_ident(end, "loop extent must be a `usize` parameter")?;
-    let name = portable_ident(name)?;
-    require_usize(params, &name, end)?;
-    Ok(name)
-}
-
-fn extent_end(range: &ExprRange) -> syn::Result<&Expr> {
-    match range.end.as_deref() {
-        Some(end) => Ok(end),
-        None => Err(Error::new(range.span(), "loop range requires an extent")),
-    }
-}
-
-fn require_usize(params: &[Param], name: &str, end: &Expr) -> syn::Result<()> {
-    if param_kind(params, name) == Some(ParamKind::Usize) {
-        return Ok(());
+    let Some(end) = range.end.as_deref() else {
+        return Err(Error::new(range.span(), "loop range requires an extent"));
+    };
+    let name = portable_ident(path_ident(end, "loop extent must be a `usize` parameter")?)?;
+    if param_kind(params, &name) == Some(ParamKind::Usize) {
+        return Ok(name);
     }
     Err(Error::new(
         end.span(),
@@ -321,15 +368,7 @@ fn at_loop_idx(expression: &Expr, idx: &str) -> syn::Result<()> {
     ))
 }
 
-fn parse_assignment(
-    assign: &ExprAssign,
-    idx: &str,
-    params: &[Param],
-) -> syn::Result<(String, TokenStream2)> {
-    let output = output_name(assign, idx, params)?;
-    Ok((output, parse_expr(assign.right.as_ref(), idx, params)?))
-}
-
+/// 赋值目标是「可写缓冲 + 循环下标」两件事；任一件不成立都在目标处报错。
 fn output_name(assign: &ExprAssign, idx: &str, params: &[Param]) -> syn::Result<String> {
     let Expr::Index(target) = assign.left.as_ref() else {
         return Err(Error::new(
@@ -342,31 +381,9 @@ fn output_name(assign: &ExprAssign, idx: &str, params: &[Param]) -> syn::Result<
         "output must be a named mutable buffer",
     )?;
     let output = portable_ident(buf)?;
-    require_output(
-        assign,
-        target.expr.as_ref(),
-        target.index.as_ref(),
-        idx,
-        params,
-    )?;
-    Ok(output)
-}
-
-fn require_output(
-    assign: &ExprAssign,
-    buf: &Expr,
-    at: &Expr,
-    idx: &str,
-    params: &[Param],
-) -> syn::Result<()> {
-    at_loop_idx(at, idx)?;
-    require_buf_write(assign, params, buf)
-}
-
-fn require_buf_write(assign: &ExprAssign, params: &[Param], buf: &Expr) -> syn::Result<()> {
-    let name = path_ident(buf, "output must be a named mutable buffer")?;
-    if param_kind(params, &portable_ident(name)?) == Some(ParamKind::BufWrite) {
-        return Ok(());
+    at_loop_idx(target.index.as_ref(), idx)?;
+    if param_kind(params, &output) == Some(ParamKind::BufWrite) {
+        return Ok(output);
     }
     Err(Error::new(
         assign.left.span(),
@@ -379,13 +396,6 @@ fn param_kind(params: &[Param], name: &str) -> Option<ParamKind> {
         .iter()
         .find(|param| param.name == name)
         .map(|param| param.kind)
-}
-
-fn is_buf_param(params: &[Param], name: &str) -> bool {
-    matches!(
-        param_kind(params, name),
-        Some(ParamKind::BufRead | ParamKind::BufWrite)
-    )
 }
 
 /// 表达式分三层：括号剥壳 → 叶子（字面量/名字/加载）→ 组合子（二元、取负）。
@@ -410,12 +420,8 @@ fn parse_compound(expression: &Expr, idx: &str, params: &[Param]) -> syn::Result
     match expression {
         Expr::Binary(binary) => binary_expr(binary, idx, params),
         Expr::Unary(unary) => negate(unary, idx, params),
-        _ => Err(unsupported(expression)),
+        _ => Err(Error::new(expression.span(), UNSUPPORTED)),
     }
-}
-
-fn unsupported(expression: &Expr) -> Error {
-    Error::new(expression.span(), UNSUPPORTED)
 }
 
 /// 表达式这一族的统一拒绝语：把「能用什么」写在一处，免得三个分支各说一套。
@@ -437,13 +443,9 @@ fn float_literal(lit: &ExprLit) -> syn::Result<TokenStream2> {
 }
 
 fn scalar_use(path: &ExprPath, idx: &str, params: &[Param]) -> syn::Result<TokenStream2> {
-    let name = scalar_name(path, idx, params)?;
-    Ok(quote!(::cutile::ir::Expr::Scalar(#name.to_string())))
-}
-
-fn scalar_name(path: &ExprPath, idx: &str, params: &[Param]) -> syn::Result<String> {
     let name = scalar_ident(path, idx)?;
-    reject_non_scalar(path, params, &name)
+    let name = reject_non_scalar(path, params, &name)?;
+    Ok(quote!(::cutile::ir::Expr::Scalar(#name.to_string())))
 }
 
 fn scalar_ident(path: &ExprPath, idx: &str) -> syn::Result<String> {
@@ -486,13 +488,14 @@ fn loaded_name(buf: &Expr, at: &Expr, idx: &str, params: &[Param]) -> syn::Resul
     let ident = path_ident(buf, "only named buffers can be loaded")?;
     let name = portable_ident(ident)?;
     at_loop_idx(at, idx)?;
-    if !is_buf_param(params, &name) {
-        return Err(Error::new(
-            ident.span(),
-            format!("`{name}` is not a buffer parameter"),
-        ));
+    let kind = param_kind(params, &name);
+    if matches!(kind, Some(ParamKind::BufRead | ParamKind::BufWrite)) {
+        return Ok(name);
     }
-    Ok(name)
+    Err(Error::new(
+        ident.span(),
+        format!("`{name}` is not a buffer parameter"),
+    ))
 }
 
 fn negate(unary: &ExprUnary, idx: &str, params: &[Param]) -> syn::Result<TokenStream2> {
@@ -540,40 +543,54 @@ fn multiplicative(op: &BinOp) -> Option<&'static str> {
     }
 }
 
-pub(super) fn ir_value_type(kind: ParamKind) -> TokenStream2 {
+/// 形参类型 → `cutile::ir::ValueType`：`&[f32]` 只读、`&mut [f32]` 可写、其余是标量。
+fn ir_value_type(kind: ParamKind) -> TokenStream2 {
+    let element = quote!(::cutile::ir::ScalarType::F32);
     match kind {
-        ParamKind::BufRead => quote! {
-            ::cutile::ir::ValueType::Buf {
-                element: ::cutile::ir::ScalarType::F32,
-                access: ::cutile::ir::Access::Read,
-            }
-        },
-        ParamKind::BufWrite => quote! {
-            ::cutile::ir::ValueType::Buf {
-                element: ::cutile::ir::ScalarType::F32,
-                access: ::cutile::ir::Access::ReadWrite,
-            }
-        },
-        ParamKind::F32 => quote! {
-            ::cutile::ir::ValueType::Scalar(::cutile::ir::ScalarType::F32)
-        },
-        ParamKind::Usize => quote! {
-            ::cutile::ir::ValueType::Scalar(::cutile::ir::ScalarType::Usize)
-        },
+        ParamKind::BufRead => {
+            quote!(::cutile::ir::ValueType::Buf { element: #element, access: ::cutile::ir::Access::Read })
+        }
+        ParamKind::BufWrite => {
+            quote!(::cutile::ir::ValueType::Buf { element: #element, access: ::cutile::ir::Access::ReadWrite })
+        }
+        ParamKind::F32 => quote!(::cutile::ir::ValueType::Scalar(#element)),
+        ParamKind::Usize => quote!(::cutile::ir::ValueType::Scalar(
+            ::cutile::ir::ScalarType::Usize
+        )),
     }
 }
 
-fn unique_parameters(params: &[Param], signature: &syn::Signature) -> syn::Result<()> {
-    for (idx, parameter) in params.iter().enumerate() {
-        if params[..idx]
-            .iter()
-            .any(|prior| prior.name == parameter.name)
-        {
-            return Err(Error::new(
-                signature.span(),
-                format!("duplicate kernel parameter `{}`", parameter.name),
-            ));
+/// `#[dsl]` 的 IR 构造器生成：把已校验的形状摊平成 `cutile::ir::Kernel::new(...)`。
+fn render(function: &ItemFn, params: &[Param], body: &Body) -> TokenStream2 {
+    let ir_params = params.iter().map(|parameter| {
+        let name = &parameter.name;
+        let ty = ir_value_type(parameter.kind);
+        quote! {
+            ::cutile::ir::Parameter {
+                name: #name.to_string(),
+                ty: #ty,
+            }
+        }
+    });
+    let fn_name = function.sig.ident.to_string();
+    let generated_name = format_ident!("__dsl_ir_{}", fn_name);
+    let visibility = &function.vis;
+    let idx = &body.idx;
+    let extent = &body.extent;
+    let output = &body.output;
+    let value = &body.value;
+    quote! {
+        #[doc(hidden)]
+        #[allow(missing_docs)]
+        #visibility fn #generated_name() -> ::cutile::ir::Kernel {
+            ::cutile::ir::Kernel::new(
+                #fn_name,
+                vec![#(#ir_params),*],
+                #idx,
+                #extent,
+                #output,
+                #value,
+            )
         }
     }
-    Ok(())
 }

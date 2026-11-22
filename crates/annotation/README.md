@@ -20,8 +20,8 @@
 文法与 `proc_macro` 解耦是这一层的核心决定：`proc_macro::TokenStream` 只在展开期可用，规则直接
 写在它上面，每条错误路径都无法被测试。
 
-四个声明侧生产文件平铺在 `src/`，单向依赖 `syntax ← decl ← render ← lib`，没有循环。唯一的子目录是
-`src/dsl/`：`#[dsl]` 是一条**独立**的前端，只依赖 `syn` / `quote`，与声明文法不共享任何一行。
+五个生产文件平铺在 `src/`，单向依赖 `syntax ← decl ← render ← lib`，没有子目录：`#[dsl]` 是一条
+**独立**的前端（`src/dsl.rs`），只依赖 `syn` / `quote`，与声明文法不共享任何一行。
 
 | 层 | 文件 | 职责 | 可测性 |
 |---|---|---|---|
@@ -29,9 +29,7 @@
 | 声明 | `src/decl.rs` | 三种形态的键表与解析产物（层 / 运行时 / 语义表） | 表驱动，加键 = 加一行 |
 | 渲染 | `src/render.rs` | 声明 → `impl` / 常量 / 校验测试的文本拼接 | 纯字符串拼接 |
 | 适配 | `src/lib.rs` | `TokenStream` ↔ token 模型、错误映射回 span；`Streams` 依赖倒置 | 字符串替身实现同一 trait |
-| DSL 前端 | `src/dsl/mod.rs` | `#[dsl]`：Rust 函数 → 受限形状（单循环 + 单输出）→ `cutile::ir::Kernel` 构造器 | `syn` AST 进、token 出 |
-| DSL 类型 | `src/dsl/types.rs` | 形参类型 → `ParamKind` 的闭集映射（`f32` / `usize` / `&[f32]` / `&mut [f32]`） | 纯函数，错误带 span |
-| DSL 渲染 | `src/dsl/render.rs` | 校验后的形状摊平成 `Kernel::new(...)` 的 token | 纯 token 拼装 |
+| DSL 前端 | `src/dsl.rs` | `#[dsl]`：Rust 函数 → 受限形状（单循环 + 单输出）→ `Kernel::new(...)`；类型闭集、形状校验、token 拼装三段按顺序排在同一文件 | `syn` AST 进、token 出；错误带 span |
 
 测试在 `tests/`：`fixture.rs`（注解文本 → token 模型的最小词法器，分层夹具）、`decl_tests.rs`、
 `render_tests.rs`、`adapter_tests.rs`、`audit.rs`（独立的 `[[test]]`，读源码与 manifest 的静态门禁）。

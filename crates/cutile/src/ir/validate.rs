@@ -3,7 +3,7 @@
 //! 六道闸按序排布：名字 → 形参 → 生成名 → extent → 输出 → 表达式。前一半决定 C 声明能否
 //! 合法发射，后一半判定表达式到底算不算 `f32` 输出。逐点 `Kernel` 与归约 `Reduce` 都走这里。
 
-use super::{buf_length_name, Access, Expr, Parameter, ScalarType, ValueType, VerificationError};
+use super::{Access, Expr, Parameter, ScalarType, ValueType, VerificationError, buf_length_name};
 
 /// 逐点与归约共用的六道校验：名字/形参/生成名决定 C 声明，之后才验表达式是否算 f32 输出。
 pub(super) fn verify_core(

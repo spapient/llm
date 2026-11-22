@@ -102,6 +102,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `OpDecl` / `Registration` | `op` | 声明解析结果与唯一注册表 `REGISTRY`；`cutile` 只消费，不持第二份 |
 | `Phase` / `Seam` / `Fusion` | `op` | 槽位代数：`compose` 判定生产者能否拼到消费者前面——`Phase` 是一段「读哪些槽位 → 写哪些槽位」，`Seam` 是两侧同类型的一处缝（`from` / `to` / `ctype`），`Fusion` 是一次合法融合（缝非空才成立，`None` 是候选剪枝而非错误）。`A == B` 的**自融合**恒为 `None`：读的槽位要等这一轮写完才有值，那是循环携带依赖，拼出来的核无法定义执行顺序，还会白占一个预算名额；`cutile` 只消费，不持第二份 |
 | `Scalar` | `gemm` | 元素运算超 trait（`Add` / `Sub` / `Mul` / `Div`）：让泛型内核写 `a + b` 而不是逐方法调用，否则「泛型化」只把 `as f32` 换成 `S::mul` |
+| `Probe` | `gemm` | 端口峰值探针——**一条指令路径**的分母（吞吐 = `ops_per_round × rounds / 耗时`）：组名前缀 / 通道后缀 / 一轮 MAC 数 / 本机跑一轮的 `run` 闭包四字段是它与测量容器之间的全部协议；本机缺某条指令路径（如 SME 通道）就**不在 [`probes`] 清单里**，调用方不写 `cfg` |
 | `Monoid` / `SsmStep` / `PlaneStep` / `Scan` | `conv` | β 指数梯形扫描的数学底座与 `scan_f32` 算子：半群、两种离散化（`exp_zero_order` / `exp_trapezoid`）、复值状态的 2×2 实值块 |
 | `Profile` | `prof` | 设备档案；机制代码不得出现 `vendor == "..."` |
 | `Device` / `Image` / `Status` | `prof` | 一台设备这次构建带上的设备侧代码、编译产物与其结局（`Source` / `Compiled` / `NoRecipe` / `Skipped`）；放在最底层是为了让六份片段 crate 与 `prim` 都能引用同一份类型而不成环 |
