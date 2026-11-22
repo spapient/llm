@@ -86,8 +86,7 @@ impl Bounds {
             )
             .with("nn::Bounds::of_ctx")
         })?;
-        let shape =
-            (model.shape_ctx)(a, b).map_err(|error| error.with("nn::Bounds::of_ctx"))?;
+        let shape = (model.shape_ctx)(a, b).map_err(|error| error.with("nn::Bounds::of_ctx"))?;
         let cost = (model.cost)(&shape).map_err(|error| error.with("nn::Bounds::of_ctx"))?;
         Ok(Self {
             read: cost.read,

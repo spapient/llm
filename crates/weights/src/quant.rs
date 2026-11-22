@@ -287,12 +287,7 @@ fn rank2(entry: &Entry, expected: &str, ctx: &str) -> Result<[usize; 2]> {
 }
 
 /// 分组：逻辑输入宽度必须被标度声明的分组数整除。`None` 表示元素类型不可能是 4 位量化。
-fn pack(
-    weight: &Entry,
-    second: usize,
-    groups: usize,
-    ctx: &str,
-) -> Result<Option<(usize, usize)>> {
+fn pack(weight: &Entry, second: usize, groups: usize, ctx: &str) -> Result<Option<(usize, usize)>> {
     let Some(in_features) = width(weight, second, ctx)? else {
         return Ok(None);
     };

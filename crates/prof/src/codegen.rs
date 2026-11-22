@@ -92,9 +92,7 @@ fn scan(dir: &Path, vendor: &str) -> Device {
 
     // 见证与清单不是片段（扩展名不符的被跳过）；每段片段带上自己的见证入口。
     let parts = files.iter().filter(|path| **path != witness);
-    let epilogue = parts
-        .clone()
-        .find_map(|path| epilogue_of(path, &ext));
+    let epilogue = parts.clone().find_map(|path| epilogue_of(path, &ext));
     // 尾块已单独取走：它不在原语闭集内，再交给 `fragment_of` 会硬失败。
     let tail = epilogue.clone();
     let (mut fragments, mut entries): (Vec<_>, Vec<_>) = parts

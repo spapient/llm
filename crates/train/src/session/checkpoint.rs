@@ -126,20 +126,8 @@ pub fn resume(
     })?;
     let ctx = format!("检查点在第 {} 步保存", checkpoint.step());
     reconcile(&ctx, "训练层数", "层", checkpoint.layers(), layers)?;
-    reconcile(
-        &ctx,
-        "批行数",
-        "行",
-        checkpoint.batch_rows(),
-        batch_rows,
-    )?;
-    reconcile(
-        &ctx,
-        "批列宽",
-        "列",
-        checkpoint.batch_cols(),
-        batch_cols,
-    )?;
+    reconcile(&ctx, "批行数", "行", checkpoint.batch_rows(), batch_rows)?;
+    reconcile(&ctx, "批列宽", "列", checkpoint.batch_cols(), batch_cols)?;
     Ok(())
 }
 

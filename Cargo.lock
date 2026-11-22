@@ -816,6 +816,8 @@ name = "llm-shard"
 version = "0.1.0"
 dependencies = [
  "llm-diagnostic",
+ "llm-testkit",
+ "proptest",
 ]
 
 [[package]]

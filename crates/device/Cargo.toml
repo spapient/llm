@@ -27,3 +27,7 @@ workspace = true
 [[test]]
 name = "schedule"
 path = "tests/schedule.rs"
+
+[[test]]
+name = "metal_suite"
+path = "tests/metal_suite.rs"

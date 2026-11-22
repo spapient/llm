@@ -375,11 +375,7 @@ impl Model {
     ///
     /// 缺少 [`AxisRole::Input`] 或 [`AxisRole::Output`] 的声明；宽度为 0（见
     /// [`ShapeCtx::new`]）。
-    pub fn projection(
-        &self,
-        in_features: usize,
-        out_features: usize,
-    ) -> Result<ShapeCtx, Error> {
+    pub fn projection(&self, in_features: usize, out_features: usize) -> Result<ShapeCtx, Error> {
         let input = self.axis(AxisRole::Input).ok_or_else(|| {
             Error::new(
                 Code::Unsupported,

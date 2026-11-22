@@ -52,3 +52,7 @@ pub use collective::{Collective, Group, Reduce, Remote};
 pub use local::Local;
 pub use tiling::{Partition, Sharding, Tiling};
 pub use topology::{Parallel, Topology};
+
+#[cfg(test)]
+#[path = "../tests/prop_tiling.rs"]
+mod prop_tiling;

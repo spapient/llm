@@ -5,9 +5,9 @@ use super::*;
 #[test]
 fn generation_goes_before_ctx() {
     let candidates = [
-        Candidate::ctx(1, 4),
+        Candidate::prefill(1, 4),
         Candidate::generation(2),
-        Candidate::ctx(3, 2),
+        Candidate::prefill(3, 2),
     ];
     let Verdict::Packed { rows, tokens } = pack(Budget::unlimited(), &candidates) else {
         panic!("不限预算必须装得下");
@@ -26,8 +26,8 @@ fn a_tight_budget_squeezes_only_ctx() {
     let candidates = [
         Candidate::generation(1),
         Candidate::generation(2),
-        Candidate::ctx(3, 8),
-        Candidate::ctx(4, 4),
+        Candidate::prefill(3, 8),
+        Candidate::prefill(4, 4),
     ];
     let Verdict::Packed { rows, tokens } = pack(Budget::new(4, 6), &candidates) else {
         panic!("应当能装下");

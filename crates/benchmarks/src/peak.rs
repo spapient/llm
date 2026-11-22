@@ -123,39 +123,43 @@ where
     F: Fn(usize) -> bool + Sync,
 {
     let count = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    let probe = &probe;
     for threads in [1, 16, count] {
         let mut group = c.benchmark_group(format!("sme_peak/{threads}{name}"));
         group.throughput(Throughput::Elements(
             (threads * FLOPS_PER_ROUND * ROUNDS) as u64,
         ));
-        let probe = &probe;
         group.bench_function("port", |iter| {
-            iter.iter_custom(|iters| {
-                let rounds = iters as usize * ROUNDS;
-                let start = Arc::new(Barrier::new(threads));
-                let mut peak = Duration::ZERO;
-                std::thread::scope(|scope| {
-                    let handles: Vec<_> = (0..threads)
-                        .map(|_| {
-                            let start = Arc::clone(&start);
-                            scope.spawn(move || {
-                                start.wait();
-                                let launched = Instant::now();
-                                assert!(probe(rounds), "本机无 SME");
-                                launched.elapsed()
-                            })
-                        })
-                        .collect();
-                    for handle in handles {
-                        if let Ok(spent) = handle.join() {
-                            peak = peak.max(spent);
-                        }
-                    }
-                });
-                peak
-            });
+            iter.iter_custom(|iters| fastest(threads, iters as usize * ROUNDS, probe));
         });
         group.finish();
     }
 }
 
+/// 一轮计时：`threads` 个线程在 `Barrier` 上齐步，各自量自己那段计算，取最大值。
+///
+/// `spawn` 与 `wait` 都在计时区外——否则线程创建的微秒会被算成内核吞吐。`probe` 返回 `false`
+/// 表示本机没有这个单元，直接让断言失败，而不是把「没测到」报成一个峰值。
+fn fastest(threads: usize, rounds: usize, probe: &(impl Fn(usize) -> bool + Sync)) -> Duration {
+    let start = Arc::new(Barrier::new(threads));
+    let mut peak = Duration::ZERO;
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..threads)
+            .map(|_| {
+                let start = Arc::clone(&start);
+                scope.spawn(move || {
+                    start.wait();
+                    let launched = Instant::now();
+                    assert!(probe(rounds), "本机无 SME");
+                    launched.elapsed()
+                })
+            })
+            .collect();
+        for handle in handles {
+            if let Ok(spent) = handle.join() {
+                peak = peak.max(spent);
+            }
+        }
+    });
+    peak
+}

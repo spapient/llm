@@ -73,18 +73,31 @@ crates/rocm/      同上，.cpp（AscendC）
 逐字不变。
 
 六台设备各 9 个文件：P0 模板用到的 7 个原语各一段，加一个 `witness.<ext>`、一个 `epilogue.<ext>`。
-档案里共 102 条 `provides`，另有 36 条 `[[epilogue]]`：文本只写这 7 个原语，其余签名停在 `L0`，
-只有见证没有文本。`cutile` 的
+档案里共 102 条 `provides`，**没有** `[[epilogue]]` 行：写回层不按形式逐条登记（下节说明为什么
+登记是第二份真相），文本只写这 7 个原语，其余签名停在 `L0`，只有见证没有文本。`cutile` 的
 `every_device_fragment_set_splices_the_p0_template` 把这条约定变成判据：台架上的档案只要能
 协商出变体，它的片段就必须能把 P0 模板拼出来——参数个数或命名参数写错不必等到构建期。
 
-## 见证源码
+## 写回正文
 
 `<vendor>/epilogue.<ext>` 是写回层的六种形式（`bias` / `act` / `residual` / `scale` / `quant` /
 `store`）在设备上的正文，用 `/* epi: <form> */` 分节，首行签名写 `/* cutile-sign: epilogue */`——
 一条文本实现六种形式，所以声明行不带 `/`。写回形式不是原语：`bias.<ext>` 之类的文件名会被
 `Prim::parse` 当成拼错的签名，因此它走 `prof::codegen` 里另一条通道，目录仍是闭集（
 `the_fragment_directory_is_a_closed_set` 把 `epilogue.<ext>` 一并算进应有文件）。
+
+这份正文**不是被引用，是被执行**：`cutile::substitute::epilogue(device, steps, &EpiArgs)` 按
+`spec::epilogue::Step` 的顺序取下对应那一段，替换 `$0..$3` 四槽拼进内核；`crates/gemm/tests/
+epilogue_device_tests.rs` 再用 `testkit::witness::run` 把装配结果编成宿主程序跑一遍，4 个场景 ×
+6 台设备 = 24 组合与 `gemm::epilogue::apply` 对拍。六段齐全由 `prof::codegen::epilogue::every_form`
+在**正文**上核（正文是装配器唯一的事实源，所以"有没有这一段"由正文自己回答）。
+
+因此这里**没有** `witness_epi_<form>` 那样的逐形式见证函数：装配真设备段并执行它本身就是验证，
+再手写一份 C 重算一遍只是把同一件事写两遍，两份还会各自漂移。四槽契约里最容易错的一条是
+`bias` 的 `$2` 是**列数**而不是元素个数（cpu 段的 `_base = _r * ($2)` 说明了这一点）——把它当元
+素个数传会越界写 tile，这条正是 24 组合对拍抓出来的。
+
+## 见证源码
 
 `<vendor>/witness.<ext>` 是"这个设备真的能跑"的最小证据。函数统一为 `int func(float *out)`：
 返回写入的元素个数（≤ 8），值按 f32 读回；档案里同时写清楚入口函数与期望输出：

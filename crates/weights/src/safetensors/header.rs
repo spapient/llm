@@ -32,31 +32,14 @@ fn field(
     offsets: &mut Option<(usize, usize)>,
 ) -> Result<()> {
     match key {
-        "dtype" => dtype_slot(dtype, value, key, ctx),
-        "shape" => shape_slot(shape, value, key, ctx),
-        "data_offsets" => offsets_slot(offsets, value, key, ctx),
+        "dtype" => dtype_of(value).and_then(|value| set_once(dtype, value, key, ctx)),
+        "shape" => shape_of(value).and_then(|value| set_once(shape, value, key, ctx)),
+        "data_offsets" => offsets_of(value).and_then(|value| set_once(offsets, value, key, ctx)),
         other => Err(bad(format!(
             "未知字段 `{other}`（条目只允许 dtype / shape / data_offsets）"
         ))
         .with(ctx)),
     }
-}
-
-fn dtype_slot(slot: &mut Option<DType>, value: &Value, key: &str, ctx: &str) -> Result<()> {
-    set_once(slot, dtype_of(value)?, key, ctx)
-}
-
-fn shape_slot(slot: &mut Option<Shape>, value: &Value, key: &str, ctx: &str) -> Result<()> {
-    set_once(slot, shape_of(value)?, key, ctx)
-}
-
-fn offsets_slot(
-    slot: &mut Option<(usize, usize)>,
-    value: &Value,
-    key: &str,
-    ctx: &str,
-) -> Result<()> {
-    set_once(slot, offsets_of(value)?, key, ctx)
 }
 
 /// 字段只允许出现一次。

@@ -201,11 +201,7 @@ pub fn enqueue(queue: &mut Vec<Queued>, graph: &Graph, stream: Stream) {
 
 /// 节点操作数约束：每个编号都要已绑定，且输入与输出不能同号。`unbound` 判定"未绑定"，
 /// `ctx` 是执行器名（CPU / Metal 各自报自己的入口）。
-pub fn check_operands(
-    node: &Node,
-    unbound: impl Fn(u32) -> bool,
-    ctx: &'static str,
-) -> Result<()> {
+pub fn check_operands(node: &Node, unbound: impl Fn(u32) -> bool, ctx: &'static str) -> Result<()> {
     for operand in node.inputs().iter().chain(node.outputs()) {
         if unbound(operand.id()) {
             return Err(Error::new(

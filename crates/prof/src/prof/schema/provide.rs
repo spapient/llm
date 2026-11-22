@@ -141,8 +141,8 @@ pub(super) fn witness_of(entry: &Table, index: usize) -> Result<Option<Witness>,
     };
     Ok(Some(witness_fields(table, |key| witness_at(index, key))?))
 }
-/// 见证的三个字段：`file` / `func` 必填，`expect` 是数值数组。字段路径由调用方给：
-/// `[[provides]]` 与 `[[epilogue]]` 共用这一段，报错位置却必须落在各自的段里。
+/// 见证的三个字段：`file` / `func` 必填，`expect` 是数值数组。字段路径由调用方给，
+/// 报错位置因此落在声明它的那一段里。
 pub(super) fn witness_fields(
     table: &Table,
     at: impl Fn(&'static str) -> Field<'static>,

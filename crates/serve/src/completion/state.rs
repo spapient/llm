@@ -267,7 +267,7 @@ where
     /// 先把拍板给上下文候选的那几块算掉：一行也没分到时它什么都不做。
     fn prefill_ctx(&mut self, plan: &[Candidate]) -> diagnostic::Result<()> {
         plan.iter()
-            .filter(|candidate| candidate.phase() == Phase::Ctx)
+            .filter(|candidate| candidate.phase() == Phase::Prefill)
             .try_for_each(|candidate| self.prefill(candidate.id(), candidate.rows()))
     }
 

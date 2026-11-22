@@ -238,11 +238,11 @@ impl Batch {
             sequences,
         } = self;
         let width = scheduler.page_size();
-        let Some((ctx, pages)) = settleable(sequences, scheduler, id) else {
+        let Some((history, pages)) = settleable(sequences, scheduler, id) else {
             return Ok(());
         };
-        for block in settled_blocks(rows, width, ctx.len(), pages.len()) {
-            scheduler.publish(&ctx, block, pages[block])?;
+        for block in settled_blocks(rows, width, history.len(), pages.len()) {
+            scheduler.publish(&history, block, pages[block])?;
         }
         Ok(())
     }
@@ -303,7 +303,7 @@ impl Batch {
                     return crate::ifb::Candidate::generation(sequence.id());
                 }
                 let rows = crate::ifb::chunk(remaining, sequence.page_size(), budget.tokens());
-                crate::ifb::Candidate::ctx(sequence.id(), rows)
+                crate::ifb::Candidate::prefill(sequence.id(), rows)
             })
             .filter(|candidate| candidate.rows() > 0)
             .collect();
