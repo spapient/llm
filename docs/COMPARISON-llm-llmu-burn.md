@@ -714,9 +714,9 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 
 
 
-* **Burn（●，9）**：49 个 Config 模块，覆盖 Linear/Embedding、全套 norm、Conv1/2/3d、Transpose、DeformConv、Pool1/2/3d、激活、Dropout、Rnn/Gru/Lstm/Bi\*、Transformer Encoder/Decoder 与 autoregressive cache；`derive(Module/Config)` + `ParamGroup`/LoRA 参数映射。
+* **Burn（●，9）**：8 大类模块、78 个 Config 结构，覆盖 Linear/Embedding、全套 norm、Conv1/2/3d、Transpose、DeformConv、Pool1/2/3d、激活、Dropout、Rnn/Gru/Lstm/Bi\*、Transformer Encoder/Decoder 与 autoregressive cache；`derive(Module/Config)` + `ParamGroup`/LoRA 参数映射。
 
-* **llm 新（◐，5）**：41 个结构体，补齐了 Conv1/2d/Transpose、Pool、各类 norm、Attention、Rope；缺 RNN。参数以 `ParamSlot`/ 扁平 `[f32]` 槽管理，无派生宏与模块参数树。
+* **llm 新（◐，5）**：38 个 `pub struct`，补齐了 Conv1/2d/Transpose、Pool、各类 norm、Attention、Rope；缺 RNN。参数以 `ParamSlot`/ 扁平 `[f32]` 槽管理，无派生宏与模块参数树。
 
 * **llm.u（○，3）**：17 个公开函数，matmul/norm/ 激活 /attention/SSM；无 conv、无 pool、无 RNN。层函数直接作用于 `&[f32]` 扁平切片，权重按名模式装配。
 
