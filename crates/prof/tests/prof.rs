@@ -3,6 +3,7 @@
 //! 与 `prof.rs` 分开放，是为了让生产文件只含生产代码——两边的行数各自可读，也各自受门禁约束。
 
 use super::*;
+use crate::atom::{DType, DTypeSet};
 use crate::schema::eval_expression;
 
 /// 内置 CPU 档案：`devices/cpu.toml` 在构建期生成的树，运行期没有 TOML 文本。

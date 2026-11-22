@@ -2,12 +2,29 @@
 //! （本文件末尾的 `eval_expression`）。自洽校验在 [`crate::witness`] 的 `Profile::validate`。
 
 use crate::atom::Set;
-use crate::decode::{self, Absent, rows};
+use crate::decode::{self, Absent, Fail, rows};
 use crate::prof::*;
 use core::fmt;
 use diagnostic::Error;
 
 pub(crate) use crate::atom::invalid;
+
+/// 档案层的失败口径：三种形态各自成 [`ProfileError`] 的变体，`code()` 因此仍能分辨"缺字段"。
+impl Fail for ProfileError {
+    fn bad(path: &str, detail: &str) -> Self {
+        Self::BadValue {
+            field: path.to_string(),
+            detail: detail.to_string(),
+        }
+    }
+    fn unknown(path: &str, value: &str, allowed: &str) -> Self {
+        Self::Unknown {
+            field: path.to_string(),
+            value: value.to_string(),
+            allowed: allowed.to_string(),
+        }
+    }
+}
 
 
 
@@ -94,7 +111,7 @@ fn named(table: &Table, key: &str, field: &str) -> Result<String, ProfileError> 
 }
 /// `[meta].emit`：必须在 [`Emit`] 闭集里。
 fn emit_of(table: &Table) -> Result<Emit, ProfileError> {
-    decode::closed("meta.emit", text(table, "emit", "meta.emit")?)
+    decode::closed::<Emit, ProfileError>("meta.emit", text(table, "emit", "meta.emit")?)
 }
 /// `[fingerprint]` 规则表：规则名 → 解析后的匹配规则。
 type Fingerprint = Vec<(String, MatchRule)>;
@@ -141,8 +158,8 @@ fn parse_spaces(table: &Table) -> Result<Spaces, ProfileError> {
 }
 /// 一条存储映射：键是闭集里的语义名，值是物理名。
 fn space_entry(key: &str, value: &Value) -> Result<(Space, String), ProfileError> {
-    let space = decode::closed("space", key)?;
-    let name = decode::text(format!("space.{key}"), value)?;
+    let space = decode::closed::<Space, ProfileError>("space", key)?;
+    let name = decode::text::<ProfileError>(format!("space.{key}"), value)?;
     Ok((space, name.to_string()))
 }
 /// 三级存储的语义名必须齐全：缺一条就拼不出完整的物理名映射。
@@ -196,7 +213,7 @@ fn unit_entry(name: &str, value: &Value) -> Result<Unit, ProfileError> {
     };
     Ok(Unit {
         name: name.to_string(),
-        space: decode::closed_set(&path, space)?,
+        space: closed_set(&path, space)?,
     })
 }
 /// `[[provides]]` 数组：至少一条，否则协商没有可选的能力。
@@ -288,7 +305,7 @@ fn parse_provide(entry: &Table, idx: usize) -> Result<Provide, ProfileError> {
 /// 一条 `[[provides]]` 的头两项：`prim` 必填且必须在闭集里，`impl` 缺省为 `-`。
 fn head_of(entry: &Table, idx: usize) -> Result<Provide, ProfileError> {
     let field = at(idx, "prim");
-    let prim = decode::closed(field, text(entry, "prim", field)?)?;
+    let prim = decode::closed::<Prim, ProfileError>(field, text(entry, "prim", field)?)?;
     Ok(Provide::of(prim, entry.string("impl").unwrap_or("-")))
 }
 /// 三条区间：主维度（`m` / `bytes` / `extent` 三选一）与 `n` / `k`。
@@ -327,8 +344,16 @@ fn span_of(entry: &Table, idx: usize, names: &[&str], detail: &str) -> Result<Sp
     let Some(text) = entry.string(alias) else {
         return Err(bad(field, detail));
     };
-    decode::span(field, text)
+    decode::span::<ProfileError>(field, text)
 }
+/// 位集解码：`WORDS` 由目标类型给，失败类型固定本层（`decode` 那边只有一份实现）。
+fn closed_set<E: Closed, const WORDS: usize>(
+    path: impl fmt::Display,
+    value: &Value,
+) -> Result<Set<E, WORDS>, ProfileError> {
+    decode::closed_set(path, value)
+}
+
 /// `dt` / `space`：缺省是空集，写了就逐项落在闭集里。
 fn set_field<E: Closed, const WORDS: usize>(
     entry: &Table,
@@ -336,14 +361,14 @@ fn set_field<E: Closed, const WORDS: usize>(
     key: &str,
 ) -> Result<Set<E, WORDS>, ProfileError> {
     match entry.get(key) {
-        Some(value) => decode::closed_set(at(idx, key), value),
+        Some(value) => closed_set(at(idx, key), value),
         None => Ok(Set::empty()),
     }
 }
 /// `grade`：必填，闭集外取值报 `Unknown`。
 fn grade_of(entry: &Table, idx: usize) -> Result<Grade, ProfileError> {
     let path = at(idx, "grade");
-    decode::closed(path, text(entry, "grade", path)?)
+    decode::closed::<Grade, ProfileError>(path, text(entry, "grade", path)?)
 }
 /// `witness`：内联表 `{ file, func, expect }`；只有路径的见证无法执行。
 fn witness_of(entry: &Table, idx: usize) -> Result<Option<Witness>, ProfileError> {
@@ -406,8 +431,11 @@ fn parsed_key(key: &str) -> bool {
 }
 /// 一条属性：键在 [`AttrKey`] 闭集里，取值按标量或数组展开。
 fn one_attr(idx: usize, key: &str, value: &Value) -> Result<Attr, ProfileError> {
-    let attr_key = decode::closed(at(idx, key), key)?;
-    Ok(Attr::new(attr_key, decode::names(at(idx, key), value)?))
+    let attr_key = decode::closed::<AttrKey, ProfileError>(at(idx, key), key)?;
+    Ok(Attr::new(
+        attr_key,
+        decode::names::<ProfileError>(at(idx, key), value)?,
+    ))
 }
 // ── 推导式求值 ───────────────────────────────────────
 

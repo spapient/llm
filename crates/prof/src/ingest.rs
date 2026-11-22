@@ -3,12 +3,22 @@
 use diagnostic::Error;
 use diagnostic::data::{Table, Value};
 
-use crate::atom::{Attr, AttrKey, Closed, Need, Prim, Span};
-use crate::decode::{self, Absent, rows};
+use crate::atom::{Attr, AttrKey, Closed, Need, Prim, Set, Span};
+use crate::decode::{self, Absent, Fail, rows};
 use crate::sch::layout::LayoutSpec;
 use crate::tpl::{Arg, Template};
 
 use super::{Axis, Chunk, Grid, OpDecl, Phase, Skeleton, Variant, field, tiles, variants};
+
+/// 声明层的失败口径：声明写错都是同一类（`invalid`），路径由 [`field`] 统一带出。
+impl Fail for Error {
+    fn bad(path: &str, detail: &str) -> Self {
+        field(path, detail)
+    }
+    fn unknown(path: &str, value: &str, allowed: &str) -> Self {
+        field(path, format!("`{value}` 不在闭集内（闭集：{allowed}）"))
+    }
+}
 
 /// 表里的全部段落一次取齐：构造函数本身没有分支，圈复杂度不该被解析步骤堆上去。
 fn parts(table: &Table) -> diagnostic::Result<(Head, Sections, Extras)> {
@@ -213,7 +223,7 @@ impl OpDecl {
 
 /// 从 `[needs]`/`[extra_needs]` 的一个条目解析能力签名。
 pub(crate) fn parse_need(section: &Table, key: &str, path: &str) -> Result<Need, Error> {
-    let prim = decode::closed(path, key)?;
+    let prim = decode::closed::<Prim, Error>(path, key)?;
     let detail = need_table(section, key, path)?;
     // 不拷这张表：解析只读它，为一棵内联表克隆一次等于每条需求多付一次分配。
     detail
@@ -245,7 +255,15 @@ fn need_field(
             "必须是字符串（`16`、`16..64`、`<=512`）",
         ));
     };
-    Ok(attach(need, decode::span(&value_path, text)?))
+    Ok(attach(need, decode::span::<Error>(&value_path, text)?))
+}
+
+/// 位集解码：`WORDS` 由目标类型给，失败类型固定本层（`decode` 那边只有一份实现）。
+fn closed_set<E: Closed, const WORDS: usize>(
+    path: &str,
+    value: &Value,
+) -> Result<Set<E, WORDS>, Error> {
+    decode::closed_set(path, value)
 }
 
 /// 一条需求的取值：必须是内联表。
@@ -268,15 +286,15 @@ fn collection(
     value: &Value,
 ) -> Result<Need, Error> {
     match name {
-        "dt" => Ok(need.with_dt(decode::closed_set(path, value)?)),
-        "space" => Ok(need.with_space(decode::closed_set(path, value)?)),
+        "dt" => Ok(need.with_dt(closed_set(path, value)?)),
+        "space" => Ok(need.with_space(closed_set(path, value)?)),
         _ => attribute(need, prim, path, name, value),
     }
 }
 
 /// 能力属性：键必须属于该原语的签名（`sat` 不属于 `load`），取值是字符串列表。
 fn attribute(need: Need, prim: Prim, path: &str, name: &str, value: &Value) -> Result<Need, Error> {
-    let attr_key = decode::closed(path, name)?;
+    let attr_key = decode::closed::<AttrKey, Error>(path, name)?;
     // 无关键既不会被协商比对、也不会被片段消费——它只会让声明看起来更具体，装载期就拒收。
     if !prim.accepts(attr_key) {
         let mut allowed: Vec<&str> = prim.attr_keys().iter().map(|key| key.as_str()).collect();
@@ -287,7 +305,7 @@ fn attribute(need: Need, prim: Prim, path: &str, name: &str, value: &Value) -> R
         );
         return Err(field(path, detail));
     }
-    Ok(need.with_attr(Attr::new(attr_key, decode::names(path, value)?)))
+    Ok(need.with_attr(Attr::new(attr_key, decode::names::<Error>(path, value)?)))
 }
 
 // ── 段解析 ─────────────────────────────────────────────────────────────
@@ -312,7 +330,7 @@ pub fn head(table: &Table) -> diagnostic::Result<(String, Skeleton, String)> {
 
 /// `[op]` 的其余两键：骨架必须落在闭集内，摘要缺省为空串占位的 `-`。
 pub fn op_head(op: &Table) -> diagnostic::Result<(Skeleton, String)> {
-    let skeleton = decode::closed(
+    let skeleton = decode::closed::<Skeleton, Error>(
         "op.skeleton",
         op.string("skeleton")
             .ok_or_else(|| field("op.skeleton", "缺失"))?,
@@ -358,7 +376,7 @@ pub fn axis(key: &str, value: &Value) -> diagnostic::Result<Axis> {
     };
     let values = items
         .iter()
-        .map(|item| decode::positive(&path, item))
+        .map(|item| decode::positive::<Error>(&path, item))
         .collect::<diagnostic::Result<Vec<u32>>>()?;
     if values.is_empty() {
         return Err(field(&path, "数组不能为空"));
@@ -472,7 +490,7 @@ pub fn consts(table: &Table) -> diagnostic::Result<Vec<(String, String)>> {
 /// 一个模板常量：整数/浮点/布尔按十进制渲染，字符串原样；表或数组不能当常量。
 pub fn const_value(key: &str, value: &Value) -> diagnostic::Result<(String, String)> {
     let path = format!("consts.{key}");
-    Ok((key.to_string(), decode::scalar_text(&path, value)?))
+    Ok((key.to_string(), decode::scalar_text::<Error>(&path, value)?))
 }
 
 /// `[consts]` 与 `[grid]`、`[chunk]` 三块可选的补丁：`declared` 按同一顺序解构。

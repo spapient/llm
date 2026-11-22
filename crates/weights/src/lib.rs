@@ -38,6 +38,10 @@
 /// 全 crate 的“非法输入”构造点转发自 L1 [`wire`]：判据与上下文标注各只有一处实现。
 pub(crate) use wire::bad;
 
+// 闭集枚举的单一生成点：判别值与 from_code 同源。
+#[macro_use]
+mod closed;
+
 // —— 自有 `.u` 容器 v2：描述符、读/写、帧编码、增量补丁与双模式 ——
 mod archive;
 mod container;

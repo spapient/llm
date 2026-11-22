@@ -24,8 +24,6 @@ use diagnostic::data::{Table, Value};
 /// 解码失败的三种形态。哪一层读表，就把它们落到哪一层的错误类型上：
 /// 档案要 `ProfileError`（缺字段与闭集外可分辨），声明要 `diagnostic::Error`（一切非法）。
 pub(crate) trait Fail: Sized {
-    /// 键不存在。
-    fn missing(path: &str) -> Self;
     /// 键在，值不成形。
     fn bad(path: &str, detail: &str) -> Self;
     /// 闭集外取值；`allowed` 是闭集名字，已按 ` | ` 连好（只在出错时拼）。
@@ -162,9 +160,6 @@ mod tests {
     #[derive(Debug, PartialEq, Eq)]
     struct Note(String);
     impl Fail for Note {
-        fn missing(path: &str) -> Self {
-            Self(format!("缺 `{path}`"))
-        }
         fn bad(path: &str, detail: &str) -> Self {
             Self(format!("`{path}` 非法：{detail}"))
         }
@@ -176,7 +171,8 @@ mod tests {
     #[test]
     fn rows_tell_absent_sections_apart() {
         let table = Table::new();
-        let optional: Vec<()> = rows(&table, "space", Absent::Empty, |_, _, _| Ok(())).unwrap();
+        let optional: Vec<()> =
+            rows(&table, "space", Absent::Empty, |_, _, _| Ok::<(), Note>(())).unwrap();
         assert!(optional.is_empty());
         let required = rows(&table, "axes", Absent::Required("至少需要一个轴"), |_, _, _| {
             Ok::<(), Note>(())
@@ -190,11 +186,16 @@ mod tests {
     #[test]
     fn rows_hand_the_section_to_every_row() {
         let mut table = Table::new();
-        table.set("axes.m", Value::Array(vec![Value::Int(1), Value::Int(2)]));
-        table.set("axes.n", Value::Array(vec![Value::Int(3)]));
+        table.set(
+            "axes",
+            Value::table(vec![
+                ("m", Value::Array(vec![Value::Int(1), Value::Int(2)])),
+                ("n", Value::Array(vec![Value::Int(3)])),
+            ]),
+        );
         let counts: Vec<usize> = rows(&table, "axes", Absent::Empty, |section, _, value| {
             assert_eq!(section.entries().len(), 2, "每一行都拿到同一段");
-            Ok(value_array_len(value))
+            Ok::<usize, Note>(value_array_len(value))
         })
         .unwrap();
         assert_eq!(counts, [2, 1]);

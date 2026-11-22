@@ -10,50 +10,32 @@ use crate::svd;
 /// 账本 schema 标识。
 pub const SCHEMA: &str = "llm.cert.v1";
 
-/// 秩选择稳定性状态（闭集，码位稳定）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Stable {
-    /// 谱隙满足 `γ_r > 2ε`。
-    Pass = 0,
-    /// 不满足严格阈值。
-    Fail = 1,
-    /// 未使用秩选择，无稳定性可判。
-    Open = 2,
-}
-
-impl Stable {
-    pub(crate) fn from_code(code: u8) -> Result<Self> {
-        match code {
-            0 => Ok(Self::Pass),
-            1 => Ok(Self::Fail),
-            2 => Ok(Self::Open),
-            other => Err(bad(format!("未知 Stable 码 {other}"))),
-        }
+closed_enum! {
+    /// 秩选择稳定性状态（闭集，码位稳定）。
+    pub enum Stable {
+        /// 谱隙满足 `γ_r > 2ε`。
+        Pass = 0,
+        /// 不满足严格阈值。
+        Fail = 1,
+        /// 未使用秩选择，无稳定性可判。
+        Open = 2,
     }
 }
 
-/// `ε_alg` 的取法（§4.2.1：证书必须声明方法；缺方法即无效，`ε_mach·σ_1` 不算无条件界）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EpsMethod {
-    /// 已验证的反向误差界。本仓不产出此值——`ε_mach·σ_1` 不是无条件界，而真正可证的向后误差
-    /// 界还没有落地，留码位是为了读端能认出别人签的那种证书。
-    Backward = 0,
-    /// 已验证残差：本次分解的后验 `‖A − UΣVᵀ‖_F`，[`certify`] 用的就是这条。
-    Residual = 1,
-    /// 只够做候选筛查（幂迭代等）：**不能**支撑证书，见 [`check`]。
-    Candidate = 2,
+closed_enum! {
+    /// `ε_alg` 的取法（§4.2.1：证书必须声明方法；缺方法即无效，`ε_mach·σ_1` 不算无条件界）。
+    pub enum EpsMethod {
+        /// 已验证的反向误差界。本仓不产出此值——`ε_mach·σ_1` 不是无条件界，而真正可证的向后误差
+        /// 界还没有落地，留码位是为了读端能认出别人签的那种证书。
+        Backward = 0,
+        /// 已验证残差：本次分解的后验 `‖A − UΣVᵀ‖_F`，[`certify`] 用的就是这条。
+        Residual = 1,
+        /// 只够做候选筛查（幂迭代等）：**不能**支撑证书，见 [`check`]。
+        Candidate = 2,
+    }
 }
 
 impl EpsMethod {
-    pub(crate) fn from_code(code: u8) -> Result<Self> {
-        match code {
-            0 => Ok(Self::Backward),
-            1 => Ok(Self::Residual),
-            2 => Ok(Self::Candidate),
-            other => Err(bad(format!("未知 EpsMethod 码 {other}"))),
-        }
-    }
-
     /// 账本里的字符串写法（闭集，码位稳定）。
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -65,27 +47,19 @@ impl EpsMethod {
     }
 }
 
-/// 这张证书用的是哪种界（§4.3.1 / §4.7 的 `bound_type`）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Bound {
-    /// L0 诊断界：只回答「秩可不可判」，[`certify`] 产出的就是这个。
-    Diagnostic = 0,
-    /// L0' 候选界：研究口径，只能当候选，不当证书。
-    Candidate = 1,
-    /// 未声明界：只在没有使用秩选择时允许。
-    None = 2,
+closed_enum! {
+    /// 这张证书用的是哪种界（§4.3.1 / §4.7 的 `bound_type`）。
+    pub enum Bound {
+        /// L0 诊断界：只回答「秩可不可判」，[`certify`] 产出的就是这个。
+        Diagnostic = 0,
+        /// L0' 候选界：研究口径，只能当候选，不当证书。
+        Candidate = 1,
+        /// 未声明界：只在没有使用秩选择时允许。
+        None = 2,
+    }
 }
 
 impl Bound {
-    pub(crate) fn from_code(code: u8) -> Result<Self> {
-        match code {
-            0 => Ok(Self::Diagnostic),
-            1 => Ok(Self::Candidate),
-            2 => Ok(Self::None),
-            other => Err(bad(format!("未知 Bound 码 {other}"))),
-        }
-    }
-
     /// 账本里的字符串写法（闭集，码位稳定）。
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -97,22 +71,13 @@ impl Bound {
     }
 }
 
-/// 重构模式（§4.4 第 3 步：纯截断 / 显式残差补偿互斥，不同模式用不同误差项，不得混用）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Mode {
-    /// 纯截断：只保存低秩项 `L`，误差项 `E_decomp = ‖W−L‖₂`。
-    Trunc = 0,
-    /// 显式残差补偿：保存 `L + C`（`C = W−L`），误差项 `E_comp = ‖C−Ĉ‖₂`。
-    Residual = 1,
-}
-
-impl Mode {
-    pub(crate) fn from_code(code: u8) -> Result<Self> {
-        match code {
-            0 => Ok(Self::Trunc),
-            1 => Ok(Self::Residual),
-            other => Err(bad(format!("未知 Mode 码 {other}"))),
-        }
+closed_enum! {
+    /// 重构模式（§4.4 第 3 步：纯截断 / 显式残差补偿互斥，不同模式用不同误差项，不得混用）。
+    pub enum Mode {
+        /// 纯截断：只保存低秩项 `L`，误差项 `E_decomp = ‖W−L‖₂`。
+        Trunc = 0,
+        /// 显式残差补偿：保存 `L + C`（`C = W−L`），误差项 `E_comp = ‖C−Ĉ‖₂`。
+        Residual = 1,
     }
 }
 

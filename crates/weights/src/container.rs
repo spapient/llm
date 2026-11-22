@@ -2,7 +2,7 @@
 //! f32 解码入口。名字唯一、区间不重叠、长度/类型判据都在这里收口，格式适配层
 //! （safetensors/gguf/bin/json）只做「字节段 → Entry/Header」映射，不重复这些判据。
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use diagnostic::{Code, Error, Result};
 use storage::snapshot::{Manifest, ManifestEntry};
@@ -81,6 +81,7 @@ impl Entry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Header {
     entries: Vec<Entry>,
+    index: HashMap<String, usize>,
     data_start: usize,
 }
 
@@ -96,8 +97,14 @@ impl Header {
         for pair in sorted.windows(2) {
             check_overlap(&pair[0], &pair[1])?;
         }
+        let index = sorted
+            .iter()
+            .enumerate()
+            .map(|(position, entry)| (entry.name().to_owned(), position))
+            .collect();
         Ok(Self {
             entries: sorted,
+            index,
             data_start,
         })
     }
@@ -107,9 +114,9 @@ impl Header {
         &self.entries
     }
 
-    /// 按名字查条目。
+    /// 按名字查条目（一次解析期建名索引，之后每次查询 O(1)）。
     pub fn get(&self, name: &str) -> Option<&Entry> {
-        self.entries.iter().find(|entry| entry.name() == name)
+        self.index.get(name).and_then(|&position| self.entries.get(position))
     }
 
     /// 数据段起点（头部长度）。

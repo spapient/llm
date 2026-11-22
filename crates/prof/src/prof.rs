@@ -2,8 +2,7 @@
 /// schema 的词汇表：`schema` / `provide` / `witness` 这些同层文件用 `use crate::prof::*`
 /// 取到它，所以是 `pub(crate) use` 而不是 `use`——这里就是本 crate 的唯一词汇表入口。
 pub(crate) use crate::atom::{
-    Attr, AttrKey, Closed, DType, DTypeSet, Grade, Need, Prim, Provide, Space, SpaceSet, Span,
-    Witness,
+    Attr, AttrKey, Closed, Grade, Need, Prim, Provide, Space, SpaceSet, Span, Witness,
 };
 use core::fmt;
 pub(crate) use diagnostic::data::{Table, Value};
@@ -357,14 +356,6 @@ pub(crate) fn witness_error(provide: &Provide, detail: impl Into<String>) -> Pro
         detail: detail.into(),
     }
 }
-/// 闭集成员的名字表；诊断里的「闭集：a | b」按声明顺序给出。
-pub(crate) fn closed_names<E: Closed>(all: &'static [E]) -> Vec<&'static str> {
-    all.iter().map(|item| item.as_str()).collect()
-}
-/// 解析闭集里的名字；闭集外一律 `Unknown`，并把闭集内容一起报出来。
-pub(crate) fn closed<E: Closed>(name: &str, field: impl fmt::Display) -> Result<E, ProfileError> {
-    E::parse(name).ok_or_else(|| unknown(field, name, &closed_names(E::ALL)))
-}
 /// 字段路径的惰性写法。一次 `Profile::parse` 会走几十条供给、每条十几个字段，
 /// 成功路径上不该为诊断拼任何字符串——`format!` 只在真出错时才发生。
 #[derive(Clone, Copy)]
@@ -421,13 +412,6 @@ pub(crate) fn text<'a>(
 }
 pub(crate) fn or_dash(table: &Table, key: &str) -> String {
     table.string(key).unwrap_or("-").to_string()
-}
-pub(crate) fn list<'a>(
-    table: &'a Table,
-    key: &str,
-    field: impl fmt::Display,
-) -> Result<Vec<&'a str>, ProfileError> {
-    table.string_array(key).ok_or_else(|| missing(field))
 }
 /// 逐项解析一张表的每个键值对：解析段里所有"按键"段落共用这一种形状。
 pub(crate) fn entries<T>(

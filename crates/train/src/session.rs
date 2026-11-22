@@ -9,7 +9,7 @@ use tensor::{DType, Shape};
 use crate::dist::Distributed;
 use crate::optimizer::{Optimizer, OwnedSlot, Slot};
 use crate::pool::Bufs;
-use crate::schedule::Schedule as LrSchedule;
+use crate::schedule::{Anneal, Schedule as LrSchedule};
 use crate::{Data, Kernel};
 use storage::{GradAccum, Moments, SlotMoments, Ties};
 use weights::Snapshot;
@@ -30,6 +30,10 @@ pub struct TrainConfig {
     pub clip_norm: Option<f32>,
     /// 梯度累积窗口：多少个 micro-batch 汇总一次再步进；`1` 为每步更新。
     pub accumulation: u32,
+    /// warmup 之后的学习率衰减曲线。
+    pub anneal: Anneal,
+    /// 谷底占峰值的比例；必须落在 `[0, 1]`，越界在装配调度时拒绝。
+    pub min_ratio: f32,
 }
 
 impl Default for TrainConfig {
@@ -40,6 +44,8 @@ impl Default for TrainConfig {
             max_steps: 1,
             clip_norm: None,
             accumulation: 1,
+            anneal: Anneal::default(),
+            min_ratio: 0.0,
         }
     }
 }
@@ -75,6 +81,8 @@ impl TrainConfig {
             max_steps,
             clip_norm,
             accumulation,
+            anneal: Anneal::default(),
+            min_ratio: 0.0,
         })
     }
 
@@ -94,6 +102,28 @@ impl TrainConfig {
             clip_norm.or(base.clip_norm),
             accumulation.unwrap_or(base.accumulation),
         )
+    }
+
+    /// 设置 warmup 之后的衰减曲线（builder 风格，覆盖默认的线性衰减）。
+    pub fn with_anneal(mut self, anneal: Anneal) -> Self {
+        self.anneal = anneal;
+        self
+    }
+
+    /// 设置谷底占峰值的比例（builder 风格）；越界不静默修正，装配调度时拒绝。
+    pub fn with_min_ratio(mut self, min_ratio: f32) -> Self {
+        self.min_ratio = min_ratio;
+        self
+    }
+
+    /// 衰减曲线。
+    pub fn anneal(&self) -> Anneal {
+        self.anneal
+    }
+
+    /// 谷底占峰值的比例。
+    pub fn min_ratio(&self) -> f32 {
+        self.min_ratio
     }
 
     /// 梯度累积窗口。
@@ -190,8 +220,8 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
         let lr_schedule = LrSchedule::with(
             config.warmup_steps,
             config.max_steps,
-            crate::Anneal::default(),
-            0.0,
+            config.anneal,
+            config.min_ratio,
         )?;
         let bufs = Bufs::new(sizes.clone(), kernel);
         Ok(Self {
