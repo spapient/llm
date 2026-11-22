@@ -202,6 +202,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Call` / `Reading` | `testkit` | 见证对拍的两端：`Call` 是「要跑哪个入口、期望什么」，`Reading` 是「跑完读回了几个、值是什么、最大相对误差多少」。个数与值分路回读，`max_rel_err` 在个数不符时取 [`f64::INFINITY`]，使"少写一个元素"与"值错了"在读数层就可区分 |
 | `TOLERANCE` / `Contract` / `Provision` / `Witness` / `Call` / `Reading` | `testkit` | 片段层的"算得对不对"与"写得对不对"分两处：`testkit::device::Contract` 只做结构闭合（P0 集合、签名首行、见证入口逐条对应、档案供给必须有证据、目录是闭集），`evidence` 只做数值闭合（见证必须自足、期望值与档案写的一致、见证执行结果与期望对拍）。`Contract` 上的 `check_p0_set` / `check_signatures` / `check_witness_entries` / `check_evidence` / `check_closed_directory` / `check_self_contained` / `check_expectations` / `check_witnesses` 是两组判据的入口，两边都只**产出缺陷**（`Result<(), String>`），由调用方的测试断言——夹具自己不 panic，于是 `src/` 里没有一个 `unwrap`/`expect`。`TOLERANCE` 住 `evidence`——它是"算出来对不对"的阈值，与结构判据无关 |
 | `RelErr` / `Worst` / `Scale` | `testkit` | 夹具侧的浮点对拍读数：`RelErr` 只答「整批最大绝对误差 / 分母」与这个分母自己的值，`Worst` 只答「读数落在哪个元素」，`Scale` 只答「分母按整批最大幅度还是每元素留 1 的地板取」。比较归 `within_ratio` / `within_rel` / `assert_rel_with`，阈值仍只由 `cutile::reference::tolerance` 拥有——本行不设第二张分档表，`Scale::Batch` 与它由 `crates/testkit/src/oracle.rs` 逐位钉住 |
+| `Absence` | `testkit` | 性质测试台账的一行：`members` 只持成员名、`reason` 只持一句**可核查**的替代覆盖说明，台账因此是纯数据——判据全在 `prop_discipline` 那道门里（与源码扫描双向一致、理由必须具体、已登记缺口有上限）。台账自己不做判断，也就不会和扫描各有一套说法 |
 
 几个**同名不同物**的邻居，评审时容易混淆：
 

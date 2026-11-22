@@ -112,3 +112,7 @@ mod element {
 #[cfg(test)]
 #[path = "../tests/tensor_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../tests/prop_shape.rs"]
+mod prop_shape;

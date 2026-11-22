@@ -4,6 +4,16 @@ use llm_optim::backend::TensorGeometry;
 use llm_optim::execution::Backend::Metal;
 use llm_optim::execution::{Mode, program};
 
+/// 立方 GEMM 的自建样本：只带三个标量与空缓冲，形状由 `m/n/k` 直接给出。
+fn tensor_sample(m: usize, n: usize, k: usize) -> op::model::Sample {
+    op::model::Sample {
+        m,
+        n,
+        scalars: vec![("M", m as i64), ("N", n as i64), ("K", k as i64)],
+        buffers: Vec::new(),
+    }
+}
+
 /// 设备 → 命令队列 的进程内对象模型打通：能建、能释放，反复建放不崩溃、不重复释放。
 #[test]
 fn device_and_queue_round_trip_without_crashing() {
@@ -769,7 +779,6 @@ fn metal_tensor_gemm() {
 #[test]
 #[ignore = "Metal 张量核立方 GEMM：cargo test --release -p llm-engine --lib -- metal_tensor_kernel_gemm --ignored --nocapture"]
 fn metal_tensor_kernel_gemm() {
-    use op::model::Sample;
     use op::sig::Signature;
 
     let Some((device, queue)) = bench_device("张量核立方 GEMM") else {
@@ -785,12 +794,7 @@ fn metal_tensor_kernel_gemm() {
             TensorGeometry::new(128, 128, 96, 8),
             TensorGeometry::new(64, 128, 96, 8),
         ];
-        let sample = Sample {
-            m,
-            n,
-            scalars: vec![("M", m as i64), ("N", n as i64), ("K", k as i64)],
-            buffers: Vec::new(),
-        };
+        let sample = tensor_sample(m, n, k);
         let mut pipes = Vec::new();
         for geometry in geometries {
             let msl = crate::tiled::metal_tensor_gemm("bench", &signature, &sample, geometry)
@@ -858,7 +862,6 @@ fn metal_tensor_double_buffer() {
 #[test]
 #[ignore = "Metal 张量核双缓冲吞吐：cargo test --release -p llm-device --lib -- metal_tensor_double_buffer_sweep --ignored --nocapture"]
 fn metal_tensor_double_buffer_sweep() {
-    use op::model::Sample;
     use op::sig::Signature;
 
     let Some((device, queue)) = bench_device("张量核双缓冲吞吐") else {
@@ -875,19 +878,18 @@ fn metal_tensor_double_buffer_sweep() {
             TensorGeometry::new(128, 64, 64, 8),
             TensorGeometry::new(128, 128, 96, 8),
         ];
-        let sample = Sample {
-            m,
-            n,
-            scalars: vec![("M", m as i64), ("N", n as i64), ("K", k as i64)],
-            buffers: Vec::new(),
-        };
+        let sample = tensor_sample(m, n, k);
         let mut pipes = Vec::new();
         for geometry in geometries {
             let msl = crate::tiled::metal_tensor_gemm("bench", &signature, &sample, geometry)
                 .expect("张量核 MSL 应能生成");
             let double = msl.contains("threadgroup half sb[2]");
             let pipe = tensor_pipe(&device, &queue, &stage, (m, n), geometry, &msl);
-            let label = format!("双缓冲吞吐 {m}³ {} {}", pipe.label, if double { "双片" } else { "单片" });
+            let label = format!(
+                "双缓冲吞吐 {m}³ {} {}",
+                pipe.label,
+                if double { "双片" } else { "单片" }
+            );
             println!("{label}");
             pipes.push(pipe);
         }

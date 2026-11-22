@@ -93,8 +93,13 @@ pub fn assemble(
     let _ = writeln!(
         text,
         "// cutile schema v{SCHEMA_VER} | op={} | skeleton={} | device={}({}) | variant={} | schedule={} | tile=[{}]",
-        op.name, op.skeleton, profile.meta.vendor, profile.meta.id, variant.name,
-        variant.schedule, combo.summary()
+        op.name,
+        op.skeleton,
+        profile.meta.vendor,
+        profile.meta.id,
+        variant.name,
+        variant.schedule,
+        combo.summary()
     );
     let _ = writeln!(
         text,

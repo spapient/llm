@@ -16,6 +16,7 @@ diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 
 [dev-dependencies]
 testkit = { path = "../testkit", package = "llm-testkit" }
+proptest = { workspace = true }
 
 [lints]
 workspace = true

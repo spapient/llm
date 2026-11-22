@@ -847,6 +847,7 @@ dependencies = [
  "llm-diagnostic",
  "llm-dtype",
  "llm-testkit",
+ "proptest",
 ]
 
 [[package]]
@@ -893,6 +894,7 @@ dependencies = [
  "llm-tensor",
  "llm-testkit",
  "llm-weights",
+ "proptest",
 ]
 
 [[package]]
@@ -914,6 +916,7 @@ version = "0.1.0"
 dependencies = [
  "llm-diagnostic",
  "llm-testkit",
+ "proptest",
 ]
 
 [[package]]

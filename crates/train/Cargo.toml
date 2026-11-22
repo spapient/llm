@@ -22,6 +22,7 @@ snapshot = { path = "../snapshot", package = "llm-snapshot" }
 
 [dev-dependencies]
 testkit = { path = "../testkit", package = "llm-testkit" }
+proptest = { workspace = true }
 
 [lints]
 workspace = true

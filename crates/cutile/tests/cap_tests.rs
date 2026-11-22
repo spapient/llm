@@ -336,7 +336,9 @@ fn a_proven_supply_wins_over_a_higher_grade_that_was_not_executed() {
             proof.insert(have.prim, &have.impl_name);
         }
     }
-    let chosen = select_borrowed(&profile, &need, &proof).expect("有供给").have;
+    let chosen = select_borrowed(&profile, &need, &proof)
+        .expect("有供给")
+        .have;
     assert_eq!(
         chosen.impl_name, "scalar_f32",
         "不能拿没执行过的等级去挤掉跑过的实现"
@@ -345,6 +347,8 @@ fn a_proven_supply_wins_over_a_higher_grade_that_was_not_executed() {
     // 反向：它真的跑过了，就按等级取它。
     let mut proven = proof.clone();
     proven.insert(Prim::Dot, "vendor_dot");
-    let chosen = select_borrowed(&profile, &need, &proven).expect("有供给").have;
+    let chosen = select_borrowed(&profile, &need, &proven)
+        .expect("有供给")
+        .have;
     assert_eq!(chosen.impl_name, "vendor_dot");
 }

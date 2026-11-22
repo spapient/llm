@@ -4,13 +4,15 @@
 //! 读取一律走 [`Cursor`]（借用调用方切片，不复制整份流）；每个 opcode 一个自由函数，整张
 //! [`OPS`] 表就是能力清单——表的顺序即文件里处理函数的顺序，找一条 opcode 不必跨文件。
 
+mod tensor;
+
 use diagnostic::Result;
 use dtype::DType;
 use wire::{bad, or_bad};
 
 use crate::cursor::Cursor;
-use crate::pickle_tensor::{as_tuple, into_str, storage_handle, tensor_of};
 use crate::torch::Tensor;
+use tensor::{as_tuple, into_str, storage_handle, tensor_of};
 
 #[derive(Clone)]
 pub(crate) enum Value {

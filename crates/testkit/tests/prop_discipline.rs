@@ -171,10 +171,11 @@ fn every_property_crate_reaches_the_shared_configuration() {
 #[test]
 fn the_scan_actually_sees_the_property_crates() {
     let found = property_crates();
-    for expected in ["gemm", "conv", "nn", "algorithm", "rng"] {
+    for expected in crate::prop_ledger::COVERED {
         assert!(
             found.contains(&expected.to_string()),
-            "扫描面漏了 `{expected}`：清单里确实声明了 proptest，说明这条路没有真的读文件"
+            "扫描面漏了 `{expected}`：台账说它有性质测试，扫描却没在清单里看到 proptest，\
+             说明这条路没有真的读文件"
         );
     }
     let total: usize = found
@@ -182,4 +183,146 @@ fn the_scan_actually_sees_the_property_crates() {
         .map(|member| member_sources(member).len())
         .sum();
     assert!(total > 0, "一个源文件都没读到，扫描面是空的");
+}
+
+/// 台账不能有个成员落空：工作区成员集与"已覆盖 ∪ 已登记缺口 ∪ 有理由缺席"逐成员相等。
+///
+/// 单向检查（"台账里的成员都存在"）没意义——漏掉一个成员时它同样通过。
+#[test]
+fn the_ledger_accounts_for_every_member_exactly_once() {
+    use crate::prop_ledger::{ABSENT, COVERED, PLANNED};
+    let (members, _) = workspace();
+    let mut accounted = std::collections::BTreeSet::new();
+    let mut duplicates = Vec::new();
+    let mut entries: Vec<&str> = COVERED.to_vec();
+    entries.extend(PLANNED.iter().map(|(member, _)| *member));
+    entries.extend(
+        ABSENT
+            .iter()
+            .flat_map(|absence| absence.members.iter().copied()),
+    );
+    for member in entries {
+        if !accounted.insert(member) {
+            duplicates.push(member);
+        }
+    }
+    assert!(
+        duplicates.is_empty(),
+        "台账里重复登记的成员：{duplicates:?}"
+    );
+    let unaccounted: Vec<&str> = members
+        .iter()
+        .map(String::as_str)
+        .filter(|member| !accounted.contains(member))
+        .collect();
+    assert!(
+        unaccounted.is_empty(),
+        "这些成员在台账里既不在 COVERED、也不在 PLANNED、也没有缺席理由：{unaccounted:?}\n\
+         新成员必须归一次类：写性质测试，或说清它由什么替代覆盖"
+    );
+    let ghosts: Vec<&str> = accounted
+        .iter()
+        .copied()
+        .filter(|member| !members.iter().any(|real| real == member))
+        .collect();
+    assert!(
+        ghosts.is_empty(),
+        "台账里有工作区中不存在的成员：{ghosts:?}"
+    );
+}
+
+/// 台账与源码必须**双向**一致：说覆盖的真的有性质测试块，说没覆盖的真的没有。
+#[test]
+fn the_ledger_agrees_with_the_sources() {
+    use crate::prop_ledger::{ABSENT, COVERED, PLANNED};
+    let has_block = |member: &str| {
+        member_sources(member)
+            .iter()
+            .any(|(_, text)| text.contains("proptest!"))
+    };
+    let missing: Vec<&str> = COVERED
+        .iter()
+        .copied()
+        .filter(|member| !has_block(member))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "台账说这些成员有性质测试，但源码里找不到性质测试块：{missing:?}"
+    );
+    let mut covered_but_absent = Vec::new();
+    for member in PLANNED.iter().map(|(member, _)| *member) {
+        if has_block(member) {
+            covered_but_absent.push(member);
+        }
+    }
+    for member in ABSENT
+        .iter()
+        .flat_map(|absence| absence.members.iter().copied())
+    {
+        if has_block(member) {
+            covered_but_absent.push(member);
+        }
+    }
+    assert!(
+        covered_but_absent.is_empty(),
+        "这些成员已经写了性质测试，台账却还把它们记作\"不需要\"或\"待补\"：{covered_but_absent:?}\n\
+         台账落后于代码，就等于没有台账"
+    );
+}
+
+/// 缺席理由必须**具体**：太短或彼此重复的理由无法指导下一个成员归哪类。
+#[test]
+fn every_absence_reason_is_specific() {
+    use crate::prop_ledger::ABSENT;
+    let mut reasons: Vec<&str> = Vec::new();
+    for absence in ABSENT {
+        assert!(
+            !absence.members.is_empty(),
+            "有一条缺席理由没挂任何成员，它是死规则：{}",
+            absence.reason
+        );
+        let length = absence.reason.chars().count();
+        assert!(
+            length >= 40,
+            "缺席理由太短（{length} 字），不足以说明替代覆盖在哪：{}",
+            absence.reason
+        );
+        assert!(
+            !reasons.contains(&absence.reason),
+            "两条缺席理由一字不差，说明其中一条是复制来的：{}",
+            absence.reason
+        );
+        reasons.push(absence.reason);
+    }
+}
+
+/// 已登记缺口只能减。允许"还没写"，不允许"越积越多"。
+#[test]
+fn the_known_gaps_are_capped() {
+    use crate::prop_ledger::{PLANNED, PLANNED_MAX};
+    assert!(
+        PLANNED.len() <= PLANNED_MAX,
+        "已登记缺口涨到 {} 条（上限 {PLANNED_MAX}）：先补上一条，再加新的",
+        PLANNED.len()
+    );
+    for (member, reason) in PLANNED {
+        assert!(
+            reason.chars().count() >= 40,
+            "`{member}` 的缺口说明太短，读的人不知道要补什么：{reason}"
+        );
+    }
+}
+
+/// 清单里声明了 `proptest` 的成员集与台账的已覆盖集必须相等。
+#[test]
+fn manifest_declarations_match_the_ledger() {
+    use crate::prop_ledger::COVERED;
+    let mut declared = property_crates();
+    let mut covered: Vec<String> = COVERED.iter().map(|member| (*member).to_string()).collect();
+    declared.sort();
+    covered.sort();
+    assert_eq!(
+        declared, covered,
+        "清单声明与台账不一致：加了 `proptest` 就要登记进 COVERED，删了就要改理由"
+    );
 }

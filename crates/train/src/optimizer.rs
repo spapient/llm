@@ -331,6 +331,10 @@ pub(crate) use muon::orthogonalize;
 #[path = "../tests/optimizer_tests.rs"]
 mod tests;
 
+#[cfg(test)]
+#[path = "../tests/prop_optimizer.rs"]
+mod prop_optimizer;
+
 /// 无矩状态；衰减按 AdamW 同款解耦口径：`param -= lr · (grad + wd · param)`，角色豁免组
 /// 不加衰减项。
 #[derive(Debug, Clone, PartialEq)]

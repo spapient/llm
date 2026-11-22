@@ -1,6 +1,6 @@
 //! `gguf` 模块的单元测试。
+use super::quant::f16_to_f32;
 use super::*;
-use crate::gguf_quant::f16_to_f32;
 
 #[path = "gguf_fixture.rs"]
 mod fixture;

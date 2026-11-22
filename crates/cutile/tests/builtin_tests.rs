@@ -154,7 +154,10 @@ fn copy_dir(from: &Path, to: &Path) {
 fn a_declaration_name_must_match_its_file_name() {
     let source = op::builtin_named("add_f32").expect("内置");
     let op = Op::new("renamed", source.declaration(), source.template());
-    let profiles = Catalogue::try_builtin().expect("内置数据").profiles.to_vec();
+    let profiles = Catalogue::try_builtin()
+        .expect("内置数据")
+        .profiles
+        .to_vec();
     let error = Catalogue::assemble(vec![op], profiles).unwrap_err();
     assert_eq!(error.code(), Code::Invalid);
     assert!(error.to_string().contains("文件名即算子名"), "{error}");

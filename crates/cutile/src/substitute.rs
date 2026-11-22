@@ -42,7 +42,10 @@ pub(crate) fn place(text: &mut String, expanded: &str) {
     let trimmed = expanded.trim_end();
     let trimmed = trimmed.strip_suffix(';').unwrap_or(trimmed);
     // 缩进取自插入点的当前行；单行片段只追加一次，不 `repeat` 缩进、也不走 `replace`。
-    let indent = text.rsplit('\n').next().map_or(0, |prefix| prefix.chars().count());
+    let indent = text
+        .rsplit('\n')
+        .next()
+        .map_or(0, |prefix| prefix.chars().count());
     let mut lines = trimmed.split('\n');
     text.push_str(lines.next().unwrap_or_default());
     for line in lines {

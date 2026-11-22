@@ -44,10 +44,39 @@ fn forward_batch_rows<E>(
     cpb: usize,
     row_dot: impl Fn(&[E], &[f32], &[f32], usize) -> f32,
 ) -> diagnostic::Result<()> {
-    batch_geometry(x.len(), out.len(), geo)?;
     let ctx = scaled_row_context(geo.m, geo.n, scales, weights.len(), cpb)?;
     forward_batch_rows_scaled(x, weights, scales, geo, out, ctx, row_dot);
     Ok(())
+}
+
+/// 稠密行批：无标度、输出行在外使一行权重只读一遍，守卫与 [`forward_dense`] 逐条对齐。
+fn forward_batch_dense<C: Plain>(
+    x: &[f32],
+    weights: &[C::Elem],
+    scales: &[f32],
+    geo: Geometry,
+    out: &mut [f32],
+) -> diagnostic::Result<()> {
+    dense_scales(scales)?;
+    required_weights(weights.len(), geo.n, geo.m)?;
+    for row in 0..geo.n {
+        let w_row = &weights[row * geo.m..][..geo.m];
+        for r in 0..geo.rows {
+            out[r * geo.n + row] = dense_dot::<C>(w_row, &x[r * geo.m..][..geo.m]);
+        }
+    }
+    Ok(())
+}
+
+/// 稠密格式的标度守卫：稠密没有标度，收到任何一条都是调用方的形状错误。
+fn dense_scales(scales: &[f32]) -> diagnostic::Result<()> {
+    if scales.is_empty() {
+        return Ok(());
+    }
+    Err(Error::new(
+        Code::Invalid,
+        format!("稠密格式没有标度，收到 {} 个", scales.len()),
+    ))
 }
 
 /// 行批的逐行遍历，算术由 `row_dot` 给：与 [`forward_rows_scaled`] 同一个"守卫已过"约定。
@@ -112,18 +141,11 @@ pub fn forward_plain_batch<C: Plain>(
     geo: Geometry,
     out: &mut [f32],
 ) -> diagnostic::Result<()> {
+    batch_geometry(x.len(), out.len(), geo)?;
     if C::SCALES.is_some() {
         forward_batch_rows(x, weights, scales, geo, out, 1, scaled_dot::<C>)
     } else {
-        if !scales.is_empty() {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("稠密格式没有标度，收到 {} 个", scales.len()),
-            ));
-        }
-        forward_batch_rows(x, weights, scales, geo, out, 1, |w, x, _, _| {
-            dense_dot::<C>(w, x)
-        })
+        forward_batch_dense::<C>(x, weights, scales, geo, out)
     }
 }
 
@@ -173,12 +195,7 @@ pub(super) fn forward_dense<C: Plain>(
     scales: &[f32],
     out: &mut [f32],
 ) -> diagnostic::Result<()> {
-    if !scales.is_empty() {
-        return Err(Error::new(
-            Code::Invalid,
-            format!("稠密格式没有标度，收到 {} 个", scales.len()),
-        ));
-    }
+    dense_scales(scales)?;
     let (m, n) = (x.len(), out.len());
     required_weights(weights.len(), n, m)?;
     for (row, value) in out.iter_mut().enumerate() {

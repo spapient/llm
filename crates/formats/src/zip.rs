@@ -74,7 +74,12 @@ impl<'a> Zip<'a> {
 /// 中央目录起点与条目总数：EOCD 的两个字段任一为 `0xFFFF…` 就走 ZIP64 回退。
 fn directory(bytes: &[u8]) -> Result<(usize, usize)> {
     let eocd = locate_eocd(bytes)?;
-    narrow_or_wide(bytes, eocd, u32_at(bytes, eocd + 16)?, u16_at(bytes, eocd + 10)?)
+    narrow_or_wide(
+        bytes,
+        eocd,
+        u32_at(bytes, eocd + 16)?,
+        u16_at(bytes, eocd + 10)?,
+    )
 }
 
 /// 32 位字段够用就按它换算，任一被截断（`0xFFFF…`）就走 ZIP64 回退。
@@ -82,7 +87,10 @@ fn narrow_or_wide(bytes: &[u8], eocd: usize, wide: u32, total: u16) -> Result<(u
     if wide == WIDE_SENTINEL || total == u16::MAX {
         return zip64_directory(bytes, eocd);
     }
-    Ok((narrow(u64::from(wide), "中央目录偏移超出 usize")?, usize::from(total)))
+    Ok((
+        narrow(u64::from(wide), "中央目录偏移超出 usize")?,
+        usize::from(total),
+    ))
 }
 
 /// ZIP64 回退：定位器在 EOCD 前 20 字节，定位器 +8 指向 64 位 EOCD；
@@ -216,7 +224,15 @@ fn sizes(bytes: &[u8], at: usize, name_len: usize) -> Result<(u64, usize)> {
     let mut slot = 0usize;
     let mut wide = [0u64; 3];
     for (index, offset) in [24, 20, 42].into_iter().enumerate() {
-        wide[index] = wide_field(bytes, at + offset, Extra { extra, extra_len, slot: &mut slot })?;
+        wide[index] = wide_field(
+            bytes,
+            at + offset,
+            Extra {
+                extra,
+                extra_len,
+                slot: &mut slot,
+            },
+        )?;
     }
     Ok((wide[1], narrow(wide[2], "本地头偏移超出 usize")?))
 }

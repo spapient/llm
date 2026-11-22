@@ -1,5 +1,5 @@
 use super::*;
-use crate::matmul::{close_enough, matmul_scalar};
+use crate::matmul::matmul_scalar;
 
 fn sample_i8(len: usize, salt: u32) -> Vec<i8> {
     (0..len)
@@ -71,6 +71,12 @@ pub(super) fn sample(len: usize, salt: u32) -> Vec<f32> {
 
 /// 生成确定性输入、跑标量参考、调用 `compute` 后与参考对拍。
 /// `sme` 测试复用同一骨架，仅替换计算入口与断言文案。
+///
+/// 断言的不是"容差内一致"，而是**可证的舍入上界**。重排求和改变的不是数学结果，
+/// 只是每一部分和的舍入；Higham《Accuracy and Stability》式 (3.3) 给出
+/// `|fl(Σ aᵢbᵢ) − Σ aᵢbᵢ| ≤ γ_k · Σ|aᵢbᵢ|`，`γ_n = n·u/(1−n·u)`，`u = 2⁻²⁴`。
+/// 该界与求和树形状无关（任何 n 叶二叉树的深度 ≤ n−1），所以分块、多累加链、
+/// FMA 融合都落在同一个界内——这正是"路径自由"的形式化说法。
 pub(super) fn check_gemm<F>(m: usize, n: usize, k: usize, compute: F, msg: &str)
 where
     F: FnOnce(&[f32], &[f32], usize, usize, usize, &mut [f32]),
@@ -81,7 +87,25 @@ where
     matmul_scalar(&a, &b, m, n, k, &mut want);
     let mut got = vec![0.0f32; m * n];
     compute(&a, &b, m, n, k, &mut got);
-    close_enough(&got, &want, 1e-3, 1e-3).expect(msg);
+    for row in 0..m {
+        for col in 0..n {
+            let slack = f64::from(got[row * n + col]) - f64::from(want[row * n + col]);
+            let scale: f64 = (0..k)
+                .map(|i| f64::from(a[row * k + i].abs()) * f64::from(b[i * n + col].abs()))
+                .sum();
+            let bound = gamma(k) * scale;
+            assert!(
+                slack.abs() <= bound,
+                "{msg}：[{row},{col}] 偏差 {slack} 超过 γ_{k}·Σ|aᵢbᵢ| = {bound}（重排求和的舍入上界）"
+            );
+        }
+    }
+}
+
+/// `γ_n = n·u/(1 − n·u)`，f32 就近舍入取 `u = 2⁻²⁴`。
+fn gamma(n: usize) -> f64 {
+    let nu = n as f64 * f64::from(2.0f32.powi(-24));
+    nu / (1.0 - nu)
 }
 
 fn check(m: usize, n: usize, k: usize) {

@@ -1,11 +1,13 @@
 //! 职责：GGUF v3 只读解析——头部、KV 元数据表与张量信息表、数据区定位，以及分块反量化入口。
 
+mod quant;
+
 use diagnostic::{Code, Error, Result};
 use dtype::{DType, QType};
 use wire::bad;
 
 use crate::cursor::Cursor;
-use crate::gguf_quant::dequantize;
+use quant::dequantize;
 
 /// 文件 magic。
 pub const MAGIC: [u8; 4] = *b"GGUF";
@@ -323,9 +325,12 @@ fn list(cursor: &mut Cursor<'_>, depth: usize) -> Result<Value> {
         return Err(bad("数组嵌套过深"));
     }
     let (kind, count) = length(cursor)?;
-    Ok(Value::Arr(records(cursor, count, "数组长度溢出", |at| {
-        value(at, kind, depth + 1)
-    })?))
+    Ok(Value::Arr(records(
+        cursor,
+        count,
+        "数组长度溢出",
+        |at| value(at, kind, depth + 1),
+    )?))
 }
 
 /// 数组头：元素类型码 + 计数，计数不得超过剩余字节（每元素至少 1 字节）。

@@ -10,8 +10,11 @@
 //!   `max` 减去、在线归一化这类写法唯一能被自动抓住的地方。
 
 use crate::matmul::matmul_scalar;
-use crate::quant::width_cpb;
-use crate::{dequant, dequant_i2, dequant_i4, fast, rmsnorm_f32, rope_f32, softmax_f32};
+use crate::quant::{I2, I4, width_cpb};
+use crate::{
+    dequant, dequant_i2, dequant_i4, fast, gemv_f32, gemv_i2, gemv_i4, gemv_i8, rmsnorm_f32,
+    rope_f32, softmax_f32,
+};
 use proptest::prelude::*;
 use std::rc::Rc;
 use testkit::prop;
@@ -44,6 +47,81 @@ fn unit_mean_square(values: &[f32]) -> Vec<f32> {
 
 fn matrix(rows: usize, cols: usize) -> impl Strategy<Value = Vec<f32>> {
     proptest::collection::vec(prop::finite(), rows * cols)
+}
+
+/// 小整数取值：乘积与部分和都落在 f32 精确整数区间内，于是线性定律可断言逐位相等。
+fn small_int() -> impl Strategy<Value = f32> {
+    (-4i8..=4).prop_map(f32::from)
+}
+
+fn ints(len: usize) -> impl Strategy<Value = Vec<f32>> {
+    proptest::collection::vec(small_int(), len)
+}
+
+/// 稠密 GEMV 一行定义：`out[j] = Σ_k w[j·m+k]·x[k]`。
+fn gemv_f32_of(x: &[f32], w: &[f32], n: usize) -> Vec<f32> {
+    let mut out = vec![0.0f32; n];
+    gemv_f32::forward(x, w, &mut out).expect("形状非空");
+    out
+}
+
+/// 稠密定义，逐行顺序点积（与内核的累加顺序不同，只用来比舍入）。
+fn dense_reference(x: &[f32], w: &[f32], n: usize) -> Vec<f32> {
+    let m = x.len();
+    (0..n)
+        .map(|j| (0..m).map(|k| w[j * m + k] * x[k]).sum())
+        .collect()
+}
+
+/// i8 定义：分组内点积、整组乘标度、跨组相加；权重字节按 `i8` 解释。
+fn i8_reference(x: &[f32], w: &[u8], s: &[f32], n: usize, groups: usize) -> Vec<f32> {
+    let m = x.len();
+    let group = m / groups;
+    (0..n)
+        .map(|j| {
+            (0..groups)
+                .map(|g| {
+                    let dot: f32 = (0..group)
+                        .map(|k| f32::from(w[j * m + g * group + k] as i8) * x[g * group + k])
+                        .sum();
+                    dot * s[j * groups + g]
+                })
+                .sum()
+        })
+        .collect()
+}
+
+/// 打包格式定义：低位槽在前按 `cpb` 位宽解包、查码表还原有符号码、整组共用一条标度。
+fn packed_reference(
+    x: &[f32],
+    w: &[u8],
+    s: &[f32],
+    n: usize,
+    groups: usize,
+    cpb: usize,
+    table: &[f32],
+) -> Vec<f32> {
+    let group = x.len() / groups;
+    let row = x.len() / cpb;
+    let width = 8 / cpb;
+    let mask = (1u8 << width) - 1;
+    (0..n)
+        .map(|j| {
+            (0..groups)
+                .map(|g| {
+                    let dot: f32 = (0..group)
+                        .map(|k| {
+                            let elem = g * group + k;
+                            let byte = w[j * row + elem / cpb];
+                            let code = usize::from((byte >> ((elem % cpb) * width)) & mask);
+                            table[code] * x[elem]
+                        })
+                        .sum();
+                    dot * s[j * groups + g]
+                })
+                .sum()
+        })
+        .collect()
 }
 
 proptest! {
@@ -375,5 +453,133 @@ proptest! {
         let mut got = vec![0i32; m * n];
         fast::gemm_i8(&a, &b, m, n, k, &mut got);
         prop_assert_eq!(got, want, "i8 GEMM 与标量参考必须逐位相等");
+    }
+
+    // ===== GEMV 定律 =====
+    //
+    // GEMV 是 `x ↦ W·x` 的线性映射。小整数输入 + 2 的幂标度下，每条乘积与部分和
+    // 都是 f32 精确整数，于是"线性""尺度不变"这两条代数定律可以断言**逐位相等**，
+    // 不必退到容差。
+
+    /// 加性：`gemv(x₁ + x₂) = gemv(x₁) + gemv(x₂)`。
+    #[test]
+    fn gemv_f32_is_additive_in_x(
+        m in 1usize..=32, n in 1usize..=8,
+        w in ints(32 * 8), a in ints(32), b in ints(32),
+    ) {
+        let (w, a, b) = (&w[..m * n], &a[..m], &b[..m]);
+        let summed: Vec<f32> = a.iter().zip(b).map(|(p, q)| p + q).collect();
+        let (left, right) = (gemv_f32_of(a, w, n), gemv_f32_of(b, w, n));
+        let want: Vec<f32> = left.iter().zip(&right).map(|(p, q)| p + q).collect();
+        prop::assert_exact("gemv(x₁+x₂) = gemv(x₁)+gemv(x₂)", &gemv_f32_of(&summed, w, n), &want);
+    }
+
+    /// 齐次性（2 的幂）：`gemv(2x) = 2·gemv(x)`，逐位成立。
+    #[test]
+    fn gemv_f32_scales_exactly_with_powers_of_two(
+        m in 1usize..=32, n in 1usize..=8, w in ints(32 * 8), x in ints(32),
+    ) {
+        let (w, x) = (&w[..m * n], &x[..m]);
+        let doubled: Vec<f32> = x.iter().map(|v| v * 2.0).collect();
+        let want: Vec<f32> = gemv_f32_of(x, w, n).iter().map(|v| v * 2.0).collect();
+        prop::assert_exact("gemv(2x) = 2·gemv(x)", &gemv_f32_of(&doubled, w, n), &want);
+    }
+
+    /// 内核与"逐行顺序点积"的定义一致：任意有限输入下只差累加顺序的舍入。
+    #[test]
+    fn gemv_f32_matches_the_row_wise_dot_product(
+        m in 1usize..=32, n in 1usize..=8, w in matrix(32, 8), x in matrix(32, 1),
+    ) {
+        let (w, x) = (&w[..m * n], &x[..m]);
+        let got = gemv_f32_of(x, w, n);
+        prop_assert!(prop::all_finite(&got), "gemv_f32 出现非有限值");
+        prop::assert_within_rel(&got, &dense_reference(x, w, n), 1e-4, "gemv_f32 对逐行顺序点积");
+    }
+
+    /// 行批与逐行调用给同一个答案：并行遍历不该改变数值口径。
+    #[test]
+    fn gemv_f32_batch_equals_row_by_row_calls(
+        m in 1usize..=16, n in 1usize..=6, rows in 1usize..=3,
+        w in ints(16 * 6), x in ints(16 * 3),
+    ) {
+        let (w, head) = (&w[..m * n], &x[..rows * m]);
+        let mut batched = vec![0.0f32; rows * n];
+        crate::gemv::forward_plain_batch::<crate::gemv::Dense<32>>(
+            head,
+            w,
+            &[],
+            crate::gemv::Geometry::new(rows, m, n),
+            &mut batched,
+        )
+        .expect("行批形状合法");
+        let mut stepwise = Vec::with_capacity(rows * n);
+        for r in 0..rows {
+            stepwise.extend(gemv_f32_of(&head[r * m..][..m], w, n));
+        }
+        prop::assert_exact("行批 = 逐行", &batched, &stepwise);
+    }
+
+    /// i8 输出必须等于定义：分组解包、整组乘标度、再跨组相加。
+    /// 1 字节/元素、整数权重 × 整数输入 × 2 的幂标度 → 全程精确，逐位相等。
+    #[test]
+    fn gemv_i8_matches_the_dequantized_dot(
+        n in 1usize..=5, groups in 1usize..=2, x in ints(64),
+    ) {
+        let m = crate::gemv::GROUP * groups;
+        let x = &x[..m];
+        let w = crate::gemv::packed::weights(m, n, 1);
+        let s: Vec<f32> = (0..n * groups).map(|i| [0.25f32, 0.5, 1.0, 2.0][i % 4]).collect();
+        let mut got = vec![0.0f32; n];
+        gemv_i8::forward(x, &w, &s, &mut got).expect("形状合法");
+        prop::assert_exact("gemv_i8 对定义", &got, &i8_reference(x, &w, &s, n, groups));
+    }
+
+    /// i8 同样是线性映射：分组标度不破坏加性。
+    #[test]
+    fn gemv_i8_is_additive_in_x(
+        n in 1usize..=4, groups in 1usize..=2, a in ints(64), b in ints(64),
+    ) {
+        let m = crate::gemv::GROUP * groups;
+        let (a, b) = (&a[..m], &b[..m]);
+        let summed: Vec<f32> = a.iter().zip(b).map(|(p, q)| p + q).collect();
+        let w = crate::gemv::packed::weights(m, n, 1);
+        let s: Vec<f32> = vec![1.0; n * groups];
+        let (mut left, mut right, mut both) =
+            (vec![0.0f32; n], vec![0.0f32; n], vec![0.0f32; n]);
+        gemv_i8::forward(a, &w, &s, &mut left).expect("形状合法");
+        gemv_i8::forward(b, &w, &s, &mut right).expect("形状合法");
+        gemv_i8::forward(&summed, &w, &s, &mut both).expect("形状合法");
+        let want: Vec<f32> = left.iter().zip(&right).map(|(p, q)| p + q).collect();
+        prop::assert_exact("gemv_i8(x₁+x₂)", &both, &want);
+    }
+
+    /// i4 打包：与"独立解包 + 查码表"的定义逐位相等，覆盖 SIMD（n≥4）与标量（n<4）两条路径。
+    #[test]
+    fn gemv_i4_matches_the_packed_definition(
+        n in 1usize..=5, groups in 1usize..=2, x in ints(64),
+    ) {
+        let m = crate::gemv::GROUP * groups;
+        let x = &x[..m];
+        let w = crate::gemv::packed::weights(m, n, 2);
+        let s: Vec<f32> = (0..n * groups).map(|i| [0.5f32, 1.0, 2.0, 0.25][i % 4]).collect();
+        let mut got = vec![0.0f32; n];
+        gemv_i4::forward(x, &w, &s, &mut got).expect("形状合法");
+        let want = packed_reference(x, &w, &s, n, groups, 2, I4.table);
+        prop::assert_exact("gemv_i4 对打包定义", &got, &want);
+    }
+
+    /// i2 打包：同上，位宽 2、每组 4 个码。
+    #[test]
+    fn gemv_i2_matches_the_packed_definition(
+        n in 1usize..=5, groups in 1usize..=2, x in ints(64),
+    ) {
+        let m = crate::gemv::GROUP * groups;
+        let x = &x[..m];
+        let w = crate::gemv::packed::weights(m, n, 4);
+        let s: Vec<f32> = (0..n * groups).map(|i| [1.0f32, 0.5][i % 2]).collect();
+        let mut got = vec![0.0f32; n];
+        gemv_i2::forward(x, &w, &s, &mut got).expect("形状合法");
+        let want = packed_reference(x, &w, &s, n, groups, 4, I2.table);
+        prop::assert_exact("gemv_i2 对打包定义", &got, &want);
     }
 }

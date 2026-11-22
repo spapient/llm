@@ -15,6 +15,7 @@ diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 
 [dev-dependencies]
 testkit = { path = "../testkit", package = "llm-testkit" }
+proptest = { workspace = true }
 
 [lints]
 workspace = true
@@ -22,3 +23,7 @@ workspace = true
 [[test]]
 name = "codec"
 path = "tests/codec.rs"
+
+[[test]]
+name = "prop_wire"
+path = "tests/prop_wire.rs"

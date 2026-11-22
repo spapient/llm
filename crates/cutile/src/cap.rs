@@ -198,10 +198,14 @@ impl std::error::Error for NoPath {}
 
 /// 一个变体的全部需求：显式 `[needs]` 加上调度隐式要求的原语（如 `bar`）；协商与片段比对共用同一份清单。
 fn all_needs<'a>(op: &'a OpDecl, variant: &'a Variant) -> impl Iterator<Item = Need> + 'a {
-    variant
-        .needs(op)
-        .cloned()
-        .chain(variant.schedule.required_prims().iter().copied().map(Need::of))
+    variant.needs(op).cloned().chain(
+        variant
+            .schedule
+            .required_prims()
+            .iter()
+            .copied()
+            .map(Need::of),
+    )
 }
 
 /// 一档里满足不了的需求；空向量表示这一档可行。判定只做一次，各判一次会让"协商能过"与"报告说不能过"同时成立。
@@ -375,25 +379,25 @@ impl Ledger {
     /// 记下一档的结果，返回它是否可行；`ok` 字段与"是否命中"必须是同一个布尔。
     fn record(&mut self, index: usize, variant: &Variant, failing: Vec<NeedReport>) -> bool {
         let ok = failing.is_empty();
+        if !ok {
+            self.remember_failure(index, &failing);
+        }
         self.chain.push(ChainStep {
             variant: variant.name.clone(),
             schedule: variant.schedule,
             ok,
-            failures: failing.clone(),
+            failures: failing,
             mma_share: variant.mma_share,
         });
-        if !ok {
-            self.remember_failure(index, failing);
-        }
         ok
     }
 
     /// 记下这一档的缺项：`first_failure` 答"首选为什么不行"，`closest` 答"补哪一个就能用"，两者不能互相冒充。
-    fn remember_failure(&mut self, index: usize, failing: Vec<NeedReport>) {
+    fn remember_failure(&mut self, index: usize, failing: &[NeedReport]) {
         let mut missing: Vec<Prim> = Vec::new();
-        for report in &failing {
-            if !missing.contains(&report.need.prim) {
-                missing.push(report.need.prim);
+        for prim in failing.iter().map(|report| report.need.prim) {
+            if !missing.contains(&prim) {
+                missing.push(prim);
             }
         }
         let fewer = self
@@ -403,9 +407,7 @@ impl Ledger {
         if fewer {
             self.closest = Some((index, missing));
         }
-        if self.first_failure.is_none() {
-            self.first_failure = Some(failing);
-        }
+        self.first_failure.get_or_insert_with(|| failing.to_vec());
     }
 
     /// 最近的解锁路径：变体名与缺项来自同一档（只陈述这一档缺这些原语，不承诺补完必然可行）。

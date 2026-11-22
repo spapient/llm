@@ -37,6 +37,7 @@ pub mod device;
 pub mod evidence;
 pub mod gating;
 pub mod prop;
+pub mod prop_ledger;
 pub mod rel;
 pub mod suite;
 pub mod witness;

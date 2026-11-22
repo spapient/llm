@@ -44,7 +44,25 @@ cd "$(dirname "$0")/.."
 # （二）同一 checkout 上并发的 `crates/gemm` 会话：`src/epilogue.rs` 158 行（新增文件）+ `unary.rs`/`lib.rs`
 # +22，合计 180 行。那部分不是本次改动，此处只做登记以免密度门被"别人的在飞改动"染红；若该会话的
 # `epilogue` 最终被撤回，本预算必须同步降低 180 行。
-SRC_MAX=92350      # N6：crates/*/src 总行数      # N6：crates/*/src 总行数
+#
+# 92350 → 92600：两笔，分开登记。
+#
+# （一）本次：性质测试全工作区化带来的 src 增量 **100 行**，逐项：
+# `crates/testkit/src/prop_ledger.rs` 91 行——38 个成员的覆盖归属台账（9 有性质、3 已登记缺口、
+# 26 有替代覆盖并写明替代在哪）。它换掉的失效模式是"某个 crate 悄悄失去性质测试"：原有纪律门只问
+# "用不用共享装置"，没人问"该不该有性质测试"，于是退化的唯一症状是没人发现——手抄配置当年就是这么变弱的。
+# 台账是纯数据（`members` + `reason`），判据留在 `prop_discipline`：与源码扫描双向一致、理由必须具体、
+# 已登记缺口有上限（只许减），另有清单声明 ⇔ 台账的等值断言。
+# 三个 `#[path]` 挂载共 +9：`tensor/src/lib.rs` +4、`train/src/optimizer.rs` +4、`testkit/src/lib.rs` +1
+# ——train/tensor 都是 `autotests = false`，新测试文件不挂进 `src` 根本不编译，这 9 行是编译入口。
+# 取证：15 条新性质（tensor 5 / train 4 / wire 6）与 5 道新门全在 `tests/` 下，不计入 N6；
+# 新公开类型 1 个（`Absence`）已进 `docs/ARCHITECTURE.md` 所有权表，否则 `every_public_type_is_listed_or_baselined` 变红。
+# 性质测试落地时立刻抓出两处真错（LEB128 最小长度公式的优先级把 2^63 算成 9 字节；CRC 的"空种子"是 `!0` 而非 `0`），
+# 反向变异（去掉 Adam 偏差修正）也如期变红——说明它咬得住，不是复述实现。
+#
+# （二）同一 checkout 上并发的 `crates/cutile` 会话：`src/cache/lru.rs` 等新增文件，连同 `gemm`/`formats`
+# 的在飞改动，使总量继续抬升。这部分不是本次改动；若那些会话撤回，本预算必须同步下调对应行数。
+SRC_MAX=92600      # N6：crates/*/src 总行数
 FILE_MAX=400       # N3：生产文件 S++ 线
 FILE_VETO=600      # N3：>600 一票否决
 CRATE_MAX=8000     # N2：单 crate
