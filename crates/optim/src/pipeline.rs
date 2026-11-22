@@ -23,6 +23,9 @@ pub(crate) struct Run<'a> {
     pub profile: &'a Profile,
     /// 这次执行得到的证据（协商只认它，不认档案里的 `grade`）。
     pub proof: Proof,
+    /// 形状覆盖：`None` 时形状由模型的 `sample(m, n)` 给出；给了就一律按它，
+    /// 让调用方能指定模型采样函数定不下来的维度（如 GEMM 的收缩轴 `K`）。
+    pub shape: Option<Sample>,
 }
 
 impl<'a> Run<'a> {
@@ -33,7 +36,19 @@ impl<'a> Run<'a> {
             op,
             profile,
             proof,
+            shape: None,
         })
+    }
+
+    /// 这次执行用的样本：显式形状优先，否则由模型按 `(m, n)` 采样。
+    ///
+    /// 形状的一切判断（网格各维、形态前置、降源常量）都从这里取，避免同一形状在两处
+    /// 各算一遍而漂移——`K` 尤其如此：它不是 `(m, n)` 的函数。
+    pub fn sample(&self, m: usize, n: usize) -> Sample {
+        match &self.shape {
+            Some(sample) => sample.clone(),
+            None => (self.model.sample)(m, n),
+        }
     }
 
     /// 这次协商该用的证据。

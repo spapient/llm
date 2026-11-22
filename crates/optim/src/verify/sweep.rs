@@ -116,7 +116,7 @@ impl Sweep<'_> {
     /// 形状 → 样本 + 产物：两条通道共用的前半段。
     fn prepare(&self, (m, n): (u64, u64)) -> diagnostic::Result<(Sample, Prepared)> {
         let (m, n) = (m as usize, n as usize);
-        let sample = (self.run.model.sample)(m, n);
+        let sample = self.run.sample(m, n);
         let prepared = self.run.prepare(&self.path, self.dirs, m, n)?;
         Ok((sample, prepared))
     }

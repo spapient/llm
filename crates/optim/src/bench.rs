@@ -301,7 +301,7 @@ fn prepare_sample(
     (m, n): (usize, usize),
 ) -> diagnostic::Result<(pipeline::Prepared, Sample)> {
     let prepared = prepare(run, dirs, m, n)?;
-    let sample = (run.model.sample)(m, n);
+    let sample = run.sample(m, n);
     run.op.signature.check(&sample)?;
     Ok((prepared, sample))
 }

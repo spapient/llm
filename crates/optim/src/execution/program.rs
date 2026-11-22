@@ -222,11 +222,11 @@ impl Mode {
     }
 
     /// 前置条件不成立时回落声明形态；`strict` 形态直接报错。
-    fn pick(&self, lower: Lower, run: &Run<'_>, m: usize, n: usize) -> diagnostic::Result<Lower> {
+    fn pick(&self, lower: Lower, run: &Run<'_>, sample: &Sample) -> diagnostic::Result<Lower> {
         let Some(gate) = self.gate else {
             return Ok(lower);
         };
-        if gate(run, m, n, &lower) {
+        if gate(run, sample, &lower) {
             return Ok(lower);
         }
         if self.strict {
@@ -262,7 +262,37 @@ pub fn program(
     n: usize,
 ) -> diagnostic::Result<Stages> {
     let (run, prepared) = resolve(catalogue, dirs, op_name, backend.tag(), m, n)?;
-    assemble(&mode, &run, &prepared, op_name, backend.emit(), m, n)
+    let sample = run.sample(m, n);
+    assemble(&mode, &run, &prepared, op_name, backend.emit(), &sample)
+}
+
+/// 生产态设备源，形状由调用方给定：`sample` 里的 `m` / `n` 与标量（如 GEMM 的收缩轴 `K`）
+/// 一律按它，不再由模型的采样函数推。
+///
+/// 与 [`program`] 的差别只在形状来源：模型的采样函数只吃 `(m, n)`，收缩轴这类维度定不下来，
+/// 形状前提（尾块、不整除）就无从验证。这里让调用方连同标量一起给出完整样本。
+///
+/// # Errors
+///
+/// 与 [`program`] 相同。
+pub fn program_sample(
+    catalogue: &Catalogue,
+    dirs: &Dirs,
+    op_name: &str,
+    backend: Backend,
+    mode: Mode,
+    sample: &Sample,
+) -> diagnostic::Result<Stages> {
+    let (mut run, prepared) = resolve(
+        catalogue,
+        dirs,
+        op_name,
+        backend.tag(),
+        sample.m,
+        sample.n,
+    )?;
+    run.shape = Some(sample.clone());
+    assemble(&mode, &run, &prepared, op_name, backend.emit(), sample)
 }
 
 /// 定形态 → 判前置 → 降源。
@@ -272,12 +302,11 @@ fn assemble(
     prepared: &Prepared,
     op_name: &str,
     emit: Emit,
-    m: usize,
-    n: usize,
+    sample: &Sample,
 ) -> diagnostic::Result<Stages> {
     let lower = mode.lower(run.op, op_name)?;
-    let chosen = mode.pick(lower, run, m, n)?;
-    stage(mode, &chosen, run, prepared, emit, m, n)
+    let chosen = mode.pick(lower, run, sample)?;
+    stage(mode, &chosen, run, prepared, emit, sample)
 }
 
 /// 目标 lowering + 声明 → 设备源与附加数据。
@@ -293,7 +322,7 @@ fn stage(
     Ok(Stages {
         sources: lower_sources(emit, lower, run, prepared, m, n)?,
         decay: decay_of(lower),
-        dims: mode.grid_dims(lower, &(run.model.sample)(m, n))?,
+        dims: mode.grid_dims(lower, &run.sample(m, n))?,
     })
 }
 
@@ -332,16 +361,16 @@ fn grid_of<'a>(op: &'a OpDecl, op_name: &str) -> diagnostic::Result<&'a Grid> {
 // 判据逐条搬自原各入口；契约本身写在 `Lower` 各变体的文档里，这里只说成立与否。
 
 /// 纯逐点：正文不吃跨元素依赖，一元素一线程成立。
-fn pointwise_ready(run: &Run<'_>, _m: usize, _n: usize, _lower: &Lower) -> bool {
+fn pointwise_ready(run: &Run<'_>, _sample: &Sample, _lower: &Lower) -> bool {
     run.op.pointwise()
 }
 
 /// 分块 GEMM：可分块、块几何合法、`M/N/K` 都能被 `tile` 整除。
-fn tile_ready(run: &Run<'_>, m: usize, n: usize, lower: &Lower) -> bool {
+fn tile_ready(run: &Run<'_>, sample: &Sample, lower: &Lower) -> bool {
     let &Lower::TiledGemm { tile, per_thread } = lower else {
         return false;
     };
-    is_gemm(run, tile) && valid_block(tile, per_thread) && shapes(run, m, n, tile)
+    is_gemm(run, tile) && valid_block(tile, per_thread) && shapes(sample, tile)
 }
 
 /// 算子是否是可分块 GEMM，且块边长合法（`tile == 0` 恒假，避免除零）。
@@ -359,9 +388,9 @@ fn valid_block(tile: usize, per_thread: usize) -> bool {
 }
 
 /// 形状能否整除分块：`M/N/K` 都是 `tile` 的正整数倍。
-fn shapes(run: &Run<'_>, m: usize, n: usize, tile: usize) -> bool {
-    let k = (run.model.sample)(m, n).scalar("K").unwrap_or(0);
-    k > 0 && divides(m, tile) && divides(n, tile) && divides(k as usize, tile)
+fn shapes(sample: &Sample, tile: usize) -> bool {
+    let k = sample.scalar("K").unwrap_or(0);
+    k > 0 && divides(sample.m, tile) && divides(sample.n, tile) && divides(k as usize, tile)
 }
 
 /// `value` 能否被 `tile` 整除（`tile == 0` 时恒假，避免除零）。
@@ -370,7 +399,7 @@ fn divides(value: usize, tile: usize) -> bool {
 }
 
 /// simdgroup GEMM：片段数在 `1..=4`、`K % 8 == 0`、`M/N` 分别被 `8·片段数` 整除。
-fn simdgroup_ready(run: &Run<'_>, m: usize, n: usize, lower: &Lower) -> bool {
+fn simdgroup_ready(run: &Run<'_>, sample: &Sample, lower: &Lower) -> bool {
     let &Lower::SimdGroupGemm {
         row_frags,
         col_frags,
@@ -378,7 +407,7 @@ fn simdgroup_ready(run: &Run<'_>, m: usize, n: usize, lower: &Lower) -> bool {
     else {
         return false;
     };
-    fragment_span(row_frags, col_frags) && fragment_shape(run, m, n, row_frags, col_frags)
+    fragment_span(row_frags, col_frags) && fragment_shape(run, sample, row_frags, col_frags)
 }
 
 /// 每个 simdgroup 沿 M/N 的输出片段数限定在 `1..=4`（`8×8` 片段，最多 `32×32` 输出）。
@@ -387,25 +416,25 @@ fn fragment_span(row_frags: usize, col_frags: usize) -> bool {
 }
 
 /// Gemm 骨架 + K 轴能被 8 整除 + M/N 分别能被 `8·片段数` 整除。
-fn fragment_shape(run: &Run<'_>, m: usize, n: usize, row_frags: usize, col_frags: usize) -> bool {
+fn fragment_shape(run: &Run<'_>, sample: &Sample, row_frags: usize, col_frags: usize) -> bool {
     if run.op.skeleton != Skeleton::Gemm {
         return false;
     }
-    let k = (run.model.sample)(m, n).scalar("K").unwrap_or(0);
+    let k = sample.scalar("K").unwrap_or(0);
     k > 0
         && (k as usize).is_multiple_of(8)
-        && divides(m, 8 * row_frags)
-        && divides(n, 8 * col_frags)
+        && divides(sample.m, 8 * row_frags)
+        && divides(sample.n, 8 * col_frags)
 }
 
 /// 张量核 GEMM：Gemm 骨架、几何参数成闭集、`M` 被 `tile_m` 整除。
-fn tensor_ready(run: &Run<'_>, m: usize, n: usize, lower: &Lower) -> bool {
+fn tensor_ready(run: &Run<'_>, sample: &Sample, lower: &Lower) -> bool {
     let &Lower::TensorGemm { geometry } = lower else {
         return false;
     };
     run.op.skeleton == Skeleton::Gemm
-        && n > 0
-        && divides(m, geometry.tile_m)
+        && sample.n > 0
+        && divides(sample.m, geometry.tile_m)
         && geometry_ready(geometry)
 }
 
@@ -415,14 +444,14 @@ fn geometry_ready(geometry: TensorGeometry) -> bool {
 }
 
 /// int8 GEMM：块边长合法、Gemm 骨架、int8 签名、`M/N/K` 都能被 `tile` 整除。
-fn int8_ready(run: &Run<'_>, m: usize, n: usize, lower: &Lower) -> bool {
+fn int8_ready(run: &Run<'_>, sample: &Sample, lower: &Lower) -> bool {
     let &Lower::Int8Gemm { tile } = lower else {
         return false;
     };
     (2..=32).contains(&tile)
         && run.op.skeleton == Skeleton::Gemm
         && int8_signature(run)
-        && shapes(run, m, n, tile)
+        && shapes(sample, tile)
 }
 
 /// 签名是不是 int8 GEMM：`(u8 *a, u8 *b, float *y, int M, int N, int K)`。

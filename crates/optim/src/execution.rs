@@ -430,7 +430,7 @@ fn lower_sources(
     m: usize,
     n: usize,
 ) -> diagnostic::Result<Vec<String>> {
-    let sample = (run.model.sample)(m, n);
+    let sample = run.sample(m, n);
     backend(emit)?.lower(&prepared.source.text, &run.op.signature, &sample, kind)
 }
 

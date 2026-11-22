@@ -26,6 +26,25 @@
 
 ### Changed
 
+- **不再需要 nightly：默认工具链换成已发布的 stable，clone 即能构建**。`crates/gemm` 的两处不稳定
+  能力改为 `#[cfg(nightly)]` 挂起，各配一条语义等价的 stable 退路，由本 crate 新增的 `build.rs`
+  （一次 `rustc --version` 判定，产出 `cfg(nightly)`）选择：
+  - `gemv::simd` 的 16 车道解包点积 → stable 走新增的 `gemv/simd_scalar.rs`。它**保持相同的分段
+    形状**（`WIDE` 个元素一段、`CHAINS` 条独立累加链轮转、段内逐条 `mul_add`），因此每条链累加的
+    元素序列与向量版逐车道一一对应，LLVM 在 stable 上也能把这份源码自动向量化；打包格式的
+    `admit`/`forward_batch` 在 stable 上恒不可达（`Option<Infallible>`），调用方无改动地落到本来
+    就存在的标量叶 `forward_rows_scaled`。两个模块同名同签名，`gemv/f32.rs`、`gemv/i8.rs`、
+    `gemv/packed.rs` 一行没动。
+  - `fast::sme` 的 ZA 外积 → 整块只在 `nightly + aarch64` 存在，stable 上 `gemm_f32` 直接走 NEON
+    通道。模块门控之后块内 26 条 `#[cfg(target_arch = "aarch64")]` 全部冗余，一并删除，
+    `sme::gemm` 里那条"非 aarch64 恒假"的分支也随之下线，文件净减 27 行。
+  - `benchmarks` 的 SME 端口探针（`port_run`/`port_mix`）随之门控；`sdot_peak` 从 `sme_peak`
+    里提出来单独调用，i8 峰值口径在 stable 上照常测量。
+  - `rust-toolchain.toml` 的 `channel` 从 `nightly-2026-09-01` 改为 `stable`，工作区
+    `rust-version` 从 `1.100`（当时尚未发布）改为 `1.99`；CI 的 14 处工具链引用同步换成 `1.99.1`。
+  - 新增 CI job `nightly channel`（macOS / aarch64）跑 `cargo test -p llm-gemm --lib`：默认工具链
+    已是 stable，没有这条守卫，上面两条 `cfg(nightly)` 通道会静默腐坏。
+
 - **`testkit` 的 L3 跨层对拍按"一个文件答一个问题"拆开，手写 LCG 删除**。`crates/testkit/src/l3.rs`
   （242 行）此前同时住着一个自造 `Lcg`、六个夹具与四类判据，文件头还声称随机源是本 crate 的 `Rng`——
   实际是第二份生成器，与"唯一事实来源"直接冲突。现在 `l3.rs` 只剩引言与三个声明；`l3/measure.rs` 是
