@@ -24,7 +24,6 @@ pub const COVERED: &[&str] = &[
     "nn",
     "rng",
     "shard",
-    "tensor",
     "testkit",
     "train",
     "wire",
@@ -91,5 +90,11 @@ pub const ABSENT: &[Absence] = &[
         members: &["formats", "fuzz", "snapshot", "tokenizer", "weights"],
         reason: "任意字节鲁棒性由 `crates/fuzz` 的确定性靶覆盖——同一句话（不 panic、只返回 \
                  `Invalid`），样本量级远超几百个用例；这五个成员还各有真实样本的往返用例钉住正向路径。",
+    },
+    Absence {
+        members: &["tensor"],
+        reason: "形状描述只剩三条离散契约：元素数是各轴的饱和乘积、空形状是标量、字节数按位向上取整。\
+                 三条都由 `tests/shape_tests.rs` 的直钉单元测试覆盖（含 `[usize::MAX, 2]` 的溢出饱和用例）；\
+                 随机化 `dims` 只会得到「乘积等于乘积」的恒真式，性质测试在这里是重复而非覆盖。",
     },
 ];
