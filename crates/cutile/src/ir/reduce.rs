@@ -3,6 +3,8 @@
 //! 与 `Kernel` 只有写回形状不同：逐点写 `output[idx] = value`，归约写 `output[at] += value`。
 //! 校验复用 `super` 的名字/形参/表达式六道闸，发射时只有守卫与循环体分道。
 
+use core::fmt::Write as _;
+
 use super::{
     buf_length_name, optimize_expr, verify_core, write_expr, write_signature, Expr, Parameter,
     VerificationError,

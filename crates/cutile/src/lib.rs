@@ -106,5 +106,9 @@ mod lru;
 // `witness`、`verify`、`execution`）住在 `optim`：它们要拼一次编译、跑一次设备，而本 crate
 // 只做"把三层数据变成源文本"这段旧模板前端（①②③④⑤）。
 
+#[cfg(test)]
+#[path = "../tests/ir_exec_tests.rs"]
+mod ir_exec_tests;
+
 /// crate 自身的 schema 版本；闭集变更时递增，旧 `plan` 表与缓存随即失效（README §6.4）。
 pub const SCHEMA_VER: u16 = 4;
