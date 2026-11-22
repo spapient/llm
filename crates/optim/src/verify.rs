@@ -207,7 +207,7 @@ fn negotiate(op: &OpDecl, catalogue: &Catalogue, device: &str) -> Negotiation {
             },
             Ok(path) => Negotiation::Fallback {
                 variant: path.variant,
-                step: path.index + 1,
+                step: path.idx + 1,
                 of,
             },
             Err(no_path) => unmet(&no_path),

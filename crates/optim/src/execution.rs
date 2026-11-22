@@ -237,7 +237,7 @@ fn length_of(op: &OpDecl, sample: &Sample) -> diagnostic::Result<usize> {
         .signature
         .params()
         .iter()
-        .find(|param| !param.ctype.is_buffer())
+        .find(|param| !param.ctype.is_buf())
         .map(|param| param.name.clone())
         .ok_or_else(|| {
             Error::new(

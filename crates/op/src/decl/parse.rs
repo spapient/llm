@@ -244,8 +244,8 @@ pub(super) fn phases(
     let Some(rows) = table.table_array("phases") else {
         return Ok(vec![Phase {
             name: op.to_string(),
-            reads: signature.buffer_names(false),
-            writes: signature.buffer_names(true),
+            reads: signature.buf_names(false),
+            writes: signature.buf_names(true),
         }]);
     };
     rows.iter().map(|row| phase(op, row, signature)).collect()
@@ -280,7 +280,7 @@ fn slot_names(
         let known = signature
             .params()
             .iter()
-            .any(|param| param.ctype.is_buffer() && param.name == *name);
+            .any(|param| param.ctype.is_buf() && param.name == *name);
         if !known {
             return Err(field(
                 &format!("{op}.phases.{key}"),

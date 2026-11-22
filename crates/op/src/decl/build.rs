@@ -41,7 +41,7 @@ impl OpDecl {
                 .signature
                 .params()
                 .iter()
-                .filter(|param| !param.ctype.is_buffer())
+                .filter(|param| !param.ctype.is_buf())
                 .count()
                 == 1
             && self.same_element_type()
@@ -53,7 +53,7 @@ impl OpDecl {
             .signature
             .params()
             .iter()
-            .filter(|param| param.ctype.is_buffer())
+            .filter(|param| param.ctype.is_buf())
             .map(|param| param.ctype);
         let Some(first) = types.next() else {
             return false;
@@ -100,7 +100,7 @@ impl OpDecl {
             .signature
             .params()
             .iter()
-            .filter(|param| param.ctype.is_buffer())
+            .filter(|param| param.ctype.is_buf())
         {
             let covered = self.phases.iter().any(|phase| {
                 phase.reads.iter().any(|slot| slot == &param.name)

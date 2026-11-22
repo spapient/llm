@@ -39,7 +39,7 @@ impl prof::atom::Closed for Skeleton {
         }
     }
 
-    fn index(self) -> usize {
+    fn idx(self) -> usize {
         self as usize
     }
 }
@@ -197,7 +197,7 @@ impl OpDecl {
         self.signature
             .params()
             .iter()
-            .find(|param| param.name == name && param.ctype.is_buffer())
+            .find(|param| param.name == name && param.ctype.is_buf())
             .map(|param| param.ctype)
     }
 }

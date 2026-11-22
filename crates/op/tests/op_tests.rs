@@ -19,7 +19,7 @@ fn arity_matches_the_samples() {
                 $(
                     let shape = <$ty as crate::operator::Operator>::SHAPE;
                     let sample = <$ty as crate::operator::Operator>::sample(shape.0, shape.1);
-                    let inputs = sample.buffers.iter().filter(|buffer| buffer.name != "y").count();
+                    let inputs = sample.bufs.iter().filter(|buf| buf.name != "y").count();
                     assert_eq!(
                         <$ty as crate::operator::Operator>::ARITY,
                         inputs,

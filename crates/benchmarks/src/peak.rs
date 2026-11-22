@@ -26,7 +26,9 @@ pub(crate) fn flops_peak(c: &mut Criterion) {
     }
     group.finish();
     machine_peak(c);
+    #[cfg(all(nightly, target_arch = "aarch64"))]
     sme_peak(c);
+    sdot_peak(c);
 }
 
 /// 每链 16 个 f32 即 4 条 128 位寄存器：`C × 4 ≤ 32` 才不溢出，故 `C ≤ 8`。
@@ -106,14 +108,14 @@ fn fma_run<const C: usize>(lanes: &mut [[f32; LANES]; C], rounds: usize) -> f32 
 /// 单线程与整机各测一次：单线程量单元的发射上限，整机量**共享之后**的实际上限。实测
 /// 1024³ 从 1 线程到 16 线程只涨 1.55 倍，说明 SME 单元是簇内共享而不是每核一份，
 /// 所以只报单线程峰值会把整机 GEMM 的百分比算成假的低值。
+#[cfg(all(nightly, target_arch = "aarch64"))]
 fn sme_peak(c: &mut Criterion) {
     ported(c, "", fast::port_run);
     let (a, b) = ([1.0f32; 16], [1.0f32; 64]);
     ported(c, "_mix", |rounds| fast::port_mix(rounds, &a, &b));
-    sdot_peak(c);
 }
 
-/// i8 `sdot` 端口峰值：K8 的分母，与 [`sme_peak`] 同一份口径（`Barrier` 齐步、只计计算段、取最大）。
+/// i8 `sdot` 端口峰值：K8 的分母，与 `sme_peak` 同一份口径（`Barrier` 齐步、只计计算段、取最大）。
 ///
 /// **为什么不能复用 f32 峰值**：i8 走 NEON `sdot`，一条指令 16 次 int8 乘加；f32 走 `fmopa`/`fma`。
 /// 两条指令路径的吞吐上限不同，拿 f32 峰值当分母是口径混用（F2/F18）。

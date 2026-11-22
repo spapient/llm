@@ -126,7 +126,7 @@ fn the_default_phase_is_derived_from_the_signature() {
     assert_eq!(phase.name, "gemv_f32");
     assert_eq!(phase.writes, ["y"], "可写输出缓冲恰好一个");
     assert_eq!(
-        op.signature.buffer_names(false),
+        op.signature.buf_names(false),
         phase.reads,
         "读槽位与签名 const 缓冲一致"
     );

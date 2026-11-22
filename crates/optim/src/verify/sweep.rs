@@ -124,7 +124,7 @@ impl Sweep<'_> {
     /// 输出个数该是多少：C 通道看样本声明的 `y`，设备通道（CUDA / Metal / 昇腾）看参考输出的长度。
     fn expected(&self, sample: &Sample, want: &[f32]) -> usize {
         match self.lane {
-            Lane::Host => sample.buffer("y").map_or(sample.n, |y| y.values.len()),
+            Lane::Host => sample.buf("y").map_or(sample.n, |y| y.values.len()),
             Lane::Cuda | Lane::Metal | Lane::Ascend => want.len(),
         }
     }

@@ -621,4 +621,116 @@ proptest! {
         let want = packed_reference(x, &w, &s, n, groups, 4, I2.table);
         prop::assert_exact("gemv_i2 对打包定义", &got, &want);
     }
+
+    // ===== GEMV 守卫：拒绝的边界 =====
+    //
+    // 上面几条钉的是"算得对"，这一组钉的是"什么时候不许算"：守卫要把形状错误挡在内核之外，
+    // 而不是让 `&weights[idx * row..]` 在上越界处 panic。每条都同时断言该拒的拒、该收的收——
+    // 只断言拒绝一侧，整体收紧成"一律拒绝"也能过。
+
+    /// 输出维度是三条格式共同的前置约束：`n = 0` 没有可写的元素，必须报错而不是静默成功。
+    #[test]
+    fn gemv_rejects_an_empty_output(m in 1usize..=32, x in ints(32)) {
+        let x = &x[..m];
+        prop_assert!(gemv_f32::forward(x, &[], &mut []).is_err(), "f32 的 n = 0 必须拒绝");
+        prop_assert!(
+            gemv_i8::forward(x, &[], &[], &mut []).is_err(),
+            "i8 的 n = 0 必须拒绝"
+        );
+    }
+
+    /// 权重下界是 `n·m`：少一个就拒，恰好够就收。
+    #[test]
+    fn gemv_f32_needs_exactly_n_times_m_weights(
+        m in 1usize..=48, n in 1usize..=8, w in ints(48 * 8),
+    ) {
+        let x = &w[..m];
+        let (need, mut out) = (n * m, vec![0.0f32; n]);
+        prop_assert!(
+            gemv_f32::forward(x, &w[..need - 1], &mut out).is_err(),
+            "权重 {} < {need} 必须拒绝",
+            need - 1
+        );
+        prop_assert!(
+            gemv_f32::forward(x, &w[..need], &mut out).is_ok(),
+            "权重恰好 {need} 必须接受"
+        );
+    }
+
+    /// 稠密格式没有标度轴：空切片才合法，收到任何一条标度都是调用方的形状错误。
+    #[test]
+    fn gemv_f32_dense_has_no_scale_axis(
+        m in 1usize..=32, n in 1usize..=8, w in matrix(8, 32), s in prop::finite(),
+    ) {
+        let x: Vec<f32> = (0..m).map(|k| k as f32 * 0.25).collect();
+        let mut out = vec![0.0f32; n];
+        prop_assert!(
+            <gemv::f32::F32 as gemv::Format>::forward(&x, &w[..n * m], &[], &mut out).is_ok(),
+            "空标度必须接受"
+        );
+        prop_assert!(
+            <gemv::f32::F32 as gemv::Format>::forward(&x, &w[..n * m], &[s], &mut out).is_err(),
+            "稠密格式收到标度必须拒绝"
+        );
+    }
+
+    /// 标度长度要同时说清两件事：每行整数个组，且组数能整除规约轴。两条缺一不可。
+    #[test]
+    fn gemv_i8_needs_scales_that_divide_both_axes(
+        n in 1usize..=4, groups in 1usize..=4, len in 0usize..=17,
+    ) {
+        let m = crate::gemv::GROUP * groups;
+        let w = crate::gemv::packed::weights(m, n, 1);
+        let (x, s, mut out) = (vec![1.0f32; m], vec![1.0f32; len], vec![0.0f32; n]);
+        let ok = match len.checked_div(n) {
+            Some(per_row) if len % n == 0 && per_row > 0 => m.is_multiple_of(per_row),
+            _ => false,
+        };
+        prop_assert_eq!(
+            gemv_i8::forward(&x, &w, &s, &mut out).is_ok(),
+            ok,
+            "{len} 个标度配 n = {}、m = {} 的可接受性",
+            n,
+            m
+        );
+    }
+
+    /// 非有限标度会把整组乘积带进 `NaN`/`inf`，且与格式无关：必须在累加前拒掉。
+    #[test]
+    fn gemv_i8_rejects_non_finite_scales(
+        n in 1usize..=4, groups in 1usize..=4, slot in 0usize..=16, which in 0usize..3,
+    ) {
+        let m = crate::gemv::GROUP * groups;
+        let w = crate::gemv::packed::weights(m, n, 1);
+        let (x, mut s, mut out) = (vec![1.0f32; m], vec![1.0f32; n * groups], vec![0.0f32; n]);
+        prop_assert!(gemv_i8::forward(&x, &w, &s, &mut out).is_ok(), "全有限必须接受");
+        let at = slot % s.len();
+        s[at] = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY][which];
+        prop_assert!(
+            gemv_i8::forward(&x, &w, &s, &mut out).is_err(),
+            "第 {at} 个标度非有限必须拒绝"
+        );
+    }
+
+    /// 行批的几何是三个数一起说的：`x` 必须正好 `rows·m`、`out` 必须正好 `rows·n`。
+    #[test]
+    fn gemv_i8_batch_rejects_inconsistent_geometry(
+        rows in 1usize..=4, n in 1usize..=4, mode in 0usize..4,
+    ) {
+        let m = crate::gemv::GROUP;
+        let w = crate::gemv::packed::weights(m, n, 1);
+        let (s, x) = (vec![1.0f32; n], vec![1.0f32; rows * m]);
+        let mut good = vec![0.0f32; rows * n];
+        let geo = crate::gemv::Geometry::new(rows, m, n);
+        prop_assert!(gemv_i8::forward_batch(&x, &w, &s, geo, &mut good).is_ok(), "几何一致必须接受");
+        let (x, geo, out) = match mode {
+            0 => (&x[..], crate::gemv::Geometry::new(0, m, n), rows * n),
+            1 => (&x[..rows * m - 1], geo, rows * n),
+            _ => (&x[..], geo, rows * n + 1),
+        };
+        prop_assert!(
+            gemv_i8::forward_batch(x, &w, &s, geo, &mut vec![0.0f32; out]).is_err(),
+            "mode {mode} 的几何必须拒绝"
+        );
+    }
 }

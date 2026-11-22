@@ -533,7 +533,7 @@ fn assemble(op_name: &str, timed: Timed, profile: &Profile, evidence: &Evidence)
 /// 判据：除输出外的全部缓冲占多少字节；不回答"它装不装得进缓存"——那要与 FAST 容量一起看。
 fn working_set(sample: &Sample, output: &str) -> u64 {
     sample
-        .buffers
+        .bufs
         .iter()
         .filter(|buffer| buffer.name != output)
         .map(|buffer| match &buffer.values {

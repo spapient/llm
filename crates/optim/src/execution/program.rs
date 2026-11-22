@@ -469,8 +469,8 @@ fn tileable_threads(threads: usize) -> bool {
 /// 注意力签名与形状：4 缓冲（q/k/v/y）+ 2 标量（S/D），且形状落在共享内存/头宽上限内。
 fn attention_shape(run: &Run<'_>, s: usize, d: usize) -> bool {
     let params = run.op.signature.params();
-    let buffers = params.iter().filter(|p| p.ctype.is_buffer()).count();
-    let scalars = params.iter().filter(|p| !p.ctype.is_buffer()).count();
+    let buffers = params.iter().filter(|p| p.ctype.is_buf()).count();
+    let scalars = params.iter().filter(|p| !p.ctype.is_buf()).count();
     buffers == 4 && scalars == 2 && in_bounds(s, d)
 }
 
