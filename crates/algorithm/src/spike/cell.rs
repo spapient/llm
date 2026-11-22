@@ -321,7 +321,7 @@ impl Spiking {
         grad: &Gradients,
     ) -> Result<()> {
         self.check_state(state)?;
-        surrogate.check_cell()?;
+        surrogate.check_window()?;
         self.check_spikes(spikes)?;
         grad.check_for(self, d_out)
     }
