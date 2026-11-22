@@ -1,4 +1,4 @@
-//! 窗口族：最大池化（1d/2d）、平均池化与自适应池化，共用 [`crate::classic`] 的 `window_op!` 装配。
+//! 窗口族：最大池化（1d/2d）、平均池化与自适应池化，共用 [`crate::conv::classic`] 的 `window_op!` 装配。
 /// 自适应平均池化（声明档 4×4 → 2×2）。
 pub mod adaptive {
     use super::super::*;

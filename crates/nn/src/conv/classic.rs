@@ -5,7 +5,7 @@ use crate::Scalar;
 use crate::conv::ConvGeom;
 use crate::model::{Buf, Cost, Sample, ShapeCtx, Values, x_buf};
 use diagnostic::Error;
-use llm_gemm::unary::{AXES, project_shape};
+use crate::kernel::unary::{AXES, project_shape};
 
 /// 一次算子装配：标记类型、语义别名与 [`crate::operator_here`] 的基座实现，外加 `#[annotation::model]`
 /// 自检常量。`$m`/`$n` 同时喂给 `operator_here!`（元组形状）与注解（数组形状），两处从同一对字面量派生。
@@ -172,5 +172,5 @@ pub use pool::{
 };
 
 #[cfg(test)]
-#[path = "../tests/classic_tests.rs"]
+#[path = "../../tests/conv/classic_tests.rs"]
 mod tests;

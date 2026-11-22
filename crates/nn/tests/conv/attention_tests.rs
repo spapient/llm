@@ -63,7 +63,7 @@ fn tiled_dense_matches_naive_bitwise() {
             let mut naive = vec![0.0f32; s * d];
             forward(q, k, v, &mut naive, s, d).expect("朴素内核");
             let mut tiled = vec![0.0f32; s * d];
-            crate::attention::tiled::forward(q, k, v, &mut tiled, s, d).expect("稠密 tile");
+            crate::conv::attention::tiled::forward(q, k, v, &mut tiled, s, d).expect("稠密 tile");
             assert_eq!(tiled, naive, "s={s},d={d} 稠密 tile 必须与朴素路径逐位一致");
         },
     );
@@ -73,10 +73,10 @@ fn tiled_dense_matches_naive_bitwise() {
 #[test]
 fn tiled_dense_rejects_bad_geometry() {
     let mut out = vec![0.0f32; 16];
-    assert!(crate::attention::tiled::forward(&[], &[], &[], &mut out, 4, 0).is_err());
-    assert!(crate::attention::tiled::forward(&[], &[], &[], &mut out, 0, 4).is_err());
+    assert!(crate::conv::attention::tiled::forward(&[], &[], &[], &mut out, 4, 0).is_err());
+    assert!(crate::conv::attention::tiled::forward(&[], &[], &[], &mut out, 0, 4).is_err());
     assert!(
-        crate::attention::tiled::forward(&[1.0; 12], &[1.0; 16], &[1.0; 16], &mut out, 4, 4)
+        crate::conv::attention::tiled::forward(&[1.0; 12], &[1.0; 16], &[1.0; 16], &mut out, 4, 4)
             .is_err()
     );
 }
@@ -90,7 +90,7 @@ fn tiled_flash_matches_online_bitwise() {
             let mut online = vec![0.0f32; s * d];
             let mut tiled = vec![0.0f32; s * d];
             flash_forward(q, k, v, &mut online, s, d).expect("flash online");
-            crate::attention::tiled::flash_tiled_forward(q, k, v, &mut tiled, s, d)
+            crate::conv::attention::tiled::flash_tiled_forward(q, k, v, &mut tiled, s, d)
                 .expect("flash tiled");
             assert_eq!(
                 tiled, online,

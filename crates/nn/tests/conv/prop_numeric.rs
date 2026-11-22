@@ -8,8 +8,8 @@
 //! - **结构性**：注意力的输出必须落在 `v` 的凸包内、平均/插值输出必须落在窗口界内。
 //!   这类性质不依赖任何实现细节，只依赖算子的定义，且能抓住"权重没归一化"这类错。
 
-use crate::attention;
-use crate::classic::{adaptive_pool, avg_pool2d, conv2d, interpolate, max_pool1d, max_pool2d};
+use crate::conv::attention;
+use crate::conv::classic::{adaptive_pool, avg_pool2d, conv2d, interpolate, max_pool1d, max_pool2d};
 use proptest::prelude::*;
 use testkit::prop;
 

@@ -4,7 +4,7 @@ mod kernel {
     //! decode 内核族：query 行数（`q_rows`）与 K/V 历史行数（`hist`）解耦的通用路径。
     use diagnostic::{Code, Error};
 
-    use crate::attention::{Mode, Rows, check_width, run_rows};
+    use crate::conv::attention::{Mode, Rows, check_width, run_rows};
 
     /// decode 查询与历史行数都必须非零。
     fn check_rows(q_rows: usize, hist: usize) -> diagnostic::Result<()> {
@@ -411,9 +411,9 @@ pub mod semantics {
     ///
     /// 缺轴时返回说明。
     pub fn cost(shape: &ShapeCtx) -> Result<Cost, Error> {
-        let q = crate::attention::axis(shape, "decode attention", 'q')?;
-        let d = crate::attention::axis(shape, "decode attention", 'd')?;
-        let h = crate::attention::axis(shape, "decode attention", 'h')?;
+        let q = crate::conv::attention::axis(shape, "decode attention", 'q')?;
+        let d = crate::conv::attention::axis(shape, "decode attention", 'd')?;
+        let h = crate::conv::attention::axis(shape, "decode attention", 'h')?;
         Ok(Cost {
             flops: (q as f64) * (h as f64) * ((d as f64) * 2.0 + 3.0),
             read: (q as u64) * (d as u64) * 4 + (h as u64) * (d as u64) * 4 * 2,
@@ -432,7 +432,7 @@ pub mod semantics {
                 ("HIST", hist as i64),
                 ("D", d as i64),
             ],
-            bufs: crate::attention::sample_bufs(q_rows * d, hist * d),
+            bufs: crate::conv::attention::sample_bufs(q_rows * d, hist * d),
         }
     }
 
@@ -455,9 +455,9 @@ pub mod semantics {
     /// 朴素参考：query 对历史 K/V 做一遍数值稳定 softmax，再对 `V` 加权。
     pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
         let (q_rows, hist, d) = geometry(sample)?;
-        let (q, k, v) = crate::attention::qkv(sample)?;
+        let (q, k, v) = crate::conv::attention::qkv(sample)?;
         let mut out = vec![0.0; q_rows * d];
-        crate::attention::decode_forward(q, k, v, &mut out, q_rows, hist, d)?;
+        crate::conv::attention::decode_forward(q, k, v, &mut out, q_rows, hist, d)?;
         Ok(out)
     }
 

@@ -13,5 +13,5 @@ pub use interp::{Interpolate, Sampler};
 pub use pool::{AdaptiveAvgPool2d, AvgPool2d, MaxPool1d, MaxPool2d};
 
 #[cfg(test)]
-#[path = "../tests/conv_tests.rs"]
+#[path = "../../tests/conv/conv_tests.rs"]
 mod tests;

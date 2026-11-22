@@ -1,6 +1,6 @@
 //! β 指数梯形扫描语义（§5.6，数学验证 5）：幺半群前缀扫描 + 对角 SSM 半群离散化。
 
-pub use llm_gemm::Scalar;
+pub use crate::Scalar;
 
 /// 幺半群：`combine` 满足结合律，[`Monoid::IDENT`] 是幺元。
 pub trait Monoid: Clone {
@@ -177,7 +177,7 @@ pub fn apply_scan<S: Scalar>(steps: &[SsmStep<S>], init: S) -> Vec<S> {
 }
 
 #[cfg(test)]
-#[path = "../tests/scan_tests.rs"]
+#[path = "../../tests/conv/scan_tests.rs"]
 mod tests;
 
 pub mod f32 {
@@ -186,7 +186,7 @@ pub mod f32 {
     use diagnostic::{Code, Error};
 
     // 单轴定义与形状投影复用 unary 骨架：时间轴 `n` 既是输入轴也是输出轴。
-    pub use llm_gemm::unary::{AXES, project_shape};
+    pub use crate::kernel::unary::{AXES, project_shape};
 
     /// 对角衰减系数 `ā = exp(λ·dt)`（模板常量 `{{a}}`）。
     const DECAY: f32 = 0.5;

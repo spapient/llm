@@ -6,18 +6,28 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 readme.workspace = true
-description = "Layer definitions (declarations, validated op references) and their performance floors."
+description = "Neural operators from dense kernels to layers: matmul/gemv families, convolution, attention, normalization, plus layer declarations and performance floors."
 publish = false
 autotests = false
+
+[features]
+# 仅测量容器使用：SME 端口峰值探针（`kernel::fast::port_run`）。生产构建不带此特性。
+bench = []
 
 [dependencies]
 annotation = { path = "../annotation", package = "llm-annotation" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
+half = { workspace = true, features = ["num-traits"] }
+llm-spec = { path = "../spec" }
+num-traits = { workspace = true }
 op = { path = "../op", package = "llm-op" }
+prof = { path = "../prof", package = "llm-prof" }
 tensor = { path = "../tensor", package = "llm-tensor" }
 weights = { path = "../weights", package = "llm-weights" }
 
 [dev-dependencies]
+# 设备侧写回尾块要真的装配并执行：装配器在 `cutile`，设备表在 `prof`，参考口径在本 crate。
+cutile = { path = "../cutile" }
 proptest = { workspace = true }
 testkit = { path = "../testkit", package = "llm-testkit" }
 

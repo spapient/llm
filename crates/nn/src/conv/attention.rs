@@ -82,7 +82,7 @@ fn qkv(sample: &Sample) -> diagnostic::Result<(&[f32], &[f32], &[f32])> {
 
 /// 行 `row` 与行 `col` 的点积：四个朴素/flash 实现共用，免得每处重写 `d` 长的累加循环。
 fn dot(x: &[f32], y: &[f32], row: usize, col: usize, d: usize) -> f32 {
-    llm_gemm::matmul::dot_lanes(&x[row * d..][..d], &y[col * d..][..d])
+    crate::kernel::matmul::dot_lanes(&x[row * d..][..d], &y[col * d..][..d])
 }
 
 /// 头宽不能为 0：`√d` 作分数除数，`d=0` 会让每条分数除零成 NaN。
@@ -299,8 +299,8 @@ crate::operator_here!(
 );
 
 #[cfg(test)]
-#[path = "../tests/latent_attention_tests.rs"]
+#[path = "../../tests/conv/latent_attention_tests.rs"]
 mod latent_attention_tests;
 #[cfg(test)]
-#[path = "../tests/attention_tests.rs"]
+#[path = "../../tests/conv/attention_tests.rs"]
 mod tests;

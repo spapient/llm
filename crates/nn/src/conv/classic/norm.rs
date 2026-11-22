@@ -1,4 +1,4 @@
-//! 归一化族：批 / 组 / 实例 / 层，四种统计范围共用 [`crate::classic`] 的 `norm_op!` 装配。
+//! 归一化族：批 / 组 / 实例 / 层，四种统计范围共用 [`crate::conv::classic`] 的 `norm_op!` 装配。
 /// 批归一化（声明档 `C=4, spatial=2, n=2`，训练口径：批统计自上而下、滑动统计按动量混入）。
 pub mod batch {
     use super::super::*;
@@ -22,7 +22,7 @@ pub mod batch {
         let mut mean = vec![S::ZERO; C];
         let mut var = vec![S::ONE; C];
         // 声明档是 `n=2, h=1, w=2`：`h·w = spatial`。
-        llm_gemm::norm::BatchNorm2d {
+        crate::kernel::norm::BatchNorm2d {
             channels: C,
             eps: S::from_f64(EPS as f64),
             momentum: S::from_f64(0.1),
@@ -69,7 +69,7 @@ pub mod group {
         beta: &[S],
         out: &mut [S],
     ) -> diagnostic::Result<()> {
-        llm_gemm::norm::GroupNorm {
+        crate::kernel::norm::GroupNorm {
             groups: G,
             channels: C,
             eps: S::from_f64(EPS as f64),
@@ -119,7 +119,7 @@ pub mod instance {
         beta: &[S],
         out: &mut [S],
     ) -> diagnostic::Result<()> {
-        llm_gemm::norm::InstanceNorm {
+        crate::kernel::norm::InstanceNorm {
             channels: C,
             eps: S::from_f64(EPS as f64),
         }
@@ -161,7 +161,7 @@ pub mod layer {
         beta: &[S],
         out: &mut [S],
     ) -> diagnostic::Result<()> {
-        llm_gemm::norm::LayerNorm {
+        crate::kernel::norm::LayerNorm {
             width: W,
             eps: S::from_f64(EPS as f64),
         }

@@ -1,6 +1,6 @@
 //! 潜空间注意力的语义锚与「内核 ↔ 参考」对拍。
 
-use crate::attention::latent::{forward, reference, sample};
+use crate::conv::attention::latent::{forward, reference, sample};
 
 /// 一条样本的全部缓冲：`q`/`k` 宽 `W`，`v`/`y` 宽 `dc`。
 fn bufs(sample: &crate::model::Sample) -> Vec<&[f32]> {

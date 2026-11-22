@@ -4,7 +4,7 @@ use std::thread;
 use diagnostic::{Code, Error, Result};
 
 use crate::Scalar;
-use llm_gemm::fast;
+use crate::kernel::fast;
 
 use super::geom::{Conv2d, ConvGeom};
 

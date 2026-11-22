@@ -1,5 +1,5 @@
 //! 分块 tile 的两条自注意力内核：Flash（online softmax）与稠密（先落地分数、再按块加权）。
-use crate::attention::check_decode_len;
+use crate::conv::attention::check_decode_len;
 use diagnostic::Result;
 
 /// KV 分块 tile 的块宽：块内历史列数。
@@ -53,7 +53,7 @@ pub fn flash_tiled_forward(
 
 /// 稠密分块 tile 内核：分数按 K/V 块算进行块内的临时轨，行内 softmax 后再按 K/V 块加权。
 ///
-/// 与 [`crate::attention::forward`] 逐位一致（分数、`exp`、归一化和与加权累加的次序都不变），差别只在
+/// 与 [`crate::conv::attention::forward`] 逐位一致（分数、`exp`、归一化和与加权累加的次序都不变），差别只在
 /// K/V 的读取次数：朴素路径每行读一遍整段 K/V，这里一个行块只读一遍。
 ///
 /// # Errors
@@ -113,7 +113,7 @@ impl TiledCtx<'_> {
         let arow = &mut acc[row * self.d..][..self.d];
         for col in start..end {
             let kcol = &self.k[col * self.d..][..self.d];
-            let score = llm_gemm::matmul::dot_lanes(qrow, kcol) / self.scale;
+            let score = crate::kernel::matmul::dot_lanes(qrow, kcol) / self.scale;
             let new_max = m.max(score);
             let reweight = (m - new_max).exp();
             let prob = (score - new_max).exp();
@@ -148,7 +148,7 @@ impl TiledCtx<'_> {
                 let qrow = &self.q[row * self.d..][..self.d];
                 let span = &mut line[start..stop];
                 for (slot, key) in span.iter_mut().zip(keys.chunks_exact(self.d)) {
-                    *slot = llm_gemm::matmul::dot_lanes(qrow, key) / self.scale;
+                    *slot = crate::kernel::matmul::dot_lanes(qrow, key) / self.scale;
                 }
             }
             start = stop;
