@@ -284,9 +284,5 @@ mod decision {
 pub use decision::{Calib, HEAD_LAYERS_TOKEN, brier};
 
 #[cfg(test)]
-#[path = "../tests/support/policy_tests.rs"]
-mod tests;
-
-#[cfg(test)]
 #[path = "../tests/policy_tests.rs"]
-mod policy_tests;
+mod tests;

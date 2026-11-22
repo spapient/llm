@@ -390,6 +390,7 @@ enum Gear<S: Scalar> {
     Attend(Hybrid<S>),
 }
 
+#[path = "tower.rs"]
 mod tower;
 
 pub use tower::Tower;

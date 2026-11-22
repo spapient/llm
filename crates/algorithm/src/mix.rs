@@ -34,6 +34,7 @@ pub fn synthesize<S: Scalar>(ya: &[S], yb: &[S], yg: &[S], pi: S, gamma: S) -> V
         .map(|((&a, &b), &g)| a.mul(pi).add(b.mul(om_pi)).mul(om_g).add(g.mul(gamma)))
         .collect()
 }
+#[path = "pulse.rs"]
 mod pulse;
 
 pub use pulse::{Audit, Encoder, Events, Lif, accumulate, encode_id, steepest};

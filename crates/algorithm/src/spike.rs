@@ -68,12 +68,19 @@ fn check_learning_rate(lr: f32) -> Result<()> {
     Ok(())
 }
 
-/// 尺度判据：反量化尺度必须是有限正数（零尺度会把整行压成零，负尺度翻转符号）。
-fn check_scale(scale: &[f32]) -> Result<()> {
-    match scale
+/// 尺度的合格条件：有限且为正——零尺度把整行压成零，负尺度翻转符号。
+///
+/// 训练里「读进来的尺度」与「走一步之后的尺度」用的是同一条条件，只是报错时说的话不同，
+/// 故条件单独一处，消息各自写。
+fn bad_scale(scale: &[f32]) -> Option<&f32> {
+    scale
         .iter()
         .find(|value| !finite(**value) || **value <= 0.0)
-    {
+}
+
+/// 尺度判据：反量化尺度必须是有限正数（零尺度会把整行压成零，负尺度翻转符号）。
+fn check_scale(scale: &[f32]) -> Result<()> {
+    match bad_scale(scale) {
         Some(value) => Err(invalid(SITE, format!("反量化尺度必须是有限正数，得到 {value:?}"))),
         None => Ok(()),
     }
@@ -137,6 +144,7 @@ fn check_reset(threshold: f32, reset: f32) -> Result<()> {
     Ok(())
 }
 
+#[path = "cell.rs"]
 mod cell;
 
 /// 浮点主权重（QAT 口径）：训练留浮点，前向只看到它的 `i8` 量化视图。
@@ -250,10 +258,7 @@ impl Master {
             .zip(grad.scale.iter())
             .map(|(value, slope)| value - lr * slope)
             .collect();
-        match scale
-            .iter()
-            .find(|value| !finite(**value) || **value <= 0.0)
-        {
+        match bad_scale(&scale) {
             Some(value) => Err(invalid(SITE, format!(
                 "更新后的反量化尺度必须有限为正，得到 {value:?}（学习率 {lr} 把量化区间走穿了）"
             ))),

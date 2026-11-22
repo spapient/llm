@@ -83,13 +83,7 @@ impl Spiking {
     /// `Code::Invalid`；失败的那一步不推进任何膜电位（累加缓冲只是暂存）。
     pub fn step(&self, spikes: &[i8], state: &mut Membrane, out: &mut [i8]) -> Result<usize> {
         self.check_state(state)?;
-        if spikes.len() != self.inputs {
-            return Err(invalid(SITE, format!(
-                "脉冲长度 {} 与输入宽度 {} 不符",
-                spikes.len(),
-                self.inputs
-            )));
-        }
+        self.check_spike_len(spikes.len())?;
         self.fire(spikes.iter().copied().enumerate(), state, out)
     }
 
@@ -325,16 +319,21 @@ impl Spiking {
 
     /// 脉冲判据：长度与输入宽度一致、取值三元——与 [`Spiking::pulse`] 用的是同一个 [`ternary`]。
     fn check_spikes(&self, spikes: &[i8]) -> Result<()> {
-        if spikes.len() != self.inputs {
-            return Err(invalid(SITE, format!(
-                "脉冲长度 {} 与输入宽度 {} 不符",
-                spikes.len(),
-                self.inputs
-            )));
-        }
+        self.check_spike_len(spikes.len())?;
         match spikes.iter().find(|spike| !ternary(**spike)) {
             Some(spike) => Err(invalid(SITE, format!("脉冲取值必须是 −1/0/+1，得到 {spike}"))),
             None => Ok(()),
         }
+    }
+
+    /// 长度判据：训练两条公开路径（`step`/`backward`）说的是同一句话，写一处。
+    fn check_spike_len(&self, len: usize) -> Result<()> {
+        if len == self.inputs {
+            return Ok(());
+        }
+        Err(invalid(SITE, format!(
+            "脉冲长度 {len} 与输入宽度 {} 不符",
+            self.inputs
+        )))
     }
 }
