@@ -3,6 +3,8 @@
 //! 批是"序列 + 页账"的唯一来源：KV 经它写、token 经它记、结束经它还页。两半因此不会各记一份
 //! ——`Sequence` 不知道页，`Scheduler` 不知道历史，谁也写不出"生成了却没页"或"占了页却没序列"。
 
+use std::ops::Range;
+
 use crate::ifb::{Budget, Candidate, Verdict, chunk, pack};
 use crate::kv::Pager;
 use crate::{Progress, Scheduler, Sequence, invalid};
@@ -126,18 +128,22 @@ impl Batch {
     pub fn emit(&mut self, id: u64, token: u32) -> Result<Progress> {
         let progress = self.advance(id)?;
         if progress != Progress::Blocked {
-            // 这一格的页已经占到，`produced` 也因此不超过 `max_new`：记账必然放得下。
-            self.sequence_mut(id)
-                .ok_or_else(|| {
-                    Error::new(
-                        Code::Internal,
-                        format!("序列 {id} 在推进之后离开了批：页账与序列不一致"),
-                    )
-                    .with("engine::Batch::emit")
-                })?
-                .push_token(token)?;
+            self.record(id, token)?;
         }
         Ok(progress)
+    }
+
+    /// 记下一个已产出的 token：这一格的页已经占到，`produced` 也因此不超过 `max_new`。
+    fn record(&mut self, id: u64, token: u32) -> Result<()> {
+        self.sequence_mut(id)
+            .ok_or_else(|| {
+                Error::new(
+                    Code::Internal,
+                    format!("序列 {id} 在推进之后离开了批：页账与序列不一致"),
+                )
+                .with("engine::Batch::emit")
+            })?
+            .push_token(token)
     }
 
     /// 批里每条序列各推进一步，结果按 [`Batch::sequences`] 的顺序排列。
@@ -366,15 +372,25 @@ impl Batch {
         let blocks = to.min(sequences[at].ctx().len()) / width;
         let range = sequences[at].settle(blocks);
         let history = sequences[at].ctx();
-        for block in range {
-            let Some(page) = scheduler
-                .pages_of(id)
-                .and_then(|table| table.pages().get(block).copied())
-            else {
-                continue;
-            };
-            scheduler.publish(history, block, page)?;
-        }
-        Ok(())
+        publish_range(scheduler, history, id, range)
     }
+}
+
+/// 把一轮里走完的块逐块登记进前缀树：页表里没有的块跳过（序列自己已判它不可发布）。
+fn publish_range(
+    scheduler: &mut Scheduler,
+    history: &[u32],
+    id: u64,
+    blocks: Range<usize>,
+) -> Result<()> {
+    for block in blocks {
+        let Some(page) = scheduler
+            .pages_of(id)
+            .and_then(|table| table.pages().get(block).copied())
+        else {
+            continue;
+        };
+        scheduler.publish(history, block, page)?;
+    }
+    Ok(())
 }

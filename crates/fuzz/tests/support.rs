@@ -113,11 +113,11 @@ pub mod drivers {
 
     impl Target for Snapshot {
         fn name(&self) -> &str {
-            "snapshot::Snapshot"
+            "storage::Snapshot::decode"
         }
 
         fn run(&self, input: &[u8]) -> Result<(), Error> {
-            snapshot::Snapshot::decode(input).map(|_| ())
+            weights::Snapshot::decode(input).map(|_| ())
         }
     }
 
@@ -241,10 +241,10 @@ pub mod seeds {
 
     /// 一份合法的检查点：事实五个数取最小合法值，一个 2×3 的 f32 条目。
     pub fn snapshot() -> Vec<u8> {
-        let facts = snapshot::Facts::new(1, 1, 1, 1, 1).expect("事实合法");
+        let facts = storage::Facts::new(1, 1, 1, 1, 1).expect("事实合法");
         let entry = weights::Entry::new("w", tensor::DType::F32, tensor::Shape::new([2, 3])).at(8);
         let header = weights::Header::new(vec![entry], 8).expect("条目表合法");
-        snapshot::Snapshot::new(facts, header)
+        weights::Snapshot::new(facts, header)
             .encode()
             .expect("编码合法检查点")
     }

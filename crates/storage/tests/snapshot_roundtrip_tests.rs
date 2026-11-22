@@ -1,9 +1,6 @@
 //! `snapshot` 的往返与完整性：编码对称、位级对拍、校验和、截断与版本判据。
 
 use super::snapshot_support::*;
-use super::*;
-use tensor::Shape;
-use weights::Entry;
 #[test]
 fn an_unsupported_dtype_is_an_error_not_a_panic() {
     // 元素类型标签是闭集：权重头部来自文件，闭集外的类型必须在编码前就变成错误。
@@ -248,7 +245,7 @@ fn every_flipped_bit_is_rejected() {
 #[test]
 fn the_checksum_matches_its_bitwise_definition() {
     assert_eq!(
-        weights::crc::crc32(b"123456789"),
+        wire::crc::crc32(b"123456789"),
         0xCBF4_3926,
         "IEEE 802.3 的标准检验值"
     );
@@ -266,7 +263,7 @@ fn the_checksum_matches_its_bitwise_definition() {
             };
         }
     }
-    assert_eq!(weights::crc::crc32(&bytes), !crc);
+    assert_eq!(wire::crc::crc32(&bytes), !crc);
 }
 
 #[test]

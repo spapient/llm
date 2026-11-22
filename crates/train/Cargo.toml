@@ -18,7 +18,7 @@ prof = { path = "../prof", package = "llm-prof" }
 shard = { path = "../shard", package = "llm-shard" }
 tensor = { path = "../tensor", package = "llm-tensor" }
 weights = { path = "../weights", package = "llm-weights" }
-snapshot = { path = "../snapshot", package = "llm-snapshot" }
+storage = { path = "../storage", package = "llm-storage" }
 
 [dev-dependencies]
 testkit = { path = "../testkit", package = "llm-testkit" }

@@ -1,9 +1,10 @@
 //! 优化器矩状态、累积窗口梯度与权重绑定表的快照类型、编码与解码。
 
+use crate::codec::{Cursor, frame, invalid};
+use crate::snapshot;
+use crate::snapshot::PREALLOC;
 use diagnostic::{Code, Error, Result};
 use wire::sink::Sink;
-
-use super::codec::{Cursor, frame, invalid};
 
 /// 一个矩状态/累积梯度槽最少占 1 字节（槽长 varint）；解码据此把声明槽位与剩余字节对账。
 pub(crate) const MIN_MOMENT_SLOT: usize = 1;
@@ -133,25 +134,25 @@ fn write_f32_values(sink: &mut impl Sink, values: &[f32]) {
 
 /// 带长度的 f32 表：累积梯度槽与矩状态一阶矩用它。
 fn write_f32_table(sink: &mut impl Sink, values: &[f32]) {
-    super::varint(sink, values.len() as u64);
+    snapshot::varint(sink, values.len() as u64);
     write_f32_values(sink, values);
 }
 
 /// 矩状态段：槽位数 → 每槽长度 + 一阶/二阶矩 f32 小端 → 优化器步数（两表等长，长度只写一次）。
 pub(crate) fn write_moments(sink: &mut impl Sink, moments: &Moments) {
-    super::varint(sink, moments.slots().len() as u64);
+    snapshot::varint(sink, moments.slots().len() as u64);
     for slot in moments.slots() {
-        super::varint(sink, slot.m().len() as u64);
+        snapshot::varint(sink, slot.m().len() as u64);
         write_f32_values(sink, slot.m());
         write_f32_values(sink, slot.v());
     }
-    super::varint(sink, moments.step());
+    snapshot::varint(sink, moments.step());
 }
 
 /// 累积梯度段：窗口批数 → 槽位数 → 每槽长度 + f32 小端；布局与矩状态段平行。
 pub(crate) fn write_grad_accum(sink: &mut impl Sink, accum: &GradAccum) {
-    super::varint(sink, accum.count() as u64);
-    super::varint(sink, accum.slots().len() as u64);
+    snapshot::varint(sink, accum.count() as u64);
+    snapshot::varint(sink, accum.slots().len() as u64);
     for slot in accum.slots() {
         write_f32_table(sink, slot);
     }
@@ -159,10 +160,10 @@ pub(crate) fn write_grad_accum(sink: &mut impl Sink, accum: &GradAccum) {
 
 /// 权重绑定段：绑定对数 → 每对源槽/回填槽下标（varint）；布局与矩状态/累积段平行。
 pub(crate) fn write_ties(sink: &mut impl Sink, ties: &Ties) {
-    super::varint(sink, ties.pairs().len() as u64);
+    snapshot::varint(sink, ties.pairs().len() as u64);
     for &(source, tied) in ties.pairs() {
-        super::varint(sink, source as u64);
-        super::varint(sink, tied as u64);
+        snapshot::varint(sink, source as u64);
+        snapshot::varint(sink, tied as u64);
     }
 }
 
@@ -177,7 +178,7 @@ fn read_slots<T>(
     slot: impl Fn(&mut Cursor<'_>, usize) -> Result<T>,
 ) -> Result<Vec<T>> {
     bound_slots(count, cursor.remaining(), label)?;
-    let mut slots = Vec::with_capacity(count.min(super::PREALLOC));
+    let mut slots = Vec::with_capacity(count.min(PREALLOC));
     for idx in 0..count {
         slots.push(slot(cursor, idx)?);
     }

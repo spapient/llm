@@ -6,7 +6,8 @@ use diagnostic::{Code, Error, Result};
 use tensor::DType;
 use wire::leb::Cursor as WireCursor;
 
-use super::ManifestEntry;
+use crate::ManifestEntry;
+use crate::snapshot::PREALLOC;
 
 /// 解码失败的上下文：错误只由这一层产生，排查时不必再猜是哪一段。
 pub(crate) const CTX: &str = "storage::snapshot::Snapshot::decode";
@@ -267,7 +268,7 @@ fn canonical<E: ManifestEntry>(
 
 /// 形状的各维度：预分到预分配上限为止，伪造的秩也只能骗到一块固定大小的内存。
 fn dims(cursor: &mut Cursor<'_>, idx: usize, rank: usize) -> Result<Vec<usize>> {
-    let mut dims = Vec::with_capacity(rank.min(super::PREALLOC));
+    let mut dims = Vec::with_capacity(rank.min(PREALLOC));
     for _ in 0..rank {
         dims.push(cursor.count("维度").map_err(frame(idx))?);
     }

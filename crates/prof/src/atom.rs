@@ -5,7 +5,7 @@ use core::hash::Hash;
 use core::marker::PhantomData;
 
 pub use crate::need::{Attr, Need, Provide, Witness};
-use crate::span::Span;
+pub use crate::span::Span;
 
 
 // ── vocab ──────────────────────────────────────────────────────────────
@@ -426,5 +426,5 @@ impl KernelKey {
 }
 
 #[cfg(test)]
-#[path = "../tests/atom.rs"]
+#[path = "../tests/spec/atom.rs"]
 mod tests;

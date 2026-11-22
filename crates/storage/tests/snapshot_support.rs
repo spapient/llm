@@ -1,9 +1,170 @@
-//! `snapshot` 测试共用的夹具：恢复事实、条目表、往返对拍与手工拼字节的助手。
+//! `snapshot` 测试共用的夹具：本地条目表、恢复事实、往返对拍与手工拼字节的助手。
+//!
+//! `storage` 不能 dev-depend `weights`（`weights` 必选依赖 `storage`，会成环），所以条目表与
+//! 权重头部在这里各有一个替身：快照只认 [`Manifest`]，替身把 `weights::Header::new` 的三条判据
+//! 原样复刻（名字唯一、区间有序不重叠、起点不早于数据段），字节判据因此一处不减。
 
-use super::*;
+use std::collections::BTreeSet;
 use std::path::Path;
-use tensor::Shape;
-use weights::Entry;
+
+pub(crate) use super::{
+    Cursor, Facts, Format, GradAccum, Manifest, ManifestEntry, Moments, SlotMoments, Ties,
+    WRITE_BUF,
+};
+pub(crate) use super::{invalid, varint};
+pub(crate) use crate::codec::tag;
+pub(crate) use tensor::{DType, Shape};
+
+/// 快照类型在本测试组里的具体化：条目表用本地替身，消费方写法与 `weights::Snapshot` 一致。
+pub(crate) type Snapshot = super::Snapshot<Header>;
+
+/// 一个测试条目：与 `weights::Entry` 同形的四项。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Entry {
+    name: String,
+    dtype: DType,
+    shape: Shape,
+    offset: usize,
+}
+
+impl Entry {
+    /// 由名字、类型与形状构造（偏移默认 0，用 [`Entry::at`] 指定）。
+    pub(crate) fn new(name: impl Into<String>, dtype: DType, shape: Shape) -> Self {
+        Self {
+            name: name.into(),
+            dtype,
+            shape,
+            offset: 0,
+        }
+    }
+
+    /// 指定在数据段里的起始偏移。
+    pub(crate) fn at(mut self, offset: usize) -> Self {
+        self.offset = offset;
+        self
+    }
+
+    /// 形状。
+    pub(crate) fn shape(&self) -> &Shape {
+        &self.shape
+    }
+
+    /// 字节长度（由形状与类型推出）。
+    fn len(&self) -> usize {
+        self.shape.element_bytes(self.dtype)
+    }
+
+    /// 结束偏移（不含）。
+    fn end(&self) -> usize {
+        self.offset.saturating_add(self.len())
+    }
+}
+
+impl ManifestEntry for Entry {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn dtype(&self) -> DType {
+        self.dtype
+    }
+
+    fn dims(&self) -> &[usize] {
+        self.shape.dims()
+    }
+
+    fn offset(&self) -> usize {
+        self.offset
+    }
+
+    fn from_parts(name: String, dtype: DType, dims: Vec<usize>, offset: usize) -> Self {
+        Self::new(name, dtype, Shape::new(dims)).at(offset)
+    }
+}
+
+/// 权重头部的本地替身：`weights::Header` 的三条判据一处不少，于是解码期复判照样能拦下坏表。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Header {
+    entries: Vec<Entry>,
+    data_start: usize,
+}
+
+impl Header {
+    /// 校验并构造：名字唯一、区间按偏移有序且不重叠、起点不早于数据段。
+    pub(crate) fn new(entries: Vec<Entry>, data_start: usize) -> Result<Self> {
+        let mut sorted = entries;
+        sorted.sort_by_key(|entry| entry.offset);
+        check_entries(&sorted, data_start)?;
+        Ok(Self {
+            entries: sorted,
+            data_start,
+        })
+    }
+}
+
+impl Manifest for Header {
+    type Entry = Entry;
+
+    fn entries(&self) -> &[Entry] {
+        &self.entries
+    }
+
+    fn data_start(&self) -> usize {
+        self.data_start
+    }
+
+    fn build(entries: Vec<Entry>, data_start: usize) -> Result<Self> {
+        Self::new(entries, data_start)
+    }
+}
+
+/// 三条判据：名字唯一、起点不早于数据段、相邻区间不重叠。
+fn check_entries(entries: &[Entry], data_start: usize) -> Result<()> {
+    let mut seen = BTreeSet::new();
+    for entry in entries {
+        check_entry(&mut seen, entry, data_start)?;
+    }
+    check_overlaps(entries)
+}
+
+/// 单条目的两条判据：名字不能重复、起点不能早于数据段。
+fn check_entry<'a>(
+    seen: &mut BTreeSet<&'a str>,
+    entry: &'a Entry,
+    data_start: usize,
+) -> Result<()> {
+    if !seen.insert(entry.name()) {
+        return Err(invalid(format!("权重条目 `{}` 重复", entry.name())));
+    }
+    if entry.offset < data_start {
+        let message = format!(
+            "条目 `{}` 的偏移 {} 早于数据段起点 {data_start}",
+            entry.name(),
+            entry.offset
+        );
+        return Err(invalid(message));
+    }
+    Ok(())
+}
+
+/// 相邻两条目（已按偏移排序）不能重叠：重叠意味着后者的起点落在前者的字节区间里。
+fn check_overlaps(entries: &[Entry]) -> Result<()> {
+    for pair in entries.windows(2) {
+        let (left, right) = (&pair[0], &pair[1]);
+        if left.end() > right.offset {
+            let message = format!(
+                "条目 `{}` 的区间与 `{}` 重叠（{} > {}）",
+                left.name(),
+                right.name(),
+                left.end(),
+                right.offset
+            );
+            return Err(invalid(message));
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn facts() -> Facts {
     Facts::new(7, 2, 2, 3, 3).expect("恢复事实")
 }
@@ -63,7 +224,7 @@ pub(crate) fn snapshot() -> Snapshot {
 /// 用任意正文重新封上校验和：只有测试会造"CRC 正确但正文有问题"的文件。
 pub(crate) fn seal(payload: &[u8]) -> Vec<u8> {
     let mut bytes = payload.to_vec();
-    bytes.extend_from_slice(&weights::crc::crc32(payload).to_le_bytes());
+    bytes.extend_from_slice(&wire::crc::crc32(payload).to_le_bytes());
     bytes
 }
 

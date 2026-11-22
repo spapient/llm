@@ -50,7 +50,7 @@ serve = { path = "../serve", package = "llm-serve" }
 tensor = { path = "../tensor", package = "llm-tensor" }
 tokenizer = { path = "../tokenizer", package = "llm-tokenizer" }
 tool = { path = "../tools", package = "llm-tools" }
-snapshot = { path = "../snapshot", package = "llm-snapshot" }
+storage = { path = "../storage", package = "llm-storage" }
 train = { path = "../train", package = "llm-train" }
 weights = { path = "../weights", package = "llm-weights" }
 # L7 唯一外部依赖例外（ADR 0048）：配置文件层解析；L1–L6 生产路径仍零外部依赖（D5 修订）。

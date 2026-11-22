@@ -139,6 +139,11 @@ pub use writer::Writer;
 pub use container::{
     Entry, Header, Loader, Reader, decode_entry_f32, decode_f32, load_f32, read_f32,
 };
+
+/// 权重文件的检查点快照：字节格式归 L2 `storage::snapshot`，这里把它具体化到 [`Header`]。
+///
+/// 上层照旧写 `weights::Snapshot`，不必知道快照是泛型的；换一种权重容器只是换一个别名。
+pub type Snapshot = storage::snapshot::Snapshot<Header>;
 pub(crate) use container::{align_up, check_capacity, read_wire};
 
 #[cfg(all(feature = "mmap", unix))]

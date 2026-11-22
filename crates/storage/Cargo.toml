@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 readme.workspace = true
-description = "Flat buffers and allocation: Buf, Allocator, and the mmap island."
+description = "Flat buffers, allocation, and the checkpoint byte format: Buf, Allocator, Snapshot."
 publish = false
 autotests = false
 
@@ -19,6 +19,7 @@ mmap = []
 [dependencies]
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 tensor = { path = "../tensor", package = "llm-tensor" }
+wire = { path = "../wire", package = "llm-wire" }
 
 [lints]
 workspace = true

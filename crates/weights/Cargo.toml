@@ -15,14 +15,14 @@ autotests = false
 [features]
 default = []
 # 只读内存映射源：复用 `storage` 的唯一 unsafe 岛；仅 Unix 目标有实现，其它平台该模块不编译。
-mmap = ["dep:storage", "storage/mmap"]
+mmap = ["storage/mmap"]
 
 [dependencies]
 dtype = { path = "../dtype", package = "llm-dtype" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 tensor = { path = "../tensor", package = "llm-tensor" }
 wire = { path = "../wire", package = "llm-wire" }
-storage = { path = "../storage", package = "llm-storage", optional = true }
+storage = { path = "../storage", package = "llm-storage" }
 
 [dev-dependencies]
 testkit = { path = "../testkit", package = "llm-testkit" }

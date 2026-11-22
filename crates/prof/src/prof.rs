@@ -103,25 +103,40 @@ pub(crate) fn within(lo: &str, hi: &str, actual: &str) -> bool {
         && parse_version(hi).is_some_and(|high| value <= high)
 }
 impl fmt::Display for MatchRule {
+    /// 五个变体各走一条只写一处的排版分支：`match` 之外没有一个 `?`，
+    /// 于是这条 `Display` 的复杂度就是臂数本身。
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Exact(text) => f.write_str(text),
             Self::Range { lo, hi } => write!(f, "{lo}..{hi}"),
-            Self::Contains(tokens) => {
-                f.write_str("contains: ")?;
-                joined(f, "|", tokens)
-            }
-            Self::Set { base, members } => {
-                write!(f, "{base}{{")?;
-                joined(f, ",", members)?;
-                f.write_str("}")
-            }
+            Self::Contains(tokens) => marked(f, "contains: ", "|", tokens),
+            Self::Set { base, members } => braced(f, base, members),
             Self::OneOf(branches) => joined(f, "|", branches),
         }
     }
 }
 
+/// `前缀 + 用分隔符串起来的条目`（`contains: a|b`）。
+fn marked<T: fmt::Display>(
+    f: &mut fmt::Formatter<'_>,
+    head: &str,
+    sep: &str,
+    items: &[T],
+) -> fmt::Result {
+    f.write_str(head)?;
+    joined(f, sep, items)
+}
+
+/// `基名{条目}`（`x86{avx2,sve}`）。
+fn braced(f: &mut fmt::Formatter<'_>, base: &str, members: &[String]) -> fmt::Result {
+    write!(f, "{base}{{")?;
+    joined(f, ",", members)?;
+    f.write_str("}")
+}
+
 /// 用分隔符把一串条目写进格式化器：不先收集 `Vec<String>`，也不为每个成员造 `String`。
+///
+/// 首个条目之后交给 `try_for_each`：分隔符与条目在同一个写点，函数里只剩一个 `?`。
 fn joined<T: fmt::Display>(
     f: &mut fmt::Formatter<'_>,
     sep: &str,
@@ -132,11 +147,7 @@ fn joined<T: fmt::Display>(
         return Ok(());
     };
     write!(f, "{first}")?;
-    for item in rest {
-        f.write_str(sep)?;
-        write!(f, "{item}")?;
-    }
-    Ok(())
+    rest.try_for_each(|item| write!(f, "{sep}{item}"))
 }
 pub(crate) fn parse_version(text: &str) -> Option<Vec<u32>> {
     let parts = text.trim().split('.');

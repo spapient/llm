@@ -550,7 +550,7 @@ dependencies = [
  "llm-nn",
  "llm-prof",
  "llm-serve",
- "llm-snapshot",
+ "llm-storage",
  "llm-tensor",
  "llm-testkit",
  "llm-tokenizer",
@@ -573,7 +573,7 @@ dependencies = [
  "llm-prof",
  "llm-serve",
  "llm-shard",
- "llm-snapshot",
+ "llm-storage",
  "llm-tensor",
  "llm-tokenizer",
  "llm-tools",
@@ -630,7 +630,7 @@ dependencies = [
  "llm-cli",
  "llm-diagnostic",
  "llm-serve",
- "llm-snapshot",
+ "llm-storage",
  "llm-tensor",
  "llm-tools",
  "llm-train",
@@ -703,22 +703,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "llm-snapshot"
-version = "0.1.0"
-dependencies = [
- "llm-diagnostic",
- "llm-tensor",
- "llm-testkit",
- "llm-weights",
- "llm-wire",
-]
-
-[[package]]
 name = "llm-storage"
 version = "0.1.0"
 dependencies = [
  "llm-diagnostic",
  "llm-tensor",
+ "llm-wire",
 ]
 
 [[package]]
@@ -768,7 +758,7 @@ dependencies = [
  "llm-nn",
  "llm-prof",
  "llm-shard",
- "llm-snapshot",
+ "llm-storage",
  "llm-tensor",
  "llm-testkit",
  "llm-weights",

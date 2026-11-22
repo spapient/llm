@@ -2,7 +2,7 @@
 
 use diagnostic::{Code, Error, Result};
 
-use super::codec::need;
+use crate::codec::need;
 
 /// 检查点文件头：4 字节魔数 + 2 字节小端版本号。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

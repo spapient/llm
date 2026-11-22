@@ -267,12 +267,18 @@ impl Scheduler {
     /// 建页表：先按块序共享命中页，再补 `fresh` 个新页。
     fn take_pages(&mut self, prefix: &[Page], fresh: usize, needed: usize) -> Result<Table> {
         let mut table = Table::new(needed)?;
+        self.share_prefix(&mut table, prefix)?;
+        Self::fill(&mut self.pager, &mut table, fresh)?;
+        Ok(table)
+    }
+
+    /// 复用命中的前缀页：每页引用计数 +1 后装进新表，页号是 `Copy` 的。
+    fn share_prefix(&mut self, table: &mut Table, prefix: &[Page]) -> Result<()> {
         for page in prefix {
             self.pager.share(*page)?;
             table.push(*page)?;
         }
-        Self::fill(&mut self.pager, &mut table, fresh)?;
-        Ok(table)
+        Ok(())
     }
 
     /// 准入的状态判据：重名、已结束、页宽不符都是调用方的状态错误；页够不够由调用点判。

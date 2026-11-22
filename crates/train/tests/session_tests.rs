@@ -4,9 +4,9 @@ use crate::{Chunks, Data, Dataset, Reference, Sgd};
 use autograd::{Sizes, Store, Tape, Var};
 use diagnostic::{Code, Result};
 use nn::ParamRole;
-use snapshot::{Facts, GradAccum, Moments, SlotMoments, Snapshot, Ties};
+use storage::{Facts, GradAccum, Moments, SlotMoments, Ties};
 use tensor::{DType, Shape};
-use weights::Header;
+use weights::{Header, Snapshot};
 
 use crate::support;
 
@@ -555,7 +555,7 @@ mod checkpoint {
         let (checkpoint, header, _topology) = fixture();
         let snapshot = checkpoint.snapshot(&header).expect("快照");
         let bytes = snapshot.encode().expect("编码");
-        let restored = snapshot::Snapshot::decode(&bytes).expect("解码");
+        let restored = weights::Snapshot::decode(&bytes).expect("解码");
         let facts = restored.facts();
         assert_eq!(facts.step(), checkpoint.step());
         assert_eq!(facts.world(), checkpoint.world());

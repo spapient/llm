@@ -24,7 +24,7 @@ prof = { path = "../prof", package = "llm-prof" }
 wire = { path = "../wire", package = "llm-wire" }
 weights = { path = "../weights", package = "llm-weights", features = ["mmap"] }
 tokenizer = { path = "../tokenizer", package = "llm-tokenizer" }
-snapshot = { path = "../snapshot", package = "llm-snapshot" }
+storage = { path = "../storage", package = "llm-storage" }
 train = { path = "../train", package = "llm-train" }
 autograd = { path = "../autograd", package = "llm-autograd" }
 tensor = { path = "../tensor", package = "llm-tensor" }
