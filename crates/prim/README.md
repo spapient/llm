@@ -72,12 +72,19 @@ crates/rocm/      同上，.cpp（AscendC）
 缓存指纹。因此给已有片段补这一行不会改动已落盘的产物，`verify` 打印的 `片段 N 行` 与缓存键
 逐字不变。
 
-六台设备各 9 段（P0 模板用到的 9 个原语），档案里共 102 条 `provides`：文本只写这 9 个，其余
-签名停在 `L0`，只有见证没有文本。`cutile` 的
+六台设备各 9 个文件：P0 模板用到的 7 个原语各一段，加一个 `witness.<ext>`、一个 `epilogue.<ext>`。
+档案里共 102 条 `provides`，另有 36 条 `[[epilogue]]`：文本只写这 7 个原语，其余签名停在 `L0`，
+只有见证没有文本。`cutile` 的
 `every_device_fragment_set_splices_the_p0_template` 把这条约定变成判据：台架上的档案只要能
 协商出变体，它的片段就必须能把 P0 模板拼出来——参数个数或命名参数写错不必等到构建期。
 
 ## 见证源码
+
+`<vendor>/epilogue.<ext>` 是写回层的六种形式（`bias` / `act` / `residual` / `scale` / `quant` /
+`store`）在设备上的正文，用 `/* epi: <form> */` 分节，首行签名写 `/* cutile-sign: epilogue */`——
+一条文本实现六种形式，所以声明行不带 `/`。写回形式不是原语：`bias.<ext>` 之类的文件名会被
+`Prim::parse` 当成拼错的签名，因此它走 `prof::codegen` 里另一条通道，目录仍是闭集（
+`the_fragment_directory_is_a_closed_set` 把 `epilogue.<ext>` 一并算进应有文件）。
 
 `<vendor>/witness.<ext>` 是"这个设备真的能跑"的最小证据。函数统一为 `int func(float *out)`：
 返回写入的元素个数（≤ 8），值按 f32 读回；档案里同时写清楚入口函数与期望输出：

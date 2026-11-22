@@ -2,6 +2,73 @@
 
 use super::*;
 
+/// 一组 f32 GEMM 真机夹具：A/B/Y 三块设备缓冲、CPU 参考、标量网格基线中位延迟。
+///
+/// 三个 f32 GEMM 用例的开场逐字相同（上传 → 生成网格管线 → 对拍 → 取中位），差异只有形状与
+/// 缓存目录名，所以做成一次构造；用例只留自己真正的分支（tile 扫描 / simdgroup 片段）。
+struct Bench {
+    device: MetalDevice,
+    queue: MetalCommandQueue,
+    catalogue: cutile::builtin::Catalogue,
+    dirs: cutile::dirs::Dirs,
+    a: MetalBuffer,
+    b: MetalBuffer,
+    y: MetalBuffer,
+    reference: Vec<f32>,
+    shape: (usize, usize, usize),
+    grid: [u32; 3],
+    ns: f64,
+}
+
+impl Bench {
+    /// 上传输入、跑标量网格、与 CPU 参考对拍，并记下基线中位延迟。
+    fn new(
+        device: MetalDevice,
+        queue: MetalCommandQueue,
+        (m, n, k): (usize, usize, usize),
+        cache: &str,
+    ) -> Self {
+        let (a, b, reference) = matmul_inputs(m, n, k);
+        let (a, b, mut y) = (
+            upload(&device, &a, "A"),
+            upload(&device, &b, "B"),
+            output_buffer(&device, m * n, "Y"),
+        );
+        let (catalogue, dirs) = catalogue_and_dirs(cache);
+        let pipe = grid_pipeline(&device, &catalogue, &dirs, "matmul_f32", m, n, "标量网格");
+        let grid = [m as u32, n as u32, 1];
+        queue.execute(&pipe, &[&a, &b, &y], grid, [1, 1, 1]);
+        assert_matmul_matches("grid", &reference, y.as_mut_bytes());
+        let ns = measure(&queue, &pipe, &[&a, &b, &y], grid, [1, 1, 1]);
+        Self {
+            device,
+            queue,
+            catalogue,
+            dirs,
+            a,
+            b,
+            y,
+            reference,
+            shape: (m, n, k),
+            grid,
+            ns,
+        }
+    }
+
+    /// 派发一次、与参考对拍，再取中位延迟（ns）。
+    fn timed(&mut self, label: &str, pipe: &MetalPipeline, grid: [u32; 3], block: [u32; 3]) -> f64 {
+        self.queue
+            .execute(pipe, &[&self.a, &self.b, &self.y], grid, block);
+        assert_matmul_matches(label, &self.reference, self.y.as_mut_bytes());
+        self.median(pipe, grid, block)
+    }
+
+    /// 只管测时：三条缓冲一次借用，不与上面的可变借用重叠。
+    fn median(&self, pipe: &MetalPipeline, grid: [u32; 3], block: [u32; 3]) -> f64 {
+        measure(&self.queue, pipe, &[&self.a, &self.b, &self.y], grid, block)
+    }
+}
+
 /// 基准的共同开工：系统默认设备 + 命令队列。
 ///
 /// 无 Metal 的本机打印 `hint` 的跳过原因并返回 `None`，用例据此走
@@ -109,77 +176,58 @@ fn metal_tiled_gemm_k4096() {
         return;
     };
     crate::backends::install();
-
-    const M: usize = 256;
-    const N: usize = 256;
-    const K: usize = 4096;
-
-    let (a, b, reference) = matmul_inputs(M, N, K);
-    let a_buf = upload(&device, &a, "A");
-    let b_buf = upload(&device, &b, "B");
-    let mut y_buf = output_buffer(&device, M * N, "Y");
-
-    let (catalogue, dirs) = catalogue_and_dirs("engine-metal-matmul-k4096");
-    let grid_pipe = grid_pipeline(&device, &catalogue, &dirs, "matmul_f32", M, N, "标量网格");
-
-    let grid = [M as u32, N as u32, 1];
-    queue.execute(&grid_pipe, &[&a_buf, &b_buf, &y_buf], grid, [1, 1, 1]);
-    assert_matmul_matches("grid", &reference, y_buf.as_mut_bytes());
-
-    let flop = 2.0 * (M * N * K) as f64;
-    let grid_ns = measure(
-        &queue,
-        &grid_pipe,
-        &[&a_buf, &b_buf, &y_buf],
-        grid,
-        [1, 1, 1],
-    );
+    let mut bench = Bench::new(device, queue, (256, 256, 4096), "engine-metal-matmul-k4096");
+    let (m, n, k) = bench.shape;
+    let flop = 2.0 * (m * n * k) as f64;
     eprintln!(
-        "Metal 生产态 GEMM 256×256×4096：网格标量={grid_ns:.1} ns（{:.2} GFLOP/s）",
-        flop / grid_ns,
+        "Metal 生产态 GEMM {m}×{n}×{k}：网格标量={:.1} ns（{:.2} GFLOP/s）",
+        bench.ns,
+        flop / bench.ns,
     );
     for (tile, per_thread) in [(8usize, 1usize), (16, 1), (32, 1), (32, 4)] {
         let msl = program(
-            &catalogue,
-            &dirs,
+            &bench.catalogue,
+            &bench.dirs,
             "matmul_f32",
             Metal,
             Mode::tiled(tile, per_thread),
-            M,
-            N,
+            m,
+            n,
         )
         .and_then(|stages| stages.one("分块"))
         .expect("分块 MSL 应能生成");
-        let pipe = device.compile(&msl).expect("分块 MSL 应能编译");
+        let pipe = bench.device.compile(&msl).expect("分块 MSL 应能编译");
         let threads = tile / per_thread;
-        let (launch_grid, block) = if per_thread == 1 {
-            (grid, [tile as u32, tile as u32, 1])
+        let (launch, block) = if per_thread == 1 {
+            (bench.grid, [tile as u32, tile as u32, 1])
         } else {
             (
-                [(M / per_thread) as u32, (N / per_thread) as u32, 1],
+                [(m / per_thread) as u32, (n / per_thread) as u32, 1],
                 [threads as u32, threads as u32, 1],
             )
         };
-        queue.execute(&pipe, &[&a_buf, &b_buf, &y_buf], launch_grid, block);
-        assert_matmul_matches("tiled", &reference, y_buf.as_mut_bytes());
-        let ns = measure(&queue, &pipe, &[&a_buf, &b_buf, &y_buf], launch_grid, block);
+        let ns = bench.timed("tiled", &pipe, launch, block);
         eprintln!(
             "  分块 tile={tile} pt={per_thread}：{ns:.1} ns（{:.2} GFLOP/s） 加速={:.2}×",
             flop / ns,
-            grid_ns / ns,
+            bench.ns / ns,
         );
     }
     for (row_frags, col_frags) in [(1usize, 1usize), (2, 2), (4, 4)] {
-        let (pipe, simd_grid) =
-            simdgroup_gemm_pipeline(&device, &catalogue, &dirs, M, N, row_frags, col_frags);
-        let block = [32, 1, 1];
-        queue.execute(&pipe, &[&a_buf, &b_buf, &y_buf], simd_grid, block);
-        assert_matmul_matches("simdgroup", &reference, y_buf.as_mut_bytes());
-        let ns = measure(&queue, &pipe, &[&a_buf, &b_buf, &y_buf], simd_grid, block);
+        let (pipe, launch) = simdgroup_gemm_pipeline(
+            &bench.device,
+            &bench.catalogue,
+            &bench.dirs,
+            m,
+            n,
+            row_frags,
+            col_frags,
+        );
+        let ns = bench.timed("simdgroup", &pipe, launch, [32, 1, 1]);
         eprintln!(
             "  simdgroup {row_frags}×{col_frags} 片段：{ns:.1} ns（{:.2} GFLOP/s） 加速={:.2}×",
             flop / ns,
-            grid_ns / ns,
+            bench.ns / ns,
         );
     }
 }
@@ -195,45 +243,29 @@ fn metal_simdgroup_gemm_512() {
         return;
     };
     crate::backends::install();
-
-    const M: usize = 512;
-    const N: usize = 512;
-    const K: usize = 4096;
-
-    let (a, b, reference) = matmul_inputs(M, N, K);
-    let a_buf = upload(&device, &a, "A");
-    let b_buf = upload(&device, &b, "B");
-    let mut y_buf = output_buffer(&device, M * N, "Y");
-
-    let (catalogue, dirs) = catalogue_and_dirs("engine-metal-simd-512");
-    let grid_pipe = grid_pipeline(&device, &catalogue, &dirs, "matmul_f32", M, N, "标量网格");
-    let grid = [M as u32, N as u32, 1];
-    queue.execute(&grid_pipe, &[&a_buf, &b_buf, &y_buf], grid, [1, 1, 1]);
-    assert_matmul_matches("grid-512", &reference, y_buf.as_mut_bytes());
-    let flop = 2.0 * (M * N * K) as f64;
-    let grid_ns = measure(
-        &queue,
-        &grid_pipe,
-        &[&a_buf, &b_buf, &y_buf],
-        grid,
-        [1, 1, 1],
-    );
+    let mut bench = Bench::new(device, queue, (512, 512, 4096), "engine-metal-simd-512");
+    let (m, n, k) = bench.shape;
+    let flop = 2.0 * (m * n * k) as f64;
     eprintln!(
-        "Metal simdgroup GEMM 512×512×4096：网格标量={grid_ns:.1} ns（{:.2} GFLOP/s）",
-        flop / grid_ns,
+        "Metal simdgroup GEMM {m}×{n}×{k}：网格标量={:.1} ns（{:.2} GFLOP/s）",
+        bench.ns,
+        flop / bench.ns,
     );
-
     for (row_frags, col_frags) in [(1usize, 1usize), (4, 4)] {
-        let (pipe, simd_grid) =
-            simdgroup_gemm_pipeline(&device, &catalogue, &dirs, M, N, row_frags, col_frags);
-        let block = [32, 1, 1];
-        queue.execute(&pipe, &[&a_buf, &b_buf, &y_buf], simd_grid, block);
-        assert_matmul_matches("simdgroup-512", &reference, y_buf.as_mut_bytes());
-        let ns = measure(&queue, &pipe, &[&a_buf, &b_buf, &y_buf], simd_grid, block);
+        let (pipe, launch) = simdgroup_gemm_pipeline(
+            &bench.device,
+            &bench.catalogue,
+            &bench.dirs,
+            m,
+            n,
+            row_frags,
+            col_frags,
+        );
+        let ns = bench.timed("simdgroup-512", &pipe, launch, [32, 1, 1]);
         eprintln!(
             "  simdgroup {row_frags}×{col_frags} 片段：{ns:.1} ns（{:.2} GFLOP/s） 加速={:.2}×",
             flop / ns,
-            grid_ns / ns,
+            bench.ns / ns,
         );
     }
 }

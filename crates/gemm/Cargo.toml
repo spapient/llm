@@ -10,6 +10,10 @@ readme = "README.md"
 publish = false
 autotests = false
 
+[features]
+# 仅测量容器使用：SME 端口峰值探针（`fast::port_run`）。生产构建不带此特性。
+bench = []
+
 [dependencies]
 annotation = { path = "../annotation", package = "llm-annotation" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }

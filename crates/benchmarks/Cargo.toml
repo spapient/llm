@@ -21,7 +21,7 @@ autobins = false
 criterion = { workspace = true }
 cutile = { path = "../cutile" }
 prof = { path = "../prof", package = "llm-prof" }
-op = { path = "../op", package = "llm-op" }
+op = { path = "../op", package = "llm-op", features = ["bench"] }
 wire = { path = "../wire", package = "llm-wire" }
 weights = { path = "../weights", package = "llm-weights", features = ["mmap"] }
 tokenizer = { path = "../tokenizer", package = "llm-tokenizer" }

@@ -10,6 +10,10 @@ readme = "README.md"
 publish = false
 autotests = false
 
+[features]
+# 透传测量容器需要的探针；下游正常构建不带此特性。
+bench = ["llm-gemm/bench"]
+
 [dependencies]
 annotation = { path = "../annotation", package = "llm-annotation" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }

@@ -40,6 +40,10 @@ fn with_panels<R>(len: usize, f: impl FnOnce(&mut [f32]) -> R) -> R {
 }
 
 mod sme;
+
+/// 端口峰值探针只在测量容器里导出（`bench` 特性），生产构建看不到它。
+#[cfg(all(feature = "bench", target_arch = "aarch64"))]
+pub use sme::port_run;
 use pack::{pack_b_f32_into, pack_b_f32_par_into, pack_panels};
 use pool::{Buffers, Shape, pool, run_pooled};
 

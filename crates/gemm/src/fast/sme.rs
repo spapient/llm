@@ -40,10 +40,15 @@ pub(super) fn gemm(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut
         if rejects(m, n, k) {
             return false;
         }
-        let t = super::threads_override().min(m / MR).min(n / NR).max(1);
-        packed(a, b, m, n, k, out, t);
+        packed(a, b, m, n, k, out, threads_for(m, n));
         true
     }
+}
+
+/// 线程数：行块（`m/MR`）与列组（`n/NR`）同时决定上限，两者都不能切出空槽。
+#[cfg(target_arch = "aarch64")]
+fn threads_for(m: usize, n: usize) -> usize {
+    super::threads_override().min(m / MR).min(n / NR).max(1)
 }
 
 /// 拒绝走 SME 的形状：零维、非整铺、低于规模门槛，或本机无 SME。
@@ -284,3 +289,59 @@ unsafe fn exit_sm() {
 #[cfg(all(test, target_arch = "aarch64"))]
 #[path = "../../tests/sme_tests.rs"]
 mod tests;
+
+/// SME 端口峰值探针：`rounds` 轮、每轮 4 条 `fmopa`，`z0`/`z1` 与 ZA 全部寄存器常驻，
+/// **内层零 load、零 store**——把「数据从哪来」整个删掉，剩下的才是这块单元每秒能吃多少外积。
+///
+/// 每轮 4 × 16 × 16 = 1024 次乘加（`p0.s` 16 条泳道，`ZA.s` 瓦片 16×16），即 2048 FLOP；
+/// 瓦片尺寸与 [`MR`]/[`NR`] 同源，由 `sme_tests.rs` 的整铺用例钉死。
+///
+/// 这是把 GF/s 换算成「端口峰值百分比」的分母：GEMM 每轮还要搬 320 B，搬不动与算不动是两件事，
+/// 不分开量就只能猜瓶颈（F18）。
+///
+/// 本机无 SME 或 `rounds == 0` 时返回 `false` 且不执行任何 SME 指令——安全入口，调用方据此跳过。
+/// 只在 `bench` 特性下编译，生产公开面不含本项。
+#[cfg(all(feature = "bench", target_arch = "aarch64"))]
+pub fn port_run(rounds: usize) -> bool {
+    if rounds == 0 || !available() {
+        return false;
+    }
+    #[allow(unsafe_code)]
+    unsafe {
+        port_rounds(rounds);
+    }
+    true
+}
+
+/// 纯外积循环：`smstart` → `rounds` 轮 4 条 `fmopa` → `smstop`，不碰任何内存。
+#[cfg(all(feature = "bench", target_arch = "aarch64"))]
+#[target_feature(enable = "sme")]
+#[allow(unsafe_code)]
+#[inline(never)]
+unsafe fn port_rounds(rounds: usize) {
+    unsafe {
+        asm!(
+            "smstart",
+            "smstart za",
+            "ptrue p0.s",
+            "fmov z0.s, #1.0",
+            "fmov z1.s, #1.0",
+            "zero {{ za0.s }}",
+            "zero {{ za1.s }}",
+            "zero {{ za2.s }}",
+            "zero {{ za3.s }}",
+            "2:",
+            "fmopa za0.s, p0/m, p0/m, z0.s, z1.s",
+            "fmopa za1.s, p0/m, p0/m, z0.s, z1.s",
+            "fmopa za2.s, p0/m, p0/m, z0.s, z1.s",
+            "fmopa za3.s, p0/m, p0/m, z0.s, z1.s",
+            "subs {k}, {k}, #1",
+            "b.ne 2b",
+            "smstop za",
+            "smstop",
+            k = inout(reg) rounds => _,
+            out("z0") _, out("z1") _, out("p0") _,
+            options(nostack),
+        );
+    }
+}

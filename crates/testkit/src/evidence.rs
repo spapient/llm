@@ -36,28 +36,30 @@ impl<'a> Contract<'a> {
     ///
     /// 第一条期望值个数不在 `1..=MAX_OUT` 的供给返回原因。
     pub fn check_expectations(&self) -> Result<(), String> {
-        for provide in self.provides {
-            let Some(witness) = provide.witness else {
-                continue;
-            };
-            let len = witness.expect.len();
-            if !(1..=MAX_OUT).contains(&len) {
-                return Err(format!(
-                    "`{}` 的 `{}/{}` 期望值有 {len} 个：见证必须写 1..={MAX_OUT} 个元素",
-                    self.id, provide.prim, provide.impl_name
-                ));
-            }
+        let prims = self.provides.iter().filter_map(|provide| {
+            provide
+                .witness
+                .map(|witness| (provide.prim, provide.impl_name, witness.expect))
+        });
+        let epis = self
+            .epilogue
+            .iter()
+            .map(|entry| (entry.form, entry.impl_name, entry.witness.expect));
+        prims
+            .chain(epis)
+            .try_for_each(|(kind, name, expect)| self.check_length(kind, name, expect))
+    }
+
+    /// 期望值的个数就是见证函数的返回值，执行器按 `MAX_OUT` 定缓冲。
+    fn check_length(&self, kind: &str, name: &str, expect: &[f32]) -> Result<(), String> {
+        let len = expect.len();
+        if (1..=MAX_OUT).contains(&len) {
+            return Ok(());
         }
-        for entry in self.epilogue {
-            let len = entry.witness.expect.len();
-            if !(1..=MAX_OUT).contains(&len) {
-                return Err(format!(
-                    "`{}` 的写回 `{}/{}` 期望值有 {len} 个：见证必须写 1..={MAX_OUT} 个元素",
-                    self.id, entry.form, entry.impl_name
-                ));
-            }
-        }
-        Ok(())
+        Err(format!(
+            "`{}` 的 `{kind}/{name}` 期望值有 {len} 个：见证必须写 1..={MAX_OUT} 个元素",
+            self.id
+        ))
     }
 
     /// 每条供给的见证都要在本机算出档案写的值。算不出来就是"这条供给的算法是编的"。
