@@ -38,11 +38,38 @@ impl Request {
     pub fn parse(body: &[u8]) -> Result<Self> {
         let text = std::str::from_utf8(body)
             .map_err(|_| Error::new(Code::Invalid, "请求体不是 UTF-8").with(Self::SITE))?;
-        let mut builder = Builder::default();
+        let (mut id, mut prompt, mut max_new) = (None, None, None);
         for (idx, line) in text.lines().enumerate() {
-            builder.line(idx + 1, line)?;
+            let line = line.strip_suffix('\r').unwrap_or(line);
+            if line.trim().is_empty() {
+                continue;
+            }
+            let Some((key, value)) = line.split_once('=') else {
+                return Err(line_error(idx + 1, "每行必须是 `键=值`"));
+            };
+            let (key, value) = (key.trim(), value.trim());
+            match key {
+                "id" => parse_once(&mut id, idx + 1, key, value, "u64")?,
+                "prompt" => {
+                    if prompt.is_some() {
+                        return Err(duplicate(idx + 1, key));
+                    }
+                    prompt = Some(value.to_string());
+                }
+                "max_new" => parse_once(&mut max_new, idx + 1, key, value, "usize")?,
+                _ => {
+                    return Err(line_error(
+                        idx + 1,
+                        &format!("未知字段 `{key}`：只认 id / prompt / max_new"),
+                    ));
+                }
+            }
         }
-        builder.finish()
+        Ok(Request {
+            id: id.ok_or_else(|| missing("id"))?,
+            prompt: prompt.ok_or_else(|| missing("prompt"))?,
+            max_new: max_new.ok_or_else(|| missing("max_new"))?,
+        })
     }
 
     /// 请求编号：由客户端给，重复编号会被准入拒绝成 `400`。

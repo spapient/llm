@@ -6,6 +6,19 @@
 ## [Unreleased]
 ### Changed
 
+- **`crates/fuzz` 登记表合一 + 判据自引用 + 热路径零分配：命名、架构与吞吐一起收口到 S++ 口径**。
+  上一版把驱动与种子收进 `src/`，但「目标名 → 适配器」与「目标名 → 种子」仍是两份平行数组，靠下标
+  配对，顺序一错就会把 A 的种子悄悄灌给 B。现在 `src/drivers.rs` 底部新增 `Entry` / `registry()`：
+  二进制名、适配器、合法范例三合一，`tests/parsers.rs` 与 `tests/gen_corpus.rs` 都从这一份取；
+  `seeds.rs` 由 `drivers.rs` 以 `#[path]` 编入并再导出 `edges`。判据 trait 统一走 `llm_fuzz::Target`：
+  `src/lib.rs` 加 `extern crate self as llm_fuzz` 让库自身测试模块与三个外部包含方共用同一条路径，
+  `src/harness.rs` 不再替入口补根级导入。驱动结构体改按 harness 二进制名对齐（`fuzz_cli` → `Cli`、
+  `fuzz_weights_json` → `WeightsJson`、`fuzz_crc` → `Crc` 等），15 个 `fuzz_harness!(drivers::X)` 与
+  文件名一一对应。热路径去分配：`check_target` 改吃 `&[u8]`，目标名与输入只在违约时才克隆进 `Finding`，
+  libFuzzer 每秒百万次的「通过」不再付两次堆分配。**验证**：`cargo check -p llm-fuzz --lib --locked`
+  零告警、`cargo fmt -p llm-fuzz -- --check` 干净（全量 `--tests` 仍被无关的 `llm-serve` 缺
+  `src/host.rs` 阻断，隔离冒烟测试覆盖登记表与自引用机制）。
+
 - **`crates/nn` 的层声明侧平铺：`format` 并入 `declare`、`norm` 并入 `spatial`，19 个单轴层块收成一层三行，
   并补上运行期配置化层与 `Hash` 能力**。合并的判据是**同一条声明口径**，不是行数：`format` 的
   `WeightFormat` 只有 `declare` 的消费者在用、且从无独立导出路径（`nn::WeightFormat` 现在是

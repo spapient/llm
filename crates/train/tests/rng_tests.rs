@@ -148,7 +148,10 @@ fn fill_matches_the_sequential_stream_at_every_length() {
             let mut filled = Rng::new(seed);
             let mut actual = vec![0; len];
             filled.fill(&mut actual);
-            assert_eq!(actual, expected, "seed {seed} len {len} 批量填充与顺序流分叉");
+            assert_eq!(
+                actual, expected,
+                "seed {seed} len {len} 批量填充与顺序流分叉"
+            );
         }
     }
 }

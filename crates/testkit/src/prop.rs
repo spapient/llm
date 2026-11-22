@@ -199,7 +199,13 @@ pub mod ledger {
 
     /// 有性质测试套件的成员——与源码里实际出现的性质测试块一一对应。
     pub const COVERED: &[&str] = &[
-        "algorithm", "fuzz", "nn", "shard", "testkit", "train", "wire",
+        "algorithm",
+        "fuzz",
+        "nn",
+        "shard",
+        "testkit",
+        "train",
+        "wire",
     ];
 
     /// 已登记、尚未补上的缺口；每条都带一句"补什么、为什么还没补"。

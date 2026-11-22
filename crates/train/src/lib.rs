@@ -43,6 +43,7 @@
 
 mod backprop;
 mod dist;
+pub mod geometry;
 mod kernel;
 mod learner;
 mod loss;
@@ -53,7 +54,6 @@ mod rng;
 mod samples;
 mod schedule;
 mod session;
-pub mod geometry;
 mod store;
 
 /// 训练侧测试共用的夹具图（`tests/support.rs`）：在 crate 根挂一次，测试模块引用它，

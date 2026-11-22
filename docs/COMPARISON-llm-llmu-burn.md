@@ -905,7 +905,7 @@ $D^:docs/ARCHITECTURE.md:1
 
 * **Burn（●，8）**：`burn-backend-tests` 套件跨后端对拍，95k 测试行，配 CI/coverage/typos/deny.toml。
 
-* **llm 新（●，9）**：58k 测试行（测试 / 生产 0.61），含架构契约测试、各 crate tests、三层 fuzz；`benchmarks` 已搭骨架但实测基准门禁待重建。`fuzz` 第一层是 10 个解析器契约目标（不 panic / 结论稳定 / 拒绝有话说），第二层新增 5 个**语义 oracle**——CRC 分块续算 + 逐位参考对拍、LEB128 规范往返、形状饱和乘积与亚字节位级取整、内核协商变体回指、分布与 Philox 位级确定性——覆盖深度超过 llm.u 的 `decode`/`ops` 目标，第三层是 proptest 属性测试（结构化生成 + 收缩），向 Burn 的属性测试靠拢；CI 对 15 个目标做有界 libFuzzer 运行。
+* **llm 新（●，9）**：58k 测试行（测试 / 生产 0.61），含架构契约测试、各 crate tests、三层 fuzz；`benchmarks` 已搭骨架但实测基准门禁待重建。`fuzz` 第一层是 10 个解析器契约目标（不 panic / 结论稳定 / 拒绝有话说），第二层新增 5 个**语义 oracle**——CRC 分块续算 + 逐位参考对拍、LEB128 规范往返、形状饱和乘积与亚字节位级取整、内核协商变体回指、分布与 Philox 位级确定性——覆盖深度超过 llm.u 的 `decode`/`ops` 目标，第三层是 proptest 属性测试（结构化生成 + 收缩），向 Burn 的属性测试靠拢；15 个目标收进 `registry()` 单一登记源（名/适配器/种子三合一），契约核对热路径零分配；CI 对 15 个目标做有界 libFuzzer 运行。
 
 * **llm.u（◐，4）**：17.8k 测试行 + fuzz nightly 独立运行；benches 在 CPU/Metal/OpenCL/CLBlast/SYCL/CUDA/MUSA 多后端实测对拍；`tool/gate` 有 arch/call/ccn/files/rules。测试体量与契约门禁弱于前两者，但实测对拍经验是其财富。
 

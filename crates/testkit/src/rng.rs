@@ -100,7 +100,11 @@ mod tests {
     fn sample_is_reproducible_and_inside_the_band() {
         assert_eq!(sample(9, 3), sample(9, 3), "同 (len, salt) 必须同一批值");
         assert_ne!(sample(9, 3), sample(9, 4), "salt 必须真的参与计算");
-        assert!(sample(64, 1).iter().all(|value| (-1.0..1.0).contains(value)));
+        assert!(
+            sample(64, 1)
+                .iter()
+                .all(|value| (-1.0..1.0).contains(value))
+        );
         assert_eq!(sample(0, 7), Vec::<f32>::new(), "零长批是空切片");
     }
 }

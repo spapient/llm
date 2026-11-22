@@ -78,4 +78,3 @@ pub mod proto {
 #[cfg(test)]
 #[path = "../tests/serve_tests.rs"]
 mod tests;
-pub mod host;

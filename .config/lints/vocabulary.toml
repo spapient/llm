@@ -86,8 +86,8 @@ reason = "`LocalExecutor` 是只记账的同步 CPU 队列（`Executor` 基座�
 
 [[ownership.unlisted]]
 crate = "fuzz"
-names = ["Behaviour", "CrcChunk", "CutileNegotiate", "DistSampler", "Frames", "HttpHead", "Json", "Leb", "LebRoundtrip", "Lex", "Repro", "Safetensors", "Seed", "ShapeArith", "Target", "UContainer"]
-reason = "模糊测试的契约类型与各解析目标适配器：`Target`/`Seed`/`Behaviour`/`Repro` 是判据基座，其余是 `drivers.rs` 里与解析器一一对应的入口；工具成员，不参与运行时分层"
+names = ["Behaviour", "Repro", "Seed", "Target"]
+reason = "模糊测试的目标、种子、行为描述与复现样本；工具成员，不参与运行时分层"
 
 [[ownership.unlisted]]
 crate = "prof"

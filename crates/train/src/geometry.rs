@@ -389,13 +389,7 @@ fn check_spatial_reshape(
 }
 
 /// 批归一化的形状核对：`(n·s·c, c, c)` 的 `(x, gamma, beta)`。
-fn check_norm(
-    lens: &[usize],
-    out: usize,
-    n: usize,
-    spatial: usize,
-    channels: usize,
-) -> Result<()> {
+fn check_norm(lens: &[usize], out: usize, n: usize, spatial: usize, channels: usize) -> Result<()> {
     let total = n * spatial * channels;
     ensure_shape(
         lens[0] == total && out == total && lens[1] == channels && lens[2] == channels,
@@ -495,14 +489,7 @@ struct Window {
 }
 
 /// 一维最大池化窗口里的最大值位置（与前向同一判定：严格更大才替换，平手取先遇到的）。
-fn window1d(
-    x: &[f32],
-    base: usize,
-    l: usize,
-    oi: usize,
-    win: Window,
-    ci: usize,
-) -> usize {
+fn window1d(x: &[f32], base: usize, l: usize, oi: usize, win: Window, ci: usize) -> usize {
     let mut best = f32::MIN;
     let mut pick = base + ci;
     for ki in 0..win.k {
@@ -1411,7 +1398,6 @@ impl Geometry {
         backward_conv2d(inputs, incoming, Window { k, s, p }, (h, w, cin, cout))
     }
 }
-
 
 #[cfg(test)]
 #[path = "../tests/geometry_tests.rs"]
