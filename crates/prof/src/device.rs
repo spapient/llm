@@ -182,7 +182,8 @@ pub fn dir_of(vendor: &str) -> Option<&'static str> {
 /// 按 `(vendor, ext)` 查内嵌片段；没有登记时返回 `None`（调用方改读磁盘）。
 ///
 /// 内嵌表构建期已校验（签名声明、`(prim, impl)` 与档案对账），装载不再重复解析；
-/// 首次查询把六台设备一次建成缓存，之后按需克隆——克隆只付一份 `String` 分配（见 [`Fragment`]）。
+/// 首次查询把六台设备一次建成缓存，之后每次取用只加一次引用计数（[`FragmentSet`] 内部是 `Arc`，
+/// 见 [`crate::fragment`]）：几百段片段不会因为"再取一次"被重新拷一遍。
 pub fn builtin(vendor: &str, ext: &str) -> Option<FragmentSet> {
     static CACHE: OnceLock<Vec<Option<FragmentSet>>> = OnceLock::new();
     let sets = CACHE.get_or_init(|| {
