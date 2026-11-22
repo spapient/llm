@@ -17,7 +17,7 @@ fn fail<T>(span: Span, message: &str) -> syn::Result<T> {
 }
 
 /// 多处复用的拒绝语：目标形状、缓冲名、可写性、下标，以及四条最长的形状诊断。
-const INDEX: &str = "buffer index must be the loop index";
+const LOOP_IDX: &str = "buffer index must be the loop index";
 const NAMED_BUF: &str = "output must be a named mutable buffer";
 const NOT_WRITE: &str = "assignment target must be an `&mut [f32]` parameter";
 const TARGET: &str = "kernel assignment target must be `output[index]`";
@@ -142,19 +142,14 @@ fn check_signature(signature: &syn::Signature) -> syn::Result<()> {
 
 fn parse_parameters(signature: &syn::Signature) -> syn::Result<Vec<Param>> {
     check_signature(signature)?;
-    let params = signature
-        .inputs
-        .iter()
-        .map(parse_parameter)
-        .collect::<syn::Result<Vec<_>>>()?;
-    let duplicate = params.iter().enumerate().find(|(idx, parameter)| {
-        params[..*idx]
-            .iter()
-            .any(|prior| prior.name == parameter.name)
-    });
-    if let Some((_, parameter)) = duplicate {
-        let message = format!("duplicate kernel parameter `{}`", parameter.name);
-        return fail(signature.span(), &message);
+    let mut params: Vec<Param> = Vec::new();
+    for argument in &signature.inputs {
+        let parameter = parse_parameter(argument)?;
+        if params.iter().any(|prior| prior.name == parameter.name) {
+            let message = format!("duplicate kernel parameter `{}`", parameter.name);
+            return fail(signature.span(), &message);
+        }
+        params.push(parameter);
     }
     Ok(params)
 }
@@ -196,24 +191,20 @@ fn scalar_kind(path: &TypePath) -> syn::Result<ParamKind> {
 /// 缓冲形参只有一种形状：`&[f32]` 或 `&mut [f32]`；切片元素再单独查一次 `f32`。
 fn reference_kind(reference: &TypeReference) -> syn::Result<ParamKind> {
     let Type::Slice(slice) = reference.elem.as_ref() else {
-        return fail(
-            reference.span(),
-            "buffer parameters must be slices (`&[f32]` or `&mut [f32]`)",
-        );
+        return fail(reference.span(), "buffers must be `&[f32]` or `&mut [f32]`");
     };
-    let element = slice.elem.as_ref();
-    let f32_element = matches!(
-        element,
-        Type::Path(path) if path.qself.is_none() && path.path.is_ident("f32")
-    );
-    if !f32_element {
-        return fail(element.span(), "buffer element type must be `f32`");
+    if !is_f32_path(slice.elem.as_ref()) {
+        return fail(slice.elem.span(), "buffer element type must be `f32`");
     }
     Ok(if reference.mutability.is_some() {
         ParamKind::BufWrite
     } else {
         ParamKind::BufRead
     })
+}
+
+fn is_f32_path(ty: &Type) -> bool {
+    matches!(ty, Type::Path(path) if path.qself.is_none() && path.path.is_ident("f32"))
 }
 
 /// 参数与循环变量都必须是「光秃秃的标识符」：带 `ref` / `mut` / 子模式的形状摊不成 C 的形参。
@@ -238,10 +229,7 @@ fn portable_ident(ident: &Ident) -> syn::Result<String> {
     if is_c_identifier(&name) {
         return Ok(name);
     }
-    fail(
-        ident.span(),
-        "kernel identifiers must be portable non-keyword C identifiers",
-    )
+    fail(ident.span(), "identifiers must be portable non-keyword C")
 }
 
 /// 标识符形状 + 不在 C11 关键字表里：两件事分开数条件，复杂度各自留在个位数。
@@ -251,18 +239,15 @@ fn is_c_identifier(name: &str) -> bool {
         .next()
         .is_some_and(|byte| matches!(byte, b'a'..=b'z' | b'A'..=b'Z' | b'_'));
     let rest = bytes.all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'z' | b'A'..=b'Z' | b'_'));
-    start
-        && rest
-        && !C_KEYWORDS
-            .split_ascii_whitespace()
-            .any(|keyword| keyword == name)
+    let padded = format!(" {name} ");
+    start && rest && !C_KEYWORDS.contains(&padded)
 }
 
-/// C11 关键字闭集：空白分隔的单串比四十二行数组短，`split_ascii_whitespace` 不分配。
-const C_KEYWORDS: &str = "auto break case char const continue default do double else enum extern \
-     float for goto if inline int long register restrict return short signed sizeof static struct \
-     switch typedef union unsigned void volatile while _Alignas _Atomic _Bool _Complex _Generic \
-     _Imaginary _Noreturn _Static_assert _Thread_local";
+/// C11 关键字闭集：空白分隔、首尾各留一个空格，于是 `contains(" for ")` 就是一次子串查找。
+const C_KEYWORDS: &str = " auto break case char const continue default do double else enum \
+     extern float for goto if inline int long register restrict return short signed sizeof \
+     static struct switch typedef union unsigned void volatile while _Alignas _Atomic _Bool \
+     _Complex _Generic _Imaginary _Noreturn _Static_assert _Thread_local ";
 
 /// 内核体被限定成「恰好一个 `for` 循环」，其余形状一律报错而不是猜一个意思。
 fn single_loop(function: &ItemFn) -> syn::Result<&ExprForLoop> {
@@ -327,6 +312,11 @@ fn loop_extent(loop_stmt: &ExprForLoop, params: &[Param]) -> syn::Result<String>
     if !matches!(range.limits, syn::RangeLimits::HalfOpen(_)) {
         return fail(range.limits.span(), "loop range must be half-open (`..`)");
     }
+    let (_, end) = range_bounds(range)?;
+    extent_param(end, params)
+}
+
+fn range_bounds(range: &syn::ExprRange) -> syn::Result<(&Expr, &Expr)> {
     let Some(start) = range.start.as_deref() else {
         return fail(range.span(), "loop range must start at zero");
     };
@@ -334,7 +324,7 @@ fn loop_extent(loop_stmt: &ExprForLoop, params: &[Param]) -> syn::Result<String>
     let Some(end) = range.end.as_deref() else {
         return fail(range.span(), "loop range requires an extent");
     };
-    extent_param(end, params)
+    Ok((start, end))
 }
 
 fn zero_start(start: &Expr) -> syn::Result<()> {
@@ -369,11 +359,11 @@ fn path_ident<'a>(expression: &'a Expr, message: &str) -> syn::Result<&'a Ident>
 
 /// 下标只能是循环变量本身：`output[idx + 1]`、`output[0]` 都会落到这里。
 fn at_loop_idx(expression: &Expr, idx: &str) -> syn::Result<()> {
-    let at = path_ident(expression, INDEX)?;
+    let at = path_ident(expression, LOOP_IDX)?;
     if portable_ident(at)? == idx {
         return Ok(());
     }
-    fail(expression.span(), INDEX)
+    fail(expression.span(), LOOP_IDX)
 }
 
 /// 赋值目标是「可写缓冲 + 循环下标」两件事；任一件不成立都在目标处报错。

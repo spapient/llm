@@ -103,7 +103,9 @@ fn dsl_builds_verified_optimized_ir_and_portable_source() {
 #[test]
 fn dsl_builds_a_reduce_ir_from_compound_assignment() {
     let reduce = __dsl_ir_dot_reduce();
-    reduce.verify().expect("macro reduction output has valid types");
+    reduce
+        .verify()
+        .expect("macro reduction output has valid types");
     let source = reduce.emit_c().expect("verified reduction emits C");
     assert!(
         source.contains(

@@ -20,9 +20,8 @@
 文法与 `proc_macro` 解耦是这一层的核心决定：`proc_macro::TokenStream` 只在展开期可用，规则直接
 写在它上面，每条错误路径都无法被测试。
 
-生产文件平铺在 `src/`，单向依赖 `syntax ← decl ← render ← lib`：`#[dsl]` 是一条**独立**的前端
-（`src/dsl/`，形状与写回在 `mod.rs`、表达式 lowering 在 `expr.rs`），只依赖 `syn` / `quote`，
-与声明文法不共享任何一行。
+五个生产文件平铺在 `src/`，单向依赖 `syntax ← decl ← render ← lib`，没有子目录：`#[dsl]` 是一条
+**独立**的前端（`src/dsl.rs`），只依赖 `syn` / `quote`，与声明文法不共享任何一行。
 
 | 层 | 文件 | 职责 | 可测性 |
 |---|---|---|---|
@@ -30,7 +29,7 @@
 | 声明 | `src/decl.rs` | 三种形态的键表与解析产物（层 / 运行时 / 语义表） | 表驱动，加键 = 加一行 |
 | 渲染 | `src/render.rs` | 声明 → `impl` / 常量 / 校验测试的文本拼接 | 纯字符串拼接 |
 | 适配 | `src/lib.rs` | `TokenStream` ↔ token 模型、错误映射回 span；`Streams` 依赖倒置 | 字符串替身实现同一 trait |
-| DSL 前端 | `src/dsl/` | `#[dsl]`：Rust 函数 → 受限形状（单循环 + 单输出）→ `Kernel::new(...)`；形状/写回（`mod.rs`）与表达式 lowering（`expr.rs`）分开 | `syn` AST 进、token 出；错误带 span |
+| DSL 前端 | `src/dsl.rs` | `#[dsl]`：Rust 函数 → 受限形状（单循环 + 一次写回）→ `Kernel::new(...)`；类型闭集、形状校验、表达式 lowering、token 装配按顺序排在同一文件 | `syn` AST 进、token 出；错误带 span |
 
 测试在 `tests/`：`fixture.rs`（注解文本 → token 模型的最小词法器，分层夹具）、`decl_tests.rs`、
 `render_tests.rs`、`adapter_tests.rs`、`audit.rs`（独立的 `[[test]]`，读源码与 manifest 的静态门禁）。

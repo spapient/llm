@@ -6,6 +6,7 @@
 
 use core::fmt::{self, Write as _};
 
+mod fuse;
 mod validate;
 use validate::verify_core;
 
@@ -278,7 +279,14 @@ impl Kernel {
         at: u32,
         value: Expr,
     ) -> Self {
-        Self::new(name, params, idx, extent, output, Write::Reduce { at, value })
+        Self::new(
+            name,
+            params,
+            idx,
+            extent,
+            output,
+            Write::Reduce { at, value },
+        )
     }
 
     /// Validate names, parameter types, memory access, and expression types.
@@ -302,33 +310,6 @@ impl Kernel {
         Ok(optimized)
     }
 
-    /// Fuse a pointwise consumer into this pointwise producer.
-    ///
-    /// 消费者把 `self.output` 声明成只读缓冲时，中间缓冲被消掉：消费者里每一处对它的取值都换成
-    /// `self` 的值表达式，于是两步落进同一个循环、只写最终输出。归约链、缺失的链接、可写链接与
-    /// 长度不一致一律拒绝，而不是猜一个意思。
-    ///
-    /// # Errors
-    ///
-    /// 任一侧校验失败、写回不是逐点、消费者没有把 `self.output` 声明成只读 `f32` 缓冲、
-    /// 或两侧 `extent` 不是同一个参数名时返回说明。
-    pub fn fuse(&self, next: &Kernel) -> Result<Self, VerificationError> {
-        verify_link(self, next)?;
-        let (Write::Map(value), Write::Map(after)) = (&self.write, &next.write) else {
-            return Err(VerificationError::new("fusion needs two pointwise kernels"));
-        };
-        let fused = Kernel::map(
-            format!("{}_{}", self.name, next.name),
-            merged_params(self, next),
-            self.idx.clone(),
-            self.extent.clone(),
-            next.output.clone(),
-            substitute(after, &self.output, value),
-        );
-        fused.verify()?;
-        Ok(fused)
-    }
-
     /// Emit portable C; return status 1 when a guarded length is violated.
     pub fn emit_c(&self) -> Result<String, VerificationError> {
         let kernel = self.optimize()?;
@@ -337,93 +318,6 @@ impl Kernel {
         write_guards(&mut source, &kernel);
         write_loop(&mut source, &kernel);
         Ok(source)
-    }
-}
-
-/// 先各自校验，再确认链路成立：把三次提前返回收进一个入口，压低 `fuse` 的分支复杂度。
-fn verify_link(producer: &Kernel, consumer: &Kernel) -> Result<(), VerificationError> {
-    producer.verify()?;
-    consumer.verify()?;
-    check_link(producer, consumer)
-}
-
-/// 融合前提：两侧都是逐点核、共享同一个 `extent`，且消费者把生产者的输出当只读缓冲读。
-fn check_link(producer: &Kernel, consumer: &Kernel) -> Result<(), VerificationError> {
-    check_pointwise(producer, consumer)?;
-    check_extent(producer, consumer)?;
-    check_input(producer, consumer)
-}
-
-fn check_pointwise(producer: &Kernel, consumer: &Kernel) -> Result<(), VerificationError> {
-    if producer.write.slot().is_some() || consumer.write.slot().is_some() {
-        return Err(VerificationError::new("fusion needs two pointwise kernels"));
-    }
-    Ok(())
-}
-
-fn check_extent(producer: &Kernel, consumer: &Kernel) -> Result<(), VerificationError> {
-    if producer.extent != consumer.extent {
-        return Err(VerificationError::new(format!(
-            "fused kernels must share extent `{}`",
-            producer.extent
-        )));
-    }
-    Ok(())
-}
-
-fn check_input(producer: &Kernel, consumer: &Kernel) -> Result<(), VerificationError> {
-    let link = consumer
-        .params
-        .iter()
-        .find(|parameter| parameter.name == producer.output);
-    match link {
-        Some(Parameter { ty: ValueType::Buf { element: ScalarType::F32, access: Access::Read }, .. }) => Ok(()),
-        Some(_) => Err(VerificationError::new(format!(
-            "fused input `{}` must be a read-only f32 buffer",
-            producer.output
-        ))),
-        None => Err(VerificationError::new(format!(
-            "consumer does not read `{}`",
-            producer.output
-        ))),
-    }
-}
-
-/// 融合核的形参：两侧都去掉中间缓冲；重名不在这里处理，交给 `verify` 的「参数不重名」闸。
-fn merged_params(producer: &Kernel, consumer: &Kernel) -> Vec<Parameter> {
-    producer
-        .params
-        .iter()
-        .chain(&consumer.params)
-        .filter(|parameter| parameter.name != producer.output)
-        .cloned()
-        .collect()
-}
-
-/// 把消费者里对中间缓冲的每一次取值换成生产者的值表达式。
-fn substitute(expression: &Expr, name: &str, replacement: &Expr) -> Expr {
-    match expression {
-        Expr::Load(loaded) => substitute_load(loaded, name, replacement),
-        other => substitute_compound(other, name, replacement),
-    }
-}
-
-fn substitute_load(loaded: &str, name: &str, replacement: &Expr) -> Expr {
-    if loaded == name {
-        return replacement.clone();
-    }
-    Expr::Load(loaded.to_string())
-}
-
-fn substitute_compound(expression: &Expr, name: &str, replacement: &Expr) -> Expr {
-    match expression {
-        Expr::Neg(value) => Expr::Neg(Box::new(substitute(value, name, replacement))),
-        Expr::Binary { op, left, right } => Expr::Binary {
-            op: *op,
-            left: Box::new(substitute(left, name, replacement)),
-            right: Box::new(substitute(right, name, replacement)),
-        },
-        leaf => leaf.clone(),
     }
 }
 
@@ -469,7 +363,11 @@ fn write_parameter(
 fn write_guards(source: &mut String, kernel: &Kernel) {
     let slot = kernel.write.slot();
     let mut bufs = 0;
-    for parameter in kernel.params.iter().filter(|parameter| parameter.ty.is_buf()) {
+    for parameter in kernel
+        .params
+        .iter()
+        .filter(|parameter| parameter.ty.is_buf())
+    {
         match slot {
             Some(at) if parameter.name == kernel.output => {
                 let _ = writeln!(

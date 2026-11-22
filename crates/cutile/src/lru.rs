@@ -1,6 +1,5 @@
 //! 职责：缓存条目计数与 LRU 淘汰。
 
-use crate::cache::{Cache, CacheKey};
 use diagnostic::{Code, Error};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -55,11 +54,11 @@ pub struct Entry {
     pub bytes: u64,
     /// 最后一次使用（读命中或写入）的时间：GC 的 LRU 顺序用它。
     pub used: SystemTime,
-    /// 落盘时的 [`CacheKey::fields`] 快照。
+    /// 落盘时的 [`crate::cache::CacheKey::fields`] 快照。
     pub fields: Vec<(String, String)>,
     /// 目录内容：有 `source` 才是可复用的一条记录。
     pub state: State,
-    /// 目录里认得出身份的编译产物个数（[`Cache::artifacts_in`]）。
+    /// 目录里认得出身份的编译产物个数（[`crate::cache::Cache::artifacts_in`]）。
     pub artifacts: usize,
     /// 目录里是否还有 `build.lock`：有表示有人正在重新生成它。
     pub locked: bool,

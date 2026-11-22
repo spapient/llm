@@ -328,6 +328,116 @@ fn reduce_emitted_c_accumulates_in_the_same_order() {
     assert_same(&run.bits, &[expected], "dot");
 }
 
+/// 生产者：`mid[i] = input[i] * scale + 3.0`，中间缓冲按可写声明。
+fn producer() -> Kernel {
+    Kernel::map(
+        "producer",
+        vec![
+            buf("input", Access::Read),
+            buf("mid", Access::ReadWrite),
+            scalar("scale"),
+            length("extent"),
+        ],
+        "i",
+        "extent",
+        "mid",
+        binary(
+            BinaryOp::Add,
+            binary(
+                BinaryOp::Mul,
+                load("input"),
+                Expr::Scalar("scale".to_string()),
+            ),
+            Expr::F32(3.0f32.to_bits()),
+        ),
+    )
+}
+
+/// 消费者：`output[i] = mid[i] * 2.0 - 1.0`；中间缓冲在这里是只读，融合才有链接可消。
+fn consumer() -> Kernel {
+    Kernel::map(
+        "consumer",
+        vec![
+            buf("mid", Access::Read),
+            buf("output", Access::ReadWrite),
+            length("extent"),
+        ],
+        "i",
+        "extent",
+        "output",
+        binary(
+            BinaryOp::Sub,
+            binary(BinaryOp::Mul, load("mid"), Expr::F32(2.0f32.to_bits())),
+            Expr::F32(1.0f32.to_bits()),
+        ),
+    )
+}
+
+/// 只读某个名字的消费者：分别命中「没有链接」与「链接可写」两闸。
+fn consumer_of(name: &str, access: Access) -> Kernel {
+    Kernel::map(
+        "after",
+        vec![
+            buf(name, access),
+            buf("out", Access::ReadWrite),
+            length("extent"),
+        ],
+        "i",
+        "extent",
+        "out",
+        binary(BinaryOp::Mul, load(name), Expr::F32(2.0f32.to_bits())),
+    )
+}
+
+/// 融合消掉中间缓冲、只留一趟循环，结果与「先写中间、再读中间」逐位相同。
+#[test]
+fn fusion_removes_the_intermediate_buf_and_keeps_every_bit() {
+    let input = adversarial();
+    let fused = producer().fuse(&consumer()).expect("pointwise chain fuses");
+    let source = fused.emit_c().expect("fused kernel emits C");
+    assert!(
+        !source.contains("mid"),
+        "intermediate buf must be gone:\n{source}"
+    );
+    let call = format!("producer_consumer(input, {LEN}, 1.5f, {LEN}, output, {LEN})");
+    let run = run("fused", &source, &pointwise_main(&call, &input));
+    assert_eq!(run.rc, 0);
+    let expected: Vec<f32> = input
+        .iter()
+        .map(|value| {
+            let mid = value * 1.5f32 + 3.0f32;
+            mid * 2.0f32 - 1.0f32
+        })
+        .collect();
+    assert_same(&run.bits, &expected, "fused");
+}
+
+/// 无法拼接的链在执行前就被挡住：归约不可融、缺链接、链接可写。
+#[test]
+fn fusion_rejects_chains_it_cannot_join() {
+    let error = affine().fuse(&dot()).expect_err("reductions cannot fuse");
+    assert!(
+        error.to_string().contains("two pointwise kernels"),
+        "{error}"
+    );
+
+    let error = affine()
+        .fuse(&consumer_of("tail", Access::Read))
+        .expect_err("consumer must read the producer output");
+    assert!(
+        error.to_string().contains("does not read `output`"),
+        "{error}"
+    );
+
+    let error = affine()
+        .fuse(&consumer_of("output", Access::ReadWrite))
+        .expect_err("link must be read-only");
+    assert!(
+        error.to_string().contains("read-only f32 buffer"),
+        "{error}"
+    );
+}
+
 #[test]
 fn length_guards_reject_short_bufs_before_any_write() {
     let input = adversarial();
@@ -400,7 +510,9 @@ fn macro_reduce_front_end_matches_rust_after_execution() {
     let b = rotated(&a);
     let run = run(
         "dot_reduce",
-        &__dsl_ir_dot_reduce().emit_c().expect("macro reduce emits C"),
+        &__dsl_ir_dot_reduce()
+            .emit_c()
+            .expect("macro reduce emits C"),
         &reduce_main("dot_reduce", &a, &b, LEN),
     );
     assert_eq!(run.rc, 0);
