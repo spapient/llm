@@ -33,8 +33,8 @@
 | 原语闭集 | 16 | 16 | `prof::atom::Prim::ALL` |
 | 片段 | 16 × ≤8 | 6 厂商 × 9 段片段 + 见证 | `ls crates/prim/<vendor>/` |
 | 布局 / 调度 | 4 / 4 | 4 / 4 | `op::layout::LayoutSpec` / `op::sch::Schedule` |
-| 机制代码 | 9,520（预算） | 9,403 行（含内联测试；剔除后 6,455） | `wc -l crates/cutile/src/*.rs` |
-| 用例 | — | 149 单测 + 2 doctest | `cargo test -p cutile --all-features` |
+| 机制代码 | 9,520（预算） | 4,533 行（测试全部经 `#[path]` 挂在 `tests/`，`src/` 内零测试体） | `wc -l crates/cutile/src/*.rs` |
+| 用例 | — | 134 单测 + 2 doctest | `cargo test -p cutile --all-features` |
 
 **迁移记录（2026-11-22）**：`#[dsl]` → typed IR 已打通 f32 的两种写回（逐点 `output[idx] = expr` 与
 归约 `output[at] += expr`），外加把两个核拼成一个的 `Kernel::fuse`；包含结构校验、把代数定律与常量折叠
@@ -42,6 +42,14 @@
 `Lower` 的 `.k` 正文。前者用 `cc` 编译执行、与 Rust 参考实现逐位对拍；后者已接上设备 dispatch（Metal 等
 vendor 后端），但 `Image` 仍未接。它仍未替换旧模板链路。上表的 P0 数字是本次迁移前的基线，不能代表迁移
 后的代码量或执行覆盖率。
+
+**结构记录**：本 crate 的 `src/` 现在**没有子目录**。此前的 `src/ir/` 是它唯一的多层目录，四个子模块已升为
+crate 根的同级单概念文件（`kernel` / `validate` / `pass` / `fuse`）——理由不是「少一层好看」，而是那层目录
+**没有承担任何限定**：四者互相引用的正是同一族 typed IR，`ir::` 前缀只是把「同属一族」重复一遍，而这族性
+`docs/ARCHITECTURE.md` 第 114 行的所有权表早已登记成一行。同一笔里两条发射合一：C 与 `.k` 此前是五对只差
+四个位置的孪生函数（签名、形参、循环、两种表头），现在差异由 `Target`（`C` / `K`）承载，`emit` 只有一条
+骨架，`emit_c` / `emit_k` 各自一行委托——这条换到的是**结构上不可能只改一边**，不是行数。`pass` 的内联测试
+模块也已搬到 `tests/pass_tests.rs` 并经 `#[path]` 挂回，`src/` 内不再有测试体。
 
 "P0 已落地"指 §16 的五项判据都已有可执行答案；四条命令就是它的全部入口：
 
@@ -190,7 +198,10 @@ crates/cutile/                  # 模板前端 + typed IR 迁移起点
 ├── README.md                   # 本文
 └── src/
     ├── lib.rs                  # 公开面、DSL 宏 re-export、SCHEMA_VER
-    ├── ir/                     # typed IR：mod（Kernel + Write + C/.k 发射）/ validate（六道闸）/ pass（定律表 + 不动点通道）/ fuse（两核拼接）
+    ├── kernel.rs               # typed IR：Kernel（签名 + 循环 + 一次写回）、Write、Expr、C / .k 双目标发射
+    ├── validate.rs             # 六道结构校验：名字 / 形参 / 生成名 / extent / 输出 / 表达式类型
+    ├── pass.rs                 # 定律表化简 + 死形参消除扫到不动点（每个 pass 之后都 verify）
+    ├── fuse.rs                 # 两核拼接：消费者读中间缓冲 → 直接读生产者的值表达式
     ├── builtin.rs              # 三层数据的装载与交叉校验（声明 / 档案 / 片段）
     ├── cap.rs                  # ② negotiate：需求 ∩ 供给、降级链、诊断构造
     ├── ast.rs                  # 模板渲染的可见中间产物（ADR 0017 的 L1）
@@ -202,7 +213,7 @@ crates/cutile/                  # 模板前端 + typed IR 迁移起点
     ├── harness.rs              # 被测内核的 C / CUDA 基准封装生成（两种方言同模块）
     ├── dirs.rs                 # 三个目录的纯数据值对象（默认路径在调用方，本模块不读环境变量）
     ├── probe.rs / space.rs     # 设备探测与形状空间（纯数据；起进程在 `optim`）
-    └── cache/                  # 缓存条目、锁与回收的细分模块
+    └── lru.rs                  # 缓存条目的残留、锁状态与回收判据（`Residue` / `Gc` / `State`）
 
 crates/optim/                  # 执行半边：编译、执行、见证、语言门与四份报告
 └── src/
@@ -802,7 +813,7 @@ text      = { any } ;            (* 片段拼接时原样保留 *)
 `#[cutile::dsl]` 暂支持普通 Rust 函数中的单个 `for i in 0..extent` 循环，配一次写回：`output[i] = expr`
 （逐点）或 `output[0] += expr`（归约，累加到固定槽位）。宏在编译期解析/限制 Rust AST，生成
 `Kernel::map(...)` 或 `Kernel::reduce(...)`。两种写回不是两个类型，而是同一类型里的一份数据——
-`Write::{Map, Reduce { at }}`——因此 `ir::validate` 的六道校验（名字、形参、生成名、`extent`、输出、
+`Write::{Map, Reduce { at }}`——因此 `validate` 的六道校验（名字、形参、生成名、`extent`、输出、
 表达式类型）、定律表化简与两条发射（C / `.k`）各自只有一份，发射时只在「长度守卫 + 循环体」处分道。`Kernel::fuse`
 再把「读输入 → 写中间」与「读中间 → 写输出」拼成一个核，中间结果不落回全局内存。
 
