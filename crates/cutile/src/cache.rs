@@ -1,17 +1,15 @@
 //! 职责：编译产物缓存的键、锁与落盘。
 
-mod lru;
-
 use crate::atom::{DTypeSet, Prim};
 use crate::emit::fnv1a;
+use crate::lru::{Tally, directory_time, evict, reclaim};
 use crate::prof::Emit;
-use lru::{Tally, directory_time, evict, reclaim};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
-pub use lru::{Entry, Gc, Residue, STALE_LOCK, State};
+pub use crate::lru::{Entry, Gc, Residue, STALE_LOCK, State};
 
 /// 缓存目录。
 #[derive(Debug, Clone, PartialEq, Eq)]

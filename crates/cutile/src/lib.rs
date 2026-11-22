@@ -1,6 +1,7 @@
-//! 职责：cutile —— 设备无关的替换式 kernel DSL。
+//! 职责：cutile —— 设备无关的 kernel DSL 与编译前端。
 //!
-//! 本 crate 实现 [`README.md`](../README.md) 的 P0 纵切面：
+//! 现有生产链路实现 [`README.md`](../README.md) 的模板式 P0 纵切面；`ir` 是开始迁移的 typed
+//! pointwise 子集，当前不取代旧模板，也不宣称具备通用优化或 GPU 执行能力。
 //!
 //! ```text
 //! 声明层 crates/op/ops/<op>.{toml,k}   档案层 crates/prof/devices/<vendor>.toml
@@ -8,8 +9,8 @@
 //!        ① expand  →  ② negotiate  →  ③ select  →  ④ substitute  →  ⑤ emit + cache
 //! ```
 //!
-//! 五个步骤的中间产物全部是可见的数据结构（[`decl::Variant`]、[`cap::Path`]、
-//! [`plan::Plan`]、[`emit::Source`]），没有任何隐藏的优化阶段——这是"无 IR"的具体含义。
+//! 模板链路的五步中间产物全部是可见数据结构（[`decl::Variant`]、[`cap::Path`]、
+//! [`plan::Plan`]、[`emit::Source`]）；新 typed IR 逐算子替换这条链路，待设备验证后再迁移执行入口。
 //!
 //! # 模块地图
 //!
@@ -20,13 +21,14 @@
 //! | ③ 变体选择与 roofline 估值 | [`plan`] |
 //! | ④ 槽位与 `@原语` 替换 | [`substitute`]、[`ast`] |
 //! | ⑤ 成文与片段行数判据 | [`emit`] |
+//! | typed pointwise IR 迁移起点 | [`ir`] |
 //! | ⑤ 指纹、锁、落盘与容量回收 | [`cache`] |
 //! | 设备探测与存储寻址 | [`probe`]、[`space`] |
 //! | 对拍口径（相对误差 + 按 dtype 阈值） | [`mod@reference`] |
 //! | 被测内核的基准封装（`cc` / `cuda`） | [`harness`] |
 //! | 输入形状：三个目录，纯数据 | [`dirs`] |
 //!
-//! 上表到 `emit` + `cache` 为止：本 crate 是**无 IR 的编译前端**，它把三份输入折成源文本与缓存键，
+//! 上表到 `emit` + `cache` 为止：旧模板链路把三份输入折成源文本与缓存键，
 //! 不碰进程、不碰设备、不跑内核。凡是要拼一次编译、跑一次设备、或给出"能跑/不能跑"结论的模块
 //! （`backend`、`build`、`device`、`runner`、`gate`、`pipeline`、`toolchain`、`witness`、
 //! `verify`、`execution` 与 `doctor` / `bench` / `ledger` 三份报告）住在 `optim`——那才是
@@ -67,6 +69,7 @@
 
 #![deny(unsafe_code)]
 
+#[cfg(test)]
 extern crate self as cutile;
 
 pub use annotation::dsl;
@@ -94,14 +97,14 @@ pub mod probe;
 pub mod reference;
 pub mod space;
 pub mod substitute;
-
+mod lru;
 // 生产态内核发射与基准封装（M3-2 / M3-10）已搬到 `engine`（L6）：Metal / CUDA 的 vendor 语法
 // 不进 cutile，机制层只经 `llm_optim::backend::Codegen::lower` / `llm_optim::backend::Codegen::harness`
 // 缝分派（`docs/ARCHITECTURE.md` 的 L3 契约：cutile 不出现厂商字面量）。
 //
 // 接缝与命令策略（`backend`、`build`、`device`、`gate`、`pipeline`、`runner`、`toolchain`、
 // `witness`、`verify`、`execution`）住在 `optim`：它们要拼一次编译、跑一次设备，而本 crate
-// 只做"把三层数据变成源文本"这段无 IR 的前端（①②③④⑤）。
+// 只做"把三层数据变成源文本"这段旧模板前端（①②③④⑤）。
 
 /// crate 自身的 schema 版本；闭集变更时递增，旧 `plan` 表与缓存随即失效（README §6.4）。
 pub const SCHEMA_VER: u16 = 4;

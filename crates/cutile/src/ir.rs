@@ -159,6 +159,18 @@ impl Kernel {
                     param.name
                 )));
             }
+            if matches!(
+                param.ty,
+                ValueType::Buffer {
+                    element: ScalarType::Usize,
+                    ..
+                }
+            ) {
+                return Err(VerificationError::new(format!(
+                    "buffer `{}` must contain f32 elements",
+                    param.name
+                )));
+            }
         }
         for (index, param) in self
             .params
@@ -212,7 +224,7 @@ impl Kernel {
         Ok(optimized)
     }
 
-    /// Emit the portable C subset used as the first backend-neutral codegen target.
+    /// Emit portable C; return status 1 when the extent exceeds any buffer length.
     pub fn emit_c(&self) -> Result<String, VerificationError> {
         let kernel = self.optimize()?;
         let mut source = String::new();
@@ -265,9 +277,9 @@ impl Kernel {
         for _parameter in kernel.params.iter().filter(|param| is_buffer(param.ty)) {
             let length = buffer_length_name(buffer_index);
             buffer_index += 1;
-            write!(
+            writeln!(
                 source,
-                "    if ({} > {}) return 1;\n",
+                "    if ({} > {}) return 1;",
                 kernel.extent, length
             )
             .expect("writing to String cannot fail");
@@ -292,7 +304,10 @@ impl Kernel {
 
     fn value_type(&self, expression: &Expr) -> Result<ScalarType, VerificationError> {
         match expression {
-            Expr::F32(_) => Ok(ScalarType::F32),
+            Expr::F32(bits) if f32::from_bits(*bits).is_finite() => Ok(ScalarType::F32),
+            Expr::F32(_) => Err(VerificationError::new(
+                "f32 literals in typed IR must be finite",
+            )),
             Expr::Scalar(name) => match self.parameter(name) {
                 Some(ValueType::Scalar(ty)) => Ok(ty),
                 Some(ValueType::Buffer { .. }) => Err(VerificationError::new(format!(

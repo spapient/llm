@@ -4,8 +4,8 @@ use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 use syn::{
-    BinOp, Error, Expr, ExprAssign, ExprBinary, ExprForLoop, ExprIndex, ExprLit, ExprPath, ItemFn,
-    Lit, Pat, Stmt, Type, TypeReference, UnOp, spanned::Spanned,
+    BinOp, Error, Expr, ExprAssign, ExprBinary, ExprForLoop, ExprIndex, ExprLit, ExprPath, Ident,
+    ItemFn, Lit, Pat, Stmt, Type, TypeReference, UnOp, spanned::Spanned,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -19,6 +19,69 @@ enum ParamKind {
 struct Param {
     name: String,
     kind: ParamKind,
+}
+
+fn portable_ident(ident: &Ident) -> syn::Result<String> {
+    let name = ident.to_string();
+    let mut bytes = name.bytes();
+    let valid_start = bytes
+        .next()
+        .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_');
+    let valid_chars = valid_start && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
+    let keyword = [
+        "auto",
+        "break",
+        "case",
+        "char",
+        "const",
+        "continue",
+        "default",
+        "do",
+        "double",
+        "else",
+        "enum",
+        "extern",
+        "float",
+        "for",
+        "goto",
+        "if",
+        "inline",
+        "int",
+        "long",
+        "register",
+        "restrict",
+        "return",
+        "short",
+        "signed",
+        "sizeof",
+        "static",
+        "struct",
+        "switch",
+        "typedef",
+        "union",
+        "unsigned",
+        "void",
+        "volatile",
+        "while",
+        "_Alignas",
+        "_Atomic",
+        "_Bool",
+        "_Complex",
+        "_Generic",
+        "_Imaginary",
+        "_Noreturn",
+        "_Static_assert",
+        "_Thread_local",
+    ]
+    .contains(&name.as_str());
+    if valid_chars && !keyword {
+        Ok(name)
+    } else {
+        Err(Error::new(
+            ident.span(),
+            "kernel identifiers must be portable non-keyword C identifiers",
+        ))
+    }
 }
 
 /// Parse, type-check, and lower the supported Rust function subset.
@@ -45,11 +108,13 @@ fn lower(attribute: &TokenStream, function: &ItemFn) -> syn::Result<TokenStream2
         ));
     }
     let signature = &function.sig;
+    portable_ident(&signature.ident)?;
     if signature.asyncness.is_some()
         || signature.constness.is_some()
         || signature.unsafety.is_some()
         || signature.abi.is_some()
         || !signature.generics.params.is_empty()
+        || signature.generics.where_clause.is_some()
         || signature.variadic.is_some()
         || !matches!(signature.output, syn::ReturnType::Default)
     {
@@ -73,9 +138,15 @@ fn lower(attribute: &TokenStream, function: &ItemFn) -> syn::Result<TokenStream2
                 "kernel parameters must use simple identifier patterns",
             ));
         };
+        if pattern.by_ref.is_some() || pattern.mutability.is_some() || pattern.subpat.is_some() {
+            return Err(Error::new(
+                pattern.span(),
+                "kernel parameters must use unmodified identifier patterns",
+            ));
+        }
         let kind = parameter_kind(&argument.ty)?;
         params.push(Param {
-            name: pattern.ident.to_string(),
+            name: portable_ident(&pattern.ident)?,
             kind,
         });
     }
@@ -125,7 +196,7 @@ fn lower(attribute: &TokenStream, function: &ItemFn) -> syn::Result<TokenStream2
             }
         }
     });
-    let fn_name = signature.ident.to_string();
+    let fn_name = portable_ident(&signature.ident)?;
     let generated_name = format_ident!("__dsl_ir_{}", signature.ident);
     let visibility = &function.vis;
 
@@ -209,12 +280,24 @@ fn unique_parameters(params: &[Param], signature: &syn::Signature) -> syn::Resul
 }
 
 fn parse_loop(loop_stmt: &ExprForLoop, params: &[Param]) -> syn::Result<(String, String)> {
+    if loop_stmt.label.is_some() || !loop_stmt.attrs.is_empty() {
+        return Err(Error::new(
+            loop_stmt.span(),
+            "labeled loops and loop attributes are not supported",
+        ));
+    }
     let Pat::Ident(index) = loop_stmt.pat.as_ref() else {
         return Err(Error::new(
             loop_stmt.pat.span(),
             "loop index must be a simple identifier",
         ));
     };
+    if index.by_ref.is_some() || index.mutability.is_some() || index.subpat.is_some() {
+        return Err(Error::new(
+            index.span(),
+            "loop index must be an unmodified identifier",
+        ));
+    }
     let Expr::Range(range) = loop_stmt.expr.as_ref() else {
         return Err(Error::new(
             loop_stmt.expr.span(),
@@ -251,8 +334,8 @@ fn parse_loop(loop_stmt: &ExprForLoop, params: &[Param]) -> syn::Result<(String,
     };
     let extent = path
         .get_ident()
-        .ok_or_else(|| Error::new(path.span(), "loop extent must be a `usize` parameter"))?
-        .to_string();
+        .ok_or_else(|| Error::new(path.span(), "loop extent must be a `usize` parameter"))?;
+    let extent = portable_ident(extent)?;
     if !params
         .iter()
         .any(|param| param.name == extent && param.kind == ParamKind::Usize)
@@ -262,7 +345,14 @@ fn parse_loop(loop_stmt: &ExprForLoop, params: &[Param]) -> syn::Result<(String,
             "loop extent must name a `usize` parameter",
         ));
     }
-    Ok((index.ident.to_string(), extent))
+    let index = portable_ident(&index.ident)?;
+    if params.iter().any(|param| param.name == index) {
+        return Err(Error::new(
+            loop_stmt.pat.span(),
+            "loop index must not shadow a kernel parameter",
+        ));
+    }
+    Ok((index, extent))
 }
 
 fn parse_assignment(
@@ -290,8 +380,8 @@ fn parse_assignment(
     let output = buffer
         .path
         .get_ident()
-        .ok_or_else(|| Error::new(buffer.path.span(), "output must be a named mutable buffer"))?
-        .to_string();
+        .ok_or_else(|| Error::new(buffer.path.span(), "output must be a named mutable buffer"))?;
+    let output = portable_ident(output)?;
     if !params
         .iter()
         .any(|param| param.name == output && param.kind == ParamKind::BufferWrite)
@@ -304,7 +394,14 @@ fn parse_assignment(
     let Expr::Path(at) = at.as_ref() else {
         return Err(Error::new(at.span(), "buffer index must be the loop index"));
     };
-    if at.path.get_ident().map(ToString::to_string).as_deref() != Some(index) {
+    if at
+        .path
+        .get_ident()
+        .map(portable_ident)
+        .transpose()?
+        .as_deref()
+        != Some(index)
+    {
         return Err(Error::new(at.span(), "buffer index must be the loop index"));
     }
     Ok((output, parse_expr(assign.right.as_ref(), index, params)?))
@@ -332,8 +429,8 @@ fn parse_expr(expression: &Expr, index: &str, params: &[Param]) -> syn::Result<T
             let name = path
                 .path
                 .get_ident()
-                .ok_or_else(|| Error::new(path.span(), "kernel expressions use simple names"))?
-                .to_string();
+                .ok_or_else(|| Error::new(path.span(), "kernel expressions use simple names"))?;
+            let name = portable_ident(name)?;
             if name == index {
                 return Err(Error::new(
                     path.span(),
@@ -376,15 +473,21 @@ fn parse_expr(expression: &Expr, index: &str, params: &[Param]) -> syn::Result<T
                     "only named buffers can be loaded",
                 ));
             };
-            let name = buffer
-                .path
-                .get_ident()
-                .ok_or_else(|| Error::new(buffer.path.span(), "only named buffers can be loaded"))?
-                .to_string();
+            let name = buffer.path.get_ident().ok_or_else(|| {
+                Error::new(buffer.path.span(), "only named buffers can be loaded")
+            })?;
+            let name = portable_ident(name)?;
             let Expr::Path(at) = at.as_ref() else {
                 return Err(Error::new(at.span(), "buffer index must be the loop index"));
             };
-            if at.path.get_ident().map(ToString::to_string).as_deref() != Some(index) {
+            if at
+                .path
+                .get_ident()
+                .map(portable_ident)
+                .transpose()?
+                .as_deref()
+                != Some(index)
+            {
                 return Err(Error::new(at.span(), "buffer index must be the loop index"));
             }
             if !params.iter().any(|param| {
