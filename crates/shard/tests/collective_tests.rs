@@ -40,6 +40,25 @@ fn the_port_is_implementable_outside_and_the_transform_lands() {
     assert_eq!(buf, [2.0], "变换必须真的落到缓冲上");
 }
 
+/// `Reduce` 的短名、单位元与运算都从同一张表按判别式取出，所以行序必须与枚举顺序一致。
+///
+/// 表把三件必须同时成立的事实写在一行（加一种归约只改一处），代价是行序成了隐式约定：
+/// 这条把它变成可执行断言，行序错了就不会是"悄悄取到别的种类"。
+#[test]
+fn the_kind_table_follows_the_enum_order() {
+    for (position, kind) in Reduce::ALL.iter().enumerate() {
+        assert_eq!(
+            *kind as usize, position,
+            "{kind:?} 的判别式与 ALL 的顺序不符"
+        );
+        assert_eq!(
+            kind.as_str(),
+            Reduce::TABLE[position].0,
+            "{kind:?} 的短名与表里第 {position} 行不符"
+        );
+    }
+}
+
 #[test]
 fn every_kind_names_itself() {
     let names: Vec<&str> = Reduce::ALL.iter().map(|kind| kind.as_str()).collect();
@@ -111,7 +130,7 @@ fn folding_nothing_is_not_a_value() {
 /// 占位远端后端拒绝任何集合操作；缓冲原样保留，不产生半个归约结果。
 #[test]
 fn all_reduce_is_unsupported_and_leaves_the_buf_untouched() {
-    let mut remote = Remote::new();
+    let mut remote = Remote;
     let group = Group::new([0, 1]).expect("双进程组");
     let mut buf = [1.0f32, 2.0, 3.0];
 
@@ -127,7 +146,7 @@ fn all_reduce_is_unsupported_and_leaves_the_buf_untouched() {
 fn local_and_remote_share_the_collective_port() {
     let topology = Topology::new(2, 1, 1).expect("tp 2");
     let mut local: Box<dyn Collective> = Box::new(Local::new(topology, 2).expect("宽度非零"));
-    let mut remote: Box<dyn Collective> = Box::new(Remote::new());
+    let mut remote: Box<dyn Collective> = Box::new(Remote);
 
     let group = topology.group(Parallel::Tensor, 0).expect("唯一一组");
     let mut buf = [0.0f32; 2];

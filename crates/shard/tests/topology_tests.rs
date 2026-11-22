@@ -11,68 +11,71 @@ fn the_world_is_the_product_of_the_three_axes() {
     assert_eq!(Topology::single(), Topology::new(1, 1, 1).expect("合法"));
 }
 
-#[test]
-fn each_axis_has_its_own_group_stride() {
-    let topology = Topology::new(2, 2, 2).expect("合法");
-    let groups = |parallel| -> Vec<Vec<u32>> {
-        (0..topology.world() / 2)
-            .map(|idx| {
-                topology
-                    .group(parallel, idx)
-                    .expect("组存在")
-                    .ranks()
-                    .to_vec()
-            })
-            .collect()
-    };
-    assert_eq!(
-        groups(Parallel::Tensor),
-        [vec![0, 1], vec![2, 3], vec![4, 5], vec![6, 7]]
-    );
-    assert_eq!(
-        groups(Parallel::Pipeline),
-        [vec![0, 2], vec![1, 3], vec![4, 6], vec![5, 7]]
-    );
-    assert_eq!(
-        groups(Parallel::Data),
-        [vec![0, 4], vec![1, 5], vec![2, 6], vec![3, 7]]
-    );
-}
-
-/// 三个维度必须对称：组内只沿**该维**移动，组大小就是该维的并行度。
+/// 三个维度必须对称：组内只沿**该维**移动，组大小就是该维的并行度，组数就是 `world / 该维`。
 ///
 /// 旧实现里 `Pipeline` 的组是整个 `tp · pp` 平面、组号当 `dp` 下标用，于是同一个
 /// `Parallel::Pipeline` 有两套下标域：`rank` 按 `pp` 校验，`group` 却按 `dp` 编号
-/// （3·5·7 上 `rank(_, 4, _)` 合法，而 `group(Pipeline, 4)` 指的是 `dp = 4`）。这条用反解
-/// 钉住"只有 pp 那一维在动"，组数则回到 `world / pp`。
+/// （3·5·7 上 `rank(_, 4, _)` 合法，而 `group(Pipeline, 4)` 指的是 `dp = 4`）。这张表在
+/// 2·3·2 上逐轴同时核对成员与反解，把"只有本维在动"钉死。
 #[test]
 fn each_axis_group_moves_only_along_that_axis() {
     let topology = Topology::new(2, 3, 2).expect("合法");
-    let pipeline = topology.group(Parallel::Pipeline, 2).expect("组号在区间内");
-    assert_eq!(pipeline.size(), topology.pp(), "组大小必须等于该维并行度");
-    assert_eq!(pipeline.ranks(), [6, 8, 10]);
-    let idxs: Vec<_> = pipeline
-        .ranks()
-        .iter()
-        .map(|rank| topology.idxs(*rank).expect("反解"))
-        .collect();
-    assert_eq!(idxs, [(0, 0, 1), (0, 1, 1), (0, 2, 1)]);
-    assert_eq!(
-        topology
-            .group(Parallel::Pipeline, topology.world() / topology.pp())
-            .unwrap_err()
-            .code(),
-        Code::Invalid
-    );
-}
-
-#[test]
-fn an_idx_outside_the_axis_is_rejected() {
-    let topology = Topology::new(2, 2, 2).expect("合法");
-    for parallel in Parallel::ALL {
+    struct Row {
+        parallel: Parallel,
+        idx: usize,
+        degree: usize,
+        members: &'static [u32],
+        idxs: &'static [(usize, usize, usize)],
+    }
+    let table = [
+        Row {
+            parallel: Parallel::Tensor,
+            idx: 1,
+            degree: 2,
+            members: &[2, 3],
+            idxs: &[(0, 1, 0), (1, 1, 0)],
+        },
+        Row {
+            parallel: Parallel::Pipeline,
+            idx: 2,
+            degree: 3,
+            members: &[6, 8, 10],
+            idxs: &[(0, 0, 1), (0, 1, 1), (0, 2, 1)],
+        },
+        Row {
+            parallel: Parallel::Data,
+            idx: 1,
+            degree: 2,
+            members: &[1, 7],
+            idxs: &[(1, 0, 0), (1, 0, 1)],
+        },
+    ];
+    for Row {
+        parallel,
+        idx,
+        degree,
+        members,
+        idxs,
+    } in table
+    {
+        let group = topology.group(parallel, idx).expect("组号在区间内");
+        assert_eq!(group.ranks(), members, "{parallel:?} 第 {idx} 组的成员");
         assert_eq!(
-            topology.group(parallel, 4).unwrap_err().code(),
-            Code::Invalid
+            group.size(),
+            degree,
+            "{parallel:?} 的组大小必须等于该维并行度"
+        );
+        let solved: Vec<_> = members
+            .iter()
+            .map(|rank| topology.idxs(*rank).expect("反解"))
+            .collect();
+        assert_eq!(solved, idxs, "{parallel:?} 第 {idx} 组反解出的下标");
+        // 组数由另两维的乘积给出：第 `count` 组必须不存在。
+        let count = topology.world() / degree;
+        assert_eq!(
+            topology.group(parallel, count).unwrap_err().code(),
+            Code::Invalid,
+            "{parallel:?} 的第 {count} 组不存在"
         );
     }
 }
@@ -163,8 +166,12 @@ fn rank_and_idxs_are_inverses() {
 #[test]
 fn an_idx_outside_its_own_degree_is_refused() {
     let topology = Topology::new(2, 3, 4).expect("合法");
-    assert_eq!(topology.rank(2, 0, 0).unwrap_err().code(), Code::Invalid);
-    assert_eq!(topology.rank(0, 3, 0).unwrap_err().code(), Code::Invalid);
-    assert_eq!(topology.rank(0, 0, 4).unwrap_err().code(), Code::Invalid);
+    for (tp_idx, pp_idx, dp_idx) in [(2, 0, 0), (0, 3, 0), (0, 0, 4)] {
+        assert_eq!(
+            topology.rank(tp_idx, pp_idx, dp_idx).unwrap_err().code(),
+            Code::Invalid,
+            "({tp_idx}, {pp_idx}, {dp_idx}) 越过了自己那一维"
+        );
+    }
     assert_eq!(topology.rank(1, 2, 3), Ok(23));
 }

@@ -129,7 +129,7 @@ impl Topology {
         let position = rank as usize;
         if position >= self.world {
             fail!(
-                "shard::Topology::indices",
+                "shard::Topology::idxs",
                 "rank {rank} 超出 0..{}",
                 self.world
             );
@@ -139,8 +139,26 @@ impl Topology {
     }
 
     /// 第 `idx` 个指定维度的进程组：组内只沿该维移动，另外两维固定。
+    ///
+    /// # Errors
+    ///
+    /// `idx` 超出该维的组数（即 `world / 该维并行度`）。
     pub fn group(&self, parallel: Parallel, idx: usize) -> Result<Group> {
-        Group::new(self.ranks(parallel, idx)?)
+        let count = self.world / self.degree(parallel);
+        if idx >= count {
+            fail!(
+                "shard::Topology::group",
+                "{} 组下标 {idx} 超出 0..{count}",
+                parallel.as_str()
+            );
+        }
+        let ranks = (0..self.degree(parallel))
+            .map(|step| {
+                let [tp, pp, dp] = self.place(parallel, idx, step);
+                self.rank(tp, pp, dp)
+            })
+            .collect::<Result<Vec<u32>>>()?;
+        Group::new(ranks)
     }
 
     /// `tp · pp`：数据维之外的世界大小（也是 `Data` 组内的 rank 步长）。
@@ -155,29 +173,6 @@ impl Topology {
             Parallel::Pipeline => self.pp,
             Parallel::Data => self.dp,
         }
-    }
-
-    /// 某一维的组数：`world / 组大小`。
-    fn groups(&self, parallel: Parallel) -> usize {
-        self.world / self.degree(parallel)
-    }
-
-    /// 某一维第 `idx` 组的 rank 列表（组内升序，已转成 `u32`）。
-    fn ranks(&self, parallel: Parallel, idx: usize) -> Result<Vec<u32>> {
-        let count = self.groups(parallel);
-        if idx >= count {
-            fail!(
-                "shard::Topology::group",
-                "{} 组下标 {idx} 超出 0..{count}",
-                parallel.as_str()
-            );
-        }
-        (0..self.degree(parallel))
-            .map(|step| {
-                let [tp, pp, dp] = self.place(parallel, idx, step);
-                self.rank(tp, pp, dp)
-            })
-            .collect()
     }
 
     /// 组的第 `step` 个成员在三个维上的下标：`idx` 是组号，`step` 是组内下标。

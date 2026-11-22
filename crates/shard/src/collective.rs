@@ -67,38 +67,46 @@ pub enum Reduce {
     Prod,
 }
 
+/// 一种归约的全部事实：短名、单位元、二元运算。
+type Row = (&'static str, f32, fn(f32, f32) -> f32);
+
 impl Reduce {
     /// 全部种类，供日志与测试遍历。
     pub const ALL: [Self; 4] = [Self::Sum, Self::Max, Self::Min, Self::Prod];
 
+    /// 一种归约的三个事实放在同一行：短名、单位元、二元运算。
+    ///
+    /// 三件事必须同时成立，所以写在一张表里。旧形态是三个各自四臂的 `match`：加一种归约要
+    /// 改三处，而"忘了 `Prod` 的单位元是 `1.0`"只会在某些输入上悄悄算错。行序必须与判别式
+    /// 一致（下面三个方法都走 `TABLE[self as usize]`），这条由 `tests` 里的
+    /// `the_kind_table_follows_the_enum_order` 钉住。
+    ///
+    /// 极值的单位元是 `NEG_INFINITY` / `INFINITY` 而不是 `MIN` / `MAX`：后者会让"取最大"在
+    /// 全是负值的梯度上返回 `MIN`。极值本身走 [`nan_preserving`] 而不是 `f32::max`。
+    const TABLE: [Row; 4] = [
+        ("sum", 0.0, |left, right| left + right),
+        ("max", f32::NEG_INFINITY, |left, right| {
+            nan_preserving(left, right, f32::max)
+        }),
+        ("min", f32::INFINITY, |left, right| {
+            nan_preserving(left, right, f32::min)
+        }),
+        ("prod", 1.0, |left, right| left * right),
+    ];
+
     /// 稳定的短名。
     pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Sum => "sum",
-            Self::Max => "max",
-            Self::Min => "min",
-            Self::Prod => "prod",
-        }
+        Self::TABLE[self as usize].0
     }
 
     /// 单位元：与任何值 `apply` 之后都不改变它。
     pub fn identity(self) -> f32 {
-        match self {
-            Self::Sum => 0.0,
-            Self::Max => f32::NEG_INFINITY,
-            Self::Min => f32::INFINITY,
-            Self::Prod => 1.0,
-        }
+        Self::TABLE[self as usize].1
     }
 
     /// 二元运算：满足结合律，且对 [`Reduce::identity`] 中立。
     pub fn apply(self, left: f32, right: f32) -> f32 {
-        match self {
-            Self::Sum => left + right,
-            Self::Prod => left * right,
-            Self::Max => nan_preserving(left, right, f32::max),
-            Self::Min => nan_preserving(left, right, f32::min),
-        }
+        (Self::TABLE[self as usize].2)(left, right)
     }
 
     /// 把一个非空切片折成一个值；空切片返回 `None`。
@@ -125,13 +133,6 @@ fn nan_preserving(left: f32, right: f32, pick: fn(f32, f32) -> f32) -> f32 {
 /// 远端集合通信占位后端：与 [`Local`] 同一 [`Collective`] 端口，未挂载真实通信栈。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Remote;
-
-impl Remote {
-    /// 构造占位远端后端；不绑定任何进程组、通信句柄或拓扑。
-    pub fn new() -> Self {
-        Self
-    }
-}
 
 impl Collective for Remote {
     fn all_reduce(&mut self, _group: &Group, _reduce: Reduce, _buf: &mut [f32]) -> Result<()> {
@@ -168,25 +169,13 @@ impl Local {
         })
     }
 
-    /// 每个 rank 的元素个数。
-    pub fn width(&self) -> usize {
-        self.width
-    }
-
-    /// 写入某个 rank 的输入；长度必须与 [`Local::width`] 一致。
+    /// 写入某个 rank 的输入；长度必须等于构造时给的归约宽度。
     ///
     /// # Errors
     ///
     /// 长度不符，或 `rank` 不在本拓扑内。
     pub fn load(&mut self, rank: u32, values: &[f32]) -> Result<()> {
-        if values.len() != self.width {
-            fail!(
-                "shard::Local::load",
-                "rank {rank} 的输入宽度 {} 与归约宽度 {} 不一致",
-                values.len(),
-                self.width
-            );
-        }
+        self.check_width("shard::Local::load", values.len())?;
         self.replica_mut("shard::Local::load", rank)?
             .copy_from_slice(values);
         Ok(())
@@ -230,6 +219,20 @@ impl Local {
         Ok(&mut self.replicas[idx])
     }
 
+    /// 缓冲必须正好是归约宽度：短了读不全，长了富余元素无人归约。
+    ///
+    /// `site` 与 [`Self::slot`] 同理——两个入口共用一条判据，诊断要指回真正拒绝的那个。
+    fn check_width(&self, site: &'static str, len: usize) -> Result<()> {
+        if len == self.width {
+            return Ok(());
+        }
+        Err(crate::refuse(
+            Code::Invalid,
+            site,
+            format_args!("宽度 {len} 与归约宽度 {} 不一致", self.width),
+        ))
+    }
+
     /// rank 必须落在本拓扑内：越界写在别的 rank 上会静默改掉无关的镜像。
     ///
     /// `site` 由调用方给：同一条越界判据有四个入口，诊断必须指回真正拒绝的那一个。
@@ -248,14 +251,7 @@ impl Local {
 
 impl Collective for Local {
     fn all_reduce(&mut self, group: &Group, reduce: Reduce, buf: &mut [f32]) -> Result<()> {
-        if buf.len() != self.width {
-            fail!(
-                "shard::Local::all_reduce",
-                "缓冲宽度 {} 与归约宽度 {} 不一致",
-                buf.len(),
-                self.width
-            );
-        }
+        self.check_width("shard::Local::all_reduce", buf.len())?;
         let reduced = self.reduce(group, reduce)?;
         buf.copy_from_slice(&reduced);
         self.distribute(group, &reduced)

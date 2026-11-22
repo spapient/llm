@@ -19,30 +19,29 @@
 //!
 //! # 例子
 //!
+//! 一个 rank 的两件事在这里一起走完：我在三维世界的哪里（[`Topology`]）、我手里是哪一块权重
+//! （[`Tiling`]）、以及归约一次的数值语义（[`Local`]）。归约在进程内就能验证，不需要真起进程。
+//!
 //! ```
-//! use llm_shard::{Parallel, Topology};
+//! use llm_shard::{Collective, Local, Parallel, Reduce, Sharding, Tiling, Topology};
 //!
 //! let topology = Topology::new(2, 2, 2).expect("合法");
 //! assert_eq!(topology.world(), 8);
+//! assert_eq!(topology.rank(1, 1, 1).expect("rank"), 7);
 //! let tensor = topology.group(Parallel::Tensor, 0).expect("第一个张量并行组");
 //! assert_eq!(tensor.ranks(), [0, 1]);
-//! let data = topology.group(Parallel::Data, 0).expect("第一个数据并行组");
-//! assert_eq!(data.ranks(), [0, 4]);
-//! assert_eq!(topology.rank(1, 1, 1).expect("rank"), 7);
-//! ```
 //!
-//! 归约的数值语义可以用进程内实现直接验证，不需要真的起进程：
+//! // 同一层的权重 `[8, 6]` 按列切给这两个 rank：各得 `[4, 6]`，拼回去正好是原样。
+//! let tiling = Tiling::new(Sharding::Column, 2, 8, 6).expect("8 能被 2 整除");
+//! assert_eq!(tiling.weight_shape(1).expect("第 1 份"), [4, 6]);
+//! assert_eq!(tiling.sharding().merge(), None, "按列切不需要通信");
 //!
-//! ```
-//! use llm_shard::{Collective, Local, Parallel, Reduce, Topology};
-//!
-//! let topology = Topology::new(2, 1, 1).expect("合法");
+//! // 两个 rank 各持一份部分和，归约后两边都拿到完整结果。
 //! let mut local = Local::new(topology, 2).expect("宽度非零");
 //! local.load(0, &[1.0, 2.0]).expect("rank 0");
 //! local.load(1, &[3.0, 4.0]).expect("rank 1");
-//! let group = topology.group(Parallel::Tensor, 0).expect("唯一一组");
 //! let mut buf = [0.0; 2];
-//! local.all_reduce(&group, Reduce::Sum, &mut buf).expect("归约");
+//! local.all_reduce(&tensor, Reduce::Sum, &mut buf).expect("归约");
 //! assert_eq!(buf, [4.0, 6.0]);
 //! assert_eq!(local.replica(1).expect("rank 1"), [4.0, 6.0]);
 //! ```
@@ -90,7 +89,3 @@ mod topology;
 pub use collective::{Collective, Group, Local, Reduce, Remote};
 pub use tiling::{Sharding, Tiling};
 pub use topology::{Parallel, Topology};
-
-#[cfg(test)]
-#[path = "../tests/prop_tiling.rs"]
-mod prop_tiling;
