@@ -168,10 +168,10 @@ impl Topology {
         }
         let stride = self.strides()[own];
         let head = self.head(own, idx);
-        let ranks: Vec<u32> = (0..degree)
-            .map(|step| u32::try_from(head + step * stride))
-            .collect::<Result<_, _>>()
-            .map_err(|_| invalid!("shard::Topology::group", "组内 rank 超出 u32"))?;
+        let ranks = (0..degree)
+            .map(|step| u32::try_from(head + step * stride).ok())
+            .collect::<Option<Vec<u32>>>()
+            .ok_or_else(|| invalid!("shard::Topology::group", "组内 rank 超出 u32"))?;
         Group::new(ranks)
     }
 
