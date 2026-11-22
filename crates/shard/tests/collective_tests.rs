@@ -375,7 +375,7 @@ fn file_remote_all_gathers_and_broadcasts() {
     let _ = std::fs::remove_file(&backing);
 }
 
-/// 占位 [`Remote`] 对新增的收集/广播同样走默认 `Unsupported`，不改动缓冲。
+/// 占位 [`Remote`] 对新增的收集/广播/归约散布同样走默认 `Unsupported`，不改动缓冲。
 #[test]
 fn the_placeholder_rejects_gather_and_broadcast() {
     let mut remote = Remote;
@@ -389,5 +389,52 @@ fn the_placeholder_rejects_gather_and_broadcast() {
         remote.broadcast(&group, 0, &mut buf).unwrap_err().code(),
         Code::Unsupported
     );
+    let mut full = [1.0f32, 2.0, 3.0, 4.0];
+    assert_eq!(
+        remote
+            .reduce_scatter(&group, Reduce::Sum, &mut full)
+            .unwrap_err()
+            .code(),
+        Code::Unsupported
+    );
     assert_eq!(buf, [1.0, 2.0], "拒绝时不得改动缓冲");
+}
+
+/// 归约散布：每个 rank 的分片按组内顺序用 `reduce` 折进对应分块；分块不相交时退化为收集。
+#[test]
+fn reduce_scatter_folds_each_shard_into_its_chunk() {
+    let topology = Topology::new(2, 1, 1).expect("tp 2");
+    let mut local = Local::new(topology, 2).expect("宽度非零");
+    local.load(0, &[1.0, 2.0]).expect("rank 0");
+    local.load(1, &[3.0, 4.0]).expect("rank 1");
+    let group = topology.group(Parallel::Tensor, 0).expect("唯一一组");
+    let mut buf = [0.0; 4];
+    local
+        .reduce_scatter(&group, Reduce::Sum, &mut buf)
+        .expect("归约散布");
+    assert_eq!(buf, [1.0, 2.0, 3.0, 4.0], "每个分片折进自己的分块");
+    let mut short = [0.0; 3];
+    assert_eq!(
+        local
+            .reduce_scatter(&group, Reduce::Sum, &mut short)
+            .unwrap_err()
+            .code(),
+        Code::Invalid
+    );
+}
+
+/// 文件后端的归约散布与 [`Local`] 同构：槽位是跨进程共享的，折进顺序由组决定。
+#[test]
+fn file_remote_reduce_scatters() {
+    let backing =
+        std::env::temp_dir().join(format!("shard-collective-rs-{}", std::process::id()));
+    let mut r0 = FileRemote::open(0, 2, 2, &backing).expect("rank 0");
+    let r1 = FileRemote::open(1, 2, 2, &backing).expect("rank 1");
+    r0.load(0, &[5.0, 6.0]).expect("rank 0");
+    r1.load(1, &[7.0, 8.0]).expect("rank 1");
+    let group = Group::new([0, 1]).expect("双进程组");
+    let mut buf = [0.0; 4];
+    r0.reduce_scatter(&group, Reduce::Sum, &mut buf).expect("归约散布");
+    assert_eq!(buf, [5.0, 6.0, 7.0, 8.0]);
+    let _ = std::fs::remove_file(&backing);
 }

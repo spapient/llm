@@ -48,6 +48,18 @@ pub trait Collective {
             "该集合通信后端没有 broadcast"
         );
     }
+
+    /// 归约散布：`buf` 长 `group.size() × width`，每个成员把它的 `width` 份按组内顺序用
+    /// `reduce` 折进对应分块，散布出的结果是组内各分块的归约拼接。分块互不相交时退化为
+    /// [`Self::all_gather`]；rank 贡献重叠（ZeRO 切分优化器态）时才是真正的归约。缺实现返回
+    /// `Unsupported`。
+    fn reduce_scatter(&mut self, _group: &Group, _reduce: Reduce, _buf: &mut [f32]) -> Result<()> {
+        fail!(
+            Unsupported,
+            "shard::Collective::reduce_scatter",
+            "该集合通信后端没有 reduce_scatter"
+        );
+    }
 }
 
 /// 参与一次通信的进程组。
@@ -254,8 +266,9 @@ impl FileRemote {
     pub fn reduce_into(&self, group: &Group, reduce: Reduce, out: &mut [f32]) -> Result<()> {
         self.check_width("shard::FileRemote::reduce_into", out.len())?;
         out.fill(reduce.identity());
+        let mut slot = vec![0.0f32; self.width];
         for rank in group.ranks() {
-            let slot = self.read(*rank)?;
+            self.read_into(*rank, &mut slot)?;
             for (acc, value) in out.iter_mut().zip(&slot) {
                 *acc = reduce.apply(*acc, *value);
             }
@@ -307,7 +320,7 @@ impl FileRemote {
         })
     }
 
-    fn read(&self, rank: u32) -> Result<Vec<f32>> {
+    fn read_into(&self, rank: u32, out: &mut [f32]) -> Result<()> {
         let mut file = File::open(&self.backing).map_err(|error| {
             Error::new(
                 Code::Io,
@@ -328,10 +341,16 @@ impl FileRemote {
                 format!("读 `{}` 失败：{error}", self.backing.display()),
             )
         })?;
-        Ok(bytes
-            .chunks_exact(4)
-            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-            .collect())
+        for (slot, chunk) in out.iter_mut().zip(bytes.chunks_exact(4)) {
+            *slot = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        }
+        Ok(())
+    }
+
+    fn read(&self, rank: u32) -> Result<Vec<f32>> {
+        let mut slot = vec![0.0f32; self.width];
+        self.read_into(rank, &mut slot)?;
+        Ok(slot)
     }
 
     fn write(&self, rank: u32, values: &[f32]) -> Result<()> {
@@ -378,7 +397,7 @@ impl Collective for FileRemote {
             );
         }
         for (idx, rank) in group.ranks().iter().enumerate() {
-            buf[idx * width..(idx + 1) * width].copy_from_slice(&self.read(*rank)?);
+            self.read_into(*rank, &mut buf[idx * width..(idx + 1) * width])?;
         }
         Ok(())
     }
@@ -389,6 +408,27 @@ impl Collective for FileRemote {
             return refuse_at!("shard::FileRemote::broadcast", "源 rank {src} 不在组内");
         }
         buf.copy_from_slice(&self.read(src)?);
+        Ok(())
+    }
+
+    fn reduce_scatter(&mut self, group: &Group, reduce: Reduce, buf: &mut [f32]) -> Result<()> {
+        let width = self.width;
+        if buf.len() != group.size() * width {
+            return refuse_at!(
+                "shard::FileRemote::reduce_scatter",
+                "缓冲长度 {} 与 reduce_scatter 期望的 {} 不一致",
+                buf.len(),
+                group.size() * width
+            );
+        }
+        buf.fill(reduce.identity());
+        let mut slot = vec![0.0f32; self.width];
+        for (idx, rank) in group.ranks().iter().enumerate() {
+            self.read_into(*rank, &mut slot)?;
+            for (out, value) in buf[idx * width..(idx + 1) * width].iter_mut().zip(&slot) {
+                *out = reduce.apply(*out, *value);
+            }
+        }
         Ok(())
     }
 }
@@ -534,6 +574,28 @@ impl Collective for Local {
             return refuse_at!("shard::Local::broadcast", "源 rank {src} 不在组内");
         }
         buf.copy_from_slice(self.replica(src)?);
+        Ok(())
+    }
+
+    fn reduce_scatter(&mut self, group: &Group, reduce: Reduce, buf: &mut [f32]) -> Result<()> {
+        let width = self.width;
+        if buf.len() != group.size() * width {
+            return refuse_at!(
+                "shard::Local::reduce_scatter",
+                "缓冲长度 {} 与 reduce_scatter 期望的 {} 不一致",
+                buf.len(),
+                group.size() * width
+            );
+        }
+        buf.fill(reduce.identity());
+        for (idx, rank) in group.ranks().iter().enumerate() {
+            for (out, value) in buf[idx * width..(idx + 1) * width]
+                .iter_mut()
+                .zip(self.replica(*rank)?)
+            {
+                *out = reduce.apply(*out, *value);
+            }
+        }
         Ok(())
     }
 }
