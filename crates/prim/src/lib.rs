@@ -49,10 +49,6 @@
 
 #![deny(unsafe_code)]
 
-mod builtin;
-mod fragment;
-mod layout;
-
 pub use builtin::{
     BUILTIN, Builtin, DEVICES, ROOTS, WITNESS, builtin, builtin_witness, device, devices, dir_of,
 };
