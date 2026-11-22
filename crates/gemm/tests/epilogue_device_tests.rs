@@ -260,7 +260,7 @@ fn cpu_quant_rounds_halfway_away_from_zero() {
         want[2] > 0.0,
         "构造前提被打破了：`0.125` 的量化商正好是半步，半数远离零应进位"
     );
-    let device = prim::device("cpu").expect("cpu 在设备表里");
+    let device = prof::device("cpu").expect("cpu 在设备表里");
     check_device(device, &edges, shape).expect("cpu 的量化取整口径");
 }
 
@@ -269,7 +269,7 @@ fn cpu_quant_rounds_halfway_away_from_zero() {
 #[test]
 fn every_device_runs_the_declared_epilogue() {
     let mut failures = Vec::new();
-    for device in prim::devices() {
+    for device in prof::devices() {
         for scenario in SCENARIOS {
             for shape in SHAPES {
                 if let Err(error) = check_device(device, scenario, *shape) {
@@ -287,7 +287,7 @@ fn every_device_runs_the_declared_epilogue() {
 
 #[test]
 fn a_wrong_expectation_is_rejected() {
-    let device = prim::device("cpu").expect("cpu 在设备表里");
+    let device = prof::device("cpu").expect("cpu 在设备表里");
     let shape = SHAPES[0];
     let text = source(device, &SCENARIOS[0], shape).expect("装配");
     let wrong = vec![0.0f32; shape.count()];

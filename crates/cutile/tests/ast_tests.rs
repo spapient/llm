@@ -8,7 +8,7 @@ fn ast_renders_byte_identical_text() {
     let catalogue = Catalogue::try_builtin().expect("内置数据");
     for profile in catalogue.profiles() {
         let fragments =
-            prim::builtin(profile.meta.vendor.as_str(), profile.meta.emit.ext()).expect("片段层");
+            prof::builtin(profile.meta.vendor.as_str(), profile.meta.emit.ext()).expect("片段层");
         for op in catalogue.ops() {
             for combo in crate::decl::expand(op).expect("tile 候选") {
                 let direct = substitute::render(op, &combo, &fragments)
@@ -31,7 +31,7 @@ fn encode_is_stable_and_field_sensitive() {
     let catalogue = Catalogue::try_builtin().expect("内置数据");
     let op = catalogue.op("gemv_i4").expect("算子");
     let combo = crate::decl::expand(op).expect("tile").remove(0);
-    let fragments = prim::builtin("cpu", "c").expect("片段");
+    let fragments = prof::builtin("cpu", "c").expect("片段");
     let nodes = build(op, &combo, &fragments).expect("AST");
 
     assert_eq!(encode(&nodes), encode(&nodes), "同一序列编码稳定");
@@ -73,7 +73,7 @@ fn fuzzed_fragments_keep_the_two_paths_identical() {
     let catalogue = Catalogue::try_builtin().expect("内置数据");
     let op = catalogue.op("gemv_i4").expect("算子");
     let combos = crate::decl::expand(op).expect("tile 候选");
-    let base = prim::builtin("cpu", "c").expect("真实片段");
+    let base = prof::builtin("cpu", "c").expect("真实片段");
 
     let mut state = 0x1234_5678_9abc_def0u64;
     for _ in 0..300 {
@@ -83,7 +83,7 @@ fn fuzzed_fragments_keep_the_two_paths_identical() {
                 continue;
             };
             let body = perturb(fragment.body(), &mut state);
-            let source = format!("/* {} {prim}/z */\n{body}", prim::SIGN_MARKER);
+            let source = format!("/* {} {prim}/z */\n{body}", prof::SIGN_MARKER);
             set.insert(prim, source).expect("合法签名片段");
         }
         for combo in &combos {

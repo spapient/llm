@@ -14,7 +14,7 @@
 //! assert_eq!(dirs.data(), None);
 //! ```
 
-use prim::Layout;
+use prof::Layout;
 use std::path::{Path, PathBuf};
 
 /// 一次调用要用的三个目录。

@@ -10,7 +10,7 @@ use cutile::{decl, emit, substitute};
 fn units_of(
     catalogue: &Catalogue,
     profile: &Profile,
-    fragments: &prim::FragmentSet,
+    fragments: &prof::FragmentSet,
 ) -> Vec<(String, String)> {
     let mut units = Vec::new();
     for op in catalogue.ops() {
@@ -56,7 +56,7 @@ fn every_fragment_composes_into_a_translation_unit_its_language_accepts() {
         }
         let arguments = spec.args_for(profile);
         let fragments =
-            prim::builtin(profile.meta.vendor.as_str(), profile.meta.emit.ext()).expect("片段层");
+            prof::builtin(profile.meta.vendor.as_str(), profile.meta.emit.ext()).expect("片段层");
         for (name, text) in units_of(&catalogue, profile, &fragments) {
             let path = dir.join(format!(
                 "{}-{name}.{}",
@@ -98,7 +98,7 @@ fn a_fragment_body_the_language_rejects_is_a_defect() {
     }
     let arguments = spec.args_for(profile);
     let honest =
-        prim::builtin(profile.meta.vendor.as_str(), profile.meta.emit.ext()).expect("片段层");
+        prof::builtin(profile.meta.vendor.as_str(), profile.meta.emit.ext()).expect("片段层");
     // `gemv_f32` 用到 `bar`：改坏它，拼进去的翻译单元就该被拒。
     let op = catalogue
         .ops()
@@ -113,7 +113,7 @@ fn a_fragment_body_the_language_rejects_is_a_defect() {
     let variant = op.variants.first().expect("降级链至少一档");
     let dir = std::env::temp_dir().join(format!("cutile-fragments-broken-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("临时目录");
-    let parse = |fragments: &prim::FragmentSet, tag: &str| {
+    let parse = |fragments: &prof::FragmentSet, tag: &str| {
         let body = substitute::render(op, &combo, fragments).expect("片段拼得进去");
         let source = emit::assemble(profile, op, variant, &combo, &body);
         let path = dir.join(format!("{tag}.cl"));
@@ -121,16 +121,16 @@ fn a_fragment_body_the_language_rejects_is_a_defect() {
         parse_one(spec, &arguments, &path)
     };
     parse(&honest, "honest").expect("原样的片段必须过门");
-    let broken = corrupted(&honest, prim::Prim::Dot);
+    let broken = corrupted(&honest, prof::Prim::Dot);
     let rejected = parse(&broken, "broken").expect_err("改坏的正文必须被语言拒绝");
     let _ = std::fs::remove_dir_all(&dir);
     assert!(rejected.to_string().contains("broken.cl"), "{rejected}");
 }
 
 /// 复制一份片段层，把 `target` 的正文换成语言收不下的文本（声明行不动，拼进去的仍是一段片段）。
-fn corrupted(base: &prim::FragmentSet, target: prim::Prim) -> prim::FragmentSet {
-    let mut set = prim::FragmentSet::new(base.vendor(), base.ext());
-    for prim in prim::Prim::ALL {
+fn corrupted(base: &prof::FragmentSet, target: prof::Prim) -> prof::FragmentSet {
+    let mut set = prof::FragmentSet::new(base.vendor(), base.ext());
+    for prim in prof::Prim::ALL {
         for fragment in base.fragments_of(*prim) {
             let source = fragment.source();
             let text = if *prim == target {

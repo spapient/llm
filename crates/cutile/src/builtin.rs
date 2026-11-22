@@ -131,7 +131,7 @@ impl Catalogue {
     }
 
     /// 全量校验：重复标识、同一原语的同名实现、见证文件存在性。
-    pub fn validate(&self, layout: &prim::Layout<'_>) -> Result<(), Vec<Error>> {
+    pub fn validate(&self, layout: &prof::Layout<'_>) -> Result<(), Vec<Error>> {
         let mut errors = self.duplicates();
         errors.extend(self.profile_errors(layout));
         errors.extend(self.fragment_errors(layout));
@@ -162,7 +162,7 @@ impl Catalogue {
     }
 
     /// 档案自身的问题：类别由档案层给（`ProfileError::code`），这里只补"哪份档案"。
-    fn profile_errors(&self, layout: &prim::Layout<'_>) -> Vec<Error> {
+    fn profile_errors(&self, layout: &prof::Layout<'_>) -> Vec<Error> {
         let mut errors = Vec::new();
         for profile in self.profiles.iter() {
             let witnesses = layout as &dyn prof::prof::WitnessLookup;
@@ -177,7 +177,7 @@ impl Catalogue {
 
     /// `provides ↔ 片段文本`：协商会挑中的那条实现，片段必须真的写了。否则一份"协商可行"的档案配一段
     /// 写错签名的文本能通过全部校验，直到构建期才炸。判定与 `cap::negotiate` 同源。
-    fn fragment_errors(&self, layout: &prim::Layout<'_>) -> Vec<Error> {
+    fn fragment_errors(&self, layout: &prof::Layout<'_>) -> Vec<Error> {
         let mut errors = Vec::new();
         for profile in self.profiles.iter() {
             let ext = profile.meta.emit.ext();
@@ -202,7 +202,7 @@ fn same_profile(profile: &Profile, other: &Profile) -> bool {
 }
 
 /// 一条声明在一份档案上的片段缺口，附上定位用的"档案/算子"帧。
-fn gaps_of(op: &OpDecl, profile: &Profile, set: &prim::FragmentSet) -> Vec<Error> {
+fn gaps_of(op: &OpDecl, profile: &Profile, set: &prof::FragmentSet) -> Vec<Error> {
     let site = format!("`{}`/`{}`", profile.meta.vendor, op.name);
     cap::fragment_gaps(op, profile, |prim| set.implementation(prim))
         .into_iter()

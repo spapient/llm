@@ -22,7 +22,7 @@ fn cached_catalogue_is_identical_across_calls() {
 fn builtin_witness_files_exist() {
     let catalogue = Catalogue::try_builtin().expect("内置数据");
     catalogue
-        .validate(&prim::Layout::builtin())
+        .validate(&prof::Layout::builtin())
         .expect("见证文件必须存在");
 }
 
@@ -85,7 +85,7 @@ fn every_device_fragment_set_splices_the_p0_template() {
     for profile in catalogue.profiles() {
         let vendor = profile.meta.vendor.as_str();
         let ext = profile.meta.emit.ext();
-        let fragments = prim::builtin(vendor, ext)
+        let fragments = prof::builtin(vendor, ext)
             .unwrap_or_else(|| panic!("`{vendor}` 的片段层没有按 `. {ext}` 登记"));
         for combo in &combos {
             if let Err(error) = substitute::render(op, combo, &fragments) {
@@ -101,7 +101,7 @@ fn every_fragment_declares_the_implementation_negotiation_picks() {
     let catalogue = Catalogue::try_builtin().expect("内置数据");
     for profile in catalogue.profiles() {
         let vendor = profile.meta.vendor.as_str();
-        let set = prim::builtin(vendor, profile.meta.emit.ext())
+        let set = prof::builtin(vendor, profile.meta.emit.ext())
             .unwrap_or_else(|| panic!("`{vendor}` 的片段层没有登记"));
         for op in catalogue.ops() {
             let gaps = cap::fragment_gaps(op, profile, |prim| set.implementation(prim));
@@ -114,9 +114,9 @@ fn every_fragment_declares_the_implementation_negotiation_picks() {
 #[test]
 fn a_fragment_declaring_another_implementation_fails_the_load() {
     let root = std::env::temp_dir().join(format!("cutile-sign-{}", std::process::id()));
-    let prim_root = prim::layer_root(&root);
-    for device in prim::devices() {
-        let dir = prim::dir_of(device.vendor).expect("每台设备都有源码根");
+    let prim_root = prof::layer_root(&root);
+    for device in prof::devices() {
+        let dir = prof::dir_of(device.vendor).expect("每台设备都有源码根");
         copy_dir(Path::new(dir), &prim_root.join(device.vendor));
     }
     // `nvidia` 的 `dot` 协商会挑中 `fma`；把文本改成声明 `dp4a`（另一条签名，属 P3）。
@@ -127,7 +127,7 @@ fn a_fragment_declaring_another_implementation_fails_the_load() {
 
     let catalogue = Catalogue::try_builtin().expect("内置数据");
     let errors = catalogue
-        .validate(&prim::Layout::at(&root))
+        .validate(&prof::Layout::at(&root))
         .expect_err("片段声明另一条签名必须报错");
     let rendered: Vec<String> = errors.iter().map(ToString::to_string).collect();
     let rendered = rendered.join("\n");
@@ -171,7 +171,7 @@ fn validation_keeps_the_category_of_the_failing_layer() {
     std::fs::create_dir_all(&root).expect("建临时目录");
     let errors = Catalogue::try_builtin()
         .expect("内置数据")
-        .validate(&prim::Layout::at(&root))
+        .validate(&prof::Layout::at(&root))
         .unwrap_err();
     assert!(!errors.is_empty(), "空片段层根必须报错");
     assert!(
@@ -194,7 +194,7 @@ fn duplicate_profiles_are_rejected() {
     let mut catalogue = Catalogue::try_builtin().expect("内置数据");
     let clone = catalogue.profiles[0].clone();
     Arc::make_mut(&mut catalogue.profiles).push(clone);
-    let errors = catalogue.validate(&prim::Layout::builtin()).unwrap_err();
+    let errors = catalogue.validate(&prof::Layout::builtin()).unwrap_err();
     assert!(
         errors
             .iter()

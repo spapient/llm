@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 pub use ::op::tpl::{Arg, Segment, error, lex};
 
 // 片段层的事实源在 `prim` crate（`<vendor>/<prim>.<ext>`）：本模块只做拼接，不持有片段。
-pub use prim::FragmentSet;
+pub use prof::FragmentSet;
 
 /// 片段层缺少 `prim` 时的统一错误：ast 展开与本模块拼接都走这条，免得两处各写一遍格式串。
 pub(crate) fn missing_fragment(

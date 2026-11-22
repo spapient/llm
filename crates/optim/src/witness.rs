@@ -176,7 +176,7 @@ pub(crate) fn source(witness: &Witness, dirs: &Dirs) -> diagnostic::Result<Strin
         .unwrap_or("");
     let vendor = witness.file.split('/').next().unwrap_or("");
     if dirs.data().is_none()
-        && let Some(text) = prim::builtin_witness(vendor, ext)
+        && let Some(text) = prof::builtin_witness(vendor, ext)
     {
         return Ok(text.to_string());
     }

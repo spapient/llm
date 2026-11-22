@@ -10,7 +10,7 @@ use weights::Loader as _;
 
 /// 每台设备的设备侧代码这次构建带了什么：只有源码，还是连镜像一起带上了。
 fn device_images() -> String {
-    let parts: Vec<String> = prim::devices()
+    let parts: Vec<String> = prof::devices()
         .iter()
         .map(|device| match &device.image {
             Some(image) => format!(
@@ -57,8 +57,8 @@ fn prof_row() -> String {
 fn prim_row() -> String {
     format!(
         "{} 台设备（{}）；设备侧代码：{}",
-        prim::devices().len(),
-        diagnostic::render::join_names(prim::devices().iter().map(|device| device.vendor)),
+        prof::devices().len(),
+        diagnostic::render::join_names(prof::devices().iter().map(|device| device.vendor)),
         device_images()
     )
 }

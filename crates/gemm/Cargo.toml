@@ -26,8 +26,7 @@ prof = { path = "../prof", package = "llm-prof" }
 workspace = true
 
 [dev-dependencies]
-# 设备侧写回尾块要真的装配并执行：装配器在 `cutile`，设备表在 `prim`，参考口径在本 crate。
+# 设备侧写回尾块要真的装配并执行：装配器在 `cutile`，设备表在 `prof`，参考口径在本 crate。
 cutile = { path = "../cutile" }
-prim = { path = "../prim", package = "llm-prim" }
 proptest = { workspace = true }
 testkit = { path = "../testkit", package = "llm-testkit" }

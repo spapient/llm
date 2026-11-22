@@ -13,14 +13,13 @@ autotests = false
 
 [dependencies]
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
-prim = { path = "../prim", package = "llm-prim" }
 op = { path = "../op", package = "llm-op" }
 prof = { path = "../prof", package = "llm-prof" }
 cutile = { path = "../cutile" }
 
 [features]
-# 见证要按设备读片段层内置的源文本，因此镜像开关除了透传给 `cutile` 还要透传给 `prim`。
-device-image = ["prim/device-image", "cutile/device-image"]
+# 见证要按设备读片段层内置的源文本，因此镜像开关除了透传给 `cutile` 还要透传给 `prof`。
+device-image = ["prof/device-image", "cutile/device-image"]
 
 [dev-dependencies]
 testkit = { path = "../testkit", package = "llm-testkit" }

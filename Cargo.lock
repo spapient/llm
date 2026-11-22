@@ -332,7 +332,6 @@ dependencies = [
  "llm-annotation",
  "llm-diagnostic",
  "llm-op",
- "llm-prim",
  "llm-prof",
  "llm-spec",
  "llm-testkit",
@@ -575,7 +574,6 @@ dependencies = [
  "llm-nn",
  "llm-op",
  "llm-optim",
- "llm-prim",
  "llm-prof",
  "llm-serve",
  "llm-snapshot",
@@ -653,14 +651,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "llm-frag"
-version = "0.1.0"
-dependencies = [
- "llm-prof",
- "llm-testkit",
-]
-
-[[package]]
 name = "llm-fuzz"
 version = "0.1.0"
 dependencies = [
@@ -684,7 +674,6 @@ dependencies = [
  "half",
  "llm-annotation",
  "llm-diagnostic",
- "llm-prim",
  "llm-prof",
  "llm-spec",
  "llm-testkit",
@@ -726,18 +715,8 @@ dependencies = [
  "cutile",
  "llm-diagnostic",
  "llm-op",
- "llm-prim",
  "llm-prof",
  "llm-testkit",
-]
-
-[[package]]
-name = "llm-prim"
-version = "0.1.0"
-dependencies = [
- "llm-diagnostic",
- "llm-frag",
- "llm-prof",
 ]
 
 [[package]]
@@ -746,6 +725,7 @@ version = "0.1.0"
 dependencies = [
  "llm-diagnostic",
  "llm-dtype",
+ "toml",
 ]
 
 [[package]]

@@ -35,7 +35,7 @@ name = "audit"
 path = "tests/audit.rs"
 
 [features]
-# 发布模式：构建期把能编译的设备编成镜像并嵌入（见 `crates/prim/build.rs`）。
+# 发布模式：构建期把能编译的设备编成镜像并嵌入（见 `crates/prof/build.rs`）。
 device-image = ["cutile/device-image", "llm-optim/device-image"]
 
 [dependencies]
@@ -46,7 +46,6 @@ engine = { path = "../engine", package = "llm-engine" }
 device = { path = "../device", package = "llm-device" }
 nn = { path = "../nn", package = "llm-nn" }
 op = { path = "../op", package = "llm-op" }
-prim = { path = "../prim", package = "llm-prim" }
 prof = { path = "../prof", package = "llm-prof" }
 serve = { path = "../serve", package = "llm-serve" }
 tensor = { path = "../tensor", package = "llm-tensor" }

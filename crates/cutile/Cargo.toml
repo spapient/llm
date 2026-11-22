@@ -14,7 +14,6 @@ autotests = false
 [dependencies]
 annotation = { path = "../annotation", package = "llm-annotation" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
-prim = { path = "../prim", package = "llm-prim" }
 op = { path = "../op", package = "llm-op" }
 prof = { path = "../prof", package = "llm-prof" }
 # 写回尾块的装配要读闭集步骤（`bias; act:relu; store` 的解析结果），文法的事实源在 `spec`。
@@ -22,7 +21,7 @@ spec = { path = "../spec", package = "llm-spec" }
 
 [features]
 # 把设备镜像的开关透传下去：`cutile` 是消费片段层的机制层，发布时它才是用镜像的那一段。
-device-image = ["prim/device-image"]
+device-image = ["prof/device-image"]
 
 [dev-dependencies]
 testkit = { path = "../testkit", package = "llm-testkit" }
