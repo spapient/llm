@@ -1,9 +1,9 @@
 //! 职责：名字集合字段解析：标量或数组逐项解析。
-use super::super::*;
+use crate::prof::*;
 
 /// 一个"名字集合"字段：标量字符串或字符串数组，逐项交给 `each`。
 /// `dt` 与 `space` 是同一形状，且都只把名字解析成位集——这里不克隆 `String`。
-pub(super) fn each_name(
+pub(crate) fn each_name(
     field: impl fmt::Display,
     value: &Value,
     mut each: impl FnMut(&str) -> Result<(), ProfileError>,
@@ -29,7 +29,7 @@ fn each_in_array(
     Ok(())
 }
 /// 一组存储层名字：每个都必须在 [`Space`] 闭集里。
-pub(super) fn parse_space_set(
+pub(crate) fn parse_space_set(
     field: impl fmt::Display,
     items: &[&str],
 ) -> Result<SpaceSet, ProfileError> {
@@ -40,7 +40,7 @@ pub(super) fn parse_space_set(
     Ok(set)
 }
 /// 一条 `[[provides]]`：认得的键各有分支，其余一律当属性（键还要过 [`AttrKey`] 闭集）。
-pub(super) fn parse_provide(entry: &Table, idx: usize) -> Result<Provide, ProfileError> {
+pub(crate) fn parse_provide(entry: &Table, idx: usize) -> Result<Provide, ProfileError> {
     let mut provide = head_of(entry, idx)?;
     provide_axes(&mut provide, entry, idx)?;
     provide_types(&mut provide, entry, idx)?;
@@ -73,7 +73,7 @@ fn provide_tail(provide: &mut Provide, entry: &Table, idx: usize) -> Result<(), 
     attrs(entry, idx, provide)
 }
 /// 一组同义维度：没写就是不限，多写就是错，写了就要能解析。
-pub(super) fn span_of(
+pub(crate) fn span_of(
     entry: &Table,
     idx: usize,
     names: &[&str],
@@ -97,7 +97,7 @@ pub(super) fn span_of(
     parse_span(field, text)
 }
 /// `dt`：标量或数组都接受，闭集外取值报 `Unknown`。
-pub(super) fn dtype_set(entry: &Table, idx: usize) -> Result<DTypeSet, ProfileError> {
+pub(crate) fn dtype_set(entry: &Table, idx: usize) -> Result<DTypeSet, ProfileError> {
     let Some(value) = entry.get("dt") else {
         return Ok(DTypeSet::empty());
     };
@@ -110,11 +110,11 @@ pub(super) fn dtype_set(entry: &Table, idx: usize) -> Result<DTypeSet, ProfileEr
     Ok(set)
 }
 /// 一个数据类型名：`DType` 是 L1 外部类型，按它的规范名解析。
-pub(super) fn closed_dtype(path: impl fmt::Display, name: &str) -> Result<DType, ProfileError> {
+pub(crate) fn closed_dtype(path: impl fmt::Display, name: &str) -> Result<DType, ProfileError> {
     DType::parse_name(name).ok_or_else(|| unknown(path, name, &dtype_names()))
 }
 /// `space`：标量或数组都接受，缺省是空集（无存储层约束）。
-pub(super) fn space_set(entry: &Table, idx: usize) -> Result<SpaceSet, ProfileError> {
+pub(crate) fn space_set(entry: &Table, idx: usize) -> Result<SpaceSet, ProfileError> {
     let Some(value) = entry.get("space") else {
         return Ok(SpaceSet::empty());
     };
@@ -127,12 +127,12 @@ pub(super) fn space_set(entry: &Table, idx: usize) -> Result<SpaceSet, ProfileEr
     Ok(set)
 }
 /// `grade`：必填，闭集外取值报 `Unknown`。
-pub(super) fn grade_of(entry: &Table, idx: usize) -> Result<Grade, ProfileError> {
+pub(crate) fn grade_of(entry: &Table, idx: usize) -> Result<Grade, ProfileError> {
     let path = at(idx, "grade");
     closed::<Grade>(text(entry, "grade", path)?, &path)
 }
 /// `witness`：内联表 `{ file, func, expect }`；只有路径的见证无法执行。
-pub(super) fn witness_of(entry: &Table, idx: usize) -> Result<Option<Witness>, ProfileError> {
+pub(crate) fn witness_of(entry: &Table, idx: usize) -> Result<Option<Witness>, ProfileError> {
     let Some(table) = entry.table("witness") else {
         if entry.contains("witness") {
             return Err(bad(at(idx, "witness"), WITNESS_DETAIL));
@@ -143,7 +143,7 @@ pub(super) fn witness_of(entry: &Table, idx: usize) -> Result<Option<Witness>, P
 }
 /// 见证的三个字段：`file` / `func` 必填，`expect` 是数值数组。字段路径由调用方给，
 /// 报错位置因此落在声明它的那一段里。
-pub(super) fn witness_fields(
+pub(crate) fn witness_fields(
     table: &Table,
     at: impl Fn(&'static str) -> Field<'static>,
 ) -> Result<Witness, ProfileError> {
@@ -153,12 +153,12 @@ pub(super) fn witness_fields(
     Ok(Witness { file, func, expect })
 }
 /// `expect`：数值数组，按顺序与见证输出对拍。
-pub(super) fn expect_values(table: &Table, path: Field<'_>) -> Result<Vec<f32>, ProfileError> {
+pub(crate) fn expect_values(table: &Table, path: Field<'_>) -> Result<Vec<f32>, ProfileError> {
     let items = table.array("expect").ok_or_else(|| missing(path))?;
     let number = |value: &Value| expect_number(value, path);
     items.iter().map(number).collect()
 }
-pub(super) fn expect_number(value: &Value, path: impl fmt::Display) -> Result<f32, ProfileError> {
+pub(crate) fn expect_number(value: &Value, path: impl fmt::Display) -> Result<f32, ProfileError> {
     match value {
         Value::Float(number) => Ok(*number as f32),
         Value::Int(number) => Ok(*number as f32),
@@ -166,7 +166,7 @@ pub(super) fn expect_number(value: &Value, path: impl fmt::Display) -> Result<f3
     }
 }
 /// 其余键一律视为枚举型属性；闭集外的键直接报错，避免"写了但没人看"。
-pub(super) fn attrs(entry: &Table, idx: usize, provide: &mut Provide) -> Result<(), ProfileError> {
+pub(crate) fn attrs(entry: &Table, idx: usize, provide: &mut Provide) -> Result<(), ProfileError> {
     for (key, value) in entry.entries() {
         if !parsed_key(key) {
             provide.attrs.push(one_attr(idx, key, value)?);
@@ -175,17 +175,17 @@ pub(super) fn attrs(entry: &Table, idx: usize, provide: &mut Provide) -> Result<
     Ok(())
 }
 /// 已经有专属解析分支的键：再当属性处理就会重复计入（与诊断同一种 `a | b` 写法）。
-pub(super) fn parsed_key(key: &str) -> bool {
+pub(crate) fn parsed_key(key: &str) -> bool {
     let parsed = "prim|impl|m|bytes|extent|n|k|dt|space|grade|witness";
     parsed.split('|').any(|name| name == key)
 }
 /// 一条属性：键在 [`AttrKey`] 闭集里，取值按标量或数组展开。
-pub(super) fn one_attr(idx: usize, key: &str, value: &Value) -> Result<Attr, ProfileError> {
+pub(crate) fn one_attr(idx: usize, key: &str, value: &Value) -> Result<Attr, ProfileError> {
     let attr_key = closed::<AttrKey>(key, &at(idx, key))?;
     Ok(Attr::new(attr_key, attr_values(idx, key, value)?))
 }
 /// 属性取值：标量或数组；表在这里没有意义。
-pub(super) fn attr_values(
+pub(crate) fn attr_values(
     idx: usize,
     key: &str,
     value: &Value,
@@ -198,19 +198,19 @@ pub(super) fn attr_values(
     }
 }
 /// 单个标量属性值：字符串原样，整数/浮点/布尔按字面写。
-pub(super) fn one_scalar(
+pub(crate) fn one_scalar(
     path: impl fmt::Display,
     value: &Value,
 ) -> Result<Vec<String>, ProfileError> {
     scalar_texts(value).ok_or_else(|| bad(path, "属性不能是表"))
 }
-pub(super) fn one_string(path: impl fmt::Display, item: &Value) -> Result<String, ProfileError> {
+pub(crate) fn one_string(path: impl fmt::Display, item: &Value) -> Result<String, ProfileError> {
     match item {
         Value::Str(text) => Ok(text.clone()),
         _ => Err(bad(path, "属性数组里只能是字符串")),
     }
 }
 /// 区间文本：解析失败时把原话带上，字段路径由调用方给全。
-pub(super) fn parse_span(field: impl fmt::Display, text: &str) -> Result<Span, ProfileError> {
+pub(crate) fn parse_span(field: impl fmt::Display, text: &str) -> Result<Span, ProfileError> {
     Span::parse(text).map_err(|error| bad(&field, error.message().to_string()))
 }

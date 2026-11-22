@@ -58,3 +58,7 @@ pub use generated::{embedded, names};
 #[cfg(test)]
 #[path = "../tests/embedded.rs"]
 mod tests;
+mod schema;
+mod eval;
+mod provide;
+mod witness;

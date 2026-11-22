@@ -1,12 +1,11 @@
 //! 设备行：每台设备这次构建带上的东西（档案元数据、见证源码，以及可选的设备侧二进制）。
 //!
-//! **拥有**：`Device`、`Image`、`Status`。**不拥有**：片段文本与见证的装载（`prim`）、
-//! 能力档案的解析（[`crate::prof`]）、编译配方与镜像产物（`crate::codegen`，`build` feature 之后）。
+//! **拥有**：`Device`、`Builtin`、`Image`、`Status`。**不拥有**：片段文本与见证的装载（`prim`）、
+//! 能力档案的解析（[`crate::prof`]）。
 //!
-//! 三者的归属由依赖方向定：每台设备的片段目录住在自己的 crate 里（`cuda` / `cpu` / `opencl` /
-//! `metal` / `musa` / `rocm`），那些 crate 的 `build.rs` 生成一行 `Device` 并交给 `prim` 合成；
-//! 它们不能反过来依赖 `prim`（`prim` 依赖它们），所以这行的类型必须比 `prim` 更低一层——它就是
-//! 设备数据，放在档案层。
+//! 三者的归属由依赖方向定：片段语料与档案都住在本 crate（`src/<vendor>/` 与 `devices/<vendor>.toml`），
+//! 一次性把两份语料扫成一批 `&'static` 表；`prim` 依赖本层，把表拼成装载入口。
+//! 这些行的类型必须比 `prim` 更低一层——它们就是设备数据，放在档案层。
 //!
 //! # 单一事实源
 //!
@@ -78,6 +77,17 @@ impl Device {
     }
 }
 
+/// 一台 vendor、一种输出语言的内嵌片段。
+#[derive(Debug, Clone, Copy)]
+pub struct Builtin {
+    /// vendor 名，与档案里的 `meta.vendor`、目录名三者一致。
+    pub vendor: &'static str,
+    /// 源文件扩展名（`Emit::ext`）：`c` → `.c`、`metal` → `.metal`。
+    pub ext: &'static str,
+    /// 片段：原语 → 文本。
+    pub fragments: &'static [(Prim, &'static str)],
+}
+
 /// 写回尾块某一形式在文本里的段标记：`/* epi: bias */`。
 pub fn epi_marker(form: Epilogue) -> String {
     format!("/* epi: {} */", form.as_str())
@@ -134,7 +144,7 @@ pub enum Status {
     Source,
     /// 已编译成设备镜像并内嵌（[`Device::image`] 必然是 `Some`）。
     Compiled,
-    /// 这台设备的输出语言还没有构建配方（见 `crate::codegen` 的配方表）。
+    /// 这台设备的输出语言还没有构建配方（[`crate::image`] 的配方表）。
     NoRecipe,
     /// 有配方，但工具链不在本机或编译失败：源码照旧可用。
     Skipped {

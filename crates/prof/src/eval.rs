@@ -1,5 +1,5 @@
 //! 职责：推导式求值：数值字面量与四则/括号。
-use super::invalid;
+use crate::schema::invalid;
 
 /// 求值一个只用数值字面量、`+ - * /` 与括号的推导式。
 pub(crate) fn eval_expression(text: &str) -> diagnostic::Result<f64> {

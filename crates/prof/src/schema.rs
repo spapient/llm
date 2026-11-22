@@ -1,15 +1,12 @@
 //! 档案 schema：把编译期展开的表读成 [`Profile`]（`parse`），再回答"档案自己是否自洽"
 //! （`check`）。
 
-use super::*;
-mod eval;
-mod provide;
-mod witness;
+use crate::prof::*;
 
-pub(super) use eval::eval_expression;
-use provide::*;
-pub use witness::WitnessLookup;
-use witness::*;
+pub(crate) use crate::eval::eval_expression;
+use crate::provide::*;
+pub use crate::witness::WitnessLookup;
+use crate::witness::*;
 
 // ── parse ─────────────────────────────────────────────────────────────
 

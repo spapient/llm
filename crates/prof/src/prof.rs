@@ -6,8 +6,7 @@ use crate::atom::{
 use core::fmt;
 use diagnostic::data::{Table, Value};
 use diagnostic::{Code, Error};
-use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::collections::BTreeMap;
 use std::sync::OnceLock;
 /// 输出语言闭集（cutile README §5.4 的 `emit` 列）。设备与输出语言是两个维度：
 /// 同一条 `cuda` emit 同时服务 NVIDIA 与 MUSA。
@@ -548,8 +547,7 @@ fn rival<'a>(
         })
         .map(|(_, profile)| profile)
 }
-mod schema;
-pub use schema::WitnessLookup;
+pub use crate::schema::WitnessLookup;
 #[cfg(test)]
 #[path = "../tests/prof.rs"]
 mod tests;
