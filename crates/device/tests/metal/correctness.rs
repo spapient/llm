@@ -489,7 +489,7 @@ fn int8_gemm_is_bit_exact_against_i32_accumulation() {
 /// 这样既逼出了溢出，又有一个与实现无关的精确期望值，不受浮点敏感度影响。
 #[test]
 fn attention_survives_score_overflow_and_matches_closed_form() {
-    const S: usize = 64;
+    const S: usize = 128;
     const D: usize = 64;
     const THREADS: usize = 64;
 
@@ -520,8 +520,6 @@ fn attention_survives_score_overflow_and_matches_closed_form() {
             "{label} 输出出现 NaN/inf：行最大值没有被扣除，exp 溢出了"
         );
         let error = frobenius(&got, &expected);
-        println!("DIAG {label}: got[0..4]={:?} expected[0..4]={:?} v0[0..4]={:?}",
-            &got[..4], &expected[..4], &v[..4]);
         assert!(
             error < 1e-5,
             "{label} 的相对 Frobenius 误差 {error:.2e} 超过 1e-5（分数已饱和，输出应等于 V[S−1]）"
@@ -762,45 +760,4 @@ fn tensor_gemm_large_shape_is_verified_on_sampled_elements() {
         "张量核 {M}×{N}×{K}（M·N·K={:.1e}）：{SAMPLES} 个抽样点最差相对误差 {worst:.2e} @ {worst_at:?}",
         (M * N * K) as f64
     );
-}
-
-// TEMP-DIAG: 用稀疏标记探明转置的真实落点映射（用完即删）。
-#[test]
-fn diag_transpose_mapping() {
-    const K: usize = 100;
-    const N: usize = 70;
-    let Some((device, queue)) = bench_device("diag-transpose") else { return; };
-    let mut b = vec![0.0f32; K * N];
-    let marks = [(0usize, 0usize, 1.0f32), (0, 1, 2.0), (1, 0, 4.0), (39, 2, 8.0),
-                 (2, 39, 16.0), (99, 69, 32.0), (99, 0, 64.0), (0, 69, 128.0)];
-    for (i, j, v) in marks { b[i * N + j] = v; }
-    let source = upload(&device, &b, "B");
-    let mut dst = device.new_buf(N * K * 2).expect("Bt");
-    let msl = crate::tiled::metal_transpose_half(K, N).expect("msl");
-    let pipe = device.compile(&msl).expect("pipe");
-    println!("dst 初始前 8 元素: {:?}", &dst.as_mut_bytes()[..16]);
-    assert!(queue.execute(&pipe, &[&source, &dst],
-        [(N as u32).div_ceil(32) * 32, (K as u32).div_ceil(32) * 8, 1], [32, 8, 1]), "dispatch");
-    let bytes = dst.as_mut_bytes();
-    let at = |j: usize, i: usize| -> f32 {
-        let p = (j * K + i) * 2;
-        half_to_f32(u16::from_ne_bytes([bytes[p], bytes[p + 1]]))
-    };
-    println!("期望布局 dst[j*K+i] = half(B[i*N+j])");
-    for (i, j, v) in marks {
-        println!("  B[{i}][{j}]={v} → 读 dst[{j}][{i}] = {}（{}）", at(j, i), at(j, i) == v);
-    }
-    let hits: Vec<(usize, usize, f32)> = (0..N).flat_map(|j| (0..K).map(move |i| (j, i)))
-        .filter_map(|(j, i)| { let v = at(j, i); (v != 0.0).then_some((j, i, v)) }).collect();
-    println!("dst 全部非零（{} 个）: {hits:?}", hits.len());
-}
-
-// TEMP-DIAG2
-#[test]
-fn diag_attention_msl() {
-    let (catalogue, dirs) = catalogue_and_dirs("diag-attn");
-    let msl = program(&catalogue, &dirs, "attention_f32", Metal, Mode::declared(), 128, 64)
-        .and_then(|stages| stages.one("declared"))
-        .expect("declared");
-    println!("{msl}");
 }

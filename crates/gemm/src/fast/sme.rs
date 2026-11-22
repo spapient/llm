@@ -6,30 +6,23 @@
 //! 2×2 的代价（A 面板按 32 宽写、每行分 8 次 16 B 散写）超过了它省下的那一条 `ld1w`。
 //! 结论：1×4 保留，`port_mix` 探针留作这条否证的仪器。
 
-#[cfg(target_arch = "aarch64")]
 use std::thread;
 
-#[cfg(target_arch = "aarch64")]
 use std::arch::asm;
 
-#[cfg(target_arch = "aarch64")]
 use std::simd::{f32x4, simd_swizzle};
 
 /// SME 微内核行数：一个 16×16 ZA 瓦片覆盖 16 行。
-#[cfg(target_arch = "aarch64")]
 const MR: usize = 16;
 
 /// SME 微内核列数：4 个 ZA 瓦片各 16 列，一次写回 64 列。
-#[cfg(target_arch = "aarch64")]
 const NR: usize = 64;
 
 /// 规模门槛（元素数）：低于此值的 GEMM，`smstart`/`smstop` 与打包的固定成本超过外积收益，
 /// 交给 NEON 更划算。
-#[cfg(target_arch = "aarch64")]
 const MIN_ELEMS: usize = 1 << 20;
 
 /// 运行时探测：本机是否存在 SME（Apple M4/M5 起）。
-#[cfg(target_arch = "aarch64")]
 fn available() -> bool {
     std::arch::is_aarch64_feature_detected!("sme")
 }
@@ -41,7 +34,6 @@ pub(super) fn gemm(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut
         let _ = (a, b, m, n, k, out);
         false
     }
-    #[cfg(target_arch = "aarch64")]
     {
         if rejects(m, n, k) {
             return false;
@@ -52,31 +44,26 @@ pub(super) fn gemm(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut
 }
 
 /// 线程数：行块（`m/MR`）与列组（`n/NR`）同时决定上限，两者都不能切出空槽。
-#[cfg(target_arch = "aarch64")]
 fn threads_for(m: usize, n: usize) -> usize {
     super::threads_override().min(m / MR).min(n / NR).max(1)
 }
 
 /// 拒绝走 SME 的形状：零维、非整铺、低于规模门槛，或本机无 SME。
-#[cfg(target_arch = "aarch64")]
 fn rejects(m: usize, n: usize, k: usize) -> bool {
     degenerate(m, n, k) || !tiled(m, n) || m * n * k < MIN_ELEMS || !available()
 }
 
 /// 任一维为零。
-#[cfg(target_arch = "aarch64")]
 fn degenerate(m: usize, n: usize, k: usize) -> bool {
     m == 0 || n == 0 || k == 0
 }
 
 /// 行/列是否满足整铺（`MR` 行 × `NR` 列的倍数）。
-#[cfg(target_arch = "aarch64")]
 fn tiled(m: usize, n: usize) -> bool {
     m.is_multiple_of(MR) && n.is_multiple_of(NR)
 }
 
 /// 一次整铺 SME GEMM：单次铺线程，先并行打包 A 面板，屏障同步后并行外积累加写回。
-#[cfg(target_arch = "aarch64")]
 fn packed(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f32], t: usize) {
     let mblk = m / MR;
     let alen = mblk * k * MR;
@@ -103,7 +90,6 @@ fn packed(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f32], t
 }
 
 /// 打包 A 的一个行块段：`src[m,k]` → `dst[块][k][16]`，按 16×16 瓦片转置让微内核连续加载。
-#[cfg(target_arch = "aarch64")]
 fn pack_a(src: &[f32], dst: &mut [f32], k: usize, mblk0: usize) {
     let blocks = dst.len() / (k * MR);
     for bi in 0..blocks {
@@ -115,7 +101,6 @@ fn pack_a(src: &[f32], dst: &mut [f32], k: usize, mblk0: usize) {
 }
 
 /// 4×4 子块转置：两轮 `zip1`/`zip2` 交错，供 [`pack_tiles`] 连续写出。
-#[cfg(target_arch = "aarch64")]
 #[inline(always)]
 fn transpose4(a0: f32x4, a1: f32x4, a2: f32x4, a3: f32x4) -> (f32x4, f32x4, f32x4, f32x4) {
     let t0 = simd_swizzle!(a0, a1, [0, 4, 1, 5]);
@@ -131,7 +116,6 @@ fn transpose4(a0: f32x4, a1: f32x4, a2: f32x4, a3: f32x4) -> (f32x4, f32x4, f32x
 }
 
 /// 16 对齐的整段：按 16×16 瓦片做 4×4 转置，返回尾部起点。
-#[cfg(target_arch = "aarch64")]
 fn pack_tiles(src: &[f32], dst: &mut [f32], k: usize, rowbase: usize, dstbase: usize) -> usize {
     let mut kk0 = 0usize;
     while kk0 + 16 <= k {
@@ -157,7 +141,6 @@ fn pack_tiles(src: &[f32], dst: &mut [f32], k: usize, rowbase: usize, dstbase: u
 }
 
 /// 尾段（不足 16 列）：逐元素标量搬移。
-#[cfg(target_arch = "aarch64")]
 fn pack_tail(
     src: &[f32],
     dst: &mut [f32],
@@ -175,7 +158,6 @@ fn pack_tail(
 }
 
 /// 计算一段连续行块：进入流式模式 → 逐行块逐列组外积累加 → 写回 → 退出流式模式。
-#[cfg(target_arch = "aarch64")]
 #[allow(unsafe_code)]
 fn compute_stage(a_stage: &[f32], b: &[f32], o_stage: &mut [f32], n: usize, k: usize) {
     let nblk = n / NR;
@@ -198,7 +180,6 @@ fn compute_stage(a_stage: &[f32], b: &[f32], o_stage: &mut [f32], n: usize, k: u
 }
 
 /// 16×16 外积微内核：`zero` → K 循环 `ld1w`+`fmopa` → 4 个 ZA 瓦片按切片号 `str za` 写回。
-#[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "sme")]
 #[allow(unsafe_code)]
 #[inline(never)]
@@ -271,7 +252,6 @@ unsafe fn sme_tile(
 }
 
 /// 进入流式模式并准备全真谓词 `p0`；必须在任何 SME 指令前调用，且每线程一次。
-#[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "sme")]
 #[allow(unsafe_code)]
 #[inline(never)]
@@ -282,7 +262,6 @@ unsafe fn enter_sm() {
 }
 
 /// 退出流式模式；与 [`enter_sm`] 成对，`sme_tile` 之间不得夹带 NEON。
-#[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "sme")]
 #[allow(unsafe_code)]
 #[inline(never)]
@@ -292,7 +271,7 @@ unsafe fn exit_sm() {
     }
 }
 
-#[cfg(all(test, target_arch = "aarch64"))]
+#[cfg(test)]
 #[path = "../../tests/sme_tests.rs"]
 mod tests;
 
@@ -307,7 +286,7 @@ mod tests;
 ///
 /// 本机无 SME 或 `rounds == 0` 时返回 `false` 且不执行任何 SME 指令——安全入口，调用方据此跳过。
 /// 只在 `bench` 特性下编译，生产公开面不含本项。
-#[cfg(all(feature = "bench", target_arch = "aarch64"))]
+#[cfg(feature = "bench")]
 pub fn port_run(rounds: usize) -> bool {
     if rounds == 0 || !available() {
         return false;
@@ -320,7 +299,7 @@ pub fn port_run(rounds: usize) -> bool {
 }
 
 /// 纯外积循环：`smstart` → `rounds` 轮 4 条 `fmopa` → `smstop`，不碰任何内存。
-#[cfg(all(feature = "bench", target_arch = "aarch64"))]
+#[cfg(feature = "bench")]
 #[target_feature(enable = "sme")]
 #[allow(unsafe_code)]
 #[inline(never)]
@@ -360,7 +339,7 @@ unsafe fn port_rounds(rounds: usize) {
 /// 只会更慢，所以据此算出的取数代价偏小、缺口偏小，拿它下结论不夸大（A3 保守值）。
 ///
 /// 本机无 SME 或 `rounds == 0` 时返回 `false` 且不执行任何 SME 指令。只在 `bench` 特性下编译。
-#[cfg(all(feature = "bench", target_arch = "aarch64"))]
+#[cfg(feature = "bench")]
 pub fn port_mix(rounds: usize, a: &[f32; 16], b: &[f32; 64]) -> bool {
     if rounds == 0 || !available() {
         return false;
@@ -373,7 +352,7 @@ pub fn port_mix(rounds: usize, a: &[f32; 16], b: &[f32; 64]) -> bool {
 }
 
 /// 固定地址的外积 + 载入循环：`smstart` → `rounds` 轮 → `smstop`，读边界由调用方的数组长度保证。
-#[cfg(all(feature = "bench", target_arch = "aarch64"))]
+#[cfg(feature = "bench")]
 #[target_feature(enable = "sme")]
 #[allow(unsafe_code)]
 #[inline(never)]
