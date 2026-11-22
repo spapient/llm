@@ -10,9 +10,10 @@
 
 ## 快速开始
 
-需要 Rust 1.100 或更高版本；`rust-toolchain.toml` 已把工具链固定为 `nightly-2026-09-01`
-（rustc 1.100.0-nightly），只要本机装了 `rustup`，进入本目录即自动切换。1.100 正式版发布后，
-把该文件的 `channel` 改成 `"1.100"` 即可切回正式版。
+需要 Rust 1.99 或更高版本。`rust-toolchain.toml` 钉的是**已发布**的 stable 通道，只要本机装了
+`rustup`，进入本目录即自动切换，`cargo build` 直接能过——不再需要 nightly。手写 SIMD 车道与
+Apple SME 外积这两条通道仍只在 nightly 上编译（`#[cfg(nightly)]`，见 `crates/gemm/build.rs`），
+stable 上自动走等价退路，语义一致、只是没有那两条指令路径。
 
 ```bash
 cargo run -p llm-cli --bin llm                              # 组合根：默认命令打印各层摘要
