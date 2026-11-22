@@ -1,0 +1,7 @@
+# 逐元素 ReLU：y[n] = max(a[n], 0)。
+# 与 silu_f32 同一副一元骨架，只差逐元素函数。
+base = "silu_f32"
+
+[op]
+name     = "relu_f32"
+summary  = "y[n] = max(a[n], 0)"

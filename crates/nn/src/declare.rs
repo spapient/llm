@@ -34,16 +34,7 @@ use tensor::Shape;
 
 use crate::{BoundsResult, ContractSpec, ParamRole};
 
-/// 层声明的输出形状口径：单轴族透传一条轴，归约族折叠成标量。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OutputShape {
-    /// 输出与输入等长的一条轴 `[len]`。
-    Single,
-    /// 输出标量（空轴 `[]`）。
-    Scalar,
-}
-
-/// 一份已校验规格 + 元素数，被单轴族与归约族的具体层包裹。
+/// 一份已校验规格 + 元素数，被单轴族的具体层包裹。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AxisCore {
     spec: ContractSpec,
@@ -51,8 +42,8 @@ pub(crate) struct AxisCore {
 }
 
 impl AxisCore {
-    /// 构造：元素数必须非零；输出形状口径由具体层给出，算子名由层绑定，构造期经 [`ContractSpec::new`]
-    /// 校验。
+    /// 构造：元素数必须非零，输出恒为一条轴 `[len]`；算子名由层绑定，构造期经
+    /// [`ContractSpec::new`] 校验。
     ///
     /// # Errors
     ///
@@ -61,7 +52,6 @@ impl AxisCore {
         name: impl Into<String>,
         op: &'static str,
         len: usize,
-        output: OutputShape,
         kind: &str,
         role: ParamRole,
     ) -> Result<Self> {
@@ -72,11 +62,7 @@ impl AxisCore {
             )
             .with("nn::AxisCore::new"));
         }
-        let shape = match output {
-            OutputShape::Single => Shape::new([len]),
-            OutputShape::Scalar => Shape::new([]),
-        };
-        let spec = ContractSpec::new_with_role(name, shape, [op], role)?;
+        let spec = ContractSpec::new_with_role(name, Shape::new([len]), [op], role)?;
         Ok(Self { spec, len })
     }
 
@@ -92,12 +78,12 @@ impl AxisCore {
         &self.spec
     }
 
-    /// 元素数（被处理 / 被归约的轴长度）。
+    /// 元素数（被处理的轴长度）。
     pub(crate) fn len(&self) -> usize {
         self.len
     }
 
-    /// 本层下界：单轴/归约算子的第二形参被骨架忽略，补 `1` 只满足 `shape_ctx` 签名，不参与代价。
+    /// 本层下界：单轴算子的第二形参被骨架忽略，补 `1` 只满足 `shape_ctx` 签名，不参与代价。
     pub(crate) fn bounds(&self) -> BoundsResult {
         let op = self
             .spec
@@ -113,7 +99,7 @@ impl AxisCore {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! layer_delegate {
-    ($ty:ident, $op:literal, $kind:literal, $shape:expr, $role:expr) => {
+    ($ty:ident, $op:literal, $kind:literal, $role:expr) => {
         impl $ty {
             /// 本层绑定的算子名。
             pub const OP: &str = $op;
@@ -125,14 +111,13 @@ macro_rules! layer_delegate {
                         name,
                         Self::OP,
                         len,
-                        $shape,
                         $kind,
                         $role,
                     )?,
                 })
             }
 
-            /// 元素数（被处理 / 被归约的轴长度）。
+            /// 元素数（被处理的轴长度）。
             pub fn len(&self) -> usize {
                 self.inner.len()
             }

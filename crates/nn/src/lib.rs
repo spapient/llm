@@ -1,7 +1,7 @@
 //! 层定义：[`Contract`]、[`ContractSpec`]、投影层 [`Linear`]、矩阵乘层 [`MatMul`] 与 [`LmHead`]，单轴层
-//! ([`RmsNorm`]、[`Softmax`]、[`Gelu`]、[`Silu`]、[`Rope`]、[`Scale`]、[`Add`]、[`Mul`]、
-//! [`ResidualAdd`])、归约层 ([`ReduceSum`]、[`ReduceMax`])、查表层 [`Embedding`] 与注意力层
-//! [`Attention`]；权重编码 [`WeightFormat`]、层的性能下界 [`Bounds`] 与层栈总下界 [`Stack`]。
+//! ([`RmsNorm`]、[`Softmax`]、激活 [`Gelu`]/[`Silu`]/[`Relu`]/[`Sigmoid`]/[`Tanh`]、[`Rope`]、
+//! [`Scale`]、[`Add`]、[`Mul`])、查表层 [`Embedding`]、注意力层 [`Attention`] 与循环层
+//! [`Recurrent`]；权重编码 [`WeightFormat`]、层的性能下界 [`Bounds`] 与层栈总下界 [`Stack`]。
 //!
 //! **拥有**：`Contract`、`ContractSpec`、上述各层、`WeightFormat`、`Bounds`、`Stack`。**不拥有**：算子声明与
 //! 模板（`op`）、kernel 机制（`cutile`）、设备峰值（`prof`）、权重字节与解析（`weights`）。
@@ -48,6 +48,7 @@ pub use annotation::spec;
 
 use diagnostic::{Code, Error, Result};
 
+mod recurrent;
 mod attention;
 mod declare;
 mod engram;
@@ -134,10 +135,12 @@ pub use spatial::{
 };
 
 #[doc(inline)]
+pub use recurrent::{Cell, Recurrent};
+
+#[doc(inline)]
 pub use single::{
-    Add, Dequant, Div, Embedding, Exp, Gauge, Gelu, HardSigmoid, LeakyRelu, Log, MatMul, Max, Min,
-    Mul, Precision, ReduceMax, ReduceSum, ResidualAdd, RmsNorm, Rope, Scale, Scan, Silu, Softmax,
-    Sub,
+    Add, Div, Embedding, Exp, Gauge, Gelu, HardSigmoid, LeakyRelu, Log, MatMul, Max, Min, Mul,
+    Precision, Relu, RmsNorm, Rope, Scale, Scan, Sigmoid, Silu, Softmax, Sub, Tanh,
 };
 
 #[doc(inline)]

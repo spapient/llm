@@ -67,7 +67,8 @@ pub use llm_gemm::{
     add_f32, dequant_i2, dequant_i4, dequant_i8, div_f32, embed_f32, exp_f32, gelu_f32, gemm_f32,
     gemm_i2, gemm_i4, gemm_i8, gemv_f32, gemv_i2, gemv_i4, gemv_i8, hard_sigmoid_f32,
     leaky_relu_f32, log_f32, matmul_i8, max_f32, min_f32, mul_f32, reduce_max_f32, reduce_sum_f32,
-    residual_add_f32, rmsnorm_f32, rope_f32, scale_f32, silu_f32, softmax_f32, sub_f32,
+    relu_f32, residual_add_f32, rmsnorm_f32, rope_f32, scale_f32, sigmoid_f32, silu_f32,
+    softmax_f32, sub_f32, tanh_f32,
 };
 
 // 契约层（签名、布局、模板词法、代价表达式、语义模型、样本、算子契约）在 `spec`：
@@ -155,14 +156,17 @@ macro_rules! for_each_operator {
             mul_f32: $crate::mul_f32::MulF32 => "binary",
             reduce_max_f32: $crate::reduce_max_f32::ReduceMaxF32 => "reduce_max_f32",
             reduce_sum_f32: $crate::reduce_sum_f32::ReduceSumF32 => "reduce_sum_f32",
+            relu_f32: $crate::relu_f32::ReluF32 => "relu_f32",
             residual_add_f32: $crate::residual_add_f32::ResidualAddF32 => "binary",
             rmsnorm_f32: $crate::rmsnorm_f32::RmsNormF32 => "rmsnorm_f32",
             rope_f32: $crate::rope_f32::RopeF32 => "rope_f32",
             scale_f32: $crate::scale_f32::ScaleF32 => "scale_f32",
             scan_f32: $crate::scan_f32::ScanF32 => "scan_f32",
+            sigmoid_f32: $crate::sigmoid_f32::SigmoidF32 => "sigmoid_f32",
             silu_f32: $crate::silu_f32::SiluF32 => "silu_f32",
             softmax_f32: $crate::softmax_f32::SoftmaxF32 => "softmax_f32",
             sub_f32: $crate::sub_f32::SubF32 => "binary",
+            tanh_f32: $crate::tanh_f32::TanhF32 => "tanh_f32",
         }
     };
 }

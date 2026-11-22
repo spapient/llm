@@ -189,3 +189,29 @@ fn hard_sigmoid_is_flat_outside_the_linear_band() -> Result<()> {
     assert_eq!(grad[2], 0.0, "上饱和梯度");
     Ok(())
 }
+
+/// `loss = reduce_sum(σ(p))`：闭式损失就是 σ 逐元素和，对拍 `σ·(1−σ)`。
+#[test]
+fn sigmoid_chain_matches_central_differences() -> Result<()> {
+    let chain_loss = |params: &[f32]| {
+        params
+            .iter()
+            .map(|&x| 1.0 / (1.0 + (-x).exp()))
+            .sum::<f32>()
+    };
+    check_unary_grad("sigmoid_f32", &[-1.3, 0.0, 0.9], chain_loss)
+}
+
+/// `loss = reduce_sum(tanh(p))`：对拍 `1 − tanh²`，负区点同时盯住导函数的偶对称。
+#[test]
+fn tanh_chain_matches_central_differences() -> Result<()> {
+    let chain_loss = |params: &[f32]| params.iter().map(|&x| x.tanh()).sum::<f32>();
+    check_unary_grad("tanh_f32", &[-1.3, 0.0, 0.9], chain_loss)
+}
+
+/// `loss = reduce_sum(relu(p))`：负区梯度必须**恰好** 0（不是 LeakyReLU 的 0.01），正区恰好 1。
+#[test]
+fn relu_chain_matches_central_differences() -> Result<()> {
+    let chain_loss = |params: &[f32]| params.iter().map(|&x| x.max(0.0)).sum::<f32>();
+    check_unary_grad("relu_f32", &[-1.3, 0.45, 0.9], chain_loss)
+}

@@ -4,18 +4,15 @@
 //! 读取一律走 [`Cursor`]（借用调用方切片，不复制整份流）；每个 opcode 一个自由函数，整张
 //! [`OPS`] 表就是能力清单——表的顺序即文件里处理函数的顺序，找一条 opcode 不必跨文件。
 
-mod tensor;
-
 use diagnostic::Result;
 use dtype::DType;
 use wire::{bad, or_bad};
 
 use crate::cursor::Cursor;
 use crate::torch::Tensor;
-use tensor::{as_tuple, into_str, storage_handle, tensor_of};
 
 #[derive(Clone)]
-pub(crate) enum Value {
+enum Value {
     Str(String),
     Int(i64),
     Scalar,
@@ -29,10 +26,10 @@ pub(crate) enum Value {
 }
 
 pub(crate) struct Vm<'a> {
-    pub(crate) stack: Vec<Value>,
-    pub(crate) memo: Vec<Value>,
-    pub(crate) cursor: Cursor<'a>,
-    pub(crate) tensors: Vec<Tensor>,
+    stack: Vec<Value>,
+    memo: Vec<Value>,
+    cursor: Cursor<'a>,
+    tensors: Vec<Tensor>,
 }
 
 /// 一个 opcode 的处理函数。opcode 字节始终传入：`K`/`M`/`J`、`X`/`\x8c`、`q`/`r`/`h`/`j`
@@ -102,7 +99,7 @@ impl<'a> Vm<'a> {
         Ok(vm.tensors)
     }
 
-    pub(crate) fn execute(&mut self) -> Result<()> {
+    fn execute(&mut self) -> Result<()> {
         loop {
             let op = self.cursor.byte()?;
             if op == b'.' {
@@ -113,13 +110,13 @@ impl<'a> Vm<'a> {
     }
 
     /// 查表并调用处理函数；未知 opcode 在这里统一拒。
-    pub(crate) fn dispatch(&mut self, op: u8) -> Result<()> {
+    fn dispatch(&mut self, op: u8) -> Result<()> {
         let handler =
             OPS[usize::from(op)].ok_or_else(|| bad(format!("未知 pickle opcode 0x{op:02X}")))?;
         handler(self, op)
     }
 
-    pub(crate) fn pops(&mut self, n: usize) -> Result<Vec<Value>> {
+    fn pops(&mut self, n: usize) -> Result<Vec<Value>> {
         let at = self
             .stack
             .len()
@@ -128,11 +125,11 @@ impl<'a> Vm<'a> {
         Ok(self.stack.split_off(at))
     }
 
-    pub(crate) fn pop(&mut self) -> Result<Value> {
+    fn pop(&mut self) -> Result<Value> {
         or_bad(self.stack.pop(), "栈下溢")
     }
 
-    pub(crate) fn pop_until_marker(&mut self) -> Result<Vec<Value>> {
+    fn pop_until_marker(&mut self) -> Result<Vec<Value>> {
         let mut items = Vec::new();
         loop {
             match self.pop()? {
@@ -177,7 +174,7 @@ impl<'a> Vm<'a> {
     /// 张量名：`REDUCE` 的实参与可调用对象弹出后，栈顶若是字符串，它就是 `state_dict`
     /// 里紧邻这个值的键；否则按出现序号命名，避免借用上一个张量残留的键把两个张量
     /// 叫成同一个名字（`torch.save([t1, t2])` 就是这一形状）。
-    pub(crate) fn tensor_name(&self) -> String {
+    fn tensor_name(&self) -> String {
         match self.stack.last() {
             Some(Value::Str(name)) => name.clone(),
             _ => self.tensors.len().to_string(),
@@ -389,7 +386,7 @@ fn write_dict(vm: &mut Vm<'_>, pairs: Vec<(Value, Value)>, what: &str) -> Result
 }
 
 /// 栈顶 list 追加：`APPEND` 弹一值，`APPENDS` 弹 MARK 起的一段。
-pub(crate) fn append(vm: &mut Vm<'_>, op: u8) -> Result<()> {
+fn append(vm: &mut Vm<'_>, op: u8) -> Result<()> {
     let (items, label) = if op == b'a' {
         (vec![vm.pop()?], "APPEND")
     } else {
@@ -403,6 +400,181 @@ pub(crate) fn append(vm: &mut Vm<'_>, op: u8) -> Result<()> {
         _ => Err(bad(format!("{label} 目标不是 list"))),
     }
 }
+
+// ---- torch 张量与存储句柄 ----
+//
+// 两个入口各管一件事：`storage_handle` 解 `BINPERSID` 的三元组，`tensor_of` 解
+// `_rebuild_tensor_v2` 实参的五要素（storage、offset、shape、stride、元素总数）。布局判据
+// 只有 `contiguous` 一条：非连续张量无法用单个连续字节区间表示，显式失败好过按连续
+// 布局读出错误字节。
+
+/// 元组视图：`REDUCE` 的实参与 persistent id 都必须是元组。
+fn as_tuple(value: Value, message: &str) -> Result<Vec<Value>> {
+    match value {
+        Value::Tuple(items) => Ok(items),
+        _ => Err(bad(message)),
+    }
+}
+
+/// 字符串视图。
+fn into_str(value: &Value) -> Result<String> {
+    match value {
+        Value::Str(text) => Ok(text.clone()),
+        _ => Err(bad("期望字符串")),
+    }
+}
+
+/// persistent id：`("storage", <类名>, <key>)` → 存库名与元素类型。
+fn storage_handle(items: &[Value]) -> Result<(String, DType)> {
+    tagged(items)?;
+    let class = storage_class(items)?;
+    Ok((text_at(items, 2, "key")?, storage_dtype(class)?))
+}
+
+/// `_rebuild_tensor_v2` 的实参 → 张量：五要素齐备且布局连续。
+fn tensor_of(items: &[Value]) -> Result<Tensor> {
+    let (key, dtype, wide) = head(items)?;
+    let (shape, count) = layout(items)?;
+    let width = dtype.bytes_for(1) as usize;
+    let offset = scaled(usize::try_from(wide).ok(), width, "offset 溢出")?;
+    Ok(Tensor {
+        name: String::new(),
+        dtype,
+        shape,
+        storage_key: key.clone(),
+        offset,
+        len: scaled(Some(count), width, "长度溢出")?,
+    })
+}
+
+/// pid 的首项必须是 `"storage"`：别种 persistent id 本模块不认识，静默当空会更糟。
+fn tagged(items: &[Value]) -> Result<()> {
+    let Some(Value::Str(tag)) = items.first() else {
+        return Err(bad("pid 空"));
+    };
+    match tag.as_str() {
+        "storage" => Ok(()),
+        other => Err(bad(format!("不支持的 persistent id `{other}`"))),
+    }
+}
+
+/// pid 的 storage 类名。
+fn storage_class(items: &[Value]) -> Result<&String> {
+    let Some(Value::Global { name: class, .. }) = items.get(1) else {
+        return Err(bad("pid 缺 storage 类"));
+    };
+    Ok(class)
+}
+
+/// storage 类名 → 元素类型。
+fn storage_dtype(class: &str) -> Result<DType> {
+    STORAGE_DTYPES
+        .iter()
+        .find_map(|&(name, dtype)| (name == class).then_some(dtype))
+        .ok_or_else(|| bad(format!("不支持的 storage 类型 `{class}`")))
+}
+
+/// 第 `idx` 项的字符串视图。
+fn text_at(items: &[Value], idx: usize, what: &str) -> Result<String> {
+    into_str(field(items, idx, what)?)
+}
+
+/// rebuild 的前三要素：storage 键、元素类型、offset 原文。
+fn head(items: &[Value]) -> Result<(&String, DType, i64)> {
+    let Some(Value::Storage { key, dtype }) = items.first() else {
+        return Err(bad("rebuild 缺 storage"));
+    };
+    let Some(Value::Int(wide)) = items.get(1) else {
+        return Err(bad("rebuild 缺 offset"));
+    };
+    Ok((key, *dtype, *wide))
+}
+
+/// 后两要素：形状与 stride 推出元素总数。
+fn layout(items: &[Value]) -> Result<(Vec<u64>, usize)> {
+    let shape = shape(items)?;
+    let steps = strides(items)?;
+    let count = contiguous(&shape, &steps)?;
+    Ok((shape, count))
+}
+
+fn shape(items: &[Value]) -> Result<Vec<u64>> {
+    tuple_at(items, 2, "shape")?.iter().map(dim).collect()
+}
+
+fn strides(items: &[Value]) -> Result<Vec<usize>> {
+    tuple_at(items, 3, "stride")?.iter().map(step).collect()
+}
+
+/// 元素数 × 字节宽：任何一步失败都是同一句"溢出"。
+fn scaled(count: Option<usize>, width: usize, what: &str) -> Result<usize> {
+    or_bad(count.and_then(|n| n.checked_mul(width)), what)
+}
+
+/// 第 `idx` 项。
+fn field<'v>(items: &'v [Value], idx: usize, missing: &str) -> Result<&'v Value> {
+    items
+        .get(idx)
+        .ok_or_else(|| bad(format!("rebuild 缺 {missing}")))
+}
+
+/// 第 `idx` 项元组视图。
+fn tuple_at<'v>(items: &'v [Value], idx: usize, what: &str) -> Result<&'v [Value]> {
+    match field(items, idx, what)? {
+        Value::Tuple(fields) => Ok(fields),
+        _ => Err(bad(format!("rebuild 缺 {what}"))),
+    }
+}
+
+/// 形状维度：非负整数，负数与错型分别是溢出与类型错误。
+fn dim(value: &Value) -> Result<u64> {
+    match value {
+        Value::Int(wide) => u64::try_from(*wide).map_err(|_| bad("形状维度溢出")),
+        _ => Err(bad("形状维度不是整数")),
+    }
+}
+
+/// stride 与维度是同一概念（非负整数），只多一步收窄到 `usize`。
+fn step(value: &Value) -> Result<usize> {
+    let wide = dim(value).map_err(|_| bad("stride 不是非负整数"))?;
+    usize::try_from(wide).map_err(|_| bad("stride 溢出"))
+}
+
+/// row-major 连续判据：尺寸为 1 的维不参与（torch 允许其 stride 任意）；返回元素总数。
+fn contiguous(shape: &[u64], steps: &[usize]) -> Result<usize> {
+    if shape.len() != steps.len() {
+        return Err(bad("stride 与 shape 维数不符"));
+    }
+    let mut count = 1usize;
+    for (&size, &step) in shape.iter().zip(steps).rev() {
+        count = advance(count, size, step)?;
+    }
+    Ok(count)
+}
+
+/// 单一维的连续校验与累乘：尺寸为 1 跳过 stride 校验，乘积溢出显式失败。
+fn advance(count: usize, size: u64, step: usize) -> Result<usize> {
+    let width = usize::try_from(size).map_err(|_| bad("形状维度溢出"))?;
+    if width > 1 && step != count {
+        return Err(bad(format!(
+            "非连续张量：stride {step}，连续布局应为 {count}"
+        )));
+    }
+    or_bad(count.checked_mul(width), "形状乘积溢出")
+}
+
+/// torch 的 storage 类名 → 元素类型（Torch 与 `dtype` 的命名对应表）。
+const STORAGE_DTYPES: [(&str, DType); 9] = [
+    ("FloatStorage", DType::F32),
+    ("HalfStorage", DType::F16),
+    ("BFloat16Storage", DType::BF16),
+    ("DoubleStorage", DType::F64),
+    ("LongStorage", DType::I64),
+    ("IntStorage", DType::I32),
+    ("ShortStorage", DType::I16),
+    ("CharStorage", DType::I8),
+    ("ByteStorage", DType::U8),
+];
 
 #[cfg(test)]
 #[path = "../tests/pickle.rs"]

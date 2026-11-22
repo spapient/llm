@@ -246,3 +246,68 @@ impl Contract for Ghost {
         &self.spec
     }
 }
+
+proptest! {
+    /// 循环层的参数字节数必须能由门表独立重算：门数 × 隐宽 × (输入宽 + 1) 逐层累加。
+    /// 若被违反，说明 `param_bytes` 里藏了第二份门数或第二份层宽口径。
+    #[test]
+    fn recurrent_parameters_follow_the_gate_table(
+        pick in 0usize..3,
+        input in units(),
+        hidden in units(),
+        layers in 1usize..=4,
+    ) {
+        let cell = Cell::ALL[pick];
+        let layer = Recurrent::new("r", cell, input, hidden, layers, 1, true).expect("合法");
+        let gates = cell.gates() as u64;
+        let mut want = 0u64;
+        for level in 0..layers {
+            let width = if level == 0 { input } else { hidden };
+            want += gates * hidden as u64 * (width as u64 + 1);
+        }
+        prop_assert_eq!(layer.param_bytes(), want * 4);
+    }
+
+    /// 加一层只能更贵：深度是最没理由让下界变小的维度。
+    #[test]
+    fn a_deeper_recurrent_stack_is_never_cheaper(
+        pick in 0usize..3,
+        input in units(),
+        hidden in units(),
+        layers in 1usize..=3,
+    ) {
+        let cell = Cell::ALL[pick];
+        let floor = |depth| {
+            Recurrent::new("r", cell, input, hidden, depth, 1, true)
+                .expect("合法")
+                .bounds()
+                .expect("合法")
+                .expect("有算子")
+        };
+        let (shallow, deep) = (floor(layers), floor(layers + 1));
+        prop_assert!(deep.read() > shallow.read(), "读侧随深度不减");
+        prop_assert!(deep.write() > shallow.write(), "写侧随深度不减");
+        prop_assert!(deep.flops() > shallow.flops(), "算术量随深度不减");
+    }
+
+    /// 双向精确是单向的两倍：两个方向除了拼接之外不共享任何代价。
+    #[test]
+    fn a_bidirectional_recurrent_layer_costs_exactly_twice(
+        pick in 0usize..3,
+        input in units(),
+        hidden in units(),
+    ) {
+        let cell = Cell::ALL[pick];
+        let floor = |dirs| {
+            Recurrent::new("r", cell, input, hidden, 1, dirs, true)
+                .expect("合法")
+                .bounds()
+                .expect("合法")
+                .expect("有算子")
+        };
+        let (uni, bi) = (floor(1), floor(2));
+        prop_assert_eq!(bi.read(), uni.read() * 2);
+        prop_assert_eq!(bi.write(), uni.write() * 2);
+        prop_assert_eq!(bi.flops(), uni.flops() * 2.0);
+    }
+}

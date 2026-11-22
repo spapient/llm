@@ -51,7 +51,8 @@ pub use matmul::i8 as matmul_i8;
 pub use reduce::{reduce_max_f32, reduce_sum_f32};
 pub use scalar::Scalar;
 pub use unary::{
-    exp_f32, gelu_f32, hard_sigmoid_f32, leaky_relu_f32, log_f32, relu_f32, scale_f32, silu_f32,
+    exp_f32, gelu_f32, hard_sigmoid_f32, leaky_relu_f32, log_f32, relu_f32, scale_f32, sigmoid_f32,
+    silu_f32, tanh_f32,
 };
 
 // 契约层在 `spec`：内核与本 crate 的骨架宏都按 crate 根解析契约路径，这里把它们搬回来，

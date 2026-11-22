@@ -195,7 +195,7 @@ macro_rules! formulas {
     };
 }
 
-const FORMULAS: [Entry; 37] = formulas![
+const FORMULAS: [Entry; 40] = formulas![
     "adaptive_pool_f32" => adaptive_pool,
     "add_f32" => passthrough,
     "residual_add_f32" => passthrough,
@@ -216,6 +216,9 @@ const FORMULAS: [Entry; 37] = formulas![
     "interpolate_f32" => interpolate,
     "layer_norm_f32" => layer_norm,
     "leaky_relu_f32" => leaky_relu,
+    "relu_f32" => relu,
+    "sigmoid_f32" => sigmoid,
+    "tanh_f32" => tanh,
     "reduce_sum_f32" => reduce_sum,
     "reduce_max_f32" => reduce_max,
     "softmax_f32" => softmax,

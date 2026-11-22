@@ -141,6 +141,28 @@ pub(super) fn silu(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
     })
 }
 
+/// y = σ(x)：y′ = y·(1−y)，输出即 σ，避免重算。
+pub(super) fn sigmoid(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
+    let da = ctx
+        .incoming
+        .iter()
+        .zip(ctx.output)
+        .map(|(&g, &y)| g * y * (1.0 - y))
+        .collect();
+    Ok(vec![da])
+}
+
+/// y = tanh(x)：y′ = 1−y²，输出即 tanh。
+pub(super) fn tanh(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
+    let da = ctx
+        .incoming
+        .iter()
+        .zip(ctx.output)
+        .map(|(&g, &y)| g * (1.0 - y * y))
+        .collect();
+    Ok(vec![da])
+}
+
 /// y = x（x ≥ 0）或 slope·x：y′ = 1 或 slope，dA = in·y′。
 pub(super) fn leaky_relu(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
     unary(ctx, |v| {
@@ -150,6 +172,11 @@ pub(super) fn leaky_relu(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
             op::leaky_relu_f32::SLOPE
         }
     })
+}
+
+/// y = max(x, 0)：y′ = 1（x > 0）或 0；负区的斜率是 0，不是 LeakyReLU 那份 0.01。
+pub(super) fn relu(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
+    unary(ctx, |v| if v > 0.0 { 1.0 } else { 0.0 })
 }
 
 /// y = clamp(x/6 + 0.5, 0, 1)：饱和区梯度为 0，线性区为 1/6。

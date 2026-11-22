@@ -299,6 +299,54 @@ pub mod relu_f32 {
     );
 }
 
+pub mod sigmoid_f32 {
+    //! 逐元素 Sigmoid：`y[n] = 1 / (1 + exp(-a[n]))`。
+
+    crate::unary_f32!(
+        Sigmoid,
+        SigmoidF32,
+        "sigmoid_f32",
+        unary_op_tests,
+        {
+            // 三个锚点：σ(0)=0.5、σ(1)、两端饱和（不溢出成 NaN）。
+            let mut out = [0.0; 4];
+            assert!(
+                forward(&[0.0, 1.0, -1000.0, 1000.0], &mut out).is_ok(),
+                "等长"
+            );
+            assert_eq!(out[0], 0.5, "σ(0)");
+            assert!((out[1] - 0.731_058_6).abs() < 1e-6, "σ(1) = {}", out[1]);
+            assert_eq!(out[2], 0.0, "下饱和不溢出");
+            assert_eq!(out[3], 1.0, "上饱和不溢出");
+        },
+        |x| 1.0 / (1.0 + (-x).exp())
+    );
+}
+
+pub mod tanh_f32 {
+    //! 逐元素双曲正切：`y[n] = 2 / (1 + exp(-2·a[n])) - 1`。
+
+    crate::unary_f32!(
+        Tanh,
+        TanhF32,
+        "tanh_f32",
+        unary_op_tests,
+        {
+            // 三个锚点：tanh(0)=0、tanh(1) 的已知值、两端饱和（线性函数族不可能满足）。
+            let mut out = [0.0; 4];
+            assert!(
+                forward(&[0.0, 1.0, -1000.0, 1000.0], &mut out).is_ok(),
+                "等长"
+            );
+            assert_eq!(out[0], 0.0, "tanh(0)");
+            assert!((out[1] - 0.761_594_2).abs() < 1e-6, "tanh(1) = {}", out[1]);
+            assert_eq!(out[2], -1.0, "下饱和");
+            assert_eq!(out[3], 1.0, "上饱和");
+        },
+        |x| 2.0 / (1.0 + (-2.0 * x).exp()) - 1.0
+    );
+}
+
 pub mod hard_sigmoid_f32 {
     //! 逐元素 HardSigmoid：`y[n] = clamp(a[n] / 6 + 0.5, 0, 1)`。
 

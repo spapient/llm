@@ -162,6 +162,7 @@ unary!(
     gelu_f32 => gelu_f32,
     hard_sigmoid_f32 => hard_sigmoid_f32,
     leaky_relu_f32 => leaky_relu_f32,
+    relu_f32 => relu_f32,
     interpolate_f32 => interpolate,
     log_f32 => log_f32,
     max_pool1d_f32 => max_pool1d,
@@ -171,7 +172,9 @@ unary!(
     reduce_max_f32 => reduce_max_f32,
     reduce_sum_f32 => reduce_sum_f32,
     scale_f32 => scale_f32,
-    scan_f32 => scan_f32
+    sigmoid_f32 => sigmoid_f32,
+    scan_f32 => scan_f32,
+    tanh_f32 => tanh_f32
 );
 binary!(
     add_f32,
@@ -383,14 +386,17 @@ const KERNELS: [Entry; op::REGISTRY.len()] = op::kernel_table![
     mul_f32,
     reduce_max_f32,
     reduce_sum_f32,
+    relu_f32,
     residual_add_f32,
     rmsnorm_f32,
     rope_f32,
     scale_f32,
     scan_f32,
+    sigmoid_f32,
     silu_f32,
     softmax_f32,
     sub_f32,
+    tanh_f32,
 ];
 
 const _: () = same_order(&KERNELS, &op::REGISTRY);
