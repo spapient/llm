@@ -166,7 +166,7 @@ fn minus_zero_is_still_an_integer() {
 fn a_header_with_many_keys_is_deduplicated_in_one_pass() {
     let mut text = String::from("{");
     for idx in 0..8_000 {
-        text.push_str(&format!("\"w{index}\": {index},"));
+        text.push_str(&format!("\"w{idx}\": {idx},"));
     }
     text.pop();
     text.push('}');

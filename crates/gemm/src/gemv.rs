@@ -65,6 +65,11 @@ mod forward;
 pub mod packed;
 
 mod shape;
+#[cfg(nightly)]
+mod simd;
+/// stable 退路：同名同签名，只是把车道换成标量，见 [`simd_scalar`] 顶部。
+#[cfg(not(nightly))]
+#[path = "simd_scalar.rs"]
 mod simd;
 
 pub use format::{

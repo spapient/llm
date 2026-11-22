@@ -48,7 +48,7 @@ proptest! {
     #[test]
     fn a_single_flipped_bit_always_changes_the_checksum(
         data in proptest::collection::vec(any::<u8>(), 1..=32),
-        at in any::<proptest::sample::Idx>(),
+        at in any::<proptest::sample::Index>(),
         bit in 0u8..8,
     ) {
         let idx = at.idx(data.len());
@@ -70,7 +70,7 @@ proptest! {
     fn chunking_a_buf_does_not_change_the_state(
         state in any::<u32>(),
         data in proptest::collection::vec(any::<u8>(), 0..=32),
-        at in any::<proptest::sample::Idx>(),
+        at in any::<proptest::sample::Index>(),
     ) {
         let (head, tail) = data.split_at(at.idx(data.len() + 1));
         prop_assert_eq!(crc::update(crc::update(state, head), tail), crc::update(state, &data));
@@ -81,7 +81,7 @@ proptest! {
     #[test]
     fn sealing_resumes_from_a_sealed_prefix(
         data in proptest::collection::vec(any::<u8>(), 0..=32),
-        at in any::<proptest::sample::Idx>(),
+        at in any::<proptest::sample::Index>(),
     ) {
         let (head, tail) = data.split_at(at.idx(data.len() + 1));
         prop_assert_eq!(crc::crc32(head), !crc::update(!0, head));

@@ -76,7 +76,7 @@ mod validate {
             return Err(Error::new(
                 Code::Invalid,
                 format!(
-                    "缓冲 {buffer_len} 字节，{dtype:?} 的 {:?} 需要 {required} 字节",
+                    "缓冲 {buf_len} 字节，{dtype:?} 的 {:?} 需要 {required} 字节",
                     shape.dims()
                 ),
             )

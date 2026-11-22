@@ -198,7 +198,7 @@ impl Topology {
         if idx >= limit {
             return Err(Error::new(
                 Code::Invalid,
-                format!("{} 下标 {index} 超出 0..{limit}", parallel.as_str()),
+                format!("{} 下标 {idx} 超出 0..{limit}", parallel.as_str()),
             )
             .with("shard::Topology::rank"));
         }
@@ -208,7 +208,7 @@ impl Topology {
     fn out_of_range(&self, parallel: Parallel, idx: usize, count: usize) -> Error {
         Error::new(
             Code::Invalid,
-            format!("{} 组下标 {index} 超出 0..{count}", parallel.as_str()),
+            format!("{} 组下标 {idx} 超出 0..{count}", parallel.as_str()),
         )
         .with("shard::Topology::group")
     }

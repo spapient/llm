@@ -108,7 +108,7 @@ fn invalid_scalar(value: &toml::Value, path: &str) -> Result<String> {
 fn array_expr(items: &[toml::Value], path: &str) -> Result<String> {
     let mut out = String::from("Value::array(vec![");
     for (idx, item) in items.iter().enumerate() {
-        let child = format!("{path}[{index}]");
+        let child = format!("{path}[{idx}]");
         let _ = write!(out, "{}, ", value_expr(item, &child)?);
     }
     out.push_str("])");

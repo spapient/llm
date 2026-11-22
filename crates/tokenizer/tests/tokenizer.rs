@@ -603,7 +603,7 @@ fn bytes_decode_rejects_saturated_ids_and_invalid_utf8() {
         match Bytes.decode(tokens) {
             Ok(text) => assert_eq!(text, "aa", "重复 ASCII 往返为原文本"),
             Err(error) => {
-                assert_eq!(error.code(), Code::Invalid, "用例 {index}");
+                assert_eq!(error.code(), Code::Invalid, "用例 {idx}");
                 assert!(!error.message().trim().is_empty(), "拒绝必须有话说");
             }
         }

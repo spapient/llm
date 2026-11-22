@@ -271,7 +271,7 @@ fn build_map(pieces: &[Vec<u8>]) -> Result<HashMap<Vec<u8>, u32>> {
             Error::new(Code::Invalid, "词表编号超出 u32 范围").with("tokenizer::Vocab::try_new")
         })?;
         if map.insert(piece.clone(), id).is_some() {
-            return Err(Error::new(Code::Invalid, format!("词片重复：编号 {index}"))
+            return Err(Error::new(Code::Invalid, format!("词片重复：编号 {idx}"))
                 .with("tokenizer::Vocab::try_new"));
         }
     }
