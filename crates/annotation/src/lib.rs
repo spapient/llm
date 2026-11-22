@@ -1,8 +1,7 @@
-//! 注解层：把"声明"写成属性，由编译器检查，而不是手写 trait 样板再靠人复核。
+//! 注解层：把契约与 kernel 声明写成属性，由编译器检查，而不是手写重复样板。
 //!
-//! **拥有**：`#[spec]` / `#[model]` 两道属性宏。**不拥有**：任何领域类型——宏只在调用点的 crate 里
-//! 展开，生成的代码指向契约路径（`::nn::Contract` / `::llm_spec::model::Model`），因此本 crate 对它们
-//! 没有依赖，也没有任何外部依赖（不引入 `syn` / `quote` / `proc-macro2`）。
+//! **拥有**：`#[spec]` / `#[model]` 契约宏与 `#[dsl]` kernel 前端。宏只在调用点的 crate 里展开，
+//! 生成代码指向契约或 IR 路径；kernel 语法由 `syn` 解析、`quote` 生成，编译期依赖不进入运行期依赖图。
 //!
 //! 注解承载的只是**可静态判定**的契约：层是（名字、输出形状、算子），语义表是（注册名、生产形状、
 //! 输出类型、骨架）。行为不在注解里，而在被标注类型所实现的那份 trait 上——两侧由 trait bound 绑死，
@@ -63,6 +62,7 @@
 #![deny(missing_debug_implementations)]
 
 mod decl;
+mod dsl;
 mod render;
 mod syntax;
 
@@ -173,6 +173,15 @@ pub fn model(attribute: TokenStream, item: TokenStream) -> TokenStream {
         render::render_model,
         syntax::model_target,
     )
+}
+
+/// 将受限的 Rust 逐点 kernel 函数转换为 `cutile::ir::Kernel` 构造器。
+///
+/// 第一版接受一层 `for i in 0..n` 循环、一个 `out[i] = expr` 写入，以及 f32 标量/缓冲区。
+/// 原函数保留为 CPU 参考实现；生成的 `__dsl_ir_<name>()` 返回可验证、可优化、可发射的 typed IR。
+#[proc_macro_attribute]
+pub fn dsl(attribute: TokenStream, item: TokenStream) -> TokenStream {
+    dsl::expand(attribute, item)
 }
 
 /// 两道注解共用的一趟展开：解析 → 取类型名 → 渲染 → 拼接。

@@ -438,15 +438,12 @@ fn code_only_stops_at_end_on_unterminated_forms() {
     assert_eq!(code_only("let raw = r\"###tail"), "let raw = r");
 }
 
-/// 运行期依赖为空：注解文法手写解析，`MODEL` 由 `Operator` 投影，不再需要任何基座 crate。
+/// 只依赖编译期 Rust AST 工具；过程宏展开后的目标 crate 不承接这些运行期依赖。
 #[test]
-fn runtime_dependency_surface_is_empty() {
+fn macro_dependencies_are_compile_time_only() {
     let manifest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
     let manifest = fs::read_to_string(&manifest_path).expect("manifest 可读");
     let mut dependencies = section_keys(&manifest, "[dependencies]");
     dependencies.sort_unstable();
-    assert!(
-        dependencies.is_empty(),
-        "运行期依赖面必须为空：{dependencies:?}"
-    );
+    assert_eq!(dependencies, ["proc-macro2", "quote", "syn"]);
 }
