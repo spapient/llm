@@ -16,10 +16,7 @@ use crate::ContractSpec as Spec;
 use crate::{Bounds, BoundsResult, Contract, ContractSpec, nonzero, spec_accessors};
 use diagnostic::Result;
 use op::conv::ConvGeom;
-use op::conv::{
-    AdaptiveAvgPool2d as OpAdaptive, Conv1d as OpConv1, Conv2d as OpConv2, Interpolate as OpInterp,
-    MaxPool1d as OpPool1, MaxPool2d as OpPool2,
-};
+use op::conv::{Conv1d as OpConv1, Conv2d as OpConv2, MaxPool1d as OpPool1, MaxPool2d as OpPool2};
 use op::deconv::{ConvTranspose1d as OpDeconv1, ConvTranspose2d as OpDeconv2};
 
 /// 一维卷积与转置卷积绑定的算子：im2col 之后就是一次矩阵乘。
@@ -374,7 +371,13 @@ impl MaxPool2d {
     /// # Errors
     ///
     /// 窗口/步长为零，或输入短于窗口时返回说明。
-    pub fn new(name: impl Into<String>, geom: ConvGeom, h: usize, w: usize, c: usize) -> Result<Self> {
+    pub fn new(
+        name: impl Into<String>,
+        geom: ConvGeom,
+        h: usize,
+        w: usize,
+        c: usize,
+    ) -> Result<Self> {
         let layer = "nn::MaxPool2d::new";
         nonzero(c, "channels", layer)?;
         let (oh, ow) = OpPool2 { geom }.shape(h, w)?;
@@ -434,11 +437,18 @@ impl AdaptiveAvgPool2d {
     }
 }
 
-planar!(
-    /// 插值层：`[h, w, c]` → `[oh, ow, c]`，取样方式见 [`op::conv::Sampler`]。规格构造口径同 [`MaxPool1d`]。
-    Interpolate,
-    "interpolate_f32"
-);
+/// 插值层：`[h, w, c]` → `[oh, ow, c]`，取样方式见 [`op::conv::Sampler`]。
+///
+/// 它比 `planar!` 那一族多一件**真状态**：`sampler` 不改输出边长，却决定算子怎么取样。
+/// 因此不塞进宏，而是显式带上——并且必须能读回（`sampler()`），否则它又会退化成死字段。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Interpolate {
+    spec: Spec,
+    sampler: op::conv::Sampler,
+    oh: usize,
+    ow: usize,
+    c: usize,
+}
 
 impl Interpolate {
     /// 构造。
@@ -457,7 +467,37 @@ impl Interpolate {
         nonzero(oh, "oh", layer)?;
         nonzero(ow, "ow", layer)?;
         nonzero(c, "channels", layer)?;
-        Self::plan(name, oh, ow, c)
+        let spec = Spec::new(name, crate::Shape::new([oh, ow, c]), ["interpolate_f32"])?;
+        Ok(Self {
+            spec,
+            sampler,
+            oh,
+            ow,
+            c,
+        })
+    }
+
+    /// 输出边长。
+    pub fn shape(&self) -> (usize, usize) {
+        (self.oh, self.ow)
+    }
+
+    /// 通道数。
+    pub fn channels(&self) -> usize {
+        self.c
+    }
+
+    /// 取样方式。
+    pub fn sampler(&self) -> op::conv::Sampler {
+        self.sampler
+    }
+}
+
+impl Contract for Interpolate {
+    spec_accessors!();
+
+    fn bounds(&self) -> BoundsResult {
+        Bounds::of_ctx("interpolate_f32", self.oh * self.ow, self.c).map(Some)
     }
 }
 

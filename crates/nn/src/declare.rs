@@ -107,13 +107,7 @@ macro_rules! layer_delegate {
             /// 由层名与元素数构造；元素数为零、或算子未在 `op` 注册时返回说明。
             pub fn new(name: impl Into<String>, len: usize) -> diagnostic::Result<Self> {
                 Ok(Self {
-                    inner: $crate::declare::AxisCore::new(
-                        name,
-                        Self::OP,
-                        len,
-                        $kind,
-                        $role,
-                    )?,
+                    inner: $crate::declare::AxisCore::new(name, Self::OP, len, $kind, $role)?,
                 })
             }
 

@@ -96,7 +96,12 @@ impl Recurrent {
         crate::nonzero_all(
             "nn::Recurrent::new",
             "循环层 ",
-            &[("input", input), ("hidden", hidden), ("layers", layers), ("dirs", dirs)],
+            &[
+                ("input", input),
+                ("hidden", hidden),
+                ("layers", layers),
+                ("dirs", dirs),
+            ],
         )?;
         if dirs > 2 {
             return Err(Error::new(
@@ -154,10 +159,7 @@ impl Recurrent {
 
     /// 权重条目名：`{块}.{单元}{层}.{方向}{WEIGHT_SUFFIX}`。门矩阵按层按方向各驻留一整块。
     pub fn weight_entry(&self, block: &str, level: usize, dir: usize) -> String {
-        format!(
-            "{block}.{}{level}.{dir}{WEIGHT_SUFFIX}",
-            self.cell.name()
-        )
+        format!("{block}.{}{level}.{dir}{WEIGHT_SUFFIX}", self.cell.name())
     }
 
     /// 全部权重条目名，按 `(层, 方向)` 升序——装配侧按它逐条取权重整块。

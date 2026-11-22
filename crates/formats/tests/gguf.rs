@@ -1,6 +1,6 @@
 //! `gguf` 模块的单元测试。
-use super::quant::f16_to_f32;
 use super::*;
+use crate::quant::f16_to_f32;
 
 #[path = "gguf_fixture.rs"]
 mod fixture;
@@ -117,7 +117,7 @@ fn reads_header_and_metadata() {
 }
 
 #[test]
-fn decodes_plain_types() {
+fn decodes_every_supported_kind_to_pinned_values() {
     let raw = fixture::standard();
     let file = Gguf::parse(&raw).unwrap();
     assert_eq!(
@@ -132,16 +132,21 @@ fn decodes_plain_types() {
         file.floats("q8.weight").unwrap(),
         (0..32).map(|i| i as f32 - 16.0).collect::<Vec<_>>()
     );
-}
-
-#[test]
-fn decodes_q4k_and_q6k() {
-    let raw = fixture::standard();
-    let file = Gguf::parse(&raw).unwrap();
+    // 夹具的块量化是 d=1.0、min=0、scales 全 1、qs 全 0x21：低半字节 1、高半字节 2。
+    // 因此 Q4_K 每组 64 个值是 32 个 1.0 后接 32 个 2.0；Q6_K 的量化点 1/1/2/2 减 32 后
+    // 是 64 个 -31.0 后接 64 个 -30.0。数值按 GGML 规范手推，不是拿实现自证。
     let q4 = file.floats("q4.weight").unwrap();
     assert_eq!(q4.len(), 256);
+    for group in q4.chunks(64) {
+        assert!(group[..32].iter().all(|&v| v == 1.0), "{:?}", &group[..4]);
+        assert!(group[32..].iter().all(|&v| v == 2.0), "{:?}", &group[32..36]);
+    }
     let q6 = file.floats("q6.weight").unwrap();
     assert_eq!(q6.len(), 256);
+    for part in q6.chunks(128) {
+        assert!(part[..64].iter().all(|&v| v == -31.0), "{:?}", &part[..4]);
+        assert!(part[64..].iter().all(|&v| v == -30.0), "{:?}", &part[64..68]);
+    }
 }
 
 #[test]

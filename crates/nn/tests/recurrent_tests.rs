@@ -40,7 +40,10 @@ fn every_layer_and_direction_owns_one_weight_entry() {
     assert_eq!(entries.len(), 3 * 2, "三层双向六块");
     let unique: std::collections::BTreeSet<&String> = entries.iter().collect();
     assert_eq!(unique.len(), entries.len(), "条目名必须互不重复");
-    assert!(entries.iter().all(|entry| entry.starts_with("rnn.gru")), "条目带单元名");
+    assert!(
+        entries.iter().all(|entry| entry.starts_with("rnn.gru")),
+        "条目带单元名"
+    );
     assert!(entries.iter().all(|entry| entry.ends_with(WEIGHT_SUFFIX)));
 }
 
@@ -57,7 +60,11 @@ fn the_first_layer_wires_the_input_width_and_the_rest_wire_the_stack() {
 
     let deep = Recurrent::new("r", Cell::Rnn, 16, 8, 2, 2, true).expect("合法");
     let widths: Vec<usize> = deep.projections().map(|(inp, _)| inp).collect();
-    assert_eq!(widths, [16, 16, 16, 16], "第二层吃 `隐宽·2`，与输入宽 16 恰好同值");
+    assert_eq!(
+        widths,
+        [16, 16, 16, 16],
+        "第二层吃 `隐宽·2`，与输入宽 16 恰好同值"
+    );
 }
 
 /// 双向把两个方向拼起来：单层时输出宽、参数与下界都精确翻倍。
@@ -76,7 +83,11 @@ fn going_bidirectional_doubles_parameters_and_floors() {
     let floor = |layer: &Recurrent| layer.bounds().expect("合法").expect("有算子");
     assert_eq!(floor(&bi).read(), floor(&uni).read() * 2, "读侧精确翻倍");
     assert_eq!(floor(&bi).write(), floor(&uni).write() * 2, "写侧精确翻倍");
-    assert_eq!(floor(&bi).flops(), floor(&uni).flops() * 2.0, "算术量精确翻倍");
+    assert_eq!(
+        floor(&bi).flops(),
+        floor(&uni).flops() * 2.0,
+        "算术量精确翻倍"
+    );
 }
 
 /// 下界随隐宽、层数、输入宽单调增；单元越"重"越贵。这条用例盯的是「下界真的进了门表」。

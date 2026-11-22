@@ -2,8 +2,8 @@
 //! 不参与自有容器、量化方案与证书判定。
 //!
 //! 文件名即格式名或唯一机制名，限定词下沉为同名目录（`gguf/quant`）：`json`、`zip`、
-//! `pickle`、`torch`、`gguf`，共享机制 `cursor`；测试夹具名同样以职责命名
-//! （`torch_sample` 只负责本机 torch `.bin` 样本）。
+//! `pickle`、`torch`、`gguf`，共享机制 `cursor`。唯一的测试夹具是文件尾的 `torch_sample`
+//! （只负责本机 torch `.bin` 样本）——它内联在此，`crate::torch_sample` 路径不变。
 
 #![deny(unsafe_code)]
 
@@ -13,7 +13,15 @@ pub mod json;
 pub(crate) mod pickle;
 pub mod torch;
 pub(crate) mod zip;
+mod quant;
 
+/// 测试夹具：本机 torch `.bin` 样本；其余夹具仍留在 `weights`。
 #[cfg(test)]
-#[path = "../tests/torch_sample.rs"]
-mod torch_sample;
+mod torch_sample {
+    /// 读取本机 torch `.bin` 样本；样本缺失返回 `None`，测试跳过而不是伪造字节。
+    pub(crate) fn real_bin_bytes() -> Option<Vec<u8>> {
+        std::fs::read("/tmp/pt/model.bin")
+            .ok()
+            .or_else(|| testkit::skip_none("torch 样本缺失"))
+    }
+}

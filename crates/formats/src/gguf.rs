@@ -1,13 +1,11 @@
 //! 职责：GGUF v3 只读解析——头部、KV 元数据表与张量信息表、数据区定位，以及分块反量化入口。
 
-mod quant;
-
 use diagnostic::{Code, Error, Result};
 use dtype::{DType, QType};
 use wire::bad;
 
 use crate::cursor::Cursor;
-use quant::dequantize;
+use crate::quant::dequantize;
 
 /// 文件 magic。
 pub const MAGIC: [u8; 4] = *b"GGUF";

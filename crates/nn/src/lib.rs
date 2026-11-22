@@ -48,11 +48,11 @@ pub use annotation::spec;
 
 use diagnostic::{Code, Error, Result};
 
-mod recurrent;
 mod attention;
 mod declare;
 mod engram;
 mod format;
+mod recurrent;
 mod lm_head {
     //! `lm_head`：由注解声明的固定形状层。
 
