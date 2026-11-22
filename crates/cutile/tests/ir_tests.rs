@@ -468,10 +468,10 @@ fn a_pipeline_that_never_settles_is_an_error() {
     assert!(error.to_string().contains("[grow]"), "{error}");
 }
 
-/// 出站校验失败归到流水线上：`broken` 交出一个坏内核，报错必须点它的名字，而不是让调用方
-/// 以为自己传进来的内核有问题（入站校验在这里是能过的）。
+/// 坏内核由 pass 产出时，报错点名那条 pass：入站校验能过，调用方就不会误以为是自己写错了，
+/// 而且发布构建里也不会让它溜到发射器。
 #[test]
-fn an_invalid_kernel_from_a_pass_names_the_pipeline() {
+fn an_invalid_kernel_from_a_pass_names_the_pass() {
     struct Broken;
     impl Pass for Broken {
         fn name(&self) -> &'static str {
@@ -488,7 +488,7 @@ fn an_invalid_kernel_from_a_pass_names_the_pipeline() {
         .run(minimal())
         .expect_err("a pass that breaks the signature must be reported");
     let message = error.to_string();
-    assert!(message.contains("[broken]"), "{message}");
+    assert!(message.contains("`broken`"), "{message}");
     assert!(message.contains("invalid kernel"), "{message}");
 }
 

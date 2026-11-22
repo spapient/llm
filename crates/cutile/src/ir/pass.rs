@@ -1,8 +1,8 @@
 //! Typed-IR pass framework: named transforms over a [`Kernel`], driven to a fixpoint.
 //!
 //! 一个 [`Pass`] 只做一件事：把内核变成另一个内核（LLVM 的 pass 模型，规模压到 `#[dsl]` 这一族）。
-//! [`PassManager::run`] 就是全部契约——进来先校验，把注册的 pass 扫到不动点，出去再校验；离开
-//! 管理器的内核按构造成立，与注册了哪些 pass 无关。
+//! [`PassManager::run`] 就是全部契约——进来先校验，把注册的 pass 扫到不动点，**每个 pass 之后**
+//! 再校验一次；离开管理器的内核在任何构建下都合法，与注册了哪些 pass 无关。
 //!
 //! 为什么要扫不止一轮：管理器**不要求**调用方按依赖顺序注册。任一 pass 都可能在已经跑过的 pass
 //! 左侧造出新的机会，只有下一轮才轮得到它，所以「注册顺序」不该是正确性的前提。轮次不用魔法数：
@@ -51,10 +51,11 @@ impl PassManager {
         self
     }
 
-    /// Verify, sweep the passes to a fixpoint, verify again.
+    /// Verify the input, then sweep the passes to a fixpoint.
     ///
     /// 轮次上限是初始内核的 `cost`：严格收缩的 pass 每轮至少减一，收敛必然在此之前发生。上限
-    /// 耗尽说明某个 pass 既不收缩也不幂等，此时返回错误，而不是把半成品当结果交出去。
+    /// 耗尽说明某个 pass 既不收缩也不幂等，此时返回错误，而不是把半成品当结果交出去。每个 pass
+    /// 之后都会校验，所以「交出的内核合法」由构造保证，调用方不必自己再验一次。
     ///
     /// # Errors
     ///
@@ -62,15 +63,7 @@ impl PassManager {
     /// never settles.
     pub fn run(&self, kernel: Kernel) -> Result<Kernel, VerificationError> {
         kernel.verify()?;
-        let kernel = self.fixpoint(kernel)?;
-        // 出站校验失败只可能来自某个 pass，所以把它归到流水线上：调用方写坏内核是入站错误，
-        // 已经在上一步报掉了。
-        kernel.verify().map_err(|error| {
-            VerificationError::new(format!(
-                "pass pipeline [{}] produced an invalid kernel: {error}",
-                self.names()
-            ))
-        })
+        self.fixpoint(kernel)
     }
 
     /// Pass names in registration order, for diagnostics.
@@ -96,18 +89,22 @@ impl PassManager {
         )))
     }
 
-    /// One left-to-right round. A pass that breaks verification is a framework bug, not a caller
-    /// error, so it is caught here in debug builds instead of surfacing as invalid emitted code.
+    /// One left-to-right round, verifying after every pass.
+    ///
+    /// 每个 pass 之后都校验，而不是只在两端校验：坏内核不会在发布构建里溜到发射器，报错还能
+    /// 直接点名是哪条 pass。校验是线性的、内核又小，换来的是「管理器交出的内核一定合法」在
+    /// **任何构建**下都成立——`run` 因此不必再补一次出站校验。
     fn sweep(&self, kernel: Kernel) -> Result<(Kernel, bool), VerificationError> {
         let start = kernel.clone();
         let mut kernel = kernel;
         for pass in &self.passes {
             kernel = pass.run(kernel)?;
-            debug_assert!(
-                kernel.verify().is_ok(),
-                "pass `{}` produced an invalid kernel",
-                pass.name()
-            );
+            kernel.verify().map_err(|error| {
+                VerificationError::new(format!(
+                    "pass `{}` produced an invalid kernel: {error}",
+                    pass.name()
+                ))
+            })?;
         }
         let changed = kernel != start;
         Ok((kernel, changed))
