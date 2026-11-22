@@ -182,7 +182,7 @@ mod tests;
 
 pub mod f32 {
     //! `scan_f32`：β 指数梯形扫描（§5.6）的离散递推 `s_t = a·s_{t-1} + b·x_t`。
-    use crate::model::{Buf, Cost, Sample, ShapeCtx, Values, cost_n, x_buf};
+    use crate::model::{Cost, Sample, ShapeCtx, cost_n};
     use diagnostic::{Code, Error};
 
     // 单轴定义与形状投影复用 unary 骨架：时间轴 `n` 既是输入轴也是输出轴。
@@ -204,18 +204,7 @@ pub mod f32 {
 
     /// 确定性样本：`x`、`y` 两个等长缓冲，标量 `N` 是时间步数。
     pub fn sample(len: usize, _: usize) -> Sample {
-        Sample {
-            m: len,
-            n: len,
-            scalars: vec![("N", len as i64)],
-            bufs: vec![
-                x_buf(len),
-                Buf {
-                    name: "y",
-                    values: Values::F32(vec![0.0; len]),
-                },
-            ],
-        }
+        Sample::f32_vector_io(len, vec![("N", len as i64)])
     }
 
     /// 标量参考：`s = ā·s + b̄·x[t]`，初态 `s = 0`，与内核同一公式。

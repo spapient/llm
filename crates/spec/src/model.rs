@@ -98,6 +98,22 @@ pub struct Sample {
 }
 
 impl Sample {
+    /// 构造单轴 f32 输入/输出样本：`x` 使用确定性夹具，`y` 初始化为零。
+    pub fn f32_vector_io(len: usize, scalars: Vec<(&'static str, i64)>) -> Self {
+        Self {
+            m: len,
+            n: len,
+            scalars,
+            bufs: vec![
+                x_buf(len),
+                Buf {
+                    name: "y",
+                    values: Values::F32(vec![0.0; len]),
+                },
+            ],
+        }
+    }
+
     /// 按名字取缓冲。
     pub fn buf(&self, name: &str) -> Option<&Buf> {
         self.bufs.iter().find(|buf| buf.name == name)

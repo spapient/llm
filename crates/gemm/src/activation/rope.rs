@@ -11,7 +11,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::model::{Buf, Cost, Sample, ShapeCtx, Values, cost_n, x_buf};
+use crate::model::{Cost, Sample, ShapeCtx, cost_n};
 use diagnostic::{Code, Error};
 
 /// 频率底数。
@@ -53,18 +53,7 @@ pub fn cost(shape: &ShapeCtx) -> Result<Cost, Error> {
 
 /// 确定性样本：`x`、`y` 两个等长（偶数）缓冲，位置固定为 7。
 pub fn sample(len: usize, _: usize) -> Sample {
-    Sample {
-        m: len,
-        n: len,
-        scalars: vec![("N", len as i64), ("pos", 7)],
-        bufs: vec![
-            x_buf(len),
-            Buf {
-                name: "y",
-                values: Values::F32(vec![0.0; len]),
-            },
-        ],
-    }
+    Sample::f32_vector_io(len, vec![("N", len as i64), ("pos", 7)])
 }
 
 /// 标量参考：与内核同一公式，位置取样本标量 `P`。
