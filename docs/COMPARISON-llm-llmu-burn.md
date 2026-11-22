@@ -186,52 +186,70 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 
 
 
-### 3.3 形状视图算子面
+### 3.3 形状视图算子面：**本仓没有这一层，这是裁决不是遗漏**
 
-日常张量 API 的主体不是 GEMM，而是"不改数据只看别的切法"的那一族：切片、取轴、广播、压平。
+日常张量 API 的主体不是 GEMM，而是"不改数据只看别的切法"的那一族。Burn 有完整的 `narrow` /
+`slice` / `chunk` / `split` / `unbind` / `select` / `squeeze` / `unsqueeze` / `flatten` / `diagonal` /
+`movedim` / `flip` / `permute` / `expand` / `slice_fill` / `slice_assign`。本仓**曾经逐条实现过**
+（`crates/tensor` 1,247 行的步长视图岛，`layout::spliced` 一个原语供四个秩变化算子共用），
+本轮**整份删除**。判定依据是"有没有消费者"，不是"写得漂不漂亮"。
 
-| 算子                              | llm（新）`tensor`                                                  | Burn                    | 实现代价                                    |
-| ------------------------------- | --------------------------------------------------------------- | ----------------------- | --------------------------------------- |
-| `narrow(axis, start, len)`      | ✅ 秩不变，返回 `Self`                                                 | ✅ `narrow`              | O(1)：起点前移 + 改一个轴长，无分配                  |
-| `slice(ranges)`                 | ✅ 一次切多轴，段可带步长（`Slice::stepped`，即 Burn 的 `s![..;2]`）              | ✅ `slice`（`s![...]`）   | O(轴数)，多轴合成一次；步长只乘进元数据                  |
-| `chunks(axis, pieces)`          | ✅ 沿一轴等分成至多 N 段，每段借用同一存储，不复制                                    | ✅ `chunk`               | 一段 = 一次 `narrow`，无新几何                  |
-| `split(axis, sizes)`            | ✅ 按段长切分；末段夹到剩余长度，任何正段长序列都恰好划分整轴一次                                   | ✅ `split`（段长之和不等则 panic） | 与 `chunks` 同一条路径：`chunks` 就是等长请求             |
-| `unbind::<R2>(axis)`            | ✅ 沿一轴逐个固定，一次借出 N 个秩减一视图，原张量不动                                        | ✅ `unbind`              | O(N·轴数)：与 `select` 共用 `layout::select`     |
-| `slice_fill(ranges, v)`         | ✅ 就地写同一窗，窗口外不动（仅自持存储）                                            | ✅ `slice_fill`          | 复用 `layout::window` + 一趟进位                  |
-| `slice_assign(ranges, values)`  | ✅ 源取 `&[K]`，按逻辑顺序写入，长度必须正好相等                                       | ✅ `slice_assign`        | 同上；非连续窗口也照写                             |
-| `select::<R2>(axis, idx)`       | ✅ 秩减一，目标秩由调用方给出                                                  | ✅ `select`              | O(轴数)：与 `squeeze` 共用同一个 splice 原语      |
-| `squeeze::<R2>` / `unsqueeze::<R2>` | ✅                                                          | ✅                       | 同上；`unsqueeze` 插入步长 0 的轴               |
-| `flatten(start, end)`           | ✅ 相邻轴按行主序压成一轴，不紧凑则 `None`                                        | ✅ `flatten`/`reshape`   | 先核轴长之积与步长，再 splice                      |
-| `diagonal::<R2>(a, b)`          | ✅ 两轴折一轴（长度取小、步长相加），对角即视图，零拷贝                                     | ✅ `diagonal`            | O(轴数)：折步长 + 一次 splice；对角元素全在同一条算术级数上 |
-| `broadcast(dims)`               | ✅ 前导新轴 + 单例扩展，步长写 0，零拷贝                                          | ✅ `expand`              | O(轴数)                                  |
-| `movedim(from, to)`             | ✅ 搬一轴、其余轴次序不动（`transpose` 只交换两轴）                              | ✅ `movedim`             | 与 `permute` 同一条路径：造一条置换交给它校验，无新几何        |
-| `flip(axes)`                    | ✅ 沿各轴反向读出，借来视图也能翻                                               | ✅ `flip`                | O(numel)：无符号步长表达不出倒读，这一步必须搬数据         |
+**可复现证据（原始命令 + 原始输出）。** 删除前的最后一个提交是 `326df52e7`，其父提交里，
+`tensor` crate 之外引用 `tensor::{Tensor,View,Rank,Store,Element}` 的地方**逐行数完是这些**：
 
-**判定：**
+```console
+$ D=$(git log --format=%H -1 --diff-filter=D -- crates/tensor/src/tensor.rs)
+$ git grep -c "tensor::Tensor\|tensor::View\|tensor::Rank\|tensor::Store\|tensor::Element" "$D^" -- ':!crates/tensor/*'
+$D^:.config/lints/vocabulary.toml:1
+$D^:CHANGELOG.md:2
+$D^:crates/cli/src/status.rs:4
+$D^:docs/ARCHITECTURE.md:1
+```
 
-* 这一族在本仓的实现收敛到**一个原语**：`layout::spliced(dims, steps, base, start, end, item)` 在定长栈数组上做"头拷贝 / 插一项 / 尾前移"。`select`、`squeeze`、`unsqueeze`、`flatten` 四个秩变化算子全部是它在不同区间上的调用——Burn 侧是四套各自展开的后端 bridge。
+`crates/cli/src/status.rs` 的那 4 行是 `status` 面板造一个 2×2 硬编码矩阵、再把 `dims`/`rank`/`numel`
+印出来。**计算路径一行都没有**：`gemm` / `gemv` / `attention` / `batch` / `scheduler` 全都不经过
+`tensor::Tensor`，它们吃的是裸指针 + 标量 + Fragment 契约。`.config` 那 1 行是同名碰撞的说明，
+`CHANGELOG` 那 2 行是历史记录。合计 6 行非历史文本、1 个真实调用点。
 
-* 关键在一处：张量原本只记 `(dims, strides)`，`narrow` 只能靠借用切片的 `buf.get(skip..)` 伪造子视图——那就**只对借来的存储成立**，且静态秩会退化成 `Vec<usize>`。补上真正的 `base`（起点偏移）后，所有形状算子变成与存储无关的**整数运算**：持有型 `Owned<K>`、借来型 `&[K]` 同一份代码，`[usize; D]` 静态秩不退化。
+**为什么不补消费者、而是删实现。** 本仓的抽象单位是「算子契约 + 设备 Fragment + 执行缝」
+（ADR 0053），排布由**算子声明**持有；在元数据类型层再建一套步长代数，就是同一件事的第二份措辞，
+正是 N6 禁止的"第二份真相"。要真正用起来，缺的不是"更好的视图 API"，而是一个需要窗口读写的算子；
+那个算子落地时会连同它自己的几何字段一起落，而不是先造 API 再找用户。
 
-* 派生视图**免检**：布局不变量是 `base + 最高偏移 < len`，而切片 / 取轴 / 压平只会缩小可达范围、不会放大，所以不变量按构造成立。这不只是省一次校验——`check_empty` 会拒绝"非空缓冲上的零元素形状"，而切出空行是合法的，重校验反而会误杀。
+**旧能力 → 新位置 → 验证用例**（三列台账，缺一列即未完成）：
 
-* `is_contiguous` 对单例轴不敏感（`dims[axis] > 1` 才参与判据）：插入的步长 0 轴、压平后的单例段都不会把连续布局误判成非连续。Burn 的 `is_contiguous` 走 `strides` 比较，单例轴的处理分散在各后端。
+| 旧能力 | 新位置 | 验证用例 / 结论 |
+| --- | --- | --- |
+| `Tensor::new` 构造 + 形状/元素数校验 | `tensor::Shape`（`numel` 饱和乘积、`element_bytes` 位级取整） | `crates/tensor/tests/shape_tests.rs` **5 条**；`cargo test -p llm-tensor` **5 + 1 doctest** 绿 |
+| `Shape::numel` / 亚字节字节数 | 同左（唯一实现，`DType::bytes_for` 委托） | 同上：`[2,3]` 的 `F16`/`BF16`→12 B、`U8`/`I8`→6 B、`U4`/`I4`→3 B |
+| `View::strided` / `row` / `is_contiguous` | **无新位置** | 全仓零消费者（上表 1 个调用点不碰步长）；能力随需求一起删除 |
+| `broadcast` / `narrow` / `slice` / `chunks` / `split` / `unbind` / `select` / `squeeze` / `unsqueeze` / `flatten` / `diagonal` / `movedim` / `flip` / `permute` | **无新位置** | 同上。注意：`git grep -w split` 的 116 命中全是 `str::split`、`slice::chunks` 这类 `core` 方法，不是张量视图——按名字数命中会得出相反的结论 |
+| `slice_fill` / `slice_assign`（窗口写） | **无新位置** | 窗口写属于执行面（ADR 0053 判给 DSL/kernel）；元数据层做 `&mut` 分区会造出第二套并发规则（ADR 0003 已写明这一点） |
+| `status` 面板的"张量/视图"两行 | `crates/cli/src/status.rs::data_rows`，改印 `Shape` 与 `DType` 的真实读数 | `cargo check -p llm-cli --all-targets` 干净；`cargo run -p llm-cli --bin llm -- status` 打印 `dims`/`rank`/`numel` 与 f32/f16/i8/u4 字节数 |
+| 元素类型单态化面（`Element` trait） | `dtype::DType`（24 变体）+ `dtype::Class`（4 类）+ `train::kernel::shape::Lane`（2 条存储 lane） | `cargo test -p llm-dtype` **18 + 8**；`llm-train` 的 `no_storage` 路径覆盖无标量 lane 的报错 |
 
-* 秩变化要靠目标见证（`select::<R2>`）：稳定 Rust 算不出 `D - 1`，这与 Burn 的 `.squeeze::<2>()` 是同一约束；本仓的 `R2` 还可以是 `Vec<usize>`，所以同一份源码也能跑运行期秩。
+**判定：这一格 llm 明确弱于 Burn，如实记 4 分（Burn 10）。** 不是"设计更先进所以不需要"，
+而是"没有需求所以没有能力"。任何声称本仓在形状视图面上超过 Burn 的说法都是假的。
 
-* 读与写共用一趟进位：`walk(shape, steps, base, visit)` 是唯一"怎么走遍逻辑位置"的实现，摊平（读）与窗口赋值（写）都只是给它一个闭包。`flip` 是唯一例外——步长无符号，镜像下标得逐元素重算，所以它是本族里唯一搬数据的算子，文档与类型（返回 `Tensor<Owned<K>, R, K>`）都把这件事写明，而不是假装零拷贝。
+**真正的差异不在这里，而在下面三条可复核的类型系统事实**（这三条 Burn 当前没有）：
 
-* 与 Burn 的命名对齐用 `#[doc(alias)]`（`expand`、`swap_dims`），不另开同名方法：别名不产生第二份实现，于是"少写一份"和"用户搜得到"同时成立。
+1. **亚字节元素是一等公民，不是打包开关**。`DType` 里 `U1`/`U2`/`U4`/`I4`/`F4` 与 `F32` 同表，
+   `bits()` 给真实位宽，`bytes_for(numel)` 做位级向上取整（`[2,3]` 的 `U4` = 3 字节而不是 6），
+   所以"一个张量占几个字节"在任何精度下都只有一处算法。Burn 的 `Element` 要求 `size_of::<Self>()`
+   整除，亚字节只能靠外部打包约定。
+2. **能力层是分类表的一列，不是第二套类型参数**。`Class::{Bool,UInt,SInt,Float}` 存在
+   `DTypeSpec` 行表里，`is_float` / `is_integer` / `is_signed` / `is_sub_byte` 全是
+   `self.spec().class` 的 `const fn` 投影——Burn 的 `Kind` 是一条类型参数链
+   （`Basic`→`Numeric`→`Ordered`→`FloatMath`），每多一档就多一层泛型；这里多一档是往行表里
+   加一列，调用方签名不变。本轮的缺陷只是**没导出**（`mod dtype` 私有），已修：
+   `pub use dtype::{Class, DType, DTypeSpec};`。
+3. **"哪个算子能用于哪种元素"由算子身份编码，不靠运行期谓词**。注册名自带精度档
+   （`add_f32` / `gemv_i2` / `dequant_i8`），于是"不支持的组合"是**不可表示**的，而不是先构造
+   再拒绝；`tensor` 侧因此不需要一个 `supports(dtype)` 的运行期开关（ADR 0018 里那个
+   `tensor::SUPPORTED` 表已随本层删除）。Burn 靠 `Kind` 在编译期拦，靠 trait bound 表达；
+   这里靠注册表在**构造期**拦，两种都对，但后者不要求调用方在类型签名里背 `Kind`。
 
-* `split` 与 `chunks` 不是两个算子而是一个：`chunks` 就是「等长请求」的 `split`，末段夹紧因此只有一处实现。段长越界时 Burn panic，这里夹到剩余长度——语义相同（各段无重叠、无缝隙覆盖整轴）但是全函数，调用方不必先验算和。
-* `unbind` 是 `select` 的批量借用版：同一个 `layout::select` 一次性给出 N 份视图，原张量还能同时被写入；「布局 → 张量」的装座只写在 `seat` 一处，`respine`（吃掉存储）与借用版共用。
-* 对角不是新几何，只是"两轴步长相加"：`(i, j)` 落在 `base + i·step_a + j·step_b`，取 `j = i` 就是 `base + i·(step_a + step_b)`。于是 `diagonal(a, b)` = 折一次步长 + 一次 `splice`，秩减一、**一个元素都不搬**——`trace` / 取值都建在这个视图上，转置过的张量也照取（轴序无关）。
-
-* 带步长的切片是同一套元数据的自然结果，不是新机制：`steps[axis] *= step`、`dims[axis] = ceil(len / step)`，两行让 `s![..;2]` 这种降采样成为零拷贝视图；`slice` 于是收 `impl AsRef<[S]>` 且 `S: Into<Slice>`，`0..4` 与 `Slice::stepped(0, 4, 2)` 在同一个数组里都合语法（连续段是 `From<Range<usize>>`）。
-
-* `chunks` 不给"分段"单开几何：一段就是一次 `narrow`，视图借用父张量的存储，段与段之间零复制、零分配；父张量若是转置视图，分段自然继承其步长。
-
-
+三处的验证口径见 §3.1/§3.2 与 `docs/lld.md` v3.0.58 的记账行。
 ***
 
 ## 4. 后端与执行模型
@@ -705,7 +723,7 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 
 * **Burn（●，10）**：秩 `D`、元素类型 `K`、后端 `B` 全部进入泛型参数，`Tensor<B, const D, K>` 贯穿算子与模块；后端不支持的算子在编译期就被拦住。连续 / 非连续视图、stride、reshape、permute 全套布局能力。这是三者中唯一 "类型即约束" 的张量模型，也是框架最硬的地基。
 
-* **llm 新（◐，6）**：一个 `Tensor<B, R, K>` 与 Burn 同形——`B` 存储、`R` 秩、`K` 元素类型；`R` 同时接受 `[usize; D]` 与 `Vec<usize>`，是 Burn `const D` 的**超集**（运行期 batch / segment 几何进同一个类型）。精度闭集（GGML 块量化 + MX 微缩放 + FP4 元素）广度甚至超过 Burn 当前 dtype 表。**差别不在有没有秩泛型，而在 `B` 是存储不是后端**：算子由 `op` 的数据驱动注册表给出（ADR 0053 量过 `B: Backend` 的代价——`FloatTensorOps` 一个接口就 130 个方法），所以「后端不支持的算子在编译期被拦住」这件事这里换成注册表 + `supports(dtype)` 的构造期拒绝。形状与元素数错误在**构造期**一次拦下（`layout::check` 唯一一条校验路径），单/多算子语义错误仍归 `spec/testkit`。
+* **llm 新（◐，4）**：`tensor` 现在只做**无执行的元数据描述**——`Shape`（`numel` 饱和乘积、`element_bytes` 位级取整）与 `DType` 的再导出，整个 crate 约 55 行；原先的 `Tensor<B,R,K>` 与整套步长视图面已按「零消费者」删除（证据与三列台账见 §3.3）。**这一格明确弱于 Burn，不辩解**：Burn 的「秩 `D` + 元素 `K` + 后端 `B` 全部进泛型」是类型即约束；本仓没有对应物，秩由算子契约的定长数组表达，元素类型在注册名里（`add_f32`/`gemv_i2`），后端不在类型里（ADR 0053 量过 `B: Backend` 的代价：`FloatTensorOps` 一个接口就 130 个方法）。**真正的强项只有三条，且都可复核**：（一）亚字节元素（`U1`/`U2`/`U4`/`I4`/`F4`）与 `F32` 同表，`bytes_for` 是唯一的位级取整算法，Burn 的 `Element` 要求 `size_of` 整除、亚字节只能靠外部约定；（二）能力层是 `DTypeSpec` 行表里的一列 `Class`，`is_float`/`is_integer`/`is_signed` 全是它的 `const fn` 投影，而 Burn 的 `Kind` 每多一档就多一层泛型参数；（三）不支持的「算子 × 元素」组合**不可表示**（没有 `gemv_f16` 这个名字），而不是构造后再拒绝。
 
 * **llm.u（○，2）**：只有 `Shape{m,n,k}`（GEMM 三维）+ `Vec<f32>` 扁平缓冲，没有独立张量类型，也无秩 / 后端泛型。局部亮点是把 TF32 建模成 "F32 存储上的计算档"，显式区分存储档与计算档；除此之外布局与类型能力最弱。
 
