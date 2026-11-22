@@ -219,8 +219,22 @@ fn a_static_rank_owned_tensor_walks_the_whole_shape_surface() {
     assert_eq!(pieces.len(), 3);
     assert_eq!(pieces[2].dims(), [2, 2]);
 
+    let diag: Tensor<crate::Owned<f32>, [usize; 1], f32> = wide.diagonal(0, 1).expect("对角");
+    assert_eq!(diag.dims(), [2], "2×6 的对角长度取小者");
     assert_eq!(
-        wide.select::<[usize; 1]>(0, 1).expect("固定首轴").dims(),
-        [6]
+        diag.to_vec(),
+        vec![1.0f32, 2.0],
+        "对角沿列走：(0,0)=1、(1,1)=2；行方向步长为 0 不影响"
+    );
+
+    let two: Tensor<crate::Owned<f32>, [usize; 2], f32> = diag
+        .unsqueeze(0)
+        .expect("提轴")
+        .broadcast([2, 2])
+        .expect("广播");
+    assert_eq!(
+        two.select::<[usize; 1]>(0, 1).expect("固定首轴").dims(),
+        [2],
+        "静态秩下 select 同样只减一秩"
     );
 }

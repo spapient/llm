@@ -70,6 +70,34 @@ cargo run -p llm-cli --bin cutile -- cache gc --limit 1073741824                
 `cargo run -p llm-cli --bin llm` 的 `片段层 prim` 一行会逐台列出 `=源码` / `=metallib N B/M 个符号`；
 `CUTILE_REQUIRE_IMAGE=metal` 把"缺镜像"升级成构建失败。细节见 [`crates/prim/README.md`](crates/prim/README.md)。
 
+## 张量形状算子面（`tensor`）
+
+`Tensor<B, R, K>` 与 Burn 的 `Tensor<B, const D, K>` 同构：第一个位置是存储，第二个是秩，
+第三个是元素类型。差别在秩可二选一——`[usize; D]` 是编译期秩（形状/步长是栈上定长数组，
+秩错在编译期拦下），`Vec<usize>` 是运行期秩（batch / segment 几何要到运行期才知道）；同一套
+算子两种秩通用，存储可以是借来的 `&[K]` 或自持的 `Owned<K>`。
+
+整套形状算子是 `(起点偏移, 各轴长度, 各轴步长)` 上的整数运算，**除 `flip` 外一个元素都不搬**，
+派生视图与源张量共用同一块存储：
+
+| 算子 | 秩 | 语义 |
+|---|---|---|
+| `broadcast` | 不变 | 前导新轴 + 单例扩展，步长写 0 |
+| `narrow` / `slice`（含 `Slice::stepped`） | 不变 | 沿一轴 / 多轴取段，段可带步长（降采样视图） |
+| `chunks` / `split` | 不变 | 等分 / 按段长切分，各段借用同一存储；段长越界夹紧，不 panic |
+| `select` / `unbind` | −1 | 固定某轴一个下标 / 逐个固定并一次借出 N 份 |
+| `squeeze` / `unsqueeze` | ∓1 | 去掉 / 插入长为 1 的轴 |
+| `diagonal` | −1 | 两轴折一轴（长度取小、步长相加），对角即视图 |
+| `flatten` | 变短 | 把行主序紧凑的一段轴压成一个；不紧凑返回 `None` |
+| `transpose` / `permute` | 不变 | 换轴序 |
+| `slice_fill` / `slice_assign` | 不变 | 就地写同一个窗口（仅自持存储） |
+| `flip` | 不变 | 沿指定轴反向读出——步长无符号，只有它要搬数据 |
+
+改秩的算子要写目标秩见证（`t.select::<[usize; 1]>(0, 3)`），因为稳定 Rust 算不出 `D - 1`——
+与 Burn 的 `.squeeze::<2>()` 同一手法，只是这里 `Vec<usize>` 也可以。逐算子实现代价与对 Burn 的
+逐条比较在 [`docs/COMPARISON-llm-llmu-burn.md`](docs/COMPARISON-llm-llmu-burn.md) §3.3，
+源码 [`crates/tensor/src/tensor.rs`](crates/tensor/src/tensor.rs) 的模块文档有同一张表。
+
 ## 配置
 
 运行时的值与目录只有一处来源——`cli::settings`（`crates/cli/src/settings.rs`），默认值面向**发布后的

@@ -691,3 +691,88 @@ fn chunks_of_a_transposed_view_keep_the_layout() {
     assert_eq!(parts[2].strides(), [1, 4], "分段不改步长");
     assert_eq!(parts[2].to_vec(), vec![8.0f32, 9.0, 10.0, 11.0], "第 3 列");
 }
+
+#[test]
+fn diagonal_folds_two_axes_by_adding_their_strides() {
+    let values = counted();
+    let matrix: View<'_, f32> = View::new(Shape::new([3, 4]), &values).expect("视图");
+    let raw = matrix.as_slice().as_ptr();
+    let diag: View<'_, f32> = matrix.diagonal(0, 1).expect("对角");
+    assert_eq!(diag.dims(), [3], "秩减一，长度取两轴较小者");
+    assert_eq!(diag.strides(), [5], "步长相加：4 + 1");
+    assert_eq!(diag.to_vec(), vec![0.0f32, 5.0, 10.0], "一个元素都没搬");
+    assert_eq!(diag.as_slice().as_ptr(), raw, "同一块存储");
+}
+
+#[test]
+fn diagonal_of_a_transposed_view_reads_the_same_elements() {
+    let values = counted();
+    let matrix: View<'_, f32> = View::new(Shape::new([3, 4]), &values).expect("视图");
+    let turned = matrix.transpose(0, 1).expect("转置");
+    let diag: View<'_, f32> = turned.diagonal(1, 0).expect("轴序无关");
+    assert_eq!(diag.dims(), [3]);
+    assert_eq!(diag.to_vec(), vec![0.0f32, 5.0, 10.0]);
+}
+
+#[test]
+fn diagonal_rejects_the_same_axis_or_an_axis_out_of_range() {
+    let values = counted();
+    let square = || -> View<'_, f32> { View::new(Shape::new([3, 4]), &values).expect("视图") };
+    assert!(square().diagonal::<[usize; 1]>(1, 1).is_none(), "同一轴无几何含义");
+    assert!(square().diagonal::<[usize; 1]>(0, 9).is_none(), "轴越界");
+}
+
+#[test]
+fn diagonal_through_a_window_keeps_the_parent_offset() {
+    let values = counted();
+    let matrix: View<'_, f32> = View::new(Shape::new([3, 4]), &values).expect("视图");
+    let window = matrix.narrow(1, 1, 3).expect("取中三列");
+    let diag: View<'_, f32> = window.diagonal(0, 1).expect("对角");
+    assert_eq!(diag.to_vec(), vec![1.0f32, 6.0, 11.0], "起点已前移一位");
+}
+
+#[test]
+fn split_takes_the_sizes_it_is_given_and_clamps_the_last_one() {
+    let values = counted();
+    let view: View<'_, f32> = View::new(Shape::new([3, 4]), &values).expect("视图");
+    let parts = view.split(0, [1, 2]);
+    assert_eq!(parts.len(), 2);
+    assert_eq!(parts[0].dims(), [1, 4]);
+    assert_eq!(parts[1].dims(), [2, 4], "段长按给定值，不是等分");
+    assert_eq!(parts[1].base(), 4);
+    assert_eq!(
+        parts[1].to_vec(),
+        vec![4.0f32, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0]
+    );
+    let clamped = view.split(0, [2, 5]);
+    assert_eq!(clamped.len(), 2, "越过轴长的那段被夹到剩余长度");
+    assert_eq!(clamped[1].dims(), [1, 4], "3 - 2 = 1 行");
+    assert_eq!(view.split(0, [9]).len(), 1, "首段就超长：夹成整轴");
+}
+
+#[test]
+fn unbind_gives_rank_minus_one_views_over_the_same_storage() {
+    let values = counted();
+    let view: View<'_, f32> = View::new(Shape::new([3, 4]), &values).expect("视图");
+    let lines: Vec<View<'_, f32>> = view.unbind(0);
+    assert_eq!(lines.len(), 3);
+    assert_eq!(lines[2].dims(), [4], "秩减一");
+    assert_eq!(lines[2].strides(), [1], "步长原样，只是去掉一轴");
+    assert_eq!(lines[2].to_vec(), vec![8.0f32, 9.0, 10.0, 11.0]);
+    assert_eq!(view.unbind::<[usize; 1]>(0).len(), 3, "编译期秩见证同样可用");
+    assert!(
+        view.unbind::<[usize; 2]>(0).is_empty(),
+        "见证秩与结果秩对不上：一份也给不出，不 panic"
+    );
+}
+
+#[test]
+fn unbind_views_write_through_to_the_source() {
+    let owned: Tensor<Owned<f32>, Vec<usize>, f32> =
+        Tensor::new(vec![3usize, 4], Owned::from(counted())).expect("自持张量");
+    let columns: Vec<View<'_, f32>> = owned.unbind(1);
+    assert_eq!(columns.len(), 4, "列数");
+    assert_eq!(columns[2].to_vec(), vec![2.0f32, 6.0, 10.0], "第 3 列");
+    let rows: Vec<View<'_, f32>> = owned.unbind(0);
+    assert_eq!(rows[0].to_vec(), vec![0.0f32, 1.0, 2.0, 3.0]);
+}

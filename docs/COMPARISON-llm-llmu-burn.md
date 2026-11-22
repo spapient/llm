@@ -195,11 +195,14 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 | `narrow(axis, start, len)`      | ✅ 秩不变，返回 `Self`                                                 | ✅ `narrow`              | O(1)：起点前移 + 改一个轴长，无分配                  |
 | `slice(ranges)`                 | ✅ 一次切多轴，段可带步长（`Slice::stepped`，即 Burn 的 `s![..;2]`）              | ✅ `slice`（`s![...]`）   | O(轴数)，多轴合成一次；步长只乘进元数据                  |
 | `chunks(axis, pieces)`          | ✅ 沿一轴等分成至多 N 段，每段借用同一存储，不复制                                    | ✅ `chunk`               | 一段 = 一次 `narrow`，无新几何                  |
+| `split(axis, sizes)`            | ✅ 按段长切分；末段夹到剩余长度，任何正段长序列都恰好划分整轴一次                                   | ✅ `split`（段长之和不等则 panic） | 与 `chunks` 同一条路径：`chunks` 就是等长请求             |
+| `unbind::<R2>(axis)`            | ✅ 沿一轴逐个固定，一次借出 N 个秩减一视图，原张量不动                                        | ✅ `unbind`              | O(N·轴数)：与 `select` 共用 `layout::select`     |
 | `slice_fill(ranges, v)`         | ✅ 就地写同一窗，窗口外不动（仅自持存储）                                            | ✅ `slice_fill`          | 复用 `layout::window` + 一趟进位                  |
 | `slice_assign(ranges, values)`  | ✅ 源取 `&[K]`，按逻辑顺序写入，长度必须正好相等                                       | ✅ `slice_assign`        | 同上；非连续窗口也照写                             |
 | `select::<R2>(axis, idx)`       | ✅ 秩减一，目标秩由调用方给出                                                  | ✅ `select`              | O(轴数)：与 `squeeze` 共用同一个 splice 原语      |
 | `squeeze::<R2>` / `unsqueeze::<R2>` | ✅                                                          | ✅                       | 同上；`unsqueeze` 插入步长 0 的轴               |
 | `flatten(start, end)`           | ✅ 相邻轴按行主序压成一轴，不紧凑则 `None`                                        | ✅ `flatten`/`reshape`   | 先核轴长之积与步长，再 splice                      |
+| `diagonal::<R2>(a, b)`          | ✅ 两轴折一轴（长度取小、步长相加），对角即视图，零拷贝                                     | ✅ `diagonal`            | O(轴数)：折步长 + 一次 splice；对角元素全在同一条算术级数上 |
 | `broadcast(dims)`               | ✅ 前导新轴 + 单例扩展，步长写 0，零拷贝                                          | ✅ `expand`              | O(轴数)                                  |
 | `flip(axes)`                    | ✅ 沿各轴反向读出，借来视图也能翻                                               | ✅ `flip`                | O(numel)：无符号步长表达不出倒读，这一步必须搬数据         |
 
@@ -218,6 +221,10 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 * 读与写共用一趟进位：`walk(shape, steps, base, visit)` 是唯一"怎么走遍逻辑位置"的实现，摊平（读）与窗口赋值（写）都只是给它一个闭包。`flip` 是唯一例外——步长无符号，镜像下标得逐元素重算，所以它是本族里唯一搬数据的算子，文档与类型（返回 `Tensor<Owned<K>, R, K>`）都把这件事写明，而不是假装零拷贝。
 
 * 与 Burn 的命名对齐用 `#[doc(alias)]`（`expand`、`swap_dims`），不另开同名方法：别名不产生第二份实现，于是"少写一份"和"用户搜得到"同时成立。
+
+* `split` 与 `chunks` 不是两个算子而是一个：`chunks` 就是「等长请求」的 `split`，末段夹紧因此只有一处实现。段长越界时 Burn panic，这里夹到剩余长度——语义相同（各段无重叠、无缝隙覆盖整轴）但是全函数，调用方不必先验算和。
+* `unbind` 是 `select` 的批量借用版：同一个 `layout::select` 一次性给出 N 份视图，原张量还能同时被写入；「布局 → 张量」的装座只写在 `seat` 一处，`respine`（吃掉存储）与借用版共用。
+* 对角不是新几何，只是"两轴步长相加"：`(i, j)` 落在 `base + i·step_a + j·step_b`，取 `j = i` 就是 `base + i·(step_a + step_b)`。于是 `diagonal(a, b)` = 折一次步长 + 一次 `splice`，秩减一、**一个元素都不搬**——`trace` / 取值都建在这个视图上，转置过的张量也照取（轴序无关）。
 
 * 带步长的切片是同一套元数据的自然结果，不是新机制：`steps[axis] *= step`、`dims[axis] = ceil(len / step)`，两行让 `s![..;2]` 这种降采样成为零拷贝视图；`slice` 于是收 `impl AsRef<[S]>` 且 `S: Into<Slice>`，`0..4` 与 `Slice::stepped(0, 4, 2)` 在同一个数组里都合语法（连续段是 `From<Range<usize>>`）。
 

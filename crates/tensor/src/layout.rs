@@ -33,7 +33,7 @@
 use diagnostic::Result;
 
 use crate::invalid;
-use crate::shape::{Order, Slice, accumulate};
+use crate::shape::{Order, Slice, accumulate, product};
 
 /// 秩变化的栈上容量：形状变换在栈上重排 `(dims, steps)`，超出这个轴数返回 `None`。
 ///
@@ -297,6 +297,36 @@ pub(crate) fn squeeze(dims: &[usize], steps: &[usize], base: usize, axis: usize)
     spliced(dims, steps, base, axis, axis + 1, None)
 }
 
+/// 对角所需的三个量：对角长度、保留轴、被折掉的轴。`a == b` 或轴越界返回 `None`。
+fn span(dims: &[usize], a: usize, b: usize) -> Option<(usize, usize, usize)> {
+    let (keep, drop) = (a.min(b), a.max(b));
+    let len = (*dims.get(keep)?).min(*dims.get(drop)?);
+    (a != b).then_some((len, keep, drop))
+}
+
+/// 轴 `a` 与轴 `b` 取对角：该轴长度取两者较小值、步长取两者之和，被折的轴随后删掉。
+///
+/// 对角是纯元数据动作——`(i, j)` 上的元素落在 `base + i·step_a + j·step_b`，`j = i` 时
+/// 正是 `base + i·(step_a + step_b)`，于是步长相加就够，一个元素都不搬。
+pub(crate) fn diagonal(
+    dims: &[usize],
+    steps: &[usize],
+    base: usize,
+    a: usize,
+    b: usize,
+) -> Option<Layout> {
+    let (len, keep, drop) = span(dims, a, b)?;
+    let mut folded = [0usize; MAX_RANK];
+    let slots = folded.get_mut(..dims.len())?;
+    slots.copy_from_slice(steps);
+    slots[keep] += steps[drop];
+    let mut shaped = [0usize; MAX_RANK];
+    let extents = shaped.get_mut(..dims.len())?;
+    extents.copy_from_slice(dims);
+    extents[keep] = len;
+    spliced(extents, slots, base, drop, drop + 1, None)
+}
+
 /// 在第 `axis` 位插入一个长为 1 的轴；轴越界返回 `None`。
 ///
 /// 单例轴的步长不参与连续性核对，所以插入项写成步长 0——它不贡献偏移，也不必猜周围是什么布局。
@@ -401,4 +431,66 @@ fn agree(
             let reached = steps.get(start + at).copied()?;
             (reached == unit.checked_mul(want[at])?).then_some(())
         })
+}
+
+/// 按步长走一遍全部逻辑位置，对每个元素偏移调用 `visit`：O(numel)。
+///
+/// 构造时的可达性校验已证明任一合法下标都落在缓冲内，故不走 `Option`。`turn` 标真的轴上从另一
+/// 端起走（[`flip`](crate::Tensor::flip) 要的顺序），起点先挪到该轴最远端、进位时按已取反的步长走，
+/// 于是三种用法——摊平读、窗口写、翻转移——共用这一趟进位，"怎么走"只有这一份。偏移增量预先
+/// 取反存在栈上，最内层进位里没有分支。
+pub(crate) fn walk(
+    shape: &[usize],
+    steps: &[usize],
+    base: usize,
+    turn: &[bool],
+    visit: &mut impl FnMut(usize),
+) {
+    let Some((mut at, delta)) = wind(shape, steps, base, turn) else {
+        return;
+    };
+    let mut counter = [0usize; MAX_RANK];
+    let Some(idx) = counter.get_mut(..shape.len()) else {
+        return;
+    };
+    for _ in 0..product(shape) {
+        visit(at);
+        at = advance(idx, shape, &delta, at);
+    }
+}
+
+/// 把翻转掩码折成"每轴带符号增量 + 起点"：标真的轴挪到最远端、增量取负。
+fn wind(
+    shape: &[usize],
+    steps: &[usize],
+    base: usize,
+    turn: &[bool],
+) -> Option<(usize, [isize; MAX_RANK])> {
+    let mut signed = [0isize; MAX_RANK];
+    let delta = signed.get_mut(..shape.len())?;
+    let mut at = base as isize;
+    for (axis, &dim) in shape.iter().enumerate() {
+        let step = steps[axis] as isize;
+        let turned = turn.get(axis).copied().unwrap_or(false);
+        delta[axis] = if turned { -step } else { step };
+        if turned {
+            at += step * dim.saturating_sub(1) as isize;
+        }
+    }
+    Some((at as usize, signed))
+}
+
+/// 行主序进位一步，返回下一个元素偏移——偏移跟着增减，不重算点积。
+fn advance(idx: &mut [usize], shape: &[usize], delta: &[isize], at: usize) -> usize {
+    let mut at = at as isize;
+    for axis in (0..idx.len()).rev() {
+        idx[axis] += 1;
+        at += delta[axis];
+        if idx[axis] < shape[axis] {
+            break;
+        }
+        idx[axis] = 0;
+        at -= delta[axis] * shape[axis] as isize;
+    }
+    at as usize
 }

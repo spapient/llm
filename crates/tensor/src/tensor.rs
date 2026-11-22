@@ -21,15 +21,17 @@
 //! |---|---|---|
 //! | [`broadcast`](Self::broadcast) | 不变 | 目标秩不小于源秩，逐轴相等或源轴长为 1 |
 //! | [`narrow`](Self::narrow) / [`slice`](Self::slice) | 不变 | 沿一轴 / 多轴取段，段可带步长（降采样视图） |
-//! | [`chunks`](Self::chunks) | 不变 | 沿一轴等分成至多 N 段，每段借用同一存储 |
+//! | [`chunks`](Self::chunks) / [`split`](Self::split) | 不变 | 沿一轴等分 / 按段长切分，各段借用同一存储 |
 //! | [`select`](Self::select) | -1 | 固定某轴下标，该轴消失 |
+//! | [`unbind`](Self::unbind) | -1 | 沿一轴逐个固定，一次借出 N 个视图（`select` 的批量版） |
 //! | [`squeeze`](Self::squeeze) / [`unsqueeze`](Self::unsqueeze) | ∓1 | 去掉长为 1 的轴 / 插入长为 1 的轴 |
+//! | [`diagonal`](Self::diagonal) | -1 | 两轴折成一轴（长度取小、步长相加），对角即视图 |
 //! | [`flatten`](Self::flatten) | 变短 | 把行主序紧凑的一段轴压成一个 |
 //! | [`transpose`](Self::transpose) / [`permute`](Self::permute) | 不变 | 换轴序 |
 //! | [`slice_fill`](Self::slice_fill) / [`slice_assign`](Self::slice_assign) | 不变 | 就地写同一个窗口（仅自持存储） |
 //! | [`flip`](Self::flip) | 不变 | 沿指定轴反向读出——步长无符号，只有它要搬数据 |
 //!
-//! 改秩的四个算子要指定目标秩见证（`t.select::<[usize; 1]>(0, 3)`），因为稳定 Rust 算不出
+//! 改秩的六个算子要指定目标秩见证（`t.select::<[usize; 1]>(0, 3)`），因为稳定 Rust 算不出
 //! `D - 1`；Burn 在这里要求 `.squeeze::<2>()`，同一手法，只是那边只能是定长数组，这边
 //! `Vec<usize>` 也可以。不改秩的算子（`narrow` / `slice` / `broadcast`）没有这个摩擦。
 //!
@@ -244,12 +246,6 @@ where
     ///
     /// 越界返回 `None`。缓冲不动，所以自持张量也能切（不需要复制，也不必是借来的存储）。
     pub fn narrow(mut self, axis: usize, start: usize, len: usize) -> Option<Self> {
-        self.shift(axis, start, len)?;
-        Some(self)
-    }
-
-    /// 把一轴的 `[start, start + len)` 落到元数据上：起点前移、该轴收窄。
-    fn shift(&mut self, axis: usize, start: usize, len: usize) -> Option<()> {
         let (base, dim) = layout::narrow(
             self.dims.as_slice(),
             self.steps.as_slice(),
@@ -260,7 +256,7 @@ where
         )?;
         self.base = base;
         self.dims.as_slice_mut()[axis] = dim;
-        Some(())
+        Some(self)
     }
 
     /// 多轴同时取段：`ranges[i]` 作用于第 `i` 轴，没给出的尾部轴原样保留。
@@ -292,21 +288,59 @@ where
 
     /// 沿 `axis` 等分成至多 `pieces` 段，每段都借用同一存储——不搬数据、不复制。
     ///
-    /// 段长 `ceil(轴长 / pieces)`，末段可能更短；轴长为 0 或 `pieces` 为 0 时为空迭代。
+    /// 段长 `ceil(轴长 / pieces)`，末段可能更短；这就是 [`split`](Self::split) 的等长特例，
+    /// 末段被夹到剩余长度这件事只有 `split` 一处实现。
     pub fn chunks(&self, axis: usize, pieces: usize) -> impl Iterator<Item = Tensor<&[K], R, K>> {
         let dim = self.dims.as_slice().get(axis).copied().unwrap_or(0);
         let size = dim.div_ceil(pieces.max(1));
-        let buf = self.buf.slice();
-        (0..pieces).filter_map(move |piece| {
-            let start = piece.checked_mul(size)?;
-            let len = dim.checked_sub(start)?.min(size);
+        self.split(axis, (0..pieces).map(move |_| size)).into_iter()
+    }
+
+    /// 按给定段长沿 `axis` 依次切分，各段借用同一存储（Burn 的 `split`）。
+    ///
+    /// 段长是**请求**：越过轴长的那一段被夹到剩余长度，总段长恰好覆盖整轴——任何正段长序列都
+    /// 给出一次无重叠、无缝隙的划分，且不 panic。Burn 在这里要求段长之和等于轴长，否则 panic；
+    /// 夹紧是同一语义的全函数版本。切段与 [`narrow`](Self::narrow) 共用 `layout::narrow`。
+    pub fn split(
+        &self,
+        axis: usize,
+        sizes: impl IntoIterator<Item = usize>,
+    ) -> Vec<Tensor<&[K], R, K>> {
+        let dim = self.dims.as_slice().get(axis).copied().unwrap_or(0);
+        let mut start = 0usize;
+        let mut parts = Vec::new();
+        for len in sizes {
+            let len = len.min(dim.saturating_sub(start));
             if len == 0 {
-                return None;
+                break;
             }
-            let mut view = Tensor::strided(self.dims.clone(), self.steps.clone(), buf).ok()?;
-            view.base = self.base;
-            view.narrow(axis, start, len)
-        })
+            let Some(piece) = self.segment(axis, start, len) else {
+                break;
+            };
+            parts.push(piece);
+            start += len;
+        }
+        parts
+    }
+
+    /// `[start, start + len)` 的借用视图：造一份元数据再走 [`narrow`](Self::narrow)。
+    fn segment(&self, axis: usize, start: usize, len: usize) -> Option<Tensor<&[K], R, K>> {
+        let view = assemble(self.dims.clone(), self.steps.clone(), self.base, self.buf.slice());
+        view.narrow(axis, start, len)
+    }
+
+    /// 沿 `axis` 逐个位置固定，给出 `dims[axis]` 个秩减一的借用视图（Burn 的 `unbind`）。
+    ///
+    /// 与 [`select`](Self::select) 共用 `layout::select`，差别只在 `select` 吃掉 `self` 交出一份，
+    /// 这里借出全部 `N` 份、原张量不动——于是可以在循环里同时向源张量写入。
+    pub fn unbind<R2: Rank>(&self, axis: usize) -> Vec<Tensor<&[K], R2, K>> {
+        let dim = self.dims.as_slice().get(axis).copied().unwrap_or(0);
+        (0..dim)
+            .filter_map(|idx| {
+                let (dims, steps) = (self.dims.as_slice(), self.steps.as_slice());
+                seat(layout::select(dims, steps, self.base, axis, idx)?, self.buf.slice())
+            })
+            .collect()
     }
 
     /// 固定第 `axis` 轴为第 `idx` 个：起点前移、该轴消失，所以秩减一。
@@ -324,6 +358,16 @@ where
     /// 去掉长为 1 的第 `axis` 轴；该轴不是单例返回 `None`（不做静默通过）。
     pub fn squeeze<R2: Rank>(self, axis: usize) -> Option<Tensor<B, R2, K>> {
         let out = layout::squeeze(self.dims.as_slice(), self.steps.as_slice(), self.base, axis)?;
+        self.respine(out)
+    }
+
+    /// 轴 `a` 与轴 `b` 的对角：两轴折成一轴（长度取较小者、步长相加），秩减一，零拷贝。
+    ///
+    /// 对角元素全落在 `base + i·(step_a + step_b)` 上，所以这只是把两轴步长相加——`diag` 与
+    /// `trace` 因此不必搬数据。`a == b` 或轴越界返回 `None`（同一轴"对自己取对角"没有几何含义）。
+    #[doc(alias = "diag")]
+    pub fn diagonal<R2: Rank>(self, a: usize, b: usize) -> Option<Tensor<B, R2, K>> {
+        let out = layout::diagonal(self.dims.as_slice(), self.steps.as_slice(), self.base, a, b)?;
         self.respine(out)
     }
 
@@ -366,7 +410,7 @@ where
         }
         let source = self.buf.slice();
         let mut buf = Vec::with_capacity(product(shape));
-        walk(shape, self.steps.as_slice(), self.base, turn, &mut |at| {
+        layout::walk(shape, self.steps.as_slice(), self.base, turn, &mut |at| {
             buf.push(source[at]);
         });
         self.respell(buf)
@@ -374,12 +418,7 @@ where
 
     /// 换成本张量的语序：把 [`layout`] 算好的布局装进新的秩见证，存储原样带走。
     fn respine<R2: Rank>(self, out: layout::Layout) -> Option<Tensor<B, R2, K>> {
-        Some(assemble(
-            R2::from_slice(out.dims())?,
-            R2::from_slice(out.steps())?,
-            out.base(),
-            self.buf,
-        ))
+        seat(out, self.buf)
     }
 
     /// 按逻辑下标顺序摊平：转置、广播、窄视图都给出 `numel` 个元素的新缓冲。
@@ -428,72 +467,10 @@ fn broadcast_step(
     steps.get(source).copied()
 }
 
-/// 按步长走一遍全部逻辑位置，对每个元素偏移调用 `visit`：O(numel)。
-///
-/// 构造时的可达性校验已证明任一合法下标都落在缓冲内，故不走 `Option`。`turn` 标真的轴上从另一
-/// 端起走（[`flip`](Tensor::flip) 要的顺序），起点先挪到该轴最远端、进位时按已取反的步长走，
-/// 于是三种用法——摊平读、窗口写、翻转移——共用这一趟进位，"怎么走"只有这一份。偏移增量预先
-/// 取反存在栈上，最内层进位里没有分支。
-fn walk(
-    shape: &[usize],
-    steps: &[usize],
-    base: usize,
-    turn: &[bool],
-    visit: &mut impl FnMut(usize),
-) {
-    let Some((mut at, delta)) = wind(shape, steps, base, turn) else {
-        return;
-    };
-    let mut counter = [0usize; layout::MAX_RANK];
-    let Some(idx) = counter.get_mut(..shape.len()) else {
-        return;
-    };
-    for _ in 0..product(shape) {
-        visit(at);
-        at = advance(idx, shape, &delta, at);
-    }
-}
-
-/// 把翻转掩码折成"每轴带符号增量 + 起点"：标真的轴挪到最远端、增量取负。
-fn wind(
-    shape: &[usize],
-    steps: &[usize],
-    base: usize,
-    turn: &[bool],
-) -> Option<(usize, [isize; layout::MAX_RANK])> {
-    let mut signed = [0isize; layout::MAX_RANK];
-    let delta = signed.get_mut(..shape.len())?;
-    let mut at = base as isize;
-    for (axis, &dim) in shape.iter().enumerate() {
-        let step = steps[axis] as isize;
-        let turned = turn.get(axis).copied().unwrap_or(false);
-        delta[axis] = if turned { -step } else { step };
-        if turned {
-            at += step * dim.saturating_sub(1) as isize;
-        }
-    }
-    Some((at as usize, signed))
-}
-
-/// 行主序进位一步，返回下一个元素偏移——偏移跟着增减，不重算点积。
-fn advance(idx: &mut [usize], shape: &[usize], delta: &[isize], at: usize) -> usize {
-    let mut at = at as isize;
-    for axis in (0..idx.len()).rev() {
-        idx[axis] += 1;
-        at += delta[axis];
-        if idx[axis] < shape[axis] {
-            break;
-        }
-        idx[axis] = 0;
-        at -= delta[axis] * shape[axis] as isize;
-    }
-    at as usize
-}
-
 /// 按步长走一遍全部逻辑位置，把读到的元素压成连续缓冲：O(numel)。
 fn gather_strided<T: Copy>(source: &[T], shape: &[usize], steps: &[usize], base: usize) -> Vec<T> {
     let mut buf = Vec::with_capacity(product(shape));
-    walk(shape, steps, base, &[], &mut |at| buf.push(source[at]));
+    layout::walk(shape, steps, base, &[], &mut |at| buf.push(source[at]));
     buf
 }
 
@@ -524,11 +501,7 @@ where
         value: K,
     ) -> Option<()> {
         let out = self.window(ranges.as_ref())?;
-        let buf = self.buf.slice_mut();
-        walk(out.dims(), out.steps(), out.base(), &[], &mut |at| {
-            buf[at] = value
-        });
-        Some(())
+        self.paint(out, || Some(value))
     }
 
     /// 就地写 `ranges` 那一窗：`values` 按行主序逻辑顺序逐位对应窗口，长度必须正好等于窗口元素数。
@@ -546,13 +519,21 @@ where
             return None;
         }
         let mut source = values.iter();
+        self.paint(out, || source.next().copied())
+    }
+
+    /// 往算好的窗口里逐位写：`next` 给出下一个值；取不到就停手并让整次写失败（长度已在调用处校验，
+    /// 这条兜底只为「绝不留半写状态」）。
+    fn paint(&mut self, out: layout::Layout, mut next: impl FnMut() -> Option<K>) -> Option<()> {
         let buf = self.buf.slice_mut();
-        walk(out.dims(), out.steps(), out.base(), &[], &mut |at| {
-            if let Some(&value) = source.next() {
-                buf[at] = value;
+        let mut complete = true;
+        layout::walk(out.dims(), out.steps(), out.base(), &[], &mut |at| {
+            match next() {
+                Some(value) => buf[at] = value,
+                None => complete = false,
             }
         });
-        Some(())
+        complete.then_some(())
     }
 }
 
@@ -565,6 +546,16 @@ fn gather<K: Copy>(source: &[K], start: usize, len: usize) -> Vec<K> {
 }
 
 /// 六处构造与重排共用同一个组装动作：元数据 + 起点 + 存储 + 零尺寸类型标记。
+/// 把布局装进秩见证，存储原样带上：`respine`（吃掉存储）与借用版算子共用这一处。
+fn seat<B, R2: Rank, K>(out: layout::Layout, buf: B) -> Option<Tensor<B, R2, K>> {
+    Some(assemble(
+        R2::from_slice(out.dims())?,
+        R2::from_slice(out.steps())?,
+        out.base(),
+        buf,
+    ))
+}
+
 fn assemble<B, R, K>(dims: R, steps: R, base: usize, buf: B) -> Tensor<B, R, K> {
     Tensor {
         dims,

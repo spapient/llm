@@ -13,21 +13,22 @@
 //! permute、reshape 全是零拷贝的元数据重排；形状、元素数、可达性与溢出在构造期一次拦下。
 //!
 //! 只有一个 `Tensor`，于是"字节视图 / 元素视图 / 拥有形态"不再是三份平行实现。偏移、可达性、
-//! 连续性与取行只有 [`layout`] 一份实现；连续步长只有 [`shape::accumulate`] 一份定义。
+//! 连续性与取行只有 `layout` 一份实现；连续步长只有 `shape::accumulate` 一份定义。
 //!
 //! 布局代数比"只有重排"宽：元数据是 `(起点偏移, 各轴长度, 各轴步长)` 三元组，所以整套形状算子
 //! 都是 O(轴数) 的整数运算，且**与存储形态无关**（借来视图与自持张量一视同仁）：
 //! [`Tensor::broadcast`] 用步长 0 表达广播，[`Tensor::narrow`] / [`Tensor::slice`] 把起点前移
-//! 成子视图，[`Tensor::select`] / [`Tensor::squeeze`] / [`Tensor::unsqueeze`] / [`Tensor::flatten`]
-//! 改秩，[`Tensor::transpose`] / [`Tensor::permute`] 换轴序，[`Tensor::slice_fill`] /
-//! [`Tensor::slice_assign`] 往同一个窗口里就地写（自持存储才可写）。改秩的四个要写目标见证
+//! 成子视图，[`Tensor::chunks`] / [`Tensor::split`] 借同一存储分段，[`Tensor::select`] /
+//! [`Tensor::unbind`] / [`Tensor::squeeze`] / [`Tensor::unsqueeze`] / [`Tensor::flatten`] /
+//! [`Tensor::diagonal`] 改秩，[`Tensor::transpose`] / [`Tensor::permute`] 换轴序，[`Tensor::slice_fill`] /
+//! [`Tensor::slice_assign`] 往同一个窗口里就地写（自持存储才可写）。改秩的六个要写目标见证
 //! （`t.select::<[usize; 1]>(0, 3)`），因为稳定 Rust 算不出 `D - 1`——Burn 的 `.squeeze::<2>()`
 //! 同理，只是那边只能是定长数组，这里 `Vec<usize>` 也可以。
 //!
 //! 唯一搬数据的形状算子是 [`Tensor::flip`]：步长是无符号量，"从远端起倒走"表达不出来，所以它
 //! 按镜像下标重算偏移并返回 `Tensor<Owned<K>, R, K>`——借来的视图也能翻，代价是一趟 O(numel)。
-//! 带步长的切片（[`Slice::stepped`]，对应 Burn 的 `s![..;2]`）与 [`Tensor::chunks`] 分段都只改
-//! 元数据、只借存储：降采样和"切成 N 份"同样是零拷贝视图。
+//! 带步长的切片（[`Slice::stepped`]，对应 Burn 的 `s![..;2]`）与 [`Tensor::chunks`] / [`Tensor::split`]
+//! 分段都只改元数据、只借存储：降采样和"切成 N 份"同样是零拷贝视图。
 //!
 //! **拥有**：`Tensor`、`Owned`、`Shape`、`Slice`、`Order`、`AxisLen`、`Element` 与 `DType`
 //! 的再导出。**不拥有**：元素类型闭集（L1 `dtype`，这里是唯一事实源的下游）、dtype-运行期的
