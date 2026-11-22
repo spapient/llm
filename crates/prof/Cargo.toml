@@ -11,9 +11,9 @@ publish = false
 autotests = false
 
 [features]
-# 构建期代码生成（`codegen`）：六个设备 crate 的 `build.rs` 通过构建依赖打开它，
-# 运行期不编译这段代码。
-build = []
+# 构建期真编设备镜像（`build.rs` 调 `xcrun metal`）。默认只有源码：镜像要工具链、要时间，
+# 缺了就只是 `Status::NoRecipe` / `Status::Skipped` 一行原因，构建不因此失败。
+device-image = []
 
 [dependencies]
 dtype = { path = "../dtype", package = "llm-dtype" }
@@ -25,3 +25,5 @@ workspace = true
 [build-dependencies]
 # 构建期共享内核（扫描/读取/生成）在 diagnostic 的 build feature 下，运行期不引入 toml。
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic", features = ["build"] }
+# 档案本身就是 TOML：生成期要读 `[meta]` 与 `[[provides]]` 做构建期校验。
+toml = { workspace = true }
