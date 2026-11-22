@@ -62,7 +62,31 @@ cd "$(dirname "$0")/.."
 #
 # （二）同一 checkout 上并发的 `crates/cutile` 会话：`src/cache/lru.rs` 等新增文件，连同 `gemm`/`formats`
 # 的在飞改动，使总量继续抬升。这部分不是本次改动；若那些会话撤回，本预算必须同步下调对应行数。
-SRC_MAX=92600      # N6：crates/*/src 总行数
+# 92600 → 93800：两笔，分开登记。实测 93,587 行（`crates/*/src`，407 个文件）。
+#
+# （一）本次：融合 roofline 打分 **+244 行**，逐项。
+# `crates/cutile/src/plan.rs` 328 行，净 +164：`score` / `Verdict` / `Payoff` / `cost_of` / `both` /
+# `payoff` / `ranking` 是新增能力——README §9.1 那条"12 条被接受、0 条可对拍"此前只是一句口头事实，
+# 现在是一张带字节数的表（7 条打得出分、5 条被几何否掉，每条报出两侧字节）。它**不跑标量参考**：
+# 中间量就是生产者唯一输出槽的 `Cost::write`，省下 `2 × write`，所以不分配内存——生产形状到
+# `(4096, 4096)`，每条候选跑一遍参考要 1–4 GiB。同一笔里 **-50 行是删掉的**：
+# `first_tile`/`predicted_s` 折进 `select`、`collect_window` 折进 `fusions`、`predict` 拆出 `sides`
+# 让打分与预测共用一台机器，三个私有辅助因此不再单独存在。
+# `crates/cli` **+80**，全部是本次：`kernel.rs` 的子命令文法（变体 + 用法两行 + 表行 + 组装函数）、
+# `cutile.rs` 的分派与装配（复用 `Catalogue::resolve`，不新增错误路径）、`matrix.rs` 的排名表
+# （复用 `Sheet`，不新建排版机制）。取证：8 条打分测试全在 `crates/cutile/tests/plan_tests.rs`、
+# 2 条文法断言在 `crates/cli/tests/kernel.rs`，**不计入 N6**；两个公开类型 `Payoff` / `Verdict`
+# 已进 `docs/ARCHITECTURE.md` §3 所有权表，否则 `every_public_type_is_listed_or_baselined` 变红；
+# 打分契约写在 `crates/cutile/README.md` §9.2（含三处它不算的代价与"只能证伪、不能证明"的弱点）。
+#
+# （二）同一 checkout 上并发会话的在飞改动，登记以免密度门被"别人的改动"染红：
+# `crates/benchmarks/src/peak.rs`（161 行，新增）、`crates/prof/src/codegen/epilogue.rs`（59 行，新增；
+# 同批还删掉了 `prof/schema/epilogue.rs`，可见这组数字在会话结束前会继续移动）、
+# `crates/cutile/src/substitute.rs`（344 行）、`crates/testkit/src/prop/ledger.rs`（99 行，前一轮
+# 性质测试工作的台账）、`crates/gemm`（sme/simd）与 `crates/prof` 的既有文件增删。
+# 这部分不是本次改动；若那些会话撤回，本预算必须同步下调对应行数——**预算跟随能力，不反过来**：
+# 本次上调换来的是"融合候选值不值得动手"从无据可查变成可执行，而不是总量数字变好看。
+SRC_MAX=93800      # N6：crates/*/src 总行数
 FILE_MAX=400       # N3：生产文件 S++ 线
 FILE_VETO=600      # N3：>600 一票否决
 CRATE_MAX=8000     # N2：单 crate

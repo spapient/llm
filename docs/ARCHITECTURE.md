@@ -111,7 +111,6 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Profile` | `prof` | 设备档案；机制代码不得出现 `vendor == "..."` |
 | `Device` / `Image` / `Status` | `prof` | 一台设备这次构建带上的设备侧代码、编译产物与其结局（`Source` / `Compiled` / `NoRecipe` / `Skipped`）；放在最底层是为了让六份片段 crate 与 `prim` 都能引用同一份类型而不成环 |
 | `WitnessLookup` | `prof` | 「见证文件名 → 磁盘路径」的唯一缝：档案校验只问这一个方法，因此内嵌根（多 crate）与数据根（单目录）两种布局共用同一条校验路径 |
-| `EpiProvide` | `prof` | 一条 `[[epilogue]]` 供给：写回形式 → 实现名 + 证据等级 + 见证（`{ file, func, expect }`）。档案只回答「这台设备怎么实现这个形式、证据到哪一级」；六种形式的闭集语法在 `spec::epilogue`，构建期的逐形式对齐在 `crates/prof/src/codegen/epilogue.rs`（缺段 / 缺供给 / 缺见证都是硬失败，不是警告），因此「声明了但没实现」和「实现了但没声明」两侧都编不过 |
 | `Closed` / `Set` / `KernelKey` / `Epilogue` / `ActKind` | `prof` | 词汇表契约、全仓唯一位集（容量在单态化时由 `const FITS` 断言）、以及一条内核实现的登记键（[ADR 0027](adr/0027-kernel-registry-and-fragment-contract.md) 七元组，只承载身份）。`Epilogue` 是写回尾块闭集（顺序即施加顺序，只有 `store` 有副作用），`ActKind` 是 `act:<kind>` 的参数闭集且与 `gemm::unary` 的执行核一一对应：两者只描述「做了什么」，算术仍归 `gemm`。这两个名字由 `vocabulary!` 宏展开成 `pub enum`，源码里没有那行 `pub`——所有权门禁的两向扫描因此共用 `public_type_names` 这一份口径 |
 | `FragmentSet` / `Fragment` / `Layout` | `prim` | 原语片段与见证源码的读入形状（文件名落在 `prof` 的原语闭集内）、以及「内嵌根 / 数据根」二选一的布局；六张内嵌表由各设备 crate 的 `build.rs` 扫描生成，`prim/src` 里只有机制与编译期的聚合 |
 | 片段文本 + 见证 | `cuda`、`cpu`、`metal`、`musa`、`opencl`、`rocm` | 一台设备一份：片段文本、见证与 `build.rs` 生成的 `FRAGMENTS` / `PRIMS` / `DEVICE` 三张表都由该成员拥有；`prim` 只把它们拼起来，不认识任何厂商名 |
@@ -201,7 +200,6 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `EntryKind` / `Harness` / `Roofline` / `Bottleneck` / `Score` / `Geometry` / `BenchRecord` | `tools` | 统一基准记录结构：记录只持有身份、几何与峰值，未测得的峰值留 `None`；`Roofline::score` 把「峰值 + 算术强度 + 实测吞吐」折成占上界百分比与瓶颈侧，测量与上界登记仍归 `optim` / `benchmarks` |
 | `Protocol` / `Statistic` / `Tally` / `Standing` / `Shortfall` / `Card` | `tools` | 实测卡三态判定：闭集 → 样本量 → 统计量定义 → 区间与门槛，次序有意；样本与时钟来源归 `benchmarks` |
 | `spec` / `model` 属性宏 | `annotation` | 把注解展开成契约实现 + 编译期断言 + 一条校验测试；**不持有运行期注册表**。`model` 生成 `MODEL` 并断言注解与 `Operator` 对齐；设备执行由 `cutile` 的 `const SPECS` / `const GATES` 描述符表按函数指针登记 |
-| `EpilogueEntry` | `testkit` | 写回形式的条目：形式名 + 实现名 + 见证。与 `Provision` 同形而不共用一个类型，因为「形式」不是原语——共用一个字段会让那个字段在两种闭集之间语义漂移 |
 | `Contract` / `Provision` / `Witness` | `testkit` | 设备片段层自述：`Contract` 只答「这台设备声明了哪些 P0 片段、拿哪些见证入口验」，`Provision` 只答「一条原语在这台设备上由哪个实现供给」，`Witness` 只答「用哪个 `witness_*` 入口、期望什么输出」。三者都只持 `&str` / `&[f32]` 借用、不持档案类型，于是夹具库不把 `prof` 拖进依赖，设备档案在测试侧摊平即用 |
 | `Call` / `Reading` | `testkit` | 见证对拍的两端：`Call` 是「要跑哪个入口、期望什么」，`Reading` 是「跑完读回了几个、值是什么、最大相对误差多少」。个数与值分路回读，`max_rel_err` 在个数不符时取 [`f64::INFINITY`]，使"少写一个元素"与"值错了"在读数层就可区分 |
 | `TOLERANCE` / `Contract` / `Provision` / `Witness` / `Call` / `Reading` | `testkit` | 片段层的"算得对不对"与"写得对不对"分两处：`testkit::device::Contract` 只做结构闭合（P0 集合、签名首行、见证入口逐条对应、档案供给必须有证据、目录是闭集），`evidence` 只做数值闭合（见证必须自足、期望值与档案写的一致、见证执行结果与期望对拍）。`Contract` 上的 `check_p0_set` / `check_signatures` / `check_witness_entries` / `check_evidence` / `check_closed_directory` / `check_self_contained` / `check_expectations` / `check_witnesses` 是两组判据的入口，两边都只**产出缺陷**（`Result<(), String>`），由调用方的测试断言——夹具自己不 panic，于是 `src/` 里没有一个 `unwrap`/`expect`。`TOLERANCE` 住 `evidence`——它是"算出来对不对"的阈值，与结构判据无关 |
