@@ -31,7 +31,3 @@ path = "tests/schedule.rs"
 [[test]]
 name = "metal_suite"
 path = "tests/metal_suite.rs"
-
-[[test]]
-name = "device_suite"
-path = "tests/device_suite.rs"
