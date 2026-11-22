@@ -152,8 +152,16 @@ fn the_matmul_gauge_is_declared_and_reaches_the_price() {
     assert_eq!(long.spca().ops(), ["matmul_f32"]);
     let short = short.bounds().expect("合法").expect("有算子");
     let long = long.bounds().expect("合法").expect("有算子");
-    assert_eq!(long.read(), short.read() * 512, "K 8 → 4096 是 512 倍的读数");
-    assert_eq!(long.flops(), short.flops() * 512.0, "同一条乘加，K 放大 512 倍");
+    assert_eq!(
+        long.read(),
+        short.read() * 512,
+        "K 8 → 4096 是 512 倍的读数"
+    );
+    assert_eq!(
+        long.flops(),
+        short.flops() * 512.0,
+        "同一条乘加，K 放大 512 倍"
+    );
 }
 
 /// 精度决定读写字节、不决定算术量：同一档位下 int8 / int4 / int2 的读侧按元素宽度精确缩到
@@ -187,7 +195,8 @@ fn the_matmul_precision_scales_reads_and_never_the_arithmetic() {
 #[test]
 fn an_unregistered_precision_rung_says_which_half_is_missing() {
     for precision in [Precision::Int2, Precision::Int4] {
-        let layer = MatMul::with_precision("m", 16, 12, precision, Gauge::Long).expect("仍是合法声明");
+        let layer =
+            MatMul::with_precision("m", 16, 12, precision, Gauge::Long).expect("仍是合法声明");
         assert!(layer.spca().ops().is_empty(), "没有内核就没有算子名");
         let error = layer.bounds().unwrap_err();
         assert_eq!(error.code(), Code::Unsupported);

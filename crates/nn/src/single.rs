@@ -352,6 +352,18 @@ pub enum Precision {
     Int8,
 }
 
+/// 「精度 × 档位 → 算子名」的全部已注册组合，唯一事实源。
+///
+/// 表的行数就是 `crates/op` 里 gemm 骨架注册的算子数（6 条）；台账 v3.0.74 记有它们的来历。
+const RUNGS: [(Precision, Gauge, &str); 6] = [
+    (Precision::F32, Gauge::Short, MatMul::OP),
+    (Precision::F32, Gauge::Long, "matmul_f32"),
+    (Precision::Int8, Gauge::Short, "gemm_i8"),
+    (Precision::Int8, Gauge::Long, "matmul_i8"),
+    (Precision::Int4, Gauge::Short, "gemm_i4"),
+    (Precision::Int2, Gauge::Short, "gemm_i2"),
+];
+
 impl Gauge {
     /// 本档位写进诊断时的说法。
     pub const fn name(self) -> &'static str {
@@ -374,18 +386,19 @@ impl Precision {
     }
 
     /// 本精度在给定档位下的算子名；算子表没有注册这个组合时返回 `None`。
+    ///
+    /// 组合写成一张表而不是 `match` 分支：这里要表达的是「哪些格子里有内核」这个二维事实，
+    /// 表里有就是有、没写就是没有，读者一眼能看出空着的那两格（int2 / int4 × `K = 4096`）。
     pub const fn operator(self, gauge: Gauge) -> Option<&'static str> {
-        match (self, gauge) {
-            (Self::F32, Gauge::Short) => Some(MatMul::OP),
-            (Self::F32, Gauge::Long) => Some("matmul_f32"),
-            (Self::Int8, Gauge::Short) => Some("gemm_i8"),
-            (Self::Int8, Gauge::Long) => Some("matmul_i8"),
-            // 大收缩轴只注册了 f32 与 int8：int2 / int4 的大 K 内核不存在。层对这种情况的回答是
-            // 「没有这个组合」，而不是退回小 K 的兄弟算子凑一个数。
-            (Self::Int2, Gauge::Short) => Some("gemm_i2"),
-            (Self::Int4, Gauge::Short) => Some("gemm_i4"),
-            (Self::Int2 | Self::Int4, Gauge::Long) => None,
+        let mut index = 0;
+        while index < RUNGS.len() {
+            let (precision, rung, operator) = RUNGS[index];
+            if precision as u8 == self as u8 && rung as u8 == gauge as u8 {
+                return Some(operator);
+            }
+            index += 1;
         }
+        None
     }
 }
 
@@ -434,11 +447,7 @@ impl MatMul {
             "矩阵乘的 ",
             &[("rows", rows), ("cols", cols)],
         )?;
-        let spec = ContractSpec::new(
-            name,
-            Shape::new([rows, cols]),
-            precision.operator(gauge),
-        )?;
+        let spec = ContractSpec::new(name, Shape::new([rows, cols]), precision.operator(gauge))?;
         Ok(Self {
             spec,
             rows,
