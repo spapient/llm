@@ -21,12 +21,6 @@ struct Param {
     kind: ParamKind,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ValueType {
-    F32,
-    Usize,
-}
-
 /// Parse, type-check, and lower the supported Rust function subset.
 pub(crate) fn expand(attribute: TokenStream, item: TokenStream) -> TokenStream {
     let function = match syn::parse::<ItemFn>(item) {
@@ -36,13 +30,19 @@ pub(crate) fn expand(attribute: TokenStream, item: TokenStream) -> TokenStream {
 
     match lower(&attribute, &function) {
         Ok(ir_fn) => quote!(#function #ir_fn).into(),
-        Err(error) => quote!(#function #error).into(),
+        Err(error) => {
+            let error = error.to_compile_error();
+            quote!(#function #error).into()
+        }
     }
 }
 
 fn lower(attribute: &TokenStream, function: &ItemFn) -> syn::Result<TokenStream2> {
     if !attribute.is_empty() {
-        return Err(Error::new(function.sig.span(), "`#[dsl]` takes no arguments"));
+        return Err(Error::new(
+            function.sig.span(),
+            "`#[dsl]` takes no arguments",
+        ));
     }
     let signature = &function.sig;
     if signature.asyncness.is_some()
@@ -62,7 +62,10 @@ fn lower(attribute: &TokenStream, function: &ItemFn) -> syn::Result<TokenStream2
     let mut params = Vec::with_capacity(signature.inputs.len());
     for argument in &signature.inputs {
         let syn::FnArg::Typed(argument) = argument else {
-            return Err(Error::new(argument.span(), "`self` parameters are not supported"));
+            return Err(Error::new(
+                argument.span(),
+                "`self` parameters are not supported",
+            ));
         };
         let Pat::Ident(pattern) = argument.pat.as_ref() else {
             return Err(Error::new(
@@ -145,11 +148,16 @@ fn lower(attribute: &TokenStream, function: &ItemFn) -> syn::Result<TokenStream2
 fn parameter_kind(ty: &Type) -> syn::Result<ParamKind> {
     match ty {
         Type::Reference(reference) => reference_kind(reference),
-        Type::Path(path) if path.qself.is_none() => match path.path.get_ident().map(ToString::to_string).as_deref() {
-            Some("f32") => Ok(ParamKind::F32),
-            Some("usize") => Ok(ParamKind::Usize),
-            _ => Err(Error::new(ty.span(), "scalar kernel parameters must be `f32` or `usize`")),
-        },
+        Type::Path(path) if path.qself.is_none() => {
+            match path.path.get_ident().map(ToString::to_string).as_deref() {
+                Some("f32") => Ok(ParamKind::F32),
+                Some("usize") => Ok(ParamKind::Usize),
+                _ => Err(Error::new(
+                    ty.span(),
+                    "scalar kernel parameters must be `f32` or `usize`",
+                )),
+            }
+        }
         _ => Err(Error::new(
             ty.span(),
             "kernel parameters must be `f32`, `usize`, `&[f32]`, or `&mut [f32]`",
@@ -165,12 +173,18 @@ fn reference_kind(reference: &TypeReference) -> syn::Result<ParamKind> {
         ));
     };
     let Type::Path(element) = slice.elem.as_ref() else {
-        return Err(Error::new(slice.elem.span(), "buffer element type must be `f32`"));
+        return Err(Error::new(
+            slice.elem.span(),
+            "buffer element type must be `f32`",
+        ));
     };
     if element.qself.is_some()
         || element.path.get_ident().map(ToString::to_string).as_deref() != Some("f32")
     {
-        return Err(Error::new(slice.elem.span(), "buffer element type must be `f32`"));
+        return Err(Error::new(
+            slice.elem.span(),
+            "buffer element type must be `f32`",
+        ));
     }
     Ok(if reference.mutability.is_some() {
         ParamKind::BufferWrite
@@ -181,7 +195,10 @@ fn reference_kind(reference: &TypeReference) -> syn::Result<ParamKind> {
 
 fn unique_parameters(params: &[Param], signature: &syn::Signature) -> syn::Result<()> {
     for (index, parameter) in params.iter().enumerate() {
-        if params[..index].iter().any(|prior| prior.name == parameter.name) {
+        if params[..index]
+            .iter()
+            .any(|prior| prior.name == parameter.name)
+        {
             return Err(Error::new(
                 signature.span(),
                 format!("duplicate kernel parameter `{}`", parameter.name),
@@ -199,10 +216,16 @@ fn parse_loop(loop_stmt: &ExprForLoop, params: &[Param]) -> syn::Result<(String,
         ));
     };
     let Expr::Range(range) = loop_stmt.expr.as_ref() else {
-        return Err(Error::new(loop_stmt.expr.span(), "loop range must be `0..extent`"));
+        return Err(Error::new(
+            loop_stmt.expr.span(),
+            "loop range must be `0..extent`",
+        ));
     };
     if !matches!(range.limits, syn::RangeLimits::HalfOpen(_)) {
-        return Err(Error::new(range.limits.span(), "loop range must be half-open (`..`)"));
+        return Err(Error::new(
+            range.limits.span(),
+            "loop range must be half-open (`..`)",
+        ));
     }
     let Some(start) = range.start.as_deref() else {
         return Err(Error::new(range.span(), "loop range must start at zero"));
@@ -221,7 +244,10 @@ fn parse_loop(loop_stmt: &ExprForLoop, params: &[Param]) -> syn::Result<(String,
         return Err(Error::new(range.span(), "loop range requires an extent"));
     };
     let Expr::Path(ExprPath { path, .. }) = end else {
-        return Err(Error::new(end.span(), "loop extent must be a `usize` parameter"));
+        return Err(Error::new(
+            end.span(),
+            "loop extent must be a `usize` parameter",
+        ));
     };
     let extent = path
         .get_ident()
@@ -231,7 +257,10 @@ fn parse_loop(loop_stmt: &ExprForLoop, params: &[Param]) -> syn::Result<(String,
         .iter()
         .any(|param| param.name == extent && param.kind == ParamKind::Usize)
     {
-        return Err(Error::new(end.span(), "loop extent must name a `usize` parameter"));
+        return Err(Error::new(
+            end.span(),
+            "loop extent must name a `usize` parameter",
+        ));
     }
     Ok((index.ident.to_string(), extent))
 }
@@ -253,7 +282,10 @@ fn parse_assignment(
         ));
     };
     let Expr::Path(buffer) = buffer.as_ref() else {
-        return Err(Error::new(buffer.span(), "output must be a named mutable buffer"));
+        return Err(Error::new(
+            buffer.span(),
+            "output must be a named mutable buffer",
+        ));
     };
     let output = buffer
         .path
@@ -275,18 +307,10 @@ fn parse_assignment(
     if at.path.get_ident().map(ToString::to_string).as_deref() != Some(index) {
         return Err(Error::new(at.span(), "buffer index must be the loop index"));
     }
-    let (value, ty) = parse_expr(assign.right.as_ref(), index, params)?;
-    if ty != ValueType::F32 {
-        return Err(Error::new(assign.right.span(), "stored value must have type `f32`"));
-    }
-    Ok((output, value))
+    Ok((output, parse_expr(assign.right.as_ref(), index, params)?))
 }
 
-fn parse_expr(
-    expression: &Expr,
-    index: &str,
-    params: &[Param],
-) -> syn::Result<(TokenStream2, ValueType)> {
+fn parse_expr(expression: &Expr, index: &str, params: &[Param]) -> syn::Result<TokenStream2> {
     match expression {
         Expr::Paren(paren) => parse_expr(paren.expr.as_ref(), index, params),
         Expr::Group(group) => parse_expr(group.expr.as_ref(), index, params),
@@ -296,10 +320,13 @@ fn parse_expr(
         }) => {
             let value = literal.base10_parse::<f32>()?;
             if !value.is_finite() {
-                return Err(Error::new(literal.span(), "kernel float literals must be finite"));
+                return Err(Error::new(
+                    literal.span(),
+                    "kernel float literals must be finite",
+                ));
             }
             let bits = value.to_bits();
-            Ok((quote!(::cutile::ir::Expr::F32(#bits)), ValueType::F32))
+            Ok(quote!(::cutile::ir::Expr::F32(#bits)))
         }
         Expr::Path(path) => {
             let name = path
@@ -308,16 +335,16 @@ fn parse_expr(
                 .ok_or_else(|| Error::new(path.span(), "kernel expressions use simple names"))?
                 .to_string();
             if name == index {
-                return Err(Error::new(path.span(), "loop index is only valid as a buffer index"));
+                return Err(Error::new(
+                    path.span(),
+                    "loop index is only valid as a buffer index",
+                ));
             }
             match params.iter().find(|param| param.name == name) {
                 Some(Param {
                     kind: ParamKind::F32,
                     ..
-                }) => Ok((
-                    quote!(::cutile::ir::Expr::Scalar(#name.to_string())),
-                    ValueType::F32,
-                )),
+                }) => Ok(quote!(::cutile::ir::Expr::Scalar(#name.to_string()))),
                 Some(Param {
                     kind: ParamKind::BufferRead | ParamKind::BufferWrite,
                     ..
@@ -328,8 +355,14 @@ fn parse_expr(
                 Some(Param {
                     kind: ParamKind::Usize,
                     ..
-                }) => Err(Error::new(path.span(), "`usize` is not valid in an f32 expression")),
-                None => Err(Error::new(path.span(), format!("unknown kernel value `{name}`"))),
+                }) => Err(Error::new(
+                    path.span(),
+                    "`usize` is not valid in an f32 expression",
+                )),
+                None => Err(Error::new(
+                    path.span(),
+                    format!("unknown kernel value `{name}`"),
+                )),
             }
         }
         Expr::Index(ExprIndex {
@@ -338,7 +371,10 @@ fn parse_expr(
             ..
         }) => {
             let Expr::Path(buffer) = buffer.as_ref() else {
-                return Err(Error::new(buffer.span(), "only named buffers can be loaded"));
+                return Err(Error::new(
+                    buffer.span(),
+                    "only named buffers can be loaded",
+                ));
             };
             let name = buffer
                 .path
@@ -355,50 +391,43 @@ fn parse_expr(
                 param.name == name
                     && matches!(param.kind, ParamKind::BufferRead | ParamKind::BufferWrite)
             }) {
-                return Err(Error::new(buffer.span(), format!("`{name}` is not a buffer parameter")));
+                return Err(Error::new(
+                    buffer.span(),
+                    format!("`{name}` is not a buffer parameter"),
+                ));
             }
-            Ok((
-                quote!(::cutile::ir::Expr::Load(#name.to_string())),
-                ValueType::F32,
-            ))
+            Ok(quote!(::cutile::ir::Expr::Load(#name.to_string())))
         }
         Expr::Binary(ExprBinary {
             left, op, right, ..
         }) => {
-            let (left, left_ty) = parse_expr(left.as_ref(), index, params)?;
-            let (right, right_ty) = parse_expr(right.as_ref(), index, params)?;
-            if left_ty != ValueType::F32 || right_ty != ValueType::F32 {
-                return Err(Error::new(expression.span(), "arithmetic operands must have type `f32`"));
-            }
+            let left = parse_expr(left.as_ref(), index, params)?;
+            let right = parse_expr(right.as_ref(), index, params)?;
             let operator = match op {
                 BinOp::Add(_) => quote!(::cutile::ir::BinaryOp::Add),
                 BinOp::Sub(_) => quote!(::cutile::ir::BinaryOp::Sub),
                 BinOp::Mul(_) => quote!(::cutile::ir::BinaryOp::Mul),
                 BinOp::Div(_) => quote!(::cutile::ir::BinaryOp::Div),
-                _ => return Err(Error::new(op.span(), "supported arithmetic is `+`, `-`, `*`, and `/`")),
+                _ => {
+                    return Err(Error::new(
+                        op.span(),
+                        "supported arithmetic is `+`, `-`, `*`, and `/`",
+                    ));
+                }
             };
-            Ok((
-                quote! {
-                    ::cutile::ir::Expr::Binary {
-                        op: #operator,
-                        left: Box::new(#left),
-                        right: Box::new(#right),
-                    }
-                },
-                ValueType::F32,
-            ))
+            Ok(quote! {
+                ::cutile::ir::Expr::Binary {
+                    op: #operator,
+                    left: Box::new(#left),
+                    right: Box::new(#right),
+                }
+            })
         }
         Expr::Unary(unary) if matches!(unary.op, UnOp::Neg(_)) => {
-            let (value, ty) = parse_expr(unary.expr.as_ref(), index, params)?;
-            if ty != ValueType::F32 {
-                return Err(Error::new(unary.span(), "unary negation requires `f32`"));
-            }
-            Ok((
-                quote! {
-                    ::cutile::ir::Expr::Neg(Box::new(#value))
-                },
-                ValueType::F32,
-            ))
+            let value = parse_expr(unary.expr.as_ref(), index, params)?;
+            Ok(quote! {
+                ::cutile::ir::Expr::Neg(Box::new(#value))
+            })
         }
         _ => Err(Error::new(
             expression.span(),

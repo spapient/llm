@@ -67,6 +67,10 @@
 
 #![deny(unsafe_code)]
 
+extern crate self as cutile;
+
+pub use annotation::dsl;
+
 // 词汇表与档案 schema 的事实源在 `prof` crate：`cutile` 只用它们，不改写闭集。
 // 用 `::prof` 前缀强制指向 crate（本 crate 也导出同名模块，避免路径歧义）。
 pub use ::prof::atom;
@@ -84,6 +88,7 @@ pub mod cap;
 pub mod dirs;
 pub mod emit;
 pub mod harness;
+pub mod ir;
 pub mod plan;
 pub mod probe;
 pub mod reference;
