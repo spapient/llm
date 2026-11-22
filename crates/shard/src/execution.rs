@@ -522,8 +522,8 @@ impl Stages {
     /// # Errors
     ///
     /// 后端少给了设备源（违约）。
-    pub fn one(mut self, role: &str) -> diagnostic::Result<String> {
-        pop_one(&mut self.sources, role)
+    pub fn one(self, role: &str) -> diagnostic::Result<String> {
+        self.take::<1>(role).map(|[one]| one)
     }
 
     /// 两段设备源，按声明顺序还原。
@@ -531,10 +531,8 @@ impl Stages {
     /// # Errors
     ///
     /// 后端少给了设备源（违约）。
-    pub fn two(mut self, role: &str) -> diagnostic::Result<(String, String)> {
-        let second = pop_one(&mut self.sources, role)?;
-        let first = pop_one(&mut self.sources, role)?;
-        Ok((first, second))
+    pub fn two(self, role: &str) -> diagnostic::Result<(String, String)> {
+        self.take::<2>(role).map(|[first, second]| (first, second))
     }
 
     /// 三段设备源，按声明顺序还原。
@@ -542,11 +540,17 @@ impl Stages {
     /// # Errors
     ///
     /// 后端少给了设备源（违约）。
-    pub fn three(mut self, role: &str) -> diagnostic::Result<(String, String, String)> {
-        let third = pop_one(&mut self.sources, role)?;
-        let second = pop_one(&mut self.sources, role)?;
-        let first = pop_one(&mut self.sources, role)?;
-        Ok((first, second, third))
+    pub fn three(self, role: &str) -> diagnostic::Result<(String, String, String)> {
+        self.take::<3>(role).map(|[first, second, third]| (first, second, third))
+    }
+
+    /// 按声明顺序还原 `N` 段设备源：`pop_one` 出栈是逆序，从数组尾往回填。
+    fn take<const N: usize>(mut self, role: &str) -> diagnostic::Result<[String; N]> {
+        let mut out = std::array::from_fn(|_| String::new());
+        for slot in out.iter_mut().rev() {
+            *slot = pop_one(&mut self.sources, role)?;
+        }
+        Ok(out)
     }
 
     /// 扫描衰减 `a`：只有分块扫描的 lowering 带它，供主机在两次派发间折叠携带前缀。
