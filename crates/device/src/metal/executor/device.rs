@@ -20,7 +20,7 @@ impl MetalDevice {
     }
 
     /// 分配一条共享模式缓冲（+1 保留，`Drop` 释放）；`MTLResourceStorageModeShared` 使 CPU 可直接读写。
-    pub fn new_buffer(&self, bytes: usize) -> Option<MetalBuffer> {
+    pub fn new_buf(&self, bytes: usize) -> Option<MetalBuf> {
         // `newBufferWithLength:options:`：长度 + 存储模式（0 = Shared）。
         let raw = unsafe {
             msg_id_2u(
@@ -34,7 +34,7 @@ impl MetalDevice {
             return None;
         }
         let contents = unsafe { msg_id(raw, selector(b"contents\0")) };
-        Some(MetalBuffer {
+        Some(MetalBuf {
             raw,
             contents: contents.cast(),
             len: bytes,
@@ -116,7 +116,7 @@ pub(crate) fn metal4(source: &str) -> bool {
 }
 
 /// `MTLCommandBufferStatusCompleted`：命令缓冲正常跑完的唯一取值。
-pub(crate) const COMMAND_BUFFER_COMPLETED: usize = 4;
+pub(crate) const COMMAND_BUF_COMPLETED: usize = 4;
 
 /// Metal 4.0 对应的 `MTLLanguageVersion` 数值（`MTLLanguageVersion4_0`）。
 pub(crate) const METAL4_VERSION: usize = 0x0004_0000;
@@ -172,7 +172,7 @@ pub struct MetalExecutor {
     pub(super) metal: MetalDevice,
     pub(super) queue: MetalCommandQueue,
     pub(super) kernels: BTreeMap<String, MetalPipeline>,
-    pub(super) buffers: BTreeMap<u32, MetalBuffer>,
+    pub(super) bufs: BTreeMap<u32, MetalBuf>,
     pub(super) pending: Vec<Queued>,
 }
 
@@ -186,7 +186,7 @@ impl MetalExecutor {
             metal,
             queue,
             kernels: BTreeMap::new(),
-            buffers: BTreeMap::new(),
+            bufs: BTreeMap::new(),
             pending: Vec::new(),
         })
     }
@@ -206,27 +206,27 @@ impl MetalExecutor {
     }
 
     /// 绑定一个操作数编号到设备缓冲；返回被替换掉的旧缓冲。
-    pub fn bind(&mut self, id: u32, buffer: MetalBuffer) -> Option<MetalBuffer> {
-        self.buffers.insert(id, buffer)
+    pub fn bind(&mut self, id: u32, buf: MetalBuf) -> Option<MetalBuf> {
+        self.bufs.insert(id, buf)
     }
 
     /// 分配一段 `len` 字节的共享缓冲并绑定到编号；返回被替换掉的旧缓冲，分配失败返回 `Internal`。
-    pub fn bind_bytes(&mut self, id: u32, len: usize) -> Result<Option<MetalBuffer>> {
-        let buffer = self.metal.new_buffer(len).ok_or_else(|| {
+    pub fn bind_bytes(&mut self, id: u32, len: usize) -> Result<Option<MetalBuf>> {
+        let buf = self.metal.new_buf(len).ok_or_else(|| {
             Error::new(Code::Internal, format!("分配 {len} 字节设备缓冲失败"))
                 .with("engine::MetalExecutor::bind_bytes")
         })?;
-        Ok(self.buffers.insert(id, buffer))
+        Ok(self.bufs.insert(id, buf))
     }
 
     /// 某个编号的缓冲（只读）。
-    pub fn buffer(&self, id: u32) -> Option<&MetalBuffer> {
-        self.buffers.get(&id)
+    pub fn buf(&self, id: u32) -> Option<&MetalBuf> {
+        self.bufs.get(&id)
     }
 
     /// 某个编号的缓冲（可写）：调用方在提交前写入输入、在 `sync` 后回读输出。
-    pub fn buffer_mut(&mut self, id: u32) -> Option<&mut MetalBuffer> {
-        self.buffers.get_mut(&id)
+    pub fn buf_mut(&mut self, id: u32) -> Option<&mut MetalBuf> {
+        self.bufs.get_mut(&id)
     }
 
     /// 尚未同步的提交条数。
@@ -243,10 +243,10 @@ impl MetalExecutor {
     fn run(&mut self, node: &Node) -> Result<()> {
         self.check_operands(node)?;
         let pipeline = self.resolve_pipeline(node)?;
-        let buffers = self.bind_buffers(node)?;
+        let bufs = self.bind_bufs(node)?;
         if !self
             .queue
-            .execute(pipeline, &buffers, node.launch().grid, node.launch().block)
+            .execute(pipeline, &bufs, node.launch().grid, node.launch().block)
         {
             return Err(
                 Error::new(Code::Internal, format!("节点 `{}` 派发失败", node.name()))
@@ -268,25 +268,25 @@ impl MetalExecutor {
     }
 
     /// 按「输入后输出」顺序绑定缓冲；`check_operands` 已保证编号都在表里，这里兜底防御。
-    fn bind_buffers(&self, node: &Node) -> Result<Vec<&MetalBuffer>> {
-        let mut buffers = Vec::with_capacity(node.inputs().len() + node.outputs().len());
+    fn bind_bufs(&self, node: &Node) -> Result<Vec<&MetalBuf>> {
+        let mut bufs = Vec::with_capacity(node.inputs().len() + node.outputs().len());
         for operand in node.inputs().iter().chain(node.outputs()) {
-            let Some(buffer) = self.buffers.get(&operand.id()) else {
+            let Some(buf) = self.bufs.get(&operand.id()) else {
                 return Err(
                     Error::new(Code::Internal, format!("操作数 {} 未绑定", operand.id()))
                         .with("engine::MetalExecutor::run"),
                 );
             };
-            buffers.push(buffer);
+            bufs.push(buf);
         }
-        Ok(buffers)
+        Ok(bufs)
     }
 
     /// 节点自己的操作数约束：每个编号都要已绑定，且输入与输出不能是同一个编号。
     fn check_operands(&self, node: &Node) -> Result<()> {
         check_operands(
             node,
-            |id| !self.buffers.contains_key(&id),
+            |id| !self.bufs.contains_key(&id),
             "engine::MetalExecutor::run",
         )
     }
@@ -304,15 +304,15 @@ impl Executor for MetalExecutor {
 
     /// 排这一条流上已提交的节点：按入队顺序派发，成功一条才出队一条。
     fn sync(&mut self, stream: Stream) -> Result<()> {
-        let mut index = 0;
-        while index < self.pending.len() {
-            if self.pending[index].stream() != stream {
-                index += 1;
+        let mut idx = 0;
+        while idx < self.pending.len() {
+            if self.pending[idx].stream() != stream {
+                idx += 1;
                 continue;
             }
-            let node = self.pending[index].node().clone();
+            let node = self.pending[idx].node().clone();
             self.run(&node)?;
-            self.pending.remove(index);
+            self.pending.remove(idx);
         }
         Ok(())
     }

@@ -72,7 +72,7 @@ pub fn metal_tiled_attention(
                 .with("engine::tiled::metal_tiled_attention"),
         );
     }
-    let (q, k, v, y) = attention_buffers(signature)?;
+    let (q, k, v, y) = attention_bufs(signature)?;
     let (s, d) = attention_dims(signature, sample)?;
     Ok(tiled_attention_msl(q, k, v, y, s, d, threads))
 }

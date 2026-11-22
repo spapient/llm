@@ -385,9 +385,9 @@ fn distinct(values: &[Value]) -> Result<(), Error> {
 
 /// `$ident`：运行时形态的唯一取值写法；错误指在 `$` 或它后面的那个 token 上。
 fn hole(cursor: &mut Cursor<'_>, key: &str) -> Result<Hole, Error> {
-    let at = cursor.index;
+    let at = cursor.idx;
     cursor.punct('$', &format!("`{key}` 的 `$` 参数标记"))?;
-    let name_at = cursor.index;
+    let name_at = cursor.idx;
     match cursor.next(&format!("`{key}` 的 `$` 参数名"))? {
         Token::Ident(name) => Ok((name.clone(), at)),
         other => Err(Error::at(
@@ -409,7 +409,7 @@ fn runtime_holes(cursor: &mut Cursor<'_>, _: Position, spec: &KeySpec<'_>) -> Re
     let (group, items) = cursor.group(Bracket::Square, &what)?;
     let mut inner = Cursor {
         tokens: items,
-        index: 0,
+        idx: 0,
     };
     let mut holes: Vec<Hole> = Vec::new();
     while let Some(item) = next_hole(&mut inner, group, spec.name)? {
@@ -436,8 +436,8 @@ fn next_hole(inner: &mut Cursor<'_>, group: Position, key: &str) -> Result<Optio
 fn runtime_ops(cursor: &mut Cursor<'_>, _: Position, spec: &KeySpec<'_>) -> Result<Value, Error> {
     let holes = runtime_holes(cursor, 0, spec)?;
     let (items, group) = holes.holes();
-    for (index, (name, _)) in items.iter().enumerate() {
-        if items[..index].iter().any(|(other, _)| other == name) {
+    for (idx, (name, _)) in items.iter().enumerate() {
+        if items[..idx].iter().any(|(other, _)| other == name) {
             return Err(Error::at(
                 group,
                 format!("算子参数 `${name}` 在同一个层里出现了两次：多写的这一次不会生效"),

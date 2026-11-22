@@ -16,12 +16,12 @@ fn mul_then_reduce_matches_central_differences() -> Result<()> {
 
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(p, ParamRole::Trainable, p0.clone())?;
-    session.buffers().load(w, Data::F32(w0.clone()))?;
-    session.buffers().compute("mul_f32", &[p, w], z)?;
+    session.bufs().load(w, Data::F32(w0.clone()))?;
+    session.bufs().compute("mul_f32", &[p, w], z)?;
     sum_backward(&mut session, z, loss)?;
 
     check_grad(
-        session.buffers().gradient(p).expect("参数梯度应在场"),
+        session.bufs().gradient(p).expect("参数梯度应在场"),
         &p0,
         "p",
         |x| dot(x, &w0),
@@ -45,12 +45,12 @@ fn scale_silu_chain_matches_central_differences() -> Result<()> {
 
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(p, ParamRole::Trainable, p0.clone())?;
-    session.buffers().compute("scale_f32", &[p], h)?;
-    session.buffers().compute("silu_f32", &[h], y)?;
+    session.bufs().compute("scale_f32", &[p], h)?;
+    session.bufs().compute("silu_f32", &[h], y)?;
     sum_backward(&mut session, y, loss)?;
 
     check_grad(
-        session.buffers().gradient(p).expect("参数梯度应在场"),
+        session.bufs().gradient(p).expect("参数梯度应在场"),
         &p0,
         "p",
         chain_loss,
@@ -65,17 +65,17 @@ fn detached_leaf_receives_no_gradient() -> Result<()> {
 
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(p, ParamRole::Trainable, vec![1.0; N])?;
-    session.buffers().load(x, Data::F32(vec![0.1; N]))?;
-    session.buffers().compute("add_f32", &[p, x], loss)?;
+    session.bufs().load(x, Data::F32(vec![0.1; N]))?;
+    session.bufs().compute("add_f32", &[p, x], loss)?;
     session.plan(loss)?;
     session.backward()?;
 
     assert!(
-        session.buffers().gradient(x).is_none(),
+        session.bufs().gradient(x).is_none(),
         "图外叶子 x 不该有梯度槽"
     );
     assert_eq!(
-        session.buffers().gradient(p),
+        session.bufs().gradient(p),
         Some(&[1.0; N][..]),
         "add 把上游 1 原样传给参数 p"
     );
@@ -102,11 +102,11 @@ fn gelu_chain_matches_central_differences() -> Result<()> {
 
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(p, ParamRole::Trainable, p0.clone())?;
-    session.buffers().compute("gelu_f32", &[p], h)?;
+    session.bufs().compute("gelu_f32", &[p], h)?;
     sum_backward(&mut session, h, loss)?;
 
     check_grad(
-        session.buffers().gradient(p).expect("参数梯度应在场"),
+        session.bufs().gradient(p).expect("参数梯度应在场"),
         &p0,
         "p",
         chain_loss,
@@ -129,11 +129,11 @@ fn reduce_max_matches_central_differences() -> Result<()> {
 
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(p, ParamRole::Trainable, p0.clone())?;
-    session.buffers().compute("reduce_max_f32", &[p], h)?;
+    session.bufs().compute("reduce_max_f32", &[p], h)?;
     sum_backward(&mut session, h, loss)?;
 
     check_grad(
-        session.buffers().gradient(p).expect("参数梯度应在场"),
+        session.bufs().gradient(p).expect("参数梯度应在场"),
         &p0,
         "p",
         chain_loss,
@@ -165,12 +165,12 @@ fn gemv_matches_central_differences() -> Result<()> {
 
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(w, ParamRole::Trainable, w0.clone())?;
-    session.buffers().load(x, Data::F32(x0.clone()))?;
-    session.buffers().compute("gemv_f32", &[w, x], y)?;
+    session.bufs().load(x, Data::F32(x0.clone()))?;
+    session.bufs().compute("gemv_f32", &[w, x], y)?;
     sum_backward(&mut session, y, loss)?;
 
     check_grad(
-        session.buffers().gradient(w).expect("权重梯度应在场"),
+        session.bufs().gradient(w).expect("权重梯度应在场"),
         &w0,
         "w",
         |w| chain_loss(w, &x0),
@@ -204,12 +204,12 @@ fn gemm_matches_central_differences() -> Result<()> {
 
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(a, ParamRole::Trainable, a0.clone())?;
-    session.buffers().load(b, Data::F32(b0.clone()))?;
-    session.buffers().compute("gemm_f32", &[a, b], y)?;
+    session.bufs().load(b, Data::F32(b0.clone()))?;
+    session.bufs().compute("gemm_f32", &[a, b], y)?;
     sum_backward(&mut session, y, loss)?;
 
     check_grad(
-        session.buffers().gradient(a).expect("A 梯度应在场"),
+        session.bufs().gradient(a).expect("A 梯度应在场"),
         &a0,
         "a",
         |a| chain_loss(a, &b0),
@@ -252,12 +252,12 @@ fn embed_table_gradient_matches_central_differences() -> Result<()> {
 
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(table, ParamRole::Trainable, table0.clone())?;
-    session.buffers().load(idx, Data::F32(idx0.clone()))?;
-    session.buffers().compute("embed_f32", &[idx, table], y)?;
+    session.bufs().load(idx, Data::F32(idx0.clone()))?;
+    session.bufs().compute("embed_f32", &[idx, table], y)?;
     sum_backward(&mut session, y, loss)?;
 
     check_grad(
-        session.buffers().gradient(table).expect("表梯度应在场"),
+        session.bufs().gradient(table).expect("表梯度应在场"),
         &table0,
         "table",
         chain_loss,
@@ -277,7 +277,7 @@ fn unsupported_operator_backward_is_rejected() -> Result<()> {
 
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(p, ParamRole::Trainable, vec![1.0; N])?;
-    session.buffers().compute("dequant_i8", &[p], y)?;
+    session.bufs().compute("dequant_i8", &[p], y)?;
     session.plan(y)?;
 
     let error = session.backward().expect_err("反量化没有解析反向");

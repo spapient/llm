@@ -15,7 +15,7 @@ impl Remote {
 }
 
 impl Collective for Remote {
-    fn all_reduce(&mut self, _group: &Group, _reduce: Reduce, _buffer: &mut [f32]) -> Result<()> {
+    fn all_reduce(&mut self, _group: &Group, _reduce: Reduce, _buf: &mut [f32]) -> Result<()> {
         Err(Error::new(
             Code::Unsupported,
             "远端集合通信未挂载：跨进程 all-reduce 在占位适配上不可用",

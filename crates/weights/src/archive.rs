@@ -152,16 +152,16 @@ impl<'a> Archive<'a> {
     }
 
     /// 为下标生成包含证明；下标越界返回错误。
-    pub fn prove(&self, index: usize) -> Result<Proof> {
+    pub fn prove(&self, idx: usize) -> Result<Proof> {
         let leaves = self.cached_leaves()?;
-        crate::proof::prove(leaves, index)
+        crate::proof::prove(leaves, idx)
             .ok_or_else(|| bad(format!("段下标 {index} 越界，共 {} 段", leaves.len())))
     }
 
     /// 仅用下标、证明与根验证归属，不接触其他张量。
-    pub fn verify(&self, index: usize, proof: &Proof, root: &Digest) -> Result<bool> {
+    pub fn verify(&self, idx: usize, proof: &Proof, root: &Digest) -> Result<bool> {
         let leaves = self.cached_leaves()?;
-        let Some(leaf_hash) = leaves.get(index) else {
+        let Some(leaf_hash) = leaves.get(idx) else {
             return Ok(false);
         };
         Ok(crate::proof::verify_proof(leaf_hash, proof, root))

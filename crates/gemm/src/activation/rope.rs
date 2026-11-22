@@ -11,7 +11,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::model::{Buffer, Cost, Sample, ShapeCtx, Values, cost_n, x_buffer};
+use crate::model::{Buf, Cost, Sample, ShapeCtx, Values, cost_n, x_buf};
 use diagnostic::{Code, Error};
 
 /// 频率底数。
@@ -57,9 +57,9 @@ pub fn sample(len: usize, _: usize) -> Sample {
         m: len,
         n: len,
         scalars: vec![("N", len as i64), ("pos", 7)],
-        buffers: vec![
-            x_buffer(len),
-            Buffer {
+        bufs: vec![
+            x_buf(len),
+            Buf {
                 name: "y",
                 values: Values::F32(vec![0.0; len]),
             },

@@ -107,7 +107,7 @@ pub(super) fn negotiation(report: &Doctor) -> String {
         path.variant,
         path.schedule,
         path.mma_share,
-        path.index + 1,
+        path.idx + 1,
         report.variants.len(),
         if path.is_head() {
             "（首档）"
@@ -115,15 +115,15 @@ pub(super) fn negotiation(report: &Doctor) -> String {
             "（降级）"
         }
     );
-    for (index, check) in report.variants.iter().enumerate() {
-        out.push_str(&variant_line(check, path.index, index));
+    for (idx, check) in report.variants.iter().enumerate() {
+        out.push_str(&variant_line(check, path.idx, idx));
     }
     out
 }
 
 /// 单个变体的一行：选中标记 + 名称；有失败就逐条列需求与原因。
-fn variant_line(check: &VariantCheck, selected: usize, index: usize) -> String {
-    let mark = if index == selected {
+fn variant_line(check: &VariantCheck, selected: usize, idx: usize) -> String {
+    let mark = if idx == selected {
         "✓ 选中"
     } else {
         "·"

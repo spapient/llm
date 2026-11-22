@@ -493,13 +493,13 @@ const _: () = all_in_registry(KERNELS);
 /// 编译期断言：表内每个算子名都能在 `op::REGISTRY` 里找到（子集即可，不必等长）；
 /// 归属查询复用上游 `op::contains`，本层不自抄 const 字节比较。
 const fn all_in_registry(entries: &[Entry]) {
-    let mut index = 0;
-    while index < entries.len() {
+    let mut idx = 0;
+    while idx < entries.len() {
         assert!(
-            op::contains(entries[index].op),
+            op::contains(entries[idx].op),
             "serve::model 内核表含注册表之外的算子"
         );
-        index += 1;
+        idx += 1;
     }
 }
 

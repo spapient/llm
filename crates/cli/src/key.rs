@@ -85,7 +85,7 @@ macro_rules! keys {
             }
 
             /// 槽位下标。
-            pub(crate) const fn index(self) -> usize {
+            pub(crate) const fn idx(self) -> usize {
                 self as usize
             }
         }

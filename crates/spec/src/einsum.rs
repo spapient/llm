@@ -136,7 +136,7 @@ impl prof::atom::Closed for Bits {
         NAMES[self as usize]
     }
 
-    fn index(self) -> usize {
+    fn idx(self) -> usize {
         self as usize
     }
 }

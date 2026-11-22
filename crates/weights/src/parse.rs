@@ -188,50 +188,50 @@ fn validate_names(descs: &[Desc]) -> Result<()> {
 /// 引用图校验：悬空/越界下标、自引用、代表段是引用、元数据不一致、引用成环，一律 `Invalid`。
 fn validate_refs(descs: &[Desc]) -> Result<()> {
     let mut colors = vec![0u8; descs.len()];
-    for index in 0..descs.len() {
-        check_ref(index, descs, &mut colors)?;
+    for idx in 0..descs.len() {
+        check_ref(idx, descs, &mut colors)?;
     }
     Ok(())
 }
 
 /// 单色 DFS：0 未访 / 1 在途 / 2 完成；回到在途节点即成环。
-fn check_ref(index: usize, descs: &[Desc], colors: &mut [u8]) -> Result<()> {
-    match colors[index] {
+fn check_ref(idx: usize, descs: &[Desc], colors: &mut [u8]) -> Result<()> {
+    match colors[idx] {
         2 => return Ok(()),
         1 => return Err(bad("引用段成环")),
         _ => {
-            colors[index] = 1;
-            walk_ref(index, descs, colors)?;
-            colors[index] = 2;
+            colors[idx] = 1;
+            walk_ref(idx, descs, colors)?;
+            colors[idx] = 2;
         }
     }
     Ok(())
 }
 
 /// 在途节点沿代表下标递归；内联段直接收口，引用段交代表段继续 DFS。
-fn walk_ref(index: usize, descs: &[Desc], colors: &mut [u8]) -> Result<()> {
-    let DescBody::Ref { rep } = descs[index].body() else {
+fn walk_ref(idx: usize, descs: &[Desc], colors: &mut [u8]) -> Result<()> {
+    let DescBody::Ref { rep } = descs[idx].body() else {
         return Ok(());
     };
     let rep = *rep as usize;
-    validate_ref_target(index, rep, descs)?;
+    validate_ref_target(idx, rep, descs)?;
     check_ref(rep, descs, colors)
 }
 
 /// 引用下标与代表段元数据校验：越界、自引用、代表段是引用、取值元数据不一致一律 `Invalid`。
-fn validate_ref_target(index: usize, rep: usize, descs: &[Desc]) -> Result<()> {
-    let name = descs[index].descriptor().name.clone();
+fn validate_ref_target(idx: usize, rep: usize, descs: &[Desc]) -> Result<()> {
+    let name = descs[idx].descriptor().name.clone();
     if rep >= descs.len() {
         return Err(bad(format!("引用段 `{name}` 指向越界下标 {rep}")));
     }
-    if rep == index {
+    if rep == idx {
         return Err(bad(format!("引用段 `{name}` 自引用")));
     }
     let target = &descs[rep];
     if !matches!(target.body(), DescBody::Inline { .. }) {
         return Err(bad(format!("引用段 `{name}` 的代表段 `{rep}` 本身是引用")));
     }
-    if !descs[index].descriptor().same_value(target.descriptor()) {
+    if !descs[idx].descriptor().same_value(target.descriptor()) {
         return Err(bad(format!(
             "引用段 `{name}` 与代表段 `{rep}` 的类型/形状/量化元数据不一致"
         )));
@@ -253,26 +253,26 @@ type Resolution = (usize, (Codec, usize, usize, u32));
 /// 先收集每条引用段的代表段区间快照；与落地分成两轮，避免可变借用叠在段表上。
 fn collect_resolutions(stored: &[Stored]) -> Result<Vec<Resolution>> {
     let mut resolutions = Vec::new();
-    for (index, seg) in stored.iter().enumerate() {
+    for (idx, seg) in stored.iter().enumerate() {
         let StoredInner::Ref { rep, .. } = &seg.inner else {
             continue;
         };
-        let resolution = resolve_one(stored, index, *rep)?;
-        resolutions.push((index, resolution));
+        let resolution = resolve_one(stored, idx, *rep)?;
+        resolutions.push((idx, resolution));
     }
     Ok(resolutions)
 }
 
 /// 把代表段区间、codec 与 CRC 回填到引用段槽位。
 fn apply_resolutions(stored: &mut [Stored], resolutions: Vec<Resolution>) {
-    for (index, (codec, start, len, crc)) in resolutions {
+    for (idx, (codec, start, len, crc)) in resolutions {
         if let StoredInner::Ref {
             codec: c,
             start: s,
             len: l,
             crc: r,
             ..
-        } = &mut stored[index].inner
+        } = &mut stored[idx].inner
         {
             *c = codec;
             *s = start;
@@ -283,7 +283,7 @@ fn apply_resolutions(stored: &mut [Stored], resolutions: Vec<Resolution>) {
 }
 
 /// 取一条引用段的代表段区间快照；代表段仍是引用则拒绝。
-fn resolve_one(stored: &[Stored], index: usize, rep: usize) -> Result<(Codec, usize, usize, u32)> {
+fn resolve_one(stored: &[Stored], idx: usize, rep: usize) -> Result<(Codec, usize, usize, u32)> {
     match &stored[rep].inner {
         StoredInner::Inline {
             codec,

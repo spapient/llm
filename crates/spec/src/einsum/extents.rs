@@ -137,8 +137,8 @@ impl Extents {
 
 impl fmt::Display for Extents {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (index, (label, length)) in self.entries.iter().enumerate() {
-            if index > 0 {
+        for (idx, (label, length)) in self.entries.iter().enumerate() {
+            if idx > 0 {
                 formatter.write_str(" ")?;
             }
             write!(formatter, "{label}={length}")?;

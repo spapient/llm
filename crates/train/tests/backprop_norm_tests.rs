@@ -17,17 +17,17 @@ fn rmsnorm_matches_central_differences() -> Result<()> {
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(x, ParamRole::Trainable, x0.clone())?;
     session.register_parameter(gamma, ParamRole::Trainable, gamma0.clone())?;
-    session.buffers().compute("rmsnorm_f32", &[x, gamma], y)?;
+    session.bufs().compute("rmsnorm_f32", &[x, gamma], y)?;
     sum_backward(&mut session, y, loss)?;
 
     check_grad(
-        session.buffers().gradient(x).expect("x 梯度应在场"),
+        session.bufs().gradient(x).expect("x 梯度应在场"),
         &x0,
         "x",
         |x| rmsnorm_loss(x, &gamma0),
     );
     check_grad(
-        session.buffers().gradient(gamma).expect("gamma 梯度应在场"),
+        session.bufs().gradient(gamma).expect("gamma 梯度应在场"),
         &gamma0,
         "gamma",
         |gamma| rmsnorm_loss(&x0, gamma),
@@ -49,11 +49,11 @@ fn rope_matches_central_differences() -> Result<()> {
 
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(x, ParamRole::Trainable, x0.clone())?;
-    session.buffers().compute("rope_f32", &[x], y)?;
+    session.bufs().compute("rope_f32", &[x], y)?;
     sum_backward(&mut session, y, loss)?;
 
     check_grad(
-        session.buffers().gradient(x).expect("x 梯度应在场"),
+        session.bufs().gradient(x).expect("x 梯度应在场"),
         &x0,
         "x",
         rope_loss,
@@ -81,23 +81,23 @@ fn attention_matches_central_differences() -> Result<()> {
     let v0: Vec<f32> = (0..len).map(|i| 0.09 * i as f32 - 0.3).collect();
 
     let mut session = attention_session(tape, sizes, [q, k, v], [&q0, &k0, &v0])?;
-    session.buffers().compute("attention_f32", &[q, k, v], y)?;
+    session.bufs().compute("attention_f32", &[q, k, v], y)?;
     sum_backward(&mut session, y, loss)?;
 
     check_grad(
-        session.buffers().gradient(q).expect("q 梯度应在场"),
+        session.bufs().gradient(q).expect("q 梯度应在场"),
         &q0,
         "q",
         |q| attention_loss(q, &k0, &v0, s, s, d),
     );
     check_grad(
-        session.buffers().gradient(k).expect("k 梯度应在场"),
+        session.bufs().gradient(k).expect("k 梯度应在场"),
         &k0,
         "k",
         |k| attention_loss(&q0, k, &v0, s, s, d),
     );
     check_grad(
-        session.buffers().gradient(v).expect("v 梯度应在场"),
+        session.bufs().gradient(v).expect("v 梯度应在场"),
         &v0,
         "v",
         |v| attention_loss(&q0, &k0, v, s, s, d),
@@ -140,24 +140,24 @@ fn latent_attention_matches_central_differences() -> Result<()> {
 
     let mut session = attention_session(tape, sizes, [q, k, v], [&q0, &k0, &v0])?;
     session
-        .buffers()
+        .bufs()
         .compute("latent_attention_f32", &[q, k, v], y)?;
     sum_backward(&mut session, y, loss)?;
 
     check_grad(
-        session.buffers().gradient(q).expect("q 梯度应在场"),
+        session.bufs().gradient(q).expect("q 梯度应在场"),
         &q0,
         "q",
         |q| latent_loss(q, &k0, &v0, rows, hist, w, dc),
     );
     check_grad(
-        session.buffers().gradient(k).expect("k 梯度应在场"),
+        session.bufs().gradient(k).expect("k 梯度应在场"),
         &k0,
         "k",
         |k| latent_loss(&q0, k, &v0, rows, hist, w, dc),
     );
     check_grad(
-        session.buffers().gradient(v).expect("v 梯度应在场"),
+        session.bufs().gradient(v).expect("v 梯度应在场"),
         &v0,
         "v",
         |v| latent_loss(&q0, &k0, v, rows, hist, w, dc),
@@ -193,24 +193,24 @@ fn decode_attention_matches_central_differences() -> Result<()> {
 
     let mut session = attention_session(tape, sizes, [q, k, v], [&q0, &k0, &v0])?;
     session
-        .buffers()
+        .bufs()
         .compute("decode_attention_f32", &[q, k, v], y)?;
     sum_backward(&mut session, y, loss)?;
 
     check_grad(
-        session.buffers().gradient(q).expect("q 梯度应在场"),
+        session.bufs().gradient(q).expect("q 梯度应在场"),
         &q0,
         "q",
         |q| attention_loss(q, &k0, &v0, q_rows, hist, d),
     );
     check_grad(
-        session.buffers().gradient(k).expect("k 梯度应在场"),
+        session.bufs().gradient(k).expect("k 梯度应在场"),
         &k0,
         "k",
         |k| attention_loss(&q0, k, &v0, q_rows, hist, d),
     );
     check_grad(
-        session.buffers().gradient(v).expect("v 梯度应在场"),
+        session.bufs().gradient(v).expect("v 梯度应在场"),
         &v0,
         "v",
         |v| attention_loss(&q0, &k0, v, q_rows, hist, d),

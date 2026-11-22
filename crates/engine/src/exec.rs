@@ -5,13 +5,13 @@
 //! **拥有**：`Stream`、`Graph`、`Node`、`Launch`、`Operand`、`Executor`。**不拥有**：编译 kernel
 //! （`cutile::runner` 负责"源文件 → 可执行文件"，产物按 `(模板, 档案, flags)` 由 `cutile::build` 缓存；本 crate 只负责
 //! "图提交到流"，每 step 都发生）、缓冲分配（`storage`）。
-//! **依赖**：`diagnostic`、`tensor`、`storage`（仅 [`Allocator`] trait 对象；`Buffer`/`Allocator`
+//! **依赖**：`diagnostic`、`tensor`、`storage`（仅 [`Allocator`] trait 对象；`Buf`/`Allocator`
 //! 类型定义归 `storage`）。**被依赖**：`engine` 的其余模块（本模块并入后与它们同 crate）。
 //!
 //! 节点绑定的只是不透明操作数引用（[`Operand`]：编号 + 只读/可写角色）；编号到实际缓冲的解析、
 //! 缓冲生命周期与设备句柄都在后端边界侧（ADR 0025 §2/§3），本层不引用 `op` 算子闭集。
 //! 设备后端的执行器只持有分配器 [`Allocator`] trait 对象（与设备同生命周期），不持有
-//! [`storage::Buffer`] 字节；缓冲的分配、解析与写回由后端执行体经分配器完成。CPU 执行器
+//! [`storage::Buf`] 字节；缓冲的分配、解析与写回由后端执行体经分配器完成。CPU 执行器
 //! 是例外、而且必须是例外：它的缓冲就是 [`Bindings`] 里的 `Vec<f32>`——CPU 上没有独立的
 //! “后端缓冲对象”，硬造一个只会多一层拷贝。
 //!
@@ -36,7 +36,7 @@ mod cpu;
 mod queue;
 
 pub use cpu::{Bindings, CpuExecutor, Program};
-pub use queue::{Buffer, View, ViewMut};
+pub use queue::{Buf, View, ViewMut};
 pub use queue::{Executor, LocalExecutor, Queued, Trace};
 pub use queue::{check_operands, enqueue};
 

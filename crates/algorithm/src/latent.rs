@@ -300,10 +300,10 @@ impl<S: Scalar> Backread<S> {
         let keys = project(layer.k(), self.width, reps);
         let values = project(layer.v(), self.width, reps);
         let mut out = Vec::with_capacity(states.len());
-        for (index, range) in patches.ranges().enumerate() {
+        for (idx, range) in patches.ranges().enumerate() {
             let block = &states[range.start * self.width..range.end * self.width];
             for state in block.chunks_exact(self.width) {
-                out.extend(self.read_byte(layer, state, &keys, &values, index));
+                out.extend(self.read_byte(layer, state, &keys, &values, idx));
             }
         }
         Ok(out)

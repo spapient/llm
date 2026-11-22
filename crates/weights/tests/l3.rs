@@ -208,8 +208,8 @@ fn a_certificate_supplies_the_epsilon_of_its_own_decomposition() {
 
     let mut w = [0.0f32; 16];
 
-    for (index, value) in [4.0f32, 2.0, 0.5, 0.25].into_iter().enumerate() {
-        w[index * 5] = value;
+    for (idx, value) in [4.0f32, 2.0, 0.5, 0.25].into_iter().enumerate() {
+        w[idx * 5] = value;
     }
 
     let certified = crate::ledger::certify(&w, 4, 4)

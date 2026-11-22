@@ -1,5 +1,5 @@
 //! Embedding 行查表：`y[n, :] = table[idx[n], :]`（行向量 gather）。
-use crate::model::{AxisRole, AxisSpec, Buffer, Cost, Sample, ShapeCtx, Values};
+use crate::model::{AxisRole, AxisSpec, Buf, Cost, Sample, ShapeCtx, Values};
 use diagnostic::{Code, Error};
 
 /// 权重表行数（闭集内的固定档）。
@@ -51,22 +51,22 @@ pub fn cost(shape: &ShapeCtx) -> Result<Cost, Error> {
 /// 确定性样本：`idx`（f32 承载的整数下标，长度 n）、`table`（长度 `V·D`）、`y`（长度 `n·D`）。
 pub fn sample(tokens: usize, dim: usize) -> Sample {
     let table = (0..VOCAB * dim)
-        .map(|index| (index % VOCAB) as f32 * 0.5)
+        .map(|idx| (idx % VOCAB) as f32 * 0.5)
         .collect();
     Sample {
         m: tokens,
         n: dim,
         scalars: vec![("N", tokens as i64), ("V", VOCAB as i64), ("D", dim as i64)],
-        buffers: vec![
-            Buffer {
+        bufs: vec![
+            Buf {
                 name: "idx",
                 values: Values::F32((0..tokens).map(|i| (i % VOCAB) as f32).collect()),
             },
-            Buffer {
+            Buf {
                 name: "table",
                 values: Values::F32(table),
             },
-            Buffer {
+            Buf {
                 name: "y",
                 values: Values::F32(vec![0.0; tokens * dim]),
             },

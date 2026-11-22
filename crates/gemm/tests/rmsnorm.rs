@@ -26,7 +26,7 @@
 
     /// 三缓冲非对齐长度各自拒绝：x/gamma 不等、x/out 不等都不能静默截位。
     #[test]
-    fn rmsnorm_rejects_each_mismatched_buffer_length() {
+    fn rmsnorm_rejects_each_mismatched_buf_length() {
         let mut out = vec![0.0; 3];
         assert!(
             forward(&[1.0, 2.0], &[1.0], &mut out).is_err(),
@@ -59,22 +59,22 @@
             &[f32::MIN; 3],
             &[0.25, -0.5, 0.75, -1.0],
         ];
-        for (index, x) in cases.iter().enumerate() {
+        for (idx, x) in cases.iter().enumerate() {
             let gamma: Vec<f32> = x.iter().map(|_| 0.75).collect();
             let sample = Sample {
                 m: x.len(),
                 n: x.len(),
                 scalars: vec![],
-                buffers: vec![
-                    Buffer {
+                bufs: vec![
+                    Buf {
                         name: "x",
                         values: crate::model::Values::F32(x.to_vec()),
                     },
-                    Buffer {
+                    Buf {
                         name: "gamma",
                         values: crate::model::Values::F32(gamma.clone()),
                     },
-                    Buffer {
+                    Buf {
                         name: "y",
                         values: crate::model::Values::F32(vec![0.0; x.len()]),
                     },

@@ -58,8 +58,8 @@ impl Local {
 
     /// 某个 rank 当前的镜像（`load` 或 `all_reduce` 之后的值）。
     pub fn replica(&self, rank: u32) -> Result<&[f32]> {
-        let index = self.index_of(rank)?;
-        Ok(&self.replicas[index])
+        let idx = self.idx_of(rank)?;
+        Ok(&self.replicas[idx])
     }
 
     /// 组内归约结果：按 [`Group`] 的顺序逐 rank 折叠，不改变任何镜像。
@@ -83,35 +83,35 @@ impl Local {
     }
 
     fn replica_mut(&mut self, rank: u32) -> Result<&mut [f32]> {
-        let index = self.index_of(rank)?;
-        Ok(&mut self.replicas[index])
+        let idx = self.idx_of(rank)?;
+        Ok(&mut self.replicas[idx])
     }
 
     /// rank 必须落在本拓扑内：越界写在别的 rank 上会静默改掉无关的镜像。
-    fn index_of(&self, rank: u32) -> Result<usize> {
-        let index = rank as usize;
-        if index >= self.replicas.len() {
+    fn idx_of(&self, rank: u32) -> Result<usize> {
+        let idx = rank as usize;
+        if idx >= self.replicas.len() {
             return Err(Error::new(
                 Code::Invalid,
                 format!("rank {rank} 超出 0..{}", self.replicas.len()),
             )
             .with("shard::Local::replica"));
         }
-        Ok(index)
+        Ok(idx)
     }
 }
 
 impl Collective for Local {
-    fn all_reduce(&mut self, group: &Group, reduce: Reduce, buffer: &mut [f32]) -> Result<()> {
-        if buffer.len() != self.width {
+    fn all_reduce(&mut self, group: &Group, reduce: Reduce, buf: &mut [f32]) -> Result<()> {
+        if buf.len() != self.width {
             return Err(Error::new(
                 Code::Invalid,
-                format!("缓冲宽度 {} 与归约宽度 {} 不一致", buffer.len(), self.width),
+                format!("缓冲宽度 {} 与归约宽度 {} 不一致", buf.len(), self.width),
             )
             .with("shard::Local::all_reduce"));
         }
         let reduced = self.reduce(group, reduce)?;
-        buffer.copy_from_slice(&reduced);
+        buf.copy_from_slice(&reduced);
         self.distribute(group, &reduced)
     }
 }

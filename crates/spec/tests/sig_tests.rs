@@ -1,5 +1,5 @@
 use super::*;
-use crate::model::{Buffer, Values};
+use crate::model::{Buf, Values};
 
 const TEMPLATE: &str = "typedef unsigned char u8;\n\
         void cutile_probe_kernel(const float *x, const u8 *w, const float *scales,\n\
@@ -12,20 +12,20 @@ fn sample() -> Sample {
         m: 4,
         n: 2,
         scalars: vec![("M", 4), ("N", 2), ("gsz", 2)],
-        buffers: vec![
-            Buffer {
+        bufs: vec![
+            Buf {
                 name: "x",
                 values: Values::F32(vec![1.0; 4]),
             },
-            Buffer {
+            Buf {
                 name: "w",
                 values: Values::U8(vec![0x98, 0x76]),
             },
-            Buffer {
+            Buf {
                 name: "scales",
                 values: Values::F32(vec![0.5; 2]),
             },
-            Buffer {
+            Buf {
                 name: "y",
                 values: Values::F32(vec![0.0; 2]),
             },
@@ -45,7 +45,7 @@ fn signature_derives_the_argument_list_from_the_template() {
 }
 
 #[test]
-fn an_unsupported_buffer_type_is_rejected_with_the_parameter_name() {
+fn an_unsupported_buf_type_is_rejected_with_the_parameter_name() {
     let broken = TEMPLATE.replace("const float *scales", "double *scales");
     let error = Signature::parse("probe", &broken).expect_err("double 不是缓冲类型");
     let text = error.to_string();
@@ -72,14 +72,14 @@ fn sample_names_and_types_must_match_the_signature() {
     let signature = Signature::parse("probe", TEMPLATE).expect("签名");
 
     let mut mistyped = sample();
-    mistyped.buffers[2].values = Values::U8(vec![0; 2]);
+    mistyped.bufs[2].values = Values::U8(vec![0; 2]);
     let error = signature.check(&mistyped).expect_err("类型不符");
     assert_eq!(error.code(), Code::Invalid);
     assert!(error.to_string().contains("scales"), "{error}");
     assert!(error.to_string().contains("float"), "{error}");
 
     let mut stray = sample();
-    stray.buffers.push(Buffer {
+    stray.bufs.push(Buf {
         name: "bias",
         values: Values::F32(vec![0.0; 2]),
     });

@@ -304,15 +304,15 @@ fn discard(vm: &mut Vm<'_>, _op: u8) -> Result<()> {
 /// `q`/`h` 读 1 字节，`r`/`j` 读 4 字节，`\x94` 直接用当前栈长。
 fn memo_op(vm: &mut Vm<'_>, op: u8) -> Result<()> {
     let idx = match op {
-        b'q' | b'h' => memo_index(vm, 1)?,
-        b'r' | b'j' => memo_index(vm, 4)?,
+        b'q' | b'h' => memo_idx(vm, 1)?,
+        b'r' | b'j' => memo_idx(vm, 4)?,
         _ => vm.memo.len(),
     };
     recall(vm, idx, matches!(op, b'h' | b'j'))
 }
 
 /// memo 索引：`size` 字节无符号。
-fn memo_index(vm: &mut Vm<'_>, size: usize) -> Result<usize> {
+fn memo_idx(vm: &mut Vm<'_>, size: usize) -> Result<usize> {
     usize::try_from(vm.cursor.uint(size)?).map_err(|_| bad("memo 索引超出 usize"))
 }
 

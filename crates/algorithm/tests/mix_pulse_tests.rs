@@ -57,7 +57,7 @@ fn only_positions_at_or_above_the_threshold_fire() {
     let events = enc.encode(&[0.2, 0.6, -0.9, 3.0]).expect("合法输入");
     assert_eq!(events.width(), 4);
     assert_eq!(events.active(), 2);
-    assert_eq!(events.indices(), &[2, 3]);
+    assert_eq!(events.idxs(), &[2, 3]);
     assert_eq!(events.codes(), &[-2i8, 6]);
     assert!((events.sparsity() - 0.5).abs() < 1e-12);
 }
@@ -137,7 +137,7 @@ fn accumulate_agrees_with_the_dense_path() {
     let got = accumulate(&w, 2, 4, &events).expect("几何合法");
 
     let mut table = [0i8; 4];
-    for (&at, &code) in events.indices().iter().zip(events.codes()) {
+    for (&at, &code) in events.idxs().iter().zip(events.codes()) {
         table[at] = code;
     }
     let dense: Vec<i32> = (0..2)
@@ -189,6 +189,6 @@ fn f32_and_f64_quantize_to_the_same_codes() {
     let a = Encoder::new(0.5f64, 1).expect("合法").encode(&wide);
     let b = Encoder::new(0.5f32, 1).expect("合法").encode(&narrow);
     let (a, b) = (a.expect("合法输入"), b.expect("合法输入"));
-    assert_eq!(a.indices(), b.indices());
+    assert_eq!(a.idxs(), b.idxs());
     assert_eq!(a.codes(), b.codes());
 }

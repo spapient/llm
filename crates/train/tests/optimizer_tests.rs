@@ -225,7 +225,7 @@ fn the_orthogonalization_compresses_the_spectrum() {
     // 对角谱 1 / 2 / 3：不处理的话，更新量会按 3 : 2 : 1 分配。
     let grad = vec![1.0_f32, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 3.0];
     let out = orthogonalize(&grad, 3, 3, 1e-7);
-    for (index, value) in out.iter().enumerate() {
+    for (idx, value) in out.iter().enumerate() {
         assert!(value.is_finite(), "第 {index} 项不是有限值");
     }
     let spread = out[0] / out[8];
@@ -265,7 +265,7 @@ fn the_update_ignores_the_gradient_scale() {
         )
         .expect("几何合法");
 
-    for (index, (small, large)) in params_small[0].iter().zip(&params_large[0]).enumerate() {
+    for (idx, (small, large)) in params_small[0].iter().zip(&params_large[0]).enumerate() {
         assert!(
             (small - large).abs() < 1e-3,
             "第 {index} 项：小梯度 {small} 与大梯度 {large} 该给出同一步"

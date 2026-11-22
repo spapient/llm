@@ -87,15 +87,15 @@ fn decode_q8(raw: &[u8], out: &mut [f32]) -> Result<()> {
 }
 
 /// Q4_K 的 6 位 scale/min 解包。
-fn scale_min(scales: &[u8], index: usize) -> (u8, u8) {
-    if index < 4 {
-        return (scales[index] & 63, scales[index + 4] & 63);
+fn scale_min(scales: &[u8], idx: usize) -> (u8, u8) {
+    if idx < 4 {
+        return (scales[idx] & 63, scales[idx + 4] & 63);
     }
-    let high = (scales[index - 4] >> 6) << 4;
-    let low = (scales[index] >> 6) << 4;
+    let high = (scales[idx - 4] >> 6) << 4;
+    let low = (scales[idx] >> 6) << 4;
     (
-        (scales[index + 4] & 0x0F) | high,
-        (scales[index + 4] >> 4) | low,
+        (scales[idx + 4] & 0x0F) | high,
+        (scales[idx + 4] >> 4) | low,
     )
 }
 

@@ -116,8 +116,8 @@ fn a_quantized_layer_without_its_scale_is_rejected_at_assembly() {
 /// 量化 int4 投影装配端到端：打包字节 + 标度两条驻留条目，前向与 `gemv_i4` 参考对拍。
 #[test]
 fn a_quantized_int4_projection_assembles_and_matches_the_reference() {
-    let x: Vec<f32> = (0..32).map(|index| 1.0 + index as f32 * 0.1).collect();
-    let codes: Vec<i8> = (0..32).map(|index| (index as i8 % 5) - 2).collect();
+    let x: Vec<f32> = (0..32).map(|idx| 1.0 + idx as f32 * 0.1).collect();
+    let codes: Vec<i8> = (0..32).map(|idx| (idx as i8 % 5) - 2).collect();
     let w = pack_codes(4, &codes);
     let scales = [0.5f32];
     let mut reference = vec![0.0; 1];
@@ -136,8 +136,8 @@ fn a_quantized_int4_projection_assembles_and_matches_the_reference() {
 /// 量化 int8 投影装配端到端：逐元素字节 + 标度，前向与 `gemv_i8` 参考对拍。
 #[test]
 fn a_quantized_int8_projection_assembles_and_matches_the_reference() {
-    let x: Vec<f32> = (0..32).map(|index| 1.0 + index as f32 * 0.1).collect();
-    let w: Vec<u8> = (0..32).map(|index| ((index as i8 % 5) - 2) as u8).collect();
+    let x: Vec<f32> = (0..32).map(|idx| 1.0 + idx as f32 * 0.1).collect();
+    let w: Vec<u8> = (0..32).map(|idx| ((idx as i8 % 5) - 2) as u8).collect();
     let scales = [0.5f32];
     let mut reference = vec![0.0; 1];
     op::gemv_i8::forward(&x, &w, &scales, &mut reference).expect("参考");
@@ -158,10 +158,10 @@ fn a_quantized_int8_projection_assembles_and_matches_the_reference() {
 fn a_quantized_int4_archive_loads_and_matches_the_reference() {
     let in_features = 32usize;
     let x: Vec<f32> = (0..in_features)
-        .map(|index| 1.0 + index as f32 * 0.1)
+        .map(|idx| 1.0 + idx as f32 * 0.1)
         .collect();
     let codes: Vec<i8> = (0..in_features)
-        .map(|index| (index as i8 % 5) - 2)
+        .map(|idx| (idx as i8 % 5) - 2)
         .collect();
     let w = pack_codes(4, &codes);
     let scales = [0.25f32];

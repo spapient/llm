@@ -23,7 +23,7 @@ fn config() -> TrainConfig {
 
 /// 把最终输出 `y` 归约成标量 `loss` 后 plan + backward：链式损失测试的公共收尾。
 fn sum_backward(session: &mut Session<Reference, Sgd>, y: Var, loss: Var) -> Result<()> {
-    session.buffers().compute("reduce_sum_f32", &[y], loss)?;
+    session.bufs().compute("reduce_sum_f32", &[y], loss)?;
     session.plan(loss)?;
     session.backward()
 }
@@ -84,19 +84,19 @@ fn close(actual: f32, numeric: f32) -> bool {
     (actual - numeric).abs() <= slack
 }
 
-/// 中心差分：把 `base[index]` 扰动 ±STEP，用闭式 `f` 重算损失。
-fn central(f: impl Fn(&[f32]) -> f32, base: &[f32], index: usize) -> f32 {
+/// 中心差分：把 `base[idx]` 扰动 ±STEP，用闭式 `f` 重算损失。
+fn central(f: impl Fn(&[f32]) -> f32, base: &[f32], idx: usize) -> f32 {
     let mut plus = base.to_vec();
-    plus[index] += STEP;
+    plus[idx] += STEP;
     let mut minus = base.to_vec();
-    minus[index] -= STEP;
+    minus[idx] -= STEP;
     (f(&plus) - f(&minus)) / (2.0 * STEP)
 }
 
 /// 逐元素对拍解析梯度与中心差分：`f` 是参数向量的闭式损失，`name` 只进断言文案。
 fn check_grad(grad: &[f32], base: &[f32], name: &str, f: impl Fn(&[f32]) -> f32) {
-    for (index, actual) in grad.iter().enumerate() {
-        let numeric = central(&f, base, index);
+    for (idx, actual) in grad.iter().enumerate() {
+        let numeric = central(&f, base, idx);
         assert!(
             close(*actual, numeric),
             "{name}[{index}] 解析 {actual} 与差分 {numeric} 超差"
@@ -123,19 +123,19 @@ fn check_binary_grad(
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(a, ParamRole::Trainable, a0.to_vec())?;
     session.register_parameter(b, ParamRole::Trainable, b0.to_vec())?;
-    session.buffers().compute(op, &[a, b], y)?;
+    session.bufs().compute(op, &[a, b], y)?;
     sum_backward(&mut session, y, out)?;
 
     // `loss` 借给两个闭包（按引用捕获，避免一次 move 后第二次取不到）。
     let f = &loss;
     check_grad(
-        session.buffers().gradient(a).expect("a 梯度应在场"),
+        session.bufs().gradient(a).expect("a 梯度应在场"),
         a0,
         "a",
         |pa| f(pa, b0),
     );
     check_grad(
-        session.buffers().gradient(b).expect("b 梯度应在场"),
+        session.bufs().gradient(b).expect("b 梯度应在场"),
         b0,
         "b",
         |pb| f(a0, pb),
@@ -155,10 +155,10 @@ fn unary_grad(op: &str, p0: &[f32], output_len: usize) -> Result<Vec<f32>> {
     let sizes = support::sizes_of(&tape, &[(p, p0.len()), (y, output_len), (out, 1)]);
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(p, ParamRole::Trainable, p0.to_vec())?;
-    session.buffers().compute(op, &[p], y)?;
+    session.bufs().compute(op, &[p], y)?;
     sum_backward(&mut session, y, out)?;
     Ok(session
-        .buffers()
+        .bufs()
         .gradient(p)
         .expect("p 梯度应在场")
         .to_vec())
@@ -320,27 +320,27 @@ fn check_affine(
     session.register_parameter(b, ParamRole::Trainable, b0.to_vec())?;
     match geometry {
         Some(geometry) => session
-            .buffers()
+            .bufs()
             .compute_shaped(op, &[x, g, b], y, geometry)?,
-        None => session.buffers().compute(op, &[x, g, b], y)?,
+        None => session.bufs().compute(op, &[x, g, b], y)?,
     }
     sum_backward(&mut session, y, out)?;
 
     let f = &loss;
     check_grad(
-        session.buffers().gradient(x).expect("x 梯度应在场"),
+        session.bufs().gradient(x).expect("x 梯度应在场"),
         x0,
         "x",
         |px| f(px, g0, b0),
     );
     check_grad(
-        session.buffers().gradient(g).expect("gamma 梯度应在场"),
+        session.bufs().gradient(g).expect("gamma 梯度应在场"),
         g0,
         "gamma",
         |pg| f(x0, pg, b0),
     );
     check_grad(
-        session.buffers().gradient(b).expect("beta 梯度应在场"),
+        session.bufs().gradient(b).expect("beta 梯度应在场"),
         b0,
         "beta",
         |pb| f(x0, g0, pb),
@@ -380,10 +380,10 @@ fn check_geometry_grad(
     let sizes = support::sizes_of(&tape, &[(p, x0.len()), (y, total), (out, 1)]);
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(p, ParamRole::Trainable, x0.to_vec())?;
-    session.buffers().compute_shaped(op, &[p], y, geometry)?;
+    session.bufs().compute_shaped(op, &[p], y, geometry)?;
     sum_backward(&mut session, y, out)?;
     check_grad(
-        session.buffers().gradient(p).expect("参数梯度应在场"),
+        session.bufs().gradient(p).expect("参数梯度应在场"),
         x0,
         "p",
         loss,
@@ -442,7 +442,7 @@ mod train;
 /// 暂存复用：第二次反传不再向分配器要内存（容量之和与热身后的完全一致）。
 ///
 /// 反向每个节点都要一份"上游梯度 / 各输入前向值 / 输出前向值"的只读快照，因为这些快照与
-/// `&mut buffers` 冲突；快照放在 `Buffers` 自持的 `Scratch` 里逐节点复用，于是稳态零分配。
+/// `&mut bufs` 冲突；快照放在 `Bufs` 自持的 `Scratch` 里逐节点复用，于是稳态零分配。
 /// 此断言盯的正是这一点：容量只增不减，故"容量不变"等价于"没有重新分配"。
 #[test]
 fn a_warm_backward_pass_reuses_its_scratch() -> Result<()> {
@@ -454,20 +454,20 @@ fn a_warm_backward_pass_reuses_its_scratch() -> Result<()> {
     let sizes = support::sizes_of(&tape, &[(p, N), (y, N), (out, 1)]);
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(p, ParamRole::Trainable, p0.to_vec())?;
-    session.buffers().compute("silu_f32", &[p], y)?;
+    session.bufs().compute("silu_f32", &[p], y)?;
     assert_eq!(
-        session.buffers().scratch.footprint(),
+        session.bufs().scratch.footprint(),
         0,
         "反传前暂存应当还是空的"
     );
 
     sum_backward(&mut session, y, out)?;
-    let warm = session.buffers().scratch.footprint();
+    let warm = session.bufs().scratch.footprint();
     assert!(warm > 0, "热过一次之后暂存应当已占下容量");
 
     sum_backward(&mut session, y, out)?;
     assert_eq!(
-        session.buffers().scratch.footprint(),
+        session.bufs().scratch.footprint(),
         warm,
         "第二次反传不得再增长暂存（容量不变即没有重新分配）"
     );

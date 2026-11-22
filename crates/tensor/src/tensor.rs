@@ -20,7 +20,7 @@ pub struct Tensor<'a> {
 impl<'a> Tensor<'a> {
     /// 由元数据与连续布局的缓冲构造：`dtype` 必须在 [`crate::SUPPORTED`] 子集内、`data` 必须够长。
     pub fn new(dtype: DType, shape: Shape, data: &'a [u8]) -> Result<Self> {
-        validate::check_byte_buffer(dtype, &shape, data.len(), "tensor::Tensor::new")?;
+        validate::check_byte_buf(dtype, &shape, data.len(), "tensor::Tensor::new")?;
         let strides = Strides::contiguous(&shape);
         Ok(Self {
             dtype,
@@ -64,15 +64,15 @@ mod validate {
     }
 
     /// 校验字节缓冲够长：先过子集校验，再按形状与类型核算所需字节数。
-    pub(crate) fn check_byte_buffer(
+    pub(crate) fn check_byte_buf(
         dtype: DType,
         shape: &Shape,
-        buffer_len: usize,
+        buf_len: usize,
         marker: &str,
     ) -> Result<()> {
         check_supported(dtype, marker)?;
         let required = shape.element_bytes(dtype);
-        if buffer_len < required {
+        if buf_len < required {
             return Err(Error::new(
                 Code::Invalid,
                 format!(
@@ -127,7 +127,7 @@ mod owned {
 
         /// 由已有字节向量构造：`dtype` 受支持且缓冲够长，布局取行主序连续。
         pub fn from_bytes(dtype: DType, shape: Shape, bytes: Vec<u8>) -> Result<Self> {
-            validate::check_byte_buffer(
+            validate::check_byte_buf(
                 dtype,
                 &shape,
                 bytes.len(),

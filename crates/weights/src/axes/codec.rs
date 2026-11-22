@@ -56,7 +56,7 @@ pub(crate) fn dict_payload(w: &[f32]) -> Option<Vec<u8>> {
     if vals.len() == w.len() {
         return None; // 全唯一，字典表 + 全宽索引必然大于 raw，无收益。
     }
-    let width = index_width(vals.len());
+    let width = idx_width(vals.len());
     let mut p = Vec::new();
     p.extend_from_slice(&(width as u32).to_le_bytes());
     p.extend_from_slice(&(vals.len() as u32).to_le_bytes());
@@ -72,7 +72,7 @@ pub(crate) fn dict_payload(w: &[f32]) -> Option<Vec<u8>> {
 }
 
 /// 索引宽度：`256`/`65536` 个值以内用 1/2 字节，其余 4 字节。
-fn index_width(count: usize) -> usize {
+fn idx_width(count: usize) -> usize {
     match count {
         n if n <= 256 => 1,
         n if n <= 65536 => 2,
@@ -86,7 +86,7 @@ pub(crate) fn decode_dict(cur: &mut Cursor<'_>, want: usize) -> Result<Vec<f32>>
     let (width, vals) = dict_table(&bytes, &mut at)?;
     (0..want)
         .map(|_| {
-            let id = read_index(&bytes, &mut at, width)?;
+            let id = read_idx(&bytes, &mut at, width)?;
             vals.get(id).copied().ok_or_else(|| bad("dict 索引越界"))
         })
         .collect()
@@ -101,7 +101,7 @@ fn dict_table(bytes: &[u8], at: &mut usize) -> Result<(usize, Vec<f32>)> {
 }
 
 /// 定宽索引（1/2/4 字节小端）；宽度只可能取自 `dict_payload` 写出的三种。
-fn read_index(bytes: &[u8], at: &mut usize, width: usize) -> Result<usize> {
+fn read_idx(bytes: &[u8], at: &mut usize, width: usize) -> Result<usize> {
     match width {
         1 => take::<1>(bytes, at, "字节截断").map(|b| usize::from(b[0])),
         2 => take::<2>(bytes, at, "字节截断").map(|b| usize::from(u16::from_le_bytes(b))),

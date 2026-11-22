@@ -27,9 +27,9 @@ pub(crate) fn forward_rows_scaled<E>(
     ctx: ScaledRow,
     row_dot: impl Fn(&[E], &[f32], &[f32], usize) -> f32,
 ) {
-    for (index, value) in out.iter_mut().enumerate() {
-        let w_row = &weights[index * ctx.row..][..ctx.row];
-        let s_row = &scales[index * ctx.groups..][..ctx.groups];
+    for (idx, value) in out.iter_mut().enumerate() {
+        let w_row = &weights[idx * ctx.row..][..ctx.row];
+        let s_row = &scales[idx * ctx.groups..][..ctx.groups];
         *value = row_dot(w_row, x, s_row, ctx.group);
     }
 }

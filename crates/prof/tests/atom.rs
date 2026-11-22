@@ -28,12 +28,12 @@ fn closed_sets_round_trip() {
     assert_eq!(Prim::parse("tma_bulk"), None);
 }
 #[test]
-fn index_is_the_position_in_the_closed_set() {
+fn idx_is_the_position_in_the_closed_set() {
     // 位集下标就是 `ALL` 里的位置：这条不变量让“加一个原语只改一个 impl”成立，
     // 也让 `Set<E, 1>` 的容量自证有意义（超过 64 个元素要显式加宽）。
     fn positions<T: Closed>(label: &str) {
         for (position, item) in T::ALL.iter().copied().enumerate() {
-            assert_eq!(item.index(), position, "{label}: {}", item.as_str());
+            assert_eq!(item.idx(), position, "{label}: {}", item.as_str());
         }
     }
     positions::<Prim>("prim");
@@ -188,7 +188,7 @@ fn grade_closed_set_runs_l0_to_l3() {
     for grade in Grade::ALL.iter().copied() {
         assert_eq!(Grade::parse(grade.as_str()), Some(grade));
         assert_eq!(
-            grade.index(),
+            grade.idx(),
             Grade::ALL.iter().position(|&item| item == grade).unwrap()
         );
     }

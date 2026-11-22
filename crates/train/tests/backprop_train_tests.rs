@@ -5,7 +5,7 @@ use super::*;
 /// 标准化后每通道均值恰为 0，于是 `loss = Σ_c beta_c * n * spatial`，
 /// `d loss / d beta_c = n * spatial` —— 这是个可解析判据，不靠拟合：
 /// 第 `t` 步后 `beta_c = -t * lr * n * spatial`，`loss = -channels * t * lr * (n * spatial)^2`。
-/// 同时覆盖 `Buffers::compute_shaped` 的几何登记通道在真实训练循环里能被反向取到。
+/// 同时覆盖 `Bufs::compute_shaped` 的几何登记通道在真实训练循环里能被反向取到。
 #[test]
 fn an_arbitrary_geometry_trains_end_to_end_under_sgd() -> Result<()> {
     let (n, spatial, channels) = (2usize, 3usize, 4usize);
@@ -50,11 +50,11 @@ fn an_arbitrary_geometry_trains_end_to_end_under_sgd() -> Result<()> {
     let mut last = f32::INFINITY;
     let mut last_shift = 0.0f32;
     for t in 0..100u32 {
-        session.buffers().load(x, Data::F32(feed.clone()))?;
+        session.bufs().load(x, Data::F32(feed.clone()))?;
         session
-            .buffers()
+            .bufs()
             .compute_shaped("batch_norm_f32", &[x, gamma, beta], y, geom)?;
-        session.buffers().compute("reduce_sum_f32", &[y], loss)?;
+        session.bufs().compute("reduce_sum_f32", &[y], loss)?;
         let now = session.record_loss(loss)?;
         let shift = session.slots()[1].params()[0];
         if t > 0 {
@@ -86,12 +86,12 @@ fn an_arbitrary_geometry_trains_end_to_end_under_sgd() -> Result<()> {
     Ok(())
 }
 
-/// 跨步常驻：同一 `Buffers` 上两轮带几何的归一化，滚动统计按动量递推并可读回。
+/// 跨步常驻：同一 `Bufs` 上两轮带几何的归一化，滚动统计按动量递推并可读回。
 ///
 /// 初始 `(0, 1)`、动量 0.1，同一批数据过两次：`mean` 应为 `0.1 * μ` 再 `0.19 * μ`，
 /// `var` 应为 `0.9 + 0.1 * u` 再 `0.81 + 0.19 * u`（`u` 是无偏 batch 方差）。
 #[test]
-fn rolling_statistics_persist_across_steps_in_the_buffers() -> Result<()> {
+fn rolling_statistics_persist_across_steps_in_the_bufs() -> Result<()> {
     let (n, spatial, channels) = (2usize, 3usize, 2usize);
     let len = n * spatial * channels;
     let count = n * spatial;
@@ -111,23 +111,23 @@ fn rolling_statistics_persist_across_steps_in_the_buffers() -> Result<()> {
         .expect("记录归一化");
     let sizes = support::sizes_of(&tape, &[(x, len), (g, channels), (b, channels), (y, len)]);
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
-    session.buffers().load(x, Data::F32(feed.clone()))?;
-    session.buffers().load(g, Data::F32(vec![1.0; channels]))?;
-    session.buffers().load(b, Data::F32(vec![0.0; channels]))?;
+    session.bufs().load(x, Data::F32(feed.clone()))?;
+    session.bufs().load(g, Data::F32(vec![1.0; channels]))?;
+    session.bufs().load(b, Data::F32(vec![0.0; channels]))?;
 
     session
-        .buffers()
+        .bufs()
         .compute_shaped("batch_norm_f32", &[x, g, b], y, geom)?;
     let once = session
-        .buffers()
+        .bufs()
         .running(y)
         .expect("第一轮应留下统计")
         .clone();
     session
-        .buffers()
+        .bufs()
         .compute_shaped("batch_norm_f32", &[x, g, b], y, geom)?;
     let twice = session
-        .buffers()
+        .bufs()
         .running(y)
         .expect("第二轮应继续递推")
         .clone();
@@ -202,7 +202,7 @@ fn conv2d_gradients_match_central_differences_on_any_geometry() -> Result<()> {
     Ok(())
 }
 
-/// 声明档前向：`Buffers::compute("conv2d_f32")` 的适配路径与算子自身的 reference 逐位一致。
+/// 声明档前向：`Bufs::compute("conv2d_f32")` 的适配路径与算子自身的 reference 逐位一致。
 #[test]
 fn conv2d_reference_kernel_matches_the_operator_sample() -> Result<()> {
     let sample = op::conv2d::sample(0, 0);
@@ -226,14 +226,14 @@ fn conv2d_reference_kernel_matches_the_operator_sample() -> Result<()> {
         ],
     );
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
-    session.buffers().load(a, Data::F32(x))?;
-    session.buffers().load(b, Data::F32(weight))?;
-    session.buffers().load(c, Data::F32(bias))?;
-    session.buffers().compute("conv2d_f32", &[a, b, c], y)?;
-    let got = session.buffers().value(y).expect("y 应在场");
+    session.bufs().load(a, Data::F32(x))?;
+    session.bufs().load(b, Data::F32(weight))?;
+    session.bufs().load(c, Data::F32(bias))?;
+    session.bufs().compute("conv2d_f32", &[a, b, c], y)?;
+    let got = session.bufs().value(y).expect("y 应在场");
     let got = got.f32().expect("y 是 f32");
     assert_eq!(got.len(), want.len());
-    for (index, (g, w)) in got.iter().zip(&want).enumerate() {
+    for (idx, (g, w)) in got.iter().zip(&want).enumerate() {
         assert!((g - w).abs() <= 1e-6, "第 {index} 个输出 {g} vs {w}");
     }
     Ok(())

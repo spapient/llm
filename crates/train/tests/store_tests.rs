@@ -80,7 +80,7 @@ fn scales() -> Data {
 }
 
 /// `var` 现在的 f32 值：没有值或不是浮点都是测试自己写错了。
-fn f32s(store: &Buffers<Reference>, var: Var) -> Vec<f32> {
+fn f32s(store: &Bufs<Reference>, var: Var) -> Vec<f32> {
     let view = store.value(var).expect("有值");
     view.f32().expect("f32").to_vec()
 }
@@ -115,8 +115,8 @@ impl Fixture {
         }
     }
 
-    fn store(&self) -> Buffers<Reference> {
-        let mut store = Buffers::new(self.sizes.clone(), Reference);
+    fn store(&self) -> Bufs<Reference> {
+        let mut store = Bufs::new(self.sizes.clone(), Reference);
         store.load(self.x, input()).expect("输入");
         store.load(self.w, weights()).expect("权重");
         store.load(self.scales, scales()).expect("scale");
@@ -124,12 +124,12 @@ impl Fixture {
     }
 
     /// 一步 `gemv_i4` 前向：`(x, w, scales) → output`。
-    fn step(&self, store: &mut Buffers<Reference>, output: Var) -> Result<()> {
+    fn step(&self, store: &mut Bufs<Reference>, output: Var) -> Result<()> {
         store.compute("gemv_i4", &[self.x, self.w, self.scales], output)
     }
 
     /// 按记录顺序算一遍全图，返回每个变量当时的值（叶子也在内）。
-    fn forward(&self, store: &mut Buffers<Reference>) -> Vec<Option<Data>> {
+    fn forward(&self, store: &mut Bufs<Reference>) -> Vec<Option<Data>> {
         for node in self.tape.nodes() {
             store
                 .compute(node.op(), node.inputs(), node.output())
@@ -147,7 +147,7 @@ impl Fixture {
     }
 
     /// 把前向留下的激活收敛到计划保留的那一份：检查点只能是前向没丢掉的那批。
-    fn rewind(&self, store: &mut Buffers<Reference>, plan: &Plan) {
+    fn rewind(&self, store: &mut Bufs<Reference>, plan: &Plan) {
         for node in self.tape.nodes() {
             if !plan.keep(node.output()) {
                 store.free(node.output());
@@ -183,7 +183,7 @@ fn compute_matches_the_operator_reference_bit_for_bit() {
 }
 
 #[test]
-fn freeing_returns_the_buffer_and_lowers_live_immediately() {
+fn freeing_returns_the_buf_and_lowers_live_immediately() {
     let fixture = Fixture::new(1);
     let mut store = fixture.store();
     let activation = (WIDTH * 4) as u64;
@@ -209,10 +209,10 @@ fn freeing_returns_the_buffer_and_lowers_live_immediately() {
 }
 
 #[test]
-fn replaying_into_a_reused_buffer_reproduces_the_same_values() {
+fn replaying_into_a_reused_buf_reproduces_the_same_values() {
     let fixture = Fixture::new(1);
     let mut store = fixture.store();
-    let run = |store: &mut Buffers<Reference>| {
+    let run = |store: &mut Bufs<Reference>| {
         fixture.step(store, fixture.loss).expect("可算");
         f32s(store, fixture.loss)
     };
@@ -239,7 +239,7 @@ fn a_released_input_is_never_read_as_a_value() {
 #[test]
 fn a_variable_without_a_registered_shape_is_rejected() {
     let fixture = Fixture::new(1);
-    let mut store = Buffers::new(Sizes::new(fixture.tape.vars()), Reference);
+    let mut store = Bufs::new(Sizes::new(fixture.tape.vars()), Reference);
     let error = fixture
         .step(&mut store, fixture.loss)
         .expect_err("没有形状");
@@ -276,7 +276,7 @@ fn a_variable_without_registered_metadata_cannot_be_loaded() {
     let (first, gap) = (tape.parameter(), tape.parameter());
     let mut sizes = Sizes::new(tape.vars());
     sizes.set(first, Shape::new([1]), DType::F32);
-    let mut store = Buffers::new(sizes, Reference);
+    let mut store = Bufs::new(sizes, Reference);
 
     let error = store.load(gap, Data::F32(vec![0.0])).expect_err("没登记");
     assert_eq!(error.code(), Code::Internal, "这是调用方漏了 Sizes::set");
@@ -293,7 +293,7 @@ fn an_impossibly_large_output_shape_is_an_error_rather_than_an_abort() {
     let mut sizes = Sizes::new(tape.vars());
     sizes.set(x, Shape::new([1]), DType::F32);
     sizes.set(y, Shape::new([usize::MAX]), DType::F32);
-    let mut store = Buffers::new(sizes, Reference);
+    let mut store = Bufs::new(sizes, Reference);
     store.load(x, Data::F32(vec![1.0])).expect("输入");
 
     let error = store
@@ -425,7 +425,7 @@ fn the_second_registered_operator_replays_like_the_first() {
     sizes.set(x, Shape::new([N]), DType::F32);
     sizes.set(w, Shape::new([N, N]), DType::F32);
     sizes.set(y, Shape::new([N]), DType::F32);
-    let mut store = Buffers::new(sizes, Reference);
+    let mut store = Bufs::new(sizes, Reference);
 
     let input: Vec<f32> = (0..N).map(|i| i as f32 * 0.25 - 1.0).collect();
     let weights: Vec<f32> = (0..N * N)
@@ -487,7 +487,7 @@ fn a_three_operator_chain_runs_forward_through_the_reference_kernel() {
         .map(|i| ((i * 37) % 251) as f32 * 0.125 - 8.0)
         .collect();
 
-    let mut store = Buffers::new(sizes, Reference);
+    let mut store = Bufs::new(sizes, Reference);
     store.load(x, Data::F32(input.clone())).expect("输入");
     store.load(w, Data::F32(weights.clone())).expect("权重");
     for node in tape.nodes() {
@@ -517,7 +517,7 @@ mod operators {
 
     use super::*;
 
-    use crate::{Buffers, Data, Reference};
+    use crate::{Bufs, Data, Reference};
     use autograd::{Sizes, Tape};
     use tensor::{DType, Shape};
 
@@ -533,7 +533,7 @@ mod operators {
         for var in [a, b, typed, raw] {
             sizes.set(var, Shape::new([4]), DType::F32);
         }
-        let mut store = Buffers::new(sizes, Reference);
+        let mut store = Bufs::new(sizes, Reference);
         store
             .load(a, Data::F32(vec![1.0, 2.0, 3.0, 4.0]))
             .expect("a");

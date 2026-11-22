@@ -24,6 +24,6 @@ fn tensor_sample(m: usize, n: usize, k: usize) -> op::model::Sample {
         m,
         n,
         scalars: vec![("M", m as i64), ("N", n as i64), ("K", k as i64)],
-        buffers: Vec::new(),
+        bufs: Vec::new(),
     }
 }

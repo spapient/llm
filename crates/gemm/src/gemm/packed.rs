@@ -92,9 +92,9 @@ pub fn unpack_stream(bytes: &[u8], cpb: usize, zero: i32) -> Vec<i32> {
 
 /// 位流 → 整数码：每个码一个 `i32`，按行主序连续铺开（A 行宽 [`super::K`]、B 行宽 `n`）。
 pub fn decode_stream(codes: &mut [i32], bytes: &[u8], conf: &Conf) {
-    for (index, code) in codes.iter_mut().enumerate() {
-        let byte = bytes[index / conf.cpb];
-        *code = unpack(byte, index % conf.cpb, conf.cpb, conf.zero) as i32;
+    for (idx, code) in codes.iter_mut().enumerate() {
+        let byte = bytes[idx / conf.cpb];
+        *code = unpack(byte, idx % conf.cpb, conf.cpb, conf.zero) as i32;
     }
 }
 

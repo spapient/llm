@@ -14,7 +14,7 @@ fn op() -> OpDecl {
 fn path(mma_share: f64) -> Path {
     Path {
         variant: "pipe2".to_string(),
-        index: 0,
+        idx: 0,
         schedule: crate::sch::Schedule::parse("pipe<2>").expect("调度"),
         mma_share,
     }
@@ -24,7 +24,7 @@ fn path(mma_share: f64) -> Path {
 fn fallback(mma_share: f64) -> Path {
     Path {
         variant: "direct".to_string(),
-        index: 1,
+        idx: 1,
         schedule: crate::sch::Schedule::Direct,
         mma_share,
     }

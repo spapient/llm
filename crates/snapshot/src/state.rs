@@ -163,18 +163,18 @@ pub(crate) fn read_moments(cursor: &mut Cursor<'_>) -> Result<Moments> {
 /// 逐槽重建矩状态表：循环与逐槽错误归属本收集器，主解码函数只做计数对账。
 fn read_moment_slots(cursor: &mut Cursor<'_>, count: usize) -> Result<Vec<SlotMoments>> {
     let mut slots = Vec::with_capacity(count.min(super::PREALLOC));
-    for index in 0..count {
-        slots.push(read_moment_slot(cursor, index)?);
+    for idx in 0..count {
+        slots.push(read_moment_slot(cursor, idx)?);
     }
     Ok(slots)
 }
 
 /// 一个矩状态槽：长度对账后读一阶、二阶两张表。
-fn read_moment_slot(cursor: &mut Cursor<'_>, index: usize) -> Result<SlotMoments> {
+fn read_moment_slot(cursor: &mut Cursor<'_>, idx: usize) -> Result<SlotMoments> {
     let len = cursor.count("矩状态长度")?;
-    let m = read_f32_table(cursor, len).map_err(frame(index))?;
-    let v = read_f32_table(cursor, len).map_err(frame(index))?;
-    SlotMoments::new(m, v).map_err(frame(index))
+    let m = read_f32_table(cursor, len).map_err(frame(idx))?;
+    let v = read_f32_table(cursor, len).map_err(frame(idx))?;
+    SlotMoments::new(m, v).map_err(frame(idx))
 }
 
 /// 权重绑定段：绑定对数 → 每对源槽/回填槽下标（varint）；布局与矩状态/累积段平行。
@@ -198,16 +198,16 @@ pub(crate) fn read_grad_accum(cursor: &mut Cursor<'_>) -> Result<GradAccum> {
 /// 逐槽重建累积梯度表：循环与逐槽错误归属本收集器，主解码函数只做计数对账。
 fn read_accum_slots(cursor: &mut Cursor<'_>, count: usize) -> Result<Vec<Vec<f32>>> {
     let mut slots = Vec::with_capacity(count.min(super::PREALLOC));
-    for index in 0..count {
-        slots.push(read_accum_slot(cursor, index)?);
+    for idx in 0..count {
+        slots.push(read_accum_slot(cursor, idx)?);
     }
     Ok(slots)
 }
 
 /// 一个累积梯度槽：长度对账后读 f32 表。
-fn read_accum_slot(cursor: &mut Cursor<'_>, index: usize) -> Result<Vec<f32>> {
+fn read_accum_slot(cursor: &mut Cursor<'_>, idx: usize) -> Result<Vec<f32>> {
     let len = cursor.count("累积梯度长度")?;
-    read_f32_table(cursor, len).map_err(frame(index))
+    read_f32_table(cursor, len).map_err(frame(idx))
 }
 
 /// 权重绑定段解码：对数先与剩余字节对账，再逐对重建下标表。

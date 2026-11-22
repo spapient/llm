@@ -77,9 +77,9 @@ fn storage_dtype(class: &str) -> Result<DType> {
         .ok_or_else(|| bad(format!("不支持的 storage 类型 `{class}`")))
 }
 
-/// 第 `index` 项的字符串视图。
-fn text_at(items: &[Value], index: usize, what: &str) -> Result<String> {
-    into_str(field(items, index, what)?)
+/// 第 `idx` 项的字符串视图。
+fn text_at(items: &[Value], idx: usize, what: &str) -> Result<String> {
+    into_str(field(items, idx, what)?)
 }
 
 /// rebuild 的前三要素：storage 键、元素类型、offset 原文。
@@ -114,16 +114,16 @@ fn scaled(count: Option<usize>, width: usize, what: &str) -> Result<usize> {
     or_bad(count.and_then(|n| n.checked_mul(width)), what)
 }
 
-/// 第 `index` 项。
-fn field<'v>(items: &'v [Value], index: usize, missing: &str) -> Result<&'v Value> {
+/// 第 `idx` 项。
+fn field<'v>(items: &'v [Value], idx: usize, missing: &str) -> Result<&'v Value> {
     items
-        .get(index)
+        .get(idx)
         .ok_or_else(|| bad(format!("rebuild 缺 {missing}")))
 }
 
-/// 第 `index` 项元组视图。
-fn tuple_at<'v>(items: &'v [Value], index: usize, what: &str) -> Result<&'v [Value]> {
-    match field(items, index, what)? {
+/// 第 `idx` 项元组视图。
+fn tuple_at<'v>(items: &'v [Value], idx: usize, what: &str) -> Result<&'v [Value]> {
+    match field(items, idx, what)? {
         Value::Tuple(fields) => Ok(fields),
         _ => Err(bad(format!("rebuild 缺 {what}"))),
     }

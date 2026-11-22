@@ -48,24 +48,24 @@ impl Muon {
         self
     }
 
-    /// 确保槽位 `index` 的动量缓冲长度等于参数长度；首次见到的槽位分配零向量。
-    fn velocity(&mut self, index: usize, len: usize) -> &mut Vec<f32> {
-        if index >= self.velocity.len() {
-            let missing = index - self.velocity.len() + 1;
+    /// 确保槽位 `idx` 的动量缓冲长度等于参数长度；首次见到的槽位分配零向量。
+    fn velocity(&mut self, idx: usize, len: usize) -> &mut Vec<f32> {
+        if idx >= self.velocity.len() {
+            let missing = idx - self.velocity.len() + 1;
             self.velocity
                 .resize_with(self.velocity.len() + missing, Vec::new);
         }
-        let buffer = &mut self.velocity[index];
-        if buffer.len() != len {
-            buffer.resize(len, 0.0);
+        let buf = &mut self.velocity[idx];
+        if buf.len() != len {
+            buf.resize(len, 0.0);
         }
-        buffer
+        buf
     }
 
     /// 一个槽的推进：动量累加 →（可选 Nesterov）→ 正交化 → 写回。
     fn advance(
         &mut self,
-        index: usize,
+        idx: usize,
         slot: &mut Slot<'_>,
         (rows, cols): (usize, usize),
         scale: f32,
@@ -73,7 +73,7 @@ impl Muon {
     ) {
         let (beta, nesterov, eps) = (self.momentum, self.nesterov, self.eps);
         let decay = decay_rate(slot.role, self.weight_decay);
-        let velocity = self.velocity(index, rows * cols);
+        let velocity = self.velocity(idx, rows * cols);
         for (tracked, &grad) in velocity.iter_mut().zip(slot.grads.iter()) {
             *tracked = beta * *tracked + scale * grad;
         }
@@ -123,8 +123,8 @@ impl Optimizer for Muon {
         let shapes = shapes_of(slots)?;
         let scale = clip_scale(global_norm(slots), self.clip_norm);
         self.step = self.step.saturating_add(1);
-        for (index, (slot, &shape)) in slots.iter_mut().zip(&shapes).enumerate() {
-            self.advance(index, slot, shape, scale, lr);
+        for (idx, (slot, &shape)) in slots.iter_mut().zip(&shapes).enumerate() {
+            self.advance(idx, slot, shape, scale, lr);
         }
         Ok(())
     }
@@ -151,8 +151,8 @@ impl Optimizer for Muon {
 /// 每个槽的矩阵形状，**全部**先查完再返回。
 fn shapes_of(slots: &[Slot<'_>]) -> Result<Vec<(usize, usize)>> {
     let mut shapes = Vec::with_capacity(slots.len());
-    for (index, slot) in slots.iter().enumerate() {
-        shapes.push(matrix_of(index, slot)?);
+    for (idx, slot) in slots.iter().enumerate() {
+        shapes.push(matrix_of(idx, slot)?);
     }
     Ok(shapes)
 }
@@ -167,7 +167,7 @@ fn nesterov_direction(velocity: &[f32], grads: &[f32], beta: f32, scale: f32) ->
 }
 
 /// 一个槽的矩阵形状：非矩阵、零维或梯度非有限都在这里拒绝。
-fn matrix_of(index: usize, slot: &Slot<'_>) -> Result<(usize, usize)> {
+fn matrix_of(idx: usize, slot: &Slot<'_>) -> Result<(usize, usize)> {
     let Some((rows, cols)) = slot.shape else {
         let message = format!(
             "第 {index} 槽（角色 {}）不是矩阵：Muon 的正交化只在矩阵上有定义，\

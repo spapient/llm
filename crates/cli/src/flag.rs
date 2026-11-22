@@ -112,24 +112,24 @@ impl<'a> Flags<'a> {
 
     /// 收一个选项：查表定位、记号出现位、带取值的再收一个词。
     fn absorb_one(&mut self, word: &'a str, words: &mut Words<'a>) -> Result<()> {
-        let index = self.index(word).ok_or_else(|| self.unknown(word))?;
-        let flag = self.grammar[index];
+        let idx = self.idx(word).ok_or_else(|| self.unknown(word))?;
+        let flag = self.grammar[idx];
         words.next();
-        self.present |= 1 << index;
+        self.present |= 1 << idx;
         if flag.kind != Kind::Switch {
-            self.slots[index] = Some(self.take(words.next(), flag.name)?);
+            self.slots[idx] = Some(self.take(words.next(), flag.name)?);
         }
         Ok(())
     }
 
     /// 可缺省选项的取值；没出现就是 `None`。取值被取走，组装完的 `Flags` 不再持有它。
     pub(crate) fn take_text(&mut self, name: &str) -> Option<&'a str> {
-        self.index(name).and_then(|index| self.slots[index].take())
+        self.idx(name).and_then(|idx| self.slots[idx].take())
     }
 
     /// 取值的借用形态：`number` 这类"用完就丢"的读者不必为解析先分配一份副本。
     fn slot(&self, name: &str) -> Option<&'a str> {
-        self.index(name).and_then(|index| self.slots[index])
+        self.idx(name).and_then(|idx| self.slots[idx])
     }
 
     /// 必需选项的取值：`parse` 已核对过，缺了是文法表写错，仍按错误返回而不是 panic。
@@ -144,8 +144,8 @@ impl<'a> Flags<'a> {
 
     /// 开关是否出现。
     pub(crate) fn switch(&self, name: &str) -> bool {
-        self.index(name)
-            .is_some_and(|index| self.present & (1 << index) != 0)
+        self.idx(name)
+            .is_some_and(|idx| self.present & (1 << idx) != 0)
     }
 
     /// 数值选项：十进制解析失败按 `message` 报错（单位由选项自己给）。
@@ -188,7 +188,7 @@ impl<'a> Flags<'a> {
     }
 
     /// 名字 → 表内下标；表外名字是组装方的编程错误，不是调用方输入错误。
-    fn index(&self, name: &str) -> Option<usize> {
+    fn idx(&self, name: &str) -> Option<usize> {
         self.grammar.iter().position(|flag| flag.name == name)
     }
 
@@ -205,8 +205,8 @@ impl<'a> Flags<'a> {
 
     /// 必需项核对：缺哪个就点名哪个（含取值说明），不替调用方补默认值。
     fn check_required(&self) -> Result<()> {
-        for (index, flag) in self.grammar.iter().enumerate() {
-            if flag.kind == Kind::Required && self.slots[index].is_none() {
+        for (idx, flag) in self.grammar.iter().enumerate() {
+            if flag.kind == Kind::Required && self.slots[idx].is_none() {
                 let (name, what) = (flag.name, flag.what);
                 return Err(self.invalid(format!("`{}` 需要 `{name} <{what}>`", self.owner)));
             }

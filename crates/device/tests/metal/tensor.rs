@@ -116,10 +116,10 @@ fn metal_tensor_kernel_gemm() {
 ///
 /// `(128, 64, 96, 8)` 的单缓冲 B 片是 12.8 KiB、双缓冲 25.6 KiB，都塞得进 32 KiB，
 /// 因此走双缓冲分支；`K=960` 被 96 整除走满块路径，`K=1024` 走尾块路径，两条都覆盖。
-/// 运行：`cargo test --release -p llm-device --lib -- metal_tensor_double_buffer --ignored --nocapture`
+/// 运行：`cargo test --release -p llm-device --lib -- metal_tensor_double_buf --ignored --nocapture`
 #[test]
 #[ignore = "Metal 张量核双缓冲对拍：cargo test --release -p llm-device --lib -- metal_tensor_double_buffer --ignored --nocapture"]
-fn metal_tensor_double_buffer() {
+fn metal_tensor_double_buf() {
     use op::model::Sample;
     use op::sig::Signature;
 
@@ -135,7 +135,7 @@ fn metal_tensor_double_buffer() {
             m,
             n,
             scalars: vec![("M", m as i64), ("N", n as i64), ("K", k as i64)],
-            buffers: Vec::new(),
+            bufs: Vec::new(),
         };
         let msl = crate::tiled::metal_tensor_gemm("bench", &signature, &sample, geometry)
             .expect("张量核 MSL 应能生成");
@@ -155,10 +155,10 @@ fn metal_tensor_double_buffer() {
 ///
 /// 双缓冲把每轮两次 barrier 减为一次并让 B 装载延迟与乘加重叠；对照用同 k_tile 的大块几何
 /// 隔离「缓冲策略」与「块大小」两个变量。运行：
-/// `cargo test --release -p llm-device --lib -- metal_tensor_double_buffer_sweep --ignored --nocapture`
+/// `cargo test --release -p llm-device --lib -- metal_tensor_double_buf_sweep --ignored --nocapture`
 #[test]
 #[ignore = "Metal 张量核双缓冲吞吐：cargo test --release -p llm-device --lib -- metal_tensor_double_buffer_sweep --ignored --nocapture"]
-fn metal_tensor_double_buffer_sweep() {
+fn metal_tensor_double_buf_sweep() {
     use op::sig::Signature;
 
     let Some((device, queue)) = bench_device("张量核双缓冲吞吐") else {

@@ -208,7 +208,7 @@ fn unit_entry(name: &str, value: &Value) -> Result<Unit, ProfileError> {
 /// `[[provides]]` 数组：至少一条，否则协商没有可选的能力。
 fn parse_provides(table: &Table) -> Result<Vec<Provide>, ProfileError> {
     let tables = table.table_array("provides").unwrap_or_default();
-    let each = |(index, entry): (usize, &&Table)| parse_provide(entry, index);
+    let each = |(idx, entry): (usize, &&Table)| parse_provide(entry, idx);
     let provides: Vec<Provide> = tables
         .iter()
         .enumerate()
@@ -320,12 +320,12 @@ impl Profile {
     fn duplicate_impls(&self) -> Vec<ProfileError> {
         let mut seen: BTreeMap<(Prim, &str), usize> = BTreeMap::new();
         let mut errors = Vec::new();
-        for (index, provide) in self.provides.iter().enumerate() {
+        for (idx, provide) in self.provides.iter().enumerate() {
             let key = (provide.prim, provide.impl_name.as_str());
-            let Some(first) = seen.insert(key, index) else {
+            let Some(first) = seen.insert(key, idx) else {
                 continue;
             };
-            errors.push(bad(at(index, "impl"), dup_impl(first, provide)));
+            errors.push(bad(at(idx, "impl"), dup_impl(first, provide)));
         }
         errors
     }
@@ -345,12 +345,12 @@ impl Profile {
     fn duplicate_witnesses(&self) -> Vec<ProfileError> {
         let mut seen: BTreeMap<(&str, &str), usize> = BTreeMap::new();
         let mut errors = Vec::new();
-        for (index, provide) in self.provides.iter().enumerate() {
+        for (idx, provide) in self.provides.iter().enumerate() {
             let Some(witness) = provide.witness.as_ref() else {
                 continue;
             };
             let key = (witness.file.as_str(), witness.func.as_str());
-            let Some(first) = seen.insert(key, index) else {
+            let Some(first) = seen.insert(key, idx) else {
                 continue;
             };
             let previous = &self.provides[first];

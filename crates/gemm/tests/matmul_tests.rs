@@ -88,7 +88,7 @@ fn tn_empty_contraction_yields_zeros() {
 }
 
 #[test]
-fn tn_forward_rejects_mismatched_buffers() {
+fn tn_forward_rejects_mismatched_bufs() {
     let x = vec![0.0f32; 8];
     let w = vec![0.0f32; 8];
     let mut out = vec![0.0f32; 8];
@@ -110,7 +110,7 @@ fn empty_contraction_yields_zeros() {
 }
 
 #[test]
-fn forward_rejects_mismatched_buffers() {
+fn forward_rejects_mismatched_bufs() {
     let a = vec![0.0f32; 8];
     let b = vec![0.0f32; 8];
     let mut out = vec![0.0f32; 8];

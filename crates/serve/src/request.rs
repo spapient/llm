@@ -37,8 +37,8 @@ impl Request {
         let text = std::str::from_utf8(body)
             .map_err(|_| Error::new(Code::Invalid, "请求体不是 UTF-8").with(Self::SITE))?;
         let mut builder = Builder::default();
-        for (index, line) in text.lines().enumerate() {
-            builder.line(index + 1, line)?;
+        for (idx, line) in text.lines().enumerate() {
+            builder.line(idx + 1, line)?;
         }
         builder.finish()
     }

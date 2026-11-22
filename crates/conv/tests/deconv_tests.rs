@@ -248,11 +248,11 @@ fn conv_transpose1d_matches_naive() {
         (4, 2, 1, 3, 6, 3),
         (2, 2, 0, 5, 4, 2),
     ];
-    for (index, (k, s, p, cin, cout, l)) in cases.iter().enumerate() {
+    for (idx, (k, s, p, cin, cout, l)) in cases.iter().enumerate() {
         let de = ConvTranspose1d::new(*cin, *cout, *k, *s, *p);
         let ol = de.len(*l).unwrap();
-        let x = testkit::sample(*l * *cin, 1 + index as u32);
-        let w = testkit::sample(*cin * *cout * *k, 7 + index as u32);
+        let x = testkit::sample(*l * *cin, 1 + idx as u32);
+        let w = testkit::sample(*cin * *cout * *k, 7 + idx as u32);
         let b = testkit::sample(*cout, 3);
         let mut got = vec![0.0f32; ol * *cout];
         de.forward_f32(&x, &w, &b, 1, *l, &mut got).unwrap();

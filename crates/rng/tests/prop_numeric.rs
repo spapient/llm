@@ -2,7 +2,7 @@
 //!
 //! 这里只写**从定义推出**的性质，不重述实现：
 //!
-//! * 计数器型引擎的定义决定了 `block` 是 `(key, stream, index)` 的**纯函数**，
+//! * 计数器型引擎的定义决定了 `block` 是 `(key, stream, idx)` 的**纯函数**，
 //!   而 `Rng::next_u32` 只是按同一函数顺序取词——所以两者必须逐词一致。
 //!   这条跨 API 定律是本文件的核心：只测其中一侧时，缓冲推进错位可以长期不被发现。
 //! * `next_f32` 的定义是 `(u >> 8) / 2^24`，所以它的像集是 [0,1) 上的二进网格，
@@ -27,10 +27,10 @@ proptest! {
 
     /// 计数器型引擎的立身之本：同一个三元组永远派生出同一个块。
     #[test]
-    fn block_is_a_pure_function(key: u64, stream: u32, index: u64) {
-        let first = block(key, stream, index);
+    fn block_is_a_pure_function(key: u64, stream: u32, idx: u64) {
+        let first = block(key, stream, idx);
         for _ in 0..3 {
-            prop_assert_eq!(block(key, stream, index), first, "纯函数：重复调用不许有状态");
+            prop_assert_eq!(block(key, stream, idx), first, "纯函数：重复调用不许有状态");
         }
     }
 
@@ -43,8 +43,8 @@ proptest! {
             streamed.push(rng.next_u32());
         }
         let mut batched = Vec::with_capacity(words);
-        for index in 0..(words.div_ceil(4) as u64) {
-            batched.extend_from_slice(&block(key, stream, index));
+        for idx in 0..(words.div_ceil(4) as u64) {
+            batched.extend_from_slice(&block(key, stream, idx));
         }
         batched.truncate(words);
         prop_assert_eq!(streamed, batched, "缓冲推进与计数器派生必须一致");
@@ -54,8 +54,8 @@ proptest! {
     #[test]
     fn distinct_streams_give_distinct_blocks(key: u64, stream: u32) {
         let other = stream.wrapping_add(1);
-        for index in 0..3u64 {
-            prop_assert_ne!(block(key, stream, index), block(key, other, index), "流号必须真的参与派生");
+        for idx in 0..3u64 {
+            prop_assert_ne!(block(key, stream, idx), block(key, other, idx), "流号必须真的参与派生");
         }
     }
 
@@ -63,8 +63,8 @@ proptest! {
     #[test]
     fn distinct_keys_give_distinct_blocks(key: u64, stream: u32) {
         let other = key ^ 1;
-        for index in 0..3u64 {
-            prop_assert_ne!(block(key, stream, index), block(other, stream, index), "种子必须真的参与派生");
+        for idx in 0..3u64 {
+            prop_assert_ne!(block(key, stream, idx), block(other, stream, idx), "种子必须真的参与派生");
         }
     }
 
@@ -206,10 +206,10 @@ proptest! {
 /// （8192 次里约 0.05%）。突变测试把 `<` 改成 `<=` 时随机版仍然全绿——这就是证据。
 /// 边界定律要么定点触发，要么等于没测。
 fn zero_draw_ordinal(seed: u64, budget: u64) -> Option<u64> {
-    for index in 0..budget {
-        for (slot, word) in block(seed, 0, index).iter().enumerate() {
+    for idx in 0..budget {
+        for (slot, word) in block(seed, 0, idx).iter().enumerate() {
             if word >> 8 == 0 {
-                return Some(index * 4 + slot as u64);
+                return Some(idx * 4 + slot as u64);
             }
         }
     }

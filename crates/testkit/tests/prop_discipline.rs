@@ -112,9 +112,9 @@ fn no_crate_hand_rolls_its_own_proptest_config() {
             if path == HARNESS {
                 continue;
             }
-            for (index, line) in text.lines().enumerate() {
+            for (idx, line) in text.lines().enumerate() {
                 if constructs_a_config(line) {
-                    offenders.push(format!("{path}:{}", index + 1));
+                    offenders.push(format!("{path}:{}", idx + 1));
                 }
             }
         }

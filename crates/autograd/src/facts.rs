@@ -153,9 +153,9 @@ impl Facts {
         stamp.fill(0);
         let mut transient = 0u64;
         let mut replayed = 0u64;
-        for (index, step) in schedule.steps().iter().enumerate() {
+        for (idx, step) in schedule.steps().iter().enumerate() {
             let mut sum = 0u64;
-            each_input(step, stamp, index as u32 + 1, |slot| {
+            each_input(step, stamp, idx as u32 + 1, |slot| {
                 if keep[slot] {
                     return;
                 }
@@ -233,11 +233,11 @@ impl Scratch {
 fn uses(steps: &[Node], len: usize) -> (Vec<u32>, Vec<u32>) {
     let mut last_use = vec![NONE; len];
     let mut producer = vec![NONE; len];
-    for (index, step) in steps.iter().enumerate() {
-        producer[step.output().id() as usize] = index as u32;
+    for (idx, step) in steps.iter().enumerate() {
+        producer[step.output().id() as usize] = idx as u32;
         for input in step.inputs() {
             // 反向顺序遍历，最后一次覆盖就是"最后一次被消费"。
-            last_use[input.id() as usize] = index as u32;
+            last_use[input.id() as usize] = idx as u32;
         }
     }
     (last_use, producer)
@@ -247,9 +247,9 @@ fn uses(steps: &[Node], len: usize) -> (Vec<u32>, Vec<u32>) {
 fn floor_of(steps: &[Node], bytes: &[u64]) -> u64 {
     let mut stamp = vec![0u32; bytes.len()];
     let mut floor = 0u64;
-    for (index, step) in steps.iter().enumerate() {
+    for (idx, step) in steps.iter().enumerate() {
         let mut sum = 0u64;
-        each_input(step, &mut stamp, index as u32 + 1, |slot| {
+        each_input(step, &mut stamp, idx as u32 + 1, |slot| {
             sum = sum.saturating_add(bytes[slot]);
         });
         floor = floor.max(sum);

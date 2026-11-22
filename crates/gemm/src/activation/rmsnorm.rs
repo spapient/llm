@@ -1,5 +1,5 @@
 //! RMSNorm：`y[n] = gamma[n] * x[n] / sqrt(mean(x[0..n]^2) + eps)`。
-use crate::model::{Buffer, Cost, Sample, ShapeCtx, Values, cost_n, x_buffer};
+use crate::model::{Buf, Cost, Sample, ShapeCtx, Values, cost_n, x_buf};
 use diagnostic::{Code, Error};
 
 /// 数值稳定项：均方根里加的小常数。
@@ -24,13 +24,13 @@ pub fn sample(len: usize, _: usize) -> Sample {
         m: len,
         n: len,
         scalars: vec![("N", len as i64)],
-        buffers: vec![
-            x_buffer(len),
-            Buffer {
+        bufs: vec![
+            x_buf(len),
+            Buf {
                 name: "gamma",
                 values: Values::F32((0..len).map(|i| 0.5 + (i as f32) * 0.01).collect()),
             },
-            Buffer {
+            Buf {
                 name: "y",
                 values: Values::F32(vec![0.0; len]),
             },

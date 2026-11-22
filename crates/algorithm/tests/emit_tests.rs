@@ -205,7 +205,7 @@ fn the_scores_are_the_self_information_of_the_picked_byte() {
     let produced = emitter.run(10, None).expect("状态自洽").bytes().to_vec();
     assert_eq!(emitter.scores().len(), produced.len());
     let ceiling = (BYTES as f64).ln();
-    for (index, &score) in emitter.scores().iter().enumerate() {
+    for (idx, &score) in emitter.scores().iter().enumerate() {
         assert!(
             score >= 0.0 && f64::from(score) <= ceiling + 1e-6,
             "第 {idx} 个字节的分数 {score} 越出 [0, {ceiling}]"

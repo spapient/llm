@@ -236,10 +236,10 @@ pub mod parse {
     /// 从 `open` 处的 `(` 找配对的 `)`：深度归零的那一格就是答案，返回绝对下标。
     pub(crate) fn matching_paren(text: &str, open: usize) -> Option<usize> {
         let mut depth = 0usize;
-        for (index, ch) in text[open..].char_indices() {
+        for (idx, ch) in text[open..].char_indices() {
             depth = depth_step(depth, ch)?;
             if depth == 0 {
-                return Some(open + index);
+                return Some(open + idx);
             }
         }
         None
@@ -250,12 +250,12 @@ pub mod parse {
         let mut parts = Vec::new();
         let mut depth = 0usize;
         let mut start = 0usize;
-        for (index, ch) in inner.char_indices() {
+        for (idx, ch) in inner.char_indices() {
             let at_comma = ch == ',' && depth == 0;
             depth = depth_step(depth, ch).unwrap_or_default();
             if at_comma {
-                parts.push((start, &inner[start..index]));
-                start = index + 1;
+                parts.push((start, &inner[start..idx]));
+                start = idx + 1;
             }
         }
         parts.push((start, &inner[start..]));

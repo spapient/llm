@@ -1,4 +1,4 @@
-//! Metal(MSL) 侧的设备源与 host 驱动拼装：`device` 地址空间、`[[buffer(slot)]]` 缓冲、compute
+//! Metal(MSL) 侧的设备源与 host 驱动拼装：`device` 地址空间、`[[buf(slot)]]` 缓冲、compute
 //! kernel 发射、`MTLBuffer` 分配 / 回读骨架。
 //!
 //! 后端无关的 lowering 原语住在 [`crate::dialect::Dialect`] trait 的**默认方法**里，这里只写
@@ -100,7 +100,7 @@ pub fn metal_loop_kernel(
 /// `cutile_launch` compute kernel：按签名顺序声明 `device` 缓冲并原样透传给内核；标量直接取样本值。
 fn metal_launch(kernel: &str, signature: &Signature, sample: &Sample) -> Result<String> {
     let call = launch_args(sample, signature.params())?;
-    let buffers = Metal::buffers(signature);
+    let bufs = Metal::bufs(signature);
     Ok(format!(
         "kernel void cutile_launch({buffers},\n                          uint tid [[thread_position_in_grid]]) {{\n    if (tid != 0) return;\n    {kernel}({call});\n}}"
     ))
@@ -119,14 +119,14 @@ fn metal_bindings(
     for (slot, param) in signature
         .params()
         .iter()
-        .filter(|p| p.ctype.is_buffer())
+        .filter(|p| p.ctype.is_buf())
         .enumerate()
     {
-        let buffer = sample
-            .buffer(&param.name)
+        let buf = sample
+            .buf(&param.name)
             .ok_or_else(|| Error::new(Code::Internal, "签名与样本已对齐（漂移）"))?;
         let base = param.ctype.c_name();
-        let len = buffer.values.len();
+        let len = buf.values.len();
         if param.mutable {
             out_len = len;
             allocs.push_str(&format!(
@@ -140,7 +140,7 @@ fn metal_bindings(
                 "static const {base} init_{name}[] = {{{lit}}};\n",
                 base = base,
                 name = param.name,
-                lit = c_literal(&buffer.values)
+                lit = c_literal(&buf.values)
             ));
             allocs.push_str(&format!(
                 "        id<MTLBuffer> b_{name} = [device newBufferWithBytes:init_{name} length:sizeof(init_{name}) options:MTLResourceStorageModeShared];\n",

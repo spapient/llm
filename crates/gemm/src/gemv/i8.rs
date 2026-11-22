@@ -30,7 +30,7 @@ impl<const G: usize> Plain for gemv::SymI8<G> {
     fn weights(m: usize, n: usize) -> Vec<u8> {
         // 取对称小整数（-8..7）的 int8 位模式，避免大整数在 f32 网格外引入舍入。
         (0..n * m)
-            .map(|index| ((index * 37) % 16) as i8 - 8)
+            .map(|idx| ((idx * 37) % 16) as i8 - 8)
             .map(|value| value as u8)
             .collect()
     }

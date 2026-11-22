@@ -45,9 +45,9 @@ impl Sample {
     /// 按 `len = s·d` 造一组：三条输入是互不相同的线性序列，`out` 全零。
     pub(crate) fn new(len: usize) -> Self {
         Self {
-            q: (0..len).map(|index| -0.5 + index as f32 * 0.13).collect(),
-            k: (0..len).map(|index| 0.4 - index as f32 * 0.09).collect(),
-            v: (0..len).map(|index| -0.2 + index as f32 * 0.11).collect(),
+            q: (0..len).map(|idx| -0.5 + idx as f32 * 0.13).collect(),
+            k: (0..len).map(|idx| 0.4 - idx as f32 * 0.09).collect(),
+            v: (0..len).map(|idx| -0.2 + idx as f32 * 0.11).collect(),
             out: vec![0.0f32; len],
         }
     }

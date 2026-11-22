@@ -167,9 +167,9 @@ impl Schedule {
     /// 一个可达节点把可达性传给它的每个"要梯度"的输入。
     fn inherit(&mut self, tape: &Tape, node: &Node) {
         for input in node.inputs() {
-            let index = input.id() as usize;
+            let idx = input.id() as usize;
             if tape.requirement(*input).is_some_and(Requirement::requires) {
-                self.graph[index] = true;
+                self.graph[idx] = true;
             }
         }
     }
@@ -202,8 +202,8 @@ impl Schedule {
                 steps.sort_unstable_by(|left, right| compare(*ordering, left, right));
             }
         }
-        endpoints.extend(graph.iter().enumerate().filter_map(|(index, seen)| {
-            let var = Var::at(index as u32);
+        endpoints.extend(graph.iter().enumerate().filter_map(|(idx, seen)| {
+            let var = Var::at(idx as u32);
             let endpoint = *seen && tape.requirement(var) == Some(Requirement::Grad);
             endpoint.then_some(var)
         }));

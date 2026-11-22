@@ -8,14 +8,14 @@
 
 use super::*;
 
-/// 多段驱动的一段：入口名、按 `buffer(i)` 顺序的缓冲变量名（带 `b_` 前缀）、派发几何、段后主机代码。
+/// 多段驱动的一段：入口名、按 `buf(i)` 顺序的缓冲变量名（带 `b_` 前缀）、派发几何、段后主机代码。
 ///
 /// `fold` 是这一段落定之后、下一段之前的主机折叠（部分和 → 总和、部分平方和 → `rms`、
 /// 携带前缀推进），空串表示这一段不需要折叠。几何按「工作项数」给，线程组恒为 `(1,1,1)`：
 /// 分块族是每线程一块，块内串行走完。
 pub(crate) struct MetalStage<'a> {
     pub entry: &'a str,
-    pub buffers: &'a [&'a str],
+    pub bufs: &'a [&'a str],
     pub grid: [usize; 3],
     pub fold: &'a str,
 }
@@ -38,7 +38,7 @@ pub(crate) fn metal_multistage_driver(
     stages: &[MetalStage<'_>],
 ) -> Result<String> {
     let output = output_name(signature)?;
-    let (data, allocs) = metal_buffers(signature, sample, capacity, scratch)?;
+    let (data, allocs) = metal_bufs(signature, sample, capacity, scratch)?;
     let body = metal_stages(stages);
     Ok(format!(
         r#"#import <Foundation/Foundation.h>
@@ -67,7 +67,7 @@ int main(int argc, const char **argv) {{
 }
 
 /// 缓冲装载：只读缓冲落字面量、可写缓冲按 `capacity` 开满，折叠用的中间缓冲另开 f32。
-fn metal_buffers(
+fn metal_bufs(
     signature: &Signature,
     sample: &Sample,
     capacity: usize,
@@ -78,7 +78,7 @@ fn metal_buffers(
     for param in signature
         .params()
         .iter()
-        .filter(|param| param.ctype.is_buffer())
+        .filter(|param| param.ctype.is_buf())
     {
         let (literal, alloc) = metal_param(param, sample, capacity)?;
         data.push_str(&literal);
@@ -93,8 +93,8 @@ fn metal_buffers(
 /// 段体：每段一份发射 + 该段自己的主机折叠（折叠串由调用方给，不在驱动里拼第二份算式）。
 fn metal_stages(stages: &[MetalStage<'_>]) -> String {
     let mut body = String::new();
-    for (index, stage) in stages.iter().enumerate() {
-        body.push_str(&metal_stage(index, stage));
+    for (idx, stage) in stages.iter().enumerate() {
+        body.push_str(&metal_stage(idx, stage));
         body.push_str(stage.fold);
     }
     body
@@ -106,19 +106,19 @@ fn metal_param(param: &Param, sample: &Sample, capacity: usize) -> Result<(Strin
     if param.mutable {
         return Ok((String::new(), output_alloc(&param.name, base, capacity)));
     }
-    let buffer = sample
-        .buffer(&param.name)
+    let buf = sample
+        .buf(&param.name)
         .ok_or_else(|| Error::new(Code::Internal, "签名与样本已对齐（漂移）"))?;
     Ok((
-        literal_decl(&param.name, base, &buffer.values),
+        literal_decl(&param.name, base, &buf.values),
         input_alloc(&param.name),
     ))
 }
 
 /// 单段发射：取入口函数、建管线、设缓冲、派发、提交并等待。
-fn metal_stage(index: usize, stage: &MetalStage<'_>) -> String {
+fn metal_stage(idx: usize, stage: &MetalStage<'_>) -> String {
     let mut sets = String::new();
-    for (slot, name) in stage.buffers.iter().enumerate() {
+    for (slot, name) in stage.bufs.iter().enumerate() {
         sets.push_str(&format!(
             "            [encoder{index} setBuffer:b_{name} offset:0 atIndex:{slot}];\n"
         ));
@@ -147,7 +147,7 @@ fn metal_stage(index: usize, stage: &MetalStage<'_>) -> String {
     )
 }
 
-/// 一轮调度：建 command buffer、设缓冲与管线、按 16 批发射、提交并等待。
+/// 一轮调度：建 command buf、设缓冲与管线、按 16 批发射、提交并等待。
 ///
 /// 预热与计时两段只在尾巴上分叉（错误文本与返回码），所以这一轮本身只写一份：
 /// 占位符在插入后由同一批 [`str::replace`] 补齐（`@ROUND@` 先于 `@SETS@` 等）。

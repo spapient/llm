@@ -54,7 +54,7 @@ pub fn metal_chunk_scan(
 fn chunk_map_kernel(
     preamble: &str,
     entry: &str,
-    buffers: &str,
+    bufs: &str,
     chunk: usize,
     len: i64,
     body: &str,
@@ -71,12 +71,12 @@ fn chunk_map_kernel(
 }
 
 /// 校正内核：每线程 `g` 把携带态 `d_c[g]` 的衰减几何级数 `C·a^(j+1)` 加回 `y`（就地累加）。
-/// 槽位按「输入后输出」：`d_c` 是输入在 `buffer(0)`、`d_y` 是输出在 `buffer(1)`。
+/// 槽位按「输入后输出」：`d_c` 是输入在 `buf(0)`、`d_y` 是输出在 `buf(1)`。
 fn chunk_scan_correct(output: &str, chunk: usize, len: i64, decay: f32) -> String {
-    let buffers =
+    let bufs =
         format!("    device float* d_c [[buffer(0)]],\n    device float* d_{output} [[buffer(1)]]");
     let body = scan_correct_body(output, decay, "    ");
-    chunk_map_kernel("", SCAN_CORRECT, &buffers, chunk, len, &body)
+    chunk_map_kernel("", SCAN_CORRECT, &bufs, chunk, len, &body)
 }
 
 /// 生产态分块 RMSNorm：两段内核 + 主机折叠。
@@ -150,7 +150,7 @@ pub fn metal_chunk_softmax(
     Ok((max, expsum, map))
 }
 
-/// 生产态 Metal 基准驱动：host 只负责输入上传与派发，样本计时取自 command buffer 的 GPU 时间戳。
+/// 生产态 Metal 基准驱动：host 只负责输入上传与派发，样本计时取自 command buf 的 GPU 时间戳。
 pub fn metal_benchmark_driver(
     signature: &Signature,
     sample: &Sample,
@@ -210,19 +210,19 @@ fn bench_wiring(signature: &Signature, sample: &Sample) -> Result<(String, Strin
     for (slot, param) in signature
         .params()
         .iter()
-        .filter(|param| param.ctype.is_buffer())
+        .filter(|param| param.ctype.is_buf())
         .enumerate()
     {
-        let buffer = sample
-            .buffer(&param.name)
+        let buf = sample
+            .buf(&param.name)
             .ok_or_else(|| Error::new(Code::Internal, "签名与样本已对齐（漂移）"))?;
         let base = param.ctype.c_name();
         let name = param.name.as_ref();
-        let len = buffer.values.len();
+        let len = buf.values.len();
         if param.mutable {
             allocs.push_str(&output_alloc(name, base, len));
         } else {
-            data.push_str(&literal_decl(name, base, &buffer.values));
+            data.push_str(&literal_decl(name, base, &buf.values));
             allocs.push_str(&input_alloc(name));
         }
         sets.push_str(&format!(

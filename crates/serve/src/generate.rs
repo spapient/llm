@@ -236,7 +236,7 @@ impl Sampling for Classical {
             &self.params,
             logits,
             "serve::Classical",
-            |scaled, retained| argmax_index(scaled, retained, "serve::Classical"),
+            |scaled, retained| argmax_idx(scaled, retained, "serve::Classical"),
         )
     }
 }
@@ -282,10 +282,10 @@ fn sample_categorical(scaled: &[f32], candidates: Vec<usize>, rng: &mut Rng) -> 
     let (weights, total) = exp_weights(scaled, &candidates);
     let threshold = rng.next_f32() * total;
     let mut cumulative = 0.0;
-    for (position, &index) in candidates.iter().enumerate() {
+    for (position, &idx) in candidates.iter().enumerate() {
         cumulative += weights[position];
         if cumulative >= threshold {
-            return Ok(index);
+            return Ok(idx);
         }
     }
     Ok(candidates[candidates.len() - 1])
@@ -304,13 +304,13 @@ fn pipeline(
     // 温度缩放是逐元素映射，整块切片一次算完。
     let scaled: Vec<f32> = logits.iter().map(|&logit| logit / temperature).collect();
     let retained = retain(params, &scaled, (0..logits.len()).collect());
-    let index = choose(&scaled, retained)?;
-    token(index, scope).map(Some)
+    let idx = choose(&scaled, retained)?;
+    token(idx, scope).map(Some)
 }
 
 /// 候选下标映射到 token 编号；越出 u32 报 `Invalid`，`scope` 标记产生错误的采样器。
-fn token(index: usize, scope: &str) -> Result<u32> {
-    u32::try_from(index)
+fn token(idx: usize, scope: &str) -> Result<u32> {
+    u32::try_from(idx)
         .map_err(|_| Error::new(Code::Invalid, format!("token 编号 {index} 超出 u32")).with(scope))
 }
 
@@ -341,14 +341,14 @@ fn top_k(scaled: &[f32], mut candidates: Vec<usize>, k: usize) -> Vec<usize> {
 }
 
 /// 保留集上确定性 argmax：严格大于才更新，等值时编号更小者胜出；候选为空报错。
-fn argmax_index(scaled: &[f32], candidates: Vec<usize>, scope: &str) -> Result<usize> {
-    let best = candidates.into_iter().fold(None, |best, index| match best {
-        None => Some(index),
-        Some(best_index) => {
-            if scaled[index] > scaled[best_index] {
-                Some(index)
+fn argmax_idx(scaled: &[f32], candidates: Vec<usize>, scope: &str) -> Result<usize> {
+    let best = candidates.into_iter().fold(None, |best, idx| match best {
+        None => Some(idx),
+        Some(best_idx) => {
+            if scaled[idx] > scaled[best_idx] {
+                Some(idx)
             } else {
-                Some(best_index)
+                Some(best_idx)
             }
         }
     });
@@ -364,11 +364,11 @@ fn empty(scope: &str) -> Error {
 fn exp_weights(scaled: &[f32], candidates: &[usize]) -> (Vec<f32>, f32) {
     let max = candidates
         .iter()
-        .map(|&index| scaled[index])
+        .map(|&idx| scaled[idx])
         .fold(f32::NEG_INFINITY, f32::max);
     let weights: Vec<f32> = candidates
         .iter()
-        .map(|&index| (scaled[index] - max).exp())
+        .map(|&idx| (scaled[idx] - max).exp())
         .collect();
     let total = weights.iter().sum();
     (weights, total)
@@ -381,8 +381,8 @@ fn nucleus(scaled: &[f32], mut candidates: Vec<usize>, p: f32) -> Vec<usize> {
     ranked.sort_by(|&(a, ea), &(b, eb)| descending(ea, eb, a, b));
     let mut kept = Vec::with_capacity(ranked.len());
     let mut cumulative = 0.0;
-    for (index, exponential) in ranked {
-        kept.push(index);
+    for (idx, exponential) in ranked {
+        kept.push(idx);
         cumulative += exponential / total;
         if cumulative >= p {
             break;
@@ -462,8 +462,8 @@ fn usable(logits: &[f32]) -> Result<()> {
 /// 最大 logit 的最小下标；空输入与非有限值都报错。
 pub(crate) fn best(logits: &[f32]) -> Result<u32> {
     usable(logits)?;
-    let index = argmax_index(logits, (0..logits.len()).collect(), "serve::Greedy")?;
-    token(index, "serve::Greedy")
+    let idx = argmax_idx(logits, (0..logits.len()).collect(), "serve::Greedy")?;
+    token(idx, "serve::Greedy")
 }
 
 #[cfg(test)]

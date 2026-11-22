@@ -32,7 +32,7 @@ impl_uint!(u8, u16, u32, u64, usize);
 #[inline]
 pub fn write<N: Uint>(out: &mut impl Sink, value: N) {
     let mut value = value.as_u64();
-    let mut buffer = [0u8; MAX_BYTES];
+    let mut buf = [0u8; MAX_BYTES];
     let mut len = 0;
     loop {
         let mut byte = (value & 0x7F) as u8;
@@ -40,13 +40,13 @@ pub fn write<N: Uint>(out: &mut impl Sink, value: N) {
         if value != 0 {
             byte |= 0x80;
         }
-        buffer[len] = byte;
+        buf[len] = byte;
         len += 1;
         if value == 0 {
             break;
         }
     }
-    out.put(&buffer[..len]);
+    out.put(&buf[..len]);
 }
 
 /// 只读游标：在一段字节上顺序取数，所有越界与非规范都返回错误而不是 panic。

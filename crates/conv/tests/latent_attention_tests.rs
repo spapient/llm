@@ -3,7 +3,7 @@
 use crate::attention::latent::{forward, reference, sample};
 
 /// 一条样本的全部缓冲：`q`/`k` 宽 `W`，`v`/`y` 宽 `dc`。
-fn buffers(sample: &crate::model::Sample) -> Vec<&[f32]> {
+fn bufs(sample: &crate::model::Sample) -> Vec<&[f32]> {
     ["q", "k", "v"]
         .iter()
         .map(|name| sample.f32(name).expect("样本带这三个缓冲"))
@@ -14,7 +14,7 @@ fn buffers(sample: &crate::model::Sample) -> Vec<&[f32]> {
 fn zero_scores_degrade_to_uniform_average_of_the_compressed_values() {
     let s = sample(2, 8);
     let q = vec![0.0f32; 2 * 8];
-    let bufs = buffers(&s);
+    let bufs = bufs(&s);
     let (k, v) = (bufs[1], bufs[2]);
     let mut y = vec![0.0f32; 2 * 4];
     forward(&q, k, v, &mut y, 8).expect("长度自洽");
@@ -41,7 +41,7 @@ fn a_single_key_value_row_passes_through_unchanged() {
 #[test]
 fn the_rope_tail_moves_the_scores() {
     let s = sample(2, 8);
-    let bufs = buffers(&s);
+    let bufs = bufs(&s);
     let (q, v) = (bufs[0], bufs[2]);
     let mut base = vec![0.0f32; 2 * 8];
     let mut moved = vec![0.0f32; 2 * 8];
@@ -73,7 +73,7 @@ fn the_kernel_agrees_with_the_reference_on_the_declared_sample() {
     };
     let want = reference(&s).expect("参考可算");
     assert_eq!(got.len(), want.len());
-    for (index, (a, b)) in got.iter().zip(&want).enumerate() {
+    for (idx, (a, b)) in got.iter().zip(&want).enumerate() {
         assert!((a - b).abs() < 1e-5, "第 {index} 项：{a} vs {b}");
     }
 }

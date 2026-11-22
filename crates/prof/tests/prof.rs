@@ -270,7 +270,7 @@ fn formulas_reject_saturated_and_degenerate_inputs_with_a_message() {
         "", "   ", "+", "(", ")", "**", "1..2", "abc", "1+", "((1+2))", "2/3/4",
     ];
     let expect_ok = ["((1+2))", "2/3/4"];
-    for (index, text) in cases.iter().enumerate() {
+    for (idx, text) in cases.iter().enumerate() {
         match eval_expression(text) {
             Ok(_) => assert!(expect_ok.contains(text), "用例 {index} `{text}` 不应通过"),
             Err(error) => {
@@ -298,7 +298,7 @@ fn formulas_evaluate_priority_chains_and_parenthesized_groups() {
         ("10-(6+2)", 2.0),
         ("8*4096/8", 4096.0),
     ];
-    for (index, (text, expected)) in cases.iter().enumerate() {
+    for (idx, (text, expected)) in cases.iter().enumerate() {
         let actual = eval_expression(text).expect("用例 {index} `{text}` 应可求值");
         assert!(
             (actual - expected).abs() < 1e-9,
@@ -315,7 +315,7 @@ fn formulas_reject_each_degenerate_shape_with_a_message() {
         "1/0", "(1+2", "1+2)", "1+2)*3", "8*", "1+2-", "*3", "**2", "1++2", "1--2", "1*/2", "2 3",
         "1a2", "3GHz", ".", "1.2.3", "e5", "1e",
     ];
-    for (index, text) in cases.iter().enumerate() {
+    for (idx, text) in cases.iter().enumerate() {
         let error = eval_expression(text).expect_err("用例 {index} `{text}` 应当拒绝");
         assert_eq!(error.code(), Code::Invalid, "用例 {index} `{text}`");
         assert!(
@@ -336,7 +336,7 @@ fn formulas_handle_saturated_large_literals_without_panic() {
         "1e-308+1e-308",
         "4294967295",
     ];
-    for (index, text) in cases.iter().enumerate() {
+    for (idx, text) in cases.iter().enumerate() {
         let value = eval_expression(text).expect("用例 {index} `{text}` 应可求值");
         assert!(
             value.is_finite() || value.is_infinite(),
@@ -362,7 +362,7 @@ fn span_parse_covers_boundary_and_degenerate_forms() {
         ("..", Err(())),
         ("16..4.5", Err(())),
     ];
-    for (index, (text, expected)) in cases.iter().enumerate() {
+    for (idx, (text, expected)) in cases.iter().enumerate() {
         let parsed = Span::parse(text);
         match expected {
             Ok(span) => assert_eq!(parsed.as_ref(), Ok(span), "用例 {index} `{text}`"),

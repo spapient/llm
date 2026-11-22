@@ -2,15 +2,15 @@
 
 use diagnostic::{Code, Error, Result};
 
-use crate::Buffer;
+use crate::Buf;
 
 /// 缓冲分配器：分配、释放、显式拷贝。
 pub trait Allocator {
     /// 分配 `bytes` 字节并清零；`0` 得到空缓冲。
-    fn alloc(&mut self, bytes: usize) -> Result<Buffer>;
+    fn alloc(&mut self, bytes: usize) -> Result<Buf>;
 
     /// 归还一段缓冲。RAII 下向量 drop 即释放，显式归还点为未来设备回收预留钩子。
-    fn free(&mut self, buffer: Buffer);
+    fn free(&mut self, buf: Buf);
 
     /// 把 `src` 显式拷进 `dst`；两端长度必须一致，否则 `Invalid`。
     fn copy_into(&self, src: &[u8], dst: &mut [u8]) -> Result<()>;
@@ -28,7 +28,7 @@ impl CpuAllocator {
 }
 
 impl Allocator for CpuAllocator {
-    fn alloc(&mut self, bytes: usize) -> Result<Buffer> {
+    fn alloc(&mut self, bytes: usize) -> Result<Buf> {
         let mut owned = Vec::new();
         owned.try_reserve_exact(bytes).map_err(|_| {
             Error::new(
@@ -38,10 +38,10 @@ impl Allocator for CpuAllocator {
             .with("storage::CpuAllocator::alloc")
         })?;
         owned.resize(bytes, 0);
-        Ok(Buffer::from_bytes(owned))
+        Ok(Buf::from_bytes(owned))
     }
 
-    fn free(&mut self, _buffer: Buffer) {}
+    fn free(&mut self, _buf: Buf) {}
 
     fn copy_into(&self, src: &[u8], dst: &mut [u8]) -> Result<()> {
         if src.len() != dst.len() {

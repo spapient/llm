@@ -13,13 +13,13 @@ fn a_tensor_parallel_group_reduces_into_every_member() {
     local.load(0, &[1.0, 2.0, 3.0]).expect("rank 0");
     local.load(1, &[10.0, 20.0, 30.0]).expect("rank 1");
     let group = topology.group(Parallel::Tensor, 0).expect("第 0 组");
-    let mut buffer = [1.0, 2.0, 3.0];
+    let mut buf = [1.0, 2.0, 3.0];
     local
-        .all_reduce(&group, Reduce::Sum, &mut buffer)
+        .all_reduce(&group, Reduce::Sum, &mut buf)
         .expect("归约");
-    assert_eq!(buffer, [11.0, 22.0, 33.0]);
-    assert_eq!(local.replica(0).expect("rank 0"), buffer);
-    assert_eq!(local.replica(1).expect("rank 1"), buffer);
+    assert_eq!(buf, [11.0, 22.0, 33.0]);
+    assert_eq!(local.replica(0).expect("rank 0"), buf);
+    assert_eq!(local.replica(1).expect("rank 1"), buf);
     // 组外的 rank 不该被这次归约改动。
     assert_eq!(local.replica(2).expect("rank 2"), [0.0, 0.0, 0.0]);
 }
@@ -35,12 +35,12 @@ fn a_data_parallel_group_reduces_only_its_own_members() {
     }
     let group = topology.group(Parallel::Data, 0).expect("第 0 组");
     assert_eq!(group.ranks(), [0, 2]);
-    let mut buffer = [0.0; 2];
+    let mut buf = [0.0; 2];
     local
-        .all_reduce(&group, Reduce::Max, &mut buffer)
+        .all_reduce(&group, Reduce::Max, &mut buf)
         .expect("归约");
-    assert_eq!(buffer, [3.0, -1.0], "max 按元素取，不和 rank 1 的 -2 混");
-    assert_eq!(local.replica(2).expect("rank 2"), buffer);
+    assert_eq!(buf, [3.0, -1.0], "max 按元素取，不和 rank 1 的 -2 混");
+    assert_eq!(local.replica(2).expect("rank 2"), buf);
 }
 
 /// 归约顺序必须由组的升序决定，而不是由切片顺序决定：混合正负时能暴露取错顺序。

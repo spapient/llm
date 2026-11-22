@@ -13,20 +13,20 @@ impl Scheduler {
     /// 序列不在批里（没 `admit`、或已经 `finish`）、已经结束、或页宽与页池不一致时报错；
     /// 这些都属于调用方的状态错误，而不是"页不够"。
     pub fn advance(&mut self, sequence: &mut Sequence) -> Result<Progress> {
-        let index = self.check_advance(sequence)?;
+        let idx = self.check_advance(sequence)?;
         if !self.extend(
-            index,
+            idx,
             self.next_pages(sequence),
             "engine::Scheduler::advance",
         )? {
             return Ok(Progress::Blocked);
         }
-        self.take_step(index, sequence)
+        self.take_step(idx, sequence)
     }
 
     /// 生成的前置判据：序列必须在批里、还没结束、页宽与页池一致。
     pub(super) fn check_advance(&self, sequence: &Sequence) -> Result<usize> {
-        let index = self.position(sequence.id()).ok_or_else(|| {
+        let idx = self.position(sequence.id()).ok_or_else(|| {
             Error::new(
                 Code::Invalid,
                 format!("序列 {} 不在批里：生成必须先 `admit`", sequence.id()),
@@ -40,33 +40,33 @@ impl Scheduler {
             );
         }
         self.check_width(sequence, "engine::Scheduler::advance")?;
-        Ok(index)
+        Ok(idx)
     }
 
-    /// 把第 `index` 条页表扩到 `needed` 页；池不够时返回 `false`，三者都不动。
+    /// 把第 `idx` 条页表扩到 `needed` 页；池不够时返回 `false`，三者都不动。
     pub(super) fn extend(
         &mut self,
-        index: usize,
+        idx: usize,
         needed: usize,
         site: &'static str,
     ) -> Result<bool> {
-        let extra = needed.saturating_sub(self.running[index].table.len());
+        let extra = needed.saturating_sub(self.running[idx].table.len());
         if extra == 0 {
             return Ok(true);
         }
         if self.pager.free_pages() < extra {
             return Ok(false);
         }
-        self.running[index].table.grow(extra)?;
-        Self::fill(&mut self.pager, &mut self.running[index].table, extra, site)?;
+        self.running[idx].table.grow(extra)?;
+        Self::fill(&mut self.pager, &mut self.running[idx].table, extra, site)?;
         Ok(true)
     }
 
     /// 走完一步并刷新批级派生值：推进计数器、重算「下一次要不要新页」、给出结局。
-    pub(super) fn take_step(&mut self, index: usize, sequence: &mut Sequence) -> Result<Progress> {
+    pub(super) fn take_step(&mut self, idx: usize, sequence: &mut Sequence) -> Result<Progress> {
         sequence.step()?;
-        let needs_page = self.needs_page(sequence, &self.running[index].table);
-        self.running[index].needs_page = needs_page;
+        let needs_page = self.needs_page(sequence, &self.running[idx].table);
+        self.running[idx].needs_page = needs_page;
         Ok(if sequence.is_done() {
             Progress::Done
         } else {
@@ -93,10 +93,10 @@ impl Scheduler {
 
     /// 结束一个序列并归还它的页；返回它是否在批里。
     pub fn finish(&mut self, id: u64) -> Result<bool> {
-        let Some(index) = self.position(id) else {
+        let Some(idx) = self.position(id) else {
             return Ok(false);
         };
-        let mut running = self.running.remove(index);
+        let mut running = self.running.remove(idx);
         for page in running.table.truncate(0)? {
             self.pager.release(page)?;
         }
@@ -110,7 +110,7 @@ impl Scheduler {
 
     /// 某个序列占的页表。
     pub fn pages_of(&self, id: u64) -> Option<&crate::kv::Table> {
-        self.position(id).map(|index| &self.running[index].table)
+        self.position(id).map(|idx| &self.running[idx].table)
     }
 
     /// 页号分配器（只读）：服务层报"占了多少页"时用它，页里的数据不在这里。
@@ -172,7 +172,7 @@ impl Scheduler {
     ///
     /// 序列不在批里或页宽为零（都算不出要几页）。
     pub fn reserve(&mut self, id: u64, rows: usize) -> Result<bool> {
-        let Some(index) = self.position(id) else {
+        let Some(idx) = self.position(id) else {
             return Err(Error::new(
                 Code::Invalid,
                 format!("序列 {id} 不在批里：先 `admit`（或它已经 `finish`）"),
@@ -185,7 +185,7 @@ impl Scheduler {
                 .with("engine::Scheduler::reserve"));
         }
         let needed = pages_for(rows, width);
-        self.extend(index, needed, "engine::Scheduler::reserve")
+        self.extend(idx, needed, "engine::Scheduler::reserve")
     }
 
     /// 读回第 `token` 个位置的 KV 行（只读）。

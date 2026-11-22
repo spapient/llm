@@ -77,7 +77,7 @@ impl Values {
 
 /// 一份具名缓冲；名字就是内核模板里的形参名。
 #[derive(Debug, Clone, PartialEq)]
-pub struct Buffer {
+pub struct Buf {
     /// C 标识符（模板的形参名）。
     pub name: &'static str,
     /// 取值。
@@ -94,13 +94,13 @@ pub struct Sample {
     /// 非缓冲实参的取值：内核签名里的整数形参（如 `M` / `N` / `gsz`）。
     pub scalars: Vec<(&'static str, i64)>,
     /// 具名缓冲（输出缓冲也在其中）。
-    pub buffers: Vec<Buffer>,
+    pub bufs: Vec<Buf>,
 }
 
 impl Sample {
     /// 按名字取缓冲。
-    pub fn buffer(&self, name: &str) -> Option<&Buffer> {
-        self.buffers.iter().find(|buffer| buffer.name == name)
+    pub fn buf(&self, name: &str) -> Option<&Buf> {
+        self.bufs.iter().find(|buf| buf.name == name)
     }
 
     /// 按名字取标量实参。
@@ -117,7 +117,7 @@ impl Sample {
     ///
     /// 缓冲不存在或不是 f32 时返回带名字的说明。
     pub fn f32(&self, name: &str) -> diagnostic::Result<&[f32]> {
-        match self.buffer(name).map(|buffer| &buffer.values) {
+        match self.buf(name).map(|buf| &buf.values) {
             Some(Values::F32(values)) => Ok(values),
             Some(Values::U8(_)) => {
                 Err(Error::new(Code::Invalid, format!("缓冲 `{name}` 不是 f32")))
@@ -135,7 +135,7 @@ impl Sample {
     ///
     /// 缓冲不存在或不是 u8 时返回带名字的说明。
     pub fn u8(&self, name: &str) -> diagnostic::Result<&[u8]> {
-        match self.buffer(name).map(|buffer| &buffer.values) {
+        match self.buf(name).map(|buf| &buf.values) {
             Some(Values::U8(values)) => Ok(values),
             Some(Values::F32(_)) => {
                 Err(Error::new(Code::Invalid, format!("缓冲 `{name}` 不是 u8")))
@@ -157,26 +157,26 @@ impl Sample {
     /// 缓冲不存在（[`Code::Missing`]）、元素类型与声明不符（[`Code::Invalid`]）或长度与算子
     /// 声明的形状不符（[`Code::Invalid`]）时返回说明。
     pub fn set(&mut self, name: &str, values: Values) -> diagnostic::Result<()> {
-        let buffer = self
-            .buffers
+        let buf = self
+            .bufs
             .iter_mut()
-            .find(|buffer| buffer.name == name)
+            .find(|buf| buf.name == name)
             .ok_or_else(|| {
                 Error::new(Code::Missing, format!("样本里没有缓冲 `{name}`"))
                     .with("op::model::Sample::set")
             })?;
-        if !buffer.values.same_kind(&values) {
+        if !buf.values.same_kind(&values) {
             return Err(Error::new(
                 Code::Invalid,
                 format!(
                     "缓冲 `{name}` 是 `{}`，换入的是 `{}`",
-                    buffer.values.describe(),
+                    buf.values.describe(),
                     values.describe()
                 ),
             )
             .with("op::model::Sample::set"));
         }
-        let (want, got) = (buffer.values.len(), values.len());
+        let (want, got) = (buf.values.len(), values.len());
         if want != got {
             return Err(Error::new(
                 Code::Invalid,
@@ -184,7 +184,7 @@ impl Sample {
             )
             .with("op::model::Sample::set"));
         }
-        buffer.values = values;
+        buf.values = values;
         Ok(())
     }
 }
@@ -249,7 +249,7 @@ fn lengths(m: usize, n: usize, x: &[f32], w: &[f32]) -> diagnostic::Result<()> {
 
 /// 只有稠密（f32）权重能注入真实数据：打包字节里的 `w` 读出来是半份字节。
 fn dense(sample: &Sample) -> diagnostic::Result<()> {
-    match sample.buffer("w").map(|buffer| &buffer.values) {
+    match sample.buf("w").map(|buf| &buf.values) {
         Some(Values::F32(_)) => Ok(()),
         Some(Values::U8(_)) => Err(Error::new(
             Code::Unsupported,
@@ -409,8 +409,8 @@ pub fn cost_n(shape: &ShapeCtx, op: &str, flops_per: f64, reads: u64) -> Result<
 }
 
 /// 确定性 `x` 样本缓冲：`x[i] = 0.25i − 2`，有正有负、可复现，供 softmax / rmsnorm / rope 共用。
-pub fn x_buffer(len: usize) -> Buffer {
-    Buffer {
+pub fn x_buf(len: usize) -> Buf {
+    Buf {
         name: "x",
         values: Values::F32((0..len).map(|i| ((i as f32) * 0.25) - 2.0).collect()),
     }

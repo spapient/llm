@@ -57,10 +57,10 @@ impl Encoding {
         &self.offsets
     }
 
-    /// 第 `index` 条是否特殊 token；越界返回 [`None`]。
+    /// 第 `idx` 条是否特殊 token；越界返回 [`None`]。
     #[must_use]
-    pub fn is_special(&self, index: usize) -> Option<bool> {
-        self.special.get(index).copied()
+    pub fn is_special(&self, idx: usize) -> Option<bool> {
+        self.special.get(idx).copied()
     }
 
     /// token 个数。
@@ -84,7 +84,7 @@ mod stream {
     /// UTF-8 边界安全的流式解码器。
     #[derive(Debug, Clone, Default, PartialEq, Eq)]
     pub struct DecoderStream {
-        buffer: Vec<u8>,
+        buf: Vec<u8>,
     }
 
     impl DecoderStream {
@@ -95,10 +95,10 @@ mod stream {
 
         /// 追加一块解码字节，返回当前已成完整字符的前缀；不完整尾字节留在缓冲。
         pub fn push(&mut self, chunk: &[u8]) -> Result<String> {
-            self.buffer.extend_from_slice(chunk);
-            match std::str::from_utf8(&self.buffer) {
+            self.buf.extend_from_slice(chunk);
+            match std::str::from_utf8(&self.buf) {
                 Ok(_) => {
-                    let complete = String::from_utf8(std::mem::take(&mut self.buffer))
+                    let complete = String::from_utf8(std::mem::take(&mut self.buf))
                         .map_err(|error| self.invalid(error))?;
                     Ok(complete)
                 }
@@ -107,9 +107,9 @@ mod stream {
                     match error.error_len() {
                         // 尾部不完整多字节序列：留到下一块。
                         None => {
-                            let prefix: Vec<u8> = self.buffer[..valid].to_vec();
-                            let tail = self.buffer.split_off(valid);
-                            self.buffer = tail;
+                            let prefix: Vec<u8> = self.buf[..valid].to_vec();
+                            let tail = self.buf.split_off(valid);
+                            self.buf = tail;
                             String::from_utf8(prefix).map_err(|error| self.invalid(error))
                         }
                         // 中间的非法字节：不是分片边界。
@@ -121,7 +121,7 @@ mod stream {
 
         /// 收尾：缓冲必须是合法 UTF-8，否则报 [`Code::Invalid`]。
         pub fn finish(self) -> Result<String> {
-            String::from_utf8(self.buffer).map_err(|error| {
+            String::from_utf8(self.buf).map_err(|error| {
                 Error::new(Code::Invalid, format!("收尾序列不是合法 UTF-8：{error}"))
                     .with("tokenizer::DecoderStream::finish")
             })

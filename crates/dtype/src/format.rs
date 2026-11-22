@@ -161,12 +161,12 @@ pub(crate) use impl_serde;
 pub trait Format:
     Copy + Eq + Ord + core::hash::Hash + core::fmt::Debug + core::fmt::Display + 'static
 {
-    /// 闭集全量，顺序即 [`Format::index`]，也是内部行表的下标。
+    /// 闭集全量，顺序即 [`Format::idx`]，也是内部行表的下标。
     const ALL: &'static [Self];
 
     /// 判别值（`repr(u8)` 的自然数），必须等于本类型在 [`Format::ALL`] 里的位置。
     #[must_use]
-    fn index(self) -> usize;
+    fn idx(self) -> usize;
 
     /// 规范小写名，用于档案、注解与诊断。
     #[must_use]

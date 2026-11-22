@@ -65,15 +65,15 @@ fn witness_is_not_a_fragment() {
 ///
 /// 合成是手写的 `const` 数组：漏行编译器会数出来，但写错顺序不会——这条用例守的就是顺序。
 #[test]
-fn the_tables_line_up_by_index() {
+fn the_tables_line_up_by_idx() {
     let len = devices().len();
     assert_eq!(BUILTIN.len(), len, "片段表与设备表不等长");
     assert_eq!(WITNESS.len(), len, "见证表与设备表不等长");
     assert_eq!(ROOTS.len(), len, "源码根表与设备表不等长");
-    for (index, device) in devices().iter().enumerate() {
-        assert_eq!(BUILTIN[index].vendor, device.vendor);
-        assert_eq!(WITNESS[index].0, device.vendor);
-        assert_eq!(ROOTS[index].0, device.vendor);
+    for (idx, device) in devices().iter().enumerate() {
+        assert_eq!(BUILTIN[idx].vendor, device.vendor);
+        assert_eq!(WITNESS[idx].0, device.vendor);
+        assert_eq!(ROOTS[idx].0, device.vendor);
     }
 }
 

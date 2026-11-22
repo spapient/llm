@@ -1,7 +1,7 @@
 //! 昇腾侧的设备源与主机驱动拼装：`__aicore__` 单源翻译单元、`<<<blocks, nullptr, stream>>>`
 //! 发射、`aclrtMalloc` / `aclrtMemcpy` / `aclrtFree` 骨架与回读。
 
-use crate::cuda::host_buffer_decl;
+use crate::cuda::host_buf_decl;
 use crate::dialect::readback_bits;
 use cutile::harness::{c_type, output_of};
 use diagnostic::{Code, Error, Result};
@@ -67,7 +67,7 @@ fn ascend_wrapper(kernel: &str, signature: &Signature, sample: &Sample) -> Resul
         .params()
         .iter()
         .map(|param| {
-            if param.ctype.is_buffer() {
+            if param.ctype.is_buf() {
                 format!("GM_ADDR d_{}", param.name)
             } else {
                 format!("{} {}", param.ctype.c_name(), param.name)
@@ -88,7 +88,7 @@ fn ascend_wrapper(kernel: &str, signature: &Signature, sample: &Sample) -> Resul
 
 /// 内核实参：缓冲传补好元素类型的 `__gm__` 指针，标量取样本值（与 CUDA 的 `launch_args` 同序同值）。
 fn ascend_argument(param: &Param, sample: &Sample) -> Result<String> {
-    if param.ctype.is_buffer() {
+    if param.ctype.is_buf() {
         let base = param.ctype.c_name();
         return Ok(if param.mutable {
             format!("(__gm__ {base} *)d_{}", param.name)
@@ -123,9 +123,9 @@ fn ascend_main(
     for param in signature
         .params()
         .iter()
-        .filter(|param| param.ctype.is_buffer())
+        .filter(|param| param.ctype.is_buf())
     {
-        text.push_str(&ascend_buffer(param, sample, output, output_len)?);
+        text.push_str(&ascend_buf(param, sample, output, output_len)?);
     }
     text.push_str(&format!(
         "    cutile_launch<<<1, nullptr, stream>>>({});\n\
@@ -138,7 +138,7 @@ fn ascend_main(
     for param in signature
         .params()
         .iter()
-        .filter(|param| param.ctype.is_buffer())
+        .filter(|param| param.ctype.is_buf())
     {
         text.push_str(&format!("    CUTILE_ACL(aclrtFree(d_{}));\n", param.name));
     }
@@ -154,23 +154,23 @@ fn ascend_main(
 
 /// 单个缓冲的 host 声明 + GM 分配 + （只读时）入向拷贝；输出缓冲的长度取 `output_len`
 /// （与 CUDA 同口径：分块归约的产物长度可以大于签名的单元素 `y`）。
-fn ascend_buffer(
+fn ascend_buf(
     param: &Param,
     sample: &Sample,
     output: &str,
     output_len: usize,
 ) -> Result<String> {
-    let Some(buffer) = sample.buffer(&param.name) else {
+    let Some(buf) = sample.buf(&param.name) else {
         return Err(Error::new(Code::Internal, "签名与样本已对齐（漂移）"));
     };
-    let values: &Values = &buffer.values;
+    let values: &Values = &buf.values;
     let ctype = c_type(values);
     let size = if param.name == output {
         output_len
     } else {
         values.len()
     };
-    let mut text = host_buffer_decl(param, values, ctype, size);
+    let mut text = host_buf_decl(param, values, ctype, size);
     text.push_str(&format!(
         "    {ctype} *d_{} = nullptr;\n\
          \x20   CUTILE_ACL(aclrtMalloc((void **)&d_{}, {size} * sizeof({ctype}), \
@@ -193,7 +193,7 @@ fn ascend_launch_args(signature: &Signature, sample: &Sample) -> Result<String> 
         .params()
         .iter()
         .map(|param| {
-            if param.ctype.is_buffer() {
+            if param.ctype.is_buf() {
                 Ok(format!("(GM_ADDR)d_{}", param.name))
             } else {
                 ascend_argument(param, sample)

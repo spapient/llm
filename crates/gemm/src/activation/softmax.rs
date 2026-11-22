@@ -1,5 +1,5 @@
 //! Softmax：`y[n] = exp(x[n] - max(x)) / sum_k exp(x[k] - max(x))`。
-use crate::model::{Buffer, Cost, Sample, ShapeCtx, Values, cost_n, x_buffer};
+use crate::model::{Buf, Cost, Sample, ShapeCtx, Values, cost_n, x_buf};
 use diagnostic::{Code, Error};
 
 // 单轴定义与形状投影复用 unary 骨架：本文件只声明 softmax 特有的代价、样本与遍历。
@@ -20,9 +20,9 @@ pub fn sample(len: usize, _: usize) -> Sample {
         m: len,
         n: len,
         scalars: vec![("N", len as i64)],
-        buffers: vec![
-            x_buffer(len),
-            Buffer {
+        bufs: vec![
+            x_buf(len),
+            Buf {
                 name: "y",
                 values: Values::F32(vec![0.0; len]),
             },

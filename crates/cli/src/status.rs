@@ -145,8 +145,8 @@ fn data_rows(panel: Panel) -> Result<Panel> {
             tensor.is_contiguous()
         ),
     );
-    let buffer = vec![0.5f32, 0.25, 0.125, 0.0625];
-    let view = tensor::View::new(tensor::Shape::new([2, 2]), &buffer)?;
+    let buf = vec![0.5f32, 0.25, 0.125, 0.0625];
+    let view = tensor::View::new(tensor::Shape::new([2, 2]), &buf)?;
     Ok(panel.row(
         "视图    tensor::View",
         format!(

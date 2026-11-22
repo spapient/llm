@@ -182,10 +182,10 @@ fn a_checkpoint_without_layers_is_rejected() {
 }
 
 #[test]
-fn a_short_buffer_is_refused_not_silently_filled() {
+fn a_short_buf_is_refused_not_silently_filled() {
     let snapshot = snapshot();
-    let mut buffer = vec![0u8; snapshot.encoded_len().expect("长度") - 1];
-    let error = snapshot.encode_into(&mut buffer).expect_err("放不下");
+    let mut buf = vec![0u8; snapshot.encoded_len().expect("长度") - 1];
+    let error = snapshot.encode_into(&mut buf).expect_err("放不下");
     assert_eq!(error.code(), Code::Invalid);
     assert!(error.to_string().contains("需要"), "{error}");
 }
@@ -198,7 +198,7 @@ fn random_snapshots_keep_the_length_promise_and_the_bytes() {
         let count = (lcg(&mut state) % 8) as usize;
         let mut entries = Vec::new();
         let mut offset = 64usize;
-        for index in 0..count {
+        for idx in 0..count {
             let rank = (lcg(&mut state) % 4) as usize;
             let dims: Vec<usize> = (0..rank)
                 .map(|_| (lcg(&mut state) % 4096) as usize)
@@ -235,7 +235,7 @@ fn random_snapshots_keep_the_length_promise_and_the_bytes() {
 /// 顺带锁住名字的前后缀共享：同一种名字写 4096 遍，字节数必须**远小于**把每个名字整串写下
 /// 去的体积，否则共享在某一轮优化里被悄悄关掉，只有文件变大而测试仍是绿的。
 #[test]
-fn a_snapshot_larger_than_the_write_buffer_lands_byte_for_byte() {
+fn a_snapshot_larger_than_the_write_buf_lands_byte_for_byte() {
     let mut entries = Vec::new();
     let mut offset = 4096usize;
     let mut plain = 0usize;
@@ -249,7 +249,7 @@ fn a_snapshot_larger_than_the_write_buffer_lands_byte_for_byte() {
     let header = Header::new(entries, 4096).expect("头部");
     let snapshot = Snapshot::new(facts(), header);
     assert!(
-        snapshot.encoded_len().expect("长度") > WRITE_BUFFER,
+        snapshot.encoded_len().expect("长度") > WRITE_BUF,
         "这一条必须真的跨过写缓冲"
     );
     assert!(

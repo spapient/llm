@@ -1,6 +1,6 @@
 //! CUDA 分块扫描 lowering：局部扫描 + 主机携带前缀 + 校正，以及 host 串联驱动。
 
-use crate::cuda::{cuda_host_buffers_grid, cuda_launch_params, cuda_readback, cuda_release};
+use crate::cuda::{cuda_host_bufs_grid, cuda_launch_params, cuda_readback, cuda_release};
 use crate::dialect::{
     Cuda, Dialect, bind_chunk_loop, carry_fold, chunk_head, inject_chunk_preamble, launch_args,
     length_scalar, scalar_name, scan_correct_body, thread_param_typed,
@@ -51,7 +51,7 @@ fn scan_local(
     body = inject_chunk_preamble(&body, &kernel, chunk, scalar)?;
     body = bind_chunk_loop(&body, scalar)?;
     let call = format!("{}, tid", launch_args(sample, signature.params())?);
-    let buffers = cuda_launch_params(signature);
+    let bufs = cuda_launch_params(signature);
     let init = "    int3 tid; tid.x = blockIdx.x; tid.y = blockIdx.y; tid.z = blockIdx.z;\n";
     Ok(format!(
         "{body}\n\n__global__ void kernel_main(\n{buffers}) {{\n{init}    {kernel}({call});\n}}"
@@ -101,7 +101,7 @@ pub fn cuda_scan_driver(
     let args = launch_args(sample, signature.params())?;
     let mut text = program_head(segments);
     text.push_str("int main(void) {\n");
-    text.push_str(&cuda_host_buffers_grid(
+    text.push_str(&cuda_host_bufs_grid(
         sample,
         signature.params(),
         output,

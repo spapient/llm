@@ -126,8 +126,8 @@ impl<'a, E: Element> View<'a, E> {
     }
 
     /// 按下标取值；秩不符或越界返回 `None`（不 panic）。
-    pub fn at(&self, index: &[usize]) -> Option<E> {
-        self.data.get(self.offset(index)?).copied()
+    pub fn at(&self, idx: &[usize]) -> Option<E> {
+        self.data.get(self.offset(idx)?).copied()
     }
 
     /// 单轴的偏移增量：下标必须落在该轴长度内，`position * step` 溢出则 `None`。
@@ -142,11 +142,11 @@ impl<'a, E: Element> View<'a, E> {
     }
 
     /// 一组下标 → 元素偏移：秩不符、任一轴越界或累加溢出都是 `None`。
-    fn offset(&self, index: &[usize]) -> Option<usize> {
-        if index.len() != self.shape.rank() {
+    fn offset(&self, idx: &[usize]) -> Option<usize> {
+        if idx.len() != self.shape.rank() {
             return None;
         }
-        index
+        idx
             .iter()
             .enumerate()
             .try_fold(0usize, |acc, (axis, &position)| {

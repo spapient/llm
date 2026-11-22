@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn same_key_stream_index_produces_the_same_block() {
+fn same_key_stream_idx_produces_the_same_block() {
     let first = block(0x1234_5678_9ABC_DEF0, 7, 100);
     let again = block(0x1234_5678_9ABC_DEF0, 7, 100);
     assert_eq!(first, again, "计数器派生必须是确定性的");
@@ -83,9 +83,9 @@ fn known_answer_vectors_match_the_reference_philox() {
             [0xFDBC_B116, 0x27FB_AB4E, 0xE85F_C832, 0xBAC6_B546],
         ),
     ];
-    for (key, stream, index, expected) in cases {
+    for (key, stream, idx, expected) in cases {
         assert_eq!(
-            block(key, stream, index),
+            block(key, stream, idx),
             expected,
             "key {key:#x} stream {stream} index {index}"
         );
@@ -95,8 +95,8 @@ fn known_answer_vectors_match_the_reference_philox() {
 #[test]
 fn sequential_blocks_match_direct_counter_derivation() {
     let mut rng = Rng::with_stream(9, 3);
-    for index in 0..3u64 {
-        let direct = block(9, 3, index);
+    for idx in 0..3u64 {
+        let direct = block(9, 3, idx);
         let buffered = std::array::from_fn(|_| rng.next_u32());
         assert_eq!(buffered, direct, "顺序缓冲必须与直接派生逐词一致");
     }

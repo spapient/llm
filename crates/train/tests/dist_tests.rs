@@ -119,7 +119,7 @@ fn distributed_session_averages_gradients_before_the_step() -> Result<()> {
     // 平均梯度 = (grad0 + grad1) / 2 = [0.2, 0.4, 0.6]，默认 lr = 1e-3。
     let expected = [0.9998_f32, 1.9996, 2.9994];
     let actual = session.slots()[0].params();
-    for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+    for (idx, (actual, expected)) in actual.iter().zip(expected).enumerate() {
         assert!(
             (actual - expected).abs() < 1e-5,
             "参数[{index}] 应按平均梯度更新为 {expected}，实际 {actual}"

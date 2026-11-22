@@ -48,17 +48,17 @@ proptest! {
     #[test]
     fn a_single_flipped_bit_always_changes_the_checksum(
         data in proptest::collection::vec(any::<u8>(), 1..=32),
-        at in any::<proptest::sample::Index>(),
+        at in any::<proptest::sample::Idx>(),
         bit in 0u8..8,
     ) {
-        let index = at.index(data.len());
+        let idx = at.idx(data.len());
         let mut flipped = data.clone();
-        flipped[index] ^= 1 << bit;
+        flipped[idx] ^= 1 << bit;
         prop_assert_ne!(
             crc::crc32(&flipped),
             crc::crc32(&data),
             "第 {} 字节第 {} 位翻转后 CRC 未变（{:?}）",
-            index,
+            idx,
             bit,
             data,
         );
@@ -67,12 +67,12 @@ proptest! {
     /// 分块顺序无关：`update` 的状态是串行链，先左后右与一次喂完必须同值。
     /// 这条对任意原始状态成立——不依赖"从 `!0` 起步"这个约定。
     #[test]
-    fn chunking_a_buffer_does_not_change_the_state(
+    fn chunking_a_buf_does_not_change_the_state(
         state in any::<u32>(),
         data in proptest::collection::vec(any::<u8>(), 0..=32),
-        at in any::<proptest::sample::Index>(),
+        at in any::<proptest::sample::Idx>(),
     ) {
-        let (head, tail) = data.split_at(at.index(data.len() + 1));
+        let (head, tail) = data.split_at(at.idx(data.len() + 1));
         prop_assert_eq!(crc::update(crc::update(state, head), tail), crc::update(state, &data));
     }
 
@@ -81,9 +81,9 @@ proptest! {
     #[test]
     fn sealing_resumes_from_a_sealed_prefix(
         data in proptest::collection::vec(any::<u8>(), 0..=32),
-        at in any::<proptest::sample::Index>(),
+        at in any::<proptest::sample::Idx>(),
     ) {
-        let (head, tail) = data.split_at(at.index(data.len() + 1));
+        let (head, tail) = data.split_at(at.idx(data.len() + 1));
         prop_assert_eq!(crc::crc32(head), !crc::update(!0, head));
         prop_assert_eq!(crc::crc32(&data), !crc::update(!crc::crc32(head), tail));
     }

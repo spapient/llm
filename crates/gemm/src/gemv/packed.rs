@@ -2,7 +2,7 @@
 /// 确定性打包权重：`n` 行、每行 `m / cpb` 个字节，同一形状取值可复现。
 pub fn weights(m: usize, n: usize, cpb: usize) -> Vec<u8> {
     (0..n * (m / cpb))
-        .map(|index| ((index * 37) % 251) as u8)
+        .map(|idx| ((idx * 37) % 251) as u8)
         .collect()
 }
 

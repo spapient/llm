@@ -1,7 +1,7 @@
 //! 端到端：容器与台账这条链——`import` 写出容器、`inspect`/`check` 读回、
 //! `settle` 与 `audit` 在台账上互相校验。
 //!
-//! 与 [`cli`](../cli/index.html) 目标同一套夹具（`support.rs`），分文件只是为了让每个端到端
+//! 与 [`cli`](../cli/idx.html) 目标同一套夹具（`support.rs`），分文件只是为了让每个端到端
 //! 目标保持在一屏之内；两者跑的仍是同一个真的 `llm` 二进制。
 
 #[path = "support.rs"]

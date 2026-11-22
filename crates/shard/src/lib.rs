@@ -7,8 +7,8 @@
 //! - 拓扑：[`Topology`]（TP/PP/DP 世界与进程组）、[`Parallel`]（并行维度）、[`Partition`]（恰好覆盖的切分）；
 //! - 切分：[`Sharding`]（按列 / 按行）与 [`Tiling`]（一层线性权重的 TP 形状与合并方式）。
 //!
-//! rank 的唯一布局规则：`rank = dp_index * (tp * pp) + pp_index * tp + tp_index`。
-//! 正向（[`Topology::rank`]）、反向（[`Topology::indices`]）与组内成员（[`Topology::group`]）
+//! rank 的唯一布局规则：`rank = dp_idx * (tp * pp) + pp_idx * tp + tp_idx`。
+//! 正向（[`Topology::rank`]）、反向（[`Topology::idxs`]）与组内成员（[`Topology::group`]）
 //! 都从这条规则派生，因此"某一维的第几组"只有一套算术。
 //!
 //! # 例子
@@ -35,9 +35,9 @@
 //! local.load(0, &[1.0, 2.0]).expect("rank 0");
 //! local.load(1, &[3.0, 4.0]).expect("rank 1");
 //! let group = topology.group(Parallel::Tensor, 0).expect("唯一一组");
-//! let mut buffer = [0.0; 2];
-//! local.all_reduce(&group, Reduce::Sum, &mut buffer).expect("归约");
-//! assert_eq!(buffer, [4.0, 6.0]);
+//! let mut buf = [0.0; 2];
+//! local.all_reduce(&group, Reduce::Sum, &mut buf).expect("归约");
+//! assert_eq!(buf, [4.0, 6.0]);
 //! assert_eq!(local.replica(1).expect("rank 1"), [4.0, 6.0]);
 //! ```
 

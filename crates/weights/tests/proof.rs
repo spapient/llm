@@ -75,15 +75,15 @@ fn leaves(names: &[&str]) -> Vec<Digest> {
 }
 
 #[test]
-fn every_index_proves_against_root() {
+fn every_idx_proves_against_root() {
     let names = ["a", "b", "c", "d", "e", "f", "g"];
 
     let tree = leaves(&names);
 
     let merkle_root = root(&tree);
 
-    for (index, digest) in tree.iter().enumerate() {
-        let proof = prove(&tree, index).expect("证明");
+    for (idx, digest) in tree.iter().enumerate() {
+        let proof = prove(&tree, idx).expect("证明");
 
         assert!(
             verify_proof(digest, &proof, &merkle_root),

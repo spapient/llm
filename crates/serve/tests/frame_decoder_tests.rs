@@ -9,13 +9,13 @@ use crate::protocol::{Envelope, Kind, Version};
 fn stream() -> (Vec<u8>, Vec<Envelope>) {
     let mut bytes = Vec::new();
     let mut frames = Vec::new();
-    for (index, kind) in Kind::ALL.iter().copied().enumerate() {
-        let version = if index % 2 == 0 {
+    for (idx, kind) in Kind::ALL.iter().copied().enumerate() {
+        let version = if idx % 2 == 0 {
             Version::FIRST
         } else {
             Version::current()
         };
-        let envelope = Envelope::new(version, kind, vec![index as u8; index * 3]);
+        let envelope = Envelope::new(version, kind, vec![idx as u8; idx * 3]);
         bytes.extend_from_slice(&envelope.frame().expect("编码"));
         frames.push(envelope);
     }

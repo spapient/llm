@@ -442,18 +442,18 @@ fn run_block_pair(
 ) -> diagnostic::Result<()> {
     let rows = model.logits_batch(sequences, batch)?;
     assert_eq!(rows.len(), sequences.len(), "行 logits 与输入切片一一对应");
-    for (index, sequence) in sequences.iter().enumerate() {
-        let embedded = &table[tokens[index] * hidden..(tokens[index] + 1) * hidden];
+    for (idx, sequence) in sequences.iter().enumerate() {
+        let embedded = &table[tokens[idx] * hidden..(tokens[idx] + 1) * hidden];
         assert_batch_row(
             batch,
             sequence.id(),
             sequence.len(),
             kv,
-            &rows[index],
+            &rows[idx],
             embedded,
             projections,
-            histories[index],
-            hists[index],
+            histories[idx],
+            hists[idx],
             head_dim,
             hidden,
         );
@@ -486,11 +486,11 @@ fn archive_of(entries: &[ArchiveEntry]) -> Vec<u8> {
         data.extend_from_slice(&entry.bytes);
     }
     let mut json = String::from("{");
-    for (index, entry) in entries.iter().enumerate() {
-        if index > 0 {
+    for (idx, entry) in entries.iter().enumerate() {
+        if idx > 0 {
             json.push(',');
         }
-        let begin = offsets[index];
+        let begin = offsets[idx];
         let end = begin + entry.bytes.len();
         json.push_str(&format!(
             "\"{}\": {{\"dtype\":\"{}\",\"shape\":[{},{}],\"data_offsets\":[{begin},{end}]}}",
@@ -594,9 +594,9 @@ fn two_layer_f32_fixture() -> (Stack, Params, [f32; 6], [f32; 4]) {
 /// 查表行：行 `k` 的第 `d` 维为 `k + d·0.1`，便于逐行核对 gather 取的是整行。
 fn embed_table(vocab: usize, dim: usize) -> Vec<f32> {
     (0..vocab * dim)
-        .map(|index| {
-            let row = index / dim;
-            let col = index % dim;
+        .map(|idx| {
+            let row = idx / dim;
+            let col = idx % dim;
             row as f32 + col as f32 * 0.1
         })
         .collect()
@@ -657,18 +657,18 @@ fn memory_reference(
 /// 投影权重 `[out, in]`：确定性小值矩阵，便于参考路径串行重算。
 fn projection_matrix(out: usize, width_in: usize, seed: f32) -> Vec<f32> {
     (0..out * width_in)
-        .map(|index| seed + index as f32 * 0.01)
+        .map(|idx| seed + idx as f32 * 0.01)
         .collect()
 }
 
 /// int4 投影的打包权重 + 标度：`out` 行、每行 `in` 元素按 32 一组共享一条标度，码取确定性小值。
 fn quant_projection(out: usize, in_width: usize, seed: i8) -> (Vec<u8>, Vec<f32>) {
     let codes: Vec<i8> = (0..out * in_width)
-        .map(|index| (seed + (index as i8 % 16)).rem_euclid(16) - 8)
+        .map(|idx| (seed + (idx as i8 % 16)).rem_euclid(16) - 8)
         .collect();
     let groups = in_width / 32;
     let scales: Vec<f32> = (0..out * groups)
-        .map(|index| 0.25 + (index % 3) as f32 * 0.25)
+        .map(|idx| 0.25 + (idx % 3) as f32 * 0.25)
         .collect();
     (pack_codes(4, &codes), scales)
 }

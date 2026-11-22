@@ -68,7 +68,7 @@ use state::{
 const MIN_ENTRY: usize = 5;
 
 /// 写盘时的缓冲：够把几千条目的头部一次交给内核，又不至于为一个小检查点占太多内存。
-const WRITE_BUFFER: usize = 8 * 1024;
+const WRITE_BUF: usize = 8 * 1024;
 
 /// 条目表与维度的预分配上限：更大的表按需增长，于是伪造的计数最多多要一块固定大小的内存。
 const PREALLOC: usize = 1024;
@@ -295,8 +295,8 @@ impl Snapshot {
                 live.len()
             )));
         }
-        for (index, (want, have)) in saved.iter().zip(live).enumerate() {
-            if let Some(message) = difference(index, want, have) {
+        for (idx, (want, have)) in saved.iter().zip(live).enumerate() {
+            if let Some(message) = difference(idx, want, have) {
                 return Err(mismatch(message));
             }
         }
@@ -376,7 +376,7 @@ impl Snapshot {
 
     /// 边编码边写并刷盘：长度承诺在改名之前对账，第一次写失败之后剩下的追加都是空操作。
     fn flush(&self, temp: &Path, tags: &[u8]) -> io::Result<()> {
-        let file = io::BufWriter::with_capacity(WRITE_BUFFER, std::fs::File::create(temp)?);
+        let file = io::BufWriter::with_capacity(WRITE_BUF, std::fs::File::create(temp)?);
         let mut sink = FileSink::new(file);
         self.write_to(&mut sink, tags);
         if let Some(error) = sink.take_error() {
@@ -457,7 +457,7 @@ impl Snapshot {
         let mut previous_name: &[u8] = &[];
         let mut previous_offset = 0usize;
         let mut previous_layout: Option<(DType, &[usize])> = None;
-        for (index, entry) in entries.iter().enumerate() {
+        for (idx, entry) in entries.iter().enumerate() {
             let name = entry.name().as_bytes();
             let front = common_prefix(previous_name, name);
             // 后缀只从"两条名字都还没被前缀吃掉"的那一段里取，于是前后两段永远不会重叠。
@@ -472,7 +472,7 @@ impl Snapshot {
                 varint(sink, 0);
             } else {
                 varint(sink, (dims.len() + 1) as u64);
-                sink.put(&[tags[index]]);
+                sink.put(&[tags[idx]]);
                 for dim in dims {
                     varint(sink, *dim as u64);
                 }

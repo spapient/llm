@@ -31,7 +31,7 @@ fn pointwise_wrap(
     Ok((
         [len.div_ceil(256), 1, 1],
         [256, 1, 1],
-        crate::cuda::buffer_args(signature),
+        crate::cuda::buf_args(signature),
     ))
 }
 

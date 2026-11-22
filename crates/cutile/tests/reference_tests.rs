@@ -86,7 +86,7 @@ fn every_accepted_fusion_is_either_testable_or_named_unrealizable() {
                 decl.phases
                     .iter()
                     .flat_map(|phase| phase.reads.iter())
-                    .all(|name| sample.buffer(name).is_some())
+                    .all(|name| sample.buf(name).is_some())
             })
             .unwrap_or(false);
         if !declared {

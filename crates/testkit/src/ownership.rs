@@ -207,12 +207,12 @@ pub(crate) fn the_entry_point_defines_no_types() {
     let mut defined = Vec::new();
     for path in &files {
         let text = std::fs::read_to_string(path).expect("源文件可读");
-        for (index, line) in text.lines().enumerate() {
+        for (idx, line) in text.lines().enumerate() {
             // 只拦对外公开的领域类型；模块内私有枚举/结构体是编排实现细节，允许保留。
             if let Some((public, _)) = type_definition(line)
                 && public
             {
-                defined.push(format!("{}:{}", path.display(), index + 1));
+                defined.push(format!("{}:{}", path.display(), idx + 1));
             }
         }
     }

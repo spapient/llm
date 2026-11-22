@@ -483,8 +483,8 @@ fn finishing_a_sequence_releases_all_of_its_pages() {
     let mut batch = Batch::new(pool(4, 2));
     batch.admit(sequence_with(1, &[3, 3], 3, 2)).expect("准入");
     // 提示长度 2 占 1 页；再生成三步：长度 4 跨进第二页，长度 6 跨进第三页，末步跑满上限。
-    for (index, token) in (10..13).enumerate() {
-        let expected = if index == 2 {
+    for (idx, token) in (10..13).enumerate() {
+        let expected = if idx == 2 {
             Progress::Done
         } else {
             Progress::Running

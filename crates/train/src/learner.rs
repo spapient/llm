@@ -213,7 +213,7 @@ impl<K: Kernel, O: Optimizer, C: Collective> Learner<K, O, C> {
 
     /// 读出变量终点的 f32 切片；不在场是 [`Code::Missing`]，lane 不符是 [`Code::Invalid`]。
     fn read_var(&mut self, var: Var) -> Result<Vec<f32>> {
-        let view = self.session.buffers().value(var).ok_or_else(|| {
+        let view = self.session.bufs().value(var).ok_or_else(|| {
             Error::new(Code::Missing, format!("变量 {} 不在场", var.id())).with(SITE)
         })?;
         view.f32()

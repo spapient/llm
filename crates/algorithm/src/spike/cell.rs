@@ -117,7 +117,7 @@ impl Spiking {
         }
         self.fire(
             events
-                .indices()
+                .idxs()
                 .iter()
                 .copied()
                 .zip(events.codes().iter().map(|code| code.signum())),

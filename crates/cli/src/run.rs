@@ -40,7 +40,7 @@ fn start_vector(input: Option<&str>, first: &nn::Linear) -> Result<Vec<f32>> {
         Some(text) => parse_input(text)?,
         // 确定性图案：不给输入时也必须可复现（cutile README §12.3 的同一条要求）。
         None => (0..first.in_features())
-            .map(|index| (index % 8) as f32 * 0.125 - 0.5)
+            .map(|idx| (idx % 8) as f32 * 0.125 - 0.5)
             .collect(),
     };
     if x.len() != first.in_features() {

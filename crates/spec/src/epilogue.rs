@@ -57,8 +57,8 @@ pub fn parse(text: &str) -> Result<Vec<Step>> {
 /// 把步骤序列渲染回文本（与 [`parse`] 互逆：`parse(render(s)) == s`）。
 pub fn render(steps: &[Step]) -> String {
     let mut text = String::new();
-    for (index, step) in steps.iter().enumerate() {
-        if index > 0 {
+    for (idx, step) in steps.iter().enumerate() {
+        if idx > 0 {
             text.push_str("; ");
         }
         write_step(&mut text, step);
@@ -70,10 +70,10 @@ pub fn render(steps: &[Step]) -> String {
 fn split_steps(text: &str) -> Vec<(usize, &str)> {
     let mut out = Vec::new();
     let mut start = 0usize;
-    for (index, ch) in text.char_indices() {
+    for (idx, ch) in text.char_indices() {
         if ch == ';' || ch == ',' {
-            push_step(&mut out, text, start, index);
-            start = index + ch.len_utf8();
+            push_step(&mut out, text, start, idx);
+            start = idx + ch.len_utf8();
         }
     }
     push_step(&mut out, text, start, text.len());

@@ -1,7 +1,7 @@
 //! 权重格式：把「一行权重怎么摆」抽象成 trait，解包与分组约束都由格式自己负责。
 use crate::einsum::{Bits, FormulaCache, OperandSpec};
 use crate::formula::FormulaOwner;
-use crate::model::{Buffer, Values};
+use crate::model::{Buf, Values};
 use crate::quant::Row;
 
 use super::forward::{forward_dense, forward_rows, scaled_dot};
@@ -23,7 +23,7 @@ pub trait Element: Copy + PartialEq + std::fmt::Debug + 'static {
     fn from_bytes(bytes: Vec<u8>) -> Vec<Self>;
 
     /// 装成同名缓冲。
-    fn buffer(name: &'static str, values: Vec<Self>) -> Buffer;
+    fn buf(name: &'static str, values: Vec<Self>) -> Buf;
 }
 
 impl Element for f32 {
@@ -45,8 +45,8 @@ impl Element for f32 {
         Vec::new()
     }
 
-    fn buffer(name: &'static str, values: Vec<Self>) -> Buffer {
-        Buffer {
+    fn buf(name: &'static str, values: Vec<Self>) -> Buf {
+        Buf {
             name,
             values: Values::F32(values),
         }
@@ -71,8 +71,8 @@ impl Element for u8 {
         bytes
     }
 
-    fn buffer(name: &'static str, values: Vec<Self>) -> Buffer {
-        Buffer {
+    fn buf(name: &'static str, values: Vec<Self>) -> Buf {
+        Buf {
             name,
             values: Values::U8(values),
         }

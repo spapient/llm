@@ -45,8 +45,8 @@ fn a_sealed_sink_covers_every_byte_it_passes_through() {
 
 #[test]
 fn a_slice_sink_flags_overflow_instead_of_truncating() {
-    let mut buffer = [0u8; 4];
-    let mut sink = SliceSink::new(&mut buffer);
+    let mut buf = [0u8; 4];
+    let mut sink = SliceSink::new(&mut buf);
     sink.put(b"ab");
     sink.put(b"cdefg");
     assert!(sink.overflow(), "放不下必须置标志，不能静默截断");
@@ -55,7 +55,7 @@ fn a_slice_sink_flags_overflow_instead_of_truncating() {
         2,
         "溢出后不再写入，已写位置停在上一次成功的长度"
     );
-    assert_eq!(buffer[..2], *b"ab", "越界位置必须保持原值");
+    assert_eq!(buf[..2], *b"ab", "越界位置必须保持原值");
 }
 
 #[test]

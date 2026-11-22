@@ -49,7 +49,7 @@ fn a_self_contained_witness_is_accepted_but_a_quoted_include_is_not() {
 }
 
 #[test]
-fn expectations_must_fit_the_reading_buffer() {
+fn expectations_must_fit_the_reading_buf() {
     let good = [witness(&[2.0])];
     assert_eq!(probe(&good, SOURCE).check_expectations(), Ok(()));
     let overflow = [2.0; MAX_OUT + 1];

@@ -113,13 +113,13 @@ fn assert_within_bound(label: &str, got: &[f32], a: &[f32], b: &[f32], m: usize,
 }
 
 /// 快照设备缓冲（内核已同步完成，共享内存可直接读）。
-fn snapshot(buffer: &mut MetalBuffer) -> Vec<u8> {
-    buffer.as_mut_bytes().to_vec()
+fn snapshot(buf: &mut MetalBuf) -> Vec<u8> {
+    buf.as_mut_bytes().to_vec()
 }
 
 /// 把输出缓冲填成 NaN：内核若漏写任何一块，NaN 会原样留下，不会被「旧值是 0」蒙混过去。
-fn fill_nan(buffer: &mut MetalBuffer) {
-    for slot in buffer.as_mut_bytes().chunks_exact_mut(4) {
+fn fill_nan(buf: &mut MetalBuf) {
+    for slot in buf.as_mut_bytes().chunks_exact_mut(4) {
         slot.copy_from_slice(&f32::NAN.to_ne_bytes());
     }
 }
@@ -185,18 +185,18 @@ fn attention_reference(q: &[f32], k: &[f32], v: &[f32], s: usize, d: usize) -> V
 }
 
 /// 上传一路 Q/K/V 并开一路输出缓冲：注意力四路缓冲的固定装配。
-fn attention_buffers(
+fn attention_bufs(
     device: &MetalDevice,
     q: &[f32],
     k: &[f32],
     v: &[f32],
     len: usize,
-) -> (MetalBuffer, MetalBuffer, MetalBuffer, MetalBuffer) {
+) -> (MetalBuf, MetalBuf, MetalBuf, MetalBuf) {
     (
         upload(device, q, "Q"),
         upload(device, k, "K"),
         upload(device, v, "V"),
-        output_buffer(device, len, "Y"),
+        output_buf(device, len, "Y"),
     )
 }
 
@@ -223,7 +223,7 @@ fn gemm_stays_within_forward_error_bound_on_full_mantissa_inputs() {
     let b = rng.values(K * N);
     let a_buf = upload(&device, &a, "A");
     let b_buf = upload(&device, &b, "B");
-    let mut y = output_buffer(&device, M * N, "Y");
+    let mut y = output_buf(&device, M * N, "Y");
     let grid = [M as u32, N as u32, 1];
 
     // 路径一：标量网格（每线程算一个输出元素）。
@@ -285,7 +285,7 @@ fn gemm_handles_ragged_tail_shapes_and_refuses_to_pretend_it_tiled() {
         let b = rng.values(k * n);
         let a_buf = upload(&device, &a, "A");
         let b_buf = upload(&device, &b, "B");
-        let mut y = output_buffer(&device, m * n, "Y");
+        let mut y = output_buf(&device, m * n, "Y");
         let label = format!("{m}×{n}×{k}");
 
         let grid_pipe = grid_pipeline(&device, &catalogue, &dirs, "matmul_f32", m, n, "标量网格");
@@ -334,7 +334,7 @@ fn gemm_writes_every_output_and_repeats_bit_exactly() {
     let b = rng.values(K * N);
     let a_buf = upload(&device, &a, "A");
     let b_buf = upload(&device, &b, "B");
-    let mut y = output_buffer(&device, M * N, "Y");
+    let mut y = output_buf(&device, M * N, "Y");
     let grid = [M as u32, N as u32, 1];
     let block = [16, 16, 1];
 
@@ -450,7 +450,7 @@ fn int8_gemm_is_bit_exact_against_i32_accumulation() {
 
         let a_buf = upload_bytes(&device, &a, "A-int8");
         let b_buf = upload_bytes(&device, &b, "B-int8");
-        let mut y = output_buffer(&device, m * n, "Y-int8");
+        let mut y = output_buf(&device, m * n, "Y-int8");
 
         let msl = program(&catalogue, &dirs, "matmul_i8", Metal, Mode::int8(tile), m, n)
             .and_then(|stages| stages.one("int8"))
@@ -467,13 +467,13 @@ fn int8_gemm_is_bit_exact_against_i32_accumulation() {
             "{label} 派发应成功"
         );
         let got = read_back(y.as_mut_bytes());
-        for (index, (got, want)) in got.iter().zip(&acc).enumerate() {
+        for (idx, (got, want)) in got.iter().zip(&acc).enumerate() {
             assert_eq!(
                 got.to_bits(),
                 (*want as f32).to_bits(),
                 "{label} 的元素 ({},{})：设备 {got:.1e}、i32 参考 {want}（int8 路径不允许任何舍入）",
-                index / n,
-                index % n
+                idx / n,
+                idx % n
             );
         }
         println!("{label}：{} 个元素逐位相等（{}）", m * n, if tiled { "分块" } else { "回落标量" });
@@ -509,11 +509,11 @@ fn attention_survives_score_overflow_and_matches_closed_form() {
         k[j * D] = j as f32;
     }
     let v = rng.values(S * D);
-    let (q_buf, k_buf, v_buf, mut y_buf) = attention_buffers(&device, &q, &k, &v, S * D);
+    let (q_buf, k_buf, v_buf, mut y_buf) = attention_bufs(&device, &q, &k, &v, S * D);
 
     // 闭式期望：第 S−1 个键独占全部权重。
     let expected: Vec<f64> = (0..D).map(|h| f64::from(v[(S - 1) * D + h])).collect();
-    let check = |label: &str, y: &mut MetalBuffer| {
+    let check = |label: &str, y: &mut MetalBuf| {
         let got = read_back(y.as_mut_bytes());
         assert!(
             got.iter().all(|value| value.is_finite()),
@@ -590,7 +590,7 @@ fn flash_attention_respects_key_block_tails() {
         let k: Vec<f32> = rng.values(s * D).iter().map(|x| x * 4.0).collect();
         let v = rng.values(s * D);
         let reference = attention_reference(&q, &k, &v, s, D);
-        let (q_buf, k_buf, v_buf, mut y_buf) = attention_buffers(&device, &q, &k, &v, s * D);
+        let (q_buf, k_buf, v_buf, mut y_buf) = attention_bufs(&device, &q, &k, &v, s * D);
         let launch = [(s * THREADS) as u32, 1, 1];
         let block = [THREADS as u32, 1, 1];
 
@@ -655,7 +655,7 @@ fn transpose_half_layout_is_bit_exact_including_tail_tiles() {
     let b: Vec<f32> = (0..K * N).map(|_| rng.half_normal()).collect();
 
     let source = upload(&device, &b, "B");
-    let mut transposed = device.new_buffer(N * K * 2).expect("Bt 缓冲");
+    let mut transposed = device.new_buf(N * K * 2).expect("Bt 缓冲");
     let msl = crate::tiled::metal_transpose_half(K, N).expect("转置 MSL 应能生成");
     let pipe = device.compile(&msl).expect("转置 MSL 应能编译");
     // 派发几何与 `tensor_stage` 完全一致：线程组 [⌈N/32⌉, ⌈K/32⌉]、组内 32×8。
@@ -775,7 +775,7 @@ fn diag_transpose_mapping() {
                  (2, 39, 16.0), (99, 69, 32.0), (99, 0, 64.0), (0, 69, 128.0)];
     for (i, j, v) in marks { b[i * N + j] = v; }
     let source = upload(&device, &b, "B");
-    let mut dst = device.new_buffer(N * K * 2).expect("Bt");
+    let mut dst = device.new_buf(N * K * 2).expect("Bt");
     let msl = crate::tiled::metal_transpose_half(K, N).expect("msl");
     let pipe = device.compile(&msl).expect("pipe");
     println!("dst 初始前 8 元素: {:?}", &dst.as_mut_bytes()[..16]);

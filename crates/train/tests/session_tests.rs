@@ -52,8 +52,8 @@ fn forward_fixture(
 ) -> Result<()> {
     session.accept_batch(1, N, tokens.len())?;
     let inputs: Vec<f32> = tokens.iter().map(|token| *token as f32 * 0.1).collect();
-    session.buffers().load(x, Data::F32(inputs))?;
-    session.buffers().compute("add_f32", op_inputs, loss)?;
+    session.bufs().load(x, Data::F32(inputs))?;
+    session.bufs().compute("add_f32", op_inputs, loss)?;
     session.plan(loss)?;
     Ok(())
 }
@@ -84,10 +84,10 @@ fn forward_two_layer(
     u: Var,
     loss: Var,
 ) -> Result<()> {
-    session.buffers().load(x, Data::F32(vec![0.1; N]))?;
-    session.buffers().compute("add_f32", &[x, w_source], h)?;
-    session.buffers().compute("add_f32", &[h, w_tied], t)?;
-    session.buffers().compute("add_f32", &[t, u], loss)?;
+    session.bufs().load(x, Data::F32(vec![0.1; N]))?;
+    session.bufs().compute("add_f32", &[x, w_source], h)?;
+    session.bufs().compute("add_f32", &[h, w_tied], t)?;
+    session.bufs().compute("add_f32", &[t, u], loss)?;
     session.plan(loss)?;
     Ok(())
 }
@@ -457,8 +457,8 @@ fn stepping_without_a_gradient_is_rejected() -> Result<()> {
     let config = TrainConfig::default();
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config)?;
     session.register_parameter(p, ParamRole::Trainable, vec![1.0; N])?;
-    session.buffers().load(x, Data::F32(vec![0.0; N]))?;
-    session.buffers().compute("add_f32", &[p, x], loss)?;
+    session.bufs().load(x, Data::F32(vec![0.0; N]))?;
+    session.bufs().compute("add_f32", &[p, x], loss)?;
     session.plan(loss)?;
 
     let error = session.optimize().expect_err("梯度未装入");

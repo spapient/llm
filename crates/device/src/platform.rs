@@ -156,7 +156,7 @@ impl prof::atom::Closed for Row {
         self.spec().name
     }
 
-    fn index(self) -> usize {
+    fn idx(self) -> usize {
         self as usize
     }
 }

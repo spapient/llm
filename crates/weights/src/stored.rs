@@ -85,7 +85,7 @@ impl Stored {
     }
 
     /// 代表段下标；内联段返回 `None`。
-    pub fn rep_index(&self) -> Option<usize> {
+    pub fn rep_idx(&self) -> Option<usize> {
         match &self.inner {
             StoredInner::Ref { rep, .. } => Some(*rep),
             StoredInner::Inline { .. } => None,

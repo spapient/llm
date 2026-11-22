@@ -74,8 +74,8 @@ fn check_label(label: f32, vocab: usize) -> Result<()> {
         let message = format!("标签 {label} 不是非负整数索引");
         return Err(Error::new(Code::Invalid, message).with(SITE));
     }
-    let index = label as usize;
-    if index >= vocab {
+    let idx = label as usize;
+    if idx >= vocab {
         let message = format!("标签索引 {index} 越界（词表 {vocab}）");
         return Err(Error::new(Code::Invalid, message).with(SITE));
     }
@@ -104,10 +104,10 @@ fn row_nll(row: &[f32], label: usize) -> f32 {
 fn row_argmax(row: &[f32]) -> usize {
     let mut best = 0;
     let mut best_value = f32::MIN;
-    for (index, &value) in row.iter().enumerate() {
+    for (idx, &value) in row.iter().enumerate() {
         if value > best_value {
             best_value = value;
-            best = index;
+            best = idx;
         }
     }
     best

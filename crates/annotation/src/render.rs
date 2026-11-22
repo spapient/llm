@@ -250,8 +250,8 @@ fn comma<T>(
     items: impl Iterator<Item = T>,
     mut each: impl FnMut(&mut String, T),
 ) {
-    for (index, item) in items.enumerate() {
-        if index > 0 {
+    for (idx, item) in items.enumerate() {
+        if idx > 0 {
             code.push_str(", ");
         }
         each(code, item);

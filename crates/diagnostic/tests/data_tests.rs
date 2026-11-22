@@ -77,7 +77,7 @@ fn remove_drops_the_key_without_leaving_a_hole() {
 }
 
 #[test]
-fn a_path_index_on_a_non_array_or_a_malformed_index_is_none() {
+fn a_path_idx_on_a_non_array_or_a_malformed_idx_is_none() {
     let table = sample();
     // 下标用在表上：表不是数组，越界形态直接 None，不panic。
     assert!(table.at("op[0].name").is_none());

@@ -265,11 +265,11 @@ impl Sizes {
 
     /// 登记一个变量的形状；编号可以跳跃（后创建的变量先登记也不会错位）。
     pub fn set(&mut self, var: Var, shape: Shape, dtype: DType) {
-        let index = var.id() as usize;
-        if index >= self.entries.len() {
-            self.entries.resize(index + 1, None);
+        let idx = var.id() as usize;
+        if idx >= self.entries.len() {
+            self.entries.resize(idx + 1, None);
         }
-        self.entries[index] = Some((shape, dtype));
+        self.entries[idx] = Some((shape, dtype));
     }
 
     /// 一个变量登记的形状与元素类型；没登记时为 `None`。

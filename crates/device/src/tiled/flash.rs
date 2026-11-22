@@ -29,7 +29,7 @@ pub fn metal_flash_attention(
         )
         .with("engine::tiled::metal_flash_attention"));
     }
-    let (q, k, v, y) = attention_buffers(signature)?;
+    let (q, k, v, y) = attention_bufs(signature)?;
     let (s, d) = attention_dims(signature, sample)?;
     if !(1..=64).contains(&d) {
         return Err(

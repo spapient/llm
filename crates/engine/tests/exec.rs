@@ -167,9 +167,9 @@ fn trace_decorates_any_executor_and_records_submissions() {
 fn local_executor_bounds_injected_allocator() {
     let mut executor =
         LocalExecutor::new(Device::new("cpu", "generic"), Box::new(CpuAllocator::new()));
-    let buffer = executor.allocator_mut().alloc(16).expect("分配 16 字节");
-    assert_eq!(buffer.len(), 16);
-    executor.allocator_mut().free(buffer);
+    let buf = executor.allocator_mut().alloc(16).expect("分配 16 字节");
+    assert_eq!(buf.len(), 16);
+    executor.allocator_mut().free(buf);
 
     let empty = executor.allocator_mut().alloc(0).expect("零字节分配");
     assert!(empty.is_empty());
@@ -384,7 +384,7 @@ fn the_same_operand_cannot_be_both_input_and_output() {
 
 /// 内核失败时缓冲必须放回：否则下一次执行会看到"操作数未绑定"，把真正的错误盖掉。
 #[test]
-fn a_failing_kernel_still_returns_its_buffers() {
+fn a_failing_kernel_still_returns_its_bufs() {
     struct Wrong;
 
     impl Program for Wrong {

@@ -12,7 +12,7 @@ use engine::kv::{Cache, Pager};
 use engine::{Progress, Scheduler, Sequence};
 use llm_device::cuda::cuda_harness;
 use llm_device::metal::metal_grid_kernel;
-use op::model::{Buffer, Sample, Values};
+use op::model::{Buf, Sample, Values};
 use op::sig::Signature;
 
 /// 页池：`pages` 个页，每页 `page_size` 个 token、每行 2 个元素。
@@ -284,20 +284,20 @@ fn cuda_missing_scalar_argument_is_an_internal_error() {
         m: 4,
         n: 2,
         scalars: vec![("M", 4), ("N", 2)],
-        buffers: vec![
-            Buffer {
+        bufs: vec![
+            Buf {
                 name: "x",
                 values: Values::F32(vec![1.0, 1.0]),
             },
-            Buffer {
+            Buf {
                 name: "w",
                 values: Values::U8(vec![0x98]),
             },
-            Buffer {
+            Buf {
                 name: "scales",
                 values: Values::F32(vec![0.5]),
             },
-            Buffer {
+            Buf {
                 name: "y",
                 values: Values::F32(vec![0.0]),
             },
@@ -309,18 +309,18 @@ fn cuda_missing_scalar_argument_is_an_internal_error() {
 }
 
 #[test]
-fn cuda_missing_buffer_is_an_internal_error() {
+fn cuda_missing_buf_is_an_internal_error() {
     // 签名与样本漂移：某个缓冲在样本里不存在，host 分配段无法拼出声明。
     let sample = Sample {
         m: 4,
         n: 2,
         scalars: vec![("M", 4), ("N", 2), ("gsz", 4)],
-        buffers: vec![
-            Buffer {
+        bufs: vec![
+            Buf {
                 name: "x",
                 values: Values::F32(vec![1.0, 1.0]),
             },
-            Buffer {
+            Buf {
                 name: "y",
                 values: Values::F32(vec![0.0]),
             },

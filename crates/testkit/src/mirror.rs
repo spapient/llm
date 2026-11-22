@@ -244,5 +244,5 @@ fn every_registered_kernel_signature_matches_its_model_sample() {
 fn line_number(text: &str, line: &str) -> String {
     text.lines()
         .position(|candidate| candidate == line)
-        .map_or_else(|| "-".to_string(), |index| (index + 1).to_string())
+        .map_or_else(|| "-".to_string(), |idx| (idx + 1).to_string())
 }

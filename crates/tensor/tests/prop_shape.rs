@@ -13,15 +13,15 @@ fn dims() -> impl Strategy<Value = Vec<usize>> {
 }
 
 /// 按行主序枚举形状的全部多下标——顺序无所谓，双射才要紧。
-fn indices(dims: &[usize]) -> Vec<Vec<usize>> {
+fn idxs(dims: &[usize]) -> Vec<Vec<usize>> {
     let mut all = vec![Vec::new()];
     for &dim in dims {
         let mut next = Vec::with_capacity(all.len() * dim);
         for prefix in &all {
             for position in 0..dim {
-                let mut index = prefix.clone();
-                index.push(position);
-                next.push(index);
+                let mut idx = prefix.clone();
+                idx.push(position);
+                next.push(idx);
             }
         }
         all = next;
@@ -33,8 +33,8 @@ fn indices(dims: &[usize]) -> Vec<Vec<usize>> {
 fn assert_bijection(view: &View<'_, f32>, dims: &[usize]) {
     let numel = crate::product(dims);
     let mut seen = vec![false; numel];
-    for index in indices(dims) {
-        let linear = view.at(&index).expect("枚举出的下标必然在形状内") as usize;
+    for idx in idxs(dims) {
+        let linear = view.at(&idx).expect("枚举出的下标必然在形状内") as usize;
         assert!(linear < numel, "线性位号 {linear} 超出 {numel}：{dims:?}");
         assert!(!seen[linear], "位号 {linear} 被两个下标取到：{dims:?}");
         seen[linear] = true;
@@ -102,10 +102,10 @@ proptest! {
         let narrow = View::strided(narrow_shape.clone(), Strides::contiguous(&narrow_shape), &data);
         let wide = View::strided(wide_shape.clone(), Strides::contiguous(&wide_shape), &data);
         let (narrow, wide) = (narrow.expect("同长缓冲"), wide.expect("多一个单例轴仍可达"));
-        for index in indices(&dims) {
-            let mut extended = index.clone();
+        for idx in idxs(&dims) {
+            let mut extended = idx.clone();
             extended.push(0);
-            prop_assert_eq!(narrow.at(&index), wide.at(&extended));
+            prop_assert_eq!(narrow.at(&idx), wide.at(&extended));
         }
     }
 }

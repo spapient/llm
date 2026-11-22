@@ -8,8 +8,8 @@ use crate::protocol::HEADER_LEN;
 /// 增量解码器。
 #[derive(Debug, Default)]
 pub struct Decoder {
-    buffer: Vec<u8>,
-    /// 已交付前缀的终点：`buffer[..start]` 是废料，下次 `push` 时再压缩。
+    buf: Vec<u8>,
+    /// 已交付前缀的终点：`buf[..start]` 是废料，下次 `push` 时再压缩。
     start: usize,
     poisoned: Option<Error>,
 }
@@ -23,7 +23,7 @@ impl Decoder {
     /// 按预期先分配缓冲：连接上未处理的字节大概有多少。
     pub fn with_capacity(bytes: usize) -> Self {
         Self {
-            buffer: Vec::with_capacity(bytes),
+            buf: Vec::with_capacity(bytes),
             ..Self::default()
         }
     }
@@ -34,8 +34,8 @@ impl Decoder {
             return Err(error.clone().with("proto::Decoder::push"));
         }
         self.compact();
-        self.buffer.extend_from_slice(bytes);
-        let available = &self.buffer[self.start..];
+        self.buf.extend_from_slice(bytes);
+        let available = &self.buf[self.start..];
         if available.len() >= HEADER_LEN
             && let Err(error) = frame::header(available)
         {
@@ -51,7 +51,7 @@ impl Decoder {
         if let Some(error) = &self.poisoned {
             return Err(error.clone().with("proto::Decoder::next_frame"));
         }
-        match frame::scan(&self.buffer[self.start..]) {
+        match frame::scan(&self.buf[self.start..]) {
             Ok(Scan::Short | Scan::Partial { .. }) => Ok(None),
             Ok(Scan::Frame {
                 header,
@@ -71,7 +71,7 @@ impl Decoder {
 
     /// 还没被取走的字节数（含半帧）。
     pub fn buffered(&self) -> usize {
-        self.buffer.len() - self.start
+        self.buf.len() - self.start
     }
 
     /// 连接关闭时调用：只有正好停在帧边界才是正常关闭。
@@ -79,7 +79,7 @@ impl Decoder {
         if let Some(error) = self.poisoned {
             return Err(error);
         }
-        let left = self.buffer.len() - self.start;
+        let left = self.buf.len() - self.start;
         if left == 0 {
             return Ok(());
         }
@@ -92,7 +92,7 @@ impl Decoder {
 
     /// 丢掉缓冲与"这条流已坏"的判定，供复用同一个对象解下一条连接。
     pub fn reset(&mut self) {
-        self.buffer.clear();
+        self.buf.clear();
         self.start = 0;
         self.poisoned = None;
     }
@@ -102,16 +102,16 @@ impl Decoder {
         if self.start == 0 {
             return;
         }
-        if self.start == self.buffer.len() {
-            self.buffer.clear();
+        if self.start == self.buf.len() {
+            self.buf.clear();
             self.start = 0;
             return;
         }
         // 拷一次的代价是"留下的字节数"，所以只在挪掉的不少于留下的时候才做：每次 push 至多
         // 一次，摊还下来仍是每字节 O(1)，而不是随帧数增长的二次搬运。
-        if self.start * 2 >= self.buffer.len() {
-            self.buffer.copy_within(self.start.., 0);
-            self.buffer.truncate(self.buffer.len() - self.start);
+        if self.start * 2 >= self.buf.len() {
+            self.buf.copy_within(self.start.., 0);
+            self.buf.truncate(self.buf.len() - self.start);
             self.start = 0;
         }
     }

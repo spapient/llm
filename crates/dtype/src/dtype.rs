@@ -298,8 +298,8 @@ impl DType {
     /// 由 code 还原；`0` 与未知 code 返回 `None`。
     #[must_use]
     pub const fn from_code(code: u16) -> Option<Self> {
-        let index = (code as usize).checked_sub(1);
-        match index {
+        let idx = (code as usize).checked_sub(1);
+        match idx {
             Some(value) if value < Self::ALL.len() => Some(Self::ALL[value]),
             _ => None,
         }
@@ -374,7 +374,7 @@ impl DType {
 impl Format for DType {
     const ALL: &'static [Self] = DType::ALL;
 
-    fn index(self) -> usize {
+    fn idx(self) -> usize {
         self as usize
     }
 

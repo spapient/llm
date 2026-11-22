@@ -160,7 +160,7 @@ pub(crate) const fn row<'a>(
 
 /// 读完一条注解的全部 `键 = 值`；一次只报一条错误，顺序是「键 → 重复 → 值」。
 pub(crate) fn collect<'a>(tokens: &[Token], table: &'a [KeySpec<'a>]) -> Result<Vec<Value>, Error> {
-    let mut cursor = Cursor { tokens, index: 0 };
+    let mut cursor = Cursor { tokens, idx: 0 };
     let mut values = vec![Value::Empty; table.len()];
     while !cursor.is_empty() {
         read_one(&mut cursor, table, &mut values)?;
@@ -174,27 +174,27 @@ fn read_one<'a>(
     table: &'a [KeySpec<'a>],
     values: &mut [Value],
 ) -> Result<(), Error> {
-    let at = cursor.index;
+    let at = cursor.idx;
     let key = key_name(cursor, at)?;
     cursor.punct('=', "键与值之间的 `=`")?;
-    let index = slot(table, values, key, at)?;
-    values[index] = (table[index].grammar)(cursor, at, &table[index])?;
+    let idx = slot(table, values, key, at)?;
+    values[idx] = (table[idx].grammar)(cursor, at, &table[idx])?;
     separator(cursor)
 }
 
 /// 键到槽位：不在闭集里点名它，槽位已经被写过则报重复。
 fn slot(table: &[KeySpec<'_>], values: &[Value], key: &str, at: Position) -> Result<usize, Error> {
-    let index = table
+    let idx = table
         .iter()
         .position(|spec| spec.name == key)
         .ok_or_else(|| unknown_key(table, key, at))?;
-    if !matches!(values[index], Value::Empty) {
+    if !matches!(values[idx], Value::Empty) {
         return Err(Error::at(
             at,
-            format!("注解键 `{}` 重复：{}", table[index].name, table[index].dup),
+            format!("注解键 `{}` 重复：{}", table[idx].name, table[idx].dup),
         ));
     }
-    Ok(index)
+    Ok(idx)
 }
 
 /// 键之间的分隔符：最后一个键之后允许省略。
@@ -227,8 +227,8 @@ fn unknown_key(table: &[KeySpec<'_>], key: &str, at: Position) -> Error {
 
 /// 必填键一个都不能少；缺了就是一条点名这个键的「缺少必填键」。
 pub(crate) fn require(values: &[Value], table: &[KeySpec<'_>]) -> Result<(), Error> {
-    for (index, spec) in table.iter().enumerate() {
-        let (true, Some(form)) = (matches!(values[index], Value::Empty), spec.form) else {
+    for (idx, spec) in table.iter().enumerate() {
+        let (true, Some(form)) = (matches!(values[idx], Value::Empty), spec.form) else {
             continue;
         };
         return Err(Error::at(0, format!("缺少必填键 `{}{form}`", spec.name)));
@@ -242,7 +242,7 @@ pub(crate) fn elements<'a>(
     tokens: &'a [Token],
     what: &str,
 ) -> Result<Vec<&'a Token>, Error> {
-    let mut cursor = Cursor { tokens, index: 0 };
+    let mut cursor = Cursor { tokens, idx: 0 };
     let mut elements = Vec::new();
     while !cursor.is_empty() {
         elements.push(cursor.next(what).map_err(|error| error.rebased(group))?);
@@ -317,29 +317,29 @@ pub(crate) fn checked_name(name: &str, at: Position) -> Result<(), Error> {
     Ok(())
 }
 
-/// 注解参数的最小游标：只认标识符、`=`、`,` 与括号组；`index` 同时是「错误指在这里」的位置。
+/// 注解参数的最小游标：只认标识符、`=`、`,` 与括号组；`idx` 同时是「错误指在这里」的位置。
 pub(crate) struct Cursor<'a> {
     pub(crate) tokens: &'a [Token],
-    pub(crate) index: usize,
+    pub(crate) idx: usize,
 }
 
 impl<'a> Cursor<'a> {
     pub(crate) fn is_empty(&self) -> bool {
-        self.index >= self.tokens.len()
+        self.idx >= self.tokens.len()
     }
 
     pub(crate) fn next(&mut self, what: &str) -> Result<&'a Token, Error> {
-        let position = self.index;
+        let position = self.idx;
         let token = self
             .tokens
-            .get(self.index)
+            .get(self.idx)
             .ok_or_else(|| Error::at(position, format!("缺少{what}")))?;
-        self.index += 1;
+        self.idx += 1;
         Ok(token)
     }
 
     pub(crate) fn punct(&mut self, expected: char, what: &str) -> Result<(), Error> {
-        let position = self.index;
+        let position = self.idx;
         match self.next(what)? {
             Token::Punct(punct) if *punct == expected => Ok(()),
             other => Err(Error::at(
@@ -354,7 +354,7 @@ impl<'a> Cursor<'a> {
         expected: Bracket,
         what: &str,
     ) -> Result<(Position, &'a [Token]), Error> {
-        let position = self.index;
+        let position = self.idx;
         match self.next(what)? {
             Token::Group(bracket, items) if *bracket == expected => Ok((position, items)),
             other => Err(Error::at(

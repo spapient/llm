@@ -35,9 +35,9 @@ macro_rules! unary_op_tests {
                 &[f32::MAX, f32::MAX],
                 &[f32::MIN, f32::MIN],
             ];
-            for (index, a) in cases.iter().enumerate() {
+            for (idx, a) in cases.iter().enumerate() {
                 let mut sample = crate::unary::sample::<$ty>(a.len(), 1);
-                sample.buffers[0].values = crate::model::Values::F32(a.to_vec());
+                sample.bufs[0].values = crate::model::Values::F32(a.to_vec());
                 let expected = crate::unary::reference::<$ty>(&sample).expect("参考可计算");
                 let mut out = vec![0.0; a.len()];
                 $forward(a, &mut out).expect("等长");

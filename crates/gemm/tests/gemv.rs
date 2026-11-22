@@ -96,7 +96,7 @@ fn a_row_that_is_shorter_than_declared_is_rejected() {
 
 /// 稠密格式不接受标度：换错算子必须报错，而不是"算出一个看起来对的数"。
 #[test]
-fn the_dense_format_refuses_a_scales_buffer() {
+fn the_dense_format_refuses_a_scales_buf() {
     let x = [1.0f32; 4];
     let w = [1.0f32; 4];
     let mut y = [0.0f32; 1];
@@ -116,9 +116,9 @@ fn the_shared_skeleton_rejects_a_weight_of_the_wrong_element_type() {
         .expect_err("float 槽位不能换成字节");
     assert_eq!(error.code(), Code::Invalid);
     let wrong = sample
-        .buffers
+        .bufs
         .iter_mut()
-        .find(|buffer| buffer.name == "w")
+        .find(|buf| buf.name == "w")
         .expect("稠密样本有 w");
     wrong.values = Values::U8(vec![0; 16]);
     let error = gemv::reference::<F32>(&sample).expect_err("u8 不是 f32 权重");

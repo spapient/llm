@@ -28,8 +28,8 @@ pub(crate) mod weights {
     /// 造一份确定性容器：64 段、每段 256 个 F32。
     fn container() -> Writer {
         let mut writer = Writer::new();
-        for index in 0..SEGMENTS {
-            let data = vec![(index % 256) as u8; BYTES_PER_SEGMENT];
+        for idx in 0..SEGMENTS {
+            let data = vec![(idx % 256) as u8; BYTES_PER_SEGMENT];
             let shape = vec![ELEMS as u64];
             let name = format!("seg_{index}");
             let segment = checked(Segment::new(name, Wire::F32, shape, None, data), "段自洽");
@@ -89,8 +89,8 @@ pub(crate) mod weights {
     fn fixture() -> (PathBuf, Vec<String>) {
         let mut entries = Vec::with_capacity(N_ENTRIES);
         let mut names = Vec::with_capacity(N_ENTRIES);
-        for index in 0..N_ENTRIES {
-            let start = index * BYTES_PER_SEGMENT;
+        for idx in 0..N_ENTRIES {
+            let start = idx * BYTES_PER_SEGMENT;
             let end = start + BYTES_PER_SEGMENT;
             names.push(format!("w.{index}"));
             entries.push(format!(
@@ -404,15 +404,15 @@ pub(crate) mod text {
 
     /// 解码：同一份取值先编码成缓冲，再逐条读回。
     fn leb_decode(c: &mut Criterion) {
-        let mut buffer = Vec::new();
+        let mut buf = Vec::new();
         for value in VALUES {
-            write(&mut buffer, value);
+            write(&mut buf, value);
         }
         let mut group = c.benchmark_group("wire/leb");
         group.throughput(Throughput::Elements(VALUES.len() as u64));
         group.bench_function("decode_values", |bench| {
             bench.iter(|| {
-                let mut cursor = Cursor::new(black_box(&buffer));
+                let mut cursor = Cursor::new(black_box(&buf));
                 for _ in VALUES {
                     black_box(checked(cursor.read::<u64>(), "规范编码"));
                 }

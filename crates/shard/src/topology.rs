@@ -110,24 +110,24 @@ impl Topology {
         Ok(())
     }
 
-    /// 由三个下标算出全局 rank：`dp_index · (tp · pp) + pp_index · tp + tp_index`。
+    /// 由三个下标算出全局 rank：`dp_idx · (tp · pp) + pp_idx · tp + tp_idx`。
     ///
     /// # Errors
     ///
     /// 任一下标超出它那一维的并行度。
-    pub fn rank(&self, tp_index: usize, pp_index: usize, dp_index: usize) -> Result<u32> {
-        self.check_axis(Parallel::Tensor, tp_index)?;
-        self.check_axis(Parallel::Pipeline, pp_index)?;
-        self.check_axis(Parallel::Data, dp_index)?;
-        rank_u32(dp_index * self.plan() + pp_index * self.tp + tp_index)
+    pub fn rank(&self, tp_idx: usize, pp_idx: usize, dp_idx: usize) -> Result<u32> {
+        self.check_axis(Parallel::Tensor, tp_idx)?;
+        self.check_axis(Parallel::Pipeline, pp_idx)?;
+        self.check_axis(Parallel::Data, dp_idx)?;
+        rank_u32(dp_idx * self.plan() + pp_idx * self.tp + tp_idx)
     }
 
-    /// [`Topology::rank`] 的反解：`(tp_index, pp_index, dp_index)`。
+    /// [`Topology::rank`] 的反解：`(tp_idx, pp_idx, dp_idx)`。
     ///
     /// # Errors
     ///
     /// `rank` 不在 `0..world`。
-    pub fn indices(&self, rank: u32) -> Result<(usize, usize, usize)> {
+    pub fn idxs(&self, rank: u32) -> Result<(usize, usize, usize)> {
         let position = rank as usize;
         if position >= self.world() {
             return Err(Error::new(
@@ -141,9 +141,9 @@ impl Topology {
         Ok((within % self.tp, within / self.tp, position / plan))
     }
 
-    /// 第 `index` 个指定维度的进程组。
-    pub fn group(&self, parallel: Parallel, index: usize) -> Result<Group> {
-        Group::new(self.ranks(parallel, index)?)
+    /// 第 `idx` 个指定维度的进程组。
+    pub fn group(&self, parallel: Parallel, idx: usize) -> Result<Group> {
+        Group::new(self.ranks(parallel, idx)?)
     }
 
     /// `tp · pp`：数据维之外的世界大小（也是 `Data` 组内的 rank 步长）。
@@ -165,37 +165,37 @@ impl Topology {
         self.world() / self.size(parallel)
     }
 
-    /// 某一维第 `index` 组的 rank 列表（组内升序，已转成 `u32`）。
-    fn ranks(&self, parallel: Parallel, index: usize) -> Result<Vec<u32>> {
+    /// 某一维第 `idx` 组的 rank 列表（组内升序，已转成 `u32`）。
+    fn ranks(&self, parallel: Parallel, idx: usize) -> Result<Vec<u32>> {
         let count = self.groups(parallel);
-        if index >= count {
-            return Err(self.out_of_range(parallel, index, count));
+        if idx >= count {
+            return Err(self.out_of_range(parallel, idx, count));
         }
         (0..self.size(parallel))
             .map(|step| {
-                let (tp, pp, dp) = self.place(parallel, index, step);
+                let (tp, pp, dp) = self.place(parallel, idx, step);
                 self.rank(tp, pp, dp)
             })
             .collect()
     }
 
-    /// 组的第 `step` 个成员在三个维上的下标：`index` 是组号，`step` 是组内下标。
-    fn place(&self, parallel: Parallel, index: usize, step: usize) -> (usize, usize, usize) {
+    /// 组的第 `step` 个成员在三个维上的下标：`idx` 是组号，`step` 是组内下标。
+    fn place(&self, parallel: Parallel, idx: usize, step: usize) -> (usize, usize, usize) {
         match parallel {
-            Parallel::Tensor => (step, index % self.pp, index / self.pp),
-            Parallel::Pipeline => (step % self.tp, step / self.tp, index),
-            Parallel::Data => (index % self.tp, index / self.tp, step),
+            Parallel::Tensor => (step, idx % self.pp, idx / self.pp),
+            Parallel::Pipeline => (step % self.tp, step / self.tp, idx),
+            Parallel::Data => (idx % self.tp, idx / self.tp, step),
         }
     }
 
     /// 某一维的下标必须落在它自己的并行度以内。
-    fn check_axis(&self, parallel: Parallel, index: usize) -> Result<()> {
+    fn check_axis(&self, parallel: Parallel, idx: usize) -> Result<()> {
         let limit = match parallel {
             Parallel::Tensor => self.tp,
             Parallel::Pipeline => self.pp,
             Parallel::Data => self.dp,
         };
-        if index >= limit {
+        if idx >= limit {
             return Err(Error::new(
                 Code::Invalid,
                 format!("{} 下标 {index} 超出 0..{limit}", parallel.as_str()),
@@ -205,7 +205,7 @@ impl Topology {
         Ok(())
     }
 
-    fn out_of_range(&self, parallel: Parallel, index: usize, count: usize) -> Error {
+    fn out_of_range(&self, parallel: Parallel, idx: usize, count: usize) -> Error {
         Error::new(
             Code::Invalid,
             format!("{} 组下标 {index} 超出 0..{count}", parallel.as_str()),

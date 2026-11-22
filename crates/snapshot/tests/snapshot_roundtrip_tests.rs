@@ -47,7 +47,7 @@ fn optimizer_moments_round_trip_bit_for_bit() {
     let before = snapshot.moments().slots();
     let after = restored_moments.slots();
     assert_eq!(before.len(), after.len(), "槽位数必须一致");
-    for (index, (want, got)) in before.iter().zip(after).enumerate() {
+    for (idx, (want, got)) in before.iter().zip(after).enumerate() {
         // 位级比较：f32 经小端字节往返不能只差一位。
         let want_m: Vec<u32> = want.m().iter().map(|value| value.to_bits()).collect();
         let got_m: Vec<u32> = got.m().iter().map(|value| value.to_bits()).collect();
@@ -129,14 +129,14 @@ fn a_slot_with_uneven_moments_is_rejected_before_encoding() {
 #[test]
 fn the_length_promise_holds_at_every_varint_boundary() {
     let steps = [0u64, 1, 127, 128, 16_383, 16_384, 4_294_967_295, u64::MAX];
-    for (index, step) in steps.into_iter().enumerate() {
-        let offset = 64 + index * 65_536;
+    for (idx, step) in steps.into_iter().enumerate() {
+        let offset = 64 + idx * 65_536;
         let header = Header::new(
             vec![Entry::new("w", DType::F32, Shape::new(vec![1, 127, 128, 16_384])).at(offset)],
             64,
         )
         .expect("头部");
-        let size = index + 1;
+        let size = idx + 1;
         let facts = Facts::new(step, size, size, size, size).expect("事实");
         assert_round_trip(&Snapshot::new(facts, header));
     }

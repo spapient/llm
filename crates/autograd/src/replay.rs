@@ -36,12 +36,12 @@ impl Replay {
     /// 只有一个来源：计划丢掉了一个本次调度里无处重放的值——内部不变量被破坏，不是调用方参数错。
     pub fn of(tape: &Tape, schedule: &Schedule, plan: &Plan) -> Result<Self> {
         let mut builder = Builder::new(tape, schedule.steps().len(), plan);
-        for (index, step) in schedule.steps().iter().enumerate() {
-            builder.begin(index);
+        for (idx, step) in schedule.steps().iter().enumerate() {
+            builder.begin(idx);
             for input in step.inputs() {
                 builder.chain(*input)?;
             }
-            builder.close(index);
+            builder.close(idx);
         }
         Ok(builder.finish())
     }
@@ -95,11 +95,11 @@ impl Replay {
         F: FnMut(&mut S, &Node) -> Result<()>,
     {
         let mut computed = 0u64;
-        for (index, step) in schedule.steps().iter().enumerate() {
-            computed = computed.saturating_add(self.recompute(tape, store, index)?);
+        for (idx, step) in schedule.steps().iter().enumerate() {
+            computed = computed.saturating_add(self.recompute(tape, store, idx)?);
             backward(store, step)?;
             // 交还放在反向公式之后：一个激活的寿命就是"直到最后一次被需要"。
-            slice(&self.free, &self.free_at, index)
+            slice(&self.free, &self.free_at, idx)
                 .iter()
                 .for_each(|var| store.free(*var));
         }
@@ -121,10 +121,10 @@ impl Replay {
         ))
     }
 
-    /// 第 `index` 步之前要重算的全部前向步，返回本步重算的个数。
-    fn recompute<S: Store>(&self, tape: &Tape, store: &mut S, index: usize) -> Result<u64> {
+    /// 第 `idx` 步之前要重算的全部前向步，返回本步重算的个数。
+    fn recompute<S: Store>(&self, tape: &Tape, store: &mut S, idx: usize) -> Result<u64> {
         let mut computed = 0u64;
-        for &var in slice(&self.compute, &self.compute_at, index) {
+        for &var in slice(&self.compute, &self.compute_at, idx) {
             let node = tape
                 .node(var)
                 .ok_or_else(|| internal(RUN, format!("变量 {} 没有生产者，无法重算", var.id())))?;
@@ -149,10 +149,10 @@ impl Replay {
     }
 }
 
-/// 第 `index` 步的区间：两张表共用同一套下标。
-fn slice<'a>(table: &'a [Var], at: &[u32], index: usize) -> &'a [Var] {
-    let start = at[index] as usize;
-    let end = at[index + 1] as usize;
+/// 第 `idx` 步的区间：两张表共用同一套下标。
+fn slice<'a>(table: &'a [Var], at: &[u32], idx: usize) -> &'a [Var] {
+    let start = at[idx] as usize;
+    let end = at[idx + 1] as usize;
     &table[start..end]
 }
 
@@ -192,9 +192,9 @@ impl<'a> Builder<'a> {
         }
     }
 
-    /// 进入反向第 `index` 步：换代 `stamp`，于是去重只在同一步内生效。
-    fn begin(&mut self, index: usize) {
-        self.current = index as u32;
+    /// 进入反向第 `idx` 步：换代 `stamp`，于是去重只在同一步内生效。
+    fn begin(&mut self, idx: usize) {
+        self.current = idx as u32;
         self.mark = self.mark.wrapping_add(1);
         if self.mark == 0 {
             self.stamp.fill(0);
@@ -203,8 +203,8 @@ impl<'a> Builder<'a> {
     }
 
     /// 本步的重算序列到此为止，记下区间右端。
-    fn close(&mut self, index: usize) {
-        self.replay.compute_at[index + 1] = self.replay.compute.len() as u32;
+    fn close(&mut self, idx: usize) {
+        self.replay.compute_at[idx + 1] = self.replay.compute.len() as u32;
     }
 
     /// 保证 `root` 的值在这一步可用：被丢弃的输入按前向拓扑序重算，保留的检查点与叶子不动。

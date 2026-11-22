@@ -44,7 +44,7 @@
             &[f32::MIN, f32::MIN],
             &[3.5, -4.0, 3.5],
         ];
-        for (index, input) in cases.iter().enumerate() {
+        for (idx, input) in cases.iter().enumerate() {
             let mut out = vec![0.0; input.len()];
             forward(input, &mut out).expect("非空行可归一化");
             let total: f32 = out.iter().sum();

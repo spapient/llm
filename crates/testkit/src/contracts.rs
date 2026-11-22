@@ -229,18 +229,18 @@ fn module_path_of(file: &std::path::Path) -> String {
 /// 文件里的每条 `use` 语句（多行也算一条，直到分号）。
 fn use_statements(text: &str) -> Vec<String> {
     let mut out = Vec::new();
-    let mut buffer = String::new();
+    let mut buf = String::new();
     for line in text.lines() {
         let line = line.trim();
         let starts = line.starts_with("pub use ") || line.starts_with("use ");
-        if buffer.is_empty() && !starts {
+        if buf.is_empty() && !starts {
             continue;
         }
-        buffer.push_str(line);
+        buf.push_str(line);
         if line.ends_with(';') {
-            out.push(std::mem::take(&mut buffer));
+            out.push(std::mem::take(&mut buf));
         } else {
-            buffer.push(' ');
+            buf.push(' ');
         }
     }
     out
@@ -314,12 +314,12 @@ pub(crate) fn hits(predicate: impl Fn(&str) -> bool) -> Vec<Hit> {
         let Some(text) = source_text(&file) else {
             continue;
         };
-        for (index, line) in text.lines().enumerate() {
+        for (idx, line) in text.lines().enumerate() {
             if predicate(line) {
                 out.push((
                     name.clone(),
                     file.strip_prefix(root()).unwrap_or(&file).to_path_buf(),
-                    index + 1,
+                    idx + 1,
                     line.trim().to_string(),
                 ));
             }
@@ -449,7 +449,7 @@ pub(crate) fn closed_vocabularies_are_declared_once() {
         );
     }
 
-    // 契约的另一半：`Closed` 的实现必须写成切片，这样才能与 `ALL` 的顺序、`index` 的下标一致。
+    // 契约的另一半：`Closed` 的实现必须写成切片，这样才能与 `ALL` 的顺序、`idx` 的下标一致。
     let prof = root().join("crates/prof/src/atom.rs");
     let text = fs::read_to_string(&prof).expect("`crates/prof/src/atom.rs` 必须存在");
     assert!(

@@ -19,7 +19,7 @@ pub struct Path {
     /// 变体名。
     pub variant: String,
     /// 变体在降级链里的下标。
-    pub index: usize,
+    pub idx: usize,
     /// 调度模板。
     pub schedule: Schedule,
     /// 该变体的 `mma_share`（roofline 用）。
@@ -30,7 +30,7 @@ impl Path {
     /// 是否命中降级链的首选变体：落到后面的档说明首选的能力没被满足。
     #[must_use]
     pub fn is_head(&self) -> bool {
-        self.index == 0
+        self.idx == 0
     }
 }
 
@@ -377,10 +377,10 @@ struct Ledger {
 
 impl Ledger {
     /// 记下一档的结果，返回它是否可行；`ok` 字段与"是否命中"必须是同一个布尔。
-    fn record(&mut self, index: usize, variant: &Variant, failing: Vec<NeedReport>) -> bool {
+    fn record(&mut self, idx: usize, variant: &Variant, failing: Vec<NeedReport>) -> bool {
         let ok = failing.is_empty();
         if !ok {
-            self.remember_failure(index, &failing);
+            self.remember_failure(idx, &failing);
         }
         self.chain.push(ChainStep {
             variant: variant.name.clone(),
@@ -393,7 +393,7 @@ impl Ledger {
     }
 
     /// 记下这一档的缺项：`first_failure` 答"首选为什么不行"，`closest` 答"补哪一个就能用"，两者不能互相冒充。
-    fn remember_failure(&mut self, index: usize, failing: &[NeedReport]) {
+    fn remember_failure(&mut self, idx: usize, failing: &[NeedReport]) {
         let mut missing: Vec<Prim> = Vec::new();
         for prim in failing.iter().map(|report| report.need.prim) {
             if !missing.contains(&prim) {
@@ -405,15 +405,15 @@ impl Ledger {
             .as_ref()
             .is_none_or(|(_, best)| missing.len() < best.len());
         if fewer {
-            self.closest = Some((index, missing));
+            self.closest = Some((idx, missing));
         }
         self.first_failure.get_or_insert_with(|| failing.to_vec());
     }
 
     /// 最近的解锁路径：变体名与缺项来自同一档（只陈述这一档缺这些原语，不承诺补完必然可行）。
     fn unlock(&self, op: &OpDecl) -> Option<Unlock> {
-        let (index, missing) = self.closest.as_ref()?;
-        op.variants.get(*index).map(|variant| Unlock {
+        let (idx, missing) = self.closest.as_ref()?;
+        op.variants.get(*idx).map(|variant| Unlock {
             variant: variant.name.clone(),
             missing: missing.clone(),
             mma_share: variant.mma_share,
@@ -436,11 +436,11 @@ impl Ledger {
 /// ② negotiate 本体：供给必须在 `proof` 里才算这次具备；空集是"这次什么都没执行"，于是每一档都不可行。
 pub fn negotiate_with(op: &OpDecl, prof: &Profile, proof: &Proof) -> Result<Path, Box<NoPath>> {
     let mut ledger = Ledger::default();
-    for (index, variant) in op.variants.iter().enumerate() {
-        if ledger.record(index, variant, failing_needs(op, prof, variant, proof)) {
+    for (idx, variant) in op.variants.iter().enumerate() {
+        if ledger.record(idx, variant, failing_needs(op, prof, variant, proof)) {
             return Ok(Path {
                 variant: variant.name.clone(),
-                index,
+                idx,
                 schedule: variant.schedule,
                 mma_share: variant.mma_share,
             });
@@ -556,7 +556,7 @@ fn write_advice(f: &mut fmt::Formatter<'_>, path: &NoPath) -> fmt::Result {
         .chain
         .iter()
         .position(|step| step.variant == unlock.variant)
-        .map_or_else(|| "?".to_string(), |index| format!("{}", index + 1));
+        .map_or_else(|| "?".to_string(), |idx| format!("{}", idx + 1));
     writeln!(
         f,
         "  建议：在 {device} 补齐 {} 的 L2 见证后可用 {}（第 {step}/{} 档，预计 mma_share {:.2}）",

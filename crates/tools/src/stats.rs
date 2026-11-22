@@ -48,7 +48,7 @@ pub fn resample(samples: &[f64], draw: impl Fn(&[f64]) -> Option<f64>) -> Vec<f6
         drawn.extend(
             samples
                 .iter()
-                .map(|_| samples[index(&mut state, samples.len())]),
+                .map(|_| samples[idx(&mut state, samples.len())]),
         );
         if let Some(value) = draw(&drawn) {
             values.push(value);
@@ -67,7 +67,7 @@ pub fn interval(samples: &[f64], draw: impl Fn(&[f64]) -> Option<f64>) -> Option
 }
 
 /// splitmix64：状态只有 64 位，重采样可复现，不引入随机依赖。
-fn index(state: &mut u64, len: usize) -> usize {
+fn idx(state: &mut u64, len: usize) -> usize {
     *state = state.wrapping_add(SEED);
     let mut z = *state;
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);

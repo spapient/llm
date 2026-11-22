@@ -17,7 +17,7 @@ pub(super) struct Shape {
 
 /// 一次任务的四条数据指针：输入 A/B、打包面板、输出。一并发布，池只认这一个入口。
 #[derive(Clone, Copy)]
-pub(super) struct Buffers {
+pub(super) struct Bufs {
     pub(super) a: *const u8,
     pub(super) b: *const u8,
     pub(super) buf: *mut u8,
@@ -309,14 +309,14 @@ fn resume_panic(job: &Job) {
 #[allow(unsafe_code)]
 pub(super) fn run_pooled(
     pool: &'static Pool,
-    buffers: Buffers,
+    bufs: Bufs,
     shape: Shape,
     mr: usize,
     t: usize,
     stage: fn(&Job, usize),
     calc: fn(&Job, usize),
 ) -> bool {
-    let Buffers { a, b, buf, out } = buffers;
+    let Bufs { a, b, buf, out } = bufs;
     let Shape { m, n, k, npad, tn } = shape;
     let live = pool.live.load(Ordering::Acquire);
     let p = t.min(live + 1);

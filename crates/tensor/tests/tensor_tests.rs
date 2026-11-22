@@ -66,7 +66,7 @@ fn sub_byte_dtypes_need_fewer_bytes_than_elements() {
 }
 
 #[test]
-fn a_short_buffer_is_rejected_with_the_required_length() {
+fn a_short_buf_is_rejected_with_the_required_length() {
     let error = Tensor::new(DType::F32, Shape::new([2]), &[0u8; 4]).expect_err("应报错");
     assert_eq!(error.code(), Code::Invalid);
     assert!(error.to_string().contains("8 字节"), "{error}");
@@ -105,7 +105,7 @@ fn a_transposed_stride_is_not_contiguous() {
 }
 
 #[test]
-fn a_view_borrows_the_callers_buffer_instead_of_copying_it() {
+fn a_view_borrows_the_callers_buf_instead_of_copying_it() {
     let values = [1.0f32, 2.0, 3.0, 4.0];
     let view = View::new(Shape::new([2, 2]), &values).expect("视图");
     assert_eq!(view.dtype(), DType::F32);
@@ -130,7 +130,7 @@ fn a_view_is_bounds_checked_without_panicking() {
 }
 
 #[test]
-fn a_view_rejects_a_buffer_of_the_wrong_length() {
+fn a_view_rejects_a_buf_of_the_wrong_length() {
     let error = View::new(Shape::new([2, 2]), &[1.0f32, 2.0]).expect_err("长度不符");
     assert_eq!(error.code(), Code::Invalid);
     assert!(error.to_string().contains("需要 4 个"), "{error}");
@@ -180,7 +180,7 @@ fn a_strided_view_rejects_a_step_count_that_does_not_match_the_rank() {
 }
 
 #[test]
-fn a_strided_view_rejects_steps_that_run_past_the_buffer() {
+fn a_strided_view_rejects_steps_that_run_past_the_buf() {
     let error = View::strided(Shape::new([2, 2]), Strides::new([2, 1]), &[0.0f32; 3])
         .expect_err("最高偏移越界");
     assert!(error.to_string().contains("最高偏移 3"), "{error}");
@@ -233,7 +233,7 @@ fn random_shapes_keep_geometry_invariants() {
 
 /// 属性骨架：随机长度的一维视图，缓冲短于形状必须被拒绝，等长才放行。
 #[test]
-fn random_views_reject_a_short_buffer() {
+fn random_views_reject_a_short_buf() {
     let mut rng = testkit::Rng::new(0x91);
     for _ in 0..16 {
         let n = rng.below(16) as usize + 1;
@@ -246,7 +246,7 @@ fn random_views_reject_a_short_buffer() {
 }
 
 #[test]
-fn a_zero_element_view_needs_an_empty_buffer() {
+fn a_zero_element_view_needs_an_empty_buf() {
     let empty: [f32; 0] = [];
     assert!(
         View::strided(Shape::new([0, 3]), Strides::new([3, 1]), &empty).is_ok(),
@@ -268,7 +268,7 @@ fn owned_tensor_zeros_allocates_the_required_bytes() {
 }
 
 #[test]
-fn owned_tensor_rejects_a_short_or_unsupported_buffer() {
+fn owned_tensor_rejects_a_short_or_unsupported_buf() {
     let short = OwnedTensor::from_bytes(DType::F32, Shape::new([2]), vec![0u8; 4]);
     assert_eq!(short.unwrap_err().code(), Code::Invalid);
     let unsupported = OwnedTensor::zeros(DType::I32, Shape::new([1]));

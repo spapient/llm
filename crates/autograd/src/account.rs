@@ -107,8 +107,8 @@ impl Account {
     /// 结算前的校验：步骤在计划里、没结算过、梯度已收满。
     fn enter(&self, step: &Node) -> Result<()> {
         let var = step.output();
-        let index = var.id() as usize;
-        match self.state.get(index) {
+        let idx = var.id() as usize;
+        match self.state.get(idx) {
             Some(State::Waiting) => {}
             Some(State::Done) => {
                 return Err(invalid(
@@ -123,7 +123,7 @@ impl Account {
                 ));
             }
         }
-        match self.pending[index] {
+        match self.pending[idx] {
             0 => Ok(()),
             pending => Err(invalid(
                 "autograd::Account::settle",
@@ -137,8 +137,8 @@ impl Account {
         if !self.graph(input) {
             return Ok(None);
         }
-        let index = input.id() as usize;
-        let Some(pending) = self.pending.get_mut(index) else {
+        let idx = input.id() as usize;
+        let Some(pending) = self.pending.get_mut(idx) else {
             return Err(invalid(
                 "autograd::Account::settle",
                 format!("变量 {} 不在账本里", input.id()),

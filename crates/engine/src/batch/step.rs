@@ -9,7 +9,7 @@ impl Batch {
     ///
     /// `id` 不在批里时返回 `invalid`。
     pub fn advance(&mut self, id: u64) -> Result<Progress> {
-        let index = self.position(id).ok_or_else(|| {
+        let idx = self.position(id).ok_or_else(|| {
             Error::new(
                 Code::Invalid,
                 format!("序列 {id} 不在批里：先 `admit`（或它已经 `finish`）"),
@@ -20,7 +20,7 @@ impl Batch {
             scheduler,
             sequences,
         } = self;
-        scheduler.advance(&mut sequences[index])
+        scheduler.advance(&mut sequences[idx])
     }
 
     /// 记录一个 token 并推进一步：两者成对，所以"生成了却没记账"写不出来。
@@ -154,8 +154,8 @@ impl Batch {
     /// 页池拒绝归还（页不在池里或重复归还）：那是内部账目出错。
     pub fn finish(&mut self, id: u64) -> Result<bool> {
         let removed = self.scheduler.finish(id)?;
-        if let Some(index) = self.position(id) {
-            self.sequences.remove(index);
+        if let Some(idx) = self.position(id) {
+            self.sequences.remove(idx);
         }
         Ok(removed)
     }
@@ -172,9 +172,9 @@ impl Batch {
             .find(|sequence| sequence.id() == id)
     }
 
-    /// 批内第 `index` 条序列（只读）：位置即 [`Batch::sequences`] 的准入顺序。
-    pub fn sequence_at(&self, index: usize) -> Option<&Sequence> {
-        self.sequences.get(index)
+    /// 批内第 `idx` 条序列（只读）：位置即 [`Batch::sequences`] 的准入顺序。
+    pub fn sequence_at(&self, idx: usize) -> Option<&Sequence> {
+        self.sequences.get(idx)
     }
 
     /// 本步批量结局：每条在跑序列一条进度，按准入顺序排列，与 [`Batch::sequences`] 一一对应。
@@ -258,9 +258,9 @@ impl Batch {
     }
 
     /// 一条序列在本轮 `step` 后的批量结局视图：它自己的序列事实与本步进度成对持有。
-    pub fn outcome(&self, index: usize, progress: Progress) -> Option<SequenceOutcome<'_>> {
+    pub fn outcome(&self, idx: usize, progress: Progress) -> Option<SequenceOutcome<'_>> {
         self.sequences
-            .get(index)
+            .get(idx)
             .map(|sequence| SequenceOutcome { sequence, progress })
     }
 

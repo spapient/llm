@@ -223,8 +223,8 @@ fn sizes(bytes: &[u8], at: usize, name_len: usize) -> Result<(u64, usize)> {
     let extra_len = usize::from(u16_at(bytes, at + 30)?);
     let mut slot = 0usize;
     let mut wide = [0u64; 3];
-    for (index, offset) in [24, 20, 42].into_iter().enumerate() {
-        wide[index] = wide_field(
+    for (idx, offset) in [24, 20, 42].into_iter().enumerate() {
+        wide[idx] = wide_field(
             bytes,
             at + offset,
             Extra {

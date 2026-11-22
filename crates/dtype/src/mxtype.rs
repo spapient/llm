@@ -165,7 +165,7 @@ impl Element {
 impl Format for Element {
     const ALL: &'static [Self] = Element::ALL;
 
-    fn index(self) -> usize {
+    fn idx(self) -> usize {
         self as usize
     }
 
@@ -375,7 +375,7 @@ impl MxType {
 impl Format for MxType {
     const ALL: &'static [Self] = MxType::ALL;
 
-    fn index(self) -> usize {
+    fn idx(self) -> usize {
         self as usize
     }
 

@@ -121,7 +121,7 @@ fn schedule_parse_handles_degenerate_and_boundary_inputs() {
         "pipe<2",
         "pipe>2",
     ];
-    for (index, text) in cases.iter().enumerate() {
+    for (idx, text) in cases.iter().enumerate() {
         let error = Schedule::parse(text).expect_err("用例 {index} 应当拒绝");
         assert_eq!(error.code(), Code::Invalid, "用例 {index}");
         assert!(
@@ -140,7 +140,7 @@ fn unmasked_share_clamps_saturated_inputs() {
         (0.0, 0, 1.0),
         (0.0, 3, 1.0 / 3.0),
     ];
-    for (index, (share, stages, expected)) in cases.iter().enumerate() {
+    for (idx, (share, stages, expected)) in cases.iter().enumerate() {
         let actual = unmasked_share(*share, *stages);
         assert!(
             (actual - expected).abs() < 1e-12,

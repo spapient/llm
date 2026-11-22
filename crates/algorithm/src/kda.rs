@@ -138,8 +138,8 @@ impl Kda {
         self.check(memory)?;
         self.check_values("值", value, self.value_dim)?;
         let (write, key) = self.gated_write(gate, write, key)?;
-        for (value_index, row) in memory.cells.chunks_exact_mut(self.key_dim).enumerate() {
-            write_row(row, gate, write, &key, value[value_index]);
+        for (value_idx, row) in memory.cells.chunks_exact_mut(self.key_dim).enumerate() {
+            write_row(row, gate, write, &key, value[value_idx]);
         }
         Ok(())
     }
@@ -226,7 +226,7 @@ impl Kda {
     fn check_values<S: Scalar>(&self, what: &str, values: &[S], want: usize) -> Result<()> {
         self.check_len(what, values.len(), want)?;
         match values.iter().position(|&value| !finite(value)) {
-            Some(index) => Err(Error::new(
+            Some(idx) => Err(Error::new(
                 Code::Invalid,
                 format!("{what}第 {idx} 项非有限：放行会把 NaN 一路带进记忆"),
             )

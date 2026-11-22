@@ -30,13 +30,13 @@ fn the_weights_are_the_softmax_of_scaled_scores() {
     let mut weights: Vec<f64> = scores.iter().map(|score| score / 2.0).collect();
     softmax_row(&mut weights);
     let want: Vec<f64> = (0..4)
-        .map(|index| {
+        .map(|idx| {
             (0..4)
-                .map(|row| weights[row] * refs[row][index])
+                .map(|row| weights[row] * refs[row][idx])
                 .sum::<f64>()
         })
         .collect();
-    for (index, (a, b)) in got.iter().zip(&want).enumerate() {
+    for (idx, (a, b)) in got.iter().zip(&want).enumerate() {
         assert!((a - b).abs() < 1e-12, "第 {idx} 维 {a} 不是手算的 {b}");
     }
 }
@@ -47,14 +47,14 @@ fn the_mixed_value_stays_in_the_convex_hull() {
     let rows = rows();
     let refs: Vec<&[f64]> = rows.iter().map(Vec::as_slice).collect();
     let got = layer().mix(&query(), &refs).expect("几何合法");
-    for (index, value) in got.iter().enumerate() {
+    for (idx, value) in got.iter().enumerate() {
         let low = refs
             .iter()
-            .map(|row| row[index])
+            .map(|row| row[idx])
             .fold(f64::INFINITY, f64::min);
         let high = refs
             .iter()
-            .map(|row| row[index])
+            .map(|row| row[idx])
             .fold(f64::NEG_INFINITY, f64::max);
         assert!(
             *value >= low - 1e-12 && *value <= high + 1e-12,
@@ -140,9 +140,9 @@ fn the_splice_never_widens_the_range() {
     for step in 0..=10 {
         let alpha = f64::from(step) / 10.0;
         let got = splice(&main, &mixed, alpha).expect("系数合法");
-        for (index, value) in got.iter().enumerate() {
-            let low = main[index].min(mixed[index]);
-            let high = main[index].max(mixed[index]);
+        for (idx, value) in got.iter().enumerate() {
+            let low = main[idx].min(mixed[idx]);
+            let high = main[idx].max(mixed[idx]);
             assert!(
                 *value >= low - 1e-12 && *value <= high + 1e-12,
                 "α = {alpha} 时第 {idx} 维 {value} 越出 [{low}, {high}]"
@@ -258,7 +258,7 @@ fn f32_and_f64_agree() {
     let refs32: Vec<&[f32]> = rows32.iter().map(Vec::as_slice).collect();
     let query32 = [2.0_f32, 0.0, 0.0, 0.0];
     let narrow = layer().mix(&query32, &refs32).expect("几何合法");
-    for (index, (a, b)) in wide.iter().zip(&narrow).enumerate() {
+    for (idx, (a, b)) in wide.iter().zip(&narrow).enumerate() {
         assert!(
             (a - f64::from(*b)).abs() < 1e-6,
             "第 {idx} 维 f64 是 {a}、f32 是 {b}"

@@ -244,7 +244,7 @@ impl Ruling {
 fn walk(rungs: &[Rung], input: f64) -> Result<(f64, f64)> {
     let mut activation = input;
     let mut error = 0.0f64;
-    for (index, rung) in rungs.iter().enumerate() {
+    for (idx, rung) in rungs.iter().enumerate() {
         error = rung.lipschitz * (rung.rho * error + rung.eps * activation);
         activation = rung.lipschitz * rung.rho_hat * activation + rung.offset;
         if !(error.is_finite() && activation.is_finite()) {
@@ -269,13 +269,13 @@ fn closed_form(rungs: &[Rung], input: f64) -> Option<f64> {
 fn latent_sum(rungs: &[Rung]) -> f64 {
     // 后缀积先算好，避免每项重扫一遍；`suffix[i]` 是第 i 段**之后**所有 `ρ` 的积。
     let mut suffix = vec![1.0f64; rungs.len() + 1];
-    for (index, rung) in rungs.iter().enumerate().rev() {
-        suffix[index] = suffix[index + 1] * rung.rho;
+    for (idx, rung) in rungs.iter().enumerate().rev() {
+        suffix[idx] = suffix[idx + 1] * rung.rho;
     }
     let mut prefix = 1.0f64;
     let mut total = 0.0f64;
-    for (index, rung) in rungs.iter().enumerate() {
-        total += rung.eps * prefix * suffix[index + 1];
+    for (idx, rung) in rungs.iter().enumerate() {
+        total += rung.eps * prefix * suffix[idx + 1];
         prefix *= rung.rho_hat;
     }
     total

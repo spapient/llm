@@ -1,7 +1,7 @@
 use super::*;
 use llm_optim::execution::POINT_THREADS;
 use op::decl::Grid;
-use op::model::{Buffer, Values};
+use op::model::{Buf, Values};
 
 const POINT_SOURCE: &str = "void cutile_scale_f32_kernel(const float *a, float *y, int N) {}\n";
 
@@ -20,12 +20,12 @@ fn pointwise() -> (Signature, Sample) {
         m: 4,
         n: 1,
         scalars: vec![("N", 4)],
-        buffers: vec![
-            Buffer {
+        bufs: vec![
+            Buf {
                 name: "a",
                 values: Values::F32(vec![1.0; 4]),
             },
-            Buffer {
+            Buf {
                 name: "y",
                 values: Values::F32(vec![0.0; 4]),
             },

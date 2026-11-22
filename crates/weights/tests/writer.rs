@@ -60,7 +60,7 @@ fn encode_into_writes_exact_bytes() {
 }
 
 #[test]
-fn encode_into_rejects_small_buffer() {
+fn encode_into_rejects_small_buf() {
     let writer = Writer::new();
 
     let mut buf = [0u8; 2];

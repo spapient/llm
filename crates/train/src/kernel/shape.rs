@@ -6,13 +6,13 @@ use tensor::DType;
 
 /// 一块零值缓冲：分配失败是错误而不是 abort——长度可能来自不受信任的权重文件头。
 pub(crate) fn zeroed<T: Clone>(len: usize, value: T) -> Result<Vec<T>> {
-    let mut buffer = Vec::new();
-    buffer.try_reserve_exact(len).map_err(|_| {
+    let mut buf = Vec::new();
+    buf.try_reserve_exact(len).map_err(|_| {
         let message = format!("要一块 {len} 个元素的缓冲区：超出可用内存或地址空间");
         Error::new(Code::Invalid, message).with(SITE)
     })?;
-    buffer.resize(len, value);
-    Ok(buffer)
+    buf.resize(len, value);
+    Ok(buf)
 }
 
 /// 一块 lane 的字节数。
@@ -241,10 +241,10 @@ fn wrong_arity(op: &str, expected: &[Kind], inputs: &[View<'_>]) -> Error {
     .with(SITE)
 }
 
-/// 取第 `index` 格输入并断言它是 `L`。
+/// 取第 `idx` 格输入并断言它是 `L`。
 pub(crate) fn input_slice<'a, L: Lane>(
     op: &str,
-    index: usize,
+    idx: usize,
     view: &'a View<'a>,
 ) -> Result<&'a [L]> {
     let slot = format!("第 {index} 个输入");
@@ -262,7 +262,7 @@ pub(crate) fn output_slice<'a, L: Lane>(
 
 /// 元数 1..=3 的拆包：元数、顺序与形态在同一次单态化里核对。
 macro_rules! inputs {
-($(($lane:ident, $value:ident): $index:literal),+ $(,)?) => {
+($(($lane:ident, $value:ident): $idx:literal),+ $(,)?) => {
     impl<$($lane: Lane),+> Inputs for ($($lane,)+) {
         type Slices<'a> = ($(&'a [$lane],)+);
         const KINDS: &'static [Kind] = &[$($lane::KIND),+];
@@ -271,7 +271,7 @@ macro_rules! inputs {
             let [$($value),+] = inputs else {
                 return Err(wrong_arity(op, Self::KINDS, inputs));
             };
-            Ok(($(input_slice::<$lane>(op, $index, $value)?,)+))
+            Ok(($(input_slice::<$lane>(op, $idx, $value)?,)+))
         }
     }
 };

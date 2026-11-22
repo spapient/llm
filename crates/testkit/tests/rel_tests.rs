@@ -50,7 +50,7 @@ fn rel_err_locates_the_worst_element() {
     assert!(!report.mismatched);
     assert_eq!(report.scale, 3.0);
     let worst = report.worst.expect("0.1 的偏差落在第二个元素");
-    assert_eq!((worst.index, worst.got, worst.want), (1, 2.1, 2.0));
+    assert_eq!((worst.idx, worst.got, worst.want), (1, 2.1, 2.0));
     assert_eq!(
         report.ratio(),
         max_rel_err(&[1.0, 2.1, 3.0], &[1.0, 2.0, 3.0])
@@ -80,7 +80,7 @@ fn rel_err_flags_length_and_nonfinite_breaks() {
     let nan = rel_err(&[1.0, f32::NAN], &[1.0, 2.0]);
     assert!(nan.mismatched);
     let at = nan.worst.expect("NaN 与有限值不一致落在第二个元素");
-    assert_eq!((at.index, at.want), (1, 2.0));
+    assert_eq!((at.idx, at.want), (1, 2.0));
     assert!(at.got.is_nan(), "{}", at.got);
 
     assert!(

@@ -21,7 +21,7 @@ pub(crate) fn scalar_name(signature: &Signature) -> Result<&str> {
     signature
         .params()
         .iter()
-        .find(|param| !param.ctype.is_buffer())
+        .find(|param| !param.ctype.is_buf())
         .map(|param| param.name.as_str())
         .ok_or(Error::new(Code::Internal, "内核没有长度标量").with("engine::dialect::scalar_name"))
 }
@@ -31,7 +31,7 @@ pub(crate) fn read_input(signature: &Signature) -> Result<&str> {
     signature
         .params()
         .iter()
-        .filter(|param| param.ctype.is_buffer())
+        .filter(|param| param.ctype.is_buf())
         .find(|param| !param.mutable)
         .map(|param| param.name.as_str())
         .ok_or(
@@ -43,7 +43,7 @@ pub(crate) fn read_input(signature: &Signature) -> Result<&str> {
 pub(crate) fn launch_args(sample: &Sample, params: &[Param]) -> Result<String> {
     let mut args = Vec::with_capacity(params.len());
     for param in params {
-        if param.ctype.is_buffer() {
+        if param.ctype.is_buf() {
             args.push(format!("d_{}", param.name));
         } else {
             let value = sample.scalar(&param.name).ok_or_else(|| {
@@ -74,7 +74,7 @@ pub(crate) fn readback_bits(src: &str, len: usize, indent: &str) -> String {
 pub(crate) fn f32_output_shape(signature: &Signature, sample: &Sample) -> Result<(String, usize)> {
     let output = output_name(signature)?;
     let values = sample
-        .buffer(output)
+        .buf(output)
         .ok_or(Error::new(Code::Internal, "签名输出缓冲与样本不匹配"))?;
     if !matches!(&values.values, Values::F32(_)) || values.values.is_empty() {
         return Err(Error::new(
@@ -146,7 +146,7 @@ pub(crate) fn grid_args(params: &[Param]) -> String {
     params
         .iter()
         .map(|param| {
-            if param.ctype.is_buffer() {
+            if param.ctype.is_buf() {
                 format!("d_{} + n", param.name)
             } else {
                 "1".to_owned()
@@ -281,7 +281,7 @@ impl Dialect for Metal {
         String::new()
     }
 
-    fn buffer_decl(param: &Param, slot: usize) -> String {
+    fn buf_decl(param: &Param, slot: usize) -> String {
         format!(
             "    device {}* d_{} [[buffer({})]]",
             param.ctype.c_name(),
@@ -312,7 +312,7 @@ impl Dialect for Cuda {
         "__device__".to_owned()
     }
 
-    fn buffer_decl(param: &Param, _slot: usize) -> String {
+    fn buf_decl(param: &Param, _slot: usize) -> String {
         format!("    {}* d_{}", param.ctype.c_name(), param.name)
     }
 

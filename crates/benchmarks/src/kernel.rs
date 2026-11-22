@@ -46,7 +46,7 @@ const SHAPES: [(usize, usize, usize); 3] = [
 
 /// 一行 decode 的输入与同长输出。
 fn row() -> (Vec<f32>, Vec<f32>) {
-    let x = (0..ROW).map(|index| index as f32 * 0.25 - 2.0).collect();
+    let x = (0..ROW).map(|idx| idx as f32 * 0.25 - 2.0).collect();
     (x, vec![0.0f32; ROW])
 }
 
@@ -542,8 +542,8 @@ fn xor_read(words: &[u64]) -> u64 {
 /// 读方向的三档上界。
 pub(crate) fn mem_read(c: &mut Criterion) {
     let mut group = c.benchmark_group("mem_stream");
-    for (index, (label, size, words, rounds)) in TIERS.into_iter().enumerate() {
-        let data = vec![FILLS[index]; words];
+    for (idx, (label, size, words, rounds)) in TIERS.into_iter().enumerate() {
+        let data = vec![FILLS[idx]; words];
         group.throughput(Throughput::Bytes(
             (rounds * words * size_of::<u64>()) as u64,
         ));
@@ -563,7 +563,7 @@ pub(crate) fn mem_read(c: &mut Criterion) {
 /// 写方向的三档上界：`fill` 直接落到本机的写路径（大块时通常是流式存储指令）。
 pub(crate) fn mem_write(c: &mut Criterion) {
     let mut group = c.benchmark_group("mem_stream");
-    for (index, (label, size, words, rounds)) in TIERS.into_iter().enumerate() {
+    for (idx, (label, size, words, rounds)) in TIERS.into_iter().enumerate() {
         let mut data = vec![0u64; words];
         group.throughput(Throughput::Bytes(
             (rounds * words * size_of::<u64>()) as u64,
@@ -571,7 +571,7 @@ pub(crate) fn mem_write(c: &mut Criterion) {
         group.bench_function(format!("{label}_write_{size}"), |iter| {
             iter.iter(|| {
                 for _ in 0..rounds {
-                    data.fill(black_box(FILLS[index]));
+                    data.fill(black_box(FILLS[idx]));
                 }
                 black_box(&data);
             })

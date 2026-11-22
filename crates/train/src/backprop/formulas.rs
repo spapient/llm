@@ -264,17 +264,17 @@ pub(super) fn gemm(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
 
 /// `y = table[idx]`（行 gather）：索引不连续、无雅可比；权重表按被访问行累加上游行。
 pub(super) fn embed(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
-    let index = &ctx.inputs[0][..];
+    let idx = &ctx.inputs[0][..];
     let table = &ctx.inputs[1][..];
-    let dim = ctx.incoming.len() / index.len();
+    let dim = ctx.incoming.len() / idx.len();
     let mut dtable = vec![0.0; table.len()];
-    for (token, &entry) in index.iter().enumerate() {
+    for (token, &entry) in idx.iter().enumerate() {
         let row = entry as usize * dim;
         let grad_row = &ctx.incoming[token * dim..][..dim];
         accumulate_into(&mut dtable, row, grad_row)?;
     }
     // 索引输入无雅可比：贡献置空，只回传表梯度。
-    Ok(vec![vec![0.0; index.len()], dtable])
+    Ok(vec![vec![0.0; idx.len()], dtable])
 }
 
 /// 训练内核 `rope_f32` 的固定位置：与 `kernel.rs` 的 `rope_f32` 同口径（标量槽尚未接进训练内核）。

@@ -71,8 +71,8 @@ impl<E: Collective> Distributed<E> {
 
     /// 数据并行组：同一份权重、不同微批的进程集合；单进程退化成 `[0]`。
     pub fn data_group(&self) -> Result<Group> {
-        let index = self.topology.indices(self.rank)?.2;
-        self.topology.group(Parallel::Data, index)
+        let idx = self.topology.idxs(self.rank)?.2;
+        self.topology.group(Parallel::Data, idx)
     }
 
     /// 组大小（数据并行度）；单进程为 1。

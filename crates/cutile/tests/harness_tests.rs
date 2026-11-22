@@ -1,6 +1,6 @@
 use super::*;
 use crate::harness::cutile_x_kernel::{sample, signature};
-use op::model::{Buffer, Values};
+use op::model::{Buf, Values};
 
 /// 生成 C 封装文本；`CUTILE_CAPTURE_GOLDEN` 显式打开时才把副本写到 `/tmp/cutile-golden`。
 #[test]
@@ -89,14 +89,14 @@ fn warmup_is_a_tenth_of_the_measurement_and_never_zero() {
 #[test]
 fn harness_rejects_a_missing_or_mistyped_output() {
     let mut sample = sample();
-    sample.buffers.retain(|buffer| buffer.name != "y");
+    sample.bufs.retain(|buf| buf.name != "y");
     let error = harness("", &signature(), &sample, 1).unwrap_err();
     assert_eq!(error.code(), Code::Missing);
     assert!(error.to_string().contains("输出缓冲"), "{error}");
 
     let mut sample = self::sample();
-    sample.buffers.retain(|buffer| buffer.name != "y");
-    sample.buffers.push(Buffer {
+    sample.bufs.retain(|buf| buf.name != "y");
+    sample.bufs.push(Buf {
         name: "y",
         values: Values::U8(vec![0]),
     });

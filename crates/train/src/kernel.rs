@@ -69,7 +69,7 @@ impl Reference {
         running: Option<&mut crate::Running>,
     ) -> Result<()> {
         let mut slices = Vec::with_capacity(inputs.len());
-        for (index, view) in inputs.iter().enumerate() {
+        for (idx, view) in inputs.iter().enumerate() {
             let slice = view.f32().ok_or_else(|| {
                 Error::new(Code::Invalid, format!("`{op}` 的第 {index} 个输入不是 f32")).with(SITE)
             })?;
@@ -387,13 +387,13 @@ const _: () = same_order(&KERNELS, &op::REGISTRY);
 
 /// 编译期断言：内核表与算子注册表逐条同名（长度已由类型锁住）。
 const fn same_order(entries: &[Entry], registry: &[op::Registration]) {
-    let mut index = 0;
-    while index < entries.len() {
+    let mut idx = 0;
+    while idx < entries.len() {
         assert!(
-            same_str(entries[index].op, registry[index].name),
+            same_str(entries[idx].op, registry[idx].name),
             "train::Reference 的内核表与 op::REGISTRY 名字或顺序漂移"
         );
-        index += 1;
+        idx += 1;
     }
 }
 

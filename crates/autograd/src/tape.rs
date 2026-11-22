@@ -49,8 +49,8 @@ impl Tape {
 
     /// 把已存在的叶子升级为梯度终点；只允许升级**还没被任何节点引用**的叶子（否则会漏掉梯度）。
     pub fn retain(&mut self, var: Var) -> Result<()> {
-        let index = self.check(var, "autograd::Tape::retain")?;
-        if self.producer[index].is_some() {
+        let idx = self.check(var, "autograd::Tape::retain")?;
+        if self.producer[idx].is_some() {
             return Err(invalid(
                 "autograd::Tape::retain",
                 format!(
@@ -59,16 +59,16 @@ impl Tape {
                 ),
             ));
         }
-        if self.requirement[index].is_endpoint() {
+        if self.requirement[idx].is_endpoint() {
             return Ok(());
         }
-        if self.consumed(index) {
+        if self.consumed(idx) {
             return Err(invalid(
                 "autograd::Tape::retain",
                 format!("变量 {} 已被记录为常量输入，升级为终点会漏掉梯度", var.id()),
             ));
         }
-        self.requirement[index] = Requirement::Grad;
+        self.requirement[idx] = Requirement::Grad;
         Ok(())
     }
 
@@ -160,8 +160,8 @@ impl Tape {
 
     /// 产出该变量的节点；叶子与不存在的编号都是 `None`。
     pub fn node(&self, var: Var) -> Option<&Node> {
-        let index = (*self.producer.get(var.id() as usize)?)?;
-        self.nodes.get(index as usize)
+        let idx = (*self.producer.get(var.id() as usize)?)?;
+        self.nodes.get(idx as usize)
     }
 
     /// 变量总数（叶子加算子输出），也是下一个变量的编号。
@@ -224,8 +224,8 @@ impl Tape {
             false => 0,
         };
         let output = self.fresh(requirement, depth);
-        let index = self.nodes.len() as u32;
-        self.producer[output.id() as usize] = Some(index);
+        let idx = self.nodes.len() as u32;
+        self.producer[output.id() as usize] = Some(idx);
         for input in inputs {
             self.referenced[input.id() as usize] = true;
         }
@@ -244,16 +244,16 @@ impl Tape {
         let mut merged = Requirement::None;
         let mut deepest = 0;
         for input in inputs {
-            let index = self.check(*input, site)?;
-            merged = merged.merged(self.requirement[index]);
-            deepest = deepest.max(self.depth[index]);
+            let idx = self.check(*input, site)?;
+            merged = merged.merged(self.requirement[idx]);
+            deepest = deepest.max(self.depth[idx]);
         }
         Ok((merged, deepest))
     }
 
     /// 该变量是否被任何节点当作输入引用过。
-    fn consumed(&self, index: usize) -> bool {
-        self.referenced.get(index).copied().unwrap_or(false)
+    fn consumed(&self, idx: usize) -> bool {
+        self.referenced.get(idx).copied().unwrap_or(false)
     }
 
     /// 编号校验：越界即"引用了一个还没创建的变量"。

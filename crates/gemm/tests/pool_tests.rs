@@ -21,7 +21,7 @@ fn run(pool: &'static Pool, stage: fn(&Job, usize), calc: fn(&Job, usize), t: us
     };
     run_pooled(
         pool,
-        Buffers {
+        Bufs {
             a: a.as_ptr(),
             b: b.as_ptr(),
             buf: buf.as_mut_ptr(),

@@ -278,13 +278,13 @@ fn encode_lanes(src: &[u8], table: &Table) -> ([u32; NLANES], [Vec<u8>; NLANES])
     // 每条 lane 最坏情况每符号写 3 字节，先按上界定长分配再按索引写，末尾截断。
     let per = src.len().div_ceil(NLANES);
     let cap = per.saturating_mul(3).saturating_add(8);
-    let mut buffers: [Vec<u8>; NLANES] = std::array::from_fn(|_| vec![0u8; cap]);
+    let mut bufs: [Vec<u8>; NLANES] = std::array::from_fn(|_| vec![0u8; cap]);
     let mut lens = [0usize; NLANES];
 
     for (i, &b) in src.iter().enumerate() {
         let lane = i % NLANES;
         let at = emit(
-            &mut buffers[lane],
+            &mut bufs[lane],
             lens[lane],
             &mut states[lane],
             table.enc[b as usize],
@@ -292,15 +292,15 @@ fn encode_lanes(src: &[u8], table: &Table) -> ([u32; NLANES], [Vec<u8>; NLANES])
         lens[lane] = at;
     }
     for lane in 0..NLANES {
-        buffers[lane].truncate(lens[lane]);
+        bufs[lane].truncate(lens[lane]);
     }
-    (states, buffers)
+    (states, bufs)
 }
 
 /// 压缩为自描述帧；返回字节数（含头部），调用方据此判断是否值得保留。
 pub(crate) fn encode(src: &[u8]) -> Vec<u8> {
     let table = Table::build(normalize(&counts(src)));
-    let (states, mut buffers) = encode_lanes(src, &table);
+    let (states, mut bufs) = encode_lanes(src, &table);
 
     let mut out = Vec::new();
     let src_len = u32::try_from(src.len()).unwrap_or(u32::MAX);
@@ -310,15 +310,15 @@ pub(crate) fn encode(src: &[u8]) -> Vec<u8> {
     for state in states {
         out.extend_from_slice(&state.to_le_bytes());
     }
-    for buffer in &buffers {
-        let len = u32::try_from(buffer.len()).unwrap_or(u32::MAX);
+    for buf in &bufs {
+        let len = u32::try_from(buf.len()).unwrap_or(u32::MAX);
         out.extend_from_slice(&len.to_le_bytes());
     }
 
     // rANS 解码顺序相反：逐条翻转后再落盘。
-    for buffer in &mut buffers {
-        buffer.reverse();
-        out.extend_from_slice(buffer);
+    for buf in &mut bufs {
+        buf.reverse();
+        out.extend_from_slice(buf);
     }
     out
 }

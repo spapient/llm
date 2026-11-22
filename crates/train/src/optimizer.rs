@@ -206,21 +206,21 @@ impl Adam {
         self
     }
 
-    /// 确保槽位 `index` 的矩向量长度等于参数长度；首次见到的槽位分配零向量。
-    fn moments(&mut self, index: usize, len: usize) -> (&mut Vec<f32>, &mut Vec<f32>) {
-        if index >= self.momentum.len() {
-            let missing = index - self.momentum.len() + 1;
+    /// 确保槽位 `idx` 的矩向量长度等于参数长度；首次见到的槽位分配零向量。
+    fn moments(&mut self, idx: usize, len: usize) -> (&mut Vec<f32>, &mut Vec<f32>) {
+        if idx >= self.momentum.len() {
+            let missing = idx - self.momentum.len() + 1;
             self.momentum
                 .resize_with(self.momentum.len() + missing, Vec::new);
             self.variance
                 .resize_with(self.variance.len() + missing, Vec::new);
         }
-        let m = &mut self.momentum[index];
+        let m = &mut self.momentum[idx];
         if m.len() != len {
             m.resize(len, 0.0);
-            self.variance[index].resize(len, 0.0);
+            self.variance[idx].resize(len, 0.0);
         }
-        (&mut self.momentum[index], &mut self.variance[index])
+        (&mut self.momentum[idx], &mut self.variance[idx])
     }
 
     /// 一阶矩表（按槽位编号）：快照导出走这里，优化器之外不另存一份矩状态。
@@ -267,9 +267,9 @@ impl Optimizer for Adam {
 
         let (beta1, beta2, eps, weight_decay) =
             (self.beta1, self.beta2, self.eps, self.weight_decay);
-        for (index, slot) in slots.iter_mut().enumerate() {
+        for (idx, slot) in slots.iter_mut().enumerate() {
             let decay = decay_rate(slot.role, weight_decay);
-            let (m, v) = self.moments(index, slot.params.len());
+            let (m, v) = self.moments(idx, slot.params.len());
             // 逐元素串行更新：m/v 对每个元素有跨步依赖，长度随参数数据而定，不能向量化展开。
             for ((param, grad), (m_value, v_value)) in slot
                 .params
@@ -303,7 +303,7 @@ impl Optimizer for Adam {
             );
             return Err(Error::new(Code::Invalid, message).with(SITE));
         }
-        for (index, (m, v)) in momentum.iter().zip(&variance).enumerate() {
+        for (idx, (m, v)) in momentum.iter().zip(&variance).enumerate() {
             if m.len() != v.len() {
                 let message = format!(
                     "第 {index} 槽矩长度不一致：一阶矩 {} 元素，二阶矩 {} 元素",

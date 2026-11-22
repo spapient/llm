@@ -266,8 +266,8 @@ fn fold_scores(mut fingerprint: Fingerprint, scores: &[f32]) -> Fingerprint {
 /// 建反向查表；重复词片或编号溢出报 [`Code::Invalid`]。
 fn build_map(pieces: &[Vec<u8>]) -> Result<HashMap<Vec<u8>, u32>> {
     let mut map = HashMap::with_capacity(pieces.len());
-    for (index, piece) in pieces.iter().enumerate() {
-        let id = u32::try_from(index).map_err(|_| {
+    for (idx, piece) in pieces.iter().enumerate() {
+        let id = u32::try_from(idx).map_err(|_| {
             Error::new(Code::Invalid, "词表编号超出 u32 范围").with("tokenizer::Vocab::try_new")
         })?;
         if map.insert(piece.clone(), id).is_some() {

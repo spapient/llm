@@ -29,7 +29,7 @@ impl Expr {
         let terms = inputs
             .split(',')
             .enumerate()
-            .map(|(index, term)| term_labels(term, index))
+            .map(|(idx, term)| term_labels(term, idx))
             .collect::<Result<Vec<_>, _>>()?;
         let output = output_labels(output)?;
         check_output(&terms, &output, trimmed)?;
@@ -105,7 +105,7 @@ fn sides(trimmed: &str) -> Result<(&str, &str), Error> {
     })
 }
 
-fn term_labels(term: &str, index: usize) -> Result<Vec<char>, Error> {
+fn term_labels(term: &str, idx: usize) -> Result<Vec<char>, Error> {
     let mut labels = Vec::with_capacity(term.len());
     for label in term.chars() {
         if !is_label(label) {

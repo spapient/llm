@@ -599,7 +599,7 @@ fn bytes_decode_rejects_saturated_ids_and_invalid_utf8() {
         &[Token::new(u32::from(b'a')), Token::new(u32::from(b'a'))],
     ];
     // 最后一例是合法 ASCII 重复字节；前四例必须拒绝。
-    for (index, tokens) in cases.iter().enumerate() {
+    for (idx, tokens) in cases.iter().enumerate() {
         match Bytes.decode(tokens) {
             Ok(text) => assert_eq!(text, "aa", "重复 ASCII 往返为原文本"),
             Err(error) => {

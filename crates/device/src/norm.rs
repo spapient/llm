@@ -1,6 +1,6 @@
 //! CUDA 分块归一化 lowering：RMSNorm 两段、Softmax 三段，以及它们的 host 串联驱动。
 
-use crate::cuda::{buffer_args, cuda_host_buffers_grid, cuda_readback, cuda_release};
+use crate::cuda::{buf_args, cuda_host_bufs_grid, cuda_readback, cuda_release};
 use crate::dialect::{Cuda, Dialect, RMS_EPS, chunk_head, length_scalar, scalar_name};
 use cutile::harness::output_name;
 use diagnostic::{Code, Error, Result};
@@ -65,7 +65,7 @@ pub(crate) fn cuda_chunk_softmax(
 /// RMSNorm 归一化段：每线程一块，`y[start + j] = gamma[start + j] * x[start + j] / rms`。
 fn rmsnorm_map(signature: &Signature, sample: &Sample) -> Result<String> {
     let len = length_scalar(signature, sample)?;
-    let reads = readonly_buffers(signature);
+    let reads = readonly_bufs(signature);
     let (Some(x), Some(gamma)) = (reads.first(), reads.get(1)) else {
         return Err(Error::new(
             Code::Invalid,
@@ -114,39 +114,39 @@ fn softmax_norm_map(signature: &Signature, sample: &Sample) -> Result<String> {
 
 /// 一个分块 map 入口：签名缓冲形参 + 额外标量（`rms` / `max` / `sum`），入口名由调用方给。
 fn map_entry(signature: &Signature, entry: &str, extra: &str, body: &str) -> String {
-    let buffers = Cuda::buffers(signature);
-    let buffers = if extra.is_empty() {
-        buffers
+    let bufs = Cuda::bufs(signature);
+    let bufs = if extra.is_empty() {
+        bufs
     } else {
         format!("{buffers},\n    {extra}")
     };
-    Cuda::kernel_entry("", "", &buffers, ("", Cuda::GRID_STMT), body, entry)
+    Cuda::kernel_entry("", "", &bufs, ("", Cuda::GRID_STMT), body, entry)
 }
 
 /// 一个逐元素网格入口：每线程一个元素，线程下标符号是 `n`（[`Cuda`] 的 [`Dialect::POINT_STMT`]）。
 fn point_entry(signature: &Signature, entry: &str, extra: &str, body: &str) -> String {
-    let buffers = Cuda::buffers(signature);
-    let buffers = if extra.is_empty() {
-        buffers
+    let bufs = Cuda::bufs(signature);
+    let bufs = if extra.is_empty() {
+        bufs
     } else {
         format!("{buffers},\n    {extra}")
     };
-    Cuda::kernel_entry("", "", &buffers, ("", Cuda::POINT_STMT), body, entry)
+    Cuda::kernel_entry("", "", &bufs, ("", Cuda::POINT_STMT), body, entry)
 }
 
 /// 只读缓冲名，按签名顺序。
-fn readonly_buffers(signature: &Signature) -> Vec<&str> {
+fn readonly_bufs(signature: &Signature) -> Vec<&str> {
     signature
         .params()
         .iter()
-        .filter(|param| param.ctype.is_buffer() && !param.mutable)
+        .filter(|param| param.ctype.is_buf() && !param.mutable)
         .map(|param| param.name.as_str())
         .collect()
 }
 
 /// 唯一只读缓冲名（Softmax 形态）；缺或多都返回 `Invalid`。
 fn single_read<'a>(signature: &'a Signature, family: &str) -> Result<&'a str> {
-    let reads = readonly_buffers(signature);
+    let reads = readonly_bufs(signature);
     match reads.as_slice() {
         [only] => Ok(*only),
         _ => Err(Error::new(
@@ -169,10 +169,10 @@ fn driver(
     let len = length_usize(signature, sample)?;
     let grid = len.div_ceil(chunk);
     let output = output_name(signature)?;
-    let args = buffer_args(signature);
+    let args = buf_args(signature);
     let mut text = program_head(segments);
     text.push_str("int main(void) {\n");
-    text.push_str(&cuda_host_buffers_grid(
+    text.push_str(&cuda_host_bufs_grid(
         sample,
         signature.params(),
         output,
@@ -308,8 +308,8 @@ pub(crate) fn program_head(segments: &[String]) -> String {
          #define CUTILE_CUDA_CHECK() do { cudaError_t error = cudaDeviceSynchronize(); \
          if (error != cudaSuccess) { fprintf(stderr, \"cuda: %s\\n\", cudaGetErrorString(error)); return 1; } } while (0)\n",
     );
-    for (index, segment) in segments.iter().enumerate() {
-        let piece = if index == 0 {
+    for (idx, segment) in segments.iter().enumerate() {
+        let piece = if idx == 0 {
             segment.as_str()
         } else {
             entry_of(segment)

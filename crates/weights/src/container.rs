@@ -185,9 +185,9 @@ pub trait Loader {
 
     /// 分配并读出条目字节。
     fn load(&self, entry: &Entry) -> Result<Vec<u8>> {
-        let mut buffer = vec![0u8; entry.len()];
-        self.copy_into(entry, &mut buffer)?;
-        Ok(buffer)
+        let mut buf = vec![0u8; entry.len()];
+        self.copy_into(entry, &mut buf)?;
+        Ok(buf)
     }
 }
 

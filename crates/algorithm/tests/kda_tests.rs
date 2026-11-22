@@ -56,7 +56,7 @@ fn a_write_is_exactly_recalled() {
         .step(&mut memory, &keep(), 1.0, &key, &value)
         .expect("几何合法");
     let got = layer.read(&memory, &key).expect("几何合法");
-    for (index, (read, wrote)) in got.iter().zip(&value).enumerate() {
+    for (idx, (read, wrote)) in got.iter().zip(&value).enumerate() {
         assert!(
             (read - wrote).abs() < 1e-12,
             "第 {idx} 维读出 {read}，写进去的是 {wrote}"
@@ -137,7 +137,7 @@ fn the_write_strength_scales_the_correction() {
         .expect("几何合法");
     let want = layer.read(&full, &key).expect("几何合法");
     let got = layer.read(&quarter, &key).expect("几何合法");
-    for (index, (read, full)) in got.iter().zip(&want).enumerate() {
+    for (idx, (read, full)) in got.iter().zip(&want).enumerate() {
         assert!(
             (read - full * 0.25).abs() < 1e-12,
             "第 {idx} 维 {read} 不是满写的四分之一（{full}）"

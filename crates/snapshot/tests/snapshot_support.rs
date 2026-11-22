@@ -18,7 +18,7 @@ pub(crate) fn assert_accum_bits(snapshot: &Snapshot, restored: &Snapshot) {
     let before = snapshot.accum().slots();
     let after = restored.accum().slots();
     assert_eq!(before.len(), after.len(), "槽位数必须一致");
-    for (index, (want, got)) in before.iter().zip(after).enumerate() {
+    for (idx, (want, got)) in before.iter().zip(after).enumerate() {
         let want_bits: Vec<u32> = want.iter().map(|value| value.to_bits()).collect();
         let got_bits: Vec<u32> = got.iter().map(|value| value.to_bits()).collect();
         assert_eq!(got_bits, want_bits, "第 {index} 槽累积梯度逐位一致");
@@ -93,12 +93,12 @@ pub(crate) fn assert_round_trip(snapshot: &Snapshot) {
         "承诺的长度就是写出的长度"
     );
 
-    let mut buffer = vec![0xAAu8; snapshot.encoded_len().expect("长度") + 16];
-    let written = snapshot.encode_into(&mut buffer).expect("缓冲够大");
+    let mut buf = vec![0xAAu8; snapshot.encoded_len().expect("长度") + 16];
+    let written = snapshot.encode_into(&mut buf).expect("缓冲够大");
     assert_eq!(written, snapshot.encoded_len().expect("长度"));
-    assert_eq!(&buffer[..written], bytes.as_slice());
+    assert_eq!(&buf[..written], bytes.as_slice());
     assert!(
-        buffer[written..].iter().all(|byte| *byte == 0xAA),
+        buf[written..].iter().all(|byte| *byte == 0xAA),
         "缓冲区多出来的部分不能被碰"
     );
 

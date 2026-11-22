@@ -39,9 +39,9 @@ impl Bpe {
     }
 
     /// 取 `(parts[i], parts[i+1])` 对应的合并秩；表内无此对返回 [`None`]。
-    fn pair_rank(&self, index: usize, parts: &[Vec<u8>]) -> Option<usize> {
-        let right_ranks = self.ranks.get(&parts[index])?;
-        right_ranks.get(&parts[index + 1]).copied()
+    fn pair_rank(&self, idx: usize, parts: &[Vec<u8>]) -> Option<usize> {
+        let right_ranks = self.ranks.get(&parts[idx])?;
+        right_ranks.get(&parts[idx + 1]).copied()
     }
 
     /// `rank` 是否严格优于当前最优对；空集合视为优于既有候选。
@@ -60,7 +60,7 @@ impl Bpe {
                 best = Some((i, rank));
             }
         }
-        best.map(|(index, _)| index)
+        best.map(|(idx, _)| idx)
     }
 
     /// 把 `idx` 与 `idx+1` 两个片段归并为一个片段。

@@ -48,7 +48,7 @@ impl Closed for Emit {
     fn as_str(self) -> &'static str {
         Self::SPEC[self as usize].0
     }
-    fn index(self) -> usize {
+    fn idx(self) -> usize {
         self as usize
     }
 }
@@ -382,7 +382,7 @@ fn closed<E: Closed>(name: &str, field: impl fmt::Display) -> Result<E, ProfileE
 enum Field<'a> {
     /// `provides[<下标>].<key>`；`witness` 为真时多一层 `witness.`。
     Provide {
-        index: usize,
+        idx: usize,
         key: &'a str,
         witness: bool,
     },
@@ -393,12 +393,12 @@ impl fmt::Display for Field<'_> {
     fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             Self::Provide {
-                index,
+                idx,
                 key,
                 witness: true,
             } => write!(out, "provides[{index}].witness.{key}"),
             Self::Provide {
-                index,
+                idx,
                 key,
                 witness: false,
             } => write!(out, "provides[{index}].{key}"),
@@ -406,16 +406,16 @@ impl fmt::Display for Field<'_> {
         }
     }
 }
-const fn at(index: usize, key: &str) -> Field<'_> {
+const fn at(idx: usize, key: &str) -> Field<'_> {
     Field::Provide {
-        index,
+        idx,
         key,
         witness: false,
     }
 }
-const fn witness_at(index: usize, key: &str) -> Field<'_> {
+const fn witness_at(idx: usize, key: &str) -> Field<'_> {
     Field::Provide {
-        index,
+        idx,
         key,
         witness: true,
     }
@@ -509,7 +509,7 @@ pub fn builtin_profiles() -> &'static [Profile] {
 
 /// 按探测指纹从一组档案里挑出唯一命中、且规则最具体的一份。
 pub fn select<'a>(profiles: &'a [Profile], detected: &Detected) -> diagnostic::Result<&'a Profile> {
-    let Some((index, profile)) = profiles
+    let Some((idx, profile)) = profiles
         .iter()
         .enumerate()
         .filter(|(_, profile)| profile.matches(detected))
@@ -520,7 +520,7 @@ pub fn select<'a>(profiles: &'a [Profile], detected: &Detected) -> diagnostic::R
                 .with("prof::select"),
         );
     };
-    match rival(profiles, detected, index, profile.specificity()) {
+    match rival(profiles, detected, idx, profile.specificity()) {
         Some(other) => Err(Error::new(
             Code::Invalid,
             format!(
@@ -543,8 +543,8 @@ fn rival<'a>(
     profiles
         .iter()
         .enumerate()
-        .find(|(index, profile)| {
-            *index != best && profile.specificity() == top && profile.matches(detected)
+        .find(|(idx, profile)| {
+            *idx != best && profile.specificity() == top && profile.matches(detected)
         })
         .map(|(_, profile)| profile)
 }

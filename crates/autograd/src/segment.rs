@@ -89,8 +89,8 @@ impl Facts {
     fn boundaries(&self, segments: usize, keep: &mut [bool]) {
         let last = self.order.len() - 1;
         let total = self.total.max(1);
-        for index in 1..=segments {
-            let target = (u128::from(total) * index as u128 / segments as u128) as u64;
+        for idx in 1..=segments {
+            let target = (u128::from(total) * idx as u128 / segments as u128) as u64;
             let position = self.prefix.partition_point(|sum| *sum < target).min(last);
             keep[self.order[position] as usize] = true;
         }

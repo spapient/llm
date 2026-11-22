@@ -204,7 +204,7 @@ fn identity(row: Row, host: &impl Host) -> Option<String> {
 /// 六行台账：**长度就是六**——缺的行没法从类型里消失（`[Standing; 6]` 而不是 `Vec`）。
 #[must_use]
 pub fn audit(host: &impl Host) -> [Standing; 6] {
-    std::array::from_fn(|index| standing(Row::ALL[index], host))
+    std::array::from_fn(|idx| standing(Row::ALL[idx], host))
 }
 
 /// 开门判定：该行没有覆盖证据就返回 `E_PLAT`（[`Code::Unsupported`]），不让调用方"看着办"。

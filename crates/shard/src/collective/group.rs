@@ -38,13 +38,13 @@ impl Group {
     }
 
     /// 组内下标（用于切片"我负责哪一段"）。
-    pub fn index_of(&self, rank: u32) -> Option<usize> {
+    pub fn idx_of(&self, rank: u32) -> Option<usize> {
         self.ranks.iter().position(|item| *item == rank)
     }
 
     /// 是否包含某个 rank。
     pub fn contains(&self, rank: u32) -> bool {
-        self.index_of(rank).is_some()
+        self.idx_of(rank).is_some()
     }
 }
 

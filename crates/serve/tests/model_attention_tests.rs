@@ -251,12 +251,12 @@ fn logits_batch_runs_four_sequences_in_input_order() {
     let mut batch = Batch::new(pager);
     let mut sequences = Vec::new();
     let mut histories = Vec::new();
-    for (index, &token) in tokens.iter().enumerate() {
-        let sequence = Sequence::new(index as u64, &[token], 2, 4, Stream::new(0)).expect("序列");
+    for (idx, &token) in tokens.iter().enumerate() {
+        let sequence = Sequence::new(idx as u64, &[token], 2, 4, Stream::new(0)).expect("序列");
         let (hist_k, hist_v) = history_kv(kv);
         let history = history_row(&hist_k, &hist_v);
         batch.admit(sequence.clone()).expect("准入");
-        batch.write_kv(index as u64, 0, &history).expect("种子历史");
+        batch.write_kv(idx as u64, 0, &history).expect("种子历史");
         histories.push((hist_k, hist_v));
         sequences.push(sequence);
     }

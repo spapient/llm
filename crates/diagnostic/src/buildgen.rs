@@ -107,7 +107,7 @@ fn invalid_scalar(value: &toml::Value, path: &str) -> Result<String> {
 /// 数组值的 `Value::array(vec![…])` 表达式。
 fn array_expr(items: &[toml::Value], path: &str) -> Result<String> {
     let mut out = String::from("Value::array(vec![");
-    for (index, item) in items.iter().enumerate() {
+    for (idx, item) in items.iter().enumerate() {
         let child = format!("{path}[{index}]");
         let _ = write!(out, "{}, ", value_expr(item, &child)?);
     }

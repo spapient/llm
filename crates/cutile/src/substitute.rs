@@ -116,8 +116,8 @@ impl<'a> Args<'a> {
 
     /// 一个占位符的取值；缺参是模板错误，而不是空串。
     fn resolve(&self, name: &str, line: usize) -> diagnostic::Result<&'a str> {
-        if let Ok(index) = name.parse::<usize>() {
-            return self.positional.get(index).copied().ok_or_else(|| {
+        if let Ok(idx) = name.parse::<usize>() {
+            return self.positional.get(idx).copied().ok_or_else(|| {
                 error(
                     line,
                     format!(

@@ -1,6 +1,6 @@
-//! 物理布局、搬运与缓冲分配：[`Layout`] + [`remap`] + [`Buffer`] + [`Allocator`]。
+//! 物理布局、搬运与缓冲分配：[`Layout`] + [`remap`] + [`Buf`] + [`Allocator`]。
 //!
-//! **拥有**：`Layout`、`remap`、`Buffer`、`Allocator`、`CpuAllocator`。
+//! **拥有**：`Layout`、`remap`、`Buf`、`Allocator`、`CpuAllocator`。
 //! **不拥有**：排列顺序与步幅累积（归 `tensor`，这里再导出 [`Order`] 保持路径兼容）、
 //! 逻辑张量元数据（归 `tensor`）、地址空间（`GM` / `FAST` / `REG` 归
 //! `cutile` / `prof`）、设备私有句柄（藏在后端边界 crate 后，ADR 0025 §2）。
@@ -31,7 +31,7 @@
 #![deny(unsafe_code)]
 
 mod alloc;
-mod buffer;
+mod buf;
 mod layout;
 
 #[cfg(all(feature = "mmap", unix))]
@@ -41,7 +41,7 @@ mod mmap;
 pub use mmap::Mmap;
 
 pub use alloc::{Allocator, CpuAllocator};
-pub use buffer::Buffer;
+pub use buf::Buf;
 pub use layout::{Layout, remap};
 
 /// 排列顺序的主人在 `tensor`；这里再导出，保持 `storage::Order` 的既有路径。

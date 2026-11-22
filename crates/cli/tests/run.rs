@@ -14,18 +14,18 @@ fn write_dense_model(name: &str, layers: &[(&str, usize, usize)]) -> std::path::
     let mut entries: Vec<(String, Vec<f32>)> = Vec::new();
     for (entry, out, input) in layers {
         let values = (0..out * input)
-            .map(|index| ((index * 5) % 17) as f32 * 0.25 - 1.0)
+            .map(|idx| ((idx * 5) % 17) as f32 * 0.25 - 1.0)
             .collect();
         entries.push((format!("{entry}{}", nn::WEIGHT_SUFFIX), values));
     }
     let mut json = String::from("{");
     let mut offset = 0usize;
-    for (index, (name, values)) in entries.iter().enumerate() {
-        if index > 0 {
+    for (idx, (name, values)) in entries.iter().enumerate() {
+        if idx > 0 {
             json.push(',');
         }
         let end = offset + values.len() * 4;
-        let (_, out, input) = layers[index];
+        let (_, out, input) = layers[idx];
         json.push_str(&format!(
                 "\"{name}\": {{\"dtype\": \"F32\", \"shape\": [{out}, {input}], \"data_offsets\": [{offset}, {end}]}}"
             ));
@@ -80,8 +80,8 @@ fn assert_close(
 #[cfg(target_os = "macos")]
 fn read_f32(bytes: &[u8], len: usize) -> Vec<f32> {
     (0..len)
-        .map(|index| {
-            let word: [u8; 4] = bytes[index * 4..index * 4 + 4]
+        .map(|idx| {
+            let word: [u8; 4] = bytes[idx * 4..idx * 4 + 4]
                 .try_into()
                 .expect("四个字节一个 f32");
             f32::from_le_bytes(word)
@@ -95,9 +95,9 @@ fn bind_f32(executor: &mut ::device::metal::executor::MetalExecutor, slot: u32, 
     executor
         .bind_bytes(slot, values.len() * 4)
         .expect("f32 缓冲");
-    let bytes = executor.buffer_mut(slot).expect("f32 可写").as_mut_bytes();
-    for (index, value) in values.iter().enumerate() {
-        bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
+    let bytes = executor.buf_mut(slot).expect("f32 可写").as_mut_bytes();
+    for (idx, value) in values.iter().enumerate() {
+        bytes[idx * 4..idx * 4 + 4].copy_from_slice(&value.to_le_bytes());
     }
 }
 
@@ -105,7 +105,7 @@ fn bind_f32(executor: &mut ::device::metal::executor::MetalExecutor, slot: u32, 
 #[cfg(target_os = "macos")]
 fn bind_u8(executor: &mut ::device::metal::executor::MetalExecutor, slot: u32, values: &[u8]) {
     executor.bind_bytes(slot, values.len()).expect("u8 缓冲");
-    let bytes = executor.buffer_mut(slot).expect("u8 可写").as_mut_bytes();
+    let bytes = executor.buf_mut(slot).expect("u8 可写").as_mut_bytes();
     bytes.copy_from_slice(values);
 }
 
@@ -118,7 +118,7 @@ fn bind_scalar(executor: &mut ::device::metal::executor::MetalExecutor, slot: u3
 /// 按声明签名把样本缓冲绑进执行器：可写参数绑 `output_len` 字节输出槽，只读参数按 C 类型
 /// （f32/u8）逐元素写输入字节。逐点与分块对拍共用这一份绑缓冲样板。
 #[cfg(target_os = "macos")]
-fn bind_decl_buffers(
+fn bind_decl_bufs(
     executor: &mut ::device::metal::executor::MetalExecutor,
     node: &mut engine::exec::Node,
     decl: &op::decl::OpDecl,
@@ -131,7 +131,7 @@ fn bind_decl_buffers(
         .signature
         .params()
         .iter()
-        .filter(|param| param.ctype.is_buffer())
+        .filter(|param| param.ctype.is_buf())
         .enumerate()
     {
         let slot = slot as u32;
@@ -178,7 +178,7 @@ fn submit_read(
         .position(|param| param.mutable)
         .expect("唯一可写输出") as u32;
     let bytes = executor
-        .buffer_mut(output_slot)
+        .buf_mut(output_slot)
         .expect("输出可读")
         .as_mut_bytes();
     read_f32(bytes, len)
@@ -269,7 +269,7 @@ fn scalar_len(decl: &op::decl::OpDecl, sample: &op::model::Sample) -> u32 {
     decl.signature
         .params()
         .iter()
-        .find(|param| !param.ctype.is_buffer())
+        .find(|param| !param.ctype.is_buf())
         .and_then(|param| sample.scalar(&param.name))
         .expect("长度标量") as u32
 }
@@ -331,7 +331,7 @@ fn the_first_layer_computes_the_hand_arithmetic_on_its_own_bytes() {
         .expect("条目存在");
     let w = weights::load_f32(entry, &file).expect("f32 条目");
     let x: Vec<f32> = (0..8)
-        .map(|index| (index % 8) as f32 * 0.125 - 0.5)
+        .map(|idx| (idx % 8) as f32 * 0.125 - 0.5)
         .collect();
     let model = op::model(nn::Linear::DENSE).expect("稠密语义");
     let sample = op::model::bind(&model, 8, 4, &x, &w).expect("形状自洽");

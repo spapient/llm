@@ -11,7 +11,7 @@ use serve::model::CpuModel;
 use snapshot::{Facts, Snapshot};
 use std::hint::black_box;
 use tensor::{DType, Shape};
-use train::{Anneal, Buffers, Data, Reference, Schedule};
+use train::{Anneal, Bufs, Data, Reference, Schedule};
 use weights::{Entry, Header};
 
 /// 同批序列数（小批变体）。
@@ -84,7 +84,7 @@ fn steps(model: &mut CpuModel, batch: &mut Batch, sequences: &[Sequence]) -> usi
 pub(crate) fn train(c: &mut Criterion) {
     schedule(c);
     snapshot(c);
-    buffers(c);
+    bufs(c);
 }
 
 /// `Schedule::lr`：1000 步全曲线求和，避免单点求值被常量折叠。
@@ -110,9 +110,9 @@ fn schedule(c: &mut Criterion) {
 /// 快照条目表：64 条、每条 4096 维，只压头部编解码。
 fn snapshot(c: &mut Criterion) {
     let entries = (0..SNAPSHOT_ENTRIES)
-        .map(|index| {
+        .map(|idx| {
             let shape = Shape::new([SNAPSHOT_DIM]);
-            let offset = index * SNAPSHOT_DIM * size_of::<f32>();
+            let offset = idx * SNAPSHOT_DIM * size_of::<f32>();
             Entry::new(format!("blk.{index}.attn_q.weight"), DType::F32, shape).at(offset)
         })
         .collect();
@@ -173,8 +173,8 @@ impl Chain {
         )
     }
 
-    fn store(&self) -> Buffers<Reference> {
-        let mut store = Buffers::new(self.sizes.clone(), Reference);
+    fn store(&self) -> Bufs<Reference> {
+        let mut store = Bufs::new(self.sizes.clone(), Reference);
         checked(store.load(self.x, self.f32s(WIDTH)), "输入");
         checked(store.load(self.w, self.packed_i4()), "权重");
         checked(store.load(self.scales, self.f32s(WIDTH)), "缩放");
@@ -195,7 +195,7 @@ fn chain_sizes(tape: &Tape, [x, w, scales]: [Var; 3]) -> Sizes {
 }
 
 /// 缓冲池：一轮前向后释放全部中间块，下一轮复用同一批槽位。
-fn buffers(c: &mut Criterion) {
+fn bufs(c: &mut Criterion) {
     let chain = Chain::new();
     let mut store = chain.store();
     let nodes: Vec<_> = chain
@@ -214,7 +214,7 @@ fn buffers(c: &mut Criterion) {
 }
 
 /// 一轮：先按表算全部节点，再一次性释放，最后取存活块数。
-fn round(store: &mut Buffers<Reference>, nodes: &[(String, Vec<Var>, Var)]) -> u64 {
+fn round(store: &mut Bufs<Reference>, nodes: &[(String, Vec<Var>, Var)]) -> u64 {
     for (op, inputs, output) in nodes {
         checked(store.compute(op, inputs, *output), "前向可算");
     }

@@ -2,19 +2,27 @@
 //! 反量化（`dequant`）、逐元素（`elementwise` / `unary`）、归约（`reduce`）与 SIMD/SME 通道（`fast`）。
 
 #![deny(unsafe_code)]
-// SME 通道依赖两个不稳定特性，且**这两个特性名只在 aarch64 上存在**：
-// x86_64 等其它目标根本不认识它们，直接 `#![feature(...)]` 会 E0635（unknown feature）。
-// 因此用 `cfg_attr` 只在 aarch64 上声明，而非"声明了但在别的架构上无作用"——
-// 特性门不是惰性的，名字在编译目标上不认识就是硬错误。
-// - `aarch64_unstable_target_feature`：放行 `#[target_feature(enable = "sme")]`（尚未稳定）。
+// 不稳定特性一律挂在 `cfg(nightly)` 上（由本 crate 的 `build.rs` 按 `rustc --version` 判定）：
+// nightly 上走手写车道，stable 上走 `src/../simd_scalar.rs` 的等价退路，两边的能力差异只在
+// 「向量化没向量化」，不在语义。这样 `rust-toolchain.toml` 不必把整个工作区钉在某个 nightly。
+//
+// 三个特性各自还有额外的门：
+// - `aarch64_unstable_target_feature`：放行 `#[target_feature(enable = "sme")]`。
 // - `stdarch_aarch64_feature_detection`：放行运行时探测 `is_aarch64_feature_detected!("sme")`。
-#![cfg_attr(target_arch = "aarch64", feature(aarch64_unstable_target_feature))]
-#![cfg_attr(target_arch = "aarch64", feature(stdarch_aarch64_feature_detection))]
-// `std::simd` 在两个地方用，且都靠它保持 `unsafe_code = "deny"` 不扩大开岛范围：
-// `fast::sme::pack_a` 的分块转置（只存在于 aarch64），以及 `gemv::simd` 的解包点积——
-// 后者**不按目标门控**，因为它是架构无关的 16 车道源码，aarch64 上落成 NEON、x86_64 上落成
-// SSE2 基线，两个目标编译的是同一份算术，于是两条验证链跑的是同一段代码。
-#![feature(portable_simd)]
+//   上面这两个特性名**只在 aarch64 上存在**：x86_64 等其它目标根本不认识，直接声明会 E0635
+//   （unknown feature）。特性门不是惰性的，名字在编译目标上不认识就是硬错误，因此还要按架构门控。
+// - `portable_simd`：`std::simd`，用在 `fast::sme::pack_a` 的分块转置（只存在于 aarch64）与
+//   `gemv::simd` 的解包点积。后者**不按目标门控**，因为它是架构无关的 16 车道源码：aarch64 上
+//   落成 NEON、x86_64 上落成 SSE2 基线，两个目标编译的是同一份算术。
+#![cfg_attr(nightly, feature(portable_simd))]
+#![cfg_attr(
+    all(nightly, target_arch = "aarch64"),
+    feature(aarch64_unstable_target_feature)
+)]
+#![cfg_attr(
+    all(nightly, target_arch = "aarch64"),
+    feature(stdarch_aarch64_feature_detection)
+)]
 
 pub mod activation;
 pub mod dequant;

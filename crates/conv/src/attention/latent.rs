@@ -8,7 +8,7 @@
 //! RoPE 段必须对同一查询行的各头相同：这是 MLA 的解耦键只有一个、被所有头共享的直接后果。构造
 //! `q` 时把这段复制到每个头，本算子照常按整行做内积即可，不需要知道"哪几列是 RoPE"。
 
-use crate::model::{AxisRole, AxisSpec, Buffer, Cost, Sample, ShapeCtx, Values};
+use crate::model::{AxisRole, AxisSpec, Buf, Cost, Sample, ShapeCtx, Values};
 use diagnostic::{Code, Error};
 
 use super::axis;
@@ -78,9 +78,9 @@ pub fn sample(m: usize, n: usize) -> Sample {
     let (r, w) = (m.max(1), n.max(1));
     let dc = w.div_ceil(2);
     let det = |base: f32, step: f32, len: usize| -> Vec<f32> {
-        (0..len).map(|index| base + index as f32 * step).collect()
+        (0..len).map(|idx| base + idx as f32 * step).collect()
     };
-    let buffer = |name: &'static str, values: Vec<f32>| Buffer {
+    let buf = |name: &'static str, values: Vec<f32>| Buf {
         name,
         values: Values::F32(values),
     };
@@ -93,11 +93,11 @@ pub fn sample(m: usize, n: usize) -> Sample {
             ("W", w as i64),
             ("DC", dc as i64),
         ],
-        buffers: vec![
-            buffer("q", det(-0.5, 0.13, r * w)),
-            buffer("k", det(0.17, -0.05, r * w)),
-            buffer("v", det(-0.23, 0.09, r * dc)),
-            buffer(OUT, vec![0.0; r * dc]),
+        bufs: vec![
+            buf("q", det(-0.5, 0.13, r * w)),
+            buf("k", det(0.17, -0.05, r * w)),
+            buf("v", det(-0.23, 0.09, r * dc)),
+            buf(OUT, vec![0.0; r * dc]),
         ],
     }
 }

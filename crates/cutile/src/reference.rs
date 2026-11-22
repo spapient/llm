@@ -206,16 +206,16 @@ fn run_fused(
 
 /// 把生产者产出写进消费者的一个槽位，长度不符就不写。
 fn bridge_one(sample: &mut Sample, from: &str, to: &str, mid: &[f32]) -> diagnostic::Result<()> {
-    let buffer = sample
-        .buffer(to)
+    let buf = sample
+        .buf(to)
         .ok_or_else(|| Error::new(Code::Missing, format!("样本里没有消费者槽位 `{to}`")))?;
-    if buffer.values.len() != mid.len() {
+    if buf.values.len() != mid.len() {
         return Err(Error::new(
             Code::Invalid,
             format!(
                 "缝 `{from} → {to}` 形状对不上：生产者产出 {} 个，消费者槽位声明 {} 个",
                 mid.len(),
-                buffer.values.len()
+                buf.values.len()
             ),
         ));
     }

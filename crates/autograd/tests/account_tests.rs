@@ -86,7 +86,7 @@ fn rebuilding_starts_the_ledger_over() {
 
 /// `settle_into` 与 `settle` 结果一致，复用调用方的缓冲。
 #[test]
-fn settling_into_a_reused_buffer_reports_the_same_ready_vars() {
+fn settling_into_a_reused_buf_reports_the_same_ready_vars() {
     let mut tape = Tape::new();
     let x = tape.parameter();
     let y = tape.parameter();

@@ -11,9 +11,9 @@ struct Bench {
     queue: MetalCommandQueue,
     catalogue: cutile::builtin::Catalogue,
     dirs: cutile::dirs::Dirs,
-    a: MetalBuffer,
-    b: MetalBuffer,
-    y: MetalBuffer,
+    a: MetalBuf,
+    b: MetalBuf,
+    y: MetalBuf,
     reference: Vec<f32>,
     shape: (usize, usize, usize),
     grid: [u32; 3],
@@ -32,7 +32,7 @@ impl Bench {
         let (a, b, mut y) = (
             upload(&device, &a, "A"),
             upload(&device, &b, "B"),
-            output_buffer(&device, m * n, "Y"),
+            output_buf(&device, m * n, "Y"),
         );
         let (catalogue, dirs) = catalogue_and_dirs(cache);
         let pipe = grid_pipeline(&device, &catalogue, &dirs, "matmul_f32", m, n, "标量网格");
@@ -106,7 +106,7 @@ kernel void kernel_main(device const float* A [[buffer(0)]],
     let (a, b, reference) = matmul_inputs(8, 8, 8);
     let a_buf = upload(&device, &a, "A");
     let b_buf = upload(&device, &b, "B");
-    let mut c_buf = output_buffer(&device, 64, "C");
+    let mut c_buf = output_buf(&device, 64, "C");
     let ok = queue.execute(&pipeline, &[&a_buf, &b_buf, &c_buf], [32, 1, 1], [32, 1, 1]);
     assert!(ok, "simdgroup 探测派发失败");
     assert_matmul_matches("simdgroup-8x8", &reference, c_buf.as_mut_bytes());
@@ -141,7 +141,7 @@ fn metal_matmul_forward() {
         .compile(&matmul_msl(true, M, N, K))
         .expect("tiled matmul 应能编译");
 
-    let mut c_buf = output_buffer(&device, M * N, "C");
+    let mut c_buf = output_buf(&device, M * N, "C");
     let grid = [N as u32, M as u32, 1];
 
     // 先各跑一次对拍，再进入计时轮。

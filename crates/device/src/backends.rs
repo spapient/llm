@@ -24,8 +24,8 @@ pub(crate) use op::sig::Signature;
 fn benchmark_output_len(signature: &Signature, sample: &Sample) -> Result<usize> {
     let output = cutile::harness::output_name(signature)?;
     sample
-        .buffer(output)
-        .map(|buffer| buffer.values.len())
+        .buf(output)
+        .map(|buf| buf.values.len())
         .ok_or_else(|| Error::new(Code::Internal, "签名输出缓冲与样本不匹配"))
 }
 
@@ -37,8 +37,8 @@ fn benchmark_grid(grid: &op::decl::Grid, sample: &Sample) -> Result<[usize; 3]> 
         ));
     }
     let mut dims = [1usize; 3];
-    for (index, (_, scalar)) in grid.dims.iter().enumerate() {
-        dims[index] = grid_extent(scalar, sample)?;
+    for (idx, (_, scalar)) in grid.dims.iter().enumerate() {
+        dims[idx] = grid_extent(scalar, sample)?;
     }
     Ok(dims)
 }

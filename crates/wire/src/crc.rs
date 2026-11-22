@@ -7,26 +7,26 @@ static SLICE: [[u32; 256]; 8] = slices();
 
 const fn slices() -> [[u32; 256]; 8] {
     let mut slice = [[0u32; 256]; 8];
-    let mut index = 0;
-    while index < 256 {
-        let mut value = index as u32;
+    let mut idx = 0;
+    while idx < 256 {
+        let mut value = idx as u32;
         let mut bit = 0;
         while bit < 8 {
             // 无分支：最低位为 1 时掩码全 1，等价于 `(value >> 1) ^ POLY`。
             value = (value >> 1) ^ (POLY & 0u32.wrapping_sub(value & 1));
             bit += 1;
         }
-        slice[0][index] = value;
-        index += 1;
+        slice[0][idx] = value;
+        idx += 1;
     }
     // 第 k 张表 = 第 k-1 张表再"过一整字节"。
     let mut level = 1;
     while level < 8 {
-        let mut index = 0;
-        while index < 256 {
-            let previous = slice[level - 1][index];
-            slice[level][index] = (previous >> 8) ^ slice[0][(previous & 0xFF) as usize];
-            index += 1;
+        let mut idx = 0;
+        while idx < 256 {
+            let previous = slice[level - 1][idx];
+            slice[level][idx] = (previous >> 8) ^ slice[0][(previous & 0xFF) as usize];
+            idx += 1;
         }
         level += 1;
     }

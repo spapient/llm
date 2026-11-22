@@ -325,7 +325,7 @@ fn the_ledger_carries_every_contracted_key_in_a_stable_order() {
 }
 
 #[test]
-fn a_name_without_a_layer_index_maps_to_null() {
+fn a_name_without_a_layer_idx_maps_to_null() {
     let settlement = settled(vec![f32_segment("embed", &compressible(64))], true);
 
     assert_eq!(only(&settlement).layer(), None);

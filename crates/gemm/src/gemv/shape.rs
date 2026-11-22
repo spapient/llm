@@ -1,20 +1,20 @@
 //! 形状上下文、确定性样本与标量参考：`#[annotation::model]` 要的三件产物。
 use diagnostic::{Code, Error};
 
-use crate::model::{Buffer, Cost, Sample, ShapeCtx, Values};
+use crate::model::{Buf, Cost, Sample, ShapeCtx, Values};
 
 use super::format::{Element, Format};
 
 /// 与权重格式无关的输入向量：两条算子共用同一份取值。
 fn input(m: usize) -> Vec<f32> {
     (0..m)
-        .map(|index| ((index * 7) % 13) as f32 * 0.25 - 1.0)
+        .map(|idx| ((idx * 7) % 13) as f32 * 0.25 - 1.0)
         .collect()
 }
 
 /// 量化格式共用的标度取值：`0.03125` 的 1..=4 倍，落在 2 的负幂网格，f32 精确。
-pub(crate) fn scale_of(index: usize) -> f32 {
-    0.031_25 * (1 + (index % 4)) as f32
+pub(crate) fn scale_of(idx: usize) -> f32 {
+    0.031_25 * (1 + (idx % 4)) as f32
 }
 
 /// 把形状对翻译成投影骨架的具名轴上下文：`m` 是规约轴、`n` 是输出轴。
@@ -41,21 +41,21 @@ pub fn cost<F: Format>(shape: &ShapeCtx) -> Result<Cost, Error> {
 
 /// 确定性样本：同一形状永远得到同一组输入。
 pub fn sample<F: Format>(m: usize, n: usize) -> Sample {
-    let mut buffers = vec![
-        Buffer {
+    let mut bufs = vec![
+        Buf {
             name: "x",
             values: Values::F32(input(m)),
         },
-        F::Elem::buffer("w", F::weights(m, n)),
+        F::Elem::buf("w", F::weights(m, n)),
     ];
     if let Some(scale) = F::SCALES {
         let groups = m / F::GRAIN.max(1);
-        buffers.push(Buffer {
+        bufs.push(Buf {
             name: "scales",
             values: Values::F32((0..n * groups).map(scale).collect()),
         });
     }
-    buffers.push(Buffer {
+    bufs.push(Buf {
         name: "y",
         values: Values::F32(vec![0.0; n]),
     });
@@ -63,16 +63,16 @@ pub fn sample<F: Format>(m: usize, n: usize) -> Sample {
         m,
         n,
         scalars: vec![("M", m as i64), ("N", n as i64), ("gsz", F::STEP as i64)],
-        buffers,
+        bufs,
     }
 }
 
 /// 从样本里取权重：名字固定是 `w`，元素类型由格式给出。
 fn weights<F: Format>(sample: &Sample) -> diagnostic::Result<&[F::Elem]> {
-    let buffer = sample
-        .buffer("w")
+    let buf = sample
+        .buf("w")
         .ok_or_else(|| Error::new(Code::Missing, "样本里没有缓冲 `w`"))?;
-    F::Elem::borrow(&buffer.values).ok_or_else(|| {
+    F::Elem::borrow(&buf.values).ok_or_else(|| {
         Error::new(
             Code::Invalid,
             format!("缓冲 `w` 不是 {}：这份格式的权重元素类型", F::Elem::NAME),

@@ -32,7 +32,7 @@ pub const SEG_CRC: u32 = 1 << 1;
 /// 最大对齐指数（2^16 = 64 KiB）。
 pub const MAX_ALIGN_LOG: u8 = 16;
 
-const WRITE_BUFFER: usize = 8 * 1024;
+const WRITE_BUF: usize = 8 * 1024;
 
 /// 权重写者。
 #[derive(Debug, Default)]
@@ -103,7 +103,7 @@ impl Writer {
     fn plan(&self) -> Result<Vec<Plan<'_>>> {
         let mut reps: HashMap<(u16, Vec<u64>, Digest), Vec<usize>> = HashMap::new();
         let mut out = Vec::with_capacity(self.segs.len());
-        for (index, segment) in self.segs.iter().enumerate() {
+        for (idx, segment) in self.segs.iter().enumerate() {
             let key = (
                 segment.dtype().code(),
                 segment.shape().to_vec(),
@@ -114,7 +114,7 @@ impl Writer {
                 continue;
             }
             let packed = self.pack_inline(segment);
-            reps.entry(key).or_default().push(index);
+            reps.entry(key).or_default().push(idx);
             out.push(packed);
         }
         Ok(out)
@@ -264,7 +264,7 @@ impl Writer {
     /// 写临时文件、刷盘、改名为目标路径。
     fn write_temp(&self, temp: &Path, target: &Path, align_log: u8) -> io::Result<()> {
         let file = std::fs::File::create(temp)?;
-        let buffered = io::BufWriter::with_capacity(WRITE_BUFFER, file);
+        let buffered = io::BufWriter::with_capacity(WRITE_BUF, file);
         self.flush_sink(FileSink::new(buffered), align_log)?;
         std::fs::rename(temp, target)
     }

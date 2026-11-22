@@ -98,7 +98,7 @@ fn trailing_bytes_belong_to_the_next_frame() {
 
 /// 一次编码失败不该在流里留下半帧：调用方的缓冲原样不动。
 #[test]
-fn a_failed_encode_leaves_the_buffer_untouched() {
+fn a_failed_encode_leaves_the_buf_untouched() {
     let mut out = b"prefix".to_vec();
     let huge = Envelope::new(Version::current(), Kind::Chunk, vec![0; MAX_PAYLOAD + 1]);
     assert_eq!(huge.frame().expect_err("超限").code(), Code::Invalid);
@@ -164,9 +164,9 @@ fn version_zero_is_invalid_and_cannot_be_written() {
 /// 载荷的每一位都被校验和覆盖：长度对得上不等于内容对得上。
 #[test]
 fn a_flipped_payload_bit_fails_the_checksum() {
-    for index in [HEADER_LEN, HEADER_LEN + 3] {
+    for idx in [HEADER_LEN, HEADER_LEN + 3] {
         let mut frame = envelope().frame().expect("编码");
-        frame[index] ^= 0x01;
+        frame[idx] ^= 0x01;
         let error = Envelope::parse(&frame).expect_err("必须拒绝");
         assert_eq!(error.code(), Code::Invalid);
         assert!(error.to_string().contains("校验和"), "{error}");

@@ -66,7 +66,7 @@ __global__ void kernel_main({params}) {{
 }
 
 /// CUDA 串行（零维网格）与循环注入：由 [`Dialect::serial_kernel`] / [`Dialect::injected_kernel`]
-/// 以 `Cuda` 方言落地，缓冲声明取 [`Dialect::buffers`]，标量由 [`crate::dialect::launch_args`] 内联进内部内核，
+/// 以 `Cuda` 方言落地，缓冲声明取 [`Dialect::bufs`]，标量由 [`crate::dialect::launch_args`] 内联进内部内核，
 /// `kernel_main` 不再重复声明标量形参。
 ///
 /// 生产态 CUDA 循环注入的 host 驱动：按 `dims` 组成 `dim3` 网格发射 `kernel_main`，
@@ -86,7 +86,7 @@ pub fn cuda_loop_driver(
 ) -> Result<String> {
     let (output, values) = output_of(signature, sample)?;
     let grid = cuda_grid(dims);
-    let args = buffer_args(signature);
+    let args = buf_args(signature);
     let emit = cuda_launch(
         "kernel_main",
         &format!("dim3({}, {}, {})", grid[0], grid[1], grid[2]),
@@ -125,11 +125,11 @@ pub(crate) fn cuda_grid(dims: &[usize]) -> [usize; 3] {
 }
 
 /// 启动实参：只传缓冲（形状是编译期常量，不进内核形参）。
-pub(crate) fn buffer_args(signature: &Signature) -> String {
+pub(crate) fn buf_args(signature: &Signature) -> String {
     signature
         .params()
         .iter()
-        .filter(|param| param.ctype.is_buffer())
+        .filter(|param| param.ctype.is_buf())
         .map(|param| format!("d_{}", param.name))
         .collect::<Vec<_>>()
         .join(", ")
@@ -140,7 +140,7 @@ pub(crate) fn buffer_args(signature: &Signature) -> String {
 ///
 /// 四段模板全部在这里之外命名：
 ///
-/// 1. 缓冲区（`cuda_host_buffers_grid` + `alloc_guards`）
+/// 1. 缓冲区（`cuda_host_bufs_grid` + `alloc_guards`）
 /// 2. 计时（`timing_loop`，先热身再按轮计时）
 /// 3. 回读（`readback_block`，按位打印）
 /// 4. 释放（`cuda_release`）
@@ -165,7 +165,7 @@ pub fn cuda_benchmark_driver(
     let mut source = cuda_prologue(device_source);
     source.push_str(musa_shims(musa));
     source.push_str(CUDA_CHECK_PROLOGUE);
-    source.push_str(&cuda_host_buffers_grid(
+    source.push_str(&cuda_host_bufs_grid(
         sample,
         signature.params(),
         &output,
@@ -186,7 +186,7 @@ pub(crate) fn cuda_release(signature: &Signature) -> String {
     for param in signature
         .params()
         .iter()
-        .filter(|param| param.ctype.is_buffer())
+        .filter(|param| param.ctype.is_buf())
     {
         text.push_str(&format!("    cudaFree(d_{});\n", param.name));
     }
@@ -242,7 +242,7 @@ pub(crate) fn alloc_guards(signature: &Signature) -> String {
     for param in signature
         .params()
         .iter()
-        .filter(|param| param.ctype.is_buffer())
+        .filter(|param| param.ctype.is_buf())
     {
         out.push_str(&format!(
             "    if (!d_{}) {{ fprintf(stderr, \"CUDA 缓冲分配失败: {}\\n\"); return 1; }}\n",

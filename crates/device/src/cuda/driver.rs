@@ -45,7 +45,7 @@ impl<'a> Driver<'a> {
     pub(crate) fn assemble(&self, head: &str, emit: &str) -> Result<String> {
         let mut text = String::from(head);
         text.push_str("\nint main(void) {\n");
-        text.push_str(&cuda_host_buffers_grid(
+        text.push_str(&cuda_host_bufs_grid(
             self.sample,
             self.signature.params(),
             self.output,
@@ -117,7 +117,7 @@ pub fn cuda_chunk_reduce_driver(
         "kernel_main",
         &blocks.to_string(),
         1,
-        &buffer_args(signature),
+        &buf_args(signature),
     );
     let head = cuda_prologue(device_source);
     Driver::new(signature, sample, output, blocks)
@@ -136,32 +136,32 @@ pub fn cuda_grid_driver(
     output_len: usize,
 ) -> Result<String> {
     let output = output_name(signature)?;
-    let emit = cuda_launch("kernel_main", &grid.to_string(), 1, &buffer_args(signature));
+    let emit = cuda_launch("kernel_main", &grid.to_string(), 1, &buf_args(signature));
     let head = cuda_prologue(device_source);
     Driver::new(signature, sample, output, output_len).assemble(&head, &emit)
 }
 
 /// host 侧缓冲声明、设备分配与只读入向拷贝；输出缓冲长度用显式 `output_len`（分块归约的部分
 /// 结果数），而非样本里的单元素。
-pub(crate) fn cuda_host_buffers_grid(
+pub(crate) fn cuda_host_bufs_grid(
     sample: &Sample,
     params: &[Param],
     output: &str,
     output_len: usize,
 ) -> Result<String> {
     let mut text = String::new();
-    for param in params.iter().filter(|param| param.ctype.is_buffer()) {
-        let Some(buffer) = sample.buffer(&param.name) else {
+    for param in params.iter().filter(|param| param.ctype.is_buf()) {
+        let Some(buf) = sample.buf(&param.name) else {
             return Err(Error::new(Code::Internal, "签名与样本已对齐（漂移）"));
         };
-        text.push_str(&cuda_buffer_host(param, &buffer.values, output, output_len));
+        text.push_str(&cuda_buf_host(param, &buf.values, output, output_len));
     }
     Ok(text)
 }
 
 /// C 系 host 侧缓冲声明：只读落静态初值、可写开数组。CUDA 与昇腾逐字同源（`h_` 主机数组 +
 /// 设备侧 `d_` 指针），Metal 的 ObjC host 不用这套（见 [`crate::metal`]）。
-pub(crate) fn host_buffer_decl(param: &Param, values: &Values, ctype: &str, size: usize) -> String {
+pub(crate) fn host_buf_decl(param: &Param, values: &Values, ctype: &str, size: usize) -> String {
     if param.mutable {
         format!("    {ctype} h_{}[{size}];\n", param.name)
     } else {
@@ -175,7 +175,7 @@ pub(crate) fn host_buffer_decl(param: &Param, values: &Values, ctype: &str, size
 
 /// 单个缓冲的 host 声明 + 设备分配 + （只读时）入向拷贝；`output` 与 `output_len` 只用于把输出
 /// 缓冲的尺寸换成部分结果数，其余缓冲尺寸取样本原值。
-pub(crate) fn cuda_buffer_host(
+pub(crate) fn cuda_buf_host(
     param: &Param,
     values: &Values,
     output: &str,
@@ -187,7 +187,7 @@ pub(crate) fn cuda_buffer_host(
     } else {
         values.len()
     };
-    let mut text = host_buffer_decl(param, values, ctype, size);
+    let mut text = host_buf_decl(param, values, ctype, size);
     text.push_str(&format!(
         "    {ctype} *d_{} = 0;\n    cudaMalloc((void **)&d_{}, {size} * sizeof({ctype}));\n",
         param.name, param.name
@@ -220,13 +220,13 @@ pub(crate) fn cuda_launch_params(signature: &Signature) -> String {
     let scalars = signature
         .params()
         .iter()
-        .filter(|param| !param.ctype.is_buffer())
+        .filter(|param| !param.ctype.is_buf())
         .map(|param| format!("{} {}", param.ctype.c_name(), param.name))
         .collect::<Vec<_>>()
         .join(", ");
-    let buffers = Cuda::buffers(signature);
+    let bufs = Cuda::bufs(signature);
     if scalars.is_empty() {
-        buffers
+        bufs
     } else {
         format!("{buffers},\n    {scalars}")
     }
@@ -248,7 +248,7 @@ pub fn cuda_point_driver(
         "kernel_main",
         &blocks.to_string(),
         threads,
-        &buffer_args(signature),
+        &buf_args(signature),
     );
     let head = cuda_head(
         "#include <cuda_runtime.h>\n#include <cstdio>\n",
@@ -279,14 +279,14 @@ pub fn cuda_harness(kernel_source: &str, signature: &Signature, sample: &Sample)
     Driver::new(signature, sample, output, values.len()).assemble(&head, &emit)
 }
 
-/// `__global__` 包装的形参声明：缓冲是设备指针，用 `d_` 前缀与 host 侧 `cuda_host_buffers` 的
+/// `__global__` 包装的形参声明：缓冲是设备指针，用 `d_` 前缀与 host 侧 `cuda_host_bufs` 的
 /// `cudaMalloc(&d_<name>)` 同源；标量直接传值。
 pub(crate) fn cuda_params(params: &[Param]) -> String {
     params
         .iter()
         .map(|param| {
             let base = param.ctype.c_name();
-            if param.ctype.is_buffer() {
+            if param.ctype.is_buf() {
                 format!("{base} *d_{}", param.name)
             } else {
                 format!("{base} {}", param.name)

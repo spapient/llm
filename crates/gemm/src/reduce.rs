@@ -1,7 +1,7 @@
 //! 归约骨架：`y[0] = fold(a[0..n])`，输出单个元素。
 
 use crate::formula::FormulaOwner;
-use crate::model::{AxisRole, AxisSpec, Buffer, Cost, Sample, ShapeCtx, Values};
+use crate::model::{AxisRole, AxisSpec, Buf, Cost, Sample, ShapeCtx, Values};
 use diagnostic::{Code, Error};
 
 /// 归约算子随语义变化的部分。
@@ -52,12 +52,12 @@ pub fn sample<R: Reduce>(len: usize, _: usize) -> Sample {
         m: len,
         n: 1,
         scalars: vec![("N", len as i64)],
-        buffers: vec![
-            Buffer {
+        bufs: vec![
+            Buf {
                 name: "a",
                 values: Values::F32(R::input(len)),
             },
-            Buffer {
+            Buf {
                 name: "y",
                 values: Values::F32(vec![0.0]),
             },

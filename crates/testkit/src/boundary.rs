@@ -37,13 +37,13 @@ pub(crate) fn the_error_boundary_does_not_fall_back_to_strings() {
             continue;
         }
         let text = std::fs::read_to_string(&path).expect("源文件可读");
-        for (index, line) in text.lines().enumerate() {
+        for (idx, line) in text.lines().enumerate() {
             if line.trim_start().starts_with("//") {
                 continue;
             }
             // 只认错误位是 `String` 的形态；`Result<Vec<String>, Error>` 这类是合法的。
             if line.contains("Result<") && line.contains(", String>") {
-                offences.push(format!("{}:{}", path.display(), index + 1));
+                offences.push(format!("{}:{}", path.display(), idx + 1));
             }
         }
     }

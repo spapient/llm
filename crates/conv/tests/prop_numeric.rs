@@ -19,36 +19,36 @@ fn fixed(len: usize) -> impl Strategy<Value = Vec<f32>> {
 }
 
 /// `k = 3, s = 1, p = 1` 的 same 输出共用窗口：返回该输出位置**有效**（非填充）元素的下标。
-fn same_window(index: usize, h: usize, w: usize) -> Vec<usize> {
-    let (oh, ow) = ((index / w) as i32, (index % w) as i32);
-    let mut index_set = Vec::with_capacity(9);
+fn same_window(idx: usize, h: usize, w: usize) -> Vec<usize> {
+    let (oh, ow) = ((idx / w) as i32, (idx % w) as i32);
+    let mut idx_set = Vec::with_capacity(9);
     for dh in -1..=1 {
         for dw in -1..=1 {
             let (ih, iw) = (oh + dh, ow + dw);
             if (0..h as i32).contains(&ih) && (0..w as i32).contains(&iw) {
-                index_set.push(ih as usize * w + iw as usize);
+                idx_set.push(ih as usize * w + iw as usize);
             }
         }
     }
-    index_set
+    idx_set
 }
 
 /// 自适应池化 `4 → 2` 的分块：输出格 `(oh, ow)` 覆盖 `2×2` 输入块。
-fn adaptive_window(index: usize, oh: usize, ow: usize, h: usize, w: usize) -> Vec<usize> {
+fn adaptive_window(idx: usize, oh: usize, ow: usize, h: usize, w: usize) -> Vec<usize> {
     let (bh, bw) = (h / oh, w / ow);
-    let (row, col) = (index / ow, index % ow);
-    let mut index_set = Vec::with_capacity(bh * bw);
+    let (row, col) = (idx / ow, idx % ow);
+    let mut idx_set = Vec::with_capacity(bh * bw);
     for dh in 0..bh {
         for dw in 0..bw {
-            index_set.push((row * bh + dh) * w + col * bw + dw);
+            idx_set.push((row * bh + dh) * w + col * bw + dw);
         }
     }
-    index_set
+    idx_set
 }
 
 /// 把下标集合映射成值的上下界（`min`/`max` 对有限输入是全域定义的）。
-fn bounds(values: &[f32], index_set: &[usize]) -> (f32, f32) {
-    index_set
+fn bounds(values: &[f32], idx_set: &[usize]) -> (f32, f32) {
+    idx_set
         .iter()
         .fold((f32::INFINITY, f32::NEG_INFINITY), |(low, high), &i| {
             (low.min(values[i]), high.max(values[i]))

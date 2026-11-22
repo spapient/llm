@@ -35,10 +35,10 @@ fn advance_key(key: &mut [u32; 2]) {
     key[1] = key[1].wrapping_add(C1);
 }
 
-/// 纯计数器派生：按 `key + stream + index` 一次性产出 4 个 u32，不推进任何状态。
+/// 纯计数器派生：按 `key + stream + idx` 一次性产出 4 个 u32，不推进任何状态。
 #[must_use]
-pub fn block(key: u64, stream: u32, index: u64) -> [u32; 4] {
-    let mut counter = [stream, index as u32, (index >> 32) as u32, 0];
+pub fn block(key: u64, stream: u32, idx: u64) -> [u32; 4] {
+    let mut counter = [stream, idx as u32, (idx >> 32) as u32, 0];
     let mut key_words = [key as u32, (key >> 32) as u32];
     for _ in 0..ROUNDS {
         counter = round(counter, key_words);
@@ -52,8 +52,8 @@ pub fn block(key: u64, stream: u32, index: u64) -> [u32; 4] {
 pub struct Rng {
     key: u64,
     stream: u32,
-    index: u64,
-    buffer: [u32; 4],
+    idx: u64,
+    buf: [u32; 4],
     slot: usize,
 }
 
@@ -70,8 +70,8 @@ impl Rng {
         Self {
             key: seed,
             stream,
-            index: 0,
-            buffer: [0; 4],
+            idx: 0,
+            buf: [0; 4],
             slot: 4,
         }
     }
@@ -79,11 +79,11 @@ impl Rng {
     /// 下一个 u32；缓冲耗尽时下一块按当前下标派生并推进下标。
     pub fn next_u32(&mut self) -> u32 {
         if self.slot >= 4 {
-            self.buffer = block(self.key, self.stream, self.index);
-            self.index = self.index.wrapping_add(1);
+            self.buf = block(self.key, self.stream, self.idx);
+            self.idx = self.idx.wrapping_add(1);
             self.slot = 0;
         }
-        let value = self.buffer[self.slot];
+        let value = self.buf[self.slot];
         self.slot += 1;
         value
     }

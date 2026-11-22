@@ -2,7 +2,7 @@
 use super::*;
 
 #[test]
-fn a_short_buffer_is_rejected_by_length() {
+fn a_short_buf_is_rejected_by_length() {
     let error = Segment::new("w", Wire::F32, vec![2], None, vec![0u8; 4]).expect_err("长度不符");
 
     assert_eq!(error.code(), Code::Invalid);
@@ -18,7 +18,7 @@ fn an_empty_name_is_rejected() {
 }
 
 #[test]
-fn a_zero_element_shape_accepts_an_empty_buffer() {
+fn a_zero_element_shape_accepts_an_empty_buf() {
     let segment = Segment::new("empty", Wire::F32, vec![0], None, Vec::new()).expect("零元素段");
 
     assert_eq!(segment.numel(), 0);

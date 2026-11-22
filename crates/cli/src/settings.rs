@@ -119,48 +119,48 @@ impl Settings {
     /// `--config` 后面的路径不存在时返回 `missing`。
     pub fn apply_arguments(&mut self, args: &[String]) -> Result<Vec<String>> {
         let mut rest = Vec::with_capacity(args.len());
-        let mut index = 0;
-        while index < args.len() {
-            index = self.next_index(args, index, &mut rest)?;
+        let mut idx = 0;
+        while idx < args.len() {
+            idx = self.next_idx(args, idx, &mut rest)?;
         }
         Ok(rest)
     }
 
     /// 一条参数的下标推进：`--set` / `--config` 消费两条，其余原样留下。
-    fn next_index(
+    fn next_idx(
         &mut self,
         args: &[String],
-        index: usize,
+        idx: usize,
         rest: &mut Vec<String>,
     ) -> Result<usize> {
-        if args[index] == "--set" {
-            self.apply_at(args, index)
-        } else if args[index] == "--config" {
-            self.apply_config_at(args, index)
+        if args[idx] == "--set" {
+            self.apply_at(args, idx)
+        } else if args[idx] == "--config" {
+            self.apply_config_at(args, idx)
         } else {
-            rest.push(args[index].clone());
-            Ok(index + 1)
+            rest.push(args[idx].clone());
+            Ok(idx + 1)
         }
     }
 
-    /// 处理 `args[index] == "--set"`，返回下一条要看的参数下标。
-    fn apply_at(&mut self, args: &[String], index: usize) -> Result<usize> {
+    /// 处理 `args[idx] == "--set"`，返回下一条要看的参数下标。
+    fn apply_at(&mut self, args: &[String], idx: usize) -> Result<usize> {
         let pair = args
-            .get(index + 1)
+            .get(idx + 1)
             .ok_or_else(|| invalid("`--set` 缺少 `key=value`"))?;
         self.apply_override(pair)
             .map_err(|error| error.with("--set"))?;
-        Ok(index + 2)
+        Ok(idx + 2)
     }
 
-    /// 处理 `args[index] == "--config"`，返回下一条要看的参数下标。
-    fn apply_config_at(&mut self, args: &[String], index: usize) -> Result<usize> {
+    /// 处理 `args[idx] == "--config"`，返回下一条要看的参数下标。
+    fn apply_config_at(&mut self, args: &[String], idx: usize) -> Result<usize> {
         let path = args
-            .get(index + 1)
+            .get(idx + 1)
             .ok_or_else(|| invalid("`--config` 缺少文件路径"))?;
         self.read_config_at(Path::new(path))
             .map_err(|error| error.with("--config"))?;
-        Ok(index + 2)
+        Ok(idx + 2)
     }
 
     /// 写入一条命令行覆盖（`key=value`）。命令行层优先级最高，相对路径按启动目录解析。
@@ -195,7 +195,7 @@ impl Settings {
     /// 槽位里的路径取值；不做来源追踪也不复制来源——这三个访问器在每次启动的必经路径上，
     /// 只有 `describe` 需要来源，因此只在那里走 [`Settings::resolved`]。
     fn path(&self, key: Key) -> Option<PathBuf> {
-        self.slots[key.index()]
+        self.slots[key.idx()]
             .as_ref()
             .and_then(|slot| slot.value.as_path())
             .map(Path::to_path_buf)
@@ -203,7 +203,7 @@ impl Settings {
 
     /// 声明层 / 档案层 / 片段层的替代根目录；`None` 表示用被调用方的内置数据。
     pub fn data_root(&self) -> Option<&Path> {
-        self.slots[Key::DataRoot.index()]
+        self.slots[Key::DataRoot.idx()]
             .as_ref()
             .and_then(|slot| slot.value.as_path())
     }
@@ -247,7 +247,7 @@ impl Settings {
 
     /// 某个键的最终取值与来源：设置过的用它，没设置的看 [`Key::default_value`]。
     fn resolved(&self, key: Key) -> Option<(SettingValue, Origin)> {
-        if let Some(slot) = &self.slots[key.index()] {
+        if let Some(slot) = &self.slots[key.idx()] {
             return Some((slot.value.clone(), slot.origin.clone()));
         }
         key.default_value(&self.roots)
@@ -274,7 +274,7 @@ impl Settings {
 
     /// 写入一个值；只有优先级不低于已有来源时才生效。
     pub(crate) fn store(&mut self, key: Key, value: SettingValue, origin: Origin) {
-        let slot = &mut self.slots[key.index()];
+        let slot = &mut self.slots[key.idx()];
         if slot
             .as_ref()
             .is_none_or(|existing| origin.rank() >= existing.origin.rank())

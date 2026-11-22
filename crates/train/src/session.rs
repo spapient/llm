@@ -8,7 +8,7 @@ use tensor::{DType, Shape};
 
 use crate::dist::Distributed;
 use crate::optimizer::{Optimizer, Slot};
-use crate::pool::Buffers;
+use crate::pool::Bufs;
 use crate::schedule::Schedule as LrSchedule;
 use crate::{Data, Kernel};
 use snapshot::{GradAccum, Ties};
@@ -144,7 +144,7 @@ impl ParamSlot {
 pub struct Session<K: Kernel, O: Optimizer, C: Collective = shard::Remote> {
     tape: Tape,
     sizes: Sizes,
-    buffers: Buffers<K>,
+    bufs: Bufs<K>,
     optimizer: O,
     distributed: Distributed<C>,
     backward: autograd::Schedule,
@@ -192,11 +192,11 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
             crate::Anneal::default(),
             0.0,
         )?;
-        let buffers = Buffers::new(sizes.clone(), kernel);
+        let bufs = Bufs::new(sizes.clone(), kernel);
         Ok(Self {
             tape,
             sizes,
-            buffers,
+            bufs,
             optimizer,
             distributed,
             backward: autograd::Schedule::default(),
@@ -232,7 +232,7 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
         let (shape, dtype) = self.shape_for(var)?;
         self.require_f32_initial(var, shape, dtype, &initial)?;
         let matrix = matrix_of(shape);
-        self.buffers
+        self.bufs
             .load(var, Data::F32(initial.clone()))
             .map_err(|error| error.with(SITE))?;
         self.slots.push(ParamSlot {
@@ -332,7 +332,7 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
     ///
     /// 前向值或上游梯度不在场、账本顺序不符，或遇到尚未接反向公式的算子时透传对应错误。
     pub fn backward(&mut self) -> Result<()> {
-        crate::backprop::backprop(&mut self.buffers, &self.tape, &self.backward)
+        crate::backprop::backprop(&mut self.bufs, &self.tape, &self.backward)
     }
 
     /// 已登记的参数槽。
@@ -341,20 +341,20 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
     }
 
     /// 激活/参数缓冲（前向装载与重算走这里）。
-    pub fn buffers(&mut self) -> &mut Buffers<K> {
-        &mut self.buffers
+    pub fn bufs(&mut self) -> &mut Bufs<K> {
+        &mut self.bufs
     }
 
     /// 装入一个参数槽的当前梯度；长度与形状校验在缓冲侧完成。
     pub fn load_gradient(&mut self, var: Var, grads: &[f32]) -> Result<()> {
-        self.buffers
+        self.bufs
             .load_gradient(var, grads)
             .map_err(|error| error.with(SITE))
     }
 
     /// 把一批微批梯度累加进窗口：窗口未满前梯度逐批相加，不覆盖上一批。
     pub fn accumulate_gradient(&mut self, var: Var, grads: &[f32]) -> Result<()> {
-        self.buffers
+        self.bufs
             .accumulate_gradient(var, grads)
             .map_err(|error| error.with(SITE))
     }
@@ -371,7 +371,7 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
             .slots
             .iter()
             .map(|slot| {
-                self.buffers
+                self.bufs
                     .gradient(slot.var())
                     .map(|grads| grads.to_vec())
                     .unwrap_or_default()
@@ -392,12 +392,12 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
 
     /// 清空全部梯度缓冲；参数值与激活不动。
     pub fn zero_gradients(&mut self) {
-        self.buffers.clear_gradients();
+        self.bufs.clear_gradients();
     }
 
     /// 记录一条 loss（取 f32 缓冲的均值），供趋势对账。
     pub fn record_loss(&mut self, loss: Var) -> Result<f32> {
-        let view = self.buffers.value(loss).ok_or_else(|| {
+        let view = self.bufs.value(loss).ok_or_else(|| {
             Error::new(Code::Missing, format!("loss 变量 {} 不在场", loss.id())).with(SITE)
         })?;
         let Some(values) = view.f32() else {
@@ -470,7 +470,7 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
     /// 窗口已满：汇总梯度 → 组内同步 → 优化器步进 → 镜像参数 → 清空梯度，步号 +1。
     fn step_once(&mut self) -> Result<()> {
         let lr = self.lr_schedule.lr(self.config.learning_rate, self.step);
-        let mut views = Self::collect_views(&mut self.slots, &mut self.buffers)?;
+        let mut views = Self::collect_views(&mut self.slots, &mut self.bufs)?;
         let mut grads: Vec<&mut [f32]> = views.iter_mut().map(|slot| slot.grads.as_mut()).collect();
         self.distributed
             .sync_grads(&mut grads)
@@ -480,8 +480,8 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
             .step(&mut slots, lr)
             .map_err(|error| error.with(SITE))?;
         // 视图参数是取走时的拷贝：步进结果整块写回槽位、梯度向量归还缓冲，再镜像参数。
-        Self::return_views(&mut self.slots, &mut self.buffers, views);
-        Self::mirror_params(&self.slots, &mut self.buffers)?;
+        Self::return_views(&mut self.slots, &mut self.bufs, views);
+        Self::mirror_params(&self.slots, &mut self.bufs)?;
         self.zero_gradients();
         self.step = self.step.saturating_add(1);
         Ok(())
@@ -489,8 +489,8 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
 
     /// 登记权重绑定：回填时 `tied` 槽整块复制 `source` 槽的当前参数值（嵌入表与输出头共享权重的接缝）。
     pub fn register_tie(&mut self, source: Var, tied: Var) -> Result<()> {
-        let source = self.slot_index(source)?;
-        let tied = self.slot_index(tied)?;
+        let source = self.slot_idx(source)?;
+        let tied = self.slot_idx(tied)?;
         self.check_tie_length(source, tied)?;
         self.ties.push((source, tied));
         Ok(())
@@ -503,12 +503,12 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
             let values = self.slots[source].params().to_vec();
             self.slots[tied].params_mut().copy_from_slice(&values);
         }
-        Self::mirror_params(&self.slots, &mut self.buffers)?;
+        Self::mirror_params(&self.slots, &mut self.bufs)?;
         Ok(())
     }
 
     /// 槽下标：未登记的变量不是参数槽（[`Code::Invalid`]）。
-    fn slot_index(&self, var: Var) -> Result<usize> {
+    fn slot_idx(&self, var: Var) -> Result<usize> {
         self.slots
             .iter()
             .position(|slot| slot.var() == var)

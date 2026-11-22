@@ -40,42 +40,42 @@ pub(super) fn parse_space_set(
     Ok(set)
 }
 /// 一条 `[[provides]]`：认得的键各有分支，其余一律当属性（键还要过 [`AttrKey`] 闭集）。
-pub(super) fn parse_provide(entry: &Table, index: usize) -> Result<Provide, ProfileError> {
-    let mut provide = head_of(entry, index)?;
-    provide_axes(&mut provide, entry, index)?;
-    provide_types(&mut provide, entry, index)?;
-    provide_tail(&mut provide, entry, index)?;
+pub(super) fn parse_provide(entry: &Table, idx: usize) -> Result<Provide, ProfileError> {
+    let mut provide = head_of(entry, idx)?;
+    provide_axes(&mut provide, entry, idx)?;
+    provide_types(&mut provide, entry, idx)?;
+    provide_tail(&mut provide, entry, idx)?;
     Ok(provide)
 }
 /// 一条 `[[provides]]` 的头两项：`prim` 必填且必须在闭集里，`impl` 缺省为 `-`。
-fn head_of(entry: &Table, index: usize) -> Result<Provide, ProfileError> {
-    let field = at(index, "prim");
+fn head_of(entry: &Table, idx: usize) -> Result<Provide, ProfileError> {
+    let field = at(idx, "prim");
     let prim = closed::<Prim>(text(entry, "prim", field)?, field)?;
     Ok(Provide::of(prim, entry.string("impl").unwrap_or("-")))
 }
 /// 三条区间：主维度（`m` / `bytes` / `extent` 三选一）与 `n` / `k`。
-fn provide_axes(provide: &mut Provide, entry: &Table, index: usize) -> Result<(), ProfileError> {
-    provide.extent = span_of(entry, index, &["m", "bytes", "extent"], EXTENT_DETAIL)?;
-    provide.n = span_of(entry, index, &["n"], AXIS_DETAIL)?;
-    provide.k = span_of(entry, index, &["k"], AXIS_DETAIL)?;
+fn provide_axes(provide: &mut Provide, entry: &Table, idx: usize) -> Result<(), ProfileError> {
+    provide.extent = span_of(entry, idx, &["m", "bytes", "extent"], EXTENT_DETAIL)?;
+    provide.n = span_of(entry, idx, &["n"], AXIS_DETAIL)?;
+    provide.k = span_of(entry, idx, &["k"], AXIS_DETAIL)?;
     Ok(())
 }
 /// `dt` / `space` 缺省为空集，`grade` 必填。
-fn provide_types(provide: &mut Provide, entry: &Table, index: usize) -> Result<(), ProfileError> {
-    provide.dt = dtype_set(entry, index)?;
-    provide.space = space_set(entry, index)?;
-    provide.grade = grade_of(entry, index)?;
+fn provide_types(provide: &mut Provide, entry: &Table, idx: usize) -> Result<(), ProfileError> {
+    provide.dt = dtype_set(entry, idx)?;
+    provide.space = space_set(entry, idx)?;
+    provide.grade = grade_of(entry, idx)?;
     Ok(())
 }
 /// 见证与其余属性：两者都只在签名写完之后才看得懂。
-fn provide_tail(provide: &mut Provide, entry: &Table, index: usize) -> Result<(), ProfileError> {
-    provide.witness = witness_of(entry, index)?;
-    attrs(entry, index, provide)
+fn provide_tail(provide: &mut Provide, entry: &Table, idx: usize) -> Result<(), ProfileError> {
+    provide.witness = witness_of(entry, idx)?;
+    attrs(entry, idx, provide)
 }
 /// 一组同义维度：没写就是不限，多写就是错，写了就要能解析。
 pub(super) fn span_of(
     entry: &Table,
-    index: usize,
+    idx: usize,
     names: &[&str],
     detail: &str,
 ) -> Result<Span, ProfileError> {
@@ -88,20 +88,20 @@ pub(super) fn span_of(
         let count = used.len();
         let aliases = "主维度有三个同义名字（`m` / `bytes` / `extent`），只能写一个";
         let detail = format!("{aliases}，这里写了 {count}");
-        return Err(bad(at(index, alias), detail));
+        return Err(bad(at(idx, alias), detail));
     }
-    let field = at(index, alias);
+    let field = at(idx, alias);
     let Some(text) = entry.string(alias) else {
         return Err(bad(field, detail));
     };
     parse_span(field, text)
 }
 /// `dt`：标量或数组都接受，闭集外取值报 `Unknown`。
-pub(super) fn dtype_set(entry: &Table, index: usize) -> Result<DTypeSet, ProfileError> {
+pub(super) fn dtype_set(entry: &Table, idx: usize) -> Result<DTypeSet, ProfileError> {
     let Some(value) = entry.get("dt") else {
         return Ok(DTypeSet::empty());
     };
-    let field = at(index, "dt");
+    let field = at(idx, "dt");
     let mut set = DTypeSet::empty();
     each_name(field, value, |name| {
         set.insert(closed_dtype(field, name)?);
@@ -114,11 +114,11 @@ pub(super) fn closed_dtype(path: impl fmt::Display, name: &str) -> Result<DType,
     DType::parse_name(name).ok_or_else(|| unknown(path, name, &dtype_names()))
 }
 /// `space`：标量或数组都接受，缺省是空集（无存储层约束）。
-pub(super) fn space_set(entry: &Table, index: usize) -> Result<SpaceSet, ProfileError> {
+pub(super) fn space_set(entry: &Table, idx: usize) -> Result<SpaceSet, ProfileError> {
     let Some(value) = entry.get("space") else {
         return Ok(SpaceSet::empty());
     };
-    let field = at(index, "space");
+    let field = at(idx, "space");
     let mut set = SpaceSet::empty();
     each_name(field, value, |name| {
         set.insert(closed::<Space>(name, field)?);
@@ -127,19 +127,19 @@ pub(super) fn space_set(entry: &Table, index: usize) -> Result<SpaceSet, Profile
     Ok(set)
 }
 /// `grade`：必填，闭集外取值报 `Unknown`。
-pub(super) fn grade_of(entry: &Table, index: usize) -> Result<Grade, ProfileError> {
-    let path = at(index, "grade");
+pub(super) fn grade_of(entry: &Table, idx: usize) -> Result<Grade, ProfileError> {
+    let path = at(idx, "grade");
     closed::<Grade>(text(entry, "grade", path)?, &path)
 }
 /// `witness`：内联表 `{ file, func, expect }`；只有路径的见证无法执行。
-pub(super) fn witness_of(entry: &Table, index: usize) -> Result<Option<Witness>, ProfileError> {
+pub(super) fn witness_of(entry: &Table, idx: usize) -> Result<Option<Witness>, ProfileError> {
     let Some(table) = entry.table("witness") else {
         if entry.contains("witness") {
-            return Err(bad(at(index, "witness"), WITNESS_DETAIL));
+            return Err(bad(at(idx, "witness"), WITNESS_DETAIL));
         }
         return Ok(None);
     };
-    Ok(Some(witness_fields(table, |key| witness_at(index, key))?))
+    Ok(Some(witness_fields(table, |key| witness_at(idx, key))?))
 }
 /// 见证的三个字段：`file` / `func` 必填，`expect` 是数值数组。字段路径由调用方给，
 /// 报错位置因此落在声明它的那一段里。
@@ -168,12 +168,12 @@ pub(super) fn expect_number(value: &Value, path: impl fmt::Display) -> Result<f3
 /// 其余键一律视为枚举型属性；闭集外的键直接报错，避免"写了但没人看"。
 pub(super) fn attrs(
     entry: &Table,
-    index: usize,
+    idx: usize,
     provide: &mut Provide,
 ) -> Result<(), ProfileError> {
     for (key, value) in entry.entries() {
         if !parsed_key(key) {
-            provide.attrs.push(one_attr(index, key, value)?);
+            provide.attrs.push(one_attr(idx, key, value)?);
         }
     }
     Ok(())
@@ -184,17 +184,17 @@ pub(super) fn parsed_key(key: &str) -> bool {
     parsed.split('|').any(|name| name == key)
 }
 /// 一条属性：键在 [`AttrKey`] 闭集里，取值按标量或数组展开。
-pub(super) fn one_attr(index: usize, key: &str, value: &Value) -> Result<Attr, ProfileError> {
-    let attr_key = closed::<AttrKey>(key, &at(index, key))?;
-    Ok(Attr::new(attr_key, attr_values(index, key, value)?))
+pub(super) fn one_attr(idx: usize, key: &str, value: &Value) -> Result<Attr, ProfileError> {
+    let attr_key = closed::<AttrKey>(key, &at(idx, key))?;
+    Ok(Attr::new(attr_key, attr_values(idx, key, value)?))
 }
 /// 属性取值：标量或数组；表在这里没有意义。
 pub(super) fn attr_values(
-    index: usize,
+    idx: usize,
     key: &str,
     value: &Value,
 ) -> Result<Vec<String>, ProfileError> {
-    let path = at(index, key);
+    let path = at(idx, key);
     match value {
         Value::Array(items) => items.iter().map(|item| one_string(path, item)).collect(),
         Value::Table(_) => Err(bad(path, "属性不能是表")),

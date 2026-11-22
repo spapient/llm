@@ -77,9 +77,9 @@ fn offset(strides: &Strides, shape: &Shape, linear: usize) -> usize {
         if dim == 0 {
             return 0;
         }
-        let index = rest % dim;
+        let idx = rest % dim;
         rest /= dim;
-        offset = offset.saturating_add(index.saturating_mul(strides.get(axis).unwrap_or(0)));
+        offset = offset.saturating_add(idx.saturating_mul(strides.get(axis).unwrap_or(0)));
     }
     offset
 }

@@ -3,29 +3,29 @@
 use super::*;
 
 #[test]
-fn cpu_allocator_allocates_zeroed_buffer() {
+fn cpu_allocator_allocates_zeroed_buf() {
     let mut alloc = CpuAllocator::new();
-    let buffer = alloc.alloc(5).expect("分配");
-    assert_eq!(buffer.len(), 5);
-    assert_eq!(buffer.bytes(), &[0; 5]);
-    alloc.free(buffer);
+    let buf = alloc.alloc(5).expect("分配");
+    assert_eq!(buf.len(), 5);
+    assert_eq!(buf.bytes(), &[0; 5]);
+    alloc.free(buf);
 }
 
 #[test]
-fn allocator_buffer_is_writable() {
+fn allocator_buf_is_writable() {
     let mut alloc = CpuAllocator::new();
-    let mut buffer = alloc.alloc(3).expect("分配");
-    buffer.bytes_mut().copy_from_slice(&[1, 2, 3]);
-    assert_eq!(buffer.bytes(), &[1, 2, 3]);
-    let bytes = buffer.into_bytes();
+    let mut buf = alloc.alloc(3).expect("分配");
+    buf.bytes_mut().copy_from_slice(&[1, 2, 3]);
+    assert_eq!(buf.bytes(), &[1, 2, 3]);
+    let bytes = buf.into_bytes();
     assert_eq!(bytes, vec![1, 2, 3]);
 }
 
 #[test]
-fn zero_allocation_yields_an_empty_buffer() {
+fn zero_allocation_yields_an_empty_buf() {
     let mut alloc = CpuAllocator::new();
-    let buffer = alloc.alloc(0).expect("零长度");
-    assert!(buffer.is_empty());
+    let buf = alloc.alloc(0).expect("零长度");
+    assert!(buf.is_empty());
 }
 
 #[test]

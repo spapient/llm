@@ -2,11 +2,11 @@
 
 use crate::compare::close_scalar;
 
-/// 误差最大的那个元素：`index` 是它在切片里的下标，`got` / `want` 是两边的原值。
+/// 误差最大的那个元素：`idx` 是它在切片里的下标，`got` / `want` 是两边的原值。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Worst {
     /// 元素在切片里的下标。
-    pub index: usize,
+    pub idx: usize,
     /// 被测侧的值。
     pub got: f32,
     /// 参考侧的值。
@@ -115,7 +115,7 @@ fn pairing_agrees(got: f32, want: f32) -> bool {
 
 /// 单元素读数 `(判据值, 绝对误差, 分母, 该元素)`；逐元素相等时为 [`None`]（不占最差点）。
 fn element_reading(
-    index: usize,
+    idx: usize,
     got: f32,
     want: f32,
     denom: f64,
@@ -125,7 +125,7 @@ fn element_reading(
         return None;
     }
     let value = if denom == 0.0 { diff } else { diff / denom };
-    Some((value, diff, denom, Worst { index, got, want }))
+    Some((value, diff, denom, Worst { idx, got, want }))
 }
 
 /// 长度已校验后的累加：第一处非有限值不一致立刻定论，否则取判据值最大的元素。
@@ -137,15 +137,15 @@ fn tally(got: &[f32], want: &[f32], scale: Scale, batch: f64) -> RelErr {
         mismatched: false,
     };
     let mut best = f64::NEG_INFINITY;
-    for (index, (&got, &want)) in got.iter().zip(want).enumerate() {
+    for (idx, (&got, &want)) in got.iter().zip(want).enumerate() {
         if !pairing_agrees(got, want) {
             report.err = f64::INFINITY;
-            report.worst = Some(Worst { index, got, want });
+            report.worst = Some(Worst { idx, got, want });
             report.mismatched = true;
             return report;
         }
         let Some((value, diff, denom, worst)) =
-            element_reading(index, got, want, denominator(scale, batch, want))
+            element_reading(idx, got, want, denominator(scale, batch, want))
         else {
             continue;
         };
@@ -209,14 +209,14 @@ fn complaint(
     if report.mismatched {
         return format!(
             "{what} 对拍失败：第 {} 个元素非有限值不一致（got {:?}，want {:?}），max_rel_err=inf",
-            at.index, at.got, at.want
+            at.idx, at.got, at.want
         );
     }
     format!(
         "{what} 对拍失败：max_rel_err={:.3e} > {tolerance:.3e}（第 {} 个元素 got={} want={}，\
          分母 {label}={:.3e}）",
         report.ratio(),
-        at.index,
+        at.idx,
         at.got,
         at.want,
         report.scale,

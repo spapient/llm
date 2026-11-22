@@ -427,7 +427,7 @@ impl QType {
 impl Format for QType {
     const ALL: &'static [Self] = QType::ALL;
 
-    fn index(self) -> usize {
+    fn idx(self) -> usize {
         self as usize
     }
 

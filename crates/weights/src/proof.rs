@@ -92,7 +92,7 @@ pub struct Sha256 {
     /// 当前链变量。
     state: [u32; 8],
     /// 未凑满 64 字节的缓冲。
-    buffer: [u8; 64],
+    buf: [u8; 64],
     /// 缓冲中已用字节。
     fill: usize,
     /// 已处理总长度（字节），用于最终填充。
@@ -111,7 +111,7 @@ impl Sha256 {
     pub fn new() -> Self {
         Self {
             state: H0,
-            buffer: [0u8; 64],
+            buf: [0u8; 64],
             fill: 0,
             total: 0,
         }
@@ -126,11 +126,11 @@ impl Sha256 {
         if self.fill > 0 {
             let need = 64 - self.fill;
             let take = need.min(input.len());
-            self.buffer[self.fill..self.fill + take].copy_from_slice(&input[..take]);
+            self.buf[self.fill..self.fill + take].copy_from_slice(&input[..take]);
             self.fill += take;
             input = &input[take..];
             if self.fill == 64 {
-                let block = self.buffer;
+                let block = self.buf;
                 compress(&mut self.state, &block);
                 self.fill = 0;
             }
@@ -146,7 +146,7 @@ impl Sha256 {
 
         // 记下尾部不足一块的部分。
         if !input.is_empty() {
-            self.buffer[..input.len()].copy_from_slice(input);
+            self.buf[..input.len()].copy_from_slice(input);
             self.fill = input.len();
         }
     }
@@ -156,22 +156,22 @@ impl Sha256 {
     pub fn finish(mut self) -> Digest {
         let bit_len = self.total.wrapping_mul(8);
         // 附加 0x80。
-        self.buffer[self.fill] = 0x80;
+        self.buf[self.fill] = 0x80;
         self.fill += 1;
         // 剩余空间放不下 8 字节长度时，先补零压一块再开新块。
         if self.fill > 56 {
-            for slot in &mut self.buffer[self.fill..] {
+            for slot in &mut self.buf[self.fill..] {
                 *slot = 0;
             }
-            let block = self.buffer;
+            let block = self.buf;
             compress(&mut self.state, &block);
             self.fill = 0;
         }
-        for slot in &mut self.buffer[self.fill..56] {
+        for slot in &mut self.buf[self.fill..56] {
             *slot = 0;
         }
-        self.buffer[56..64].copy_from_slice(&bit_len.to_be_bytes());
-        let block = self.buffer;
+        self.buf[56..64].copy_from_slice(&bit_len.to_be_bytes());
+        let block = self.buf;
         compress(&mut self.state, &block);
 
         let mut out = [0u8; HASH_LEN];
@@ -303,7 +303,7 @@ pub(crate) fn root(leaves: &[Digest]) -> Digest {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Proof {
     /// 叶子在原列表的下标。
-    index: usize,
+    idx: usize,
     /// 兄弟节点，按从叶子到根的顺序。
     siblings: Vec<Digest>,
 }
@@ -311,8 +311,8 @@ pub struct Proof {
 impl Proof {
     /// 叶子在原列表的下标。
     #[must_use]
-    pub fn index(&self) -> usize {
-        self.index
+    pub fn idx(&self) -> usize {
+        self.idx
     }
 
     /// 兄弟节点，按从叶子到根的顺序。
@@ -324,12 +324,12 @@ impl Proof {
 
 /// 生成下标的包含证明；下标越界返回 None。
 #[must_use]
-pub(crate) fn prove(leaves: &[Digest], index: usize) -> Option<Proof> {
-    if index >= leaves.len() {
+pub(crate) fn prove(leaves: &[Digest], idx: usize) -> Option<Proof> {
+    if idx >= leaves.len() {
         return None;
     }
     let mut level = leaves.to_vec();
-    let mut idx = index;
+    let mut idx = idx;
     let mut siblings = Vec::new();
     while level.len() > 1 {
         pad(&mut level);
@@ -338,14 +338,14 @@ pub(crate) fn prove(leaves: &[Digest], index: usize) -> Option<Proof> {
         level = fold(level);
         idx /= 2;
     }
-    Some(Proof { index, siblings })
+    Some(Proof { idx, siblings })
 }
 
 /// 仅用一个叶子哈希、包含证明和根验证归属，不接触其他张量。
 #[must_use]
 pub(crate) fn verify_proof(leaf_hash: &Digest, proof: &Proof, merkle_root: &Digest) -> bool {
     let mut node = *leaf_hash;
-    let mut idx = proof.index;
+    let mut idx = proof.idx;
     for sibling in &proof.siblings {
         node = if idx.is_multiple_of(2) {
             pair(&node, sibling)

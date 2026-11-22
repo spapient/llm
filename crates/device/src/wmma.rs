@@ -163,7 +163,7 @@ fn input_pair(signature: &Signature) -> Result<(&str, &str)> {
     let reads: Vec<&str> = signature
         .params()
         .iter()
-        .filter(|param| param.ctype.is_buffer() && !param.mutable)
+        .filter(|param| param.ctype.is_buf() && !param.mutable)
         .map(|param| param.name.as_str())
         .collect();
     match reads.as_slice() {
@@ -199,7 +199,7 @@ fn shape(signature: &Signature, sample: &Sample) -> Result<(usize, usize, usize)
     for param in signature
         .params()
         .iter()
-        .filter(|param| !param.ctype.is_buffer())
+        .filter(|param| !param.ctype.is_buf())
     {
         values.push(scalar_of(param, sample)?);
     }

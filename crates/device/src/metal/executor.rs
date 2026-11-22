@@ -122,13 +122,13 @@ mod harness;
 mod tests;
 
 /// 一条 Metal 共享缓冲句柄（+1 保留，`Drop` 释放）；`contents` 是 CPU 可访问的字节视图。
-pub struct MetalBuffer {
+pub struct MetalBuf {
     pub(super) raw: *mut c_void,
     pub(super) contents: *mut u8,
     pub(super) len: usize,
 }
 
-impl MetalBuffer {
+impl MetalBuf {
     /// CPU 可访问的字节长度。
     pub fn len(&self) -> usize {
         self.len
@@ -146,7 +146,7 @@ impl MetalBuffer {
     }
 }
 
-impl Drop for MetalBuffer {
+impl Drop for MetalBuf {
     fn drop(&mut self) {
         unsafe { release(self.raw) };
     }
@@ -169,19 +169,19 @@ pub struct MetalCommandQueue {
 }
 
 impl MetalCommandQueue {
-    /// 执行一条计算管线：把 `buffers` 按数组下标绑定（`setBuffer:offset:atIndex:`，offset=0），
+    /// 执行一条计算管线：把 `bufs` 按数组下标绑定（`setBuffer:offset:atIndex:`，offset=0），
     /// 以 `(grid, block)` 几何派发（`dispatchThreads:threadsPerThreadgroup:`），`commit` 后
     /// `waitUntilCompleted` 同步等完。
     pub fn execute(
         &self,
         pipeline: &MetalPipeline,
-        buffers: &[&MetalBuffer],
+        bufs: &[&MetalBuf],
         grid: [u32; 3],
         block: [u32; 3],
     ) -> bool {
         // `commandBuffer` / `computeCommandEncoder` 返回自动释放对象，包一层池统一释放。
         let pool = unsafe { objc_autoreleasePoolPush() };
-        let ok = self.execute_with_pool(pipeline, buffers, grid, block);
+        let ok = self.execute_with_pool(pipeline, bufs, grid, block);
         unsafe { objc_autoreleasePoolPop(pool) };
         ok
     }
@@ -191,7 +191,7 @@ impl MetalCommandQueue {
     fn execute_with_pool(
         &self,
         pipeline: &MetalPipeline,
-        buffers: &[&MetalBuffer],
+        bufs: &[&MetalBuf],
         grid: [u32; 3],
         block: [u32; 3],
     ) -> bool {
@@ -209,11 +209,11 @@ impl MetalCommandQueue {
                 selector(b"setComputePipelineState:\0"),
                 pipeline.raw,
             );
-            for (i, buffer) in buffers.iter().enumerate() {
+            for (i, buf) in bufs.iter().enumerate() {
                 msg_void_p2u(
                     encoder,
                     selector(b"setBuffer:offset:atIndex:\0"),
-                    buffer.raw,
+                    buf.raw,
                     0,
                     i,
                 );
@@ -239,7 +239,7 @@ impl MetalCommandQueue {
             msg_void(cmd, selector(b"waitUntilCompleted\0"));
             // 派发本身成功不代表内核跑成了：越界、共享内存超限、张量布局不合法都会让命令
             // 缓冲以 error 收场，而缓冲内容保持原样。不查状态就会把「没写」当成「写错」。
-            if msg_usize(cmd, selector(b"status\0")) == COMMAND_BUFFER_COMPLETED {
+            if msg_usize(cmd, selector(b"status\0")) == COMMAND_BUF_COMPLETED {
                 return true;
             }
             report(&msg_id(cmd, selector(b"error\0")));

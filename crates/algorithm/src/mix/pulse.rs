@@ -73,7 +73,7 @@ pub fn encode_id<S: Scalar>(y: &[S]) -> Vec<S> {
 pub struct Events<S: Scalar> {
     width: usize,
     scale: S,
-    indices: Vec<usize>,
+    idxs: Vec<usize>,
     codes: Vec<i8>,
 }
 
@@ -85,7 +85,7 @@ impl<S: Scalar> Events<S> {
 
     /// 发放的位置数 `N_active`。
     pub fn active(&self) -> usize {
-        self.indices.len()
+        self.idxs.len()
     }
 
     /// E14 的冻结定义：`S = 1 − N_active/N_total`。
@@ -93,15 +93,15 @@ impl<S: Scalar> Events<S> {
         if self.width == 0 {
             return 1.0;
         }
-        1.0 - self.indices.len() as f64 / self.width as f64
+        1.0 - self.idxs.len() as f64 / self.width as f64
     }
 
     /// 发放位置，严格升序。
-    pub fn indices(&self) -> &[usize] {
-        &self.indices
+    pub fn idxs(&self) -> &[usize] {
+        &self.idxs
     }
 
-    /// 与 [`Events::indices`] 一一对应的整数码。
+    /// 与 [`Events::idxs`] 一一对应的整数码。
     pub fn codes(&self) -> &[i8] {
         &self.codes
     }
@@ -114,7 +114,7 @@ impl<S: Scalar> Events<S> {
     /// 还原成稠密张量：发放位置取 `code·scale`，其余位置为零。
     pub fn decode(&self) -> Vec<S> {
         let mut y = vec![S::ZERO; self.width];
-        for (&at, &code) in self.indices.iter().zip(&self.codes) {
+        for (&at, &code) in self.idxs.iter().zip(&self.codes) {
             y[at] = self.scale.mul(S::from_f64(f64::from(code)));
         }
         y
@@ -167,19 +167,19 @@ impl<S: Scalar> Encoder<S> {
     /// 于是一个坏值静默变成「不发放」。
     pub fn encode(&self, y: &[S]) -> Result<Events<S>> {
         check_finite(y)?;
-        let mut indices = Vec::new();
+        let mut idxs = Vec::new();
         let mut codes = Vec::new();
         for (at, &value) in y.iter().enumerate() {
             let code = self.quantize(value);
             if i32::from(code).abs() >= self.threshold {
-                indices.push(at);
+                idxs.push(at);
                 codes.push(code);
             }
         }
         Ok(Events {
             width: y.len(),
             scale: self.scale,
-            indices,
+            idxs,
             codes,
         })
     }
@@ -309,7 +309,7 @@ pub fn accumulate<S: Scalar>(
     for (row, slot) in out.iter_mut().enumerate() {
         let line = &w[row * cols..(row + 1) * cols];
         *slot = events
-            .indices()
+            .idxs()
             .iter()
             .zip(events.codes())
             .fold(0i32, |acc, (&at, &code)| {

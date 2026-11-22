@@ -136,7 +136,7 @@ fn op_matches_reference_at(op_name: &str, shape: Option<(usize, usize)>) {
             .signature
             .params()
             .iter()
-            .find(|param| !param.ctype.is_buffer())
+            .find(|param| !param.ctype.is_buf())
             .expect("逐点单标量")
             .name
             .clone();
@@ -148,7 +148,7 @@ fn op_matches_reference_at(op_name: &str, shape: Option<(usize, usize)>) {
     }
     let launch = engine::exec::Launch::new(grid, [1, 1, 1]);
     let mut node = engine::exec::Node::new(op_name, launch);
-    bind_decl_buffers(&mut executor, &mut node, decl, &sample, expected.len());
+    bind_decl_bufs(&mut executor, &mut node, decl, &sample, expected.len());
 
     let output = submit_read(&mut executor, node, decl, expected.len());
 
@@ -198,7 +198,7 @@ fn op_chunked_reduce_matches_reference(op_name: &str) {
 
     let launch = engine::exec::Launch::new([grid_size, 1, 1], [1, 1, 1]);
     let mut node = engine::exec::Node::new(op_name, launch);
-    bind_decl_buffers(&mut executor, &mut node, &decl, &sample, grid_size as usize);
+    bind_decl_bufs(&mut executor, &mut node, &decl, &sample, grid_size as usize);
 
     let partials = submit_read(&mut executor, node, &decl, grid_size as usize);
 
@@ -326,7 +326,7 @@ fn op_chunked_scan_matches_reference(op_name: &str) {
         .register(&correct_name, &correct_msl)
         .expect("注册校正内核");
 
-    // 槽位约定（同 buffer_decls 的签名序）：0 = 只读输入 x，1 = 可写输出 y。
+    // 槽位约定（同 buf_decls 的签名序）：0 = 只读输入 x，1 = 可写输出 y。
     let input = sample.f32("x").expect("扫描输入");
     bind_f32(&mut executor, 0, input);
     executor
@@ -347,7 +347,7 @@ fn op_chunked_scan_matches_reference(op_name: &str) {
 
     // 阶段 2（主机）：从局部扫描输出读块末态，做块级携带前缀。
     let local = {
-        let bytes = executor.buffer_mut(1).expect("局部扫描可读").as_mut_bytes();
+        let bytes = executor.buf_mut(1).expect("局部扫描可读").as_mut_bytes();
         read_f32(bytes, expected.len())
     };
     let mut carry = vec![0.0f64; grid_size as usize];
@@ -373,7 +373,7 @@ fn op_chunked_scan_matches_reference(op_name: &str) {
     executor.sync(stream).expect("同步校正");
 
     let output = {
-        let bytes = executor.buffer_mut(1).expect("输出可读").as_mut_bytes();
+        let bytes = executor.buf_mut(1).expect("输出可读").as_mut_bytes();
         read_f32(bytes, expected.len())
     };
     assert_close("分块扫描", op_name, &output, &expected, model.dtype);
@@ -417,7 +417,7 @@ fn op_chunked_rmsnorm_matches_reference(op_name: &str) {
         .register(&map_name, &map_msl)
         .expect("注册归一化内核");
 
-    // 槽位（同 buffer_decls 签名序）：0 = x、1 = gamma、2 = y（部分和临时占 y 前 G 个槽）。
+    // 槽位（同 buf_decls 签名序）：0 = x、1 = gamma、2 = y（部分和临时占 y 前 G 个槽）。
     let x = sample.f32("x").expect("rmsnorm 输入 x");
     let gamma = sample.f32("gamma").expect("rmsnorm 权重 gamma");
     bind_f32(&mut executor, 0, x);
@@ -435,7 +435,7 @@ fn op_chunked_rmsnorm_matches_reference(op_name: &str) {
     executor.sync(stream).expect("同步部分平方和");
 
     let partials = {
-        let bytes = executor.buffer_mut(2).expect("部分和可读").as_mut_bytes();
+        let bytes = executor.buf_mut(2).expect("部分和可读").as_mut_bytes();
         read_f32(bytes, grid_size as usize)
     };
     let sum_sq = partials
@@ -457,7 +457,7 @@ fn op_chunked_rmsnorm_matches_reference(op_name: &str) {
     executor.sync(stream).expect("同步归一化");
 
     let output = {
-        let bytes = executor.buffer_mut(2).expect("输出可读").as_mut_bytes();
+        let bytes = executor.buf_mut(2).expect("输出可读").as_mut_bytes();
         read_f32(bytes, expected.len())
     };
     assert_close("分块归一化", op_name, &output, &expected, model.dtype);
@@ -513,7 +513,7 @@ fn op_chunked_softmax_matches_reference(op_name: &str) {
     let stream = engine::exec::Stream::new(0);
     let launch = engine::exec::Launch::new([grid_size, 1, 1], [1, 1, 1]);
     let read_partials = |executor: &mut ::device::metal::executor::MetalExecutor| {
-        let bytes = executor.buffer_mut(1).expect("部分结果可读").as_mut_bytes();
+        let bytes = executor.buf_mut(1).expect("部分结果可读").as_mut_bytes();
         read_f32(bytes, grid_size as usize)
     };
 
@@ -553,7 +553,7 @@ fn op_chunked_softmax_matches_reference(op_name: &str) {
     executor.sync(stream).expect("同步归一化");
 
     let output = {
-        let bytes = executor.buffer_mut(1).expect("输出可读").as_mut_bytes();
+        let bytes = executor.buf_mut(1).expect("输出可读").as_mut_bytes();
         read_f32(bytes, expected.len())
     };
     assert_close("分块 softmax", op_name, &output, &expected, model.dtype);

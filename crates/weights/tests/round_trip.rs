@@ -18,11 +18,11 @@ fn safetensors_file(json: &str, data: &[u8]) -> Vec<u8> {
 }
 
 /// 给每个 wire 类型造一个 `n` 元素的段，数据填递增字节，长度正好是形状推出的字节数。
-fn segment_of(wire: Wire, index: usize) -> Segment {
+fn segment_of(wire: Wire, idx: usize) -> Segment {
     let numel = 11u64; // 奇数，顺带钉亚字节类型的向上取整
     let bytes = wire.bytes_for(numel) as usize;
     let data: Vec<u8> = (0..bytes)
-        .map(|b| (b as u8).wrapping_add(index as u8))
+        .map(|b| (b as u8).wrapping_add(idx as u8))
         .collect();
     Segment::new(format!("seg_{index}"), wire, vec![numel], None, data).expect("段自洽")
 }
@@ -44,15 +44,15 @@ fn write_pair(prefix: &str) -> std::path::PathBuf {
 #[test]
 fn every_wire_type_round_trips_byte_for_byte() {
     let mut writer = Writer::new();
-    for (index, wire) in Wire::ALL.iter().enumerate() {
-        writer.push(segment_of(*wire, index)).expect("追加");
+    for (idx, wire) in Wire::ALL.iter().enumerate() {
+        writer.push(segment_of(*wire, idx)).expect("追加");
     }
     let bytes = writer.finish(6).expect("64 B 对齐");
     let archive = Archive::parse(&bytes).expect("自证合法");
     assert_eq!(archive.segments().len(), Wire::ALL.len());
 
-    for (index, wire) in Wire::ALL.iter().enumerate() {
-        let expected = segment_of(*wire, index);
+    for (idx, wire) in Wire::ALL.iter().enumerate() {
+        let expected = segment_of(*wire, idx);
         let stored = archive.get(&format!("seg_{index}")).expect("按名查");
         assert_eq!(stored.dtype(), *wire);
         assert_eq!(stored.shape(), &[11]);
@@ -133,8 +133,8 @@ fn checksums_can_be_disabled_and_then_a_flip_survives() {
 #[test]
 fn merkle_proofs_round_trip_and_bind_names() {
     let mut writer = Writer::new();
-    for index in 0..5 {
-        writer.push(segment_of(Wire::F32, index)).expect("追加");
+    for idx in 0..5 {
+        writer.push(segment_of(Wire::F32, idx)).expect("追加");
     }
     let writer_root = writer.merkle_root();
     let bytes = writer.finish(6).expect("产出");
@@ -143,10 +143,10 @@ fn merkle_proofs_round_trip_and_bind_names() {
     // 写端与读端在同一逻辑内容上得到同一根。
     assert_eq!(writer_root, archive_root);
 
-    for index in 0..5 {
-        let proof = archive.prove(index).expect("证明");
+    for idx in 0..5 {
+        let proof = archive.prove(idx).expect("证明");
         assert!(
-            archive.verify(index, &proof, &archive_root).expect("验证"),
+            archive.verify(idx, &proof, &archive_root).expect("验证"),
             "下标 {index} 应包含于根"
         );
     }
@@ -186,9 +186,9 @@ fn a_mapped_file_opens_without_copying_into_memory() {
     let map = storage::Mmap::open(&target).expect("映射");
     let archive = Archive::parse(map.as_slice()).expect("映射字节合法");
     assert_eq!(archive.segments().len(), 2);
-    for index in 0..2 {
-        let stored = &archive.segments()[index];
-        let expected = segment_of(if index == 0 { Wire::F32 } else { Wire::F16 }, index);
+    for idx in 0..2 {
+        let stored = &archive.segments()[idx];
+        let expected = segment_of(if idx == 0 { Wire::F32 } else { Wire::F16 }, idx);
         assert_eq!(
             archive.load(stored).expect("加载").as_ref(),
             expected.data.as_slice()

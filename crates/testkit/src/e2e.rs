@@ -8,7 +8,7 @@ use autograd::{Sizes, Store, Tape};
 use nn::{Contract, Stack};
 use op::{gemv_f32, gemv_i2, gemv_i4, gemv_i8};
 use tensor::{DType, Shape};
-use train::{Buffers, Data, Reference};
+use train::{Bufs, Data, Reference};
 use weights::ptq::{self, I2, I4, I8};
 use weights::safetensors::Archive;
 
@@ -119,7 +119,7 @@ fn the_layer_declaration_agrees_with_the_container() {
 }
 
 #[test]
-fn the_training_buffer_computes_the_scalar_reference_of_the_same_weights() {
+fn the_training_buf_computes_the_scalar_reference_of_the_same_weights() {
     let bytes = fixture();
     let archive = Archive::parse(&bytes).expect("解析");
     let entry = archive.header().get(NAMES[0]).expect("秩 2 条目");
@@ -140,7 +140,7 @@ fn the_training_buffer_computes_the_scalar_reference_of_the_same_weights() {
     );
     sizes.set(y, Shape::new([layer.out_features()]), DType::F32);
 
-    let mut store = Buffers::new(sizes, Reference);
+    let mut store = Bufs::new(sizes, Reference);
     store.load(x, Data::F32(INPUT.to_vec())).expect("输入");
     store.load(w, Data::F32(weight.clone())).expect("权重");
     store.compute("gemv_f32", &[w, x], y).expect("算");

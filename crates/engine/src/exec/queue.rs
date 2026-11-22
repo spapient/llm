@@ -243,14 +243,14 @@ impl Executor for LocalExecutor {
 
 /// 一段已绑定缓冲的存储形态：32 位浮点，或按位打包的字节（i4/i8 lane）。
 #[derive(Debug, Clone, PartialEq)]
-pub enum Buffer {
+pub enum Buf {
     /// 32 位浮点。
     F32(Vec<f32>),
     /// 按位打包的整型：i8 逐元素一字节，i4 每字节两个 nibble；字节序与内核一致。
     U8(Vec<u8>),
 }
 
-impl Buffer {
+impl Buf {
     /// 当成 `f32` 读；不是浮点缓冲时为 `None`。
     pub fn f32(&self) -> Option<&[f32]> {
         match self {

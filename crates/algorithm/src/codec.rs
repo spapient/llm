@@ -117,16 +117,16 @@ impl<S: Scalar> ByteEncoder<S> {
         Ok(out)
     }
 
-    /// 第 `index` 个字节的 N-gram 向量：逐字节生成时的**本地上下文**。
+    /// 第 `idx` 个字节的 N-gram 向量：逐字节生成时的**本地上下文**。
     ///
     /// 取的是池化用的同一份逐字节向量（同一套哈希、同一组阶、同一张表），不因为"要走的是残差"
     /// 再算一套；宽度与 patch 表示相同，于是两者可以直接相加。
     ///
     /// # Errors
     ///
-    /// `index` 越出 `bytes` 时返回 `Code::Invalid`：越界下标取窗口会在切片处炸。
-    pub fn glyph(&self, bytes: &[u8], index: usize) -> Result<Vec<S>> {
-        if index >= bytes.len() {
+    /// `idx` 越出 `bytes` 时返回 `Code::Invalid`：越界下标取窗口会在切片处炸。
+    pub fn glyph(&self, bytes: &[u8], idx: usize) -> Result<Vec<S>> {
+        if idx >= bytes.len() {
             return Err(Error::new(
                 Code::Invalid,
                 format!(
@@ -137,7 +137,7 @@ impl<S: Scalar> ByteEncoder<S> {
             .with(SITE));
         }
         let mut out = vec![S::ZERO; self.dim()];
-        self.vector(bytes, index, &mut out);
+        self.vector(bytes, idx, &mut out);
         Ok(out)
     }
 

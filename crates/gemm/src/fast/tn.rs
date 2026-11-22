@@ -1,6 +1,6 @@
 //! 线性层布局（TN）的稠密 f32 GEMM：`out[rows,n] = x[rows,k] · w[n,k]ᵀ`。
 use super::pack::pack_panels;
-use super::pool::{Buffers, Shape, pool, run_pooled};
+use super::pool::{Bufs, Shape, pool, run_pooled};
 use super::{KB, Layout, MR, NR, Span, Sweep, edge, sweep_columns, threads_override};
 
 /// 走这条入口的最少行数：一个完整微内核行块。再少的批只有残行（标量），打包的转置成本摊不回来，
@@ -58,7 +58,7 @@ fn pooled_tn(
     super::with_panels(npad * k, |buf| {
         run_pooled(
             pool(),
-            Buffers {
+            Bufs {
                 a: x.as_ptr() as *const u8,
                 b: w.as_ptr() as *const u8,
                 buf: buf.as_mut_ptr() as *mut u8,

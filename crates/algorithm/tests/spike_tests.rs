@@ -69,7 +69,7 @@ fn the_event_path_and_the_dense_path_agree_bitwise() {
         .expect("参数合法")
         .encode(&[0.0, 0.9, -1.4])
         .expect("合法输入");
-    assert_eq!(events.indices(), &[1, 2]);
+    assert_eq!(events.idxs(), &[1, 2]);
     // 事件码的符号：0.9/0.5 → +1，−1.4/0.5 → −2 → 符号 −1。
     let mut driven = layer.membrane();
     let mut sparse = [0i8; 2];
@@ -280,8 +280,8 @@ fn both_surrogate_shapes_have_unit_area_and_nothing_outside_the_window() {
     let steps = 1000;
     for shape in [rect, triangle] {
         let mut area = 0.0f32;
-        for index in 0..steps {
-            let offset = -0.5 + (index as f32 + 0.5) / steps as f32;
+        for idx in 0..steps {
+            let offset = -0.5 + (idx as f32 + 0.5) / steps as f32;
             area += shape.derivative(offset, 0.0) / steps as f32;
         }
         assert!((area - 1.0).abs() < 1e-2, "{shape:?} 的面积 {area}");
@@ -366,7 +366,7 @@ fn channels_outside_the_window_take_no_gradient_at_all() {
 }
 
 #[test]
-fn the_backward_step_rejects_bad_inputs_before_touching_the_buffer() {
+fn the_backward_step_rejects_bad_inputs_before_touching_the_buf() {
     let layer = single();
     let mut state = layer.membrane();
     let mut out = [0i8; 1];
@@ -471,7 +471,7 @@ fn a_non_positive_learning_rate_is_rejected() {
 }
 
 #[test]
-fn a_gradient_buffer_of_another_shape_is_rejected() {
+fn a_gradient_buf_of_another_shape_is_rejected() {
     let wide = quiet(vec![1, 1, 1, 1], vec![1.0, 1.0], 2, 2);
     let layer = quiet(vec![1, 1], vec![1.0], 2, 1);
     let mut state = layer.membrane();

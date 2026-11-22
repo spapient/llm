@@ -125,12 +125,12 @@ pub(crate) fn decode(c: &mut Criterion) {
 /// 一个历史长度的一对内核。
 fn hist_pair(c: &mut Criterion, hist: usize) {
     let kv_len = hist * D;
-    let q: Vec<f32> = (0..D).map(|index| -0.5 + index as f32 * 0.13).collect();
+    let q: Vec<f32> = (0..D).map(|idx| -0.5 + idx as f32 * 0.13).collect();
     let k: Vec<f32> = (0..kv_len)
-        .map(|index| 0.4 - index as f32 * 0.009)
+        .map(|idx| 0.4 - idx as f32 * 0.009)
         .collect();
     let v: Vec<f32> = (0..kv_len)
-        .map(|index| -0.2 + index as f32 * 0.011)
+        .map(|idx| -0.2 + idx as f32 * 0.011)
         .collect();
     let mut out = vec![0.0f32; D];
 

@@ -17,11 +17,11 @@ fn device_and_queue_round_trip_without_crashing() {
 
 /// 共享缓冲分配 + CPU 读写回读：写进去的字节原样读回，证明设备内存与 CPU 视图是同一块内存。
 #[test]
-fn shared_buffer_round_trip_reads_written_bytes() {
+fn shared_buf_round_trip_reads_written_bytes() {
     let Some(device) = MetalDevice::system_default() else {
         return;
     };
-    let Some(mut buf) = device.new_buffer(16) else {
+    let Some(mut buf) = device.new_buf(16) else {
         panic!("分配共享缓冲失败");
     };
     let expect: [u8; 16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
@@ -64,7 +64,7 @@ kernel void kernel_main(device float* out [[buffer(0)]], uint id [[thread_positi
         panic!("有设备必有命令队列");
     };
     // 4 个 f32 = 16 字节。
-    let mut out = device.new_buffer(16).expect("分配输出缓冲失败");
+    let mut out = device.new_buf(16).expect("分配输出缓冲失败");
     assert!(
         queue.execute(&pipeline, &[&out], [4, 1, 1], [1, 1, 1]),
         "派发应成功"

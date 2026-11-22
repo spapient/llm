@@ -145,8 +145,8 @@ impl Catalogue {
     /// 重复标识：`vendor`/`id` 都对上的两份档案谁都不该赢。
     fn duplicates(&self) -> Vec<Error> {
         let mut errors = Vec::new();
-        for (index, profile) in self.profiles.iter().enumerate() {
-            for other in &self.profiles[index + 1..] {
+        for (idx, profile) in self.profiles.iter().enumerate() {
+            for other in &self.profiles[idx + 1..] {
                 if same_profile(profile, other) {
                     errors.push(Error::new(
                         Code::Invalid,

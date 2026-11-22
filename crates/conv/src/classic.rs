@@ -3,7 +3,7 @@
 
 use crate::Scalar;
 use crate::conv::ConvGeom;
-use crate::model::{Buffer, Cost, Sample, ShapeCtx, Values, x_buffer};
+use crate::model::{Buf, Cost, Sample, ShapeCtx, Values, x_buf};
 use diagnostic::Error;
 use llm_gemm::unary::{AXES, project_shape};
 
@@ -94,9 +94,9 @@ fn window_sample(in_len: usize, out_len: usize) -> Sample {
         m: out_len,
         n: out_len,
         scalars: vec![("N", out_len as i64)],
-        buffers: vec![
-            x_buffer(in_len),
-            Buffer {
+        bufs: vec![
+            x_buf(in_len),
+            Buf {
                 name: "y",
                 values: Values::F32(vec![0.0; out_len]),
             },
@@ -128,17 +128,17 @@ fn norm_sample(
         m: total,
         n: total,
         scalars,
-        buffers: vec![
-            x_buffer(total),
-            Buffer {
+        bufs: vec![
+            x_buf(total),
+            Buf {
                 name: "gamma",
                 values: Values::F32(vec![gamma; channels]),
             },
-            Buffer {
+            Buf {
                 name: "beta",
                 values: Values::F32(vec![beta; channels]),
             },
-            Buffer {
+            Buf {
                 name: "y",
                 values: Values::F32(vec![0.0; total]),
             },

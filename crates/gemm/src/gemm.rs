@@ -2,7 +2,7 @@
 
 use crate::einsum::Bits;
 use crate::gemv::Element;
-use crate::model::{AxisRole, AxisSpec, Buffer, Cost, Sample, ShapeCtx, Values};
+use crate::model::{AxisRole, AxisSpec, Buf, Cost, Sample, ShapeCtx, Values};
 use crate::quant::Row;
 use diagnostic::{Code, Error};
 
@@ -121,10 +121,10 @@ pub trait Gemm {
 
 /// 从样本里取输入缓冲：名字固定 `a` / `b`，元素类型由格式给出。
 fn take<'a, G: Gemm>(sample: &'a Sample, name: &str) -> Result<&'a [G::Elem], Error> {
-    let buffer = sample
-        .buffer(name)
+    let buf = sample
+        .buf(name)
         .ok_or_else(|| Error::new(Code::Missing, format!("样本里没有缓冲 `{name}`")))?;
-    G::Elem::borrow(&buffer.values).ok_or_else(|| {
+    G::Elem::borrow(&buf.values).ok_or_else(|| {
         Error::new(
             Code::Invalid,
             format!(
@@ -158,10 +158,10 @@ pub fn sample<G: Gemm>(m: usize, n: usize) -> Sample {
         m,
         n,
         scalars: vec![("M", m as i64), ("K", K as i64), ("N", n as i64)],
-        buffers: vec![
-            G::Elem::buffer("a", G::sample_a(m)),
-            G::Elem::buffer("b", G::sample_b(n)),
-            Buffer {
+        bufs: vec![
+            G::Elem::buf("a", G::sample_a(m)),
+            G::Elem::buf("b", G::sample_b(n)),
+            Buf {
                 name: "y",
                 values: Values::F32(vec![0.0; m * n]),
             },
@@ -311,7 +311,7 @@ fn exact(af: &[f32], bf: &[f32], k: usize, n: usize, i: usize, j: usize) -> (f64
 /// 把元素读成 f32；打包格式（`u8` 元素）返回空，由调用方按 `k = 0` 自行失败。
 #[cfg(test)]
 fn f32_values<G: Gemm>(values: &[G::Elem]) -> Vec<f32> {
-    match G::Elem::buffer("v", values.to_vec()).values {
+    match G::Elem::buf("v", values.to_vec()).values {
         Values::F32(v) => v,
         _ => Vec::new(),
     }

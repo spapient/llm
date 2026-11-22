@@ -34,11 +34,11 @@ impl Host for Fake {
 #[test]
 fn specs_line_up_with_the_rows() {
     assert_eq!(Row::ALL.len(), SPECS.len(), "六行不缺不多");
-    for (index, row) in Row::ALL.iter().enumerate() {
-        assert_eq!(*row as usize, index, "判别式必须等于表下标");
+    for (idx, row) in Row::ALL.iter().enumerate() {
+        assert_eq!(*row as usize, idx, "判别式必须等于表下标");
         assert_eq!(
             row.as_str(),
-            SPECS[index].name,
+            SPECS[idx].name,
             "{} 的名字与表错位",
             row.as_str()
         );

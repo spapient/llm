@@ -166,7 +166,7 @@ impl Table {
         };
         match last.1 {
             None => table.set_key(last.0, value),
-            Some(index) => table.set_index(last.0, index, value),
+            Some(idx) => table.set_idx(last.0, idx, value),
         }
     }
 
@@ -184,8 +184,8 @@ impl Table {
 
     /// 删除一个键，返回值。
     pub fn remove(&mut self, key: &str) -> Option<Value> {
-        let index = self.entries.iter().position(|(name, _)| name == key)?;
-        Some(self.entries.remove(index).1)
+        let idx = self.entries.iter().position(|(name, _)| name == key)?;
+        Some(self.entries.remove(idx).1)
     }
 
     /// 路径最后一段的宿主表：无父级就是自己。
@@ -207,12 +207,12 @@ impl Table {
         }
     }
 
-    /// 替换数组里的第 `index` 项；越界或类型不符时静默不写。
-    fn set_index(&mut self, key: &str, index: usize, value: Value) {
+    /// 替换数组里的第 `idx` 项；越界或类型不符时静默不写。
+    fn set_idx(&mut self, key: &str, idx: usize, value: Value) {
         let Some(Value::Array(items)) = self.get_mut(key) else {
             return;
         };
-        if let Some(slot) = items.get_mut(index) {
+        if let Some(slot) = items.get_mut(idx) {
             *slot = value;
         }
     }
@@ -279,10 +279,10 @@ fn segments(path: &str) -> Vec<(&str, Option<usize>)> {
     path.split('.')
         .map(|segment| match segment.split_once('[') {
             Some((name, rest)) => {
-                let index = rest
+                let idx = rest
                     .strip_suffix(']')
                     .and_then(|digits| digits.parse().ok());
-                (name, index)
+                (name, idx)
             }
             None => (segment, None),
         })
@@ -290,18 +290,18 @@ fn segments(path: &str) -> Vec<(&str, Option<usize>)> {
 }
 
 /// 对一步路径取值（只处理下标，不带键名）。
-fn step(value: &Value, index: Option<usize>) -> Option<&Value> {
-    match (value, index) {
+fn step(value: &Value, idx: Option<usize>) -> Option<&Value> {
+    match (value, idx) {
         (value, None) => Some(value),
-        (Value::Array(items), Some(index)) => items.get(index),
+        (Value::Array(items), Some(idx)) => items.get(idx),
         (_, Some(_)) => None,
     }
 }
 
-fn step_mut(value: &mut Value, index: Option<usize>) -> Option<&mut Value> {
-    match (value, index) {
+fn step_mut(value: &mut Value, idx: Option<usize>) -> Option<&mut Value> {
+    match (value, idx) {
         (value, None) => Some(value),
-        (Value::Array(items), Some(index)) => items.get_mut(index),
+        (Value::Array(items), Some(idx)) => items.get_mut(idx),
         (_, Some(_)) => None,
     }
 }

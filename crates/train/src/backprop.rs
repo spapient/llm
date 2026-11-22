@@ -5,59 +5,59 @@ use diagnostic::{Code, Error, Result};
 
 use crate::geometry::Geometry;
 use crate::kernel::{Kernel, same_str};
-use crate::pool::Buffers;
+use crate::pool::Bufs;
 
 /// 本模块诊断站点。
 pub(crate) const SITE: &str = "train::backprop";
 
 /// 按已规划的 [`Schedule`] 回传梯度：起点 loss 梯度为全 `1`，逐节点分配到图上输入。
 ///
-/// 梯度累加进 `buffers` 的梯度槽；图外（需求为无梯度）输入不收账。
+/// 梯度累加进 `bufs` 的梯度槽；图外（需求为无梯度）输入不收账。
 ///
 /// # Errors
 ///
 /// 前向值/上游梯度不在场、账本顺序不符，或遇到尚未接反向公式的算子时返回对应 [`Code`]。
 pub(crate) fn backprop<K: Kernel>(
-    buffers: &mut Buffers<K>,
+    bufs: &mut Bufs<K>,
     tape: &Tape,
     schedule: &Schedule,
 ) -> Result<()> {
-    // 暂存从缓冲区里借出：`Ctx` 持只读快照、`apply_formula` 要 `&mut buffers`，
+    // 暂存从缓冲区里借出：`Ctx` 持只读快照、`apply_formula` 要 `&mut bufs`，
     // 同一结构无法同时借，故把暂存放在独立结构里逐节点复用——稳态不再向分配器要内存。
-    let mut scratch = std::mem::take(&mut buffers.scratch);
-    seed_loss(buffers, schedule.loss(), &mut scratch)?;
+    let mut scratch = std::mem::take(&mut bufs.scratch);
+    seed_loss(bufs, schedule.loss(), &mut scratch)?;
     let mut account = schedule.account();
     for step in schedule.steps() {
-        reverse_step(buffers, tape, step, &mut scratch)?;
+        reverse_step(bufs, tape, step, &mut scratch)?;
         account.settle(step).map_err(|error| error.with(SITE))?;
     }
-    buffers.scratch = scratch;
+    bufs.scratch = scratch;
     Ok(())
 }
 
 /// 单节点反向：取上游梯度、装配公式上下文，查表执行并把逐输入贡献喂回梯度槽。
 fn reverse_step<K: Kernel>(
-    buffers: &mut Buffers<K>,
+    bufs: &mut Bufs<K>,
     tape: &Tape,
     step: &Node,
     scratch: &mut Scratch,
 ) -> Result<()> {
-    copy_into(&mut scratch.incoming, incoming(buffers, step)?);
-    collect_inputs(buffers, step, &mut scratch.inputs)?;
-    copy_into(&mut scratch.output, values(buffers, step.output())?);
+    copy_into(&mut scratch.incoming, incoming(bufs, step)?);
+    collect_inputs(bufs, step, &mut scratch.inputs)?;
+    copy_into(&mut scratch.output, values(bufs, step.output())?);
     let ctx = Ctx {
         incoming: &scratch.incoming,
         inputs: &scratch.inputs,
         output: &scratch.output,
-        geometry: buffers.geometry(step.output()),
+        geometry: bufs.geometry(step.output()),
     };
-    apply_formula(buffers, tape, step, ctx)
+    apply_formula(bufs, tape, step, ctx)
 }
 
 /// 反向逐节点复用的暂存：容量只增不减，热路径上不再逐节点向分配器要内存。
 ///
-/// 三者都是本节点前向快照的只读副本，故与 `Buffers` 分开持有：一份借不冲突的读视图，
-/// 一份可写缓冲区，36 条公式因此仍然只吃 `Ctx`、不碰 `Buffers`。
+/// 三者都是本节点前向快照的只读副本，故与 `Bufs` 分开持有：一份借不冲突的读视图，
+/// 一份可写缓冲区，36 条公式因此仍然只吃 `Ctx`、不碰 `Bufs`。
 #[derive(Debug, Default)]
 pub(crate) struct Scratch {
     incoming: Vec<f32>,
@@ -86,21 +86,21 @@ fn copy_into(dst: &mut Vec<f32>, src: &[f32]) {
 
 /// 把各输入的前向值整块拷出只读快照；任一前向值不在场即回缺失。
 fn collect_inputs<K: Kernel>(
-    buffers: &Buffers<K>,
+    bufs: &Bufs<K>,
     step: &Node,
     out: &mut Vec<Vec<f32>>,
 ) -> Result<()> {
     let inputs = step.inputs();
     out.resize_with(inputs.len(), Vec::new);
     for (slot, &input) in out.iter_mut().zip(inputs) {
-        copy_into(slot, values(buffers, input)?);
+        copy_into(slot, values(bufs, input)?);
     }
     Ok(())
 }
 
 /// 按算子名查公式目录执行，把返回的逐输入贡献喂回对应梯度槽；未登记公式即拒绝。
 fn apply_formula<K: Kernel>(
-    buffers: &mut Buffers<K>,
+    bufs: &mut Bufs<K>,
     tape: &Tape,
     step: &Node,
     ctx: Ctx<'_>,
@@ -108,14 +108,14 @@ fn apply_formula<K: Kernel>(
     let formula = lookup(step.op())?;
     let contributions = formula(ctx)?;
     for (&input, contrib) in step.inputs().iter().zip(contributions) {
-        feed(buffers, tape, input, contrib)?;
+        feed(bufs, tape, input, contrib)?;
     }
     Ok(())
 }
 
 /// 记一份梯度贡献；图外输入没有梯度缓冲，直接丢弃。
 fn feed<K: Kernel>(
-    buffers: &mut Buffers<K>,
+    bufs: &mut Bufs<K>,
     tape: &Tape,
     var: Var,
     contrib: Vec<f32>,
@@ -124,7 +124,7 @@ fn feed<K: Kernel>(
         .requirement(var)
         .is_some_and(|requirement| !requirement.is_none());
     if receives {
-        buffers
+        bufs
             .accumulate_gradient(var, &contrib)
             .map_err(|error| error.with(SITE))?;
     }
@@ -132,19 +132,19 @@ fn feed<K: Kernel>(
 }
 
 /// loss 起点梯度：每个前向元素都从上游 `1` 出发。
-fn seed_loss<K: Kernel>(buffers: &mut Buffers<K>, loss: Var, scratch: &mut Scratch) -> Result<()> {
-    let width = values(buffers, loss)?.len();
+fn seed_loss<K: Kernel>(bufs: &mut Bufs<K>, loss: Var, scratch: &mut Scratch) -> Result<()> {
+    let width = values(bufs, loss)?.len();
     scratch.ones.clear();
     scratch.ones.resize(width, 1.0);
-    buffers
+    bufs
         .load_gradient(loss, &scratch.ones)
         .map_err(|error| error.with(SITE))?;
     Ok(())
 }
 
 /// 读变量在场的前向 f32 值；缺失是重放/装配口径问题。
-fn values<K: Kernel>(buffers: &Buffers<K>, var: Var) -> Result<&[f32]> {
-    buffers
+fn values<K: Kernel>(bufs: &Bufs<K>, var: Var) -> Result<&[f32]> {
+    bufs
         .value(var)
         .and_then(|view| view.f32())
         .ok_or_else(|| {
@@ -157,8 +157,8 @@ fn values<K: Kernel>(buffers: &Buffers<K>, var: Var) -> Result<&[f32]> {
 }
 
 /// 读节点输出已就位的上游梯度；缺失说明拓扑序上有前驱没回传到。
-fn incoming<'a, K: Kernel>(buffers: &'a Buffers<K>, step: &Node) -> Result<&'a [f32]> {
-    buffers.gradient(step.output()).ok_or_else(|| {
+fn incoming<'a, K: Kernel>(bufs: &'a Bufs<K>, step: &Node) -> Result<&'a [f32]> {
+    bufs.gradient(step.output()).ok_or_else(|| {
         Error::new(
             Code::Missing,
             format!("节点 {} 的上游梯度未就位", step.output().id()),

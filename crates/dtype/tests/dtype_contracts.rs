@@ -175,8 +175,8 @@ fn assert_identity<F>(unknown: &str)
 where
     F: Format + FromStr,
 {
-    for (index, format) in F::ALL.iter().enumerate() {
-        assert_eq!(format.index(), index, "{format:?} 的判别值必须等于行表下标");
+    for (idx, format) in F::ALL.iter().enumerate() {
+        assert_eq!(format.idx(), idx, "{format:?} 的判别值必须等于行表下标");
         assert_eq!(
             format.name().parse::<F>().ok(),
             Some(*format),
@@ -243,7 +243,7 @@ macro_rules! assert_one_table {
     ($format:ty, @identity) => {
         for format in <$format>::ALL {
             assert_eq!(
-                Format::index(*format),
+                Format::idx(*format),
                 *format as usize,
                 "{format:?} 的判别值必须等于行表下标"
             );
@@ -481,7 +481,7 @@ mod byte_view {
     {
         for format in F::ALL {
             let bytes = bytemuck::bytes_of(format);
-            let code = u8::try_from(format.index()).expect("闭集远小于 256 个变体");
+            let code = u8::try_from(format.idx()).expect("闭集远小于 256 个变体");
             assert_eq!(bytes, &[code], "{format:?} 写出的不是一字节判别值");
             assert_eq!(
                 bytemuck::checked::try_from_bytes::<F>(bytes).ok().copied(),
@@ -498,7 +498,7 @@ mod byte_view {
             match parsed {
                 Some(format) => {
                     assert_eq!(
-                        Format::index(format),
+                        Format::idx(format),
                         usize::from(code),
                         "{code} 读成了别的格式"
                     );

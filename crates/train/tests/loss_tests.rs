@@ -2,7 +2,7 @@ use crate::{argmax_hits, bce_with_logits, cross_entropy, hinge, huber, mse};
 use diagnostic::{Code, Result};
 
 #[test]
-fn mse_is_zero_for_identical_buffers() -> Result<()> {
+fn mse_is_zero_for_identical_bufs() -> Result<()> {
     let a = [1.0f32, -2.0, 3.5];
     assert!(mse(&a, &a)? == 0.0);
     let b = [1.0f32, -2.0, 4.5];
@@ -130,7 +130,7 @@ fn cross_entropy_stays_finite_on_extreme_logits() -> Result<()> {
 
 /// argmax 平局取首个命中的下标：相等时按下标最小一侧计数。
 #[test]
-fn argmax_breaks_ties_to_the_first_index() -> Result<()> {
+fn argmax_breaks_ties_to_the_first_idx() -> Result<()> {
     let logits = [5.0, 5.0, 0.0];
     let first_hit = argmax_hits(&logits, &[0.0], 3)?;
     assert_eq!(first_hit, (1, 1), "平局取下标 0");

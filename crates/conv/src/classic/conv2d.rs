@@ -43,9 +43,9 @@ pub fn sample(_: usize, _: usize) -> Sample {
         m: OH * OW,
         n: COUT,
         scalars: vec![("N", 1)],
-        buffers: vec![
-            x_buffer(H * W * CIN),
-            Buffer {
+        bufs: vec![
+            x_buf(H * W * CIN),
+            Buf {
                 name: "weight",
                 values: Values::F32(
                     (0..PATCH * COUT)
@@ -53,11 +53,11 @@ pub fn sample(_: usize, _: usize) -> Sample {
                         .collect(),
                 ),
             },
-            Buffer {
+            Buf {
                 name: "bias",
                 values: Values::F32(vec![0.4; COUT]),
             },
-            Buffer {
+            Buf {
                 name: "y",
                 values: Values::F32(vec![0.0; OH * OW * COUT]),
             },

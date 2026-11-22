@@ -19,13 +19,13 @@ pub use misc::{
 // ---------------------------------------------------------------------------
 
 /// 三条缓冲名（按签名序：A、B、Y）。
-fn gemm_buffers(signature: &Signature) -> Result<(&str, &str, &str)> {
-    let buffers: Vec<&Param> = signature
+fn gemm_bufs(signature: &Signature) -> Result<(&str, &str, &str)> {
+    let bufs: Vec<&Param> = signature
         .params()
         .iter()
-        .filter(|param| param.ctype.is_buffer())
+        .filter(|param| param.ctype.is_buf())
         .collect();
-    match buffers.as_slice() {
+    match bufs.as_slice() {
         [a, b, y] => Ok((a.name.as_str(), b.name.as_str(), y.name.as_str())),
         _ => Err(
             Error::new(Code::Internal, "GEMM 签名需要 3 个缓冲（A/B/Y）")
@@ -39,7 +39,7 @@ fn gemm_dims(signature: &Signature, sample: &Sample) -> Result<(usize, usize, us
     let scalars: Vec<&Param> = signature
         .params()
         .iter()
-        .filter(|param| !param.ctype.is_buffer())
+        .filter(|param| !param.ctype.is_buf())
         .collect();
     if scalars.len() != 3 {
         return Err(
@@ -69,13 +69,13 @@ fn dim(sample: &Sample, param: &Param) -> Result<usize> {
 }
 
 /// 四条缓冲名（按签名序：Q、K、V、Y）。
-fn attention_buffers(signature: &Signature) -> Result<(&str, &str, &str, &str)> {
-    let buffers: Vec<&Param> = signature
+fn attention_bufs(signature: &Signature) -> Result<(&str, &str, &str, &str)> {
+    let bufs: Vec<&Param> = signature
         .params()
         .iter()
-        .filter(|param| param.ctype.is_buffer())
+        .filter(|param| param.ctype.is_buf())
         .collect();
-    match buffers.as_slice() {
+    match bufs.as_slice() {
         [q, k, v, y] => Ok((
             q.name.as_str(),
             k.name.as_str(),
@@ -94,7 +94,7 @@ fn attention_dims(signature: &Signature, sample: &Sample) -> Result<(usize, usiz
     let scalars: Vec<&Param> = signature
         .params()
         .iter()
-        .filter(|param| !param.ctype.is_buffer())
+        .filter(|param| !param.ctype.is_buf())
         .collect();
     if scalars.len() != 2 {
         return Err(
@@ -163,7 +163,7 @@ pub fn metal_tensor_gemm(
     sample: &Sample,
     geometry: TensorGeometry,
 ) -> Result<String> {
-    let (a, b, y) = gemm_buffers(signature)?;
+    let (a, b, y) = gemm_bufs(signature)?;
     let (m, n, k) = gemm_dims(signature, sample)?;
     check_tensor_geometry(m, n, k, geometry)?;
     Ok(tensor_gemm_msl(a, b, y, m, n, k, geometry))

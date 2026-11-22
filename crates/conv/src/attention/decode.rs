@@ -432,7 +432,7 @@ pub mod semantics {
                 ("HIST", hist as i64),
                 ("D", d as i64),
             ],
-            buffers: crate::attention::sample_buffers(q_rows * d, hist * d),
+            bufs: crate::attention::sample_bufs(q_rows * d, hist * d),
         }
     }
 

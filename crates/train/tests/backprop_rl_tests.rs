@@ -33,19 +33,19 @@ fn distillation_kl_graph_matches_central_differences() -> Result<()> {
 
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(s, ParamRole::Trainable, s0.clone())?;
-    session.buffers().load(t, Data::F32(t0.clone()))?;
-    session.buffers().compute("softmax_f32", &[s], ps)?;
-    session.buffers().compute("softmax_f32", &[t], pt)?;
-    session.buffers().compute("log_f32", &[ps], lps)?;
-    session.buffers().compute("log_f32", &[pt], lpt)?;
-    session.buffers().compute("sub_f32", &[lps, lpt], diff)?;
-    session.buffers().compute("mul_f32", &[ps, diff], prod)?;
-    session.buffers().compute("reduce_sum_f32", &[prod], kl)?;
+    session.bufs().load(t, Data::F32(t0.clone()))?;
+    session.bufs().compute("softmax_f32", &[s], ps)?;
+    session.bufs().compute("softmax_f32", &[t], pt)?;
+    session.bufs().compute("log_f32", &[ps], lps)?;
+    session.bufs().compute("log_f32", &[pt], lpt)?;
+    session.bufs().compute("sub_f32", &[lps, lpt], diff)?;
+    session.bufs().compute("mul_f32", &[ps, diff], prod)?;
+    session.bufs().compute("reduce_sum_f32", &[prod], kl)?;
     session.plan(kl)?;
     session.backward()?;
 
     check_grad(
-        session.buffers().gradient(s).expect("s 梯度应在场"),
+        session.bufs().gradient(s).expect("s 梯度应在场"),
         &s0,
         "s",
         |s| kl_single_row(s, &t0),
@@ -99,31 +99,31 @@ fn grpo_clipped_surrogate_graph_matches_central_differences() -> Result<()> {
 
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(new, ParamRole::Trainable, new0.clone())?;
-    session.buffers().load(old, Data::F32(old0.clone()))?;
-    session.buffers().load(adv, Data::F32(adv0.clone()))?;
-    session.buffers().load(lo_leaf, Data::F32(vec![lo; N]))?;
-    session.buffers().load(hi_leaf, Data::F32(vec![hi; N]))?;
-    session.buffers().compute("sub_f32", &[new, old], diff)?;
-    session.buffers().compute("exp_f32", &[diff], ratio)?;
+    session.bufs().load(old, Data::F32(old0.clone()))?;
+    session.bufs().load(adv, Data::F32(adv0.clone()))?;
+    session.bufs().load(lo_leaf, Data::F32(vec![lo; N]))?;
+    session.bufs().load(hi_leaf, Data::F32(vec![hi; N]))?;
+    session.bufs().compute("sub_f32", &[new, old], diff)?;
+    session.bufs().compute("exp_f32", &[diff], ratio)?;
     session
-        .buffers()
+        .bufs()
         .compute("max_f32", &[ratio, lo_leaf], r_lo)?;
     session
-        .buffers()
+        .bufs()
         .compute("min_f32", &[r_lo, hi_leaf], r_clamp)?;
-    session.buffers().compute("mul_f32", &[ratio, adv], term1)?;
+    session.bufs().compute("mul_f32", &[ratio, adv], term1)?;
     session
-        .buffers()
+        .bufs()
         .compute("mul_f32", &[r_clamp, adv], term2)?;
     session
-        .buffers()
+        .bufs()
         .compute("min_f32", &[term1, term2], surr)?;
-    session.buffers().compute("reduce_sum_f32", &[surr], loss)?;
+    session.bufs().compute("reduce_sum_f32", &[surr], loss)?;
     session.plan(loss)?;
     session.backward()?;
 
     check_grad(
-        session.buffers().gradient(new).expect("new 梯度应在场"),
+        session.bufs().gradient(new).expect("new 梯度应在场"),
         &new0,
         "new",
         |new| clipped_surrogate_sum(new, &old0, &adv0, eps),
@@ -151,11 +151,11 @@ fn leaky_relu_chain_matches_central_differences() -> Result<()> {
 
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(p, ParamRole::Trainable, p0.clone())?;
-    session.buffers().compute("leaky_relu_f32", &[p], h)?;
+    session.bufs().compute("leaky_relu_f32", &[p], h)?;
     sum_backward(&mut session, h, loss)?;
 
     check_grad(
-        session.buffers().gradient(p).expect("参数梯度应在场"),
+        session.bufs().gradient(p).expect("参数梯度应在场"),
         &p0,
         "p",
         chain_loss,

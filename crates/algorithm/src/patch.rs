@@ -63,24 +63,24 @@ impl<S: Scalar> Boundary<S> {
         })
     }
 
-    /// 第 `index` 个字节是否开一个新的 patch——**只看 `0..=index`**，与 `index` 之后的字节无关。
+    /// 第 `idx` 个字节是否开一个新的 patch——**只看 `0..=idx`**，与 `idx` 之后的字节无关。
     ///
     /// 这是切分的唯一判定处：[`Boundary::split`] 就是把它对每个下标跑一遍，逐字节生成时也只问它。
     /// 于是前缀稳定性由同一条算式给出：后面的字节再多，也不能把已经定下的起点撤销。
     ///
     /// # Errors
     ///
-    /// 参数越界、`index` 不在 `0..scores.len()` 内（流式调用时最常见的错位），或 `index` 与
-    /// `index - 1` 的分数非有限——都返回 `Code::Invalid`。
-    pub fn opens(self, scores: &[S], index: usize) -> Result<bool> {
-        self.probe(scores, index)?;
-        Ok(index == 0 || self.breaks(scores, index))
+    /// 参数越界、`idx` 不在 `0..scores.len()` 内（流式调用时最常见的错位），或 `idx` 与
+    /// `idx - 1` 的分数非有限——都返回 `Code::Invalid`。
+    pub fn opens(self, scores: &[S], idx: usize) -> Result<bool> {
+        self.probe(scores, idx)?;
+        Ok(idx == 0 || self.breaks(scores, idx))
     }
 
     /// 入口校验：参数、下标与**本字节及前一个字节**的分数都在定义域内。
-    fn probe(self, scores: &[S], index: usize) -> Result<()> {
+    fn probe(self, scores: &[S], idx: usize) -> Result<()> {
         self.check()?;
-        if index >= scores.len() {
+        if idx >= scores.len() {
             return Err(Error::new(
                 Code::Invalid,
                 format!(
@@ -90,16 +90,16 @@ impl<S: Scalar> Boundary<S> {
             )
             .with(SITE));
         }
-        self.window(scores, index)
+        self.window(scores, idx)
     }
 
     /// 判定所需的两个字都必须在定义域内：放行 `NaN` 会让比较全部为假，一整段字节静默并成一个 patch。
-    fn window(self, scores: &[S], index: usize) -> Result<()> {
-        audit(index, scores[index])?;
-        if index == 0 {
+    fn window(self, scores: &[S], idx: usize) -> Result<()> {
+        audit(idx, scores[idx])?;
+        if idx == 0 {
             return Ok(());
         }
-        audit(index - 1, scores[index - 1])
+        audit(idx - 1, scores[idx - 1])
     }
 
     /// 参数自检：越界的参数不切分，也不被夹到边界值上。

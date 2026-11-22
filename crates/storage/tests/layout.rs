@@ -18,7 +18,7 @@ fn row_major_is_the_tensor_default_and_col_major_is_its_mirror() {
 }
 
 #[test]
-fn remap_transposes_a_row_major_buffer() {
+fn remap_transposes_a_row_major_buf() {
     let shape = Shape::new([2, 3]);
     let from = Layout::new(shape.clone(), Order::RowMajor);
     let to = Layout::new(shape.clone(), Order::ColMajor);
@@ -37,7 +37,7 @@ fn an_identity_layout_change_is_a_copy() {
 }
 
 #[test]
-fn mismatched_shapes_and_short_buffers_are_rejected() {
+fn mismatched_shapes_and_short_bufs_are_rejected() {
     let from = Layout::new(Shape::new([2, 3]), Order::RowMajor);
     let to = Layout::new(Shape::new([3, 2]), Order::ColMajor);
     assert_eq!(

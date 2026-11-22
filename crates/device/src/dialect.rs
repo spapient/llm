@@ -33,7 +33,7 @@ pub(crate) trait Dialect {
     fn device_fn(name: &str) -> String;
 
     /// 渲染一条缓冲形参声明；`slot` 是驱动侧 `setBuffer:atIndex:` / 拷贝的槽位序。
-    fn buffer_decl(param: &Param, slot: usize) -> String;
+    fn buf_decl(param: &Param, slot: usize) -> String;
 
     /// 内核入口关键字：Metal `kernel`，CUDA `__global__`。
     const ENTRY: &'static str;
@@ -51,15 +51,15 @@ pub(crate) trait Dialect {
     /// 由形参 [`Dialect::GRID_PARAM`] 提供）。
     const TID_INIT: &'static str;
 
-    /// 方言化的缓冲声明段：按签名序逐条问 [`Dialect::buffer_decl`]。Metal 带 `[[buffer(slot)]]`，
+    /// 方言化的缓冲声明段：按签名序逐条问 [`Dialect::buf_decl`]。Metal 带 `[[buf(slot)]]`，
     /// CUDA 不带；槽位序与驱动侧 `setBuffer:atIndex:` 同源。
-    fn buffers(signature: &Signature) -> String {
+    fn bufs(signature: &Signature) -> String {
         signature
             .params()
             .iter()
-            .filter(|param| param.ctype.is_buffer())
+            .filter(|param| param.ctype.is_buf())
             .enumerate()
-            .map(|(slot, param)| Self::buffer_decl(param, slot))
+            .map(|(slot, param)| Self::buf_decl(param, slot))
             .collect::<Vec<_>>()
             .join(",\n")
     }
@@ -107,7 +107,7 @@ pub(crate) trait Dialect {
     fn kernel_entry(
         source: &str,
         kernel: &str,
-        buffers: &str,
+        bufs: &str,
         tid: (&str, &str),
         body: &str,
         entry: &str,
@@ -141,7 +141,7 @@ pub(crate) trait Dialect {
         let scalars = signature
             .params()
             .iter()
-            .filter(|param| !param.ctype.is_buffer())
+            .filter(|param| !param.ctype.is_buf())
             .count();
         if scalars != 1 {
             return Err(Error::new(
@@ -154,7 +154,7 @@ pub(crate) trait Dialect {
             .with("engine::dialect::grid_kernel"));
         }
         let call = grid_args(signature.params());
-        let buffers = Self::buffers(signature);
+        let bufs = Self::bufs(signature);
         let body = match guard_len {
             Some(len) => format!(
                 "    if (n < {len}) {{\n        {}({call});\n    }}",
@@ -165,7 +165,7 @@ pub(crate) trait Dialect {
         Ok(Self::kernel_entry(
             kernel_source,
             &signature.kernel(),
-            &buffers,
+            &bufs,
             (Self::POINT_PARAM, Self::POINT_STMT),
             &body,
             "kernel_main",
@@ -204,14 +204,14 @@ pub(crate) trait Dialect {
         let input = read_input(signature)?;
         let output = output_name(signature)?;
         let len = length_scalar(signature, sample)?;
-        let buffers = Self::buffers(signature);
+        let bufs = Self::bufs(signature);
         let body = format!(
             "    int start = g * {chunk};\n    int len = min({chunk}, {len} - start);\n    d_{output}[g] = {reduce_func}(d_{input} + start, len, 1);"
         );
         Ok(Self::kernel_entry(
             kernel_source,
             &signature.kernel(),
-            &buffers,
+            &bufs,
             (Self::GRID_PARAM, Self::GRID_STMT),
             &body,
             entry,
@@ -226,12 +226,12 @@ pub(crate) trait Dialect {
         sample: &Sample,
     ) -> Result<String> {
         let call = launch_args(sample, signature.params())?;
-        let buffers = Self::buffers(signature);
+        let bufs = Self::bufs(signature);
         let body = format!("    {}({call});", signature.kernel());
         Ok(Self::kernel_entry(
             kernel_source,
             &signature.kernel(),
-            &buffers,
+            &bufs,
             ("", ""),
             &body,
             "kernel_main",
@@ -250,7 +250,7 @@ pub(crate) trait Dialect {
         entry: &str,
     ) -> Result<String> {
         let call = format!("{}, tid", launch_args(sample, signature.params())?);
-        let buffers = Self::buffers(signature);
+        let bufs = Self::bufs(signature);
         let param = if Self::GRID_PARAM.is_empty() {
             String::new()
         } else {

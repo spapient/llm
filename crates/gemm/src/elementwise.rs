@@ -1,7 +1,7 @@
 //! 逐元素二元骨架：`y[n] = op(a[n], b[n])`。
 
 use crate::formula::FormulaOwner;
-use crate::model::{Buffer, Cost, Sample, ShapeCtx, Values};
+use crate::model::{Buf, Cost, Sample, ShapeCtx, Values};
 use diagnostic::{Code, Error};
 
 // 单轴定义与形状投影复用一元骨架（与 dequant / softmax / rmsnorm / rope / scan 同一模式）。
@@ -36,16 +36,16 @@ pub fn sample<B: Binary>(len: usize, _: usize) -> Sample {
         m: len,
         n: len,
         scalars: vec![("N", len as i64)],
-        buffers: vec![
-            Buffer {
+        bufs: vec![
+            Buf {
                 name: "a",
                 values: Values::F32(B::input_a(len)),
             },
-            Buffer {
+            Buf {
                 name: "b",
                 values: Values::F32(B::input_b(len)),
             },
-            Buffer {
+            Buf {
                 name: "y",
                 values: Values::F32(vec![0.0; len]),
             },

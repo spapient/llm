@@ -46,10 +46,10 @@ pub(super) fn attention_inputs(s: usize, d: usize) -> (Vec<f32>, Vec<f32>, Vec<f
 
 /// 注意力基准的缓冲套件：Q/K/V 输入缓冲、Y 输出缓冲与 CPU 参考。
 pub(super) struct AttentionBench(
-    pub(super) MetalBuffer,
-    pub(super) MetalBuffer,
-    pub(super) MetalBuffer,
-    pub(super) MetalBuffer,
+    pub(super) MetalBuf,
+    pub(super) MetalBuf,
+    pub(super) MetalBuf,
+    pub(super) MetalBuf,
     pub(super) Vec<f32>,
 );
 
@@ -60,33 +60,33 @@ pub(super) fn attention_bench(device: &MetalDevice, s: usize, d: usize) -> Atten
         upload(device, &q, "Q"),
         upload(device, &k, "K"),
         upload(device, &v, "V"),
-        output_buffer(device, s * d, "Y"),
+        output_buf(device, s * d, "Y"),
         reference,
     )
 }
 
 /// 上传一路输入：共享缓冲按元素数 × 4 分配，`values` 原样拷进去（`label` 只进失败消息）。
-pub(super) fn upload(device: &MetalDevice, values: &[f32], label: &str) -> MetalBuffer {
+pub(super) fn upload(device: &MetalDevice, values: &[f32], label: &str) -> MetalBuf {
     let mut buf = device
-        .new_buffer(values.len() * 4)
+        .new_buf(values.len() * 4)
         .unwrap_or_else(|| panic!("{label} 缓冲"));
     buf.as_mut_bytes().copy_from_slice(&as_bytes(values));
     buf
 }
 
 /// 上传一段原始字节（int8 输入走这里，按字节而不是 f32 分配）。
-pub(super) fn upload_bytes(device: &MetalDevice, bytes: &[u8], label: &str) -> MetalBuffer {
+pub(super) fn upload_bytes(device: &MetalDevice, bytes: &[u8], label: &str) -> MetalBuf {
     let mut buf = device
-        .new_buffer(bytes.len())
+        .new_buf(bytes.len())
         .unwrap_or_else(|| panic!("{label} 缓冲"));
     buf.as_mut_bytes().copy_from_slice(bytes);
     buf
 }
 
 /// 开一路只由 GPU 写的输出缓冲：`len` 个 f32，内容留白（`label` 只进失败消息）。
-pub(super) fn output_buffer(device: &MetalDevice, len: usize, label: &str) -> MetalBuffer {
+pub(super) fn output_buf(device: &MetalDevice, len: usize, label: &str) -> MetalBuf {
     device
-        .new_buffer(len * 4)
+        .new_buf(len * 4)
         .unwrap_or_else(|| panic!("{label} 缓冲"))
 }
 
@@ -181,9 +181,9 @@ pub(super) struct Int8GemmBench {
     pub(super) n: usize,
     pub(super) k: usize,
     pub(super) reference: Vec<f32>,
-    pub(super) a: MetalBuffer,
-    pub(super) b: MetalBuffer,
-    pub(super) y: MetalBuffer,
+    pub(super) a: MetalBuf,
+    pub(super) b: MetalBuf,
+    pub(super) y: MetalBuf,
     pub(super) grid: [u32; 3],
 }
 
@@ -197,7 +197,7 @@ pub(super) fn int8_gemm_bench(device: &MetalDevice) -> Int8GemmBench {
     let (m, n, k) = (fixture.m, fixture.n, fixture.k);
     let a = upload_bytes(device, &fixture.a, "A-int8");
     let b = upload_bytes(device, &fixture.b, "B-int8");
-    let y = output_buffer(device, m * n, "Y-int8");
+    let y = output_buf(device, m * n, "Y-int8");
     Int8GemmBench {
         m,
         n,
@@ -341,15 +341,15 @@ pub(super) const SAMPLES: usize = 30;
 pub(super) fn measure(
     queue: &MetalCommandQueue,
     pipeline: &MetalPipeline,
-    buffers: &[&MetalBuffer],
+    bufs: &[&MetalBuf],
     grid: [u32; 3],
     block: [u32; 3],
 ) -> f64 {
-    queue.execute(pipeline, buffers, grid, block);
+    queue.execute(pipeline, bufs, grid, block);
     let mut samples = [0u128; SAMPLES];
     for slot in &mut samples {
         let start = std::time::Instant::now();
-        queue.execute(pipeline, buffers, grid, block);
+        queue.execute(pipeline, bufs, grid, block);
         *slot = start.elapsed().as_nanos();
     }
     samples.sort_unstable();
@@ -392,9 +392,9 @@ pub(super) fn assert_relaxed_matches(label: &str, reference: &[f32], output: &[u
 
 /// 张量核基准的每档形状夹具：`A`/`B` 上传、`B` 预转置成 half 的 `Bt`、输出缓冲、可选 CPU 参考。
 pub(super) struct TensorStage {
-    pub(super) a: MetalBuffer,
-    pub(super) bt: MetalBuffer,
-    pub(super) y: MetalBuffer,
+    pub(super) a: MetalBuf,
+    pub(super) bt: MetalBuf,
+    pub(super) y: MetalBuf,
     pub(super) reference: Option<Vec<f32>>,
 }
 
@@ -418,8 +418,8 @@ pub(super) fn tensor_stage(
     let (a, b) = matmul_values(m, n, k);
     let a_buf = upload(device, &a, "A");
     let b_buf = upload(device, &b, "B");
-    let bt_buf = device.new_buffer(n * k * 2).expect("Bt 缓冲");
-    let y_buf = output_buffer(device, m * n, "Y");
+    let bt_buf = device.new_buf(n * k * 2).expect("Bt 缓冲");
+    let y_buf = output_buf(device, m * n, "Y");
     // 布局前置：`B[K][N]` 的 f32 → `Bt[N][K]` 的 half，每个形状只跑一次。
     let transpose = crate::tiled::metal_transpose_half(k, n).expect("转置 MSL 应能生成");
     let transpose = device.compile(&transpose).expect("转置 MSL 应能编译");

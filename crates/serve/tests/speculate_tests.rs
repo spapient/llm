@@ -1,9 +1,9 @@
 use super::*;
 
-/// 一行里只有第 `index` 个位置是高分：argmax 可读。
-fn row(index: usize, width: usize) -> Vec<f32> {
+/// 一行里只有第 `idx` 个位置是高分：argmax 可读。
+fn row(idx: usize, width: usize) -> Vec<f32> {
     let mut logits = vec![0.0f32; width];
-    logits[index] = 9.0;
+    logits[idx] = 9.0;
     logits
 }
 

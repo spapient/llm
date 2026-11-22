@@ -1,12 +1,12 @@
-//! [`Buffer`]：一段拥有的扁平字节缓冲。
+//! [`Buf`]：一段拥有的扁平字节缓冲。
 
 /// 一段拥有的扁平字节缓冲：CPU 后端的不透明句柄。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Buffer {
+pub struct Buf {
     bytes: Vec<u8>,
 }
 
-impl Buffer {
+impl Buf {
     /// 由拥有的字节向量构造；长度即缓冲容量。
     pub fn from_bytes(bytes: Vec<u8>) -> Self {
         Self { bytes }

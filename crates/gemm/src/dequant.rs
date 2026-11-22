@@ -1,6 +1,6 @@
 //! 打包反量化骨架：每字节 `CPB` 个码，`y = scale · (code − zero)`。
 
-use crate::model::{Buffer, Cost, Sample, ShapeCtx, Values};
+use crate::model::{Buf, Cost, Sample, ShapeCtx, Values};
 use diagnostic::{Code, Error};
 
 // 单轴定义与形状投影复用 unary 骨架。
@@ -68,12 +68,12 @@ pub fn sample_packed(len: usize, cpb: usize) -> Sample {
         m: len,
         n: len,
         scalars: vec![("N", len as i64)],
-        buffers: vec![
-            Buffer {
+        bufs: vec![
+            Buf {
                 name: "q",
                 values: Values::U8((0..bytes).map(|i| (i * 37 % 251) as u8).collect()),
             },
-            Buffer {
+            Buf {
                 name: "y",
                 values: Values::F32(vec![0.0; len]),
             },
@@ -233,7 +233,7 @@ pub mod dequant_i4 {
 pub mod i8 {
     //! 8 位反量化：`y[n] = scale * (q[n] - zero)`。
     use crate::dequant;
-    use crate::model::{Buffer, Cost, Sample, ShapeCtx, Values, cost_n};
+    use crate::model::{Buf, Cost, Sample, ShapeCtx, Values, cost_n};
     use diagnostic::{Code, Error};
 
     // 单轴定义复用 unary 骨架。
@@ -262,12 +262,12 @@ pub mod i8 {
             m: len,
             n: len,
             scalars: vec![("N", len as i64)],
-            buffers: vec![
-                Buffer {
+            bufs: vec![
+                Buf {
                     name: "q",
                     values: Values::F32((0..len).map(|i| (i % 16) as f32).collect()),
                 },
-                Buffer {
+                Buf {
                     name: "y",
                     values: Values::F32(vec![0.0; len]),
                 },

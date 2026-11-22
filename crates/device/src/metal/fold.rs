@@ -32,7 +32,7 @@ impl<'a> Prep<'a> {
             len,
             blocks: len.div_ceil(chunk.max(1)),
             output: output_name(signature)?,
-            names: buffer_names(signature),
+            names: buf_names(signature),
         })
     }
 
@@ -84,7 +84,7 @@ fn reduce_parts(
         &[],
         &[MetalStage {
             entry: "kernel_main",
-            buffers: &prep.names,
+            bufs: &prep.names,
             grid: [prep.blocks, 1, 1],
             fold: &fold,
         }],
@@ -130,13 +130,13 @@ fn rmsnorm_parts(
         &[
             MetalStage {
                 entry: PARTIAL,
-                buffers: &prep.names,
+                bufs: &prep.names,
                 grid: [prep.blocks, 1, 1],
                 fold: &fold,
             },
             MetalStage {
                 entry: NORM,
-                buffers: &map,
+                bufs: &map,
                 grid: [prep.blocks, 1, 1],
                 fold: "",
             },
@@ -175,8 +175,8 @@ fn softmax_parts(
     let parts = format!("b_{}", prep.output);
     let fold_max = fold_into(&parts, "b_max", prep.blocks, MAX_STEP);
     let fold_sum = fold_into(&parts, "b_sum", prep.blocks, SUM_STEP);
-    let exp_buffers = ["max", x, prep.output];
-    let norm_buffers = ["max", "sum", x, prep.output];
+    let exp_bufs = ["max", x, prep.output];
+    let norm_bufs = ["max", "sum", x, prep.output];
     let host = metal_multistage_driver(
         signature,
         sample,
@@ -186,19 +186,19 @@ fn softmax_parts(
         &[
             MetalStage {
                 entry: PARTIAL,
-                buffers: &prep.names,
+                bufs: &prep.names,
                 grid: [prep.blocks, 1, 1],
                 fold: &fold_max,
             },
             MetalStage {
                 entry: EXPSUM,
-                buffers: &exp_buffers,
+                bufs: &exp_bufs,
                 grid: [prep.blocks, 1, 1],
                 fold: &fold_sum,
             },
             MetalStage {
                 entry: NORM,
-                buffers: &norm_buffers,
+                bufs: &norm_bufs,
                 grid: [prep.blocks, 1, 1],
                 fold: "",
             },
@@ -236,7 +236,7 @@ fn scan_parts(
     let (local, correct) = metal_chunk_scan(kernel_source, signature, sample, chunk, decay)?;
     let device = concat(&local, &[(correct.as_str(), SCAN_CORRECT)])?;
     let fold = fold_carry(prep.output, chunk, prep.len, decay);
-    let correct_buffers = ["c", prep.output];
+    let correct_bufs = ["c", prep.output];
     let host = metal_multistage_driver(
         signature,
         sample,
@@ -246,13 +246,13 @@ fn scan_parts(
         &[
             MetalStage {
                 entry: SCAN_LOCAL,
-                buffers: &prep.names,
+                bufs: &prep.names,
                 grid: [prep.blocks, 1, 1],
                 fold: &fold,
             },
             MetalStage {
                 entry: SCAN_CORRECT,
-                buffers: &correct_buffers,
+                bufs: &correct_bufs,
                 grid: [prep.blocks, 1, 1],
                 fold: "",
             },
@@ -269,12 +269,12 @@ fn length(signature: &Signature, sample: &Sample) -> Result<usize> {
     })
 }
 
-/// 签名里全部缓冲的名字（按 `buffer(i)` 顺序）。
-fn buffer_names(signature: &Signature) -> Vec<&str> {
+/// 签名里全部缓冲的名字（按 `buf(i)` 顺序）。
+fn buf_names(signature: &Signature) -> Vec<&str> {
     signature
         .params()
         .iter()
-        .filter(|param| param.ctype.is_buffer())
+        .filter(|param| param.ctype.is_buf())
         .map(|param| param.name.as_str())
         .collect()
 }
@@ -284,7 +284,7 @@ fn readonly_names(signature: &Signature) -> Vec<&str> {
     signature
         .params()
         .iter()
-        .filter(|param| param.ctype.is_buffer() && !param.mutable)
+        .filter(|param| param.ctype.is_buf() && !param.mutable)
         .map(|param| param.name.as_str())
         .collect()
 }

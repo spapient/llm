@@ -105,8 +105,8 @@ fn scan(dir: &Path, vendor: &str) -> Device {
     if fragments.is_empty() {
         fail(format!("`{}` 里一段片段都没有", dir.display()));
     }
-    fragments.sort_by_key(|(prim, _)| index(*prim));
-    entries.sort_by_key(|(prim, _)| index(*prim));
+    fragments.sort_by_key(|(prim, _)| idx(*prim));
+    entries.sort_by_key(|(prim, _)| idx(*prim));
     let Some(epilogue) = epilogue else {
         fail(format!(
             "`{}` 里没有 `{EPILOGUE_STEM}.{ext}`：六种写回形式没有片段，装配无从下手",
@@ -275,7 +275,7 @@ fn extension(path: &Path) -> Option<String> {
         .map(str::to_string)
 }
 
-fn index(prim: Prim) -> usize {
+fn idx(prim: Prim) -> usize {
     Prim::ALL
         .iter()
         .position(|candidate| *candidate == prim)

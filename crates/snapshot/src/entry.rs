@@ -49,8 +49,8 @@ pub(crate) fn read_entries(
     }
     let mut entries = Vec::with_capacity(count.min(prealloc));
     let mut rebuild = Vec::new();
-    for index in 0..count {
-        let entry = entry(cursor, index, entries.last(), &mut rebuild)?;
+    for idx in 0..count {
+        let entry = entry(cursor, idx, entries.last(), &mut rebuild)?;
         entries.push(entry);
     }
     // 尾部余量归正文对账：条目表之后还有矩状态段，不能在这里把余量判成多余字节。
@@ -60,26 +60,26 @@ pub(crate) fn read_entries(
 /// 一个条目：名字、布局与偏移；上一条同时提供名字共享与布局重复的基准。
 fn entry(
     cursor: &mut Cursor<'_>,
-    index: usize,
+    idx: usize,
     previous: Option<&Entry>,
     rebuild: &mut Vec<u8>,
 ) -> Result<Entry> {
     let previous_name = previous.map_or(&[][..], |entry| entry.name().as_bytes());
-    let name = rebuild_name(cursor, index, previous_name, rebuild)?;
-    let (dtype, dims) = layout(cursor, index, previous)?;
-    let offset = offset(cursor, index, previous)?;
+    let name = rebuild_name(cursor, idx, previous_name, rebuild)?;
+    let (dtype, dims) = layout(cursor, idx, previous)?;
+    let offset = offset(cursor, idx, previous)?;
     Ok(Entry::new(name, dtype, Shape::new(dims)).at(offset))
 }
 
 /// 按上一条名字拼回整串，并拒掉"共享不是最长"的写法（否则同一份快照有多种字节形态）。
 fn rebuild_name<'b>(
     cursor: &mut Cursor<'_>,
-    index: usize,
+    idx: usize,
     previous: &[u8],
     out: &'b mut Vec<u8>,
 ) -> Result<&'b str> {
-    let (front, back, len) = name_lengths(cursor, index, previous.len())?;
-    let middle = cursor.take(len).map_err(frame(index))?;
+    let (front, back, len) = name_lengths(cursor, idx, previous.len())?;
+    let middle = cursor.take(len).map_err(frame(idx))?;
     out.clear();
     out.extend_from_slice(&previous[..front]);
     out.extend_from_slice(middle);
@@ -91,17 +91,17 @@ fn rebuild_name<'b>(
             "条目名的共享不是最长写法（写了前 {front} 后 {back}，\
              应为前 {want_front} 后 {want_back}）"
         );
-        return Err(invalid_at(index, message));
+        return Err(invalid_at(idx, message));
     }
     std::str::from_utf8(out)
-        .map_err(|error| invalid_at(index, format!("条目名不是 UTF-8：{error}")))
+        .map_err(|error| invalid_at(idx, format!("条目名不是 UTF-8：{error}")))
 }
 
 /// 共享长度得分得开：前后两段不能重叠，也不能超过上一条名字。
-fn fits_share(shared: usize, front: usize, back: usize, index: usize) -> Result<()> {
+fn fits_share(shared: usize, front: usize, back: usize, idx: usize) -> Result<()> {
     if front > shared || back > shared - front {
         let message = format!("上一条目名只有 {shared} 字节，却要共享前 {front} 后 {back} 字节");
-        return Err(invalid_at(index, message));
+        return Err(invalid_at(idx, message));
     }
     Ok(())
 }
@@ -109,34 +109,34 @@ fn fits_share(shared: usize, front: usize, back: usize, index: usize) -> Result<
 /// 名字的三段长度：共享前后缀必须分得开，中段长度随后读出。
 fn name_lengths(
     cursor: &mut Cursor<'_>,
-    index: usize,
+    idx: usize,
     shared: usize,
 ) -> Result<(usize, usize, usize)> {
-    let front = cursor.count("名字的共享前缀").map_err(frame(index))?;
-    let back = cursor.count("名字的共享后缀").map_err(frame(index))?;
-    fits_share(shared, front, back, index)?;
-    let len = cursor.count("条目名中段长度").map_err(frame(index))?;
+    let front = cursor.count("名字的共享前缀").map_err(frame(idx))?;
+    let back = cursor.count("名字的共享后缀").map_err(frame(idx))?;
+    fits_share(shared, front, back, idx)?;
+    let len = cursor.count("条目名中段长度").map_err(frame(idx))?;
     Ok((front, back, len))
 }
 
 /// 布局标签：`0` 表示与上一条同型同形，否则是 `秩 + 1` 加类型与各维度。
 fn layout(
     cursor: &mut Cursor<'_>,
-    index: usize,
+    idx: usize,
     previous: Option<&Entry>,
 ) -> Result<(DType, Vec<usize>)> {
-    let label = cursor.count("布局标签").map_err(frame(index))?;
+    let label = cursor.count("布局标签").map_err(frame(idx))?;
     if label == 0 {
-        return repeated(previous, index);
+        return repeated(previous, idx);
     }
-    fresh(cursor, index, label - 1, previous)
+    fresh(cursor, idx, label - 1, previous)
 }
 
 /// 与上一条同型同形；第一个条目没有上一条。
-fn repeated(previous: Option<&Entry>, index: usize) -> Result<(DType, Vec<usize>)> {
+fn repeated(previous: Option<&Entry>, idx: usize) -> Result<(DType, Vec<usize>)> {
     let Some(previous) = previous else {
         return Err(invalid_at(
-            index,
+            idx,
             "第一个条目不能与上一条共享布局（还没有上一条）",
         ));
     };
@@ -146,23 +146,23 @@ fn repeated(previous: Option<&Entry>, index: usize) -> Result<(DType, Vec<usize>
 /// 重写布局：类型标签与各维度。
 fn fresh(
     cursor: &mut Cursor<'_>,
-    index: usize,
+    idx: usize,
     rank: usize,
     previous: Option<&Entry>,
 ) -> Result<(DType, Vec<usize>)> {
-    let dtype = dtype(cursor.u8().map_err(frame(index))?)?;
-    let dims = dims(cursor, index, rank)?;
-    canonical(previous, dtype, &dims, index).map(|()| (dtype, dims))
+    let dtype = dtype(cursor.u8().map_err(frame(idx))?)?;
+    let dims = dims(cursor, idx, rank)?;
+    canonical(previous, dtype, &dims, idx).map(|()| (dtype, dims))
 }
 
 /// 与上一条同型同形却重写了布局是非规范写法：同一份快照不能既有"重复"又有"重写"。
-fn canonical(previous: Option<&Entry>, dtype: DType, dims: &[usize], index: usize) -> Result<()> {
+fn canonical(previous: Option<&Entry>, dtype: DType, dims: &[usize], idx: usize) -> Result<()> {
     if let Some(previous) = previous
         && previous.dtype() == dtype
         && previous.shape().dims() == dims
     {
         return Err(invalid_at(
-            index,
+            idx,
             "布局与上一条相同却没有写成重复（标签 0）",
         ));
     }
@@ -170,19 +170,19 @@ fn canonical(previous: Option<&Entry>, dtype: DType, dims: &[usize], index: usiz
 }
 
 /// 形状的各维度：预分到预分配上限为止，伪造的秩也只能骗到一块固定大小的内存。
-fn dims(cursor: &mut Cursor<'_>, index: usize, rank: usize) -> Result<Vec<usize>> {
+fn dims(cursor: &mut Cursor<'_>, idx: usize, rank: usize) -> Result<Vec<usize>> {
     let mut dims = Vec::with_capacity(rank.min(super::PREALLOC));
     for _ in 0..rank {
-        dims.push(cursor.count("维度").map_err(frame(index))?);
+        dims.push(cursor.count("维度").map_err(frame(idx))?);
     }
     Ok(dims)
 }
 
 /// 偏移按增量存：上一条的偏移加增量，溢出就是坏数据。
-fn offset(cursor: &mut Cursor<'_>, index: usize, previous: Option<&Entry>) -> Result<usize> {
+fn offset(cursor: &mut Cursor<'_>, idx: usize, previous: Option<&Entry>) -> Result<usize> {
     let previous = previous.map_or(0, Entry::offset);
-    let delta = cursor.count("偏移增量").map_err(frame(index))?;
-    let overflow = || invalid_at(index, format!("偏移 {previous} + {delta} 溢出"));
+    let delta = cursor.count("偏移增量").map_err(frame(idx))?;
+    let overflow = || invalid_at(idx, format!("偏移 {previous} + {delta} 溢出"));
     previous.checked_add(delta).ok_or_else(overflow)
 }
 
@@ -206,8 +206,8 @@ pub(crate) fn common_suffix(left: &[u8], right: &[u8]) -> usize {
     at
 }
 
-/// 第 `index` 个条目的第一处不同；两者一致时为 `None`。
-pub(crate) fn difference(index: usize, want: &Entry, have: &Entry) -> Option<String> {
+/// 第 `idx` 个条目的第一处不同；两者一致时为 `None`。
+pub(crate) fn difference(idx: usize, want: &Entry, have: &Entry) -> Option<String> {
     let name = want.name();
     if name != have.name() {
         let other = have.name();

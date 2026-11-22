@@ -66,9 +66,9 @@ fn ufcs_call(tokens: &[Token], idx: usize) -> Option<Call> {
 }
 
 /// 该下标处是否为圆括号分组；方法与 UFCS 两条形态共用同一种判定。
-fn has_paren(tokens: &[Token], index: usize) -> bool {
+fn has_paren(tokens: &[Token], idx: usize) -> bool {
     matches!(
-        tokens.get(index),
+        tokens.get(idx),
         Some(Token::Group {
             delim: Delim::Paren,
             ..

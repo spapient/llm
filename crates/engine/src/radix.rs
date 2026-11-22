@@ -52,17 +52,17 @@ impl Radix {
         let mut block = 0;
         let mut path = Vec::new();
         while let Some(span) = block_tokens(tokens, page_size, block) {
-            let Some(index) = self.child(at, span) else {
+            let Some(idx) = self.child(at, span) else {
                 break;
             };
-            path.push(index);
-            at = Some(index);
+            path.push(idx);
+            at = Some(idx);
             block += 1;
         }
         self.clock += 1;
         let tick = self.clock;
-        for index in path {
-            if let Some(block) = self.nodes[index].as_mut() {
+        for idx in path {
+            if let Some(block) = self.nodes[idx].as_mut() {
                 block.tick = tick;
                 pages.push(block.page);
             }
@@ -124,10 +124,10 @@ impl Radix {
     pub fn evict(&mut self, pager: &mut Pager, wanted: usize) -> Result<usize> {
         let mut freed = 0;
         while freed < wanted {
-            let Some(index) = self.least_leaf() else {
+            let Some(idx) = self.least_leaf() else {
                 break;
             };
-            freed += self.drop_subtree(pager, index)?;
+            freed += self.drop_subtree(pager, idx)?;
         }
         Ok(freed)
     }
@@ -138,10 +138,10 @@ impl Radix {
         let mut at: Option<usize> = None;
         for level in 0..block {
             let span = span_of(tokens, page_size, level)?;
-            let Some(index) = self.child(at, span) else {
+            let Some(idx) = self.child(at, span) else {
                 return Ok(Path::Broken);
             };
-            at = Some(index);
+            at = Some(idx);
         }
         Ok(Path::Linked(at))
     }
@@ -150,9 +150,9 @@ impl Radix {
     fn children(&self, at: Option<usize>) -> &[usize] {
         match at {
             None => &self.root,
-            Some(index) => self
+            Some(idx) => self
                 .nodes
-                .get(index)
+                .get(idx)
                 .and_then(Option::as_ref)
                 .map(|block| block.children.as_slice())
                 .unwrap_or_default(),
@@ -164,13 +164,13 @@ impl Radix {
         self.children(at)
             .iter()
             .copied()
-            .find(|&index| self.tokens_of(index) == Some(tokens))
+            .find(|&idx| self.tokens_of(idx) == Some(tokens))
     }
 
     /// 某个节点记的块内 token。
-    fn tokens_of(&self, index: usize) -> Option<&[u32]> {
+    fn tokens_of(&self, idx: usize) -> Option<&[u32]> {
         self.nodes
-            .get(index)
+            .get(idx)
             .and_then(Option::as_ref)
             .map(|block| block.tokens.as_slice())
     }
@@ -184,10 +184,10 @@ impl Radix {
             children: Vec::new(),
             tick: self.clock,
         };
-        let index = match self.nodes.iter().position(Option::is_none) {
-            Some(index) => {
-                self.nodes[index] = Some(block);
-                index
+        let idx = match self.nodes.iter().position(Option::is_none) {
+            Some(idx) => {
+                self.nodes[idx] = Some(block);
+                idx
             }
             None => {
                 self.nodes.push(Some(block));
@@ -197,17 +197,17 @@ impl Radix {
         match at {
             Some(parent) => {
                 if let Some(block) = self.nodes[parent].as_mut() {
-                    block.children.push(index);
+                    block.children.push(idx);
                 }
             }
-            None => self.root.push(index),
+            None => self.root.push(idx),
         }
     }
 
-    /// 摘掉一棵子树（`index` 起），返回摘掉的块数；每块归还自己那一份页引用。
-    fn drop_subtree(&mut self, pager: &mut Pager, index: usize) -> Result<usize> {
+    /// 摘掉一棵子树（`idx` 起），返回摘掉的块数；每块归还自己那一份页引用。
+    fn drop_subtree(&mut self, pager: &mut Pager, idx: usize) -> Result<usize> {
         let mut count = 0;
-        let mut stack = vec![index];
+        let mut stack = vec![idx];
         while let Some(current) = stack.pop() {
             let Some(block) = self.nodes.get_mut(current).and_then(Option::take) else {
                 continue;
@@ -220,15 +220,15 @@ impl Radix {
         Ok(count)
     }
 
-    /// 把 `index` 从父（或根）的孩子表里去掉。
-    fn unlink(&mut self, parent: Option<usize>, index: usize) {
+    /// 把 `idx` 从父（或根）的孩子表里去掉。
+    fn unlink(&mut self, parent: Option<usize>, idx: usize) {
         match parent {
             Some(parent) => {
                 if let Some(block) = self.nodes[parent].as_mut() {
-                    block.children.retain(|&child| child != index);
+                    block.children.retain(|&child| child != idx);
                 }
             }
-            None => self.root.retain(|&child| child != index),
+            None => self.root.retain(|&child| child != idx),
         }
     }
 
@@ -240,7 +240,7 @@ impl Radix {
             .enumerate()
             .filter(|(_, block)| block.children.is_empty())
             .min_by_key(|(_, block)| block.tick)
-            .map(|(index, _)| index)
+            .map(|(idx, _)| idx)
     }
 }
 

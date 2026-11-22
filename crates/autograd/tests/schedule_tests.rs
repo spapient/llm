@@ -96,7 +96,7 @@ fn the_schedule_is_deterministic() {
 
 /// 复用同一个 `Schedule`：步骤表的缓冲地址不变，说明没有重新分配。
 #[test]
-fn planning_into_an_existing_schedule_reuses_its_buffers() {
+fn planning_into_an_existing_schedule_reuses_its_bufs() {
     let (mut tape, _, left, right) = crate::testutil::fork();
     let loss = tape.record("add", &[left, right]).expect("记录");
     let mut schedule = Schedule::new();
@@ -301,7 +301,7 @@ fn positions(schedule: &Schedule) -> BTreeMap<u32, usize> {
         .steps()
         .iter()
         .enumerate()
-        .map(|(index, step)| (step.output().id(), index))
+        .map(|(idx, step)| (step.output().id(), idx))
         .collect()
 }
 

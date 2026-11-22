@@ -13,9 +13,9 @@ fn the_world_is_the_product_of_the_three_axes() {
 fn each_axis_has_its_own_group_stride() {
     let topology = Topology::new(2, 2, 2).expect("合法");
     let tensor: Vec<Vec<u32>> = (0..4)
-        .map(|index| {
+        .map(|idx| {
             topology
-                .group(Parallel::Tensor, index)
+                .group(Parallel::Tensor, idx)
                 .expect("张量组")
                 .ranks()
                 .to_vec()
@@ -36,7 +36,7 @@ fn each_axis_has_its_own_group_stride() {
 }
 
 #[test]
-fn an_index_outside_the_axis_is_rejected() {
+fn an_idx_outside_the_axis_is_rejected() {
     let topology = Topology::new(2, 2, 2).expect("合法");
     assert_eq!(
         topology.group(Parallel::Tensor, 4).unwrap_err().code(),
@@ -81,8 +81,8 @@ fn every_axis_partitions_the_ranks_exactly_once() {
                 Parallel::Data => tp * pp,
             };
             let mut seen = vec![0usize; world];
-            for index in 0..count {
-                for &rank in topology.group(parallel, index).expect("组存在").ranks() {
+            for idx in 0..count {
+                for &rank in topology.group(parallel, idx).expect("组存在").ranks() {
                     seen[rank as usize] += 1;
                 }
             }
@@ -108,23 +108,23 @@ fn axis_names_are_stable() {
 /// 布局规则只有一个方向是可读的公式，反解必须与它逐点互逆——否则 `group` 与
 /// "我在第几段"会各说一套。
 #[test]
-fn rank_and_indices_are_inverses() {
+fn rank_and_idxs_are_inverses() {
     for (tp, pp, dp) in [(1, 1, 1), (2, 2, 2), (3, 1, 4), (1, 5, 2)] {
         let topology = Topology::new(tp, pp, dp).expect("合法");
         for rank in 0..topology.world() {
-            let (tp_index, pp_index, dp_index) = topology
-                .indices(u32::try_from(rank).expect("world 收窄"))
+            let (tp_idx, pp_idx, dp_idx) = topology
+                .idxs(u32::try_from(rank).expect("world 收窄"))
                 .expect("反解");
-            assert!(tp_index < tp && pp_index < pp && dp_index < dp);
+            assert!(tp_idx < tp && pp_idx < pp && dp_idx < dp);
             assert_eq!(
-                topology.rank(tp_index, pp_index, dp_index),
+                topology.rank(tp_idx, pp_idx, dp_idx),
                 Ok(u32::try_from(rank).expect("world 收窄")),
                 "{tp}·{pp}·{dp} 的 rank {rank} 反解后不再等于自己"
             );
         }
         assert_eq!(
             topology
-                .indices(u32::try_from(topology.world()).expect("world 收窄"))
+                .idxs(u32::try_from(topology.world()).expect("world 收窄"))
                 .unwrap_err()
                 .code(),
             Code::Invalid
@@ -133,7 +133,7 @@ fn rank_and_indices_are_inverses() {
 }
 
 #[test]
-fn an_index_outside_its_own_degree_is_refused() {
+fn an_idx_outside_its_own_degree_is_refused() {
     let topology = Topology::new(2, 3, 4).expect("合法");
     assert_eq!(topology.rank(2, 0, 0).unwrap_err().code(), Code::Invalid);
     assert_eq!(topology.rank(0, 3, 0).unwrap_err().code(), Code::Invalid);

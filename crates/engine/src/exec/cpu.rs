@@ -14,7 +14,7 @@ pub trait Program {
 /// 执行器持有的操作数表：编号 ↔ 平坦的 `f32` 缓冲。
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Bindings {
-    values: std::collections::BTreeMap<u32, Buffer>,
+    values: std::collections::BTreeMap<u32, Buf>,
 }
 
 impl Bindings {
@@ -25,32 +25,32 @@ impl Bindings {
 
     /// 绑定一个 `f32` 编号；返回被替换掉的旧浮点块。
     pub fn bind_f32(&mut self, id: u32, values: Vec<f32>) -> Option<Vec<f32>> {
-        match self.values.insert(id, Buffer::F32(values)) {
-            Some(Buffer::F32(old)) => Some(old),
-            Some(Buffer::U8(_)) | None => None,
+        match self.values.insert(id, Buf::F32(values)) {
+            Some(Buf::F32(old)) => Some(old),
+            Some(Buf::U8(_)) | None => None,
         }
     }
 
     /// 绑定一个打包字节编号；返回被替换掉的旧字节块。
     pub fn bind_u8(&mut self, id: u32, values: Vec<u8>) -> Option<Vec<u8>> {
-        match self.values.insert(id, Buffer::U8(values)) {
-            Some(Buffer::U8(old)) => Some(old),
-            Some(Buffer::F32(_)) | None => None,
+        match self.values.insert(id, Buf::U8(values)) {
+            Some(Buf::U8(old)) => Some(old),
+            Some(Buf::F32(_)) | None => None,
         }
     }
 
     /// 某个编号的 `f32` 内容；字节缓冲返回 `None`。
     pub fn get(&self, id: u32) -> Option<&[f32]> {
-        self.values.get(&id).and_then(Buffer::f32)
+        self.values.get(&id).and_then(Buf::f32)
     }
 
     /// 某个编号的打包字节内容；浮点缓冲返回 `None`。
     pub fn get_u8(&self, id: u32) -> Option<&[u8]> {
-        self.values.get(&id).and_then(Buffer::u8)
+        self.values.get(&id).and_then(Buf::u8)
     }
 
     /// 某个编号绑定的缓冲（只读）。
-    pub fn buffer(&self, id: u32) -> Option<&Buffer> {
+    pub fn buf(&self, id: u32) -> Option<&Buf> {
         self.values.get(&id)
     }
 
@@ -69,18 +69,18 @@ impl Bindings {
 #[derive(Default)]
 struct Taken {
     ids: Vec<u32>,
-    values: Vec<Buffer>,
+    values: Vec<Buf>,
 }
 
 impl Taken {
     /// 按节点角色取只读视图。
     fn views(&self) -> Vec<View<'_>> {
-        self.values.iter().map(Buffer::view).collect()
+        self.values.iter().map(Buf::view).collect()
     }
 
     /// 按节点角色取可写视图。
     fn views_mut(&mut self) -> Vec<ViewMut<'_>> {
-        self.values.iter_mut().map(Buffer::view_mut).collect()
+        self.values.iter_mut().map(Buf::view_mut).collect()
     }
 }
 
@@ -177,13 +177,13 @@ impl CpuExecutor {
     ///
     /// 内核未登记、操作数未绑定、同一节点里一个编号既是输入又是输出、或内核本身报错。
     pub fn run(&mut self, node: &Node) -> Result<()> {
-        let index = self.position(node.name())?;
+        let idx = self.position(node.name())?;
         self.check_operands(node)?;
         let mut inputs = self.take(node.inputs());
         let mut outputs = self.take(node.outputs());
         let input_views = inputs.views();
         let mut output_views = outputs.views_mut();
-        let result = self.programs[index].run(node.launch(), &input_views, &mut output_views);
+        let result = self.programs[idx].run(node.launch(), &input_views, &mut output_views);
         // 缓冲先放回、再报错：执行失败不该把操作数留在一个"查不到"的状态里。
         self.restore(std::mem::take(&mut inputs));
         self.restore(std::mem::take(&mut outputs));
@@ -205,7 +205,7 @@ impl CpuExecutor {
     fn check_operands(&self, node: &Node) -> Result<()> {
         check_operands(
             node,
-            |id| self.bindings.buffer(id).is_none(),
+            |id| self.bindings.buf(id).is_none(),
             "engine::CpuExecutor::run",
         )
     }
@@ -275,15 +275,15 @@ impl Executor for CpuExecutor {
 
     /// 排这一条流上已提交的节点：按入队顺序执行，成功一条才出队一条。
     fn sync(&mut self, stream: Stream) -> Result<()> {
-        let mut index = 0;
-        while index < self.queue.len() {
-            if self.queue[index].stream() != stream {
-                index += 1;
+        let mut idx = 0;
+        while idx < self.queue.len() {
+            if self.queue[idx].stream() != stream {
+                idx += 1;
                 continue;
             }
-            let node = self.queue[index].node().clone();
+            let node = self.queue[idx].node().clone();
             self.run(&node)?;
-            self.queue.remove(index);
+            self.queue.remove(idx);
         }
         Ok(())
     }

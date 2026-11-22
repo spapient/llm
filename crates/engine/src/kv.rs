@@ -145,24 +145,24 @@ impl Table {
         &self.pages
     }
 
-    /// 第 `index` 页的编号。
-    pub fn get(&self, index: usize) -> Option<u32> {
-        self.pages.get(index).map(Page::id)
+    /// 第 `idx` 页的编号。
+    pub fn get(&self, idx: usize) -> Option<u32> {
+        self.pages.get(idx).map(Page::id)
     }
 
-    /// 第 `index` 个 token 落在哪一页的哪一格：`page_size` 来自页池（页表自己不存页宽）。
+    /// 第 `idx` 个 token 落在哪一页的哪一格：`page_size` 来自页池（页表自己不存页宽）。
     ///
     /// 这是“KV 数据写到哪里”的唯一算术：页表只记页号，token 在页内的偏移由页宽除出来。
     /// 把这条除法写在调用方，就会在“本页够不够”与“下一页从哪个 token 开始”两处各写一次。
     ///
     /// # Errors
     ///
-    /// `page_size` 为 0，或第 `index` 个 token 还没有页（页表只覆盖已分配的那几页）。
-    pub fn slot(&self, index: usize, page_size: usize) -> Result<Slot> {
+    /// `page_size` 为 0，或第 `idx` 个 token 还没有页（页表只覆盖已分配的那几页）。
+    pub fn slot(&self, idx: usize, page_size: usize) -> Result<Slot> {
         if page_size == 0 {
             return Err(Error::new(Code::Invalid, "页宽不能为 0").with("engine::kv::Table::slot"));
         }
-        let page = self.pages.get(index / page_size).ok_or_else(|| {
+        let page = self.pages.get(idx / page_size).ok_or_else(|| {
             Error::new(
                 Code::Invalid,
                 format!(
@@ -174,7 +174,7 @@ impl Table {
         })?;
         Ok(Slot {
             page: *page,
-            offset: index % page_size,
+            offset: idx % page_size,
         })
     }
 

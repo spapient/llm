@@ -103,7 +103,7 @@ fn tiled_flash_matches_online_bitwise() {
 /// 行主序确定性向量：`rows × d`，第 `i` 个元素取 `base + i·step`，便于逐行核对。
 fn det_rows(rows: usize, d: usize, base: f32, step: f32) -> Vec<f32> {
     (0..rows * d)
-        .map(|index| base + index as f32 * step)
+        .map(|idx| base + idx as f32 * step)
         .collect()
 }
 
@@ -138,7 +138,7 @@ fn decode_supports_multiple_query_rows_against_history() {
 }
 
 #[test]
-fn decode_rejects_buffer_length_mismatch() {
+fn decode_rejects_buf_length_mismatch() {
     let (q_rows, hist, d) = (1, 5, 4);
     let (q, k, v) = decode_qkv(q_rows, hist, d);
 
@@ -262,7 +262,7 @@ fn one_head_entry_matches_the_single_head_kernel() {
 }
 
 #[test]
-fn multi_head_rejects_non_multiple_buffer_length() {
+fn multi_head_rejects_non_multiple_buf_length() {
     let (q_rows, hist, heads, d) = (1, 4, 2, 3);
     let (q, k, v) = headed_qkv(heads, q_rows, hist, d);
     let mut out = vec![0.0; heads * q_rows * d];

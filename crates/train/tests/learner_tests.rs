@@ -40,11 +40,11 @@ fn forward(
     loss: Var,
     logits_values: &[f32],
 ) -> Result<ForwardOut> {
-    session.buffers().load(x, Data::F32(vec![0.1; N]))?;
+    session.bufs().load(x, Data::F32(vec![0.1; N]))?;
     session
-        .buffers()
+        .bufs()
         .load(logits, Data::F32(logits_values.to_vec()))?;
-    session.buffers().compute("add_f32", &[p, x], loss)?;
+    session.bufs().compute("add_f32", &[p, x], loss)?;
     session.plan(loss)?;
     Ok(ForwardOut {
         logits,
@@ -77,12 +77,12 @@ fn run_metric_batch(
         &mut chunks,
         1,
         |session, _tokens| {
-            session.buffers().load(x, Data::F32(vec![0.1; N]))?;
+            session.bufs().load(x, Data::F32(vec![0.1; N]))?;
             session
-                .buffers()
+                .bufs()
                 .load(logits, Data::F32(vec![0.0, 10.0, 0.0]))?;
             let metric = metric(session)?;
-            session.buffers().compute("add_f32", &[p, x], loss)?;
+            session.bufs().compute("add_f32", &[p, x], loss)?;
             session.plan(loss)?;
             Ok(ForwardOut {
                 logits,
@@ -261,7 +261,7 @@ fn records_distillation_loss_when_metric_is_distill() -> Result<()> {
 
     let learner = run_metric_batch(tape, sizes, p, x, logits, loss, |session| {
         session
-            .buffers()
+            .bufs()
             .load(teacher, Data::F32(vec![1.0; VOCAB]))?;
         Ok(Metric::Distill {
             teacher,
@@ -287,10 +287,10 @@ fn records_grpo_loss_when_metric_is_grpo() -> Result<()> {
     sizes.set(ref_kl, Shape::new([1]), DType::F32);
 
     let learner = run_metric_batch(tape, sizes, p, x, logits, loss, |session| {
-        session.buffers().load(new_logp, Data::F32(vec![-0.1]))?;
-        session.buffers().load(old_logp, Data::F32(vec![-0.2]))?;
-        session.buffers().load(advantages, Data::F32(vec![1.0]))?;
-        session.buffers().load(ref_kl, Data::F32(vec![0.05]))?;
+        session.bufs().load(new_logp, Data::F32(vec![-0.1]))?;
+        session.bufs().load(old_logp, Data::F32(vec![-0.2]))?;
+        session.bufs().load(advantages, Data::F32(vec![1.0]))?;
+        session.bufs().load(ref_kl, Data::F32(vec![0.05]))?;
         Ok(Metric::Grpo {
             new_logp,
             old_logp,

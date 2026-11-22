@@ -47,7 +47,7 @@ pub fn dsa_topk<S: Scalar>(scores: &mut [S], rows: usize, cols: usize, k: usize)
         if k >= cols {
             continue;
         }
-        // 降序选择：index k−1 是第 k 大，`[0..k]` 为 top-k，`[k..]` 为弃项。
+        // 降序选择：idx k−1 是第 k 大，`[0..k]` 为 top-k，`[k..]` 为弃项。
         row.select_nth_unstable_by(k - 1, |a, b| b.partial_cmp(a).unwrap_or(Ordering::Equal));
         for v in &mut row[k..] {
             *v = S::NEG_INFINITY;

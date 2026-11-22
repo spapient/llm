@@ -195,16 +195,16 @@ impl<S: Scalar> Emitter<S> {
 
     /// 追加一个字节与它的分数，并问边界：收口的那一刻就地编码。
     fn append(&mut self, byte: u8, score: S) -> Result<()> {
-        let index = self.bytes.len();
+        let idx = self.bytes.len();
         self.bytes.push(byte);
         self.scores.push(score);
-        if self.rule.opens(&self.scores, index)? {
+        if self.rule.opens(&self.scores, idx)? {
             close(
                 &self.encoder,
                 &self.bytes,
                 &mut self.starts,
                 &mut self.reprs,
-                index,
+                idx,
             )?;
         }
         Ok(())
@@ -304,16 +304,16 @@ fn replay<S: Scalar>(
         starts: Vec::new(),
         reprs: Vec::new(),
     };
-    for (index, &byte) in prompt.iter().enumerate() {
+    for (idx, &byte) in prompt.iter().enumerate() {
         replay.bytes.push(byte);
-        replay.scores.push(scores[index]);
-        if rule.opens(&replay.scores, index)? {
+        replay.scores.push(scores[idx]);
+        if rule.opens(&replay.scores, idx)? {
             close(
                 encoder,
                 &replay.bytes,
                 &mut replay.starts,
                 &mut replay.reprs,
-                index,
+                idx,
             )?;
         }
     }
@@ -328,18 +328,18 @@ struct Replay<S: Scalar> {
     reprs: Vec<S>,
 }
 
-/// 在 `index` 处开一个新 patch：上一条（若开着）就地收口，只编码它自己那一段。
+/// 在 `idx` 处开一个新 patch：上一条（若开着）就地收口，只编码它自己那一段。
 fn close<S: Scalar>(
     encoder: &ByteEncoder<S>,
     bytes: &[u8],
     starts: &mut Vec<usize>,
     reprs: &mut Vec<S>,
-    index: usize,
+    idx: usize,
 ) -> Result<()> {
     if let Some(&from) = starts.last() {
-        reprs.extend_from_slice(&encoder.patch(bytes, from..index)?);
+        reprs.extend_from_slice(&encoder.patch(bytes, from..idx)?);
     }
-    starts.push(index);
+    starts.push(idx);
     Ok(())
 }
 

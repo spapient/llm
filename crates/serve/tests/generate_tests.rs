@@ -14,7 +14,7 @@ fn greedy_takes_the_largest_logit() {
 
 /// 等值时取编号最小的那个：换一台机器、换一次运行都必须得到同一个 token。
 #[test]
-fn ties_go_to_the_lowest_index() {
+fn ties_go_to_the_lowest_idx() {
     let mut greedy = Greedy;
     assert_eq!(greedy.sample(&[2.0, 2.0, 2.0]).expect("可采"), Some(0));
     assert_eq!(greedy.sample(&[0.0, 5.0, 5.0]).expect("可采"), Some(1));

@@ -87,7 +87,7 @@ fn downgrade_op() -> OpDecl {
 fn cpu_hits_the_first_variant() {
     let path = negotiate(&op(), &cpu()).expect("CPU 应命中首档");
     assert_eq!(path.variant, "pipe2");
-    assert_eq!(path.index, 0);
+    assert_eq!(path.idx, 0);
     assert!(path.schedule.uses_async());
 }
 

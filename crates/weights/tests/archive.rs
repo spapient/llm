@@ -206,7 +206,7 @@ mod ref_tests {
 
         assert!(sb.is_ref());
 
-        assert_eq!(sb.rep_index(), Some(0));
+        assert_eq!(sb.rep_idx(), Some(0));
 
         assert_eq!(
             archive.load(sa).expect("a 字节"),

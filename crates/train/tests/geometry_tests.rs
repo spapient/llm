@@ -82,10 +82,10 @@ fn evaluation_normalizes_with_the_given_rolling_statistics() {
     let mut out = vec![0.0f32; len];
     geom.forward_eval(&[&x, &gain, &shift], &mut out, &running)
         .expect("推理前向");
-    for (index, got) in out.iter().enumerate() {
-        let ci = index % channels;
+    for (idx, got) in out.iter().enumerate() {
+        let ci = idx % channels;
         let want =
-            (x[index] - running.mean[ci]) / (running.var[ci] + EPS).sqrt() * gain[ci] + shift[ci];
+            (x[idx] - running.mean[ci]) / (running.var[ci] + EPS).sqrt() * gain[ci] + shift[ci];
         assert!(
             (got - want).abs() <= 1e-6,
             "第 {index} 个输出 {got} vs {want}"
@@ -121,7 +121,7 @@ fn running_statistics_update_by_momentum_without_changing_the_output() {
         let mut plain = vec![0.0f32; len];
         geom.forward(&[batch, &gain, &shift], &mut plain)
             .expect("无统计的前向");
-        for (index, (a, b)) in out.iter().zip(&plain).enumerate() {
+        for (idx, (a, b)) in out.iter().zip(&plain).enumerate() {
             assert!(
                 (a - b).abs() <= 1e-6,
                 "第 {index} 个输出被统计影响：{a} vs {b}"

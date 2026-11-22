@@ -16,14 +16,14 @@ pub use span::Span;
 // ── vocab ──────────────────────────────────────────────────────────────
 
 /// 闭集：词汇表本身。`ALL` 是全量与顺序的唯一事实源，`as_str` 是跨层共用的名字（TOML、诊断、
-/// 模板字符串同一份），`index` 是位集下标；[`Self::parse`] 由前两者默认实现，闭集外返回 `None`。
+/// 模板字符串同一份），`idx` 是位集下标；[`Self::parse`] 由前两者默认实现，闭集外返回 `None`。
 pub trait Closed: Copy + Eq + Ord + Hash + 'static {
-    /// 闭集全量；顺序即 [`Self::index`]，也是诊断里的顺序。
+    /// 闭集全量；顺序即 [`Self::idx`]，也是诊断里的顺序。
     const ALL: &'static [Self];
     /// 跨层名字。
     fn as_str(self) -> &'static str;
     /// 位集下标；必须落在 `0..ALL.len()`。
-    fn index(self) -> usize;
+    fn idx(self) -> usize;
     /// 按名字解析；闭集外返回 `None`。
     fn parse(name: &str) -> Option<Self> {
         Self::ALL.iter().copied().find(|item| item.as_str() == name)
@@ -63,19 +63,19 @@ impl<E: Closed, const WORDS: usize> Set<E, WORDS> {
     /// 加入一个元素。
     pub fn insert(&mut self, item: E) {
         let () = Self::FITS;
-        self.bits[item.index() / WORD_BITS] |= 1 << (item.index() % WORD_BITS);
+        self.bits[item.idx() / WORD_BITS] |= 1 << (item.idx() % WORD_BITS);
     }
     /// 是否包含某元素。
     pub fn contains(self, item: E) -> bool {
-        self.bits[item.index() / WORD_BITS] & (1 << (item.index() % WORD_BITS)) != 0
+        self.bits[item.idx() / WORD_BITS] & (1 << (item.idx() % WORD_BITS)) != 0
     }
     /// 是否为空集。
     pub const fn is_empty(self) -> bool {
-        let mut index = 0;
-        while index < WORDS && self.bits[index] == 0 {
-            index += 1;
+        let mut idx = 0;
+        while idx < WORDS && self.bits[idx] == 0 {
+            idx += 1;
         }
-        index == WORDS
+        idx == WORDS
     }
     /// 元素个数。
     pub fn len(self) -> u32 {
@@ -144,7 +144,7 @@ macro_rules! inherent_names {
 }
 
 /// 声明一个闭集：变体、`ALL`、名字表与 `Display` 由同一张表展开，名字因此只有一份。
-/// 变体顺序即 `ALL` 顺序、即位集下标；`as_str` 按 `index` 查同序名字表。
+/// 变体顺序即 `ALL` 顺序、即位集下标；`as_str` 按 `idx` 查同序名字表。
 macro_rules! vocabulary {
     (
         $(#[$doc:meta])*
@@ -157,9 +157,9 @@ macro_rules! vocabulary {
             const ALL: &'static [Self] = &[$(Self::$variant),*];
             fn as_str(self) -> &'static str {
                 const NAMES: &[&str] = &[$($text),*];
-                NAMES[self.index()]
+                NAMES[self.idx()]
             }
-            fn index(self) -> usize { self as usize }
+            fn idx(self) -> usize { self as usize }
         }
         impl fmt::Display for $name {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(self.as_str()) }
@@ -269,8 +269,8 @@ impl<T: dtype::Format> Closed for T {
     fn as_str(self) -> &'static str {
         dtype::Format::name(self)
     }
-    fn index(self) -> usize {
-        dtype::Format::index(self)
+    fn idx(self) -> usize {
+        dtype::Format::idx(self)
     }
     fn parse(name: &str) -> Option<Self> {
         <Self as dtype::Format>::parse_name(name)

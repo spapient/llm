@@ -1,6 +1,6 @@
 //! 注意力：`O = softmax(QKᵀ/√d)·V`。
 
-use crate::model::{AxisRole, AxisSpec, Buffer, Cost, Sample, ShapeCtx, Values};
+use crate::model::{AxisRole, AxisSpec, Buf, Cost, Sample, ShapeCtx, Values};
 use diagnostic::{Code, Error};
 
 pub mod tiled;
@@ -48,19 +48,19 @@ pub fn cost(shape: &ShapeCtx) -> Result<Cost, Error> {
 }
 
 /// 确定性 q/k/v/y 缓冲：`q` 与 `y` 取 `q_len`，`k`/`v` 取 `kv_len`。
-fn sample_buffers(q_len: usize, kv_len: usize) -> Vec<Buffer> {
+fn sample_bufs(q_len: usize, kv_len: usize) -> Vec<Buf> {
     let det = |base: f32, step: f32, len: usize| -> Vec<f32> {
-        (0..len).map(|index| base + index as f32 * step).collect()
+        (0..len).map(|idx| base + idx as f32 * step).collect()
     };
-    let buffer = |name: &'static str, values: Vec<f32>| Buffer {
+    let buf = |name: &'static str, values: Vec<f32>| Buf {
         name,
         values: Values::F32(values),
     };
     vec![
-        buffer("q", det(-0.5, 0.13, q_len)),
-        buffer("k", det(0.4, -0.09, kv_len)),
-        buffer("v", det(-0.2, 0.11, kv_len)),
-        buffer("y", vec![0.0; q_len]),
+        buf("q", det(-0.5, 0.13, q_len)),
+        buf("k", det(0.4, -0.09, kv_len)),
+        buf("v", det(-0.2, 0.11, kv_len)),
+        buf("y", vec![0.0; q_len]),
     ]
 }
 
@@ -71,7 +71,7 @@ pub fn sample(s: usize, d: usize) -> Sample {
         m: s,
         n: d,
         scalars: vec![("S", s as i64), ("D", d as i64)],
-        buffers: sample_buffers(len, len),
+        bufs: sample_bufs(len, len),
     }
 }
 

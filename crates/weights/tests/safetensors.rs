@@ -328,7 +328,7 @@ fn both_backends_produce_the_same_header_and_the_same_bytes() {
 }
 
 #[test]
-fn a_wrong_sized_buffer_is_rejected_by_the_slice_backend_too() {
+fn a_wrong_sized_buf_is_rejected_by_the_slice_backend_too() {
     let json = r#"{"w": {"dtype": "F32", "shape": [1], "data_offsets": [0, 4]}}"#;
 
     let bytes = file(json, &[0; 4]);

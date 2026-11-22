@@ -29,9 +29,9 @@ macro_rules! reduce_saturating_tests {
         #[test]
         fn saturating_and_repeated_inputs_match_reference() {
             let cases: &[&[f32]] = $cases;
-            for (index, input) in cases.iter().enumerate() {
+            for (idx, input) in cases.iter().enumerate() {
                 let mut sample = crate::reduce::sample::<$ty>(input.len(), 1);
-                sample.buffers[0].values = crate::model::Values::F32(input.to_vec());
+                sample.bufs[0].values = crate::model::Values::F32(input.to_vec());
                 let expected = crate::reduce::reference::<$ty>(&sample).expect("参考可计算");
                 let mut out = vec![0.0];
                 $forward(input, &mut out).expect("单元素输出");

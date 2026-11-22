@@ -42,7 +42,7 @@ fn with_panels<R>(len: usize, f: impl FnOnce(&mut [f32]) -> R) -> R {
 mod sme;
 
 use pack::{pack_b_f32_into, pack_b_f32_par_into, pack_panels};
-use pool::{Buffers, Shape, pool, run_pooled};
+use pool::{Bufs, Shape, pool, run_pooled};
 
 /// 端口峰值探针只在测量容器里导出（`bench` 特性），生产构建看不到它。
 #[cfg(all(feature = "bench", target_arch = "aarch64"))]
@@ -82,7 +82,7 @@ pub fn gemm_f32(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f
     with_panels(npad * k, |buf| {
         if run_pooled(
             pool(),
-            Buffers {
+            Bufs {
                 a: a.as_ptr() as *const u8,
                 b: b.as_ptr() as *const u8,
                 buf: buf.as_mut_ptr() as *mut u8,

@@ -29,7 +29,7 @@ fn a_batch_must_reject_an_overflowing_shape() {
 }
 
 #[test]
-fn a_batch_borrows_the_callers_buffer() {
+fn a_batch_borrows_the_callers_buf() {
     let tokens = [7, 8, 9, 10, 11, 12];
     for (rows, cols) in [(1, 6), (2, 3), (3, 2), (6, 1)] {
         let batch = Batch::new(&tokens, rows, cols).expect("形状合法");

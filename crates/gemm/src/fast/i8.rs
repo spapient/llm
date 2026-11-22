@@ -12,7 +12,7 @@ use diagnostic::{Code, Error, Result};
 
 use super::compute;
 use super::pack::b_groups;
-use super::pool::{Buffers, Job, Shape, pool, run_pooled};
+use super::pool::{Bufs, Job, Shape, pool, run_pooled};
 use super::tn;
 
 pub(super) const I8_MR: usize = 4;
@@ -139,7 +139,7 @@ pub fn gemm_i8(a: &[i8], b: &[i8], m: usize, n: usize, k: usize, out: &mut [i32]
     let mut bpack = vec![0i8; npad * k];
     if run_pooled(
         pool(),
-        Buffers {
+        Bufs {
             a: a.as_ptr() as *const u8,
             b: b.as_ptr() as *const u8,
             buf: bpack.as_mut_ptr() as *mut u8,

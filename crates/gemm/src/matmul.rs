@@ -30,7 +30,7 @@ use std::ops::Range;
 
 use diagnostic::{Code, Error, Result};
 
-use crate::model::{AxisRole, AxisSpec, Buffer, Cost, Sample, ShapeCtx, Values};
+use crate::model::{AxisRole, AxisSpec, Buf, Cost, Sample, ShapeCtx, Values};
 
 /// 输出 tile 行数。
 pub const TILE_M: usize = 64;
@@ -328,16 +328,16 @@ fn sample_of(m: usize, n: usize, a: Values, b: Values) -> Sample {
         m,
         n,
         scalars: vec![("M", m as i64), ("K", K as i64), ("N", n as i64)],
-        buffers: vec![
-            Buffer {
+        bufs: vec![
+            Buf {
                 name: "a",
                 values: a,
             },
-            Buffer {
+            Buf {
                 name: "b",
                 values: b,
             },
-            Buffer {
+            Buf {
                 name: "y",
                 values: Values::F32(vec![0.0; m * n]),
             },

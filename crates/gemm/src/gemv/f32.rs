@@ -40,7 +40,7 @@ impl<const B: usize> Plain for gemv::Dense<B> {
 
     fn weights(m: usize, n: usize) -> Vec<f32> {
         (0..n * m)
-            .map(|index| ((index * 37) % 251) as f32 * 0.125 - 8.0)
+            .map(|idx| ((idx * 37) % 251) as f32 * 0.125 - 8.0)
             .collect()
     }
 

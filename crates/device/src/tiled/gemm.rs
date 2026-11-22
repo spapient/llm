@@ -26,7 +26,7 @@ pub fn metal_tiled_gemm(
             Error::new(Code::Invalid, "分块大小必须大于 0").with("engine::tiled::metal_tiled_gemm")
         );
     }
-    let (a, b, y) = gemm_buffers(signature)?;
+    let (a, b, y) = gemm_bufs(signature)?;
     let (_, n, k) = gemm_dims(signature, sample)?;
     Ok(tiled_gemm_msl(a, b, y, n, k, tile, per_thread))
 }
@@ -67,7 +67,7 @@ pub fn metal_simdgroup_gemm(
     col_frags: usize,
 ) -> Result<String> {
     check_fragments(row_frags, col_frags)?;
-    let (a, b, y) = gemm_buffers(signature)?;
+    let (a, b, y) = gemm_bufs(signature)?;
     let (_, n, k) = gemm_dims(signature, sample)?;
     check_k(k)?;
     Ok(simdgroup_gemm_msl(a, b, y, n, k, row_frags, col_frags))

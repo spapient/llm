@@ -49,12 +49,12 @@ pub const fn same_bytes(left: &str, right: &str) -> bool {
     if left.len() != right.len() {
         return false;
     }
-    let mut index = 0;
-    while index < left.len() {
-        if left[index] != right[index] {
+    let mut idx = 0;
+    while idx < left.len() {
+        if left[idx] != right[idx] {
             return false;
         }
-        index += 1;
+        idx += 1;
     }
     true
 }

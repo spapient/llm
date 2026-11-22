@@ -26,7 +26,7 @@ impl CType {
     }
 
     /// 是否对应一个样本缓冲（标量不是缓冲）。
-    pub fn is_buffer(self) -> bool {
+    pub fn is_buf(self) -> bool {
         !matches!(self, Self::Int)
     }
 
@@ -101,7 +101,7 @@ impl Signature {
     pub fn output(&self) -> Option<&str> {
         self.params
             .iter()
-            .find(|param| param.ctype.is_buffer() && param.mutable)
+            .find(|param| param.ctype.is_buf() && param.mutable)
             .map(|param| param.name.as_str())
     }
 
@@ -109,15 +109,15 @@ impl Signature {
     pub fn output_type(&self) -> Option<CType> {
         self.params
             .iter()
-            .find(|param| param.ctype.is_buffer() && param.mutable)
+            .find(|param| param.ctype.is_buf() && param.mutable)
             .map(|param| param.ctype)
     }
 
     /// 缓冲形参名，按方向筛：`mutable` 为真取可写输出，为假取只读输入；标量形参不在此列。
-    pub fn buffer_names(&self, mutable: bool) -> Vec<String> {
+    pub fn buf_names(&self, mutable: bool) -> Vec<String> {
         self.params
             .iter()
-            .filter(|param| param.ctype.is_buffer() && param.mutable == mutable)
+            .filter(|param| param.ctype.is_buf() && param.mutable == mutable)
             .map(|param| param.name.clone())
             .collect()
     }
@@ -129,15 +129,15 @@ impl Signature {
     /// 任一不匹配都返回带算子名、形参名与两侧类型的说明。
     pub fn check(&self, sample: &Sample) -> diagnostic::Result<()> {
         self.check_params(sample)?;
-        self.check_extra_buffers(sample)?;
+        self.check_extra_bufs(sample)?;
         self.check_extra_scalars(sample)
     }
 
     /// 逐个形参对齐样本：缓冲同名同类型，标量有取值。
     fn check_params(&self, sample: &Sample) -> diagnostic::Result<()> {
         for param in &self.params {
-            if param.ctype.is_buffer() {
-                self.check_buffer(param, sample)?;
+            if param.ctype.is_buf() {
+                self.check_buf(param, sample)?;
             } else if sample.scalar(&param.name).is_none() {
                 return Err(Error::new(
                     Code::Missing,
@@ -152,8 +152,8 @@ impl Signature {
     }
 
     /// 一个缓冲形参：同名缓冲必须存在，元素类型必须与 `.k` 的声明一致。
-    fn check_buffer(&self, param: &Param, sample: &Sample) -> diagnostic::Result<()> {
-        let buffer = sample.buffer(&param.name).ok_or_else(|| {
+    fn check_buf(&self, param: &Param, sample: &Sample) -> diagnostic::Result<()> {
+        let buf = sample.buf(&param.name).ok_or_else(|| {
             Error::new(
                 Code::Missing,
                 format!(
@@ -162,7 +162,7 @@ impl Signature {
                 ),
             )
         })?;
-        if type_matches(param.ctype, &buffer.values) {
+        if type_matches(param.ctype, &buf.values) {
             return Ok(());
         }
         Err(Error::new(
@@ -172,20 +172,20 @@ impl Signature {
                 self.op,
                 param.name,
                 param.ctype.c_name(),
-                buffer.values.describe()
+                buf.values.describe()
             ),
         ))
     }
 
     /// 样本里多出来的缓冲名：签名没有它，emit 时谁也接不住。
-    fn check_extra_buffers(&self, sample: &Sample) -> diagnostic::Result<()> {
-        for buffer in &sample.buffers {
-            if !self.has_buffer(buffer.name) {
+    fn check_extra_bufs(&self, sample: &Sample) -> diagnostic::Result<()> {
+        for buf in &sample.bufs {
+            if !self.has_buf(buf.name) {
                 return Err(Error::new(
                     Code::Invalid,
                     format!(
                         "算子 `{}` 的样本缓冲 `{}` 不在 `.k` 签名里",
-                        self.op, buffer.name
+                        self.op, buf.name
                     ),
                 ));
             }
@@ -207,17 +207,17 @@ impl Signature {
     }
 
     /// 签名里有没有这个缓冲形参。
-    fn has_buffer(&self, name: &str) -> bool {
+    fn has_buf(&self, name: &str) -> bool {
         self.params
             .iter()
-            .any(|param| param.ctype.is_buffer() && param.name == name)
+            .any(|param| param.ctype.is_buf() && param.name == name)
     }
 
     /// 签名里有没有这个标量形参。
     fn has_scalar(&self, name: &str) -> bool {
         self.params
             .iter()
-            .any(|param| !param.ctype.is_buffer() && param.name == name)
+            .any(|param| !param.ctype.is_buf() && param.name == name)
     }
 
     /// 按签名顺序渲染内核实参：缓冲名原样、标量取样本里的值。
@@ -237,7 +237,7 @@ impl Signature {
 
     /// 一个形参在调用点的写法：缓冲给名字，标量给样本里的取值。
     fn argument(&self, param: &Param, sample: &Sample) -> diagnostic::Result<String> {
-        if param.ctype.is_buffer() {
+        if param.ctype.is_buf() {
             return Ok(param.name.clone());
         }
         // `check` 刚过，这里取不到只能是实现与校验不同步——内部不变量，不是调用方的错。
@@ -260,8 +260,8 @@ impl Signature {
 
     /// 形参名只能出现一次：重名会让「按名字取实参」变成看运气。
     fn check_unique(&self) -> diagnostic::Result<()> {
-        for (index, param) in self.params.iter().enumerate() {
-            if let Some(other) = self.params[..index]
+        for (idx, param) in self.params.iter().enumerate() {
+            if let Some(other) = self.params[..idx]
                 .iter()
                 .find(|other| other.name == param.name)
             {
@@ -302,7 +302,7 @@ impl Signature {
     fn outputs(&self) -> usize {
         self.params
             .iter()
-            .filter(|param| param.ctype.is_buffer() && param.mutable)
+            .filter(|param| param.ctype.is_buf() && param.mutable)
             .count()
     }
 }
@@ -405,7 +405,7 @@ mod parse {
         pointer: bool,
     ) -> diagnostic::Result<CType> {
         if pointer {
-            buffer_ctype(op, name, ty, line)
+            buf_ctype(op, name, ty, line)
         } else {
             scalar_ctype(op, name, ty, line)
         }
@@ -455,7 +455,7 @@ mod parse {
     }
 
     /// 缓冲形参的类型：只有 `float` 与 `unsigned char`/`u8`。
-    pub(super) fn buffer_ctype(
+    pub(super) fn buf_ctype(
         op: &str,
         name: &str,
         ty: &str,

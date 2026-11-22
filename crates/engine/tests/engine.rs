@@ -293,13 +293,13 @@ fn random_batches_keep_the_page_accounts_consistent() {
         .collect();
 
     for _ in 0..400 {
-        let index = rng.below(sequences.len() as u32) as usize;
-        let id = sequences[index].id();
+        let idx = rng.below(sequences.len() as u32) as usize;
+        let id = sequences[idx].id();
         match rng.below(3) {
             0 => {
                 let admitted = scheduler.pages_of(id).is_some();
-                let done = sequences[index].is_done();
-                match scheduler.admit(&sequences[index]) {
+                let done = sequences[idx].is_done();
+                match scheduler.admit(&sequences[idx]) {
                     Err(error) => {
                         assert_eq!(error.code(), Code::Invalid);
                         assert!(admitted || done, "只有重复准入与已结束的序列才是错误");
@@ -313,9 +313,9 @@ fn random_batches_keep_the_page_accounts_consistent() {
                 }
             }
             1 => {
-                let before = sequences[index].produced();
+                let before = sequences[idx].produced();
                 let admitted = scheduler.pages_of(id).is_some();
-                let outcome = scheduler.advance(&mut sequences[index]);
+                let outcome = scheduler.advance(&mut sequences[idx]);
                 // 批级信号必须与实际结局同源：`blocked()` 就是刚刚返回 Blocked 的那个集合。
                 assert_eq!(
                     scheduler.blocked().contains(&id),
@@ -326,18 +326,18 @@ fn random_batches_keep_the_page_accounts_consistent() {
                     Err(error) => {
                         assert_eq!(error.code(), Code::Invalid);
                         assert!(
-                            !admitted || sequences[index].is_done(),
+                            !admitted || sequences[idx].is_done(),
                             "已准入且未结束的推进不该报错"
                         );
-                        assert_eq!(sequences[index].produced(), before, "报错不能推进");
+                        assert_eq!(sequences[idx].produced(), before, "报错不能推进");
                     }
                     Ok(Progress::Blocked) => {
                         assert!(admitted);
-                        assert_eq!(sequences[index].produced(), before, "阻塞不能推进");
+                        assert_eq!(sequences[idx].produced(), before, "阻塞不能推进");
                     }
                     Ok(progress) => {
-                        assert_eq!(sequences[index].produced(), before + 1);
-                        let expected = if sequences[index].is_done() {
+                        assert_eq!(sequences[idx].produced(), before + 1);
+                        let expected = if sequences[idx].is_done() {
                             Progress::Done
                         } else {
                             Progress::Running

@@ -188,7 +188,7 @@ fn a_non_finite_input_is_refused() {
 
 /// 并列按最小下标：同一份输入在每次运行里都选中同一组专家。
 #[test]
-fn ties_keep_the_lower_index() {
+fn ties_keep_the_lower_idx() {
     let router = vec![1.0_f64, 0.0, 1.0, 0.0, 0.5, 0.0];
     let moe = Moe::new(2, 1, router, experts(3, 2), None).expect("几何合法");
     let picks = moe.route(&[1.0, 0.0]).expect("几何合法");

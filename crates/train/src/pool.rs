@@ -1,4 +1,4 @@
-//! 分配与复用：等长空闲表 + [`Buffers`]，把 [`autograd::Store`] 落到真实内存。
+//! 分配与复用：等长空闲表 + [`Bufs`]，把 [`autograd::Store`] 落到真实内存。
 
 use crate::geometry::{Geometry, Running};
 use crate::kernel::Kernel;
@@ -33,12 +33,12 @@ macro_rules! buckets {
             }
 
             /// 还回一块空闲块，按它的长度归到对应档。
-            fn $give(&mut self, buffer: Vec<$lane>) {
-                let len = buffer.len();
+            fn $give(&mut self, buf: Vec<$lane>) {
+                let len = buf.len();
                 let pile = &mut self.$pile;
                 match pile.iter_mut().find(|(size, _)| *size == len) {
-                    Some((_, blocks)) => blocks.push(buffer),
-                    None => pile.push((len, vec![buffer])),
+                    Some((_, blocks)) => blocks.push(buf),
+                    None => pile.push((len, vec![buf])),
                 }
             }
 
@@ -47,7 +47,7 @@ macro_rules! buckets {
                 self.$pile.iter().map(|(_, blocks)| blocks.len()).sum()
             }
 
-            /// 档里空闲块占用的字节数，与 [`Buffers::live`] 同口径对账。
+            /// 档里空闲块占用的字节数，与 [`Bufs::live`] 同口径对账。
             fn $bytes(&self) -> u64 {
                 self.$pile
                     .iter()
@@ -95,7 +95,7 @@ impl Pool {
 
 /// 以 [`Var`] 为下标的真实缓冲：`autograd::Store` 在训练侧的实现。
 #[derive(Debug)]
-pub struct Buffers<K: Kernel> {
+pub struct Bufs<K: Kernel> {
     sizes: Sizes,
     kernel: K,
     slots: Vec<Option<Data>>,
@@ -113,7 +113,7 @@ pub struct Buffers<K: Kernel> {
     pub(crate) scratch: crate::backprop::Scratch,
 }
 
-impl<K: Kernel> Buffers<K> {
+impl<K: Kernel> Bufs<K> {
     /// 由形状表与内核构造：槽位数与 `sizes.len()` 同口径（即 `Tape::vars()`）。
     pub fn new(sizes: Sizes, kernel: K) -> Self {
         let slots = sizes.len();
@@ -352,8 +352,8 @@ impl<K: Kernel> Buffers<K> {
 
     /// 变量对应的槽位；越界说明 `Sizes` 与 `Tape` 不同源。
     fn slot(&self, var: Var) -> Result<usize> {
-        let index = var.id() as usize;
-        if index >= self.slots.len() {
+        let idx = var.id() as usize;
+        if idx >= self.slots.len() {
             let message = format!(
                 "变量 {} 超出形状表的 {} 个槽位：Sizes 必须按 Tape::vars() 构造",
                 var.id(),
@@ -361,7 +361,7 @@ impl<K: Kernel> Buffers<K> {
             );
             return Err(Error::new(Code::Internal, message).with(SITE));
         }
-        Ok(index)
+        Ok(idx)
     }
 
     /// 输出槽位与登记的（形状，元素类型）：两者缺一都说明 `Sizes` 与 `Tape` 不同源。
@@ -388,7 +388,7 @@ impl<K: Kernel> Buffers<K> {
     }
 }
 
-impl<K: Kernel> Store for Buffers<K> {
+impl<K: Kernel> Store for Bufs<K> {
     fn compute(&mut self, op: &str, inputs: &[Var], output: Var) -> Result<()> {
         self.run(op, inputs, output, None)
     }

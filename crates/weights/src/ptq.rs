@@ -187,9 +187,9 @@ fn decode_code(scheme: Scheme, field: u8) -> f32 {
     }
 }
 
-/// 把第 `index` 个 `width` 位码写入位流（低码在前）；跨字节边界时高位溢到下一字节。
-fn pack_bits(packed: &mut [u8], index: usize, width: u8, code: u8) {
-    let bit = index * width as usize;
+/// 把第 `idx` 个 `width` 位码写入位流（低码在前）；跨字节边界时高位溢到下一字节。
+fn pack_bits(packed: &mut [u8], idx: usize, width: u8, code: u8) {
+    let bit = idx * width as usize;
     let byte = bit / 8;
     let shift = (bit % 8) as u32;
     let value = (code as u32) << shift;
@@ -199,9 +199,9 @@ fn pack_bits(packed: &mut [u8], index: usize, width: u8, code: u8) {
     }
 }
 
-/// 从位流读出第 `index` 个 `width` 位码；跨字节边界时低位溢到下一字节。
-fn unpack_bits(packed: &[u8], index: usize, width: u8) -> u8 {
-    let bit = index * width as usize;
+/// 从位流读出第 `idx` 个 `width` 位码；跨字节边界时低位溢到下一字节。
+fn unpack_bits(packed: &[u8], idx: usize, width: u8) -> u8 {
+    let bit = idx * width as usize;
     let byte = bit / 8;
     let shift = (bit % 8) as u32;
     let mut value = (packed[byte] as u32) >> shift;

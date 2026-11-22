@@ -69,7 +69,7 @@ impl Loader for StubLoader {
 }
 
 #[test]
-fn load_f32_decodes_an_entry_into_the_resident_buffer() {
+fn load_f32_decodes_an_entry_into_the_resident_buf() {
     let bytes: Vec<u8> = [1.0f32, 0.0, 2.5]
         .iter()
         .flat_map(|v| v.to_le_bytes())
@@ -80,7 +80,7 @@ fn load_f32_decodes_an_entry_into_the_resident_buffer() {
 }
 
 #[test]
-fn a_non_f32_entry_is_not_unpacked_into_the_resident_buffer() {
+fn a_non_f32_entry_is_not_unpacked_into_the_resident_buf() {
     let entry = Entry::new("q", DType::F16, Shape::new([4])).at(64);
     let error = load_f32(&entry, &StubLoader(vec![0u8; 8])).expect_err("非 F32 必须拒绝");
     assert_eq!(error.code(), Code::Unsupported);

@@ -17,7 +17,7 @@
 //! 「生产面零 `unwrap`/`expect`」口径直接看不到本文件，而不必在门禁里为它开例外。
 
 #[cfg(test)]
-use op::model::{Buffer, Sample, Values};
+use op::model::{Buf, Sample, Values};
 #[cfg(test)]
 use op::sig::Signature;
 
@@ -35,7 +35,7 @@ pub fn signature() -> Signature {
 /// 与 [`signature`] 配套的样本：`m = 4`、`n = 2`，四个缓冲各自给出确定取值。
 #[cfg(test)]
 pub fn sample() -> Sample {
-    let buffers = [
+    let bufs = [
         ("x", Values::F32(vec![1.0, 1.0, 1.0, 1.0])),
         ("w", Values::U8(vec![0x98, 0x76])),
         ("scales", Values::F32(vec![0.5, 0.5])),
@@ -45,9 +45,9 @@ pub fn sample() -> Sample {
         m: 4,
         n: 2,
         scalars: vec![("M", 4), ("N", 2), ("gsz", 4)],
-        buffers: buffers
+        bufs: bufs
             .into_iter()
-            .map(|(name, values)| Buffer { name, values })
+            .map(|(name, values)| Buf { name, values })
             .collect(),
     }
 }

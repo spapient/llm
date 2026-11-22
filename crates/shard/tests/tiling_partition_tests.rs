@@ -29,7 +29,7 @@ fn the_remainder_goes_to_the_earlier_parts() {
 }
 
 #[test]
-fn an_index_outside_the_split_is_rejected() {
+fn an_idx_outside_the_split_is_rejected() {
     let partition = Partition::new(0, 4).expect("切分");
     assert_eq!(partition.slice(16, 3), Ok((12, 4)));
     assert_eq!(partition.slice(16, 4).unwrap_err().code(), Code::Invalid);

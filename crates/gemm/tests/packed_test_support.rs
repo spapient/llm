@@ -1,5 +1,5 @@
 use super::{Format, cost};
-use crate::model::{Buffer, Cost, Sample, ShapeCtx, Values};
+use crate::model::{Buf, Cost, Sample, ShapeCtx, Values};
 use diagnostic::Error;
 
 /// 三缓冲打包样本：`x`、打包权重 `w` 与每组分标度 `scales`。
@@ -8,16 +8,16 @@ pub fn with(m: usize, n: usize, x: Vec<f32>, w: Vec<u8>, scales: Vec<f32>) -> Sa
         m,
         n,
         scalars: Vec::new(),
-        buffers: vec![
-            Buffer {
+        bufs: vec![
+            Buf {
                 name: "x",
                 values: Values::F32(x),
             },
-            Buffer {
+            Buf {
                 name: "w",
                 values: Values::U8(w),
             },
-            Buffer {
+            Buf {
                 name: "scales",
                 values: Values::F32(scales),
             },
@@ -67,7 +67,7 @@ macro_rules! packed_gemv_batch_tests {
         }
 
         #[test]
-        fn a_row_batch_with_mismatched_buffers_is_an_error() {
+        fn a_row_batch_with_mismatched_bufs_is_an_error() {
             let weights = $crate::gemv::packed::weights(4 * $group, 2, $cpb);
             let scales = vec![1.0f32; 2 * 4];
             let mut out = vec![0.0f32; 4];
@@ -88,7 +88,7 @@ macro_rules! packed_gemv_batch_tests {
 macro_rules! packed_gemv_tests {
     ($ty:ty, $model:ident, $group:ident, $forward:ident, $w_bytes:expr, $sample_w:expr) => {
         #[test]
-        fn forward_rejects_a_buffer_that_does_not_fit_the_shapes() {
+        fn forward_rejects_a_buf_that_does_not_fit_the_shapes() {
             let error = $forward(&[1.0; 4], &[], &[1.0], &mut [0.0; 1]).expect_err("权重太短");
             assert_eq!(error.code(), ::diagnostic::Code::Invalid);
             assert!(
@@ -143,7 +143,7 @@ pub fn multi_group(
 ) -> (Vec<u8>, Vec<f32>, Vec<f32>, usize, usize) {
     let (m, n) = (8, 2);
     let packed = pack(bits, w);
-    let x: Vec<f32> = (0..m).map(|index| index as f32 + 1.0).collect();
+    let x: Vec<f32> = (0..m).map(|idx| idx as f32 + 1.0).collect();
     (packed, x, scales, m, n)
 }
 
@@ -253,7 +253,7 @@ macro_rules! packed_gemv_value_tests {
         }
 
         #[test]
-        fn forward_writes_into_the_caller_buffer_and_matches_the_reference() {
+        fn forward_writes_into_the_caller_buf_and_matches_the_reference() {
             let (w, x, scales, m, n) = multi_group($bits, &$w_group, $scales_group.to_vec());
             let expected =
                 crate::gemv::reference::<$ty>(&with(m, n, x.clone(), w.clone(), scales.clone()))
@@ -273,7 +273,7 @@ macro_rules! packed_gemv_value_tests {
             let m = 8;
             let n = 2;
             let w = pack($bits, &$w_sum);
-            let x: Vec<f32> = (0..m).map(|index| index as f32 * 0.5 - 1.0).collect();
+            let x: Vec<f32> = (0..m).map(|idx| idx as f32 * 0.5 - 1.0).collect();
             // 行 0：组 0 = 0.25、组 1 = 0.5；行 1：组 0 = 1.0、组 1 = -1.0。
             let scales = vec![0.25, 0.5, 1.0, -1.0];
 

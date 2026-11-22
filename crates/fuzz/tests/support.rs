@@ -193,14 +193,14 @@ pub mod drivers {
             let mut counted = wire::sink::Count::default();
             counted.put(input);
             let mut slice = vec![0u8; input.len()];
-            let mut buffer = wire::sink::SliceSink::new(&mut slice);
-            buffer.put(input);
+            let mut buf = wire::sink::SliceSink::new(&mut slice);
+            buf.put(input);
             let inconsistent = [
                 checksum != wire::crc::crc32(input),
                 counted.0 != input.len(),
                 written.as_slice() != input,
-                buffer.overflow(),
-                buffer.written() != input.len(),
+                buf.overflow(),
+                buf.written() != input.len(),
             ]
             .contains(&true);
             if inconsistent {

@@ -61,7 +61,7 @@ fn the_worst_element_attains_the_reported_error() {
     let want = [1.0, 2.0, 3.0, 4.0];
     let report = rel_err(&got, &want);
     let at = report.worst.expect("有偏差就有最差点");
-    assert_eq!(at.index, 2, "−3 与 3 相差 6，是整批最大绝对误差");
+    assert_eq!(at.idx, 2, "−3 与 3 相差 6，是整批最大绝对误差");
     assert_eq!((at.got, at.want), (-3.0, 3.0));
     let attained = f64::from((at.got - at.want).abs());
     assert_eq!(report.err, attained, "读数必须是这个元素上的绝对误差");
@@ -77,8 +77,8 @@ fn the_two_denominators_differ_only_in_the_floor() {
     let want = [0.0001, 0.0002];
     let batch = rel_err(&got, &want);
     let unit = rel_err_with(&got, &want, Scale::Unit);
-    assert_eq!(batch.worst.map(|worst| worst.index), Some(0));
-    assert_eq!(unit.worst.map(|worst| worst.index), Some(0));
+    assert_eq!(batch.worst.map(|worst| worst.idx), Some(0));
+    assert_eq!(unit.worst.map(|worst| worst.idx), Some(0));
     assert_eq!(
         batch.scale,
         f64::from(0.0002f32),

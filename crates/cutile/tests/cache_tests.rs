@@ -180,7 +180,7 @@ fn changes_name_every_field_that_differs() {
 fn gc_evicts_the_least_recently_used_first() {
     let cache = Fixture::new("gc");
     let mut keys = Vec::new();
-    for (index, secs) in [100u64, 200, 300].into_iter().enumerate() {
+    for (idx, secs) in [100u64, 200, 300].into_iter().enumerate() {
         let mut key = key();
         key.variant = format!("v{index}");
         cache.put(&key, "int x;\n").expect("写缓存");

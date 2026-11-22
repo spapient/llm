@@ -66,7 +66,7 @@ pub fn assert_close(left: &[f32], right: &[f32], abs: f32, rel: f32) {
         left.len(),
         right.len()
     );
-    for (index, (got, want)) in left.iter().zip(right).enumerate() {
+    for (idx, (got, want)) in left.iter().zip(right).enumerate() {
         let tolerance = abs + rel * want.abs();
         assert!(
             (got - want).abs() <= tolerance,

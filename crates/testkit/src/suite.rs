@@ -146,7 +146,7 @@ macro_rules! device_suite {
         }
 
         #[test]
-        fn every_expectation_fits_the_readback_buffer() {
+        fn every_expectation_fits_the_readback_buf() {
             judged(
                 |contract| contract.check_expectations(),
                 "期望值必须放得进回读缓冲",

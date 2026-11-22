@@ -14,7 +14,7 @@ impl<'a> Contract<'a> {
     ///
     /// 第一条引号包含返回原因（带行号）。
     pub fn check_self_contained(&self) -> Result<(), String> {
-        for (index, line) in self.source.lines().enumerate() {
+        for (idx, line) in self.source.lines().enumerate() {
             let Some((_, rest)) = line.split_once("#include") else {
                 continue;
             };
@@ -23,7 +23,7 @@ impl<'a> Contract<'a> {
                 return Err(format!(
                     "`{}` 的见证第 {} 行用引号包含了 `{target}`：副本编译时相对路径不存在",
                     self.id,
-                    index + 1
+                    idx + 1
                 ));
             }
         }
@@ -142,7 +142,7 @@ fn expected<'a>(calls: &'a [Call<'a>], func: &str) -> &'a [f32] {
 pub(crate) fn definitions(source: &str) -> Vec<&str> {
     source
         .match_indices("int ")
-        .filter_map(|(index, _)| defined_name(&source[index + 4..]))
+        .filter_map(|(idx, _)| defined_name(&source[idx + 4..]))
         .collect()
 }
 

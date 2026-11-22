@@ -1,7 +1,7 @@
 //! 逐元素一元骨架：`y[n] = f(a[n])`。
 
 use crate::formula::FormulaOwner;
-use crate::model::{AxisRole, AxisSpec, Buffer, Cost, Sample, ShapeCtx, Values};
+use crate::model::{AxisRole, AxisSpec, Buf, Cost, Sample, ShapeCtx, Values};
 use diagnostic::{Code, Error};
 
 /// 逐元素一元算子随语义变化的那部分。
@@ -43,12 +43,12 @@ pub fn sample<U: Unary>(len: usize, _: usize) -> Sample {
         m: len,
         n: len,
         scalars: vec![("N", len as i64)],
-        buffers: vec![
-            Buffer {
+        bufs: vec![
+            Buf {
                 name: "a",
                 values: Values::F32(U::input(len)),
             },
-            Buffer {
+            Buf {
                 name: "y",
                 values: Values::F32(vec![0.0; len]),
             },

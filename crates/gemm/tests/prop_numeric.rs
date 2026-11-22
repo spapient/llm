@@ -447,7 +447,7 @@ proptest! {
     ) {
         let x: Vec<f32> = x[..rows * k].to_vec();
         let w: Vec<f32> = w[..n * k].to_vec();
-        let transposed: Vec<f32> = (0..k * n).map(|index| w[(index % n) * k + index / n]).collect();
+        let transposed: Vec<f32> = (0..k * n).map(|idx| w[(idx % n) * k + idx / n]).collect();
         let mut want = vec![0.0; rows * n];
         matmul_scalar::<f32>(&x, &transposed, rows, n, k, &mut want);
         let mut got = vec![0.0; rows * n];

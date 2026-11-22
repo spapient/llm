@@ -43,7 +43,7 @@ fn a_stack_global_names_the_class_that_was_pushed_last() {
 }
 
 #[test]
-fn a_huge_memo_index_is_rejected_not_resized() {
+fn a_huge_memo_idx_is_rejected_not_resized() {
     let error = Vm::run(b"K\x01r\xff\xff\xff\xff.").expect_err("memo 索引必须报错");
     assert!(error.to_string().contains("memo"), "{error}");
 }

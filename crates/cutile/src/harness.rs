@@ -18,7 +18,7 @@ pub fn harness(
     let warmup = warmup_runs(repeat);
     let args = signature.call_args(sample)?;
     let mut text = prelude(kernel_source, &kernel, sample, repeat, warmup);
-    let (decls, init) = input_buffers(sample, output);
+    let (decls, init) = input_bufs(sample, output);
     text.push_str(&decls);
     text.push_str(&main(
         output,
@@ -40,7 +40,7 @@ pub fn output_of<'a>(
 ) -> diagnostic::Result<(&'a str, &'a [f32])> {
     let output = output_name(signature)?;
     let out = sample
-        .buffer(output)
+        .buf(output)
         .ok_or_else(|| Error::new(Code::Missing, format!("样本里没有输出缓冲 `{output}`")))?;
     let Values::F32(values) = &out.values else {
         return Err(Error::new(
@@ -124,25 +124,25 @@ static double cutile_now_ns(void) {\n\
 
 /// 输入缓冲的两段文本：声明，以及"初值 → 缓冲"的拷贝循环。初值先落在 `volatile const` 里再拷入，
 /// 故 `-O3` 折不进内核（32x1 会被折成空循环）。
-fn input_buffers(sample: &Sample, output: &str) -> (String, String) {
+fn input_bufs(sample: &Sample, output: &str) -> (String, String) {
     let mut decls = String::new();
     let mut init = String::new();
-    for buffer in &sample.buffers {
-        if buffer.name == output {
+    for buf in &sample.bufs {
+        if buf.name == output {
             continue;
         }
-        let ctype = c_type(&buffer.values);
-        let size = buffer.values.len();
+        let ctype = c_type(&buf.values);
+        let size = buf.values.len();
         decls.push_str(&format!(
             "static volatile const {ctype} cutile_init_{name}[{size}] = {{{literal}}};\n\
              static {ctype} {name}[{size}];\n",
-            name = buffer.name,
-            literal = c_literal(&buffer.values)
+            name = buf.name,
+            literal = c_literal(&buf.values)
         ));
         init.push_str(&format!(
             "    for (int cutile_i = 0; cutile_i < {size}; ++cutile_i) \
              {{ {name}[cutile_i] = cutile_init_{name}[cutile_i]; }}\n",
-            name = buffer.name
+            name = buf.name
         ));
     }
     (decls, init)
