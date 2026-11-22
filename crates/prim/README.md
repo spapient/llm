@@ -26,7 +26,7 @@ crates/frag/
     src/<设备>/    cvt  dot  epilogue  load  load_async  quant  reduce  store + witness
 ```
 
-`crates/frag/src/<设备>/` 下是内容，`crates/frag/build.rs` 只列出六个 `(模块, vendor)`；每个
+`crates/frag/src/<设备>/` 下是内容，`../prof/src/build.rs` 只列出六个 `(模块, vendor)`；每个
 模块的 `ROOT` / `FRAGMENTS` / `PRIMS` / `EPILOGUE` / `DEVICE` 都由 `prof::codegen` 生成到
 `OUT_DIR/tables.rs`。加一台设备的成本因此是"放一个目录 + `build.rs` 里一行 + `prim` 里四行"，
 而不是往 `prim` 里再塞一个 vendor 分支。
@@ -143,14 +143,14 @@ witness = { file = "cpu/witness.c", func = "witness_dot", expect = [70.0] }
 解释，不留"忘了写"。
 
 `witness.<ext>` 与片段同目录同扩展名，因此**装载片段时按名字跳过它**——否则目录扫描会把它
-当成一个名字非法的片段。发布机上没有源码树，所以见证源码由 `crates/frag/build.rs` 一次编进
+当成一个名字非法的片段。发布机上没有源码树，所以见证源码由 `../prof/src/build.rs` 一次编进
 `WITNESS`（与 `BUILTIN` 分开：见证不是片段）。
 
 ## 构建期：四张表
 
 `BUILTIN`（片段）、`WITNESS`（见证源码）、`DEVICES`（每台设备的原语枚举 + 入口映射表 + 可选镜像）、
 `ROOTS`（源码根）由 `builtin.rs` 合成，四张表按下标同源（`the_tables_line_up_by_index` 守着顺序）。
-六台设备的表由 `crates/frag/build.rs` 一次生成，每台设备一行 `(模块, vendor)`：
+六台设备的表由 `../prof/src/build.rs` 一次生成，每台设备一行 `(模块, vendor)`：
 
 ```rust
 codegen::devices(&[("rocm", "ascend"), ("cpu", "cpu"), /* … */]);
@@ -194,7 +194,7 @@ CUTILE_REQUIRE_IMAGE=metal cargo build -p llm --features device-image   # 缺 me
 
 ## 新增设备 / 更换一段实现
 
-1. 新建目录 `crates/frag/src/<name>/`，并在 `crates/frag/build.rs` 的 `devices(..)` 里加一行
+1. 新建目录 `crates/frag/src/<name>/`，并在 `../prof/src/build.rs` 的 `devices(..)` 里加一行
    `("<name>", "<vendor>")`——`ROOT` / `FRAGMENTS` / `PRIMS` / `EPILOGUE` / `DEVICE` 由生成器给出；
 2. 在 crate 根写片段（只写这台设备真正支持的，其余留空），第一行必须是
    `/* cutile-sign: <prim>/<impl> */`，`impl` 取档案里 `provides.impl` 的那一个；
