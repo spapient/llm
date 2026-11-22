@@ -49,11 +49,19 @@ fn latent_compresses_to_the_latent_width_and_spreads_rows_by_heads() {
     assert_eq!(layer.seq(), 16);
     assert_eq!(layer.latent(), 32);
     assert_eq!(layer.heads(), 4);
-    let dense = Attention::new("blk.0.attn", 16 * 4, 32, AttentionAlgo::Naive).expect("合法");
+    let flat = LatentAttention::new("blk.0.latent", 64, 32, 1).expect("合法");
     assert_eq!(
         layer.bounds().expect("合法"),
-        dense.bounds().expect("合法"),
-        "行数摊成 seq · h 后与稠密同宽注意力同价"
+        flat.bounds().expect("合法"),
+        "代价只认摊平行数 seq · h：16×4 与 64×1 同价"
+    );
+    assert_ne!(
+        layer.bounds().expect("合法"),
+        LatentAttention::new("blk.0.latent", 16, 32, 1)
+            .expect("合法")
+            .bounds()
+            .expect("合法"),
+        "头数纯摊平行数，不进形状"
     );
 }
 
