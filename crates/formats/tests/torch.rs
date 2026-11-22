@@ -10,30 +10,19 @@ fn parses_real_torch_bin() {
     };
     let file = Checkpoint::parse(&raw).expect("解析");
     assert_eq!(file.tensors().len(), 4);
-
-    let w = file.tensor("layer.weight").expect("张量");
-    assert_eq!(w.dtype(), DType::F32);
-    assert_eq!(w.shape(), &[4, 6]);
-    assert_eq!(file.data(w).expect("字节").len(), 96);
-
-    let embed = file.tensor("embed").expect("f16");
-    assert_eq!(embed.dtype(), DType::F16);
-    assert_eq!(file.data(embed).expect("字节").len(), 24);
-
-    let count = file.tensor("count").expect("i64");
-    assert_eq!(count.dtype(), DType::I64);
-    assert_eq!(file.data(count).expect("字节").len(), 24);
-}
-
-#[test]
-fn bytes_match_torch_storage() {
-    let Some(raw) = real_bin_bytes() else {
-        return;
-    };
-    let file = Checkpoint::parse(&raw).expect("解析");
-    let bias = file.tensor("layer.bias").expect("bias");
-    let bytes = file.data(bias).expect("字节");
-    assert_eq!(bytes.len(), 16);
+    const CASES: [(&str, DType, usize); 4] = [
+        ("layer.weight", DType::F32, 96),
+        ("layer.bias", DType::F32, 16),
+        ("embed", DType::F16, 24),
+        ("count", DType::I64, 24),
+    ];
+    for (name, dtype, bytes) in CASES {
+        let tensor = file.tensor(name).expect("张量");
+        assert_eq!(tensor.name(), name);
+        assert_eq!(tensor.dtype(), dtype, "{name}");
+        assert_eq!(file.data(tensor).expect("字节").len(), bytes, "{name}");
+    }
+    assert_eq!(file.tensor("layer.weight").expect("权重").shape(), [4, 6]);
 }
 
 #[test]

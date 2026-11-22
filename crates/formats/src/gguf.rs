@@ -97,8 +97,8 @@ impl Kind {
     }
 }
 
-/// 元数据表：键值对按书写顺序。
-pub(crate) type Meta = Vec<(String, Value)>;
+/// 一条元数据：键与值；表按书写顺序排列。
+pub(crate) type Meta = (String, Value);
 
 /// 元数据值：整数按有无符号归类，浮点统一 f64。
 #[derive(Debug, Clone, PartialEq)]
@@ -210,7 +210,7 @@ impl Tensor {
 /// 已解析的 GGUF 文件，持有调用方字节切片的借用。
 pub struct Gguf<'a> {
     bytes: &'a [u8],
-    meta: Vec<(String, Value)>,
+    meta: Vec<Meta>,
     tensors: Vec<Tensor>,
     data: usize,
 }
@@ -239,7 +239,7 @@ impl<'a> Gguf<'a> {
 
     /// 全部元数据。
     #[must_use]
-    pub fn metas(&self) -> &[(String, Value)] {
+    pub fn metas(&self) -> &[Meta] {
         &self.meta
     }
 
@@ -264,7 +264,7 @@ impl<'a> Gguf<'a> {
         self.meta("general.architecture").and_then(Value::text)
     }
 
-    /// 张量原始字节视图：区间判据走共享的 [`slice`](crate::cursor::slice)，偏移越界与长度越界
+    /// 张量原始字节视图：区间判据走共享的 `cursor::slice`，偏移越界与长度越界
     /// 都由它一处拒。
     pub fn raw(&self, tensor: &Tensor) -> Result<&'a [u8]> {
         let offset = usize::try_from(tensor.offset).map_err(|_| bad("张量偏移溢出"))?;
@@ -435,7 +435,7 @@ fn stamp(cursor: &mut Cursor<'_>) -> Result<()> {
 }
 
 /// 头部与两张表：magic/版本、两个计数（张量条目数、KV 对数），接着 KV 表与张量信息表。
-pub(crate) fn tables(cursor: &mut Cursor<'_>) -> Result<(Vec<Tensor>, Meta)> {
+pub(crate) fn tables(cursor: &mut Cursor<'_>) -> Result<(Vec<Tensor>, Vec<Meta>)> {
     let (tensor_count, kv_count) = counts(cursor)?;
     let meta = records(cursor, kv_count, "KV 计数溢出", pair)?;
     Ok((records(cursor, tensor_count, "张量计数溢出", tensor)?, meta))
@@ -448,7 +448,7 @@ fn counts(cursor: &mut Cursor<'_>) -> Result<(u64, u64)> {
 }
 
 /// 数据区起点：按 `general.alignment` 对齐（未声明或非法时退回 [`DEFAULT_ALIGN`]），且不得越过末尾。
-pub(crate) fn data_start(meta: &[(String, Value)], pos: usize, len: usize) -> Result<usize> {
+pub(crate) fn data_start(meta: &[Meta], pos: usize, len: usize) -> Result<usize> {
     let align = meta
         .iter()
         .find(|(key, _)| key == "general.alignment")
