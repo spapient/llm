@@ -157,7 +157,7 @@ fn attention_paths(
 
 /// 朴素自注意力适配：走稠密分块 tile 路径。
 fn attention_f32(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
-    attention_paths(inputs, outputs, nn::conv::attention::tiled::forward)
+    attention_paths(inputs, outputs, nn::conv::attention::forward)
 }
 
 /// prefill 自注意力适配：走分块 tile 路径。
@@ -169,7 +169,7 @@ fn flash_attention_f32(
     attention_paths(
         inputs,
         outputs,
-        nn::conv::attention::tiled::flash_tiled_forward,
+        nn::conv::attention::flash_forward,
     )
 }
 

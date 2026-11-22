@@ -6,20 +6,20 @@
 ## [Unreleased]
 ### Changed
 
-- **`crates/nn` 的层声明侧平铺：`format` 并入 `declare`、`norm` 并入 `spatial`，19 个单轴层块压成一张表，
+- **`crates/nn` 的层声明侧平铺：`format` 并入 `declare`、`norm` 并入 `spatial`，19 个单轴层块收成一层三行，
   并补上运行期配置化层与 `Hash` 能力**。合并的判据是**同一条声明口径**，不是行数：`format` 的
   `WeightFormat` 只有 `declare` 的消费者在用、且从无独立导出路径（`nn::WeightFormat` 现在是
   `declare` 再导出）；`norm` 的四个归一化层与卷积/池化/插值共享同一套形状约定（末轴是通道）与同一档
   下界口径（问算子语义表），只是不碰窗口。`single.rs` 里 19 个 `axis!(文档, "算子"[，角色])` 四行块
-  收成 `axis_table!` 的一行一条（逐条文档与 `Norm` 角色保留，默认臂仍是 `Trainable`），该文件 364 → 302 行。
+  收成「一层三行」——`axis!(`、文档、参数行，`);` 收到参数行上；文档留在括号内仍由 `$(#[$meta])*` 挂到结构体上、`Norm` 角色保留、默认臂仍是 `Trainable`，该文件 364 → 312 行。
   **能力**：新增 `nn::OpLayer`——算子名、长度与 `ParamRole` 都是构造参数的单轴层，契约/访问器/下界
   与编译期类型层逐字相同（同一个 `AxisCore` 的两种入口），`Vec<OpLayer>` 即一张可直接迭代的配置表；
   `Hash` 补到 `WeightFormat` / `ContractSpec` / `Linear` / 各注意力与循环层 / 卷积与池化层 /
   `ConvGeom` / `Sampler` / `Gauge` / `Precision` / `Cell`（含 `f32` 的归一化层与持有 `dyn Contract`
   的 `Stack` 按判据跳过），配置表因此能直接拿层做键。**热路径**：`registry::model` 改走
   `binary_search_by`——`REGISTRY` 与算子目录同序且已按名字排好（编译期 `const` 断言钉死这一不变量），
-  按层查表的比较次数从线性降到对数。**验证**：`cargo test -p llm-nn --lib` 467 条全绿（原 464 + 新增
-  3 条：配置化层与类型层的契约等价、零长度仍被拒、层可直接当映射键且编码不同不合并）；
+  按层查表的比较次数从线性降到对数。**验证**：`cargo test -p llm-nn --lib` 全绿（新增 3 条：
+  配置化层与类型层的契约等价、零长度仍被拒、层可直接当映射键且编码不同不合并）；
   `cargo clippy -p llm-nn --all-targets` 零告警；`llm-algorithm` / `llm-cli` / `cutile` / `llm-train` /
   `llm-testkit` / `llm-autograd` / `llm-device` 全部 `check` 通过（导出路径逐一未变）。
 
