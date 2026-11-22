@@ -238,16 +238,31 @@ pub(crate) fn matches_reference_over_shapes<G: Gemm>(shapes: &[(usize, usize)]) 
     }
 }
 
+/// 取样本里的 `a`/`b` 并按 `m×n` 跑一遍生产 [`forward`]，输出写进调用方的 `out`。
+///
+/// 两条闭式校验（整数 [`hand_closed`]、稠密 [`dense_closed`]）的公共装配：它们各自的判据不同，
+/// 但"先把生产结果拿到手"这一段必须逐字一致，否则两条校验比的就不是同一次调用。
+#[cfg(test)]
+fn closed_pair<'a, G: Gemm>(
+    sample: &'a Sample,
+    m: usize,
+    n: usize,
+    out: &mut [f32],
+) -> (&'a [G::Elem], &'a [G::Elem]) {
+    let a = take::<G>(sample, "a").expect("a");
+    let b = take::<G>(sample, "b").expect("b");
+    forward::<G>(a, b, m, n, out).expect("尺寸符");
+    (a, b)
+}
+
 /// 整数点积的独立闭式校验：不经过 `G::dot` 与 `matmul`，测试侧自己按收缩轴重算。
 #[cfg(test)]
 pub(crate) fn hand_closed<G: Gemm>() {
     const M: usize = 5;
     const N: usize = 7;
     let sample = sample::<G>(M, N);
-    let a = take::<G>(&sample, "a").expect("a");
-    let b = take::<G>(&sample, "b").expect("b");
     let mut out = vec![0.0; M * N];
-    forward::<G>(a, b, M, N, &mut out).expect("尺寸符");
+    let (a, b) = closed_pair::<G>(&sample, M, N, &mut out);
 
     let unpacked: Vec<i32> = sample_unpacked::<G>(a, b, M, N);
     for i in 0..M {
@@ -276,10 +291,8 @@ pub(crate) fn dense_closed<G: Gemm>() {
     /// 实测界的收紧系数：留余量但不留到与 `γ_k` 同宽。
     const MARGIN: f64 = 0.5;
     let sample = sample::<G>(M, N);
-    let a = take::<G>(&sample, "a").expect("a");
-    let b = take::<G>(&sample, "b").expect("b");
     let mut out = vec![0.0; M * N];
-    forward::<G>(a, b, M, N, &mut out).expect("尺寸符");
+    let (a, b) = closed_pair::<G>(&sample, M, N, &mut out);
 
     let (af, bf) = (f32_values::<G>(a), f32_values::<G>(b));
     let k = af.len() / M;

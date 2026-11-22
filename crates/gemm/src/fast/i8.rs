@@ -287,7 +287,7 @@ unsafe fn sdot_rounds(rounds: usize) {
 pub const SDOT_BLOCK_MAC_PER_K: usize = 16;
 
 /// `sdot` **取数受限**峰值：一轮 = `k/16` 个 k16 步，每步 4 条 A load + 4 条 B load + 16 条
-/// `sdot`，与生产微内核 [`kernel::dot_block`] 逐指令一致。
+/// `sdot`，与生产微内核 [`sdot_tile`] 逐指令一致（同一份代码，不会漂移）。
 ///
 /// **为什么要它**：纯端口探针零 load，是理想上限；生产核每 16 条 `sdot` 要发 8 条 load。
 /// 两者之差就是取数代价，也是「K8 的缺口里多少是结构注定、多少是核写得差」的分界线。
@@ -298,10 +298,15 @@ pub const SDOT_BLOCK_MAC_PER_K: usize = 16;
 /// 那样的「混合峰值 ≈ 纯峰值」是空证据：它根本没在环内取数。改成与生产相同的 `base + p`
 /// 单调推进后，取数被迫留在环内，实测比值才是真的（同一台机、同一编译参数，中位 0.875）。
 ///
-/// 但仓内 `criterion` 口径与那支独立程序不同，且**仓内才是权威**：
-/// `i8_peak/1_block/port` 493.3 vs `i8_peak/1/port` 504.0 = **0.979**——单线程取数几乎免费；
-/// 16/18 线程降到 0.69–0.73，那是 P/E 核混合下 L1 取数端口成为约束，不是 tile 形状的锅。
-/// 故「4×4 tile 注定只能到 87.5%」被证伪，单线程天花板是 98%。
+/// 但仓内 `criterion` 口径与那支独立程序不同，且**仓内才是权威**：同一会话
+/// `i8_peak/1_block/port` 539.37 vs `i8_peak/1/port` 543.19 = **0.993**——单线程取数几乎免费；
+/// 18 线程 5667.3 vs 6736.0 = **0.841**，即瓦片体自身能到端口峰值的 84%。
+/// 故「4×4 tile 注定只能到 87.5%」被证伪（单线程天花板 99%、18 线程 84%）。
+///
+/// **它现在与生产共用 [`sdot_tile`]，因此不再是独立仪器**：N5 要求探针与生产同源、不许漂移，
+/// 代价是它的绝对值不能再横向比"换了一版取数写法"的旧数（旧独立版单线程 493.3、18 线程 4032.8）。
+/// 它仍然回答一个没有别的口径能回答的问题：**同一个瓦片体放进零记账的合成循环里能跑多快**，
+/// 于是"生产离瓦片体上限差多少"= 内存系统 + 瓦片外记账，而不是核写得差。
 ///
 /// A/B 与 `k` 的形状校验：`k` 非零且是 16 的倍数，两侧各留足 `4k`。
 #[cfg(all(feature = "bench", target_arch = "aarch64"))]
@@ -330,35 +335,56 @@ pub fn port_sdot_block(rounds: usize, a: &[i8], b: &[i8], k: usize) -> bool {
 #[allow(unsafe_code)]
 #[inline(never)]
 unsafe fn sdot_block_rounds(rounds: usize, ap: *const i8, bp: *const i8, k: usize) {
-    use std::arch::aarch64::*;
     unsafe {
         for _ in 0..rounds {
-            let zero = vdupq_n_s32(0);
-            let mut accs = [[zero; I8_MR]; I8_NR];
-            let mut p = 0;
-            while p < k {
-                let av: [int8x16_t; I8_MR] = [
-                    vld1q_s8(ap.add(p)),
-                    vld1q_s8(ap.add(k + p)),
-                    vld1q_s8(ap.add(2 * k + p)),
-                    vld1q_s8(ap.add(3 * k + p)),
-                ];
-                for (nb, column) in accs.iter_mut().enumerate() {
-                    let bv = vld1q_s8(bp.add(nb * k + p));
-                    for (cell, a) in column.iter_mut().zip(av) {
-                        *cell = vdotq_s32(*cell, a, bv);
-                    }
-                }
-                p += 16;
-            }
-            std::hint::black_box(accs);
+            std::hint::black_box(sdot_tile(ap, bp, k, k));
         }
+    }
+}
+
+/// 一个 4 行 × 4 列瓦片的整数累加：`bp` 指向**本瓦片首列**在 B 面板里的起点，只累加 `p < kvec`。
+///
+/// 生产微内核（[`kernel::dot_one`]）与取数受限探针（[`sdot_block_rounds`]）共用**这一份**：
+/// 探针的全部意义是"与生产逐指令一致"，两份写法必然漂移，一份才有保证（N5/可替换）。
+/// `kvec` 是向量化段长度，标量尾巴由 [`kernel::harvest`] 补，不在这里。
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "dotprod")]
+#[allow(unsafe_code)]
+#[inline]
+unsafe fn sdot_tile(
+    ap: *const i8,
+    bp: *const i8,
+    k: usize,
+    kvec: usize,
+) -> [[std::arch::aarch64::int32x4_t; I8_MR]; I8_NR] {
+    use std::arch::aarch64::*;
+    unsafe {
+        let zero = vdupq_n_s32(0);
+        // 列优先：一列一个内层迭代，块内推进不必同时索引四行。
+        let mut accs = [[zero; I8_MR]; I8_NR];
+        let mut p = 0;
+        while p < kvec {
+            let av: [int8x16_t; I8_MR] = [
+                vld1q_s8(ap.add(p)),
+                vld1q_s8(ap.add(k + p)),
+                vld1q_s8(ap.add(2 * k + p)),
+                vld1q_s8(ap.add(3 * k + p)),
+            ];
+            for (nb, column) in accs.iter_mut().enumerate() {
+                let bv = vld1q_s8(bp.add(nb * k + p));
+                for (cell, a) in column.iter_mut().zip(av) {
+                    *cell = vdotq_s32(*cell, a, bv);
+                }
+            }
+            p += 16;
+        }
+        accs
     }
 }
 
 /// B 转置打包成 `[nblk][nb][k]`（同列 k 连续），返回 `(面板, n 补齐到 8)`。
 mod kernel {
-    use super::{I8_MR, I8_NR};
+    use super::{I8_MR, I8_NR, sdot_tile};
 
     /// 单线程块计算（B 面板已备）：**N 分组在最外层**，每组 8×k 的 B 瓦片常驻 L1，
     /// 被本线程所有行对复用——否则每行对都把整块 B 重读一遍，卡在内存带宽。
@@ -429,44 +455,8 @@ mod kernel {
         unsafe {
             let ap = a.as_ptr().add(g.r * g.k);
             let bp = bpack.as_ptr();
-            let accs = dot_block(ap, bp, g.blk, g.k, g.kvec);
+            let accs = sdot_tile(ap, bp.add(g.blk * g.k), g.k, g.kvec);
             harvest(ap, bp, out, (g.r, g.n, g.k, g.kvec), g.blk, accs);
-        }
-    }
-
-    /// 一个 4 列块的 4 行累加：`(4 行 × 4 列的整数累加和)`。
-    #[cfg(target_arch = "aarch64")]
-    #[target_feature(enable = "dotprod")]
-    #[allow(unsafe_code)]
-    unsafe fn dot_block(
-        ap: *const i8,
-        bp: *const i8,
-        blk: usize,
-        k: usize,
-        kvec: usize,
-    ) -> [[std::arch::aarch64::int32x4_t; I8_NR]; I8_MR] {
-        use std::arch::aarch64::*;
-        unsafe {
-            let zero = vdupq_n_s32(0);
-            // 列优先：一列一个内层迭代，块内推进不必同时索引四行。
-            let mut accs = [[zero; I8_MR]; I8_NR];
-            let mut p = 0;
-            while p < kvec {
-                let av: [int8x16_t; I8_MR] = [
-                    vld1q_s8(ap.add(p)),
-                    vld1q_s8(ap.add(k + p)),
-                    vld1q_s8(ap.add(2 * k + p)),
-                    vld1q_s8(ap.add(3 * k + p)),
-                ];
-                for (nb, column) in accs.iter_mut().enumerate() {
-                    let bv = vld1q_s8(bp.add((blk + nb) * k + p));
-                    for (cell, a) in column.iter_mut().zip(av) {
-                        *cell = vdotq_s32(*cell, a, bv);
-                    }
-                }
-                p += 16;
-            }
-            accs
         }
     }
 
