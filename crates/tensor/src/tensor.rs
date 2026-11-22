@@ -36,8 +36,6 @@
 //! 偏移、可达性、连续性与取行只有 [`crate::layout`] 一份实现——两种秩、两种存储共用它。
 
 use core::marker::PhantomData;
-use core::ops::Range;
-
 use diagnostic::Result;
 
 use crate::invalid;
@@ -268,28 +266,28 @@ where
     /// 多轴同时取段：`ranges[i]` 作用于第 `i` 轴，没给出的尾部轴原样保留。
     ///
     /// 一段可以是连续区间（`0..4`），也可以是 [`Slice::stepped`] 这种跳着读的段——步长只
-    /// 乘进该轴元数据，视图照样零拷贝。比逐轴 [`narrow`](Self::narrow) 少一次重新校验。
-    pub fn slice<S: Into<Slice> + Clone>(mut self, ranges: impl AsRef<[S]>) -> Option<Self> {
-        let ranges = ranges.as_ref();
-        if ranges.len() > self.rank() {
-            return None;
-        }
-        for (axis, range) in ranges.iter().enumerate() {
-            self.spaced(axis, range.clone().into())?;
-        }
-        Some(self)
+    /// 乘进该轴元数据，视图照样零拷贝。窗口在各处只算一份：`layout::window` 一次给出全部轴，
+    /// 读用 [`slice`](Self::slice)，就地写用 [`slice_fill`](Self::slice_fill) /
+    /// [`slice_assign`](Self::slice_assign)，三者的窗口语义不可能分叉。
+    pub fn slice<S: Into<Slice> + Clone>(self, ranges: impl AsRef<[S]>) -> Option<Self> {
+        let out = self.window(ranges.as_ref())?;
+        self.respine(out)
     }
 
-    /// 一轴一段落到元数据上：先按连续段前移，再让该轴每 `step` 个位置取一个。
-    fn spaced(&mut self, axis: usize, slice: Slice) -> Option<()> {
-        let len = slice.end.checked_sub(slice.start)?;
-        if slice.step == 0 {
-            return None;
+    /// `ranges` 圈出的那一窗的布局：逐轴换成 [`Slice`] 落在栈上算好带走，于是随后可以
+    /// `buf.slice_mut()` 而不与 `self` 冲突。轴数超出栈上容量返回 `None`。
+    fn window<S: Into<Slice> + Clone>(&self, ranges: &[S]) -> Option<layout::Layout> {
+        let mut stack = [Slice::new(0, 0); layout::MAX_RANK];
+        let slots = stack.get_mut(..ranges.len())?;
+        for (slot, range) in slots.iter_mut().zip(ranges) {
+            *slot = range.clone().into();
         }
-        self.shift(axis, slice.start, len)?;
-        self.dims.as_slice_mut()[axis] = len.div_ceil(slice.step);
-        self.steps.as_slice_mut()[axis] *= slice.step;
-        Some(())
+        layout::window(
+            self.dims.as_slice(),
+            self.steps.as_slice(),
+            self.base,
+            slots,
+        )
     }
 
     /// 沿 `axis` 等分成至多 `pieces` 段，每段都借用同一存储——不搬数据、不复制。
@@ -520,7 +518,11 @@ where
     ///
     /// 窗口与 [`slice`](Self::slice) 完全一致（同一个 `layout::window`），只是方向反过来。这类
     /// 原地更新只出现在自持张量上——借来的存储只读。窗口越界返回 `None`。
-    pub fn slice_fill(&mut self, ranges: impl AsRef<[Range<usize>]>, value: K) -> Option<()> {
+    pub fn slice_fill<S: Into<Slice> + Clone>(
+        &mut self,
+        ranges: impl AsRef<[S]>,
+        value: K,
+    ) -> Option<()> {
         let out = self.window(ranges.as_ref())?;
         let buf = self.buf.slice_mut();
         walk(out.dims(), out.steps(), out.base(), &[], &mut |at| {
@@ -533,9 +535,9 @@ where
     ///
     /// 源取 `&[K]` 而不是张量，于是任何形态的源都能进来：[`to_vec`](Self::to_vec) 给的正是逻辑
     /// 顺序，非连续张量直接可用。长度不符返回 `None`——不静默截断，也不补零。
-    pub fn slice_assign(
+    pub fn slice_assign<S: Into<Slice> + Clone>(
         &mut self,
-        ranges: impl AsRef<[Range<usize>]>,
+        ranges: impl AsRef<[S]>,
         values: impl AsRef<[K]>,
     ) -> Option<()> {
         let out = self.window(ranges.as_ref())?;
@@ -551,16 +553,6 @@ where
             }
         });
         Some(())
-    }
-
-    /// `ranges` 圈出的那一窗的布局：栈上算好带走，于是随后可以 `buf.slice_mut()` 而不与 `self` 冲突。
-    fn window(&self, ranges: &[Range<usize>]) -> Option<layout::Layout> {
-        layout::window(
-            self.dims.as_slice(),
-            self.steps.as_slice(),
-            self.base,
-            ranges,
-        )
     }
 }
 

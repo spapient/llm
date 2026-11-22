@@ -26,8 +26,10 @@
 //!
 //! 唯一搬数据的形状算子是 [`Tensor::flip`]：步长是无符号量，"从远端起倒走"表达不出来，所以它
 //! 按镜像下标重算偏移并返回 `Tensor<Owned<K>, R, K>`——借来的视图也能翻，代价是一趟 O(numel)。
+//! 带步长的切片（[`Slice::stepped`]，对应 Burn 的 `s![..;2]`）与 [`Tensor::chunks`] 分段都只改
+//! 元数据、只借存储：降采样和"切成 N 份"同样是零拷贝视图。
 //!
-//! **拥有**：`Tensor`、`Owned`、`Shape`、`Order`、`AxisLen`、`Element` 与 `DType`
+//! **拥有**：`Tensor`、`Owned`、`Shape`、`Slice`、`Order`、`AxisLen`、`Element` 与 `DType`
 //! 的再导出。**不拥有**：元素类型闭集（L1 `dtype`，这里是唯一事实源的下游）、dtype-运行期的
 //! 字节视图（权重层自己的描述符已经承担该契约，形状与字节数由 `Shape::element_bytes` 给出）、
 //! kernel 侧操作数视图（DSL 的宿主 API，语义不同）、布局搬运（`storage`）、设备句柄（ADR 0025）。

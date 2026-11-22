@@ -30,12 +30,10 @@
 //! 跨度（轴长变短、去掉轴、插入步长 0 的轴、压平紧凑段），于是不变量自动保持——派生视图因此
 //! 不必再跑一遍校验，这是它们 O(1) 且能容忍零长度段的原因。
 
-use core::ops::Range;
-
 use diagnostic::Result;
 
 use crate::invalid;
-use crate::shape::{Order, accumulate};
+use crate::shape::{Order, Slice, accumulate};
 
 /// 秩变化的栈上容量：形状变换在栈上重排 `(dims, steps)`，超出这个轴数返回 `None`。
 ///
@@ -238,32 +236,44 @@ fn forward(steps: &[usize], base: usize, axis: usize, count: usize) -> Option<us
     base.checked_add(count.checked_mul(*steps.get(axis)?)?)
 }
 
-/// 多轴同时取段：`ranges[i]` 作用于第 `i` 轴，没给出的尾部轴原样保留。
+/// 多轴同时取段：`slices[i]` 作用于第 `i` 轴，没给出的尾部轴原样保留。
 ///
-/// [`narrow`] 的批量版：逐个轴前移起点、收窄轴长，结果落在栈上的 [`Layout`] 里，不分配。
-/// 窗口越界、轴数超出栈上容量都是 `None`。
+/// [`narrow`] 的批量版：逐轴前移起点、收窄轴长；带步长的段只把步长乘进该轴元数据，于是降采样
+/// 窗也是零拷贝视图。结果落在栈上的 [`Layout`] 里，不分配。越界、步长为 0、轴数超出栈上容量
+/// 都是 `None`。
 pub(crate) fn window(
     dims: &[usize],
     steps: &[usize],
     base: usize,
-    ranges: &[Range<usize>],
+    slices: &[Slice],
 ) -> Option<Layout> {
     let mut out = Layout::blank(base, dims.len())?;
     out.dims[..dims.len()].copy_from_slice(dims);
     out.steps[..steps.len()].copy_from_slice(steps);
-    for (axis, range) in ranges.iter().enumerate() {
-        let (base, dim) = narrow(
-            out.dims(),
-            out.steps(),
-            out.base,
-            axis,
-            range.start,
-            range.end.checked_sub(range.start)?,
-        )?;
-        out.base = base;
-        out.dims[axis] = dim;
+    for (axis, slice) in slices.iter().enumerate() {
+        place(&mut out, axis, *slice)?;
     }
     Some(out)
+}
+
+/// 把一轴的段落到 `out` 上：起点前移、该轴按步长收窄（`step` 为 1 时即纯连续段）。
+fn place(out: &mut Layout, axis: usize, slice: Slice) -> Option<()> {
+    if slice.step == 0 {
+        return None;
+    }
+    let len = slice.end.checked_sub(slice.start)?;
+    let (base, dim) = narrow(
+        out.dims(),
+        out.steps(),
+        out.base,
+        axis,
+        slice.start,
+        len,
+    )?;
+    out.base = base;
+    out.dims[axis] = dim.div_ceil(slice.step);
+    out.steps[axis] *= slice.step;
+    Some(())
 }
 
 /// 沿 `axis` 取第 `index` 个：起点前移、该轴去掉。越界返回 `None`。

@@ -530,6 +530,33 @@ fn slice_fill_touches_only_the_window() {
 }
 
 #[test]
+fn a_stepped_window_can_be_written_in_place() {
+    let mut tensor: Tensor<Owned<f32>> = Tensor::zeros(vec![2usize, 4]).expect("分配");
+    // 每 2 列写一个：两行的第 0、2 列。
+    tensor
+        .slice_fill([Slice::new(0, 2), Slice::stepped(0, 4, 2)], 9.0)
+        .expect("跳着写的窗");
+    assert_eq!(
+        tensor.to_vec(),
+        [9.0, 0.0, 9.0, 0.0, 9.0, 0.0, 9.0, 0.0],
+        "只有偶数列被写"
+    );
+    // 跳着赋值：第 1 行的第 1、3 列，按逻辑顺序逐位对应。
+    tensor
+        .slice_assign([Slice::new(1, 2), Slice::stepped(1, 4, 2)], [1.0f32, 2.0])
+        .expect("窗口元素数为 2");
+    assert_eq!(
+        tensor.to_vec(),
+        [9.0, 0.0, 9.0, 0.0, 9.0, 1.0, 9.0, 2.0],
+        "跳着写也按逻辑顺序"
+    );
+    assert!(
+        tensor.slice_fill([Slice::stepped(0, 4, 0)], 1.0).is_none(),
+        "步长 0 的段无意义"
+    );
+}
+
+#[test]
 fn slice_assign_follows_the_logical_order_even_when_strided() {
     let solid: Tensor<Owned<f32>> =
         Tensor::new(vec![3usize, 4], Owned::from(counted())).expect("自持张量");

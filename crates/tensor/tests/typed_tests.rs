@@ -205,10 +205,8 @@ fn a_static_rank_owned_tensor_walks_the_whole_shape_surface() {
         "跳着读的窗口压不平：压平只能落在连续段上"
     );
 
-    let flat: Tensor<crate::Owned<f32>, [usize; 1], f32> = window
-        .to_contiguous()
-        .flatten(0, 2)
-        .expect("物化后压平");
+    let flat: Tensor<crate::Owned<f32>, [usize; 1], f32> =
+        window.to_contiguous().flatten(0, 2).expect("物化后压平");
     assert_eq!(flat.dims(), [6], "秩在类型里跟着变");
     assert_eq!(flat.to_vec(), vec![1.0f32, 2.0, 3.0, 9.0, 10.0, 11.0]);
 
@@ -221,5 +219,8 @@ fn a_static_rank_owned_tensor_walks_the_whole_shape_surface() {
     assert_eq!(pieces.len(), 3);
     assert_eq!(pieces[2].dims(), [2, 2]);
 
-    assert_eq!(wide.select::<[usize; 1]>(0, 1).expect("固定首轴").dims(), [6]);
+    assert_eq!(
+        wide.select::<[usize; 1]>(0, 1).expect("固定首轴").dims(),
+        [6]
+    );
 }
