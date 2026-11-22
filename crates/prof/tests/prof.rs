@@ -723,3 +723,18 @@ fn a_dequant_signature_covers_both_packed_widths() {
         );
     }
 }
+
+/// 同分并列：选中靠后那份（`max_by_key` 语义），报错点名靠前那份——两者分开记，一趟扫完就够。
+#[test]
+fn select_names_the_first_rival_of_an_equally_specific_pair() {
+    let lead = Profile::parse(&edited(cpu(), "meta.vendor", Value::text("lead"))).expect("档案");
+    let tail = Profile::parse(&edited(cpu(), "meta.vendor", Value::text("tail"))).expect("档案");
+    let profiles = [lead, tail];
+    let detected = Detected::new().with("arch", std::env::consts::ARCH);
+    let error = select(&profiles, &detected).expect_err("同分必须报错");
+    assert_eq!(error.code(), Code::Invalid);
+    assert!(
+        error.to_string().contains("`tail` 与 `lead`"),
+        "选中的是后者、点名的是前者：{error}"
+    );
+}
