@@ -1,5 +1,4 @@
-//! 声明表的字段级解析与模板侧校验：`[op]`/`[axes]`/`[needs]`/`[layouts]`/`[grid]`/`[chunk]`/
-//! `[consts]`/`[[variants]]`/`[[phases]]` 各自一块，加上 [`OpDecl::parse`] 的模板实例化。
+//! 声明表的字段级解析与模板侧校验：各段各自一块，加上 [`OpDecl::parse`] 的模板实例化。
 
 use diagnostic::Error;
 use diagnostic::data::{Table, Value};
@@ -11,8 +10,7 @@ use spec::tpl::{Arg, Template};
 
 use super::{Axis, Chunk, Grid, OpDecl, Phase, Skeleton, Variant, field, tiles, variants};
 
-/// 表里的全部段落一次取齐。`head`/`sections`/`extras` 各自的 `?` 收在这一处：
-/// 构造函数本身没有分支，圈复杂度不该被几个"不可能失败"的解析步骤堆上去。
+/// 表里的全部段落一次取齐：构造函数本身没有分支，圈复杂度不该被解析步骤堆上去。
 fn parts(table: &Table) -> diagnostic::Result<(Head, Sections, Extras)> {
     Ok((head(table)?, sections(table)?, extras(table)?))
 }
@@ -184,9 +182,8 @@ impl OpDecl {
             return Ok(());
         };
         // 只收这一条原语声明的属性：`needs.{prim}.{key}` 是该调用点的全部签名。
-        let declared: Vec<&Attr> = variant
-            .needs(self)
-            .filter(|need| need.prim == prim)
+        let needs = variant.needs(self).filter(|need| need.prim == prim);
+        let declared: Vec<&Attr> = needs
             .flat_map(|need| need.attrs.iter())
             .filter(|attr| attr.key() == attr_key)
             .collect();
@@ -579,12 +576,10 @@ fn phase(op: &str, row: &Table, signature: &spec::sig::Signature) -> diagnostic:
         .string("name")
         .map(str::to_string)
         .ok_or_else(|| field(&format!("{op}.phases.name"), "缺失"))?;
-    let reads = slot_names(op, row, "reads", signature)?;
-    let writes = slot_names(op, row, "writes", signature)?;
     Ok(Phase {
         name,
-        reads,
-        writes,
+        reads: slot_names(op, row, "reads", signature)?,
+        writes: slot_names(op, row, "writes", signature)?,
     })
 }
 
