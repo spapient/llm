@@ -68,9 +68,14 @@ impl Shape {
 
     /// 该元素类型下需要的字节数（按位向上取整，`U4` 会小于 `numel`）。
     pub fn element_bytes(&self, dtype: DType) -> usize {
-        let numel = u64::try_from(self.numel()).unwrap_or(u64::MAX);
-        usize::try_from(dtype.bytes_for(numel)).unwrap_or(usize::MAX)
+        element_bytes(self.numel(), dtype)
     }
+}
+
+/// 元素个数 → 字节数：`usize` 溢出按上限夹取（`U4` 按位向上取整，会小于 `numel`）。
+pub(crate) fn element_bytes(numel: usize, dtype: DType) -> usize {
+    let numel = u64::try_from(numel).unwrap_or(u64::MAX);
+    usize::try_from(dtype.bytes_for(numel)).unwrap_or(usize::MAX)
 }
 
 mod order {

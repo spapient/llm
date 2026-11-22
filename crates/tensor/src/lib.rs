@@ -1,5 +1,6 @@
 //! 逻辑张量：`DType` + [`Shape`] + [`Strides`] + 只读字节视图 [`Tensor`]、元素视图
-//! [`View`] 与拥有形态 [`OwnedTensor`]。
+//! [`View`] 与拥有形态 [`OwnedTensor`]，以及编译期秩 / 元素类型的栈元数据视图
+//! `typed::{Shape, Strides, Tensor}`。
 //!
 //! **拥有**：[`Tensor`]、[`OwnedTensor`]、[`View`]、[`Shape`]、[`Strides`]、[`Order`]、
 //! [`Element`] 与计算层子集 [`SUPPORTED`]。**不拥有**：元素类型闭集（L1 `dtype`，这里只再导出
@@ -68,6 +69,9 @@ mod shape;
 mod tensor;
 mod view;
 
+// 编译期秩 + 元素类型张量：与运行期 `Shape` / `Strides` 并存的栈元数据视图。
+pub mod typed;
+
 // 元素类型的唯一事实源在 L1 `dtype`：全精度 24 变体，这里不再自定义枚举。
 pub use dtype::DType;
 
@@ -112,6 +116,10 @@ mod element {
 #[cfg(test)]
 #[path = "../tests/tensor_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../tests/typed_tests.rs"]
+mod typed_tests;
 
 #[cfg(test)]
 #[path = "../tests/prop_shape.rs"]
