@@ -505,7 +505,7 @@ pub fn select<'a>(profiles: &'a [Profile], detected: &Detected) -> diagnostic::R
         None => Ok(profile),
     }
 }
-pub use crate::schema::WitnessLookup;
+pub use crate::witness::WitnessLookup;
 #[cfg(test)]
 #[path = "../tests/prof.rs"]
 mod tests;

@@ -111,7 +111,9 @@ fn declarations(manifest: &Path) -> diagnostic::Result<(String, String, String)>
     code.push_str("}\n\n");
     code.push_str("/// 按名字取编译期生成的声明表；名字不在表里时返回 `None`。表按名升序（生成序），二分查找。\n");
     code.push_str("pub fn declared(name: &str) -> Option<&'static Table> {\n");
-    code.push_str("    let index = tables().binary_search_by_key(&name, |(entry, _)| entry).ok()?;\n");
+    code.push_str(
+        "    let index = tables().binary_search_by_key(&name, |(entry, _)| entry).ok()?;\n",
+    );
     code.push_str("    Some(&tables()[index].1)\n");
     code.push_str("}\n\n");
     let _ = writeln!(code, "static NAMES: [&str; {}] = [", names.len());
@@ -141,7 +143,11 @@ fn declarations(manifest: &Path) -> diagnostic::Result<(String, String, String)>
          // Source: crates/prof/ops/<stem>.k, sorted by operator name.\n\
          /// 算子名与模板正文，顺序与 `crate::for_each_template!` 一致。\n",
     );
-    let _ = writeln!(table, "pub const TEMPLATES: [(&str, &str); {}] = [", names.len());
+    let _ = writeln!(
+        table,
+        "pub const TEMPLATES: [(&str, &str); {}] = [",
+        names.len()
+    );
     for (name, stem) in names.iter().zip(&stems) {
         let path = ops.join(format!("{stem}.k"));
         let _ = writeln!(
@@ -235,7 +241,9 @@ fn devices_of(src: &Path) -> Vec<Device> {
     let mut dirs: Vec<PathBuf> = entries
         .map(|entry| {
             entry
-                .unwrap_or_else(|error| fail(format!("读取 {} 的目录项失败：{error}", src.display())))
+                .unwrap_or_else(|error| {
+                    fail(format!("读取 {} 的目录项失败：{error}", src.display()))
+                })
                 .path()
         })
         .filter(|path| path.is_dir() && has_witness(path))
@@ -282,8 +290,8 @@ fn scan(dir: &Path, name: &str) -> Device {
                 dir.display()
             ))
         });
-    let ext = extension(&witness)
-        .unwrap_or_else(|| fail(format!("`{}` 没有扩展名", witness.display())));
+    let ext =
+        extension(&witness).unwrap_or_else(|| fail(format!("`{}` 没有扩展名", witness.display())));
 
     let doc = archive_of(dir, name);
     let meta = doc
@@ -296,7 +304,10 @@ fn scan(dir: &Path, name: &str) -> Device {
     let mut fragments = Vec::new();
     let mut entries = Vec::new();
     let mut epilogue = None;
-    for path in files.iter().filter(|path| **path != witness && **path != archive) {
+    for path in files
+        .iter()
+        .filter(|path| **path != witness && **path != archive)
+    {
         let prim = stem(path)
             .unwrap_or_else(|| fail(format!("`{}` 的文件名不是合法 UTF-8", path.display())))
             .to_string();
@@ -311,7 +322,10 @@ fn scan(dir: &Path, name: &str) -> Device {
             continue;
         }
         let implementation = signature(&prim, &read(path), path);
-        entries.push((prim.clone(), entry_of(&provides, &prim, &implementation, path)));
+        entries.push((
+            prim.clone(),
+            entry_of(&provides, &prim, &implementation, path),
+        ));
         fragments.push((prim, path.clone()));
     }
     if fragments.is_empty() {
@@ -391,7 +405,9 @@ fn provides_of(doc: &toml::Table, name: &str, ext: &str) -> Vec<Provide> {
                 .get("witness")
                 .and_then(|value| value.as_table())
                 .unwrap_or_else(|| {
-                    fail(format!("`{name}` 的档案有 `provides` 缺 `witness`：写回证据必须可指"))
+                    fail(format!(
+                        "`{name}` 的档案有 `provides` 缺 `witness`：写回证据必须可指"
+                    ))
                 });
             let file = text(witness, "file", name);
             if file != want {
@@ -443,8 +459,12 @@ fn signature(prim: &str, source: &str, path: &Path) -> String {
             sign::MARKER
         ))
     });
-    let (declared_prim, implementation) = sign::split_slash(declared)
-        .unwrap_or_else(|| fail(format!("`{}` 的签名声明不是 `<prim>/<impl>`", path.display())));
+    let (declared_prim, implementation) = sign::split_slash(declared).unwrap_or_else(|| {
+        fail(format!(
+            "`{}` 的签名声明不是 `<prim>/<impl>`",
+            path.display()
+        ))
+    });
     if declared_prim.trim() != prim {
         fail(format!(
             "`{}` 的签名声明写的是 `{}`：文件名即原语名，两者必须一致",
@@ -473,7 +493,10 @@ fn forms_of(source: &str, path: &Path) -> Vec<String> {
             fail(format!("`{}` 有空的分段标记", path.display()));
         }
         if forms.iter().any(|have| have == name) {
-            fail(format!("`{}` 的尾块分段 `{name}` 出现了两次", path.display()));
+            fail(format!(
+                "`{}` 的尾块分段 `{name}` 出现了两次",
+                path.display()
+            ));
         }
         forms.push(name.to_string());
     }
@@ -509,7 +532,9 @@ fn files_in(dir: &Path) -> Vec<PathBuf> {
 /// 只有带见证文件的目录才是设备目录：`src/` 里除了六台设备的语料，还有 `decl`/`ops` 这类
 /// 非设备子树（声明解析与算子语料），它们不含 `witness.<ext>`，不得被当成设备扫描。
 fn has_witness(dir: &Path) -> bool {
-    files_in(dir).iter().any(|path| stem(path) == Some(WITNESS_STEM))
+    files_in(dir)
+        .iter()
+        .any(|path| stem(path) == Some(WITNESS_STEM))
 }
 
 fn read(path: &Path) -> String {
@@ -595,8 +620,10 @@ fn archives_of(devices: &[Device]) -> String {
          \x20       vec![\n",
     );
     for device in devices {
-        let table = buildgen::read(&device.archive).unwrap_or_else(|error| fail(format!("{error}")));
-        let pairs = buildgen::emit(&table, &device.name).unwrap_or_else(|error| fail(format!("{error}")));
+        let table =
+            buildgen::read(&device.archive).unwrap_or_else(|error| fail(format!("{error}")));
+        let pairs =
+            buildgen::emit(&table, &device.name).unwrap_or_else(|error| fail(format!("{error}")));
         let _ = writeln!(code, "            ({:?}, {pairs}),", device.name);
     }
     code.push_str(
@@ -727,7 +754,9 @@ fn device_line(text: &mut String, device: &Device, outcome: &Outcome) {
             );
         }
         Outcome::Source => text.push_str("    image: None,\n    status: crate::Status::Source,\n"),
-        Outcome::NoRecipe => text.push_str("    image: None,\n    status: crate::Status::NoRecipe,\n"),
+        Outcome::NoRecipe => {
+            text.push_str("    image: None,\n    status: crate::Status::NoRecipe,\n")
+        }
         Outcome::Skipped(reason) => {
             let _ = writeln!(
                 text,
@@ -853,7 +882,10 @@ fn compile(device: &Device, recipe: &Recipe, out: &Path) -> Result<Outcome, Stri
         .map(|stdout| stdout.lines().filter(|line| line.contains(" T ")).count())
         .unwrap_or(0);
 
-    Ok(Outcome::Compiled { path: image, symbols })
+    Ok(Outcome::Compiled {
+        path: image,
+        symbols,
+    })
 }
 
 /// 一条语言级的构建配方：怎么把一份翻译单元变成设备镜像。

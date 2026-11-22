@@ -147,8 +147,8 @@ macro_rules! closed_enum {
 // `model` / `sig` / `sch` / `tpl` / `einsum` 这些词汇定义在 `spec`，但下游一座座 crate
 // 只依赖 `prof`。从这里转出，「算子声明 + 词汇」就沿同一个 crate 名到达，消费者不必为
 // 读一个 `Model` 再加一条 `spec` 依赖。词汇侧的布局规格走 `prof::sch::layout`。
-pub use spec::{einsum, model, operator, quant, same_bytes, sample, sch, sig, tpl};
 pub use spec::{dropout, formula, init, parse, rnd};
+pub use spec::{einsum, model, operator, quant, same_bytes, sample, sch, sig, tpl};
 
 pub mod device;
 pub mod prof;
@@ -159,7 +159,9 @@ pub mod stems {
 }
 
 pub use atom::Prim;
-pub use device::{builtin, builtin_witness, device, devices, dir_of, Builtin, Device, Image, Status};
+pub use device::{
+    Builtin, Device, Image, Status, builtin, builtin_witness, device, devices, dir_of,
+};
 pub use fragment::{Fragment, FragmentSet, Layout, SIGN_MARKER, WITNESS_STEM, layer_root, load};
 
 /// 构建期生成的档案表（`build.rs` 读 `src/<vendor>/<vendor>.toml` 展开成 `Table` 字面量）。
@@ -179,11 +181,12 @@ mod fragment;
 
 mod eval;
 mod schema;
+mod witness;
 
+pub mod decl;
 #[cfg(test)]
 #[path = "../tests/embedded.rs"]
 mod tests;
-pub mod decl;
 
 /// 构建期生成的算子声明表（`build.rs` 读 `src/ops/*.toml` 展开成 `Table` 字面量）。
 #[allow(clippy::all, missing_docs)]
@@ -222,7 +225,9 @@ pub mod catalogue {
 
     /// 按名字取模板正文；名字不在清单里时返回 `None`。表按名升序（生成序），二分查找。
     pub fn template(name: &str) -> Option<&'static str> {
-        let index = TEMPLATES.binary_search_by_key(&name, |(entry, _)| entry).ok()?;
+        let index = TEMPLATES
+            .binary_search_by_key(&name, |(entry, _)| entry)
+            .ok()?;
         Some(TEMPLATES[index].1)
     }
 
@@ -281,7 +286,8 @@ pub mod catalogue {
 
     /// 按名字取一条内嵌算子；名字不在清单里时返回 `None`。
     pub fn named(name: &str) -> Option<Op> {
-        let (entry, template) = TEMPLATES.binary_search_by_key(&name, |(entry, _)| entry)
+        let (entry, template) = TEMPLATES
+            .binary_search_by_key(&name, |(entry, _)| entry)
             .ok()
             .map(|index| TEMPLATES[index])?;
         Some(Op::new(entry, crate::declared(entry)?, template))
@@ -291,9 +297,7 @@ pub mod catalogue {
     pub fn all() -> Vec<Op> {
         TEMPLATES
             .iter()
-            .filter_map(|(name, template)| {
-                Some(Op::new(name, crate::declared(name)?, template))
-            })
+            .filter_map(|(name, template)| Some(Op::new(name, crate::declared(name)?, template)))
             .collect()
     }
 }

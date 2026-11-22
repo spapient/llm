@@ -1,12 +1,15 @@
-//! 档案 schema：把编译期展开的表读成 [`Profile`]（`parse`），再回答"档案自己是否自洽"
-//! （`check`）。字段解析、见证判据与见证源码定位都在这一份文件里。
+//! 档案 schema：把编译期展开的表读成 [`Profile`]（`parse`），再回答"档案自己是否自洽"（`check`）。
+//! 见证判据与源码定位在 [`crate::witness`]，推导式求值在 [`crate::eval`]。
 
-use core::fmt;
-use diagnostic::{Code, Error};
-use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
 use crate::atom::Set;
 use crate::prof::*;
+use crate::witness::{
+    Root, WitnessFiles, attr_key_error, exec_attr, signature_fields, witness_shape,
+};
+use core::fmt;
+use diagnostic::{Code, Error};
+use std::collections::BTreeMap;
+use std::path::Path;
 
 pub(crate) use crate::eval::eval_expression;
 
@@ -53,18 +56,18 @@ impl Profile {
     /// 从构建期展开的表解析（表由 [`crate::embedded`] 给出）；闭集与见证校验留给 [`Profile::validate`]。
     pub fn parse(table: &Table) -> Result<Self, ProfileError> {
         let meta = meta_of(table)?;
-        let device = fingerprint_and_spaces(table)?;
-        let capability = capability_sections(table)?;
+        let (fingerprint, spaces) = fingerprint_and_spaces(table)?;
+        let (units, peak, provides) = capability_sections(table)?;
         let (flags, preamble, headers) = parse_compile(table);
         Ok(Self {
             meta,
-            fingerprint: device.fingerprint,
-            spaces: device.spaces,
+            fingerprint,
+            spaces,
             mem: parse_mem(table),
             simt: parse_simt(table),
-            units: capability.units,
-            provides: capability.provides,
-            peak: capability.peak,
+            units,
+            provides,
+            peak,
             flags,
             preamble,
             headers,
@@ -96,30 +99,18 @@ fn emit_of(table: &Table) -> Result<Emit, ProfileError> {
     closed::<Emit>(text(table, "emit", "meta.emit")?, "meta.emit")
 }
 /// 指纹与存储层：[`Profile::parse`] 的两段定位描述，失败信息互不牵连。
-fn fingerprint_and_spaces(table: &Table) -> Result<Device, ProfileError> {
-    Ok(Device {
-        fingerprint: parse_fingerprint(table)?,
-        spaces: parse_spaces(table)?,
-    })
-}
-/// 设备段的前两节：指纹规则与存储层名字映射。
-struct Device {
-    fingerprint: Vec<(String, MatchRule)>,
-    spaces: Vec<(Space, String)>,
+fn fingerprint_and_spaces(
+    table: &Table,
+) -> Result<(Vec<(String, MatchRule)>, Vec<(Space, String)>), ProfileError> {
+    Ok((parse_fingerprint(table)?, parse_spaces(table)?))
 }
 /// 能力三件套：执行单元、峰值与 `[[provides]]`（协商只看这三段）。
-fn capability_sections(table: &Table) -> Result<Capability, ProfileError> {
-    Ok(Capability {
-        units: parse_units(table)?,
-        peak: parse_peak(table)?,
-        provides: parse_provides(table)?,
-    })
-}
-/// 设备段的后三节：执行单元、峰值与能力条目。
-struct Capability {
-    units: Vec<Unit>,
-    peak: Peak,
-    provides: Vec<Provide>,
+fn capability_sections(table: &Table) -> Result<(Vec<Unit>, Peak, Vec<Provide>), ProfileError> {
+    Ok((
+        parse_units(table)?,
+        parse_peak(table)?,
+        parse_provides(table)?,
+    ))
 }
 /// `[fingerprint]` 段：规则直接写在段下，或写在 `match = { ... }` 里（README §5.3）。
 fn parse_fingerprint(table: &Table) -> Result<Vec<(String, MatchRule)>, ProfileError> {
@@ -141,7 +132,10 @@ fn fingerprint_rule(key: &str, value: &Value) -> Result<(String, MatchRule), Pro
 /// `[space]` 段：语义存储名 → 物理名，三级存储必须齐全。
 fn parse_spaces(table: &Table) -> Result<Vec<(Space, String)>, ProfileError> {
     let section = table.table("space");
-    let spaces = section.map_or(Ok(Vec::new()), |map| entries(map, space_entry))?;
+    let spaces: Vec<(Space, String)> = match section {
+        Some(map) => entries(map, space_entry)?,
+        None => Vec::new(),
+    };
     require_spaces(&spaces)?;
     Ok(spaces)
 }
@@ -156,12 +150,13 @@ fn space_entry(key: &str, value: &Value) -> Result<(Space, String), ProfileError
 /// 三级存储的语义名必须齐全：缺一条就拼不出完整的物理名映射。
 fn require_spaces(spaces: &[(Space, String)]) -> Result<(), ProfileError> {
     let has = |wanted: Space| spaces.iter().any(|(have, _)| *have == wanted);
-    let unfilled = Space::ALL.iter().copied().find(|space| !has(*space));
-    unfilled.map_or(Ok(()), |space| Err(unfilled_space(space)))
-}
-fn unfilled_space(space: Space) -> ProfileError {
-    let name = space.as_str();
-    missing(format!("space.{name}（三级存储的语义名必须齐全）"))
+    let Some(space) = Space::ALL.iter().copied().find(|space| !has(*space)) else {
+        return Ok(());
+    };
+    Err(missing(format!(
+        "space.{}（三级存储的语义名必须齐全）",
+        space.as_str()
+    )))
 }
 /// `[mem]` 段：容量与 bank 数，缺项按 0。
 fn parse_mem(table: &Table) -> Mem {
@@ -188,9 +183,10 @@ fn parse_simt(table: &Table) -> Simt {
 }
 /// `[units.<name>]` 段：执行单元及其可访问的存储层；缺段表示档案不区分单元。
 fn parse_units(table: &Table) -> Result<Vec<Unit>, ProfileError> {
-    table
-        .table("units")
-        .map_or(Ok(Vec::new()), |section| entries(section, unit_entry))
+    let Some(section) = table.table("units") else {
+        return Ok(Vec::new());
+    };
+    entries(section, unit_entry)
 }
 /// 一个执行单元：必须是 `[units.<name>]` 形式的表，`space` 必填。
 fn unit_entry(name: &str, value: &Value) -> Result<Unit, ProfileError> {
@@ -207,11 +203,10 @@ fn unit_entry(name: &str, value: &Value) -> Result<Unit, ProfileError> {
 /// `[[provides]]` 数组：至少一条，否则协商没有可选的能力。
 fn parse_provides(table: &Table) -> Result<Vec<Provide>, ProfileError> {
     let tables = table.table_array("provides").unwrap_or_default();
-    let each = |(idx, entry): (usize, &&Table)| parse_provide(entry, idx);
     let provides: Vec<Provide> = tables
         .iter()
         .enumerate()
-        .map(each)
+        .map(|(idx, entry)| parse_provide(entry, idx))
         .collect::<Result<_, _>>()?;
     if provides.is_empty() {
         return Err(missing("provides"));
@@ -287,8 +282,7 @@ pub(crate) fn invalid(detail: impl Into<String>) -> Error {
 
 // ── provides 字段 ─────────────────────────────────────────────────────
 
-/// 一个"名字集合"字段：标量字符串或字符串数组，逐项交给 `each`。
-/// `dt` 与 `space` 是同一形状，且都只把名字解析成位集——这里不克隆 `String`。
+/// 一个"名字集合"字段：标量字符串或字符串数组，逐项交给 `each`。 `dt` 与 `space` 是同一形状，且都只把名字解析成位集——这里不克隆 `String`。
 fn each_name(
     field: impl fmt::Display,
     value: &Value,
@@ -309,10 +303,7 @@ fn each_name(
     }
 }
 /// 一组存储层名字：每个都必须在 [`Space`] 闭集里。
-fn parse_space_set(
-    field: impl fmt::Display,
-    items: &[&str],
-) -> Result<SpaceSet, ProfileError> {
+fn parse_space_set(field: impl fmt::Display, items: &[&str]) -> Result<SpaceSet, ProfileError> {
     let mut set = SpaceSet::empty();
     for item in items {
         set.insert(closed::<Space>(item, &field)?);
@@ -353,12 +344,7 @@ fn provide_tail(provide: &mut Provide, entry: &Table, idx: usize) -> Result<(), 
     attrs(entry, idx, provide)
 }
 /// 一组同义维度：没写就是不限，多写就是错，写了就要能解析。
-fn span_of(
-    entry: &Table,
-    idx: usize,
-    names: &[&str],
-    detail: &str,
-) -> Result<Span, ProfileError> {
+fn span_of(entry: &Table, idx: usize, names: &[&str], detail: &str) -> Result<Span, ProfileError> {
     let hit = |name: &&str| entry.contains(name);
     let used: Vec<&str> = names.iter().copied().filter(hit).collect();
     let Some(alias) = used.first().copied() else {
@@ -411,8 +397,7 @@ fn witness_of(entry: &Table, idx: usize) -> Result<Option<Witness>, ProfileError
     };
     Ok(Some(witness_fields(table, |key| witness_at(idx, key))?))
 }
-/// 见证的三个字段：`file` / `func` 必填，`expect` 是数值数组。字段路径由调用方给，
-/// 报错位置因此落在声明它的那一段里。
+/// 见证的三个字段：`file` / `func` 必填，`expect` 是数值数组。字段路径由调用方给， 报错位置因此落在声明它的那一段里。
 fn witness_fields(
     table: &Table,
     at: impl Fn(&'static str) -> Field<'static>,
@@ -448,7 +433,16 @@ fn attrs(entry: &Table, idx: usize, provide: &mut Provide) -> Result<(), Profile
 fn parsed_key(key: &str) -> bool {
     matches!(
         key,
-        "prim" | "impl" | "m" | "bytes" | "extent" | "n" | "k" | "dt" | "space" | "grade"
+        "prim"
+            | "impl"
+            | "m"
+            | "bytes"
+            | "extent"
+            | "n"
+            | "k"
+            | "dt"
+            | "space"
+            | "grade"
             | "witness"
     )
 }
@@ -458,11 +452,7 @@ fn one_attr(idx: usize, key: &str, value: &Value) -> Result<Attr, ProfileError> 
     Ok(Attr::new(attr_key, attr_values(idx, key, value)?))
 }
 /// 属性取值：标量或数组；表在这里没有意义。
-fn attr_values(
-    idx: usize,
-    key: &str,
-    value: &Value,
-) -> Result<Vec<String>, ProfileError> {
+fn attr_values(idx: usize, key: &str, value: &Value) -> Result<Vec<String>, ProfileError> {
     let path = at(idx, key);
     match value {
         Value::Array(items) => items.iter().map(|item| one_string(path, item)).collect(),
@@ -621,142 +611,4 @@ impl Profile {
         }
         (reachable, undefined)
     }
-}
-
-/// 见证的形状：`L2` 必须有见证，声明了就要有入口函数名与期望值（不碰文件）。
-fn witness_shape(provide: &Provide) -> Vec<ProfileError> {
-    let Some(witness) = provide.witness.as_ref() else {
-        return missing_witness(provide).into_iter().collect();
-    };
-    let make = |(_, detail): (&'static str, String)| witness_error(provide, detail);
-    shape_details(witness).into_iter().map(make).collect()
-}
-/// 见证形状的判据本体：键是 `func` / `expect`，两种供给（原语与写回形式）共用一份。
-fn shape_details(witness: &Witness) -> Vec<(&'static str, String)> {
-    let len = witness.expect.len();
-    let too_many = format!("期望输出 {len} 个，超过上限 {}", Witness::MAX_OUT);
-    let checks = [
-        (
-            witness.func.is_empty(),
-            "func",
-            "见证必须给出入口函数名，否则无法执行".to_string(),
-        ),
-        (
-            witness.expect.is_empty(),
-            "expect",
-            "见证必须给出期望输出，否则无法对拍".to_string(),
-        ),
-        (len > Witness::MAX_OUT, "expect", too_many),
-    ];
-    let failed = checks.into_iter().filter(|(failed, ..)| *failed);
-    failed.map(|(_, key, detail)| (key, detail)).collect()
-}
-/// 没有见证时唯一说得通的理由是等级还不到 `L2`——等级是执行的结论，不是自述。
-fn missing_witness(provide: &Provide) -> Option<ProfileError> {
-    if !provide.grade.is_verified() {
-        return None;
-    }
-    let grade = provide.grade;
-    let detail = format!("{grade} 要求 `witness = {{ file, func, expect }}`");
-    Some(witness_error(provide, detail))
-}
-/// 签名的必填项：有数据类型的原语不能给空集；`L2` 及以上必须写实现名。
-fn signature_fields(provide: &Provide) -> Vec<ProfileError> {
-    let empty_dt = provide.dt.is_empty() && provide.prim.has_dtype();
-    let no_impl = provide.grade.is_verified() && provide.impl_name.is_empty();
-    let checks = [
-        (empty_dt, "dt", "数据类型集合不能为空"),
-        (no_impl, "impl", "实现名不能为空"),
-    ];
-    let failed = checks.into_iter().filter(|(failed, ..)| *failed);
-    let make = |(_, key, detail): (bool, &str, &str)| bad(prim_at(provide.prim, key), detail);
-    failed.map(make).collect()
-}
-/// 闭集外的属性键：闭集是该原语签名键的并集 `exec`（执行单元是档案级属性）。
-fn attr_key_error(provide: &Provide, key: AttrKey) -> ProfileError {
-    let keys = provide.prim.attr_keys();
-    let mut allowed: Vec<&str> = keys.iter().map(|key| key.as_str()).collect();
-    allowed.push("exec");
-    unknown(prim_at(provide.prim, key.as_str()), key.as_str(), &allowed)
-}
-/// 一条供给声明的执行单元列表；没写 `exec` 就没有这条判据。
-fn exec_attr(provide: &Provide) -> Option<&Attr> {
-    let is_exec = |attr: &&Attr| attr.key() == AttrKey::Exec;
-    provide.attrs.iter().find(is_exec)
-}
-/// 见证源码的定位方式：把 `witness.file`（`<vendor>/witness.<ext>`）解析成一个可读路径。
-pub trait WitnessLookup {
-    /// 见证文件的可读路径；`None` 表示这个 vendor 没有任何落盘位置。
-    fn path(&self, file: &str) -> Option<PathBuf>;
-}
-/// 单一根下的定位：`file` 直接拼在根上。
-struct Root<'a>(&'a Path);
-impl WitnessLookup for Root<'_> {
-    fn path(&self, file: &str) -> Option<PathBuf> {
-        Some(self.0.join(file))
-    }
-}
-/// 见证文件的一次性读取缓存：同一份源码只读一次，同一个缺失文件只报一次。
-struct WitnessFiles<'a> {
-    /// 定位方式；`None` 表示本轮不做文件检查（单元测试）。
-    witnesses: Option<&'a dyn WitnessLookup>,
-    /// 文件 → 源码；`None` 表示不存在或不可读。
-    sources: BTreeMap<String, Option<String>>,
-    /// 已经报过的缺失路径。
-    reported: BTreeSet<String>,
-}
-impl<'a> WitnessFiles<'a> {
-    /// 空缓存。
-    fn new(witnesses: Option<&'a dyn WitnessLookup>) -> Self {
-        Self {
-            witnesses,
-            sources: BTreeMap::new(),
-            reported: BTreeSet::new(),
-        }
-    }
-    /// 一条供给的文件级判据：文件要在，且真的声明了那个入口函数；不判断跑不跑得通。
-    fn probe(&mut self, provide: &Provide) -> Vec<ProfileError> {
-        let make = |detail: String| witness_error(provide, detail);
-        let (Some(witnesses), Some(witness)) = (self.witnesses, provide.witness.as_ref()) else {
-            return Vec::new();
-        };
-        let source = self.source(witnesses, &witness.file);
-        let found = source.map(|text| declares(text, witness));
-        match found {
-            None => self.report(witnesses, &witness.file),
-            Some(false) => vec![make(absent_function(witness))],
-            Some(true) => Vec::new(),
-        }
-    }
-    /// 读一份见证源码：每个文件最多读一次盘。
-    fn source(&mut self, witnesses: &dyn WitnessLookup, file: &str) -> Option<&str> {
-        let text = self.sources.entry(file.to_string());
-        let text = text.or_insert_with(|| {
-            let path = witnesses.path(file)?;
-            std::fs::read_to_string(path).ok()
-        });
-        text.as_deref()
-    }
-    /// 缺失文件只报第一次：多条供给引用同一份缺失文件时，原因只有一个。
-    fn report(&mut self, witnesses: &dyn WitnessLookup, file: &str) -> Vec<ProfileError> {
-        let path = witnesses
-            .path(file)
-            .map_or_else(|| file.to_string(), |path| path.display().to_string());
-        if !self.reported.insert(path.clone()) {
-            return Vec::new();
-        }
-        vec![ProfileError::WitnessFile {
-            file: path,
-            detail: "不存在或不可读".to_string(),
-        }]
-    }
-}
-fn declares(text: &str, witness: &Witness) -> bool {
-    text.contains(&format!("{}(", witness.func))
-}
-fn absent_function(witness: &Witness) -> String {
-    format!(
-        "`{}` 里没有函数 `{}`：声明的见证无法执行",
-        witness.file, witness.func
-    )
 }

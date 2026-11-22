@@ -1,9 +1,9 @@
 //! 片段层：一段片段（原语名、签名声明、拼进模板的正文），以及"片段在哪"——仓库内置表
 //! 或某个 `data.root` 的 `prim/` 目录。
 
+use crate::Prim;
 use crate::device::{builtin, dir_of};
 use crate::sign::EPILOGUE_STEM;
-use crate::Prim;
 use diagnostic::{Code, Error};
 use std::collections::BTreeMap;
 use std::ops::Range;
