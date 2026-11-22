@@ -5,7 +5,7 @@ fact lives in exactly one table.
 
 | Axis | Type | Answers |
 | --- | --- | --- |
-| Scalar | `DType` | how is **one element** stored? (`Bool`, `U1`–`U64`, `I1`–`I64`, `F4`, FP8, `F16`, `BF16`, `F32`, `F64`) |
+| Scalar | `DType` | how is **one element** stored? (`Bool`, `U1`–`U64`, `I1`–`I64`, `F4`, FP8, `F16`, `BF16`, `F32`, `F64`, plus exponent/mantissa/bias) |
 | GGML block | `QType` | how is **a block** packed? (25 formats: legacy Q, K-quant, IQ, TQ) |
 | Micro-scaled | `MxType` | low-precision element + shared block exponent (OCP MX v1.1 and NVFP4) |
 | MX element | `Element` | which E2M1/E2M3/E3M2/E4M3/E5M2/INT8 element sits inside an `MxType`? |
@@ -28,12 +28,18 @@ assert_eq!("q4_k".parse::<QType>(), Ok(QType::Q4_K));
   accessor that can be is a `const fn`; geometry has exactly one implementation (the inherent
   `const fn`), which the `Format`/`BlockFormat` traits forward to generic code. Name parsing is the
   one exception: it delegates to the trait default because stable Rust has no const traits.
+- **Float bit layout is identity, not derived.** `DTypeSpec`/`ElementSpec` carry a `FloatLayout`
+  column (`exp_bits`, `mantissa_bits`, `exponent_bias`) next to the width, so `F8E4M3 = 1 + 4 + 3`,
+  `BF16 = (8, 7, 127)` and the `FNUZ` variants (bias one higher than their IEEE twin) live in the
+  same row table a dequantizer already reads — no hard-coded bit fields downstream. For every
+  float, `sign_bits + exp_bits + mantissa_bits == bits`, and an MX element's layout equals that of
+  its scalar `DType` counterpart.
 - **Identity is locked.** Every row is pinned by a literal table in that module's tests: `DType`
-  (wire code, name, variant, bits, class), the MX element set (name, variant, bits, scalar
-  counterpart) and the block layout of `QType`/`MxType` (block length, block bytes, scale,
-  family). Every public accessor is asserted against its own column on top of that, so a getter
-  reading the neighbouring field cannot hide behind a locked table. `Display`, `FromStr` and the
-  optional `serde` representation all read the same name.
+  (wire code, name, variant, bits, class, float layout), the MX element set (name, variant, bits,
+  scalar counterpart, float layout) and the block layout of `QType`/`MxType` (block length, block
+  bytes, scale, family). Every public accessor is asserted against its own column on top of that,
+  so a getter reading the neighbouring field cannot hide behind a locked table. `Display`,
+  `FromStr` and the optional `serde` representation all read the same name.
 - **Facts, not algorithms.** This crate says *what a format is and how many bytes it takes*; it
   never says *how to decode it*. Dequantization stays in `llm-weights` (ADR 0018).
 

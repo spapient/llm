@@ -19,8 +19,8 @@ fn loaded_local(a: [f32; 2], b: [f32; 2]) -> (Local, Group) {
 /// 两个 rank 的文件远端：共享一份以 `stem` 命名的临时文件，各载入一段输入。
 fn file_remotes(stem: &str) -> (std::path::PathBuf, FileRemote, Group) {
     let backing = std::env::temp_dir().join(format!("{stem}{}", std::process::id()));
-    let mut r0 = FileRemote::open(0, 2, 2, &backing).expect("rank 0");
-    let mut r1 = FileRemote::open(1, 2, 2, &backing).expect("rank 1");
+    let r0 = FileRemote::open(0, 2, 2, &backing).expect("rank 0");
+    let r1 = FileRemote::open(1, 2, 2, &backing).expect("rank 1");
     r0.load(0, &[5.0, 6.0]).expect("rank 0");
     r1.load(1, &[7.0, 8.0]).expect("rank 1");
     let group = Group::new([0, 1]).expect("双进程组");

@@ -39,6 +39,31 @@ pub(crate) fn read_input(signature: &Signature) -> Result<&str> {
         )
 }
 
+/// 长度标量的 `usize` 视图；负值或超长返回 `Invalid`。归约 / 扫描 / 归一化三族的几何判定共用。
+pub(crate) fn length_usize(signature: &Signature, sample: &Sample) -> Result<usize> {
+    let len = length_scalar(signature, sample)?;
+    usize::try_from(len).map_err(|_| {
+        Error::new(
+            Code::Invalid,
+            format!(
+                "长度标量 `{}` = {len} 不是非负 usize",
+                scalar_name(signature).unwrap_or("?")
+            ),
+        )
+        .with("engine::dialect::length_usize")
+    })
+}
+
+/// 只读缓冲名，按签名顺序。CUDA / Metal 的归约、扫描、归一化 lowering 共用这一条查表。
+pub(crate) fn readonly_bufs(signature: &Signature) -> Vec<&str> {
+    signature
+        .params()
+        .iter()
+        .filter(|param| param.ctype.is_buf() && !param.mutable)
+        .map(|param| param.name.as_str())
+        .collect()
+}
+
 /// launch 实参：缓冲传设备指针 `d_<name>`，标量取样本值。
 pub(crate) fn launch_args(sample: &Sample, params: &[Param]) -> Result<String> {
     let mut args = Vec::with_capacity(params.len());

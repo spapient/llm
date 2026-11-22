@@ -221,16 +221,16 @@ fn classify(
     Ok(())
 }
 
+/// 循环件名归组：`(首个条目的位置, 该组条目)`。
+type Groups<'a> = BTreeMap<&'a str, (usize, Vec<&'a Entry>)>;
+
+/// 未归组的条目：`(条目位置, 条目)`。
+type Rest<'a> = Vec<(usize, &'a Entry)>;
+
 /// 分组：一次投影的标度条目跳过，循环件名按层名归组，其余留着逐条判投影。
-fn partition<'a>(
-    header: &'a Header,
-    scales: &[&str],
-) -> (
-    BTreeMap<&'a str, (usize, Vec<&'a Entry>)>,
-    Vec<(usize, &'a Entry)>,
-) {
-    let mut groups: BTreeMap<&str, (usize, Vec<&Entry>)> = BTreeMap::new();
-    let mut rest: Vec<(usize, &Entry)> = Vec::new();
+fn partition<'a>(header: &'a Header, scales: &[&str]) -> (Groups<'a>, Rest<'a>) {
+    let mut groups: Groups<'a> = BTreeMap::new();
+    let mut rest: Rest<'a> = Vec::new();
     for (at, entry) in header.entries().iter().enumerate() {
         if scales.contains(&entry.name()) {
             continue;
@@ -248,10 +248,7 @@ fn partition<'a>(
 }
 
 /// 认出来的循环层；认不出就一件都不认——半认会把一半权重算进下界、另一半丢进清单。
-fn layers_of(
-    groups: BTreeMap<&str, (usize, Vec<&Entry>)>,
-    uncovered: &mut Vec<String>,
-) -> Vec<(usize, Box<dyn Contract>)> {
+fn layers_of(groups: Groups<'_>, uncovered: &mut Vec<String>) -> Vec<(usize, Box<dyn Contract>)> {
     groups
         .into_iter()
         .filter_map(

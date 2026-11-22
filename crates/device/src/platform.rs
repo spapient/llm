@@ -39,8 +39,6 @@ mod arch;
 
 pub use arch::{Arch, Host, Machine, Standing, Why, audit, require, standing};
 #[cfg(test)]
-#[cfg(test)]
-#[cfg(test)]
 #[path = "../tests/platform.rs"]
 mod tests;
 

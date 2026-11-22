@@ -136,12 +136,7 @@ fn metal_bindings(
                 base = base
             ));
         } else {
-            data.push_str(&format!(
-                "static const {base} init_{name}[] = {{{lit}}};\n",
-                base = base,
-                name = param.name,
-                lit = c_literal(&buf.values)
-            ));
+            data.push_str(&literal_decl(&param.name, base, &buf.values));
             allocs.push_str(&format!(
                 "        id<MTLBuffer> b_{name} = [device newBufferWithBytes:init_{name} length:sizeof(init_{name}) options:MTLResourceStorageModeShared];\n",
                 name = param.name

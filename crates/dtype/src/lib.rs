@@ -20,11 +20,13 @@
 //! 全仓库的精度/数值类型只有这一个事实源，按三个正交轴分文件，MX 元素作为 `MxType` 的子闭集
 //! 住在同一文件：
 //!
-//! - [`DType`](dtype.rs)：**一个元素怎么存**（无 scale），bool、INT1–INT64、FP4–FP64；
+//! - [`DType`](dtype.rs)：**一个元素怎么存**（无 scale），bool、INT1–INT64、FP4–FP64；浮点的
+//!   指数/尾数切分与偏置是 [`FloatLayout`] 一列，与位宽同住一张行表（`F8E4M3 = 1+4+3`，
+//!   `F8E4M3FNUZ` 的偏置比 IEEE 多 1），下游反量化不必硬编码位域；
 //! - [`QType`](qtype.rs)：**一块元素怎么打包**（GGML 块量化，`f16`/`f32`/sub-scale），如 `Q4_K`；
 //! - [`MxType`](mxtype.rs)：**低精度元素 + 块共享指数**（OCP MX 与 NVFP4 厂商扩展）。
-//! - [`Element`](mxtype.rs)：**MX 块内是哪种元素**（E2M1/E2M3/E3M2/E4M3/E5M2/INT8），只回答位宽与
-//!   标量对应。
+//! - [`Element`](mxtype.rs)：**MX 块内是哪种元素**（E2M1/E2M3/E3M2/E4M3/E5M2/INT8），只回答位宽、
+//!   浮点位域与标量对应。
 //!
 //! `QType`/`MxType` 的布局表不引用 `DType`；唯一的跨轴**身份**映射是 [`mxtype::Element::dtype`]——
 //! 元素格式到标量 `DType` 的身份对应（6 位 MX 格式没有标量对应时为 `None`）。本文件只是薄入口与
@@ -41,7 +43,7 @@
 //! 「标量元素或块格式」的统一布局来源（`weights` 的 GGUF 支持表用它，将来接 MXFP4 时
 //! 只换泛型参数）。trait 方法不是 `const fn`（stable 无 const trait）：几何与身份的唯一实现
 //! 是各枚举的 inherent `const fn`，trait 只转发；`parse_name` 反过来由 trait 默认实现唯一
-//! 提供，inherent 只转发。两条路径读同一张行表，由 `tests/identity.rs` 一处对四个闭集逐项
+//! 提供，inherent 只转发。两条路径读同一张行表，由 `tests/dtype_contracts.rs` 一处对四个闭集逐项
 //! 对拍（身份与块几何都在那里）。
 //!
 //! # 互操作：标准 trait 与可选 feature
@@ -98,7 +100,7 @@ mod format;
 pub mod mxtype;
 pub mod qtype;
 
-pub use dtype::{Class, DType, DTypeSpec};
+pub use dtype::{Class, DType, DTypeSpec, FloatLayout};
 pub use format::{BlockFormat, Format, Layout, UnknownCode, UnknownName};
 pub use mxtype::{Element, MxType};
 pub use qtype::QType;

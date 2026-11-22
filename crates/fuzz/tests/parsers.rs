@@ -5,10 +5,14 @@
 //! 分组数、半个转义序列）。同一 `(seed, case)` 在任何机器上都得到同一串字节，失败可复现。
 //!
 //! 覆盖文本与字节两类边界：`cli` 的参数文法、`tools` 的词法解析、`weights` 的 JSON /
-//! safetensors / 自有 `.u` 容器、`train` 的检查点、`serve` 的帧解码、`wire` 的 LEB128 游标，以及
-//! `wire` 三种接收器的
-//! 不变量。它们都是"外部来的字节"，也都把错误当返回值，因此"不 panic / 结论稳定 / 拒绝有
-//! 话说"三条契约在这里是同一件事；最后一个不拒绝任何输入，它验的是"三条承诺互相一致"。
+//! safetensors / 自有 `.u` 容器、`train` 的检查点、`serve` 的帧解码、`wire` 的 LEB128 游标，
+//! 以及 `wire` 三种接收器的不变量。它们都是"外部来的字节"，也都把错误当返回值，因此
+//! "不 panic / 结论稳定 / 拒绝有话说"三条契约在这里是同一件事；`Sealed` 不拒绝任何输入，它验的
+//! 是"三条承诺互相一致"。
+//!
+//! 后半段是**语义 oracle**：CRC 分块续算、LEB 规范往返、形状算术、能力协商产物、分布与
+//! Philox 不变量。它们同样吃任意字节，但把数学/协议承诺做成断言——这是 llm.u 的
+//! `decode`/`ops` 目标在做、而纯"不 panic"覆盖不到的一层深度。
 //!
 //! 适配定义统一来自 [`drivers`]，合法范例统一来自 [`seeds`]，与 libfuzzer harness、语料
 //! 生成器共用，避免判据与种子两份漂移。
@@ -24,20 +28,21 @@ mod support;
 use support::{drivers, seeds};
 
 use drivers::{
-    Frames, HttpHead, Invocation, Json, Leb, Lex, Safetensors, Sealed, Snapshot, UContainer,
+    CrcChunk, CutileNegotiate, DistSampler, Frames, HttpHead, Invocation, Json, Leb,
+    LebRoundtrip, Lex, Safetensors, Sealed, ShapeArith, Snapshot, UContainer,
 };
 use llm_fuzz::{Seed, Target, sweep};
 
 /// 每个目标跑多少条派生用例。
 ///
-/// 512 条 × 9 个目标 = 4608 次解析（每条还跑两遍验稳定），边际成本是毫秒级；数量取到"能
+/// 512 条 × 15 个目标 = 7680 次解析（每条还跑两遍验稳定），边际成本是毫秒级；数量取到"能
 /// 覆盖每个字节位置被扰动一次"就够——加密强度的随机源在这里没有价值，可复现才有。
 const CASES: u64 = 512;
 
 /// 全部被测入口及其合法种子；适配器顺序与 [`seeds::exemplars`] 一一对应，种子字节只在
 /// 范例清单里构造一次，遍历与种子校验两条测试共用这份配对。
-fn targets() -> [(&'static dyn Target, Seed); 10] {
-    let adapters: [&'static dyn Target; 10] = [
+fn targets() -> [(&'static dyn Target, Seed); 15] {
+    let adapters: [&'static dyn Target; 15] = [
         &Invocation,
         &Json,
         &Safetensors,
@@ -48,6 +53,11 @@ fn targets() -> [(&'static dyn Target, Seed); 10] {
         &Sealed,
         &Leb,
         &Lex,
+        &CrcChunk,
+        &LebRoundtrip,
+        &ShapeArith,
+        &CutileNegotiate,
+        &DistSampler,
     ];
     let exemplars = seeds::exemplars();
     std::array::from_fn(|i| (adapters[i], Seed::new(exemplars[i].1.clone())))

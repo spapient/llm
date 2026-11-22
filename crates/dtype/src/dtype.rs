@@ -35,7 +35,41 @@ pub enum Class {
     Float,
 }
 
-/// 一个标量类型的身份与布局：规范名、Rust 变体名、位宽、数值类别。
+/// 浮点格式的位域切分：符号位恒为 1，其余由指数位宽、尾数位宽与指数偏置决定。
+///
+/// 这是 [`DTypeSpec`] 与 [`crate::mxtype::ElementSpec`] 的一列，位域因此和规范名、位宽一样
+/// 只有一个事实源：FP4/FP8 的指数/尾数切分不必在下游反量化里硬编码，规范漂移只改一行。
+///
+/// ```
+/// let layout = llm_dtype::DType::BF16.float_layout().expect("bf16 是浮点");
+/// assert_eq!(
+///     (layout.exp_bits, layout.mantissa_bits, layout.exponent_bias),
+///     (8, 7, 127)
+/// );
+/// ```
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+pub struct FloatLayout {
+    /// 指数字段位宽。
+    pub exp_bits: u32,
+    /// 尾数字段位宽（不含隐含的整数位）。
+    pub mantissa_bits: u32,
+    /// 指数偏置：真指数 = 位域值 − 偏置；FNUZ 变体比同形 IEEE 浮点多 1。
+    pub exponent_bias: u32,
+}
+
+impl FloatLayout {
+    /// 按位域宽度与指数偏置构造；符号位不在这里，恒为 1。
+    #[must_use]
+    pub const fn new(exp_bits: u32, mantissa_bits: u32, exponent_bias: u32) -> Self {
+        Self {
+            exp_bits,
+            mantissa_bits,
+            exponent_bias,
+        }
+    }
+}
+
+/// 一个标量类型的身份与布局：规范名、Rust 变体名、位宽、数值类别与浮点位域。
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub struct DTypeSpec {
     /// 规范小写名（`f16`、`bf16`、`f8e4m3fnuz`），用于档案、注解与诊断。
@@ -46,6 +80,8 @@ pub struct DTypeSpec {
     pub bits: u32,
     /// 数值类别，三个分类谓词的唯一来源。
     pub class: Class,
+    /// 浮点位域；非浮点类型为 `None`（与 `class == Float` 同真同假）。
+    pub float: Option<FloatLayout>,
 }
 
 /// 元素类型闭集：布尔、无符号/有符号整数、浮点与亚字节打包类型。
@@ -113,144 +149,168 @@ const SPECS: [DTypeSpec; DType::ALL.len()] = [
         variant: "Bool",
         bits: 1,
         class: Class::Bool,
+        float: None,
     },
     DTypeSpec {
         name: "u1",
         variant: "U1",
         bits: 1,
         class: Class::UInt,
+        float: None,
     },
     DTypeSpec {
         name: "u2",
         variant: "U2",
         bits: 2,
         class: Class::UInt,
+        float: None,
     },
     DTypeSpec {
         name: "u4",
         variant: "U4",
         bits: 4,
         class: Class::UInt,
+        float: None,
     },
     DTypeSpec {
         name: "u8",
         variant: "U8",
         bits: 8,
         class: Class::UInt,
+        float: None,
     },
     DTypeSpec {
         name: "u16",
         variant: "U16",
         bits: 16,
         class: Class::UInt,
+        float: None,
     },
     DTypeSpec {
         name: "u32",
         variant: "U32",
         bits: 32,
         class: Class::UInt,
+        float: None,
     },
     DTypeSpec {
         name: "u64",
         variant: "U64",
         bits: 64,
         class: Class::UInt,
+        float: None,
     },
     DTypeSpec {
         name: "i1",
         variant: "I1",
         bits: 1,
         class: Class::SInt,
+        float: None,
     },
     DTypeSpec {
         name: "i2",
         variant: "I2",
         bits: 2,
         class: Class::SInt,
+        float: None,
     },
     DTypeSpec {
         name: "i4",
         variant: "I4",
         bits: 4,
         class: Class::SInt,
+        float: None,
     },
     DTypeSpec {
         name: "i8",
         variant: "I8",
         bits: 8,
         class: Class::SInt,
+        float: None,
     },
     DTypeSpec {
         name: "i16",
         variant: "I16",
         bits: 16,
         class: Class::SInt,
+        float: None,
     },
     DTypeSpec {
         name: "i32",
         variant: "I32",
         bits: 32,
         class: Class::SInt,
+        float: None,
     },
     DTypeSpec {
         name: "i64",
         variant: "I64",
         bits: 64,
         class: Class::SInt,
+        float: None,
     },
     DTypeSpec {
         name: "f8e4m3",
         variant: "F8E4M3",
         bits: 8,
         class: Class::Float,
+        float: Some(FloatLayout::new(4, 3, 7)),
     },
     DTypeSpec {
         name: "f8e5m2",
         variant: "F8E5M2",
         bits: 8,
         class: Class::Float,
+        float: Some(FloatLayout::new(5, 2, 15)),
     },
     DTypeSpec {
         name: "f16",
         variant: "F16",
         bits: 16,
         class: Class::Float,
+        float: Some(FloatLayout::new(5, 10, 15)),
     },
     DTypeSpec {
         name: "bf16",
         variant: "BF16",
         bits: 16,
         class: Class::Float,
+        float: Some(FloatLayout::new(8, 7, 127)),
     },
     DTypeSpec {
         name: "f32",
         variant: "F32",
         bits: 32,
         class: Class::Float,
+        float: Some(FloatLayout::new(8, 23, 127)),
     },
     DTypeSpec {
         name: "f64",
         variant: "F64",
         bits: 64,
         class: Class::Float,
+        float: Some(FloatLayout::new(11, 52, 1023)),
     },
     DTypeSpec {
         name: "f4",
         variant: "F4",
         bits: 4,
         class: Class::Float,
+        float: Some(FloatLayout::new(2, 1, 1)),
     },
     DTypeSpec {
         name: "f8e4m3fnuz",
         variant: "F8E4M3FNUZ",
         bits: 8,
         class: Class::Float,
+        float: Some(FloatLayout::new(4, 3, 8)),
     },
     DTypeSpec {
         name: "f8e5m2fnuz",
         variant: "F8E5M2FNUZ",
         bits: 8,
         class: Class::Float,
+        float: Some(FloatLayout::new(5, 2, 16)),
     },
 ];
 
@@ -323,10 +383,51 @@ impl DType {
         self.spec().variant
     }
 
+    /// 浮点位域（指数/尾数位宽与偏置）；非浮点类型为 `None`。
+    ///
+    /// 与 [`DType::is_float`] 同真同假：浮点 ⟺ `Some`，由测试跨列锁住。
+    #[must_use]
+    pub const fn float_layout(self) -> Option<FloatLayout> {
+        self.spec().float
+    }
+
+    /// 指数字段位宽；非浮点类型为 `None`。
+    #[must_use]
+    pub const fn exp_bits(self) -> Option<u32> {
+        match self.spec().float {
+            Some(layout) => Some(layout.exp_bits),
+            None => None,
+        }
+    }
+
+    /// 尾数字段位宽（不含隐含的整数位）；非浮点类型为 `None`。
+    #[must_use]
+    pub const fn mantissa_bits(self) -> Option<u32> {
+        match self.spec().float {
+            Some(layout) => Some(layout.mantissa_bits),
+            None => None,
+        }
+    }
+
+    /// 指数偏置；非浮点类型为 `None`。
+    #[must_use]
+    pub const fn exponent_bias(self) -> Option<u32> {
+        match self.spec().float {
+            Some(layout) => Some(layout.exponent_bias),
+            None => None,
+        }
+    }
+
     /// 由规范名还原；未知名字返回 `None`。
     #[must_use]
     pub fn parse_name(text: &str) -> Option<Self> {
         <Self as Format>::parse_name(text)
+    }
+
+    /// 是否为布尔（1 位，但既不是整数也不是浮点）。
+    #[must_use]
+    pub const fn is_bool(self) -> bool {
+        matches!(self.spec().class, Class::Bool)
     }
 
     /// 是否为浮点类型（含 FP4/FP8 与 FNUZ 变体）。
@@ -341,10 +442,27 @@ impl DType {
         matches!(self.spec().class, Class::UInt | Class::SInt)
     }
 
+    /// 是否为无符号整数（布尔不归入，与 [`DType::is_integer`] 同口径）。
+    #[must_use]
+    pub const fn is_unsigned(self) -> bool {
+        matches!(self.spec().class, Class::UInt)
+    }
+
     /// 是否为有符号整数。
     #[must_use]
     pub const fn is_signed(self) -> bool {
         matches!(self.spec().class, Class::SInt)
+    }
+
+    /// 符号位宽：浮点与有符号整数各占 1 位，布尔与无符号整数为 0。
+    ///
+    /// 对浮点，`sign_bits + exp_bits + mantissa_bits` 恒等于 [`DType::bits`]。
+    #[must_use]
+    pub const fn sign_bits(self) -> u32 {
+        match self.spec().class {
+            Class::Float | Class::SInt => 1,
+            Class::Bool | Class::UInt => 0,
+        }
     }
 
     /// 是否为亚字节类型（位宽小于 8，存储按位打包）。

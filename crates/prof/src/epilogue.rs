@@ -16,7 +16,7 @@
 
 use crate::atom::{ActKind, DType, Epilogue};
 use crate::tpl::error;
-use diagnostic::{Error, Result};
+use diagnostic::Result;
 
 /// 一个写回步骤：闭集操作 + 它的参数。每个变体自带参数，错误状态不可表达。
 #[derive(Debug, Clone, PartialEq)]

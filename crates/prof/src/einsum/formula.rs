@@ -348,8 +348,9 @@ fn writes_only_outputs(expr: &Expr, operands: &[Operand]) -> Result<(), Error> {
 
 /// 一项的元素数：该项每条轴长度的乘积。
 fn term_elements(extents: &Extents, term: &[char]) -> Result<u128, Error> {
-    term.iter()
-        .try_fold(1u128, |total, label| multiply(total, extent(extents, *label)?))
+    term.iter().try_fold(1u128, |total, label| {
+        multiply(total, extent(extents, *label)?)
+    })
 }
 
 /// 按方向累加：两个计数器各自溢出都要报。

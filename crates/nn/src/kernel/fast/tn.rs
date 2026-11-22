@@ -148,7 +148,7 @@ pub(super) fn compute_tn(
     k: usize,
     out: &mut [f32],
 ) {
-    super::compute_rows(a, bpack, w, rows, n, k, out, Layout::Tn);
+    super::compute_rows(a, bpack, w, super::Extent { rows, n, k }, out, Layout::Tn);
 }
 
 #[cfg(test)]

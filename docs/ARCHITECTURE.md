@@ -42,7 +42,7 @@
 
 **合并判据是「同构」，不是「消费者数量」。** 一个成员只有一条入边时，它通常是边界而不是肥肉：`storage` 独自持有全仓唯一的 `unsafe` 岛（`tensor` 是 `deny(unsafe_code)` 且有 11 个消费者），`algorithm` 刻意不产 `ContractSpec`（`nn` 专产），`shard` 坐 L5 而 `train` 坐 L6。可合并的硬信号只有一个——两个成员的 `lib.rs` / `build.rs` 除专名外**逐字相同**：六台设备 crate 并入 `frag` 时按这条判据删掉 512 行、补回 55 行，净省 457 行。反面的账同样要算：一次合并能省的至多是该 crate 的 `Cargo.toml`（全仓 1060 行 / 33 个，约 32 行）加一段头注释，指望靠合并兑现「代码大量减少」是算错账。裁决过程与测量数字见 [lld.md](lld.md) v3.0.90。
 
-允许的边（当前全量，共 123 条，含 50 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benchmarks` / `testkit` 的边不参与运行时方向判定）：
+允许的边（当前全量，共 124 条，含 52 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benchmarks` / `testkit` 的边不参与运行时方向判定）：
 
 ```
 diagnostic → （叶：错误类型 + `toml`，被大量成员消费；运行时出边为零；`+dev` 只登记夹具）
@@ -50,7 +50,7 @@ rng        → diagnostic    +dev: testkit（叶：Philox4x32-10，显式种子 
 dtype      → （叶    +dev: testkit（精度闭集）
 wire       → diagnostic    +dev: testkit（叶：纯字节码闭集，不认识张量或容器布局）
 tools      → diagnostic    +dev: testkit（配置驱动静态质量门 + 回退判定）
-prof       → annotation, diagnostic, dtype    +dev: testkit（契约词汇 + 档案 + 声明层 + 模板正文；片段与见证的语料在这里，机制也只有它）
+prof       → diagnostic, dtype    +dev: testkit（契约词汇 + 档案 + 声明层 + 模板正文；片段与见证的语料在这里，机制也只有它）
 cutile     → annotation, diagnostic, prof    +dev: nn, testkit（机制：协商 → 拼接 → emit → 指纹，一行也不执行）
 tensor     → dtype（`dtype` 之上的形状与索引代数）
 storage    → diagnostic, tensor, wire    +dev: testkit（扁平缓冲与分配，以及折进来的检查点字节格式）
@@ -66,7 +66,7 @@ device     → cutile, diagnostic, engine, nn, prof, shard    +dev: testkit（�
 serve      → diagnostic, engine, nn, prof, rng, tensor, tokenizer, weights, wire    +dev: testkit（形状积只经 `tensor::product` 的饱和乘法：回绕出的偏小数会骗过权重长度核对）
 cli        → cutile, device, diagnostic, engine, nn, prof, serve, shard, tensor, tokenizer, tools, train, weights    +dev: storage（L7 组合根：只做命令分派与各层装配，不定义新类型）
 annotation → （叶：工具边，`#[model]` 注解，不参与方向判定）
-fuzz       → diagnostic    +dev: cli, serve, storage, tensor, tools, train, weights, wire（工具成员；`+dev` 是 `tests/support.rs` 里的驱动对象）
+fuzz       → diagnostic    +dev: cli, cutile, rng, serve, storage, tensor, tools, train, weights, wire（工具成员；`+dev` 是 `tests/support.rs` 里的驱动对象）
 benchmarks → （叶    +dev: autograd, cutile, engine, nn, prof, serve, storage, tensor, testkit, tokenizer, tools, train, weights, wire（工具成员：只声明被测对象，测量配置归 criterion）
 testkit    → （叶    +dev: autograd, cutile, nn, prof, tensor, tools, train, weights（工具成员：夹具库 + 门禁；被测层只出现在 dev-dependencies）
 ```

@@ -35,6 +35,12 @@ serve = { path = "../serve", package = "llm-serve" }
 wire = { path = "../wire", package = "llm-wire" }
 tensor = { path = "../tensor", package = "llm-tensor" }
 tool = { path = "../tools", package = "llm-tools" }
+testkit = { path = "../testkit", package = "llm-testkit" }
+# 语义 oracle：能力协商、确定性随机与形状算术都要对真实实现取不变量。
+cutile = { path = "../cutile" }
+rng = { path = "../rng", package = "llm-rng" }
+# 属性层：Burn 式随机生成 + 收缩，覆盖 fuzzer 难以命中的组合空间。
+proptest = { workspace = true }
 
 # 确定性 sweep 遍历：走 libtest，默认 feature 即可跑（`tests/support.rs` 由它 include）。
 [[test]]
@@ -109,6 +115,41 @@ name = "fuzz_lex"
 path = "tests/fuzz_lex.rs"
 harness = false
 required-features = ["engine"]
+
+[[test]]
+name = "fuzz_crc"
+path = "tests/fuzz_crc.rs"
+harness = false
+required-features = ["engine"]
+
+[[test]]
+name = "fuzz_leb_roundtrip"
+path = "tests/fuzz_leb_roundtrip.rs"
+harness = false
+required-features = ["engine"]
+
+[[test]]
+name = "fuzz_shape"
+path = "tests/fuzz_shape.rs"
+harness = false
+required-features = ["engine"]
+
+[[test]]
+name = "fuzz_cutile_negotiate"
+path = "tests/fuzz_cutile_negotiate.rs"
+harness = false
+required-features = ["engine"]
+
+[[test]]
+name = "fuzz_dist"
+path = "tests/fuzz_dist.rs"
+harness = false
+required-features = ["engine"]
+
+# proptest 属性层：走 libtest，默认 feature 即可跑，与确定性 sweep 互补（随机生成 + 收缩）。
+[[test]]
+name = "properties"
+path = "tests/properties.rs"
 
 [lints]
 workspace = true

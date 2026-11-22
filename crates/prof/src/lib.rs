@@ -54,6 +54,8 @@
 
 #![deny(unsafe_code)]
 
+mod annotate;
+
 // ---- 词汇层：算子契约 ---------------------------------------------------------
 //
 // [`atom`] 是唯一的词汇表：原语闭集、存储位、数据类型、属性键、证据等级，以及需求/供给的
@@ -115,6 +117,7 @@ include!(concat!(env!("OUT_DIR"), "/tables.rs"));
 pub use generated::{embedded, names};
 
 mod schema;
+mod witness;
 
 pub mod decl;
 #[cfg(test)]

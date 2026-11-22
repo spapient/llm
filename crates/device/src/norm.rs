@@ -1,18 +1,16 @@
 //! CUDA 分块归一化 lowering：RMSNorm 两段、Softmax 三段，以及它们的 host 串联驱动。
 
 use crate::cuda::{buf_args, cuda_host_bufs_grid, cuda_readback, cuda_release};
-use crate::dialect::{Cuda, Dialect, RMS_EPS, chunk_head, length_scalar, scalar_name};
+use crate::dialect::{
+    Cuda, Dialect, RMS_EPS, chunk_head, length_scalar, length_usize, readonly_bufs,
+};
 use cutile::harness::output_name;
 use diagnostic::{Code, Error, Result};
 use nn::model::Sample;
 use nn::sig::Signature;
 
-/// 部分归约段入口（部分平方和 / 部分最大值）。
-pub(crate) const PARTIAL: &str = "kernel_partial";
-/// 部分指数和段入口（Softmax 第二段）。
-pub(crate) const EXPSUM: &str = "kernel_expsum";
-/// 归一化段入口（RMSNorm / Softmax 的末段）。
-pub(crate) const NORM: &str = "kernel_norm";
+/// 部分归约 / 部分指数和 / 归一化三段入口：与 Metal 侧同源，直接复用 [`crate::dialect`] 的常量。
+pub(crate) use crate::dialect::{EXPSUM, NORM, PARTIAL};
 
 /// 分块 RMSNorm 的设备段：`(部分平方和, 归一化)`。第一段写 `y[g] = Σx²` 的部分和，
 /// 主机折叠出 `rms` 后第二段按块回写 `y = gamma * x / rms`。
@@ -132,16 +130,6 @@ fn point_entry(signature: &Signature, entry: &str, extra: &str, body: &str) -> S
         format!("{bufs},\n    {extra}")
     };
     Cuda::kernel_entry("", "", &bufs, ("", Cuda::POINT_STMT), body, entry)
-}
-
-/// 只读缓冲名，按签名顺序。
-fn readonly_bufs(signature: &Signature) -> Vec<&str> {
-    signature
-        .params()
-        .iter()
-        .filter(|param| param.ctype.is_buf() && !param.mutable)
-        .map(|param| param.name.as_str())
-        .collect()
 }
 
 /// 唯一只读缓冲名（Softmax 形态）；缺或多都返回 `Invalid`。
@@ -286,21 +274,6 @@ pub fn cuda_softmax_driver(
     })
 }
 
-/// 长度标量的 `usize` 视图；负值或超长返回 `Invalid`。
-pub(crate) fn length_usize(signature: &Signature, sample: &Sample) -> Result<usize> {
-    let len = length_scalar(signature, sample)?;
-    usize::try_from(len).map_err(|_| {
-        Error::new(
-            Code::Invalid,
-            format!(
-                "长度标量 `{}` = {len} 不是非负 usize",
-                scalar_name(signature).unwrap_or("?")
-            ),
-        )
-        .with("engine::norm::length_usize")
-    })
-}
-
 /// 程序头：CUDA include、错误检查宏、多段设备源。
 pub(crate) fn program_head(segments: &[String]) -> String {
     let mut text = String::from(
@@ -323,13 +296,7 @@ pub(crate) fn program_head(segments: &[String]) -> String {
 /// 后续段的入口部分：从段内最后一个 `__global__` 起截断（preamble 与模板函数只在首段保留）。
 fn entry_of(segment: &str) -> &str {
     const MARK: &str = "\n\n__global__ void ";
-    match segment.rfind(MARK) {
-        Some(at) => {
-            let start = at + MARK.len() - "__global__ void ".len();
-            &segment[start..]
-        }
-        None => segment,
-    }
+    segment.rfind(MARK).map_or(segment, |at| &segment[at + 2..])
 }
 
 /// host 侧部分结果的脚手架：网格数 `G` 与回读数组。

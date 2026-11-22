@@ -1,5 +1,5 @@
 //! 档案 schema：把编译期展开的表读成 [`Profile`]（`parse`），并把声明里的推导式求值成数字
-//! （本文件末尾的 `eval_expression`）。自洽校验在 [`crate::prof`] 的 `Profile::validate`。
+//! （本文件末尾的 `eval_expression`）。自洽校验在 [`crate::witness`] 的 `Profile::validate`。
 
 use crate::atom::Set;
 use crate::prof::*;

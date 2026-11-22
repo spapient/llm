@@ -18,14 +18,27 @@ pub use misc::{
 // 签名 → 缓冲名与几何：各族共用
 // ---------------------------------------------------------------------------
 
-/// 三条缓冲名（按签名序：A、B、Y）。
-fn gemm_bufs(signature: &Signature) -> Result<(&str, &str, &str)> {
-    let bufs: Vec<&Param> = signature
+/// 签名里全部缓冲参数（按序）。
+fn buf_params(signature: &Signature) -> Vec<&Param> {
+    signature
         .params()
         .iter()
         .filter(|param| param.ctype.is_buf())
-        .collect();
-    match bufs.as_slice() {
+        .collect()
+}
+
+/// 签名里全部标量参数（按序）。
+fn scalar_params(signature: &Signature) -> Vec<&Param> {
+    signature
+        .params()
+        .iter()
+        .filter(|param| !param.ctype.is_buf())
+        .collect()
+}
+
+/// 三条缓冲名（按签名序：A、B、Y）。
+fn gemm_bufs(signature: &Signature) -> Result<(&str, &str, &str)> {
+    match buf_params(signature).as_slice() {
         [a, b, y] => Ok((a.name.as_str(), b.name.as_str(), y.name.as_str())),
         _ => Err(
             Error::new(Code::Internal, "GEMM 签名需要 3 个缓冲（A/B/Y）")
@@ -36,22 +49,13 @@ fn gemm_bufs(signature: &Signature) -> Result<(&str, &str, &str)> {
 
 /// 三个整数标量 `(M, N, K)` 的样本值。
 fn gemm_dims(signature: &Signature, sample: &Sample) -> Result<(usize, usize, usize)> {
-    let scalars: Vec<&Param> = signature
-        .params()
-        .iter()
-        .filter(|param| !param.ctype.is_buf())
-        .collect();
-    if scalars.len() != 3 {
-        return Err(
+    match scalar_params(signature).as_slice() {
+        [m, n, k] => Ok((dim(sample, m)?, dim(sample, n)?, dim(sample, k)?)),
+        _ => Err(
             Error::new(Code::Internal, "GEMM 签名需要 3 个整数标量（M/N/K）")
                 .with("engine::tiled::metal_tiled_gemm"),
-        );
+        ),
     }
-    Ok((
-        dim(sample, scalars[0])?,
-        dim(sample, scalars[1])?,
-        dim(sample, scalars[2])?,
-    ))
 }
 
 /// 一个整数标量的样本取值（必须存在且非负）。
@@ -70,12 +74,7 @@ fn dim(sample: &Sample, param: &Param) -> Result<usize> {
 
 /// 四条缓冲名（按签名序：Q、K、V、Y）。
 fn attention_bufs(signature: &Signature) -> Result<(&str, &str, &str, &str)> {
-    let bufs: Vec<&Param> = signature
-        .params()
-        .iter()
-        .filter(|param| param.ctype.is_buf())
-        .collect();
-    match bufs.as_slice() {
+    match buf_params(signature).as_slice() {
         [q, k, v, y] => Ok((
             q.name.as_str(),
             k.name.as_str(),
@@ -91,18 +90,13 @@ fn attention_bufs(signature: &Signature) -> Result<(&str, &str, &str, &str)> {
 
 /// 两个整数标量 `(S, D)` 的样本值。
 fn attention_dims(signature: &Signature, sample: &Sample) -> Result<(usize, usize)> {
-    let scalars: Vec<&Param> = signature
-        .params()
-        .iter()
-        .filter(|param| !param.ctype.is_buf())
-        .collect();
-    if scalars.len() != 2 {
-        return Err(
+    match scalar_params(signature).as_slice() {
+        [s, d] => Ok((dim(sample, s)?, dim(sample, d)?)),
+        _ => Err(
             Error::new(Code::Internal, "注意力签名需要 2 个整数标量（S/D）")
                 .with("engine::tiled::metal_tiled_attention"),
-        );
+        ),
     }
-    Ok((dim(sample, scalars[0])?, dim(sample, scalars[1])?))
 }
 
 #[cfg(test)]

@@ -712,7 +712,7 @@ $D^:docs/ARCHITECTURE.md:1
 | 16 | 随机数 / 确定性    | 7      | 1     | 8    | llm Philox4x32-10 counter + 三分布；llm.u 运行期采样注入闭包，tool/proto 侧另用 rand 初始化；Burn rand/seed/Distribution                |
 | 17 | 内核 DSL 扩展    | 6      | 2     | 9    | llm cutile 协商 / 拼接 /emit/ 指纹；llm.u 内核直写后端；Burn CubeCL IR 成熟                                                        |
 | 18 | 架构 / 可维护性    | 8      | 3     | 8    | llm 六层契约 + testkit 强制守分层 + ADR；llm.u device/exec 耦合、unsafe 分散 49 文件；Burn crate 分层清晰                                |
-| 19 | 测试 / 质量门禁    | 7      | 4     | 8    | llm 58k 行 + 架构契约 / 对拍；llm.u 17.8k + fuzz nightly；Burn backend-tests 套件 + 95k 行                                     |
+| 19 | 测试 / 质量门禁    | 9      | 4     | 8    | llm 58k 行 + 架构契约 + 三层 fuzz（10 契约 + 5 语义 oracle + proptest）；llm.u 17.8k + fuzz nightly；Burn backend-tests 套件 + 95k 行 |
 | 20 | 生态 / 示例 / 文档 | 4      | 4     | 8    | llm 内部架构文档完备无对外模型；llm.u README/perf 实测详尽；Burn book + 23 examples                                                   |
 
 ### 16.4 逐维度优势与短板论证
@@ -899,13 +899,13 @@ $D^:docs/ARCHITECTURE.md:1
 
 * **llm.u（○/◐，3）**：`device` 28k 行直持各后端 FFI 与内核封装，device/exec 强耦合，无显式分层门禁；unsafe 分散在 49 个文件。配置驱动是它的组织特色，但跨层边界弱、改动容易牵一发动全身。
 
-#### 19. 测试 / 质量门禁 —— llm 7・llm.u 4・Burn 8
+#### 19. 测试 / 质量门禁 —— llm 9・llm.u 4・Burn 8
 
 
 
 * **Burn（●，8）**：`burn-backend-tests` 套件跨后端对拍，95k 测试行，配 CI/coverage/typos/deny.toml。
 
-* **llm 新（●/◐，7）**：58k 测试行（测试 / 生产 0.61），含架构契约测试、各 crate tests、fuzz（libfuzzer-sys optional）；`benchmarks` 已搭骨架但实测基准门禁待重建。
+* **llm 新（●，9）**：58k 测试行（测试 / 生产 0.61），含架构契约测试、各 crate tests、三层 fuzz；`benchmarks` 已搭骨架但实测基准门禁待重建。`fuzz` 第一层是 10 个解析器契约目标（不 panic / 结论稳定 / 拒绝有话说），第二层新增 5 个**语义 oracle**——CRC 分块续算 + 逐位参考对拍、LEB128 规范往返、形状饱和乘积与亚字节位级取整、内核协商变体回指、分布与 Philox 位级确定性——覆盖深度超过 llm.u 的 `decode`/`ops` 目标，第三层是 proptest 属性测试（结构化生成 + 收缩），向 Burn 的属性测试靠拢；CI 对 15 个目标做有界 libFuzzer 运行。
 
 * **llm.u（◐，4）**：17.8k 测试行 + fuzz nightly 独立运行；benches 在 CPU/Metal/OpenCL/CLBlast/SYCL/CUDA/MUSA 多后端实测对拍；`tool/gate` 有 arch/call/ccn/files/rules。测试体量与契约门禁弱于前两者，但实测对拍经验是其财富。
 
@@ -927,7 +927,7 @@ $D^:docs/ARCHITECTURE.md:1
 
 |     | llm（新）   | llm.u    | Burn     |
 | --- | -------- | -------- | -------- |
-| 平均分 | **4.85** | **3.35** | **8.30** |
+| 平均分 | **4.95** | **3.35** | **8.30** |
 
 **B. LLM 推理 / 性能视角（侧重后端执行、推理服务、量化、内核 DSL；训练指标 / 数据集 / RNN 降权，权重合计 100）**
 
@@ -947,7 +947,7 @@ $D^:docs/ARCHITECTURE.md:1
 | 4  | 分布式 / 并行     | 3        | 2        | 6        |
 | 3  | 张量 / 类型系统    | 6        | 2        | 10       |
 | 3  | 随机数 / 确定性    | 7        | 1        | 8        |
-| 3  | 测试 / 质量门禁    | 7        | 4        | 8        |
+| 3  | 测试 / 质量门禁    | 9        | 4        | 8        |
 | 2  | 自动微分         | 5        | 2        | 10       |
 | 2  | 优化器          | 4        | 3        | 9        |
 | 2  | 调度 / 训练循环    | 5        | 4        | 9        |
@@ -955,7 +955,7 @@ $D^:docs/ARCHITECTURE.md:1
 | 2  | 生态 / 示例 / 文档 | 4        | 4        | 8        |
 | 1  | 指标 / 评估器     | 3        | 1        | 10       |
 | 1  | 数据集管线        | 2        | 1        | 9        |
-|    | **加权总分**     | **5.13** | **4.30** | **7.43** |
+|    | **加权总分**     | **5.19** | **4.30** | **7.43** |
 
 ### 16.6 评分解读
 
@@ -965,7 +965,7 @@ $D^:docs/ARCHITECTURE.md:1
 
 * **新 llm 在两种视角都居中**：架构契约、RNG、量化格式、分层测试是亮点；拖分项是后端执行未闭环、类型系统层级低、训练生态薄。相对 llm.u，它把工程结构和能力端口补齐了，但后端实测性能与服务链路需要重建。
 
-* **llm.u 在纯推理 / 性能视角下与新 llm 差距明显缩小（4.30 vs 5.13）**：多后端实测 GEMM、完整调度 / KV 是它的基本盘；但架构耦合、无图反向、运行期采样靠注入闭包、集合通信仅有空参考实现、训练能力最小化，在通用框架视角下垫底。
+* **llm.u 在纯推理 / 性能视角下与新 llm 差距明显缩小（4.30 vs 5.19）**：多后端实测 GEMM、完整调度 / KV 是它的基本盘；但架构耦合、无图反向、运行期采样靠注入闭包、集合通信仅有空参考实现、训练能力最小化，在通用框架视角下垫底。
 
 * 若目标是**产出可训练的通用模型**：优先对标 Burn；若目标是**LLM 低延迟推理与多后端性能**：llm.u 的实测路径更直接，新 llm 的 DSL 分层是更长期的工程方向。
 

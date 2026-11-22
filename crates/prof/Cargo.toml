@@ -18,7 +18,6 @@ device-image = []
 [dependencies]
 # 契约词汇（`atom`/`sig`/`sch`/`tpl`/`einsum`/`model`/`sample`/`operator`/`epilogue`）
 # 与档案同住本 crate：模板与签名是设备档案与片段正文的共同文法，拆开只会多一层转发。
-annotation = { path = "../annotation", package = "llm-annotation" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 dtype = { path = "../dtype", package = "llm-dtype" }
 

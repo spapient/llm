@@ -28,6 +28,15 @@
   后者是一条轴在求和式里的身份，合并它们会造出一个两边都不好用的词。
 ### Added
 
+- **`crates/dtype` 的浮点位域身份进表：FP4/FP8 的指数/尾数切分与偏置不再是注释里的一句话**。
+  `DTypeSpec` 与 `mxtype::ElementSpec` 各多一列 `float: Option<FloatLayout>`（`exp_bits` /
+  `mantissa_bits` / `exponent_bias`），于是 `F8E4M3 = 1+4+3`、`BF16 = (8, 7, 127)`、`E3M2` 的偏置 3
+  与 `F8E4M3FNUZ`/`F8E5M2FNUZ` 比同形 IEEE 多 1 的偏置都躺在原来那张行表里，下游 FP8/FP4 反量化
+  不必再硬编码位域。新增全 `const fn` 访问器 `float_layout` / `exp_bits` / `mantissa_bits` /
+  `exponent_bias`（`Option`）与 `sign_bits` / `is_bool` / `is_unsigned`；`tests/dtype_tests.rs`
+  与 `tests/mxtype_tests.rs` 的锁定表各多一列，并补「浮点 ⟺ `Some`」「`sign_bits + exp + mantissa
+  == bits`」与「`Element` 的位域不漂移于其标量 `DType`」三条不变量。
+
 - **typed IR 多了一族：归约 `Write::Reduce { at }`（`output[at] += value`），两族共用一套六道校验**。
   此前 IR 只能表达 `output[idx] = expr`，`dot` / `sum` 这类内核必须另起一套 lowering。现在两族不是两个
   类型，而是同一个 `Kernel` 里的一份写回数据（`Write::{Map, Reduce { at }}`），因此名字/形参/生成名/

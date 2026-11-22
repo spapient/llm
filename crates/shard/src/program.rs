@@ -81,7 +81,8 @@ impl Stages {
     ///
     /// 后端少给了设备源（违约）。
     pub fn three(self, role: &str) -> diagnostic::Result<(String, String, String)> {
-        self.take::<3>(role).map(|[first, second, third]| (first, second, third))
+        self.take::<3>(role)
+            .map(|[first, second, third]| (first, second, third))
     }
 
     /// 按声明顺序还原 `N` 段设备源：`pop_one` 出栈是逆序，从数组尾往回填。

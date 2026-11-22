@@ -180,7 +180,7 @@ fn pool_into_attention() -> Fusion {
 #[test]
 fn a_fusion_never_slows_down() {
     let profile = profile();
-    let ranked = ranking(&profile, &decls(), 12, &models());
+    let ranked = ranking(&profile, &decls(), 12, models());
     let mut scored = 0;
     for (fusion, verdict) in &ranked {
         if let Verdict::Scored(payoff) = verdict {
@@ -204,10 +204,10 @@ fn a_fusion_never_slows_down() {
 fn the_payoff_is_the_intermediate_round_trip() {
     let profile = profile();
     let fusion = pool_into_attention();
-    let Verdict::Scored(payoff) = score(&profile, &fusion, &models()) else {
+    let Verdict::Scored(payoff) = score(&profile, &fusion, models()) else {
         panic!(
             "这一对应当打得出分：{}",
-            score(&profile, &fusion, &models()).as_str()
+            score(&profile, &fusion, models()).as_str()
         );
     };
     // 中间量=生产者唯一输出的字节数，独立算一遍：省的正是它的写 + 读。
@@ -223,7 +223,7 @@ fn the_payoff_is_the_intermediate_round_trip() {
 fn the_payoff_agrees_with_predict() {
     let profile = profile();
     let fusion = pool_into_attention();
-    let Verdict::Scored(payoff) = score(&profile, &fusion, &models()) else {
+    let Verdict::Scored(payoff) = score(&profile, &fusion, models()) else {
         panic!("这一对应当打得出分");
     };
     // 一台机器两个视角：不融合就是两次 `predict`（掩盖项为 0 时等价于裸 roofline）。
@@ -249,7 +249,7 @@ fn scoring_refuses_without_peaks() {
     profile.peak = crate::prof::Peak::default();
     // 峰值缺席是"无从判定"，不是"加速 1.0×"：不许猜一个数顶上。
     assert!(matches!(
-        score(&profile, &pool_into_attention(), &models()),
+        score(&profile, &pool_into_attention(), models()),
         Verdict::Unscorable(_)
     ));
 }
@@ -259,7 +259,7 @@ fn a_candidate_without_a_semantic_model_is_unscorable() {
     let mut fusion = pool_into_attention();
     fusion.producer = "没有这个算子".to_string();
     assert!(matches!(
-        score(&profile(), &fusion, &models()),
+        score(&profile(), &fusion, models()),
         Verdict::Unscorable(_)
     ));
 }
@@ -272,7 +272,7 @@ fn a_multi_output_seam_cannot_be_attributed() {
     fusion.seams.push(second);
     // 代价表的 `write` 是全部输出之和：接缝占两条时中间量无法从它归因。
     assert!(matches!(
-        score(&profile(), &fusion, &models()),
+        score(&profile(), &fusion, models()),
         Verdict::Unscorable(_)
     ));
 }
@@ -280,7 +280,7 @@ fn a_multi_output_seam_cannot_be_attributed() {
 #[test]
 fn the_ranking_covers_every_candidate_and_orders_it() {
     let profile = profile();
-    let ranked = ranking(&profile, &decls(), 12, &models());
+    let ranked = ranking(&profile, &decls(), 12, models());
     assert_eq!(
         ranked.len(),
         fusions(&decls(), 12).len(),

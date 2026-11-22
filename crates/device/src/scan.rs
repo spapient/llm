@@ -3,9 +3,9 @@
 use crate::cuda::{cuda_host_bufs_grid, cuda_launch_params, cuda_readback, cuda_release};
 use crate::dialect::{
     Cuda, Dialect, bind_chunk_loop, carry_fold, chunk_head, inject_chunk_preamble, launch_args,
-    length_scalar, scalar_name, scan_correct_body, thread_param_typed,
+    length_scalar, length_usize, scalar_name, scan_correct_body, thread_param_typed,
 };
-use crate::norm::{launch, length_usize, program_head};
+use crate::norm::{launch, program_head};
 use cutile::harness::output_name;
 use diagnostic::Result;
 use nn::model::Sample;

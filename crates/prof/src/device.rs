@@ -158,6 +158,12 @@ pub enum Status {
 
 use std::sync::OnceLock;
 
+/// 生成表查询：表按生成期顺序升序，二分查找。四张表（设备行 / 片段根 / 内嵌片段 / 内嵌见证）
+/// 共用这一份口径：哪个表、按什么键、缺了返回 `None`——口径只写一次。
+fn position<T, K: Ord>(table: &[T], key: &K, key_of: impl Fn(&T) -> K) -> Option<usize> {
+    table.binary_search_by_key(key, key_of).ok()
+}
+
 /// 每台设备一行（顺序同 [`DEVICES`]，即生成期按 vendor 升序）。
 pub fn devices() -> &'static [crate::Device] {
     &crate::DEVICES
@@ -165,17 +171,13 @@ pub fn devices() -> &'static [crate::Device] {
 
 /// 按 vendor 查设备行；没有登记时 `None`。表按 vendor 升序（生成序），二分查找。
 pub fn device(vendor: &str) -> Option<&'static crate::Device> {
-    let idx = crate::DEVICES
-        .binary_search_by_key(&vendor, |entry| entry.vendor)
-        .ok()?;
+    let idx = position(&crate::DEVICES, &vendor, |entry| entry.vendor)?;
     Some(&crate::DEVICES[idx])
 }
 
 /// 按 vendor 查片段源码根（那个设备目录）；没有登记时 `None`。
 pub fn dir_of(vendor: &str) -> Option<&'static str> {
-    let idx = crate::ROOTS
-        .binary_search_by_key(&vendor, |(have, _)| have)
-        .ok()?;
+    let idx = position(&crate::ROOTS, &vendor, |(have, _)| *have)?;
     Some(crate::ROOTS[idx].1)
 }
 
@@ -183,7 +185,7 @@ pub fn dir_of(vendor: &str) -> Option<&'static str> {
 ///
 /// 内嵌表构建期已校验（签名声明、`(prim, impl)` 与档案对账），装载不再重复解析；
 /// 首次查询把六台设备一次建成缓存，之后每次取用只加一次引用计数（[`FragmentSet`] 内部是 `Arc`，
-/// 见 [`crate::fragment`]）：几百段片段不会因为"再取一次"被重新拷一遍。
+/// 见 [`FragmentSet`]）：几百段片段不会因为"再取一次"被重新拷一遍。
 pub fn builtin(vendor: &str, ext: &str) -> Option<FragmentSet> {
     static CACHE: OnceLock<Vec<Option<FragmentSet>>> = OnceLock::new();
     let sets = CACHE.get_or_init(|| {
@@ -198,19 +200,17 @@ pub fn builtin(vendor: &str, ext: &str) -> Option<FragmentSet> {
             })
             .collect()
     });
-    let idx = crate::BUILTIN
-        .binary_search_by_key(&(vendor, ext), |entry| (entry.vendor, entry.ext))
-        .ok()?;
+    let idx = position(&crate::BUILTIN, &(vendor, ext), |entry| {
+        (entry.vendor, entry.ext)
+    })?;
     sets[idx].clone()
 }
 
 /// 按 `(vendor, ext)` 查内嵌见证；没有登记时返回 `None`（调用方改读磁盘）。
 pub fn builtin_witness(vendor: &str, ext: &str) -> Option<&'static str> {
-    let idx = crate::WITNESS
-        .binary_search_by_key(&(vendor, ext), |(have_vendor, have_ext, _)| {
-            (*have_vendor, *have_ext)
-        })
-        .ok()?;
+    let idx = position(&crate::WITNESS, &(vendor, ext), |(have, have_ext, _)| {
+        (*have, *have_ext)
+    })?;
     Some(crate::WITNESS[idx].2)
 }
 
@@ -464,7 +464,7 @@ pub fn layer_root(data_root: &Path) -> PathBuf {
     data_root.join("prim")
 }
 
-/// 片段层在哪：仓库内置（六台设备各在自己的 crate 里）或某个 `data.root` 的 `prim/`。
+/// 片段层在哪：仓库内置（六台设备各在自己的 `src/<vendor>/`）或某个 `data.root` 的 `prim/`。
 #[derive(Debug, Clone, Copy)]
 pub struct Layout<'a> {
     /// `Some` 表示读磁盘上的 `data.root`；`None` 表示内置表。
@@ -472,7 +472,7 @@ pub struct Layout<'a> {
 }
 
 impl<'a> Layout<'a> {
-    /// 仓库内置的片段层：六台设备各自的 crate。
+    /// 仓库内置的片段层：六台设备各自的 `src/<vendor>/`。
     pub const fn builtin() -> Self {
         Self { data: None }
     }

@@ -121,8 +121,8 @@ fn snapshot(buf: &mut MetalBuf) -> Vec<u8> {
 
 /// 把输出缓冲填成 NaN：内核若漏写任何一块，NaN 会原样留下，不会被「旧值是 0」蒙混过去。
 fn fill_nan(buf: &mut MetalBuf) {
-    for slot in buf.as_mut_bytes().chunks_exact_mut(4) {
-        slot.copy_from_slice(&f32::NAN.to_ne_bytes());
+    for slot in buf.as_mut_bytes().as_chunks_mut::<4>().0 {
+        *slot = f32::NAN.to_ne_bytes();
     }
 }
 

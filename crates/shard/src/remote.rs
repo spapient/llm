@@ -153,6 +153,7 @@ impl FileRemote {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .open(&self.backing)
             .map_err(|error| self.io("创建", error))?;
         file.set_len(self.len_bytes())
@@ -165,8 +166,8 @@ impl FileRemote {
         let mut bytes = vec![0u8; self.width * 4];
         file.read_exact(&mut bytes)
             .map_err(|error| self.io("读", error))?;
-        for (slot, chunk) in out.iter_mut().zip(bytes.chunks_exact(4)) {
-            *slot = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        for (slot, chunk) in out.iter_mut().zip(bytes.as_chunks::<4>().0) {
+            *slot = f32::from_le_bytes(*chunk);
         }
         Ok(())
     }
@@ -180,9 +181,11 @@ impl FileRemote {
     fn write(&self, rank: u32, values: &[f32]) -> Result<()> {
         let mut file = self.open_write()?;
         self.seek_slot(&mut file, rank)?;
-        let bytes: Vec<u8> = values.iter().flat_map(|value| value.to_le_bytes()).collect();
-        file.write_all(&bytes)
-            .map_err(|error| self.io("写", error))
+        let bytes: Vec<u8> = values
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        file.write_all(&bytes).map_err(|error| self.io("写", error))
     }
 }
 

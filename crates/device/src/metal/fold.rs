@@ -1,7 +1,8 @@
 //! Metal 多段并行程序：分块族（归约 / 归一化 / 扫描）的「多段发射 + 主机折叠」。
 
 use crate::dialect::{
-    EXPSUM, NORM, PARTIAL, RMS_EPS, SCAN_CORRECT, SCAN_LOCAL, carry_fold, length_scalar,
+    EXPSUM, NORM, PARTIAL, RMS_EPS, SCAN_CORRECT, SCAN_LOCAL, carry_fold, length_usize,
+    readonly_bufs,
 };
 use crate::metal::{
     MetalStage, metal_chunk_reduce, metal_chunk_rmsnorm, metal_chunk_scan, metal_chunk_softmax,
@@ -27,7 +28,7 @@ struct Prep<'a> {
 
 impl<'a> Prep<'a> {
     fn of(signature: &'a Signature, sample: &Sample, chunk: usize) -> Result<Self> {
-        let len = length(signature, sample)?;
+        let len = length_usize(signature, sample)?;
         Ok(Self {
             len,
             blocks: len.div_ceil(chunk.max(1)),
@@ -261,14 +262,6 @@ fn scan_parts(
     Ok((device, host))
 }
 
-/// 长度标量（`N` / `n` / `len`）的样本取值。
-fn length(signature: &Signature, sample: &Sample) -> Result<usize> {
-    usize::try_from(length_scalar(signature, sample)?).map_err(|_| {
-        Error::new(Code::Invalid, "长度标量不是非负整数".to_owned())
-            .with("engine::metal::fold::length")
-    })
-}
-
 /// 签名里全部缓冲的名字（按 `buf(i)` 顺序）。
 fn buf_names(signature: &Signature) -> Vec<&str> {
     signature
@@ -279,19 +272,9 @@ fn buf_names(signature: &Signature) -> Vec<&str> {
         .collect()
 }
 
-/// 签名里的只读缓冲名字（输入），顺序与设备段的 `d_*` 一致。
-fn readonly_names(signature: &Signature) -> Vec<&str> {
-    signature
-        .params()
-        .iter()
-        .filter(|param| param.ctype.is_buf() && !param.mutable)
-        .map(|param| param.name.as_str())
-        .collect()
-}
-
 /// 归一化的两个只读缓冲（`x` 与 `gamma`）：少一个就做不了 RMSNorm，在入口拒绝。
 fn normalization_reads(signature: &Signature) -> Result<(&str, &str)> {
-    let reads = readonly_names(signature);
+    let reads = readonly_bufs(signature);
     reads
         .first()
         .zip(reads.get(1))
@@ -307,7 +290,7 @@ fn normalization_reads(signature: &Signature) -> Result<(&str, &str)> {
 
 /// Softmax 的唯一只读缓冲（`x`）：分布定义在整行上，多给一个就说不清算谁。
 fn only_read(signature: &Signature) -> Result<&str> {
-    readonly_names(signature).first().copied().ok_or_else(|| {
+    readonly_bufs(signature).first().copied().ok_or_else(|| {
         Error::new(Code::Invalid, "Softmax 需要一个只读缓冲（x）".to_owned())
             .with("engine::metal::fold::softmax")
     })

@@ -19,6 +19,7 @@ pub struct Absence {
 /// 有性质测试套件的成员——与源码里实际出现的性质测试块一一对应。
 pub const COVERED: &[&str] = &[
     "algorithm",
+    "fuzz",
     "nn",
     "rng",
     "shard",
@@ -66,9 +67,9 @@ pub const ABSENT: &[Absence] = &[
                  真值是 `prof` 的逐条对账用例，写在性质层只会退化成\"结构等于结构\"。",
     },
     Absence {
-        members: &["fuzz", "tokenizer", "weights"],
+        members: &["tokenizer", "weights"],
         reason: "任意字节鲁棒性由 `crates/fuzz` 的确定性靶覆盖——同一句话（不 panic、只返回 \
-                 `Invalid`），样本量级远超几百个用例；这三个成员还各有真实样本的往返用例钉住正向路径（`storage` 的检查点格式已在词汇表一行登记）。",
+                 `Invalid`），样本量级远超几百个用例；这两个成员还各有真实样本的往返用例钉住正向路径（`storage` 的检查点格式已在词汇表一行登记）。",
     },
     Absence {
         members: &["tensor"],

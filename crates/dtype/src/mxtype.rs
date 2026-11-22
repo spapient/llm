@@ -28,17 +28,17 @@
 //! # 消费者
 //!
 //! 当前**还没有**解码器消费 [`MxType`]：7 个格式与 [`Element::dtype`] 只有本 crate 内的测试
-//! 覆盖。布局已经有规范对照——`tests/mx_spec.rs` 用 OCP v1.1 的数值表与手写字节块核了块长、
+//! 覆盖。布局已经有规范对照——`tests/dtype_contracts.rs` 用 OCP v1.1 的数值表与手写字节块核了块长、
 //! 每块字节与 E2M1/E4M3 解码——但**还没有一条真实模型的权重字节流**校过。因此：接上
 //! MX/NVFP4 反量化之前不再扩格式；接上时先补一条真实字节流的对拍，再谈加格式。
 
 use crate::blocked::blocked_accessors;
-use crate::dtype::DType;
+use crate::dtype::{DType, FloatLayout};
 #[cfg(feature = "serde")]
 use crate::format::impl_serde;
 use crate::format::{BlockFormat, Format, impl_from_str};
 
-/// 一个 MX 元素格式的身份：规范名、Rust 变体名、位宽与标量对应。
+/// 一个 MX 元素格式的身份：规范名、Rust 变体名、位宽、标量对应与浮点位域。
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub struct ElementSpec {
     /// 规范小写名（`e2m1`），用于档案与诊断。
@@ -49,6 +49,8 @@ pub struct ElementSpec {
     pub bits: u32,
     /// 对应的标量元素类型；MX 专有的 6 位格式为 `None`。
     pub dtype: Option<DType>,
+    /// 浮点位域；`Int8` 为 `None`。与 [`Element::dtype`] 的浮点布局必须一致（跨轴测试锁住）。
+    pub float: Option<FloatLayout>,
 }
 
 /// MX 元素格式闭集（低精度浮点或整数），决定元素的位宽与指数/尾数切分。
@@ -80,36 +82,42 @@ const ELEMENT_SPECS: [ElementSpec; Element::ALL.len()] = [
         variant: "E2M1",
         bits: 4,
         dtype: Some(DType::F4),
+        float: Some(FloatLayout::new(2, 1, 1)),
     },
     ElementSpec {
         name: "e2m3",
         variant: "E2M3",
         bits: 6,
         dtype: None,
+        float: Some(FloatLayout::new(2, 3, 1)),
     },
     ElementSpec {
         name: "e3m2",
         variant: "E3M2",
         bits: 6,
         dtype: None,
+        float: Some(FloatLayout::new(3, 2, 3)),
     },
     ElementSpec {
         name: "e4m3",
         variant: "E4M3",
         bits: 8,
         dtype: Some(DType::F8E4M3),
+        float: Some(FloatLayout::new(4, 3, 7)),
     },
     ElementSpec {
         name: "e5m2",
         variant: "E5M2",
         bits: 8,
         dtype: Some(DType::F8E5M2),
+        float: Some(FloatLayout::new(5, 2, 15)),
     },
     ElementSpec {
         name: "int8",
         variant: "Int8",
         bits: 8,
         dtype: Some(DType::I8),
+        float: None,
     },
 ];
 
@@ -158,6 +166,42 @@ impl Element {
     #[must_use]
     pub const fn dtype(self) -> Option<DType> {
         self.spec().dtype
+    }
+
+    /// 浮点位域（指数/尾数位宽与偏置）；`Int8` 为 `None`。
+    ///
+    /// 有标量对应的元素（E2M1/E4M3/E5M2）与 [`Element::dtype`] 的浮点布局必须相等，
+    /// 由跨轴测试锁住，避免两轴各写一份位域。
+    #[must_use]
+    pub const fn float_layout(self) -> Option<FloatLayout> {
+        self.spec().float
+    }
+
+    /// 指数字段位宽；`Int8` 为 `None`。
+    #[must_use]
+    pub const fn exp_bits(self) -> Option<u32> {
+        match self.spec().float {
+            Some(layout) => Some(layout.exp_bits),
+            None => None,
+        }
+    }
+
+    /// 尾数字段位宽（不含隐含的整数位）；`Int8` 为 `None`。
+    #[must_use]
+    pub const fn mantissa_bits(self) -> Option<u32> {
+        match self.spec().float {
+            Some(layout) => Some(layout.mantissa_bits),
+            None => None,
+        }
+    }
+
+    /// 指数偏置；`Int8` 为 `None`。
+    #[must_use]
+    pub const fn exponent_bias(self) -> Option<u32> {
+        match self.spec().float {
+            Some(layout) => Some(layout.exponent_bias),
+            None => None,
+        }
     }
 }
 

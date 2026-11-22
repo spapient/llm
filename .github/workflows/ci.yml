@@ -279,7 +279,8 @@ jobs:
       FUZZ_TARGETS: >-
         fuzz_cli fuzz_weights_json fuzz_weights_safetensors fuzz_weights_archive
         fuzz_train_snapshot fuzz_serve_frames fuzz_wire_sealed fuzz_wire_leb
-        fuzz_http_head fuzz_lex
+        fuzz_http_head fuzz_lex fuzz_crc fuzz_leb_roundtrip fuzz_shape
+        fuzz_cutile_negotiate fuzz_dist
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master

@@ -29,24 +29,21 @@ crates/prof/
 ├── build.rs               # 唯一的生成器：档案 → 表字面量，片段 → 每台设备一个模块
 ├── src/
 │   ├── atom.rs            # 唯一的词汇表：16 原语、位集、AttrKey / Grade、Need / Provide / Span / KernelKey
+│   │                      #   + 三个发射宏（`vocabulary!` / `inherent_names!` / `closed_enum!`）
 │   ├── sig.rs             # 入口签名（ABI 唯一事实源）+ same_bytes（const 名字比较）
 │   ├── sch.rs             # 布局闭集与调度模板；sch/layout.rs 是构造子
 │   ├── tpl.rs             # 模板词法（`{{…}}` 与 `@原语`）
-│   ├── einsum.rs          # 代价表达式与求和语义；einsum/formula/ 是求值面
+│   ├── einsum.rs          # 代价表达式与求和语义；einsum/formula.rs 是求值面（含校验与项算术）
 │   ├── model.rs           # 语义模型：粒度、形状、样本、标量参考
 │   ├── sample.rs          # 确定性样本：rnd / dropout / init
 │   ├── operator.rs        # 算子契约与 `operator_here!` / `operator_via!` 注解宏
 │   ├── epilogue.rs        # 写回尾块的六步文法
-│   ├── annotate.rs        # `closed_enum!`：带附加列的闭集展开
-│   ├── decl.rs            # 声明层：OpDecl 类型 + 轴展开 + 变体链 + 字段级解析（原 decl/ingest）
+│   ├── decl.rs            # 声明层：OpDecl 类型 + 轴展开 + 变体链 + 字段级解析（decl::ingest）
 │   ├── catalogue.rs       # 52 条算子模板的目录
-│   ├── prof.rs            # 档案 schema：类型、匹配规则、选择与错误
-│   ├── schema.rs          # 解析 + 校验：闭集字段、[units] 一致性、见证可达性
-│   ├── device.rs          # 设备行：档案元数据 + 见证源码 + 可选镜像（Device / Image / Status）
-│   ├── fragment.rs        # 片段集合、内嵌根 / 数据根两种布局、片段签名行
-│   ├── sign.rs            # 片段签名行 `/* cutile-sign: <prim>/<impl> */`（ADR 0027 §5）
-│   ├── eval.rs            # [peak] 的表达式求值与量纲
-│   ├── witness.rs         # 见证 ABI 与回读上限
+│   ├── prof.rs            # 档案层：类型、匹配规则、选择、错误，以及见证查找与 `Profile::validate`
+│   ├── schema.rs          # 解析 + 推导式求值：闭集字段、[units] 一致性、[peak] 对拍
+│   ├── device.rs          # 设备行 + 片段层：Device / Image / Status、Fragment / FragmentSet / Layout / load
+│   ├── sign.rs            # 片段签名行 `/* cutile-sign: <prim>/<impl> */`（ADR 0027 §5；构建期与本层共用）
 │   ├── lib.rs             # 公开面：模块声明 + 生成表的出口（运行期不解析 TOML、不读目录）
 │   ├── buildtables.rs     # 构建期：片段 → FRAGMENTS / PRIMS / EPILOGUE / DEVICE
 │   ├── buildops.rs        # 构建期：ops/*.toml → 声明表
@@ -122,7 +119,7 @@ TOML 注释里，峰值数字因此只有一个事实源（cutile README §12.1�
 协商，却要协商过才能跑出 `L2`）；设备上刚跑通的见证，效力本来就强于写作时的自述。
 
 `witness` 是一个可执行的判据：`{ file, func, expect }`。`file` 是**相对片段层根**的路径（仓库里根是
-`crates/prim`，即 `cpu/witness.c`；设置 `data.root` 时是 `<data.root>/prim`），`func` 是统一 ABI
+`crates/prof/src`，即 `cpu/witness.c`；设置 `data.root` 时是 `<data.root>/prim`），`func` 是统一 ABI
 `int func(float *out)` 的入口，`expect` 是按顺序写出的期望值。
 
 ```toml

@@ -19,7 +19,6 @@ mmap = ["weights/mmap"]
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 engine = { path = "../engine", package = "llm-engine" }
 nn = { path = "../nn", package = "llm-nn" }
-prof = { path = "../prof", package = "llm-prof" }
 rng = { path = "../rng", package = "llm-rng" }
 tensor = { path = "../tensor", package = "llm-tensor" }
 tokenizer = { path = "../tokenizer", package = "llm-tokenizer" }

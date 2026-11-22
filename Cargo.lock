@@ -576,7 +576,6 @@ dependencies = [
  "llm-storage",
  "llm-tensor",
  "llm-tokenizer",
- "llm-tools",
  "llm-train",
  "llm-weights",
  "toml",
@@ -626,16 +625,20 @@ dependencies = [
 name = "llm-fuzz"
 version = "0.1.0"
 dependencies = [
+ "cutile",
  "libfuzzer-sys",
  "llm-cli",
  "llm-diagnostic",
+ "llm-rng",
  "llm-serve",
  "llm-storage",
  "llm-tensor",
+ "llm-testkit",
  "llm-tools",
  "llm-train",
  "llm-weights",
  "llm-wire",
+ "proptest",
 ]
 
 [[package]]
@@ -658,7 +661,6 @@ dependencies = [
 name = "llm-prof"
 version = "0.1.0"
 dependencies = [
- "llm-annotation",
  "llm-diagnostic",
  "llm-dtype",
  "llm-testkit",
@@ -681,7 +683,6 @@ dependencies = [
  "llm-diagnostic",
  "llm-engine",
  "llm-nn",
- "llm-prof",
  "llm-rng",
  "llm-tensor",
  "llm-testkit",
