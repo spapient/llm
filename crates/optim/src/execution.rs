@@ -427,11 +427,9 @@ fn lower_sources(
     kind: &Lower,
     run: &Run<'_>,
     prepared: &Prepared,
-    m: usize,
-    n: usize,
+    sample: &Sample,
 ) -> diagnostic::Result<Vec<String>> {
-    let sample = run.sample(m, n);
-    backend(emit)?.lower(&prepared.source.text, &run.op.signature, &sample, kind)
+    backend(emit)?.lower(&prepared.source.text, &run.op.signature, sample, kind)
 }
 
 /// 声明里必带的 `[chunk]` 块大小；缺声明时报 [`Code::Unsupported`]（串行兜底另有路径，这里只做分块）。

@@ -124,7 +124,7 @@ enum Plan {
 }
 
 /// 形状前置条件：`(流水线, m, n, 目标 lowering) -> 是否成立`。
-type Gate = fn(&Run<'_>, usize, usize, &Lower) -> bool;
+type Gate = fn(&Run<'_>, &Sample, &Lower) -> bool;
 
 impl Mode {
     /// 单源、按声明：分块族退串行（一源一内核）。
