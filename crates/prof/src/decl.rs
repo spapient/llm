@@ -469,7 +469,7 @@ fn extra_needs(idx: usize, entry: &diagnostic::data::Table) -> diagnostic::Resul
         .entries()
         .iter()
         .map(|(key, _)| {
-            crate::decl::parse::parse_need(section, key, &format!("{prefix}.extra_needs.{key}"))
+            crate::decl::ingest::parse_need(section, key, &format!("{prefix}.extra_needs.{key}"))
         })
         .collect()
 }
@@ -479,7 +479,10 @@ fn field_path(idx: usize, name: &str) -> String {
     format!("variants[{idx}].{name}")
 }
 
-mod parse;
+/// 语料摄入：声明表 → [`OpDecl`] 的字段级解析与模板侧校验，平铺在 `src/ingest.rs`
+/// （模块路径是 `decl::ingest`，文件不套子目录）。
+#[path = "ingest.rs"]
+mod ingest;
 
 #[cfg(test)]
 #[path = "../tests/decl.rs"]

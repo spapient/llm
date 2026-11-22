@@ -265,22 +265,18 @@ fn collection(
     }
 }
 
-/// 能力属性：键必须属于该原语的签名，取值是字符串列表。
+/// 能力属性：键必须属于该原语的签名（`sat` 不属于 `load`），取值是字符串列表。
 fn attribute(need: Need, prim: Prim, path: &str, name: &str, value: &Value) -> Result<Need, Error> {
     let attr_key = closed_of::<AttrKey>(path, name)?;
-    // 属性键属于原语自己的签名：`sat` 不属于 `load`，`lanes` 不属于 `mma`。协商只比对需求里
-    // 出现的键，所以一个与该原语无关的键既不会被检查、也不会被片段消费——它只会让声明看起来
-    // 更具体。装载期就拒收。
+    // 无关键既不会被协商比对、也不会被片段消费——它只会让声明看起来更具体，装载期就拒收。
     if !prim.accepts(attr_key) {
         let mut allowed: Vec<&str> = prim.attr_keys().iter().map(|key| key.as_str()).collect();
         allowed.push("exec");
-        return Err(field(
-            path,
-            format!(
-                "`{prim}` 的能力签名里没有 `{attr_key}`（该原语的属性键：{}）",
-                allowed.join(" | ")
-            ),
-        ));
+        let detail = format!(
+            "`{prim}` 的能力签名里没有 `{attr_key}`（该原语的属性键：{}）",
+            allowed.join(" | ")
+        );
+        return Err(field(path, detail));
     }
     Ok(need.with_attr(Attr::new(attr_key, string_list(path, value)?)))
 }
@@ -359,20 +355,10 @@ pub fn op_head(op: &Table) -> diagnostic::Result<(Skeleton, String)> {
 }
 
 /// 四个段（轴、需求、布局、变体链）：`declared` 按同一顺序解构。
-pub type Sections = (
-    Vec<Axis>,
-    Vec<Need>,
-    Vec<(String, LayoutSpec)>,
-    Vec<Variant>,
-);
+pub type Sections = (Vec<Axis>, Vec<Need>, Vec<(String, LayoutSpec)>, Vec<Variant>);
 
 pub fn sections(table: &Table) -> diagnostic::Result<Sections> {
-    Ok((
-        axes(table)?,
-        needs(table)?,
-        layouts(table)?,
-        variants(table)?,
-    ))
+    Ok((axes(table)?, needs(table)?, layouts(table)?, variants(table)?))
 }
 
 /// `[axes]`：每个键一组正整数取值；至少要有一条轴。
@@ -521,8 +507,7 @@ pub fn chunk(table: &Table) -> diagnostic::Result<Option<Chunk>> {
     }))
 }
 
-/// `[consts]`：模板常量的固定取值（非轴、非布局）。键给槽位名，值按十进制渲染成字符串，
-/// 供 [`OpDecl::const_value`] 在 `{{槽位}}` 解析时查用。
+/// `[consts]`：模板常量的固定取值（非轴、非布局）。键给槽位名，值按十进制渲染成字符串， 供 [`OpDecl::const_value`] 在 `{{槽位}}` 解析时查用。
 pub fn consts(table: &Table) -> diagnostic::Result<Vec<(String, String)>> {
     let Some(section) = table.table("consts") else {
         return Ok(Vec::new());
