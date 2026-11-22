@@ -8,8 +8,9 @@ use crate::ledger;
 use wire::leb::Cursor;
 
 use crate::codec::{
-    bytes_to_f32, decode_dict, decode_quant, decode_sparse, dict_payload, f32_bytes, pack_bytes,
-    payload_cap, quant_payload, sparse_payload, unpack_bytes, unpack_marked, word,
+    bytes_to_f32, decode_dict, decode_quant, decode_sparse, dict_payload, f32_bytes, from_le_bytes,
+    pack_bytes, payload_cap, quant_payload, sparse_payload, to_le_bytes, unpack_bytes,
+    unpack_marked, word,
 };
 use crate::cursor::u32_at;
 
@@ -153,21 +154,23 @@ impl Pick {
 /// 五轴搜索：返回逐位验证通过且字节最小的候选；形状不合法返回错误。
 pub fn search(w: &[f32], m: usize, n: usize) -> Result<Pick> {
     check_shape(w, m, n)?;
-    // `Raw` 恒可用，是基线；其余四轴只在与基线比长度时才有胜出可能。
-    let base = frame(Axis::Raw, m, n, pack_bytes(&f32_bytes(w)));
-    let smaller = AXES[1..]
+    let shape = (m, n);
+    // `Raw` 恒可用，是基线；基线必须先自身逐位成立，破了就是压缩器实现 bug，报错而不是 panic。
+    let base_payload = pack_bytes(&f32_bytes(w));
+    if !sound(&Raw, &base_payload, shape, w) {
+        return Err(bad("raw 基线没能逐位还原，压缩器自身不自洽"));
+    }
+    let base = frame(Axis::Raw, m, n, base_payload);
+    // 其余四轴只在逐位成立且严格小于基线时才有胜出可能。
+    Ok(AXES[1..]
         .iter()
         .filter_map(|cfg| {
-            cfg.encode(w, m, n)
-                .map(|payload| frame(cfg.kind(), m, n, payload))
+            let payload = cfg.encode(w, m, n)?;
+            sound(cfg, &payload, shape, w).then(|| frame(cfg.kind(), m, n, payload))
         })
-        .filter(|pick| verified(pick, w) && pick.len() < base.len())
-        .min_by_key(Pick::len);
-    let best = smaller.unwrap_or(base);
-    // 基线必须自身逐位成立；这是压缩器的不变式，破了就是实现 bug，因此报错而不是 panic。
-    verified(&best, w)
-        .then_some(best)
-        .ok_or_else(|| bad("raw 基线没能逐位还原，压缩器自身不自洽"))
+        .filter(|pick| pick.len() < base.len())
+        .min_by_key(Pick::len)
+        .unwrap_or(base))
 }
 
 /// 字节级无损压缩入口：`data` 是行主序 f32 小端字节（`m*n` 个元素）。仅当五轴 artifact
@@ -257,8 +260,10 @@ fn frame(axis: Axis, m: usize, n: usize, payload: Vec<u8>) -> Pick {
     Pick { axis, artifact }
 }
 
-fn verified(pick: &Pick, w: &[f32]) -> bool {
-    decode(&pick.artifact).is_ok_and(|got| {
+/// 载荷逐位还原判据：编码后的载荷直接反解并对质，跳过 `frame → head` 的再解析——
+/// 帧头本就是写端刚构造的，读端重解析它并不会让结果更可信，只是多一次分配与越界检查。
+fn sound(cfg: &dyn AxisCfg, payload: &[u8], shape: (usize, usize), w: &[f32]) -> bool {
+    cfg.decode(&mut Cursor::new(payload), shape).is_ok_and(|got| {
         got.len() == w.len() && got.iter().zip(w).all(|(a, b)| a.to_bits() == b.to_bits())
     })
 }
@@ -381,21 +386,13 @@ fn rank_part(frame: &[u8], cap: usize, want: usize) -> Result<Vec<f32>> {
 
 /// 因子的字节形式：`f64` 保留分解的原始精度，`f32` 因子会让 `Σ uσv` 舍入两次而丢掉逐位判据。
 pub(crate) fn f64_bytes(values: &[f64]) -> Vec<u8> {
-    values.iter().flat_map(|v| v.to_le_bytes()).collect()
+    to_le_bytes(values)
 }
 
 /// 解一段带标记的因子（`f64`）。
 fn factor_part(frame: &[u8], want: usize) -> Result<Vec<f64>> {
     let bytes = unpack_marked(frame, payload_cap(want * 2))?;
-    if bytes.len() != want * 8 {
-        return Err(bad(format!(
-            "因子字节 {} != 期望 {}",
-            bytes.len(),
-            want * 8
-        )));
-    }
-    let (chunks, _) = bytes.as_chunks::<8>();
-    Ok(chunks.iter().map(|c| f64::from_le_bytes(*c)).collect())
+    from_le_bytes(&bytes, want)
 }
 
 #[cfg(test)]

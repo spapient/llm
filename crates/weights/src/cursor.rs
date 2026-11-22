@@ -13,21 +13,24 @@ pub(crate) fn slice(bytes: &[u8], at: usize, len: usize) -> Result<&[u8]> {
     bytes.get(at..stop).ok_or_else(|| bad("字段越界"))
 }
 
-/// 小端定宽整数：宽度由类型给出，越界由 [`slice`] 统一拒。
+/// 小端定宽字节：宽度由 const 泛型给出，越界由 [`slice`] 统一拒。
+fn le_at<const N: usize>(bytes: &[u8], at: usize) -> Result<[u8; N]> {
+    let mut raw = [0u8; N];
+    raw.copy_from_slice(slice(bytes, at, N)?);
+    Ok(raw)
+}
+
+/// 小端定宽整数：宽度由类型给出，三个入口只是 [`le_at`] 的一次 `from_le_bytes` 收窄。
 pub(crate) fn u16_at(bytes: &[u8], at: usize) -> Result<u16> {
-    let raw = slice(bytes, at, 2)?;
-    Ok(u16::from_le_bytes([raw[0], raw[1]]))
+    le_at(bytes, at).map(u16::from_le_bytes)
 }
 
 pub(crate) fn u32_at(bytes: &[u8], at: usize) -> Result<u32> {
-    let raw = slice(bytes, at, 4)?;
-    Ok(u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]))
+    le_at(bytes, at).map(u32::from_le_bytes)
 }
 
 pub(crate) fn u64_at(bytes: &[u8], at: usize) -> Result<u64> {
-    let mut raw = [0u8; 8];
-    raw.copy_from_slice(slice(bytes, at, 8)?);
-    Ok(u64::from_le_bytes(raw))
+    le_at(bytes, at).map(u64::from_le_bytes)
 }
 
 /// 顺序游标：每次读取都过 [`slice`]，位置只在读取成功后前进；越界不会退化成「空的成功切片」。

@@ -1,7 +1,7 @@
 //! CUDA 侧装配：把一份 CUDA C 内核与它的签名/样本装成可直接 `nvcc` 编译的翻译单元。
 //!
 //! 只放与 CUDA 有关的模板：内核壳（`*_kernel`）、host 驱动（`*_driver`）、发射与读回。
-//! 后端无关的 lowering 在 [`crate::dialect`]，形态分派在 [`crate::program`]。
+//! 后端无关的 lowering 在 [`crate::dialect`]，形态分派在 [`crate::backends`]。
 
 use crate::dialect::{Cuda, Dialect, f32_output_shape, launch_args, length_scalar, readback_bits};
 use cutile::harness::{c_literal, c_type, output_name, output_of};

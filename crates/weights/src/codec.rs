@@ -206,20 +206,64 @@ pub(crate) fn decode_quant(cur: &mut Cursor<'_>, want: usize) -> Result<Vec<f32>
     Ok(codes.iter().map(|&c| min + c as f32 * step).collect())
 }
 
+/// 小端字节 ↔ 标量的宽度事实：f32/f64 各一条实现。`to_le_bytes`/`from_le_bytes` 据此泛化，
+/// 不再每个标量类型各写一份「flat_map / as_chunks + from_le_bytes」。
+trait Le: Copy + 'static {
+    const WIDTH: usize;
+    fn to_le(self) -> [u8; Self::WIDTH];
+    fn from_le(bytes: [u8; Self::WIDTH]) -> Self;
+}
+
+impl Le for f32 {
+    const WIDTH: usize = 4;
+    fn to_le(self) -> [u8; 4] {
+        f32::to_le_bytes(self)
+    }
+    fn from_le(bytes: [u8; 4]) -> Self {
+        f32::from_le_bytes(bytes)
+    }
+}
+
+impl Le for f64 {
+    const WIDTH: usize = 8;
+    fn to_le(self) -> [u8; 8] {
+        f64::to_le_bytes(self)
+    }
+    fn from_le(bytes: [u8; 8]) -> Self {
+        f64::from_le_bytes(bytes)
+    }
+}
+
+/// 标量序列 → 小端字节。
+pub(crate) fn to_le_bytes<T: Le>(values: &[T]) -> Vec<u8> {
+    values.iter().flat_map(|&v| v.to_le()).collect()
+}
+
+/// 小端字节 → 标量序列：字节数必须恰为 `want` 个标量，截断与余量都显式报错。
+pub(crate) fn from_le_bytes<T: Le>(bytes: &[u8], want: usize) -> Result<Vec<T>> {
+    if bytes.len() != want * T::WIDTH {
+        return Err(bad(format!(
+            "{} 字节 {} != 期望 {}",
+            std::any::type_name::<T>(),
+            bytes.len(),
+            want * T::WIDTH
+        )));
+    }
+    let mut out = Vec::with_capacity(want);
+    for chunk in bytes.chunks_exact(T::WIDTH) {
+        let mut raw = [0u8; T::WIDTH];
+        raw.copy_from_slice(chunk);
+        out.push(T::from_le(raw));
+    }
+    Ok(out)
+}
+
 pub(crate) fn f32_bytes(w: &[f32]) -> Vec<u8> {
-    w.iter().flat_map(|v| v.to_le_bytes()).collect()
+    to_le_bytes(w)
 }
 
 pub(crate) fn bytes_to_f32(bytes: &[u8], want: usize) -> Result<Vec<f32>> {
-    if bytes.len() != want * 4 {
-        return Err(bad(format!(
-            "f32 字节 {} != 期望 {}",
-            bytes.len(),
-            want * 4
-        )));
-    }
-    let (chunks, _) = bytes.as_chunks::<4>();
-    Ok(chunks.iter().map(|c| f32::from_le_bytes(*c)).collect())
+    from_le_bytes(bytes, want)
 }
 
 fn pack_bits(codes: &[u32], width: u8) -> Vec<u8> {

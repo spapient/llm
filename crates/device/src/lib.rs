@@ -1,8 +1,8 @@
 //! 设备源 lowering 与厂商后端：把一条内核 body 落成**可编译的设备源**，再经厂商工具链跑起来。
 //!
 //! **拥有**：方言层（[`dialect`]，把「同一条内核 body 拼成不同后端」的语法差异收进一个 trait）、
-//! 各算子的源生成（[`norm`] / [`scan`] / [`tiled`] / [`wmma`] / [`program`]）、三条厂商链
-//! （[`backends`] 经 `Codegen` 出源 + `Driver` 跑源）与厂商编译器探测（`toolchain`），
+//! 各算子的源生成（[`norm`] / [`tiled`] / [`cuda`]）、三条厂商链
+//! （[`backends`] 经 `Codegen` 出源 + `Driver` 跑源）与厂商编译器探测（[`platform`]），
 //! 以及六平台执行合同（[`platform`]，缺设备只能 `OPEN` 的那一格）。
 //! **不拥有**：序列状态、页账、准入与提交契约（那些在 `engine`）——本 crate **依赖** `engine`
 //! 的 [`Executor`](engine::exec::Executor) 缝来落地设备执行体，方向单边，无反向依赖。
@@ -37,13 +37,12 @@
 pub mod backends;
 pub mod cuda;
 mod dialect;
-pub mod metal;
-pub mod norm;
-pub mod platform;
-pub mod program;
-pub mod tiled;
 #[cfg(target_os = "macos")]
 #[path = "metal/executor.rs"]
 pub mod executor;
+pub mod metal;
+pub mod norm;
+pub mod platform;
+pub mod tiled;
 
 pub use platform::{Abi, Arch, Host, Machine, Row, Standing, Why, audit, require, standing};

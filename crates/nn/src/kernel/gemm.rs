@@ -70,8 +70,8 @@ pub trait Gemm {
         let Some(row) = Self::config() else {
             return Vec::new();
         };
-        let conf = packed::Conf::from(&row);
-        Self::Elem::from_bytes(packed::packed_sample_a(m, &conf))
+        let conf = Conf::from(&row);
+        Self::Elem::from_bytes(packed_sample_a(m, &conf))
     }
 
     /// B（`K×n`）确定性取值（口径同 [`sample_a`](Self::sample_a)）。
@@ -79,20 +79,20 @@ pub trait Gemm {
         let Some(row) = Self::config() else {
             return Vec::new();
         };
-        let conf = packed::Conf::from(&row);
-        Self::Elem::from_bytes(packed::packed_sample_b(n, &conf))
+        let conf = Conf::from(&row);
+        Self::Elem::from_bytes(packed_sample_b(n, &conf))
     }
 
     /// A 缓冲应有的元素个数（打包后按 [`Elem`](Self::Elem) 计）。
     fn a_len(m: usize) -> usize {
         let Some(row) = Self::config() else { return 0 };
-        packed::packed_a_len(m, &packed::Conf::from(&row))
+        packed_a_len(m, &Conf::from(&row))
     }
 
     /// B 缓冲应有的元素个数。
     fn b_len(n: usize) -> usize {
         let Some(row) = Self::config() else { return 0 };
-        packed::packed_b_len(n, &packed::Conf::from(&row))
+        packed_b_len(n, &Conf::from(&row))
     }
 
     /// 输出位置 `(i, j)` 的点积：A 第 `i` 行（连续 `K` 个元素）与 B 第 `j` 列（跨步 `n`）。
@@ -106,7 +106,7 @@ pub trait Gemm {
         let Some(b) = Element::borrow_u8(b) else {
             return 0.0;
         };
-        packed::dot(a, b, n, i, j, &packed::Conf::from(&row))
+        dot(a, b, n, i, j, &Conf::from(&row))
     }
 
     /// 内核本体：这份格式的 tile 矩阵乘，结果写满 `out`（`m × n`）。
@@ -169,8 +169,152 @@ pub fn sample<G: Gemm>(m: usize, n: usize) -> Sample {
     }
 }
 
-/// 打包量化格式（每字节 `CPB` 个码）的公共解包、取样与点积助手。
-pub mod packed;
+/// 打包配置：取样/长度/点积共用一行 [`Row`](crate::quant::Row) 的位宽事实。
+pub struct Conf {
+    /// 每字节码数。
+    pub cpb: usize,
+    /// 对称零点（无符号码点回退有符号整数的平移量）。
+    pub zero: i32,
+    /// 样本码值偏移，长度等于 `cpb`。
+    pub offsets: &'static [u32],
+}
+
+impl From<&crate::quant::Row> for Conf {
+    fn from(row: &crate::quant::Row) -> Self {
+        Self {
+            cpb: row.cpb,
+            zero: row.zero,
+            offsets: row.offsets,
+        }
+    }
+}
+
+/// 解包字节内第 `slot` 个码，按对称零点回退成有符号整数。
+pub fn unpack(byte: u8, slot: usize, cpb: usize, zero: i32) -> i8 {
+    let width = crate::quant::width_cpb(cpb);
+    let mask = (1u8 << width) - 1;
+    let value = (byte >> (slot * width)) & mask;
+    (value as i32 - zero) as i8
+}
+
+/// 确定性打包位模式：`len` 个码按 `cpb` 每字节装一行；码值取
+/// `(字节下标 · seed + offsets[c]) mod 2^width`。
+pub fn pack(len: usize, seed: usize, cpb: usize, offsets: &[u32]) -> Vec<u8> {
+    let width = crate::quant::width_cpb(cpb);
+    let modulus = 1usize << width;
+    (0..len / cpb)
+        .map(|byte| {
+            (0..cpb).fold(0u8, |acc, code| {
+                let value = ((byte * seed + offsets[code] as usize) % modulus) as u8;
+                acc | (value << (code * width))
+            })
+        })
+        .collect()
+}
+
+/// 打包矩阵点积：A 第 `i` 行与 B 第 `j` 列，收缩轴固定 [`K`]，整数累加后转 f32。
+pub fn dot(a: &[u8], b: &[u8], n: usize, i: usize, j: usize, conf: &Conf) -> f32 {
+    let bytes_per_row = K / conf.cpb;
+    let mut acc: i32 = 0;
+    for p in 0..K {
+        let x = unpack(
+            a[i * bytes_per_row + p / conf.cpb],
+            p % conf.cpb,
+            conf.cpb,
+            conf.zero,
+        ) as i32;
+        let y_pos = p * n + j;
+        let y = unpack(b[y_pos / conf.cpb], y_pos % conf.cpb, conf.cpb, conf.zero) as i32;
+        acc += x * y;
+    }
+    acc as f32
+}
+
+/// A（`m×K`）确定性打包取样；seed 固定，同一形状取值可复现。
+pub fn packed_sample_a(m: usize, conf: &Conf) -> Vec<u8> {
+    pack(m * K, 37, conf.cpb, conf.offsets)
+}
+
+/// B（`K×n`）确定性打包取样。
+pub fn packed_sample_b(n: usize, conf: &Conf) -> Vec<u8> {
+    pack(K * n, 53, conf.cpb, conf.offsets)
+}
+
+/// A 打包后字节数：`m·K/cpb`。
+pub fn packed_a_len(m: usize, conf: &Conf) -> usize {
+    m * K / conf.cpb
+}
+
+/// B 打包后字节数：`K·n/cpb`。
+pub fn packed_b_len(n: usize, conf: &Conf) -> usize {
+    K * n / conf.cpb
+}
+
+/// 按元素位流解包一串打包字节：每字节 `cpb` 个码，低槽在前，码值减 `zero`。
+pub fn unpack_stream(bytes: &[u8], cpb: usize, zero: i32) -> Vec<i32> {
+    bytes
+        .iter()
+        .flat_map(|&byte| (0..cpb).map(move |slot| unpack(byte, slot, cpb, zero) as i32))
+        .collect()
+}
+
+/// 位流 → 整数码：每个码一个 `i32`，按行主序连续铺开（A 行宽 [`K`]、B 行宽 `n`）。
+pub fn decode_stream(codes: &mut [i32], bytes: &[u8], conf: &Conf) {
+    for (idx, code) in codes.iter_mut().enumerate() {
+        let byte = bytes[idx / conf.cpb];
+        *code = unpack(byte, idx % conf.cpb, conf.cpb, conf.zero) as i32;
+    }
+}
+
+/// 整数码的 tile 累加：外层按 [`TILE_N`] 走列块，块内 `p` 在外、列在内。
+pub fn accumulate_tiled(codes_a: &[i32], codes_b: &[i32], m: usize, n: usize, out: &mut [f32]) {
+    let mut acc = vec![0i32; TILE_N.min(n)];
+    let mut start = 0;
+    while start < n {
+        let width = TILE_N.min(n - start);
+        let acc = &mut acc[..width];
+        let (rows, _) = codes_a.as_chunks::<K>();
+        for (row, arow) in rows.iter().take(m).enumerate() {
+            acc.fill(0);
+            for (p, &x) in arow.iter().enumerate() {
+                let segment = &codes_b[p * n + start..][..width];
+                rank1_update(acc, x, segment);
+            }
+            write_back(out, row, n, start, width, acc);
+        }
+        start += width;
+    }
+}
+
+/// 块内 rank-1 更新：`acc[j] += x · segment[j]`。
+fn rank1_update(acc: &mut [i32], x: i32, segment: &[i32]) {
+    for (slot, &y) in acc.iter_mut().zip(segment) {
+        *slot += x * y;
+    }
+}
+
+/// 把 `acc` 写回输出行：`out[row, start..start+width] = acc as f32`。
+fn write_back(out: &mut [f32], row: usize, n: usize, start: usize, width: usize, acc: &[i32]) {
+    let target = &mut out[row * n + start..][..width];
+    for (slot, &value) in target.iter_mut().zip(acc.iter()) {
+        *slot = value as f32;
+    }
+}
+
+/// 逐元素格式的整数码：`u8` 位模式按 `i8` 解释，与 [`Gemm::dot`] 的取码口径同一份。
+pub fn signed_codes(values: &[u8]) -> Vec<i32> {
+    values.iter().map(|&byte| byte as i8 as i32).collect()
+}
+
+/// 打包格式的本体：两条位流各解一遍，再走 [`accumulate_tiled`]。
+pub fn packed_tiled(a: &[u8], b: &[u8], m: usize, n: usize, conf: &Conf, out: &mut [f32]) {
+    let mut codes_a = vec![0i32; m * K];
+    let mut codes_b = vec![0i32; K * n];
+    decode_stream(&mut codes_a, a, conf);
+    decode_stream(&mut codes_b, b, conf);
+    accumulate_tiled(&codes_a, &codes_b, m, n, out);
+}
+
 /// 矩阵遍历：外层只写一份，内层点积落在 [`Gemm::dot`]。
 pub fn matmul<G: Gemm>(a: &[G::Elem], b: &[G::Elem], m: usize, n: usize, out: &mut [f32]) {
     for i in 0..m {
@@ -179,8 +323,6 @@ pub fn matmul<G: Gemm>(a: &[G::Elem], b: &[G::Elem], m: usize, n: usize, out: &m
         }
     }
 }
-
-pub use packed::{accumulate_tiled, decode_stream, packed_tiled, signed_codes};
 
 /// 标量参考：逐 `(i, j)` 走 [`Gemm::dot`]，是与 tile 内核**相互独立**的对拍真值。
 pub fn reference<G: Gemm>(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
@@ -336,8 +478,8 @@ fn sample_unpacked<G: Gemm>(a: &[G::Elem], b: &[G::Elem], m: usize, n: usize) ->
         Some(row) => {
             let a: &[u8] = Element::borrow_u8(a).expect("打包格式元素为 u8");
             let b: &[u8] = Element::borrow_u8(b).expect("打包格式元素为 u8");
-            values.extend(packed::unpack_stream(a, row.cpb, row.zero));
-            values.extend(packed::unpack_stream(b, row.cpb, row.zero));
+            values.extend(unpack_stream(a, row.cpb, row.zero));
+            values.extend(unpack_stream(b, row.cpb, row.zero));
         }
         None => {
             values.extend(G::codes(a));
@@ -423,7 +565,7 @@ pub mod i2 {
             Some(I2)
         },
         fn mul(a: &[u8], b: &[u8], m: usize, n: usize, out: &mut [f32]) {
-            crate::gemm::packed_tiled(a, b, m, n, &crate::gemm::packed::Conf::from(&I2), out)
+            crate::gemm::packed_tiled(a, b, m, n, &crate::gemm::Conf::from(&I2), out)
         },
     );
 }
@@ -448,7 +590,7 @@ pub mod i4 {
             Some(I4)
         },
         fn mul(a: &[u8], b: &[u8], m: usize, n: usize, out: &mut [f32]) {
-            crate::gemm::packed_tiled(a, b, m, n, &crate::gemm::packed::Conf::from(&I4), out)
+            crate::gemm::packed_tiled(a, b, m, n, &crate::gemm::Conf::from(&I4), out)
         },
     );
 }

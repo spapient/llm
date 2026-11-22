@@ -7,6 +7,11 @@
 //
 // 本文件被 15 个入口共享 include：`fuzz_target` 只在 harness 目标里被用到，按 include 语义
 // 定向放开未用导入告警。
+
+// `drivers.rs` 以 `crate::Target` 引用判据 trait：入口的 crate 根必须存在 `Target` 这个名字，
+// 由这里补上；入口文件自身保持零导入。
+use llm_fuzz::Target;
+
 #[allow(unused_imports)]
 #[cfg(all(unix, feature = "engine"))]
 use libfuzzer_sys::fuzz_target;

@@ -79,9 +79,9 @@ pub fn quantize(scheme: Scheme, group: usize, x: &[f32]) -> Result<(Vec<u8>, Vec
     let mut scales = Vec::with_capacity(groups);
 
     for g in 0..groups {
-        let lo = g * group;
-        let hi = (lo + group).min(x.len());
-        let slice = &x[lo..hi];
+        let range = span(group, x.len(), g);
+        let lo = range.start;
+        let slice = &x[range];
         let scale = group_scale(scheme, slice);
         scales.push(scale);
 
@@ -145,12 +145,12 @@ pub fn dequantize(
     // 且把尺度的读取变成随索引跳动的访存。按组切片后每组只取一次 scale。
     let len = out.len();
     for (g, &scale) in scales.iter().enumerate() {
-        let lo = g * group;
-        let hi = (lo + group).min(len);
-        if lo >= hi {
+        let range = span(group, len, g);
+        if range.is_empty() {
             break;
         }
-        for (offset, slot) in out[lo..hi].iter_mut().enumerate() {
+        let lo = range.start;
+        for (offset, slot) in out[range].iter_mut().enumerate() {
             let field = unpack_bits(packed, lo + offset, scheme.bits);
             *slot = scale * decode_code(scheme, field);
         }
@@ -348,11 +348,8 @@ pub(crate) fn validate_compensate(m: usize, n: usize, w: &[f32]) -> Result<()> {
 
 // —— 2–8bit 自适应组量化（原 `adaptive` 平铺进 `ptq`）——
 
-/// 候选档位，位宽从低到高。
+/// 候选档位，位宽从低到高（`Scheme::bits` 本身就是位宽，不再并行维护一张位宽表）。
 const LADDER: [Scheme; 4] = [I2, I3, I4, I8];
-
-/// 与 [`LADDER`] 一一对应的元素位宽。
-const BITS: [u8; 4] = [2, 3, 4, 8];
 
 /// 起始档位：所有组都从最宽的 `I8` 起，降到哪由预算决定。
 const TOP: usize = 3;
@@ -391,7 +388,7 @@ pub fn adaptive_quantize(group: usize, x: &[f32], target_err: f64) -> Result<Ada
     let mut total = total_err2(&maxes, group, x.len(), &levels);
     descend(&maxes, group, x.len(), &mut levels, &mut total, target2);
     Ok(Adaptive {
-        widths: levels.iter().map(|&level| BITS[level]).collect(),
+        widths: levels.iter().map(|&level| LADDER[level].bits).collect(),
         bpw: average_bits(group, x.len(), &levels),
         met: total <= target2,
         recon: reconstruct(group, x, &levels)?,
@@ -575,7 +572,7 @@ fn cheapest(
 fn rung(maxes: &[f32], group: usize, len: usize, g: usize, from: usize) -> Option<(f64, f64)> {
     let to = from.checked_sub(1)?;
     let delta = group_err2(maxes, group, len, g, to) - group_err2(maxes, group, len, g, from);
-    let saved = f64::from(BITS[from] - BITS[to]);
+    let saved = f64::from(LADDER[from].bits - LADDER[to].bits);
     Some((delta, delta / saved))
 }
 
@@ -596,7 +593,7 @@ fn average_bits(group: usize, len: usize, levels: &[usize]) -> f64 {
     let total: usize = levels
         .iter()
         .enumerate()
-        .map(|(g, &level)| BITS[level] as usize * span(group, len, g).count())
+        .map(|(g, &level)| LADDER[level].bits as usize * span(group, len, g).count())
         .sum();
     total as f64 / len as f64
 }

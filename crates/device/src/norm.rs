@@ -1,8 +1,6 @@
 //! CUDA 分块归一化与扫描 lowering：RMSNorm 两段、Softmax 三段、扫描两段，以及它们的 host 串联驱动。
 
-use crate::cuda::{
-    buf_args, cuda_host_bufs_grid, cuda_launch_params, cuda_readback, cuda_release,
-};
+use crate::cuda::{buf_args, cuda_host_bufs_grid, cuda_launch_params, cuda_readback, cuda_release};
 use crate::dialect::{
     Cuda, Dialect, RMS_EPS, bind_chunk_loop, carry_fold, chunk_head, inject_chunk_preamble,
     launch_args, length_scalar, length_usize, readonly_bufs, scalar_name, scan_correct_body,
