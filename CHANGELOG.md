@@ -26,6 +26,32 @@
 
 ### Changed
 
+- **`#[dsl]` 与 typed IR 整改到仓库自己的质量门：命名归一到 `buf`/`idx`，圈复杂度全部 ≤ 5，`.expect` 清零**。
+  上一轮落地的 `crates/annotation/src/dsl.rs` 与 `crates/cutile/src/ir.rs` 跑 `cargo test -p llm-tools --test gate`
+  报出 135 条违规：`parse_expr` 圈复杂度 34（上限 5）、`parse_loop` 22、`value_type` 18，两个文件都超 600 行，
+  `emit_c` 里 11 处 `String` 写入的 `.expect(...)`（`Metric::Call` 在 `src/` 上是硬零），另有约 130 条
+  「一概念一词」违规（`buffer`/`index` 的口径在本仓库是 `buf`/`idx`）。
+  - **结构性拆分**：`dsl.rs` 变成 `dsl/{mod,types,render}.rs`——`mod` 只留形状解析与校验，`types` 是
+    「形参类型 → `ParamKind`」的闭集映射，`render` 只做 token 拼装；`ir.rs` 的 `verify` 拆成
+    「名字/形参/生成名」与「extent/输出/表达式」两段，`value_type` 拆成 `compound_type` → `scalar_type` /
+    `load_type` / `negated_type` / `binary_type`，`emit_c` 拆成 `write_signature` / `write_guards` / `write_loop`，
+    `optimize_expr` 拆成 `fold_negation` / `fold_binary`。
+  - **`.expect` 清零**：写 `String` 用的 `write!(...)` 改成 `let _ = write!(...)`——这条路径不可能失败，
+    而 `expect` 会把它变成一处需要人读的 panic 站点。
+  - **改名**：`ValueType::Buffer` → `ValueType::Buf`、`Kernel::index` → `Kernel::idx`、`is_buffer` → `is_buf`、
+    `buffer_length_name` → `buf_length_name`、`ParamKind::{BufferRead, BufferWrite}` → `{BufRead, BufWrite}`。
+    口径与 `docs/ARCHITECTURE.md` 里「缓冲区一律叫 `buf`」一致。
+  - **`ir.rs` 的用例搬进 `tests/ir_tests.rs`**（`#[path]` 挂回，与本 crate 其余模块同一约定），
+    从 7 条扩到 8 条：新增 C 关键字/非法名字、生成名与形参撞车、`usize` 缓冲被拒、以及
+    「折叠不会吃掉非有限结果」（`1.0 / 0.0` 原样保留为 `(1.0f / 0.0f)`）。
+  - **`prof::codegen` 的镜像编译段落独立成 `codegen/image.rs`**：`Outcome` / `recipe` / `run` / `require`
+    与「扫描片段 + 生成表格」分开，`codegen.rs` 从 630 行回到 447 行。
+  - 顺带修掉一个真实缺陷：宏过去把**函数名当值**发射（`affine.to_string()`），生成的 `Kernel::new` 第一参
+    因此要求 `fn item: Display`——`#[dsl]` 的用例此前从未在主树上跑过。现在发的是字符串字面量。
+  **验证**：`cargo test -p llm-tools --test gate` 14/14 绿；`cargo test -p cutile --lib` 110 通过
+  （`cap::tests::the_signature_that_covers_the_need_is_the_one_compared` 为既有失败，与本轮无关）；
+  `cargo test -p llm-annotation` 44 通过（`tests/audit.rs::rendering_allocates_only_its_output_buf` 为既有失败）。
+
 - **六个设备片段 crate 合并成一个 `llm-frag`：一台设备一个模块，生成器一次生成六台**。`cuda` / `metal` /
   `cpu` / `opencl` / `rocm` / `musa` 这六个 crate 的差别只有两样：`build.rs` 里的 vendor 字符串，和
   `src/` 里的片段文本。其余部分（`Cargo.toml`、`build.rs` 的 `main`、`src/lib.rs` 的文档与 re-export、

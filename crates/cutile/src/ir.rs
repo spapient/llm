@@ -24,7 +24,7 @@ impl ScalarType {
     }
 }
 
-/// Buffer access required by a kernel parameter.
+/// Buf access required by a kernel parameter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Access {
     /// Read-only buffer.
@@ -49,8 +49,8 @@ pub enum ValueType {
     /// Scalar value.
     Scalar(ScalarType),
     /// Contiguous buffer and its element/access contract.
-    Buffer {
-        /// Buffer element type.
+    Buf {
+        /// Buf element type.
         element: ScalarType,
         /// Required access.
         access: Access,
@@ -62,27 +62,27 @@ impl ValueType {
     fn c_type(self) -> Option<&'static str> {
         match self {
             ValueType::Scalar(element) => Some(element.c_name()),
-            ValueType::Buffer {
+            ValueType::Buf {
                 element: ScalarType::F32,
                 access,
             } => Some(access.c_pointer()),
-            ValueType::Buffer { .. } => None,
+            ValueType::Buf { .. } => None,
         }
     }
 
-    fn is_buffer(self) -> bool {
-        matches!(self, ValueType::Buffer { .. })
+    fn is_buf(self) -> bool {
+        matches!(self, ValueType::Buf { .. })
     }
 
     /// `f32` 缓冲是唯一能发射成 C 的缓冲类型；`usize` 缓冲在校验阶段就被打回。
     fn element_ok(self) -> bool {
         match self {
             ValueType::Scalar(_) => true,
-            ValueType::Buffer {
+            ValueType::Buf {
                 element: ScalarType::F32,
                 ..
             } => true,
-            ValueType::Buffer { .. } => false,
+            ValueType::Buf { .. } => false,
         }
     }
 }
@@ -131,7 +131,7 @@ impl BinaryOp {
     }
 }
 
-/// Typed expression nodes. Buffer loads use the kernel's implicit loop index.
+/// Typed expression nodes. Buf loads use the kernel's implicit loop index.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
     /// An f32 literal stored by its exact IEEE-754 bit pattern.
@@ -214,9 +214,19 @@ impl Kernel {
 
     /// Validate names, parameter types, memory access, and expression types.
     pub fn verify(&self) -> Result<(), VerificationError> {
+        self.check_shape()?;
+        self.check_semantics()
+    }
+
+    /// 名字与形参决定了 C 声明长什么样，必须是排在最前面的两道闸。
+    fn check_shape(&self) -> Result<(), VerificationError> {
         self.check_names()?;
         self.check_params()?;
-        self.check_generated()?;
+        self.check_generated()
+    }
+
+    /// 名字合法之后才谈得上"这个表达式到底算不算 f32 输出"。
+    fn check_semantics(&self) -> Result<(), VerificationError> {
         self.check_extent()?;
         self.check_output()?;
         self.check_value()
@@ -259,10 +269,10 @@ impl Kernel {
         for (idx, _) in self
             .params
             .iter()
-            .filter(|param| param.ty.is_buffer())
+            .filter(|param| param.ty.is_buf())
             .enumerate()
         {
-            let generated = buffer_length_name(idx);
+            let generated = buf_length_name(idx);
             if self.params.iter().any(|other| other.name == generated) {
                 return Err(VerificationError::new(format!(
                     "parameter `{generated}` conflicts with a generated buffer length"
@@ -285,7 +295,7 @@ impl Kernel {
 
     fn check_output(&self) -> Result<(), VerificationError> {
         let output = self.parameter(&self.output);
-        let expected = ValueType::Buffer {
+        let expected = ValueType::Buf {
             element: ScalarType::F32,
             access: Access::ReadWrite,
         };
@@ -353,7 +363,7 @@ impl Kernel {
     fn scalar_type(&self, name: &str) -> Result<ScalarType, VerificationError> {
         match self.parameter(name) {
             Some(ValueType::Scalar(ty)) => Ok(ty),
-            Some(ValueType::Buffer { .. }) => Err(VerificationError::new(format!(
+            Some(ValueType::Buf { .. }) => Err(VerificationError::new(format!(
                 "buffer `{name}` must be loaded at the loop index"
             ))),
             None => Err(VerificationError::new(format!(
@@ -364,11 +374,11 @@ impl Kernel {
 
     fn load_type(&self, name: &str) -> Result<ScalarType, VerificationError> {
         match self.parameter(name) {
-            Some(ValueType::Buffer {
+            Some(ValueType::Buf {
                 element: ScalarType::F32,
                 ..
             }) => Ok(ScalarType::F32),
-            Some(ValueType::Buffer { .. }) => Err(VerificationError::new(format!(
+            Some(ValueType::Buf { .. }) => Err(VerificationError::new(format!(
                 "buffer `{name}` does not contain f32 elements"
             ))),
             Some(ValueType::Scalar(_)) => Err(VerificationError::new(format!(
@@ -432,11 +442,12 @@ fn write_parameter(
             parameter.name
         )));
     };
-    let _ = write!(source, "{declaration} {}", parameter.name);
-    if !parameter.ty.is_buffer() {
+    let separator = if declaration.ends_with('*') { "" } else { " " };
+    let _ = write!(source, "{declaration}{separator}{}", parameter.name);
+    if !parameter.ty.is_buf() {
         return Ok(0);
     }
-    let _ = write!(source, ", size_t {}", buffer_length_name(bufs));
+    let _ = write!(source, ", size_t {}", buf_length_name(bufs));
     Ok(1)
 }
 
@@ -444,14 +455,14 @@ fn write_guards(source: &mut String, kernel: &Kernel) {
     for (idx, _) in kernel
         .params
         .iter()
-        .filter(|parameter| parameter.ty.is_buffer())
+        .filter(|parameter| parameter.ty.is_buf())
         .enumerate()
     {
         let _ = writeln!(
             source,
             "    if ({} > {}) return 1;",
             kernel.extent,
-            buffer_length_name(idx)
+            buf_length_name(idx)
         );
     }
 }
@@ -502,7 +513,7 @@ fn fold_binary(op: BinaryOp, left: Expr, right: Expr) -> Expr {
     }
 }
 
-fn buffer_length_name(buf: usize) -> String {
+fn buf_length_name(buf: usize) -> String {
     format!("cutile_len_{buf}")
 }
 
@@ -567,149 +578,5 @@ const C_KEYWORDS: &[&str] = &[
 ];
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[crate::dsl]
-    #[allow(dead_code)]
-    fn affine(input: &[f32], output: &mut [f32], scale: f32, extent: usize) {
-        for position in 0..extent {
-            output[position] = input[position] * scale + (2.0 + 1.0);
-        }
-    }
-
-    /// 只有 `output` + `extent` 的最小合法内核，别的判据都从它派生出来。
-    fn minimal() -> Kernel {
-        Kernel::new(
-            "copy",
-            vec![
-                Parameter {
-                    name: "output".to_string(),
-                    ty: ValueType::Buffer {
-                        element: ScalarType::F32,
-                        access: Access::ReadWrite,
-                    },
-                },
-                Parameter {
-                    name: "extent".to_string(),
-                    ty: ValueType::Scalar(ScalarType::Usize),
-                },
-            ],
-            "i",
-            "extent",
-            "output",
-            Expr::F32(0.0f32.to_bits()),
-        )
-    }
-
-    #[test]
-    fn dsl_builds_verified_optimized_ir_and_portable_source() {
-        let kernel = __dsl_ir_affine();
-        kernel.verify().expect("macro output has valid types");
-        let source = kernel.emit_c().expect("verified IR emits C");
-        assert!(source.contains("int affine(const float *input, size_t cutile_len_0, float *output, size_t cutile_len_1, float scale, size_t extent)"));
-        assert!(source.contains("if (extent > cutile_len_0) return 1;"));
-        assert!(source.contains("output[position] = ((input[position] * scale) + 3.0f);"));
-    }
-
-    #[test]
-    fn verifier_rejects_non_mutable_outputs_and_invalid_extents() {
-        let mut kernel = minimal();
-        kernel.params[0].ty = ValueType::Buffer {
-            element: ScalarType::F32,
-            access: Access::Read,
-        };
-        let error = kernel
-            .verify()
-            .expect_err("wrong output access is rejected");
-        assert!(error.to_string().contains("mutable f32 buffer"));
-
-        kernel.params[0].ty = ValueType::Buffer {
-            element: ScalarType::F32,
-            access: Access::ReadWrite,
-        };
-        kernel.verify().expect("valid signature passes");
-        kernel.params[1].ty = ValueType::Scalar(ScalarType::F32);
-        let error = kernel.verify().expect_err("non-usize extent is rejected");
-        assert!(error.to_string().contains("loop extent"));
-    }
-
-    /// 名字要原样写进 C 片段，所以 C 关键字与非法形状都在发射前被打回。
-    #[test]
-    fn c_keywords_and_odd_names_are_rejected() {
-        let mut kernel = minimal();
-        for name in ["float", "1out", "out-put", ""] {
-            kernel.name = name.to_string();
-            let error = kernel.verify().expect_err("non-portable name is rejected");
-            assert!(error.to_string().contains("portable C identifier"), "{name}");
-        }
-    }
-
-    #[test]
-    fn generated_length_names_cannot_collide_with_parameters() {
-        let mut kernel = minimal();
-        kernel.params.insert(
-            0,
-            Parameter {
-                name: "cutile_len_0".to_string(),
-                ty: ValueType::Buffer {
-                    element: ScalarType::F32,
-                    access: Access::Read,
-                },
-            },
-        );
-        let error = kernel
-            .verify()
-            .expect_err("clashing generated name is rejected");
-        assert!(error.to_string().contains("generated buffer length"));
-    }
-
-    /// `usize` 缓冲本身合法（还能当形参），但它装不下 `f32`，必须在校验期就被挡下。
-    #[test]
-    fn non_f32_buffers_are_rejected() {
-        let mut kernel = minimal();
-        kernel.params[0].ty = ValueType::Buffer {
-            element: ScalarType::Usize,
-            access: Access::ReadWrite,
-        };
-        let error = kernel.verify().expect_err("usize buffer is rejected");
-        assert!(error.to_string().contains("must contain f32 elements"));
-    }
-
-    /// 折叠只吃掉能算出有限值的常量：`1.0 / 0.0` 会变成 `inf`，所以原样留下。
-    #[test]
-    fn optimizer_keeps_operations_that_leave_the_finite_range() {
-        let mut kernel = minimal();
-        kernel.value = Expr::Binary {
-            op: BinaryOp::Div,
-            left: Box::new(Expr::F32(1.0f32.to_bits())),
-            right: Box::new(Expr::F32(0.0f32.to_bits())),
-        };
-        let source = kernel.emit_c().expect("non-finite folding still emits C");
-        assert!(source.contains("(1.0f / 0.0f)"), "{source}");
-
-        kernel.value = Expr::Neg(Box::new(Expr::F32(2.0f32.to_bits())));
-        let source = kernel.emit_c().expect("finite negation folds");
-        assert!(source.contains("= -2.0f;"), "{source}");
-    }
-
-    #[test]
-    fn loads_must_name_a_buffer_and_scalars_are_typed() {
-        let mut kernel = minimal();
-        kernel.params.push(Parameter {
-            name: "scale".to_string(),
-            ty: ValueType::Scalar(ScalarType::F32),
-        });
-        kernel.value = Expr::Load("scale".to_string());
-        let error = kernel.verify().expect_err("scalar cannot be loaded");
-        assert!(error.to_string().contains("cannot be loaded as a buffer"));
-
-        kernel.value = Expr::Load("missing".to_string());
-        let error = kernel.verify().expect_err("unknown buffer is rejected");
-        assert!(error.to_string().contains("unknown buffer"));
-
-        kernel.value = Expr::Scalar("missing".to_string());
-        let error = kernel.verify().expect_err("unknown scalar is rejected");
-        assert!(error.to_string().contains("unknown scalar parameter"));
-    }
-}
+#[path = "../tests/ir_tests.rs"]
+mod ir_tests;

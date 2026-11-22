@@ -3,18 +3,23 @@
 //! 这一族只接受「一个 `for idx in 0..extent` 循环 + 一次 `output[idx] = expr` 赋值」的形状。
 //! 收窄输入比猜一个意思便宜：被拒绝的函数原样保留为 CPU 参考实现，只多一条编译期错误。
 
+mod render;
+mod types;
+
+use render::render;
+use types::parameter_kind;
+
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
-use quote::{format_ident, quote};
+use quote::quote;
 use syn::{
     BinOp, Error, Expr, ExprAssign, ExprBinary, ExprForLoop, ExprLit, ExprPath, ExprRange,
-    ExprUnary, Ident, ItemFn, Lit, Pat, PatIdent, Stmt, Type, TypePath, TypeReference, UnOp,
-    spanned::Spanned,
+    ExprUnary, Ident, ItemFn, Lit, Pat, PatIdent, Stmt, UnOp, spanned::Spanned,
 };
 
 /// 一个形参在 C 侧的身份：只读缓冲、可写缓冲、`f32` 标量、`usize` 长度。
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum ParamKind {
+pub(super) enum ParamKind {
     BufRead,
     BufWrite,
     F32,
@@ -200,7 +205,7 @@ fn single_assignment(loop_stmt: &ExprForLoop) -> syn::Result<&ExprAssign> {
 
 fn parse_loop(loop_stmt: &ExprForLoop, params: &[Param]) -> syn::Result<(String, String)> {
     no_loop_decorations(loop_stmt)?;
-    let idx = loop_index(loop_stmt, params)?;
+    let idx = loop_idx(loop_stmt, params)?;
     let extent = loop_extent(loop_stmt, params)?;
     Ok((idx, extent))
 }
@@ -215,7 +220,7 @@ fn no_loop_decorations(loop_stmt: &ExprForLoop) -> syn::Result<()> {
     ))
 }
 
-fn loop_index(loop_stmt: &ExprForLoop, params: &[Param]) -> syn::Result<String> {
+fn loop_idx(loop_stmt: &ExprForLoop, params: &[Param]) -> syn::Result<String> {
     let pattern = plain_ident(loop_stmt.pat.as_ref(), "loop index")?;
     let idx = portable_ident(&pattern.ident)?;
     if params.iter().any(|param| param.name == idx) {
@@ -267,22 +272,28 @@ fn zero_start(range: &ExprRange) -> syn::Result<()> {
 }
 
 fn extent_name(range: &ExprRange, params: &[Param]) -> syn::Result<String> {
-    let end = range
-        .end
-        .as_deref()
-        .ok_or_else(|| Error::new(range.span(), "loop range requires an extent"))?;
+    let end = extent_end(range)?;
     let name = path_ident(end, "loop extent must be a `usize` parameter")?;
     let name = portable_ident(name)?;
-    if !params
-        .iter()
-        .any(|param| param.name == name && param.kind == ParamKind::Usize)
-    {
-        return Err(Error::new(
-            end.span(),
-            "loop extent must name a `usize` parameter",
-        ));
-    }
+    require_usize(params, &name, end)?;
     Ok(name)
+}
+
+fn extent_end(range: &ExprRange) -> syn::Result<&Expr> {
+    match range.end.as_deref() {
+        Some(end) => Ok(end),
+        None => Err(Error::new(range.span(), "loop range requires an extent")),
+    }
+}
+
+fn require_usize(params: &[Param], name: &str, end: &Expr) -> syn::Result<()> {
+    if param_kind(params, name) == Some(ParamKind::Usize) {
+        return Ok(());
+    }
+    Err(Error::new(
+        end.span(),
+        "loop extent must name a `usize` parameter",
+    ))
 }
 
 /// 把 `&Expr` 当成「一个光秃秃的名字」读；不是就报给定的那句话。
@@ -295,7 +306,7 @@ fn path_ident<'a>(expression: &'a Expr, message: &str) -> syn::Result<&'a Ident>
 }
 
 /// 下标只能是循环变量本身：`output[idx + 1]`、`output[0]` 都会落到这里。
-fn at_loop_index(expression: &Expr, idx: &str) -> syn::Result<()> {
+fn at_loop_idx(expression: &Expr, idx: &str) -> syn::Result<()> {
     let at = path_ident(expression, "buffer index must be the loop index")?;
     if portable_ident(at)? == idx {
         return Ok(());
@@ -324,14 +335,30 @@ fn output_name(assign: &ExprAssign, idx: &str, params: &[Param]) -> syn::Result<
     };
     let buf = path_ident(target.expr.as_ref(), "output must be a named mutable buffer")?;
     let output = portable_ident(buf)?;
-    at_loop_index(target.index.as_ref(), idx)?;
-    if param_kind(params, &output) != Some(ParamKind::BufWrite) {
-        return Err(Error::new(
-            assign.left.span(),
-            "assignment target must be an `&mut [f32]` parameter",
-        ));
-    }
+    require_output(assign, target.expr.as_ref(), target.index.as_ref(), idx, params)?;
     Ok(output)
+}
+
+fn require_output(
+    assign: &ExprAssign,
+    buf: &Expr,
+    at: &Expr,
+    idx: &str,
+    params: &[Param],
+) -> syn::Result<()> {
+    at_loop_idx(at, idx)?;
+    require_buf_write(assign, params, buf)
+}
+
+fn require_buf_write(assign: &ExprAssign, params: &[Param], buf: &Expr) -> syn::Result<()> {
+    let name = path_ident(buf, "output must be a named mutable buffer")?;
+    if param_kind(params, &portable_ident(name)?) == Some(ParamKind::BufWrite) {
+        return Ok(());
+    }
+    Err(Error::new(
+        assign.left.span(),
+        "assignment target must be an `&mut [f32]` parameter",
+    ))
 }
 
 fn param_kind(params: &[Param], name: &str) -> Option<ParamKind> {
@@ -341,7 +368,7 @@ fn param_kind(params: &[Param], name: &str) -> Option<ParamKind> {
         .map(|param| param.kind)
 }
 
-fn is_buffer_param(params: &[Param], name: &str) -> bool {
+fn is_buf_param(params: &[Param], name: &str) -> bool {
     matches!(
         param_kind(params, name),
         Some(ParamKind::BufRead | ParamKind::BufWrite)
@@ -361,7 +388,7 @@ fn parse_leaf(expression: &Expr, idx: &str, params: &[Param]) -> syn::Result<Tok
     match expression {
         Expr::Lit(lit) => float_literal(lit),
         Expr::Path(path) => scalar_use(path, idx, params),
-        Expr::Index(target) => buffer_load(target.expr.as_ref(), target.index.as_ref(), idx, params),
+        Expr::Index(target) => buf_load(target.expr.as_ref(), target.index.as_ref(), idx, params),
         other => parse_compound(other, idx, params),
     }
 }
@@ -433,7 +460,7 @@ fn reject_non_scalar(
         ParamKind::F32 => Ok(name.to_string()),
         ParamKind::BufRead | ParamKind::BufWrite => Err(Error::new(
             path.span(),
-            "buffer values must be read with `buffer[loop_index]`",
+            "buffer values must be read with `buffer[loop_idx]`",
         )),
         ParamKind::Usize => Err(Error::new(
             path.span(),
@@ -442,7 +469,7 @@ fn reject_non_scalar(
     }
 }
 
-fn buffer_load(
+fn buf_load(
     buf: &Expr,
     at: &Expr,
     idx: &str,
@@ -455,8 +482,8 @@ fn buffer_load(
 fn loaded_name(buf: &Expr, at: &Expr, idx: &str, params: &[Param]) -> syn::Result<String> {
     let ident = path_ident(buf, "only named buffers can be loaded")?;
     let name = portable_ident(ident)?;
-    at_loop_index(at, idx)?;
-    if !is_buffer_param(params, &name) {
+    at_loop_idx(at, idx)?;
+    if !is_buf_param(params, &name) {
         return Err(Error::new(
             ident.span(),
             format!("`{name}` is not a buffer parameter"),
@@ -510,16 +537,16 @@ fn multiplicative(op: &BinOp) -> Option<&'static str> {
     }
 }
 
-fn ir_value_type(kind: ParamKind) -> TokenStream2 {
+pub(super) fn ir_value_type(kind: ParamKind) -> TokenStream2 {
     match kind {
         ParamKind::BufRead => quote! {
-            ::cutile::ir::ValueType::Buffer {
+            ::cutile::ir::ValueType::Buf {
                 element: ::cutile::ir::ScalarType::F32,
                 access: ::cutile::ir::Access::Read,
             }
         },
         ParamKind::BufWrite => quote! {
-            ::cutile::ir::ValueType::Buffer {
+            ::cutile::ir::ValueType::Buf {
                 element: ::cutile::ir::ScalarType::F32,
                 access: ::cutile::ir::Access::ReadWrite,
             }
@@ -531,61 +558,6 @@ fn ir_value_type(kind: ParamKind) -> TokenStream2 {
             ::cutile::ir::ValueType::Scalar(::cutile::ir::ScalarType::Usize)
         },
     }
-}
-
-fn parameter_kind(ty: &Type) -> syn::Result<ParamKind> {
-    match ty {
-        Type::Reference(reference) => reference_kind(reference),
-        Type::Path(path) if path.qself.is_none() => scalar_kind(path),
-        _ => Err(Error::new(
-            ty.span(),
-            "kernel parameters must be `f32`, `usize`, `&[f32]`, or `&mut [f32]`",
-        )),
-    }
-}
-
-fn scalar_kind(path: &TypePath) -> syn::Result<ParamKind> {
-    match path.path.get_ident().map(ToString::to_string).as_deref() {
-        Some("f32") => Ok(ParamKind::F32),
-        Some("usize") => Ok(ParamKind::Usize),
-        _ => Err(Error::new(
-            path.span(),
-            "scalar kernel parameters must be `f32` or `usize`",
-        )),
-    }
-}
-
-fn reference_kind(reference: &TypeReference) -> syn::Result<ParamKind> {
-    f32_element(slice_element(reference)?)?;
-    Ok(if reference.mutability.is_some() {
-        ParamKind::BufWrite
-    } else {
-        ParamKind::BufRead
-    })
-}
-
-fn slice_element(reference: &TypeReference) -> syn::Result<&Type> {
-    let Type::Slice(slice) = reference.elem.as_ref() else {
-        return Err(Error::new(
-            reference.span(),
-            "buffer parameters must be slices (`&[f32]` or `&mut [f32]`)",
-        ));
-    };
-    Ok(slice.elem.as_ref())
-}
-
-fn f32_element(ty: &Type) -> syn::Result<()> {
-    if is_float(ty) {
-        return Ok(());
-    }
-    Err(Error::new(ty.span(), "buffer element type must be `f32`"))
-}
-
-fn is_float(ty: &Type) -> bool {
-    let Type::Path(path) = ty else {
-        return false;
-    };
-    path.qself.is_none() && path.path.is_ident("f32")
 }
 
 fn unique_parameters(params: &[Param], signature: &syn::Signature) -> syn::Result<()> {
@@ -601,38 +573,4 @@ fn unique_parameters(params: &[Param], signature: &syn::Signature) -> syn::Resul
         }
     }
     Ok(())
-}
-
-fn render(function: &ItemFn, params: &[Param], body: &Body) -> TokenStream2 {
-    let ir_params = params.iter().map(|parameter| {
-        let name = &parameter.name;
-        let ty = ir_value_type(parameter.kind);
-        quote! {
-            ::cutile::ir::Parameter {
-                name: #name.to_string(),
-                ty: #ty,
-            }
-        }
-    });
-    let fn_name = &function.sig.ident;
-    let generated_name = format_ident!("__dsl_ir_{}", fn_name);
-    let visibility = &function.vis;
-    let idx = &body.idx;
-    let extent = &body.extent;
-    let output = &body.output;
-    let value = &body.value;
-    quote! {
-        #[doc(hidden)]
-        #[allow(missing_docs)]
-        #visibility fn #generated_name() -> ::cutile::ir::Kernel {
-            ::cutile::ir::Kernel::new(
-                #fn_name.to_string(),
-                vec![#(#ir_params),*],
-                #idx,
-                #extent,
-                #output,
-                #value,
-            )
-        }
-    }
 }

@@ -1,15 +1,14 @@
 # `llm` / `llm.u` / Burn 全维度源码级对比分析
 
-> 基线：三份代码均按源码同口径实测（剔除 
->
+> 基线：三份代码均按源码同口径实测（剔除
 > `target/`
->
->  构建产物与 tests 目录后统计生产行）。
->
+> 构建产物与 tests 目录后统计生产行）。
+
+
 
 | 代号            | 路径                      | 版本 / HEAD                                                | 角色                          |
 | ------------- | ----------------------- | -------------------------------------------------------- | --------------------------- |
-| **llm**（新仓）   | `/Users/fei/code/llm`   | workspace，33 个成员 crate（含 `frag`），HEAD `40b18f36`        | 重构后的分层契约架构（L1–L6）           |
+| **llm**（新仓）   | `/Users/fei/code/llm`   | workspace，33 个成员 crate（含 `frag`），HEAD `40b18f36`         | 重构后的分层契约架构（L1–L6）           |
 | **llm.u**（旧仓） | `/Users/fei/code/llm.u` | workspace，14 个成员 crate（`fuzz` 被 exclude），HEAD `cf4e8fe3` | 配置驱动、后端直连的执行框架              |
 | **Burn**      | `/Users/fei/code/burn`  | `0.23.0-pre.2`，HEAD `aff0a3cf`                           | 成熟通用 Rust 深度学习框架（Tracel AI） |
 
@@ -126,8 +125,8 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 
 
 
-|       | llm（新）                                                                             | llm.u                                                                                                                                                                                  | Burn                                                              |
-| ----- | ---------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+|       | llm（新）                                                                                               | llm.u                                                                                                                                                                                                                                                             | Burn                                                              |
+| ----- | ---------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
 | 运行期三方 | `bytemuck`(optional)、`half`(workspace)、`serde`/`serde_json`(optional)、`libfuzzer-sys`(optional, dev) | `cudarc 0.19`(optional)、`metal 0.33`(optional)、`coreml-native 0.2`(optional)、`libloading 0.8`(OpenCL/SYCL/CLBlast/MUSA/ROCm/NCE/Vitis 动态加载)、`half 2`、`faer 0.24`(storage)、`rand 0.9`/`rand_distr 0.5`(tool/proto 侧初始化)、`serde/serde_json`、`clap`、`criterion`(dev) | `rand`、`half`、`bytemuck`、`cubecl`、`wgpu`、`cudarc`（经 CubeCL）等一整套生态 |
 
 
@@ -195,55 +194,41 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 
 
 
-| 后端                | llm（新）                                                                                                                                                                                                                     | llm.u                                                                                                                         | Burn                                                                                   |
-| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| CPU               | `cpu` Fragment（9 份 `.c` + witness）；`CpuExecutor` 实现在 `engine/exec/cpu.rs`；`gemm/fast` 有 NEON 微核（`vfmaq_laneq`）                                                                                                             | `host/cpu`：NEON/AVX2/AVX-512 手写微核 + Accelerate/BLAS 探测                                                                        | 双 CPU 后端：`burn-cpu`（CubeCL/LLVM，融合 + autotune）与 `burn-flex`（纯 Rust eager，no\_std/WASM） |
-| NVIDIA CUDA       | `cuda` Fragment（9 份 `.cu` + witness）；`CudaBackend` 实现 `Codegen`+`Driver`+`Backend`，`compile_run_cuda` 经 `std::process::Command` 调 **nvcc** 编译并回读；`cuda_lower` 目前只覆盖逐点网格与分块归约，其余骨架未覆盖                                       | `backend/cuda/cublas/*`（6,238 行）：cuBLAS/cuBLASLT 封装、i8/i4/lowbit/attn/ssm/train，cudarc 直链；CUDA graph 捕获 replay                | `burn-cuda`（CubeCL `cuda` feature）                                                     |
-| Apple Metal       | `metal` Fragment（9 份 `.metal`）；`MetalExecutor`**&#x20;是唯一已落地的 GPU&#x20;**`Executor`**&#x20;实现**；`MetalBackend` 三 trait 齐备，`compile_run_metal` 走 `xcrun metal` + metallib                                                   | `backend/metal/rt.rs`（643 行）+ `rt/{compute,dev,train}.rs` 共 1,923 行：tensor 路径、hgemm/i8gemm/unary、SSM adapter；`metal` crate 直链 | 经 `burn-wgpu`(MSL) 与 CubeCL                                                            |
-| AMD ROCm/HIP      | `prof` 档案有 `Emit::Hip`；`frag/rocm` 有 9 份标量 `.cpp` 片段（fma 四路链，与各设备标量单元同源，非真 HIP 设备内核），但**无 `Driver`/`Backend` 实现、未挂执行缝**   | `backend/blas/rocm_ops.rs`（49 行，经 `libloading` 加载自研 hipcc 共享库，仅 SSM Ops 探测 / 择优，非完整 GEMM 后端）                                  | `burn-rocm`（CubeCL `hip` feature）                                                      |
-| Intel OpenCL/SYCL | `opencl` Fragment（9 份 `.cl`，intel 档案），未挂 Driver                                                                                                                                                                            | `backend/intel/opencl.rs`(862) + `sycl.rs`(483) + BLAS probe；OpenCL/SYCL 实测择优                                                 | 经 wgpu / 通用 GPU 路径                                                                     |
-| 摩尔线程 MUSA         | `musa` Fragment（9 份 `.cu` 变体）；`CudaBackend` 复用 `.cu` 源，工具名 `mcc` 走 `musa_ready`/`compile_run_cuda` 链路                                                                                                                      | `backend/blas/musa.rs`（596 行，MUDNN/MUBLAS）                                                                                    | 无                                                                                      |
+| 后端                | llm（新）                                                                                                                                                                                                                               | llm.u                                                                                                                         | Burn                                                                                   |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| CPU               | `cpu` Fragment（9 份 `.c` + witness）；`CpuExecutor` 实现在 `engine/exec/cpu.rs`；`gemm/fast` 有 NEON 微核（`vfmaq_laneq`）                                                                                                                       | `host/cpu`：NEON/AVX2/AVX-512 手写微核 + Accelerate/BLAS 探测                                                                        | 双 CPU 后端：`burn-cpu`（CubeCL/LLVM，融合 + autotune）与 `burn-flex`（纯 Rust eager，no\_std/WASM） |
+| NVIDIA CUDA       | `cuda` Fragment（9 份 `.cu` + witness）；`CudaBackend` 实现 `Codegen`+`Driver`+`Backend`，`compile_run_cuda` 经 `std::process::Command` 调 **nvcc** 编译并回读；`cuda_lower` 目前只覆盖逐点网格与分块归约，其余骨架未覆盖                                                 | `backend/cuda/cublas/*`（6,238 行）：cuBLAS/cuBLASLT 封装、i8/i4/lowbit/attn/ssm/train，cudarc 直链；CUDA graph 捕获 replay                | `burn-cuda`（CubeCL `cuda` feature）                                                     |
+| Apple Metal       | `metal` Fragment（9 份 `.metal`）；`MetalExecutor`**&#x20;是唯一已落地的 GPU&#x20;**`Executor`**&#x20;实现**；`MetalBackend` 三 trait 齐备，`compile_run_metal` 走 `xcrun metal` + metallib                                                             | `backend/metal/rt.rs`（643 行）+ `rt/{compute,dev,train}.rs` 共 1,923 行：tensor 路径、hgemm/i8gemm/unary、SSM adapter；`metal` crate 直链 | 经 `burn-wgpu`(MSL) 与 CubeCL                                                            |
+| AMD ROCm/HIP      | `prof` 档案有 `Emit::Hip`；`frag/rocm` 有 9 份标量 `.cpp` 片段（fma 四路链，与各设备标量单元同源，非真 HIP 设备内核），但**无&#x20;**`Driver`**/**`Backend`**&#x20;实现、未挂执行缝**                                                                                            | `backend/blas/rocm_ops.rs`（49 行，经 `libloading` 加载自研 hipcc 共享库，仅 SSM Ops 探测 / 择优，非完整 GEMM 后端）                                  | `burn-rocm`（CubeCL `hip` feature）                                                      |
+| Intel OpenCL/SYCL | `opencl` Fragment（9 份 `.cl`，intel 档案），未挂 Driver                                                                                                                                                                                      | `backend/intel/opencl.rs`(862) + `sycl.rs`(483) + BLAS probe；OpenCL/SYCL 实测择优                                                 | 经 wgpu / 通用 GPU 路径                                                                     |
+| 摩尔线程 MUSA         | `musa` Fragment（9 份 `.cu` 变体）；`CudaBackend` 复用 `.cu` 源，工具名 `mcc` 走 `musa_ready`/`compile_run_cuda` 链路                                                                                                                                | `backend/blas/musa.rs`（596 行，MUDNN/MUBLAS）                                                                                    | 无                                                                                      |
 | 昇腾 CANN/Ascend    | `AscendBackend` 三 trait 齐备，`compile_run_ascend` 调 CCE；设备源拼装在 `device/src/ascend.rs`（`__aicore__` 单源 + `aclrtMalloc`/`aclrtMemcpy`/`aclrtFree` 骨架）。**生产态内核仍是空**：P0 片段只到标量 C 语义，未触及 MTE/Cube/Vector，`compile_run` 对非单源返回 `Unsupported` | `Device::Cann` 枚举在位，实现待接入                                                                                                     | 无                                                                                      |
-| Apple ANE/CoreML  | 无                                                                                                                                                                                                                          | `coreml-native` optional 依赖；`backend/npu.rs` 统一 ANE/NCE/Vitis resident 语义（feature 门控）                                         | 无                                                                                      |
-| 通用 GPU/NPU        | `Row::Gpu`（厂商 MMA + 同构 ABI 合同）                                                                                                                                                                                             | `Device::Nce`(Intel NPU, OpenVINO 待接入)、`npu.rs`                                                                               | 无                                                                                      |
-| 远端 / 进程间          | `shard::Remote` 占位；`serve/http` 是 std `TcpListener`/`TcpStream` 的 HTTP/1.1 薄适配器（进程内可验证）                                                                                                                                                                 | `exec/comm.rs` 有 `Comm` trait（`all_reduce`）+ `Cpu` 空参考实现 + 测试用 `sum_all_reduce`；`config.comm` 声明 `nccl/rccl`，**无真实跨进程传输实现**                                                                                            | `burn-remote`：client/server/transport/telemetry/credential，可远程推理与 P2P 训练               |
+| Apple ANE/CoreML  | 无                                                                                                                                                                                                                                    | `coreml-native` optional 依赖；`backend/npu.rs` 统一 ANE/NCE/Vitis resident 语义（feature 门控）                                         | 无                                                                                      |
+| 通用 GPU/NPU        | `Row::Gpu`（厂商 MMA + 同构 ABI 合同）                                                                                                                                                                                                       | `Device::Nce`(Intel NPU, OpenVINO 待接入)、`npu.rs`                                                                               | 无                                                                                      |
+| 远端 / 进程间          | `shard::Remote` 占位；`serve/http` 是 std `TcpListener`/`TcpStream` 的 HTTP/1.1 薄适配器（进程内可验证）                                                                                                                                              | `exec/comm.rs` 有 `Comm` trait（`all_reduce`）+ `Cpu` 空参考实现 + 测试用 `sum_all_reduce`；`config.comm` 声明 `nccl/rccl`，**无真实跨进程传输实现**   | `burn-remote`：client/server/transport/telemetry/credential，可远程推理与 P2P 训练               |
 
 > 新 llm 的后端分两层：
->
 > **Fragment**
->
-> （每设备 9 份原语源 + witness，编译期扫成表）与 
->
+> （每设备 9 份原语源 + witness，编译期扫成表）与
 > **Backend**
->
 > （
->
 > `Codegen`
->
 > /
->
 > `Driver`
->
 > /
->
 > `Backend`
+> 三 trait）。设备后端三 trait 齐备的是 Metal、Cuda (含 MUSA 工具链)、Ascend；另有 
 >
->  三 trait）。设备后端三 trait 齐备的是 Metal、Cuda (含 MUSA 工具链)、Ascend；另有 `CBackend`（宿主 C 参考自检后端，只证明"C 编得过、跑得出 expect"，不是设备证据）。ROCm/OpenCL/MUSA 仅有 Fragment，未接 Driver。执行器缝（
+> `CBackend`
 >
+> （宿主 C 参考自检后端，只证明 "C 编得过、跑得出 expect"，不是设备证据）。ROCm/OpenCL/MUSA 仅有 Fragment，未接 Driver。执行器缝（
 > `Executor`
->
-> ）目前只有 
->
+> ）目前只有
 > `LocalExecutor`
->
 > /
->
 > `CpuExecutor`
->
 > /
->
 > `MetalExecutor`
->
 > 。
 
 ### 4.2 执行缝（trait 面）
@@ -354,7 +339,7 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 | 存储格式        | `dtype`：GGML 块量化 QType、MX 微缩放 MxType、MX 元素闭集；`weights/ptq.rs` 定义 `Scheme{I2,I4,I8,Compensated}` | `Prec`：I8/I4/I3/I2 + F8E4M3/F8E5M2/Fp4；AWQ 权重缓存路径                                    | `QuantValue`：Q8F/Q8S/Q4F/Q4S/Q2F/Q2S + E4M3/E5M2/E2M1；`PackedU32` 打包                  |
 | 量化落点        | 权重档案（`weights/ptq`、`adaptive`、`settle`、`quant`）；算子侧引用块格式                                        | CPU `awq.rs`/`lowbit.rs`、CUDA `int4/int8w/lowbit/subbyte`、Metal i8；AWQ I4 缓存为 f32 Bᵀ | 模块参数级 `Quantizer`（`ModuleMapper` 按路径 / 参数组映射），`Calibration` + `QuantScheme` 算 qparams |
 | PTQ 校准      | `weights` 侧自适应 /settle 流程                                                                       | 配置档位 + 后端实现                                                                          | `Calibration`（range 观测）+ scheme（symmetric/affine，F/S 家族）                              |
-| QAT（量化感知训练） | 无                                                                                               | 无                                                                                    | 无（当前版本；`qtensor` 注释自证：QAT 需 straight-through estimator，当前量化张量不带 autodiff 图）                                                                  |
+| QAT（量化感知训练） | 无                                                                                               | 无                                                                                    | 无（当前版本；`qtensor` 注释自证：QAT 需 straight-through estimator，当前量化张量不带 autodiff 图）           |
 | 低精度计算       | TF32 档在 llm.u 显式；新仓 `prec`/`dtype` 承接                                                           | Tf32 计算档；f16/bf16 端到端；i8 逐元素对拍精确                                                     | 后端按 `FloatDType` 能力选；FP8/FP4 经 QuantValue                                             |
 
 **判定：** 三家都**没有 QAT**。llm.u 与新 llm 的量化偏 "权重存储格式 + 后端 GEMM 解包"，Burn 的量化偏 "参数体系内可映射的量化张量"。块量化格式广度新 llm 最大；模块级量化工具链 Burn 最完整。
@@ -369,10 +354,10 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 
 
 
-|           | llm（新）                                                | llm.u                               | Burn                                                                                                                                                    |
-| --------- | ----------------------------------------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 优化器 trait | `Optimizer`（`Slot/OwnedSlot`、weight decay、clip\_norm） | 自由函数 + `Adam` 结构                    | `Optimizer` trait（module 级参数映射 + state）                                                                                                                 |
-| 已实现       | `Sgd` `Adam` `Muon`(+momentum/Nesterov/eps)，实现在 `train/optimizer`（`optim` crate 是内核编译 / 对账 / bench 工具链，非优化器库） | `sgd` 函数、`Adam`(lr/wd 解耦权重衰减 /step) | 直接 `impl Optimizer` 10 个：`Sgd` `Adam` `AdamW` `AdaGrad` `Adafactor` `Adan` `RmsProp` `Lamb` `Lion` `Muon`；另有 `LBFGS` `Momentum` 配套结构；+ 梯度累积 `grad_accum`、梯度裁剪 `grad_clipping`、衰减 `decay` |
+|           | llm（新）                                                                                                       | llm.u                               | Burn                                                                                                                                                                                     |
+| --------- | ------------------------------------------------------------------------------------------------------------ | ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 优化器 trait | `Optimizer`（`Slot/OwnedSlot`、weight decay、clip\_norm）                                                        | 自由函数 + `Adam` 结构                    | `Optimizer` trait（module 级参数映射 + state）                                                                                                                                                  |
+| 已实现       | `Sgd` `Adam` `Muon`(+momentum/Nesterov/eps)，实现在 `train/optimizer`（`optim` crate 是内核编译 / 对账 /bench 工具链，非优化器库） | `sgd` 函数、`Adam`(lr/wd 解耦权重衰减 /step) | 直接 `impl Optimizer` 10 个：`Sgd` `Adam` `AdamW` `AdaGrad` `Adafactor` `Adan` `RmsProp` `Lamb` `Lion` `Muon`；另有 `LBFGS` `Momentum` 配套结构；+ 梯度累积 `grad_accum`、梯度裁剪 `grad_clipping`、衰减 `decay` |
 
 ### 8.2 学习率调度 / 训练循环
 
@@ -428,12 +413,12 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 
 
 
-| 维度   | llm（新）                                                                                                   | llm.u                                            | Burn                                                                                                                      |
-| ---- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
-| 拓扑   | `shard/topology`：world size、per-axis 进程组                                                                 | `config.tables.parallel`：切分配置；`data::shard` 数据分片 | `burn-shard`：sharding/kind/resharding/rules/backend                                                                       |
-| 切分类型 | `Sharding`(axis) + `Tiling`(parts/inp/out) + `Reduce`(Sum/Mean/Max…)                                     | 配置声明 `comm: nccl/rccl`；无切分实现                     | `burn-shard` 规则与重切分                                                                                                       |
+| 维度   | llm（新）                                                                                                   | llm.u                                                                              | Burn                                                                                                                      |
+| ---- | -------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| 拓扑   | `shard/topology`：world size、per-axis 进程组                                                                 | `config.tables.parallel`：切分配置；`data::shard` 数据分片                                   | `burn-shard`：sharding/kind/resharding/rules/backend                                                                       |
+| 切分类型 | `Sharding`(axis) + `Tiling`(parts/inp/out) + `Reduce`(Sum/Mean/Max…)                                     | 配置声明 `comm: nccl/rccl`；无切分实现                                                       | `burn-shard` 规则与重切分                                                                                                       |
 | 集合通信 | `Collective` trait（`all_reduce` + `Group`）；`Local` 进程内 reduce；`Remote`**&#x20;占位，返回&#x20;**`Unsupported` | `Comm` trait（`all_reduce`）+ `Cpu` 空参考实现 + 测试用归约；`config.comm` 声明 `nccl/rccl`，无真实传输 | `burn-communication`：`Protocol/ProtocolClient/ProtocolServer/CommunicationChannel` + WebSocket 实现；`burn-remote` 远程训练 / 推理 |
-| 并行范式 | TP/PP/DP 拓扑数据结构在位，传输未挂载                                                                                  | 数据分片函数；无模型并行                                     | `burn-train/learner/sharder` + 通信协议；layer-parallelism 示例；P2P 远程训练示例                                                       |
+| 并行范式 | TP/PP/DP 拓扑数据结构在位，传输未挂载                                                                                  | 数据分片函数；无模型并行                                                                       | `burn-train/learner/sharder` + 通信协议；layer-parallelism 示例；P2P 远程训练示例                                                       |
 
 **判定：** 三家的跨进程集合通信都未接 NCCL/RCCL/MPI 真实栈；Burn 有可运行的 WebSocket/remote 通道与 shard 规则，新 llm 有完整拓扑 / 切分 / Reduce 数据结构但通信后端是占位，llm.u 有 `Comm` trait 端口但仅 CPU 空参考实现、无真实传输。
 
@@ -445,10 +430,10 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 
 
 
-|           | llm（新）                                                                             | llm.u                                              | Burn                                                              |
-| --------- | ---------------------------------------------------------------------------------- | -------------------------------------------------- | ----------------------------------------------------------------- |
+|           | llm（新）                                                                             | llm.u                                                                                                                 | Burn                                                              |
+| --------- | ---------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
 | RNG crate | `rng`：Philox4x32-10 counter 引擎，显式 seed/stream/index；`Uniform`/`Normal`/`Bernoulli` | 无独立 RNG crate；`tool`/`proto` 侧用 `rand 0.9`/`rand_distr`（StdRng/Normal/Uniform）做初始化；运行期采样由外部注入闭包 `impl FnMut() -> f64` | `rand` 生态；`Device::seed(u64)`；张量 `Distribution::Uniform/Normal/…` |
-| 可复现性      | counter-based，分 stream/index，可复现                                                   | 依赖注入闭包，确定性由调用方冻结种子                                 | 后端种子语义（可能全局生效）                                                    |
+| 可复现性      | counter-based，分 stream/index，可复现                                                   | 依赖注入闭包，确定性由调用方冻结种子                                                                                                    | 后端种子语义（可能全局生效）                                                    |
 
 
 
@@ -516,47 +501,47 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 
 
 
-| 能力维度                 | llm（新）                                             | llm.u                                      | Burn                               |
-| -------------------- | -------------------------------------------------- | ------------------------------------------ | ---------------------------------- |
-| CPU 内核（手写 SIMD 微核）   | ◐ gemm/fast NEON 微核在位，AVX 路径待补                     | ● NEON/AVX2/AVX-512/Accelerate 实测          | ◐ CPU 后端可用，非极致调优                   |
-| CUDA 后端              | ◐ nvcc 编译回读链路通；lower 仅逐点 / 归约，GEMM 大内核待接           | ● cuBLAS/LT 封装 + graph capture             | ● CubeCL CUDA                      |
-| Metal 后端             | ● MetalExecutor 落地；xcrun 编译链路通                     | ● runtime/tensor 路径实测                      | ◐ 经 wgpu/MSL                       |
-| AMD ROCm/HIP         | ◐ `Emit::Hip` 档案 + `frag/rocm` 标量 `.cpp` 片段，无 Driver/Backend               | ◐ 49 行 SSM 共享库探测                           | ● CubeCL HIP                       |
-| OpenCL/SYCL          | ○ 仅 intel Fragment，无 Driver                        | ● OpenCL 862 + SYCL 483 实测择优               | ○                                  |
-| MUSA                 | ◐ 复用 CUDA 源 + mcc 工具链                              | ● MUDNN 596 行实测                            | ○                                  |
-| 昇腾 CANN              | ◐ CCE 编译回读；设备源在 `device/ascend.rs`，内核仅标量语义，并行核函数未落地 | ◐ 枚举在位                                     | ○                                  |
-| ANE/CoreML           | ○                                                  | ◐ optional，feature 门控 resident 语义          | ○                                  |
-| 张量秩 / 后端泛型           | ○                                                  | ○                                          | ●                                  |
-| 运行期形状 / 精度校验         | ● spec/testkit                                     | ● config 校验                                | ● 后端能力协商                           |
-| 自动微分（图 /tape）        | ◐ 仓内小图                                             | ○ 手写反向                                     | ● 后端装饰器                            |
-| 梯度检查点                | ◐ segment                                          | ○                                          | ● 策略可配                             |
-| 优化器丰富度               | ◐ Sgd/Adam/Muon                                    | ◐ Sgd/Adam                                 | ● 10 个 impl + LBFGS/Momentum，含 AdamW/Lamb/Lion/Adafactor… |
-| LR 调度                | ● warmup+anneal                                    | ● cosine+warmup                            | ● 多策略                              |
-| 指标注册表 /evaluator     | ◐ Learner 账表 + evaluate，无可插拔指标 / 渲染器               | ○                                          | ● 30+ 指标                           |
-| 数据集 crate            | ◐ Dataset trait + Chunks 游标，无物理源                   | ○                                          | ●                                  |
-| 检查点体系                | ● snapshot（自描述编码 + CRC-32 + 恢复事实）                  | ◐ checkpoint 字节存档（save/restore/write/read） | ● store/checkpoint 完整              |
-| CNN 卷积层              | ●                                                  | ○                                          | ●                                  |
-| 池化层                  | ●                                                  | ○                                          | ●                                  |
-| RNN/GRU/LSTM         | ○                                                  | ○                                          | ●                                  |
-| Transformer 模块       | ◐ 注意力 / 算法语义                                       | ◐ 注意力 KV                                   | ● Encoder/Decoder + cache          |
-| SSM/Mamba            | ● algorithm/kernel                                 | ● 前反向                                      | ○                                  |
-| MoE 路由               | ◐ algorithm/gating                                 | ○                                          | ○                                  |
-| 量化格式广度               | ● GGML+MX+FP4                                      | ◐ I2–I8+FP8/FP4                            | ● Q8/Q4/Q2+FP8/FP4                 |
-| 参数级量化映射              | ○                                                  | ○                                          | ● ModuleMapper/Quantizer           |
-| QAT                  | ○                                                  | ○                                          | ○                                  |
-| 连续批调度                | ● engine/ifb                                       | ● scheduler                                | ○                                  |
-| 分页 KV + 前缀共享         | ● radix/page                                       | ● radix/page                               | ○ 序列 cache                         |
-| 投机采样                 | ● speculate                                        | ● speculative                              | ○                                  |
-| OpenAI 兼容端点          | ◐ route/protocol + HTTP/1.1 薄适配器                   | ◐ schema + 纯逻辑路由，HTTP 运行时未接                | ○ 示例 server                        |
-| 权重格式读取               | ● safetensors/GGUF/JSON/torch.bin                  | ● gguf/safetensors/HF zip-pickle           | ○ pytorch-reader                   |
-| 内置分词器                | ● tokenizer                                        | ○                                          | ○                                  |
-| 拓扑 / 切分数据结构          | ● shard                                            | ◐ 配置                                       | ● shard rules                      |
-| 跨进程集合通信              | ○ Remote 占位                                        | ◐ Comm trait + CPU 空参考实现，无真实传输          | ◐ WebSocket/remote                 |
-| 确定性 RNG              | ● Philox                                           | ○ 注入闭包                                     | ● rand/seed                        |
-| 自定义内核 DSL            | ● cutile                                           | ○ 直接写后端                                    | ● CubeCL                           |
-| 模块派生宏（Module/Config） | ○                                                  | ○                                          | ● derive                           |
-| RL 栈                 | ◐ log\_prob/entropy/advantage/GRPO                 | ○ 桥                                        | ● env/policy/buffer                |
-| 远程训练 / 推理            | ○                                                  | ○ ● remote                                 |                                    |
+| 能力维度                 | llm（新）                                                       | llm.u                                      | Burn                                                      |
+| -------------------- | ------------------------------------------------------------ | ------------------------------------------ | --------------------------------------------------------- |
+| CPU 内核（手写 SIMD 微核）   | ◐ gemm/fast NEON 微核在位，AVX 路径待补                               | ● NEON/AVX2/AVX-512/Accelerate 实测          | ◐ CPU 后端可用，非极致调优                                          |
+| CUDA 后端              | ◐ nvcc 编译回读链路通；lower 仅逐点 / 归约，GEMM 大内核待接                     | ● cuBLAS/LT 封装 + graph capture             | ● CubeCL CUDA                                             |
+| Metal 后端             | ● MetalExecutor 落地；xcrun 编译链路通                               | ● runtime/tensor 路径实测                      | ◐ 经 wgpu/MSL                                              |
+| AMD ROCm/HIP         | ◐ `Emit::Hip` 档案 + `frag/rocm` 标量 `.cpp` 片段，无 Driver/Backend | ◐ 49 行 SSM 共享库探测                           | ● CubeCL HIP                                              |
+| OpenCL/SYCL          | ○ 仅 intel Fragment，无 Driver                                  | ● OpenCL 862 + SYCL 483 实测择优               | ○                                                         |
+| MUSA                 | ◐ 复用 CUDA 源 + mcc 工具链                                        | ● MUDNN 596 行实测                            | ○                                                         |
+| 昇腾 CANN              | ◐ CCE 编译回读；设备源在 `device/ascend.rs`，内核仅标量语义，并行核函数未落地          | ◐ 枚举在位                                     | ○                                                         |
+| ANE/CoreML           | ○                                                            | ◐ optional，feature 门控 resident 语义          | ○                                                         |
+| 张量秩 / 后端泛型           | ○                                                            | ○                                          | ●                                                         |
+| 运行期形状 / 精度校验         | ● spec/testkit                                               | ● config 校验                                | ● 后端能力协商                                                  |
+| 自动微分（图 /tape）        | ◐ 仓内小图                                                       | ○ 手写反向                                     | ● 后端装饰器                                                   |
+| 梯度检查点                | ◐ segment                                                    | ○                                          | ● 策略可配                                                    |
+| 优化器丰富度               | ◐ Sgd/Adam/Muon                                              | ◐ Sgd/Adam                                 | ● 10 个 impl + LBFGS/Momentum，含 AdamW/Lamb/Lion/Adafactor… |
+| LR 调度                | ● warmup+anneal                                              | ● cosine+warmup                            | ● 多策略                                                     |
+| 指标注册表 /evaluator     | ◐ Learner 账表 + evaluate，无可插拔指标 / 渲染器                         | ○                                          | ● 30+ 指标                                                  |
+| 数据集 crate            | ◐ Dataset trait + Chunks 游标，无物理源                             | ○                                          | ●                                                         |
+| 检查点体系                | ● snapshot（自描述编码 + CRC-32 + 恢复事实）                            | ◐ checkpoint 字节存档（save/restore/write/read） | ● store/checkpoint 完整                                     |
+| CNN 卷积层              | ●                                                            | ○                                          | ●                                                         |
+| 池化层                  | ●                                                            | ○                                          | ●                                                         |
+| RNN/GRU/LSTM         | ○                                                            | ○                                          | ●                                                         |
+| Transformer 模块       | ◐ 注意力 / 算法语义                                                 | ◐ 注意力 KV                                   | ● Encoder/Decoder + cache                                 |
+| SSM/Mamba            | ● algorithm/kernel                                           | ● 前反向                                      | ○                                                         |
+| MoE 路由               | ◐ algorithm/gating                                           | ○                                          | ○                                                         |
+| 量化格式广度               | ● GGML+MX+FP4                                                | ◐ I2–I8+FP8/FP4                            | ● Q8/Q4/Q2+FP8/FP4                                        |
+| 参数级量化映射              | ○                                                            | ○                                          | ● ModuleMapper/Quantizer                                  |
+| QAT                  | ○                                                            | ○                                          | ○                                                         |
+| 连续批调度                | ● engine/ifb                                                 | ● scheduler                                | ○                                                         |
+| 分页 KV + 前缀共享         | ● radix/page                                                 | ● radix/page                               | ○ 序列 cache                                                |
+| 投机采样                 | ● speculate                                                  | ● speculative                              | ○                                                         |
+| OpenAI 兼容端点          | ◐ route/protocol + HTTP/1.1 薄适配器                             | ◐ schema + 纯逻辑路由，HTTP 运行时未接                | ○ 示例 server                                               |
+| 权重格式读取               | ● safetensors/GGUF/JSON/torch.bin                            | ● gguf/safetensors/HF zip-pickle           | ○ pytorch-reader                                          |
+| 内置分词器                | ● tokenizer                                                  | ○                                          | ○                                                         |
+| 拓扑 / 切分数据结构          | ● shard                                                      | ◐ 配置                                       | ● shard rules                                             |
+| 跨进程集合通信              | ○ Remote 占位                                                  | ◐ Comm trait + CPU 空参考实现，无真实传输             | ◐ WebSocket/remote                                        |
+| 确定性 RNG              | ● Philox                                                     | ○ 注入闭包                                     | ● rand/seed                                               |
+| 自定义内核 DSL            | ● cutile                                                     | ○ 直接写后端                                    | ● CubeCL                                                  |
+| 模块派生宏（Module/Config） | ○                                                            | ○                                          | ● derive                                                  |
+| RL 栈                 | ◐ log\_prob/entropy/advantage/GRPO                           | ○ 桥                                        | ● env/policy/buffer                                       |
+| 远程训练 / 推理            | ○                                                            | ○ ● remote                                 |                                                           |
 
 
 
@@ -620,9 +605,7 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 | 0    | 缺失                    |
 
 > 分数是
->
 > **当前代码快照**
->
 > 的相对评价，不是能力上限；三者目标定位不同（通用训练框架 / LLM 推理执行框架），总分必须结合权重视角解读。
 
 ### 16.2 评分方法与口径
@@ -645,28 +628,28 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 
 
 
-| #  | 维度           | llm（新） | llm.u | Burn | 核心一句话                                                                                                    |
-| -- | ------------ | ------ | ----- | ---- | -------------------------------------------------------------------------------------------------------- |
-| 1  | 张量 / 类型系统    | 3      | 2     | 10   | llm/llm.u 运行期形状与精度、无后端 / 秩泛型；Burn `Tensor<const D,K,B>` 编译期泛型                                            |
-| 2  | 后端广度         | 5      | 6     | 8    | llm 档案 9 种 Emit、6 设备 Fragment，Driver 仅 3；llm.u 枚举 11 设备、6 类跑通；Burn CPU/CUDA/WGPU/ROCm/Remote/Flex 6 类    |
-| 3  | 后端执行成熟度 / 性能 | 3      | 6     | 8    | llm 仅 Metal 执行器闭环，CUDA/Ascend lower 覆盖窄；llm.u 多后端 GEMM 实测对拍但耦合深；Burn 跨后端可跑完整算子，CPU 非极致微核                 |
-| 4  | 算子 / 内核覆盖    | 4      | 4     | 9    | llm 四层契约骨架 + NEON 微核；llm.u 4 家族注册表；Burn 张量 API 全套 + linalg/einsum                                        |
-| 5  | nn 层完整度      | 5      | 3     | 9    | llm 38 个 pub struct 含 conv/pool/norm/attn，无 RNN；llm.u 17 函数无 conv/pool/RNN；Burn 8 大类 / 78 Config 含 RNN/Transformer       |
-| 6  | 自动微分         | 5      | 2     | 10   | llm 独立 tape/plan/replay 仓内小图；llm.u 手写逐层 bwd；Burn 后端装饰器任意可微 + 检查点策略                                       |
-| 7  | 优化器          | 4      | 3     | 9    | llm Sgd/Adam/Muon（train/optimizer）；llm.u sgd/Adam (解耦 wd)；Burn 10 个 impl + LBFGS/Momentum 配套                      |
-| 8  | 调度 / 训练循环    | 5      | 4     | 9    | llm Session/Learner/evaluate/ 账表；llm.u Session/Trainer+Cosine；Burn Learner/early stopping/sharder/logger |
-| 9  | 损失函数         | 5      | 4     | 9    | llm 10 fn + Loss 枚举 + Distill/Grpo；llm.u 7 fn；Burn 20 种含 CTC/RNNT/ 三元组                                   |
-| 10 | 指标 / 评估器     | 3      | 1     | 10   | llm 仅 loss / 命中 / 样本数账表；llm.u 仅 perplexity；Burn 30+ 指标 + evaluator/renderer                              |
-| 11 | 数据集管线        | 2      | 1     | 9    | llm Dataset trait+Chunks 游标；llm.u pack/shard 函数；Burn audio/nlp/vision/source/transform                   |
-| 12 | 检查点 / 序列化    | 6      | 4     | 9    | llm snapshot 自描述 + CRC32 + 恢复事实；llm.u 状态字节存档；Burn store/checkpoint/burnpack/pytorch                      |
-| 13 | 推理服务         | 6      | 6     | 3    | llm ifb/radix/page/speculate/HTTP 薄适配器；llm.u 调度生命周期完整但 HTTP 未接异步栈；Burn 仅示例 server/remote                 |
-| 14 | 分布式 / 并行     | 3      | 2     | 6    | llm 拓扑 / 切分 / Reduce 齐、Remote 占位；llm.u 有 Comm trait + CPU 空参考实现，无真实传输；Burn WebSocket/remote + shard 规则，无 NCCL 级栈              |
-| 15 | 量化 / 精度      | 6      | 5     | 7    | llm GGML+MX+FP4 格式广、权重档案侧；llm.u I2–I8+FP8/FP4+AWQ；Burn Q8/Q4/Q2+FP8/FP4 参数级映射；三家均无 QAT                   |
-| 16 | 随机数 / 确定性    | 7      | 1     | 8    | llm Philox4x32-10 counter + 三分布；llm.u 运行期采样注入闭包，tool/proto 侧另用 rand 初始化；Burn rand/seed/Distribution                              |
-| 17 | 内核 DSL 扩展    | 6      | 2     | 9    | llm cutile 协商 / 拼接 /emit/ 指纹；llm.u 内核直写后端；Burn CubeCL IR 成熟                                              |
-| 18 | 架构 / 可维护性    | 8      | 3     | 8    | llm 六层契约 + testkit 强制守分层 + ADR；llm.u device/exec 耦合、unsafe 分散 49 文件；Burn crate 分层清晰                      |
-| 19 | 测试 / 质量门禁    | 7      | 4     | 8    | llm 58k 行 + 架构契约 / 对拍；llm.u 17.8k + fuzz nightly；Burn backend-tests 套件 + 95k 行                           |
-| 20 | 生态 / 示例 / 文档 | 4      | 4     | 8    | llm 内部架构文档完备无对外模型；llm.u README/perf 实测详尽；Burn book + 23 examples                                         |
+| #  | 维度           | llm（新） | llm.u | Burn | 核心一句话                                                                                                              |
+| -- | ------------ | ------ | ----- | ---- | ------------------------------------------------------------------------------------------------------------------ |
+| 1  | 张量 / 类型系统    | 3      | 2     | 10   | llm/llm.u 运行期形状与精度、无后端 / 秩泛型；Burn `Tensor<const D,K,B>` 编译期泛型                                                      |
+| 2  | 后端广度         | 5      | 6     | 8    | llm 档案 9 种 Emit、6 设备 Fragment，Driver 仅 3；llm.u 枚举 11 设备、6 类跑通；Burn CPU/CUDA/WGPU/ROCm/Remote/Flex 6 类              |
+| 3  | 后端执行成熟度 / 性能 | 3      | 6     | 8    | llm 仅 Metal 执行器闭环，CUDA/Ascend lower 覆盖窄；llm.u 多后端 GEMM 实测对拍但耦合深；Burn 跨后端可跑完整算子，CPU 非极致微核                           |
+| 4  | 算子 / 内核覆盖    | 4      | 4     | 9    | llm 四层契约骨架 + NEON 微核；llm.u 4 家族注册表；Burn 张量 API 全套 + linalg/einsum                                                  |
+| 5  | nn 层完整度      | 5      | 3     | 9    | llm 38 个 pub struct 含 conv/pool/norm/attn，无 RNN；llm.u 17 函数无 conv/pool/RNN；Burn 8 大类 / 78 Config 含 RNN/Transformer |
+| 6  | 自动微分         | 5      | 2     | 10   | llm 独立 tape/plan/replay 仓内小图；llm.u 手写逐层 bwd；Burn 后端装饰器任意可微 + 检查点策略                                                 |
+| 7  | 优化器          | 4      | 3     | 9    | llm Sgd/Adam/Muon（train/optimizer）；llm.u sgd/Adam (解耦 wd)；Burn 10 个 impl + LBFGS/Momentum 配套                       |
+| 8  | 调度 / 训练循环    | 5      | 4     | 9    | llm Session/Learner/evaluate/ 账表；llm.u Session/Trainer+Cosine；Burn Learner/early stopping/sharder/logger           |
+| 9  | 损失函数         | 5      | 4     | 9    | llm 10 fn + Loss 枚举 + Distill/Grpo；llm.u 7 fn；Burn 20 种含 CTC/RNNT/ 三元组                                             |
+| 10 | 指标 / 评估器     | 3      | 1     | 10   | llm 仅 loss / 命中 / 样本数账表；llm.u 仅 perplexity；Burn 30+ 指标 + evaluator/renderer                                        |
+| 11 | 数据集管线        | 2      | 1     | 9    | llm Dataset trait+Chunks 游标；llm.u pack/shard 函数；Burn audio/nlp/vision/source/transform                             |
+| 12 | 检查点 / 序列化    | 6      | 4     | 9    | llm snapshot 自描述 + CRC32 + 恢复事实；llm.u 状态字节存档；Burn store/checkpoint/burnpack/pytorch                                |
+| 13 | 推理服务         | 6      | 6     | 3    | llm ifb/radix/page/speculate/HTTP 薄适配器；llm.u 调度生命周期完整但 HTTP 未接异步栈；Burn 仅示例 server/remote                           |
+| 14 | 分布式 / 并行     | 3      | 2     | 6    | llm 拓扑 / 切分 / Reduce 齐、Remote 占位；llm.u 有 Comm trait + CPU 空参考实现，无真实传输；Burn WebSocket/remote + shard 规则，无 NCCL 级栈   |
+| 15 | 量化 / 精度      | 6      | 5     | 7    | llm GGML+MX+FP4 格式广、权重档案侧；llm.u I2–I8+FP8/FP4+AWQ；Burn Q8/Q4/Q2+FP8/FP4 参数级映射；三家均无 QAT                             |
+| 16 | 随机数 / 确定性    | 7      | 1     | 8    | llm Philox4x32-10 counter + 三分布；llm.u 运行期采样注入闭包，tool/proto 侧另用 rand 初始化；Burn rand/seed/Distribution                |
+| 17 | 内核 DSL 扩展    | 6      | 2     | 9    | llm cutile 协商 / 拼接 /emit/ 指纹；llm.u 内核直写后端；Burn CubeCL IR 成熟                                                        |
+| 18 | 架构 / 可维护性    | 8      | 3     | 8    | llm 六层契约 + testkit 强制守分层 + ADR；llm.u device/exec 耦合、unsafe 分散 49 文件；Burn crate 分层清晰                                |
+| 19 | 测试 / 质量门禁    | 7      | 4     | 8    | llm 58k 行 + 架构契约 / 对拍；llm.u 17.8k + fuzz nightly；Burn backend-tests 套件 + 95k 行                                     |
+| 20 | 生态 / 示例 / 文档 | 4      | 4     | 8    | llm 内部架构文档完备无对外模型；llm.u README/perf 实测详尽；Burn book + 23 examples                                                   |
 
 ### 16.4 逐维度优势与短板论证
 
@@ -734,7 +717,7 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 
 
 
-* **Burn（●，9）**：13+ 实现（sgd/adam/adamw/adagrad/adafactor/adan/rmsprop/lamb/lion/lbfgs/muon/momentum），优化器是 module 级参数映射 + 状态体系，带梯度累积、梯度裁剪、衰减。
+* **Burn（●，9）**：直接 `impl Optimizer` 10 个（sgd/adam/adamw/adagrad/adafactor/adan/rmsprop/lamb/lion/muon），另有 `LBFGS`/`Momentum` 配套结构；优化器是 module 级参数映射 + 状态体系，带梯度累积、梯度裁剪、衰减。
 
 * **llm 新（◐，4）**：`Sgd/Adam/Muon`（+momentum/Nesterov/eps），有 `Optimizer` trait 与 `Slot/OwnedSlot`、weight decay、clip\_norm；算法数量与状态体系仍偏少。
 
@@ -800,7 +783,7 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 
 * **Burn（○，3）**：`examples/server` 只是推理示例，`burn-remote` 提供远程推理 client/server；**没有**内置连续批、分页 KV、前缀共享、投机采样，也无内置分词器。这是它作为训练框架的产品面留白。
 
-#### 14. 分布式 / 并行 —— llm 3・llm.u 1・Burn 6
+#### 14. 分布式 / 并行 —— llm 3・llm.u 2・Burn 6
 
 
 
@@ -808,7 +791,7 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 
 * **llm 新（◐，3）**：`shard/topology` world size、per-axis 进程组，`Sharding/Tiling/Reduce(Sum/Mean/Max)`，`Collective` trait（all\_reduce + Group），`Local` 进程内 reduce；`Remote` 占位，`all_reduce` 返回 `Unsupported`。
 
-* **llm.u（○，1）**：`config.tables.parallel` 切分配置 + `data::shard` 数据分片；`comm` 仅 nccl/rccl 标签，无 Collective trait，无传输实现。
+* **llm.u（◐，2）**：`config.tables.parallel` 切分配置 + `data::shard` 数据分片；`exec/comm.rs` 有 `Comm` trait（`all_reduce`）与 `Cpu` 空参考实现、测试用 `sum_all_reduce`；`config.comm` 声明 nccl/rccl，但无真实跨进程传输，NCCL/RCCL 未接入。
 
 #### 15. 量化 / 精度 —— llm 6・llm.u 5・Burn 7
 
@@ -848,7 +831,7 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 
 * **llm 新（●，8）**：L1–L6 单向依赖契约，`testkit/architecture.rs` 读 cargo metadata 与源码逐条核对，不一致即 `cargo test` 失败；有 ADR、`diagnostic` 错误码、`tools` 质量门；unsafe 收成 6 个岛，workspace `unsafe_code = "deny"`。分层边界可被测试守住，这是相对 llm.u 最大的工程进步。
 
-* **Burn（●，8）**：41 crate 按核心 / 后端 / 模型 / 训练 / 服务分层，derive 宏隔离业务与后端，unsafe 下沉到后端实现；依赖约定文档化。
+* **Burn（●，8）**：40 crate 按核心 / 后端 / 模型 / 训练 / 服务分层，derive 宏隔离业务与后端，unsafe 下沉到后端实现；依赖约定文档化。
 
 * **llm.u（○/◐，3）**：`device` 28k 行直持各后端 FFI 与内核封装，device/exec 强耦合，无显式分层门禁；unsafe 分散在 49 个文件。配置驱动是它的组织特色，但跨层边界弱、改动容易牵一发动全身。
 
@@ -880,7 +863,7 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 
 |     | llm（新）   | llm.u    | Burn     |
 | --- | -------- | -------- | -------- |
-| 平均分 | **4.85** | **3.30** | **8.30** |
+| 平均分 | **4.85** | **3.35** | **8.30** |
 
 **B. LLM 推理 / 性能视角（侧重后端执行、推理服务、量化、内核 DSL；训练指标 / 数据集 / RNN 降权，权重合计 100）**
 
@@ -897,7 +880,7 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 | 5  | 架构 / 可维护性    | 8        | 3        | 8        |
 | 4  | nn 层完整度      | 5        | 3        | 9        |
 | 4  | 检查点 / 序列化    | 6        | 4        | 9        |
-| 4  | 分布式 / 并行     | 3        | 1        | 6        |
+| 4  | 分布式 / 并行     | 3        | 2        | 6        |
 | 3  | 张量 / 类型系统    | 3        | 2        | 10       |
 | 3  | 随机数 / 确定性    | 7        | 1        | 8        |
 | 3  | 测试 / 质量门禁    | 7        | 4        | 8        |
@@ -908,7 +891,7 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 | 2  | 生态 / 示例 / 文档 | 4        | 4        | 8        |
 | 1  | 指标 / 评估器     | 3        | 1        | 10       |
 | 1  | 数据集管线        | 2        | 1        | 9        |
-|    | **加权总分**     | **5.04** | **4.26** | **7.43** |
+|    | **加权总分**     | **5.04** | **4.30** | **7.43** |
 
 ### 16.6 评分解读
 
@@ -918,7 +901,7 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 
 * **新 llm 在两种视角都居中**：架构契约、RNG、量化格式、分层测试是亮点；拖分项是后端执行未闭环、类型系统层级低、训练生态薄。相对 llm.u，它把工程结构和能力端口补齐了，但后端实测性能与服务链路需要重建。
 
-* **llm.u 在纯推理 / 性能视角下与新 llm 差距明显缩小（4.26 vs 5.04）**：多后端实测 GEMM、完整调度 / KV 是它的基本盘；但架构耦合、无图反向、无 RNG、无分布式、训练能力最小化，在通用框架视角下垫底。
+* **llm.u 在纯推理 / 性能视角下与新 llm 差距明显缩小（4.30 vs 5.04）**：多后端实测 GEMM、完整调度 / KV 是它的基本盘；但架构耦合、无图反向、运行期采样靠注入闭包、集合通信仅有空参考实现、训练能力最小化，在通用框架视角下垫底。
 
 * 若目标是**产出可训练的通用模型**：优先对标 Burn；若目标是**LLM 低延迟推理与多后端性能**：llm.u 的实测路径更直接，新 llm 的 DSL 分层是更长期的工程方向。
 
@@ -943,18 +926,14 @@ find crates -path '*/tests/*' -name '*.rs' -not -path '*/target/*' | xargs wc -l
 
 
 
-* llm：`/Users/fei/code/llm`，HEAD `f6b46e76`
+* llm：`/Users/fei/code/llm`，HEAD `40b18f36`
 
 * llm.u：`/Users/fei/code/llm.u`，HEAD `cf4e8fe3`
 
 * Burn：`/Users/fei/code/burn`，`0.23.0-pre.2`，HEAD `aff0a3cf`
 
-> 注：Burn 的 
->
+> 注：Burn 的
 > `burn-cuda/burn-cpu`
->
->  壳层极薄是架构使然 —— 重内核在 CubeCL IR 与 
->
+> 壳层极薄是架构使然 —— 重内核在 CubeCL IR 与
 > `burn-cubecl`
->
 > ；比较后端能力时应以 "Backend 实现 + 内核 lowering 链" 整体计，而非壳层行数。llm/llm.u 的后端代码直接计入各自 crate，口径不同，跨仓行数只作量级参考。
