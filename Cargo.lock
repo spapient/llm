@@ -333,6 +333,7 @@ dependencies = [
  "llm-op",
  "llm-prim",
  "llm-prof",
+ "llm-spec",
  "llm-testkit",
 ]
 

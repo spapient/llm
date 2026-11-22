@@ -1,7 +1,7 @@
 //! 写回尾块执行：把 `spec::epilogue::Step` 闭集按声明顺序施加到 f32 瓦片，算术只转发 `gemm` 的拥有方。
 //!
 //! 六步闭集来自 [`llm_spec::epilogue::Step`]：`bias` / `act` / `residual` / `scale` / `quant` / `store`。
-//! 本模块不持有任何算术——激活转发 [`crate::unary`] 的五个执行核，量化用 [`crate::dequant::SCALE`]
+//! 本模块不持有任何算术——激活逐个取 [`crate::unary`] 的标量核，量化用 [`crate::dequant::SCALE`]
 //! 做对称 round-trip，残差与缩放直接就地累加。契约层（`spec`）只声明"有哪些步"，执行层在这里
 //! 决定"每一步落在哪个既有内核上"。
 
@@ -13,7 +13,7 @@ use prof::atom::{ActKind, DType};
 ///
 /// * `bias`：长度 `cols` 的列偏置，按列广播；缺省跳过。
 /// * `residual`：长度等于 `out` 的残差输入；缺省跳过。
-/// * `act:<kind>`：转发 `crate::{kind}_f32::forward`，算术归 [`crate::unary`]。
+/// * `act:<kind>`：逐元素施加 `crate::{kind}_f32` 的标量核，算术归 [`crate::unary`]。
 /// * `scale:<α>`：逐元素乘 `α`。
 /// * `quant:<i8|i4|i2>`：量化到对称整数网格再反量化（步长 [`crate::dequant::SCALE`]，误差 ≤ 半步长）。
 /// * `store`：无副作用标记，本层空操作。
@@ -54,7 +54,10 @@ fn apply_step(
 /// 后三个是激活 / 量化 / 无副作用步；`_` 臂不可达（已由 [`apply_step`] 收走），防御性报错。
 fn apply_tail(step: &Step, out: &mut [f32]) -> diagnostic::Result<()> {
     match step {
-        Step::Act(kind) => activate(out, *kind),
+        Step::Act(kind) => {
+            activate(out, *kind);
+            Ok(())
+        }
         Step::Quant(dtype) => quant_round_trip(out, *dtype),
         Step::Store => Ok(()),
         _ => Err(Error::new(Code::Invalid, "写回步骤分派不可达")),
@@ -104,15 +107,21 @@ fn scale_tile(out: &mut [f32], alpha: f32) -> diagnostic::Result<()> {
     Ok(())
 }
 
-/// 激活分派：五臂闭集一一对应 `crate::unary` 的执行核，就地施加。
-fn activate(out: &mut [f32], kind: ActKind) -> diagnostic::Result<()> {
-    let src = out.to_vec();
+/// 激活分派：五臂闭集一一对应 `crate::unary` 的标量核，就地施加（不建副本、不另分配）。
+fn activate(out: &mut [f32], kind: ActKind) {
+    for x in out.iter_mut() {
+        *x = scalar(kind, *x);
+    }
+}
+
+/// 一个激活值的标量核：与 `crate::unary` 的 `Unary::apply` 同一份算术，只是按 `ActKind` 取用。
+fn scalar(kind: ActKind, x: f32) -> f32 {
     match kind {
-        ActKind::Relu => crate::relu_f32::forward(&src, out),
-        ActKind::Gelu => crate::gelu_f32::forward(&src, out),
-        ActKind::Silu => crate::silu_f32::forward(&src, out),
-        ActKind::LeakyRelu => crate::leaky_relu_f32::forward(&src, out),
-        ActKind::HardSigmoid => crate::hard_sigmoid_f32::forward(&src, out),
+        ActKind::Relu => <crate::relu_f32 as crate::unary::Unary>::apply(x),
+        ActKind::Gelu => <crate::gelu_f32 as crate::unary::Unary>::apply(x),
+        ActKind::Silu => <crate::silu_f32 as crate::unary::Unary>::apply(x),
+        ActKind::LeakyRelu => <crate::leaky_relu_f32 as crate::unary::Unary>::apply(x),
+        ActKind::HardSigmoid => <crate::hard_sigmoid_f32 as crate::unary::Unary>::apply(x),
     }
 }
 

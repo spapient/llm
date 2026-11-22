@@ -105,11 +105,36 @@ fn fma_run<const C: usize>(lanes: &mut [[f32; LANES]; C], rounds: usize) -> f32 
 /// 所以只报单线程峰值会把整机 GEMM 的百分比算成假的低值。
 fn sme_peak(c: &mut Criterion) {
     let count = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
-    for threads in [1, count] {
+    for threads in [1, 16, count] {
         let mut group = c.benchmark_group(format!("sme_peak/{threads}"));
-        group.throughput(Throughput::Elements((threads * FLOPS_PER_ROUND * ROUNDS) as u64));
+        group.throughput(Throughput::Elements(
+            (threads * FLOPS_PER_ROUND * ROUNDS) as u64,
+        ));
         group.bench_function("port", |iter| {
-            iter.iter(|| run_port(threads, ROUNDS));
+            iter.iter_custom(|iters| {
+                let rounds = iters as usize * ROUNDS;
+                let start = Arc::new(Barrier::new(threads));
+                let mut peak = Duration::ZERO;
+                std::thread::scope(|scope| {
+                    let handles: Vec<_> = (0..threads)
+                        .map(|_| {
+                            let start = Arc::clone(&start);
+                            scope.spawn(move || {
+                                start.wait();
+                                let launched = Instant::now();
+                                assert!(fast::port_run(rounds), "本机无 SME");
+                                launched.elapsed()
+                            })
+                        })
+                        .collect();
+                    for handle in handles {
+                        if let Ok(spent) = handle.join() {
+                            peak = peak.max(spent);
+                        }
+                    }
+                });
+                peak
+            });
         });
         group.finish();
     }
@@ -117,17 +142,3 @@ fn sme_peak(c: &mut Criterion) {
 
 /// 每轮 4 条 `fmopa`，每条 16×16 乘加（`p0.s` 16 泳道），故 4·256·2 = 2048 FLOP。
 const FLOPS_PER_ROUND: usize = 4 * 16 * 16 * 2;
-
-/// 起 `threads` 个线程各跑 `rounds` 轮纯外积；屏障同步后计时，线程创建不进计时段。
-fn run_port(threads: usize, rounds: usize) {
-    let barrier = Arc::new(Barrier::new(threads));
-    std::thread::scope(|scope| {
-        for _ in 0..threads {
-            let barrier = Arc::clone(&barrier);
-            scope.spawn(move || {
-                barrier.wait();
-                assert!(fast::port_run(black_box(rounds)), "本机无 SME");
-            });
-        }
-    });
-}

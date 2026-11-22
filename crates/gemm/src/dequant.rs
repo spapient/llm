@@ -7,7 +7,7 @@ use diagnostic::{Code, Error};
 pub use crate::unary::{AXES, project_shape};
 
 /// 反量化标度（2 的负幂网格，f32 精确）。
-pub const SCALE: f32 = 0.25;
+pub const SCALE: f32 = llm_spec::epilogue::QUANT_SCALE;
 
 /// 打包格式的前置约束：输出长度必须是输入字节数的 `cpb` 倍。
 fn check_len(q: &[u8], out: &[f32], cpb: usize) -> Result<(), Error> {
