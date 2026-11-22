@@ -1,5 +1,6 @@
 //! 职责：内核登记键（ADR 0027 七元组）。
-use super::*;
+
+use crate::atom::*;
 
 /// 一条内核实现的登记键（ADR 0027 §1 七元组）。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

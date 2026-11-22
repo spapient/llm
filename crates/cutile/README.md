@@ -512,7 +512,7 @@ exec  = ["cube"]         # 加载期校验：cube 必须访问得到上面声明
 `space = ["GM"]`，加载期直接报 ``provides[dot].space：`cube` 访问不到 [GM]``，而不是等真机跑错。
 新增设备乃至新增一种执行单元都只改 `devices/<name>.toml`，`cutile` 一行不动。
 
-### 5.3 档案（`crates/prof/devices/nvidia.toml`）
+### 5.3 档案（`../prof/src/nvidia/nvidia.toml`）
 
 ```toml
 [meta]

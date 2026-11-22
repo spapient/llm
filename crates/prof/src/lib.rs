@@ -40,6 +40,7 @@ pub mod atom;
 pub mod device;
 pub mod prof;
 pub mod sign;
+pub mod stems;
 
 /// 构建期代码生成：一台设备的目录 → 它的 `tables.rs`（`build` feature 下的构建依赖）。
 #[cfg(feature = "build")]
@@ -62,3 +63,7 @@ mod schema;
 mod eval;
 mod provide;
 mod witness;
+
+mod key;
+mod need;
+mod span;

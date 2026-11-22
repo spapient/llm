@@ -534,7 +534,7 @@ sed -n '165,182p;526,534p' crates/prof/src/atom.rs
 
 ### 5.2 缺口 A/B：缺什么、补在哪个文件
 
-**落点一：`crates/prof/devices/metal.toml` 的 `[compile].preamble`（当前 1 行 TOML、2 行源文本，`:54`）**——这是"数据缺口 B"的主战场。要补的是**原语级实现**，与 CPU 的六个 helper 同构（`cpu.toml:53`/`:85`/`:121`/`:136`/`:157`/`:179`）：
+**落点一：`../crates/prof/src/metal/metal.toml` 的 `[compile].preamble`（当前 1 行 TOML、2 行源文本，`:54`）**——这是"数据缺口 B"的主战场。要补的是**原语级实现**，与 CPU 的六个 helper 同构（`cpu.toml:53`/`:85`/`:121`/`:136`/`:157`/`:179`）：
 
 | 要补的 helper | 对应原语 / 片段 | 为什么必须是前导而不是片段 | 目标判据 |
 |---|---|---|---|
@@ -577,9 +577,9 @@ sed -n '165,182p;526,534p' crates/prof/src/atom.rs
 | 序 | 动作 | 落点文件 | 判据（可观测） |
 |---|---|---|---|
 | **P0-1** | 补 `reduce`/`dot`/`quant` 三段正文，使 `cutile-sign` 与 `provides` 的 L1 条目同名 | `crates/prim/metal/{reduce,dot,quant}.metal` | `grep -h 'cutile-sign' crates/prim/metal/*` 的 9 条与 `metal.toml` 的 11 条 L1 交叉对齐；`reduce.metal` 正文 > 4 行且含 `simd_shuffle_xor` |
-| **P0-2** | 补前导的原语级 helper（`simd_bfly` / `simd_exp` / `simd_recip` / mma 包装 / 向量搬运） | `crates/prof/devices/metal.toml` `[compile].preamble`（`:54`） | `grep -c 'static inline' metal.toml` ≥ 5；`grep -c 'simd_' metal.toml` ≥ 5。**不要求**该轮升 grade |
+| **P0-2** | 补前导的原语级 helper（`simd_bfly` / `simd_exp` / `simd_recip` / mma 包装 / 向量搬运） | `../crates/prof/src/metal/metal.toml` `[compile].preamble`（`:54`） | `grep -c 'static inline' metal.toml` ≥ 5；`grep -c 'simd_' metal.toml` ≥ 5。**不要求**该轮升 grade |
 | **P1-1** | 片段改走 `$func` 槽位（真实现放前导，正文只做一次调用），与 `cpu/reduce.c:4` 同构 | 同上两处 + `crates/prim/metal/reduce.metal` | `reduce.metal` 正文能通过 `substitute` 的槽位解析（`crates/cutile/src/substitute.rs:37` `render`）且 `grep -c '\$func' crates/prim/metal/reduce.metal` = 1 |
-| **P1-2** | 把 `reduce`/`dot`/`quant` 至少一条声明升到 L2 | `crates/prof/devices/metal.toml`（`:137`/`:57`/`:76`） | `grep -o 'grade *= *"L[0-9]"' crates/prof/devices/metal.toml \| grep -c L2` ≥ 1；且该条 `witness` 的 `expect` 与片段的真实输出一致（`metal.toml:143`） |
+| **P1-2** | 把 `reduce`/`dot`/`quant` 至少一条声明升到 L2 | `../crates/prof/src/metal/metal.toml`（`:137`/`:57`/`:76`） | `grep -o 'grade *= *"L[0-9]"' crates/prof/devices/metal.toml \| grep -c L2` ≥ 1；且该条 `witness` 的 `expect` 与片段的真实输出一致（`metal.toml:143`） |
 | **P2-1** | 接通执行通道：`Lane::Metal` + Metal 方言 | `crates/cutile/src/verify.rs`（`:345-364`）、`crates/cutile/src/harness.rs`、复用 `device.rs:504/618/627` | `verify --device m5` 从 `unsupported_emit`（`:514`）变为逐形状对拍；失败判据反向成立：`verify.rs:504-509` 的 `max_rel_err ≤ tolerance` 全部通过 |
 | **P2-2** | 最后才谈性能 | `crates/cutile/src/bench.rs`、`runner.rs:31/37/53` | `bench --device m5` 输出 `min_ns` / `p50_ns` / `p95_ns`，并与 `metal.toml:45-50` 的 `[peak]`（`8.192e12` flop/s、`307.2e9` B/s）对照 roofline |
 

@@ -456,7 +456,7 @@
   逐位相同、写一次后当步与下一格都与"只遗忘"分叉、三层各持自己写入的那一行、缓存 `seq` 与元素数不动、
   失败整栈回滚、门宽/份数/几何错全部在第一次写入前拒绝。`ARCHITECTURE.md` 所有权表登记该行。
 
-- **MUSA 后端（MTT S4000 / `mp_22`）从"只有档案"走到真机 `L2`：新增 `crates/prof/devices/musa.toml` 与
+- **MUSA 后端（MTT S4000 / `mp_22`）从"只有档案"走到真机 `L2`：新增 `crates/prof/src/musa/musa.toml` 与
   `crates/prim/musa/` 的 9 段片段、17 条见证，36 个算子（全部声明）在真机上编成、执行并与 `op` 的标量参考对拍
   （`max_rel_err ≤ 3.878e-7`，多数为 `0`）**。它是第一台"档案与 `nvidia` 同构、工具链不同"的加速器：`[meta].emit`
   仍是 `cuda`（同一门输出语言），`[meta].tool = "mcc"` 决定命令名与运行时头——`engine` 的 CUDA 后端
@@ -1497,7 +1497,7 @@
 - 见证路径语义收敛：档案里的 `witness` 改为**相对片段层根**（`cpu/witness.c`），仓库内根是 `crates/prim`、`data.root` 下是 `<data.root>/prim`；`Catalogue::root()` 随之删除，`cutile` 不再需要知道自己的清单目录。
 - 三层数据：`crates/op/ops/gemv_i4.toml` + `gemv_i4.k`（声明层）、`crates/prof/devices/{ascend,cpu,intel,nvidia}.toml`（档案层）、`crates/prim/cpu/`（片段层，9 段 + 见证）。
 - **执行单元进入闭集**：`AttrKey` 新增 `exec`，档案新增 `[units.<name>]`（单元名 → 可访问的存储层），`Profile::validate` 校验 "`exec` 必须是已声明单元" 与 "该单元访问得到这条供给声明的存储层"，于是"昇腾 Cube 只能访问 L1/L0"是可校验的数据而不是注释；`Need` 写 `exec = ["vector"]` 即"我要 vector 实现的点积"，协商仍是同一次集合/区间判定。
-- 昇腾档案 `crates/prof/devices/ascend.toml`：`GM` / `L1` / `L0C` 三级存储 + `cube` / `vector` / `mte` / `fixpipe` / `scalar`五个执行单元，10 条 `provides` 全部 `L0`（P0 无真机证据，未验证视为不具备）；`probe::fake("ascend")` 让指纹选档可离线回归。
+- 昇腾档案 `crates/prof/src/ascend/ascend.toml`：`GM` / `L1` / `L0C` 三级存储 + `cube` / `vector` / `mte` / `fixpipe` / `scalar`五个执行单元，10 条 `provides` 全部 `L0`（P0 无真机证据，未验证视为不具备）；`probe::fake("ascend")` 让指纹选档可离线回归。
 - `prof` crate 承接档案 schema 与能力词汇表：`crates/prof/src/{atom,prof}.rs`（从 `cutile` 迁入），`cutile` 只 re-export（`pub use ::prof::{atom, prof}`），`SCHEMA_VER` 升到 3。
 - CLI：`cutile doctor` / `verify` / `bench`（`src/main.rs`）；`verify` 在缺设备时返回非零码；`doctor` 新增 `units:` 一行，直接显示档案声明的执行单元与可访问存储层。
 - `llm-config` 从占位成员变成真正的配置基座（目录 `crates/config`，包名 `llm-config`）：`Key` 键闭集（`cache.dir` / `work.dir` / `data.root`，只登记有消费方的键）、`Kind`/`Value` 类型校验、`Sources` 三层来源（默认 < 用户级文件 < 环境变量 < 命令行）与 `Origin` 可追溯、`Roots` 绝对路径解析、`Settings` 一次性加载并向后传递；配置文件出现未登记的键直接报错，`schema` 缺省按当前版本处理。

@@ -54,7 +54,7 @@
 
 | # | 改动 | 判定 | 依据 |
 |---|---|---|---|
-| 正例 1 | 改 `crates/prof/devices/metal.toml` 的 `preamble` / `flags` / `provides` | 合法：数据缺口 B，落在 L2 档案层 | 决策一；分析文档 §5.2 落点一 |
+| 正例 1 | 改 `../../crates/prof/src/metal/metal.toml` 的 `preamble` / `flags` / `provides` | 合法：数据缺口 B，落在 L2 档案层 | 决策一；分析文档 §5.2 落点一 |
 | 正例 2 | 新增或改写 `crates/prim/metal/reduce.metal` 的片段正文 | 合法：数据缺口 A，落在 L2 片段层 | 决策一；分析文档 §5.2 落点二 |
 | 正例 3 | 在 `device.rs:44-63` 的 `SPECS` 加一行，复用既有编译 / 驱动 / 回读三段编排 | 合法：机制扩展，形态仍是表行 + 私有段 | 决策二；分析文档 §5.3 |
 | 反例 1 | 在 `crates/cutile/src/` 新增 `metal.rs`（或 `cuda.rs` / `ascend.rs`）厂商模块 | 越界：设备编排只能以 `SPECS` 表行 + 私有段存在 | 决策二 |

@@ -4,7 +4,7 @@ use crate::atom::{
     Witness,
 };
 use core::fmt;
-use diagnostic::data::{Table, Value};
+pub(crate) use diagnostic::data::{Table, Value};
 use diagnostic::{Code, Error};
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
@@ -129,12 +129,12 @@ impl MatchRule {
         }
     }
 }
-fn set_matches(base: &str, members: &[String], actual: &str) -> bool {
+pub(crate) fn set_matches(base: &str, members: &[String], actual: &str) -> bool {
     let hit = |member: &String| actual.contains(member.as_str());
     actual.starts_with(base) && members.iter().all(hit)
 }
 /// 版本区间：两端都必须能解析成版本号，实际值落在闭区间内。
-fn within(lo: &str, hi: &str, actual: &str) -> bool {
+pub(crate) fn within(lo: &str, hi: &str, actual: &str) -> bool {
     let Some(value) = parse_version(actual) else {
         return false;
     };
@@ -155,7 +155,7 @@ impl fmt::Display for MatchRule {
         }
     }
 }
-fn parse_version(text: &str) -> Option<Vec<u32>> {
+pub(crate) fn parse_version(text: &str) -> Option<Vec<u32>> {
     let parts = text.trim().split('.');
     parts.map(|part| part.parse().ok()).collect()
 }
@@ -336,13 +336,13 @@ impl From<ProfileError> for Error {
     }
 }
 impl std::error::Error for ProfileError {}
-fn missing(field: impl fmt::Display) -> ProfileError {
+pub(crate) fn missing(field: impl fmt::Display) -> ProfileError {
     ProfileError::Missing {
         field: field.to_string(),
     }
 }
 /// 闭集外取值；`allowed` 是闭集成员的名字表。
-fn unknown(field: impl fmt::Display, value: &str, allowed: &[&str]) -> ProfileError {
+pub(crate) fn unknown(field: impl fmt::Display, value: &str, allowed: &[&str]) -> ProfileError {
     ProfileError::Unknown {
         field: field.to_string(),
         value: value.to_string(),
@@ -350,35 +350,35 @@ fn unknown(field: impl fmt::Display, value: &str, allowed: &[&str]) -> ProfileEr
     }
 }
 /// 字段非法：`detail` 说明为什么非法，不重复字段名。
-fn bad(field: impl fmt::Display, detail: impl Into<String>) -> ProfileError {
+pub(crate) fn bad(field: impl fmt::Display, detail: impl Into<String>) -> ProfileError {
     ProfileError::BadValue {
         field: field.to_string(),
         detail: detail.into(),
     }
 }
 /// 证据不成立：`prim` 是被考察的那条供给。
-fn witness_error(provide: &Provide, detail: impl Into<String>) -> ProfileError {
+pub(crate) fn witness_error(provide: &Provide, detail: impl Into<String>) -> ProfileError {
     ProfileError::Witness {
         prim: provide.prim,
         detail: detail.into(),
     }
 }
 /// 闭集成员的名字表；诊断里的「闭集：a | b」按声明顺序给出。
-fn closed_names<E: Closed>(all: &'static [E]) -> Vec<&'static str> {
+pub(crate) fn closed_names<E: Closed>(all: &'static [E]) -> Vec<&'static str> {
     all.iter().map(|item| item.as_str()).collect()
 }
 /// 数据类型闭集的名字表：`DType` 是 L1 外部类型，用它自己的 `name()`。
-fn dtype_names() -> Vec<&'static str> {
+pub(crate) fn dtype_names() -> Vec<&'static str> {
     DType::ALL.iter().map(|dt| dt.name()).collect()
 }
 /// 解析闭集里的名字；闭集外一律 `Unknown`，并把闭集内容一起报出来。
-fn closed<E: Closed>(name: &str, field: impl fmt::Display) -> Result<E, ProfileError> {
+pub(crate) fn closed<E: Closed>(name: &str, field: impl fmt::Display) -> Result<E, ProfileError> {
     E::parse(name).ok_or_else(|| unknown(field, name, &closed_names(E::ALL)))
 }
 /// 字段路径的惰性写法。一次 `Profile::parse` 会走几十条供给、每条十几个字段，
 /// 成功路径上不该为诊断拼任何字符串——`format!` 只在真出错时才发生。
 #[derive(Clone, Copy)]
-enum Field<'a> {
+pub(crate) enum Field<'a> {
     /// `provides[<下标>].<key>`；`witness` 为真时多一层 `witness.`。
     Provide {
         idx: usize,
@@ -405,34 +405,34 @@ impl fmt::Display for Field<'_> {
         }
     }
 }
-const fn at(idx: usize, key: &str) -> Field<'_> {
+pub(crate) const fn at(idx: usize, key: &str) -> Field<'_> {
     Field::Provide {
         idx,
         key,
         witness: false,
     }
 }
-const fn witness_at(idx: usize, key: &str) -> Field<'_> {
+pub(crate) const fn witness_at(idx: usize, key: &str) -> Field<'_> {
     Field::Provide {
         idx,
         key,
         witness: true,
     }
 }
-const fn prim_at(prim: Prim, key: &str) -> Field<'_> {
+pub(crate) const fn prim_at(prim: Prim, key: &str) -> Field<'_> {
     Field::Prim { prim, key }
 }
-fn text<'a>(
+pub(crate) fn text<'a>(
     table: &'a Table,
     key: &str,
     field: impl fmt::Display,
 ) -> Result<&'a str, ProfileError> {
     table.string(key).ok_or_else(|| missing(field))
 }
-fn or_dash(table: &Table, key: &str) -> String {
+pub(crate) fn or_dash(table: &Table, key: &str) -> String {
     table.string(key).unwrap_or("-").to_string()
 }
-fn list<'a>(
+pub(crate) fn list<'a>(
     table: &'a Table,
     key: &str,
     field: impl fmt::Display,
@@ -440,7 +440,7 @@ fn list<'a>(
     table.string_array(key).ok_or_else(|| missing(field))
 }
 /// 逐项解析一张表的每个键值对：解析段里所有"按键"段落共用这一种形状。
-fn entries<T>(
+pub(crate) fn entries<T>(
     table: &Table,
     each: impl Fn(&str, &Value) -> Result<T, ProfileError>,
 ) -> Result<Vec<T>, ProfileError> {
@@ -458,13 +458,13 @@ pub fn scalar_texts(value: &Value) -> Option<Vec<String>> {
     }
 }
 /// 主维度只接受区间字符串。
-const EXTENT_DETAIL: &str = "主维度只能是区间字符串（如 `<=4096`）";
+pub(crate) const EXTENT_DETAIL: &str = "主维度只能是区间字符串（如 `<=4096`）";
 /// `n` / `k` 只接受区间字符串。
-const AXIS_DETAIL: &str = "只能是区间字符串（如 `16`、`16..64`）";
+pub(crate) const AXIS_DETAIL: &str = "只能是区间字符串（如 `16`、`16..64`）";
 /// `[units.<name>]` 的取值必须是表。
-const UNIT_DETAIL: &str = "只接受 `[units.<name>]` 形式的表";
+pub(crate) const UNIT_DETAIL: &str = "只接受 `[units.<name>]` 形式的表";
 /// `witness` 必须是内联表。
-const WITNESS_DETAIL: &str =
+pub(crate) const WITNESS_DETAIL: &str =
     "必须是内联表 `{ file, func, expect }`：没有入口函数与期望值的见证无法执行";
 impl Profile {
     /// 语义存储名映射到物理名。
@@ -533,7 +533,7 @@ pub fn select<'a>(profiles: &'a [Profile], detected: &Detected) -> diagnostic::R
 }
 
 /// 与最优者同等具体、同样命中的另一份档案：选择没有唯一答案。
-fn rival<'a>(
+pub(crate) fn rival<'a>(
     profiles: &'a [Profile],
     detected: &Detected,
     best: usize,

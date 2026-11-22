@@ -5,13 +5,10 @@ use core::hash::Hash;
 use core::marker::PhantomData;
 
 use diagnostic::{Code, Error};
-mod key;
-mod need;
-mod span;
 
-pub use key::KernelKey;
-pub use need::{Attr, Need, Provide, Witness};
-pub use span::Span;
+pub use crate::key::KernelKey;
+pub use crate::need::{Attr, Need, Provide, Witness};
+pub use crate::span::Span;
 
 // ── vocab ──────────────────────────────────────────────────────────────
 
