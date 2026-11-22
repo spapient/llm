@@ -170,8 +170,8 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `ByteEncoder` / `ByteDecoder` | `algorithm` | byte-latent 的表示侧与解码侧：哈希 N-gram 桶向量 + patch 内注意力池化，一次投影给出 256-way 分布与贪心字节 |
 | `Emission` / `Emitter` / `Halt` | `algorithm` | byte-latent 生成侧：把边界 / 编码 / 解码串成一次生成，条件只取**已收口** patch；`Halt` 是闭集，`None` 说不清"截断"与"空结果" |
 | `Global` / `Backread` / `Layer` | `algorithm` | byte-latent 的潜在栈：`Global` 的遍数就是 patch 数，`Backread` 的可见集由 `Patches` 给出，`Layer` 的宽度由栈校验 |
-| `Group` / `Reduce` / `Collective` / `Topology` / `Parallel` / `Partition` | `shard` | 集合通信契约与 TP/PP/DP 拓扑；`world = tp · pp · dp` 在构造期算成精确值，因此不存在回绕出来的"合法" rank |
-| `Sharding` / `Tiling` | `shard` | 张量并行的两种线性层切法与一层权重的切分计划；切分必须整除，在构造期失败而不是摊余数 |
+| `Group` / `Reduce` / `Collective` / `Topology` / `Parallel` | `shard` | 集合通信契约与 TP/PP/DP 拓扑；`world = tp · pp · dp` 在构造期算成精确值，因此不存在回绕出来的"合法" rank |
+| `Sharding` / `Tiling` | `shard` | 张量并行的两种线性层切法与一层权重的切分计划；切分必须整除，在构造期失败而不是摊余数（不保留"前几份多拿一个"的均匀切分：TP 要求各 rank 的权重形状一致） |
 | `Local` | `shard` | 进程内集合通信：每个 rank 一份镜像，让 TP/DP 的数值语义在没有 NCCL 的机器上也能被 `cargo test` 验证 |
 | `Remote` | `shard` | 远端集合通信占位：同一 `Collective` 端口，`all_reduce` 返回 `Unsupported` 且不改动调用方缓冲 |
 | `Snapshot` / `Format` / `Facts` | `snapshot` | 检查点字节格式与恢复事实：字节只写相对上一条的差、尾部 CRC-32；`verify` 只验字节，`check_weights` 要求条目表与权重文件逐条相同。不依赖任何训练侧类型，写出同样的字节即可换掉实现 |

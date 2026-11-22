@@ -1,7 +1,7 @@
 //! 三维并行拓扑：[`Parallel`] 与 [`Topology`]。
 
 use crate::collective::Group;
-use diagnostic::{Code, Error, Result};
+use diagnostic::Result;
 
 /// 三种并行维度。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -45,24 +45,20 @@ impl Topology {
     /// 任一维度为零，或 `tp · pp · dp` 溢出 `usize` / 超过 `u32::MAX` 时返回说明。
     pub fn new(tp: usize, pp: usize, dp: usize) -> Result<Self> {
         if [tp, pp, dp].contains(&0) {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("并行度必须非零（tp = {tp}，pp = {pp}，dp = {dp}）"),
-            )
-            .with("shard::Topology::new"));
+            fail!(
+                "shard::Topology::new",
+                "并行度必须非零（tp = {tp}，pp = {pp}，dp = {dp}）"
+            );
         }
         let world = tp
             .checked_mul(pp)
             .and_then(|plan| plan.checked_mul(dp))
             .filter(|world| *world <= u32::MAX as usize)
             .ok_or_else(|| {
-                Error::new(
-                    Code::Invalid,
-                    format!(
-                        "tp · pp · dp = {tp} · {pp} · {dp} 超出 u32：rank 布局无解，启动再多进程也对不上"
-                    ),
+                invalid!(
+                    "shard::Topology::new",
+                    "tp · pp · dp = {tp} · {pp} · {dp} 超出 u32：rank 布局无解，启动再多进程也对不上"
                 )
-                .with("shard::Topology::new")
             })?;
         Ok(Self { tp, pp, dp, world })
     }
@@ -100,12 +96,12 @@ impl Topology {
 
     /// 校验启动的进程数与拓扑一致（不一致时继续跑只会得到静默的错误结果）。
     pub fn check_world(&self, world: usize) -> Result<()> {
-        if world != self.world() {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("启动 {world} 个进程，但拓扑要求 {}", self.world()),
-            )
-            .with("shard::Topology::check"));
+        if world != self.world {
+            fail!(
+                "shard::Topology::check",
+                "启动 {world} 个进程，但拓扑要求 {}",
+                self.world
+            );
         }
         Ok(())
     }
@@ -119,7 +115,9 @@ impl Topology {
         self.check_axis(Parallel::Tensor, tp_idx)?;
         self.check_axis(Parallel::Pipeline, pp_idx)?;
         self.check_axis(Parallel::Data, dp_idx)?;
-        rank_u32(dp_idx * self.plan() + pp_idx * self.tp + tp_idx)
+        let flat = dp_idx * self.plan() + pp_idx * self.tp + tp_idx;
+        // `new` 已把 world 限在 u32 以内，而 flat < world，故这次收窄不会失败。
+        u32::try_from(flat).map_err(|_| invalid!("shard::Topology::rank", "rank {flat} 超出 u32"))
     }
 
     /// [`Topology::rank`] 的反解：`(tp_idx, pp_idx, dp_idx)`。
@@ -129,19 +127,18 @@ impl Topology {
     /// `rank` 不在 `0..world`。
     pub fn idxs(&self, rank: u32) -> Result<(usize, usize, usize)> {
         let position = rank as usize;
-        if position >= self.world() {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("rank {rank} 超出 0..{}", self.world()),
-            )
-            .with("shard::Topology::indices"));
+        if position >= self.world {
+            fail!(
+                "shard::Topology::indices",
+                "rank {rank} 超出 0..{}",
+                self.world
+            );
         }
-        let plan = self.plan();
-        let within = position % plan;
-        Ok((within % self.tp, within / self.tp, position / plan))
+        let within = position % self.plan();
+        Ok((within % self.tp, within / self.tp, position / self.plan()))
     }
 
-    /// 第 `idx` 个指定维度的进程组。
+    /// 第 `idx` 个指定维度的进程组：组内只沿该维移动，另外两维固定。
     pub fn group(&self, parallel: Parallel, idx: usize) -> Result<Group> {
         Group::new(self.ranks(parallel, idx)?)
     }
@@ -151,74 +148,62 @@ impl Topology {
         self.tp * self.pp
     }
 
-    /// 某一维的组大小。
-    fn size(&self, parallel: Parallel) -> usize {
+    /// 某一维的并行度，也是它每个组的大小。
+    fn degree(&self, parallel: Parallel) -> usize {
         match parallel {
             Parallel::Tensor => self.tp,
-            Parallel::Pipeline => self.plan(),
+            Parallel::Pipeline => self.pp,
             Parallel::Data => self.dp,
         }
     }
 
     /// 某一维的组数：`world / 组大小`。
     fn groups(&self, parallel: Parallel) -> usize {
-        self.world() / self.size(parallel)
+        self.world / self.degree(parallel)
     }
 
     /// 某一维第 `idx` 组的 rank 列表（组内升序，已转成 `u32`）。
     fn ranks(&self, parallel: Parallel, idx: usize) -> Result<Vec<u32>> {
         let count = self.groups(parallel);
         if idx >= count {
-            return Err(self.out_of_range(parallel, idx, count));
+            fail!(
+                "shard::Topology::group",
+                "{} 组下标 {idx} 超出 0..{count}",
+                parallel.as_str()
+            );
         }
-        (0..self.size(parallel))
+        (0..self.degree(parallel))
             .map(|step| {
-                let (tp, pp, dp) = self.place(parallel, idx, step);
+                let [tp, pp, dp] = self.place(parallel, idx, step);
                 self.rank(tp, pp, dp)
             })
             .collect()
     }
 
     /// 组的第 `step` 个成员在三个维上的下标：`idx` 是组号，`step` 是组内下标。
-    fn place(&self, parallel: Parallel, idx: usize, step: usize) -> (usize, usize, usize) {
+    ///
+    /// 组号由**另外两维**按 rank 布局的次要→主要次序解出（先除小组、后除大组），本维只由
+    /// `step` 决定——"这一组只沿本维移动"这条判据就在这里落地。
+    fn place(&self, parallel: Parallel, idx: usize, step: usize) -> [usize; 3] {
         match parallel {
-            Parallel::Tensor => (step, idx % self.pp, idx / self.pp),
-            Parallel::Pipeline => (step % self.tp, step / self.tp, idx),
-            Parallel::Data => (idx % self.tp, idx / self.tp, step),
+            Parallel::Tensor => [step, idx % self.pp, idx / self.pp],
+            Parallel::Pipeline => [idx % self.tp, step, idx / self.tp],
+            Parallel::Data => [idx % self.tp, idx / self.tp, step],
         }
     }
 
     /// 某一维的下标必须落在它自己的并行度以内。
     fn check_axis(&self, parallel: Parallel, idx: usize) -> Result<()> {
-        let limit = match parallel {
-            Parallel::Tensor => self.tp,
-            Parallel::Pipeline => self.pp,
-            Parallel::Data => self.dp,
-        };
+        let limit = self.degree(parallel);
         if idx >= limit {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("{} 下标 {idx} 超出 0..{limit}", parallel.as_str()),
-            )
-            .with("shard::Topology::rank"));
+            fail!(
+                "shard::Topology::rank",
+                "{} 下标 {idx} 超出 0..{limit}",
+                parallel.as_str()
+            );
         }
         Ok(())
     }
-
-    fn out_of_range(&self, parallel: Parallel, idx: usize, count: usize) -> Error {
-        Error::new(
-            Code::Invalid,
-            format!("{} 组下标 {idx} 超出 0..{count}", parallel.as_str()),
-        )
-        .with("shard::Topology::group")
-    }
-}
-
-/// rank 必须是 `u32`：`world` 在构造期已被限在 `u32` 以内，这里只是把类型收窄。
-fn rank_u32(rank: usize) -> Result<u32> {
-    u32::try_from(rank).map_err(|_| {
-        Error::new(Code::Invalid, format!("rank {rank} 超出 u32")).with("shard::Topology::group")
-    })
 }
 
 #[cfg(test)]

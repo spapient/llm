@@ -1,9 +1,7 @@
 //! 张量并行的权重切分：[`Sharding`] 与 [`Tiling`]。
 
-pub use partition::Partition;
-
 use crate::collective::Reduce;
-use diagnostic::{Code, Error, Result};
+use diagnostic::Result;
 
 /// 张量并行里线性层的两种切法。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -27,6 +25,8 @@ impl Sharding {
     }
 
     /// 被切的是权重 `[out, in]` 的哪一维。
+    ///
+    /// 全 crate 只有这一处把切法翻译成轴：分片形状、随份数变化的长度都从它派生。
     pub fn axis(self) -> usize {
         match self {
             Self::Column => 0,
@@ -44,12 +44,16 @@ impl Sharding {
 }
 
 /// 一层线性权重的 TP 切分计划：切法、份数与完整的 `[out, in]` 形状。
+///
+/// 分片是**整除**的等分：`Tiling::new` 拒绝任何摊余数的形状，因此第 `rank` 份永远是
+/// `(rank · 被切维长度 / 份数, 被切维长度 / 份数)`。TP 要求各 rank 的权重形状一致，
+/// 有余数就没有合法的分片，故这里不保留"前几份多拿一个"的均匀切分——那条分支在任何
+/// 可达路径上都取不到。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Tiling {
     sharding: Sharding,
-    partition: Partition,
-    out: usize,
-    inp: usize,
+    parts: usize,
+    shape: [usize; 2],
 }
 
 impl Tiling {
@@ -59,31 +63,29 @@ impl Tiling {
     ///
     /// 份数为零、形状里出现零宽，或被切维不能被份数整除。
     pub fn new(sharding: Sharding, parts: usize, out: usize, inp: usize) -> Result<Self> {
-        let partition = Partition::new(sharding.axis(), parts)?;
-        if out == 0 || inp == 0 {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("权重形状 [{out}, {inp}] 含零宽：切出来是空分片"),
-            )
-            .with("shard::Tiling::new"));
+        if parts == 0 {
+            fail!("shard::Tiling::new", "切分份数不能为 0");
         }
-        let split = Self::dimension(sharding, out, inp);
+        if out == 0 || inp == 0 {
+            fail!(
+                "shard::Tiling::new",
+                "权重形状 [{out}, {inp}] 含零宽：切出来是空分片"
+            );
+        }
+        let shape = [out, inp];
+        let split = shape[sharding.axis()];
         if !split.is_multiple_of(parts) {
-            return Err(Error::new(
-                Code::Invalid,
-                format!(
-                    "{} 的第 {} 维长度 {split} 不能被 {parts} 整除：各 rank 的权重形状会不一致",
-                    sharding.as_str(),
-                    sharding.axis()
-                ),
-            )
-            .with("shard::Tiling::new"));
+            fail!(
+                "shard::Tiling::new",
+                "{} 的第 {} 维长度 {split} 不能被 {parts} 整除：各 rank 的权重形状会不一致",
+                sharding.as_str(),
+                sharding.axis()
+            );
         }
         Ok(Self {
             sharding,
-            partition,
-            out,
-            inp,
+            parts,
+            shape,
         })
     }
 
@@ -94,39 +96,35 @@ impl Tiling {
 
     /// 份数（通常等于 `Topology::tp()`）。
     pub fn parts(&self) -> usize {
-        self.partition.parts()
+        self.parts
     }
 
-    /// 第 `rank` 份的权重形状 `[out, in]`。
+    /// 第 `rank` 份的权重形状 `[out, in]`：完整形状把被切维换成该份的长度。
     pub fn weight_shape(&self, rank: usize) -> Result<[usize; 2]> {
         let (_, width) = self.range(rank)?;
-        Ok(match self.sharding {
-            Sharding::Column => [width, self.inp],
-            Sharding::Row => [self.out, width],
-        })
+        let mut shape = self.shape;
+        shape[self.sharding.axis()] = width;
+        Ok(shape)
     }
 
     /// 第 `rank` 份在完整权重里的 `(起点, 长度)`，沿 [`Sharding::axis`] 那一维。
     pub fn range(&self, rank: usize) -> Result<(usize, usize)> {
-        let split = Self::dimension(self.sharding, self.out, self.inp);
-        self.partition.slice(split, rank)
-    }
-
-    /// 合并各 rank 的输出需要哪种归约；不需要通信时是 `None`。
-    pub fn merge(&self) -> Option<Reduce> {
-        self.sharding.merge()
-    }
-
-    /// 被切的维在完整权重里的长度。
-    fn dimension(sharding: Sharding, out: usize, inp: usize) -> usize {
-        match sharding {
-            Sharding::Column => out,
-            Sharding::Row => inp,
+        if rank >= self.parts {
+            fail!(
+                "shard::Tiling::range",
+                "份下标 {rank} 超出 0..{}",
+                self.parts
+            );
         }
+        let width = self.width();
+        Ok((rank * width, width))
+    }
+
+    /// 被切维在每份里的长度：构造期已保证整除。
+    fn width(&self) -> usize {
+        self.shape[self.sharding.axis()] / self.parts
     }
 }
-
-mod partition;
 
 #[cfg(test)]
 #[path = "../tests/tiling_tests.rs"]
