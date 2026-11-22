@@ -145,22 +145,10 @@ mod strides {
         }
 
         /// 是否为行主序连续布局：与 [`contiguous`](Self::contiguous) 同一套期望累积值，
-        /// 逐轴无分配核对，不再临时构造一条 `Vec` 再比较。层内收口实现，不进公开面。
+        /// 逐轴无分配核对。层内收口实现，不进公开面。
         #[must_use]
         pub(crate) fn is_contiguous(&self, shape: &Shape) -> bool {
-            if self.0.len() != shape.rank() {
-                return false;
-            }
-            let dims = shape.dims();
-            // 反向核对期望累积值；串行依赖同上，保留循环。
-            let mut acc = 1usize;
-            for axis in (0..dims.len()).rev() {
-                if self.0[axis] != acc {
-                    return false;
-                }
-                acc = acc.saturating_mul(dims[axis]);
-            }
-            true
+            crate::layout::is_contiguous(shape.dims(), &self.0)
         }
     }
 }

@@ -66,12 +66,6 @@ impl PassManager {
         self.fixpoint(kernel)
     }
 
-    /// Pass names in registration order, for diagnostics.
-    fn names(&self) -> String {
-        let names: Vec<_> = self.passes.iter().map(|pass| pass.name()).collect();
-        names.join(", ")
-    }
-
     /// Sweep until a round leaves the kernel unchanged.
     fn fixpoint(&self, kernel: Kernel) -> Result<Kernel, VerificationError> {
         let limit = cost(&kernel);
@@ -83,9 +77,11 @@ impl PassManager {
             }
             kernel = next;
         }
+        let names = self.passes.iter().map(|pass| pass.name());
+        let names: Vec<_> = names.collect();
         Err(VerificationError::new(format!(
             "pass pipeline [{}] did not settle within {limit} sweeps",
-            self.names()
+            names.join(", ")
         )))
     }
 
@@ -246,8 +242,7 @@ fn identity(expression: &Expr, op: BinaryOp, side: Side, bits: u32) -> Option<Ex
         Side::Left => (left, right),
         Side::Right => (right, left),
     };
-    let holds = *found == op && matches!(**literal, Expr::F32(found) if found == bits);
-    holds.then(|| kept.as_ref().clone())
+    (*found == op && **literal == Expr::F32(bits)).then(|| kept.as_ref().clone())
 }
 
 fn fold_negation(expression: &Expr) -> Option<Expr> {

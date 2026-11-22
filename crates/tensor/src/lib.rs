@@ -69,6 +69,9 @@ mod shape;
 mod tensor;
 mod view;
 
+// 布局算式（偏移 / 可达性 / 连续性 / 取行）的唯一实现，两种秩的视图共用。
+mod layout;
+
 // 编译期秩 + 元素类型张量：与运行期 `Shape` / `Strides` 并存的栈元数据视图。
 pub mod typed;
 

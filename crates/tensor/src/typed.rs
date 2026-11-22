@@ -5,10 +5,14 @@
 //!
 //! 与运行期 [`Shape`](crate::Shape) / [`Strides`](crate::Strides)（`Vec<usize>`）并存：静态形状
 //! （权重、固定激活、层定义）用这里的栈数组，运行期 batch / segment 几何仍走运行期元数据。
+//!
+//! 两个秩见证只差"秩从哪来"：偏移、可达性、连续性与取行的算式收口在 `crate::layout` 一份，本模块
+//! 不再自带一套平行的下标实现。
 
 use diagnostic::{Code, Error, Result};
 
 use crate::element::Element;
+use crate::layout;
 use crate::shape::element_bytes;
 use crate::{DType, Order};
 
@@ -129,7 +133,7 @@ impl<const D: usize> Strides<D> {
     /// 是否为行主序连续布局：与 [`contiguous`](Self::contiguous) 同一套期望累积值。
     #[must_use]
     pub fn is_contiguous(&self, shape: &Shape<D>) -> bool {
-        *self == Self::contiguous(shape)
+        crate::layout::is_contiguous(shape.dims(), &self.steps)
     }
 
     /// 交换两轴的步长；轴越界返回 `None`。
@@ -189,60 +193,17 @@ impl<'a, const D: usize, E: Element> Tensor<'a, D, E> {
 
     /// 由任意合法步长构造：转置、切片这类非连续布局也是合法视图。
     pub fn strided(shape: Shape<D>, strides: Strides<D>, data: &'a [E]) -> Result<Self> {
-        let tensor = Self {
+        layout::check(
+            shape.dims(),
+            strides.steps(),
+            data.len(),
+            "tensor::typed::Tensor::strided",
+        )?;
+        Ok(Self {
             shape,
             strides,
             data,
-        };
-        tensor.check_empty()?;
-        tensor.check_reach()?;
-        Ok(tensor)
-    }
-
-    /// 零元素口径：形状里有 0 个元素时只接受空缓冲（与 [`Tensor::new`] 同一口径）。
-    fn check_empty(&self) -> Result<()> {
-        if self.shape.numel() != 0 || self.data.is_empty() {
-            return Ok(());
-        }
-        Err(Self::invalid(format!(
-            "零元素视图不该借用 {} 个元素的缓冲",
-            self.data.len()
-        )))
-    }
-
-    /// 可达性：每轴最后一位走出的总偏移必须算得出、且落在 `data` 内。
-    fn check_reach(&self) -> Result<()> {
-        if self.shape.numel() == 0 {
-            return Ok(());
-        }
-        let highest = self.highest_offset().ok_or_else(|| {
-            Self::invalid(format!(
-                "形状 {:?} 与步长 {:?} 算出溢出",
-                self.shape.dims(),
-                self.strides.steps()
-            ))
-        })?;
-        if highest < self.data.len() {
-            return Ok(());
-        }
-        Err(Self::invalid(format!(
-            "最高偏移 {highest} 超出缓冲（{} 个元素）：步长与形状对不上",
-            self.data.len()
-        )))
-    }
-
-    /// 最高下标（每轴最后一位）走出的总偏移；任一轴越界或累加溢出则 `None`。
-    fn highest_offset(&self) -> Option<usize> {
-        let mut idx = [0usize; D];
-        for (slot, dim) in idx.iter_mut().zip(self.shape.dims().iter()) {
-            *slot = dim.checked_sub(1)?;
-        }
-        self.offset(idx)
-    }
-
-    /// 本视图的 `Invalid` 错误：三处校验共用同一条构造点标记，文案由调用点给出。
-    fn invalid(message: impl Into<String>) -> Error {
-        Error::new(Code::Invalid, message).with("tensor::typed::Tensor::strided")
+        })
     }
 
     /// 形状。
@@ -277,27 +238,8 @@ impl<'a, const D: usize, E: Element> Tensor<'a, D, E> {
 
     /// 按下标取值；任一轴越界返回 `None`（不 panic）。
     pub fn at(&self, idx: [usize; D]) -> Option<E> {
-        self.data.get(self.offset(idx)?).copied()
-    }
-
-    /// 单轴的偏移增量：下标必须落在该轴长度内，`position * step` 溢出则 `None`。
-    fn axis_offset(&self, axis: usize, position: usize) -> Option<usize> {
-        let dimension = self.shape.dim(axis)?;
-        let step = self.strides.get(axis)?;
-        if position < dimension {
-            position.checked_mul(step)
-        } else {
-            None
-        }
-    }
-
-    /// 一组下标 → 元素偏移：任一轴越界或累加溢出都是 `None`。
-    fn offset(&self, idx: [usize; D]) -> Option<usize> {
-        idx.into_iter()
-            .enumerate()
-            .try_fold(0usize, |acc, (axis, position)| {
-                acc.checked_add(self.axis_offset(axis, position)?)
-            })
+        let offset = layout::offset(self.shape.dims(), self.strides.steps(), &idx)?;
+        self.data.get(offset).copied()
     }
 
     /// 交换两轴：转置是零拷贝的元数据重排。
@@ -343,12 +285,7 @@ impl<'a, const D: usize, E: Element> Tensor<'a, D, E> {
 impl<'a, E: Element> Tensor<'a, 2, E> {
     /// 二维视图的第 `row` 行；列不连续时返回 `None`。
     pub fn row(&self, row: usize) -> Option<&'a [E]> {
-        if self.strides.get(1) != Some(1) {
-            return None;
-        }
-        let start = self.axis_offset(0, row)?;
-        self.data
-            .get(start..start.checked_add(self.shape.dims()[1])?)
+        layout::row(self.shape.dims(), self.strides.steps(), self.data, row)
     }
 }
 
