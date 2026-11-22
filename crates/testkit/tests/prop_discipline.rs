@@ -171,7 +171,7 @@ fn every_property_crate_reaches_the_shared_configuration() {
 #[test]
 fn the_scan_actually_sees_the_property_crates() {
     let found = property_crates();
-    for expected in crate::prop_ledger::COVERED {
+    for expected in crate::prop::ledger::COVERED {
         assert!(
             found.contains(&expected.to_string()),
             "扫描面漏了 `{expected}`：台账说它有性质测试，扫描却没在清单里看到 proptest，\
@@ -190,7 +190,7 @@ fn the_scan_actually_sees_the_property_crates() {
 /// 单向检查（"台账里的成员都存在"）没意义——漏掉一个成员时它同样通过。
 #[test]
 fn the_ledger_accounts_for_every_member_exactly_once() {
-    use crate::prop_ledger::{ABSENT, COVERED, PLANNED};
+    use crate::prop::ledger::{ABSENT, COVERED, PLANNED};
     let (members, _) = workspace();
     let mut accounted = std::collections::BTreeSet::new();
     let mut duplicates = Vec::new();
@@ -234,7 +234,7 @@ fn the_ledger_accounts_for_every_member_exactly_once() {
 /// 台账与源码必须**双向**一致：说覆盖的真的有性质测试块，说没覆盖的真的没有。
 #[test]
 fn the_ledger_agrees_with_the_sources() {
-    use crate::prop_ledger::{ABSENT, COVERED, PLANNED};
+    use crate::prop::ledger::{ABSENT, COVERED, PLANNED};
     let has_block = |member: &str| {
         member_sources(member)
             .iter()
@@ -273,7 +273,7 @@ fn the_ledger_agrees_with_the_sources() {
 /// 缺席理由必须**具体**：太短或彼此重复的理由无法指导下一个成员归哪类。
 #[test]
 fn every_absence_reason_is_specific() {
-    use crate::prop_ledger::ABSENT;
+    use crate::prop::ledger::ABSENT;
     let mut reasons: Vec<&str> = Vec::new();
     for absence in ABSENT {
         assert!(
@@ -299,7 +299,7 @@ fn every_absence_reason_is_specific() {
 /// 已登记缺口只能减。允许"还没写"，不允许"越积越多"。
 #[test]
 fn the_known_gaps_are_capped() {
-    use crate::prop_ledger::{PLANNED, PLANNED_MAX};
+    use crate::prop::ledger::{PLANNED, PLANNED_MAX};
     assert!(
         PLANNED.len() <= PLANNED_MAX,
         "已登记缺口涨到 {} 条（上限 {PLANNED_MAX}）：先补上一条，再加新的",
@@ -316,7 +316,7 @@ fn the_known_gaps_are_capped() {
 /// 清单里声明了 `proptest` 的成员集与台账的已覆盖集必须相等。
 #[test]
 fn manifest_declarations_match_the_ledger() {
-    use crate::prop_ledger::COVERED;
+    use crate::prop::ledger::COVERED;
     let mut declared = property_crates();
     let mut covered: Vec<String> = COVERED.iter().map(|member| (*member).to_string()).collect();
     declared.sort();

@@ -18,6 +18,8 @@
 //! 它只会让同一性质在不同 crate 里用不同的样本数与收缩预算——静默地变弱。
 //! 深挖反例时用 `PROPTEST_CASES=4096 cargo test`，不必改代码。
 
+pub mod ledger;
+
 use proptest::prelude::*;
 use proptest::test_runner::RngSeed;
 use std::ops::RangeInclusive;
