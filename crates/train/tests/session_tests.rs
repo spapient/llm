@@ -496,7 +496,7 @@ fn overrides_fall_back_to_default_without_duplicating_constants() {
 
 /// 检查点事实集：恢复所需的最小事实集与偏差拒绝。
 mod checkpoint {
-    use crate::session::checkpoint::*;
+    use crate::session::*;
 
     use diagnostic::Code;
     use tensor::Shape;

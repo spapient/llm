@@ -9,8 +9,8 @@
 //! "注册了算子却没有参考实现"是编译错误；`live` / `peak` 都是实测值，与 [`autograd::Plan`] 的承诺
 //! 对账，而计划保留的检查点必须在重放开始前就在场。
 //!
-//! 三条语义轴平铺在 crate 根：[`shape`] 是形态/视图/拆包契约，[`kernel`] 是标量参考内核适配，
-//! [`pool`] 是等长空闲表与 [`Bufs`] 落地；本模块是这一层的**门面**——把三者的类型收成一个名字，
+//! 两条语义轴平铺在 crate 根：[`kernel`] 是形态/视图/拆包契约与标量参考内核适配，[`pool`] 是等长
+//! 空闲表与 [`Bufs`] 落地；本模块是这一层的**门面**——把两者的类型收成一个名字，
 //! 持有该层统一的诊断站点，并把 `op` 的算子清单展开成 [`OperatorSetOps`] 的默认方法。
 //!
 //! # 例子
@@ -42,7 +42,7 @@ pub use crate::kernel::{Kernel, Reference};
 
 pub use crate::pool::Bufs;
 
-pub use crate::shape::{Data, Inputs, Kind, Lane, View, ViewMut};
+pub use crate::kernel::{Data, Inputs, Kind, Lane, View, ViewMut};
 
 #[cfg(test)]
 #[path = "../tests/store_tests.rs"]

@@ -316,16 +316,7 @@ impl Writer {
         mut file_sink: FileSink<io::BufWriter<std::fs::File>>,
         align_log: u8,
     ) -> io::Result<()> {
-        let global = {
-            let mut sealed = Sealed::new(&mut file_sink);
-            self.write_body_in(plan, &mut sealed, align_log)
-                .map_err(|error| io::Error::other(error.to_string()))?;
-            if self.config.checksum {
-                sealed.checksum()
-            } else {
-                0
-            }
-        };
+        let global = self.body_checksum(plan, &mut file_sink, align_log)?;
         file_sink.put(&global.to_le_bytes());
         if let Some(error) = file_sink.error() {
             return Err(io::Error::new(error.kind(), error.to_string()));
@@ -338,6 +329,23 @@ impl Writer {
         );
         let writer = file_sink.into_inner()?;
         flush_file(writer)
+    }
+
+    /// 写正文并取全局 CRC：不校验时写 0。`?` 与校验开关都收在这一处，主流程只剩一次调用。
+    fn body_checksum(
+        &self,
+        plan: &[Plan<'_>],
+        file_sink: &mut FileSink<io::BufWriter<std::fs::File>>,
+        align_log: u8,
+    ) -> io::Result<u32> {
+        let mut sealed = Sealed::new(file_sink);
+        self.write_body_in(plan, &mut sealed, align_log)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        Ok(if self.config.checksum {
+            sealed.checksum()
+        } else {
+            0
+        })
     }
 
     fn check_align(align_log: u8) -> Result<()> {

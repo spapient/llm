@@ -67,6 +67,22 @@ impl FloatLayout {
             exponent_bias,
         }
     }
+
+    /// 全宽：符号 1 位 + 指数 + 尾数。恒等于所在格式的位宽。
+    ///
+    /// 符号位不在字段里（恒为 1），所以全宽是派生量而不是另一列；`bits()` 是三段位域的
+    /// 唯一求和公式，测试里不再手写 `1 + exp + mantissa`。
+    ///
+    /// ```
+    /// use llm_dtype::DType;
+    ///
+    /// assert_eq!(DType::BF16.float_layout().unwrap().bits(), 16);
+    /// assert_eq!(DType::F4.float_layout().unwrap().bits(), 4);
+    /// ```
+    #[must_use]
+    pub const fn bits(self) -> u32 {
+        1 + self.exp_bits + self.mantissa_bits
+    }
 }
 
 /// 一个标量类型的身份与布局：规范名、Rust 变体名、位宽、数值类别与浮点位域。
@@ -456,7 +472,8 @@ impl DType {
 
     /// 符号位宽：浮点与有符号整数各占 1 位，布尔与无符号整数为 0。
     ///
-    /// 对浮点，`sign_bits + exp_bits + mantissa_bits` 恒等于 [`DType::bits`]。
+    /// 对浮点，[`FloatLayout::bits`]（`sign_bits + exp_bits + mantissa_bits`）恒等于
+    /// [`DType::bits`]。
     #[must_use]
     pub const fn sign_bits(self) -> u32 {
         match self.spec().class {

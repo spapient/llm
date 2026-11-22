@@ -3,8 +3,8 @@
 use diagnostic::Error;
 use diagnostic::data::{Table, Value};
 
-use crate::atom::{Attr, AttrKey, Closed, Need, Prim, Set, Span};
-use crate::prof::scalar_texts;
+use crate::atom::{Attr, AttrKey, Closed, Need, Prim, Span};
+use crate::decode::{self, Absent, rows};
 use crate::sch::layout::LayoutSpec;
 use crate::tpl::{Arg, Template};
 
@@ -213,7 +213,7 @@ impl OpDecl {
 
 /// 从 `[needs]`/`[extra_needs]` 的一个条目解析能力签名。
 pub(crate) fn parse_need(section: &Table, key: &str, path: &str) -> Result<Need, Error> {
-    let prim = closed_of::<Prim>(path, key)?;
+    let prim = decode::closed(path, key)?;
     let detail = need_table(section, key, path)?;
     // 不拷这张表：解析只读它，为一棵内联表克隆一次等于每条需求多付一次分配。
     detail
@@ -239,7 +239,13 @@ fn need_field(
         "k" => Need::with_k,
         _ => return collection(need, prim, &value_path, name, value),
     };
-    Ok(attach(need, parse_span(&value_path, value)?))
+    let Value::Str(text) = value else {
+        return Err(field(
+            &value_path,
+            "必须是字符串（`16`、`16..64`、`<=512`）",
+        ));
+    };
+    Ok(attach(need, decode::span(&value_path, text)?))
 }
 
 /// 一条需求的取值：必须是内联表。
@@ -262,15 +268,15 @@ fn collection(
     value: &Value,
 ) -> Result<Need, Error> {
     match name {
-        "dt" => Ok(need.with_dt(parse_closed_set(path, value)?)),
-        "space" => Ok(need.with_space(parse_closed_set(path, value)?)),
+        "dt" => Ok(need.with_dt(decode::closed_set(path, value)?)),
+        "space" => Ok(need.with_space(decode::closed_set(path, value)?)),
         _ => attribute(need, prim, path, name, value),
     }
 }
 
 /// 能力属性：键必须属于该原语的签名（`sat` 不属于 `load`），取值是字符串列表。
 fn attribute(need: Need, prim: Prim, path: &str, name: &str, value: &Value) -> Result<Need, Error> {
-    let attr_key = closed_of::<AttrKey>(path, name)?;
+    let attr_key = decode::closed(path, name)?;
     // 无关键既不会被协商比对、也不会被片段消费——它只会让声明看起来更具体，装载期就拒收。
     if !prim.accepts(attr_key) {
         let mut allowed: Vec<&str> = prim.attr_keys().iter().map(|key| key.as_str()).collect();
@@ -281,50 +287,7 @@ fn attribute(need: Need, prim: Prim, path: &str, name: &str, value: &Value) -> R
         );
         return Err(field(path, detail));
     }
-    Ok(need.with_attr(Attr::new(attr_key, string_list(path, value)?)))
-}
-
-/// 闭集名字解析：闭集外报错并列出全量。
-fn closed_of<E: Closed>(path: &str, name: &str) -> Result<E, Error> {
-    E::parse(name).ok_or_else(|| {
-        let allowed: Vec<&str> = E::ALL.iter().map(|item| item.as_str()).collect();
-        field(path, format!("闭集：{}", allowed.join(" | ")))
-    })
-}
-
-fn parse_span(path: &str, value: &Value) -> Result<Span, Error> {
-    let Value::Str(text) = value else {
-        return Err(field(path, "必须是字符串（`16`、`16..64`、`<=512`）"));
-    };
-    Span::parse(text).map_err(|error| field(path, error.message()))
-}
-
-/// 从字符串列表解析一个闭集位集：`["f32", "f16"]` 或单个标量都行；闭集外的名字报错并列出全量。
-fn parse_closed_set<E: Closed, const WORDS: usize>(
-    path: &str,
-    value: &Value,
-) -> Result<Set<E, WORDS>, Error> {
-    let mut set = Set::<E, WORDS>::empty();
-    for name in string_list(path, value)? {
-        set.insert(closed_of::<E>(path, &name)?);
-    }
-    Ok(set)
-}
-
-/// 一个键的字符串列表：允许 `["a", "b"]`、`"a"` 与标量写法（标量按十进制渲染）。
-fn string_list(path: &str, value: &Value) -> Result<Vec<String>, Error> {
-    match value {
-        Value::Array(items) => items.iter().map(|item| as_string(path, item)).collect(),
-        scalar => scalar_texts(scalar).ok_or_else(|| field(path, "不能是表")),
-    }
-}
-
-/// 数组里的一个元素：只能是字符串。
-fn as_string(path: &str, item: &Value) -> Result<String, Error> {
-    let Value::Str(text) = item else {
-        return Err(field(path, "数组里只能是字符串"));
-    };
-    Ok(text.clone())
+    Ok(need.with_attr(Attr::new(attr_key, decode::names(path, value)?)))
 }
 
 // ── 段解析 ─────────────────────────────────────────────────────────────
@@ -349,7 +312,7 @@ pub fn head(table: &Table) -> diagnostic::Result<(String, Skeleton, String)> {
 
 /// `[op]` 的其余两键：骨架必须落在闭集内，摘要缺省为空串占位的 `-`。
 pub fn op_head(op: &Table) -> diagnostic::Result<(Skeleton, String)> {
-    let skeleton = closed_of::<Skeleton>(
+    let skeleton = decode::closed(
         "op.skeleton",
         op.string("skeleton")
             .ok_or_else(|| field("op.skeleton", "缺失"))?,
@@ -376,14 +339,12 @@ pub fn sections(table: &Table) -> diagnostic::Result<Sections> {
 
 /// `[axes]`：每个键一组正整数取值；至少要有一条轴。
 pub fn axes(table: &Table) -> diagnostic::Result<Vec<Axis>> {
-    let Some(section) = table.table("axes") else {
-        return Err(field("axes", "至少需要一个轴"));
-    };
-    let out: Vec<Axis> = section
-        .entries()
-        .iter()
-        .map(|(key, value)| axis(key, value))
-        .collect::<diagnostic::Result<_>>()?;
+    let out: Vec<Axis> = rows(
+        table,
+        "axes",
+        Absent::Required("至少需要一个轴"),
+        |_, key, value| axis(key, value),
+    )?;
     if out.is_empty() {
         return Err(field("axes", "至少需要一个轴"));
     }
@@ -397,7 +358,7 @@ pub fn axis(key: &str, value: &Value) -> diagnostic::Result<Axis> {
     };
     let values = items
         .iter()
-        .map(|item| positive(&path, item))
+        .map(|item| decode::positive(&path, item))
         .collect::<diagnostic::Result<Vec<u32>>>()?;
     if values.is_empty() {
         return Err(field(&path, "数组不能为空"));
@@ -408,36 +369,18 @@ pub fn axis(key: &str, value: &Value) -> diagnostic::Result<Axis> {
     })
 }
 
-/// 轴的一个取值：正整数。
-pub fn positive(path: &str, item: &Value) -> diagnostic::Result<u32> {
-    match item {
-        Value::Int(number) if *number > 0 => Ok(*number as u32),
-        _ => Err(field(path, "每个取值必须是正整数")),
-    }
-}
-
 /// `[needs]`：算子级公共需求，每条一个原语的能力签名。
 pub fn needs(table: &Table) -> diagnostic::Result<Vec<Need>> {
-    let Some(section) = table.table("needs") else {
-        return Ok(Vec::new());
-    };
-    section
-        .entries()
-        .iter()
-        .map(|(key, _)| parse_need(section, key, &format!("needs.{key}")))
-        .collect()
+    rows(table, "needs", Absent::Empty, |section, key, _| {
+        parse_need(section, key, &format!("needs.{key}"))
+    })
 }
 
 /// `[layouts]`：槽位名 → 布局闭集里的一个词。
 pub fn layouts(table: &Table) -> diagnostic::Result<Vec<(String, LayoutSpec)>> {
-    let Some(section) = table.table("layouts") else {
-        return Ok(Vec::new());
-    };
-    section
-        .entries()
-        .iter()
-        .map(|(key, value)| layout(key, value))
-        .collect()
+    rows(table, "layouts", Absent::Empty, |_, key, value| {
+        layout(key, value)
+    })
 }
 
 /// 一条布局：`layouts.{槽位}` 必须是布局闭集内的字符串。
@@ -521,24 +464,15 @@ pub fn chunk(table: &Table) -> diagnostic::Result<Option<Chunk>> {
 
 /// `[consts]`：模板常量的固定取值（非轴、非布局）。键给槽位名，值按十进制渲染成字符串， 供 [`OpDecl::const_value`] 在 `{{槽位}}` 解析时查用。
 pub fn consts(table: &Table) -> diagnostic::Result<Vec<(String, String)>> {
-    let Some(section) = table.table("consts") else {
-        return Ok(Vec::new());
-    };
-    section
-        .entries()
-        .iter()
-        .map(|(key, value)| const_value(key, value))
-        .collect()
+    rows(table, "consts", Absent::Empty, |_, key, value| {
+        const_value(key, value)
+    })
 }
 
 /// 一个模板常量：整数/浮点/布尔按十进制渲染，字符串原样；表或数组不能当常量。
 pub fn const_value(key: &str, value: &Value) -> diagnostic::Result<(String, String)> {
     let path = format!("consts.{key}");
-    let texts = scalar_texts(value).ok_or_else(|| field(&path, "不能是表或数组"))?;
-    let Some(text) = texts.into_iter().next() else {
-        return Err(field(&path, "不能是表或数组"));
-    };
-    Ok((key.to_string(), text))
+    Ok((key.to_string(), decode::scalar_text(&path, value)?))
 }
 
 /// `[consts]` 与 `[grid]`、`[chunk]` 三块可选的补丁：`declared` 按同一顺序解构。

@@ -50,22 +50,13 @@ mod writer;
 
 // —— 平铺的子模块：原各父模块的单文件子目录，拍平到顶层 ——
 pub(crate) mod codec;
-pub(crate) mod decode;
-pub(crate) mod header;
-pub(crate) mod note;
 pub(crate) mod plan;
-pub(crate) mod rank;
-pub(crate) mod reason;
-pub(crate) mod text;
 
 // —— 量化方案：仿射方案与外部量化条目 ——
 pub mod quant;
 
 // —— 2/4/8-bit 对称 PTQ：f32 → 打包码的正向量化与其反解（离线换算，ADR 0018） ——
 pub mod ptq;
-
-// 自适应档位分配：ptq 的子域，平铺到顶层以过 N3（原 `ptq/adaptive`）。
-mod adaptive;
 
 // —— 完整性证明：Merkle + SHA-256 ——
 mod proof;
@@ -92,10 +83,6 @@ pub(crate) mod zip;
 
 pub use lifecycle::import;
 pub mod safetensors;
-
-// 只读内存映射源：feature + Unix 双门控，复用 `storage` 的唯一 unsafe 岛。
-#[cfg(all(feature = "mmap", unix))]
-mod mmap;
 
 // 纯字节码基础件归 L1 `wire`；这里只做薄转发，保持容器内部路径不变。
 /// CRC-32（转发自 `wire::crc`）。
@@ -151,7 +138,7 @@ pub type Snapshot = storage::snapshot::Snapshot<Header>;
 pub(crate) use container::{align_up, check_capacity, read_wire};
 
 #[cfg(all(feature = "mmap", unix))]
-pub use mmap::MmapSource;
+pub use safetensors::MmapSource;
 
 #[cfg(test)]
 #[path = "../tests/lib.rs"]

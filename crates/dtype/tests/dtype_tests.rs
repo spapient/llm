@@ -182,11 +182,12 @@ fn float_layout_is_present_exactly_for_floats() {
 
 #[test]
 fn float_bit_fields_fill_the_whole_element() {
-    // 位域是可加的量：符号 1 位 + 指数 + 尾数必须正好等于位宽，既不能少算也不能重复占位。
+    // 位域是可加的量：`FloatLayout::bits()`（符号 1 位 + 指数 + 尾数）必须正好等于位宽，
+    // 既不能少算也不能重复占位；求和公式只在 `bits()` 一处，这里不再手写。
     for dtype in DType::ALL {
         if let Some(layout) = dtype.float_layout() {
             assert_eq!(
-                dtype.sign_bits() + layout.exp_bits + layout.mantissa_bits,
+                layout.bits(),
                 dtype.bits(),
                 "{dtype:?} 的浮点位域之和不等于位宽"
             );

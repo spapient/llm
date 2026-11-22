@@ -37,6 +37,12 @@
   与 `tests/mxtype_tests.rs` 的锁定表各多一列，并补「浮点 ⟺ `Some`」「`sign_bits + exp + mantissa
   == bits`」与「`Element` 的位域不漂移于其标量 `DType`」三条不变量。
 
+- **`crates/dtype` 把「全宽」与「浮点还是整数」这两个派生事实各收成一个 `const fn`**。
+  `FloatLayout::bits()`（符号恒 1 + 指数 + 尾数）成了三段位域的唯一求和公式，两处测试不再手写
+  `1 + exp + mantissa`；`mxtype::Element` 增 `is_float()`/`is_integer()`，直接读已有的 `float`
+  列（`Some` 即浮点、`None` 即整数），MX 元素不必再为分类多一列 `Class`。测试新增元素分类普查
+  （5 浮点 + 1 整数），锁住「`is_float ⟺ 有位域`」且两者互补。
+
 - **typed IR 多了一族：归约 `Write::Reduce { at }`（`output[at] += value`），两族共用一套六道校验**。
   此前 IR 只能表达 `output[idx] = expr`，`dot` / `sum` 这类内核必须另起一套 lowering。现在两族不是两个
   类型，而是同一个 `Kernel` 里的一份写回数据（`Write::{Map, Reduce { at }}`），因此名字/形参/生成名/

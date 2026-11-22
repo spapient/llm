@@ -52,7 +52,6 @@ mod rl;
 mod samples;
 mod schedule;
 mod session;
-pub(crate) use kernel::shape;
 pub mod geometry;
 mod store;
 
@@ -73,7 +72,6 @@ pub use optimizer::{Adam, Group, Muon, Optimizer, OwnedSlot, Sgd, Slot};
 pub use rl::{Grpo, advantage, clipped_surrogate, entropy, grpo_loss, log_prob, policy_loss};
 pub use samples::{Batch, Chunks, Dataset};
 pub use schedule::{Anneal, Schedule};
-pub use session::checkpoint::{Checkpoint, Step, operators, resume};
-pub use session::{ParamSlot, Session, TrainConfig};
+pub use session::{Checkpoint, ParamSlot, Session, Step, TrainConfig, operators, resume};
 pub use store::OperatorSetOps;
 pub use store::{Bufs, Data, Inputs, Kernel, Kind, Lane, Reference, View, ViewMut};

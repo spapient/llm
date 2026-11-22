@@ -50,6 +50,8 @@ pub struct ElementSpec {
     /// 对应的标量元素类型；MX 专有的 6 位格式为 `None`。
     pub dtype: Option<DType>,
     /// 浮点位域；`Int8` 为 `None`。与 [`Element::dtype`] 的浮点布局必须一致（跨轴测试锁住）。
+    ///
+    /// 这一列同时驱动 [`Element::is_float`]/[`Element::is_integer`]：`Some` 即浮点，`None` 即整数。
     pub float: Option<FloatLayout>,
 }
 
@@ -202,6 +204,21 @@ impl Element {
             Some(layout) => Some(layout.exponent_bias),
             None => None,
         }
+    }
+
+    /// 是否为浮点元素（E2M1/E2M3/E3M2/E4M3/E5M2）；`Int8` 为 `false`。
+    ///
+    /// 与 [`Element::float_layout`] 同真同假：浮点 ⟺ 有位域。`Element` 没有 `Class` 列，
+    /// `float: None` 正是「唯一的整数元素」这一事实源。
+    #[must_use]
+    pub const fn is_float(self) -> bool {
+        self.spec().float.is_some()
+    }
+
+    /// 是否为整数元素（仅 `Int8`）；与 [`Element::is_float`] 互补。
+    #[must_use]
+    pub const fn is_integer(self) -> bool {
+        self.spec().float.is_none()
     }
 }
 

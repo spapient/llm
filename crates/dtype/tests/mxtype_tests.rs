@@ -76,12 +76,34 @@ fn element_float_layout_matches_its_scalar_dtype() {
         }
         if let Some(layout) = layout {
             assert_eq!(
-                1 + layout.exp_bits + layout.mantissa_bits,
+                layout.bits(),
                 element.bits(),
                 "{element:?} 的浮点位域之和不等于位宽"
             );
         }
     }
+}
+
+#[test]
+fn element_classification_is_float_or_integer() {
+    // `Element` 没有 `Class` 列：`float` 列就是分类事实源。`is_float ⟺ 有位域`，
+    // `is_integer` 与之互补；普查锁定 5 浮点 + 1 整数，未来加元素时这里必须显式改数。
+    let (mut floats, mut integers) = (0, 0);
+    for element in Element::ALL {
+        assert_eq!(
+            element.is_float(),
+            element.float_layout().is_some(),
+            "{element:?} 的浮点分类与位域分家"
+        );
+        assert_eq!(
+            element.is_integer(),
+            !element.is_float(),
+            "{element:?} 的整数分类与浮点分类不互补"
+        );
+        floats += usize::from(element.is_float());
+        integers += usize::from(element.is_integer());
+    }
+    assert_eq!((floats, integers), (5, 1));
 }
 
 #[test]

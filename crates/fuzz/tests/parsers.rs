@@ -28,8 +28,8 @@ mod support;
 use support::{drivers, seeds};
 
 use drivers::{
-    CrcChunk, CutileNegotiate, DistSampler, Frames, HttpHead, Invocation, Json, Leb,
-    LebRoundtrip, Lex, Safetensors, Sealed, ShapeArith, Snapshot, UContainer,
+    CrcChunk, CutileNegotiate, DistSampler, Frames, HttpHead, Invocation, Json, Leb, LebRoundtrip,
+    Lex, Safetensors, Sealed, ShapeArith, Snapshot, UContainer,
 };
 use llm_fuzz::{Seed, Target, sweep};
 

@@ -8,7 +8,7 @@ fact lives in exactly one table.
 | Scalar | `DType` | how is **one element** stored? (`Bool`, `U1`–`U64`, `I1`–`I64`, `F4`, FP8, `F16`, `BF16`, `F32`, `F64`, plus exponent/mantissa/bias) |
 | GGML block | `QType` | how is **a block** packed? (25 formats: legacy Q, K-quant, IQ, TQ) |
 | Micro-scaled | `MxType` | low-precision element + shared block exponent (OCP MX v1.1 and NVFP4) |
-| MX element | `Element` | which E2M1/E2M3/E3M2/E4M3/E5M2/INT8 element sits inside an `MxType`? |
+| MX element | `Element` | which E2M1/E2M3/E3M2/E4M3/E5M2/INT8 element sits inside an `MxType`, and is it float or integer? |
 
 ```rust
 use llm_dtype::{DType, QType};
@@ -31,9 +31,11 @@ assert_eq!("q4_k".parse::<QType>(), Ok(QType::Q4_K));
 - **Float bit layout is identity, not derived.** `DTypeSpec`/`ElementSpec` carry a `FloatLayout`
   column (`exp_bits`, `mantissa_bits`, `exponent_bias`) next to the width, so `F8E4M3 = 1 + 4 + 3`,
   `BF16 = (8, 7, 127)` and the `FNUZ` variants (bias one higher than their IEEE twin) live in the
-  same row table a dequantizer already reads — no hard-coded bit fields downstream. For every
-  float, `sign_bits + exp_bits + mantissa_bits == bits`, and an MX element's layout equals that of
-  its scalar `DType` counterpart.
+  same row table a dequantizer already reads — no hard-coded bit fields downstream. The sign bit is
+  implicit (always 1), so the full width is the single derivation `FloatLayout::bits()`;
+  `FloatLayout::bits() == bits` for every float, and an MX element's layout equals that of its
+  scalar `DType` counterpart. `Element::is_float()`/`is_integer()` read the same layout column, so
+  the float/integer split is a table fact too — no separate `Class` column to drift.
 - **Identity is locked.** Every row is pinned by a literal table in that module's tests: `DType`
   (wire code, name, variant, bits, class, float layout), the MX element set (name, variant, bits,
   scalar counterpart, float layout) and the block layout of `QType`/`MxType` (block length, block

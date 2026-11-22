@@ -160,7 +160,7 @@ pub(crate) fn quant_payload(w: &[f32]) -> Option<Vec<u8>> {
     if w.iter().any(|v| !v.is_finite()) {
         return None;
     }
-    let min = w.iter().map(|v| v.to_bits()).min().map(f32::from_bits)?;
+    let min = w.iter().copied().reduce(f32::min)?;
     (-30i32..=30).find_map(|e| {
         let step = 2.0f32.powi(e);
         let (codes, max) = fit(w, min, step)?;
@@ -201,7 +201,7 @@ pub(crate) fn decode_quant(cur: &mut Cursor<'_>, want: usize) -> Result<Vec<f32>
     if width > 8 {
         return Err(bad("quant 位宽超过 8"));
     }
-    let codes = unpack_bits(&bytes[at..], want, width);
+    let codes = unpack_bits(&bytes[at..], want, width)?;
     let step = 2.0f32.powi(exponent as i8 as i32);
     Ok(codes.iter().map(|&c| min + c as f32 * step).collect())
 }
@@ -244,9 +244,9 @@ fn pack_bits(codes: &[u32], width: u8) -> Vec<u8> {
     out
 }
 
-fn unpack_bits(src: &[u8], count: usize, width: u8) -> Vec<u32> {
+fn unpack_bits(src: &[u8], count: usize, width: u8) -> Result<Vec<u32>> {
     if width == 0 {
-        return vec![0; count];
+        return Ok(vec![0; count]);
     }
     let mut out = Vec::with_capacity(count);
     let mut acc = 0u64;
@@ -254,7 +254,8 @@ fn unpack_bits(src: &[u8], count: usize, width: u8) -> Vec<u32> {
     let mut at = 0usize;
     for _ in 0..count {
         while bits < width as u32 {
-            acc |= (src.get(at).copied().unwrap_or(0) as u64) << bits;
+            let byte = src.get(at).copied().ok_or_else(|| bad("quant 码流截断"))?;
+            acc |= (byte as u64) << bits;
             at += 1;
             bits += 8;
         }
@@ -262,7 +263,7 @@ fn unpack_bits(src: &[u8], count: usize, width: u8) -> Vec<u32> {
         acc >>= width;
         bits -= width as u32;
     }
-    out
+    Ok(out)
 }
 
 /// 从 `buf` 的 `at` 处取 `N` 字节并推进偏移；越界用 `missing` 文案报错。

@@ -35,11 +35,13 @@ use std::path::Path;
 
 use crate::bad;
 use diagnostic::{Code, Error, Result};
-use tensor::DType;
+use tensor::{DType, Shape};
 
-use crate::header::{build, collect_fields, data_after, header_slice, internal, required_fields};
 use crate::json::{self, Value};
 use crate::{Entry, Header, Loader, Reader, check_capacity};
+
+#[cfg(all(feature = "mmap", unix))]
+use storage::Mmap;
 
 /// 头部里与条目并列的元数据键：不是条目，跳过。
 pub const METADATA: &str = "__metadata__";
@@ -369,6 +371,271 @@ fn entry(name: &str, value: &Value, data_start: usize) -> Result<Entry> {
     build(name, dtype, shape, offsets, data_start, &ctx)
 }
 
+// —— 头部字段机制（原 `header` 平铺进 `safetensors`）：JSON 字段槽位收集、必填校验与 `Entry` 组装 ——
+
+/// 条目三个字段的可选槽位。
+type Slots = (Option<DType>, Option<Shape>, Option<(usize, usize)>);
+
+/// 三个字段；重复与未知字段按文件顺序拒绝。
+pub(crate) fn collect_fields(fields: &[(String, Value)], ctx: &str) -> Result<Slots> {
+    let mut dtype = None;
+    let mut shape = None;
+    let mut offsets = None;
+    for (key, value) in fields {
+        field(key, value, ctx, &mut dtype, &mut shape, &mut offsets)?;
+    }
+    Ok((dtype, shape, offsets))
+}
+
+/// 一条字段写进对应槽位；未知字段直接报错。
+fn field(
+    key: &str,
+    value: &Value,
+    ctx: &str,
+    dtype: &mut Option<DType>,
+    shape: &mut Option<Shape>,
+    offsets: &mut Option<(usize, usize)>,
+) -> Result<()> {
+    match key {
+        "dtype" => dtype_of(value).and_then(|value| set_once(dtype, value, key, ctx)),
+        "shape" => shape_of(value).and_then(|value| set_once(shape, value, key, ctx)),
+        "data_offsets" => offsets_of(value).and_then(|value| set_once(offsets, value, key, ctx)),
+        other => Err(bad(format!(
+            "未知字段 `{other}`（条目只允许 dtype / shape / data_offsets）"
+        ))
+        .with(ctx)),
+    }
+}
+
+/// 字段只允许出现一次。
+fn set_once<T>(slot: &mut Option<T>, value: T, key: &str, ctx: &str) -> Result<()> {
+    if slot.is_some() {
+        return Err(bad(format!("字段 `{key}` 重复")).with(ctx));
+    }
+    *slot = Some(value);
+    Ok(())
+}
+
+/// 三个必填字段，缺一即报错并指出名字。
+pub(crate) fn required_fields(
+    dtype: Option<DType>,
+    shape: Option<Shape>,
+    offsets: Option<(usize, usize)>,
+    ctx: &str,
+) -> Result<(DType, Shape, (usize, usize))> {
+    let dtype = required(dtype, "dtype", ctx)?;
+    let shape = required(shape, "shape", ctx)?;
+    let offsets = required(offsets, "data_offsets", ctx)?;
+    Ok((dtype, shape, offsets))
+}
+
+fn required<T>(slot: Option<T>, key: &str, ctx: &str) -> Result<T> {
+    slot.ok_or_else(|| bad(format!("缺字段 `{key}`")).with(ctx))
+}
+
+/// 区间长度与形状自洽，并把相对起点转成绝对偏移。
+pub(crate) fn build(
+    name: &str,
+    dtype: DType,
+    shape: Shape,
+    (begin, end): (usize, usize),
+    data_start: usize,
+    ctx: &str,
+) -> Result<Entry> {
+    let expected = shape.element_bytes(dtype);
+    if end < begin {
+        return Err(bad(format!("区间 {begin}..{end} 起点晚于终点")).with(ctx));
+    }
+    if end - begin != expected {
+        return Err(bad(format!(
+            "区间 {begin}..{end} 是 {} 字节，但 {:?} {:?} 推出 {expected} 字节",
+            end - begin,
+            dtype,
+            shape.dims()
+        ))
+        .with(ctx));
+    }
+    let offset = data_start
+        .checked_add(begin)
+        .ok_or_else(|| bad(format!("偏移 {begin} 与数据段起点相加溢出")).with(ctx))?;
+    Ok(Entry::new(name, dtype, shape).at(offset))
+}
+
+/// `dtype` → [`DType`]；不认识的名字直接报错并列出闭集。
+fn dtype_of(value: &Value) -> Result<DType> {
+    let name = value.string().map_err(|error| error.with("字段 `dtype`"))?;
+    DTYPES
+        .iter()
+        .find(|(known, _)| *known == name)
+        .map(|(_, dtype)| *dtype)
+        .ok_or_else(|| {
+            let known: Vec<&str> = DTYPES.iter().map(|(name, _)| *name).collect();
+            Error::new(
+                Code::Unsupported,
+                format!("`dtype` 是 `{name}`，闭集里只有 {}", known.join(" / ")),
+            )
+            .with("字段 `dtype`")
+        })
+}
+
+fn shape_of(value: &Value) -> Result<Shape> {
+    let items = value.array().map_err(|error| error.with("字段 `shape`"))?;
+    let mut dims = Vec::with_capacity(items.len());
+    for item in items {
+        let number = item
+            .integer()
+            .map_err(|error| error.with("字段 `shape` 的轴长度"))?;
+        let axis = nonnegative(number, "轴长度", "字段 `shape`")?;
+        dims.push(axis);
+    }
+    Ok(Shape::new(dims))
+}
+
+/// 一个非负整数换算成 `usize`；负数（或超出可寻址范围）按 `Invalid` 拒绝，给出字段站点。
+fn nonnegative(number: i64, what: &str, ctx: &str) -> Result<usize> {
+    usize::try_from(number).map_err(|_| bad(format!("{what} {number} 不能为负")).with(ctx))
+}
+
+fn offsets_of(value: &Value) -> Result<(usize, usize)> {
+    let (begin, end) = pair_of(value)?;
+    let begin = offset(begin)?;
+    let end = offset(end)?;
+    if begin > end {
+        return Err(bad(format!("`data_offsets` 的起点 {begin} 晚于终点 {end}"))
+            .with("字段 `data_offsets`"));
+    }
+    Ok((begin, end))
+}
+
+/// `data_offsets` 必须是恰好两个元素的数组。
+fn pair_of(value: &Value) -> Result<(&Value, &Value)> {
+    let items = value
+        .array()
+        .map_err(|error| error.with("字段 `data_offsets`"))?;
+    match items {
+        [begin, end] => Ok((begin, end)),
+        _ => Err(bad(format!(
+            "`data_offsets` 必须是两个整数，实际 {} 个",
+            items.len()
+        ))
+        .with("字段 `data_offsets`")),
+    }
+}
+
+/// 一个非负偏移值；负数越界即报错。
+fn offset(value: &Value) -> Result<usize> {
+    let number = value
+        .integer()
+        .map_err(|error| error.with("字段 `data_offsets`"))?;
+    nonnegative(number, "偏移", "字段 `data_offsets`")
+}
+
+/// 8 字节长度前缀与头部 JSON 切片；两者都必须落在文件内。
+pub(crate) fn header_slice(bytes: &[u8]) -> Result<(usize, &[u8])> {
+    let Some(prefix) = bytes.get(..8) else {
+        return Err(bad(format!(
+            "文件只有 {} 字节，读不出 8 字节头部长度",
+            bytes.len()
+        )));
+    };
+    let mut word = [0u8; 8];
+    word.copy_from_slice(prefix);
+    let (declared, header_end) = split_prefix(word)?;
+    let Some(text) = bytes.get(8..header_end) else {
+        return Err(bad(format!(
+            "头部声明 {declared} 字节，但 {header_end} 已超出文件长度 {}",
+            bytes.len()
+        )));
+    };
+    Ok((header_end, text))
+}
+
+/// 数据段：必须正好被条目覆盖，不许多余字节。
+pub(crate) fn data_after<'b>(
+    bytes: &'b [u8],
+    header: &Header,
+    header_end: usize,
+) -> Result<&'b [u8]> {
+    let data = &bytes[header_end..];
+    let covered = header.data_bytes();
+    if covered == data.len() {
+        return Ok(data);
+    }
+    Err(bad(format!(
+        "数据段应为 {covered} 字节（由条目的最大结束偏移推出），实际 {} 字节",
+        data.len()
+    ))
+    .with("weights::safetensors::Archive"))
+}
+
+/// 读端内部错误：偏移越界只可能是头部与数据段漂移。
+pub(crate) fn internal(message: String) -> Error {
+    Error::new(Code::Internal, message).with("weights::safetensors::Archive::read")
+}
+
+// —— 只读内存映射源（原 `mmap` 平铺进 `safetensors`）：Unix + `mmap` feature 下的零拷贝 Reader ——
+
+/// 只读映射权重源：整份文件映射后复用 safetensors 头部自证校验，条目字节作为映射借用。
+#[cfg(all(feature = "mmap", unix))]
+#[derive(Debug)]
+pub struct MmapSource {
+    map: Mmap,
+    header: Header,
+}
+
+#[cfg(all(feature = "mmap", unix))]
+impl MmapSource {
+    /// 打开并校验一个权重文件，整份映射为只读。
+    ///
+    /// # Errors
+    ///
+    /// [`diagnostic::Code::Io`]：打不开、取长度失败或映射失败（透传自 [`Mmap::open`]）。
+    ///
+    /// [`diagnostic::Code::Invalid`] / [`diagnostic::Code::Unsupported`]：与 [`Archive::parse`]
+    /// 同口径的头部校验失败（长度前缀、字段、区间、dtype 闭集）。
+    pub fn open(path: &Path) -> Result<Self> {
+        let map = Mmap::open(path)?;
+        let archive = Archive::parse(map.as_slice())?;
+        let header = archive.header().clone();
+        Ok(Self { map, header })
+    }
+
+    /// 已校验的头部。
+    #[must_use]
+    pub fn header(&self) -> &Header {
+        &self.header
+    }
+
+    /// 整份映射的只读字节。
+    #[must_use]
+    pub fn as_slice(&self) -> &[u8] {
+        self.map.as_slice()
+    }
+}
+
+#[cfg(all(feature = "mmap", unix))]
+impl Reader for MmapSource {
+    fn read(&self, entry: &Entry) -> Result<&[u8]> {
+        let all = self.map.as_slice();
+        let data = all.get(self.header.data_start()..).ok_or_else(|| {
+            Error::new(
+                Code::Internal,
+                format!(
+                    "数据段起点 {} 超出映射长度 {}",
+                    self.header.data_start(),
+                    all.len()
+                ),
+            )
+            .with("weights::safetensors::MmapSource::read")
+        })?;
+        entry_slice(&self.header, data, entry)
+    }
+}
+
 #[cfg(test)]
 #[path = "../tests/safetensors.rs"]
 mod tests;
+
+#[cfg(all(feature = "mmap", unix, test))]
+#[path = "../tests/mmap.rs"]
+mod mmap_tests;

@@ -26,7 +26,7 @@
 //! - [`QType`](qtype.rs)：**一块元素怎么打包**（GGML 块量化，`f16`/`f32`/sub-scale），如 `Q4_K`；
 //! - [`MxType`](mxtype.rs)：**低精度元素 + 块共享指数**（OCP MX 与 NVFP4 厂商扩展）。
 //! - [`Element`](mxtype.rs)：**MX 块内是哪种元素**（E2M1/E2M3/E3M2/E4M3/E5M2/INT8），只回答位宽、
-//!   浮点位域与标量对应。
+//!   浮点位域、标量对应与浮点/整数分类。
 //!
 //! `QType`/`MxType` 的布局表不引用 `DType`；唯一的跨轴**身份**映射是 [`mxtype::Element::dtype`]——
 //! 元素格式到标量 `DType` 的身份对应（6 位 MX 格式没有标量对应时为 `None`）。本文件只是薄入口与

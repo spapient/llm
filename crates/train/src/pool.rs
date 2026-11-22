@@ -2,7 +2,7 @@
 
 use crate::geometry::{Geometry, Running};
 use crate::kernel::Kernel;
-use crate::shape::{Data, Kind, View, no_storage, zeroed};
+use crate::kernel::{Data, Kind, View, no_storage, zeroed};
 use crate::store::SITE;
 use autograd::{Sizes, Store, Var};
 use diagnostic::{Code, Error, Result};

@@ -170,11 +170,11 @@ fn a_tampered_certificate_is_rejected_on_read() {
     let rest = pack_bytes(&f32_bytes(&cert.rest));
 
     let framed = |note: Vec<u8>| {
-        let mut p = framed(&note);
+        let mut p = framed(&note).expect("证书段");
 
-        p.extend(framed(&left));
+        p.extend(framed(&left).expect("左因子段"));
 
-        p.extend(framed(&right));
+        p.extend(framed(&right).expect("右因子段"));
 
         p.extend(rest.clone());
 
@@ -225,7 +225,7 @@ fn the_rank_payload_requires_a_certificate() {
 
     let low = pack_bytes(&f32_bytes(&cert.low));
 
-    let mut old = framed(&cert.note.to_bytes());
+    let mut old = framed(&cert.note.to_bytes()).expect("证书段");
 
     old.extend_from_slice(&(low.len() as u32).to_le_bytes());
 

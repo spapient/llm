@@ -2,11 +2,14 @@
 //! （本文件末尾的 `eval_expression`）。自洽校验在 [`crate::witness`] 的 `Profile::validate`。
 
 use crate::atom::Set;
+use crate::decode::{self, Absent, rows};
 use crate::prof::*;
 use core::fmt;
 use diagnostic::Error;
 
 pub(crate) use crate::atom::invalid;
+
+
 
 // ── parse ─────────────────────────────────────────────────────────────
 
@@ -91,7 +94,7 @@ fn named(table: &Table, key: &str, field: &str) -> Result<String, ProfileError> 
 }
 /// `[meta].emit`：必须在 [`Emit`] 闭集里。
 fn emit_of(table: &Table) -> Result<Emit, ProfileError> {
-    closed::<Emit>(text(table, "emit", "meta.emit")?, "meta.emit")
+    decode::closed("meta.emit", text(table, "emit", "meta.emit")?)
 }
 /// `[fingerprint]` 规则表：规则名 → 解析后的匹配规则。
 type Fingerprint = Vec<(String, MatchRule)>;
@@ -130,21 +133,17 @@ fn fingerprint_rule(key: &str, value: &Value) -> Result<(String, MatchRule), Pro
 }
 /// `[space]` 段：语义存储名 → 物理名，三级存储必须齐全。
 fn parse_spaces(table: &Table) -> Result<Spaces, ProfileError> {
-    let section = table.table("space");
-    let spaces: Vec<(Space, String)> = match section {
-        Some(map) => entries(map, space_entry)?,
-        None => Vec::new(),
-    };
+    let spaces: Spaces = rows(table, "space", Absent::Empty, |_, key, value| {
+        space_entry(key, value)
+    })?;
     require_spaces(&spaces)?;
     Ok(spaces)
 }
 /// 一条存储映射：键是闭集里的语义名，值是物理名。
 fn space_entry(key: &str, value: &Value) -> Result<(Space, String), ProfileError> {
-    let space = closed::<Space>(key, "space")?;
-    let Value::Str(name) = value else {
-        return Err(bad(format!("space.{key}"), "只接受字符串"));
-    };
-    Ok((space, name.clone()))
+    let space = decode::closed("space", key)?;
+    let name = decode::text(format!("space.{key}"), value)?;
+    Ok((space, name.to_string()))
 }
 /// 三级存储的语义名必须齐全：缺一条就拼不出完整的物理名映射。
 fn require_spaces(spaces: &[(Space, String)]) -> Result<(), ProfileError> {
@@ -182,10 +181,9 @@ fn parse_simt(table: &Table) -> Simt {
 }
 /// `[units.<name>]` 段：执行单元及其可访问的存储层；缺段表示档案不区分单元。
 fn parse_units(table: &Table) -> Result<Vec<Unit>, ProfileError> {
-    let Some(section) = table.table("units") else {
-        return Ok(Vec::new());
-    };
-    entries(section, unit_entry)
+    rows(table, "units", Absent::Empty, |_, name, value| {
+        unit_entry(name, value)
+    })
 }
 /// 一个执行单元：必须是 `[units.<name>]` 形式的表，`space` 必填。
 fn unit_entry(name: &str, value: &Value) -> Result<Unit, ProfileError> {
@@ -193,10 +191,12 @@ fn unit_entry(name: &str, value: &Value) -> Result<Unit, ProfileError> {
         return Err(bad(format!("units.{name}"), UNIT_DETAIL));
     };
     let path = format!("units.{name}.space");
-    let space = parse_space_set(&path, &list(inner, "space", &path)?)?;
+    let Some(space) = inner.get("space") else {
+        return Err(missing(&path));
+    };
     Ok(Unit {
         name: name.to_string(),
-        space,
+        space: decode::closed_set(&path, space)?,
     })
 }
 /// `[[provides]]` 数组：至少一条，否则协商没有可选的能力。
@@ -277,40 +277,6 @@ fn derive(field: &str, src: &str) -> Result<f64, ProfileError> {
 
 // ── provides 字段 ─────────────────────────────────────────────────────
 
-/// 一个"名字集合"字段：标量字符串或字符串数组，逐项交给 `each`。 `dt` 与 `space` 是同一形状，且都只把名字解析成位集——这里不克隆 `String`。
-fn each_name(
-    field: impl fmt::Display,
-    value: &Value,
-    mut each: impl FnMut(&str) -> Result<(), ProfileError>,
-) -> Result<(), ProfileError> {
-    match value {
-        Value::Str(text) => each(text),
-        Value::Array(items) => each_in_array(field, items, &mut each),
-        _ => Err(bad(field, "只接受字符串或字符串数组")),
-    }
-}
-/// 数组形态：逐项必须是字符串，遇到别的类型就报错（不静默跳过）。
-fn each_in_array(
-    field: impl fmt::Display,
-    items: &[Value],
-    each: &mut impl FnMut(&str) -> Result<(), ProfileError>,
-) -> Result<(), ProfileError> {
-    for item in items {
-        let Value::Str(text) = item else {
-            return Err(bad(&field, "数组里只能是字符串"));
-        };
-        each(text)?;
-    }
-    Ok(())
-}
-/// 一组存储层名字：每个都必须在 [`Space`] 闭集里。
-fn parse_space_set(field: impl fmt::Display, items: &[&str]) -> Result<SpaceSet, ProfileError> {
-    let mut set = SpaceSet::empty();
-    for item in items {
-        set.insert(closed::<Space>(item, &field)?);
-    }
-    Ok(set)
-}
 /// 一条 `[[provides]]`：认得的键各有分支，其余一律当属性（键还要过 [`AttrKey`] 闭集）。
 fn parse_provide(entry: &Table, idx: usize) -> Result<Provide, ProfileError> {
     let mut provide = head_of(entry, idx)?;
@@ -322,7 +288,7 @@ fn parse_provide(entry: &Table, idx: usize) -> Result<Provide, ProfileError> {
 /// 一条 `[[provides]]` 的头两项：`prim` 必填且必须在闭集里，`impl` 缺省为 `-`。
 fn head_of(entry: &Table, idx: usize) -> Result<Provide, ProfileError> {
     let field = at(idx, "prim");
-    let prim = closed::<Prim>(text(entry, "prim", field)?, field)?;
+    let prim = decode::closed(field, text(entry, "prim", field)?)?;
     Ok(Provide::of(prim, entry.string("impl").unwrap_or("-")))
 }
 /// 三条区间：主维度（`m` / `bytes` / `extent` 三选一）与 `n` / `k`。
@@ -334,8 +300,8 @@ fn provide_axes(provide: &mut Provide, entry: &Table, idx: usize) -> Result<(), 
 }
 /// `dt` / `space` 缺省为空集，`grade` 必填。
 fn provide_types(provide: &mut Provide, entry: &Table, idx: usize) -> Result<(), ProfileError> {
-    provide.dt = closed_set(entry, idx, "dt", DTypeSet::empty(), DType::parse_name)?;
-    provide.space = closed_set(entry, idx, "space", SpaceSet::empty(), Space::parse)?;
+    provide.dt = set_field(entry, idx, "dt")?;
+    provide.space = set_field(entry, idx, "space")?;
     provide.grade = grade_of(entry, idx)?;
     Ok(())
 }
@@ -361,32 +327,23 @@ fn span_of(entry: &Table, idx: usize, names: &[&str], detail: &str) -> Result<Sp
     let Some(text) = entry.string(alias) else {
         return Err(bad(field, detail));
     };
-    parse_span(field, text)
+    decode::span(field, text)
 }
-/// `dt` / `space` 的公共形状：标量或数组都接受，缺省是空集，闭集外取值报 `Unknown`。
-fn closed_set<E: Closed, const WORDS: usize>(
+/// `dt` / `space`：缺省是空集，写了就逐项落在闭集里。
+fn set_field<E: Closed, const WORDS: usize>(
     entry: &Table,
     idx: usize,
     key: &str,
-    empty: Set<E, WORDS>,
-    parse: impl Fn(&str) -> Option<E>,
 ) -> Result<Set<E, WORDS>, ProfileError> {
-    let Some(value) = entry.get(key) else {
-        return Ok(empty);
-    };
-    let field = at(idx, key);
-    let mut set = Set::empty();
-    each_name(field, value, |name| {
-        let item = parse(name).ok_or_else(|| unknown(field, name, &closed_names(E::ALL)))?;
-        set.insert(item);
-        Ok(())
-    })?;
-    Ok(set)
+    match entry.get(key) {
+        Some(value) => decode::closed_set(at(idx, key), value),
+        None => Ok(Set::empty()),
+    }
 }
 /// `grade`：必填，闭集外取值报 `Unknown`。
 fn grade_of(entry: &Table, idx: usize) -> Result<Grade, ProfileError> {
     let path = at(idx, "grade");
-    closed::<Grade>(text(entry, "grade", path)?, &path)
+    decode::closed(path, text(entry, "grade", path)?)
 }
 /// `witness`：内联表 `{ file, func, expect }`；只有路径的见证无法执行。
 fn witness_of(entry: &Table, idx: usize) -> Result<Option<Witness>, ProfileError> {
@@ -449,29 +406,9 @@ fn parsed_key(key: &str) -> bool {
 }
 /// 一条属性：键在 [`AttrKey`] 闭集里，取值按标量或数组展开。
 fn one_attr(idx: usize, key: &str, value: &Value) -> Result<Attr, ProfileError> {
-    let attr_key = closed::<AttrKey>(key, &at(idx, key))?;
-    Ok(Attr::new(attr_key, attr_values(idx, key, value)?))
+    let attr_key = decode::closed(at(idx, key), key)?;
+    Ok(Attr::new(attr_key, decode::names(at(idx, key), value)?))
 }
-/// 属性取值：标量或数组；表在这里没有意义。
-fn attr_values(idx: usize, key: &str, value: &Value) -> Result<Vec<String>, ProfileError> {
-    let path = at(idx, key);
-    match value {
-        Value::Array(items) => items.iter().map(|item| one_string(path, item)).collect(),
-        Value::Table(_) => Err(bad(path, "属性不能是表")),
-        scalar => scalar_texts(scalar).ok_or_else(|| bad(path, "属性不能是表")),
-    }
-}
-fn one_string(path: impl fmt::Display, item: &Value) -> Result<String, ProfileError> {
-    match item {
-        Value::Str(text) => Ok(text.clone()),
-        _ => Err(bad(path, "属性数组里只能是字符串")),
-    }
-}
-/// 区间文本：解析失败时把原话带上，字段路径由调用方给全。
-fn parse_span(field: impl fmt::Display, text: &str) -> Result<Span, ProfileError> {
-    Span::parse(text).map_err(|error| bad(&field, error.message().to_string()))
-}
-
 // ── 推导式求值 ───────────────────────────────────────
 
 /// 求值一个只用数值字面量、`+ - * /` 与括号的推导式。

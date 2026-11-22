@@ -116,6 +116,7 @@ include!(concat!(env!("OUT_DIR"), "/tables.rs"));
 
 pub use generated::{embedded, names};
 
+mod decode;
 mod schema;
 mod witness;
 
