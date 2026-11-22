@@ -49,16 +49,8 @@ fn decode_attention_scans_history_past_one_block() {
     let (catalogue, dirs) = catalogue_and_dirs("engine-metal-decode");
 
     let (sample, q, k, v) = decode_sample(Q_ROWS, HIST, D);
-    let want: Vec<f64> = op::attention::decode_attention::reference(&sample)
-        .expect("CPU 参考")
-        .iter()
-        .map(|value| f64::from(*value))
-        .collect();
-
-    let q_buf = upload(&device, &q, "Q");
-    let k_buf = upload(&device, &k, "K");
-    let v_buf = upload(&device, &v, "V");
-    let mut y = output_buf(&device, Q_ROWS * D, "Y");
+    let want = want_from(&op::attention::decode_attention::reference(&sample).expect("CPU 参考"));
+    let (q_buf, k_buf, v_buf, mut y) = attention_bufs(&device, &q, &k, &v, Q_ROWS * D);
     let pipe = grid_pipeline_sample(
         &device,
         &catalogue,
@@ -103,16 +95,8 @@ fn latent_attention_scans_time_axis_past_one_block() {
     let read = |name: &str| sample.f32(name).expect("样本缓冲").to_vec();
     let (q, k, v) = (read("q"), read("k"), read("v"));
     let dc = sample.scalar("DC").expect("样本缺 DC") as usize;
-    let want: Vec<f64> = op::attention::latent::reference(&sample)
-        .expect("CPU 参考")
-        .iter()
-        .map(|value| f64::from(*value))
-        .collect();
-
-    let q_buf = upload(&device, &q, "Q");
-    let k_buf = upload(&device, &k, "K");
-    let v_buf = upload(&device, &v, "V");
-    let mut y = output_buf(&device, R * dc, "Y");
+    let want = want_from(&op::attention::latent::reference(&sample).expect("CPU 参考"));
+    let (q_buf, k_buf, v_buf, mut y) = attention_bufs(&device, &q, &k, &v, R * dc);
     let pipe = grid_pipeline_sample(
         &device,
         &catalogue,

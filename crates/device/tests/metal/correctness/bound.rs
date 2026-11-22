@@ -20,12 +20,7 @@ fn gemm_stays_within_forward_error_bound_on_full_mantissa_inputs() {
     crate::backends::install();
     let (catalogue, dirs) = catalogue_and_dirs("engine-metal-bound");
 
-    let mut rng = Rng::new(0x5eed_1234_abcd_0001);
-    let a = rng.values(M * K);
-    let b = rng.values(K * N);
-    let a_buf = upload(&device, &a, "A");
-    let b_buf = upload(&device, &b, "B");
-    let mut y = output_buf(&device, M * N, "Y");
+    let (a, b, a_buf, b_buf, mut y) = gemm_fixture(&device, (M, N, K), 0x5eed_1234_abcd_0001);
     let grid = [M as u32, N as u32, 1];
 
     // 路径一：标量网格（每线程算一个输出元素）。
@@ -97,12 +92,8 @@ fn gemm_handles_ragged_tail_shapes_and_refuses_to_pretend_it_tiled() {
     let (catalogue, dirs) = catalogue_and_dirs("engine-metal-ragged");
 
     for (m, n, k) in [(1, 1, 1), (3, 5, 7), (17, 33, 65), (129, 7, 3)] {
-        let mut rng = Rng::new(0x5eed_0000_0000_0002 ^ ((m * 1000 + n * 10 + k) as u64));
-        let a = rng.values(m * k);
-        let b = rng.values(k * n);
-        let a_buf = upload(&device, &a, "A");
-        let b_buf = upload(&device, &b, "B");
-        let mut y = output_buf(&device, m * n, "Y");
+        let seed = 0x5eed_0000_0000_0002 ^ ((m * 1000 + n * 10 + k) as u64);
+        let (a, b, a_buf, b_buf, mut y) = gemm_fixture(&device, (m, n, k), seed);
         let label = format!("{m}×{n}×{k}");
 
         let sample = gemm_sample(m, n, k);
@@ -161,12 +152,7 @@ fn gemm_writes_every_output_and_repeats_bit_exactly() {
     crate::backends::install();
     let (catalogue, dirs) = catalogue_and_dirs("engine-metal-repeat");
 
-    let mut rng = Rng::new(0x5eed_0000_0000_0003);
-    let a = rng.values(M * K);
-    let b = rng.values(K * N);
-    let a_buf = upload(&device, &a, "A");
-    let b_buf = upload(&device, &b, "B");
-    let mut y = output_buf(&device, M * N, "Y");
+    let (a, b, a_buf, b_buf, mut y) = gemm_fixture(&device, (M, N, K), 0x5eed_0000_0000_0003);
     let grid = [M as u32, N as u32, 1];
     let block = [16, 16, 1];
 

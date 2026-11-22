@@ -193,6 +193,11 @@ fn attention_reference(q: &[f32], k: &[f32], v: &[f32], s: usize, d: usize) -> V
 }
 
 /// 上传一路 Q/K/V 并开一路输出缓冲：注意力四路缓冲的固定装配。
+/// CPU 参考的 f32 结果升成 f64 期望值：判据在 f64 上比较，避免把参考自身的舍入算进误差。
+fn want_from(reference: &[f32]) -> Vec<f64> {
+    reference.iter().map(|value| f64::from(*value)).collect()
+}
+
 fn attention_bufs(
     device: &MetalDevice,
     q: &[f32],
@@ -206,6 +211,24 @@ fn attention_bufs(
         upload(device, v, "V"),
         output_buf(device, len, "Y"),
     )
+}
+
+/// GEMM 的满尾数夹具：`a[m×k]`、`b[k×n]` 按 `seed` 生成并上传，另配一片未初始化的 `y[m×n]`。
+///
+/// 三处用例都要这一套装配（误差界、残尾逐形状、写满与可复现），种子不同是为了让三份输入互不
+/// 相同——共用的只是**装配方式**，不是输入数据。
+fn gemm_fixture(
+    device: &MetalDevice,
+    (m, n, k): (usize, usize, usize),
+    seed: u64,
+) -> (Vec<f32>, Vec<f32>, MetalBuf, MetalBuf, MetalBuf) {
+    let mut rng = Rng::new(seed);
+    let a = rng.values(m * k);
+    let b = rng.values(k * n);
+    let a_buf = upload(device, &a, "A");
+    let b_buf = upload(device, &b, "B");
+    let y = output_buf(device, m * n, "Y");
+    (a, b, a_buf, b_buf, y)
 }
 
 mod attention;
