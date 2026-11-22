@@ -3,6 +3,7 @@ use diagnostic::{Code, Error};
 
 use super::format::Plain;
 use super::shape::{finite_scales, required_weights, scaled_groups};
+use super::simd::COLS;
 
 /// 带标度行骨架：分组、粒度、权重与标度守卫连同行切片统一收口，逐行点积由 `row_dot` 给出。
 pub(super) fn forward_rows<E>(
@@ -198,9 +199,13 @@ pub(super) fn forward_dense<C: Plain>(
     dense_scales(scales)?;
     let (m, n) = (x.len(), out.len());
     required_weights(weights.len(), n, m)?;
-    for (row, value) in out.iter_mut().enumerate() {
-        let w_row = &weights[row * m..][..m];
-        *value = C::dot(w_row, x);
+    let full = n - n % COLS;
+    for j in (0..full).step_by(COLS) {
+        let block = &weights[j * m..][..COLS * m];
+        C::dot_four(block, x, m, &mut out[j..][..COLS]);
+    }
+    for j in full..n {
+        out[j] = C::dot(&weights[j * m..][..m], x);
     }
     Ok(())
 }

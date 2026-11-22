@@ -13,7 +13,7 @@ use std::simd::{Simd, StdFloat};
 use super::ScaledRow;
 
 /// 4 列累加器：一次算 4 行，4 条向量链各持一组寄存器，一份 `x` 块摊到 4 行。
-const COLS: usize = 4;
+pub(crate) const COLS: usize = 4;
 
 /// 宽档车道数：一条 AVX2 `ymm`、四条 NEON 寄存器。
 const WIDE: usize = 16;
@@ -258,18 +258,53 @@ impl Load for u8 {
 /// 连续点积骨架：`CHAINS` 条独立累加链轮转，权重按 [`Load`] 取成车道，行尾归约一次。
 ///
 /// 这是 `f32` 与对称 `int8` 共用的唯一一份点积——两种格式的差别只剩 [`Load`] 的取法。
+///
+/// 链按 [`CHAINS`] 分段常量展开，`acc` 的下标因此是编译期常量、累加器整份留在向量寄存器里。
+/// 分段之后块 `g·CHAINS + c` 落在链 `c`，与"块下标取模"是同一张映射，故逐位不变——2026-11-22
+/// 实测两者同为 `gemv_f32/decode` 39.8–40.2 GiB/s（离散 0.5%），即常量下标只是把意图写明，
+/// 并没有换来速度：这条路径只在 `cfg(nightly)` 下编译，那台机器上的实测数字属于 stable 退路
+/// （`gemv/simd/fallback.rs`），本文件的热路径结论必须在那条通道上取。
 pub(crate) fn elementwise<T: Load>(w: &[T], x: &[f32]) -> f32 {
-    let (w_chunks, w_tail) = w.as_chunks::<WIDE>();
-    let (x_chunks, x_tail) = x.as_chunks::<WIDE>();
+    let (w_groups, w_tail) = w.as_chunks::<{ WIDE * CHAINS }>();
+    let (x_groups, x_tail) = x.as_chunks::<{ WIDE * CHAINS }>();
     let mut acc = [Simd::<f32, WIDE>::splat(0.0); CHAINS];
-    for (i, (w, x)) in w_chunks.iter().zip(x_chunks).enumerate() {
-        acc[i % CHAINS] = T::wide(w).mul_add(Simd::from_slice(x), acc[i % CHAINS]);
+    for (wg, xg) in w_groups.iter().zip(x_groups) {
+        for c in 0..CHAINS {
+            let (wc, xc) = (&wg[c * WIDE..][..WIDE], &xg[c * WIDE..][..WIDE]);
+            acc[c] = T::wide(wc).mul_add(Simd::from_slice(xc), acc[c]);
+        }
     }
     let mut total = acc.iter().copied().map(SimdFloat::reduce_sum).sum::<f32>();
     for (w, x) in w_tail.iter().zip(x_tail) {
         total += T::one(*w) * *x;
     }
     total
+}
+
+/// [`COLS`] 行并行点积：一份 `x` 段摊到 [`COLS`] 行，权重每 64 B 的取数从 8 次降到 5 次。
+///
+/// 行内按 [`WIDE`] 整除的部分走向量，零头逐行标量收口——零头重读 `x` 的代价可忽略，换来行宽
+/// 不必是 [`WIDE`] 的倍数。每行只有一条累加链：链的独立性由"行"提供（[`COLS`] 条独立链），
+/// 而不是由链数提供，所以累加器刚好 `COLS` 份，全部留在寄存器里。
+pub(crate) fn elementwise_four<T: Load>(w: &[T], x: &[f32], m: usize, out: &mut [f32]) {
+    let mut acc = [Simd::<f32, WIDE>::splat(0.0); COLS];
+    let full = m - m % WIDE;
+    let row = |r: usize| &w[r * m..][..m];
+    let chunks: [&[[T; WIDE]]; COLS] = [0, 1, 2, 3].map(|r| row(r).as_chunks::<WIDE>().0);
+    let (x_head, x_tail) = x.split_at(full);
+    for (k, xv) in x_head.as_chunks::<WIDE>().0.iter().enumerate() {
+        let xv = Simd::from_slice(xv);
+        for r in 0..COLS {
+            acc[r] = T::wide(&chunks[r][k]).mul_add(xv, acc[r]);
+        }
+    }
+    for (r, o) in out.iter_mut().enumerate() {
+        let mut total = acc[r].reduce_sum();
+        for (wc, xc) in row(r)[full..].iter().zip(x_tail) {
+            total += T::one(*wc) * *xc;
+        }
+        *o = total;
+    }
 }
 
 #[cfg(test)]

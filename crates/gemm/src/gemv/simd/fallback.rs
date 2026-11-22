@@ -19,6 +19,9 @@ const WIDE: usize = 16;
 /// 独立累加链数，与向量版一致：一条链的乘加延迟约 4 拍，4 条刚好把流水填满。
 const CHAINS: usize = 4;
 
+/// 行并行度，与向量版一致：一次算 [`COLS`] 行，一份 `x` 段摊到这 4 行上。
+pub(crate) const COLS: usize = 4;
+
 /// 逐元素通道的权重取法：稠密 `f32` 直取，对称 `int8` 按二补数重新解释。
 ///
 /// 一条通道只由权重元素类型选，[`elementwise`] 因此对两种格式是同一段代码。
@@ -37,6 +40,33 @@ impl Load for u8 {
     /// `u8 → i8` 是位模式重解释，`i8 → f32` 是有符号展宽。
     fn one(elem: Self) -> f32 {
         (elem as i8) as f32
+    }
+}
+
+/// [`COLS`] 行并行点积：`w` 是连续 4 条行、每行 `m` 个元素，结果写进 `out` 的 4 个槽。
+///
+/// 与向量版逐位同形：每行一条累加链、按 `WIDE` 分段、段内逐条 `mul_add`，行尾归约一次。
+/// 行内的独立性由"行"提供（[`COLS`] 条独立链），所以累加器只占 `COLS × WIDE` 个标量，
+/// 循环体形状又足以让 LLVM 自己向量化——稳定版没有显式车道，靠的就是这一点。
+pub(crate) fn elementwise_four<T: Load>(w: &[T], x: &[f32], m: usize, out: &mut [f32]) {
+    let mut acc = [[0.0f32; WIDE]; COLS];
+    let full = m - m % WIDE;
+    let (x_head, x_tail) = x.split_at(full);
+    for (k, xs) in x_head.as_chunks::<WIDE>().0.iter().enumerate() {
+        let at = k * WIDE;
+        for (r, chain) in acc.iter_mut().enumerate() {
+            let wc = &w[r * m + at..][..WIDE];
+            for (lane, (wv, xv)) in wc.iter().zip(xs).enumerate() {
+                chain[lane] = T::one(*wv).mul_add(*xv, chain[lane]);
+            }
+        }
+    }
+    for (r, (o, chain)) in out.iter_mut().zip(acc).enumerate() {
+        let mut total: f32 = chain.iter().sum();
+        for (wc, xc) in w[r * m + full..][..m - full].iter().zip(x_tail) {
+            total = T::one(*wc).mul_add(*xc, total);
+        }
+        *o = total;
     }
 }
 

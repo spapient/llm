@@ -52,6 +52,11 @@ impl<const B: usize> Plain for gemv::Dense<B> {
     fn dot(w_row: &[f32], x: &[f32]) -> f32 {
         super::simd::elementwise(w_row, x)
     }
+
+    /// 4 行并行：一份 `x` 段摊到 4 行，解码阶段每 64 B 权重的取数从 8 次降到 5 次。
+    fn dot_four(w: &[f32], x: &[f32], m: usize, out: &mut [f32]) {
+        super::simd::elementwise_four(w, x, m, out)
+    }
 }
 
 /// 稠密格式的语义类型：分块宽度 [`BLOCK`]、任意输入宽度都合法。

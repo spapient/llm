@@ -238,10 +238,8 @@ pub(crate) fn matches_reference_over_shapes<G: Gemm>(shapes: &[(usize, usize)]) 
     }
 }
 
-/// 取样本里的 `a`/`b` 并按 `m×n` 跑一遍生产 [`forward`]，输出写进调用方的 `out`。
-///
-/// 两条闭式校验（整数 [`hand_closed`]、稠密 [`dense_closed`]）的公共装配：它们各自的判据不同，
-/// 但"先把生产结果拿到手"这一段必须逐字一致，否则两条校验比的就不是同一次调用。
+/// 取样本 `a`/`b` 并按 `m×n` 跑一遍生产 [`forward`]：两条闭式校验的公共装配，
+/// 这一段必须逐字一致，否则 [`hand_closed`] 与 [`dense_closed`] 比的不是同一次调用。
 #[cfg(test)]
 fn closed_pair<'a, G: Gemm>(
     sample: &'a Sample,

@@ -9,10 +9,37 @@ use cutile::substitute::{EpiArgs, epilogue};
 use llm_spec::epilogue::Step;
 use prof::atom::{ActKind, DType};
 
-/// 瓦片形状：`bias` 的长度是列数，其余步按元素走。
-const ROWS: usize = 2;
-const COLS: usize = 3;
-const N: usize = ROWS * COLS;
+/// 场景数组的最大元素数：见证 ABI 的写出上限 [`testkit::witness::MAX_OUT`] 就是这个数，
+/// 用例不可能比它更大，所以数组按上限定长、按形状切片。
+const MAX_N: usize = testkit::witness::MAX_OUT;
+
+/// 场景数组的最大列数：`bias` 的长度等于列数，比元素数更紧。
+const MAX_COLS: usize = 5;
+
+/// 一个瓦片形状：`bias` 按列广播，其余步按 `rows * cols` 个元素走。
+#[derive(Clone, Copy)]
+struct Shape {
+    /// 行数：`bias` 的外层，也是行内基址 `行号 * 列数` 的来源。
+    rows: usize,
+    /// 列数：`bias` 的内层宽度。
+    cols: usize,
+}
+
+impl Shape {
+    /// 逐元素步看到的元素数。
+    fn count(self) -> usize {
+        self.rows * self.cols
+    }
+}
+
+/// 三个形状合起来把 4-wide 的向量主环与标量尾环都真的跑到，并守住行内基址：
+/// `2×3` 让逐元素步落在 6 = 4+2（向量 + 尾）、`2×4` 让 `bias` 落在 8 = 4+4（两行各一整块，
+/// 行基址必须逐行偏移）、`1×5` 让 `bias` 与逐元素步都落在 5 = 4+1（向量 + 尾）。
+const SHAPES: &[Shape] = &[
+    Shape { rows: 2, cols: 3 },
+    Shape { rows: 2, cols: 4 },
+    Shape { rows: 1, cols: 5 },
+];
 
 /// 相对误差上限，与 `cutile::reference` 的 f32 口径一致。
 const TOL: f64 = 1e-5;
@@ -41,16 +68,17 @@ const QUANT8: &[Step] = &[
     Step::Store,
 ];
 
-/// 一个场景：初始瓦片、两个第二操作数与声明顺序。
+/// 一个场景：初始瓦片、两个第二操作数与声明顺序。数组按 [`MAX_N`] / [`MAX_COLS`] 定长，
+/// 跑某个 [`Shape`] 时按需切片，同一份场景因此能被多个形状复用。
 struct Scenario {
     /// 失败信息里用的名字。
     name: &'static str,
     /// `$0` 的初值（行主序）。
-    init: [f32; N],
+    init: [f32; MAX_N],
     /// `bias` 的列偏置。
-    bias: [f32; COLS],
+    bias: [f32; MAX_COLS],
     /// `residual` 的残差。
-    residual: [f32; N],
+    residual: [f32; MAX_N],
     /// 施加顺序。
     steps: &'static [Step],
 }
@@ -58,30 +86,30 @@ struct Scenario {
 const SCENARIOS: &[Scenario] = &[
     Scenario {
         name: "bias",
-        init: [0.4, -0.9, 2.6, -3.5, 0.0, 1.25],
-        bias: [0.5, -0.25, 1.0],
-        residual: [0.0; N],
+        init: [0.4, -0.9, 2.6, -3.5, 0.0, 1.25, 0.02, -0.06],
+        bias: [0.5, -0.25, 1.0, 0.125, -2.0],
+        residual: [0.0; MAX_N],
         steps: ONLY_BIAS,
     },
     Scenario {
         name: "residual-act-scale",
-        init: [0.4, -0.9, 2.6, -3.5, 0.0, 1.25],
-        bias: [0.5, -0.25, 1.0],
-        residual: [0.1, 0.2, -0.3, 0.4, -0.5, 0.6],
+        init: [0.4, -0.9, 2.6, -3.5, 0.0, 1.25, 0.02, -0.06],
+        bias: [0.5, -0.25, 1.0, 0.125, -2.0],
+        residual: [0.1, 0.2, -0.3, 0.4, -0.5, 0.6, -0.7, 0.8],
         steps: RESID_ACT_SCALE,
     },
     Scenario {
         name: "fused-i4",
-        init: [0.4, -0.9, 2.6, -3.5, 0.0, 1.25],
-        bias: [0.5, -0.25, 1.0],
-        residual: [0.1, 0.2, -0.3, 0.4, -0.5, 0.6],
+        init: [0.4, -0.9, 2.6, -3.5, 0.0, 1.25, 0.02, -0.06],
+        bias: [0.5, -0.25, 1.0, 0.125, -2.0],
+        residual: [0.1, 0.2, -0.3, 0.4, -0.5, 0.6, -0.7, 0.8],
         steps: FUSED,
     },
     Scenario {
         name: "hard-sigmoid-i8",
-        init: [0.4, -0.9, 2.6, -3.5, 0.0, 1.25],
-        bias: [0.5, -0.25, 1.0],
-        residual: [0.1, 0.2, -0.3, 0.4, -0.5, 0.6],
+        init: [0.4, -0.9, 2.6, -3.5, 0.0, 1.25, 0.02, -0.06],
+        bias: [0.5, -0.25, 1.0, 0.125, -2.0],
+        residual: [0.1, 0.2, -0.3, 0.4, -0.5, 0.6, -0.7, 0.8],
         steps: QUANT8,
     },
 ];
@@ -99,10 +127,13 @@ fn literals(values: &[f32]) -> String {
 ///
 /// 段文本本身是设备写法（`.cu` / `.cl` / `.metal` / `.cpp` 各一份），但都只用宿主 C / C++ 也认的
 /// 构造——这正是 `witness.<ext>` 一直守的约定，装配出的尾块沿用它，所以能在宿主上原样执行。
-fn source(device: &prof::Device, scenario: &Scenario) -> Result<String, String> {
-    let count = N.to_string();
-    let cols = COLS.to_string();
-    let rows = ROWS.to_string();
+/// 这里补的头文件与设备档案的 `preamble` 对齐：真实装配路径由 `cutile::emit` 前置 `preamble`，
+/// 本用例自建翻译单元，就得自己带上同样的 `<math.h>` 与条件 `<arm_neon.h>`。
+fn source(device: &prof::Device, scenario: &Scenario, shape: Shape) -> Result<String, String> {
+    let n = shape.count();
+    let count = n.to_string();
+    let cols = shape.cols.to_string();
+    let rows = shape.rows.to_string();
     let args = EpiArgs {
         out: "y",
         bias: "BIAS",
@@ -114,6 +145,9 @@ fn source(device: &prof::Device, scenario: &Scenario) -> Result<String, String> 
     let body = epilogue(device, scenario.steps, &args).map_err(|error| error.to_string())?;
     Ok(format!(
         "#include <math.h>\n\
+         #if defined(__aarch64__)\n\
+         #include <arm_neon.h>\n\
+         #endif\n\
          static const float INIT[{n}] = {{ {init} }};\n\
          static const float BIAS[{cols}] = {{ {bias} }};\n\
          static const float RES[{n}] = {{ {resid} }};\n\
@@ -124,33 +158,34 @@ fn source(device: &prof::Device, scenario: &Scenario) -> Result<String, String> 
          for (int i = 0; i < {n}; ++i) out[i] = y[i];\n\
          return {n};\n\
          }}\n",
-        n = N,
-        cols = COLS,
-        init = literals(&scenario.init),
-        bias = literals(&scenario.bias),
-        resid = literals(&scenario.residual),
+        n = n,
+        cols = shape.cols,
+        init = literals(&scenario.init[..n]),
+        bias = literals(&scenario.bias[..shape.cols]),
+        resid = literals(&scenario.residual[..n]),
         body = body,
     ))
 }
 
 /// 参考口径：同一份步骤施加到初始瓦片上。
-fn reference(scenario: &Scenario) -> Vec<f32> {
-    let mut want = scenario.init.to_vec();
+fn reference(scenario: &Scenario, shape: Shape) -> Vec<f32> {
+    let n = shape.count();
+    let mut want = scenario.init[..n].to_vec();
     apply(
         scenario.steps,
         &mut want,
-        COLS,
-        Some(&scenario.bias),
-        Some(&scenario.residual),
+        shape.cols,
+        Some(&scenario.bias[..shape.cols]),
+        Some(&scenario.residual[..n]),
     )
     .expect("场景本身合法");
     want
 }
 
 /// 跑一个场景：装配 → 编译 → 执行 → 逐元素比。
-fn check_device(device: &prof::Device, scenario: &Scenario) -> Result<(), String> {
-    let text = source(device, scenario)?;
-    let want = reference(scenario);
+fn check_device(device: &prof::Device, scenario: &Scenario, shape: Shape) -> Result<(), String> {
+    let text = source(device, scenario, shape)?;
+    let want = reference(scenario, shape);
     let calls = [testkit::witness::Call {
         func: "epi",
         expect: &want,
@@ -159,29 +194,87 @@ fn check_device(device: &prof::Device, scenario: &Scenario) -> Result<(), String
         .into_iter()
         .next()
         .ok_or("没有任何读数")?;
-    if reading.count as usize != N {
+    let n = shape.count();
+    if reading.count as usize != n {
         return Err(format!(
-            "`{}` / `{}` 写出 {} 个元素，应为 {N}",
+            "`{}` / `{}` 写出 {} 个元素，应为 {n}",
             device.vendor, scenario.name, reading.count
         ));
     }
     if reading.max_rel_err > TOL {
         return Err(format!(
-            "`{}` / `{}` 与 `gemm::epilogue::apply` 不符：最大相对误差 {:.3e}（上限 {TOL:.0e}）\n  \
+            "`{}` / `{}` 在 {}×{} 上与 `gemm::epilogue::apply` 不符：最大相对误差 {:.3e}（上限 {TOL:.0e}）\n  \
              got  {:?}\n  want {want:?}",
-            device.vendor, scenario.name, reading.max_rel_err, reading.values
+            device.vendor,
+            scenario.name,
+            shape.rows,
+            shape.cols,
+            reading.max_rel_err,
+            reading.values
         ));
     }
     Ok(())
 }
 
+/// 比半步略小的那个 `f32`（`0.125` 的前一个可表示值）。`QUANT_SCALE` 是 `0.25`，二进制的
+/// 幂，所以量化商 `x / 0.25` 就是精确的 `4x`：`4 * 0.124999993 = 0.49999997`，正好落在
+/// 「半步下方」——`f32::round` 给 0，而 `(int)(q + 0.5f)` 会先把 `q + 0.5f` 抬成 `1.0f`
+/// 再截断成 1。这个值因此能把取整口径的偏差钉成一个确定性的失败，不依赖随机命中。
+const JUST_BELOW_EIGHTH: f32 = f32::from_bits(0x3dff_ffff);
+
+/// 只做量化的步骤序列。
+const HALFWAY_STEPS: &[Step] = &[Step::Quant(DType::I8), Step::Store];
+
+/// 量化取整口径：半数远离零，与 `gemm::epilogue::apply` 的 `f32::round` 同口径。
+///
+/// 三步都要守住：向量主环（前四个元素）走 `vcvtaq_s32_f32`、标量尾环（后两个元素）走
+/// `roundf`、两者都得与 Rust 侧一致。边界值故意在两条环里各放一份。
+///
+/// 只跑 `cpu`：其余五台的 `epilogue.*` 里仍是 `(int)(x ± 0.5f)` 的旧写法（同一处偏 1 个码字，
+/// 且超出 int 范围时是未定义行为），把这条场景放进共享表会让它们红；等五台一起改到再合表。
+#[test]
+fn cpu_quant_rounds_halfway_away_from_zero() {
+    let edges = Scenario {
+        name: "quant-halfway",
+        init: [
+            JUST_BELOW_EIGHTH,
+            -JUST_BELOW_EIGHTH,
+            0.125,
+            -0.125,
+            JUST_BELOW_EIGHTH,
+            -JUST_BELOW_EIGHTH,
+            0.0,
+            0.0,
+        ],
+        bias: [0.0; MAX_COLS],
+        residual: [0.0; MAX_N],
+        steps: HALFWAY_STEPS,
+    };
+    let shape = Shape { rows: 2, cols: 3 };
+    let want = reference(&edges, shape);
+    assert_eq!(
+        want[0], 0.0,
+        "构造前提被打破了：`{JUST_BELOW_EIGHTH}` 的量化商应落在半步下方、取整到 0"
+    );
+    assert!(
+        want[2] > 0.0,
+        "构造前提被打破了：`0.125` 的量化商正好是半步，半数远离零应进位"
+    );
+    let device = prim::device("cpu").expect("cpu 在设备表里");
+    check_device(device, &edges, shape).expect("cpu 的量化取整口径");
+}
+
+/// 六台设备 × 四个场景 × 三个形状：形状这一维专门用来把 4-wide 的向量主环与标量尾环都跑到，
+/// 只在其中一个形状上过不算过。
 #[test]
 fn every_device_runs_the_declared_epilogue() {
     let mut failures = Vec::new();
     for device in prim::devices() {
         for scenario in SCENARIOS {
-            if let Err(error) = check_device(device, scenario) {
-                failures.push(error);
+            for shape in SHAPES {
+                if let Err(error) = check_device(device, scenario, *shape) {
+                    failures.push(error);
+                }
             }
         }
     }
@@ -195,8 +288,9 @@ fn every_device_runs_the_declared_epilogue() {
 #[test]
 fn a_wrong_expectation_is_rejected() {
     let device = prim::device("cpu").expect("cpu 在设备表里");
-    let text = source(device, &SCENARIOS[0]).expect("装配");
-    let wrong = vec![0.0f32; N];
+    let shape = SHAPES[0];
+    let text = source(device, &SCENARIOS[0], shape).expect("装配");
+    let wrong = vec![0.0f32; shape.count()];
     let calls = [testkit::witness::Call {
         func: "epi",
         expect: &wrong,

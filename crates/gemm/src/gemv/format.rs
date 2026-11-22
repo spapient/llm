@@ -251,6 +251,16 @@ pub trait Plain: FormulaOwner {
             .map(|(elem, xv)| Self::to_f32(*elem) * xv)
             .sum()
     }
+
+    /// [`COLS`](super::simd::COLS) 行并行点积：`w` 是连续 4 条行、每行 `m` 个元素，结果写进 `out` 的 4 个槽。
+    ///
+    /// 默认逐行转发 [`Plain::dot`]；稠密 `f32` 与对称 `int8` 覆盖成 [`simd::elementwise_four`]，
+    /// 一份 `x` 段摊到 4 行。行宽按 4 分支不加运行期判断——这是编译期单态化，不是运行期配置。
+    fn dot_four(w: &[Self::Elem], x: &[f32], m: usize, out: &mut [f32]) {
+        for (r, o) in out.iter_mut().enumerate() {
+            *o = Self::dot(&w[r * m..][..m], x);
+        }
+    }
 }
 
 /// 配置驱动的逐元素权重格式：把一条 [`Plain`] 配置挂进 [`Format`] 骨架。
