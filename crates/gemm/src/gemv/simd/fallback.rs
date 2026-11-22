@@ -23,10 +23,13 @@ const CHAINS: usize = 4;
 ///
 /// 实测每多一条行流就多一条 DRAM 预取流，2026-11-22 扫描 2/4/8 得到 55.1／48.9／44.7 GiB/s，
 /// 故取 2：`x` 复用与流数的最优点，再往上就是流数占主导。
-pub(crate) const COLS: usize = 2;
+pub(crate) const COLS: usize = 4;
 
 /// 段宽：一条累加链一次推进的元素数，与 [`WIDE`] 同义但可独立调（见 [`COLS`] 的扫描）。
-const SPAN: usize = 32;
+const SPAN: usize = 8;
+
+/// 每条行的独立累加链数：行并行度只有 [`COLS`]，链不够就喂不满 4 拍的乘加延迟。
+const DEPTH: usize = 1;
 
 /// 逐元素通道的权重取法：稠密 `f32` 直取，对称 `int8` 按二补数重新解释。
 ///
@@ -55,21 +58,24 @@ impl Load for u8 {
 /// 行内的独立性由"行"提供（[`COLS`] 条独立链），所以累加器只占 `COLS × WIDE` 个标量，
 /// 循环体形状又足以让 LLVM 自己向量化——稳定版没有显式车道，靠的就是这一点。
 pub(crate) fn elementwise_four<T: Load>(w: &[T], x: &[f32], m: usize, out: &mut [f32]) {
-    let mut acc = [[0.0f32; SPAN]; COLS];
-    let full = m - m % SPAN;
+    let mut acc = [[[0.0f32; SPAN]; DEPTH]; COLS];
+    let group = SPAN * DEPTH;
+    let full = m - m % group;
     let (x_head, x_tail) = x.split_at(full);
-    for (k, xs) in x_head.as_chunks::<SPAN>().0.iter().enumerate() {
-        let at = k * SPAN;
-        for (r, chain) in acc.iter_mut().enumerate() {
-            let wc = &w[r * m + at..][..SPAN];
-            for (lane, (wv, xv)) in wc.iter().zip(xs).enumerate() {
-                chain[lane] = T::one(*wv).mul_add(*xv, chain[lane]);
+    for (g, xg) in x_head.as_chunks::<{ SPAN * DEPTH }>().0.iter().enumerate() {
+        for d in 0..DEPTH {
+            let xs = &xg[d * SPAN..][..SPAN];
+            let at = g * group + d * SPAN;
+            for (r, row) in acc.iter_mut().enumerate() {
+                for (lane, (wv, xv)) in w[r * m + at..][..SPAN].iter().zip(xs).enumerate() {
+                    row[d][lane] = T::one(*wv).mul_add(*xv, row[d][lane]);
+                }
             }
         }
     }
     let row = |r: usize| &w[r * m..][..m];
     for (r, (o, chain)) in out.iter_mut().zip(acc).enumerate() {
-        let mut total: f32 = chain.iter().sum();
+        let mut total: f32 = chain.iter().flatten().sum();
         for (wc, xc) in row(r)[full..].iter().zip(x_tail) {
             total = T::one(*wc).mul_add(*xc, total);
         }
