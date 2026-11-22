@@ -415,7 +415,90 @@
 
 ---
 
-## 16. 取证口径与可复核命令
+## 16. 量化评分（0–10）
+
+### 16.1 评分标尺
+
+| 分段 | 含义 |
+|---|---|
+| 9–10 | 成熟完备，生产可用，生态/类型支撑完整 |
+| 7–8 | 主体完整，少量缺口或局部调优不足 |
+| 5–6 | 端口/骨架在位，部分实现或仅单点落地 |
+| 3–4 | 最小可用，或只有单点实现/手写集合 |
+| 1–2 | 仅声明、配置标签或占位，无真实链路 |
+| 0 | 缺失 |
+
+> 分数是**当前代码快照**的相对评价，不是能力上限；三者目标定位不同（通用训练框架 / LLM 推理执行框架），总分必须结合权重视角解读。
+
+### 16.2 维度明细
+
+| # | 维度 | llm（新） | llm.u | Burn | 打分依据（简） |
+|---:|---|:--:|:--:|:--:|---|
+| 1 | 张量/类型系统 | 3 | 2 | 10 | llm/llm.u 运行期形状与精度、无后端/秩泛型；Burn `Tensor<const D,K,B>` 编译期泛型 |
+| 2 | 后端广度 | 5 | 6 | 8 | llm 档案 9 种 Emit、6 设备 Fragment，Driver 仅 3；llm.u 枚举 10 设备、6 类跑通；Burn CPU/CUDA/WGPU/ROCm/Remote/Flex 6 类 |
+| 3 | 后端执行成熟度/性能 | 3 | 6 | 8 | llm 仅 Metal 执行器闭环，CUDA/Ascend lower 覆盖窄；llm.u 多后端 GEMM 实测对拍但耦合深；Burn 跨后端可跑完整算子，CPU 非极致微核 |
+| 4 | 算子/内核覆盖 | 4 | 4 | 9 | llm 四层契约骨架 + NEON 微核；llm.u 4 家族注册表；Burn 张量 API 全套 + linalg/einsum |
+| 5 | nn 层完整度 | 5 | 3 | 9 | llm 41 结构含 conv/pool/norm/attn，无 RNN；llm.u 17 函数无 conv/pool/RNN；Burn 49 Config 模块含 RNN/Transformer |
+| 6 | 自动微分 | 5 | 2 | 10 | llm 独立 tape/plan/replay 仓内小图；llm.u 手写逐层 bwd；Burn 后端装饰器任意可微 + 检查点策略 |
+| 7 | 优化器 | 4 | 3 | 9 | llm Sgd/Adam/Muon；llm.u sgd/Adam(解耦 wd)；Burn 13+ 含 AdamW/Lamb/Lion/Adafactor/LBFGS |
+| 8 | 调度/训练循环 | 5 | 4 | 9 | llm Session/Learner/evaluate/账表；llm.u Session/Trainer+Cosine；Burn Learner/early stopping/sharder/logger |
+| 9 | 损失函数 | 5 | 4 | 9 | llm 10 fn + Loss 枚举 + Distill/Grpo；llm.u 7 fn；Burn 20 种含 CTC/RNNT/三元组 |
+| 10 | 指标/评估器 | 3 | 1 | 10 | llm 仅 loss/命中/样本数账表；llm.u 仅 perplexity；Burn 30+ 指标 + evaluator/renderer |
+| 11 | 数据集管线 | 2 | 1 | 9 | llm Dataset trait+Chunks 游标；llm.u pack/shard 函数；Burn audio/nlp/vision/source/transform |
+| 12 | 检查点/序列化 | 6 | 4 | 9 | llm snapshot 自描述+CRC32+恢复事实；llm.u 状态字节存档；Burn store/checkpoint/burnpack/pytorch |
+| 13 | 推理服务 | 6 | 6 | 3 | llm ifb/radix/page/speculate/HTTP 薄适配器；llm.u 调度生命周期完整但 HTTP 未接异步栈；Burn 仅示例 server/remote |
+| 14 | 分布式/并行 | 3 | 1 | 6 | llm 拓扑/切分/Reduce 齐、Remote 占位；llm.u 仅 comm 标签；Burn WebSocket/remote + shard 规则，无 NCCL 级栈 |
+| 15 | 量化/精度 | 6 | 5 | 7 | llm GGML+MX+FP4 格式广、权重档案侧；llm.u I2–I8+FP8/FP4+AWQ；Burn Q8/Q4/Q2+FP8/FP4 参数级映射；三家均无 QAT |
+| 16 | 随机数/确定性 | 7 | 1 | 8 | llm Philox4x32-10 counter+三分布；llm.u 注入闭包无 RNG；Burn rand/seed/Distribution |
+| 17 | 内核 DSL 扩展 | 6 | 2 | 9 | llm cutile 协商/拼接/emit/指纹；llm.u 内核直写后端；Burn CubeCL IR 成熟 |
+| 18 | 架构/可维护性 | 8 | 3 | 8 | llm 六层契约 + testkit 强制守分层 + ADR；llm.u device/exec 耦合、unsafe 分散 49 文件；Burn crate 分层清晰 |
+| 19 | 测试/质量门禁 | 7 | 4 | 8 | llm 58k 行 + 架构契约/对拍；llm.u 17.8k + fuzz nightly；Burn backend-tests 套件 + 95k 行 |
+| 20 | 生态/示例/文档 | 4 | 4 | 8 | llm 内部架构文档完备无对外模型；llm.u README/perf 实测详尽；Burn book + 23 examples |
+
+### 16.3 加权总分
+
+**A. 等权视角（20 维度各 5%，通用框架口径）**
+
+| | llm（新） | llm.u | Burn |
+|---|:--:|:--:|:--:|
+| 平均分 | **4.85** | **3.30** | **8.30** |
+
+**B. LLM 推理 / 性能视角（侧重后端执行、推理服务、量化、内核 DSL；训练指标/数据集/RNN 降权，权重合计 100）**
+
+| 权重 | 维度 | llm（新） | llm.u | Burn |
+|---:|---|:--:|:--:|:--:|
+| 14 | 后端执行成熟度/性能 | 3 | 6 | 8 |
+| 16 | 推理服务 | 6 | 6 | 3 |
+| 10 | 量化/精度 | 6 | 5 | 7 |
+| 8 | 后端广度 | 5 | 6 | 8 |
+| 8 | 算子/内核覆盖 | 4 | 4 | 9 |
+| 6 | 内核 DSL 扩展 | 6 | 2 | 9 |
+| 5 | 架构/可维护性 | 8 | 3 | 8 |
+| 4 | nn 层完整度 | 5 | 3 | 9 |
+| 4 | 检查点/序列化 | 6 | 4 | 9 |
+| 4 | 分布式/并行 | 3 | 1 | 6 |
+| 3 | 张量/类型系统 | 3 | 2 | 10 |
+| 3 | 随机数/确定性 | 7 | 1 | 8 |
+| 3 | 测试/质量门禁 | 7 | 4 | 8 |
+| 2 | 自动微分 | 5 | 2 | 10 |
+| 2 | 优化器 | 4 | 3 | 9 |
+| 2 | 调度/训练循环 | 5 | 4 | 9 |
+| 2 | 损失函数 | 5 | 4 | 9 |
+| 2 | 生态/示例/文档 | 4 | 4 | 8 |
+| 1 | 指标/评估器 | 3 | 1 | 10 |
+| 1 | 数据集管线 | 2 | 1 | 9 |
+| | **加权总分** | **5.04** | **4.26** | **7.43** |
+
+### 16.4 评分解读
+
+- **Burn 在通用训练框架维度全面领先**：类型系统、autograd、优化器、指标、数据集、nn 层、生态是其高分项；失分主要在 LLM 在线推理面（连续批/分页 KV/前缀共享）与原生 Metal/MUSA 后端。
+- **新 llm 在两种视角都居中**：架构契约、RNG、量化格式、分层测试是亮点；拖分项是后端执行未闭环、类型系统层级低、训练生态薄。相对 llm.u，它把工程结构和能力端口补齐了，但后端实测性能与服务链路需要重建。
+- **llm.u 在纯推理/性能视角下与新 llm 差距明显缩小（4.26 vs 5.04）**：多后端实测 GEMM、完整调度/KV 是它的基本盘；但架构耦合、无图反向、无 RNG、无分布式、训练能力最小化，在通用框架视角下垫底。
+- 若目标是**产出可训练的通用模型**：优先对标 Burn；若目标是**LLM 低延迟推理与多后端性能**：llm.u 的实测路径更直接，新 llm 的 DSL 分层是更长期的工程方向。
+
+---
+
+## 17. 取证口径与可复核命令
 
 统计命令（在各仓库根目录执行）：
 
