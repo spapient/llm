@@ -29,6 +29,25 @@ macro_rules! refuse_at {
 pub trait Collective {
     /// 对 `buf` 做原地归约；返回时表示"已完成"。
     fn all_reduce(&mut self, group: &Group, reduce: Reduce, buf: &mut [f32]) -> Result<()>;
+
+    /// 全部收集：`buf` 长 `group.size() × width`，每个成员把它的 `width` 份按组内顺序写进对应
+    /// 分块；操作后每个成员都拿到组内全部贡献的拼接。缺实现返回 `Unsupported`。
+    fn all_gather(&mut self, _group: &Group, _buf: &mut [f32]) -> Result<()> {
+        fail!(
+            Unsupported,
+            "shard::Collective::all_gather",
+            "该集合通信后端没有 all_gather"
+        );
+    }
+
+    /// 广播：`src` 号成员的值广播给组内全体。缺实现返回 `Unsupported`。
+    fn broadcast(&mut self, _group: &Group, _src: u32, _buf: &mut [f32]) -> Result<()> {
+        fail!(
+            Unsupported,
+            "shard::Collective::broadcast",
+            "该集合通信后端没有 broadcast"
+        );
+    }
 }
 
 /// 参与一次通信的进程组。
@@ -347,6 +366,31 @@ impl Collective for FileRemote {
         }
         Ok(())
     }
+
+    fn all_gather(&mut self, group: &Group, buf: &mut [f32]) -> Result<()> {
+        let width = self.width;
+        if buf.len() != group.size() * width {
+            return refuse_at!(
+                "shard::FileRemote::all_gather",
+                "缓冲长度 {} 与 all_gather 期望的 {} 不一致",
+                buf.len(),
+                group.size() * width
+            );
+        }
+        for (idx, rank) in group.ranks().iter().enumerate() {
+            buf[idx * width..(idx + 1) * width].copy_from_slice(&self.read(*rank)?);
+        }
+        Ok(())
+    }
+
+    fn broadcast(&mut self, group: &Group, src: u32, buf: &mut [f32]) -> Result<()> {
+        self.check_width("shard::FileRemote::broadcast", buf.len())?;
+        if !group.ranks().contains(&src) {
+            return refuse_at!("shard::FileRemote::broadcast", "源 rank {src} 不在组内");
+        }
+        buf.copy_from_slice(&self.read(src)?);
+        Ok(())
+    }
 }
 
 /// 进程内的集合通信：每个 rank 一份镜像，归约在本进程内完成。
@@ -466,6 +510,31 @@ impl Collective for Local {
     fn all_reduce(&mut self, group: &Group, reduce: Reduce, buf: &mut [f32]) -> Result<()> {
         self.reduce_into(group, reduce, buf)?;
         self.distribute(group, buf)
+    }
+
+    fn all_gather(&mut self, group: &Group, buf: &mut [f32]) -> Result<()> {
+        let width = self.width;
+        if buf.len() != group.size() * width {
+            return refuse_at!(
+                "shard::Local::all_gather",
+                "缓冲长度 {} 与 all_gather 期望的 {} 不一致",
+                buf.len(),
+                group.size() * width
+            );
+        }
+        for (idx, rank) in group.ranks().iter().enumerate() {
+            buf[idx * width..(idx + 1) * width].copy_from_slice(self.replica(*rank)?);
+        }
+        Ok(())
+    }
+
+    fn broadcast(&mut self, group: &Group, src: u32, buf: &mut [f32]) -> Result<()> {
+        self.check_width("shard::Local::broadcast", buf.len())?;
+        if !group.ranks().contains(&src) {
+            return refuse_at!("shard::Local::broadcast", "源 rank {src} 不在组内");
+        }
+        buf.copy_from_slice(self.replica(src)?);
+        Ok(())
     }
 }
 
