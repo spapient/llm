@@ -2,7 +2,7 @@
 //! `crates/prof/devices/intel.toml` 声称具备的能力，中间的任何错位都是缺陷。
 //!
 //! 判据本身在 `testkit::device`（六台设备共用一套），用例由 `testkit::device_suite!`
-//! 摊开，这里只交出设备行与 P0 闭集。额外一条：见证正文还要被 OpenCL 自己的前端接受——
+//! 摊开，这里只交出设备行。额外一条：见证正文还要被 OpenCL 自己的前端接受——
 //! 宿主 `cc` 编得过它，不等于 `-cl-std=CL2.0` 也认它。
 
 use super::*;
