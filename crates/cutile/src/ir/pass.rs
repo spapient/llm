@@ -107,7 +107,7 @@ fn cost(kernel: &Kernel) -> usize {
 }
 
 /// 表达式节点数：每个二元 / 取负节点各算一，叶子算一。
-fn nodes(expression: &Expr) -> usize {
+pub(super) fn nodes(expression: &Expr) -> usize {
     match expression {
         Expr::Binary { left, right, .. } => 1 + nodes(left) + nodes(right),
         Expr::Neg(value) => 1 + nodes(value),
@@ -139,6 +139,9 @@ type Law = fn(&Expr) -> Option<Expr>;
 /// 只有**逐位成立**的恒等能进表：`x + 0.0 → x` 不成立（`-0.0 + 0.0 = +0.0`），所以没有它；
 /// `x * 1.0 → x`、`x / 1.0 → x`、`x - 0.0 → x` 在默认舍入下成立（sNaN 的静默化除外，而核里
 /// 不产生 sNaN）。非有限的折叠结果同样不折叠，留给目标端自己的 IEEE 语义。
+///
+/// 这些判断不是靠注释成立的：`tests/ir_tests.rs` 的解释执行用例枚举每条律的形状，在 `±0`、次正规、
+/// `inf`、`NaN` 上逐位比较化简前后，塞进一条不成立的律就会红。
 const RULES: [(&str, Law); 6] = [
     ("double-negation", double_negation),
     ("mul-one", mul_one),
@@ -153,7 +156,7 @@ const RULES: [(&str, Law); 6] = [
 /// 定律只会把「一个节点 + 子项」换成严格更小的项，所以内层循环按子树大小终止；而它作用在已经
 /// 规约好的子节点上，因此一次自底向上就得到范式——`x * (0.5 + 0.5)` 一趟就成 `x`，折叠暴露的
 /// `* 1.0` 不会漏到下一轮。
-fn normalize(expression: Expr) -> Expr {
+pub(super) fn normalize(expression: Expr) -> Expr {
     let mut expression = match expression {
         Expr::Neg(value) => Expr::Neg(Box::new(normalize(*value))),
         Expr::Binary { op, left, right } => Expr::Binary {
@@ -351,7 +354,10 @@ mod tests {
             (binary(BinaryOp::Mul, literal(1.0), load("a")), load("a")),
             (binary(BinaryOp::Div, load("a"), literal(1.0)), load("a")),
             (binary(BinaryOp::Sub, load("a"), literal(0.0)), load("a")),
-            (binary(BinaryOp::Add, literal(0.5), literal(0.5)), literal(1.0)),
+            (
+                binary(BinaryOp::Add, literal(0.5), literal(0.5)),
+                literal(1.0),
+            ),
             (Expr::Neg(Box::new(literal(2.0))), literal(-2.0)),
             (
                 binary(

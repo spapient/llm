@@ -1,3 +1,4 @@
+use super::pass::{nodes, normalize};
 use super::*;
 
 #[crate::dsl]
@@ -295,10 +296,15 @@ fn optimize_drops_dead_params_before_emission() {
     });
     let optimized = kernel.optimize().expect("optimize succeeds");
     assert!(
-        optimized.params.iter().all(|parameter| parameter.name != "dead"),
+        optimized
+            .params
+            .iter()
+            .all(|parameter| parameter.name != "dead"),
         "{optimized:?}"
     );
-    let source = kernel.emit_c().expect("dead param is dropped, C still emits");
+    let source = kernel
+        .emit_c()
+        .expect("dead param is dropped, C still emits");
     assert!(!source.contains("dead"), "{source}");
 }
 
@@ -486,4 +492,164 @@ fn the_fixpoint_reaches_the_emitted_c() {
     let source = kernel.emit_c().expect("emits");
     assert!(source.contains("= input[i];"), "{source}");
     assert!(!source.contains("0.5"), "{source}");
+}
+
+// 定律的差分执行证据：这里只执行、只比较结果位；结构判据在 `ir::pass` 的单测里。
+fn literal(value: f32) -> Expr {
+    Expr::F32(value.to_bits())
+}
+
+fn load(name: &str) -> Expr {
+    Expr::Load(name.to_string())
+}
+
+fn binary(op: BinaryOp, left: Expr, right: Expr) -> Expr {
+    Expr::Binary {
+        op,
+        left: Box::new(left),
+        right: Box::new(right),
+    }
+}
+
+/// 定律的**语义**判据：逐位相同（`NaN` 之间不比较 payload——核里不产生 sNaN，payload 本就不
+/// 属于契约）。两个 `NaN` 视为一致。
+fn same_result(left: f32, right: f32) -> bool {
+    left.to_bits() == right.to_bits() || (left.is_nan() && right.is_nan())
+}
+
+/// 解释执行：定律的判据是「化简前后在同一组输入上逐位同值」，所以必须真的算一遍。
+fn evaluate(expression: &Expr, inputs: [f32; 2]) -> f32 {
+    let slot = |name: &str| match name {
+        "y" => inputs[1],
+        _ => inputs[0],
+    };
+    match expression {
+        Expr::F32(bits) => f32::from_bits(*bits),
+        Expr::Load(name) | Expr::Scalar(name) => slot(name),
+        Expr::Neg(value) => -evaluate(value, inputs),
+        Expr::Binary { op, left, right } => {
+            op.apply(evaluate(left, inputs), evaluate(right, inputs))
+        }
+    }
+}
+
+/// 复用同一组特殊值：`±0` 能证伪 `x + 0.0`，`inf` / `NaN` 能证伪「看起来显然」的折叠。
+const INPUTS: [[f32; 2]; 6] = [
+    [0.0, -0.0],
+    [-0.0, 0.0],
+    [1.0, -1.0],
+    [f32::from_bits(1), 3.5],
+    [f32::INFINITY, f32::NEG_INFINITY],
+    [f32::NAN, 0.5],
+];
+
+/// 确定性伪随机（xorshift），不引依赖：同一种子每次跑出同一棵表达式树。
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+
+    fn pick<T: Copy>(&mut self, options: &[T]) -> T {
+        options[(self.next() % options.len() as u64) as usize]
+    }
+}
+
+/// 从字面量池里取一个常量：含 `±0` 与 `1.0`，好让恒等定律真的被触发。
+fn any_literal(rng: &mut Rng) -> Expr {
+    let pool = [0.0f32, -0.0, 1.0, 0.5, 2.0, -1.0, -2.0];
+    literal(rng.pick(&pool))
+}
+
+/// 随机表达式，深度受限；叶子是字面量或两个缓冲读，保证至少有一种输入依赖。
+fn any_expr(rng: &mut Rng, depth: u32) -> Expr {
+    if depth == 0 || rng.next().is_multiple_of(3) {
+        let leaf = rng.next() % 4;
+        return match leaf {
+            0 => any_literal(rng),
+            1 => load("x"),
+            2 => load("y"),
+            _ => Expr::Scalar("s".to_string()),
+        };
+    }
+    if rng.next().is_multiple_of(5) {
+        return Expr::Neg(Box::new(any_expr(rng, depth - 1)));
+    }
+    let op = rng.pick(&[BinaryOp::Add, BinaryOp::Sub, BinaryOp::Mul, BinaryOp::Div]);
+    binary(op, any_expr(rng, depth - 1), any_expr(rng, depth - 1))
+}
+
+/// 代表操作数：两个缓冲读、一个标量，加一批常量（含 `±0`、`1.0` 这些恒等律的判据），再加两种
+/// 取负——定律的形状几乎都落在这里。
+fn operands() -> Vec<Expr> {
+    let mut operands = vec![load("x"), load("y"), Expr::Scalar("s".to_string())];
+    for value in [0.0f32, -0.0, 0.5, 1.0, 2.0, -1.0, 0.75] {
+        operands.push(literal(value));
+    }
+    operands.push(Expr::Neg(Box::new(load("x"))));
+    operands.push(Expr::Neg(Box::new(literal(0.0))));
+    operands
+}
+
+/// 待判定的形状：算子 × 操作数对**全组合**，每个节点再叠一层和两层取负。
+///
+/// 这一层不是抽样，是枚举：`x * 1.0`、`x / 1.0`、`x - 0.0`、`-(-x)` 的每个字面量组合都必然被
+/// 跑到，所以「某条律在某个常量上不成立」不可能靠运气漏掉。
+fn shapes() -> Vec<Expr> {
+    let operands = operands();
+    let mut shapes = Vec::new();
+    for op in [BinaryOp::Add, BinaryOp::Sub, BinaryOp::Mul, BinaryOp::Div] {
+        for left in &operands {
+            shapes.push(Expr::Neg(Box::new(left.clone())));
+            shapes.push(Expr::Neg(Box::new(Expr::Neg(Box::new(left.clone())))));
+            for right in &operands {
+                let node = binary(op, left.clone(), right.clone());
+                shapes.push(Expr::Neg(Box::new(node.clone())));
+                shapes.push(node);
+            }
+        }
+    }
+    shapes
+}
+
+/// 一条形状的裁决：不长大、已是范式、每组输入逐位同值。
+fn assert_sound(original: &Expr, simplified: &Expr) {
+    assert!(
+        nodes(simplified) <= nodes(original),
+        "simplification grew {original:?}"
+    );
+    assert_eq!(
+        normalize(simplified.clone()),
+        simplified.clone(),
+        "not a normal form: {original:?}"
+    );
+    for inputs in INPUTS {
+        let before = evaluate(original, inputs);
+        let after = evaluate(simplified, inputs);
+        assert!(
+            same_result(before, after),
+            "{original:?} -> {simplified:?} changed {inputs:?}: {before} vs {after}"
+        );
+    }
+}
+
+/// 定律的差分判据：化简前后在每组输入（含 `±0`、次正规、`inf`、`NaN`）上逐位同值。
+///
+/// 先枚举每条律的形状（见 `shapes`），再用随机树补交互广度。把任何一条「逐位不成立」的律塞
+/// 进表里——比如 `x + 0.0 → x`（`-0.0 + 0.0 = +0.0`）——枚举这一层立刻红，这比在注释里断言
+/// 「成立」强得多。
+#[test]
+fn every_law_preserves_every_bit_it_touches() {
+    for original in shapes() {
+        assert_sound(&original, &normalize(original.clone()));
+    }
+    let mut rng = Rng(0x5eed_1234_9abc_def0);
+    for _ in 0..300 {
+        let original = any_expr(&mut rng, 4);
+        assert_sound(&original, &normalize(original.clone()));
+    }
 }

@@ -809,7 +809,10 @@ text      = { any } ;            (* 片段拼接时原样保留 *)
 **证据强度**：`tests/ir_exec_tests.rs` 把发射出的 C 与一个生成的 `main` 交给 `cc` 编译执行，再按
 IEEE-754 位模式与 Rust 参考实现逐元素比对（含 ±0、次正规、长度守卫、`extent = 0`、归约累加顺序），
 所以发射器不是靠字符串断言过关（融合核另有 `fusion_removes_the_intermediate_buf_and_keeps_every_bit`
-把「两趟」与「一趟」逐位对拍）。该原型仍不支持 tile/layout、自动融合调度或 CUDA/Metal 发射，尚未接入
+把「两趟」与「一趟」逐位对拍）。定律表另有差分执行证据：`tests/ir_tests.rs` 按「操作数 × 运算符 ×
+嵌套取反」枚举每条律的形状，在 ±0、次正规、`inf`、`NaN` 上逐位比较化简前后——塞进一条不成立的律
+（例如 `x + 0.0 → x`）就会以 `-0 vs 0` 变红，所以「定律都保位」不是注释里的声明。该原型仍不支持
+tile/layout、自动融合调度或 CUDA/Metal 发射，尚未接入
 生产 dispatch；迁移顺序是扩展 IR 与测试，接入真实后端并对拍后，再逐步删除相应 `.k` 模板和重复 lowering。
 
 ### 10.4 缓存指纹
