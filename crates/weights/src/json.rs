@@ -12,7 +12,7 @@
 //! # 例子
 //!
 //! ```
-//! use llm_formats::json::{self, Value};
+//! use llm_weights::json::{self, Value};
 //!
 //! let value = json::parse(r#"{"a": [1, 2], "b": "x"}"#).expect("合法");
 //! let fields = value.object().expect("顶层是对象");

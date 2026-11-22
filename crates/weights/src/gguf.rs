@@ -5,7 +5,7 @@ use dtype::{DType, QType};
 use wire::bad;
 
 use crate::cursor::Cursor;
-use crate::quant::dequantize;
+use crate::dequant::dequantize;
 
 /// 文件 magic。
 pub const MAGIC: [u8; 4] = *b"GGUF";
