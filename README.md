@@ -36,7 +36,7 @@ workspace；入口二进制要用 `-p llm-cli --bin llm|cutile` 指定。
 
 ## 分层与依赖
 
-七层从下到上：L1 基础设施（`diagnostic` `rng` `dtype` `wire` `tool`）→ L2 数据（`prof` `op` `prim`）
+七层从下到上：L1 基础设施（`diagnostic` `dtype` `wire` `tool`）→ L2 数据（`prof` `op` `prim`）
 → L3 内核（`cutile`）→ L4 运行时（`tensor` `storage` `tokenizer`）→ L5 模型与训练（`weights`
 `autograd` `nn` `shard`）→ L6 调度与服务（`train` `engine` `serve`）→ L7 入口（`cli`）。
 `annotation` / `fuzz` / `benchmarks` / `testkit` 是工具成员，不计入运行时分层。

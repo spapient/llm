@@ -263,7 +263,7 @@ impl Load for u8 {
 /// 分段之后块 `g·CHAINS + c` 落在链 `c`，与"块下标取模"是同一张映射，故逐位不变——2026-11-22
 /// 实测两者同为 `gemv_f32/decode` 39.8–40.2 GiB/s（离散 0.5%），即常量下标只是把意图写明，
 /// 并没有换来速度：这条路径只在 `cfg(nightly)` 下编译，那台机器上的实测数字属于 stable 退路
-/// （`gemv/simd/fallback.rs`），本文件的热路径结论必须在那条通道上取。
+/// （`gemv/simd_fallback.rs`），本文件的热路径结论必须在那条通道上取。
 pub(crate) fn elementwise<T: Load>(w: &[T], x: &[f32]) -> f32 {
     let (w_groups, w_tail) = w.as_chunks::<{ WIDE * CHAINS }>();
     let (x_groups, x_tail) = x.as_chunks::<{ WIDE * CHAINS }>();

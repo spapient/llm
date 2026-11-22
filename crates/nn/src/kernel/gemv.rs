@@ -67,9 +67,9 @@ pub mod packed;
 mod shape;
 #[cfg(nightly)]
 mod simd;
-/// stable 退路：同名同签名，只是把车道换成标量，见 `gemv/simd/fallback.rs` 顶部。
+/// stable 退路：同名同签名，只是把车道换成标量，见 `gemv/simd_fallback.rs` 顶部。
 #[cfg(not(nightly))]
-#[path = "gemv/simd/fallback.rs"]
+#[path = "gemv/simd_fallback.rs"]
 mod simd;
 
 pub use format::{
