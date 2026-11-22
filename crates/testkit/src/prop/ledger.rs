@@ -74,9 +74,9 @@ pub const ABSENT: &[Absence] = &[
                  真值是 `prof` 的逐条对账用例，写在性质层只会退化成\"结构等于结构\"。",
     },
     Absence {
-        members: &["formats", "fuzz", "snapshot", "tokenizer", "weights"],
+        members: &["fuzz", "snapshot", "tokenizer", "weights"],
         reason: "任意字节鲁棒性由 `crates/fuzz` 的确定性靶覆盖——同一句话（不 panic、只返回 \
-                 `Invalid`），样本量级远超几百个用例；这五个成员还各有真实样本的往返用例钉住正向路径。",
+                 `Invalid`），样本量级远超几百个用例；这四个成员还各有真实样本的往返用例钉住正向路径。",
     },
     Absence {
         members: &["tensor"],

@@ -4,6 +4,8 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use diagnostic::{Code, Error};
+
 use crate::{Device, fail};
 
 
@@ -28,15 +30,19 @@ pub fn outcome(device: &Device, out: &Path, images: bool) -> Outcome {
     }
     match recipe(&device.emit) {
         None => Outcome::NoRecipe,
-        Some(recipe) => compile(device, recipe, out).unwrap_or_else(Outcome::Skipped),
+        Some(recipe) => compile(device, recipe, out)
+            .unwrap_or_else(|error| Outcome::Skipped(error.to_string())),
     }
 }
 
 /// 编译一台设备的见证：`[meta].tools` 给出的程序 + 配方里的参数。
-fn compile(device: &Device, recipe: &Recipe, out: &Path) -> Result<Outcome, String> {
+fn compile(device: &Device, recipe: &Recipe, out: &Path) -> diagnostic::Result<Outcome> {
     let mut parts = device.tool.split_whitespace();
     let Some(program) = parts.next() else {
-        return Err(format!("`{}` 不是可执行的工具名", device.tool));
+        return Err(Error::new(
+            Code::Invalid,
+            format!("`{}` 不是可执行的工具名", device.tool),
+        ));
     };
     let object = out.join(format!("{}.witness.{}", device.name, recipe.object_ext));
     let image = out.join(format!("{}.witness.{}", device.name, recipe.format));
@@ -117,11 +123,16 @@ fn expand(arg: &str, src: &Path, object: &Path, image: &Path) -> String {
 }
 
 /// 跑一个子进程；失败时把第一行 stderr 作为原因交回（构建不因此失败）。
-fn run(program: &str, args: &[String]) -> Result<String, String> {
+fn run(program: &str, args: &[String]) -> diagnostic::Result<String> {
     let output = Command::new(program)
         .args(args)
         .output()
-        .map_err(|error| format!("`{program}` 不可执行：{error}"))?;
+        .map_err(|error| {
+            Error::new(
+                Code::Unsupported,
+                format!("`{program}` 不可执行：{error}"),
+            )
+        })?;
     if output.status.success() {
         return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
     }
@@ -130,11 +141,14 @@ fn run(program: &str, args: &[String]) -> Result<String, String> {
         .lines()
         .find(|line| !line.trim().is_empty())
         .unwrap_or("");
-    Err(format!(
-        "`{program} {}` 失败（{}）：{}",
-        args.join(" "),
-        output.status,
-        shorten(first)
+    Err(Error::new(
+        Code::Unsupported,
+        format!(
+            "`{program} {}` 失败（{}）：{}",
+            args.join(" "),
+            output.status,
+            shorten(first)
+        ),
     ))
 }
 

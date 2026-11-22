@@ -68,10 +68,17 @@ pub(crate) fn public_type_names(text: &str) -> BTreeSet<&str> {
     names
 }
 
-/// 展开成 `pub struct Name` 的层发射宏：所有权门认它们的第一个标识符参数为类型名。
-/// `axis!` 与 `planar!` 逐行读源码同样看不到展开后的 `pub struct`，与 `vocabulary!` 同源。
+/// 展开成 `pub enum|struct Name` 的层发射宏：所有权门认它们的第一个标识符参数为类型名。
+/// `axis!` / `planar!` / `closed_enum!` / `closed!` 逐行读源码同样看不到展开后的 `pub`，
+/// 与 `vocabulary!` 同源。调用点常带 `crate::` / `$crate::` 前缀，判定只看宏名本身。
 fn is_type_macro_open(trimmed: &str) -> bool {
-    trimmed.starts_with("axis!") || trimmed.starts_with("planar!")
+    ["axis!", "planar!", "closed_enum!", "closed!"]
+        .iter()
+        .any(|open| {
+            trimmed
+                .split_once(open)
+                .is_some_and(|(head, _)| head.is_empty() || head.ends_with("::"))
+        })
 }
 
 /// 内联形式 `axis!(Name, ...)` 的 `Name`；多行形式（宏名独占一行）返回 `None`。
