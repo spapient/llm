@@ -112,7 +112,7 @@ fn reads_header_and_metadata() {
     assert_eq!(file.name(), Some("fixture"));
     assert_eq!(file.arch(), Some("llama"));
     assert_eq!(file.metas().len(), 4);
-    assert_eq!(file.tensors().len(), 5);
+    assert_eq!(file.tensors().len(), 6);
     assert_eq!(file.tensor("q4.weight").unwrap().kind, Kind::Q4_K);
 }
 
@@ -120,32 +120,31 @@ fn reads_header_and_metadata() {
 fn decodes_every_supported_kind_to_pinned_values() {
     let raw = fixture::standard();
     let file = Gguf::parse(&raw).unwrap();
-    assert_eq!(
-        file.floats("f32.weight").unwrap(),
-        vec![1.0, -0.5, 3.25, 0.0]
-    );
-    assert_eq!(
-        file.floats("half.weight").unwrap(),
-        vec![0.5, -2.0, 0.0, 1.5]
-    );
-    assert_eq!(
-        file.floats("q8.weight").unwrap(),
-        (0..32).map(|i| i as f32 - 16.0).collect::<Vec<_>>()
-    );
+    assert_eq!(file.floats("f32.weight").unwrap(), [1.0, -0.5, 3.25, 0.0]);
+    assert_eq!(file.floats("half.weight").unwrap(), [0.5, -2.0, 0.0, 1.5]);
+    let q8: Vec<f32> = (0..32).map(|i| i as f32 - 16.0).collect();
+    assert_eq!(file.floats("q8.weight").unwrap(), q8);
     // 夹具的块量化是 d=1.0、min=0、scales 全 1、qs 全 0x21：低半字节 1、高半字节 2。
     // 因此 Q4_K 每组 64 个值是 32 个 1.0 后接 32 个 2.0；Q6_K 的量化点 1/1/2/2 减 32 后
     // 是 64 个 -31.0 后接 64 个 -30.0。数值按 GGML 规范手推，不是拿实现自证。
     let q4 = file.floats("q4.weight").unwrap();
-    assert_eq!(q4.len(), 256);
-    for group in q4.chunks(64) {
-        assert!(group[..32].iter().all(|&v| v == 1.0), "{:?}", &group[..4]);
-        assert!(group[32..].iter().all(|&v| v == 2.0), "{:?}", &group[32..36]);
-    }
+    let q5 = file.floats("q5.weight").unwrap();
     let q6 = file.floats("q6.weight").unwrap();
-    assert_eq!(q6.len(), 256);
-    for part in q6.chunks(128) {
-        assert!(part[..64].iter().all(|&v| v == -31.0), "{:?}", &part[..4]);
-        assert!(part[64..].iter().all(|&v| v == -30.0), "{:?}", &part[64..68]);
+    assert_eq!((q4.len(), q5.len(), q6.len()), (256, 256, 256));
+    for g in q4.chunks(64) {
+        assert!(g[..32].iter().all(|&v| v == 1.0), "{:?}", &g[..4]);
+        assert!(g[32..].iter().all(|&v| v == 2.0), "{:?}", &g[32..36]);
+    }
+    // Q5_K 的 qh 全 0x5A，位 1/3 落在组 0/1 的高位半字节、位 4/6 落在组 2/3 的低位半字节：
+    // 于是组 0/1 是 32 个 1.0 后接 32 个 18.0，组 2/3 是 32 个 17.0 后接 32 个 2.0。
+    for (g, group) in q5.chunks(64).enumerate() {
+        let (low, high) = if g < 2 { (1.0, 18.0) } else { (17.0, 2.0) };
+        assert!(group[..32].iter().all(|&v| v == low), "Q5_K 组 {g} 低位");
+        assert!(group[32..].iter().all(|&v| v == high), "Q5_K 组 {g} 高位");
+    }
+    for p in q6.chunks(128) {
+        assert!(p[..64].iter().all(|&v| v == -31.0), "{:?}", &p[..4]);
+        assert!(p[64..].iter().all(|&v| v == -30.0), "{:?}", &p[64..68]);
     }
 }
 

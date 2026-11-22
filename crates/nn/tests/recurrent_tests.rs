@@ -6,7 +6,7 @@ use super::*;
 use crate::Contract;
 use diagnostic::Code;
 
-/// 门数就是参数宽度的唯一来源：门矩阵是 `门数·隐宽` 行。
+/// 门数就是参数宽度的唯一来源：两张门矩阵的行数都是 `门数·隐宽`。
 #[test]
 fn the_gate_table_drives_parameter_bytes() {
     let bytes = |cell| {
@@ -15,36 +15,101 @@ fn the_gate_table_drives_parameter_bytes() {
             .param_bytes()
     };
     let rnn = bytes(Cell::Rnn);
-    assert_eq!(rnn, (4 * 8 + 4) * 4, "RNN：一门 (8 → 4) 加偏置");
+    // 一门：输入侧 4×8、隐侧 4×4、两条偏置各 4 个元素。
+    assert_eq!(rnn, (4 * 8 + 4 * 4 + 4 + 4) * 4, "RNN 四件张量");
     assert_eq!(bytes(Cell::Gru), rnn * 3, "GRU 三门恰好三倍");
     assert_eq!(bytes(Cell::Lstm), rnn * 4, "LSTM 四门恰好四倍");
 }
 
-/// 偏置是 `门数·隐宽` 个元素，与输入宽无关；关掉它就少这一块。
+/// 偏置是**两条**向量（输入侧与隐侧各一条），与输入宽无关；关掉它就少这两条。
+///
+/// 只算一条是本层最容易被写漏的地方：PyTorch / Burn 的 checkpoint 里 `bias_ih` 与 `bias_hh`
+/// 是两个张量，融合写法会把参数总量少报一半偏置。
 #[test]
-fn the_bias_costs_one_element_per_output() {
-    let with = Recurrent::new("r", Cell::Lstm, 8, 4, 1, 1, true)
-        .expect("合法")
-        .param_bytes();
-    let without = Recurrent::new("r", Cell::Lstm, 8, 4, 1, 1, false)
-        .expect("合法")
-        .param_bytes();
-    assert_eq!(with - without, (4 * 4) * 4, "四门 × 隐宽 4 × 4 字节");
+fn the_bias_costs_two_vectors_per_direction() {
+    let bytes = |bias| {
+        Recurrent::new("r", Cell::Lstm, 8, 4, 1, 1, bias)
+            .expect("合法")
+            .param_bytes()
+    };
+    assert_eq!(
+        bytes(true) - bytes(false),
+        2 * (4 * 4) * 4,
+        "四门 × 隐宽 4 × 两条偏置 × 4 字节"
+    );
 }
 
-/// 每层每方向一个权重整块：条目数正好 `层数 × 方向数`，且互不重复。
+/// 每层每方向四件张量，名字与真实 checkpoint 逐字相同（反向加 `_reverse`）。
 #[test]
-fn every_layer_and_direction_owns_one_weight_entry() {
-    let layer = Recurrent::new("r", Cell::Gru, 16, 8, 3, 2, true).expect("合法");
-    let entries = layer.weight_entries("rnn");
-    assert_eq!(entries.len(), 3 * 2, "三层双向六块");
-    let unique: std::collections::BTreeSet<&String> = entries.iter().collect();
-    assert_eq!(unique.len(), entries.len(), "条目名必须互不重复");
-    assert!(
-        entries.iter().all(|entry| entry.starts_with("rnn.gru")),
-        "条目带单元名"
+fn every_direction_owns_the_four_checkpoint_tensors() {
+    let layer = Recurrent::new("r", Cell::Gru, 16, 8, 2, 2, true).expect("合法");
+    let entries = layer.weight_entries("blk");
+    assert_eq!(entries.len(), 2 * 2 * 4, "两层双向 × 四件");
+    let names: Vec<&str> = entries.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(
+        &names[..4],
+        [
+            "blk.gru.weight_ih_l0",
+            "blk.gru.weight_hh_l0",
+            "blk.gru.bias_ih_l0",
+            "blk.gru.bias_hh_l0",
+        ],
+        "首层首方向四件"
     );
-    assert!(entries.iter().all(|entry| entry.ends_with(WEIGHT_SUFFIX)));
+    assert!(
+        names.contains(&"blk.gru.weight_ih_l1_reverse"),
+        "反向层的名字带 _reverse，与 PyTorch 一致"
+    );
+    let unique: std::collections::BTreeSet<&str> = names.iter().copied().collect();
+    assert_eq!(unique.len(), names.len(), "条目名必须互不重复");
+}
+
+/// 形状按门堆叠：矩阵 `[门数·隐宽, 该侧宽]`、偏置 `[门数·隐宽]`；隐侧第二维永远是隐宽。
+#[test]
+fn the_entry_shapes_stack_the_gates() {
+    let layer = Recurrent::new("r", Cell::Lstm, 16, 8, 2, 2, true).expect("合法");
+    let shape = |name: &str| {
+        layer
+            .weight_entries("blk")
+            .into_iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, shape)| shape.dims().to_vec())
+            .expect("条目存在")
+    };
+    assert_eq!(shape("blk.lstm.weight_ih_l0"), [32, 16], "首层吃输入宽 16");
+    assert_eq!(
+        shape("blk.lstm.weight_ih_l1"),
+        [32, 16],
+        "其后层吃拼接结果 `隐宽·2`"
+    );
+    assert_eq!(shape("blk.lstm.weight_hh_l1"), [32, 8], "隐侧永远是隐宽");
+    assert_eq!(shape("blk.lstm.bias_ih_l1"), [32], "偏置一维");
+    assert_eq!(
+        shape("blk.lstm.bias_hh_l0_reverse"),
+        [32],
+        "反向偏置同样一维"
+    );
+}
+
+/// 参数总量与声明清单互相钉住：谁改了口径，另一侧立刻不动。
+#[test]
+fn the_parameter_total_equals_the_declared_tensors() {
+    for cell in Cell::ALL {
+        for bias in [false, true] {
+            let layer = Recurrent::new("r", cell, 6, 5, 2, 2, bias).expect("合法");
+            let declared: usize = layer
+                .weight_entries("blk")
+                .iter()
+                .map(|(_, shape)| shape.numel())
+                .sum();
+            assert_eq!(
+                layer.param_bytes(),
+                declared as u64 * 4,
+                "{} 的字节数必须等于其声明张量之和（bias = {bias}）",
+                cell.name()
+            );
+        }
+    }
 }
 
 /// 第一层吃输入宽，其后的层吃上一层的拼接结果（双向是 `隐宽·2`）。

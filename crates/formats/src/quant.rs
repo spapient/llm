@@ -31,8 +31,8 @@ fn decode(kind: Kind, raw: &[u8], out: &mut [f32]) -> Result<()> {
 fn blocked(kind: Kind, raw: &[u8], out: &mut [f32]) -> Result<()> {
     match kind {
         Kind::Q8_0 => decode_q8(raw, out),
-        Kind::Q4_K => decode_k(raw, out, 144, 0),
-        Kind::Q5_K => decode_k(raw, out, 176, 32),
+        Kind::Q4_K => decode_k::<false>(raw, out),
+        Kind::Q5_K => decode_k::<true>(raw, out),
         Kind::Q6_K => decode_q6k(raw, out),
         _ => Err(bad(format!("{kind:?} 不是分块格式"))),
     }
@@ -101,7 +101,11 @@ fn scale_min(scales: &[u8], idx: usize) -> (u8, u8) {
 
 /// Q4_K / Q5_K 共用的解码：Q5_K 多一段 `qh`（每个元素的第 5 位），块长度多 32 字节。
 /// 两者每块都是 4 个 64 元素的组，组内高低半字节分别写 `lane` 与 `lane + 32`。
-fn decode_k(raw: &[u8], out: &mut [f32], block: usize, high_bytes: usize) -> Result<()> {
+///
+/// `HIGH` 为编译期常量而不是运行时开关：Q4_K 是磁盘上最常见的方向，它的内循环里
+/// 因此没有 `qh` 的取值与越界检查（`high_bit` 只剩 Q5_K 一份下游）。
+fn decode_k<const HIGH: bool>(raw: &[u8], out: &mut [f32]) -> Result<()> {
+    let (block, high_bytes) = if HIGH { (176, 32) } else { (144, 0) };
     let (slots, _) = out.as_chunks_mut::<256>();
     for (slot, bytes) in slots.iter_mut().zip(raw.chunks_exact(block)) {
         let d = half_at(bytes, 0);
@@ -114,8 +118,16 @@ fn decode_k(raw: &[u8], out: &mut [f32], block: usize, high_bytes: usize) -> Res
             let (s1, m1) = scale_min(scales, group * 2 + 1);
             let row = &mut slot[group * 64..];
             for lane in 0..32 {
-                let high0 = high_bit(high, lane, group * 2);
-                let high1 = high_bit(high, lane, group * 2 + 1);
+                let high0 = if HIGH {
+                    high_bit(high, lane, group * 2)
+                } else {
+                    0
+                };
+                let high1 = if HIGH {
+                    high_bit(high, lane, group * 2 + 1)
+                } else {
+                    0
+                };
                 let q0 = (qs[lane] & 0x0F) + high0;
                 let q1 = (qs[lane] >> 4) + high1;
                 row[lane] = d * f32::from(s0) * f32::from(q0) - min * f32::from(m0);

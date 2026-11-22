@@ -135,7 +135,7 @@ pub use spatial::{
 };
 
 #[doc(inline)]
-pub use recurrent::{Cell, Recurrent};
+pub use recurrent::{Cell, Recurrent, Tensor};
 
 #[doc(inline)]
 pub use single::{

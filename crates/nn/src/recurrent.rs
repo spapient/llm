@@ -5,13 +5,19 @@
 //! 因此这里是一个类型参数化在 [`Cell`] 上，而不是三个类型加一个 `BiLstm`——双向只是
 //! `dirs = 2`，不需要第二个类型、也不需要两套权重命名。
 //!
+//! 权重按真实 checkpoint 的形状声明，而不是融合成一块：`weight_ih` / `weight_hh` /
+//! `bias_ih` / `bias_hh` 四件、名字与 PyTorch 的 `lstm.weight_ih_l0` 逐字相同（反向加
+//! `_reverse`），每件都带形状。这样 [`Recurrent::weight_entries`] 给出的清单能直接对上一份
+//! 真实权重，而 [`Recurrent::param_bytes`] 由同一份清单求和推出——「参数总量」与「加载清单」
+//! 因此不可能各说一套。
+//!
 //! 声明是**逐时间步**的：输出形状给 `[hidden·dirs]`，时间步由调用方展开；下界因此也是
 //! 单步的下界，乘上步数即整段循环的代价。这样层不必凭空编一个序列长度来让它听起来更贵。
 
 use diagnostic::{Code, Error, Result};
 use tensor::Shape;
 
-use crate::{Bounds, BoundsResult, Contract, ContractSpec, WEIGHT_SUFFIX, spec_accessors};
+use crate::{Bounds, BoundsResult, Contract, ContractSpec, spec_accessors};
 
 /// 循环单元的门结构。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +61,52 @@ impl Cell {
             Self::Rnn => &[("tanh_f32", 1)],
             Self::Gru => &[("sigmoid_f32", 2), ("tanh_f32", 1)],
             Self::Lstm => &[("sigmoid_f32", 3), ("tanh_f32", 2)],
+        }
+    }
+}
+
+/// 循环层方向内的一件权重：名字与形状都对齐真实 checkpoint。
+///
+/// 融合成一块（比如 `weight_ihh`）会让真实权重对不上——输入侧与隐侧是两张矩阵，第二维不同
+/// （输入侧吃 `输入宽`，隐侧永远吃 `隐宽`），偏置也是两条而不是一条。因此按四件声明。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tensor {
+    /// 输入侧门矩阵 `[门数·隐宽, 输入宽]`。
+    WeightIh,
+    /// 隐侧门矩阵 `[门数·隐宽, 隐宽]`。
+    WeightHh,
+    /// 输入侧门偏置 `[门数·隐宽]`。
+    BiasIh,
+    /// 隐侧门偏置 `[门数·隐宽]`。
+    BiasHh,
+}
+
+impl Tensor {
+    /// 四件权重；`bias = false` 时只取前两件。
+    pub const ALL: [Self; 4] = [Self::WeightIh, Self::WeightHh, Self::BiasIh, Self::BiasHh];
+
+    /// 名字后缀（不含层号与方向）：与 PyTorch 的 `weight_ih` / `bias_hh` 同名。
+    pub const fn suffix(self) -> &'static str {
+        match self {
+            Self::WeightIh => "weight_ih",
+            Self::WeightHh => "weight_hh",
+            Self::BiasIh => "bias_ih",
+            Self::BiasHh => "bias_hh",
+        }
+    }
+
+    /// 是不是偏置：偏置是一维的，且受 `bias` 开关控制。
+    pub const fn is_bias(self) -> bool {
+        matches!(self, Self::BiasIh | Self::BiasHh)
+    }
+
+    /// 形状：门堆叠在第一维。`width` 只对输入侧矩阵有意义。
+    fn shape(self, gates: usize, hidden: usize, width: usize) -> Shape {
+        let rows = gates * hidden;
+        match self {
+            Self::WeightIh => Shape::new([rows, width]),
+            Self::WeightHh => Shape::new([rows, hidden]),
+            Self::BiasIh | Self::BiasHh => Shape::new([rows]),
         }
     }
 }
@@ -144,8 +196,11 @@ impl Recurrent {
         bias -> bool = bias,
     }
 
-    /// 每层每方向的 `(输入宽度, 输出宽度)`：第一层吃 `input`，其余层吃上一层的拼接结果。
-    pub fn projections(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+    /// 唯一的一份「每层每方向：`(层, 方向, 输入宽, 门堆叠行数)`」。
+    ///
+    /// 投影、张量清单、参数量三者都从它展开，所以「第一层吃 `input`、其后吃拼接结果」这条口径
+    /// 只有一处拼写；想改宽度规则不可能只改到三个调用方里的一处。
+    fn tiling(&self) -> impl Iterator<Item = (usize, usize, usize, usize)> + '_ {
         let out = self.cell.gates() * self.hidden;
         (0..self.layers).flat_map(move |level| {
             let width = if level == 0 {
@@ -153,28 +208,53 @@ impl Recurrent {
             } else {
                 self.hidden * self.dirs
             };
-            (0..self.dirs).map(move |_| (width, out))
+            (0..self.dirs).map(move |dir| (level, dir, width, out))
         })
     }
 
-    /// 权重条目名：`{块}.{单元}{层}.{方向}{WEIGHT_SUFFIX}`。门矩阵按层按方向各驻留一整块。
-    pub fn weight_entry(&self, block: &str, level: usize, dir: usize) -> String {
-        format!("{block}.{}{level}.{dir}{WEIGHT_SUFFIX}", self.cell.name())
+    /// 每层每方向的一次门投影 `(输入宽度, 输出宽度)`：`bounds` 按它逐次计价。
+    pub fn projections(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        self.tiling().map(|(_, _, width, out)| (width, out))
     }
 
-    /// 全部权重条目名，按 `(层, 方向)` 升序——装配侧按它逐条取权重整块。
-    pub fn weight_entries(&self, block: &str) -> Vec<String> {
-        (0..self.layers)
-            .flat_map(|level| (0..self.dirs).map(move |dir| (level, dir)))
-            .map(|(level, dir)| self.weight_entry(block, level, dir))
+    /// 张量清单：每层每方向两张门矩阵、两条门偏置（`bias = false` 时只有矩阵）。
+    fn tensors(&self) -> impl Iterator<Item = (usize, usize, Tensor, Shape)> + '_ {
+        let (gates, hidden, bias) = (self.cell.gates(), self.hidden, self.bias);
+        self.tiling().flat_map(move |(level, dir, width, _)| {
+            Tensor::ALL
+                .into_iter()
+                .filter(move |t| bias || !t.is_bias())
+                .map(move |t| (level, dir, t, t.shape(gates, hidden, width)))
+        })
+    }
+
+    /// 一件权重的名字：`{块}.{单元}.{后缀}_l{层}`，反向再加 `_reverse`——与 PyTorch 的
+    /// `lstm.weight_ih_l0` / `lstm.weight_hh_l0_reverse` 逐字相同。
+    pub fn weight_entry(&self, block: &str, level: usize, dir: usize, tensor: Tensor) -> String {
+        let rev = if dir == 0 { "" } else { "_reverse" };
+        format!(
+            "{block}.{}.{}_l{level}{rev}",
+            self.cell.name(),
+            tensor.suffix()
+        )
+    }
+
+    /// 全部权重条目与形状，按 `(层, 方向, 件)` 升序——装配侧按它逐条取张量并核对形状。
+    pub fn weight_entries(&self, block: &str) -> Vec<(String, Shape)> {
+        self.tensors()
+            .map(|(level, dir, tensor, shape)| {
+                (self.weight_entry(block, level, dir, tensor), shape)
+            })
             .collect()
     }
 
-    /// 参数字节数：门矩阵 `out × in` 加可选的门偏置 `out`，按 4 字节/元素。
+    /// 参数字节数：由声明的张量形状求和，按 4 字节/元素。
+    ///
+    /// 与 [`Recurrent::weight_entries`] 同源，因此它不会漏算 `bias_hh`（融合写法最容易漏的就是它），
+    /// 也不会与加载清单对不上。
     pub fn param_bytes(&self) -> u64 {
-        let bias = u64::from(self.bias) * self.cell.gates() as u64 * self.hidden as u64;
-        self.projections()
-            .map(|(inp, out)| out as u64 * inp as u64 + bias)
+        self.tensors()
+            .map(|(_, _, _, shape)| shape.numel() as u64)
             .sum::<u64>()
             * 4
     }

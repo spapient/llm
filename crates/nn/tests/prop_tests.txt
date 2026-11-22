@@ -5,3 +5,10 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc cb020f08565e8079f4edce159e903f6976276bc193c64d6a92b3b1dda0e5944a # shrinks to pairs = [(32, 32)]
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 1bfa474178a2f12a9cc874c5f79aecac022872d2171302ffb570e6ce0eb1a4dc # shrinks to pick = 0, input = 1, hidden = 1, layers = 1

@@ -6,147 +6,123 @@
 
 use diagnostic::{Code, Error, Result};
 
-use crate::declare::AxisCore;
-use crate::layer_delegate;
+use crate::axis;
 use crate::{Bounds, BoundsResult, Contract, ContractSpec, ParamRole, Shape, spec_accessors};
 
-/// RMSNorm 归一化：`y = γ · x / sqrt(mean(x²) + ε)`，沿最后一维 `len` 归一化。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RmsNorm {
-    inner: AxisCore,
-}
-layer_delegate!(RmsNorm, "rmsnorm_f32", "单轴层", ParamRole::Norm);
-
-/// Softmax：沿最后一维 `len` 做数值稳定的归一化（减最大值后取指数再除和）。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Softmax {
-    inner: AxisCore,
-}
-layer_delegate!(Softmax, "softmax_f32", "单轴层", ParamRole::Trainable);
-
-/// GELU 激活（精确 erf 版）：逐元素 `0.5·x·(1 + erf(x/√2))`。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Gelu {
-    inner: AxisCore,
-}
-layer_delegate!(Gelu, "gelu_f32", "单轴层", ParamRole::Trainable);
-
-/// SiLU / Swish 激活：逐元素 `x · sigmoid(x)`。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Silu {
-    inner: AxisCore,
-}
-layer_delegate!(Silu, "silu_f32", "单轴层", ParamRole::Trainable);
-
-/// 逐元素指数：`y = exp(a)`。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Exp {
-    inner: AxisCore,
-}
-layer_delegate!(Exp, "exp_f32", "单轴层", ParamRole::Trainable);
-
-/// 逐元素自然对数：`y = ln(a)`。定义域由算子语义表负责（层不替内核判值域）。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Log {
-    inner: AxisCore,
-}
-layer_delegate!(Log, "log_f32", "单轴层", ParamRole::Trainable);
-
-/// LeakyReLU 激活：`y = x`（非负）或 `0.01·x`（负区）。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LeakyRelu {
-    inner: AxisCore,
-}
-layer_delegate!(LeakyRelu, "leaky_relu_f32", "单轴层", ParamRole::Trainable);
-
-/// HardSigmoid 激活：`y = clamp(x/6 + 0.5, 0, 1)`。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HardSigmoid {
-    inner: AxisCore,
-}
-layer_delegate!(
-    HardSigmoid,
-    "hard_sigmoid_f32",
-    "单轴层",
-    ParamRole::Trainable
+axis!(
+    /// RMSNorm 归一化：`y = γ · x / sqrt(mean(x²) + ε)`，沿最后一维 `len` 归一化。
+    RmsNorm,
+    "rmsnorm_f32",
+    Norm
 );
 
-/// Sigmoid 激活：`y = 1 / (1 + exp(-x))`，输出落在 `(0, 1)`。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Sigmoid {
-    inner: AxisCore,
-}
-layer_delegate!(Sigmoid, "sigmoid_f32", "单轴层", ParamRole::Trainable);
+axis!(
+    /// Softmax：沿最后一维 `len` 做数值稳定的归一化（减最大值后取指数再除和）。
+    Softmax,
+    "softmax_f32"
+);
 
-/// Tanh 激活：`y = tanh(x)`，输出落在 `(-1, 1)`。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Tanh {
-    inner: AxisCore,
-}
-layer_delegate!(Tanh, "tanh_f32", "单轴层", ParamRole::Trainable);
+axis!(
+    /// GELU 激活（精确 erf 版）：逐元素 `0.5·x·(1 + erf(x/√2))`。
+    Gelu,
+    "gelu_f32"
+);
 
-/// ReLU 激活：`y = max(x, 0)`。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Relu {
-    inner: AxisCore,
-}
-layer_delegate!(Relu, "relu_f32", "单轴层", ParamRole::Trainable);
+axis!(
+    /// SiLU / Swish 激活：逐元素 `x · sigmoid(x)`。
+    Silu,
+    "silu_f32"
+);
 
-/// RoPE 旋转位置编码：成对分量按位置做二维旋转；`len` 为头宽，奇数末尾原样透传。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Rope {
-    inner: AxisCore,
-}
-layer_delegate!(Rope, "rope_f32", "单轴层", ParamRole::Trainable);
+axis!(
+    /// 逐元素指数：`y = exp(a)`。
+    Exp,
+    "exp_f32"
+);
 
-/// 标量缩放：逐元素 `α · x`，系数由算子样本固定。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Scale {
-    inner: AxisCore,
-}
-layer_delegate!(Scale, "scale_f32", "单轴层", ParamRole::Trainable);
+axis!(
+    /// 逐元素自然对数：`y = ln(a)`。定义域由算子语义表负责（层不替内核判值域）。
+    Log,
+    "log_f32"
+);
 
-/// 逐元素加法：`y = a + b`，两路输入等长 `len`。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Add {
-    inner: AxisCore,
-}
-layer_delegate!(Add, "add_f32", "单轴层", ParamRole::Trainable);
+axis!(
+    /// LeakyReLU 激活：`y = x`（非负）或 `0.01·x`（负区）。
+    LeakyRelu,
+    "leaky_relu_f32"
+);
 
-/// 逐元素乘法：`y = a · b`，两路输入等长 `len`。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Mul {
-    inner: AxisCore,
-}
-layer_delegate!(Mul, "mul_f32", "单轴层", ParamRole::Trainable);
+axis!(
+    /// HardSigmoid 激活：`y = clamp(x/6 + 0.5, 0, 1)`。
+    HardSigmoid,
+    "hard_sigmoid_f32"
+);
 
-/// 逐元素减法：`y = a - b`，两路输入等长 `len`。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Sub {
-    inner: AxisCore,
-}
-layer_delegate!(Sub, "sub_f32", "单轴层", ParamRole::Trainable);
+axis!(
+    /// Sigmoid 激活：`y = 1 / (1 + exp(-x))`，输出落在 `(0, 1)`。
+    Sigmoid,
+    "sigmoid_f32"
+);
 
-/// 逐元素除法：`y = a / b`，两路输入等长 `len`；除零语义归算子，层不越权改写。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Div {
-    inner: AxisCore,
-}
-layer_delegate!(Div, "div_f32", "单轴层", ParamRole::Trainable);
+axis!(
+    /// Tanh 激活：`y = tanh(x)`，输出落在 `(-1, 1)`。
+    Tanh,
+    "tanh_f32"
+);
 
-/// 逐元素取大：`y = max(a, b)`。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Max {
-    inner: AxisCore,
-}
-layer_delegate!(Max, "max_f32", "单轴层", ParamRole::Trainable);
+axis!(
+    /// ReLU 激活：`y = max(x, 0)`。
+    Relu,
+    "relu_f32"
+);
 
-/// 逐元素取小：`y = min(a, b)`。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Min {
-    inner: AxisCore,
-}
-layer_delegate!(Min, "min_f32", "单轴层", ParamRole::Trainable);
+axis!(
+    /// RoPE 旋转位置编码：成对分量按位置做二维旋转；`len` 为头宽，奇数末尾原样透传。
+    Rope,
+    "rope_f32"
+);
+
+axis!(
+    /// 标量缩放：逐元素 `α · x`，系数由算子样本固定。
+    Scale,
+    "scale_f32"
+);
+
+axis!(
+    /// 逐元素加法：`y = a + b`，两路输入等长 `len`。
+    Add,
+    "add_f32"
+);
+
+axis!(
+    /// 逐元素乘法：`y = a · b`，两路输入等长 `len`。
+    Mul,
+    "mul_f32"
+);
+
+axis!(
+    /// 逐元素减法：`y = a - b`，两路输入等长 `len`。
+    Sub,
+    "sub_f32"
+);
+
+axis!(
+    /// 逐元素除法：`y = a / b`，两路输入等长 `len`；除零语义归算子，层不越权改写。
+    Div,
+    "div_f32"
+);
+
+axis!(
+    /// 逐元素取大：`y = max(a, b)`。
+    Max,
+    "max_f32"
+);
+
+axis!(
+    /// 逐元素取小：`y = min(a, b)`。
+    Min,
+    "min_f32"
+);
 
 /// 嵌入查表层。
 #[crate::spec(name = $name, out = [$tokens, $dim], ops = [$op], role = $role)]
@@ -284,15 +260,14 @@ impl Precision {
     }
 }
 
-/// 前缀扫描层：`s_t = a·s_{t-1} + b·x_t`，沿单一时间轴串行递推。
-///
-/// 与逐元素层的差别不在形状而在**依赖**：每个输出都依赖前一个输出，因此算子表给了独立的
-/// `scan` 骨架与分块声明。层侧仍只声明长度，读写字节与算术量全部由算子语义表推出。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Scan {
-    inner: AxisCore,
-}
-layer_delegate!(Scan, "scan_f32", "单轴层", ParamRole::Trainable);
+axis!(
+    /// 前缀扫描层：`s_t = a·s_{t-1} + b·x_t`，沿单一时间轴串行递推。
+    ///
+    /// 与逐元素层的差别不在形状而在**依赖**：每个输出都依赖前一个输出，因此算子表给了独立的
+    /// `scan` 骨架与分块声明。层侧仍只声明长度，读写字节与算术量全部由算子表推出。
+    Scan,
+    "scan_f32"
+);
 
 /// 矩阵乘层：结果形状 `[rows, cols]`；收缩轴档位与元素精度共同决定用哪个算子。
 #[derive(Debug, Clone, PartialEq, Eq)]

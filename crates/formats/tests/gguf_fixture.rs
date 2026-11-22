@@ -16,6 +16,8 @@ const T_Q8_0: u32 = 8;
 
 const T_Q4_K: u32 = 12;
 
+const T_Q5_K: u32 = 13;
+
 const T_Q6_K: u32 = 14;
 
 fn text(out: &mut Vec<u8>, value: &str) {
@@ -74,7 +76,7 @@ pub(crate) fn assemble(pieces: &[(&str, Vec<u64>, u32, Vec<u8>)]) -> Vec<u8> {
     head
 }
 
-/// 全类型夹具：F32/F16 标量与 Q8_0/Q4_K/Q6_K 块量化各一。
+/// 全类型夹具：F32/F16 标量与 Q8_0/Q4_K/Q5_K/Q6_K 块量化各一。
 pub(crate) fn standard() -> Vec<u8> {
     let f32s: Vec<u8> = [1.0f32, -0.5, 3.25, 0.0]
         .into_iter()
@@ -90,6 +92,11 @@ pub(crate) fn standard() -> Vec<u8> {
     q4.extend(0u16.to_le_bytes());
     q4.extend([1u8; 12]);
     q4.extend([0x21u8; 128]);
+    let mut q5 = 0x3C00u16.to_le_bytes().to_vec();
+    q5.extend(0u16.to_le_bytes());
+    q5.extend([1u8; 12]);
+    q5.extend([0x5Au8; 32]);
+    q5.extend([0x21u8; 128]);
     let mut q6 = vec![0x21u8; 128];
     q6.extend([0u8; 64]);
     q6.extend([1u8; 16]);
@@ -99,6 +106,7 @@ pub(crate) fn standard() -> Vec<u8> {
         ("half.weight", vec![4], T_F16, halves),
         ("q8.weight", vec![32], T_Q8_0, q8),
         ("q4.weight", vec![256], T_Q4_K, q4),
+        ("q5.weight", vec![256], T_Q5_K, q5),
         ("q6.weight", vec![256], T_Q6_K, q6),
     ])
 }

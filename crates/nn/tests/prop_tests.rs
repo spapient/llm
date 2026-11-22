@@ -248,8 +248,9 @@ impl Contract for Ghost {
 }
 
 proptest! {
-    /// 循环层的参数字节数必须能由门表独立重算：门数 × 隐宽 × (输入宽 + 1) 逐层累加。
-    /// 若被违反，说明 `param_bytes` 里藏了第二份门数或第二份层宽口径。
+    /// 循环层的参数字节数必须能由门表独立重算：每层每方向有输入侧矩阵
+    /// `门数·隐宽 × 输入宽`、隐侧矩阵 `门数·隐宽 × 隐宽`、以及两条偏置 `门数·隐宽`。
+    /// 若被违反，说明 `param_bytes` 里藏了第二份门数、第二份层宽口径，或漏算了一条偏置。
     #[test]
     fn recurrent_parameters_follow_the_gate_table(
         pick in 0usize..3,
@@ -263,7 +264,7 @@ proptest! {
         let mut want = 0u64;
         for level in 0..layers {
             let width = if level == 0 { input } else { hidden };
-            want += gates * hidden as u64 * (width as u64 + 1);
+            want += gates * hidden as u64 * (width as u64 + hidden as u64 + 2);
         }
         prop_assert_eq!(layer.param_bytes(), want * 4);
     }
