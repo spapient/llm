@@ -7,18 +7,7 @@
 
 use super::*;
 
-/// P0 闭集：`crates/op/ops/*.k` 真的会 `@` 到的七个原语——模板按名字取片段，缺一条就拼不出内核。
-const P0: [&str; 7] = [
-    "cvt",
-    "dot",
-    "load",
-    "load_async",
-    "quant",
-    "reduce",
-    "store",
-];
-
-testkit::device_suite!(P0);
+testkit::device_suite!();
 
 /// 宿主 `cc` 编得过 `.cl` 只是因为它写的是标量 C；OpenCL 前端才是这份文件的真读者。
 #[test]

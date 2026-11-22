@@ -1,12 +1,12 @@
 //! 片段层的用例套：九条判据 × 每台设备一遍。
 //!
 //! `rocm` 与 `opencl` 的用例正文逐字相同，只有 `DEVICE` / `FRAGMENTS` / `PRIMS` / `ROOT`
-//! 与 P0 闭集不同——逐字复制两份正是 N7 要消掉的同构。于是套子只在这里写一次，设备 crate
-//! 用一个宏把它摊成 `#[test]` 函数：
+//! 与生成的表不同——逐字复制两份正是 N7 要消掉的同构。于是套子只在这里写一次，设备 crate
+//! 用一个宏把它摊成 `#[test]` 函数，连 P0 闭集也不必自带：
 //!
 //! ```ignore
 //! use super::*;
-//! testkit::device_suite!(P0);
+//! testkit::device_suite!();
 //! ```
 //!
 //! 断言用 `assert!` 而不是 `expect`：判据本身只**产出缺陷**（`Result<(), String>`），失败
@@ -66,7 +66,7 @@ macro_rules! device_suite {
                 id: &profile.meta.id,
                 ext: DEVICE.ext,
                 dir: ROOT,
-                p0: &$p0,
+                p0: &$crate::device::P0,
                 fragments: &fragments,
                 prims: &prims,
                 provides: &provides,
