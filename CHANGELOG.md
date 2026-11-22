@@ -38,19 +38,27 @@
   - `fast::sme` 的 ZA 外积 → 整块只在 `nightly + aarch64` 存在，stable 上 `gemm_f32` 直接走 NEON
     通道。模块门控之后块内 26 条 `#[cfg(target_arch = "aarch64")]` 全部冗余，一并删除，
     `sme::gemm` 里那条"非 aarch64 恒假"的分支也随之下线，文件净减 28 行。
-  - `benchmarks` 的 SME 端口探针（`port_run`/`port_mix`）随之门控；`sdot_peak` 从 `sme_peak`
-    里提出来单独调用，i8 峰值口径在 stable 上照常测量。
+  - **端口探针改由 `crates/gemm` 发清单**（`fast::Probe` + `fast::probes()`，新增
+    `fast/probe.rs`）。第一版把 `cfg(nightly)` 直接写在 `benchmarks/src/peak.rs` 里，这是错的：
+    `nightly` 是 `crates/gemm` 的私有 cfg（`build.rs` 发出），别的 crate 写它只会拿到
+    `unexpected_cfgs` 警告，`-D warnings` 下就是红的。现在"本机有哪几条指令路径可测"由提供方
+    回答——缺的通道**直接不在清单里**，调用方只有一句 `for probe in fast::probes()`。
+    `peak.rs` 202 → 147 行（`sme_peak`/`sdot_peak`/`ported` 三个函数与 `FLOPS_PER_ROUND`
+    一起下线），且组名沿用 `{group}/{threads}{suffix}`，历史基准曲线仍可比。
+  - **清单本身有测试守着**（`fast::tests::probe_list_matches_the_toolchain`）：nightly 必含
+    `sme_peak`、stable 必不含、i8 两条恒在、每条的分子为正——两个工具链各断言自己那一侧，
+    "能力有没有"不再靠人工核对。
   - `rust-toolchain.toml` 的 `channel` 从 `nightly-2026-09-01` 改为 `stable`，工作区
     `rust-version` 从 `1.100`（当时尚未发布）改为 `1.99`，`clippy.toml` 的 `msrv` 同步回 `1.99`
     （否则 clippy 自报"两处 MSRV 不一致"）；CI 的工具链引用除 `fmt` 一格外全部换成 `1.99.1`。
   - 新增 CI job `nightly channel`（macOS / aarch64）跑 `cargo test -p llm-gemm --lib`：默认工具链
     已是 stable，没有这条守卫，上面两条 `cfg(nightly)` 通道会静默腐坏。
-  - 构建/测试/clippy/deny/coverage 全部落到 stable。`crates/gemm` 为此净 **+52 行**
-    （新增 `gemv/simd_scalar.rs` 80 行、`fast/sme.rs` 411→383 减 28 行——后者是纯减法，
-    模块被门控后块内 26 条 `#[cfg(target_arch = "aarch64")]` 全成冗余），已在
-    `scripts/loc-budget.sh` 按"（一）本次 +52 /（二）并发会话 +237"两笔分开登记，
-    `SRC_MAX` 93800 → 94200（实测 94,089）。
-  - **取证**：`cargo test -p llm-gemm --lib` → stable **242 passed**、nightly **254 passed**；
+  - 构建/测试/clippy/deny/coverage 全部落到 stable。两个 crate 合计净 **+101 行**
+    （`gemv/simd_scalar.rs` +80、`fast/sme.rs` 411→383 减 28——模块被门控后块内 26 条
+    `#[cfg(target_arch = "aarch64")]` 全成冗余，纯减法；`fast/probe.rs` +97、`fast.rs` +7、
+    `benchmarks/src/peak.rs` 202→147 减 55），已在 `scripts/loc-budget.sh` 按
+    "（一）本次 +101 /（二）并发会话 +237"两笔分开登记，`SRC_MAX` 93800 → 94200（实测 94,142）。
+  - **取证**：`cargo test -p llm-gemm --lib` → stable **243 passed**、nightly **255 passed**；
     差的 12 条正是 `fast::sme::tests::*`（5）与 `gemv::simd::tests::*`（7），即 `cfg(nightly)`
     被置上与未置上的恰是设计里那两条通道，而不是"两边都编译、退化无人发现"。
   - **`fmt` 门单独留在 nightly**：rustfmt 的排版随版本漂移，仓库的格式基线是 nightly 的 rustfmt 产出的。

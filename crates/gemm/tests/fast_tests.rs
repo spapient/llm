@@ -201,3 +201,19 @@ fn bench_throughput() {
         );
     }
 }
+
+/// 探针清单是「能力有没有」的唯一入口：条目随工具链变，但每条都必须有正数分子。
+///
+/// 这条测试盯的是**不泄漏 `cfg`**：调用方（测量容器）拿到的是一张清单，不是
+/// `cfg(nightly)`——后者是 crate 私有 cfg，谁写谁报 `unexpected_cfgs`。
+#[cfg(all(feature = "bench", target_arch = "aarch64"))]
+#[test]
+fn probe_list_matches_the_toolchain() {
+    let probes = probes();
+    assert!(probes.iter().all(|p| p.ops_per_round > 0), "{probes:?}");
+    #[cfg(nightly)]
+    assert!(probes.iter().any(|p| p.group == "sme_peak"));
+    #[cfg(not(nightly))]
+    assert!(probes.iter().all(|p| p.group != "sme_peak"));
+    assert!(probes.iter().any(|p| p.group == "i8_peak"));
+}

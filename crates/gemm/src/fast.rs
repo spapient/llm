@@ -295,6 +295,13 @@ mod micro;
 /// i8 `sdot` 端口峰值探针（K8 的分母），只在测量容器里导出。
 #[cfg(all(feature = "bench", target_arch = "aarch64"))]
 pub use i8::{SDOT_BLOCK_MAC_PER_K, SDOT_MAC_PER_ROUND, port_sdot, port_sdot_block};
+
+/// 端口探针清单：哪几条指令路径可测，由这里统一回答（调用方不写 `cfg`）。
+#[cfg(feature = "bench")]
+mod probe;
+#[cfg(feature = "bench")]
+pub use probe::{Probe, probes};
+
 use i8::{f32_calc, f32_pack, threads_override};
 pub use i8::{gemm_i8, gemm_i8_checked, gemm_i8_single};
 use micro::{Layout, Span, Sweep, Tile, edge, micro_packed};

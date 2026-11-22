@@ -17,16 +17,12 @@ use super::tn;
 
 pub(super) const I8_MR: usize = 4;
 
-/// 行块高度：要让 A 的 `rc × k` 字节留在 L1（约 128KiB），否则每个列块都要从 L2 重拉整块 A。
+/// 行块高度：让 A 的 `rc × k` 字节留在 L1（约 128KiB），否则每个列块都要从 L2 重拉整块 A。
 ///
-/// `RC_SWEEP` 是实测用的显式旋钮，非 0 时优先——它是**调参入口**而非分支：抽成函数后
-/// 调用点零分支，静态门的 Ccn 也就不会随旋钮的存在往上走。
+/// 「留住」这个假设已被实测证伪：`rc` 扫 112 / 64 / 32 与默认 128 在噪声内无差
+/// （默认 309.1、366.7 Gelem/s；`rc=112` 304.4、346.4），见 `docs/lld.md` v3.0.40。
 fn row_chunk(k: usize) -> usize {
-    if RC_SWEEP > 0 {
-        RC_SWEEP
-    } else {
-        ((1usize << 17) / k.max(1)).clamp(I8_MR, 256)
-    }
+    ((1usize << 17) / k.max(1)).clamp(I8_MR, 256)
 }
 
 /// i8 微内核列数（4 个 int32x4 累加器 × 4 行 = 16 寄存器，避开溢出）。
@@ -302,14 +298,18 @@ pub const SDOT_BLOCK_MAC_PER_K: usize = 16;
 /// 那样的「混合峰值 ≈ 纯峰值」是空证据：它根本没在环内取数。改成与生产相同的 `base + p`
 /// 单调推进后，取数被迫留在环内，实测比值才是真的（同一台机、同一编译参数，中位 0.875）。
 ///
-/// 本机无 `dotprod`、`rounds == 0`、`k == 0` 或 `k % 16 != 0`、缓冲不足 `4 * k` 时返回
+/// 但仓内 `criterion` 口径与那支独立程序不同，且**仓内才是权威**：
+/// `i8_peak/1_block/port` 493.3 vs `i8_peak/1/port` 504.0 = **0.979**——单线程取数几乎免费；
+/// 16/18 线程降到 0.69–0.73，那是 P/E 核混合下 L1 取数端口成为约束，不是 tile 形状的锅。
+/// 故「4×4 tile 注定只能到 87.5%」被证伪，单线程天花板是 98%。
+///
 /// A/B 与 `k` 的形状校验：`k` 非零且是 16 的倍数，两侧各留足 `4k`。
 #[cfg(all(feature = "bench", target_arch = "aarch64"))]
 fn block_shaped(a: &[i8], b: &[i8], k: usize) -> bool {
-    k != 0 && k % 16 == 0 && a.len() >= 4 * k && b.len() >= 4 * k
+    k != 0 && k.is_multiple_of(16) && a.len() >= 4 * k && b.len() >= 4 * k
 }
 
-/// `false` 且不执行任何向量指令。只在 `bench` 特性下编译。
+/// 本机无 `dotprod`、`rounds == 0`、形状不合时返回 `false` 且不执行任何向量指令。
 #[cfg(all(feature = "bench", target_arch = "aarch64"))]
 pub fn port_sdot_block(rounds: usize, a: &[i8], b: &[i8], k: usize) -> bool {
     if rounds == 0 || !block_shaped(a, b, k) || !std::arch::is_aarch64_feature_detected!("dotprod")
@@ -372,7 +372,7 @@ mod kernel {
         out: &mut [i32],
     ) {
         let kvec = k - k % 16;
-        let rc = (row_chunk(k) / I8_MR) * I8_MR;
+        let rc = (super::row_chunk(k) / I8_MR) * I8_MR;
         let mut r0 = 0;
         while r0 < rows {
             let rend = (r0 + rc).min(rows);
