@@ -204,19 +204,19 @@ macro_rules! kernel_table {
 pub use kernel::{
     Scalar, add_f32, apply_epilogue, dequant_i2, dequant_i4, dequant_i8, div_f32, embed_f32,
     exp_f32, gelu_f32, gemm_f32, gemm_i2, gemm_i4, gemm_i8, gemv_f32, gemv_i2, gemv_i4, gemv_i8,
-    hard_sigmoid_f32, leaky_relu_f32, log_f32, matmul_i8, max_f32, min_f32, mul_f32, reduce_max_f32,
-    reduce_sum_f32, relu_f32, residual_add_f32, rmsnorm_f32, rope_f32, scale_f32, sigmoid_f32,
-    silu_f32, softmax_f32, sub_f32, tanh_f32,
+    hard_sigmoid_f32, leaky_relu_f32, log_f32, matmul_i8, max_f32, min_f32, mul_f32,
+    reduce_max_f32, reduce_sum_f32, relu_f32, residual_add_f32, rmsnorm_f32, rope_f32, scale_f32,
+    sigmoid_f32, silu_f32, softmax_f32, sub_f32, tanh_f32,
 };
 
 // 契约层在 `spec`：内核源码与骨架宏都按 crate 根解析契约路径，这里把它们搬回来，于是内核源码
 // 里写的是 `crate::model::…` / `crate::operator_via!`，而不是到处写依赖 crate 名。
+pub use model::quant;
 pub use prof::same_bytes;
 pub(crate) use prof::tpl::guard;
 pub use prof::tpl::{formula, parse};
 pub use prof::{einsum, model, operator, sample, sch, sig, tpl};
 pub use prof::{formula_cell, operator_here, operator_via};
-pub use model::quant;
 pub use sch::layout;
 
 /// 形状由 `tensor` 拥有（见 `docs/ARCHITECTURE.md` 第三节），这里再导出：`Contract::output` 本来就返回它，
@@ -225,7 +225,10 @@ pub use tensor::Shape;
 
 /// 已声明的算子名清单，仅用于报错文案（热路径不调用）。
 fn declared_ops() -> String {
-    let names: Vec<&str> = prof::catalogue::all().iter().map(prof::catalogue::Op::name).collect();
+    let names: Vec<&str> = prof::catalogue::all()
+        .iter()
+        .map(prof::catalogue::Op::name)
+        .collect();
     format!("已声明：{}", names.join("、"))
 }
 

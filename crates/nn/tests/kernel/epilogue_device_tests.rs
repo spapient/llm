@@ -6,8 +6,8 @@
 
 use crate::epilogue::apply;
 use cutile::substitute::{EpiArgs, epilogue};
-use prof::epilogue::Step;
 use prof::atom::{ActKind, DType};
+use prof::epilogue::Step;
 
 /// 场景数组的最大元素数：见证 ABI 的写出上限 [`testkit::witness::MAX_OUT`] 就是这个数，
 /// 用例不可能比它更大，所以数组按上限定长、按形状切片。

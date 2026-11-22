@@ -61,7 +61,11 @@ fn the_ascend_front_is_ccec_for_the_910b_core() {
         .iter()
         .find(|entry| entry.emit == Emit::Ascendc)
         .expect("AscendC 语法前端已登记");
-    assert_eq!(entry.tool, vec!["ccec".to_string()], "昇腾的前端是 CANN 的 ccec");
+    assert_eq!(
+        entry.tool,
+        vec!["ccec".to_string()],
+        "昇腾的前端是 CANN 的 ccec"
+    );
     for flag in ["-xcce", "--cce-aicore-algorithm=dav-c220", "-fsyntax-only"] {
         assert!(
             entry.check.iter().any(|item| item.as_str() == flag),

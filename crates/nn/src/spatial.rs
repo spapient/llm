@@ -13,11 +13,13 @@
 //! - **池化/插值**各绑自己的真算子，代价表即算子的语义表。
 
 use crate::ContractSpec as Spec;
+use crate::conv::ConvGeom;
+use crate::conv::deconv::{ConvTranspose1d as OpDeconv1, ConvTranspose2d as OpDeconv2};
+use crate::conv::{
+    Conv1d as OpConv1, Conv2d as OpConv2, MaxPool1d as OpPool1, MaxPool2d as OpPool2,
+};
 use crate::{ContractSpec, nonzero};
 use diagnostic::Result;
-use crate::conv::ConvGeom;
-use crate::conv::{Conv1d as OpConv1, Conv2d as OpConv2, MaxPool1d as OpPool1, MaxPool2d as OpPool2};
-use crate::conv::deconv::{ConvTranspose1d as OpDeconv1, ConvTranspose2d as OpDeconv2};
 
 /// 一维卷积与转置卷积绑定的算子：im2col 之后就是一次矩阵乘。
 const GEMM: &str = "gemm_f32";

@@ -4,10 +4,10 @@ use crate::cap::Path;
 use crate::decl::{Fusion, OpDecl, TileCombo, compose, expand};
 use crate::prof::Profile;
 use crate::sch::Masking;
+use ::prof::catalogue::Registration;
 use core::cmp::Ordering;
 use core::fmt;
 use diagnostic::{Code, Error};
-use ::prof::catalogue::Registration;
 use prof::model::{Cost, Model};
 
 /// 一次 plan 的产物。

@@ -1,8 +1,8 @@
 //! 层计划与族别分流：类型视图（投影/查表）优先，再按算子族别闭集归类等长族。
 
 use diagnostic::{Code, Error, Result};
-use nn::{Contract, Embedding, Linear, MemoryBlock, Shape, WEIGHT_SUFFIX, WeightFormat};
 use nn::quant::{I4, I8};
+use nn::{Contract, Embedding, Linear, MemoryBlock, Shape, WEIGHT_SUFFIX, WeightFormat};
 
 use crate::kernels::SITE;
 use crate::params::Params;

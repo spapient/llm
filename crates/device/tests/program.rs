@@ -1,7 +1,7 @@
 use super::*;
 use llm_optim::execution::POINT_THREADS;
-use prof::decl::Grid;
 use nn::model::{Buf, Values};
+use prof::decl::Grid;
 
 const POINT_SOURCE: &str = "void cutile_scale_f32_kernel(const float *a, float *y, int N) {}\n";
 

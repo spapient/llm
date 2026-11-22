@@ -8,10 +8,10 @@ use std::path::Path;
 use diagnostic::{Code, Error, Result};
 
 use crate::Codec;
+use crate::plan::{Plan, axes_frame, flush_file, temp_path, write_data, write_descs};
 use crate::proof::Digest;
 use crate::rans;
 use crate::seg::Segment;
-use crate::plan::{Plan, axes_frame, flush_file, temp_path, write_data, write_descs};
 use wire::leb;
 use wire::sink::{Count, FileSink, Measured, Sealed, Sink, SliceSink};
 

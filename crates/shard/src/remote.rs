@@ -120,31 +120,47 @@ impl FileRemote {
         u64::from(rank) * (self.width as u64) * 4
     }
 
-    fn io_err(&self, action: &str, error: std::io::Error) -> Error {
-        Error::new(
-            Code::Io,
-            format!("{action} `{}` 失败：{error}", self.backing.display()),
-        )
-    }
-
     fn resize(&self) -> Result<()> {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .open(&self.backing)
-            .map_err(|error| self.io_err("创建", error))?;
-        file.set_len(self.len_bytes())
-            .map_err(|error| self.io_err("预留", error))
+            .map_err(|error| {
+                Error::new(
+                    Code::Io,
+                    format!("创建 `{}` 失败：{error}", self.backing.display()),
+                )
+            })?;
+        file.set_len(self.len_bytes()).map_err(|error| {
+            Error::new(
+                Code::Io,
+                format!("预留 `{}` 失败：{error}", self.backing.display()),
+            )
+        })
     }
 
     fn read_into(&self, rank: u32, out: &mut [f32]) -> Result<()> {
-        let mut file = File::open(&self.backing).map_err(|error| self.io_err("打开", error))?;
+        let mut file = File::open(&self.backing).map_err(|error| {
+            Error::new(
+                Code::Io,
+                format!("打开 `{}` 失败：{error}", self.backing.display()),
+            )
+        })?;
         file.seek(SeekFrom::Start(self.offset(rank)))
-            .map_err(|error| self.io_err("定位", error))?;
+            .map_err(|error| {
+                Error::new(
+                    Code::Io,
+                    format!("定位 `{}` 失败：{error}", self.backing.display()),
+                )
+            })?;
         let mut bytes = vec![0u8; self.width * 4];
-        file.read_exact(&mut bytes)
-            .map_err(|error| self.io_err("读", error))?;
+        file.read_exact(&mut bytes).map_err(|error| {
+            Error::new(
+                Code::Io,
+                format!("读 `{}` 失败：{error}", self.backing.display()),
+            )
+        })?;
         for (slot, chunk) in out.iter_mut().zip(bytes.chunks_exact(4)) {
             *slot = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
         }
@@ -158,15 +174,26 @@ impl FileRemote {
     }
 
     fn write(&self, rank: u32, values: &[f32]) -> Result<()> {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .open(&self.backing)
-            .map_err(|error| self.io_err("打开", error))?;
+        let mut file = OpenOptions::new().write(true).open(&self.backing).map_err(|error| {
+            Error::new(
+                Code::Io,
+                format!("打开 `{}` 失败：{error}", self.backing.display()),
+            )
+        })?;
         file.seek(SeekFrom::Start(self.offset(rank)))
-            .map_err(|error| self.io_err("定位", error))?;
+            .map_err(|error| {
+                Error::new(
+                    Code::Io,
+                    format!("定位 `{}` 失败：{error}", self.backing.display()),
+                )
+            })?;
         let bytes: Vec<u8> = values.iter().flat_map(|value| value.to_le_bytes()).collect();
-        file.write_all(&bytes)
-            .map_err(|error| self.io_err("写", error))
+        file.write_all(&bytes).map_err(|error| {
+            Error::new(
+                Code::Io,
+                format!("写 `{}` 失败：{error}", self.backing.display()),
+            )
+        })
     }
 }
 

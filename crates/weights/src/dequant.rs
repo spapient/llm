@@ -29,18 +29,27 @@ fn decode(kind: Kind, raw: &[u8], out: &mut [f32]) -> Result<()> {
 }
 
 /// 分块格式的位解包：传统 Q（`Q4_0`/`Q5_0`/`Q5_1`/`Q8_0`）与 K 超块（`Q2_K`~`Q6_K`）各自分派。
+/// 分块格式的解码函数。
+type Decoder = fn(&[u8], &mut [f32]) -> Result<()>;
+
+/// 分块格式 → 解码函数。一张表代替九臂 `match`：加一种格式只加一行，
+/// 分派本身没有分支，也就不会随格式数量长出复杂度。
+const BLOCKED: &[(Kind, Decoder)] = &[
+    (Kind::Q4_0, decode_q4_0),
+    (Kind::Q5_0, decode_q5_0),
+    (Kind::Q5_1, decode_q5_1),
+    (Kind::Q8_0, decode_q8),
+    (Kind::Q2_K, decode_q2k),
+    (Kind::Q3_K, decode_q3k),
+    (Kind::Q4_K, decode_k::<false>),
+    (Kind::Q5_K, decode_k::<true>),
+    (Kind::Q6_K, decode_q6k),
+];
+
 fn blocked(kind: Kind, raw: &[u8], out: &mut [f32]) -> Result<()> {
-    match kind {
-        Kind::Q4_0 => decode_q4_0(raw, out),
-        Kind::Q5_0 => decode_q5_0(raw, out),
-        Kind::Q5_1 => decode_q5_1(raw, out),
-        Kind::Q8_0 => decode_q8(raw, out),
-        Kind::Q2_K => decode_q2k(raw, out),
-        Kind::Q3_K => decode_q3k(raw, out),
-        Kind::Q4_K => decode_k::<false>(raw, out),
-        Kind::Q5_K => decode_k::<true>(raw, out),
-        Kind::Q6_K => decode_q6k(raw, out),
-        _ => Err(bad(format!("{kind:?} 不是分块格式"))),
+    match BLOCKED.iter().find(|(known, _)| *known == kind) {
+        Some((_, decode)) => decode(raw, out),
+        None => Err(bad(format!("{kind:?} 不是分块格式"))),
     }
 }
 
@@ -235,8 +244,7 @@ fn decode_q2k(raw: &[u8], out: &mut [f32]) -> Result<()> {
     let (blocks, _) = raw.as_chunks::<84>();
     let (slots, _) = out.as_chunks_mut::<256>();
     for (slot, block) in slots.iter_mut().zip(blocks) {
-        let d = half_at(block, 0);
-        let min = half_at(block, 2);
+        let (d, min) = (half_at(block, 0), half_at(block, 2));
         let scales = &block[4..20];
         let qs = &block[20..84];
         let mut is = 0usize;
@@ -245,27 +253,39 @@ fn decode_q2k(raw: &[u8], out: &mut [f32]) -> Result<()> {
             let q = &qs[n * 32..];
             let mut shift = 0u32;
             for _j in 0..4 {
-                let sc = scales[is];
+                let (dl, ml) = scale_pair(d, min, scales[is]);
                 is += 1;
-                let dl = d * f32::from(sc & 0x0F);
-                let ml = min * f32::from(sc >> 4);
-                for l in 0..16 {
-                    slot[y] = dl * f32::from(((q[l] >> shift) & 3) as i8) - ml;
-                    y += 1;
-                }
-                let sc = scales[is];
+                lanes_2bit(slot, &mut y, q, shift, dl, ml);
+                let (dl, ml) = scale_pair(d, min, scales[is]);
                 is += 1;
-                let dl = d * f32::from(sc & 0x0F);
-                let ml = min * f32::from(sc >> 4);
-                for l in 0..16 {
-                    slot[y] = dl * f32::from(((q[l + 16] >> shift) & 3) as i8) - ml;
-                    y += 1;
-                }
+                lanes_2bit(slot, &mut y, &q[16..], shift, dl, ml);
                 shift += 2;
             }
         }
     }
     Ok(())
+}
+
+/// Q2_K 的一对缩放：低四位是 scale，高四位是 min。
+fn scale_pair(d: f32, min: f32, sc: u8) -> (f32, f32) {
+    (d * f32::from(sc & 0x0F), min * f32::from(sc >> 4))
+}
+
+/// 16 个 3-bit lane：高位掩码 `hm` 决定减不减偏置（Q3_K 的 `-4`）。
+fn lanes_3bit(slot: &mut [f32], y: &mut usize, q: &[u8], shift: u32, dl: f32, hm: &[u8], m: u8) {
+    for (at, value) in q.iter().take(16).enumerate() {
+        let sub = if hm[at] & m == 0 { 4 } else { 0 };
+        slot[*y] = dl * f32::from(((value >> shift) & 3) as i8 - sub);
+        *y += 1;
+    }
+}
+
+/// 16 个 2-bit lane：`out = dl * q - ml`。
+fn lanes_2bit(slot: &mut [f32], y: &mut usize, q: &[u8], shift: u32, dl: f32, ml: f32) {
+    for value in q.iter().take(16) {
+        slot[*y] = dl * f32::from(((value >> shift) & 3) as i8) - ml;
+        *y += 1;
+    }
 }
 
 /// `Q3_K`：块 256、110 字节。32 字节 mask + 64 字节 2-bit 量化点 + 12 字节 6-bit scale +
@@ -287,18 +307,10 @@ fn decode_q3k(raw: &[u8], out: &mut [f32]) -> Result<()> {
             for _j in 0..4 {
                 let dl = d_all * f32::from(scales[is] - 32);
                 is += 1;
-                for l in 0..16 {
-                    let sub = if hm[l] & m == 0 { 4 } else { 0 };
-                    slot[y] = dl * f32::from(((q[l] >> shift) & 3) as i8 - sub);
-                    y += 1;
-                }
+                lanes_3bit(slot, &mut y, q, shift, dl, hm, m);
                 let dl = d_all * f32::from(scales[is] - 32);
                 is += 1;
-                for l in 0..16 {
-                    let sub = if hm[l + 16] & m == 0 { 4 } else { 0 };
-                    slot[y] = dl * f32::from(((q[l + 16] >> shift) & 3) as i8 - sub);
-                    y += 1;
-                }
+                lanes_3bit(slot, &mut y, &q[16..], shift, dl, &hm[16..], m);
                 shift += 2;
                 m <<= 1;
             }
@@ -382,7 +394,7 @@ mod tests {
         block[0..2].copy_from_slice(&f16_bytes(0x3C00)); // d = 1.0
         block[2..4].copy_from_slice(&f16_bytes(0x3800)); // dmin = 0.5
         block[4..20].fill(0x11); // 每个 scale：低 4 位 = 1（dl=1.0）、高 4 位 = 1（ml=0.5）
-                                 // qs 全 0 → 量化点 0 → 输出 = 1.0*0 - 0.5 = -0.5
+        // qs 全 0 → 量化点 0 → 输出 = 1.0*0 - 0.5 = -0.5
         let mut out = [0.0f32; 256];
         decode_q2k(&block, &mut out).expect("解码");
         assert!(out.iter().all(|&v| (v + 0.5).abs() < 1e-6));
@@ -399,7 +411,7 @@ mod tests {
         let mut block = [0u8; 110];
         block[108..110].copy_from_slice(&f16_bytes(0x3C00)); // d = 1.0
         block[0..32].fill(0xFF); // mask 全 1，不扣 4
-                                 // scales 全 0 → dl = 1.0*(0-32) = -32；qs 全 0 → 量化点 0 → 输出 0
+        // scales 全 0 → dl = 1.0*(0-32) = -32；qs 全 0 → 量化点 0 → 输出 0
         let mut out = [0.0f32; 256];
         decode_q3k(&block, &mut out).expect("解码");
         assert!(out.iter().all(|&v| v == 0.0));

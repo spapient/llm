@@ -317,4 +317,3 @@ fn check_rejected_shapes(group: u64) -> diagnostic::Result<()> {
     }
     Ok(())
 }
-

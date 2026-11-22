@@ -13,8 +13,8 @@ use cutile::plan::Plan;
 use cutile::prof::Profile;
 use cutile::space;
 use diagnostic::{Code, Error};
-use prof::decl::{OpDecl, expand};
 use prof::atom::Space;
+use prof::decl::{OpDecl, expand};
 use std::path::PathBuf;
 
 /// 一次 `doctor` 的结论：每一步的产物，排版交给前端。

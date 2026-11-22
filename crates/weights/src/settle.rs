@@ -9,8 +9,8 @@ use crate::axes;
 use crate::json;
 use crate::ledger::{self, SCHEMA};
 use crate::reason::{bits_per, entropy_of, layer_of, reason_of};
-use crate::text::{escape, verify_root};
 use crate::stored::lossless_entry;
+use crate::text::{escape, verify_root};
 use crate::{Archive, Codec, Stored};
 
 /// 小于该字节数的段不值得编码，原样落盘（`passthrough:small`）。

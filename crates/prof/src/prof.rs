@@ -137,11 +137,7 @@ fn braced(f: &mut fmt::Formatter<'_>, base: &str, members: &[String]) -> fmt::Re
 /// 用分隔符把一串条目写进格式化器：不先收集 `Vec<String>`，也不为每个成员造 `String`。
 ///
 /// 首个条目之后交给 `try_for_each`：分隔符与条目在同一个写点，函数里只剩一个 `?`。
-fn joined<T: fmt::Display>(
-    f: &mut fmt::Formatter<'_>,
-    sep: &str,
-    items: &[T],
-) -> fmt::Result {
+fn joined<T: fmt::Display>(f: &mut fmt::Formatter<'_>, sep: &str, items: &[T]) -> fmt::Result {
     let mut rest = items.iter();
     let Some(first) = rest.next() else {
         return Ok(());

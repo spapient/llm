@@ -39,7 +39,11 @@ fn every_fragment_composes_into_a_translation_unit_its_language_accepts() {
     let mut languages = 0;
     let mut units = 0;
     for profile in catalogue.profiles() {
-        let Some(spec) = config().gates.iter().find(|entry| entry.emit == profile.meta.emit) else {
+        let Some(spec) = config()
+            .gates
+            .iter()
+            .find(|entry| entry.emit == profile.meta.emit)
+        else {
             eprintln!(
                 "skip: `{}` 的 `{}` 没有登记语法前端，它的片段未被解析",
                 profile.meta.id, profile.meta.emit

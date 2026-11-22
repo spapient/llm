@@ -5,11 +5,11 @@
 //! 字段级解析在 [`parse`]（`decl/parse.rs`）。
 
 use crate::atom::Need;
-use core::fmt;
-use diagnostic::{Code, Error};
 use crate::sch::Schedule;
 use crate::sch::layout::LayoutSpec;
 use crate::sig::CType;
+use core::fmt;
+use diagnostic::{Code, Error};
 
 /// 变体数上限（cutile README §4.1）。
 pub const MAX_VARIANTS: usize = 8;

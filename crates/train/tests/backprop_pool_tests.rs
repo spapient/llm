@@ -56,7 +56,11 @@ fn adaptive_pool_matches_central_differences() -> Result<()> {
 
 #[test]
 fn interpolate_matches_central_differences() -> Result<()> {
-    let (h, w, out) = (nn::conv::interpolate::H, nn::conv::interpolate::W, nn::conv::interpolate::OH);
+    let (h, w, out) = (
+        nn::conv::interpolate::H,
+        nn::conv::interpolate::W,
+        nn::conv::interpolate::OH,
+    );
     let x0 = ramp(h * w);
     check_shaped_grad("interpolate_f32", &x0, out * out, |px| {
         let mut y = vec![0.0f32; out * out];

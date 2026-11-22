@@ -14,8 +14,8 @@
 //! 各步骤的数值语义（列偏置广播、激活、量化）归 `gemm` 等算术拥有方：本层只描述「做了什么、按什么顺序」，
 //! 不复制算术。
 
-use diagnostic::{Error, Result};
 use crate::atom::{ActKind, DType, Epilogue};
+use diagnostic::{Error, Result};
 
 /// 一个写回步骤：闭集操作 + 它的参数。每个变体自带参数，错误状态不可表达。
 #[derive(Debug, Clone, PartialEq)]

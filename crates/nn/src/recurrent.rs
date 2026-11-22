@@ -93,6 +93,11 @@ impl RecurrentTensor {
     /// 四件权重；`bias = false` 时只取前两件。
     pub const ALL: [Self; 4] = [Self::WeightIh, Self::WeightHh, Self::BiasIh, Self::BiasHh];
 
+    /// 后缀 → 件：闭集只有四件，反查走这一处，拆名与装配共用同一张表。
+    pub fn from_suffix(suffix: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|item| item.suffix() == suffix)
+    }
+
     /// 名字后缀（不含层号与方向）：与 PyTorch 的 `weight_ih` / `bias_hh` 同名。
     pub const fn suffix(self) -> &'static str {
         match self {
@@ -163,21 +168,8 @@ impl Recurrent {
                 ("dirs", dirs),
             ],
         )?;
-        if dirs > 2 {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("循环层只支持单向或双向，dirs = {dirs} 既不是 1 也不是 2"),
-            )
-            .with("nn::Recurrent::new"));
-        }
-        // 去重靠 `contains` 而不是 `dedup`：后者只吃掉相邻重复，表的顺序一变就会漏。
-        let mut ops: Vec<&str> = vec![Self::GEMV];
-        for (op, _) in cell.activations() {
-            if !ops.contains(op) {
-                ops.push(op);
-            }
-        }
-        let spec = ContractSpec::new(name, Shape::new([hidden * dirs]), ops)?;
+        Self::two_directions(dirs)?;
+        let spec = ContractSpec::new(name, Shape::new([hidden * dirs]), Self::cell_ops(cell))?;
         Ok(Self {
             spec,
             input,
@@ -187,6 +179,30 @@ impl Recurrent {
             cell,
             bias,
         })
+    }
+
+    /// 循环层只有单向与双向：`dirs` 不在 `{1, 2}` 里就在构造期失败。
+    fn two_directions(dirs: usize) -> Result<()> {
+        if dirs > 2 {
+            return Err(Error::new(
+                Code::Invalid,
+                format!("循环层只支持单向或双向，dirs = {dirs} 既不是 1 也不是 2"),
+            )
+            .with("nn::Recurrent::new"));
+        }
+        Ok(())
+    }
+
+    /// 本层要装配的算子：`gemv` 加上 cell 的激活。
+    /// 去重靠 `contains` 而不是 `dedup`：后者只吃掉相邻重复，表的顺序一变就会漏。
+    fn cell_ops(cell: Cell) -> Vec<&'static str> {
+        let mut ops = vec![Self::GEMV];
+        for (op, _) in cell.activations() {
+            if !ops.contains(op) {
+                ops.push(op);
+            }
+        }
+        ops
     }
 
     crate::accessors! {
@@ -276,19 +292,26 @@ impl Contract for Recurrent {
     }
 
     fn bounds(&self) -> BoundsResult {
-        let mut total = Bounds::ZERO;
-        for (inp, out) in self.projections() {
-            total = total.plus(Bounds::of_op(Self::GEMV, inp, out)?);
-        }
-        // 门激活与门投影同一口径：一元层按 `(len, 1)` 计价，故这里也用 `of_ctx`，
-        // 不另编一套「隐宽当投影宽」的说法。
-        for (op, count) in self.cell.activations() {
-            let step = Bounds::of_ctx(op, self.hidden, 1)?;
-            for _ in 0..(*count * self.dirs * self.layers) {
-                total = total.plus(step);
-            }
-        }
-        Ok(Some(total))
+        let projections = self
+            .projections()
+            .try_fold(Bounds::ZERO, |total, (inp, out)| {
+                Bounds::of_op(Self::GEMV, inp, out).map(|cost| total.plus(cost))
+            })?;
+        Ok(Some(projections.plus(self.activation_bound()?)))
+    }
+}
+
+impl Recurrent {
+    /// 门激活的总代价：一元层按 `(len, 1)` 计价，与门投影同一口径，不另编一套
+    /// 「隐宽当投影宽」的说法；出现次数是 `count × 方向数 × 层数`。
+    fn activation_bound(&self) -> Result<Bounds> {
+        self.cell
+            .activations()
+            .iter()
+            .try_fold(Bounds::ZERO, |total, (op, count)| {
+                let step = Bounds::of_ctx(op, self.hidden, 1)?;
+                Ok((0..count * self.dirs * self.layers).fold(total, |sum, _| sum.plus(step)))
+            })
     }
 }
 

@@ -1,9 +1,9 @@
 //! 职责：方言源码文本：CUDA/Metal 源串拼接。
 use super::Dialect;
 use diagnostic::{Code, Error, Result};
-use prof::decl::Grid;
 use nn::model::{Sample, Values};
 use nn::sig::{Param, Signature};
+use prof::decl::Grid;
 
 use cutile::harness::output_name;
 

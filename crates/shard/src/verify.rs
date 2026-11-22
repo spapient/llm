@@ -331,7 +331,6 @@ fn gate_parts(gate: &LanguageGate) -> Option<String> {
     }
 }
 
-
 #[cfg(test)]
 #[path = "../tests/verify_tests.rs"]
 mod tests;

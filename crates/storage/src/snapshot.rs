@@ -33,7 +33,7 @@ use tensor::DType;
 use wire::leb::write;
 use wire::sink::{Count, FileSink, Sealed, Sink, SliceSink};
 
-use crate::codec::{difference, invalid, mismatch, read_entries, tag, truncated, Cursor};
+use crate::codec::{Cursor, difference, invalid, mismatch, read_entries, tag, truncated};
 use crate::state::{
     read_grad_accum, read_moments, read_ties, write_grad_accum, write_moments, write_ties,
 };
@@ -45,7 +45,7 @@ const MIN_ENTRY: usize = 5;
 pub(crate) const WRITE_BUF: usize = 8 * 1024;
 
 /// 条目表与维度的预分配上限：更大的表按需增长，于是伪造的计数最多多要一块固定大小的内存。
-const PREALLOC: usize = 1024;
+pub(crate) const PREALLOC: usize = 1024;
 
 /// 快照里的一个条目：名字、元素类型、形状维度与它在数据段里的字节偏移。
 ///
@@ -449,13 +449,13 @@ fn temp_path(path: &Path) -> PathBuf {
 }
 
 #[cfg(test)]
-#[path = "snapshot_support.rs"]
+#[path = "../tests/snapshot_support.rs"]
 mod snapshot_support;
 
 #[cfg(test)]
-#[path = "snapshot_roundtrip_tests.rs"]
+#[path = "../tests/snapshot_roundtrip_tests.rs"]
 mod roundtrip_tests;
 
 #[cfg(test)]
-#[path = "snapshot_canonical_tests.rs"]
+#[path = "../tests/snapshot_canonical_tests.rs"]
 mod canonical_tests;

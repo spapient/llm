@@ -31,13 +31,11 @@ pub const COVERED: &[&str] = &[
 ///
 /// 这是**唯一**允许出现"还没写"的名单，长度由 [`PLANNED_MAX`] 封顶：
 /// 一旦它开始增长，就说明有人把"该有而没写"记成了"不需要"，那道门随即便失效。
-pub const PLANNED: &[(&str, &str)] = &[
-    (
-        "autograd",
-        "该断言\"每个算子恰好被访问一次\"与\"加法梯度是求和\"；但同一批公式的生产路径在 \
+pub const PLANNED: &[(&str, &str)] = &[(
+    "autograd",
+    "该断言\"每个算子恰好被访问一次\"与\"加法梯度是求和\"；但同一批公式的生产路径在 \
          `train`（刚补上梯度对拍），先坐实那边再回填这里的遍历纪律。",
-    ),
-];
+)];
 
 /// 缺口上限：只许减，不许随手加。
 pub const PLANNED_MAX: usize = 1;
@@ -50,12 +48,7 @@ pub const ABSENT: &[Absence] = &[
                  要么是 PTX 文本形状——而它的真值是实测吞吐，断言文本只会锁死实现。",
     },
     Absence {
-        members: &[
-            "annotation",
-            "diagnostic",
-            "dtype",
-            "storage",
-        ],
+        members: &["annotation", "diagnostic", "dtype", "storage"],
         reason: "词汇表：枚举、错误码与注册表行。唯一的不变量是\"每个取值都被处理过一次\"，\
                  而它由穷举 `match` 在编译期强制（加一个变体不处理就编译不过）——\
                  性质测试在这里提供的不是覆盖，是重复。",
@@ -73,9 +66,9 @@ pub const ABSENT: &[Absence] = &[
                  真值是 `prof` 的逐条对账用例，写在性质层只会退化成\"结构等于结构\"。",
     },
     Absence {
-        members: &["fuzz", "snapshot", "tokenizer", "weights"],
+        members: &["fuzz", "tokenizer", "weights"],
         reason: "任意字节鲁棒性由 `crates/fuzz` 的确定性靶覆盖——同一句话（不 panic、只返回 \
-                 `Invalid`），样本量级远超几百个用例；这四个成员还各有真实样本的往返用例钉住正向路径。",
+                 `Invalid`），样本量级远超几百个用例；这三个成员还各有真实样本的往返用例钉住正向路径（`storage` 的检查点格式已在词汇表一行登记）。",
     },
     Absence {
         members: &["tensor"],

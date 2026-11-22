@@ -140,4 +140,3 @@ fn accumulate_row(
         dk[j_read + h] += s * ctx.q[i_read + h];
     }
 }
-

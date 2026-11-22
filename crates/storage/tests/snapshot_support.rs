@@ -7,23 +7,24 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
+pub(crate) use super::varint;
 pub(crate) use super::{
-    Cursor, Facts, Format, GradAccum, Manifest, ManifestEntry, Moments, SlotMoments, Ties,
-    WRITE_BUF,
+    Facts, Format, GradAccum, Manifest, ManifestEntry, Moments, SlotMoments, Ties, WRITE_BUF,
 };
-pub(crate) use super::{invalid, varint};
-pub(crate) use crate::codec::tag;
+pub(crate) use crate::codec::{Cursor, invalid, tag};
+pub(crate) use diagnostic::{Code, Result};
 pub(crate) use tensor::{DType, Shape};
 
 /// 快照类型在本测试组里的具体化：条目表用本地替身，消费方写法与 `weights::Snapshot` 一致。
 pub(crate) type Snapshot = super::Snapshot<Header>;
 
-/// 一个测试条目：与 `weights::Entry` 同形的四项。
+/// 一个测试条目：与 `weights::Entry` 同形的四项，但内部形状存成 `Vec<usize>`——
+/// 快照只认识 [`ManifestEntry`] 的四个字段，测试替身与生产 `Entry` 不必共用同一份存储。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Entry {
     name: String,
     dtype: DType,
-    shape: Shape,
+    dims: Vec<usize>,
     offset: usize,
 }
 
@@ -33,7 +34,7 @@ impl Entry {
         Self {
             name: name.into(),
             dtype,
-            shape,
+            dims: shape.dims().to_vec(),
             offset: 0,
         }
     }
@@ -44,14 +45,14 @@ impl Entry {
         self
     }
 
-    /// 形状。
-    pub(crate) fn shape(&self) -> &Shape {
-        &self.shape
+    /// 形状（按需重建，仅测试用）。
+    pub(crate) fn shape(&self) -> Shape {
+        Shape::new(self.dims.clone())
     }
 
     /// 字节长度（由形状与类型推出）。
-    fn len(&self) -> usize {
-        self.shape.element_bytes(self.dtype)
+    pub(crate) fn len(&self) -> usize {
+        self.shape().element_bytes(self.dtype)
     }
 
     /// 结束偏移（不含）。
@@ -61,24 +62,29 @@ impl Entry {
 }
 
 impl ManifestEntry for Entry {
-    fn name(&self) -> &str {
-        &self.name
+    fn offset(&self) -> usize {
+        self.offset
     }
 
     fn dtype(&self) -> DType {
         self.dtype
     }
 
-    fn dims(&self) -> &[usize] {
-        self.shape.dims()
+    fn name(&self) -> &str {
+        &self.name
     }
 
-    fn offset(&self) -> usize {
-        self.offset
+    fn dims(&self) -> &[usize] {
+        &self.dims
     }
 
     fn from_parts(name: String, dtype: DType, dims: Vec<usize>, offset: usize) -> Self {
-        Self::new(name, dtype, Shape::new(dims)).at(offset)
+        Self {
+            name,
+            dtype,
+            dims,
+            offset,
+        }
     }
 }
 

@@ -39,7 +39,7 @@ pub(crate) fn invalid(message: impl Into<String>) -> Error {
     Error::new(Code::Invalid, message).with(CTX)
 }
 
-/// 检查点与手头的条目表不一致：只由 [`super::Snapshot::check_weights`] 产生。
+/// 检查点与手头的条目表不一致：只由 [`crate::snapshot::Snapshot::check_weights`] 产生。
 pub(crate) fn mismatch(message: impl Into<String>) -> Error {
     Error::new(Code::Invalid, message).with("storage::snapshot::Snapshot::check_weights")
 }

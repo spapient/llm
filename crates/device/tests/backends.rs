@@ -438,7 +438,9 @@ fn production_grid_kernel_compiles_for_a_real_op() {
         testkit::skip("engine: Metal 工具链不在本机，生产态内核编译用例未运行");
         return;
     }
-    let (m, n) = nn::registry::model("silu_f32").expect("silu_f32 语义表").shape;
+    let (m, n) = nn::registry::model("silu_f32")
+        .expect("silu_f32 语义表")
+        .shape;
     let msl = program(&catalogue, &dirs, "silu_f32", Metal, Mode::declared(), m, n)
         .and_then(|stages| stages.one("降源"))
         .expect("生产态网格内核应能生成");
@@ -486,7 +488,9 @@ fn production_scan_kernel_compiles_for_a_real_op() {
         testkit::skip("engine: Metal 工具链不在本机，扫描内核编译用例未运行");
         return;
     }
-    let (m, n) = nn::registry::model("scan_f32").expect("scan_f32 语义表").shape;
+    let (m, n) = nn::registry::model("scan_f32")
+        .expect("scan_f32 语义表")
+        .shape;
     let (local, correct) = program(
         &catalogue,
         &dirs,
@@ -520,7 +524,9 @@ fn production_rmsnorm_kernel_compiles_for_a_real_op() {
         testkit::skip("engine: Metal 工具链不在本机，两趟内核编译用例未运行");
         return;
     }
-    let (m, n) = nn::registry::model("rmsnorm_f32").expect("rmsnorm_f32 语义表").shape;
+    let (m, n) = nn::registry::model("rmsnorm_f32")
+        .expect("rmsnorm_f32 语义表")
+        .shape;
     let msl = program(
         &catalogue,
         &dirs,
@@ -565,7 +571,9 @@ fn production_softmax_kernel_compiles_for_a_real_op() {
         testkit::skip("engine: Metal 工具链不在本机，softmax 内核编译用例未运行");
         return;
     }
-    let (m, n) = nn::registry::model("softmax_f32").expect("softmax_f32 语义表").shape;
+    let (m, n) = nn::registry::model("softmax_f32")
+        .expect("softmax_f32 语义表")
+        .shape;
     let (max, expsum, map) = program(
         &catalogue,
         &dirs,

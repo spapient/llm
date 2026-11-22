@@ -147,7 +147,11 @@ fn locate(module: &str, depth: usize) -> Option<PathBuf> {
                 else {
                     return false;
                 };
-                let name = rest.trim_start().trim_end_matches('{').trim_end_matches(';').trim();
+                let name = rest
+                    .trim_start()
+                    .trim_end_matches('{')
+                    .trim_end_matches(';')
+                    .trim();
                 name == leaf
             }) {
                 return Some(candidate);
@@ -570,4 +574,3 @@ pub(crate) fn annotation_names_come_from_the_vocabulary() {
         );
     }
 }
-

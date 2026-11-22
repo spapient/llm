@@ -8,7 +8,6 @@ use diagnostic::{Code, Error};
 
 use crate::{Device, fail};
 
-
 // ── 设备镜像 ──────────────────────────────────────────────────────────
 
 /// 一台设备的镜像结局。
@@ -30,8 +29,9 @@ pub fn outcome(device: &Device, out: &Path, images: bool) -> Outcome {
     }
     match recipe(&device.emit) {
         None => Outcome::NoRecipe,
-        Some(recipe) => compile(device, recipe, out)
-            .unwrap_or_else(|error| Outcome::Skipped(error.to_string())),
+        Some(recipe) => {
+            compile(device, recipe, out).unwrap_or_else(|error| Outcome::Skipped(error.to_string()))
+        }
     }
 }
 
@@ -127,12 +127,7 @@ fn run(program: &str, args: &[String]) -> diagnostic::Result<String> {
     let output = Command::new(program)
         .args(args)
         .output()
-        .map_err(|error| {
-            Error::new(
-                Code::Unsupported,
-                format!("`{program}` 不可执行：{error}"),
-            )
-        })?;
+        .map_err(|error| Error::new(Code::Unsupported, format!("`{program}` 不可执行：{error}")))?;
     if output.status.success() {
         return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
     }

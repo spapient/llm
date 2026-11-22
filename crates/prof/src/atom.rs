@@ -7,7 +7,6 @@ use core::marker::PhantomData;
 pub use crate::need::{Attr, Need, Provide, Witness};
 pub use crate::span::Span;
 
-
 // ── vocab ──────────────────────────────────────────────────────────────
 
 /// 闭集：词汇表本身。`ALL` 是全量与顺序的唯一事实源，`as_str` 是跨层共用的名字（TOML、诊断、

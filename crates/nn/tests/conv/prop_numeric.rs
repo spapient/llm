@@ -9,7 +9,9 @@
 //!   这类性质不依赖任何实现细节，只依赖算子的定义，且能抓住"权重没归一化"这类错。
 
 use crate::conv::attention;
-use crate::conv::classic::{adaptive_pool, avg_pool2d, conv2d, interpolate, max_pool1d, max_pool2d};
+use crate::conv::classic::{
+    adaptive_pool, avg_pool2d, conv2d, interpolate, max_pool1d, max_pool2d,
+};
 use proptest::prelude::*;
 use testkit::prop;
 

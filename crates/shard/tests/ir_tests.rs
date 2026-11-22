@@ -7,9 +7,9 @@ use crate::backend::Lower;
 use cutile::kernel::{Access, Arith, Expr, Kernel, Parameter, ScalarType, ValueType};
 use cutile::prof::Emit;
 use diagnostic::Code;
-use prof::decl::Grid;
 use nn::model::{Buf, Sample, Values};
 use nn::sig::CType;
+use prof::decl::Grid;
 
 fn read(name: &str) -> Parameter {
     Parameter {

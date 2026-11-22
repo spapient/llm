@@ -10,13 +10,13 @@ use crate::backend::{Lower, TensorGeometry};
 use crate::execution::{grid_dims, kind, lower_sources, resolve, single_kind};
 use crate::pipeline::{Prepared, Run};
 use cutile::builtin::Catalogue;
-use cutile::dirs::Dirs;
 use cutile::decl::Skeleton;
+use cutile::dirs::Dirs;
 use cutile::prof::Emit;
 use diagnostic::{Code, Error};
-use prof::decl::{Grid, OpDecl};
 use nn::model::Sample;
 use nn::sig::CType;
+use prof::decl::{Grid, OpDecl};
 
 /// 错误定位：所有形态共用这一个站点（换形态不改定位）。
 const SITE: &str = "cutile::execution::program";
@@ -410,22 +410,21 @@ fn tensor_gemm_ready(geometry: TensorGeometry, run: &Run<'_>, sample: &Sample) -
 
 /// int8 GEMM：tile 在 2..=32、骨架是 GEMM、签名是 int8 对、形状能整块切开。
 fn int8_gemm_ready(tile: usize, run: &Run<'_>, sample: &Sample) -> bool {
-    (2..=32).contains(&tile) && run.op.skeleton == Skeleton::Gemm && int8_signature(run)
+    (2..=32).contains(&tile)
+        && run.op.skeleton == Skeleton::Gemm
+        && int8_signature(run)
         && shapes(sample, tile)
 }
 
 /// 分块注意力：线程可整块、骨架是逐点、形状满足 `d ≤ s` 的注意力几何。
 fn tiled_attention_ready(threads: usize, run: &Run<'_>, sample: &Sample) -> bool {
-    tileable_threads(threads) && run.op.skeleton == Skeleton::Elementwise && attention_shape(run, sample)
+    tileable_threads(threads)
+        && run.op.skeleton == Skeleton::Elementwise
+        && attention_shape(run, sample)
 }
 
 /// flash 注意力：在分块注意力之上再要求块内批处理可行。
-fn flash_attention_ready(
-    threads: usize,
-    block: usize,
-    run: &Run<'_>,
-    sample: &Sample,
-) -> bool {
+fn flash_attention_ready(threads: usize, block: usize, run: &Run<'_>, sample: &Sample) -> bool {
     tiled_attention_ready(threads, run, sample) && batching_block(threads, block)
 }
 
@@ -508,4 +507,3 @@ fn attention_shape(run: &Run<'_>, sample: &Sample) -> bool {
 fn in_bounds(s: usize, d: usize) -> bool {
     s > 0 && d > 0 && s <= 8192 && d <= 64
 }
-

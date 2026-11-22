@@ -205,13 +205,27 @@ impl Stack {
     }
 }
 
-/// 条目归到两侧：一次投影进层清单，其余进未覆盖清单。
+/// 条目归到两侧：能认成循环层的按层归组，其余逐条判投影。
 fn classify(
     header: &Header,
     scales: &[&str],
     layers: &mut Vec<Box<dyn Contract>>,
     uncovered: &mut Vec<String>,
 ) -> Result<()> {
+    let (groups, rest) = partition(header, scales);
+    let mut found = layers_of(groups, uncovered);
+    found.extend(projections_of(header, rest, uncovered)?);
+    // 认出来的层与投影按条目在文件里的偏移排回去：下界归因与切分都按这个顺序读。
+    found.sort_by_key(|(at, _)| *at);
+    layers.extend(found.into_iter().map(|(_, layer)| layer));
+    Ok(())
+}
+
+/// 分组：一次投影的标度条目跳过，循环件名按层名归组，其余留着逐条判投影。
+fn partition<'a>(
+    header: &'a Header,
+    scales: &[&str],
+) -> (BTreeMap<&'a str, (usize, Vec<&'a Entry>)>, Vec<(usize, &'a Entry)>) {
     let mut groups: BTreeMap<&str, (usize, Vec<&Entry>)> = BTreeMap::new();
     let mut rest: Vec<(usize, &Entry)> = Vec::new();
     for (at, entry) in header.entries().iter().enumerate() {
@@ -227,24 +241,40 @@ fn classify(
             None => rest.push((at, entry)),
         }
     }
-    // 认出来的层与投影按条目在文件里的偏移排回去：下界归因与切分都按这个顺序读。
+    (groups, rest)
+}
+
+/// 认出来的循环层；认不出就一件都不认——半认会把一半权重算进下界、另一半丢进清单。
+fn layers_of(
+    groups: BTreeMap<&str, (usize, Vec<&Entry>)>,
+    uncovered: &mut Vec<String>,
+) -> Vec<(usize, Box<dyn Contract>)> {
+    groups
+        .into_iter()
+        .filter_map(|(block, (at, group))| match recurrent_layer(block, &group) {
+            Some(layer) => Some((at, Box::new(layer) as Box<dyn Contract>)),
+            None => {
+                uncovered.extend(group.iter().map(|entry| entry.name().to_string()));
+                None
+            }
+        })
+        .collect()
+}
+
+/// 其余条目逐条判投影：认得出的进层清单，认不出的进未覆盖清单。
+fn projections_of(
+    header: &Header,
+    rest: Vec<(usize, &Entry)>,
+    uncovered: &mut Vec<String>,
+) -> Result<Vec<(usize, Box<dyn Contract>)>> {
     let mut found: Vec<(usize, Box<dyn Contract>)> = Vec::new();
-    for (block, (at, group)) in groups {
-        match recurrent_layer(block, &group) {
-            Some(layer) => found.push((at, Box::new(layer))),
-            // 认不出就一件都不认：半认会把一半权重算进下界、另一半丢进清单。
-            None => uncovered.extend(group.iter().map(|entry| entry.name().to_string())),
-        }
-    }
     for (at, entry) in rest {
         match projection(header, entry)? {
             Some(layer) => found.push((at, Box::new(layer))),
             None => uncovered.push(entry.name().to_string()),
         }
     }
-    found.sort_by_key(|(at, _)| *at);
-    layers.extend(found.into_iter().map(|(_, layer)| layer));
-    Ok(())
+    Ok(found)
 }
 
 /// 循环权重条目的拆解：把 `blk.lstm.weight_ih_l0_reverse` 拆成 `(层名, 件, 层号, 方向)`。
@@ -252,53 +282,46 @@ fn classify(
 /// 从右往左拆，而不是拿固定后缀反复 `ends_with`：层号与方向都是变长的，右拆一次就拿到；
 /// 后缀不落在四件之内（比如 `blk.0.mix_l2`）就返回 `None`，不会被误认成循环权重。
 fn recurrent_parts(entry: &str) -> Option<(&str, RecurrentTensor, usize, usize)> {
-    let (stem, dir) = match entry.strip_suffix("_reverse") {
+    let (stem, dir) = split_dir(entry);
+    let (stem, level) = stem.rsplit_once("_l")?;
+    let (block, suffix) = stem.rsplit_once('.')?;
+    let tensor = RecurrentTensor::from_suffix(suffix)?;
+    let level: usize = level.parse().ok()?;
+    (!block.is_empty()).then_some((block, tensor, level, dir))
+}
+
+/// 方向：`_reverse` 后缀是反向（1），其余是正向（0）。
+fn split_dir(entry: &str) -> (&str, usize) {
+    match entry.strip_suffix("_reverse") {
         Some(stem) => (stem, 1),
         None => (entry, 0),
-    };
-    let (stem, level) = stem.rsplit_once("_l")?;
-    let level: usize = level.parse().ok()?;
-    let (block, suffix) = stem.rsplit_once('.')?;
-    let tensor = RecurrentTensor::ALL.into_iter().find(|t| t.suffix() == suffix)?;
-    (!block.is_empty()).then_some((block, tensor, level, dir))
+    }
 }
 
 /// 由一组同前缀的条目认出一次循环层；认不出返回 `None`。
 ///
-/// 判据不是「名字像」，而是**清单能重新生成**：由 `weight_hh` 的行列比定门数、它的第二维定隐宽、
-/// 层号与方向的最大值定规模，构造出来之后按 [`Recurrent::weight_entries`] 把名字与形状重新生
-/// 成一遍——与检查点里的一条不差才认。认的是「这份权重就是这一层」，不是「它大概像这一层」。
+/// 判据不是「名字像」，而是**清单能重新生成**：构造出来之后按 [`Recurrent::weight_entries`]
+/// 把名字与形状重新生成一遍，与检查点里的一条不差才认。认的是「这份权重就是这一层」，
+/// 不是「它大概像这一层」。
 fn recurrent_layer(block: &str, entries: &[&Entry]) -> Option<Recurrent> {
-    let shape = |tensor: RecurrentTensor, level: usize, dir: usize| {
-        entries
-            .iter()
-            .find_map(|entry| match recurrent_parts(entry.name())? {
-                (prefix, kind, at, side)
-                    if prefix == block && kind == tensor && at == level && side == dir =>
-                {
-                    Some(entry.shape().dims().to_vec())
-                }
-                _ => None,
-            })
-    };
-    let matrix = |tensor: RecurrentTensor| match shape(tensor, 0, 0)?.as_slice() {
-        [rows, cols] => Some((*rows, *cols)),
-        _ => None,
-    };
-    let (rows, hidden) = matrix(RecurrentTensor::WeightHh)?;
-    let (_, input) = matrix(RecurrentTensor::WeightIh)?;
-    let gates = (hidden != 0)
-        .then(|| rows / hidden)
-        .filter(|g| g * hidden == rows)?;
-    let (layers, dirs) = entries
-        .iter()
-        .filter_map(|entry| recurrent_parts(entry.name()))
-        .filter(|(prefix, ..)| *prefix == block)
-        .fold((0, 0), |(layers, dirs), (_, _, level, dir)| {
-            (layers.max(level + 1), dirs.max(dir + 1))
-        });
-    let bias = shape(RecurrentTensor::BiasIh, 0, 0).is_some();
-    let layer = Recurrent::new(
+    let layer = build_layer(block, entries)?;
+    let mut wanted = layer.weight_entries();
+    let mut actual = recovered(block, entries);
+    // 按名字排序后逐条比对：条目名在候选里唯一，名字序也就唯一。
+    wanted.sort_by(|a, b| a.0.cmp(&b.0));
+    actual.sort_by(|a, b| a.0.cmp(&b.0));
+    (wanted == actual).then_some(layer)
+}
+
+/// 由同前缀条目构造一层：`weight_hh` 的行列比定门数、它的第二维定隐宽、层号与方向的
+/// 最大值定规模，`bias_ih` 在不在定有没有偏置。
+fn build_layer(block: &str, entries: &[&Entry]) -> Option<Recurrent> {
+    let (rows, hidden) = matrix_of(block, entries, RecurrentTensor::WeightHh)?;
+    let (_, input) = matrix_of(block, entries, RecurrentTensor::WeightIh)?;
+    let gates = gates_of(rows, hidden)?;
+    let (layers, dirs) = extent_of(block, entries);
+    let bias = shape_of(block, entries, RecurrentTensor::BiasIh, 0, 0).is_some();
+    Recurrent::new(
         block,
         Cell::of_gates(gates)?,
         input,
@@ -307,19 +330,63 @@ fn recurrent_layer(block: &str, entries: &[&Entry]) -> Option<Recurrent> {
         dirs,
         bias,
     )
-    .ok()?;
-    let mut wanted = layer.weight_entries();
-    let mut actual: Vec<(String, Shape)> = entries
+    .ok()
+}
+
+/// 某一件某层某方向的二维形状；缺这一件或不是二维就返回 `None`。
+fn matrix_of(
+    block: &str,
+    entries: &[&Entry],
+    tensor: RecurrentTensor,
+) -> Option<(usize, usize)> {
+    match shape_of(block, entries, tensor, 0, 0)?.as_slice() {
+        [rows, cols] => Some((*rows, *cols)),
+        _ => None,
+    }
+}
+
+/// 某一件某层某方向的形状。
+fn shape_of(
+    block: &str,
+    entries: &[&Entry],
+    tensor: RecurrentTensor,
+    level: usize,
+    dir: usize,
+) -> Option<Vec<usize>> {
+    entries.iter().find_map(|entry| {
+        let (prefix, kind, at, side) = recurrent_parts(entry.name())?;
+        (prefix == block && kind == tensor && at == level && side == dir)
+            .then(|| entry.shape().dims().to_vec())
+    })
+}
+
+/// 门数：`weight_hh` 的行数必须是隐宽的整数倍，否则不是一次门堆叠。
+fn gates_of(rows: usize, hidden: usize) -> Option<usize> {
+    (hidden != 0)
+        .then(|| rows / hidden)
+        .filter(|gates| gates * hidden == rows)
+}
+
+/// 层数与方向数：条目里出现的 `(层号, 方向)` 最大值加一。
+fn extent_of(block: &str, entries: &[&Entry]) -> (usize, usize) {
+    entries
         .iter()
-        .filter(
-            |entry| matches!(recurrent_parts(entry.name()), Some((prefix, ..)) if prefix == block),
-        )
+        .filter_map(|entry| recurrent_parts(entry.name()))
+        .filter(|(prefix, ..)| *prefix == block)
+        .fold((0, 0), |(layers, dirs), (_, _, level, dir)| {
+            (layers.max(level + 1), dirs.max(dir + 1))
+        })
+}
+
+/// 条目里属于这一块的那些 `(名字, 形状)`。
+fn recovered(block: &str, entries: &[&Entry]) -> Vec<(String, Shape)> {
+    entries
+        .iter()
+        .filter(|entry| {
+            matches!(recurrent_parts(entry.name()), Some((prefix, ..)) if prefix == block)
+        })
         .map(|entry| (entry.name().to_string(), entry.shape().clone()))
-        .collect();
-    // 按名字排序后逐条比对：条目名在候选里唯一，名字序也就唯一。
-    wanted.sort_by(|a, b| a.0.cmp(&b.0));
-    actual.sort_by(|a, b| a.0.cmp(&b.0));
-    (wanted == actual).then_some(layer)
+        .collect()
 }
 
 /// 一个条目能否被视为一次投影：能则给出层，不能则返回 `None`（进未覆盖清单）。

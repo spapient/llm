@@ -12,8 +12,8 @@ use cutile::builtin::{AUTO_DEVICE, Catalogue};
 use cutile::dirs::Dirs;
 use cutile::prof::{Emit, Profile};
 use diagnostic::{Code, Error};
-use prof::decl::OpDecl;
 use nn::model::{Cost, Sample, Values};
+use prof::decl::OpDecl;
 use std::path::PathBuf;
 
 /// 一次 `bench` 的实测口径（README §12.3 的台账）。

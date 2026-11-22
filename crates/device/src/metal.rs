@@ -7,9 +7,9 @@
 //! 同层的一件事：只换方言，不改语义，回读口径（`float` 位模式逐行打印）必须逐字一致。
 
 use diagnostic::{Code, Error, Result};
-use prof::decl::Grid;
 use nn::model::{Sample, Values};
 use nn::sig::{Param, Signature};
+use prof::decl::Grid;
 
 use cutile::harness::{c_literal, output_name, output_of};
 

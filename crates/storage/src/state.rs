@@ -28,7 +28,9 @@ impl SlotMoments {
                 m.len(),
                 v.len()
             );
-            return Err(Error::new(Code::Invalid, message).with("storage::snapshot::SlotMoments::new"));
+            return Err(
+                Error::new(Code::Invalid, message).with("storage::snapshot::SlotMoments::new")
+            );
         }
         Ok(Self { m, v })
     }
@@ -218,7 +220,9 @@ fn read_accum_slot(cursor: &mut Cursor<'_>, idx: usize) -> Result<Vec<f32>> {
 /// 权重绑定段解码：对数先与剩余字节对账，再逐对重建下标表。
 pub(crate) fn read_ties(cursor: &mut Cursor<'_>) -> Result<Ties> {
     let count = cursor.count("权重绑定对数")?;
-    let pairs = read_slots(cursor, count, "权重绑定", |cursor, _| read_tie_pair(cursor))?;
+    let pairs = read_slots(cursor, count, "权重绑定", |cursor, _| {
+        read_tie_pair(cursor)
+    })?;
     Ok(Ties::new(pairs))
 }
 

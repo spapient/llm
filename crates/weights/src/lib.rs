@@ -82,13 +82,13 @@ pub mod settle;
 pub mod l3;
 
 // —— 外部格式只读适配：torch `.bin`（ZIP_STORED + pickle）、GGUF、受限 JSON ——
+pub(crate) mod cursor;
+mod dequant;
 pub mod gguf;
 pub mod json;
-pub mod torch;
 pub(crate) mod pickle;
+pub mod torch;
 pub(crate) mod zip;
-mod dequant;
-pub(crate) mod cursor;
 
 pub use lifecycle::import;
 pub mod safetensors;

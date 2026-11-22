@@ -285,7 +285,7 @@ impl<'a> Contract<'a> {
         let vendor = Path::new(self.dir)
             .file_name()
             .and_then(|name| name.to_str())
-            .unwrap_or(&self.id);
+            .unwrap_or(self.id);
         want.push(format!("{vendor}.toml"));
         want
     }

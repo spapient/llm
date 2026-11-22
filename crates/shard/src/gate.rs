@@ -1,6 +1,6 @@
 //! 语法门：设备不在本机时，用一门语言自己的解析器把见证过一遍。
 
-use crate::config::{config, LanguageFront};
+use crate::config::{LanguageFront, config};
 use crate::runner::driver::{scratch, write_text};
 use crate::toolchain::{Toolchain, clang, probe_declared};
 use crate::witness::{Selected, declared_witnesses, device_available, source};
@@ -100,7 +100,11 @@ pub fn language_gate(profile: &Profile, dirs: &Dirs) -> LanguageGate {
 }
 
 /// 语法门的执行器：表行决定程序与参数，这里只负责“逐份文件过一遍、失败带第一行报错回来”。
-fn parse_all(spec: &LanguageFront, profile: &Profile, dirs: &Dirs) -> diagnostic::Result<LanguageGate> {
+fn parse_all(
+    spec: &LanguageFront,
+    profile: &Profile,
+    dirs: &Dirs,
+) -> diagnostic::Result<LanguageGate> {
     let selected = declared_witnesses(profile)?;
     if selected.is_empty() {
         return Ok(LanguageGate::Absent {

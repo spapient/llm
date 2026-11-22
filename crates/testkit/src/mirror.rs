@@ -80,7 +80,10 @@ fn the_registry_and_the_model_annotations_are_mirrors() {
         annotated.len()
     );
 
-    let names: Vec<&str> = nn::registry::REGISTRY.iter().map(|entry| entry.name).collect();
+    let names: Vec<&str> = nn::registry::REGISTRY
+        .iter()
+        .map(|entry| entry.name)
+        .collect();
     assert_eq!(
         names.len(),
         types.len(),
@@ -243,7 +246,11 @@ fn every_registered_kernel_signature_matches_its_model_sample() {
         checked >= 2,
         "扫描器只看到 {checked} 条注册：扫描逻辑或表布局坏了"
     );
-    assert_eq!(checked, nn::registry::REGISTRY.len(), "注册表每条都必须过签名对齐");
+    assert_eq!(
+        checked,
+        nn::registry::REGISTRY.len(),
+        "注册表每条都必须过签名对齐"
+    );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 

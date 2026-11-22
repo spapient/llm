@@ -49,7 +49,8 @@ fn decode_attention_scans_history_past_one_block() {
     let (catalogue, dirs) = catalogue_and_dirs("engine-metal-decode");
 
     let (sample, q, k, v) = decode_sample(Q_ROWS, HIST, D);
-    let want = want_from(&nn::conv::attention::decode_attention::reference(&sample).expect("CPU 参考"));
+    let want =
+        want_from(&nn::conv::attention::decode_attention::reference(&sample).expect("CPU 参考"));
     let (q_buf, k_buf, v_buf, mut y) = attention_bufs(&device, &q, &k, &v, Q_ROWS * D);
     let pipe = grid_pipeline_sample(
         &device,

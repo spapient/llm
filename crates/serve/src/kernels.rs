@@ -166,7 +166,11 @@ fn flash_attention_f32(
     inputs: &[View<'_>],
     outputs: &mut [ViewMut<'_>],
 ) -> Result<()> {
-    attention_paths(inputs, outputs, nn::conv::attention::tiled::flash_tiled_forward)
+    attention_paths(
+        inputs,
+        outputs,
+        nn::conv::attention::tiled::flash_tiled_forward,
+    )
 }
 
 /// decode 三路适配：`q/hist_k/hist_v → out`；第四路输入为 ragged 段长表（ADR 0046 §8）走批段

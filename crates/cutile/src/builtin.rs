@@ -5,8 +5,8 @@ use crate::decl::OpDecl;
 use crate::probe::select;
 use crate::prof::Detected;
 use crate::prof::Profile;
-use diagnostic::{Code, Error};
 use ::prof::catalogue::Op;
+use diagnostic::{Code, Error};
 use std::sync::{Arc, OnceLock};
 
 /// 保留的设备名：不走档案查找，按本机探测挑一份档案。命令行默认值在 `cli` 侧另存一份，这里是库内比对口径。

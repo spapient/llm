@@ -50,10 +50,10 @@ pub use unary::{
 pub use prof::same_bytes;
 // `$crate::formula_cell!` / `$crate::operator_via!` 在骨架宏里按 crate 根解析，这里把 spec 导出的
 // 宏搬回本 crate 根：内核里几十处 `#[model]` 展开都不必改路径。
+pub use model::quant;
 pub use prof::tpl::{formula, parse};
 pub use prof::{einsum, model, operator, sample, sch, sig, tpl};
 pub use prof::{formula_cell, operator_here, operator_via};
-pub use model::quant;
 pub use sch::layout;
 
 #[cfg(test)]

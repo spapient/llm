@@ -425,7 +425,8 @@ fn decode_attention_kernels_match_the_reference() {
     let (d, hist) = (8, 4);
 
     let mut naive_reference = vec![0.0; d];
-    nn::conv::attention::decode_forward(&q, &k, &v, &mut naive_reference, 1, hist, d).expect("朴素参考");
+    nn::conv::attention::decode_forward(&q, &k, &v, &mut naive_reference, 1, hist, d)
+        .expect("朴素参考");
     let mut flash_reference = vec![0.0; d];
     nn::conv::attention::decode_flash_forward(&q, &k, &v, &mut flash_reference, 1, hist, d)
         .expect("flash 参考");

@@ -1,8 +1,8 @@
 //! 调度：4 个模板（cutile README §7）。
 
+use crate::atom::Prim;
 use core::fmt;
 use diagnostic::{Code, Error};
-use crate::atom::Prim;
 
 /// 调度模板闭集。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

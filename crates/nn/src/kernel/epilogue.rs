@@ -6,8 +6,8 @@
 //! 决定"每一步落在哪个既有内核上"。
 
 use diagnostic::{Code, Error};
-use prof::epilogue::Step;
 use prof::atom::{ActKind, DType};
+use prof::epilogue::Step;
 
 /// 按 `steps` 的顺序把写回尾块施加到 `out`（行主序，列宽 `cols`）。
 ///

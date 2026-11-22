@@ -6,9 +6,9 @@ use diagnostic::{Code, Error, Result};
 use crate::decode::{check_frame, check_quant, decode_meta, decode_quant, decode_tail};
 
 use crate::Wire;
-use crate::quant::Quant;
 #[cfg(test)]
 pub(crate) use crate::decode::{MAX_RANK, decode_shape};
+use crate::quant::Quant;
 use std::borrow::Cow;
 use wire::leb::{self, Cursor};
 use wire::sink::Sink;

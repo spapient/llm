@@ -40,11 +40,18 @@ fn scan(
     let mut stems = Vec::new();
     let mut rows = String::new();
     for path in files {
-        println!("cargo:rerun-if-changed={}", buildgen::relative(manifest, path));
+        println!(
+            "cargo:rerun-if-changed={}",
+            buildgen::relative(manifest, path)
+        );
         let name = file_stem(path);
         let table = resolve(ops, buildgen::read(path)?)?;
         stems.push(stem_of(&table, name, ops));
-        let _ = writeln!(rows, "            (\"{name}\", {}),", buildgen::emit(&table, name)?);
+        let _ = writeln!(
+            rows,
+            "            (\"{name}\", {}),",
+            buildgen::emit(&table, name)?
+        );
         names.push(name.to_string());
     }
     Ok((names, stems, rows))
@@ -116,10 +123,18 @@ fn emit_templates(ops: &Path, names: &[String], stems: &[String]) -> String {
          // Source: crates/prof/ops/<stem>.k, sorted by operator name.\n\
          /// 算子名与模板正文，顺序与 `crate::for_each_template!` 一致。\n",
     );
-    let _ = writeln!(table, "pub const TEMPLATES: [(&str, &str); {}] = [", names.len());
+    let _ = writeln!(
+        table,
+        "pub const TEMPLATES: [(&str, &str); {}] = [",
+        names.len()
+    );
     for (name, stem) in names.iter().zip(stems) {
         let path = ops.join(format!("{stem}.k"));
-        let _ = writeln!(table, "    (\"{name}\", include_str!({:?})),", path.display());
+        let _ = writeln!(
+            table,
+            "    (\"{name}\", include_str!({:?})),",
+            path.display()
+        );
     }
     table.push_str("];\n");
     table

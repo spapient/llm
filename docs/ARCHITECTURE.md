@@ -15,8 +15,8 @@
 | L1 基础设施 | `diagnostic`、`rng`、`dtype`、`wire`、`tools` | 错误类型与声明数据树（`data`：构建期语料在运行期的形状，**没有解析器**）、计数器型确定性随机、精度闭集、与领域无关的字节码闭集（CRC-32 / LEB128 / Sink / 对齐落位 / `Invalid` 构造点）、静态质量门与回退判定 | 任何运行时领域语义、任何 TOML 解析 |
 | L2 数据层 | `prof` | 算子契约与设备档案同住一个 crate。契约侧出签名 / 样本 / 语义表 / 求和表达式 / 模板词法，以及 `atom` 这一层词汇（原语、存储位、数据类型、属性键、证据等级、需求与供给的代数 `Need` / `Provide` / `Span` / `KernelKey`）；档案侧出声明层与模板正文：`OpDecl` 解析、`catalogue` 的 52 条算子模板、六台设备的原语片段与见证（一台设备一个模块，`src/<设备>/` 放语料，`build.rs` 一次把它解析成每台设备的 `FRAGMENTS` / `PRIMS` / `EPILOGUE` / `DEVICE` 表，并在编译期拼成一张聚合表，按 `Layout` 决定读内嵌表还是读盘）。两者同住是因为它们是**同一条文法**：档案声明"这台设备能拼出 `dot`"，片段声明"`dot` 这么写"，模板与签名就是两边的共同语言——拆成两个 crate 只会多一层 `pub use` 转发，一行代码也不会少 | 任何机制代码（拼接、协商、emit）、任何设备知识、任何内核正文 |
 | L3 内核 | `cutile` | 纯机制：协商 → 拼接 → emit → 缓存指纹，一行也不执行。只产设备源与指纹，换掉工具链不影响它；执行侧（工具链探测、编译、验见证、测速）随原 `optim` 并入 `shard`，因为那部分要碰编译器与设备，换掉执行方式不该动框架 | 设备厂商特判、运行时依赖 |
-| L4 运行时 | `tensor`、`storage`、`tokenizer` | 张量元数据、布局搬运、文本边界 | 模型语义、调度策略 |
-| L5 模型与训练 | `weights`、`snapshot`、`autograd`、`nn`、`algorithm`、`shard` | 权重结构与自有 `.u` 容器、外部权重格式只读适配（torch `.bin` 的 ZIP+pickle 栈机、GGUF、JSON，只吐四要素不判语义）、检查点字节格式、反向图与显存计划、层定义与内核族（`nn` 同时拥有内核装配、神经算子与唯一注册表 `REGISTRY`——注册表必须持有内核类型才能装进语义表，故它与内核同住）、架构变体的参考语义（不产出 `ContractSpec`）、切分拓扑与集合通信、以及原 `optim` 的编译执行面 | 进程 / 服务语义 |
+| L4 运行时 | `tensor`、`storage`、`tokenizer` | 张量元数据、布局搬运、文本边界、检查点字节格式（`snapshot` 折进 `storage`：`Snapshot<Manifest>` 泛型，字节只写相对上一条的差 + CRC-32 尾部，不认识训练循环） | 模型语义、调度策略 |
+| L5 模型与训练 | `weights`、`autograd`、`nn`、`algorithm`、`shard` | 权重结构与自有 `.u` 容器、外部权重格式只读适配（torch `.bin` 的 ZIP+pickle 栈机、GGUF、JSON，只吐四要素不判语义）、反向图与显存计划、层定义与内核族（`nn` 同时拥有内核装配、神经算子与唯一注册表 `REGISTRY`——注册表必须持有内核类型才能装进语义表，故它与内核同住）、架构变体的参考语义（不产出 `ContractSpec`）、切分拓扑与集合通信、以及原 `optim` 的编译执行面 | 进程 / 服务语义 |
 | L6 调度与服务 | `train`、`engine`、`device`、`serve` | 训练样本与循环、检查点事实集、连续批与 KV 页账、提交与执行体、设备源 lowering 与厂商后端（`device::backends` / `device::metal::host` / `device::metal::fold` / `device::cuda` / `device::dialect` / `device::platform`，实现 `cutile` 的 `Backend` 缝与 `engine` 的 `Executor` 缝；`device::metal::executor` 是唯一 `unsafe` 岛（[ADR 0035](adr/0035-unsafe-ffi-boundary.md)））、端点契约与线格式、CPU 模型宿主 | 直接调用 `cutile` 生成 kernel；执行任何业务 |
 | L7 入口 | `cli`（bin：`llm` 与 `cutile`） | 组合根：命令行文法、配置解析、各层装配、取值解析与人可读排版；编排入口不定义新类型 | 编排入口新增领域类型；在本层复制内核机制 |
 
@@ -42,7 +42,7 @@
 
 **合并判据是「同构」，不是「消费者数量」。** 一个成员只有一条入边时，它通常是边界而不是肥肉：`storage` 独自持有全仓唯一的 `unsafe` 岛（`tensor` 是 `deny(unsafe_code)` 且有 11 个消费者），`algorithm` 刻意不产 `ContractSpec`（`nn` 专产），`shard` 坐 L5 而 `train` 坐 L6。可合并的硬信号只有一个——两个成员的 `lib.rs` / `build.rs` 除专名外**逐字相同**：六台设备 crate 并入 `frag` 时按这条判据删掉 512 行、补回 55 行，净省 457 行。反面的账同样要算：一次合并能省的至多是该 crate 的 `Cargo.toml`（全仓 1060 行 / 33 个，约 32 行）加一段头注释，指望靠合并兑现「代码大量减少」是算错账。裁决过程与测量数字见 [lld.md](lld.md) v3.0.90。
 
-允许的边（当前全量，共 126 条，含 49 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benchmarks` / `testkit` 的边不参与运行时方向判定）：
+允许的边（当前全量，共 123 条，含 50 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benchmarks` / `testkit` 的边不参与运行时方向判定）：
 
 ```
 diagnostic → （叶：错误类型 + `toml`，被大量成员消费；运行时出边为零；`+dev` 只登记夹具）
@@ -53,22 +53,21 @@ tools      → diagnostic    +dev: testkit（配置驱动静态质量门 + 回�
 prof       → annotation, diagnostic, dtype    +dev: testkit（契约词汇 + 档案 + 声明层 + 模板正文；片段与见证的语料在这里，机制也只有它）
 cutile     → annotation, diagnostic, prof    +dev: nn, testkit（机制：协商 → 拼接 → emit → 指纹，一行也不执行）
 tensor     → dtype（`dtype` 之上的形状与索引代数）
-storage    → diagnostic, tensor（扁平缓冲与分配）
+storage    → diagnostic, tensor, wire    +dev: testkit（扁平缓冲与分配，以及折进来的检查点字节格式）
 tokenizer  → diagnostic（词表与分词）
 weights    → diagnostic, dtype, storage, tensor, wire    +dev: storage, testkit（`storage` 由 `mmap` feature 可选启用，复用其唯一 unsafe 岛）
-snapshot   → diagnostic, tensor, weights, wire    +dev: testkit（检查点字节格式：只写相对上一条的差 + CRC-32 尾部，不认识训练循环）
 autograd   → diagnostic, tensor    +dev: testkit（反向图与显存计划）
 nn         → annotation, diagnostic, prof, tensor, weights    +dev: cutile, testkit（内核装配 + 神经算子 + 唯一注册表；`cutile` 只在 dev 图里（写回尾块测试要真装配））
 algorithm  → diagnostic, nn, prof    +dev: testkit（架构变体的参考语义：产出张量流而非 `ContractSpec`，故不认识 `tensor` / `weights`）
 shard      → cutile, diagnostic, nn, prof    +dev: testkit（切分拓扑、集合通信与原 `optim` 的编译执行面）
-train      → autograd, diagnostic, nn, prof, shard, snapshot, tensor, weights    +dev: testkit
+train      → autograd, diagnostic, nn, prof, shard, storage, tensor, weights    +dev: testkit
 engine     → diagnostic, storage, tensor    +dev: testkit
 device     → cutile, diagnostic, engine, nn, prof, shard    +dev: testkit（设备源 lowering 与厂商后端（`metal::executor` 是唯一 unsafe 岛））
 serve      → diagnostic, engine, nn, prof, rng, tensor, tokenizer, weights, wire    +dev: testkit（形状积只经 `tensor::product` 的饱和乘法：回绕出的偏小数会骗过权重长度核对）
-cli        → cutile, device, diagnostic, engine, nn, prof, serve, shard, snapshot, tensor, tokenizer, tools, train, weights（L7 组合根：只做命令分派与各层装配，不定义新类型）
+cli        → cutile, device, diagnostic, engine, nn, prof, serve, shard, tensor, tokenizer, tools, train, weights    +dev: storage（L7 组合根：只做命令分派与各层装配，不定义新类型）
 annotation → （叶：工具边，`#[model]` 注解，不参与方向判定）
-fuzz       → diagnostic    +dev: cli, serve, snapshot, tensor, tools, train, weights, wire（工具成员；`+dev` 是 `tests/support.rs` 里的驱动对象）
-benchmarks → （叶    +dev: autograd, cutile, engine, nn, prof, serve, snapshot, tensor, testkit, tokenizer, tools, train, weights, wire（工具成员：只声明被测对象，测量配置归 criterion）
+fuzz       → diagnostic    +dev: cli, serve, storage, tensor, tools, train, weights, wire（工具成员；`+dev` 是 `tests/support.rs` 里的驱动对象）
+benchmarks → （叶    +dev: autograd, cutile, engine, nn, prof, serve, storage, tensor, testkit, tokenizer, tools, train, weights, wire（工具成员：只声明被测对象，测量配置归 criterion）
 testkit    → （叶    +dev: autograd, cutile, nn, prof, tensor, tools, train, weights（工具成员：夹具库 + 门禁；被测层只出现在 dev-dependencies）
 ```
 
@@ -124,6 +123,7 @@ testkit    → （叶    +dev: autograd, cutile, nn, prof, tensor, tools, train,
 | `Bench` / `Throughput` / `Peak` / `Verdict` / `Performance` / `CostCoefficients` | `shard` | `bench` 的实测口径与达成率判定；口径无效或没有峰值时 `is_measure` 直接给否，不许补一个乐观值 |
 | `Shape` / `AxisLen` / `product` | `tensor` | 只做无执行的元数据描述：`Shape` 记各轴长度，`numel` 是饱和乘积（溢出到 `usize::MAX` 而不是回绕——长度可能来自不受信任的权重文件头），`element_bytes(dtype)` 折字节数，亚字节按位向上取整的唯一实现是 `DType::bytes_for`；`AxisLen` 是轴长的 `usize` / `u64` 双口径；元素类型 `DType` **只转发不拥有**，闭集与 `Class` 数值类别的唯一源在 L1 `dtype`（唯一源行见本表 `dtype`）。**本层没有 `Tensor` / `View`**：步长视图代数曾在此占 1,247 行，实测其全仓消费者只有 `llm status` 面板的一行样例、计算路径为零，而本仓的抽象单位是「算子契约 + 设备 Fragment + 执行缝」（ADR 0053），排布由算子声明持有，不在元数据层再建第二套措辞。设备地址不泄漏到本层 |
 | `Buf` / `Allocator` / `CpuAllocator` | `storage` | 扁平缓冲与分配（排布归算子声明，本层不持有布局）；`Allocator` 是分配 / 释放 / 显式拷贝的边界 trait，设备后端在边界 crate 实现同一 trait；本层不做隐式跨设备拷贝 |
+| `Manifest` / `ManifestEntry` | `storage` | 检查点字节格式的两条契约：`Manifest` 是"有序条目 + 数据段起点"，`ManifestEntry` 是一条条目的名字 / 布局 / 字节区间。字节格式因此不必反向依赖 `weights`——`weights::Header` 实现它，环不存在 |
 | `Stream` / `Graph` / `Launch` / `Device` / `Operand` / `OperandRole` / `ScalarSlots` | `engine` | 提交与执行，不编译 kernel；`Device` 只是运行时标识标签，不持私有句柄；`ScalarSlots` 是定长类型化闭集标量槽（[ADR 0043](adr/0043-program-scalar-slots.md)），位置参数不折进 1 元素 f32 缓冲 |
 | `Sequence` / `Scheduler` / `Progress` | `engine` | 连续批与序列状态；准入后每生成一个 token 才预留它要落的那页，`Blocked` 时不改任何状态；`Sequence` 是已生成 token 的唯一存放处 |
 | `Page` / `Table` / `Cache` / `Pager` | `engine` | 分页 KV 的页管理与页内数据：引用计数 O(1) 判定越界 / 重复归还 / 下溢，归零才回池且只有最后一个持有者归还时清零；行宽由装载模型的一侧给 |
@@ -173,11 +173,11 @@ testkit    → （叶    +dev: autograd, cutile, nn, prof, tensor, tools, train,
 | `Local` | `shard` | 进程内集合通信：每个 rank 一份镜像，让 TP/DP 的数值语义在没有 NCCL 的机器上也能被 `cargo test` 验证 |
 | `Remote` / `FileRemote` | `shard` | 远端集合通信：`Remote` 是未挂载占位（同一 `Collective` 端口，`all_reduce` 返回 `Unsupported` 且不改动调用方缓冲），`FileRemote` 是文件传输的真实实现（`world × width` 槽位、小端字节序、跨进程、无 `unsafe`） |
 | `RuntimeConfig` / `LanguageFront` | `shard` | 运行时可配置旋钮（纯数据，由 `cli` 注入）：各语言语法门、host 自检参数、L3 达成率门槛、缓存锁等待；codegen 常量（`POINT_THREADS` 等）不进这里 |
-| `Snapshot` / `Format` / `Facts` | `snapshot` | 检查点字节格式与恢复事实：字节只写相对上一条的差、尾部 CRC-32；`verify` 只验字节，`check_weights` 要求条目表与权重文件逐条相同。不依赖任何训练侧类型，写出同样的字节即可换掉实现 |
-| `Moments` / `SlotMoments` / `GradAccum` / `Ties` | `snapshot` | 快照携带的优化器状态段：矩状态按槽位自持、累积梯度带计数、权重绑定表是 `(源槽, 回填槽)` 下标对；编解码与字节格式同源，训练侧只读写不重新定义 |
+| `Snapshot` / `Format` / `Facts` | `storage`（`snapshot` 模块） | 检查点字节格式与恢复事实：字节只写相对上一条的差、尾部 CRC-32；`verify` 只验字节，`check_weights` 要求条目表与权重文件逐条相同。不依赖任何训练侧类型，写出同样的字节即可换掉实现 |
+| `Moments` / `SlotMoments` / `GradAccum` / `Ties` | `storage`（`snapshot` 模块） | 快照携带的优化器状态段：矩状态按槽位自持、累积梯度带计数、权重绑定表是 `(源槽, 回填槽)` 下标对；编解码与字节格式同源，训练侧只读写不重新定义 |
 | `Schedule` / `Anneal` / `Step` / `Session` / `TrainConfig` / `ParamSlot` / `Checkpoint` / `Distributed` | `train` | 训练循环状态：纯函数学习率调度与衰减曲线、一次会话复用同一张图 / 缓冲 / 优化器、参数槽与分布式装配（后端契约在 `shard`） |
 | `Batch` / `Dataset` / `Chunks` | `train`（`samples` 模块） | 训练样本：借用调用方 token 缓冲（零分配 / 零拷贝），两个构造函数共用同一份几何校验，批总数在构造期算好，`Dataset` 对象安全 |
-| `Optimizer` / `Sgd` / `Adam` / `Group` / `Slot` / `OwnedSlot` | `train` | 优化器：对象安全 trait，矩状态按槽位编号自持；参数组由 `ParamRole` 派生，不按字段名猜（矩状态与累积梯度的**类型**归 `snapshot`，本层只持有并步进） |
+| `Optimizer` / `Sgd` / `Adam` / `Group` / `Slot` / `OwnedSlot` | `train` | 优化器：对象安全 trait，矩状态按槽位编号自持；参数组由 `ParamRole` 派生，不按字段名猜（矩状态与累积梯度的**类型**归 `storage`，本层只持有并步进） |
 | `Muon` | `train` | 矩阵参数的近似正交化更新：更新量只由方向决定，非矩阵槽**拒绝**而不是悄悄跳过 |
 | `Bufs` / `Kernel` / `Reference` / `Data` / `View` / `ViewMut` / `Kind` / `Lane` / `Sealed` / `Inputs` / `OperatorSetOps` | `train` | 激活缓冲：`autograd::Store` 在训练侧的落地（按计划分配与交还、按等长空闲表复用），算术交给 `Kernel`；本层不定义算子、不碰 `unsafe` |
 | `MetricPoint` / `MetricsBoard` / `Learner` / `ForwardOut` | `train` | 评估与编排：`Learner` 驱动"前向 → 评估入账 → 装梯度 → 优化步"闭环，模型拓扑与梯度来源由闭包注入 |

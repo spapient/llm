@@ -12,8 +12,8 @@ use cutile::dirs::Dirs;
 use cutile::emit::Fragment;
 use cutile::prof::{Emit, Profile};
 use diagnostic::{Code, Error};
-use prof::decl::{Grid, OpDecl};
 use nn::model::Sample;
+use prof::decl::{Grid, OpDecl};
 
 /// 一次真机执行：调用方给的样本 → 编译 → 跑一次 → 与标量参考对拍。
 #[derive(Debug, Clone, PartialEq)]
@@ -67,7 +67,6 @@ pub fn execute(
     let run = established(op, profile, dirs)?;
     one(&run, profile, dirs, sample)
 }
-
 
 /// 解析算子/档案/证据并编译出可执行产物：`(流水线, 产物)`。
 pub(crate) fn resolve<'a>(

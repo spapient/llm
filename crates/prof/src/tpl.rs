@@ -12,9 +12,9 @@
 //! 正文——文本段与槽位名都是 `&str`，一个字符都不拷贝。只有 `@原语` 的参数表需要一次小分配
 //! （每处调用一次，与模板里写了几条 `@` 同阶）。
 
+use crate::atom::Prim;
 use crate::parse::{matching_paren, split_top_level};
 use diagnostic::Error;
-use crate::atom::Prim;
 
 /// 模板片段。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -300,8 +300,7 @@ pub mod formula {
     #[macro_export]
     macro_rules! formula_cell {
         () => {{
-            static CACHE: $crate::einsum::FormulaCache =
-                $crate::einsum::FormulaCache::new();
+            static CACHE: $crate::einsum::FormulaCache = $crate::einsum::FormulaCache::new();
             &CACHE
         }};
     }

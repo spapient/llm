@@ -293,8 +293,7 @@ fn file_remote_reduces_across_ranks() {
 /// 越界与宽度不符在文件后端同样被拒：`load`、`replica`、`all_reduce` 各自守住自己的判据。
 #[test]
 fn file_remote_refuses_out_of_world_and_width_mismatch() {
-    let backing =
-        std::env::temp_dir().join(format!("shard-collective-bad-{}", std::process::id()));
+    let backing = std::env::temp_dir().join(format!("shard-collective-bad-{}", std::process::id()));
     let mut r0 = FileRemote::open(0, 2, 2, &backing).expect("rank 0");
     assert_eq!(r0.load(2, &[1.0, 2.0]).unwrap_err().code(), Code::Invalid);
     assert_eq!(r0.load(0, &[1.0]).unwrap_err().code(), Code::Invalid);
@@ -426,15 +425,15 @@ fn reduce_scatter_folds_each_shard_into_its_chunk() {
 /// 文件后端的归约散布与 [`Local`] 同构：槽位是跨进程共享的，折进顺序由组决定。
 #[test]
 fn file_remote_reduce_scatters() {
-    let backing =
-        std::env::temp_dir().join(format!("shard-collective-rs-{}", std::process::id()));
+    let backing = std::env::temp_dir().join(format!("shard-collective-rs-{}", std::process::id()));
     let mut r0 = FileRemote::open(0, 2, 2, &backing).expect("rank 0");
     let r1 = FileRemote::open(1, 2, 2, &backing).expect("rank 1");
     r0.load(0, &[5.0, 6.0]).expect("rank 0");
     r1.load(1, &[7.0, 8.0]).expect("rank 1");
     let group = Group::new([0, 1]).expect("双进程组");
     let mut buf = [0.0; 4];
-    r0.reduce_scatter(&group, Reduce::Sum, &mut buf).expect("归约散布");
+    r0.reduce_scatter(&group, Reduce::Sum, &mut buf)
+        .expect("归约散布");
     assert_eq!(buf, [5.0, 6.0, 7.0, 8.0]);
     let _ = std::fs::remove_file(&backing);
 }

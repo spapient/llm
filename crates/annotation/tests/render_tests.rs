@@ -294,9 +294,7 @@ fn the_model_renderer_projects_the_operator_contract() {
         "MODEL 必须是 Operator 的投影：{code}"
     );
     assert!(
-        code.contains(
-            r#"::prof::same_bytes(<I4 as ::prof::operator::Operator>::NAME, "gemv_i4")"#
-        ),
+        code.contains(r#"::prof::same_bytes(<I4 as ::prof::operator::Operator>::NAME, "gemv_i4")"#),
         "注解注册名必须在编译期与 Operator::NAME 对齐：{code}"
     );
     assert!(

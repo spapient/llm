@@ -323,37 +323,65 @@ impl Reader<'_> {
     }
 
     /// 字符串体：批量消费无转义的 ASCII 段，只在引号、反斜杠、控制字符与多字节处停顿。
+    /// 批量段的断点：引号、反斜杠，以及任何非可打印 ASCII。
+    fn breaks(byte: u8) -> bool {
+        byte == b'"' || byte == b'\\' || !(0x20..0x80).contains(&byte)
+    }
+
+    /// 一段字符串：先整段吞掉安全 ASCII，再由 [`Self::step`] 处理一个转折点，直到闭合。
+    ///
+    /// 三件事各占一个函数——批量段、转折点、逐字节的转义——所以循环体里没有分支可以藏。
     fn chars(&mut self, open: usize) -> Result<String> {
         let mut text = String::with_capacity(16);
         loop {
-            let start = self.cursor.pos();
-            while let Some(byte) = self.cursor.peek() {
-                if byte == b'"' || byte == b'\\' || !(0x20..0x80).contains(&byte) {
-                    break;
-                }
-                self.cursor.advance(1);
-            }
-            if self.cursor.pos() > start {
-                let chunk = &self.cursor.bytes()[start..self.cursor.pos()];
-                text.push_str(std::str::from_utf8(chunk).expect("批量段是 ASCII"));
-            }
-            match self.cursor.peek() {
-                Some(b'"') => {
-                    self.cursor.advance(1);
-                    return Ok(text);
-                }
-                Some(b'\\') => {
-                    let at = self.cursor.pos();
-                    self.cursor.advance(1);
-                    text.push(self.escape(open, at)?);
-                }
-                Some(_) => {
-                    let at = self.cursor.pos();
-                    text.push(self.plain(at)?);
-                }
-                None => return Err(self.cursor.fail_at(open, "字符串没有闭合")),
+            self.bulk(&mut text);
+            if self.step(open, &mut text)? {
+                return Ok(text);
             }
         }
+    }
+
+    /// 批量段：把安全 ASCII 一次搬进 `text`。判据已在循环里保证每个字节都在 `0x20..0x80`，
+    /// 因此逐字节转 `char` 不会失败，也就不需要任何解包。
+    fn bulk(&mut self, text: &mut String) {
+        let start = self.cursor.pos();
+        while let Some(byte) = self.cursor.peek() {
+            if Self::breaks(byte) {
+                break;
+            }
+            self.cursor.advance(1);
+        }
+        let chunk = &self.cursor.bytes()[start..self.cursor.pos()];
+        text.reserve(chunk.len());
+        text.extend(chunk.iter().map(|byte| char::from(*byte)));
+    }
+
+    /// 一个转折点：闭合返回 `true`，继续则把一个字符追进 `text`。
+    fn step(&mut self, open: usize, text: &mut String) -> Result<bool> {
+        match self.cursor.peek() {
+            Some(b'"') => {
+                self.cursor.advance(1);
+                Ok(true)
+            }
+            Some(b'\\') => self.escape_into(open, text),
+            Some(_) => self.plain_into(text),
+            None => Err(self.cursor.fail_at(open, "字符串没有闭合")),
+        }
+    }
+
+    /// 转义序列：`\` 之后交给 [`Self::escape`]。
+    fn escape_into(&mut self, open: usize, text: &mut String) -> Result<bool> {
+        let at = self.cursor.pos();
+        self.cursor.advance(1);
+        text.push(self.escape(open, at)?);
+        Ok(false)
+    }
+
+    /// 裸字符（非 ASCII 或需要转义的字节）。
+    fn plain_into(&mut self, text: &mut String) -> Result<bool> {
+        let at = self.cursor.pos();
+        text.push(self.plain(at)?);
+        Ok(false)
     }
 
     /// 一个转义序列：`\` 之后的一个字节；`u` 走四位十六进制与代理对，其余查固定表。

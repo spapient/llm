@@ -6,7 +6,6 @@ use std::path::Path;
 use crate::buildimage::{Outcome, outcome, recipe, require};
 use crate::{Device, buildgen, fail, variant};
 
-
 // ── 档案表 ────────────────────────────────────────────────────────────
 
 /// ADR 0022 的档案树：`Table::from_pairs(vec![…])` 字面量 + 一张按名字查的表。

@@ -40,13 +40,11 @@ mod buf;
 
 pub mod snapshot;
 
+mod codec;
+mod format;
 #[cfg(all(feature = "mmap", unix))]
 mod mmap;
-pub mod entry;
-pub mod cursor;
 mod state;
-mod format;
-mod codec;
 
 #[cfg(all(feature = "mmap", unix))]
 pub use mmap::Mmap;
