@@ -2,7 +2,7 @@
 //! `crates/prof/devices/musa.toml` 声称具备的能力，中间的任何错位都是缺陷。
 //!
 //! 判据本身在 `testkit::device`（六台设备共用一套），用例由 `testkit::device_suite!`
-//! 摊开，这里只交出设备行与 P0 闭集。输出语言是 MUSA。
+//! 摊开，这里只交出设备行。输出语言是 MUSA。
 
 use super::*;
 
