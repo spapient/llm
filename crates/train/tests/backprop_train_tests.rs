@@ -118,19 +118,11 @@ fn rolling_statistics_persist_across_steps_in_the_bufs() -> Result<()> {
     session
         .bufs()
         .compute_shaped("batch_norm_f32", &[x, g, b], y, geom)?;
-    let once = session
-        .bufs()
-        .running(y)
-        .expect("第一轮应留下统计")
-        .clone();
+    let once = session.bufs().running(y).expect("第一轮应留下统计").clone();
     session
         .bufs()
         .compute_shaped("batch_norm_f32", &[x, g, b], y, geom)?;
-    let twice = session
-        .bufs()
-        .running(y)
-        .expect("第二轮应继续递推")
-        .clone();
+    let twice = session.bufs().running(y).expect("第二轮应继续递推").clone();
 
     for ci in 0..channels {
         let values: Vec<f32> = (0..count).map(|p| feed[p * channels + ci]).collect();

@@ -102,9 +102,7 @@ fn tiled_flash_matches_online_bitwise() {
 
 /// 行主序确定性向量：`rows × d`，第 `i` 个元素取 `base + i·step`，便于逐行核对。
 fn det_rows(rows: usize, d: usize, base: f32, step: f32) -> Vec<f32> {
-    (0..rows * d)
-        .map(|idx| base + idx as f32 * step)
-        .collect()
+    (0..rows * d).map(|idx| base + idx as f32 * step).collect()
 }
 
 #[test]

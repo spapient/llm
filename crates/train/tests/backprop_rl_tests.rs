@@ -105,19 +105,13 @@ fn grpo_clipped_surrogate_graph_matches_central_differences() -> Result<()> {
     session.bufs().load(hi_leaf, Data::F32(vec![hi; N]))?;
     session.bufs().compute("sub_f32", &[new, old], diff)?;
     session.bufs().compute("exp_f32", &[diff], ratio)?;
-    session
-        .bufs()
-        .compute("max_f32", &[ratio, lo_leaf], r_lo)?;
+    session.bufs().compute("max_f32", &[ratio, lo_leaf], r_lo)?;
     session
         .bufs()
         .compute("min_f32", &[r_lo, hi_leaf], r_clamp)?;
     session.bufs().compute("mul_f32", &[ratio, adv], term1)?;
-    session
-        .bufs()
-        .compute("mul_f32", &[r_clamp, adv], term2)?;
-    session
-        .bufs()
-        .compute("min_f32", &[term1, term2], surr)?;
+    session.bufs().compute("mul_f32", &[r_clamp, adv], term2)?;
+    session.bufs().compute("min_f32", &[term1, term2], surr)?;
     session.bufs().compute("reduce_sum_f32", &[surr], loss)?;
     session.plan(loss)?;
     session.backward()?;

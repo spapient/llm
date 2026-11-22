@@ -69,7 +69,7 @@ pub fn execute(
 }
 
 mod program;
-pub use program::{Backend, Mode, Stages, program};
+pub use program::{Backend, Mode, Stages, program, program_sample};
 
 /// 解析算子/档案/证据并编译出可执行产物：`(流水线, 产物)`。
 fn resolve<'a>(

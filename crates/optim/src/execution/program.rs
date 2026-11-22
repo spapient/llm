@@ -283,14 +283,7 @@ pub fn program_sample(
     mode: Mode,
     sample: &Sample,
 ) -> diagnostic::Result<Stages> {
-    let (mut run, prepared) = resolve(
-        catalogue,
-        dirs,
-        op_name,
-        backend.tag(),
-        sample.m,
-        sample.n,
-    )?;
+    let (mut run, prepared) = resolve(catalogue, dirs, op_name, backend.tag(), sample.m, sample.n)?;
     run.shape = Some(sample.clone());
     assemble(&mode, &run, &prepared, op_name, backend.emit(), sample)
 }
@@ -316,13 +309,12 @@ fn stage(
     run: &Run<'_>,
     prepared: &Prepared,
     emit: Emit,
-    m: usize,
-    n: usize,
+    sample: &Sample,
 ) -> diagnostic::Result<Stages> {
     Ok(Stages {
-        sources: lower_sources(emit, lower, run, prepared, m, n)?,
+        sources: lower_sources(emit, lower, run, prepared, sample)?,
         decay: decay_of(lower),
-        dims: mode.grid_dims(lower, &run.sample(m, n))?,
+        dims: mode.grid_dims(lower, sample)?,
     })
 }
 
@@ -465,14 +457,14 @@ fn int8_signature(run: &Run<'_>) -> bool {
 }
 
 /// flash attention：线程/块几何合法、elementwise 骨架、注意力签名与形状。
-fn flash_ready(run: &Run<'_>, s: usize, d: usize, lower: &Lower) -> bool {
+fn flash_ready(run: &Run<'_>, sample: &Sample, lower: &Lower) -> bool {
     let &Lower::FlashAttention { threads, block } = lower else {
         return false;
     };
     tileable_threads(threads)
         && batching_block(threads, block)
         && run.op.skeleton == Skeleton::Elementwise
-        && attention_shape(run, s, d)
+        && attention_shape(run, sample)
 }
 
 /// 键块大小：`[32, 1024]` 内且是线程数的整数倍，保证每轮线程负载均匀。
@@ -481,13 +473,13 @@ fn batching_block(threads: usize, block: usize) -> bool {
 }
 
 /// 分块 attention 的前置条件：线程数合法、elementwise 骨架、4 缓冲 + 2 标量的注意力签名。
-fn attention_ready(run: &Run<'_>, s: usize, d: usize, lower: &Lower) -> bool {
+fn attention_ready(run: &Run<'_>, sample: &Sample, lower: &Lower) -> bool {
     let &Lower::TiledAttention { threads } = lower else {
         return false;
     };
     tileable_threads(threads)
         && run.op.skeleton == Skeleton::Elementwise
-        && attention_shape(run, s, d)
+        && attention_shape(run, sample)
 }
 
 /// 线程数必须是 [32, 1024] 内的 2 的幂（树归约与线程组上限）。
@@ -496,11 +488,11 @@ fn tileable_threads(threads: usize) -> bool {
 }
 
 /// 注意力签名与形状：4 缓冲（q/k/v/y）+ 2 标量（S/D），且形状落在共享内存/头宽上限内。
-fn attention_shape(run: &Run<'_>, s: usize, d: usize) -> bool {
+fn attention_shape(run: &Run<'_>, sample: &Sample) -> bool {
     let params = run.op.signature.params();
     let buffers = params.iter().filter(|p| p.ctype.is_buf()).count();
     let scalars = params.iter().filter(|p| !p.ctype.is_buf()).count();
-    buffers == 4 && scalars == 2 && in_bounds(s, d)
+    buffers == 4 && scalars == 2 && in_bounds(sample.m, sample.n)
 }
 
 /// `S·4` 字节的分数块不超过 32 KiB 线程组内存，头宽不超过模板的 64。

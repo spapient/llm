@@ -393,8 +393,7 @@ pub mod seed {
     impl Seed {
         /// 派生第 `idx` 个用例：范例的一份确定性扰动。
         pub fn derive(&self, idx: u64) -> Vec<u8> {
-            let mut rng =
-                Rng::new(fingerprint(&self.0) ^ idx.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+            let mut rng = Rng::new(fingerprint(&self.0) ^ idx.wrapping_mul(0x9E37_79B9_7F4A_7C15));
             let mut out = self.0.clone();
             if out.is_empty() {
                 // 空范例没有可删可改的位置：从流里造 0..=2 个边界字节，仍然覆盖空串、单字节与

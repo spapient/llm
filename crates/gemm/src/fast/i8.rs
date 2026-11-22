@@ -294,7 +294,11 @@ pub const SDOT_BLOCK_MAC_PER_K: usize = 16;
 /// `false` 且不执行任何向量指令。只在 `bench` 特性下编译。
 #[cfg(all(feature = "bench", target_arch = "aarch64"))]
 pub fn port_sdot_block(rounds: usize, a: &[i8], b: &[i8], k: usize) -> bool {
-    if rounds == 0 || k == 0 || k % 16 != 0 || a.len() < 4 * k || b.len() < 4 * k
+    if rounds == 0
+        || k == 0
+        || k % 16 != 0
+        || a.len() < 4 * k
+        || b.len() < 4 * k
         || !std::arch::is_aarch64_feature_detected!("dotprod")
     {
         return false;

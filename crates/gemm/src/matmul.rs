@@ -323,11 +323,11 @@ pub fn cost(shape: &ShapeCtx) -> Result<Cost> {
 
 /// 三缓冲样本的公共骨架：`a` / `b` 的取值由精度给，`y` 恒为 f32 零缓冲，标量 `M`/`K`/`N`
 /// 与 `.k` 签名一致。
-fn sample_of(m: usize, n: usize, a: Values, b: Values) -> Sample {
+fn sample_of(m: usize, n: usize, k: usize, a: Values, b: Values) -> Sample {
     Sample {
         m,
         n,
-        scalars: vec![("M", m as i64), ("K", K as i64), ("N", n as i64)],
+        scalars: vec![("M", m as i64), ("K", k as i64), ("N", n as i64)],
         bufs: vec![
             Buf {
                 name: "a",
@@ -345,13 +345,22 @@ fn sample_of(m: usize, n: usize, a: Values, b: Values) -> Sample {
     }
 }
 
-/// 确定性样本：`a` / `b` 由同一份采样序列给出，`y` 为零缓冲。
+/// 确定性样本：`a` / `b` 由同一份采样序列给出，`y` 为零缓冲，收缩轴取生产形状 [`K`]。
 pub fn sample(m: usize, n: usize) -> Sample {
+    sample_k(m, n, K)
+}
+
+/// 显式收缩轴长度的确定性样本：与 [`sample`] 同构，只有 `K` 由调用方给定。
+///
+/// 形状前提（尾块、不整除）只有把 `K` 拿在手里才验得了——`K` 不是 `(m, n)` 的函数，
+/// [`sample`] 把它写死成生产形状，`3×5×7` 这种形状就无从表达。
+pub fn sample_k(m: usize, n: usize, k: usize) -> Sample {
     sample_of(
         m,
         n,
-        Values::F32(deterministic(m * K, 1)),
-        Values::F32(deterministic(K * n, 2)),
+        k,
+        Values::F32(deterministic(m * k, 1)),
+        Values::F32(deterministic(k * n, 2)),
     )
 }
 
