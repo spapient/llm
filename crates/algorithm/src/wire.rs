@@ -144,10 +144,10 @@ pub fn mla_layer(m: &Mla<f32>, seq: usize, name: &str) -> Result<LatentAttention
 /// 任一宽度为零或算子缺语义表。
 pub fn hybrid_layer(h: &Hybrid<f32>, seq: usize, index: usize) -> Result<Vec<Box<dyn Contract>>> {
     // 层名带位置：同一个混合块会在一座塔里出现多次，重名会被 `nn::Stack::of` 拒收。
-    let attn = mla_layer(h.attention(), seq, &format!("hybrid.{index}.attn"))?;
+    let attn = mla_layer(h.attention(), seq, &format!("hybrid.{idx}.attn"))?;
     Ok(vec![
         Box::new(attn),
-        Box::new(mhc_layer(h.residual(), &format!("hybrid.{index}.mix"))?),
+        Box::new(mhc_layer(h.residual(), &format!("hybrid.{idx}.mix"))?),
     ])
 }
 

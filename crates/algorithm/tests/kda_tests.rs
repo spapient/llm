@@ -59,7 +59,7 @@ fn a_write_is_exactly_recalled() {
     for (index, (read, wrote)) in got.iter().zip(&value).enumerate() {
         assert!(
             (read - wrote).abs() < 1e-12,
-            "第 {index} 维读出 {read}，写进去的是 {wrote}"
+            "第 {idx} 维读出 {read}，写进去的是 {wrote}"
         );
     }
 }
@@ -140,7 +140,7 @@ fn the_write_strength_scales_the_correction() {
     for (index, (read, full)) in got.iter().zip(&want).enumerate() {
         assert!(
             (read - full * 0.25).abs() < 1e-12,
-            "第 {index} 维 {read} 不是满写的四分之一（{full}）"
+            "第 {idx} 维 {read} 不是满写的四分之一（{full}）"
         );
     }
 }

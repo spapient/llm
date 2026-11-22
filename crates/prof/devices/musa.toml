@@ -9,7 +9,8 @@
 #
 # 与 nvidia 的关系：**同一门输出语言**（`emit = "cuda"`），不同工具链（`tools = "mcc"`，clang-14 驱动）。
 # 因此 `prim/musa` 的片段与 `prim/nvidia` 逐段同构、只在能证明更强的地方不同（`quant` 四位一组
-# 展开）；`dot` 的四链 ILP 会改变求和次序，属另一条签名，在没提供对应见证之前不冒充 `dot/fma`。
+# 展开）；`dot` 的四链 ILP 会改变求和次序，所以它是另一条签名 `dot/fma4`——档案里单列一条、
+# 自带见证（`witness_dot` 在整数输入下两种次序都精确得 70），而不是让同名片段算两份数。
 # `engine` 侧的后端只按 `[meta].tools` 决定命令名与运行时头。
 
 [meta]
@@ -113,10 +114,12 @@ lanes   = ["4"]
 grade   = "L1"
 witness = { file = "musa/witness.cu", func = "witness_dot_i8", expect = [10.0] }
 
-# P0 模板的 `@dot` 是标量 f32 累加，与上面的整数点积不是同一个指令：单独一条签名。
+# P0 模板的 `@dot` 是标量 f32 累加的语义，与上面的整数点积不是同一个指令：单独一条签名。
+# 四链 ILP 摊开 FMA 延迟，求和次序因此与单链不同——这就是单独一条 `fma4` 的理由，见文件头。
+# 正文与 `intel`/`nvidia`/`metal` 同源；见证值不变（整数输入，两种次序都精确得 70）。
 [[provides]]
 prim    = "dot"
-impl    = "fma"
+impl    = "fma4"
 dt      = ["f32"]
 space   = ["REG"]
 lanes   = ["1"]

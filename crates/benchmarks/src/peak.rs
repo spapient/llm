@@ -126,6 +126,15 @@ fn sdot_peak(c: &mut Criterion) {
         fast::port_sdot,
         2 * fast::SDOT_MAC_PER_ROUND,
     );
+    // 取数受限曲线：每轮 4 A + 4 B load 配 16 `sdot`，与生产微内核每 `k16` 步逐条对齐。
+    let (a, b) = ([3i8; 64], [5i8; 64]);
+    ported_ops(
+        c,
+        "i8_peak",
+        "_mix",
+        |rounds| fast::port_sdot_mix(rounds, &a, &b),
+        2 * fast::SDOT_MIX_MAC_PER_ROUND,
+    );
 }
 
 /// 把端口探针跑成与 [`machine_peak`] 同口径的曲线：`Barrier` 齐步、只计计算段、取各线程最大值

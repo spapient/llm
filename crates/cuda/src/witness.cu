@@ -27,7 +27,7 @@ int witness_dot_i8(float *out) {
     return 1;
 }
 
-/* dot/fma: 标量 f32 点积 {1,2,3,4} · {5,6,7,8} = 70 */
+/* dot/fma4: f32 点积 {1,2,3,4} · {5,6,7,8} = 70 */
 int witness_dot(float *out) {
     const float a[4] = {1.0f, 2.0f, 3.0f, 4.0f};
     const float b[4] = {5.0f, 6.0f, 7.0f, 8.0f};

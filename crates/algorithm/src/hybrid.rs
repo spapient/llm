@@ -354,7 +354,7 @@ fn check_memory_width(memory: &[crate::kda::Kda], width: usize) -> Result<()> {
         Some((index, bad)) => Err(Error::new(
             Code::Invalid,
             format!(
-                "第 {index} 个记忆层读出宽 {} ≠ 混合层宽 {width}：读数要加回主路，宽度不齐会拼起两张不同的表",
+                "第 {idx} 个记忆层读出宽 {} ≠ 混合层宽 {width}：读数要加回主路，宽度不齐会拼起两张不同的表",
                 bad.value_dim()
             ),
         )

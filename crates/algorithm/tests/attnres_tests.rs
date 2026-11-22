@@ -37,7 +37,7 @@ fn the_weights_are_the_softmax_of_scaled_scores() {
         })
         .collect();
     for (index, (a, b)) in got.iter().zip(&want).enumerate() {
-        assert!((a - b).abs() < 1e-12, "第 {index} 维 {a} 不是手算的 {b}");
+        assert!((a - b).abs() < 1e-12, "第 {idx} 维 {a} 不是手算的 {b}");
     }
 }
 
@@ -58,7 +58,7 @@ fn the_mixed_value_stays_in_the_convex_hull() {
             .fold(f64::NEG_INFINITY, f64::max);
         assert!(
             *value >= low - 1e-12 && *value <= high + 1e-12,
-            "第 {index} 维 {value} 越出 [{low}, {high}]"
+            "第 {idx} 维 {value} 越出 [{low}, {high}]"
         );
     }
 }
@@ -145,7 +145,7 @@ fn the_splice_never_widens_the_range() {
             let high = main[index].max(mixed[index]);
             assert!(
                 *value >= low - 1e-12 && *value <= high + 1e-12,
-                "α = {alpha} 时第 {index} 维 {value} 越出 [{low}, {high}]"
+                "α = {alpha} 时第 {idx} 维 {value} 越出 [{low}, {high}]"
             );
         }
     }
@@ -261,7 +261,7 @@ fn f32_and_f64_agree() {
     for (index, (a, b)) in wide.iter().zip(&narrow).enumerate() {
         assert!(
             (a - f64::from(*b)).abs() < 1e-6,
-            "第 {index} 维 f64 是 {a}、f32 是 {b}"
+            "第 {idx} 维 f64 是 {a}、f32 是 {b}"
         );
     }
 }

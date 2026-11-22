@@ -104,10 +104,13 @@ lanes   = ["4"]
 grade   = "L1"
 witness = { file = "metal/witness.metal", func = "witness_dot_i8", expect = [10.0] }
 
-# P0 模板的 `@dot` 是标量 f32 累加，与上面的整数点积不是同一条指令：单独一条签名。
+# P0 模板的 `@dot` 是标量 f32 累加的语义，与上面的整数点积不是同一条指令：单独一条签名。
+# 正文与 `intel` 的 `fma4` 同源（四链、16-wide 步进、4-wide 收口）：单链把 FMA 的吞吐压到 1/4，
+# 名字里的 `4` 就是"四条互不相欠的链"。见证值不变——{1,2,3,4}·{5,6,7,8} 在两种次序下都精确
+# 等于 70（整数输入，每条链的部分和都是 f32 精确整数）。
 [[provides]]
 prim    = "dot"
-impl    = "simd_fma"
+impl    = "fma4"
 dt      = ["f32"]
 space   = ["REG"]
 lanes   = ["1"]

@@ -52,9 +52,9 @@ impl<S: Scalar> Boundary<S> {
     /// 字节静默并进同一个 patch，出错的地方离原因很远。
     pub fn split(self, scores: &[S]) -> Result<Patches> {
         let mut starts = Vec::new();
-        for index in 0..scores.len() {
-            if self.opens(scores, index)? {
-                starts.push(index);
+        for idx in 0..scores.len() {
+            if self.opens(scores, idx)? {
+                starts.push(idx);
             }
         }
         Ok(Patches {
@@ -84,7 +84,7 @@ impl<S: Scalar> Boundary<S> {
             return Err(Error::new(
                 Code::Invalid,
                 format!(
-                    "下标 {index} 越出 {len} 个字节：边界只问已有的字节",
+                    "下标 {idx} 越出 {len} 个字节：边界只问已有的字节",
                     len = scores.len()
                 ),
             )

@@ -125,7 +125,7 @@ impl AttnRes {
             .with(SITE));
         }
         for (index, value) in values.iter().enumerate() {
-            self.check_row(value, &format!("{what}第 {index} 项"))?;
+            self.check_row(value, &format!("{what}第 {idx} 项"))?;
         }
         Ok(())
     }
@@ -142,7 +142,7 @@ impl AttnRes {
         match row.iter().position(|&value| !finite(value)) {
             Some(index) => Err(Error::new(
                 Code::Invalid,
-                format!("{what}第 {index} 项非有限：softmax 会把 NaN 摊到整组权重上"),
+                format!("{what}第 {idx} 项非有限：softmax 会把 NaN 摊到整组权重上"),
             )
             .with(SITE)),
             None => Ok(()),
@@ -211,7 +211,7 @@ fn check_pairs<S: Scalar>(main: &[S], mixed: &[S]) -> Result<()> {
     {
         Some(index) => Err(Error::new(
             Code::Invalid,
-            format!("第 {index} 项非有限：并回会把 NaN 带进主路"),
+            format!("第 {idx} 项非有限：并回会把 NaN 带进主路"),
         )
         .with(SITE)),
         None => Ok(()),

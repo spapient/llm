@@ -274,6 +274,63 @@ unsafe fn sdot_rounds(rounds: usize) {
     std::hint::black_box(acc);
 }
 
+/// `sdot` 混合端口探针一轮的乘加次数：16 条 `sdot`（4 行 × 4 列）× 16 项，配 8 条 16 字节 load。
+#[cfg(all(feature = "bench", target_arch = "aarch64"))]
+pub const SDOT_MIX_MAC_PER_ROUND: usize = 16 * 16;
+
+/// `sdot` **取数受限**峰值：一轮 = 4 条 A load + 4 条 B load + 16 条 `sdot`，与生产微内核
+/// [`kernel::dot_block`] 每个 `k16` 步的指令构成逐条一致。
+///
+/// **为什么要它**：纯端口探针是零 load 的理想上限，生产核每 16 条 `sdot` 要发 8 条 load。
+/// 两条曲线之差就是取数开销，也就是「K8 的缺口里有多少是结构注定、有多少是核写得差」的分界线。
+/// 若混合峰值 ≈ 纯峰值，说明 load 被完全掩住，那么缺口只能来自线程扩展；若混合峰值掉到
+/// 纯峰值的 3/4 一线，说明 4×4 微内核的 8 load : 16 `sdot` 就是天花板，缺口与瓦片形状无关。
+///
+/// `a`（4 行 × 16 字节）与 `b`（4 列 × 16 字节）由调用方给，长度不足 64 时返回 `false`。
+#[cfg(all(feature = "bench", target_arch = "aarch64"))]
+pub fn port_sdot_mix(rounds: usize, a: &[i8], b: &[i8]) -> bool {
+    if rounds == 0 || a.len() < 64 || b.len() < 64
+        || !std::arch::is_aarch64_feature_detected!("dotprod")
+    {
+        return false;
+    }
+    // 安全性：dotprod 已运行时探测；`a`/`b` 各 64 字节已在上面校验。
+    #[allow(unsafe_code)]
+    unsafe {
+        sdot_mix_rounds(rounds, a.as_ptr(), b.as_ptr());
+    }
+    true
+}
+
+/// 混合端口循环：16 累加器 + 每轮 8 条 load，累加结果进 `black_box` 防整段消除。
+#[cfg(all(feature = "bench", target_arch = "aarch64"))]
+#[target_feature(enable = "dotprod")]
+#[allow(unsafe_code)]
+#[inline(never)]
+unsafe fn sdot_mix_rounds(rounds: usize, ap: *const i8, bp: *const i8) {
+    use std::arch::aarch64::*;
+    unsafe {
+        let mut acc = [vdupq_n_s32(0); 16];
+        let mut p = 0;
+        while p < rounds {
+            let av: [int8x16_t; 4] = [
+                vld1q_s8(ap),
+                vld1q_s8(ap.add(16)),
+                vld1q_s8(ap.add(32)),
+                vld1q_s8(ap.add(48)),
+            ];
+            for (nb, col) in acc.chunks_exact_mut(4).enumerate() {
+                let bv = vld1q_s8(bp.add(nb * 16));
+                for (cell, a) in col.iter_mut().zip(av) {
+                    *cell = vdotq_s32(*cell, a, bv);
+                }
+            }
+            p += 1;
+        }
+        std::hint::black_box(acc);
+    }
+}
+
 /// B 转置打包成 `[nblk][nb][k]`（同列 k 连续），返回 `(面板, n 补齐到 8)`。
 mod kernel {
     use super::{I8_MR, I8_NR};

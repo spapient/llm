@@ -130,7 +130,7 @@ impl<S: Scalar> ByteEncoder<S> {
             return Err(Error::new(
                 Code::Invalid,
                 format!(
-                    "第 {index} 个字节不在 {} 个字节内：本地上下文只取已有字节",
+                    "第 {idx} 个字节不在 {} 个字节内：本地上下文只取已有字节",
                     bytes.len()
                 ),
             )

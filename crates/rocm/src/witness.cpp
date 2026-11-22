@@ -6,7 +6,7 @@
  * P0 的见证执行器只执行 `emit = c`，所以等级仍是 L0——AscendC 的 host harness
  * 与真机证据随非 C 执行器一起补。
  *
- * 每条签名一条函数：`dot` 的 `mmad`（Cube，f16 分块）与 `scalar_fma`（scalar，f32）
+ * 每条签名一条函数：`dot` 的 `mmad`（Cube，f16 分块）与 `fma4`（四链 f32）
  * 是两种能力，不能共用一个见证；`quant` / `load` / `load_async` 的特化实现与标量实现
  * 虽然语义相同，也各自保留入口——一条见证只能证明一条签名（cutile README §11.3）。
  *
@@ -49,7 +49,7 @@ int witness_dot_f16(float *out) {
     return 1;
 }
 
-/* dot/scalar_fma: 标量 f32 点积 {1,2,3,4} · {5,6,7,8} = 70 */
+/* dot/fma4: f32 点积 {1,2,3,4} · {5,6,7,8} = 70 */
 int witness_dot(float *out) {
     const float a[4] = {1.0f, 2.0f, 3.0f, 4.0f};
     const float b[4] = {5.0f, 6.0f, 7.0f, 8.0f};

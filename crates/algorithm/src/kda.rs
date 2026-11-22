@@ -228,7 +228,7 @@ impl Kda {
         match values.iter().position(|&value| !finite(value)) {
             Some(index) => Err(Error::new(
                 Code::Invalid,
-                format!("{what}第 {index} 项非有限：放行会把 NaN 一路带进记忆"),
+                format!("{what}第 {idx} 项非有限：放行会把 NaN 一路带进记忆"),
             )
             .with(SITE)),
             None => Ok(()),

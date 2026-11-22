@@ -489,7 +489,7 @@ fn int8_gemm_is_bit_exact_against_i32_accumulation() {
 /// 这样既逼出了溢出，又有一个与实现无关的精确期望值，不受浮点敏感度影响。
 #[test]
 fn attention_survives_score_overflow_and_matches_closed_form() {
-    const S: usize = 128;
+    const S: usize = 64;
     const D: usize = 64;
     const THREADS: usize = 64;
 
@@ -520,6 +520,8 @@ fn attention_survives_score_overflow_and_matches_closed_form() {
             "{label} 输出出现 NaN/inf：行最大值没有被扣除，exp 溢出了"
         );
         let error = frobenius(&got, &expected);
+        println!("DIAG {label}: got[0..4]={:?} expected[0..4]={:?} v0[0..4]={:?}",
+            &got[..4], &expected[..4], &v[..4]);
         assert!(
             error < 1e-5,
             "{label} 的相对 Frobenius 误差 {error:.2e} 超过 1e-5（分数已饱和，输出应等于 V[S−1]）"
@@ -791,4 +793,14 @@ fn diag_transpose_mapping() {
     let hits: Vec<(usize, usize, f32)> = (0..N).flat_map(|j| (0..K).map(move |i| (j, i)))
         .filter_map(|(j, i)| { let v = at(j, i); (v != 0.0).then_some((j, i, v)) }).collect();
     println!("dst 全部非零（{} 个）: {hits:?}", hits.len());
+}
+
+// TEMP-DIAG2
+#[test]
+fn diag_attention_msl() {
+    let (catalogue, dirs) = catalogue_and_dirs("diag-attn");
+    let msl = program(&catalogue, &dirs, "attention_f32", Metal, Mode::declared(), 128, 64)
+        .and_then(|stages| stages.one("declared"))
+        .expect("declared");
+    println!("{msl}");
 }

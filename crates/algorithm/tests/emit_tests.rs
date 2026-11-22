@@ -208,7 +208,7 @@ fn the_scores_are_the_self_information_of_the_picked_byte() {
     for (index, &score) in emitter.scores().iter().enumerate() {
         assert!(
             score >= 0.0 && f64::from(score) <= ceiling + 1e-6,
-            "第 {index} 个字节的分数 {score} 越出 [0, {ceiling}]"
+            "第 {idx} 个字节的分数 {score} 越出 [0, {ceiling}]"
         );
     }
 }

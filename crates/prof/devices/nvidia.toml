@@ -89,10 +89,11 @@ lanes   = ["4"]
 grade   = "L1"
 witness = { file = "nvidia/witness.cu", func = "witness_dot_i8", expect = [10.0] }
 
-# P0 模板的 `@dot` 是标量 f32 累加，与上面的整数点积不是同一个指令：单独一条签名。
+# P0 模板的 `@dot` 是标量 f32 累加的语义，与上面的整数点积不是同一个指令：单独一条签名。
+# 正文与 `intel`/`metal` 的 `fma4` 同源（四链、16-wide 步进、4-wide 收口）；见证值不变。
 [[provides]]
 prim    = "dot"
-impl    = "fma"
+impl    = "fma4"
 dt      = ["f32"]
 space   = ["REG"]
 lanes   = ["1"]
