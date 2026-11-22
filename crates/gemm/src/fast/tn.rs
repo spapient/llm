@@ -1,7 +1,6 @@
 //! 线性层布局（TN）的稠密 f32 GEMM：`out[rows,n] = x[rows,k] · w[n,k]ᵀ`。
-use super::pack::pack_panels;
 use super::pool::{Bufs, Shape, pool, run_pooled};
-use super::{KB, Layout, MR, NR, Span, Sweep, edge, sweep_columns, threads_override};
+use super::{Layout, MR, NR, threads_override};
 
 /// 走这条入口的最少行数：一个完整微内核行块。再少的批只有残行（标量），打包的转置成本摊不回来，
 /// 调用方应当继续用按列驻留的 tile 核。
@@ -138,6 +137,8 @@ pub(super) fn stage(
 }
 
 /// 一段行的计算：A 面板打包 + 按 [`KB`] 分块扫列 + 行残尾。
+///
+/// 正文与父模块的 Nt 视角**共用一份**（`fast::compute_rows`），这里只钉住 `Layout::Tn`。
 pub(super) fn compute_tn(
     a: &[f32],
     bpack: &[f32],
@@ -147,52 +148,7 @@ pub(super) fn compute_tn(
     k: usize,
     out: &mut [f32],
 ) {
-    let full = rows / MR;
-    let apack = pack_panels(a, full, k);
-    let mut first = true;
-    let mut k0 = 0;
-    while k0 < k {
-        let kb = KB.min(k - k0);
-        sweep_columns(
-            Sweep {
-                a,
-                apack: &apack,
-                bpack,
-                w,
-                full,
-                n,
-                k,
-                layout: Layout::Tn,
-            },
-            out,
-            k0,
-            kb,
-            first,
-        );
-        first = false;
-        k0 += kb;
-    }
-    // 残行（≤ MR−1 行）一次走完整段 K，不参与分块累加——与父模块同一条边界。
-    let tail = full * MR;
-    if tail < rows {
-        edge(
-            a,
-            w,
-            out,
-            Span {
-                i: tail,
-                j: 0,
-                mr: rows - tail,
-                nr: n,
-                n,
-                k,
-                stride: k,
-            },
-            0,
-            true,
-            Layout::Tn,
-        );
-    }
+    super::compute_rows(a, bpack, w, rows, n, k, out, Layout::Tn);
 }
 
 #[cfg(test)]

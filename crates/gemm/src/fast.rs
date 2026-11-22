@@ -176,15 +176,19 @@ pub fn gemm_f32_single(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: 
     });
 }
 
-/// 单线程块计算：A 打包成 8 行面板，再 j 外层、面板内层跑微内核；残尾走标量。
-fn compute_gemm(
+/// 一个行块的块计算：A 打包成 8 行面板，再 j 外层、面板内层跑微内核；残尾走标量。
+///
+/// `layout` 是**数据而非分支**：`Nt`（B 按列驻留）与 `Tn`（W 转置驻留）曾各写一份逐字
+/// 相同的正文，只在 `Sweep.layout` / `edge` 的最后一个实参上不同；现在一份正文配两次调用。
+fn compute_rows(
     a: &[f32],
     bpack: &[f32],
-    b: &[f32],
+    w: &[f32],
     rows: usize,
     n: usize,
     k: usize,
     out: &mut [f32],
+    layout: Layout,
 ) {
     let full = rows / MR;
     let apack = pack_panels(a, full, k);
@@ -197,11 +201,11 @@ fn compute_gemm(
                 a,
                 apack: &apack,
                 bpack,
-                w: b,
+                w,
                 full,
                 n,
                 k,
-                layout: Layout::Nt,
+                layout,
             },
             out,
             k0,
@@ -216,7 +220,7 @@ fn compute_gemm(
     if tail < rows {
         edge(
             a,
-            b,
+            w,
             out,
             Span {
                 i: tail,
@@ -229,9 +233,22 @@ fn compute_gemm(
             },
             0,
             true,
-            Layout::Nt,
+            layout,
         );
     }
+}
+
+/// Nt 视角的块计算：B 按列驻留（父模块的两条入口用它）。
+fn compute_gemm(
+    a: &[f32],
+    bpack: &[f32],
+    b: &[f32],
+    rows: usize,
+    n: usize,
+    k: usize,
+    out: &mut [f32],
+) {
+    compute_rows(a, bpack, b, rows, n, k, out, Layout::Nt);
 }
 
 /// 沿列块扫描整行块：整块走微内核，最后一段残列走标量边（`edge` 读未打包的 `a`）。
