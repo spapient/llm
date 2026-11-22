@@ -117,9 +117,12 @@ fn activate(out: &mut [f32], kind: ActKind) {
     }
 }
 
+/// 一个标量激活核：`f32 -> f32`，与 [`crate::unary::Unary::apply`] 同签名。
+type Scalar = fn(f32) -> f32;
+
 /// 五个标量核的登记表：`ActKind` 的闭集成员与 `crate::unary` 的 `Unary::apply` 一一对上，
 /// 覆盖关系由 `epilogue_tests` 的 `every_act_kind_has_a_scalar_kernel` 钉住。
-const SCALARS: [(ActKind, fn(f32) -> f32); 5] = [
+const SCALARS: [(ActKind, Scalar); 5] = [
     (ActKind::Relu, <crate::relu_f32::ReluF32 as crate::unary::Unary>::apply),
     (ActKind::Gelu, <crate::gelu_f32::GeluF32 as crate::unary::Unary>::apply),
     (ActKind::Silu, <crate::silu_f32::SiluF32 as crate::unary::Unary>::apply),

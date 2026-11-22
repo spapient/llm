@@ -70,8 +70,15 @@ cd "$(dirname "$0")/.."
 # 现在是一张带字节数的表（7 条打得出分、5 条被几何否掉，每条报出两侧字节）。它**不跑标量参考**：
 # 中间量就是生产者唯一输出槽的 `Cost::write`，省下 `2 × write`，所以不分配内存——生产形状到
 # `(4096, 4096)`，每条候选跑一遍参考要 1–4 GiB。同一笔里 **-50 行是删掉的**：
-# `first_tile`/`predicted_s` 折进 `select`、`collect_window` 折进 `fusions`、`predict` 拆出 `sides`
+# `first_tile` 折进 `select`、`collect_window` 折进 `fusions`、`predict` 拆出 `sides`
 # 让打分与预测共用一台机器，三个私有辅助因此不再单独存在。
+# CCN 是另一条约束：静态门 `ccn_max = 5`，而 lizard 口径把 `ok_or_else(|| …)?` 记成 3 个条件、
+# `?` 记 1 个，于是"折进去"必须折得**不带分支**——`select` 留下 `no_tiles`（函数项，调用点零分支）
+# 与 `predict_or_fail`（把 8 行错误构造移出主流程并语义化为"三步取料"），`fusions` 去掉
+# `len<2 || budget==0` 守卫（`compose` 在槽位代数里已摘自融合，`take(room)` 处理预算为 0），
+# `score` 拆成 `seam`（接缝代数，含 4 个守卫）→ `merged`（复合代价过 roofline）→ `score` 本体
+# 一次 `map_or_else` 零分支。省行不能拿分支密度换：门挡下的是 `select 6 / fusions 7 / score 6`，
+# 现在是 `4 / 3 / 1`，且总量比拆分前更少。
 # `crates/cli` **+80**，全部是本次：`kernel.rs` 的子命令文法（变体 + 用法两行 + 表行 + 组装函数）、
 # `cutile.rs` 的分派与装配（复用 `Catalogue::resolve`，不新增错误路径）、`matrix.rs` 的排名表
 # （复用 `Sheet`，不新建排版机制）。取证：8 条打分测试全在 `crates/cutile/tests/plan_tests.rs`、
