@@ -2,17 +2,7 @@
 
 use diagnostic::{Code, Error, Result};
 use nn::model::Sample;
-use nn::sig::{Param, Signature};
-
-mod flash;
-mod gemm;
-mod misc;
-
-pub use flash::metal_flash_attention;
-pub use gemm::{metal_simdgroup_gemm, metal_tiled_gemm};
-pub use misc::{
-    metal_int8_gemm, metal_int8_gemm_program, metal_tiled_attention, metal_transpose_half,
-};
+use nn::sig::{CType, Param, Signature};
 
 // ---------------------------------------------------------------------------
 // 签名 → 缓冲名与几何：各族共用
