@@ -29,6 +29,10 @@ reason = "L1：分片种类（张量流水线/数据）是调度层的词汇表"
 crate = "serve"
 reason = "L6：帧类型是线格式的词汇表（`protocol` 模块，`proto` 为兼容重导出路径），与设备能力无关；`serve` 在 `prof` 下游，反向依赖会成环"
 
+[[closed.exempt]]
+crate = "nn"
+reason = "L5：`Cell::ALL`（三种循环单元）与 `Tensor::ALL`（四件权重）是带领域方法（`gates`/`of_gates`/`activations`/`suffix`）的语义枚举的遍历助表，不是 `prof` 的名字原子表；转 `Closed` 会凭空加 `nn → prof` 依赖，并把 `Ord`/`Hash`/`as_str` 硬套到领域枚举上"
+
 
 [bitset]
 exempt = []

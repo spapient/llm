@@ -31,7 +31,7 @@
 //! let mut store = Bufs::new(sizes, Reference);
 //! store.load(x, Data::F32(vec![1.0, 2.0])).expect("输入");
 //! store.load(w, Data::F32(vec![1.0, 0.0, 0.0, 1.0])).expect("权重");
-//! store.compute("gemv_f32", &[w, x], y).expect("可算");
+//! store.compute_step("gemv_f32", &[w, x], y).expect("可算");
 //! assert!(store.value(y).and_then(|view| view.f32()).is_some());
 //! ```
 

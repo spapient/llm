@@ -54,16 +54,18 @@ P3 要在边界 crate 挂 Metal/CUDA 后端（ADR 0025 §1、§9；ADR 0028 §3 
 |---|---|---|
 | `crates/storage/src/mmap.rs`（模块级，1 处） | mmap 映射 | 模块级 allow；只读、私有映射、`Drop` 归还、线程归属；对外只暴露拥有型 `&[u8]` 视图 |
 | `crates/device/src/metal/executor.rs`（模块级，1 处） | FFI 调用 + 设备缓冲句柄 | 手写 `objc_msgSend` 与 Metal 运行时符号；+1 保留的对象在 `Drop` 恰好 `-release` 一次，句柄私有、不跨线程，自动释放对象由 autorelease 池收口；对外是 `Executor` / `Allocator` 的安全实现 |
-| `crates/gemm/src/fast/i8.rs`（8 处，函数级） | 裸指针切片重建 + SIMD intrinsics | 字节量化族的越界点随实现在此。只在 `aarch64` 的 NEON 微内核、`x86_64` 的 AVX2/FMA 微内核与打包/回写段 |
-| `crates/gemm/src/fast/micro.rs`（6 处，函数级） | 裸指针切片重建 + SIMD intrinsics | 公共微内核（点积 / 归约 / 打包回写） |
+| `crates/gemm/src/fast/i8.rs`（12 处，函数级） | 裸指针切片重建 + SIMD intrinsics | 字节量化族的越界点随实现在此。只在 `aarch64` 的 NEON 微内核、`x86_64` 的 AVX2/FMA 微内核与打包/回写段；瓦片体 `sdot_tile` 由生产与 `_block` 探针**共用同一份**（N5），故探针不另开越界点 |
+| `crates/gemm/src/fast/micro.rs`（11 处，函数级） | 裸指针切片重建 + SIMD intrinsics | 公共微内核（点积 / 归约 / 打包回写）。瓦片体 `fma_step` 由 `micro_packed` 与 `fma_peak/{1,16,18}_block` 探针**共用同一份**（N5），同 `i8` 的 `sdot_tile` 形态：探针若自写一份瓦片体，既多一座岛又会让分母与分子漂移 |
 | `crates/gemm/src/fast/pool.rs`（3 处，函数级） | 裸指针跨线程发布 | 任务只发布指针 + 一次 `Barrier`，主线程自旋等到全部 worker 完成才返回 |
 | `crates/gemm/src/fast/sme.rs`（8 处，函数级） | 裸指针切片重建 + SIMD intrinsics + 内联汇编 | aarch64 SME 路径。第 5、6 处是 **端口峰值探针** `port_run`/`port_mix`：`bench` 特性下才编译，`z0`/`z1` 与 ZA 常驻，内层只有 `fmopa`（`port_run`）或 `fmopa` + 5 条 `ld1w`（`port_mix`），零 store。探测必须留在这里——探针与被测内核用同一条指令路径，搬到测量容器会让 `unsafe` 岛变成两个 |
 
 `gemm` 那几行是**存量冻结**：只许减少，不许增加。要新增一行，先改本表，并说明这个越界点为什么
 不能落在边界 crate。拆文件不改变冻结口径——`fast.rs` 拆成 `fast/` 目录后按文件重新列举，
-总数由 17 涨到 21 是拆分时每个微内核各自重建切片的重复，**属于需要往下削的欠账而不是新增许可**；当前总计 26 处。
+总数由 17 涨到 21 是拆分时每个微内核各自重建切片的重复，**属于需要往下削的欠账而不是新增许可**；当前各行相加 **36 处**。此前文首写「总计 26」与各行相加 27 已不符，本轮一并改正为按表求和。另删除一处**空头许可**：`crates/gemm/src/fast/probe.rs` 曾有模块级 `#![allow(unsafe_code)]` 而文件内`unsafe` 用量为 0（`git grep unsafe` 只命中那一行本身），已删——白名单里挂一个不越界的文件，等于把「可枚举」这条判据本身弄假。
 
 `sme.rs` 由 4 涨到 8 是**唯一一次有意的增量**：四个探针入口（`port_run`/`port_mix` 各一个安全包装 + 一个 `#[target_feature]` 工人）不是新的越界面，而是把已在岛内的 `fmopa` 与 `ld1w` 路径暴露成可计时的循环，用来给出 GF/s 的分母与**取数代价**（否则 K7 只能拿 NEON 峰值当分母，那是口径混用）。它们受 `bench` 特性门控，生产公开面不含该项，不变量与 `sme_tile` 一致：包装只做 `available()` 判定与指针透传，工人只为 `smstart`/`smstop` 配对与读边界负责，`port_run` 完全不接触内存，`port_mix` 只读调用方给的 `&[f32; 16]` 与 `&[f32; 64]`（各恰好一次读满，无越界）。
+
+`i8.rs` 由 8 涨到 12、`micro.rs` 由 6 涨到 11 是同一形态的**有意增量**：把生产微内核的瓦片体抽成`sdot_tile`（i8）与 `fma_step`（f32）后，探针与被测内核共用一份实现，代价是每个新函数各自一个 `#[allow]`，收益是**消掉一份重复的瓦片体**——若探针自写一份，分母就与分子不同源，K7/K8 变成两个内核相除。其中 `i8.rs` 的 4 处是上一轮合并 `sdot_tile` 时新增、本轮才补登记（欠账，已补）。新增的 f32 探针只在 `bench` 特性下编译，生产公开面不含该项；不变量与 `micro_packed` 一致：包装只做长度守卫与指针透传，工人只为 `fma_step` 的读边界（`NR*k` 内的 `NR` 行）负责。
 
 六个文件、三个逻辑岛：`storage` 的 mmap、`device` 的 Metal FFI、`gemm` 的 CPU 微内核——最后一行
 跨 `fast.rs` 与 `fast/pool.rs` 两个文件，是同一个 P1 待搬出的欠账岛（两文件同属一个内核的

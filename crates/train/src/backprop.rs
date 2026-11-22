@@ -307,6 +307,7 @@ fn lookup(op: &str) -> Result<Formula> {
         .ok_or_else(|| unsupported(op))
 }
 
+mod attention;
 mod formulas;
 use formulas::*;
 
