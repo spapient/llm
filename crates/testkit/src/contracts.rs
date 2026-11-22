@@ -130,7 +130,7 @@ fn locate(module: &str, depth: usize) -> Option<PathBuf> {
         let segments: Vec<&str> = module.split("::").collect();
         let leaf = segments.last().copied().unwrap_or_default();
         // 判据是「这个文件声明了**目标段**」而不是「声明了中间段」：`conv.rs` 声明了
-        // `pub mod classic`，但实体在 `conv/classic/norm.rs` 的 `pub mod batch` 里，
+        // `pub mod classic`，但实体在 `conv/classic.rs` 的内联 `pub mod batch` 里，
         // 认中间段会把壳文件当成实体文件（壳里没有注解，也没有算子）。
         for cut in (1..segments.len()).rev() {
             let Some(candidate) = find(format!("{}.rs", segments[..cut].join("/"))) else {

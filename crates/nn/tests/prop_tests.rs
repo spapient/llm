@@ -12,7 +12,7 @@
 //! | 重名被拒、异名被收 | 按名字对齐的遍历变成猜测 |
 //! | 分组对齐宽度必有下界 | 构造成功却推不出数，或反之 |
 //!
-//! 与 `testkit::rel` 的关系：那套容差判据只接受 `&[f32]`，而 `Bounds` 的 `flops` 是 `f64`。
+//! 与 `testkit::compare` 的关系：那套容差判据只接受 `&[f32]`，而 `Bounds` 的 `flops` 是 `f64`。
 //! 本文件对 `f64` 用同一口径的投影（`|got − want| ≤ tol · max(1, |want|)`），不是第二套真理。
 //!
 //! 分组的对齐口径（N8 信任清单）：本文件只断言**诚实形状**——宽度取分组因子的整数倍，
@@ -67,7 +67,7 @@ fn total(values: &[Bounds]) -> Bounds {
     values.iter().fold(Bounds::ZERO, |acc, b| acc.plus(*b))
 }
 
-/// `|got − want| ≤ tol · max(1, |want|)`：`testkit::rel` 的 f64 投影。
+/// `|got − want| ≤ tol · max(1, |want|)`：`testkit::compare` 的 f64 投影。
 fn assert_near(got: f64, want: f64, tol: f64, what: &str) {
     let scale = want.abs().max(1.0);
     assert!(
