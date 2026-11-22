@@ -443,15 +443,28 @@ fn walk(
     turn: &[bool],
     visit: &mut impl FnMut(usize),
 ) {
-    // 进位计数器放栈上：构造期已核过秩不超过 `MAX_RANK`，非连续摊平因此只剩输出一次分配。
+    let Some((mut at, delta)) = wind(shape, steps, base, turn) else {
+        return;
+    };
     let mut counter = [0usize; layout::MAX_RANK];
     let Some(idx) = counter.get_mut(..shape.len()) else {
         return;
     };
+    for _ in 0..product(shape) {
+        visit(at);
+        at = advance(idx, shape, &delta, at);
+    }
+}
+
+/// 把翻转掩码折成"每轴带符号增量 + 起点"：标真的轴挪到最远端、增量取负。
+fn wind(
+    shape: &[usize],
+    steps: &[usize],
+    base: usize,
+    turn: &[bool],
+) -> Option<(usize, [isize; layout::MAX_RANK])> {
     let mut signed = [0isize; layout::MAX_RANK];
-    let Some(delta) = signed.get_mut(..shape.len()) else {
-        return;
-    };
+    let delta = signed.get_mut(..shape.len())?;
     let mut at = base as isize;
     for (axis, &dim) in shape.iter().enumerate() {
         let step = steps[axis] as isize;
@@ -461,19 +474,22 @@ fn walk(
             at += step * dim.saturating_sub(1) as isize;
         }
     }
-    for _ in 0..product(shape) {
-        visit(at as usize);
-        // 行主序进位：偏移跟着增减，省掉每次重算点积。
-        for axis in (0..idx.len()).rev() {
-            idx[axis] += 1;
-            at += delta[axis];
-            if idx[axis] < shape[axis] {
-                break;
-            }
-            idx[axis] = 0;
-            at -= delta[axis] * shape[axis] as isize;
+    Some((at as usize, signed))
+}
+
+/// 行主序进位一步，返回下一个元素偏移——偏移跟着增减，不重算点积。
+fn advance(idx: &mut [usize], shape: &[usize], delta: &[isize], at: usize) -> usize {
+    let mut at = at as isize;
+    for axis in (0..idx.len()).rev() {
+        idx[axis] += 1;
+        at += delta[axis];
+        if idx[axis] < shape[axis] {
+            break;
         }
+        idx[axis] = 0;
+        at -= delta[axis] * shape[axis] as isize;
     }
+    at as usize
 }
 
 /// 按步长走一遍全部逻辑位置，把读到的元素压成连续缓冲：O(numel)。
