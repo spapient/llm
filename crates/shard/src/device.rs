@@ -8,7 +8,7 @@ use crate::toolchain;
 use crate::witness::{MAX_OUT, Scope, Selected};
 use cutile::dirs::Dirs;
 use cutile::prof::{Emit, Profile};
-use diagnostic::Result;
+use diagnostic::{Code, Error, Result};
 use std::sync::{Mutex, OnceLock};
 
 /// 宿主 C 参考后端：本机 CPU 永远在，证明「这段 C 编得过、跑得出 `expect`」，不是设备证据。
@@ -75,6 +75,16 @@ pub(crate) fn spec(emit: Emit) -> Option<&'static dyn Backend> {
         return None;
     };
     table.iter().find(|entry| entry.emit() == emit).copied()
+}
+
+/// 按 `emit` 取后端；取不到就是「本机没有这门语言的生产态后端」。
+pub(crate) fn require(emit: Emit) -> Result<&'static dyn Backend> {
+    spec(emit).ok_or_else(|| {
+        Error::new(
+            Code::Unsupported,
+            format!("本机没有 `{emit}` 语言的生产态后端"),
+        )
+    })
 }
 
 /// 已登记的全部执行语言：错误报告里列出「本机接了哪些」。

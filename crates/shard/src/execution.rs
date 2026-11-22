@@ -411,12 +411,7 @@ fn check_parity(bits: &[f32], expected: &[f32], tolerance: f64) -> diagnostic::R
 /// 经 [`crate::backend::Codegen::lower`] 缝取 vendor 后端的生产态设备源。机制层不认厂商，只认
 /// `emit` 与 [`Lower`] 描述；cutile 内不出现 Metal / CUDA 字面量（L3 契约）。
 fn backend(emit: Emit) -> diagnostic::Result<&'static dyn crate::backend::Backend> {
-    crate::device::spec(emit).ok_or_else(|| {
-        Error::new(
-            Code::Unsupported,
-            format!("本机没有 `{emit}` 语言的生产态后端"),
-        )
-    })
+    crate::device::require(emit)
 }
 
 /// 样本 + 后端查表 + 生产态 lowering 收在一处：调用方只写一个 `?`，不逐处重复「取样本、查后端、
