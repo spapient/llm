@@ -41,12 +41,12 @@
 //! assert_eq!(cache.in_use(), 0);
 //! ```
 
-mod pager;
-
-use diagnostic::{Code, Error, Result};
+use crate::invalid;
+use diagnostic::Result;
 use tensor::Shape;
 
-pub use pager::Pager;
+/// 页池上的页内数据（实现见 [`crate::pager`]）：给页表要页、写行、读行。
+pub use crate::pager::Pager;
 
 /// 满块前缀树（实现见 [`crate::radix`]）：页池只记「谁在看」，树记「哪段前缀对应哪一页」。
 pub use crate::radix::Radix;
@@ -84,9 +84,7 @@ impl Table {
     /// 建一个最多 `capacity` 页的页表；容量为 0 直接报错（那等于无法生成任何 token）。
     pub fn new(capacity: usize) -> Result<Self> {
         if capacity == 0 {
-            return Err(
-                invalid("engine::kv::Table::new", "页表容量不能为 0")
-            );
+            return Err(invalid("engine::kv::Table::new", "页表容量不能为 0"));
         }
         Ok(Self {
             pages: Vec::with_capacity(capacity),
@@ -97,9 +95,10 @@ impl Table {
     /// 追加一页；已满时报错，而不是静默丢弃（丢页等于丢上下文）。
     pub fn push(&mut self, page: Page) -> Result<()> {
         if self.pages.len() == self.capacity {
-            return Err(
-                invalid("engine::kv::Table::push", format!("页表已满（容量 {}）", self.capacity)),
-            );
+            return Err(invalid(
+                "engine::kv::Table::push",
+                format!("页表已满（容量 {}）", self.capacity),
+            ));
         }
         self.pages.push(page);
         Ok(())
@@ -128,7 +127,10 @@ impl Table {
     /// 把容量抬高 `extra` 页（页表随序列增长）。
     pub fn grow(&mut self, extra: usize) -> Result<()> {
         let capacity = self.capacity.checked_add(extra).ok_or_else(|| {
-            invalid("engine::kv::Table::grow", format!("页表容量 {} + {extra} 溢出", self.capacity),)
+            invalid(
+                "engine::kv::Table::grow",
+                format!("页表容量 {} + {extra} 溢出", self.capacity),
+            )
         })?;
         self.pages.reserve(extra);
         self.capacity = capacity;
@@ -158,10 +160,13 @@ impl Table {
             return Err(invalid("engine::kv::Table::slot", "页宽不能为 0"));
         }
         let page = self.pages.get(idx / page_size).ok_or_else(|| {
-            invalid("engine::kv::Table::slot", format!(
+            invalid(
+                "engine::kv::Table::slot",
+                format!(
                     "第 {idx} 个 token 还没有页：页表只有 {} 页",
                     self.pages.len()
-                ),)
+                ),
+            )
         })?;
         Ok(Slot {
             page: *page,
@@ -179,7 +184,10 @@ impl Table {
     /// `keep` 大于当前页数。
     pub fn truncate(&mut self, keep: usize) -> Result<Vec<Page>> {
         if keep > self.pages.len() {
-            return Err(invalid("engine::kv::Table::truncate", format!("只能删到不超过 {} 页，收到 {keep}", self.pages.len()),));
+            return Err(invalid(
+                "engine::kv::Table::truncate",
+                format!("只能删到不超过 {} 页，收到 {keep}", self.pages.len()),
+            ));
         }
         Ok(self.pages.split_off(keep))
     }
@@ -217,11 +225,13 @@ impl Cache {
     /// 建一个 `total` 页、每页 `page_size` 个 token 的页池。
     pub fn new(total: usize, page_size: usize) -> Result<Self> {
         if total == 0 || page_size == 0 {
-            return Err(invalid("engine::kv::Cache::new", format!("页数与页宽都必须非零（total = {total}，page_size = {page_size}）"),));
+            return Err(invalid(
+                "engine::kv::Cache::new",
+                format!("页数与页宽都必须非零（total = {total}，page_size = {page_size}）"),
+            ));
         }
-        let total_pages = u32::try_from(total).map_err(|_| {
-            invalid("engine::kv::Cache::new", format!("页数 {total} 超出 u32"))
-        })?;
+        let total_pages = u32::try_from(total)
+            .map_err(|_| invalid("engine::kv::Cache::new", format!("页数 {total} 超出 u32")))?;
         // 倒序入池：`alloc` 从尾部取，这样第 0 页先被用上，调试输出更稳定。
         let free = (0..total_pages).rev().map(Page::new).collect();
         Ok(Self {
@@ -250,15 +260,19 @@ impl Cache {
     /// 页越界，或不在借出状态（从未分配、已经归还）。
     pub fn share(&mut self, page: Page) -> Result<()> {
         let Some(count) = self.refs.get_mut(page.id() as usize) else {
-            return Err(
-                invalid("engine::kv::Cache::share", format!("页 {} 不在页池范围内", page.id())),
-            );
+            return Err(invalid(
+                "engine::kv::Cache::share",
+                format!("页 {} 不在页池范围内", page.id()),
+            ));
         };
         if *count == 0 {
-            return Err(invalid("engine::kv::Cache::share", format!(
+            return Err(invalid(
+                "engine::kv::Cache::share",
+                format!(
                     "页 {} 不在借出状态：要么被重复共享，要么从未分配",
                     page.id()
-                ),));
+                ),
+            ));
         }
         *count += 1;
         Ok(())
@@ -267,15 +281,19 @@ impl Cache {
     /// 归还一页：越界、重复归还或计数下溢都是调用方的 bug，直接报错。
     pub fn release(&mut self, page: Page) -> Result<bool> {
         let Some(count) = self.refs.get_mut(page.id() as usize) else {
-            return Err(
-                invalid("engine::kv::Cache::release", format!("页 {} 不在页池范围内", page.id())),
-            );
+            return Err(invalid(
+                "engine::kv::Cache::release",
+                format!("页 {} 不在页池范围内", page.id()),
+            ));
         };
         if *count == 0 {
-            return Err(invalid("engine::kv::Cache::release", format!(
+            return Err(invalid(
+                "engine::kv::Cache::release",
+                format!(
                     "页 {} 不在借出状态：要么被重复归还，要么从未分配",
                     page.id()
-                ),));
+                ),
+            ));
         }
         *count -= 1;
         if *count > 0 {

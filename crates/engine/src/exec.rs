@@ -1,16 +1,15 @@
 //! 提交与执行：[`Stream`]、[`Graph`]、[`Node`]、[`Launch`]、[`Operand`] 与 [`Executor`] 契约。
 //!
-//! 本模块按主题分成四个文件：[`submit`]（提交契约）、[`queue`]（执行器缝与记账）、
-//! [`memory`]（缓冲视图）、[`cpu`]（CPU 执行体）。四段之间只经公开类型相接，没有共享的私有状态。
+//! 本模块只有提交契约这一件事（图、流、节点、操作数）。执行器缝与记账在 [`crate::queue`]，
+//! 缓冲视图与 CPU 执行体在 [`crate::cpu`]：三段只经公开类型相接，没有共享的私有状态。
 //! **拥有**：`Stream`、`Graph`、`Node`、`Launch`、`Operand`、`Executor`。**不拥有**：编译 kernel
 //! （`cutile::runner` 负责"源文件 → 可执行文件"，产物按 `(模板, 档案, flags)` 由 `cutile::build` 缓存；本 crate 只负责
 //! "图提交到流"，每 step 都发生）、缓冲分配（`storage`）。
-//! **依赖**：`diagnostic`、`tensor`、`storage`（仅 [`Allocator`] trait 对象；`Buf`/`Allocator`
-//! 类型定义归 `storage`）。**被依赖**：`engine` 的其余模块（本模块并入后与它们同 crate）。
+//! **依赖**：`diagnostic`、`tensor`、`storage`（仅 [`storage::Allocator`] trait 对象；它的类型定义归 `storage`）。**被依赖**：`engine` 的其余模块（本模块并入后与它们同 crate）。
 //!
 //! 节点绑定的只是不透明操作数引用（[`Operand`]：编号 + 只读/可写角色）；编号到实际缓冲的解析、
 //! 缓冲生命周期与设备句柄都在后端边界侧（ADR 0025 §2/§3），本层不引用 `op` 算子闭集。
-//! 设备后端的执行器只持有分配器 [`Allocator`] trait 对象（与设备同生命周期），不持有
+//! 设备后端的执行器只持有分配器 [`storage::Allocator`] trait 对象（与设备同生命周期），不持有
 //! [`storage::Buf`] 字节；缓冲的分配、解析与写回由后端执行体经分配器完成。CPU 执行器
 //! 是例外、而且必须是例外：它的缓冲就是 [`Bindings`] 里的 `Vec<f32>`——CPU 上没有独立的
 //! “后端缓冲对象”，硬造一个只会多一层拷贝。
@@ -32,17 +31,10 @@
 //! assert_eq!(Stream::new(0).id(), 0);
 //! ```
 
-mod cpu;
-mod queue;
-
-pub use cpu::{Bindings, CpuExecutor, Program};
-pub use queue::{Buf, View, ViewMut};
-pub use queue::{Executor, LocalExecutor, Queued, Trace};
-pub use queue::{check_operands, enqueue};
-
-use diagnostic::{Code, Error, Result};
-use std::fmt;
-use storage::Allocator;
+pub use crate::cpu::{Bindings, CpuExecutor, Program};
+pub use crate::queue::{Buf, View, ViewMut};
+pub use crate::queue::{Executor, LocalExecutor, Queued, Trace};
+pub use crate::queue::{check_operands, enqueue};
 
 #[cfg(test)]
 #[path = "../tests/exec.rs"]

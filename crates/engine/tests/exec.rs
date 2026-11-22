@@ -1,4 +1,5 @@
 use super::*;
+use diagnostic::{Code, Error, Result};
 use storage::CpuAllocator;
 
 struct Counting {

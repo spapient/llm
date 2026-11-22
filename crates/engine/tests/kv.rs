@@ -1,6 +1,7 @@
 //! 页缓存的账目夹具：分配、复用、引用计数与前缀复用。
 
 use super::*;
+use diagnostic::Code;
 
 #[test]
 fn pages_are_handed_out_in_order_and_reused() {

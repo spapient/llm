@@ -1,5 +1,6 @@
 use super::*;
 use crate::kv::Cache;
+use diagnostic::Code;
 
 /// `pages` 页、每页 `page_size` 个 token 的页池（行宽 1：这几条测的是页的账，不是行里的数）。
 fn pool(pages: usize, page_size: usize) -> Pager {

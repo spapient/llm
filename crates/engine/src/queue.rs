@@ -1,6 +1,10 @@
 //! 执行器缝与提交记账：`Executor` 契约、`Trace` 装饰器、本地执行器。
 
-use super::*;
+use crate::exec::{Device, Graph, Node, Program, Stream};
+use crate::invalid;
+use diagnostic::{Code, Error, Result};
+use std::fmt;
+use storage::Allocator;
 
 /// 后端要实现的东西：把一张图提交到一条流，并按编号登记内核与宿主缓冲。
 pub trait Executor {
@@ -204,7 +208,10 @@ pub fn enqueue(queue: &mut Vec<Queued>, graph: &Graph, stream: Stream) {
 pub fn check_operands(node: &Node, unbound: impl Fn(u32) -> bool, ctx: &'static str) -> Result<()> {
     for operand in node.inputs().iter().chain(node.outputs()) {
         if unbound(operand.id()) {
-            return Err(invalid(ctx, format!("节点 `{}` 的操作数 {} 未绑定", node.name(), operand.id()),));
+            return Err(invalid(
+                ctx,
+                format!("节点 `{}` 的操作数 {} 未绑定", node.name(), operand.id()),
+            ));
         }
     }
     let clash = node
@@ -212,7 +219,10 @@ pub fn check_operands(node: &Node, unbound: impl Fn(u32) -> bool, ctx: &'static 
         .iter()
         .any(|output| node.inputs().iter().any(|input| input.id() == output.id()));
     if clash {
-        return Err(invalid(ctx, format!("节点 `{}` 有一个编号既是输入又是输出", node.name()),));
+        return Err(invalid(
+            ctx,
+            format!("节点 `{}` 有一个编号既是输入又是输出", node.name()),
+        ));
     }
     Ok(())
 }

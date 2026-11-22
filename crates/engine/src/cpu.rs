@@ -1,6 +1,10 @@
 //! CPU 执行体：内核注册、参数绑定，以及解释一节点的执行器。
 
-use super::*;
+use crate::exec::{Device, Graph, Launch, Node, Operand, Stream};
+use crate::invalid;
+use crate::queue::{Buf, Executor, Queued, View, ViewMut, check_operands, enqueue};
+use diagnostic::Result;
+use std::fmt;
 
 /// 一段可执行的内核体：按节点名字登记，在绑定好的缓冲上就地计算。
 pub trait Program {
@@ -133,10 +137,13 @@ impl CpuExecutor {
     /// 登记一段内核体；同名已登记时返回 `Invalid`，而不是让后登记的那份静默顶替。
     pub fn register(&mut self, program: Box<dyn Program>) -> Result<()> {
         if self.position(program.name()).is_ok() {
-            return Err(invalid("engine::CpuExecutor::register", format!(
+            return Err(invalid(
+                "engine::CpuExecutor::register",
+                format!(
                     "内核 `{}` 已登记：重名会让「哪一份在跑」变成一个运行期问题",
                     program.name()
-                ),));
+                ),
+            ));
         }
         self.programs.push(program);
         Ok(())
@@ -191,9 +198,7 @@ impl CpuExecutor {
         self.programs
             .iter()
             .position(|program| program.name() == name)
-            .ok_or_else(|| {
-                invalid("engine::CpuExecutor::run", format!("内核 `{name}` 未登记"))
-            })
+            .ok_or_else(|| invalid("engine::CpuExecutor::run", format!("内核 `{name}` 未登记")))
     }
 
     /// 节点自己的操作数约束：每个编号都要已绑定，且输入与输出不能是同一个编号。

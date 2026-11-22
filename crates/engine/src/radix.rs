@@ -1,6 +1,7 @@
 //! 满块前缀树：[`Radix`] 把「写满的一页」登记成一条边，跨请求复用同一段前缀的 KV。
 
-use diagnostic::{Code, Error, Result};
+use crate::invalid;
+use diagnostic::{Error, Result};
 
 use crate::kv::{Page, Pager};
 
@@ -276,5 +277,8 @@ fn zero_page() -> Error {
 }
 
 fn beyond(block: usize, len: usize) -> Error {
-    invalid("engine::radix::Radix", format!("第 {block} 块超出现有 {len} 个 token：不满一页的尾巴不登记"),)
+    invalid(
+        "engine::radix::Radix",
+        format!("第 {block} 块超出现有 {len} 个 token：不满一页的尾巴不登记"),
+    )
 }
