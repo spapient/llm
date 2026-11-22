@@ -64,7 +64,7 @@ fn every_source_passes_the_static_gate() {
 
     for path in &production {
         if mounted_tests.contains(path) {
-            scan_integration_test(root, path, &mut bad);
+            scan_integration_test(&gate, root, path, &mut bad);
         } else {
             scan_production(&gate, root, path, &mut bad, &mut live);
         }
@@ -73,7 +73,7 @@ fn every_source_passes_the_static_gate() {
         scan_build_script(&gate, root, path, &mut bad, &mut live);
     }
     for path in &integration_tests {
-        scan_integration_test(root, path, &mut bad);
+        scan_integration_test(&gate, root, path, &mut bad);
     }
 
     bad.extend(gate.stale(&live));
@@ -150,12 +150,23 @@ fn scan_build_script(
     }
 }
 
-/// 外部集成测试：只守门词法可解析；生产限值不套到测试代码上。
-fn scan_integration_test(root: &Path, path: &Path, bad: &mut Vec<String>) {
+/// 外部集成测试与 `#[path]` 挂进 `src` 的测试模块。
+///
+/// 函数长度与圈复杂度是生产面的度量，不套到测试代码上；但**文件行数受
+/// [`Gate::test_limit`] 管**——测试巨石和口袋文件是同一个病：一个文件里躺着几十条互不
+/// 相干的用例，改一条得先读懂全部。
+fn scan_integration_test(gate: &Gate, root: &Path, path: &Path, bad: &mut Vec<String>) {
     let name = label(root, path);
     let raw = std::fs::read_to_string(path).expect("read integration test");
     if let Err(err) = lex::parse(&raw) {
         bad.push(format!("{name}: 词法错误 {err:?}"));
+    }
+    let lines = raw.lines().count();
+    if lines > gate.test_limit() {
+        bad.push(format!(
+            "{name}: 测试文件 {lines} 行超过上限 {}——按主题拆成 `tests/<主题>/` 下的多个模块",
+            gate.test_limit()
+        ));
     }
 }
 
