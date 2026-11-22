@@ -52,24 +52,11 @@
 
 pub mod decl;
 
-// 内核与神经算子各自成 crate（分层见 `docs/ARCHITECTURE.md` §二）：`op` 只留声明层与注册表。
-// 用 `pub use` 把两个 crate 的模块与别名整体搬回本 crate 根，12 个下游 crate 的
-// `op::gemv::…` / `op::conv::…` / `op::gemv_f32` 路径零改动——门面是路径的承诺，不是再实现。
-pub use llm_conv::{
-    Scalar, adaptive_pool, avg_pool2d, batch_norm, conv2d, decode_attention, group_norm,
-    instance_norm, interpolate, layer_norm, max_pool1d, max_pool2d, scan_f32,
-};
-pub use llm_conv::{attention, classic, conv, deconv, scan};
-pub use llm_gemm::{
-    activation, dequant, elementwise, fast, gemm, gemv, matmul, norm, reduce, unary,
-};
-pub use llm_gemm::{
-    add_f32, dequant_i2, dequant_i4, dequant_i8, div_f32, embed_f32, exp_f32, gelu_f32, gemm_f32,
-    gemm_i2, gemm_i4, gemm_i8, gemv_f32, gemv_i2, gemv_i4, gemv_i8, hard_sigmoid_f32,
-    leaky_relu_f32, log_f32, matmul_i8, max_f32, min_f32, mul_f32, reduce_max_f32, reduce_sum_f32,
-    relu_f32, residual_add_f32, rmsnorm_f32, rope_f32, scale_f32, sigmoid_f32, silu_f32,
-    softmax_f32, sub_f32, tanh_f32,
-};
+// 本 crate 只有声明层与注册表：内核族与神经算子在 `nn`（分层见 `docs/ARCHITECTURE.md` §二）。
+// 这里曾经用 `pub use` 把两个内核 crate 整体搬到本 crate 根做门面；门面把「路径的承诺」押在了
+// 一个不拥有实现的 crate 上，于是 `op` 依赖 `gemm`/`conv`，而 `conv` 又依赖 `gemm`，
+// 想给内核族找一条通向 `nn` 的路就会撞上 `op → nn → op`。合并后路径归实现方所有，
+// 下游写 `nn::gemv_f32` / `nn::conv2d`，本 crate 不再转发任何内核符号。
 
 // 契约层（签名、布局、模板词法、代价表达式、语义模型、样本、算子契约）在 `spec`：
 // 这一层只回答"算子是什么"，被 `gemm` / `conv` / `op` 三方同时依赖而不成环。
