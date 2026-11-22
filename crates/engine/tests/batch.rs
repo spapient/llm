@@ -692,3 +692,40 @@ fn an_empty_batch_has_nothing_to_round() {
     let batch = Batch::new(pool(4, 4));
     assert_eq!(batch.round(Budget::unlimited()), Verdict::Idle);
 }
+
+/// E13 前缀登记随写入推进而不是重扫（`#[ignore]` 实测：
+/// `cargo test -p llm-engine --lib -- e13_prefix_settle --release --ignored --nocapture`）。
+///
+/// 一次预填充写 P 行，逐行 `write_kv`：块 `b` 在行 `(b+1)·页宽` 落定时登记。若每次写入都从 0
+/// 重扫，行走次数是 `Σ_t ⌊t/页宽⌋ ≈ P²/(2·页宽)`；只登记真新的块则每行至多一次，共 `O(P)`。
+/// 这里量两种页宽下的预填充墙钟，看它随 P 线性还是平方增长。
+#[test]
+#[ignore = "E13 前缀登记：cargo test -p llm-engine --lib -- e13_prefix_settle --release --ignored --nocapture"]
+fn e13_prefix_settle() {
+    let width = 16usize;
+    for prompt in [256usize, 512, 1024, 2048] {
+        let pages = prompt / width + 4;
+        let mut batch = Batch::new(pool(pages, width));
+        let tokens: Vec<u32> = (0..prompt as u32).collect();
+        batch
+            .admit(sequence_with(1, &tokens, 1, width))
+            .expect("准入");
+        batch.reserve(1, prompt).expect("预留页");
+        let started = std::time::Instant::now();
+        for row in 0..prompt {
+            batch.write_kv(1, row, &[0.0; 2]).expect("写一行");
+        }
+        let elapsed = started.elapsed();
+        assert_eq!(
+            batch.scheduler().cached_blocks(),
+            prompt / width,
+            "整段提示的每一块都应登记：{prompt} token"
+        );
+        println!(
+            "E13 预填充 prompt={prompt:<6} 块={:<4} 每次写入={:.1} ns 总计={:?}",
+            prompt / width,
+            elapsed.as_nanos() as f64 / prompt as f64,
+            elapsed
+        );
+    }
+}
