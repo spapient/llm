@@ -44,7 +44,9 @@ pub(crate) fn public_type_names(text: &str) -> BTreeSet<&str> {
         }
         if is_type_macro_open(trimmed) {
             match inline_type_macro_arg(trimmed) {
-                Some(name) => names.insert(name),
+                Some(name) => {
+                    names.insert(name);
+                }
                 None => in_macro_block = true,
             }
             continue;
