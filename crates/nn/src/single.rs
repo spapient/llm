@@ -584,9 +584,5 @@ impl Contract for MatMul {
 }
 
 #[cfg(test)]
-#[path = "../tests/support/pointwise_tests.rs"]
-mod tests;
-
-#[cfg(test)]
 #[path = "../tests/single_tests.rs"]
 mod single_tests;

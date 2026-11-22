@@ -407,10 +407,6 @@ impl Contract for Linear {
 }
 
 #[cfg(test)]
-#[path = "../tests/param_role_tests.rs"]
-mod param_role_tests;
-
-#[cfg(test)]
 #[path = "../tests/lib_tests.rs"]
 mod tests;
 

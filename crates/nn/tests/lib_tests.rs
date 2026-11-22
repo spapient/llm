@@ -1,3 +1,9 @@
+//! crate 表面（`src/lib.rs` + `src/declare.rs` 的公开契约）：声明式 spec 宏在定义期就拒掉
+//! 不认识的操作数、参数角色的闭集与它派生的两条判定、以及重导出面本身。
+//!
+//! `ParamRole` 的动作原先在 `tests/param_role_tests.rs`：两文件挂的是**同一个模块**（`super::*`
+//! 都是 crate 根），分开只换来一次跳转，不换来隔离，故并到这里。
+
 use super::*;
 
 /// 只声明了输出、没有输入宽度：层合法，但没有可计价的形状。
@@ -176,4 +182,35 @@ fn a_projection_layer_declares_the_trainable_role() {
     let layer = Linear::new("blk.0.attn_q", 8, 4).expect("合法");
     assert_eq!(layer.spca().role(), ParamRole::Trainable);
     assert!(!layer.spca().role().wd_exempt());
+}
+
+/// 闭集四个角色都是参数槽：都进入可训练参数表。
+#[test]
+fn every_role_is_a_parameter_slot() {
+    for role in [
+        ParamRole::Trainable,
+        ParamRole::Bias,
+        ParamRole::Norm,
+        ParamRole::Embedding,
+    ] {
+        assert!(role.trainable(), "{role:?} 应当是可训练参数槽");
+    }
+}
+
+/// 权重衰减豁免只从角色派生：偏置、归一化系数与嵌入表不衰减，投影权重衰减。
+#[test]
+fn weight_decay_exemption_follows_the_role() {
+    assert!(!ParamRole::Trainable.wd_exempt(), "投影权重参与衰减");
+    for exempt in [ParamRole::Bias, ParamRole::Norm, ParamRole::Embedding] {
+        assert!(exempt.wd_exempt(), "{exempt:?} 应豁免权重衰减");
+    }
+}
+
+/// 短名与变体一一对应：诊断、快照与报告按这个名字对齐。
+#[test]
+fn short_names_match_the_variants() {
+    assert_eq!(ParamRole::Trainable.as_str(), "trainable");
+    assert_eq!(ParamRole::Bias.as_str(), "bias");
+    assert_eq!(ParamRole::Norm.as_str(), "norm");
+    assert_eq!(ParamRole::Embedding.as_str(), "embedding");
 }

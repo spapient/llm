@@ -1,9 +1,15 @@
-//! 单算子层的用例：逐元素/归一化/激活/查表/矩阵乘共用一条契约——
-//! 层不写第二份流量常数，下界一律由算子语义表推出。
+//! `src/single.rs` 的全部用例：逐元素/归一化/激活、归约、查表、矩阵乘（精度与档位）、
+//! 前缀扫描与反量化共用一条契约——层不写第二份流量常数，下界一律由算子语义表推出。
+//!
+//! 原先这里分成两个文件（本文件与 `tests/support/pointwise_tests.rs`），理由只有一个：
+//! 逐元素层那时住在 `src/pointwise.rs`，测试必须跟着它的模块树走。该文件已被 `single.rs`
+//! 吸收，而两者挂载的是**同一个模块**（`super::*` 是同一份 prelude），于是分开不再换来任何
+//! 隔离，只换来两个同义助手（`assert_elementwise` 与 `assert_layer`）。现在助手只剩一个：
+//! 强的那个是弱的严格超集，多查了名字、形状与非零流量。
 
 use super::*;
 
-use crate::{Bounds, Contract};
+use crate::{Bounds, Contract, ParamRole};
 use diagnostic::Code;
 
 #[test]
@@ -99,40 +105,87 @@ fn a_zero_dimension_matmul_is_rejected() {
     assert_eq!(MatMul::new("x", 16, 0).unwrap_err().code(), Code::Invalid);
 }
 
+/// 单轴层与矩阵乘层都必须能当 `&dyn Contract` 用：装配侧只认这个视角。
 #[test]
-fn a_matmul_works_as_a_trait_object() {
-    let layer: &dyn Contract = &MatMul::new("proj", 16, 12).expect("合法");
-    assert_eq!(layer.output().dims(), [16, 12]);
-    assert!(layer.bounds().expect("合法").is_some());
+fn layers_work_as_trait_objects() {
+    let axis: &dyn Contract = &Silu::new("mlp.silu", 64).expect("合法");
+    assert_eq!(axis.output().dims(), [64]);
+    assert!(axis.bounds().expect("合法").is_some());
+
+    let matmul: &dyn Contract = &MatMul::new("proj", 16, 12).expect("合法");
+    assert_eq!(matmul.output().dims(), [16, 12]);
+    assert!(matmul.bounds().expect("合法").is_some());
 }
 
-/// 单轴层的通用断言：绑定的算子名、以及与语义表逐项相等的下界。
-fn assert_elementwise<L: Contract>(layer: &L, op: &str, len: usize) {
+/// 权重衰减豁免与可训练判定都从角色派生：归一化的系数不衰减，激活没有参数轴之外的例外。
+#[test]
+fn a_norm_layer_declares_the_norm_role_and_an_activation_the_trainable_role() {
+    let norm = RmsNorm::new("blk.0.norm", 128).expect("合法");
+    assert_eq!(norm.spca().role(), ParamRole::Norm);
+    assert!(norm.spca().role().wd_exempt());
+
+    let activation = Gelu::new("mlp.gelu", 128).expect("合法");
+    assert_eq!(activation.spca().role(), ParamRole::Trainable);
+}
+
+/// 单轴层的通用断言：名字、形状、绑定的算子名，以及与语义表逐项相等的下界、非零的两笔流量。
+fn assert_layer<L: Contract>(layer: &L, name: &str, op: &str, len: usize) {
+    assert_eq!(layer.name(), name);
+    assert_eq!(layer.output().dims(), [len]);
     assert_eq!(layer.spca().ops(), [op]);
     let floor = layer.bounds().expect("单轴形状合法").expect("有算子");
+    // 单轴算子不写第二份公式：下界必须与直接问语义表逐项相等。
     assert_eq!(
         floor,
         Bounds::of_ctx(op, len, 1).expect("同一份语义"),
         "{op} 的下界来自算子语义表"
     );
+    assert!(floor.read() > 0 && floor.write() > 0, "{op} 有读有写");
 }
 
-/// 除 / 减 / 取大 / 取小 / 指数 / 对数六个算子此前在 `op` 注册表里有、在层集里没有：
-/// 元素级 API 的主体缺了一角。这条用例把它们钉住，同时验证与 `add_f32` / `gelu_f32` 同价骨架无关——
-/// 层不写第二份公式，下界一律由各自的语义表给出。
-#[test]
-fn the_six_elementwise_operators_that_had_no_layer_now_have_one() {
-    assert_elementwise(&Sub::new("blk.0.sub", 128).expect("合法"), Sub::OP, 128);
-    assert_elementwise(&Div::new("blk.0.div", 128).expect("合法"), Div::OP, 128);
-    assert_elementwise(&Max::new("blk.0.max", 128).expect("合法"), Max::OP, 128);
-    assert_elementwise(&Min::new("blk.0.min", 128).expect("合法"), Min::OP, 128);
-    assert_elementwise(&Exp::new("blk.0.exp", 128).expect("合法"), Exp::OP, 128);
-    assert_elementwise(&Log::new("blk.0.log", 128).expect("合法"), Log::OP, 128);
+/// 每个层只剩「类型 + 名字 + 长度」三项事实：构造、名字、算子名、形状、下界都由这两行给出，
+/// 于是加一个单轴层不必再抄五遍同样的断言。
+macro_rules! layer {
+    ($ty:ident, $name:literal, $len:literal) => {
+        assert_layer(
+            &$ty::new($name, $len).expect("合法"),
+            $name,
+            $ty::OP,
+            $len,
+        )
+    };
 }
 
-/// 六个新层沿用同一条「零长度拒绝」口径，不留一个可以构造出空轴的后门。
+/// 逐元素 / 归一化 / 激活层各自绑定自己的算子、各自从语义表取价。
+/// 这张清单也是「哪些层存在」的唯一一处：加层时这里必须多一行，否则新层没有任何断言。
 #[test]
-fn a_zero_length_elementwise_tensor_is_rejected() {
+fn every_pointwise_layer_binds_its_declared_operator() {
+    layer!(RmsNorm, "blk.0.norm", 128);
+    layer!(Softmax, "attn.softmax", 64);
+    layer!(Gelu, "mlp.gelu", 128);
+    layer!(Silu, "mlp.silu", 128);
+    layer!(LeakyRelu, "act.leaky", 128);
+    layer!(HardSigmoid, "act.hard", 128);
+    layer!(Rope, "attn.rope", 128);
+    layer!(Scale, "proj.scale", 128);
+    layer!(Add, "res.add", 128);
+    layer!(Mul, "gate.mul", 128);
+    layer!(ResidualAdd, "residual.add", 128);
+    // 除 / 减 / 取大 / 取小 / 指数 / 对数此前算子表里有、层集里没有：并进来一并钉住。
+    layer!(Sub, "blk.0.sub", 128);
+    layer!(Div, "blk.0.div", 128);
+    layer!(Max, "blk.0.max", 128);
+    layer!(Min, "blk.0.min", 128);
+    layer!(Exp, "blk.0.exp", 128);
+    layer!(Log, "blk.0.log", 128);
+}
+
+/// 所有单轴层沿用同一条「零长度拒绝」口径，不留一个可以构造出空轴的后门。
+#[test]
+fn a_zero_length_axis_tensor_is_rejected() {
+    assert_eq!(Gelu::new("x", 0).unwrap_err().code(), Code::Invalid);
+    assert_eq!(Silu::new("x", 0).unwrap_err().code(), Code::Invalid);
+    assert_eq!(RmsNorm::new("x", 0).unwrap_err().code(), Code::Invalid);
     assert_eq!(Sub::new("x", 0).unwrap_err().code(), Code::Invalid);
     assert_eq!(Div::new("x", 0).unwrap_err().code(), Code::Invalid);
     assert_eq!(Max::new("x", 0).unwrap_err().code(), Code::Invalid);
