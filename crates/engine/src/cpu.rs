@@ -133,14 +133,10 @@ impl CpuExecutor {
     /// 登记一段内核体；同名已登记时返回 `Invalid`，而不是让后登记的那份静默顶替。
     pub fn register(&mut self, program: Box<dyn Program>) -> Result<()> {
         if self.position(program.name()).is_ok() {
-            return Err(Error::new(
-                Code::Invalid,
-                format!(
+            return Err(invalid("engine::CpuExecutor::register", format!(
                     "内核 `{}` 已登记：重名会让「哪一份在跑」变成一个运行期问题",
                     program.name()
-                ),
-            )
-            .with("engine::CpuExecutor::register"));
+                ),));
         }
         self.programs.push(program);
         Ok(())
@@ -196,8 +192,7 @@ impl CpuExecutor {
             .iter()
             .position(|program| program.name() == name)
             .ok_or_else(|| {
-                Error::new(Code::Invalid, format!("内核 `{name}` 未登记"))
-                    .with("engine::CpuExecutor::run")
+                invalid("engine::CpuExecutor::run", format!("内核 `{name}` 未登记"))
             })
     }
 

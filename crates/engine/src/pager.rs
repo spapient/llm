@@ -19,8 +19,7 @@ impl Pager {
     pub fn new(cache: Cache, width: usize) -> Result<Self> {
         if width == 0 {
             return Err(
-                Error::new(Code::Invalid, "KV 行宽不能为 0：页池需要能放下至少一个元素")
-                    .with("engine::kv::Pager::new"),
+                invalid("engine::kv::Pager::new", "KV 行宽不能为 0：页池需要能放下至少一个元素"),
             );
         }
         let elements = cache
@@ -28,23 +27,15 @@ impl Pager {
             .checked_mul(cache.page_size())
             .and_then(|positions| positions.checked_mul(width))
             .ok_or_else(|| {
-                Error::new(
-                    Code::Invalid,
-                    format!(
+                invalid("engine::kv::Pager::new", format!(
                         "KV 页池容量溢出：{} 页 × {} 行 × 行宽 {width}",
                         cache.total(),
                         cache.page_size()
-                    ),
-                )
-                .with("engine::kv::Pager::new")
+                    ),)
             })?;
         let mut data = Vec::new();
         data.try_reserve_exact(elements).map_err(|_| {
-            Error::new(
-                Code::Invalid,
-                format!("KV 页池需要 {elements} 个 f32：超出可用内存"),
-            )
-            .with("engine::kv::Pager::new")
+            invalid("engine::kv::Pager::new", format!("KV 页池需要 {elements} 个 f32：超出可用内存"),)
         })?;
         data.resize(elements, 0.0);
         Ok(Self { cache, width, data })
@@ -115,15 +106,11 @@ impl Pager {
     /// 长度不符（半行会让同一页里的行错位），或同 [`Pager::row`]。
     pub fn write(&mut self, slot: Slot, values: &[f32]) -> Result<()> {
         if values.len() != self.width {
-            return Err(Error::new(
-                Code::Invalid,
-                format!(
+            return Err(invalid("engine::kv::Pager::write", format!(
                     "KV 行宽 {} 与实际写入的 {} 个元素不符",
                     self.width,
                     values.len()
-                ),
-            )
-            .with("engine::kv::Pager::write"));
+                ),));
         }
         self.row_mut(slot)?.copy_from_slice(values);
         Ok(())
@@ -157,25 +144,17 @@ impl Pager {
     /// 一行的元素区间；页必须活着，偏移必须落在页内。
     fn span(&self, slot: Slot) -> Result<std::ops::Range<usize>> {
         if !self.cache.is_live(slot.page()) {
-            return Err(Error::new(
-                Code::Invalid,
-                format!(
+            return Err(invalid("engine::kv::Pager", format!(
                     "页 {} 不在借出状态：它已经归还（或从未分配），这一行不再属于任何序列",
                     slot.page().id()
-                ),
-            )
-            .with("engine::kv::Pager"));
+                ),));
         }
         if slot.offset() >= self.cache.page_size() {
-            return Err(Error::new(
-                Code::Invalid,
-                format!(
+            return Err(invalid("engine::kv::Pager", format!(
                     "页内偏移 {} 超出页宽 {}",
                     slot.offset(),
                     self.cache.page_size()
-                ),
-            )
-            .with("engine::kv::Pager"));
+                ),));
         }
         let start = self.start(slot.page(), slot.offset());
         Ok(start..start + self.width)

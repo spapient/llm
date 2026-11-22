@@ -57,23 +57,18 @@ impl Sequence {
         stream: crate::exec::Stream,
     ) -> Result<Self> {
         if page_size == 0 {
-            return Err(Error::new(Code::Invalid, "页宽不能为 0").with("engine::Sequence::new"));
+            return Err(invalid("engine::Sequence::new", "页宽不能为 0"));
         }
         if max_new == 0 {
             return Err(
-                Error::new(Code::Invalid, "max_new 不能为 0（否则请求一进来就结束）")
-                    .with("engine::Sequence::new"),
+                invalid("engine::Sequence::new", "max_new 不能为 0（否则请求一进来就结束）"),
             );
         }
         let prompt_len = prompt.len();
         // 上下文长度在整条生命周期里只增不减，`len()` 与 `len() + 1` 都不该溢出：一次校验
         // 比每处调用点各写一个 `saturating_add` 便宜，也避免“同一族量一处回绕、一处饱和”。
         if prompt_len.checked_add(max_new).is_none() {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("prompt_len {prompt_len} 加 max_new {max_new} 溢出：上下文长度装不下"),
-            )
-            .with("engine::Sequence::new"));
+            return Err(invalid("engine::Sequence::new", format!("prompt_len {prompt_len} 加 max_new {max_new} 溢出：上下文长度装不下"),));
         }
         Ok(Self {
             id,
@@ -138,14 +133,10 @@ impl Sequence {
     /// `max_new` 已经记满时返回 `invalid`。
     pub(crate) fn push_token(&mut self, token: u32) -> Result<()> {
         if self.all.len() - self.prompt_len >= self.max_new {
-            return Err(Error::new(
-                Code::Invalid,
-                format!(
+            return Err(invalid("engine::Sequence::push_token", format!(
                     "序列 {} 已经记满 {} 个生成 token：再多一个就超出上限",
                     self.id, self.max_new
-                ),
-            )
-            .with("engine::Sequence::push_token"));
+                ),));
         }
         self.all.push(token);
         Ok(())
@@ -172,8 +163,7 @@ impl Sequence {
     pub fn stop(&mut self) -> Result<()> {
         if self.state == State::Done {
             return Err(
-                Error::new(Code::Invalid, format!("序列 {} 已结束", self.id))
-                    .with("engine::Sequence::stop"),
+                invalid("engine::Sequence::stop", format!("序列 {} 已结束", self.id)),
             );
         }
         self.state = State::Done;
@@ -183,7 +173,7 @@ impl Sequence {
     /// 推进一个 token；已经结束时再推进是调用方的 bug。
     pub(crate) fn step(&mut self) -> Result<()> {
         if self.state == State::Done {
-            return Err(Error::new(Code::Invalid, "序列已结束").with("engine::Sequence::step"));
+            return Err(invalid("engine::Sequence::step", "序列已结束"));
         }
         self.state = State::Running;
         self.produced += 1;
@@ -203,14 +193,10 @@ impl Sequence {
     /// `to` 超出 `0..=prompt_len` 或比当前已算位置更浅时返回 `invalid`。
     pub(crate) fn prefill_to(&mut self, to: usize) -> Result<()> {
         if to > self.prompt_len || to < self.prefilled {
-            return Err(Error::new(
-                Code::Invalid,
-                format!(
+            return Err(invalid("engine::Sequence::prefill_to", format!(
                     "预填充位置 {to} 不在 {}..={} 之内（不许倒退、不许越过提示段）",
                     self.prefilled, self.prompt_len
-                ),
-            )
-            .with("engine::Sequence::prefill_to"));
+                ),));
         }
         self.prefilled = to;
         Ok(())

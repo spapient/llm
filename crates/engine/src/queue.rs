@@ -204,11 +204,7 @@ pub fn enqueue(queue: &mut Vec<Queued>, graph: &Graph, stream: Stream) {
 pub fn check_operands(node: &Node, unbound: impl Fn(u32) -> bool, ctx: &'static str) -> Result<()> {
     for operand in node.inputs().iter().chain(node.outputs()) {
         if unbound(operand.id()) {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("节点 `{}` 的操作数 {} 未绑定", node.name(), operand.id()),
-            )
-            .with(ctx));
+            return Err(invalid(ctx, format!("节点 `{}` 的操作数 {} 未绑定", node.name(), operand.id()),));
         }
     }
     let clash = node
@@ -216,11 +212,7 @@ pub fn check_operands(node: &Node, unbound: impl Fn(u32) -> bool, ctx: &'static 
         .iter()
         .any(|output| node.inputs().iter().any(|input| input.id() == output.id()));
     if clash {
-        return Err(Error::new(
-            Code::Invalid,
-            format!("节点 `{}` 有一个编号既是输入又是输出", node.name()),
-        )
-        .with(ctx));
+        return Err(invalid(ctx, format!("节点 `{}` 有一个编号既是输入又是输出", node.name()),));
     }
     Ok(())
 }

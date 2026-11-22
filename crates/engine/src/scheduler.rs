@@ -161,16 +161,11 @@ impl Scheduler {
     pub(super) fn check_admissible(&self, sequence: &Sequence) -> Result<()> {
         if self.position(sequence.id()).is_some() {
             return Err(
-                Error::new(Code::Invalid, format!("序列 {} 已经在批里", sequence.id()))
-                    .with("engine::Scheduler::admit"),
+                invalid("engine::Scheduler::admit", format!("序列 {} 已经在批里", sequence.id())),
             );
         }
         if sequence.is_done() {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("序列 {} 已结束，准入只会白占页", sequence.id()),
-            )
-            .with("engine::Scheduler::admit"));
+            return Err(invalid("engine::Scheduler::admit", format!("序列 {} 已结束，准入只会白占页", sequence.id()),));
         }
         self.check_width(sequence, "engine::Scheduler::admit")
     }

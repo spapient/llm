@@ -272,13 +272,9 @@ pub(super) fn span_of(tokens: &[u32], page_size: usize, level: usize) -> Result<
 }
 
 fn zero_page() -> Error {
-    Error::new(Code::Invalid, "页宽不能为 0：前缀按整页切块").with("engine::radix::Radix")
+    invalid("engine::radix::Radix", "页宽不能为 0：前缀按整页切块")
 }
 
 fn beyond(block: usize, len: usize) -> Error {
-    Error::new(
-        Code::Invalid,
-        format!("第 {block} 块超出现有 {len} 个 token：不满一页的尾巴不登记"),
-    )
-    .with("engine::radix::Radix")
+    invalid("engine::radix::Radix", format!("第 {block} 块超出现有 {len} 个 token：不满一页的尾巴不登记"),)
 }

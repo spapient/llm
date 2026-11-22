@@ -23,16 +23,11 @@ impl Scheduler {
     /// 生成的前置判据：序列必须在批里、还没结束、页宽与页池一致。
     pub(super) fn check_advance(&self, sequence: &Sequence) -> Result<usize> {
         let idx = self.position(sequence.id()).ok_or_else(|| {
-            Error::new(
-                Code::Invalid,
-                format!("序列 {} 不在批里：生成必须先 `admit`", sequence.id()),
-            )
-            .with("engine::Scheduler::advance")
+            invalid("engine::Scheduler::advance", format!("序列 {} 不在批里：生成必须先 `admit`", sequence.id()),)
         })?;
         if sequence.is_done() {
             return Err(
-                Error::new(Code::Invalid, format!("序列 {} 已结束", sequence.id()))
-                    .with("engine::Scheduler::advance"),
+                invalid("engine::Scheduler::advance", format!("序列 {} 已结束", sequence.id())),
             );
         }
         self.check_width(sequence, "engine::Scheduler::advance")?;
@@ -129,11 +124,7 @@ impl Scheduler {
     /// 序列不在批里，或那个 token 还没有页（页表只盖住已经生成的位置）。
     pub fn slot(&self, id: u64, token: usize) -> Result<crate::kv::Slot> {
         let table = self.pages_of(id).ok_or_else(|| {
-            Error::new(
-                Code::Invalid,
-                format!("序列 {id} 不在批里：先 `admit` 再问页位置"),
-            )
-            .with("engine::Scheduler::slot")
+            invalid("engine::Scheduler::slot", format!("序列 {id} 不在批里：先 `admit` 再问页位置"),)
         })?;
         table.slot(token, self.pager.page_size())
     }
@@ -164,16 +155,11 @@ impl Scheduler {
     /// 序列不在批里或页宽为零（都算不出要几页）。
     pub fn reserve(&mut self, id: u64, rows: usize) -> Result<bool> {
         let Some(idx) = self.position(id) else {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("序列 {id} 不在批里：先 `admit`（或它已经 `finish`）"),
-            )
-            .with("engine::Scheduler::reserve"));
+            return Err(invalid("engine::Scheduler::reserve", format!("序列 {id} 不在批里：先 `admit`（或它已经 `finish`）"),));
         };
         let width = self.pager.page_size();
         if width == 0 {
-            return Err(Error::new(Code::Invalid, "页宽为零：算不出要几页")
-                .with("engine::Scheduler::reserve"));
+            return Err(invalid("engine::Scheduler::reserve", "页宽为零：算不出要几页"));
         }
         let needed = pages_for(rows, width);
         self.extend(idx, needed, "engine::Scheduler::reserve")
@@ -207,15 +193,11 @@ impl Scheduler {
         if sequence.page_size() == self.pager.page_size() {
             return Ok(());
         }
-        Err(Error::new(
-            Code::Invalid,
-            format!(
+        Err(invalid(site, format!(
                 "序列 {} 的页宽 {} 与页池的 {} 不一致：页数会算错",
                 sequence.id(),
                 sequence.page_size(),
                 self.pager.page_size()
-            ),
-        )
-        .with(site))
+            ),))
     }
 }

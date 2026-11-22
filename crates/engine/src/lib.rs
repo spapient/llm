@@ -68,6 +68,10 @@
 
 #![deny(unsafe_code)]
 
+mod cpu;
+mod pager;
+mod queue;
+
 pub mod batch;
 pub mod exec;
 pub mod ifb;
@@ -80,6 +84,14 @@ pub use batch::{Admission, Batch, SequenceOutcome};
 pub use ifb::{Budget, Candidate, Phase, Verdict, chunk, pack};
 pub use scheduler::Scheduler;
 pub use sequence::{Progress, Sequence, State};
+
+use diagnostic::{Code, Error};
+
+/// 构造一条 `Invalid` 诊断：`site` 是报错入口，于是"哪个入口"与"为什么"在同一个调用点写出来，
+/// 不必每个校验都写一遍 `Error::new(Code::Invalid, ..).with(..)` 的三行。
+pub(crate) fn invalid(site: &'static str, message: impl Into<String>) -> Error {
+    Error::new(Code::Invalid, message).with(site)
+}
 
 #[cfg(test)]
 #[path = "../tests/engine.rs"]

@@ -10,11 +10,7 @@ impl Batch {
     /// `id` 不在批里时返回 `invalid`。
     pub fn advance(&mut self, id: u64) -> Result<Progress> {
         let idx = self.position(id).ok_or_else(|| {
-            Error::new(
-                Code::Invalid,
-                format!("序列 {id} 不在批里：先 `admit`（或它已经 `finish`）"),
-            )
-            .with("engine::Batch::advance")
+            invalid("engine::Batch::advance", format!("序列 {id} 不在批里：先 `admit`（或它已经 `finish`）"),)
         })?;
         let Self {
             scheduler,
@@ -105,11 +101,7 @@ impl Batch {
     pub fn mark_prefilled(&mut self, id: u64, to: usize) -> Result<()> {
         self.sequence_mut(id)
             .ok_or_else(|| {
-                Error::new(
-                    Code::Invalid,
-                    format!("序列 {id} 不在批里：先 `admit`（或它已经 `finish`）"),
-                )
-                .with("engine::Batch::mark_prefilled")
+                invalid("engine::Batch::mark_prefilled", format!("序列 {id} 不在批里：先 `admit`（或它已经 `finish`）"),)
             })?
             .prefill_to(to)?;
         // 已算 `to` 个位置 ⇒ 行 0..to 落定，与写路径同一口径。
