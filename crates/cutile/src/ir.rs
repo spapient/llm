@@ -277,12 +277,8 @@ impl Kernel {
         for _parameter in kernel.params.iter().filter(|param| is_buffer(param.ty)) {
             let length = buffer_length_name(buffer_index);
             buffer_index += 1;
-            writeln!(
-                source,
-                "    if ({} > {}) return 1;",
-                kernel.extent, length
-            )
-            .expect("writing to String cannot fail");
+            writeln!(source, "    if ({} > {}) return 1;", kernel.extent, length)
+                .expect("writing to String cannot fail");
         }
         write!(
             source,
