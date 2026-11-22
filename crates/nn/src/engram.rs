@@ -163,14 +163,11 @@ impl<S: Scalar> Bypass<S> {
         })
     }
 
-    /// N-gram 阶 `N`。
-    pub fn order(&self) -> usize {
-        self.order
-    }
-
-    /// 残差强度。
-    pub fn gate(&self) -> S {
-        self.gate
+    crate::accessors! {
+        /// N-gram 阶 `N`。
+        order -> usize = order,
+        /// 残差强度。
+        gate -> S = gate,
     }
 
     /// 只读的表。
@@ -294,11 +291,7 @@ impl MemoryBlock {
         let spec = ContractSpec::new_with_role(
             name,
             Shape::new([width]),
-            vec![
-                Self::EMBED.to_string(),
-                Self::SCALE.to_string(),
-                Self::RESIDUAL.to_string(),
-            ],
+            [Self::EMBED, Self::SCALE, Self::RESIDUAL],
             ParamRole::Embedding,
         )?;
         Ok(Self {
@@ -311,29 +304,17 @@ impl MemoryBlock {
         })
     }
 
-    /// 隐藏宽度（本层的输入与输出宽度）。
-    pub fn width(&self) -> usize {
-        self.width
-    }
-
-    /// N-gram 阶 `N`。
-    pub fn order(&self) -> usize {
-        self.order
-    }
-
-    /// 槽哈希种子（与写表时同一把）。
-    pub fn seed(&self) -> u64 {
-        self.seed
-    }
-
-    /// 表槽数 `M`：驻留权重条目为 `[buckets, width]`。
-    pub fn buckets(&self) -> usize {
-        self.buckets
-    }
-
-    /// 门控强度 `γ`。
-    pub fn gate(&self) -> f32 {
-        self.gate
+    crate::accessors! {
+        /// 隐藏宽度（本层的输入与输出宽度）。
+        width -> usize = width,
+        /// N-gram 阶 `N`。
+        order -> usize = order,
+        /// 槽哈希种子（与写表时同一把）。
+        seed -> u64 = seed,
+        /// 表槽数 `M`：驻留权重条目为 `[buckets, width]`。
+        buckets -> usize = buckets,
+        /// 门控强度 `γ`。
+        gate -> f32 = gate,
     }
 }
 

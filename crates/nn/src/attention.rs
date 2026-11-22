@@ -71,19 +71,13 @@ impl Attention {
         })
     }
 
-    /// 序列长（轴 `s`）。
-    pub fn seq(&self) -> usize {
-        self.seq
-    }
-
-    /// 头宽（轴 `d`）。
-    pub fn head_dim(&self) -> usize {
-        self.head_dim
-    }
-
-    /// 选用的算法。
-    pub fn algo(&self) -> AttentionAlgo {
-        self.algo
+    crate::accessors! {
+        /// 序列长（轴 `s`）。
+        seq -> usize = seq,
+        /// 头宽（轴 `d`）。
+        head_dim -> usize = head_dim,
+        /// 选用的算法。
+        algo -> AttentionAlgo = algo,
     }
 }
 
@@ -204,27 +198,17 @@ impl AttentionBlock {
         algo: AttentionAlgo,
         format: WeightFormat,
     ) -> Result<ContractSpec> {
-        let mut ops: Vec<String> = Vec::new();
-        if let Some(projection) = format.operator() {
-            ops.push(projection.to_string());
-        }
-        ops.push(algo.operator().to_string());
+        let ops = format.operator().into_iter().chain([algo.operator()]);
         ContractSpec::new(name, Shape::new([hidden]), ops)
     }
 
-    /// 隐藏宽度（块的输入与输出宽度）。
-    pub fn hidden(&self) -> usize {
-        self.hidden
-    }
-
-    /// Q/K/V 投影宽度（= 头数 × 头宽）。
-    pub fn kv_width(&self) -> usize {
-        self.kv_width
-    }
-
-    /// 头宽。
-    pub fn head_dim(&self) -> usize {
-        self.head_dim
+    crate::accessors! {
+        /// 隐藏宽度（块的输入与输出宽度）。
+        hidden -> usize = hidden,
+        /// Q/K/V 投影宽度（= 头数 × 头宽）。
+        kv_width -> usize = kv_width,
+        /// 头宽。
+        head_dim -> usize = head_dim,
     }
 
     /// 头数：`kv_width / head_dim`；构造校验已保证整除，这里是纯派生，不再二次取余。
@@ -299,6 +283,70 @@ impl Contract for AttentionBlock {
             (Some(p), Some(a)) => Ok(Some(p.plus(a))),
             _ => Ok(None),
         }
+    }
+}
+
+/// 潜空间注意力层：KV 按 `d_c` 压缩存量，解耦 RoPE 键单头叠加。
+///
+/// 与 [`Attention`] 的区别只在 KV 的口径：本层不认识 `h · d_h` 的稠密宽度，只认识压缩宽度 `d_c`。
+/// 形状仍是 `[seq, d_c]`，头数进代价（行数摊成 `seq · h`），不进形状——这与算子
+/// `latent_attention_f32` 的几何完全一致：算子按压平行算，输出宽就是压缩宽度。
+///
+/// 上投影 `W^{UK}` / `W^{UV}` 不在本层：吸收式把它们折进查询与输出投影，稠密式则整块展开，
+/// 两种折法都在装配侧，层只管压缩存量与读法。
+#[crate::spec(name = $name, out = [$seq, $latent], ops = [$op])]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LatentAttention {
+    seq: usize,
+    latent: usize,
+    heads: usize,
+}
+
+impl LatentAttention {
+    /// 算子名。
+    pub const OPERATOR: &str = "latent_attention_f32";
+
+    /// 由层名、查询行数、压缩宽度与头数构造。
+    ///
+    /// # Errors
+    ///
+    /// `seq` / `latent` / `heads` 任一为零（[`Code::Invalid`]）；算子未注册或没有语义表
+    /// （[`ContractSpec::new`] 上报）。
+    pub fn new(name: impl Into<String>, seq: usize, latent: usize, heads: usize) -> Result<Self> {
+        for (label, value) in [("seq", seq), ("latent", latent), ("heads", heads)] {
+            if value == 0 {
+                return Err(Error::new(
+                    Code::Invalid,
+                    format!("潜空间注意力层 {label} 必须非零（{label} = {value}）"),
+                )
+                .with("nn::LatentAttention::new"));
+            }
+        }
+        Ok(Self {
+            spec: __layer_spec_LatentAttention!(name, seq, latent, Self::OPERATOR)?,
+            seq,
+            latent,
+            heads,
+        })
+    }
+
+    crate::accessors! {
+        /// 序列长度（轴 `s`）；摊平后喂给算子的行数是 `seq · heads`。
+        seq -> usize = seq,
+        /// 压缩宽度（轴 `c`），也是单头的键值宽度。
+        latent -> usize = latent,
+        /// 头数：不进形状，但行数与代价都按它摊开。
+        heads -> usize = heads,
+    }
+}
+
+impl Contract for LatentAttention {
+    spec_accessors!();
+
+    fn bounds(&self) -> BoundsResult {
+        // 行数是摊平后的 `seq · h`；宽度只认压缩宽度 `d_c`，解耦 RoPE 那段属于装配侧的几何，
+        // 由运行期行宽给出，层不假装知道它——否则下界会把上投影的活算进来，重复计价。
+        Bounds::of_op(Self::OPERATOR, self.seq * self.heads, self.latent).map(Some)
     }
 }
 

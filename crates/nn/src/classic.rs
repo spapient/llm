@@ -72,8 +72,11 @@ fn nonzero_channels(cin: usize, cout: usize, layer: &str) -> Result<()> {
     nonzero(cout, "cout", layer)?;
     Ok(())
 }
+#[path = "conv.rs"]
 mod conv;
+#[path = "norm.rs"]
 mod norm;
+#[path = "pool.rs"]
 mod pool;
 
 pub use conv::{Conv1d, Conv2d, ConvTranspose1d, ConvTranspose2d};

@@ -34,14 +34,11 @@ impl MatMul {
         Ok(Self { spec, rows, cols })
     }
 
-    /// 输出行数（轴 `m`）。
-    pub fn rows(&self) -> usize {
-        self.rows
-    }
-
-    /// 输出列数（轴 `n`）。
-    pub fn cols(&self) -> usize {
-        self.cols
+    crate::accessors! {
+        /// 输出行数（轴 `m`）。
+        rows -> usize = rows,
+        /// 输出列数（轴 `n`）。
+        cols -> usize = cols,
     }
 }
 

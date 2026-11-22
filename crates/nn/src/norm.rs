@@ -32,11 +32,7 @@ impl BatchNorm2d {
             eps,
             momentum,
         };
-        let spec = Spec::new(
-            name,
-            crate::Shape::new([channels]),
-            vec!["batch_norm_f32".to_string()],
-        )?;
+        let spec = Spec::new(name, crate::Shape::new([channels]), ["batch_norm_f32"])?;
         Ok(Self {
             spec,
             norm,
@@ -81,11 +77,7 @@ impl GroupNorm {
             channels,
             eps,
         };
-        let spec = Spec::new(
-            name,
-            crate::Shape::new([channels]),
-            vec!["group_norm_f32".to_string()],
-        )?;
+        let spec = Spec::new(name, crate::Shape::new([channels]), ["group_norm_f32"])?;
         Ok(Self {
             spec,
             norm,
@@ -126,11 +118,7 @@ impl InstanceNorm {
         nonzero(channels, "channels", layer)?;
         check_eps(eps, layer)?;
         let norm = OpInst { channels, eps };
-        let spec = Spec::new(
-            name,
-            crate::Shape::new([channels]),
-            vec!["instance_norm_f32".to_string()],
-        )?;
+        let spec = Spec::new(name, crate::Shape::new([channels]), ["instance_norm_f32"])?;
         Ok(Self {
             spec,
             norm,
@@ -171,11 +159,7 @@ impl LayerNorm {
         nonzero(width, "width", layer)?;
         check_eps(eps, layer)?;
         let norm = OpLayer { width, eps };
-        let spec = Spec::new(
-            name,
-            crate::Shape::new([width]),
-            vec!["layer_norm_f32".to_string()],
-        )?;
+        let spec = Spec::new(name, crate::Shape::new([width]), ["layer_norm_f32"])?;
         Ok(Self { spec, norm, width })
     }
 

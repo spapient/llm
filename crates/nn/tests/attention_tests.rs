@@ -40,3 +40,28 @@ fn a_zero_dimension_attention_is_rejected() {
         Code::Invalid
     );
 }
+
+#[test]
+fn latent_compresses_to_the_latent_width_and_spreads_rows_by_heads() {
+    let layer = LatentAttention::new("blk.0.latent", 16, 32, 4).expect("合法");
+    assert_eq!(layer.spca().ops(), [LatentAttention::OPERATOR]);
+    assert_eq!(layer.output().dims(), [16, 32]);
+    assert_eq!(layer.seq(), 16);
+    assert_eq!(layer.latent(), 32);
+    assert_eq!(layer.heads(), 4);
+    let dense = Attention::new("blk.0.attn", 16 * 4, 32, AttentionAlgo::Naive).expect("合法");
+    assert_eq!(
+        layer.bounds().expect("合法"),
+        dense.bounds().expect("合法"),
+        "行数摊成 seq · h 后与稠密同宽注意力同价"
+    );
+}
+
+#[test]
+fn a_zero_dimension_latent_attention_is_rejected() {
+    for (seq, latent, heads) in [(0, 32, 4), (16, 0, 4), (16, 32, 0)] {
+        let error = LatentAttention::new("x", seq, latent, heads).unwrap_err();
+        assert_eq!(error.code(), Code::Invalid);
+        assert!(error.to_string().contains("潜空间注意力层"), "{error}");
+    }
+}

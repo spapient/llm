@@ -43,28 +43,19 @@ impl Bounds {
 
     /// 由算子语义推出下界。
     ///
+    /// 两个宽度按 [`Model::projection`](op::model::Model::projection) 的口径给 `(输入宽度,
+    /// 输出宽度)`：算子自己的轴角色把它们翻成具名轴，层不必知道规约轴在表达式里叫 `m` 还是 `k`，
+    /// 也不必知道量化分组的派生轴怎么切。
+    ///
     /// # Errors
     ///
     /// - 算子没有语义表（[`Code::Missing`]）：声明了却不能对拍，也就无法定义它的下界；
-    /// - `(m, n)` 不是该算子的合法形状（[`Code::Invalid`]）：由算子自己的代价模型报出，
-    ///   例如量化 GEMV 的规约轴必须是分组因子的整数倍。
-    pub fn of_op(op: &str, m: usize, n: usize) -> Result<Self> {
-        let model = op::model(op).ok_or_else(|| {
-            Error::new(
-                Code::Missing,
-                format!("算子 `{op}` 没有语义表，无法推出下界"),
-            )
-            .with("nn::Bounds::of_op")
-        })?;
-        // 投影的 `(输入宽度, 输出宽度)` 由算子自己的轴角色翻译成具名轴：层不必知道规约轴在
-        // 表达式里叫 `m` 还是 `k`，也不必知道量化分组的派生轴怎么切。
-        let shape = model.projection(m, n)?;
-        let cost = (model.cost)(&shape)?;
-        Ok(Self {
-            read: cost.read,
-            write: cost.write,
-            flops: cost.flops,
-        })
+    /// - `(输入宽度, 输出宽度)` 不是该算子的合法形状（[`Code::Invalid`]）：由算子自己的代价模型
+    ///   报出，例如量化 GEMV 的规约轴必须是分组因子的整数倍。
+    pub fn of_op(op: &str, in_features: usize, out_features: usize) -> Result<Self> {
+        let model = model_of(op, "nn::Bounds::of_op")?;
+        let shape = model.projection(in_features, out_features)?;
+        Ok(Self::of_cost((model.cost)(&shape)?))
     }
 
     /// 通用形状入口：把 `(a, b)` 交给算子自己的 [`Model::shape_ctx`](op::model::Model::shape_ctx)
@@ -79,20 +70,10 @@ impl Bounds {
     /// - 算子没有语义表（[`Code::Missing`]）：声明了却不能对拍，也就无法定义下界；
     /// - 形状上下文构造失败，或代价模型拒绝该形状（错误原样上报并点名算子）。
     pub fn of_ctx(op: &str, a: usize, b: usize) -> Result<Self> {
-        let model = op::model(op).ok_or_else(|| {
-            Error::new(
-                Code::Missing,
-                format!("算子 `{op}` 没有语义表，无法推出下界"),
-            )
-            .with("nn::Bounds::of_ctx")
-        })?;
+        let model = model_of(op, "nn::Bounds::of_ctx")?;
         let shape = (model.shape_ctx)(a, b).map_err(|error| error.with("nn::Bounds::of_ctx"))?;
         let cost = (model.cost)(&shape).map_err(|error| error.with("nn::Bounds::of_ctx"))?;
-        Ok(Self {
-            read: cost.read,
-            write: cost.write,
-            flops: cost.flops,
-        })
+        Ok(Self::of_cost(cost))
     }
 
     /// 一串算子在**同一个形状**上的下界之和：组合层自己的下界。
@@ -107,13 +88,24 @@ impl Bounds {
     /// # Errors
     ///
     /// 任一算子没有语义表或该形状对它不合法时，错误原样上报并点名该算子。
-    pub fn of_ops(ops: &[String], m: usize, n: usize) -> Result<Self> {
+    pub fn of_ops(ops: &[String], in_features: usize, out_features: usize) -> Result<Self> {
         let mut total = Self::ZERO;
         for op in ops {
-            total = total
-                .plus(Self::of_op(op, m, n).map_err(|error| error.with(format!("算子 `{op}`")))?);
+            total = total.plus(
+                Self::of_op(op, in_features, out_features)
+                    .map_err(|error| error.with(format!("算子 `{op}`")))?,
+            );
         }
         Ok(total)
+    }
+
+    /// 由算子语义表给出的代价转成下界：字段一一对应，不做二次解释。
+    fn of_cost(cost: op::einsum::Cost) -> Self {
+        Self {
+            read: cost.read,
+            write: cost.write,
+            flops: cost.flops,
+        }
     }
 
     /// 两笔下界相加：一串层（或一个复合算子）的总下界。
@@ -125,14 +117,11 @@ impl Bounds {
         }
     }
 
-    /// 最少读入字节。
-    pub fn read(&self) -> u64 {
-        self.read
-    }
-
-    /// 最少写出字节。
-    pub fn write(&self) -> u64 {
-        self.write
+    crate::accessors! {
+        /// 最少读入字节。
+        read -> u64 = read,
+        /// 最少写出字节。
+        write -> u64 = write,
     }
 
     /// 最少流量（字节）：读与写合计的**派生**量。
@@ -159,6 +148,19 @@ impl Bounds {
     pub fn moves_within(self, other: Self) -> bool {
         self.read <= other.read && self.write <= other.write && self.flops <= other.flops
     }
+}
+
+/// 取算子的语义表：没有就报"声明了却不能对拍"，并点名是哪个入口要的。
+///
+/// 两个入口（投影 / 通用形状）的诊断只差这个点名，措辞收在这里一份。
+fn model_of(op_name: &str, site: &'static str) -> Result<op::model::Model> {
+    op::model(op_name).ok_or_else(|| {
+        Error::new(
+            Code::Missing,
+            format!("算子 `{op_name}` 没有语义表，无法推出下界"),
+        )
+        .with(site)
+    })
 }
 
 #[cfg(test)]

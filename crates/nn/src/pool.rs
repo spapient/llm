@@ -29,23 +29,16 @@ impl MaxPool1d {
         nonzero(c, "channels", layer)?;
         let pool = OpPool1 { k, s, p };
         let ol = pool.len(l)?;
-        let spec = Spec::new(
-            name,
-            crate::Shape::new([ol, c]),
-            vec!["max_pool1d_f32".to_string()],
-        )?;
+        let spec = Spec::new(name, crate::Shape::new([ol, c]), ["max_pool1d_f32"])?;
         Ok(Self { spec, pool, ol, c })
     }
 
-    /// 输出长度。
-    #[allow(clippy::len_without_is_empty)]
-    pub fn len(&self) -> usize {
-        self.ol
-    }
-
-    /// 通道数。
-    pub fn channels(&self) -> usize {
-        self.c
+    crate::accessors! {
+        /// 输出长度。
+        #[allow(clippy::len_without_is_empty)]
+        len -> usize = ol,
+        /// 通道数。
+        channels -> usize = c,
     }
 }
 
@@ -84,11 +77,7 @@ impl MaxPool2d {
         nonzero(c, "channels", layer)?;
         let pool = OpPool2 { geom };
         let (oh, ow) = pool.shape(h, w)?;
-        let spec = Spec::new(
-            name,
-            crate::Shape::new([oh, ow, c]),
-            vec!["max_pool2d_f32".to_string()],
-        )?;
+        let spec = Spec::new(name, crate::Shape::new([oh, ow, c]), ["max_pool2d_f32"])?;
         Ok(Self {
             spec,
             pool,
@@ -147,11 +136,7 @@ impl AvgPool2d {
             count_include_pad,
         };
         let (oh, ow) = pool.shape(h, w)?;
-        let spec = Spec::new(
-            name,
-            crate::Shape::new([oh, ow, c]),
-            vec!["avg_pool2d_f32".to_string()],
-        )?;
+        let spec = Spec::new(name, crate::Shape::new([oh, ow, c]), ["avg_pool2d_f32"])?;
         Ok(Self { spec, oh, ow, c })
     }
 
@@ -194,11 +179,7 @@ impl AdaptiveAvgPool2d {
         nonzero(ow, "ow", layer)?;
         nonzero(c, "channels", layer)?;
         let pool = OpAdaptive { oh, ow };
-        let spec = Spec::new(
-            name,
-            crate::Shape::new([oh, ow, c]),
-            vec!["adaptive_pool_f32".to_string()],
-        )?;
+        let spec = Spec::new(name, crate::Shape::new([oh, ow, c]), ["adaptive_pool_f32"])?;
         Ok(Self { spec, pool, c })
     }
 
@@ -247,11 +228,7 @@ impl Interpolate {
         nonzero(ow, "ow", layer)?;
         nonzero(c, "channels", layer)?;
         let interp = OpInterp { sampler, oh, ow };
-        let spec = Spec::new(
-            name,
-            crate::Shape::new([oh, ow, c]),
-            vec!["interpolate_f32".to_string()],
-        )?;
+        let spec = Spec::new(name, crate::Shape::new([oh, ow, c]), ["interpolate_f32"])?;
         Ok(Self { spec, interp, c })
     }
 

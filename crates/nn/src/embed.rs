@@ -41,19 +41,13 @@ impl Embedding {
         })
     }
 
-    /// 词表大小（权重表行数）。
-    pub fn vocab(&self) -> usize {
-        self.vocab
-    }
-
-    /// 行宽（每个 token 向量的维度）。
-    pub fn dim(&self) -> usize {
-        self.dim
-    }
-
-    /// 一次查表的 token 数。
-    pub fn tokens(&self) -> usize {
-        self.tokens
+    crate::accessors! {
+        /// 词表大小（权重表行数）。
+        vocab -> usize = vocab,
+        /// 行宽（每个 token 向量的维度）。
+        dim -> usize = dim,
+        /// 一次查表的 token 数。
+        tokens -> usize = tokens,
     }
 }
 

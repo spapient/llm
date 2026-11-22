@@ -26,8 +26,7 @@ impl Conv1d {
         l: usize,
     ) -> Result<Self> {
         let layer = "nn::Conv1d::new";
-        nonzero(cin, "cin", layer)?;
-        nonzero(cout, "cout", layer)?;
+        nonzero_channels(cin, cout, layer)?;
         let kernel = OpConv1::new(cin, cout, geom.kw, geom.sw, geom.pw);
         let ol = kernel.len(l)?;
         let spec = __layer_spec_Conv1d!(name, ol, cout, GEMM)?;
@@ -40,25 +39,16 @@ impl Conv1d {
         })
     }
 
-    /// 输入通道。
-    pub fn cin(&self) -> usize {
-        self.cin
-    }
-
-    /// 输出通道。
-    pub fn cout(&self) -> usize {
-        self.cout
-    }
-
-    /// 卷积几何。
-    pub fn geom(&self) -> ConvGeom {
-        self.geom
-    }
-
-    /// 输出长度。
-    #[allow(clippy::len_without_is_empty)]
-    pub fn len(&self) -> usize {
-        self.ol
+    crate::accessors! {
+        /// 输入通道。
+        cin -> usize = cin,
+        /// 输出通道。
+        cout -> usize = cout,
+        /// 卷积几何。
+        geom -> ConvGeom = geom,
+        /// 输出长度。
+        #[allow(clippy::len_without_is_empty)]
+        len -> usize = ol,
     }
 }
 
@@ -96,8 +86,7 @@ impl Conv2d {
         w: usize,
     ) -> Result<Self> {
         let layer = "nn::Conv2d::new";
-        nonzero(cin, "cin", layer)?;
-        nonzero(cout, "cout", layer)?;
+        nonzero_channels(cin, cout, layer)?;
         let kernel = OpConv2::new(cin, cout, geom);
         let (oh, ow) = kernel.shape(h, w)?;
         let spec = __layer_spec_Conv2d!(name, oh, ow, cout, CONV)?;
@@ -111,19 +100,13 @@ impl Conv2d {
         })
     }
 
-    /// 输入通道。
-    pub fn cin(&self) -> usize {
-        self.cin
-    }
-
-    /// 输出通道。
-    pub fn cout(&self) -> usize {
-        self.cout
-    }
-
-    /// 卷积几何。
-    pub fn geom(&self) -> ConvGeom {
-        self.geom
+    crate::accessors! {
+        /// 输入通道。
+        cin -> usize = cin,
+        /// 输出通道。
+        cout -> usize = cout,
+        /// 卷积几何。
+        geom -> ConvGeom = geom,
     }
 
     /// 输出边长 `(oh, ow)`。

@@ -47,7 +47,7 @@ impl AxisCore {
             OutputShape::Single => Shape::new([len]),
             OutputShape::Scalar => Shape::new([]),
         };
-        let spec = ContractSpec::new_with_role(name, shape, vec![op.to_string()], role)?;
+        let spec = ContractSpec::new_with_role(name, shape, [op], role)?;
         Ok(Self { spec, len })
     }
 
@@ -144,5 +144,23 @@ macro_rules! spec_accessors {
         fn spca(&self) -> &$crate::ContractSpec {
             &self.spec
         }
+    };
+}
+
+/// 只读访问器表：`名字 -> 类型 = 字段`，字段必填（访问器返字段值，不做计算）。
+///
+/// 一行一条的写法与 [`layer_delegate!`] 同源：层数多、访问器都是"返字段"，手写会把
+/// `pub fn x(&self) -> T { self.x }` 平铺成四行 × 每层数条。带计算的访问器（如 `bytes()`、
+/// `intensity()`）不进表，仍手写——表只收"读一个字段"这一种语义。
+#[doc(hidden)]
+#[macro_export]
+macro_rules! accessors {
+    ($($(#[$attr:meta])* $name:ident -> $ty:ty = $field:ident),+ $(,)?) => {
+        $(
+            $(#[$attr])*
+            pub fn $name(&self) -> $ty {
+                self.$field
+            }
+        )+
     };
 }

@@ -227,7 +227,8 @@ struct Ghost {
 impl Ghost {
     fn new(name: &str) -> Self {
         Self {
-            spec: ContractSpec::new(name, Shape::new([8]), Vec::new()).expect("空算子列表合法"),
+            spec: ContractSpec::new(name, Shape::new([8]), core::iter::empty::<&str>())
+                .expect("空算子列表合法"),
         }
     }
 }

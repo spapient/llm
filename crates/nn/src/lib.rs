@@ -54,7 +54,6 @@ mod bounds;
 mod embed;
 mod engram;
 mod format;
-mod latent;
 mod lm_head {
     //! `lm_head`：由注解声明的固定形状层。
 
@@ -108,8 +107,7 @@ mod pointwise;
 mod stack;
 
 #[doc(inline)]
-pub use attention::{Attention, AttentionAlgo, AttentionBlock};
-pub use latent::LatentAttention;
+pub use attention::{Attention, AttentionAlgo, AttentionBlock, LatentAttention};
 
 #[doc(inline)]
 pub use bounds::Bounds;
@@ -165,7 +163,14 @@ pub struct ContractSpec {
 
 impl ContractSpec {
     /// 校验并构造：`ops` 必须既存在于 `op::builtin()`，又有 `op::model()` 的语义表。
-    pub fn new(name: impl Into<String>, output: Shape, ops: Vec<String>) -> Result<Self> {
+    ///
+    /// `ops` 收 `impl Into<String>` 的任意可迭代物：字面量数组 `["gemv_i4"]` 与已拼好的
+    /// `Vec<String>` 都能直接传，调用侧不必为一条静态名字写 `.to_string()`。
+    pub fn new(
+        name: impl Into<String>,
+        output: Shape,
+        ops: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Result<Self> {
         Self::new_with_role(name, output, ops, ParamRole::Trainable)
     }
 
@@ -174,9 +179,10 @@ impl ContractSpec {
     pub fn new_with_role(
         name: impl Into<String>,
         output: Shape,
-        ops: Vec<String>,
+        ops: impl IntoIterator<Item = impl Into<String>>,
         role: ParamRole,
     ) -> Result<Self> {
+        let ops: Vec<String> = ops.into_iter().map(Into::into).collect();
         let known = op::builtin();
         for wanted in &ops {
             if !known.iter().any(|declared| declared.name() == wanted) {
@@ -313,11 +319,10 @@ impl Linear {
             )
             .with("nn::Linear::with_format"));
         }
-        let ops = format.operator().map(str::to_string).into_iter().collect();
         let spec = ContractSpec::new_with_role(
             name,
             Shape::new([out_features]),
-            ops,
+            format.operator(),
             ParamRole::Trainable,
         )?;
         Ok(Self {
@@ -328,19 +333,13 @@ impl Linear {
         })
     }
 
-    /// 输入宽度。
-    pub fn in_features(&self) -> usize {
-        self.in_features
-    }
-
-    /// 输出宽度。
-    pub fn out_features(&self) -> usize {
-        self.out_features
-    }
-
-    /// 权重编码。它决定了本层用哪个算子，也决定了"这一层的下界是否可算"。
-    pub fn format(&self) -> WeightFormat {
-        self.format
+    crate::accessors! {
+        /// 输入宽度。
+        in_features -> usize = in_features,
+        /// 输出宽度。
+        out_features -> usize = out_features,
+        /// 权重编码。它决定了本层用哪个算子，也决定了"这一层的下界是否可算"。
+        format -> WeightFormat = format,
     }
 
     /// 本层的性能下界，见 [`Contract::bounds`]。
