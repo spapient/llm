@@ -27,7 +27,7 @@
 //! 但"改语义会让对拍变红"只挡得住改，挡不住**删**：整目录删掉时对拍随之消失，全仓不会有一条用例
 //! 变红。所以存在性不靠本文件自证，而由 `crates/tools/tests/gate.rs` 的
 //! `every_architecture_family_keeps_its_conformance_suite` 从外部守：每份对拍必须被 `src` 的
-//! `#[path]` 真挂载，用例总数不得低于 245。
+//! `#[path]` 真挂载，用例总数不得低于 248。
 
 #![deny(unsafe_code)]
 

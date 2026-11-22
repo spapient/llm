@@ -138,14 +138,272 @@ fn check_reset(threshold: f32, reset: f32) -> Result<()> {
 }
 
 mod cell;
-mod master;
-mod membrane;
-mod surrogate;
+
+/// 浮点主权重（QAT 口径）：训练留浮点，前向只看到它的 `i8` 量化视图。
+#[derive(Clone, Debug, PartialEq)]
+pub struct Master {
+    pub(in crate::spike) weights: Vec<f32>,
+    pub(in crate::spike) scale: Vec<f32>,
+    pub(in crate::spike) inputs: usize,
+    pub(in crate::spike) outputs: usize,
+    pub(in crate::spike) threshold: f32,
+    pub(in crate::spike) leak: f32,
+    pub(in crate::spike) reset: f32,
+}
+
+impl Master {
+    /// 从浮点权重构造：几何与动力学都按 [`Spiking::new`] 同一份判据在入口挡住。
+    ///
+    /// 权重必须是有限值——`NaN` 在量化时会被夹成一个「看起来正常」的 `i8`，事后从视图上完全
+    /// 看不出它原本是坏的。
+    ///
+    /// # Errors
+    ///
+    /// 长度与 `inputs·outputs` / `outputs` 不符、权重或尺度非有限、尺度非正、动力学越界，
+    /// 一律 `Code::Invalid`。
+    pub fn new(
+        weights: Vec<f32>,
+        scale: Vec<f32>,
+        inputs: usize,
+        outputs: usize,
+        threshold: f32,
+        leak: f32,
+        reset: f32,
+    ) -> Result<Self> {
+        let master = Self {
+            weights,
+            scale,
+            inputs,
+            outputs,
+            threshold,
+            leak,
+            reset,
+        };
+        master.check_master()?;
+        Ok(master)
+    }
+
+    /// 浮点主权重，行主序 `[outputs, inputs]`。
+    #[must_use]
+    pub fn weights(&self) -> &[f32] {
+        &self.weights
+    }
+
+    /// 逐行反量化尺度，一条对一行。
+    #[must_use]
+    pub fn scale(&self) -> &[f32] {
+        &self.scale
+    }
+
+    /// 量化成前向层：四舍五入后夹到 `[−127, 127]`。
+    ///
+    /// 对称量化、零点不入码——与 [`Spiking::new`] 的 `|w| ≤ 127` 前提一致，所以「夹到 127」只会
+    /// 发生在训练把某个权重推出量化范围的时候，而不是正常路径。
+    ///
+    /// # Errors
+    ///
+    /// 量化后的几何或动力学不合（[`Master`] 字段私有，正常不会发生）时透传 [`Spiking::new`]
+    /// 的错误。
+    pub fn view(&self) -> Result<Spiking> {
+        let weights = self
+            .weights
+            .iter()
+            .map(|weight| weight.round().clamp(-127.0, 127.0) as i8)
+            .collect();
+        Spiking::new(
+            weights,
+            self.scale.clone(),
+            self.inputs,
+            self.outputs,
+            self.threshold,
+            self.leak,
+            self.reset,
+        )
+    }
+
+    /// 一步 SGD：`w ← w − lr·g_w`、`scale ← scale − lr·g_scale`。
+    ///
+    /// 只吃权重与尺度两条梯度：电流梯度是**给上一层**的，不落在本层参数上。
+    ///
+    /// # Errors
+    ///
+    /// 梯度布局与本层不符、学习率非有限或非正、更新把某条尺度推成非正（说明步长把量化区间
+    /// 走穿了）——都返回 `Code::Invalid`，且失败时一格参数都不写。
+    pub fn descend(&mut self, grad: &Gradients, lr: f32) -> Result<()> {
+        grad.layout(self.weights.len(), self.outputs)?;
+        check_learning_rate(lr)?;
+        // 尺度必须在写权重之前全部验完：留下「权重已降、尺度是负的」这种半截状态，要等到下一次
+        // `view` 才报错，而那时离出错点已经很远了。
+        let scale = self.next_scale(grad, lr)?;
+        for (weight, slope) in self.weights.iter_mut().zip(grad.weights.iter()) {
+            *weight -= lr * slope;
+        }
+        self.scale = scale;
+        Ok(())
+    }
+
+    /// 走一步之后的尺度：先算齐、再验「有限为正」，都不合就一格参数也不写。
+    fn next_scale(&self, grad: &Gradients, lr: f32) -> Result<Vec<f32>> {
+        let scale: Vec<f32> = self
+            .scale
+            .iter()
+            .zip(grad.scale.iter())
+            .map(|(value, slope)| value - lr * slope)
+            .collect();
+        match scale
+            .iter()
+            .find(|value| !finite(**value) || **value <= 0.0)
+        {
+            Some(value) => Err(invalid(SITE, format!(
+                "更新后的反量化尺度必须有限为正，得到 {value:?}（学习率 {lr} 把量化区间走穿了）"
+            ))),
+            None => Ok(scale),
+        }
+    }
+
+    /// 构造判据：两条长度、权重的有限性、尺度的有限正性、动力学范围。
+    pub(in crate::spike) fn check_master(&self) -> Result<()> {
+        check_lattice(&self.weights, &self.scale, self.inputs, self.outputs)?;
+        self.check_values()
+    }
+
+    /// 取值判据：权重有限、尺度有限为正、动力学在范围内。
+    fn check_values(&self) -> Result<()> {
+        check_weights(&self.weights)?;
+        check_scale(&self.scale)?;
+        check_dynamics(self.threshold, self.leak, self.reset)
+    }
+}
+
+/// 一层的状态：每通道一条 [`Lif`]、一段复用的整数累加缓冲，以及本步发放前的膜电位。
+#[derive(Debug, Clone, PartialEq)]
+pub struct Membrane {
+    pub(in crate::spike) outputs: usize,
+    pub(in crate::spike) lifs: Vec<Lif<f32>>,
+    pub(in crate::spike) acc: Vec<i32>,
+    pub(in crate::spike) pre: Vec<f32>,
+}
+
+impl Membrane {
+    /// 输出通道数（构造它的层的宽度）。
+    #[must_use]
+    pub const fn outputs(&self) -> usize {
+        self.outputs
+    }
+
+    /// 各通道当前膜电位（观测用；发放后等于 `reset`）。
+    #[must_use]
+    pub fn potential(&self) -> Vec<f32> {
+        self.lifs.iter().map(Lif::mem).collect()
+    }
+
+    /// 各通道**本步发放前**的膜电位（反传判窗用；一次前向都还没走过时全零）。
+    #[must_use]
+    pub fn pre(&self) -> &[f32] {
+        &self.pre
+    }
+}
+
+/// 代理梯度（surrogate）：只定义「发放对膜电位」的导数，不参与前向。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Surrogate {
+    /// 矩形窗：`|v − θ| < width` 内恒为 `1/(2·width)`。
+    Rect {
+        /// 窗的半宽。
+        width: f32,
+    },
+    /// 三角形：窗内从阈值处的 `1/width` 线性衰减到边界上的零。
+    Triangle {
+        /// 窗的半宽。
+        width: f32,
+    },
+}
+
+impl Surrogate {
+    /// 窗的半宽。
+    #[must_use]
+    pub fn width(&self) -> f32 {
+        match self {
+            Self::Rect { width } | Self::Triangle { width } => *width,
+        }
+    }
+
+    /// 发放对膜电位的导数：`potential` 与 `threshold` 的距离落在窗内才有值。
+    #[must_use]
+    pub fn derivative(&self, potential: f32, threshold: f32) -> f32 {
+        let offset = (potential - threshold).abs();
+        // 非有限偏移连 `NaN` 一起挡在窗外：窗宽由构造期校验为有限正数，而 `NaN` 与任何值的
+        // `>=` 都为假，单写比较会让它走进窗内拿到一个假的导数。
+        if !offset.is_finite() || offset >= self.width() {
+            return 0.0;
+        }
+        match self {
+            Self::Rect { width } => 1.0 / (2.0 * width),
+            Self::Triangle { width } => (width - offset) / (width * width),
+        }
+    }
+
+    /// 参数判据：半宽必须有限为正（零宽等于没有梯度，负宽会让窗内外颠倒）。
+    pub(in crate::spike) fn check_window(&self) -> Result<()> {
+        let width = self.width();
+        if !finite(width) || width <= 0.0 {
+            return Err(invalid(SITE, format!("代理梯度的窗宽必须有限为正，得到 {width:?}")));
+        }
+        Ok(())
+    }
+}
+
+/// 一层脉冲线性的梯度，布局与本层参数逐项对齐。
+#[derive(Debug, Clone, PartialEq)]
+pub struct Gradients {
+    pub(in crate::spike) weights: Vec<f32>,
+    pub(in crate::spike) scale: Vec<f32>,
+    pub(in crate::spike) current: Vec<f32>,
+}
+
+impl Gradients {
+    /// 对权重的梯度，行主序 `[outputs, inputs]`（与本层的权重同一布局）。
+    #[must_use]
+    pub fn weights(&self) -> &[f32] {
+        &self.weights
+    }
+
+    /// 对逐行反量化尺度的梯度，一条对一行。
+    #[must_use]
+    pub fn scale(&self) -> &[f32] {
+        &self.scale
+    }
+
+    /// 对本层输出**电流**的梯度，可直接交给上一层的反传。
+    #[must_use]
+    pub fn current(&self) -> &[f32] {
+        &self.current
+    }
+
+    /// 缓冲判据：三条梯度必须与本层参数同形，长了短了都会静默写错行。
+    pub(in crate::spike) fn check_shapes(&self, layer: &Spiking) -> Result<()> {
+        self.layout(layer.weights.len(), layer.outputs)
+    }
+
+    /// 反传入口判据：缓冲与本层同形，且输出梯度与通道数同长。
+    pub(in crate::spike) fn check_for(&self, layer: &Spiking, d_out: &[f32]) -> Result<()> {
+        self.check_shapes(layer)?;
+        check_gradient(d_out, layer.outputs)
+    }
+
+    /// 判据本体：只按「权重格数 + 输出通道数」核对，好让量化前的 [`Master`] 与量化后的
+    /// [`Spiking`] 共用同一份判据。
+    pub(in crate::spike) fn layout(&self, weights: usize, outputs: usize) -> Result<()> {
+        let shape = [self.weights.len(), self.scale.len(), self.current.len()];
+        let want = [weights, outputs, outputs];
+        if shape != want {
+            return Err(invalid(SITE, format!("梯度缓冲 {shape:?} 与本层 {want:?} 不符")));
+        }
+        Ok(())
+    }
+}
 
 pub use cell::Spiking;
-pub use master::Master;
-pub use membrane::Membrane;
-pub use surrogate::{Gradients, Surrogate};
 
 #[cfg(test)]
 #[path = "../tests/spike_tests.rs"]

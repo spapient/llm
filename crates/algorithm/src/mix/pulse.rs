@@ -375,7 +375,3 @@ fn check_finite<S: Scalar>(values: &[S]) -> Result<()> {
     }
     Err(invalid(SITE, "激活含非有限值".to_string()))
 }
-
-#[cfg(test)]
-#[path = "../../tests/mix_pulse_tests.rs"]
-mod tests;
