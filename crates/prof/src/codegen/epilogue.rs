@@ -26,7 +26,7 @@ pub(super) fn epilogue_of(path: &Path, ext: &str) -> Option<PathBuf> {
 /// 六段标记齐全，缺一段即构建期失败。
 fn every_form(source: &str, path: &Path) {
     for form in Epilogue::ALL {
-        let marker = crate::device::epi_marker(form);
+        let marker = crate::device::epi_marker(*form);
         if !source.contains(marker.as_str()) {
             fail(format!(
                 "`{}` 缺少 `{marker}` 段：六种写回形式必须齐全",

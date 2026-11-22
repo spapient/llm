@@ -254,7 +254,8 @@ fn payoff(profile: &Profile, before: Cost, after: Cost, fused: Cost, seam: u64) 
 /// 这是结构性上界，三件事它不算：流水掩盖（按变体算，在加速比里两边相消）、融合核多出来的寄存器
 /// 压力、代码变大带来的指令缓存代价。所以 [`Payoff::speedup`] 是"值不值得动手"的判据，不是实测。
 pub fn score(profile: &Profile, fusion: &Fusion) -> Verdict {
-    let (Some(producer), Some(consumer)) = (op::model(&fusion.producer), op::model(&fusion.consumer))
+    let (Some(producer), Some(consumer)) =
+        (op::model(&fusion.producer), op::model(&fusion.consumer))
     else {
         return Verdict::Unscorable(format!(
             "`{}` → `{}` 有一侧没有语义投影，算不出 roofline",
@@ -285,7 +286,10 @@ pub fn score(profile: &Profile, fusion: &Fusion) -> Verdict {
     let fused = Cost::new(
         before.flops + after.flops,
         before.read.saturating_add(after.read).saturating_sub(seam),
-        before.write.saturating_add(after.write).saturating_sub(seam),
+        before
+            .write
+            .saturating_add(after.write)
+            .saturating_sub(seam),
     );
     payoff(profile, before, after, fused, seam).map_or_else(
         || {

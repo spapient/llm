@@ -157,18 +157,16 @@ pub(super) fn ledger_primitives(profile: &Profile) -> String {
 
 /// 融合候选打分表：能打分的按加速比降序在前，没条件打分的带原因排在后面。
 pub(super) fn fusions(rows: &[(Fusion, Verdict)]) -> String {
-    let mut table = Sheet::new([
-        "生产者", "消费者", "加速比", "省下", "定界", "判决", "说明",
-    ])
-    .align([
-        Align::Left,
-        Align::Left,
-        Align::Right,
-        Align::Right,
-        Align::Left,
-        Align::Left,
-        Align::Left,
-    ]);
+    let mut table = Sheet::new(["生产者", "消费者", "加速比", "省下", "定界", "判决", "说明"])
+        .align([
+            Align::Left,
+            Align::Left,
+            Align::Right,
+            Align::Right,
+            Align::Left,
+            Align::Left,
+            Align::Left,
+        ]);
     for (fusion, verdict) in rows {
         let (speedup, saved, bound) = match verdict {
             Verdict::Scored(payoff) => (

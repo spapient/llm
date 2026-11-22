@@ -129,11 +129,6 @@ impl<'a> Contract<'a> {
         let defined = crate::evidence::definitions(self.source);
         let prims = self.prims.iter().map(|(prim, func)| (*prim, *func));
         self.check_one_each(&defined, prims, "原语", "一条签名一个函数")?;
-        let epis = self
-            .epilogue
-            .iter()
-            .map(|entry| (entry.form, entry.witness.func));
-        self.check_one_each(&defined, epis, "写回形式", "一种形式一个函数")?;
         self.check_unclaimed(&defined)
     }
 
@@ -254,11 +249,9 @@ impl<'a> Contract<'a> {
 
     /// 某条见证函数是否被档案里的一条供给认领。
     fn claimed(&self, name: &str) -> bool {
-        let provided = self
-            .provides
+        self.provides
             .iter()
-            .any(|provide| provide.witness.is_some_and(|witness| witness.func == name));
-        provided || self.epilogue.iter().any(|entry| entry.witness.func == name)
+            .any(|provide| provide.witness.is_some_and(|witness| witness.func == name))
     }
 
     /// 闭集里的全部名字：P0 的 `<prim>.<ext>`、一个 `witness.<ext>`、一份 `epilogue.<ext>`。

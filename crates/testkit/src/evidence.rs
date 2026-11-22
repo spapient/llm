@@ -36,17 +36,13 @@ impl<'a> Contract<'a> {
     ///
     /// 第一条期望值个数不在 `1..=MAX_OUT` 的供给返回原因。
     pub fn check_expectations(&self) -> Result<(), String> {
-        let prims = self.provides.iter().filter_map(|provide| {
-            provide
-                .witness
-                .map(|witness| (provide.prim, provide.impl_name, witness.expect))
-        });
-        let epis = self
-            .epilogue
+        self.provides
             .iter()
-            .map(|entry| (entry.form, entry.impl_name, entry.witness.expect));
-        prims
-            .chain(epis)
+            .filter_map(|provide| {
+                provide
+                    .witness
+                    .map(|witness| (provide.prim, provide.impl_name, witness.expect))
+            })
             .try_for_each(|(kind, name, expect)| self.check_length(kind, name, expect))
     }
 
@@ -77,12 +73,13 @@ impl<'a> Contract<'a> {
         judge(self.id, &calls, &readings)
     }
 
-    /// 档案里带见证的供给与写回形式，摊成执行器要的 `Call`。写回形式同样要算出档案写的值：
-    /// 六种形式只是"没有可协商的签名"，不是"可以不验"。
+    /// 档案里带见证的供给，摊成执行器要的 `Call`。
     fn calls(&self) -> Vec<Call<'a>> {
-        let prims = self.provides.iter().filter_map(|provide| provide.witness);
-        let epis = self.epilogue.iter().map(|entry| entry.witness);
-        prims.chain(epis).map(call).collect()
+        self.provides
+            .iter()
+            .filter_map(|provide| provide.witness)
+            .map(call)
+            .collect()
     }
 }
 

@@ -250,10 +250,7 @@ fn scoring_refuses_without_peaks() {
 fn a_candidate_without_a_semantic_model_is_unscorable() {
     let mut fusion = pool_into_attention();
     fusion.producer = "没有这个算子".to_string();
-    assert!(matches!(
-        score(&profile(), &fusion),
-        Verdict::Unscorable(_)
-    ));
+    assert!(matches!(score(&profile(), &fusion), Verdict::Unscorable(_)));
 }
 
 #[test]
@@ -263,10 +260,7 @@ fn a_multi_output_seam_cannot_be_attributed() {
     second.from = "另一条输出".to_string();
     fusion.seams.push(second);
     // 代价表的 `write` 是全部输出之和：接缝占两条时中间量无法从它归因。
-    assert!(matches!(
-        score(&profile(), &fusion),
-        Verdict::Unscorable(_)
-    ));
+    assert!(matches!(score(&profile(), &fusion), Verdict::Unscorable(_)));
 }
 
 #[test]
@@ -297,7 +291,10 @@ fn the_ranking_covers_every_candidate_and_orders_it() {
                 2
             }
         };
-        assert!(rank >= last_rank, "判决分组必须是 scored → unscorable → rejected");
+        assert!(
+            rank >= last_rank,
+            "判决分组必须是 scored → unscorable → rejected"
+        );
         last_rank = rank;
     }
 }

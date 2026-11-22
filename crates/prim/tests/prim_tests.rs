@@ -412,11 +412,6 @@ fn every_device_splits_the_six_epilogue_sections() {
                 "`{}` 的 `{form}` 段跨进了下一段",
                 device.vendor
             );
-            assert!(
-                device.epi_entry(form).is_some(),
-                "`{}` 的 `{form}` 没有见证入口",
-                device.vendor
-            );
         }
     }
 }

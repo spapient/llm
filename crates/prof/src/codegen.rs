@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::atom::{Epilogue, Prim};
+use crate::atom::Prim;
 use crate::prof::{Emit, Profile};
 use crate::sign::EPILOGUE_STEM;
 
