@@ -131,8 +131,8 @@ pub use classic::{
 
 #[doc(inline)]
 pub use single::{
-    Add, Embedding, Gelu, HardSigmoid, LeakyRelu, MatMul, Mul, ReduceMax, ReduceSum, ResidualAdd,
-    RmsNorm, Rope, Scale, Silu, Softmax,
+    Add, Div, Embedding, Exp, Gauge, Gelu, HardSigmoid, LeakyRelu, Log, MatMul, Max, Min, Mul,
+    Precision, ReduceMax, ReduceSum, ResidualAdd, RmsNorm, Rope, Scale, Silu, Softmax, Sub,
 };
 
 #[doc(inline)]

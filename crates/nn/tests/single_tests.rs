@@ -105,3 +105,94 @@ fn a_matmul_works_as_a_trait_object() {
     assert_eq!(layer.output().dims(), [16, 12]);
     assert!(layer.bounds().expect("合法").is_some());
 }
+
+/// 单轴层的通用断言：绑定的算子名、以及与语义表逐项相等的下界。
+fn assert_elementwise<L: Contract>(layer: &L, op: &str, len: usize) {
+    assert_eq!(layer.spca().ops(), [op]);
+    let floor = layer.bounds().expect("单轴形状合法").expect("有算子");
+    assert_eq!(
+        floor,
+        Bounds::of_ctx(op, len, 1).expect("同一份语义"),
+        "{op} 的下界来自算子语义表"
+    );
+}
+
+/// 除 / 减 / 取大 / 取小 / 指数 / 对数六个算子此前在 `op` 注册表里有、在层集里没有：
+/// 元素级 API 的主体缺了一角。这条用例把它们钉住，同时验证与 `add_f32` / `gelu_f32` 同价骨架无关——
+/// 层不写第二份公式，下界一律由各自的语义表给出。
+#[test]
+fn the_six_elementwise_operators_that_had_no_layer_now_have_one() {
+    assert_elementwise(&Sub::new("blk.0.sub", 128).expect("合法"), Sub::OP, 128);
+    assert_elementwise(&Div::new("blk.0.div", 128).expect("合法"), Div::OP, 128);
+    assert_elementwise(&Max::new("blk.0.max", 128).expect("合法"), Max::OP, 128);
+    assert_elementwise(&Min::new("blk.0.min", 128).expect("合法"), Min::OP, 128);
+    assert_elementwise(&Exp::new("blk.0.exp", 128).expect("合法"), Exp::OP, 128);
+    assert_elementwise(&Log::new("blk.0.log", 128).expect("合法"), Log::OP, 128);
+}
+
+/// 六个新层沿用同一条「零长度拒绝」口径，不留一个可以构造出空轴的后门。
+#[test]
+fn a_zero_length_elementwise_tensor_is_rejected() {
+    assert_eq!(Sub::new("x", 0).unwrap_err().code(), Code::Invalid);
+    assert_eq!(Div::new("x", 0).unwrap_err().code(), Code::Invalid);
+    assert_eq!(Max::new("x", 0).unwrap_err().code(), Code::Invalid);
+    assert_eq!(Min::new("x", 0).unwrap_err().code(), Code::Invalid);
+    assert_eq!(Exp::new("x", 0).unwrap_err().code(), Code::Invalid);
+    assert_eq!(Log::new("x", 0).unwrap_err().code(), Code::Invalid);
+}
+
+/// 收缩轴档位是算子表声明的固定档（`gemm_*` = 8、`matmul_*` = 4096），不是层能编造的尺寸。
+/// 实测两档的读侧与 flops 都精确相差 512 倍——这条用例锁的就是「档位真的进了计价」，
+/// 而不是层拿小档算子给大档层报一条偏小 512 倍的下界。
+#[test]
+fn the_matmul_gauge_is_declared_and_reaches_the_price() {
+    let short = MatMul::with_precision("m", 16, 12, Precision::F32, Gauge::Short).expect("合法");
+    let long = MatMul::with_precision("m", 16, 12, Precision::F32, Gauge::Long).expect("合法");
+    assert_eq!(short.spca().ops(), ["gemm_f32"]);
+    assert_eq!(long.spca().ops(), ["matmul_f32"]);
+    let short = short.bounds().expect("合法").expect("有算子");
+    let long = long.bounds().expect("合法").expect("有算子");
+    assert_eq!(long.read(), short.read() * 512, "K 8 → 4096 是 512 倍的读数");
+    assert_eq!(long.flops(), short.flops() * 512.0, "同一条乘加，K 放大 512 倍");
+}
+
+/// 精度决定读写字节、不决定算术量：同一档位下 int8 / int4 / int2 的读侧按元素宽度精确缩到
+/// 1/4、1/8、1/16，而 flops 与 f32 逐位相同——「几个数的乘加还是那么多次」。
+#[test]
+fn the_matmul_precision_scales_reads_and_never_the_arithmetic() {
+    let floor = |precision| {
+        MatMul::with_precision("m", 16, 12, precision, Gauge::Short)
+            .expect("合法")
+            .bounds()
+            .expect("合法")
+            .expect("有算子")
+    };
+    let (f32, i8, i4, i2) = (
+        floor(Precision::F32),
+        floor(Precision::Int8),
+        floor(Precision::Int4),
+        floor(Precision::Int2),
+    );
+    assert_eq!(i8.read() * 4, f32.read());
+    assert_eq!(i4.read() * 8, f32.read());
+    assert_eq!(i2.read() * 16, f32.read());
+    for (label, other) in [("int8", i8), ("int4", i4), ("int2", i2)] {
+        assert_eq!(other.flops(), f32.flops(), "{label} 与 f32 做同样多次乘加");
+        assert_eq!(other.write(), f32.write(), "{label} 的输出仍是 f32");
+    }
+}
+
+/// 算子表只注册了 int2 / int4 × `K = 8`：大收缩轴的这两个精度不存在。层的回答是
+/// 「没有这个组合」并说清缺哪一半，而不是退回小 K 的兄弟算子凑一条下界。
+#[test]
+fn an_unregistered_precision_rung_says_which_half_is_missing() {
+    for precision in [Precision::Int2, Precision::Int4] {
+        let layer = MatMul::with_precision("m", 16, 12, precision, Gauge::Long).expect("仍是合法声明");
+        assert!(layer.spca().ops().is_empty(), "没有内核就没有算子名");
+        let error = layer.bounds().unwrap_err();
+        assert_eq!(error.code(), Code::Unsupported);
+        let message = error.to_string();
+        assert!(message.contains(precision.name()), "{message}");
+        assert!(message.contains("K = 4096"), "{message}");
+    }
+}
