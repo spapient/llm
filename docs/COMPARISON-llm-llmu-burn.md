@@ -430,9 +430,21 @@
 
 > 分数是**当前代码快照**的相对评价，不是能力上限；三者目标定位不同（通用训练框架 / LLM 推理执行框架），总分必须结合权重视角解读。
 
-### 16.2 维度明细
+### 16.2 评分方法与口径
 
-| # | 维度 | llm（新） | llm.u | Burn | 打分依据（简） |
+打分不是凭印象给分，流程固定为三步：
+
+1. **先取证事实**：每条结论回链到 §3–§15 的源码实测（trait 定义、impl 数量、crate 清单、依赖、行计数、目录与文件状态），不把"目录存在/函数签名存在"当成"链路可用"。
+2. **再对标尺定档**：按 §16.1 的 0–10 标尺，先判定能力状态——● 真实实现可用 / ◐ 端口或骨架在位、部分实现或占位 / ○ 缺失或仅声明——再落分。
+3. **同口径横向校平**：三家用同一套维度、同一把尺子并排比对，避免各家按各自宣传口径计分。
+
+**证据状态标注（与 §14 能力矩阵一致）**：● 已落地、可跑通或有实测对拍；◐ 接口/结构/契约在位，实现不完整或后端未闭环；○ 仅配置标签、枚举、档案或完全缺失。下面每条论证均按此标注，分数对应状态：● 多落在 7–10，◐ 多落在 3–6，○ 多落在 0–2。
+
+> 重要前提：三者定位不同（Burn=通用训练框架，llm.u=LLM 推理/多后端执行框架，llm=面向 Burn 能力端口的分层重构）。下面的横向分是"当前代码快照"的相对成熟度，不代表设计上限，也不代表产品适配度——一个推理框架在训练维度低分是定位使然，不等于工程失败。
+
+### 16.3 维度速览表
+
+| # | 维度 | llm（新） | llm.u | Burn | 核心一句话 |
 |---:|---|:--:|:--:|:--:|---|
 | 1 | 张量/类型系统 | 3 | 2 | 10 | llm/llm.u 运行期形状与精度、无后端/秩泛型；Burn `Tensor<const D,K,B>` 编译期泛型 |
 | 2 | 后端广度 | 5 | 6 | 8 | llm 档案 9 种 Emit、6 设备 Fragment，Driver 仅 3；llm.u 枚举 10 设备、6 类跑通；Burn CPU/CUDA/WGPU/ROCm/Remote/Flex 6 类 |
@@ -455,7 +467,130 @@
 | 19 | 测试/质量门禁 | 7 | 4 | 8 | llm 58k 行 + 架构契约/对拍；llm.u 17.8k + fuzz nightly；Burn backend-tests 套件 + 95k 行 |
 | 20 | 生态/示例/文档 | 4 | 4 | 8 | llm 内部架构文档完备无对外模型；llm.u README/perf 实测详尽；Burn book + 23 examples |
 
-### 16.3 加权总分
+### 16.4 逐维度优势与短板论证
+
+#### 1. 张量 / 类型系统 —— llm 3 · llm.u 2 · Burn 10
+
+- **Burn（●，10）**：秩 `D`、元素类型 `K`、后端 `B` 全部进入泛型参数，`Tensor<B, const D, K>` 贯穿算子与模块；后端不支持的算子在编译期就被拦住。连续/非连续视图、stride、reshape、permute 全套布局能力。这是三者中唯一"类型即约束"的张量模型，也是框架最硬的地基。
+- **llm 新（◐，3）**：有 `Tensor/OwnedTensor/View` 三形态与 `Shape/Strides/Order/只读字节视图`，精度闭集（GGML 块量化 + MX 微缩放 + FP4 元素）广度甚至超过 Burn 当前 dtype 表；但**没有后端泛型、没有秩泛型**，形状与 dtype 错误要到 `spec/testkit` 校验或运行期才暴露，编译期拦不住。
+- **llm.u（○，2）**：只有 `Shape{m,n,k}`（GEMM 三维）+ `Vec<f32>` 扁平缓冲，没有独立张量类型，也无秩/后端泛型。局部亮点是把 TF32 建模成"F32 存储上的计算档"，显式区分存储档与计算档；除此之外布局与类型能力最弱。
+
+#### 2. 后端广度 —— llm 5 · llm.u 6 · Burn 8
+
+- **Burn（●，8）**：`burn-cpu`（CubeCL/LLVM，融合 + autotune）、`burn-cuda`、`burn-wgpu`、`burn-rocm`、`burn-remote`、`burn-flex`（纯 Rust eager，no_std/WASM）六类后端，同一套 `Backend` trait 可换后端编译。短板：无原生 Metal、MUSA、OpenCL、昇腾后端。
+- **llm.u（◐，6）**：`Device` 枚举 10 种（Cpu/Cuda/Metal/Rocm/Sycl/Musa/Cann/Opencl/Ane/Nce/Xdna），CPU/CUDA/Metal/OpenCL/SYCL/MUSA 有实测路径；ROCm 仅 49 行 SSM 共享库探测，ANE/NCE/Xdna 待接入。广度主要靠直链 FFI 拿到。
+- **llm 新（◐，5）**：`Emit` 档案 9 种、6 设备 Fragment；但三 trait（`Codegen/Driver/Backend`）齐备的只有 Metal、Cuda(+MUSA)、Ascend，OpenCL 仅有 Fragment、Hip 仅有档案枚举，未挂 `Driver`。真正落地的执行器只有 Local/Cpu/Metal 三个，后端落地数少于 llm.u。
+
+#### 3. 后端执行成熟度 / 性能 —— llm 3 · llm.u 6 · Burn 8
+
+- **llm.u（●，6）**：这是它的基本盘。CPU NEON/AVX2/AVX-512 手写微核、Metal tensor 路径、OpenCL/SYCL 择优、cuBLAS/cuBLASLT 封装、CUDA graph 捕获 replay、MUSA 对拍，README/docs 留有实测与对拍数据。扣分点：后端与宿主强耦合，能力回退宿主，代码分散在 49 个 unsafe 文件。
+- **Burn（●，8）**：跨后端能跑通完整算子集，CPU 后端带算子融合、autotune、LLVM 编译；但它不以手工极致微核、峰值 GEMM 调优为第一优先级，所以单论极限性能不是为压榨硬件设计的。
+- **llm 新（◐，3）**：Metal 执行器已闭环；CUDA/Ascend 有真实编译驱动（nvcc/mcc/CCE 编译回读），但 `cuda_lower` 目前只覆盖逐点网格 + 分块归约，Ascend 内核只到标量 C 语义、未触及 MTE/Cube/Vector，GEMM 大内核与多数后端执行面仍在重建。微核虽沉淀进 `gemm/cutile`，尚未在各后端全面落地。
+
+#### 4. 算子 / 内核覆盖 —— llm 4 · llm.u 4 · Burn 9
+
+- **Burn（●，9）**：张量方法全套——线性代数（matmul/einsum/linalg）、conv/pool/norm、激活、归约、逐元素、形状变换、采样、量化张量；自定义内核走 CubeCL，扩展面完整。
+- **llm 新（◐，4）**：算子四层契约 `spec→gemm→conv→op` + 唯一注册表 `REGISTRY`，`spec` 出算子级 IR 与 einsum 求和语义；但真实内核面以 NEON 微核与少量 Fragment 为主，大算子族的 lowering 尚未补齐。
+- **llm.u（◐，4）**：4 家族注册表（matmul 5 impl / elemwise / attention 3 impl / reduce），能力位含 sgemm、复用、TF32、常驻权重、设备端 adam、SSM 前反向；但算子集围绕 LLM/SSM 裁剪，不是通用张量算子集。
+
+#### 5. nn 层完整度 —— llm 5 · llm.u 3 · Burn 9
+
+- **Burn（●，9）**：49 个 Config 模块，覆盖 Linear/Embedding、全套 norm、Conv1/2/3d、Transpose、DeformConv、Pool1/2/3d、激活、Dropout、Rnn/Gru/Lstm/Bi*、Transformer Encoder/Decoder 与 autoregressive cache；`derive(Module/Config)` + `ParamGroup`/LoRA 参数映射。
+- **llm 新（◐，5）**：41 个结构体，补齐了 Conv1/2d/Transpose、Pool、各类 norm、Attention、Rope；缺 RNN。参数以 `ParamSlot`/扁平 `[f32]` 槽管理，无派生宏与模块参数树。
+- **llm.u（○，3）**：17 个公开函数，matmul/norm/激活/attention/SSM；无 conv、无 pool、无 RNN。层函数直接作用于 `&[f32]` 扁平切片，权重按名模式装配。
+
+#### 6. 自动微分 —— llm 5 · llm.u 2 · Burn 10
+
+- **Burn（●，10）**：`Autodiff<B,C>` 是后端级装饰器，任意张量算子自动记录反向图；`AutodiffServer` 与关联梯度类型齐备；检查点策略可选 `NoCheckpointing/CheckpointStrategy/retro-forward`，并与分布式梯度连通。
+- **llm 新（◐，5）**：独立 `autograd` crate，`graph/tape/plan/replay/schedule/segment/account/facts` 结构齐全，有 `Var/Node/Role/ParamSlot`、tie 绑定、分段检查点；但它是**仓内自洽的小图**，不接管张量上任意算子的链式求导，`Remote` 梯度也未挂载。
+- **llm.u（○，2）**：没有变量对象与图抽象；rms/rope/ce/kl 反向与 SSM bwd 是手写逐层函数集合，梯度装进 `grads` 容器，前向算激活、反向逐层调手写 bwd。
+
+#### 7. 优化器 —— llm 4 · llm.u 3 · Burn 9
+
+- **Burn（●，9）**：13+ 实现（sgd/adam/adamw/adagrad/adafactor/adan/rmsprop/lamb/lion/lbfgs/muon/momentum），优化器是 module 级参数映射 + 状态体系，带梯度累积、梯度裁剪、衰减。
+- **llm 新（◐，4）**：`Sgd/Adam/Muon`（+momentum/Nesterov/eps），有 `Optimizer` trait 与 `Slot/OwnedSlot`、weight decay、clip_norm；算法数量与状态体系仍偏少。
+- **llm.u（◐，3）**：`sgd` 自由函数 + `Adam`（lr/wd 解耦权重衰减/step），无优化器 trait，无统一状态槽体系。
+
+#### 8. 调度 / 训练循环 —— llm 5 · llm.u 4 · Burn 9
+
+- **Burn（●，9）**：`Learner/LearnerBuilder` 接管 train/val 循环、early stopping、sharder、logger、summary、RL 子回路；lr scheduler 多策略。
+- **llm 新（◐，5）**：`Session<K,O,C>` 注册参数、tie 绑定、plan/backward/optimize、微批累积、loss 记录；`Learner` 组织 run/evaluate 与 `MetricsBoard` 训练验证分账；`Schedule` 支持 warmup + anneal。缺评估/日志子框架与可插拔回调。
+- **llm.u（◐，4）**：`Session` + `Trainer`（observe/accumulate/step/loss/mean），Cosine warmup/total/min，`Accum` 梯度累积；循环紧贴推理栈，无独立评估器、日志子框架。
+
+#### 9. 损失函数 —— llm 5 · llm.u 4 · Burn 9
+
+- **Burn（●，9）**：约 20 种，CE/MSE/BCE/KL/CTC/RNNT/Huber/SmoothL1/Triplet/MarginRanking/CosineEmbedding/HingeEmbedding/GaussianNLL/Poisson/MultiMargin/SoftMargin/LP 等。
+- **llm 新（◐，5）**：10 个函数 + `Loss` 枚举分发，含 CE/argmax hits/mse/bce/huber/hinge/kl_div/kl_per_row/distillation/log_softmax；入账终点带 Distill/Grpo。
+- **llm.u（◐，4）**：7 个函数，sequence(CE)/perplexity/bits/mse/entropy/distill/clip。
+
+#### 10. 指标 / 评估器 —— llm 3 · llm.u 1 · Burn 10
+
+- **Burn（●，10）**：30+ 指标（acc/top-k/MAE/MSE/R²/precision/recall/F1/MCC/AUROC/AUC-PR/confusion/bleu/cer/wer/rouge/hamming/perplexity/loss），叠加 CPU/GPU/内存/温度采集，有指标处理器、渲染器与可插拔 evaluator。
+- **llm 新（◐，3）**：只有最小账表——loss、命中率（argmax hits）、样本数、步，训练与验证分账；无可插拔指标注册表，也无 renderer。
+- **llm.u（○，1）**：仅一个 perplexity 函数，没有指标体系。
+
+#### 11. 数据集管线 —— llm 2 · llm.u 1 · Burn 9
+
+- **Burn（●，9）**：`burn-dataset` 覆盖 audio/nlp/vision/source/transform，CSV/图像/音频源齐备。
+- **llm 新（◐，2）**：有 `Batch`/`Dataset` trait/`Chunks` 游标；但无打乱、打包，也没有物理数据源 crate。
+- **llm.u（○，1）**：只有 pack/shard 函数，无数据集抽象。
+
+#### 12. 检查点 / 序列化 —— llm 6 · llm.u 4 · Burn 9
+
+- **Burn（●，9）**：`burn-train/checkpoint` + `burn-store`（adapter/applier/collector/filter/keyremapper/burnpack/pytorch），权重与状态往返工具链完整。
+- **llm 新（●/◐，6）**：`snapshot` 自描述编码 + CRC-32 trailer + 恢复事实；`train/store` 承接；权重侧可读 safetensors/GGUF/JSON/torch.bin。扣在训练态与参数树序列化尚未完全对齐框架级 store。
+- **llm.u（◐，4）**：checkpoint 状态字节格式（save/restore/write/read）；storage 侧有 gguf/safetensors/legacy/merkle/sign/cert/patch/lattice，格式杂但缺自描述校验与恢复事实。
+
+#### 13. 推理服务 —— llm 6 · llm.u 6 · Burn 3
+
+- **llm.u（●/◐，6）**：调度面最实——Request/Batch/Phase/Stats、优先级、salt、extra_key、cancel/abort、页池、radix 前缀树、compress/latent、投机采样；有 OpenAI schema(chat/completions)。短板：HTTP 层未接 axum/tokio（serve 零依赖），router/shutdown 待实现，仍是纯逻辑路由。
+- **llm 新（◐，6）**：把调度与服务拆成两层——`engine`（scheduler/ifb/batch/sequence/radix/kv）与 `serve`（endpoint/protocol/http 薄适配器，socket 字节解成方法+路径+请求体交 Router，可进程内验证）/speculate/completion；分层干净，并有内置 tokenizer。扣分：OpenAI 兼容度停在契约层，非完整生产网关。
+- **Burn（○，3）**：`examples/server` 只是推理示例，`burn-remote` 提供远程推理 client/server；**没有**内置连续批、分页 KV、前缀共享、投机采样，也无内置分词器。这是它作为训练框架的产品面留白。
+
+#### 14. 分布式 / 并行 —— llm 3 · llm.u 1 · Burn 6
+
+- **Burn（◐，6）**：`burn-shard` sharding/kind/resharding/rules，`burn-communication` Protocol/Client/Server/Channel + WebSocket 实现，`burn-remote` 支持 P2P；但未接 NCCL/RCCL/MPI 生产集合通信栈。
+- **llm 新（◐，3）**：`shard/topology` world size、per-axis 进程组，`Sharding/Tiling/Reduce(Sum/Mean/Max)`，`Collective` trait（all_reduce + Group），`Local` 进程内 reduce；`Remote` 占位，`all_reduce` 返回 `Unsupported`。
+- **llm.u（○，1）**：`config.tables.parallel` 切分配置 + `data::shard` 数据分片；`comm` 仅 nccl/rccl 标签，无 Collective trait，无传输实现。
+
+#### 15. 量化 / 精度 —— llm 6 · llm.u 5 · Burn 7
+
+- **Burn（●/◐，7）**：`QuantValue` Q8F/Q8S/Q4F/Q4S/Q2F/Q2S + E4M3/E5M2/E2M1，`PackedU32` 打包；**参数级** `Quantizer` 经 `ModuleMapper` 按路径/参数组映射，`Calibration` range 观测 + scheme（symmetric/affine）。模块级量化工具链三家最完整。
+- **llm 新（◐，6）**：dtype 闭集覆盖 GGML QType、MX MxType（OCP MX/NVFP4）、元素 E2M1/E2M3/E3M2/E4M3/E5M2/INT8；`ptq Scheme` I2/I4/I8/Compensated。**格式广度三家最大**，但落点是权重档案与算子引用块格式，没有模块参数级映射体系。
+- **llm.u（◐，5）**：`Prec` I8/I4/I3/I2 + F8E4M3/F8E5M2/Fp4，TF32 计算档；AWQ 权重缓存路径，CPU awq/lowbit、CUDA int4/int8w/lowbit/subbyte、Metal i8。
+- **共同事实**：三家当前版本都**没有 QAT**（量化感知训练）。
+
+#### 16. 随机数 / 确定性 —— llm 7 · llm.u 1 · Burn 8
+
+- **Burn（●，8）**：rand 生态，`Device::seed(u64)`，张量 `Distribution` Uniform/Normal 等；种子语义可能全局生效，复现粒度略粗于 counter 模型。
+- **llm 新（●，7）**：`rng` crate 用 Philox4x32-10 counter 引擎，显式 seed/stream/index，提供 Uniform/Normal/Bernoulli；counter-based 可复现、可分流，确定性设计最细。
+- **llm.u（○，1）**：无独立 RNG，采样由外部注入闭包 `FnMut() -> f64`，测试用线性种子伪随机；确定性完全依赖调用方冻结种子。
+
+#### 17. 内核 DSL 扩展 —— llm 6 · llm.u 2 · Burn 9
+
+- **Burn（●，9）**：CubeCL 设备无关内核语言 + cubek IR，lowering 到 CUDA/HIP/WGPU/CPU；`burn-cubecl-fusion` 算子融合；有自定义内核示例，DSL 已成熟并承载真实内核。
+- **llm 新（◐，6）**：`cutile` 能力协商 → Fragment 拼接 → emit → 指纹缓存，`spec` 模板词法与代价表达式，六设备 Fragment 编译期扫成表；`optim` 侧 doctor/verify/bench 对账。DSL 只生成设备源、不执行，成熟度与覆盖面仍低于 CubeCL。
+- **llm.u（○，2）**：内核直接写在各 backend 模块，`kernel` crate 只放 attn/ssm 阶段；没有设备无关 IR 或 DSL。
+
+#### 18. 架构 / 可维护性 —— llm 8 · llm.u 3 · Burn 8
+
+- **llm 新（●，8）**：L1–L6 单向依赖契约，`testkit/architecture.rs` 读 cargo metadata 与源码逐条核对，不一致即 `cargo test` 失败；有 ADR、`diagnostic` 错误码、`tools` 质量门；unsafe 收成 6 个岛，workspace `unsafe_code = "deny"`。分层边界可被测试守住，这是相对 llm.u 最大的工程进步。
+- **Burn（●，8）**：41 crate 按核心/后端/模型/训练/服务分层，derive 宏隔离业务与后端，unsafe 下沉到后端实现；依赖约定文档化。
+- **llm.u（○/◐，3）**：`device` 28k 行直持各后端 FFI 与内核封装，device/exec 强耦合，无显式分层门禁；unsafe 分散在 49 个文件。配置驱动是它的组织特色，但跨层边界弱、改动容易牵一发动全身。
+
+#### 19. 测试 / 质量门禁 —— llm 7 · llm.u 4 · Burn 8
+
+- **Burn（●，8）**：`burn-backend-tests` 套件跨后端对拍，95k 测试行，配 CI/coverage/typos/deny.toml。
+- **llm 新（●/◐，7）**：58k 测试行（测试/生产 0.61），含架构契约测试、各 crate tests、fuzz（libfuzzer-sys optional）；`benchmarks` 已搭骨架但实测基准门禁待重建。
+- **llm.u（◐，4）**：17.8k 测试行 + fuzz nightly 独立运行；benches 在 CPU/Metal/OpenCL/CLBlast/SYCL/CUDA/MUSA 多后端实测对拍；`tool/gate` 有 arch/call/ccn/files/rules。测试体量与契约门禁弱于前两者，但实测对拍经验是其财富。
+
+#### 20. 生态 / 示例 / 文档 —— llm 4 · llm.u 4 · Burn 8
+
+- **Burn（●，8）**：burn-book、contributor-book，23 个 examples（mnist、modern-lstm、text-classification、text-generation、dqn、wgan 等），pytorch-reader 可导权重；新人可照示例搭可训练模型。
+- **llm 新（◐，4）**：内部架构文档完备（ARCHITECTURE/lld/math/adr），但没有对外可运行示例，也没有端到端模型库。
+- **llm.u（◐，4）**：README 留有大量性能实测记录，配 docs/perf、QUALITY.md；但对外示例与模型生态薄。
+
+### 16.5 加权总分
 
 **A. 等权视角（20 维度各 5%，通用框架口径）**
 
