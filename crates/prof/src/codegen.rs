@@ -169,8 +169,7 @@ fn fragment_of(path: &Path, ext: &str, profile: &Profile) -> Option<(Prim, Strin
     Some((prim, entry))
 }
 
-/// 一个文件是不是写回尾块片段：是就返回六种形式的见证入口，不是就 `None`。
-///
+/// 目录对应的档案：`vendor` / `emit` 必须与目录一致。
 fn profile_of(vendor: &str, ext: &str) -> Profile {
     let table = crate::embedded(vendor).unwrap_or_else(|| {
         fail(format!(

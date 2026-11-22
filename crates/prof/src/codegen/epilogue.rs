@@ -9,6 +9,8 @@ use crate::prof::Profile;
 use crate::sign::EPILOGUE_STEM;
 use std::path::Path;
 
+/// 一个文件是不是写回尾块片段：是就返回六种形式的见证入口，不是就 `None`。
+///
 /// 六种形式必须齐全——`spec::epilogue` 的语法是闭集，少一种就说明这台设备的写回根本不完整；
 /// 每段以 `/* epi: <form> */` 开头，装配按语法顺序各取一段。
 pub(super) fn epilogue_of(path: &Path, ext: &str, profile: &Profile) -> Option<Vec<(Epilogue, String)>> {
@@ -76,5 +78,3 @@ fn epi_entry_of(profile: &Profile, form: Epilogue, path: &Path, source: &str) ->
             ))
         })
 }
-
-/// 目录对应的档案：`vendor` / `emit` 必须与目录一致。

@@ -19,16 +19,24 @@ pub(super) fn parse_epilogues(table: &Table) -> Result<Vec<EpiProvide>, ProfileE
 /// 一条 `[[epilogue]]`：`form` / `impl` / `grade` 必填，`witness` 也必填——构建期要用它的
 /// 函数名当镜像入口，缺了这条供给就没有落点。
 fn parse_epilogue(entry: &Table, index: usize) -> Result<EpiProvide, ProfileError> {
-    let form = closed::<Epilogue>(text(entry, "form", epi_at(index, "form"))?, epi_at(index, "form"))?;
-    let implementation = entry.string("impl").unwrap_or("-");
-    let grade = closed::<Grade>(text(entry, "grade", epi_at(index, "grade"))?, epi_at(index, "grade"))?;
-    let witness = witness_of_epi(entry, index)?;
     Ok(EpiProvide {
-        form,
-        impl_name: implementation.to_string(),
-        grade,
-        witness: Some(witness),
+        form: form_of(entry, index)?,
+        impl_name: entry.string("impl").unwrap_or("-").to_string(),
+        grade: grade_of(entry, index)?,
+        witness: Some(witness_of_epi(entry, index)?),
     })
+}
+
+/// `form`：`spec::epilogue` 的六种写回形式之一，闭集之外的写法没有装配位置。
+fn form_of(entry: &Table, index: usize) -> Result<Epilogue, ProfileError> {
+    let at = epi_at(index, "form");
+    closed::<Epilogue>(text(entry, "form", at)?, at)
+}
+
+/// `grade`：证据等级；等级要得起见证时，`epi_shape` 会再要 `witness`。
+fn grade_of(entry: &Table, index: usize) -> Result<Grade, ProfileError> {
+    let at = epi_at(index, "grade");
+    closed::<Grade>(text(entry, "grade", at)?, at)
 }
 
 /// `witness`：与 `[[provides]]` 同一种内联表，只有路径的见证无法执行。
