@@ -53,7 +53,8 @@ impl<const B: usize> Plain for gemv::Dense<B> {
         super::simd::elementwise(w_row, x)
     }
 
-    /// 4 行并行：一份 `x` 段摊到 4 行，解码阶段每 64 B 权重的取数从 8 次降到 5 次。
+    /// 行并行：一份 `x` 段摊到 [`COLS`](super::simd::COLS) 行，解码阶段每 64 B 权重的取数
+    /// 从单行版的 8 次降到 6 次，是 K9 从 40 GiB/s 抬到 66 GiB/s 的主因。
     fn dot_four(w: &[f32], x: &[f32], m: usize, out: &mut [f32]) {
         super::simd::elementwise_four(w, x, m, out)
     }

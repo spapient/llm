@@ -196,3 +196,38 @@ fn the_dense_dot_stays_inside_the_gamma_bound_against_a_wider_reference() {
     );
     assert!(magnitude > 0.0, "样本不能退化成零");
 }
+
+/// 行分块路径（`Plain::dot_four`）的 A1 证据：`forward_dense` 把前 `n − n mod COLS` 行走
+/// [`COLS`](crate::gemv::simd::COLS) 行并行、余数行走单行 `dot`，两条路径的求和顺序不同。
+///
+/// 这里故意取奇数 `N = 5`：若块宽推导写成 `n · m` 而不是 `COLS · m`，第 4 行会读到别行的权重，
+/// 或者尾行拿不到数据——这正是本用例要钉住的边界，而单行版测试覆盖不到。
+#[test]
+fn the_row_blocked_forward_stays_inside_the_gamma_bound_with_an_odd_row_count() {
+    const M: usize = 512;
+    const N: usize = 5;
+    let weight: Vec<f32> = (0..M * N)
+        .map(|k| ((k * 41 % 97) as f32 - 48.0) / 5.0)
+        .collect();
+    let x: Vec<f32> = (0..M)
+        .map(|k| ((k * 13 % 59) as f32 - 29.0) / 3.0)
+        .collect();
+    let mut y = vec![0.0f32; N];
+    forward(&x, &weight, &mut y).expect("合法形状");
+    let u = f64::from(f32::EPSILON) / 2.0;
+    let gamma = M as f64 * u / (1.0 - (M as f64) * u);
+    for r in 0..N {
+        let row = &weight[r * M..][..M];
+        let exact: f64 = (0..M).map(|k| f64::from(row[k]) * f64::from(x[k])).sum();
+        let magnitude: f64 = (0..M)
+            .map(|k| (f64::from(row[k]) * f64::from(x[k])).abs())
+            .sum();
+        let error = (f64::from(y[r]) - exact).abs();
+        assert!(
+            error <= gamma * magnitude,
+            "第 {r} 行实测 {error:e} 超出 γ_M·Σ|wx| = {:e}",
+            gamma * magnitude
+        );
+        assert!(magnitude > 0.0, "第 {r} 行样本退化");
+    }
+}

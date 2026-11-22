@@ -15,11 +15,11 @@
 
    | | crate 成员 | `.rs` 源文件 | 生产行 | 测试行 |
    |---|---:|---:|---:|---:|
-   | llm（新） | 38 | 721 | 94,540 | 58,004 |
+   | llm（新） | 38 | 721 | 94,580 | 58,039 |
    | llm.u | 14 | 349 | 86,735 | 17,857 |
    | Burn | 41 | 1,851 | 381,556 | 95,111 |
 
-   Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代码为 1.6× / 5.3×。
+   Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代码为 1.6× / 5.3×。（新 llm 工作区存在未提交改动，行数以取证时点为准，`cargo test` 全绿后可复跑 §16 命令刷新。）
 3. **关键差距不在"有没有目录"，而在"缝后面是不是真实现"。** 新 llm 的 `Executor`/`Collective`/`Backend` trait 端口齐全，但 GPU 执行器目前仅 Metal 一个真实实现，远端集合通信返回 `Unsupported`；Burn 的端口后面是跨 CPU/CUDA/WGPU/ROCm 的可运行内核与可训练模型。
 4. **llm.u 的长板是多后端实测性能**（CPU NEON/AVX2/AVX-512、Metal、OpenCL/SYCL、CUDA cuBLAS、MUSA 均有 GEMM 数据与对拍；ROCm 仅 SSM 内核库加载/探测，非完整 GEMM 后端），这一点 Burn 的 CPU/CUDA 后端不以极致微核调优为目标；新 llm 把 llm.u 的微核沉淀进 `gemm`/`conv`/`cutile`，但后端执行面尚在重建。
 
@@ -90,7 +90,7 @@
 
 | | llm（新） | llm.u | Burn |
 |---|---|---|---|
-| 运行期三方 | `bytemuck`(optional)、`serde`(optional)、`libfuzzer-sys`(optional) | `cudarc 0.19`、`metal 0.33`、`coreml-native 0.2`、`libloading 0.8`、`serde/serde_json`、`faer 0.24`、`clap`、`criterion`(dev) | `rand`、`half`、`bytemuck`、`cubecl`、`wgpu`、`cudarc`（经 CubeCL）等一整套生态 |
+| 运行期三方 | `bytemuck`(optional)、`serde`/`serde_json`(optional)、`libfuzzer-sys`(optional, dev) | `cudarc 0.19`、`metal 0.33`、`coreml-native 0.2`、`libloading 0.8`(OpenCL/SYCL/CLBlast/MUSA/ROCm/NCE/Vitis 动态加载)、`half 2`、`faer 0.24`(storage)、`serde/serde_json`、`clap`、`criterion`(dev) | `rand`、`half`、`bytemuck`、`cubecl`、`wgpu`、`cudarc`（经 CubeCL）等一整套生态 |
 
 - 新 llm 刻意把外部依赖压到最低：后端 FFI 不直链 `cudarc/metal`，而是走 `cutile` DSL 生成设备源（`.cu/.metal/.cl/.cpp`）+ `optim` 的 `Driver` 编译执行；这是与 llm.u 最大的工程转向。
 - llm.u 直接链 `cudarc`/`metal`/`coreml-native`，后端能力受这些 crate 的 API 面约束。
@@ -141,10 +141,10 @@
 | CPU | `cpu` Fragment（9 份 `.c` + witness）；`CpuExecutor` 实现在 `engine/exec/cpu.rs`；`gemm/fast` 有 NEON 微核（`vfmaq_laneq`） | `host/cpu`：NEON/AVX2/AVX-512 手写微核 + Accelerate/BLAS 探测 | 双 CPU 后端：`burn-cpu`（CubeCL/LLVM，融合+autotune）与 `burn-flex`（纯 Rust eager，no_std/WASM） |
 | NVIDIA CUDA | `cuda` Fragment（9 份 `.cu` + witness）；`CudaBackend` 实现 `Codegen`+`Driver`+`Backend`，`compile_run_cuda` 经 `std::process::Command` 调 **nvcc** 编译并回读；`cuda_lower` 目前只覆盖逐点网格与分块归约，其余骨架未覆盖 | `backend/cuda/cublas/*`（6,238 行）：cuBLAS/cuBLASLT 封装、i8/i4/lowbit/attn/ssm/train，cudarc 直链；CUDA graph 捕获 replay | `burn-cuda`（CubeCL `cuda` feature） |
 | Apple Metal | `metal` Fragment（9 份 `.metal`）；**`MetalExecutor` 是唯一已落地的 GPU `Executor` 实现**；`MetalBackend` 三 trait 齐备，`compile_run_metal` 走 `xcrun metal` + metallib | `backend/metal/rt.rs`（643 行）+ `rt/{compute,dev,train}.rs` 共 1,923 行：tensor 路径、hgemm/i8gemm/unary、SSM adapter；`metal` crate 直链 | 经 `burn-wgpu`(MSL) 与 CubeCL |
-| AMD ROCm/HIP | `rocm` Fragment（9 份 `.cpp`），**未挂 `Driver`/`Backend` 实现** | `backend/blas/rocm_ops.rs`（49 行，SSM Ops 探测/择优，非完整 GEMM 后端） | `burn-rocm`（CubeCL `hip` feature） |
-| Intel OpenCL/SYCL | `opencl` Fragment（9 份 `.cl`），未挂 Driver | `backend/intel/opencl.rs`(862) + `sycl.rs`(483) + BLAS probe；OpenCL/SYCL 实测择优 | 经 wgpu/通用 GPU 路径 |
-| 摩尔线程 MUSA | `musa` Fragment（9 份 `.cu` 变体）；`CudaBackend` 复用 `.cu` 源，工具名 `mcc` 走 `musa_ready`/`compile_run_cuda` 链路 | `backend/blas/musa.rs`（596 行，MUBLAS） | 无 |
-| 昇腾 CANN/Ascend | `AscendBackend` 三 trait 齐备，`compile_run_ascend` 调 CCE；**文档注明生产态内核仍是空**：P0 片段只到标量 C 语义，未触及 MTE/Cube/Vector，`compile_run` 对非单源返回 `Unsupported` | `Device::Cann` 枚举在位，实现待接入 | 无 |
+| AMD ROCm/HIP | `prof` 档案有 `Emit::Hip`，但**无对应 Fragment crate、无 `Driver`/`Backend` 实现** | `backend/blas/rocm_ops.rs`（49 行，经 `libloading` 加载自研 hipcc 共享库，仅 SSM Ops 探测/择优，非完整 GEMM 后端） | `burn-rocm`（CubeCL `hip` feature） |
+| Intel OpenCL/SYCL | `opencl` Fragment（9 份 `.cl`，intel 档案），未挂 Driver | `backend/intel/opencl.rs`(862) + `sycl.rs`(483) + BLAS probe；OpenCL/SYCL 实测择优 | 经 wgpu/通用 GPU 路径 |
+| 摩尔线程 MUSA | `musa` Fragment（9 份 `.cu` 变体）；`CudaBackend` 复用 `.cu` 源，工具名 `mcc` 走 `musa_ready`/`compile_run_cuda` 链路 | `backend/blas/musa.rs`（596 行，MUDNN/MUBLAS） | 无 |
+| 昇腾 CANN/Ascend | `AscendBackend` 三 trait 齐备，`compile_run_ascend` 调 CCE；**文档注明生产态内核仍是空**：P0 片段只到标量 C 语义，未触及 MTE/Cube/Vector，`compile_run` 对非单源返回 `Unsupported`。注：`crates/rocm` 目录实为 ascend 片段（厂商名 `ascend`，输出 AscendC/ccec），仓内无独立 AMD HIP 片段 | `Device::Cann` 枚举在位，实现待接入 | 无 |
 | Apple ANE/CoreML | 无 | `coreml-native` optional 依赖；`backend/npu.rs` 统一 ANE/NCE/Vitis resident 语义（feature 门控） | 无 |
 | 通用 GPU/NPU | `Row::Gpu`（厂商 MMA + 同构 ABI 合同） | `Device::Nce`(Intel NPU, OpenVINO 待接入)、`npu.rs` | 无 |
 | 远端/进程间 | `shard::Remote` 占位；`serve/http` 是单线程 HTTP/1.1 薄适配器（进程内可验证） | `config.comm` 声明 `nccl/rccl`，无传输实现 | `burn-remote`：client/server/transport/telemetry/credential，可远程推理与 P2P 训练 |
@@ -239,7 +239,7 @@
 | | llm（新） | llm.u | Burn |
 |---|---|---|---|
 | 优化器 trait | `Optimizer`（`Slot/OwnedSlot`、weight decay、clip_norm） | 自由函数 + `Adam` 结构 | `Optimizer` trait（module 级参数映射 + state） |
-| 已实现 | `Sgd` `Adam` `Muon`(+momentum/Nesterov/eps) | `sgd` 函数、`Adam`(lr/wd/step) | `Sgd` `Adam` `AdamW` `Adagrad` `RmsProp` `RmsPropMomentum` `Lamb` `Adafactor` `Lion` `Adan` `Lbfgs` `Muon` `Momentum` + 梯度累积 `grad_accum`、梯度裁剪 `grad_clipping`、衰减 `decay` |
+| 已实现 | `Sgd` `Adam` `Muon`(+momentum/Nesterov/eps) | `sgd` 函数、`Adam`(lr/wd 解耦权重衰减/step) | `Sgd` `Adam` `AdamW` `Adagrad` `Adafactor` `Adan` `RmsProp` `Lamb` `Lion` `Lbfgs` `Muon` `Momentum` + 梯度累积 `grad_accum`、梯度裁剪 `grad_clipping`、衰减 `decay` |
 
 ### 8.2 学习率调度 / 训练循环
 
@@ -270,7 +270,7 @@
 | 连续批 | `engine/ifb` + `serve/admit` | `scheduler.step/commit` 连续批 | 无 |
 | 投机采样 | `serve/speculate` | `engine/scheduler/speculative`；`exec/teacher`(math/mod) | 无 |
 | 端点契约 | `serve/endpoint`：Route/Status/Response/Endpoint；`protocol`；`http`（单线程 HTTP/1.1 薄适配器，socket 字节解成方法+路径+请求体交 Router）；`completion/frame/request/model/params` | `serve`：openai schema(chat/completions)、`route` 纯逻辑路由；**HTTP 层未接 axum/tokio（serve 零依赖），router/shutdown 待实现**；transport/assemble/detokenize/ensemble/health/admin/facade | `examples/server`；`burn-remote` 提供远程推理 client/server |
-| 权重格式 | `weights`：safetensors(header/whole-buffer/mmap)、GGUF、JSON、torch `.bin`(ZIP+pickle 栈机)；自有 `.u` 容器 | `storage`：gguf/safetensors/legacy/tans/merkle/sign/cert/patch/lattice；`exec/format`：HF `config.json`/tokenizer、zip 状态字典(pickle 协议 2)、pytorch_model.bin → `.u` 归档 | `pytorch-reader` + `burn-store`/burnpack |
+| 权重格式 | `formats`：GGUF(470+159)、torch `.bin`(ZIP+pickle 栈机 409+180)、JSON；`weights`：safetensors(whole-buffer/header/mmap)；自有 `.u` 容器 | `storage`：gguf/safetensors/legacy/tans/merkle/sign/cert/patch/lattice；`exec/format`：HF `config.json`/tokenizer、zip 状态字典(pickle 协议 2)、pytorch_model.bin → `.u` 归档 | `pytorch-reader` + `burn-store`/burnpack |
 | 分词 | `tokenizer` crate：Tokenizer trait + 字节级参考实现 | `proto/decode` 采样；`serve/token/detokenize` | 无内置分词器 |
 
 ### 9.2 服务能力判定
@@ -350,10 +350,10 @@
 | CPU 内核（手写 SIMD 微核） | ◐ gemm/fast NEON 微核在位，AVX 路径待补 | ● NEON/AVX2/AVX-512/Accelerate 实测 | ◐ CPU 后端可用，非极致调优 |
 | CUDA 后端 | ◐ nvcc 编译回读链路通；lower 仅逐点/归约，GEMM 大内核待接 | ● cuBLAS/LT 封装 + graph capture | ● CubeCL CUDA |
 | Metal 后端 | ● MetalExecutor 落地；xcrun 编译链路通 | ● runtime/tensor 路径实测 | ◐ 经 wgpu/MSL |
-| ROCm/HIP | ○ 仅 Fragment，无 Driver | ◐ 49 行 SSM Ops 探测 | ● CubeCL HIP |
-| OpenCL/SYCL | ○ 仅 Fragment，无 Driver | ● OpenCL 862 + SYCL 483 实测择优 | ○ |
-| MUSA | ◐ 复用 CUDA 源 + mcc 工具链 | ● MUBLAS 596 行实测 | ○ |
-| 昇腾 CANN | ◐ CCE 编译回读；内核仅标量语义，并行核函数未落地 | ◐ 枚举在位 | ○ |
+| AMD ROCm/HIP | ○ 仅 `Emit::Hip` 档案，无 Fragment/Driver | ◐ 49 行 SSM 共享库探测 | ● CubeCL HIP |
+| OpenCL/SYCL | ○ 仅 intel Fragment，无 Driver | ● OpenCL 862 + SYCL 483 实测择优 | ○ |
+| MUSA | ◐ 复用 CUDA 源 + mcc 工具链 | ● MUDNN 596 行实测 | ○ |
+| 昇腾 CANN | ◐ CCE 编译回读；内核仅标量语义，并行核函数未落地（`rocm` 目录实为 ascend 片段） | ◐ 枚举在位 | ○ |
 | ANE/CoreML | ○ | ◐ optional，feature 门控 resident 语义 | ○ |
 | 张量秩/后端泛型 | ○ | ○ | ● |
 | 运行期形状/精度校验 | ● spec/testkit | ● config 校验 | ● 后端能力协商 |
@@ -363,7 +363,7 @@
 | LR 调度 | ● warmup+anneal | ● cosine+warmup | ● 多策略 |
 | 指标注册表/evaluator | ◐ Learner 账表 + evaluate，无可插拔指标/渲染器 | ○ | ● 30+ 指标 |
 | 数据集 crate | ◐ Dataset trait + Chunks 游标，无物理源 | ○ | ● |
-| 检查点体系 | ● snapshot | ○ checkpoint | ● store/checkpoint 完整 |
+| 检查点体系 | ● snapshot（自描述编码 + CRC-32 + 恢复事实） | ◐ checkpoint 字节存档（save/restore/write/read） | ● store/checkpoint 完整 |
 | CNN 卷积层 | ● | ○ | ● |
 | 池化层 | ● | ○ | ● |
 | RNN/GRU/LSTM | ○ | ○ | ● |
@@ -376,8 +376,8 @@
 | 连续批调度 | ● engine/ifb | ● scheduler | ○ |
 | 分页 KV + 前缀共享 | ● radix/page | ● radix/page | ○ 序列 cache |
 | 投机采样 | ● speculate | ● speculative | ○ |
-| OpenAI 兼容端点 | ● route/protocol | ● schema/server | ○ 示例 server |
-| 权重格式读取 | ● safetensors/GGUF/JSON/torch.bin | ● gguf/safetensors | ○ pytorch-reader |
+| OpenAI 兼容端点 | ◐ route/protocol + HTTP/1.1 薄适配器 | ◐ schema + 纯逻辑路由，HTTP 运行时未接 | ○ 示例 server |
+| 权重格式读取 | ● safetensors/GGUF/JSON/torch.bin | ● gguf/safetensors/HF zip-pickle | ○ pytorch-reader |
 | 内置分词器 | ● tokenizer | ○ | ○ |
 | 拓扑/切分数据结构 | ● shard | ◐ 配置 | ● shard rules |
 | 跨进程集合通信 | ○ Remote 占位 | ○ 标签 | ◐ WebSocket/remote |
@@ -393,7 +393,7 @@
 
 ### 15.1 新 llm 相对 Burn 的主要缺口
 
-1. **执行面未闭环**：`Executor` 落地 CPU/Local/Metal 三个；CUDA/MUSA/Ascend 有真实编译驱动（nvcc/mcc/CCE）但算子 `lower` 覆盖有限（CUDA 仅逐点网格 + 分块归约，Ascend 仅标量 C 语义）；ROCm/OpenCL 只有 Fragment，未挂 `Driver`/`Backend`。Burn 同一套 API 可在 5+ 后端跑通完整算子集。
+1. **执行面未闭环**：`Executor` 落地 CPU/Local/Metal 三个；CUDA/MUSA/Ascend 有真实编译驱动（nvcc/mcc/CCE）但算子 `lower` 覆盖有限（CUDA 仅逐点网格 + 分块归约，Ascend 仅标量 C 语义）；OpenCL 只有 Fragment、AMD HIP 仅有档案 `Emit::Hip`，均未挂 `Driver`/`Backend`。Burn 同一套 API 可在 5+ 后端跑通完整算子集。
 2. **类型系统层级低**：张量无后端/秩泛型，编译期无法拦截后端不支持的算子；形状与 dtype 错误要到校验/运行期暴露。
 3. **训练框架不完整**：有最小 Learner/evaluate/账表与 Dataset trait，但无可插拔指标注册表、evaluator/renderer、物理数据集 crate、模块参数树与派生宏；autograd 不覆盖任意张量算子链式求导。
 4. **集合通信未挂载**：`Remote::all_reduce` 直接 `Unsupported`，无法做真实 DP/TP 训练。

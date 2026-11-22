@@ -252,10 +252,11 @@ pub trait Plain: FormulaOwner {
             .sum()
     }
 
-    /// [`COLS`](super::simd::COLS) 行并行点积：`w` 是连续 4 条行、每行 `m` 个元素，结果写进 `out` 的 4 个槽。
+    /// [`COLS`](super::simd::COLS) 行并行点积：`w` 是连续 [`COLS`](super::simd::COLS) 条行、
+    /// 每行 `m` 个元素，结果写进 `out` 的 [`COLS`](super::simd::COLS) 个槽。
     ///
-    /// 默认逐行转发 [`Plain::dot`]；稠密 `f32` 与对称 `int8` 覆盖成 [`simd::elementwise_four`]，
-    /// 一份 `x` 段摊到 4 行。行宽按 4 分支不加运行期判断——这是编译期单态化，不是运行期配置。
+    /// 默认逐行转发 [`Plain::dot`]；稠密 `f32` 覆盖成 [`simd::elementwise_four`]，
+    /// 一份 `x` 段摊到多行。行数由 `COLS` 编译期定死，没有运行期分支。
     fn dot_four(w: &[Self::Elem], x: &[f32], m: usize, out: &mut [f32]) {
         for (r, o) in out.iter_mut().enumerate() {
             *o = Self::dot(&w[r * m..][..m], x);

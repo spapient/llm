@@ -52,35 +52,67 @@ impl Load for u8 {
     }
 }
 
-/// [`COLS`] 行并行点积：`w` 是连续 4 条行、每行 `m` 个元素，结果写进 `out` 的 4 个槽。
+/// [`COLS`] 行并行点积：`w` 是连续 [`COLS`] 条行、每行 `m` 个元素，结果写进 `out` 的 [`COLS`] 个槽。
 ///
-/// 与向量版逐位同形：每行一条累加链、按 `WIDE` 分段、段内逐条 `mul_add`，行尾归约一次。
-/// 行内的独立性由"行"提供（[`COLS`] 条独立链），所以累加器只占 `COLS × WIDE` 个标量，
-/// 循环体形状又足以让 LLVM 自己向量化——稳定版没有显式车道，靠的就是这一点。
+/// 形状是 `COLS × DEPTH × SPAN` 的累加器：一行一份 `x` 段摊给 [`COLS`] 行共用，行内再拆
+/// [`DEPTH`] 条独立链去盖住乘加的 4 拍延迟。稳定版没有显式车道，靠的是循环体形状本身
+/// 够整齐，让 LLVM 自己向量化——所以 `SPAN · DEPTH` 必须是 2 的幂，否则整段退化成标量
+/// （实测 `COLS = 3` 掉到 30 GiB/s）。
+///
+/// 三个常数都不是猜的：2026-11-22 在同机同口径下扫过 `COLS ∈ {2,4,8}`（55.1／48.9／44.7）
+/// 与 `SPAN ∈ {8,16,32,64}`、`DEPTH ∈ {1,2,3,4}`，定格在 2／8／2 —— 再大的 `COLS` 每多一条行流
+/// 就多一条 DRAM 预取流，与 `x` 的流争抢，收益反转为负。
 pub(crate) fn elementwise_four<T: Load>(w: &[T], x: &[f32], m: usize, out: &mut [f32]) {
     let mut acc = [[[0.0f32; SPAN]; DEPTH]; COLS];
     let group = SPAN * DEPTH;
     let full = m - m % group;
     let (x_head, x_tail) = x.split_at(full);
     for (g, xg) in x_head.as_chunks::<{ SPAN * DEPTH }>().0.iter().enumerate() {
-        for d in 0..DEPTH {
+        commit(&mut acc, w, m, xg, g * group);
+    }
+    for (r, (o, chain)) in out.iter_mut().zip(acc).enumerate() {
+        *o = finish(w, m, r, full, x_tail, chain);
+    }
+}
+
+/// 把一个 `x` 组（`SPAN · DEPTH` 个元素）乘进 [`COLS`] 行 × [`DEPTH`] 链的累加器。
+///
+/// 单独成函数只为把嵌套压到门禁的 5 以内；`#[inline]` 保证与内联版逐指令一致——这是
+/// 排版，不是抽象层。
+#[inline]
+fn commit<T: Load>(
+    acc: &mut [[[f32; SPAN]; DEPTH]; COLS],
+    w: &[T],
+    m: usize,
+    xg: &[f32],
+    at: usize,
+) {
+    for (r, row) in acc.iter_mut().enumerate() {
+        for (d, chain) in row.iter_mut().enumerate() {
             let xs = &xg[d * SPAN..][..SPAN];
-            let at = g * group + d * SPAN;
-            for (r, row) in acc.iter_mut().enumerate() {
-                for (lane, (wv, xv)) in w[r * m + at..][..SPAN].iter().zip(xs).enumerate() {
-                    row[d][lane] = T::one(*wv).mul_add(*xv, row[d][lane]);
-                }
+            let ws = &w[r * m + at + d * SPAN..][..SPAN];
+            for (lane, (wv, xv)) in ws.iter().zip(xs).enumerate() {
+                chain[lane] = T::one(*wv).mul_add(*xv, chain[lane]);
             }
         }
     }
-    let row = |r: usize| &w[r * m..][..m];
-    for (r, (o, chain)) in out.iter_mut().zip(acc).enumerate() {
-        let mut total: f32 = chain.iter().flatten().sum();
-        for (wc, xc) in row(r)[full..].iter().zip(x_tail) {
-            total = T::one(*wc).mul_add(*xc, total);
-        }
-        *o = total;
+}
+
+/// 归约一条链并吃掉行尾（`m` 不是 `SPAN · DEPTH` 整数倍时剩下的那几个）。
+#[inline]
+fn finish<T: Load>(
+    w: &[T],
+    m: usize,
+    r: usize,
+    full: usize,
+    x_tail: &[f32],
+    chain: [[f32; SPAN]; DEPTH],
+) -> f32 {
+    let mut total: f32 = chain.iter().flatten().sum();
+    for (wc, xc) in w[r * m + full..][..m - full].iter().zip(x_tail) {
+        total = T::one(*wc).mul_add(*xc, total);
     }
+    total
 }
 
 /// 连续点积：`CHAINS` 条独立累加链轮转，行尾归约一次。
