@@ -208,9 +208,9 @@ fn attention_bufs(
     )
 }
 
+mod attention;
 mod bound;
 mod exact;
-mod attention;
 mod layout;
-mod spot;
 mod scan;
+mod spot;
