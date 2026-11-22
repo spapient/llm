@@ -49,8 +49,7 @@ pub use annotation::spec;
 use diagnostic::{Code, Error, Result};
 
 mod attention;
-mod axis;
-mod bounds;
+mod declare;
 mod engram;
 mod format;
 mod lm_head {
@@ -108,7 +107,7 @@ mod stack;
 pub use attention::{Attention, AttentionAlgo, AttentionBlock, DecodeAttention, LatentAttention};
 
 #[doc(inline)]
-pub use bounds::Bounds;
+pub use declare::Bounds;
 
 #[doc(inline)]
 #[doc(inline)]
@@ -303,6 +302,9 @@ impl Linear {
 
     /// 对称 int8 权重对应的算子名。
     pub const I8: &str = "gemv_i8";
+
+    /// 对称 int2 权重对应的算子名。
+    pub const I2: &str = "gemv_i2";
 
     /// 由输入/输出宽度构造，按 int4 权重（[`WeightFormat::INT4`]）计价；两个宽度都必须非零。
     pub fn new(name: impl Into<String>, in_features: usize, out_features: usize) -> Result<Self> {

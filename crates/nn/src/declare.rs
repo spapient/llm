@@ -1,15 +1,21 @@
+//! 层要向装配侧声明的两件事：**形状**与**下界**。
+//!
+//! 前半是单轴族与归约族共享的规格内核与三张委托宏（形状口径、访问器、规格透传）；后半是由算子
+//! 语义表推出的流量与运算下界。两者同居一个文件，用的是同一条判据：**层只声明，不写第二份常数**
+//! ——形状由构造参数给出，代价由算子名去 `op` 里查，`nn` 不认识除算子名以外的领域知识。
+//!
 //! 层的性能下界：任何实现都不可能低于的流量与运算次数。
 //!
 //! 这些数**不是手写的**：它们由层声明的算子在 `op` 里的语义（一条求和表达式 + 每个操作数的
 //! 位宽与方向）推出。因此新增算子不会多出第二条公式，`nn` 也不必认识除算子名以外的任何领域知识。
 //!
-//! # 为什么要有它
+//! ### 为什么要有它
 //!
 //! `cutile` 的 roofline 在 **kernel** 层回答"这条片段至少要搬多少、算多少"；本模块把同一件事
 //! 抬到**层**：下界是声明，`bench` 的实测是事实，两者之差正是融合、量化与布局真正赚到的部分。
 //! 没有层的下界，"这一层优化了多少"就只能靠人肉估算。
 //!
-//! # 口径：按方向分账
+//! ### 口径：按方向分账
 //!
 //! 流量分成 [`Bounds::read`] 与 [`Bounds::write`] 两个方向，而不是一个 `bytes`：设备的读、写
 //! 上限不是同一个数（只流式读权重的 GEMV 可以跑过拷贝上限），合成一个总量之后"这层卡在哪一侧"
@@ -18,12 +24,182 @@
 //! 这个区分不是为了好看：[`Bounds::moves_within`] 靠它识别"总量不变、只是把读挪成写"——那不是
 //! 融合省下的流量，只是换了一个瓶颈。
 //!
-//! # 与设备无关
+//! ### 与设备无关
 //!
 //! 本模块不认识峰值带宽、厂商或存储层，也不做 roofline 编排：需要与设备比较时由调用方拿峰值
 //! 去比（`cutile::plan` 就是这么做的）。这里只给数对，而且每个方向各给一份。
 
 use diagnostic::{Code, Error, Result};
+use tensor::Shape;
+
+use crate::{BoundsResult, ContractSpec, ParamRole};
+
+/// 层声明的输出形状口径：单轴族透传一条轴，归约族折叠成标量。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OutputShape {
+    /// 输出与输入等长的一条轴 `[len]`。
+    Single,
+    /// 输出标量（空轴 `[]`）。
+    Scalar,
+}
+
+/// 一份已校验规格 + 元素数，被单轴族与归约族的具体层包裹。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AxisCore {
+    spec: ContractSpec,
+    len: usize,
+}
+
+impl AxisCore {
+    /// 构造：元素数必须非零；输出形状口径由具体层给出，算子名由层绑定，构造期经 [`ContractSpec::new`]
+    /// 校验。
+    ///
+    /// # Errors
+    ///
+    /// 元素数为零（[`Code::Invalid`]）。`kind` 只用于诊断文案点名族别。
+    pub(crate) fn new(
+        name: impl Into<String>,
+        op: &'static str,
+        len: usize,
+        output: OutputShape,
+        kind: &str,
+        role: ParamRole,
+    ) -> Result<Self> {
+        if len == 0 {
+            return Err(Error::new(
+                Code::Invalid,
+                format!("{kind}元素数必须非零（len = {len}）"),
+            )
+            .with("nn::AxisCore::new"));
+        }
+        let shape = match output {
+            OutputShape::Single => Shape::new([len]),
+            OutputShape::Scalar => Shape::new([]),
+        };
+        let spec = ContractSpec::new_with_role(name, shape, [op], role)?;
+        Ok(Self { spec, len })
+    }
+
+    pub(crate) fn name(&self) -> &str {
+        self.spec.name()
+    }
+
+    pub(crate) fn output(&self) -> &Shape {
+        self.spec.output()
+    }
+
+    pub(crate) fn spca(&self) -> &ContractSpec {
+        &self.spec
+    }
+
+    /// 元素数（被处理 / 被归约的轴长度）。
+    pub(crate) fn len(&self) -> usize {
+        self.len
+    }
+
+    /// 本层下界：单轴/归约算子的第二形参被骨架忽略，补 `1` 只满足 `shape_ctx` 签名，不参与代价。
+    pub(crate) fn bounds(&self) -> BoundsResult {
+        let op = self
+            .spec
+            .ops()
+            .first()
+            .map(String::as_str)
+            .unwrap_or_default();
+        Bounds::of_ctx(op, self.len, 1).map(Some)
+    }
+}
+
+/// 为一个已显式声明的层绑定算子名、构造器、访问器与 [`Contract`] 委托。
+#[doc(hidden)]
+#[macro_export]
+macro_rules! layer_delegate {
+    ($ty:ident, $op:literal, $kind:literal, $shape:expr, $role:expr) => {
+        impl $ty {
+            /// 本层绑定的算子名。
+            pub const OP: &str = $op;
+
+            /// 由层名与元素数构造；元素数为零、或算子未在 `op` 注册时返回说明。
+            pub fn new(name: impl Into<String>, len: usize) -> diagnostic::Result<Self> {
+                Ok(Self {
+                    inner: $crate::declare::AxisCore::new(
+                        name,
+                        Self::OP,
+                        len,
+                        $shape,
+                        $kind,
+                        $role,
+                    )?,
+                })
+            }
+
+            /// 元素数（被处理 / 被归约的轴长度）。
+            pub fn len(&self) -> usize {
+                self.inner.len()
+            }
+
+            /// 是否为空：构造期已拒绝零长度，因此恒为 `false`。
+            pub fn is_empty(&self) -> bool {
+                self.inner.len() == 0
+            }
+        }
+
+        impl $crate::Contract for $ty {
+            fn name(&self) -> &str {
+                self.inner.name()
+            }
+
+            fn output(&self) -> &$crate::Shape {
+                self.inner.output()
+            }
+
+            fn spca(&self) -> &$crate::ContractSpec {
+                self.inner.spca()
+            }
+
+            fn bounds(&self) -> $crate::BoundsResult {
+                self.inner.bounds()
+            }
+        }
+    };
+}
+
+/// 对"持有 `spec: ContractSpec` 字段"的层，把层名/输出形状/规格三件委托收口一份；
+/// 各层仍在自己的 `Contract` impl 里补类型化访问器与下界。
+#[doc(hidden)]
+#[macro_export]
+macro_rules! spec_accessors {
+    () => {
+        fn name(&self) -> &str {
+            self.spec.name()
+        }
+
+        fn output(&self) -> &$crate::Shape {
+            self.spec.output()
+        }
+
+        fn spca(&self) -> &$crate::ContractSpec {
+            &self.spec
+        }
+    };
+}
+
+/// 只读访问器表：`名字 -> 类型 = 字段`，字段必填（访问器返字段值，不做计算）。
+///
+/// 一行一条的写法与 [`layer_delegate!`] 同源：层数多、访问器都是"返字段"，手写会把
+/// `pub fn x(&self) -> T { self.x }` 平铺成四行 × 每层数条。带计算的访问器（如 `bytes()`、
+/// `intensity()`）不进表，仍手写——表只收"读一个字段"这一种语义。
+#[doc(hidden)]
+#[macro_export]
+macro_rules! accessors {
+    ($($(#[$attr:meta])* $name:ident -> $ty:ty = $field:ident),+ $(,)?) => {
+        $(
+            $(#[$attr])*
+            pub fn $name(&self) -> $ty {
+                self.$field
+            }
+        )+
+    };
+}
 
 /// 一次调用的性能下界：读、写两个方向的最少流量与最少浮点运算次数。
 #[derive(Debug, Clone, Copy, PartialEq)]

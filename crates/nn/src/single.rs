@@ -6,7 +6,7 @@
 
 use diagnostic::{Code, Error, Result};
 
-use crate::axis::{AxisCore, OutputShape};
+use crate::declare::{AxisCore, OutputShape};
 use crate::layer_delegate;
 use crate::{Bounds, BoundsResult, Contract, ParamRole, spec_accessors};
 
@@ -156,7 +156,7 @@ mod reduce {
     //! 归约层：把一维输入折叠成单个标量输出。
 
     use crate::ParamRole;
-    use crate::axis::{AxisCore, OutputShape};
+    use crate::declare::{AxisCore, OutputShape};
     use crate::layer_delegate;
 
     /// 求和归约：`y = Σ a[0..n]`，输出单个标量。

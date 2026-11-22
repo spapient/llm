@@ -15,8 +15,15 @@ pub enum WeightFormat {
     Bf16,
     /// 8 位整数（int8 / uint8 的语义由算子决定，本层不猜）。
     I8,
+    /// 2 位打包整数，但**没有声明分组**：与 [`WeightFormat::Packed4`] 同一类"缺标度条目"的编码。
+    Packed2,
     /// 4 位打包整数，但**没有声明分组**：元素类型本身不携带"多少个元素共享一个缩放因子"。
     Packed4,
+    /// 2 位打包整数 + 每 `group` 个元素一个缩放因子。
+    Int2 {
+        /// 分组宽度（`m` 必须是它的整数倍）。
+        group: usize,
+    },
     /// 4 位打包整数 + 每 `group` 个元素一个缩放因子。
     Int4 {
         /// 分组宽度（`m` 必须是它的整数倍）。
@@ -36,9 +43,13 @@ const FORMATS: &[(DType, WeightFormat)] = &[
     (DType::BF16, WeightFormat::Bf16),
     (DType::I8, WeightFormat::I8),
     (DType::U4, WeightFormat::Packed4),
+    (DType::U2, WeightFormat::Packed2),
 ];
 
 impl WeightFormat {
+    /// 对称 int2 的默认格式：32 元素分组（与 int4 共用内核的 group 声明档），即 [`crate::Linear::I2`] 的输入格式。
+    pub const INT2: Self = Self::Int2 { group: 32 };
+
     /// 量化侧的默认格式：int4 + 32 元素分组，即 [`crate::Linear::OP`] 的输入格式。
     pub const INT4: Self = Self::Int4 { group: 32 };
 
@@ -59,6 +70,11 @@ impl WeightFormat {
         Self::Int4 { group }
     }
 
+    /// 显式声明 2 位量化的分组。
+    pub const fn int2(group: usize) -> Self {
+        Self::Int2 { group }
+    }
+
     /// 显式声明 8 位逐元素量化的分组。
     pub const fn int8(group: usize) -> Self {
         Self::Int8 { group }
@@ -69,6 +85,7 @@ impl WeightFormat {
         match self {
             Self::Int4 { .. } => DType::U4,
             Self::Int8 { .. } => DType::I8,
+            Self::Int2 { .. } => DType::U2,
             other => FORMATS
                 .iter()
                 .find(|(_, format)| *format == other)
@@ -89,14 +106,17 @@ impl WeightFormat {
 
     /// 为什么这种编码取不到算子：一句话说清"缺什么"，而不是只说"没有"。
     pub fn unpriced_reason(self) -> String {
+        // 量化格式的说法只有一种：缺的是「分组对得上」而不是算子本身。
+        if let Some(quant) = self.quantized() {
+            return quantized_reason(quant);
+        }
         match self {
-            Self::Packed4 => "是 4 位打包，但找不到它的标度条目，分组不明".to_string(),
+            Self::Packed2 | Self::Packed4 => format!(
+                "是 {} 位打包，但找不到它的标度条目，分组不明",
+                self.dtype().bits()
+            ),
             // 稠密算子目前只有 32 位那一条：16 位的元素宽度不同，套上去读下界会正好差两倍。
             Self::F16 | Self::Bf16 => format!("编码是 {self}，还没有 16 位元素的投影算子"),
-            format @ (Self::Int4 { .. } | Self::Int8 { .. }) => match format.quantized() {
-                Some(quant) => quantized_reason(quant),
-                None => format!("编码是 {format}，还没有这个格式的投影算子"),
-            },
             other => format!("编码是 {other}，还没有这个格式的投影算子"),
         }
     }
@@ -104,6 +124,12 @@ impl WeightFormat {
     /// 带分组的量化格式描述；非量化返回 `None`。
     fn quantized(self) -> Option<Quant> {
         match self {
+            Self::Int2 { group } => Some(Quant {
+                group,
+                op: crate::Linear::I2,
+                declared: kernel_group(crate::Linear::I2),
+                label: "int2",
+            }),
             Self::Int4 { group } => Some(Quant {
                 group,
                 op: crate::Linear::OP,
@@ -124,7 +150,10 @@ impl WeightFormat {
 impl fmt::Display for WeightFormat {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Packed4 => formatter.write_str("4 位打包（未声明分组）"),
+            Self::Packed2 | Self::Packed4 => {
+                write!(formatter, "{} 位打包（未声明分组）", self.dtype().bits())
+            }
+            Self::Int2 { group } => write!(formatter, "int2（分组 {group}）"),
             Self::Int4 { group } => write!(formatter, "int4（分组 {group}）"),
             Self::Int8 { group } => write!(formatter, "int8（分组 {group}）"),
             // 其余四种编码的名字就是元素类型的规范名，不在这里再写一遍字面量。
