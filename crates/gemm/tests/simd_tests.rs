@@ -175,7 +175,15 @@ fn agree_elementwise<T: Load>(w: &[T], x: &[f32], one: impl Fn(T) -> f32) {
 #[test]
 fn the_dense_channel_covers_every_chain_and_the_tail() {
     // 一段 = `CHAINS · WIDE` 个元素；两边的零头与整段都要出现。
-    for m in [1, WIDE - 1, WIDE, WIDE + 1, CHAINS * WIDE, CHAINS * WIDE + 3, 257] {
+    for m in [
+        1,
+        WIDE - 1,
+        WIDE,
+        WIDE + 1,
+        CHAINS * WIDE,
+        CHAINS * WIDE + 3,
+        257,
+    ] {
         let w: Vec<f32> = (0..m)
             .map(|i| ((i * 37 % 101) as f32 - 50.0) / 7.0)
             .collect();
@@ -187,9 +195,15 @@ fn the_dense_channel_covers_every_chain_and_the_tail() {
 #[test]
 fn the_int8_channel_sign_extends_the_byte_pattern() {
     for m in [1, WIDE - 1, WIDE, WIDE + 1, CHAINS * WIDE + 5, 263] {
-        // `% 251` 跨过 127，正值与负值交替出现。
+        // `% 251` 跨过 127，正值与负值交替出现；短样本凑不齐两侧，按整段起点判定。
         let w: Vec<u8> = (0..m).map(|i| ((i * 37) % 251) as u8).collect();
-        assert!(w.iter().any(|&b| b > 127), "样本必须跨过半程，否则符号没被考到");
+        if m >= WIDE {
+            assert!(
+                w.iter().any(|&b| b > 127),
+                "样本必须跨过半程，否则符号没被考到"
+            );
+            assert!(w.iter().any(|&b| b <= 127), "样本必须同时含正码");
+        }
         agree_elementwise(&w, &fractional(m), |b| (b as i8) as f32);
     }
 }

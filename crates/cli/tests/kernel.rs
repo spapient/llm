@@ -30,6 +30,20 @@ fn parses_each_subcommand_with_its_defaults() {
         }
     );
     assert_eq!(
+        CutileCommand::parse(&args(&["fusions"])).unwrap(),
+        CutileCommand::Fusions {
+            profile: DEFAULT_PROFILE,
+            budget: 12
+        }
+    );
+    assert_eq!(
+        CutileCommand::parse(&args(&["fusions", "--profile", "nv", "--budget", "4"])).unwrap(),
+        CutileCommand::Fusions {
+            profile: "nv",
+            budget: 4
+        }
+    );
+    assert_eq!(
         CutileCommand::parse(&args(&["cache", "gc"])).unwrap(),
         CutileCommand::Cache { limit: None }
     );

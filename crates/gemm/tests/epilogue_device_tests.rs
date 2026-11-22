@@ -101,12 +101,14 @@ fn literals(values: &[f32]) -> String {
 /// 构造——这正是 `witness.<ext>` 一直守的约定，装配出的尾块沿用它，所以能在宿主上原样执行。
 fn source(device: &prof::Device, scenario: &Scenario) -> Result<String, String> {
     let count = N.to_string();
+    let cols = COLS.to_string();
     let rows = ROWS.to_string();
     let args = EpiArgs {
         out: "y",
         bias: "BIAS",
         residual: "RES",
         count: &count,
+        cols: &cols,
         rows: &rows,
     };
     let body = epilogue(device, scenario.steps, &args).map_err(|error| error.to_string())?;

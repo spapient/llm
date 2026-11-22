@@ -268,7 +268,9 @@ impl Load for u8 {
     /// `u8 → i8` 是位模式重解释，`i8 → f32` 是有符号展宽，两条都是单条指令。
     #[inline]
     fn wide(block: &[Self]) -> Simd<f32, WIDE> {
-        Simd::<u8, WIDE>::from_slice(block).cast::<i8>().cast::<f32>()
+        Simd::<u8, WIDE>::from_slice(block)
+            .cast::<i8>()
+            .cast::<f32>()
     }
 
     #[inline]

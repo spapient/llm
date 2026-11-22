@@ -10,6 +10,7 @@
 //! cargo run --bin cutile -- doctor --device cpu --why 83a3ecdb31cd1225
 //! cargo run --bin cutile -- verify --devices cpu,cuda --emit-ledger
 //! cargo run --bin cutile -- bench --shape 4096x4096 --repeat 50
+//! cargo run --bin cutile -- fusions --budget 12
 //! cargo run --bin cutile -- cache gc --limit 1073741824
 //! ```
 
@@ -76,6 +77,7 @@ fn run(command: &CutileCommand<'_>, settings: &Settings) -> diagnostic::Result<S
             repeat,
         } => bench(settings, op, shape.as_deref(), device.as_deref(), *repeat),
         CutileCommand::Ledger { out } => ledger(settings, out.as_deref()),
+        CutileCommand::Fusions { profile, budget } => fusions(settings, profile, *budget),
         CutileCommand::Cache { limit } => cache_gc(settings, *limit),
     }
 }
@@ -104,6 +106,13 @@ fn ledger(settings: &Settings, out: Option<&str>) -> diagnostic::Result<String> 
         }
         None => Ok(text),
     }
+}
+
+/// `fusions`：候选融合逐条过 roofline，按加速比排名——README §9.1 那张清单的可执行版本。
+fn fusions(settings: &Settings, name: &str, budget: usize) -> diagnostic::Result<String> {
+    let catalogue = Catalogue::load(&settings.dirs())?;
+    let ranked = cutile::plan::ranking(catalogue.resolve(name)?, catalogue.ops(), budget);
+    Ok(matrix::fusions(&ranked))
 }
 
 /// `--why` 缓存键解释段；没给键或没有可行变体时返回空串。

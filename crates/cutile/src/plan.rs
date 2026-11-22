@@ -204,6 +204,14 @@ impl Verdict {
         }
     }
 
+    /// 打不出分的原因；`Scored` 没有原因可报。
+    pub fn reason(&self) -> Option<&str> {
+        match self {
+            Self::Scored(_) => None,
+            Self::Rejected(reason) | Self::Unscorable(reason) => Some(reason),
+        }
+    }
+
     /// 排序键：能打分的按加速比降序在前，其次是"没条件打分"，最后是"拼不出来"。
     fn rank(&self) -> (u8, f64) {
         match self {

@@ -145,8 +145,10 @@ pub struct EpiArgs<'a> {
     pub bias: &'a str,
     /// `$1`：`residual` 步的残差数组，长度是元素数。
     pub residual: &'a str,
-    /// `$2`：元素数（`bias` 是列宽）。
+    /// `$2`：元素数——除 `bias` 外的各步都按它走整块。
     pub count: &'a str,
+    /// `$2`：列宽——`bias` 按 `[行][列]` 两层走，`$3` 是行数。
+    pub cols: &'a str,
     /// `$3`：`bias` 的行数。
     pub rows: &'a str,
 }
@@ -239,7 +241,7 @@ fn slots_head(
     Ok(match step {
         Step::Bias => (
             Epilogue::Bias,
-            [args.out, args.bias, args.count, args.rows].map(str::to_string),
+            [args.out, args.bias, args.cols, args.rows].map(str::to_string),
         ),
         Step::Act(kind) => (
             Epilogue::Act,

@@ -12,6 +12,7 @@ pub const USAGE: &str = "\
   verify                  逐设备验证：协商 + 拼接 + 编译 + 与标量参考对拍
   bench                   跑一次并报告带宽达成率
   ledger                  跨档案能力台账：每条供给这次执行到的结论
+  fusions                 候选融合按 roofline 加速比排名（能打分的在前）
   cache gc                按 LRU 把缓存回收到容量上限以内
 
 选项：
@@ -24,6 +25,8 @@ pub const USAGE: &str = "\
   --shape <MxN>           bench 用（缺省：算子的生产形状）
   --device <设备>          bench 用（缺省 auto：按本机指纹挑；也可写 cpu / nvidia / musa …）
   --repeat <次数>         bench 用（缺省 50）
+  --profile <档案>        fusions 用（缺省 `cpu`）
+  --budget <条数>         fusions 用（缺省 12）
   --limit <字节>          cache gc 用（缺省 2 GiB）
   -h, --help              打印本说明
 ";
@@ -33,6 +36,9 @@ pub const DEFAULT_OP: &str = "gemv_i4";
 
 /// 缺省设备名：按指纹选。
 pub const AUTO: &str = "auto";
+
+/// 缺省档案名：`fusions` 打分要用一个真实的峰值：缺了就无从定界。
+pub const DEFAULT_PROFILE: &str = "cpu";
 
 /// 内核层审计命令。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,6 +76,13 @@ pub enum CutileCommand<'a> {
     Ledger {
         /// 台账 markdown 落盘路径；`None` 只打印到 stdout。
         out: Option<&'a str>,
+    },
+    /// 候选融合打分。
+    Fusions {
+        /// 档案名（`auto` 表示按本机指纹选）。
+        profile: &'a str,
+        /// 候选条数上限。
+        budget: usize,
     },
     /// 缓存维护：把缓存回收到容量上限以内。
     Cache {
@@ -113,6 +126,11 @@ const SUBCOMMANDS: &[(&str, Grammar, Build)] = &[
         bench,
     ),
     ("ledger", &[value("--out", "文件")], ledger),
+    (
+        "fusions",
+        &[value("--profile", "档案"), value("--budget", "条数")],
+        fusions,
+    ),
 ];
 
 /// `cache gc` 的选项表：上限是字节数，与 `--repeat` 的次数不同。
@@ -182,6 +200,16 @@ fn bench<'a>(flags: &mut Flags<'a>) -> Result<CutileCommand<'a>> {
 fn ledger<'a>(flags: &mut Flags<'a>) -> Result<CutileCommand<'a>> {
     Ok(CutileCommand::Ledger {
         out: flags.take_text("--out"),
+    })
+}
+
+/// `fusions`：候选融合按加速比排名。
+fn fusions<'a>(flags: &mut Flags<'a>) -> Result<CutileCommand<'a>> {
+    Ok(CutileCommand::Fusions {
+        profile: flags.take_text("--profile").unwrap_or(DEFAULT_PROFILE),
+        budget: flags
+            .number("--budget", "`--budget` 需要正整数")?
+            .unwrap_or(12),
     })
 }
 

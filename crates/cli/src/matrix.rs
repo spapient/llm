@@ -1,10 +1,12 @@
 //! 台账的表格排版：证据汇总表、原语 × 后端矩阵、逐条说明与档案头/原语表。
 
 use cutile::atom::Prim;
+use cutile::plan::Verdict;
 use cutile::prof::Profile;
 use diagnostic::render::{Align, Sheet};
 use llm_optim::ledger::{BackendRow, LedgerCell, Status};
 use llm_optim::verify::Verified;
+use op::decl::Fusion;
 use std::fmt::Write as _;
 
 /// 台账矩阵：证据汇总表 + 原语×后端对照表 + 逐条证据说明。
@@ -151,4 +153,45 @@ pub(super) fn ledger_primitives(profile: &Profile) -> String {
         ]);
     }
     format!("\n\n{}", table.render())
+}
+
+/// 融合候选打分表：能打分的按加速比降序在前，没条件打分的带原因排在后面。
+pub(super) fn fusions(rows: &[(Fusion, Verdict)]) -> String {
+    let mut table = Sheet::new([
+        "生产者", "消费者", "加速比", "省下", "定界", "判决", "说明",
+    ])
+    .align([
+        Align::Left,
+        Align::Left,
+        Align::Right,
+        Align::Right,
+        Align::Left,
+        Align::Left,
+        Align::Left,
+    ]);
+    for (fusion, verdict) in rows {
+        let (speedup, saved, bound) = match verdict {
+            Verdict::Scored(payoff) => (
+                format!("{:.2}×", payoff.speedup()),
+                format!("{} B", payoff.saved_bytes),
+                payoff.bound(),
+            ),
+            _ => (String::from("—"), String::from("—"), "—"),
+        };
+        table = table.row([
+            format!("`{}`", fusion.producer),
+            format!("`{}`", fusion.consumer),
+            speedup,
+            saved,
+            bound.to_string(),
+            verdict.as_str().to_string(),
+            verdict.reason().unwrap_or("—").to_string(),
+        ]);
+    }
+    format!(
+        "## 候选融合（roofline 加速比）\n\n{}\n\n\
+         加速比是结构性上界：只算中间量的往返，不算掩盖、寄存器压力与指令缓存。\
+         拼不出来的那条带几何原因，缺投影或缺峰值的那条带缺失项——它们都留在表里。\n",
+        table.render()
+    )
 }

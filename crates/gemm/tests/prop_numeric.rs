@@ -58,6 +58,19 @@ fn ints(len: usize) -> impl Strategy<Value = Vec<f32>> {
     proptest::collection::vec(small_int(), len)
 }
 
+/// 幅值落在 `[1/8, 2)` 的标量：两个这样的数相乘 ≥ 1/64，`m ≤ 96` 的部分和 ≤ 384，
+/// 既不下溢成次正规数也不上溢 —— `γ_m` 界成立的前提（每步都正常舍入）就满足了。
+fn scaled_scalar() -> impl Strategy<Value = f32> {
+    (prop::finite(), any::<bool>()).prop_map(|(v, negative)| {
+        let magnitude = 0.125 + v.abs() * 1.875;
+        if negative { -magnitude } else { magnitude }
+    })
+}
+
+fn scaled(len: usize) -> impl Strategy<Value = Vec<f32>> {
+    proptest::collection::vec(scaled_scalar(), len)
+}
+
 /// 稠密 GEMV 一行定义：`out[j] = Σ_k w[j·m+k]·x[k]`。
 fn gemv_f32_of(x: &[f32], w: &[f32], n: usize) -> Vec<f32> {
     let mut out = vec![0.0f32; n];
@@ -464,8 +477,8 @@ proptest! {
     /// 加性：`gemv(x₁ + x₂) = gemv(x₁) + gemv(x₂)`。
     #[test]
     fn gemv_f32_is_additive_in_x(
-        m in 1usize..=32, n in 1usize..=8,
-        w in ints(32 * 8), a in ints(32), b in ints(32),
+        m in 1usize..=96, n in 1usize..=8,
+        w in ints(96 * 8), a in ints(96), b in ints(96),
     ) {
         let (w, a, b) = (&w[..m * n], &a[..m], &b[..m]);
         let summed: Vec<f32> = a.iter().zip(b).map(|(p, q)| p + q).collect();
@@ -477,7 +490,7 @@ proptest! {
     /// 齐次性（2 的幂）：`gemv(2x) = 2·gemv(x)`，逐位成立。
     #[test]
     fn gemv_f32_scales_exactly_with_powers_of_two(
-        m in 1usize..=32, n in 1usize..=8, w in ints(32 * 8), x in ints(32),
+        m in 1usize..=96, n in 1usize..=8, w in ints(96 * 8), x in ints(96),
     ) {
         let (w, x) = (&w[..m * n], &x[..m]);
         let doubled: Vec<f32> = x.iter().map(|v| v * 2.0).collect();
@@ -488,7 +501,7 @@ proptest! {
     /// 内核与"逐行顺序点积"的定义一致：任意有限输入下只差累加顺序的舍入。
     #[test]
     fn gemv_f32_matches_the_row_wise_dot_product(
-        m in 1usize..=32, n in 1usize..=8, w in matrix(32, 8), x in matrix(32, 1),
+        m in 1usize..=96, n in 1usize..=8, w in matrix(96, 8), x in matrix(96, 1),
     ) {
         let (w, x) = (&w[..m * n], &x[..m]);
         let got = gemv_f32_of(x, w, n);
@@ -496,11 +509,37 @@ proptest! {
         prop::assert_within_rel(&got, &dense_reference(x, w, n), 1e-4, "gemv_f32 对逐行顺序点积");
     }
 
+    /// 稠密点积的**误差上界**：`simd::elementwise` 把求和拆进多条累加链，顺序与标量不同，
+    /// 逐位相等不可能；于是对 f64 真值钉 `γ_m = m·u/(1−m·u)`。
+    ///
+    /// `f32×f32` 落进 `f64` 是精确的（24+24 ≤ 53 位），96 项 `f64` 求和的相对误差
+    /// ≈ 96·2⁻⁵³ ≈ 1e-14，比 `f32` 的界小 7 个数量级 —— `exact as f32` 就是可用的真值。
+    #[test]
+    fn gemv_f32_dot_stays_inside_the_gamma_bound(
+        m in 1usize..=96, n in 1usize..=5, w in scaled(96 * 5), x in scaled(96),
+    ) {
+        let (w, x) = (&w[..m * n], &x[..m]);
+        let got = gemv_f32_of(x, w, n);
+        let u = f64::from(f32::EPSILON) / 2.0;
+        let gamma = m as f64 * u / (1.0 - m as f64 * u);
+        for j in 0..n {
+            let products = (0..m).map(|k| f64::from(w[j * m + k]) * f64::from(x[k]));
+            let (exact, magnitude) =
+                products.fold((0.0f64, 0.0f64), |(sum, mag), p| (sum + p, mag + p.abs()));
+            let error = (f64::from(got[j]) - exact).abs();
+            prop_assert!(
+                error <= gamma * magnitude,
+                "第 {j} 行：{error:e} 超出 γ_{m}·Σ|wx| = {:e}",
+                gamma * magnitude
+            );
+        }
+    }
+
     /// 行批与逐行调用给同一个答案：并行遍历不该改变数值口径。
     #[test]
     fn gemv_f32_batch_equals_row_by_row_calls(
-        m in 1usize..=16, n in 1usize..=6, rows in 1usize..=3,
-        w in ints(16 * 6), x in ints(16 * 3),
+        m in 1usize..=96, n in 1usize..=6, rows in 1usize..=3,
+        w in ints(96 * 6), x in ints(96 * 3),
     ) {
         let (w, head) = (&w[..m * n], &x[..rows * m]);
         let mut batched = vec![0.0f32; rows * n];
@@ -523,7 +562,7 @@ proptest! {
     /// 1 字节/元素、整数权重 × 整数输入 × 2 的幂标度 → 全程精确，逐位相等。
     #[test]
     fn gemv_i8_matches_the_dequantized_dot(
-        n in 1usize..=5, groups in 1usize..=2, x in ints(64),
+        n in 1usize..=5, groups in 1usize..=4, x in ints(128),
     ) {
         let m = crate::gemv::GROUP * groups;
         let x = &x[..m];
@@ -537,7 +576,7 @@ proptest! {
     /// i8 同样是线性映射：分组标度不破坏加性。
     #[test]
     fn gemv_i8_is_additive_in_x(
-        n in 1usize..=4, groups in 1usize..=2, a in ints(64), b in ints(64),
+        n in 1usize..=4, groups in 1usize..=4, a in ints(128), b in ints(128),
     ) {
         let m = crate::gemv::GROUP * groups;
         let (a, b) = (&a[..m], &b[..m]);
@@ -556,7 +595,7 @@ proptest! {
     /// i4 打包：与"独立解包 + 查码表"的定义逐位相等，覆盖 SIMD（n≥4）与标量（n<4）两条路径。
     #[test]
     fn gemv_i4_matches_the_packed_definition(
-        n in 1usize..=5, groups in 1usize..=2, x in ints(64),
+        n in 1usize..=5, groups in 1usize..=4, x in ints(128),
     ) {
         let m = crate::gemv::GROUP * groups;
         let x = &x[..m];
@@ -571,7 +610,7 @@ proptest! {
     /// i2 打包：同上，位宽 2、每组 4 个码。
     #[test]
     fn gemv_i2_matches_the_packed_definition(
-        n in 1usize..=5, groups in 1usize..=2, x in ints(64),
+        n in 1usize..=5, groups in 1usize..=4, x in ints(128),
     ) {
         let m = crate::gemv::GROUP * groups;
         let x = &x[..m];
