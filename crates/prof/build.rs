@@ -84,32 +84,29 @@ struct Device {
     epilogue: PathBuf,
     /// 见证源码与它的档案：生成的代码按路径读，构建期再按路径校。
     witness: PathBuf,
+    /// 档案路径：生成的代码按路径读，生成器也拿它当输入登记。
     archive: PathBuf,
+    /// 已解析的档案本体：档案表与片段表读的是同一份解析结果，不会各读一次盘。
+    doc: toml::Table,
     /// 尾块六段的名字，按出现顺序。
     forms: Vec<String>,
 }
 
 /// 目录里的设备：一个子目录一台，顺序按目录名升序（产物稳定）。
+///
+/// 每个目录只列一次：判据是「目录里有没有见证文件」，而判完要读的文件清单正是同一份。
 fn devices_of(src: &Path) -> Vec<Device> {
-    let entries = fs::read_dir(src)
-        .unwrap_or_else(|error| fail(format!("读取 {} 失败：{error}", src.display())));
-    let mut dirs: Vec<PathBuf> = entries
-        .map(|entry| {
-            entry
-                .unwrap_or_else(|error| {
-                    fail(format!("读取 {} 的目录项失败：{error}", src.display()))
-                })
-                .path()
-        })
-        .filter(|path| path.is_dir() && has_witness(path))
+    let mut dirs: Vec<(PathBuf, Vec<PathBuf>)> = dirs_in(src)
+        .into_iter()
+        .filter(|(_, files)| has_witness(files))
         .collect();
-    dirs.sort();
+    dirs.sort_by(|left, right| left.0.cmp(&right.0));
     if dirs.is_empty() {
         fail(format!("`{}` 里一台设备都没有", src.display()));
     }
 
     let mut out: Vec<Device> = Vec::new();
-    for dir in &dirs {
+    for (dir, files) in dirs {
         let name = dir
             .file_name()
             .and_then(|value| value.to_str())
@@ -117,7 +114,7 @@ fn devices_of(src: &Path) -> Vec<Device> {
         if !identifier(name) {
             fail(format!("设备目录名 `{name}` 不是可移植的 Rust 标识符"));
         }
-        let device = scan(dir, name);
+        let device = scan(&dir, name, files);
         // 六台设备的尾块必须是同一组形式：装配器按名字取段，缺一处就只在那一台上炸。
         match out.first() {
             Some(first) if first.forms != device.forms => fail(format!(
@@ -133,8 +130,9 @@ fn devices_of(src: &Path) -> Vec<Device> {
 }
 
 /// 扫描一台设备的目录：七段原语片段 + `epilogue.<ext>` + `witness.<ext>` + 同名档案。
-fn scan(dir: &Path, name: &str) -> Device {
-    let files = files_in(dir);
+///
+/// `files` 由调用方一次性列出并传入：判「这个目录算不算设备」与「它有哪些文件」是同一回读盘。
+fn scan(dir: &Path, name: &str, files: Vec<PathBuf>) -> Device {
     let witness = files
         .iter()
         .find(|path| stem(path) == Some(WITNESS_STEM))
@@ -159,29 +157,29 @@ fn scan(dir: &Path, name: &str) -> Device {
     let mut fragments = Vec::new();
     let mut entries = Vec::new();
     let mut epilogue = None;
-    for path in files
-        .iter()
-        .filter(|path| **path != witness && **path != archive)
-    {
-        let prim = stem(path)
+    for path in files {
+        if path == witness || path == archive {
+            continue;
+        }
+        let prim = stem(&path)
             .unwrap_or_else(|| fail(format!("`{}` 的文件名不是合法 UTF-8", path.display())))
             .to_string();
-        if extension(path).as_deref() != Some(ext.as_str()) {
+        if extension(&path).as_deref() != Some(ext.as_str()) {
             fail(format!(
                 "`{}` 的扩展名与同目录的 `{WITNESS_STEM}.{ext}` 不一致：一台设备只有一种输出语言",
                 path.display()
             ));
         }
         if prim == EPILOGUE_STEM {
-            epilogue = Some(path.clone());
+            epilogue = Some(path);
             continue;
         }
-        let implementation = signature(&prim, &read(path), path);
+        let implementation = signature(&prim, &read(&path), &path);
         entries.push((
             prim.clone(),
-            entry_of(&provides, &prim, &implementation, path),
+            entry_of(&provides, &prim, &implementation, &path),
         ));
-        fragments.push((prim, path.clone()));
+        fragments.push((prim, path));
     }
     if fragments.is_empty() {
         fail(format!("`{}` 里一段片段都没有", dir.display()));
@@ -211,6 +209,7 @@ fn scan(dir: &Path, name: &str) -> Device {
         epilogue,
         witness,
         archive,
+        doc,
         forms,
     }
 }
@@ -386,10 +385,24 @@ fn files_in(dir: &Path) -> Vec<PathBuf> {
 
 /// 只有带见证文件的目录才是设备目录：`src/` 里除了六台设备的语料，还有 `decl`/`ops` 这类
 /// 非设备子树（声明解析与算子语料），它们不含 `witness.<ext>`，不得被当成设备扫描。
-fn has_witness(dir: &Path) -> bool {
-    files_in(dir)
-        .iter()
-        .any(|path| stem(path) == Some(WITNESS_STEM))
+fn has_witness(files: &[PathBuf]) -> bool {
+    files.iter().any(|path| stem(path) == Some(WITNESS_STEM))
+}
+
+/// `src` 下每个子目录与其文件清单（一次读盘，判据与扫描共用同一份清单）。
+fn dirs_in(src: &Path) -> Vec<(PathBuf, Vec<PathBuf>)> {
+    let mut out = Vec::new();
+    for entry in fs::read_dir(src)
+        .unwrap_or_else(|error| fail(format!("读取 {} 失败：{error}", src.display())))
+    {
+        let entry = entry
+            .unwrap_or_else(|error| fail(format!("读取 {} 的目录项失败：{error}", src.display())));
+        let path = entry.path();
+        if path.is_dir() {
+            out.push((path.clone(), files_in(&path)));
+        }
+    }
+    out
 }
 
 fn read(path: &Path) -> String {
