@@ -39,15 +39,10 @@ pub const PLANNED: &[(&str, &str)] = &[
         "该断言\"每个算子恰好被访问一次\"与\"加法梯度是求和\"；但同一批公式的生产路径在 \
          `train`（刚补上梯度对拍），先坐实那边再回填这里的遍历纪律。",
     ),
-    (
-        "optim",
-        "该复制 `train::optimizer` 的单步闭式解；动手前须确认 `optim` 与 `train` 不是同一份\
-         实现的两次抄写，否则性质会在两处各写一遍、各漂一半。",
-    ),
 ];
 
 /// 缺口上限：只许减，不许随手加。
-pub const PLANNED_MAX: usize = 2;
+pub const PLANNED_MAX: usize = 1;
 
 /// 有明确替代覆盖、因而**不该**再写性质测试的成员，按理由归类。
 pub const ABSENT: &[Absence] = &[

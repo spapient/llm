@@ -44,11 +44,11 @@ pub(crate) fn locate_module(module: &str) -> Option<PathBuf> {
     locate(module, 0)
 }
 
-/// 内核机制与运行期的 `src` 根。`cutile` 拆成「纯机制」+「run（编译执行 / doctor / bench /
-/// verify）」两家后，契约文件会在两家之间搬；判据守的是结构契约（缝在、注册表在、注入点在），
-/// 不是文件坐标，所以按两家探测，谁家有就用谁家的。
+/// 内核机制与运行期的 `src` 根。`optim` 并入 `shard` 后，契约文件（后端缝、注册表）在
+/// `cutile` 与 `shard` 两家之间；判据守的是结构契约（缝在、注册表在、注入点在），不是文件
+/// 坐标，所以按两家探测，谁家有就用谁家的。
 fn cutile_path(relative: &str) -> PathBuf {
-    let candidates: Vec<PathBuf> = ["cutile", "optim"]
+    let candidates: Vec<PathBuf> = ["cutile", "shard"]
         .iter()
         .map(|name| root().join("crates").join(name).join("src").join(relative))
         .collect();
@@ -58,7 +58,7 @@ fn cutile_path(relative: &str) -> PathBuf {
         .cloned()
         .unwrap_or_else(|| {
             panic!(
-                "`{relative}` 在 cutile 与 optim 的 `src` 里都不存在（查过 {}）",
+                "`{relative}` 在 cutile 与 shard 的 `src` 里都不存在（查过 {}）",
                 candidates
                     .iter()
                     .map(|path| path.display().to_string())

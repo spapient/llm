@@ -14,9 +14,9 @@
 |---|---|---|---|
 | L1 基础设施 | `diagnostic`、`rng`、`dtype`、`wire`、`formats`、`tools` | 错误类型与声明数据树（`data`：构建期语料在运行期的形状，**没有解析器**）、计数器型确定性随机、精度闭集、与领域无关的字节码闭集（CRC-32 / LEB128 / Sink / 对齐落位 / `Invalid` 构造点）、外部权重格式的只读适配（torch `.bin` 的 ZIP+pickle 栈机、GGUF、JSON，只吐四要素不判语义）、静态质量门与回退判定 | 任何运行时领域语义、任何 TOML 解析 |
 | L2 数据层 | `prof`、`spec`、`gemm`、`conv`、`op`、`frag`、`prim` | 设备档案与能力闭集、算子四层：`spec` 出契约（签名 / 样本 / 语义表 / 求和表达式与模板词法）、`gemm` 出内核族（打包格式、经典几何、微内核）、`conv` 出神经网络算子（卷积 / 归一化 / 注意力 / 扫描）、`op` 出声明解析与唯一注册表 `REGISTRY`，求和语义代价由 `spec::einsum` 推出；六台设备的原语片段与各自见证（一台设备一个模块，`src/<设备>/` 放语料，`build.rs` 一次把它解析成每台设备的 `FRAGMENTS` / `PRIMS` / `EPILOGUE` / `DEVICE` 表）、`prim` 只出机制：把六张表在编译期拼成一张聚合表，并按 `Layout` 决定读内嵌表还是读盘 | 任何机制代码（拼接、协商、emit）、任何设备知识 |
-| L3 内核 | `cutile`、`optim` | 前半纯机制：协商 → 拼接 → emit → 缓存指纹，一行也不执行；后半编译执行：`doctor` / `verify` / `bench` / `execution` 共用一条 `pipeline`，报告只是数据、排版在前端。拆开的理由是"能不能执行"这条边界：`cutile` 只产设备源与指纹，换掉工具链不影响它；`optim` 才碰编译器与设备，换掉执行方式不影响框架 | 设备厂商特判、运行时依赖 |
+| L3 内核 | `cutile` | 纯机制：协商 → 拼接 → emit → 缓存指纹，一行也不执行；只产设备源与指纹，换掉工具链不影响它 | 设备厂商特判、运行时依赖 |
 | L4 运行时 | `tensor`、`storage`、`tokenizer` | 张量元数据、布局搬运、文本边界 | 模型语义、调度策略 |
-| L5 模型与训练 | `weights`、`snapshot`、`autograd`、`nn`、`algorithm`、`shard` | 权重结构与自有 `.u` 容器、检查点字节格式、反向图与显存计划、层定义与执行侧机制、架构变体的参考语义（不产出 `ContractSpec`）、切分拓扑与集合通信 | 进程 / 服务语义 |
+| L5 模型与训练 | `weights`、`snapshot`、`autograd`、`nn`、`algorithm`、`shard` | 权重结构与自有 `.u` 容器、检查点字节格式、反向图与显存计划、层定义与执行侧机制、架构变体的参考语义（不产出 `ContractSpec`）、切分拓扑与集合通信、并入的 optim 机制层（后端契约 / 工具链 / 编译执行 / 验证 / 基准） | 进程 / 服务语义 |
 | L6 调度与服务 | `train`、`engine`、`device`、`serve` | 训练样本与循环、检查点事实集、连续批与 KV 页账、提交与执行体、设备源 lowering 与厂商后端（`device::backends` / `device::metal::host` / `device::metal::fold` / `device::cuda` / `device::dialect` / `device::platform`，实现 `cutile` 的 `Backend` 缝与 `engine` 的 `Executor` 缝；`device::metal::executor` 是唯一 `unsafe` 岛（[ADR 0035](adr/0035-unsafe-ffi-boundary.md)））、端点契约与线格式、CPU 模型宿主 | 直接调用 `cutile` 生成 kernel；执行任何业务 |
 | L7 入口 | `cli`（bin：`llm` 与 `cutile`） | 组合根：命令行文法、配置解析、各层装配、取值解析与人可读排版；编排入口不定义新类型 | 编排入口新增领域类型；在本层复制内核机制 |
 
@@ -45,7 +45,6 @@
 
 ```
 cutile   → annotation, diagnostic, op, prim, prof, spec    +dev: testkit
-optim    → cutile, diagnostic, op, prim, prof    +dev: testkit（运行期：编译 / 执行 / 测速 / 见证；只经 `cutile` 的器械做，不重写协商）
 op       → annotation, conv, diagnostic, gemm, prof, spec    +dev: testkit（工具边：`#[model]` 注解，不参与方向判定）
 gemm     → annotation, diagnostic, prof, spec    +dev: cutile, prim, testkit（声明解析结果与内核族的落点；不含 `op`，注册表只在 `op`）
 conv     → annotation, diagnostic, gemm, prof, spec    +dev: testkit（神经网络算子只借用内核族的打包与几何，不反向）
@@ -63,12 +62,12 @@ snapshot → diagnostic, tensor, weights, wire（检查点字节格式：只写�
 autograd → tensor, diagnostic    +dev: testkit
 nn       → tensor, op, weights, diagnostic, annotation    +dev: testkit
 algorithm → nn, op, diagnostic    +dev: testkit（架构变体的参考语义：产出张量流而非 `ContractSpec`，故不认识 `tensor` / `weights`）
-shard    → diagnostic    +dev: testkit（性质测试共用装置：切分定律与"拼回原样"端到端定律）
+shard    → cutile, diagnostic, nn, prof    +dev: testkit（性质测试共用装置：切分定律与"拼回原样"端到端定律；并入的 optim 机制层带来 cutile/nn/prof 边）
 train    → nn, autograd, weights, shard, op, tensor, diagnostic, snapshot    +dev: testkit
 engine   → tensor, diagnostic, storage    +dev: testkit
-device   → engine, cutile, optim, op, prof, diagnostic    +dev: testkit
+device   → engine, cutile, shard, op, prof, diagnostic    +dev: testkit
 serve    → engine, nn, op, rng, tensor, tokenizer, diagnostic, weights, wire    +dev: testkit（形状积只经 `tensor::product` 的饱和乘法：回绕出的偏小数会骗过权重长度核对）
-cli      → cutile, optim, diagnostic, device, engine, nn, op, prim, prof, serve, snapshot, tensor, tokenizer, tools, train, weights（L7 组合根：只做命令分派与各层装配，不定义新类型）
+cli      → cutile, shard, diagnostic, device, engine, nn, op, prim, prof, serve, snapshot, tensor, tokenizer, tools, train, weights（L7 组合根：只做命令分派与各层装配，不定义新类型）
 fuzz     → diagnostic    +dev: cli, snapshot, weights, train, serve, wire, tensor, tools（工具成员；`+dev` 是 `tests/support.rs` 里的驱动对象）
 benchmarks → +dev: snapshot, prof, op, cutile, wire, weights, tokenizer, tools, testkit, train, autograd, tensor, nn, engine, serve（工具成员：只声明被测对象，测量配置归 criterion）
 tools     → diagnostic（配置驱动静态质量门 + 回退判定）    +dev: testkit
@@ -113,7 +112,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `FragmentSet` / `Fragment` / `Layout` | `prim` | 原语片段与见证源码的读入形状（文件名落在 `prof` 的原语闭集内）、以及「内嵌根 / 数据根」二选一的布局；六张内嵌表由 `llm-frag` 的单个 `build.rs` 一次扫描生成，`prim/src` 里只有机制与编译期的聚合 |
 | 片段文本 + 见证 | `frag` | 一台设备一个模块（`src/<设备>/`）：片段文本、见证与生成器给出的 `FRAGMENTS` / `PRIMS` / `EPILOGUE` / `DEVICE` 表都由该成员拥有；`prim` 只把它们拼起来，不认识任何厂商名。六台设备共用一份 `Cargo.toml` / `build.rs` / 测试目标，是因为它们的机制逐字相同——差别只有 vendor 字符串与片段正文 |
 | `Catalogue` | `cutile` | 已装载的三层数据（声明 + 档案 + 片段）与它们的交叉校验 |
-| `Kernel` / `Write` / `Parameter` / `ValueType` / `ScalarType` / `Access` / `Expr` / `Arith` / `VerificationError` / `Pass` / `Pipeline` | `cutile` | `#[dsl]` 的 typed IR：一份目标无关的内核**签名 + 循环 + 一次写回**；写回是数据而非类型——逐点 `Write::Map`（`output[idx] = value`）与归约 `Write::Reduce { at }`（`output[at] += value`，如点积）落在同一个 `Kernel` 上，因此名字/形参/表达式校验只有一套（`ScalarType` 是标量闭集，`Access` 只区分只读与可读写，`ValueType` 把「标量」与「缓冲区 + 元素类型 + 访问」合成签名里的一种值，`Arith` 是算术闭集），`Kernel::fuse` 再把两个逐点核拼成一个。它只描述「算什么」，不含任何设备、线程或内存层级——`verify` 在构造时挡住越界与类型不符，`Pass` / `Pipeline` 把化简与死形参消除扫到**不动点**。化简不是一堆专用函数，而是一张**定律表**——`-(-x)→x`、`x*1.0→x`、`x/1.0→x`、`x-0.0→x`、常量折叠、常量取负，一条定律一行，签名统一为 `fn(&Expr) -> Option<Expr>`，加一条律只加一行；`normalize` 先规约子节点再在本节点上把定律跑到不动点，因此一趟就出范式（`x*(0.5+0.5)` 折成 `x*1.0` 后当趟即消成 `x`，不需要第二轮），每条律是否严格收缩由 `debug_assert` 机器检查，内层循环另以「起始节点数」为上界，所以定律即便写错，任何构建下都只会少化简、不会打转。表里只收**逐位成立**的恒等：`x+0.0→x` 被排除是因为 `-0.0+0.0=+0.0`，非有限结果（`0.0/0.0`）也不折叠，留给目标端自己的 IEEE 语义。驱动按**结构是否变化**判停，而不是拿代价当「变了没变」的代理，所以「没变小但有变化」的中间态不会被误当成终点；轮次上限取初始 `cost`（形参数 + 节点数）——严格收缩的 pass 必然在此之前收敛，上限耗尽说明流水线在震荡，此时 `run` **报错**（MLIR 的 did not converge）而不是悄悄交出半成品。注册顺序只在两个 pass 真正冲突时才决定结果：互相交换的 pass 无论如何注册都会收敛到同一范式，所以「调用方排好依赖」不是正确性前提。`run` 在**每个 pass 之后**都 `verify`（MLIR 的 verifyEach），坏内核在发布构建里也到不了发射器，报错还直接点名出问题的 pass——「管理器交出的内核一定合法」因此由构造成立，而不是只在 debug 下成立。落地有两条：`emit_c`（portable C）与 `emit_k`（`.k` 正文，经 `optim::ir` 接 `Lower` / 设备 dispatch）；`Image` 仍未接上，因此设备路径之外它**不产生任何性能结论**，只是把「宏写出来的表达式」变成可校验的数据 |
+| `Kernel` / `Write` / `Parameter` / `ValueType` / `ScalarType` / `Access` / `Expr` / `Arith` / `VerificationError` / `Pass` / `Pipeline` | `cutile` | `#[dsl]` 的 typed IR：一份目标无关的内核**签名 + 循环 + 一次写回**；写回是数据而非类型——逐点 `Write::Map`（`output[idx] = value`）与归约 `Write::Reduce { at }`（`output[at] += value`，如点积）落在同一个 `Kernel` 上，因此名字/形参/表达式校验只有一套（`ScalarType` 是标量闭集，`Access` 只区分只读与可读写，`ValueType` 把「标量」与「缓冲区 + 元素类型 + 访问」合成签名里的一种值，`Arith` 是算术闭集），`Kernel::fuse` 再把两个逐点核拼成一个。它只描述「算什么」，不含任何设备、线程或内存层级——`verify` 在构造时挡住越界与类型不符，`Pass` / `Pipeline` 把化简与死形参消除扫到**不动点**。化简不是一堆专用函数，而是一张**定律表**——`-(-x)→x`、`x*1.0→x`、`x/1.0→x`、`x-0.0→x`、常量折叠、常量取负，一条定律一行，签名统一为 `fn(&Expr) -> Option<Expr>`，加一条律只加一行；`normalize` 先规约子节点再在本节点上把定律跑到不动点，因此一趟就出范式（`x*(0.5+0.5)` 折成 `x*1.0` 后当趟即消成 `x`，不需要第二轮），每条律是否严格收缩由 `debug_assert` 机器检查，内层循环另以「起始节点数」为上界，所以定律即便写错，任何构建下都只会少化简、不会打转。表里只收**逐位成立**的恒等：`x+0.0→x` 被排除是因为 `-0.0+0.0=+0.0`，非有限结果（`0.0/0.0`）也不折叠，留给目标端自己的 IEEE 语义。驱动按**结构是否变化**判停，而不是拿代价当「变了没变」的代理，所以「没变小但有变化」的中间态不会被误当成终点；轮次上限取初始 `cost`（形参数 + 节点数）——严格收缩的 pass 必然在此之前收敛，上限耗尽说明流水线在震荡，此时 `run` **报错**（MLIR 的 did not converge）而不是悄悄交出半成品。注册顺序只在两个 pass 真正冲突时才决定结果：互相交换的 pass 无论如何注册都会收敛到同一范式，所以「调用方排好依赖」不是正确性前提。`run` 在**每个 pass 之后**都 `verify`（MLIR 的 verifyEach），坏内核在发布构建里也到不了发射器，报错还直接点名出问题的 pass——「管理器交出的内核一定合法」因此由构造成立，而不是只在 debug 下成立。落地有两条：`emit_c`（portable C）与 `emit_k`（`.k` 正文，经 `shard::ir` 接 `Lower` / 设备 dispatch）；`Image` 仍未接上，因此设备路径之外它**不产生任何性能结论**，只是把「宏写出来的表达式」变成可校验的数据 |
 | `Backend` / `Codegen` / `Driver` / `Readback` / `Source` / `Lower` / `Launch` / `Stages` | `shard` | 设备后端契约（`Backend = Codegen + Driver`）：`Codegen` 是纯函数，`Driver` 是唯一碰工具链 / FFI 的一半，运行期只经 `dyn` 分派；Metal / CUDA 的 `Driver` 由 `device` 实现、`cli` 注入；`Lower` 是生产态 lowering 的中性请求，`Launch` 把「工作项数」`items` 与「每点线程数」`group` 拆成两个字段（合成一个数会让总线程数与工作项数无法同时表达），两者都只由 `execution::launch` 一处从声明与样本推出。`Stages` 是一次形态产出的**按角色取**的设备源集合（单段 / 两段 / 三段 + 扫描衰减 + 循环注入的网格各维）：段数随形态变，按位置返回元组会让「第几个返回值是什么」变成隐式约定，而按角色取不出就报缺段。`Backend::parallel` 的默认实现是 `Unsupported`——「这个后端没有并行网格程序」是一句诚实的回答，默认给一份逐点源会让「缺实现」伪装成「实现过」 |
 | `Plan` / `Path` / `NoPath` / `VariantCheck` / `Proof` | `cutile` | kernel 层中间产物，全部可见、无 IR；只有 `NoPath` 自带文本（错误契约）；`Proof` 记这次真正执行过的供给，`Proof::declared` 只给解释性报告 |
 | `Payoff` / `Verdict` | `cutile` | 融合打分的结果：`Payoff` 是结构性 roofline 增益（不融合两次定界之和 vs 复合代价一次定界，`saved_bytes` 是中间量的往返），`speedup ≥ 1` 由 `max` 次可加保证而非拟合；`Verdict` 是三态判决——打得出分、拼不出来（带几何原因）、无从打分（缺语义投影 / 接缝跨多条输出 / 档案缺峰值，都不猜一个数顶上）。打分只读代价表、不跑标量参考，所以不需要样本也不分配内存；`bound()` 报融合后哪一侧定界 |
@@ -138,7 +137,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Budget` / `Candidate` / `Phase` / `Verdict` | `engine`（`ifb` 模块） | 一次迭代的可行域与相位：`pack` 判"这一轮塞得下几行"，与 `admit` 判"这辈子跑不跑得完"分开；相位是序列自己的事实，不是调用方贴的标签。唯一消费者是 `serve::Completion` 的批调度：`round` 先把本层一次提交的粒度收进预算、再把 `Packed` 的行原样下发，于是"这一轮算几行"只有一个来源（打包给配额、`chunk` 给块尾，取小的那个） |
 | `Executor` / `Trace` / `Program` / `Bindings` / `Buf` / `View` / `ViewMut` / `CpuExecutor` | `engine` | CPU 执行体（[ADR 0051](adr/0051-execution-backend-base.md)）：`Program` 按名字登记、重名拒绝，`Bindings` 是编号 ↔ 缓冲的操作数表，`CpuExecutor` 入队并在 `sync` 时就地执行；`Trace` 只记录不改语义 |
 | `MetalDevice` / `MetalCommandQueue` / `MetalBuf` / `MetalPipeline` / `MetalExecutor` | `device` | 设备后端边界（[ADR 0035](adr/0035-unsafe-ffi-boundary.md) 白名单第五类「进程级库句柄」，越界岛，不单独成 crate）：句柄私有、不跨线程，MSL 由装配层注入，本层不调用 `cutile` |
-| `Abi` / `Arch` / `Host` / `Machine` / `Row` / `Standing` / `Why` | `device`（`platform` 模块） | 六平台执行合同（[ADR 0052](adr/0052-execution-platform-contract.md)）：`Row` 是执行族闭集（CPU / Metal / CUDA / ROCm-HIP / Vulkan-SYCL 合一的 GPU 行，顺序即合同登记顺序），`Standing` 是三态裁决（覆盖 + 证据 或 未覆盖 + `Why`），`Why` 只分 `NoDevice` / `NoToolchain`——两者处置不同（换机器 vs 装工具链），混成一个"未覆盖"就丢了唯一的行动信息。`audit` 每次都出六行（少一行会让"未覆盖"与"根本没问"变成同一输出），`require` 才报 `E-PLAT`；它只判**平台有没有资格跑**，不判内核在某台设备上是否正确（那是 `optim::verify` 与 `tool::card` 的事）。`Host` 是注入缝（架构 + 该行工具链），`Machine` 是这台机器的实现：架构取 `std::env::consts`、工具链复用 `backends` 那份进程级快照探测（不新开第二次 `--version`），于是测试能用一台假机器摆出九种组合。**不拥有**设备探测实现、设备后端代码（Metal / CUDA 的越界边界见 [ADR 0035](adr/0035-unsafe-ffi-boundary.md)，本层只裁决"能不能跑"）、性能与正确性结论（E1–E15 归协议卡）、以及设备档案本身（那是 `prof` 的声明层） |
+| `Abi` / `Arch` / `Host` / `Machine` / `Row` / `Standing` / `Why` | `device`（`platform` 模块） | 六平台执行合同（[ADR 0052](adr/0052-execution-platform-contract.md)）：`Row` 是执行族闭集（CPU / Metal / CUDA / ROCm-HIP / Vulkan-SYCL 合一的 GPU 行，顺序即合同登记顺序），`Standing` 是三态裁决（覆盖 + 证据 或 未覆盖 + `Why`），`Why` 只分 `NoDevice` / `NoToolchain`——两者处置不同（换机器 vs 装工具链），混成一个"未覆盖"就丢了唯一的行动信息。`audit` 每次都出六行（少一行会让"未覆盖"与"根本没问"变成同一输出），`require` 才报 `E-PLAT`；它只判**平台有没有资格跑**，不判内核在某台设备上是否正确（那是 `shard::verify` 与 `tool::card` 的事）。`Host` 是注入缝（架构 + 该行工具链），`Machine` 是这台机器的实现：架构取 `std::env::consts`、工具链复用 `backends` 那份进程级快照探测（不新开第二次 `--version`），于是测试能用一台假机器摆出九种组合。**不拥有**设备探测实现、设备后端代码（Metal / CUDA 的越界边界见 [ADR 0035](adr/0035-unsafe-ffi-boundary.md)，本层只裁决"能不能跑"）、性能与正确性结论（E1–E15 归协议卡）、以及设备档案本身（那是 `prof` 的声明层） |
 | `Tokenizer` / `Token` / `Bytes` / `Bpe` / `Unigram` / `SpecialTokens` / `Encoding` / `Strategy` / `Truncation` / `Padding` / `PadDirection` / `Fingerprint` / `DecoderStream` / `Vocab` / `VocabSource` / `VocabFamily` / `Merge` | `tokenizer` | 文本 ↔ token 的唯一边界：编号、编码对齐记录、序列策略、词表身份指纹与 UTF-8 边界安全的流式解码 |
 | `Adaptive` / `AdaptiveCompensated` / `Header` / `Entry` / `Reader` / `Loader` / `Archive` / `File` / `MmapSource` / `Quantized` / `Scheme` / `Compensated` / `Writer` / `Stored` / `Segment` / `Quant` / `Codec` / `Proof` / `Metrics` | `weights` | 权重文件：外部 safetensors 只读适配（`Reader` 借出 / `Loader` 拷贝两条契约）+ 自有 `.u` 容器 v2 读写（rANS、Merkle 证明、两级 CRC、原子写、现场度量）；`Quantized` 的分组、输入宽度与输出宽度出自同一次推断 |
 | `Certified` / `Note` / `Stable` / `Mode` / `EpsMethod` / `Bound` | `weights` | `ledger` 的谱隙证书与它门控的秩选择：判定与产出出自同一次分解，证书写在 `AX03` 的 `rank` 段并由 `audit` 重算，对不上就拒读；证书自报 `ε` 的**方法**（`EpsMethod`）与这张界的**类型**（`Bound`，L0 诊断 vs L0' 候选），于是「幂迭代只够排序」与「候选界不签无损」是可执行约束而不是注释；`E_decomp` 与 `E_comp` 分开记，合成误差只有 `Note::synth` 一处算式 |
@@ -198,7 +197,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Command` / `Invocation` / `USAGE` | `cli` | 命令行文法（argv / env → 强类型调用参数）与编排分派 |
 | `Token` / `Pos` / `Delim` / `Finding` / `Gate` / `Hit` | `tools` | 零依赖词法 token 树、单函数复杂度 finding 与配置化阈值、标识符层词汇命中（全拼名 + 应改用的缩写）；分析器只产出数据，不打印不退出。词汇判定在**标识符**层而不是文本层，字符串字面量与注释不参与——设备源码里 `[[buffer(0)]]` 这类选择器因此不会被误报 |
 | `Case` / `Baseline` / `Judgement` | `tools` | 回退判定（与基线相比有没有退）；不做测量 |
-| `EntryKind` / `Harness` / `Roofline` / `Bottleneck` / `Score` / `Geometry` / `BenchRecord` | `tools` | 统一基准记录结构：记录只持有身份、几何与峰值，未测得的峰值留 `None`；`Roofline::score` 把「峰值 + 算术强度 + 实测吞吐」折成占上界百分比与瓶颈侧，测量与上界登记仍归 `optim` / `benchmarks` |
+| `EntryKind` / `Harness` / `Roofline` / `Bottleneck` / `Score` / `Geometry` / `BenchRecord` | `tools` | 统一基准记录结构：记录只持有身份、几何与峰值，未测得的峰值留 `None`；`Roofline::score` 把「峰值 + 算术强度 + 实测吞吐」折成占上界百分比与瓶颈侧，测量与上界登记仍归 `shard` / `benchmarks` |
 | `Protocol` / `Statistic` / `Tally` / `Standing` / `Shortfall` / `Card` | `tools` | 实测卡三态判定：闭集 → 样本量 → 统计量定义 → 区间与门槛，次序有意；样本与时钟来源归 `benchmarks` |
 | `spec` / `model` 属性宏 | `annotation` | 把注解展开成契约实现 + 编译期断言 + 一条校验测试；**不持有运行期注册表**。`model` 生成 `MODEL` 并断言注解与 `Operator` 对齐；设备执行由 `cutile` 的 `const SPECS` / `const GATES` 描述符表按函数指针登记 |
 | `Contract` / `Provision` / `Witness` | `testkit` | 设备片段层自述：`Contract` 只答「这台设备声明了哪些 P0 片段、拿哪些见证入口验」，`Provision` 只答「一条原语在这台设备上由哪个实现供给」，`Witness` 只答「用哪个 `witness_*` 入口、期望什么输出」。三者都只持 `&str` / `&[f32]` 借用、不持档案类型，于是夹具库不把 `prof` 拖进依赖，设备档案在测试侧摊平即用 |
@@ -210,7 +209,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 几个**同名不同物**的邻居，评审时容易混淆：
 
 - `cutile::space::Space`（GM / FAST / REG）是**语言概念**，`prof::atom::Space` 是它的档案表示；档案侧只认字节；
-- `optim::bench::Verdict`（达成率：能否与档案峰值比较）、`tool::regress::Judgement`（相对基线有无回退）、
+- `shard::bench::Verdict`（达成率：能否与档案峰值比较）、`tool::regress::Judgement`（相对基线有无回退）、
   `tool::card::Standing`（这一格成立了没有）三态名不同是刻意的，它们会同时出现在一份报告里；
 - kernel 侧操作数视图**不在 `tensor`**：排布（分片、步长、窗口）由算子声明与设备 Fragment 持有，`tensor` 只描述形状与字节数，两者不得互相假装；
   该视图在 P0 **尚未实现**——`cutile` 只接收裸指针与标量，分片由调用方给；
