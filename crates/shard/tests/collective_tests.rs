@@ -270,3 +270,50 @@ fn reducing_into_a_buf_agrees_with_allocating_a_vec() {
         Code::Invalid
     );
 }
+
+/// 文件传输的远端归约：两个 rank 共享一份文件，各写各的槽位，归约后两边都拿到完整结果——
+/// 这是 [`Remote`] 占位之外的真实远端实现（跨进程可用，无 `unsafe`）。
+#[test]
+fn file_remote_reduces_across_ranks() {
+    let backing = std::env::temp_dir().join(format!("shard-collective-{}", std::process::id()));
+    let mut r0 = FileRemote::open(0, 2, 2, &backing).expect("rank 0");
+    let r1 = FileRemote::open(1, 2, 2, &backing).expect("rank 1");
+    assert_eq!(r0.rank(), 0);
+    r0.load(0, &[1.0, 2.0]).expect("rank 0 输入");
+    r1.load(1, &[3.0, 4.0]).expect("rank 1 输入");
+    let group = Group::new([0, 1]).expect("双进程组");
+    let mut buf = [0.0; 2];
+    r0.all_reduce(&group, Reduce::Sum, &mut buf).expect("归约");
+    assert_eq!(buf, [4.0, 6.0]);
+    assert_eq!(r1.replica(0).expect("rank 0"), buf, "结果写回每个成员");
+    assert_eq!(r1.replica(1).expect("rank 1"), buf);
+    let _ = std::fs::remove_file(&backing);
+}
+
+/// 越界与宽度不符在文件后端同样被拒：`load`、`replica`、`all_reduce` 各自守住自己的判据。
+#[test]
+fn file_remote_refuses_out_of_world_and_width_mismatch() {
+    let backing =
+        std::env::temp_dir().join(format!("shard-collective-bad-{}", std::process::id()));
+    let mut r0 = FileRemote::open(0, 2, 2, &backing).expect("rank 0");
+    assert_eq!(r0.load(2, &[1.0, 2.0]).unwrap_err().code(), Code::Invalid);
+    assert_eq!(r0.load(0, &[1.0]).unwrap_err().code(), Code::Invalid);
+    assert_eq!(r0.replica(2).unwrap_err().code(), Code::Invalid);
+    let group = Group::new([0, 1]).expect("双进程组");
+    let mut short = [0.0; 1];
+    assert_eq!(
+        r0.all_reduce(&group, Reduce::Sum, &mut short)
+            .unwrap_err()
+            .code(),
+        Code::Invalid
+    );
+    assert_eq!(
+        FileRemote::open(2, 2, 2, &backing).unwrap_err().code(),
+        Code::Invalid
+    );
+    assert_eq!(
+        FileRemote::open(0, 0, 2, &backing).unwrap_err().code(),
+        Code::Invalid
+    );
+    let _ = std::fs::remove_file(&backing);
+}

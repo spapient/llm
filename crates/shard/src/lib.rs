@@ -86,7 +86,7 @@ mod collective;
 mod tiling;
 mod topology;
 
-pub use collective::{Collective, Group, Local, Reduce, Remote};
+pub use collective::{Collective, FileRemote, Group, Local, Reduce, Remote};
 pub use tiling::{Sharding, Tiling};
 pub use topology::{Parallel, Topology};
 

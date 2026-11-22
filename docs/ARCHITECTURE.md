@@ -176,7 +176,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Group` / `Reduce` / `Collective` / `Topology` / `Parallel` | `shard` | 集合通信契约与 TP/PP/DP 拓扑；`world = tp · pp · dp` 在构造期算成精确值，因此不存在回绕出来的"合法" rank |
 | `Sharding` / `Tiling` | `shard` | 张量并行的两种线性层切法与一层权重的切分计划；切分必须整除，在构造期失败而不是摊余数（不保留"前几份多拿一个"的均匀切分：TP 要求各 rank 的权重形状一致） |
 | `Local` | `shard` | 进程内集合通信：每个 rank 一份镜像，让 TP/DP 的数值语义在没有 NCCL 的机器上也能被 `cargo test` 验证 |
-| `Remote` | `shard` | 远端集合通信占位：同一 `Collective` 端口，`all_reduce` 返回 `Unsupported` 且不改动调用方缓冲 |
+| `Remote` / `FileRemote` | `shard` | 远端集合通信：`Remote` 是未挂载占位（`all_reduce` 返回 `Unsupported`），`FileRemote` 是文件传输的真实实现（`world × width` 槽位、小端字节序、跨进程、无 `unsafe`） |
 | `RuntimeConfig` / `LanguageFront` | `shard` | 运行时可配置旋钮（纯数据由 `cli` 注入）：各语言语法门、host 自检参数、L3 达成率门槛、缓存锁等待；codegen 常量（`POINT_THREADS` 等）不进这里 |
 | `Snapshot` / `Format` / `Facts` | `snapshot` | 检查点字节格式与恢复事实：字节只写相对上一条的差、尾部 CRC-32；`verify` 只验字节，`check_weights` 要求条目表与权重文件逐条相同。不依赖任何训练侧类型，写出同样的字节即可换掉实现 |
 | `Moments` / `SlotMoments` / `GradAccum` / `Ties` | `snapshot` | 快照携带的优化器状态段：矩状态按槽位自持、累积梯度带计数、权重绑定表是 `(源槽, 回填槽)` 下标对；编解码与字节格式同源，训练侧只读写不重新定义 |
