@@ -36,6 +36,29 @@ pub fn product<A: AxisLen>(dims: &[A]) -> A {
     dims.iter().fold(A::ONE, |acc, dim| acc.mul_saturated(*dim))
 }
 
+/// 按 `order` 把连续步长写进 `steps`：`steps[axis]` 是该侧全部轴长之积。
+///
+/// 累乘是串行依赖，保留循环。这是"连续"的**唯一**定义：`Strides::ordered`、编译期秩与运行期秩的
+/// [`Rank::contiguous`](crate::Rank::contiguous)、以及 [`Tensor::is_contiguous`](crate::Tensor)
+/// 的期望值全部经由本函数，任何一处口径变更不会漏改第二遍。
+pub(crate) fn accumulate(dims: &[usize], steps: &mut [usize], order: Order) {
+    let mut acc = 1usize;
+    match order {
+        Order::RowMajor => {
+            for (step, &dim) in steps.iter_mut().zip(dims.iter()).rev() {
+                *step = acc;
+                acc = acc.saturating_mul(dim);
+            }
+        }
+        Order::ColMajor => {
+            for (step, &dim) in steps.iter_mut().zip(dims.iter()) {
+                *step = acc;
+                acc = acc.saturating_mul(dim);
+            }
+        }
+    }
+}
+
 /// 形状：每个轴的长度。空形状表示标量，`numel()` 为 1。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Shape(Vec<usize>);
@@ -78,6 +101,13 @@ pub(crate) fn element_bytes(numel: usize, dtype: DType) -> usize {
     usize::try_from(dtype.bytes_for(numel)).unwrap_or(usize::MAX)
 }
 
+/// 让运行期秩的 [`Tensor`](crate::Tensor) 直接吃 [`Shape`]，既有调用点不必改写法。
+impl From<Shape> for Vec<usize> {
+    fn from(shape: Shape) -> Self {
+        shape.0
+    }
+}
+
 mod order {
     //! 排列顺序：同一组元素在扁平缓冲里沿哪个轴相邻。
 
@@ -92,10 +122,9 @@ mod order {
 }
 
 mod strides {
-    //! 步长：沿每个轴前进一个下标要走多少个元素；连续性判定与顺序累积的唯一实现。
+    //! 步长：沿每个轴前进一个下标要走多少个元素。
 
-    use super::Order;
-    use crate::shape::Shape;
+    use super::{Order, Shape, accumulate};
 
     /// 步长：沿每个轴前进一个下标要走多少个元素。
     #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -107,25 +136,10 @@ mod strides {
             Self(strides.into())
         }
 
-        /// 按排列顺序推出的连续步长：行主序反向累乘，列主序正向累乘。
+        /// 按排列顺序推出的连续步长。
         pub fn ordered(shape: &Shape, order: Order) -> Self {
-            let dims = shape.dims();
-            let mut strides = vec![0; dims.len()];
-            let mut acc = 1usize;
-            match order {
-                Order::RowMajor => {
-                    for axis in (0..dims.len()).rev() {
-                        strides[axis] = acc;
-                        acc = acc.saturating_mul(dims[axis]);
-                    }
-                }
-                Order::ColMajor => {
-                    for axis in 0..dims.len() {
-                        strides[axis] = acc;
-                        acc = acc.saturating_mul(dims[axis]);
-                    }
-                }
-            }
+            let mut strides = vec![0; shape.rank()];
+            accumulate(shape.dims(), &mut strides, order);
             Self(strides)
         }
 
@@ -143,12 +157,12 @@ mod strides {
         pub fn get(&self, axis: usize) -> Option<usize> {
             self.0.get(axis).copied()
         }
+    }
 
-        /// 是否为行主序连续布局：与 [`contiguous`](Self::contiguous) 同一套期望累积值，
-        /// 逐轴无分配核对。层内收口实现，不进公开面。
-        #[must_use]
-        pub(crate) fn is_contiguous(&self, shape: &Shape) -> bool {
-            crate::layout::is_contiguous(shape.dims(), &self.0)
+    /// 让运行期秩的 [`Tensor`](crate::Tensor) 直接吃 [`Strides`]。
+    impl From<Strides> for Vec<usize> {
+        fn from(strides: Strides) -> Self {
+            strides.0
         }
     }
 }
