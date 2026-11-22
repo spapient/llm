@@ -311,15 +311,62 @@ impl Contract for MaxPool1d {
     }
 }
 
-/// 二维最大池化层：`[h, w, c]` → `[oh, ow, c]`。规格构造口径同 [`MaxPool1d`]。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MaxPool2d {
-    spec: ContractSpec,
-    pool: OpPool2,
-    oh: usize,
-    ow: usize,
-    c: usize,
+/// `[h, w, c] → [oh, ow, c]` 这一族的共用骨架。
+///
+/// 二维池化（最大/平均/自适应）与插值**只差一件事**：绑哪个算子。输出边长的算法属于算子自己，
+/// 因此各自手写构造；而"存什么、怎么读、下界按什么算"三件事一模一样，只剩这一份。
+///
+/// 算子结构体不再作为字段保存：它只在构造时用来算输出边长，之后没有任何访问器能读到它，
+/// 留着就是一份会被拷贝、会被比较、却永远不参与判断的状态。
+macro_rules! planar {
+    ($(#[$doc:meta])* $ty:ident, $op:literal) => {
+        $(#[$doc])*
+        #[derive(Debug, Clone, PartialEq, Eq)]
+        pub struct $ty {
+            spec: Spec,
+            oh: usize,
+            ow: usize,
+            c: usize,
+        }
+
+        impl $ty {
+            /// 输出边长。
+            pub fn shape(&self) -> (usize, usize) {
+                (self.oh, self.ow)
+            }
+
+            /// 通道数。
+            pub fn channels(&self) -> usize {
+                self.c
+            }
+
+            /// 四个构造函数的尾巴都是这一句：边长已由算子算好，这里只登记规格。
+            fn plan(name: impl Into<String>, oh: usize, ow: usize, c: usize) -> Result<Self> {
+                let spec = Spec::new(name, crate::Shape::new([oh, ow, c]), [$op])?;
+                Ok(Self {
+                    spec,
+                    oh,
+                    ow,
+                    c,
+                })
+            }
+        }
+
+        impl Contract for $ty {
+            spec_accessors!();
+
+            fn bounds(&self) -> BoundsResult {
+                Bounds::of_ctx($op, self.oh * self.ow, self.c).map(Some)
+            }
+        }
+    };
 }
+
+planar!(
+    /// 二维最大池化层：`[h, w, c]` → `[oh, ow, c]`。规格构造口径同 [`MaxPool1d`]。
+    MaxPool2d,
+    "max_pool2d_f32"
+);
 
 impl MaxPool2d {
     /// 构造。
@@ -327,54 +374,19 @@ impl MaxPool2d {
     /// # Errors
     ///
     /// 窗口/步长为零，或输入短于窗口时返回说明。
-    pub fn new(
-        name: impl Into<String>,
-        geom: ConvGeom,
-        h: usize,
-        w: usize,
-        c: usize,
-    ) -> Result<Self> {
+    pub fn new(name: impl Into<String>, geom: ConvGeom, h: usize, w: usize, c: usize) -> Result<Self> {
         let layer = "nn::MaxPool2d::new";
         nonzero(c, "channels", layer)?;
-        let pool = OpPool2 { geom };
-        let (oh, ow) = pool.shape(h, w)?;
-        let spec = Spec::new(name, crate::Shape::new([oh, ow, c]), ["max_pool2d_f32"])?;
-        Ok(Self {
-            spec,
-            pool,
-            oh,
-            ow,
-            c,
-        })
-    }
-
-    /// 输出边长。
-    pub fn shape(&self) -> (usize, usize) {
-        (self.oh, self.ow)
-    }
-
-    /// 通道数。
-    pub fn channels(&self) -> usize {
-        self.c
+        let (oh, ow) = OpPool2 { geom }.shape(h, w)?;
+        Self::plan(name, oh, ow, c)
     }
 }
 
-impl Contract for MaxPool2d {
-    spec_accessors!();
-
-    fn bounds(&self) -> BoundsResult {
-        Bounds::of_ctx("max_pool2d_f32", self.oh * self.ow, self.c).map(Some)
-    }
-}
-
-/// 二维平均池化层：口径同 [`MaxPool2d`]，`count_include_pad` 决定补零是否计入分母。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AvgPool2d {
-    spec: ContractSpec,
-    oh: usize,
-    ow: usize,
-    c: usize,
-}
+planar!(
+    /// 二维平均池化层：口径同 [`MaxPool2d`]，`count_include_pad` 决定补零是否计入分母。
+    AvgPool2d,
+    "avg_pool2d_f32"
+);
 
 impl AvgPool2d {
     /// 构造。
@@ -392,41 +404,20 @@ impl AvgPool2d {
     ) -> Result<Self> {
         let layer = "nn::AvgPool2d::new";
         nonzero(c, "channels", layer)?;
-        let pool = op::conv::AvgPool2d {
+        let (oh, ow) = op::conv::AvgPool2d {
             geom,
             count_include_pad,
-        };
-        let (oh, ow) = pool.shape(h, w)?;
-        let spec = Spec::new(name, crate::Shape::new([oh, ow, c]), ["avg_pool2d_f32"])?;
-        Ok(Self { spec, oh, ow, c })
-    }
-
-    /// 输出边长。
-    pub fn shape(&self) -> (usize, usize) {
-        (self.oh, self.ow)
-    }
-
-    /// 通道数。
-    pub fn channels(&self) -> usize {
-        self.c
+        }
+        .shape(h, w)?;
+        Self::plan(name, oh, ow, c)
     }
 }
 
-impl Contract for AvgPool2d {
-    spec_accessors!();
-
-    fn bounds(&self) -> BoundsResult {
-        Bounds::of_ctx("avg_pool2d_f32", self.oh * self.ow, self.c).map(Some)
-    }
-}
-
-/// 自适应平均池化层：任意输入压到固定 `[oh, ow, c]`。规格构造口径同 [`MaxPool1d`]。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AdaptiveAvgPool2d {
-    spec: ContractSpec,
-    pool: OpAdaptive,
-    c: usize,
-}
+planar!(
+    /// 自适应平均池化层：任意输入压到固定 `[oh, ow, c]`。规格构造口径同 [`MaxPool1d`]。
+    AdaptiveAvgPool2d,
+    "adaptive_pool_f32"
+);
 
 impl AdaptiveAvgPool2d {
     /// 构造。
@@ -439,37 +430,15 @@ impl AdaptiveAvgPool2d {
         nonzero(oh, "oh", layer)?;
         nonzero(ow, "ow", layer)?;
         nonzero(c, "channels", layer)?;
-        let pool = OpAdaptive { oh, ow };
-        let spec = Spec::new(name, crate::Shape::new([oh, ow, c]), ["adaptive_pool_f32"])?;
-        Ok(Self { spec, pool, c })
-    }
-
-    /// 输出边长。
-    pub fn shape(&self) -> (usize, usize) {
-        (self.pool.oh, self.pool.ow)
-    }
-
-    /// 通道数。
-    pub fn channels(&self) -> usize {
-        self.c
+        Self::plan(name, oh, ow, c)
     }
 }
 
-impl Contract for AdaptiveAvgPool2d {
-    spec_accessors!();
-
-    fn bounds(&self) -> BoundsResult {
-        Bounds::of_ctx("adaptive_pool_f32", self.pool.oh * self.pool.ow, self.c).map(Some)
-    }
-}
-
-/// 插值层：`[h, w, c]` → `[oh, ow, c]`，取样方式见 [`op::conv::Sampler`]。规格构造口径同 [`MaxPool1d`]。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Interpolate {
-    spec: ContractSpec,
-    interp: OpInterp,
-    c: usize,
-}
+planar!(
+    /// 插值层：`[h, w, c]` → `[oh, ow, c]`，取样方式见 [`op::conv::Sampler`]。规格构造口径同 [`MaxPool1d`]。
+    Interpolate,
+    "interpolate_f32"
+);
 
 impl Interpolate {
     /// 构造。
@@ -488,27 +457,7 @@ impl Interpolate {
         nonzero(oh, "oh", layer)?;
         nonzero(ow, "ow", layer)?;
         nonzero(c, "channels", layer)?;
-        let interp = OpInterp { sampler, oh, ow };
-        let spec = Spec::new(name, crate::Shape::new([oh, ow, c]), ["interpolate_f32"])?;
-        Ok(Self { spec, interp, c })
-    }
-
-    /// 输出边长。
-    pub fn shape(&self) -> (usize, usize) {
-        (self.interp.oh, self.interp.ow)
-    }
-
-    /// 通道数。
-    pub fn channels(&self) -> usize {
-        self.c
-    }
-}
-
-impl Contract for Interpolate {
-    spec_accessors!();
-
-    fn bounds(&self) -> BoundsResult {
-        Bounds::of_ctx("interpolate_f32", self.interp.oh * self.interp.ow, self.c).map(Some)
+        Self::plan(name, oh, ow, c)
     }
 }
 
