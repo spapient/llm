@@ -117,3 +117,38 @@ fn element_types_are_compile_time_constants() {
     assert_eq!(<i8 as Element>::DTYPE, DType::I8);
     assert_eq!(<u8 as Element>::DTYPE, DType::U8);
 }
+
+#[test]
+fn a_shape_view_keeps_the_compile_time_rank() {
+    let data = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let tensor: Fix2<'_> = Tensor::new([2, 3], data.as_slice()).expect("形状与缓冲匹配");
+    // 返回类型写死成 Fix2：起点前移若偷偷换成 Vec 见证，这里就编译不过。
+    let tail: Fix2<'_> = tensor.clone().narrow(0, 1, 1).expect("末行");
+    assert_eq!(tail.dims(), [1, 3]);
+    assert_eq!(tail.strides(), [3, 1]);
+    assert_eq!(tail.base(), 3);
+    let block: Fix2<'_> = tensor.slice([0..1, 1..3]).expect("首行后两列");
+    assert_eq!(block.at([0, 1]), Some(3.0));
+}
+
+#[test]
+fn rank_changing_views_need_the_target_witness_and_the_length_is_checked() {
+    let data = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let tensor: Fix2<'_> = Tensor::new([2, 3], data.as_slice()).expect("形状与缓冲匹配");
+    let row = tensor.clone().select::<[usize; 1]>(0, 1).expect("第 1 行");
+    assert_eq!(row.dims(), [3]);
+    assert_eq!(row.base(), 3);
+    assert!(
+        tensor.clone().select::<[usize; 2]>(0, 1).is_none(),
+        "去掉一轴后是秩 1，装不进秩 2 的定长数组"
+    );
+
+    let lifted: Tensor<&[f32], [usize; 3], f32> = tensor
+        .clone()
+        .unsqueeze::<[usize; 3]>(1)
+        .expect("插入单例轴");
+    assert_eq!(lifted.dims(), [2, 1, 3]);
+    let back: Fix2<'_> = lifted.squeeze::<[usize; 2]>(1).expect("再压回去");
+    assert_eq!(back.dims(), [2, 3]);
+    assert_eq!(back.as_slice(), tensor.as_slice());
+}

@@ -15,8 +15,13 @@
 //! 只有一个 `Tensor`，于是"字节视图 / 元素视图 / 拥有形态"不再是三份平行实现。偏移、可达性、
 //! 连续性与取行只有 [`layout`] 一份实现；连续步长只有 [`shape::accumulate`] 一份定义。
 //!
-//! 布局代数比"只有重排"宽：[`Tensor::broadcast`] 用步长 0 表达广播，[`Tensor::narrow`] 把起点
-//! 前移成子视图——两者都是零拷贝的元数据，转置与置换表达不出来。
+//! 布局代数比"只有重排"宽：元数据是 `(起点偏移, 各轴长度, 各轴步长)` 三元组，所以整套形状算子
+//! 都是 O(轴数) 的整数运算，一个元素都不搬，且**与存储形态无关**（借来视图与自持张量一视同仁）：
+//! [`Tensor::broadcast`] 用步长 0 表达广播，[`Tensor::narrow`] / [`Tensor::slice`] 把起点前移
+//! 成子视图，[`Tensor::select`] / [`Tensor::squeeze`] / [`Tensor::unsqueeze`] / [`Tensor::flatten`]
+//! 改秩，[`Tensor::transpose`] / [`Tensor::permute`] 换轴序。改秩的四个要写目标见证
+//! （`t.select::<[usize; 1]>(0, 3)`），因为稳定 Rust 算不出 `D - 1`——Burn 的 `.squeeze::<2>()`
+//! 同理，只是那边只能是定长数组，这里 `Vec<usize>` 也可以。
 //!
 //! **拥有**：`Tensor`、`Owned`、`Shape`、`Order`、`AxisLen`、`Element` 与 `DType`
 //! 的再导出。**不拥有**：元素类型闭集（L1 `dtype`，这里是唯一事实源的下游）、dtype-运行期的
@@ -54,7 +59,7 @@ mod tensor;
 mod rank;
 mod store;
 
-// 布局算式（偏移 / 可达性 / 连续性 / 取行）的唯一实现，两种秩、两种存储共用。
+// 布局算式的唯一实现：偏移 / 可达性 / 连续性 / 取行 + 全部形状代数，两种秩、两种存储共用。
 mod layout;
 
 // 元素类型的唯一事实源在 L1 `dtype`：全精度 24 变体，这里不再自定义枚举。

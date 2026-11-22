@@ -303,13 +303,13 @@ fn a_broadcast_axis_gets_stride_zero_and_reads_the_same_element() {
 fn a_narrowed_view_still_borrows_the_callers_buf() {
     let values = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
     let view: View<'_, f32> = View::new(Shape::new([3, 2]), &values).expect("视图");
-    let tail = view.narrow(0, 1, 2).expect("取第 1..3 行");
+    let tail = view.clone().narrow(0, 1, 2).expect("取第 1..3 行");
     assert_eq!(tail.dims(), [2, 2]);
     assert_eq!(tail.strides(), [2, 1], "步长不变，只是起点前移");
     assert_eq!(tail.row(0), Some(&[3.0, 4.0][..]), "借的是同一块缓冲");
     assert_eq!(tail.at([1, 1]), Some(6.0));
 
-    let column = view.narrow(1, 1, 1).expect("取第 1 列");
+    let column = view.clone().narrow(1, 1, 1).expect("取第 1 列");
     assert_eq!(column.dims(), [3, 1]);
     assert_eq!(column.strides(), [2, 1]);
     assert_eq!(
@@ -317,8 +317,8 @@ fn a_narrowed_view_still_borrows_the_callers_buf() {
         [Some(2.0), Some(4.0), Some(6.0)]
     );
 
-    assert!(view.narrow(0, 2, 2).is_none(), "越界");
-    assert!(view.narrow(9, 0, 1).is_none(), "轴越界");
+    assert!(view.clone().narrow(0, 2, 2).is_none(), "越界");
+    assert!(view.clone().narrow(9, 0, 1).is_none(), "轴越界");
     let empty = view.narrow(0, 0, 0).expect("零行是合法视图");
     assert_eq!(empty.numel(), 0);
 }
@@ -369,4 +369,146 @@ fn a_contiguous_tensor_materialises_to_an_equal_copy() {
     let copy = dense.to_contiguous();
     assert_eq!(copy.as_slice(), dense.as_slice());
     assert_eq!(copy.strides(), dense.strides());
+}
+
+/// 0 到 11 的 3×4 连续张量：下标 = 行 * 4 + 列。
+fn counted() -> Vec<f32> {
+    (0..12).map(|i| i as f32).collect()
+}
+
+#[test]
+fn a_slice_advances_the_base_and_keeps_the_strides() {
+    let values = counted();
+    let view: View<'_, f32> = View::new(Shape::new([3, 4]), values.as_slice()).expect("视图");
+    let block = view.slice([0..2, 1..3]).expect("两轴各取一段");
+    assert_eq!(block.dims(), [2, 2]);
+    assert_eq!(block.strides(), [4, 1], "步长不变，只是起点前移");
+    assert_eq!(block.base(), 1, "列 1 起");
+    assert_eq!(block.at([0, 0]), Some(1.0));
+    assert_eq!(block.at([1, 1]), Some(6.0));
+}
+
+#[test]
+fn a_slice_outside_the_axes_or_the_rank_is_none() {
+    let values = counted();
+    let view: View<'_, f32> = View::new(Shape::new([3, 4]), values.as_slice()).expect("视图");
+    let rows = 3;
+    let inverted = core::ops::Range { start: 2, end: 1 };
+    assert!(
+        view.clone().slice([1..rows + 1, 0..1]).is_none(),
+        "3 行里取不到 1..4"
+    );
+    assert!(
+        view.clone().slice([0..1, inverted]).is_none(),
+        "起点在终点之后"
+    );
+    assert!(
+        view.clone().slice([0..1, 0..1, 0..1]).is_none(),
+        "轴数超过秩"
+    );
+    assert!(view.slice([0..3, 0..4]).is_some(), "满段是合法的");
+}
+
+#[test]
+fn a_selected_axis_disappears_and_the_base_follows_the_index() {
+    let values = counted();
+    let view: View<'_, f32> = View::new(Shape::new([3, 4]), values.as_slice()).expect("视图");
+    let row = view.select::<Vec<usize>>(0, 1).expect("第 1 行");
+    assert_eq!(row.dims(), [4]);
+    assert_eq!(row.base(), 4);
+    assert_eq!(row.at([2]), Some(6.0));
+    assert_eq!(row.numel(), 4);
+}
+
+#[test]
+fn narrow_works_on_a_self_held_tensor_not_only_on_a_borrowed_view() {
+    let tensor: Tensor<Owned<f32>> = Tensor::zeros(vec![3usize, 4]).expect("分配");
+    let tail = tensor.narrow(0, 1, 2).expect("自持张量也能零拷贝切");
+    assert_eq!(tail.dims(), [2, 4]);
+    assert_eq!(tail.base(), 4);
+    assert_eq!(tail.strides(), [4, 1]);
+    assert_eq!(tail.numel(), 8);
+}
+
+#[test]
+fn materialising_a_narrowed_view_starts_at_its_base() {
+    let values = counted();
+    let view: View<'_, f32> = View::new(Shape::new([3, 4]), values.as_slice()).expect("视图");
+    let solid = view.narrow(0, 1, 1).expect("第 1 行").to_contiguous();
+    assert_eq!(solid.dims(), [1, 4]);
+    assert_eq!(solid.base(), 0, "物化后的起点归零");
+    assert_eq!(solid.as_slice(), [4.0f32, 5.0, 6.0, 7.0]);
+}
+
+#[test]
+fn squeeze_only_drops_an_axis_that_is_really_a_singleton() {
+    let values = counted();
+    let view: View<'_, f32> = View::new(Shape::new([3, 4]), values.as_slice()).expect("视图");
+    let wide = view.clone().narrow(0, 0, 1).expect("第 0 行");
+    assert_eq!(wide.dims(), [1, 4]);
+    assert!(
+        wide.clone().squeeze::<Vec<usize>>(1).is_none(),
+        "列不是单例"
+    );
+    let flat = wide.squeeze::<Vec<usize>>(0).expect("去掉单例行轴");
+    assert_eq!(flat.dims(), [4]);
+    assert_eq!(flat.base(), 0);
+}
+
+#[test]
+fn unsqueezing_adds_a_singleton_axis_without_moving_anything() {
+    let values = counted();
+    let view: View<'_, f32> = View::new(Shape::new([3, 4]), values.as_slice()).expect("视图");
+    let lifted = view.clone().unsqueeze::<Vec<usize>>(1).expect("插入单例轴");
+    assert_eq!(lifted.dims(), [3, 1, 4]);
+    assert_eq!(lifted.strides(), [4, 0, 1], "单例轴步长 0，不贡献偏移");
+    assert!(lifted.is_contiguous(), "单例轴不破坏连续性");
+    assert_eq!(lifted.at([2, 0, 3]), view.at([2, 3]), "元素一个没动");
+    assert!(view.unsqueeze::<Vec<usize>>(3).is_none(), "轴不能超过秩");
+}
+
+#[test]
+fn flatten_merges_a_run_that_is_contiguous_in_storage_and_refuses_otherwise() {
+    let values = counted();
+    let view: View<'_, f32> = View::new(Shape::new([3, 4]), values.as_slice()).expect("视图");
+    let flat = view.clone().flatten::<Vec<usize>>(0, 2).expect("整块连续");
+    assert_eq!(flat.dims(), [12]);
+    assert_eq!(flat.at([7]), Some(7.0));
+
+    let block = view.clone().narrow(1, 0, 2).expect("前两列");
+    assert_eq!(block.dims(), [3, 2]);
+    assert!(
+        block.clone().flatten::<Vec<usize>>(0, 2).is_none(),
+        "行之间隔着两列"
+    );
+    assert_eq!(
+        block.flatten::<Vec<usize>>(1, 2).map(|f| f.dims().to_vec()),
+        Some(vec![3, 2]),
+        "单轴段是空操作"
+    );
+}
+
+#[test]
+fn a_transposed_pair_of_axes_cannot_be_flattened() {
+    let values = counted();
+    let view: View<'_, f32> = View::new(Shape::new([3, 4]), values.as_slice()).expect("视图");
+    let turned = view.transpose(0, 1).expect("转置");
+    assert_eq!(turned.strides(), [1, 4]);
+    assert!(turned.clone().flatten::<Vec<usize>>(0, 2).is_none());
+    assert_eq!(
+        turned
+            .flatten::<Vec<usize>>(0, 1)
+            .map(|f| f.dims().to_vec()),
+        Some(vec![4, 3]),
+        "单轴段仍然可用"
+    );
+}
+
+#[test]
+fn a_broadcast_axis_is_honestly_not_contiguous() {
+    let values = [1.0f32, 2.0];
+    let view: View<'_, f32> = View::new(Shape::new([2]), &values).expect("视图");
+    let wide = view.broadcast(Shape::new([4, 2])).expect("广播新增前导轴");
+    assert_eq!(wide.at([3, 1]), Some(2.0), "步长 0 复用同一个元素");
+    assert!(!wide.is_contiguous(), "步长 0 的重复轴不可能是行主序紧凑");
 }

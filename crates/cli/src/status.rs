@@ -138,7 +138,7 @@ fn data_rows(panel: Panel) -> Result<Panel> {
     let view: tensor::View<'_, f32> =
         tensor::Tensor::new(tensor::Shape::new([2, 2]), buf.as_slice())?;
     // 先零拷贝切出末行，再广播成 4 行：步长 0 复用同一份元素，转置与置换表达不出来。
-    let last = view.narrow(0, 1, 1).expect("末行是合法视图");
+    let last = view.clone().narrow(0, 1, 1).expect("末行是合法视图");
     let wide = last.broadcast(vec![4usize, 2]);
     let panel = panel.row(
         "张量    tensor::Tensor",

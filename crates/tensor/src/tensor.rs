@@ -12,9 +12,28 @@
 //! 其余全部继承：连续与非连续布局、stride、transpose、permute、reshape 都是零拷贝的元数据
 //! 重排；形状、元素数、可达性与溢出在构造期一次拦下。
 //!
+//! # 形状算子面
+//!
+//! 元数据是 `(起点偏移, 各轴长度, 各轴步长)` 三元组，所以整套形状算子都是 O(轴数) 的整数运算，
+//! 一个元素都不搬，且**与存储形态无关**——借来的视图与自持的张量一视同仁：
+//!
+//! | 算子 | 秩 | 语义 |
+//! |---|---|---|
+//! | [`broadcast`](Self::broadcast) | 不变 | 目标秩不小于源秩，逐轴相等或源轴长为 1 |
+//! | [`narrow`](Self::narrow) / [`slice`](Self::slice) | 不变 | 沿一轴 / 多轴取连续段 |
+//! | [`select`](Self::select) | -1 | 固定某轴下标，该轴消失 |
+//! | [`squeeze`](Self::squeeze) / [`unsqueeze`](Self::unsqueeze) | ∓1 | 去掉长为 1 的轴 / 插入长为 1 的轴 |
+//! | [`flatten`](Self::flatten) | 变短 | 把行主序紧凑的一段轴压成一个 |
+//! | [`transpose`](Self::transpose) / [`permute`](Self::permute) | 不变 | 换轴序 |
+//!
+//! 改秩的四个算子要指定目标秩见证（`t.select::<[usize; 1]>(0, 3)`），因为稳定 Rust 算不出
+//! `D - 1`；Burn 在这里要求 `.squeeze::<2>()`，同一手法，只是那边只能是定长数组，这边
+//! `Vec<usize>` 也可以。不改秩的算子（`narrow` / `slice` / `broadcast`）没有这个摩擦。
+//!
 //! 偏移、可达性、连续性与取行只有 [`crate::layout`] 一份实现——两种秩、两种存储共用它。
 
 use core::marker::PhantomData;
+use core::ops::Range;
 
 use diagnostic::Result;
 
@@ -35,6 +54,8 @@ use crate::{DType, product};
 pub struct Tensor<B, R = Vec<usize>, K = f32> {
     dims: R,
     steps: R,
+    /// 起点偏移：下标 0 对应的缓冲位置。子视图不改缓冲、只把它前移。
+    base: usize,
     buf: B,
     /// 零尺寸，把 `K` 钉在类型里；`fn() -> K` 位置避免自动 trait 泄漏到 `Tensor`。
     marker: PhantomData<fn() -> K>,
@@ -65,7 +86,7 @@ where
             buf.slice().len(),
             "tensor::Tensor::strided",
         )?;
-        Ok(assemble(dims, steps, buf))
+        Ok(assemble(dims, steps, 0, buf))
     }
 
     /// 两种形态共用的连续构造：先核元素数，再推连续步长。
@@ -89,7 +110,7 @@ where
                 marker,
             )
         })?;
-        Ok(assemble(dims, steps, buf))
+        Ok(assemble(dims, steps, 0, buf))
     }
 
     /// 各轴长度。
@@ -100,6 +121,11 @@ where
     /// 各轴步长。
     pub fn strides(&self) -> &[usize] {
         self.steps.as_slice()
+    }
+
+    /// 起点偏移：下标 0 在存储里的位置。换行主序视图对象共享同一块缓冲时靠它区分。
+    pub fn base(&self) -> usize {
+        self.base
     }
 
     /// 轴数（rank）。标量为 0。
@@ -118,18 +144,26 @@ where
     }
 
     /// 存储里的全部元素——借来视图就是调用方的缓冲本身，不是副本。
+    ///
+    /// 这是**存储**而不是"本张量的元素"：子视图只覆盖其中 `base .. base + 最高偏移` 一段。
+    /// 要本张量的元素依次读出，用 [`to_contiguous`](Self::to_contiguous)。
     pub fn as_slice(&self) -> &[K] {
         self.buf.slice()
     }
 
-    /// 是否为行主序连续布局：期望步长由 [`Rank::contiguous`] 给出，与构造期同一套累积规则。
+    /// 是否为行主序连续布局：与连续步长逐轴核对。长度为 1 的轴不参与核对（它的步长不贡献偏移）。
     pub fn is_contiguous(&self) -> bool {
         layout::is_contiguous(self.dims.as_slice(), self.steps.as_slice())
     }
 
     /// 按下标取值；秩不符或越界返回 `None`（不 panic）。
     pub fn at(&self, idx: impl AsRef<[usize]>) -> Option<K> {
-        let offset = layout::offset(self.dims.as_slice(), self.steps.as_slice(), idx.as_ref())?;
+        let offset = layout::offset(
+            self.dims.as_slice(),
+            self.steps.as_slice(),
+            self.base,
+            idx.as_ref(),
+        )?;
         self.buf.slice().get(offset).copied()
     }
 
@@ -138,16 +172,25 @@ where
         layout::row(
             self.dims.as_slice(),
             self.steps.as_slice(),
+            self.base,
             self.buf.slice(),
             row,
         )
     }
+}
 
+impl<B, R, K> Tensor<B, R, K>
+where
+    R: Rank,
+    K: Element,
+    B: Store<K>,
+{
     /// 交换两轴：零拷贝的元数据重排，与存储形态无关。
     pub fn transpose(self, a: usize, b: usize) -> Option<Self> {
         Some(assemble(
             self.dims.swapped(a, b)?,
             self.steps.swapped(a, b)?,
+            self.base,
             self.buf,
         ))
     }
@@ -161,6 +204,7 @@ where
         Some(assemble(
             self.dims.permuted(order)?,
             self.steps.permuted(order)?,
+            self.base,
             self.buf,
         ))
     }
@@ -189,7 +233,7 @@ where
             })
             .collect::<Option<Vec<usize>>>()?;
         let steps = R::from_slice(&steps)?;
-        Some(assemble(dims, steps, self.buf))
+        Some(assemble(dims, steps, self.base, self.buf))
     }
 
     /// 等元素数地改形状：仅连续布局可用（转置过的张量可以先转置回去，那一步仍是零拷贝）。
@@ -202,7 +246,97 @@ where
             return None;
         }
         let steps = R2::contiguous(dims.as_slice())?;
-        Some(assemble(dims, steps, self.buf))
+        Some(assemble(dims, steps, self.base, self.buf))
+    }
+
+    /// 沿 `axis` 取 `[start, start + len)` 一段：秩不变，只把起点前移、该轴收窄。
+    ///
+    /// 越界返回 `None`。缓冲不动，所以自持张量也能切（不需要复制，也不必是借来的存储）。
+    pub fn narrow(mut self, axis: usize, start: usize, len: usize) -> Option<Self> {
+        let (base, dim) = layout::narrow(
+            self.dims.as_slice(),
+            self.steps.as_slice(),
+            self.base,
+            axis,
+            start,
+            len,
+        )?;
+        self.base = base;
+        self.dims.as_slice_mut()[axis] = dim;
+        Some(self)
+    }
+
+    /// 多轴同时取段：`ranges[i]` 作用于第 `i` 轴，没给出的尾部轴原样保留。
+    ///
+    /// 比逐轴 [`narrow`](Self::narrow) 少一次重新校验和几趟搬动：一趟扫完所有轴。
+    pub fn slice(mut self, ranges: impl AsRef<[Range<usize>]>) -> Option<Self> {
+        let ranges = ranges.as_ref();
+        if ranges.len() > self.rank() {
+            return None;
+        }
+        for (axis, range) in ranges.iter().enumerate() {
+            let len = range.end.checked_sub(range.start)?;
+            let (base, dim) = layout::narrow(
+                self.dims.as_slice(),
+                self.steps.as_slice(),
+                self.base,
+                axis,
+                range.start,
+                len,
+            )?;
+            self.base = base;
+            self.dims.as_slice_mut()[axis] = dim;
+        }
+        Some(self)
+    }
+
+    /// 固定第 `axis` 轴为第 `index` 个：起点前移、该轴消失，所以秩减一。
+    pub fn select<R2: Rank>(self, axis: usize, index: usize) -> Option<Tensor<B, R2, K>> {
+        let out = layout::select(
+            self.dims.as_slice(),
+            self.steps.as_slice(),
+            self.base,
+            axis,
+            index,
+        )?;
+        self.respine(out)
+    }
+
+    /// 去掉长为 1 的第 `axis` 轴；该轴不是单例返回 `None`（不做静默通过）。
+    pub fn squeeze<R2: Rank>(self, axis: usize) -> Option<Tensor<B, R2, K>> {
+        let out = layout::squeeze(self.dims.as_slice(), self.steps.as_slice(), self.base, axis)?;
+        self.respine(out)
+    }
+
+    /// 在第 `axis` 位插入一个长为 1 的轴：纯元数据，零拷贝。
+    pub fn unsqueeze<R2: Rank>(self, axis: usize) -> Option<Tensor<B, R2, K>> {
+        let out = layout::unsqueeze(self.dims.as_slice(), self.steps.as_slice(), self.base, axis)?;
+        self.respine(out)
+    }
+
+    /// 把 `[start, end)` 各轴压成一个轴：仅当这段在存储里就是行主序紧凑时成立，否则 `None`。
+    ///
+    /// 比 [`reshape`](Self::reshape) 严格地窄一格也严格地安全一格：`reshape` 要求**整个**张量连续，
+    /// 这里只要求这一段连续，于是转置过的张量也能先压平能压的那几轴。
+    pub fn flatten<R2: Rank>(self, start: usize, end: usize) -> Option<Tensor<B, R2, K>> {
+        let out = layout::flatten(
+            self.dims.as_slice(),
+            self.steps.as_slice(),
+            self.base,
+            start,
+            end,
+        )?;
+        self.respine(out)
+    }
+
+    /// 换成本张量的语序：把 [`layout`] 算好的布局装进新的秩见证，存储原样带走。
+    fn respine<R2: Rank>(self, out: layout::Layout) -> Option<Tensor<B, R2, K>> {
+        Some(assemble(
+            R2::from_slice(out.dims())?,
+            R2::from_slice(out.steps())?,
+            out.base(),
+            self.buf,
+        ))
     }
 
     /// 物化成连续缓冲：步长 0 的广播轴、非满长的窄视图都摊进一块紧凑内存，于是可以接着
@@ -210,16 +344,23 @@ where
     #[must_use]
     pub fn to_contiguous(&self) -> Tensor<Owned<K>, R, K> {
         let shape = self.dims.as_slice();
-        let source = self.buf.slice();
+        let numel = product(shape);
         let steps = R::contiguous(shape).unwrap_or_else(|| self.dims.clone());
+        let source = self.buf.slice();
         if self.is_contiguous() {
-            return assemble(self.dims.clone(), steps, Owned::from(source.to_vec()));
+            // 连续布局的整块元素从起点开始就是挨着的，所以一次切片拷贝即可——起点可能不是 0。
+            return assemble(
+                self.dims.clone(),
+                steps,
+                0,
+                Owned::from(gather(source, self.base, numel)),
+            );
         }
-        let mut buf = Vec::with_capacity(crate::product(shape));
+        let mut buf = Vec::with_capacity(numel);
         let mut idx = vec![0usize; shape.len()];
-        let mut at = 0usize;
+        let mut at = self.base;
         let axis_steps = self.steps.as_slice();
-        for _ in 0..crate::product(shape) {
+        for _ in 0..numel {
             // 构造时的 check_reach 已证明任一合法下标都落在缓冲内，故不走 `Option`。
             buf.push(source[at]);
             // 行主序进位，偏移跟着增减，省掉每次重算点积。
@@ -233,34 +374,7 @@ where
                 at -= axis_steps[axis] * shape[axis];
             }
         }
-        assemble(self.dims.clone(), steps, Owned::from(buf))
-    }
-}
-
-impl<'a, R, K> Tensor<&'a [K], R, K>
-where
-    R: Rank,
-    K: Element,
-{
-    /// 沿 `axis` 零拷贝取 `[start, start + len)` 一段，返回借用同一缓冲的视图。
-    ///
-    /// 只对借来的存储开放：持有 [`Owned`] 的张量要分段就得复制，那不是"视图"。返回的视图按同一组
-    /// 步长重新做一遍可达性校验——起点前移后仍落在调用方缓冲内。
-    pub fn narrow(&self, axis: usize, start: usize, len: usize) -> Option<View<'a, K>> {
-        let dims = self.dims.as_slice();
-        let steps = self.steps.as_slice().to_vec();
-        if start.checked_add(len)? > *dims.get(axis)? {
-            return None;
-        }
-        let skip = start.checked_mul(*steps.get(axis)?)?;
-        let mut dims = dims.to_vec();
-        dims[axis] = len;
-        // 零元素口径与别处一致：空段借空缓冲，不借调用方的非空缓冲。
-        let data = match len {
-            0 => self.buf.get(..0)?,
-            _ => self.buf.get(skip..)?,
-        };
-        Tensor::strided(dims, steps, data).ok()
+        assemble(self.dims.clone(), steps, 0, Owned::from(buf))
     }
 }
 
@@ -282,11 +396,18 @@ where
     }
 }
 
-/// 六处构造与重排共用同一个组装动作：元数据 + 存储 + 零尺寸类型标记。
-fn assemble<B, R, K>(dims: R, steps: R, buf: B) -> Tensor<B, R, K> {
+/// 从 `start` 起拷 `len` 个元素；越界时按实际可得的截断（构造期已保证不会发生）。
+fn gather<K: Copy>(source: &[K], start: usize, len: usize) -> Vec<K> {
+    let end = start.saturating_add(len).min(source.len());
+    source.get(start.min(end)..end).unwrap_or_default().to_vec()
+}
+
+/// 六处构造与重排共用同一个组装动作：元数据 + 起点 + 存储 + 零尺寸类型标记。
+fn assemble<B, R, K>(dims: R, steps: R, base: usize, buf: B) -> Tensor<B, R, K> {
     Tensor {
         dims,
         steps,
+        base,
         buf,
         marker: PhantomData,
     }
