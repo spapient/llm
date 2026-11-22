@@ -6,8 +6,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::atom::Prim;
+use crate::atom::{Epilogue, Prim};
 use crate::prof::{Emit, Profile};
+use crate::sign::EPILOGUE_STEM;
 
 // ── scan ──────────────────────────────────────────────────────────────
 
@@ -29,6 +30,7 @@ pub fn device(vendor: &str) {
     let mut text = String::new();
     header(&mut text);
     fragments(&mut text, &device);
+    epilogues(&mut text, &device);
     device_line(&mut text, &device, &outcome);
     fs::write(out.join("tables.rs"), text)
         .unwrap_or_else(|error| fail(format!("写 tables.rs 失败：{error}")));
@@ -51,6 +53,10 @@ struct Device {
     profile: Profile,
     /// 片段与路径，顺序与 `Prim::ALL` 一致。
     fragments: Vec<(Prim, PathBuf)>,
+    /// 写回尾块片段：一份文本，六种形式按 `/* epi: <form> */` 分段。
+    epilogue: PathBuf,
+    /// 写回形式 → 见证入口，顺序与 `Epilogue::ALL` 一致。
+    epis: Vec<(Epilogue, String)>,
     /// 见证源码路径（正文由生成的 `include_str!` 读，脚本里不再存一份）。
     witness: PathBuf,
     /// 原语 → 见证入口（`int func(float *out)` 的函数名）。
@@ -85,8 +91,13 @@ fn scan(dir: &Path, vendor: &str) -> Device {
     // 见证与清单不是片段（扩展名不符的被跳过）；每段片段带上自己的见证入口。
     let mut fragments = Vec::new();
     let mut entries = Vec::new();
+    let mut epilogue = None;
     for path in &files {
         if *path == witness {
+            continue;
+        }
+        if let Some(epis) = epilogue_of(path, &ext, &profile) {
+            epilogue = Some((path.clone(), epis));
             continue;
         }
         if let Some((prim, entry)) = fragment_of(path, &ext, &profile) {
@@ -99,12 +110,20 @@ fn scan(dir: &Path, vendor: &str) -> Device {
     }
     fragments.sort_by_key(|(prim, _)| index(*prim));
     entries.sort_by_key(|(prim, _)| index(*prim));
+    let Some((epilogue, epis)) = epilogue else {
+        fail(format!(
+            "`{}` 里没有 `{EPILOGUE_STEM}.{ext}`：六种写回形式没有片段，装配无从下手",
+            dir.display()
+        ))
+    };
 
     Device {
         name: vendor.to_string(),
         ext,
         profile,
         fragments,
+        epilogue,
+        epis,
         witness,
         entries,
     }
@@ -150,6 +169,76 @@ fn fragment_of(path: &Path, ext: &str, profile: &Profile) -> Option<(Prim, Strin
     let implementation = signature(prim, &read(path), path);
     let entry = entry_of(profile, prim, &implementation, path);
     Some((prim, entry))
+}
+
+/// 一个文件是不是写回尾块片段：是就返回六种形式的见证入口，不是就 `None`。
+///
+/// 六种形式必须齐全——`spec::epilogue` 的语法是闭集，少一种就说明这台设备的写回根本不完整；
+/// 每段以 `/* epi: <form> */` 开头，装配按语法顺序各取一段。
+fn epilogue_of(path: &Path, ext: &str, profile: &Profile) -> Option<Vec<(Epilogue, String)>> {
+    if stem(path) != Some(EPILOGUE_STEM) || extension(path).as_deref() != Some(ext) {
+        return None;
+    }
+    let source = read(path);
+    family_signature(&source, path);
+    let entries = Epilogue::ALL
+        .iter()
+        .map(|form| (*form, epi_entry_of(profile, *form, path, &source)))
+        .collect();
+    Some(entries)
+}
+
+/// 写回尾块片段的第一行：`/* cutile-sign: epilogue */`。
+///
+/// 它不带 `/`：原语片段的签名是"这一段实现哪条签名"，而一份尾块文本实现的是六种形式，
+/// 逐个形式写签名会让同一份文件出现六条声明。
+fn family_signature(source: &str, path: &Path) {
+    let first = source.lines().next().unwrap_or_default();
+    let declared = crate::sign::strip_marker(first).unwrap_or_else(|| {
+        fail(format!(
+            "`{}` 的第一行必须是 `/* {} {EPILOGUE_STEM} */`，实际是 `{first}`",
+            path.display(),
+            crate::sign::MARKER
+        ))
+    });
+    if declared.trim() != EPILOGUE_STEM {
+        fail(format!(
+            "`{}` 的签名声明是 `{}`：写回尾块只能声明 `{EPILOGUE_STEM}`（不带 `/`）",
+            path.display(),
+            declared.trim()
+        ));
+    }
+}
+
+/// 写回形式在档案里的见证入口；缺供给、缺段标记或缺见证都是构建期失败。
+fn epi_entry_of(profile: &Profile, form: Epilogue, path: &Path, source: &str) -> String {
+    let marker = crate::device::epi_marker(form);
+    if !source.contains(marker.as_str()) {
+        fail(format!(
+            "`{}` 缺少 `{marker}` 段：六种写回形式必须齐全",
+            path.display()
+        ));
+    }
+    let provide = profile
+        .epilogue
+        .iter()
+        .find(|provide| provide.form == form)
+        .unwrap_or_else(|| {
+            fail(format!(
+                "`{}` 有 `{form}` 段，档案里却没有对应的 `[[epilogue]]`（`form = \"{form}\"`）",
+                path.display()
+            ))
+        });
+    provide
+        .witness
+        .as_ref()
+        .map(|witness| witness.func.clone())
+        .unwrap_or_else(|| {
+            fail(format!(
+                "`{}` 的 `{form}` 段没有见证：装配表要指向镜像里的一个入口，先给这条写回写见证",
+                path.display()
+            ))
+        })
 }
 
 /// 目录对应的档案：`vendor` / `emit` 必须与目录一致。
@@ -467,7 +556,7 @@ fn header(text: &mut String) {
          // 一台设备的片段、入口与设备行；`prim` 把六份这样的表合成 `BUILTIN` / `WITNESS` /\n\
          // `DEVICES`。类型定义在 `src/` 与 `prof`，所以生成代码不改变所有权表。\n\
          #[allow(unused_imports)]\n\
-         use prof::atom::Prim;"
+         use prof::atom::{{Epilogue, Prim}};"
     );
 }
 
@@ -490,6 +579,26 @@ fn fragments(text: &mut String, device: &Device) {
     let _ = writeln!(text, "];\n");
 }
 
+/// 生成写回尾块表：一份文本 + 六种形式各自的见证入口。
+fn epilogues(text: &mut String, device: &Device) {
+    let _ = writeln!(
+        text,
+        "/// 写回尾块片段：`/* epi: <form> */` 分成六段，装配按段取用。\n\
+         pub const EPILOGUE: &str = include_str!({:?});\n",
+        device.epilogue.display().to_string()
+    );
+    let _ = writeln!(
+        text,
+        "/// 写回形式 → 见证里的入口名，顺序与 `Epilogue::ALL` 一致。\n\
+         pub const EPIS: [(Epilogue, &str); {}] = [",
+        device.epis.len()
+    );
+    for (form, entry) in &device.epis {
+        let _ = writeln!(text, "    (Epilogue::{:?}, {entry:?}),", form);
+    }
+    let _ = writeln!(text, "];\n");
+}
+
 /// 生成设备行：入口表 + 档案元数据 + 见证源码 + （可选的）镜像。
 fn device_line(text: &mut String, device: &Device, outcome: &Outcome) {
     prims(text, device);
@@ -505,6 +614,8 @@ fn device_line(text: &mut String, device: &Device, outcome: &Outcome) {
     let _ = writeln!(text, "    tool: {:?},", device.profile.meta.tool);
     let _ = writeln!(text, "    tool_ver: {:?},", device.profile.meta.tool_ver);
     let _ = writeln!(text, "    prims: &PRIMS,");
+    let _ = writeln!(text, "    epilogue: EPILOGUE,");
+    let _ = writeln!(text, "    epis: &EPIS,");
     let _ = writeln!(
         text,
         "    source: include_str!({:?}),",

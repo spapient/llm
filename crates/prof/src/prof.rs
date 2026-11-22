@@ -1,7 +1,7 @@
 //! 档案层：设备指纹、参数化能力供给、证据等级与字段校验（cutile README §5.3、§11.2）。
 use crate::atom::{
-    Attr, AttrKey, Closed, DType, DTypeSet, Grade, Need, Prim, Provide, Space, SpaceSet, Span,
-    Witness,
+    Attr, AttrKey, Closed, DType, DTypeSet, EpiProvide, Epilogue, Grade, Need, Prim, Provide,
+    Space, SpaceSet, Span, Witness,
 };
 use core::fmt;
 use diagnostic::data::{Table, Value};
@@ -255,6 +255,8 @@ pub struct Profile {
     pub units: Vec<Unit>,
     /// 能力供给。
     pub provides: Vec<Provide>,
+    /// 写回尾块供给：六种形式各一条（`[[epilogue]]`）。
+    pub epilogue: Vec<EpiProvide>,
     /// 峰值常数。
     pub peak: Peak,
     /// 编译参数（参与缓存指纹）。
@@ -388,6 +390,12 @@ enum Field<'a> {
     },
     /// `provides[<原语名>].<key>`：校验按原语而不是下标报位置。
     Prim { prim: Prim, key: &'a str },
+    /// `epilogue[<下标>].<key>`；`witness` 为真时多一层 `witness.`。
+    Epi {
+        index: usize,
+        key: &'a str,
+        witness: bool,
+    },
 }
 impl fmt::Display for Field<'_> {
     fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -403,6 +411,16 @@ impl fmt::Display for Field<'_> {
                 witness: false,
             } => write!(out, "provides[{index}].{key}"),
             Self::Prim { prim, key } => write!(out, "provides[{prim}].{key}"),
+            Self::Epi {
+                index,
+                key,
+                witness: true,
+            } => write!(out, "epilogue[{index}].witness.{key}"),
+            Self::Epi {
+                index,
+                key,
+                witness: false,
+            } => write!(out, "epilogue[{index}].{key}"),
         }
     }
 }
@@ -422,6 +440,20 @@ const fn witness_at(index: usize, key: &str) -> Field<'_> {
 }
 const fn prim_at(prim: Prim, key: &str) -> Field<'_> {
     Field::Prim { prim, key }
+}
+const fn epi_at(index: usize, key: &str) -> Field<'_> {
+    Field::Epi {
+        index,
+        key,
+        witness: false,
+    }
+}
+const fn epi_witness_at(index: usize, key: &str) -> Field<'_> {
+    Field::Epi {
+        index,
+        key,
+        witness: true,
+    }
 }
 fn text<'a>(
     table: &'a Table,

@@ -20,7 +20,7 @@
 //! 是 `metallib`。没有镜像不是错误，[`Device::status`] 给出原因——"缺设备即失败"由
 //! `CUTILE_REQUIRE_IMAGE` 显式要求，不由默认构建强加。
 
-use crate::atom::Prim;
+use crate::atom::{Epilogue, Prim};
 
 /// 一台设备的设备侧代码：源码 + 可选的镜像。
 #[derive(Debug, Clone, Copy)]
@@ -37,6 +37,10 @@ pub struct Device {
     pub tool_ver: &'static str,
     /// 原语枚举与映射表：这台设备有哪些原语，每个原语在镜像里的入口叫什么。
     pub prims: &'static [(Prim, &'static str)],
+    /// 写回尾块片段：一份文本里按 `/* epi: <form> */` 分成六段，装配按段取用。
+    pub epilogue: &'static str,
+    /// 写回尾块枚举与映射表：六种形式各自的见证入口。
+    pub epis: &'static [(Epilogue, &'static str)],
     /// 见证源码：调试模式下的设备侧代码，也是镜像的输入。
     pub source: &'static str,
     /// 设备镜像；只在 `device-image` feature 下、且本机工具链真的编出来时存在。
@@ -59,10 +63,34 @@ impl Device {
             .map(|(_, entry)| *entry)
     }
 
+    /// 写回尾块的某一段：`/* epi: <form> */` 之后、下一个标记之前的正文。
+    ///
+    /// 六种形式在同一份文本里，装配按语法顺序各取一段；找不到标记返回 `None`（构建期已经
+    /// 保证六段齐全，这里的 `None` 只可能是调用方用错了 vendor）。
+    pub fn epilogue_of(&self, form: Epilogue) -> Option<&'static str> {
+        let marker = epi_marker(form);
+        let rest = self.epilogue.split_once(marker.as_str())?.1;
+        let body = rest.split("/* epi: ").next()?;
+        Some(body.trim_matches('\n'))
+    }
+
+    /// 写回尾块某一段的见证入口名。
+    pub fn epi_entry(&self, form: Epilogue) -> Option<&'static str> {
+        self.epis
+            .iter()
+            .find(|(have, _)| *have == form)
+            .map(|(_, entry)| *entry)
+    }
+
     /// 是否带上了设备镜像。
     pub fn has_image(&self) -> bool {
         self.image.is_some()
     }
+}
+
+/// 写回尾块某一形式在文本里的段标记：`/* epi: bias */`。
+pub fn epi_marker(form: Epilogue) -> String {
+    format!("/* epi: {} */", form.as_str())
 }
 
 /// 编译好的设备镜像。

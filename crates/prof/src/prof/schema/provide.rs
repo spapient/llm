@@ -139,18 +139,21 @@ pub(super) fn witness_of(entry: &Table, index: usize) -> Result<Option<Witness>,
         }
         return Ok(None);
     };
-    Ok(Some(witness_fields(table, index)?))
+    Ok(Some(witness_fields(table, |key| witness_at(index, key))?))
 }
-/// 见证的三个字段：`file` / `func` 必填，`expect` 是数值数组。
-pub(super) fn witness_fields(table: &Table, index: usize) -> Result<Witness, ProfileError> {
-    let file = text(table, "file", witness_at(index, "file"))?.to_string();
-    let func = text(table, "func", witness_at(index, "func"))?.to_string();
-    let expect = expect_values(table, index)?;
+/// 见证的三个字段：`file` / `func` 必填，`expect` 是数值数组。字段路径由调用方给：
+/// `[[provides]]` 与 `[[epilogue]]` 共用这一段，报错位置却必须落在各自的段里。
+pub(super) fn witness_fields(
+    table: &Table,
+    at: impl Fn(&'static str) -> Field<'static>,
+) -> Result<Witness, ProfileError> {
+    let file = text(table, "file", at("file"))?.to_string();
+    let func = text(table, "func", at("func"))?.to_string();
+    let expect = expect_values(table, at("expect"))?;
     Ok(Witness { file, func, expect })
 }
 /// `expect`：数值数组，按顺序与见证输出对拍。
-pub(super) fn expect_values(table: &Table, index: usize) -> Result<Vec<f32>, ProfileError> {
-    let path = witness_at(index, "expect");
+pub(super) fn expect_values(table: &Table, path: Field<'_>) -> Result<Vec<f32>, ProfileError> {
     let items = table.array("expect").ok_or_else(|| missing(path))?;
     let number = |value: &Value| expect_number(value, path);
     items.iter().map(number).collect()

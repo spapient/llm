@@ -107,9 +107,13 @@ fn add(set: &mut FragmentSet, path: &Path, ext: &str) -> diagnostic::Result<()> 
     set.insert(prim, source)
 }
 
-/// 文件名里的原语名：扩展名不对、或叫 [`WITNESS_STEM`] 的文件都不是片段。
+/// 文件名里的原语名：扩展名不对、或叫 [`WITNESS_STEM`] / `epilogue` 的文件都不是片段。
+///
+/// 写回尾块的那份文本由设备行的 `epilogue` 字段直接带出去（`prof::Device`），不经过
+/// [`FragmentSet`]——它的键是 [`Prim`]，六种写回形式不是原语。
 fn fragment_stem<'a>(path: &'a Path, ext: &str) -> Option<&'a str> {
     let stem = path.file_stem().and_then(|value| value.to_str())?;
     let right_ext = path.extension().and_then(|value| value.to_str()) == Some(ext);
-    (right_ext && stem != WITNESS_STEM).then_some(stem)
+    let named = stem != WITNESS_STEM && stem != prof::sign::EPILOGUE_STEM;
+    (right_ext && named).then_some(stem)
 }

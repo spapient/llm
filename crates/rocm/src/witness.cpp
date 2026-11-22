@@ -211,3 +211,78 @@ int witness_rcp(float *out) {
     out[1] = 1.0f / root;
     return 2;
 }
+
+/* ---- 写回尾块（epilogue）的六种形式 ----------------------------------------
+ * 形式集合与 spec::epilogue 的语法一一对应，数值口径是 crates/gemm/src/epilogue.rs。
+ * 片段文本是带占位符的可拼接块，不进这里；这里只证明"哪种形式算什么"。
+ */
+
+/* epi/bias: 2x2 tile {1,2,3,4} + 列偏置 {10,20} → {11,22,13,24} */
+int witness_epi_bias(float *out) {
+    const float tile[4] = {1.0f, 2.0f, 3.0f, 4.0f};
+    const float bias[2] = {10.0f, 20.0f};
+    for (int r = 0; r < 2; ++r) {
+        for (int c = 0; c < 2; ++c) {
+            out[r * 2 + c] = tile[r * 2 + c] + bias[c];
+        }
+    }
+    return 4;
+}
+
+/* epi/act: relu {-1,0,2.5} → {0,0,2.5} */
+int witness_epi_act(float *out) {
+    const float in[3] = {-1.0f, 0.0f, 2.5f};
+    for (int i = 0; i < 3; ++i) {
+        const float v = in[i];
+        out[i] = (v > 0.0f) ? v : 0.0f;
+    }
+    return 3;
+}
+
+/* epi/residual: {1,2} + {0.5,0.25} → {1.5,2.25} */
+int witness_epi_residual(float *out) {
+    const float a[2] = {1.0f, 2.0f};
+    const float b[2] = {0.5f, 0.25f};
+    for (int i = 0; i < 2; ++i) {
+        out[i] = a[i] + b[i];
+    }
+    return 2;
+}
+
+/* epi/scale: {1,2} * 0.5 → {0.5,1} */
+int witness_epi_scale(float *out) {
+    const float a[2] = {1.0f, 2.0f};
+    const float alpha = 0.5f;
+    for (int i = 0; i < 2; ++i) {
+        out[i] = a[i] * alpha;
+    }
+    return 2;
+}
+
+/* epi/quant: scale=1、bits=4、{7.4,-8.6} → 取整 {7,-9} → 钳位 [-8,7] → {7,-8} */
+int witness_epi_quant(float *out) {
+    const float scale = 1.0f;
+    const int bits = 4;
+    const float lo = (float)(-(1 << (bits - 1)));
+    const float hi = (float)((1 << (bits - 1)) - 1);
+    const float src[2] = {7.4f, -8.6f};
+    for (int i = 0; i < 2; ++i) {
+        const float x = src[i] / scale;
+        const float r = (x >= 0.0f) ? (float)(int)(x + 0.5f) : (float)(int)(x - 0.5f);
+        float v = (r < lo) ? lo : r;
+        if (v > hi) {
+            v = hi;
+        }
+        out[i] = v * scale;
+    }
+    return 2;
+}
+
+/* epi/store: 写回标记，tile 原样落到输出缓冲 {3.25,1.5} → {3.25,1.5} */
+int witness_epi_store(float *out) {
+    const float tile[2] = {3.25f, 1.5f};
+    for (int i = 0; i < 2; ++i) {
+        out[i] = tile[i];
+    }
+    return 2;
+}

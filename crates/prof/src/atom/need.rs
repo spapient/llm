@@ -168,6 +168,39 @@ pub struct Provide {
     /// 可执行的见证（`L2` 及以上必填）。
     pub witness: Option<Witness>,
 }
+/// 一条写回尾块供给：某设备档案对六种写回步骤之一的实现与见证。
+///
+/// 它不是 [`Provide`]：`Provide` 的 `extent` / `n` / `k` / `dt` / `space` / `attrs` 都是
+/// 「这道指令能覆盖哪种需求」的坐标，而写回步骤没有需要协商的签名——`spec::epilogue` 的语法
+/// 已经把它写死成六种形式。所以这里只留 `form`、实现名、等级与见证。
+#[derive(Debug, Clone, PartialEq)]
+pub struct EpiProvide {
+    /// 步骤：`bias` / `act` / `residual` / `scale` / `quant` / `store`。
+    pub form: Epilogue,
+    /// 实现名：`epilogue.<ext>` 里那一段的声明。
+    pub impl_name: String,
+    /// 证据等级。
+    pub grade: Grade,
+    /// 可执行的见证（构建期据此得到镜像里的入口名，所以实际上必填）。
+    pub witness: Option<Witness>,
+}
+impl EpiProvide {
+    /// 构造一条只声明步骤本身的供给，便于增量补字段。
+    pub fn of(form: Epilogue, impl_name: impl Into<String>) -> Self {
+        Self {
+            form,
+            impl_name: impl_name.into(),
+            grade: Grade::L0,
+            witness: None,
+        }
+    }
+    /// 设置证据等级。
+    #[must_use]
+    pub fn with_grade(mut self, grade: Grade) -> Self {
+        self.grade = grade;
+        self
+    }
+}
 impl Provide {
     /// 构造一个只声明原语本身的供给，便于增量补字段。
     pub fn of(prim: Prim, impl_name: impl Into<String>) -> Self {

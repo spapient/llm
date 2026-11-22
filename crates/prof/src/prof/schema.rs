@@ -3,10 +3,12 @@
 
 use super::*;
 mod eval;
+mod epilogue;
 mod provide;
 mod witness;
 
 pub(super) use eval::eval_expression;
+use epilogue::*;
 use provide::*;
 pub use witness::WitnessLookup;
 use witness::*;
@@ -65,6 +67,7 @@ impl Profile {
             simt: parse_simt(table),
             units: capability.units,
             provides: capability.provides,
+            epilogue: parse_epilogues(table)?,
             peak: capability.peak,
             flags,
             preamble,

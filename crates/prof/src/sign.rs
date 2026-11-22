@@ -19,6 +19,12 @@
 /// 签名声明的标记，与 `prim::SIGN_MARKER` 同一个字符串。
 pub const MARKER: &str = "cutile-sign:";
 
+/// 写回尾块片段的文件名（不含扩展名）：一份文本装六种形式。
+///
+/// 它的签名声明不带 `/`（`/* cutile-sign: epilogue */`）：原语片段的声明回答"这一段实现哪条
+/// 签名"，而一份尾块文本实现六种形式，逐个形式写声明会让同一份文件出现六条。
+pub const EPILOGUE_STEM: &str = "epilogue";
+
 /// 剥掉 `/* */` 外壳与 [`MARKER`]，得到声明正文 `<prim>/<impl>`；形态不符返回 `None`。
 pub fn strip_marker(first: &str) -> Option<&str> {
     first
