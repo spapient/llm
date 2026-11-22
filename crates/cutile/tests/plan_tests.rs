@@ -154,3 +154,150 @@ fn pruning_caps_at_the_budget_and_keeps_a_composable_pair() {
         "可拼的生产者→消费者对必须留下"
     );
 }
+
+/// 内置声明表：`fusions` 与 `ranking` 的输入就是它。
+fn decls() -> Vec<OpDecl> {
+    op::builtin()
+        .iter()
+        .map(|source| OpDecl::parse(source.declaration(), source.template()).expect("声明自洽"))
+        .collect()
+}
+
+/// 一条真实候选：`adaptive_pool_f32` 的 `y` 接 `attention_f32` 的输入（生产形状对得上）。
+fn pool_into_attention() -> Fusion {
+    let parse = |name: &str| {
+        let source = op::builtin_named(name).expect("内置");
+        OpDecl::parse(source.declaration(), source.template()).expect("声明")
+    };
+    compose(&parse("adaptive_pool_f32"), &parse("attention_f32")).expect("能拼")
+}
+
+#[test]
+fn a_fusion_never_slows_down() {
+    let profile = profile();
+    let ranked = ranking(&profile, &decls(), 12);
+    let mut scored = 0;
+    for (fusion, verdict) in &ranked {
+        if let Verdict::Scored(payoff) = verdict {
+            scored += 1;
+            // `max` 次可加：融合省的只有流量，算力不变，所以预测只会更小。
+            assert!(
+                payoff.speedup() >= 1.0 && payoff.fused_s <= payoff.unfused_s,
+                "{} → {} 越融越慢：{:?}",
+                fusion.producer,
+                fusion.consumer,
+                payoff
+            );
+            assert!(payoff.saved_bytes > 0, "融合必须省下中间量的往返");
+            assert!(payoff.bound() == "compute" || payoff.bound() == "memory");
+        }
+    }
+    assert!(scored > 0, "内置注册表上至少有一条候选打得出分");
+}
+
+#[test]
+fn the_payoff_is_the_intermediate_round_trip() {
+    let profile = profile();
+    let fusion = pool_into_attention();
+    let Verdict::Scored(payoff) = score(&profile, &fusion) else {
+        panic!("这一对应当打得出分：{}", score(&profile, &fusion).as_str());
+    };
+    // 中间量=生产者唯一输出的字节数，独立算一遍：省的正是它的写 + 读。
+    let producer = op::model(&fusion.producer).expect("语义投影");
+    let (m, n) = producer.shape;
+    let shape_ctx = (producer.shape_ctx)(m, n).expect("生产形状自洽");
+    let cost = (producer.cost)(&shape_ctx).expect("代价");
+    assert_eq!(payoff.saved_bytes, 2 * cost.write);
+    assert!(payoff.saved_bytes <= cost.bytes() * 2, "省的不能超过往返");
+}
+
+#[test]
+fn the_payoff_agrees_with_predict() {
+    let profile = profile();
+    let fusion = pool_into_attention();
+    let Verdict::Scored(payoff) = score(&profile, &fusion) else {
+        panic!("这一对应当打得出分");
+    };
+    // 一台机器两个视角：不融合就是两次 `predict`（掩盖项为 0 时等价于裸 roofline）。
+    let bare = Masking {
+        mma_share: 1.0,
+        stages: 1,
+        unmasked: 0.0,
+    };
+    let side = |name: &str| {
+        let model = op::model(name).expect("语义投影");
+        let (m, n) = model.shape;
+        let ctx = (model.shape_ctx)(m, n).expect("形状");
+        let cost = (model.cost)(&ctx).expect("代价");
+        predict(&profile, cost.flops, cost.bytes(), bare).expect("可预测")
+    };
+    let unfused = side(&fusion.producer) + side(&fusion.consumer);
+    assert!((payoff.unfused_s - unfused).abs() < 1e-18, "{payoff:?}");
+}
+
+#[test]
+fn scoring_refuses_without_peaks() {
+    let mut profile = profile();
+    profile.peak = crate::prof::Peak::default();
+    // 峰值缺席是"无从判定"，不是"加速 1.0×"：不许猜一个数顶上。
+    assert!(matches!(
+        score(&profile, &pool_into_attention()),
+        Verdict::Unscorable(_)
+    ));
+}
+
+#[test]
+fn a_candidate_without_a_semantic_model_is_unscorable() {
+    let mut fusion = pool_into_attention();
+    fusion.producer = "没有这个算子".to_string();
+    assert!(matches!(
+        score(&profile(), &fusion),
+        Verdict::Unscorable(_)
+    ));
+}
+
+#[test]
+fn a_multi_output_seam_cannot_be_attributed() {
+    let mut fusion = pool_into_attention();
+    let mut second = fusion.seams[0].clone();
+    second.from = "另一条输出".to_string();
+    fusion.seams.push(second);
+    // 代价表的 `write` 是全部输出之和：接缝占两条时中间量无法从它归因。
+    assert!(matches!(
+        score(&profile(), &fusion),
+        Verdict::Unscorable(_)
+    ));
+}
+
+#[test]
+fn the_ranking_covers_every_candidate_and_orders_it() {
+    let profile = profile();
+    let ranked = ranking(&profile, &decls(), 12);
+    assert_eq!(
+        ranked.len(),
+        fusions(&decls(), 12).len(),
+        "每条候选必须落到某个判决上：不许悄悄丢掉"
+    );
+    let (mut ranked_slowdown, mut last_rank) = (f64::INFINITY, 0u8);
+    for (fusion, verdict) in &ranked {
+        let rank = match verdict {
+            Verdict::Scored(payoff) => {
+                assert!(
+                    payoff.speedup() <= ranked_slowdown,
+                    "{} → {} 破坏了加速比降序",
+                    fusion.producer,
+                    fusion.consumer
+                );
+                ranked_slowdown = payoff.speedup();
+                0
+            }
+            Verdict::Unscorable(_) => 1,
+            Verdict::Rejected(reason) => {
+                assert!(!reason.is_empty(), "拒绝必须带原因");
+                2
+            }
+        };
+        assert!(rank >= last_rank, "判决分组必须是 scored → unscorable → rejected");
+        last_rank = rank;
+    }
+}

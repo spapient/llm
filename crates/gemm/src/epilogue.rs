@@ -107,23 +107,31 @@ fn scale_tile(out: &mut [f32], alpha: f32) -> diagnostic::Result<()> {
     Ok(())
 }
 
-/// 激活分派：五臂闭集一一对应 `crate::unary` 的标量核，就地施加（不建副本、不另分配）。
+/// 激活分派：按 [`SCALARS`] 取标量核，就地施加（不建副本、不另分配）。
 fn activate(out: &mut [f32], kind: ActKind) {
+    let Some((_, apply)) = SCALARS.iter().find(|(have, _)| *have == kind) else {
+        return;
+    };
     for x in out.iter_mut() {
-        *x = scalar(kind, *x);
+        *x = apply(*x);
     }
 }
 
-/// 一个激活值的标量核：与 `crate::unary` 的 `Unary::apply` 同一份算术，只是按 `ActKind` 取用。
-fn scalar(kind: ActKind, x: f32) -> f32 {
-    match kind {
-        ActKind::Relu => <crate::relu_f32 as crate::unary::Unary>::apply(x),
-        ActKind::Gelu => <crate::gelu_f32 as crate::unary::Unary>::apply(x),
-        ActKind::Silu => <crate::silu_f32 as crate::unary::Unary>::apply(x),
-        ActKind::LeakyRelu => <crate::leaky_relu_f32 as crate::unary::Unary>::apply(x),
-        ActKind::HardSigmoid => <crate::hard_sigmoid_f32 as crate::unary::Unary>::apply(x),
-    }
-}
+/// 五个标量核的登记表：`ActKind` 的闭集成员与 `crate::unary` 的 `Unary::apply` 一一对上，
+/// 覆盖关系由 `epilogue_tests` 的 `every_act_kind_has_a_scalar_kernel` 钉住。
+const SCALARS: [(ActKind, fn(f32) -> f32); 5] = [
+    (ActKind::Relu, <crate::relu_f32::ReluF32 as crate::unary::Unary>::apply),
+    (ActKind::Gelu, <crate::gelu_f32::GeluF32 as crate::unary::Unary>::apply),
+    (ActKind::Silu, <crate::silu_f32::SiluF32 as crate::unary::Unary>::apply),
+    (
+        ActKind::LeakyRelu,
+        <crate::leaky_relu_f32::LeakyReluF32 as crate::unary::Unary>::apply,
+    ),
+    (
+        ActKind::HardSigmoid,
+        <crate::hard_sigmoid_f32::HardSigmoidF32 as crate::unary::Unary>::apply,
+    ),
+];
 
 /// 量化到对称整数网格再反量化（round-trip）：`out[i] = SCALE * round(out[i] / SCALE)`，饱和到
 /// `[-(2^(b-1)), 2^(b-1)-1]`。步长 [`crate::dequant::SCALE`]，最大误差 0.5 步长。
@@ -165,3 +173,7 @@ fn shape_err(what: &str, expected: usize, got: usize) -> Error {
 #[cfg(test)]
 #[path = "../tests/epilogue_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../tests/epilogue_device_tests.rs"]
+mod device_tests;

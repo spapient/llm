@@ -46,7 +46,7 @@ use pool::{Buffers, Shape, pool, run_pooled};
 
 /// 端口峰值探针只在测量容器里导出（`bench` 特性），生产构建看不到它。
 #[cfg(all(feature = "bench", target_arch = "aarch64"))]
-pub use sme::port_run;
+pub use sme::{port_mix, port_run};
 
 mod tn;
 pub use tn::{MIN_ROWS, gemm_f32_tn};

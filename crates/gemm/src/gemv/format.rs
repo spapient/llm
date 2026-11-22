@@ -239,6 +239,18 @@ pub trait Plain: FormulaOwner {
 
     /// 元素反量化到 f32：int8 按 `i8` 解释，f32 恒等。
     fn to_f32(elem: Self::Elem) -> f32;
+
+    /// 一段权重与输入的逐元素点积：默认逐元素标量推进。
+    ///
+    /// `f32` 与对称 `int8` 都覆盖成 [`simd::elementwise`] 的向量通道——这里是唯一一处
+    /// 配置能自己决定"用哪台机器算这一行"，其余算术全部锁在骨架里。
+    fn dot(w_row: &[Self::Elem], x: &[f32]) -> f32 {
+        w_row
+            .iter()
+            .zip(x)
+            .map(|(elem, xv)| Self::to_f32(*elem) * xv)
+            .sum()
+    }
 }
 
 /// 配置驱动的逐元素权重格式：把一条 [`Plain`] 配置挂进 [`Format`] 骨架。

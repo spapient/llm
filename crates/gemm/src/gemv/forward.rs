@@ -62,7 +62,7 @@ fn forward_batch_dense<C: Plain>(
     for row in 0..geo.n {
         let w_row = &weights[row * geo.m..][..geo.m];
         for r in 0..geo.rows {
-            out[r * geo.n + row] = dense_dot::<C>(w_row, &x[r * geo.m..][..geo.m]);
+            out[r * geo.n + row] = C::dot(w_row, &x[r * geo.m..][..geo.m]);
         }
     }
     Ok(())
@@ -200,12 +200,12 @@ pub(super) fn forward_dense<C: Plain>(
     required_weights(weights.len(), n, m)?;
     for (row, value) in out.iter_mut().enumerate() {
         let w_row = &weights[row * m..][..m];
-        *value = dense_dot::<C>(w_row, x);
+        *value = C::dot(w_row, x);
     }
     Ok(())
 }
 
-/// 一行的带标度点积：按组推进，每组解包点积一次乘标度（[`dot`] 承担单元素反量化）。
+/// 一行的带标度点积：按组推进，每组解包点积一次乘标度（[`Plain::dot`] 承担单组点积）。
 pub(super) fn scaled_dot<C: Plain>(
     w_row: &[C::Elem],
     x: &[f32],
@@ -214,37 +214,7 @@ pub(super) fn scaled_dot<C: Plain>(
 ) -> f32 {
     let mut acc = 0.0f32;
     for ((w_chunk, scale), x_chunk) in w_row.chunks(group).zip(s_row).zip(x.chunks(group)) {
-        acc += dot::<C>(w_chunk, x_chunk) * scale;
+        acc += C::dot(w_chunk, x_chunk) * scale;
     }
     acc
-}
-
-/// 累加链数：16 条 = 4 条 NEON 寄存器（x86 的 AVX2 上是 2 条 `ymm`）。
-const LANES: usize = 16;
-
-/// 一行的无标度点积：`LANES` 条独立累加链，内层编译成整条向量乘加。
-fn dense_dot<C: Plain>(w_row: &[C::Elem], x: &[f32]) -> f32 {
-    let (w_chunks, w_tail) = w_row.as_chunks::<LANES>();
-    let (x_chunks, x_tail) = x.as_chunks::<LANES>();
-    let mut lanes = [0.0f32; LANES];
-    for (w, x) in w_chunks.iter().zip(x_chunks) {
-        let mut lane = 0;
-        while lane < LANES {
-            lanes[lane] += C::to_f32(w[lane]) * x[lane];
-            lane += 1;
-        }
-    }
-    let mut acc = lanes.iter().sum::<f32>();
-    for (w, x) in w_tail.iter().zip(x_tail) {
-        acc += C::to_f32(*w) * *x;
-    }
-    acc
-}
-
-/// 一段逐元素点积：`sum(to_f32(w) · x)`，按配置的单元素反量化。
-fn dot<C: Plain>(w: &[C::Elem], x: &[f32]) -> f32 {
-    w.iter()
-        .zip(x)
-        .map(|(elem, xv)| C::to_f32(*elem) * xv)
-        .sum()
 }

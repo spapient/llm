@@ -134,6 +134,209 @@ impl<'a> Args<'a> {
     }
 }
 
+/// 写回尾块的装配实参：设备文本里 `$0`..`$3` 的取值，由调用点一次给足。
+///
+/// 与 `@原语(...)` 的实参同形：装配不猜任何名字，缺参即错误。
+#[derive(Debug, Clone, Copy)]
+pub struct EpiArgs<'a> {
+    /// `$0`：输出缓冲（行主序）。
+    pub out: &'a str,
+    /// `$1`：`bias` 步的列偏置数组，长度是列数。
+    pub bias: &'a str,
+    /// `$1`：`residual` 步的残差数组，长度是元素数。
+    pub residual: &'a str,
+    /// `$2`：元素数（`bias` 是列宽）。
+    pub count: &'a str,
+    /// `$3`：`bias` 的行数。
+    pub rows: &'a str,
+}
+
+/// 可直接注入表达式的激活：三段文本是闭集成员在 C 类语言里的写法，操作数名固定为 `_v`。
+///
+/// `gelu` / `silu` 不在表里：它们要 `exp` / `erf`，而设备侧数学函数的拼写各语言不同
+/// （OpenCL 只有 `exp`、CUDA 有 `expf`、纯 C 要 `<math.h>`），所以那两种形式必须先在
+/// `epilogue.<ext>` 里落成设备自己的段落，不能由一个跨设备的表达式表假装通用。
+const ACT_EXPR: [(prof::atom::ActKind, &str); 3] = [
+    (prof::atom::ActKind::Relu, "(_v > 0.0f) ? _v : 0.0f"),
+    (
+        prof::atom::ActKind::LeakyRelu,
+        "(_v >= 0.0f) ? _v : 0.01f * _v",
+    ),
+    (
+        prof::atom::ActKind::HardSigmoid,
+        "(_v / 6.0f + 0.5f < 0.0f) ? 0.0f : \
+         ((_v / 6.0f + 0.5f > 1.0f) ? 1.0f : (_v / 6.0f + 0.5f))",
+    ),
+];
+
+/// 量化位宽：`quant` 步骤的 `$3`，与 `gemm::epilogue` 的对称网格边界一一对应。
+const QUANT_BITS: [(prof::atom::DType, &str); 3] = [
+    (prof::atom::DType::I8, "8"),
+    (prof::atom::DType::I4, "4"),
+    (prof::atom::DType::I2, "2"),
+];
+
+/// 写回尾块装配：按 `steps` 的顺序逐段取设备文本、填占位符、拼成一段可直接放进内核尾部的语句块。
+///
+/// 六段文本的事实源是设备的 `epilogue.<ext>`（[`prof::Device::epilogue`]）：本函数只做「按形式取段 →
+/// 填 `$0`..`$3` → 按声明顺序拼接」，不持有第二份算术。唯一的算术是激活表达式（[`ACT_EXPR`]），
+/// 它与 `gemm::unary` 的标量核由执行对拍钉住。
+///
+/// # Errors
+///
+/// 设备缺该形式的段、激活形式还没有设备侧段落、`quant` 位宽超出 `i8/i4/i2` 时返回 `invalid`。
+pub fn epilogue(
+    device: &prof::Device,
+    steps: &[spec::epilogue::Step],
+    args: &EpiArgs<'_>,
+) -> diagnostic::Result<String> {
+    let mut text = String::new();
+    for step in steps {
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        let block = block(device, step, args)?;
+        place(&mut text, &block);
+    }
+    Ok(text)
+}
+
+/// 一步的段文本：先定位形式与四个槽位，再交给 [`splice`] 填。
+fn block(
+    device: &prof::Device,
+    step: &spec::epilogue::Step,
+    args: &EpiArgs<'_>,
+) -> diagnostic::Result<String> {
+    let (form, slots) = slots(step, args)?;
+    let section = device
+        .epilogue_of(form)
+        .ok_or_else(|| missing_section(device, form))?;
+    let refs: Vec<Arg<'_>> = slots.iter().map(|slot| Arg::Expr(slot)).collect();
+    splice(section, &refs, 0)
+}
+
+/// 形式与四个槽位：前三步交给 [`slots_head`]、其余交给 [`slots_tail`]，把六臂 match 压成两段、
+/// 每段都远低于圈复杂度上限。
+fn slots(
+    step: &spec::epilogue::Step,
+    args: &EpiArgs<'_>,
+) -> diagnostic::Result<(prof::atom::Epilogue, [String; 4])> {
+    match step {
+        spec::epilogue::Step::Bias
+        | spec::epilogue::Step::Act(_)
+        | spec::epilogue::Step::Residual => slots_head(step, args),
+        _ => slots_tail(step, args),
+    }
+}
+
+/// 前三步的槽位：只有 `act` 的 `$3` 不是调用点给的（那是注入的激活表达式）。
+fn slots_head(
+    step: &spec::epilogue::Step,
+    args: &EpiArgs<'_>,
+) -> diagnostic::Result<(prof::atom::Epilogue, [String; 4])> {
+    use prof::atom::Epilogue;
+    use spec::epilogue::Step;
+    Ok(match step {
+        Step::Bias => (
+            Epilogue::Bias,
+            [args.out, args.bias, args.count, args.rows].map(str::to_string),
+        ),
+        Step::Act(kind) => (
+            Epilogue::Act,
+            [args.out, args.out, args.count, act(*kind)?].map(str::to_string),
+        ),
+        Step::Residual => (
+            Epilogue::Residual,
+            [args.out, args.residual, args.count, args.out].map(str::to_string),
+        ),
+        _ => return Err(unreachable()),
+    })
+}
+
+/// 后三步的槽位：`scale` 的 `$1` 是标量字面量，`quant` 的 `$1` / `$3` 是步长与位宽。
+fn slots_tail(
+    step: &spec::epilogue::Step,
+    args: &EpiArgs<'_>,
+) -> diagnostic::Result<(prof::atom::Epilogue, [String; 4])> {
+    use prof::atom::Epilogue;
+    use spec::epilogue::Step;
+    Ok(match step {
+        Step::Scale(alpha) => (
+            Epilogue::Scale,
+            [
+                args.out.to_string(),
+                format!("{alpha:?}f"),
+                args.count.to_string(),
+                args.out.to_string(),
+            ],
+        ),
+        Step::Quant(dtype) => (
+            Epilogue::Quant,
+            [
+                args.out.to_string(),
+                format!("{:?}f", spec::epilogue::QUANT_SCALE),
+                args.count.to_string(),
+                bits(*dtype)?.to_string(),
+            ],
+        ),
+        Step::Store => (
+            Epilogue::Store,
+            [args.out, args.out, args.count, args.out].map(str::to_string),
+        ),
+        _ => return Err(unreachable()),
+    })
+}
+
+/// 激活形式 → 注入表达式；不在 [`ACT_EXPR`] 里的形式说明它还没有设备段落。
+fn act(kind: prof::atom::ActKind) -> diagnostic::Result<&'static str> {
+    ACT_EXPR
+        .iter()
+        .find(|(have, _)| *have == kind)
+        .map(|(_, text)| *text)
+        .ok_or_else(|| {
+            diagnostic::Error::new(
+                diagnostic::Code::Invalid,
+                format!(
+                    "`act:{}` 需要设备侧数学函数（`exp` / `erf`），各语言拼写不同：\
+                     先在 `epilogue.<ext>` 里补这一形式的段落，再由本层取用",
+                    kind.as_str()
+                ),
+            )
+        })
+}
+
+/// `quant` 位宽 → 位数字面量。
+fn bits(dtype: prof::atom::DType) -> diagnostic::Result<&'static str> {
+    QUANT_BITS
+        .iter()
+        .find(|(have, _)| *have == dtype)
+        .map(|(_, text)| *text)
+        .ok_or_else(|| {
+            diagnostic::Error::new(
+                diagnostic::Code::Invalid,
+                format!("`quant:{}` 只接受 i8/i4/i2", dtype.name()),
+            )
+        })
+}
+
+/// 设备文本缺这一形式时的错误：捎上 vendor 与扩展名，一眼能定位是哪份 `epilogue.<ext>`。
+fn missing_section(device: &prof::Device, form: prof::atom::Epilogue) -> diagnostic::Error {
+    diagnostic::Error::new(
+        diagnostic::Code::Invalid,
+        format!(
+            "设备 `{}` 的 `epilogue.{}` 缺少 `/* epi: {} */` 段",
+            device.vendor,
+            device.ext,
+            form.as_str()
+        ),
+    )
+}
+
+/// 分段守卫：六臂已在前一步分派干净，走到这里是装配器的内部错误。
+fn unreachable() -> diagnostic::Error {
+    diagnostic::Error::new(diagnostic::Code::Invalid, "写回装配分派不可达")
+}
+
 #[cfg(test)]
 #[path = "../tests/substitute_tests.rs"]
 mod tests;

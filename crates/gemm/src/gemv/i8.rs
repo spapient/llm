@@ -38,6 +38,11 @@ impl<const G: usize> Plain for gemv::SymI8<G> {
     fn to_f32(elem: u8) -> f32 {
         (elem as i8) as f32
     }
+
+    /// 对称 `int8` 走 [`simd::elementwise`]：位模式原样重解释成 `i8` 再展宽，零点 0 无需偏移。
+    fn dot(w_row: &[u8], x: &[f32]) -> f32 {
+        super::simd::elementwise(w_row, x)
+    }
 }
 
 /// 对称 int8 格式的语义类型：声明粒度 [`GROUP`]、每行 `m` 个字节。

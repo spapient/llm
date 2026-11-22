@@ -27,6 +27,7 @@ pub(crate) fn flops_peak(c: &mut Criterion) {
     group.finish();
     machine_peak(c);
     sme_peak(c);
+    sme_mix(c);
 }
 
 /// 每链 16 个 f32 即 4 条 128 位寄存器：`C × 4 ≤ 32` 才不溢出，故 `C ≤ 8`。
@@ -142,3 +143,21 @@ fn sme_peak(c: &mut Criterion) {
 
 /// 每轮 4 条 `fmopa`，每条 16×16 乘加（`p0.s` 16 泳道），故 4·256·2 = 2048 FLOP。
 const FLOPS_PER_ROUND: usize = 4 * 16 * 16 * 2;
+
+/// 取数代价探针：与 [`sme_peak`] 同一个 `fmopa` 条数，只多出 16×64 瓦片必需的那 5 条 load
+/// （`a` 64 B + `b` 256 B）。两条曲线之差就是「每轮取数要花多少周期」，也就是
+/// [`FLOPS_PER_ROUND`] 内的核与端口峰值之间那条不可删除的缝。
+///
+/// 有了它，「GEMM 离端口峰值差多少」才分成两问：差在取数（瓦片形状决定，`a` 与 `b` 各按
+/// `M/16`、`N/16` 条算，2×2 瓦片最小）还是差在核本身（可与本探针对齐后逐轮比）。
+fn sme_mix(c: &mut Criterion) {
+    let a = [1.0f32; 16];
+    let b = [1.0f32; 64];
+    let threads = 1;
+    let mut group = c.benchmark_group(format!("sme_peak/{threads}_mix"));
+    group.throughput(Throughput::Elements((FLOPS_PER_ROUND * ROUNDS) as u64));
+    group.bench_function("port", |iter| {
+        iter.iter(|| assert!(fast::port_mix(ROUNDS, &a, &b), "本机无 SME"));
+    });
+    group.finish();
+}

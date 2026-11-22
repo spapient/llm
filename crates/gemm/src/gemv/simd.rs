@@ -1,12 +1,28 @@
-//! 解包点积的向量通道：`n·m` 点积、4 列累加器、4 行权重与一份 `x` 窗口在 L1 里轮转。
+//! 真 SIMD 点积，两条通道：
+//!
+//! * [`forward`]／[`forward_batch`]——打包格式（一字节 `CPB` 个码）。解包、偏移、乘加全在
+//!   `LANES` 宽的车道上，[`COLS`] 行权重并行，一份 `x` 块摊到 4 行；`x` 就地转置，不额外分配。
+//! * [`elementwise`]——逐元素格式（稠密 `f32`、对称 `int8`）。`LANES` 条车道 × [`CHAINS`] 条
+//!   独立累加链，权重按 [`Load`] 取成车道。
+//!
+//! 两条通道的行尾都只归约一次，于是舍入只发生在"每个元素乘加一次"这一层。
 
-use std::simd::prelude::{SimdFloat, SimdUint};
+use std::simd::prelude::{SimdFloat, SimdInt, SimdUint};
 use std::simd::{Simd, StdFloat};
 
 use super::ScaledRow;
 
-/// 4 列累加器：一次算 4 行，4 条向量链各持一组寄存器，一份 `x` 载入摊到 4 行。
+/// 4 列累加器：一次算 4 行，4 条向量链各持一组寄存器，一份 `x` 块摊到 4 行。
 const COLS: usize = 4;
+
+/// 宽档车道数：一条 AVX2 `ymm`、四条 NEON 寄存器。
+const WIDE: usize = 16;
+
+/// 窄档车道数：一组凑不满 [`WIDE`] 时用，半个 `ymm`、两条 NEON 寄存器。
+const NARROW: usize = 8;
+
+/// 逐元素通道的独立累加链数：一条车道链的乘加延迟约 4 拍，4 条刚好把流水填满。
+const CHAINS: usize = 4;
 
 /// 反量化表的仿射零：`table[code] == code - zero` 时返回 `zero`，否则 `None`（走标量叶）。
 pub(crate) fn affine_zero(dequant: &[f32], codes: usize) -> Option<f32> {
@@ -21,9 +37,19 @@ pub(crate) fn affine_zero(dequant: &[f32], codes: usize) -> Option<f32> {
     affine.then_some(zero)
 }
 
-/// 形状够不够走本通道：车道数落在 8 / 16 两档，且一组的字节数被它整除。
-fn fits(cpb: usize, lanes: usize) -> bool {
-    matches!((cpb, lanes), (2 | 4, 8 | 16))
+/// 车道数：一组里每槽位的字节数被 [`WIDE`] 整除取宽档，被 [`NARROW`] 整除取窄档，都不行就不走本通道。
+///
+/// 车道数整除一组是硬前提：真整除才能让索引算术完全无分支、无掩码、无零头。真实分组
+/// （[`GROUP`](super::GROUP) 的倍数配 2 / 4 个码一字节）永远落在宽档或窄档，其余形状走标量叶，
+/// 算术一模一样，只是不向量化。
+fn lanes_of(per_group: usize) -> Option<usize> {
+    if per_group.is_multiple_of(WIDE) {
+        Some(WIDE)
+    } else if per_group.is_multiple_of(NARROW) {
+        Some(NARROW)
+    } else {
+        None
+    }
 }
 
 /// 通过校验之后的通道参数：形状（[`ScaledRow`]）、码宽、车道数、反量化表的仿射零点。
@@ -38,8 +64,8 @@ pub(crate) struct Affine {
 /// 校验并构造 [`Affine`]：`n` 是输出宽度（权重行数），`ctx` 是入口已经量好的行形状。
 pub(crate) fn admit(cpb: usize, n: usize, ctx: ScaledRow, dequant: &[f32]) -> Option<Affine> {
     let zero = affine_zero(dequant, codes_of(cpb))?;
-    let lanes = ctx.group / cpb;
-    (n >= COLS && fits(cpb, lanes)).then_some(Affine {
+    let lanes = lanes_of(ctx.group / cpb)?;
+    (n >= COLS).then_some(Affine {
         ctx,
         cpb,
         lanes,
@@ -49,11 +75,10 @@ pub(crate) fn admit(cpb: usize, n: usize, ctx: ScaledRow, dequant: &[f32]) -> Op
 
 /// 单行入口：`out` 是 `n` 个输出。
 pub(crate) fn forward(x: &[f32], weights: &[u8], scales: &[f32], affine: Affine, out: &mut [f32]) {
-    let input = [layout(x, affine)];
     run(
         &Plan {
             weights,
-            inputs: &input,
+            inputs: &[x],
             affine,
             scales,
         },
@@ -69,11 +94,10 @@ pub(crate) fn forward_batch(
     affine: Affine,
     out: &mut [f32],
 ) {
-    let input: Vec<Vec<f32>> = rows.iter().map(|row| layout(row, affine)).collect();
     run(
         &Plan {
             weights,
-            inputs: &input,
+            inputs: rows,
             affine,
             scales,
         },
@@ -86,26 +110,33 @@ fn codes_of(cpb: usize) -> usize {
     1 << crate::quant::width_cpb(cpb)
 }
 
-/// 内核的全部输入：权重、排好版的输入行、通道参数、标度。
+/// 内核的全部输入：权重、输入行、通道参数、标度。
 struct Plan<'a> {
     weights: &'a [u8],
-    inputs: &'a [Vec<f32>],
+    inputs: &'a [&'a [f32]],
     affine: Affine,
     scales: &'a [f32],
 }
 
-/// 按 `cpb` 与车道数单态化：槽位循环与组尾归约的形态都由这两个常量决定，编译期摊平。
+/// 按 `cpb` 单态化：槽位循环与位移量都由它决定，编译期摊平。
 fn run(plan: &Plan<'_>, out: &mut [f32]) {
-    match (plan.affine.cpb, plan.affine.lanes) {
-        (2, 8) => columns::<2, 8>(plan, out),
-        (2, _) => columns::<2, 16>(plan, out),
-        (_, 8) => columns::<4, 8>(plan, out),
-        _ => columns::<4, 16>(plan, out),
+    match plan.affine.cpb {
+        2 => by_lanes::<2>(plan, out),
+        _ => by_lanes::<4>(plan, out),
     }
 }
 
-/// 列遍历：整块走 `R = COLS`，不足一块的尾部逐列走 `R = 1`（同一个 `dot`、同一副累加器
-/// 形态），所以 `n` 不必是 `COLS` 的倍数。
+/// 按车道数单态化：两档 [`columns`] 只有 `LANES` 这一处不同。
+fn by_lanes<const CPB: usize>(plan: &Plan<'_>, out: &mut [f32]) {
+    if plan.affine.lanes == WIDE {
+        columns::<CPB, WIDE>(plan, out);
+    } else {
+        columns::<CPB, NARROW>(plan, out);
+    }
+}
+
+/// 列遍历：整块走 `R = COLS`，不足一块的尾部逐列走 `R = 1`（同一个 [`dot`]、同一副累加器
+/// 形态），所以 `n` 不必是 [`COLS`] 的倍数。
 fn columns<const CPB: usize, const LANES: usize>(plan: &Plan<'_>, out: &mut [f32]) {
     let n = out.len() / plan.inputs.len();
     let mut j = 0;
@@ -125,53 +156,45 @@ fn strip<const CPB: usize, const LANES: usize, const R: usize>(
     n: usize,
     j: usize,
 ) {
-    let (row, groups, group) = (
-        plan.affine.ctx.row,
-        plan.affine.ctx.groups,
-        plan.affine.ctx.group,
-    );
+    let ctx = plan.affine.ctx;
     let (w, s) = (
-        &plan.weights[j * row..][..R * row],
-        &plan.scales[j * groups..][..R * groups],
+        &plan.weights[j * ctx.row..][..R * ctx.row],
+        &plan.scales[j * ctx.groups..][..R * ctx.groups],
     );
     for (r, input) in plan.inputs.iter().enumerate() {
         let dest = &mut out[r * n + j..][..R];
-        dest.copy_from_slice(&dot::<CPB, LANES, R>(
-            w,
-            row,
-            s,
-            input,
-            group,
-            plan.affine.zero,
-        ));
+        dest.copy_from_slice(&dot::<CPB, LANES, R>(w, s, input, ctx, plan.affine.zero));
     }
 }
 
-/// `R` 行的点积：一组一条 `LANES` 车道链，四行同时推进，**每行只在行尾归约一次**。
+/// `R` 行的点积：一组一条 `LANES` 车道链，`R` 行同时推进，**每行只在行尾归约一次**。
+///
+/// `ctx.groups` 不是从 `input.len()` 反推出来的，而是入口 [`admit`] 量好的：形状守卫已经保证
+/// `input.len() == ctx.groups · ctx.group`，所以这里没有"一组都凑不满"这种需要断言的中间态。
 fn dot<const CPB: usize, const LANES: usize, const R: usize>(
     w: &[u8],
-    row: usize,
     s: &[f32],
     input: &[f32],
-    group: usize,
+    ctx: ScaledRow,
     zero: f32,
 ) -> [f32; R] {
-    let per_group = group / CPB;
-    let groups = input.len() / group;
-    assert!(groups > 0, "一组都凑不满的形状在 admit 就该被挡下");
+    let per_group = ctx.group / CPB;
     let shift = Simd::<f32, LANES>::splat(zero);
     let mut running = [Simd::<f32, LANES>::splat(0.0); R];
-    for g in 0..groups {
+    for g in 0..ctx.groups {
         let at = g * per_group;
-        let acc = group_acc::<CPB, LANES, R>(w, row, input, at, per_group, shift);
+        let acc = group_acc::<CPB, LANES, R>(w, ctx.row, input, at, per_group, shift);
         for (r, (acc, running)) in acc.iter().zip(running.iter_mut()).enumerate() {
-            *running = acc.mul_add(Simd::splat(s[r * groups + g]), *running);
+            *running = acc.mul_add(Simd::splat(s[r * ctx.groups + g]), *running);
         }
     }
     running.map(SimdFloat::reduce_sum)
 }
 
 /// 一组：`CPB` 个槽位 × `per_group / LANES` 段，`R` 条车道链各累加一份。
+///
+/// `x` 在这里就地转置——每段只取一次连续的 `LANES · CPB` 个元素，摊成 `CPB` 条车道向量，
+/// 于是 `x` 每元素只读一遍，入口那一遍整行重排连同它的分配一起消失。
 #[inline]
 fn group_acc<const CPB: usize, const LANES: usize, const R: usize>(
     w: &[u8],
@@ -182,17 +205,31 @@ fn group_acc<const CPB: usize, const LANES: usize, const R: usize>(
     shift: Simd<f32, LANES>,
 ) -> [Simd<f32, LANES>; R] {
     let mut acc = [Simd::<f32, LANES>::splat(0.0); R];
-    for slot in 0..CPB {
-        for chunk in (at..at + per_group).step_by(LANES) {
-            let xs = Simd::<f32, LANES>::from_slice(&input[slot * row + chunk..][..LANES]);
+    for byte in (at..at + per_group).step_by(LANES) {
+        let block = &input[byte * CPB..][..LANES * CPB];
+        for slot in 0..CPB {
+            let xs = slot_lanes::<CPB, LANES>(block, slot);
             for (r, acc) in acc.iter_mut().enumerate() {
-                let bytes = Simd::<u8, LANES>::from_slice(&w[r * row + chunk..][..LANES]);
+                let bytes = Simd::<u8, LANES>::from_slice(&w[r * row + byte..][..LANES]);
                 let value = codes::<CPB, LANES>(bytes, slot).cast::<f32>() - shift;
                 *acc = value.mul_add(xs, *acc);
             }
         }
     }
     acc
+}
+
+/// 一段输入的某个槽位，摊成 `LANES` 条车道：槽位 `s` 取第 `i · CPB + s` 个元素。
+#[inline]
+fn slot_lanes<const CPB: usize, const LANES: usize>(
+    block: &[f32],
+    slot: usize,
+) -> Simd<f32, LANES> {
+    let mut lane = [0.0f32; LANES];
+    for (i, value) in lane.iter_mut().enumerate() {
+        *value = block[i * CPB + slot];
+    }
+    Simd::from_array(lane)
 }
 
 /// 第 `slot` 个码的 `LANES` 个无符号码值：低位槽在前，`mask = (1 << width) - 1`。
@@ -204,16 +241,57 @@ fn codes<const CPB: usize, const LANES: usize>(
     (bytes >> Simd::splat(width * slot as u8)) & Simd::splat((1 << width) - 1)
 }
 
-/// 入口那一遍：把元素重排成"槽位优先"——`input[slot·row + byte]`。
-fn layout(x: &[f32], affine: Affine) -> Vec<f32> {
-    let (row, cpb) = (affine.ctx.row, affine.cpb);
-    let mut input = vec![0.0f32; x.len()];
-    for byte in 0..row {
-        for slot in 0..cpb {
-            input[slot * row + byte] = x[byte * cpb + slot];
-        }
+/// 逐元素通道的权重取法：稠密 `f32` 直取，对称 `int8` 按二补数重新解释。
+///
+/// 一条通道只由权重元素类型选，[`elementwise`] 因此对两种格式是同一段代码。
+pub(crate) trait Load: Copy {
+    /// [`WIDE`] 个元素一次取成 `f32` 车道。
+    fn wide(block: &[Self]) -> Simd<f32, WIDE>;
+
+    /// 单个元素：不足一条车道的零头用。
+    fn one(elem: Self) -> f32;
+}
+
+impl Load for f32 {
+    #[inline]
+    fn wide(block: &[Self]) -> Simd<f32, WIDE> {
+        Simd::from_slice(block)
     }
-    input
+
+    #[inline]
+    fn one(elem: Self) -> f32 {
+        elem
+    }
+}
+
+impl Load for u8 {
+    /// `u8 → i8` 是位模式重解释，`i8 → f32` 是有符号展宽，两条都是单条指令。
+    #[inline]
+    fn wide(block: &[Self]) -> Simd<f32, WIDE> {
+        Simd::<u8, WIDE>::from_slice(block).cast::<i8>().cast::<f32>()
+    }
+
+    #[inline]
+    fn one(elem: Self) -> f32 {
+        (elem as i8) as f32
+    }
+}
+
+/// 连续点积骨架：`CHAINS` 条独立累加链轮转，权重按 [`Load`] 取成车道，行尾归约一次。
+///
+/// 这是 `f32` 与对称 `int8` 共用的唯一一份点积——两种格式的差别只剩 [`Load`] 的取法。
+pub(crate) fn elementwise<T: Load>(w: &[T], x: &[f32]) -> f32 {
+    let (w_chunks, w_tail) = w.as_chunks::<WIDE>();
+    let (x_chunks, x_tail) = x.as_chunks::<WIDE>();
+    let mut acc = [Simd::<f32, WIDE>::splat(0.0); CHAINS];
+    for (i, (w, x)) in w_chunks.iter().zip(x_chunks).enumerate() {
+        acc[i % CHAINS] = T::wide(w).mul_add(Simd::from_slice(x), acc[i % CHAINS]);
+    }
+    let mut total = acc.iter().copied().map(SimdFloat::reduce_sum).sum::<f32>();
+    for (w, x) in w_tail.iter().zip(x_tail) {
+        total += T::one(*w) * *x;
+    }
+    total
 }
 
 #[cfg(test)]

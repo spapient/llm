@@ -66,19 +66,28 @@ fn the_affine_zero_is_the_table_zero() {
     assert_eq!(affine_zero(&bent, 3), None);
 }
 
+/// 车道数只取两档，且必须整除一组；凑不满一档的形状由 [`admit`] 在进内核之前挡下。
 #[test]
-fn only_the_two_packed_widths_fit_the_lane_count() {
-    assert!(fits(2, GROUP / 2), "4 位码：一组 16 字节、16 车道");
-    assert!(fits(4, GROUP / 4), "2 位码：一组 8 字节、8 车道");
-    // 一组 2 个码：凑不满一条 8 车道向量，也不在 8 / 16 两档之外加档。
-    assert!(!fits(4, 8 / 4));
-    assert!(!fits(8, GROUP / 8), "int8 不打包，不走本通道");
+fn the_lane_count_only_takes_the_two_wide_tiers() {
+    assert_eq!(
+        lanes_of(GROUP / 2),
+        Some(WIDE),
+        "4 位码：一组 16 字节、16 车道"
+    );
+    assert_eq!(
+        lanes_of(GROUP / 4),
+        Some(NARROW),
+        "2 位码：一组 8 字节、8 车道"
+    );
+    // 一组 2 个码、一组 12 个码：两档都不整除，不添第三档，也不为零头补掩码路径。
+    assert_eq!(lanes_of(8 / 4), None);
+    assert_eq!(lanes_of(12), None);
     // 走不到通道的形状必须在 `admit` 就被挡下，而不是让内核给出一个数。
     assert!(admit(2, N, context(M, 2), table(2)).is_some());
     assert!(admit(4, N, context(M, 4), table(4)).is_some());
     // 一组 2 个码的形状（`m = 8`、2 位码）：凑不满一条向量，`admit` 必须拒绝。
     assert!(admit(4, 2, context(8, 4), table(4)).is_none());
-    // int8 不打包，不走本通道。
+    // int8 不打包：码表对不上，不走本通道（它走 `elementwise`）。
     assert!(admit(1, N, context(M, 1), table(1)).is_none());
     // 输出宽度不足一列组：尾部没有 `COLS` 行可并，回退。
     assert!(admit(2, COLS - 1, context(M, 2), table(2)).is_none());
@@ -151,5 +160,36 @@ fn a_row_batch_equals_row_by_row_calls() {
             *single,
             "第 {r} 行：批与逐行调用必须逐位相同"
         );
+    }
+}
+
+/// 逐元素通道的一种取法与逐个展开比对：容差取 f32 舍入量级（累加顺序不同，不能逐位比）。
+fn agree_elementwise<T: Load>(w: &[T], x: &[f32], one: impl Fn(T) -> f32) {
+    let want: f32 = w.iter().zip(x).map(|(&elem, &v)| one(elem) * v).sum();
+    let got = elementwise(w, x);
+    let slack = 1e-5 * want.abs().max(1.0);
+    assert!((got - want).abs() <= slack, "{got} vs {want}");
+}
+
+/// 稠密 `f32` 的逐元素通道：累加链轮转、整段与零头都得走到。
+#[test]
+fn the_dense_channel_covers_every_chain_and_the_tail() {
+    // 一段 = `CHAINS · WIDE` 个元素；两边的零头与整段都要出现。
+    for m in [1, WIDE - 1, WIDE, WIDE + 1, CHAINS * WIDE, CHAINS * WIDE + 3, 257] {
+        let w: Vec<f32> = (0..m)
+            .map(|i| ((i * 37 % 101) as f32 - 50.0) / 7.0)
+            .collect();
+        agree_elementwise(&w, &fractional(m), core::convert::identity);
+    }
+}
+
+/// 对称 `int8` 的逐元素通道：`> 127` 的字节必须按二补数落到负值，而不是当无符号数乘。
+#[test]
+fn the_int8_channel_sign_extends_the_byte_pattern() {
+    for m in [1, WIDE - 1, WIDE, WIDE + 1, CHAINS * WIDE + 5, 263] {
+        // `% 251` 跨过 127，正值与负值交替出现。
+        let w: Vec<u8> = (0..m).map(|i| ((i * 37) % 251) as u8).collect();
+        assert!(w.iter().any(|&b| b > 127), "样本必须跨过半程，否则符号没被考到");
+        agree_elementwise(&w, &fractional(m), |b| (b as i8) as f32);
     }
 }

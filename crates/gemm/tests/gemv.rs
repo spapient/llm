@@ -161,7 +161,7 @@ fn the_declared_group_is_the_format_grain() {
     grain_is_what_the_model_declares::<crate::gemv::i8::I8>();
 }
 
-/// A1 的真证据：`dense_dot` 有 16 条独立累加链，求和顺序与顺序标量不同，**不可能逐位相等**；
+/// A1 的真证据：`simd::elementwise` 有 `CHAINS · WIDE` 条独立累加链，求和顺序与顺序标量不同，**不可能逐位相等**；
 /// 于是按 A1 的另一半要求钉住误差上界。
 ///
 /// 上面的 `forward_matches_the_scalar_reference_on_the_deterministic_sample` 不能当证据：

@@ -47,6 +47,11 @@ impl<const B: usize> Plain for gemv::Dense<B> {
     fn to_f32(elem: f32) -> f32 {
         elem
     }
+
+    /// 稠密 `f32` 走 [`simd::elementwise`]：`WIDE` 条车道 × 独立累加链，整段乘加编译成向量指令。
+    fn dot(w_row: &[f32], x: &[f32]) -> f32 {
+        super::simd::elementwise(w_row, x)
+    }
 }
 
 /// 稠密格式的语义类型：分块宽度 [`BLOCK`]、任意输入宽度都合法。

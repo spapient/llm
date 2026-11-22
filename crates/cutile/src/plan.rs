@@ -1,12 +1,13 @@
-//! 职责：③ select：按声明顺序取 tile，roofline 只给估值（README §9、§12.1）。
+//! 职责：③ select 与融合打分：按声明顺序取 tile，roofline 只给估值（README §9、§12.1）。
 
 use crate::cap::Path;
 use crate::decl::{Fusion, OpDecl, TileCombo, compose, expand};
 use crate::prof::Profile;
 use crate::sch::Masking;
+use core::cmp::Ordering;
 use core::fmt;
 use diagnostic::{Code, Error};
-use op::model::Cost;
+use op::model::{Cost, Model};
 
 /// 一次 plan 的产物。
 #[derive(Debug, Clone, PartialEq)]
@@ -51,8 +52,9 @@ impl fmt::Display for Plan {
     }
 }
 
-/// roofline 预测：`max(flops/峰值, bytes/带宽) + 未掩盖项`。
-pub fn predict(profile: &Profile, flops: f64, bytes: u64, masking: Masking) -> Option<f64> {
+/// roofline 的两侧秒数：`(算力侧 flops/峰值, 带宽侧 bytes/带宽)`。档案没给出可求值的峰值时
+/// 那一侧是 `None`——峰值是能力，缺席就是"不知道"，不是 0。
+fn sides(profile: &Profile, flops: f64, bytes: u64) -> (Option<f64>, Option<f64>) {
     let compute = profile
         .peak
         .flops_f32
@@ -65,42 +67,30 @@ pub fn predict(profile: &Profile, flops: f64, bytes: u64, masking: Masking) -> O
         .as_ref()
         .filter(|constant| constant.value > 0.0)
         .map(|constant| bytes as f64 / constant.value);
-    let base = match (compute, memory) {
-        (Some(a), Some(b)) => a.max(b),
-        (Some(a), None) => a,
-        (None, Some(b)) => b,
+    (compute, memory)
+}
+
+/// roofline 预测：`max(flops/峰值, bytes/带宽) × (1 + 未掩盖占比)`。
+pub fn predict(profile: &Profile, flops: f64, bytes: u64, masking: Masking) -> Option<f64> {
+    let base = match sides(profile, flops, bytes) {
+        (Some(compute), Some(memory)) => compute.max(memory),
+        (Some(base), None) | (None, Some(base)) => base,
         (None, None) => return None,
     };
     Some(base * (1.0 + masking.unmasked))
 }
 
-/// ③ select 本体：取轴展开出的**第一个** tile，再用算子给出的代价做 roofline 估值。
+/// ③ select 本体：取轴展开出的**第一个** tile（TOML 顺序即优先级，不在这里打分），再用算子给出
+/// 的代价做 roofline 估值。峰值是能力：档案没给出可求值的峰值就无法判定，而不是"预测为 0"。
 pub fn select(op: &OpDecl, profile: &Profile, path: &Path, cost: Cost) -> diagnostic::Result<Plan> {
     let masking = Masking::of(path.mma_share, &path.schedule);
-    Ok(Plan {
-        variant: path.variant.clone(),
-        schedule: path.schedule.as_str(),
-        tile: first_tile(op)?,
-        predicted_s: predicted_s(profile, cost, masking)?,
-        flops: cost.flops,
-        bytes: cost.bytes(),
-        masking,
-    })
-}
-
-/// 轴展开出的第一个 tile：TOML 顺序即优先级，不在这里打分。
-fn first_tile(op: &OpDecl) -> diagnostic::Result<TileCombo> {
-    expand(op)?.into_iter().next().ok_or_else(|| {
+    let tile = expand(op)?.into_iter().next().ok_or_else(|| {
         Error::new(
             Code::Internal,
             "轴展开后没有任何 tile 候选（声明解析应当保证至少一个轴）",
         )
-    })
-}
-
-/// roofline 估值；峰值是能力：档案没给出可求值的峰值就无法判定，而不是“预测为 0”。
-fn predicted_s(profile: &Profile, cost: Cost, masking: Masking) -> diagnostic::Result<f64> {
-    predict(profile, cost.flops, cost.bytes(), masking).ok_or_else(|| {
+    })?;
+    let predicted_s = predict(profile, cost.flops, cost.bytes(), masking).ok_or_else(|| {
         Error::new(
             Code::Unsupported,
             format!(
@@ -108,6 +98,15 @@ fn predicted_s(profile: &Profile, cost: Cost, masking: Masking) -> diagnostic::R
                 profile.meta.vendor
             ),
         )
+    })?;
+    Ok(Plan {
+        variant: path.variant.clone(),
+        schedule: path.schedule.as_str(),
+        tile,
+        predicted_s,
+        flops: cost.flops,
+        bytes: cost.bytes(),
+        masking,
     })
 }
 
@@ -120,7 +119,7 @@ pub fn window_radius(budget: usize) -> usize {
     (budget as f64).sqrt().ceil() as usize
 }
 
-/// 候选剪枝：在算子表上枚举生产者→消费者对，先过 `compose`（只留“能拼”），再用窗口半径
+/// 候选剪枝：在算子表上枚举生产者→消费者对，先过 `compose`（只留"能拼"），再用窗口半径
 /// 压邻域，最多接受 `budget` 条。`compose` 返回的 [`Fusion`] 才进 roofline 打分。
 pub fn fusions(ops: &[OpDecl], budget: usize) -> Vec<Fusion> {
     if ops.len() < 2 || budget == 0 {
@@ -129,33 +128,190 @@ pub fn fusions(ops: &[OpDecl], budget: usize) -> Vec<Fusion> {
     let radius = window_radius(budget);
     let mut accepted = Vec::new();
     for (i, producer) in ops.iter().enumerate() {
-        collect_window(ops, producer, i, radius, budget, &mut accepted);
-        if accepted.len() == budget {
-            break;
+        let lo = i.saturating_sub(radius);
+        let hi = (i + radius + 1).min(ops.len());
+        for consumer in &ops[lo..hi] {
+            if let Some(fusion) = compose(producer, consumer) {
+                accepted.push(fusion);
+                if accepted.len() == budget {
+                    return accepted;
+                }
+            }
         }
     }
     accepted
 }
 
-/// 单个生产者在窗口半径内的邻居里找「能拼」的消费者，最多补到预算上限。
-fn collect_window(
-    ops: &[OpDecl],
-    producer: &OpDecl,
-    i: usize,
-    radius: usize,
-    budget: usize,
-    accepted: &mut Vec<Fusion>,
-) {
-    let lo = i.saturating_sub(radius);
-    let hi = (i + radius + 1).min(ops.len());
-    for consumer in &ops[lo..hi] {
-        if let Some(fusion) = compose(producer, consumer) {
-            accepted.push(fusion);
-            if accepted.len() == budget {
-                return;
-            }
+/// 一条融合候选的 roofline 增益。
+///
+/// 融合只省中间量的**往返**：生产者写一次、消费者读一次，两笔都落在 DRAM 上，算力一点不减。
+/// 于是 `unfused` 是两侧各自 `max(算力, 带宽)` 之和，`fused` 是复合代价的一次定界。`max` 次可加
+/// （`max(a₁+a₂, b₁+b₂) ≤ max(a₁,b₁) + max(a₂,b₂)`）保证 `fused ≤ unfused`，[`Payoff::speedup`]
+/// 因此恒 ≥ 1——这是代数结论，不是拟合出来的数。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Payoff {
+    /// 不融合：两侧各自一次 roofline 预测之和（秒）。
+    pub unfused_s: f64,
+    /// 融合：中间量不进 DRAM 之后的预测（秒）。
+    pub fused_s: f64,
+    /// 融合后的算力侧秒数。
+    pub compute_s: f64,
+    /// 融合后的带宽侧秒数。
+    pub memory_s: f64,
+    /// 省掉的流量（字节）：中间量的写 + 读。
+    pub saved_bytes: u64,
+}
+
+impl Payoff {
+    /// 加速比：不融合 / 融合。两侧都是 0（没流量也没算力）时记 1：没有可省的东西就没有加速。
+    pub fn speedup(&self) -> f64 {
+        if self.fused_s > 0.0 {
+            self.unfused_s / self.fused_s
+        } else {
+            1.0
         }
     }
+
+    /// 融合后哪一侧定界。融合把字节减掉中间量的往返，常常把界从带宽挪到算力——那是融合的目的，
+    /// 所以它是一个要报告的结论，不是一个中间量。
+    pub fn bound(&self) -> &'static str {
+        if self.compute_s >= self.memory_s {
+            "compute"
+        } else {
+            "memory"
+        }
+    }
+}
+
+/// 一条候选的判决：三种诚实结局，没有第四种。
+#[derive(Debug, Clone, PartialEq)]
+pub enum Verdict {
+    /// 打得出分：两侧都有语义投影、接缝能归因、档案有峰值。
+    Scored(Payoff),
+    /// 拼不出来：几何否掉了它（长度、槽位、类型），原因来自判据本身。
+    Rejected(String),
+    /// 无从打分：缺语义投影、接缝上有多条输出、或档案缺峰值——都不许猜一个数顶上。
+    Unscorable(String),
+}
+
+impl Verdict {
+    /// 判决名，写进报告。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Scored(_) => "scored",
+            Self::Rejected(_) => "rejected",
+            Self::Unscorable(_) => "unscorable",
+        }
+    }
+
+    /// 排序键：能打分的按加速比降序在前，其次是"没条件打分"，最后是"拼不出来"。
+    fn rank(&self) -> (u8, f64) {
+        match self {
+            Self::Scored(payoff) => (0, -payoff.speedup()),
+            Self::Unscorable(_) => (1, 0.0),
+            Self::Rejected(_) => (2, 0.0),
+        }
+    }
+}
+
+/// 算子在自己生产形状上的代价；形状或代价不自洽就是 `None`——打分不猜数。
+fn cost_of(model: &Model) -> Option<Cost> {
+    let (m, n) = model.shape;
+    (model.cost)(&(model.shape_ctx)(m, n).ok()?).ok()
+}
+
+/// 两侧都要：判定"融合后哪一侧定界"缺一侧就不成立。
+fn both(profile: &Profile, flops: f64, bytes: u64) -> Option<(f64, f64)> {
+    let (compute, memory) = sides(profile, flops, bytes);
+    Some((compute?, memory?))
+}
+
+/// 三笔代价过 roofline：不融合是两侧各自定界之和，融合是复合代价一次定界。
+fn payoff(profile: &Profile, before: Cost, after: Cost, fused: Cost, seam: u64) -> Option<Payoff> {
+    let (before_compute, before_memory) = both(profile, before.flops, before.bytes())?;
+    let (after_compute, after_memory) = both(profile, after.flops, after.bytes())?;
+    let (compute_s, memory_s) = both(profile, fused.flops, fused.bytes())?;
+    Some(Payoff {
+        unfused_s: before_compute.max(before_memory) + after_compute.max(after_memory),
+        fused_s: compute_s.max(memory_s),
+        compute_s,
+        memory_s,
+        saved_bytes: seam.saturating_mul(2),
+    })
+}
+
+/// 给一条融合打分（README §12.1：roofline 是判据本身，不是装饰）。
+///
+/// 中间量的字节取自**生产者的代价表**：接缝只认一条输出槽（与
+/// [`crate::reference::verify_fusion`] 同一条判据），此时 `Cost::write` 就是那条槽；消费者读它一次
+/// 是同样的字节，所以省下 `2 × write`。这条路不需要跑标量参考，也就不必为打分分配 4 GiB 样本。
+///
+/// 这是结构性上界，三件事它不算：流水掩盖（按变体算，在加速比里两边相消）、融合核多出来的寄存器
+/// 压力、代码变大带来的指令缓存代价。所以 [`Payoff::speedup`] 是"值不值得动手"的判据，不是实测。
+pub fn score(profile: &Profile, fusion: &Fusion) -> Verdict {
+    let (Some(producer), Some(consumer)) = (op::model(&fusion.producer), op::model(&fusion.consumer))
+    else {
+        return Verdict::Unscorable(format!(
+            "`{}` → `{}` 有一侧没有语义投影，算不出 roofline",
+            fusion.producer, fusion.consumer
+        ));
+    };
+    let outputs = fusion.outputs();
+    let [from] = outputs.as_slice() else {
+        return Verdict::Unscorable(format!(
+            "接缝落在 {} 条输出槽上（`{}`），中间量无法从代价表归因",
+            outputs.len(),
+            outputs.join("`, `")
+        ));
+    };
+    let (Some(before), Some(after)) = (cost_of(&producer), cost_of(&consumer)) else {
+        return Verdict::Unscorable(format!(
+            "`{}` 或 `{}` 在自己的生产形状上给不出代价",
+            fusion.producer, fusion.consumer
+        ));
+    };
+    let seam = before.write;
+    if after.read < seam {
+        return Verdict::Rejected(format!(
+            "缝 `{from}` 有 {seam} 字节，消费者只读 {} 字节：代价表与缝代数不一致",
+            after.read
+        ));
+    }
+    let fused = Cost::new(
+        before.flops + after.flops,
+        before.read.saturating_add(after.read).saturating_sub(seam),
+        before.write.saturating_add(after.write).saturating_sub(seam),
+    );
+    payoff(profile, before, after, fused, seam).map_or_else(
+        || {
+            Verdict::Unscorable(format!(
+                "档案 `{}` 缺算力或带宽峰值，roofline 无从定界",
+                profile.meta.vendor
+            ))
+        },
+        Verdict::Scored,
+    )
+}
+
+/// 完整打分表：[`fusions`] 给出的候选逐条过 [`score`]，按加速比降序。
+///
+/// 打不出分的候选留在表里并带原因——它们不是"被过滤掉"，而是"这一条今天还不成立"，报告据此才知道
+/// 下一步该补形状、补样本还是补峰值。这正是 README §9.1 那条"12 条被接受、0 条可对拍"的基线从
+/// 一句口头事实变成一张可执行的工作清单。
+pub fn ranking(profile: &Profile, ops: &[OpDecl], budget: usize) -> Vec<(Fusion, Verdict)> {
+    let mut ranked: Vec<(Fusion, Verdict)> = fusions(ops, budget)
+        .into_iter()
+        .map(|fusion| {
+            let verdict = score(profile, &fusion);
+            (fusion, verdict)
+        })
+        .collect();
+    ranked.sort_by(|a, b| {
+        a.1.rank()
+            .partial_cmp(&b.1.rank())
+            .unwrap_or(Ordering::Equal)
+    });
+    ranked
 }
 
 #[cfg(test)]

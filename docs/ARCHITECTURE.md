@@ -39,13 +39,13 @@
 不再复述每一次的数字；配置层的现状见 [ADR 0022](adr/0022-build-time-corpora.md) 与
 [ADR 0023](adr/0023-settings-to-cli.md)。
 
-允许的边（当前全量，共 176 条，含 59 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benchmarks` / `testkit` 的边不参与运行时方向判定）：
+允许的边（当前全量，共 179 条，含 61 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benchmarks` / `testkit` 的边不参与运行时方向判定）：
 
 ```
-cutile   → diagnostic, op, prim, prof    +dev: testkit
+cutile   → diagnostic, op, prim, prof, spec    +dev: testkit
 optim    → cutile, diagnostic, op, prim, prof    +dev: testkit（运行期：编译 / 执行 / 测速 / 见证；只经 `cutile` 的器械做，不重写协商）
 op       → annotation, conv, diagnostic, gemm, prof, spec    +dev: testkit（工具边：`#[model]` 注解，不参与方向判定）
-gemm     → annotation, diagnostic, prof, spec    +dev: testkit（声明解析结果与内核族的落点；不含 `op`，注册表只在 `op`）
+gemm     → annotation, diagnostic, prof, spec    +dev: cutile, prim, testkit（声明解析结果与内核族的落点；不含 `op`，注册表只在 `op`）
 conv     → annotation, diagnostic, gemm, prof, spec    +dev: testkit（神经网络算子只借用内核族的打包与几何，不反向）
 spec     → annotation, diagnostic, prof    +dev: testkit（契约层：只认识 L1 与注解，不认识任何内核）
 prim     → cpu, cuda, diagnostic, metal, musa, opencl, prof, rocm（机制：编译期把六张设备表拼成聚合表）
@@ -124,7 +124,8 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `VerifyReport` / `VerifyEntry` / `Verified` / `Execution` / `WitnessRun` / `Evidence` / `Basis` | `optim` | `verify` 的逐设备结果与见证执行；失败如实记录，不写成"跳过"；`Evidence` 是三条命令共用的那一份证据。设备车道先问 `Backend::parallel`：拿到源就按 `Launch.items` / `group` 真发射网格，只在它明确答 `Unsupported` 时才回落语义门 harness——回落与否是证据里的一个字段而不是"反正都过了"的沉默，否则并行实现缺失会被读成设备已验证 |
 | `LedgerCell` / `BackendRow` | `optim` | `ledger` 跨档案能力台账：只聚合 `witness` 已跑出的证据，不产生新证据 |
 | `Negotiation` | `optim` | 一台设备的协商结论（首档 / 降级 / 无路径 / 无档案）：只读声明与档案，与执行成败分开记 |
-| `Fragment` | `cutile` | 一份生成片段的行数与 §16 口径（`FRAGMENT_LIMIT` 上限管成败，`FRAGMENT_GOAL` 只是余量） |
+| `Fragment` / `EpiArgs` | `cutile` | 一份生成片段的行数与 §16 口径（`FRAGMENT_LIMIT` 上限管成败，`FRAGMENT_GOAL` 只是余量）；`EpiArgs` 是尾块片段写回要的四个实参 `$0`..`$3`——做成结构体而不是一袋字符串，「装配不猜名字、缺参即错误」才判得出来 |
+| `Payoff` | `cutile` | 一条融合候选的 roofline 增益：`unfused_s` 是两侧各自 `max(算力, 带宽)` 之和，`fused_s` 是复合代价的定界。`max` 次可加保证 `fused ≤ unfused`，`speedup` 因此恒 ≥ 1——代数结论，不是拟合 |
 | `Oracle` | `cutile` | 融合对拍的读数：`got` 是消费者在**全部缝**都桥接之后的产出，`bridged` 是实际桥接的 `(生产者输出, 消费者槽位)` 对。`reference::verify_fusion` 是 `Fusion` 的唯一实例化入口——缝从代数的证据里来，不从调用点的字符串来；自融合、多输出生产者、非 `F32` 缝、缝上形状不符一律显式拒绝（`Invalid` / `Unsupported`），而不是算出一个「差不多」的值。README §9 的契约「每个被接受的融合都必须能生成一条对拍」由 `crates/cutile/tests/reference_tests.rs` 在整张内置注册表上执行 |
 | `Bench` / `Throughput` / `Peak` / `Verdict` / `Performance` / `CostCoefficients` | `optim` | `bench` 的实测口径与达成率判定；口径无效或没有峰值时 `is_measured` 为假。`CostCoefficients` 用实测 p50 反推有效带宽 / 算力，回填进 roofline 当分母（替代档案峰值） |
 | `Tensor` / `View` / `Element` / `Shape` / `Strides` / `Order` / `AxisLen` / `OwnedTensor` | `tensor` | `Tensor` 是**字节**视图，`View<E>` 是**元素**零拷贝视图；`SUPPORTED` 子集表声明本层可构造的精度；设备地址不泄漏到本层 |

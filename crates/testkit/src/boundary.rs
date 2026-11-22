@@ -72,7 +72,7 @@ pub(crate) const UNSAFE_ISLANDS: &[(&str, usize)] = &[
     ("crates/gemm/src/fast/i8.rs", 8),
     ("crates/gemm/src/fast/micro.rs", 6),
     ("crates/gemm/src/fast/pool.rs", 3),
-    ("crates/gemm/src/fast/sme.rs", 6),
+    ("crates/gemm/src/fast/sme.rs", 8),
     ("crates/storage/src/mmap.rs", 1),
 ];
 
