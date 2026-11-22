@@ -41,7 +41,7 @@ impl Surrogate {
     }
 
     /// 参数判据：半宽必须有限为正（零宽等于没有梯度，负宽会让窗内外颠倒）。
-    pub(super) fn check(&self) -> Result<()> {
+    pub(super) fn check_layer(&self) -> Result<()> {
         let width = self.width();
         if !finite(width) || width <= 0.0 {
             return Err(bad(format!("代理梯度的窗宽必须有限为正，得到 {width:?}")));
@@ -84,7 +84,7 @@ impl Gradients {
 
     /// 反传入口判据：缓冲与本层同形，且输出梯度与通道数同长。
     pub(super) fn check_for(&self, layer: &Spiking, d_out: &[f32]) -> Result<()> {
-        self.check(layer)?;
+        self.check_layer(layer)?;
         check_gradient(d_out, layer.outputs)
     }
 

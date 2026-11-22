@@ -162,7 +162,7 @@ mod objective {
     fn classify_matches_cross_entropy_and_hits() -> Result<()> {
         let logits = [0.0, 10.0, 0.0, 10.0, 0.0, 0.0];
         let labels = [1.0, 0.0];
-        let out = Loss::Classify.compute(&logits, &labels, 3)?;
+        let out = Loss::Classify.compute_loss(&logits, &labels, 3)?;
         assert!(
             (out.loss - cross_entropy(&logits, &labels, 3)?).abs() < 1e-6,
             "loss 应与 CE 一致"
@@ -182,7 +182,7 @@ mod objective {
             teacher: &teacher,
             config,
         }
-        .compute(&student, &labels, 3)?;
+        .compute_loss(&student, &labels, 3)?;
         assert!(
             (out.loss - distillation_loss(&student, &teacher, &labels, 3, config)?).abs() < 1e-5,
             "loss 应与蒸馏损失一致"
@@ -206,7 +206,7 @@ mod objective {
             ref_kl: &ref_kl,
             config,
         }
-        .compute(&[0.0], &[0.0], 1)?;
+        .compute_loss(&[0.0], &[0.0], 1)?;
         let expected = grpo_loss(&new_logp, &old_logp, &advantages, &ref_kl, config)?;
         assert!(
             (out.loss - expected).abs() < 1e-6,
@@ -231,7 +231,7 @@ mod objective {
             ref_kl: &ref_kl,
             config: Grpo::new(0.2, 0.0),
         }
-        .compute(&[], &[], 1)?;
+        .compute_loss(&[], &[], 1)?;
         assert!(out.loss.is_finite(), "空 logits/labels 不应影响 RL 损失");
         Ok(())
     }
@@ -254,7 +254,7 @@ mod objective {
     #[test]
     fn classify_rejects_empty_labels() {
         assert!(matches!(
-            Loss::Classify.compute(&[0.0], &[], 2),
+            Loss::Classify.compute_loss(&[0.0], &[], 2),
             Err(e) if e.code() == Code::Invalid
         ));
     }

@@ -39,7 +39,7 @@ impl Spiking {
             leak,
             reset,
         };
-        layer.check()?;
+        layer.check_cell()?;
         Ok(layer)
     }
 
@@ -208,7 +208,7 @@ impl Spiking {
     }
 
     /// 参数判据：几何、尺度、动力学各查一处，互不代答。
-    pub(super) fn check(&self) -> Result<()> {
+    pub(super) fn check_cell(&self) -> Result<()> {
         self.check_geometry()?;
         check_scale(&self.scale)?;
         check_dynamics(self.threshold, self.leak, self.reset)
@@ -321,7 +321,7 @@ impl Spiking {
         grad: &Gradients,
     ) -> Result<()> {
         self.check_state(state)?;
-        surrogate.check()?;
+        surrogate.check_cell()?;
         self.check_spikes(spikes)?;
         grad.check_for(self, d_out)
     }

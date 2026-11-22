@@ -44,7 +44,7 @@ fn forward(
     session
         .bufs()
         .load(logits, Data::F32(logits_values.to_vec()))?;
-    session.bufs().compute("add_f32", &[p, x], loss)?;
+    session.bufs().compute_step("add_f32", &[p, x], loss)?;
     session.plan(loss)?;
     Ok(ForwardOut {
         logits,
@@ -82,7 +82,7 @@ fn run_metric_batch(
                 .bufs()
                 .load(logits, Data::F32(vec![0.0, 10.0, 0.0]))?;
             let metric = metric(session)?;
-            session.bufs().compute("add_f32", &[p, x], loss)?;
+            session.bufs().compute_step("add_f32", &[p, x], loss)?;
             session.plan(loss)?;
             Ok(ForwardOut {
                 logits,

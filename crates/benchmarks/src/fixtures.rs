@@ -16,8 +16,8 @@ pub(crate) fn checked_or_exit<T, E: fmt::Display>(result: Result<T, E>, what: &s
     }
 }
 
-/// 夹具查表失败：`Option` 版本，语义与 [`checked`] 相同（同样是唯一失败出口）。
-/// 测量路径上的 `Result` 出口：同一几何已在装配阶段由 [`checked`] 校验过一次，这里只把
+/// 夹具查表失败：`Option` 版本，语义与 [`checked_or_exit`] 相同（同样是唯一失败出口）。
+/// 测量路径上的 `Result` 出口：同一几何已在装配阶段由 [`checked_or_exit`] 校验过一次，这里只把
 /// 状态压成 `bool` 交给 `black_box`——不在计时路径上第二次解释失败，也不吞掉错误。
 pub(crate) fn ok<E>(r: Result<(), E>) -> bool {
     r.is_ok()
@@ -71,10 +71,10 @@ fn finite_values(n: usize, seed: u32) -> Vec<f32> {
 
 /// 合成栈：`tok_emb` 查表首层 + `proj` f32 投影，两层权重都按固定种子生成。
 pub(crate) fn synthetic_model() -> CpuModel {
-    let stack = checked(
+    let stack = checked_or_exit(
         Stack::of(vec![
-            Box::new(checked(Embedding::new("tok_emb", VOCAB, DIM, 1), "嵌入层")),
-            Box::new(checked(
+            Box::new(checked_or_exit(Embedding::new("tok_emb", VOCAB, DIM, 1), "嵌入层")),
+            Box::new(checked_or_exit(
                 Linear::with_format("proj", WeightFormat::F32, DIM, OUT),
                 "投影层",
             )),
@@ -84,5 +84,5 @@ pub(crate) fn synthetic_model() -> CpuModel {
     let mut params = Params::new();
     params.insert("tok_emb.weight", finite_values(VOCAB * DIM, 7));
     params.insert("proj.weight", finite_values(OUT * DIM, 11));
-    checked(CpuModel::new(&stack, &params), "装配")
+    checked_or_exit(CpuModel::new(&stack, &params), "装配")
 }

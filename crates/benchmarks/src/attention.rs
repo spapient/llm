@@ -1,6 +1,6 @@
 //! attention 基准：decode 单头、prefill 的 online / dense 与各自 tiled 对照。
 
-use crate::fixtures::{Sample, checked};
+use crate::fixtures::{Sample, checked_or_exit};
 use criterion::measurement::WallTime;
 use criterion::{BenchmarkGroup, Criterion, Throughput};
 use op::attention;
@@ -34,7 +34,7 @@ fn one<E: fmt::Display>(
     name: &str,
     run: impl Fn(&[f32], &[f32], &[f32], &mut [f32]) -> Result<(), E>,
 ) {
-    checked(run(&sample.q, &sample.k, &sample.v, &mut sample.out), SIZED);
+    checked_or_exit(run(&sample.q, &sample.k, &sample.v, &mut sample.out), SIZED);
     bench(
         group,
         name,
@@ -51,7 +51,7 @@ fn decode_one<E: fmt::Display>(
     hist: usize,
     run: impl Fn(&[f32], &[f32], &[f32], &mut [f32], usize, usize, usize) -> Result<(), E>,
 ) {
-    checked(run(q, k, v, out, 1, hist, D), "decode 几何");
+    checked_or_exit(run(q, k, v, out, 1, hist, D), "decode 几何");
     bench(group, name, (q, k, v, out), |q, k, v, out| {
         run(q, k, v, out, 1, hist, D)
     });

@@ -302,7 +302,7 @@ fn prepare_sample(
 ) -> diagnostic::Result<(pipeline::Prepared, Sample)> {
     let prepared = prepare(run, dirs, m, n)?;
     let sample = run.sample(m, n);
-    run.op.signature.check(&sample)?;
+    run.op.signature.check_sample(&sample)?;
     Ok((prepared, sample))
 }
 

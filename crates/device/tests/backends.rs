@@ -102,7 +102,7 @@ fn device_benchmark_drivers_measure_gpu_time_and_emit_output() {
     let op = catalogue.op("gemv_f32").expect("gemv_f32 声明");
     let model = op::model("gemv_f32").expect("gemv_f32 模型");
     let sample = (model.sample)(2, 4);
-    op.signature.check(&sample).expect("样本与签名一致");
+    op.signature.check_sample(&sample).expect("样本与签名一致");
 
     let i4 = catalogue.op("gemv_i4").expect("gemv_i4 声明");
     let cuda_kernel = crate::cuda::cuda_quantized_gemv_i4(&i4.signature, 32).expect("CUDA 内核");

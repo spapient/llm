@@ -1,6 +1,6 @@
 //! 整模型一步前向与 `train` 状态层基准。
 
-use crate::fixtures::{PROMPT, checked, synthetic_model};
+use crate::fixtures::{PROMPT, checked_or_exit, synthetic_model};
 use autograd::{Sizes, Store, Tape, Var};
 use criterion::{Criterion, Throughput};
 use engine::exec::Stream;
@@ -31,18 +31,18 @@ const LAYERS: usize = 4;
 /// 装配合成栈与一批序列；模型、批与序列在测量轮次间复用，前向内不重新分配权重。
 fn fixture() -> (CpuModel, Batch, Vec<Sequence>) {
     let model = synthetic_model();
-    let cache = checked(Cache::new(16, 4), "页池");
-    let mut batch = Batch::new(checked(Pager::new(cache, 2), "行宽"));
+    let cache = checked_or_exit(Cache::new(16, 4), "页池");
+    let mut batch = Batch::new(checked_or_exit(Pager::new(cache, 2), "行宽"));
     let sequences: Vec<Sequence> = (0..BATCH)
         .map(|id| {
-            checked(
+            checked_or_exit(
                 Sequence::new(id as u64, PROMPT, 2, 4, Stream::new(0)),
                 "序列",
             )
         })
         .collect();
     for sequence in &sequences {
-        checked(batch.admit(sequence.clone()), "准入");
+        checked_or_exit(batch.admit(sequence.clone()), "准入");
     }
     (model, batch, sequences)
 }
@@ -56,7 +56,7 @@ pub(crate) fn decode(c: &mut Criterion) {
     group.throughput(Throughput::Elements(1));
     group.bench_function("single_step", |bench| {
         bench.iter(|| {
-            black_box(checked(
+            black_box(checked_or_exit(
                 model.logits(black_box(&sequences[0]), black_box(&mut batch)),
                 "一步前向",
             ))
@@ -75,7 +75,7 @@ pub(crate) fn decode(c: &mut Criterion) {
 fn steps(model: &mut CpuModel, batch: &mut Batch, sequences: &[Sequence]) -> usize {
     let mut produced = 0usize;
     for sequence in sequences {
-        produced += checked(model.logits(sequence, batch), "一步前向").len();
+        produced += checked_or_exit(model.logits(sequence, batch), "一步前向").len();
     }
     black_box(produced)
 }
@@ -89,7 +89,7 @@ pub(crate) fn train(c: &mut Criterion) {
 
 /// `Schedule::lr`：1000 步全曲线求和，避免单点求值被常量折叠。
 fn schedule(c: &mut Criterion) {
-    let curve = checked(
+    let curve = checked_or_exit(
         Schedule::with(100, SCHEDULE_STEPS, Anneal::Cosine, 0.1),
         "调度合法",
     );
@@ -116,18 +116,18 @@ fn snapshot(c: &mut Criterion) {
             Entry::new(format!("blk.{idx}.attn_q.weight"), DType::F32, shape).at(offset)
         })
         .collect();
-    let facts = checked(Facts::new(7, 1, SNAPSHOT_ENTRIES, 32, 32), "事实");
-    let header = checked(Header::new(entries, 0), "头部自洽");
+    let facts = checked_or_exit(Facts::new(7, 1, SNAPSHOT_ENTRIES, 32, 32), "事实");
+    let header = checked_or_exit(Header::new(entries, 0), "头部自洽");
     let table = Snapshot::new(facts, header);
-    let bytes = checked(table.encode(), "编码");
+    let bytes = checked_or_exit(table.encode(), "编码");
 
     let mut group = c.benchmark_group("train/snapshot");
     group.throughput(Throughput::Elements(SNAPSHOT_ENTRIES as u64));
     group.bench_function("encode", |bench| {
-        bench.iter(|| black_box(checked(table.encode(), "编码")))
+        bench.iter(|| black_box(checked_or_exit(table.encode(), "编码")))
     });
     group.bench_function("decode", |bench| {
-        bench.iter(|| black_box(checked(Snapshot::decode(black_box(&bytes)), "解码")))
+        bench.iter(|| black_box(checked_or_exit(Snapshot::decode(black_box(&bytes)), "解码")))
     });
     group.finish();
 }
@@ -149,7 +149,7 @@ impl Chain {
         let scales = tape.leaf();
         let mut loss = x;
         for _ in 0..LAYERS {
-            loss = checked(tape.record("gemv_i4", &[loss, w, scales]), "记录");
+            loss = checked_or_exit(tape.record("gemv_i4", &[loss, w, scales]), "记录");
         }
         let sizes = chain_sizes(&tape, [x, w, scales]);
         Self {
@@ -175,9 +175,9 @@ impl Chain {
 
     fn store(&self) -> Bufs<Reference> {
         let mut store = Bufs::new(self.sizes.clone(), Reference);
-        checked(store.load(self.x, self.f32s(WIDTH)), "输入");
-        checked(store.load(self.w, self.packed_i4()), "权重");
-        checked(store.load(self.scales, self.f32s(WIDTH)), "缩放");
+        checked_or_exit(store.load(self.x, self.f32s(WIDTH)), "输入");
+        checked_or_exit(store.load(self.w, self.packed_i4()), "权重");
+        checked_or_exit(store.load(self.scales, self.f32s(WIDTH)), "缩放");
         store
     }
 }
@@ -216,7 +216,7 @@ fn bufs(c: &mut Criterion) {
 /// 一轮：先按表算全部节点，再一次性释放，最后取存活块数。
 fn round(store: &mut Bufs<Reference>, nodes: &[(String, Vec<Var>, Var)]) -> u64 {
     for (op, inputs, output) in nodes {
-        checked(store.compute(op, inputs, *output), "前向可算");
+        checked_or_exit(store.compute_step(op, inputs, *output), "前向可算");
     }
     for (_, _, output) in nodes {
         store.free(*output);

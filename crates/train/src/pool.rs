@@ -136,7 +136,7 @@ impl<K: Kernel> Bufs<K> {
     /// # Errors
     ///
     /// 形状不符、或内核执行失败时返回对应诊断。
-    pub fn compute_shaped(
+    pub fn compute_shaped_step(
         &mut self,
         op: &str,
         inputs: &[Var],
@@ -170,7 +170,7 @@ impl<K: Kernel> Bufs<K> {
         let mut stats = take_stats(&mut self.running, output, geometry);
         let views = views(&self.slots, output, inputs)?;
         let mut block = self.pool.block(dtype, &shape)?;
-        let result = self.kernel.compute_shaped(
+        let result = self.kernel.compute_shaped_step(
             op,
             &views,
             &mut block.view_mut(),

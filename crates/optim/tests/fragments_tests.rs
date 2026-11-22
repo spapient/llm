@@ -54,7 +54,7 @@ fn every_fragment_composes_into_a_translation_unit_its_language_accepts() {
             );
             continue;
         }
-        let arguments = spec.check(profile);
+        let arguments = spec.args_for(profile);
         let fragments =
             prim::builtin(profile.meta.vendor.as_str(), profile.meta.emit.ext()).expect("片段层");
         for (name, text) in units_of(&catalogue, profile, &fragments) {
@@ -96,7 +96,7 @@ fn a_fragment_body_the_language_rejects_is_a_defect() {
         eprintln!("skip: 本机没有 `clang`");
         return;
     }
-    let arguments = spec.check(profile);
+    let arguments = spec.args_for(profile);
     let honest =
         prim::builtin(profile.meta.vendor.as_str(), profile.meta.emit.ext()).expect("片段层");
     // `gemv_f32` 用到 `bar`：改坏它，拼进去的翻译单元就该被拒。

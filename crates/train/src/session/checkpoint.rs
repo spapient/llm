@@ -117,7 +117,7 @@ pub fn resume(
     batch_rows: usize,
     batch_cols: usize,
 ) -> Result<()> {
-    topology.check(checkpoint.world()).map_err(|error| {
+    topology.check_world(checkpoint.world()).map_err(|error| {
         error.with(format!(
             "检查点在第 {} 步、{} 进程下保存",
             checkpoint.step(),

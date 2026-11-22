@@ -65,7 +65,7 @@ fn route(command: &Command<'_>) -> Result<()> {
     match command {
         Command::Help => usage(),
         Command::Platform => platform::report(),
-        Command::Status { .. } | Command::Run { .. } | Command::Train { .. } => compute(command),
+        Command::Status { .. } | Command::Run { .. } | Command::Train { .. } => run_command(command),
         other => objects(other),
     }
 }
@@ -118,7 +118,7 @@ fn objects(command: &Command<'_>) -> Result<()> {
 fn examine(command: &Command<'_>) -> Result<()> {
     match command {
         Command::Inspect { input } => archive::inspect(input),
-        Command::Check { input } => archive::check(input),
+        Command::Check { input } => archive::check_archive(input),
         Command::Deploy { input } => archive::deploy(input),
         other => stray(other),
     }

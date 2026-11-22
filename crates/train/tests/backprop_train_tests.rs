@@ -53,8 +53,8 @@ fn an_arbitrary_geometry_trains_end_to_end_under_sgd() -> Result<()> {
         session.bufs().load(x, Data::F32(feed.clone()))?;
         session
             .bufs()
-            .compute_shaped("batch_norm_f32", &[x, gamma, beta], y, geom)?;
-        session.bufs().compute("reduce_sum_f32", &[y], loss)?;
+            .compute_shaped_step("batch_norm_f32", &[x, gamma, beta], y, geom)?;
+        session.bufs().compute_step("reduce_sum_f32", &[y], loss)?;
         let now = session.record_loss(loss)?;
         let shift = session.slots()[1].params()[0];
         if t > 0 {
@@ -117,7 +117,7 @@ fn rolling_statistics_persist_across_steps_in_the_bufs() -> Result<()> {
 
     session
         .bufs()
-        .compute_shaped("batch_norm_f32", &[x, g, b], y, geom)?;
+        .compute_shaped_step("batch_norm_f32", &[x, g, b], y, geom)?;
     let once = session
         .bufs()
         .running(y)
@@ -125,7 +125,7 @@ fn rolling_statistics_persist_across_steps_in_the_bufs() -> Result<()> {
         .clone();
     session
         .bufs()
-        .compute_shaped("batch_norm_f32", &[x, g, b], y, geom)?;
+        .compute_shaped_step("batch_norm_f32", &[x, g, b], y, geom)?;
     let twice = session
         .bufs()
         .running(y)
@@ -229,7 +229,7 @@ fn conv2d_reference_kernel_matches_the_operator_sample() -> Result<()> {
     session.bufs().load(a, Data::F32(x))?;
     session.bufs().load(b, Data::F32(weight))?;
     session.bufs().load(c, Data::F32(bias))?;
-    session.bufs().compute("conv2d_f32", &[a, b, c], y)?;
+    session.bufs().compute_step("conv2d_f32", &[a, b, c], y)?;
     let got = session.bufs().value(y).expect("y 应在场");
     let got = got.f32().expect("y 是 f32");
     assert_eq!(got.len(), want.len());

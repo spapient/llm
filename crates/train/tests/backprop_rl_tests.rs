@@ -34,13 +34,13 @@ fn distillation_kl_graph_matches_central_differences() -> Result<()> {
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(s, ParamRole::Trainable, s0.clone())?;
     session.bufs().load(t, Data::F32(t0.clone()))?;
-    session.bufs().compute("softmax_f32", &[s], ps)?;
-    session.bufs().compute("softmax_f32", &[t], pt)?;
-    session.bufs().compute("log_f32", &[ps], lps)?;
-    session.bufs().compute("log_f32", &[pt], lpt)?;
-    session.bufs().compute("sub_f32", &[lps, lpt], diff)?;
-    session.bufs().compute("mul_f32", &[ps, diff], prod)?;
-    session.bufs().compute("reduce_sum_f32", &[prod], kl)?;
+    session.bufs().compute_step("softmax_f32", &[s], ps)?;
+    session.bufs().compute_step("softmax_f32", &[t], pt)?;
+    session.bufs().compute_step("log_f32", &[ps], lps)?;
+    session.bufs().compute_step("log_f32", &[pt], lpt)?;
+    session.bufs().compute_step("sub_f32", &[lps, lpt], diff)?;
+    session.bufs().compute_step("mul_f32", &[ps, diff], prod)?;
+    session.bufs().compute_step("reduce_sum_f32", &[prod], kl)?;
     session.plan(kl)?;
     session.backward()?;
 
@@ -103,22 +103,22 @@ fn grpo_clipped_surrogate_graph_matches_central_differences() -> Result<()> {
     session.bufs().load(adv, Data::F32(adv0.clone()))?;
     session.bufs().load(lo_leaf, Data::F32(vec![lo; N]))?;
     session.bufs().load(hi_leaf, Data::F32(vec![hi; N]))?;
-    session.bufs().compute("sub_f32", &[new, old], diff)?;
-    session.bufs().compute("exp_f32", &[diff], ratio)?;
+    session.bufs().compute_step("sub_f32", &[new, old], diff)?;
+    session.bufs().compute_step("exp_f32", &[diff], ratio)?;
     session
         .bufs()
-        .compute("max_f32", &[ratio, lo_leaf], r_lo)?;
+        .compute_step("max_f32", &[ratio, lo_leaf], r_lo)?;
     session
         .bufs()
-        .compute("min_f32", &[r_lo, hi_leaf], r_clamp)?;
-    session.bufs().compute("mul_f32", &[ratio, adv], term1)?;
+        .compute_step("min_f32", &[r_lo, hi_leaf], r_clamp)?;
+    session.bufs().compute_step("mul_f32", &[ratio, adv], term1)?;
     session
         .bufs()
-        .compute("mul_f32", &[r_clamp, adv], term2)?;
+        .compute_step("mul_f32", &[r_clamp, adv], term2)?;
     session
         .bufs()
-        .compute("min_f32", &[term1, term2], surr)?;
-    session.bufs().compute("reduce_sum_f32", &[surr], loss)?;
+        .compute_step("min_f32", &[term1, term2], surr)?;
+    session.bufs().compute_step("reduce_sum_f32", &[surr], loss)?;
     session.plan(loss)?;
     session.backward()?;
 
@@ -151,7 +151,7 @@ fn leaky_relu_chain_matches_central_differences() -> Result<()> {
 
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(p, ParamRole::Trainable, p0.clone())?;
-    session.bufs().compute("leaky_relu_f32", &[p], h)?;
+    session.bufs().compute_step("leaky_relu_f32", &[p], h)?;
     sum_backward(&mut session, h, loss)?;
 
     check_grad(

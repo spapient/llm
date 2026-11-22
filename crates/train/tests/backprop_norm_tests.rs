@@ -17,7 +17,7 @@ fn rmsnorm_matches_central_differences() -> Result<()> {
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(x, ParamRole::Trainable, x0.clone())?;
     session.register_parameter(gamma, ParamRole::Trainable, gamma0.clone())?;
-    session.bufs().compute("rmsnorm_f32", &[x, gamma], y)?;
+    session.bufs().compute_step("rmsnorm_f32", &[x, gamma], y)?;
     sum_backward(&mut session, y, loss)?;
 
     check_grad(
@@ -49,7 +49,7 @@ fn rope_matches_central_differences() -> Result<()> {
 
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(x, ParamRole::Trainable, x0.clone())?;
-    session.bufs().compute("rope_f32", &[x], y)?;
+    session.bufs().compute_step("rope_f32", &[x], y)?;
     sum_backward(&mut session, y, loss)?;
 
     check_grad(
@@ -81,7 +81,7 @@ fn attention_matches_central_differences() -> Result<()> {
     let v0: Vec<f32> = (0..len).map(|i| 0.09 * i as f32 - 0.3).collect();
 
     let mut session = attention_session(tape, sizes, [q, k, v], [&q0, &k0, &v0])?;
-    session.bufs().compute("attention_f32", &[q, k, v], y)?;
+    session.bufs().compute_step("attention_f32", &[q, k, v], y)?;
     sum_backward(&mut session, y, loss)?;
 
     check_grad(
@@ -141,7 +141,7 @@ fn latent_attention_matches_central_differences() -> Result<()> {
     let mut session = attention_session(tape, sizes, [q, k, v], [&q0, &k0, &v0])?;
     session
         .bufs()
-        .compute("latent_attention_f32", &[q, k, v], y)?;
+        .compute_step("latent_attention_f32", &[q, k, v], y)?;
     sum_backward(&mut session, y, loss)?;
 
     check_grad(
@@ -194,7 +194,7 @@ fn decode_attention_matches_central_differences() -> Result<()> {
     let mut session = attention_session(tape, sizes, [q, k, v], [&q0, &k0, &v0])?;
     session
         .bufs()
-        .compute("decode_attention_f32", &[q, k, v], y)?;
+        .compute_step("decode_attention_f32", &[q, k, v], y)?;
     sum_backward(&mut session, y, loss)?;
 
     check_grad(

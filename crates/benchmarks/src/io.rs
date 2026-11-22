@@ -1,7 +1,7 @@
 //! 外部格式与字节编码：自有 `.u` 容器 / safetensors 装载，分词器与 `wire` 字节码闭集。
 
 pub(crate) mod weights {
-    use crate::fixtures::{checked, found};
+    use crate::fixtures::{checked_or_exit, found};
     use criterion::{BenchmarkGroup, Criterion, Throughput, measurement::WallTime};
     use std::hint::black_box;
     use std::path::{Path, PathBuf};
@@ -32,32 +32,32 @@ pub(crate) mod weights {
             let data = vec![(idx % 256) as u8; BYTES_PER_SEGMENT];
             let shape = vec![ELEMS as u64];
             let name = format!("seg_{idx}");
-            let segment = checked(Segment::new(name, Wire::F32, shape, None, data), "段自洽");
-            checked(writer.push(segment), "追加段");
+            let segment = checked_or_exit(Segment::new(name, Wire::F32, shape, None, data), "段自洽");
+            checked_or_exit(writer.push(segment), "追加段");
         }
         writer
     }
 
     /// 容器组：一份字节喂全部只读路径，写出单独一组（`finish` 可重复调用）。
     pub(crate) fn archive(c: &mut Criterion) {
-        let bytes = checked(container().finish(6), "容器字节");
-        let parsed = checked(Archive::parse(&bytes), "解析");
-        let root = checked(parsed.merkle_root(), "根");
-        let proof = checked(parsed.prove(0), "证明");
+        let bytes = checked_or_exit(container().finish(6), "容器字节");
+        let parsed = checked_or_exit(Archive::parse(&bytes), "解析");
+        let root = checked_or_exit(parsed.merkle_root(), "根");
+        let proof = checked_or_exit(parsed.prove(0), "证明");
         let mut group = c.benchmark_group("weights/archive");
         group.throughput(Throughput::Bytes(bytes.len() as u64));
 
         group.bench_function("parse", |bench| {
-            bench.iter(|| black_box(checked(Archive::parse(black_box(&bytes)), "解析")))
+            bench.iter(|| black_box(checked_or_exit(Archive::parse(black_box(&bytes)), "解析")))
         });
         group.bench_function("merkle_root", |bench| {
-            bench.iter(|| black_box(checked(parsed.merkle_root(), "根")))
+            bench.iter(|| black_box(checked_or_exit(parsed.merkle_root(), "根")))
         });
         group.bench_function("prove", |bench| {
-            bench.iter(|| black_box(checked(parsed.prove(black_box(0)), "证明")))
+            bench.iter(|| black_box(checked_or_exit(parsed.prove(black_box(0)), "证明")))
         });
         group.bench_function("verify", |bench| {
-            bench.iter(|| black_box(checked(parsed.verify(0, &proof, &root), "校验")))
+            bench.iter(|| black_box(checked_or_exit(parsed.verify(0, &proof, &root), "校验")))
         });
         group.finish();
         lookup(c, &parsed);
@@ -80,7 +80,7 @@ pub(crate) mod weights {
         let mut group = c.benchmark_group("weights/writer");
         group.throughput(Throughput::Bytes((SEGMENTS * BYTES_PER_SEGMENT) as u64));
         group.bench_function("finish", |bench| {
-            bench.iter(|| black_box(checked(writer.finish(6), "写出字节")))
+            bench.iter(|| black_box(checked_or_exit(writer.finish(6), "写出字节")))
         });
         group.finish();
     }
@@ -104,13 +104,13 @@ pub(crate) mod weights {
         // 数据段递增字节：全零会被页缓存与压缩抹平后端差异。
         file.extend((0..TOTAL_BYTES).map(|i| (i % 251) as u8));
         let path = temp_path();
-        checked(std::fs::write(&path, &file), "写基准临时文件");
+        checked_or_exit(std::fs::write(&path, &file), "写基准临时文件");
         (path, names)
     }
 
     /// 本进程独享的临时文件路径。
     fn temp_path() -> PathBuf {
-        let nanos = checked(
+        let nanos = checked_or_exit(
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH),
             "系统时钟",
         )
@@ -124,14 +124,14 @@ pub(crate) mod weights {
     /// 装载组：`*_reopen` 每迭代重开（冷），`*_open` 复用已打开源（热）；`mmap_*` 仅 Unix。
     pub(crate) fn load(c: &mut Criterion) {
         let (path, names) = fixture();
-        let file = checked(File::open(&path), "打开");
+        let file = checked_or_exit(File::open(&path), "打开");
         let mut group = c.benchmark_group("weights/load");
         plan(
             &mut group,
             "read",
             |first| {
                 loads(
-                    &checked(File::open(black_box(&path)), "冷开"),
+                    &checked_or_exit(File::open(black_box(&path)), "冷开"),
                     &names,
                     first,
                 )
@@ -140,7 +140,7 @@ pub(crate) mod weights {
         );
         mapped(&mut group, &path, &names);
         group.finish();
-        checked(std::fs::remove_file(&path), "删除临时文件");
+        checked_or_exit(std::fs::remove_file(&path), "删除临时文件");
     }
 
     /// 装载用例的两条轴：全量 8 条对首条 1 条；字节数与 `tests/table.rs` 同源。
@@ -170,7 +170,7 @@ pub(crate) mod weights {
         let mut produced = 0usize;
         for name in lanes {
             let entry = found(file.header().get(name.as_str()), "条目在位");
-            produced += checked(file.load(entry), "装载").len();
+            produced += checked_or_exit(file.load(entry), "装载").len();
         }
         black_box(produced)
     }
@@ -178,13 +178,13 @@ pub(crate) mod weights {
     /// 映射后端的四条用例：与 `load` 共用 `plan`，只换开与读。
     #[cfg(unix)]
     fn mapped(group: &mut BenchmarkGroup<'_, WallTime>, path: &Path, names: &[String]) {
-        let source = checked(MmapSource::open(path), "映射");
+        let source = checked_or_exit(MmapSource::open(path), "映射");
         plan(
             group,
             "mmap",
             |first| {
                 views(
-                    &checked(MmapSource::open(black_box(path)), "冷映射"),
+                    &checked_or_exit(MmapSource::open(black_box(path)), "冷映射"),
                     names,
                     first,
                 )
@@ -200,7 +200,7 @@ pub(crate) mod weights {
         let mut produced = 0usize;
         for name in lanes {
             let entry = found(source.header().get(name.as_str()), "条目在位");
-            produced += checked(source.read(entry), "借用读取").len();
+            produced += checked_or_exit(source.read(entry), "借用读取").len();
         }
         black_box(produced)
     }
@@ -211,7 +211,7 @@ pub(crate) mod weights {
 }
 
 pub(crate) mod text {
-    use crate::fixtures::checked;
+    use crate::fixtures::checked_or_exit;
     use criterion::{Criterion, Throughput};
     use std::hint::black_box;
     use tokenizer::{Bpe, Bytes, DecoderStream, Merge, Tokenizer, VocabFamily, VocabSource};
@@ -252,8 +252,8 @@ pub(crate) mod text {
             merges,
             ..VocabSource::default()
         };
-        let vocab = checked(tokenizer::Vocab::try_new(source), "基准词表构造");
-        checked(Bpe::new(vocab), "基准 BPE 实例")
+        let vocab = checked_or_exit(tokenizer::Vocab::try_new(source), "基准词表构造");
+        checked_or_exit(Bpe::new(vocab), "基准 BPE 实例")
     }
 
     /// 分词器五组：编码（基线 / BPE）、计数、解码（基线 / BPE）、详细对齐、流式增量。
@@ -273,10 +273,10 @@ pub(crate) mod text {
         let mut group = c.benchmark_group("tokenizer/encode");
         group.throughput(Throughput::Bytes(text.len() as u64));
         group.bench_function("bpe_synth_4kib", |bench| {
-            bench.iter(|| black_box(checked(encoder.encode(black_box(text)), "编码")))
+            bench.iter(|| black_box(checked_or_exit(encoder.encode(black_box(text)), "编码")))
         });
         group.bench_function("bytes_4kib", |bench| {
-            bench.iter(|| black_box(checked(Bytes.encode(black_box(text)), "编码")))
+            bench.iter(|| black_box(checked_or_exit(Bytes.encode(black_box(text)), "编码")))
         });
         group.finish();
     }
@@ -286,22 +286,22 @@ pub(crate) mod text {
         let mut group = c.benchmark_group("tokenizer/count");
         group.throughput(Throughput::Bytes(text.len() as u64));
         group.bench_function("bytes_4kib", |bench| {
-            bench.iter(|| black_box(checked(Bytes.count(black_box(text)), "计数")))
+            bench.iter(|| black_box(checked_or_exit(Bytes.count(black_box(text)), "计数")))
         });
         group.finish();
     }
 
     /// 解码：先按各自方式编码一次再回解，两边输入同一份 4 KiB 语料。
     fn decode(c: &mut Criterion, text: &str, encoder: &Bpe) {
-        let bpe_tokens = checked(encoder.encode(text), "预置编码");
-        let tokens = checked(Bytes.encode(text), "预置编码");
+        let bpe_tokens = checked_or_exit(encoder.encode(text), "预置编码");
+        let tokens = checked_or_exit(Bytes.encode(text), "预置编码");
         let mut group = c.benchmark_group("tokenizer/decode");
         group.throughput(Throughput::Bytes(text.len() as u64));
         group.bench_function("bpe_synth_4kib", |bench| {
-            bench.iter(|| black_box(checked(encoder.decode(black_box(&bpe_tokens)), "解码")))
+            bench.iter(|| black_box(checked_or_exit(encoder.decode(black_box(&bpe_tokens)), "解码")))
         });
         group.bench_function("bytes_4kib", |bench| {
-            bench.iter(|| black_box(checked(Bytes.decode(black_box(&tokens)), "解码")))
+            bench.iter(|| black_box(checked_or_exit(Bytes.decode(black_box(&tokens)), "解码")))
         });
         group.finish();
     }
@@ -311,7 +311,7 @@ pub(crate) mod text {
         let mut group = c.benchmark_group("tokenizer/encode_detailed");
         group.throughput(Throughput::Bytes(text.len() as u64));
         group.bench_function("bytes_4kib", |bench| {
-            bench.iter(|| black_box(checked(Bytes.encode_detailed(black_box(text)), "详细编码")))
+            bench.iter(|| black_box(checked_or_exit(Bytes.encode_detailed(black_box(text)), "详细编码")))
         });
         group.finish();
     }
@@ -324,9 +324,9 @@ pub(crate) mod text {
             bench.iter(|| {
                 let mut decoder = DecoderStream::new();
                 for chunk in plain.chunks(CHUNK) {
-                    black_box(checked(decoder.push(black_box(chunk)), "增量解码"));
+                    black_box(checked_or_exit(decoder.push(black_box(chunk)), "增量解码"));
                 }
-                black_box(checked(decoder.finish(), "收尾"));
+                black_box(checked_or_exit(decoder.finish(), "收尾"));
             })
         });
         group.finish();
@@ -334,7 +334,7 @@ pub(crate) mod text {
 
     /// 单字节基线的 token 位模式，供流式解码按 32 字节切块。
     fn plain(text: &str) -> Vec<u8> {
-        let tokens = checked(Bytes.encode(text), "预置编码");
+        let tokens = checked_or_exit(Bytes.encode(text), "预置编码");
         tokens.iter().map(|token| token.id() as u8).collect()
     }
 
@@ -414,7 +414,7 @@ pub(crate) mod text {
             bench.iter(|| {
                 let mut cursor = Cursor::new(black_box(&buf));
                 for _ in VALUES {
-                    black_box(checked(cursor.read::<u64>(), "规范编码"));
+                    black_box(checked_or_exit(cursor.read::<u64>(), "规范编码"));
                 }
             })
         });

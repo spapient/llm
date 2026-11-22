@@ -63,7 +63,7 @@ pub(super) fn check_pool1d(
         .filter(|&v| v > 0)
         .ok_or_else(|| invalid("池化输入为空"))?;
     let want = lens[0] / per * pool_len(l, k, s, p)? * c;
-    check(
+    ensure_shape(
         lens[0] == lens[0] / per * per && out == want,
         lens,
         out,
@@ -83,7 +83,7 @@ pub(super) fn check_spatial_pool(
     let (oh, ow) = pool2d_out(win, h, w)?;
     let per = h * w * c;
     let n = lens[0] / per;
-    check(
+    ensure_shape(
         lens[0] == n * per && out == n * oh * ow * c,
         lens,
         out,
@@ -103,7 +103,7 @@ pub(super) fn check_spatial_reshape(
     let (h, w, c) = plane;
     let per = h * w * c;
     let n = lens[0] / per;
-    check(
+    ensure_shape(
         lens[0] == n * per && out == n * oh * ow * c,
         lens,
         out,
@@ -120,7 +120,7 @@ pub(super) fn check_norm(
     channels: usize,
 ) -> Result<()> {
     let total = n * spatial * channels;
-    check(
+    ensure_shape(
         lens[0] == total && out == total && lens[1] == channels && lens[2] == channels,
         lens,
         out,
@@ -139,7 +139,7 @@ pub(super) fn check_group(
 ) -> Result<()> {
     let total = n * spatial * channels;
     let channels_ok = [lens[0], lens[1], lens[2], out] == [total, channels, channels, total];
-    check(
+    ensure_shape(
         groups > 0 && channels.is_multiple_of(groups) && channels_ok,
         lens,
         out,
@@ -150,7 +150,7 @@ pub(super) fn check_group(
 /// 层归一化的形状核对：`(rows·width, width, width)` 的 `(x, gamma, beta)`。
 pub(super) fn check_layer(lens: &[usize], out: usize, rows: usize, width: usize) -> Result<()> {
     let total = rows * width;
-    check(
+    ensure_shape(
         lens[0] == total && out == total && lens[1] == width && lens[2] == width,
         lens,
         out,
@@ -169,7 +169,7 @@ pub(super) fn check_conv2d_shape(
     let (oh, ow) = pool2d_out(win, h, w)?;
     let patch = win.k * win.k * cin;
     let io_ok = [lens[0], lens[1], lens[2]] == [h * w * cin, patch * cout, cout];
-    check(io_ok && out == oh * ow * cout, lens, out, "二维卷积")
+    ensure_shape(io_ok && out == oh * ow * cout, lens, out, "二维卷积")
 }
 
 /// 方形窗口的 `ConvGeom`。
@@ -322,7 +322,7 @@ pub(super) fn invalid(message: impl Into<String>) -> Error {
 }
 
 /// 形状核对：不符时把实际值带上，避免只报一句"形状不对"。
-pub(super) fn check(ok: bool, lens: &[usize], out: usize, what: &str) -> Result<()> {
+pub(super) fn ensure_shape(ok: bool, lens: &[usize], out: usize, what: &str) -> Result<()> {
     if ok {
         return Ok(());
     }

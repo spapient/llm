@@ -41,7 +41,7 @@ impl Master {
             leak,
             reset,
         };
-        master.check()?;
+        master.check_master()?;
         Ok(master)
     }
 
@@ -124,7 +124,7 @@ impl Master {
     }
 
     /// 构造判据：两条长度、权重的有限性、尺度的有限正性、动力学范围。
-    pub(super) fn check(&self) -> Result<()> {
+    pub(super) fn check_master(&self) -> Result<()> {
         self.check_shape()?;
         self.check_values()
     }

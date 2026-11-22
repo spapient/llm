@@ -188,7 +188,7 @@ impl Sweep<'_> {
         emit: Emit,
         sample: &Sample,
     ) -> diagnostic::Result<(&'static dyn crate::backend::Backend, crate::backend::Launch)> {
-        self.run.op.signature.check(sample)?;
+        self.run.op.signature.check_sample(sample)?;
         let backend = backend(emit)?;
         let launch = crate::execution::launch(self.run.op, sample)?;
         Ok((backend, launch))

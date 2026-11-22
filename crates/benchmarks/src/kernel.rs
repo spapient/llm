@@ -1,6 +1,6 @@
 //! 单机算子基准：逐元素 / 行内算子、小 K 稠密与量化 GEMM、大 K GEMM 与线程余量、内存搬参照。
 
-use crate::fixtures::{checked, ok};
+use crate::fixtures::{checked_or_exit, ok};
 use criterion::measurement::WallTime;
 use criterion::{BenchmarkGroup, BenchmarkId, Criterion, Throughput};
 use op::add_f32::Add;
@@ -55,7 +55,7 @@ pub(crate) fn elementwise(c: &mut Criterion) {
     let a: Vec<f32> = (0..VECTOR).map(|i| i as f32 * 0.5 - 1.0).collect();
     let b: Vec<f32> = (0..VECTOR).map(|i| i as f32 * 0.25 + 0.5).collect();
     let mut out = vec![0.0f32; VECTOR];
-    checked(elementwise::forward::<Add>(&a, &b, &mut out), "缓冲等长");
+    checked_or_exit(elementwise::forward::<Add>(&a, &b, &mut out), "缓冲等长");
 
     let mut group = c.benchmark_group("elementwise/add_f32");
     group.throughput(Throughput::Elements(VECTOR as u64));
@@ -76,7 +76,7 @@ pub(crate) fn gemv(c: &mut Criterion) {
     let weights: Vec<f32> = (0..ROW * ROW).map(|i| (i as f32 * 0.001).sin()).collect();
     let x: Vec<f32> = (0..ROW).map(|i| (i as f32 * 0.002).cos()).collect();
     let mut out = vec![0.0f32; ROW];
-    checked(gemv_f32::forward(&x, &weights, &mut out), "形状与缓冲等长");
+    checked_or_exit(gemv_f32::forward(&x, &weights, &mut out), "形状与缓冲等长");
 
     let mut group = c.benchmark_group("gemv_f32");
     // 时间与带宽两条口径都归档：读者不必自己换算。
@@ -121,7 +121,7 @@ pub(crate) fn gemv_quant(c: &mut Criterion) {
 
     scalar(&mut out);
     let expected = out.clone();
-    checked(gemv_i4::forward(&x, &weights, &scales, &mut out), GEOM);
+    checked_or_exit(gemv_i4::forward(&x, &weights, &scales, &mut out), GEOM);
     for (j, (&got, &want)) in out.iter().zip(&expected).enumerate() {
         let slack = 1e-5 * want.abs().max(1.0);
         assert!(
@@ -151,7 +151,7 @@ pub(crate) fn gemv_quant(c: &mut Criterion) {
 /// `softmax_f32::forward`：decode 一行 4096 个 f32 的三趟数值稳定归一化。
 pub(crate) fn softmax(c: &mut Criterion) {
     let (x, mut out) = row();
-    checked(softmax_f32::forward(&x, &mut out), "输入与输出等长");
+    checked_or_exit(softmax_f32::forward(&x, &mut out), "输入与输出等长");
 
     let mut group = c.benchmark_group("softmax_f32");
     group.throughput(Throughput::Elements(ROW as u64));
@@ -164,7 +164,7 @@ pub(crate) fn softmax(c: &mut Criterion) {
 /// `rope_f32::forward`：decode 一行 4096 个 f32 的二维位置旋转（位置取 7）。
 pub(crate) fn rope(c: &mut Criterion) {
     let (x, mut out) = row();
-    checked(rope_f32::forward(7, &x, &mut out), "输入与输出等长");
+    checked_or_exit(rope_f32::forward(7, &x, &mut out), "输入与输出等长");
 
     let mut group = c.benchmark_group("rope_f32");
     group.throughput(Throughput::Elements(ROW as u64));
@@ -178,7 +178,7 @@ pub(crate) fn rope(c: &mut Criterion) {
 pub(crate) fn rmsnorm(c: &mut Criterion) {
     let (x, mut out) = row();
     let gamma: Vec<f32> = (0..ROW).map(|i| 0.5 + i as f32 * 0.01).collect();
-    checked(rmsnorm_f32::forward(&x, &gamma, &mut out), "三个缓冲等长");
+    checked_or_exit(rmsnorm_f32::forward(&x, &gamma, &mut out), "三个缓冲等长");
 
     let mut group = c.benchmark_group("rmsnorm_f32");
     group.throughput(Throughput::Elements(ROW as u64));
@@ -198,7 +198,7 @@ pub(crate) fn rmsnorm(c: &mut Criterion) {
 pub(crate) fn silu(c: &mut Criterion) {
     let x: Vec<f32> = (0..ROW).map(|i| i as f32 * 0.25 - 4.0).collect();
     let mut out = vec![0.0f32; ROW];
-    checked(silu_f32::forward(&x, &mut out), "输入与输出等长");
+    checked_or_exit(silu_f32::forward(&x, &mut out), "输入与输出等长");
 
     let mut group = c.benchmark_group("silu_f32");
     group.throughput(Throughput::Elements(ROW as u64));
@@ -220,7 +220,7 @@ fn dual<A, C, E: fmt::Display>(
     scalar: Kernel<A, C, E>,
     tiled: Kernel<A, C, E>,
 ) {
-    checked(scalar(a, b, m, n, k, &mut *out), GEOM);
+    checked_or_exit(scalar(a, b, m, n, k, &mut *out), GEOM);
     group.bench_function(names[0], |iter| {
         iter.iter(|| {
             black_box(scalar(
@@ -254,13 +254,13 @@ fn gemm_pair<G: Gemm>(
     (m, n): (usize, usize),
     (scalar, tiled): (&str, &str),
 ) {
-    checked(gemm::forward::<G>(a, b, m, n, &mut *out), GEOM);
+    checked_or_exit(gemm::forward::<G>(a, b, m, n, &mut *out), GEOM);
     group.bench_function(scalar, |iter| {
         iter.iter(|| gemm::matmul::<G>(black_box(a), black_box(b), m, n, black_box(&mut *out)))
     });
     group.bench_function(tiled, |iter| {
         iter.iter(|| {
-            checked(
+            checked_or_exit(
                 gemm::forward::<G>(black_box(a), black_box(b), m, n, black_box(&mut *out)),
                 GEOM,
             )
@@ -344,7 +344,7 @@ fn projection(c: &mut Criterion) {
     group.throughput(Throughput::Bytes(
         ((x.len() + w.len()) * size_of::<f32>()) as u64,
     ));
-    checked(matmul::forward_tn_tiled(&x, &w, rows, N, K, &mut out), GEOM);
+    checked_or_exit(matmul::forward_tn_tiled(&x, &w, rows, N, K, &mut out), GEOM);
     group.bench_function("row_by_row_gemv", |iter| {
         iter.iter(|| {
             for row in 0..rows {
@@ -472,7 +472,7 @@ fn i8_paths(group: &mut BenchmarkGroup<'_, WallTime>, parallel: usize) {
         let mut out = vec![0i32; m * n];
         let shape = format!("{m}x{n}x{k}");
         group.throughput(Throughput::Elements((2 * m * n * k) as u64));
-        checked(matmul_i8::forward_tiled(&a, &b, m, n, k, &mut out), GEOM);
+        checked_or_exit(matmul_i8::forward_tiled(&a, &b, m, n, k, &mut out), GEOM);
 
         group.bench_function(BenchmarkId::new("i8", &shape), |iter| {
             iter.iter(|| {

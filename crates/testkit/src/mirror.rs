@@ -218,7 +218,7 @@ fn every_registered_kernel_signature_matches_its_model_sample() {
             }
         };
         let sample = (entry.model.sample)(entry.model.shape.0, entry.model.shape.1);
-        if let Err(error) = signature.check(&sample) {
+        if let Err(error) = signature.check_sample(&sample) {
             failures.push(format!("`{}`：样本与 `.k` 签名不一致：{error}", entry.name));
         }
         let output_dtype = signature.output_type().and_then(|ctype| ctype.dtype());

@@ -80,7 +80,7 @@ impl<S: Scalar> Layer<S> {
     }
 
     /// 四张方阵都必须是 `[width, width]`：宽了是把别的层的数喂进来，窄了内积照算却是另一个数。
-    fn check(&self, width: usize, stride: usize) -> Result<()> {
+    fn check_geometry(&self, width: usize, stride: usize) -> Result<()> {
         for (label, matrix) in [
             ("q", &self.q),
             ("k", &self.k),
@@ -129,7 +129,7 @@ impl<S: Scalar> Global<S> {
             .with(SITE));
         }
         for layer in &layers {
-            layer.check(width, stride)?;
+            layer.check_geometry(width, stride)?;
         }
         Ok(Self {
             width,
@@ -225,7 +225,7 @@ impl<S: Scalar> Backread<S> {
             .with(SITE));
         }
         for layer in &layers {
-            layer.check(width, stride)?;
+            layer.check_geometry(width, stride)?;
         }
         Ok(Self { width, layers })
     }
@@ -252,7 +252,7 @@ impl<S: Scalar> Backread<S> {
     /// 表示行数与 patch 数不等、字节数或本地向量的行数对不上、宽度为零、某层方阵尺寸不符——返回
     /// `Code::Invalid`。宽了是把别的层的数喂进来，窄了内积照算却是另一个数。
     pub fn forward(&self, reps: &[S], glyphs: &[S], patches: &Patches) -> Result<Vec<S>> {
-        self.check(reps, glyphs, patches)?;
+        self.check_patches(reps, glyphs, patches)?;
         let mut states = glyphs.to_vec();
         for layer in &self.layers {
             states = self.read(layer, &states, reps, patches)?;
@@ -261,7 +261,7 @@ impl<S: Scalar> Backread<S> {
     }
 
     /// 入口几何：表示一行一个 patch、本地向量一行一个字节，宽度由栈给出。
-    fn check(&self, reps: &[S], glyphs: &[S], patches: &Patches) -> Result<()> {
+    fn check_patches(&self, reps: &[S], glyphs: &[S], patches: &Patches) -> Result<()> {
         let visible = rows(reps.len(), self.width)?;
         if visible != patches.len() {
             return Err(Error::new(

@@ -1,6 +1,6 @@
 //! 协议层基准：`Span::parse` 的四种写法与 `cap::negotiate` 的一次能力协商。
 
-use crate::fixtures::{checked, found};
+use crate::fixtures::{checked_or_exit, found};
 use criterion::Criterion;
 use cutile::builtin::Catalogue;
 use cutile::cap;
@@ -19,7 +19,7 @@ const SPANS: [(&str, &str); 4] = [
 pub(crate) fn span(c: &mut Criterion) {
     let mut group = c.benchmark_group("span_parse");
     for (name, text) in SPANS {
-        checked(Span::parse(text), "Span 写法");
+        checked_or_exit(Span::parse(text), "Span 写法");
         group.bench_function(name, |bench| {
             bench.iter(|| black_box(Span::parse(black_box(text))))
         });
@@ -29,7 +29,7 @@ pub(crate) fn span(c: &mut Criterion) {
 
 /// 内置目录在 `cpu` 档案上协商 `gemv_i4`：应命中首档。
 pub(crate) fn negotiate(c: &mut Criterion) {
-    let catalogue = checked(Catalogue::try_builtin(), "内置目录");
+    let catalogue = checked_or_exit(Catalogue::try_builtin(), "内置目录");
     let op = found(catalogue.op("gemv_i4"), "内置算子 gemv_i4");
     let profile = found(catalogue.profile("cpu"), "内置 cpu 档案");
 

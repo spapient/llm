@@ -91,7 +91,7 @@ impl Prepared {
         sample: &Sample,
         repeat: usize,
     ) -> diagnostic::Result<String> {
-        op.signature.check(sample)?;
+        op.signature.check_sample(sample)?;
         harness::harness(&self.source.text, &op.signature, sample, repeat)
     }
 }

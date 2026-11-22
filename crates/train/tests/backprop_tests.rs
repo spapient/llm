@@ -23,7 +23,7 @@ fn config() -> TrainConfig {
 
 /// 把最终输出 `y` 归约成标量 `loss` 后 plan + backward：链式损失测试的公共收尾。
 fn sum_backward(session: &mut Session<Reference, Sgd>, y: Var, loss: Var) -> Result<()> {
-    session.bufs().compute("reduce_sum_f32", &[y], loss)?;
+    session.bufs().compute_step("reduce_sum_f32", &[y], loss)?;
     session.plan(loss)?;
     session.backward()
 }
@@ -123,7 +123,7 @@ fn check_binary_grad(
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(a, ParamRole::Trainable, a0.to_vec())?;
     session.register_parameter(b, ParamRole::Trainable, b0.to_vec())?;
-    session.bufs().compute(op, &[a, b], y)?;
+    session.bufs().compute_step(op, &[a, b], y)?;
     sum_backward(&mut session, y, out)?;
 
     // `loss` 借给两个闭包（按引用捕获，避免一次 move 后第二次取不到）。
@@ -155,7 +155,7 @@ fn unary_grad(op: &str, p0: &[f32], output_len: usize) -> Result<Vec<f32>> {
     let sizes = support::sizes_of(&tape, &[(p, p0.len()), (y, output_len), (out, 1)]);
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(p, ParamRole::Trainable, p0.to_vec())?;
-    session.bufs().compute(op, &[p], y)?;
+    session.bufs().compute_step(op, &[p], y)?;
     sum_backward(&mut session, y, out)?;
     Ok(session
         .bufs()
@@ -321,8 +321,8 @@ fn check_affine(
     match geometry {
         Some(geometry) => session
             .bufs()
-            .compute_shaped(op, &[x, g, b], y, geometry)?,
-        None => session.bufs().compute(op, &[x, g, b], y)?,
+            .compute_shaped_step(op, &[x, g, b], y, geometry)?,
+        None => session.bufs().compute_step(op, &[x, g, b], y)?,
     }
     sum_backward(&mut session, y, out)?;
 
@@ -380,7 +380,7 @@ fn check_geometry_grad(
     let sizes = support::sizes_of(&tape, &[(p, x0.len()), (y, total), (out, 1)]);
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(p, ParamRole::Trainable, x0.to_vec())?;
-    session.bufs().compute_shaped(op, &[p], y, geometry)?;
+    session.bufs().compute_shaped_step(op, &[p], y, geometry)?;
     sum_backward(&mut session, y, out)?;
     check_grad(
         session.bufs().gradient(p).expect("参数梯度应在场"),
@@ -454,7 +454,7 @@ fn a_warm_backward_pass_reuses_its_scratch() -> Result<()> {
     let sizes = support::sizes_of(&tape, &[(p, N), (y, N), (out, 1)]);
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(p, ParamRole::Trainable, p0.to_vec())?;
-    session.bufs().compute("silu_f32", &[p], y)?;
+    session.bufs().compute_step("silu_f32", &[p], y)?;
     assert_eq!(
         session.bufs().scratch.footprint(),
         0,

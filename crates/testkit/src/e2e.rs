@@ -143,7 +143,7 @@ fn the_training_buf_computes_the_scalar_reference_of_the_same_weights() {
     let mut store = Bufs::new(sizes, Reference);
     store.load(x, Data::F32(INPUT.to_vec())).expect("输入");
     store.load(w, Data::F32(weight.clone())).expect("权重");
-    store.compute("gemv_f32", &[w, x], y).expect("算");
+    store.compute_step("gemv_f32", &[w, x], y).expect("算");
     let observed = store.value(y).expect("有值");
     let observed = observed.f32().expect("f32 视图");
 

@@ -214,7 +214,7 @@ pub(crate) fn compare(
             impl_name: impl_name.clone(),
             func: witness.func.clone(),
             values: got.len(),
-            max_rel_err: checked(*prim, witness, got, reference::tolerance(DType::F32))?,
+            max_rel_err: checked_error(*prim, witness, got, reference::tolerance(DType::F32))?,
             scope,
         });
     }

@@ -125,14 +125,14 @@ impl Fixture {
 
     /// 一步 `gemv_i4` 前向：`(x, w, scales) → output`。
     fn step(&self, store: &mut Bufs<Reference>, output: Var) -> Result<()> {
-        store.compute("gemv_i4", &[self.x, self.w, self.scales], output)
+        store.compute_step("gemv_i4", &[self.x, self.w, self.scales], output)
     }
 
     /// 按记录顺序算一遍全图，返回每个变量当时的值（叶子也在内）。
     fn forward(&self, store: &mut Bufs<Reference>) -> Vec<Option<Data>> {
         for node in self.tape.nodes() {
             store
-                .compute(node.op(), node.inputs(), node.output())
+                .compute_step(node.op(), node.inputs(), node.output())
                 .expect("前向可算");
         }
         (0..self.tape.vars())
@@ -230,7 +230,7 @@ fn a_released_input_is_never_read_as_a_value() {
     store.free(first);
 
     let error = store
-        .compute("gemv_i4", &[first, fixture.w, fixture.scales], fixture.loss)
+        .compute_step("gemv_i4", &[first, fixture.w, fixture.scales], fixture.loss)
         .expect_err("输入已释放");
     assert_eq!(error.code(), Code::Missing);
     assert_eq!(store.live(), RESIDENT, "失败的这一次没有留下任何占用");
@@ -297,7 +297,7 @@ fn an_impossibly_large_output_shape_is_an_error_rather_than_an_abort() {
     store.load(x, Data::F32(vec![1.0])).expect("输入");
 
     let error = store
-        .compute("gemv_i4", &[x], y)
+        .compute_step("gemv_i4", &[x], y)
         .expect_err("分配不出来就必须报错");
     assert_eq!(error.code(), Code::Invalid);
     assert!(error.to_string().contains("个元素"), "{error}");
@@ -310,7 +310,7 @@ fn an_unknown_operator_is_unsupported_rather_than_silently_zero() {
     let fixture = Fixture::new(1);
     let mut store = fixture.store();
     let error = store
-        .compute("relu", &[fixture.x], fixture.loss)
+        .compute_step("relu", &[fixture.x], fixture.loss)
         .expect_err("没有 relu 的内核");
     assert_eq!(error.code(), Code::Unsupported);
     assert!(
@@ -433,7 +433,7 @@ fn the_second_registered_operator_replays_like_the_first() {
         .collect();
     store.load(x, Data::F32(input.clone())).expect("输入");
     store.load(w, Data::F32(weights.clone())).expect("权重");
-    store.compute("gemv_f32", &[w, x], y).expect("可算");
+    store.compute_step("gemv_f32", &[w, x], y).expect("可算");
 
     let mut expected = vec![0.0f32; N];
     op::gemv_f32::forward(&input, &weights, &mut expected).expect("参考可算");
@@ -450,14 +450,14 @@ fn a_kernel_signature_mismatch_names_the_slot() {
     let fixture = Fixture::new(1);
     let mut store = fixture.store();
 
-    let error = store.compute("gemv_i4", &[fixture.x, fixture.w], fixture.loss);
+    let error = store.compute_step("gemv_i4", &[fixture.x, fixture.w], fixture.loss);
     let error = error.expect_err("少一个输入");
     assert_eq!(error.code(), Code::Invalid);
     assert!(error.to_string().contains("必须是"), "{error}");
 
     let arity = &[fixture.x, fixture.x, fixture.scales];
     let error = store
-        .compute("gemv_i4", arity, fixture.loss)
+        .compute_step("gemv_i4", arity, fixture.loss)
         .expect_err("权重是 f32");
     assert_eq!(error.code(), Code::Invalid);
     assert!(error.to_string().contains("第 1 个输入"), "{error}");
@@ -492,7 +492,7 @@ fn a_three_operator_chain_runs_forward_through_the_reference_kernel() {
     store.load(w, Data::F32(weights.clone())).expect("权重");
     for node in tape.nodes() {
         store
-            .compute(node.op(), node.inputs(), node.output())
+            .compute_step(node.op(), node.inputs(), node.output())
             .expect("前向可算");
     }
 
@@ -541,7 +541,7 @@ mod operators {
             .load(b, Data::F32(vec![0.5, 0.5, 0.5, 0.5]))
             .expect("b");
         store.add_f32(&[a, b], typed).expect("类型化调用");
-        Store::compute(&mut store, "add_f32", &[a, b], raw).expect("字符串调用");
+        Store::compute_step(&mut store, "add_f32", &[a, b], raw).expect("字符串调用");
         let typed = store
             .value(typed)
             .expect("有值")

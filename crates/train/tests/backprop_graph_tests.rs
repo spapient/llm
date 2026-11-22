@@ -17,7 +17,7 @@ fn mul_then_reduce_matches_central_differences() -> Result<()> {
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(p, ParamRole::Trainable, p0.clone())?;
     session.bufs().load(w, Data::F32(w0.clone()))?;
-    session.bufs().compute("mul_f32", &[p, w], z)?;
+    session.bufs().compute_step("mul_f32", &[p, w], z)?;
     sum_backward(&mut session, z, loss)?;
 
     check_grad(
@@ -45,8 +45,8 @@ fn scale_silu_chain_matches_central_differences() -> Result<()> {
 
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(p, ParamRole::Trainable, p0.clone())?;
-    session.bufs().compute("scale_f32", &[p], h)?;
-    session.bufs().compute("silu_f32", &[h], y)?;
+    session.bufs().compute_step("scale_f32", &[p], h)?;
+    session.bufs().compute_step("silu_f32", &[h], y)?;
     sum_backward(&mut session, y, loss)?;
 
     check_grad(
@@ -66,7 +66,7 @@ fn detached_leaf_receives_no_gradient() -> Result<()> {
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(p, ParamRole::Trainable, vec![1.0; N])?;
     session.bufs().load(x, Data::F32(vec![0.1; N]))?;
-    session.bufs().compute("add_f32", &[p, x], loss)?;
+    session.bufs().compute_step("add_f32", &[p, x], loss)?;
     session.plan(loss)?;
     session.backward()?;
 
@@ -102,7 +102,7 @@ fn gelu_chain_matches_central_differences() -> Result<()> {
 
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(p, ParamRole::Trainable, p0.clone())?;
-    session.bufs().compute("gelu_f32", &[p], h)?;
+    session.bufs().compute_step("gelu_f32", &[p], h)?;
     sum_backward(&mut session, h, loss)?;
 
     check_grad(
@@ -129,7 +129,7 @@ fn reduce_max_matches_central_differences() -> Result<()> {
 
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(p, ParamRole::Trainable, p0.clone())?;
-    session.bufs().compute("reduce_max_f32", &[p], h)?;
+    session.bufs().compute_step("reduce_max_f32", &[p], h)?;
     sum_backward(&mut session, h, loss)?;
 
     check_grad(
@@ -166,7 +166,7 @@ fn gemv_matches_central_differences() -> Result<()> {
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(w, ParamRole::Trainable, w0.clone())?;
     session.bufs().load(x, Data::F32(x0.clone()))?;
-    session.bufs().compute("gemv_f32", &[w, x], y)?;
+    session.bufs().compute_step("gemv_f32", &[w, x], y)?;
     sum_backward(&mut session, y, loss)?;
 
     check_grad(
@@ -205,7 +205,7 @@ fn gemm_matches_central_differences() -> Result<()> {
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(a, ParamRole::Trainable, a0.clone())?;
     session.bufs().load(b, Data::F32(b0.clone()))?;
-    session.bufs().compute("gemm_f32", &[a, b], y)?;
+    session.bufs().compute_step("gemm_f32", &[a, b], y)?;
     sum_backward(&mut session, y, loss)?;
 
     check_grad(
@@ -253,7 +253,7 @@ fn embed_table_gradient_matches_central_differences() -> Result<()> {
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(table, ParamRole::Trainable, table0.clone())?;
     session.bufs().load(idx, Data::F32(idx0.clone()))?;
-    session.bufs().compute("embed_f32", &[idx, table], y)?;
+    session.bufs().compute_step("embed_f32", &[idx, table], y)?;
     sum_backward(&mut session, y, loss)?;
 
     check_grad(
@@ -277,7 +277,7 @@ fn unsupported_operator_backward_is_rejected() -> Result<()> {
 
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(p, ParamRole::Trainable, vec![1.0; N])?;
-    session.bufs().compute("dequant_i8", &[p], y)?;
+    session.bufs().compute_step("dequant_i8", &[p], y)?;
     session.plan(y)?;
 
     let error = session.backward().expect_err("反量化没有解析反向");

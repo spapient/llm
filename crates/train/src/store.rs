@@ -98,6 +98,6 @@ macro_rules! typed_ops {
 /// 运行时缓冲实现唯一原语：按注册名派发到既有内核表。
 impl<K: crate::Kernel> OperatorSetOps for crate::Bufs<K> {
     fn apply(&mut self, name: &'static str, inputs: &[Var], output: Var) -> Result<()> {
-        Store::compute(self, name, inputs, output)
+        Store::compute_step(self, name, inputs, output)
     }
 }
