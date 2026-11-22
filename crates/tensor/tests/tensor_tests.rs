@@ -1,4 +1,4 @@
-use crate::{DType, Element, Order, Owned, Shape, Tensor, View};
+use crate::{DType, Element, Order, Owned, Shape, Slice, Tensor, View};
 use diagnostic::Code;
 
 #[test]
@@ -511,4 +511,156 @@ fn a_broadcast_axis_is_honestly_not_contiguous() {
     let wide = view.broadcast(Shape::new([4, 2])).expect("广播新增前导轴");
     assert_eq!(wide.at([3, 1]), Some(2.0), "步长 0 复用同一个元素");
     assert!(!wide.is_contiguous(), "步长 0 的重复轴不可能是行主序紧凑");
+}
+
+#[test]
+fn slice_fill_touches_only_the_window() {
+    let mut tensor: Tensor<Owned<f32>> = Tensor::zeros(vec![3usize, 4]).expect("分配");
+    tensor
+        .slice_fill([1..2, 1..3], 9.0)
+        .expect("第 1 行第 1、2 列");
+    let flat = tensor.to_vec();
+    assert_eq!(&flat[0..4], [0.0f32; 4], "窗口外的行原样");
+    assert_eq!(&flat[4..8], [0.0f32, 9.0, 9.0, 0.0], "只有窗口被写");
+    assert_eq!(&flat[8..12], [0.0f32; 4], "窗口外的行原样");
+    assert!(
+        tensor.slice_fill([2..4, 0..1], 1.0).is_none(),
+        "窗口越界不静默收窄"
+    );
+}
+
+#[test]
+fn slice_assign_follows_the_logical_order_even_when_strided() {
+    let solid: Tensor<Owned<f32>> =
+        Tensor::new(vec![3usize, 4], Owned::from(counted())).expect("自持张量");
+    let mut turned = solid.transpose(0, 1).expect("转置");
+    turned
+        .slice_assign([0..1, 0..2], [91.0f32, 92.0])
+        .expect("窗口大小对得上");
+    assert_eq!(turned.at([0, 0]), Some(91.0), "逻辑第 0 位");
+    assert_eq!(turned.at([0, 1]), Some(92.0), "逻辑第 1 位，跨步长");
+    assert_eq!(turned.at([1, 0]), Some(1.0), "窗口外原样");
+    assert_eq!(turned.at([0, 2]), Some(8.0), "窗口外原样");
+    assert_eq!(turned.to_vec()[0..2], [91.0, 92.0], "读回来还是逻辑顺序");
+    assert!(
+        turned.slice_assign([0..1, 0..2], [1.0f32]).is_none(),
+        "长度不符不静默截断"
+    );
+}
+
+#[test]
+fn flip_reverses_only_the_named_axes() {
+    let values = counted();
+    let view: View<'_, f32> = View::new(Shape::new([3, 4]), &values).expect("视图");
+    let rows = view.flip([0]);
+    assert_eq!(rows.dims(), [3, 4]);
+    assert_eq!(rows.strides(), [4, 1], "翻转后是紧凑缓冲");
+    assert_eq!(rows.at([0, 0]), Some(8.0), "行序倒过来");
+    assert_eq!(rows.at([2, 3]), Some(3.0), "末行就是原来的首行");
+    let cols = view.clone().flip([1]);
+    assert_eq!(cols.at([0, 0]), Some(3.0), "列序倒过来");
+    assert_eq!(cols.at([2, 3]), Some(8.0));
+    let both = view.flip([0, 1]).to_vec();
+    assert_eq!(both[0], 11.0, "两轴都翻等于整段倒读");
+    assert_eq!(both[11], 0.0);
+}
+
+#[test]
+fn flip_is_idempotent_where_it_should_be() {
+    let values = counted();
+    let view: View<'_, f32> = View::new(Shape::new([3, 4]), &values).expect("视图");
+    assert_eq!(view.flip([] as [usize; 0]).to_vec(), values, "不翻任何轴");
+    assert_eq!(view.flip([9]).to_vec(), values, "轴号超出秩的忽略");
+    assert_eq!(
+        view.flip([0, 0]).to_vec(),
+        view.flip([0]).to_vec(),
+        "重复给出的轴只翻一次"
+    );
+    assert_eq!(view.flip([0]).flip([0]).to_vec(), values, "翻两次复原");
+}
+
+#[test]
+fn flip_of_a_strided_view_reads_the_logical_order() {
+    let values = counted();
+    let view: View<'_, f32> = View::new(Shape::new([3, 4]), &values).expect("视图");
+    let turned = view.transpose(0, 1).expect("转置");
+    assert_eq!(
+        turned.flip([0]).at([0, 0]),
+        turned.at([3, 0]),
+        "翻的是逻辑轴，不是缓冲顺序"
+    );
+    assert!(turned.flip([0]).is_contiguous(), "物化后紧凑");
+}
+
+#[test]
+fn a_stepped_slice_reads_every_other_element_without_moving_data() {
+    let values = counted();
+    let view: View<'_, f32> = View::new(Shape::new([3, 4]), &values).expect("视图");
+    let every_other_row = view.slice([Slice::stepped(0, 3, 2)]).expect("隔行");
+    assert_eq!(every_other_row.dims(), [2, 4], "3 行里隔行取 2 行");
+    assert_eq!(every_other_row.strides(), [8, 1], "步长翻倍，不是复制");
+    assert!(!every_other_row.is_contiguous(), "跳着读就不再紧凑");
+    assert_eq!(
+        every_other_row.to_vec(),
+        vec![0.0f32, 1.0, 2.0, 3.0, 8.0, 9.0, 10.0, 11.0]
+    );
+}
+
+#[test]
+fn a_stepped_view_writes_through_its_own_steps() {
+    let solid: Tensor<Owned<f32>> =
+        Tensor::new(vec![3, 4], Owned::from(counted())).expect("自持张量");
+    let mut every_other_row = solid
+        .slice([Slice::stepped(0, 3, 2), Slice::new(0, 4)])
+        .expect("隔行");
+    every_other_row
+        .slice_assign([1..2, 0..4], [90.0f32, 91.0, 92.0, 93.0])
+        .expect("写第二行");
+    assert_eq!(
+        every_other_row.to_vec(),
+        vec![0.0f32, 1.0, 2.0, 3.0, 90.0, 91.0, 92.0, 93.0],
+        "写入落在第 2 行（缓冲偏移 8），步长被尊重"
+    );
+}
+
+#[test]
+fn a_step_of_zero_or_an_inverted_range_is_none() {
+    let values = counted();
+    let view: View<'_, f32> = View::new(Shape::new([3, 4]), &values).expect("视图");
+    assert!(
+        view.clone().slice([Slice::stepped(0, 3, 0)]).is_none(),
+        "步长 0 会原地打转"
+    );
+    assert!(
+        view.slice([Slice::stepped(3, 0, 1)]).is_none(),
+        "倒序段只能靠 flip"
+    );
+}
+
+#[test]
+fn chunks_split_into_borrowed_views_without_copying() {
+    let values = counted();
+    let view: View<'_, f32> = View::new(Shape::new([3, 4]), &values).expect("视图");
+    let parts: Vec<_> = view.chunks(0, 2).collect();
+    assert_eq!(parts.len(), 2);
+    assert_eq!(parts[0].dims(), [2, 4]);
+    assert_eq!(parts[1].dims(), [1, 4], "3 行等分 2 段：2 + 1");
+    assert_eq!(
+        parts[0].to_vec(),
+        vec![0.0f32, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
+    );
+    assert_eq!(parts[1].base(), 8, "第二段只是起点前移");
+    assert_eq!(parts[1].to_vec(), vec![8.0f32, 9.0, 10.0, 11.0]);
+}
+
+#[test]
+fn chunks_of_a_transposed_view_keep_the_layout() {
+    let values = counted();
+    let view: View<'_, f32> = View::new(Shape::new([3, 4]), &values).expect("视图");
+    let turned = view.transpose(0, 1).expect("转置");
+    let parts: Vec<_> = turned.chunks(1, 3).collect();
+    assert_eq!(parts.len(), 3);
+    assert_eq!(parts[2].dims(), [4, 1]);
+    assert_eq!(parts[2].strides(), [1, 4], "分段不改步长");
+    assert_eq!(parts[2].to_vec(), vec![8.0f32, 9.0, 10.0, 11.0], "第 3 列");
 }

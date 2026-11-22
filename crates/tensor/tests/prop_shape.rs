@@ -169,4 +169,34 @@ proptest! {
             prop_assert_eq!(narrow.at(&idx), wide.at(&extended));
         }
     }
+
+    /// 翻转只是「这些轴从另一端读」：结果等于把每个下标在指定轴上取镜像后逐个读，且翻两次复原。
+    #[test]
+    fn flipping_reads_the_named_axes_from_their_far_end(dims in dims(), mask in any::<u16>()) {
+        let data = counting(&dims);
+        let shape = Shape::new(dims.clone());
+        let view = View::strided(shape.clone(), shape.strides(Order::RowMajor), &data);
+        let view = view.expect("同长缓冲");
+        let axes: Vec<usize> = (0..dims.len()).filter(|axis| mask >> axis & 1 == 1).collect();
+        let turned = view.flip(axes.clone());
+        let want: Vec<f32> = idxs(&dims)
+            .iter()
+            .map(|idx| {
+                let far: Vec<usize> = idx
+                    .iter()
+                    .enumerate()
+                    .map(|(axis, &at)| {
+                        if axes.contains(&axis) {
+                            dims[axis] - 1 - at
+                        } else {
+                            at
+                        }
+                    })
+                    .collect();
+                view.at(&far).expect("镜像下标仍在形状内")
+            })
+            .collect();
+        prop_assert_eq!(turned.to_vec(), want);
+        prop_assert_eq!(turned.flip(axes).to_vec(), view.to_vec(), "翻两次复原");
+    }
 }

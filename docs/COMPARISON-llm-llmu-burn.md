@@ -193,11 +193,14 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 | 算子                              | llm（新）`tensor`                                                  | Burn                    | 实现代价                                    |
 | ------------------------------- | --------------------------------------------------------------- | ----------------------- | --------------------------------------- |
 | `narrow(axis, start, len)`      | ✅ 秩不变，返回 `Self`                                                 | ✅ `narrow`              | O(1)：起点前移 + 改一个轴长，无分配                  |
-| `slice(ranges)`                 | ✅ 一次切多轴（`impl AsRef<[Range<usize>]>`）                           | ✅ `slice`/`slice_assign` | O(轴数)，多轴合成一次                       |
+| `slice(ranges)`                 | ✅ 一次切多轴（`impl AsRef<[Range<usize>]>`）                           | ✅ `slice`               | O(轴数)，多轴合成一次                       |
+| `slice_fill(ranges, v)`         | ✅ 就地写同一窗，窗口外不动（仅自持存储）                                            | ✅ `slice_fill`          | 复用 `layout::window` + 一趟进位                  |
+| `slice_assign(ranges, values)`  | ✅ 源取 `&[K]`，按逻辑顺序写入，长度必须正好相等                                       | ✅ `slice_assign`        | 同上；非连续窗口也照写                             |
 | `select::<R2>(axis, idx)`       | ✅ 秩减一，目标秩由调用方给出                                                  | ✅ `select`              | O(轴数)：与 `squeeze` 共用同一个 splice 原语      |
 | `squeeze::<R2>` / `unsqueeze::<R2>` | ✅                                                          | ✅                       | 同上；`unsqueeze` 插入步长 0 的轴               |
 | `flatten(start, end)`           | ✅ 相邻轴按行主序压成一轴，不紧凑则 `None`                                        | ✅ `flatten`/`reshape`   | 先核轴长之积与步长，再 splice                      |
 | `broadcast(dims)`               | ✅ 前导新轴 + 单例扩展，步长写 0，零拷贝                                          | ✅ `expand`              | O(轴数)                                  |
+| `flip(axes)`                    | ✅ 沿各轴反向读出，借来视图也能翻                                               | ✅ `flip`                | O(numel)：无符号步长表达不出倒读，这一步必须搬数据         |
 
 **判定：**
 
@@ -210,6 +213,10 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 * `is_contiguous` 对单例轴不敏感（`dims[axis] > 1` 才参与判据）：插入的步长 0 轴、压平后的单例段都不会把连续布局误判成非连续。Burn 的 `is_contiguous` 走 `strides` 比较，单例轴的处理分散在各后端。
 
 * 秩变化要靠目标见证（`select::<R2>`）：稳定 Rust 算不出 `D - 1`，这与 Burn 的 `.squeeze::<2>()` 是同一约束；本仓的 `R2` 还可以是 `Vec<usize>`，所以同一份源码也能跑运行期秩。
+
+* 读与写共用一趟进位：`walk(shape, steps, base, visit)` 是唯一"怎么走遍逻辑位置"的实现，摊平（读）与窗口赋值（写）都只是给它一个闭包。`flip` 是唯一例外——步长无符号，镜像下标得逐元素重算，所以它是本族里唯一搬数据的算子，文档与类型（返回 `Tensor<Owned<K>, R, K>`）都把这件事写明，而不是假装零拷贝。
+
+* 与 Burn 的命名对齐用 `#[doc(alias)]`（`expand`、`swap_dims`），不另开同名方法：别名不产生第二份实现，于是"少写一份"和"用户搜得到"同时成立。
 
 
 ***

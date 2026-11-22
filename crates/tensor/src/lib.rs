@@ -16,12 +16,16 @@
 //! 连续性与取行只有 [`layout`] 一份实现；连续步长只有 [`shape::accumulate`] 一份定义。
 //!
 //! 布局代数比"只有重排"宽：元数据是 `(起点偏移, 各轴长度, 各轴步长)` 三元组，所以整套形状算子
-//! 都是 O(轴数) 的整数运算，一个元素都不搬，且**与存储形态无关**（借来视图与自持张量一视同仁）：
+//! 都是 O(轴数) 的整数运算，且**与存储形态无关**（借来视图与自持张量一视同仁）：
 //! [`Tensor::broadcast`] 用步长 0 表达广播，[`Tensor::narrow`] / [`Tensor::slice`] 把起点前移
 //! 成子视图，[`Tensor::select`] / [`Tensor::squeeze`] / [`Tensor::unsqueeze`] / [`Tensor::flatten`]
-//! 改秩，[`Tensor::transpose`] / [`Tensor::permute`] 换轴序。改秩的四个要写目标见证
+//! 改秩，[`Tensor::transpose`] / [`Tensor::permute`] 换轴序，[`Tensor::slice_fill`] /
+//! [`Tensor::slice_assign`] 往同一个窗口里就地写（自持存储才可写）。改秩的四个要写目标见证
 //! （`t.select::<[usize; 1]>(0, 3)`），因为稳定 Rust 算不出 `D - 1`——Burn 的 `.squeeze::<2>()`
 //! 同理，只是那边只能是定长数组，这里 `Vec<usize>` 也可以。
+//!
+//! 唯一搬数据的形状算子是 [`Tensor::flip`]：步长是无符号量，"从远端起倒走"表达不出来，所以它
+//! 按镜像下标重算偏移并返回 `Tensor<Owned<K>, R, K>`——借来的视图也能翻，代价是一趟 O(numel)。
 //!
 //! **拥有**：`Tensor`、`Owned`、`Shape`、`Order`、`AxisLen`、`Element` 与 `DType`
 //! 的再导出。**不拥有**：元素类型闭集（L1 `dtype`，这里是唯一事实源的下游）、dtype-运行期的
@@ -31,7 +35,8 @@
 //! `nn`、`engine`、`llm`、`cli`。
 //!
 //! 本层只描述"数据长什么样、放在哪几个字节里"，**不做 `&mut` 分区**（那是 DSL 的所有权规则，
-//! cutile README §4.4），也不做任何执行——矩阵乘、归约、激活都在算子 / 内核层。
+//! cutile README §4.4），也不做任何执行——矩阵乘、归约、激活都在算子 / 内核层。窗口写入
+//! （`slice_fill` / `slice_assign`）写的是自己的缓冲，不涉及 kernel 操作数分区。
 //!
 //! # 例子
 //!
@@ -67,7 +72,7 @@ pub use dtype::DType;
 
 pub use element::Element;
 pub use rank::Rank;
-pub use shape::{AxisLen, Order, Shape, product};
+pub use shape::{AxisLen, Order, Shape, Slice, product};
 pub use store::{Owned, Store, StoreMut};
 pub use tensor::{Tensor, View};
 

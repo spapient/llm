@@ -4,7 +4,7 @@
 //! 它与运行期秩共用 `layout` 与 `shape::accumulate`，所以两个见证不该有任何行为差别；这里既锁住
 //! 编译期秩自己的全套布局能力，也锁住"两族算出来的步长逐轴相等"。
 
-use crate::{DType, Element, Order, Shape, Tensor, product};
+use crate::{DType, Element, Order, Shape, Slice, Tensor, product};
 
 /// 编译期秩 2 的借来视图。
 type Fix2<'a> = Tensor<&'a [f32], [usize; 2], f32>;
@@ -169,4 +169,57 @@ fn typed_tensor_keeps_its_rank_through_narrow_and_slice() {
     assert_eq!(corner.dims(), [1, 2]);
     assert_eq!(corner.strides(), [3, 1]);
     assert_eq!(corner.base(), 3, "两次切片的起点偏移累加");
+}
+
+#[test]
+fn typed_tensor_keeps_its_rank_through_flip_and_window_writes() {
+    let data = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let tensor: Fix2<'_> = Tensor::new([2, 3], data.as_slice()).expect("形状与缓冲匹配");
+
+    // `flip` 换存储（借来 → 自持），秩见证原样留在类型上。
+    let flipped: Tensor<crate::Owned<f32>, [usize; 2], f32> = tensor.flip([1]);
+    assert_eq!(flipped.dims(), [2, 3]);
+    assert_eq!(flipped.row(0), Some(&[3.0f32, 2.0, 1.0][..]), "整行倒读");
+
+    let mut own: Tensor<crate::Owned<f32>, [usize; 2], f32> =
+        Tensor::new([2, 3], crate::Owned::from(data.to_vec())).expect("自持张量");
+    own.slice_fill([1..2, 0..3], 0.0).expect("末行清零");
+    own.slice_assign([0..1, 1..3], [8.0f32, 9.0])
+        .expect("首行两列");
+    assert_eq!(own.row(0), Some(&[1.0f32, 8.0, 9.0][..]));
+    assert_eq!(own.row(1), Some(&[0.0f32, 0.0, 0.0][..]));
+}
+
+#[test]
+fn a_static_rank_owned_tensor_walks_the_whole_shape_surface() {
+    let data: Vec<f32> = (0..12).map(|i| i as f32).collect();
+    let solid: Tensor<crate::Owned<f32>, [usize; 2], f32> =
+        Tensor::new([3, 4], crate::Owned::from(data)).expect("自持张量");
+
+    let window: Tensor<crate::Owned<f32>, [usize; 2], f32> = solid
+        .slice([Slice::stepped(0, 3, 2), Slice::new(1, 4)])
+        .expect("隔行、去掉首列");
+    assert_eq!(window.dims(), [2, 3]);
+    assert!(
+        window.clone().flatten::<[usize; 1]>(0, 2).is_none(),
+        "跳着读的窗口压不平：压平只能落在连续段上"
+    );
+
+    let flat: Tensor<crate::Owned<f32>, [usize; 1], f32> = window
+        .to_contiguous()
+        .flatten(0, 2)
+        .expect("物化后压平");
+    assert_eq!(flat.dims(), [6], "秩在类型里跟着变");
+    assert_eq!(flat.to_vec(), vec![1.0f32, 2.0, 3.0, 9.0, 10.0, 11.0]);
+
+    let wide: Tensor<crate::Owned<f32>, [usize; 2], f32> = flat
+        .unsqueeze(0)
+        .expect("提轴")
+        .broadcast([2, 6])
+        .expect("广播");
+    let pieces: Vec<_> = wide.chunks(1, 3).collect();
+    assert_eq!(pieces.len(), 3);
+    assert_eq!(pieces[2].dims(), [2, 2]);
+
+    assert_eq!(wide.select::<[usize; 1]>(0, 1).expect("固定首轴").dims(), [6]);
 }

@@ -1,5 +1,7 @@
 //! 形状：每个轴的长度与元素数 / 字节数推导。
 
+use core::ops::Range;
+
 use dtype::DType;
 
 pub use order::Order;
@@ -123,5 +125,41 @@ mod order {
         RowMajor,
         /// 列主序：第一轴相邻（Fortran / cuBLAS 的 `T` 位）。
         ColMajor,
+    }
+}
+
+/// 一段切片：`start..end` 加上读取步长（Burn 的 `s![..;2]`）。
+///
+/// 步长只改元数据里的 `steps[axis]`，所以带步长的 [`slice`](crate::Tensor::slice) 依旧一个
+/// 元素都不搬——降采样、隔行取列都是视图。`Range<usize>` 经 `From` 直接当连续段用。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Slice {
+    /// 起始下标（含）。
+    pub start: usize,
+    /// 结束下标（不含）。
+    pub end: usize,
+    /// 读取步长：`1` 即连续。
+    pub step: usize,
+}
+
+impl Slice {
+    /// 连续段，等价于 `start..end`。
+    pub const fn new(start: usize, end: usize) -> Self {
+        Self {
+            start,
+            end,
+            step: 1,
+        }
+    }
+
+    /// 跳着读的段：该轴每 `step` 个位置取一个。
+    pub const fn stepped(start: usize, end: usize, step: usize) -> Self {
+        Self { start, end, step }
+    }
+}
+
+impl From<Range<usize>> for Slice {
+    fn from(range: Range<usize>) -> Self {
+        Self::new(range.start, range.end)
     }
 }
