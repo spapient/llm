@@ -328,13 +328,13 @@ fn layers_slice_their_own_part_of_one_row() {
 }
 
 /// E12 随机历史访问 + 块表 O(1)（`#[ignore]` 实测：
-/// `cargo test -p llm-engine --lib -- e12_random_access --release --ignored --nocapture`）。
+/// `cargo test --release -p llm-engine --lib -- e12_random_access --ignored --nocapture`）。
 ///
 /// 冻结工作集 4096 页 × 16 token/页 = 65536 历史 token；确定性生成 10 万次随机访问，
 /// `Table::slot` 只做 `idx / page_size` + `idx % page_size` + 一次 `Vec` 下标（源码即
 /// O(1)，不随历史长度遍历），这里再用不同历史长度下的查表墙钟做经验佐证。
 #[test]
-#[ignore = "E12 块表基准：cargo test -p llm-engine --lib -- e12_random_access --release --ignored --nocapture"]
+#[ignore = "E12 块表基准：cargo test --release -p llm-engine --lib -- e12_random_access --ignored --nocapture"]
 fn e12_random_access() {
     let page_size = 16usize;
     let pages = 4096usize;

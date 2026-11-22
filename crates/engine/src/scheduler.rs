@@ -110,14 +110,6 @@ impl Scheduler {
             .publish(&mut self.pager, tokens, width, block, page)
     }
 
-    /// `tokens` 这条路径上前缀树已经登记了多少块。
-    ///
-    /// 树沿一条路径连通，已登记的块因此必然连成从 0 开始的一段，这个数就是"下一块真新的块
-    /// 从哪开始"。[`Batch::settle`] 靠它把每次写入的登记缩成常数次，而不是从 0 重扫。
-    pub(crate) fn registered(&self, tokens: &[u32]) -> usize {
-        self.radix.depth(tokens, self.pager.page_size())
-    }
-
     /// 前缀树里的块数（只读诊断）：服务侧报"共享缓存有多深"时用，不暴露树本身。
     pub fn cached_blocks(&self) -> usize {
         self.radix.len()

@@ -45,6 +45,8 @@ pub struct Sequence {
     stream: crate::exec::Stream,
     /// 完整上下文：提示段在前、生成段在后；[`tokens`](Self::tokens) 切出后半段。
     all: Vec<u32>,
+    /// 历史里已经登记进前缀树的块数：只增不减，[`Batch::settle`] 靠它只登记真新的块。
+    settled: usize,
 }
 
 impl Sequence {
@@ -85,6 +87,7 @@ impl Sequence {
             state: State::Waiting,
             stream,
             all: prompt.to_vec(),
+            settled: 0,
         })
     }
 
@@ -106,6 +109,16 @@ impl Sequence {
     /// 提示段已经算进页账的位置数。
     pub fn prefilled(&self) -> usize {
         self.prefilled
+    }
+
+    /// 把"已登记进前缀树的块"推进到 `blocks`，返回这次真新的块区间。
+    ///
+    /// 块账跟着序列而不是跟着批：块有了、块算完是这条序列自己的属性。区间只往前推，因为已登记
+    /// 的块不会退回未登记——那一页只要在树里，重登记也只是让树再答一次"已在"，白走一趟路径。
+    pub(crate) fn settle(&mut self, blocks: usize) -> std::ops::Range<usize> {
+        let from = self.settled;
+        self.settled = self.settled.max(blocks);
+        from..self.settled
     }
 
     /// 提示段是否已算完（可以直接解码）。

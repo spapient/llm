@@ -345,12 +345,9 @@ impl Batch {
 
     /// 把前 `to` 行里**走完的块**登记进前缀树。
     ///
-    /// 起点问树、不问行账，是这里唯一的性能条款。块 `b` 落定的条件是 `(b + 1) · 页宽 <= to`，
-    /// 从 0 扫到 `to` 是对的但会白跑：一次预填充会让每行写入都把整棵树重走一遍再听它回答
-    /// `false`，总计 `O(提示长² / 页宽)` 次行走。树沿一条 token 路径是连通的，已登记的块必然
-    /// 连成从 0 开始的一段，所以 [`Scheduler::registered`] 一次就答出"真新的块从哪开始"。
-    ///
-    /// 不按"上一行写到哪"推起点，是因为调用方可以跳着写：缺的那几块照样要在这里补登记。
+    /// 块 `b` 落定的条件是 `(b + 1) · 页宽 <= to`，而每写一行都从 0 扫到 `to` 会让一次预填充
+    /// 付出 `O(提示长² / 页宽)` 次前缀树行走、然后听它逐块回答"已在"。所以起点取序列自己的块账：
+    /// 它只往前推，走过的块不必再问。跳着写的调用方也不用特殊照顾——缺的块正落在没走过的区间里。
     ///
     /// 登记要的是「上下文 + 一页」：上下文只借不克隆（它在序列里），页号是 `Copy` 的
     /// [`crate::kv::Page`]，因此页池的可变借用与序列的只读借用可以先后各取一次，不必先复制一份快照。
@@ -363,15 +360,13 @@ impl Batch {
         if width == 0 {
             return Ok(());
         }
-        let Some(sequence) = sequences.iter().find(|sequence| sequence.id() == id) else {
+        let Some(at) = sequences.iter().position(|sequence| sequence.id() == id) else {
             return Ok(());
         };
-        let history = sequence.ctx();
-        let from = scheduler.registered(history);
-        for block in from..to / width {
-            if (block + 1) * width > history.len() {
-                continue;
-            }
+        let blocks = to.min(sequences[at].ctx().len()) / width;
+        let range = sequences[at].settle(blocks);
+        let history = sequences[at].ctx();
+        for block in range {
             let Some(page) = scheduler
                 .pages_of(id)
                 .and_then(|table| table.pages().get(block).copied())

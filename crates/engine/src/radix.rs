@@ -61,11 +61,6 @@ impl Radix {
         pages
     }
 
-    /// 最长满块前缀命中的块数。只读：不刷新时序戳，因为问「到哪儿了」不该算一次命中。
-    pub fn depth(&self, tokens: &[u32], page_size: usize) -> usize {
-        self.walk(tokens, page_size).len()
-    }
-
     /// 沿 token 路径一直往下走，返回命中的节点下标（按块序）。
     fn walk(&self, tokens: &[u32], page_size: usize) -> Vec<usize> {
         let mut path = Vec::new();
