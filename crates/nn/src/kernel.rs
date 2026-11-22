@@ -47,12 +47,12 @@ pub use unary::{
 
 // 契约层在 `spec`：内核与本 crate 的骨架宏都按 crate 根解析契约路径，这里把它们搬回来，
 // 于是内核源码里写的是 `crate::model::…` / `crate::operator_via!`，而不是到处写依赖 crate 名。
-pub use llm_spec::same_bytes;
+pub use prof::same_bytes;
 // `$crate::formula_cell!` / `$crate::operator_via!` 在骨架宏里按 crate 根解析，这里把 spec 导出的
 // 宏搬回本 crate 根：内核里几十处 `#[model]` 展开都不必改路径。
-pub use llm_spec::tpl::{formula, parse};
-pub use llm_spec::{einsum, model, operator, sample, sch, sig, tpl};
-pub use llm_spec::{formula_cell, operator_here, operator_via};
+pub use prof::tpl::{formula, parse};
+pub use prof::{einsum, model, operator, sample, sch, sig, tpl};
+pub use prof::{formula_cell, operator_here, operator_via};
 pub use model::quant;
 pub use sch::layout;
 

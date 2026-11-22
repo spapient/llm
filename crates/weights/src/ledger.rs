@@ -1,13 +1,11 @@
 //! 谱隙证书账本：L0 判定、秩选择与证书同源，只有一个入口 [`certify`]。
 
-pub(crate) mod note;
-
 use crate::bad;
 use diagnostic::Result;
 
 use crate::svd;
 
-pub use crate::ledger::note::{audit, check_note};
+pub use crate::note::{audit, check_note};
 
 /// 账本 schema 标识。
 pub const SCHEMA: &str = "llm.cert.v1";

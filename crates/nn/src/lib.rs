@@ -211,11 +211,11 @@ pub use kernel::{
 
 // 契约层在 `spec`：内核源码与骨架宏都按 crate 根解析契约路径，这里把它们搬回来，于是内核源码
 // 里写的是 `crate::model::…` / `crate::operator_via!`，而不是到处写依赖 crate 名。
-pub use llm_spec::same_bytes;
-pub(crate) use llm_spec::tpl::guard;
-pub use llm_spec::tpl::{formula, parse};
-pub use llm_spec::{einsum, model, operator, sample, sch, sig, tpl};
-pub use llm_spec::{formula_cell, operator_here, operator_via};
+pub use prof::same_bytes;
+pub(crate) use prof::tpl::guard;
+pub use prof::tpl::{formula, parse};
+pub use prof::{einsum, model, operator, sample, sch, sig, tpl};
+pub use prof::{formula_cell, operator_here, operator_via};
 pub use model::quant;
 pub use sch::layout;
 

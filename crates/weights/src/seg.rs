@@ -1,16 +1,14 @@
 //! 段：一个权重张量的名字、类型、形状、可选量化方案与它的逻辑字节。
 
-pub(crate) mod decode;
-
 use crate::bad;
 use diagnostic::{Code, Error, Result};
 
-use crate::seg::decode::{check_frame, check_quant, decode_meta, decode_quant, decode_tail};
+use crate::decode::{check_frame, check_quant, decode_meta, decode_quant, decode_tail};
 
 use crate::Wire;
 use crate::quant::Quant;
 #[cfg(test)]
-pub(crate) use crate::seg::decode::{MAX_RANK, decode_shape};
+pub(crate) use crate::decode::{MAX_RANK, decode_shape};
 use std::borrow::Cow;
 use wire::leb::{self, Cursor};
 use wire::sink::Sink;

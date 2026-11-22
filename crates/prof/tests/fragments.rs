@@ -57,3 +57,29 @@ mod nvidia {
     use llm_prof::nvidia::*;
     testkit::device_suite!();
 }
+
+/// 片段集合的克隆只加一次引用计数；克隆之后再登记，改的是克隆自己（写时复制）。
+#[test]
+fn a_clone_keeps_its_own_inserts() {
+    let mut base = llm_prof::FragmentSet::new("cpu", "c");
+    base.insert(llm_prof::Prim::Load, fragment("load", "one"))
+        .expect("登记首份片段");
+    let mut copy = base.clone();
+    copy.insert(llm_prof::Prim::Load, fragment("load", "two"))
+        .expect("登记第二份片段");
+    assert_eq!(
+        base.fragments_of(llm_prof::Prim::Load).len(),
+        1,
+        "克隆不能共享后来的插入"
+    );
+    assert_eq!(copy.fragments_of(llm_prof::Prim::Load).len(), 2);
+    assert_eq!(base.implementation(llm_prof::Prim::Load), Some("one"));
+}
+
+/// 一份合法片段：第一行是签名声明，后面是正文。
+fn fragment(prim: &str, implementation: &str) -> String {
+    format!(
+        "/* {} {prim}/{implementation} */\nvoid {implementation}(void) {{}}\n",
+        llm_prof::SIGN_MARKER
+    )
+}

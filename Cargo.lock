@@ -333,7 +333,6 @@ dependencies = [
  "llm-diagnostic",
  "llm-nn",
  "llm-prof",
- "llm-spec",
  "llm-testkit",
 ]
 
@@ -551,7 +550,7 @@ dependencies = [
  "llm-nn",
  "llm-prof",
  "llm-serve",
- "llm-snapshot",
+ "llm-storage",
  "llm-tensor",
  "llm-testkit",
  "llm-tokenizer",
@@ -574,7 +573,7 @@ dependencies = [
  "llm-prof",
  "llm-serve",
  "llm-shard",
- "llm-snapshot",
+ "llm-storage",
  "llm-tensor",
  "llm-tokenizer",
  "llm-tools",
@@ -624,16 +623,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "llm-formats"
-version = "0.1.0"
-dependencies = [
- "llm-diagnostic",
- "llm-dtype",
- "llm-testkit",
- "llm-wire",
-]
-
-[[package]]
 name = "llm-fuzz"
 version = "0.1.0"
 dependencies = [
@@ -641,7 +630,7 @@ dependencies = [
  "llm-cli",
  "llm-diagnostic",
  "llm-serve",
- "llm-snapshot",
+ "llm-storage",
  "llm-tensor",
  "llm-tools",
  "llm-train",
@@ -658,7 +647,6 @@ dependencies = [
  "llm-annotation",
  "llm-diagnostic",
  "llm-prof",
- "llm-spec",
  "llm-tensor",
  "llm-testkit",
  "llm-weights",
@@ -670,9 +658,9 @@ dependencies = [
 name = "llm-prof"
 version = "0.1.0"
 dependencies = [
+ "llm-annotation",
  "llm-diagnostic",
  "llm-dtype",
- "llm-spec",
  "llm-testkit",
  "toml",
 ]
@@ -715,32 +703,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "llm-snapshot"
-version = "0.1.0"
-dependencies = [
- "llm-diagnostic",
- "llm-tensor",
- "llm-testkit",
- "llm-weights",
- "llm-wire",
-]
-
-[[package]]
-name = "llm-spec"
-version = "0.1.0"
-dependencies = [
- "llm-annotation",
- "llm-diagnostic",
- "llm-dtype",
- "llm-testkit",
-]
-
-[[package]]
 name = "llm-storage"
 version = "0.1.0"
 dependencies = [
  "llm-diagnostic",
  "llm-tensor",
+ "llm-wire",
 ]
 
 [[package]]
@@ -790,7 +758,7 @@ dependencies = [
  "llm-nn",
  "llm-prof",
  "llm-shard",
- "llm-snapshot",
+ "llm-storage",
  "llm-tensor",
  "llm-testkit",
  "llm-weights",
@@ -803,7 +771,6 @@ version = "0.1.0"
 dependencies = [
  "llm-diagnostic",
  "llm-dtype",
- "llm-formats",
  "llm-storage",
  "llm-tensor",
  "llm-testkit",

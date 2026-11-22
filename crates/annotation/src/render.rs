@@ -166,7 +166,7 @@ pub(crate) fn render_model(declaration: &ModelDecl, ty: &str) -> String {
     );
     let _ = writeln!(
         code,
-        "pub const {}: ::llm_spec::model::Model = ::llm_spec::operator::model_of::<{ty}>();\n",
+        "pub const {}: ::prof::model::Model = ::prof::operator::model_of::<{ty}>();\n",
         declaration.const_name
     );
     asserts(&mut code, declaration, ty);
@@ -201,26 +201,26 @@ fn asserts(code: &mut String, declaration: &ModelDecl, ty: &str) {
     let [m, n] = declaration.shape;
     let _ = writeln!(
         code,
-        "const _: () = assert!(::llm_spec::same_bytes(<{ty} as ::llm_spec::operator::Operator>::NAME, {}), \"注解注册名必须与 Operator::NAME 一致\");",
+        "const _: () = assert!(::prof::same_bytes(<{ty} as ::prof::operator::Operator>::NAME, {}), \"注解注册名必须与 Operator::NAME 一致\");",
         Quoted(&declaration.name)
     );
     let _ = writeln!(
         code,
-        "const _: () = assert!(::llm_spec::same_bytes(<{ty} as ::llm_spec::operator::Operator>::DTYPE.name(), {}), \"注解里的 `dtype` 必须与 Operator::DTYPE 一致\");",
+        "const _: () = assert!(::prof::same_bytes(<{ty} as ::prof::operator::Operator>::DTYPE.name(), {}), \"注解里的 `dtype` 必须与 Operator::DTYPE 一致\");",
         Quoted(&declaration.dtype)
     );
     code.push_str("const _: () = {\n    ");
     let _ = writeln!(
         code,
-        "assert!(<{ty} as ::llm_spec::operator::Operator>::SHAPE.0 == {m}usize, \"注解生产形状必须与 Operator::SHAPE 一致\");"
+        "assert!(<{ty} as ::prof::operator::Operator>::SHAPE.0 == {m}usize, \"注解生产形状必须与 Operator::SHAPE 一致\");"
     );
     let _ = writeln!(
         code,
-        "    assert!(<{ty} as ::llm_spec::operator::Operator>::SHAPE.1 == {n}usize, \"注解生产形状必须与 Operator::SHAPE 一致\");"
+        "    assert!(<{ty} as ::prof::operator::Operator>::SHAPE.1 == {n}usize, \"注解生产形状必须与 Operator::SHAPE 一致\");"
     );
     let _ = writeln!(
         code,
-        "    let group = <{ty} as ::llm_spec::operator::Operator>::GROUP as usize;"
+        "    let group = <{ty} as ::prof::operator::Operator>::GROUP as usize;"
     );
     code.push_str("    assert!(group > 0, \"形状粒度必须大于 0\");\n");
     let _ = writeln!(

@@ -97,15 +97,15 @@ impl Checkpoint {
     }
 
     /// 把这些事实与当前权重表组合成可落盘的快照。
-    pub fn snapshot(&self, weights: &weights::Header) -> Result<snapshot::Snapshot> {
-        let facts = snapshot::Facts::new(
+    pub fn snapshot(&self, weights: &weights::Header) -> Result<weights::Snapshot> {
+        let facts = storage::Facts::new(
             self.step,
             self.world,
             self.layers,
             self.batch_rows,
             self.batch_cols,
         )?;
-        Ok(snapshot::Snapshot::new(facts, weights.clone()))
+        Ok(weights::Snapshot::new(facts, weights.clone()))
     }
 }
 
@@ -155,7 +155,8 @@ use super::{ParamSlot, SITE, Session, SlotMeta};
 use crate::optimizer::{Optimizer, OwnedSlot};
 use crate::pool::Bufs;
 use crate::{Data, Kernel};
-use snapshot::{GradAccum, Moments, SlotMoments, Snapshot, Ties};
+use storage::{GradAccum, Moments, SlotMoments, Ties};
+use weights::Snapshot;
 
 // ---- 会话快照回载 ----------------------------------------------------------
 //

@@ -75,11 +75,6 @@ names = ["CallArg", "ChainStep", "FragmentGap", "Lock", "NeedReport", "PrimCall"
 reason = "内核 DSL 的协商前端与结果类型；按 `crates/cutile/README.md` 的分节归类，待分节稳定后逐节进表（执行期五个名字随拆分迁到 `optim`）"
 
 [[ownership.unlisted]]
-crate = "optim"
-names = ["LanguageGate", "Scope", "TensorGeometry", "Timing"]
-reason = "执行期前端：`LanguageGate` 是一门设备语言的入口条件、`Scope` 是见证的作用域、`TensorGeometry` 是张量核几何、`Timing` 是一次实测的时间口径；四者随 `cutile` 的「机制 / 运行」拆分迁来，待 `optim` 的 README 分节稳定后进表"
-
-[[ownership.unlisted]]
 crate = "dtype"
 names = ["BlockFormat", "Class", "DTypeSpec", "ElementSpec", "Family", "MxTypeSpec", "QTypeSpec", "UnknownCode", "UnknownName"]
 reason = "行表类型、分类闭集与解析错误；表形状仍在演进，按闭集整体进表比逐项更清楚"
@@ -95,34 +90,9 @@ names = ["Behaviour", "Repro", "Seed", "Target"]
 reason = "模糊测试的目标、种子、行为描述与复现样本；工具成员，不参与运行时分层"
 
 [[ownership.unlisted]]
-crate = "op"
-names = ["Axis", "Chunk", "Grid", "Skeleton", "TileCombo", "Variant"]
-reason = "声明解析结果（骨架 / 网格映射 / 轴候选 / tile 组合）与变体闭集的内部类型；公开面是 `REGISTRY`。`Axis` 与 `spec::einsum::formula::Index`（原 `Axis`）同名不同概念（这里是模板槽位 `name`+`values`，那里是求和表达式的字母+长度+角色）——所有权门按名字全局判重，故两边各登记一次；候选槽位改名是 X2 的 P2 待办"
-
-[[ownership.unlisted]]
-crate = "gemm"
-names = ["Binary", "Dense", "DequantI8", "Embed", "Gemm", "Matmul", "MatmulI8Op", "Packed", "PackedRow", "Plain", "PlainFmt", "QuantI4", "SymI8", "Unary"]
-reason = "内核族与打包格式的实现类型（每个算子一个模块、一张行表）；随 L 拆分从 `op` 迁到 `gemm`，公开面仍是 `REGISTRY` 与 `Operator`。经典 CNN 算子与 `nn` 同名层共享名字（`Conv1d`/`Conv2d`/`BatchNorm2d` 等）——所有权门按名字全局判重，故这些名字由 `nn` 的所有权行覆盖，本侧不重复登记（与 `tool::Geometry`/`train::Geometry` 同一处置）"
-
-[[ownership.unlisted]]
-crate = "conv"
-names = ["ConvGeom", "DecodeAttention", "DecodeFlashAttention", "FlashAttention", "Sampler"]
-reason = "神经网络算子（卷积几何 / 注意力 / 解码采样）的实现类型；随 L 拆分从 `op` 迁到 `conv`，公开面仍是 `REGISTRY` 与 `Operator`"
-
-[[ownership.unlisted]]
-crate = "spec"
-names = ["Access", "Arg", "Axis", "AxisRole", "AxisSpec", "CType", "Formula", "Param", "ShapeCtx", "SplitMix64", "Values"]
-reason = "契约层内部类型（访问模式、算子参数、轴角色与轴规格、C 类型、公式缓存句柄、形状上下文、计数器型随机）；随 L 拆分从 `op` 迁到 `spec`，公开面是 `Operator` / `Model` / 签名"
-
-[[ownership.unlisted]]
-crate = "prim"
-names = ["Builtin"]
-reason = "内嵌片段的条目类型；片段文本表才是对外契约"
-
-[[ownership.unlisted]]
 crate = "prof"
-names = ["Attr", "AttrKey", "Constant", "Detected", "Emit", "Grade", "MatchRule", "Mem", "Meta", "Mismatch", "Need", "Prim", "ProfileError", "Provide", "Simt", "Space", "Span", "Unit", "Witness"]
-reason = "档案行表的列类型与匹配规则；档案的公开面是 `Archive`/`Profile`"
+names = ["Access", "Arg", "AxisRole", "AxisSpec", "Constant", "CType", "Detected", "Emit", "Formula", "MatchRule", "Mem", "Meta", "Param", "ProfileError", "Recipe", "ShapeCtx", "Simt", "SplitMix64", "Unit", "Values", "Witness"]
+reason = "档案行表的列类型与匹配规则（公开面是 `Archive`/`Profile`），加上随 `op`/`prim` 解散迁来的声明解析结果（骨架 / 网格映射 / 轴候选 / tile 组合 / 变体闭集）与内嵌片段条目 `Builtin`；`spec` 并入本 crate 后又多了契约词汇的内部类型（访问模式、算子参数、轴角色与轴规格、C 类型、公式缓存句柄、形状上下文、计数器型随机）。`Axis` 在声明层与 `einsum::formula` 各有一份，同名不同物：表里只登记声明层那一份，本基线不再重复；`AttrKey`/`Grade`/`Prim`/`Space` 由 `closed!` 宏生成、扫描器认不出定义行，故四者不再登记"
 
 [[ownership.unlisted]]
 crate = "storage"
@@ -141,13 +111,8 @@ reason = "复杂度与回归门禁的行类型；工具成员，公开面是 `Re
 
 [[ownership.unlisted]]
 crate = "weights"
-names = ["Axis", "Pick", "Sha256", "Svd"]
-reason = "选码与哈希内部件：五轴选码的候选与结果（`axes` 的 `Axis`/`Pick`）、`svd` 分解件与哈希内部件；谱隙证书的 `Certified`/`Note`/`Stable`/`Mode`/`EpsMethod`/`Bound` 已进所有权表（它们决定秩，是可读的判定口径而不是实现细节），公开生产面是表里的读写契约与容器类型"
-
-[[ownership.unlisted]]
-crate = "formats"
-names = ["Gguf", "Tensor"]
-reason = "外部格式的解析件：`Gguf` 是 GGUF 头部 + 数据区视图，`Tensor` 是 GGUF 与 torch 两种文件里各一条的张量目录项（`gguf::Tensor` / `torch::Tensor`，同名不同物、靠路径区分），都只吐「名字 + 类型 + 形状 + 字节区间」、不带任何容器判据；torch `.bin` 的读出结果收进 `torch::Checkpoint`（与所有权表里的 `train::Checkpoint` 同名不同物，靠路径区分），`Bin` 随 torch 解析重写为只读 `Checkpoint` 后注销"
+names = ["Axis", "Gguf", "Pick", "Sha256", "Svd", "Tensor"]
+reason = "选码与哈希内部件：五轴选码的候选与结果（`axes` 的 `Axis`/`Pick`）、`svd` 分解件与哈希内部件；谱隙证书的 `Certified`/`Note`/`Stable`/`Mode`/`EpsMethod`/`Bound` 已进所有权表（它们决定秩，是可读的判定口径而不是实现细节），公开生产面是表里的读写契约与容器类型。外部格式的解析件随 `formats` 并入本 crate：`Gguf` 是 GGUF 头部 + 数据区视图，`Tensor` 是 GGUF 与 torch 两种文件里各一条的张量目录项（`gguf::Tensor` / `torch::Tensor`，同名不同物、靠路径区分），都只吐「名字 + 类型 + 形状 + 字节区间」、不带任何容器判据；torch `.bin` 的读出结果收进 `torch::Checkpoint`（与所有权表里的 `train::Checkpoint` 同名不同物，靠路径区分），`Bin` 随 torch 解析重写为只读 `Checkpoint` 后注销"
 
 [[ownership.unlisted]]
 crate = "wire"

@@ -10,72 +10,31 @@ pub(crate) use diagnostic::data::{Table, Value};
 use diagnostic::{Code, Error};
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
-/// 输出语言闭集（cutile README §5.4 的 `emit` 列）。设备与输出语言是两个维度：
-/// 同一条 `cuda` emit 同时服务 NVIDIA 与 MUSA。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Emit {
-    /// CUDA C++。
-    Cuda,
-    /// PTX 汇编。
-    Ptx,
-    /// HIP。
-    Hip,
-    /// OpenCL C。
-    Opencl,
-    /// SPIR-V。
-    Spirv,
-    /// Metal Shading Language。
-    Metal,
-    /// 昇腾 AscendC。
-    Ascendc,
-    /// 可移植 C。
-    C,
-    /// WGSL。
-    Wgsl,
-}
-impl Closed for Emit {
-    /// 闭集全量；顺序即 `Emit::SPEC` 的下标，也就是变体判别值。
-    const ALL: &'static [Self] = &[
-        Self::Cuda,
-        Self::Ptx,
-        Self::Hip,
-        Self::Opencl,
-        Self::Spirv,
-        Self::Metal,
-        Self::Ascendc,
-        Self::C,
-        Self::Wgsl,
-    ];
-    fn as_str(self) -> &'static str {
-        Self::SPEC[self as usize].0
-    }
-    fn idx(self) -> usize {
-        self as usize
-    }
-}
-crate::inherent_names!(Emit);
-impl Emit {
-    /// 名字与源文件扩展名，一行一个变体（顺序与 [`Emit::ALL`] 一致）：
-    /// 名字与后缀是同一份事实，写成一张表，改名时不会漏掉 `ext`。
-    const SPEC: &'static [(&'static str, &'static str)] = &[
-        ("cuda", "cu"),
-        ("ptx", "ptx"),
-        ("hip", "hip"),
-        ("opencl", "cl"),
-        ("spirv", "spv"),
-        ("metal", "metal"),
-        ("ascendc", "cpp"),
-        ("c", "c"),
-        ("wgsl", "wgsl"),
-    ];
-    /// 生成的源文件扩展名（只回答后缀，不回答这种语言能否编出产物）。
-    pub const fn ext(self) -> &'static str {
-        Self::SPEC[self as usize].1
-    }
-}
-impl fmt::Display for Emit {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
+
+crate::closed_enum! {
+    /// 输出语言闭集（cutile README §5.4 的 `emit` 列）。设备与输出语言是两个维度：
+    /// 同一条 `cuda` emit 同时服务 NVIDIA 与 MUSA。附加列 `ext` 是生成的源文件扩展名
+    /// （只回答后缀，不回答这种语言能否编出产物）。
+    Emit {
+        ext:
+        // CUDA C++。
+        Cuda => ("cuda", "cu"),
+        // PTX 汇编。
+        Ptx => ("ptx", "ptx"),
+        // HIP。
+        Hip => ("hip", "hip"),
+        // OpenCL C。
+        Opencl => ("opencl", "cl"),
+        // SPIR-V。
+        Spirv => ("spirv", "spv"),
+        // Metal Shading Language。
+        Metal => ("metal", "metal"),
+        // 昇腾 AscendC。
+        Ascendc => ("ascendc", "cpp"),
+        // 可移植 C。
+        C => ("c", "c"),
+        // WGSL。
+        Wgsl => ("wgsl", "wgsl"),
     }
 }
 /// 档案的元信息。
@@ -144,18 +103,51 @@ pub(crate) fn within(lo: &str, hi: &str, actual: &str) -> bool {
         && parse_version(hi).is_some_and(|high| value <= high)
 }
 impl fmt::Display for MatchRule {
+    /// 五个变体各走一条只写一处的排版分支：`match` 之外没有一个 `?`，
+    /// 于是这条 `Display` 的复杂度就是臂数本身。
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Exact(text) => f.write_str(text),
             Self::Range { lo, hi } => write!(f, "{lo}..{hi}"),
-            Self::Contains(tokens) => write!(f, "contains: {}", tokens.join("|")),
-            Self::Set { base, members } => write!(f, "{base}{{{}}}", members.join(",")),
-            Self::OneOf(branches) => {
-                let parts: Vec<String> = branches.iter().map(ToString::to_string).collect();
-                f.write_str(&parts.join("|"))
-            }
+            Self::Contains(tokens) => marked(f, "contains: ", "|", tokens),
+            Self::Set { base, members } => braced(f, base, members),
+            Self::OneOf(branches) => joined(f, "|", branches),
         }
     }
+}
+
+/// `前缀 + 用分隔符串起来的条目`（`contains: a|b`）。
+fn marked<T: fmt::Display>(
+    f: &mut fmt::Formatter<'_>,
+    head: &str,
+    sep: &str,
+    items: &[T],
+) -> fmt::Result {
+    f.write_str(head)?;
+    joined(f, sep, items)
+}
+
+/// `基名{条目}`（`x86{avx2,sve}`）。
+fn braced(f: &mut fmt::Formatter<'_>, base: &str, members: &[String]) -> fmt::Result {
+    write!(f, "{base}{{")?;
+    joined(f, ",", members)?;
+    f.write_str("}")
+}
+
+/// 用分隔符把一串条目写进格式化器：不先收集 `Vec<String>`，也不为每个成员造 `String`。
+///
+/// 首个条目之后交给 `try_for_each`：分隔符与条目在同一个写点，函数里只剩一个 `?`。
+fn joined<T: fmt::Display>(
+    f: &mut fmt::Formatter<'_>,
+    sep: &str,
+    items: &[T],
+) -> fmt::Result {
+    let mut rest = items.iter();
+    let Some(first) = rest.next() else {
+        return Ok(());
+    };
+    write!(f, "{first}")?;
+    rest.try_for_each(|item| write!(f, "{sep}{item}"))
 }
 pub(crate) fn parse_version(text: &str) -> Option<Vec<u32>> {
     let parts = text.trim().split('.');
@@ -188,9 +180,13 @@ impl Detected {
 }
 impl fmt::Display for Detected {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let pair = |(key, value): (&String, &String)| format!("{key}={value}");
-        let parts: Vec<String> = self.attrs.iter().map(pair).collect();
-        f.write_str(&parts.join(" "))
+        for (at, (key, value)) in self.attrs.iter().enumerate() {
+            if at > 0 {
+                f.write_str(" ")?;
+            }
+            write!(f, "{key}={value}")?;
+        }
+        Ok(())
     }
 }
 /// 存储容量与 bank 数。
@@ -369,10 +365,6 @@ pub(crate) fn witness_error(provide: &Provide, detail: impl Into<String>) -> Pro
 pub(crate) fn closed_names<E: Closed>(all: &'static [E]) -> Vec<&'static str> {
     all.iter().map(|item| item.as_str()).collect()
 }
-/// 数据类型闭集的名字表：`DType` 是 L1 外部类型，用它自己的 `name()`。
-pub(crate) fn dtype_names() -> Vec<&'static str> {
-    DType::ALL.iter().map(|dt| dt.name()).collect()
-}
 /// 解析闭集里的名字；闭集外一律 `Unknown`，并把闭集内容一起报出来。
 pub(crate) fn closed<E: Closed>(name: &str, field: impl fmt::Display) -> Result<E, ProfileError> {
     E::parse(name).ok_or_else(|| unknown(field, name, &closed_names(E::ALL)))
@@ -508,48 +500,65 @@ pub fn builtin_profiles() -> &'static [Profile] {
     })
 }
 
+/// 一趟扫描的结果：最高具体度、它**第一个**出现在哪、**最后一个**出现在哪。
+///
+/// 「选谁」与「跟谁并列」是两个位置：选后者是 `max_by_key` 的语义（同分取靠后的那份），
+/// 而报错时点名的是并列里的第一个。分开记这两个下标，一次遍历就够——不必先把命中项收成
+/// `Vec` 再扫两遍，也不为一次选择分配内存。
+#[derive(Default)]
+struct Best {
+    /// 目前见过的最高具体度。
+    top: usize,
+    /// 达到 `top` 的第一份档案下标。
+    first: Option<usize>,
+    /// 达到 `top` 的最后一份档案下标（同分时选它）。
+    last: usize,
+}
+
+impl Best {
+    /// 登记一次命中：更高则重开一段并列，同分则推进「最后一份」，更低一概不动。
+    fn offer(&mut self, at: usize, specificity: usize) {
+        match self.first {
+            Some(_) if specificity < self.top => {}
+            Some(_) if specificity == self.top => self.last = at,
+            _ => {
+                self.top = specificity;
+                self.first = Some(at);
+                self.last = at;
+            }
+        }
+    }
+}
+
 /// 按探测指纹从一组档案里挑出唯一命中、且规则最具体的一份。
 pub fn select<'a>(profiles: &'a [Profile], detected: &Detected) -> diagnostic::Result<&'a Profile> {
-    let Some((idx, profile)) = profiles
-        .iter()
-        .enumerate()
-        .filter(|(_, profile)| profile.matches(detected))
-        .max_by_key(|(_, profile)| profile.specificity())
-    else {
+    let mut best = Best::default();
+    for (at, profile) in profiles.iter().enumerate() {
+        if profile.matches(detected) {
+            best.offer(at, profile.specificity());
+        }
+    }
+    let Some(first) = best.first else {
         return Err(
             Error::new(Code::Unsupported, format!("没有档案匹配该指纹：{detected}"))
                 .with("prof::select"),
         );
     };
-    match rival(profiles, detected, idx, profile.specificity()) {
-        Some(other) => Err(Error::new(
-            Code::Invalid,
-            format!(
-                "`{}` 与 `{}` 的指纹同等具体，无法决定用哪一份（指纹：{detected}）",
-                profile.meta.vendor, other.meta.vendor
-            ),
-        )
-        .with("prof::select")),
-        None => Ok(profile),
+    if first == best.last {
+        return Ok(&profiles[best.last]);
     }
+    Err(tie(&profiles[best.last], &profiles[first], detected))
 }
 
-/// 与最优者同等具体、同样命中的另一份档案：选择没有唯一答案。
-pub(crate) fn rival<'a>(
-    profiles: &'a [Profile],
-    detected: &Detected,
-    best: usize,
-    top: usize,
-) -> Option<&'a Profile> {
-    profiles
-        .iter()
-        .enumerate()
-        .find(|(idx, profile)| {
-            *idx != best && profile.specificity() == top && profile.matches(detected)
-        })
-        .map(|(_, profile)| profile)
+/// 两份档案同等具体：消息点名「选中的那份」与「并列里的第一份」，与旧实现逐字一致。
+fn tie(chosen: &Profile, rival: &Profile, detected: &Detected) -> Error {
+    let detail = format!(
+        "`{}` 与 `{}` 的指纹同等具体，无法决定用哪一份（指纹：{detected}）",
+        chosen.meta.vendor, rival.meta.vendor
+    );
+    Error::new(Code::Invalid, detail).with("prof::select")
 }
-pub use crate::schema::WitnessLookup;
+pub use crate::witness::WitnessLookup;
 #[cfg(test)]
 #[path = "../tests/prof.rs"]
 mod tests;

@@ -1,12 +1,12 @@
-//! 写回尾块执行：把 `spec::epilogue::Step` 闭集按声明顺序施加到 f32 瓦片，算术只转发 `gemm` 的拥有方。
+//! 写回尾块执行：把 `prof::epilogue::Step` 闭集按声明顺序施加到 f32 瓦片，算术只转发 `gemm` 的拥有方。
 //!
-//! 六步闭集来自 [`llm_spec::epilogue::Step`]：`bias` / `act` / `residual` / `scale` / `quant` / `store`。
+//! 六步闭集来自 [`prof::epilogue::Step`]：`bias` / `act` / `residual` / `scale` / `quant` / `store`。
 //! 本模块不持有任何算术——激活逐个取 [`crate::unary`] 的标量核，量化用 [`crate::dequant::SCALE`]
 //! 做对称 round-trip，残差与缩放直接就地累加。契约层（`spec`）只声明"有哪些步"，执行层在这里
 //! 决定"每一步落在哪个既有内核上"。
 
 use diagnostic::{Code, Error};
-use llm_spec::epilogue::Step;
+use prof::epilogue::Step;
 use prof::atom::{ActKind, DType};
 
 /// 按 `steps` 的顺序把写回尾块施加到 `out`（行主序，列宽 `cols`）。

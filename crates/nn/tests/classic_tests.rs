@@ -117,7 +117,7 @@ fn pool_and_interpolate_layers_bind_one_real_operator() {
     assert_eq!(adp.output().dims(), [2, 2, 4]);
     assert_eq!(adp.spca().ops(), ["adaptive_pool_f32"]);
 
-    let up = Interpolate::new("i", crate::conv::conv::Sampler::Linear, 16, 16, 4).expect("合法");
+    let up = Interpolate::new("i", crate::conv::Sampler::Linear, 16, 16, 4).expect("合法");
     assert_eq!(up.output().dims(), [16, 16, 4]);
     assert_eq!(up.spca().ops(), ["interpolate_f32"]);
 }

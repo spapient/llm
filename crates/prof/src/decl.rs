@@ -1,54 +1,32 @@
-//! 声明解析与轴展开（cutile README §4、§10.2 的 ①）。
+//! 声明层：算子声明的类型、轴展开与降级链解析（cutile README §4、§10.2 的 ①）。
+//!
+//! 一份文件装三件事，因为它们是同一条链上的三节：类型（[`OpDecl`] / [`Variant`] / [`Fusion`]）
+//! 是声明的形状，[`expand`] 把轴展开成 tile 候选，变体链校验（[`variants`]）保证降级有序。
+//! 字段级解析在 [`parse`]（`decl/parse.rs`）。
 
-use spec::sch::layout::LayoutSpec;
-use spec::sch::Schedule;
-use spec::sig::CType;
+use crate::atom::Need;
 use core::fmt;
 use diagnostic::{Code, Error};
-use crate::atom::Need;
+use crate::sch::Schedule;
+use crate::sch::layout::LayoutSpec;
+use crate::sig::CType;
 
 /// 变体数上限（cutile README §4.1）。
 pub const MAX_VARIANTS: usize = 8;
 /// 轴展开后的 tile 候选上限（cutile README §4.1）。
 pub const MAX_TILES: usize = 8;
 
-/// 骨架闭集（cutile README 附录 B）：决定用哪个模板基座。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Skeleton {
-    /// 逐元素。
-    Elementwise,
-    /// 归约。
-    Reduce,
-    /// 矩阵乘。
-    Gemm,
-    /// 扫描。
-    Scan,
-}
-
-impl crate::atom::Closed for Skeleton {
-    /// 闭集全量。
-    const ALL: &'static [Self] = &[Self::Elementwise, Self::Reduce, Self::Gemm, Self::Scan];
-
-    /// 声明层写法。
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Elementwise => "elementwise",
-            Self::Reduce => "reduce",
-            Self::Gemm => "gemm",
-            Self::Scan => "scan",
-        }
-    }
-
-    fn idx(self) -> usize {
-        self as usize
-    }
-}
-
-crate::inherent_names!(Skeleton);
-
-impl fmt::Display for Skeleton {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
+crate::closed_enum! {
+    /// 骨架闭集（cutile README 附录 B）：决定用哪个模板基座。
+    Skeleton {
+        // 逐元素。
+        Elementwise => "elementwise",
+        // 归约。
+        Reduce => "reduce",
+        // 矩阵乘。
+        Gemm => "gemm",
+        // 扫描。
+        Scan => "scan",
     }
 }
 
@@ -123,7 +101,7 @@ pub struct OpDecl {
     /// 模板文本。
     pub template: String,
     /// 内核签名：从模板的入口函数解析，是 ABI 的唯一事实源。
-    pub signature: spec::sig::Signature,
+    pub signature: crate::sig::Signature,
     /// 数据流阶段：谁在哪一阶段读/写哪个槽位；单内核算子就是一段（名字 = 算子名）。
     pub phases: Vec<Phase>,
 }
@@ -148,7 +126,7 @@ pub struct Seam {
     /// 消费者的读槽位名（融合时以临时缓冲桥接，名字不必相同）。
     pub to: String,
     /// 缝上的类型（两侧一致才合法；只可能是缓冲类型 F32 / U8）。
-    pub ctype: spec::sig::CType,
+    pub ctype: crate::sig::CType,
 }
 
 /// 一次合法的生产者→消费者融合。
@@ -193,12 +171,38 @@ impl Fusion {
 
 impl OpDecl {
     /// 槽位的声明类型：缓冲形参才有；标量或未知名返回 `None`。
-    pub fn slot_type(&self, name: &str) -> Option<spec::sig::CType> {
+    pub fn slot_type(&self, name: &str) -> Option<crate::sig::CType> {
         self.signature
             .params()
             .iter()
             .find(|param| param.name == name && param.ctype.is_buf())
             .map(|param| param.ctype)
+    }
+
+    /// 按名字取变体。
+    pub fn variant(&self, name: &str) -> Option<&Variant> {
+        self.variants.iter().find(|variant| variant.name == name)
+    }
+
+    /// 按槽位名取布局。
+    pub fn layout(&self, slot: &str) -> Option<LayoutSpec> {
+        self.layouts
+            .iter()
+            .find(|(name, _)| name == slot)
+            .map(|(_, spec)| *spec)
+    }
+
+    /// 按名字取模板常量。
+    pub fn const_value(&self, name: &str) -> Option<&str> {
+        self.consts
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.as_str())
+    }
+
+    /// 按名字取轴。
+    pub fn axis(&self, name: &str) -> Option<&Axis> {
+        self.axes.iter().find(|axis| axis.name == name)
     }
 }
 
@@ -303,67 +307,182 @@ pub fn field(path: &str, detail: impl Into<String>) -> Error {
     Error::new(Code::Invalid, format!("`{path}` 非法：{}", detail.into()))
 }
 
-mod build;
+// ── 轴展开 ─────────────────────────────────────────────────────────────
 
-mod expand {
-    //! 轴展开：把 [`OpDecl`] 的轴取值笛卡尔积物化成 [`TileCombo`] 候选，或只算候选数。
-    use diagnostic::Error;
-
-    use super::{Axis, MAX_TILES, OpDecl, TileCombo, field};
-
-    /// tile 候选数：轴取值的乘积，与 [`expand`] 同一口径但不物化组合。
-    ///
-    /// # Errors
-    ///
-    /// 乘积超过 [`MAX_TILES`] 时返回说明（与 [`expand`] 同一个判据与消息）。
-    pub fn tiles(op: &OpDecl) -> diagnostic::Result<usize> {
-        let mut count = 1usize;
-        for axis in &op.axes {
-            count = count.saturating_mul(axis.values.len());
-            if count > MAX_TILES {
-                return Err(too_many_tiles(op, axis, count));
-            }
+/// tile 候选数：轴取值的乘积，与 [`expand`] 同一口径但不物化组合。
+///
+/// # Errors
+///
+/// 乘积超过 [`MAX_TILES`] 时返回说明（与 [`expand`] 同一个判据与消息）。
+pub fn tiles(op: &OpDecl) -> diagnostic::Result<usize> {
+    let mut count = 1usize;
+    for axis in &op.axes {
+        count = count.saturating_mul(axis.values.len());
+        if count > MAX_TILES {
+            return Err(too_many_tiles(op, axis, count));
         }
-        Ok(count)
     }
-
-    /// 轴展开：笛卡尔积，超过 [`MAX_TILES`] 即拒绝并说明该剪哪个轴。
-    pub fn expand(op: &OpDecl) -> diagnostic::Result<Vec<TileCombo>> {
-        let mut combos = vec![TileCombo { values: Vec::new() }];
-        for axis in &op.axes {
-            let mut next = Vec::with_capacity(combos.len() * axis.values.len());
-            for combo in &combos {
-                for value in &axis.values {
-                    let mut values = combo.values.clone();
-                    values.push((axis.name.clone(), *value));
-                    next.push(TileCombo { values });
-                }
-            }
-            if next.len() > MAX_TILES {
-                return Err(too_many_tiles(op, axis, next.len()));
-            }
-            combos = next;
-        }
-        Ok(combos)
-    }
-
-    /// 候选超限的诊断：点名该剪哪个轴，以及它至少要让出几个取值。
-    fn too_many_tiles(op: &OpDecl, axis: &Axis, count: usize) -> Error {
-        field(
-            &format!("{}.axes", op.name),
-            format!(
-                "展开后有 {count} 个 tile 候选，超过上限 {MAX_TILES}；最少可剪掉轴 `{}` 的{}个取值",
-                axis.name,
-                axis.values.len().saturating_sub(1)
-            ),
-        )
-    }
+    Ok(count)
 }
 
-mod parse;
+/// 轴展开：笛卡尔积，超过 [`MAX_TILES`] 即拒绝并说明该剪哪个轴。
+pub fn expand(op: &OpDecl) -> diagnostic::Result<Vec<TileCombo>> {
+    let mut combos = vec![TileCombo { values: Vec::new() }];
+    for axis in &op.axes {
+        let mut next = Vec::with_capacity(combos.len() * axis.values.len());
+        for combo in &combos {
+            for value in &axis.values {
+                let mut values = combo.values.clone();
+                values.push((axis.name.clone(), *value));
+                next.push(TileCombo { values });
+            }
+        }
+        if next.len() > MAX_TILES {
+            return Err(too_many_tiles(op, axis, next.len()));
+        }
+        combos = next;
+    }
+    Ok(combos)
+}
 
-mod variant;
-pub use expand::{expand, tiles};
+/// 候选超限的诊断：点名该剪哪个轴，以及它至少要让出几个取值。
+fn too_many_tiles(op: &OpDecl, axis: &Axis, count: usize) -> Error {
+    field(
+        &format!("{}.axes", op.name),
+        format!(
+            "展开后有 {count} 个 tile 候选，超过上限 {MAX_TILES}；最少可剪掉轴 `{}` 的{}个取值",
+            axis.name,
+            axis.values.len().saturating_sub(1)
+        ),
+    )
+}
+
+// ── 变体链 ─────────────────────────────────────────────────────────────
+
+/// 变体链：逐个解析、按 `order` 排序，再判数量与链路。
+pub(crate) fn variants(table: &diagnostic::data::Table) -> diagnostic::Result<Vec<Variant>> {
+    let mut variants: Vec<Variant> = table
+        .table_array("variants")
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+        .map(|(idx, entry)| variant(idx, entry))
+        .collect::<diagnostic::Result<_>>()?;
+    check_count(&variants)?;
+    variants.sort_by_key(|variant| variant.order);
+    check_chain(&variants)?;
+    Ok(variants)
+}
+
+/// 变体数：至少一个、至多 [`MAX_VARIANTS`] 个。
+fn check_count(variants: &[Variant]) -> diagnostic::Result<()> {
+    if variants.is_empty() {
+        return Err(field("variants", "至少需要一个变体"));
+    }
+    if variants.len() > MAX_VARIANTS {
+        return Err(field(
+            "variants",
+            format!("{} 个变体超过上限 {MAX_VARIANTS}", variants.len()),
+        ));
+    }
+    Ok(())
+}
+
+/// 降级链的判据：名字唯一、非 MMA 占比单调，且首选的掩码能落地。
+fn check_chain(variants: &[Variant]) -> diagnostic::Result<()> {
+    for pair in variants.windows(2) {
+        if pair[0].name == pair[1].name {
+            return Err(field("variants", format!("变体名 `{}` 重复", pair[0].name)));
+        }
+    }
+    // 借用变体名：这条判据只读名字与占比，没有理由在装载期为它拷一份字符串。
+    let chain: Vec<(&str, f64)> = variants
+        .iter()
+        .map(|variant| (variant.name.as_str(), variant.mma_share))
+        .collect();
+    crate::sch::check_monotonic(&chain).map_err(|detail| field("variants", detail.message()))?;
+    let Some(head) = variants.first() else {
+        return Ok(());
+    };
+    crate::sch::check_masking(
+        &head.name,
+        crate::sch::Masking::of(head.mma_share, &head.schedule),
+    )
+    .map_err(|detail| field("variants", detail.message()))
+}
+
+/// 一个 `[[variants]]` 段：名字与优先级、调度、非 MMA 占比、增量需求。
+fn variant(idx: usize, entry: &diagnostic::data::Table) -> diagnostic::Result<Variant> {
+    let (name, order) = identity(idx, entry)?;
+    let schedule = schedule(idx, entry)?;
+    let mma_share = share(idx, entry)?;
+    Ok(Variant {
+        name,
+        order,
+        schedule,
+        mma_share,
+        extra_needs: extra_needs(idx, entry)?,
+    })
+}
+
+/// 变体名与优先级：两个键都必填，负的 `order` 按 0 处理。
+fn identity(idx: usize, entry: &diagnostic::data::Table) -> diagnostic::Result<(String, u32)> {
+    let name = entry
+        .string("name")
+        .ok_or_else(|| field(&field_path(idx, "name"), "缺失"))?
+        .to_string();
+    let order = entry
+        .int("order")
+        .ok_or_else(|| field(&field_path(idx, "order"), "缺失"))?
+        .max(0) as u32;
+    Ok((name, order))
+}
+
+/// 调度：`schedule` 必须落在调度闭集内。
+fn schedule(idx: usize, entry: &diagnostic::data::Table) -> diagnostic::Result<Schedule> {
+    let path = field_path(idx, "schedule");
+    let text = entry
+        .string("schedule")
+        .ok_or_else(|| field(&path, "缺失"))?;
+    Schedule::parse(text).map_err(|detail| field(&path, detail.message()))
+}
+
+/// 非 MMA 占比：`0..=1` 之间。
+fn share(idx: usize, entry: &diagnostic::data::Table) -> diagnostic::Result<f64> {
+    let path = field_path(idx, "mma_share");
+    let mma_share = entry
+        .float("mma_share")
+        .ok_or_else(|| field(&path, "缺失"))?;
+    if (0.0..=1.0).contains(&mma_share) {
+        return Ok(mma_share);
+    }
+    Err(field(&path, "必须在 0..=1 之间"))
+}
+
+/// `extra_needs`：变体自己追加的需求。
+fn extra_needs(idx: usize, entry: &diagnostic::data::Table) -> diagnostic::Result<Vec<Need>> {
+    let Some(section) = entry.table("extra_needs") else {
+        return Ok(Vec::new());
+    };
+    let prefix = field_path(idx, "");
+    section
+        .entries()
+        .iter()
+        .map(|(key, _)| {
+            crate::decl::ingest::parse_need(section, key, &format!("{prefix}.extra_needs.{key}"))
+        })
+        .collect()
+}
+
+/// `variants[i].{name}` 形式的字段路径；`name` 为空时只剩前缀。
+fn field_path(idx: usize, name: &str) -> String {
+    format!("variants[{idx}].{name}")
+}
+
+/// 语料摄入：声明表 → [`OpDecl`] 的字段级解析与模板侧校验，平铺在 `src/ingest.rs`
+/// （模块路径是 `decl::ingest`，文件不套子目录）。
+#[path = "ingest.rs"]
+mod ingest;
 
 #[cfg(test)]
 #[path = "../tests/decl.rs"]

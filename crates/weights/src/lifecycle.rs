@@ -133,6 +133,7 @@ pub mod import {
 
     use diagnostic::{Code, Error, Result};
 
+    use crate::codec::f32_bytes;
     use crate::gguf::{Gguf, Kind, Tensor};
     use crate::safetensors::{Archive as StArchive, File as StFile};
     use crate::torch::Checkpoint;
@@ -265,13 +266,8 @@ pub mod import {
     fn gguf_bytes(arch: &Gguf<'_>, tensor: &Tensor) -> Result<Vec<u8>> {
         match tensor.kind {
             Kind::F32 | Kind::F16 => Ok(arch.raw(tensor)?.to_vec()),
-            _ => Ok(f32_bytes(arch.floats(&tensor.name)?)),
+            _ => Ok(f32_bytes(&arch.floats(&tensor.name)?)),
         }
-    }
-
-    /// f32 序列 → 小端字节，即段的存储口径。
-    fn f32_bytes(values: Vec<f32>) -> Vec<u8> {
-        values.into_iter().flat_map(f32::to_le_bytes).collect()
     }
 
     /// torch 检查点 → 同一中性段流；读不通的归档或对象流在 `torch` 解析层已显式失败，

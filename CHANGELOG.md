@@ -4,6 +4,28 @@
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
 ## [Unreleased]
+### Changed
+
+- **`crates/spec` 整体并入 `crates/prof`：契约词汇与设备档案落进同一个 crate，少一个成员、净 −134 行**。
+  合并的判据不是"都跟设备有关"，而是**同一条文法**：档案声明"这台设备能拼出 `dot`"，片段声明"`dot`
+  在 `.metal` 里这么写"，模板词法与签名就是两边的共同语言，而 `prof` 原本只是把 `spec` 的 9 个模块
+  与 5 个词汇名**原样转发**（`pub use spec::{einsum, model, operator, …}` 加一个空的 `pub mod atom`），
+  这层转发一行代码也没省。合并后：`atom` / `key` / `need` / `span` 四份词汇文件压平成**一份
+  `prof/src/atom.rs`**（`KernelKey`、`Span`、`Attr` / `Need` / `Provide` / `Witness` 与闭集同住一个
+  模块，`prof::atom::*` 的历史路径逐字不变）；`decl` / `ingest` 压平成**一份 `prof/src/decl.rs`**
+  （类型、轴展开、变体链与字段级解析同住——每一段解析都直接回填同一个 `OpDecl` 字段，隔一层模块
+  只会让每个字段名写两遍）；`same_bytes` 从已删除的 `spec/lib.rs` 迁进 `sig`（ABI 的身份比较归签名）。
+  **导出面只有一条**：`prof::atom` / `prof::sig` / `prof::model` / `prof::sch` / `prof::tpl` /
+  `prof::einsum` / `prof::sample` / `prof::operator` / `prof::epilogue`，`nn` 与 `cutile` 各少一条
+  `llm-spec` 依赖。**注解渲染的路径跟着换**：`#[model]` 展开出的编译期断言原本指向 `::llm_spec::same_bytes`，
+  现在指向 `::prof::same_bytes`（`annotation/src/render.rs`），否则每个带注解的内核都会指向一个不存在的 crate。
+  **门禁一并改口径**：层表、边表（132 → 126 条，`+dev` 50 → 49）、所有权表里 5 行主人 `spec` → `prof`、
+  `contracts` 门扫描的 `crates/spec/src/atom.rs` → `crates/prof/src/atom.rs`、性质台账与所有权基线
+  （`Gguf` / `Tensor` 随格式层早先的并入一并归位）。**验证**：`cargo test -p llm-testkit --lib` 99 条
+  （层表/边集/所有权/边界四个方向全绿）、`cargo test -p llm-prof` 156 + 56 条、`cargo check --workspace
+  --all-targets` 零错误零告警。**没做也不打算混进来的**：`model::AxisRole`（`Input`/`Output`）与
+  `einsum::formula::AxisRole`（`Batch`/`Free`/`Reduced`/`Grouped`）同名不同物——前者是层填轴的语义角色，
+  后者是一条轴在求和式里的身份，合并它们会造出一个两边都不好用的词。
 ### Added
 
 - **typed IR 多了一族：归约 `Write::Reduce { at }`（`output[at] += value`），两族共用一套六道校验**。

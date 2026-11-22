@@ -54,36 +54,55 @@
 
 #![deny(unsafe_code)]
 
-/// 能力词汇表定义在 [`spec::atom`]（`spec` 在 `prof` 之上，词汇是双方共用的契约）；
-/// `prof` 侧再转出键、需求与跨度，`prof::atom::*` 的历史路径保持不变。
-pub mod atom {
-    pub use spec::atom::*;
-    pub use spec::key::KernelKey;
-    pub use spec::need::{Attr, Need, Provide, Witness};
-    pub use spec::span::Span;
-}
+mod annotate;
 
-pub use spec::inherent_names;
-
-// ---- 词汇层 ------------------------------------------------------------------
+// ---- 词汇层：算子契约 ---------------------------------------------------------
 //
-// `model` / `sig` / `sch` / `tpl` / `einsum` 这些词汇定义在 `spec`，但下游一座座 crate
-// 只依赖 `prof`。从这里转出，「算子声明 + 词汇」就沿同一个 crate 名到达，消费者不必为
-// 读一个 `Model` 再加一条 `spec` 依赖。`layout` 例外：`prof` 自己有一个同名模块
-// （设备片段布局），词汇侧的布局规格走 `prof::sch::layout`。
-pub use spec::{einsum, model, operator, quant, same_bytes, sample, sch, sig, tpl};
-pub use spec::{dropout, formula, init, parse, rnd};
+// [`atom`] 是唯一的词汇表：原语闭集、存储位、数据类型、属性键、证据等级，以及需求/供给的
+// 代数（[`atom::Need`] / [`atom::Provide`] / [`atom::Span`] / [`atom::KernelKey`]）。其余模块
+// 是契约本身：[`sig`] 是 ABI 的唯一事实源，[`sch`] 是布局闭集，[`tpl`] 是模板词法，
+// [`einsum`] 出代价表达式与求和语义，[`model`] 出语义模型，[`sample`] 出确定性样本，
+// [`operator`] 把三者缝成一张算子契约，[`epilogue`] 是写回阶段的文法。
+//
+// 这些词汇与档案、片段同住一个 crate，理由不是"都跟设备有关"，而是**同一条文法**：档案声明
+// "这台设备能拼出 `dot`"，片段声明"`dot` 在 `.metal` 里这么写"，模板与签名就是两边的共同语言。
+// 拆成两个 crate 只会让这份语言多一层转发（`pub use spec::…`，一行代码也没少），
+// 所以词汇随档案落地：`prof::atom` / `prof::sig` / `prof::model` 是它唯一的公开路径。
+pub mod atom;
+pub mod einsum;
+pub mod epilogue;
+pub mod model;
+pub mod need;
+pub mod operator;
+pub mod sample;
+pub mod sch;
+pub mod sig;
+pub mod span;
+pub mod tpl;
+
+pub use model::quant;
+pub use sample::{dropout, init, rnd};
+pub use sch::layout;
+pub use sig::same_bytes;
+pub use tpl::{formula, parse};
+
+#[cfg(test)]
+#[path = "../tests/spec/support/lib_spec_tests.rs"]
+mod spec_tests;
 
 pub mod device;
 pub mod prof;
 pub mod sign;
-pub mod stems;
+/// 保留词的历史路径：三个常量住在 [`sign`]，`stems::*` 兼容下游既有引用。
+pub mod stems {
+    pub use crate::sign::{EPILOGUE_STEM, MARKER, WITNESS_STEM};
+}
 
 pub use atom::Prim;
-pub use device::{Builtin, Device, Image, Status};
-pub use builtin::{builtin, builtin_witness, device, devices, dir_of};
-pub use fragment::{Fragment, FragmentSet, SIGN_MARKER};
-pub use layout::{Layout, WITNESS_STEM, layer_root, load};
+pub use device::{
+    Builtin, Device, Image, Status, builtin, builtin_witness, device, devices, dir_of,
+};
+pub use fragment::{Fragment, FragmentSet, Layout, SIGN_MARKER, WITNESS_STEM, layer_root, load};
 
 /// 构建期生成的档案表（`build.rs` 读 `src/<vendor>/<vendor>.toml` 展开成 `Table` 字面量）。
 #[allow(clippy::all, missing_docs)]
@@ -98,19 +117,16 @@ include!(concat!(env!("OUT_DIR"), "/tables.rs"));
 
 pub use generated::{embedded, names};
 
-mod builtin;
 mod fragment;
-mod layout;
 
 mod eval;
-mod provide;
 mod schema;
 mod witness;
 
+pub mod decl;
 #[cfg(test)]
 #[path = "../tests/embedded.rs"]
 mod tests;
-pub mod decl;
 
 /// 构建期生成的算子声明表（`build.rs` 读 `src/ops/*.toml` 展开成 `Table` 字面量）。
 #[allow(clippy::all, missing_docs)]
@@ -120,168 +136,24 @@ mod declared_generated {
 
 pub use declared_generated::declared;
 
-/// 全量算子清单里「名字 → 模板 stem」的那一半：**唯一一次**声明。
+/// 全量算子清单里「名字 → 模板 stem」的那一半：由 [`build.rs`](../build.rs) 与声明表同一次
+/// 扫描生成（`ops/*.toml` 的 `[op].stem`），语料是唯一事实源——加算子 = 加两个文件。
 ///
 /// 这里不含任何内核类型：本 crate 只回答"有哪些算子、各自用哪份模板"。谁实现它们由
 /// `nn::registry` 回答——那张表按名字与本表逐条对齐，错位在编译期就失败。
 #[macro_export]
 macro_rules! for_each_template {
     ($m:ident) => {
-        $m! {
-            adaptive_pool_f32 => "adaptive_pool_f32",
-            add_f32 => "binary",
-            attention_f32 => "attention_f32",
-            avg_pool2d_f32 => "avg_pool2d_f32",
-            batch_norm_f32 => "batch_norm_f32",
-            conv2d_f32 => "conv2d_f32",
-            decode_attention_f32 => "decode_attention_f32",
-            decode_flash_attention_f32 => "decode_flash_attention_f32",
-            dequant_i2 => "dequant_packed",
-            dequant_i4 => "dequant_packed",
-            dequant_i8 => "dequant_i8",
-            div_f32 => "binary",
-            embed_f32 => "embed_f32",
-            exp_f32 => "exp_f32",
-            flash_attention_f32 => "flash_attention_f32",
-            gelu_f32 => "gelu_f32",
-            gemm_f32 => "gemm_f32",
-            gemm_i2 => "gemm_packed",
-            gemm_i4 => "gemm_packed",
-            gemm_i8 => "gemm_i8",
-            gemv_f32 => "gemv_f32",
-            gemv_i2 => "gemv_packed",
-            gemv_i4 => "gemv_packed",
-            gemv_i8 => "gemv_i8",
-            group_norm_f32 => "group_norm_f32",
-            hard_sigmoid_f32 => "hard_sigmoid_f32",
-            instance_norm_f32 => "instance_norm_f32",
-            interpolate_f32 => "interpolate_f32",
-            latent_attention_f32 => "latent_attention_f32",
-            layer_norm_f32 => "layer_norm_f32",
-            leaky_relu_f32 => "leaky_relu_f32",
-            log_f32 => "log_f32",
-            matmul_f32 => "matmul_f32",
-            matmul_i8 => "matmul_i8",
-            max_f32 => "max_f32",
-            max_pool1d_f32 => "max_pool1d_f32",
-            max_pool2d_f32 => "max_pool2d_f32",
-            min_f32 => "min_f32",
-            mul_f32 => "binary",
-            reduce_max_f32 => "reduce_max_f32",
-            reduce_sum_f32 => "reduce_sum_f32",
-            relu_f32 => "relu_f32",
-            residual_add_f32 => "binary",
-            rmsnorm_f32 => "rmsnorm_f32",
-            rope_f32 => "rope_f32",
-            scale_f32 => "scale_f32",
-            scan_f32 => "scan_f32",
-            sigmoid_f32 => "sigmoid_f32",
-            silu_f32 => "silu_f32",
-            softmax_f32 => "softmax_f32",
-            sub_f32 => "binary",
-            tanh_f32 => "tanh_f32",
-        }
+        include!(concat!(env!("OUT_DIR"), "/template_list.rs"))
     };
 }
 
-/// 模板表：算子名 → `src/ops/<stem>.k` 的正文，`include_str!` 在编译期读入。
+/// 模板表：算子名 → `ops/<stem>.k` 的正文，`include_str!` 在编译期读入，与
+/// [`for_each_template!`] 同一次扫描生成。
 mod templates {
-    macro_rules! impl_templates {
-        ($($name:ident => $stem:literal),* $(,)?) => {
-            /// 算子名与模板正文，顺序与 [`for_each_template!`] 一致。
-            pub const TEMPLATES: [(&str, &str); <[()]>::len(&[$(impl_templates!(@one $stem)),*])] = [
-                $((stringify!($name), include_str!(concat!("ops/", $stem, ".k")))),*
-            ];
-        };
-        (@one $stem:literal) => { () };
-    }
-
-    crate::for_each_template!(impl_templates);
+    include!(concat!(env!("OUT_DIR"), "/templates_table.rs"));
 }
 
 pub use templates::TEMPLATES;
 
-/// 算子目录：`src/ops/*.toml` 的声明表，与 `<stem>.k` 的模板正文。
-///
-/// 与 [`builtin`] 的档案表并列但不同：档案表答"这台机器能跑什么"，目录答"有哪些算子"。
-pub mod catalogue {
-    pub use crate::declared_generated::names;
-    pub use crate::templates::TEMPLATES;
-
-    /// 按名字取模板正文；名字不在清单里时返回 `None`。
-    pub fn template(name: &str) -> Option<&'static str> {
-        TEMPLATES
-            .iter()
-            .find(|(entry, _)| *entry == name)
-            .map(|(_, text)| *text)
-    }
-
-    /// 一次注册：一个算子的三件事——名字、语义表、是否可微（模板问 [`template`]）。
-    ///
-    /// 这是**注册表的值类型**：`nn::REGISTRY` 按 [`for_each_template!`](crate::for_each_template)
-    /// 的同一顺序逐条填它，于是"有哪些算子"只有一份，`cutile` 与下游只认这个结构，不认识任何
-    /// 内核类型。
-    #[derive(Debug, Clone, Copy)]
-    pub struct Registration {
-        /// 算子名（与 `src/ops/<name>.toml` 的文件名一致）。
-        pub name: &'static str,
-        /// 代价、样本与标量参考。
-        pub model: spec::model::Model,
-        /// 训练反向图里是否可微：`true` 的算子必须配套一条反向公式。
-        pub differentiable: bool,
-    }
-
-    /// 一份算子声明：编译期生成的声明表与同名 `<stem>.k` 模板。
-    #[derive(Debug, Clone, PartialEq)]
-    pub struct Op {
-        name: &'static str,
-        declaration: &'static diagnostic::data::Table,
-        template: &'static str,
-    }
-
-    impl Op {
-        /// 由名字、声明表与模板构造；名字取 `<name>.toml` 的文件名。
-        pub fn new(
-            name: &'static str,
-            declaration: &'static diagnostic::data::Table,
-            template: &'static str,
-        ) -> Self {
-            Self {
-                name,
-                declaration,
-                template,
-            }
-        }
-
-        /// 算子名（与 `<name>.toml` 的文件名一致）。
-        pub fn name(&self) -> &'static str {
-            self.name
-        }
-
-        /// 声明表：`[op]` / `[axes]` / `[needs]` / `[layouts]` / `[[variants]]`。
-        pub fn declaration(&self) -> &'static diagnostic::data::Table {
-            self.declaration
-        }
-
-        /// 模板正文：C 风格文本 + `{{插值}}` + `@原语` 槽位。
-        pub fn template(&self) -> &'static str {
-            self.template
-        }
-    }
-
-    /// 按名字取一条内嵌算子；名字不在清单里时返回 `None`。
-    pub fn named(name: &str) -> Option<Op> {
-        let (entry, template) = TEMPLATES.iter().find(|(entry, _)| *entry == name)?;
-        Some(Op::new(entry, crate::declared(entry)?, template))
-    }
-
-    /// 全部内嵌算子，顺序与 [`TEMPLATES`] 一致。
-    pub fn all() -> Vec<Op> {
-        TEMPLATES
-            .iter()
-            .filter_map(|(name, template)| {
-                Some(Op::new(name, crate::declared(name)?, template))
-            })
-            .collect()
-    }
-}
+pub mod catalogue;

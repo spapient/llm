@@ -11,7 +11,7 @@ use crate::optimizer::{Optimizer, Slot};
 use crate::pool::Bufs;
 use crate::schedule::Schedule as LrSchedule;
 use crate::{Data, Kernel};
-use snapshot::{GradAccum, Ties};
+use storage::{GradAccum, Ties};
 
 /// 本模块诊断站点。
 pub(crate) const SITE: &str = "train::Session";

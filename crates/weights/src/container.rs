@@ -5,6 +5,7 @@
 use std::collections::BTreeSet;
 
 use diagnostic::{Code, Error, Result};
+use storage::snapshot::{Manifest, ManifestEntry};
 use tensor::{DType, Shape};
 
 use wire::leb::Cursor;
@@ -122,6 +123,48 @@ impl Header {
             .last()
             .map(|entry| entry.end().saturating_sub(self.data_start))
             .unwrap_or(0)
+    }
+}
+
+// —— 检查点快照的接入点：字节格式归 L2 `storage::snapshot`，本 crate 只回答"进入字节的四个字段
+// 从哪来"与"读回来的条目表怎么复判"，于是快照不必反向认识 `Header`，`storage → weights → storage`
+// 的环也就不存在。——
+impl ManifestEntry for Entry {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn dtype(&self) -> DType {
+        self.dtype
+    }
+
+    fn dims(&self) -> &[usize] {
+        self.shape.dims()
+    }
+
+    fn offset(&self) -> usize {
+        self.offset
+    }
+
+    fn from_parts(name: String, dtype: DType, dims: Vec<usize>, offset: usize) -> Self {
+        Self::new(name, dtype, Shape::new(dims)).at(offset)
+    }
+}
+
+impl Manifest for Header {
+    type Entry = Entry;
+
+    fn entries(&self) -> &[Entry] {
+        &self.entries
+    }
+
+    fn data_start(&self) -> usize {
+        self.data_start
+    }
+
+    /// 解码期复判：字节里的条目表必须再过一遍 [`Header::new`] 的三条判据。
+    fn build(entries: Vec<Entry>, data_start: usize) -> Result<Self> {
+        Self::new(entries, data_start)
     }
 }
 

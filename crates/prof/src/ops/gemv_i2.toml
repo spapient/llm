@@ -3,6 +3,7 @@ base = "gemv_i4"
 
 [op]
 name     = "gemv_i2"
+stem     = "gemv_packed"
 skeleton = "gemm"
 summary  = "y[n] = Σ_g scale[n,g] · dot(dequant(w[n, g·G : g·G+G]), x[g·G : g·G+G])"
 

@@ -2,11 +2,11 @@
 
 use crate::decl::{OpDecl, TileCombo};
 use prof::atom::{ActKind, DType, Epilogue};
-use spec::epilogue::{QUANT_SCALE, Step};
+use prof::epilogue::{QUANT_SCALE, Step};
 use std::collections::BTreeMap;
 
 /// 词法与行号唯一的错误构造器直接转发：词法只有一份，声明解析与拼接看同一套 `{{…}}` 规则。
-pub use spec::tpl::{Arg, Segment, error, lex};
+pub use prof::tpl::{Arg, Segment, error, lex};
 
 // 片段层的事实源在 `prim` crate（`<vendor>/<prim>.<ext>`）：本模块只做拼接，不持有片段。
 pub use prof::FragmentSet;

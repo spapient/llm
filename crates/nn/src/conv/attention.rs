@@ -149,12 +149,15 @@ impl<'a> Rows<'a> {
         let max = scores.iter().copied().fold(f32::MIN, f32::max);
         let exps: Vec<f32> = scores.iter().map(|score| (score - max).exp()).collect();
         let sum: f32 = exps.iter().sum();
-        for h in 0..self.write {
-            let mut acc = 0.0f32;
-            for j in 0..self.cols {
-                acc += (exps[j] / sum) * self.v[j * self.write + h];
-            }
-            out[row * self.write + h] = acc;
+        // `V` 按 `col` 分块，每块是 `write` 个输出列；按块求和让行列关系写在类型系统里，
+        // 而不是靠 `j * write + h` 手算偏移。
+        let targets = &mut out[row * self.write..][..self.write];
+        for (h, slot) in targets.iter_mut().enumerate() {
+            *slot = exps
+                .iter()
+                .zip(self.v.chunks_exact(self.write))
+                .map(|(prob, vrow)| (prob / sum) * vrow[h])
+                .sum();
         }
     }
 
@@ -169,8 +172,9 @@ impl<'a> Rows<'a> {
             let reweight = (max - new_max).exp();
             let prob = (score - new_max).exp();
             sum = sum * reweight + prob;
-            for h in 0..self.write {
-                acc[h] = acc[h] * reweight + prob * self.v[col * self.write + h];
+            let vrow = &self.v[col * self.write..][..self.write];
+            for (slot, value) in acc.iter_mut().zip(vrow) {
+                *slot = *slot * reweight + prob * value;
             }
             max = new_max;
         }

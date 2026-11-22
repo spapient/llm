@@ -1,10 +1,24 @@
-# prof —— 档案层（设备档案 + schema）
+# prof —— 契约词汇 + 设备档案
 
-设备能力档案的存放地：每个文件描述"这台设备能做什么、证据到什么等级"。
-**设备的一切差异都写在这里，代码里没有任何 `if vendor == …`**：存储层物理名、输出语言、
-工具链版本、执行单元及其可访问的存储层、每条能力区间，全部是 `devices/*.toml` 的闭集字段。
-`cutile` 只做机制（探测 → 协商 → 选择 → 拼接 → emit），通过本 crate 取档案，所以新增设备
-**只改数据，不改代码**。
+一个 crate 装两样东西，因为它们是**同一条文法**：
+
+- **契约词汇**：签名（`sig`，ABI 的唯一事实源）、布局闭集（`sch`）、模板词法（`tpl`）、
+  代价表达式与求和语义（`einsum`）、语义模型（`model`）、确定性样本（`sample`）、
+  算子契约（`operator`）、写回尾块文法（`epilogue`），以及唯一的词汇表 `atom`
+  （原语 / 存储位 / 数据类型 / 属性键 / 证据等级，需求与供给的代数 `Need` / `Provide` /
+  `Span` / `KernelKey`）。
+- **设备档案**：每台设备一个 `<vendor>.toml`，描述"这台设备能做什么、证据到什么等级"，
+  加上它自己的原语片段与见证正文。
+
+两者不能分开：档案声明"这台设备能拼出 `dot`"，片段声明"`dot` 在 `.metal` 里这么写"，
+而模板词法与签名正是判断两边是否说的是同一件事的依据。词汇曾单独住在 `crates/spec`，
+`prof` 只做 `pub use spec::…` 的原样转发——那层转发一行代码也没省，所以已并入本 crate
+（`prof::atom` / `prof::sig` / `prof::model` … 是它唯一的公开路径）。
+
+**设备的一切差异都写在档案里，代码里没有任何 `if vendor == …`**：存储层物理名、输出语言、
+工具链版本、执行单元及其可访问的存储层、每条能力区间，全部是 `src/<vendor>/<vendor>.toml`
+的闭集字段。`cutile` 只做机制（探测 → 协商 → 选择 → 拼接 → emit），通过本 crate 取档案，
+所以新增设备**只改数据，不改代码**。
 
 ## 目录
 
@@ -12,23 +26,35 @@
 crates/prof/
 ├── Cargo.toml
 ├── README.md
-├── devices/
-│   ├── ascend.toml      # P0 只有 L0：单元、形状与见证已声明，真机执行待补
-│   ├── cpu.toml         # 真机后端：L2（与参考实现对拍通过）
-│   ├── intel.toml
-│   ├── metal.toml       # P0 只有 L1：MSL 片段与 17 条见证已声明，Metal 执行后端待接
-│   ├── musa.toml        # 真机后端（MTT S4000 / mp_22）：L2，36 个算子与参考实现对拍通过
-│   └── nvidia.toml      # P0 只有 L0/L1：见证已声明，未执行的能力视为不具备
-└── src/
-    ├── atom.rs          # 能力词汇表：16 原语、位集、Need/Provide、AttrKey 闭集（含 exec）
-    ├── codegen.rs       # 构建期：devices/*.toml → 生成的表（只在 --features build 下编译）
-    ├── device.rs        # 设备行：档案元数据 + 见证源码 + 可选镜像（Device / Image / Status）
-    ├── lib.rs           # 构建期生成的档案表（embedded / names）：运行期不解析 TOML、不读目录
-    ├── prof.rs          # 档案 schema：类型、匹配规则、选择与错误
-    ├── prof/schema.rs   # 解析 + 校验：闭集字段、[units] 一致性、见证可达性
-    └── sign.rs          # 片段签名行规则 `/* cutile-sign: <prim>/<impl> */`（ADR 0027 §5）
+├── build.rs               # 唯一的生成器：档案 → 表字面量，片段 → 每台设备一个模块
+├── src/
+│   ├── atom.rs            # 唯一的词汇表：16 原语、位集、AttrKey / Grade、Need / Provide / Span / KernelKey
+│   ├── sig.rs             # 入口签名（ABI 唯一事实源）+ same_bytes（const 名字比较）
+│   ├── sch.rs             # 布局闭集与调度模板；sch/layout.rs 是构造子
+│   ├── tpl.rs             # 模板词法（`{{…}}` 与 `@原语`）
+│   ├── einsum.rs          # 代价表达式与求和语义；einsum/formula/ 是求值面
+│   ├── model.rs           # 语义模型：粒度、形状、样本、标量参考
+│   ├── sample.rs          # 确定性样本：rnd / dropout / init
+│   ├── operator.rs        # 算子契约与 `operator_here!` / `operator_via!` 注解宏
+│   ├── epilogue.rs        # 写回尾块的六步文法
+│   ├── annotate.rs        # `closed_enum!`：带附加列的闭集展开
+│   ├── decl.rs            # 声明层：OpDecl 类型 + 轴展开 + 变体链 + 字段级解析（原 decl/ingest）
+│   ├── catalogue.rs       # 52 条算子模板的目录
+│   ├── prof.rs            # 档案 schema：类型、匹配规则、选择与错误
+│   ├── schema.rs          # 解析 + 校验：闭集字段、[units] 一致性、见证可达性
+│   ├── device.rs          # 设备行：档案元数据 + 见证源码 + 可选镜像（Device / Image / Status）
+│   ├── fragment.rs        # 片段集合、内嵌根 / 数据根两种布局、片段签名行
+│   ├── sign.rs            # 片段签名行 `/* cutile-sign: <prim>/<impl> */`（ADR 0027 §5）
+│   ├── eval.rs            # [peak] 的表达式求值与量纲
+│   ├── witness.rs         # 见证 ABI 与回读上限
+│   ├── lib.rs             # 公开面：模块声明 + 生成表的出口（运行期不解析 TOML、不读目录）
+│   ├── buildtables.rs     # 构建期：片段 → FRAGMENTS / PRIMS / EPILOGUE / DEVICE
+│   ├── buildops.rs        # 构建期：ops/*.toml → 声明表
+│   ├── buildimage.rs      # 构建期：device-image 下真编设备镜像
+│   ├── <vendor>/          # 一台设备一个目录：<vendor>.toml + 8 段 <prim>.<ext> + epilogue + witness
+│   └── ops/               # 算子语料：<stem>.toml（声明）+ <stem>.k（模板正文）
+└── tests/                 # 片段对账、内嵌档案、档案 schema；tests/spec/ 是契约词汇的用例
 ```
-
 ## 一份档案写什么
 
 | 段 | 内容 | 语义定义在 |
@@ -162,8 +188,8 @@ P0 九条不多不少、每条签名都是带见证的供给且入口名与 `PRI
 
 ## 新增设备 / 新增执行单元
 
-1. 在 `devices/` 下写 `<name>.toml`（键必须属于闭集，写错字段会在解析期报错）；
-2. 在 `src/lib.rs` 的 `BUILTIN` 里补一行 `include_str!`（否则发布出去的二进制里没有它）；
+1. 在 `src/<name>/` 下写 `<name>.toml` 与片段 / 见证正文（键必须属于闭集，写错字段会在解析期报错）；
+2. 目录本身就是清单：`build.rs` 扫 `src/*/*.toml`，加一个目录就是加一台设备，`lib.rs` 不登记 vendor；
 3. `cargo test -p prof` —— `every_embedded_entry_is_a_device_archive` 会把"生成表里缺一份档案"直接判为失败；
    `cargo test -p llm-<name>` 再对一遍片段层契约（见上），它同时把每条见证在本机执行一次；
 4. `cargo run --bin cutile -- doctor --op gemv_i4 --device <name>` 看协商结果（`units:` 那一行就是本档案的执行单元）；
@@ -171,9 +197,9 @@ P0 九条不多不少、每条签名都是带见证的供给且入口名与 `PRI
 
 ## 什么不放进来
 
-- **算子声明与模板**（`ops/*.{toml,k}`）：在 `crates/op`。
-- **原语片段**（`prim/<vendor>/<prim>.<ext>`）与见证源码：在 `crates/prim`（本 crate 只在装载期检查
-  见证文件是否存在）。
+- **算子声明与模板**（`src/ops/*.{toml,k}`）**在本 crate**：它们与档案共用同一套模板词法与签名，
+  由 `build.rs` 与档案一起展开成表。
+- **原语片段**（`src/<vendor>/<prim>.<ext>`）与见证源码**也在本 crate**：它们是数据，不是代码。
 - **机制**：协商（`cap`）、选择（`plan`）、拼接（`substitute`）与 emit（`emit`）、探测（`probe`）都在 `cutile`；
   依赖方向固定为 `llm → cutile → {prof, prim}`、`prim → prof`、`{prof, prim} → diagnostic`，本 crate 不依赖 `cutile`。
 - 构建与工具链配置：见根目录的 `Cargo.toml`、`clippy.toml`、`rustfmt.toml`。

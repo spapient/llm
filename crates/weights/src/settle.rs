@@ -1,9 +1,6 @@
 //! 沉降账本：LLD §4.7 的 `config.json`——逐张量把"落盘后到底占了多少字节、为什么用这个编码"
 //! 写成一份可复核的账。
 
-pub(crate) mod reason;
-pub(crate) mod text;
-
 use std::fmt::Write as _;
 
 use diagnostic::Result;
@@ -11,8 +8,8 @@ use diagnostic::Result;
 use crate::axes;
 use crate::json;
 use crate::ledger::{self, SCHEMA};
-use crate::settle::reason::{bits_per, entropy_of, layer_of, reason_of};
-use crate::settle::text::{escape, verify_root};
+use crate::reason::{bits_per, entropy_of, layer_of, reason_of};
+use crate::text::{escape, verify_root};
 use crate::stored::lossless_entry;
 use crate::{Archive, Codec, Stored};
 

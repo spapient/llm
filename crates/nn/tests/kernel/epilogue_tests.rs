@@ -1,7 +1,7 @@
 //! `epilogue::apply` 的执行面：几何步、激活步、量化步、顺序与错误。
 
 use super::apply;
-use llm_spec::epilogue::parse;
+use prof::epilogue::parse;
 
 /// 空步骤是恒等：`out` 不变。
 #[test]

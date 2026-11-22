@@ -78,9 +78,9 @@ macro_rules! registry_impl {
         /// 编译期内嵌的算子注册表，顺序与 [`prof::catalogue::TEMPLATES`] 一致。
         pub const REGISTRY: [Registration; <[()]>::len(&[$(registry_impl!(@one $ty)),*])] = [
             $(Registration {
-                name: <$ty as llm_spec::operator::Operator>::NAME,
-                model: llm_spec::operator::model_of::<$ty>(),
-                differentiable: <$ty as llm_spec::operator::Operator>::DIFFERENTIABLE,
+                name: <$ty as prof::operator::Operator>::NAME,
+                model: prof::operator::model_of::<$ty>(),
+                differentiable: <$ty as prof::operator::Operator>::DIFFERENTIABLE,
             }),*
         ];
 
@@ -89,11 +89,11 @@ macro_rules! registry_impl {
             let mut idx = 0;
             $(
                 assert!(
-                    llm_spec::same_bytes(stringify!($name), <$ty as llm_spec::operator::Operator>::NAME),
+                    prof::same_bytes(stringify!($name), <$ty as prof::operator::Operator>::NAME),
                     "算子清单的名字与 Operator::NAME 不一致",
                 );
                 assert!(
-                    llm_spec::same_bytes(stringify!($name), prof::catalogue::TEMPLATES[idx].0),
+                    prof::same_bytes(stringify!($name), prof::catalogue::TEMPLATES[idx].0),
                     "算子注册表与算子目录的顺序或名字不一致",
                 );
                 idx += 1;
@@ -110,7 +110,7 @@ for_each_operator!(registry_impl);
 pub const fn contains(name: &str) -> bool {
     let mut idx = 0;
     while idx < REGISTRY.len() {
-        if llm_spec::same_bytes(name, REGISTRY[idx].name) {
+        if prof::same_bytes(name, REGISTRY[idx].name) {
             return true;
         }
         idx += 1;
@@ -119,7 +119,7 @@ pub const fn contains(name: &str) -> bool {
 }
 
 /// 算子语义表：声明层有的算子，这里必须有它的代价、样本与标量参考。
-pub fn model(name: &str) -> Option<llm_spec::model::Model> {
+pub fn model(name: &str) -> Option<prof::model::Model> {
     REGISTRY
         .iter()
         .find(|entry| entry.name == name)

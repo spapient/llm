@@ -82,11 +82,29 @@ macro_rules! fail {
     };
 }
 
+/// [`fail!`] 的同形状形态，但站点由调用方给（参数），不要求字面量。
+///
+/// 只在"同一条判据有多个入口、诊断要指回真正拒绝的那一个"时才用：此时站点是运行时值，
+/// 而 [`fail!`] 展开出的 [`invalid!`] 要字面量站点。两条宏都落到 [`crate::refuse`]，
+/// 所以拒绝仍然只有一个出口。
+macro_rules! refuse_at {
+    ($site:expr, $($arg:tt)+) => {
+        Err(crate::refuse(
+            crate::Code::Invalid,
+            $site,
+            format_args!($($arg)+),
+        ))
+    };
+}
+
 mod collective;
 mod tiling;
 mod topology;
 
-pub use collective::{Collective, FileRemote, Group, Local, Reduce, Remote};
+mod remote;
+
+pub use collective::{Collective, Group, Local, Reduce, Remote};
+pub use remote::FileRemote;
 pub use tiling::{Sharding, Tiling};
 pub use topology::{Parallel, Topology};
 
@@ -106,8 +124,11 @@ pub mod gate;
 pub mod ir;
 pub mod ledger;
 pub mod pipeline;
+pub mod program;
 pub mod runner;
+pub mod sweep;
 pub mod toolchain;
 pub mod verify;
 pub mod witness;
+
 pub use runner::{compile_flags, driver};

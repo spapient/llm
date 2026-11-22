@@ -6,7 +6,7 @@
 
 use crate::epilogue::apply;
 use cutile::substitute::{EpiArgs, epilogue};
-use llm_spec::epilogue::Step;
+use prof::epilogue::Step;
 use prof::atom::{ActKind, DType};
 
 /// 场景数组的最大元素数：见证 ABI 的写出上限 [`testkit::witness::MAX_OUT`] 就是这个数，

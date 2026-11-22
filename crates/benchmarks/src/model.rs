@@ -8,11 +8,11 @@ use engine::kv::{Cache, Pager};
 use engine::{Batch, Sequence};
 use serve::Predict;
 use serve::model::CpuModel;
-use snapshot::{Facts, Snapshot};
+use storage::Facts;
 use std::hint::black_box;
 use tensor::{DType, Shape};
 use train::{Anneal, Bufs, Data, Reference, Schedule};
-use weights::{Entry, Header};
+use weights::{Entry, Header, Snapshot};
 
 /// 同批序列数（小批变体）。
 const BATCH: usize = 4;

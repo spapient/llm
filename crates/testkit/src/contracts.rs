@@ -44,9 +44,9 @@ pub(crate) fn locate_module(module: &str) -> Option<PathBuf> {
     locate(module, 0)
 }
 
-/// 内核机制与运行期的 `src` 根。`optim` 并入 `shard` 后，契约文件（后端缝、注册表）在
-/// `cutile` 与 `shard` 两家之间；判据守的是结构契约（缝在、注册表在、注入点在），不是文件
-/// 坐标，所以按两家探测，谁家有就用谁家的。
+/// 内核机制与运行期的 `src` 根。机制（协商 / 拼接 / emit）在 `cutile`，执行面
+/// （编译 / doctor / bench / verify）并进 `shard` 后，契约文件会在两家之间搬；判据守的是结构契约
+/// （缝在、注册表在、注入点在），不是文件坐标，所以按两家探测，谁家有就用谁家的。
 fn cutile_path(relative: &str) -> PathBuf {
     let candidates: Vec<PathBuf> = ["cutile", "shard"]
         .iter()
@@ -91,11 +91,10 @@ fn family() -> &'static BTreeSet<String> {
 /// 只提名字的散文不算声明。
 const MODEL_ANNOTATION: &str = "#[annotation::model(";
 
-/// 算子家族的 `src` 根。算子实体散在各家，路径探测必须逐家去试；门面排最前，
-/// 同一个文件名在两家都出现时以门面的 `pub use` 声明为准。
+/// 算子家族的 `src` 根。算子实体可能散在多家，路径探测逐家去试；按名字排序只为稳定。
 fn op_roots() -> Vec<PathBuf> {
     let mut names: Vec<&String> = family().iter().collect();
-    names.sort_by_key(|name| (name.as_str() != "op", name.to_string()));
+    names.sort();
     names
         .into_iter()
         .map(|name| root().join("crates").join(name).join("src"))
@@ -129,6 +128,10 @@ fn locate(module: &str, depth: usize) -> Option<PathBuf> {
         // 逐级上溯到第一个**确实声明了下一段**的文件。这条判据是必要的——只按"文件存在"上溯，
         // `fast::i8::gemm_i8` 这类纯函数重导出会被错认成 `fast/i8.rs` 的算子实体。
         let segments: Vec<&str> = module.split("::").collect();
+        let leaf = segments.last().copied().unwrap_or_default();
+        // 判据是「这个文件声明了**目标段**」而不是「声明了中间段」：`conv.rs` 声明了
+        // `pub mod classic`，但实体在 `conv/classic/norm.rs` 的 `pub mod batch` 里，
+        // 认中间段会把壳文件当成实体文件（壳里没有注解，也没有算子）。
         for cut in (1..segments.len()).rev() {
             let Some(candidate) = find(format!("{}.rs", segments[..cut].join("/"))) else {
                 continue;
@@ -136,7 +139,17 @@ fn locate(module: &str, depth: usize) -> Option<PathBuf> {
             let Some(text) = source_text(&candidate) else {
                 continue;
             };
-            if text.contains(&format!("pub mod {}", segments[cut])) {
+            if text.lines().any(|line| {
+                let line = line.trim_start();
+                let Some(rest) = line
+                    .strip_prefix("pub mod ")
+                    .or_else(|| line.strip_prefix("pub(crate) mod "))
+                else {
+                    return false;
+                };
+                let name = rest.trim_start().trim_end_matches('{').trim_end_matches(';').trim();
+                name == leaf
+            }) {
                 return Some(candidate);
             }
         }
@@ -433,7 +446,7 @@ pub(crate) fn closed_vocabularies_are_declared_once() {
     let (allowed, offenders) = offenders_of("closed", &hits);
     assert!(
         offenders.is_empty(),
-        "这些闭集表该用 `impl prof::atom::Closed for ..` + `prof::inherent_names!`：{}",
+        "这些闭集表该用 `impl prof::atom::Closed for ..` + `inherent_names!`：{}",
         describe(&offenders)
     );
 
@@ -450,8 +463,8 @@ pub(crate) fn closed_vocabularies_are_declared_once() {
     }
 
     // 契约的另一半：`Closed` 的实现必须写成切片，这样才能与 `ALL` 的顺序、`idx` 的下标一致。
-    let prof = root().join("crates/prof/src/atom.rs");
-    let text = fs::read_to_string(&prof).expect("`crates/prof/src/atom.rs` 必须存在");
+    let text = fs::read_to_string(root().join("crates/prof/src/atom.rs"))
+        .expect("`crates/prof/src/atom.rs` 必须存在");
     assert!(
         text.contains("const ALL: &'static [Self]"),
         "`prof::atom` 的闭集表必须写成切片"
@@ -557,3 +570,4 @@ pub(crate) fn annotation_names_come_from_the_vocabulary() {
         );
     }
 }
+
