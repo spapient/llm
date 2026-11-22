@@ -32,6 +32,49 @@ fn minimal() -> Kernel {
     )
 }
 
+/// 最小点积归约：`out[0] += a[k] * b[k]`，两个只读缓冲 + 一个输出槽 + 一个长度。
+fn dot() -> Reduce {
+    Reduce::new(
+        "dot",
+        vec![
+            Parameter {
+                name: "a".to_string(),
+                ty: ValueType::Buf {
+                    element: ScalarType::F32,
+                    access: Access::Read,
+                },
+            },
+            Parameter {
+                name: "b".to_string(),
+                ty: ValueType::Buf {
+                    element: ScalarType::F32,
+                    access: Access::Read,
+                },
+            },
+            Parameter {
+                name: "out".to_string(),
+                ty: ValueType::Buf {
+                    element: ScalarType::F32,
+                    access: Access::ReadWrite,
+                },
+            },
+            Parameter {
+                name: "len".to_string(),
+                ty: ValueType::Scalar(ScalarType::Usize),
+            },
+        ],
+        "k",
+        "len",
+        "out",
+        0,
+        Expr::Binary {
+            op: BinaryOp::Mul,
+            left: Box::new(Expr::Load("a".to_string())),
+            right: Box::new(Expr::Load("b".to_string())),
+        },
+    )
+}
+
 #[test]
 fn dsl_builds_verified_optimized_ir_and_portable_source() {
     let kernel = __dsl_ir_affine();
@@ -150,4 +193,35 @@ fn loads_must_name_a_buf_and_scalars_are_typed() {
     kernel.value = Expr::Scalar("missing".to_string());
     let error = kernel.verify().expect_err("unknown scalar is rejected");
     assert!(error.to_string().contains("unknown scalar parameter"));
+}
+
+/// 归约发射：输入缓冲用归约长度做上界，输出缓冲只看固定槽位是否越界。
+#[test]
+fn reduce_emits_an_accumulating_loop_into_a_fixed_slot() {
+    let source = dot().emit_c().expect("reduction IR emits C");
+    assert!(
+        source.contains(
+            "int dot(const float *a, size_t cutile_len_0, const float *b, size_t cutile_len_1, \
+             float *out, size_t cutile_len_2, size_t len)"
+        ),
+        "{source}"
+    );
+    assert!(source.contains("if (len > cutile_len_0) return 1;"), "{source}");
+    assert!(source.contains("if (len > cutile_len_1) return 1;"), "{source}");
+    assert!(source.contains("if (0 >= cutile_len_2) return 1;"), "{source}");
+    assert!(source.contains("out[0] += (a[k] * b[k]);"), "{source}");
+}
+
+/// 归约与逐点共用同一套校验：输出仍是可变 f32 缓冲，值仍是 f32 表达式。
+#[test]
+fn reduce_rejects_non_mutable_outputs() {
+    let mut reduce = dot();
+    reduce.output = "missing".to_string();
+    let error = reduce.verify().expect_err("unknown output is rejected");
+    assert!(error.to_string().contains("mutable f32 buffer"));
+
+    let mut reduce = dot();
+    reduce.value = Expr::Scalar("len".to_string());
+    let error = reduce.verify().expect_err("usize scalar is not f32");
+    assert!(error.to_string().contains("must have type f32"));
 }
