@@ -4,6 +4,7 @@
 use core::fmt;
 use diagnostic::{Code, Error};
 use std::collections::BTreeMap;
+use std::path::Path;
 use crate::prof::*;
 
 pub(crate) use crate::eval::eval_expression;

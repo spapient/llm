@@ -2,7 +2,6 @@
 
 use core::fmt;
 use diagnostic::{Code, Error};
-use crate::atom::*;
 
 /// 一个闭区间（含两端）。`exact(16)` 表示"只能 16"，`at_most(512)` 表示"≤ 512"。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

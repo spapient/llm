@@ -70,7 +70,7 @@ macro_rules! device_suite {
                 fragments: &fragments,
                 prims: &prims,
                 provides: &provides,
-                epilogue_stem: prof::sign::EPILOGUE_STEM,
+                epilogue_stem: prof::stems::EPILOGUE_STEM,
                 source: DEVICE.source,
             }))
         }

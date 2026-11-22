@@ -4,8 +4,6 @@ use core::fmt;
 use core::hash::Hash;
 use core::marker::PhantomData;
 
-use diagnostic::{Code, Error};
-
 pub use crate::key::KernelKey;
 pub use crate::need::{Attr, Need, Provide, Witness};
 pub use crate::span::Span;

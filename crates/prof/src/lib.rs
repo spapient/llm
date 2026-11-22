@@ -72,10 +72,9 @@ mod generated {
     include!(concat!(env!("OUT_DIR"), "/embedded.rs"));
 }
 
-/// 构建期生成的片段表：每台设备一个模块 + 四张聚合表。
-///
-/// `include!` 在 crate 根上、不套 `mod`：套一层就要在 `lib.rs` 里重导出每台设备，那份 vendor
-/// 清单会重新变成第二份真相——生成表的意义正是让它只存在于 `src/` 的目录名里。
+// 构建期生成的片段表：每台设备一个模块 + 四张聚合表。
+// `include!` 在 crate 根上、不套 `mod`：套一层就要在 `lib.rs` 里重导出每台设备，那份 vendor
+// 清单会重新变成第二份真相——生成表的意义正是让它只存在于 `src/` 的目录名里。
 include!(concat!(env!("OUT_DIR"), "/tables.rs"));
 
 pub use generated::{embedded, names};

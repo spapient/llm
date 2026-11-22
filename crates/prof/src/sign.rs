@@ -16,7 +16,7 @@
 //! assert_eq!(sign::strip_marker("/* 别的注释 */"), None);
 //! ```
 
-pub use crate::stems::{EPILOGUE_STEM, MARKER, WITNESS_STEM};
+pub use crate::stems::MARKER;
 
 /// 剥掉 `/* */` 外壳与 [`MARKER`]，得到声明正文 `<prim>/<impl>`；形态不符返回 `None`。
 pub fn strip_marker(first: &str) -> Option<&str> {

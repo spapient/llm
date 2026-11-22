@@ -1,12 +1,13 @@
 //! 片段层在哪：仓库内置（六台设备各在自己的 crate 里）或某个 `data.root` 的 `prim/`。
 
 use crate::builtin::{builtin, dir_of};
+use crate::stems::EPILOGUE_STEM;
 use crate::{FragmentSet, Prim};
 use diagnostic::{Code, Error};
 use std::path::{Path, PathBuf};
 
 /// 见证源码的文件名（不含扩展名）。
-pub const WITNESS_STEM: &str = "witness";
+pub use crate::stems::WITNESS_STEM;
 
 /// 数据根对应的片段层根目录：`<data.root>/prim`。
 pub fn layer_root(data_root: &Path) -> PathBuf {
@@ -114,6 +115,6 @@ fn add(set: &mut FragmentSet, path: &Path, ext: &str) -> diagnostic::Result<()> 
 fn fragment_stem<'a>(path: &'a Path, ext: &str) -> Option<&'a str> {
     let stem = path.file_stem().and_then(|value| value.to_str())?;
     let right_ext = path.extension().and_then(|value| value.to_str()) == Some(ext);
-    let named = stem != WITNESS_STEM && stem != crate::sign::EPILOGUE_STEM;
+    let named = stem != WITNESS_STEM && stem != EPILOGUE_STEM;
     (right_ext && named).then_some(stem)
 }

@@ -3,7 +3,7 @@
 //! 表本身不是手写的：`$OUT_DIR/tables.rs` 由 [`build.rs`](../../build.rs) 从 `src/<vendor>/`
 //! 的档案与片段生成，本模块只剩查询。所以"加一台设备"不会在这里留下一行。
 
-pub use crate::{BUILTIN, Builtin, DEVICES, ROOTS, WITNESS};
+pub use crate::{BUILTIN, DEVICES, ROOTS, WITNESS};
 use crate::FragmentSet;
 
 /// 每台设备一行（顺序同 [`DEVICES`]，即生成期按 vendor 升序）。

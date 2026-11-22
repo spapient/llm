@@ -1,7 +1,6 @@
 //! 职责：见证重复检查：同名实现诊断串。
-use diagnostic::Error;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use crate::prof::*;
 
 pub(crate) fn dup_impl(first: usize, provide: &Provide) -> String {
