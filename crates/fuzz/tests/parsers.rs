@@ -14,7 +14,7 @@
 //! Philox 不变量。它们同样吃任意字节，但把数学/协议承诺做成断言——这是 llm.u 的
 //! `decode`/`ops` 目标在做、而纯"不 panic"覆盖不到的一层深度。
 //!
-//! 适配定义统一来自 [`drivers`]，合法范例统一来自 [`seeds`]，与 libfuzzer harness、语料
+//! 适配器与合法范例统一来自 [`drivers::registry`] 的登记表，与 libfuzzer harness、语料
 //! 生成器共用，避免判据与种子两份漂移。
 //!
 //! **不再覆盖 TOML**：`ops/`、`devices/`、`lints/vocabulary.toml` 在构建期就被解析成表
@@ -24,13 +24,7 @@
 
 #[path = "../src/drivers.rs"]
 mod drivers;
-#[path = "../src/seeds.rs"]
-mod seeds;
 
-use drivers::{
-    CrcChunk, CutileNegotiate, DistSampler, Frames, HttpHead, Invocation, Json, Leb, LebRoundtrip,
-    Lex, Safetensors, Sealed, ShapeArith, Snapshot, UContainer,
-};
 use llm_fuzz::{Seed, Target, sweep};
 
 /// 每个目标跑多少条派生用例。
@@ -39,34 +33,16 @@ use llm_fuzz::{Seed, Target, sweep};
 /// 覆盖每个字节位置被扰动一次"就够——加密强度的随机源在这里没有价值，可复现才有。
 const CASES: u64 = 512;
 
-/// 全部被测入口及其合法种子；适配器顺序与 [`seeds::exemplars`] 一一对应，种子字节只在
-/// 范例清单里构造一次，遍历与种子校验两条测试共用这份配对。
-fn targets() -> [(&'static dyn Target, Seed); 15] {
-    let adapters: [&'static dyn Target; 15] = [
-        &Invocation,
-        &Json,
-        &Safetensors,
-        &UContainer,
-        &Snapshot,
-        &Frames,
-        &HttpHead,
-        &Sealed,
-        &Leb,
-        &Lex,
-        &CrcChunk,
-        &LebRoundtrip,
-        &ShapeArith,
-        &CutileNegotiate,
-        &DistSampler,
-    ];
-    let exemplars = seeds::exemplars();
-    std::array::from_fn(|i| (adapters[i], Seed::new(exemplars[i].1.clone())))
+/// 登记表里的全部被测入口；名称/适配器/范例三合一，遍历与种子校验两条测试共用这份配对。
+fn entries() -> [drivers::Entry; 15] {
+    drivers::registry()
 }
 
 #[test]
 fn every_parser_turns_arbitrary_bytes_into_a_stable_verdict() {
-    for (target, seed) in targets() {
-        if let Err(finding) = sweep(target, &seed, CASES) {
+    for entry in entries() {
+        let seed = Seed::new(entry.seed);
+        if let Err(finding) = sweep(entry.adapter, &seed, CASES) {
             panic!("{finding}");
         }
     }
@@ -76,12 +52,26 @@ fn every_parser_turns_arbitrary_bytes_into_a_stable_verdict() {
 /// "合法输入也只许有一种结论"这条就没人验。
 #[test]
 fn every_seed_is_a_valid_input() {
-    for (target, seed) in targets() {
+    for entry in entries() {
         assert!(
-            target.run(seed.bytes()).is_ok(),
+            entry.adapter.run(entry.seed.as_slice()).is_ok(),
             "{} 的种子应当被接受：{}",
-            target.name(),
-            llm_fuzz::repro(seed.bytes())
+            entry.adapter.name(),
+            llm_fuzz::repro(&entry.seed)
         );
     }
+}
+
+/// 登记表自身的完整性：目标名非空且唯一，防止复制粘贴时漏配或重复。
+#[test]
+fn registry_names_are_unique_and_nonempty() {
+    let names: Vec<&str> = drivers::registry()
+        .iter()
+        .map(|entry| entry.binary)
+        .collect();
+    assert!(names.iter().all(|name| !name.is_empty()));
+    let mut unique = names.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(unique.len(), names.len(), "目标名重复：{names:?}");
 }
