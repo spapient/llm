@@ -364,4 +364,16 @@ pub mod descriptors {
     }
 }
 
-pub mod vocab;
+/// 把词表段字节装配成可注入的分词器。
+pub fn tokenizer_from_segment(bytes: &[u8]) -> Result<Box<dyn tokenizer::Tokenizer>> {
+    let (source, digest) = tokenizer::decode_vocab(bytes)?;
+    let vocab = tokenizer::Vocab::try_new(source)?;
+    if vocab.fingerprint().digest() != digest {
+        return Err(Error::new(Code::Invalid, "词表指纹与段尾摘要不符").with("serve::vocab"));
+    }
+    vocab.into_tokenizer()
+}
+
+#[cfg(test)]
+#[path = "../tests/vocab_tests.rs"]
+mod tests;

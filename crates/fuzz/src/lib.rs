@@ -63,6 +63,11 @@
 
 use diagnostic::Error;
 
+// 让本 crate 以库名自引用：`drivers.rs` 被三个外部目标 `#[path]` 包含（`tests/parsers.rs`、
+// `src/fuzz_*.rs`、`tests/gen_corpus.rs`）时，它们通过 `llm_fuzz::Target` 取判据 trait；
+// 库自身的测试模块也走同一条路径，避免再要求每个包含方在 crate 根各补一个 `Target`。
+extern crate self as llm_fuzz;
+
 pub mod contract {
     //! 三条契约的核对入口：确定性遍历 [`sweep`] 与 libfuzzer harness 从这里取同一份判据，
     //! 拒绝判据不会在两处悄悄漂移。
@@ -93,33 +98,41 @@ pub mod contract {
     }
 
     /// 核对单条用例的三条契约；违约返回第一条证据。
-    pub fn check_target(target: &dyn Target, case: u64, input: Vec<u8>) -> Result<(), Finding> {
-        let name = target.name().to_string();
-        let first = judge(target, &input);
+    ///
+    /// 热路径不落任何分配：`name` 与 `input` 只在确实违约时才克隆进 [`Finding`]，libFuzzer
+    /// 每秒百万次的「通过」迭代不为此付堆分配。
+    pub fn check_target(target: &dyn Target, case: u64, input: &[u8]) -> Result<(), Finding> {
+        let first = judge(target, input);
         if let Behaviour::Panicked { .. } = first {
-            return Err(Finding::new(&name, case, input, first, PANIC));
+            return Err(Finding::new(target.name(), case, input, first, PANIC));
         }
         if let Behaviour::Rejected { message, .. } = &first
             && message.trim().is_empty()
         {
-            return Err(Finding::new(&name, case, input, first, EMPTY_MESSAGE));
+            return Err(Finding::new(target.name(), case, input, first, EMPTY_MESSAGE));
         }
-        let second = judge(target, &input);
+        let second = judge(target, input);
         if first != second {
-            return Err(Finding::new(&name, case, input, second, STABILITY));
+            return Err(Finding::new(target.name(), case, input, second, STABILITY));
         }
         Ok(())
     }
 
     /// 跑 `cases` 个确定性用例；全部符合契约返回 `Ok(())`，否则返回第一条证据。
     pub fn sweep(target: &dyn Target, seed: &Seed, cases: u64) -> Result<(), Finding> {
-        (0..cases).try_for_each(|case| check_target(target, case, seed.derive(case)))
+        (0..cases).try_for_each(|case| {
+            let input = seed.derive(case);
+            check_target(target, case, &input)
+        })
     }
 
     /// 跑 `cases` 个确定性用例，收齐**全部**违约证据。
     pub fn sweep_all(target: &dyn Target, seed: &Seed, cases: u64) -> Vec<Finding> {
         (0..cases)
-            .filter_map(|case| check_target(target, case, seed.derive(case)).err())
+            .filter_map(|case| {
+                let input = seed.derive(case);
+                check_target(target, case, &input).err()
+            })
             .collect()
     }
 
@@ -213,14 +226,14 @@ pub mod finding {
         pub(crate) fn new(
             target: &str,
             case: u64,
-            input: Vec<u8>,
+            input: &[u8],
             behaviour: Behaviour,
             contract: &'static str,
         ) -> Self {
             Self {
                 target: target.to_string(),
                 case,
-                input,
+                input: input.to_vec(),
                 behaviour,
                 contract,
             }
@@ -534,17 +547,15 @@ pub trait Target {
     where
         Self: Sized,
     {
-        check_target(self, 0, input.to_vec())
+        check_target(self, 0, input)
     }
 }
 
-// 契约单测与共享定义：`tests/parsers.rs`、`src/fuzz_*.rs` 与库内单测取同一份驱动与种子，
-// 不再各留一份。三者只在测试构建里编译；`drivers` / `seeds` 由 `#[path]` 供给其它目标。
+// 契约单测与共享定义：`tests/parsers.rs`、`src/fuzz_*.rs` 与库内单测取同一份驱动，
+// 不再各留一份。`drivers` 在测试构建里把 `seeds` 一起编进来（`#[path]`），并给出
+// 「名称/适配器/种子」三合一的登记表，供遍历与语料生成共用。
 #[cfg(test)]
 #[allow(dead_code)]
 mod drivers;
 #[cfg(test)]
 mod fuzz_tests;
-#[cfg(test)]
-#[allow(dead_code)]
-mod seeds;

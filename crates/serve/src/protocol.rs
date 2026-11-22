@@ -66,8 +66,7 @@
 
 use core::fmt;
 
-pub use crate::decoder::Decoder;
-pub use crate::frame::{Envelope, Frame};
+pub use crate::frame::{Decoder, Envelope, Frame};
 
 pub mod macros {
     //! 编译期表驱动宏：闭集由一张表展开变体、`ALL` 与映射，同一个清单不再手抄多遍。

@@ -1,11 +1,10 @@
-//! 合法范例构造：sweep 遍历与 libFuzzer 种子语料共用同一份，格式演进只改一处。
+//! 合法范例构造：登记表与种子语料共用同一份，格式演进只改一处。
 //!
 //! 二进制格式一律经库编码，不手抄字节：手抄版本一旦格式演进，就会悄悄变成"合法种子其实
-//! 不合法"。范例同时被两处消费：`tests/parsers.rs` 的确定性扰动遍历，与 `tests/gen_corpus.rs`
-//! 写到 `corpus/<目标>/seed.bin` 的覆盖引导语料。
+//! 不合法"。范例由 `drivers::registry` 配对到适配器，边界样本由 `drivers::edges` 写到语料目录。
 //!
-//! 本模块被 `parsers.rs` / `gen_corpus.rs` 与库内测试共用：单个目标只用到其中一部分构造，
-//! 未被该目标引用的项是有意保留的共享定义，不报 dead_code。
+//! 本模块被 `drivers.rs` 以 `#[path]` 包含：单个目标只用到其中一部分构造，未被该目标引用
+//! 的项是有意保留的共享定义，不报 dead_code。
 #![allow(dead_code)]
 
 /// 一份合法的命令行：默认命令 + 一个带取值的选项。
@@ -76,28 +75,3 @@ pub fn edges() -> [(&'static str, Vec<u8>); 3] {
 
 /// 一份合法的词法输入：含函数体、局部绑定与字面量，分组与字符串都闭合。
 pub const LEX: &[u8] = b"fn f() { let x = 1; }";
-
-/// harness 目标名 → 合法范例；顺序与 CI 的 `FUZZ_TARGETS`、`drivers.rs` 的驱动一一对应。
-pub fn exemplars() -> [(&'static str, Vec<u8>); 15] {
-    [
-        ("fuzz_cli", ARGS.to_vec()),
-        ("fuzz_weights_json", HEADER.as_bytes().to_vec()),
-        ("fuzz_weights_safetensors", safetensors()),
-        ("fuzz_weights_archive", u_container()),
-        ("fuzz_train_snapshot", snapshot()),
-        ("fuzz_serve_frames", frame()),
-        (
-            "fuzz_http_head",
-            b"POST /v1/echo HTTP/1.1\r\nContent-Length: 2\r\n\r\n".to_vec(),
-        ),
-        ("fuzz_wire_sealed", frame()),
-        ("fuzz_wire_leb", leb()),
-        ("fuzz_lex", LEX.to_vec()),
-        // 语义 oracle 的种子：任意合法输入即可触发不变量断言（`run` 恒返回 Ok）。
-        ("fuzz_crc", b"llm crc seed".to_vec()),
-        ("fuzz_leb_roundtrip", leb()),
-        ("fuzz_shape", vec![2, 0, 3, 0, 4, 0, 5, 0]),
-        ("fuzz_cutile_negotiate", vec![0, 0]),
-        ("fuzz_dist", vec![0u8; 16]),
-    ]
-}

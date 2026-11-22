@@ -18,8 +18,6 @@
 //! 它只会让同一性质在不同 crate 里用不同的样本数与收缩预算——静默地变弱。
 //! 深挖反例时用 `PROPTEST_CASES=4096 cargo test`，不必改代码。
 
-pub mod ledger;
-
 use proptest::prelude::*;
 use proptest::test_runner::RngSeed;
 use std::ops::RangeInclusive;
@@ -158,8 +156,7 @@ pub fn wide_vector(len: RangeInclusive<usize>) -> impl Strategy<Value = Vec<f32>
     prop::collection::vec(wide(), len)
 }
 
-pub use crate::compare::all_finite;
-pub use crate::rel::{assert_within_rel, within_rel};
+pub use crate::compare::{all_finite, assert_within_rel};
 
 /// 精确相等断言：逐元素 `a == b`（`±0` 视为相等，`NaN` 与他人不等）。
 ///
@@ -181,4 +178,78 @@ pub fn assert_exact(what: &str, got: &[f32], want: &[f32]) {
     if let Some(idx) = got.iter().zip(want).position(|(a, b)| a != b) {
         assert_eq!(got[idx], want[idx], "{what}：第 {idx} 项不符");
     }
+}
+
+/// 性质测试台账：每个工作区成员要么在 [`ledger::COVERED`] 里，要么有一条**具体**理由说明它为什么没有。
+///
+/// 台账存在的理由：纪律门只回答了"用不用共享装置"，没回答"该不该有性质测试"。
+/// 缺了后半个问题，`crate` 从有性质退化成没有性质的唯一症状是**没人发现**——
+/// 那正是手抄配置曾经造成过的静默变弱。
+///
+/// 三条硬约束由 [`crate::prop_discipline`] 的双向覆盖门强制：台账与源码扫描必须逐成员一致、
+/// 每条理由必须具体且互不相同、已登记缺口的数量有上限（否则"以后补"会变成永远不补的垃圾桶）。
+pub mod ledger {
+    /// 一条"为什么这个成员不需要性质测试"的分类理由。
+    pub struct Absence {
+        /// 适用该理由的成员。
+        pub members: &'static [&'static str],
+        /// 理由本身：必须指向真实存在、可核查的替代覆盖。
+        pub reason: &'static str,
+    }
+
+    /// 有性质测试套件的成员——与源码里实际出现的性质测试块一一对应。
+    pub const COVERED: &[&str] = &[
+        "algorithm", "fuzz", "nn", "shard", "testkit", "train", "wire",
+    ];
+
+    /// 已登记、尚未补上的缺口；每条都带一句"补什么、为什么还没补"。
+    ///
+    /// 这是**唯一**允许出现"还没写"的名单，长度由 [`PLANNED_MAX`] 封顶：
+    /// 一旦它开始增长，就说明有人把"该有而没写"记成了"不需要"，那道门随即便失效。
+    pub const PLANNED: &[(&str, &str)] = &[(
+        "autograd",
+        "该断言\"每个算子恰好被访问一次\"与\"加法梯度是求和\"；但同一批公式的生产路径在 \
+         `train`（刚补上梯度对拍），先坐实那边再回填这里的遍历纪律。",
+    )];
+
+    /// 缺口上限：只许减，不许随手加。
+    pub const PLANNED_MAX: usize = 1;
+
+    /// 有明确替代覆盖、因而**不该**再写性质测试的成员，按理由归类。
+    pub const ABSENT: &[Absence] = &[
+        Absence {
+            members: &["cutile", "device"],
+            reason: "发射路径：结论要么要真设备（`testkit::gating` 的跳过语义，本机恒定 skip 等于空转），\
+                     要么是 PTX 文本形状——而它的真值是实测吞吐，断言文本只会锁死实现。",
+        },
+        Absence {
+            members: &["annotation", "diagnostic", "dtype", "storage"],
+            reason: "词汇表：枚举、错误码与注册表行。唯一的不变量是\"每个取值都被处理过一次\"，\
+                     而它由穷举 `match` 在编译期强制（加一个变体不处理就编译不过）——\
+                     性质测试在这里提供的不是覆盖，是重复。",
+        },
+        Absence {
+            members: &["benchmarks", "cli", "tools"],
+            reason: "端到端工具：真值是 stdout、退出码与版面，已有逐字节快照用例。\
+                     随机化输入只会变成\"输出等于输出\"，这条恒真、抓不到东西。",
+        },
+        Absence {
+            members: &["engine", "prof", "serve"],
+            reason: "调度与时序：要可控时钟与线程排练才能断言，现有场景用例已用假时钟钉死时间线；\
+                     随机化调度只会让失败不可复现——在这类代码里不可复现等于没有失败。\
+                     片段正文与见证（原 `frag`）随声明层一并落在 `prof/src/<vendor>/`，\
+                     真值是 `prof` 的逐条对账用例，写在性质层只会退化成\"结构等于结构\"。",
+        },
+        Absence {
+            members: &["tokenizer", "weights"],
+            reason: "任意字节鲁棒性由 `crates/fuzz` 的确定性靶覆盖——同一句话（不 panic、只返回 \
+                     `Invalid`），样本量级远超几百个用例；这两个成员还各有真实样本的往返用例钉住正向路径（`storage` 的检查点格式已在词汇表一行登记）。",
+        },
+        Absence {
+            members: &["tensor"],
+            reason: "形状描述只剩三条离散契约：元素数是各轴的饱和乘积、空形状是标量、字节数按位向上取整。\
+                     三条都由 `tests/shape_tests.rs` 的直钉单元测试覆盖（含 `[usize::MAX, 2]` 的溢出饱和用例）；\
+                     随机化 `dims` 只会得到「乘积等于乘积」的恒真式，性质测试在这里是重复而非覆盖。",
+        },
+    ];
 }

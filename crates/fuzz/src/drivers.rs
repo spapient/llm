@@ -15,12 +15,14 @@ use std::sync::OnceLock;
 
 use cutile::builtin::Catalogue;
 use diagnostic::{Code, Error};
+use llm_fuzz::Target;
 use wire::sink::Sink;
 
-// 判据 trait 走 `crate::Target`：本文件被三个 crate 各自 `#[path]` 包含（库自身的测试模块、
-// `tests/parsers.rs`、15 个 harness 入口），三方都在自己的 crate 根提供 `Target` 这个名字；
-// 不能用 `llm_fuzz::Target`——库自身按名字自引用会解不出这条路径。
-use crate::Target;
+// 合法范例与边界样本：登记表据此配对种子，语料生成器借 `edges` 写边界样本。本文件被四个
+// 目标 `#[path]` 包含，`llm_fuzz::Target` 在库内靠 `extern crate self as llm_fuzz` 自引用。
+#[path = "seeds.rs"]
+mod seeds;
+pub use seeds::edges;
 
 /// 文本解析器的公共外壳：非 UTF-8 不是"解析失败"，而是"这份输入不适用于文本入口"。
 ///
@@ -32,9 +34,9 @@ pub fn text(input: &[u8]) -> Result<&str, Error> {
 }
 
 /// 命令行：空白切词，再交给唯一的文法。
-pub struct Invocation;
+pub struct Cli;
 
-impl Target for Invocation {
+impl Target for Cli {
     fn name(&self) -> &str {
         "cli::Invocation"
     }
@@ -62,9 +64,9 @@ impl Target for Lex {
 }
 
 /// safetensors 头部里的 JSON。
-pub struct Json;
+pub struct WeightsJson;
 
-impl Target for Json {
+impl Target for WeightsJson {
     fn name(&self) -> &str {
         "weights::json"
     }
@@ -75,9 +77,9 @@ impl Target for Json {
 }
 
 /// safetensors 整体：8 字节头长 + JSON 头 + 数据段。
-pub struct Safetensors;
+pub struct WeightsSafetensors;
 
-impl Target for Safetensors {
+impl Target for WeightsSafetensors {
     fn name(&self) -> &str {
         "weights::safetensors::Archive"
     }
@@ -91,9 +93,9 @@ impl Target for Safetensors {
 ///
 /// 与 safetensors 是两条独立的布局路径：段名唯一性、区间不重叠、两级校验和都在这条入口上
 /// 暴露给任意字节。
-pub struct UContainer;
+pub struct WeightsArchive;
 
-impl Target for UContainer {
+impl Target for WeightsArchive {
     fn name(&self) -> &str {
         "weights::Archive"
     }
@@ -107,9 +109,9 @@ impl Target for UContainer {
 ///
 /// `decode` 内部先跑 `verify`，所以这一条同时覆盖"校验和在错误路径上不 panic"与
 /// "正文解析只在校验通过后才开始"两件事。
-pub struct Snapshot;
+pub struct TrainSnapshot;
 
-impl Target for Snapshot {
+impl Target for TrainSnapshot {
     fn name(&self) -> &str {
         "storage::Snapshot::decode"
     }
@@ -123,9 +125,9 @@ impl Target for Snapshot {
 ///
 /// 逐帧取尽再 `finish`：只调 `push` 会漏掉"半帧断开"那条路径，而它正是协议最容易犯的
 /// 安静错误（把半个请求当成完整的）。
-pub struct Frames;
+pub struct ServeFrames;
 
-impl Target for Frames {
+impl Target for ServeFrames {
     fn name(&self) -> &str {
         "serve::proto::Decoder"
     }
@@ -155,9 +157,9 @@ impl Target for HttpHead {
 ///
 /// 非规范编码（前导零字节、超 `u64` 容量、第 10 字节越界）与字节不足都返回错误；游标本身
 /// 不要求消费完整段，尾部多余字节留给流式上层判断，这里只验"读一个数不 panic、结论稳定"。
-pub struct Leb;
+pub struct WireLeb;
 
-impl Target for Leb {
+impl Target for WireLeb {
     fn name(&self) -> &str {
         "wire::leb::Cursor"
     }
@@ -174,9 +176,9 @@ impl Target for Leb {
 /// 这一条不拒绝任何输入（`Sink` 没有"格式错"这种状态），它验的是**不变量**：密封算出的
 /// 校验和等于 `crc32`、计量长度等于实际写出长度、切片接收器在容量够时置位标志且不越界。
 /// 三条里任何一条在某个字节位置翻转，都会让下游的长度承诺与校验承诺对不上。
-pub struct Sealed;
+pub struct WireSealed;
 
-impl Target for Sealed {
+impl Target for WireSealed {
     fn name(&self) -> &str {
         "wire::sink::Sealed"
     }
@@ -204,7 +206,7 @@ impl Target for Sealed {
         if inconsistent {
             return Err(
                 Error::new(Code::Internal, "三种接收器对同一批字节给出了不一致的结论")
-                    .with("fuzz::drivers::Sealed"),
+                    .with("fuzz::drivers::WireSealed"),
             );
         }
         Ok(())
@@ -220,9 +222,9 @@ fn inconsistent(what: &str) -> Error {
 ///
 /// `update` 承诺「跨块状态可续」，`crc32` 承诺「一次算完等于分段算」。查表下标、初值与
 /// 终值取反任一处写错，长文的分段校验就会和整段校验分叉——而这正是容器完整性尾部的依据。
-pub struct CrcChunk;
+pub struct Crc;
 
-impl Target for CrcChunk {
+impl Target for Crc {
     fn name(&self) -> &str {
         "wire::crc"
     }
@@ -320,9 +322,9 @@ fn leb_len(value: u64) -> usize {
 ///
 /// 轴长可能来自不受信任的权重文件头，乘积溢出必须夹到上限而不是回绕；亚字节类型
 /// （`U1`/`U4`/`F4`）又要求字节数按位向上取整。两条都在这里与一份 `u128` 参考比对。
-pub struct ShapeArith;
+pub struct Shape;
 
-impl Target for ShapeArith {
+impl Target for Shape {
     fn name(&self) -> &str {
         "tensor::Shape"
     }
@@ -422,9 +424,9 @@ impl Target for CutileNegotiate {
 ///
 /// 与解析器的「不 panic」不同，这里验的是**数学承诺**：`Uniform` 的样本不越界、`Bernoulli`
 /// 的端点概率、`Normal` 的有限性，以及 Philox 计数器流的位级确定性。
-pub struct DistSampler;
+pub struct Dist;
 
-impl Target for DistSampler {
+impl Target for Dist {
     fn name(&self) -> &str {
         "train::rng"
     }
@@ -534,4 +536,55 @@ fn normal_is_finite(seed: u64, words: [u32; 4]) -> Result<(), Error> {
         }
     }
     Ok(())
+}
+
+/// 一个被测入口的登记：harness 二进制名、适配器与合法范例，三件事绑成一条。
+///
+/// `binary` 与 Cargo `[[test]]` 名、CI `FUZZ_TARGETS` 一致，也用作语料目录名；`adapter` 是
+/// 确定性遍历与 libfuzzer 共用的判据；`seed` 是会被 `adapter` 接受的合法输入，遍历从它的
+/// 边角扰动出发，覆盖引导从它的附近出发。
+pub struct Entry {
+    /// harness 二进制名（= 语料目录名）。
+    pub binary: &'static str,
+    /// 把任意字节接成「接受/拒绝」的适配器。
+    pub adapter: &'static dyn Target,
+    /// 一份被适配器接受的合法范例。
+    pub seed: Vec<u8>,
+}
+
+/// 全部被测入口：名称、适配器与合法种子三合一，**唯一出处**。
+///
+/// `tests/parsers.rs` 的遍历、`tests/gen_corpus.rs` 的语料生成与 CI `FUZZ_TARGETS` 都按这一份
+/// 的顺序与名称对齐；不再用两份平行数组靠下标配对，顺序错位不可能悄悄把 A 的种子灌给 B。
+pub fn registry() -> [Entry; 15] {
+    [
+        entry("fuzz_cli", &Cli, seeds::ARGS),
+        entry("fuzz_weights_json", &WeightsJson, seeds::HEADER.as_bytes()),
+        entry("fuzz_weights_safetensors", &WeightsSafetensors, seeds::safetensors()),
+        entry("fuzz_weights_archive", &WeightsArchive, seeds::u_container()),
+        entry("fuzz_train_snapshot", &TrainSnapshot, seeds::snapshot()),
+        entry("fuzz_serve_frames", &ServeFrames, seeds::frame()),
+        entry(
+            "fuzz_http_head",
+            &HttpHead,
+            b"POST /v1/echo HTTP/1.1\r\nContent-Length: 2\r\n\r\n",
+        ),
+        entry("fuzz_wire_sealed", &WireSealed, seeds::frame()),
+        entry("fuzz_wire_leb", &WireLeb, seeds::leb()),
+        entry("fuzz_lex", &Lex, seeds::LEX),
+        entry("fuzz_crc", &Crc, b"llm crc seed"),
+        entry("fuzz_leb_roundtrip", &LebRoundtrip, seeds::leb()),
+        entry("fuzz_shape", &Shape, vec![2, 0, 3, 0, 4, 0, 5, 0]),
+        entry("fuzz_cutile_negotiate", &CutileNegotiate, vec![0, 0]),
+        entry("fuzz_dist", &Dist, vec![0u8; 16]),
+    ]
+}
+
+/// 构造一条登记：种子统一走 `Into<Vec<u8>>`，范例构造（`Vec` / `&[u8]` / 字面量）不手抄字节。
+fn entry(binary: &'static str, adapter: &'static dyn Target, seed: impl Into<Vec<u8>>) -> Entry {
+    Entry {
+        binary,
+        adapter,
+        seed: seed.into(),
+    }
 }

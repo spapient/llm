@@ -200,7 +200,7 @@ fn reading(call: &Call<'_>, line: &str) -> Result<Reading, String> {
 fn deviation(values: &[f32], expect: &[f32], count: i32) -> f64 {
     let matches = usize::try_from(count).is_ok_and(|count| count == expect.len());
     if matches && values.len() == expect.len() {
-        crate::rel::max_rel_err(values, expect)
+        crate::compare::max_rel_err(values, expect)
     } else {
         f64::INFINITY
     }
