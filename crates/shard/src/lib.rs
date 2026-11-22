@@ -86,9 +86,12 @@ mod collective;
 mod tiling;
 mod topology;
 
-pub use collective::{Collective, Group, Local, Reduce, Remote};
+pub use collective::{Collective, FileRemote, Group, Local, Reduce, Remote};
 pub use tiling::{Sharding, Tiling};
 pub use topology::{Parallel, Topology};
+
+pub mod config;
+pub use config::{LanguageFront, RuntimeConfig};
 
 // ---- 优化面（原 `optim` crate 并入） ----------------------------------------
 //
@@ -107,7 +110,5 @@ pub mod runner;
 pub mod toolchain;
 pub mod verify;
 pub mod witness;
-mod sweep;
-mod program;
 
 pub use runner::{compile_flags, driver};

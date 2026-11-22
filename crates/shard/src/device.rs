@@ -2,6 +2,7 @@
 
 use crate::backend::{Backend, Codegen, Driver, Readback};
 use crate::build;
+use crate::config::config;
 use crate::runner::driver;
 use crate::toolchain;
 use crate::witness::{MAX_OUT, Scope, Selected};
@@ -9,9 +10,6 @@ use cutile::dirs::Dirs;
 use cutile::prof::{Emit, Profile};
 use diagnostic::Result;
 use std::sync::{Mutex, OnceLock};
-
-/// 自检用的 host C 参数：设备档案的 `[compile].flags` 在本机要么指向不存在的头，要么只对真机编译器有意义；它与设备执行是两个参数集。
-pub(crate) const HOST_FLAGS: [&str; 2] = ["-O2", "-std=c99"];
 
 /// 宿主 C 参考后端：本机 CPU 永远在，证明「这段 C 编得过、跑得出 `expect`」，不是设备证据。
 struct CBackend;
@@ -96,10 +94,7 @@ pub(crate) fn specs() -> Vec<&'static dyn Backend> {
 fn c_inputs(profile: &Profile, scope: Scope) -> (String, Vec<String>) {
     match scope {
         Scope::Device => (profile.preamble.clone(), profile.flags.clone()),
-        Scope::Host => (
-            String::new(),
-            HOST_FLAGS.iter().map(|flag| (*flag).to_string()).collect(),
-        ),
+        Scope::Host => (String::new(), config().host_flags.clone()),
     }
 }
 

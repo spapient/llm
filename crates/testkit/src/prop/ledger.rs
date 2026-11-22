@@ -40,7 +40,7 @@ pub const PLANNED: &[(&str, &str)] = &[
 ];
 
 /// 缺口上限：只许减，不许随手加。
-pub const PLANNED_MAX: usize = 2;
+pub const PLANNED_MAX: usize = 1;
 
 /// 有明确替代覆盖、因而**不该**再写性质测试的成员，按理由归类。
 pub const ABSENT: &[Absence] = &[

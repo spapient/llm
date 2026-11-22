@@ -5,7 +5,10 @@
 //! 在四个 `mod` 与四条 `pub use` 之间拼回这层关系，而它们各自的算术都不足以独立成篇。
 
 use crate::topology::Topology;
-use diagnostic::Result;
+use diagnostic::{Code, Error, Result};
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::PathBuf;
 
 /// [`fail!`] 的同形状形态，但站点由调用方给（参数），不要求字面量。
 ///
@@ -26,6 +29,25 @@ macro_rules! refuse_at {
 pub trait Collective {
     /// 对 `buf` 做原地归约；返回时表示"已完成"。
     fn all_reduce(&mut self, group: &Group, reduce: Reduce, buf: &mut [f32]) -> Result<()>;
+
+    /// 全部收集：`buf` 长 `group.size() × width`，每个成员把它的 `width` 份按组内顺序写进对应
+    /// 分块；操作后每个成员都拿到组内全部贡献的拼接。缺实现返回 `Unsupported`。
+    fn all_gather(&mut self, _group: &Group, _buf: &mut [f32]) -> Result<()> {
+        fail!(
+            Unsupported,
+            "shard::Collective::all_gather",
+            "该集合通信后端没有 all_gather"
+        );
+    }
+
+    /// 广播：`src` 号成员的值广播给组内全体。缺实现返回 `Unsupported`。
+    fn broadcast(&mut self, _group: &Group, _src: u32, _buf: &mut [f32]) -> Result<()> {
+        fail!(
+            Unsupported,
+            "shard::Collective::broadcast",
+            "该集合通信后端没有 broadcast"
+        );
+    }
 }
 
 /// 参与一次通信的进程组。
@@ -159,6 +181,218 @@ impl Collective for Remote {
     }
 }
 
+/// 文件传输的远端集合通信：一份共享文件承载 `world × width` 个 f32 槽位，每个 rank 一个
+/// [`FileRemote`] 句柄指向同一份文件。与 [`Local`] 同一 [`Collective`] 端口，缓冲在进程外，
+/// 因此跨进程可用；无 `unsafe`，传输就是 `std::fs::File` 的按槽读/写（小端字节序，跨机器共享
+/// 文件时字节布局确定）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileRemote {
+    rank: u32,
+    world: u32,
+    width: usize,
+    backing: PathBuf,
+}
+
+impl FileRemote {
+    /// 打开第 `rank` 个进程的句柄：`backing` 是全部 rank 共享的文件路径，槽位按
+    /// `rank × width × 4` 字节排列。文件在第一次 `open` 时预留到满长，未写过的槽位读作 0。
+    ///
+    /// # Errors
+    ///
+    /// `world` 或 `width` 为零、`rank` 超出 `0..world`、或文件不可创建 / 不可预留。
+    pub fn open(rank: u32, world: u32, width: usize, backing: impl Into<PathBuf>) -> Result<Self> {
+        if world == 0 {
+            fail!("shard::FileRemote::open", "进程数 world 不能为 0");
+        }
+        if rank >= world {
+            fail!("shard::FileRemote::open", "rank {rank} 超出 0..{world}");
+        }
+        if width == 0 {
+            fail!("shard::FileRemote::open", "归约宽度不能为 0");
+        }
+        let remote = Self {
+            rank,
+            world,
+            width,
+            backing: backing.into(),
+        };
+        remote.resize()?;
+        Ok(remote)
+    }
+
+    /// 本进程的 rank。
+    pub fn rank(&self) -> u32 {
+        self.rank
+    }
+
+    /// 把某个 rank 的输入写进它的槽位；[`Collective::all_reduce`] 只读已写进的槽位。
+    ///
+    /// # Errors
+    ///
+    /// 长度不等于归约宽度、`rank` 超出 `0..world`、或文件不可写。
+    pub fn load(&self, rank: u32, values: &[f32]) -> Result<()> {
+        self.check_width("shard::FileRemote::load", values.len())?;
+        self.check_rank("shard::FileRemote::load", rank)?;
+        self.write(rank, values)
+    }
+
+    /// 某个 rank 当前槽位的值（`load` 或 `all_reduce` 之后）。
+    ///
+    /// # Errors
+    ///
+    /// `rank` 超出 `0..world`，或文件不可读。
+    pub fn replica(&self, rank: u32) -> Result<Vec<f32>> {
+        self.check_rank("shard::FileRemote::replica", rank)?;
+        self.read(rank)
+    }
+
+    /// 把组内归约写进调用方给的缓冲；长度必须等于归约宽度。与 [`Local::reduce_into`] 同口径。
+    ///
+    /// # Errors
+    ///
+    /// 缓冲长度与归约宽度不一致，或组里出现本 world 之外的 rank。
+    pub fn reduce_into(&self, group: &Group, reduce: Reduce, out: &mut [f32]) -> Result<()> {
+        self.check_width("shard::FileRemote::reduce_into", out.len())?;
+        out.fill(reduce.identity());
+        for rank in group.ranks() {
+            let slot = self.read(*rank)?;
+            for (acc, value) in out.iter_mut().zip(&slot) {
+                *acc = reduce.apply(*acc, *value);
+            }
+        }
+        Ok(())
+    }
+
+    fn check_width(&self, site: &'static str, len: usize) -> Result<()> {
+        if len == self.width {
+            return Ok(());
+        }
+        refuse_at!(site, "宽度 {len} 与归约宽度 {} 不一致", self.width)
+    }
+
+    fn check_rank(&self, site: &'static str, rank: u32) -> Result<()> {
+        if rank < self.world {
+            return Ok(());
+        }
+        refuse_at!(site, "rank {rank} 超出 0..{}", self.world)
+    }
+
+    /// 字节总长：`world × width × 4`。`open` 时预留，未写过的槽位读作 0。
+    fn len_bytes(&self) -> u64 {
+        u64::from(self.world) * (self.width as u64) * 4
+    }
+
+    /// 第 `rank` 个槽位的字节偏移。
+    fn offset(&self, rank: u32) -> u64 {
+        u64::from(rank) * (self.width as u64) * 4
+    }
+
+    fn resize(&self) -> Result<()> {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&self.backing)
+            .map_err(|error| {
+                Error::new(
+                    Code::Io,
+                    format!("创建 `{}` 失败：{error}", self.backing.display()),
+                )
+            })?;
+        file.set_len(self.len_bytes()).map_err(|error| {
+            Error::new(
+                Code::Io,
+                format!("预留 `{}` 失败：{error}", self.backing.display()),
+            )
+        })
+    }
+
+    fn read(&self, rank: u32) -> Result<Vec<f32>> {
+        let mut file = File::open(&self.backing).map_err(|error| {
+            Error::new(
+                Code::Io,
+                format!("打开 `{}` 失败：{error}", self.backing.display()),
+            )
+        })?;
+        file.seek(SeekFrom::Start(self.offset(rank)))
+            .map_err(|error| {
+                Error::new(
+                    Code::Io,
+                    format!("定位 `{}` 失败：{error}", self.backing.display()),
+                )
+            })?;
+        let mut bytes = vec![0u8; self.width * 4];
+        file.read_exact(&mut bytes).map_err(|error| {
+            Error::new(
+                Code::Io,
+                format!("读 `{}` 失败：{error}", self.backing.display()),
+            )
+        })?;
+        Ok(bytes
+            .chunks_exact(4)
+            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .collect())
+    }
+
+    fn write(&self, rank: u32, values: &[f32]) -> Result<()> {
+        let mut file = OpenOptions::new().write(true).open(&self.backing).map_err(|error| {
+            Error::new(
+                Code::Io,
+                format!("打开 `{}` 失败：{error}", self.backing.display()),
+            )
+        })?;
+        file.seek(SeekFrom::Start(self.offset(rank)))
+            .map_err(|error| {
+                Error::new(
+                    Code::Io,
+                    format!("定位 `{}` 失败：{error}", self.backing.display()),
+                )
+            })?;
+        let bytes: Vec<u8> = values.iter().flat_map(|value| value.to_le_bytes()).collect();
+        file.write_all(&bytes).map_err(|error| {
+            Error::new(
+                Code::Io,
+                format!("写 `{}` 失败：{error}", self.backing.display()),
+            )
+        })
+    }
+}
+
+impl Collective for FileRemote {
+    fn all_reduce(&mut self, group: &Group, reduce: Reduce, buf: &mut [f32]) -> Result<()> {
+        self.reduce_into(group, reduce, buf)?;
+        for rank in group.ranks() {
+            self.write(*rank, buf)?;
+        }
+        Ok(())
+    }
+
+    fn all_gather(&mut self, group: &Group, buf: &mut [f32]) -> Result<()> {
+        let width = self.width;
+        if buf.len() != group.size() * width {
+            return refuse_at!(
+                "shard::FileRemote::all_gather",
+                "缓冲长度 {} 与 all_gather 期望的 {} 不一致",
+                buf.len(),
+                group.size() * width
+            );
+        }
+        for (idx, rank) in group.ranks().iter().enumerate() {
+            buf[idx * width..(idx + 1) * width].copy_from_slice(&self.read(*rank)?);
+        }
+        Ok(())
+    }
+
+    fn broadcast(&mut self, group: &Group, src: u32, buf: &mut [f32]) -> Result<()> {
+        self.check_width("shard::FileRemote::broadcast", buf.len())?;
+        if !group.ranks().contains(&src) {
+            return refuse_at!("shard::FileRemote::broadcast", "源 rank {src} 不在组内");
+        }
+        buf.copy_from_slice(&self.read(src)?);
+        Ok(())
+    }
+}
+
 /// 进程内的集合通信：每个 rank 一份镜像，归约在本进程内完成。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Local {
@@ -276,6 +510,31 @@ impl Collective for Local {
     fn all_reduce(&mut self, group: &Group, reduce: Reduce, buf: &mut [f32]) -> Result<()> {
         self.reduce_into(group, reduce, buf)?;
         self.distribute(group, buf)
+    }
+
+    fn all_gather(&mut self, group: &Group, buf: &mut [f32]) -> Result<()> {
+        let width = self.width;
+        if buf.len() != group.size() * width {
+            return refuse_at!(
+                "shard::Local::all_gather",
+                "缓冲长度 {} 与 all_gather 期望的 {} 不一致",
+                buf.len(),
+                group.size() * width
+            );
+        }
+        for (idx, rank) in group.ranks().iter().enumerate() {
+            buf[idx * width..(idx + 1) * width].copy_from_slice(self.replica(*rank)?);
+        }
+        Ok(())
+    }
+
+    fn broadcast(&mut self, group: &Group, src: u32, buf: &mut [f32]) -> Result<()> {
+        self.check_width("shard::Local::broadcast", buf.len())?;
+        if !group.ranks().contains(&src) {
+            return refuse_at!("shard::Local::broadcast", "源 rank {src} 不在组内");
+        }
+        buf.copy_from_slice(self.replica(src)?);
+        Ok(())
     }
 }
 

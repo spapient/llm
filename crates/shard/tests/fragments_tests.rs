@@ -39,7 +39,7 @@ fn every_fragment_composes_into_a_translation_unit_its_language_accepts() {
     let mut languages = 0;
     let mut units = 0;
     for profile in catalogue.profiles() {
-        let Some(spec) = GATES.iter().find(|entry| entry.emit == profile.meta.emit) else {
+        let Some(spec) = config().gates.iter().find(|entry| entry.emit == profile.meta.emit) else {
             eprintln!(
                 "skip: `{}` 的 `{}` 没有登记语法前端，它的片段未被解析",
                 profile.meta.id, profile.meta.emit
@@ -54,7 +54,7 @@ fn every_fragment_composes_into_a_translation_unit_its_language_accepts() {
             );
             continue;
         }
-        let arguments = spec.args_for(profile);
+        let arguments = args_for(spec, profile);
         let fragments =
             prof::builtin(profile.meta.vendor.as_str(), profile.meta.emit.ext()).expect("片段层");
         for (name, text) in units_of(&catalogue, profile, &fragments) {
@@ -88,7 +88,8 @@ fn a_fragment_body_the_language_rejects_is_a_defect() {
     }
     let catalogue = Catalogue::try_builtin().expect("内置数据");
     let profile = catalogue.profile("intel").expect("intel 档案");
-    let spec = GATES
+    let spec = config()
+        .gates
         .iter()
         .find(|entry| entry.emit == profile.meta.emit)
         .expect("OpenCL 语法前端已登记");
@@ -96,7 +97,7 @@ fn a_fragment_body_the_language_rejects_is_a_defect() {
         eprintln!("skip: 本机没有 `clang`");
         return;
     }
-    let arguments = spec.args_for(profile);
+    let arguments = args_for(spec, profile);
     let honest =
         prof::builtin(profile.meta.vendor.as_str(), profile.meta.emit.ext()).expect("片段层");
     // `gemv_f32` 用到 `bar`：改坏它，拼进去的翻译单元就该被拒。

@@ -1,9 +1,11 @@
 use super::*;
 use crate::toolchain;
+use cutile::prof::Emit;
 
 /// OpenCL 前端表行：拒绝用例要拿它的参数过一遍 OpenCL C 不支持的构造。
-fn opencl() -> &'static GateSpec {
-    GATES
+fn opencl() -> &'static LanguageFront {
+    config()
+        .gates
         .iter()
         .find(|entry| entry.emit == Emit::Opencl)
         .expect("OpenCL 语法前端已登记")
@@ -33,8 +35,9 @@ fn a_witness_its_own_language_rejects_is_a_defect() {
     )
     .expect("写见证");
 
-    let rejected =
-        parse_one(opencl(), opencl().check, &source).expect_err("OpenCL C 不允许函数指针");
+    let gate = opencl();
+    let arguments: Vec<&str> = gate.check.iter().map(String::as_str).collect();
+    let rejected = parse_one(gate, &arguments, &source).expect_err("OpenCL C 不允许函数指针");
     assert!(rejected.to_string().contains("witness.cl"), "{rejected}");
     assert!(rejected.to_string().contains("-x cl"), "{rejected}");
 
@@ -53,14 +56,15 @@ fn a_witness_its_own_language_rejects_is_a_defect() {
 /// 核芯（`id = "910b"`）、`-fsyntax-only` 决定只解析不产出。
 #[test]
 fn the_ascend_front_is_ccec_for_the_910b_core() {
-    let entry = GATES
+    let entry = config()
+        .gates
         .iter()
         .find(|entry| entry.emit == Emit::Ascendc)
         .expect("AscendC 语法前端已登记");
-    assert_eq!(entry.tool, ["ccec"], "昇腾的前端是 CANN 的 ccec");
+    assert_eq!(entry.tool, vec!["ccec".to_string()], "昇腾的前端是 CANN 的 ccec");
     for flag in ["-xcce", "--cce-aicore-algorithm=dav-c220", "-fsyntax-only"] {
         assert!(
-            entry.check.contains(&flag),
+            entry.check.iter().any(|item| item.as_str() == flag),
             "缺 `{flag}`：{:?}",
             entry.check
         );
@@ -75,7 +79,8 @@ fn a_missing_declared_front_is_absent_not_rejected() {
         eprintln!("skip: 本机装了 `ccec`，缺席分支无从构造");
         return;
     }
-    let ascend = GATES
+    let ascend = config()
+        .gates
         .iter()
         .find(|entry| entry.emit == Emit::Ascendc)
         .expect("AscendC 语法前端已登记");

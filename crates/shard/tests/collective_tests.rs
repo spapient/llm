@@ -270,3 +270,124 @@ fn reducing_into_a_buf_agrees_with_allocating_a_vec() {
         Code::Invalid
     );
 }
+
+/// 文件传输的远端归约：两个 rank 共享一份文件，各写各的槽位，归约后两边都拿到完整结果——
+/// 这是 [`Remote`] 占位之外的真实远端实现（跨进程可用，无 `unsafe`）。
+#[test]
+fn file_remote_reduces_across_ranks() {
+    let backing = std::env::temp_dir().join(format!("shard-collective-{}", std::process::id()));
+    let mut r0 = FileRemote::open(0, 2, 2, &backing).expect("rank 0");
+    let r1 = FileRemote::open(1, 2, 2, &backing).expect("rank 1");
+    assert_eq!(r0.rank(), 0);
+    r0.load(0, &[1.0, 2.0]).expect("rank 0 输入");
+    r1.load(1, &[3.0, 4.0]).expect("rank 1 输入");
+    let group = Group::new([0, 1]).expect("双进程组");
+    let mut buf = [0.0; 2];
+    r0.all_reduce(&group, Reduce::Sum, &mut buf).expect("归约");
+    assert_eq!(buf, [4.0, 6.0]);
+    assert_eq!(r1.replica(0).expect("rank 0"), buf, "结果写回每个成员");
+    assert_eq!(r1.replica(1).expect("rank 1"), buf);
+    let _ = std::fs::remove_file(&backing);
+}
+
+/// 越界与宽度不符在文件后端同样被拒：`load`、`replica`、`all_reduce` 各自守住自己的判据。
+#[test]
+fn file_remote_refuses_out_of_world_and_width_mismatch() {
+    let backing =
+        std::env::temp_dir().join(format!("shard-collective-bad-{}", std::process::id()));
+    let mut r0 = FileRemote::open(0, 2, 2, &backing).expect("rank 0");
+    assert_eq!(r0.load(2, &[1.0, 2.0]).unwrap_err().code(), Code::Invalid);
+    assert_eq!(r0.load(0, &[1.0]).unwrap_err().code(), Code::Invalid);
+    assert_eq!(r0.replica(2).unwrap_err().code(), Code::Invalid);
+    let group = Group::new([0, 1]).expect("双进程组");
+    let mut short = [0.0; 1];
+    assert_eq!(
+        r0.all_reduce(&group, Reduce::Sum, &mut short)
+            .unwrap_err()
+            .code(),
+        Code::Invalid
+    );
+    assert_eq!(
+        FileRemote::open(2, 2, 2, &backing).unwrap_err().code(),
+        Code::Invalid
+    );
+    assert_eq!(
+        FileRemote::open(0, 0, 2, &backing).unwrap_err().code(),
+        Code::Invalid
+    );
+    let _ = std::fs::remove_file(&backing);
+}
+
+/// 全部收集按组内顺序拼接：每个 rank 的镜像写进自己那一分块，不是按调用顺序。
+#[test]
+fn all_gather_concatenates_the_group_in_order() {
+    let topology = Topology::new(2, 1, 1).expect("tp 2");
+    let mut local = Local::new(topology, 2).expect("宽度非零");
+    local.load(0, &[1.0, 2.0]).expect("rank 0");
+    local.load(1, &[3.0, 4.0]).expect("rank 1");
+    let group = topology.group(Parallel::Tensor, 0).expect("唯一一组");
+    let mut buf = [0.0; 4];
+    local.all_gather(&group, &mut buf).expect("收集");
+    assert_eq!(buf, [1.0, 2.0, 3.0, 4.0], "按组内 rank 顺序拼接");
+    // 缓冲长度不符（不是 size × width）要拒绝。
+    let mut short = [0.0; 3];
+    assert_eq!(
+        local.all_gather(&group, &mut short).unwrap_err().code(),
+        Code::Invalid
+    );
+}
+
+/// 广播：源 rank 的值复制进缓冲，与其它 rank 的镜像无关。
+#[test]
+fn broadcast_copies_the_source_rank() {
+    let topology = Topology::new(2, 1, 1).expect("tp 2");
+    let mut local = Local::new(topology, 2).expect("宽度非零");
+    local.load(0, &[7.0, 8.0]).expect("rank 0");
+    local.load(1, &[1.0, 1.0]).expect("rank 1");
+    let group = topology.group(Parallel::Tensor, 0).expect("唯一一组");
+    let mut buf = [0.0; 2];
+    local.broadcast(&group, 0, &mut buf).expect("广播");
+    assert_eq!(buf, [7.0, 8.0]);
+    // 源不在组内要拒绝。
+    let mut other = [0.0; 2];
+    let bad = Group::new([1]).expect("单成员组");
+    assert_eq!(
+        local.broadcast(&bad, 0, &mut other).unwrap_err().code(),
+        Code::Invalid
+    );
+}
+
+/// 文件后端同样支持收集与广播：槽位是跨进程共享的，语义与 [`Local`] 同构。
+#[test]
+fn file_remote_all_gathers_and_broadcasts() {
+    let backing = std::env::temp_dir().join(format!("shard-collective-ops-{}", std::process::id()));
+    let mut r0 = FileRemote::open(0, 2, 2, &backing).expect("rank 0");
+    let r1 = FileRemote::open(1, 2, 2, &backing).expect("rank 1");
+    r0.load(0, &[5.0, 6.0]).expect("rank 0");
+    r1.load(1, &[7.0, 8.0]).expect("rank 1");
+    let group = Group::new([0, 1]).expect("双进程组");
+    let mut gathered = [0.0; 4];
+    r0.all_gather(&group, &mut gathered).expect("收集");
+    assert_eq!(gathered, [5.0, 6.0, 7.0, 8.0]);
+    let mut broadcast = [0.0; 2];
+    r0.broadcast(&group, 1, &mut broadcast).expect("广播");
+    assert_eq!(broadcast, [7.0, 8.0]);
+    let _ = std::fs::remove_file(&backing);
+}
+
+/// 占位 [`Remote`] 对新增的收集/广播同样走默认 `Unsupported`，不改动缓冲。
+#[test]
+fn the_placeholder_rejects_gather_and_broadcast() {
+    let mut remote = Remote;
+    let group = Group::new([0, 1]).expect("双进程组");
+    let mut buf = [1.0f32, 2.0];
+    assert_eq!(
+        remote.all_gather(&group, &mut buf).unwrap_err().code(),
+        Code::Unsupported
+    );
+    assert_eq!(
+        remote.broadcast(&group, 0, &mut buf).unwrap_err().code(),
+        Code::Unsupported
+    );
+    assert_eq!(buf, [1.0, 2.0], "拒绝时不得改动缓冲");
+}
