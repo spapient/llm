@@ -308,5 +308,5 @@ pub(crate) fn elementwise_four<T: Load>(w: &[T], x: &[f32], m: usize, out: &mut 
 }
 
 #[cfg(test)]
-#[path = "../../tests/simd_tests.rs"]
+#[path = "../../../tests/kernel/simd_tests.rs"]
 mod tests;

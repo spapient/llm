@@ -155,7 +155,7 @@ macro_rules! reduce_f32 {
 }
 
 #[cfg(test)]
-#[path = "../tests/reduce_test_support.rs"]
+#[path = "../../tests/kernel/reduce_test_support.rs"]
 pub(crate) mod test_support;
 
 // 声明式算子表：同一副归约骨架的两种算子（最大值 / 求和），每个算子一个 `pub mod` 保持

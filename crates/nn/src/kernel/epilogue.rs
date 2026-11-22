@@ -181,9 +181,9 @@ fn shape_err(what: &str, expected: usize, got: usize) -> Error {
 }
 
 #[cfg(test)]
-#[path = "../tests/epilogue_tests.rs"]
+#[path = "../../tests/kernel/epilogue_tests.rs"]
 mod tests;
 
 #[cfg(test)]
-#[path = "../tests/epilogue_device_tests.rs"]
+#[path = "../../tests/kernel/epilogue_device_tests.rs"]
 mod device_tests;

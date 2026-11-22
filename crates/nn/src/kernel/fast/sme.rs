@@ -269,7 +269,7 @@ unsafe fn exit_sm() {
 }
 
 #[cfg(test)]
-#[path = "../../tests/sme_tests.rs"]
+#[path = "../../../tests/kernel/sme_tests.rs"]
 mod tests;
 
 /// SME 端口峰值探针：`rounds` 轮、每轮 4 条 `fmopa`，`z0`/`z1` 与 ZA 全部寄存器常驻，

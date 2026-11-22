@@ -353,5 +353,5 @@ fn normalize_row<S: Scalar>(
 }
 
 #[cfg(test)]
-#[path = "../tests/norm_tests.rs"]
+#[path = "../../tests/kernel/norm_tests.rs"]
 mod tests;

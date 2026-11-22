@@ -324,9 +324,9 @@ pub use i8::{gemm_i8, gemm_i8_checked, gemm_i8_single};
 use micro::{Layout, Span, Sweep, Tile, edge, micro_packed};
 
 #[cfg(test)]
-#[path = "../tests/fast_tests.rs"]
+#[path = "../../tests/kernel/fast_tests.rs"]
 mod tests;
 
 #[cfg(test)]
-#[path = "../tests/scratch_tests.rs"]
+#[path = "../../tests/kernel/scratch_tests.rs"]
 mod scratch_tests;

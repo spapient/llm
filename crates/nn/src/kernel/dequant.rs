@@ -204,7 +204,7 @@ macro_rules! dequant_packed {
 }
 
 #[cfg(test)]
-#[path = "../tests/dequant_test_support.rs"]
+#[path = "../../tests/kernel/dequant_test_support.rs"]
 pub(crate) mod test_support;
 
 pub mod dequant_i2 {

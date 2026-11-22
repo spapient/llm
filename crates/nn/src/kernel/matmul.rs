@@ -399,7 +399,7 @@ fn deterministic(len: usize, salt: u32) -> Vec<f32> {
 }
 
 #[cfg(test)]
-#[path = "../tests/matmul_tests.rs"]
+#[path = "../../tests/kernel/matmul_tests.rs"]
 mod tests;
 
 /// 大 K 对称 int8 GEMM 的语义与精度档：`Y[m, n] = Σ_k A[m, k] · B[k, n]`，累加器 `i32`。

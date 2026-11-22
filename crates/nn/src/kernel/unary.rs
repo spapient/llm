@@ -150,7 +150,7 @@ macro_rules! unary_f32 {
 }
 
 #[cfg(test)]
-#[path = "../tests/unary_test_support.rs"]
+#[path = "../../tests/kernel/unary_test_support.rs"]
 pub(crate) mod test_support;
 
 // 声明式算子表：同一副一元骨架的五个算子，每个算子一个 `pub mod` 保持 `op::<name>::MODEL` /

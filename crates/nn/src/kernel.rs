@@ -1,7 +1,6 @@
 //! 稠密计算核：矩阵乘族（`gemm` / `gemv` / `matmul`）、激活（`activation`）、归一化（`norm`）、
 //! 反量化（`dequant`）、逐元素（`elementwise` / `unary`）、归约（`reduce`）与 SIMD/SME 通道（`fast`）。
 
-#![deny(unsafe_code)]
 // 不稳定特性一律挂在 `cfg(nightly)` 上（由本 crate 的 `build.rs` 按 `rustc --version` 判定）：
 // nightly 上走手写车道，stable 上走 `gemv/simd/fallback.rs` 的等价退路，两边的能力差异只在
 // 「向量化没向量化」，不在语义。这样 `rust-toolchain.toml` 不必把整个工作区钉在某个 nightly。
@@ -14,15 +13,6 @@
 // - `portable_simd`：`std::simd`，用在 `fast::sme::pack_a` 的分块转置（只存在于 aarch64）与
 //   `gemv::simd` 的解包点积。后者**不按目标门控**，因为它是架构无关的 16 车道源码：aarch64 上
 //   落成 NEON、x86_64 上落成 SSE2 基线，两个目标编译的是同一份算术。
-#![cfg_attr(nightly, feature(portable_simd))]
-#![cfg_attr(
-    all(nightly, target_arch = "aarch64"),
-    feature(aarch64_unstable_target_feature)
-)]
-#![cfg_attr(
-    all(nightly, target_arch = "aarch64"),
-    feature(stdarch_aarch64_feature_detection)
-)]
 
 pub mod activation;
 pub mod dequant;

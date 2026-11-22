@@ -354,5 +354,5 @@ pub(super) fn run_pooled(
 }
 
 #[cfg(test)]
-#[path = "../../tests/pool_tests.rs"]
+#[path = "../../../tests/kernel/pool_tests.rs"]
 mod tests;

@@ -350,7 +350,7 @@ fn sample_unpacked<G: Gemm>(a: &[G::Elem], b: &[G::Elem], m: usize, n: usize) ->
 /// 各格式共用的测试生成：打包格式（i2/i4/i8）跑参考、形状矩阵与独立闭式点积三则；
 /// 稠密 f32 跑独立 f64 闭式校验（整数闭式不适用，但那不等于只能自我对拍）。形状矩阵只定义一次。
 #[cfg(test)]
-#[path = "../tests/gemm_test_support.rs"]
+#[path = "../../tests/kernel/gemm_test_support.rs"]
 pub(crate) mod test_support;
 
 /// 生成一份 GEMM 精度变体的完整公开面：标记类型、[`Gemm`] 实现、`forward` 入口、

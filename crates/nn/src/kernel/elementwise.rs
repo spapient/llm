@@ -169,7 +169,7 @@ macro_rules! binary_f32 {
 }
 
 #[cfg(test)]
-#[path = "../tests/elementwise_test_support.rs"]
+#[path = "../../tests/kernel/elementwise_test_support.rs"]
 pub(crate) mod test_support;
 
 // 声明式算子表：同一副二元骨架的七个算子，每个算子一个 `pub mod` 保持 `op::<name>::forward`

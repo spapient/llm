@@ -83,7 +83,7 @@ pub(crate) use forward::ScaledRow;
 pub(crate) use shape::scale_of;
 
 #[cfg(test)]
-#[path = "../tests/packed_test_support.rs"]
+#[path = "../../tests/kernel/packed_test_support.rs"]
 pub(crate) mod packed_test_support;
 
 /// 打包量化的分组长度：一行权重的元素个数是它的整数倍，标度按它分组记账。

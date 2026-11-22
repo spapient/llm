@@ -38,6 +38,22 @@
 //! ```
 
 #![deny(unsafe_code)]
+// 不稳定特性一律挂在 `cfg(nightly)` 上（由本 crate 的 `build.rs` 按 `rustc --version` 判定）：
+// nightly 上走手写车道，stable 上走 `kernel/gemv/simd/fallback.rs` 的等价退路，两边的能力差异
+// 只在「向量化没向量化」，不在语义。`rust-toolchain.toml` 不必把整个工作区钉在 nightly。
+//
+// `aarch64_unstable_target_feature` 与 `stdarch_aarch64_feature_detection` 这两个特性名**只在
+// aarch64 上存在**，x86_64 等目标直接声明就是 E0635，因此还要按架构门控；`portable_simd` 是
+// 架构无关的 16 车道 `std::simd` 源码，不按目标门控。
+#![cfg_attr(nightly, feature(portable_simd))]
+#![cfg_attr(
+    all(nightly, target_arch = "aarch64"),
+    feature(aarch64_unstable_target_feature)
+)]
+#![cfg_attr(
+    all(nightly, target_arch = "aarch64"),
+    feature(stdarch_aarch64_feature_detection)
+)]
 
 // 生成的代码用 `::nn::..` 指回本 crate，因此 crate 内部也必须能按名字解析到自己：
 // 这样注解在 `nn` 自己身上（`lm_head` 模块里的 `LmHead`）与在下游 crate 里是同一套展开。
@@ -143,6 +159,39 @@ pub use single::{
 
 #[doc(inline)]
 pub use stack::{Floor, Stack, Unpriced, WEIGHT_SUFFIX};
+
+/// 稠密计算核：矩阵乘族、激活、归一化、反量化、逐元素、归约与 SIMD/SME 通道。
+///
+/// 它原先独立成 crate（`gemm`），与本 crate 之间的唯一通路是 `op` 的 `pub use` 门面；合并后
+/// 层定义直接引用内核，`op` 退回纯声明层。
+pub mod kernel;
+
+/// 内核模块按原路径转出：内核源码与新下游都写 `nn::gemv::…` / `nn::gemm::…`。
+///
+/// `norm` 不在这一串里：`nn::norm` 是本 crate 的归一化**层**（契约登记），`nn::kernel::norm`
+/// 才是它调用的**核**，同名不同物，靠命名空间区分而不是改名。
+pub use kernel::{
+    activation, dequant, elementwise, epilogue, fast, gemm, gemv, matmul, reduce, scalar, unary,
+};
+
+/// 单算子入口（`gemv_f32` / `rmsnorm_f32` …）：下游原先写 `op::gemv_f32`，现在写 `nn::gemv_f32`。
+pub use kernel::{
+    Scalar, add_f32, apply_epilogue, dequant_i2, dequant_i4, dequant_i8, div_f32, embed_f32,
+    exp_f32, gelu_f32, gemm_f32, gemm_i2, gemm_i4, gemm_i8, gemv_f32, gemv_i2, gemv_i4, gemv_i8,
+    hard_sigmoid_f32, leaky_relu_f32, log_f32, matmul_i8, max_f32, min_f32, mul_f32, reduce_max_f32,
+    reduce_sum_f32, relu_f32, residual_add_f32, rmsnorm_f32, rope_f32, scale_f32, sigmoid_f32,
+    silu_f32, softmax_f32, sub_f32, tanh_f32,
+};
+
+// 契约层在 `spec`：内核源码与骨架宏都按 crate 根解析契约路径，这里把它们搬回来，于是内核源码
+// 里写的是 `crate::model::…` / `crate::operator_via!`，而不是到处写依赖 crate 名。
+pub use llm_spec::same_bytes;
+pub(crate) use llm_spec::tpl::guard;
+pub use llm_spec::tpl::{formula, parse};
+pub use llm_spec::{einsum, model, operator, sample, sch, sig, tpl};
+pub use llm_spec::{formula_cell, operator_here, operator_via};
+pub use model::quant;
+pub use sch::layout;
 
 /// 形状由 `tensor` 拥有（见 `docs/ARCHITECTURE.md` 第三节），这里再导出：`Contract::output` 本来就返回它，
 /// 消费者与 `#[spec]` 生成的代码都不该为此额外依赖 `tensor`。
