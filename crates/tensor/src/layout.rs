@@ -7,7 +7,9 @@
 //!
 //! 统一的调用形状是 `(dims, steps)` 两个切片；`&[usize; D]` 自动退化成 `&[usize]`。
 
-use diagnostic::{Code, Error, Result};
+use diagnostic::Result;
+
+use crate::invalid;
 
 /// 构造期校验：秩对应、零元素口径、可达性。`marker` 是构造点标记，文案由调用点给出。
 pub(crate) fn check(dims: &[usize], steps: &[usize], len: usize, marker: &str) -> Result<()> {
@@ -56,11 +58,6 @@ fn check_reach(dims: &[usize], steps: &[usize], len: usize, marker: &str) -> Res
         format!("最高偏移 {highest} 超出缓冲（{len} 个元素）：步长与形状对不上"),
         marker,
     ))
-}
-
-/// 构造期 `Invalid` 错误：本模块所有校验共用一条构造路径，标记由调用点给出。
-fn invalid(message: String, marker: &str) -> Error {
-    Error::new(Code::Invalid, message).with(marker)
 }
 
 /// 最高下标（每轴最后一位）走出的总偏移；任一轴为空或累加溢出则 `None`。

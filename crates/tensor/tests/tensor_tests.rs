@@ -113,7 +113,7 @@ fn a_transposed_stride_is_not_contiguous() {
 #[test]
 fn a_view_borrows_the_callers_buf_instead_of_copying_it() {
     let values = [1.0f32, 2.0, 3.0, 4.0];
-    let view: View<f32> = View::new(Shape::new([2, 2]), &values).expect("视图");
+    let view: View<'_, f32> = View::new(Shape::new([2, 2]), &values).expect("视图");
     assert_eq!(view.dtype(), DType::F32);
     assert_eq!(view.numel(), 4);
     assert_eq!(view.strides(), [2, 1]);
@@ -126,7 +126,7 @@ fn a_view_borrows_the_callers_buf_instead_of_copying_it() {
 #[test]
 fn a_view_is_bounds_checked_without_panicking() {
     let values = [1.0f32, 2.0, 3.0, 4.0];
-    let view: View<f32> = View::new(Shape::new([2, 2]), &values).expect("视图");
+    let view: View<'_, f32> = View::new(Shape::new([2, 2]), &values).expect("视图");
     assert_eq!(view.at([0, 1]), Some(2.0));
     assert_eq!(view.at([1, 0]), Some(3.0));
     assert_eq!(view.at([1]), None, "秩不符");
@@ -145,7 +145,7 @@ fn a_view_rejects_a_buf_of_the_wrong_length() {
 #[test]
 fn a_row_of_a_higher_rank_view_is_not_guessed() {
     let values = [0u8; 8];
-    let view: View<u8> = View::new(Shape::new([2, 2, 2]), &values).expect("视图");
+    let view: View<'_, u8> = View::new(Shape::new([2, 2, 2]), &values).expect("视图");
     assert_eq!(view.row(0), None, "只有二维视图才有“行”");
 }
 
@@ -170,7 +170,7 @@ const SIX: [f32; 6] = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
 #[test]
 fn a_transposed_view_reads_through_its_strides() {
     // 2×3 行主序缓冲，按 3×2 转置读：`(i, j)` 落在 `i + 3j`。
-    let view: View<f32> =
+    let view: View<'_, f32> =
         View::strided(Shape::new([3, 2]), Strides::new([1, 3]), &SIX).expect("转置视图");
     assert_eq!(view.at([0, 0]), Some(1.0));
     assert_eq!(view.at([0, 1]), Some(4.0));
@@ -196,7 +196,7 @@ fn a_strided_view_rejects_steps_that_run_past_the_buf() {
 
 #[test]
 fn a_row_of_a_transposed_view_is_not_returned_as_a_slice() {
-    let view: View<f32> =
+    let view: View<'_, f32> =
         View::strided(Shape::new([3, 2]), Strides::new([1, 3]), &SIX).expect("转置视图");
     assert_eq!(
         view.row(0),
@@ -209,7 +209,7 @@ fn a_row_of_a_transposed_view_is_not_returned_as_a_slice() {
 #[test]
 fn a_row_strided_view_still_serves_contiguous_rows() {
     // 隔行取样：形状 2×3，行步长 2、列步长 1。
-    let view: View<f32> =
+    let view: View<'_, f32> =
         View::strided(Shape::new([2, 3]), Strides::new([2, 1]), &SIX).expect("行切片");
     assert_eq!(view.row(0), Some(&[1.0, 2.0, 3.0][..]));
     assert_eq!(view.row(1), Some(&[3.0, 4.0, 5.0][..]));

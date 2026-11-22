@@ -16,7 +16,9 @@
 
 use core::marker::PhantomData;
 
-use diagnostic::{Code, Error, Result};
+use diagnostic::Result;
+
+use crate::invalid;
 
 use crate::element::Element;
 use crate::layout;
@@ -62,12 +64,7 @@ where
             buf.slice().len(),
             "tensor::Tensor::strided",
         )?;
-        Ok(Self {
-            dims,
-            steps,
-            buf,
-            marker: PhantomData,
-        })
+        Ok(assemble(dims, steps, buf))
     }
 
     /// 两种形态共用的连续构造：先核元素数，再推连续步长。
@@ -87,16 +84,11 @@ where
         }
         let steps = R::contiguous(dims.as_slice()).ok_or_else(|| {
             invalid(
-                format!("形状 {:?} 的轴数与秩 {} 不符", dims.as_slice(), numel),
+                format!("形状 {:?} 的轴数与秩见证不符", dims.as_slice()),
                 marker,
             )
         })?;
-        Ok(Self {
-            dims,
-            steps,
-            buf,
-            marker: PhantomData,
-        })
+        Ok(assemble(dims, steps, buf))
     }
 
     /// 各轴长度。
@@ -152,12 +144,11 @@ where
 
     /// 交换两轴：零拷贝的元数据重排，与存储形态无关。
     pub fn transpose(self, a: usize, b: usize) -> Option<Self> {
-        Some(Self {
-            dims: self.dims.swapped(a, b)?,
-            steps: self.steps.swapped(a, b)?,
-            buf: self.buf,
-            marker: PhantomData,
-        })
+        Some(assemble(
+            self.dims.swapped(a, b)?,
+            self.steps.swapped(a, b)?,
+            self.buf,
+        ))
     }
 
     /// 按 `order` 重排各轴：置换是零拷贝的元数据重排。
@@ -166,12 +157,11 @@ where
         if !is_permutation(order, self.rank()) {
             return None;
         }
-        Some(Self {
-            dims: self.dims.permuted(order)?,
-            steps: self.steps.permuted(order)?,
-            buf: self.buf,
-            marker: PhantomData,
-        })
+        Some(assemble(
+            self.dims.permuted(order)?,
+            self.steps.permuted(order)?,
+            self.buf,
+        ))
     }
 
     /// 等元素数地改形状：仅连续布局可用（否则需先物化成连续缓冲）。
@@ -184,12 +174,7 @@ where
             return None;
         }
         let steps = R2::contiguous(dims.as_slice())?;
-        Some(Tensor {
-            dims,
-            steps,
-            buf: self.buf,
-            marker: PhantomData,
-        })
+        Some(assemble(dims, steps, self.buf))
     }
 }
 
@@ -211,9 +196,14 @@ where
     }
 }
 
-/// 构造期 `Invalid` 错误：本模块所有校验共用一条构造路径。
-fn invalid(message: String, marker: &str) -> Error {
-    Error::new(Code::Invalid, message).with(marker)
+/// 六处构造与重排共用同一个组装动作：元数据 + 存储 + 零尺寸类型标记。
+fn assemble<B, R, K>(dims: R, steps: R, buf: B) -> Tensor<B, R, K> {
+    Tensor {
+        dims,
+        steps,
+        buf,
+        marker: PhantomData,
+    }
 }
 
 /// `order` 是否是 `0..rank` 的一个排列（每个值恰好出现一次）。

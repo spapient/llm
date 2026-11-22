@@ -55,7 +55,10 @@ fn permute_reorders_axes() {
     assert_eq!(permuted.dims(), [4, 2, 3]);
     assert_eq!(permuted.strides(), [1, 12, 4]);
     assert_eq!(permuted.at([1, 0, 2]), tensor.at([0, 2, 1]));
-    assert!(tensor.clone().permute([0, 0, 1]).is_none(), "重复轴不是排列");
+    assert!(
+        tensor.clone().permute([0, 0, 1]).is_none(),
+        "重复轴不是排列"
+    );
     assert!(tensor.permute([0, 1]).is_none(), "轴数不符不是排列");
 }
 

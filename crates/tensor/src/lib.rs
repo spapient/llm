@@ -74,6 +74,13 @@ pub fn supports(dtype: DType) -> bool {
     SUPPORTED.contains(&dtype)
 }
 
+use diagnostic::{Code, Error};
+
+/// 构造期 `Invalid` 错误：全 crate 只有这一条构造路径。
+pub(crate) fn invalid(message: impl Into<String>, marker: &str) -> Error {
+    Error::new(Code::Invalid, message).with(marker)
+}
+
 mod element {
     //! 元素类型：把 Rust 标量映射到 [`DType`] 闭集。这是 [`Tensor`](crate::Tensor) 的第三个泛型位。
 

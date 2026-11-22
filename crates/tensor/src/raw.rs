@@ -7,11 +7,13 @@
 //!
 //! 布局算式与元素张量共用 [`crate::layout`] 一份，不另起一套。
 
-use diagnostic::{Code, Error, Result};
+use diagnostic::Result;
+
+use crate::invalid;
 
 use crate::layout;
 use crate::shape::element_bytes;
-use crate::{DType, Shape, Strides, product, supports};
+use crate::{DType, Shape, Strides, supports};
 
 /// 运行期 `dtype` 的只读字节视图。
 #[derive(Debug, Clone)]
@@ -33,18 +35,24 @@ impl<'a> Raw<'a> {
     pub fn strided(dtype: DType, shape: Shape, strides: Strides, data: &'a [u8]) -> Result<Self> {
         if !supports(dtype) {
             let allowed = crate::SUPPORTED;
-            return Err(invalid(format!("{dtype:?} 不在计算层子集 {allowed:?} 内")));
+            return Err(invalid(
+                format!("{dtype:?} 不在计算层子集 {allowed:?} 内"),
+                "tensor::Raw::new",
+            ));
         }
         let numel = shape.numel();
         // 字节视图的缓冲按容量判：亚字节精度下 `element_bytes` 会小于 `numel`。
-        if data.len() < element_bytes(numel, dtype) {
-            return Err(invalid(format!(
-                "缓冲 {} 字节，形状 {:?} 的 {numel} 个 {:?} 需要 {} 字节",
-                data.len(),
-                shape.dims(),
-                dtype,
-                element_bytes(numel, dtype)
-            )));
+        let need = element_bytes(numel, dtype);
+        if data.len() < need {
+            return Err(invalid(
+                format!(
+                    "缓冲 {} 字节，形状 {:?} 的 {numel} 个 {:?} 需要 {need} 字节",
+                    data.len(),
+                    shape.dims(),
+                    dtype
+                ),
+                "tensor::Raw::strided",
+            ));
         }
         layout::check(
             shape.dims(),
@@ -77,7 +85,7 @@ impl<'a> Raw<'a> {
 
     /// 元素个数。
     pub fn numel(&self) -> usize {
-        product(self.shape.dims())
+        self.shape.numel()
     }
 
     /// 调用方的字节缓冲本身（同一个指针，不是副本）。
@@ -89,9 +97,4 @@ impl<'a> Raw<'a> {
     pub fn is_contiguous(&self) -> bool {
         layout::is_contiguous(self.shape.dims(), self.strides.as_slice())
     }
-}
-
-/// 构造期 `Invalid` 错误：本模块所有校验共用一条构造路径。
-fn invalid(message: String) -> Error {
-    Error::new(Code::Invalid, message).with("tensor::Raw")
 }

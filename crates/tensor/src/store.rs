@@ -5,7 +5,7 @@
 //! 泛型派发，于是这个位置让给存储——同一个 [`Tensor`](crate::Tensor) 既能借用调用方的 `&[K]`，
 //! 也能持有自己的 `Vec<K>`，全套方法两处通用，不再有"字节视图 / 元素视图 / 拥有视图"三份实现。
 
-use diagnostic::{Code, Error, Result};
+use diagnostic::Result;
 
 /// 只读元素存储。
 pub trait Store<E> {
@@ -20,9 +20,9 @@ pub trait StoreMut<E>: Store<E> {
 }
 
 /// 借来的存储就是切片本身：`B = &'a [K]`，构造时不必再包一层。
-impl<'a, E> Store<E> for &'a [E] {
+impl<E> Store<E> for &[E] {
     fn slice(&self) -> &[E] {
-        *self
+        self
     }
 }
 
@@ -51,9 +51,9 @@ impl<E> Owned<E> {
     {
         let mut elems = Vec::new();
         elems.try_reserve_exact(len).map_err(|_| {
-            Error::new(
-                Code::Invalid,
+            crate::invalid(
                 format!("{len} 个元素超出可用内存或地址空间"),
+                "tensor::Owned::zeros",
             )
             .with("tensor::Owned::zeros")
         })?;
