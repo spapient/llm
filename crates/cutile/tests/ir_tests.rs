@@ -267,3 +267,42 @@ fn reduce_rejects_non_mutable_outputs() {
     let error = reduce.verify().expect_err("usize scalar is not f32");
     assert!(error.to_string().contains("must have type f32"));
 }
+
+/// 优化通道删掉死形参：发射的 C 签名里没有它，行为不变。
+#[test]
+fn optimize_drops_dead_params_before_emission() {
+    let mut kernel = minimal();
+    kernel.params.push(Parameter {
+        name: "dead".to_string(),
+        ty: ValueType::Scalar(ScalarType::F32),
+    });
+    let optimized = kernel.optimize().expect("optimize succeeds");
+    assert!(
+        optimized.params.iter().all(|parameter| parameter.name != "dead"),
+        "{optimized:?}"
+    );
+    let source = kernel.emit_c().expect("dead param is dropped, C still emits");
+    assert!(!source.contains("dead"), "{source}");
+}
+
+/// `Pass` 可组合：自定义通道按注册顺序施加到内核上。
+#[test]
+fn pass_manager_applies_custom_passes_in_order() {
+    struct Rename;
+    impl Pass for Rename {
+        fn name(&self) -> &'static str {
+            "rename"
+        }
+
+        fn run(&self, mut kernel: Kernel) -> Result<Kernel, VerificationError> {
+            kernel.name.push_str("_p");
+            Ok(kernel)
+        }
+    }
+    let kernel = minimal();
+    let renamed = PassManager::new()
+        .add(Rename)
+        .run(kernel.clone())
+        .expect("custom pass runs");
+    assert_eq!(renamed.name, "copy_p");
+}

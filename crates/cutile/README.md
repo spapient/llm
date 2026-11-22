@@ -188,7 +188,7 @@ crates/cutile/                  # 模板前端 + typed IR 迁移起点
 ├── README.md                   # 本文
 └── src/
     ├── lib.rs                  # 公开面、DSL 宏 re-export、SCHEMA_VER
-    ├── ir/                     # typed IR：mod（Kernel + Write + fuse + 常量折叠 + C 发射）/ validate（六道闸）
+    ├── ir/                     # typed IR：mod（Kernel + Write + 折叠 + C 发射）/ validate（六道闸）/ fuse（两核拼接）
     ├── builtin.rs              # 三层数据的装载与交叉校验（声明 / 档案 / 片段）
     ├── cap.rs                  # ② negotiate：需求 ∩ 供给、降级链、诊断构造
     ├── ast.rs                  # 模板渲染的可见中间产物（ADR 0017 的 L1）
@@ -795,7 +795,7 @@ text      = { any } ;            (* 片段拼接时原样保留 *)
 | ④ substitute | 模板 + 片段 + 布局 | `Source { lang, text }` | 槽位缺失 / 布局不可重组 |
 | ⑤ emit | `Source` + `prof.tool` | `Artifact { path, bytes, reused }` | 编译器报错（原文透出） |
 
-### 10.3 typed DSL：f32 逐点与归约两族
+### 10.3 typed DSL：f32 逐点、归约与两核拼接
 
 `#[cutile::dsl]` 暂支持普通 Rust 函数中的单个 `for i in 0..extent` 循环，配一次写回：`output[i] = expr`
 （逐点）或 `output[0] += expr`（归约，累加到固定槽位）。宏在编译期解析/限制 Rust AST，生成
@@ -806,7 +806,8 @@ text      = { any } ;            (* 片段拼接时原样保留 *)
 
 **证据强度**：`tests/ir_exec_tests.rs` 把发射出的 C 与一个生成的 `main` 交给 `cc` 编译执行，再按
 IEEE-754 位模式与 Rust 参考实现逐元素比对（含 ±0、次正规、长度守卫、`extent = 0`、归约累加顺序），
-所以发射器不是靠字符串断言过关。该原型仍不支持 tile/layout、跨算子融合或 CUDA/Metal 发射，尚未接入
+所以发射器不是靠字符串断言过关（融合核另有 `fusion_removes_the_intermediate_buf_and_keeps_every_bit`
+把「两趟」与「一趟」逐位对拍）。该原型仍不支持 tile/layout、自动融合调度或 CUDA/Metal 发射，尚未接入
 生产 dispatch；迁移顺序是扩展 IR 与测试，接入真实后端并对拍后，再逐步删除相应 `.k` 模板和重复 lowering。
 
 ### 10.4 缓存指纹

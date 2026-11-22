@@ -1,13 +1,16 @@
 //! Typed, target-neutral IR for the `#[dsl]` kernel family.
 //!
 //! 一张 [`Kernel`] 覆盖三种写法：逐点 `output[idx] = value`、归约 `output[at] += value`、以及由
-//! 前两者组合出的融合核（[`Kernel::fuse`]）。这一层只做校验、常量折叠与可移植 C 发射；它还没接
-//! `Lower`/`Image`，所以任何「性能提升」都不该由它来宣称。
+//! 前两者组合出的融合核（[`Kernel::fuse`]）。这一层做校验、规范化、常量折叠、死形参消除与可移植
+//! C 发射——后四者排成 [`PassManager`] 里的有序通道；它还没接 `Lower`/`Image`，所以任何「性能
+//! 提升」都不该由它来宣称。
 
 use core::fmt::{self, Write as _};
 
 mod fuse;
+mod pass;
 mod validate;
+pub use pass::{Pass, PassManager};
 use validate::verify_core;
 
 /// Scalar element types represented by the initial pointwise IR.
@@ -301,13 +304,10 @@ impl Kernel {
         )
     }
 
-    /// Fold constant-only subexpressions, retaining operations whose result is non-finite.
+    /// Run the standard pass pipeline: verify → canonicalize → fold constants → drop dead
+    /// parameters → verify. The result is a valid, simplified kernel.
     pub fn optimize(&self) -> Result<Self, VerificationError> {
-        self.verify()?;
-        let mut optimized = self.clone();
-        *optimized.write.expr_mut() = optimize_expr(self.write.expr().clone());
-        optimized.verify()?;
-        Ok(optimized)
+        PassManager::standard().run(self.clone())
     }
 
     /// Emit portable C; return status 1 when a guarded length is violated.
@@ -362,30 +362,20 @@ fn write_parameter(
 /// 归约只碰 `output[at]` 一个槽：输出守卫看 `at` 是否越界，其余缓冲仍看 `extent`。
 fn write_guards(source: &mut String, kernel: &Kernel) {
     let slot = kernel.write.slot();
-    let mut bufs = 0;
-    for parameter in kernel
+    let bufs = kernel
         .params
         .iter()
-        .filter(|parameter| parameter.ty.is_buf())
-    {
-        match slot {
-            Some(at) if parameter.name == kernel.output => {
-                let _ = writeln!(
-                    source,
-                    "    if ({at} >= {}) return 1;",
-                    buf_length_name(bufs)
-                );
-            }
-            _ => {
-                let _ = writeln!(
-                    source,
-                    "    if ({} > {}) return 1;",
-                    kernel.extent,
-                    buf_length_name(bufs)
-                );
-            }
-        }
-        bufs += 1;
+        .filter(|parameter| parameter.ty.is_buf());
+    for (idx, parameter) in bufs.enumerate() {
+        let guard = match slot {
+            Some(at) if parameter.name == kernel.output => format!("{at} >="),
+            _ => format!("{} >", kernel.extent),
+        };
+        let _ = writeln!(
+            source,
+            "    if ({guard} {}) return 1;",
+            buf_length_name(idx)
+        );
     }
 }
 
@@ -412,42 +402,6 @@ fn write_reduce_header(source: &mut String, kernel: &Kernel, at: u32) {
         "    for (size_t {0} = 0; {0} < {1}; ++{0}) {{\n        {2}[{3}] += ",
         kernel.idx, kernel.extent, kernel.output, at
     );
-}
-
-fn optimize_expr(expression: Expr) -> Expr {
-    match expression {
-        Expr::Neg(value) => fold_negation(*value),
-        Expr::Binary { op, left, right } => fold_binary(op, *left, *right),
-        expression => expression,
-    }
-}
-
-fn fold_negation(value: Expr) -> Expr {
-    let value = optimize_expr(value);
-    let Expr::F32(bits) = value else {
-        return Expr::Neg(Box::new(value));
-    };
-    let result = -f32::from_bits(bits);
-    if result.is_finite() {
-        return Expr::F32(result.to_bits());
-    }
-    Expr::Neg(Box::new(Expr::F32(bits)))
-}
-
-fn fold_binary(op: BinaryOp, left: Expr, right: Expr) -> Expr {
-    let left = optimize_expr(left);
-    let right = optimize_expr(right);
-    if let (Expr::F32(left), Expr::F32(right)) = (&left, &right) {
-        let result = op.apply(f32::from_bits(*left), f32::from_bits(*right));
-        if result.is_finite() {
-            return Expr::F32(result.to_bits());
-        }
-    }
-    Expr::Binary {
-        op,
-        left: Box::new(left),
-        right: Box::new(right),
-    }
 }
 
 fn buf_length_name(buf: usize) -> String {

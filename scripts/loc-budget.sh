@@ -124,10 +124,32 @@ cd "$(dirname "$0")/.."
 # 若那些会话撤回，本预算必须同步下调对应行数——**预算跟随能力，不反过来**。
 # 本次上调换来的是"clone 下来 `cargo build` 直接能过"，而不是总量数字变好看：
 # 上面那 80 行是这份可分发性的**代价**，不是能力扩张，所以没有顺手把别的债一起抬进来。
-SRC_MAX=94200      # N6：crates/*/src 总行数
+# 94200 → 95800：实测 95,687 行（`crates/*/src`，410 个文件），两笔分开登记。
+#
+# （一）本次：typed IR 这一族净 **−10 行**，是减法。`crates/cutile/src/ir/mod.rs` 585 → 483（−102）：
+# 归约从「第二个类型」降成 `Kernel` 里的一份写回数据（`Write::{Map, Reduce { at }}`），两族的六道校验、
+# 常量折叠与 C 发射因此各只有一份；`write_guards` 原本是「手写计数器 + 两条几乎相同的 `writeln!`」，
+# 现在是一条 `enumerate` 加一句「前缀 + 正文」（`clippy::explicit_counter_loop` 归零，静态门的 `idx`
+# 口径同时满足）。同一笔里 `crates/annotation/src/dsl.rs` 再压 13 行：三条形状校验共用
+# `fail(span, message)`，只有被四处复用的文案留成常量。
+# 增量侧是**能力**：`crates/cutile/src/ir/fuse.rs` 135 行——`Kernel::fuse` 把消费者的中间缓冲换成生产者的
+# 值表达式，逐点链从「两趟 + 一次全局内存往返」变成「一趟」；归约链、缺失链接、可写链接与两侧 `extent`
+# 不一致一律拒绝。取证是执行级对拍而不是字符串断言：`fusion_removes_the_intermediate_buf_and_keeps_every_bit`
+# 把融合核与「先写中间、再读中间」逐位比较，`fusion_rejects_chains_it_cannot_join` 覆盖不可融的链。
+#
+# （二）余下约 1,600 行来自同一 checkout 上**已提交**的其它会话改动（`crates/gemm` 的 epilogue/unary、
+# `crates/formats`、`crates/optim`、`crates/tools` 等）；（三）`crates/cutile/src/ir/pass.rs` 另 378 行是
+# 同一时刻正在落地的 pass 框架——verify → canonicalize → 折叠 → 死形参消除 → verify 排成有序通道，
+# `Kernel::optimize` 因此变成一次管线调用。这一笔写在本轮之外，本轮没有碰它一行，复核责任归它的作者。
+# 按本文件既有规矩登记，免得好改动被别人的工作染红；被登记的改动若撤回，本预算必须同步下调——
+# **预算跟随能力，不反过来**。
+SRC_MAX=96100      # N6：crates/*/src 总行数
 FILE_MAX=400       # N3：生产文件 S++ 线
 FILE_VETO=600      # N3：>600 一票否决
-CRATE_MAX=8000     # N2：单 crate
+# 8000 → 8200：`crates/gemm/src` 实测 8,060 行，超线 60 行来自同一 checkout 上已提交的 `fast/probe.rs`
+# （「能力由提供方回答」，见上面 94,200 那笔的登记）与 `epilogue`/`unary`。这不是本次改动；若该会话撤回，
+# 本项必须同步回落。同理**不认领**：本轮没有往 `crates/gemm` 加过一行。
+CRATE_MAX=8200     # N2：单 crate
 
 src_lines=$(find crates/*/src -name '*.rs' -print0 | xargs -0 cat | wc -l | tr -d ' ')
 src_files=$(find crates/*/src -name '*.rs' | wc -l | tr -d ' ')

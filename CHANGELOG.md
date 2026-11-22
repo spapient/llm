@@ -6,15 +6,24 @@
 ## [Unreleased]
 ### Added
 
-- **typed IR 多了一族：归约 `Reduce`（`output[at] += value`），逐点与归约共用一套六道校验**。
-  此前 IR 只能表达 `output[idx] = expr`，`dot` / `sum` 这类内核必须另起一套 lowering。现在
-  `crates/cutile/src/ir/reduce.rs` 只声明「累加到固定槽位」这一处差异（`at: u32`），名字/形参/生成名/
-  `extent`/输出/表达式六道闸移到 `ir/validate.rs` 的 `verify_core` 两份共用，发射只在守卫与循环体
-  分道：`if (extent > cutile_len_N) return 1;` 之后是 `for (...) output[at] += value;`。
-  累加顺序与 Rust 参考实现逐位一致：`ir_exec_tests` 把源码交给 `cc` 编译执行后再按 IEEE-754 位模式
-  比对（`reduce_emitted_c_accumulates_in_the_same_order`），不是字符串断言。
-  **代价**：`ir.rs` 一份 589 行变成 `ir/{mod,validate,reduce}.rs` 三份 737 行——多出的行是第二族的
-  发射与两份族共用的校验，不是新样板。**验证**：`cargo test -p cutile` 119 条全绿。
+- **typed IR 多了一族：归约 `Write::Reduce { at }`（`output[at] += value`），两族共用一套六道校验**。
+  此前 IR 只能表达 `output[idx] = expr`，`dot` / `sum` 这类内核必须另起一套 lowering。现在两族不是两个
+  类型，而是同一个 `Kernel` 里的一份写回数据（`Write::{Map, Reduce { at }}`），因此名字/形参/生成名/
+  `extent`/输出/表达式六道闸（`ir/validate.rs` 的 `verify_core`）、常量折叠与 C 发射各自只有一份，
+  发射时只在守卫与循环体分道：`if (extent > cutile_len_N) return 1;` 之后是
+  `for (...) output[at] += value;`。累加顺序与 Rust 参考实现逐位一致：`ir_exec_tests` 把源码交给 `cc`
+  编译执行后再按 IEEE-754 位模式比对（`reduce_emitted_c_accumulates_in_the_same_order`），不是字符串断言。
+  **代价**：`crates/cutile/src/ir/` 从 589 行（单文件 `ir.rs`）拆成三份——`mod`（`Kernel` + `Write` + C
+  发射）、`validate`（六道闸）、`fuse`（两核拼接）。多出的行是第二族的写回语义、两族共用的校验与融合
+  改写，不是新样板。**验证**：`cargo test -p cutile` 123 条全绿（含 9 条 `cc` 编译执行对拍）。
+
+- **两个逐点核可以拼成一个：`Kernel::fuse` 把消费者的中间缓冲换成生产者的值表达式**。
+  `crates/cutile/src/ir/fuse.rs` 只做「改写 + 重新校验」，不碰发射器：消掉中间缓冲后的核仍是一张普通
+  `Kernel`，常量折叠、长度守卫与 C 发射全部原样复用，融合核的名字是 `生产者_消费者`。归约链、缺失的
+  链接、可写链接与两侧 `extent` 不一致一律拒绝，而不是猜一个意思。逐点链因此从「两趟 + 一次全局内存
+  往返」变成「一趟」。**验证**：`ir_exec_tests` 的
+  `fusion_removes_the_intermediate_buf_and_keeps_every_bit` 把融合核与「先写中间、再读中间」逐位对拍，
+  `fusion_rejects_chains_it_cannot_join` 覆盖不可融的链。
 
 - **`crates/rocm`（`ascend`）与 `crates/opencl`（`intel`）的片段层开始有测试：两边从 0 条到 9 + 10 条**。
   此前两个 crate 都是 `autotests = false` 且没有任何测试目标，`cargo test -p llm-rocm -p llm-opencl`
@@ -38,21 +47,25 @@
 
 - **typed IR 有了执行级判据：发射出的 C 真的编译、真的跑，并与 Rust 逐位对拍**。
   此前 `tests/ir_tests.rs` 只断言「生成的文本里含某个片段」——括号写错、长度守卫漏一条、常量折叠算错，
-  字符串断言都看不见。新增 `crates/cutile/tests/ir_exec_tests.rs`（6 条）：把 `emit_c` 的产物和一个
+  字符串断言都看不见。新增 `crates/cutile/tests/ir_exec_tests.rs`（9 条）：把 `emit_c` 的产物和一个
   生成的 `main` 交给 `cc -std=c11 -O0` 真正编译执行，再用 `f32::to_bits` 逐元素与 Rust 参考实现比对。
   覆盖逐点 `+ - * /` 与取负（含 `-0.0` 的符号位）、归约 `out[0] += a[k] * b[k]` 的累加顺序、
   `extent` 大于缓冲（守卫返回非零且一个字节都不写）、`extent = 0`（写入零个元素），以及
   `#[dsl]` 宏前端生成的 IR（`__dsl_ir_*` → C → 执行）。输入含 `±0.0`、次正规、`3e38`、`1e-45`
   与固定种子 xorshift 填满的随机值。宏路径从此不再只有「能构造出 `Kernel`」这一条证据。
-  **验证**：`cargo test -p cutile` 119 条全绿（含这 6 条执行对拍）。
+  **验证**：`cargo test -p cutile` 123 条全绿（含这 9 条执行对拍）。
 
-- **`#[dsl]` 前端三个文件合并回一个：680 行 / 3 文件 → 598 行 / 1 文件（净 −82 行、−2 文件）**。
+- **`#[dsl]` 前端三个文件合并回一个，并再压一轮：680 行 / 3 文件 → 585 行 / 1 文件（净 −95 行、−2 文件）**。
   `dsl/{mod,types,render}.rs` 的切分原本只为压 600 行线，但 `types.rs` 只有 60 行、`render.rs` 只有
   42 行，读一条 lowering 要在三个文件之间跳；合并后按「形参类型闭集 → 形状 → 表达式 → 装配」的顺序
-  排布，带 span 的报错文案与判定顺序逐字未改，`#[dsl]` 的语义因此与合并前完全等价。
-  **验证**：`cargo test -p llm-annotation` 50 条、`cargo test -p cutile` 119 条全绿；
-  `cargo fmt --check` 干净，`cargo clippy -p llm-annotation --all-targets -D warnings` 零告警；
-  `scripts/loc-budget.sh` 的 600 行否决项不再命中本文件。
+  排布，带 span 的报错文案与判定顺序逐字未改，`#[dsl]` 的语义因此与合并前完全等价。合并版再做两处
+  收敛：形状校验的每条错误路径不再各写四行 `return Err(Error::new(span, "…"))`，而统一走
+  `fail(span, message)`，只有被四处复用的文案留成常量；C11 关键字表仍是 44 词的单串，查找从
+  `split_ascii_whitespace().any(..)` 换成「首尾补空格 + `contains(" kw ")`」，重复形参检测也用线性扫描，
+  以守住 `tests/audit.rs` 对生产源码「禁用关联容器」的约束。
+  **验证**：`cargo test -p llm-annotation` 44 + 6 条与 2 条 doctest、`cargo test -p cutile` 123 条全绿；
+  `cargo fmt --all --check` 干净，`cargo clippy -p llm-annotation --all-targets -D warnings` 零告警；
+  `scripts/loc-budget.sh` 的 600 行否决项零命中。
 
 - **`#[dsl]` 与 typed IR 整改到仓库自己的质量门：命名归一到 `buf`/`idx`，圈复杂度全部 ≤ 5，`.expect` 清零**。
   上一轮落地的 `crates/annotation/src/dsl.rs` 与 `crates/cutile/src/ir.rs` 跑 `cargo test -p llm-tools --test gate`
