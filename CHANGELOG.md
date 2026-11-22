@@ -6,6 +6,19 @@
 ## [Unreleased]
 ### Changed
 
+- **`crates/fuzz` 的测试夹具收进 `src/`：15 个 harness 入口各剩一行，驱动与种子只留一份源文件**。
+  原先判据住在 `tests/support.rs` 这个"支持单元"里，每个 `tests/fuzz_*.rs` 都用
+  `include!("support.rs")` 把整组驱动编进自己的二进制——15 份副本、15 次编译，语料生成器与
+  确定性 sweep 又各 `#[path]` 取一次。现在分层：驱动（15 个 `Target`，含 5 条语义 oracle）在
+  `src/drivers.rs`，合法范例在 `src/seeds.rs`，harness 边界（`fuzz_target!` 夹具与 Windows 空
+  `main` 桩）在 `src/harness.rs`，入口 `src/fuzz_*.rs` 只剩 `mod drivers` + `include!` +
+  `fuzz_harness!(…)` 三行、内容一行。`tests/parsers.rs` 与 `tests/gen_corpus.rs` 以 `#[path]`
+  取同一份 `src/drivers.rs` / `src/seeds.rs`，不再有第二份定义；`fuzz_tests.rs` 由 `src/lib.rs`
+  按 `#[cfg(test)] mod fuzz_tests;` 挂载（与 `train` 的夹具同一挂法）。顺带补上 `nextest`
+  `default-filter` 里此前漏掉的 5 个语义 oracle 二进制（`fuzz_crc` / `fuzz_leb_roundtrip` /
+  `fuzz_shape` / `fuzz_cutile_negotiate` / `fuzz_dist`），`--all-features` 下列举测试不再整体失败。
+  **验证**：`cargo test -p llm-fuzz --locked` 17 单测 + 2 sweep（15 目标 × 512 用例）+ 5 条属性 +
+  doctest 全绿；`cargo check -p llm-fuzz --lib --locked` 零告警。
 - **`crates/spec` 整体并入 `crates/prof`：契约词汇与设备档案落进同一个 crate，少一个成员、净 −134 行**。
   合并的判据不是"都跟设备有关"，而是**同一条文法**：档案声明"这台设备能拼出 `dot`"，片段声明"`dot`
   在 `.metal` 里这么写"，模板词法与签名就是两边的共同语言，而 `prof` 原本只是把 `spec` 的 9 个模块

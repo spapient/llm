@@ -34,9 +34,8 @@ pub fn snapshot() -> Vec<u8> {
 
 /// 一份合法的自有 `.u` 容器 v2：一个 2×3 的 f32 段，24 字节数据，64 字节对齐。
 pub fn u_container() -> Vec<u8> {
-    let segment =
-        weights::Segment::new("w", tensor::DType::F32, vec![2, 3], None, vec![0u8; 24])
-            .expect("段合法");
+    let segment = weights::Segment::new("w", tensor::DType::F32, vec![2, 3], None, vec![0u8; 24])
+        .expect("段合法");
     weights::Writer::new()
         .push(segment)
         .expect("段不重名")

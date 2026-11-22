@@ -4,7 +4,8 @@
 //! [`sweep_all`]。**不拥有**：具体解析器（`cutile` 的模板与片段名）、语料库与进程管理
 //! （属于 CI 的 fuzz job）。**依赖**：`diagnostic`（运行时只此一个）。**被依赖**：
 //! `tests/parsers.rs`（本 crate 自己的集成测试，以 `+dev` 依赖接上 `cli` / `weights` 等
-//! 真实解析器）与 `tests/fuzz_*.rs`（libfuzzer harness）。
+//! 真实解析器）与 `src/fuzz_*.rs`（libfuzzer harness 入口；判据与种子在 `src/drivers.rs` /
+//! `src/seeds.rs`）。
 //!
 //! 为什么表单独立在一个 crate：真正需要它的不是一个解析器，而是**每一个**解析器。把
 //! "什么算失败"写在一处，才能保证命令行文法与 safetensors 头部被同一套判据检查，而不是各写
@@ -537,6 +538,13 @@ pub trait Target {
     }
 }
 
+// 契约单测与共享定义：`tests/parsers.rs`、`src/fuzz_*.rs` 与库内单测取同一份驱动与种子，
+// 不再各留一份。三者只在测试构建里编译；`drivers` / `seeds` 由 `#[path]` 供给其它目标。
 #[cfg(test)]
-#[path = "../tests/fuzz_tests.rs"]
-mod tests;
+#[allow(dead_code)]
+mod drivers;
+#[cfg(test)]
+mod fuzz_tests;
+#[cfg(test)]
+#[allow(dead_code)]
+mod seeds;

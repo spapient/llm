@@ -9,120 +9,59 @@ use diagnostic::{Code, Error, Result};
 use crate::axis;
 use crate::{Bounds, BoundsResult, Contract, ContractSpec, ParamRole, Shape, spec_accessors};
 
-axis!(
+/// 单轴层清单：一行一层——`类型, 算子名[, 参数角色]`，逐条带文档，展开后交给 [`axis!`]。
+///
+/// 这些层原本是十九个四行块：`axis!(`、文档、类型、算子名、`);`。块里真正有信息量的只有
+/// 「类型 / 算子 / 角色」三列，其余逐字相同；放进一张表之后，新增一层与增一行同宽，读的人
+/// 也不必逐块跳过样板才知道差异在哪。角色省略即 `Trainable`（由 [`axis!`] 的默认臂决定）。
+macro_rules! axis_table {
+    ($($(#[$doc:meta])* $ty:ident, $op:literal $(, $role:ident)?;)*) => {
+        $(
+            axis!($(#[$doc])* $ty, $op $(, $role)?);
+        )*
+    };
+}
+
+axis_table! {
     /// RMSNorm 归一化：`y = γ · x / sqrt(mean(x²) + ε)`，沿最后一维 `len` 归一化。
-    RmsNorm,
-    "rmsnorm_f32",
-    Norm
-);
-
-axis!(
+    RmsNorm, "rmsnorm_f32", Norm;
     /// Softmax：沿最后一维 `len` 做数值稳定的归一化（减最大值后取指数再除和）。
-    Softmax,
-    "softmax_f32"
-);
-
-axis!(
+    Softmax, "softmax_f32";
     /// GELU 激活（精确 erf 版）：逐元素 `0.5·x·(1 + erf(x/√2))`。
-    Gelu,
-    "gelu_f32"
-);
-
-axis!(
+    Gelu, "gelu_f32";
     /// SiLU / Swish 激活：逐元素 `x · sigmoid(x)`。
-    Silu,
-    "silu_f32"
-);
-
-axis!(
+    Silu, "silu_f32";
     /// 逐元素指数：`y = exp(a)`。
-    Exp,
-    "exp_f32"
-);
-
-axis!(
+    Exp, "exp_f32";
     /// 逐元素自然对数：`y = ln(a)`。定义域由算子语义表负责（层不替内核判值域）。
-    Log,
-    "log_f32"
-);
-
-axis!(
+    Log, "log_f32";
     /// LeakyReLU 激活：`y = x`（非负）或 `0.01·x`（负区）。
-    LeakyRelu,
-    "leaky_relu_f32"
-);
-
-axis!(
+    LeakyRelu, "leaky_relu_f32";
     /// HardSigmoid 激活：`y = clamp(x/6 + 0.5, 0, 1)`。
-    HardSigmoid,
-    "hard_sigmoid_f32"
-);
-
-axis!(
+    HardSigmoid, "hard_sigmoid_f32";
     /// Sigmoid 激活：`y = 1 / (1 + exp(-x))`，输出落在 `(0, 1)`。
-    Sigmoid,
-    "sigmoid_f32"
-);
-
-axis!(
+    Sigmoid, "sigmoid_f32";
     /// Tanh 激活：`y = tanh(x)`，输出落在 `(-1, 1)`。
-    Tanh,
-    "tanh_f32"
-);
-
-axis!(
+    Tanh, "tanh_f32";
     /// ReLU 激活：`y = max(x, 0)`。
-    Relu,
-    "relu_f32"
-);
-
-axis!(
+    Relu, "relu_f32";
     /// RoPE 旋转位置编码：成对分量按位置做二维旋转；`len` 为头宽，奇数末尾原样透传。
-    Rope,
-    "rope_f32"
-);
-
-axis!(
+    Rope, "rope_f32";
     /// 标量缩放：逐元素 `α · x`，系数由算子样本固定。
-    Scale,
-    "scale_f32"
-);
-
-axis!(
+    Scale, "scale_f32";
     /// 逐元素加法：`y = a + b`，两路输入等长 `len`。
-    Add,
-    "add_f32"
-);
-
-axis!(
+    Add, "add_f32";
     /// 逐元素乘法：`y = a · b`，两路输入等长 `len`。
-    Mul,
-    "mul_f32"
-);
-
-axis!(
+    Mul, "mul_f32";
     /// 逐元素减法：`y = a - b`，两路输入等长 `len`。
-    Sub,
-    "sub_f32"
-);
-
-axis!(
+    Sub, "sub_f32";
     /// 逐元素除法：`y = a / b`，两路输入等长 `len`；除零语义归算子，层不越权改写。
-    Div,
-    "div_f32"
-);
-
-axis!(
+    Div, "div_f32";
     /// 逐元素取大：`y = max(a, b)`。
-    Max,
-    "max_f32"
-);
-
-axis!(
+    Max, "max_f32";
     /// 逐元素取小：`y = min(a, b)`。
-    Min,
-    "min_f32"
-);
+    Min, "min_f32";
+}
 
 /// 嵌入查表层。
 #[crate::spec(name = $name, out = [$tokens, $dim], ops = [$op], role = $role)]

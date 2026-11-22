@@ -67,7 +67,6 @@ use diagnostic::{Code, Error, Result};
 mod attention;
 mod declare;
 mod engram;
-mod format;
 mod recurrent;
 mod lm_head {
     //! `lm_head`：由注解声明的固定形状层。
@@ -116,7 +115,6 @@ mod param_role {
         }
     }
 }
-mod norm;
 mod single;
 mod spatial;
 mod stack;
@@ -125,7 +123,7 @@ mod stack;
 pub use attention::{Attention, AttentionAlgo, AttentionBlock, DecodeAttention, LatentAttention};
 
 #[doc(inline)]
-pub use declare::Bounds;
+pub use declare::{Bounds, OpLayer, WeightFormat};
 
 #[doc(inline)]
 pub use engram::{Bypass, MemoryBlock, Table, allocate, next_prime, phi, slot_of, slots};
@@ -134,18 +132,12 @@ pub use engram::{Bypass, MemoryBlock, Table, allocate, next_prime, phi, slot_of,
 pub use lm_head::LmHead;
 
 #[doc(inline)]
-pub use format::WeightFormat;
-
-#[doc(inline)]
 pub use param_role::ParamRole;
 
 #[doc(inline)]
-pub use norm::{BatchNorm2d, GroupNorm, InstanceNorm, LayerNorm};
-
-#[doc(inline)]
 pub use spatial::{
-    AdaptiveAvgPool2d, AvgPool2d, Conv1d, Conv2d, ConvTranspose1d, ConvTranspose2d, Interpolate,
-    MaxPool1d, MaxPool2d,
+    AdaptiveAvgPool2d, AvgPool2d, BatchNorm2d, Conv1d, Conv2d, ConvTranspose1d, ConvTranspose2d,
+    GroupNorm, InstanceNorm, Interpolate, LayerNorm, MaxPool1d, MaxPool2d,
 };
 
 #[doc(inline)]
@@ -174,8 +166,8 @@ pub mod registry;
 
 /// 内核模块按原路径转出：内核源码与新下游都写 `nn::gemv::…` / `nn::gemm::…`。
 ///
-/// `norm` 不在这一串里：`nn::norm` 是本 crate 的归一化**层**（契约登记），`nn::kernel::norm`
-/// 才是它调用的**核**，同名不同物，靠命名空间区分而不是改名。
+/// 归一化**层**（契约登记）与空间层同居 `spatial`，`nn::kernel::norm` 才是它调用的**核**，
+/// 同名不同物，靠命名空间区分而不是改名。
 pub use kernel::{
     activation, dequant, elementwise, epilogue, fast, gemm, gemv, matmul, reduce, scalar, unary,
 };
@@ -263,7 +255,7 @@ fn nonzero(value: usize, field: &str, layer: &str) -> Result<usize> {
 }
 
 /// 层定义产出的声明：名字、输出形状、要用的算子名与参数角色。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ContractSpec {
     name: String,
     output: Shape,
@@ -388,7 +380,7 @@ pub trait Contract {
 }
 
 /// 线性层：`y = x · W`。用哪个算子由权重编码 [`WeightFormat`] 决定，而不是一个全局常量。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Linear {
     spec: ContractSpec,
     in_features: usize,

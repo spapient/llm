@@ -8,7 +8,7 @@ repository.workspace = true
 readme.workspace = true
 description = "Fuzz contract: deterministic seeds, target trait and the invariants a parser must keep."
 publish = false
-# `tests/support.rs` 是共享支持单元，不是测试目标：关掉自动发现，下面逐项声明真实目标。
+# 关掉自动发现：`tests/parsers.rs` 与 15 个 `src/fuzz_*.rs` 入口都逐项声明，入口只剩一行。
 autotests = false
 
 [features]
@@ -24,7 +24,8 @@ diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 [target.'cfg(unix)'.dependencies]
 libfuzzer-sys = { version = "0.4.13", optional = true }
 
-# 驱动方：把真实解析器灌进 `sweep`（见 `tests/parsers.rs`）与 libfuzzer harness（见 `tests/fuzz_*.rs`）。
+# 驱动方：把真实解析器灌进 `sweep`（见 `tests/parsers.rs`）与 libfuzzer harness（见 `src/fuzz_*.rs`）；
+# 共享的驱动与合法种子在 `src/drivers.rs` / `src/seeds.rs`，两边不各写一份判据。
 # 只在测试与 harness 里用，不进契约库运行时。
 [dev-dependencies]
 cli = { path = "../cli", package = "llm-cli" }
@@ -42,7 +43,7 @@ rng = { path = "../rng", package = "llm-rng" }
 # 属性层：Burn 式随机生成 + 收缩，覆盖 fuzzer 难以命中的组合空间。
 proptest = { workspace = true }
 
-# 确定性 sweep 遍历：走 libtest，默认 feature 即可跑（`tests/support.rs` 由它 include）。
+# 确定性 sweep 遍历：走 libtest，默认 feature 即可跑（驱动来自 `src/drivers.rs`）。
 [[test]]
 name = "parsers"
 path = "tests/parsers.rs"
@@ -54,95 +55,96 @@ name = "gen_corpus"
 path = "tests/gen_corpus.rs"
 harness = false
 
-# libfuzzer 目标是 `harness = false` 的独立测试二进制：拿 dev-dependencies，但不走 libtest；
-# 不作为 `example` 样例目标存在。仅在 `engine` feature 下编译。
+# libfuzzer 目标是 `harness = false` 的独立测试二进制：入口只有一行（`src/fuzz_*.rs` 调
+# `fuzz_harness!`），判据全部在 `src/drivers.rs`；不走 libtest、不作为 `example` 存在，
+# 仅在 `engine` feature 下编译。
 [[test]]
 name = "fuzz_cli"
-path = "tests/fuzz_cli.rs"
+path = "src/fuzz_cli.rs"
 harness = false
 required-features = ["engine"]
 
 [[test]]
 name = "fuzz_weights_json"
-path = "tests/fuzz_weights_json.rs"
+path = "src/fuzz_weights_json.rs"
 harness = false
 required-features = ["engine"]
 
 [[test]]
 name = "fuzz_weights_safetensors"
-path = "tests/fuzz_weights_safetensors.rs"
+path = "src/fuzz_weights_safetensors.rs"
 harness = false
 required-features = ["engine"]
 
 [[test]]
 name = "fuzz_weights_archive"
-path = "tests/fuzz_weights_archive.rs"
+path = "src/fuzz_weights_archive.rs"
 harness = false
 required-features = ["engine"]
 
 [[test]]
 name = "fuzz_train_snapshot"
-path = "tests/fuzz_train_snapshot.rs"
+path = "src/fuzz_train_snapshot.rs"
 harness = false
 required-features = ["engine"]
 
 [[test]]
 name = "fuzz_serve_frames"
-path = "tests/fuzz_serve_frames.rs"
+path = "src/fuzz_serve_frames.rs"
 harness = false
 required-features = ["engine"]
 
 [[test]]
 name = "fuzz_http_head"
-path = "tests/fuzz_http_head.rs"
+path = "src/fuzz_http_head.rs"
 harness = false
 required-features = ["engine"]
 
 [[test]]
 name = "fuzz_wire_sealed"
-path = "tests/fuzz_wire_sealed.rs"
+path = "src/fuzz_wire_sealed.rs"
 harness = false
 required-features = ["engine"]
 
 [[test]]
 name = "fuzz_wire_leb"
-path = "tests/fuzz_wire_leb.rs"
+path = "src/fuzz_wire_leb.rs"
 harness = false
 required-features = ["engine"]
 
 [[test]]
 name = "fuzz_lex"
-path = "tests/fuzz_lex.rs"
+path = "src/fuzz_lex.rs"
 harness = false
 required-features = ["engine"]
 
 [[test]]
 name = "fuzz_crc"
-path = "tests/fuzz_crc.rs"
+path = "src/fuzz_crc.rs"
 harness = false
 required-features = ["engine"]
 
 [[test]]
 name = "fuzz_leb_roundtrip"
-path = "tests/fuzz_leb_roundtrip.rs"
+path = "src/fuzz_leb_roundtrip.rs"
 harness = false
 required-features = ["engine"]
 
 [[test]]
 name = "fuzz_shape"
-path = "tests/fuzz_shape.rs"
+path = "src/fuzz_shape.rs"
 harness = false
 required-features = ["engine"]
 
 [[test]]
 name = "fuzz_cutile_negotiate"
-path = "tests/fuzz_cutile_negotiate.rs"
+path = "src/fuzz_cutile_negotiate.rs"
 harness = false
 required-features = ["engine"]
 
 [[test]]
 name = "fuzz_dist"
-path = "tests/fuzz_dist.rs"
+path = "src/fuzz_dist.rs"
 harness = false
 required-features = ["engine"]
 

@@ -119,9 +119,13 @@ pub const fn contains(name: &str) -> bool {
 }
 
 /// 算子语义表：声明层有的算子，这里必须有它的代价、样本与标量参考。
+///
+/// 查表走二分而不是线性扫描：`REGISTRY` 与算子目录同序，且清单已按名字字典序排好（上面的
+/// `const` 断言把这一不变量钉死），所以"有序"不是约定而是编译期事实。名字列表只有几十条，
+/// 但装配一条几百层的模型会按层查它若干次，对数查找省下的是热路径上重复的比较。
 pub fn model(name: &str) -> Option<prof::model::Model> {
     REGISTRY
-        .iter()
-        .find(|entry| entry.name == name)
-        .map(|entry| entry.model)
+        .binary_search_by(|entry| entry.name.cmp(name))
+        .ok()
+        .map(|idx| REGISTRY[idx].model)
 }

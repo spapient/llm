@@ -74,13 +74,11 @@ pub mod settle;
 // —— L3 合成律：LLD §4.5 的逐段证书 → 网络级误差上界与适用域 ——
 pub mod l3;
 
-// —— 外部格式只读适配：torch `.bin`（ZIP_STORED + pickle）、GGUF、受限 JSON ——
+// —— 外部格式只读适配：torch `.bin`（ZIP_STORED + pickle，已平铺进单模块）、GGUF、受限 JSON ——
 pub(crate) mod cursor;
 pub mod gguf;
 pub mod json;
-pub(crate) mod pickle;
 pub mod torch;
-pub(crate) mod zip;
 
 pub use lifecycle::import;
 pub mod safetensors;

@@ -66,7 +66,7 @@ device     → cutile, diagnostic, engine, nn, prof, shard    +dev: testkit（�
 serve      → diagnostic, engine, nn, rng, tensor, tokenizer, weights, wire    +dev: testkit（形状积只经 `tensor::product` 的饱和乘法：回绕出的偏小数会骗过权重长度核对）
 cli        → cutile, device, diagnostic, engine, nn, prof, serve, shard, tensor, tokenizer, train, weights    +dev: storage（L7 组合根：只做命令分派与各层装配，不定义新类型）
 annotation → （叶：工具边，`#[model]` 注解，不参与方向判定）
-fuzz       → diagnostic    +dev: cli, cutile, rng, serve, storage, tensor, testkit, tools, train, weights, wire（工具成员；`+dev` 是 `tests/support.rs` 里的驱动对象）
+fuzz       → diagnostic    +dev: cli, cutile, rng, serve, storage, tensor, testkit, tools, train, weights, wire（工具成员；`+dev` 是 `src/drivers.rs` 里的驱动对象，合法种子在 `src/seeds.rs`，`src/fuzz_*.rs` 只剩一行入口）
 benchmarks → （叶    +dev: autograd, cutile, engine, nn, prof, serve, storage, tensor, testkit, tokenizer, tools, train, weights, wire（工具成员：只声明被测对象，测量配置归 criterion）
 testkit    → （叶    +dev: autograd, cutile, nn, prof, tensor, tools, train, weights（工具成员：夹具库 + 门禁；被测层只出现在 dev-dependencies）
 ```

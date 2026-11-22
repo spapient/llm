@@ -4,10 +4,8 @@
 //! 语料目录挂给 libFuzzer。范例与 sweep 遍历共用 [`seeds`]，二进制格式不经手抄。被 test runner
 //! 无参拉起时不落盘，避免普通 `cargo test` 产生源码树副作用。
 
-#[path = "support.rs"]
-mod support;
-
-use support::seeds;
+#[path = "../src/seeds.rs"]
+mod seeds;
 
 use std::fs;
 use std::path::PathBuf;

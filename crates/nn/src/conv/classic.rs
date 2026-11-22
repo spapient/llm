@@ -1,5 +1,5 @@
 //! 池化 / 插值 / 归一化的算子声明：几何是声明档固定常量，算术与标量参考直接复用
-//! [`crate::conv`] 与 [`crate::norm`] 的真实现。
+//! [`crate::conv`] 与 [`crate::kernel::norm`] 的真实现。
 
 use crate::Scalar;
 use crate::conv::ConvGeom;
