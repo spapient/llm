@@ -120,23 +120,23 @@ fn metal_stage(idx: usize, stage: &MetalStage<'_>) -> String {
     let mut sets = String::new();
     for (slot, name) in stage.bufs.iter().enumerate() {
         sets.push_str(&format!(
-            "            [encoder{index} setBuffer:b_{name} offset:0 atIndex:{slot}];\n"
+            "            [encoder{idx} setBuffer:b_{name} offset:0 atIndex:{slot}];\n"
         ));
     }
     format!(
         r#"        {{
-            id<MTLFunction> function{index} = [library newFunctionWithName:@"{entry}"];
-            if (!function{index}) {{ fprintf(stderr, "metallib 里没有 {entry}\n"); return 5; }}
-            id<MTLComputePipelineState> pipeline{index} = [device newComputePipelineStateWithFunction:function{index} error:&error];
-            if (!pipeline{index}) {{ fprintf(stderr, "管线创建失败：%s\n", error.localizedDescription.UTF8String); return 6; }}
-            id<MTLCommandBuffer> buffer{index} = [queue commandBuffer];
-            id<MTLComputeCommandEncoder> encoder{index} = [buffer{index} computeCommandEncoder];
-            [encoder{index} setComputePipelineState:pipeline{index}];
-{sets}            [encoder{index} dispatchThreads:MTLSizeMake({gx}, {gy}, {gz}) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
-            [encoder{index} endEncoding];
-            [buffer{index} commit];
-            [buffer{index} waitUntilCompleted];
-            if (buffer{index}.error) {{ fprintf(stderr, "内核执行失败：%s\n", buffer{index}.error.localizedDescription.UTF8String); return 7; }}
+            id<MTLFunction> function{idx} = [library newFunctionWithName:@"{entry}"];
+            if (!function{idx}) {{ fprintf(stderr, "metallib 里没有 {entry}\n"); return 5; }}
+            id<MTLComputePipelineState> pipeline{idx} = [device newComputePipelineStateWithFunction:function{idx} error:&error];
+            if (!pipeline{idx}) {{ fprintf(stderr, "管线创建失败：%s\n", error.localizedDescription.UTF8String); return 6; }}
+            id<MTLCommandBuffer> buffer{idx} = [queue commandBuffer];
+            id<MTLComputeCommandEncoder> encoder{idx} = [buffer{idx} computeCommandEncoder];
+            [encoder{idx} setComputePipelineState:pipeline{idx}];
+{sets}            [encoder{idx} dispatchThreads:MTLSizeMake({gx}, {gy}, {gz}) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+            [encoder{idx} endEncoding];
+            [buffer{idx} commit];
+            [buffer{idx} waitUntilCompleted];
+            if (buffer{idx}.error) {{ fprintf(stderr, "内核执行失败：%s\n", buffer{idx}.error.localizedDescription.UTF8String); return 7; }}
         }}
 "#,
         entry = stage.entry,

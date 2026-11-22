@@ -306,7 +306,7 @@ impl Optimizer for Adam {
         for (idx, (m, v)) in momentum.iter().zip(&variance).enumerate() {
             if m.len() != v.len() {
                 let message = format!(
-                    "第 {index} 槽矩长度不一致：一阶矩 {} 元素，二阶矩 {} 元素",
+                    "第 {idx} 槽矩长度不一致：一阶矩 {} 元素，二阶矩 {} 元素",
                     m.len(),
                     v.len()
                 );

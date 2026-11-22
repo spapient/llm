@@ -50,7 +50,7 @@ macro_rules! elementwise_binary_tests {
                 let expected = crate::elementwise::reference::<$ty>(&sample).expect("参考可计算");
                 let mut out = vec![0.0; a.len()];
                 $forward(a, b, &mut out).expect("等长");
-                assert_eq!(out, expected, "用例 {index}");
+                assert_eq!(out, expected, "用例 {idx}");
             }
         }
     };

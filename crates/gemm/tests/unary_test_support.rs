@@ -41,8 +41,8 @@ macro_rules! unary_op_tests {
                 let expected = crate::unary::reference::<$ty>(&sample).expect("参考可计算");
                 let mut out = vec![0.0; a.len()];
                 $forward(a, &mut out).expect("等长");
-                assert_eq!(out, expected, "用例 {index}");
-                assert!(out.iter().all(|v| v.is_finite()), "用例 {index}：结果有限");
+                assert_eq!(out, expected, "用例 {idx}");
+                assert!(out.iter().all(|v| v.is_finite()), "用例 {idx}：结果有限");
             }
         }
     };

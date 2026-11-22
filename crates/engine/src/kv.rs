@@ -166,7 +166,7 @@ impl Table {
             Error::new(
                 Code::Invalid,
                 format!(
-                    "第 {index} 个 token 还没有页：页表只有 {} 页",
+                    "第 {idx} 个 token 还没有页：页表只有 {} 页",
                     self.pages.len()
                 ),
             )

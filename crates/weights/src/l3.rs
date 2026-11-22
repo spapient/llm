@@ -248,7 +248,7 @@ fn walk(rungs: &[Rung], input: f64) -> Result<(f64, f64)> {
         error = rung.lipschitz * (rung.rho * error + rung.eps * activation);
         activation = rung.lipschitz * rung.rho_hat * activation + rung.offset;
         if !(error.is_finite() && activation.is_finite()) {
-            return Err(bad(format!("第 {index} 段越出 f64：无穷大的上界不是上界")));
+            return Err(bad(format!("第 {idx} 段越出 f64：无穷大的上界不是上界")));
         }
     }
     Ok((activation, error))

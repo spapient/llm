@@ -211,7 +211,7 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
         let want = self.slots[idx].params().len();
         if slot.m().len() != want || slot.v().len() != want {
             let message = format!(
-                "第 {index} 槽矩长度不符：快照 {} 元素，会话 {} 元素",
+                "第 {idx} 槽矩长度不符：快照 {} 元素，会话 {} 元素",
                 slot.m().len(),
                 want
             );
@@ -252,7 +252,7 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
         let want = self.slots[idx].params().len();
         if grads.len() != want {
             let message = format!(
-                "第 {index} 槽累积梯度长度不符：快照 {} 元素，会话 {} 元素",
+                "第 {idx} 槽累积梯度长度不符：快照 {} 元素，会话 {} 元素",
                 grads.len(),
                 want
             );

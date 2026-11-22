@@ -88,7 +88,7 @@ fn evaluation_normalizes_with_the_given_rolling_statistics() {
             (x[idx] - running.mean[ci]) / (running.var[ci] + EPS).sqrt() * gain[ci] + shift[ci];
         assert!(
             (got - want).abs() <= 1e-6,
-            "第 {index} 个输出 {got} vs {want}"
+            "第 {idx} 个输出 {got} vs {want}"
         );
     }
     // 通道数不匹配要在形状层报错，不静默套用错位统计。
@@ -124,7 +124,7 @@ fn running_statistics_update_by_momentum_without_changing_the_output() {
         for (idx, (a, b)) in out.iter().zip(&plain).enumerate() {
             assert!(
                 (a - b).abs() <= 1e-6,
-                "第 {index} 个输出被统计影响：{a} vs {b}"
+                "第 {idx} 个输出被统计影响：{a} vs {b}"
             );
         }
     }

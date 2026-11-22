@@ -33,7 +33,7 @@ fn scan_is_geometric_decay_for_impulse() {
     let mut out = vec![0.0; x.len()];
     forward(&x, &mut out).expect("等长");
     for (idx, (got, want)) in out.iter().zip(expected).enumerate() {
-        assert!((got - want).abs() < 1e-6, "第 {index} 步：{got} vs {want}");
+        assert!((got - want).abs() < 1e-6, "第 {idx} 步：{got} vs {want}");
     }
 }
 

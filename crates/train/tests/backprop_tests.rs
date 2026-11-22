@@ -99,7 +99,7 @@ fn check_grad(grad: &[f32], base: &[f32], name: &str, f: impl Fn(&[f32]) -> f32)
         let numeric = central(&f, base, idx);
         assert!(
             close(*actual, numeric),
-            "{name}[{index}] 解析 {actual} 与差分 {numeric} 超差"
+            "{name}[{idx}] 解析 {actual} 与差分 {numeric} 超差"
         );
     }
 }

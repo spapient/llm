@@ -113,7 +113,7 @@ fn snapshot(c: &mut Criterion) {
         .map(|idx| {
             let shape = Shape::new([SNAPSHOT_DIM]);
             let offset = idx * SNAPSHOT_DIM * size_of::<f32>();
-            Entry::new(format!("blk.{index}.attn_q.weight"), DType::F32, shape).at(offset)
+            Entry::new(format!("blk.{idx}.attn_q.weight"), DType::F32, shape).at(offset)
         })
         .collect();
     let facts = checked(Facts::new(7, 1, SNAPSHOT_ENTRIES, 32, 32), "事实");

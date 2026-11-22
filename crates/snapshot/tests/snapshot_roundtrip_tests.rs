@@ -53,8 +53,8 @@ fn optimizer_moments_round_trip_bit_for_bit() {
         let got_m: Vec<u32> = got.m().iter().map(|value| value.to_bits()).collect();
         let want_v: Vec<u32> = want.v().iter().map(|value| value.to_bits()).collect();
         let got_v: Vec<u32> = got.v().iter().map(|value| value.to_bits()).collect();
-        assert_eq!(got_m, want_m, "第 {index} 槽一阶矩逐位一致");
-        assert_eq!(got_v, want_v, "第 {index} 槽二阶矩逐位一致");
+        assert_eq!(got_m, want_m, "第 {idx} 槽一阶矩逐位一致");
+        assert_eq!(got_v, want_v, "第 {idx} 槽二阶矩逐位一致");
     }
 }
 

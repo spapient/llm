@@ -179,6 +179,6 @@ pub fn assert_exact(what: &str, got: &[f32], want: &[f32]) {
         want.len()
     );
     if let Some(idx) = got.iter().zip(want).position(|(a, b)| a != b) {
-        assert_eq!(got[idx], want[idx], "{what}：第 {index} 项不符");
+        assert_eq!(got[idx], want[idx], "{what}：第 {idx} 项不符");
     }
 }

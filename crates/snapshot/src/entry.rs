@@ -212,7 +212,7 @@ pub(crate) fn difference(idx: usize, want: &Entry, have: &Entry) -> Option<Strin
     if name != have.name() {
         let other = have.name();
         return Some(format!(
-            "第 {index} 个条目：检查点里是 `{name}`，权重文件里是 `{other}`"
+            "第 {idx} 个条目：检查点里是 `{name}`，权重文件里是 `{other}`"
         ));
     }
     if want.dtype() != have.dtype() {

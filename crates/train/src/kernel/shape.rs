@@ -247,7 +247,7 @@ pub(crate) fn input_slice<'a, L: Lane>(
     idx: usize,
     view: &'a View<'a>,
 ) -> Result<&'a [L]> {
-    let slot = format!("第 {index} 个输入");
+    let slot = format!("第 {idx} 个输入");
     L::slice(*view).ok_or_else(|| wrong_lane(op, &slot, L::KIND, view.kind()))
 }
 

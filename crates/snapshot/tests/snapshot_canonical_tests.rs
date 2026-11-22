@@ -207,7 +207,7 @@ fn random_snapshots_keep_the_length_promise_and_the_bytes() {
             offset += (lcg(&mut state) % 512) as usize;
             entries.push(
                 Entry::new(
-                    format!("blk.{round}.w{index}"),
+                    format!("blk.{round}.w{idx}"),
                     DType::F32,
                     Shape::new(dims),
                 )

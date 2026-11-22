@@ -87,7 +87,7 @@ fn every_idx_proves_against_root() {
 
         assert!(
             verify_proof(digest, &proof, &merkle_root),
-            "下标 {index} 应验证通过"
+            "下标 {idx} 应验证通过"
         );
 
         // 证明长度为 ceil(log2 n)。

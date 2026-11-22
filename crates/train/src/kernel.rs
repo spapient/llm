@@ -71,7 +71,7 @@ impl Reference {
         let mut slices = Vec::with_capacity(inputs.len());
         for (idx, view) in inputs.iter().enumerate() {
             let slice = view.f32().ok_or_else(|| {
-                Error::new(Code::Invalid, format!("`{op}` 的第 {index} 个输入不是 f32")).with(SITE)
+                Error::new(Code::Invalid, format!("`{op}` 的第 {idx} 个输入不是 f32")).with(SITE)
             })?;
             slices.push(slice);
         }

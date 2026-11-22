@@ -54,7 +54,7 @@ fn scan_local(
     let bufs = cuda_launch_params(signature);
     let init = "    int3 tid; tid.x = blockIdx.x; tid.y = blockIdx.y; tid.z = blockIdx.z;\n";
     Ok(format!(
-        "{body}\n\n__global__ void kernel_main(\n{buffers}) {{\n{init}    {kernel}({call});\n}}"
+        "{body}\n\n__global__ void kernel_main(\n{bufs}) {{\n{init}    {kernel}({call});\n}}"
     ))
 }
 

@@ -122,7 +122,7 @@ fn distributed_session_averages_gradients_before_the_step() -> Result<()> {
     for (idx, (actual, expected)) in actual.iter().zip(expected).enumerate() {
         assert!(
             (actual - expected).abs() < 1e-5,
-            "参数[{index}] 应按平均梯度更新为 {expected}，实际 {actual}"
+            "参数[{idx}] 应按平均梯度更新为 {expected}，实际 {actual}"
         );
     }
     Ok(())

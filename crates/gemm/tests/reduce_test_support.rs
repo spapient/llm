@@ -35,7 +35,7 @@ macro_rules! reduce_saturating_tests {
                 let expected = crate::reduce::reference::<$ty>(&sample).expect("参考可计算");
                 let mut out = vec![0.0];
                 $forward(input, &mut out).expect("单元素输出");
-                assert_eq!(out, expected, "用例 {index}");
+                assert_eq!(out, expected, "用例 {idx}");
             }
         }
     };

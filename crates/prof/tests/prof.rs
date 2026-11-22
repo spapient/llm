@@ -272,12 +272,12 @@ fn formulas_reject_saturated_and_degenerate_inputs_with_a_message() {
     let expect_ok = ["((1+2))", "2/3/4"];
     for (idx, text) in cases.iter().enumerate() {
         match eval_expression(text) {
-            Ok(_) => assert!(expect_ok.contains(text), "用例 {index} `{text}` 不应通过"),
+            Ok(_) => assert!(expect_ok.contains(text), "用例 {idx} `{text}` 不应通过"),
             Err(error) => {
-                assert_eq!(error.code(), Code::Invalid, "用例 {index}");
+                assert_eq!(error.code(), Code::Invalid, "用例 {idx}");
                 assert!(
                     !error.message().trim().is_empty(),
-                    "用例 {index}：拒绝必须有话说"
+                    "用例 {idx}：拒绝必须有话说"
                 );
             }
         }
@@ -299,10 +299,10 @@ fn formulas_evaluate_priority_chains_and_parenthesized_groups() {
         ("8*4096/8", 4096.0),
     ];
     for (idx, (text, expected)) in cases.iter().enumerate() {
-        let actual = eval_expression(text).expect("用例 {index} `{text}` 应可求值");
+        let actual = eval_expression(text).expect("用例 {idx} `{text}` 应可求值");
         assert!(
             (actual - expected).abs() < 1e-9,
-            "用例 {index} `{text}`：{actual} != {expected}"
+            "用例 {idx} `{text}`：{actual} != {expected}"
         );
     }
 }
@@ -316,11 +316,11 @@ fn formulas_reject_each_degenerate_shape_with_a_message() {
         "1a2", "3GHz", ".", "1.2.3", "e5", "1e",
     ];
     for (idx, text) in cases.iter().enumerate() {
-        let error = eval_expression(text).expect_err("用例 {index} `{text}` 应当拒绝");
-        assert_eq!(error.code(), Code::Invalid, "用例 {index} `{text}`");
+        let error = eval_expression(text).expect_err("用例 {idx} `{text}` 应当拒绝");
+        assert_eq!(error.code(), Code::Invalid, "用例 {idx} `{text}`");
         assert!(
             !error.message().trim().is_empty(),
-            "用例 {index} `{text}`：拒绝必须带说明"
+            "用例 {idx} `{text}`：拒绝必须带说明"
         );
     }
 }
@@ -337,10 +337,10 @@ fn formulas_handle_saturated_large_literals_without_panic() {
         "4294967295",
     ];
     for (idx, text) in cases.iter().enumerate() {
-        let value = eval_expression(text).expect("用例 {index} `{text}` 应可求值");
+        let value = eval_expression(text).expect("用例 {idx} `{text}` 应可求值");
         assert!(
             value.is_finite() || value.is_infinite(),
-            "用例 {index}：不应是 NaN"
+            "用例 {idx}：不应是 NaN"
         );
     }
 }
@@ -365,8 +365,8 @@ fn span_parse_covers_boundary_and_degenerate_forms() {
     for (idx, (text, expected)) in cases.iter().enumerate() {
         let parsed = Span::parse(text);
         match expected {
-            Ok(span) => assert_eq!(parsed.as_ref(), Ok(span), "用例 {index} `{text}`"),
-            Err(()) => assert!(parsed.is_err(), "用例 {index} `{text}` 应当拒绝"),
+            Ok(span) => assert_eq!(parsed.as_ref(), Ok(span), "用例 {idx} `{text}`"),
+            Err(()) => assert!(parsed.is_err(), "用例 {idx} `{text}` 应当拒绝"),
         }
     }
     let any = Span::any();

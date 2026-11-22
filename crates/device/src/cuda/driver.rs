@@ -228,7 +228,7 @@ pub(crate) fn cuda_launch_params(signature: &Signature) -> String {
     if scalars.is_empty() {
         bufs
     } else {
-        format!("{buffers},\n    {scalars}")
+        format!("{bufs},\n    {scalars}")
     }
 }
 

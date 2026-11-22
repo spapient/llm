@@ -48,11 +48,11 @@
             let mut out = vec![0.0; input.len()];
             forward(input, &mut out).expect("非空行可归一化");
             let total: f32 = out.iter().sum();
-            assert!(total.is_finite(), "用例 {index}：归一化结果必须有限");
-            assert!((total - 1.0).abs() < 1e-5, "用例 {index}：每行和为 1");
+            assert!(total.is_finite(), "用例 {idx}：归一化结果必须有限");
+            assert!((total - 1.0).abs() < 1e-5, "用例 {idx}：每行和为 1");
             assert!(
                 out.iter().all(|v| v.is_finite()),
-                "用例 {index}：无 NaN/Inf"
+                "用例 {idx}：无 NaN/Inf"
             );
         }
     }

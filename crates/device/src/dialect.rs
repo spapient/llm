@@ -124,7 +124,7 @@ pub(crate) trait Dialect {
             format!("    {tid_stmt}\n")
         };
         format!(
-            "{}\n\n{} void {entry}(\n{buffers}{param}) {{\n{stmt}{body}\n}}",
+            "{}\n\n{} void {entry}(\n{bufs}{param}) {{\n{stmt}{body}\n}}",
             Self::prelude(source, kernel),
             Self::ENTRY,
         )
@@ -257,7 +257,7 @@ pub(crate) trait Dialect {
             format!(",\n    {}", Self::GRID_PARAM)
         };
         Ok(format!(
-            "{body}\n\n{} void {entry}(\n{buffers}{param}) {{\n{}    {}({call});\n}}",
+            "{body}\n\n{} void {entry}(\n{bufs}{param}) {{\n{}    {}({call});\n}}",
             Self::ENTRY,
             Self::TID_INIT,
             signature.kernel(),

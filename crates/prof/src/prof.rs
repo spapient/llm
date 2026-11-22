@@ -396,12 +396,12 @@ impl fmt::Display for Field<'_> {
                 idx,
                 key,
                 witness: true,
-            } => write!(out, "provides[{index}].witness.{key}"),
+            } => write!(out, "provides[{idx}].witness.{key}"),
             Self::Provide {
                 idx,
                 key,
                 witness: false,
-            } => write!(out, "provides[{index}].{key}"),
+            } => write!(out, "provides[{idx}].{key}"),
             Self::Prim { prim, key } => write!(out, "provides[{prim}].{key}"),
         }
     }

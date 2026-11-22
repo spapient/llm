@@ -24,7 +24,7 @@ fn segment_of(wire: Wire, idx: usize) -> Segment {
     let data: Vec<u8> = (0..bytes)
         .map(|b| (b as u8).wrapping_add(idx as u8))
         .collect();
-    Segment::new(format!("seg_{index}"), wire, vec![numel], None, data).expect("段自洽")
+    Segment::new(format!("seg_{idx}"), wire, vec![numel], None, data).expect("段自洽")
 }
 
 /// 写一个 F32 + F16 两段归档到带 `prefix` 的唯一临时路径，返回该路径。
@@ -53,7 +53,7 @@ fn every_wire_type_round_trips_byte_for_byte() {
 
     for (idx, wire) in Wire::ALL.iter().enumerate() {
         let expected = segment_of(*wire, idx);
-        let stored = archive.get(&format!("seg_{index}")).expect("按名查");
+        let stored = archive.get(&format!("seg_{idx}")).expect("按名查");
         assert_eq!(stored.dtype(), *wire);
         assert_eq!(stored.shape(), &[11]);
         assert_eq!(
@@ -147,7 +147,7 @@ fn merkle_proofs_round_trip_and_bind_names() {
         let proof = archive.prove(idx).expect("证明");
         assert!(
             archive.verify(idx, &proof, &archive_root).expect("验证"),
-            "下标 {index} 应包含于根"
+            "下标 {idx} 应包含于根"
         );
     }
     // 越界下标取不到证明。

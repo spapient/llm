@@ -155,7 +155,7 @@ impl<'a> Archive<'a> {
     pub fn prove(&self, idx: usize) -> Result<Proof> {
         let leaves = self.cached_leaves()?;
         crate::proof::prove(leaves, idx)
-            .ok_or_else(|| bad(format!("段下标 {index} 越界，共 {} 段", leaves.len())))
+            .ok_or_else(|| bad(format!("段下标 {idx} 越界，共 {} 段", leaves.len())))
     }
 
     /// 仅用下标、证明与根验证归属，不接触其他张量。

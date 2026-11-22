@@ -70,7 +70,7 @@ pub fn assert_close(left: &[f32], right: &[f32], abs: f32, rel: f32) {
         let tolerance = abs + rel * want.abs();
         assert!(
             (got - want).abs() <= tolerance,
-            "第 {index} 个元素 {got} vs {want}（容差 {tolerance}）"
+            "第 {idx} 个元素 {got} vs {want}（容差 {tolerance}）"
         );
     }
 }

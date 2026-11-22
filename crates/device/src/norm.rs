@@ -118,7 +118,7 @@ fn map_entry(signature: &Signature, entry: &str, extra: &str, body: &str) -> Str
     let bufs = if extra.is_empty() {
         bufs
     } else {
-        format!("{buffers},\n    {extra}")
+        format!("{bufs},\n    {extra}")
     };
     Cuda::kernel_entry("", "", &bufs, ("", Cuda::GRID_STMT), body, entry)
 }
@@ -129,7 +129,7 @@ fn point_entry(signature: &Signature, entry: &str, extra: &str, body: &str) -> S
     let bufs = if extra.is_empty() {
         bufs
     } else {
-        format!("{buffers},\n    {extra}")
+        format!("{bufs},\n    {extra}")
     };
     Cuda::kernel_entry("", "", &bufs, ("", Cuda::POINT_STMT), body, entry)
 }

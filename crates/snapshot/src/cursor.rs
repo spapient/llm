@@ -33,7 +33,7 @@ pub(crate) fn mismatch(message: impl Into<String>) -> Error {
 
 /// 第 `idx` 个条目的错误帧：一个几千条目的检查点里，"第 3 个条目"比"某个偏移"有用得多。
 pub(crate) fn frame(idx: usize) -> impl Fn(Error) -> Error {
-    move |error| error.with(format!("第 {index} 个权重条目"))
+    move |error| error.with(format!("第 {idx} 个权重条目"))
 }
 
 /// 第 `idx` 个条目的非法输入：`frame` 与 `invalid` 的现成组合，省掉调用处的双层括号。

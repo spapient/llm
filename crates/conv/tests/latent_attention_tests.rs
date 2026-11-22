@@ -74,7 +74,7 @@ fn the_kernel_agrees_with_the_reference_on_the_declared_sample() {
     let want = reference(&s).expect("参考可算");
     assert_eq!(got.len(), want.len());
     for (idx, (a, b)) in got.iter().zip(&want).enumerate() {
-        assert!((a - b).abs() < 1e-5, "第 {index} 项：{a} vs {b}");
+        assert!((a - b).abs() < 1e-5, "第 {idx} 项：{a} vs {b}");
     }
 }
 

@@ -226,7 +226,7 @@ fn the_orthogonalization_compresses_the_spectrum() {
     let grad = vec![1.0_f32, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 3.0];
     let out = orthogonalize(&grad, 3, 3, 1e-7);
     for (idx, value) in out.iter().enumerate() {
-        assert!(value.is_finite(), "第 {index} 项不是有限值");
+        assert!(value.is_finite(), "第 {idx} 项不是有限值");
     }
     let spread = out[0] / out[8];
     assert!(
@@ -268,9 +268,9 @@ fn the_update_ignores_the_gradient_scale() {
     for (idx, (small, large)) in params_small[0].iter().zip(&params_large[0]).enumerate() {
         assert!(
             (small - large).abs() < 1e-3,
-            "第 {index} 项：小梯度 {small} 与大梯度 {large} 该给出同一步"
+            "第 {idx} 项：小梯度 {small} 与大梯度 {large} 该给出同一步"
         );
-        assert!((small - 1.0).abs() > 1e-9, "第 {index} 项根本没被更新");
+        assert!((small - 1.0).abs() > 1e-9, "第 {idx} 项根本没被更新");
     }
 }
 

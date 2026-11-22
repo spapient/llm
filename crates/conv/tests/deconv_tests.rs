@@ -259,7 +259,7 @@ fn conv_transpose1d_matches_naive() {
         let mut want = vec![0.0f32; ol * *cout];
         naive1(&x, &w, &b, &de, 1, *l, &mut want);
         for (a, e) in got.iter().zip(want.iter()) {
-            assert!((a - e).abs() < 1e-4, "case {index}: {a} vs {e}");
+            assert!((a - e).abs() < 1e-4, "case {idx}: {a} vs {e}");
         }
     }
 }

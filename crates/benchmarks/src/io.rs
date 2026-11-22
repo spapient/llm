@@ -31,7 +31,7 @@ pub(crate) mod weights {
         for idx in 0..SEGMENTS {
             let data = vec![(idx % 256) as u8; BYTES_PER_SEGMENT];
             let shape = vec![ELEMS as u64];
-            let name = format!("seg_{index}");
+            let name = format!("seg_{idx}");
             let segment = checked(Segment::new(name, Wire::F32, shape, None, data), "段自洽");
             checked(writer.push(segment), "追加段");
         }
@@ -92,9 +92,9 @@ pub(crate) mod weights {
         for idx in 0..N_ENTRIES {
             let start = idx * BYTES_PER_SEGMENT;
             let end = start + BYTES_PER_SEGMENT;
-            names.push(format!("w.{index}"));
+            names.push(format!("w.{idx}"));
             entries.push(format!(
-                "\"w.{index}\": {{\"dtype\": \"F32\", \"shape\": [{ELEMS}], \
+                "\"w.{idx}\": {{\"dtype\": \"F32\", \"shape\": [{ELEMS}], \
                  \"data_offsets\": [{start}, {end}]}}"
             ));
         }

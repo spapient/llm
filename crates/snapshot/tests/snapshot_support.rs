@@ -21,7 +21,7 @@ pub(crate) fn assert_accum_bits(snapshot: &Snapshot, restored: &Snapshot) {
     for (idx, (want, got)) in before.iter().zip(after).enumerate() {
         let want_bits: Vec<u32> = want.iter().map(|value| value.to_bits()).collect();
         let got_bits: Vec<u32> = got.iter().map(|value| value.to_bits()).collect();
-        assert_eq!(got_bits, want_bits, "第 {index} 槽累积梯度逐位一致");
+        assert_eq!(got_bits, want_bits, "第 {idx} 槽累积梯度逐位一致");
     }
 }
 

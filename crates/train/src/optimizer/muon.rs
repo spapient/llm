@@ -170,18 +170,18 @@ fn nesterov_direction(velocity: &[f32], grads: &[f32], beta: f32, scale: f32) ->
 fn matrix_of(idx: usize, slot: &Slot<'_>) -> Result<(usize, usize)> {
     let Some((rows, cols)) = slot.shape else {
         let message = format!(
-            "第 {index} 槽（角色 {}）不是矩阵：Muon 的正交化只在矩阵上有定义，\
+            "第 {idx} 槽（角色 {}）不是矩阵：Muon 的正交化只在矩阵上有定义，\
              偏置/归一化增益按角色分派给 AdamW",
             slot.role.as_str()
         );
         return Err(Error::new(Code::Invalid, message).with(SITE));
     };
     if rows == 0 || cols == 0 {
-        let message = format!("第 {index} 槽声明为 [{rows}, {cols}]：两边都必须非零");
+        let message = format!("第 {idx} 槽声明为 [{rows}, {cols}]：两边都必须非零");
         return Err(Error::new(Code::Invalid, message).with(SITE));
     }
     if let Some(bad) = slot.grads.iter().position(|grad| !grad.is_finite()) {
-        let message = format!("第 {index} 槽梯度第 {bad} 项非有限：正交化会把它铺满整个方向");
+        let message = format!("第 {idx} 槽梯度第 {bad} 项非有限：正交化会把它铺满整个方向");
         return Err(Error::new(Code::Invalid, message).with(SITE));
     }
     Ok((rows, cols))

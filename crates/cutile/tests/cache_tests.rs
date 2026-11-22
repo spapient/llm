@@ -182,7 +182,7 @@ fn gc_evicts_the_least_recently_used_first() {
     let mut keys = Vec::new();
     for (idx, secs) in [100u64, 200, 300].into_iter().enumerate() {
         let mut key = key();
-        key.variant = format!("v{index}");
+        key.variant = format!("v{idx}");
         cache.put(&key, "int x;\n").expect("写缓存");
         age(&cache.dir_for(&key), secs);
         keys.push(key);

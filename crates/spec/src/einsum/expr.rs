@@ -110,12 +110,12 @@ fn term_labels(term: &str, idx: usize) -> Result<Vec<char>, Error> {
     for label in term.chars() {
         if !is_label(label) {
             return Err(bad(format!(
-                "第 {index} 项（`{term}`）：`{label}` {NOT_LABEL}"
+                "第 {idx} 项（`{term}`）：`{label}` {NOT_LABEL}"
             )));
         }
         if labels.contains(&label) {
             return Err(bad(format!(
-                "第 {index} 项（`{term}`）里字母 `{label}` 重复：对角提取请先 reshape，再写成两条式子"
+                "第 {idx} 项（`{term}`）里字母 `{label}` 重复：对角提取请先 reshape，再写成两条式子"
             )));
         }
         labels.push(label);

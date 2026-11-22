@@ -76,7 +76,7 @@ fn check_label(label: f32, vocab: usize) -> Result<()> {
     }
     let idx = label as usize;
     if idx >= vocab {
-        let message = format!("标签索引 {index} 越界（词表 {vocab}）");
+        let message = format!("标签索引 {idx} 越界（词表 {vocab}）");
         return Err(Error::new(Code::Invalid, message).with(SITE));
     }
     Ok(())

@@ -121,7 +121,7 @@ impl<'a> Args<'a> {
                 error(
                     line,
                     format!(
-                        "片段占用了 `${index}`，但模板只给了 {} 个位置参数",
+                        "片段占用了 `${idx}`，但模板只给了 {} 个位置参数",
                         self.positional.len()
                     ),
                 )

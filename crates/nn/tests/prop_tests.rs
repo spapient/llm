@@ -33,7 +33,7 @@ fn units() -> impl Strategy<Value = usize> {
 
 /// 唯一层名：`Stack` 按名字对齐，重名会让整条遍历变成猜测。
 fn named(idx: usize) -> String {
-    format!("blk.0.layer_{index}")
+    format!("blk.0.layer_{idx}")
 }
 
 /// 一组层：`(输入宽度, 输出宽度)`，宽度都对齐到分组因子。

@@ -102,7 +102,7 @@ fn metal_launch(kernel: &str, signature: &Signature, sample: &Sample) -> Result<
     let call = launch_args(sample, signature.params())?;
     let bufs = Metal::bufs(signature);
     Ok(format!(
-        "kernel void cutile_launch({buffers},\n                          uint tid [[thread_position_in_grid]]) {{\n    if (tid != 0) return;\n    {kernel}({call});\n}}"
+        "kernel void cutile_launch({bufs},\n                          uint tid [[thread_position_in_grid]]) {{\n    if (tid != 0) return;\n    {kernel}({call});\n}}"
     ))
 }
 

@@ -122,11 +122,11 @@ fn schedule_parse_handles_degenerate_and_boundary_inputs() {
         "pipe>2",
     ];
     for (idx, text) in cases.iter().enumerate() {
-        let error = Schedule::parse(text).expect_err("用例 {index} 应当拒绝");
-        assert_eq!(error.code(), Code::Invalid, "用例 {index}");
+        let error = Schedule::parse(text).expect_err("用例 {idx} 应当拒绝");
+        assert_eq!(error.code(), Code::Invalid, "用例 {idx}");
         assert!(
             !error.message().trim().is_empty(),
-            "用例 {index}：拒绝必须有话说"
+            "用例 {idx}：拒绝必须有话说"
         );
     }
 }
@@ -144,11 +144,11 @@ fn unmasked_share_clamps_saturated_inputs() {
         let actual = unmasked_share(*share, *stages);
         assert!(
             (actual - expected).abs() < 1e-12,
-            "用例 {index}：{actual} != {expected}"
+            "用例 {idx}：{actual} != {expected}"
         );
         assert!(
             (0.0..=1.0).contains(&actual),
-            "用例 {index}：占比必须在 [0,1]"
+            "用例 {idx}：占比必须在 [0,1]"
         );
     }
     // 负占比按 (1 - share) 直接求值（骨架未做 clamp），结果仍是有限非负。

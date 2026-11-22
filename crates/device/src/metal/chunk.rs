@@ -66,7 +66,7 @@ fn chunk_map_kernel(
     };
     let chunk_lines = chunk_head(chunk, len, "    ");
     format!(
-        "{head}kernel void {entry}(\n{buffers},\n    uint3 tid [[thread_position_in_grid]]) {{\n    int g = (int)tid.x;\n{chunk_lines}{body}\n}}"
+        "{head}kernel void {entry}(\n{bufs},\n    uint3 tid [[thread_position_in_grid]]) {{\n    int g = (int)tid.x;\n{chunk_lines}{body}\n}}"
     )
 }
 

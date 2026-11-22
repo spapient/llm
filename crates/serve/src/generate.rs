@@ -311,7 +311,7 @@ fn pipeline(
 /// 候选下标映射到 token 编号；越出 u32 报 `Invalid`，`scope` 标记产生错误的采样器。
 fn token(idx: usize, scope: &str) -> Result<u32> {
     u32::try_from(idx)
-        .map_err(|_| Error::new(Code::Invalid, format!("token 编号 {index} 超出 u32")).with(scope))
+        .map_err(|_| Error::new(Code::Invalid, format!("token 编号 {idx} 超出 u32")).with(scope))
 }
 
 /// 温度之后的 top-k → top-p 截断：从全候选集裁到概率保留集；argmax 与逆变换两种选择器共用这一份序列。

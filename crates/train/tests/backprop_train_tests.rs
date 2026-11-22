@@ -234,7 +234,7 @@ fn conv2d_reference_kernel_matches_the_operator_sample() -> Result<()> {
     let got = got.f32().expect("y 是 f32");
     assert_eq!(got.len(), want.len());
     for (idx, (g, w)) in got.iter().zip(&want).enumerate() {
-        assert!((g - w).abs() <= 1e-6, "第 {index} 个输出 {g} vs {w}");
+        assert!((g - w).abs() <= 1e-6, "第 {idx} 个输出 {g} vs {w}");
     }
     Ok(())
 }
