@@ -1,7 +1,7 @@
 //! V4 CSA/HCA 超长注意力（§5.8.3）：序列分块压缩 + 稀疏/稠密注意力。
 
-use core::cmp::Ordering;
 use crate::invalid;
+use core::cmp::Ordering;
 use diagnostic::Result;
 use op::scan::Scalar;
 
@@ -155,11 +155,11 @@ const SITE: &str = "algorithm::csa::BlockTable";
 
 /// 可寻址宽度 `seq × dim`：任一几何为零时算不出宽度，乘法溢出同样拒绝。
 fn geometry(seq: usize, dim: usize, m: usize, win: usize) -> Result<usize> {
-    let width = seq.checked_mul(dim).ok_or_else(|| {
-        invalid(SITE, format!("seq × dim 溢出（{seq} × {dim}）"))
-    })?;
+    let width = seq
+        .checked_mul(dim)
+        .ok_or_else(|| invalid!("seq × dim 溢出（{seq} × {dim}）"))?;
     if dim.min(m).min(win) == 0 {
-        return Err(invalid(SITE, format!("块表几何必须非零（dim = {dim}，m = {m}，win = {win}）")));
+        return err!("块表几何必须非零（dim = {dim}，m = {m}，win = {win}）");
     }
     Ok(width)
 }
@@ -169,7 +169,7 @@ fn lengths<S>(keys: &[S], values: &[S], width: usize) -> Result<()> {
     if [keys.len(), values.len()] == [width; 2] {
         return Ok(());
     }
-    Err(invalid(SITE, format!("K/V 长度必须都是 seq × dim = {width}")))
+    err!("K/V 长度必须都是 seq × dim = {width}")
 }
 
 impl<S: Scalar> BlockTable<S> {
@@ -196,24 +196,15 @@ impl<S: Scalar> BlockTable<S> {
         })
     }
 
-    /// 序列长。
-    pub fn seq(&self) -> usize {
-        self.seq
-    }
-
-    /// 单行宽度。
-    pub fn dim(&self) -> usize {
-        self.dim
-    }
-
-    /// 块因子 `m`。
-    pub fn factor(&self) -> usize {
-        self.m
-    }
-
-    /// 滑窗宽。
-    pub fn window(&self) -> usize {
-        self.win
+    accessors! {
+        /// 序列长。
+        seq -> usize = seq,
+        /// 单行宽度。
+        dim -> usize = dim,
+        /// 块因子 `m`。
+        factor -> usize = m,
+        /// 滑窗宽。
+        window -> usize = win,
     }
 
     /// 块数 `⌈seq/m⌉`，与 [`effective_len`] 同式。
@@ -235,12 +226,12 @@ impl<S: Scalar> BlockTable<S> {
     /// 因果注意力：查询 `q` 在位置 `t` 的输出。
     pub fn attend(&self, q: &[S], t: usize, topk: Option<usize>) -> Result<Vec<S>> {
         if t >= self.seq || q.len() != self.dim {
-            return Err(invalid(SITE, format!(
-                    "位置 {t} 或查询宽度 {} 越界（seq = {}，dim = {}）",
-                    q.len(),
-                    self.seq,
-                    self.dim
-                )));
+            return err!(
+                "位置 {t} 或查询宽度 {} 越界（seq = {}，dim = {}）",
+                q.len(),
+                self.seq,
+                self.dim
+            );
         }
         let (whole, start) = self.visible(t);
         let mut scores = self.scores(q, whole, start, t);

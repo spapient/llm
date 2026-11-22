@@ -1,6 +1,6 @@
 use super::*;
-use diagnostic::Code;
 use crate::csa::is_doubly_stochastic;
+use diagnostic::Code;
 
 /// 三条流、宽四：每条的每个位置取不同值，混合结果可逐项核对。
 fn streams() -> Vec<Vec<f64>> {

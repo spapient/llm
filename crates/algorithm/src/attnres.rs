@@ -44,14 +44,14 @@ impl AttnRes {
     /// `width` 为零——返回 `Code::Invalid`。
     pub fn new(width: usize) -> Result<Self> {
         if width == 0 {
-            return Err(invalid(SITE, "宽度必须非零"));
+            return err!("宽度必须非零");
         }
         Ok(Self { width })
     }
 
-    /// 隐藏维 `d`。
-    pub fn width(&self) -> usize {
-        self.width
+    accessors! {
+        /// 隐藏维 `d`。
+        width -> usize = width,
     }
 
     /// 一次混合：`Σ w_j · values[j]`，`w = softmax(q·valuesᵀ / √d)`。
@@ -77,14 +77,14 @@ impl AttnRes {
     pub fn gated<S: Scalar>(&self, logs: &[S], values: &[&[S]]) -> Result<Vec<S>> {
         self.check_rows(values, "坐标集")?;
         if logs.len() != values.len() {
-            return Err(invalid(SITE, format!(
-                    "注意力日志必须与坐标集一一对应，得到 {} 条日志对 {} 个坐标",
-                    logs.len(),
-                    values.len()
-                )));
+            return err!(
+                "注意力日志必须与坐标集一一对应，得到 {} 条日志对 {} 个坐标",
+                logs.len(),
+                values.len()
+            );
         }
         if let Some(bad) = logs.iter().position(|&log| !finite(log)) {
-            return Err(invalid(SITE, format!("注意力日志第 {bad} 条非有限：softmax 会把它摊到整组权重上")));
+            return err!("注意力日志第 {bad} 条非有限：softmax 会把它摊到整组权重上");
         }
         self.combine(logs, values)
     }
@@ -111,7 +111,7 @@ impl AttnRes {
     /// 坐标集非空、每个坐标的宽度正确、取值有限。
     fn check_rows<S: Scalar>(&self, values: &[&[S]], what: &str) -> Result<()> {
         if values.is_empty() {
-            return Err(invalid(SITE, format!("{what}为空：softmax 无定义，残差也没有东西可并")));
+            return err!("{what}为空：softmax 无定义，残差也没有东西可并");
         }
         for (idx, value) in values.iter().enumerate() {
             self.check_row(value, &format!("{what}第 {idx} 项"))?;
@@ -122,10 +122,10 @@ impl AttnRes {
     /// 单行几何 + 有限性。
     fn check_row<S: Scalar>(&self, row: &[S], what: &str) -> Result<()> {
         if row.len() != self.width {
-            return Err(invalid(SITE, format!("{what}宽度必须是 {}，得到 {}", self.width, row.len())));
+            return err!("{what}宽度必须是 {}，得到 {}", self.width, row.len());
         }
         match row.iter().position(|&value| !finite(value)) {
-            Some(idx) => Err(invalid(SITE, format!("{what}第 {idx} 项非有限：softmax 会把 NaN 摊到整组权重上"))),
+            Some(idx) => err!("{what}第 {idx} 项非有限：softmax 会把 NaN 摊到整组权重上"),
             None => Ok(()),
         }
     }
@@ -160,11 +160,11 @@ fn check_width<S: Scalar>(main: &[S], mixed: &[S]) -> Result<()> {
     if main.len() == mixed.len() {
         return Ok(());
     }
-    Err(invalid(SITE, format!(
-            "主路宽 {} 与混合值宽 {} 不等：并回是把同一维度的两段合起来",
-            main.len(),
-            mixed.len()
-        )))
+    err!(
+        "主路宽 {} 与混合值宽 {} 不等：并回是把同一维度的两段合起来",
+        main.len(),
+        mixed.len()
+    )
 }
 
 /// 系数 `α ∈ [0, 1]`：出界就不再是凸组合，主路会被拉长而不是内插。
@@ -172,7 +172,7 @@ fn check_alpha<S: Scalar>(alpha: S) -> Result<()> {
     if finite(alpha) && alpha >= S::ZERO && alpha <= S::ONE {
         return Ok(());
     }
-    Err(invalid(SITE, format!("系数是 {alpha:?}：必须在 [0, 1] 内（0 保留主路，1 换成混合值）")))
+    err!("系数是 {alpha:?}：必须在 [0, 1] 内（0 保留主路，1 换成混合值）")
 }
 
 /// 两段逐项有限：任一项是 `NaN`，并回都会把它带进主路。
@@ -182,7 +182,7 @@ fn check_pairs<S: Scalar>(main: &[S], mixed: &[S]) -> Result<()> {
         .zip(mixed)
         .position(|(&a, &b)| !finite(a) || !finite(b))
     {
-        Some(idx) => Err(invalid(SITE, format!("第 {idx} 项非有限：并回会把 NaN 带进主路"))),
+        Some(idx) => err!("第 {idx} 项非有限：并回会把 NaN 带进主路"),
         None => Ok(()),
     }
 }
@@ -202,19 +202,19 @@ impl Sources {
     /// 来源为空、来源不是严格递增、或任一来源等于主路——返回 `Code::Invalid`。
     pub fn new(layers: Vec<usize>, main: usize) -> Result<Self> {
         if layers.is_empty() {
-            return Err(invalid(SITE, "来源为空：这一层没有可取的前层输出"));
+            return err!("来源为空：这一层没有可取的前层输出");
         }
         if let Some(gap) = layers.windows(2).position(|pair| pair[0] >= pair[1]) {
-            return Err(invalid(SITE, format!(
-                    "来源第 {} 与第 {} 项不是严格递增（{} ≥ {}）：重复的层会被算两次",
-                    gap,
-                    gap + 1,
-                    layers[gap],
-                    layers[gap + 1]
-                )));
+            return err!(
+                "来源第 {} 与第 {} 项不是严格递增（{} ≥ {}）：重复的层会被算两次",
+                gap,
+                gap + 1,
+                layers[gap],
+                layers[gap + 1]
+            );
         }
         if layers.contains(&main) {
-            return Err(invalid(SITE, format!("主路第 {main} 层同时出现在来源里：同一条输出不能取两次")));
+            return err!("主路第 {main} 层同时出现在来源里：同一条输出不能取两次");
         }
         Ok(Self { layers, main })
     }
@@ -224,9 +224,9 @@ impl Sources {
         &self.layers
     }
 
-    /// 主路取自第几层。
-    pub fn main(&self) -> usize {
-        self.main
+    accessors! {
+        /// 主路取自第几层。
+        main -> usize = main,
     }
 
     /// 来源层数：凸组合里的项数。

@@ -37,18 +37,17 @@ impl<S: Scalar> Mhc<S> {
     pub fn new(mix: &[S], streams: usize) -> Result<Self> {
         let size = size(streams)?;
         if mix.len() != size {
-            return Err(invalid(SITE, format!(
-                    "混合矩阵必须是 [{streams}, {streams}] = {size} 个元素，得到 {}",
-                    mix.len()
-                )));
+            return err!(
+                "混合矩阵必须是 [{streams}, {streams}] = {size} 个元素，得到 {}",
+                mix.len()
+            );
         }
         check_entries(mix)?;
         let mut normalized = mix.to_vec();
         if !sinkhorn(&mut normalized, streams, ITERS, S::from_f64(TOL)) {
-            return Err(invalid(
-                SITE,
-                "Sinkhorn 归一后仍不是双随机：矩阵里有行和或列和为零（归一时原地不动），这张矩阵没有分布可归一",
-            ));
+            return err!(
+                "Sinkhorn 归一后仍不是双随机：矩阵里有行和或列和为零（归一时原地不动），这张矩阵没有分布可归一"
+            );
         }
         let sigma = spectral_norm(&normalized, streams, ITERS);
         Ok(Self {
@@ -71,9 +70,9 @@ impl<S: Scalar> Mhc<S> {
         Self::new(&mix, streams)
     }
 
-    /// 流数 `M`。
-    pub fn streams(&self) -> usize {
-        self.streams
+    accessors! {
+        /// 流数 `M`。
+        streams -> usize = streams,
     }
 
     /// 归一后的混合矩阵，行主序 `[M, M]`（行和、列和均 ≈ 1）。
@@ -81,9 +80,9 @@ impl<S: Scalar> Mhc<S> {
         &self.mix
     }
 
-    /// 实测谱范数 `‖B‖₂`：对非负双随机阵，理论值 `≤ 1`。
-    pub fn sigma(&self) -> S {
-        self.sigma
+    accessors! {
+        /// 实测谱范数 `‖B‖₂`：对非负双随机阵，理论值 `≤ 1`。
+        sigma -> S = sigma,
     }
 
     /// 一次层间混合：`M` 条流进、`M` 条流出，第 `r` 条输出是输入各流的凸组合。
@@ -102,17 +101,17 @@ impl<S: Scalar> Mhc<S> {
     /// 入口校验：流条数与各条宽度一致，返回公共宽度。
     fn check_streams(&self, streams: &[Vec<S>]) -> Result<usize> {
         if streams.len() != self.streams {
-            return Err(invalid(SITE, format!("必须是 {} 条流，得到 {} 条", self.streams, streams.len())));
+            return err!("必须是 {} 条流，得到 {} 条", self.streams, streams.len());
         }
         let width = streams.first().map_or(0, Vec::len);
         if width == 0 {
-            return Err(invalid(SITE, "流宽度不能为零"));
+            return err!("流宽度不能为零");
         }
         if let Some(bad) = streams.iter().position(|row| row.len() != width) {
-            return Err(invalid(SITE, format!(
-                    "第 {bad} 条流宽度是 {}，与第 0 条的 {width} 不一致",
-                    streams[bad].len()
-                )));
+            return err!(
+                "第 {bad} 条流宽度是 {}，与第 0 条的 {width} 不一致",
+                streams[bad].len()
+            );
         }
         Ok(width)
     }
@@ -130,7 +129,7 @@ impl<S: Scalar> Mhc<S> {
 /// `M × M` 的元素数，零与溢出都拒绝。
 fn size(streams: usize) -> Result<usize> {
     match streams.checked_mul(streams) {
-        Some(0) | None => Err(invalid(SITE, format!("流数必须非零且平方不溢出，得到 {streams}"))),
+        Some(0) | None => err!("流数必须非零且平方不溢出，得到 {streams}"),
         Some(size) => Ok(size),
     }
 }
@@ -140,10 +139,10 @@ fn check_entries<S: Scalar>(mix: &[S]) -> Result<()> {
     let Some(bad) = mix.iter().position(|&v| !finite(v) || v < S::ZERO) else {
         return Ok(());
     };
-    Err(invalid(SITE, format!(
-            "混合矩阵第 {bad} 项是 {:?}：必须是有限非负数——负号不会被 Sinkhorn 消掉，而带负号的矩阵即使双随机也可能把信号放大",
-            mix[bad]
-        )))
+    err!(
+        "混合矩阵第 {bad} 项是 {:?}：必须是有限非负数——负号不会被 Sinkhorn 消掉，而带负号的矩阵即使双随机也可能把信号放大",
+        mix[bad]
+    )
 }
 
 #[cfg(test)]

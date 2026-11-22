@@ -24,8 +24,8 @@ fn layer() -> Mla<f32> {
     Mla::new(2, 3, 4, 2, &values(24, 1), &values(24, 2)).expect("层")
 }
 
-/// 顺序追加 `seq` 行；每行的取值随行号变。
-fn cache(mla: &Mla<f32>, seq: usize) -> Latent<f32> {
+/// 顺序追加 `seq` 行；每行的取值随行号变。泛型在 `S` 上，`f64` 用例不再抄一遍循环。
+fn cache<S: Scalar>(mla: &Mla<S>, seq: usize) -> Latent<S> {
     let mut cache = mla.empty_cache();
     for t in 0..seq {
         cache
@@ -88,12 +88,7 @@ fn absorb_matches_the_upref_reference() {
 #[test]
 fn the_two_paths_agree_in_f64_too() {
     let mla: Mla<f64> = Mla::new(2, 3, 4, 2, &values(24, 1), &values(24, 2)).expect("层");
-    let mut cache = mla.empty_cache();
-    for t in 0..5 {
-        cache
-            .push(&scaled(mla.latent(), t, 1.0), &scaled(mla.rope(), t, 1.0))
-            .expect("追加");
-    }
+    let cache = cache(&mla, 5);
     let q_nope: Vec<f64> = values(6, 7);
     let q_rope: Vec<f64> = values(4, 9);
     let absorbed = mla

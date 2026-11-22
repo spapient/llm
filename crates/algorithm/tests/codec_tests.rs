@@ -3,8 +3,8 @@
 //! 生产文件只留执行与判据，用例集中于此；N3 行数门限不再受用例增删影响。
 
 use super::*;
-use diagnostic::Code;
 use crate::Boundary;
+use diagnostic::Code;
 
 /// 一张每槽都不同的表：池化与局部性要能区分不同输入，全零表会让它们永远相等。
 fn filled<S: Scalar>(len: usize, dim: usize) -> Table<S> {

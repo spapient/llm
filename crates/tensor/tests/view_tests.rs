@@ -438,7 +438,10 @@ fn diagonal_of_a_transposed_view_reads_the_same_elements() {
 fn diagonal_rejects_the_same_axis_or_an_axis_out_of_range() {
     let values = counted();
     let square = || -> View<'_, f32> { View::new(Shape::new([3, 4]), &values).expect("视图") };
-    assert!(square().diagonal::<[usize; 1]>(1, 1).is_none(), "同一轴无几何含义");
+    assert!(
+        square().diagonal::<[usize; 1]>(1, 1).is_none(),
+        "同一轴无几何含义"
+    );
     assert!(square().diagonal::<[usize; 1]>(0, 9).is_none(), "轴越界");
 }
 
@@ -479,7 +482,11 @@ fn unbind_gives_rank_minus_one_views_over_the_same_storage() {
     assert_eq!(lines[2].dims(), [4], "秩减一");
     assert_eq!(lines[2].strides(), [1], "步长原样，只是去掉一轴");
     assert_eq!(lines[2].to_vec(), vec![8.0f32, 9.0, 10.0, 11.0]);
-    assert_eq!(view.unbind::<[usize; 1]>(0).len(), 3, "编译期秩见证同样可用");
+    assert_eq!(
+        view.unbind::<[usize; 1]>(0).len(),
+        3,
+        "编译期秩见证同样可用"
+    );
     assert!(
         view.unbind::<[usize; 2]>(0).is_empty(),
         "见证秩与结果秩对不上：一份也给不出，不 panic"
@@ -503,7 +510,11 @@ fn movedim_relocates_one_axis_and_leaves_the_others_in_order() {
     let view: View<'_, f32> = View::new(Shape::new([2, 2, 3]), &values).expect("视图");
     let moved = view.clone().movedim(0, 2).expect("搬轴");
     assert_eq!(moved.dims(), [2, 3, 2], "第一轴搬到末尾，其余轴次序不动");
-    assert_eq!(moved.strides(), [3, 1, 6], "只重排步长，一块存储、一次分配都不多");
+    assert_eq!(
+        moved.strides(),
+        [3, 1, 6],
+        "只重排步长，一块存储、一次分配都不多"
+    );
     // 与 permute 的同一条置换逐元素相等：movedim 是 permute 的命名特例，不是第二套几何。
     let permuted = view.clone().permute([1, 2, 0]).expect("置换");
     assert_eq!(moved.to_vec(), permuted.to_vec());

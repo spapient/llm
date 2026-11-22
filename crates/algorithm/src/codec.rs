@@ -50,9 +50,9 @@ impl<S: Scalar> ByteEncoder<S> {
         self.table.dim()
     }
 
-    /// 哈希种子。
-    pub fn seed(&self) -> u64 {
-        self.seed
+    accessors! {
+        /// 哈希种子。
+        seed -> u64 = seed,
     }
 
     /// 桶表。
@@ -71,11 +71,11 @@ impl<S: Scalar> ByteEncoder<S> {
     /// 字节分行只会把两个不相干的内容拼在一起（越界的区间还会在切片处炸，报错离原因很远）。
     pub fn encode(&self, bytes: &[u8], patches: &Patches) -> Result<Vec<S>> {
         if patches.bytes() != bytes.len() {
-            return Err(invalid(SITE, format!(
-                    "切分覆盖 {} 字节，输入是 {}：切分不是这次输入的",
-                    patches.bytes(),
-                    bytes.len()
-                )));
+            return err!(
+                "切分覆盖 {} 字节，输入是 {}：切分不是这次输入的",
+                patches.bytes(),
+                bytes.len()
+            );
         }
         let mut out = Vec::with_capacity(patches.len() * self.dim());
         for range in patches.ranges() {
@@ -95,10 +95,10 @@ impl<S: Scalar> ByteEncoder<S> {
     /// 会在切片处炸，报错离原因很远。
     pub fn patch(&self, bytes: &[u8], range: Range<usize>) -> Result<Vec<S>> {
         if range.start >= range.end || range.end > bytes.len() {
-            return Err(invalid(SITE, format!(
-                    "patch 区间 {range:?} 不在 {} 个字节内：patch 是非空字节区间",
-                    bytes.len()
-                )));
+            return err!(
+                "patch 区间 {range:?} 不在 {} 个字节内：patch 是非空字节区间",
+                bytes.len()
+            );
         }
         let dim = self.dim();
         let mut rows = vec![S::ZERO; range.len() * dim];
@@ -120,10 +120,10 @@ impl<S: Scalar> ByteEncoder<S> {
     /// `idx` 越出 `bytes` 时返回 `Code::Invalid`：越界下标取窗口会在切片处炸。
     pub fn glyph(&self, bytes: &[u8], idx: usize) -> Result<Vec<S>> {
         if idx >= bytes.len() {
-            return Err(invalid(SITE, format!(
-                    "第 {idx} 个字节不在 {} 个字节内：本地上下文只取已有字节",
-                    bytes.len()
-                )));
+            return err!(
+                "第 {idx} 个字节不在 {} 个字节内：本地上下文只取已有字节",
+                bytes.len()
+            );
         }
         let mut out = vec![S::ZERO; self.dim()];
         self.vector(bytes, idx, &mut out);
@@ -182,14 +182,14 @@ impl<S: Scalar> ByteDecoder<S> {
     /// 宽度为零（没有可读的表示维）、投影长度不是 `BYTES × width`、或这个乘积溢出——都返回
     /// `Code::Invalid`。行数或列数错了的话每个通道整体错位，输出的每个数都错却不会有任何一处报错。
     pub fn new(width: usize, projection: &[S]) -> Result<Self> {
-        let expected = width.checked_mul(BYTES).ok_or_else(|| {
-            invalid(SITE, format!("BYTES × width 溢出（{BYTES} × {width}）"))
-        })?;
+        let expected = width
+            .checked_mul(BYTES)
+            .ok_or_else(|| invalid!("BYTES × width 溢出（{BYTES} × {width}）"))?;
         if width == 0 || projection.len() != expected {
-            return Err(invalid(SITE, format!(
-                    "表示宽度必须非零、投影长度必须是 BYTES × width = {expected}，得到宽度 {width}、{} 个元素",
-                    projection.len()
-                )));
+            return err!(
+                "表示宽度必须非零、投影长度必须是 BYTES × width = {expected}，得到宽度 {width}、{} 个元素",
+                projection.len()
+            );
         }
         Ok(Self {
             width,
@@ -197,9 +197,9 @@ impl<S: Scalar> ByteDecoder<S> {
         })
     }
 
-    /// 表示宽度（与 [`ByteEncoder::dim`] 是同一个量）。
-    pub fn width(&self) -> usize {
-        self.width
+    accessors! {
+        /// 表示宽度（与 [`ByteEncoder::dim`] 是同一个量）。
+        width -> usize = width,
     }
 
     /// 投影，行主序 `[BYTES, width]`。
@@ -269,7 +269,7 @@ impl<S: Scalar> ByteDecoder<S> {
         if state.len() == self.width {
             return Ok(());
         }
-        Err(invalid(SITE, format!("表示宽度必须是 {}，得到 {}", self.width, state.len())))
+        err!("表示宽度必须是 {}，得到 {}", self.width, state.len())
     }
 }
 

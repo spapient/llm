@@ -89,10 +89,10 @@ impl<S: Scalar> Layer<S> {
             ("o", &self.o),
         ] {
             if matrix.len() != stride {
-                return Err(invalid(SITE, format!(
-                        "投影 {label} 有 {} 个元素，应当是 width × width = {stride}（width = {width}）",
-                        matrix.len()
-                    )));
+                return err!(
+                    "投影 {label} 有 {} 个元素，应当是 width × width = {stride}（width = {width}）",
+                    matrix.len()
+                );
             }
         }
         Ok(())
@@ -119,7 +119,7 @@ impl<S: Scalar> Global<S> {
     pub fn new(width: usize, factor: usize, window: usize, layers: Vec<Layer<S>>) -> Result<Self> {
         let stride = stride(width)?;
         if factor.min(window) == 0 {
-            return Err(invalid(SITE, format!("块表几何必须非零（factor = {factor}，window = {window}）")));
+            return err!("块表几何必须非零（factor = {factor}，window = {window}）");
         }
         for layer in &layers {
             layer.check_geometry(width, stride)?;
@@ -133,9 +133,9 @@ impl<S: Scalar> Global<S> {
         })
     }
 
-    /// 列宽。
-    pub fn width(&self) -> usize {
-        self.width
+    accessors! {
+        /// 列宽。
+        width -> usize = width,
     }
 
     /// 层数。
@@ -143,19 +143,13 @@ impl<S: Scalar> Global<S> {
         self.layers.len()
     }
 
-    /// 块压缩因子：`1` 是逐行（稠密因果），越大远处压得越狠。
-    pub fn factor(&self) -> usize {
-        self.factor
-    }
-
-    /// 滑窗宽度：最近 `window` 行按原始行参与，不走块表。
-    pub fn window(&self) -> usize {
-        self.window
-    }
-
-    /// 每行的 top-k 槽数。
-    pub fn topk(&self) -> Option<usize> {
-        self.topk
+    accessors! {
+        /// 块压缩因子：`1` 是逐行（稠密因果），越大远处压得越狠。
+        factor -> usize = factor,
+        /// 滑窗宽度：最近 `window` 行按原始行参与，不走块表。
+        window -> usize = window,
+        /// 每行的 top-k 槽数。
+        topk -> Option<usize> = topk,
     }
 
     /// 把一列 patch 表示跑完整个栈。
@@ -208,10 +202,10 @@ impl<S: Scalar> Backread<S> {
     pub fn new(width: usize, layers: Vec<Layer<S>>) -> Result<Self> {
         let stride = stride(width)?;
         if !(LOCAL_MIN..=LOCAL_MAX).contains(&layers.len()) {
-            return Err(invalid(SITE, format!(
-                    "逆向 cross-attention 的层数是闭集 {LOCAL_MIN}..={LOCAL_MAX}，给了 {}",
-                    layers.len()
-                )));
+            return err!(
+                "逆向 cross-attention 的层数是闭集 {LOCAL_MIN}..={LOCAL_MAX}，给了 {}",
+                layers.len()
+            );
         }
         for layer in &layers {
             layer.check_geometry(width, stride)?;
@@ -219,9 +213,9 @@ impl<S: Scalar> Backread<S> {
         Ok(Self { width, layers })
     }
 
-    /// 列宽。
-    pub fn width(&self) -> usize {
-        self.width
+    accessors! {
+        /// 列宽。
+        width -> usize = width,
     }
 
     /// 层数。
@@ -253,21 +247,21 @@ impl<S: Scalar> Backread<S> {
     fn check_patches(&self, reps: &[S], glyphs: &[S], patches: &Patches) -> Result<()> {
         let visible = rows(reps.len(), self.width)?;
         if visible != patches.len() {
-            return Err(invalid(SITE, format!(
-                    "表示有 {visible} 行，patch 有 {} 个：一行一个 patch",
-                    patches.len()
-                )));
+            return err!(
+                "表示有 {visible} 行，patch 有 {} 个：一行一个 patch",
+                patches.len()
+            );
         }
         let expected = glyph_stride(patches, self.width)?;
         if glyphs.len() == expected {
             return Ok(());
         }
-        Err(invalid(SITE, format!(
-                "本地向量有 {} 个元素，应当是 bytes × width = {} × {} = {expected}",
-                glyphs.len(),
-                patches.bytes(),
-                self.width
-            )))
+        err!(
+            "本地向量有 {} 个元素，应当是 bytes × width = {} × {} = {expected}",
+            glyphs.len(),
+            patches.bytes(),
+            self.width
+        )
     }
 
     /// 一层：每个字节的查询回读可见 patch，读到的值与自己的状态相加（残差）。
@@ -325,20 +319,17 @@ impl<S: Scalar> Backread<S> {
 /// `width × width`，宽度为零或乘积溢出都是入口错误。
 fn stride(width: usize) -> Result<usize> {
     if width == 0 {
-        return Err(invalid(SITE, "列宽不能为零"));
+        return err!("列宽不能为零");
     }
     width
         .checked_mul(width)
-        .ok_or_else(|| invalid(SITE, format!("{width} × {width} 溢出")))
+        .ok_or_else(|| invalid!("{width} × {width} 溢出"))
 }
 
 /// 一行一个 patch：列长必须是宽度的整数倍，否则「第几行是哪个 patch」无从谈起。
 fn rows(len: usize, width: usize) -> Result<usize> {
     if width == 0 || !len.is_multiple_of(width) {
-        return Err(invalid(
-            SITE,
-            format!("表示列有 {len} 个元素，不是宽度 {width} 的整数倍"),
-        ));
+        return err!("表示列有 {len} 个元素，不是宽度 {width} 的整数倍");
     }
     Ok(len / width)
 }
@@ -348,7 +339,7 @@ fn glyph_stride(patches: &Patches, width: usize) -> Result<usize> {
     patches
         .bytes()
         .checked_mul(width)
-        .ok_or_else(|| invalid(SITE, format!("{} 个字节 × {width} 溢出", patches.bytes())))
+        .ok_or_else(|| invalid!("{} 个字节 × {width} 溢出", patches.bytes()))
 }
 
 /// 行主序方阵乘向量：不引第三个转置视角，`[r, c]` 就是 `r * width + c`。

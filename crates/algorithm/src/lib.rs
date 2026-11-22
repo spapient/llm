@@ -38,8 +38,49 @@ use diagnostic::{Code, Error};
 /// 全 crate 只这一处绑定 `Code::Invalid` 与站点标签，各族只负责说清「为什么」——`site` 是
 /// `algorithm::<族>`，让诊断能指回是哪一族拒绝的。在此之前 15 个文件各自写
 /// `Error::new(Code::Invalid, …).with(SITE)`，84 处、每处 3–6 行，其中 2 处还漏掉了站点标签。
-pub(crate) fn invalid(site: &'static str, message: impl Into<String>) -> Error {
-    Error::new(Code::Invalid, message).with(site)
+pub(crate) fn invalid(site: &'static str, message: std::fmt::Arguments<'_>) -> Error {
+    Error::new(Code::Invalid, message.to_string()).with(site)
+}
+
+/// 判据失败：`invalid!("…{x}…")` 即 `invalid(SITE, format_args!("…{x}…"))`。
+///
+/// 两层壳（`SITE` + 格式化）在每个判据处都要重写一遍，而按 60 列的 `fn_call_width`，
+/// `invalid(SITE, format_args!(…))` 只要消息带插值就必然被 `rustfmt` 拆成四行——122 处判据
+/// 里 104 处是这么摊开的。宏把两层壳一起收掉。**单支**是有意的：若给纯字面量留一条
+/// `$msg:literal` 分支，`invalid!("…{bad}…")` 会命中字面量分支而不插值，诊断文案被静默改坏；
+/// 而给内联捕获补显式实参又会被 `redundant_argument` 拦下。`SITE` 由调用点所在的族提供，
+/// 宏体按卫生性引用不到别族的标签。
+macro_rules! invalid {
+    ($($arg:tt)+) => {
+        invalid(SITE, format_args!($($arg)+))
+    };
+}
+
+/// 判据失败并立即返回：`err!("…{x}…")` 即 `Err(invalid!("…{x}…"))`。
+///
+/// 判据几乎都长成 `return Err(invalid!(…))`，三层壳占掉 21 列，而判据消息本身按双宽计常有
+/// 70–90 列——多出来的这几列正好把单行推到 100 列之外，`rustfmt` 于是把它竖排成四行。
+/// 宏再把 `Err(` 一层收掉，消息才留得下一行。
+macro_rules! err {
+    ($($arg:tt)+) => {
+        Err(invalid!($($arg)+))
+    };
+}
+
+/// 只读访问器表：`名字 -> 类型 = 字段` 一行一条，文档照写在条目上方。
+///
+/// 47 个访问器的函数体原本只有 `self.<字段>`，展开成 4 行后 `src` 里约 190 行是同一种形状；
+/// 写成表后一条两行，且 `rustdoc` 生成的条目与逐条手写完全一致（属性原样搬过去）。
+/// 名字与字段不同的一律写显式字段，`= 字段` 是必填项而不是默认值——这样读表就知道取的哪个字段。
+macro_rules! accessors {
+    ($($(#[$attr:meta])* $name:ident -> $ty:ty = $field:ident),+ $(,)?) => {
+        $(
+            $(#[$attr])*
+            pub fn $name(&self) -> $ty {
+                self.$field
+            }
+        )+
+    };
 }
 
 mod attnres;
@@ -107,14 +148,11 @@ impl Wiring {
         }
     }
 
-    /// 每个结构块落成的层数（`tower` 这类可重复的族按单块计，整塔层数 = 块数 × 本值）。
-    pub fn layers(&self) -> usize {
-        self.layers
-    }
-
-    /// 剩余阻塞；`None` 表示整族接通。
-    pub fn blocked_on(&self) -> Option<Blocked> {
-        self.blocked
+    accessors! {
+        /// 每个结构块落成的层数（`tower` 这类可重复的族按单块计，整塔层数 = 块数 × 本值）。
+        layers -> usize = layers,
+        /// 剩余阻塞；`None` 表示整族接通。
+        blocked_on -> Option<Blocked> = blocked,
     }
 
     /// 是否整族接通。

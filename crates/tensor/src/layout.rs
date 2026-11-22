@@ -262,14 +262,7 @@ fn place(out: &mut Layout, axis: usize, slice: Slice) -> Option<()> {
         return None;
     }
     let len = slice.end.checked_sub(slice.start)?;
-    let (base, dim) = narrow(
-        out.dims(),
-        out.steps(),
-        out.base,
-        axis,
-        slice.start,
-        len,
-    )?;
+    let (base, dim) = narrow(out.dims(), out.steps(), out.base, axis, slice.start, len)?;
     out.base = base;
     out.dims[axis] = dim.div_ceil(slice.step);
     out.steps[axis] *= slice.step;

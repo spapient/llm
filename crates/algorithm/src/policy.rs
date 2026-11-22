@@ -102,19 +102,13 @@ impl<S: Scalar> Gating<S> {
         gating
     }
 
-    /// α/β 门控 `π_t`。
-    pub fn pi(&self) -> S {
-        self.pi
-    }
-
-    /// 连续/事件门控 `γ_t`。
-    pub fn gamma(&self) -> S {
-        self.gamma
-    }
-
-    /// 主导通道。
-    pub fn channel(&self) -> Channel {
-        self.channel
+    accessors! {
+        /// α/β 门控 `π_t`。
+        pi -> S = pi,
+        /// 连续/事件门控 `γ_t`。
+        gamma -> S = gamma,
+        /// 主导通道。
+        channel -> Channel = channel,
     }
 
     /// 单位剖分系数，次序 α、β、γ：三项非负且和为 1。

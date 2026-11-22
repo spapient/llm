@@ -340,7 +340,12 @@ where
 
     /// `[start, start + len)` 的借用视图：造一份元数据再走 [`narrow`](Self::narrow)。
     fn segment(&self, axis: usize, start: usize, len: usize) -> Option<Tensor<&[K], R, K>> {
-        let view = assemble(self.dims.clone(), self.steps.clone(), self.base, self.buf.slice());
+        let view = assemble(
+            self.dims.clone(),
+            self.steps.clone(),
+            self.base,
+            self.buf.slice(),
+        );
         view.narrow(axis, start, len)
     }
 
@@ -353,7 +358,10 @@ where
         (0..dim)
             .filter_map(|idx| {
                 let (dims, steps) = (self.dims.as_slice(), self.steps.as_slice());
-                seat(layout::select(dims, steps, self.base, axis, idx)?, self.buf.slice())
+                seat(
+                    layout::select(dims, steps, self.base, axis, idx)?,
+                    self.buf.slice(),
+                )
             })
             .collect()
     }
@@ -542,12 +550,16 @@ where
     fn paint(&mut self, out: layout::Layout, mut next: impl FnMut() -> Option<K>) -> Option<()> {
         let buf = self.buf.slice_mut();
         let mut complete = true;
-        layout::walk(out.dims(), out.steps(), out.base(), &[], &mut |at| {
-            match next() {
+        layout::walk(
+            out.dims(),
+            out.steps(),
+            out.base(),
+            &[],
+            &mut |at| match next() {
                 Some(value) => buf[at] = value,
                 None => complete = false,
-            }
-        });
+            },
+        );
         complete.then_some(())
     }
 }

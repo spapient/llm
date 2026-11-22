@@ -103,11 +103,11 @@ impl Spiking {
     ) -> Result<usize> {
         self.check_state(state)?;
         if events.width() != self.inputs {
-            return Err(invalid(SITE, format!(
+            return err!(
                 "事件宽度 {} 与输入宽度 {} 不符",
                 events.width(),
                 self.inputs
-            )));
+            );
         }
         self.fire(
             events
@@ -148,14 +148,9 @@ impl Spiking {
     /// 一条事件的三件判据（位置在宽度内、取值三元、零脉冲不累加）与它的累加。
     fn pulse(&self, column: usize, spike: i8, state: &mut Membrane) -> Result<()> {
         if column >= self.inputs {
-            return Err(invalid(SITE, format!(
-                "脉冲位置 {column} 越界（宽度 {}）",
-                self.inputs
-            )));
+            return err!("脉冲位置 {column} 越界（宽度 {}）", self.inputs);
         }
-        if !ternary(spike) {
-            return Err(invalid(SITE, format!("脉冲取值必须是 −1/0/+1，得到 {spike}")));
-        }
+        Self::ternary_guard(spike)?;
         if spike == 0 {
             return Ok(());
         }
@@ -166,11 +161,7 @@ impl Spiking {
     /// 输出缓冲判据：一格对应一个输出通道，短了会少算行、长了会留下没人写过的格。
     fn check_out(&self, out: &[i8]) -> Result<()> {
         if out.len() != self.outputs {
-            return Err(invalid(SITE, format!(
-                "输出缓冲 {} 格与输出通道 {} 不符",
-                out.len(),
-                self.outputs
-            )));
+            return err!("输出缓冲 {} 格与输出通道 {} 不符", out.len(), self.outputs);
         }
         Ok(())
     }
@@ -217,13 +208,10 @@ impl Spiking {
     /// 宽度判据：通道非零，且输入宽到会让整数累加越过 `i32` 时直接拒绝。
     fn check_width(&self) -> Result<()> {
         if self.inputs == 0 || self.outputs == 0 {
-            return Err(invalid(SITE, "输入与输出通道都必须为正"));
+            return err!("输入与输出通道都必须为正");
         }
         if self.inputs > i32::MAX as usize / WEIGHT_MAGNITUDE {
-            return Err(invalid(SITE, format!(
-                "输入宽度 {} 过大：整数累加会越过 i32",
-                self.inputs
-            )));
+            return err!("输入宽度 {} 过大：整数累加会越过 i32", self.inputs);
         }
         Ok(())
     }
@@ -231,10 +219,11 @@ impl Spiking {
     /// 状态判据：膜电位必须属于同宽度的层。
     fn check_state(&self, state: &Membrane) -> Result<()> {
         if state.outputs != self.outputs {
-            return Err(invalid(SITE, format!(
+            return err!(
                 "膜电位属于 {} 个通道的层，本层是 {}",
-                state.outputs, self.outputs
-            )));
+                state.outputs,
+                self.outputs
+            );
         }
         Ok(())
     }
@@ -317,13 +306,12 @@ impl Spiking {
         }
     }
 
-    /// 脉冲判据：长度与输入宽度一致、取值三元——与 [`Spiking::pulse`] 用的是同一个 [`ternary`]。
+    /// 脉冲判据：长度与输入宽度一致、取值三元——三元那句由 [`Self::ternary_guard`] 说。
     fn check_spikes(&self, spikes: &[i8]) -> Result<()> {
         self.check_spike_len(spikes.len())?;
-        match spikes.iter().find(|spike| !ternary(**spike)) {
-            Some(spike) => Err(invalid(SITE, format!("脉冲取值必须是 −1/0/+1，得到 {spike}"))),
-            None => Ok(()),
-        }
+        spikes
+            .iter()
+            .try_for_each(|spike| Self::ternary_guard(*spike))
     }
 
     /// 长度判据：训练两条公开路径（`step`/`backward`）说的是同一句话，写一处。
@@ -331,9 +319,14 @@ impl Spiking {
         if len == self.inputs {
             return Ok(());
         }
-        Err(invalid(SITE, format!(
-            "脉冲长度 {len} 与输入宽度 {} 不符",
-            self.inputs
-        )))
+        err!("脉冲长度 {len} 与输入宽度 {} 不符", self.inputs)
+    }
+
+    /// 三元判据：单条路径（[`Self::pulse`]）与整批路径（[`Self::check_spikes`]）说同一句话，写一处。
+    fn ternary_guard(spike: i8) -> Result<()> {
+        match ternary(spike) {
+            true => Ok(()),
+            false => err!("脉冲取值必须是 −1/0/+1，得到 {spike}"),
+        }
     }
 }

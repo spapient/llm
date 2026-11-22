@@ -3,8 +3,8 @@
 //! 生产文件只留执行与判据，用例集中于此；N3 行数门限不再受用例增删影响。
 
 use super::*;
-use diagnostic::Code;
 use crate::codec::{BYTES, ORDERS};
+use diagnostic::Code;
 use nn::Table;
 
 /// 一张每槽都不同的表：全零表会让"哪个字节"永远分不出来，测试也就测不出错位。

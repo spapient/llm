@@ -79,14 +79,11 @@ impl<S: Scalar> Latent<S> {
         self.latent.len() / self.latent_width
     }
 
-    /// 潜在段宽 `d_c`。
-    pub fn latent_width(&self) -> usize {
-        self.latent_width
-    }
-
-    /// RoPE 键宽 `d_h^R`。
-    pub fn rope_width(&self) -> usize {
-        self.rope_width
+    accessors! {
+        /// 潜在段宽 `d_c`。
+        latent_width -> usize = latent_width,
+        /// RoPE 键宽 `d_h^R`。
+        rope_width -> usize = rope_width,
     }
 
     /// 一个 token 位置的缓存宽度 `d_c + d_h^R`。
@@ -124,13 +121,13 @@ impl<S: Scalar> Latent<S> {
     /// 会让 `seq` 在下一行对不上，而那种错要到很远的地方才暴露。
     pub fn push(&mut self, latent: &[S], rope: &[S]) -> Result<()> {
         if latent.len() != self.latent_width || rope.len() != self.rope_width {
-            return Err(invalid(SITE, format!(
-                    "潜在行宽度不符：给的是 ({}, {})，缓存要 ({}, {})",
-                    latent.len(),
-                    rope.len(),
-                    self.latent_width,
-                    self.rope_width
-                )));
+            return err!(
+                "潜在行宽度不符：给的是 ({}, {})，缓存要 ({}, {})",
+                latent.len(),
+                rope.len(),
+                self.latent_width,
+                self.rope_width
+            );
         }
         self.latent.extend_from_slice(latent);
         self.rope.extend_from_slice(rope);
@@ -166,23 +163,20 @@ impl<S: Scalar> Mla<S> {
         up_value: &[S],
     ) -> Result<Self> {
         if heads.min(head_dim).min(latent).min(rope) == 0 {
-            return Err(invalid(
-                SITE,
-                format!("MLA 超参必须非零（n_h = {heads}，d_h = {head_dim}，d_c = {latent}，d_h^R = {rope}）"),
-            ));
+            return err!(
+                "MLA 超参必须非零（n_h = {heads}，d_h = {head_dim}，d_c = {latent}，d_h^R = {rope}）"
+            );
         }
         let width = heads
             .checked_mul(head_dim)
             .and_then(|rows| rows.checked_mul(latent))
-            .ok_or_else(|| {
-                invalid(SITE, format!("n_h × d_h × d_c 溢出（{heads} × {head_dim} × {latent}）"))
-            })?;
+            .ok_or_else(|| invalid!("n_h × d_h × d_c 溢出（{heads} × {head_dim} × {latent}）"))?;
         if [up_key.len(), up_value.len()] != [width; 2] {
-            return Err(invalid(SITE, format!(
-                    "投影长度必须都是 n_h × d_h × d_c = {width}，得到 ({}, {})",
-                    up_key.len(),
-                    up_value.len()
-                )));
+            return err!(
+                "投影长度必须都是 n_h × d_h × d_c = {width}，得到 ({}, {})",
+                up_key.len(),
+                up_value.len()
+            );
         }
         Ok(Self {
             heads,
@@ -194,24 +188,15 @@ impl<S: Scalar> Mla<S> {
         })
     }
 
-    /// 头数 `n_h`。
-    pub fn heads(&self) -> usize {
-        self.heads
-    }
-
-    /// 头宽 `d_h`。
-    pub fn head_dim(&self) -> usize {
-        self.head_dim
-    }
-
-    /// 潜在宽 `d_c`。
-    pub fn latent(&self) -> usize {
-        self.latent
-    }
-
-    /// 解耦 RoPE 键宽 `d_h^R`。
-    pub fn rope(&self) -> usize {
-        self.rope
+    accessors! {
+        /// 头数 `n_h`。
+        heads -> usize = heads,
+        /// 头宽 `d_h`。
+        head_dim -> usize = head_dim,
+        /// 潜在宽 `d_c`。
+        latent -> usize = latent,
+        /// 解耦 RoPE 键宽 `d_h^R`。
+        rope -> usize = rope,
     }
 
     /// 一个 token 位置的缓存宽度 `d_c + d_h^R`。
@@ -252,11 +237,11 @@ impl<S: Scalar> Mla<S> {
     pub fn cache(&self, latent: &[S], rope: &[S]) -> Result<Latent<S>> {
         let seq = self.count(latent, self.latent)?;
         if self.count(rope, self.rope)? != seq {
-            return Err(invalid(SITE, format!(
-                    "两段的 seq 不一致：潜在段 {} 行、RoPE 段 {} 行",
-                    seq,
-                    self.count(rope, self.rope)?
-                )));
+            return err!(
+                "两段的 seq 不一致：潜在段 {} 行、RoPE 段 {} 行",
+                seq,
+                self.count(rope, self.rope)?
+            );
         }
         Ok(Latent {
             latent_width: self.latent,
@@ -269,7 +254,7 @@ impl<S: Scalar> Mla<S> {
     /// 这一段能装几个位置；不是整数倍就是错的几何。
     fn count(&self, segment: &[S], width: usize) -> Result<usize> {
         if !segment.len().is_multiple_of(width) {
-            return Err(invalid(SITE, format!("段长 {} 不是宽度 {width} 的整数倍", segment.len())));
+            return err!("段长 {} 不是宽度 {width} 的整数倍", segment.len());
         }
         Ok(segment.len() / width)
     }
@@ -306,26 +291,26 @@ impl<S: Scalar> Mla<S> {
     /// 入口校验：缓存几何、位置与两条查询的宽度。
     fn check_cache(&self, cache: &Latent<S>, q_nope: &[S], q_rope: &[S], t: usize) -> Result<()> {
         if [cache.latent_width(), cache.rope_width()] != [self.latent, self.rope] {
-            return Err(invalid(SITE, format!(
-                    "缓存的几何 ({}, {}) 与本层 ({}, {}) 不同：不能拿别的层的潜在缓存来算",
-                    cache.latent_width(),
-                    cache.rope_width(),
-                    self.latent,
-                    self.rope
-                )));
+            return err!(
+                "缓存的几何 ({}, {}) 与本层 ({}, {}) 不同：不能拿别的层的潜在缓存来算",
+                cache.latent_width(),
+                cache.rope_width(),
+                self.latent,
+                self.rope
+            );
         }
         if t >= cache.seq()
             || q_nope.len() != self.heads * self.head_dim
             || q_rope.len() != self.heads * self.rope
         {
-            return Err(invalid(SITE, format!(
-                    "位置 {t} 或查询宽度 ({}, {}) 越界（seq = {}，要 ({}, {})）",
-                    q_nope.len(),
-                    q_rope.len(),
-                    cache.seq(),
-                    self.heads * self.head_dim,
-                    self.heads * self.rope
-                )));
+            return err!(
+                "位置 {t} 或查询宽度 ({}, {}) 越界（seq = {}，要 ({}, {})）",
+                q_nope.len(),
+                q_rope.len(),
+                cache.seq(),
+                self.heads * self.head_dim,
+                self.heads * self.rope
+            );
         }
         Ok(())
     }

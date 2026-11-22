@@ -40,14 +40,10 @@ fn ternary(spike: i8) -> bool {
 /// 输出侧梯度判据：长度与输出通道一致，取值有限。
 fn check_gradient(d_out: &[f32], outputs: usize) -> Result<()> {
     if d_out.len() != outputs {
-        return Err(invalid(SITE, format!(
-            "输出梯度 {} 格与输出通道 {} 不符",
-            d_out.len(),
-            outputs
-        )));
+        return err!("输出梯度 {} 格与输出通道 {} 不符", d_out.len(), outputs);
     }
     match d_out.iter().find(|value| !finite(**value)) {
-        Some(value) => Err(invalid(SITE, format!("输出梯度必须是有限值，得到 {value:?}"))),
+        Some(value) => err!("输出梯度必须是有限值，得到 {value:?}"),
         None => Ok(()),
     }
 }
@@ -56,14 +52,14 @@ fn check_gradient(d_out: &[f32], outputs: usize) -> Result<()> {
 /// 浮点权重判据：`NaN` 经 `round().clamp()` 会落成某个看着正常的 `i8`，只能在量化之前挡住。
 fn check_weights(weights: &[f32]) -> Result<()> {
     match weights.iter().find(|weight| !finite(**weight)) {
-        Some(weight) => Err(invalid(SITE, format!("浮点主权重必须是有限值，得到 {weight:?}"))),
+        Some(weight) => err!("浮点主权重必须是有限值，得到 {weight:?}"),
         None => Ok(()),
     }
 }
 
 fn check_learning_rate(lr: f32) -> Result<()> {
     if !finite(lr) || lr <= 0.0 {
-        return Err(invalid(SITE, format!("学习率必须有限为正，得到 {lr:?}")));
+        return err!("学习率必须有限为正，得到 {lr:?}");
     }
     Ok(())
 }
@@ -81,7 +77,7 @@ fn bad_scale(scale: &[f32]) -> Option<&f32> {
 /// 尺度判据：反量化尺度必须是有限正数（零尺度会把整行压成零，负尺度翻转符号）。
 fn check_scale(scale: &[f32]) -> Result<()> {
     match bad_scale(scale) {
-        Some(value) => Err(invalid(SITE, format!("反量化尺度必须是有限正数，得到 {value:?}"))),
+        Some(value) => err!("反量化尺度必须是有限正数，得到 {value:?}"),
         None => Ok(()),
     }
 }
@@ -94,19 +90,12 @@ fn check_scale(scale: &[f32]) -> Result<()> {
 fn check_lattice<T>(weights: &[T], scale: &[f32], inputs: usize, outputs: usize) -> Result<()> {
     let want = inputs
         .checked_mul(outputs)
-        .ok_or_else(|| invalid(SITE, "输入宽度与输出通道相乘溢出"))?;
+        .ok_or_else(|| invalid!("输入宽度与输出通道相乘溢出"))?;
     if weights.len() != want {
-        return Err(invalid(SITE, format!(
-            "权重 {} 格与 {inputs}×{outputs} 不符",
-            weights.len()
-        )));
+        return err!("权重 {} 格与 {inputs}×{outputs} 不符", weights.len());
     }
     if scale.len() != outputs {
-        return Err(invalid(SITE, format!(
-            "反量化尺度 {} 条与输出通道 {} 不符",
-            scale.len(),
-            outputs
-        )));
+        return err!("反量化尺度 {} 条与输出通道 {} 不符", scale.len(), outputs);
     }
     Ok(())
 }
@@ -121,7 +110,7 @@ fn check_dynamics(threshold: f32, leak: f32, reset: f32) -> Result<()> {
 /// 门槛判据：有限且为正（零门槛会让每一步都发放）。
 fn check_threshold(threshold: f32) -> Result<()> {
     if !finite(threshold) || threshold <= 0.0 {
-        return Err(invalid(SITE, format!("发放门槛必须有限为正，得到 {threshold:?}")));
+        return err!("发放门槛必须有限为正，得到 {threshold:?}");
     }
     Ok(())
 }
@@ -129,7 +118,7 @@ fn check_threshold(threshold: f32) -> Result<()> {
 /// 泄漏判据：落在 `[0,1]`——`0` 是纯 IF，`1` 是每步清零。
 fn check_leak(leak: f32) -> Result<()> {
     if !finite(leak) || !(..=1.0).contains(&leak) || leak < 0.0 {
-        return Err(invalid(SITE, format!("泄漏比例必须落在 [0,1]，得到 {leak:?}")));
+        return err!("泄漏比例必须落在 [0,1]，得到 {leak:?}");
     }
     Ok(())
 }
@@ -137,9 +126,7 @@ fn check_leak(leak: f32) -> Result<()> {
 /// 重置判据：有限且低于门槛，否则下一拍会立刻再发放一次。
 fn check_reset(threshold: f32, reset: f32) -> Result<()> {
     if !finite(reset) || reset >= threshold {
-        return Err(invalid(SITE, format!(
-            "重置值必须有限且低于门槛 {threshold}，得到 {reset:?}"
-        )));
+        return err!("重置值必须有限且低于门槛 {threshold}，得到 {reset:?}");
     }
     Ok(())
 }
@@ -259,9 +246,9 @@ impl Master {
             .map(|(value, slope)| value - lr * slope)
             .collect();
         match bad_scale(&scale) {
-            Some(value) => Err(invalid(SITE, format!(
+            Some(value) => err!(
                 "更新后的反量化尺度必须有限为正，得到 {value:?}（学习率 {lr} 把量化区间走穿了）"
-            ))),
+            ),
             None => Ok(scale),
         }
     }
@@ -352,7 +339,7 @@ impl Surrogate {
     pub(in crate::spike) fn check_window(&self) -> Result<()> {
         let width = self.width();
         if !finite(width) || width <= 0.0 {
-            return Err(invalid(SITE, format!("代理梯度的窗宽必须有限为正，得到 {width:?}")));
+            return err!("代理梯度的窗宽必须有限为正，得到 {width:?}");
         }
         Ok(())
     }
@@ -402,7 +389,7 @@ impl Gradients {
         let shape = [self.weights.len(), self.scale.len(), self.current.len()];
         let want = [weights, outputs, outputs];
         if shape != want {
-            return Err(invalid(SITE, format!("梯度缓冲 {shape:?} 与本层 {want:?} 不符")));
+            return err!("梯度缓冲 {shape:?} 与本层 {want:?} 不符");
         }
         Ok(())
     }

@@ -33,14 +33,11 @@ impl<S: Scalar> Tower<S> {
         })
     }
 
-    /// 本栈宽度（= 混合层的 `n_h · d_h` = 记忆层读出宽 = 主路宽）。
-    pub fn width(&self) -> usize {
-        self.width
-    }
-
-    /// 残差流条数 `M`。
-    pub fn streams(&self) -> usize {
-        self.streams
+    accessors! {
+        /// 本栈宽度（= 混合层的 `n_h · d_h` = 记忆层读出宽 = 主路宽）。
+        width -> usize = width,
+        /// 残差流条数 `M`。
+        streams -> usize = streams,
     }
 
     /// 层序的形态视图：`Memory` 与 `Attend` 的序列。
@@ -77,7 +74,7 @@ impl<S: Scalar> Tower<S> {
     /// `hidden` 宽度不是本栈宽度时返回 `Code::Invalid`。
     pub fn seed(&self, hidden: &[S]) -> Result<Vec<Vec<S>>> {
         if hidden.len() != self.width {
-            return Err(invalid(SITE, format!("初值宽度是 {}，本栈宽度是 {}", hidden.len(), self.width)));
+            return err!("初值宽度是 {}，本栈宽度是 {}", hidden.len(), self.width);
         }
         Ok(vec![hidden.to_vec(); self.streams])
     }
@@ -127,14 +124,14 @@ impl<S: Scalar> Tower<S> {
     /// [`accumulate`] 静默只加重叠部分。
     fn check_streams(&self, streams: &[Vec<S>]) -> Result<()> {
         if streams.len() != self.streams {
-            return Err(invalid(SITE, format!("流条数是 {}，本栈是 {}", streams.len(), self.streams)));
+            return err!("流条数是 {}，本栈是 {}", streams.len(), self.streams);
         }
         match streams.iter().position(|row| row.len() != self.width) {
-            Some(bad) => Err(invalid(SITE, format!(
-                    "第 {bad} 条流宽度是 {}，本栈宽度是 {}",
-                    streams[bad].len(),
-                    self.width
-                ))),
+            Some(bad) => err!(
+                "第 {bad} 条流宽度是 {}，本栈宽度是 {}",
+                streams[bad].len(),
+                self.width
+            ),
             None => Ok(()),
         }
     }

@@ -67,9 +67,9 @@ impl<S: Scalar> Moe<S> {
         self
     }
 
-    /// 宽度（每个 token 的隐藏维）。
-    pub fn width(&self) -> usize {
-        self.width
+    accessors! {
+        /// 宽度（每个 token 的隐藏维）。
+        width -> usize = width,
     }
 
     /// 路由专家数（候选集合的大小）。
@@ -77,14 +77,11 @@ impl<S: Scalar> Moe<S> {
         self.experts.len()
     }
 
-    /// 每次前向激活的专家数 `k`。
-    pub fn active(&self) -> usize {
-        self.active
-    }
-
-    /// 校准名。
-    pub fn calib(&self) -> Calib {
-        self.calib
+    accessors! {
+        /// 每次前向激活的专家数 `k`。
+        active -> usize = active,
+        /// 校准名。
+        calib -> Calib = calib,
     }
 
     /// 路由矩阵，行主序 `[专家数, width]`。
@@ -112,10 +109,10 @@ impl<S: Scalar> Moe<S> {
             .collect();
         let dist = self.calib.to_dist(&scores);
         if let Some(bad) = dist.iter().position(|&d| !finite(d)) {
-            return Err(invalid(SITE, format!(
-                    "路由分布第 {bad} 项非有限（分数 {:?}）：内积已溢出",
-                    scores[bad]
-                )));
+            return err!(
+                "路由分布第 {bad} 项非有限（分数 {:?}）：内积已溢出",
+                scores[bad]
+            );
         }
         Ok(renormalized(ranked(dist, self.active)))
     }
@@ -141,10 +138,10 @@ impl<S: Scalar> Moe<S> {
     /// 入口校验：宽度与非有限值。
     fn check_input(&self, x: &[S]) -> Result<()> {
         if x.len() != self.width {
-            return Err(invalid(SITE, format!("输入宽度必须是 {}，得到 {}", self.width, x.len())));
+            return err!("输入宽度必须是 {}，得到 {}", self.width, x.len());
         }
         if let Some(bad) = x.iter().position(|&v| !finite(v)) {
-            return Err(invalid(SITE, format!("输入第 {bad} 项非有限：路由分数会把这些值带进分布")));
+            return err!("输入第 {bad} 项非有限：路由分数会把这些值带进分布");
         }
         Ok(())
     }
@@ -189,10 +186,10 @@ fn check_shape<S: Scalar>(
     in_range(active, count)?;
     let expected = product(count, width)?;
     if router.len() != expected {
-        return Err(invalid(SITE, format!(
-                "路由矩阵必须是 [专家数 {count}, width {width}] = {expected} 个元素，得到 {}",
-                router.len()
-            )));
+        return err!(
+            "路由矩阵必须是 [专家数 {count}, width {width}] = {expected} 个元素，得到 {}",
+            router.len()
+        );
     }
     check_experts(width, experts)
 }
@@ -202,7 +199,7 @@ fn nonzero(width: usize, count: usize) -> Result<()> {
     if width > 0 && count > 0 {
         return Ok(());
     }
-    Err(invalid(SITE, format!("宽度与专家数都必须非零，得到 width = {width}、专家 {count} 个")))
+    err!("宽度与专家数都必须非零，得到 width = {width}、专家 {count} 个")
 }
 
 /// 激活数在 `1..=count` 之间。
@@ -210,7 +207,7 @@ fn in_range(active: usize, count: usize) -> Result<()> {
     if (1..=count).contains(&active) {
         return Ok(());
     }
-    Err(invalid(SITE, format!("激活数必须在 1..={count} 之间，得到 {active}")))
+    err!("激活数必须在 1..={count} 之间，得到 {active}")
 }
 
 /// 每个专家都是一张 `[width, width]` 方阵。
@@ -224,7 +221,7 @@ fn check_experts<S: Scalar>(width: usize, experts: &[Vec<S>]) -> Result<()> {
 /// 方阵元素数 `width × width`，溢出即拒绝。
 fn product(a: usize, b: usize) -> Result<usize> {
     a.checked_mul(b)
-        .ok_or_else(|| invalid(SITE, format!("方阵尺寸溢出（{a} × {b}）")))
+        .ok_or_else(|| invalid!("方阵尺寸溢出（{a} × {b}）"))
 }
 
 /// 一张方阵的尺寸校验。
@@ -233,10 +230,10 @@ fn check_matrix<S: Scalar>(what: &str, width: usize, matrix: &[S]) -> Result<()>
     if matrix.len() == expected {
         return Ok(());
     }
-    Err(invalid(SITE, format!(
-            "{what} 必须是 [width, width] = {expected} 个元素，得到 {}（width = {width}）",
-            matrix.len()
-        )))
+    err!(
+        "{what} 必须是 [width, width] = {expected} 个元素，得到 {}（width = {width}）",
+        matrix.len()
+    )
 }
 
 #[cfg(test)]

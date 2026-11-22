@@ -81,9 +81,9 @@ impl Emission {
         &self.bytes
     }
 
-    /// 停下来的时候发生了哪种停止。
-    pub fn halt(&self) -> Halt {
-        self.halt
+    accessors! {
+        /// 停下来的时候发生了哪种停止。
+        halt -> Halt = halt,
     }
 
     /// 产出的字节数（含停止字节）。
@@ -126,11 +126,11 @@ impl<S: Scalar> Emitter<S> {
         decoder: ByteDecoder<S>,
     ) -> Result<Self> {
         if encoder.dim() != decoder.width() {
-            return Err(invalid(SITE, format!(
-                    "表示宽度 {} 与输出头宽度 {} 不等：条件喂不进这一个头",
-                    encoder.dim(),
-                    decoder.width()
-                )));
+            return err!(
+                "表示宽度 {} 与输出头宽度 {} 不等：条件喂不进这一个头",
+                encoder.dim(),
+                decoder.width()
+            );
         }
         Ok(Self {
             rule,
@@ -155,11 +155,11 @@ impl<S: Scalar> Emitter<S> {
     /// `Code::Invalid`。失败时旧状态原样保留：先在局部队列里攒完再一次性换上。
     pub fn seed(&mut self, prompt: &[u8], scores: &[S]) -> Result<()> {
         if prompt.len() != scores.len() {
-            return Err(invalid(SITE, format!(
-                    "预填充 {} 个字节却给了 {} 个分数：分数是逐字节的",
-                    prompt.len(),
-                    scores.len()
-                )));
+            return err!(
+                "预填充 {} 个字节却给了 {} 个分数：分数是逐字节的",
+                prompt.len(),
+                scores.len()
+            );
         }
         let replay = replay(&self.rule, &self.encoder, prompt, scores)?;
         self.bytes = replay.bytes;

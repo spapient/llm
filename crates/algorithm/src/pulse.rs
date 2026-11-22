@@ -58,9 +58,9 @@ impl<S: Scalar> Lif<S> {
         self.commit(potential)
     }
 
-    /// 当前膜电位（观测用）。
-    pub fn mem(&self) -> S {
-        self.mem
+    accessors! {
+        /// 当前膜电位（观测用）。
+        mem -> S = mem,
     }
 }
 
@@ -79,9 +79,9 @@ pub struct Events<S: Scalar> {
 }
 
 impl<S: Scalar> Events<S> {
-    /// 事件覆盖的宽度（本层激活的元素数 `N_total`）。
-    pub fn width(&self) -> usize {
-        self.width
+    accessors! {
+        /// 事件覆盖的宽度（本层激活的元素数 `N_total`）。
+        width -> usize = width,
     }
 
     /// 发放的位置数 `N_active`。
@@ -107,9 +107,9 @@ impl<S: Scalar> Events<S> {
         &self.codes
     }
 
-    /// 每个码的步长。
-    pub fn scale(&self) -> S {
-        self.scale
+    accessors! {
+        /// 每个码的步长。
+        scale -> S = scale,
     }
 
     /// 还原成稠密张量：发放位置取 `code·scale`，其余位置为零。
@@ -140,24 +140,19 @@ impl<S: Scalar> Encoder<S> {
     /// 步长非有限或非正、门槛不在 `1..=127`——返回 `Code::Invalid`。
     pub fn new(scale: S, threshold: i32) -> Result<Self> {
         if !finite(scale) || scale <= S::ZERO {
-            return Err(invalid(SITE, format!("步长必须是有限正数，得到 {scale:?}")));
+            return err!("步长必须是有限正数，得到 {scale:?}");
         }
         if !(1..=MAX_CODE).contains(&threshold) {
-            return Err(invalid(SITE, format!(
-                "发放门槛必须落在 1..={MAX_CODE}，得到 {threshold}"
-            )));
+            return err!("发放门槛必须落在 1..={MAX_CODE}，得到 {threshold}");
         }
         Ok(Self { scale, threshold })
     }
 
-    /// 每个码的步长。
-    pub fn scale(&self) -> S {
-        self.scale
-    }
-
-    /// 发放门槛（码位口径）。
-    pub fn threshold(&self) -> i32 {
-        self.threshold
+    accessors! {
+        /// 每个码的步长。
+        scale -> S = scale,
+        /// 发放门槛（码位口径）。
+        threshold -> i32 = threshold,
     }
 
     /// 编码：`code = round(y/scale)` 夹取到 `±127`，`|code| ≥ threshold` 的位置才发放。
@@ -231,14 +226,11 @@ impl Audit {
         })
     }
 
-    /// E14 的稀疏度 `S = 1 − N_active/N_total`。
-    pub fn sparsity(&self) -> f64 {
-        self.sparsity
-    }
-
-    /// 相对重构损失（`‖y‖ = 0` 时退化为绝对误差）。
-    pub fn loss(&self) -> f64 {
-        self.loss
+    accessors! {
+        /// E14 的稀疏度 `S = 1 − N_active/N_total`。
+        sparsity -> f64 = sparsity,
+        /// 相对重构损失（`‖y‖ = 0` 时退化为绝对误差）。
+        loss -> f64 = loss,
     }
 }
 
@@ -277,11 +269,7 @@ fn pair_gain<S: Scalar>(encoder: &Encoder<S>, u: &[S], v: &[S]) -> Result<Option
 /// 一对样本的入口契约：长度相等且各自都有限。
 fn check_pair<S: Scalar>(u: &[S], v: &[S]) -> Result<()> {
     if u.len() != v.len() {
-        return Err(invalid(SITE, format!(
-            "样本对的两段长度必须相等，得到 {} 与 {}",
-            u.len(),
-            v.len()
-        )));
+        return err!("样本对的两段长度必须相等，得到 {} 与 {}", u.len(), v.len());
     }
     check_finite(u)?;
     check_finite(v)
@@ -350,20 +338,14 @@ fn squared_distance<S: Scalar>(a: &[S], b: &[S]) -> f64 {
 /// 几何与容量一次判清：形状对了才谈累加，容量装得下才允许用普通 `i32` 加法。
 fn check_geometry(got: usize, rows: usize, cols: usize, width: usize) -> Result<()> {
     if rows.checked_mul(cols) != Some(got) {
-        return Err(invalid(SITE, format!(
-            "权重长度必须是 rows × cols = {rows} × {cols}，得到 {got}"
-        )));
+        return err!("权重长度必须是 rows × cols = {rows} × {cols}，得到 {got}");
     }
     if width != cols {
-        return Err(invalid(SITE, format!(
-            "事件宽度必须等于权重列数 {cols}，得到 {width}"
-        )));
+        return err!("事件宽度必须等于权重列数 {cols}，得到 {width}");
     }
     let cell = (MAX_CODE as usize) * (MAX_CODE as usize);
     if cols.saturating_mul(cell) > i32::MAX as usize {
-        return Err(invalid(SITE, format!(
-            "列数 {cols} × 单格上限 {cell} 超出 i32 累加容量"
-        )));
+        return err!("列数 {cols} × 单格上限 {cell} 超出 i32 累加容量");
     }
     Ok(())
 }
@@ -373,5 +355,5 @@ fn check_finite<S: Scalar>(values: &[S]) -> Result<()> {
     if values.iter().all(|&v| finite(v)) {
         return Ok(());
     }
-    Err(invalid(SITE, "激活含非有限值".to_string()))
+    err!("激活含非有限值")
 }

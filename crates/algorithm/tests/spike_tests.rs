@@ -4,8 +4,8 @@
 //! `spike.rs` 推过行数门限。
 
 use super::*;
-use diagnostic::Code;
 use crate::mix::Encoder;
+use diagnostic::Code;
 
 /// 门槛调到不可能达到、无泄漏：此时膜电位就是这一步的整数累加。
 fn quiet(weights: Vec<i8>, scale: Vec<f32>, inputs: usize, outputs: usize) -> Spiking {

@@ -48,14 +48,11 @@ pub struct Memory<S: Scalar = f32> {
 }
 
 impl<S: Scalar> Memory<S> {
-    /// 键维 `d_k`：门的宽度、列的下标。
-    pub fn key_dim(&self) -> usize {
-        self.key_dim
-    }
-
-    /// 值维 `d_v`：每次读出的宽度、行的下标。
-    pub fn value_dim(&self) -> usize {
-        self.value_dim
+    accessors! {
+        /// 键维 `d_k`：门的宽度、列的下标。
+        key_dim -> usize = key_dim,
+        /// 值维 `d_v`：每次读出的宽度、行的下标。
+        value_dim -> usize = value_dim,
     }
 
     /// 扁平记忆：`cells[value * key_dim + key]`。
@@ -87,22 +84,19 @@ impl Kda {
     /// 任一维为零，或 `d_v × d_k` 溢出——返回 `Code::Invalid`。
     pub fn new(key_dim: usize, value_dim: usize) -> Result<Self> {
         if key_dim == 0 || value_dim == 0 {
-            return Err(invalid(SITE, format!("键维与值维都必须非零，得到 d_k = {key_dim}、d_v = {value_dim}")));
+            return err!("键维与值维都必须非零，得到 d_k = {key_dim}、d_v = {value_dim}");
         }
         if key_dim.checked_mul(value_dim).is_none() {
-            return Err(invalid(SITE, format!("记忆尺寸溢出（{value_dim} × {key_dim}）")));
+            return err!("记忆尺寸溢出（{value_dim} × {key_dim}）");
         }
         Ok(Self { key_dim, value_dim })
     }
 
-    /// 键维 `d_k`。
-    pub fn key_dim(&self) -> usize {
-        self.key_dim
-    }
-
-    /// 值维 `d_v`。
-    pub fn value_dim(&self) -> usize {
-        self.value_dim
+    accessors! {
+        /// 键维 `d_k`。
+        key_dim -> usize = key_dim,
+        /// 值维 `d_v`。
+        value_dim -> usize = value_dim,
     }
 
     /// 零记忆：一个 token 都没写过。
@@ -166,10 +160,13 @@ impl Kda {
         if memory.key_dim == self.key_dim && memory.value_dim == self.value_dim {
             return Ok(());
         }
-        Err(invalid(SITE, format!(
-                "记忆几何必须是 [值维 {}, 键维 {}]，得到 [值维 {}, 键维 {}]",
-                self.value_dim, self.key_dim, memory.value_dim, memory.key_dim
-            )))
+        err!(
+            "记忆几何必须是 [值维 {}, 键维 {}]，得到 [值维 {}, 键维 {}]",
+            self.value_dim,
+            self.key_dim,
+            memory.value_dim,
+            memory.key_dim
+        )
     }
 
     /// 门：长度、有限性与取值域 `[0, 1]` 一起在这个入口判定。
@@ -186,7 +183,7 @@ impl Kda {
         if finite(write) && write >= S::ZERO && write <= S::ONE {
             return Ok(write);
         }
-        Err(invalid(SITE, format!("写强度是 {write:?}：必须在 [0, 1] 内（0 只遗忘不写，1 写满残差）")))
+        err!("写强度是 {write:?}：必须在 [0, 1] 内（0 只遗忘不写，1 写满残差）")
     }
 
     /// 单位键：delta 规则的精确写入要求 `‖k‖ = 1`，归一化因此在入口做一次，零键拒绝。
@@ -198,7 +195,7 @@ impl Kda {
             .fold(S::ZERO, |acc, value| acc.add(value.mul(value)))
             .sqrt();
         if norm <= S::ZERO {
-            return Err(invalid(SITE, "键的 L2 范数为零：残差 `v − S k` 会退化成 `v`，写进去的是值而不是纠错"));
+            return err!("键的 L2 范数为零：残差 `v − S k` 会退化成 `v`，写进去的是值而不是纠错");
         }
         Ok(key.iter().map(|&value| value.div(norm)).collect())
     }
@@ -207,7 +204,7 @@ impl Kda {
     fn check_values<S: Scalar>(&self, what: &str, values: &[S], want: usize) -> Result<()> {
         self.check_len(what, values.len(), want)?;
         match values.iter().position(|&value| !finite(value)) {
-            Some(idx) => Err(invalid(SITE, format!("{what}第 {idx} 项非有限：放行会把 NaN 一路带进记忆"))),
+            Some(idx) => err!("{what}第 {idx} 项非有限：放行会把 NaN 一路带进记忆"),
             None => Ok(()),
         }
     }
@@ -217,7 +214,7 @@ impl Kda {
         if got == want {
             return Ok(());
         }
-        Err(invalid(SITE, format!("{what}的宽度必须是 {want}，得到 {got}")))
+        err!("{what}的宽度必须是 {want}，得到 {got}")
     }
 }
 
@@ -233,13 +230,13 @@ fn write_row<S: Scalar>(row: &mut [S], gate: &[S], write: S, key: &[S], value: S
 /// 单个通道的门：有限且落在 `[0, 1]`（`0` 清空该通道，`1` 一点不忘）。
 fn check_channel<S: Scalar>(channel: usize, alpha: S) -> Result<()> {
     if !finite(alpha) {
-        return Err(invalid(SITE, format!("门第 {channel} 个通道非有限：遗忘系数必须是 [0, 1] 里的实数")));
+        return err!("门第 {channel} 个通道非有限：遗忘系数必须是 [0, 1] 里的实数");
     }
     if alpha < S::ZERO || alpha > S::ONE {
-        return Err(invalid(SITE, format!(
-                "门第 {channel} 个通道是 {alpha:?}：遗忘系数必须在 [0, 1] 内\
+        return err!(
+            "门第 {channel} 个通道是 {alpha:?}：遗忘系数必须在 [0, 1] 内\
                  （0 清空该通道，1 一点不忘）"
-            )));
+        );
     }
     Ok(())
 }

@@ -82,10 +82,10 @@ impl<S: Scalar> Boundary<S> {
     fn probe(self, scores: &[S], idx: usize) -> Result<()> {
         self.check_patch()?;
         if idx >= scores.len() {
-            return Err(invalid(SITE, format!(
-                    "下标 {idx} 越出 {len} 个字节：边界只问已有的字节",
-                    len = scores.len()
-                )));
+            return err!(
+                "下标 {idx} 越出 {len} 个字节：边界只问已有的字节",
+                len = scores.len()
+            );
         }
         self.window(scores, idx)
     }
@@ -142,9 +142,9 @@ impl Patches {
         self.starts.is_empty()
     }
 
-    /// 输入的字节数。
-    pub fn bytes(&self) -> usize {
-        self.bytes
+    accessors! {
+        /// 输入的字节数。
+        bytes -> usize = bytes,
     }
 
     /// 第 `i` 个 patch 的字节区间 `[start, end)`；越界返回 `None`。
@@ -178,7 +178,7 @@ fn audit<S: Scalar>(i: usize, score: S) -> Result<()> {
     if finite(score) {
         return Ok(());
     }
-    Err(invalid(SITE, format!("第 {i} 个字节的分数不是有限值（{score:?}）：熵与信息密度都是实数")))
+    err!("第 {i} 个字节的分数不是有限值（{score:?}）：熵与信息密度都是实数")
 }
 
 /// 熵阈值必须非负有限：负阈值会让每个字节都成为边界，「门」也就不再是门。
@@ -186,7 +186,7 @@ fn thresholds<S: Scalar>(global: S, rise: S) -> Result<()> {
     if non_negative(global) && non_negative(rise) {
         return Ok(());
     }
-    Err(invalid(SITE, format!("熵阈值必须非负有限：θ_g = {global:?}，θ_r = {rise:?}")))
+    err!("熵阈值必须非负有限：θ_g = {global:?}，θ_r = {rise:?}")
 }
 
 /// 秩判定要 `1 ≤ top ≤ window`：`window = 0` 时秩无定义，`top > window` 时窗口里凑不齐名次。
@@ -194,7 +194,7 @@ fn ranks(window: usize, top: usize) -> Result<()> {
     if top >= 1 && top <= window {
         return Ok(());
     }
-    Err(invalid(SITE, format!("编码率规则要 1 ≤ top ≤ window，得到 top = {top}、window = {window}")))
+    err!("编码率规则要 1 ≤ top ≤ window，得到 top = {top}、window = {window}")
 }
 
 /// 非负有限：负值与 `NaN` / `±inf` 一样让阈值失去意义。

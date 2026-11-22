@@ -89,17 +89,17 @@ impl<S: Scalar> Hybrid<S> {
             .heads()
             .checked_mul(attention.head_dim())
             .ok_or_else(|| {
-                invalid(SITE, format!(
-                        "注意力输出宽 n_h × d_h 溢出（{} × {}）",
-                        attention.heads(),
-                        attention.head_dim()
-                    ))
+                invalid!(
+                    "注意力输出宽 n_h × d_h 溢出（{} × {}）",
+                    attention.heads(),
+                    attention.head_dim()
+                )
             })?;
         if width != ffn.width() {
-            return Err(invalid(SITE, format!(
-                    "注意力输出宽 n_h × d_h = {width}，前馈宽 {}：两者必须相等，否则残差相加会把错位的数据拼在一起",
-                    ffn.width()
-                )));
+            return err!(
+                "注意力输出宽 n_h × d_h = {width}，前馈宽 {}：两者必须相等，否则残差相加会把错位的数据拼在一起",
+                ffn.width()
+            );
         }
         Ok(Self {
             attention,
@@ -141,7 +141,7 @@ impl<S: Scalar> Hybrid<S> {
     /// 「另一层的数」混进来，而混流本身看不出这一点。
     pub fn seed(&self, hidden: &[S]) -> Result<Vec<Vec<S>>> {
         if hidden.len() != self.width() {
-            return Err(invalid(SITE, format!("初值宽度是 {}，本层宽度是 {}", hidden.len(), self.width())));
+            return err!("初值宽度是 {}，本层宽度是 {}", hidden.len(), self.width());
         }
         Ok(vec![hidden.to_vec(); self.streams()])
     }
@@ -196,10 +196,10 @@ impl<S: Scalar> Hybrid<S> {
     fn check_width(&self, mixed: &[Vec<S>]) -> Result<()> {
         let width = self.width();
         match mixed.iter().position(|row| row.len() != width) {
-            Some(bad) => Err(invalid(SITE, format!(
-                    "第 {bad} 条流宽度是 {}，本层宽度是 {width}（= n_h · d_h = 前馈宽）",
-                    mixed[bad].len()
-                ))),
+            Some(bad) => err!(
+                "第 {bad} 条流宽度是 {}，本层宽度是 {width}（= n_h · d_h = 前馈宽）",
+                mixed[bad].len()
+            ),
             None => Ok(()),
         }
     }
@@ -208,7 +208,7 @@ impl<S: Scalar> Hybrid<S> {
 /// 本 token 的位置：缓存的最后一行。
 fn cursor<S: Scalar>(cache: &Latent<S>) -> Result<usize> {
     cache.seq().checked_sub(1).ok_or_else(|| {
-        invalid(SITE, "缓存里没有任何位置：本 token 的 (c^KV, k^R) 必须先 push 再 step，否则注意力会对着空历史算")
+        invalid!("缓存里没有任何位置：本 token 的 (c^KV, k^R) 必须先 push 再 step，否则注意力会对着空历史算")
     })
 }
 
@@ -260,7 +260,7 @@ impl<'a, S: Scalar> Walk<'a, S> {
     fn next(&mut self) -> Result<MemoryStep<'a, S>> {
         let used = self.used;
         let input = self.memories.get(used).copied().ok_or_else(|| {
-            invalid(SITE, format!("第 {used} 个记忆层没有输入：每一格要一份门/键/值/查询，少一份就是错位"))
+            invalid!("第 {used} 个记忆层没有输入：每一格要一份门/键/值/查询，少一份就是错位")
         })?;
         self.used += 1;
         Ok(input)
@@ -272,24 +272,24 @@ fn check_count(used: usize, given: usize) -> Result<()> {
     if used == given {
         return Ok(());
     }
-    Err(invalid(SITE, format!("记忆输入比记忆层多：本栈 {used} 个记忆层，收到 {given} 份输入")))
+    err!("记忆输入比记忆层多：本栈 {used} 个记忆层，收到 {given} 份输入")
 }
 
 /// 混合层的几何：至少一层，且各层宽度与流条数同源。
 fn geometry<S: Scalar>(attention: &[Hybrid<S>]) -> Result<(usize, usize)> {
-    let first = attention.first().ok_or_else(|| {
-        invalid(SITE, "层栈至少需要一个混合层：没有注意力就没有可推进的主路")
-    })?;
+    let first = attention
+        .first()
+        .ok_or_else(|| invalid!("层栈至少需要一个混合层：没有注意力就没有可推进的主路"))?;
     let (width, streams) = (first.width(), first.streams());
     match attention
         .iter()
         .find(|layer| layer.width() != width || layer.streams() != streams)
     {
-        Some(bad) => Err(invalid(SITE, format!(
-                "混合层几何不一致：本栈是宽 {width} × {streams} 流，遇到宽 {} × {} 流",
-                bad.width(),
-                bad.streams()
-            ))),
+        Some(bad) => err!(
+            "混合层几何不一致：本栈是宽 {width} × {streams} 流，遇到宽 {} × {} 流",
+            bad.width(),
+            bad.streams()
+        ),
         None => Ok((width, streams)),
     }
 }
@@ -300,9 +300,9 @@ fn check_ratio(attention: usize, memory: usize) -> Result<()> {
     if memory == want {
         return Ok(());
     }
-    Err(invalid(SITE, format!(
-            "配比必须是每 {MEMORY_PER_ATTENTION} 个记忆层配 1 个混合层：{attention} 个混合层要 {want} 个记忆层，得到 {memory}"
-        )))
+    err!(
+        "配比必须是每 {MEMORY_PER_ATTENTION} 个记忆层配 1 个混合层：{attention} 个混合层要 {want} 个记忆层，得到 {memory}"
+    )
 }
 
 /// 记忆层的读出宽必须等于主路宽：读数要加回主路，宽度不齐就是两张不同的表。
@@ -312,10 +312,10 @@ fn check_memory_width(memory: &[crate::kda::Kda], width: usize) -> Result<()> {
         .enumerate()
         .find(|(_, kda)| kda.value_dim() != width)
     {
-        Some((idx, bad)) => Err(invalid(SITE, format!(
-                "第 {idx} 个记忆层读出宽 {} ≠ 混合层宽 {width}：读数要加回主路，宽度不齐会拼起两张不同的表",
-                bad.value_dim()
-            ))),
+        Some((idx, bad)) => err!(
+            "第 {idx} 个记忆层读出宽 {} ≠ 混合层宽 {width}：读数要加回主路，宽度不齐会拼起两张不同的表",
+            bad.value_dim()
+        ),
         None => Ok(()),
     }
 }
