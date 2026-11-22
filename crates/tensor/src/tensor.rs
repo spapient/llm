@@ -131,8 +131,7 @@ where
 
     /// 是否为行主序连续布局：期望步长由 [`Rank::contiguous`] 给出，与构造期同一套累积规则。
     pub fn is_contiguous(&self) -> bool {
-        let dims = self.dims.as_slice();
-        R::contiguous(dims).is_some_and(|expected| expected.as_slice() == self.steps.as_slice())
+        layout::is_contiguous(self.dims.as_slice(), self.steps.as_slice())
     }
 
     /// 按下标取值；秩不符或越界返回 `None`（不 panic）。

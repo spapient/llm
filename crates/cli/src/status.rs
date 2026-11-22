@@ -134,25 +134,25 @@ fn model_rows(panel: Panel, weights: Option<&str>) -> Result<Panel> {
 
 /// 张量与视图两行：最小实例布局。
 fn data_rows(panel: Panel) -> Result<Panel> {
-    let tensor = tensor::Tensor::new(tensor::DType::F32, tensor::Shape::new([2, 2]), &[0u8; 16])?;
+    let raw = tensor::Raw::new(tensor::DType::F32, tensor::Shape::new([2, 2]), &[0u8; 16])?;
     let panel = panel.row(
-        "张量    tensor",
+        "张量    tensor::Raw",
         format!(
             "{:?} {:?} = {} 元素，连续布局：{}",
-            tensor.dtype(),
-            tensor.shape().dims(),
-            tensor.numel(),
-            tensor.is_contiguous()
+            raw.dtype(),
+            raw.shape().dims(),
+            raw.numel(),
+            raw.is_contiguous()
         ),
     );
     let buf = vec![0.5f32, 0.25, 0.125, 0.0625];
-    let view = tensor::View::new(tensor::Shape::new([2, 2]), &buf)?;
+    let view = tensor::Tensor::new(tensor::Shape::new([2, 2]), buf.as_slice())?;
     Ok(panel.row(
-        "视图    tensor::View",
+        "视图    tensor::Tensor",
         format!(
             "{:?} {:?}，第 1 行和 = {:.3}（借用调用方 {} 个元素，不复制）",
             view.dtype(),
-            view.shape().dims(),
+            view.dims(),
             view.row(1)
                 .map(|row| row.iter().sum::<f32>())
                 .unwrap_or(0.0),

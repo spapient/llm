@@ -38,7 +38,7 @@
 //!
 //! // 秩进类型：形状写成 `[usize; 2]`，换成三轴就编译不过。
 //! let fixed: Tensor<&[f32], [usize; 2], f32> =
-//!     Tensor::new([3, 2], &values).expect("形状与缓冲匹配");
+//!     Tensor::new([3, 2], values.as_slice()).expect("形状与缓冲匹配");
 //! assert_eq!(fixed.transpose(0, 1).expect("轴合法").dims(), [2, 3]);
 //! ```
 
