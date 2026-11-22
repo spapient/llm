@@ -195,7 +195,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Httpd` | `serve` | std-only HTTP/1.1 薄适配器：单线程一问一答，固定 `Connection: close`；换传输层只需在同一个 `Router` 上再挂一个适配器 |
 | `CpuModel` / `Params` / `Block` | `serve` | CPU 模型宿主与驻留参数表：装载期一次解码、生成循环不再读文件；七个层族装配成 `engine::exec::Graph`，执行器泛化为 `E: Executor`；`from_path` 按 `Reader` / `Loader` 在装配点分流 |
 | `Command` / `Invocation` / `USAGE` | `cli` | 命令行文法（argv / env → 强类型调用参数）与编排分派 |
-| `Token` / `Pos` / `Delim` / `Finding` / `Gate` | `tools` | 零依赖词法 token 树、单函数复杂度 finding 与配置化阈值；分析器只产出数据，不打印不退出 |
+| `Token` / `Pos` / `Delim` / `Finding` / `Gate` / `Hit` | `tools` | 零依赖词法 token 树、单函数复杂度 finding 与配置化阈值、标识符层词汇命中（全拼名 + 应改用的缩写）；分析器只产出数据，不打印不退出。词汇判定在**标识符**层而不是文本层，字符串字面量与注释不参与——设备源码里 `[[buffer(0)]]` 这类选择器因此不会被误报 |
 | `Case` / `Baseline` / `Judgement` | `tools` | 回退判定（与基线相比有没有退）；不做测量 |
 | `EntryKind` / `Harness` / `Roofline` / `Bottleneck` / `Score` / `Geometry` / `BenchRecord` | `tools` | 统一基准记录结构：记录只持有身份、几何与峰值，未测得的峰值留 `None`；`Roofline::score` 把「峰值 + 算术强度 + 实测吞吐」折成占上界百分比与瓶颈侧，测量与上界登记仍归 `optim` / `benchmarks` |
 | `Protocol` / `Statistic` / `Tally` / `Standing` / `Shortfall` / `Card` | `tools` | 实测卡三态判定：闭集 → 样本量 → 统计量定义 → 区间与门槛，次序有意；样本与时钟来源归 `benchmarks` |
