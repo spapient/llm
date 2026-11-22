@@ -85,6 +85,7 @@ fn compile(ext: &str, main: &std::path::Path, binary: &std::path::Path) -> Resul
     let compiled = Command::new(&compiler)
         .arg("-O1")
         .arg(standard)
+        .args(erase_qualifiers(ext))
         .arg("-o")
         .arg(binary)
         .arg(main)
@@ -98,6 +99,12 @@ fn compile(ext: &str, main: &std::path::Path, binary: &std::path::Path) -> Resul
         compiler.to_string_lossy(),
         String::from_utf8_lossy(&compiled.stderr).trim()
     ))
+}
+
+/// 抹掉宿主编译器不认识的地址空间限定符。Metal 的 `thread` 只声明"这块内存在本线程"，
+/// 算术与回读一字不差；擦掉限定符，同一份正文才能在主机上算参考值。
+fn erase_qualifiers(ext: &str) -> Option<&'static str> {
+    (ext == "metal").then_some("-Dthread=")
 }
 
 /// 主机上该语言的编译器：`CXX`/`CC` 优先，缺席时用 `c++`/`cc`。

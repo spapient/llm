@@ -8,7 +8,7 @@
 | --- | --- | --- | --- | --- |
 | **GEMM f32**（`crates/gemm`） | `C[M,N] = A[M,K]·B[K,N]`；输入域 `M,N,K ≥ 1`，输出域 `M×N`；代数性质：双线性、对分块可分、按行/列尺度不变（`α·(AB) = (αA)B`）。 | 时间 `Θ(MNK)` 乘加（直接/tiled 路径；代数下界 `Ω(MNK)`，Strassen/Winograd 未采用）；tiled 版 I/O 达 Hong–Kung 下界 `Θ(MNK/√Z)`（`Z` = 缓存字）。空间 `Θ(MK+KN+MN)` + 打包缓冲 `Θ(k_c·n_c)`。 | 每个输出是长 `K` 的内积：前向误差 `≤ γ_K·Σ|a_i b_i|`。`K=512` 时 `γ_512 ≈ 3.05e-5`，与实测容差一致 —— `packed_test_support.rs` assert `1e-5`（GEMM）、`1e-6`（反量化点积）。tiled 求和重排不改变逐内积的误差界（每个内积内部顺序不变）。 | 见 `crates/dtype/tests/*.rs` 的 `to_bits()` 对拍（标量/位级地板）。 |
 | **GEMM i8**（`crates/gemm`） | `C = A_i8·B_i8` 整数累加后按 scale 反量化；输入域 i8 量化张量，输出域 f32 或 i32 累加器。 | 同上 `Θ(MNK)` 整数 MAC，无浮点舍入直到反量化一步。空间同 f32 且打包缓冲减半。 | 整数累加**精确**（无舍入），误差全部来自末尾一次反量化：`gemv_i8.rs` / `packed_test_support.rs` assert `1e-6`。 | `gemm/tests/dequant_i8_tests.rs` 对拍 i8 路径与标量参考。 |
-| **GEMV f32 decode**（`crates/gemm`） | `y[M] = W[M,K]·x[K]`（`K=4096` 权重侧）；每输出一个长内积。 | 时间 `Θ(MK)`；**带宽界**：算术强度 `2/(4·1)=0.5 FLOP/byte`，落在 roofline 的 DRAM 区 —— `gemv_f32/decode_1x4096x4096` 实测 `72.65 GiB/s` = 内存读上限 `83.68 GiB/s` 的 `86.8%`。空间 `Θ(MK+K+M)`。 | 同 GEMM，`γ_K·Σ|w_i x_i|`；`gemv.rs` 与标量参考 assert `1e-5` 量级。 | —（GEMV 单链无 SIMD 特化位级断言，见开口清单）。 |
+| **GEMV f32 decode**（`crates/gemm`） | `y[M] = W[M,K]·x[K]`（`K=4096` 权重侧）；每输出一个长内积。 | 时间 `Θ(MK)`；**带宽界**：算术强度 `2/(4·1)=0.5 FLOP/byte`，落在 roofline 的 DRAM 区 —— 2026-11-22 / Apple M5 Pro（18 核）实测 `gemv_f32/decode_1x4096x4096` `[63.934 64.693 65.408] GiB/s`，同一尺寸的内存读上限 `mem_stream/dram_read_64mib` `[81.268 81.486 81.671] GiB/s` → **79.4%**（门槛 85%，未达 5.6 点）。同一条用例相对上一份 criterion 基线 `time: [+10.653% +12.120% +13.513%]`，即**变慢 12.1%**，作为红项登记，见 `docs/lld.md` v3.0.33。**旧数 72.65 / 86.8% 是更早一次实测**，已被同一台机器上的重测取代，不并列保留（并列就是 best-of-N，F1）。空间 `Θ(MK+K+M)`。 | `γ_K·Σ|w_i x_i|`（`K` = 行内项数）。**实测**：`the_dense_dot_stays_inside_the_gamma_bound_against_a_wider_reference` 用 f64 顺序累加当真值（f32×f32 落 f64 精确，4096 项 f64 求和相对误差 ≈4.5e-13，比 f32 的界小 9 个数量级）钉住：`K=4096` 时实测 **2.6 ulp**，γ_K·Σ|wx| = `1.594e1`，误差方向保守。 |
 | **GEMV i8 量化**（`crates/gemm`） | 反量化折叠进点积：`Σ w_i·x_i · (s_w·s_x)`，scale 乘到累加器末尾一次。 | 时间 `Θ(MK)` 整数 MAC + 一次反量化；带宽界（i8 强度翻倍为 `1 FLOP/byte`）。 | 折叠是**严格代数等价**（scale 为常数可提公因子）；`gemv_i8.rs` assert `1e-6`。 | — |
 | **Softmax**（`crates/gemm`） | `softmax(x)_i = exp(x_i − m) / Σ_j exp(x_j − m)`；输入域任意 f32 行，输出域和为 1 的分布；性质：平移不变、单调、正值。 | 时间 `Θ(n)`（max 一遍、exp 求和一遍、归一化一遍）；空间 `Θ(n)`，在线重标定版 `Θ(1)` 额外。 | **max 相减必要性**：`exp(x)` 在 `x>88.7` 溢出 f32，减去 `m=max(x)` 保证 `x_i−m ≤ 0`，`exp ≤ 1`，和永不为 0。误差：`softmax.rs` assert 每行和 `=1` 容差 `1e-5`（exp 近似 + 求和重排的总效应）。 | — |
 | **RMSNorm**（`crates/gemm`） | `y = x / rms(x) · γ`，`rms = sqrt(mean(x²))`；性质：尺度不变（`x→cx` 输出不变）。 | 时间 `Θ(n)`（平方和一遍、归一化一遍）；空间 `Θ(1)` 额外。 | rsqrt 近似 + 平方求和：`rmsnorm.rs` assert 全零行输出 `→0` 容差 `1e-6`；`norm_tests.rs` 组均值 `1e-5`、组方差 `1e-4`。 | — |
@@ -26,7 +26,11 @@
 
 ## 开口（仍未闭合，及闭合前提）
 
-1. **GEMV 单链无 SIMD 位级对拍**：decode GEMV 是纯标量累加链，无 SIMD 特化，故无「SIMD vs 标量」逐位用例可写；闭合前提 = 引入多累加链/SIMD 路径后再补对拍。
+1. **GEMV 的逐位对拍在数学上不可得**：`dense_dot` 有 `const LANES: usize = 16` 条独立累加链 + `as_chunks::<LANES>()`，
+   求和顺序与顺序标量不同，浮点加法不结合，故「逐位相等」不是可达目标。按 A1 的另一半改为钉住 ulp 上界，
+   已闭合（实测 2.6 ulp，见上表）。**同时发现一处假证据**：`gemv::reference` 内部调的正是 `F::forward`
+   （`gemv/shape.rs` 的 `run`），所以旧测试 `forward_matches_the_scalar_reference_on_the_deterministic_sample`
+   是内核跟自己比（F6），它证明不了任何与独立参考的一致性；已由上表的 f64 参考取代，旧断言保留但不再算证据。
 2. **浮点求和路径逐位**：GEMM/GEMV/softmax 的 SIMD 路径与顺序标量参考**不逐位相等**（求和重排）；已按 A1 用 `γ_n` 界 + 测试容差钉住，不做位级承诺。闭合前提 = 把累加器固定为顺序标量（牺牲峰值，与本指令 K7/K8 冲突）。
 3. **Winograd / Strassen 未采用**：Conv 只有 direct/im2col，无 Winograd 误差界可交；闭合前提 = 引入 Winograd 路径后补。
 4. **投机解码**：本仓推理路径未实现 draft/accept 循环，无期望加速比可交；闭合前提 = 先有投机解码实现。

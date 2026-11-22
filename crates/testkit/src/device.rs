@@ -20,6 +20,18 @@ pub struct Witness<'a> {
     pub expect: &'a [f32],
 }
 
+/// 一条写回形式的条目：形式名、实现名、它算出的值。与 [`Provision`] 同形，但形式不是原语——
+/// 硬塞进 `prim` 一栏会让那个字段在两种闭集之间语义漂移。
+#[derive(Debug, Clone, Copy)]
+pub struct EpilogueEntry<'a> {
+    /// 写回形式名，如 `bias`。
+    pub form: &'a str,
+    /// 实现名，如 `column_broadcast`。
+    pub impl_name: &'a str,
+    /// 见证入口与期望值。
+    pub witness: Witness<'a>,
+}
+
 /// 一台设备在片段层的自述：由设备 crate 的生成表与档案拼出来。
 #[derive(Debug, Clone, Copy)]
 pub struct Contract<'a> {
@@ -37,6 +49,11 @@ pub struct Contract<'a> {
     pub prims: &'a [(&'a str, &'a str)],
     /// 档案里这台设备的全部供给。
     pub provides: &'a [Provision<'a>],
+    /// 写回尾块：档案 `[[epilogue]]` 的 `(形式, 见证函数名)`。六种形式与供给分属两套闭集，
+    /// 认领关系却同样要闭合：见证里写了算法，档案里就得有一条写着它归属哪种形式。
+    pub epilogue: &'a [EpilogueEntry<'a>],
+    /// 写回尾块的文件名主干（`prof::sign` 的那一份），闭集要拿它算文件名。
+    pub epilogue_stem: &'a str,
     /// 见证源码（`DEVICE.source`）。
     pub source: &'a str,
 }
@@ -125,23 +142,45 @@ impl<'a> Contract<'a> {
     /// 入口缺席、重复，或有见证函数无人认领时返回原因。
     pub fn check_witness_entries(&self) -> Result<(), String> {
         let defined = crate::evidence::definitions(self.source);
-        for (prim, func) in self.prims {
-            let count = defined.iter().filter(|name| **name == *func).count();
+        let prims = self.prims.iter().map(|(prim, func)| (*prim, *func));
+        self.check_one_each(&defined, prims, "原语", "一条签名一个函数")?;
+        let epis = self
+            .epilogue
+            .iter()
+            .map(|entry| (entry.form, entry.witness.func));
+        self.check_one_each(&defined, epis, "写回形式", "一种形式一个函数")?;
+        self.check_unclaimed(&defined)
+    }
+
+    /// 每条命名了算法的条目在见证文件里必须正好有一段函数：少一段是漏说了，多一段是两份真相。
+    fn check_one_each<'n>(
+        &self,
+        defined: &[&'n str],
+        entries: impl Iterator<Item = (&'n str, &'n str)>,
+        kind: &str,
+        rule: &str,
+    ) -> Result<(), String> {
+        for (name, func) in entries {
+            let count = defined.iter().filter(|seen| **seen == func).count();
             if count != 1 {
                 return Err(format!(
-                    "`{}` 的 `{prim}` 入口 `{func}` 在见证文件里出现了 {count} 次：一条签名一个函数",
+                    "`{}` 的{kind} `{name}` 入口 `{func}` 在见证文件里出现了 {count} 次：{rule}",
                     self.id
                 ));
             }
         }
-        for name in &defined {
-            if self.claimed(name) {
-                continue;
+        Ok(())
+    }
+
+    /// 反向的漏：见证文件里每个函数都得有档案认领，否则它算的东西归属不到任何一条。
+    fn check_unclaimed(&self, defined: &[&str]) -> Result<(), String> {
+        for name in defined {
+            if !self.claimed(name) {
+                return Err(format!(
+                    "`{}` 的见证函数 `{name}` 没有任何供给认领：它执行的算法归属不到一条签名",
+                    self.id
+                ));
             }
-            return Err(format!(
-                "`{}` 的见证函数 `{name}` 没有任何供给认领：它执行的算法归属不到一条签名",
-                self.id
-            ));
         }
         Ok(())
     }
@@ -230,12 +269,14 @@ impl<'a> Contract<'a> {
 
     /// 某条见证函数是否被档案里的一条供给认领。
     fn claimed(&self, name: &str) -> bool {
-        self.provides
+        let provided = self
+            .provides
             .iter()
-            .any(|provide| provide.witness.is_some_and(|witness| witness.func == name))
+            .any(|provide| provide.witness.is_some_and(|witness| witness.func == name));
+        provided || self.epilogue.iter().any(|entry| entry.witness.func == name)
     }
 
-    /// 闭集里的全部名字：P0 的 `<prim>.<ext>` 加一个 `witness.<ext>`。
+    /// 闭集里的全部名字：P0 的 `<prim>.<ext>`、一个 `witness.<ext>`、一份 `epilogue.<ext>`。
     fn expected_names(&self) -> Vec<String> {
         let mut want: Vec<String> = self
             .p0
@@ -243,6 +284,8 @@ impl<'a> Contract<'a> {
             .map(|prim| format!("{prim}.{}", self.ext))
             .collect();
         want.push(format!("witness.{}", self.ext));
+        // 一份写回尾块文本承载六种形式，文件名由 `prof::sign` 定，不随原语扩张。
+        want.push(format!("{}.{}", self.epilogue_stem, self.ext));
         want
     }
 }

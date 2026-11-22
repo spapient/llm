@@ -305,6 +305,7 @@ fn line_gate() -> Gate {
         ("ccn_max", Value::int(5)),
         ("nloc_max", Value::int(60)),
         ("file_max_lines", Value::int(10)),
+        ("test_max_lines", Value::int(10)),
     ];
     Gate::from_table(&Table::from_pairs(vec![("gate", Value::table(thresholds))]))
         .expect("测试阈值合法")

@@ -48,6 +48,15 @@ impl<'a> Contract<'a> {
                 ));
             }
         }
+        for entry in self.epilogue {
+            let len = entry.witness.expect.len();
+            if !(1..=MAX_OUT).contains(&len) {
+                return Err(format!(
+                    "`{}` 的写回 `{}/{}` 期望值有 {len} 个：见证必须写 1..={MAX_OUT} 个元素",
+                    self.id, entry.form, entry.impl_name
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -66,18 +75,20 @@ impl<'a> Contract<'a> {
         judge(self.id, &calls, &readings)
     }
 
-    /// 档案里带见证的供给，摊成执行器要的 `Call`。
+    /// 档案里带见证的供给与写回形式，摊成执行器要的 `Call`。写回形式同样要算出档案写的值：
+    /// 六种形式只是"没有可协商的签名"，不是"可以不验"。
     fn calls(&self) -> Vec<Call<'a>> {
-        let provides: &'a [crate::device::Provision<'a>] = self.provides;
-        provides
-            .iter()
-            .filter_map(|provide| {
-                provide.witness.map(|witness| Call {
-                    func: witness.func,
-                    expect: witness.expect,
-                })
-            })
-            .collect()
+        let prims = self.provides.iter().filter_map(|provide| provide.witness);
+        let epis = self.epilogue.iter().map(|entry| entry.witness);
+        prims.chain(epis).map(call).collect()
+    }
+}
+
+/// 一条见证摊成执行器要的 `Call`。
+fn call(witness: crate::device::Witness<'_>) -> Call<'_> {
+    Call {
+        func: witness.func,
+        expect: witness.expect,
     }
 }
 

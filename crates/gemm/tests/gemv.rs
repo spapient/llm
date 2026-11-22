@@ -128,8 +128,11 @@ fn the_shared_skeleton_rejects_a_weight_of_the_wrong_element_type() {
 
 #[test]
 fn call_arguments_follow_the_template_signature() {
-    let signature = crate::sig::Signature::parse("gemv_f32", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../op/ops/gemv_f32.k")))
-        .expect("签名可解析");
+    let signature = crate::sig::Signature::parse(
+        "gemv_f32",
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../op/ops/gemv_f32.k")),
+    )
+    .expect("签名可解析");
     assert_eq!(
         signature
             .call_args(&gemv::sample::<F32>(64, 4))
@@ -138,7 +141,6 @@ fn call_arguments_follow_the_template_signature() {
     );
     assert_eq!(signature.output(), Some("y"));
 }
-
 
 /// `Model::group` 必须来自 [`Format::GRAIN`]，不是注解另写的一个数。
 ///
@@ -157,4 +159,40 @@ fn the_declared_group_is_the_format_grain() {
     grain_is_what_the_model_declares::<crate::gemv::i2::I2>();
     grain_is_what_the_model_declares::<crate::gemv::i4::I4>();
     grain_is_what_the_model_declares::<crate::gemv::i8::I8>();
+}
+
+/// A1 的真证据：`dense_dot` 有 16 条独立累加链，求和顺序与顺序标量不同，**不可能逐位相等**；
+/// 于是按 A1 的另一半要求钉住误差上界。
+///
+/// 上面的 `forward_matches_the_scalar_reference_on_the_deterministic_sample` 不能当证据：
+/// `gemv::reference` 内部就是 `F::forward`，那是自己跟自己比（F6）。这里用 f64 顺序累加当
+/// 真参考——f32×f32 落进 f64 是精确的（24+24 ≤ 53 位），4096 项 f64 求和的相对误差
+/// ≈ 4096·2⁻⁵³ ≈ 4.5e-13，比 f32 的界小 9 个数量级，故 `exact as f32` 就是可用的真值。
+#[test]
+fn the_dense_dot_stays_inside_the_gamma_bound_against_a_wider_reference() {
+    const M: usize = 4096;
+    // 3/7 与 1/3 在二进制里都不精确，累加不可精确 → 重排误差真实可见。
+    let weight: Vec<f32> = (0..M)
+        .map(|k| ((k * 37 % 101) as f32 - 50.0) / 7.0)
+        .collect();
+    let x: Vec<f32> = (0..M)
+        .map(|k| ((k * 11 % 53) as f32 - 26.0) / 3.0)
+        .collect();
+    let exact: f64 = (0..M).map(|k| f64::from(weight[k]) * f64::from(x[k])).sum();
+    let magnitude: f64 = (0..M)
+        .map(|k| (f64::from(weight[k]) * f64::from(x[k])).abs())
+        .sum();
+    let mut y = [0.0f32; 1];
+    forward(&x, &weight, &mut y).expect("合法形状");
+    // γ_M = M·u/(1−M·u)，u = 2⁻²⁴。逐行版的重排更松，γ_M 是上界（误差方向保守）。
+    let u = f64::from(f32::EPSILON) / 2.0;
+    let gamma = M as f64 * u / (1.0 - (M as f64) * u);
+    let error = (f64::from(y[0]) - exact).abs();
+    let ulps = (y[0] as f64 - exact).abs() / (exact.abs() * u);
+    assert!(
+        error <= gamma * magnitude,
+        "实测 {error:e} 超出 γ_M·Σ|wx| = {:e}（≈{ulps:.1} ulp）",
+        gamma * magnitude
+    );
+    assert!(magnitude > 0.0, "样本不能退化成零");
 }

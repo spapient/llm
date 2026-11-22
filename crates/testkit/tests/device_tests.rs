@@ -21,6 +21,8 @@ fn probe<'a>(fragments: &'a [(&'a str, &'a str)], source: &'a str) -> Contract<'
         fragments,
         prims: PRIMS_OF_PROBE,
         provides: &PROVIDES,
+        epilogue: &[],
+        epilogue_stem: "epilogue",
         source,
     }
 }
@@ -112,5 +114,83 @@ fn a_fragment_set_that_overruns_p0_is_a_defect() {
             .as_ref()
             .is_err_and(|reason| reason.contains("抢同一个原语")),
         "同一原语两份正文必须被发现：{defect:?}"
+    );
+}
+
+/// 一条只关心"哪个形式、哪个入口"的写回条目。
+fn claimed_epi<'a>(form: &'a str, func: &'a str) -> EpilogueEntry<'a> {
+    EpilogueEntry {
+        form,
+        impl_name: "probe",
+        witness: Witness {
+            func,
+            expect: &[1.0],
+        },
+    }
+}
+
+/// 写回见证与供给见证分属两个闭集，认领规则却一样：正文里有几个算法，档案里就得有几条写着它。
+#[test]
+fn an_epilogue_witness_that_no_entry_claims_is_a_defect() {
+    const TWO: &str = "int witness_load(float *out) { out[0] = 1.0f; return 1; }\n\
+                       int witness_epi_bias(float *out) { out[0] = 2.0f; return 1; }";
+    let orphan = Contract {
+        epilogue: &[],
+        ..probe(&[("load", SIGNED)], TWO)
+    };
+    assert!(
+        orphan
+            .check_witness_entries()
+            .is_err_and(|reason| reason.contains("witness_epi_bias")),
+        "无供给认领的写回见证必须被发现"
+    );
+    let claimed = Contract {
+        epilogue: &[claimed_epi("bias", "witness_epi_bias")],
+        ..probe(&[("load", SIGNED)], TWO)
+    };
+    assert_eq!(claimed.check_witness_entries(), Ok(()));
+}
+
+/// 档案里写了条目、正文里没有那段函数，是另一半的漏。
+#[test]
+fn an_epilogue_entry_without_its_function_is_a_defect() {
+    let ghost = Contract {
+        epilogue: &[claimed_epi("bias", "witness_epi_absent")],
+        ..probe(
+            &[("load", SIGNED)],
+            "int witness_load(float *out) { out[0] = 1.0f; return 1; }",
+        )
+    };
+    assert!(
+        ghost.check_witness_entries().is_err(),
+        "只有条目没有正文的写回必须被发现"
+    );
+}
+
+/// 写回见证也进执行器：同一段正文，期望值与它算的东西不一致时必须被判缺陷。
+#[test]
+fn an_epilogue_witness_that_computes_something_else_is_a_defect() {
+    const SOURCE: &str = "int witness_load(float *out) { out[0] = 1.0f; return 1; }\n\
+                          int witness_epi_bias(float *out) { out[0] = 1.0f; return 1; }";
+    let entry = |expect: &'static [f32]| EpilogueEntry {
+        form: "bias",
+        impl_name: "column_broadcast",
+        witness: Witness {
+            func: "witness_epi_bias",
+            expect,
+        },
+    };
+    let honest = Contract {
+        epilogue: &[entry(&[1.0])],
+        ..probe(&[("load", SIGNED)], SOURCE)
+    };
+    assert_eq!(honest.check_witnesses(), Ok(()));
+    let lying = Contract {
+        epilogue: &[entry(&[2.0])],
+        ..probe(&[("load", SIGNED)], SOURCE)
+    };
+    assert!(
+        lying.check_witnesses().is_err(),
+        "写回见证算的不是档案写的值，必须被发现"
     );
 }

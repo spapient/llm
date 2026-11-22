@@ -25,6 +25,8 @@ fn probe<'a>(provides: &'a [Provision<'a>], source: &'a str) -> Contract<'a> {
         fragments: &[("load", SIGNED)],
         prims: &[("load", "witness_load")],
         provides,
+        epilogue: &[],
+        epilogue_stem: "epilogue",
         source,
     }
 }

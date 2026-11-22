@@ -60,6 +60,22 @@ macro_rules! device_suite {
                         }),
                 })
                 .collect();
+            let epilogue: Vec<_> = profile
+                .epilogue
+                .iter()
+                .filter_map(|epi| {
+                    epi.witness
+                        .as_ref()
+                        .map(|witness| $crate::device::EpilogueEntry {
+                            form: epi.form.as_str(),
+                            impl_name: epi.impl_name.as_str(),
+                            witness: $crate::device::Witness {
+                                func: witness.func.as_str(),
+                                expect: &witness.expect,
+                            },
+                        })
+                })
+                .collect();
             Ok(body(&$crate::device::Contract {
                 id: &profile.meta.id,
                 ext: DEVICE.ext,
@@ -68,6 +84,8 @@ macro_rules! device_suite {
                 fragments: &fragments,
                 prims: &prims,
                 provides: &provides,
+                epilogue: &epilogue,
+                epilogue_stem: prof::sign::EPILOGUE_STEM,
                 source: DEVICE.source,
             }))
         }

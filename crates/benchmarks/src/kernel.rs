@@ -37,7 +37,12 @@ const I4_CPB: usize = 2;
 const GROUP: usize = 32;
 
 /// 参与线程对照的形状 `(m, n, k)`：prefill 主链路与近方阵各一档。
-const SHAPES: [(usize, usize, usize); 2] = [(256, 256, 4096), (512, 512, 512)];
+const SHAPES: [(usize, usize, usize); 3] = [
+    (256, 256, 4096),
+    (512, 512, 512),
+    // K7/K8 的口径就是 1024³：不测这个形状，吞吐数字再高也不回答「离端口峰值多远」。
+    (1024, 1024, 1024),
+];
 
 /// 一行 decode 的输入与同长输出。
 fn row() -> (Vec<f32>, Vec<f32>) {

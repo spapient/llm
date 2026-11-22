@@ -22,5 +22,8 @@ default = []
 # 构建期把 `witness.c` 编成设备镜像并嵌入二进制；没有镜像配方时只是 `Status::NoRecipe`。
 device-image = []
 
+[dev-dependencies]
+testkit = { path = "../testkit", package = "llm-testkit" }
+
 [lints]
 workspace = true

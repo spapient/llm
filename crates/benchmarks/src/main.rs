@@ -5,6 +5,7 @@ mod fixtures;
 mod io;
 mod kernel;
 mod model;
+mod peak;
 mod protocol;
 
 use criterion::{criterion_group, criterion_main};
@@ -26,6 +27,7 @@ criterion_group!(
     kernel::matmul_dense,
     kernel::matmul_int8,
     kernel::matmul_threads,
+    peak::flops_peak,
     kernel::mem_read,
     kernel::mem_write,
     io::weights::archive,
