@@ -497,7 +497,12 @@ fn walk_sources(dir: &Path, out: &mut Vec<PathBuf>) {
 // ---------------------------------------------------------------------------
 
 /// 本仓库三个阈值的键与值；改动它们就改 `lints/vocabulary.toml`。
-const GATE_KEYS: [(&str, i64); 3] = [("ccn_max", 5), ("nloc_max", 60), ("file_max_lines", 600)];
+const GATE_KEYS: [(&str, i64); 4] = [
+    ("ccn_max", 5),
+    ("nloc_max", 60),
+    ("file_max_lines", 600),
+    ("test_max_lines", 800),
+];
 
 /// 一份与仓库同阈值、没有存量债的 `[gate]` 表。
 fn sound_gate() -> Table {
@@ -545,6 +550,29 @@ fn the_project_config_lists_only_root_entry_legacy_debt() {
             "运行时生产代码没有债务条目，存量只能是入口编排既有逻辑：{msg}"
         );
     }
+}
+
+#[test]
+fn a_test_boulder_over_the_limit_must_fail() {
+    let gate = Gate::load().expect("阈值配置加载");
+    let limit = gate.test_limit();
+    let dir = std::env::temp_dir().join(format!("llm-gate-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("造临时目录");
+    let path = dir.join("boulder.rs");
+    // 每行都是一个合法空行：本用例量的是行数棘轮，不是词法。
+    let body = "\n".repeat(limit + 1);
+    std::fs::write(&path, &body).expect("写临时文件");
+
+    let mut bad = Vec::new();
+    scan_integration_test(&gate, &dir, &path, &mut bad);
+    assert_eq!(bad.len(), 1, "超过 {limit} 行必须恰好报一条：{bad:?}");
+    assert!(bad[0].contains("超过上限"), "{bad:?}");
+
+    std::fs::write(&path, "\n".repeat(limit)).expect("重写临时文件");
+    let mut ok = Vec::new();
+    scan_integration_test(&gate, &dir, &path, &mut ok);
+    assert!(ok.is_empty(), "等于上限不该报：{ok:?}");
+    std::fs::remove_dir_all(&dir).expect("清理临时目录");
 }
 
 #[test]
