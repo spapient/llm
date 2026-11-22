@@ -118,16 +118,8 @@ fn decode_k<const HIGH: bool>(raw: &[u8], out: &mut [f32]) -> Result<()> {
             let (s1, m1) = scale_min(scales, group * 2 + 1);
             let row = &mut slot[group * 64..];
             for lane in 0..32 {
-                let high0 = if HIGH {
-                    high_bit(high, lane, group * 2)
-                } else {
-                    0
-                };
-                let high1 = if HIGH {
-                    high_bit(high, lane, group * 2 + 1)
-                } else {
-                    0
-                };
+                let high0 = high_bit::<HIGH>(high, lane, group * 2);
+                let high1 = high_bit::<HIGH>(high, lane, group * 2 + 1);
                 let q0 = (qs[lane] & 0x0F) + high0;
                 let q1 = (qs[lane] >> 4) + high1;
                 row[lane] = d * f32::from(s0) * f32::from(q0) - min * f32::from(m0);
@@ -138,10 +130,12 @@ fn decode_k<const HIGH: bool>(raw: &[u8], out: &mut [f32]) -> Result<()> {
     Ok(())
 }
 
-/// Q5_K 的第 5 位：`high` 为空（Q4_K）时恒为 0。
-fn high_bit(high: &[u8], lane: usize, bit: usize) -> u8 {
-    high.get(lane)
-        .map_or(0, |byte| u8::from(byte & (1 << bit) != 0) << 4)
+/// Q5_K 的第 5 位；`HIGH` 为 `false`（Q4_K）时整条取值路径在编译期消失，恒为 0。
+fn high_bit<const HIGH: bool>(high: &[u8], lane: usize, bit: usize) -> u8 {
+    match high.get(lane) {
+        Some(byte) if HIGH => u8::from(byte & (1 << bit) != 0) << 4,
+        _ => 0,
+    }
 }
 
 fn decode_q6k(raw: &[u8], out: &mut [f32]) -> Result<()> {

@@ -84,13 +84,10 @@ fn undecoded_qtypes_are_explicit() {
         .collect();
     assert_eq!(
         decoded,
-        vec![QType::Q8_0, QType::Q4_K, QType::Q5_K, QType::Q6_K]
+        [QType::Q8_0, QType::Q4_K, QType::Q5_K, QType::Q6_K]
     );
-    assert_eq!(
-        QType::ALL.len() - decoded.len(),
-        21,
-        "其余 QType 尚无解码器；接上时要同步这张表与反量化分支"
-    );
+    // 其余 QType 尚无解码器；接上时要同步这张表与 `blocked` 的分派。
+    assert_eq!(QType::ALL.len() - decoded.len(), 21);
     for qtype in &decoded {
         assert!(
             QType::ALL.contains(qtype),
