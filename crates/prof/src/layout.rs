@@ -67,7 +67,7 @@ impl<'a> Layout<'a> {
     }
 }
 
-impl prof::prof::WitnessLookup for Layout<'_> {
+impl crate::prof::WitnessLookup for Layout<'_> {
     fn path(&self, file: &str) -> Option<PathBuf> {
         self.witness(file)
     }
@@ -114,6 +114,6 @@ fn add(set: &mut FragmentSet, path: &Path, ext: &str) -> diagnostic::Result<()> 
 fn fragment_stem<'a>(path: &'a Path, ext: &str) -> Option<&'a str> {
     let stem = path.file_stem().and_then(|value| value.to_str())?;
     let right_ext = path.extension().and_then(|value| value.to_str()) == Some(ext);
-    let named = stem != WITNESS_STEM && stem != prof::sign::EPILOGUE_STEM;
+    let named = stem != WITNESS_STEM && stem != crate::sign::EPILOGUE_STEM;
     (right_ext && named).then_some(stem)
 }

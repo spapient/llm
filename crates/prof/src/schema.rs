@@ -1,6 +1,9 @@
 //! 档案 schema：把编译期展开的表读成 [`Profile`]（`parse`），再回答"档案自己是否自洽"
 //! （`check`）。
 
+use core::fmt;
+use diagnostic::{Code, Error};
+use std::collections::BTreeMap;
 use crate::prof::*;
 
 pub(crate) use crate::eval::eval_expression;
@@ -279,7 +282,7 @@ fn derive(field: &str, src: &str) -> Result<f64, ProfileError> {
     eval_expression(src).map_err(fail)
 }
 /// 推导式写错：位置与非法内容由调用方给全。
-fn invalid(detail: impl Into<String>) -> Error {
+pub(crate) fn invalid(detail: impl Into<String>) -> Error {
     Error::new(Code::Invalid, detail)
 }
 

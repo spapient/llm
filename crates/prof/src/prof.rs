@@ -1,5 +1,7 @@
 //! 档案层：设备指纹、参数化能力供给、证据等级与字段校验（cutile README §5.3、§11.2）。
-use crate::atom::{
+/// schema 的词汇表：`schema` / `provide` / `witness` 这些同层文件用 `use crate::prof::*`
+/// 取到它，所以是 `pub(crate) use` 而不是 `use`——这里就是本 crate 的唯一词汇表入口。
+pub(crate) use crate::atom::{
     Attr, AttrKey, Closed, DType, DTypeSet, Grade, Need, Prim, Provide, Space, SpaceSet, Span,
     Witness,
 };

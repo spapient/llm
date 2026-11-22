@@ -5,7 +5,7 @@ use diagnostic::{Code, Error};
 use std::collections::BTreeMap;
 
 /// 签名声明的标记：片段第一行 `/* cutile-sign: <prim>/<impl> */` 里的 `cutile-sign:`。
-pub const SIGN_MARKER: &str = prof::sign::MARKER;
+pub const SIGN_MARKER: &str = crate::sign::MARKER;
 
 /// 一段片段：文本，以及它声明实现的那条签名。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,7 +79,7 @@ fn split_declaration(source: &str, prim: Prim) -> diagnostic::Result<(&str, &str
 
 /// 声明行 → `<prim>/<impl>` 两半：注释外壳与 [`SIGN_MARKER`] 标记都要在这里对上。
 fn declaration_parts(first: &str, prim: Prim) -> diagnostic::Result<(&str, &str)> {
-    let declared = prof::sign::strip_marker(first).ok_or_else(|| {
+    let declared = crate::sign::strip_marker(first).ok_or_else(|| {
         Error::new(
             Code::Invalid,
             format!(
@@ -87,7 +87,7 @@ fn declaration_parts(first: &str, prim: Prim) -> diagnostic::Result<(&str, &str)
             ),
         )
     })?;
-    let (declared_prim, implementation) = prof::sign::split_slash(declared).ok_or_else(|| {
+    let (declared_prim, implementation) = crate::sign::split_slash(declared).ok_or_else(|| {
         Error::new(
             Code::Invalid,
             format!("`{prim}` 的签名声明 `{declared}` 不是 `<prim>/<impl>`"),

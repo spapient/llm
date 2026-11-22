@@ -62,9 +62,7 @@ pub mod stems;
 
 pub use atom::Prim;
 pub use device::{Builtin, Device, Image, Status};
-pub use builtin::{
-    BUILTIN, DEVICES, ROOTS, WITNESS, builtin, builtin_witness, device, devices, dir_of,
-};
+pub use builtin::{builtin, builtin_witness, device, devices, dir_of};
 pub use fragment::{Fragment, FragmentSet, SIGN_MARKER};
 pub use layout::{Layout, WITNESS_STEM, layer_root, load};
 
