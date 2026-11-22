@@ -126,14 +126,16 @@ fn decode_k<const HIGH: bool>(raw: &[u8], out: &mut [f32]) -> Result<()> {
         for (group, qs) in groups.iter().enumerate() {
             let (s0, m0) = scale_min(scales, group * 2);
             let (s1, m1) = scale_min(scales, group * 2 + 1);
+            let (ds0, mm0) = (d * f32::from(s0), min * f32::from(m0));
+            let (ds1, mm1) = (d * f32::from(s1), min * f32::from(m1));
             let row = &mut slot[group * 64..];
             for lane in 0..32 {
                 let high0 = high_bit::<HIGH>(high, lane, group * 2);
                 let high1 = high_bit::<HIGH>(high, lane, group * 2 + 1);
                 let q0 = (qs[lane] & 0x0F) + high0;
                 let q1 = (qs[lane] >> 4) + high1;
-                row[lane] = d * f32::from(s0) * f32::from(q0) - min * f32::from(m0);
-                row[lane + 32] = d * f32::from(s1) * f32::from(q1) - min * f32::from(m1);
+                row[lane] = ds0 * f32::from(q0) - mm0;
+                row[lane + 32] = ds1 * f32::from(q1) - mm1;
             }
         }
     }
@@ -157,6 +159,10 @@ fn decode_q6k(raw: &[u8], out: &mut [f32]) -> Result<()> {
             let ql = &block[part * 64..][..64];
             let qh = &block[128 + part * 32..][..32];
             let scales = &block[192 + part * 8..][..8];
+            let mut ds = [0.0f32; 8];
+            for (slot, &s) in ds.iter_mut().zip(scales) {
+                *slot = d * f32::from(s as i8);
+            }
             let row = &mut slot[part * 128..][..128];
             for lane in 0..32 {
                 let base = lane / 16;
@@ -164,10 +170,10 @@ fn decode_q6k(raw: &[u8], out: &mut [f32]) -> Result<()> {
                 let q2 = (ql[lane + 32] & 0x0F) | (((qh[lane] >> 2) & 0x03) << 4);
                 let q3 = (ql[lane] >> 4) | (((qh[lane] >> 4) & 0x03) << 4);
                 let q4 = (ql[lane + 32] >> 4) | (((qh[lane] >> 6) & 0x03) << 4);
-                row[lane] = d * f32::from(scales[base] as i8) * (q1 as i32 - 32) as f32;
-                row[lane + 32] = d * f32::from(scales[base + 2] as i8) * (q2 as i32 - 32) as f32;
-                row[lane + 64] = d * f32::from(scales[base + 4] as i8) * (q3 as i32 - 32) as f32;
-                row[lane + 96] = d * f32::from(scales[base + 6] as i8) * (q4 as i32 - 32) as f32;
+                row[lane] = ds[base] * (q1 as i32 - 32) as f32;
+                row[lane + 32] = ds[base + 2] * (q2 as i32 - 32) as f32;
+                row[lane + 64] = ds[base + 4] * (q3 as i32 - 32) as f32;
+                row[lane + 96] = ds[base + 6] * (q4 as i32 - 32) as f32;
             }
         }
     }
