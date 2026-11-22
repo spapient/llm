@@ -1411,3 +1411,8 @@ impl Geometry {
         backward_conv2d(inputs, incoming, Window { k, s, p }, (h, w, cin, cout))
     }
 }
+
+
+#[cfg(test)]
+#[path = "../tests/geometry_tests.rs"]
+mod tests;
