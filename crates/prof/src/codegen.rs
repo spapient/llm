@@ -10,6 +10,10 @@ use crate::atom::{Epilogue, Prim};
 use crate::prof::{Emit, Profile};
 use crate::sign::EPILOGUE_STEM;
 
+mod epilogue;
+
+use self::epilogue::epilogue_of;
+
 // ── scan ──────────────────────────────────────────────────────────────
 
 /// 生成器入口：`CARGO_MANIFEST_DIR/src` 里的片段 → `$OUT_DIR/tables.rs`。
@@ -89,22 +93,16 @@ fn scan(dir: &Path, vendor: &str) -> Device {
     let profile = profile_of(vendor, &ext);
 
     // 见证与清单不是片段（扩展名不符的被跳过）；每段片段带上自己的见证入口。
-    let mut fragments = Vec::new();
-    let mut entries = Vec::new();
-    let mut epilogue = None;
-    for path in &files {
-        if *path == witness {
-            continue;
-        }
-        if let Some(epis) = epilogue_of(path, &ext, &profile) {
-            epilogue = Some((path.clone(), epis));
-            continue;
-        }
-        if let Some((prim, entry)) = fragment_of(path, &ext, &profile) {
-            fragments.push((prim, path.clone()));
-            entries.push((prim, entry));
-        }
-    }
+    let parts = files.iter().filter(|path| **path != witness);
+    let epilogue = parts
+        .clone()
+        .find_map(|path| epilogue_of(path, &ext, &profile).map(|epis| (path.clone(), epis)));
+    let (mut fragments, mut entries): (Vec<_>, Vec<_>) = parts
+        .filter_map(|path| {
+            let (prim, entry) = fragment_of(path, &ext, &profile)?;
+            Some(((prim, path.clone()), (prim, entry)))
+        })
+        .unzip();
     if fragments.is_empty() {
         fail(format!("`{}` 里一段片段都没有", dir.display()));
     }
