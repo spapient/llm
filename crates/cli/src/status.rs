@@ -146,7 +146,8 @@ fn data_rows(panel: Panel) -> Result<Panel> {
         ),
     );
     let buf = vec![0.5f32, 0.25, 0.125, 0.0625];
-    let view = tensor::Tensor::new(tensor::Shape::new([2, 2]), buf.as_slice())?;
+    let view: tensor::View<'_, f32> =
+        tensor::Tensor::new(tensor::Shape::new([2, 2]), buf.as_slice())?;
     Ok(panel.row(
         "视图    tensor::Tensor",
         format!(
