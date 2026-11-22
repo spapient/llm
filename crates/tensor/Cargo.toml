@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 readme.workspace = true
-description = "Logical tensor metadata: DType, Shape, Strides and a read-only byte view."
+description = "Logical tensor: Shape, strides, and one three-generic Tensor over storage, rank and dtype."
 publish = false
 autotests = false
 

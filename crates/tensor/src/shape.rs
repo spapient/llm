@@ -3,7 +3,6 @@
 use dtype::DType;
 
 pub use order::Order;
-pub use strides::Strides;
 
 /// 轴长度的整数类型：元素数乘积 [`product`] 需要的最小接口。
 pub trait AxisLen: Copy {
@@ -38,24 +37,20 @@ pub fn product<A: AxisLen>(dims: &[A]) -> A {
 
 /// 按 `order` 把连续步长写进 `steps`：`steps[axis]` 是该侧全部轴长之积。
 ///
-/// 累乘是串行依赖，保留循环。这是"连续"的**唯一**定义：`Strides::ordered`、编译期秩与运行期秩的
+/// 累乘是串行依赖，保留循环。这是"连续"的**唯一**定义：[`Shape::strides`]、编译期秩与运行期秩的
 /// [`Rank::contiguous`](crate::Rank::contiguous)、以及 [`Tensor::is_contiguous`](crate::Tensor)
 /// 的期望值全部经由本函数，任何一处口径变更不会漏改第二遍。
 pub(crate) fn accumulate(dims: &[usize], steps: &mut [usize], order: Order) {
     let mut acc = 1usize;
-    match order {
-        Order::RowMajor => {
-            for (step, &dim) in steps.iter_mut().zip(dims.iter()).rev() {
-                *step = acc;
-                acc = acc.saturating_mul(dim);
-            }
-        }
-        Order::ColMajor => {
-            for (step, &dim) in steps.iter_mut().zip(dims.iter()) {
-                *step = acc;
-                acc = acc.saturating_mul(dim);
-            }
-        }
+    for offset in 0..steps.len() {
+        // 行主序从最后一轴起累积，列主序从第一轴起——同一段循环，只有轴向不同。
+        let axis = match order {
+            Order::RowMajor => steps.len() - 1 - offset,
+            Order::ColMajor => offset,
+        };
+        let Some(&dim) = dims.get(axis) else { break };
+        steps[axis] = acc;
+        acc = acc.saturating_mul(dim);
     }
 }
 
@@ -93,6 +88,16 @@ impl Shape {
     pub fn element_bytes(&self, dtype: DType) -> usize {
         element_bytes(self.numel(), dtype)
     }
+
+    /// 按 `order` 推出的连续步长：与 [`Tensor`](crate::Tensor) 构造期同一套累积规则。
+    ///
+    /// 步长不是另一种形状，就是"每轴一个 `usize`"的同一类数，因此直接给 [`Vec`]——不必再引入
+    /// 一个平行容器，再写一份 `new` / `as_slice` / `From`。
+    pub fn strides(&self, order: Order) -> Vec<usize> {
+        let mut strides = vec![0; self.0.len()];
+        accumulate(&self.0, &mut strides, order);
+        strides
+    }
 }
 
 /// 元素个数 → 字节数：`usize` 溢出按上限夹取（`U4` 按位向上取整，会小于 `numel`）。
@@ -118,51 +123,5 @@ mod order {
         RowMajor,
         /// 列主序：第一轴相邻（Fortran / cuBLAS 的 `T` 位）。
         ColMajor,
-    }
-}
-
-mod strides {
-    //! 步长：沿每个轴前进一个下标要走多少个元素。
-
-    use super::{Order, Shape, accumulate};
-
-    /// 步长：沿每个轴前进一个下标要走多少个元素。
-    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-    pub struct Strides(Vec<usize>);
-
-    impl Strides {
-        /// 由各轴步长构造（不做合法性校验：非连续布局也是合法布局）。
-        pub fn new(strides: impl Into<Vec<usize>>) -> Self {
-            Self(strides.into())
-        }
-
-        /// 按排列顺序推出的连续步长。
-        pub fn ordered(shape: &Shape, order: Order) -> Self {
-            let mut strides = vec![0; shape.rank()];
-            accumulate(shape.dims(), &mut strides, order);
-            Self(strides)
-        }
-
-        /// 行主序连续布局：最后一轴步长为 1，向前累乘。
-        pub fn contiguous(shape: &Shape) -> Self {
-            Self::ordered(shape, Order::RowMajor)
-        }
-
-        /// 各轴步长。
-        pub fn as_slice(&self) -> &[usize] {
-            &self.0
-        }
-
-        /// 某一轴的步长；越界返回 `None`。
-        pub fn get(&self, axis: usize) -> Option<usize> {
-            self.0.get(axis).copied()
-        }
-    }
-
-    /// 让运行期秩的 [`Tensor`](crate::Tensor) 直接吃 [`Strides`]。
-    impl From<Strides> for Vec<usize> {
-        fn from(strides: Strides) -> Self {
-            strides.0
-        }
     }
 }

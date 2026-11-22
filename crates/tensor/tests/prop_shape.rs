@@ -3,7 +3,7 @@
 //! 单点用例只钉住几个形状；这里对任意轴数、任意轴长的形状断言双射，
 //! 反向累乘少乘一轴、多乘一轴、或漏掉最后一轴的 `1`，都会被最小反例抓住。
 
-use crate::{DType, Order, Shape, Strides, View};
+use crate::{DType, Order, Shape, View};
 use proptest::prelude::*;
 use testkit::prop;
 
@@ -53,7 +53,7 @@ proptest! {
     #[test]
     fn row_major_offsets_are_a_bijection_onto_the_elements(dims in dims()) {
         let shape = Shape::new(dims.clone());
-        let strides = Strides::contiguous(&shape);
+        let strides = shape.strides(Order::RowMajor);
         let data = counting(&dims);
         let view = View::strided(shape, strides, &data).expect("缓冲长度与形状一致");
         assert_bijection(&view, &dims);
@@ -62,7 +62,7 @@ proptest! {
     #[test]
     fn col_major_offsets_are_a_bijection_onto_the_elements(dims in dims()) {
         let shape = Shape::new(dims.clone());
-        let strides = Strides::ordered(&shape, Order::ColMajor);
+        let strides = shape.strides(Order::ColMajor);
         let data = counting(&dims);
         let view = View::strided(shape, strides, &data).expect("列主序也是合法布局");
         assert_bijection(&view, &dims);
@@ -73,11 +73,11 @@ proptest! {
     fn reversing_axes_and_strides_together_transposes(dims in dims()) {
         let shape = Shape::new(dims.clone());
         let mut axes = dims.clone();
-        let mut steps = Strides::contiguous(&shape).as_slice().to_vec();
+        let mut steps = shape.strides(Order::RowMajor).as_slice().to_vec();
         axes.reverse();
         steps.reverse();
         let data = counting(&dims);
-        let view = View::strided(Shape::new(axes.clone()), Strides::new(steps), &data)
+        let view = View::strided(Shape::new(axes.clone()), steps, &data)
             .expect("转置布局仍然可达");
         assert_bijection(&view, &axes);
     }
@@ -99,8 +99,8 @@ proptest! {
         let narrow_shape = Shape::new(dims.clone());
         let wide_shape = Shape::new(wider);
         let data = counting(&dims);
-        let narrow = View::strided(narrow_shape.clone(), Strides::contiguous(&narrow_shape), &data);
-        let wide = View::strided(wide_shape.clone(), Strides::contiguous(&wide_shape), &data);
+        let narrow = View::strided(narrow_shape.clone(), narrow_shape.strides(Order::RowMajor), &data);
+        let wide = View::strided(wide_shape.clone(), wide_shape.strides(Order::RowMajor), &data);
         let (narrow, wide) = (narrow.expect("同长缓冲"), wide.expect("多一个单例轴仍可达"));
         for idx in idxs(&dims) {
             let mut extended = idx.clone();

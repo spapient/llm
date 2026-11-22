@@ -137,13 +137,14 @@ fn data_rows(panel: Panel) -> Result<Panel> {
     let buf = vec![0.5f32, 0.25, 0.125, 0.0625];
     let view: tensor::View<'_, f32> =
         tensor::Tensor::new(tensor::Shape::new([2, 2]), buf.as_slice())?;
-    // 广播用步长 0 复用同一份元素——转置与置换表达不出来的布局。
-    let wide = view.clone().broadcast(vec![4usize, 2]);
+    // 先零拷贝切出末行，再广播成 4 行：步长 0 复用同一份元素，转置与置换表达不出来。
+    let last = view.narrow(0, 1, 1).expect("末行是合法视图");
+    let wide = last.broadcast(vec![4usize, 2]);
     let panel = panel.row(
         "张量    tensor::Tensor",
         match wide {
             Some(wide) => format!(
-                "{:?} {:?} 步长 {:?}，连续：{}（广播不复用缓冲，只把被扩展轴步长写成 0）",
+                "{:?} {:?} 步长 {:?}，连续：{}（广播不复制缓冲，只把被扩展轴步长写成 0）",
                 wide.dtype(),
                 wide.dims(),
                 wide.strides(),

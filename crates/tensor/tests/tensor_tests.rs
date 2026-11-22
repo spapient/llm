@@ -1,4 +1,4 @@
-use crate::{DType, Element, Order, Owned, Shape, Strides, Tensor, View};
+use crate::{DType, Element, Order, Owned, Shape, Tensor, View};
 use diagnostic::Code;
 
 #[test]
@@ -6,7 +6,7 @@ fn a_scalar_has_one_element_and_no_strides() {
     let shape = Shape::new([]);
     assert_eq!(shape.rank(), 0);
     assert_eq!(shape.numel(), 1);
-    assert_eq!(Strides::contiguous(&shape).as_slice(), [] as [usize; 0]);
+    assert_eq!(shape.strides(Order::RowMajor).as_slice(), [] as [usize; 0]);
     let scalar: View<'_, f32> = View::new(shape, &[0.0f32]).expect("标量");
     assert_eq!(scalar.numel(), 1);
     assert!(scalar.is_contiguous());
@@ -29,8 +29,8 @@ fn row_major_order_matches_the_continuous_strides() {
     for dims in [&[] as &[usize], &[5], &[2, 3], &[2, 3, 4]] {
         let shape = Shape::new(dims.to_vec());
         assert_eq!(
-            Strides::ordered(&shape, Order::RowMajor).as_slice(),
-            Strides::contiguous(&shape).as_slice(),
+            shape.strides(Order::RowMajor).as_slice(),
+            shape.strides(Order::RowMajor).as_slice(),
             "行主序必须与连续步长同源：{dims:?}"
         );
     }
@@ -39,11 +39,11 @@ fn row_major_order_matches_the_continuous_strides() {
 #[test]
 fn col_major_order_accumulates_along_the_first_axis() {
     assert_eq!(
-        Strides::ordered(&Shape::new([2, 3]), Order::ColMajor).as_slice(),
+        Shape::new([2, 3]).strides(Order::ColMajor).as_slice(),
         [1, 2]
     );
     assert_eq!(
-        Strides::ordered(&Shape::new([2, 3, 4]), Order::ColMajor).as_slice(),
+        Shape::new([2, 3, 4]).strides(Order::ColMajor).as_slice(),
         [1, 2, 6]
     );
 }
@@ -51,10 +51,7 @@ fn col_major_order_accumulates_along_the_first_axis() {
 #[test]
 fn a_scalar_has_one_element_and_no_strides_col_major_too() {
     let shape = Shape::new([]);
-    assert_eq!(
-        Strides::ordered(&shape, Order::ColMajor).as_slice(),
-        [] as [usize; 0]
-    );
+    assert_eq!(shape.strides(Order::ColMajor).as_slice(), [] as [usize; 0]);
 }
 
 #[test]
@@ -85,7 +82,7 @@ fn a_shape_whose_product_overflows_saturates_instead_of_wrapping() {
         "元素视图同样不能放行"
     );
     assert!(
-        View::strided(huge, Strides::new([1, 1]), &[0u8; 4]).is_err(),
+        View::strided(huge, [1, 1], &[0u8; 4]).is_err(),
         "按步长算最高偏移时必须看见溢出"
     );
     assert_eq!(
@@ -100,8 +97,8 @@ fn a_transposed_stride_is_not_contiguous() {
     let shape = Shape::new([2, 3]);
     let tensor: View<'_, i8> = View::new(shape.clone(), &[0i8; 6]).expect("视图");
     assert!(tensor.is_contiguous());
-    let transposed = Strides::new([1, 2]);
-    assert_ne!(transposed, Strides::contiguous(&shape));
+    let transposed = vec![1usize, 2];
+    assert_ne!(transposed, shape.strides(Order::RowMajor));
 }
 
 #[test]
@@ -164,8 +161,7 @@ const SIX: [f32; 6] = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
 #[test]
 fn a_transposed_view_reads_through_its_strides() {
     // 2×3 行主序缓冲，按 3×2 转置读：`(i, j)` 落在 `i + 3j`。
-    let view: View<'_, f32> =
-        View::strided(Shape::new([3, 2]), Strides::new([1, 3]), &SIX).expect("转置视图");
+    let view: View<'_, f32> = View::strided(Shape::new([3, 2]), [1, 3], &SIX).expect("转置视图");
     assert_eq!(view.at([0, 0]), Some(1.0));
     assert_eq!(view.at([0, 1]), Some(4.0));
     assert_eq!(view.at([2, 1]), Some(6.0));
@@ -175,23 +171,21 @@ fn a_transposed_view_reads_through_its_strides() {
 
 #[test]
 fn a_strided_view_rejects_a_step_count_that_does_not_match_the_rank() {
-    let error =
-        View::<f32>::strided(Shape::new([2, 2]), Strides::new([4]), &SIX).expect_err("轴数不符");
+    let error = View::<f32>::strided(Shape::new([2, 2]), [4], &SIX).expect_err("轴数不符");
     assert_eq!(error.code(), Code::Invalid);
     assert!(error.to_string().contains("2 个轴"), "{error}");
 }
 
 #[test]
 fn a_strided_view_rejects_steps_that_run_past_the_buf() {
-    let error = View::<f32>::strided(Shape::new([2, 2]), Strides::new([2, 1]), &[0.0f32; 3])
-        .expect_err("最高偏移越界");
+    let error =
+        View::<f32>::strided(Shape::new([2, 2]), [2, 1], &[0.0f32; 3]).expect_err("最高偏移越界");
     assert!(error.to_string().contains("最高偏移 3"), "{error}");
 }
 
 #[test]
 fn a_row_of_a_transposed_view_is_not_returned_as_a_slice() {
-    let view: View<'_, f32> =
-        View::strided(Shape::new([3, 2]), Strides::new([1, 3]), &SIX).expect("转置视图");
+    let view: View<'_, f32> = View::strided(Shape::new([3, 2]), [1, 3], &SIX).expect("转置视图");
     assert_eq!(
         view.row(0),
         None,
@@ -203,8 +197,7 @@ fn a_row_of_a_transposed_view_is_not_returned_as_a_slice() {
 #[test]
 fn a_row_strided_view_still_serves_contiguous_rows() {
     // 隔行取样：形状 2×3，行步长 2、列步长 1。
-    let view: View<'_, f32> =
-        View::strided(Shape::new([2, 3]), Strides::new([2, 1]), &SIX).expect("行切片");
+    let view: View<'_, f32> = View::strided(Shape::new([2, 3]), [2, 1], &SIX).expect("行切片");
     assert_eq!(view.row(0), Some(&[1.0, 2.0, 3.0][..]));
     assert_eq!(view.row(1), Some(&[3.0, 4.0, 5.0][..]));
     assert!(!view.is_contiguous(), "行之间跳过了元素，整体不连续");
@@ -221,12 +214,12 @@ fn random_shapes_keep_geometry_invariants() {
         let rank = rng.below(4) as usize;
         let dims: Vec<usize> = (0..rank).map(|_| rng.below(8) as usize + 1).collect();
         let shape = Shape::new(dims);
-        let strides = Strides::contiguous(&shape);
+        let strides = shape.strides(Order::RowMajor);
 
         assert_eq!(shape.numel(), shape.dims().iter().product::<usize>());
         for axis in 0..rank {
             let expected = shape.dims()[axis + 1..].iter().product::<usize>();
-            assert_eq!(strides.get(axis), Some(expected));
+            assert_eq!(strides.get(axis).copied(), Some(expected));
         }
         for dtype in [DType::F32, DType::I8, DType::U4] {
             let bits = shape.numel() * dtype.bits() as usize;
@@ -253,11 +246,10 @@ fn random_views_reject_a_short_buf() {
 fn a_zero_element_view_needs_an_empty_buf() {
     let empty: [f32; 0] = [];
     assert!(
-        View::<f32>::strided(Shape::new([0, 3]), Strides::new([3, 1]), &empty).is_ok(),
+        View::<f32>::strided(Shape::new([0, 3]), [3, 1], &empty).is_ok(),
         "零元素视图与 `Tensor::new` 同一口径"
     );
-    let error = View::<f32>::strided(Shape::new([0, 3]), Strides::new([3, 1]), &[1.0f32])
-        .expect_err("非空缓冲");
+    let error = View::<f32>::strided(Shape::new([0, 3]), [3, 1], &[1.0f32]).expect_err("非空缓冲");
     assert!(error.to_string().contains("零元素"), "{error}");
 }
 

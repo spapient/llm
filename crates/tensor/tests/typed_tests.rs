@@ -4,7 +4,7 @@
 //! 它与运行期秩共用 `layout` 与 `shape::accumulate`，所以两个见证不该有任何行为差别；这里既锁住
 //! 编译期秩自己的全套布局能力，也锁住"两族算出来的步长逐轴相等"。
 
-use crate::{DType, Element, Shape, Strides, Tensor, product};
+use crate::{DType, Element, Order, Shape, Tensor, product};
 
 /// 编译期秩 2 的借来视图。
 type Fix2<'a> = Tensor<&'a [f32], [usize; 2], f32>;
@@ -106,7 +106,7 @@ fn static_rank_contiguous_matches_the_runtime_strides() {
     let data = [0.0f32; 24];
     let fixed: Tensor<&[f32], [usize; 3], f32> =
         Tensor::new([2, 3, 4], data.as_slice()).expect("形状与缓冲匹配");
-    let runtime = Strides::contiguous(&Shape::new([2, 3, 4]));
+    let runtime = Shape::new([2, 3, 4]).strides(Order::RowMajor);
     assert_eq!(fixed.strides(), runtime.as_slice());
     assert_eq!(fixed.numel(), product(&[2usize, 3, 4]));
 }

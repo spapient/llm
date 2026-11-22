@@ -1,9 +1,8 @@
 //! 布局算法：形状 + 步长 → 元素偏移的**唯一**实现。
 //!
-//! 同一个 [`Tensor`](crate::Tensor) 可以是运行期秩（`Vec<usize>`）或编译期秩（`[usize; D]`），
-//! [`Raw`](crate::Raw) 的字节视图也走这里。下标、可达性、连续性与取行这些算式与秩的来源、元素的
-//! 类型都无关，因此收口在这里一份——两套各自实现意味着任何一处溢出 / 越界口径的修改都要记得改两遍，
-//! 那正是漂移的来源。
+//! 同一个 [`Tensor`](crate::Tensor) 可以是运行期秩（`Vec<usize>`）或编译期秩（`[usize; D]`）。
+//! 下标、可达性、连续性与取行这些算式与秩的来源、元素的类型都无关，因此收口在这里一份——两套各自
+//! 实现意味着任何一处溢出 / 越界口径的修改都要记得改两遍，那正是漂移的来源。
 //!
 //! 统一的调用形状是 `(dims, steps)` 两个切片；`&[usize; D]` 自动退化成 `&[usize]`。
 
@@ -11,9 +10,9 @@ use diagnostic::Result;
 
 use crate::invalid;
 
-/// 构造期校验：秩对应、零元素口径、可达性。`marker` 是构造点标记，文案由调用点给出。
+/// 构造期校验：秩对应、零元素口径、可达性——三条判据写在一个函数里，省掉三层转调。
 ///
-/// `numel` 由调用方算好传进来——一次构造只该扫一遍各轴长度。
+/// `numel` 由调用方算好传进来：一次构造只该扫一遍各轴长度。
 pub(crate) fn check(
     dims: &[usize],
     steps: &[usize],
@@ -21,66 +20,40 @@ pub(crate) fn check(
     len: usize,
     marker: &str,
 ) -> Result<()> {
-    check_rank(dims, steps, marker)?;
-    check_empty(numel, len, marker)?;
-    check_reach(dims, steps, numel, len, marker)
-}
-
-/// 轴数：步长必须与形状逐轴对应，否则下面的偏移计算没有意义。
-fn check_rank(dims: &[usize], steps: &[usize], marker: &str) -> Result<()> {
-    if dims.len() == steps.len() {
-        return Ok(());
+    if dims.len() != steps.len() {
+        let axes = (steps.len(), dims.len());
+        return Err(invalid(
+            format!("步长有 {} 个轴，形状 {dims:?} 有 {} 个轴", axes.0, axes.1),
+            marker,
+        ));
     }
-    Err(invalid(
-        format!(
-            "步长有 {} 个轴，形状 {dims:?} 有 {} 个轴",
-            steps.len(),
-            dims.len()
-        ),
-        marker,
-    ))
-}
-
-/// 零元素口径：形状里有 0 个元素时只接受空缓冲。
-fn check_empty(numel: usize, len: usize, marker: &str) -> Result<()> {
-    if numel != 0 || len == 0 {
-        return Ok(());
-    }
-    Err(invalid(
-        format!("零元素视图不该借用 {len} 个元素的缓冲"),
-        marker,
-    ))
-}
-
-/// 可达性：每轴最后一位走出的总偏移必须算得出、且落在缓冲内。
-fn check_reach(
-    dims: &[usize],
-    steps: &[usize],
-    numel: usize,
-    len: usize,
-    marker: &str,
-) -> Result<()> {
     if numel == 0 {
-        return Ok(());
+        return match len {
+            0 => Ok(()),
+            len => Err(invalid(
+                format!("零元素视图不该借用 {len} 个元素的缓冲"),
+                marker,
+            )),
+        };
     }
-    let highest = highest(dims, steps)
-        .ok_or_else(|| invalid(format!("形状 {dims:?} 与步长 {steps:?} 算出溢出"), marker))?;
-    if highest < len {
-        return Ok(());
-    }
-    Err(invalid(
-        format!("最高偏移 {highest} 超出缓冲（{len} 个元素）：步长与形状对不上"),
-        marker,
-    ))
-}
-
-/// 最高下标（每轴最后一位）走出的总偏移；任一轴为空或累加溢出则 `None`。
-fn highest(dims: &[usize], steps: &[usize]) -> Option<usize> {
-    dims.iter()
+    // 最高下标（每轴最后一位）走出的总偏移必须算得出、且落在缓冲内。
+    let highest = dims
+        .iter()
         .zip(steps)
         .try_fold(0usize, |acc, (&dim, &step)| {
             acc.checked_add(dim.checked_sub(1)?.checked_mul(step)?)
-        })
+        });
+    match highest {
+        Some(highest) if highest < len => Ok(()),
+        Some(highest) => Err(invalid(
+            format!("最高偏移 {highest} 超出缓冲（{len} 个元素）：步长与形状对不上"),
+            marker,
+        )),
+        None => Err(invalid(
+            format!("形状 {dims:?} 与步长 {steps:?} 算出溢出"),
+            marker,
+        )),
+    }
 }
 
 /// 一组下标 → 元素偏移：秩不符、任一轴越界或累加溢出都是 `None`。

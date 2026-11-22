@@ -1,9 +1,9 @@
 //! [`Layout`]：形状 + 排列顺序，以及 [`remap`] 的逐元素重排。
 
 use diagnostic::{Code, Error, Result};
-use tensor::{Order, Shape, Strides};
+use tensor::{Order, Shape};
 
-/// 形状 + 排列顺序；步长由 [`Strides::ordered`] 推出，累积规则只有一份。
+/// 形状 + 排列顺序；步长由 [`Shape::strides`] 推出，累积规则只有一份。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Layout {
     shape: Shape,
@@ -27,8 +27,8 @@ impl Layout {
     }
 
     /// 按顺序推出的步长。
-    pub fn strides(&self) -> Strides {
-        Strides::ordered(&self.shape, self.order)
+    pub fn strides(&self) -> Vec<usize> {
+        self.shape.strides(self.order)
     }
 }
 
@@ -68,7 +68,7 @@ pub fn remap<T: Copy>(src: &[T], from: &Layout, to: &Layout) -> Result<Vec<T>> {
 }
 
 /// 行主序线性下标 → 该布局下的元素偏移。
-fn offset(strides: &Strides, shape: &Shape, linear: usize) -> usize {
+fn offset(strides: &[usize], shape: &Shape, linear: usize) -> usize {
     let dims = shape.dims();
     let mut rest = linear;
     let mut offset = 0usize;
@@ -79,7 +79,7 @@ fn offset(strides: &Strides, shape: &Shape, linear: usize) -> usize {
         }
         let idx = rest % dim;
         rest /= dim;
-        offset = offset.saturating_add(idx.saturating_mul(strides.get(axis).unwrap_or(0)));
+        offset = offset.saturating_add(idx.saturating_mul(strides.get(axis).copied().unwrap_or(0)));
     }
     offset
 }

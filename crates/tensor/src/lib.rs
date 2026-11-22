@@ -18,7 +18,7 @@
 //! 布局代数比"只有重排"宽：[`Tensor::broadcast`] 用步长 0 表达广播，[`Tensor::narrow`] 把起点
 //! 前移成子视图——两者都是零拷贝的元数据，转置与置换表达不出来。
 //!
-//! **拥有**：`Tensor`、`Owned`、`Shape`、`Strides`、`Order`、`AxisLen`、`Element` 与 `DType`
+//! **拥有**：`Tensor`、`Owned`、`Shape`、`Order`、`AxisLen`、`Element` 与 `DType`
 //! 的再导出。**不拥有**：元素类型闭集（L1 `dtype`，这里是唯一事实源的下游）、dtype-运行期的
 //! 字节视图（权重层自己的描述符已经承担该契约，形状与字节数由 `Shape::element_bytes` 给出）、
 //! kernel 侧操作数视图（DSL 的宿主 API，语义不同）、布局搬运（`storage`）、设备句柄（ADR 0025）。
@@ -62,7 +62,7 @@ pub use dtype::DType;
 
 pub use element::Element;
 pub use rank::Rank;
-pub use shape::{AxisLen, Order, Shape, Strides, product};
+pub use shape::{AxisLen, Order, Shape, product};
 pub use store::{Owned, Store, StoreMut};
 pub use tensor::{Tensor, View};
 
