@@ -110,7 +110,7 @@ fn cuda_segments(
 
 /// Metal 并行程序：单源族（逐点 / 循环注入）各有一份 `kernel_main`，分块族是多段源 + 主机折叠。
 ///
-/// 分块族的段数与折叠是一体的，因此每臂只调 [`crate::metal::fold`] 里各自的合成入口，
+/// 分块族的段数与折叠是一体的，因此每臂只调 [`crate::metal`] 里各自的合成入口，
 /// 与 CUDA 侧的 `cuda_segments` 分法一致：这层只管「什么形态配哪份程序」。
 ///
 /// # Errors
@@ -137,22 +137,18 @@ fn metal_segments(
 ) -> Option<Result<Source>> {
     let kind = &launch.kind;
     if let Lower::ChunkReduce { chunk, func } = kind {
-        return Some(crate::metal::fold::reduce(
+        return Some(crate::metal::reduce(
             kernel, signature, sample, *chunk, func,
         ));
     }
     if let Lower::ChunkRmsnorm { chunk } = kind {
-        return Some(crate::metal::fold::rmsnorm(
-            kernel, signature, sample, *chunk,
-        ));
+        return Some(crate::metal::rmsnorm(kernel, signature, sample, *chunk));
     }
     if let Lower::ChunkSoftmax { chunk } = kind {
-        return Some(crate::metal::fold::softmax(
-            kernel, signature, sample, *chunk,
-        ));
+        return Some(crate::metal::softmax(kernel, signature, sample, *chunk));
     }
     if let Lower::ChunkScan { chunk, decay } = kind {
-        return Some(crate::metal::fold::scan(
+        return Some(crate::metal::scan(
             kernel, signature, sample, *chunk, *decay,
         ));
     }

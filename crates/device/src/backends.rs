@@ -1,6 +1,6 @@
 //! Metal / CUDA 设备后端：实现 [`llm_optim::backend::Backend`]（`Codegen` 出源 + `Driver` 跑源）。
 
-pub use crate::metal::host::{compile_run_metal, metal_driver, metal_kernel};
+pub use crate::metal::{compile_run_metal, metal_driver, metal_kernel};
 // 三条厂商链共用的导入面：避免各写一份重复块。
 pub(crate) use cutile::dirs::Dirs;
 pub(crate) use cutile::prof::{Emit, Profile};
@@ -69,7 +69,7 @@ fn witness_readback(max: usize) -> String {
 // 装配：注册进 cutile 的进程级表
 // ---------------------------------------------------------------------------
 
-use crate::metal::host::run_metal;
+use crate::metal::run_metal;
 use crate::toolchain::{
     ascend_device, detect_cce, detect_metal, detect_musa, detect_nvcc, find_cl, musa_device,
 };
@@ -296,7 +296,6 @@ fn ascend_compile(exe: &Path, src: &Path, profile: &Profile, dirs: &Dirs) -> Res
         .args(links);
     driver::run_tool(tool, &mut command, src)
 }
-
 
 // ---------------------------------------------------------------------------
 // CUDA / MUSA 后端：`Codegen` 出 `.cu`、`Driver` 跑 `nvcc`。
@@ -669,7 +668,6 @@ fn cuda_ccbin(tool: &str, command: &mut Command) -> Result<()> {
     command.arg("-ccbin").arg(cl);
     Ok(())
 }
-
 
 // ---------------------------------------------------------------------------
 // Metal 后端：`Codegen` 出 MSL、`Driver` 跑 `xcrun metal` + `metallib`。

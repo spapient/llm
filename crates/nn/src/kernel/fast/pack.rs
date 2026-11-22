@@ -18,17 +18,42 @@ pub(super) fn pack_panels(a: &[f32], full: usize, k: usize) -> Vec<f32> {
     apack
 }
 
+/// 一个列组面板的内层转置：`first` 起的 `cols` 列 × 全 `k` 行 → `dst[base..]` 的 `[q][NR]`。
+///
+/// `transposed` 只决定源下标：
+/// - `false`（Nt）：`src[q*n + first + c]`，B 按 `[k][n]` 驻留，整行 `copy_from_slice`；
+/// - `true`（Tn）：`src[(first+c)*k + q]`，W 按 `[n][k]` 驻留，逐元素转置。
+///
+/// 这是 B 打包的唯一算术：整段、分片与池化三种外层遍历只差列组下标，内层下标只有这一份。
+pub(super) fn pack_panel(
+    src: &[f32],
+    dst: &mut [f32],
+    n: usize,
+    k: usize,
+    first: usize,
+    base: usize,
+    transposed: bool,
+) {
+    let cols = if first < n { NR.min(n - first) } else { 0 };
+    for q in 0..k {
+        let row = base + q * NR;
+        if transposed {
+            for (c, slot) in dst[row..row + cols].iter_mut().enumerate() {
+                *slot = src[(first + c) * k + q];
+            }
+        } else {
+            let src0 = q * n + first;
+            dst[row..row + cols].copy_from_slice(&src[src0..src0 + cols]);
+        }
+    }
+}
+
 /// B 打包成 `[jblk][p][NR]`：微内核每条 `p` 只需两次连续向量加载（行主序 B 是每 `p` 跨一条行）。
 pub(super) fn pack_b_f32_into(bpack: &mut [f32], b: &[f32], n: usize, k: usize) {
     let npad = n.div_ceil(NR) * NR;
     debug_assert_eq!(bpack.len(), npad * k);
     for jb in 0..npad / NR {
-        let first = jb * NR;
-        let cols = if first < n { NR.min(n - first) } else { 0 };
-        for p in 0..k {
-            let dst = (jb * k + p) * NR;
-            bpack[dst..dst + cols].copy_from_slice(&b[p * n + first..p * n + first + cols]);
-        }
+        pack_panel(b, bpack, n, k, jb * NR, jb * k * NR, false);
     }
 }
 
@@ -43,23 +68,14 @@ pub(super) fn pack_b_f32_par_into(bpack: &mut [f32], b: &[f32], n: usize, k: usi
     let span = per * NR * k;
     thread::scope(|s| {
         for (gi, chunk) in bpack.chunks_mut(span).enumerate() {
-            s.spawn(move || pack_b_f32_span(chunk, b, n, k, gi * per));
+            s.spawn(move || {
+                let blocks = chunk.len() / (NR * k);
+                for bi in 0..blocks {
+                    pack_panel(b, chunk, n, k, (gi * per + bi) * NR, bi * k * NR, false);
+                }
+            });
         }
     });
-}
-
-/// 一段连续的列组打包：`blk0` 起，每块 `NR · k`。
-fn pack_b_f32_span(chunk: &mut [f32], b: &[f32], n: usize, k: usize, blk0: usize) {
-    let blocks = chunk.len() / (NR * k);
-    for bi in 0..blocks {
-        let first = (blk0 + bi) * NR;
-        let cols = if first < n { NR.min(n - first) } else { 0 };
-        let tile = &mut chunk[bi * NR * k..(bi + 1) * NR * k];
-        for p in 0..k {
-            let dst = p * NR;
-            tile[dst..dst + cols].copy_from_slice(&b[p * n + first..p * n + first + cols]);
-        }
-    }
 }
 
 /// 池化打包的分片体：本槽负责的 8 列组按 `p` 步长轮转，写入 `[jblk][p][NR]`（零初始化覆盖补零列）。
@@ -75,14 +91,7 @@ pub(super) fn b_groups(
     let groups = npad / NR;
     let mut g = slot;
     while g < groups {
-        let first = g * NR;
-        let cols = if first < n { NR.min(n - first) } else { 0 };
-        let base = g * k * NR;
-        for q in 0..k {
-            let src = q * n + first;
-            let dst = base + q * NR;
-            buf[dst..dst + cols].copy_from_slice(&b[src..src + cols]);
-        }
+        pack_panel(b, buf, n, k, g * NR, g * k * NR, false);
         g += p;
     }
 }

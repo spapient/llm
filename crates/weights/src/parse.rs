@@ -6,8 +6,7 @@ use diagnostic::{Code, Error, Result};
 use crate::cursor::{u16_at, u32_at};
 
 use crate::quant::Quant;
-use crate::seg::{Codec, Desc, DescBody, Descriptor};
-use crate::stored::{Stored, StoredInner};
+use crate::seg::{Codec, Desc, DescBody, Descriptor, Stored, StoredInner};
 use crate::writer::{GLOBAL_CRC, MAGIC, MAX_ALIGN_LOG, SEG_CRC, VERSION};
 use crate::{Wire, align_up};
 use wire::leb::Cursor;

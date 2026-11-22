@@ -1,8 +1,8 @@
 //! 声明层：算子声明的类型、轴展开与降级链解析（cutile README §4、§10.2 的 ①）。
 //!
 //! 一份文件装三件事，因为它们是同一条链上的三节：类型（[`OpDecl`] / [`Variant`] / [`Fusion`]）
-//! 是声明的形状，[`expand`] 把轴展开成 tile 候选，变体链校验（[`variants`]）保证降级有序。
-//! 字段级解析在 [`parse`]（`decl/parse.rs`）。
+//! 是声明的形状，[`expand`] 把轴展开成 tile 候选，`variants` 保证降级有序。
+//! 字段级解析在同文件的 `ingest` 模块（表 → 类型；本文件只留类型与代数）。
 
 use crate::atom::Need;
 use crate::sch::Schedule;

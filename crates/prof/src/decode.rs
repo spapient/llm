@@ -69,7 +69,7 @@ pub(crate) fn rows<'t, F: Fail, T>(
 // ── 值 ────────────────────────────────────────────────────────────────────
 
 /// 一个字符串：只收 `Value::Str`，数字与布尔都算"不成形"。
-pub(crate) fn text<'a, F: Fail>(path: impl fmt::Display, value: &'a Value) -> Result<&'a str, F> {
+pub(crate) fn text<F: Fail>(path: impl fmt::Display, value: &Value) -> Result<&str, F> {
     match value {
         Value::Str(text) => Ok(text),
         _ => Err(bad(&path, "必须是字符串")),
@@ -137,18 +137,27 @@ fn each_text<F: Fail>(
     mut each: impl FnMut(&str) -> Result<(), F>,
 ) -> Result<(), F> {
     if let Value::Array(items) = value {
-        for item in items {
-            let Value::Str(text) = item else {
-                return Err(bad(path, "数组里只能是字符串"));
-            };
-            each(text)?;
-        }
-        return Ok(());
+        return each_item(path, items, each);
     }
-    let Some(texts) = crate::prof::scalar_texts(value) else {
-        return Err(bad(path, "只接受字符串或字符串数组"));
-    };
-    texts.iter().try_for_each(|text| each(text))
+    match crate::prof::scalar_texts(value) {
+        Some(texts) => texts.iter().try_for_each(|text| each(text)),
+        None => Err(bad(path, "只接受字符串或字符串数组")),
+    }
+}
+
+/// 数组形态：逐项必须是字符串，遇到别的类型就报错（不静默跳过）。
+fn each_item<F: Fail>(
+    path: &impl fmt::Display,
+    items: &[Value],
+    mut each: impl FnMut(&str) -> Result<(), F>,
+) -> Result<(), F> {
+    for item in items {
+        let Value::Str(text) = item else {
+            return Err(bad(path, "数组里只能是字符串"));
+        };
+        each(text)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -174,9 +183,12 @@ mod tests {
         let optional: Vec<()> =
             rows(&table, "space", Absent::Empty, |_, _, _| Ok::<(), Note>(())).unwrap();
         assert!(optional.is_empty());
-        let required = rows(&table, "axes", Absent::Required("至少需要一个轴"), |_, _, _| {
-            Ok::<(), Note>(())
-        });
+        let required = rows(
+            &table,
+            "axes",
+            Absent::Required("至少需要一个轴"),
+            |_, _, _| Ok::<(), Note>(()),
+        );
         assert_eq!(
             required.unwrap_err(),
             Note("`axes` 非法：至少需要一个轴".to_string())

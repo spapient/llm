@@ -26,8 +26,6 @@ impl Fail for ProfileError {
     }
 }
 
-
-
 // ── parse ─────────────────────────────────────────────────────────────
 
 impl MatchRule {

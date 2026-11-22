@@ -38,10 +38,15 @@ crates/prof/
 │   ├── sample.rs          # 确定性样本：rnd / dropout / init
 │   ├── operator.rs        # 算子契约与 `operator_here!` / `operator_via!` 注解宏
 │   ├── epilogue.rs        # 写回尾块的六步文法
-│   ├── decl.rs            # 声明层：OpDecl 类型 + 轴展开 + 变体链 + 字段级解析（decl::ingest）
-│   ├── catalogue.rs       # 52 条算子模板的目录
-│   ├── prof.rs            # 档案层：类型、匹配规则、选择、错误，以及见证查找与 `Profile::validate`
+│   ├── decl.rs            # 声明层：OpDecl 类型 + 轴展开 + 变体链（字段级解析在 ingest.rs）
+│   ├── ingest.rs          # 声明语料的摄入：声明表 → OpDecl（模块路径 decl::ingest，文件不套子目录）
+│   ├── catalogue.rs       # 算子目录：`src/ops/*.k` 与同名 `.toml` 一一对齐，按名二分查找
+│   ├── prof.rs            # 档案层：类型、指纹匹配、选择与 `ProfileError`
+│   ├── witness.rs         # 见证与自洽校验：`Profile::validate`（`[units]` 一致性、见证查找）
+│   ├── decode.rs          # 表值解码的唯一实现：段读取 + 名字列表/闭集位集/区间/正整数
 │   ├── schema.rs          # 解析 + 推导式求值：闭集字段、[units] 一致性、[peak] 对拍
+│   ├── need.rs            # 需求与供给的代数：`Need` / `Provide` / `Attr` 与协商口径
+│   ├── annotate.rs        # 闭集枚举宏 `closed_enum!`（变体 / 名字表 / Display / parse 同表展开）
 │   ├── device.rs          # 设备行 + 片段层：Device / Image / Status、Fragment / FragmentSet / Layout / load
 │   ├── sign.rs            # 片段签名行 `/* cutile-sign: <prim>/<impl> */`（ADR 0027 §5；构建期与本层共用）
 │   ├── lib.rs             # 公开面：模块声明 + 生成表的出口（运行期不解析 TOML、不读目录）

@@ -1,5 +1,5 @@
 /* cutile-sign: epilogue */
-/* intel（OpenCL）写回尾块：六种形式各一段，装配按 spec::epilogue 的语法顺序拼接。
+/* intel（OpenCL）写回尾块：六种形式各一段，装配按 prof::epilogue 的语法顺序拼接。
  *
  * 占位符契约与其余设备一致（$0 输出/行主序，$1 第二操作数，$2 元素数或列数，$3 本步参数）。
  * 量化钳位写成显式分支而非内置 `clamp`：后者只在 OpenCL 里有定义，而尾块要能被宿主编译器

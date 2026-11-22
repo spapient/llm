@@ -348,7 +348,7 @@ grade    = "L0"
 witness  = { file = "ascend/witness.cpp", func = "witness_rcp", expect = [0.25, 0.5] }
 
 # ---- 写回尾块（epilogue）的六种形式 ----------------------------------------
-# `form` 的取值就是 spec::epilogue 的闭环，六种形式由语法写死，档案只回答"这台设备怎么
+# `form` 的取值就是 prof::epilogue 的闭环，六种形式由语法写死，档案只回答"这台设备怎么
 # 实现它、证据到哪一级"。片段文本在 `src/epilogue.{ext}`，以 `/* epi: <form> */` 分段；
 # 六台设备共用同一份占位符契约（$0 输出 tile，$1 第二操作数，$2 元素数/列数，$3 本步参数）。
 # `quant` / `store` 的算术不在别处另写一份：它们复用 `quant.{ext}` 与 `store.{ext}` 的指令级

@@ -10,7 +10,7 @@ use crate::bad;
 use crate::json;
 use crate::json::Value;
 use crate::ledger::{self, SCHEMA};
-use crate::stored::lossless_entry;
+use crate::seg::lossless_entry;
 use crate::{Archive, Codec, Stored};
 
 /// 小于该字节数的段不值得编码，原样落盘（`passthrough:small`）。

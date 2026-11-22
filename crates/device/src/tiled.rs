@@ -359,7 +359,6 @@ fn tensor_mma(a: &str, exact: bool, bbase: &str) -> String {
     }
 }
 
-
 /// 生产态共享内存分块 f32 GEMM（Metal）：把标量三重循环换成 threadgroup 分块。
 ///
 /// 语义与模板逐元素相同（`Y[i][j] = Σ_p A[i][p]·B[p][j]`），只换遍历：每个 `tile×tile`
@@ -602,7 +601,6 @@ fn register_blocked_gemm_msl(
     src
 }
 
-
 /// 生产态 flash attention（Metal）：一个线程组负责一个查询行，K/V 按 `block` 个键分块
 /// 流式扫描，在线 softmax（running max/sum）把输出累加在每线程寄存器，不保留完整分数向量。
 ///
@@ -844,7 +842,6 @@ fn flash_acc_update(v: &str, n: usize, shape: Flash, tail: bool) -> String {
          \x20           }} }}\n"
     )
 }
-
 
 /// 张量核 GEMM 的 B 布局前置：把行主序 `rows × cols` 的 f32 转成 `cols × rows` 的 half。
 ///

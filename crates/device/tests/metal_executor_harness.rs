@@ -3,7 +3,7 @@ use llm_optim::backend::TensorGeometry;
 use llm_optim::execution::Backend::Metal;
 use llm_optim::execution::{Mode, program, program_sample};
 
-pub(super) fn bench_device(hint: &str) -> Option<(MetalDevice, MetalCommandQueue)> {
+pub(crate) fn bench_device(hint: &str) -> Option<(MetalDevice, MetalCommandQueue)> {
     let Some(device) = MetalDevice::system_default() else {
         eprintln!("Metal 设备不在本机，{hint}未运行");
         return None;
@@ -15,21 +15,21 @@ pub(super) fn bench_device(hint: &str) -> Option<(MetalDevice, MetalCommandQueue
 }
 
 /// 内置算子目录 + 该基准自己的临时工作目录：一次基准里的所有 MSL 生成都落在这上面。
-pub(super) fn catalogue_and_dirs(cache: &str) -> (cutile::builtin::Catalogue, cutile::dirs::Dirs) {
+pub(crate) fn catalogue_and_dirs(cache: &str) -> (cutile::builtin::Catalogue, cutile::dirs::Dirs) {
     let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
     let dirs = cutile::dirs::Dirs::under(std::env::temp_dir().join(cache));
     (catalogue, dirs)
 }
 
 /// matmul 测点的确定性输入 + CPU 参考：A、B 各取一套固定取模模式，参考由 f64 累加给出。
-pub(super) fn matmul_inputs(m: usize, n: usize, k: usize) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+pub(crate) fn matmul_inputs(m: usize, n: usize, k: usize) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
     let (a, b) = matmul_values(m, n, k);
     let reference = cpu_matmul(&a, &b, m, n, k);
     (a, b, reference)
 }
 
 /// matmul 测点的确定性输入（不含参考）：大形状的 f64 参考要跑上分钟，吞吐测点只要输入。
-pub(super) fn matmul_values(m: usize, n: usize, k: usize) -> (Vec<f32>, Vec<f32>) {
+pub(crate) fn matmul_values(m: usize, n: usize, k: usize) -> (Vec<f32>, Vec<f32>) {
     let a: Vec<f32> = (0..m * k).map(|i| ((i % 5) as f32) * 0.25 - 0.5).collect();
     let b: Vec<f32> = (0..k * n).map(|i| ((i % 7) as f32) * 0.2 - 0.4).collect();
     (a, b)
@@ -38,7 +38,7 @@ pub(super) fn matmul_values(m: usize, n: usize, k: usize) -> (Vec<f32>, Vec<f32>
 /// 满尾数样本：每个值都用足 f32 的 24 位有效位（`[0.5, 1)` 内的规约数再缩放到 `(0.7, 1)`
 /// 区间）。这种输入进入 half 必然要舍入，因而能验出「张量核确实按 half 精度舍入」而不是
 /// 靠夹具恰好可精确表示而得出的假零误差。
-pub(super) fn full_mantissa_values(m: usize, n: usize, k: usize) -> (Vec<f32>, Vec<f32>) {
+pub(crate) fn full_mantissa_values(m: usize, n: usize, k: usize) -> (Vec<f32>, Vec<f32>) {
     // xorshift64*：确定性、无外部依赖，低位也参与高位运算，避免 `i % 7` 那种短周期。
     let mut state = 0x9e37_79b9_7f4a_7c15u64;
     let mut next = || {
@@ -53,7 +53,7 @@ pub(super) fn full_mantissa_values(m: usize, n: usize, k: usize) -> (Vec<f32>, V
 }
 
 /// 注意力测点的确定性输入 + CPU 参考：Q/K/V 各取一套固定取模模式，参考由 [`cpu_attention`] 给出。
-pub(super) fn attention_inputs(s: usize, d: usize) -> (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>) {
+pub(crate) fn attention_inputs(s: usize, d: usize) -> (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>) {
     let q: Vec<f32> = (0..s * d).map(|i| ((i % 5) as f32) * 0.25 - 0.5).collect();
     let k: Vec<f32> = (0..s * d).map(|i| ((i % 7) as f32) * 0.2 - 0.4).collect();
     let v: Vec<f32> = (0..s * d).map(|i| ((i % 3) as f32) * 0.3 - 0.3).collect();
@@ -62,16 +62,16 @@ pub(super) fn attention_inputs(s: usize, d: usize) -> (Vec<f32>, Vec<f32>, Vec<f
 }
 
 /// 注意力基准的缓冲套件：Q/K/V 输入缓冲、Y 输出缓冲与 CPU 参考。
-pub(super) struct AttentionBench(
-    pub(super) MetalBuf,
-    pub(super) MetalBuf,
-    pub(super) MetalBuf,
-    pub(super) MetalBuf,
-    pub(super) Vec<f32>,
+pub(crate) struct AttentionBench(
+    pub(crate) MetalBuf,
+    pub(crate) MetalBuf,
+    pub(crate) MetalBuf,
+    pub(crate) MetalBuf,
+    pub(crate) Vec<f32>,
 );
 
 /// 上传 [`attention_inputs`] 的 Q/K/V，再开一路只有 GPU 写的 Y 输出。
-pub(super) fn attention_bench(device: &MetalDevice, s: usize, d: usize) -> AttentionBench {
+pub(crate) fn attention_bench(device: &MetalDevice, s: usize, d: usize) -> AttentionBench {
     let (q, k, v, reference) = attention_inputs(s, d);
     AttentionBench(
         upload(device, &q, "Q"),
@@ -83,7 +83,7 @@ pub(super) fn attention_bench(device: &MetalDevice, s: usize, d: usize) -> Atten
 }
 
 /// 上传一路输入：共享缓冲按元素数 × 4 分配，`values` 原样拷进去（`label` 只进失败消息）。
-pub(super) fn upload(device: &MetalDevice, values: &[f32], label: &str) -> MetalBuf {
+pub(crate) fn upload(device: &MetalDevice, values: &[f32], label: &str) -> MetalBuf {
     let mut buf = device
         .new_buf(values.len() * 4)
         .unwrap_or_else(|| panic!("{label} 缓冲"));
@@ -92,7 +92,7 @@ pub(super) fn upload(device: &MetalDevice, values: &[f32], label: &str) -> Metal
 }
 
 /// 上传一段原始字节（int8 输入走这里，按字节而不是 f32 分配）。
-pub(super) fn upload_bytes(device: &MetalDevice, bytes: &[u8], label: &str) -> MetalBuf {
+pub(crate) fn upload_bytes(device: &MetalDevice, bytes: &[u8], label: &str) -> MetalBuf {
     let mut buf = device
         .new_buf(bytes.len())
         .unwrap_or_else(|| panic!("{label} 缓冲"));
@@ -101,14 +101,14 @@ pub(super) fn upload_bytes(device: &MetalDevice, bytes: &[u8], label: &str) -> M
 }
 
 /// 开一路只由 GPU 写的输出缓冲：`len` 个 f32，内容留白（`label` 只进失败消息）。
-pub(super) fn output_buf(device: &MetalDevice, len: usize, label: &str) -> MetalBuf {
+pub(crate) fn output_buf(device: &MetalDevice, len: usize, label: &str) -> MetalBuf {
     device
         .new_buf(len * 4)
         .unwrap_or_else(|| panic!("{label} 缓冲"))
 }
 
 /// 标量网格程序：按 `kernel` 与 `m×n` 生成 MSL 再编译成管线；`what` 只进失败消息。
-pub(super) fn grid_pipeline(
+pub(crate) fn grid_pipeline(
     device: &MetalDevice,
     catalogue: &cutile::builtin::Catalogue,
     dirs: &cutile::dirs::Dirs,
@@ -126,7 +126,7 @@ pub(super) fn grid_pipeline(
 }
 
 /// 同 [`grid_pipeline`]，但形状由样本显式给出（`K` 不是 `(m, n)` 的函数，只能这样传）。
-pub(super) fn grid_pipeline_sample(
+pub(crate) fn grid_pipeline_sample(
     device: &MetalDevice,
     catalogue: &cutile::builtin::Catalogue,
     dirs: &cutile::dirs::Dirs,
@@ -143,7 +143,7 @@ pub(super) fn grid_pipeline_sample(
 }
 
 /// simdgroup GEMM 的一个片段形状：生成 MSL、编译成管线，并给出对应的网格（每线程组 32 线程）。
-pub(super) fn simdgroup_gemm_pipeline(
+pub(crate) fn simdgroup_gemm_pipeline(
     device: &MetalDevice,
     catalogue: &cutile::builtin::Catalogue,
     dirs: &cutile::dirs::Dirs,
@@ -172,17 +172,17 @@ pub(super) fn simdgroup_gemm_pipeline(
     (pipe, grid)
 }
 
-pub(super) struct Int8Gemm {
-    pub(super) m: usize,
-    pub(super) n: usize,
-    pub(super) k: usize,
-    pub(super) a: Vec<u8>,
-    pub(super) b: Vec<u8>,
-    pub(super) reference: Vec<f32>,
+pub(crate) struct Int8Gemm {
+    pub(crate) m: usize,
+    pub(crate) n: usize,
+    pub(crate) k: usize,
+    pub(crate) a: Vec<u8>,
+    pub(crate) b: Vec<u8>,
+    pub(crate) reference: Vec<f32>,
 }
 
 /// 一次 CPU 参考（`nn::matmul_i8::forward_tiled`）给出 `f32` 参考列，设备侧只与它比。
-pub(super) fn int8_gemm() -> Int8Gemm {
+pub(crate) fn int8_gemm() -> Int8Gemm {
     let (m, n, k) = (64usize, 256usize, 4096usize);
     let a: Vec<u8> = (0..m * k)
         .map(|i| (((i % 17) as i32 - 8) as i8) as u8)
@@ -210,15 +210,15 @@ pub(super) fn int8_gemm() -> Int8Gemm {
 ///
 /// 两个 int8 用例的输入、输出与网格完全一致，只是 MSL 来源不同（本地生成 / cutile 生产入口），
 /// 因此缓冲与网格只在这里建一次。
-pub(super) struct Int8GemmBench {
-    pub(super) m: usize,
-    pub(super) n: usize,
-    pub(super) k: usize,
-    pub(super) reference: Vec<f32>,
-    pub(super) a: MetalBuf,
-    pub(super) b: MetalBuf,
-    pub(super) y: MetalBuf,
-    pub(super) grid: [u32; 3],
+pub(crate) struct Int8GemmBench {
+    pub(crate) m: usize,
+    pub(crate) n: usize,
+    pub(crate) k: usize,
+    pub(crate) reference: Vec<f32>,
+    pub(crate) a: MetalBuf,
+    pub(crate) b: MetalBuf,
+    pub(crate) y: MetalBuf,
+    pub(crate) grid: [u32; 3],
 }
 
 /// int8 GEMM 基准的固定几何与输入：64×256×4096，`i8` 输入、`i32` 精确累加、`f32` 参考。
@@ -226,7 +226,7 @@ pub(super) struct Int8GemmBench {
 /// 两个 int8 用例共用同一份样本，它们对拍的对象因此逐位相同——换一组数不该改变结论。
 ///
 /// 上传 [`int8_gemm`] 的 A/B，再开一路只有 GPU 写的 Y 输出。
-pub(super) fn int8_gemm_bench(device: &MetalDevice) -> Int8GemmBench {
+pub(crate) fn int8_gemm_bench(device: &MetalDevice) -> Int8GemmBench {
     let fixture = int8_gemm();
     let (m, n, k) = (fixture.m, fixture.n, fixture.k);
     let a = upload_bytes(device, &fixture.a, "A-int8");
@@ -243,7 +243,7 @@ pub(super) fn int8_gemm_bench(device: &MetalDevice) -> Int8GemmBench {
         grid: [m as u32, n as u32, 1],
     }
 }
-pub(super) fn cpu_attention(q: &[f32], k: &[f32], v: &[f32], s: usize, d: usize) -> Vec<f32> {
+pub(crate) fn cpu_attention(q: &[f32], k: &[f32], v: &[f32], s: usize, d: usize) -> Vec<f32> {
     let scale = (d as f32).sqrt();
     let mut out = vec![0.0f32; s * d];
     let mut scores = vec![0.0f32; s];
@@ -274,7 +274,7 @@ pub(super) fn cpu_attention(q: &[f32], k: &[f32], v: &[f32], s: usize, d: usize)
 }
 
 /// 两版 matmul MSL 共用的前导：A、B、C 三路接口声明，`M`/`N`/`K` 由调用方随后内联。
-pub(super) const MATMUL_MSL_HEAD: &str = "#include <metal_stdlib>\n\
+pub(crate) const MATMUL_MSL_HEAD: &str = "#include <metal_stdlib>\n\
      using namespace metal;\n\
      kernel void kernel_main(\n\
      \x20    device const float* A [[buffer(0)]],\n\
@@ -283,7 +283,7 @@ pub(super) const MATMUL_MSL_HEAD: &str = "#include <metal_stdlib>\n\
 
 /// 朴素 MSL：每线程算一个输出元素；`tiled` 为真时用 threadgroup 共享内存把 A/B 按 16×16 分块，
 /// 每个线程组 16×16 线程协同搬运一次整块，规约轴复用共享块，避免反复从设备全局内存重读。
-pub(super) fn matmul_msl(tiled: bool, m: usize, n: usize, k: usize) -> String {
+pub(crate) fn matmul_msl(tiled: bool, m: usize, n: usize, k: usize) -> String {
     if !tiled {
         return format!(
             "{MATMUL_MSL_HEAD}\
@@ -316,7 +316,7 @@ pub(super) fn matmul_msl(tiled: bool, m: usize, n: usize, k: usize) -> String {
 }
 
 /// 同一算术的 CPU 参考（f64 累加，保证对拍基准的精度只受量化级控制，不引入累加顺序差异）。
-pub(super) fn cpu_matmul(a: &[f32], b: &[f32], m: usize, n: usize, k: usize) -> Vec<f32> {
+pub(crate) fn cpu_matmul(a: &[f32], b: &[f32], m: usize, n: usize, k: usize) -> Vec<f32> {
     let mut out = vec![0.0f32; m * n];
     for i in 0..m {
         for j in 0..n {
@@ -330,7 +330,7 @@ pub(super) fn cpu_matmul(a: &[f32], b: &[f32], m: usize, n: usize, k: usize) -> 
     out
 }
 
-pub(super) fn as_bytes(values: &[f32]) -> Vec<u8> {
+pub(crate) fn as_bytes(values: &[f32]) -> Vec<u8> {
     values.iter().flat_map(|f| f.to_ne_bytes()).collect()
 }
 
@@ -340,7 +340,7 @@ pub(super) fn as_bytes(values: &[f32]) -> Vec<u8> {
 /// 乘积之和，量级在 1 以上；注意力输出是 softmax 权重乘 V 的和，整批最大幅度只有 1e-4 量级。
 /// 整批口径会把注意力输出上 1e-5 的绝对差放大成 1e0 的相对误差，那不是「算错了」而是「分母选错了」。
 /// `Unit` 给每元素留 1 的绝对地板，正对这两类输出的共同下限；最差元素的下标与两侧取值仍由夹具层报出。
-pub(super) fn assert_matmul_matches(label: &str, reference: &[f32], output: &[u8]) {
+pub(crate) fn assert_matmul_matches(label: &str, reference: &[f32], output: &[u8]) {
     let got = read_back(output);
     testkit::assert_rel_with(
         testkit::Scale::Unit,
@@ -352,7 +352,7 @@ pub(super) fn assert_matmul_matches(label: &str, reference: &[f32], output: &[u8
 }
 
 /// 把设备缓冲回读成 f32 序列（缓冲按 f32 分配、按 4 字节切块）。
-pub(super) fn read_back(output: &[u8]) -> Vec<f32> {
+pub(crate) fn read_back(output: &[u8]) -> Vec<f32> {
     let (chunks, _) = output.as_chunks::<4>();
     chunks
         .iter()
@@ -361,7 +361,7 @@ pub(super) fn read_back(output: &[u8]) -> Vec<f32> {
 }
 
 /// 每元素相对误差的最大值，分母按 `max(|want|, 1)`（[`testkit::Scale::Unit`] 口径），只用于打印。
-pub(super) fn max_relative(got: &[f32], want: &[f32]) -> f64 {
+pub(crate) fn max_relative(got: &[f32], want: &[f32]) -> f64 {
     got.iter()
         .zip(want)
         .map(|(got, want)| f64::from((got - want).abs()) / f64::from(want.abs()).max(1.0))
@@ -370,9 +370,9 @@ pub(super) fn max_relative(got: &[f32], want: &[f32]) -> f64 {
 
 /// 同一内核连跑 50 次，返回中位数延迟（ns）；预热一次不计入。
 /// 同一派发连跑 `SAMPLES` 次取中位，口径对齐 llm.u 的 `measure_kernel`。
-pub(super) const SAMPLES: usize = 30;
+pub(crate) const SAMPLES: usize = 30;
 
-pub(super) fn measure(
+pub(crate) fn measure(
     queue: &MetalCommandQueue,
     pipeline: &MetalPipeline,
     bufs: &[&MetalBuf],
@@ -394,7 +394,7 @@ pub(super) fn measure(
 ///
 /// 只用于造 CPU 参考——`relaxed` 路径的 A、B 都只有 10 位尾数（half / tf32 同级），拿全精度
 /// 参考去对拍只会把「精度档不同」误报成「算错了」。指数域不动：测点取值落在 half 正规区间。
-pub(super) fn half_precision(value: f32) -> f32 {
+pub(crate) fn half_precision(value: f32) -> f32 {
     let bits = value.to_bits();
     let sign = bits & 0x8000_0000;
     let exponent = bits & 0x7f80_0000;
@@ -411,10 +411,10 @@ pub(super) fn half_precision(value: f32) -> f32 {
 
 /// 张量核 `relaxed` 口径的对拍阈值：输入只有 10 位尾数、硬件还可能低精度累加，故放到 5e-3；
 /// 同形的全 f32 路径（分块 / simdgroup）仍按 1e-3 判。
-pub(super) const TENSOR_TOLERANCE: f64 = 5e-3;
+pub(crate) const TENSOR_TOLERANCE: f64 = 5e-3;
 
 /// 张量核输出与「按同精度舍入后的 f64 参考」对拍。
-pub(super) fn assert_relaxed_matches(label: &str, reference: &[f32], output: &[u8]) -> f64 {
+pub(crate) fn assert_relaxed_matches(label: &str, reference: &[f32], output: &[u8]) -> f64 {
     let got = read_back(output);
     let error = max_relative(&got, reference);
     assert!(
@@ -425,16 +425,16 @@ pub(super) fn assert_relaxed_matches(label: &str, reference: &[f32], output: &[u
 }
 
 /// 张量核基准的每档形状夹具：`A`/`B` 上传、`B` 预转置成 half 的 `Bt`、输出缓冲、可选 CPU 参考。
-pub(super) struct TensorStage {
-    pub(super) a: MetalBuf,
-    pub(super) bt: MetalBuf,
-    pub(super) y: MetalBuf,
-    pub(super) reference: Option<Vec<f32>>,
+pub(crate) struct TensorStage {
+    pub(crate) a: MetalBuf,
+    pub(crate) bt: MetalBuf,
+    pub(crate) y: MetalBuf,
+    pub(crate) reference: Option<Vec<f32>>,
 }
 
 impl TensorStage {
     /// 与 CPU 参考对拍并返回误差（无参考时 NaN）；拆借 `y` 与 `reference` 两个字段避免借用冲突。
-    pub(super) fn error(&mut self, label: &str) -> f64 {
+    pub(crate) fn error(&mut self, label: &str) -> f64 {
         let Self { y, reference, .. } = self;
         reference.as_ref().map_or(f64::NAN, |want| {
             assert_relaxed_matches(label, want, y.as_mut_bytes())
@@ -443,7 +443,7 @@ impl TensorStage {
 }
 
 /// 上传 + 布局前置 + 可选参考：算子装配与裸内核两档基准共用同一套输入准备。
-pub(super) fn tensor_stage(
+pub(crate) fn tensor_stage(
     device: &MetalDevice,
     queue: &MetalCommandQueue,
     shape: (usize, usize, usize),
@@ -456,7 +456,7 @@ pub(super) fn tensor_stage(
 
 /// 同 [`tensor_stage`]，输入由调用方给定：样本值能否精确表示成 half，直接决定这条用例
 /// 能不能验出舍入误差，因而必须可由用例自己掌握而不是钉在夹具里。
-pub(super) fn tensor_stage_from(
+pub(crate) fn tensor_stage_from(
     device: &MetalDevice,
     queue: &MetalCommandQueue,
     (m, n, k): (usize, usize, usize),
@@ -498,15 +498,15 @@ pub(super) fn tensor_stage_from(
 }
 
 /// 一条已编译的张量核管线及其派发参数：连跑取中位时复用，不重复编译。
-pub(super) struct Pipe {
-    pub(super) label: String,
-    pub(super) pipe: MetalPipeline,
-    pub(super) grid: [u32; 3],
-    pub(super) block: [u32; 3],
+pub(crate) struct Pipe {
+    pub(crate) label: String,
+    pub(crate) pipe: MetalPipeline,
+    pub(crate) grid: [u32; 3],
+    pub(crate) block: [u32; 3],
 }
 
 /// 编译一个几何档并首跑一次；标签由 `(tile_m, tile_n, k_tile, simdgroups)` 生成。
-pub(super) fn tensor_pipe(
+pub(crate) fn tensor_pipe(
     device: &MetalDevice,
     queue: &MetalCommandQueue,
     stage: &TensorStage,
@@ -540,7 +540,7 @@ pub(super) fn tensor_pipe(
 }
 
 /// 同一批管线连跑 3 轮、每档取中位：频率漂移靠「整轮重扫」消除，而不是打散单档采样。
-pub(super) fn sweep(
+pub(crate) fn sweep(
     queue: &MetalCommandQueue,
     stage: &TensorStage,
     pipes: &[Pipe],

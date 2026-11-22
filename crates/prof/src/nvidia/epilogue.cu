@@ -1,5 +1,5 @@
 /* cutile-sign: epilogue */
-/* nvidia 写回尾块：六种形式各一段，装配按 spec::epilogue 的语法顺序拼接。
+/* nvidia 写回尾块：六种形式各一段，装配按 prof::epilogue 的语法顺序拼接。
  *
  * 占位符契约（六台设备一致，由模板在拼接时替换）：
  *   $0 输出 tile（f32，行主序）  $2 元素数（`bias` 段是列数）

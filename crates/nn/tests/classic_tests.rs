@@ -131,6 +131,9 @@ fn norm_layers_check_their_geometry() {
     // 超参存了就必须能读回：否则它只是会被拷贝、会被比较、却永不参与判断的状态。
     assert_eq!((bn.norm().eps, bn.norm().momentum), (1e-5, 0.1));
     assert!(BatchNorm2d::new("bn", 64, 0.0, 0.1).is_err());
+    assert!(BatchNorm2d::new("bn", 64, f32::INFINITY, 0.1).is_err());
+    assert!(BatchNorm2d::new("bn", 64, f32::NEG_INFINITY, 0.1).is_err());
+    assert!(BatchNorm2d::new("bn", 64, f32::NAN, 0.1).is_err());
     assert!(BatchNorm2d::new("bn", 64, 1e-5, 1.5).is_err());
 
     let gn = GroupNorm::new("gn", 8, 64, 1e-5).expect("合法");

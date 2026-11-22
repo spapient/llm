@@ -145,7 +145,7 @@ pub enum Status {
     Source,
     /// 已编译成设备镜像并内嵌（[`Device::image`] 必然是 `Some`）。
     Compiled,
-    /// 这台设备的输出语言还没有构建配方（[`crate::image`] 的配方表）。
+    /// 这台设备的输出语言还没有构建配方（`buildimage` 的配方表）。
     NoRecipe,
     /// 有配方，但工具链不在本机或编译失败：源码照旧可用。
     Skipped {
@@ -164,7 +164,7 @@ fn position<T, K: Ord>(table: &[T], key: &K, key_of: impl Fn(&T) -> K) -> Option
     table.binary_search_by_key(key, key_of).ok()
 }
 
-/// 每台设备一行（顺序同 [`DEVICES`]，即生成期按 vendor 升序）。
+/// 每台设备一行（顺序同 [`crate::DEVICES`]，即生成期按 vendor 升序）。
 pub fn devices() -> &'static [crate::Device] {
     &crate::DEVICES
 }

@@ -142,7 +142,7 @@ fn the_tile_families_report_unsupported_rather_than_a_wrong_source() {
 
 #[test]
 fn a_block_family_on_metal_is_stages_plus_a_host_fold() {
-    // 分块族在 Metal 侧的落点是 [`crate::metal::fold`]：段与折叠一体，不是「不支持」。
+    // 分块族在 Metal 侧的落点是 [`crate::metal`]：段与折叠一体，不是「不支持」。
     let Source::Pair { device, host } = metal(
         cutile_x_kernel::SOURCE,
         &gemv().0,

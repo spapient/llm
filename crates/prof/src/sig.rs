@@ -7,9 +7,9 @@ use diagnostic::{Code, Error};
 /// 形参的类型。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CType {
-    /// `float`（样本里是 [`Values::F32`]）。
+    /// `float`（样本里是 [`crate::model::Values::F32`]）。
     F32,
-    /// `unsigned char` / `u8`（样本里是 [`Values::U8`]）。
+    /// `unsigned char` / `u8`（样本里是 [`crate::model::Values::U8`]）。
     U8,
     /// 整数标量（`int`、`long` 等），取值来自 [`Sample::scalars`]。
     Int,
@@ -224,7 +224,7 @@ impl Signature {
     ///
     /// # Errors
     ///
-    /// 签名与样本不一致时先由 [`Self::check`] 返回说明。
+    /// 签名与样本不一致时先由 [`Self::check_sample`] 返回说明。
     pub fn call_args(&self, sample: &Sample) -> diagnostic::Result<String> {
         self.check_sample(sample)?;
         let parts: Vec<String> = self

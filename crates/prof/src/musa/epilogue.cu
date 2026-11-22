@@ -1,5 +1,5 @@
 /* cutile-sign: epilogue */
-/* musa 写回尾块：六种形式各一段，装配按 spec::epilogue 的语法顺序拼接。
+/* musa 写回尾块：六种形式各一段，装配按 prof::epilogue 的语法顺序拼接。
  *
  * 占位符契约与 nvidia 一致（$0 输出 tile/行主序，$1 第二操作数，$2 元素数或列数，
  * $3 本步参数）。mcc 的展开粒度比 nvcc 粗，这里给固定 4 路展开，避免模板再乘一遍。

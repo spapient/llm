@@ -49,12 +49,10 @@ mod lifecycle;
 mod parse;
 mod rans;
 mod seg;
-mod stored;
 mod writer;
 
 // —— 平铺的子模块：原各父模块的单文件子目录，拍平到顶层 ——
 pub(crate) mod codec;
-pub(crate) mod plan;
 
 // —— 量化方案：仿射方案与外部量化条目 ——
 pub mod quant;
@@ -78,7 +76,6 @@ pub mod l3;
 
 // —— 外部格式只读适配：torch `.bin`（ZIP_STORED + pickle）、GGUF、受限 JSON ——
 pub(crate) mod cursor;
-mod dequant;
 pub mod gguf;
 pub mod json;
 pub(crate) mod pickle;
@@ -128,7 +125,7 @@ pub use quant::{Quant, Quantized};
 pub use seg::Codec;
 pub use seg::Segment;
 pub use settle::{Reason, Settled, Settlement};
-pub use stored::Stored;
+pub use seg::Stored;
 pub use writer::{Config, Writer};
 
 pub use container::{

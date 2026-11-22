@@ -231,7 +231,7 @@ impl Prim {
 }
 
 vocabulary! {
-    /// 写回尾块（epilogue）闭集：`gemm` / `conv` / `device` 写回阶段的六个步骤（`spec::epilogue` 的文法）。
+    /// 写回尾块（epilogue）闭集：`gemm` / `conv` / `device` 写回阶段的六个步骤（[`crate::epilogue`] 的文法）。
     Epilogue {
         #[doc = "加列偏置。"] Bias => "bias",
         #[doc = "逐元素激活（参数在 [`ActKind`]）。"] Act => "act",

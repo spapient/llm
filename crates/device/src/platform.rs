@@ -111,7 +111,7 @@ impl Host for Machine {
 /// 进程内默认 Metal 设备在不在（非 macOS 恒为 `false`，连符号都不引）。
 #[cfg(target_os = "macos")]
 fn metal_device() -> bool {
-    crate::metal::executor::MetalDevice::system_default().is_some()
+    crate::executor::MetalDevice::system_default().is_some()
 }
 
 /// 非 macOS：Metal 行没有设备证据。

@@ -46,7 +46,7 @@ pub const fn model_of<T: Operator>() -> Model {
 /// 为「模块自带具体入口」的算子装配 [`Operator`]（ADR 0050 §3）：`AXES` / `project_shape` /
 /// `cost` / `sample` / `reference` 都取当前模块的同名项，装配行只剩类型、注册名、生产形状、
 /// 可微性与参考入口。族骨架的泛型入口（reduce / unary / binary / gemv / gemm）走
-/// [`operator_via!`]。
+/// [`crate::operator_via!`]。
 #[macro_export]
 macro_rules! operator_here {
     ($ty:ty, $op:tt, $arity:literal, $shape:expr, $differentiable:literal, $reference:path) => {

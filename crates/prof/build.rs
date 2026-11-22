@@ -329,7 +329,7 @@ fn signature(prim: &str, source: &str, path: &Path) -> String {
     implementation.to_string()
 }
 
-/// 尾块正文里的六段标记：数量与名字在这里核，名字属于闭集由 `prim` 的测试核。
+/// 尾块正文里的六段标记：数量与名字在这里核，名字属于闭集由 `prof` 的测试核。
 fn forms_of(source: &str, path: &Path) -> Vec<String> {
     let mut forms: Vec<String> = Vec::new();
     for (idx, marker) in source.match_indices("/* epi: ").collect::<Vec<_>>() {

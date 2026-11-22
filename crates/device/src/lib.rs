@@ -28,7 +28,7 @@
 //!
 //! # 越界岛
 //!
-//! [`metal::executor`] 是全仓四个 `unsafe` 岛之一（Metal FFI，同 `storage::mmap` 形态），
+//! [`executor`] 是全仓四个 `unsafe` 岛之一（Metal FFI，同 `storage::mmap` 形态），
 //! 全仓默认 `deny(unsafe_code)`，只有该文件内 `#![allow(unsafe_code)]`。岛的行数与位置由
 //! `testkit` 的 `unsafe_islands_are_the_ones_the_adr_lists` 逐个点名，ADR 0035 是唯一出处。
 
@@ -46,5 +46,7 @@ pub mod scan;
 pub mod tiled;
 mod toolchain;
 pub mod wmma;
+#[cfg(target_os = "macos")]
+pub mod executor;
 
 pub use platform::{Abi, Arch, Host, Machine, Row, Standing, Why, audit, require, standing};

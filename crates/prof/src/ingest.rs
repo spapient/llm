@@ -243,19 +243,29 @@ fn need_field(
     value: &Value,
 ) -> Result<Need, Error> {
     let value_path = format!("{path}.{name}");
-    let attach: fn(Need, Span) -> Need = match name.as_str() {
+    let Some(attach) = span_attach(name) else {
+        return collection(need, prim, &value_path, name, value);
+    };
+    Ok(attach(need, span_of_need(&value_path, value)?))
+}
+
+/// 维度键挂跨度：`m` / `bytes` / `extent` 都算主维度；其余键不是跨度（交给属性分支）。
+fn span_attach(name: &str) -> Option<fn(Need, Span) -> Need> {
+    let attach = match name {
         "m" | "bytes" | "extent" => Need::with_extent,
         "n" => Need::with_n,
         "k" => Need::with_k,
-        _ => return collection(need, prim, &value_path, name, value),
+        _ => return None,
     };
+    Some(attach)
+}
+
+/// 一条区间取值：只收字符串，四种写法交给 [`Span::parse`]。
+fn span_of_need(path: &str, value: &Value) -> Result<Span, Error> {
     let Value::Str(text) = value else {
-        return Err(field(
-            &value_path,
-            "必须是字符串（`16`、`16..64`、`<=512`）",
-        ));
+        return Err(field(path, "必须是字符串（`16`、`16..64`、`<=512`）"));
     };
-    Ok(attach(need, decode::span::<Error>(&value_path, text)?))
+    decode::span::<Error>(path, text)
 }
 
 /// 位集解码：`WORDS` 由目标类型给，失败类型固定本层（`decode` 那边只有一份实现）。

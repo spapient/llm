@@ -15,8 +15,10 @@ use crate::{Bounds, BoundsResult, Contract, ContractSpec, nonzero, spec_accessor
 
 /// 校验 `eps` 为正且有限：所有归一化层共用。
 fn check_eps(eps: f32, layer: &str) -> Result<()> {
-    if eps <= 0.0 || eps.is_nan() {
-        return Err(Error::new(Code::Invalid, format!("{layer}: `eps` 必须为正")).with(layer));
+    if !(eps.is_finite() && eps > 0.0) {
+        return Err(
+            Error::new(Code::Invalid, format!("{layer}: `eps` 必须为正且有限")).with(layer),
+        );
     }
     Ok(())
 }

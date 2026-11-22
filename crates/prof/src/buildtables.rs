@@ -67,7 +67,7 @@ pub fn tables_of(devices: &[Device], out: &Path, images: bool) -> String {
             "\n/// `{}` 设备的片段：原语 → 文本、原语 → 见证入口、设备行与源码根。\npub mod {} {{\n\
              #[allow(unused_imports)]\n\
              use crate::atom::Prim;\n\n\
-             /// 本设备片段与见证所在目录，`prim` 按它读磁盘。\n\
+             /// 本设备片段与见证所在目录，`device` 按它读磁盘。\n\
              pub const ROOT: &str = concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/src/{}\");",
             device.name, device.name, device.name
         );
@@ -164,7 +164,7 @@ fn device_line(text: &mut String, device: &Device, outcome: &Outcome) {
     text.push_str("};\n");
 }
 
-/// 四张聚合表：`prim` 拿它们回答"有哪些设备"与"这台设备的片段是什么"。
+/// 四张聚合表：`device` 拿它们回答"有哪些设备"与"这台设备的片段是什么"。
 ///
 /// 长度由生成的模块数决定，不写死台数：加一份 `<vendor>.toml` 就多一台设备。
 fn aggregates(text: &mut String, devices: &[Device]) {

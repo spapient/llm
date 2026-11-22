@@ -1,4 +1,5 @@
 //! 线性层布局（TN）的稠密 f32 GEMM：`out[rows,n] = x[rows,k] · w[n,k]ᵀ`。
+use super::pack::pack_panel;
 use super::pool::{Bufs, Shape, pool, run_pooled};
 use super::{Layout, MR, NR, threads_override};
 
@@ -101,19 +102,7 @@ fn pack_tn_into(bpack: &mut [f32], w: &[f32], n: usize, k: usize) {
     let npad = n.div_ceil(NR) * NR;
     debug_assert_eq!(bpack.len(), npad * k);
     for g in 0..npad / NR {
-        let base = g * k * NR;
-        fill_panel(&mut bpack[base..base + k * NR], w, n, k, g * NR);
-    }
-}
-
-/// 一个列组的转置打包：`w` 的 `first..first+NR` 行、每行 `k` 个元素 → 面板 `[q][NR]`。
-fn fill_panel(panel: &mut [f32], w: &[f32], n: usize, k: usize, first: usize) {
-    let cols = if first < n { NR.min(n - first) } else { 0 };
-    for q in 0..k {
-        let dst = &mut panel[q * NR..q * NR + cols];
-        for (c, slot) in dst.iter_mut().enumerate() {
-            *slot = w[(first + c) * k + q];
-        }
+        pack_panel(w, bpack, n, k, g * NR, g * k * NR, true);
     }
 }
 
@@ -130,8 +119,7 @@ pub(super) fn stage(
     let groups = npad / NR;
     let mut g = slot;
     while g < groups {
-        let base = g * k * NR;
-        fill_panel(&mut buf[base..base + k * NR], w, n, k, g * NR);
+        pack_panel(w, buf, n, k, g * NR, g * k * NR, true);
         g += p;
     }
 }

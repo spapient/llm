@@ -1,12 +1,12 @@
 //! 语义层：一条爱因斯坦求和表达式 + 轴长度 + 操作数位宽 → [`Cost`]（flops 与最少字节）。
 //!
 //! 这一层回答的是**与设备、与 tile、与片段都无关**的问题：这个算子至少要算多少次浮点、至少
-//! 要搬多少字节。它不认识 `cutile`、`prof`、`prim`，因此可以在任何机器上离线复现——roofline
+//! 要搬多少字节。它不认识 `cutile`、设备档案与片段，因此可以在任何机器上离线复现——roofline
 //! 的分子从此只有一个来源，而不是每个算子各写一遍公式。
 //!
 //! **拥有**：[`Expr`]、[`Extents`]、[`Axis`] / [`Axes`]、[`Operand`] / [`OperandSpec`]、[`Bits`]、
 //! [`Cost`]，以及四条骨架共用的表达式缓存 [`FormulaCache`]。
-//! **不拥有**：设备峰值（[`prof`]）、roofline 的编排（`cutile::plan`）、算子声明与样本（[`crate`]）。
+//! **不拥有**：设备峰值（[`crate::prof`]）、roofline 的编排（`cutile::plan`）、算子声明与样本（[`crate`]）。
 //! **依赖**：`diagnostic`（全仓唯一的错误类型）。**被依赖**：`op` 的算子语义（用本模块推导代价）。
 //!
 //! 它原是一个独立成员（`llm-einsum`），唯一消费者是 `op`；并入后 `Cost` 与 `OpDecl` 同处一个
@@ -195,5 +195,5 @@ impl Cost {
 }
 
 #[cfg(test)]
-#[path = "../tests/spec/einsum_tests.rs"]
+#[path = "../tests/spec/cost_tests.rs"]
 mod tests;
