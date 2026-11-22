@@ -81,3 +81,27 @@ fn declared_provisions_each_get_a_cell_and_unprovided_are_marked() {
         }
     }
 }
+
+/// K14：设备执行一个都拿不到的档案，每一格要么有见证、要么自报"本机起不了前端"。
+/// 口径：`Declared` 格只允许出现在整行零见证的档案上；行里有见证而某原语没见证 = 真漏洞。
+#[test]
+fn no_provided_cell_falls_back_to_declaration_while_the_row_has_witnesses() {
+    let catalogue = catalogue();
+    let dirs = Dirs::under(std::env::temp_dir().join("cutile-ledger-test"));
+    for row in ledger(&catalogue, &dirs) {
+        if row.host == 0 {
+            continue;
+        }
+        for cell in &row.cells {
+            assert_ne!(
+                cell.status,
+                Status::Declared,
+                "档案 {vendor} 行内已有 {host} 条 host 见证，原语 {prim} 却停在只有自述：{note}",
+                vendor = row.profile.meta.vendor,
+                host = row.host,
+                prim = cell.prim,
+                note = cell.note
+            );
+        }
+    }
+}

@@ -110,6 +110,16 @@ fn sme_peak(c: &mut Criterion) {
     ported(c, "", fast::port_run);
     let (a, b) = ([1.0f32; 16], [1.0f32; 64]);
     ported(c, "_mix", |rounds| fast::port_mix(rounds, &a, &b));
+    sdot_peak(c);
+}
+
+/// i8 `sdot` 端口峰值：K8 的分母，与 [`sme_peak`] 同一份口径（`Barrier` 齐步、只计计算段、取最大）。
+///
+/// **为什么不能复用 f32 峰值**：i8 走 NEON `sdot`，一条指令 16 次 int8 乘加；f32 走 `fmopa`/`fma`。
+/// 两条指令路径的吞吐上限不同，拿 f32 峰值当分母是口径混用（F2/F18）。
+/// 与 SME 不同，NEON 是每核一份的，所以整机分母**实测**而不是「单核 × 核数」推出来。
+fn sdot_peak(c: &mut Criterion) {
+    ported_ops(c, "i8_peak", "", fast::port_sdot, 2 * fast::SDOT_MAC_PER_ROUND);
 }
 
 /// 把端口探针跑成与 [`machine_peak`] 同口径的曲线：`Barrier` 齐步、只计计算段、取各线程最大值
@@ -122,12 +132,20 @@ fn ported<F>(c: &mut Criterion, name: &str, probe: F)
 where
     F: Fn(usize) -> bool + Sync,
 {
+    ported_ops(c, "sme_peak", name, probe, FLOPS_PER_ROUND);
+}
+
+/// [`ported`] 的参数化版本：组名前缀与「探针一轮做多少次操作」由调用方给。
+fn ported_ops<F>(c: &mut Criterion, prefix: &str, suffix: &str, probe: F, ops_per_round: usize)
+where
+    F: Fn(usize) -> bool + Sync,
+{
     let count = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
     let probe = &probe;
     for threads in [1, 16, count] {
-        let mut group = c.benchmark_group(format!("sme_peak/{threads}{name}"));
+        let mut group = c.benchmark_group(format!("{prefix}/{threads}{suffix}"));
         group.throughput(Throughput::Elements(
-            (threads * FLOPS_PER_ROUND * ROUNDS) as u64,
+            (threads * ops_per_round * ROUNDS) as u64,
         ));
         group.bench_function("port", |iter| {
             iter.iter_custom(|iters| fastest(threads, iters as usize * ROUNDS, probe));

@@ -227,6 +227,50 @@ pub fn gemm_i8_single(a: &[i8], b: &[i8], m: usize, n: usize, k: usize, out: &mu
     single_i8(a, b, m, n, k, out);
 }
 
+/// `sdot` 端口峰值探针一轮的乘加次数：8 条互不依赖的 `sdot` × 16 项。
+#[cfg(all(feature = "bench", target_arch = "aarch64"))]
+pub const SDOT_MAC_PER_ROUND: usize = 8 * 16;
+
+/// i8 `sdot` 端口峰值：`rounds` 轮 × 8 条 `sdot`，操作数与累加器全常驻，**内层零 load 零 store**。
+///
+/// 这是 K8 的分母：i8 路径走的是 NEON `sdot`（每指令 4 组 × 4 项 = 16 次乘加），不是 SME
+/// 的 `fmopa`，所以 f32 FMA 峰值与 SME 峰值**都不能**当分母——那会得到 >100% 的无意义百分比（F2/F18）。
+///
+/// 8 条链不是挑出来的：`sdot` 延迟 3–4 周期、每周期可发 1 条，少于 4 条链被延迟卡住、多于 8 条
+/// 会溢出向量寄存器，4/6/8 三档扫过取平台（与 `machine_peak` 同口径，判据是「换链数结果不变」）。
+///
+/// 本机无 `dotprod` 或 `rounds == 0` 时返回 `false` 且不执行任何向量指令。只在 `bench` 特性下编译。
+#[cfg(all(feature = "bench", target_arch = "aarch64"))]
+pub fn port_sdot(rounds: usize) -> bool {
+    if rounds == 0 || !std::arch::is_aarch64_feature_detected!("dotprod") {
+        return false;
+    }
+    // 安全性：dotprod 已运行时探测；函数体内只有寄存器运算，不触碰内存。
+    #[allow(unsafe_code)]
+    unsafe {
+        sdot_rounds(rounds);
+    }
+    true
+}
+
+/// 纯 `sdot` 循环：8 个累加器 × 8 个操作数向量，互不依赖，累加结果进 `black_box` 防整段消除。
+#[cfg(all(feature = "bench", target_arch = "aarch64"))]
+#[target_feature(enable = "dotprod")]
+#[allow(unsafe_code)]
+#[inline(never)]
+unsafe fn sdot_rounds(rounds: usize) {
+    use std::arch::aarch64::*;
+    let a = vdupq_n_s8(3);
+    let b = vdupq_n_s8(5);
+    let mut acc = [vdupq_n_s32(0); 8];
+    for _ in 0..rounds {
+        for chain in &mut acc {
+            *chain = vdotq_s32(*chain, a, b);
+        }
+    }
+    std::hint::black_box(acc);
+}
+
 /// B 转置打包成 `[nblk][nb][k]`（同列 k 连续），返回 `(面板, n 补齐到 8)`。
 mod kernel {
     use super::{I8_MR, I8_NR};

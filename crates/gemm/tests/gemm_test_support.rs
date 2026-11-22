@@ -32,14 +32,24 @@ macro_rules! gemm_packed_tests {
     };
 }
 
-/// 稠密 f32 格式：整数闭式点积不适用，只做标量参考对拍。
+/// 稠密 f32 格式：整数闭式点积不适用，故改用 **f64 重算**的独立闭式校验。
+///
+/// 不沿用标量参考对拍：`f32` 的 `mul` 就是 `matmul`，而 `reference` 也走 `matmul`，
+/// 两者逐位相等是构造出来的，那种对拍的证据为零。
 macro_rules! gemm_dense_tests {
     ($ty:ty) => {
         #[test]
-        fn matches_the_scalar_reference() {
-            crate::gemm::matches_reference::<$ty>();
+        fn matches_an_independent_f64_closure() {
+            crate::gemm::dense_closed::<$ty>();
         }
     };
+}
+
+/// 前向误差界常数 `γ_n = n·u/(1−n·u)`，`u = 2^-24` 为 f32 单位舍入。
+pub(crate) fn gamma(n: usize) -> f64 {
+    let u = f64::from(f32::EPSILON) * 0.5;
+    let nu = n as f64 * u;
+    nu / (1.0 - nu)
 }
 pub(crate) use gemm_dense_tests;
 pub(crate) use gemm_packed_tests;

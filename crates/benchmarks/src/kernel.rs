@@ -501,6 +501,18 @@ fn i8_paths(group: &mut BenchmarkGroup<'_, WallTime>, parallel: usize) {
                 black_box(out.len())
             })
         });
+        // K8 的分子必须是生产路径：卷积实际调的是 `fast::gemm_i8`（`sdot` 内核 + 线程池），
+        // 不是上面两档 tiled 通道。拿 tiled 的 GOPS 当 K8 会低估自己，拿 f32 峰值当分母会高估（F2）。
+        group.bench_function(BenchmarkId::new("i8_fast_single", &shape), |iter| {
+            iter.iter(|| {
+                fast::gemm_i8_single(black_box(&a), black_box(&b), m, n, k, black_box(&mut out));
+            });
+        });
+        group.bench_function(BenchmarkId::new("i8_fast_threads", &shape), |iter| {
+            iter.iter(|| {
+                fast::gemm_i8(black_box(&a), black_box(&b), m, n, k, black_box(&mut out));
+            });
+        });
     }
 }
 

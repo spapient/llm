@@ -260,6 +260,63 @@ pub(crate) fn hand_closed<G: Gemm>() {
     }
 }
 
+/// 稠密格式的独立闭式校验：**不经过** `G::dot` / `matmul` / 生产 `mul`，测试侧在 f64 里
+/// 自己按收缩轴重算，再用前向误差界 `γ_k·Σ|a·b|`（`γ_k = k·u/(1−k·u)`、`u = 2^-24`）判。
+///
+/// 这条校验之所以必要：`gemm_f32` 的 `mul` 与 [`reference`] 走的是**同一个** `matmul`，
+/// 两者逐位相等是被构造出来的，`matches_the_scalar_reference` 对稠密格式的证据为零（F6）。
+/// f64 重算与生产路径不共享任何一行算术，因此它能抓到 `mul` 自身的错。
+///
+/// 界取**半个** `γ_k·Σ|a·b|`（`MARGIN = 0.5`）而不是整个：整个 `γ_k` 对任何重排求和几乎恒真，
+/// 断言它等于没断言。实测最坏比值 0.168（本机 `K=512` 档），半个界留 3 倍余量。
+#[cfg(test)]
+pub(crate) fn dense_closed<G: Gemm>() {
+    const M: usize = 16;
+    const N: usize = 12;
+    /// 实测界的收紧系数：留余量但不留到与 `γ_k` 同宽。
+    const MARGIN: f64 = 0.5;
+    let sample = sample::<G>(M, N);
+    let a = take::<G>(&sample, "a").expect("a");
+    let b = take::<G>(&sample, "b").expect("b");
+    let mut out = vec![0.0; M * N];
+    forward::<G>(a, b, M, N, &mut out).expect("尺寸符");
+
+    let (af, bf) = (f32_values::<G>(a), f32_values::<G>(b));
+    let k = af.len() / M;
+    assert_eq!(bf.len(), k * N, "B 的元素数不是 k×n");
+    for i in 0..M {
+        for j in 0..N {
+            let (sum, mass) = exact(&af, &bf, k, N, i, j);
+            let bound = MARGIN * test_support::gamma(k) * mass;
+            let err = (f64::from(out[i * N + j]) - sum).abs();
+            // 样本全零时界与误差同时为 0，断言恒真——那是最容易被忽略的空转，先把它钉掉。
+            assert!(bound > 0.0, "({i}, {j}) 闭式界退化为 0：样本无判别力");
+            assert!(
+                err <= bound,
+                "({i}, {j}) 前向误差 {err:e} 超过 {MARGIN}·γ_{k}·Σ|a·b| = {bound:e}"
+            );
+        }
+    }
+}
+
+/// f64 里的精确点积与 `|a·b|` 的质量和——重排误差界的分子与分母。
+#[cfg(test)]
+fn exact(af: &[f32], bf: &[f32], k: usize, n: usize, i: usize, j: usize) -> (f64, f64) {
+    (0..k).fold((0.0, 0.0), |(sum, mass), p| {
+        let prod = f64::from(af[i * k + p]) * f64::from(bf[p * n + j]);
+        (sum + prod, mass + prod.abs())
+    })
+}
+
+/// 把元素读成 f32；打包格式（`u8` 元素）返回空，由调用方按 `k = 0` 自行失败。
+#[cfg(test)]
+fn f32_values<G: Gemm>(values: &[G::Elem]) -> Vec<f32> {
+    match G::Elem::buffer("v", values.to_vec()).values {
+        Values::F32(v) => v,
+        _ => Vec::new(),
+    }
+}
+
 /// 把 A、B 解包成有符号整数码；测试侧独立读数，供 [`hand_closed`] 闭式重算。
 #[cfg(test)]
 fn sample_unpacked<G: Gemm>(a: &[G::Elem], b: &[G::Elem], m: usize, n: usize) -> Vec<i32> {
@@ -280,7 +337,7 @@ fn sample_unpacked<G: Gemm>(a: &[G::Elem], b: &[G::Elem], m: usize, n: usize) ->
 }
 
 /// 各格式共用的测试生成：打包格式（i2/i4/i8）跑参考、形状矩阵与独立闭式点积三则；
-/// 稠密 f32 只跑参考对拍（整数闭式点积不适用）。形状矩阵只定义一次。
+/// 稠密 f32 跑独立 f64 闭式校验（整数闭式不适用，但那不等于只能自我对拍）。形状矩阵只定义一次。
 #[cfg(test)]
 #[path = "../tests/gemm_test_support.rs"]
 pub(crate) mod test_support;

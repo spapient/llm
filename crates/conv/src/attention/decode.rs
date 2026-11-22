@@ -461,13 +461,10 @@ pub mod semantics {
         Ok(out)
     }
 
-    /// Flash 参考：online softmax 单遍扫历史 K/V；flash 别名模块的参考入口指向这里。
+    /// Flash 参考：flash 只是同一数学的**优化**（online softmax 单遍扫 K/V），语义锚仍取朴素定义。
+    /// 指回 [`decode_flash_forward`] 会让"内核对不对"与"参考对不对"落在同一行代码上（F6 自我对拍）。
     pub fn decode_flash_reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
-        let (q_rows, hist, d) = geometry(sample)?;
-        let (q, k, v) = crate::attention::qkv(sample)?;
-        let mut out = vec![0.0; q_rows * d];
-        crate::attention::decode_flash_forward(q, k, v, &mut out, q_rows, hist, d)?;
-        Ok(out)
+        reference(sample)
     }
 
     /// 标记类型：承载 `#[model]` 语义。
@@ -477,12 +474,12 @@ pub mod semantics {
     #[annotation::model(name = "decode_attention_f32", shape = [1, 8], dtype = "f32", skeleton = "attention")]
     pub type DecodeAttentionF32 = DecodeAttention;
 
-    /// Flash decode 注意力标记类型：形状、样本、代价与朴素 [`DecodeAttention`] 共用，只把标量参考
-    /// 换成 online softmax 版本（[`decode_flash_reference`]）。`const = "DECODE_FLASH_MODEL"` 让
-    /// 两个算子同模块各持一份语义表。
+    /// Flash decode 注意力标记类型：形状、样本、代价与朴素 [`DecodeAttention`] 共用，语义锚也共用朴素
+    /// 定义（[`decode_flash_reference`] 转调 [`reference`]）；两者差在**内核**，不在数学。
+    /// `const = "DECODE_FLASH_MODEL"` 让两个算子同模块各持一份语义表。
     pub struct DecodeFlashAttention;
 
-    /// Flash decode 注意力语义别名；codegen 按注册名选 [`decode_flash_reference`]。
+    /// Flash decode 注意力语义别名；注册名 `decode_flash_attention_f32` 指向同一套数学。
     #[annotation::model(name = "decode_flash_attention_f32", shape = [1, 8], dtype = "f32", skeleton = "attention", const = "DECODE_FLASH_MODEL")]
     pub type DecodeFlashAttentionF32 = DecodeFlashAttention;
 
