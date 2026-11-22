@@ -146,8 +146,8 @@ reason = "选码与哈希内部件：五轴选码的候选与结果（`axes` 的
 
 [[ownership.unlisted]]
 crate = "formats"
-names = ["Gguf"]
-reason = "外部格式的解析件：`Gguf` 是 GGUF 头部 + 数据区视图，只吐「名字 + 类型 + 形状 + 字节区间」，不带任何容器判据；torch `.bin` 的读出结果已收进 `torch::Checkpoint` / `torch::Tensor`（与所有权表里的 `train::Checkpoint` 同名不同物，靠路径区分），`Bin` 随 torch 解析重写为只读 `Checkpoint` 后注销"
+names = ["Gguf", "Tensor"]
+reason = "外部格式的解析件：`Gguf` 是 GGUF 头部 + 数据区视图，`Tensor` 是 GGUF 与 torch 两种文件里各一条的张量目录项（`gguf::Tensor` / `torch::Tensor`，同名不同物、靠路径区分），都只吐「名字 + 类型 + 形状 + 字节区间」、不带任何容器判据；torch `.bin` 的读出结果收进 `torch::Checkpoint`（与所有权表里的 `train::Checkpoint` 同名不同物，靠路径区分），`Bin` 随 torch 解析重写为只读 `Checkpoint` 后注销"
 
 [[ownership.unlisted]]
 crate = "wire"

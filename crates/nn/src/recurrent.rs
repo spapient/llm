@@ -78,7 +78,7 @@ impl Cell {
 /// 融合成一块（比如 `weight_ihh`）会让真实权重对不上——输入侧与隐侧是两张矩阵，第二维不同
 /// （输入侧吃 `输入宽`，隐侧永远吃 `隐宽`），偏置也是两条而不是一条。因此按四件声明。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Tensor {
+pub enum RecurrentTensor {
     /// 输入侧门矩阵 `[门数·隐宽, 输入宽]`。
     WeightIh,
     /// 隐侧门矩阵 `[门数·隐宽, 隐宽]`。
@@ -89,7 +89,7 @@ pub enum Tensor {
     BiasHh,
 }
 
-impl Tensor {
+impl RecurrentTensor {
     /// 四件权重；`bias = false` 时只取前两件。
     pub const ALL: [Self; 4] = [Self::WeightIh, Self::WeightHh, Self::BiasIh, Self::BiasHh];
 
@@ -226,10 +226,10 @@ impl Recurrent {
     }
 
     /// 张量清单：每层每方向两张门矩阵、两条门偏置（`bias = false` 时只有矩阵）。
-    fn tensors(&self) -> impl Iterator<Item = (usize, usize, Tensor, Shape)> + '_ {
+    fn tensors(&self) -> impl Iterator<Item = (usize, usize, RecurrentTensor, Shape)> + '_ {
         let (gates, hidden, bias) = (self.cell.gates(), self.hidden, self.bias);
         self.tiling().flat_map(move |(level, dir, width, _)| {
-            Tensor::ALL
+            RecurrentTensor::ALL
                 .into_iter()
                 .filter(move |t| bias || !t.is_bias())
                 .map(move |t| (level, dir, t, t.shape(gates, hidden, width)))
@@ -241,7 +241,7 @@ impl Recurrent {
     ///
     /// 前缀就是本层自己的名字，不再另插一个单元段：真实 checkpoint 里的模块名是调用方定的
     /// （`self.rnn = nn.GRU(..)` 存出来是 `rnn.weight_ih_l0`），多插一段 `gru.` 反而对不上。
-    pub fn weight_entry(&self, level: usize, dir: usize, tensor: Tensor) -> String {
+    pub fn weight_entry(&self, level: usize, dir: usize, tensor: RecurrentTensor) -> String {
         let rev = if dir == 0 { "" } else { "_reverse" };
         format!("{}.{}_l{level}{rev}", self.spec.name(), tensor.suffix())
     }

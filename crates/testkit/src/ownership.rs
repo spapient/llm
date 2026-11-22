@@ -27,29 +27,55 @@ pub(crate) fn type_definition(line: &str) -> Option<(bool, &str)> {
     (!name.is_empty()).then_some((public, name))
 }
 
-/// 一段源码里的顶层 `pub` 类型名。`vocabulary!` 宏块开头那个名字也算：宏把它展开成
-/// `pub enum Name`，逐行读文本看不到那一行 `pub`——正文扫描与 `pub` 校验必须共用这一份口径，
-/// 否则「反向扫描认了、正向校验不认」的自相矛盾会出现。
+/// 一段源码里的顶层 `pub` 类型名。`vocabulary!` 与 `axis!` / `planar!` 宏块开头那个名字也算：
+/// 宏把它们展开成 `pub enum Name` / `pub struct Name`，逐行读文本看不到那一行 `pub`——正文扫描
+/// 与 `pub` 校验必须共用这一份口径，否则「反向扫描认了、正向校验不认」的自相矛盾会出现。
 pub(crate) fn public_type_names(text: &str) -> BTreeSet<&str> {
     let mut names = BTreeSet::new();
-    let mut in_vocabulary = false;
+    let mut in_macro_block = false;
     for line in text.lines() {
         if let Some((true, name)) = type_definition(line) {
             names.insert(name);
         }
         let trimmed = line.trim();
         if trimmed.starts_with("vocabulary!") {
-            in_vocabulary = true;
+            in_macro_block = true;
             continue;
         }
-        if in_vocabulary && !trimmed.is_empty() && !trimmed.starts_with("///") {
-            if let Some(name) = macro_block_name(trimmed) {
+        if is_type_macro_open(trimmed) {
+            match inline_type_macro_arg(trimmed) {
+                Some(name) => names.insert(name),
+                None => in_macro_block = true,
+            }
+            continue;
+        }
+        if in_macro_block {
+            if trimmed.is_empty()
+                || trimmed.starts_with("///")
+                || trimmed.starts_with("//!")
+                || trimmed.starts_with('#')
+            {
+                continue;
+            }
+            if let Some(name) = macro_type_arg(trimmed) {
                 names.insert(name);
             }
-            in_vocabulary = false;
+            in_macro_block = false;
         }
     }
     names
+}
+
+/// 展开成 `pub struct Name` 的层发射宏：所有权门认它们的第一个标识符参数为类型名。
+/// `axis!` 与 `planar!` 逐行读源码同样看不到展开后的 `pub struct`，与 `vocabulary!` 同源。
+fn is_type_macro_open(trimmed: &str) -> bool {
+    trimmed.starts_with("axis!") || trimmed.starts_with("planar!")
+}
+
+/// 内联形式 `axis!(Name, ...)` 的 `Name`；多行形式（宏名独占一行）返回 `None`。
+fn inline_type_macro_arg(trimmed: &str) -> Option<&str> {
+    let open = trimmed.find('(')?;
+    macro_type_arg(&trimmed[open + 1..])
 }
 
 /// `files` 里出现的 `pub struct|enum|trait|union` 名字，口径由 [`public_type_names`] 定义。
@@ -64,9 +90,14 @@ pub(crate) fn public_types(files: &[std::path::PathBuf]) -> BTreeSet<String> {
     names
 }
 
-/// 宏块开头行 `Name {`：取 `{` 前的标识符，首字母大写才算类型名。
-pub(crate) fn macro_block_name(line: &str) -> Option<&str> {
-    let name = line.split('{').next()?.trim();
+/// 宏块的类型名：`vocabulary!` 的 `Name {`、`axis!` / `planar!` 的 `Name,`。
+/// 取行首标识符，首字母大写才算类型名。
+pub(crate) fn macro_type_arg(line: &str) -> Option<&str> {
+    let name = line.trim_start();
+    let end = name
+        .find(|value: char| !(value.is_alphanumeric() || value == '_'))
+        .unwrap_or(name.len());
+    let name = &name[..end];
     (!name.is_empty() && name.chars().next()?.is_ascii_uppercase()).then_some(name)
 }
 

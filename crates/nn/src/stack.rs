@@ -43,7 +43,7 @@ use diagnostic::{Code, Error, Result};
 use tensor::Shape;
 use weights::{Entry, Header};
 
-use crate::recurrent::{Cell, Recurrent, Tensor};
+use crate::recurrent::{Cell, Recurrent, RecurrentTensor};
 use crate::{Bounds, Contract, Linear, WeightFormat};
 
 /// 权重条目名里表示"这是一个权重矩阵"的后缀；层名去掉它，才能与其它按名查找的地方对齐。
@@ -251,7 +251,7 @@ fn classify(
 ///
 /// 从右往左拆，而不是拿固定后缀反复 `ends_with`：层号与方向都是变长的，右拆一次就拿到；
 /// 后缀不落在四件之内（比如 `blk.0.mix_l2`）就返回 `None`，不会被误认成循环权重。
-fn recurrent_parts(entry: &str) -> Option<(&str, Tensor, usize, usize)> {
+fn recurrent_parts(entry: &str) -> Option<(&str, RecurrentTensor, usize, usize)> {
     let (stem, dir) = match entry.strip_suffix("_reverse") {
         Some(stem) => (stem, 1),
         None => (entry, 0),
@@ -259,7 +259,7 @@ fn recurrent_parts(entry: &str) -> Option<(&str, Tensor, usize, usize)> {
     let (stem, level) = stem.rsplit_once("_l")?;
     let level: usize = level.parse().ok()?;
     let (block, suffix) = stem.rsplit_once('.')?;
-    let tensor = Tensor::ALL.into_iter().find(|t| t.suffix() == suffix)?;
+    let tensor = RecurrentTensor::ALL.into_iter().find(|t| t.suffix() == suffix)?;
     (!block.is_empty()).then_some((block, tensor, level, dir))
 }
 
@@ -269,7 +269,7 @@ fn recurrent_parts(entry: &str) -> Option<(&str, Tensor, usize, usize)> {
 /// 层号与方向的最大值定规模，构造出来之后按 [`Recurrent::weight_entries`] 把名字与形状重新生
 /// 成一遍——与检查点里的一条不差才认。认的是「这份权重就是这一层」，不是「它大概像这一层」。
 fn recurrent_layer(block: &str, entries: &[&Entry]) -> Option<Recurrent> {
-    let shape = |tensor: Tensor, level: usize, dir: usize| {
+    let shape = |tensor: RecurrentTensor, level: usize, dir: usize| {
         entries
             .iter()
             .find_map(|entry| match recurrent_parts(entry.name())? {
@@ -281,12 +281,12 @@ fn recurrent_layer(block: &str, entries: &[&Entry]) -> Option<Recurrent> {
                 _ => None,
             })
     };
-    let matrix = |tensor: Tensor| match shape(tensor, 0, 0)?.as_slice() {
+    let matrix = |tensor: RecurrentTensor| match shape(tensor, 0, 0)?.as_slice() {
         [rows, cols] => Some((*rows, *cols)),
         _ => None,
     };
-    let (rows, hidden) = matrix(Tensor::WeightHh)?;
-    let (_, input) = matrix(Tensor::WeightIh)?;
+    let (rows, hidden) = matrix(RecurrentTensor::WeightHh)?;
+    let (_, input) = matrix(RecurrentTensor::WeightIh)?;
     let gates = (hidden != 0)
         .then(|| rows / hidden)
         .filter(|g| g * hidden == rows)?;
@@ -297,7 +297,7 @@ fn recurrent_layer(block: &str, entries: &[&Entry]) -> Option<Recurrent> {
         .fold((0, 0), |(layers, dirs), (_, _, level, dir)| {
             (layers.max(level + 1), dirs.max(dir + 1))
         });
-    let bias = shape(Tensor::BiasIh, 0, 0).is_some();
+    let bias = shape(RecurrentTensor::BiasIh, 0, 0).is_some();
     let layer = Recurrent::new(
         block,
         Cell::of_gates(gates)?,
