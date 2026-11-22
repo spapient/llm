@@ -39,13 +39,17 @@ fn with_panels<R>(len: usize, f: impl FnOnce(&mut [f32]) -> R) -> R {
     })
 }
 
+/// SME 通道要 `#[target_feature(enable = "sme")]` 与 `is_aarch64_feature_detected!("sme")`，
+/// 两者都还没稳定，因此整块只在「nightly + aarch64」存在；其余情形 `gemm_f32` 走 NEON 通道，
+/// 结果一模一样，只是没有 ZA 外积。
+#[cfg(all(nightly, target_arch = "aarch64"))]
 mod sme;
 
 use pack::{pack_b_f32_into, pack_b_f32_par_into, pack_panels};
 use pool::{Bufs, Shape, pool, run_pooled};
 
 /// 端口峰值探针只在测量容器里导出（`bench` 特性），生产构建看不到它。
-#[cfg(all(feature = "bench", target_arch = "aarch64"))]
+#[cfg(all(feature = "bench", nightly, target_arch = "aarch64"))]
 pub use sme::{port_mix, port_run};
 
 mod tn;
@@ -68,6 +72,7 @@ const KB: usize = 256;
 pub fn gemm_f32(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f32]) {
     check_dims(a, b, m, n, k, out);
     // SME 通道：16×64 整铺的大 GEMM 交给 ZA 外积；小题或不可整铺时退回下方 NEON 通道。
+    #[cfg(all(nightly, target_arch = "aarch64"))]
     if sme::gemm(a, b, m, n, k, out) {
         return;
     }
