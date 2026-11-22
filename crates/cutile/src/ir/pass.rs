@@ -63,8 +63,20 @@ impl PassManager {
     pub fn run(&self, kernel: Kernel) -> Result<Kernel, VerificationError> {
         kernel.verify()?;
         let kernel = self.fixpoint(kernel)?;
-        kernel.verify()?;
-        Ok(kernel)
+        // 出站校验失败只可能来自某个 pass，所以把它归到流水线上：调用方写坏内核是入站错误，
+        // 已经在上一步报掉了。
+        kernel.verify().map_err(|error| {
+            VerificationError::new(format!(
+                "pass pipeline [{}] produced an invalid kernel: {error}",
+                self.names()
+            ))
+        })
+    }
+
+    /// Pass names in registration order, for diagnostics.
+    fn names(&self) -> String {
+        let names: Vec<_> = self.passes.iter().map(|pass| pass.name()).collect();
+        names.join(", ")
     }
 
     /// Sweep until a round leaves the kernel unchanged.
@@ -79,7 +91,8 @@ impl PassManager {
             kernel = next;
         }
         Err(VerificationError::new(format!(
-            "pass pipeline did not settle within {limit} sweeps"
+            "pass pipeline [{}] did not settle within {limit} sweeps",
+            self.names()
         )))
     }
 
@@ -156,6 +169,9 @@ const RULES: [(&str, Law); 6] = [
 /// 定律只会把「一个节点 + 子项」换成严格更小的项，所以内层循环按子树大小终止；而它作用在已经
 /// 规约好的子节点上，因此一次自底向上就得到范式——`x * (0.5 + 0.5)` 一趟就成 `x`，折叠暴露的
 /// `* 1.0` 不会漏到下一轮。
+///
+/// 内层循环的终止不靠 `debug_assert`：预算取起始节点数，每次命中至少消掉一个节点，所以
+/// **任何构建下**都只会改写有限次——一条写错的律最多让化简变慢，不会让编译器打转。
 pub(super) fn normalize(expression: Expr) -> Expr {
     let mut expression = match expression {
         Expr::Neg(value) => Expr::Neg(Box::new(normalize(*value))),
@@ -166,12 +182,17 @@ pub(super) fn normalize(expression: Expr) -> Expr {
         },
         leaf => leaf,
     };
-    while let Some((rule, next)) = first_match(&expression) {
+    let mut budget = nodes(&expression);
+    while budget > 0 {
+        let Some((rule, next)) = first_match(&expression) else {
+            break;
+        };
         debug_assert!(
             nodes(&next) < nodes(&expression),
             "law `{rule}` did not shrink its term"
         );
         expression = next;
+        budget -= 1;
     }
     expression
 }
@@ -194,48 +215,42 @@ fn double_negation(expression: &Expr) -> Option<Expr> {
 }
 
 fn mul_one(expression: &Expr) -> Option<Expr> {
-    let Expr::Binary {
-        op: BinaryOp::Mul,
-        left,
-        right,
-    } = expression
-    else {
-        return None;
-    };
     let one = 1.0f32.to_bits();
-    literal_identity(left, right, one).or_else(|| literal_identity(right, left, one))
+    identity(expression, BinaryOp::Mul, Side::Right, one)
+        .or_else(|| identity(expression, BinaryOp::Mul, Side::Left, one))
 }
 
 fn div_one(expression: &Expr) -> Option<Expr> {
-    let Expr::Binary {
-        op: BinaryOp::Div,
-        left,
-        right,
-    } = expression
-    else {
-        return None;
-    };
-    literal_identity(left, right, 1.0f32.to_bits())
+    identity(expression, BinaryOp::Div, Side::Right, 1.0f32.to_bits())
 }
 
 fn sub_zero(expression: &Expr) -> Option<Expr> {
+    identity(expression, BinaryOp::Sub, Side::Right, 0.0f32.to_bits())
+}
+
+/// 字面量落在哪一侧。只有乘法两侧都看：它可交换，换边不改变任何一位。
+#[derive(Clone, Copy)]
+enum Side {
+    Left,
+    Right,
+}
+
+/// `x op bits → x`：`bits` 那一侧是字面量时返回另一侧。`x op 1 → x` 这类恒等的唯一判据。
+fn identity(expression: &Expr, op: BinaryOp, side: Side, bits: u32) -> Option<Expr> {
     let Expr::Binary {
-        op: BinaryOp::Sub,
+        op: found,
         left,
         right,
     } = expression
     else {
         return None;
     };
-    literal_identity(left, right, 0.0f32.to_bits())
-}
-
-/// `left` 当且仅当 `right` 正是 `bits` 对应的字面量；`x op 1 → x` 这类恒等的唯一判据。
-fn literal_identity(left: &Expr, right: &Expr, bits: u32) -> Option<Expr> {
-    let Expr::F32(found) = right else {
-        return None;
+    let (literal, kept) = match side {
+        Side::Left => (left, right),
+        Side::Right => (right, left),
     };
-    (*found == bits).then(|| left.clone())
+    let holds = *found == op && matches!(**literal, Expr::F32(found) if found == bits);
+    holds.then(|| kept.as_ref().clone())
 }
 
 fn fold_negation(expression: &Expr) -> Option<Expr> {
@@ -289,13 +304,9 @@ fn expr_mentions(expression: &Expr, name: &str) -> bool {
     match expression {
         Expr::Scalar(used) | Expr::Load(used) => used == name,
         Expr::Neg(value) => expr_mentions(value, name),
-        Expr::Binary { left, right, .. } => binary_mentions(left, right, name),
+        Expr::Binary { left, right, .. } => expr_mentions(left, name) || expr_mentions(right, name),
         Expr::F32(_) => false,
     }
-}
-
-fn binary_mentions(left: &Expr, right: &Expr, name: &str) -> bool {
-    expr_mentions(left, name) || expr_mentions(right, name)
 }
 
 #[cfg(test)]

@@ -464,6 +464,32 @@ fn a_pipeline_that_never_settles_is_an_error() {
         .run(minimal())
         .expect_err("a growing pass never settles");
     assert!(error.to_string().contains("did not settle"), "{error}");
+    // 诊断要点名是哪条流水线在震荡，否则调用方只能猜。
+    assert!(error.to_string().contains("[grow]"), "{error}");
+}
+
+/// 出站校验失败归到流水线上：`broken` 交出一个坏内核，报错必须点它的名字，而不是让调用方
+/// 以为自己传进来的内核有问题（入站校验在这里是能过的）。
+#[test]
+fn an_invalid_kernel_from_a_pass_names_the_pipeline() {
+    struct Broken;
+    impl Pass for Broken {
+        fn name(&self) -> &'static str {
+            "broken"
+        }
+
+        fn run(&self, mut kernel: Kernel) -> Result<Kernel, VerificationError> {
+            kernel.output = "missing".to_string();
+            Ok(kernel)
+        }
+    }
+    let error = PassManager::new()
+        .push(Broken)
+        .run(minimal())
+        .expect_err("a pass that breaks the signature must be reported");
+    let message = error.to_string();
+    assert!(message.contains("[broken]"), "{message}");
+    assert!(message.contains("invalid kernel"), "{message}");
 }
 
 /// 化简一路走到发射器：`input * (0.5 + 0.5)` 在 C 里只剩 `input`。
