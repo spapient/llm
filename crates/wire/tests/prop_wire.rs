@@ -51,7 +51,7 @@ proptest! {
         at in any::<proptest::sample::Index>(),
         bit in 0u8..8,
     ) {
-        let idx = at.idx(data.len());
+        let idx = at.index(data.len());
         let mut flipped = data.clone();
         flipped[idx] ^= 1 << bit;
         prop_assert_ne!(
@@ -72,7 +72,7 @@ proptest! {
         data in proptest::collection::vec(any::<u8>(), 0..=32),
         at in any::<proptest::sample::Index>(),
     ) {
-        let (head, tail) = data.split_at(at.idx(data.len() + 1));
+        let (head, tail) = data.split_at(at.index(data.len() + 1));
         prop_assert_eq!(crc::update(crc::update(state, head), tail), crc::update(state, &data));
     }
 
@@ -83,7 +83,7 @@ proptest! {
         data in proptest::collection::vec(any::<u8>(), 0..=32),
         at in any::<proptest::sample::Index>(),
     ) {
-        let (head, tail) = data.split_at(at.idx(data.len() + 1));
+        let (head, tail) = data.split_at(at.index(data.len() + 1));
         prop_assert_eq!(crc::crc32(head), !crc::update(!0, head));
         prop_assert_eq!(crc::crc32(&data), !crc::update(!crc::crc32(head), tail));
     }
