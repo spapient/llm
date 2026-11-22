@@ -2,12 +2,10 @@
 //! （`check`）。
 
 use super::*;
-mod epilogue;
 mod eval;
 mod provide;
 mod witness;
 
-use epilogue::*;
 pub(super) use eval::eval_expression;
 use provide::*;
 pub use witness::WitnessLookup;
@@ -67,7 +65,6 @@ impl Profile {
             simt: parse_simt(table),
             units: capability.units,
             provides: capability.provides,
-            epilogue: parse_epilogues(table)?,
             peak: capability.peak,
             flags,
             preamble,
@@ -302,12 +299,6 @@ impl Profile {
             errors.extend(witness_shape(provide));
             errors.extend(files.probe(provide));
             errors.extend(signature_fields(provide));
-        }
-        errors.extend(epi_duplicates(&self.epilogue));
-        for (index, epi) in self.epilogue.iter().enumerate() {
-            errors.extend(epi_shape(epi, index));
-            let make = |detail: String| bad(epi_at(index, "witness"), detail);
-            errors.extend(files.probe_witness(epi.witness.as_ref(), &make));
         }
         errors.extend(self.simt_lanes());
         errors.extend(self.exec_units());

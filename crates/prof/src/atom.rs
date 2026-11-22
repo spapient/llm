@@ -10,7 +10,7 @@ mod need;
 mod span;
 
 pub use key::KernelKey;
-pub use need::{Attr, EpiProvide, Need, Provide, Witness};
+pub use need::{Attr, Need, Provide, Witness};
 pub use span::Span;
 
 // ── vocab ──────────────────────────────────────────────────────────────

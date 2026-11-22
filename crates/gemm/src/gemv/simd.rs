@@ -63,7 +63,8 @@ pub(crate) struct Affine {
 
 /// 校验并构造 [`Affine`]：`n` 是输出宽度（权重行数），`ctx` 是入口已经量好的行形状。
 pub(crate) fn admit(cpb: usize, n: usize, ctx: ScaledRow, dequant: &[f32]) -> Option<Affine> {
-    let zero = affine_zero(dequant, codes_of(cpb))?;
+    // 码表长度 `1 << width`，`width = 8 / cpb`（与 `quant::width_cpb` 同一公式）。
+    let zero = affine_zero(dequant, 1 << crate::quant::width_cpb(cpb))?;
     let lanes = lanes_of(ctx.group / cpb)?;
     (n >= COLS).then_some(Affine {
         ctx,
@@ -73,20 +74,12 @@ pub(crate) fn admit(cpb: usize, n: usize, ctx: ScaledRow, dequant: &[f32]) -> Op
     })
 }
 
-/// 单行入口：`out` 是 `n` 个输出。
+/// 单行入口：行批入口只有一行时的特化，`out` 是 `n` 个输出。
 pub(crate) fn forward(x: &[f32], weights: &[u8], scales: &[f32], affine: Affine, out: &mut [f32]) {
-    run(
-        &Plan {
-            weights,
-            inputs: &[x],
-            affine,
-            scales,
-        },
-        out,
-    );
+    forward_batch(&[x], weights, scales, affine, out);
 }
 
-/// 行批入口：与 [`forward`] 同一段算术、同一份列块遍历，只是一次带上所有输入行。
+/// 行批入口：一次带上所有输入行，同一段算术、同一份列块遍历。
 pub(crate) fn forward_batch(
     rows: &[&[f32]],
     weights: &[u8],
@@ -105,11 +98,6 @@ pub(crate) fn forward_batch(
     );
 }
 
-/// 码表长度：`1 << width`，`width = 8 / cpb`（与 [`crate::quant::width_cpb`] 同一公式）。
-fn codes_of(cpb: usize) -> usize {
-    1 << crate::quant::width_cpb(cpb)
-}
-
 /// 内核的全部输入：权重、输入行、通道参数、标度。
 struct Plan<'a> {
     weights: &'a [u8],
@@ -118,20 +106,13 @@ struct Plan<'a> {
     scales: &'a [f32],
 }
 
-/// 按 `cpb` 单态化：槽位循环与位移量都由它决定，编译期摊平。
+/// 两个轴一起单态化：`cpb` 决定槽位循环与位移量，车道数决定向量宽度，编译期全摊平。
 fn run(plan: &Plan<'_>, out: &mut [f32]) {
-    match plan.affine.cpb {
-        2 => by_lanes::<2>(plan, out),
-        _ => by_lanes::<4>(plan, out),
-    }
-}
-
-/// 按车道数单态化：两档 [`columns`] 只有 `LANES` 这一处不同。
-fn by_lanes<const CPB: usize>(plan: &Plan<'_>, out: &mut [f32]) {
-    if plan.affine.lanes == WIDE {
-        columns::<CPB, WIDE>(plan, out);
-    } else {
-        columns::<CPB, NARROW>(plan, out);
+    match (plan.affine.cpb, plan.affine.lanes == WIDE) {
+        (2, true) => columns::<2, WIDE>(plan, out),
+        (2, false) => columns::<2, NARROW>(plan, out),
+        (_, true) => columns::<4, WIDE>(plan, out),
+        (_, false) => columns::<4, NARROW>(plan, out),
     }
 }
 

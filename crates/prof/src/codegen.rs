@@ -59,8 +59,6 @@ struct Device {
     fragments: Vec<(Prim, PathBuf)>,
     /// 写回尾块片段：一份文本，六种形式按 `/* epi: <form> */` 分段。
     epilogue: PathBuf,
-    /// 写回形式 → 见证入口，顺序与 `Epilogue::ALL` 一致。
-    epis: Vec<(Epilogue, String)>,
     /// 见证源码路径（正文由生成的 `include_str!` 读，脚本里不再存一份）。
     witness: PathBuf,
     /// 原语 → 见证入口（`int func(float *out)` 的函数名）。
@@ -96,9 +94,9 @@ fn scan(dir: &Path, vendor: &str) -> Device {
     let parts = files.iter().filter(|path| **path != witness);
     let epilogue = parts
         .clone()
-        .find_map(|path| epilogue_of(path, &ext, &profile).map(|epis| (path.clone(), epis)));
+        .find_map(|path| epilogue_of(path, &ext));
     // 尾块已单独取走：它不在原语闭集内，再交给 `fragment_of` 会硬失败。
-    let tail = epilogue.as_ref().map(|(path, _)| path.clone());
+    let tail = epilogue.clone();
     let (mut fragments, mut entries): (Vec<_>, Vec<_>) = parts
         .filter(|path| tail.as_ref() != Some(*path))
         .filter_map(|path| {
@@ -111,7 +109,7 @@ fn scan(dir: &Path, vendor: &str) -> Device {
     }
     fragments.sort_by_key(|(prim, _)| index(*prim));
     entries.sort_by_key(|(prim, _)| index(*prim));
-    let Some((epilogue, epis)) = epilogue else {
+    let Some(epilogue) = epilogue else {
         fail(format!(
             "`{}` 里没有 `{EPILOGUE_STEM}.{ext}`：六种写回形式没有片段，装配无从下手",
             dir.display()
@@ -124,7 +122,6 @@ fn scan(dir: &Path, vendor: &str) -> Device {
         profile,
         fragments,
         epilogue,
-        epis,
         witness,
         entries,
     }
@@ -518,16 +515,6 @@ fn epilogues(text: &mut String, device: &Device) {
          pub const EPILOGUE: &str = include_str!({:?});\n",
         device.epilogue.display().to_string()
     );
-    let _ = writeln!(
-        text,
-        "/// 写回形式 → 见证里的入口名，顺序与 `Epilogue::ALL` 一致。\n\
-         pub const EPIS: [(Epilogue, &str); {}] = [",
-        device.epis.len()
-    );
-    for (form, entry) in &device.epis {
-        let _ = writeln!(text, "    (Epilogue::{:?}, {entry:?}),", form);
-    }
-    let _ = writeln!(text, "];\n");
 }
 
 /// 生成设备行：入口表 + 档案元数据 + 见证源码 + （可选的）镜像。
@@ -546,7 +533,6 @@ fn device_line(text: &mut String, device: &Device, outcome: &Outcome) {
     let _ = writeln!(text, "    tool_ver: {:?},", device.profile.meta.tool_ver);
     let _ = writeln!(text, "    prims: &PRIMS,");
     let _ = writeln!(text, "    epilogue: EPILOGUE,");
-    let _ = writeln!(text, "    epis: &EPIS,");
     let _ = writeln!(
         text,
         "    source: include_str!({:?}),",

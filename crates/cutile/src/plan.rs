@@ -154,12 +154,10 @@ pub struct Payoff {
     pub unfused_s: f64,
     /// 融合：中间量不进 DRAM 之后的预测（秒）。
     pub fused_s: f64,
-    /// 融合后的算力侧秒数。
-    pub compute_s: f64,
-    /// 融合后的带宽侧秒数。
-    pub memory_s: f64,
     /// 省掉的流量（字节）：中间量的写 + 读。
     pub saved_bytes: u64,
+    /// 融合后算力侧定界。私有：增益是算出来的，不能从外部拼一个自相矛盾的出来。
+    compute_bound: bool,
 }
 
 impl Payoff {
@@ -175,7 +173,7 @@ impl Payoff {
     /// 融合后哪一侧定界。融合把字节减掉中间量的往返，常常把界从带宽挪到算力——那是融合的目的，
     /// 所以它是一个要报告的结论，不是一个中间量。
     pub fn bound(&self) -> &'static str {
-        if self.compute_s >= self.memory_s {
+        if self.compute_bound {
             "compute"
         } else {
             "memory"
@@ -242,9 +240,8 @@ fn payoff(profile: &Profile, before: Cost, after: Cost, fused: Cost, seam: u64) 
     Some(Payoff {
         unfused_s: before_compute.max(before_memory) + after_compute.max(after_memory),
         fused_s: compute_s.max(memory_s),
-        compute_s,
-        memory_s,
         saved_bytes: seam.saturating_mul(2),
+        compute_bound: compute_s >= memory_s,
     })
 }
 
