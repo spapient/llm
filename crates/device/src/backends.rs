@@ -14,8 +14,8 @@ pub(crate) use llm_optim::backend::{Backend, Codegen, Driver, Launch, Lower, Rea
 pub(crate) use llm_optim::driver;
 pub(crate) use llm_optim::toolchain::Toolchain;
 pub(crate) use llm_optim::witness::{MAX_OUT, Scope, Selected};
-pub(crate) use op::model::Sample;
-pub(crate) use op::sig::Signature;
+pub(crate) use nn::model::Sample;
+pub(crate) use nn::sig::Signature;
 
 // ---------------------------------------------------------------------------
 // 基准几何与见证回读：三条厂商链共用，因此不归任何一家
@@ -29,7 +29,7 @@ fn benchmark_output_len(signature: &Signature, sample: &Sample) -> Result<usize>
         .ok_or_else(|| Error::new(Code::Internal, "签名输出缓冲与样本不匹配"))
 }
 
-fn benchmark_grid(grid: &op::decl::Grid, sample: &Sample) -> Result<[usize; 3]> {
+fn benchmark_grid(grid: &prof::decl::Grid, sample: &Sample) -> Result<[usize; 3]> {
     if grid.dims.is_empty() || grid.dims.len() > 3 {
         return Err(Error::new(
             Code::Unsupported,

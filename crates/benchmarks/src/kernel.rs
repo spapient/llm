@@ -3,10 +3,10 @@
 use crate::fixtures::{checked_or_exit, ok};
 use criterion::measurement::WallTime;
 use criterion::{BenchmarkGroup, BenchmarkId, Criterion, Throughput};
-use op::add_f32::Add;
-use op::gemm::{self, Gemm};
-use op::quant::I4;
-use op::{
+use nn::add_f32::Add;
+use nn::gemm::{self, Gemm};
+use nn::quant::I4;
+use nn::{
     elementwise, fast, gemm_f32, gemm_i2, gemm_i4, gemm_i8, gemv_f32, gemv_i4, matmul, matmul_i8,
     rmsnorm_f32, rope_f32, silu_f32, softmax_f32,
 };
@@ -107,7 +107,7 @@ pub(crate) fn gemv_quant(c: &mut Criterion) {
     // 标量叶：与打包格式回退路径调用的是同一个 `dot_row`。
     let scalar = |out: &mut [f32]| {
         for j in 0..ROW {
-            out[j] = op::gemv::packed::dot_row(
+            out[j] = nn::gemv::packed::dot_row(
                 &weights[j * row..][..row],
                 &x,
                 &scales[j * groups..][..groups],

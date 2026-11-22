@@ -12,8 +12,8 @@ use engine::kv::{Cache, Pager};
 use engine::{Progress, Scheduler, Sequence};
 use llm_device::cuda::cuda_harness;
 use llm_device::metal::metal_grid_kernel;
-use op::model::{Buf, Sample, Values};
-use op::sig::Signature;
+use nn::model::{Buf, Sample, Values};
+use nn::sig::Signature;
 
 /// 页池：`pages` 个页，每页 `page_size` 个 token、每行 2 个元素。
 fn scheduler(pages: usize, page_size: usize) -> Scheduler {

@@ -194,7 +194,7 @@ pub(crate) const SKELETONS: [&str; 15] = [
     "scan",
 ];
 
-/// `gemm` 骨架认识的注册名：各格式各有 `op::gemm_*` 模块，名字就是模块选择器。
+/// `gemm` 骨架认识的注册名：各格式各有 `nn::gemm_*` 模块，名字就是模块选择器。
 pub(crate) const GEMM_SKELETON_NAMES: [&str; 4] = ["gemm_f32", "gemm_i8", "gemm_i4", "gemm_i2"];
 
 /// `#[model(..)]` 的 `dtype` 闭集：对拍**有阈值**的那几种输出类型。

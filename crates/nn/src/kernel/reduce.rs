@@ -159,7 +159,7 @@ macro_rules! reduce_f32 {
 pub(crate) mod test_support;
 
 // 声明式算子表：同一副归约骨架的两种算子（最大值 / 求和），每个算子一个 `pub mod` 保持
-// `op::<name>::MODEL` / `op::<name>::forward` 路径不变（`forward` 同名，必须隔在各自的模块里）。
+// `nn::<name>::MODEL` / `nn::<name>::forward` 路径不变（`forward` 同名，必须隔在各自的模块里）。
 // 新增一种归约在此补一段。
 
 pub mod reduce_max_f32 {

@@ -75,5 +75,5 @@ pub fn forward_batch(
 
 #[cfg(test)]
 mod tests {
-    include!("../../tests/gemv_i8.rs");
+    include!("../../../tests/kernel/gemv_i8.rs");
 }

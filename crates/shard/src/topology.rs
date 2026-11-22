@@ -124,7 +124,7 @@ impl Topology {
         self.check_axis(Parallel::Tensor, tp_idx)?;
         self.check_axis(Parallel::Pipeline, pp_idx)?;
         self.check_axis(Parallel::Data, dp_idx)?;
-        let flat = mix([tp_idx, pp_idx, dp_idx], self.radices());
+        let flat = self.weigh([tp_idx, pp_idx, dp_idx]);
         // `new` 已把 world 限在 u32 以内，而 flat < world，故这次收窄不会失败。
         u32::try_from(flat).map_err(|_| invalid!("shard::Topology::rank", "rank {flat} 超出 u32"))
     }
@@ -143,7 +143,7 @@ impl Topology {
                 self.world
             );
         }
-        let [tp, pp, dp] = spread(position, self.radices());
+        let [tp, pp, dp] = self.digits(position, None);
         Ok((tp, pp, dp))
     }
 
@@ -167,7 +167,7 @@ impl Topology {
             );
         }
         let stride = self.strides()[own];
-        let head = self.head(own, idx);
+        let head = self.weigh(self.digits(idx, Some(own)));
         let ranks = (0..degree)
             .map(|step| u32::try_from(head + step * stride).ok())
             .collect::<Option<Vec<u32>>>()
@@ -187,7 +187,9 @@ impl Topology {
 
     /// 每一维的 rank 步长：沿该维加一位，rank 就加这么多。`strides[k] = ∏_{j<k} radices[j]`。
     ///
-    /// 这是 [`Topology::group`] 能用等差序列表示成员的唯一依据，也是 rank 布局的第三种等价说法。
+    /// 这是 rank 布局的第二种等价说法：`rank = Σ idxs[k] · strides[k]`。它把 [`Self::radices`]
+    /// 从"进制"翻译成"权重"，此后编码（[`Self::weigh`]）与解码（[`Self::digits`]）都只做乘除，
+    /// 不再各自重写一遍进制循环。
     fn strides(&self) -> [usize; DIM] {
         let radices = self.radices();
         let mut strides = [1; DIM];
@@ -197,19 +199,28 @@ impl Topology {
         strides
     }
 
-    /// 第 `idx` 个 `own` 维组成员里最小那个的 rank：`idx` 只由**另外两维**解码，本维填 0。
-    fn head(&self, own: usize, idx: usize) -> usize {
+    /// 编码：三个下标按各自的步长加权求和。
+    fn weigh(&self, idxs: [usize; DIM]) -> usize {
+        idxs.iter().zip(self.strides()).map(|(n, s)| n * s).sum()
+    }
+
+    /// 解码：按 `[tp, pp, dp]` 的进制逐位取余，`skip` 那一维跳过并留 0。
+    ///
+    /// `skip = None` 是完整反解（[`Self::idxs`]）；`skip = Some(own)` 是"本维不动、只在另外
+    /// 两维里数"，即 [`Self::group`] 的组号——此时商只在留下的两维上推进，所以组号是**压缩**
+    /// 过的进制数，而不是完整 rank 的高位。两者共用这一处循环，`spread` 就是它 `skip = None`
+    /// 的形态。
+    fn digits(&self, mut flat: usize, skip: Option<usize>) -> [usize; DIM] {
         let radices = self.radices();
-        let strides = self.strides();
-        let mut head = 0;
-        let mut rest = idx;
-        for (axis, radix) in radices.iter().enumerate() {
-            if axis != own {
-                head += (rest % radix) * strides[axis];
-                rest /= radix;
+        let mut digits = [0; DIM];
+        for axis in 0..DIM {
+            if Some(axis) == skip {
+                continue;
             }
+            digits[axis] = flat % radices[axis];
+            flat /= radices[axis];
         }
-        head
+        digits
     }
 
     /// 某一维的下标必须落在它自己的并行度以内。
@@ -224,31 +235,6 @@ impl Topology {
         }
         Ok(())
     }
-}
-
-/// 混合进制编码：`digits` 与 `radices` 都从最次要维（变化最快）排到最主维。
-///
-/// 这就是 rank 布局本身——`[tp_idx, pp_idx, dp_idx]` 与 `[tp, pp, dp]` 编码出的正是
-/// `dp_idx · tp · pp + pp_idx · tp + tp_idx`。写成循环而不是三条手写乘法，是因为反解
-/// （`spread`）必须与它是同一个进制的另一侧，两者共用一份 `radices` 就没有"各说一套"的余地。
-fn mix(digits: [usize; DIM], radices: [usize; DIM]) -> usize {
-    let mut flat = 0;
-    let mut stride = 1;
-    for (digit, radix) in digits.iter().zip(radices) {
-        flat += digit * stride;
-        stride *= radix;
-    }
-    flat
-}
-
-/// `mix` 的逆：把 `flat` 拆成每一维的下标。
-fn spread(mut flat: usize, radices: [usize; DIM]) -> [usize; DIM] {
-    let mut digits = [0; DIM];
-    for (digit, radix) in digits.iter_mut().zip(radices) {
-        *digit = flat % radix;
-        flat /= radix;
-    }
-    digits
 }
 
 #[cfg(test)]

@@ -11,7 +11,7 @@
 //! - 输出是否**被写满**、同一派发是否**可逐位复现**（漏写与竞争只在初值上露头）。
 
 use super::*;
-use op::model::{Buf, Sample, Values};
+use nn::model::{Buf, Sample, Values};
 
 /// SplitMix64：确定性伪随机位模式。免依赖、跨平台一致，用例失败时可照序号复算。
 struct Rng(u64);
@@ -140,10 +140,10 @@ fn half_to_f32(bits: u16) -> f32 {
     if sign == 1 { -magnitude } else { magnitude }
 }
 
-/// 显式收缩轴的稠密 GEMM 样本：`K` 不是 `(m, n)` 的函数，模型自带的 [`op::matmul::sample`]
+/// 显式收缩轴的稠密 GEMM 样本：`K` 不是 `(m, n)` 的函数，模型自带的 [`nn::matmul::sample`]
 /// 把它钉在生产形状 4096 上，用它生成 MSL 就等于让内核拿 4096 去算 96×80×96 的题。
-fn gemm_sample(m: usize, n: usize, k: usize) -> op::model::Sample {
-    op::matmul::sample_k(m, n, k)
+fn gemm_sample(m: usize, n: usize, k: usize) -> nn::model::Sample {
+    nn::matmul::sample_k(m, n, k)
 }
 
 /// 注意力输出的相对 Frobenius 误差 `‖got − want‖ / ‖want‖`。

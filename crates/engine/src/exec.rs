@@ -201,7 +201,7 @@ impl Node {
         self
     }
 
-    /// 算子名（与 `op::Op::name` 一致，便于把执行与声明对上）。
+    /// 算子名（与 `prof::catalogue::Op::name` 一致，便于把执行与声明对上）。
     pub fn name(&self) -> &str {
         &self.name
     }

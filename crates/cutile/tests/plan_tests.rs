@@ -7,7 +7,7 @@ fn profile() -> Profile {
 }
 
 fn op() -> OpDecl {
-    let source = &op::builtin_named("gemv_i4").expect("内置");
+    let source = &prof::catalogue::named("gemv_i4").expect("内置");
     OpDecl::parse(source.declaration(), source.template()).expect("声明")
 }
 
@@ -86,7 +86,7 @@ fn a_falling_back_variant_is_reported_not_rejected() {
 #[test]
 fn declaration_order_decides_the_tile_not_its_size() {
     // 轴取值顺序即优先级：把 64 写在前面就取 64，即使它更大。
-    let source = &op::builtin_named("gemv_i4").expect("内置");
+    let source = &prof::catalogue::named("gemv_i4").expect("内置");
     let mut reordered = source.declaration().clone();
     reordered.set(
         "axes.GMAX",
@@ -101,7 +101,7 @@ fn declaration_order_decides_the_tile_not_its_size() {
 #[test]
 fn prediction_is_the_same_for_every_tile() {
     // 模型里没有可比较的量：两个候选的预测必须相同，否则说明有人给 predict 编了常数。
-    let source = &op::builtin_named("gemv_i4").expect("内置");
+    let source = &prof::catalogue::named("gemv_i4").expect("内置");
     let mut swapped = source.declaration().clone();
     swapped.set(
         "axes.GMAX",
@@ -133,7 +133,7 @@ fn the_window_radius_is_solved_from_the_budget() {
 #[test]
 fn pruning_caps_at_the_budget_and_keeps_a_composable_pair() {
     let parse = |name: &str| {
-        let source = op::builtin_named(name).expect("内置");
+        let source = prof::catalogue::named(name).expect("内置");
         OpDecl::parse(source.declaration(), source.template()).expect("声明")
     };
     let gemv = parse("gemv_f32");
@@ -156,8 +156,13 @@ fn pruning_caps_at_the_budget_and_keeps_a_composable_pair() {
 }
 
 /// 内置声明表：`fusions` 与 `ranking` 的输入就是它。
+/// 语义表：注册表在 `nn`——只有它持有内核类型，`Model` 才装得进去。
+fn models() -> &'static [prof::catalogue::Registration] {
+    &nn::registry::REGISTRY
+}
+
 fn decls() -> Vec<OpDecl> {
-    op::builtin()
+    prof::catalogue::all()
         .iter()
         .map(|source| OpDecl::parse(source.declaration(), source.template()).expect("声明自洽"))
         .collect()
@@ -166,7 +171,7 @@ fn decls() -> Vec<OpDecl> {
 /// 一条真实候选：`adaptive_pool_f32` 的 `y` 接 `attention_f32` 的输入（生产形状对得上）。
 fn pool_into_attention() -> Fusion {
     let parse = |name: &str| {
-        let source = op::builtin_named(name).expect("内置");
+        let source = prof::catalogue::named(name).expect("内置");
         OpDecl::parse(source.declaration(), source.template()).expect("声明")
     };
     compose(&parse("adaptive_pool_f32"), &parse("attention_f32")).expect("能拼")
@@ -175,7 +180,7 @@ fn pool_into_attention() -> Fusion {
 #[test]
 fn a_fusion_never_slows_down() {
     let profile = profile();
-    let ranked = ranking(&profile, &decls(), 12);
+    let ranked = ranking(&profile, &decls(), 12, &models());
     let mut scored = 0;
     for (fusion, verdict) in &ranked {
         if let Verdict::Scored(payoff) = verdict {
@@ -199,11 +204,11 @@ fn a_fusion_never_slows_down() {
 fn the_payoff_is_the_intermediate_round_trip() {
     let profile = profile();
     let fusion = pool_into_attention();
-    let Verdict::Scored(payoff) = score(&profile, &fusion) else {
-        panic!("这一对应当打得出分：{}", score(&profile, &fusion).as_str());
+    let Verdict::Scored(payoff) = score(&profile, &fusion, &models()) else {
+        panic!("这一对应当打得出分：{}", score(&profile, &fusion, &models()).as_str());
     };
     // 中间量=生产者唯一输出的字节数，独立算一遍：省的正是它的写 + 读。
-    let producer = op::model(&fusion.producer).expect("语义投影");
+    let producer = nn::registry::model(&fusion.producer).expect("语义投影");
     let (m, n) = producer.shape;
     let shape_ctx = (producer.shape_ctx)(m, n).expect("生产形状自洽");
     let cost = (producer.cost)(&shape_ctx).expect("代价");
@@ -215,7 +220,7 @@ fn the_payoff_is_the_intermediate_round_trip() {
 fn the_payoff_agrees_with_predict() {
     let profile = profile();
     let fusion = pool_into_attention();
-    let Verdict::Scored(payoff) = score(&profile, &fusion) else {
+    let Verdict::Scored(payoff) = score(&profile, &fusion, &models()) else {
         panic!("这一对应当打得出分");
     };
     // 一台机器两个视角：不融合就是两次 `predict`（掩盖项为 0 时等价于裸 roofline）。
@@ -225,7 +230,7 @@ fn the_payoff_agrees_with_predict() {
         unmasked: 0.0,
     };
     let side = |name: &str| {
-        let model = op::model(name).expect("语义投影");
+        let model = nn::registry::model(name).expect("语义投影");
         let (m, n) = model.shape;
         let ctx = (model.shape_ctx)(m, n).expect("形状");
         let cost = (model.cost)(&ctx).expect("代价");
@@ -241,7 +246,7 @@ fn scoring_refuses_without_peaks() {
     profile.peak = crate::prof::Peak::default();
     // 峰值缺席是"无从判定"，不是"加速 1.0×"：不许猜一个数顶上。
     assert!(matches!(
-        score(&profile, &pool_into_attention()),
+        score(&profile, &pool_into_attention(), &models()),
         Verdict::Unscorable(_)
     ));
 }
@@ -250,7 +255,7 @@ fn scoring_refuses_without_peaks() {
 fn a_candidate_without_a_semantic_model_is_unscorable() {
     let mut fusion = pool_into_attention();
     fusion.producer = "没有这个算子".to_string();
-    assert!(matches!(score(&profile(), &fusion), Verdict::Unscorable(_)));
+    assert!(matches!(score(&profile(), &fusion, &models()), Verdict::Unscorable(_)));
 }
 
 #[test]
@@ -260,13 +265,13 @@ fn a_multi_output_seam_cannot_be_attributed() {
     second.from = "另一条输出".to_string();
     fusion.seams.push(second);
     // 代价表的 `write` 是全部输出之和：接缝占两条时中间量无法从它归因。
-    assert!(matches!(score(&profile(), &fusion), Verdict::Unscorable(_)));
+    assert!(matches!(score(&profile(), &fusion, &models()), Verdict::Unscorable(_)));
 }
 
 #[test]
 fn the_ranking_covers_every_candidate_and_orders_it() {
     let profile = profile();
-    let ranked = ranking(&profile, &decls(), 12);
+    let ranked = ranking(&profile, &decls(), 12, &models());
     assert_eq!(
         ranked.len(),
         fusions(&decls(), 12).len(),

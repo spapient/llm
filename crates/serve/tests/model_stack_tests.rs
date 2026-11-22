@@ -8,7 +8,7 @@ fn a_two_layer_chain_forward_matches_the_reference() {
 
     let hidden = gemv_hidden(&x, &w1);
     let mut reference = vec![0.0; 2];
-    op::gemv_f32::forward(&hidden, &w2, &mut reference).expect("参考：第二层");
+    nn::gemv_f32::forward(&hidden, &w2, &mut reference).expect("参考：第二层");
 
     forward_close(stack, params, &x, &reference);
 }
@@ -121,7 +121,7 @@ fn a_quantized_int4_projection_assembles_and_matches_the_reference() {
     let w = pack_codes(4, &codes);
     let scales = [0.5f32];
     let mut reference = vec![0.0; 1];
-    op::gemv_i4::forward(&x, &w, &scales, &mut reference).expect("参考");
+    nn::gemv_i4::forward(&x, &w, &scales, &mut reference).expect("参考");
 
     let stack = Stack::new(vec![
         Linear::with_format("blk.0", WeightFormat::INT4, 32, 1).expect("层"),
@@ -140,7 +140,7 @@ fn a_quantized_int8_projection_assembles_and_matches_the_reference() {
     let w: Vec<u8> = (0..32).map(|idx| ((idx as i8 % 5) - 2) as u8).collect();
     let scales = [0.5f32];
     let mut reference = vec![0.0; 1];
-    op::gemv_i8::forward(&x, &w, &scales, &mut reference).expect("参考");
+    nn::gemv_i8::forward(&x, &w, &scales, &mut reference).expect("参考");
 
     let stack = Stack::new(vec![
         Linear::with_format("blk.0", WeightFormat::INT8, 32, 1).expect("层"),
@@ -162,7 +162,7 @@ fn a_quantized_int4_archive_loads_and_matches_the_reference() {
     let w = pack_codes(4, &codes);
     let scales = [0.25f32];
     let mut reference = vec![0.0; 1];
-    op::gemv_i4::forward(&x, &w, &scales, &mut reference).expect("参考");
+    nn::gemv_i4::forward(&x, &w, &scales, &mut reference).expect("参考");
 
     let bytes = archive_of(&[
         ArchiveEntry {
@@ -262,7 +262,7 @@ fn a_projection_then_unary_activation_matches_the_reference() {
 
     let hidden = gemv_hidden(&x, &w1);
     let mut reference = vec![0.0; 2];
-    op::silu_f32::forward(&hidden, &mut reference).expect("参考：激活");
+    nn::silu_f32::forward(&hidden, &mut reference).expect("参考：激活");
 
     let stack = Stack::of(vec![
         Box::new(Linear::with_format("blk.0", WeightFormat::F32, 3, 2).expect("层")),
@@ -283,7 +283,7 @@ fn a_projection_then_rmsnorm_matches_the_reference() {
 
     let hidden = gemv_hidden(&x, &w1);
     let mut reference = vec![0.0; 2];
-    op::rmsnorm_f32::forward(&hidden, &gamma, &mut reference).expect("参考：归一化");
+    nn::rmsnorm_f32::forward(&hidden, &gamma, &mut reference).expect("参考：归一化");
 
     let stack = Stack::of(vec![
         Box::new(Linear::with_format("blk.0", WeightFormat::F32, 3, 2).expect("层")),
@@ -332,7 +332,7 @@ fn a_binary_layer_takes_a_bypass_activation_matches_the_reference() {
 
     let hidden = gemv_hidden(&x, &w1);
     let mut reference = vec![0.0; 2];
-    op::add_f32::forward(&hidden, &hidden, &mut reference).expect("参考：二元相加");
+    nn::add_f32::forward(&hidden, &hidden, &mut reference).expect("参考：二元相加");
 
     let stack = Stack::of(vec![
         Box::new(Linear::with_format("blk.0", WeightFormat::F32, 3, 2).expect("层")),
@@ -352,7 +352,7 @@ fn a_binary_mul_layer_takes_a_bypass_activation_matches_the_reference() {
 
     let hidden = gemv_hidden(&x, &w1);
     let mut reference = vec![0.0; 2];
-    op::mul_f32::forward(&hidden, &hidden, &mut reference).expect("参考：二元相乘");
+    nn::mul_f32::forward(&hidden, &hidden, &mut reference).expect("参考：二元相乘");
 
     let stack = Stack::of(vec![
         Box::new(Linear::with_format("blk.0", WeightFormat::F32, 3, 2).expect("层")),
@@ -447,9 +447,9 @@ fn a_two_layer_composite_model_logits_match_the_reference() {
         sequence.len(),
     );
     let mut normed = vec![0.0; hidden];
-    op::rmsnorm_f32::forward(&residual, &gamma, &mut normed).expect("参考归一化");
+    nn::rmsnorm_f32::forward(&residual, &gamma, &mut normed).expect("参考归一化");
     let mut reference = vec![0.0; out];
-    op::gemv_f32::forward(&normed, &w2, &mut reference).expect("参考输出投影");
+    nn::gemv_f32::forward(&normed, &w2, &mut reference).expect("参考输出投影");
 
     assert_close(&produced, &reference);
 }

@@ -36,7 +36,7 @@ fn silu(x: f32) -> f32 {
     x / (1.0 + (-x).exp())
 }
 
-/// 单行 softmax（与 `op::softmax_f32` 同口径：整缓冲当作一行，先减 max 再 exp）。
+/// 单行 softmax（与 `nn::softmax_f32` 同口径：整缓冲当作一行，先减 max 再 exp）。
 fn softmax_row(x: &[f32]) -> Vec<f32> {
     let max = x.iter().copied().fold(f32::MIN, f32::max);
     let mut sum = 0.0;
@@ -170,7 +170,7 @@ fn check_unary_grad(op: &str, p0: &[f32], loss: impl Fn(&[f32]) -> f32) -> Resul
 /// RMSNorm 闭式：`y = γ·x / sqrt(mean(x²)+eps)`，返回逐元素和。
 fn rmsnorm_loss(x: &[f32], gamma: &[f32]) -> f32 {
     let mean_sq = x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32;
-    let rms = (mean_sq + op::rmsnorm_f32::EPS).sqrt();
+    let rms = (mean_sq + nn::rmsnorm_f32::EPS).sqrt();
     x.iter().zip(gamma).map(|(x, g)| g * x / rms).sum()
 }
 
@@ -180,7 +180,7 @@ fn rope_loss(x: &[f32]) -> f32 {
     let pairs = d / 2;
     let mut out = vec![0.0; d];
     for i in 0..pairs {
-        let freq = op::rope_f32::BASE.powf(-(2.0 * i as f32) / d as f32);
+        let freq = nn::rope_f32::BASE.powf(-(2.0 * i as f32) / d as f32);
         let angle = 7.0 * freq;
         let (sin, cos) = angle.sin_cos();
         out[2 * i] = x[2 * i] * cos - x[2 * i + 1] * sin;

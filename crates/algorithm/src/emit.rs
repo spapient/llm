@@ -41,7 +41,7 @@
 
 use crate::invalid;
 use diagnostic::Result;
-use op::scan::Scalar;
+use nn::conv::scan::Scalar;
 
 use crate::codec::{ByteDecoder, ByteEncoder};
 use crate::patch::{Boundary, Patches};

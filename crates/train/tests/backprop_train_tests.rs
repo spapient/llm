@@ -197,11 +197,11 @@ fn conv2d_gradients_match_central_differences_on_any_geometry() -> Result<()> {
 /// 声明档前向：`Bufs::compute("conv2d_f32")` 的适配路径与算子自身的 reference 逐位一致。
 #[test]
 fn conv2d_reference_kernel_matches_the_operator_sample() -> Result<()> {
-    let sample = op::conv2d::sample(0, 0);
+    let sample = nn::conv::conv2d::sample(0, 0);
     let x = sample.f32("x")?.to_vec();
     let weight = sample.f32("weight")?.to_vec();
     let bias = sample.f32("bias")?.to_vec();
-    let want = op::conv2d::reference(&sample)?;
+    let want = nn::conv::conv2d::reference(&sample)?;
 
     let mut tape = Tape::new();
     let a = tape.leaf();

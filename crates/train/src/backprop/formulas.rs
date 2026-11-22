@@ -44,7 +44,7 @@ pub(super) fn mul(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
 
 /// y = α·a：dA = α·in。
 pub(super) fn scale(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
-    let alpha = op::scale_f32::ALPHA;
+    let alpha = nn::scale_f32::ALPHA;
     let da = ctx.incoming.iter().map(|&g| g * alpha).collect();
     Ok(vec![da])
 }
@@ -170,7 +170,7 @@ pub(super) fn leaky_relu(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
         if v >= 0.0 {
             1.0
         } else {
-            op::leaky_relu_f32::SLOPE
+            nn::leaky_relu_f32::SLOPE
         }
     })
 }
@@ -268,12 +268,12 @@ fn gemv_input(weight: &[f32], incoming: &[f32], rows: usize, cols: usize) -> Vec
     dinput
 }
 
-/// `Y = A·B`：返回 `[dA, dB]`，收缩轴固定 `op::gemm::K`。
+/// `Y = A·B`：返回 `[dA, dB]`，收缩轴固定 `nn::gemm::K`。
 pub(super) fn gemm(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
     let a = &ctx.inputs[0][..];
     let b = &ctx.inputs[1][..];
     let grad = &ctx.incoming;
-    let k = op::gemm::K;
+    let k = nn::gemm::K;
     let m = a.len() / k;
     let n = grad.len() / m;
     let mut da = vec![0.0; a.len()];
@@ -322,7 +322,7 @@ fn rmsnorm_grad(x: &[f32], gamma: &[f32], grad: &[f32]) -> Result<(Vec<f32>, Vec
         return Err(Error::new(Code::Invalid, "rmsnorm 反向输入不能为空").with(SITE));
     }
     let mean_sq = x.iter().map(|v| v * v).sum::<f32>() / n as f32;
-    let rms = (mean_sq + op::rmsnorm_f32::EPS).sqrt();
+    let rms = (mean_sq + nn::rmsnorm_f32::EPS).sqrt();
     let weighted = grad
         .iter()
         .zip(gamma)
@@ -362,7 +362,7 @@ fn rotations(d: usize) -> Rc<[(f32, f32)]> {
         {
             return Rc::clone(table);
         }
-        let table: Rc<[(f32, f32)]> = op::rope_f32::frequencies(d)
+        let table: Rc<[(f32, f32)]> = nn::rope_f32::frequencies(d)
             .iter()
             .map(|&freq| (ROPE_POS * freq).sin_cos())
             .collect();
@@ -390,7 +390,7 @@ fn rope_grad(x: &[f32], grad: &[f32]) -> Vec<f32> {
 
 /// 自注意力（`attention_f32` / `flash_attention_f32` 共用）：返回 `[dq, dk, dv]`。
 pub(super) fn attention(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
-    let d = op::attention::MODEL.shape.1;
+    let d = nn::conv::attention::MODEL.shape.1;
     let s = divide(ctx.inputs[0].len(), d, "attention_f32")?;
     let (dq, dk, dv) = attention_grad(attention_ctx(&ctx, d), s, s);
     Ok(vec![dq, dk, dv])
@@ -399,7 +399,7 @@ pub(super) fn attention(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
 /// 潜空间注意力（`latent_attention_f32`）：唯一差别是**写宽比读宽窄**——`dO` 与 `dV` 按压缩宽度
 /// `d_c` 走，`dQ` / `dK` 仍按读宽 `W` 走。`d_c` 由上游梯度长度与查询行数反推，不额外声明。
 pub(super) fn latent_attention(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
-    let w = op::attention::latent::MODEL.shape.1;
+    let w = nn::conv::attention::latent::MODEL.shape.1;
     let q_rows = divide(ctx.inputs[0].len(), w, "latent_attention_f32")?;
     let hist = divide(ctx.inputs[1].len(), w, "latent_attention_f32")?;
     let write = ctx.incoming.len() / q_rows.max(1);
@@ -412,7 +412,7 @@ pub(super) fn latent_attention(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
 /// decode 注意力（`decode_attention_f32` / `decode_flash_attention_f32` 共用）：查询行数与历史
 /// 行数解耦，返回 `[dq, dk, dv]`。
 pub(super) fn decode_attention(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
-    let d = op::decode_attention::MODEL.shape.1;
+    let d = nn::conv::decode_attention::MODEL.shape.1;
     let q_rows = divide(ctx.inputs[0].len(), d, "decode_attention_f32")?;
     let hist = divide(ctx.inputs[1].len(), d, "decode_attention_f32")?;
     let (dq, dk, dv) = attention_grad(attention_ctx(&ctx, d), q_rows, hist);
@@ -461,6 +461,6 @@ fn accumulate_into(dst: &mut [f32], offset: usize, source: &[f32]) -> Result<()>
 /// GELU 导数：`y = 0.5·x·(1+erf(x/√2))`，`y′ = Φ(x) + x·φ(x)`。
 fn gelu_grad(x: f32) -> f32 {
     let normal = (-(x * x) / 2.0).exp() / (2.0 * std::f32::consts::PI).sqrt();
-    let erf_term = 0.5 * (1.0 + op::gelu_f32::erf(x * std::f32::consts::FRAC_1_SQRT_2));
+    let erf_term = 0.5 * (1.0 + nn::gelu_f32::erf(x * std::f32::consts::FRAC_1_SQRT_2));
     erf_term + x * normal
 }

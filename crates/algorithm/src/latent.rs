@@ -25,13 +25,13 @@
 //!   可见的正好是已收口的那些（[`crate::Emitter`] 只拿收口的表示当条件），于是可见性不需要第二套规则。
 //!
 //! 本模块不持训练状态、不注册算子，也不定义前馈与激活：一层在这里就是 q/k/v/o 四张方阵加残差，与
-//! [`crate::Moe`]「专家的 FFN 在它的外层 `Contract`」是同一种分工。纯算术统一走 [`op::scan::Scalar`]
+//! [`crate::Moe`]「专家的 FFN 在它的外层 `Contract`」是同一种分工。纯算术统一走 [`nn::conv::scan::Scalar`]
 //! 泛型（`f32` 前向、`f64` 对拍）；点积、softmax、加权累加与块表寻址都复用 `csa` 的那几份，
 //! 不因模块边界重写。
 
 use crate::invalid;
 use diagnostic::Result;
-use op::scan::Scalar;
+use nn::conv::scan::Scalar;
 
 use crate::csa::{BlockTable, accumulate, dot, softmax_row};
 use crate::patch::Patches;

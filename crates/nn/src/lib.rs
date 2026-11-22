@@ -180,6 +180,26 @@ pub use kernel::{
     activation, dequant, elementwise, epilogue, fast, gemm, gemv, matmul, reduce, scalar, unary,
 };
 
+/// 卷积族模块按原路径转出：`nn::layer_norm` / `nn::adaptive_pool` / `nn::scan_f32` …
+///
+/// 这些名字在 `nn` 根都没有别的含义（归一化**层**是 `LayerNorm` 类型，不是 `layer_norm` 模块），
+/// 所以平铺一层不会遮蔽任何东西；`nn::conv::*` 的完整路径同时保留。
+pub use conv::{
+    adaptive_pool, avg_pool2d, batch_norm, conv2d, group_norm, instance_norm, interpolate,
+    layer_norm, max_pool1d, max_pool2d, scan_f32,
+};
+
+/// 标量内核表：把「算子名 → 内核函数」装配成一个常量数组，供上层按注册名派发。
+///
+/// 只做语法搬运，表项类型由调用方决定（`Entry` 在展开点按名字解析）：名字取自注册表，
+/// 函数取自本 crate 的参考内核，两者同序由调用方的 `const` 断言锁住。
+#[macro_export]
+macro_rules! kernel_table {
+    ($($run:ident),* $(,)?) => {
+        [$( Entry { op: stringify!($run), run: $run } ),*]
+    };
+}
+
 /// 单算子入口（`gemv_f32` / `rmsnorm_f32` …）：下游原先写 `op::gemv_f32`，现在写 `nn::gemv_f32`。
 pub use kernel::{
     Scalar, add_f32, apply_epilogue, dequant_i2, dequant_i4, dequant_i8, div_f32, embed_f32,

@@ -1,6 +1,6 @@
 use super::*;
 use crate::harness::cutile_x_kernel::{sample, signature};
-use op::model::{Buf, Values};
+use nn::model::{Buf, Values};
 
 /// 生成 C 封装文本；`CUTILE_CAPTURE_GOLDEN` 显式打开时才把副本写到 `/tmp/cutile-golden`。
 #[test]

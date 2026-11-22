@@ -218,3 +218,79 @@ fn the_rank_is_the_mixed_radix_code_of_its_axes() {
         }
     }
 }
+
+/// [`Topology::group`] 的唯一依据现在是**一条等差序列**：第 `k` 个成员 = 首成员 + `k` · 本维步长。
+///
+/// 这条定律同时钉住两件事：组内只沿本维移动（另两维的下标逐点恒定），且组号的解码是
+/// **压缩**进制（只在剩下的两维上数，而不是拿完整 rank 的高位当组号）。旧形态逐个走
+/// `rank` 的三次下标校验，改错一位只体现为"某几组的成员错位"；这里在随机非方阵上逐轴逐组
+/// 核对首成员加步长与真正的反解。
+///
+/// 同一条定律也钉住编码/解码这一对原语：`weigh(digits(flat)) == flat` 对 `0..world` 逐点成立。
+mod progression {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(testkit::prop::config())]
+
+        #[test]
+        fn a_group_is_the_progression_of_its_axis(
+            tp in 1usize..=4,
+            pp in 1usize..=4,
+            dp in 1usize..=4,
+        ) {
+            let topology = Topology::new(tp, pp, dp).expect("合法");
+            let strides = topology.strides();
+            for parallel in Parallel::ALL {
+                let own = parallel as usize;
+                let degree = topology.degree(parallel);
+                let stride = strides[own];
+                for idx in 0..topology.world() / degree {
+                    let group = topology.group(parallel, idx).expect("组号在区间内");
+                    prop_assert_eq!(group.size(), degree, "{} 的组大小", parallel.as_str());
+                    let head = group.ranks()[0] as usize;
+                    let base = topology.idxs(group.ranks()[0]).expect("反解");
+                    let base = [base.0, base.1, base.2];
+                    for (step, rank) in group.ranks().iter().enumerate() {
+                        prop_assert_eq!(
+                            *rank as usize,
+                            head + step * stride,
+                            "{} 第 {} 组的第 {} 个成员不在首成员加步长的位置上",
+                            parallel.as_str(),
+                            idx,
+                            step,
+                        );
+                        let solved = topology.idxs(*rank).expect("反解");
+                        let solved = [solved.0, solved.1, solved.2];
+                        prop_assert_eq!(solved[own], step, "{} 的本维下标", parallel.as_str());
+                        for axis in 0..DIM {
+                            if axis != own {
+                                prop_assert_eq!(
+                                    solved[axis],
+                                    base[axis],
+                                    "{} 第 {} 组动到了第 {} 维",
+                                    parallel.as_str(),
+                                    idx,
+                                    axis,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn weighing_the_digits_of_a_rank_gives_it_back(
+            tp in 1usize..=4,
+            pp in 1usize..=4,
+            dp in 1usize..=4,
+        ) {
+            let topology = Topology::new(tp, pp, dp).expect("合法");
+            for flat in 0..topology.world() {
+                prop_assert_eq!(topology.weigh(topology.digits(flat, None)), flat);
+            }
+        }
+    }
+}

@@ -272,7 +272,7 @@ fn metal_simdgroup_gemm_512() {
 
 /// int8 分块 GEMM 真机基准：64×256×4096，`i8` 输入、`i32` 精确累加、`f32` 输出。
 ///
-/// 同一输入先跑 CPU 参考（`op::matmul_i8::forward_tiled`）逐元素对拍，再对 tile=8/16/32
+/// 同一输入先跑 CPU 参考（`nn::matmul_i8::forward_tiled`）逐元素对拍，再对 tile=8/16/32
 /// 报端到端延迟；这是 `matmul_i8` 的设备侧落地，不是 f32 GEMM 的近似。
 ///
 /// 本用例只出测量：`cargo test --release -p llm-engine --lib -- metal_int8_gemm_k4096 --ignored --nocapture`。

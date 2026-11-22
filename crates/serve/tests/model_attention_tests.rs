@@ -8,7 +8,7 @@ fn rmsnorm_groups_batch_rows_against_the_single_row_reference() {
     let mut reference = vec![0.0; 6];
     for row in 0..2 {
         let start = row * 3;
-        op::rmsnorm_f32::forward(
+        nn::rmsnorm_f32::forward(
             &x[start..start + 3],
             &gamma,
             &mut reference[start..start + 3],
@@ -33,7 +33,7 @@ fn rope_rotates_batch_segments_by_the_position_table() {
     let mut reference = vec![0.0; 4];
     for (seq, &pos) in positions.iter().enumerate() {
         let start = seq * head_dim;
-        op::rope_f32::forward_heads(
+        nn::rope_f32::forward_heads(
             pos as usize,
             &x[start..start + head_dim],
             &mut reference[start..start + head_dim],
@@ -72,7 +72,7 @@ fn decode_attention_groups_batch_segments_by_the_history_table() {
     let mut kv_cursor = 0;
     for (seq, &h) in hist.iter().enumerate() {
         let kv_seq = heads * h * d;
-        op::attention::decode_forward_heads(
+        nn::conv::attention::decode_forward_heads(
             &q[seq * q_seq..(seq + 1) * q_seq],
             &k[kv_cursor..kv_cursor + kv_seq],
             &v[kv_cursor..kv_cursor + kv_seq],

@@ -64,7 +64,7 @@ fn rope_matches_central_differences() -> Result<()> {
 /// `loss = reduce_sum(attention(q,k,v))`：`dq` / `dk` / `dv` 三路闭式对拍（头宽固定 8）。
 #[test]
 fn attention_matches_central_differences() -> Result<()> {
-    let d = op::attention::MODEL.shape.1;
+    let d = nn::conv::attention::MODEL.shape.1;
     let s = 2usize;
     let len = s * d;
     let mut tape = Tape::new();
@@ -113,7 +113,7 @@ fn attention_matches_central_differences() -> Result<()> {
 /// 混用都会在这里被中心差分抓到。
 #[test]
 fn latent_attention_matches_central_differences() -> Result<()> {
-    let w = op::attention::latent::MODEL.shape.1;
+    let w = nn::conv::attention::latent::MODEL.shape.1;
     let (rows, hist, dc) = (2usize, 2usize, w / 2);
     let (q_len, kv_len, out_len) = (rows * w, hist * w, rows * dc);
     let mut tape = Tape::new();
@@ -170,7 +170,7 @@ fn latent_attention_matches_central_differences() -> Result<()> {
 /// `loss = reduce_sum(decode_attention(q,k,v))`：查询一行、历史两行，三路梯度闭式对拍。
 #[test]
 fn decode_attention_matches_central_differences() -> Result<()> {
-    let d = op::decode_attention::MODEL.shape.1;
+    let d = nn::conv::decode_attention::MODEL.shape.1;
     let q_rows = 1usize;
     let hist = 2usize;
     let q_len = q_rows * d;

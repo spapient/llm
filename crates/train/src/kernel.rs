@@ -3,6 +3,7 @@
 use crate::shape::{Inputs, View, ViewMut, output_slice};
 use crate::store::SITE;
 use diagnostic::{Code, Error, Result};
+use nn::kernel_table;
 
 /// 一步前向：`op(inputs) → output`；契约是"输入此刻都在"与"输出要被完整写入"。
 pub trait Kernel {
@@ -69,7 +70,7 @@ impl Kernel for Reference {
 }
 
 impl Reference {
-    /// 按实例几何前向：算术复用 `op::conv` / `op::norm` 的真实现，与声明档内核同一份算术。
+    /// 按实例几何前向：算术复用 `nn::conv::conv` / `nn::kernel::norm` 的真实现，与声明档内核同一份算术。
     fn shaped(
         &mut self,
         op: &str,
@@ -103,7 +104,7 @@ fn batches(op: &str, len: usize, k: usize) -> Result<usize> {
 
 /// 内核表的一行：算子名 + 缓冲级入口（函数指针：表在编译期定长，按名字线性查一次）。
 struct Entry {
-    /// 算子名，必须与 [`op::REGISTRY`] 同名同序。
+    /// 算子名，必须与 [`nn::registry::REGISTRY`] 同名同序。
     op: &'static str,
     /// 把视图拆成算子的形参，再调算子自己的标量实现。
     run: fn(&[View<'_>], &mut ViewMut<'_>) -> Result<()>,
@@ -115,7 +116,7 @@ macro_rules! unary {
     ($($run:ident => $module:ident),* $(,)?) => {$(
         fn $run(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
             let (a,) = <(f32,) as Inputs>::unpack(inputs, stringify!($run))?;
-            op::$module::forward(a, output_slice::<f32>(stringify!($run), output)?)
+            nn::$module::forward(a, output_slice::<f32>(stringify!($run), output)?)
         }
     )*};
 }
@@ -125,7 +126,7 @@ macro_rules! binary {
     ($($run:ident),* $(,)?) => {$(
         fn $run(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
             let (a, b) = <(f32, f32) as Inputs>::unpack(inputs, stringify!($run))?;
-            op::$run::forward(a, b, output_slice::<f32>(stringify!($run), output)?)
+            nn::$run::forward(a, b, output_slice::<f32>(stringify!($run), output)?)
         }
     )*};
 }
@@ -137,7 +138,7 @@ macro_rules! norm {
         fn $run(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
             let (x, gamma, beta) =
                 <(f32, f32, f32) as Inputs>::unpack(inputs, stringify!($run))?;
-            op::$module::forward(x, gamma, beta, output_slice::<f32>(stringify!($run), output)?)
+            nn::$module::forward(x, gamma, beta, output_slice::<f32>(stringify!($run), output)?)
         }
     )*};
 }
@@ -150,7 +151,7 @@ macro_rules! gemm {
             let out = output_slice::<f32>(stringify!($run), output)?;
             let m = a.len() / $div;
             let rows = batches(stringify!($run), out.len(), m)?;
-            op::$run::forward(a, b, m, rows, out)
+            nn::$run::forward(a, b, m, rows, out)
         }
     )*};
 }
@@ -198,37 +199,37 @@ norm!(
 /// 二维卷积适配：`[x, weight, bias] → y`，声明档单样本几何由算子模块定。
 fn conv2d_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
     let (x, weight, bias) = <(f32, f32, f32) as Inputs>::unpack(inputs, "conv2d_f32")?;
-    op::conv2d::forward(x, weight, bias, output_slice::<f32>("conv2d_f32", output)?)
+    nn::conv::conv2d::forward(x, weight, bias, output_slice::<f32>("conv2d_f32", output)?)
 }
 
 /// 稠密向量投影：输入列表按算子操作数声明 `[weights, x]` 排列。
 fn gemv_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
     let (weights, x) = <(f32, f32) as Inputs>::unpack(inputs, "gemv_f32")?;
-    op::gemv_f32::forward(x, weights, output_slice::<f32>("gemv_f32", output)?)
+    nn::gemv_f32::forward(x, weights, output_slice::<f32>("gemv_f32", output)?)
 }
 gemm!(
-    (gemm_f32, f32, op::gemm_f32::K),
-    (gemm_i2, u8, op::gemm_i2::K / 4),
-    (gemm_i4, u8, op::gemm_i4::K / 2),
-    (gemm_i8, u8, op::gemm_i8::K),
+    (gemm_f32, f32, nn::gemm_f32::K),
+    (gemm_i2, u8, nn::gemm_i2::K / 4),
+    (gemm_i4, u8, nn::gemm_i4::K / 2),
+    (gemm_i8, u8, nn::gemm_i8::K),
 );
 
-/// 大 K 稠密 GEMM：收缩轴取生产档 [`op::matmul::K`]，行数由输入长度推出。
+/// 大 K 稠密 GEMM：收缩轴取生产档 [`nn::matmul::K`]，行数由输入长度推出。
 fn matmul_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
     let (a, b) = <(f32, f32) as Inputs>::unpack(inputs, "matmul_f32")?;
     let out = output_slice::<f32>("matmul_f32", output)?;
-    let (m, n) = matrix_geometry("matmul_f32", a.len(), out.len(), op::matmul::K)?;
-    op::fast::gemm_f32_checked(a, b, m, n, op::matmul::K, out)
+    let (m, n) = matrix_geometry("matmul_f32", a.len(), out.len(), nn::matmul::K)?;
+    nn::fast::gemm_f32_checked(a, b, m, n, nn::matmul::K, out)
 }
 
 /// 大 K 对称 int8 GEMM：输入是承载有符号码的 `u8`，`i32` 精确累加后转 `f32`。
 fn matmul_i8(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
     let (a, b) = <(u8, u8) as Inputs>::unpack(inputs, "matmul_i8")?;
     let out = output_slice::<f32>("matmul_i8", output)?;
-    let (m, n) = matrix_geometry("matmul_i8", a.len(), out.len(), op::matmul_i8::K)?;
+    let (m, n) = matrix_geometry("matmul_i8", a.len(), out.len(), nn::matmul_i8::K)?;
     let mut acc = vec![0i32; m * n];
     let (a, b) = (signed(a), signed(b));
-    op::fast::gemm_i8_checked(&a, &b, m, n, op::matmul_i8::K, &mut acc)?;
+    nn::fast::gemm_i8_checked(&a, &b, m, n, nn::matmul_i8::K, &mut acc)?;
     widen(acc, out);
     Ok(())
 }
@@ -263,7 +264,7 @@ macro_rules! quant_gemv {
     ($($run:ident),* $(,)?) => {$(
         fn $run(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
             let (x, w, scales) = <(f32, u8, f32) as Inputs>::unpack(inputs, stringify!($run))?;
-            op::$run::forward(x, w, scales, output_slice::<f32>(stringify!($run), output)?)
+            nn::$run::forward(x, w, scales, output_slice::<f32>(stringify!($run), output)?)
         }
     )*};
 }
@@ -278,26 +279,26 @@ fn attention_paths(
 ) -> Result<()> {
     let (q, k, v) = <(f32, f32, f32) as Inputs>::unpack(inputs, "attention_f32")?;
     let out = output_slice::<f32>("attention_f32", output)?;
-    let d = op::attention::MODEL.shape.1;
+    let d = nn::conv::attention::MODEL.shape.1;
     let heads = batches("attention_f32", q.len(), d)?;
     run(q, k, v, out, heads, d)
 }
 
 /// `[q, k, v: f32] → y: f32`：尺寸由声明宽度推导；算术走稠密分块 tile。
 fn attention_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
-    attention_paths(inputs, output, op::attention::tiled::forward)
+    attention_paths(inputs, output, nn::conv::attention::tiled::forward)
 }
 
-/// 同形参，走 online softmax 的分块 tile 版（`op::attention::tiled::flash_tiled_forward`）。
+/// 同形参，走 online softmax 的分块 tile 版（`nn::conv::attention::tiled::flash_tiled_forward`）。
 fn flash_attention_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
-    attention_paths(inputs, output, op::attention::tiled::flash_tiled_forward)
+    attention_paths(inputs, output, nn::conv::attention::tiled::flash_tiled_forward)
 }
 
 /// decode 注意力适配的公共几何：`q_rows` 由 q 长、`hist` 由 k 长按头宽 `d` 推出。
 fn decode_paths(inputs: &[View<'_>], output: &mut ViewMut<'_>, run: DecodeKernel) -> Result<()> {
     let (q, k, v) = <(f32, f32, f32) as Inputs>::unpack(inputs, "decode_attention_f32")?;
     let out = output_slice::<f32>("decode_attention_f32", output)?;
-    let d = op::decode_attention::MODEL.shape.1;
+    let d = nn::conv::decode_attention::MODEL.shape.1;
     let q_rows = batches("decode_attention_f32", q.len(), d)?;
     let hist = batches("decode_attention_f32", k.len(), d)?;
     run(q, k, v, out, q_rows, hist, d)
@@ -305,12 +306,12 @@ fn decode_paths(inputs: &[View<'_>], output: &mut ViewMut<'_>, run: DecodeKernel
 
 /// decode 注意力：`q/k/v → out`。
 fn decode_attention_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
-    decode_paths(inputs, output, op::attention::decode_forward)
+    decode_paths(inputs, output, nn::conv::attention::decode_forward)
 }
 
-/// 同 decode 几何，走 online softmax 版 `op::attention::decode_flash_forward`。
+/// 同 decode 几何，走 online softmax 版 `nn::conv::attention::decode_flash_forward`。
 fn decode_flash_attention_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
-    decode_paths(inputs, output, op::attention::decode_flash_forward)
+    decode_paths(inputs, output, nn::conv::attention::decode_flash_forward)
 }
 
 /// 潜空间注意力适配：`[q, k, v: f32] → y: f32`，行宽取声明宽度，输出宽由输出长度反推。
@@ -320,8 +321,8 @@ fn decode_flash_attention_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> 
 fn latent_attention_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
     let (q, k, v) = <(f32, f32, f32) as Inputs>::unpack(inputs, "latent_attention_f32")?;
     let out = output_slice::<f32>("latent_attention_f32", output)?;
-    let w = op::attention::latent::MODEL.shape.1;
-    op::attention::latent_forward(q, k, v, out, w)
+    let w = nn::conv::attention::latent::MODEL.shape.1;
+    nn::conv::attention::latent_forward(q, k, v, out, w)
 }
 
 /// 反量化适配：`[q] → y: f32`，scale/zero 取样本常量；打包与逐元素两档只差输入 lane。
@@ -330,7 +331,7 @@ macro_rules! dequant {
         fn $run(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
             let (q,) = <($lane,) as Inputs>::unpack(inputs, stringify!($run))?;
             let out = output_slice::<f32>(stringify!($run), output)?;
-            op::$run::forward(op::$run::SCALE, op::$run::ZERO, q, out)
+            nn::$run::forward(nn::$run::SCALE, nn::$run::ZERO, q, out)
         }
     )*};
 }
@@ -340,11 +341,11 @@ dequant!((dequant_i2, u8), (dequant_i4, u8), (dequant_i8, f32));
 /// `[a: f32] → y: f32`：位置取样本约定的 7。
 fn rope_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
     let (a,) = <(f32,) as Inputs>::unpack(inputs, "rope_f32")?;
-    op::rope_f32::forward(7, a, output_slice::<f32>("rope_f32", output)?)
+    nn::rope_f32::forward(7, a, output_slice::<f32>("rope_f32", output)?)
 }
 
-/// 标量内核表：长度就是 [`op::REGISTRY`] 的长度，名字与顺序由下面的 `const` 断言锁住。
-const KERNELS: [Entry; op::REGISTRY.len()] = op::kernel_table![
+/// 标量内核表：长度就是 [`nn::registry::REGISTRY`] 的长度，名字与顺序由下面的 `const` 断言锁住。
+const KERNELS: [Entry; nn::registry::REGISTRY.len()] = kernel_table![
     adaptive_pool_f32,
     add_f32,
     attention_f32,
@@ -399,22 +400,22 @@ const KERNELS: [Entry; op::REGISTRY.len()] = op::kernel_table![
     tanh_f32,
 ];
 
-const _: () = same_order(&KERNELS, &op::REGISTRY);
+const _: () = same_order(&KERNELS, &nn::registry::REGISTRY);
 
 /// 编译期断言：内核表与算子注册表逐条同名（长度已由类型锁住）。
-const fn same_order(entries: &[Entry], registry: &[op::Registration]) {
+const fn same_order(entries: &[Entry], registry: &[prof::catalogue::Registration]) {
     let mut idx = 0;
     while idx < entries.len() {
         assert!(
             same_str(entries[idx].op, registry[idx].name),
-            "train::Reference 的内核表与 op::REGISTRY 名字或顺序漂移"
+            "train::Reference 的内核表与 nn::registry::REGISTRY 名字或顺序漂移"
         );
         idx += 1;
     }
 }
 
-/// `const` 上下文逐字节比：唯一实现是 [`op::same_bytes`]，本层只重导出别名，
-/// 内核表与 [`op::REGISTRY`] 的名字对拍不再自带第二份比较逻辑。
-pub(crate) use op::same_bytes as same_str;
+/// `const` 上下文逐字节比：唯一实现是 [`nn::same_bytes`]，本层只重导出别名，
+/// 内核表与 [`nn::registry::REGISTRY`] 的名字对拍不再自带第二份比较逻辑。
+pub(crate) use nn::same_bytes as same_str;
 
 pub mod shape;

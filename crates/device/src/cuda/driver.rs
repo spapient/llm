@@ -1,8 +1,8 @@
 //! 职责：CUDA 后端驱动：发射、读回与方言降级。
 use cutile::harness::{c_literal, c_type, output_name, output_of};
 use diagnostic::{Code, Error, Result};
-use op::model::{Sample, Values};
-use op::sig::{Param, Signature};
+use nn::model::{Sample, Values};
+use nn::sig::{Param, Signature};
 
 use crate::dialect::{Cuda, Dialect, launch_args, length_scalar, readback_bits};
 

@@ -190,7 +190,7 @@ fn gemm_writes_every_output_and_repeats_bit_exactly() {
     assert_eq!(first, snapshot(&mut y), "同一输入的两次派发应逐位相同");
 
     // 张量核双缓冲：ping-pong 两片缓冲与「一次 barrier」的软件流水最容易出竞争。
-    use op::sig::Signature;
+    use nn::sig::Signature;
 
     let geometry = TensorGeometry::new(128, 64, 96, 8);
     let mut stage = tensor_stage(&device, &queue, (256, 256, 1024), true);

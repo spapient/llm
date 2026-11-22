@@ -65,6 +65,15 @@ pub mod atom {
 
 pub use spec::inherent_names;
 
+// ---- 词汇层 ------------------------------------------------------------------
+//
+// `model` / `sig` / `sch` / `tpl` / `einsum` 这些词汇定义在 `spec`，但下游一座座 crate
+// 只依赖 `prof`。从这里转出，「算子声明 + 词汇」就沿同一个 crate 名到达，消费者不必为
+// 读一个 `Model` 再加一条 `spec` 依赖。`layout` 例外：`prof` 自己有一个同名模块
+// （设备片段布局），词汇侧的布局规格走 `prof::sch::layout`。
+pub use spec::{einsum, model, operator, quant, same_bytes, sample, sch, sig, tpl};
+pub use spec::{dropout, formula, init, parse, rnd};
+
 pub mod device;
 pub mod prof;
 pub mod sign;

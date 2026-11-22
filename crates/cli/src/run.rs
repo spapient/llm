@@ -89,15 +89,15 @@ fn build_sample(
     n: usize,
     x: &[f32],
     w: &[f32],
-) -> Result<op::model::Sample> {
-    let model = op::model(operator).ok_or_else(|| {
+) -> Result<nn::model::Sample> {
+    let model = nn::registry::model(operator).ok_or_else(|| {
         Error::new(
             Code::Missing,
             format!("算子 `{operator}` 没有语义表，无法构造样本"),
         )
         .with("llm run")
     })?;
-    op::model::bind(&model, m, n, x, w)
+    nn::model::bind(&model, m, n, x, w)
 }
 
 /// 跑一条内核并回收结果：协商 → 拼接 → emit → 编译 → 执行 → 对拍。
@@ -106,7 +106,7 @@ fn run_variant(
     dirs: &cutile::dirs::Dirs,
     operator: &str,
     device: &str,
-    sample: &op::model::Sample,
+    sample: &nn::model::Sample,
 ) -> Result<llm_optim::execution::Execution> {
     llm_optim::execution::execute(catalogue, dirs, operator, device, sample)
 }

@@ -1,6 +1,6 @@
 //! `T_θ` 三通道合成律（§1.5，数学验证 31）。
 
-use op::scan::Scalar;
+use nn::conv::scan::Scalar;
 
 /// α/β 凸组合：`y_cont = π·y_α + (1−π)·y_β`。
 pub fn cont<S: Scalar>(ya: &[S], yb: &[S], pi: S) -> Vec<S> {

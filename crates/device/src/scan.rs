@@ -8,8 +8,8 @@ use crate::dialect::{
 use crate::norm::{launch, length_usize, program_head};
 use cutile::harness::output_name;
 use diagnostic::Result;
-use op::model::Sample;
-use op::sig::Signature;
+use nn::model::Sample;
+use nn::sig::Signature;
 
 /// 校正段入口（把携带前缀的衰减贡献加回块内）。
 pub(crate) const CORRECT: &str = "kernel_correct";

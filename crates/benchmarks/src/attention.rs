@@ -3,7 +3,7 @@
 use crate::fixtures::{Sample, checked_or_exit};
 use criterion::measurement::WallTime;
 use criterion::{BenchmarkGroup, Criterion, Throughput};
-use op::attention;
+use nn::conv::attention;
 use std::fmt;
 use std::hint::black_box;
 

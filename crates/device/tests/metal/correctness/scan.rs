@@ -49,7 +49,7 @@ fn decode_attention_scans_history_past_one_block() {
     let (catalogue, dirs) = catalogue_and_dirs("engine-metal-decode");
 
     let (sample, q, k, v) = decode_sample(Q_ROWS, HIST, D);
-    let want = want_from(&op::attention::decode_attention::reference(&sample).expect("CPU 参考"));
+    let want = want_from(&nn::conv::attention::decode_attention::reference(&sample).expect("CPU 参考"));
     let (q_buf, k_buf, v_buf, mut y) = attention_bufs(&device, &q, &k, &v, Q_ROWS * D);
     let pipe = grid_pipeline_sample(
         &device,
@@ -91,11 +91,11 @@ fn latent_attention_scans_time_axis_past_one_block() {
     crate::backends::install();
     let (catalogue, dirs) = catalogue_and_dirs("engine-metal-latent");
 
-    let sample = op::attention::latent::sample(R, W);
+    let sample = nn::conv::attention::latent::sample(R, W);
     let read = |name: &str| sample.f32(name).expect("样本缓冲").to_vec();
     let (q, k, v) = (read("q"), read("k"), read("v"));
     let dc = sample.scalar("DC").expect("样本缺 DC") as usize;
-    let want = want_from(&op::attention::latent::reference(&sample).expect("CPU 参考"));
+    let want = want_from(&nn::conv::attention::latent::reference(&sample).expect("CPU 参考"));
     let (q_buf, k_buf, v_buf, mut y) = attention_bufs(&device, &q, &k, &v, R * dc);
     let pipe = grid_pipeline_sample(
         &device,

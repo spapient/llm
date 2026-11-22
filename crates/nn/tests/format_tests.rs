@@ -28,7 +28,7 @@ fn a_declared_group_is_the_only_one_that_reaches_an_operator() {
         (crate::Linear::I8, WeightFormat::int8, WeightFormat::INT8),
     ];
     for (op_name, with_group, default) in rungs {
-        let group = op::model(op_name)
+        let group = nn::registry::model(op_name)
             .unwrap_or_else(|| panic!("{op_name} 有语义表"))
             .group as usize;
         assert_eq!(
@@ -52,7 +52,7 @@ fn a_declared_group_is_the_only_one_that_reaches_an_operator() {
 /// int8 这一档独有的是元素类型：它不打包，一个元素就是一字节。
 #[test]
 fn int8_elements_take_one_byte_each() {
-    let group = op::model(crate::Linear::I8)
+    let group = nn::registry::model(crate::Linear::I8)
         .expect("gemv_i8 有语义表")
         .group as usize;
     assert_eq!(
@@ -98,7 +98,7 @@ fn every_mapped_operator_name_is_declared() {
     for format in formats {
         let operator = format.operator().expect("这三种格式都有算子");
         assert!(
-            op::builtin_named(operator).is_some(),
+            prof::catalogue::named(operator).is_some(),
             "{format} 映射到未注册的算子 `{operator}`"
         );
     }
@@ -121,7 +121,7 @@ fn grouped_formats_map_back_to_their_storage_dtype() {
 /// 算子表里有、层侧表达不出，正是「精度档缺一级」这种缺口的形态。这条用例锁住它被补上。
 #[test]
 fn the_int2_rung_is_packed_and_says_which_group_mismatches() {
-    let group = op::model(crate::Linear::I2)
+    let group = nn::registry::model(crate::Linear::I2)
         .expect("gemv_i2 有语义表")
         .group as usize;
     assert_eq!(

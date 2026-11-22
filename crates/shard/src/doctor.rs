@@ -13,7 +13,7 @@ use cutile::plan::Plan;
 use cutile::prof::Profile;
 use cutile::space;
 use diagnostic::{Code, Error};
-use op::decl::{OpDecl, expand};
+use prof::decl::{OpDecl, expand};
 use prof::atom::Space;
 use std::path::PathBuf;
 

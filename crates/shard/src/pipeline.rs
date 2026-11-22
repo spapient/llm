@@ -9,8 +9,8 @@ use cutile::harness;
 use cutile::plan::{self, Plan};
 use cutile::prof::Profile;
 use diagnostic::{Code, Error};
-use op::decl::OpDecl;
-use op::model::{Model, Sample};
+use prof::decl::OpDecl;
+use nn::model::{Model, Sample};
 
 /// 这次要跑的那条流水线：算子、语义模型、设备档案与执行证据。
 #[derive(Debug)]
@@ -144,7 +144,7 @@ fn invalid(message: String) -> Error {
 /// 取算子的语义模型（代价、样本、标量参考）。声明层新增了算子却没有模型时，
 /// `doctor`/`verify`/`bench` 都无法给出计划或对拍结果。
 pub(crate) fn model_for(name: &str) -> diagnostic::Result<Model> {
-    op::model(name).ok_or_else(|| {
+    nn::registry::model(name).ok_or_else(|| {
         Error::new(
             Code::Missing,
             format!(

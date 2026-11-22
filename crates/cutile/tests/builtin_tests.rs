@@ -7,7 +7,7 @@ use std::path::Path;
 #[test]
 fn builtin_data_is_valid() {
     let catalogue = Catalogue::try_builtin().expect("内置数据必须合法");
-    assert_eq!(catalogue.ops().len(), op::REGISTRY.len());
+    assert_eq!(catalogue.ops().len(), nn::registry::REGISTRY.len());
     assert_eq!(catalogue.profiles().len(), prof::names().len());
 }
 
@@ -152,7 +152,7 @@ fn copy_dir(from: &Path, to: &Path) {
 
 #[test]
 fn a_declaration_name_must_match_its_file_name() {
-    let source = op::builtin_named("add_f32").expect("内置");
+    let source = prof::catalogue::named("add_f32").expect("内置");
     let op = Op::new("renamed", source.declaration(), source.template());
     let profiles = Catalogue::try_builtin()
         .expect("内置数据")

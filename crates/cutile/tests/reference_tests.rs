@@ -53,7 +53,7 @@ fn every_accepted_fusion_is_either_testable_or_named_unrealizable() {
     //   Unsupported → 多输出 / U8 缝，标量参考答不了；
     //   跳过        → 样本面上没有生产者的输入，这条融合的 ABI 压根没构造出来。
     // 唯独 `Missing` 是 bug：样本按消费者声明构造，代数若点出样本里没有的槽位，就是发明了名字。
-    let sources = op::builtin();
+    let sources = prof::catalogue::all();
     let decls: Vec<crate::decl::OpDecl> = sources
         .iter()
         .map(|source| {
@@ -62,7 +62,7 @@ fn every_accepted_fusion_is_either_testable_or_named_unrealizable() {
         .collect();
     let models: Vec<(&str, Model)> = sources
         .iter()
-        .filter_map(|source| op::model(source.name()).map(|model| (source.name(), model)))
+        .filter_map(|source| nn::registry::model(source.name()).map(|model| (source.name(), model)))
         .collect();
 
     let accepted = crate::plan::fusions(&decls, 12);
@@ -140,14 +140,14 @@ fn every_accepted_fusion_is_either_testable_or_named_unrealizable() {
 
 /// 建一条真实的声明：内置算子的 TOML + 模板，过一遍拼装期校验。
 fn declared(name: &str) -> crate::decl::OpDecl {
-    let source = op::builtin_named(name).expect("内置算子");
+    let source = prof::catalogue::named(name).expect("内置算子");
     crate::decl::OpDecl::parse(source.declaration(), source.template()).expect("声明自洽")
 }
 
 #[test]
 fn the_fused_oracle_bridges_every_seam_not_just_one() {
-    let mul = op::model("mul_f32").expect("mul_f32 已登记");
-    let add = op::model("add_f32").expect("add_f32 已登记");
+    let mul = nn::registry::model("mul_f32").expect("mul_f32 已登记");
+    let add = nn::registry::model("add_f32").expect("add_f32 已登记");
     let fusion = crate::decl::compose(&declared("mul_f32"), &declared("add_f32")).expect("可拼");
     assert_eq!(fusion.outputs(), ["y"], "生产者只有一条输出");
     assert_eq!(fusion.seams.len(), 2, "add 的两个读槽位各一条缝");
@@ -171,8 +171,8 @@ fn the_fused_oracle_bridges_every_seam_not_just_one() {
 
 #[test]
 fn the_fused_oracle_refuses_what_it_cannot_bridge() {
-    let mul = op::model("mul_f32").expect("mul_f32 已登记");
-    let add = op::model("add_f32").expect("add_f32 已登记");
+    let mul = nn::registry::model("mul_f32").expect("mul_f32 已登记");
+    let add = nn::registry::model("add_f32").expect("add_f32 已登记");
     let real = crate::decl::compose(&declared("mul_f32"), &declared("add_f32")).expect("可拼");
     let seam = |from: &str, to: &str, ctype| crate::decl::Seam {
         from: from.to_string(),

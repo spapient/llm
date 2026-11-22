@@ -7,7 +7,7 @@ kernel_smoke!(
         let x = [1.0, 2.0, 3.0];
         let weights = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
         let mut reference = vec![0.0; 2];
-        op::gemv_f32::forward(&x, &weights, &mut reference).expect("参考");
+        nn::gemv_f32::forward(&x, &weights, &mut reference).expect("参考");
         bind(executor, 0, &x);
         bind(executor, 1, &weights);
         (vec![0, 1], 2, reference)
@@ -24,7 +24,7 @@ fn gemv_row_batch_runs_each_row_against_the_shared_weight() {
     let mut reference = vec![0.0; n * 2];
     for row in 0..2 {
         let xs = &x[row * m..(row + 1) * m];
-        op::gemv_f32::forward(xs, &w, &mut reference[row * n..(row + 1) * n]).expect("参考行");
+        nn::gemv_f32::forward(xs, &w, &mut reference[row * n..(row + 1) * n]).expect("参考行");
     }
 
     let produced = run_gemv_rows(&x, &w, m, n, 2);
@@ -32,17 +32,17 @@ fn gemv_row_batch_runs_each_row_against_the_shared_weight() {
     assert_close(&produced, &reference);
 }
 
-/// 行批跨过微内核行块（`op::fast::MIN_ROWS`）后换到 packed 入口：两侧各取一个批宽，否则这条分派
+/// 行批跨过微内核行块（`nn::fast::MIN_ROWS`）后换到 packed 入口：两侧各取一个批宽，否则这条分派
 /// 只有一侧被覆盖——2 行走按列 tile，`MIN_ROWS + 1` 行走 8×8 寄存器分块那条。
 #[test]
 fn gemv_row_batch_switches_to_the_packed_kernel_at_the_row_block() {
     let (m, n) = (5, 7);
     let w: Vec<f32> = (0..n * m).map(|i| (i % 9) as f32 * 0.25 - 1.0).collect();
-    for rows in [2, op::fast::MIN_ROWS + 1] {
+    for rows in [2, nn::fast::MIN_ROWS + 1] {
         let x: Vec<f32> = (0..rows * m).map(|i| (i % 5) as f32 * 0.5 - 1.0).collect();
         let mut reference = vec![0.0; n * rows];
         for row in 0..rows {
-            op::gemv_f32::forward(
+            nn::gemv_f32::forward(
                 &x[row * m..(row + 1) * m],
                 &w,
                 &mut reference[row * n..][..n],
@@ -81,7 +81,7 @@ kernel_smoke!(
         let w = pack_codes(4, &[1, 2, 3, 4]);
         let scales = [0.5f32];
         let mut reference = vec![0.0; 1];
-        op::gemv_i4::forward(&x, &w, &scales, &mut reference).expect("参考");
+        nn::gemv_i4::forward(&x, &w, &scales, &mut reference).expect("参考");
         bind(executor, 0, &x);
         bind_u8(executor, 1, &w);
         bind(executor, 2, &scales);
@@ -98,7 +98,7 @@ kernel_smoke!(
         let w: Vec<u8> = [1i8, 2, 3, 4].iter().map(|value| *value as u8).collect();
         let scales = [0.5f32];
         let mut reference = vec![0.0; 1];
-        op::gemv_i8::forward(&x, &w, &scales, &mut reference).expect("参考");
+        nn::gemv_i8::forward(&x, &w, &scales, &mut reference).expect("参考");
         bind(executor, 0, &x);
         bind_u8(executor, 1, &w);
         bind(executor, 2, &scales);
@@ -113,9 +113,9 @@ kernel_smoke!(
     |executor| {
         let q = [0x52u8];
         let mut reference = vec![0.0; 2];
-        op::dequant_i4::forward(
-            op::dequant_i4::SCALE,
-            op::dequant_i4::ZERO,
+        nn::dequant_i4::forward(
+            nn::dequant_i4::SCALE,
+            nn::dequant_i4::ZERO,
             &q,
             &mut reference,
         )
@@ -132,9 +132,9 @@ kernel_smoke!(
     |executor| {
         let q = [8.0f32, 12.0];
         let mut reference = vec![0.0; 2];
-        op::dequant_i8::forward(
-            op::dequant_i8::SCALE,
-            op::dequant_i8::ZERO,
+        nn::dequant_i8::forward(
+            nn::dequant_i8::SCALE,
+            nn::dequant_i8::ZERO,
             &q,
             &mut reference,
         )
@@ -151,9 +151,9 @@ kernel_smoke!(
     |executor| {
         let q = [0x52u8];
         let mut reference = vec![0.0; 4];
-        op::dequant_i2::forward(
-            op::dequant_i2::SCALE,
-            op::dequant_i2::ZERO,
+        nn::dequant_i2::forward(
+            nn::dequant_i2::SCALE,
+            nn::dequant_i2::ZERO,
             &q,
             &mut reference,
         )
@@ -172,7 +172,7 @@ kernel_smoke!(
         let w = pack_codes(2, &[1, -1, 0, 1]);
         let scales = [0.5f32];
         let mut reference = vec![0.0; 1];
-        op::gemv_i2::forward(&x, &w, &scales, &mut reference).expect("参考");
+        nn::gemv_i2::forward(&x, &w, &scales, &mut reference).expect("参考");
         bind(executor, 0, &x);
         bind_u8(executor, 1, &w);
         bind(executor, 2, &scales);
@@ -182,7 +182,7 @@ kernel_smoke!(
 
 /// 量化 GEMM 经注册 Program 对拍：A/B 打包字节、Y 浮点；几何由样本静态轴与缓冲长度反推。
 ///
-/// 三条位宽 lane 共用同一套夹具：样本缓冲取 `op::<lane>::sample`，参考走同一 `forward`，
+/// 三条位宽 lane 共用同一套夹具：样本缓冲取 `nn::<lane>::sample`，参考走同一 `forward`，
 /// 执行器拆两路 u8 输入、一路 f32 输出；打包规则完全来自 `op`，夹具不重写。
 fn gemm_quant_matches_reference(
     lane: &str,
@@ -204,11 +204,11 @@ fn gemm_quant_matches_reference(
 #[test]
 fn gemm_i4_runs_through_the_registered_kernel() {
     let (m, n) = (2, 3);
-    let sample = op::gemm::sample::<op::gemm_i4::GemmI4>(m, n);
+    let sample = nn::gemm::sample::<nn::gemm_i4::GemmI4>(m, n);
     let a = sample.u8("a").expect("a");
     let b = sample.u8("b").expect("b");
     let mut reference = vec![0.0; m * n];
-    op::gemm_i4::forward(a, b, m, n, &mut reference).expect("参考");
+    nn::gemm_i4::forward(a, b, m, n, &mut reference).expect("参考");
 
     gemm_quant_matches_reference("gemm_i4", a, b, m, n, &reference);
 }
@@ -217,11 +217,11 @@ fn gemm_i4_runs_through_the_registered_kernel() {
 #[test]
 fn gemm_i8_runs_through_the_registered_kernel() {
     let (m, n) = (2, 3);
-    let sample = op::gemm::sample::<op::gemm_i8::GemmI8>(m, n);
+    let sample = nn::gemm::sample::<nn::gemm_i8::GemmI8>(m, n);
     let a = sample.u8("a").expect("a");
     let b = sample.u8("b").expect("b");
     let mut reference = vec![0.0; m * n];
-    op::gemm_i8::forward(a, b, m, n, &mut reference).expect("参考");
+    nn::gemm_i8::forward(a, b, m, n, &mut reference).expect("参考");
 
     gemm_quant_matches_reference("gemm_i8", a, b, m, n, &reference);
 }
@@ -230,11 +230,11 @@ fn gemm_i8_runs_through_the_registered_kernel() {
 #[test]
 fn gemm_i2_runs_through_the_registered_kernel() {
     let (m, n) = (2, 3);
-    let sample = op::gemm::sample::<op::gemm_i2::GemmI2>(m, n);
+    let sample = nn::gemm::sample::<nn::gemm_i2::GemmI2>(m, n);
     let a = sample.u8("a").expect("a");
     let b = sample.u8("b").expect("b");
     let mut reference = vec![0.0; m * n];
-    op::gemm_i2::forward(a, b, m, n, &mut reference).expect("参考");
+    nn::gemm_i2::forward(a, b, m, n, &mut reference).expect("参考");
 
     gemm_quant_matches_reference("gemm_i2", a, b, m, n, &reference);
 }
@@ -265,7 +265,7 @@ kernel_smoke!(
         let x = [1.0, 2.0, 3.0];
         let gamma = [1.0, 1.0, 1.0];
         let mut reference = vec![0.0; 3];
-        op::rmsnorm_f32::forward(&x, &gamma, &mut reference).expect("参考");
+        nn::rmsnorm_f32::forward(&x, &gamma, &mut reference).expect("参考");
         bind(executor, 0, &x);
         bind(executor, 1, &gamma);
         (vec![0, 1], 2, reference)
@@ -278,11 +278,11 @@ fn binary_elementwise_runs_through_the_registered_kernel() {
     let b = [3.0, 4.0];
 
     let mut add_ref = vec![0.0; 2];
-    op::add_f32::forward(&a, &b, &mut add_ref).expect("参考");
+    nn::add_f32::forward(&a, &b, &mut add_ref).expect("参考");
     let mut mul_ref = vec![0.0; 2];
-    op::mul_f32::forward(&a, &b, &mut mul_ref).expect("参考");
+    nn::mul_f32::forward(&a, &b, &mut mul_ref).expect("参考");
     let mut residual_ref = vec![0.0; 2];
-    op::residual_add_f32::forward(&a, &b, &mut residual_ref).expect("参考");
+    nn::residual_add_f32::forward(&a, &b, &mut residual_ref).expect("参考");
 
     let mut executor = cpu();
     bind(&mut executor, 0, &a);
@@ -302,11 +302,11 @@ fn unary_elementwise_runs_through_the_registered_kernel() {
     let a = [-1.0, 0.0, 1.0, 2.0];
 
     let mut silu_ref = vec![0.0; 4];
-    op::silu_f32::forward(&a, &mut silu_ref).expect("参考");
+    nn::silu_f32::forward(&a, &mut silu_ref).expect("参考");
     let mut gelu_ref = vec![0.0; 4];
-    op::gelu_f32::forward(&a, &mut gelu_ref).expect("参考");
+    nn::gelu_f32::forward(&a, &mut gelu_ref).expect("参考");
     let mut scale_ref = vec![0.0; 4];
-    op::scale_f32::forward(&a, &mut scale_ref).expect("参考");
+    nn::scale_f32::forward(&a, &mut scale_ref).expect("参考");
 
     let mut executor = cpu();
     bind(&mut executor, 0, &a);
@@ -325,11 +325,11 @@ fn softmax_and_reduce_run_through_the_registered_kernel() {
     let x = [3.0, 1.0, 2.0];
 
     let mut softmax_ref = vec![0.0; 3];
-    op::softmax_f32::forward(&x, &mut softmax_ref).expect("参考");
+    nn::softmax_f32::forward(&x, &mut softmax_ref).expect("参考");
     let mut max_ref = vec![0.0; 1];
-    op::reduce_max_f32::forward(&x, &mut max_ref).expect("参考");
+    nn::reduce_max_f32::forward(&x, &mut max_ref).expect("参考");
     let mut sum_ref = vec![0.0; 1];
-    op::reduce_sum_f32::forward(&x, &mut sum_ref).expect("参考");
+    nn::reduce_sum_f32::forward(&x, &mut sum_ref).expect("参考");
 
     let mut executor = cpu();
     bind(&mut executor, 0, &x);
@@ -346,17 +346,17 @@ fn softmax_and_reduce_run_through_the_registered_kernel() {
 /// 注意力三路 q/k/v 经登记内核执行，朴素与 Flash 分别对拍同算子参考实现。
 #[test]
 fn attention_runs_through_the_registered_kernel() {
-    let sample = op::attention::sample(2, 8);
+    let sample = nn::conv::attention::sample(2, 8);
     let q = sample.f32("q").expect("q");
     let k = sample.f32("k").expect("k");
     let v = sample.f32("v").expect("v");
-    let d = op::attention::MODEL.shape.1;
+    let d = nn::conv::attention::MODEL.shape.1;
     let s = q.len() / d;
 
     let mut plain = vec![0.0; q.len()];
-    op::attention::forward(q, k, v, &mut plain, s, d).expect("朴素参考");
+    nn::conv::attention::forward(q, k, v, &mut plain, s, d).expect("朴素参考");
     let mut flash = vec![0.0; q.len()];
-    op::attention::flash_forward(q, k, v, &mut flash, s, d).expect("flash 参考");
+    nn::conv::attention::flash_forward(q, k, v, &mut flash, s, d).expect("flash 参考");
 
     let mut executor = cpu();
     bind(&mut executor, 0, q);
@@ -377,9 +377,9 @@ fn a_graph_chains_through_the_same_bindings() {
     let b = [3.0, 4.0];
 
     let mut middle = vec![0.0; 2];
-    op::add_f32::forward(&a, &b, &mut middle).expect("参考：加和");
+    nn::add_f32::forward(&a, &b, &mut middle).expect("参考：加和");
     let mut reference = vec![0.0; 2];
-    op::silu_f32::forward(&middle, &mut reference).expect("参考：激活");
+    nn::silu_f32::forward(&middle, &mut reference).expect("参考：激活");
 
     let mut executor = cpu();
     bind(&mut executor, 0, &a);
@@ -418,16 +418,16 @@ fn an_uncovered_operator_is_refused_by_name() {
 /// decode 两条注意力内核经登记表跑通：与独立 `op` decode 参考对拍。
 #[test]
 fn decode_attention_kernels_match_the_reference() {
-    let sample = op::decode_attention::sample(1, 8);
+    let sample = nn::conv::decode_attention::sample(1, 8);
     let q = sample.f32("q").expect("q").to_vec();
     let k = sample.f32("k").expect("k").to_vec();
     let v = sample.f32("v").expect("v").to_vec();
     let (d, hist) = (8, 4);
 
     let mut naive_reference = vec![0.0; d];
-    op::attention::decode_forward(&q, &k, &v, &mut naive_reference, 1, hist, d).expect("朴素参考");
+    nn::conv::attention::decode_forward(&q, &k, &v, &mut naive_reference, 1, hist, d).expect("朴素参考");
     let mut flash_reference = vec![0.0; d];
-    op::attention::decode_flash_forward(&q, &k, &v, &mut flash_reference, 1, hist, d)
+    nn::conv::attention::decode_flash_forward(&q, &k, &v, &mut flash_reference, 1, hist, d)
         .expect("flash 参考");
 
     let mut executor = cpu();
@@ -483,7 +483,7 @@ fn a_row_batch_projection_equals_row_by_row_gemv() {
     project_rows(&x, &weights, &mut batched, m, n).expect("行批投影");
     let mut row_by_row = vec![0.0f32; rows * n];
     for row in 0..rows {
-        op::gemv_f32::forward(
+        nn::gemv_f32::forward(
             &x[row * m..(row + 1) * m],
             &weights,
             &mut row_by_row[row * n..(row + 1) * n],
@@ -496,6 +496,6 @@ fn a_row_batch_projection_equals_row_by_row_gemv() {
     let mut single = vec![0.0f32; n];
     project_rows(&x[..m], &weights, &mut single, m, n).expect("单行投影");
     let mut reference = vec![0.0f32; n];
-    op::gemv_f32::forward(&x[..m], &weights, &mut reference).expect("gemv");
+    nn::gemv_f32::forward(&x[..m], &weights, &mut reference).expect("gemv");
     assert_eq!(single, reference, "decode 口径必须与 gemv 逐位一致");
 }

@@ -100,7 +100,7 @@ fn metal_driver_wrapper_is_nonempty() {
 fn device_benchmark_drivers_measure_gpu_time_and_emit_output() {
     let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置算子");
     let op = catalogue.op("gemv_f32").expect("gemv_f32 声明");
-    let model = op::model("gemv_f32").expect("gemv_f32 模型");
+    let model = nn::registry::model("gemv_f32").expect("gemv_f32 模型");
     let sample = (model.sample)(2, 4);
     op.signature.check_sample(&sample).expect("样本与签名一致");
 
@@ -354,7 +354,7 @@ fn an_ascend_harness_is_a_single_ascendc_translation_unit() {
     let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
     let profile = ascend_profile();
     let decl = catalogue.op("gemv_i4").expect("gemv_i4 声明").clone();
-    let model = op::model("gemv_i4").expect("gemv_i4 语义表");
+    let model = nn::registry::model("gemv_i4").expect("gemv_i4 语义表");
     let (m, n) = model.shape;
     let sample = (model.sample)(m, n);
     // 装配后的内核体：`@load` / `@dot` / `@reduce` 都已换成片段，只剩 C。
@@ -438,7 +438,7 @@ fn production_grid_kernel_compiles_for_a_real_op() {
         testkit::skip("engine: Metal 工具链不在本机，生产态内核编译用例未运行");
         return;
     }
-    let (m, n) = op::model("silu_f32").expect("silu_f32 语义表").shape;
+    let (m, n) = nn::registry::model("silu_f32").expect("silu_f32 语义表").shape;
     let msl = program(&catalogue, &dirs, "silu_f32", Metal, Mode::declared(), m, n)
         .and_then(|stages| stages.one("降源"))
         .expect("生产态网格内核应能生成");
@@ -456,7 +456,7 @@ fn production_reduce_kernel_compiles_for_a_real_op() {
         testkit::skip("engine: Metal 工具链不在本机，归约内核编译用例未运行");
         return;
     }
-    let (m, n) = op::model("reduce_sum_f32")
+    let (m, n) = nn::registry::model("reduce_sum_f32")
         .expect("reduce_sum_f32 语义表")
         .shape;
     let msl = program(
@@ -486,7 +486,7 @@ fn production_scan_kernel_compiles_for_a_real_op() {
         testkit::skip("engine: Metal 工具链不在本机，扫描内核编译用例未运行");
         return;
     }
-    let (m, n) = op::model("scan_f32").expect("scan_f32 语义表").shape;
+    let (m, n) = nn::registry::model("scan_f32").expect("scan_f32 语义表").shape;
     let (local, correct) = program(
         &catalogue,
         &dirs,
@@ -520,7 +520,7 @@ fn production_rmsnorm_kernel_compiles_for_a_real_op() {
         testkit::skip("engine: Metal 工具链不在本机，两趟内核编译用例未运行");
         return;
     }
-    let (m, n) = op::model("rmsnorm_f32").expect("rmsnorm_f32 语义表").shape;
+    let (m, n) = nn::registry::model("rmsnorm_f32").expect("rmsnorm_f32 语义表").shape;
     let msl = program(
         &catalogue,
         &dirs,
@@ -565,7 +565,7 @@ fn production_softmax_kernel_compiles_for_a_real_op() {
         testkit::skip("engine: Metal 工具链不在本机，softmax 内核编译用例未运行");
         return;
     }
-    let (m, n) = op::model("softmax_f32").expect("softmax_f32 语义表").shape;
+    let (m, n) = nn::registry::model("softmax_f32").expect("softmax_f32 语义表").shape;
     let (max, expsum, map) = program(
         &catalogue,
         &dirs,

@@ -168,7 +168,7 @@ fn two_seq_fixture(
 fn gemv_hidden(x: &[f32], w: &[f32]) -> Vec<f32> {
     let out = w.len() / x.len();
     let mut h = vec![0.0; out];
-    op::gemv_f32::forward(x, w, &mut h).expect("参考：投影");
+    nn::gemv_f32::forward(x, w, &mut h).expect("参考：投影");
     h
 }
 
@@ -337,16 +337,16 @@ fn reference_block_core(
     let mut v = vec![0.0; kv];
     project_v(&mut v);
     let mut q_rot = vec![0.0; kv];
-    op::rope_f32::forward_heads(pos, &q, &mut q_rot, head_dim).expect("参考 rope q");
+    nn::rope_f32::forward_heads(pos, &q, &mut q_rot, head_dim).expect("参考 rope q");
     let mut k_rot = vec![0.0; kv];
-    op::rope_f32::forward_heads(pos, &k, &mut k_rot, head_dim).expect("参考 rope k");
+    nn::rope_f32::forward_heads(pos, &k, &mut k_rot, head_dim).expect("参考 rope k");
     let mut attn = vec![0.0; kv];
-    op::attention::decode_forward_heads(&q_rot, hist_k, hist_v, &mut attn, 1, hist, head_dim)
+    nn::conv::attention::decode_forward_heads(&q_rot, hist_k, hist_v, &mut attn, 1, hist, head_dim)
         .expect("参考注意力");
     let mut o = vec![0.0; hidden];
     project_o(&attn, &mut o);
     let mut residual = vec![0.0; hidden];
-    op::residual_add_f32::forward(&o, embedded, &mut residual).expect("参考残差");
+    nn::residual_add_f32::forward(&o, embedded, &mut residual).expect("参考残差");
     (residual, k_rot, v)
 }
 
@@ -376,17 +376,17 @@ fn reference_block(
     match weights {
         BlockWeights::Dense((wq, wk, wv, wo)) => reference_block_core(
             input,
-            |q| op::gemv_f32::forward(embedded, wq, q).expect("参考 q"),
-            |k| op::gemv_f32::forward(embedded, wk, k).expect("参考 k"),
-            |v| op::gemv_f32::forward(embedded, wv, v).expect("参考 v"),
-            |attn, o| op::gemv_f32::forward(attn, wo, o).expect("参考 o"),
+            |q| nn::gemv_f32::forward(embedded, wq, q).expect("参考 q"),
+            |k| nn::gemv_f32::forward(embedded, wk, k).expect("参考 k"),
+            |v| nn::gemv_f32::forward(embedded, wv, v).expect("参考 v"),
+            |attn, o| nn::gemv_f32::forward(attn, wo, o).expect("参考 o"),
         ),
         BlockWeights::Int4((wq, sq), (wk, sk), (wv, sv), (wo, so)) => reference_block_core(
             input,
-            |q| op::gemv_i4::forward(embedded, wq, sq, q).expect("参考 q"),
-            |k| op::gemv_i4::forward(embedded, wk, sk, k).expect("参考 k"),
-            |v| op::gemv_i4::forward(embedded, wv, sv, v).expect("参考 v"),
-            |attn, o| op::gemv_i4::forward(attn, wo, so, o).expect("参考 o"),
+            |q| nn::gemv_i4::forward(embedded, wq, sq, q).expect("参考 q"),
+            |k| nn::gemv_i4::forward(embedded, wk, sk, k).expect("参考 k"),
+            |v| nn::gemv_i4::forward(embedded, wv, sv, v).expect("参考 v"),
+            |attn, o| nn::gemv_i4::forward(attn, wo, so, o).expect("参考 o"),
         ),
     }
 }
@@ -512,7 +512,7 @@ fn two_layer_archive_fixture() -> ([f32; 3], Vec<u8>, Vec<f32>) {
     let w2 = [1.0, 1.0, 2.0, 0.0];
     let hidden = gemv_hidden(&x, &w1);
     let mut reference = vec![0.0; 2];
-    op::gemv_f32::forward(&hidden, &w2, &mut reference).expect("参考：第二层");
+    nn::gemv_f32::forward(&hidden, &w2, &mut reference).expect("参考：第二层");
     let bytes = archive_of(&[
         ArchiveEntry {
             name: "blk.0.weight",
@@ -605,9 +605,9 @@ fn embed_table(vocab: usize, dim: usize) -> Vec<f32> {
 /// 串行参考：单 token 查表 → 投影一行；权重 `[out, in]`，输出宽 `w.len()/dim`。
 fn reference_row(table: &[f32], w: &[f32], token: u32, dim: usize) -> Vec<f32> {
     let mut embedded = vec![0.0; dim];
-    op::embed_f32::forward(&[token as f32], table, &mut embedded).expect("参考查表");
+    nn::embed_f32::forward(&[token as f32], table, &mut embedded).expect("参考查表");
     let mut out = vec![0.0; w.len() / dim];
-    op::gemv_f32::forward(&embedded, w, &mut out).expect("参考投影");
+    nn::gemv_f32::forward(&embedded, w, &mut out).expect("参考投影");
     out
 }
 
@@ -644,7 +644,7 @@ fn memory_reference(
     dim: usize,
 ) -> Vec<f32> {
     let mut out = vec![0.0; dim];
-    op::embed_f32::forward(&[token as f32], table, &mut out).expect("参考查表");
+    nn::embed_f32::forward(&[token as f32], table, &mut out).expect("参考查表");
     let Some(slot) = nn::slot_of(history, order, seed, buckets) else {
         return out;
     };

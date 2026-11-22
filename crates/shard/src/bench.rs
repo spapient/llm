@@ -11,8 +11,8 @@ use cutile::builtin::{AUTO_DEVICE, Catalogue};
 use cutile::dirs::Dirs;
 use cutile::prof::{Emit, Profile};
 use diagnostic::{Code, Error};
-use op::decl::OpDecl;
-use op::model::{Cost, Sample, Values};
+use prof::decl::OpDecl;
+use nn::model::{Cost, Sample, Values};
 use std::path::PathBuf;
 
 /// L3 达成率门槛（README §12.3）：低于它就是"没有可用证据"。
@@ -447,8 +447,8 @@ fn production_lower(op: &OpDecl, emit: Emit) -> diagnostic::Result<Lower> {
 /// 只有逐点与 GEMM 骨架有生产态计时路径：逐点优先走逐点核，其余走声明里的网格。
 fn skeleton_lower(op: &OpDecl) -> diagnostic::Result<Lower> {
     match op.skeleton {
-        op::decl::Skeleton::Elementwise => pointwise_or_grid(op),
-        op::decl::Skeleton::Gemm => grid_lower(op),
+        prof::decl::Skeleton::Elementwise => pointwise_or_grid(op),
+        prof::decl::Skeleton::Gemm => grid_lower(op),
         _ => Err(Error::new(
             Code::Unsupported,
             format!("`{}` 的生产态 lowering 尚无设备计时路径", op.name),

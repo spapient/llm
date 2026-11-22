@@ -77,7 +77,7 @@ fn the_registry_and_the_model_annotations_are_mirrors() {
         annotated.len()
     );
 
-    let names: Vec<&str> = op::REGISTRY.iter().map(|entry| entry.name).collect();
+    let names: Vec<&str> = nn::registry::REGISTRY.iter().map(|entry| entry.name).collect();
     assert_eq!(
         names.len(),
         types.len(),
@@ -209,8 +209,10 @@ fn invokes_model_macro(text: &str, macros: &std::collections::BTreeSet<String>) 
 fn every_registered_kernel_signature_matches_its_model_sample() {
     let mut checked = 0;
     let mut failures: Vec<String> = Vec::new();
-    for entry in op::REGISTRY {
-        let signature = match op::sig::Signature::parse(entry.name, entry.template) {
+    for entry in nn::registry::REGISTRY {
+        // 模板正文归目录（`prof::catalogue`），注册表只留名字与语义表。
+        let template = prof::catalogue::template(entry.name).expect("注册过的名字都有模板");
+        let signature = match nn::sig::Signature::parse(entry.name, template) {
             Ok(signature) => signature,
             Err(error) => {
                 failures.push(format!("`{}`：签名解析失败：{error}", entry.name));
@@ -226,7 +228,7 @@ fn every_registered_kernel_signature_matches_its_model_sample() {
             failures.push(format!(
                 "`{}`：`.k` 可写输出是 `{}`，语义表 dtype 是 `{:?}`，两者必须是同一个类型",
                 entry.name,
-                signature.output_type().map_or("-", op::sig::CType::c_name),
+                signature.output_type().map_or("-", nn::sig::CType::c_name),
                 entry.model.dtype
             ));
         }
@@ -236,7 +238,7 @@ fn every_registered_kernel_signature_matches_its_model_sample() {
         checked >= 2,
         "扫描器只看到 {checked} 条注册：扫描逻辑或表布局坏了"
     );
-    assert_eq!(checked, op::REGISTRY.len(), "注册表每条都必须过签名对齐");
+    assert_eq!(checked, nn::registry::REGISTRY.len(), "注册表每条都必须过签名对齐");
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 

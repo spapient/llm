@@ -49,7 +49,7 @@ fn segmented_metal(
     metal_executor().map(|e| (e, first, second))
 }
 
-/// 首个真机对拍闭环：`silu_f32` 走 op::REGISTRY → cutile emit → MetalExecutor 进程内编译 →
+/// 首个真机对拍闭环：`silu_f32` 走 nn::registry::REGISTRY → cutile emit → MetalExecutor 进程内编译 →
 /// 网格派发 → 回读，与标量参考对拍。证明「模板 → 拼接正文 → 网格包装 → Metal 执行」整条
 /// 生产链路在真机上产出正确数值，而不只是编译通过。
 #[cfg(target_os = "macos")]
@@ -110,7 +110,7 @@ fn op_matches_reference_at(op_name: &str, shape: Option<(usize, usize)>) {
         return;
     };
 
-    let model = op::model(op_name).expect("语义表");
+    let model = nn::registry::model(op_name).expect("语义表");
     let (m, n) = shape.unwrap_or(model.shape);
     let sample = (model.sample)(m, n);
     let expected = (model.reference)(&sample).expect("标量参考");

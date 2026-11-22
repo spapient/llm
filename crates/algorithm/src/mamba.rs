@@ -7,11 +7,11 @@
 //! # 三个决定
 //!
 //! **状态是复值的、存成 2×2 实值块**：`λ = λ_re + i·ω` 时状态不再是实标量，而是一对实值分量，
-//! 一步就是 [`op::scan::PlaneStep`] 的一次施加（旋转 + 衰减）。复值状态不必引入复数类型，于是「状态宽减半、
+//! 一步就是 [`nn::conv::scan::PlaneStep`] 的一次施加（旋转 + 衰减）。复值状态不必引入复数类型，于是「状态宽减半、
 //! 同困惑度」那条实证红利的实现形态是可测的：每个状态维占 2 个实值分量，`pairs` 取一半即同宽。
 //!
 //! **离散化取双抽头梯形**：[`exp_trapezoid`] 用 `x_{t−1}` 与 `x_t` 的平均，步内输入不是常数——这正是
-//! `exponential_trapezoid` 这个名字所指的算式；左端常数那条（[`op::scan::exp_zero_order`]）是另一个名字、另一条
+//! `exponential_trapezoid` 这个名字所指的算式；左端常数那条（[`nn::conv::scan::exp_zero_order`]）是另一个名字、另一条
 //! 式子，`scan_f32` 算子用它。层内记着上一个 token 的输入（[`Carry::taps`]），所以梯形不需要调用方
 //! 额外传参。
 //!
@@ -24,7 +24,7 @@
 
 use crate::invalid;
 use diagnostic::Result;
-use op::scan::{Scalar, exp_trapezoid};
+use nn::conv::scan::{Scalar, exp_trapezoid};
 
 use crate::csa::finite;
 

@@ -8,7 +8,7 @@ fn an_embedding_single_step_matches_the_reference() {
     let idx = [2.0f32];
 
     let mut reference = vec![0.0; dim];
-    op::embed_f32::forward(&idx, &table, &mut reference).expect("参考：查表");
+    nn::embed_f32::forward(&idx, &table, &mut reference).expect("参考：查表");
 
     let stack = Stack::of(vec![Box::new(
         Embedding::new("tok_emb", vocab, dim, 1).expect("层"),
@@ -30,11 +30,11 @@ fn an_embedding_then_projection_matches_the_reference() {
 
     let embedded = {
         let mut e = vec![0.0; dim];
-        op::embed_f32::forward(&idx, &table, &mut e).expect("参考：查表");
+        nn::embed_f32::forward(&idx, &table, &mut e).expect("参考：查表");
         e
     };
     let mut reference = vec![0.0; 2];
-    op::gemv_f32::forward(&embedded, &w, &mut reference).expect("参考：投影");
+    nn::gemv_f32::forward(&embedded, &w, &mut reference).expect("参考：投影");
 
     let stack = embed_projection_stack(vocab, dim);
     let params = params_of(&[
@@ -76,7 +76,7 @@ fn a_multi_token_embedding_gathers_multiple_rows() {
     let idx = [2.0f32, 5.0, 1.0];
 
     let mut reference = vec![0.0; tokens * dim];
-    op::embed_f32::forward(&idx, &table, &mut reference).expect("参考：多 token 查表");
+    nn::embed_f32::forward(&idx, &table, &mut reference).expect("参考：多 token 查表");
 
     let stack = Stack::of(vec![Box::new(
         Embedding::new("tok_emb", vocab, dim, tokens).expect("层"),

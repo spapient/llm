@@ -96,7 +96,7 @@ fn gelu_chain_matches_central_differences() -> Result<()> {
     let chain_loss = |params: &[f32]| {
         params
             .iter()
-            .map(|&x| 0.5 * x * (1.0 + op::gelu_f32::erf(x * std::f32::consts::FRAC_1_SQRT_2)))
+            .map(|&x| 0.5 * x * (1.0 + nn::gelu_f32::erf(x * std::f32::consts::FRAC_1_SQRT_2)))
             .sum::<f32>()
     };
 
@@ -178,10 +178,10 @@ fn gemv_matches_central_differences() -> Result<()> {
     Ok(())
 }
 
-/// `loss = reduce_sum(gemm(a, b))`：收缩轴固定 `op::gemm::K`，对拍 `dA` / `dB`。
+/// `loss = reduce_sum(gemm(a, b))`：收缩轴固定 `nn::gemm::K`，对拍 `dA` / `dB`。
 #[test]
 fn gemm_matches_central_differences() -> Result<()> {
-    let k = op::gemm::K;
+    let k = nn::gemm::K;
     let m = 1usize;
     let n = 2usize;
     let mut tape = Tape::new();

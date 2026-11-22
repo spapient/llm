@@ -6,7 +6,7 @@ use cutile::prof::Profile;
 use diagnostic::render::{Align, Sheet};
 use llm_optim::ledger::{BackendRow, LedgerCell, Status};
 use llm_optim::verify::Verified;
-use op::decl::Fusion;
+use prof::decl::Fusion;
 use std::fmt::Write as _;
 
 /// 台账矩阵：证据汇总表 + 原语×后端对照表 + 逐条证据说明。

@@ -25,5 +25,5 @@ pub use scan::f32 as scan_f32;
 
 
 #[cfg(test)]
-#[path = "../../tests/conv/prop_numeric.rs"]
+#[path = "../tests/conv/prop_numeric.rs"]
 mod prop_numeric;

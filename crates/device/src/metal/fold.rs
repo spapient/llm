@@ -10,8 +10,8 @@ use crate::metal::{
 use cutile::harness::output_name;
 use diagnostic::{Code, Error, Result};
 use llm_optim::backend::Source;
-use op::model::Sample;
-use op::sig::Signature;
+use nn::model::Sample;
+use nn::sig::Signature;
 
 /// 折叠的一步：与 `.k` 模板的 `reduce.op` 同口径，`sum` / `max` 两个闭集表达。
 const SUM_STEP: &str = "acc += parts[g];";

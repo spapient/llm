@@ -186,7 +186,7 @@ struct Entry {
 }
 
 /// 已接反向公式的可微算子目录；其余算子（量化权重 / 反量化）在 [`apply_formula`] 处回
-/// [`Code::Unsupported`]。与 [`op::REGISTRY`] 的 `differentiable` 标记一一对应，由下方 `const`
+/// [`Code::Unsupported`]。与 [`nn::registry::REGISTRY`] 的 `differentiable` 标记一一对应，由下方 `const`
 /// 断言在编译期守住。
 /// 展开公式目录：`op => formula` 一行一条，数组长度由下方 [`FORMULAS`] 的声明给定。
 macro_rules! formulas {
@@ -238,11 +238,11 @@ const FORMULAS: [Entry; 40] = formulas![
     "decode_flash_attention_f32" => decode_attention,
 ];
 
-/// 编译期闭合：公式目录与 [`op::REGISTRY`] 的 `differentiable` 标记一一对应。
-const _: () = formulas_cover(&FORMULAS, &op::REGISTRY);
+/// 编译期闭合：公式目录与 [`nn::registry::REGISTRY`] 的 `differentiable` 标记一一对应。
+const _: () = formulas_cover(&FORMULAS, &nn::registry::REGISTRY);
 
 /// 双向互锁：可微算子缺公式、公式指向不可微/未注册算子、或公式重复，都是编译错误。
-const fn formulas_cover(formulas: &[Entry], registry: &[op::Registration]) {
+const fn formulas_cover(formulas: &[Entry], registry: &[prof::catalogue::Registration]) {
     let mut i = 0;
     while i < registry.len() {
         assert!(
@@ -275,7 +275,7 @@ const fn has_formula(formulas: &[Entry], name: &str) -> bool {
 }
 
 /// 算子名是否登记为可微；未注册返回 `false`（不存在"可微但未注册"的算子）。
-const fn differentiable(registry: &[op::Registration], name: &str) -> bool {
+const fn differentiable(registry: &[prof::catalogue::Registration], name: &str) -> bool {
     let mut i = 0;
     while i < registry.len() {
         if same_str(registry[i].name, name) {

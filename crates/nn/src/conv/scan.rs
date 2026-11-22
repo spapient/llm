@@ -254,6 +254,6 @@ pub mod f32 {
 
     #[cfg(test)]
     mod tests {
-        include!("../tests/scan_f32_tests.rs");
+        include!("../../tests/conv/scan_f32_tests.rs");
     }
 }

@@ -5,7 +5,7 @@
 //! （`op`）。**依赖**：`autograd`、`tensor`、`op`、`diagnostic`。
 //!
 //! 三条硬约束：缓冲只有 `f32` 与按位打包的 `u8` 两种形态（`unsafe_code = deny`，"把字节重解释成
-//! 浮点"这条路关着，`F16` / `BF16` 于是在编译期就被拒绝）；内核表与 [`op::REGISTRY`] 同名同序，
+//! 浮点"这条路关着，`F16` / `BF16` 于是在编译期就被拒绝）；内核表与 [`nn::registry::REGISTRY`] 同名同序，
 //! "注册了算子却没有参考实现"是编译错误；`live` / `peak` 都是实测值，与 [`autograd::Plan`] 的承诺
 //! 对账，而计划保留的检查点必须在重放开始前就在场。
 //!
@@ -50,7 +50,7 @@ mod tests;
 
 // ---- 类型化算子入口 --------------------------------------------------------
 //
-// 从 `op::for_each_operator!` 的同一张清单展开，没有第二份装配表：后端只需实现
+// 从 `nn::for_each_operator!` 的同一张清单展开，没有第二份装配表：后端只需实现
 // `OperatorSetOps::apply` 一个原语，其余方法都是默认方法，名字取 `Operator::NAME`、
 // 输入个数取 `Operator::ARITY`。方法名与 `Operator::NAME` 在 `op` 里编译期逐字节对拍，
 // 因此注册表、API 面与样本不会各自漂移。
@@ -60,8 +60,8 @@ use diagnostic::Result;
 
 /// 把算子清单展开成 trait：一个原语 + 每个算子一条默认方法。
 macro_rules! typed_ops {
-    ($($name:ident: $ty:ty => $template:literal),* $(,)?) => {
-        /// 由 `op::for_each_operator!` 展开的类型化算子入口。
+    ($($name:ident: $ty:ty),* $(,)?) => {
+        /// 由 `nn::for_each_operator!` 展开的类型化算子入口。
         pub trait OperatorSetOps {
             /// 唯一原语：按注册名派发一次。
             ///
@@ -78,12 +78,12 @@ macro_rules! typed_ops {
                 #[inline]
                 fn $name(
                     &mut self,
-                    inputs: &[Var; <$ty as ::op::operator::Operator>::ARITY],
+                    inputs: &[Var; <$ty as ::nn::operator::Operator>::ARITY],
                     output: Var,
                 ) -> Result<()> {
                     <Self as OperatorSetOps>::apply(
                         self,
-                        <$ty as ::op::operator::Operator>::NAME,
+                        <$ty as ::nn::operator::Operator>::NAME,
                         inputs.as_slice(),
                         output,
                     )
@@ -93,7 +93,7 @@ macro_rules! typed_ops {
     };
 }
 
-::op::for_each_operator!(typed_ops);
+::nn::for_each_operator!(typed_ops);
 
 /// 运行时缓冲实现唯一原语：按注册名派发到既有内核表。
 impl<K: crate::Kernel> OperatorSetOps for crate::Bufs<K> {

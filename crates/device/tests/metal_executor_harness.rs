@@ -131,7 +131,7 @@ pub(super) fn grid_pipeline_sample(
     catalogue: &cutile::builtin::Catalogue,
     dirs: &cutile::dirs::Dirs,
     kernel: &str,
-    sample: &op::model::Sample,
+    sample: &nn::model::Sample,
     what: &str,
 ) -> MetalPipeline {
     let msl = program_sample(catalogue, dirs, kernel, Metal, Mode::declared(), sample)
@@ -181,7 +181,7 @@ pub(super) struct Int8Gemm {
     pub(super) reference: Vec<f32>,
 }
 
-/// 一次 CPU 参考（`op::matmul_i8::forward_tiled`）给出 `f32` 参考列，设备侧只与它比。
+/// 一次 CPU 参考（`nn::matmul_i8::forward_tiled`）给出 `f32` 参考列，设备侧只与它比。
 pub(super) fn int8_gemm() -> Int8Gemm {
     let (m, n, k) = (64usize, 256usize, 4096usize);
     let a: Vec<u8> = (0..m * k)
@@ -195,7 +195,7 @@ pub(super) fn int8_gemm() -> Int8Gemm {
         b.iter().map(|&x| x as i8).collect(),
     );
     let mut acc = vec![0i32; m * n];
-    op::matmul_i8::forward_tiled(&sa, &sb, m, n, k, &mut acc).expect("CPU 参考");
+    nn::matmul_i8::forward_tiled(&sa, &sb, m, n, k, &mut acc).expect("CPU 参考");
     Int8Gemm {
         m,
         n,

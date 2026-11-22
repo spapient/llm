@@ -17,9 +17,9 @@ pub(crate) use text::{Cuda, Metal};
 
 use cutile::harness::output_name;
 use diagnostic::{Code, Error, Result};
-use op::decl::Grid;
-use op::model::Sample;
-use op::sig::{Param, Signature};
+use prof::decl::Grid;
+use nn::model::Sample;
+use nn::sig::{Param, Signature};
 
 /// 厂商语法面：后端无关的 lowering 原语里需要厂商语法的那几处，抽成方法 + 关联常量，并把
 /// lowering 原语本身作为**默认方法**在这里一次实现。

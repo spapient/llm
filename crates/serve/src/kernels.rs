@@ -7,10 +7,10 @@
 //!
 //! # 职责
 //!
-//! - 编译期锁定的算子表：表内每个名字都必须在 `op::REGISTRY` 内（`const` 子集断言）；
+//! - 编译期锁定的算子表：表内每个名字都必须在 `nn::registry::REGISTRY` 内（`const` 子集断言）；
 //!   表未覆盖的算子不登记，执行时由 [`CpuExecutor`](engine::exec::CpuExecutor) 按名拒绝，
 //!   不留静默空入口。
-//! - 适配函数只做拆视图 + 调 `op::<op>::forward`，算术不重写。模式复刻 `train::KERNELS`
+//! - 适配函数只做拆视图 + 调 `nn::<op>::forward`，算术不重写。模式复刻 `train::KERNELS`
 //!   （`crates/train/src/kernel.rs`），但不带 train 的 `Lane` 适配层：缓冲形态用 engine
 //!   自己的 [`View`] / [`ViewMut`]，f32 与打包字节两路分开取切片。
 //! - 层栈装配、驻留参数表与前向宿主收在 [`assembly`](crate::assembly) 模块，本文件只留内核适配表。
@@ -30,6 +30,7 @@
 
 use diagnostic::{Code, Error, Result};
 use engine::exec::{Executor, Launch, Program, View, ViewMut};
+use nn::kernel_table;
 
 pub(crate) const SITE: &str = "serve::model";
 
@@ -89,19 +90,19 @@ fn output_f32<'a>(
         })
 }
 
-/// 表内一行：算子名（与 `op::REGISTRY` 同名）+ 缓冲级函数指针。
+/// 表内一行：算子名（与 `nn::registry::REGISTRY` 同名）+ 缓冲级函数指针。
 struct Entry {
     op: &'static str,
     run: KernelFn,
 }
 
-/// 算子适配宏：按 arity 分支展开拆切片 + 调 `op::<op>::forward`。
+/// 算子适配宏：按 arity 分支展开拆切片 + 调 `nn::<op>::forward`。
 macro_rules! kernel {
     ($($run:ident),* ; unary) => {$(
         fn $run(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
             let input = input_f32(stringify!($run), inputs, 0)?;
             let output = output_f32(stringify!($run), outputs, 0)?;
-            op::$run::forward(input, output)
+            nn::$run::forward(input, output)
         }
     )*};
     ($($run:ident),* ; binary) => {$(
@@ -109,7 +110,7 @@ macro_rules! kernel {
             let left = input_f32(stringify!($run), inputs, 0)?;
             let right = input_f32(stringify!($run), inputs, 1)?;
             let output = output_f32(stringify!($run), outputs, 0)?;
-            op::$run::forward(left, right, output)
+            nn::$run::forward(left, right, output)
         }
     )*};
 }
@@ -135,7 +136,7 @@ fn rmsnorm_f32(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]
     let x = input_f32("rmsnorm_f32", inputs, 0)?;
     let gamma = input_f32("rmsnorm_f32", inputs, 1)?;
     let out = output_f32("rmsnorm_f32", outputs, 0)?;
-    op::rmsnorm_f32::forward_batch(x, gamma, out, gamma.len())
+    nn::rmsnorm_f32::forward_batch(x, gamma, out, gamma.len())
 }
 
 /// 注意力三路适配：`q/k/v → out`；头宽 `d` 取算子静态语义表，序列长 `s` 由 `q` 长推出，
@@ -149,14 +150,14 @@ fn attention_paths(
     let k = input_f32("attention", inputs, 1)?;
     let v = input_f32("attention", inputs, 2)?;
     let out = output_f32("attention", outputs, 0)?;
-    let d = op::attention::MODEL.shape.1;
+    let d = nn::conv::attention::MODEL.shape.1;
     let s = q.len() / d;
     run(q, k, v, out, s, d)
 }
 
 /// 朴素自注意力适配：走稠密分块 tile 路径。
 fn attention_f32(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
-    attention_paths(inputs, outputs, op::attention::tiled::forward)
+    attention_paths(inputs, outputs, nn::conv::attention::tiled::forward)
 }
 
 /// prefill 自注意力适配：走分块 tile 路径。
@@ -165,7 +166,7 @@ fn flash_attention_f32(
     inputs: &[View<'_>],
     outputs: &mut [ViewMut<'_>],
 ) -> Result<()> {
-    attention_paths(inputs, outputs, op::attention::tiled::flash_tiled_forward)
+    attention_paths(inputs, outputs, nn::conv::attention::tiled::flash_tiled_forward)
 }
 
 /// decode 三路适配：`q/hist_k/hist_v → out`；第四路输入为 ragged 段长表（ADR 0046 §8）走批段
@@ -208,7 +209,7 @@ fn decode_single(
     out: &mut [f32],
     single: DecodeKernel,
 ) -> Result<()> {
-    let d = op::decode_attention::MODEL.shape.1;
+    let d = nn::conv::decode_attention::MODEL.shape.1;
     let heads = q.len() / d;
     let q_rows = q.len() / (heads * d);
     let hist = k.len() / (heads * d);
@@ -247,8 +248,8 @@ fn decode_attention_f32(
         &launch,
         inputs,
         outputs,
-        op::attention::decode_forward_heads,
-        op::attention::decode_forward_batch_var,
+        nn::conv::attention::decode_forward_heads,
+        nn::conv::attention::decode_forward_batch_var,
     )
 }
 
@@ -261,8 +262,8 @@ fn decode_flash_attention_f32(
         &launch,
         inputs,
         outputs,
-        op::attention::decode_flash_forward_heads,
-        op::attention::decode_flash_forward_batch_var,
+        nn::conv::attention::decode_flash_forward_heads,
+        nn::conv::attention::decode_flash_forward_batch_var,
     )
 }
 
@@ -272,7 +273,7 @@ fn gemv_f32(launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) ->
     let (x, weights, out) = gemv_inputs(inputs, outputs)?;
     let m = launch.block[1] as usize;
     if m == 0 || x.len() == m {
-        return op::gemv_f32::forward(x, weights, out);
+        return nn::gemv_f32::forward(x, weights, out);
     }
     project_rows(x, weights, out, m, launch.block[0] as usize)
 }
@@ -292,13 +293,13 @@ fn gemv_inputs<'a, 'b>(
 fn project_rows(x: &[f32], weights: &[f32], out: &mut [f32], m: usize, n: usize) -> Result<()> {
     let rows = row_batch_rows(x, out, m, n)?;
     if rows == 1 {
-        return op::gemv_f32::forward(x, weights, out);
+        return nn::gemv_f32::forward(x, weights, out);
     }
-    if rows >= op::fast::MIN_ROWS {
-        op::fast::gemm_f32_tn(x, weights, rows, n, m, out);
+    if rows >= nn::fast::MIN_ROWS {
+        nn::fast::gemm_f32_tn(x, weights, rows, n, m, out);
         return Ok(());
     }
-    op::matmul::forward_tn_tiled(x, weights, rows, n, m, out)
+    nn::matmul::forward_tn_tiled(x, weights, rows, n, m, out)
 }
 
 /// 行批几何校验并给出输出行数：`x` 是 `rows × m`，`out` 必须是 `rows × n`。
@@ -314,7 +315,7 @@ type GemvQuantFn = fn(x: &[f32], w: &[u8], s: &[f32], out: &mut [f32]) -> Result
 
 /// 量化 GEMV 行批算术入口：`rows × m` 的输入 → `rows × n` 的输出。
 type GemvQuantBatchFn =
-    fn(x: &[f32], w: &[u8], s: &[f32], geo: op::gemv::Geometry, out: &mut [f32]) -> Result<()>;
+    fn(x: &[f32], w: &[u8], s: &[f32], geo: nn::gemv::Geometry, out: &mut [f32]) -> Result<()>;
 
 /// `[x: f32, w: u8, scales: f32] → y: f32`：量化 GEMV 通用桥接，按批行数分流。
 fn gemv_quant(
@@ -334,7 +335,7 @@ fn gemv_quant(
         x,
         weights,
         scales,
-        op::gemv::Geometry::new(x.len() / m, m, launch.block[0] as usize),
+        nn::gemv::Geometry::new(x.len() / m, m, launch.block[0] as usize),
         out,
     )
 }
@@ -348,15 +349,15 @@ macro_rules! gemv_quant_kernel {
             let weights = input_u8(name, inputs, 1)?;
             let scales = input_f32(name, inputs, 2)?;
             let out = output_f32(name, outputs, 0)?;
-            gemv_quant(launch, x, weights, scales, out, op::$run::forward, $batch)
+            gemv_quant(launch, x, weights, scales, out, nn::$run::forward, $batch)
         }
     )*};
 }
 
 gemv_quant_kernel!(
-    gemv_i2 => op::gemv_i2::forward_batch,
-    gemv_i4 => op::gemv_i4::forward_batch,
-    gemv_i8 => op::gemv_i8::forward_batch
+    gemv_i2 => nn::gemv_i2::forward_batch,
+    gemv_i4 => nn::gemv_i4::forward_batch,
+    gemv_i8 => nn::gemv_i8::forward_batch
 );
 
 /// 反量化桥接：打包字节 lane（i2/i4）输入 u8；i8 逐元素 lane 输入 f32。
@@ -366,7 +367,7 @@ macro_rules! dequant_packed {
             let name = stringify!($run);
             let q = input_u8(name, inputs, 0)?;
             let out = output_f32(name, outputs, 0)?;
-            op::$run::forward(op::$run::SCALE, op::$run::ZERO, q, out)
+            nn::$run::forward(nn::$run::SCALE, nn::$run::ZERO, q, out)
         }
     )*};
 }
@@ -377,21 +378,21 @@ dequant_packed!(dequant_i2, dequant_i4);
 fn dequant_i8(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
     let q = input_f32("dequant_i8", inputs, 0)?;
     let out = output_f32("dequant_i8", outputs, 0)?;
-    op::dequant_i8::forward(op::dequant_i8::SCALE, op::dequant_i8::ZERO, q, out)
+    nn::dequant_i8::forward(nn::dequant_i8::SCALE, nn::dequant_i8::ZERO, q, out)
 }
 
 /// 量化 GEMM 算术入口：两路打包字节 + 静态几何 `(m, n)` → 浮点输出。
 type GemmQuantFn = fn(a: &[u8], b: &[u8], m: usize, n: usize, out: &mut [f32]) -> Result<()>;
 
 /// 量化 GEMM 通用桥接：`A: u8, B: u8 → Y: f32`，几何从静态收缩轴 `K` 与缓冲长度反推。
-fn gemm_quant<G: op::gemm::Gemm<Elem = u8>>(
+fn gemm_quant<G: nn::gemm::Gemm<Elem = u8>>(
     a: &[u8],
     b: &[u8],
     out: &mut [f32],
     run: GemmQuantFn,
 ) -> Result<()> {
-    let cpb = op::gemm::codes_per_byte(G::BITS);
-    let row = op::gemm::K / cpb;
+    let cpb = nn::gemm::codes_per_byte(G::BITS);
+    let row = nn::gemm::K / cpb;
     let m = a.len() / row;
     let n = b.len() / row;
     run(a, b, m, n, out)
@@ -405,23 +406,23 @@ macro_rules! gemm_quant_kernel {
             let a = input_u8(name, inputs, 0)?;
             let b = input_u8(name, inputs, 1)?;
             let out = output_f32(name, outputs, 0)?;
-            gemm_quant::<$marker>(a, b, out, op::$run::forward)
+            gemm_quant::<$marker>(a, b, out, nn::$run::forward)
         }
     )*};
 }
 
 gemm_quant_kernel!(
-    (gemm_i2, op::gemm_i2::GemmI2),
-    (gemm_i4, op::gemm_i4::GemmI4),
-    (gemm_i8, op::gemm_i8::GemmI8)
+    (gemm_i2, nn::gemm_i2::GemmI2),
+    (gemm_i4, nn::gemm_i4::GemmI4),
+    (gemm_i8, nn::gemm_i8::GemmI8)
 );
 
 /// 按头宽选 RoPE 入口：头宽 0 或等于整段（单头）走单头旋转，否则按头分段重计频率。
 fn run_rope(pos: usize, x: &[f32], out: &mut [f32], head_dim: usize) -> Result<()> {
     if head_dim == 0 || head_dim == x.len() {
-        op::rope_f32::forward(pos, x, out)
+        nn::rope_f32::forward(pos, x, out)
     } else {
-        op::rope_f32::forward_heads(pos, x, out, head_dim)
+        nn::rope_f32::forward_heads(pos, x, out, head_dim)
     }
 }
 
@@ -445,7 +446,7 @@ fn rope_f32(launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) ->
 /// 批位置表通道：`positions[b]` 折 usize，段内复用多头旋转编排。
 fn rope_batch(table: &[f32], x: &[f32], out: &mut [f32], head_dim: usize) -> Result<()> {
     let positions: Vec<usize> = table.iter().map(|&pos| pos as usize).collect();
-    op::rope_f32::forward_batch(&positions, x, out, head_dim)
+    nn::rope_f32::forward_batch(&positions, x, out, head_dim)
 }
 
 /// 单序列标量槽通道：未填位置给 `Invalid`；头宽 0 或等于整段走单头旋转。
@@ -458,8 +459,8 @@ fn rope_single(launch: &Launch, x: &[f32], out: &mut [f32], head_dim: usize) -> 
 }
 
 /// 内核表展开：每条例子取适配函数标识符，算子名由 `stringify!` 派生，避免名字与函数名各写一份。
-/// CPU 内核表：`op::REGISTRY` 的 f32 纯切片子集，不是全覆盖。
-const KERNELS: &[Entry] = &op::kernel_table![
+/// CPU 内核表：`nn::registry::REGISTRY` 的 f32 纯切片子集，不是全覆盖。
+const KERNELS: &[Entry] = &kernel_table![
     add_f32,
     attention_f32,
     decode_attention_f32,
@@ -490,13 +491,13 @@ const KERNELS: &[Entry] = &op::kernel_table![
 
 const _: () = all_in_registry(KERNELS);
 
-/// 编译期断言：表内每个算子名都能在 `op::REGISTRY` 里找到（子集即可，不必等长）；
-/// 归属查询复用上游 `op::contains`，本层不自抄 const 字节比较。
+/// 编译期断言：表内每个算子名都能在 `nn::registry::REGISTRY` 里找到（子集即可，不必等长）；
+/// 归属查询复用上游 `nn::contains`，本层不自抄 const 字节比较。
 const fn all_in_registry(entries: &[Entry]) {
     let mut idx = 0;
     while idx < entries.len() {
         assert!(
-            op::contains(entries[idx].op),
+            nn::registry::contains(entries[idx].op),
             "serve::model 内核表含注册表之外的算子"
         );
         idx += 1;

@@ -11,7 +11,10 @@ publish = false
 autotests = false
 
 [dependencies]
+cutile = { path = "../cutile", package = "cutile" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
+nn = { path = "../nn", package = "llm-nn" }
+prof = { path = "../prof", package = "llm-prof" }
 
 [dev-dependencies]
 proptest = { workspace = true }

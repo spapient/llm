@@ -50,7 +50,6 @@ pub use unary::{
 pub use llm_spec::same_bytes;
 // `$crate::formula_cell!` / `$crate::operator_via!` 在骨架宏里按 crate 根解析，这里把 spec 导出的
 // 宏搬回本 crate 根：内核里几十处 `#[model]` 展开都不必改路径。
-pub(crate) use llm_spec::tpl::guard;
 pub use llm_spec::tpl::{formula, parse};
 pub use llm_spec::{einsum, model, operator, sample, sch, sig, tpl};
 pub use llm_spec::{formula_cell, operator_here, operator_via};
@@ -58,5 +57,5 @@ pub use model::quant;
 pub use sch::layout;
 
 #[cfg(test)]
-#[path = "../tests/prop_numeric.rs"]
+#[path = "../tests/kernel/prop_numeric.rs"]
 mod prop_numeric;

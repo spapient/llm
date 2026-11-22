@@ -6,7 +6,7 @@
 use crate::{Rng, approx_eq, cosine_similarity};
 use autograd::{Sizes, Store, Tape};
 use nn::{Contract, Stack};
-use op::{gemv_f32, gemv_i2, gemv_i4, gemv_i8};
+use nn::{gemv_f32, gemv_i2, gemv_i4, gemv_i8};
 use tensor::{DType, Shape};
 use train::{Bufs, Data, Reference};
 use weights::ptq::{self, I2, I4, I8};
@@ -191,7 +191,7 @@ fn a_weight_entry_that_is_not_a_projection_never_produces_a_layer() {
 // ---------------------------------------------------------------------------
 //
 // `weights::ptq` 把 f32 权重按组量化成打包码 + 每组件标度（ADR 0018：换算算法留在 `weights`，
-// 离线算），`op::gemv_i2/i4/i8` 的融合内核在同一个 kernel 内解包 + 点积。两层各自在自己的坐标
+// 离线算），`nn::gemv_i2/i4/i8` 的融合内核在同一个 kernel 内解包 + 点积。两层各自在自己的坐标
 // 系里自洽，只有把真实字节串起来才能证明「量化」与「融合反量化」说的是同一件事——字节序、零点、
 // 标度分组三处任一漂移都会让本测试红掉。
 //

@@ -10,7 +10,7 @@ use crate::sch::Schedule;
 use diagnostic::data::Value;
 
 fn op() -> OpDecl {
-    let source = &op::builtin_named("gemv_i4").expect("内置");
+    let source = &prof::catalogue::named("gemv_i4").expect("内置");
     OpDecl::parse(source.declaration(), source.template()).expect("声明可解析")
 }
 
@@ -74,7 +74,7 @@ fn downgrade_op() -> OpDecl {
             },
         ],
         template: template.to_string(),
-        signature: op::sig::Signature::parse("probe", template).expect("签名"),
+        signature: nn::sig::Signature::parse("probe", template).expect("签名"),
         phases: vec![Phase {
             name: "probe".to_string(),
             reads: Vec::new(),
@@ -210,7 +210,7 @@ fn inspect_reports_the_whole_chain_as_data() {
 #[test]
 fn one_signature_written_in_either_layer_stays_the_same() {
     fn declare(load: &[(&str, Value)]) -> OpDecl {
-        let source = op::builtin_named("gemv_i4").expect("内置");
+        let source = prof::catalogue::named("gemv_i4").expect("内置");
         let mut table = source.declaration().clone();
         table.set("needs.load", Value::table(load.to_vec()));
         OpDecl::parse(&table, source.template()).expect("合成声明可解析")

@@ -27,7 +27,7 @@ fn int8_gemm_is_bit_exact_against_i32_accumulation() {
             b.iter().map(|&value| value as i8).collect(),
         );
         let mut acc = vec![0i32; m * n];
-        op::matmul_i8::forward_tiled(&signed_a, &signed_b, m, n, k, &mut acc)
+        nn::matmul_i8::forward_tiled(&signed_a, &signed_b, m, n, k, &mut acc)
             .expect("CPU i32 参考");
 
         let a_buf = upload_bytes(&device, &a, "A-int8");
@@ -40,7 +40,7 @@ fn int8_gemm_is_bit_exact_against_i32_accumulation() {
             "matmul_i8",
             Metal,
             Mode::int8(tile),
-            &op::matmul_i8::sample_k(m, n, k),
+            &nn::matmul_i8::sample_k(m, n, k),
         )
         .and_then(|stages| stages.one("int8"))
         .unwrap_or_else(|error| panic!("{label} 的 MSL 应能生成：{error}"));

@@ -4,8 +4,8 @@ use crate::cuda::{buf_args, cuda_host_bufs_grid, cuda_readback, cuda_release};
 use crate::dialect::{Cuda, Dialect, RMS_EPS, chunk_head, length_scalar, scalar_name};
 use cutile::harness::output_name;
 use diagnostic::{Code, Error, Result};
-use op::model::Sample;
-use op::sig::Signature;
+use nn::model::Sample;
+use nn::sig::Signature;
 
 /// 部分归约段入口（部分平方和 / 部分最大值）。
 pub(crate) const PARTIAL: &str = "kernel_partial";

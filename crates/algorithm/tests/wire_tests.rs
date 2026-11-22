@@ -74,7 +74,7 @@ fn no_family_claims_a_missing_operator_that_is_already_registered() {
             continue;
         };
         assert!(
-            op::builtin_named(op).is_none(),
+            prof::catalogue::named(op).is_none(),
             "`{}` 声称缺算子 `{op}`，但该算子已注册：台账该翻成接通或换阻塞理由",
             family.name
         );
@@ -142,7 +142,7 @@ fn the_wired_families_produce_layers_whose_operators_are_registered() {
         for layer in &layers {
             for op in layer.spca().ops() {
                 assert!(
-                    op::builtin_named(op).is_some(),
+                    prof::catalogue::named(op).is_some(),
                     "`{name}` 的层引用了未注册算子 `{op}`"
                 );
             }

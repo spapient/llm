@@ -35,11 +35,11 @@ pub(crate) fn status(weights: Option<&str>) -> Result<()> {
 
 /// 算子清单一行：数量与名字。
 fn ops_row() -> String {
-    let ops = op::builtin();
+    let ops = prof::catalogue::all();
     format!(
         "{} 个算子（{}）",
         ops.len(),
-        diagnostic::render::join_names(ops.iter().map(op::Op::name))
+        diagnostic::render::join_names(ops.iter().map(prof::catalogue::Op::name))
     )
 }
 

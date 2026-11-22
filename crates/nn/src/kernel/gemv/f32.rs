@@ -74,5 +74,5 @@ pub fn forward(x: &[f32], weights: &[f32], out: &mut [f32]) -> diagnostic::Resul
 
 #[cfg(test)]
 mod tests {
-    include!("../../tests/gemv.rs");
+    include!("../../../tests/kernel/gemv.rs");
 }

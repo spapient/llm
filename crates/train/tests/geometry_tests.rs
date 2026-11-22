@@ -2,7 +2,7 @@ use super::*;
 use diagnostic::Code;
 
 /// 声明档样本的输入切片：卷积是 `(x, weight, bias)`，其余按一元/三元口径。
-fn declared_inputs(sample: &op::model::Sample, g: Geometry) -> Vec<&[f32]> {
+fn declared_inputs(sample: &nn::model::Sample, g: Geometry) -> Vec<&[f32]> {
     match g {
         Geometry::Conv2d { .. } => vec![
             sample.f32("x").expect("x"),
@@ -19,22 +19,22 @@ fn declared_inputs(sample: &op::model::Sample, g: Geometry) -> Vec<&[f32]> {
 }
 
 /// 十种声明档算子及其样本，供形状对齐与前向对拍两个测试共用。
-fn declared_samples() -> [(&'static str, op::model::Sample); 10] {
+fn declared_samples() -> [(&'static str, nn::model::Sample); 10] {
     [
-        ("max_pool1d_f32", op::max_pool1d::sample(1, 1)),
-        ("max_pool2d_f32", op::max_pool2d::sample(1, 1)),
-        ("avg_pool2d_f32", op::avg_pool2d::sample(1, 1)),
-        ("adaptive_pool_f32", op::adaptive_pool::sample(1, 1)),
-        ("interpolate_f32", op::interpolate::sample(1, 1)),
-        ("batch_norm_f32", op::batch_norm::sample(1, 1)),
-        ("conv2d_f32", op::conv2d::sample(1, 1)),
-        ("group_norm_f32", op::group_norm::sample(1, 1)),
-        ("instance_norm_f32", op::instance_norm::sample(1, 1)),
-        ("layer_norm_f32", op::layer_norm::sample(1, 1)),
+        ("max_pool1d_f32", nn::conv::max_pool1d::sample(1, 1)),
+        ("max_pool2d_f32", nn::conv::max_pool2d::sample(1, 1)),
+        ("avg_pool2d_f32", nn::conv::avg_pool2d::sample(1, 1)),
+        ("adaptive_pool_f32", nn::conv::adaptive_pool::sample(1, 1)),
+        ("interpolate_f32", nn::conv::interpolate::sample(1, 1)),
+        ("batch_norm_f32", nn::conv::batch_norm::sample(1, 1)),
+        ("conv2d_f32", nn::conv::conv2d::sample(1, 1)),
+        ("group_norm_f32", nn::conv::group_norm::sample(1, 1)),
+        ("instance_norm_f32", nn::conv::instance_norm::sample(1, 1)),
+        ("layer_norm_f32", nn::conv::layer_norm::sample(1, 1)),
     ]
 }
 
-/// 声明档实例与 `op::classic` 的声明档样本长度逐一对齐：前向缓冲与样本同长。
+/// 声明档实例与 `nn::conv::classic` 的声明档样本长度逐一对齐：前向缓冲与样本同长。
 #[test]
 fn declared_geometries_match_the_sample_lengths() {
     for (op, sample) in declared_samples() {
@@ -46,7 +46,7 @@ fn declared_geometries_match_the_sample_lengths() {
     }
 }
 
-/// 前向：实例几何的结果必须与 `op::classic` 的 reference 逐位一致（同一份算术的两次执行）。
+/// 前向：实例几何的结果必须与 `nn::conv::classic` 的 reference 逐位一致（同一份算术的两次执行）。
 #[test]
 fn declared_forward_matches_the_reference() {
     for (op, sample) in declared_samples() {
@@ -54,7 +54,7 @@ fn declared_forward_matches_the_reference() {
         let mut out = vec![0.0f32; g.outputs()];
         g.forward(&declared_inputs(&sample, g), &mut out)
             .expect("前向");
-        let want = (op::model(op).expect("已注册").reference)(&sample).expect("参考");
+        let want = (nn::registry::model(op).expect("已注册").reference)(&sample).expect("参考");
         assert_eq!(out, want, "{op} 实例前向与声明档参考不一致");
     }
 }

@@ -153,8 +153,8 @@ macro_rules! unary_f32 {
 #[path = "../../tests/kernel/unary_test_support.rs"]
 pub(crate) mod test_support;
 
-// 声明式算子表：同一副一元骨架的五个算子，每个算子一个 `pub mod` 保持 `op::<name>::MODEL` /
-// `op::<name>::forward` 路径不变（`forward` 同名，必须隔在各自的模块里）。新增一元运算在此补一段。
+// 声明式算子表：同一副一元骨架的五个算子，每个算子一个 `pub mod` 保持 `nn::<name>::MODEL` /
+// `nn::<name>::forward` 路径不变（`forward` 同名，必须隔在各自的模块里）。新增一元运算在此补一段。
 
 pub mod exp_f32 {
     //! 逐元素指数：`y[n] = exp(a[n])`。

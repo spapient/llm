@@ -17,9 +17,9 @@
 //! 「生产面零 `unwrap`/`expect`」口径直接看不到本文件，而不必在门禁里为它开例外。
 
 #[cfg(test)]
-use op::model::{Buf, Sample, Values};
+use nn::model::{Buf, Sample, Values};
 #[cfg(test)]
-use op::sig::Signature;
+use nn::sig::Signature;
 
 /// 签名文本：解析与装配吃同一份源，源码不抄第二遍。
 #[cfg(test)]

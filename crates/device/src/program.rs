@@ -2,9 +2,9 @@
 
 use diagnostic::{Code, Error, Result};
 use llm_optim::backend::{Launch, Lower, Source};
-use op::decl::Grid;
-use op::model::Sample;
-use op::sig::Signature;
+use prof::decl::Grid;
+use nn::model::Sample;
+use nn::sig::Signature;
 
 #[cfg(test)]
 #[path = "../../testkit/tests/kernel.rs"]

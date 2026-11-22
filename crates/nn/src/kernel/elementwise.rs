@@ -172,7 +172,7 @@ macro_rules! binary_f32 {
 #[path = "../../tests/kernel/elementwise_test_support.rs"]
 pub(crate) mod test_support;
 
-// 声明式算子表：同一副二元骨架的七个算子，每个算子一个 `pub mod` 保持 `op::<name>::forward`
+// 声明式算子表：同一副二元骨架的七个算子，每个算子一个 `pub mod` 保持 `nn::<name>::forward`
 // 路径不变（`forward` 同名，必须隔在各自的模块里）。新增二元运算在此补一段。
 
 pub mod add_f32 {

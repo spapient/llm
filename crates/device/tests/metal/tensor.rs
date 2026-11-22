@@ -76,7 +76,7 @@ fn metal_tensor_gemm() {
 #[test]
 #[ignore = "Metal 张量核立方 GEMM：cargo test --release -p llm-engine --lib -- metal_tensor_kernel_gemm --ignored --nocapture"]
 fn metal_tensor_kernel_gemm() {
-    use op::sig::Signature;
+    use nn::sig::Signature;
 
     let Some((device, queue)) = bench_device("张量核立方 GEMM") else {
         return;
@@ -120,8 +120,8 @@ fn metal_tensor_kernel_gemm() {
 #[test]
 #[ignore = "Metal 张量核双缓冲对拍：cargo test --release -p llm-device --lib -- metal_tensor_double_buffer --ignored --nocapture"]
 fn metal_tensor_double_buf() {
-    use op::model::Sample;
-    use op::sig::Signature;
+    use nn::model::Sample;
+    use nn::sig::Signature;
 
     let Some((device, queue)) = bench_device("张量核双缓冲对拍") else {
         return;
@@ -159,7 +159,7 @@ fn metal_tensor_double_buf() {
 #[test]
 #[ignore = "Metal 张量核双缓冲吞吐：cargo test --release -p llm-device --lib -- metal_tensor_double_buffer_sweep --ignored --nocapture"]
 fn metal_tensor_double_buf_sweep() {
-    use op::sig::Signature;
+    use nn::sig::Signature;
 
     let Some((device, queue)) = bench_device("张量核双缓冲吞吐") else {
         return;

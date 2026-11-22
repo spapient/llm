@@ -12,8 +12,8 @@ use cutile::dirs::Dirs;
 use cutile::emit::Fragment;
 use cutile::prof::{Emit, Profile};
 use diagnostic::{Code, Error};
-use op::decl::OpDecl;
-use op::model::Sample;
+use prof::decl::OpDecl;
+use nn::model::Sample;
 
 /// 设备不在本机时唯一的说法：通道、协商与报告都用它。
 const NO_DEVICE: &str = "本机没有该设备，只能真机验证";

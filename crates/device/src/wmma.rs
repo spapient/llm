@@ -2,8 +2,8 @@
 
 use cutile::harness::output_name;
 use diagnostic::{Code, Error, Result};
-use op::model::Sample;
-use op::sig::Signature;
+use nn::model::Sample;
+use nn::sig::Signature;
 
 /// 输出块边长。
 const TILE: usize = 64;
@@ -214,7 +214,7 @@ fn shape(signature: &Signature, sample: &Sample) -> Result<(usize, usize, usize)
 }
 
 /// 单个形状标量的样本值：缺取值或不是非负 `usize` 都在这里报，不留给几何算式去越界。
-fn scalar_of(param: &op::sig::Param, sample: &Sample) -> Result<usize> {
+fn scalar_of(param: &nn::sig::Param, sample: &Sample) -> Result<usize> {
     let value = sample.scalar(&param.name).ok_or_else(|| {
         Error::new(
             Code::Invalid,

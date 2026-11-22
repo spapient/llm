@@ -319,6 +319,6 @@ pub mod i8 {
 
     #[cfg(test)]
     mod tests {
-        include!("../tests/dequant_i8_tests.rs");
+        include!("../../tests/kernel/dequant_i8_tests.rs");
     }
 }

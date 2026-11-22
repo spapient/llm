@@ -39,7 +39,7 @@ fn pointwise_wrap(
 fn loop_wrap(
     signature: &Signature,
     sample: &Sample,
-    grid: &op::decl::Grid,
+    grid: &prof::decl::Grid,
 ) -> Result<([usize; 3], [usize; 3], String)> {
     Ok((
         benchmark_grid(grid, sample)?,

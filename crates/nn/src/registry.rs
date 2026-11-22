@@ -8,62 +8,67 @@ use prof::catalogue::Registration;
 
 /// 算子清单：`名字: 内核类型`，一行一个，**唯一一次**声明内核类型。
 ///
-/// 名字必须与 `Operator::NAME` 逐字节相同（下面有编译期断言）；模板 stem 不在这里写。
-macro_rules! for_each_kernel {
+/// 名字必须与 `Operator::NAME` 逐字节相同（下面有编译期断言）；模板 stem 不在这里写——
+/// 那是 [`prof::for_each_template!`] 的事，两张表按名字同序，错位在编译期失败。
+///
+/// 导出是因为上层还要从同一张清单展开类型化 API（`train::OperatorSetOps`）：一张清单，
+/// 注册表、类型化入口、样本三者不会各自漂移。
+#[macro_export]
+macro_rules! for_each_operator {
     ($m:ident) => {
         $m! {
-            adaptive_pool_f32: crate::conv::adaptive_pool::AdaptivePoolModel,
-            add_f32: crate::kernel::add_f32::AddF32,
-            attention_f32: crate::conv::attention::AttentionF32,
-            avg_pool2d_f32: crate::conv::avg_pool2d::AvgPool2dModel,
-            batch_norm_f32: crate::conv::batch_norm::BatchNormModel,
-            conv2d_f32: crate::conv::conv2d::Conv2dModel,
-            decode_attention_f32: crate::conv::decode_attention::DecodeAttentionF32,
-            decode_flash_attention_f32: crate::conv::decode_attention::DecodeFlashAttentionF32,
-            dequant_i2: crate::kernel::dequant_i2::DequantI2F32,
-            dequant_i4: crate::kernel::dequant_i4::DequantI4F32,
-            dequant_i8: crate::kernel::dequant_i8::DequantI8F32,
-            div_f32: crate::kernel::div_f32::DivF32,
-            embed_f32: crate::kernel::embed_f32::EmbedF32,
-            exp_f32: crate::kernel::exp_f32::ExpF32,
-            flash_attention_f32: crate::conv::attention::FlashAttentionF32,
-            gelu_f32: crate::kernel::gelu_f32::GeluF32,
-            gemm_f32: crate::kernel::gemm_f32::GemmF32,
-            gemm_i2: crate::kernel::gemm_i2::GemmI2Model,
-            gemm_i4: crate::kernel::gemm_i4::GemmI4Model,
-            gemm_i8: crate::kernel::gemm_i8::GemmI8Model,
-            gemv_f32: crate::kernel::gemv_f32::F32,
-            gemv_i2: crate::kernel::gemv_i2::I2,
-            gemv_i4: crate::kernel::gemv_i4::I4,
-            gemv_i8: crate::kernel::gemv_i8::I8,
-            group_norm_f32: crate::conv::group_norm::GroupNormModel,
-            hard_sigmoid_f32: crate::kernel::hard_sigmoid_f32::HardSigmoidF32,
-            instance_norm_f32: crate::conv::instance_norm::InstanceNormModel,
-            interpolate_f32: crate::conv::interpolate::InterpolateModel,
-            latent_attention_f32: crate::conv::attention::latent::LatentAttentionF32,
-            layer_norm_f32: crate::conv::layer_norm::LayerNormModel,
-            leaky_relu_f32: crate::kernel::leaky_relu_f32::LeakyReluF32,
-            log_f32: crate::kernel::log_f32::LogF32,
-            matmul_f32: crate::kernel::matmul::MatmulF32,
-            matmul_i8: crate::kernel::matmul_i8::MatmulI8,
-            max_f32: crate::kernel::max_f32::MaxF32,
-            max_pool1d_f32: crate::conv::max_pool1d::MaxPool1dModel,
-            max_pool2d_f32: crate::conv::max_pool2d::MaxPool2dModel,
-            min_f32: crate::kernel::min_f32::MinF32,
-            mul_f32: crate::kernel::mul_f32::MulF32,
-            reduce_max_f32: crate::kernel::reduce_max_f32::ReduceMaxF32,
-            reduce_sum_f32: crate::kernel::reduce_sum_f32::ReduceSumF32,
-            relu_f32: crate::kernel::relu_f32::ReluF32,
-            residual_add_f32: crate::kernel::residual_add_f32::ResidualAddF32,
-            rmsnorm_f32: crate::kernel::rmsnorm_f32::RmsNormF32,
-            rope_f32: crate::kernel::rope_f32::RopeF32,
-            scale_f32: crate::kernel::scale_f32::ScaleF32,
-            scan_f32: crate::conv::scan_f32::ScanF32,
-            sigmoid_f32: crate::kernel::sigmoid_f32::SigmoidF32,
-            silu_f32: crate::kernel::silu_f32::SiluF32,
-            softmax_f32: crate::kernel::softmax_f32::SoftmaxF32,
-            sub_f32: crate::kernel::sub_f32::SubF32,
-            tanh_f32: crate::kernel::tanh_f32::TanhF32,
+            adaptive_pool_f32: $crate::conv::adaptive_pool::AdaptivePoolModel,
+            add_f32: $crate::kernel::add_f32::AddF32,
+            attention_f32: $crate::conv::attention::AttentionF32,
+            avg_pool2d_f32: $crate::conv::avg_pool2d::AvgPool2dModel,
+            batch_norm_f32: $crate::conv::batch_norm::BatchNormModel,
+            conv2d_f32: $crate::conv::conv2d::Conv2dModel,
+            decode_attention_f32: $crate::conv::decode_attention::DecodeAttentionF32,
+            decode_flash_attention_f32: $crate::conv::decode_attention::DecodeFlashAttentionF32,
+            dequant_i2: $crate::kernel::dequant_i2::DequantI2F32,
+            dequant_i4: $crate::kernel::dequant_i4::DequantI4F32,
+            dequant_i8: $crate::kernel::dequant_i8::DequantI8F32,
+            div_f32: $crate::kernel::div_f32::DivF32,
+            embed_f32: $crate::kernel::embed_f32::EmbedF32,
+            exp_f32: $crate::kernel::exp_f32::ExpF32,
+            flash_attention_f32: $crate::conv::attention::FlashAttentionF32,
+            gelu_f32: $crate::kernel::gelu_f32::GeluF32,
+            gemm_f32: $crate::kernel::gemm_f32::GemmF32,
+            gemm_i2: $crate::kernel::gemm_i2::GemmI2Model,
+            gemm_i4: $crate::kernel::gemm_i4::GemmI4Model,
+            gemm_i8: $crate::kernel::gemm_i8::GemmI8Model,
+            gemv_f32: $crate::kernel::gemv_f32::F32,
+            gemv_i2: $crate::kernel::gemv_i2::I2,
+            gemv_i4: $crate::kernel::gemv_i4::I4,
+            gemv_i8: $crate::kernel::gemv_i8::I8,
+            group_norm_f32: $crate::conv::group_norm::GroupNormModel,
+            hard_sigmoid_f32: $crate::kernel::hard_sigmoid_f32::HardSigmoidF32,
+            instance_norm_f32: $crate::conv::instance_norm::InstanceNormModel,
+            interpolate_f32: $crate::conv::interpolate::InterpolateModel,
+            latent_attention_f32: $crate::conv::attention::latent::LatentAttentionF32,
+            layer_norm_f32: $crate::conv::layer_norm::LayerNormModel,
+            leaky_relu_f32: $crate::kernel::leaky_relu_f32::LeakyReluF32,
+            log_f32: $crate::kernel::log_f32::LogF32,
+            matmul_f32: $crate::kernel::matmul::MatmulF32,
+            matmul_i8: $crate::kernel::matmul_i8::MatmulI8,
+            max_f32: $crate::kernel::max_f32::MaxF32,
+            max_pool1d_f32: $crate::conv::max_pool1d::MaxPool1dModel,
+            max_pool2d_f32: $crate::conv::max_pool2d::MaxPool2dModel,
+            min_f32: $crate::kernel::min_f32::MinF32,
+            mul_f32: $crate::kernel::mul_f32::MulF32,
+            reduce_max_f32: $crate::kernel::reduce_max_f32::ReduceMaxF32,
+            reduce_sum_f32: $crate::kernel::reduce_sum_f32::ReduceSumF32,
+            relu_f32: $crate::kernel::relu_f32::ReluF32,
+            residual_add_f32: $crate::kernel::residual_add_f32::ResidualAddF32,
+            rmsnorm_f32: $crate::kernel::rmsnorm_f32::RmsNormF32,
+            rope_f32: $crate::kernel::rope_f32::RopeF32,
+            scale_f32: $crate::kernel::scale_f32::ScaleF32,
+            scan_f32: $crate::conv::scan_f32::ScanF32,
+            sigmoid_f32: $crate::kernel::sigmoid_f32::SigmoidF32,
+            silu_f32: $crate::kernel::silu_f32::SiluF32,
+            softmax_f32: $crate::kernel::softmax_f32::SoftmaxF32,
+            sub_f32: $crate::kernel::sub_f32::SubF32,
+            tanh_f32: $crate::kernel::tanh_f32::TanhF32,
         }
     };
 }
@@ -99,7 +104,7 @@ macro_rules! registry_impl {
     (@one $ty:ty) => { () };
 }
 
-for_each_kernel!(registry_impl);
+for_each_operator!(registry_impl);
 
 /// 名字是否在注册表里；const 上下文可用。
 pub const fn contains(name: &str) -> bool {

@@ -2,7 +2,7 @@
 
 use crate::invalid;
 use diagnostic::Result;
-use op::scan::Scalar;
+use nn::conv::scan::Scalar;
 
 use crate::csa::{accumulate, dot, softmax_row};
 

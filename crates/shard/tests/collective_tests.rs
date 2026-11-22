@@ -233,3 +233,40 @@ fn a_width_mismatch_is_refused_on_both_sides() {
     );
     assert_eq!(Local::new(topology(), 0).unwrap_err().code(), Code::Invalid);
 }
+
+/// [`Local::reduce_into`] 是 [`Local::reduce`] 不分配的那条路径，[`Collective::all_reduce`] 走它。
+///
+/// 两条路径必须逐元素同解，四种归约都要对：只测 `Sum` 时，"`Max` 的缓冲没被整段覆盖"这种
+/// 缺陷照样能过。缓冲先灌成 NaN——归约必须先填单位元再折叠，任何一格没被写到都会立刻暴露。
+/// 同时钉住归约的纯度：归约之后每个 rank 的镜像仍是原值。
+#[test]
+fn reducing_into_a_buf_agrees_with_allocating_a_vec() {
+    let topology = Topology::new(2, 1, 1).expect("tp 2");
+    let mut local = Local::new(topology, 3).expect("宽度非零");
+    local.load(0, &[2.0, -3.0, 0.5]).expect("rank 0");
+    local.load(1, &[4.0, -1.0, -2.0]).expect("rank 1");
+    let group = topology.group(Parallel::Tensor, 0).expect("唯一一组");
+    for reduce in Reduce::ALL {
+        let expected = local.reduce(&group, reduce).expect("归约");
+        let mut buf = [f32::NAN; 3];
+        local
+            .reduce_into(&group, reduce, &mut buf)
+            .expect("归约进缓冲");
+        assert_eq!(
+            buf.as_slice(),
+            expected.as_slice(),
+            "{}：进缓冲与出 Vec 两条路径不同解",
+            reduce.as_str()
+        );
+        assert_eq!(local.replica(0).expect("rank 0"), [2.0, -3.0, 0.5]);
+        assert_eq!(local.replica(1).expect("rank 1"), [4.0, -1.0, -2.0]);
+    }
+    let mut short = [0.0; 2];
+    assert_eq!(
+        local
+            .reduce_into(&group, Reduce::Sum, &mut short)
+            .unwrap_err()
+            .code(),
+        Code::Invalid
+    );
+}

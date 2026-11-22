@@ -218,7 +218,7 @@ macro_rules! packed_gemv_config_tests {
                 $op,
                 include_str!(concat!(
                     env!("CARGO_MANIFEST_DIR"),
-                    "/ops/gemv_packed.k"
+                    "/../prof/src/ops/gemv_packed.k"
                 )),
             )
             .expect("签名可解析");

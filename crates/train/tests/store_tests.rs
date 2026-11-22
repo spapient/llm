@@ -174,7 +174,7 @@ fn compute_matches_the_operator_reference_bit_for_bit() {
         w.view().u8().expect("u8"),
         s.view().f32().expect("f32"),
     );
-    op::gemv_i4::forward(xv, wv, sv, &mut expected).expect("参考可算");
+    nn::gemv_i4::forward(xv, wv, sv, &mut expected).expect("参考可算");
     assert_eq!(
         f32s(&store, fixture.loss),
         expected,
@@ -436,7 +436,7 @@ fn the_second_registered_operator_replays_like_the_first() {
     store.compute_step("gemv_f32", &[w, x], y).expect("可算");
 
     let mut expected = vec![0.0f32; N];
-    op::gemv_f32::forward(&input, &weights, &mut expected).expect("参考可算");
+    nn::gemv_f32::forward(&input, &weights, &mut expected).expect("参考可算");
     assert_eq!(
         f32s(&store, y),
         expected,
@@ -498,11 +498,11 @@ fn a_three_operator_chain_runs_forward_through_the_reference_kernel() {
 
     // 手工逐环：与图上同一顺序、同一套算子参考。rope 在参考内核里固定位置 7。
     let mut h_ref = vec![0.0f32; N];
-    op::gemv_f32::forward(&input, &weights, &mut h_ref).expect("gemv 参考");
+    nn::gemv_f32::forward(&input, &weights, &mut h_ref).expect("gemv 参考");
     let mut r_ref = vec![0.0f32; N];
-    op::rope_f32::forward(7, &h_ref, &mut r_ref).expect("rope 参考");
+    nn::rope_f32::forward(7, &h_ref, &mut r_ref).expect("rope 参考");
     let mut expected = vec![0.0f32; N];
-    op::softmax_f32::forward(&r_ref, &mut expected).expect("softmax 参考");
+    nn::softmax_f32::forward(&r_ref, &mut expected).expect("softmax 参考");
 
     assert_eq!(
         f32s(&store, p),

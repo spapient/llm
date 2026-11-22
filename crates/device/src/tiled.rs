@@ -1,8 +1,8 @@
 //! 设备侧分块 lowering：共享内存 GEMM 与（后续）分块注意力。
 
 use diagnostic::{Code, Error, Result};
-use op::model::Sample;
-use op::sig::{Param, Signature};
+use nn::model::Sample;
+use nn::sig::{Param, Signature};
 
 mod flash;
 mod gemm;

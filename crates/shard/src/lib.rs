@@ -89,3 +89,22 @@ mod topology;
 pub use collective::{Collective, Group, Local, Reduce, Remote};
 pub use tiling::{Sharding, Tiling};
 pub use topology::{Parallel, Topology};
+
+// ---- 优化面（原 `optim` crate 并入） ----------------------------------------
+//
+// `device` / `cli` 以 `llm_optim::` 名义消费这些路径：后端契约、工具链、执行驱动。
+pub mod backend;
+pub mod bench;
+pub mod build;
+pub mod device;
+pub mod doctor;
+pub mod execution;
+pub mod gate;
+pub mod ir;
+pub mod ledger;
+pub mod pipeline;
+pub mod runner;
+pub mod toolchain;
+pub mod verify;
+pub mod witness;
+pub use runner::{compile_flags, driver};

@@ -2,8 +2,8 @@
 //! [`kernel`](super::kernel)，本文件只做路由，不重复实现两者。
 
 use diagnostic::Result;
-use op::conv::{AdaptiveAvgPool2d, AvgPool2d, Conv2d, Interpolate, MaxPool1d, MaxPool2d, Sampler};
-use op::norm::{BatchNorm2d, GroupNorm, LayerNorm};
+use nn::conv::conv::{AdaptiveAvgPool2d, AvgPool2d, Conv2d, Interpolate, MaxPool1d, MaxPool2d, Sampler};
+use nn::kernel::norm::{BatchNorm2d, GroupNorm, LayerNorm};
 
 use super::kernel::*;
 use super::shape::*;
@@ -116,7 +116,7 @@ impl Geometry {
         check_conv2d_shape(lens, out, Window { k, s, p }, (h, w, cin, cout))
     }
 
-    /// 按实例几何前向：算术全部复用 `op::conv` / `op::norm` 的真实现。
+    /// 按实例几何前向：算术全部复用 `nn::conv::conv` / `nn::kernel::norm` 的真实现。
     ///
     /// # Errors
     ///

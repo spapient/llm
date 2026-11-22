@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 
-use op::scan::Scalar;
+use nn::conv::scan::Scalar;
 
 /// `ρ_t` 窗口宽度（冻结常数，数学验证 38）。
 pub const W: usize = 64;
@@ -182,7 +182,7 @@ impl Default for MissRate {
 mod decision {
     //! `DecisionHead`：唯一门控实现（§1.11）。
 
-    use op::scan::Scalar;
+    use nn::conv::scan::Scalar;
 
     /// `DecisionHead` 的逐 token 默认层深（§1.11：`head_layers = 0`）。
     pub const HEAD_LAYERS_TOKEN: usize = 0;

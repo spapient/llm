@@ -19,8 +19,8 @@ mod gemm;
 mod tensor;
 
 /// 立方 GEMM 的自建样本：只带三个标量与空缓冲，形状由 `m/n/k` 直接给出。
-fn tensor_sample(m: usize, n: usize, k: usize) -> op::model::Sample {
-    op::model::Sample {
+fn tensor_sample(m: usize, n: usize, k: usize) -> nn::model::Sample {
+    nn::model::Sample {
         m,
         n,
         scalars: vec![("M", m as i64), ("N", n as i64), ("K", k as i64)],

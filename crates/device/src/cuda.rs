@@ -8,9 +8,9 @@ mod driver;
 use crate::dialect::{Cuda, Dialect, f32_output_shape, readback_bits};
 use cutile::harness::output_of;
 use diagnostic::{Code, Error, Result};
-use op::decl::Grid;
-use op::model::Sample;
-use op::sig::Signature;
+use prof::decl::Grid;
+use nn::model::Sample;
+use nn::sig::Signature;
 
 pub(crate) use driver::*;
 pub use driver::{cuda_grid_driver, cuda_harness};

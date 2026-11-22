@@ -5,7 +5,7 @@ use std::sync::{Arc, Barrier};
 use std::time::{Duration, Instant};
 
 use criterion::{BenchmarkGroup, Criterion, Throughput, measurement::WallTime};
-use op::fast;
+use nn::fast;
 
 /// f32 FMA 端口峰值：寄存器常驻、多条累加链互不依赖，用来把 GF/s 换算成峰值百分比。
 ///
@@ -102,7 +102,7 @@ fn fma_run<const C: usize>(lanes: &mut [[f32; LANES]; C], rounds: usize) -> f32 
 ///
 /// **为什么峰值必须分指令路径测**：每条指令通道的峰值不同（NEON `fma` 与 `sme` 的 `fmopa` 差
 /// 一个数量级以上），拿 A 通道的峰值当 B 通道的分母是口径混用（F2）。分母必须与分子同指令路径、
-/// **同线程数**，故每通道的探针与分母由 [`op::fast::probes`] 成对给出。生产默认线程数是
+/// **同线程数**，故每通道的探针与分母由 [`nn::fast::probes`] 成对给出。生产默认线程数是
 /// `available_parallelism`，所以 K7 该取 `{count}` 那一档，单线程档只用于隔离抖动。
 ///
 /// 通道探针本身也受 `cfg(nightly)` 门控：钉住的 stable 工具链上 `sme` 通道不编译，

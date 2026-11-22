@@ -8,9 +8,9 @@ use cutile::decl::Skeleton;
 use cutile::dirs::Dirs;
 use cutile::prof::Emit;
 use diagnostic::{Code, Error};
-use op::decl::{Grid, OpDecl};
-use op::model::Sample;
-use op::sig::CType;
+use prof::decl::{Grid, OpDecl};
+use nn::model::Sample;
+use nn::sig::CType;
 
 /// 错误定位：所有形态共用这一个站点（换形态不改定位）。
 const SITE: &str = "cutile::execution::program";

@@ -144,7 +144,7 @@ fn leaky_relu_chain_matches_central_differences() -> Result<()> {
     let loss = tape.record("reduce_sum_f32", &[h]).expect("记录 loss");
 
     let sizes = support::sizes_of(&tape, &[(p, N), (h, N), (loss, 1)]);
-    let slope = op::leaky_relu_f32::SLOPE;
+    let slope = nn::leaky_relu_f32::SLOPE;
     let p0 = vec![-1.2_f32, 0.4, 1.1];
     let chain_loss = |params: &[f32]| {
         params

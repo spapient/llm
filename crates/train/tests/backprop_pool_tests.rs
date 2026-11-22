@@ -11,106 +11,106 @@ fn sum_grad(op: &str, geometry: Geometry, x0: &[f32]) -> Result<()> {
 
 #[test]
 fn max_pool1d_matches_central_differences() -> Result<()> {
-    let total = op::max_pool1d::L;
-    let out = op::max_pool1d::OL;
+    let total = nn::conv::max_pool1d::L;
+    let out = nn::conv::max_pool1d::OL;
     let x0 = ramp(total);
     check_shaped_grad("max_pool1d_f32", &x0, out, |px| {
         let mut y = vec![0.0f32; out];
-        op::max_pool1d::forward(px, &mut y).expect("前向");
+        nn::conv::max_pool1d::forward(px, &mut y).expect("前向");
         y.iter().sum()
     })
 }
 
 #[test]
 fn max_pool2d_matches_central_differences() -> Result<()> {
-    let side = op::max_pool2d::H;
+    let side = nn::conv::max_pool2d::H;
     let x0 = ramp(side * side);
     check_shaped_grad("max_pool2d_f32", &x0, side * side, |px| {
         let mut y = vec![0.0f32; side * side];
-        op::max_pool2d::forward(px, &mut y).expect("前向");
+        nn::conv::max_pool2d::forward(px, &mut y).expect("前向");
         y.iter().sum()
     })
 }
 
 #[test]
 fn avg_pool2d_matches_central_differences() -> Result<()> {
-    let side = op::avg_pool2d::H;
+    let side = nn::conv::avg_pool2d::H;
     let x0 = ramp(side * side);
     check_shaped_grad("avg_pool2d_f32", &x0, side * side, |px| {
         let mut y = vec![0.0f32; side * side];
-        op::avg_pool2d::forward(px, &mut y).expect("前向");
+        nn::conv::avg_pool2d::forward(px, &mut y).expect("前向");
         y.iter().sum()
     })
 }
 
 #[test]
 fn adaptive_pool_matches_central_differences() -> Result<()> {
-    let (side, out) = (op::adaptive_pool::H, op::adaptive_pool::OH);
+    let (side, out) = (nn::conv::adaptive_pool::H, nn::conv::adaptive_pool::OH);
     let x0 = ramp(side * side);
     check_shaped_grad("adaptive_pool_f32", &x0, out * out, |px| {
         let mut y = vec![0.0f32; out * out];
-        op::adaptive_pool::forward(px, &mut y).expect("前向");
+        nn::conv::adaptive_pool::forward(px, &mut y).expect("前向");
         y.iter().sum()
     })
 }
 
 #[test]
 fn interpolate_matches_central_differences() -> Result<()> {
-    let (h, w, out) = (op::interpolate::H, op::interpolate::W, op::interpolate::OH);
+    let (h, w, out) = (nn::conv::interpolate::H, nn::conv::interpolate::W, nn::conv::interpolate::OH);
     let x0 = ramp(h * w);
     check_shaped_grad("interpolate_f32", &x0, out * out, |px| {
         let mut y = vec![0.0f32; out * out];
-        op::interpolate::forward(px, &mut y).expect("前向");
+        nn::conv::interpolate::forward(px, &mut y).expect("前向");
         y.iter().sum()
     })
 }
 
 #[test]
 fn batch_norm_matches_central_differences() -> Result<()> {
-    use op::batch_norm as decl;
+    use nn::conv::batch_norm as decl;
     let total = decl::C * decl::S * decl::N;
     let (x0, g0, b0) = (ramp(total), gain(), shift());
     check_affine_grad("batch_norm_f32", &x0, &g0, &b0, total, |px, pg, pb| {
         let mut y = vec![0.0f32; total];
-        op::batch_norm::forward(px, pg, pb, &mut y).expect("前向");
+        nn::conv::batch_norm::forward(px, pg, pb, &mut y).expect("前向");
         y.iter().sum()
     })
 }
 
 #[test]
 fn group_norm_matches_central_differences() -> Result<()> {
-    use op::group_norm as decl;
+    use nn::conv::group_norm as decl;
     let total = decl::C * decl::S * decl::N;
     let (x0, g0, b0) = (ramp(total), gain(), shift());
     check_affine_grad("group_norm_f32", &x0, &g0, &b0, total, |px, pg, pb| {
         let mut y = vec![0.0f32; total];
-        op::group_norm::forward(px, pg, pb, &mut y).expect("前向");
+        nn::conv::group_norm::forward(px, pg, pb, &mut y).expect("前向");
         y.iter().sum()
     })
 }
 
 #[test]
 fn instance_norm_matches_central_differences() -> Result<()> {
-    use op::instance_norm as decl;
+    use nn::conv::instance_norm as decl;
     let total = decl::C * decl::S * decl::N;
     let (x0, g0, b0) = (ramp(total), gain(), shift());
     check_affine_grad("instance_norm_f32", &x0, &g0, &b0, total, |px, pg, pb| {
         let mut y = vec![0.0f32; total];
-        op::instance_norm::forward(px, pg, pb, &mut y).expect("前向");
+        nn::conv::instance_norm::forward(px, pg, pb, &mut y).expect("前向");
         y.iter().sum()
     })
 }
 
 #[test]
 fn layer_norm_matches_central_differences() -> Result<()> {
-    use op::layer_norm as decl;
+    use nn::conv::layer_norm as decl;
     let total = decl::R * decl::W;
     let x0 = ramp(total);
     let g0 = gain();
     let b0 = shift();
     check_affine_grad("layer_norm_f32", &x0, &g0, &b0, total, |px, pg, pb| {
         let mut y = vec![0.0f32; total];
-        op::layer_norm::forward(px, pg, pb, &mut y).expect("前向");
+        nn::conv::layer_norm::forward(px, pg, pb, &mut y).expect("前向");
         y.iter().sum()
     })
 }

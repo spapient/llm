@@ -137,7 +137,7 @@ impl Node {
         self.output
     }
 
-    /// 算子名（与 `op::Op::name` 一致，便于把反向公式与声明对上）。
+    /// 算子名（与 `prof::catalogue::Op::name` 一致，便于把反向公式与声明对上）。
     pub fn op(&self) -> &str {
         &self.op
     }

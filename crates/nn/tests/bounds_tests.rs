@@ -22,7 +22,7 @@ fn a_projection_declares_its_floor() {
 
 #[test]
 fn the_floor_is_exactly_the_operator_semantics() {
-    let model = op::model("gemv_i4").expect("有语义表");
+    let model = nn::registry::model("gemv_i4").expect("有语义表");
     for (m, n) in [(64, 4), (32, 1), (4096, 64)] {
         let floor = Bounds::of_op("gemv_i4", m, n).expect("合法形状");
         let shape = model.projection(m, n).expect("合法形状");

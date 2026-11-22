@@ -5,8 +5,8 @@ use crate::cuda::host_buf_decl;
 use crate::dialect::readback_bits;
 use cutile::harness::{c_type, output_of};
 use diagnostic::{Code, Error, Result};
-use op::model::{Sample, Values};
-use op::sig::{Param, Signature};
+use nn::model::{Sample, Values};
+use nn::sig::{Param, Signature};
 
 /// AscendCL 的调用守卫：失败时报出是哪个调用并返回非零。
 pub(crate) const ACL_GUARD: &str = "static int cutile_acl(const char *what, aclError code) {\n\

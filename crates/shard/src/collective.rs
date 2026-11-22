@@ -5,7 +5,22 @@
 //! 在四个 `mod` 与四条 `pub use` 之间拼回这层关系，而它们各自的算术都不足以独立成篇。
 
 use crate::topology::Topology;
-use diagnostic::{Code, Result};
+use diagnostic::Result;
+
+/// [`fail!`] 的同形状形态，但站点由调用方给（参数），不要求字面量。
+///
+/// 只在"同一条判据有多个入口、诊断要指回真正拒绝的那一个"时才用：此时站点是运行时值，
+/// 而 [`fail!`] 展开出的 [`invalid!`] 要字面量站点。两条宏都落到 [`crate::refuse`]，
+/// 所以拒绝仍然只有一个出口。
+macro_rules! refuse_at {
+    ($site:expr, $($arg:tt)+) => {
+        Err(crate::refuse(
+            crate::Code::Invalid,
+            $site,
+            format_args!($($arg)+),
+        ))
+    };
+}
 
 /// 通信后端要实现的东西：对组内缓冲做一次集合操作。
 pub trait Collective {
@@ -196,13 +211,28 @@ impl Local {
     ///
     /// 组里出现本拓扑之外的 rank（`Group` 本身不绑定拓扑）。
     pub fn reduce(&self, group: &Group, reduce: Reduce) -> Result<Vec<f32>> {
-        let mut total = vec![reduce.identity(); self.width];
+        let mut total = vec![0.0; self.width];
+        self.reduce_into(group, reduce, &mut total)?;
+        Ok(total)
+    }
+
+    /// 把组内归约写进调用方给的缓冲；长度必须等于归约宽度。
+    ///
+    /// [`Collective::all_reduce`] 直接写进它自己的 `buf`，所以一次归约**不分配**堆：
+    /// 旧形态的 `all_reduce` 先 `reduce` 出一个 `Vec` 再拷进 `buf`，每次调用多一次分配。
+    ///
+    /// # Errors
+    ///
+    /// 缓冲长度与归约宽度不一致，或组里出现本拓扑之外的 rank。
+    pub fn reduce_into(&self, group: &Group, reduce: Reduce, out: &mut [f32]) -> Result<()> {
+        self.check_width("shard::Local::reduce_into", out.len())?;
+        out.fill(reduce.identity());
         for rank in group.ranks() {
-            for (slot, value) in total.iter_mut().zip(self.replica(*rank)?) {
+            for (slot, value) in out.iter_mut().zip(self.replica(*rank)?) {
                 *slot = reduce.apply(*slot, *value);
             }
         }
-        Ok(total)
+        Ok(())
     }
 
     /// 把归约结果写回组内每个 rank 的镜像。
@@ -222,15 +252,12 @@ impl Local {
     /// 缓冲必须正好是归约宽度：短了读不全，长了富余元素无人归约。
     ///
     /// `site` 与 [`Self::slot`] 同理——两个入口共用一条判据，诊断要指回真正拒绝的那个。
+    /// 站点是参数而不是字面量，所以 [`fail!`] 用不了，走下面这条同形状的 [`refuse_at!`]。
     fn check_width(&self, site: &'static str, len: usize) -> Result<()> {
         if len == self.width {
             return Ok(());
         }
-        Err(crate::refuse(
-            Code::Invalid,
-            site,
-            format_args!("宽度 {len} 与归约宽度 {} 不一致", self.width),
-        ))
+        refuse_at!(site, "宽度 {len} 与归约宽度 {} 不一致", self.width)
     }
 
     /// rank 必须落在本拓扑内：越界写在别的 rank 上会静默改掉无关的镜像。
@@ -241,20 +268,14 @@ impl Local {
         if idx < self.replicas.len() {
             return Ok(idx);
         }
-        Err(crate::refuse(
-            Code::Invalid,
-            site,
-            format_args!("rank {rank} 超出 0..{}", self.replicas.len()),
-        ))
+        refuse_at!(site, "rank {rank} 超出 0..{}", self.replicas.len())
     }
 }
 
 impl Collective for Local {
     fn all_reduce(&mut self, group: &Group, reduce: Reduce, buf: &mut [f32]) -> Result<()> {
-        self.check_width("shard::Local::all_reduce", buf.len())?;
-        let reduced = self.reduce(group, reduce)?;
-        buf.copy_from_slice(&reduced);
-        self.distribute(group, &reduced)
+        self.reduce_into(group, reduce, buf)?;
+        self.distribute(group, buf)
     }
 }
 

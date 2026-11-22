@@ -153,5 +153,5 @@ pub(super) fn compute_tn(
 
 #[cfg(test)]
 mod tests {
-    include!("../../tests/tn_tests.rs");
+    include!("../../../tests/kernel/tn_tests.rs");
 }

@@ -111,7 +111,12 @@ fn ledger(settings: &Settings, out: Option<&str>) -> diagnostic::Result<String> 
 /// `fusions`：候选融合逐条过 roofline，按加速比排名——README §9.1 那张清单的可执行版本。
 fn fusions(settings: &Settings, name: &str, budget: usize) -> diagnostic::Result<String> {
     let catalogue = Catalogue::load(&settings.dirs())?;
-    let ranked = cutile::plan::ranking(catalogue.resolve(name)?, catalogue.ops(), budget);
+    let ranked = cutile::plan::ranking(
+        catalogue.resolve(name)?,
+        catalogue.ops(),
+        budget,
+        &nn::registry::REGISTRY,
+    );
     Ok(matrix::fusions(&ranked))
 }
 

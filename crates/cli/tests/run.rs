@@ -66,7 +66,7 @@ fn assert_close(
     op_name: &str,
     output: &[f32],
     want: &[f32],
-    dtype: op::model::DType,
+    dtype: nn::model::DType,
 ) {
     let max_rel_err = cutile::reference::max_rel_err(output, want);
     let tolerance = cutile::reference::tolerance(dtype);
@@ -121,11 +121,11 @@ fn bind_scalar(executor: &mut ::device::metal::executor::MetalExecutor, slot: u3
 fn bind_decl_bufs(
     executor: &mut ::device::metal::executor::MetalExecutor,
     node: &mut engine::exec::Node,
-    decl: &op::decl::OpDecl,
-    sample: &op::model::Sample,
+    decl: &prof::decl::OpDecl,
+    sample: &nn::model::Sample,
     output_len: usize,
 ) {
-    use op::sig::CType;
+    use nn::sig::CType;
 
     for (slot, param) in decl
         .signature
@@ -160,7 +160,7 @@ fn bind_decl_bufs(
 fn submit_read(
     executor: &mut ::device::metal::executor::MetalExecutor,
     node: engine::exec::Node,
-    decl: &op::decl::OpDecl,
+    decl: &prof::decl::OpDecl,
     len: usize,
 ) -> Vec<f32> {
     use engine::exec::Executor as _;
@@ -219,9 +219,9 @@ struct CudaSetup {
     catalogue: cutile::builtin::Catalogue,
     dirs: cutile::dirs::Dirs,
     profile: cutile::prof::Profile,
-    model: op::model::Model,
-    sample: op::model::Sample,
-    decl: op::decl::OpDecl,
+    model: nn::model::Model,
+    sample: nn::model::Sample,
+    decl: prof::decl::OpDecl,
     m: usize,
     n: usize,
 }
@@ -230,7 +230,7 @@ struct CudaSetup {
 fn cuda_setup(op_name: &str, tag: &str, shape: Option<(usize, usize)>) -> Option<CudaSetup> {
     let (catalogue, dirs) = cuda_harness(tag)?;
     let profile = catalogue.profile("nvidia").cloned().expect("nvidia 档案");
-    let model = op::model(op_name).expect("语义表");
+    let model = nn::registry::model(op_name).expect("语义表");
     let (m, n) = shape.unwrap_or(model.shape);
     let sample = (model.sample)(m, n);
     let decl = catalogue.op(op_name).expect("算子声明").clone();
@@ -252,10 +252,10 @@ fn cuda_setup(op_name: &str, tag: &str, shape: Option<(usize, usize)>) -> Option
 struct ChunkSetup {
     catalogue: cutile::builtin::Catalogue,
     dirs: cutile::dirs::Dirs,
-    model: op::model::Model,
-    sample: op::model::Sample,
+    model: nn::model::Model,
+    sample: nn::model::Sample,
     expected: Vec<f32>,
-    decl: op::decl::OpDecl,
+    decl: prof::decl::OpDecl,
     m: usize,
     n: usize,
     len: u32,
@@ -265,7 +265,7 @@ struct ChunkSetup {
 
 /// 从签名里取唯一非缓冲标量作为分块轴长度（Metal 扫描与 CUDA 归约共用）。
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-fn scalar_len(decl: &op::decl::OpDecl, sample: &op::model::Sample) -> u32 {
+fn scalar_len(decl: &prof::decl::OpDecl, sample: &nn::model::Sample) -> u32 {
     decl.signature
         .params()
         .iter()
@@ -278,10 +278,10 @@ fn scalar_len(decl: &op::decl::OpDecl, sample: &op::model::Sample) -> u32 {
 fn chunk_setup(
     op_name: &str,
     tag: &str,
-    len_of: impl FnOnce(&op::decl::OpDecl, &op::model::Sample) -> u32,
+    len_of: impl FnOnce(&prof::decl::OpDecl, &nn::model::Sample) -> u32,
 ) -> Option<ChunkSetup> {
     let (catalogue, dirs) = metal_harness(tag)?;
-    let model = op::model(op_name).expect("语义表");
+    let model = nn::registry::model(op_name).expect("语义表");
     let (m, n) = model.shape;
     let sample = (model.sample)(m, n);
     let expected = (model.reference)(&sample).expect("标量参考");
@@ -331,8 +331,8 @@ fn the_first_layer_computes_the_hand_arithmetic_on_its_own_bytes() {
         .expect("条目存在");
     let w = weights::load_f32(entry, &file).expect("f32 条目");
     let x: Vec<f32> = (0..8).map(|idx| (idx % 8) as f32 * 0.125 - 0.5).collect();
-    let model = op::model(nn::Linear::DENSE).expect("稠密语义");
-    let sample = op::model::bind(&model, 8, 4, &x, &w).expect("形状自洽");
+    let model = nn::registry::model(nn::Linear::DENSE).expect("稠密语义");
+    let sample = nn::model::bind(&model, 8, 4, &x, &w).expect("形状自洽");
 
     let settings = crate::settings::Settings::load()
         .map_err(|error| error.with("配置"))

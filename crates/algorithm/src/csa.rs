@@ -3,7 +3,7 @@
 use crate::invalid;
 use core::cmp::Ordering;
 use diagnostic::Result;
-use op::scan::Scalar;
+use nn::conv::scan::Scalar;
 
 /// CSA 分块因子。
 pub const CSA_M: usize = 4;
