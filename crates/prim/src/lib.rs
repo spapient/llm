@@ -1,14 +1,14 @@
 //! 片段层：某台设备上某个原语的具体写法，以及它的见证源码。
 //!
 //! **拥有**：[`Fragment`] / [`FragmentSet`]（装载后的片段）、[`Layout`]（片段层在哪）、
-//! [`Builtin`]（编译期内嵌表）。**不拥有**：片段文本本身（六个设备 crate：`cpu` / `cuda` /
-//! `metal` / `musa` / `opencl` / `rocm`）、`Device` / `Image` / `Status` 与设备能力区间
-//! （`prof`）、拼接与 emit（`cutile`）。**依赖**：六个设备 crate、`prof`（原语闭集与档案）、
+//! [`Builtin`]（编译期内嵌表）。**不拥有**：片段文本本身（`llm-frag` 的六个设备模块：
+//! `cpu` / `cuda` / `metal` / `musa` / `opencl` / `rocm`）、`Device` / `Image` / `Status` 与设备能力区间
+//! （`prof`）、拼接与 emit（`cutile`）。**依赖**：`frag`、`prof`（原语闭集与档案）、
 //! `diagnostic`（错误类别由本层给，装载失败因此带类别而不是字符串）。**被依赖**：`cutile`。
 //!
 //! 这一层是**机制**：怎么找、怎么装载、怎么校验签名声明。一台设备的某条原语怎么写，全部是
-//! 那个设备 crate 里的 `<prim>.<ext>` 文本，本 crate 一行片段都没有。于是"加一台设备"是加
-//! 一个设备 crate，再加 `builtin` 里四行（四张表各一行）；机制代码不动，片段也不会与拼接器
+//! `crates/frag/src/<设备>/` 里的 `<prim>.<ext>` 文本，本 crate 一行片段都没有。于是"加一台设备"是加
+//! 一个设备目录与一行 `build.rs`，再加 `builtin` 里四行（四张表各一行）；机制代码不动，片段也不会与拼接器
 //! 挤在同一个 crate。
 //!
 //! 这个文件只是**门面**：三个模块各承担一个问题，公开项在这里统一导出，路径与模块归属无关。
@@ -44,7 +44,7 @@
 //! assert!(device.entry(llm_prim::Prim::Dot).is_some(), "每个原语都有入口");
 //!
 //! let layout = llm_prim::Layout::builtin();
-//! assert!(layout.witness("cpu/witness.c").is_some(), "内置见证在设备 crate 里");
+//! assert!(layout.witness("cpu/witness.c").is_some(), "内置见证在 frag 的设备目录里");
 //! ```
 
 #![deny(unsafe_code)]

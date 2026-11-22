@@ -1,13 +1,12 @@
 [package]
-name = "llm-cpu"
+name = "llm-frag"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "cpu device fragments: the `cpu` primitive implementations (C) and their witness."
+description = "Device fragments: the six vendors' primitive implementations and witnesses, one module per device."
 publish = false
-autotests = false
 build = "build.rs"
 
 [dependencies]
@@ -19,7 +18,7 @@ prof = { path = "../prof", package = "llm-prof", features = ["build"] }
 
 [features]
 default = []
-# 构建期把 `witness.c` 编成设备镜像并嵌入二进制；没有镜像配方时只是 `Status::NoRecipe`。
+# 构建期把能编的见证编成设备镜像并嵌入二进制；没有镜像配方时只是 `Status::NoRecipe`。
 device-image = []
 
 [dev-dependencies]

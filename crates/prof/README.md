@@ -150,7 +150,7 @@ host 自检），值不对就整台设备失败。
 `profile.validate` 把这条变成装载期判据（只对**写了** `[simt]` 的档案生效——`ascend` 没有这一段，
 它的 lane 交换由向量单元 `vgather`/`vbroadcast` 承担）。
 
-**片段层的闭合由设备 crate 自己判定**：`testkit::device::Contract` 把一台设备的三张生成表
+**片段层的闭合由设备模块自己判定**：`testkit::device::Contract` 把一台设备的三张生成表
 （`FRAGMENTS` / `PRIMS` / `DEVICE`）与它在档案里的 `[[provides]]` 摊到同一份契约上，逐条判定——
 P0 九条不多不少、每条签名都是带见证的供给且入口名与 `PRIMS` 那条一致、每个见证函数被恰好一条
 签名认领（多出来的是死代码）、目录是 `<prim>.<ext>` 加 `witness.<ext>` 的闭集、期望值不超回读

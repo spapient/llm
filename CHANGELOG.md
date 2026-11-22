@@ -26,6 +26,25 @@
 
 ### Changed
 
+- **六个设备片段 crate 合并成一个 `llm-frag`：一台设备一个模块，生成器一次生成六台**。`cuda` / `metal` /
+  `cpu` / `opencl` / `rocm` / `musa` 这六个 crate 的差别只有两样：`build.rs` 里的 vendor 字符串，和
+  `src/` 里的片段文本。其余部分（`Cargo.toml`、`build.rs` 的 `main`、`src/lib.rs` 的文档与 re-export、
+  `tests/fragments.rs` 的六个 `mod`）逐字相同，**541 行样板摊在 25 个文件里**，改一条判据要改六处。
+  现在只剩 `crates/frag`（`name = "llm-frag"`）：`src/<设备>/` 放片段正文，`build.rs` 用
+  `prof::codegen::devices(&[(模块, vendor); 6])` **一次**产出 `$OUT_DIR/tables.rs`，其中每台设备是一个
+  带文档的 `pub mod`，导出 `ROOT` / `FRAGMENTS` / `EPILOGUE` / `PRIMS` / `DEVICE`。
+  - **调用点形状不变**：`prim` 从六条重命名依赖变成一条 `frag`，加一行
+    `use frag::{cpu, cuda, metal, musa, opencl, rocm};`，`cuda::DEVICE.vendor` 这类写法原样有效。
+  - **加一台设备的成本**从"新建 crate + 六个文件"降到"放一个目录 + `build.rs` 一行 + `builtin` 四行"；
+    构建脚本数从 6 降到 1，`device-image` 的 feature 转发从 6 条并成 1 条（合并前 `prim` 就同时开六台，
+    语义等价）。
+  - **生成器多了两条校验**：模块名必须是合法 Rust 标识符且非关键字，六个模块名不得重复——两者以前靠
+    "一个 vendor 一个 crate"隐式成立，现在要靠显式拒绝。
+  - **测试反而更严**：`crates/frag/tests/fragments.rs` 一个文件跑六台设备，55 条判据（含 `testkit` 的
+    见证编译与 `expect` 对拍）全绿；此前这些判据散在六个测试目标里，`cargo test -p llm-<dev>` 只能逐台跑。
+  **净减**：−21 个文件、−6 个 crate（38 → 33）、样板 541 → 142 行（净 −399 行），片段正文 54 个文件
+  逐字节未改（`git mv`）。
+
 - **不再需要 nightly：默认工具链换成已发布的 stable，clone 即能构建**。`crates/gemm` 的两处不稳定
   能力改为 `#[cfg(nightly)]` 挂起，各配一条语义等价的 stable 退路，由本 crate 新增的 `build.rs`
   （一次 `rustc --version` 判定，产出 `cfg(nightly)`）选择：

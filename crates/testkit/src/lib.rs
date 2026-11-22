@@ -12,7 +12,7 @@
 //! （[`device`]）与 `check_expectations`、`check_witnesses`、`check_self_contained`、
 //! `TOLERANCE`（[`evidence`]）——六台设备共用的片段层契约：签名、见证入口、档案供给三者
 //! 必须闭合，且每条见证在本机算得出档案写的值；`device_suite!`（[`suite`]）把九条判据
-//! 摊成设备 crate 的 `#[test]` 函数，于是"一台设备一遍"不必复制九次。
+//! 摊成设备模块的 `#[test]` 函数，于是"一台设备一遍"不必复制九次。
 //! **不拥有**：任何生产逻辑——它是测试夹具，不进任何二进制。
 //! **依赖**：`proptest`（仅 [`prop`]：性质测试装置）——夹具不拉被测 crate，复用测试库则比在
 //! 四个成员里各写一份配置更省，且 testkit 只作 dev-dependency，此依赖不进任何二进制。

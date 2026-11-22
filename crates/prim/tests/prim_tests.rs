@@ -360,7 +360,7 @@ fn a_reduction_fragment_must_fold_through_func() {
     }
 }
 
-/// `device-image` 开在本 crate 上必须真的转发给设备 crate：漏转发时设备 crate 自己编了镜像，
+/// `device-image` 开在本 crate 上必须真的转发给 frag：漏转发时 frag 自己编了镜像，
 /// 而 `prim` 合成出来的表还是纯源码——两边说的不是同一件事。开启后 `metal` 有配方，所以它不再
 /// 停在 [`Status::Source`]（编成 [`Status::Compiled`] 还是 [`Status::Skipped`] 取决于本机工具链）。
 #[cfg(feature = "device-image")]
@@ -370,7 +370,7 @@ fn the_device_image_feature_reaches_the_composed_table() {
     assert_ne!(
         metal.status,
         Status::Source,
-        "`device-image` 没有转发到设备 crate"
+        "`device-image` 没有转发到 frag"
     );
 }
 

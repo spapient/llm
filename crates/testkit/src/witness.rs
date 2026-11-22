@@ -1,4 +1,4 @@
-//! 见证源码的宿主执行：把设备 crate 的 `witness.<ext>` 编成可执行文件，逐条调用
+//! 见证源码的宿主执行：把设备模块的 `witness.<ext>` 编成可执行文件，逐条调用
 //! `int func(float *out)` 并与档案里的 `witness.expect` 对拍。
 
 use std::fmt::Write as _;

@@ -603,22 +603,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "llm-cpu"
-version = "0.1.0"
-dependencies = [
- "llm-prof",
- "llm-testkit",
-]
-
-[[package]]
-name = "llm-cuda"
-version = "0.1.0"
-dependencies = [
- "llm-prof",
- "llm-testkit",
-]
-
-[[package]]
 name = "llm-device"
 version = "0.1.0"
 dependencies = [
@@ -669,6 +653,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "llm-frag"
+version = "0.1.0"
+dependencies = [
+ "llm-prof",
+ "llm-testkit",
+]
+
+[[package]]
 name = "llm-fuzz"
 version = "0.1.0"
 dependencies = [
@@ -701,22 +693,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "llm-metal"
-version = "0.1.0"
-dependencies = [
- "llm-prof",
- "llm-testkit",
-]
-
-[[package]]
-name = "llm-musa"
-version = "0.1.0"
-dependencies = [
- "llm-prof",
- "llm-testkit",
-]
-
-[[package]]
 name = "llm-nn"
 version = "0.1.0"
 dependencies = [
@@ -744,14 +720,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "llm-opencl"
-version = "0.1.0"
-dependencies = [
- "llm-prof",
- "llm-testkit",
-]
-
-[[package]]
 name = "llm-optim"
 version = "0.1.0"
 dependencies = [
@@ -767,14 +735,9 @@ dependencies = [
 name = "llm-prim"
 version = "0.1.0"
 dependencies = [
- "llm-cpu",
- "llm-cuda",
  "llm-diagnostic",
- "llm-metal",
- "llm-musa",
- "llm-opencl",
+ "llm-frag",
  "llm-prof",
- "llm-rocm",
 ]
 
 [[package]]
@@ -792,14 +755,6 @@ dependencies = [
  "llm-diagnostic",
  "llm-testkit",
  "proptest",
-]
-
-[[package]]
-name = "llm-rocm"
-version = "0.1.0"
-dependencies = [
- "llm-prof",
- "llm-testkit",
 ]
 
 [[package]]

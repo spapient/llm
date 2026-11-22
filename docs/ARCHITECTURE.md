@@ -13,7 +13,7 @@
 | 层 | 成员 | 职责 | 不允许出现 |
 |---|---|---|---|
 | L1 基础设施 | `diagnostic`、`rng`、`dtype`、`wire`、`formats`、`tools` | 错误类型与声明数据树（`data`：构建期语料在运行期的形状，**没有解析器**）、计数器型确定性随机、精度闭集、与领域无关的字节码闭集（CRC-32 / LEB128 / Sink / 对齐落位 / `Invalid` 构造点）、外部权重格式的只读适配（torch `.bin` 的 ZIP+pickle 栈机、GGUF、JSON，只吐四要素不判语义）、静态质量门与回退判定 | 任何运行时领域语义、任何 TOML 解析 |
-| L2 数据层 | `prof`、`spec`、`gemm`、`conv`、`op`、`cpu`、`cuda`、`metal`、`musa`、`opencl`、`rocm`、`prim` | 设备档案与能力闭集、算子四层：`spec` 出契约（签名 / 样本 / 语义表 / 求和表达式与模板词法）、`gemm` 出内核族（打包格式、经典几何、微内核）、`conv` 出神经网络算子（卷积 / 归一化 / 注意力 / 扫描）、`op` 出声明解析与唯一注册表 `REGISTRY`，求和语义代价由 `spec::einsum` 推出；六份设备原语片段与各自见证（一台设备一个成员，语料在各自的 `build.rs` 里解析成 `FRAGMENTS` / `PRIMS` / `DEVICE` 三张表）、`prim` 只出机制：把六张表在编译期拼成一张聚合表，并按 `Layout` 决定读内嵌表还是读盘 | 任何机制代码（拼接、协商、emit）、任何设备知识 |
+| L2 数据层 | `prof`、`spec`、`gemm`、`conv`、`op`、`frag`、`prim` | 设备档案与能力闭集、算子四层：`spec` 出契约（签名 / 样本 / 语义表 / 求和表达式与模板词法）、`gemm` 出内核族（打包格式、经典几何、微内核）、`conv` 出神经网络算子（卷积 / 归一化 / 注意力 / 扫描）、`op` 出声明解析与唯一注册表 `REGISTRY`，求和语义代价由 `spec::einsum` 推出；六台设备的原语片段与各自见证（一台设备一个模块，`src/<设备>/` 放语料，`build.rs` 一次把它解析成每台设备的 `FRAGMENTS` / `PRIMS` / `EPILOGUE` / `DEVICE` 表）、`prim` 只出机制：把六张表在编译期拼成一张聚合表，并按 `Layout` 决定读内嵌表还是读盘 | 任何机制代码（拼接、协商、emit）、任何设备知识 |
 | L3 内核 | `cutile`、`optim` | 前半纯机制：协商 → 拼接 → emit → 缓存指纹，一行也不执行；后半编译执行：`doctor` / `verify` / `bench` / `execution` 共用一条 `pipeline`，报告只是数据、排版在前端。拆开的理由是"能不能执行"这条边界：`cutile` 只产设备源与指纹，换掉工具链不影响它；`optim` 才碰编译器与设备，换掉执行方式不影响框架 | 设备厂商特判、运行时依赖 |
 | L4 运行时 | `tensor`、`storage`、`tokenizer` | 张量元数据、布局搬运、文本边界 | 模型语义、调度策略 |
 | L5 模型与训练 | `weights`、`snapshot`、`autograd`、`nn`、`algorithm`、`shard` | 权重结构与自有 `.u` 容器、检查点字节格式、反向图与显存计划、层定义与执行侧机制、架构变体的参考语义（不产出 `ContractSpec`）、切分拓扑与集合通信 | 进程 / 服务语义 |
@@ -39,23 +39,18 @@
 不再复述每一次的数字；配置层的现状见 [ADR 0022](adr/0022-build-time-corpora.md) 与
 [ADR 0023](adr/0023-settings-to-cli.md)。
 
-允许的边（当前全量，共 180 条，含 62 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benchmarks` / `testkit` 的边不参与运行时方向判定）：
+允许的边（当前全量，共 166 条，含 57 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benchmarks` / `testkit` 的边不参与运行时方向判定）：
 
 ```
-cutile   → diagnostic, op, prim, prof, spec    +dev: testkit
+cutile   → annotation, diagnostic, op, prim, prof, spec    +dev: testkit
 optim    → cutile, diagnostic, op, prim, prof    +dev: testkit（运行期：编译 / 执行 / 测速 / 见证；只经 `cutile` 的器械做，不重写协商）
 op       → annotation, conv, diagnostic, gemm, prof, spec    +dev: testkit（工具边：`#[model]` 注解，不参与方向判定）
 gemm     → annotation, diagnostic, prof, spec    +dev: cutile, prim, testkit（声明解析结果与内核族的落点；不含 `op`，注册表只在 `op`）
 conv     → annotation, diagnostic, gemm, prof, spec    +dev: testkit（神经网络算子只借用内核族的打包与几何，不反向）
 spec     → annotation, diagnostic, prof    +dev: testkit（契约层：只认识 L1 与注解，不认识任何内核）
-prim     → cpu, cuda, diagnostic, metal, musa, opencl, prof, rocm（机制：编译期把六张设备表拼成聚合表）
+prim     → diagnostic, frag, prof（机制：编译期把六张设备表拼成聚合表）
 prof     → diagnostic, dtype
-cpu      → prof（片段 + 见证；只依赖档案的 `Prim` / `Witness` 闭集，不认识 `prim`）    +dev: testkit（片段层对账：契约夹具与见证执行）
-cuda     → prof    +dev: testkit
-metal    → prof    +dev: testkit（见证按主机 C 跑参考值：`thread` 限定符在宿主侧擦掉，算术一字不改）
-musa     → prof    +dev: testkit
-opencl   → prof    +dev: testkit（片段层对账：契约夹具与见证执行）
-rocm     → prof    +dev: testkit（片段层对账：契约夹具与见证执行）
+frag     → prof（片段 + 见证；只依赖档案的 `Prim` / `Witness` 闭集，不认识 `prim`）    +dev: testkit（片段层对账：契约夹具与见证执行）
 dtype    → （叶：精度闭集，无运行期工作区依赖）    +dev: testkit
 tensor   → diagnostic, dtype    +dev: testkit
 storage  → tensor, diagnostic
@@ -112,9 +107,10 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Device` / `Image` / `Status` | `prof` | 一台设备这次构建带上的设备侧代码、编译产物与其结局（`Source` / `Compiled` / `NoRecipe` / `Skipped`）；放在最底层是为了让六份片段 crate 与 `prim` 都能引用同一份类型而不成环 |
 | `WitnessLookup` | `prof` | 「见证文件名 → 磁盘路径」的唯一缝：档案校验只问这一个方法，因此内嵌根（多 crate）与数据根（单目录）两种布局共用同一条校验路径 |
 | `Closed` / `Set` / `KernelKey` / `Epilogue` / `ActKind` | `prof` | 词汇表契约、全仓唯一位集（容量在单态化时由 `const FITS` 断言）、以及一条内核实现的登记键（[ADR 0027](adr/0027-kernel-registry-and-fragment-contract.md) 七元组，只承载身份）。`Epilogue` 是写回尾块闭集（顺序即施加顺序，只有 `store` 有副作用），`ActKind` 是 `act:<kind>` 的参数闭集且与 `gemm::unary` 的执行核一一对应：两者只描述「做了什么」，算术仍归 `gemm`。这两个名字由 `vocabulary!` 宏展开成 `pub enum`，源码里没有那行 `pub`——所有权门禁的两向扫描因此共用 `public_type_names` 这一份口径 |
-| `FragmentSet` / `Fragment` / `Layout` | `prim` | 原语片段与见证源码的读入形状（文件名落在 `prof` 的原语闭集内）、以及「内嵌根 / 数据根」二选一的布局；六张内嵌表由各设备 crate 的 `build.rs` 扫描生成，`prim/src` 里只有机制与编译期的聚合 |
-| 片段文本 + 见证 | `cuda`、`cpu`、`metal`、`musa`、`opencl`、`rocm` | 一台设备一份：片段文本、见证与 `build.rs` 生成的 `FRAGMENTS` / `PRIMS` / `DEVICE` 三张表都由该成员拥有；`prim` 只把它们拼起来，不认识任何厂商名 |
+| `FragmentSet` / `Fragment` / `Layout` | `prim` | 原语片段与见证源码的读入形状（文件名落在 `prof` 的原语闭集内）、以及「内嵌根 / 数据根」二选一的布局；六张内嵌表由 `llm-frag` 的单个 `build.rs` 一次扫描生成，`prim/src` 里只有机制与编译期的聚合 |
+| 片段文本 + 见证 | `frag` | 一台设备一个模块（`src/<设备>/`）：片段文本、见证与生成器给出的 `FRAGMENTS` / `PRIMS` / `EPILOGUE` / `DEVICE` 表都由该成员拥有；`prim` 只把它们拼起来，不认识任何厂商名。六台设备共用一份 `Cargo.toml` / `build.rs` / 测试目标，是因为它们的机制逐字相同——差别只有 vendor 字符串与片段正文 |
 | `Catalogue` | `cutile` | 已装载的三层数据（声明 + 档案 + 片段）与它们的交叉校验 |
+| `Kernel` / `Parameter` / `ValueType` / `ScalarType` / `Access` / `Expr` / `BinaryOp` / `VerificationError` | `cutile` | `#[dsl]` 的 typed IR：一份目标无关的逐点内核**签名 + 表达式**（`ScalarType` 是逐点族的标量闭集，`Access` 只区分只读与可读写，`ValueType` 把「标量」与「缓冲区 + 元素类型 + 访问」合成签名里的一种值，`BinaryOp` 是算术闭集）。它只描述「算什么」，不含任何设备、线程或内存层级——`verify` 在构造时挡住越界与类型不符，`optimize` 只做保语义的常量折叠，`emit_c` 是当前唯一的落地；把 IR 抬进协商（`Lower` / `Image`）尚未接上，因此它此刻**不产生任何性能结论**，只是把「宏写出来的表达式」变成可校验的数据 |
 | `Backend` / `Codegen` / `Driver` / `Readback` / `Source` / `Lower` / `Launch` / `Stages` | `optim` | 设备后端契约（`Backend = Codegen + Driver`）：`Codegen` 是纯函数，`Driver` 是唯一碰工具链 / FFI 的一半，运行期只经 `dyn` 分派；Metal / CUDA 的 `Driver` 由 `device` 实现、`cli` 注入；`Lower` 是生产态 lowering 的中性请求，`Launch` 把「工作项数」`items` 与「每点线程数」`group` 拆成两个字段（合成一个数会让总线程数与工作项数无法同时表达），两者都只由 `execution::launch` 一处从声明与样本推出。`Stages` 是一次形态产出的**按角色取**的设备源集合（单段 / 两段 / 三段 + 扫描衰减 + 循环注入的网格各维）：段数随形态变，按位置返回元组会让「第几个返回值是什么」变成隐式约定，而按角色取不出就报缺段。`Backend::parallel` 的默认实现是 `Unsupported`——「这个后端没有并行网格程序」是一句诚实的回答，默认给一份逐点源会让「缺实现」伪装成「实现过」 |
 | `Plan` / `Path` / `NoPath` / `VariantCheck` / `Proof` | `cutile` | kernel 层中间产物，全部可见、无 IR；只有 `NoPath` 自带文本（错误契约）；`Proof` 记这次真正执行过的供给，`Proof::declared` 只给解释性报告 |
 | `Payoff` / `Verdict` | `cutile` | 融合打分的结果：`Payoff` 是结构性 roofline 增益（不融合两次定界之和 vs 复合代价一次定界，`saved_bytes` 是中间量的往返），`speedup ≥ 1` 由 `max` 次可加保证而非拟合；`Verdict` 是三态判决——打得出分、拼不出来（带几何原因）、无从打分（缺语义投影 / 接缝跨多条输出 / 档案缺峰值，都不猜一个数顶上）。打分只读代价表、不跑标量参考，所以不需要样本也不分配内存；`bound()` 报融合后哪一侧定界 |
@@ -278,7 +274,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `RUSTDOCFLAGS=-D warnings cargo doc` | CI `doc` job | 文档坏链接、未文档化的公开项 |
 | `cargo test --workspace` | CI `test` job | 行为回归 |
 | `crates/cutile/src/gate.rs` + `tests/fragments_tests.rs` | CI `test` job | 片段正文没被设备自己的语言接受：`GATES` 给每门语言登记一个语法前端，用例把六台设备的每个算子 × 每个 tile 组合真正拼成翻译单元（`substitute::render` → `emit::assemble`，与出厂文本逐字节同源）再交给前端解析；语言版本取自档案 `compile.flags`（`GateSpec::check`），门不许自己再写一份。片段正文写坏时反向用例必红——"占位不报错"在这里不成立 |
-| `crates/prim/src/tests.rs::every_verified_provide_has_a_fragment_body` | `cargo test -p llm-prim` | **档案替一台设备吹的牛**：`L2` 及以上的 `provides` 会被协商选中并真的 emit，因此必须有同名片段正文；`L0`/`L1` 是能力目录（"未验证视为不具备"），允许只有见证、没有正文。反方向（正文签名 → 档案供给）由各设备 `build.rs` 里的 `prof::codegen::scan::entry_of` 在构建期硬失败。把一条没有正文的供给写成 `L2`，用例必红——从 8+8+8+8+5+11 条目录条目里挑任意一条升等级即可复现 |
+| `crates/prim/src/tests.rs::every_verified_provide_has_a_fragment_body` | `cargo test -p llm-prim` | **档案替一台设备吹的牛**：`L2` 及以上的 `provides` 会被协商选中并真的 emit，因此必须有同名片段正文；`L0`/`L1` 是能力目录（"未验证视为不具备"），允许只有见证、没有正文。反方向（正文签名 → 档案供给）由 `llm-frag` 的 `build.rs` 里的 `prof::codegen::scan::entry_of` 在构建期硬失败。把一条没有正文的供给写成 `L2`，用例必红——从 8+8+8+8+5+11 条目录条目里挑任意一条升等级即可复现 |
 | `crates/testkit/src/{layer,ownership,boundary}.rs` | `cargo test -p llm-testkit --lib` | 成员集合、边集合与方向、所有权表与 `cargo metadata` / 源码不一致；`op` / `prof` / `prim` / `cutile` 退回 `Result<_, String>`；本文正文点名的 `crate::名字` 不存在；`allow(unsafe_code)` 不在 ADR 0035 §6 的白名单里；机制层（`cutile`）的公开项以厂商名起头；设备后端没在 `cli` 的产品路径上装配 |
 | `crates/testkit/src/{contracts,mirror}.rs` + `.config/lints/vocabulary.toml` | `cargo test -p llm-testkit --lib` | 闭集 / 位集被手写第二份、白名单过期、注解与注册表不互为镜像 |
 | `#[model]` 生成的两个 `const` + 一条测试 | 被标注 crate 的 `cargo test` | 格式自证不成立（粒度 ≤ 0、派生轴除数 ≠ 粒度）；注解的 `dtype` 与 `.k` 可写输出不是同一个类型 |

@@ -1,6 +1,7 @@
-//! 编译期内嵌表：六个设备 crate 的产出合成的一张表，以及把它变成 [`FragmentSet`] 的唯一入口。
+//! 编译期内嵌表：六个设备模块的产出合成的一张表，以及把它变成 [`FragmentSet`] 的唯一入口。
 
 use crate::{FragmentSet, Prim};
+use frag::{cpu, cuda, metal, musa, opencl, rocm};
 
 /// 一台 vendor、一种输出语言的内嵌片段。
 #[derive(Debug, Clone, Copy)]
@@ -95,7 +96,7 @@ pub fn device(vendor: &str) -> Option<&'static prof::Device> {
     DEVICES.iter().find(|device| device.vendor == vendor)
 }
 
-/// 按 vendor 查片段源码根（那个设备 crate 的目录）；没有登记时 `None`。
+/// 按 vendor 查片段源码根（那个设备目录）；没有登记时 `None`。
 pub fn dir_of(vendor: &str) -> Option<&'static str> {
     ROOTS
         .iter()

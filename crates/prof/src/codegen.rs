@@ -1,4 +1,4 @@
-//! 构建期代码生成：一个设备目录 → 一份编译期表（`$OUT_DIR/tables.rs`）。
+//! 构建期代码生成：`src/<设备目录>/` → 一份编译期表（`$OUT_DIR/tables.rs`）。
 
 use std::env;
 use std::fmt::Write as _;
@@ -16,30 +16,77 @@ use self::epilogue::epilogue_of;
 
 // ── scan ──────────────────────────────────────────────────────────────
 
-/// 生成器入口：`CARGO_MANIFEST_DIR/src` 里的片段 → `$OUT_DIR/tables.rs`。
-pub fn device(vendor: &str) {
-    let dir = PathBuf::from(variable("CARGO_MANIFEST_DIR")).join("src");
+/// 生成器入口：`(模块名, vendor)` 若干台设备 → `$OUT_DIR/tables.rs`。
+///
+/// 模块名同时是 `src/` 下的目录名，生成 `pub mod <模块名> { … }`；一个 crate 因此可以装下
+/// 多台设备的片段，而每台设备仍是一份独立、可单独校验的表。vendor 与目录名可以不同
+/// （`nvidia` 的目录叫 `cuda`）：档案文件与 `witness.file` 的前缀都用 vendor。
+pub fn devices(tables: &[(&str, &str)]) {
+    let src = PathBuf::from(variable("CARGO_MANIFEST_DIR")).join("src");
     let out = PathBuf::from(variable("OUT_DIR"));
     let images = env::var_os("CARGO_FEATURE_DEVICE_IMAGE").is_some();
 
-    // 整个 crate 目录都算输入：新增一段片段、换一份见证都必须让构建脚本重跑。
-    println!("cargo:rerun-if-changed={}", dir.display());
+    // 整棵树都算输入：新增一段片段、换一份见证都必须让构建脚本重跑。
+    println!("cargo:rerun-if-changed={}", src.display());
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_DEVICE_IMAGE");
     println!("cargo:rerun-if-env-changed=CUTILE_REQUIRE_IMAGE");
 
-    let device = scan(&dir, vendor);
-    // 镜像结局只算一次：生成的表与 `CUTILE_REQUIRE_IMAGE` 门禁读的是同一次编译的结果。
-    let outcome = outcome(&device, &out, images);
+    let mut text = header();
+    let mut seen: Vec<&str> = Vec::new();
+    for (module, vendor) in tables {
+        if !identifier(module) {
+            fail(format!("设备模块名 `{module}` 不是可移植的 Rust 标识符"));
+        }
+        if seen.contains(module) {
+            fail(format!("设备模块名 `{module}` 重复：模块名是生成表的主键"));
+        }
+        seen.push(module);
 
-    let mut text = String::new();
-    header(&mut text);
-    fragments(&mut text, &device);
-    epilogues(&mut text, &device);
-    device_line(&mut text, &device, &outcome);
+        let device = scan(&src.join(module), vendor);
+        // 镜像结局只算一次：生成的表与 `CUTILE_REQUIRE_IMAGE` 门禁读的是同一次编译的结果。
+        let outcome = outcome(&device, &out, images);
+
+        let _ = writeln!(
+            text,
+            "/// `{vendor}` 设备的片段：原语 → 文本、原语 → 见证入口、设备行与源码根。\n\
+             pub mod {module} {{"
+        );
+        let _ = writeln!(text, "#[allow(unused_imports)]");
+        let _ = writeln!(text, "use prof::atom::{{Epilogue, Prim}};");
+        let _ = writeln!(
+            text,
+            "/// 本设备片段与见证所在目录，`prim` 按它读磁盘。\n\
+             pub const ROOT: &str = concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/src/{module}\");"
+        );
+        fragments(&mut text, &device);
+        epilogues(&mut text, &device);
+        device_line(&mut text, &device, &outcome);
+        let _ = writeln!(text, "}}\n");
+
+        require(&device, &outcome);
+    }
+    if tables.is_empty() {
+        fail("一台设备都没有登记：生成的表会是空的");
+    }
+
     fs::write(out.join("tables.rs"), text)
         .unwrap_or_else(|error| fail(format!("写 tables.rs 失败：{error}")));
+}
 
-    require(&device, &outcome);
+/// 模块名要能直接写进生成的代码：标识符形状，且不是 Rust 关键字。
+fn identifier(name: &str) -> bool {
+    const KEYWORDS: &[&str] = &[
+        "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum",
+        "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move",
+        "mut", "pub", "ref", "return", "self", "static", "struct", "super", "trait", "true",
+        "type", "unsafe", "use", "where", "while",
+    ];
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|first| first == '_' || first.is_ascii_alphabetic())
+        && chars.all(|rest| rest == '_' || rest.is_ascii_alphanumeric())
+        && !KEYWORDS.contains(&name)
 }
 
 /// 构建脚本必带的环境变量；缺了说明调用方不是 `build.rs`，直接失败而不是猜一个目录。
@@ -473,17 +520,17 @@ fn require(device: &Device, outcome: &Outcome) {
 
 // ── table ─────────────────────────────────────────────────────────────
 
-/// 文件头：说明这是生成物，并把 `Prim` 拉进作用域。
-fn header(text: &mut String) {
+/// 文件头：说明这是生成物。每个设备模块自己带 `use`，模块之间不共享作用域。
+fn header() -> String {
+    let mut text = String::new();
     let _ = writeln!(
         text,
         "// 由 `crates/prof/src/codegen` 生成，不要手改。\n\
          //\n\
-         // 一台设备的片段、入口与设备行；`prim` 把六份这样的表合成 `BUILTIN` / `WITNESS` /\n\
-         // `DEVICES`。类型定义在 `src/` 与 `prof`，所以生成代码不改变所有权表。\n\
-         #[allow(unused_imports)]\n\
-         use prof::atom::{{Epilogue, Prim}};"
+         // 每台设备一个模块：片段、入口、设备行与源码根；`prim` 把这些模块合成 `BUILTIN` /\n\
+         // `WITNESS` / `DEVICES`。类型定义在 `src/` 与 `prof`，所以生成代码不改变所有权表。"
     );
+    text
 }
 
 /// 生成片段表：`(原语, 文本)`，顺序与 `Prim::ALL` 一致。

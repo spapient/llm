@@ -53,10 +53,10 @@ pub const PLANNED_MAX: usize = 2;
 /// 有明确替代覆盖、因而**不该**再写性质测试的成员，按理由归类。
 pub const ABSENT: &[Absence] = &[
     Absence {
-        members: &["cpu", "cuda", "metal", "musa", "rocm", "opencl"],
-        reason: "后端描述层：寄存器、器件常量与能力位逐字段搬成 Rust 值，没有算法可断言。\
-                 会错的只有字段抄错与枚举错位，真值在 `benchmarks` 的实测与 `device` 的发射契约里；\
-                 写成性质只剩\"结构等于结构\"，比编译器已保证的弱。",
+        members: &["frag"],
+        reason: "片段层：六台设备的片段正文与见证是**要被设备编译器读的代码**，Rust 侧只剩生成器给出的\
+                 四张表，没有算法可断言。真值是 `crates/frag/tests/fragments.rs` 的逐条对账与见证执行，\
+                 以及 `cutile::gate` 的语言前端解析；写成性质只剩\"结构等于结构\"，比编译器已保证的弱。",
     },
     Absence {
         members: &["cutile", "device"],

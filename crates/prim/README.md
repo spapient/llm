@@ -1,16 +1,16 @@
 # prim —— 片段机制
 
 `prim` 只做**机制**：片段长什么样、从哪读、内嵌成哪几张表、怎么按原语查出来。片段**文本**
-一行都不在这里——它住在六个设备 crate 里，每台设备一个 crate。
+一行都不在这里——它住在 `crates/frag` 的六个设备目录里，一台设备一个目录。
 
 | | 在哪 | 是什么 |
 |---|---|---|
 | 机制 | 本 crate（`fragment` / `layout` / `builtin` 三个文件） | 片段与供给签名的形状、装载、内嵌表 |
-| 文本 | `crates/{cpu,cuda,opencl,metal,musa,rocm}/<prim>.<ext>` | 一台设备的片段与见证源码 |
+| 文本 | `crates/frag/src/<设备>/<prim>.<ext>` | 一台设备的片段与见证源码 |
 | 能力区间 | `crates/prof/devices/<vendor>.toml` | 这台设备有哪些原语、精度、形状、证据等级 |
 
-`src/lib.rs` 是 64 行的薄入口：只写 crate 文档、`mod` 声明与 `pub use`，没有逻辑。拆成六个
-crate 之后，`lib.rs` 里既没有片段表也没有 `include_str!`，发布包与源码树都通过同一套表取文本。
+`src/lib.rs` 是薄入口：只写 crate 文档、`mod` 声明与 `pub use`，没有逻辑。拆成六个模块之后，
+`lib.rs` 里既没有片段表也没有 `include_str!`，发布包与源码树都通过同一套表取文本。
 
 ## 目录
 
@@ -20,33 +20,32 @@ crates/prim/src/
     fragment.rs   片段是什么：Fragment / FragmentSet、签名声明行
     layout.rs     片段从哪来：Layout::builtin() / Layout::at(root)、见证查找
     builtin.rs    编译进来了什么：BUILTIN / WITNESS / DEVICES / ROOTS
-crates/cpu/       bar.c  commit_wait.c  cvt.c  dot.c  load.c  load_async.c  quant.c  reduce.c  store.c + witness.c
-crates/cuda/      同上，.cu
-crates/opencl/    同上，.cl
-crates/metal/     同上，.metal
-crates/musa/      同上，.cu
-crates/rocm/      同上，.cpp（AscendC）
+crates/frag/
+    build.rs      六行：哪个目录是哪台设备
+    src/lib.rs    include!($OUT_DIR/tables.rs)
+    src/<设备>/    cvt  dot  epilogue  load  load_async  quant  reduce  store + witness
 ```
 
-每个设备 crate 都有 `src/lib.rs`（`ROOT` / `FRAGMENTS` / `DEVICE` 三个 `pub const`，`ROOT` 指向
-自己的目录）、`build.rs`（一行）、以及一份生成到 `OUT_DIR` 的 `tables.rs`。加一台设备的成本因此
-是"放一个目录 + 一行 `build.rs`"，而不是往 `prim` 里再塞一个 vendor 分支。
+`crates/frag/src/<设备>/` 下是内容，`crates/frag/build.rs` 只列出六个 `(模块, vendor)`；每个
+模块的 `ROOT` / `FRAGMENTS` / `PRIMS` / `EPILOGUE` / `DEVICE` 都由 `prof::codegen` 生成到
+`OUT_DIR/tables.rs`。加一台设备的成本因此是"放一个目录 + `build.rs` 里一行 + `prim` 里四行"，
+而不是往 `prim` 里再塞一个 vendor 分支。
 
-## 目录约定：vendor ≠ crate 名
+## 目录约定：vendor ≠ 目录名
 
 `vendor` 是**档案里的键**，不是目录名——它是内嵌表的键，也是标签里 `witness.file` 的前缀，
 所以历史名字留下了：
 
-| crate | vendor | ext | emit | 备注 |
+| 模块 | vendor | ext | emit | 备注 |
 |---|---|---|---|---|
-| `crates/cpu` | `cpu` | `c` | `c` | 本机执行 + host 自检 |
-| `crates/cuda` | `nvidia` | `cu` | `cuda` | |
-| `crates/opencl` | `intel` | `cl` | `opencl` | |
-| `crates/metal` | `metal` | `metal` | `metal` | 唯一有镜像配方的设备 |
-| `crates/musa` | `musa` | `cu` | `cuda` | 同一门语言，不同工具链 |
-| `crates/rocm` | `ascend` | `cpp` | `ascendc` | |
+| `cpu` | `cpu` | `c` | `c` | 本机执行 + host 自检 |
+| `cuda` | `nvidia` | `cu` | `cuda` | |
+| `opencl` | `intel` | `cl` | `opencl` | |
+| `metal` | `metal` | `metal` | `metal` | 唯一有镜像配方的设备 |
+| `musa` | `musa` | `cu` | `cuda` | 同一门语言，不同工具链 |
+| `rocm` | `ascend` | `cpp` | `ascendc` | |
 
-"片段层根"`<root>` 就是那个 crate 的 `env!("CARGO_MANIFEST_DIR")`（`prof::Device` 的 `ROOT`）：
+"片段层根"`<root>` 就是那个设备目录的绝对路径（`prof::Device` 的 `ROOT`）：
 `Layout::builtin()` 用六台设备内嵌的源码根，`Layout::at(dir)` 用磁盘上的目录树——前者给发布包
 （没有源码树），后者给开发机与 `cargo test`。装载逻辑只有一份，两者共用。
 
@@ -109,7 +108,7 @@ grade   = "L2"
 witness = { file = "cpu/witness.c", func = "witness_dot", expect = [70.0] }
 ```
 
-`file` 相对片段层根（即 `crates/cpu/witness.c`）。`grade ≥ L2` 的供给**必须**有见证；
+`file` 相对片段层根（即 `crates/frag/src/cpu/witness.c`）。`grade ≥ L2` 的供给**必须**有见证；
 `cutile verify` 先把每一条见证编成可执行文件并执行，值与 `expect` 不符就整台设备失败。
 `L0`/`L1` 不要求见证，但**一旦声明就会校验**：文件名可读、入口函数在源码里、期望值非空。
 设备执行跑不到的见证还会走**本机自检**：见证的 ABI 是 host C，与片段语言无关，所以自检
@@ -125,8 +124,8 @@ witness = { file = "cpu/witness.c", func = "witness_dot", expect = [70.0] }
 `float *out` 编不过）。`cc` 只因为它是纯 C 才放行，`xcrun metal` 不放——自检走 host C 前端时
 会前置一行 `#define thread`，设备前端不经过这一行。
 
-同一件事对另外三台设备也成立：`crates/cuda/witness.cu` 与 `crates/opencl/witness.cl` 由 clang 的
-`-x cuda` / `-x cl` 前端各解析一遍（`crates/rocm/src/witness.cpp` 由 CANN 的 `ccec -xcce` 前端解析）。
+同一件事对另外三台设备也成立：`crates/frag/src/cuda/witness.cu` 与 `crates/frag/src/opencl/witness.cl` 由 clang 的
+`-x cuda` / `-x cl` 前端各解析一遍（`crates/frag/src/rocm/witness.cpp` 由 CANN 的 `ccec -xcce` 前端解析）。
 解析器比 host `cc` 严格：`double` 在没开 `cl_khr_fp64` 的 OpenCL C 里是错误，而 `cc` 照收。所以
 写见证时按**它自己那门语言**的规则写，不要只按"`cc` 能过"写。
 
@@ -144,17 +143,17 @@ witness = { file = "cpu/witness.c", func = "witness_dot", expect = [70.0] }
 解释，不留"忘了写"。
 
 `witness.<ext>` 与片段同目录同扩展名，因此**装载片段时按名字跳过它**——否则目录扫描会把它
-当成一个名字非法的片段。发布机上没有源码树，所以见证源码由各设备 crate 的 `build.rs` 编进
+当成一个名字非法的片段。发布机上没有源码树，所以见证源码由 `crates/frag/build.rs` 一次编进
 `WITNESS`（与 `BUILTIN` 分开：见证不是片段）。
 
 ## 构建期：四张表
 
 `BUILTIN`（片段）、`WITNESS`（见证源码）、`DEVICES`（每台设备的原语枚举 + 入口映射表 + 可选镜像）、
 `ROOTS`（源码根）由 `builtin.rs` 合成，四张表按下标同源（`the_tables_line_up_by_index` 守着顺序）。
-每个设备 crate 的那一份由它自己的 `build.rs` 一行生成：
+六台设备的表由 `crates/frag/build.rs` 一次生成，每台设备一行 `(模块, vendor)`：
 
 ```rust
-fn main() { prof::codegen::device("rocm"); }
+codegen::devices(&[("rocm", "ascend"), ("cpu", "cpu"), /* … */]);
 ```
 
 生成器住在 `crates/prof/src/codegen`（`prof` 的 `build` feature 之后），因为六台设备都依赖 `prof`
@@ -181,7 +180,7 @@ fn main() { prof::codegen::device("rocm"); }
 "缺镜像即失败"时显式要求：
 
 ```bash
-cargo build -p llm --features device-image                        # 带镜像（feature 逐层透传 cutile → prim → 六个设备 crate）
+cargo build -p llm --features device-image                        # 带镜像（feature 逐层透传 cutile → prim → llm-frag）
 CUTILE_REQUIRE_IMAGE=metal cargo build -p llm --features device-image   # 缺 metal 镜像直接失败
 ```
 
@@ -195,9 +194,8 @@ CUTILE_REQUIRE_IMAGE=metal cargo build -p llm --features device-image   # 缺 me
 
 ## 新增设备 / 更换一段实现
 
-1. 新建设备 crate（`crates/<name>`）：`Cargo.toml` 依赖 `prof`，`build.rs` 一行
-   `fn main() { prof::codegen::device("<vendor>"); }`，`src/lib.rs` 用 crate 宏导出 `ROOT` /
-   `FRAGMENTS` / `DEVICE`（照抄 `crates/cpu/src/lib.rs` 即可）；
+1. 新建目录 `crates/frag/src/<name>/`，并在 `crates/frag/build.rs` 的 `devices(..)` 里加一行
+   `("<name>", "<vendor>")`——`ROOT` / `FRAGMENTS` / `PRIMS` / `EPILOGUE` / `DEVICE` 由生成器给出；
 2. 在 crate 根写片段（只写这台设备真正支持的，其余留空），第一行必须是
    `/* cutile-sign: <prim>/<impl> */`，`impl` 取档案里 `provides.impl` 的那一个；
 3. 写 `witness.<ext>`（每条签名一个 `int func(float *out)` 入口），并在
@@ -220,6 +218,6 @@ CUTILE_REQUIRE_IMAGE=metal cargo build -p llm --features device-image   # 缺 me
 - **算子声明与模板**：在 `crates/op`。
 - **机制**：模板词法与拼接（`lower/substitute`）、emit（`lower/emit`）、缓存与编译（`cache`、`backend`）、
   探测与协商（`probe`、`cap`）都在 `cutile`。依赖方向固定为
-  `cutile → prim → {六个设备 crate, prof, diagnostic}`，设备 crate 只依赖 `prof`（生成器在
+  `cutile → prim → {frag, prof, diagnostic}`，`frag` 只依赖 `prof`（生成器在
   `prof::codegen`，所以不会绕成环），本 crate 不依赖 `cutile`。
 - 构建与工具链配置：见根目录的 `Cargo.toml`、`clippy.toml`、`rustfmt.toml`。

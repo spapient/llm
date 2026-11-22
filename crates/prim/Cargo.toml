@@ -10,15 +10,10 @@ readme = "README.md"
 publish = false
 autotests = false
 
-# 六台设备各在自己的 crate 里：本 crate 只做合成（`src/tables.rs`），不含任何片段文本，
-# 也没有构建脚本。加一台设备 = 加一个设备 crate + 这里一行。
+# 六台设备在同一 crate 的六个模块里：本 crate 只做合成（`src/tables.rs`），不含任何片段文本，
+# 也没有构建脚本。加一台设备 = 在 `llm-frag` 里加一个目录 + `build.rs` 一行 + 这里一行。
 [dependencies]
-cuda = { path = "../cuda", package = "llm-cuda" }
-cpu = { path = "../cpu", package = "llm-cpu" }
-metal = { path = "../metal", package = "llm-metal" }
-musa = { path = "../musa", package = "llm-musa" }
-opencl = { path = "../opencl", package = "llm-opencl" }
-rocm = { path = "../rocm", package = "llm-rocm" }
+frag = { path = "../frag", package = "llm-frag" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 prof = { path = "../prof", package = "llm-prof" }
 
@@ -26,15 +21,8 @@ prof = { path = "../prof", package = "llm-prof" }
 default = []
 # 构建期把能编译的设备见证编成设备镜像（`metal` → `metallib`）并嵌入二进制。
 # 关着是"源码调试"：只有片段与见证源码，运行期再编译；打开是"镜像发布"。
-# 转发给六台设备：谁有镜像配方谁就带上，没有的只是 `Status::NoRecipe`。
-device-image = [
-    "cuda/device-image",
-    "cpu/device-image",
-    "metal/device-image",
-    "musa/device-image",
-    "opencl/device-image",
-    "rocm/device-image",
-]
+# 六台设备一起开：谁有镜像配方谁就带上，没有的只是 `Status::NoRecipe`。
+device-image = ["frag/device-image"]
 
 [lints]
 workspace = true
