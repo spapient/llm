@@ -107,4 +107,7 @@ pub mod runner;
 pub mod toolchain;
 pub mod verify;
 pub mod witness;
+mod sweep;
+mod program;
+
 pub use runner::{compile_flags, driver};

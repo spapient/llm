@@ -1,19 +1,15 @@
 //! `verify`：逐设备把三件事钉在一起——见证跑通、协商选中首档、内核与标量参考对拍（README §11）。
 
-use crate::build;
 use crate::gate::LanguageGate;
-use crate::pipeline::{Prepared, Run, parse_shape, rejected_shapes, verify_shapes};
 use crate::witness;
-use crate::{runner, toolchain};
 use cutile::builtin::Catalogue;
 use cutile::cache::Artifact;
-use cutile::cap::{self, NoPath, Path, Proof};
+use cutile::cap::{self, NoPath};
 use cutile::dirs::Dirs;
 use cutile::emit::Fragment;
-use cutile::prof::{Emit, Profile};
+use cutile::prof::Emit;
 use diagnostic::{Code, Error};
 use prof::decl::OpDecl;
-use nn::model::Sample;
 
 /// 设备不在本机时唯一的说法：通道、协商与报告都用它。
 const NO_DEVICE: &str = "本机没有该设备，只能真机验证";
@@ -335,11 +331,9 @@ fn gate_parts(gate: &LanguageGate) -> Option<String> {
     }
 }
 
-mod sweep;
-
 #[cfg(test)]
-pub(crate) use sweep::Lane;
-pub use sweep::verify_one;
+pub(crate) use crate::sweep::Lane;
+pub use crate::sweep::verify_one;
 
 #[cfg(test)]
 #[path = "../tests/verify_tests.rs"]

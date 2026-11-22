@@ -16,24 +16,29 @@ pub(crate) fn witness_shape(provide: &Provide) -> Vec<ProfileError> {
     shape_details(witness).into_iter().map(make).collect()
 }
 /// 见证形状的判据本体：键是 `func` / `expect`，两种供给（原语与写回形式）共用一份。
+///
+/// 文案按需渲染：通过校验的供给（构建期里的绝大多数）一条消息都不拼。
 pub(crate) fn shape_details(witness: &Witness) -> Vec<(&'static str, String)> {
-    let len = witness.expect.len();
-    let too_many = format!("期望输出 {len} 个，超过上限 {}", Witness::MAX_OUT);
-    let checks = [
-        (
-            witness.func.is_empty(),
-            "func",
-            "见证必须给出入口函数名，否则无法执行".to_string(),
-        ),
-        (
-            witness.expect.is_empty(),
-            "expect",
-            "见证必须给出期望输出，否则无法对拍".to_string(),
-        ),
-        (len > Witness::MAX_OUT, "expect", too_many),
-    ];
-    let failed = checks.into_iter().filter(|(failed, ..)| *failed);
-    failed.map(|(_, key, detail)| (key, detail)).collect()
+    let mut failed = Vec::new();
+    if witness.func.is_empty() {
+        failed.push(("func", "见证必须给出入口函数名，否则无法执行".to_string()));
+    }
+    if witness.expect.is_empty() {
+        failed.push(("expect", "见证必须给出期望输出，否则无法对拍".to_string()));
+    }
+    if witness.expect.len() > Witness::MAX_OUT {
+        failed.push(("expect", too_many_expect(witness)));
+    }
+    failed
+}
+
+/// `expect` 超长的说明：只有真超了才会被调用，个数与上限在这里现算。
+fn too_many_expect(witness: &Witness) -> String {
+    format!(
+        "期望输出 {} 个，超过上限 {}",
+        witness.expect.len(),
+        Witness::MAX_OUT
+    )
 }
 /// 没有见证时唯一说得通的理由是等级还不到 `L2`——等级是执行的结论，不是自述。
 pub(crate) fn missing_witness(provide: &Provide) -> Option<ProfileError> {
@@ -112,14 +117,15 @@ impl<'a> WitnessFiles<'a> {
             Some(true) => Vec::new(),
         }
     }
-    /// 读一份见证源码：每个文件最多读一次盘。
+    /// 读一份见证源码：每个文件最多读一次盘（命中缓存的那次连键都不必再分配）。
     fn source(&mut self, witnesses: &dyn WitnessLookup, file: &str) -> Option<&str> {
-        let text = self.sources.entry(file.to_string());
-        let text = text.or_insert_with(|| {
-            let path = witnesses.path(file)?;
-            std::fs::read_to_string(path).ok()
-        });
-        text.as_deref()
+        if !self.sources.contains_key(file) {
+            let text = witnesses
+                .path(file)
+                .and_then(|path| std::fs::read_to_string(path).ok());
+            self.sources.insert(file.to_string(), text);
+        }
+        self.sources.get(file)?.as_deref()
     }
     /// 缺失文件只报第一次：多条供给引用同一份缺失文件时，原因只有一个。
     fn report(&mut self, witnesses: &dyn WitnessLookup, file: &str) -> Vec<ProfileError> {
@@ -135,8 +141,11 @@ impl<'a> WitnessFiles<'a> {
         }]
     }
 }
+/// 见证源码里是否声明了入口函数：找「`func` 紧跟 `(`」的位置，不为每次探测拼一个 `func(`。
 pub(crate) fn declares(text: &str, witness: &Witness) -> bool {
-    text.contains(&format!("{}(", witness.func))
+    let func = witness.func.as_str();
+    text.match_indices(func)
+        .any(|(at, _)| text[at + func.len()..].starts_with('('))
 }
 pub(crate) fn absent_function(witness: &Witness) -> String {
     format!(

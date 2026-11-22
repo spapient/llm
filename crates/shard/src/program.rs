@@ -1,6 +1,6 @@
 //! 生产态设备内核源：一条算子 → 一份后端可编译的设备源（外加派发要用的附加数据）。
 
-use super::{grid_dims, kind, lower_sources, resolve, single_kind};
+use crate::execution::{grid_dims, kind, lower_sources, resolve, single_kind};
 use crate::backend::{Lower, TensorGeometry};
 use crate::pipeline::{Prepared, Run};
 use cutile::builtin::Catalogue;
@@ -11,6 +11,7 @@ use diagnostic::{Code, Error};
 use prof::decl::{Grid, OpDecl};
 use nn::model::Sample;
 use nn::sig::CType;
+use crate::execution;
 
 /// 错误定位：所有形态共用这一个站点（换形态不改定位）。
 const SITE: &str = "cutile::execution::program";
@@ -235,7 +236,7 @@ impl Mode {
         single_kind(run.op)
     }
 
-    /// 循环注入的网格各维：其它形态不给（派发几何由 [`super::launch`] 现算）。
+    /// 循环注入的网格各维：其它形态不给（派发几何由 [`execution::launch`] 现算）。
     fn grid_dims(&self, lower: &Lower, sample: &Sample) -> diagnostic::Result<Option<Vec<usize>>> {
         let Plan::Grid = self.plan else {
             return Ok(None);
