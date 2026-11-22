@@ -35,6 +35,29 @@ fn check_group_norm(groups: usize, channels: usize, layer: &str) -> Result<()> {
     Ok(())
 }
 
+/// 归一化层的 `Contract` 面：四个层只差**算子名**与**所沿轴的名字**，其余逐字相同。
+/// 展开成两件事——那条轴的只读访问器、以及「下界一律问语义表」的 `Contract` 实现。
+/// 与 `layer_delegate!` 同一个理由：同一段结构抄四遍时，第五遍一定会抄错一处。
+macro_rules! norm_contract {
+    ($ty:ident, $op:literal, $axis:ident) => {
+        impl $ty {
+            #[doc = concat!("归一化所沿那条轴的尺寸（`", stringify!($axis), "`）。")]
+            pub fn $axis(&self) -> usize {
+                self.$axis
+            }
+        }
+
+        impl Contract for $ty {
+            spec_accessors!();
+
+            fn bounds(&self) -> BoundsResult {
+                // 层不写第二份流量公式：下界向算子语义表要。
+                Bounds::of_ctx($op, self.$axis, 1).map(Some)
+            }
+        }
+    };
+}
+
 /// 批归一化层（NHWC，最后维 `channels`）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct BatchNorm2d {
@@ -72,20 +95,9 @@ impl BatchNorm2d {
             channels,
         })
     }
-
-    /// 通道数。
-    pub fn channels(&self) -> usize {
-        self.channels
-    }
 }
 
-impl Contract for BatchNorm2d {
-    spec_accessors!();
-
-    fn bounds(&self) -> BoundsResult {
-        Bounds::of_ctx("batch_norm_f32", self.channels, 1).map(Some)
-    }
-}
+norm_contract!(BatchNorm2d, "batch_norm_f32", channels);
 
 /// 组归一化层：`(n, group)` 内按 `(C/G, spatial)` 统计。规格构造口径同 [`BatchNorm2d`]。
 #[derive(Debug, Clone, PartialEq)]
@@ -117,20 +129,9 @@ impl GroupNorm {
             channels,
         })
     }
-
-    /// 通道数。
-    pub fn channels(&self) -> usize {
-        self.channels
-    }
 }
 
-impl Contract for GroupNorm {
-    spec_accessors!();
-
-    fn bounds(&self) -> BoundsResult {
-        Bounds::of_ctx("group_norm_f32", self.channels, 1).map(Some)
-    }
-}
+norm_contract!(GroupNorm, "group_norm_f32", channels);
 
 /// 实例归一化层：等价于 `GroupNorm(groups = channels)`。规格构造口径同 [`BatchNorm2d`]。
 #[derive(Debug, Clone, PartialEq)]
@@ -158,20 +159,9 @@ impl InstanceNorm {
             channels,
         })
     }
-
-    /// 通道数。
-    pub fn channels(&self) -> usize {
-        self.channels
-    }
 }
 
-impl Contract for InstanceNorm {
-    spec_accessors!();
-
-    fn bounds(&self) -> BoundsResult {
-        Bounds::of_ctx("instance_norm_f32", self.channels, 1).map(Some)
-    }
-}
+norm_contract!(InstanceNorm, "instance_norm_f32", channels);
 
 /// 层归一化层：逐行在最后一维 `width` 上统计。规格构造口径同 [`BatchNorm2d`]。
 #[derive(Debug, Clone, PartialEq)]
@@ -195,17 +185,6 @@ impl LayerNorm {
         let spec = Spec::new(name, crate::Shape::new([width]), ["layer_norm_f32"])?;
         Ok(Self { spec, norm, width })
     }
-
-    /// 归一化宽度。
-    pub fn width(&self) -> usize {
-        self.width
-    }
 }
 
-impl Contract for LayerNorm {
-    spec_accessors!();
-
-    fn bounds(&self) -> BoundsResult {
-        Bounds::of_ctx("layer_norm_f32", self.width, 1).map(Some)
-    }
-}
+norm_contract!(LayerNorm, "layer_norm_f32", width);

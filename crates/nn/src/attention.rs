@@ -416,4 +416,3 @@ impl Contract for LatentAttention {
 #[cfg(test)]
 #[path = "../tests/attention_tests.rs"]
 mod attention_tests;
-

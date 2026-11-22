@@ -1,11 +1,8 @@
 //! `src/single.rs` 的全部用例：逐元素/归一化/激活、归约、查表、矩阵乘（精度与档位）、
 //! 前缀扫描与反量化共用一条契约——层不写第二份流量常数，下界一律由算子语义表推出。
 //!
-//! 原先这里分成两个文件（本文件与 `tests/support/pointwise_tests.rs`），理由只有一个：
-//! 逐元素层那时住在 `src/pointwise.rs`，测试必须跟着它的模块树走。该文件已被 `single.rs`
-//! 吸收，而两者挂载的是**同一个模块**（`super::*` 是同一份 prelude），于是分开不再换来任何
-//! 隔离，只换来两个同义助手（`assert_elementwise` 与 `assert_layer`）。现在助手只剩一个：
-//! 强的那个是弱的严格超集，多查了名字、形状与非零流量。
+//! 逐元素层原先住在 `src/pointwise.rs`，测试因此分出去一份；该文件已并入 `single.rs`，
+//! 两者又挂同一个模块，分开只剩两个同义助手，故合并。
 
 use super::*;
 
@@ -147,12 +144,7 @@ fn assert_layer<L: Contract>(layer: &L, name: &str, op: &str, len: usize) {
 /// 于是加一个单轴层不必再抄五遍同样的断言。
 macro_rules! layer {
     ($ty:ident, $name:literal, $len:literal) => {
-        assert_layer(
-            &$ty::new($name, $len).expect("合法"),
-            $name,
-            $ty::OP,
-            $len,
-        )
+        assert_layer(&$ty::new($name, $len).expect("合法"), $name, $ty::OP, $len)
     };
 }
 

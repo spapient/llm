@@ -13,13 +13,16 @@ fn every_element_type_maps_to_a_format_and_back() {
     );
 }
 
+/// 一档精度的三件事实：绑定的算子名、按分组拼格式的构造器、默认格式。
+type Rung = (&'static str, fn(usize) -> WeightFormat, WeightFormat);
+
 /// 「分组对得上才选得到算子」是三档共用的一条契约，三处拷贝此前各写一遍同样的三步。
 /// 收成一张表还有个额外好处：多一档精度时这张表会立刻要求补一行，而不是静默漏掉。
 /// 各档自己的差异（元素类型、默认分组、诊断文字）留在各自那一条用例里。
 #[test]
 fn a_declared_group_is_the_only_one_that_reaches_an_operator() {
     // 分组一律从算子语义表读出来，不在用例里再断言一个 32。
-    let rungs: [(&str, fn(usize) -> WeightFormat, WeightFormat); 3] = [
+    let rungs: [Rung; 3] = [
         (crate::Linear::I2, WeightFormat::int2, WeightFormat::INT2),
         (crate::Linear::OP, WeightFormat::int4, WeightFormat::INT4),
         (crate::Linear::I8, WeightFormat::int8, WeightFormat::INT8),

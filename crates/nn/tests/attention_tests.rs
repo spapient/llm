@@ -1,9 +1,5 @@
 //! 注意力族：`Attention`（朴素 / flash 两条骨架）、`LatentAttention`、`DecodeAttention`，
-//! 以及由它们组合出的 `AttentionBlock`。
-//!
-//! 组合块原先单独一个文件（`tests/block_tests.rs`），但它与这里挂**同一个模块**
-//! （`super::*` 是同一份 prelude），而 `AttentionBlock` 的底层正是本文件测的 `Attention`——
-//! 块的用例要断言「块的下界等于各子层之和」，那个「子层」就是这里的东西，拆两处反而要来回看。
+//! 以及由它们组合出的 `AttentionBlock`——块的下界就是这些子层之和，故同一文件。
 
 use super::*;
 

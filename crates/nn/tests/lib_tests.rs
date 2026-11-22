@@ -1,8 +1,5 @@
-//! crate 表面（`src/lib.rs` + `src/declare.rs` 的公开契约）：声明式 spec 宏在定义期就拒掉
-//! 不认识的操作数、参数角色的闭集与它派生的两条判定、以及重导出面本身。
-//!
-//! `ParamRole` 的动作原先在 `tests/param_role_tests.rs`：两文件挂的是**同一个模块**（`super::*`
-//! 都是 crate 根），分开只换来一次跳转，不换来隔离，故并到这里。
+//! crate 表面：声明式 spec 宏在定义期就拒掉不认识的操作数、`ParamRole` 闭集与它派生的
+//! 两条判定、以及重导出面本身。`ParamRole` 的动作原在单独文件，挂同一模块故合并。
 
 use super::*;
 
