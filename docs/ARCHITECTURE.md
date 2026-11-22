@@ -41,7 +41,7 @@
 
 **合并判据是「同构」，不是「消费者数量」。** 一个成员只有一条入边时，它通常是边界而不是肥肉：`storage` 独自持有全仓唯一的 `unsafe` 岛（`tensor` 是 `deny(unsafe_code)` 且有 11 个消费者），`algorithm` 刻意不产 `ContractSpec`（`nn` 专产），`shard` 坐 L5 而 `train` 坐 L6。可合并的硬信号只有一个——两个成员的 `lib.rs` / `build.rs` 除专名外**逐字相同**：六台设备 crate 并入 `frag` 时按这条判据删掉 512 行、补回 55 行，净省 457 行。反面的账同样要算：一次合并能省的至多是该 crate 的 `Cargo.toml`（全仓 1060 行 / 33 个，约 32 行）加一段头注释，指望靠合并兑现「代码大量减少」是算错账。裁决过程与测量数字见 [lld.md](lld.md) v3.0.90。
 
-允许的边（当前全量，共 166 条，含 57 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benchmarks` / `testkit` 的边不参与运行时方向判定）：
+允许的边（当前全量，共 165 条，含 56 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benchmarks` / `testkit` 的边不参与运行时方向判定）：
 
 ```
 cutile   → annotation, diagnostic, op, prim, prof, spec    +dev: testkit
@@ -54,7 +54,7 @@ prim     → diagnostic, frag, prof（机制：编译期把六张设备表拼成
 prof     → diagnostic, dtype
 frag     → prof（片段 + 见证；只依赖档案的 `Prim` / `Witness` 闭集，不认识 `prim`）    +dev: testkit（片段层对账：契约夹具与见证执行）
 dtype    → （叶：精度闭集，无运行期工作区依赖）    +dev: testkit
-tensor   → diagnostic, dtype    +dev: testkit
+tensor   → dtype
 storage  → tensor, diagnostic
 tokenizer→ diagnostic
 formats  → diagnostic, dtype, wire    +dev: testkit
@@ -67,7 +67,7 @@ shard    → diagnostic    +dev: testkit（性质测试共用装置：切分定�
 train    → nn, autograd, weights, shard, op, tensor, diagnostic, snapshot    +dev: testkit
 engine   → tensor, diagnostic, storage    +dev: testkit
 device   → engine, cutile, optim, op, prof, diagnostic    +dev: testkit
-serve    → engine, nn, op, rng, tokenizer, diagnostic, weights, wire    +dev: testkit
+serve    → engine, nn, op, rng, tensor, tokenizer, diagnostic, weights, wire    +dev: testkit（形状积只经 `tensor::product` 的饱和乘法：回绕出的偏小数会骗过权重长度核对）
 cli      → cutile, optim, diagnostic, device, engine, nn, op, prim, prof, serve, snapshot, tensor, tokenizer, tools, train, weights（L7 组合根：只做命令分派与各层装配，不定义新类型）
 fuzz     → diagnostic    +dev: cli, snapshot, weights, train, serve, wire, tensor, tools（工具成员；`+dev` 是 `tests/support.rs` 里的驱动对象）
 benchmarks → +dev: snapshot, prof, op, cutile, wire, weights, tokenizer, tools, testkit, train, autograd, tensor, nn, engine, serve（工具成员：只声明被测对象，测量配置归 criterion）

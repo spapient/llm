@@ -766,6 +766,7 @@ dependencies = [
  "llm-nn",
  "llm-op",
  "llm-rng",
+ "llm-tensor",
  "llm-testkit",
  "llm-tokenizer",
  "llm-weights",

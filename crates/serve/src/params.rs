@@ -337,6 +337,31 @@ pub mod descriptors {
         }
         Ok(())
     }
+
+    #[cfg(test)]
+    mod overflow_tests {
+        use super::{BindingDesc, check_all};
+        use crate::params::Params;
+        use diagnostic::Code;
+
+        /// 形状积溢出必须夹到上限后报错：回绕的乘积可能恰好等于一条短条目的长度，
+        /// 让一条越界的权重声明通过装配期校验。
+        #[test]
+        fn every_overflowing_weight_shape_is_rejected() {
+            let mut params = Params::new();
+            params.insert("w", vec![0.0; 4]);
+            // 4 × (2^62 + 1) = 2^64 + 4：回绕后恰好等于 4。
+            let desc = BindingDesc {
+                id: 0,
+                entry: Some("w".to_string()),
+                shape: vec![4, (1usize << 62) + 1],
+            };
+
+            let error = check_all(&[desc], &params, &[]).expect_err("溢出形状必须报错");
+
+            assert_eq!(error.code(), Code::Invalid);
+        }
+    }
 }
 
 pub mod vocab;
