@@ -2,30 +2,20 @@
 //!
 //! 判据本身在 `testkit::device`，用例由 `testkit::device_suite!` 摊开；每台设备只是一行
 //! `mod`，因为要摊开的判据相同、只有生成表不同。左边的表来自 `build.rs`，右边是
-//! `crates/prof/devices/<vendor>.toml` 声称具备的能力，中间的任何错位都是缺陷。
+//! `crates/prof/src/<vendor>/<vendor>.toml` 声称具备的能力，中间的任何错位都是缺陷。
+
+mod ascend {
+    use prof::ascend::*;
+    testkit::device_suite!();
+}
 
 mod cpu {
-    use llm_frag::cpu::*;
+    use prof::cpu::*;
     testkit::device_suite!();
 }
 
-mod cuda {
-    use llm_frag::cuda::*;
-    testkit::device_suite!();
-}
-
-mod metal {
-    use llm_frag::metal::*;
-    testkit::device_suite!();
-}
-
-mod musa {
-    use llm_frag::musa::*;
-    testkit::device_suite!();
-}
-
-mod opencl {
-    use llm_frag::opencl::*;
+mod intel {
+    use prof::intel::*;
     testkit::device_suite!();
 
     /// 宿主 `cc` 编得过 `.cl` 只是因为它写的是标量 C；OpenCL 前端才是这份文件的真读者。
@@ -53,7 +43,17 @@ mod opencl {
     }
 }
 
-mod rocm {
-    use llm_frag::rocm::*;
+mod metal {
+    use prof::metal::*;
+    testkit::device_suite!();
+}
+
+mod musa {
+    use prof::musa::*;
+    testkit::device_suite!();
+}
+
+mod nvidia {
+    use prof::nvidia::*;
     testkit::device_suite!();
 }

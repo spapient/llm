@@ -9,7 +9,7 @@ use super::variant::variants;
 use super::{Axis, Chunk, Grid, Phase, Skeleton, Variant, field};
 
 /// 算子名：`[op].name`，非空。
-pub(super) fn op_name(op: &Table) -> diagnostic::Result<String> {
+pub fn op_name(op: &Table) -> diagnostic::Result<String> {
     let name = op.string("name").ok_or_else(|| field("op.name", "缺失"))?;
     if name.is_empty() {
         return Err(field("op.name", "不能为空"));
@@ -18,7 +18,7 @@ pub(super) fn op_name(op: &Table) -> diagnostic::Result<String> {
 }
 
 /// `[op]` 段读出的身份：名字、骨架、摘要。
-pub(super) fn head(table: &Table) -> diagnostic::Result<(String, Skeleton, String)> {
+pub fn head(table: &Table) -> diagnostic::Result<(String, Skeleton, String)> {
     let op = table
         .table("op")
         .ok_or_else(|| field("op", "缺少 `[op]` 段"))?;
@@ -27,7 +27,7 @@ pub(super) fn head(table: &Table) -> diagnostic::Result<(String, Skeleton, Strin
 }
 
 /// `[op]` 的其余两键：骨架必须落在闭集内，摘要缺省为空串占位的 `-`。
-pub(super) fn op_head(op: &Table) -> diagnostic::Result<(Skeleton, String)> {
+pub fn op_head(op: &Table) -> diagnostic::Result<(Skeleton, String)> {
     let skeleton = Skeleton::parse(
         op.string("skeleton")
             .ok_or_else(|| field("op.skeleton", "缺失"))?,
@@ -40,14 +40,14 @@ pub(super) fn op_head(op: &Table) -> diagnostic::Result<(Skeleton, String)> {
 }
 
 /// 四个段（轴、需求、布局、变体链）：`declared` 按同一顺序解构。
-pub(super) type Sections = (
+pub type Sections = (
     Vec<Axis>,
     Vec<Need>,
     Vec<(String, LayoutSpec)>,
     Vec<Variant>,
 );
 
-pub(super) fn sections(table: &Table) -> diagnostic::Result<Sections> {
+pub fn sections(table: &Table) -> diagnostic::Result<Sections> {
     Ok((
         axes(table)?,
         needs(table)?,
@@ -57,7 +57,7 @@ pub(super) fn sections(table: &Table) -> diagnostic::Result<Sections> {
 }
 
 /// `[axes]`：每个键一组正整数取值；至少要有一条轴。
-pub(super) fn axes(table: &Table) -> diagnostic::Result<Vec<Axis>> {
+pub fn axes(table: &Table) -> diagnostic::Result<Vec<Axis>> {
     let Some(section) = table.table("axes") else {
         return Err(field("axes", "至少需要一个轴"));
     };
@@ -73,7 +73,7 @@ pub(super) fn axes(table: &Table) -> diagnostic::Result<Vec<Axis>> {
 }
 
 /// 一条轴：`axes.{名字}` 是非空的正整数数组。
-pub(super) fn axis(key: &str, value: &Value) -> diagnostic::Result<Axis> {
+pub fn axis(key: &str, value: &Value) -> diagnostic::Result<Axis> {
     let path = format!("axes.{key}");
     let Value::Array(items) = value else {
         return Err(field(&path, "必须是数组"));
@@ -92,7 +92,7 @@ pub(super) fn axis(key: &str, value: &Value) -> diagnostic::Result<Axis> {
 }
 
 /// 轴的一个取值：正整数。
-pub(super) fn positive(path: &str, item: &Value) -> diagnostic::Result<u32> {
+pub fn positive(path: &str, item: &Value) -> diagnostic::Result<u32> {
     match item {
         Value::Int(number) if *number > 0 => Ok(*number as u32),
         _ => Err(field(path, "每个取值必须是正整数")),
@@ -100,7 +100,7 @@ pub(super) fn positive(path: &str, item: &Value) -> diagnostic::Result<u32> {
 }
 
 /// `[needs]`：算子级公共需求，每条一个原语的能力签名。
-pub(super) fn needs(table: &Table) -> diagnostic::Result<Vec<Need>> {
+pub fn needs(table: &Table) -> diagnostic::Result<Vec<Need>> {
     let Some(section) = table.table("needs") else {
         return Ok(Vec::new());
     };
@@ -112,7 +112,7 @@ pub(super) fn needs(table: &Table) -> diagnostic::Result<Vec<Need>> {
 }
 
 /// `[layouts]`：槽位名 → 布局闭集里的一个词。
-pub(super) fn layouts(table: &Table) -> diagnostic::Result<Vec<(String, LayoutSpec)>> {
+pub fn layouts(table: &Table) -> diagnostic::Result<Vec<(String, LayoutSpec)>> {
     let Some(section) = table.table("layouts") else {
         return Ok(Vec::new());
     };
@@ -124,7 +124,7 @@ pub(super) fn layouts(table: &Table) -> diagnostic::Result<Vec<(String, LayoutSp
 }
 
 /// 一条布局：`layouts.{槽位}` 必须是布局闭集内的字符串。
-pub(super) fn layout(key: &str, value: &Value) -> diagnostic::Result<(String, LayoutSpec)> {
+pub fn layout(key: &str, value: &Value) -> diagnostic::Result<(String, LayoutSpec)> {
     let path = format!("layouts.{key}");
     let Value::Str(text) = value else {
         return Err(field(&path, "必须是字符串"));
@@ -134,7 +134,7 @@ pub(super) fn layout(key: &str, value: &Value) -> diagnostic::Result<(String, La
 }
 
 /// `[grid]`：Gemm 骨架的网格映射（仅 Gemm 声明，其余骨架不需要）。缺省返回 `None`。
-pub(super) fn grid(table: &Table) -> diagnostic::Result<Option<Grid>> {
+pub fn grid(table: &Table) -> diagnostic::Result<Option<Grid>> {
     let Some(section) = table.table("grid") else {
         return Ok(None);
     };
@@ -144,7 +144,7 @@ pub(super) fn grid(table: &Table) -> diagnostic::Result<Option<Grid>> {
 }
 
 /// `grid.dims`：`"线程:标量"` 数组，至少一维、至多三维（Metal 网格上限）。
-pub(super) fn grid_dims(section: &Table) -> diagnostic::Result<Vec<(String, String)>> {
+pub fn grid_dims(section: &Table) -> diagnostic::Result<Vec<(String, String)>> {
     let Some(value) = section.get("dims") else {
         return Err(field("grid.dims", "缺失"));
     };
@@ -161,7 +161,7 @@ pub(super) fn grid_dims(section: &Table) -> diagnostic::Result<Vec<(String, Stri
 }
 
 /// 解析一维：`"线程:标量"`，两个名字都不能为空。
-pub(super) fn grid_item(idx: usize, item: &Value) -> diagnostic::Result<(String, String)> {
+pub fn grid_item(idx: usize, item: &Value) -> diagnostic::Result<(String, String)> {
     let path = format!("grid.dims[{idx}]");
     let Value::Str(text) = item else {
         return Err(field(&path, "必须是 `线程:标量` 字符串"));
@@ -176,7 +176,7 @@ pub(super) fn grid_item(idx: usize, item: &Value) -> diagnostic::Result<(String,
 }
 
 /// 网格维数约束：至少一维、至多三维（Metal 网格上限）。
-pub(super) fn check_grid_dims(dims: &[(String, String)]) -> diagnostic::Result<()> {
+pub fn check_grid_dims(dims: &[(String, String)]) -> diagnostic::Result<()> {
     if dims.is_empty() {
         return Err(field("grid.dims", "至少一维"));
     }
@@ -187,7 +187,7 @@ pub(super) fn check_grid_dims(dims: &[(String, String)]) -> diagnostic::Result<(
 }
 
 /// `[chunk]`：分块并行的块长（reduce/scan 骨架）。缺省返回 `None`（串行兜底）。
-pub(super) fn chunk(table: &Table) -> diagnostic::Result<Option<Chunk>> {
+pub fn chunk(table: &Table) -> diagnostic::Result<Option<Chunk>> {
     let Some(section) = table.table("chunk") else {
         return Ok(None);
     };
@@ -204,7 +204,7 @@ pub(super) fn chunk(table: &Table) -> diagnostic::Result<Option<Chunk>> {
 
 /// `[consts]`：模板常量的固定取值（非轴、非布局）。键给槽位名，值按十进制渲染成字符串，
 /// 供 [`OpDecl::const_value`] 在 `{{槽位}}` 解析时查用。
-pub(super) fn consts(table: &Table) -> diagnostic::Result<Vec<(String, String)>> {
+pub fn consts(table: &Table) -> diagnostic::Result<Vec<(String, String)>> {
     let Some(section) = table.table("consts") else {
         return Ok(Vec::new());
     };
@@ -216,7 +216,7 @@ pub(super) fn consts(table: &Table) -> diagnostic::Result<Vec<(String, String)>>
 }
 
 /// 一个模板常量：整数/浮点/布尔按十进制渲染，字符串原样；表或数组不能当常量。
-pub(super) fn const_value(key: &str, value: &Value) -> diagnostic::Result<(String, String)> {
+pub fn const_value(key: &str, value: &Value) -> diagnostic::Result<(String, String)> {
     let text = match value {
         Value::Str(text) => text.clone(),
         Value::Int(number) => number.to_string(),
@@ -228,15 +228,15 @@ pub(super) fn const_value(key: &str, value: &Value) -> diagnostic::Result<(Strin
 }
 
 /// `[consts]` 与 `[grid]`、`[chunk]` 三块可选的补丁：`declared` 按同一顺序解构。
-pub(super) type Extras = (Vec<(String, String)>, Option<Grid>, Option<Chunk>);
+pub type Extras = (Vec<(String, String)>, Option<Grid>, Option<Chunk>);
 
 /// `[consts]` 与 `[grid]`、`[chunk]`：声明表里三块可选的补丁，一起解析成 `(常量, 网格, 分块)`。
-pub(super) fn extras(table: &Table) -> diagnostic::Result<Extras> {
+pub fn extras(table: &Table) -> diagnostic::Result<Extras> {
     Ok((consts(table)?, grid(table)?, chunk(table)?))
 }
 
 /// `[[phases]]`：数据流阶段（可选）。缺省 = 单阶段：名字取算子名，读/写槽位取自签名。
-pub(super) fn phases(
+pub fn phases(
     table: &Table,
     op: &str,
     signature: &crate::sig::Signature,

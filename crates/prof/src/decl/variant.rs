@@ -9,7 +9,7 @@ use super::build::parse_need;
 use super::{MAX_VARIANTS, Variant, field};
 
 /// 变体链：逐个解析、按 `order` 排序，再判数量与链路。
-pub(super) fn variants(table: &Table) -> diagnostic::Result<Vec<Variant>> {
+pub fn variants(table: &Table) -> diagnostic::Result<Vec<Variant>> {
     let mut variants: Vec<Variant> = table
         .table_array("variants")
         .unwrap_or_default()

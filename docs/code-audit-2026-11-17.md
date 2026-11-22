@@ -103,5 +103,5 @@
 ## 7. 工作树注意
 
 - `docs/adr/0035-unsafe-ffi-boundary.md` 是并发独立裁决，提交时排除；`docs/llmu-parity-optimization-design.md` 为本方案文档，尚未提交。
-- `crates/op/ops/decode_*` 与 `crates/op/src/decode_*.rs` 为在途新增算子片段；提交前核对注册表、注解表、train/serve 三处内核表口径一致。
+- `../crates/prof/src/ops` 与 `crates/op/src/decode_*.rs` 为在途新增算子片段；提交前核对注册表、注解表、train/serve 三处内核表口径一致。
 - `crates/serve/src/model_host.rs` 为装配宿主下沉的新模块（未跟踪）；`assembly.rs` 只留装配与台账，提交前确认 `lib.rs` 兼容导出 `CpuModel`/`Params` 路径不变。

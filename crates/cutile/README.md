@@ -292,10 +292,10 @@ TOML 解析与运行时配置不在本 crate：它们是与领域无关的基础
 
 ## 4. 声明层：用户写什么
 
-用户只写两个文件，都在 `crates/op/ops/` 下（`ops/*.toml` 在构建期由 `op` 的 `build.rs` 解析成声明表，
+用户只写两个文件，都在 `../prof/src/ops` 下（`ops/*.toml` 在构建期由 `op` 的 `build.rs` 解析成声明表，
 `cutile` 只消费解析结果，不解释存放位置）。
 
-### 4.1 算子声明（`crates/op/ops/attn_decode.toml`）
+### 4.1 算子声明（`../prof/src/ops`）
 
 ```toml
 [op]
@@ -363,7 +363,7 @@ mma_share = 0.40
 - 变体数上限 8；`axes` 乘积超过 8 直接拒绝，报错时给出建议剪掉的轴。
 - 为什么是 TOML 而不是 `#[op]` 过程宏：声明要可 diff、可被 `verify` 单独校验、不引入 `syn`/`quote` 依赖（见 §18 D3）。Rust 只在**新增骨架**时才写——骨架闭集只有 4 个，写满即止。
 
-### 4.2 模板（`crates/op/ops/attn_decode.k`）
+### 4.2 模板（`../prof/src/ops`）
 
 语法刻意保持极小：可解析构造只有 `{{槽位}}` 插值、`@原语(参数)` 调用、`#define` 与 `for`，其余文本原样保留。
 
@@ -1269,7 +1269,7 @@ wc -l crates/device/c/*                                                         
 
 | 术语 | 含义 |
 |---|---|
-| 算子（op） | 声明层的最小单位，对应 `crates/op/ops/<name>.toml` |
+| 算子（op） | 声明层的最小单位，对应 `../prof/src/ops` |
 | 档案（archive） | 档案层的最小单位，对应 `crates/prof/devices/<name>.toml`：一台设备的能力与证据 |
 | 骨架（skeleton） | 算子的结构类别，闭集 4 个；决定用哪个模板基座 |
 | 原语（prim） | 模板唯一可调用的指令级操作，闭集 16 个 |

@@ -94,3 +94,4 @@ mod witness;
 #[cfg(test)]
 #[path = "../tests/embedded.rs"]
 mod tests;
+pub mod decl;

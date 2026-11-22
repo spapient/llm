@@ -167,7 +167,7 @@
 
 ### 3.1 模板侧：两份 `.k`，一套槽位
 
-`crates/op/ops/` 共 22 份 `.k` 模板（`ls crates/op/ops/*.k | wc -l`）。两个 GEMV 家族的槽位逐条点数：
+`../crates/prof/src/ops` 共 22 份 `.k` 模板（`ls crates/op/ops/*.k | wc -l`）。两个 GEMV 家族的槽位逐条点数：
 
 | 槽位 | `gemv_f32.k` | `gemv_i4.k` | 说明 |
 |---|---|---|---|
@@ -185,9 +185,9 @@
 
 "逻辑只有一份"的含义就是上表两侧的**形状完全相同**——同一份分块、同一套累加顺序，差异只在有无 `@quant` 与 `@load_async` 的条数：
 
-> 「逻辑只有一份；设备差异全部在 `prim/<vendor>/<prim>.<ext>` 里。」——`crates/op/ops/gemv_f32.k:3`、`crates/op/ops/gemv_i4.k:3`
+> 「逻辑只有一份；设备差异全部在 `prim/<vendor>/<prim>.<ext>` 里。」——`../crates/prof/src/ops`、`../crates/prof/src/ops`
 
-> 「与 gemv_i4 的模板逐行对照：少了 `@quant` 与标度指针，多了把权重行本身搬进寄存器的那次 `@load_async`。累加仍是"每块一个部分和，再加进总量"——与标量参考的分块顺序一致，因此对拍比的是同一份舍入顺序，而不是运气。」——`crates/op/ops/gemv_f32.k:6-8`
+> 「与 gemv_i4 的模板逐行对照：少了 `@quant` 与标度指针，多了把权重行本身搬进寄存器的那次 `@load_async`。累加仍是"每块一个部分和，再加进总量"——与标量参考的分块顺序一致，因此对拍比的是同一份舍入顺序，而不是运气。」——`../crates/prof/src/ops`
 
 模板里的 `{{…}}` 只有轴与布局两类，不含任何设备字样：`grep -o '{{[A-Za-z]*}}' crates/op/ops/gemv_f32.k | sort | uniq -c` → `{{op}} 2 / {{w}} 1 / {{x}} 1`；i4 版多一对 `{{GMAX}} 2`（来自 `gemv_i4.toml` 的 `[axes]`）。
 

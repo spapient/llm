@@ -38,7 +38,7 @@ TOML 的书写形式（键顺序、引号、缩进）。
 
 | crate | 输入 | 生成物 | 暴露 |
 |---|---|---|---|
-| `op` | `crates/op/ops/*.toml` | `$OUT_DIR/declared.rs` | `op::declared(&str) -> Option<&'static Table>`、`op::names()` |
+| `op` | `../../crates/prof/src/ops` | `$OUT_DIR/declared.rs` | `op::declared(&str) -> Option<&'static Table>`、`op::names()` |
 | `prof` | `crates/prof/devices/*.toml` | `$OUT_DIR/embedded.rs` | `prof::embedded(&str) -> Option<&'static Table>`、`prof::names()` |
 | `tool` | `lints/vocabulary.toml` | `$OUT_DIR/vocabulary.rs` | `tool::vocabulary() -> &'static Table` |
 

@@ -1365,7 +1365,7 @@
 
 判据只有一条：**同一份数据在运行期是否还需要"从文本变回结构"。**
 
-- 事实 A（已确认）：三份语料都是编译期资产。`crates/op/ops/*.toml`、`crates/prof/devices/*.toml`、
+- 事实 A（已确认）：三份语料都是编译期资产。`../crates/prof/src/ops`、`crates/prof/devices/*.toml`、
   `lints/vocabulary.toml` 随二进制发布，运行期读到的是与构建期同一份文件；`ops/`、`devices/` 的
   运行期装载入口（`op::load`、`prof::load`）唯一的生产使用者是 `cutile::builtin` 的 `from_dir`/
   `from_repo` 与一份测试。
@@ -1382,7 +1382,7 @@
 
 | crate | 输入（构建期） | 生成物 | 运行期暴露 | 失败行为 |
 | --- | --- | --- | --- | --- |
-| `op` | `crates/op/ops/*.toml` | `$OUT_DIR/declared.rs` | `op::declared(&str) -> Option<&'static Table>`、`op::names()` | 日期值/非表顶层 → 构建失败 |
+| `op` | `../crates/prof/src/ops` | `$OUT_DIR/declared.rs` | `op::declared(&str) -> Option<&'static Table>`、`op::names()` | 日期值/非表顶层 → 构建失败 |
 | `prof` | `crates/prof/devices/*.toml` | `$OUT_DIR/embedded.rs` | `prof::embedded(&str) -> Option<&'static Table>`、`prof::names()` | 同上 |
 | `tool` | `lints/vocabulary.toml` | `$OUT_DIR/vocabulary.rs` | `tool::vocabulary() -> &'static Table` | 同上 |
 

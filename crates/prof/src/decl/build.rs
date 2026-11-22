@@ -241,7 +241,7 @@ impl OpDecl {
 }
 
 /// 从 `[needs]`/`[extra_needs]` 的一个条目解析能力签名。
-pub(super) fn parse_need(section: &Table, key: &str, path: &str) -> Result<Need, Error> {
+pub fn parse_need(section: &Table, key: &str, path: &str) -> Result<Need, Error> {
     let prim = prim_key(key, path)?;
     let detail = need_table(section, key, path)?;
     // 不拷这张表：解析只读它，为一棵内联表克隆一次等于每条需求多付一次分配。

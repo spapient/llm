@@ -20,8 +20,8 @@
 
 | 文件 | 内容 | 是否机制 |
 |---|---|---|
-| `crates/op/ops/gemv_f32.toml` | 骨架 / 轴 / 能力签名 / 布局 / 降级链 | 数据 |
-| `crates/op/ops/gemv_f32.k` | 模板：分块点积 + 与 `gemv_i4` 同一批 `@原语` | 数据 |
+| `../../crates/prof/src/ops` | 骨架 / 轴 / 能力签名 / 布局 / 降级链 | 数据 |
+| `../../crates/prof/src/ops` | 模板：分块点积 + 与 `gemv_i4` 同一批 `@原语` | 数据 |
 | `crates/op/src/gemv_f32.rs` | `EXPR = "nm,m,n->n"`、`AXES`、`MODEL`、样本与标量参考 | 语义（第二份实现） |
 | `crates/op/src/lib.rs` | `REGISTRY` 多一条 `Registration` | 一条注册 |
 

@@ -116,7 +116,7 @@ cargo run -p llm-cli --bin cutile -- cache gc --limit 1073741824                
 |---|---|---|
 | `cache.dir` | `CUTILE_CACHE_DIR`（兼容 `CUTILE_CACHE`） | `<缓存根>/cache` |
 | `work.dir` | `CUTILE_WORK_DIR` | `<缓存根>/work` |
-| `data.root` | `CUTILE_DATA_DIR` | 未设置（用编译期内嵌的 `crates/op/ops/`、`crates/prof/devices/` 与 `crates/prim/<vendor>/`） |
+| `data.root` | `CUTILE_DATA_DIR` | 未设置（用编译期内嵌的 `crates/prof/src/ops`、`crates/prof/devices/` 与 `crates/prim/<vendor>/`） |
 | `cache.limit_bytes` | — | 2 GiB |
 
 默认值的唯一来源是 `crates/cli/src/settings.rs`；要偏离默认用配置文件、环境变量或 `--set`，

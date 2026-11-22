@@ -1495,7 +1495,7 @@
 - `cutile` P0 纵切面实现（约 4,900 行 Rust + 数据）：`atom`（16 原语闭集 / 参数化能力签名 / 逐字段差异）、`prof`（档案 schema + 指纹规则 + L2 见证校验）、`cap`（协商 + 降级链 + 可解释诊断）、`layout`（4 构造子 / 正规形 / repack 计费）、`space`、`sch`、`lower`（词法 / 轴展开 / 片段拼接 / emit）、`cache`（FNV 指纹 + 锁 + 原子落盘）、`plan`（roofline）、`reference`（标量参考 + 对拍口径）、`backend`（`cc` 编译执行）、`probe`、`builtin`、`toml`（手写受限解析）。
 - `prim` 成员（目录 `crates/prim`）：片段层独立成 crate——`crates/cutile/prim/cpu/*.c` 迁入为 `crates/prim/cpu/*.c`，`src/lib.rs` 提供 `BUILTIN`（按 `(vendor, ext)` 登记的内嵌片段）、`builtin()`、`load()`、`dir()`、`layer_root()` 与 `FragmentSet`；文件名不在原语闭集内即装载报错，`witness.<ext>` 与片段同目录同扩展名、装载时按名字跳过（旧目录扫描会把它当成非法片段名而失败）。`cutile` 的 `lower/substitute` 只剩拼接（`pub use prim::FragmentSet`）。
 - 见证路径语义收敛：档案里的 `witness` 改为**相对片段层根**（`cpu/witness.c`），仓库内根是 `crates/prim`、`data.root` 下是 `<data.root>/prim`；`Catalogue::root()` 随之删除，`cutile` 不再需要知道自己的清单目录。
-- 三层数据：`crates/op/ops/gemv_i4.toml` + `gemv_i4.k`（声明层）、`crates/prof/devices/{ascend,cpu,intel,nvidia}.toml`（档案层）、`crates/prim/cpu/`（片段层，9 段 + 见证）。
+- 三层数据：`crates/prof/src/ops` + `gemv_i4.k`（声明层）、`crates/prof/devices/{ascend,cpu,intel,nvidia}.toml`（档案层）、`crates/prim/cpu/`（片段层，9 段 + 见证）。
 - **执行单元进入闭集**：`AttrKey` 新增 `exec`，档案新增 `[units.<name>]`（单元名 → 可访问的存储层），`Profile::validate` 校验 "`exec` 必须是已声明单元" 与 "该单元访问得到这条供给声明的存储层"，于是"昇腾 Cube 只能访问 L1/L0"是可校验的数据而不是注释；`Need` 写 `exec = ["vector"]` 即"我要 vector 实现的点积"，协商仍是同一次集合/区间判定。
 - 昇腾档案 `crates/prof/src/ascend/ascend.toml`：`GM` / `L1` / `L0C` 三级存储 + `cube` / `vector` / `mte` / `fixpipe` / `scalar`五个执行单元，10 条 `provides` 全部 `L0`（P0 无真机证据，未验证视为不具备）；`probe::fake("ascend")` 让指纹选档可离线回归。
 - `prof` crate 承接档案 schema 与能力词汇表：`crates/prof/src/{atom,prof}.rs`（从 `cutile` 迁入），`cutile` 只 re-export（`pub use ::prof::{atom, prof}`），`SCHEMA_VER` 升到 3。
@@ -1578,7 +1578,7 @@
 
 - **片段集合不再按厂商分支**：`FragmentSet::builtin_cpu()` 改为 `FragmentSet::builtin(vendor)` + 内嵌表 `FragmentSet::BUILTIN`，CLI 的 `vendor == "cpu"` 判断消失——未登记的 vendor 一律走 `data.root` 的 `prim/<vendor>/`，接入新设备仍然只改数据。
 - **档案层迁出 `cutile`**：`crates/cutile/devices/` → `crates/prof/devices/`；`cutile::builtin` 改为从 `prof` 取档案（内嵌副本与磁盘副本两条路径都只经 `prof::builtin()` / `prof::load()`），测试里的 `include_str!("../devices/*.toml")` 改为 `prof::embedded()`。`data.root` 语义不变：仍指向一个含 `ops/`、`devices/`、`prim/` 的数据根；档案里的 `witness` 仍以 `cutile` 根为基准解析。同时修正 `cutile` 的 `description` 与项目文档中的分层说明（三层数据分属 `op` / `prof` / `cutile`）。
-- **声明层迁出 `cutile`**：`crates/cutile/ops/` → `crates/op/ops/`；`cutile::builtin` 改为从 `op` 取声明（新增 `from_repo()` 对拍磁盘与内嵌副本），并校验“文件名即算子名”（与 `[op] name` 不一致直接报错）。`data.root` 语义不变：仍指向一个含 `ops/`、`devices/`、`prim/` 的数据根。
+- **声明层迁出 `cutile`**：`crates/cutile/ops/` → `crates/prof/src/ops`；`cutile::builtin` 改为从 `op` 取声明（新增 `from_repo()` 对拍磁盘与内嵌副本），并校验“文件名即算子名”（与 `[op] name` 不一致直接报错）。`data.root` 语义不变：仍指向一个含 `ops/`、`devices/`、`prim/` 的数据根。
 - **TOML 解析器**从 `cutile` 移到 `llm-config`（`cutile::toml` 保留为转发路径）：实现只有一份，`llm` 将来读自己的配置不必反向依赖 `cutile`。
 - `Cache::from_env()` 改为 `Cache::from_settings(&Settings)`：缓存目录不再按当前工作目录拼 `target/cutile-cache`，而是取平台用户缓存目录（`~/Library/Caches/cutile/cache`、`$XDG_CACHE_HOME/cutile/cache`、`%LOCALAPPDATA%\cutile\cache`）。
 - **默认目录改为平台用户级目录**：`Roots::discover()` 不再“向上找 workspace、找不到就用 CWD”，而是取 `~/Library/Caches`（macOS）、`$XDG_CACHE_HOME`（Linux/BSD）、`%LOCALAPPDATA%`（Windows）；配置目录同理。发布后的二进制在任意目录运行都命中同一份缓存，不会在 CWD 里造 `target/`。

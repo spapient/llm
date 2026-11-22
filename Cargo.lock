@@ -586,21 +586,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "llm-conv"
-version = "0.1.0"
-dependencies = [
- "half",
- "llm-annotation",
- "llm-diagnostic",
- "llm-gemm",
- "llm-prof",
- "llm-spec",
- "llm-testkit",
- "num-traits",
- "proptest",
-]
-
-[[package]]
 name = "llm-device"
 version = "0.1.0"
 dependencies = [
@@ -667,30 +652,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "llm-gemm"
+name = "llm-nn"
 version = "0.1.0"
 dependencies = [
  "cutile",
  "half",
  "llm-annotation",
  "llm-diagnostic",
+ "llm-op",
  "llm-prof",
  "llm-spec",
- "llm-testkit",
- "num-traits",
- "proptest",
-]
-
-[[package]]
-name = "llm-nn"
-version = "0.1.0"
-dependencies = [
- "llm-annotation",
- "llm-diagnostic",
- "llm-op",
  "llm-tensor",
  "llm-testkit",
  "llm-weights",
+ "num-traits",
  "proptest",
 ]
 
@@ -699,9 +674,7 @@ name = "llm-op"
 version = "0.1.0"
 dependencies = [
  "llm-annotation",
- "llm-conv",
  "llm-diagnostic",
- "llm-gemm",
  "llm-prof",
  "llm-spec",
  "llm-testkit",
@@ -725,6 +698,7 @@ version = "0.1.0"
 dependencies = [
  "llm-diagnostic",
  "llm-dtype",
+ "llm-testkit",
  "toml",
 ]
 

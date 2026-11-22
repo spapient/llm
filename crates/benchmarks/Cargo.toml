@@ -21,7 +21,7 @@ autobins = false
 criterion = { workspace = true }
 cutile = { path = "../cutile" }
 prof = { path = "../prof", package = "llm-prof" }
-op = { path = "../op", package = "llm-op", features = ["bench"] }
+op = { path = "../op", package = "llm-op" }
 wire = { path = "../wire", package = "llm-wire" }
 weights = { path = "../weights", package = "llm-weights", features = ["mmap"] }
 tokenizer = { path = "../tokenizer", package = "llm-tokenizer" }
@@ -30,7 +30,7 @@ train = { path = "../train", package = "llm-train" }
 autograd = { path = "../autograd", package = "llm-autograd" }
 tensor = { path = "../tensor", package = "llm-tensor" }
 # roofline 的分子（每条基准至少搬多少、算多少）由算子语义推出，不在报告里手写第二份公式。
-nn = { path = "../nn", package = "llm-nn" }
+nn = { path = "../nn", package = "llm-nn", features = ["bench"] }
 # 整模型一步基准：合成栈经 engine 页账与 serve 宿主跑 Predict 路线 B（测量容器，全部在 dev）。
 engine = { path = "../engine", package = "llm-engine" }
 serve = { path = "../serve", package = "llm-serve" }

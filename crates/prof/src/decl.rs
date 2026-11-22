@@ -299,7 +299,7 @@ impl fmt::Display for TileCombo {
 }
 
 /// 字段级错误：`invalid` 类别，消息里带字段路径（声明层的一切错误都是"输入不合法"）。
-pub(crate) fn field(path: &str, detail: impl Into<String>) -> Error {
+pub fn field(path: &str, detail: impl Into<String>) -> Error {
     Error::new(Code::Invalid, format!("`{path}` 非法：{}", detail.into()))
 }
 

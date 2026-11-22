@@ -8,7 +8,7 @@
 
 ### 现状（回链当前 revision）
 
-- 注册表 27 条算子，其中 9 条量化 lane：`gemv_i2` / `gemv_i4` / `gemv_i8`、`gemm_i2` / `gemm_i4` / `gemm_i8`、`dequant_i2` / `dequant_i4` / `dequant_i8`（`crates/op/ops/*.toml`；量化名见各 toml）。
+- 注册表 27 条算子，其中 9 条量化 lane：`gemv_i2` / `gemv_i4` / `gemv_i8`、`gemm_i2` / `gemm_i4` / `gemm_i8`、`dequant_i2` / `dequant_i4` / `dequant_i8`（`../../crates/prof/src/ops`；量化名见各 toml）。
 - GEMV 骨架收口在 `crates/op/src/gemv.rs` 的 `Format` trait（`:113`）：随精度变化的关联项是 `Elem` / `EXPR` / `OPERANDS` / `GRAIN` / `DERIVED` / `SCALES` / `STEP` / `cache` / `row` / `weights` / `forward`；格式类型有稠密 `Dense<BLOCK>`（`:199`）、量化 `Quantized<GRAIN>`（`:193`）、对称 8 位 `SymI8<GRAIN>`（`:205`）。
 - GEMM 骨架收口在 `crates/op/src/gemm.rs` 的 `Gemm` trait（`:57`），位宽走 `const BITS: Bits`（`:65`），打包长度走 `a_len` / `b_len`，点积落 `dot`。
 - i4 实现是新格式的镜像参照（`crates/op/src/gemv_i4.rs`）：4 位打包每字节两个 nibble；`DEQUANT` 16 项对称表 `nibble − 8`；分组必须为偶数；`row = m / 2`；点积按分组推进、整组共用一条标度，低 nibble 在前。
