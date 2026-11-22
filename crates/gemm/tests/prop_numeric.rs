@@ -665,11 +665,11 @@ proptest! {
         let x: Vec<f32> = (0..m).map(|k| k as f32 * 0.25).collect();
         let mut out = vec![0.0f32; n];
         prop_assert!(
-            <gemv::f32::F32 as gemv::Format>::forward(&x, &w[..n * m], &[], &mut out).is_ok(),
+            <crate::gemv::f32::F32 as crate::gemv::Format>::forward(&x, &w[..n * m], &[], &mut out).is_ok(),
             "空标度必须接受"
         );
         prop_assert!(
-            <gemv::f32::F32 as gemv::Format>::forward(&x, &w[..n * m], &[s], &mut out).is_err(),
+            <crate::gemv::f32::F32 as crate::gemv::Format>::forward(&x, &w[..n * m], &[s], &mut out).is_err(),
             "稠密格式收到标度必须拒绝"
         );
     }
@@ -689,9 +689,8 @@ proptest! {
         prop_assert_eq!(
             gemv_i8::forward(&x, &w, &s, &mut out).is_ok(),
             ok,
-            "{len} 个标度配 n = {}、m = {} 的可接受性",
-            n,
-            m
+            "{} 个标度配 n = {}、m = {} 的可接受性",
+            len, n, m
         );
     }
 

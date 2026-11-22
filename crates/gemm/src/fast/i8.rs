@@ -274,60 +274,68 @@ unsafe fn sdot_rounds(rounds: usize) {
     std::hint::black_box(acc);
 }
 
-/// `sdot` 混合端口探针一轮的乘加次数：16 条 `sdot`（4 行 × 4 列）× 16 项，配 8 条 16 字节 load。
+/// `sdot` **取数受限**峰值一轮的 k16 步数换算系数：每步 16 条 `sdot`，故一轮供 `16 * k` 次乘加。
 #[cfg(all(feature = "bench", target_arch = "aarch64"))]
-pub const SDOT_MIX_MAC_PER_ROUND: usize = 16 * 16;
+pub const SDOT_BLOCK_MAC_PER_K: usize = 16;
 
-/// `sdot` **取数受限**峰值：一轮 = 4 条 A load + 4 条 B load + 16 条 `sdot`，与生产微内核
-/// [`kernel::dot_block`] 每个 `k16` 步的指令构成逐条一致。
+/// `sdot` **取数受限**峰值：一轮 = `k/16` 个 k16 步，每步 4 条 A load + 4 条 B load + 16 条
+/// `sdot`，与生产微内核 [`kernel::dot_block`] 逐指令一致。
 ///
-/// **为什么要它**：纯端口探针是零 load 的理想上限，生产核每 16 条 `sdot` 要发 8 条 load。
-/// 两条曲线之差就是取数开销，也就是「K8 的缺口里有多少是结构注定、有多少是核写得差」的分界线。
-/// 若混合峰值 ≈ 纯峰值，说明 load 被完全掩住，那么缺口只能来自线程扩展；若混合峰值掉到
-/// 纯峰值的 3/4 一线，说明 4×4 微内核的 8 load : 16 `sdot` 就是天花板，缺口与瓦片形状无关。
+/// **为什么要它**：纯端口探针零 load，是理想上限；生产核每 16 条 `sdot` 要发 8 条 load。
+/// 两者之差就是取数代价，也是「K8 的缺口里多少是结构注定、多少是核写得差」的分界线。
 ///
-/// `a`（4 行 × 16 字节）与 `b`（4 列 × 16 字节）由调用方给，长度不足 64 时返回 `false`。
+/// **第一版是错探针，必须记下来**：当时把 A/B 写成固定 64 字节、地址用常量偏移
+/// `bp.add(nb * 16)`，而循环变量不进地址，于是 LLVM 把 8 条 load **整体提到循环外**——
+/// `otool -tV` 实测循环体只剩 16 条 `sdot` 加 `subs`/`b.ne`，`ldp q16,q17,[x0]` 只出现一次。
+/// 那样的「混合峰值 ≈ 纯峰值」是空证据：它根本没在环内取数。改成与生产相同的 `base + p`
+/// 单调推进后，取数被迫留在环内，实测比值才是真的（同一台机、同一编译参数，中位 0.875）。
+///
+/// 本机无 `dotprod`、`rounds == 0`、`k == 0` 或 `k % 16 != 0`、缓冲不足 `4 * k` 时返回
+/// `false` 且不执行任何向量指令。只在 `bench` 特性下编译。
 #[cfg(all(feature = "bench", target_arch = "aarch64"))]
-pub fn port_sdot_mix(rounds: usize, a: &[i8], b: &[i8]) -> bool {
-    if rounds == 0 || a.len() < 64 || b.len() < 64
+pub fn port_sdot_block(rounds: usize, a: &[i8], b: &[i8], k: usize) -> bool {
+    if rounds == 0 || k == 0 || k % 16 != 0 || a.len() < 4 * k || b.len() < 4 * k
         || !std::arch::is_aarch64_feature_detected!("dotprod")
     {
         return false;
     }
-    // 安全性：dotprod 已运行时探测；`a`/`b` 各 64 字节已在上面校验。
+    // 安全性：dotprod 已运行时探测；A/B 各 4k 字节已在上面校验。
     #[allow(unsafe_code)]
     unsafe {
-        sdot_mix_rounds(rounds, a.as_ptr(), b.as_ptr());
+        sdot_block_rounds(rounds, a.as_ptr(), b.as_ptr(), k);
     }
     true
 }
 
-/// 混合端口循环：16 累加器 + 每轮 8 条 load，累加结果进 `black_box` 防整段消除。
+/// 取数受限循环：4 行 × 4 列累加器，每 k16 步 4 条 A load + 4 条 B load + 16 条 `sdot`。
 #[cfg(all(feature = "bench", target_arch = "aarch64"))]
 #[target_feature(enable = "dotprod")]
 #[allow(unsafe_code)]
 #[inline(never)]
-unsafe fn sdot_mix_rounds(rounds: usize, ap: *const i8, bp: *const i8) {
+unsafe fn sdot_block_rounds(rounds: usize, ap: *const i8, bp: *const i8, k: usize) {
     use std::arch::aarch64::*;
     unsafe {
-        let mut acc = [vdupq_n_s32(0); 16];
-        let mut p = 0;
-        while p < rounds {
-            let av: [int8x16_t; 4] = [
-                vld1q_s8(ap),
-                vld1q_s8(ap.add(16)),
-                vld1q_s8(ap.add(32)),
-                vld1q_s8(ap.add(48)),
-            ];
-            for (nb, col) in acc.chunks_exact_mut(4).enumerate() {
-                let bv = vld1q_s8(bp.add(nb * 16));
-                for (cell, a) in col.iter_mut().zip(av) {
-                    *cell = vdotq_s32(*cell, a, bv);
+        for _ in 0..rounds {
+            let zero = vdupq_n_s32(0);
+            let mut accs = [[zero; I8_MR]; I8_NR];
+            let mut p = 0;
+            while p < k {
+                let av: [int8x16_t; I8_MR] = [
+                    vld1q_s8(ap.add(p)),
+                    vld1q_s8(ap.add(k + p)),
+                    vld1q_s8(ap.add(2 * k + p)),
+                    vld1q_s8(ap.add(3 * k + p)),
+                ];
+                for (nb, column) in accs.iter_mut().enumerate() {
+                    let bv = vld1q_s8(bp.add(nb * k + p));
+                    for (cell, a) in column.iter_mut().zip(av) {
+                        *cell = vdotq_s32(*cell, a, bv);
+                    }
                 }
+                p += 16;
             }
-            p += 1;
+            std::hint::black_box(accs);
         }
-        std::hint::black_box(acc);
     }
 }
 
