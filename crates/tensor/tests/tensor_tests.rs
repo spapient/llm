@@ -410,7 +410,7 @@ fn a_slice_outside_the_axes_or_the_rank_is_none() {
 }
 
 #[test]
-fn a_selected_axis_disappears_and_the_base_follows_the_index() {
+fn a_selected_axis_disappears_and_the_base_follows_the_idx() {
     let values = counted();
     let view: View<'_, f32> = View::new(Shape::new([3, 4]), values.as_slice()).expect("视图");
     let row = view.select::<Vec<usize>>(0, 1).expect("第 1 行");

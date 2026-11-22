@@ -146,7 +146,7 @@ where
     /// 存储里的全部元素——借来视图就是调用方的缓冲本身，不是副本。
     ///
     /// 这是**存储**而不是"本张量的元素"：子视图只覆盖其中 `base .. base + 最高偏移` 一段。
-    /// 要本张量的元素依次读出，用 [`to_contiguous`](Self::to_contiguous)。
+    /// 要本张量的元素依次读出，用 [`to_vec`](Self::to_vec)；要一块可接着 [`reshape`](Self::reshape) 的存储，用 [`to_contiguous`](Self::to_contiguous)。
     pub fn as_slice(&self) -> &[K] {
         self.buf.slice()
     }
@@ -177,14 +177,7 @@ where
             row,
         )
     }
-}
 
-impl<B, R, K> Tensor<B, R, K>
-where
-    R: Rank,
-    K: Element,
-    B: Store<K>,
-{
     /// 交换两轴：零拷贝的元数据重排，与存储形态无关。
     pub fn transpose(self, a: usize, b: usize) -> Option<Self> {
         Some(assemble(
@@ -220,16 +213,11 @@ where
             .as_slice()
             .iter()
             .enumerate()
-            .map(|(axis, &want)| -> Option<usize> {
-                let Some(source) = axis.checked_sub(lead) else {
-                    return Some(0); // 前导新轴
-                };
-                let have = self.dims.as_slice()[source];
-                match (have, want) {
-                    (have, want) if have == want => Some(self.steps.as_slice()[source]),
-                    (1, _) => Some(0),
-                    _ => None,
-                }
+            .map(|(axis, &want)| {
+                broadcast_step(
+                    (lead, self.dims.as_slice(), self.steps.as_slice()),
+                    (axis, want),
+                )
             })
             .collect::<Option<Vec<usize>>>()?;
         let steps = R::from_slice(&steps)?;
@@ -253,6 +241,12 @@ where
     ///
     /// 越界返回 `None`。缓冲不动，所以自持张量也能切（不需要复制，也不必是借来的存储）。
     pub fn narrow(mut self, axis: usize, start: usize, len: usize) -> Option<Self> {
+        self.shift(axis, start, len)?;
+        Some(self)
+    }
+
+    /// 把一轴的 `[start, start + len)` 落到元数据上：起点前移、该轴收窄。
+    fn shift(&mut self, axis: usize, start: usize, len: usize) -> Option<()> {
         let (base, dim) = layout::narrow(
             self.dims.as_slice(),
             self.steps.as_slice(),
@@ -263,7 +257,7 @@ where
         )?;
         self.base = base;
         self.dims.as_slice_mut()[axis] = dim;
-        Some(self)
+        Some(())
     }
 
     /// 多轴同时取段：`ranges[i]` 作用于第 `i` 轴，没给出的尾部轴原样保留。
@@ -275,29 +269,19 @@ where
             return None;
         }
         for (axis, range) in ranges.iter().enumerate() {
-            let len = range.end.checked_sub(range.start)?;
-            let (base, dim) = layout::narrow(
-                self.dims.as_slice(),
-                self.steps.as_slice(),
-                self.base,
-                axis,
-                range.start,
-                len,
-            )?;
-            self.base = base;
-            self.dims.as_slice_mut()[axis] = dim;
+            self.shift(axis, range.start, range.end.checked_sub(range.start)?)?;
         }
         Some(self)
     }
 
-    /// 固定第 `axis` 轴为第 `index` 个：起点前移、该轴消失，所以秩减一。
-    pub fn select<R2: Rank>(self, axis: usize, index: usize) -> Option<Tensor<B, R2, K>> {
+    /// 固定第 `axis` 轴为第 `idx` 个：起点前移、该轴消失，所以秩减一。
+    pub fn select<R2: Rank>(self, axis: usize, idx: usize) -> Option<Tensor<B, R2, K>> {
         let out = layout::select(
             self.dims.as_slice(),
             self.steps.as_slice(),
             self.base,
             axis,
-            index,
+            idx,
         )?;
         self.respine(out)
     }
@@ -339,43 +323,69 @@ where
         ))
     }
 
-    /// 物化成连续缓冲：步长 0 的广播轴、非满长的窄视图都摊进一块紧凑内存，于是可以接着
-    /// [`reshape`](Self::reshape)。这是本模块唯一真正搬数据的地方，O(numel)。
-    #[must_use]
-    pub fn to_contiguous(&self) -> Tensor<Owned<K>, R, K> {
+    /// 按逻辑下标顺序摊平：转置、广播、窄视图都给出 `numel` 个元素的新缓冲。
+    ///
+    /// 连续布局走一次整段拷贝（起点可能不是 0，仍是一段），其余布局按步长走一遍；`O(numel)`。
+    pub fn to_vec(&self) -> Vec<K> {
         let shape = self.dims.as_slice();
-        let numel = product(shape);
-        let steps = R::contiguous(shape).unwrap_or_else(|| self.dims.clone());
         let source = self.buf.slice();
         if self.is_contiguous() {
-            // 连续布局的整块元素从起点开始就是挨着的，所以一次切片拷贝即可——起点可能不是 0。
-            return assemble(
-                self.dims.clone(),
-                steps,
-                0,
-                Owned::from(gather(source, self.base, numel)),
-            );
+            return gather(source, self.base, product(shape));
         }
-        let mut buf = Vec::with_capacity(numel);
-        let mut idx = vec![0usize; shape.len()];
-        let mut at = self.base;
-        let axis_steps = self.steps.as_slice();
-        for _ in 0..numel {
-            // 构造时的 check_reach 已证明任一合法下标都落在缓冲内，故不走 `Option`。
-            buf.push(source[at]);
-            // 行主序进位，偏移跟着增减，省掉每次重算点积。
-            for axis in (0..idx.len()).rev() {
-                idx[axis] += 1;
-                at += axis_steps[axis];
-                if idx[axis] < shape[axis] {
-                    break;
-                }
-                idx[axis] = 0;
-                at -= axis_steps[axis] * shape[axis];
-            }
-        }
-        assemble(self.dims.clone(), steps, 0, Owned::from(buf))
+        gather_strided(source, shape, self.steps.as_slice(), self.base)
     }
+
+    /// 物化成连续缓冲：步长 0 的广播轴、非满长的窄视图都摊进一块紧凑内存，于是可以接着
+    /// [`reshape`](Self::reshape)。这是本模块唯一真正搬数据的地方。
+    #[must_use]
+    pub fn to_contiguous(&self) -> Tensor<Owned<K>, R, K> {
+        let steps = R::contiguous(self.dims.as_slice()).unwrap_or_else(|| self.dims.clone());
+        assemble(self.dims.clone(), steps, 0, Owned::from(self.to_vec()))
+    }
+}
+
+/// 广播时第 `axis` 轴的步长：前导新轴为 0；同长沿用源步长；源轴长为 1 则恒读同一元素。
+///
+/// 秩、轴长对不上都不是广播，返回 `None`。
+fn broadcast_step(
+    (lead, dims, steps): (usize, &[usize], &[usize]),
+    (axis, want): (usize, usize),
+) -> Option<usize> {
+    let Some(source) = axis.checked_sub(lead) else {
+        return Some(0);
+    };
+    let have = *dims.get(source)?;
+    if have == 1 {
+        return Some(0);
+    }
+    if have != want {
+        return None;
+    }
+    steps.get(source).copied()
+}
+
+/// 按步长走一遍全部逻辑位置，把读到的元素压成连续缓冲：O(numel)。
+///
+/// 构造时的可达性校验已证明任一合法下标都落在缓冲内，故不走 `Option`。
+fn gather_strided<T: Copy>(source: &[T], shape: &[usize], steps: &[usize], base: usize) -> Vec<T> {
+    let numel = product(shape);
+    let mut buf = Vec::with_capacity(numel);
+    let mut idx = vec![0usize; shape.len()];
+    let mut at = base;
+    for _ in 0..numel {
+        buf.push(source[at]);
+        // 行主序进位：偏移跟着增减，省掉每次重算点积。
+        for axis in (0..idx.len()).rev() {
+            idx[axis] += 1;
+            at += steps[axis];
+            if idx[axis] < shape[axis] {
+                break;
+            }
+            idx[axis] = 0;
+            at -= steps[axis] * shape[axis];
+        }
+    }
+    buf
 }
 
 impl<R, K> Tensor<Owned<K>, R, K>
@@ -398,8 +408,10 @@ where
 
 /// 从 `start` 起拷 `len` 个元素；越界时按实际可得的截断（构造期已保证不会发生）。
 fn gather<K: Copy>(source: &[K], start: usize, len: usize) -> Vec<K> {
-    let end = start.saturating_add(len).min(source.len());
-    source.get(start.min(end)..end).unwrap_or_default().to_vec()
+    source
+        .get(start..start.saturating_add(len))
+        .unwrap_or_default()
+        .to_vec()
 }
 
 /// 六处构造与重排共用同一个组装动作：元数据 + 起点 + 存储 + 零尺寸类型标记。

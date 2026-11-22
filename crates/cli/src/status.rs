@@ -137,34 +137,40 @@ fn data_rows(panel: Panel) -> Result<Panel> {
     let buf = vec![0.5f32, 0.25, 0.125, 0.0625];
     let view: tensor::View<'_, f32> =
         tensor::Tensor::new(tensor::Shape::new([2, 2]), buf.as_slice())?;
+    let profile = format!(
+        "{:?} {:?}，第 1 行和 = {:.3}（借用调用方 {} 个元素，不复制）",
+        view.dtype(),
+        view.dims(),
+        view.row(1)
+            .map(|row| row.iter().sum::<f32>())
+            .unwrap_or(0.0),
+        view.numel()
+    );
     // 先零拷贝切出末行，再广播成 4 行：步长 0 复用同一份元素，转置与置换表达不出来。
-    let last = view.clone().narrow(0, 1, 1).expect("末行是合法视图");
+    let last = view
+        .narrow(0, 1, 1)
+        .ok_or_else(|| Error::new(Code::Internal, "2×2 视图切末行必成立").with("llm status"))?;
     let wide = last.broadcast(vec![4usize, 2]);
     let panel = panel.row(
         "张量    tensor::Tensor",
         match wide {
-            Some(wide) => format!(
-                "{:?} {:?} 步长 {:?}，连续：{}（广播不复制缓冲，只把被扩展轴步长写成 0）",
-                wide.dtype(),
-                wide.dims(),
-                wide.strides(),
-                wide.is_contiguous()
-            ),
+            Some(wide) => {
+                // 摊平按逻辑下标顺序读一遍：步长 0 的广播轴在这里展开成真实元素，缓冲仍只有一份。
+                let flat = wide.to_vec();
+                format!(
+                    "{:?} {:?} 步长 {:?}，连续：{}，摊平 {} 个 = {:?}",
+                    wide.dtype(),
+                    wide.dims(),
+                    wide.strides(),
+                    wide.is_contiguous(),
+                    flat.len(),
+                    flat
+                )
+            }
             None => "广播失败".to_owned(),
         },
     );
-    Ok(panel.row(
-        "视图    tensor::View",
-        format!(
-            "{:?} {:?}，第 1 行和 = {:.3}（借用调用方 {} 个元素，不复制）",
-            view.dtype(),
-            view.dims(),
-            view.row(1)
-                .map(|row| row.iter().sum::<f32>())
-                .unwrap_or(0.0),
-            view.numel()
-        ),
-    ))
+    Ok(panel.row("视图    tensor::View", profile))
 }
 
 /// 训练行：起一个最小训练计划实例。

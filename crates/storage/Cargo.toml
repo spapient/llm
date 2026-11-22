@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 readme.workspace = true
-description = "Physical layouts over flat buffers: Order, Layout and the remap pass."
+description = "Flat buffers and allocation: Buf, Allocator, and the mmap island."
 publish = false
 autotests = false
 

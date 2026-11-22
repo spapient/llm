@@ -36,7 +36,10 @@ use llm_tools::{
 
 const MIN_SOURCES: usize = 100;
 /// 文档下限：根 README + 各成员 README + `docs/`（含 ADR）。低于它说明扫描路径写错了。
-const MIN_DOCUMENTS: usize = 30;
+///
+/// 它探测的是"扫描路径还在扫到东西"，不是文档数量目标——合并文档是本仓的既定方向，所以下限要
+/// 明显低于当前篇数，否则每合并一次就得改门禁。
+const MIN_DOCUMENTS: usize = 12;
 
 #[test]
 fn every_source_passes_the_static_gate() {

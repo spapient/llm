@@ -33,6 +33,7 @@
 use diagnostic::Result;
 
 use crate::invalid;
+use crate::shape::{Order, accumulate};
 
 /// 秩变化的栈上容量：形状变换在栈上重排 `(dims, steps)`，超出这个轴数返回 `None`。
 ///
@@ -50,41 +51,66 @@ pub(crate) fn check(
     len: usize,
     marker: &str,
 ) -> Result<()> {
-    if dims.len() != steps.len() {
-        return Err(invalid(
-            format!(
-                "步长有 {} 个轴，形状 {dims:?} 有 {} 个轴",
-                steps.len(),
-                dims.len()
-            ),
-            marker,
-        ));
+    check_rank(dims, steps, marker)?;
+    check_empty(numel, len, marker)?;
+    check_reach(dims, steps, numel, len, marker)
+}
+
+/// 轴数：步长必须与形状逐轴对应，否则下面的偏移计算没有意义。
+fn check_rank(dims: &[usize], steps: &[usize], marker: &str) -> Result<()> {
+    if dims.len() == steps.len() {
+        return Ok(());
     }
+    Err(invalid(
+        format!(
+            "步长有 {} 个轴，形状 {dims:?} 有 {} 个轴",
+            steps.len(),
+            dims.len()
+        ),
+        marker,
+    ))
+}
+
+/// 零元素口径：形状里有 0 个元素时只接受空缓冲。
+fn check_empty(numel: usize, len: usize, marker: &str) -> Result<()> {
+    if numel != 0 || len == 0 {
+        return Ok(());
+    }
+    Err(invalid(
+        format!("零元素视图不该借用 {len} 个元素的缓冲"),
+        marker,
+    ))
+}
+
+/// 可达性：每轴最后一位走出的总偏移必须算得出、且落在缓冲内。
+fn check_reach(
+    dims: &[usize],
+    steps: &[usize],
+    numel: usize,
+    len: usize,
+    marker: &str,
+) -> Result<()> {
     if numel == 0 {
-        // 零元素形状只接受空缓冲；否则没有下标可算，就没有可达性可言。
-        return match len {
-            0 => Ok(()),
-            _ => Err(invalid(
-                format!("零元素视图不该借用 {len} 个元素的缓冲"),
-                marker,
-            )),
-        };
+        return Ok(());
     }
-    // 每轴最后一位走出的总偏移：既要算得出（各段无溢出），也要落在缓冲内。
-    let highest = dims
-        .iter()
+    let highest = highest(dims, steps)
+        .ok_or_else(|| invalid(format!("形状 {dims:?} 与步长 {steps:?} 算出溢出"), marker))?;
+    if highest < len {
+        return Ok(());
+    }
+    Err(invalid(
+        format!("最高偏移 {highest} 超出缓冲（{len} 个元素）：步长与形状对不上"),
+        marker,
+    ))
+}
+
+/// 最高下标（每轴最后一位）走出的总偏移；任一轴为空或累加溢出则 `None`。
+fn highest(dims: &[usize], steps: &[usize]) -> Option<usize> {
+    dims.iter()
         .zip(steps)
         .try_fold(0usize, |acc, (&dim, &step)| {
             acc.checked_add(dim.checked_sub(1)?.checked_mul(step)?)
         })
-        .ok_or_else(|| invalid(format!("形状 {dims:?} 与步长 {steps:?} 算出溢出"), marker))?;
-    match highest < len {
-        true => Ok(()),
-        false => Err(invalid(
-            format!("最高偏移 {highest} 超出缓冲（{len} 个元素）：步长与形状对不上"),
-            marker,
-        )),
-    }
 }
 
 /// 一组下标 → 元素偏移：秩不符、任一轴越界或累加溢出都是 `None`。
@@ -117,15 +143,12 @@ pub(crate) fn is_contiguous(dims: &[usize], steps: &[usize]) -> bool {
     if dims.len() != steps.len() {
         return false;
     }
-    let mut acc = 1usize;
-    // 反向核对期望累积值；串行依赖，保留循环。
-    for axis in (0..dims.len()).rev() {
-        if dims[axis] > 1 && steps[axis] != acc {
-            return false;
-        }
-        acc = acc.saturating_mul(dims[axis]);
+    // 连续 = 整段压平后步长为 1；全单例（或零轴）只有一个元素，任何步长都算连续。
+    match collapse(dims, steps, 0, dims.len()) {
+        Some((_, 1)) => true,
+        Some((dim, _)) => dim <= 1,
+        None => false,
     }
-    true
 }
 
 /// 二维视图的第 `row` 行；秩不是 2、行越界或列不连续时返回 `None`。
@@ -136,12 +159,18 @@ pub(crate) fn row<'a, E>(
     data: &'a [E],
     row: usize,
 ) -> Option<&'a [E]> {
-    let [_, columns] = <[usize; 2]>::try_from(dims).ok()?;
+    let (start, end) = row_span(dims, steps, base, row)?;
+    data.get(start..end)
+}
+
+/// 第 `row` 行在存储里的半开区间：列必须是单位步长，否则"一行"不是连续的一段。
+fn row_span(dims: &[usize], steps: &[usize], base: usize, row: usize) -> Option<(usize, usize)> {
+    let columns = *dims.get(1)?;
     if steps.get(1) != Some(&1) {
         return None;
     }
-    let start = base.checked_add(axis_offset(dims[0], steps[0], row)?)?;
-    data.get(start..start.checked_add(columns)?)
+    let start = offset(dims, steps, base, &[row, 0])?;
+    Some((start, start.checked_add(columns)?))
 }
 
 /// 重排后的布局：起点偏移 + 各轴长度 / 步长，前 `len` 项有效。
@@ -195,13 +224,16 @@ pub(crate) fn narrow(
     start: usize,
     len: usize,
 ) -> Option<(usize, usize)> {
-    let dim = *dims.get(axis)?;
-    let step = *steps.get(axis)?;
-    if start.checked_add(len)? > dim {
+    let room = dims.get(axis)?.checked_sub(len)?;
+    if start > room {
         return None;
     }
-    let skip = start.checked_mul(step)?;
-    Some((base.checked_add(skip)?, len))
+    Some((forward(steps, base, axis, start)?, len))
+}
+
+/// 沿 `axis` 前移 `count` 格后的起点偏移；轴越界或溢出返回 `None`。
+fn forward(steps: &[usize], base: usize, axis: usize, count: usize) -> Option<usize> {
+    base.checked_add(count.checked_mul(*steps.get(axis)?)?)
 }
 
 /// 沿 `axis` 取第 `index` 个：起点前移、该轴去掉。越界返回 `None`。
@@ -210,10 +242,10 @@ pub(crate) fn select(
     steps: &[usize],
     base: usize,
     axis: usize,
-    index: usize,
+    idx: usize,
 ) -> Option<Layout> {
     let step = *steps.get(axis)?;
-    let base = base.checked_add(axis_offset(*dims.get(axis)?, step, index)?)?;
+    let base = base.checked_add(axis_offset(*dims.get(axis)?, step, idx)?)?;
     spliced(dims, steps, base, axis, axis + 1, None)
 }
 
@@ -281,28 +313,52 @@ fn spliced(
 
 /// `[start, end)` 压成一轴的 (轴长, 步长)；该段不是行主序紧凑排布返回 `None`。
 ///
-/// 单例轴不参与顺序核对（它的步长不贡献偏移），所以 `unsqueeze` 造出来的轴也能一起压。
+/// 期望步长由 [`accumulate`] 给出——它与 [`Shape::strides`](crate::Shape::strides)、
+/// [`Rank::contiguous`](crate::Rank::contiguous) 共用同一份累积规则，本函数只做逐轴比对，
+/// 于是"连续"在本 crate 里始终只有一条定律。轴长不超过 1 时不必核对步长：这种段里没有
+/// 第二个位置，步长无人读到。
 fn collapse(dims: &[usize], steps: &[usize], start: usize, end: usize) -> Option<(usize, usize)> {
-    if start > end || end > dims.len() {
-        return None;
+    let seg = dims.get(start..end)?;
+    let dim = run_product(seg)?;
+    if dim <= 1 {
+        return Some((dim, 0));
     }
-    let dim = dims[start..end]
+    Some((dim, unit_step(seg, steps, start)?))
+}
+
+/// 段内轴长之积；溢出返回 `None`。
+fn run_product(seg: &[usize]) -> Option<usize> {
+    seg.iter()
+        .try_fold(1usize, |acc, &axis| acc.checked_mul(axis))
+}
+
+/// 段内压平后的单位步长（最内侧非单例轴的步长）；步长与行主序对不上返回 `None`。
+fn unit_step(seg: &[usize], steps: &[usize], start: usize) -> Option<usize> {
+    let mut want = [0usize; MAX_RANK];
+    let want = want.get_mut(..seg.len())?;
+    accumulate(seg, want, Order::RowMajor);
+    // 单位步长取自最内侧非单例轴：它内侧全是单例，期望步长必然是 1。
+    let unit = seg
         .iter()
-        .try_fold(1usize, |acc, &axis| acc.checked_mul(axis))?;
-    if dim == 0 {
-        return Some((0, 1)); // 空段：轴长 0，步长随便（没有元素可读）
-    }
-    let mut stacked = 1usize; // 段内已核对过的轴长之积
-    let mut step = None; // 压平后的步长 = 段内最末一个非单例轴的步长
-    for axis in (start..end).rev() {
-        if dims[axis] <= 1 {
-            continue;
-        }
-        let unit = *step.get_or_insert(steps[axis]);
-        if steps[axis] != unit.checked_mul(stacked)? {
-            return None;
-        }
-        stacked = stacked.checked_mul(dims[axis])?;
-    }
-    Some((dim, step.unwrap_or(0)))
+        .rposition(|&axis| axis > 1)
+        .and_then(|at| steps.get(start + at).copied())?;
+    agree(seg, steps, start, (unit, want))?;
+    Some(unit)
+}
+
+/// 逐轴核对实际步长等于 `unit × 期望步长`；任一轴对不上返回 `None`。
+fn agree(
+    seg: &[usize],
+    steps: &[usize],
+    start: usize,
+    (unit, want): (usize, &[usize]),
+) -> Option<()> {
+    seg.iter()
+        .copied()
+        .enumerate()
+        .filter(|(_, axis)| *axis > 1)
+        .try_for_each(|(at, _)| {
+            let reached = steps.get(start + at).copied()?;
+            (reached == unit.checked_mul(want[at])?).then_some(())
+        })
 }

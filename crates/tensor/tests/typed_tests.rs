@@ -152,3 +152,21 @@ fn rank_changing_views_need_the_target_witness_and_the_length_is_checked() {
     assert_eq!(back.dims(), [2, 3]);
     assert_eq!(back.as_slice(), tensor.as_slice());
 }
+
+#[test]
+fn typed_tensor_keeps_its_rank_through_narrow_and_slice() {
+    let data = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let tensor: Fix2<'_> = Tensor::new([2, 3], data.as_slice()).expect("形状与缓冲匹配");
+
+    // 类型标注本身就是断言：`narrow`/`slice` 若把秩退化成 `Vec<usize>`，这里编译不过。
+    let last: Fix2<'_> = tensor.narrow(0, 1, 1).expect("第 1 行");
+    assert_eq!(last.dims(), [1, 3]);
+    assert_eq!(last.row(0), Some(&data[3..]), "零拷贝挪到起点 3");
+
+    let corner: Fix2<'_> = last
+        .slice([core::ops::Range { start: 0, end: 1 }, 0..2])
+        .expect("左上角一块");
+    assert_eq!(corner.dims(), [1, 2]);
+    assert_eq!(corner.strides(), [3, 1]);
+    assert_eq!(corner.base(), 3, "两次切片的起点偏移累加");
+}
