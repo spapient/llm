@@ -489,39 +489,63 @@ pub fn builtin_profiles() -> &'static [Profile] {
     })
 }
 
+/// 一趟扫描的结果：最高具体度、它**第一个**出现在哪、**最后一个**出现在哪。
+///
+/// 「选谁」与「跟谁并列」是两个位置：选后者是 `max_by_key` 的语义（同分取靠后的那份），
+/// 而报错时点名的是并列里的第一个。分开记这两个下标，一次遍历就够——不必先把命中项收成
+/// `Vec` 再扫两遍，也不为一次选择分配内存。
+#[derive(Default)]
+struct Best {
+    /// 目前见过的最高具体度。
+    top: usize,
+    /// 达到 `top` 的第一份档案下标。
+    first: Option<usize>,
+    /// 达到 `top` 的最后一份档案下标（同分时选它）。
+    last: usize,
+}
+
+impl Best {
+    /// 登记一次命中：更高则重开一段并列，同分则推进「最后一份」，更低一概不动。
+    fn offer(&mut self, at: usize, specificity: usize) {
+        match self.first {
+            Some(_) if specificity < self.top => {}
+            Some(_) if specificity == self.top => self.last = at,
+            _ => {
+                self.top = specificity;
+                self.first = Some(at);
+                self.last = at;
+            }
+        }
+    }
+}
+
 /// 按探测指纹从一组档案里挑出唯一命中、且规则最具体的一份。
 pub fn select<'a>(profiles: &'a [Profile], detected: &Detected) -> diagnostic::Result<&'a Profile> {
-    // 最优者 = 命中的具体度最大者（相等取后者，`max_by_key` 语义）；冲突者 = 另一个同分命中者。
-    let hits: Vec<&Profile> = profiles
-        .iter()
-        .filter(|profile| profile.matches(detected))
-        .collect();
-    let Some((best_at, best)) = hits
-        .iter()
-        .enumerate()
-        .max_by_key(|(_, profile)| profile.specificity())
-    else {
+    let mut best = Best::default();
+    for (at, profile) in profiles.iter().enumerate() {
+        if profile.matches(detected) {
+            best.offer(at, profile.specificity());
+        }
+    }
+    let Some(first) = best.first else {
         return Err(
             Error::new(Code::Unsupported, format!("没有档案匹配该指纹：{detected}"))
                 .with("prof::select"),
         );
     };
-    let top = best.specificity();
-    let rival = hits
-        .iter()
-        .enumerate()
-        .find(|(at, profile)| *at != best_at && profile.specificity() == top);
-    match rival {
-        Some((_, other)) => Err(Error::new(
-            Code::Invalid,
-            format!(
-                "`{}` 与 `{}` 的指纹同等具体，无法决定用哪一份（指纹：{detected}）",
-                best.meta.vendor, other.meta.vendor
-            ),
-        )
-        .with("prof::select")),
-        None => Ok(best),
+    if first == best.last {
+        return Ok(&profiles[best.last]);
     }
+    Err(tie(&profiles[best.last], &profiles[first], detected))
+}
+
+/// 两份档案同等具体：消息点名「选中的那份」与「并列里的第一份」，与旧实现逐字一致。
+fn tie(chosen: &Profile, rival: &Profile, detected: &Detected) -> Error {
+    let detail = format!(
+        "`{}` 与 `{}` 的指纹同等具体，无法决定用哪一份（指纹：{detected}）",
+        chosen.meta.vendor, rival.meta.vendor
+    );
+    Error::new(Code::Invalid, detail).with("prof::select")
 }
 pub use crate::witness::WitnessLookup;
 #[cfg(test)]
