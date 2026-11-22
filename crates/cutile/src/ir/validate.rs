@@ -1,7 +1,7 @@
-//! Shared validation for the pointwise and reduction kernel families.
+//! Validation for every [`super::Kernel`], regardless of its [`super::Write`].
 //!
 //! 六道闸按序排布：名字 → 形参 → 生成名 → extent → 输出 → 表达式。前一半决定 C 声明能否
-//! 合法发射，后一半判定表达式到底算不算 `f32` 输出。逐点 `Kernel` 与归约 `Reduce` 都走这里。
+//! 合法发射，后一半判定表达式到底算不算 `f32` 输出；逐点与归约只有写回形状不同，闸口完全一样。
 
 use super::{Access, Expr, Parameter, ScalarType, ValueType, VerificationError, buf_length_name};
 

@@ -6,6 +6,16 @@
 ## [Unreleased]
 ### Added
 
+- **typed IR 多了一族：归约 `Reduce`（`output[at] += value`），逐点与归约共用一套六道校验**。
+  此前 IR 只能表达 `output[idx] = expr`，`dot` / `sum` 这类内核必须另起一套 lowering。现在
+  `crates/cutile/src/ir/reduce.rs` 只声明「累加到固定槽位」这一处差异（`at: u32`），名字/形参/生成名/
+  `extent`/输出/表达式六道闸移到 `ir/validate.rs` 的 `verify_core` 两份共用，发射只在守卫与循环体
+  分道：`if (extent > cutile_len_N) return 1;` 之后是 `for (...) output[at] += value;`。
+  累加顺序与 Rust 参考实现逐位一致：`ir_exec_tests` 把源码交给 `cc` 编译执行后再按 IEEE-754 位模式
+  比对（`reduce_emitted_c_accumulates_in_the_same_order`），不是字符串断言。
+  **代价**：`ir.rs` 一份 589 行变成 `ir/{mod,validate,reduce}.rs` 三份 737 行——多出的行是第二族的
+  发射与两份族共用的校验，不是新样板。**验证**：`cargo test -p cutile` 119 条全绿。
+
 - **`crates/rocm`（`ascend`）与 `crates/opencl`（`intel`）的片段层开始有测试：两边从 0 条到 9 + 10 条**。
   此前两个 crate 都是 `autotests = false` 且没有任何测试目标，`cargo test -p llm-rocm -p llm-opencl`
   跑出 0 条——片段正文、见证入口与档案里的 `[[provides]]` 三者之间没有任何机器判据。现在一台设备的
@@ -36,7 +46,7 @@
   与固定种子 xorshift 填满的随机值。宏路径从此不再只有「能构造出 `Kernel`」这一条证据。
   **验证**：`cargo test -p cutile` 119 条全绿（含这 6 条执行对拍）。
 
-- **`#[dsl]` 前端三个文件合并回一个：681 行 / 3 文件 → 596 行 / 1 文件（净 −85 行、−2 文件）**。
+- **`#[dsl]` 前端三个文件合并回一个：680 行 / 3 文件 → 598 行 / 1 文件（净 −82 行、−2 文件）**。
   `dsl/{mod,types,render}.rs` 的切分原本只为压 600 行线，但 `types.rs` 只有 60 行、`render.rs` 只有
   42 行，读一条 lowering 要在三个文件之间跳；合并后按「形参类型闭集 → 形状 → 表达式 → 装配」的顺序
   排布，带 span 的报错文案与判定顺序逐字未改，`#[dsl]` 的语义因此与合并前完全等价。
@@ -49,8 +59,9 @@
   报出上百条违规：单函数圈复杂度最高 34（`parse_expr`，上限 5；`parse_loop` 22、`value_type` 18），
   两个文件都超 600 行，`emit_c` 里 11 处 `String` 写入的 `.expect(...)`（`Metric::Call` 在 `src/` 上是硬零），
   另有约 130 条「一概念一词」违规（`buffer`/`index` 的口径在本仓库是 `buf`/`idx`）。
-  - **结构性拆分**：`dsl.rs` 变成 `dsl/{mod,types,render}.rs`——`mod` 只留形状解析与校验，`types` 是
-    「形参类型 → `ParamKind`」的闭集映射，`render` 只做 token 拼装；`ir.rs` 的 `verify` 拆成
+  - **结构性拆分**：`dsl.rs` 拆成 `dsl/{mod,types,render}.rs`（`mod` 管形状解析与校验，`types` 是
+    「形参类型 → `ParamKind`」的闭集映射，`render` 拼 token）；这一刀后来按「−2 文件」并回单文件，
+    口径见上一条。`ir.rs` 的 `verify` 拆成
     「名字/形参/生成名」与「extent/输出/表达式」两段，`value_type` 拆成 `compound_type` → `scalar_type` /
     `load_type` / `negated_type` / `binary_type`，`emit_c` 拆成 `write_signature` / `write_guards` / `write_loop`，
     `optimize_expr` 拆成 `fold_negation` / `fold_binary`。

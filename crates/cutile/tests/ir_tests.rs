@@ -8,9 +8,18 @@ fn affine(input: &[f32], output: &mut [f32], scale: f32, extent: usize) {
     }
 }
 
+/// 归约形状由同一宏前端翻译：`out[0] += a[k] * b[k]` 应落成 `Reduce` 而不是 `Kernel`。
+#[crate::dsl]
+#[allow(dead_code)]
+fn dot_reduce(a: &[f32], b: &[f32], out: &mut [f32], len: usize) {
+    for k in 0..len {
+        out[0] += a[k] * b[k];
+    }
+}
+
 /// 只有 `output` + `extent` 的最小合法内核，别的判据都从它派生出来。
 fn minimal() -> Kernel {
-    Kernel::new(
+    Kernel::map(
         "copy",
         vec![
             Parameter {
@@ -33,8 +42,8 @@ fn minimal() -> Kernel {
 }
 
 /// 最小点积归约：`out[0] += a[k] * b[k]`，两个只读缓冲 + 一个输出槽 + 一个长度。
-fn dot() -> Reduce {
-    Reduce::new(
+fn dot() -> Kernel {
+    Kernel::reduce(
         "dot",
         vec![
             Parameter {
@@ -89,6 +98,25 @@ fn dsl_builds_verified_optimized_ir_and_portable_source() {
         source.contains("output[position] = ((input[position] * scale) + 3.0f);"),
         "{source}"
     );
+}
+
+#[test]
+fn dsl_builds_a_reduce_ir_from_compound_assignment() {
+    let reduce = __dsl_ir_dot_reduce();
+    reduce.verify().expect("macro reduction output has valid types");
+    let source = reduce.emit_c().expect("verified reduction emits C");
+    assert!(
+        source.contains(
+            "int dot_reduce(const float *a, size_t cutile_len_0, const float *b, size_t cutile_len_1, \
+             float *out, size_t cutile_len_2, size_t len)"
+        ),
+        "{source}"
+    );
+    assert!(
+        source.contains("if (0 >= cutile_len_2) return 1;"),
+        "{source}"
+    );
+    assert!(source.contains("out[0] += (a[k] * b[k]);"), "{source}");
 }
 
 #[test]
@@ -162,15 +190,15 @@ fn non_f32_bufs_are_rejected() {
 #[test]
 fn optimizer_keeps_operations_that_leave_the_finite_range() {
     let mut kernel = minimal();
-    kernel.value = Expr::Binary {
+    kernel.write = Write::Map(Expr::Binary {
         op: BinaryOp::Div,
         left: Box::new(Expr::F32(1.0f32.to_bits())),
         right: Box::new(Expr::F32(0.0f32.to_bits())),
-    };
+    });
     let source = kernel.emit_c().expect("non-finite folding still emits C");
     assert!(source.contains("(1.0f / 0.0f)"), "{source}");
 
-    kernel.value = Expr::Neg(Box::new(Expr::F32(2.0f32.to_bits())));
+    kernel.write = Write::Map(Expr::Neg(Box::new(Expr::F32(2.0f32.to_bits()))));
     let source = kernel.emit_c().expect("finite negation folds");
     assert!(source.contains("= -2.0f;"), "{source}");
 }
@@ -182,15 +210,15 @@ fn loads_must_name_a_buf_and_scalars_are_typed() {
         name: "scale".to_string(),
         ty: ValueType::Scalar(ScalarType::F32),
     });
-    kernel.value = Expr::Load("scale".to_string());
+    kernel.write = Write::Map(Expr::Load("scale".to_string()));
     let error = kernel.verify().expect_err("scalar cannot be loaded");
     assert!(error.to_string().contains("cannot be loaded as a buffer"));
 
-    kernel.value = Expr::Load("missing".to_string());
+    kernel.write = Write::Map(Expr::Load("missing".to_string()));
     let error = kernel.verify().expect_err("unknown buffer is rejected");
     assert!(error.to_string().contains("unknown buffer"));
 
-    kernel.value = Expr::Scalar("missing".to_string());
+    kernel.write = Write::Map(Expr::Scalar("missing".to_string()));
     let error = kernel.verify().expect_err("unknown scalar is rejected");
     assert!(error.to_string().contains("unknown scalar parameter"));
 }
@@ -230,7 +258,10 @@ fn reduce_rejects_non_mutable_outputs() {
     assert!(error.to_string().contains("mutable f32 buffer"));
 
     let mut reduce = dot();
-    reduce.value = Expr::Scalar("len".to_string());
+    reduce.write = Write::Reduce {
+        at: 0,
+        value: Expr::Scalar("len".to_string()),
+    };
     let error = reduce.verify().expect_err("usize scalar is not f32");
     assert!(error.to_string().contains("must have type f32"));
 }

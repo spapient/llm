@@ -15,7 +15,7 @@
 
 三条边界先说清，后面所有取舍都由它们推导出来：
 
-1. **当前生产模板链路不做通用编译器。** 它仍是"展开 → 协商 → 替换 → 发出 → 缓存"；typed IR 正在逐族引入，首个 f32 pointwise 子集见 §10.3。它尚未接入设备执行，不能据此声称已有通用 pass 或自动布局推导。
+1. **当前生产模板链路不做通用编译器。** 它仍是"展开 → 协商 → 替换 → 发出 → 缓存"；typed IR 正在逐族引入，f32 逐点与归约两族见 §10.3。它尚未接入设备执行，不能据此声称已有通用 pass 或自动布局推导。
 2. **不做通用算子。** 算子闭集今天 36 条声明（`op::REGISTRY` 是唯一事实源，本文不复述清单）、原语闭集 16 个、布局闭集 4 个、调度闭集 4 个、设备档案 ≤ 8 份。申请闭集之外的组合，显式报错并给出最近可行解，**绝不静默变慢**。
 3. **设备无关是硬约束，不是卖点。** 同一份算子声明与同一份模板，必须能在 NVIDIA / AMD / Intel / Apple / 昇腾 / MUSA / CPU / 可移植 GPU 上产出可运行代码；任何"只在某一家的硬件上成立"的设计，直接出局。
 
@@ -36,9 +36,10 @@
 | 机制代码 | 9,520（预算） | 9,403 行（含内联测试；剔除后 6,455） | `wc -l crates/cutile/src/*.rs` |
 | 用例 | — | 149 单测 + 2 doctest | `cargo test -p cutile --all-features` |
 
-**迁移记录（2026-11-22）**：新增 `#[dsl]` 到 pointwise typed IR 的原型链路（f32、单循环、单输出），
-包含结构校验、常量折叠和 portable C 发射；它仍未替换旧模板链路，也未接入设备 dispatch。上表的 P0
-数字是本次迁移前的基线，不能代表迁移后的代码量或执行覆盖率。
+**迁移记录（2026-11-22）**：`#[dsl]` → typed IR 已打通 f32 两族（逐点 `output[idx] = expr` 与归约
+`output[at] += expr`），包含结构校验、常量折叠和 portable C 发射，并用 `cc` 编译执行发射结果、与 Rust
+参考实现逐位对拍；它仍未替换旧模板链路，也未接入设备 dispatch。上表的 P0 数字是本次迁移前的基线，
+不能代表迁移后的代码量或执行覆盖率。
 
 "P0 已落地"指 §16 的五项判据都已有可执行答案；四条命令就是它的全部入口：
 
@@ -90,7 +91,7 @@ CPU 后端在本机（macOS / Apple clang）真实编译并执行，`max_rel_err
 |---|---|---|
 | CuTile Rust | 借用检查器级别的数据竞争证明；Tile IR 里有 NVIDIA 自己的调度器 | cutile 计划用宿主侧 `partition()` 继承 Rust 借用检查（§4.4，**P0 尚未实现**），但**不接管设备调度**，交给各家原生编译器 |
 | TileLang | 算子生态与 Python 上手速度；tile 级 API 覆盖广 | cutile 只覆盖闭集里的算子（今天 36 条），超出即报错；不提供 Python 前端 |
-| CubeCL | IR 级优化、后端成熟度、社区 | 现有模板链路没有 IR，因此**拿不到跨算子融合**；新 pointwise IR 目前也未支持融合或设备执行（§10.3）。 |
+| CubeCL | IR 级优化、后端成熟度、社区 | 现有模板链路没有 IR，因此**拿不到跨算子融合**；新 typed IR 目前也只有逐点与归约两族，未支持融合或设备执行（§10.3）。 |
 | CuTe DSL | 布局代数的表达完备性 | cutile 用 4 构造子的闭集换可判定性，非常规布局在闭集外直接拒绝 |
 | 旧工程 `llm.u` | 真机覆盖面与性能台账的严谨度 | cutile 继承它的台账方法（证据分级），但用自动生成的见证替代人填 |
 
@@ -182,12 +183,12 @@ crates/prim/                    # 片段层：纯数据，不含机制
     ├── device.rs               # 设备镜像：这次构建带上的源码与可选设备侧二进制
     └── tables.rs               # 构建期生成物的 include! 落点（只有数据）
 
-crates/cutile/                  # 模板前端 + typed pointwise IR 迁移起点
+crates/cutile/                  # 模板前端 + typed IR 迁移起点
 ├── Cargo.toml
 ├── README.md                   # 本文
 └── src/
     ├── lib.rs                  # 公开面、DSL 宏 re-export、SCHEMA_VER
-    ├── ir.rs                   # f32 pointwise typed IR、校验、常量折叠与可移植 C 发射
+    ├── ir/                     # typed IR：mod（逐点）/ reduce（归约）/ validate（两族共用六道闸）+ 常量折叠与 C 发射
     ├── builtin.rs              # 三层数据的装载与交叉校验（声明 / 档案 / 片段）
     ├── cap.rs                  # ② negotiate：需求 ∩ 供给、降级链、诊断构造
     ├── ast.rs                  # 模板渲染的可见中间产物（ADR 0017 的 L1）
@@ -761,7 +762,7 @@ saved = 2 × producer.write
 
 ## 10. lowering：现有模板链路与 typed IR 迁移
 
-现有生产 lowering 仍按五步模板链路运行；本节前两小节描述该链路，§10.3 记录新的 typed DSL 子集。
+现有生产 lowering 仍按五步模板链路运行；本节前两小节描述该链路，§10.3 记录新的 typed DSL 两族。
 
 ### 10.1 模板语法（EBNF 摘要）
 
@@ -794,15 +795,19 @@ text      = { any } ;            (* 片段拼接时原样保留 *)
 | ④ substitute | 模板 + 片段 + 布局 | `Source { lang, text }` | 槽位缺失 / 布局不可重组 |
 | ⑤ emit | `Source` + `prof.tool` | `Artifact { path, bytes, reused }` | 编译器报错（原文透出） |
 
-### 10.3 typed DSL：f32 pointwise 原型
+### 10.3 typed DSL：f32 逐点与归约两族
 
-`#[cutile::dsl]` 暂支持普通 Rust 函数中的单个 `for i in 0..extent` 循环、一个 `&mut [f32]` 输出写入，
-以及 f32 标量、缓冲加载和基本算术。宏在编译期解析/限制 Rust AST，生成 `cutile::ir::Kernel`；
-IR 验证参数、访问权限和表达式类型，提供常量折叠，并能发射带切片长度检查的 C 子集。该原型不支持
-归约、tile/layout、跨算子融合或 CUDA/Metal 发射，尚未接入生产 dispatch；迁移顺序是扩展 IR 与测试，
-接入真实后端并对拍后，再逐步删除相应 `.k` 模板和重复 lowering。
+`#[cutile::dsl]` 暂支持普通 Rust 函数中的单个 `for i in 0..extent` 循环，配一次 `output[i] = expr`
+（逐点）或一次 `output[0] += expr`（归约，累加到固定槽位）。宏在编译期解析/限制 Rust AST，分别生成
+`cutile::ir::Kernel` 与 `cutile::ir::Reduce`；两族共用 `ir::validate` 的六道校验（名字、形参、生成名、
+`extent`、输出、表达式类型）与同一份常量折叠，发射时只在「长度守卫 + 循环体」处分道。
 
-### 10.3 缓存指纹
+**证据强度**：`tests/ir_exec_tests.rs` 把发射出的 C 与一个生成的 `main` 交给 `cc` 编译执行，再按
+IEEE-754 位模式与 Rust 参考实现逐元素比对（含 ±0、次正规、长度守卫、`extent = 0`、归约累加顺序），
+所以发射器不是靠字符串断言过关。该原型仍不支持 tile/layout、跨算子融合或 CUDA/Metal 发射，尚未接入
+生产 dispatch；迁移顺序是扩展 IR 与测试，接入真实后端并对拍后，再逐步删除相应 `.k` 模板和重复 lowering。
+
+### 10.4 缓存指纹
 
 ```rust
 pub struct CacheKey {

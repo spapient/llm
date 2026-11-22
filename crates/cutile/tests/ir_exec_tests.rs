@@ -3,7 +3,7 @@
 //! 字符串断言只能证明发射器写了哪些字；这里把源码交给 `cc` 编译、运行，再按 IEEE-754
 //! 位模式比较，覆盖 ±0、次正规数、无穷、NaN、溢出与长度守卫。归约还额外锁住累加顺序。
 
-use crate::ir::{Access, BinaryOp, Expr, Kernel, Parameter, Reduce, ScalarType, ValueType};
+use crate::ir::{Access, BinaryOp, Expr, Kernel, Parameter, ScalarType, ValueType};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::PathBuf;
@@ -51,7 +51,7 @@ fn load(name: &str) -> Expr {
 
 /// `output[i] = input[i] * scale + 3.0`，三种运算齐上：乘、加、标量参数。
 fn affine() -> Kernel {
-    Kernel::new(
+    Kernel::map(
         "affine",
         vec![
             buf("input", Access::Read),
@@ -76,7 +76,7 @@ fn affine() -> Kernel {
 
 /// `output[i] = -(input[i] / 3.0)`：负号与除法单独成核，避免只测一条表达式路径。
 fn scaled_negation() -> Kernel {
-    Kernel::new(
+    Kernel::map(
         "scaled_negation",
         vec![
             buf("input", Access::Read),
@@ -95,8 +95,8 @@ fn scaled_negation() -> Kernel {
 }
 
 /// `out[0] += a[k] * b[k]`：归约族的写回形状。
-fn dot() -> Reduce {
-    Reduce::new(
+fn dot() -> Kernel {
+    Kernel::reduce(
         "dot",
         vec![
             buf("a", Access::Read),
@@ -250,7 +250,7 @@ fn pointwise_main(call: &str, input: &[f32]) -> String {
     main
 }
 
-fn reduce_main(a: &[f32], b: &[f32], extent: usize) -> String {
+fn reduce_main(name: &str, a: &[f32], b: &[f32], extent: usize) -> String {
     let mut main = String::new();
     let _ = writeln!(main, "int main(void) {{");
     let _ = writeln!(main, "    static const float a[] = {{{}}};", c_array(a));
@@ -258,7 +258,7 @@ fn reduce_main(a: &[f32], b: &[f32], extent: usize) -> String {
     let _ = writeln!(main, "    float out[1] = {{0.0f}};");
     let _ = writeln!(
         main,
-        "    int rc = dot(a, {LEN}, b, {LEN}, out, 1, {extent});"
+        "    int rc = {name}(a, {LEN}, b, {LEN}, out, 1, {extent});"
     );
     let _ = writeln!(main, "    printf(\"rc %d\\n\", rc);");
     let _ = writeln!(main, "    printf(\"%08x\\n\", bits(out[0]));");
@@ -318,7 +318,7 @@ fn reduce_emitted_c_accumulates_in_the_same_order() {
     let run = run(
         "dot",
         &dot().emit_c().expect("reduce emits C"),
-        &reduce_main(&a, &b, LEN),
+        &reduce_main("dot", &a, &b, LEN),
     );
     assert_eq!(run.rc, 0);
     let mut expected = 0.0f32;
@@ -383,4 +383,30 @@ fn macro_front_end_output_matches_rust_after_execution() {
     assert_eq!(run.rc, 0);
     let expected: Vec<f32> = input.iter().map(|value| value * 1.5f32 + 3.0f32).collect();
     assert_same(&run.bits, &expected, "fused");
+}
+
+/// 归约宏前端与手写 `Kernel` 走同一条执行链，输出位模式逐位一致。
+#[crate::dsl]
+#[allow(dead_code)]
+fn dot_reduce(a: &[f32], b: &[f32], out: &mut [f32], len: usize) {
+    for k in 0..len {
+        out[0] += a[k] * b[k];
+    }
+}
+
+#[test]
+fn macro_reduce_front_end_matches_rust_after_execution() {
+    let a = adversarial();
+    let b = rotated(&a);
+    let run = run(
+        "dot_reduce",
+        &__dsl_ir_dot_reduce().emit_c().expect("macro reduce emits C"),
+        &reduce_main("dot_reduce", &a, &b, LEN),
+    );
+    assert_eq!(run.rc, 0);
+    let mut expected = 0.0f32;
+    for (left, right) in a.iter().zip(&b) {
+        expected += left * right;
+    }
+    assert_same(&run.bits, &[expected], "dot_reduce");
 }
