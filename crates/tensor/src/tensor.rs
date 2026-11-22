@@ -61,6 +61,7 @@ where
         layout::check(
             dims.as_slice(),
             steps.as_slice(),
+            product(dims.as_slice()),
             buf.slice().len(),
             "tensor::Tensor::strided",
         )?;
@@ -164,7 +165,34 @@ where
         ))
     }
 
-    /// 等元素数地改形状：仅连续布局可用（否则需先物化成连续缓冲）。
+    /// 广播到更大的形状：目标秩不小于源秩，逐轴相等或源轴长为 1，否则 `None`。
+    ///
+    /// 被扩展的轴步长为 0——同一个元素被多个逻辑位置读到，零拷贝。步长 0 是转置与置换表达不出来的
+    /// 布局，布局代数因此严格宽于"只有重排"。
+    pub fn broadcast(self, dims: impl Into<R>) -> Option<Self> {
+        let dims = dims.into();
+        let lead = dims.as_slice().len().checked_sub(self.rank())?;
+        let steps = dims
+            .as_slice()
+            .iter()
+            .enumerate()
+            .map(|(axis, &want)| -> Option<usize> {
+                let Some(source) = axis.checked_sub(lead) else {
+                    return Some(0); // 前导新轴
+                };
+                let have = self.dims.as_slice()[source];
+                match (have, want) {
+                    (have, want) if have == want => Some(self.steps.as_slice()[source]),
+                    (1, _) => Some(0),
+                    _ => None,
+                }
+            })
+            .collect::<Option<Vec<usize>>>()?;
+        let steps = R::from_slice(&steps)?;
+        Some(assemble(dims, steps, self.buf))
+    }
+
+    /// 等元素数地改形状：仅连续布局可用（转置过的张量可以先转置回去，那一步仍是零拷贝）。
     pub fn reshape<R2: Rank>(self, dims: impl Into<R2>) -> Option<Tensor<B, R2, K>> {
         if !self.is_contiguous() {
             return None;
@@ -175,6 +203,64 @@ where
         }
         let steps = R2::contiguous(dims.as_slice())?;
         Some(assemble(dims, steps, self.buf))
+    }
+
+    /// 物化成连续缓冲：步长 0 的广播轴、非满长的窄视图都摊进一块紧凑内存，于是可以接着
+    /// [`reshape`](Self::reshape)。这是本模块唯一真正搬数据的地方，O(numel)。
+    #[must_use]
+    pub fn to_contiguous(&self) -> Tensor<Owned<K>, R, K> {
+        let shape = self.dims.as_slice();
+        let source = self.buf.slice();
+        let steps = R::contiguous(shape).unwrap_or_else(|| self.dims.clone());
+        if self.is_contiguous() {
+            return assemble(self.dims.clone(), steps, Owned::from(source.to_vec()));
+        }
+        let mut buf = Vec::with_capacity(crate::product(shape));
+        let mut idx = vec![0usize; shape.len()];
+        let mut at = 0usize;
+        let axis_steps = self.steps.as_slice();
+        for _ in 0..crate::product(shape) {
+            // 构造时的 check_reach 已证明任一合法下标都落在缓冲内，故不走 `Option`。
+            buf.push(source[at]);
+            // 行主序进位，偏移跟着增减，省掉每次重算点积。
+            for axis in (0..idx.len()).rev() {
+                idx[axis] += 1;
+                at += axis_steps[axis];
+                if idx[axis] < shape[axis] {
+                    break;
+                }
+                idx[axis] = 0;
+                at -= axis_steps[axis] * shape[axis];
+            }
+        }
+        assemble(self.dims.clone(), steps, Owned::from(buf))
+    }
+}
+
+impl<'a, R, K> Tensor<&'a [K], R, K>
+where
+    R: Rank,
+    K: Element,
+{
+    /// 沿 `axis` 零拷贝取 `[start, start + len)` 一段，返回借用同一缓冲的视图。
+    ///
+    /// 只对借来的存储开放：持有 [`Owned`] 的张量要分段就得复制，那不是"视图"。返回的视图按同一组
+    /// 步长重新做一遍可达性校验——起点前移后仍落在调用方缓冲内。
+    pub fn narrow(&self, axis: usize, start: usize, len: usize) -> Option<View<'a, K>> {
+        let dims = self.dims.as_slice();
+        let steps = self.steps.as_slice().to_vec();
+        if start.checked_add(len)? > *dims.get(axis)? {
+            return None;
+        }
+        let skip = start.checked_mul(*steps.get(axis)?)?;
+        let mut dims = dims.to_vec();
+        dims[axis] = len;
+        // 零元素口径与别处一致：空段借空缓冲，不借调用方的非空缓冲。
+        let data = match len {
+            0 => self.buf.get(..0)?,
+            _ => self.buf.get(skip..)?,
+        };
+        Tensor::strided(dims, steps, data).ok()
     }
 }
 

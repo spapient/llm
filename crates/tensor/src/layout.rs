@@ -12,10 +12,18 @@ use diagnostic::Result;
 use crate::invalid;
 
 /// 构造期校验：秩对应、零元素口径、可达性。`marker` 是构造点标记，文案由调用点给出。
-pub(crate) fn check(dims: &[usize], steps: &[usize], len: usize, marker: &str) -> Result<()> {
+///
+/// `numel` 由调用方算好传进来——一次构造只该扫一遍各轴长度。
+pub(crate) fn check(
+    dims: &[usize],
+    steps: &[usize],
+    numel: usize,
+    len: usize,
+    marker: &str,
+) -> Result<()> {
     check_rank(dims, steps, marker)?;
-    check_empty(dims, len, marker)?;
-    check_reach(dims, steps, len, marker)
+    check_empty(numel, len, marker)?;
+    check_reach(dims, steps, numel, len, marker)
 }
 
 /// 轴数：步长必须与形状逐轴对应，否则下面的偏移计算没有意义。
@@ -34,8 +42,8 @@ fn check_rank(dims: &[usize], steps: &[usize], marker: &str) -> Result<()> {
 }
 
 /// 零元素口径：形状里有 0 个元素时只接受空缓冲。
-fn check_empty(dims: &[usize], len: usize, marker: &str) -> Result<()> {
-    if crate::product(dims) != 0 || len == 0 {
+fn check_empty(numel: usize, len: usize, marker: &str) -> Result<()> {
+    if numel != 0 || len == 0 {
         return Ok(());
     }
     Err(invalid(
@@ -45,8 +53,14 @@ fn check_empty(dims: &[usize], len: usize, marker: &str) -> Result<()> {
 }
 
 /// 可达性：每轴最后一位走出的总偏移必须算得出、且落在缓冲内。
-fn check_reach(dims: &[usize], steps: &[usize], len: usize, marker: &str) -> Result<()> {
-    if crate::product(dims) == 0 {
+fn check_reach(
+    dims: &[usize],
+    steps: &[usize],
+    numel: usize,
+    len: usize,
+    marker: &str,
+) -> Result<()> {
+    if numel == 0 {
         return Ok(());
     }
     let highest = highest(dims, steps)

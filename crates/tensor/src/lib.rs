@@ -12,13 +12,16 @@
 //! segment 几何也要进同一个类型，ADR 0046）。其余全部对齐：连续与非连续布局、stride、transpose、
 //! permute、reshape 全是零拷贝的元数据重排；形状、元素数、可达性与溢出在构造期一次拦下。
 //!
-//! 只有一个 `Tensor`，于是"字节视图 / 元素视图 / 拥有形态"不再是三份平行实现。元素张量与
-//! dtype-运行期的字节视图 [`Raw`] 是两种契约（逐元素对齐 对 容量足够；`U4` 这类亚字节精度只有后者
-//! 说得通），而不是同一件事的三种写法。偏移、可达性、连续性与取行只有 [`layout`] 一份实现。
+//! 只有一个 `Tensor`，于是"字节视图 / 元素视图 / 拥有形态"不再是三份平行实现。偏移、可达性、
+//! 连续性与取行只有 [`layout`] 一份实现；连续步长只有 [`shape::accumulate`] 一份定义。
 //!
-//! **拥有**：`Tensor`、`Raw`、`Owned`、`Shape`、`Strides`、`Order`、`AxisLen`、`Element` 与计算层
-//! 子集 [`SUPPORTED`]。**不拥有**：元素类型闭集（L1 `dtype`，这里只再导出 `DType`）、kernel 侧
-//! 操作数视图（DSL 的宿主 API，语义不同）、布局搬运（`storage`）、设备句柄（ADR 0025）。
+//! 布局代数比"只有重排"宽：[`Tensor::broadcast`] 用步长 0 表达广播，[`Tensor::narrow`] 把起点
+//! 前移成子视图——两者都是零拷贝的元数据，转置与置换表达不出来。
+//!
+//! **拥有**：`Tensor`、`Owned`、`Shape`、`Strides`、`Order`、`AxisLen`、`Element` 与 `DType`
+//! 的再导出。**不拥有**：元素类型闭集（L1 `dtype`，这里是唯一事实源的下游）、dtype-运行期的
+//! 字节视图（权重层自己的描述符已经承担该契约，形状与字节数由 `Shape::element_bytes` 给出）、
+//! kernel 侧操作数视图（DSL 的宿主 API，语义不同）、布局搬运（`storage`）、设备句柄（ADR 0025）。
 //! **依赖**：`dtype`、`diagnostic`。**被依赖**：`storage`、`weights`、`kv`、`autograd`、`data`、
 //! `nn`、`engine`、`llm`、`cli`。
 //!
@@ -47,9 +50,8 @@
 mod shape;
 mod tensor;
 
-// 秩见证（[usize; D] / Vec<usize>）、元素存储（&[K] / Owned<K>）、dtype-运行期字节视图。
+// 秩见证（[usize; D] / Vec<usize>）与元素存储（&[K] / Owned<K>）。
 mod rank;
-mod raw;
 mod store;
 
 // 布局算式（偏移 / 可达性 / 连续性 / 取行）的唯一实现，两种秩、两种存储共用。
@@ -60,19 +62,9 @@ pub use dtype::DType;
 
 pub use element::Element;
 pub use rank::Rank;
-pub use raw::Raw;
 pub use shape::{AxisLen, Order, Shape, Strides, product};
 pub use store::{Owned, Store, StoreMut};
 pub use tensor::{Tensor, View};
-
-/// 计算层当前可消费的元素子集：闭集里的其他类型可以被容器存储，却不能构造进运行时张量。
-pub const SUPPORTED: &[DType] = &[DType::F32, DType::F16, DType::BF16, DType::I8, DType::U4];
-
-/// 判定某个 `dtype` 是否属于计算层支持子集。
-#[must_use]
-pub fn supports(dtype: DType) -> bool {
-    SUPPORTED.contains(&dtype)
-}
 
 use diagnostic::{Code, Error};
 

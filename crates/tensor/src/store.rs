@@ -31,16 +31,6 @@ impl<E> Store<E> for &[E] {
 pub struct Owned<E>(Vec<E>);
 
 impl<E> Owned<E> {
-    /// 接管一个已有向量。
-    pub fn new(elems: Vec<E>) -> Self {
-        Self(elems)
-    }
-
-    /// 交出内部向量。
-    pub fn into_vec(self) -> Vec<E> {
-        self.0
-    }
-
     /// 按元素个数分配并清零。
     ///
     /// 地址空间装不下时报 `Invalid` 而不是 abort：形状来自文件头，恶意或损坏的头不该成为
@@ -55,10 +45,15 @@ impl<E> Owned<E> {
                 format!("{len} 个元素超出可用内存或地址空间"),
                 "tensor::Owned::zeros",
             )
-            .with("tensor::Owned::zeros")
         })?;
         elems.resize(len, E::default());
         Ok(Self(elems))
+    }
+}
+
+impl<E> From<Vec<E>> for Owned<E> {
+    fn from(elems: Vec<E>) -> Self {
+        Self(elems)
     }
 }
 

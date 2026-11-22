@@ -1,4 +1,4 @@
-use crate::{DType, Element, Order, Owned, Raw, Shape, Strides, Tensor, View};
+use crate::{DType, Element, Order, Owned, Shape, Strides, Tensor, View};
 use diagnostic::Code;
 
 #[test]
@@ -7,9 +7,9 @@ fn a_scalar_has_one_element_and_no_strides() {
     assert_eq!(shape.rank(), 0);
     assert_eq!(shape.numel(), 1);
     assert_eq!(Strides::contiguous(&shape).as_slice(), [] as [usize; 0]);
-    let tensor = Raw::new(DType::F32, shape, &[0u8; 4]).expect("标量");
-    assert_eq!(tensor.numel(), 1);
-    assert!(tensor.is_contiguous());
+    let scalar: View<'_, f32> = View::new(shape, &[0.0f32]).expect("标量");
+    assert_eq!(scalar.numel(), 1);
+    assert!(scalar.is_contiguous());
 }
 
 #[test]
@@ -67,15 +67,9 @@ fn sub_byte_dtypes_need_fewer_bytes_than_elements() {
 
 #[test]
 fn a_short_buf_is_rejected_with_the_required_length() {
-    let error = Raw::new(DType::F32, Shape::new([2]), &[0u8; 4]).expect_err("应报错");
+    let error = View::new(Shape::new([2]), &[0.0f32]).expect_err("应报错");
     assert_eq!(error.code(), Code::Invalid);
     assert!(error.to_string().contains("8 字节"), "{error}");
-}
-
-#[test]
-fn an_unsupported_dtype_cannot_enter_the_runtime() {
-    let error = Raw::new(DType::I32, Shape::new([1]), &[0u8; 4]).expect_err("不在计算层子集");
-    assert_eq!(error.code(), Code::Invalid);
 }
 
 /// 形状可以来自文件头：乘积溢出必须饱和，而不是回绕成一个"看起来很小"的数。
@@ -84,7 +78,7 @@ fn a_shape_whose_product_overflows_saturates_instead_of_wrapping() {
     let huge = Shape::new([usize::MAX, 2]);
     assert_eq!(huge.numel(), usize::MAX, "溢出饱和，不回绕");
     // 回绕会得到 0，于是"空缓冲 + 巨大形状"会被当成合法张量。
-    let error = Raw::new(DType::F32, huge.clone(), &[0u8; 4]).expect_err("必须拒绝");
+    let error = View::new(huge.clone(), &[0.0f32]).expect_err("必须拒绝");
     assert_eq!(error.code(), Code::Invalid);
     assert!(
         View::new(huge.clone(), &[0u8; 4]).is_err(),
@@ -104,7 +98,7 @@ fn a_shape_whose_product_overflows_saturates_instead_of_wrapping() {
 #[test]
 fn a_transposed_stride_is_not_contiguous() {
     let shape = Shape::new([2, 3]);
-    let tensor = Raw::new(DType::I8, shape.clone(), &[0u8; 6]).expect("视图");
+    let tensor: View<'_, i8> = View::new(shape.clone(), &[0i8; 6]).expect("视图");
     assert!(tensor.is_contiguous());
     let transposed = Strides::new([1, 2]);
     assert_ne!(transposed, Strides::contiguous(&shape));
@@ -292,4 +286,95 @@ fn owned_tensor_writes_through_the_mutable_path_and_reads_it_back() {
 fn an_unaffordable_owned_tensor_is_an_error_not_an_abort() {
     let error = OwnedF32::zeros(Shape::new([usize::MAX])).expect_err("地址空间装不下");
     assert_eq!(error.code(), Code::Invalid);
+}
+
+#[test]
+fn a_broadcast_axis_gets_stride_zero_and_reads_the_same_element() {
+    let values = [1.0f32, 2.0];
+    let row: View<'_, f32> = View::new(Shape::new([1, 2]), &values).expect("视图");
+    let wide = row
+        .clone()
+        .broadcast(Shape::new([3, 2]))
+        .expect("1 轴可广播");
+    assert_eq!(wide.dims(), [3, 2]);
+    assert_eq!(wide.strides(), [0, 1], "被扩展的轴步长为 0");
+    assert_eq!(wide.at([2, 1]), Some(2.0), "三个逻辑行读同一份数据");
+    assert!(!wide.is_contiguous(), "步长 0 不是连续布局");
+
+    // 首轴可广播、末轴 2 对 3 -> 整体拒绝。
+    assert!(row.clone().broadcast(Shape::new([2, 3])).is_none());
+    // 目标秩比源秩小 -> 不是广播。
+    assert!(row.broadcast(Shape::new([2])).is_none());
+}
+
+#[test]
+fn a_narrowed_view_still_borrows_the_callers_buf() {
+    let values = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let view: View<'_, f32> = View::new(Shape::new([3, 2]), &values).expect("视图");
+    let tail = view.narrow(0, 1, 2).expect("取第 1..3 行");
+    assert_eq!(tail.dims(), [2, 2]);
+    assert_eq!(tail.strides(), [2, 1], "步长不变，只是起点前移");
+    assert_eq!(tail.row(0), Some(&[3.0, 4.0][..]), "借的是同一块缓冲");
+    assert_eq!(tail.at([1, 1]), Some(6.0));
+
+    let column = view.narrow(1, 1, 1).expect("取第 1 列");
+    assert_eq!(column.dims(), [3, 1]);
+    assert_eq!(column.strides(), [2, 1]);
+    assert_eq!(
+        [column.at([0, 0]), column.at([1, 0]), column.at([2, 0])],
+        [Some(2.0), Some(4.0), Some(6.0)]
+    );
+
+    assert!(view.narrow(0, 2, 2).is_none(), "越界");
+    assert!(view.narrow(9, 0, 1).is_none(), "轴越界");
+    let empty = view.narrow(0, 0, 0).expect("零行是合法视图");
+    assert_eq!(empty.numel(), 0);
+}
+
+#[test]
+fn a_permuted_rank_cannot_panic_on_a_long_order() {
+    let tensor: Tensor<&[f32], [usize; 2], f32> =
+        Tensor::new([2, 2], [1.0f32, 2.0, 3.0, 4.0].as_slice()).expect("视图");
+    assert!(
+        tensor.permute([0, 1, 0]).is_none(),
+        "长度超过秩的置换返回 None，而不是在定长数组上越界"
+    );
+}
+
+#[test]
+fn a_broadcast_view_materialises_into_a_contiguous_tensor() {
+    let buf = [1.0f32, 2.0];
+    let row: View<'_, f32> = View::new(Shape::new([1, 2]), &buf[..]).expect("单行");
+    let wide = row.broadcast(Shape::new([3, 2])).expect("1 轴可广播");
+    assert_eq!(wide.numel(), 6);
+
+    let dense = wide.to_contiguous();
+    assert!(dense.is_contiguous(), "物化后必须连续");
+    assert_eq!(dense.dims(), [3, 2]);
+    assert_eq!(dense.as_slice(), [1.0, 2.0, 1.0, 2.0, 1.0, 2.0]);
+    // 物化的用处就是能接着 reshape——广播视图本身不是连续的，reshape 不了。
+    assert!(wide.reshape::<[usize; 1]>([6]).is_none());
+    let flat = dense.reshape::<[usize; 1]>([6]).expect("6 个元素");
+    assert_eq!(flat.dims(), [6]);
+}
+
+#[test]
+fn materialising_a_transpose_reorders_the_elements() {
+    let buf = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let matrix: View<'_, f32> = View::new(Shape::new([2, 3]), &buf[..]).expect("2×3");
+    let turned = matrix.transpose(0, 1).expect("秩 2");
+    assert!(!turned.is_contiguous(), "转置后步长不是行主序");
+    assert_eq!(
+        turned.to_contiguous().as_slice(),
+        [1.0, 4.0, 2.0, 5.0, 3.0, 6.0]
+    );
+}
+
+#[test]
+fn a_contiguous_tensor_materialises_to_an_equal_copy() {
+    let buf = [1.0f32, 2.0, 3.0, 4.0];
+    let dense: View<'_, f32> = View::new(Shape::new([2, 2]), &buf[..]).expect("2×2");
+    let copy = dense.to_contiguous();
+    assert_eq!(copy.as_slice(), dense.as_slice());
+    assert_eq!(copy.strides(), dense.strides());
 }

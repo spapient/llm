@@ -134,22 +134,26 @@ fn model_rows(panel: Panel, weights: Option<&str>) -> Result<Panel> {
 
 /// 张量与视图两行：最小实例布局。
 fn data_rows(panel: Panel) -> Result<Panel> {
-    let raw = tensor::Raw::new(tensor::DType::F32, tensor::Shape::new([2, 2]), &[0u8; 16])?;
-    let panel = panel.row(
-        "张量    tensor::Raw",
-        format!(
-            "{:?} {:?} = {} 元素，连续布局：{}",
-            raw.dtype(),
-            raw.shape().dims(),
-            raw.numel(),
-            raw.is_contiguous()
-        ),
-    );
     let buf = vec![0.5f32, 0.25, 0.125, 0.0625];
     let view: tensor::View<'_, f32> =
         tensor::Tensor::new(tensor::Shape::new([2, 2]), buf.as_slice())?;
+    // 广播用步长 0 复用同一份元素——转置与置换表达不出来的布局。
+    let wide = view.clone().broadcast(vec![4usize, 2]);
+    let panel = panel.row(
+        "张量    tensor::Tensor",
+        match wide {
+            Some(wide) => format!(
+                "{:?} {:?} 步长 {:?}，连续：{}（广播不复用缓冲，只把被扩展轴步长写成 0）",
+                wide.dtype(),
+                wide.dims(),
+                wide.strides(),
+                wide.is_contiguous()
+            ),
+            None => "广播失败".to_owned(),
+        },
+    );
     Ok(panel.row(
-        "视图    tensor::Tensor",
+        "视图    tensor::View",
         format!(
             "{:?} {:?}，第 1 行和 = {:.3}（借用调用方 {} 个元素，不复制）",
             view.dtype(),
