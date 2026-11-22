@@ -90,6 +90,9 @@ pub use collective::{Collective, Group, Local, Reduce, Remote};
 pub use tiling::{Sharding, Tiling};
 pub use topology::{Parallel, Topology};
 
+pub mod config;
+pub use config::{Config, Gate};
+
 // ---- 优化面（原 `optim` crate 并入） ----------------------------------------
 //
 // `device` / `cli` 以 `llm_optim::` 名义消费这些路径：后端契约、工具链、执行驱动。

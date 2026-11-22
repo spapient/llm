@@ -1,5 +1,6 @@
 //! ⑤ emit + cache：指纹 → 查缓存 → 取锁 → 拼接 → emit → 落盘（README §10.3）。
 
+use crate::config::config;
 use crate::runner::{self, Outcome};
 use crate::toolchain::Toolchain;
 use cutile::SCHEMA_VER;
@@ -329,9 +330,6 @@ fn cached_only(
     }
 }
 
-/// 等锁的上限：另一个进程正常写完缓存就会释放锁，等到超时说明锁文件是残留的。
-const LOCK_WAIT: Duration = Duration::from_secs(5);
-
 /// 取源码缓存锁：别人正在为同一个 key 编译时等它（它的产物就是我们要的文本），等不到才报错。
 fn wait_for_lock(cache: &Cache, key: &CacheKey) -> diagnostic::Result<Lock> {
     wait_for_lock_at(cache, &cache.dir_for(key).join("build.lock"))
@@ -346,7 +344,7 @@ fn wait_for_artifact_lock(cache: &Cache, key: &ArtifactKey) -> diagnostic::Resul
 /// 锁是否陈旧（[`STALE_LOCK`](cutile::cache::STALE_LOCK)）：`O_EXCL` 锁是文件，持有者被 `kill` 后没人
 /// 能释放它；活着的锁一律不抢，等满 `LOCK_WAIT` 才报错，错误里给出锁文件路径。
 fn wait_for_lock_at(cache: &Cache, path: &StdPath) -> diagnostic::Result<Lock> {
-    let deadline = Instant::now() + LOCK_WAIT;
+    let deadline = Instant::now() + config().lock_wait;
     loop {
         match cache.lock_at(path) {
             Ok(lock) => return Ok(lock),

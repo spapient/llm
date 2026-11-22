@@ -2,6 +2,7 @@
 
 use crate::backend::Lower;
 use crate::build;
+use crate::config::config;
 use crate::device;
 use crate::pipeline::{self, Run, model_for};
 use crate::runner;
@@ -14,9 +15,6 @@ use diagnostic::{Code, Error};
 use prof::decl::OpDecl;
 use nn::model::{Cost, Sample, Values};
 use std::path::PathBuf;
-
-/// L3 达成率门槛（README §12.3）：低于它就是"没有可用证据"。
-pub const L3_THRESHOLD: f64 = 0.7;
 
 /// 一次 `bench` 的实测口径（README §12.3 的台账）。
 #[derive(Debug, Clone, PartialEq)]
@@ -115,7 +113,7 @@ fn classify(ratio: Option<f64>, cache_resident: bool) -> Verdict {
 
 /// 判据：口径有效的达成率过没过 70%；不回答"差的那部分该改哪行代码"。
 fn attainment(ratio: f64) -> Verdict {
-    if ratio >= L3_THRESHOLD {
+    if ratio >= config().l3_threshold {
         Verdict::Reached
     } else {
         Verdict::Below

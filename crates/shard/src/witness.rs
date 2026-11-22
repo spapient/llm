@@ -2,7 +2,8 @@
 
 pub use cutile::prof::Emit;
 
-use crate::device::{self, HOST_FLAGS};
+use crate::config::config;
+use crate::device;
 use cutile::atom::{DType, Prim, Provide, Witness};
 use cutile::cap::Proof;
 use cutile::dirs::Dirs;
@@ -61,7 +62,7 @@ pub fn establish(profile: &Profile, dirs: &Dirs) -> Evidence {
         host,
         failure,
         device_params: profile.flags.join(" "),
-        host_params: HOST_FLAGS.join(" "),
+        host_params: config().host_flags.join(" "),
         language,
         proof,
     }
