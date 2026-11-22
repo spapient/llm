@@ -1,7 +1,7 @@
 //! 逐元素一元骨架：`y[n] = f(a[n])`。
 
 use crate::formula::FormulaOwner;
-use crate::model::{AxisRole, AxisSpec, Buffer, Cost, Sample, ShapeContext, Values};
+use crate::model::{AxisRole, AxisSpec, Buffer, Cost, Sample, ShapeCtx, Values};
 use diagnostic::{Code, Error};
 
 /// 逐元素一元算子随语义变化的那部分。
@@ -26,12 +26,12 @@ pub const AXES: &[AxisSpec] = &[AxisSpec {
 /// # Errors
 ///
 /// 形状上下文构造失败时返回说明（当前实现不会失败）。
-pub fn project_shape(len: usize, _: usize) -> Result<ShapeContext, Error> {
-    ShapeContext::new([('n', len)])
+pub fn project_shape(len: usize, _: usize) -> Result<ShapeCtx, Error> {
+    ShapeCtx::new([('n', len)])
 }
 
 /// 标量代价：完全由表达式与操作数位宽推出。
-pub fn cost<U: Unary>(shape: &ShapeContext) -> Result<Cost, Error> {
+pub fn cost<U: Unary>(shape: &ShapeCtx) -> Result<Cost, Error> {
     U::formula()?
         .cost(shape.extents())
         .map_err(|error| error.with("op::unary::cost"))

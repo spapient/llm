@@ -1,5 +1,5 @@
 //! Softmax：`y[n] = exp(x[n] - max(x)) / sum_k exp(x[k] - max(x))`。
-use crate::model::{Buffer, Cost, Sample, ShapeContext, Values, cost_n, x_buffer};
+use crate::model::{Buffer, Cost, Sample, ShapeCtx, Values, cost_n, x_buffer};
 use diagnostic::{Code, Error};
 
 // 单轴定义与形状投影复用 unary 骨架：本文件只声明 softmax 特有的代价、样本与遍历。
@@ -10,7 +10,7 @@ pub use crate::unary::{AXES, project_shape};
 /// # Errors
 ///
 /// 形状缺轴时返回说明。
-pub fn cost(shape: &ShapeContext) -> Result<Cost, Error> {
+pub fn cost(shape: &ShapeCtx) -> Result<Cost, Error> {
     cost_n(shape, "softmax", 3.0, 3)
 }
 

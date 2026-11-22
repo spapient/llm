@@ -22,7 +22,7 @@ pub(crate) struct Scenario {
     pub(crate) dtype: &'static str,
     /// 批大小：1 行 = 一个 decode 步，与 prefill 的多行批差三个数量级。
     pub(crate) batch: u32,
-    /// 交给 [`nn::Bounds::of_context`] 的 `(a, b)`：算子自己的语义表把它翻成具名轴。
+    /// 交给 [`nn::Bounds::of_ctx`] 的 `(a, b)`：算子自己的语义表把它翻成具名轴。
     pub(crate) bounds: (usize, usize),
 }
 

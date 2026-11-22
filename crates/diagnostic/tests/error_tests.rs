@@ -1,12 +1,12 @@
 use super::*;
 
 #[test]
-fn context_is_appended_from_inside_out() {
+fn ctx_is_appended_from_inside_out() {
     let error = Error::new(Code::Missing, "模板缺配对的 `.k`")
         .with("op::load")
         .with("cutile::builtin");
     assert_eq!(error.message(), "模板缺配对的 `.k`");
-    assert_eq!(error.context(), ["op::load", "cutile::builtin"]);
+    assert_eq!(error.ctx(), ["op::load", "cutile::builtin"]);
     assert_eq!(
         error.to_string(),
         "missing: 模板缺配对的 `.k` → op::load → cutile::builtin"

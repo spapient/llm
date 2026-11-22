@@ -1,5 +1,5 @@
 //! RMSNorm：`y[n] = gamma[n] * x[n] / sqrt(mean(x[0..n]^2) + eps)`。
-use crate::model::{Buffer, Cost, Sample, ShapeContext, Values, cost_n, x_buffer};
+use crate::model::{Buffer, Cost, Sample, ShapeCtx, Values, cost_n, x_buffer};
 use diagnostic::{Code, Error};
 
 /// 数值稳定项：均方根里加的小常数。
@@ -14,7 +14,7 @@ pub use crate::unary::{AXES, project_shape};
 /// # Errors
 ///
 /// 形状缺轴时返回说明。
-pub fn cost(shape: &ShapeContext) -> Result<Cost, Error> {
+pub fn cost(shape: &ShapeCtx) -> Result<Cost, Error> {
     cost_n(shape, "rmsnorm", 4.0, 3)
 }
 

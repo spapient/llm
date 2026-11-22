@@ -22,7 +22,7 @@ pub(crate) fn backprop<K: Kernel>(
     tape: &Tape,
     schedule: &Schedule,
 ) -> Result<()> {
-    // 暂存从缓冲区里借出：`Context` 持只读快照、`apply_formula` 要 `&mut buffers`，
+    // 暂存从缓冲区里借出：`Ctx` 持只读快照、`apply_formula` 要 `&mut buffers`，
     // 同一结构无法同时借，故把暂存放在独立结构里逐节点复用——稳态不再向分配器要内存。
     let mut scratch = std::mem::take(&mut buffers.scratch);
     seed_loss(buffers, schedule.loss(), &mut scratch)?;
@@ -45,19 +45,19 @@ fn reverse_step<K: Kernel>(
     copy_into(&mut scratch.incoming, incoming(buffers, step)?);
     collect_inputs(buffers, step, &mut scratch.inputs)?;
     copy_into(&mut scratch.output, values(buffers, step.output())?);
-    let context = Context {
+    let ctx = Ctx {
         incoming: &scratch.incoming,
         inputs: &scratch.inputs,
         output: &scratch.output,
         geometry: buffers.geometry(step.output()),
     };
-    apply_formula(buffers, tape, step, context)
+    apply_formula(buffers, tape, step, ctx)
 }
 
 /// 反向逐节点复用的暂存：容量只增不减，热路径上不再逐节点向分配器要内存。
 ///
 /// 三者都是本节点前向快照的只读副本，故与 `Buffers` 分开持有：一份借不冲突的读视图，
-/// 一份可写缓冲区，36 条公式因此仍然只吃 `Context`、不碰 `Buffers`。
+/// 一份可写缓冲区，36 条公式因此仍然只吃 `Ctx`、不碰 `Buffers`。
 #[derive(Debug, Default)]
 pub(crate) struct Scratch {
     incoming: Vec<f32>,
@@ -103,10 +103,10 @@ fn apply_formula<K: Kernel>(
     buffers: &mut Buffers<K>,
     tape: &Tape,
     step: &Node,
-    context: Context<'_>,
+    ctx: Ctx<'_>,
 ) -> Result<()> {
     let formula = lookup(step.op())?;
-    let contributions = formula(context)?;
+    let contributions = formula(ctx)?;
     for (&input, contrib) in step.inputs().iter().zip(contributions) {
         feed(buffers, tape, input, contrib)?;
     }
@@ -172,7 +172,7 @@ fn unsupported(op: &str) -> Error {
 }
 
 /// 公式只读上下文：上游梯度、各输入前向值、输出前向值（均为本节点前向快照）。
-struct Context<'a> {
+struct Ctx<'a> {
     incoming: &'a [f32],
     inputs: &'a [Vec<f32>],
     output: &'a [f32],
@@ -180,7 +180,7 @@ struct Context<'a> {
     geometry: Option<Geometry>,
 }
 
-impl Context<'_> {
+impl Ctx<'_> {
     /// 本节点的实例几何：显式登记过就用它，否则取该算子的声明档实例（对拍基准）。
     fn instance(&self, op: &str) -> Result<Geometry> {
         match self.geometry {
@@ -191,7 +191,7 @@ impl Context<'_> {
 }
 
 /// 反向公式：按上下文算出与输入等长的逐元素贡献，顺序与节点输入对齐。
-type Formula = fn(Context<'_>) -> Result<Vec<Vec<f32>>>;
+type Formula = fn(Ctx<'_>) -> Result<Vec<Vec<f32>>>;
 
 /// 一条公式目录项：算子名与其解析反向公式。
 struct Entry {

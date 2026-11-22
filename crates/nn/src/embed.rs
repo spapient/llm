@@ -65,7 +65,7 @@ impl Contract for Embedding {
     }
 
     fn bounds(&self) -> BoundsResult {
-        Bounds::of_context(Self::OP, self.tokens, 1).map(Some)
+        Bounds::of_ctx(Self::OP, self.tokens, 1).map(Some)
     }
 }
 

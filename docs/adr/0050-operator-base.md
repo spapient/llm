@@ -41,8 +41,8 @@ pub trait Operator {
     const AXES: &'static [AxisSpec];
     const DIFFERENTIABLE: bool;
     const GROUP: u32 = 1;
-    fn shape_ctx(m: usize, n: usize) -> Result<ShapeContext, Error>;
-    fn cost(shape: &ShapeContext) -> Result<Cost, Error>;
+    fn shape_ctx(m: usize, n: usize) -> Result<ShapeCtx, Error>;
+    fn cost(shape: &ShapeCtx) -> Result<Cost, Error>;
     fn sample(m: usize, n: usize) -> Sample;
     fn reference(sample: &Sample) -> Result<Vec<f32>>;
 }

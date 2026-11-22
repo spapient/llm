@@ -124,7 +124,7 @@ impl Sequence {
     }
 
     /// 完整上下文：提示段在前、生成段在后。
-    pub fn context(&self) -> &[u32] {
+    pub fn ctx(&self) -> &[u32] {
         &self.all
     }
 

@@ -22,15 +22,15 @@ fn admitted(scheduler: &mut Scheduler, sequence: &Sequence, why: &str) -> bool {
 }
 
 #[test]
-fn context_holds_the_full_prompt_plus_generated_tokens() {
+fn ctx_holds_the_full_prompt_plus_generated_tokens() {
     let mut sequence =
         Sequence::new(1, &[4u32, 5], 2, 16, crate::exec::Stream::new(0)).expect("序列");
     assert_eq!(sequence.prompt_len(), 2);
-    assert_eq!(sequence.context(), [4, 5]);
+    assert_eq!(sequence.ctx(), [4, 5]);
     assert!(sequence.tokens().is_empty(), "提示段不算生成历史");
 
     sequence.push_token(6).expect("记账");
-    assert_eq!(sequence.context(), [4, 5, 6]);
+    assert_eq!(sequence.ctx(), [4, 5, 6]);
     assert_eq!(sequence.tokens(), [6]);
 }
 

@@ -1,7 +1,7 @@
 //! 形状上下文、确定性样本与标量参考：`#[annotation::model]` 要的三件产物。
 use diagnostic::{Code, Error};
 
-use crate::model::{Buffer, Cost, Sample, ShapeContext, Values};
+use crate::model::{Buffer, Cost, Sample, ShapeCtx, Values};
 
 use super::format::{Element, Format};
 
@@ -18,8 +18,8 @@ pub(crate) fn scale_of(index: usize) -> f32 {
 }
 
 /// 把形状对翻译成投影骨架的具名轴上下文：`m` 是规约轴、`n` 是输出轴。
-pub fn project_shape(m: usize, n: usize) -> Result<ShapeContext, Error> {
-    ShapeContext::new([('m', m), ('n', n)])
+pub fn project_shape(m: usize, n: usize) -> Result<ShapeCtx, Error> {
+    ShapeCtx::new([('m', m), ('n', n)])
 }
 
 /// 标量代价：完全由 [`FormulaOwner::EXPR`] 与操作数位宽推出，本函数不含任何流量常数。
@@ -29,7 +29,7 @@ pub fn project_shape(m: usize, n: usize) -> Result<ShapeContext, Error> {
 /// # Errors
 ///
 /// 形状与表达式不自洽（缺轴、长度为 0，或 `m` 不是 [`Format::GRAIN`] 的整数倍）时返回说明。
-pub fn cost<F: Format>(shape: &ShapeContext) -> Result<Cost, Error> {
+pub fn cost<F: Format>(shape: &ShapeCtx) -> Result<Cost, Error> {
     let extents = match F::DERIVED {
         Some((label, base, divisor)) => shape.extents_with_group(label, base, divisor)?,
         None => shape.extents().clone(),

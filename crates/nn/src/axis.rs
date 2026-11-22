@@ -76,7 +76,7 @@ impl AxisCore {
             .first()
             .map(String::as_str)
             .unwrap_or_default();
-        Bounds::of_context(op, self.len, 1).map(Some)
+        Bounds::of_ctx(op, self.len, 1).map(Some)
     }
 }
 

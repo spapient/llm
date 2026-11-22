@@ -78,17 +78,17 @@ impl Bounds {
     ///
     /// - 算子没有语义表（[`Code::Missing`]）：声明了却不能对拍，也就无法定义下界；
     /// - 形状上下文构造失败，或代价模型拒绝该形状（错误原样上报并点名算子）。
-    pub fn of_context(op: &str, a: usize, b: usize) -> Result<Self> {
+    pub fn of_ctx(op: &str, a: usize, b: usize) -> Result<Self> {
         let model = op::model(op).ok_or_else(|| {
             Error::new(
                 Code::Missing,
                 format!("算子 `{op}` 没有语义表，无法推出下界"),
             )
-            .with("nn::Bounds::of_context")
+            .with("nn::Bounds::of_ctx")
         })?;
         let shape =
-            (model.shape_ctx)(a, b).map_err(|error| error.with("nn::Bounds::of_context"))?;
-        let cost = (model.cost)(&shape).map_err(|error| error.with("nn::Bounds::of_context"))?;
+            (model.shape_ctx)(a, b).map_err(|error| error.with("nn::Bounds::of_ctx"))?;
+        let cost = (model.cost)(&shape).map_err(|error| error.with("nn::Bounds::of_ctx"))?;
         Ok(Self {
             read: cost.read,
             write: cost.write,

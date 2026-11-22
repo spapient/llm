@@ -366,11 +366,11 @@ fn entry(name: &str, value: &Value, data_start: usize) -> Result<Entry> {
     if name.is_empty() {
         return Err(bad("条目名不能为空").with("weights::safetensors"));
     }
-    let context = format!("权重条目 `{name}`");
-    let fields = value.object().map_err(|error| error.with(&context))?;
-    let (dtype, shape, offsets) = collect_fields(fields, &context)?;
-    let (dtype, shape, offsets) = required_fields(dtype, shape, offsets, &context)?;
-    build(name, dtype, shape, offsets, data_start, &context)
+    let ctx = format!("权重条目 `{name}`");
+    let fields = value.object().map_err(|error| error.with(&ctx))?;
+    let (dtype, shape, offsets) = collect_fields(fields, &ctx)?;
+    let (dtype, shape, offsets) = required_fields(dtype, shape, offsets, &ctx)?;
+    build(name, dtype, shape, offsets, data_start, &ctx)
 }
 
 #[cfg(test)]

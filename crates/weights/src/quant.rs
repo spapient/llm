@@ -244,15 +244,15 @@ fn scales_candidates(name: &str) -> Vec<String> {
 
 /// 由一对条目推出分组：形状自相矛盾就报错，不是 4 位量化就返回 `None`。
 fn analyze<'a>(weight: &'a Entry, scales: &'a Entry) -> Result<Option<Quantized<'a>>> {
-    let context = format!(
+    let ctx = format!(
         "量化条目 `{}` 与它的标度 `{}`",
         weight.name(),
         scales.name()
     );
-    let Some((second, groups)) = dims(weight, scales, &context)? else {
+    let Some((second, groups)) = dims(weight, scales, &ctx)? else {
         return Ok(None);
     };
-    let Some((in_features, group)) = pack(weight, second, groups, &context)? else {
+    let Some((in_features, group)) = pack(weight, second, groups, &ctx)? else {
         return Ok(None);
     };
     Ok(Some(Quantized {
@@ -264,25 +264,25 @@ fn analyze<'a>(weight: &'a Entry, scales: &'a Entry) -> Result<Option<Quantized<
 }
 
 /// 形状与类型口径：两个条目都必须是秩 2、输出维相等，标度必须是浮点。
-fn dims(weight: &Entry, scales: &Entry, context: &str) -> Result<Option<(usize, usize)>> {
-    let [out, second] = rank2(weight, "打包权重必须是秩 2（out × in）", context)?;
-    let [scaled_out, groups] = rank2(scales, "标度必须是秩 2（out × 分组数）", context)?;
+fn dims(weight: &Entry, scales: &Entry, ctx: &str) -> Result<Option<(usize, usize)>> {
+    let [out, second] = rank2(weight, "打包权重必须是秩 2（out × in）", ctx)?;
+    let [scaled_out, groups] = rank2(scales, "标度必须是秩 2（out × 分组数）", ctx)?;
     if scaled_out != out {
         return Err(bad(format!(
             "标度的输出维 {scaled_out} 与权重的输出维 {out} 不等：分组无法对齐到每一行"
         ))
-        .with(context));
+        .with(ctx));
     }
     let float = matches!(scales.dtype(), DType::F32 | DType::F16 | DType::BF16);
     Ok(float.then_some((second, groups)))
 }
 
 /// 一个条目的秩 2 形状；`expected` 说明要的是哪种秩 2（权重还是标度）。
-fn rank2(entry: &Entry, expected: &str, context: &str) -> Result<[usize; 2]> {
+fn rank2(entry: &Entry, expected: &str, ctx: &str) -> Result<[usize; 2]> {
     let dims = entry.shape().dims();
     match dims {
         [first, second] => Ok([*first, *second]),
-        _ => Err(bad(format!("{expected}，实际 {dims:?}")).with(context)),
+        _ => Err(bad(format!("{expected}，实际 {dims:?}")).with(ctx)),
     }
 }
 
@@ -291,22 +291,22 @@ fn pack(
     weight: &Entry,
     second: usize,
     groups: usize,
-    context: &str,
+    ctx: &str,
 ) -> Result<Option<(usize, usize)>> {
-    let Some(in_features) = width(weight, second, context)? else {
+    let Some(in_features) = width(weight, second, ctx)? else {
         return Ok(None);
     };
     if groups == 0 || !in_features.is_multiple_of(groups) {
         return Err(bad(format!(
             "标度声明 {groups} 个分组，但输入宽度 {in_features} 不是它的整数倍"
         ))
-        .with(context));
+        .with(ctx));
     }
     Ok(Some((in_features, in_features / groups)))
 }
 
 /// 每行的逻辑输入宽度：解包视图与逐元素 int8 的第二维就是元素数；无符号字节一个字节两个 nibble。
-fn width(weight: &Entry, second: usize, context: &str) -> Result<Option<usize>> {
+fn width(weight: &Entry, second: usize, ctx: &str) -> Result<Option<usize>> {
     match weight.dtype() {
         DType::U4 | DType::I8 => Ok(Some(second)),
         DType::U8 => second.checked_mul(2).map(Some).ok_or_else(|| {
@@ -314,7 +314,7 @@ fn width(weight: &Entry, second: usize, context: &str) -> Result<Option<usize>> 
                 "形状 {:?} 的第二维 {second} 乘 2 时溢出",
                 weight.shape().dims()
             ))
-            .with(context)
+            .with(ctx)
         }),
         _ => Ok(None),
     }

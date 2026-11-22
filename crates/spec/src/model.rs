@@ -14,7 +14,7 @@
 //!
 //! # 形状是具名轴，不是一对数字
 //!
-//! 算子的 `cost` 收 [`ShapeContext`]（轴字母 → 长度），而不是 `(m, n)`：后者把"一个规约轴 +
+//! 算子的 `cost` 收 [`ShapeCtx`]（轴字母 → 长度），而不是 `(m, n)`：后者把"一个规约轴 +
 //! 一个输出轴"写死进接口，RMSNorm 的 `[batch, seq, d_model]` 与 Attention 的 `seq²` 只能靠伪造
 //! 一对 `(m, n)` 来表达，而伪造就意味着第二份公式。**派生轴**（量化分组 `g = m / GROUP`）由算子
 //! 自己在 `cost` 里声明：分组属于算子语义，把它推给调用方等于让每个层都抄一遍 32。
@@ -288,11 +288,11 @@ pub struct AxisSpec {
 
 /// 一次调用的形状上下文：算子声明的**基本轴**及长度。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct ShapeContext {
+pub struct ShapeCtx {
     extents: Extents,
 }
 
-impl ShapeContext {
+impl ShapeCtx {
     /// 由 `(轴字母, 长度)` 构造。
     ///
     /// # Errors
@@ -330,7 +330,7 @@ impl ShapeContext {
         self.extents
             .clone()
             .group(label, base, divisor)
-            .map_err(|error| error.with("op::model::ShapeContext"))
+            .map_err(|error| error.with("op::model::ShapeCtx"))
     }
 }
 
@@ -347,9 +347,9 @@ pub struct Model {
     /// 基本轴：层按角色取值，不必知道表达式里的字母。
     pub axes: &'static [AxisSpec],
     /// 把形状对 `(m, n)` 翻译成算子自己的具名轴上下文。
-    pub shape_ctx: fn(usize, usize) -> Result<ShapeContext, Error>,
+    pub shape_ctx: fn(usize, usize) -> Result<ShapeCtx, Error>,
     /// 给定形状上下文的标量代价。
-    pub cost: fn(&ShapeContext) -> Result<Cost, Error>,
+    pub cost: fn(&ShapeCtx) -> Result<Cost, Error>,
     /// 给定 `(m, n)` 的确定性样本。
     pub sample: fn(usize, usize) -> Sample,
     /// 标量参考：不依赖任何设备，也不依赖片段。
@@ -374,12 +374,12 @@ impl Model {
     /// # Errors
     ///
     /// 缺少 [`AxisRole::Input`] 或 [`AxisRole::Output`] 的声明；宽度为 0（见
-    /// [`ShapeContext::new`]）。
+    /// [`ShapeCtx::new`]）。
     pub fn projection(
         &self,
         in_features: usize,
         out_features: usize,
-    ) -> Result<ShapeContext, Error> {
+    ) -> Result<ShapeCtx, Error> {
         let input = self.axis(AxisRole::Input).ok_or_else(|| {
             Error::new(
                 Code::Unsupported,
@@ -394,13 +394,13 @@ impl Model {
             )
             .with("op::model::Model::projection")
         })?;
-        ShapeContext::new([(input, in_features), (output, out_features)])
+        ShapeCtx::new([(input, in_features), (output, out_features)])
     }
 }
 
 /// 单轴 `n` 的 f32 标量代价：`bytes = n·4`，`flops = n·flops_per`，`read = bytes·reads`，`write = bytes`。
 /// rmsnorm / rope / softmax / dequant 这类「一条轴、f32 元素」的算子共用这一份口径，不各写一份。
-pub fn cost_n(shape: &ShapeContext, op: &str, flops_per: f64, reads: u64) -> Result<Cost, Error> {
+pub fn cost_n(shape: &ShapeCtx, op: &str, flops_per: f64, reads: u64) -> Result<Cost, Error> {
     let n = shape
         .get('n')
         .ok_or_else(|| Error::new(Code::Invalid, format!("{op} 形状缺轴 `n`")))?;

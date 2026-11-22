@@ -182,7 +182,7 @@ mod tests;
 
 pub mod f32 {
     //! `scan_f32`：β 指数梯形扫描（§5.6）的离散递推 `s_t = a·s_{t-1} + b·x_t`。
-    use crate::model::{Buffer, Cost, Sample, ShapeContext, Values, cost_n, x_buffer};
+    use crate::model::{Buffer, Cost, Sample, ShapeCtx, Values, cost_n, x_buffer};
     use diagnostic::{Code, Error};
 
     // 单轴定义与形状投影复用 unary 骨架：时间轴 `n` 既是输入轴也是输出轴。
@@ -198,7 +198,7 @@ pub mod f32 {
     /// # Errors
     ///
     /// 形状缺轴 `n` 时返回说明。
-    pub fn cost(shape: &ShapeContext) -> Result<Cost, Error> {
+    pub fn cost(shape: &ShapeCtx) -> Result<Cost, Error> {
         cost_n(shape, "scan", 2.0, 1)
     }
 

@@ -25,7 +25,7 @@ fn scales(n: usize, groups: usize) -> Vec<f32> {
         .collect()
 }
 
-fn context(m: usize, cpb: usize) -> ScaledRow {
+fn ctx(m: usize, cpb: usize) -> ScaledRow {
     ScaledRow {
         groups: m / GROUP,
         group: GROUP,
@@ -52,7 +52,7 @@ fn fractional(m: usize) -> Vec<f32> {
 
 /// 标量叶（[`super::packed::dot_row`]）对一行给出的值——独立于本通道的第二实现。
 fn oracle(m: usize, cpb: usize, w_row: &[u8], s_row: &[f32], x: &[f32]) -> f32 {
-    let ctx = context(m, cpb);
+    let ctx = ctx(m, cpb);
     super::super::packed::dot_row(w_row, x, s_row, ctx.group / cpb, ctx.group, cpb, table(cpb))
 }
 
@@ -83,16 +83,16 @@ fn the_lane_count_only_takes_the_two_wide_tiers() {
     assert_eq!(lanes_of(8 / 4), None);
     assert_eq!(lanes_of(12), None);
     // 走不到通道的形状必须在 `admit` 就被挡下，而不是让内核给出一个数。
-    assert!(admit(2, N, context(M, 2), table(2)).is_some());
-    assert!(admit(4, N, context(M, 4), table(4)).is_some());
+    assert!(admit(2, N, ctx(M, 2), table(2)).is_some());
+    assert!(admit(4, N, ctx(M, 4), table(4)).is_some());
     // 一组 2 个码的形状（`m = 8`、2 位码）：凑不满一条向量，`admit` 必须拒绝。
-    assert!(admit(4, 2, context(8, 4), table(4)).is_none());
+    assert!(admit(4, 2, ctx(8, 4), table(4)).is_none());
     // int8 不打包：码表对不上，不走本通道（它走 `elementwise`）。
-    assert!(admit(1, N, context(M, 1), table(1)).is_none());
+    assert!(admit(1, N, ctx(M, 1), table(1)).is_none());
     // 输出宽度不足一列组：尾部没有 `COLS` 行可并，回退。
-    assert!(admit(2, COLS - 1, context(M, 2), table(2)).is_none());
+    assert!(admit(2, COLS - 1, ctx(M, 2), table(2)).is_none());
     // 表不落在仿射关系上：查表换不成算式的形状，回退。
-    assert!(admit(2, N, context(M, 2), &[0.0, 2.0, 4.0, 9.0]).is_none());
+    assert!(admit(2, N, ctx(M, 2), &[0.0, 2.0, 4.0, 9.0]).is_none());
 }
 
 /// 跑一遍字节内核，把每行与标量叶 [`oracle`] 逐行比对；`agree` 决定该行的容差口径。
@@ -100,7 +100,7 @@ fn the_lane_count_only_takes_the_two_wide_tiers() {
 /// 两个用例只差 `values`（权重取值）与 `agree`（容差口径），装配与遍历这一份。
 fn compare_rows(values: fn(usize) -> Vec<f32>, agree: impl Fn(f32, f32, usize, usize)) {
     for cpb in [2, 4] {
-        let ctx = context(M, cpb);
+        let ctx = ctx(M, cpb);
         let (w, s, x) = (weights(M, N, cpb), scales(N, ctx.groups), values(M));
         let mut out = vec![0.0f32; N];
         forward_batch(&[&x], &w, &s, admitted(cpb, ctx), &mut out);
@@ -140,7 +140,7 @@ fn inexact_values_agree_within_rounding() {
 #[test]
 fn a_row_batch_equals_row_by_row_calls() {
     let cpb = 2;
-    let ctx = context(M, cpb);
+    let ctx = ctx(M, cpb);
     let rows = 3;
     let (w, s) = (weights(M, N, cpb), scales(N, ctx.groups));
     let base = fractional(M);

@@ -15,7 +15,7 @@ fn the_matmul_floor_follows_the_gemm_semantics() {
     let layer = MatMul::new("blk.0.matmul", 16, 12).expect("合法");
     let floor = layer.bounds().expect("合法").expect("有算子");
     // 层不写第二份公式：下界必须与直接问语义表逐项相等。
-    let same = Bounds::of_context(MatMul::OP, 16, 12).expect("同一份语义");
+    let same = Bounds::of_ctx(MatMul::OP, 16, 12).expect("同一份语义");
     assert_eq!(floor, same, "矩阵乘下界来自算子语义表");
     assert!(floor.read() > 0 && floor.write() > 0 && floor.flops() > 0.0);
 }

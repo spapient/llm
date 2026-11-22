@@ -401,9 +401,9 @@ fn multi_sequence_batch_runs_their_own_history_and_progress() {
     assert!(third.is_done(), "第三条跑满上限");
 
     // 上下文 = 提示段 + 各自生成段：共享前缀那条的提示仍是 [7, 7]，没被生成历史冲掉。
-    assert_eq!(first.context(), [7, 7, 10, 11, 12]);
-    assert_eq!(second.context(), [8, 8, 9, 9, 20, 21]);
-    assert_eq!(third.context(), [7, 7, 30, 31]);
+    assert_eq!(first.ctx(), [7, 7, 10, 11, 12]);
+    assert_eq!(second.ctx(), [8, 8, 9, 9, 20, 21]);
+    assert_eq!(third.ctx(), [7, 7, 30, 31]);
 }
 
 /// 批量结果视图：`outcomes` 按准入顺序把每条序列的历史与本步进度对齐，视图间互不重叠。
@@ -623,7 +623,7 @@ fn a_published_block_keeps_its_page_out_of_the_free_list() {
 /// 相位不是调用方给的标签，而是序列自己的事实（`prefilled < prompt_len`），所以"谁先进批"
 /// 与"谁先跑"是两件事。
 #[test]
-fn a_round_runs_generation_before_context() {
+fn a_round_runs_generation_before_ctx() {
     let batch = prompt_and_decode_batch();
 
     let Verdict::Packed { rows, tokens } = batch.round(Budget::unlimited()) else {
@@ -643,7 +643,7 @@ fn a_round_runs_generation_before_context() {
 /// 块大小由 [`crate::ifb::chunk`] 按页对齐给出，所以"少跑一点"只能是整页少跑，不会出现
 /// 半页的块——那种块既不进前缀树，也换不来一次干净的对齐。
 #[test]
-fn a_tight_budget_pushes_the_context_block_to_the_next_round() {
+fn a_tight_budget_pushes_the_ctx_block_to_the_next_round() {
     let batch = prompt_and_decode_batch();
 
     let Verdict::Packed { rows, tokens } = batch.round(Budget::new(2, 2)) else {

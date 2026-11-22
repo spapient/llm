@@ -13,7 +13,7 @@ fn assert_layer<L: Contract>(layer: &L, name: &str, op: &str, len: usize) {
     assert_eq!(layer.spca().ops(), [op]);
     let floor = layer.bounds().expect("单轴形状合法").expect("有算子");
     // 单轴算子不写第二份公式：下界必须与直接问语义表逐项相等。
-    let same = Bounds::of_context(op, len, 1).expect("同一份语义");
+    let same = Bounds::of_ctx(op, len, 1).expect("同一份语义");
     assert_eq!(floor, same, "{op} 的下界来自算子语义表");
     assert!(floor.read() > 0 && floor.write() > 0, "{op} 有读有写");
 }

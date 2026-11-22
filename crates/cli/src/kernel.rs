@@ -137,7 +137,7 @@ const SUBCOMMANDS: &[(&str, Grammar, Build)] = &[
 const CACHE: Grammar = &[value("--limit", "字节数")];
 
 /// 诊断帧：本层是内核审计命令的文法层。
-const CONTEXT: &str = "cli::kernel::parse";
+const CTX: &str = "cli::kernel::parse";
 
 impl<'a> CutileCommand<'a> {
     /// 解析参数（不含 `argv[0]`）。
@@ -163,7 +163,7 @@ fn table<'a>(name: &'a str, words: &mut Words<'a>) -> Result<CutileCommand<'a>> 
     let Some((_, grammar, build)) = SUBCOMMANDS.iter().find(|(known, ..)| *known == name) else {
         return Err(invalid(format!("未知子命令 `{name}`")));
     };
-    build(&mut Flags::parse(words, grammar, name, CONTEXT)?)
+    build(&mut Flags::parse(words, grammar, name, CTX)?)
 }
 
 /// `doctor`：打印整条流水线。
@@ -221,7 +221,7 @@ fn cache<'a>(words: &mut Words<'a>) -> Result<CutileCommand<'a>> {
     if action != "gc" {
         return Err(invalid(format!("未知子命令 `cache {action}`")));
     }
-    let mut flags = Flags::parse(words, CACHE, "cache gc", CONTEXT)?;
+    let mut flags = Flags::parse(words, CACHE, "cache gc", CTX)?;
     Ok(CutileCommand::Cache {
         limit: limit(&mut flags)?,
     })
@@ -249,12 +249,12 @@ fn devices(text: Option<&str>) -> Vec<String> {
 
 /// `help`：用法文本本身就是诊断消息（不带前缀），类别仍是「输入不合法」。
 fn help() -> Error {
-    Error::new(Code::Invalid, USAGE).with(CONTEXT)
+    Error::new(Code::Invalid, USAGE).with(CTX)
 }
 
 /// 一条子命令文法的诊断：上下文固定在这一层。
 fn invalid(message: impl Into<String>) -> Error {
-    Error::new(Code::Invalid, message.into()).with(CONTEXT)
+    Error::new(Code::Invalid, message.into()).with(CTX)
 }
 
 /// 子命令文法的单元测试：文法与用法文本与生产类型同文件，进程级端到端在 `tests/cli.rs`。

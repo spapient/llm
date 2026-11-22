@@ -107,7 +107,7 @@ reason = "神经网络算子（卷积几何 / 注意力 / 解码采样）的实�
 
 [[ownership.unlisted]]
 crate = "spec"
-names = ["Access", "Arg", "Axis", "AxisRole", "AxisSpec", "CType", "Formula", "Param", "ShapeContext", "SplitMix64", "Values"]
+names = ["Access", "Arg", "Axis", "AxisRole", "AxisSpec", "CType", "Formula", "Param", "ShapeCtx", "SplitMix64", "Values"]
 reason = "契约层内部类型（访问模式、算子参数、轴角色与轴规格、C 类型、公式缓存句柄、形状上下文、计数器型随机）；随 L 拆分从 `op` 迁到 `spec`，公开面是 `Operator` / `Model` / 签名"
 
 [[ownership.unlisted]]

@@ -6,7 +6,7 @@ use diagnostic::{Code, Error, Result};
 use wire::leb::Cursor as WireCursor;
 
 /// 解码失败的上下文：错误只由这一层产生，排查时不必再猜是哪一段。
-pub(crate) const CONTEXT: &str = "snapshot::Snapshot::decode";
+pub(crate) const CTX: &str = "snapshot::Snapshot::decode";
 
 /// 取一段字节；不足时按起始偏移报截断。
 pub(crate) fn need(bytes: &[u8], span: Range<usize>, offset: usize) -> Result<&[u8]> {
@@ -18,12 +18,12 @@ pub(crate) fn need(bytes: &[u8], span: Range<usize>, offset: usize) -> Result<&[
 
 /// 检查点在给定偏移处被截断。
 pub(crate) fn truncated(offset: usize) -> Error {
-    Error::new(Code::Invalid, format!("检查点在偏移 {offset} 处截断")).with(CONTEXT)
+    Error::new(Code::Invalid, format!("检查点在偏移 {offset} 处截断")).with(CTX)
 }
 
 /// 一条解码期非法输入；上下文固定在快照层。
 pub(crate) fn invalid(message: impl Into<String>) -> Error {
-    Error::new(Code::Invalid, message).with(CONTEXT)
+    Error::new(Code::Invalid, message).with(CTX)
 }
 
 /// 检查点与手头的权重表不一致：只由 [`super::Snapshot::check_weights`] 产生。
@@ -32,7 +32,7 @@ pub(crate) fn mismatch(message: impl Into<String>) -> Error {
 }
 
 /// 条目错误的上下文：一个几千条目的检查点里，"第 3 个条目"比"某个偏移"有用得多。
-pub(crate) fn context(index: usize) -> impl Fn(Error) -> Error {
+pub(crate) fn ctx(index: usize) -> impl Fn(Error) -> Error {
     move |error| error.with(format!("第 {index} 个权重条目"))
 }
 

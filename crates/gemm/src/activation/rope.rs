@@ -11,7 +11,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::model::{Buffer, Cost, Sample, ShapeContext, Values, cost_n, x_buffer};
+use crate::model::{Buffer, Cost, Sample, ShapeCtx, Values, cost_n, x_buffer};
 use diagnostic::{Code, Error};
 
 /// 频率底数。
@@ -47,7 +47,7 @@ pub use crate::unary::{AXES, project_shape};
 /// # Errors
 ///
 /// 形状缺轴时返回说明。
-pub fn cost(shape: &ShapeContext) -> Result<Cost, Error> {
+pub fn cost(shape: &ShapeCtx) -> Result<Cost, Error> {
     cost_n(shape, "rope", 4.0, 1)
 }
 

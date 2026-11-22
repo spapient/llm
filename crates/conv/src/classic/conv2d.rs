@@ -81,7 +81,7 @@ pub fn forward(x: &[f32], weight: &[f32], bias: &[f32], out: &mut [f32]) -> diag
 }
 
 /// 标量代价：每输出 `2·K²·CIN` 次浮点运算；读 x/weight/bias 三遍、写 y 一遍。
-pub fn cost(shape: &ShapeContext) -> Result<Cost, Error> {
+pub fn cost(shape: &ShapeCtx) -> Result<Cost, Error> {
     crate::model::cost_n(shape, "conv2d_f32", 2.0 * PATCH as f64, 3)
 }
 

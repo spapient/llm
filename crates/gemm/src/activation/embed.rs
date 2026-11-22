@@ -1,5 +1,5 @@
 //! Embedding 行查表：`y[n, :] = table[idx[n], :]`（行向量 gather）。
-use crate::model::{AxisRole, AxisSpec, Buffer, Cost, Sample, ShapeContext, Values};
+use crate::model::{AxisRole, AxisSpec, Buffer, Cost, Sample, ShapeCtx, Values};
 use diagnostic::{Code, Error};
 
 /// 权重表行数（闭集内的固定档）。
@@ -22,8 +22,8 @@ pub const AXES: &[AxisSpec] = &[
 /// # Errors
 ///
 /// 当前实现不会失败。
-pub fn project_shape(tokens: usize, dim: usize) -> Result<ShapeContext, Error> {
-    ShapeContext::new([('n', tokens), ('d', dim)])
+pub fn project_shape(tokens: usize, dim: usize) -> Result<ShapeCtx, Error> {
+    ShapeCtx::new([('n', tokens), ('d', dim)])
 }
 
 /// 标量代价：每个 token 搬一行 `D`（读表一行 + 写输出一行），下标转换按 1 次/token 估算。
@@ -33,7 +33,7 @@ pub fn project_shape(tokens: usize, dim: usize) -> Result<ShapeContext, Error> {
 /// # Errors
 ///
 /// 形状缺轴时返回说明。
-pub fn cost(shape: &ShapeContext) -> Result<Cost, Error> {
+pub fn cost(shape: &ShapeCtx) -> Result<Cost, Error> {
     let n = shape
         .get('n')
         .ok_or_else(|| Error::new(Code::Invalid, "embed 形状缺轴 `n`"))?;

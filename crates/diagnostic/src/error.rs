@@ -9,7 +9,7 @@ use std::path::Path;
 pub struct Error {
     code: Code,
     message: String,
-    context: Vec<String>,
+    ctx: Vec<String>,
     notes: Vec<String>,
 }
 
@@ -19,15 +19,15 @@ impl Error {
         Self {
             code,
             message: message.into(),
-            context: Vec::new(),
+            ctx: Vec::new(),
             notes: Vec::new(),
         }
     }
 
     /// 追加一层上下文（链式，便于 `map_err` 里就地补充位置）。
     #[must_use]
-    pub fn with(mut self, context: impl Into<String>) -> Self {
-        self.context.push(context.into());
+    pub fn with(mut self, ctx: impl Into<String>) -> Self {
+        self.ctx.push(ctx.into());
         self
     }
 
@@ -58,8 +58,8 @@ impl Error {
 
     /// 上下文帧，按追加顺序。
     #[must_use]
-    pub fn context(&self) -> &[String] {
-        &self.context
+    pub fn ctx(&self) -> &[String] {
+        &self.ctx
     }
 
     /// 由一次读文件失败构造：路径不存在是 `missing`，其余是 `io`。
@@ -76,7 +76,7 @@ impl Error {
 impl fmt::Display for Error {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "{}: {}", self.code, self.message)?;
-        render(&self.context, " → ", formatter)?;
+        render(&self.ctx, " → ", formatter)?;
         render(&self.notes, "\n  ", formatter)?;
         Ok(())
     }

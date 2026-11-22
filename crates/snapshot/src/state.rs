@@ -3,7 +3,7 @@
 use diagnostic::{Code, Error, Result};
 use wire::sink::Sink;
 
-use super::cursor::{Cursor, context, invalid};
+use super::cursor::{Cursor, ctx, invalid};
 
 /// 一个矩状态/累积梯度槽最少占 1 字节（槽长 varint）；解码据此把声明槽位与剩余字节对账。
 pub(crate) const MIN_MOMENT_SLOT: usize = 1;
@@ -172,9 +172,9 @@ fn read_moment_slots(cursor: &mut Cursor<'_>, count: usize) -> Result<Vec<SlotMo
 /// 一个矩状态槽：长度对账后读一阶、二阶两张表。
 fn read_moment_slot(cursor: &mut Cursor<'_>, index: usize) -> Result<SlotMoments> {
     let len = cursor.count("矩状态长度")?;
-    let m = read_f32_table(cursor, len).map_err(context(index))?;
-    let v = read_f32_table(cursor, len).map_err(context(index))?;
-    SlotMoments::new(m, v).map_err(context(index))
+    let m = read_f32_table(cursor, len).map_err(ctx(index))?;
+    let v = read_f32_table(cursor, len).map_err(ctx(index))?;
+    SlotMoments::new(m, v).map_err(ctx(index))
 }
 
 /// 权重绑定段：绑定对数 → 每对源槽/回填槽下标（varint）；布局与矩状态/累积段平行。
@@ -207,7 +207,7 @@ fn read_accum_slots(cursor: &mut Cursor<'_>, count: usize) -> Result<Vec<Vec<f32
 /// 一个累积梯度槽：长度对账后读 f32 表。
 fn read_accum_slot(cursor: &mut Cursor<'_>, index: usize) -> Result<Vec<f32>> {
     let len = cursor.count("累积梯度长度")?;
-    read_f32_table(cursor, len).map_err(context(index))
+    read_f32_table(cursor, len).map_err(ctx(index))
 }
 
 /// 权重绑定段解码：对数先与剩余字节对账，再逐对重建下标表。

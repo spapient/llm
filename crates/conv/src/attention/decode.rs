@@ -378,7 +378,7 @@ mod kernel {
 
 pub mod semantics {
     //! decode 注意力语义：query 行数与 K/V 历史行数解耦。
-    use crate::model::{AxisRole, AxisSpec, Cost, Sample, ShapeContext};
+    use crate::model::{AxisRole, AxisSpec, Cost, Sample, ShapeCtx};
     use diagnostic::{Code, Error};
 
     /// 样本固定历史长度：真实 `hist` 由执行侧按已缓存页数推出，语义表样本用一份确定长度。
@@ -400,9 +400,9 @@ pub mod semantics {
     ///
     /// # Errors
     ///
-    /// 轴长为 0 或字母重复时由 [`ShapeContext::new`] 返回说明。
-    pub fn project_shape(q_rows: usize, d: usize) -> Result<ShapeContext, Error> {
-        ShapeContext::new([('q', q_rows), ('d', d), ('h', HIST)])
+    /// 轴长为 0 或字母重复时由 [`ShapeCtx::new`] 返回说明。
+    pub fn project_shape(q_rows: usize, d: usize) -> Result<ShapeCtx, Error> {
+        ShapeCtx::new([('q', q_rows), ('d', d), ('h', HIST)])
     }
 
     /// 标量代价：每行 query 扫 `hist` 条历史（每个 d 维内积）+ softmax + 对 `V` 加权。
@@ -410,7 +410,7 @@ pub mod semantics {
     /// # Errors
     ///
     /// 缺轴时返回说明。
-    pub fn cost(shape: &ShapeContext) -> Result<Cost, Error> {
+    pub fn cost(shape: &ShapeCtx) -> Result<Cost, Error> {
         let q = crate::attention::axis(shape, "decode attention", 'q')?;
         let d = crate::attention::axis(shape, "decode attention", 'd')?;
         let h = crate::attention::axis(shape, "decode attention", 'h')?;

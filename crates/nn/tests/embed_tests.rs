@@ -19,7 +19,7 @@ fn an_embedding_floor_follows_the_gather_semantics() {
     let floor = layer.bounds().expect("合法").expect("有算子");
     assert_eq!(
         floor,
-        Bounds::of_context(Embedding::OP, 8, 1).expect("同一份语义")
+        Bounds::of_ctx(Embedding::OP, 8, 1).expect("同一份语义")
     );
 }
 

@@ -30,7 +30,7 @@
 //!
 //! let error = Error::new(Code::Unsupported, "dp4a 不支持 f32").with("cap::negotiate");
 //! assert_eq!(error.code(), Code::Unsupported);
-//! assert_eq!(error.context(), ["cap::negotiate"]);
+//! assert_eq!(error.ctx(), ["cap::negotiate"]);
 //! assert!(error.to_string().contains("unsupported"));
 //! ```
 

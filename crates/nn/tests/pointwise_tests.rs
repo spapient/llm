@@ -11,7 +11,7 @@ fn a_reduction_emits_a_scalar_shape() {
     let floor = sum.bounds().expect("合法").expect("有算子");
     assert_eq!(
         floor,
-        Bounds::of_context(ReduceSum::OP, 128, 1).expect("同一份语义")
+        Bounds::of_ctx(ReduceSum::OP, 128, 1).expect("同一份语义")
     );
     // 读侧覆盖整个输入，写侧只有一个标量。
     assert!(floor.read() > floor.write());

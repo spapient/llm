@@ -17,7 +17,7 @@ fn gates_are_clipped() {
 
 /// 短上下文（ν 小）抬 π，长上下文（ν 大）压 π。
 #[test]
-fn short_context_raises_pi() {
+fn short_ctx_raises_pi() {
     assert!(pi(0.0, 0.0) > pi(0.0, 4.0));
 }
 

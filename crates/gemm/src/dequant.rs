@@ -1,6 +1,6 @@
 //! 打包反量化骨架：每字节 `CPB` 个码，`y = scale · (code − zero)`。
 
-use crate::model::{Buffer, Cost, Sample, ShapeContext, Values};
+use crate::model::{Buffer, Cost, Sample, ShapeCtx, Values};
 use diagnostic::{Code, Error};
 
 // 单轴定义与形状投影复用 unary 骨架。
@@ -50,7 +50,7 @@ pub fn check_affine(scale: f32, zero: f32, width: usize) -> Result<(), Error> {
 /// # Errors
 ///
 /// 形状缺轴时返回说明。
-pub fn cost_packed(shape: &ShapeContext, cpb: usize) -> Result<Cost, Error> {
+pub fn cost_packed(shape: &ShapeCtx, cpb: usize) -> Result<Cost, Error> {
     let n = shape
         .get('n')
         .ok_or_else(|| Error::new(Code::Invalid, "dequant 形状缺轴 `n`"))?;
@@ -138,7 +138,7 @@ macro_rules! dequant_packed {
 
         /// 标量代价：每元素一次减法一次乘法；读打包字节，写 `n` 个 f32。
         pub fn cost(
-            shape: &$crate::model::ShapeContext,
+            shape: &$crate::model::ShapeCtx,
         ) -> diagnostic::Result<$crate::model::Cost> {
             $crate::dequant::cost_packed(shape, $row.cpb)
         }
@@ -233,7 +233,7 @@ pub mod dequant_i4 {
 pub mod i8 {
     //! 8 位反量化：`y[n] = scale * (q[n] - zero)`。
     use crate::dequant;
-    use crate::model::{Buffer, Cost, Sample, ShapeContext, Values, cost_n};
+    use crate::model::{Buffer, Cost, Sample, ShapeCtx, Values, cost_n};
     use diagnostic::{Code, Error};
 
     // 单轴定义复用 unary 骨架。
@@ -252,7 +252,7 @@ pub mod i8 {
     /// # Errors
     ///
     /// 形状缺轴时返回说明。
-    pub fn cost(shape: &ShapeContext) -> Result<Cost, Error> {
+    pub fn cost(shape: &ShapeCtx) -> Result<Cost, Error> {
         cost_n(shape, "dequant", 2.0, 1)
     }
 

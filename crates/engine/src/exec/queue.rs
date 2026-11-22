@@ -200,11 +200,11 @@ pub fn enqueue(queue: &mut Vec<Queued>, graph: &Graph, stream: Stream) {
 }
 
 /// 节点操作数约束：每个编号都要已绑定，且输入与输出不能同号。`unbound` 判定"未绑定"，
-/// `context` 是执行器名（CPU / Metal 各自报自己的入口）。
+/// `ctx` 是执行器名（CPU / Metal 各自报自己的入口）。
 pub fn check_operands(
     node: &Node,
     unbound: impl Fn(u32) -> bool,
-    context: &'static str,
+    ctx: &'static str,
 ) -> Result<()> {
     for operand in node.inputs().iter().chain(node.outputs()) {
         if unbound(operand.id()) {
@@ -212,7 +212,7 @@ pub fn check_operands(
                 Code::Invalid,
                 format!("节点 `{}` 的操作数 {} 未绑定", node.name(), operand.id()),
             )
-            .with(context));
+            .with(ctx));
         }
     }
     let clash = node
@@ -224,7 +224,7 @@ pub fn check_operands(
             Code::Invalid,
             format!("节点 `{}` 有一个编号既是输入又是输出", node.name()),
         )
-        .with(context));
+        .with(ctx));
     }
     Ok(())
 }

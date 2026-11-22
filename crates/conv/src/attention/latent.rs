@@ -8,7 +8,7 @@
 //! RoPE 段必须对同一查询行的各头相同：这是 MLA 的解耦键只有一个、被所有头共享的直接后果。构造
 //! `q` 时把这段复制到每个头，本算子照常按整行做内积即可，不需要知道"哪几列是 RoPE"。
 
-use crate::model::{AxisRole, AxisSpec, Buffer, Cost, Sample, ShapeContext, Values};
+use crate::model::{AxisRole, AxisSpec, Buffer, Cost, Sample, ShapeCtx, Values};
 use diagnostic::{Code, Error};
 
 use super::axis;
@@ -33,8 +33,8 @@ const OUT: &str = "y";
 /// # Errors
 ///
 /// 当前实现不会失败。
-pub fn project_shape(r: usize, w: usize) -> Result<ShapeContext, Error> {
-    ShapeContext::new([('r', r), ('w', w)])
+pub fn project_shape(r: usize, w: usize) -> Result<ShapeCtx, Error> {
+    ShapeCtx::new([('r', r), ('w', w)])
 }
 
 /// 标量代价：每个查询行对 `t` 条键各做一次宽 `W` 的内积，再按 `dc` 列加权。
@@ -45,7 +45,7 @@ pub fn project_shape(r: usize, w: usize) -> Result<ShapeContext, Error> {
 /// # Errors
 ///
 /// 缺轴时返回说明。
-pub fn cost(shape: &ShapeContext) -> Result<Cost, Error> {
+pub fn cost(shape: &ShapeCtx) -> Result<Cost, Error> {
     let r = axis(shape, "latent_attention", 'r')?;
     let w = axis(shape, "latent_attention", 'w')?;
     let (dot, weighted) = pricing(r, w);

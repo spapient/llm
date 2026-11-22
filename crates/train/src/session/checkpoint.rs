@@ -124,17 +124,17 @@ pub fn resume(
             checkpoint.world()
         ))
     })?;
-    let context = format!("检查点在第 {} 步保存", checkpoint.step());
-    reconcile(&context, "训练层数", "层", checkpoint.layers(), layers)?;
+    let ctx = format!("检查点在第 {} 步保存", checkpoint.step());
+    reconcile(&ctx, "训练层数", "层", checkpoint.layers(), layers)?;
     reconcile(
-        &context,
+        &ctx,
         "批行数",
         "行",
         checkpoint.batch_rows(),
         batch_rows,
     )?;
     reconcile(
-        &context,
+        &ctx,
         "批列宽",
         "列",
         checkpoint.batch_cols(),
@@ -144,7 +144,7 @@ pub fn resume(
 }
 
 /// 一项恢复事实必须与当前运行逐项相同；口径与 [`resume`] 一致，三条对账共用同一份判据。
-fn reconcile(context: &str, label: &str, unit: &str, saved: usize, current: usize) -> Result<()> {
+fn reconcile(ctx: &str, label: &str, unit: &str, saved: usize, current: usize) -> Result<()> {
     if saved == current {
         return Ok(());
     }
@@ -152,7 +152,7 @@ fn reconcile(context: &str, label: &str, unit: &str, saved: usize, current: usiz
         Code::Invalid,
         format!("{label}不一致：检查点记录 {saved} {unit}，当前是 {current} {unit}"),
     )
-    .with(context))
+    .with(ctx))
 }
 
 /// 训练层的算子引用：`nn` 的层定义必须先通过 `op` 的闭集校验。

@@ -51,7 +51,7 @@ impl Contract for MatMul {
     fn bounds(&self) -> BoundsResult {
         // 三轴骨架：收缩轴 `k` 由算子的 `project_shape` 固定，层只给 `(m, n)`，走通用形状入口，
         // 而不是投影入口——投影入口只填输入/输出两条角色轴，填不出独立的收缩轴。
-        Bounds::of_context(Self::OP, self.rows, self.cols).map(Some)
+        Bounds::of_ctx(Self::OP, self.rows, self.cols).map(Some)
     }
 }
 

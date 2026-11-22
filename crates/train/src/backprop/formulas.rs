@@ -1,6 +1,6 @@
 //! 反向公式表里的 36 条解析公式与共享数值助手。
 
-use super::{Context, SITE};
+use super::{Ctx, SITE};
 use diagnostic::{Code, Error, Result};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -8,7 +8,7 @@ use std::rc::Rc;
 /// 经典算子的反向公式：几何交给 [`Geometry`]，公式本身只剩"取实例、回传"。
 macro_rules! instance_backward {
     ($($name:ident => $op:literal),* $(,)?) => {$(
-        pub(super) fn $name(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
+        pub(super) fn $name(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
             ctx.instance($op)?.backward(ctx.inputs, ctx.incoming)
         }
     )*};
@@ -28,12 +28,12 @@ instance_backward!(
 );
 
 /// y = a + b：两条路径都原样回传上游梯度。
-pub(super) fn passthrough(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
+pub(super) fn passthrough(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
     Ok(vec![ctx.incoming.to_vec(); ctx.inputs.len()])
 }
 
 /// y = a·b：dA = in·b，dB = in·a。
-pub(super) fn mul(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
+pub(super) fn mul(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
     let a = &ctx.inputs[0];
     let b = &ctx.inputs[1];
     let da = ctx.incoming.iter().zip(b).map(|(&g, w)| g * w).collect();
@@ -42,21 +42,21 @@ pub(super) fn mul(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
 }
 
 /// y = α·a：dA = α·in。
-pub(super) fn scale(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
+pub(super) fn scale(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
     let alpha = op::scale_f32::ALPHA;
     let da = ctx.incoming.iter().map(|&g| g * alpha).collect();
     Ok(vec![da])
 }
 
 /// y = a−b：dA = in，dB = −in。
-pub(super) fn sub(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
+pub(super) fn sub(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
     let da = ctx.incoming.to_vec();
     let db = ctx.incoming.iter().map(|&g| -g).collect();
     Ok(vec![da, db])
 }
 
 /// y = a/b：dA = in/b，dB = −in·a/b²。
-pub(super) fn div(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
+pub(super) fn div(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
     let a = &ctx.inputs[0];
     let b = &ctx.inputs[1];
     let da = ctx.incoming.iter().zip(b).map(|(&g, &w)| g / w).collect();
@@ -71,7 +71,7 @@ pub(super) fn div(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
 }
 
 /// y = exp(a)：dA = in·y（输出 y 即 exp(a)，避免重算）。
-pub(super) fn exp(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
+pub(super) fn exp(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
     let da = ctx
         .incoming
         .iter()
@@ -82,7 +82,7 @@ pub(super) fn exp(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
 }
 
 /// y = ln(a)：dA = in/a。
-pub(super) fn log(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
+pub(super) fn log(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
     let da = ctx
         .incoming
         .iter()
@@ -93,18 +93,18 @@ pub(super) fn log(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
 }
 
 /// y = min(a,b)：梯度给较小者；相等给 `a`（避免双计）。
-pub(super) fn min(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
+pub(super) fn min(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
     extremum(ctx, |x, y| x <= y, |x, y| y < x)
 }
 
 /// y = max(a,b)：梯度给较大者；相等给 `a`（避免双计）。
-pub(super) fn max(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
+pub(super) fn max(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
     extremum(ctx, |x, y| x >= y, |x, y| y > x)
 }
 
 /// `min`/`max` 共用的选点反向：`a_wins` / `b_wins` 各自判"该元素拿走上游梯度"，等号只归 `a`。
 fn extremum(
-    ctx: Context<'_>,
+    ctx: Ctx<'_>,
     a_wins: impl Fn(f32, f32) -> bool,
     b_wins: impl Fn(f32, f32) -> bool,
 ) -> Result<Vec<Vec<f32>>> {
@@ -122,7 +122,7 @@ fn extremum(
 }
 
 /// 一元逐元素算子：`y′` 只看本元素，`dA[i] = in[i]·f(x[i])`。
-fn unary(ctx: Context<'_>, grad: impl Fn(f32) -> f32) -> Result<Vec<Vec<f32>>> {
+fn unary(ctx: Ctx<'_>, grad: impl Fn(f32) -> f32) -> Result<Vec<Vec<f32>>> {
     let x = &ctx.inputs[0];
     let da = ctx
         .incoming
@@ -134,7 +134,7 @@ fn unary(ctx: Context<'_>, grad: impl Fn(f32) -> f32) -> Result<Vec<Vec<f32>>> {
 }
 
 /// y = x·σ(x)：y′ = σ + x·σ(1−σ)，dA = in·y′。
-pub(super) fn silu(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
+pub(super) fn silu(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
     unary(ctx, |v| {
         let sigmoid = 1.0 / (1.0 + (-v).exp());
         sigmoid + v * sigmoid * (1.0 - sigmoid)
@@ -142,7 +142,7 @@ pub(super) fn silu(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
 }
 
 /// y = x（x ≥ 0）或 slope·x：y′ = 1 或 slope，dA = in·y′。
-pub(super) fn leaky_relu(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
+pub(super) fn leaky_relu(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
     unary(ctx, |v| {
         if v >= 0.0 {
             1.0
@@ -153,7 +153,7 @@ pub(super) fn leaky_relu(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
 }
 
 /// y = clamp(x/6 + 0.5, 0, 1)：饱和区梯度为 0，线性区为 1/6。
-pub(super) fn hard_sigmoid(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
+pub(super) fn hard_sigmoid(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
     unary(ctx, |v| {
         let v = f64::from(v);
         let inside = (v / 6.0 + 0.5) > 0.0 && (v / 6.0 + 0.5) < 1.0;
@@ -162,18 +162,18 @@ pub(super) fn hard_sigmoid(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
 }
 
 /// y = 0.5·x·(1 + erf(x/√2))：y′ = Φ(x) + x·φ(x)，φ 为标准正态密度、Φ 为累积分布。
-pub(super) fn gelu(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
+pub(super) fn gelu(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
     unary(ctx, gelu_grad)
 }
 
 /// y = Σa：上游标量梯度广播回每个元素，dA[i] = in[0]。
-pub(super) fn reduce_sum(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
+pub(super) fn reduce_sum(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
     let da = vec![ctx.incoming[0]; ctx.inputs[0].len()];
     Ok(vec![da])
 }
 
 /// y = max(a)：只有最大值元素收到 `in[0]`，其余梯度为 0。
-pub(super) fn reduce_max(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
+pub(super) fn reduce_max(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
     let a = &ctx.inputs[0];
     let peak = a.iter().copied().fold(f32::MIN, f32::max);
     let da = a
@@ -184,7 +184,7 @@ pub(super) fn reduce_max(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
 }
 
 /// p = softmax(x)：dA[i] = p[i]·(in[i] − Σ_j in[j]·p[j])。
-pub(super) fn softmax(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
+pub(super) fn softmax(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
     let probability = ctx.output;
     let dot: f32 = ctx
         .incoming
@@ -202,7 +202,7 @@ pub(super) fn softmax(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
 }
 
 /// `y = W·x`（`[n] = Σ_k W[n,k]·x[k]`）：返回 `[dW, dx]`。
-pub(super) fn gemv(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
+pub(super) fn gemv(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
     let weight = &ctx.inputs[0][..];
     let input = &ctx.inputs[1][..];
     let (rows, cols) = matrix_shape(weight, input.len())?;
@@ -241,7 +241,7 @@ fn gemv_input(weight: &[f32], incoming: &[f32], rows: usize, cols: usize) -> Vec
 }
 
 /// `Y = A·B`：返回 `[dA, dB]`，收缩轴固定 `op::gemm::K`。
-pub(super) fn gemm(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
+pub(super) fn gemm(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
     let a = &ctx.inputs[0][..];
     let b = &ctx.inputs[1][..];
     let grad = &ctx.incoming;
@@ -263,7 +263,7 @@ pub(super) fn gemm(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
 }
 
 /// `y = table[idx]`（行 gather）：索引不连续、无雅可比；权重表按被访问行累加上游行。
-pub(super) fn embed(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
+pub(super) fn embed(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
     let index = &ctx.inputs[0][..];
     let table = &ctx.inputs[1][..];
     let dim = ctx.incoming.len() / index.len();
@@ -282,7 +282,7 @@ const ROPE_POS: f32 = 7.0;
 
 /// `y = γ·x / rms(x)`：`dx[j] = g[j]·γ[j]/r − x[j]·Σ_i g[i]·γ[i]·x[i] / (n·r³)`，
 /// `dγ[i] = g[i]·x[i]/r`。
-pub(super) fn rmsnorm(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
+pub(super) fn rmsnorm(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
     let (dx, dgamma) = rmsnorm_grad(&ctx.inputs[0], &ctx.inputs[1], ctx.incoming)?;
     Ok(vec![dx, dgamma])
 }
@@ -312,7 +312,7 @@ fn rmsnorm_grad(x: &[f32], gamma: &[f32], grad: &[f32]) -> Result<(Vec<f32>, Vec
 }
 
 /// `y = R(θ)·x`：旋转矩阵正交，反向即转置 `R(−θ)`。
-pub(super) fn rope(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
+pub(super) fn rope(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
     Ok(vec![rope_grad(&ctx.inputs[0], ctx.incoming)])
 }
 
@@ -361,7 +361,7 @@ fn rope_grad(x: &[f32], grad: &[f32]) -> Vec<f32> {
 }
 
 /// 自注意力（`attention_f32` / `flash_attention_f32` 共用）：返回 `[dq, dk, dv]`。
-pub(super) fn attention(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
+pub(super) fn attention(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
     let d = op::attention::MODEL.shape.1;
     let s = divide(ctx.inputs[0].len(), d, "attention_f32")?;
     let (dq, dk, dv) = attention_grad(attention_ctx(&ctx, d), s, s);
@@ -370,7 +370,7 @@ pub(super) fn attention(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
 
 /// 潜空间注意力（`latent_attention_f32`）：唯一差别是**写宽比读宽窄**——`dO` 与 `dV` 按压缩宽度
 /// `d_c` 走，`dQ` / `dK` 仍按读宽 `W` 走。`d_c` 由上游梯度长度与查询行数反推，不额外声明。
-pub(super) fn latent_attention(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
+pub(super) fn latent_attention(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
     let w = op::attention::latent::MODEL.shape.1;
     let q_rows = divide(ctx.inputs[0].len(), w, "latent_attention_f32")?;
     let hist = divide(ctx.inputs[1].len(), w, "latent_attention_f32")?;
@@ -383,7 +383,7 @@ pub(super) fn latent_attention(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
 
 /// decode 注意力（`decode_attention_f32` / `decode_flash_attention_f32` 共用）：查询行数与历史
 /// 行数解耦，返回 `[dq, dk, dv]`。
-pub(super) fn decode_attention(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
+pub(super) fn decode_attention(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
     let d = op::decode_attention::MODEL.shape.1;
     let q_rows = divide(ctx.inputs[0].len(), d, "decode_attention_f32")?;
     let hist = divide(ctx.inputs[1].len(), d, "decode_attention_f32")?;
@@ -392,7 +392,7 @@ pub(super) fn decode_attention(ctx: Context<'_>) -> Result<Vec<Vec<f32>>> {
 }
 
 /// 由公式上下文拼出注意力反向的只读视野。
-fn attention_ctx<'a>(ctx: &Context<'a>, d: usize) -> AttentionCtx<'a> {
+fn attention_ctx<'a>(ctx: &Ctx<'a>, d: usize) -> AttentionCtx<'a> {
     AttentionCtx {
         q: &ctx.inputs[0],
         k: &ctx.inputs[1],

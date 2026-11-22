@@ -157,7 +157,7 @@ impl Roofline {
         declared_ns: f64,
         observed_ns: f64,
     ) -> Self {
-        let bounds = nn::Bounds::of_context(scenario.op, scenario.bounds.0, scenario.bounds.1)
+        let bounds = nn::Bounds::of_ctx(scenario.op, scenario.bounds.0, scenario.bounds.1)
             .unwrap_or_else(|error| {
                 panic!(
                     "{}：算子 `{}` 推不出下界（{}），roofline 就没有分子",

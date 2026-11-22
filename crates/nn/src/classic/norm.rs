@@ -54,7 +54,7 @@ impl Contract for BatchNorm2d {
     spec_accessors!();
 
     fn bounds(&self) -> BoundsResult {
-        Bounds::of_context("batch_norm_f32", self.channels, 1).map(Some)
+        Bounds::of_ctx("batch_norm_f32", self.channels, 1).map(Some)
     }
 }
 
@@ -103,7 +103,7 @@ impl Contract for GroupNorm {
     spec_accessors!();
 
     fn bounds(&self) -> BoundsResult {
-        Bounds::of_context("group_norm_f32", self.channels, 1).map(Some)
+        Bounds::of_ctx("group_norm_f32", self.channels, 1).map(Some)
     }
 }
 
@@ -148,7 +148,7 @@ impl Contract for InstanceNorm {
     spec_accessors!();
 
     fn bounds(&self) -> BoundsResult {
-        Bounds::of_context("instance_norm_f32", self.channels, 1).map(Some)
+        Bounds::of_ctx("instance_norm_f32", self.channels, 1).map(Some)
     }
 }
 
@@ -189,6 +189,6 @@ impl Contract for LayerNorm {
     spec_accessors!();
 
     fn bounds(&self) -> BoundsResult {
-        Bounds::of_context("layer_norm_f32", self.width, 1).map(Some)
+        Bounds::of_ctx("layer_norm_f32", self.width, 1).map(Some)
     }
 }

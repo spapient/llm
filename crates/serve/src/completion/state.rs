@@ -247,7 +247,7 @@ where
     /// 批内一轮：按 [`Batch::round`] 的打包结果推进，再把生成行一次整批前向 + 逐行记账。
     pub(super) fn step_batch(&mut self) -> diagnostic::Result<Vec<(u64, Generation)>> {
         let plan = self.round()?;
-        self.prefill_context(&plan)?;
+        self.prefill_ctx(&plan)?;
         let sequences = self.ready(&plan)?;
         self.decode_rows(&sequences)
     }
@@ -265,9 +265,9 @@ where
     }
 
     /// 先把拍板给上下文候选的那几块算掉：一行也没分到时它什么都不做。
-    fn prefill_context(&mut self, plan: &[Candidate]) -> diagnostic::Result<()> {
+    fn prefill_ctx(&mut self, plan: &[Candidate]) -> diagnostic::Result<()> {
         plan.iter()
-            .filter(|candidate| candidate.phase() == Phase::Context)
+            .filter(|candidate| candidate.phase() == Phase::Ctx)
             .try_for_each(|candidate| self.prefill(candidate.id(), candidate.rows()))
     }
 

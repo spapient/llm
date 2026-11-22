@@ -116,7 +116,7 @@ impl<E: Executor> CpuModel<E> {
         self.assembly.descriptors()
     }
 
-    /// 按准入序把各行 `context[at]` 折成索引缓冲；非 Embedding 首层拒绝缺失的外部向量输入。
+    /// 按准入序把各行 `ctx[at]` 折成索引缓冲；非 Embedding 首层拒绝缺失的外部向量输入。
     fn predict_input_batch(&self, rows: &[Row<'_>]) -> Result<Vec<f32>> {
         if self.assembly.input_kind != LayerKind::Embedding {
             return Err(Error::new(
@@ -233,8 +233,8 @@ impl<E: Executor> CpuModel<E> {
             let mut slots = Vec::with_capacity(rows.len());
             let mut gate = Vec::with_capacity(rows.len() * binding.width);
             for row in rows {
-                let context = row.sequence.context();
-                let history = context.get(..row.settled()).unwrap_or(context);
+                let ctx = row.sequence.ctx();
+                let history = ctx.get(..row.settled()).unwrap_or(ctx);
                 let slot = nn::slot_of(
                     history,
                     binding.spec.order,
@@ -362,10 +362,10 @@ impl<'a> Row<'a> {
         self.at + 1
     }
 
-    /// 输入 token：`context[at]`；位置越界归无效输入而不是内部错误。
+    /// 输入 token：`ctx[at]`；位置越界归无效输入而不是内部错误。
     fn token(&self) -> Result<f32> {
         self.sequence
-            .context()
+            .ctx()
             .get(self.at)
             .copied()
             .map(|token| token as f32)
@@ -375,7 +375,7 @@ impl<'a> Row<'a> {
                     format!(
                         "位置 {} 超出现有 {} 个 token",
                         self.at,
-                        self.sequence.context().len()
+                        self.sequence.ctx().len()
                     ),
                 )
                 .with(SITE)

@@ -1,7 +1,7 @@
 //! 逐元素二元骨架：`y[n] = op(a[n], b[n])`。
 
 use crate::formula::FormulaOwner;
-use crate::model::{Buffer, Cost, Sample, ShapeContext, Values};
+use crate::model::{Buffer, Cost, Sample, ShapeCtx, Values};
 use diagnostic::{Code, Error};
 
 // 单轴定义与形状投影复用一元骨架（与 dequant / softmax / rmsnorm / rope / scan 同一模式）。
@@ -24,7 +24,7 @@ pub trait Binary: FormulaOwner {
 }
 
 /// 标量代价：完全由表达式与操作数位宽推出，本函数不含流量常数。
-pub fn cost<B: Binary>(shape: &ShapeContext) -> Result<Cost, Error> {
+pub fn cost<B: Binary>(shape: &ShapeCtx) -> Result<Cost, Error> {
     B::formula()?
         .cost(shape.extents())
         .map_err(|error| error.with("op::elementwise::cost"))

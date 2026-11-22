@@ -1,7 +1,7 @@
 //! 职责：i8 矩阵乘的标量/分块出口与形状投影。
 use diagnostic::Result;
 
-use crate::model::{Cost, Sample, ShapeContext, Values};
+use crate::model::{Cost, Sample, ShapeCtx, Values};
 
 pub use super::{
     AXES, K, TILE_K, TILE_M, TILE_N, forward_scalar, matmul_scalar, matmul_tiled, project_shape,
@@ -109,7 +109,7 @@ fn edge_rows(a: &[i8], b: &[i8], out: &mut [i32], mut i0: usize, m: usize, n: us
 /// # Errors
 ///
 /// 形状上下文缺轴时返回带算子名的说明。
-pub fn cost(shape: &ShapeContext) -> Result<Cost> {
+pub fn cost(shape: &ShapeCtx) -> Result<Cost> {
     super::cost_of::<i8>(shape)
 }
 

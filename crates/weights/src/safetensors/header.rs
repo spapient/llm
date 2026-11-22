@@ -12,12 +12,12 @@ use crate::{Entry, Header};
 type Slots = (Option<DType>, Option<Shape>, Option<(usize, usize)>);
 
 /// 三个字段；重复与未知字段按文件顺序拒绝。
-pub(crate) fn collect_fields(fields: &[(String, Value)], context: &str) -> Result<Slots> {
+pub(crate) fn collect_fields(fields: &[(String, Value)], ctx: &str) -> Result<Slots> {
     let mut dtype = None;
     let mut shape = None;
     let mut offsets = None;
     for (key, value) in fields {
-        field(key, value, context, &mut dtype, &mut shape, &mut offsets)?;
+        field(key, value, ctx, &mut dtype, &mut shape, &mut offsets)?;
     }
     Ok((dtype, shape, offsets))
 }
@@ -26,43 +26,43 @@ pub(crate) fn collect_fields(fields: &[(String, Value)], context: &str) -> Resul
 fn field(
     key: &str,
     value: &Value,
-    context: &str,
+    ctx: &str,
     dtype: &mut Option<DType>,
     shape: &mut Option<Shape>,
     offsets: &mut Option<(usize, usize)>,
 ) -> Result<()> {
     match key {
-        "dtype" => dtype_slot(dtype, value, key, context),
-        "shape" => shape_slot(shape, value, key, context),
-        "data_offsets" => offsets_slot(offsets, value, key, context),
+        "dtype" => dtype_slot(dtype, value, key, ctx),
+        "shape" => shape_slot(shape, value, key, ctx),
+        "data_offsets" => offsets_slot(offsets, value, key, ctx),
         other => Err(bad(format!(
             "未知字段 `{other}`（条目只允许 dtype / shape / data_offsets）"
         ))
-        .with(context)),
+        .with(ctx)),
     }
 }
 
-fn dtype_slot(slot: &mut Option<DType>, value: &Value, key: &str, context: &str) -> Result<()> {
-    set_once(slot, dtype_of(value)?, key, context)
+fn dtype_slot(slot: &mut Option<DType>, value: &Value, key: &str, ctx: &str) -> Result<()> {
+    set_once(slot, dtype_of(value)?, key, ctx)
 }
 
-fn shape_slot(slot: &mut Option<Shape>, value: &Value, key: &str, context: &str) -> Result<()> {
-    set_once(slot, shape_of(value)?, key, context)
+fn shape_slot(slot: &mut Option<Shape>, value: &Value, key: &str, ctx: &str) -> Result<()> {
+    set_once(slot, shape_of(value)?, key, ctx)
 }
 
 fn offsets_slot(
     slot: &mut Option<(usize, usize)>,
     value: &Value,
     key: &str,
-    context: &str,
+    ctx: &str,
 ) -> Result<()> {
-    set_once(slot, offsets_of(value)?, key, context)
+    set_once(slot, offsets_of(value)?, key, ctx)
 }
 
 /// 字段只允许出现一次。
-fn set_once<T>(slot: &mut Option<T>, value: T, key: &str, context: &str) -> Result<()> {
+fn set_once<T>(slot: &mut Option<T>, value: T, key: &str, ctx: &str) -> Result<()> {
     if slot.is_some() {
-        return Err(bad(format!("字段 `{key}` 重复")).with(context));
+        return Err(bad(format!("字段 `{key}` 重复")).with(ctx));
     }
     *slot = Some(value);
     Ok(())
@@ -73,16 +73,16 @@ pub(crate) fn required_fields(
     dtype: Option<DType>,
     shape: Option<Shape>,
     offsets: Option<(usize, usize)>,
-    context: &str,
+    ctx: &str,
 ) -> Result<(DType, Shape, (usize, usize))> {
-    let dtype = required(dtype, "dtype", context)?;
-    let shape = required(shape, "shape", context)?;
-    let offsets = required(offsets, "data_offsets", context)?;
+    let dtype = required(dtype, "dtype", ctx)?;
+    let shape = required(shape, "shape", ctx)?;
+    let offsets = required(offsets, "data_offsets", ctx)?;
     Ok((dtype, shape, offsets))
 }
 
-fn required<T>(slot: Option<T>, key: &str, context: &str) -> Result<T> {
-    slot.ok_or_else(|| bad(format!("缺字段 `{key}`")).with(context))
+fn required<T>(slot: Option<T>, key: &str, ctx: &str) -> Result<T> {
+    slot.ok_or_else(|| bad(format!("缺字段 `{key}`")).with(ctx))
 }
 
 /// 区间长度与形状自洽，并把相对起点转成绝对偏移。
@@ -92,7 +92,7 @@ pub(crate) fn build(
     shape: Shape,
     (begin, end): (usize, usize),
     data_start: usize,
-    context: &str,
+    ctx: &str,
 ) -> Result<Entry> {
     let expected = shape.element_bytes(dtype);
     if end - begin != expected {
@@ -102,11 +102,11 @@ pub(crate) fn build(
             dtype,
             shape.dims()
         ))
-        .with(context));
+        .with(ctx));
     }
     let offset = data_start
         .checked_add(begin)
-        .ok_or_else(|| bad(format!("偏移 {begin} 与数据段起点相加溢出")).with(context))?;
+        .ok_or_else(|| bad(format!("偏移 {begin} 与数据段起点相加溢出")).with(ctx))?;
     Ok(Entry::new(name, dtype, shape).at(offset))
 }
 
@@ -141,8 +141,8 @@ fn shape_of(value: &Value) -> Result<Shape> {
 }
 
 /// 一个非负整数换算成 `usize`；负数（或超出可寻址范围）按 `Invalid` 拒绝，给出字段站点。
-fn nonnegative(number: i64, what: &str, context: &str) -> Result<usize> {
-    usize::try_from(number).map_err(|_| bad(format!("{what} {number} 不能为负")).with(context))
+fn nonnegative(number: i64, what: &str, ctx: &str) -> Result<usize> {
+    usize::try_from(number).map_err(|_| bad(format!("{what} {number} 不能为负")).with(ctx))
 }
 
 fn offsets_of(value: &Value) -> Result<(usize, usize)> {

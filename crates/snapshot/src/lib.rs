@@ -518,7 +518,7 @@ fn read_weights_header(cursor: &mut Cursor<'_>) -> Result<Header> {
     let data_start = cursor.count("权重数据段起点")?;
     let count = cursor.count("权重条目数")?;
     let entries = read_entries(cursor, count, MIN_ENTRY, PREALLOC)?;
-    Header::new(entries, data_start).map_err(error_context)
+    Header::new(entries, data_start).map_err(error_ctx)
 }
 
 /// 五个恢复事实，顺序即格式顺序；四个形状计数共用一条读取循环。
@@ -529,12 +529,12 @@ fn decode_facts(cursor: &mut Cursor<'_>) -> Result<Facts> {
     for (slot, label) in counts.iter_mut().zip(labels) {
         *slot = cursor.count(label)?;
     }
-    Facts::new(step, counts[0], counts[1], counts[2], counts[3]).map_err(error_context)
+    Facts::new(step, counts[0], counts[1], counts[2], counts[3]).map_err(error_ctx)
 }
 
 /// Header 构造失败挂上解码上下文。
-fn error_context(error: Error) -> Error {
-    error.with(cursor::CONTEXT)
+fn error_ctx(error: Error) -> Error {
+    error.with(cursor::CTX)
 }
 
 /// 写一个 LEB128 变长整数；算术与规范性判据归 `wire`，这里只保留快照侧的调用名。

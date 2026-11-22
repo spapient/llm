@@ -28,8 +28,8 @@
 use diagnostic::{Code, Error, Result};
 
 /// 配置错误：上下文统一带 `tools::regress::` 前缀。
-fn invalid(context: &str, message: impl Into<String>) -> Error {
-    Error::new(Code::Invalid, message).with(format!("tools::regress::{context}"))
+fn invalid(ctx: &str, message: impl Into<String>) -> Error {
+    Error::new(Code::Invalid, message).with(format!("tools::regress::{ctx}"))
 }
 
 /// 指标方向：越大越好，还是越小越好。

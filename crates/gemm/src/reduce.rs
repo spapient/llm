@@ -1,7 +1,7 @@
 //! 归约骨架：`y[0] = fold(a[0..n])`，输出单个元素。
 
 use crate::formula::FormulaOwner;
-use crate::model::{AxisRole, AxisSpec, Buffer, Cost, Sample, ShapeContext, Values};
+use crate::model::{AxisRole, AxisSpec, Buffer, Cost, Sample, ShapeCtx, Values};
 use diagnostic::{Code, Error};
 
 /// 归约算子随语义变化的部分。
@@ -35,12 +35,12 @@ pub const AXES: &[AxisSpec] = &[
 /// # Errors
 ///
 /// 当前实现不会失败。
-pub fn project_shape(len: usize, _: usize) -> Result<ShapeContext, Error> {
-    ShapeContext::new([('n', len), ('o', 1)])
+pub fn project_shape(len: usize, _: usize) -> Result<ShapeCtx, Error> {
+    ShapeCtx::new([('n', len), ('o', 1)])
 }
 
 /// 标量代价。
-pub fn cost<R: Reduce>(shape: &ShapeContext) -> Result<Cost, Error> {
+pub fn cost<R: Reduce>(shape: &ShapeCtx) -> Result<Cost, Error> {
     R::formula()?
         .cost(shape.extents())
         .map_err(|error| error.with("op::reduce::cost"))

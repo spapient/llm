@@ -84,7 +84,7 @@ impl Scheduler {
     pub(super) fn plan(&mut self, sequence: &Sequence) -> Result<Option<Plan>> {
         let needed = sequence.pages_needed();
         let width = self.pager.page_size();
-        let prefix = self.radix.longest(sequence.context(), width);
+        let prefix = self.radix.longest(sequence.ctx(), width);
         let shared = prefix.len().min(needed);
         let fresh = needed - shared;
         if !self.make_room(fresh)? {

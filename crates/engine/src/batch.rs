@@ -82,15 +82,15 @@ fn settleable(
         return None;
     }
     let table = scheduler.pages_of(id)?;
-    Some((sequence.context().to_vec(), table.pages().to_vec()))
+    Some((sequence.ctx().to_vec(), table.pages().to_vec()))
 }
 
 /// 前 `rows` 行覆盖到的满块：块尾已落定（`(block + 1) · width <= 上下文长`）且页表里真有这一页。
-fn settled_blocks(rows: usize, width: usize, context_len: usize, pages: usize) -> Vec<usize> {
+fn settled_blocks(rows: usize, width: usize, ctx_len: usize, pages: usize) -> Vec<usize> {
     if width == 0 {
         return Vec::new();
     }
     (0..rows / width)
-        .filter(|block| (block + 1) * width <= context_len && *block < pages)
+        .filter(|block| (block + 1) * width <= ctx_len && *block < pages)
         .collect()
 }

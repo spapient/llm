@@ -1,5 +1,5 @@
 use super::{Format, cost};
-use crate::model::{Buffer, Cost, Sample, ShapeContext, Values};
+use crate::model::{Buffer, Cost, Sample, ShapeCtx, Values};
 use diagnostic::Error;
 
 /// 三缓冲打包样本：`x`、打包权重 `w` 与每组分标度 `scales`。
@@ -27,7 +27,7 @@ pub fn with(m: usize, n: usize, x: Vec<f32>, w: Vec<u8>, scales: Vec<f32>) -> Sa
 
 /// 只关心 `(m, n)` 的代价：宽度填进算子声明的具名轴。
 pub fn at<T: Format>(m: usize, n: usize) -> Result<Cost, Error> {
-    cost::<T>(&ShapeContext::new([('m', m), ('n', n)])?)
+    cost::<T>(&ShapeCtx::new([('m', m), ('n', n)])?)
 }
 
 /// 生成三档量化 GEMV（i2 / i4 / i8）共有的行批测试：批结果逐位等于逐行调用、行批几何不符被拒。

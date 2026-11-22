@@ -30,7 +30,7 @@ use std::ops::Range;
 
 use diagnostic::{Code, Error, Result};
 
-use crate::model::{AxisRole, AxisSpec, Buffer, Cost, Sample, ShapeContext, Values};
+use crate::model::{AxisRole, AxisSpec, Buffer, Cost, Sample, ShapeCtx, Values};
 
 /// 输出 tile 行数。
 pub const TILE_M: usize = 64;
@@ -283,9 +283,9 @@ pub const AXES: &[AxisSpec] = &[
 ///
 /// # Errors
 ///
-/// 轴表不合法时由 [`ShapeContext::new`] 报出。
-pub fn project_shape(m: usize, n: usize) -> Result<ShapeContext> {
-    ShapeContext::new([('m', m), ('k', K), ('n', n)])
+/// 轴表不合法时由 [`ShapeCtx::new`] 报出。
+pub fn project_shape(m: usize, n: usize) -> Result<ShapeCtx> {
+    ShapeCtx::new([('m', m), ('k', K), ('n', n)])
 }
 
 /// 标量代价：`2·m·K·n` FLOP，读 `(m·K + K·n)·size_of::<P>()` 字节，写 `m·n·4` 字节。
@@ -296,7 +296,7 @@ pub fn project_shape(m: usize, n: usize) -> Result<ShapeContext> {
 /// # Errors
 ///
 /// 形状上下文缺轴时返回带算子名的说明。
-fn cost_of<P: Precision>(shape: &ShapeContext) -> Result<Cost> {
+fn cost_of<P: Precision>(shape: &ShapeCtx) -> Result<Cost> {
     let axis = |label: char| {
         shape
             .get(label)
@@ -317,7 +317,7 @@ fn cost_of<P: Precision>(shape: &ShapeContext) -> Result<Cost> {
 /// # Errors
 ///
 /// 形状上下文缺轴时返回带算子名的说明。
-pub fn cost(shape: &ShapeContext) -> Result<Cost> {
+pub fn cost(shape: &ShapeCtx) -> Result<Cost> {
     cost_of::<f32>(shape)
 }
 

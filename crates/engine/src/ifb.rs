@@ -39,7 +39,7 @@ pub enum Phase {
     /// 解码：一条序列一行。
     Generation,
     /// 提示段或前缀补齐：一条序列可占多行。
-    Context,
+    Ctx,
 }
 
 /// 一条候选：本轮要算几行、属于哪个相位。
@@ -63,10 +63,10 @@ impl Candidate {
 
     /// 一条上下文的块：`rows` 行由 [`chunk`] 给出，不是调用方拍脑袋的数。
     #[must_use]
-    pub const fn context(id: u64, rows: usize) -> Self {
+    pub const fn ctx(id: u64, rows: usize) -> Self {
         Self {
             id,
-            phase: Phase::Context,
+            phase: Phase::Ctx,
             rows,
         }
     }

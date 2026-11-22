@@ -1,7 +1,7 @@
 use diagnostic::{Code, Error};
-use llm_spec::model::{AxisRole, AxisSpec, Cost, DType, Model, Sample, ShapeContext, Values, bind};
+use llm_spec::model::{AxisRole, AxisSpec, Cost, DType, Model, Sample, ShapeCtx, Values, bind};
 
-const fn zero_cost(_: &ShapeContext) -> Result<Cost, Error> {
+const fn zero_cost(_: &ShapeCtx) -> Result<Cost, Error> {
     Ok(Cost::ZERO)
 }
 
@@ -18,8 +18,8 @@ fn reference(_: &Sample) -> diagnostic::Result<Vec<f32>> {
     Ok(Vec::new())
 }
 
-fn test_shape(m: usize, n: usize) -> Result<ShapeContext, Error> {
-    ShapeContext::new([('k', m), ('j', n)])
+fn test_shape(m: usize, n: usize) -> Result<ShapeCtx, Error> {
+    ShapeCtx::new([('k', m), ('j', n)])
 }
 
 /// 只声明输入轴：它不是一个可投影的算子，`projection` 必须说出来，而不是猜一对数字。
@@ -38,7 +38,7 @@ const HALF_PROJECTION: Model = Model {
 };
 
 #[test]
-fn a_projection_context_fills_the_axes_by_role_not_by_position() {
+fn a_projection_ctx_fills_the_axes_by_role_not_by_position() {
     let model = Model {
         axes: &[
             AxisSpec {
@@ -67,7 +67,7 @@ fn a_model_without_both_projection_axes_is_not_a_projection() {
 
 #[test]
 fn a_derived_axis_is_declared_by_the_operator() {
-    let shape = ShapeContext::new([('m', 64), ('n', 4)]).expect("合法");
+    let shape = ShapeCtx::new([('m', 64), ('n', 4)]).expect("合法");
     let extents = shape
         .extents_with_group('g', 'm', 32)
         .expect("64 能被 32 整除");
@@ -84,8 +84,8 @@ fn a_derived_axis_is_declared_by_the_operator() {
 }
 
 #[test]
-fn a_context_rejects_an_empty_axis_instead_of_pricing_zero() {
-    let error = ShapeContext::new([('m', 0)]).expect_err("空轴");
+fn a_ctx_rejects_an_empty_axis_instead_of_pricing_zero() {
+    let error = ShapeCtx::new([('m', 0)]).expect_err("空轴");
     assert_eq!(error.code(), Code::Invalid);
     assert!(error.to_string().contains("长度为 0"), "{error}");
 }

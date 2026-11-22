@@ -2,7 +2,7 @@
 
 use crate::einsum::Bits;
 use crate::gemv::Element;
-use crate::model::{AxisRole, AxisSpec, Buffer, Cost, Sample, ShapeContext, Values};
+use crate::model::{AxisRole, AxisSpec, Buffer, Cost, Sample, ShapeCtx, Values};
 use crate::quant::Row;
 use diagnostic::{Code, Error};
 
@@ -38,12 +38,12 @@ pub const AXES: &[AxisSpec] = &[
 /// # Errors
 ///
 /// 当前实现不会失败。
-pub fn project_shape(m: usize, n: usize) -> Result<ShapeContext, Error> {
-    ShapeContext::new([('m', m), ('k', K), ('n', n)])
+pub fn project_shape(m: usize, n: usize) -> Result<ShapeCtx, Error> {
+    ShapeCtx::new([('m', m), ('k', K), ('n', n)])
 }
 
 /// 从形状上下文取一条轴；缺轴时按 `op` 标签报 [`Code::Invalid`]。
-pub fn axis(shape: &ShapeContext, label: char, op: &str) -> Result<usize, Error> {
+pub fn axis(shape: &ShapeCtx, label: char, op: &str) -> Result<usize, Error> {
     shape
         .get(label)
         .ok_or_else(|| Error::new(Code::Invalid, format!("{op} 形状缺轴 `{label}`")))
@@ -140,7 +140,7 @@ fn take<'a, G: Gemm>(sample: &'a Sample, name: &str) -> Result<&'a [G::Elem], Er
 /// # Errors
 ///
 /// 形状缺轴时返回说明（带 [`Gemm::OP`] 算子名）。
-pub fn cost<G: Gemm>(shape: &ShapeContext) -> Result<Cost, Error> {
+pub fn cost<G: Gemm>(shape: &ShapeCtx) -> Result<Cost, Error> {
     let m = axis(shape, 'm', G::OP)?;
     let k = axis(shape, 'k', G::OP)?;
     let n = axis(shape, 'n', G::OP)?;

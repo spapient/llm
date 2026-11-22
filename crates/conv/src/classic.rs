@@ -3,7 +3,7 @@
 
 use crate::Scalar;
 use crate::conv::ConvGeom;
-use crate::model::{Buffer, Cost, Sample, ShapeContext, Values, x_buffer};
+use crate::model::{Buffer, Cost, Sample, ShapeCtx, Values, x_buffer};
 use diagnostic::Error;
 use llm_gemm::unary::{AXES, project_shape};
 
@@ -45,7 +45,7 @@ macro_rules! window_op {
         }
 
         /// 标量代价：显式口径，浮点运算与字节读写见本模块装配行的注释。
-        pub fn cost(shape: &ShapeContext) -> Result<Cost, Error> {
+        pub fn cost(shape: &ShapeCtx) -> Result<Cost, Error> {
             crate::model::cost_n(shape, $op, $flops, $reads)
         }
 
@@ -80,7 +80,7 @@ macro_rules! norm_op {
         }
 
         /// 标量代价：显式口径，浮点运算与字节读写见本模块装配行的注释。
-        pub fn cost(shape: &ShapeContext) -> Result<Cost, Error> {
+        pub fn cost(shape: &ShapeCtx) -> Result<Cost, Error> {
             crate::model::cost_n(shape, $op, $flops, $reads)
         }
 

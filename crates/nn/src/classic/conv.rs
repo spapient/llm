@@ -66,7 +66,7 @@ impl Contract for Conv1d {
     spec_accessors!();
 
     fn bounds(&self) -> BoundsResult {
-        Bounds::of_context(GEMM, self.ol, self.cout).map(Some)
+        Bounds::of_ctx(GEMM, self.ol, self.cout).map(Some)
     }
 }
 
@@ -136,7 +136,7 @@ impl Contract for Conv2d {
     spec_accessors!();
 
     fn bounds(&self) -> BoundsResult {
-        Bounds::of_context(CONV, self.oh * self.ow, self.cout).map(Some)
+        Bounds::of_ctx(CONV, self.oh * self.ow, self.cout).map(Some)
     }
 }
 
@@ -187,7 +187,7 @@ impl Contract for ConvTranspose1d {
     spec_accessors!();
 
     fn bounds(&self) -> BoundsResult {
-        Bounds::of_context(GEMM, self.ol, self.deconv.cout).map(Some)
+        Bounds::of_ctx(GEMM, self.ol, self.deconv.cout).map(Some)
     }
 }
 
@@ -243,6 +243,6 @@ impl Contract for ConvTranspose2d {
     spec_accessors!();
 
     fn bounds(&self) -> BoundsResult {
-        Bounds::of_context(GEMM, self.oh * self.ow, self.deconv.cout).map(Some)
+        Bounds::of_ctx(GEMM, self.oh * self.ow, self.deconv.cout).map(Some)
     }
 }

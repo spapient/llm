@@ -74,7 +74,7 @@ pub(crate) struct Flags<'a> {
     /// 命令名：错误信息用它点名「谁不接受这个参数」。
     owner: &'a str,
     /// 诊断帧：这次失败发生在哪一层解析器。
-    context: &'static str,
+    ctx: &'static str,
 }
 
 impl<'a> Flags<'a> {
@@ -87,7 +87,7 @@ impl<'a> Flags<'a> {
         words: &mut Words<'a>,
         grammar: Grammar,
         owner: &'a str,
-        context: &'static str,
+        ctx: &'static str,
     ) -> Result<Self> {
         debug_assert!(grammar.len() <= WIDTH, "选项表比 WIDTH 宽");
         let mut flags = Self {
@@ -95,7 +95,7 @@ impl<'a> Flags<'a> {
             present: 0,
             slots: [const { None }; WIDTH],
             owner,
-            context,
+            ctx,
         };
         flags.absorb(words)?;
         flags.check_required()?;
@@ -162,7 +162,7 @@ impl<'a> Flags<'a> {
 
     /// 一条选项诊断：帧固定在本层解析器。
     pub(crate) fn invalid(&self, message: impl Into<String>) -> Error {
-        Error::new(Code::Invalid, message.into()).with(self.context)
+        Error::new(Code::Invalid, message.into()).with(self.ctx)
     }
 
     /// 表外的词：`-` 开头是打错的选项，否则是多余参数——两者的修法不同，所以分开说。

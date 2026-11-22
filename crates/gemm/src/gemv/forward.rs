@@ -13,7 +13,7 @@ pub(super) fn forward_rows<E>(
     cpb: usize,
     row_dot: impl Fn(&[E], &[f32], &[f32], usize) -> f32,
 ) -> diagnostic::Result<()> {
-    let ctx = scaled_row_context(x.len(), out.len(), scales, weights.len(), cpb)?;
+    let ctx = scaled_row_ctx(x.len(), out.len(), scales, weights.len(), cpb)?;
     forward_rows_scaled(x, weights, scales, out, ctx, row_dot);
     Ok(())
 }
@@ -44,7 +44,7 @@ fn forward_batch_rows<E>(
     cpb: usize,
     row_dot: impl Fn(&[E], &[f32], &[f32], usize) -> f32,
 ) -> diagnostic::Result<()> {
-    let ctx = scaled_row_context(geo.m, geo.n, scales, weights.len(), cpb)?;
+    let ctx = scaled_row_ctx(geo.m, geo.n, scales, weights.len(), cpb)?;
     forward_batch_rows_scaled(x, weights, scales, geo, out, ctx, row_dot);
     Ok(())
 }
@@ -99,7 +99,7 @@ pub(crate) fn forward_batch_rows_scaled<E>(
 }
 
 /// 带标度格式的行守卫：分组、粒度倍数、权重长度与标度有限四项一次判齐，返回 `(groups, group)`。
-pub(super) fn scaled_row_context(
+pub(super) fn scaled_row_ctx(
     m: usize,
     n: usize,
     scales: &[f32],

@@ -3,11 +3,11 @@
 use super::*;
 
 #[test]
-fn generation_goes_before_context() {
+fn generation_goes_before_ctx() {
     let candidates = [
-        Candidate::context(1, 4),
+        Candidate::ctx(1, 4),
         Candidate::generation(2),
-        Candidate::context(3, 2),
+        Candidate::ctx(3, 2),
     ];
     let Verdict::Packed { rows, tokens } = pack(Budget::unlimited(), &candidates) else {
         panic!("不限预算必须装得下");
@@ -22,12 +22,12 @@ fn generation_goes_before_context() {
 
 /// 挤压时只挤上下文：生成行一条都不许丢，上下文整条推到下一轮。
 #[test]
-fn a_tight_budget_squeezes_only_context() {
+fn a_tight_budget_squeezes_only_ctx() {
     let candidates = [
         Candidate::generation(1),
         Candidate::generation(2),
-        Candidate::context(3, 8),
-        Candidate::context(4, 4),
+        Candidate::ctx(3, 8),
+        Candidate::ctx(4, 4),
     ];
     let Verdict::Packed { rows, tokens } = pack(Budget::new(4, 6), &candidates) else {
         panic!("应当能装下");
@@ -66,7 +66,7 @@ fn no_candidates_is_idle() {
 
 /// 除末块外整页对齐；末块不补齐，省下的预算留给下一轮。
 #[test]
-fn context_chunks_align_to_whole_pages_except_the_tail() {
+fn ctx_chunks_align_to_whole_pages_except_the_tail() {
     assert_eq!(chunk(1000, 16, 100), 96, "100 行里只有 96 是整页");
     assert_eq!(chunk(100, 16, 100), 100, "末块不必对齐");
     assert_eq!(chunk(100, 16, 0), 0, "没有预算就不做上下文");

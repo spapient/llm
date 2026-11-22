@@ -1,6 +1,6 @@
 //! 注意力：`O = softmax(QKᵀ/√d)·V`。
 
-use crate::model::{AxisRole, AxisSpec, Buffer, Cost, Sample, ShapeContext, Values};
+use crate::model::{AxisRole, AxisSpec, Buffer, Cost, Sample, ShapeCtx, Values};
 use diagnostic::{Code, Error};
 
 pub mod tiled;
@@ -21,12 +21,12 @@ pub const AXES: &[AxisSpec] = &[
 /// # Errors
 ///
 /// 当前实现不会失败。
-pub fn project_shape(s: usize, d: usize) -> Result<ShapeContext, Error> {
-    ShapeContext::new([('s', s), ('d', d)])
+pub fn project_shape(s: usize, d: usize) -> Result<ShapeCtx, Error> {
+    ShapeCtx::new([('s', s), ('d', d)])
 }
 
 /// 取形状轴；缺失时按模块前缀与轴名报错，避免各调用点各写一遍分支。
-fn axis(shape: &ShapeContext, what: &str, label: char) -> Result<usize, Error> {
+fn axis(shape: &ShapeCtx, what: &str, label: char) -> Result<usize, Error> {
     shape
         .get(label)
         .ok_or_else(|| Error::new(Code::Invalid, format!("{what} 形状缺轴 `{label}`")))
@@ -37,7 +37,7 @@ fn axis(shape: &ShapeContext, what: &str, label: char) -> Result<usize, Error> {
 /// # Errors
 ///
 /// 缺轴时返回说明。
-pub fn cost(shape: &ShapeContext) -> Result<Cost, Error> {
+pub fn cost(shape: &ShapeCtx) -> Result<Cost, Error> {
     let s = axis(shape, "attention", 's')?;
     let d = axis(shape, "attention", 'd')?;
     Ok(Cost {

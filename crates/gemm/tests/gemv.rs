@@ -1,9 +1,9 @@
 use super::*;
 use crate::gemv::Format;
-use crate::model::{ShapeContext, Values};
+use crate::model::{ShapeCtx, Values};
 use diagnostic::Code;
 
-fn shape(m: usize, n: usize) -> ShapeContext {
+fn shape(m: usize, n: usize) -> ShapeCtx {
     MODEL.projection(m, n).expect("两个投影轴都声明了")
 }
 
@@ -18,10 +18,10 @@ fn cost_reads_three_f32_operands_and_counts_one_multiply_add_per_element() {
 
 #[test]
 fn a_zero_extent_is_rejected_instead_of_silently_priced() {
-    let error = ShapeContext::new([('m', 8), ('n', 0)]).expect_err("n = 0");
+    let error = ShapeCtx::new([('m', 8), ('n', 0)]).expect_err("n = 0");
     assert_eq!(error.code(), Code::Invalid);
     assert!(
-        ShapeContext::new([('m', 0), ('n', 4)]).is_err(),
+        ShapeCtx::new([('m', 0), ('n', 4)]).is_err(),
         "m = 0 同样不自洽"
     );
 }

@@ -4,8 +4,8 @@
 use diagnostic::{Code, Error, Result};
 
 /// 配置错误：上下文统一带 `tools::bench::` 前缀。
-fn invalid(context: &str, message: impl Into<String>) -> Error {
-    Error::new(Code::Invalid, message).with(format!("tools::bench::{context}"))
+fn invalid(ctx: &str, message: impl Into<String>) -> Error {
+    Error::new(Code::Invalid, message).with(format!("tools::bench::{ctx}"))
 }
 
 /// 条目层级：算子内核、层、整模型。

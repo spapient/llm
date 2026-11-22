@@ -53,7 +53,7 @@ impl Contract for MaxPool1d {
     spec_accessors!();
 
     fn bounds(&self) -> BoundsResult {
-        Bounds::of_context("max_pool1d_f32", self.ol, self.c).map(Some)
+        Bounds::of_ctx("max_pool1d_f32", self.ol, self.c).map(Some)
     }
 }
 
@@ -113,7 +113,7 @@ impl Contract for MaxPool2d {
     spec_accessors!();
 
     fn bounds(&self) -> BoundsResult {
-        Bounds::of_context("max_pool2d_f32", self.oh * self.ow, self.c).map(Some)
+        Bounds::of_ctx("max_pool2d_f32", self.oh * self.ow, self.c).map(Some)
     }
 }
 
@@ -170,7 +170,7 @@ impl Contract for AvgPool2d {
     spec_accessors!();
 
     fn bounds(&self) -> BoundsResult {
-        Bounds::of_context("avg_pool2d_f32", self.oh * self.ow, self.c).map(Some)
+        Bounds::of_ctx("avg_pool2d_f32", self.oh * self.ow, self.c).map(Some)
     }
 }
 
@@ -217,7 +217,7 @@ impl Contract for AdaptiveAvgPool2d {
     spec_accessors!();
 
     fn bounds(&self) -> BoundsResult {
-        Bounds::of_context("adaptive_pool_f32", self.pool.oh * self.pool.ow, self.c).map(Some)
+        Bounds::of_ctx("adaptive_pool_f32", self.pool.oh * self.pool.ow, self.c).map(Some)
     }
 }
 
@@ -270,6 +270,6 @@ impl Contract for Interpolate {
     spec_accessors!();
 
     fn bounds(&self) -> BoundsResult {
-        Bounds::of_context("interpolate_f32", self.interp.oh * self.interp.ow, self.c).map(Some)
+        Bounds::of_ctx("interpolate_f32", self.interp.oh * self.interp.ow, self.c).map(Some)
     }
 }

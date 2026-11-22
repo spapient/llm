@@ -210,7 +210,7 @@ const COMMANDS: &[Row] = &[
 ];
 
 /// 诊断帧：本层是文法层。
-const CONTEXT: &str = "cli::argv::parse";
+const CTX: &str = "cli::argv::parse";
 
 /// 一次调用：解析后的命令。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -258,12 +258,12 @@ fn table<'a>(name: &'a str, words: &mut Words<'a>) -> Result<Command<'a>> {
             known.join("、")
         )));
     };
-    build(&mut Flags::parse(words, grammar, name, CONTEXT)?)
+    build(&mut Flags::parse(words, grammar, name, CTX)?)
 }
 
 /// 一条顶层命令文法的诊断：上下文固定在这一层。
 fn invalid(message: impl Into<String>) -> Error {
-    Error::new(Code::Invalid, message.into()).with(CONTEXT)
+    Error::new(Code::Invalid, message.into()).with(CTX)
 }
 
 /// 一级命令文法的单元测试：文法与类型同文件，进程级端到端在 `tests/cli.rs`。
