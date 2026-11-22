@@ -3,7 +3,7 @@ use crate::toolchain;
 use cutile::prof::Emit;
 
 /// OpenCL 前端表行：拒绝用例要拿它的参数过一遍 OpenCL C 不支持的构造。
-fn opencl() -> &'static Gate {
+fn opencl() -> &'static LanguageFront {
     config()
         .gates
         .iter()

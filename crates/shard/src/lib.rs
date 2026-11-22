@@ -91,7 +91,7 @@ pub use tiling::{Sharding, Tiling};
 pub use topology::{Parallel, Topology};
 
 pub mod config;
-pub use config::{Config, Gate};
+pub use config::{LanguageFront, RuntimeConfig};
 
 // ---- 优化面（原 `optim` crate 并入） ----------------------------------------
 //

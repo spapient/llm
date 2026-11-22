@@ -1,6 +1,6 @@
 //! 语法门：设备不在本机时，用一门语言自己的解析器把见证过一遍。
 
-use crate::config::{config, Gate};
+use crate::config::{config, LanguageFront};
 use crate::runner::driver::{scratch, write_text};
 use crate::toolchain::{Toolchain, clang, probe_declared};
 use crate::witness::{Selected, declared_witnesses, device_available, source};
@@ -50,7 +50,7 @@ impl fmt::Display for LanguageGate {
 }
 
 /// 有效检查参数：表内固定的语法检查参数 + 档案自己声明的语言版本开关。
-fn args_for<'a>(gate: &'a Gate, profile: &'a Profile) -> Vec<&'a str> {
+fn args_for<'a>(gate: &'a LanguageFront, profile: &'a Profile) -> Vec<&'a str> {
     let mut arguments: Vec<&str> = gate.check.iter().map(String::as_str).collect();
     arguments.extend(
         profile
@@ -65,7 +65,7 @@ fn args_for<'a>(gate: &'a Gate, profile: &'a Profile) -> Vec<&'a str> {
 /// 表行声明的解析器：`clang` 行指「本机的 clang 前端」（先问 `clang`，再退到名字里带 clang 的
 /// `cc`）；其余按声明原样探测，不退回宿主编译器——拿 `cc` 去解析 AscendC 只会把「本机没有 CANN」
 /// 报成一条 C 语法错误。
-fn front(spec: &Gate) -> Option<Toolchain> {
+fn front(spec: &LanguageFront) -> Option<Toolchain> {
     let declared = spec.tool.join(" ");
     if declared == "clang" {
         return clang();
@@ -100,7 +100,7 @@ pub fn language_gate(profile: &Profile, dirs: &Dirs) -> LanguageGate {
 }
 
 /// 语法门的执行器：表行决定程序与参数，这里只负责“逐份文件过一遍、失败带第一行报错回来”。
-fn parse_all(spec: &Gate, profile: &Profile, dirs: &Dirs) -> diagnostic::Result<LanguageGate> {
+fn parse_all(spec: &LanguageFront, profile: &Profile, dirs: &Dirs) -> diagnostic::Result<LanguageGate> {
     let selected = declared_witnesses(profile)?;
     if selected.is_empty() {
         return Ok(LanguageGate::Absent {
@@ -129,7 +129,7 @@ fn parse_all(spec: &Gate, profile: &Profile, dirs: &Dirs) -> diagnostic::Result<
 
 /// 把每份见证按“内嵌优先”的文本落到临时目录，再交给解析器：同一份源码可以没有磁盘副本。
 fn write_and_parse(
-    spec: &Gate,
+    spec: &LanguageFront,
     arguments: &[&str],
     selected: &[Selected<'_>],
     dirs: &Dirs,
@@ -146,7 +146,7 @@ fn write_and_parse(
 
 /// 一份见证：按“内嵌优先”的文本落盘，再交给它自己语言的解析器。
 fn write_one(
-    spec: &Gate,
+    spec: &LanguageFront,
     arguments: &[&str],
     witness: &Witness,
     dirs: &Dirs,
@@ -158,7 +158,7 @@ fn write_one(
 }
 
 /// 解析一份翻译单元；失败时只带编译器的第一行报错（整段 stderr 进不了报告）。
-fn parse_one(spec: &Gate, arguments: &[&str], path: &Path) -> diagnostic::Result<()> {
+fn parse_one(spec: &LanguageFront, arguments: &[&str], path: &Path) -> diagnostic::Result<()> {
     let program = &spec.tool[0];
     let mut command = std::process::Command::new(program);
     command.args(&spec.tool[1..]).args(arguments).arg(path);
