@@ -31,9 +31,14 @@ pub(crate) fn mismatch(message: impl Into<String>) -> Error {
     Error::new(Code::Invalid, message).with("snapshot::Snapshot::check_weights")
 }
 
-/// 条目错误的上下文：一个几千条目的检查点里，"第 3 个条目"比"某个偏移"有用得多。
-pub(crate) fn ctx(index: usize) -> impl Fn(Error) -> Error {
+/// 第 `index` 个条目的错误帧：一个几千条目的检查点里，"第 3 个条目"比"某个偏移"有用得多。
+pub(crate) fn frame(index: usize) -> impl Fn(Error) -> Error {
     move |error| error.with(format!("第 {index} 个权重条目"))
+}
+
+/// 第 `index` 个条目的非法输入：`frame` 与 `invalid` 的现成组合，省掉调用处的双层括号。
+pub(crate) fn invalid_at(index: usize, message: impl Into<String>) -> Error {
+    frame(index)(invalid(message))
 }
 
 /// 逐字节读取器：在 `wire::Cursor` 之上保留快照侧的字段上下文与错误词汇。

@@ -23,6 +23,7 @@ pub const COVERED: &[&str] = &[
     "gemm",
     "nn",
     "rng",
+    "shard",
     "tensor",
     "testkit",
     "train",
@@ -44,15 +45,10 @@ pub const PLANNED: &[(&str, &str)] = &[
         "该复制 `train::optimizer` 的单步闭式解；动手前须确认 `optim` 与 `train` 不是同一份\
          实现的两次抄写，否则性质会在两处各写一遍、各漂一半。",
     ),
-    (
-        "shard",
-        "该断言\"切片无重叠且覆盖整轴\"；缺少\"任意拓扑切分后能拼回原样\"的端到端路径，\
-         单写会退化成对实现的复述。",
-    ),
 ];
 
 /// 缺口上限：只许减，不许随手加。
-pub const PLANNED_MAX: usize = 3;
+pub const PLANNED_MAX: usize = 2;
 
 /// 有明确替代覆盖、因而**不该**再写性质测试的成员，按理由归类。
 pub const ABSENT: &[Absence] = &[
