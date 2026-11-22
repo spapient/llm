@@ -2,13 +2,13 @@
 //! （`check`）。
 
 use super::*;
-mod eval;
 mod epilogue;
+mod eval;
 mod provide;
 mod witness;
 
-pub(super) use eval::eval_expression;
 use epilogue::*;
+pub(super) use eval::eval_expression;
 use provide::*;
 pub use witness::WitnessLookup;
 use witness::*;

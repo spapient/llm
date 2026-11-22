@@ -13,7 +13,11 @@ use std::path::Path;
 ///
 /// 六种形式必须齐全——`spec::epilogue` 的语法是闭集，少一种就说明这台设备的写回根本不完整；
 /// 每段以 `/* epi: <form> */` 开头，装配按语法顺序各取一段。
-pub(super) fn epilogue_of(path: &Path, ext: &str, profile: &Profile) -> Option<Vec<(Epilogue, String)>> {
+pub(super) fn epilogue_of(
+    path: &Path,
+    ext: &str,
+    profile: &Profile,
+) -> Option<Vec<(Epilogue, String)>> {
     if stem(path) != Some(EPILOGUE_STEM) || extension(path).as_deref() != Some(ext) {
         return None;
     }
