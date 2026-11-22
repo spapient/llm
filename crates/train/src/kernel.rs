@@ -287,16 +287,12 @@ fn attention_paths(
 
 /// `[q, k, v: f32] → y: f32`：尺寸由声明宽度推导；算术走稠密分块 tile。
 fn attention_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
-    attention_paths(inputs, output, nn::conv::attention::tiled::forward)
+    attention_paths(inputs, output, nn::conv::attention::forward)
 }
 
-/// 同形参，走 online softmax 的分块 tile 版（`nn::conv::attention::tiled::flash_tiled_forward`）。
+/// 同形参，走 online softmax 版（`nn::conv::attention::flash_forward`）。
 fn flash_attention_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
-    attention_paths(
-        inputs,
-        output,
-        nn::conv::attention::tiled::flash_tiled_forward,
-    )
+    attention_paths(inputs, output, nn::conv::attention::flash_forward)
 }
 
 /// decode 注意力适配的公共几何：`q_rows` 由 q 长、`hist` 由 k 长按头宽 `d` 推出。
