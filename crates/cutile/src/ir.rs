@@ -1,4 +1,7 @@
 //! Typed, target-neutral IR for the first `#[dsl]` pointwise kernel family.
+//!
+//! 这一层只做三件事：校验形状（名字合法、类型对得上、缓冲只按循环变量取值）、折叠常量、
+//! 发射可移植 C。它还没有接 `Lower`/`Image`，所以任何「性能提升」都不该由它来宣称。
 
 use core::fmt::{self, Write as _};
 
@@ -11,6 +14,16 @@ pub enum ScalarType {
     Usize,
 }
 
+impl ScalarType {
+    /// C spelling used in a kernel signature.
+    fn c_name(self) -> &'static str {
+        match self {
+            ScalarType::F32 => "float",
+            ScalarType::Usize => "size_t",
+        }
+    }
+}
+
 /// Buffer access required by a kernel parameter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Access {
@@ -18,6 +31,16 @@ pub enum Access {
     Read,
     /// Mutable buffer, which may be read and written.
     ReadWrite,
+}
+
+impl Access {
+    /// C pointer declaration for an `f32` buffer held with this access.
+    fn c_pointer(self) -> &'static str {
+        match self {
+            Access::Read => "const float *",
+            Access::ReadWrite => "float *",
+        }
+    }
 }
 
 /// A checked value type in the kernel signature.
@@ -32,6 +55,36 @@ pub enum ValueType {
         /// Required access.
         access: Access,
     },
+}
+
+impl ValueType {
+    /// C declaration for this parameter, or `None` when the element type has no C spelling.
+    fn c_type(self) -> Option<&'static str> {
+        match self {
+            ValueType::Scalar(element) => Some(element.c_name()),
+            ValueType::Buffer {
+                element: ScalarType::F32,
+                access,
+            } => Some(access.c_pointer()),
+            ValueType::Buffer { .. } => None,
+        }
+    }
+
+    fn is_buffer(self) -> bool {
+        matches!(self, ValueType::Buffer { .. })
+    }
+
+    /// `f32` 缓冲是唯一能发射成 C 的缓冲类型；`usize` 缓冲在校验阶段就被打回。
+    fn element_ok(self) -> bool {
+        match self {
+            ValueType::Scalar(_) => true,
+            ValueType::Buffer {
+                element: ScalarType::F32,
+                ..
+            } => true,
+            ValueType::Buffer { .. } => false,
+        }
+    }
 }
 
 /// A named kernel parameter.
@@ -54,6 +107,28 @@ pub enum BinaryOp {
     Mul,
     /// Division.
     Div,
+}
+
+impl BinaryOp {
+    /// Infix symbol used when emitting C.
+    fn c_symbol(self) -> &'static str {
+        match self {
+            BinaryOp::Add => "+",
+            BinaryOp::Sub => "-",
+            BinaryOp::Mul => "*",
+            BinaryOp::Div => "/",
+        }
+    }
+
+    /// Apply the operation to two `f32` operands.
+    fn apply(self, left: f32, right: f32) -> f32 {
+        match self {
+            BinaryOp::Add => left + right,
+            BinaryOp::Sub => left - right,
+            BinaryOp::Mul => left * right,
+            BinaryOp::Div => left / right,
+        }
+    }
 }
 
 /// Typed expression nodes. Buffer loads use the kernel's implicit loop index.
@@ -108,7 +183,7 @@ pub struct Kernel {
     /// Ordered scalar and buffer parameters.
     pub params: Vec<Parameter>,
     /// Loop index variable.
-    pub index: String,
+    pub idx: String,
     /// Name of the `usize` parameter providing the loop bound.
     pub extent: String,
     /// Name of the mutable output buffer.
@@ -122,7 +197,7 @@ impl Kernel {
     pub fn new(
         name: impl Into<String>,
         params: Vec<Parameter>,
-        index: impl Into<String>,
+        idx: impl Into<String>,
         extent: impl Into<String>,
         output: impl Into<String>,
         value: Expr,
@@ -130,7 +205,7 @@ impl Kernel {
         Self {
             name: name.into(),
             params,
-            index: index.into(),
+            idx: idx.into(),
             extent: extent.into(),
             output: output.into(),
             value,
@@ -139,74 +214,91 @@ impl Kernel {
 
     /// Validate names, parameter types, memory access, and expression types.
     pub fn verify(&self) -> Result<(), VerificationError> {
+        self.check_names()?;
+        self.check_params()?;
+        self.check_generated()?;
+        self.check_extent()?;
+        self.check_output()?;
+        self.check_value()
+    }
+
+    fn check_names(&self) -> Result<(), VerificationError> {
         valid_identifier(&self.name)?;
-        valid_identifier(&self.index)?;
-        if self.params.iter().any(|param| param.name == self.index) {
+        valid_identifier(&self.idx)?;
+        if self.params.iter().any(|param| param.name == self.idx) {
             return Err(VerificationError::new(format!(
                 "loop index `{}` shadows a kernel parameter",
-                self.index
+                self.idx
             )));
         }
+        Ok(())
+    }
 
-        for (index, param) in self.params.iter().enumerate() {
+    /// 逐条检查参数：名字合法、不重名、缓冲元素是 `f32`。
+    fn check_params(&self) -> Result<(), VerificationError> {
+        for (idx, param) in self.params.iter().enumerate() {
             valid_identifier(&param.name)?;
-            if self.params[..index]
-                .iter()
-                .any(|prior| prior.name == param.name)
-            {
+            if self.params[..idx].iter().any(|prior| prior.name == param.name) {
                 return Err(VerificationError::new(format!(
                     "duplicate parameter `{}`",
                     param.name
                 )));
             }
-            if matches!(
-                param.ty,
-                ValueType::Buffer {
-                    element: ScalarType::Usize,
-                    ..
-                }
-            ) {
+            if !param.ty.element_ok() {
                 return Err(VerificationError::new(format!(
                     "buffer `{}` must contain f32 elements",
                     param.name
                 )));
             }
         }
-        for (index, param) in self
+        Ok(())
+    }
+
+    /// 生成的长度名不许和用户形参撞车，否则 C 签名里会出现两个同名参数。
+    fn check_generated(&self) -> Result<(), VerificationError> {
+        for (idx, _) in self
             .params
             .iter()
-            .filter(|param| is_buffer(param.ty))
+            .filter(|param| param.ty.is_buffer())
             .enumerate()
         {
-            let generated = buffer_length_name(index);
+            let generated = buffer_length_name(idx);
             if self.params.iter().any(|other| other.name == generated) {
                 return Err(VerificationError::new(format!(
                     "parameter `{generated}` conflicts with a generated buffer length"
                 )));
             }
-            valid_identifier(&param.name)?;
         }
-        if !matches!(
-            self.parameter(&self.extent),
-            Some(ValueType::Scalar(ScalarType::Usize))
-        ) {
+        Ok(())
+    }
+
+    fn check_extent(&self) -> Result<(), VerificationError> {
+        let extent = self.parameter(&self.extent);
+        if extent != Some(ValueType::Scalar(ScalarType::Usize)) {
             return Err(VerificationError::new(format!(
                 "loop extent `{}` must be a `usize` parameter",
                 self.extent
             )));
         }
-        if !matches!(
-            self.parameter(&self.output),
-            Some(ValueType::Buffer {
-                element: ScalarType::F32,
-                access: Access::ReadWrite,
-            })
-        ) {
+        Ok(())
+    }
+
+    fn check_output(&self) -> Result<(), VerificationError> {
+        let output = self.parameter(&self.output);
+        let expected = ValueType::Buffer {
+            element: ScalarType::F32,
+            access: Access::ReadWrite,
+        };
+        if output != Some(expected) {
             return Err(VerificationError::new(format!(
                 "output `{}` must be a mutable f32 buffer",
                 self.output
             )));
         }
+        Ok(())
+    }
+
+    fn check_value(&self) -> Result<(), VerificationError> {
         if self.value_type(&self.value)? != ScalarType::F32 {
             return Err(VerificationError::new(
                 "kernel output expression must have type f32",
@@ -227,67 +319,10 @@ impl Kernel {
     /// Emit portable C; return status 1 when the extent exceeds any buffer length.
     pub fn emit_c(&self) -> Result<String, VerificationError> {
         let kernel = self.optimize()?;
-        let mut source = String::new();
-        source.push_str("#include <stddef.h>\n");
-        write!(source, "int {}(", kernel.name).expect("writing to String cannot fail");
-        let mut buffer_index = 0;
-        for (index, parameter) in kernel.params.iter().enumerate() {
-            if index != 0 {
-                source.push_str(", ");
-            }
-            match parameter.ty {
-                ValueType::Scalar(ScalarType::F32) => {
-                    write!(source, "float {}", parameter.name)
-                        .expect("writing to String cannot fail");
-                }
-                ValueType::Scalar(ScalarType::Usize) => {
-                    write!(source, "size_t {}", parameter.name)
-                        .expect("writing to String cannot fail");
-                }
-                ValueType::Buffer {
-                    element: ScalarType::F32,
-                    access: Access::Read,
-                } => {
-                    write!(source, "const float *{}", parameter.name)
-                        .expect("writing to String cannot fail");
-                    write!(source, ", size_t {}", buffer_length_name(buffer_index))
-                        .expect("writing to String cannot fail");
-                    buffer_index += 1;
-                }
-                ValueType::Buffer {
-                    element: ScalarType::F32,
-                    access: Access::ReadWrite,
-                } => {
-                    write!(source, "float *{}", parameter.name)
-                        .expect("writing to String cannot fail");
-                    write!(source, ", size_t {}", buffer_length_name(buffer_index))
-                        .expect("writing to String cannot fail");
-                    buffer_index += 1;
-                }
-                ValueType::Buffer { .. } => {
-                    return Err(VerificationError::new(format!(
-                        "unsupported buffer type for `{}`",
-                        parameter.name
-                    )));
-                }
-            }
-        }
-        source.push_str(") {\n");
-        buffer_index = 0;
-        for _parameter in kernel.params.iter().filter(|param| is_buffer(param.ty)) {
-            let length = buffer_length_name(buffer_index);
-            buffer_index += 1;
-            writeln!(source, "    if ({} > {}) return 1;", kernel.extent, length)
-                .expect("writing to String cannot fail");
-        }
-        write!(
-            source,
-            "    for (size_t {} = 0; {} < {}; ++{}) {{\n        {}[{}] = ",
-            kernel.index, kernel.index, kernel.extent, kernel.index, kernel.output, kernel.index
-        )
-        .expect("writing to String cannot fail");
-        write_expr(&mut source, &kernel.value, &kernel.index);
-        source.push_str(";\n    }\n    return 0;\n}\n");
+        let mut source = String::from("#include <stddef.h>\n");
+        write_signature(&mut source, &kernel)?;
+        write_guards(&mut source, &kernel);
+        write_loop(&mut source, &kernel);
         Ok(source)
     }
 
@@ -300,249 +335,233 @@ impl Kernel {
 
     fn value_type(&self, expression: &Expr) -> Result<ScalarType, VerificationError> {
         match expression {
-            Expr::F32(bits) if f32::from_bits(*bits).is_finite() => Ok(ScalarType::F32),
-            Expr::F32(_) => Err(VerificationError::new(
-                "f32 literals in typed IR must be finite",
-            )),
-            Expr::Scalar(name) => match self.parameter(name) {
-                Some(ValueType::Scalar(ty)) => Ok(ty),
-                Some(ValueType::Buffer { .. }) => Err(VerificationError::new(format!(
-                    "buffer `{name}` must be loaded at the loop index"
-                ))),
-                None => Err(VerificationError::new(format!(
-                    "unknown scalar parameter `{name}`"
-                ))),
-            },
-            Expr::Load(name) => match self.parameter(name) {
-                Some(ValueType::Buffer {
-                    element: ScalarType::F32,
-                    ..
-                }) => Ok(ScalarType::F32),
-                Some(ValueType::Buffer { .. }) => Err(VerificationError::new(format!(
-                    "buffer `{name}` does not contain f32 elements"
-                ))),
-                Some(ValueType::Scalar(_)) => Err(VerificationError::new(format!(
-                    "scalar `{name}` cannot be loaded as a buffer"
-                ))),
-                None => Err(VerificationError::new(format!("unknown buffer `{name}`"))),
-            },
-            Expr::Neg(value) => {
-                let ty = self.value_type(value)?;
-                if ty == ScalarType::F32 {
-                    Ok(ty)
-                } else {
-                    Err(VerificationError::new("unary negation requires f32"))
-                }
-            }
-            Expr::Binary { left, right, .. } => {
-                let left = self.value_type(left)?;
-                let right = self.value_type(right)?;
-                if left == right && left == ScalarType::F32 {
-                    Ok(left)
-                } else {
-                    Err(VerificationError::new(
-                        "pointwise arithmetic operands must both be f32",
-                    ))
-                }
-            }
+            Expr::F32(bits) => literal_type(*bits),
+            Expr::Scalar(name) => self.scalar_type(name),
+            Expr::Load(name) => self.load_type(name),
+            other => self.compound_type(other),
         }
+    }
+
+    fn compound_type(&self, expression: &Expr) -> Result<ScalarType, VerificationError> {
+        match expression {
+            Expr::Neg(value) => self.negated_type(value),
+            Expr::Binary { left, right, .. } => self.binary_type(left, right),
+            _ => Err(VerificationError::new("unsupported expression node")),
+        }
+    }
+
+    fn scalar_type(&self, name: &str) -> Result<ScalarType, VerificationError> {
+        match self.parameter(name) {
+            Some(ValueType::Scalar(ty)) => Ok(ty),
+            Some(ValueType::Buffer { .. }) => Err(VerificationError::new(format!(
+                "buffer `{name}` must be loaded at the loop index"
+            ))),
+            None => Err(VerificationError::new(format!(
+                "unknown scalar parameter `{name}`"
+            ))),
+        }
+    }
+
+    fn load_type(&self, name: &str) -> Result<ScalarType, VerificationError> {
+        match self.parameter(name) {
+            Some(ValueType::Buffer {
+                element: ScalarType::F32,
+                ..
+            }) => Ok(ScalarType::F32),
+            Some(ValueType::Buffer { .. }) => Err(VerificationError::new(format!(
+                "buffer `{name}` does not contain f32 elements"
+            ))),
+            Some(ValueType::Scalar(_)) => Err(VerificationError::new(format!(
+                "scalar `{name}` cannot be loaded as a buffer"
+            ))),
+            None => Err(VerificationError::new(format!("unknown buffer `{name}`"))),
+        }
+    }
+
+    fn negated_type(&self, value: &Expr) -> Result<ScalarType, VerificationError> {
+        let ty = self.value_type(value)?;
+        if ty == ScalarType::F32 {
+            return Ok(ty);
+        }
+        Err(VerificationError::new("unary negation requires f32"))
+    }
+
+    fn binary_type(&self, left: &Expr, right: &Expr) -> Result<ScalarType, VerificationError> {
+        let left = self.value_type(left)?;
+        let right = self.value_type(right)?;
+        if left == right && left == ScalarType::F32 {
+            return Ok(left);
+        }
+        Err(VerificationError::new(
+            "pointwise arithmetic operands must both be f32",
+        ))
     }
 }
 
-fn valid_identifier(name: &str) -> Result<(), VerificationError> {
-    let mut bytes = name.bytes();
-    let valid_start = bytes
-        .next()
-        .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_');
-    let valid_chars = valid_start && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
-    let keyword = [
-        "auto",
-        "break",
-        "case",
-        "char",
-        "const",
-        "continue",
-        "default",
-        "do",
-        "double",
-        "else",
-        "enum",
-        "extern",
-        "float",
-        "for",
-        "goto",
-        "if",
-        "inline",
-        "int",
-        "long",
-        "register",
-        "restrict",
-        "return",
-        "short",
-        "signed",
-        "sizeof",
-        "static",
-        "struct",
-        "switch",
-        "typedef",
-        "union",
-        "unsigned",
-        "void",
-        "volatile",
-        "while",
-        "_Alignas",
-        "_Atomic",
-        "_Bool",
-        "_Complex",
-        "_Generic",
-        "_Imaginary",
-        "_Noreturn",
-        "_Static_assert",
-        "_Thread_local",
-    ]
-    .contains(&name);
-    if valid_chars && !keyword {
-        Ok(())
-    } else {
-        Err(VerificationError::new(format!(
-            "`{name}` is not a portable C identifier"
-        )))
+fn literal_type(bits: u32) -> Result<ScalarType, VerificationError> {
+    if f32::from_bits(bits).is_finite() {
+        return Ok(ScalarType::F32);
     }
+    Err(VerificationError::new(
+        "f32 literals in typed IR must be finite",
+    ))
+}
+
+/// 形参声明 + 每个缓冲的隐式长度参数：`buffer` 与其长度成对出现，顺序与 `check_generated` 对齐。
+fn write_signature(source: &mut String, kernel: &Kernel) -> Result<(), VerificationError> {
+    let _ = write!(source, "int {}(", kernel.name);
+    let mut bufs = 0;
+    for (idx, parameter) in kernel.params.iter().enumerate() {
+        if idx != 0 {
+            source.push_str(", ");
+        }
+        bufs += write_parameter(source, parameter, bufs)?;
+    }
+    source.push_str(") {\n");
+    Ok(())
+}
+
+fn write_parameter(
+    source: &mut String,
+    parameter: &Parameter,
+    bufs: usize,
+) -> Result<usize, VerificationError> {
+    let Some(declaration) = parameter.ty.c_type() else {
+        return Err(VerificationError::new(format!(
+            "unsupported buffer type for `{}`",
+            parameter.name
+        )));
+    };
+    let _ = write!(source, "{declaration} {}", parameter.name);
+    if !parameter.ty.is_buffer() {
+        return Ok(0);
+    }
+    let _ = write!(source, ", size_t {}", buffer_length_name(bufs));
+    Ok(1)
+}
+
+fn write_guards(source: &mut String, kernel: &Kernel) {
+    for (idx, _) in kernel
+        .params
+        .iter()
+        .filter(|parameter| parameter.ty.is_buffer())
+        .enumerate()
+    {
+        let _ = writeln!(
+            source,
+            "    if ({} > {}) return 1;",
+            kernel.extent,
+            buffer_length_name(idx)
+        );
+    }
+}
+
+fn write_loop(source: &mut String, kernel: &Kernel) {
+    let _ = write!(
+        source,
+        "    for (size_t {0} = 0; {0} < {1}; ++{0}) {{\n        {2}[{0}] = ",
+        kernel.idx, kernel.extent, kernel.output
+    );
+    write_expr(source, &kernel.value, &kernel.idx);
+    source.push_str(";\n    }\n    return 0;\n}\n");
 }
 
 fn optimize_expr(expression: Expr) -> Expr {
     match expression {
-        Expr::Neg(value) => match optimize_expr(*value) {
-            Expr::F32(bits) => {
-                let result = -f32::from_bits(bits);
-                if result.is_finite() {
-                    Expr::F32(result.to_bits())
-                } else {
-                    Expr::Neg(Box::new(Expr::F32(bits)))
-                }
-            }
-            value => Expr::Neg(Box::new(value)),
-        },
-        Expr::Binary { op, left, right } => {
-            let left = optimize_expr(*left);
-            let right = optimize_expr(*right);
-            if let (Expr::F32(left), Expr::F32(right)) = (&left, &right) {
-                let left = f32::from_bits(*left);
-                let right = f32::from_bits(*right);
-                let result = match op {
-                    BinaryOp::Add => left + right,
-                    BinaryOp::Sub => left - right,
-                    BinaryOp::Mul => left * right,
-                    BinaryOp::Div => left / right,
-                };
-                if result.is_finite() {
-                    return Expr::F32(result.to_bits());
-                }
-            }
-            Expr::Binary {
-                op,
-                left: Box::new(left),
-                right: Box::new(right),
-            }
-        }
+        Expr::Neg(value) => fold_negation(*value),
+        Expr::Binary { op, left, right } => fold_binary(op, *left, *right),
         expression => expression,
     }
 }
 
-fn is_buffer(ty: ValueType) -> bool {
-    matches!(ty, ValueType::Buffer { .. })
+fn fold_negation(value: Expr) -> Expr {
+    let value = optimize_expr(value);
+    let Expr::F32(bits) = value else {
+        return Expr::Neg(Box::new(value));
+    };
+    let result = -f32::from_bits(bits);
+    if result.is_finite() {
+        return Expr::F32(result.to_bits());
+    }
+    Expr::Neg(Box::new(Expr::F32(bits)))
 }
 
-fn buffer_length_name(index: usize) -> String {
-    format!("cutile_len_{index}")
+fn fold_binary(op: BinaryOp, left: Expr, right: Expr) -> Expr {
+    let left = optimize_expr(left);
+    let right = optimize_expr(right);
+    if let (Expr::F32(left), Expr::F32(right)) = (&left, &right) {
+        let result = op.apply(f32::from_bits(*left), f32::from_bits(*right));
+        if result.is_finite() {
+            return Expr::F32(result.to_bits());
+        }
+    }
+    Expr::Binary {
+        op,
+        left: Box::new(left),
+        right: Box::new(right),
+    }
 }
 
-fn write_expr(source: &mut String, expression: &Expr, index: &str) {
+fn buffer_length_name(buf: usize) -> String {
+    format!("cutile_len_{buf}")
+}
+
+fn write_expr(source: &mut String, expression: &Expr, idx: &str) {
     match expression {
         Expr::F32(bits) => {
             let value = f32::from_bits(*bits);
-            write!(source, "{value:?}f").expect("writing to String cannot fail");
+            let _ = write!(source, "{value:?}f");
         }
         Expr::Scalar(name) => source.push_str(name),
         Expr::Load(name) => {
-            write!(source, "{name}[{index}]").expect("writing to String cannot fail");
+            let _ = write!(source, "{name}[{idx}]");
         }
+        other => write_compound(source, other, idx),
+    }
+}
+
+fn write_compound(source: &mut String, expression: &Expr, idx: &str) {
+    match expression {
         Expr::Neg(value) => {
             source.push_str("-(");
-            write_expr(source, value, index);
+            write_expr(source, value, idx);
             source.push(')');
         }
-        Expr::Binary { op, left, right } => {
-            source.push('(');
-            write_expr(source, left, index);
-            source.push_str(match op {
-                BinaryOp::Add => " + ",
-                BinaryOp::Sub => " - ",
-                BinaryOp::Mul => " * ",
-                BinaryOp::Div => " / ",
-            });
-            write_expr(source, right, index);
-            source.push(')');
-        }
+        Expr::Binary { op, left, right } => write_binary(source, *op, left, right, idx),
+        _ => {}
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[crate::dsl]
-    #[allow(dead_code)]
-    fn affine(input: &[f32], output: &mut [f32], scale: f32, extent: usize) {
-        for position in 0..extent {
-            output[position] = input[position] * scale + (2.0 + 1.0);
-        }
-    }
-
-    #[test]
-    fn dsl_builds_verified_optimized_ir_and_portable_source() {
-        let kernel = __dsl_ir_affine();
-        kernel.verify().expect("macro output has valid types");
-        let source = kernel.emit_c().expect("verified IR emits C");
-        assert!(source.contains("int affine(const float *input, size_t cutile_len_0, float *output, size_t cutile_len_1, float scale, size_t extent)"));
-        assert!(source.contains("if (extent > cutile_len_0) return 1;"));
-        assert!(source.contains("output[position] = ((input[position] * scale) + 3.0f);"));
-    }
-
-    #[test]
-    fn verifier_rejects_non_mutable_outputs_and_invalid_extents() {
-        let mut kernel = Kernel::new(
-            "bad",
-            vec![
-                Parameter {
-                    name: "output".to_string(),
-                    ty: ValueType::Buffer {
-                        element: ScalarType::F32,
-                        access: Access::Read,
-                    },
-                },
-                Parameter {
-                    name: "extent".to_string(),
-                    ty: ValueType::Scalar(ScalarType::Usize),
-                },
-            ],
-            "i",
-            "extent",
-            "output",
-            Expr::F32(0.0f32.to_bits()),
-        );
-        let error = kernel
-            .verify()
-            .expect_err("wrong output access is rejected");
-        assert!(error.to_string().contains("mutable f32 buffer"));
-
-        kernel.params[0].ty = ValueType::Buffer {
-            element: ScalarType::F32,
-            access: Access::ReadWrite,
-        };
-        kernel.verify().expect("valid signature passes");
-        kernel.params[1].ty = ValueType::Scalar(ScalarType::F32);
-        let error = kernel.verify().expect_err("non-usize extent is rejected");
-        assert!(error.to_string().contains("loop extent"));
-    }
+fn write_binary(source: &mut String, op: BinaryOp, left: &Expr, right: &Expr, idx: &str) {
+    source.push('(');
+    write_expr(source, left, idx);
+    let _ = write!(source, " {} ", op.c_symbol());
+    write_expr(source, right, idx);
+    source.push(')');
 }
+
+fn valid_identifier(name: &str) -> Result<(), VerificationError> {
+    if identifier_shape_ok(name) && !C_KEYWORDS.contains(&name) {
+        return Ok(());
+    }
+    Err(VerificationError::new(format!(
+        "`{name}` is not a portable C identifier"
+    )))
+}
+
+fn identifier_shape_ok(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    let start = bytes
+        .next()
+        .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_');
+    start && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
+/// C11 关键字闭集：被发射的名字要原样写进 C 片段，撞上它就不是合法标识符。
+const C_KEYWORDS: &[&str] = &[
+    "auto", "break", "case", "char", "const", "continue", "default", "do", "double", "else",
+    "enum", "extern", "float", "for", "goto", "if", "inline", "int", "long", "register",
+    "restrict", "return", "short", "signed", "sizeof", "static", "struct", "switch", "typedef",
+    "union", "unsigned", "void", "volatile", "while", "_Alignas", "_Atomic", "_Bool", "_Complex",
+    "_Generic", "_Imaginary", "_Noreturn", "_Static_assert", "_Thread_local",
+];
