@@ -123,11 +123,7 @@ pub(super) fn negotiation(report: &Doctor) -> String {
 
 /// 单个变体的一行：选中标记 + 名称；有失败就逐条列需求与原因。
 fn variant_line(check: &VariantCheck, selected: usize, idx: usize) -> String {
-    let mark = if idx == selected {
-        "✓ 选中"
-    } else {
-        "·"
-    };
+    let mark = if idx == selected { "✓ 选中" } else { "·" };
     if check.failures.is_empty() {
         format!("  {mark} {}\n", check.name)
     } else {

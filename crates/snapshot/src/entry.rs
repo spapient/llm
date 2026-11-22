@@ -93,8 +93,7 @@ fn rebuild_name<'b>(
         );
         return Err(invalid_at(idx, message));
     }
-    std::str::from_utf8(out)
-        .map_err(|error| invalid_at(idx, format!("条目名不是 UTF-8：{error}")))
+    std::str::from_utf8(out).map_err(|error| invalid_at(idx, format!("条目名不是 UTF-8：{error}")))
 }
 
 /// 共享长度得分得开：前后两段不能重叠，也不能超过上一条名字。
@@ -161,10 +160,7 @@ fn canonical(previous: Option<&Entry>, dtype: DType, dims: &[usize], idx: usize)
         && previous.dtype() == dtype
         && previous.shape().dims() == dims
     {
-        return Err(invalid_at(
-            idx,
-            "布局与上一条相同却没有写成重复（标签 0）",
-        ));
+        return Err(invalid_at(idx, "布局与上一条相同却没有写成重复（标签 0）"));
     }
     Ok(())
 }

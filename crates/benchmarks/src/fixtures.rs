@@ -73,7 +73,10 @@ fn finite_values(n: usize, seed: u32) -> Vec<f32> {
 pub(crate) fn synthetic_model() -> CpuModel {
     let stack = checked_or_exit(
         Stack::of(vec![
-            Box::new(checked_or_exit(Embedding::new("tok_emb", VOCAB, DIM, 1), "嵌入层")),
+            Box::new(checked_or_exit(
+                Embedding::new("tok_emb", VOCAB, DIM, 1),
+                "嵌入层",
+            )),
             Box::new(checked_or_exit(
                 Linear::with_format("proj", WeightFormat::F32, DIM, OUT),
                 "投影层",

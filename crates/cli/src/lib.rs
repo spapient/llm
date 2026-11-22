@@ -65,7 +65,9 @@ fn route(command: &Command<'_>) -> Result<()> {
     match command {
         Command::Help => usage(),
         Command::Platform => platform::report(),
-        Command::Status { .. } | Command::Run { .. } | Command::Train { .. } => run_command(command),
+        Command::Status { .. } | Command::Run { .. } | Command::Train { .. } => {
+            run_command(command)
+        }
         other => objects(other),
     }
 }

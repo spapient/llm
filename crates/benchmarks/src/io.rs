@@ -32,7 +32,8 @@ pub(crate) mod weights {
             let data = vec![(idx % 256) as u8; BYTES_PER_SEGMENT];
             let shape = vec![ELEMS as u64];
             let name = format!("seg_{idx}");
-            let segment = checked_or_exit(Segment::new(name, Wire::F32, shape, None, data), "段自洽");
+            let segment =
+                checked_or_exit(Segment::new(name, Wire::F32, shape, None, data), "段自洽");
             checked_or_exit(writer.push(segment), "追加段");
         }
         writer
@@ -298,7 +299,12 @@ pub(crate) mod text {
         let mut group = c.benchmark_group("tokenizer/decode");
         group.throughput(Throughput::Bytes(text.len() as u64));
         group.bench_function("bpe_synth_4kib", |bench| {
-            bench.iter(|| black_box(checked_or_exit(encoder.decode(black_box(&bpe_tokens)), "解码")))
+            bench.iter(|| {
+                black_box(checked_or_exit(
+                    encoder.decode(black_box(&bpe_tokens)),
+                    "解码",
+                ))
+            })
         });
         group.bench_function("bytes_4kib", |bench| {
             bench.iter(|| black_box(checked_or_exit(Bytes.decode(black_box(&tokens)), "解码")))
@@ -311,7 +317,12 @@ pub(crate) mod text {
         let mut group = c.benchmark_group("tokenizer/encode_detailed");
         group.throughput(Throughput::Bytes(text.len() as u64));
         group.bench_function("bytes_4kib", |bench| {
-            bench.iter(|| black_box(checked_or_exit(Bytes.encode_detailed(black_box(text)), "详细编码")))
+            bench.iter(|| {
+                black_box(checked_or_exit(
+                    Bytes.encode_detailed(black_box(text)),
+                    "详细编码",
+                ))
+            })
         });
         group.finish();
     }

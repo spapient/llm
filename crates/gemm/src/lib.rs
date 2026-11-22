@@ -3,7 +3,7 @@
 
 #![deny(unsafe_code)]
 // 不稳定特性一律挂在 `cfg(nightly)` 上（由本 crate 的 `build.rs` 按 `rustc --version` 判定）：
-// nightly 上走手写车道，stable 上走 `src/../simd_scalar.rs` 的等价退路，两边的能力差异只在
+// nightly 上走手写车道，stable 上走 `gemv/simd/fallback.rs` 的等价退路，两边的能力差异只在
 // 「向量化没向量化」，不在语义。这样 `rust-toolchain.toml` 不必把整个工作区钉在某个 nightly。
 //
 // 三个特性各自还有额外的门：

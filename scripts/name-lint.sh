@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # 命名门（S++ N4 / N5）：文件名必须单词、符号不得带前后缀、不得有泛名函数。
 # 判据全为 grep；零命中才绿。用法：bash scripts/name-lint.sh
+#
+# 这里只管**文件名与符号形状**。「一个概念两个词」（`buffer`/`index` 与 `buf`/`idx`
+# 并存）是**标识符级**判断，grep 做不了——设备源字符串里的 Metal 选择器
+# `[[buffer(0)]]` 与外来 API（`MTLBuffer`/`atIndex`）必须豁免，而裸 grep 无法区分。
+# 那条判据在 `crates/tools/src/words.rs`，由 `cargo test -p llm-tools --test gate` 守。
 set -eu
 cd "$(dirname "$0")/.."
 

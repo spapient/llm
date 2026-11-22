@@ -330,11 +330,7 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
 
     /// 把 [`Self::collect_views`] 取走的视图按槽号归位：更新后的参数真值回填进槽，梯度向量
     /// 归还缓冲；是否清空梯度由步进收尾决定。
-    pub(super) fn return_views(
-        slots: &mut [ParamSlot],
-        bufs: &mut Bufs<K>,
-        views: Vec<OwnedSlot>,
-    ) {
+    pub(super) fn return_views(slots: &mut [ParamSlot], bufs: &mut Bufs<K>, views: Vec<OwnedSlot>) {
         for (slot, view) in slots.iter_mut().zip(views) {
             slot.params.copy_from_slice(&view.params);
             bufs.put_back_gradient(slot.var(), view.grads);
@@ -342,19 +338,14 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
     }
 
     /// 收集视图失败时的局部归还：已装配的前 `views.len()` 个槽对应 `slots` 前缀。
-    fn return_views_prefix(
-        slots: &mut [ParamSlot],
-        bufs: &mut Bufs<K>,
-        views: Vec<OwnedSlot>,
-    ) {
+    fn return_views_prefix(slots: &mut [ParamSlot], bufs: &mut Bufs<K>, views: Vec<OwnedSlot>) {
         Self::return_views(&mut slots[..views.len()], bufs, views);
     }
 
     /// 把优化器写回后的参数值镜像回激活缓冲，供下一轮前向复用。
     pub(super) fn mirror_params(slots: &[ParamSlot], bufs: &mut Bufs<K>) -> Result<()> {
         for slot in slots {
-            bufs
-                .load(slot.var(), Data::F32(slot.params.clone()))
+            bufs.load(slot.var(), Data::F32(slot.params.clone()))
                 .map_err(|error| error.with(SITE))?;
         }
         Ok(())

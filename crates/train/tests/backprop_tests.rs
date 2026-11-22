@@ -157,11 +157,7 @@ fn unary_grad(op: &str, p0: &[f32], output_len: usize) -> Result<Vec<f32>> {
     session.register_parameter(p, ParamRole::Trainable, p0.to_vec())?;
     session.bufs().compute_step(op, &[p], y)?;
     sum_backward(&mut session, y, out)?;
-    Ok(session
-        .bufs()
-        .gradient(p)
-        .expect("p 梯度应在场")
-        .to_vec())
+    Ok(session.bufs().gradient(p).expect("p 梯度应在场").to_vec())
 }
 
 /// `loss = reduce_sum(op(p))` 的公共夹具：单路参数中心差分，`loss(p)` 给整标量。

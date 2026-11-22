@@ -25,7 +25,10 @@ fn a_full_spelling_is_flagged_with_its_canonical_form() {
 
 #[test]
 fn the_canonical_spelling_itself_is_silent() {
-    assert_eq!(found("let idx = 0; let buf = vec![];"), Vec::<String>::new());
+    assert_eq!(
+        found("let idx = 0; let buf = vec![];"),
+        Vec::<String>::new()
+    );
 }
 
 #[test]

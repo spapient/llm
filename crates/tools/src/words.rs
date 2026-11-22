@@ -66,7 +66,10 @@ impl Hit {
     /// 一行诊断：文件路径由调用方拼在前面。
     #[must_use]
     pub fn describe(&self) -> String {
-        format!("第 {} 行 `{}` 应写成 `{}`", self.line, self.found, self.canon)
+        format!(
+            "第 {} 行 `{}` 应写成 `{}`",
+            self.line, self.found, self.canon
+        )
     }
 }
 

@@ -114,12 +114,7 @@ fn pairing_agrees(got: f32, want: f32) -> bool {
 }
 
 /// 单元素读数 `(判据值, 绝对误差, 分母, 该元素)`；逐元素相等时为 [`None`]（不占最差点）。
-fn element_reading(
-    idx: usize,
-    got: f32,
-    want: f32,
-    denom: f64,
-) -> Option<(f64, f64, f64, Worst)> {
+fn element_reading(idx: usize, got: f32, want: f32, denom: f64) -> Option<(f64, f64, f64, Worst)> {
     let diff = (f64::from(got) - f64::from(want)).abs();
     if diff == 0.0 {
         return None;

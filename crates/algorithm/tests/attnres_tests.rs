@@ -30,11 +30,7 @@ fn the_weights_are_the_softmax_of_scaled_scores() {
     let mut weights: Vec<f64> = scores.iter().map(|score| score / 2.0).collect();
     softmax_row(&mut weights);
     let want: Vec<f64> = (0..4)
-        .map(|idx| {
-            (0..4)
-                .map(|row| weights[row] * refs[row][idx])
-                .sum::<f64>()
-        })
+        .map(|idx| (0..4).map(|row| weights[row] * refs[row][idx]).sum::<f64>())
         .collect();
     for (idx, (a, b)) in got.iter().zip(&want).enumerate() {
         assert!((a - b).abs() < 1e-12, "第 {idx} 维 {a} 不是手算的 {b}");

@@ -81,7 +81,9 @@ fn attention_matches_central_differences() -> Result<()> {
     let v0: Vec<f32> = (0..len).map(|i| 0.09 * i as f32 - 0.3).collect();
 
     let mut session = attention_session(tape, sizes, [q, k, v], [&q0, &k0, &v0])?;
-    session.bufs().compute_step("attention_f32", &[q, k, v], y)?;
+    session
+        .bufs()
+        .compute_step("attention_f32", &[q, k, v], y)?;
     sum_backward(&mut session, y, loss)?;
 
     check_grad(
