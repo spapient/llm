@@ -5,6 +5,7 @@ mod fixtures;
 mod io;
 mod kernel;
 mod model;
+mod parse;
 mod peak;
 mod protocol;
 
@@ -38,5 +39,6 @@ criterion_group!(
     io::text::wire,
     protocol::span,
     protocol::negotiate,
+    parse::parse,
 );
 criterion_main!(benches);
