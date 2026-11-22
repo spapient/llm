@@ -38,10 +38,15 @@ fn value_accessors_return_their_own_variant() {
 fn kind_maps_ggml_codes_and_delegates_layout() {
     // 码、布局、元素数、字节数合成一行：六种类型各占一行，两张并列的表会各自漂移。
     // 线格式写死成字面量，才不是拿上游常量自证：`QType`/`DType` 改口径时这里必须一起改。
-    const WIRE: [(u32, Kind, Layout, usize, usize); 6] = [
+    const WIRE: [(u32, Kind, Layout, usize, usize); 11] = [
         (0, Kind::F32, Layout::Scalar(DType::F32), 1, 4),
         (1, Kind::F16, Layout::Scalar(DType::F16), 1, 2),
+        (2, Kind::Q4_0, Layout::Block(QType::Q4_0), 32, 18),
+        (6, Kind::Q5_0, Layout::Block(QType::Q5_0), 32, 22),
+        (7, Kind::Q5_1, Layout::Block(QType::Q5_1), 32, 24),
         (8, Kind::Q8_0, Layout::Block(QType::Q8_0), 32, 34),
+        (10, Kind::Q2_K, Layout::Block(QType::Q2_K), 256, 84),
+        (11, Kind::Q3_K, Layout::Block(QType::Q3_K), 256, 110),
         (12, Kind::Q4_K, Layout::Block(QType::Q4_K), 256, 144),
         (13, Kind::Q5_K, Layout::Block(QType::Q5_K), 256, 176),
         (14, Kind::Q6_K, Layout::Block(QType::Q6_K), 256, 210),
@@ -64,7 +69,7 @@ fn kind_maps_ggml_codes_and_delegates_layout() {
             Layout::Scalar(dtype) => assert_eq!(span, dtype.bytes_for(1) as usize, "{kind:?}"),
         }
     }
-    assert!(Kind::from_code(2).is_err(), "未支持的 ggml 码必须显式失败");
+    assert!(Kind::from_code(3).is_err(), "未支持的 ggml 码必须显式失败");
     assert!(Kind::from_code(15).is_err(), "未支持的 ggml 码必须显式失败");
 }
 
@@ -77,10 +82,20 @@ fn undecoded_qtypes_are_explicit() {
             Layout::Block(qtype) => Some(*qtype),
         })
         .collect();
-    let pinned = [QType::Q8_0, QType::Q4_K, QType::Q5_K, QType::Q6_K];
+    let pinned = [
+        QType::Q4_0,
+        QType::Q5_0,
+        QType::Q5_1,
+        QType::Q8_0,
+        QType::Q2_K,
+        QType::Q3_K,
+        QType::Q4_K,
+        QType::Q5_K,
+        QType::Q6_K,
+    ];
     assert_eq!(decoded, pinned);
     // 其余 QType 尚无解码器；接上时要同步这张表与 `blocked` 的分派。
-    assert_eq!(QType::ALL.len() - decoded.len(), 21);
+    assert_eq!(QType::ALL.len() - decoded.len(), 16);
     for qtype in &decoded {
         assert!(QType::ALL.contains(qtype), "{qtype:?}");
     }

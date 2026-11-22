@@ -24,8 +24,18 @@ pub enum Kind {
     F32 = 0,
     /// 16 位浮点（GGML 码 1）。
     F16 = 1,
+    /// 4 位传统块（GGML 码 2，f16 尺度 + 32×4bit）。
+    Q4_0 = 2,
+    /// 5 位传统块（GGML 码 6，f16 尺度 + 32×5bit）。
+    Q5_0 = 6,
+    /// 5 位传统块（GGML 码 7，f16 尺度 + min + 32×5bit）。
+    Q5_1 = 7,
     /// 8 位量化块（GGML 码 8，f16 尺度 + 32×i8）。
     Q8_0 = 8,
+    /// 2 位 K 超块（GGML 码 10）。
+    Q2_K = 10,
+    /// 3 位 K 超块（GGML 码 11）。
+    Q3_K = 11,
     /// 4 位 K 超块（GGML 码 12）。
     Q4_K = 12,
     /// 5 位 K 超块（GGML 码 13）。
@@ -41,7 +51,12 @@ pub type Layout = dtype::Layout<QType>;
 pub const SUPPORTED: &[(Kind, Layout)] = &[
     (Kind::F32, Layout::Scalar(DType::F32)),
     (Kind::F16, Layout::Scalar(DType::F16)),
+    (Kind::Q4_0, Layout::Block(QType::Q4_0)),
+    (Kind::Q5_0, Layout::Block(QType::Q5_0)),
+    (Kind::Q5_1, Layout::Block(QType::Q5_1)),
     (Kind::Q8_0, Layout::Block(QType::Q8_0)),
+    (Kind::Q2_K, Layout::Block(QType::Q2_K)),
+    (Kind::Q3_K, Layout::Block(QType::Q3_K)),
     (Kind::Q4_K, Layout::Block(QType::Q4_K)),
     (Kind::Q5_K, Layout::Block(QType::Q5_K)),
     (Kind::Q6_K, Layout::Block(QType::Q6_K)),
