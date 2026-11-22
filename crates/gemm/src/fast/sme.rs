@@ -1,8 +1,10 @@
-//! Apple SME 32×32 微内核通道：ZA 矩阵累加器外积（`fmopa`）+ 运行时探测。
+//! Apple SME 16×64 微内核通道：ZA 矩阵累加器外积（`fmopa`）+ 运行时探测。
 //!
-//! 瓦片取 2×2 而不是 1×4：ZA 只有 4 个 f32 瓦片，`(M/16)·(N/16) = 4` 的三种拆法里，
-//! 每个 `fmopa` 分摊到的 `ld1w` 条数是 `(M/16 + N/16)/4`——2×2 为 1.00，1×4 与 4×1 都是 1.25。
-//! 实测每条 `ld1w` 约 0.42 周期（[`port_run`] 与 [`port_mix`] 之差），所以 2×2 是唯一最优。
+//! 瓦片形状是**量过**的，不是推出来的：2×2（32×32）每 4 条 `fmopa` 只摊 4 条 `ld1w`，
+//! 按载入条数该比 1×4 快 7.6%，但实测 1 线程 1256.7 vs 1543.4 Gelem/s、16 线程 2063.7 vs
+//! 2271.8（`sme_peak` 口径），**反而慢 19% / 9%**。载入条数因此不是约束项，
+//! 2×2 的代价（A 面板按 32 宽写、每行分 8 次 16 B 散写）超过了它省下的那一条 `ld1w`。
+//! 结论：1×4 保留，`port_mix` 探针留作这条否证的仪器。
 
 #[cfg(target_arch = "aarch64")]
 use std::thread;
@@ -13,13 +15,13 @@ use std::arch::asm;
 #[cfg(target_arch = "aarch64")]
 use std::simd::{f32x4, simd_swizzle};
 
-/// SME 微内核行数：2 层 ZA 瓦片各 16 行，一次写回 32 行。
+/// SME 微内核行数：一个 16×16 ZA 瓦片覆盖 16 行。
 #[cfg(target_arch = "aarch64")]
-const MR: usize = 32;
+const MR: usize = 16;
 
-/// SME 微内核列数：2 列 ZA 瓦片各 16 列，一次写回 32 列。
+/// SME 微内核列数：4 个 ZA 瓦片各 16 列，一次写回 64 列。
 #[cfg(target_arch = "aarch64")]
-const NR: usize = 32;
+const NR: usize = 64;
 
 /// 规模门槛（元素数）：低于此值的 GEMM，`smstart`/`smstop` 与打包的固定成本超过外积收益，
 /// 交给 NEON 更划算。
@@ -32,7 +34,7 @@ fn available() -> bool {
     std::arch::is_aarch64_feature_detected!("sme")
 }
 
-/// 32×32 整铺 SME GEMM：`out[m,n] = a[m,k] · b[k,n]`。
+/// 16×64 整铺 SME GEMM：`out[m,n] = a[m,k] · b[k,n]`。
 pub(super) fn gemm(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f32]) -> bool {
     #[cfg(not(target_arch = "aarch64"))]
     {
@@ -128,12 +130,12 @@ fn transpose4(a0: f32x4, a1: f32x4, a2: f32x4, a3: f32x4) -> (f32x4, f32x4, f32x
     )
 }
 
-/// 16 对齐的整段：按 16×16 瓦片做 4×4 转置（`MR/4` 个行组），返回尾部起点。
+/// 16 对齐的整段：按 16×16 瓦片做 4×4 转置，返回尾部起点。
 #[cfg(target_arch = "aarch64")]
 fn pack_tiles(src: &[f32], dst: &mut [f32], k: usize, rowbase: usize, dstbase: usize) -> usize {
     let mut kk0 = 0usize;
     while kk0 + 16 <= k {
-        for r in 0..MR / 4 {
+        for r in 0..4usize {
             for c in 0..4usize {
                 let rr = r * 4;
                 let cc = kk0 + c * 4;
@@ -195,11 +197,7 @@ fn compute_stage(a_stage: &[f32], b: &[f32], o_stage: &mut [f32], n: usize, k: u
     }
 }
 
-/// 2×2 外积微内核：`zero` → K 循环（2 条 `a` + 2 条 `b` 载入 + 4 条 `fmopa`）→ 4 个 ZA
-/// 瓦片逐切片 `str za` 写回 32×32 的行主序块。
-///
-/// 写回里 `c16` 是同一行向右一个瓦片（+64 B），`c32` 是向下 16 行（+16 行 × `n_stride`）——
-/// 四个瓦片拼成一个 32×32 块，切片号 0..15 逐行推进，所以循环 16 次、切片每次 +4。
+/// 16×16 外积微内核：`zero` → K 循环 `ld1w`+`fmopa` → 4 个 ZA 瓦片按切片号 `str za` 写回。
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "sme")]
 #[allow(unsafe_code)]
@@ -212,8 +210,7 @@ unsafe fn sme_tile(
     n_stride: usize,
     b_stride: usize,
 ) {
-    let b_adv = b_stride - 64;
-    let down = 16 * n_stride;
+    let b_adv = b_stride - 3 * 64;
     unsafe {
         asm!(
         "zero {{ za0.s }}",
@@ -223,21 +220,26 @@ unsafe fn sme_tile(
         "2:",
         "ld1w {{ z0.s }}, p0/z, [{a}]",
         "add {a}, {a}, #64",
-        "ld1w {{ z1.s }}, p0/z, [{a}]",
-        "add {a}, {a}, #64",
+        "ld1w {{ z1.s }}, p0/z, [{b}]",
+        "add {b}, {b}, #64",
         "ld1w {{ z2.s }}, p0/z, [{b}]",
         "add {b}, {b}, #64",
         "ld1w {{ z3.s }}, p0/z, [{b}]",
+        "add {b}, {b}, #64",
+        "ld1w {{ z4.s }}, p0/z, [{b}]",
         "add {b}, {b}, {b_adv}",
-        "fmopa za0.s, p0/m, p0/m, z0.s, z2.s",
-        "fmopa za1.s, p0/m, p0/m, z0.s, z3.s",
-        "fmopa za2.s, p0/m, p0/m, z1.s, z2.s",
-        "fmopa za3.s, p0/m, p0/m, z1.s, z3.s",
+        "fmopa za0.s, p0/m, p0/m, z0.s, z1.s",
+        "fmopa za1.s, p0/m, p0/m, z0.s, z2.s",
+        "fmopa za2.s, p0/m, p0/m, z0.s, z3.s",
+        "fmopa za3.s, p0/m, p0/m, z0.s, z4.s",
         "subs {k}, {k}, #1",
         "b.ne 2b",
-        "add {c16}, {c}, #64",
-        "add {c32}, {c}, {down}",
-        "add {c48}, {c32}, #64",
+        "mov {c16}, {c}",
+        "add {c16}, {c16}, #64",
+        "mov {c32}, {c}",
+        "add {c32}, {c32}, #128",
+        "mov {c48}, {c}",
+        "add {c48}, {c48}, #192",
         "mov w12, #0",
         "mov w13, #1",
         "mov w14, #2",
@@ -259,9 +261,9 @@ unsafe fn sme_tile(
         "b.ne 3b",
         a = inout(reg) a_p => _, b = inout(reg) b_p => _, c = inout(reg) c => _,
         k = inout(reg) k => _,
-        nstride = in(reg) n_stride, b_adv = in(reg) b_adv, down = in(reg) down,
+        nstride = in(reg) n_stride, b_adv = in(reg) b_adv,
         c16 = out(reg) _, c32 = out(reg) _, c48 = out(reg) _,
-        out("z0") _, out("z1") _, out("z2") _, out("z3") _,
+        out("z0") _, out("z1") _, out("z2") _, out("z3") _, out("z4") _,
         out("w12") _, out("w13") _, out("w14") _, out("w15") _, out("p0") _,
         options(nostack),
         );

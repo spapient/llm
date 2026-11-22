@@ -74,12 +74,7 @@ pub(crate) fn admit(cpb: usize, n: usize, ctx: ScaledRow, dequant: &[f32]) -> Op
     })
 }
 
-/// 单行入口：行批入口只有一行时的特化，`out` 是 `n` 个输出。
-pub(crate) fn forward(x: &[f32], weights: &[u8], scales: &[f32], affine: Affine, out: &mut [f32]) {
-    forward_batch(&[x], weights, scales, affine, out);
-}
-
-/// 行批入口：一次带上所有输入行，同一段算术、同一份列块遍历。
+/// 唯一入口：一次带上所有输入行，单行只是 `rows` 只有一个元素。
 pub(crate) fn forward_batch(
     rows: &[&[f32]],
     weights: &[u8],

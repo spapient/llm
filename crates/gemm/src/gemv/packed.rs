@@ -54,7 +54,7 @@ pub fn forward_rows(
 ) -> diagnostic::Result<()> {
     let ctx = super::forward::scaled_row_context(x.len(), out.len(), scales, weights.len(), cpb)?;
     if let Some(affine) = super::simd::admit(cpb, out.len(), ctx, dequant) {
-        super::simd::forward(x, weights, scales, affine, out);
+        super::simd::forward_batch(&[x], weights, scales, affine, out);
         return Ok(());
     }
     super::forward::forward_rows_scaled(x, weights, scales, out, ctx, row_dot(cpb, dequant));

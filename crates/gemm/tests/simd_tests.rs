@@ -103,7 +103,7 @@ fn compare_rows(values: fn(usize) -> Vec<f32>, agree: impl Fn(f32, f32, usize, u
         let ctx = context(M, cpb);
         let (w, s, x) = (weights(M, N, cpb), scales(N, ctx.groups), values(M));
         let mut out = vec![0.0f32; N];
-        forward(&x, &w, &s, admitted(cpb, ctx), &mut out);
+        forward_batch(&[&x], &w, &s, admitted(cpb, ctx), &mut out);
         for (j, &got) in out.iter().enumerate() {
             let want = oracle(
                 M,
@@ -154,7 +154,7 @@ fn a_row_batch_equals_row_by_row_calls() {
     forward_batch(&rows_of_x, &w, &s, affine, &mut batched);
     for r in 0..rows {
         let mut single = vec![0.0f32; N];
-        forward(&x[r * M..][..M], &w, &s, affine, &mut single);
+        forward_batch(&[&x[r * M..][..M]], &w, &s, affine, &mut single);
         assert_eq!(
             batched[r * N..][..N],
             *single,

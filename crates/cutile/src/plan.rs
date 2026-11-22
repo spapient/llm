@@ -80,17 +80,17 @@ pub fn predict(profile: &Profile, flops: f64, bytes: u64, masking: Masking) -> O
     Some(base * (1.0 + masking.unmasked))
 }
 
-/// ③ select 本体：取轴展开出的**第一个** tile（TOML 顺序即优先级，不在这里打分），再用算子给出
-/// 的代价做 roofline 估值。峰值是能力：档案没给出可求值的峰值就无法判定，而不是"预测为 0"。
-pub fn select(op: &OpDecl, profile: &Profile, path: &Path, cost: Cost) -> diagnostic::Result<Plan> {
-    let masking = Masking::of(path.mma_share, &path.schedule);
-    let tile = expand(op)?.into_iter().next().ok_or_else(|| {
-        Error::new(
-            Code::Internal,
-            "轴展开后没有任何 tile 候选（声明解析应当保证至少一个轴）",
-        )
-    })?;
-    let predicted_s = predict(profile, cost.flops, cost.bytes(), masking).ok_or_else(|| {
+/// 轴展开为空是声明解析的不变量破了：那是内部错误，不是"候选不好"。
+fn no_tiles() -> Error {
+    Error::new(
+        Code::Internal,
+        "轴展开后没有任何 tile 候选（声明解析应当保证至少一个轴）",
+    )
+}
+
+/// 预测值缺席就是档案缺峰值；写成独立一步，好让 [`select`] 读成"三步取料"，而不是三层错误构造。
+fn predict_or_fail(profile: &Profile, cost: Cost, masking: Masking) -> diagnostic::Result<f64> {
+    predict(profile, cost.flops, cost.bytes(), masking).ok_or_else(|| {
         Error::new(
             Code::Unsupported,
             format!(
@@ -98,7 +98,15 @@ pub fn select(op: &OpDecl, profile: &Profile, path: &Path, cost: Cost) -> diagno
                 profile.meta.vendor
             ),
         )
-    })?;
+    })
+}
+
+/// ③ select 本体：取轴展开出的**第一个** tile（TOML 顺序即优先级，不在这里打分），再用算子给出
+/// 的代价做 roofline 估值。峰值是能力：档案没给出可求值的峰值就无法判定，而不是"预测为 0"。
+pub fn select(op: &OpDecl, profile: &Profile, path: &Path, cost: Cost) -> diagnostic::Result<Plan> {
+    let masking = Masking::of(path.mma_share, &path.schedule);
+    let tile = expand(op)?.into_iter().next().ok_or_else(no_tiles)?;
+    let predicted_s = predict_or_fail(profile, cost, masking)?;
     Ok(Plan {
         variant: path.variant.clone(),
         schedule: path.schedule.as_str(),
@@ -122,21 +130,22 @@ pub fn window_radius(budget: usize) -> usize {
 /// 候选剪枝：在算子表上枚举生产者→消费者对，先过 `compose`（只留"能拼"），再用窗口半径
 /// 压邻域，最多接受 `budget` 条。`compose` 返回的 [`Fusion`] 才进 roofline 打分。
 pub fn fusions(ops: &[OpDecl], budget: usize) -> Vec<Fusion> {
-    if ops.len() < 2 || budget == 0 {
-        return Vec::new();
-    }
     let radius = window_radius(budget);
     let mut accepted = Vec::new();
     for (i, producer) in ops.iter().enumerate() {
         let lo = i.saturating_sub(radius);
         let hi = (i + radius + 1).min(ops.len());
-        for consumer in &ops[lo..hi] {
-            if let Some(fusion) = compose(producer, consumer) {
-                accepted.push(fusion);
-                if accepted.len() == budget {
-                    return accepted;
-                }
-            }
+        // 窗口天生含生产者自己，`compose` 按槽位代数把自融合摘掉；预算为 0 时 `room` 也是 0，
+        // 这一圈的 `take` 什么都不收——两条退化情形都不需要额外的守卫分支。
+        let room = budget - accepted.len();
+        accepted.extend(
+            ops[lo..hi]
+                .iter()
+                .filter_map(|consumer| compose(producer, consumer))
+                .take(room),
+        );
+        if accepted.len() == budget {
+            break;
         }
     }
     accepted
@@ -245,44 +254,45 @@ fn payoff(profile: &Profile, before: Cost, after: Cost, fused: Cost, seam: u64) 
     })
 }
 
-/// 给一条融合打分（README §12.1：roofline 是判据本身，不是装饰）。
+/// 接缝的代数：取两侧代价与中间量的字节数。
 ///
-/// 中间量的字节取自**生产者的代价表**：接缝只认一条输出槽（与
-/// [`crate::reference::verify_fusion`] 同一条判据），此时 `Cost::write` 就是那条槽；消费者读它一次
-/// 是同样的字节，所以省下 `2 × write`。这条路不需要跑标量参考，也就不必为打分分配 4 GiB 样本。
-///
-/// 这是结构性上界，三件事它不算：流水掩盖（按变体算，在加速比里两边相消）、融合核多出来的寄存器
-/// 压力、代码变大带来的指令缓存代价。所以 [`Payoff::speedup`] 是"值不值得动手"的判据，不是实测。
-pub fn score(profile: &Profile, fusion: &Fusion) -> Verdict {
+/// 接缝只认一条输出槽（与 [`crate::reference::verify_fusion`] 同一条判据），此时生产者的
+/// `Cost::write` 就是那条槽；消费者读它一次是同样的字节，所以省下 `2 × write`。任何一步不成立都
+/// 给出判决而不是猜数：缺语义投影、多槽缝隙、代价不成立是"无从打分"，代价表与缝不一致是"拼不出来"。
+fn seam(fusion: &Fusion) -> Result<(Cost, Cost, u64), Verdict> {
     let (Some(producer), Some(consumer)) =
         (op::model(&fusion.producer), op::model(&fusion.consumer))
     else {
-        return Verdict::Unscorable(format!(
+        return Err(Verdict::Unscorable(format!(
             "`{}` → `{}` 有一侧没有语义投影，算不出 roofline",
             fusion.producer, fusion.consumer
-        ));
+        )));
     };
     let outputs = fusion.outputs();
     let [from] = outputs.as_slice() else {
-        return Verdict::Unscorable(format!(
+        return Err(Verdict::Unscorable(format!(
             "接缝落在 {} 条输出槽上（`{}`），中间量无法从代价表归因",
             outputs.len(),
             outputs.join("`, `")
-        ));
+        )));
     };
     let (Some(before), Some(after)) = (cost_of(&producer), cost_of(&consumer)) else {
-        return Verdict::Unscorable(format!(
+        return Err(Verdict::Unscorable(format!(
             "`{}` 或 `{}` 在自己的生产形状上给不出代价",
             fusion.producer, fusion.consumer
-        ));
+        )));
     };
-    let seam = before.write;
-    if after.read < seam {
-        return Verdict::Rejected(format!(
-            "缝 `{from}` 有 {seam} 字节，消费者只读 {} 字节：代价表与缝代数不一致",
-            after.read
-        ));
+    if after.read < before.write {
+        return Err(Verdict::Rejected(format!(
+            "缝 `{from}` 有 {} 字节，消费者只读 {} 字节：代价表与缝代数不一致",
+            before.write, after.read
+        )));
     }
+    Ok((before, after, before.write))
+}
+
+/// 复合代价过一次 roofline：融合把中间量的往返从字节账里减掉，剩下的两项各按峰值定界。
+fn merged(profile: &Profile, before: Cost, after: Cost, seam: u64) -> Verdict {
     let fused = Cost::new(
         before.flops + after.flops,
         before.read.saturating_add(after.read).saturating_sub(seam),
@@ -299,6 +309,19 @@ pub fn score(profile: &Profile, fusion: &Fusion) -> Verdict {
             ))
         },
         Verdict::Scored,
+    )
+}
+
+/// 给一条融合打分（README §12.1：roofline 是判据本身，不是装饰）。
+///
+/// 中间量的字节取自**生产者的代价表**（[`seam`]），这条路不需要跑标量参考，也就不必为打分分配
+/// 4 GiB 样本。这是结构性上界，三件事它不算：流水掩盖（按变体算，在加速比里两边相消）、融合核多
+/// 出来的寄存器压力、代码变大带来的指令缓存代价。所以 [`Payoff::speedup`] 是"值不值得动手"的判据，
+/// 不是实测。
+pub fn score(profile: &Profile, fusion: &Fusion) -> Verdict {
+    seam(fusion).map_or_else(
+        |verdict| verdict,
+        |(before, after, seam)| merged(profile, before, after, seam),
     )
 }
 
