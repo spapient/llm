@@ -1,4 +1,4 @@
-//! 声明表的字段级解析与模板侧校验：各段各自一块，加上 [`OpDecl::parse`] 的模板实例化。
+//! 声明语料的摄入：`ops/*.toml` 的编译期表 → [`OpDecl`]，含各段字段解析与模板侧校验；形状与代数在 [`super`]（`decl.rs`）。
 
 use diagnostic::Error;
 use diagnostic::data::{Table, Value};
@@ -220,12 +220,26 @@ pub(crate) fn parse_need(section: &Table, key: &str, path: &str) -> Result<Need,
         .entries()
         .iter()
         .try_fold(Need::of(prim), |need, (name, value)| {
-            let value_path = format!("{path}.{name}");
-            match dimension(&need, name, &value_path, value)? {
-                Some(need) => Ok(need),
-                None => collection(need, prim, &value_path, name, value),
-            }
+            need_field(need, prim, path, name, value)
         })
+}
+
+/// 需求表里的一个键：维度键（`m`/`bytes`/`extent`/`n`/`k`）挂跨度，其余是能力属性。
+fn need_field(
+    need: Need,
+    prim: Prim,
+    path: &str,
+    name: &String,
+    value: &Value,
+) -> Result<Need, Error> {
+    let value_path = format!("{path}.{name}");
+    let attach: fn(Need, Span) -> Need = match name.as_str() {
+        "m" | "bytes" | "extent" => Need::with_extent,
+        "n" => Need::with_n,
+        "k" => Need::with_k,
+        _ => return collection(need, prim, &value_path, name, value),
+    };
+    Ok(attach(need, parse_span(&value_path, value)?))
 }
 
 /// 一条需求的取值：必须是内联表。
@@ -237,17 +251,6 @@ fn need_table<'a>(section: &'a Table, key: &str, path: &str) -> Result<&'a Table
         return Err(field(path, "必须是内联表"));
     };
     Ok(detail)
-}
-
-/// 维度键：`m`/`bytes`/`extent` 共用跨度写法，`n`/`k` 各一条轴；都不是返回 `None`。
-fn dimension(need: &Need, name: &str, path: &str, value: &Value) -> Result<Option<Need>, Error> {
-    let attach: fn(Need, Span) -> Need = match name {
-        "m" | "bytes" | "extent" => Need::with_extent,
-        "n" => Need::with_n,
-        "k" => Need::with_k,
-        _ => return Ok(None),
-    };
-    Ok(Some(attach(need.clone(), parse_span(path, value)?)))
 }
 
 /// 非跨度键：`dt`/`space` 各一条集合，其余是能力属性。
@@ -318,10 +321,10 @@ fn string_list(path: &str, value: &Value) -> Result<Vec<String>, Error> {
 
 /// 数组里的一个元素：只能是字符串。
 fn as_string(path: &str, item: &Value) -> Result<String, Error> {
-    match item {
-        Value::Str(text) => Ok(text.clone()),
-        _ => Err(field(path, "数组里只能是字符串")),
-    }
+    let Value::Str(text) = item else {
+        return Err(field(path, "数组里只能是字符串"));
+    };
+    Ok(text.clone())
 }
 
 // ── 段解析 ─────────────────────────────────────────────────────────────
@@ -355,10 +358,20 @@ pub fn op_head(op: &Table) -> diagnostic::Result<(Skeleton, String)> {
 }
 
 /// 四个段（轴、需求、布局、变体链）：`declared` 按同一顺序解构。
-pub type Sections = (Vec<Axis>, Vec<Need>, Vec<(String, LayoutSpec)>, Vec<Variant>);
+pub type Sections = (
+    Vec<Axis>,
+    Vec<Need>,
+    Vec<(String, LayoutSpec)>,
+    Vec<Variant>,
+);
 
 pub fn sections(table: &Table) -> diagnostic::Result<Sections> {
-    Ok((axes(table)?, needs(table)?, layouts(table)?, variants(table)?))
+    Ok((
+        axes(table)?,
+        needs(table)?,
+        layouts(table)?,
+        variants(table)?,
+    ))
 }
 
 /// `[axes]`：每个键一组正整数取值；至少要有一条轴。
@@ -376,7 +389,6 @@ pub fn axes(table: &Table) -> diagnostic::Result<Vec<Axis>> {
     }
     Ok(out)
 }
-
 /// 一条轴：`axes.{名字}` 是非空的正整数数组。
 pub fn axis(key: &str, value: &Value) -> diagnostic::Result<Axis> {
     let path = format!("axes.{key}");
@@ -471,12 +483,12 @@ pub fn grid_item(idx: usize, item: &Value) -> diagnostic::Result<(String, String
     let Value::Str(text) = item else {
         return Err(field(&path, "必须是 `线程:标量` 字符串"));
     };
-    let Some((thread, scalar)) = text.split_once(':') else {
+    let Some((thread, scalar)) = text
+        .split_once(':')
+        .filter(|(thread, scalar)| !thread.is_empty() && !scalar.is_empty())
+    else {
         return Err(field(&path, "必须是 `线程:标量` 字符串"));
     };
-    if thread.is_empty() || scalar.is_empty() {
-        return Err(field(&path, "线程名与标量名都不能为空"));
-    }
     Ok((thread.to_string(), scalar.to_string()))
 }
 
@@ -521,12 +533,10 @@ pub fn consts(table: &Table) -> diagnostic::Result<Vec<(String, String)>> {
 
 /// 一个模板常量：整数/浮点/布尔按十进制渲染，字符串原样；表或数组不能当常量。
 pub fn const_value(key: &str, value: &Value) -> diagnostic::Result<(String, String)> {
-    let text = match value {
-        Value::Str(text) => text.clone(),
-        Value::Int(number) => number.to_string(),
-        Value::Float(number) => number.to_string(),
-        Value::Bool(flag) => flag.to_string(),
-        _ => return Err(field(&format!("consts.{key}"), "不能是表或数组")),
+    let path = format!("consts.{key}");
+    let texts = scalar_texts(value).ok_or_else(|| field(&path, "不能是表或数组"))?;
+    let Some(text) = texts.into_iter().next() else {
+        return Err(field(&path, "不能是表或数组"));
     };
     Ok((key.to_string(), text))
 }
@@ -534,7 +544,6 @@ pub fn const_value(key: &str, value: &Value) -> diagnostic::Result<(String, Stri
 /// `[consts]` 与 `[grid]`、`[chunk]` 三块可选的补丁：`declared` 按同一顺序解构。
 pub type Extras = (Vec<(String, String)>, Option<Grid>, Option<Chunk>);
 
-/// `[consts]` 与 `[grid]`、`[chunk]`：声明表里三块可选的补丁，一起解析成 `(常量, 网格, 分块)`。
 pub fn extras(table: &Table) -> diagnostic::Result<Extras> {
     Ok((consts(table)?, grid(table)?, chunk(table)?))
 }
@@ -578,17 +587,14 @@ fn slot_names(
     let Some(names) = row.string_array(key) else {
         return Ok(Vec::new());
     };
-    for name in &names {
-        let known = signature
-            .params()
-            .iter()
-            .any(|param| param.ctype.is_buf() && param.name == *name);
-        if !known {
-            return Err(field(
-                &format!("{op}.phases.{key}"),
-                format!("`{name}` 不是签名的缓冲形参"),
-            ));
-        }
-    }
-    Ok(names.into_iter().map(str::to_string).collect())
+    let unknown = names
+        .iter()
+        .find(|name| !signature.params().iter().any(|param| param.name == **name));
+    let Some(name) = unknown else {
+        return Ok(names.into_iter().map(str::to_string).collect());
+    };
+    Err(field(
+        &format!("{op}.phases.{key}"),
+        format!("`{name}` 不是签名的缓冲形参"),
+    ))
 }

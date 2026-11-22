@@ -165,18 +165,18 @@ pub fn devices() -> &'static [crate::Device] {
 
 /// 按 vendor 查设备行；没有登记时 `None`。表按 vendor 升序（生成序），二分查找。
 pub fn device(vendor: &str) -> Option<&'static crate::Device> {
-    let index = crate::DEVICES
+    let idx = crate::DEVICES
         .binary_search_by_key(&vendor, |entry| entry.vendor)
         .ok()?;
-    Some(&crate::DEVICES[index])
+    Some(&crate::DEVICES[idx])
 }
 
 /// 按 vendor 查片段源码根（那个设备目录）；没有登记时 `None`。
 pub fn dir_of(vendor: &str) -> Option<&'static str> {
-    let index = crate::ROOTS
+    let idx = crate::ROOTS
         .binary_search_by_key(&vendor, |(have, _)| have)
         .ok()?;
-    Some(crate::ROOTS[index].1)
+    Some(crate::ROOTS[idx].1)
 }
 
 /// 按 `(vendor, ext)` 查内嵌片段；没有登记时返回 `None`（调用方改读磁盘）。
@@ -197,18 +197,18 @@ pub fn builtin(vendor: &str, ext: &str) -> Option<FragmentSet> {
             })
             .collect()
     });
-    let index = crate::BUILTIN
+    let idx = crate::BUILTIN
         .binary_search_by_key(&(vendor, ext), |entry| (entry.vendor, entry.ext))
         .ok()?;
-    sets[index].clone()
+    sets[idx].clone()
 }
 
 /// 按 `(vendor, ext)` 查内嵌见证；没有登记时返回 `None`（调用方改读磁盘）。
 pub fn builtin_witness(vendor: &str, ext: &str) -> Option<&'static str> {
-    let index = crate::WITNESS
+    let idx = crate::WITNESS
         .binary_search_by_key(&(vendor, ext), |(have_vendor, have_ext, _)| {
             (*have_vendor, *have_ext)
         })
         .ok()?;
-    Some(crate::WITNESS[index].2)
+    Some(crate::WITNESS[idx].2)
 }

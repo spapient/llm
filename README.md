@@ -68,7 +68,7 @@ cargo run -p llm-cli --bin cutile -- cache gc --limit 1073741824                
 `metal` 的设备侧代码还能在构建期编成 `metallib` 并嵌进二进制：`cargo build -p llm-cli --features device-image`
 （默认是源码调试，只带片段与见证）。哪台设备带了什么由 `prim::devices()` 回答，
 `cargo run -p llm-cli --bin llm` 的 `片段层 prim` 一行会逐台列出 `=源码` / `=metallib N B/M 个符号`；
-`CUTILE_REQUIRE_IMAGE=metal` 把"缺镜像"升级成构建失败。细节见 [`crates/prim/README.md`](crates/prim/README.md)。
+`CUTILE_REQUIRE_IMAGE=metal` 把"缺镜像"升级成构建失败。细节见 [`crates/prof/README.md`](crates/prof/README.md)。
 
 ## 形状描述面（`tensor`）
 
@@ -116,7 +116,7 @@ cargo run -p llm-cli --bin cutile -- cache gc --limit 1073741824                
 |---|---|---|
 | `cache.dir` | `CUTILE_CACHE_DIR`（兼容 `CUTILE_CACHE`） | `<缓存根>/cache` |
 | `work.dir` | `CUTILE_WORK_DIR` | `<缓存根>/work` |
-| `data.root` | `CUTILE_DATA_DIR` | 未设置（用编译期内嵌的 `crates/prof/src/ops`、`crates/prof/devices/` 与 `crates/prim/<vendor>/`） |
+| `data.root` | `CUTILE_DATA_DIR` | 未设置（用编译期内嵌的 `crates/prof/src/ops`、`crates/prof/devices/` 与 `crates/prof/src/<vendor>/`） |
 | `cache.limit_bytes` | — | 2 GiB |
 
 默认值的唯一来源是 `crates/cli/src/settings.rs`；要偏离默认用配置文件、环境变量或 `--set`，

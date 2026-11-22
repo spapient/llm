@@ -1,15 +1,10 @@
-//! 档案 schema：把编译期展开的表读成 [`Profile`]（`parse`），再回答"档案自己是否自洽"（`check`）。
-//! 见证判据与源码定位在 [`crate::witness`]，推导式求值在 [`crate::eval`]。
+//! 档案 schema：把编译期展开的表读成 [`Profile`]（`parse`）。自洽校验在 [`crate::witness`]，
+//! 推导式求值在 [`crate::eval`]。
 
 use crate::atom::Set;
 use crate::prof::*;
-use crate::witness::{
-    Root, WitnessFiles, attr_key_error, exec_attr, signature_fields, witness_shape,
-};
 use core::fmt;
 use diagnostic::{Code, Error};
-use std::collections::BTreeMap;
-use std::path::Path;
 
 pub(crate) use crate::eval::eval_expression;
 
@@ -290,17 +285,23 @@ fn each_name(
 ) -> Result<(), ProfileError> {
     match value {
         Value::Str(text) => each(text),
-        Value::Array(items) => {
-            for item in items {
-                let Value::Str(text) = item else {
-                    return Err(bad(&field, "数组里只能是字符串"));
-                };
-                each(text)?;
-            }
-            Ok(())
-        }
+        Value::Array(items) => each_in_array(field, items, &mut each),
         _ => Err(bad(field, "只接受字符串或字符串数组")),
     }
+}
+/// 数组形态：逐项必须是字符串，遇到别的类型就报错（不静默跳过）。
+fn each_in_array(
+    field: impl fmt::Display,
+    items: &[Value],
+    each: &mut impl FnMut(&str) -> Result<(), ProfileError>,
+) -> Result<(), ProfileError> {
+    for item in items {
+        let Value::Str(text) = item else {
+            return Err(bad(&field, "数组里只能是字符串"));
+        };
+        each(text)?;
+    }
+    Ok(())
 }
 /// 一组存储层名字：每个都必须在 [`Space`] 闭集里。
 fn parse_space_set(field: impl fmt::Display, items: &[&str]) -> Result<SpaceSet, ProfileError> {
@@ -469,146 +470,4 @@ fn one_string(path: impl fmt::Display, item: &Value) -> Result<String, ProfileEr
 /// 区间文本：解析失败时把原话带上，字段路径由调用方给全。
 fn parse_span(field: impl fmt::Display, text: &str) -> Result<Span, ProfileError> {
     Span::parse(text).map_err(|error| bad(&field, error.message().to_string()))
-}
-
-// ── check ─────────────────────────────────────────────────────────────
-
-/// 写了 `exec` 却没声明执行单元。
-const EXEC_DETAIL: &str = "写 `exec` 前必须先用 `[units.<name>]` 声明执行单元";
-impl Profile {
-    /// 闭集与见证校验：只回答"档案自己是否自洽"，不判断它是否能在某台机器上跑对。
-    pub fn validate(&self, witnesses: Option<&dyn WitnessLookup>) -> Result<(), Vec<ProfileError>> {
-        let mut errors = self.head_errors();
-        let mut files = WitnessFiles::new(witnesses);
-        for provide in &self.provides {
-            errors.extend(witness_shape(provide));
-            errors.extend(files.probe(provide));
-            errors.extend(signature_fields(provide));
-        }
-        errors.extend(self.simt_lanes());
-        errors.extend(self.exec_units());
-        let passed = errors.is_empty().then_some(());
-        passed.ok_or(errors)
-    }
-    /// 单一根下的校验：见证文件都相对 `root` 解析（`<root>/<vendor>/witness.<ext>`）。
-    pub fn validate_in(&self, root: &Path) -> Result<(), Vec<ProfileError>> {
-        self.validate(Some(&Root(root)))
-    }
-    /// 跨供给的重复项与属性键闭集：`impl` 重名、见证复用、无关属性键。
-    fn head_errors(&self) -> Vec<ProfileError> {
-        let mut errors = self.duplicate_impls();
-        errors.extend(self.attr_keys());
-        errors.extend(self.duplicate_witnesses());
-        errors
-    }
-    /// 同一原语的多条签名必须用不同 `impl`，否则协商只会取到其中一条。
-    fn duplicate_impls(&self) -> Vec<ProfileError> {
-        let mut seen: BTreeMap<(Prim, &str), usize> = BTreeMap::new();
-        let mut errors = Vec::new();
-        for (idx, provide) in self.provides.iter().enumerate() {
-            let key = (provide.prim, provide.impl_name.as_str());
-            let Some(first) = seen.insert(key, idx) else {
-                continue;
-            };
-            let detail = format!(
-                "`{}` 的实现名与 provides[{first}] 重名：同一原语的多条签名必须用不同 impl 区分",
-                provide.prim
-            );
-            errors.push(bad(at(idx, "impl"), detail));
-        }
-        errors
-    }
-    /// 属性键必须属于该原语的能力签名：多写的键永远不会被协商比对，闭集在这里就拒收。
-    fn attr_keys(&self) -> Vec<ProfileError> {
-        let mut errors = Vec::new();
-        for provide in &self.provides {
-            for attr in &provide.attrs {
-                if !provide.prim.accepts(attr.key()) {
-                    errors.push(attr_key_error(provide, attr.key()));
-                }
-            }
-        }
-        errors
-    }
-    /// 一条见证只证明一条签名：两段签名指向同一入口时，"都有见证"就无法归属到哪一条。
-    fn duplicate_witnesses(&self) -> Vec<ProfileError> {
-        let mut seen: BTreeMap<(&str, &str), usize> = BTreeMap::new();
-        let mut errors = Vec::new();
-        for (idx, provide) in self.provides.iter().enumerate() {
-            let Some(witness) = provide.witness.as_ref() else {
-                continue;
-            };
-            let key = (witness.file.as_str(), witness.func.as_str());
-            let Some(first) = seen.insert(key, idx) else {
-                continue;
-            };
-            let previous = &self.provides[first];
-            let was = format!("{}/{}", previous.prim, previous.impl_name);
-            let now = format!("{}/{}", provide.prim, provide.impl_name);
-            let detail = format!(
-                "见证 `{}` 同时被 `{was}` 与 `{now}` 引用：一条见证只能证明一条签名",
-                witness.func
-            );
-            errors.push(witness_error(provide, detail));
-        }
-        errors
-    }
-    /// 子组内交换/广播以"有第二条 lane"为前提；只看 `group` 不够，还要 `declared`。
-    fn simt_lanes(&self) -> Vec<ProfileError> {
-        let group = self.simt.group;
-        let swap = |p: &Provide| matches!(p.prim, Prim::Shuffle | Prim::Broadcast);
-        let on_one_lane = |p: &Provide| swap(p) && self.simt.declared && group <= 1;
-        let errors = self.provides.iter().filter(|p| on_one_lane(p));
-        errors
-            .map(|p| {
-                bad(
-                    prim_at(p.prim, ""),
-                    format!(
-                        "`{}` 要求 `[simt].group > 1`（子组内交换/广播），本档案声明的是 {group}：单 lane 设备没有可交换的对象，这条能力应当不声明",
-                        p.prim
-                    ),
-                )
-            })
-            .collect()
-    }
-    /// `exec` 必须对得上本档案声明的执行单元，且该单元的存储层要覆盖这条供给。
-    fn exec_units(&self) -> Vec<ProfileError> {
-        let mut errors = Vec::new();
-        for provide in &self.provides {
-            if let Some(exec) = exec_attr(provide) {
-                errors.extend(self.exec_errors(provide, exec));
-            }
-        }
-        errors
-    }
-    /// 一条 `exec` 断言：单元要在，且它的存储层要覆盖供给声明的 `space`。
-    fn exec_errors(&self, provide: &Provide, exec: &Attr) -> Vec<ProfileError> {
-        let field = prim_at(provide.prim, "exec");
-        if self.units.is_empty() {
-            return vec![bad(field, EXEC_DETAIL)];
-        }
-        let (reachable, mut errors) = self.exec_reach(field, exec.values());
-        if !provide.space.is_subset(reachable) {
-            let unreachable = provide.space.difference(reachable);
-            let detail = format!("`{}` 访问不到 [{unreachable}]", exec.values().join("+"));
-            errors.push(bad(prim_at(provide.prim, "space"), detail));
-        }
-        errors
-    }
-    /// `exec` 取值能触及的存储层并集；本档案没声明的单元逐个报 `Unknown`。
-    fn exec_reach(
-        &self,
-        field: impl fmt::Display,
-        values: &[String],
-    ) -> (SpaceSet, Vec<ProfileError>) {
-        let allowed: Vec<&str> = self.units.iter().map(|unit| unit.name.as_str()).collect();
-        let (mut reachable, mut undefined) = (SpaceSet::empty(), Vec::new());
-        for value in values {
-            match self.units.iter().find(|unit| unit.name == *value) {
-                Some(unit) => unit.space.iter().for_each(|space| reachable.insert(space)),
-                None => undefined.push(unknown(&field, value, &allowed)),
-            }
-        }
-        (reachable, undefined)
-    }
 }

@@ -80,7 +80,7 @@ op 变长批段入口已按紧排游标切段；serve 装填 / 写回侧沿用�
 
 - **段布局**：历史 K/V 扁平一块，`[batch, heads, hist_b, d]`，段间紧排。第 `b` 段起点为累计游标
   `Σ_{j<b} heads·hist_j·d`，段长 `heads·hist_b·d`，缓冲总长 `Σ_b heads·hist_b·d`；与 op
-  [`decode_batch_var`](../../crates/conv/src/attention.rs) 的 `kv_cursor` 累计口径一致，两侧不各写一份
+  [`decode_batch_var`](../../crates/nn/src/conv/attention/decode.rs) 的 `kv_cursor` 累计口径一致，两侧不各写一份
   段算术。`hist_b = sequence.len()`，按准入序对齐。
 - **段内复用既有重排**：段内仍是头优先块 `[head, token, d]`，沿用现有 `reorder_history_row` 头分段
   整段 `copy_from_slice`；ragged 只改段间偏移，不改段内布局。
@@ -149,7 +149,7 @@ op 变长批段入口已按紧排游标切段；serve 装填 / 写回侧沿用�
 
 serve 整批前向动工前，下面三条是已从源码取证的阻塞契约缺口；在裁决落地前不铺图接线：
 
-1. **投影行批算术路径**（已裁决：方案 A）。`gemv_f32` 输入 / 输出宽度任意，但是单向量几何；`gemm_f32` 行批骨架的收缩轴 `K=8` 是固定档（[`gemm::K`](../../crates/gemm/src/gemm.rs)），不接任意 `in_features` 的真实驻留权重。两条候选：
+1. **投影行批算术路径**（已裁决：方案 A）。`gemv_f32` 输入 / 输出宽度任意，但是单向量几何；`gemm_f32` 行批骨架的收缩轴 `K=8` 是固定档（[`gemm::K`](../../crates/nn/src/kernel/gemm.rs)），不接任意 `in_features` 的真实驻留权重。两条候选：
    - **A. 行循环 gemv（采用）**：批内每段调一次既有 `gemv_f32`，共享同一份权重；实现直接、不动 op 契约，但内层按行循环。
    - **B. gemm 收缩轴运行期化（搁置）**：整块矩阵乘符合批处理偏好，但要先证明放宽 `K` 不破坏 `gemm_i4` / `gemm_i8` 的分组打包契约与样本 / 校验。
 2. **归一化行分组**。`rmsnorm_f32` 行分组 op 入口 `forward_batch` 已就位（各段独立 RMS、`gamma` 按行宽复用）；serve 内核适配接行批分段仍待接线。

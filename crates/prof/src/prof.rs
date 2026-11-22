@@ -465,44 +465,36 @@ pub fn builtin_profiles() -> &'static [Profile] {
 
 /// 按探测指纹从一组档案里挑出唯一命中、且规则最具体的一份。
 pub fn select<'a>(profiles: &'a [Profile], detected: &Detected) -> diagnostic::Result<&'a Profile> {
-    // 单遍：同时找最优者与同分冲突者（`max_by_key` 的相等取后者 + 第一个非最优的同分者）。
-    let mut best: Option<(usize, &Profile)> = None;
-    let mut rival: Option<&Profile> = None;
-    for (idx, profile) in profiles.iter().enumerate() {
-        if !profile.matches(detected) {
-            continue;
-        }
-        match best {
-            None => best = Some((idx, profile)),
-            Some((_, top)) if profile.specificity() > top.specificity() => {
-                best = Some((idx, profile));
-                rival = None;
-            }
-            Some((_, top)) if profile.specificity() == top.specificity() => {
-                if rival.is_none() {
-                    rival = Some(top);
-                }
-                best = Some((idx, profile));
-            }
-            Some(_) => {}
-        }
-    }
-    let Some((_, profile)) = best else {
+    // 最优者 = 命中的具体度最大者（相等取后者，`max_by_key` 语义）；冲突者 = 另一个同分命中者。
+    let hits: Vec<&Profile> = profiles
+        .iter()
+        .filter(|profile| profile.matches(detected))
+        .collect();
+    let Some((best_at, best)) = hits
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, profile)| profile.specificity())
+    else {
         return Err(
             Error::new(Code::Unsupported, format!("没有档案匹配该指纹：{detected}"))
                 .with("prof::select"),
         );
     };
+    let top = best.specificity();
+    let rival = hits
+        .iter()
+        .enumerate()
+        .find(|(at, profile)| *at != best_at && profile.specificity() == top);
     match rival {
-        Some(other) => Err(Error::new(
+        Some((_, other)) => Err(Error::new(
             Code::Invalid,
             format!(
                 "`{}` 与 `{}` 的指纹同等具体，无法决定用哪一份（指纹：{detected}）",
-                profile.meta.vendor, other.meta.vendor
+                best.meta.vendor, other.meta.vendor
             ),
         )
         .with("prof::select")),
-        None => Ok(profile),
+        None => Ok(best),
     }
 }
 pub use crate::witness::WitnessLookup;
