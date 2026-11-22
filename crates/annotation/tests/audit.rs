@@ -357,7 +357,7 @@ fn rendering_allocates_only_its_output_buf() {
     let hot = [
         "spec",
         "contract",
-        "check",
+        "check_module",
         "render_runtime",
         "render_model",
         "asserts",

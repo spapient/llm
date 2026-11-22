@@ -170,17 +170,21 @@ fn is_c_identifier(name: &str) -> bool {
         .next()
         .is_some_and(|byte| matches!(byte, b'a'..=b'z' | b'A'..=b'Z' | b'_'));
     let rest = bytes.all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'z' | b'A'..=b'Z' | b'_'));
-    start && rest && !C_KEYWORDS.contains(&name)
+    start && rest && !is_c_keyword(name)
 }
 
-/// C11 关键字闭集：这些名字会被写进 C 片段，撞上它就不是合法标识符。
-const C_KEYWORDS: &[&str] = &[
-    "auto", "break", "case", "char", "const", "continue", "default", "do", "double", "else",
-    "enum", "extern", "float", "for", "goto", "if", "inline", "int", "long", "register",
-    "restrict", "return", "short", "signed", "sizeof", "static", "struct", "switch", "typedef",
-    "union", "unsigned", "void", "volatile", "while", "_Alignas", "_Atomic", "_Bool", "_Complex",
-    "_Generic", "_Imaginary", "_Noreturn", "_Static_assert", "_Thread_local",
-];
+/// C11 关键字闭集：被发射的名字要原样写进 C 片段，撞上它就不是合法标识符。
+/// 写成空白分隔的单串比四十二行数组短，`split_ascii_whitespace` 不分配。
+const C_KEYWORDS: &str = "auto break case char const continue default do double else enum extern \
+     float for goto if inline int long register restrict return short signed sizeof static struct \
+     switch typedef union unsigned void volatile while _Alignas _Atomic _Bool _Complex _Generic \
+     _Imaginary _Noreturn _Static_assert _Thread_local";
+
+fn is_c_keyword(name: &str) -> bool {
+    C_KEYWORDS
+        .split_ascii_whitespace()
+        .any(|keyword| keyword == name)
+}
 
 /// 内核体被限定成「恰好一个 `for` 循环」，其余形状一律报错而不是猜一个意思。
 fn single_loop(function: &ItemFn) -> syn::Result<&ExprForLoop> {
@@ -333,9 +337,18 @@ fn output_name(assign: &ExprAssign, idx: &str, params: &[Param]) -> syn::Result<
             "kernel assignment target must be `output[index]`",
         ));
     };
-    let buf = path_ident(target.expr.as_ref(), "output must be a named mutable buffer")?;
+    let buf = path_ident(
+        target.expr.as_ref(),
+        "output must be a named mutable buffer",
+    )?;
     let output = portable_ident(buf)?;
-    require_output(assign, target.expr.as_ref(), target.index.as_ref(), idx, params)?;
+    require_output(
+        assign,
+        target.expr.as_ref(),
+        target.index.as_ref(),
+        idx,
+        params,
+    )?;
     Ok(output)
 }
 
@@ -406,8 +419,7 @@ fn unsupported(expression: &Expr) -> Error {
 }
 
 /// 表达式这一族的统一拒绝语：把「能用什么」写在一处，免得三个分支各说一套。
-const UNSUPPORTED: &str =
-    "unsupported expression; use f32 parameters, buffer loads, finite float literals, and basic arithmetic";
+const UNSUPPORTED: &str = "unsupported expression: f32 params, buf loads, finite literals, + - * /";
 
 fn float_literal(lit: &ExprLit) -> syn::Result<TokenStream2> {
     let Lit::Float(literal) = &lit.lit else {
@@ -449,11 +461,7 @@ fn scalar_ident(path: &ExprPath, idx: &str) -> syn::Result<String> {
     Ok(name)
 }
 
-fn reject_non_scalar(
-    path: &ExprPath,
-    params: &[Param],
-    name: &str,
-) -> syn::Result<String> {
+fn reject_non_scalar(path: &ExprPath, params: &[Param], name: &str) -> syn::Result<String> {
     let kind = param_kind(params, name)
         .ok_or_else(|| Error::new(path.span(), format!("unknown kernel value `{name}`")))?;
     match kind {
@@ -469,12 +477,7 @@ fn reject_non_scalar(
     }
 }
 
-fn buf_load(
-    buf: &Expr,
-    at: &Expr,
-    idx: &str,
-    params: &[Param],
-) -> syn::Result<TokenStream2> {
+fn buf_load(buf: &Expr, at: &Expr, idx: &str, params: &[Param]) -> syn::Result<TokenStream2> {
     let name = loaded_name(buf, at, idx, params)?;
     Ok(quote!(::cutile::ir::Expr::Load(#name.to_string())))
 }

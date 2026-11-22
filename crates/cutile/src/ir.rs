@@ -248,7 +248,10 @@ impl Kernel {
     fn check_params(&self) -> Result<(), VerificationError> {
         for (idx, param) in self.params.iter().enumerate() {
             valid_identifier(&param.name)?;
-            if self.params[..idx].iter().any(|prior| prior.name == param.name) {
+            if self.params[..idx]
+                .iter()
+                .any(|prior| prior.name == param.name)
+            {
                 return Err(VerificationError::new(format!(
                     "duplicate parameter `{}`",
                     param.name
@@ -552,7 +555,7 @@ fn write_binary(source: &mut String, op: BinaryOp, left: &Expr, right: &Expr, id
 }
 
 fn valid_identifier(name: &str) -> Result<(), VerificationError> {
-    if identifier_shape_ok(name) && !C_KEYWORDS.contains(&name) {
+    if identifier_shape_ok(name) && !is_c_keyword(name) {
         return Ok(());
     }
     Err(VerificationError::new(format!(
@@ -569,13 +572,17 @@ fn identifier_shape_ok(name: &str) -> bool {
 }
 
 /// C11 关键字闭集：被发射的名字要原样写进 C 片段，撞上它就不是合法标识符。
-const C_KEYWORDS: &[&str] = &[
-    "auto", "break", "case", "char", "const", "continue", "default", "do", "double", "else",
-    "enum", "extern", "float", "for", "goto", "if", "inline", "int", "long", "register",
-    "restrict", "return", "short", "signed", "sizeof", "static", "struct", "switch", "typedef",
-    "union", "unsigned", "void", "volatile", "while", "_Alignas", "_Atomic", "_Bool", "_Complex",
-    "_Generic", "_Imaginary", "_Noreturn", "_Static_assert", "_Thread_local",
-];
+/// 写成空白分隔的单串比四十二行数组短，`split_ascii_whitespace` 不分配。
+const C_KEYWORDS: &str = "auto break case char const continue default do double else enum extern \
+     float for goto if inline int long register restrict return short signed sizeof static struct \
+     switch typedef union unsigned void volatile while _Alignas _Atomic _Bool _Complex _Generic \
+     _Imaginary _Noreturn _Static_assert _Thread_local";
+
+fn is_c_keyword(name: &str) -> bool {
+    C_KEYWORDS
+        .split_ascii_whitespace()
+        .any(|keyword| keyword == name)
+}
 
 #[cfg(test)]
 #[path = "../tests/ir_tests.rs"]

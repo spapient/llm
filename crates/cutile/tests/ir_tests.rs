@@ -38,8 +38,14 @@ fn dsl_builds_verified_optimized_ir_and_portable_source() {
     kernel.verify().expect("macro output has valid types");
     let source = kernel.emit_c().expect("verified IR emits C");
     assert!(source.contains("int affine(const float *input, size_t cutile_len_0, float *output, size_t cutile_len_1, float scale, size_t extent)"), "{source}");
-    assert!(source.contains("if (extent > cutile_len_0) return 1;"), "{source}");
-    assert!(source.contains("output[position] = ((input[position] * scale) + 3.0f);"), "{source}");
+    assert!(
+        source.contains("if (extent > cutile_len_0) return 1;"),
+        "{source}"
+    );
+    assert!(
+        source.contains("output[position] = ((input[position] * scale) + 3.0f);"),
+        "{source}"
+    );
 }
 
 #[test]
@@ -71,7 +77,10 @@ fn c_keywords_and_odd_names_are_rejected() {
     for name in ["float", "1out", "out-put", ""] {
         kernel.name = name.to_string();
         let error = kernel.verify().expect_err("non-portable name is rejected");
-        assert!(error.to_string().contains("portable C identifier"), "{name}");
+        assert!(
+            error.to_string().contains("portable C identifier"),
+            "{name}"
+        );
     }
 }
 

@@ -193,7 +193,7 @@ fn the_signature_that_covers_the_need_is_the_one_compared() {
     // 这条用例只验"签名比对挑中了哪条供给"，与证据等级无关：按档案自述取证据即可。
     let report = check_need(&profile, &need, &Proof::declared(&profile));
     assert!(report.mismatches.is_empty(), "{}", report.reason());
-    assert_eq!(report.have.expect("nvidia 有 dot 供给").impl_name, "fma");
+    assert_eq!(report.have.expect("nvidia 有 dot 供给").impl_name, "fma4");
 }
 
 #[test]
