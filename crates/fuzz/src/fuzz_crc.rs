@@ -7,4 +7,4 @@ mod drivers;
 
 include!("harness.rs");
 
-fuzz_harness!(drivers::CrcChunk);
+fuzz_harness!(drivers::Crc);

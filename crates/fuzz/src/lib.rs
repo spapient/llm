@@ -66,6 +66,8 @@ use diagnostic::Error;
 // 让本 crate 以库名自引用：`drivers.rs` 被三个外部目标 `#[path]` 包含（`tests/parsers.rs`、
 // `src/fuzz_*.rs`、`tests/gen_corpus.rs`）时，它们通过 `llm_fuzz::Target` 取判据 trait；
 // 库自身的测试模块也走同一条路径，避免再要求每个包含方在 crate 根各补一个 `Target`。
+// 自引用只在 `#[cfg(test)]` 包含的 `drivers` 里被消费，纯 lib 构建不引用，故放开未用告警。
+#[allow(unused_extern_crates)]
 extern crate self as llm_fuzz;
 
 pub mod contract {
@@ -109,7 +111,13 @@ pub mod contract {
         if let Behaviour::Rejected { message, .. } = &first
             && message.trim().is_empty()
         {
-            return Err(Finding::new(target.name(), case, input, first, EMPTY_MESSAGE));
+            return Err(Finding::new(
+                target.name(),
+                case,
+                input,
+                first,
+                EMPTY_MESSAGE,
+            ));
         }
         let second = judge(target, input);
         if first != second {

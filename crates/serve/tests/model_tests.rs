@@ -1,7 +1,7 @@
 use super::*;
 use crate::Predict;
 use crate::assembly::Params;
-use crate::model::host::CpuModel;
+use crate::model::CpuModel;
 use crate::proto::{Decoder, Envelope, HEADER_LEN, Kind, MAX_PAYLOAD, TRAILER_LEN, Version};
 use crate::{Response, Route, Status};
 use diagnostic::Code;

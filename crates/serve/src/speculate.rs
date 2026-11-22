@@ -31,7 +31,8 @@ impl Verdict {
     /// 这一步真正走出来的 token：被接受的草稿前缀 + 第一个不一致处目标模型的补位。
     #[must_use]
     pub fn produced(&self, draft: &[u32]) -> Vec<u32> {
-        let mut out: Vec<u32> = draft.iter().take(self.accepted).copied().collect();
+        let mut out = Vec::with_capacity(self.accepted + usize::from(self.fallback.is_some()));
+        out.extend(draft.iter().take(self.accepted).copied());
         out.extend(self.fallback);
         out
     }

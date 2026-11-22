@@ -1,5 +1,8 @@
 //! CPU 模型宿主：装配结果 + 驻留执行器，承载张量级前向与 [`Predict`](crate::Predict) 路线 B 入口。
 
+pub use crate::kernels::register_cpu;
+pub use crate::params::Params;
+
 use diagnostic::{Code, Error, Result};
 use engine::exec::{CpuExecutor, Device, Executor};
 use engine::{Batch, Sequence};
@@ -7,8 +10,7 @@ use nn::Stack;
 use std::path::Path;
 
 use crate::assembly::{
-    Assembly, BlockBinding, LayerKind, Params, assemble, bind_activations, bind_weights,
-    submit_and_fetch,
+    Assembly, BlockBinding, LayerKind, assemble, bind_activations, bind_weights, submit_and_fetch,
 };
 use crate::kernels::SITE;
 

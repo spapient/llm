@@ -1,4 +1,4 @@
-//! 装配管线：把 `nn` 层栈与驻留参数表接成 engine [`Graph`]，再由 [`CpuModel`](crate::model::host::CpuModel) 宿主执行。
+//! 装配管线：把 `nn` 层栈与驻留参数表接成 engine [`Graph`]，再由 [`CpuModel`](crate::model::CpuModel) 宿主执行。
 
 use diagnostic::{Code, Error, Result};
 use engine::exec::{Executor, Graph, Launch, Node, Stream};

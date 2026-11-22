@@ -560,8 +560,16 @@ pub fn registry() -> [Entry; 15] {
     [
         entry("fuzz_cli", &Cli, seeds::ARGS),
         entry("fuzz_weights_json", &WeightsJson, seeds::HEADER.as_bytes()),
-        entry("fuzz_weights_safetensors", &WeightsSafetensors, seeds::safetensors()),
-        entry("fuzz_weights_archive", &WeightsArchive, seeds::u_container()),
+        entry(
+            "fuzz_weights_safetensors",
+            &WeightsSafetensors,
+            seeds::safetensors(),
+        ),
+        entry(
+            "fuzz_weights_archive",
+            &WeightsArchive,
+            seeds::u_container(),
+        ),
         entry("fuzz_train_snapshot", &TrainSnapshot, seeds::snapshot()),
         entry("fuzz_serve_frames", &ServeFrames, seeds::frame()),
         entry(

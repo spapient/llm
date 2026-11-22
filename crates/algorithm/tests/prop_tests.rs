@@ -15,7 +15,7 @@
 //!
 //! # 容差口径
 //!
-//! `|got − want| ≤ tol · max(1, |want|)`：相对误差，绝对下限为 1。`testkit::rel` 是同一判据，
+//! `|got − want| ≤ tol · max(1, |want|)`：相对误差，绝对下限为 1。`testkit::compare` 是同一判据，
 //! 但它的公开面只收 `f32` 切片；这里被测的是 `f64` 实例化，故用它的 `f64` 投影，不另立第二套。
 
 use diagnostic::Code;
