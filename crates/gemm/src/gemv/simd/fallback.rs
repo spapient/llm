@@ -26,7 +26,7 @@ const CHAINS: usize = 4;
 pub(crate) const COLS: usize = 2;
 
 /// 段宽：一条累加链一次推进的元素数，与 [`WIDE`] 同义但可独立调（见 [`COLS`] 的扫描）。
-const SPAN: usize = 16;
+const SPAN: usize = 32;
 
 /// 逐元素通道的权重取法：稠密 `f32` 直取，对称 `int8` 按二补数重新解释。
 ///
