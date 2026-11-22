@@ -39,8 +39,6 @@ pub struct Device {
     pub prims: &'static [(Prim, &'static str)],
     /// 写回尾块片段：一份文本里按 `/* epi: <form> */` 分成六段，装配按段取用。
     pub epilogue: &'static str,
-    /// 写回尾块枚举与映射表：六种形式各自的见证入口。
-    pub epis: &'static [(Epilogue, &'static str)],
     /// 见证源码：调试模式下的设备侧代码，也是镜像的输入。
     pub source: &'static str,
     /// 设备镜像；只在 `device-image` feature 下、且本机工具链真的编出来时存在。
@@ -72,14 +70,6 @@ impl Device {
         let rest = self.epilogue.split_once(marker.as_str())?.1;
         let body = rest.split("/* epi: ").next()?;
         Some(body.trim_matches('\n'))
-    }
-
-    /// 写回尾块某一段的见证入口名。
-    pub fn epi_entry(&self, form: Epilogue) -> Option<&'static str> {
-        self.epis
-            .iter()
-            .find(|(have, _)| *have == form)
-            .map(|(_, entry)| *entry)
     }
 
     /// 是否带上了设备镜像。

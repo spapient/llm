@@ -20,18 +20,6 @@ pub struct Witness<'a> {
     pub expect: &'a [f32],
 }
 
-/// 一条写回形式的条目：形式名、实现名、它算出的值。与 [`Provision`] 同形，但形式不是原语——
-/// 硬塞进 `prim` 一栏会让那个字段在两种闭集之间语义漂移。
-#[derive(Debug, Clone, Copy)]
-pub struct EpilogueEntry<'a> {
-    /// 写回形式名，如 `bias`。
-    pub form: &'a str,
-    /// 实现名，如 `column_broadcast`。
-    pub impl_name: &'a str,
-    /// 见证入口与期望值。
-    pub witness: Witness<'a>,
-}
-
 /// 一台设备在片段层的自述：由设备 crate 的生成表与档案拼出来。
 #[derive(Debug, Clone, Copy)]
 pub struct Contract<'a> {
@@ -49,9 +37,6 @@ pub struct Contract<'a> {
     pub prims: &'a [(&'a str, &'a str)],
     /// 档案里这台设备的全部供给。
     pub provides: &'a [Provision<'a>],
-    /// 写回尾块：档案 `[[epilogue]]` 的 `(形式, 见证函数名)`。六种形式与供给分属两套闭集，
-    /// 认领关系却同样要闭合：见证里写了算法，档案里就得有一条写着它归属哪种形式。
-    pub epilogue: &'a [EpilogueEntry<'a>],
     /// 写回尾块的文件名主干（`prof::sign` 的那一份），闭集要拿它算文件名。
     pub epilogue_stem: &'a str,
     /// 见证源码（`DEVICE.source`）。

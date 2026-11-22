@@ -1,7 +1,7 @@
 //! 档案层：设备指纹、参数化能力供给、证据等级与字段校验（cutile README §5.3、§11.2）。
 use crate::atom::{
-    Attr, AttrKey, Closed, DType, DTypeSet, Epilogue, Grade, Need, Prim, Provide,
-    Space, SpaceSet, Span, Witness,
+    Attr, AttrKey, Closed, DType, DTypeSet, Grade, Need, Prim, Provide, Space, SpaceSet, Span,
+    Witness,
 };
 use core::fmt;
 use diagnostic::data::{Table, Value};
