@@ -97,7 +97,10 @@ fn scan(dir: &Path, vendor: &str) -> Device {
     let epilogue = parts
         .clone()
         .find_map(|path| epilogue_of(path, &ext, &profile).map(|epis| (path.clone(), epis)));
+    // 尾块已单独取走：它不在原语闭集内，再交给 `fragment_of` 会硬失败。
+    let tail = epilogue.as_ref().map(|(path, _)| path.clone());
     let (mut fragments, mut entries): (Vec<_>, Vec<_>) = parts
+        .filter(|path| tail.as_ref() != Some(*path))
         .filter_map(|path| {
             let (prim, entry) = fragment_of(path, &ext, &profile)?;
             Some(((prim, path.clone()), (prim, entry)))
