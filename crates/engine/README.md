@@ -1,23 +1,23 @@
 # `llm-engine`
 
-Serving state machine and device floor: sequences, their KV pages, the admission scheduler, the
-submission contract — and the one place that asks "can this machine run this row at all".
+Serving state machine: sequences, their KV pages, the admission scheduler, and the submission
+contract. One file per concept, no subdirectories.
 
 | Module | Answers |
 | --- | --- |
-| `exec` | how is a program submitted and executed? (`Executor` is the runtime seam, ADR 0051) |
-| `batch` | how many rows fit **this** round? (`Batch::round`, `Admission`, `OverSeqs` / `OverTokens`) |
-| `kv` | where do a sequence's tokens live? (`Page` / `Table` / `Cache` / `Pager`, refcounted) |
-| `radix` | which prefix is already computed? (radix block tree over page tables) |
+| `scheduler` | which sequence takes the next step, and can it get the page? (`Scheduler`, private `Plan`) |
+| `sequence` | how far has one request got? (`Sequence` / `State` / `Progress`) |
+| `batch` | how many rows fit **this** round, and what settles when? (`Batch::round`, `Admission`) |
 | `ifb` | which three constraints are being decided? (`Budget` / `Candidate` / `Phase` / `pack`) |
-| `dialect` / `cuda` / `msl` | what source runs this family? (`Dialect` lowering primitives; CUDA + Metal vendor drivers) |
-| `metal::host` | how does a Metal kernel reach the GPU? (`xcrun metal` → `metallib` → host driver → readback) |
-| `metal_pipeline` | which stages and host folds does a chunked family need? (`reduce` / `rmsnorm` / `softmax` / `scan`) |
-| `tiled` | how is a launch shaped? (`Flash { seq, dim, threads, block }`, `lanes` / `tail`) |
-| `backends` | which compiler and device exist here? (`nvcc` / `xcrun metal` / MSVC probe) |
-| `metal` | how is the process-internal Metal executor driven? (the only `unsafe` island) |
-| `norm` / `scan` / `wmma` | which kernel family is this, and what launch does it need? |
-| `platform` | is this row runnable on this machine? (`Row` / `Standing` / `Why`, ADR 0052) |
+| `kv` | where do a sequence's tokens live? (`Page` / `Table` / `Slot` / `Cache`, refcounted) |
+| `pager` | which page is free, and who holds it? (page pool behind `kv`) |
+| `radix` | which prefix is already computed? (radix block tree over page tables) |
+| `queue` | how is a program submitted and executed? (`Executor` seam, ADR 0051; `Buf` / `View`) |
+| `exec` | what does a submission *mean*? (`Stream` / `Graph` / `Node` / `Launch` / `Operand`) |
+| `cpu` | how does a graph run in-process? (`LocalExecutor`, `Program`, `Bindings`) |
+
+Device sources, vendor chains and platform eligibility live in `llm-device`; `engine` only defines
+the seam (`exec::Executor`) that it fills.
 
 ## Guarantees
 
@@ -27,22 +27,17 @@ submission contract — and the one place that asks "can this machine run this r
 - **Pages are bookkept, not copied.** Data lives in `Cache`, page numbers in `Table`; sharing a
   prefix means two tables referencing the same pages, and `finish` returns them. `in_use` is the
   single count of "how many pages are spoken for".
-- **The platform verdict never fails the audit.** `audit` emits all six rows every time — a missing
-  row would make "not covered" and "never asked" the same output. `require` reports `E-PLAT` for the
-  one row you asked about. It decides **eligibility**, not correctness: a passing `require` says
-  nothing about whether a kernel computes the right number (`cutile::verify` and `tool::card` do).
-- **`Why` is a three-value closed set.** `NoDevice` and `NoToolchain` have different fixes (another
-  machine vs another install), so they are never merged into free-text "unsupported".
-- **The vendor boundary stays behind one FFI island.** `engine` owns the probe, the source generation
-  and the launch shape; the `unsafe` calls that actually reach a device live in `metal` and nowhere
-  else (ADR 0035).
-- **A chunked family is one program, not one kernel.** Partial results land in the output buffer per
-  block, the host folds them (f64 sums, `a^len` by squaring) and the next stage re-launches on the
-  same grid — so a family cannot claim "parallel" from its device segments alone.
+- **Prefix registration is incremental, not a rescan.** Block `b` settles once rows `(b+1)·width`
+  are written. Rescanning from 0 per write would re-walk the tree to hear "already there" — a
+  prefill of length P paying `O(P²/width)` walks. `Batch::settle` asks the tree how deep this token
+  path already goes and registers only past that, so the cost tracks blocks that are genuinely new —
+  including when a caller writes rows out of order and skipped blocks still need publishing.
+- **Nothing owns the epoch but the page count.** `in_use` is the single count of "how many pages are
+  spoken for"; there is no second ledger to drift from it.
 
 ## Where the numbers come from
 
-The launch geometry (`tiled`) and the source text (`dialect` / `cuda` / `msl`) are mechanism; the measurements that
-judge them (`E10` predictability, `E12` page access) live in `#[ignore]` probes on the modules they
-measure, and their verdicts belong to `tool::card`. A mechanism probe reports a quantity, never a
-PASS.
+Launch geometry and vendor source text are `llm-device`'s; the measurement that judges the page
+account here is `E12` page access — an `#[ignore]` probe in `tests/kv.rs` that reports random-access
+recall and slot-lookup cost. A mechanism probe reports a quantity, never a PASS; the verdict belongs
+to `tool::card`.

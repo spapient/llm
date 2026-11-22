@@ -48,20 +48,10 @@ impl Radix {
 
     /// 最长满块前缀命中的页，按块序；页可直接采纳进新页表（调用方按 `share` 加计数）。
     pub fn longest(&mut self, tokens: &[u32], page_size: usize) -> Vec<Page> {
-        let mut pages = Vec::new();
-        let mut at: Option<usize> = None;
-        let mut block = 0;
-        let mut path = Vec::new();
-        while let Some(span) = block_tokens(tokens, page_size, block) {
-            let Some(idx) = self.child(at, span) else {
-                break;
-            };
-            path.push(idx);
-            at = Some(idx);
-            block += 1;
-        }
+        let path = self.walk(tokens, page_size);
         self.clock += 1;
         let tick = self.clock;
+        let mut pages = Vec::with_capacity(path.len());
         for idx in path {
             if let Some(block) = self.nodes[idx].as_mut() {
                 block.tick = tick;
@@ -69,6 +59,25 @@ impl Radix {
             }
         }
         pages
+    }
+
+    /// 最长满块前缀命中的块数。只读：不刷新时序戳，因为问「到哪儿了」不该算一次命中。
+    pub fn depth(&self, tokens: &[u32], page_size: usize) -> usize {
+        self.walk(tokens, page_size).len()
+    }
+
+    /// 沿 token 路径一直往下走，返回命中的节点下标（按块序）。
+    fn walk(&self, tokens: &[u32], page_size: usize) -> Vec<usize> {
+        let mut path = Vec::new();
+        let mut at: Option<usize> = None;
+        while let Some(span) = block_tokens(tokens, page_size, path.len()) {
+            let Some(idx) = self.child(at, span) else {
+                break;
+            };
+            path.push(idx);
+            at = Some(idx);
+        }
+        path
     }
 
     /// 把一个写满的块登记进树：对它的页加一份引用，返回是否新登记。
