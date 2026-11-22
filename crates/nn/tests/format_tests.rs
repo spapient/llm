@@ -13,39 +13,45 @@ fn every_element_type_maps_to_a_format_and_back() {
     );
 }
 
+/// 「分组对得上才选得到算子」是三档共用的一条契约，三处拷贝此前各写一遍同样的三步。
+/// 收成一张表还有个额外好处：多一档精度时这张表会立刻要求补一行，而不是静默漏掉。
+/// 各档自己的差异（元素类型、默认分组、诊断文字）留在各自那一条用例里。
 #[test]
-fn only_the_declared_int4_group_reaches_an_operator() {
-    // 分组来自算子语义表：这里把它读出来而不是再断言一个 32。
-    let group = op::model(crate::Linear::OP).expect("算子有语义表").group as usize;
-    assert_eq!(
-        WeightFormat::int4(group).operator(),
-        Some(crate::Linear::OP),
-        "与算子声明的分组一致时才选得到算子"
-    );
-    assert_eq!(WeightFormat::INT4.operator(), Some(crate::Linear::OP));
-    assert_eq!(
-        WeightFormat::int4(group * 2).operator(),
-        None,
-        "分组不同就是另一个算子，不能套用"
-    );
+fn a_declared_group_is_the_only_one_that_reaches_an_operator() {
+    // 分组一律从算子语义表读出来，不在用例里再断言一个 32。
+    let rungs: [(&str, fn(usize) -> WeightFormat, WeightFormat); 3] = [
+        (crate::Linear::I2, WeightFormat::int2, WeightFormat::INT2),
+        (crate::Linear::OP, WeightFormat::int4, WeightFormat::INT4),
+        (crate::Linear::I8, WeightFormat::int8, WeightFormat::INT8),
+    ];
+    for (op_name, with_group, default) in rungs {
+        let group = op::model(op_name)
+            .unwrap_or_else(|| panic!("{op_name} 有语义表"))
+            .group as usize;
+        assert_eq!(
+            with_group(group).operator(),
+            Some(op_name),
+            "{op_name}：与算子声明的分组一致时才选得到算子"
+        );
+        assert_eq!(
+            default.operator(),
+            Some(op_name),
+            "{op_name}：默认格式的分组必须就是内核声明的那一档"
+        );
+        assert_eq!(
+            with_group(group * 2).operator(),
+            None,
+            "{op_name}：分组不同就是另一个算子，不能套用"
+        );
+    }
 }
 
+/// int8 这一档独有的是元素类型：它不打包，一个元素就是一字节。
 #[test]
-fn only_the_declared_int8_group_reaches_an_operator() {
+fn int8_elements_take_one_byte_each() {
     let group = op::model(crate::Linear::I8)
         .expect("gemv_i8 有语义表")
         .group as usize;
-    assert_eq!(
-        WeightFormat::int8(group).operator(),
-        Some(crate::Linear::I8),
-        "与算子声明的分组一致时才选得到算子"
-    );
-    assert_eq!(WeightFormat::INT8.operator(), Some(crate::Linear::I8));
-    assert_eq!(
-        WeightFormat::int8(group * 2).operator(),
-        None,
-        "分组不同就是另一个算子，不能套用"
-    );
     assert_eq!(
         WeightFormat::int8(group).dtype(),
         DType::I8,
@@ -111,21 +117,10 @@ fn grouped_formats_map_back_to_their_storage_dtype() {
 /// 2 位这一档此前在格式轴上不存在，而 `gemv_i2` / `gemm_i2` / `dequant_i2` 三个算子早已注册：
 /// 算子表里有、层侧表达不出，正是「精度档缺一级」这种缺口的形态。这条用例锁住它被补上。
 #[test]
-fn the_int2_rung_reaches_its_operator_like_the_other_two_precisions() {
+fn the_int2_rung_is_packed_and_says_which_group_mismatches() {
     let group = op::model(crate::Linear::I2)
         .expect("gemv_i2 有语义表")
         .group as usize;
-    assert_eq!(
-        WeightFormat::INT2,
-        WeightFormat::int2(group),
-        "默认 2 位格式的分组必须就是内核声明的那一档"
-    );
-    assert_eq!(WeightFormat::INT2.operator(), Some(crate::Linear::I2));
-    assert_eq!(
-        WeightFormat::int2(group * 2).operator(),
-        None,
-        "分组不同就是另一个算子，不能套用"
-    );
     assert_eq!(
         WeightFormat::int2(group * 2).unpriced_reason(),
         format!(
