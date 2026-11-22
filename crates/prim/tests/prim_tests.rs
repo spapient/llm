@@ -392,3 +392,63 @@ fn without_the_feature_every_device_is_source_only() {
         );
     }
 }
+
+/// 六种写回形式在每台设备上都切得出来：装配按语法顺序各取一段，切错或切空要到装配期
+/// 才会暴露，所以在这里就按形式逐个取。
+#[test]
+fn every_device_splits_the_six_epilogue_sections() {
+    for device in devices() {
+        for form in prof::atom::Epilogue::ALL.iter().copied() {
+            let text = device
+                .epilogue_of(form)
+                .unwrap_or_else(|| panic!("`{}` 没有 `{form}` 段", device.vendor));
+            assert!(
+                !text.trim().is_empty(),
+                "`{}` 的 `{form}` 段是空的",
+                device.vendor
+            );
+            assert!(
+                !text.contains("/* epi: "),
+                "`{}` 的 `{form}` 段跨进了下一段",
+                device.vendor
+            );
+            assert!(
+                device.epi_entry(form).is_some(),
+                "`{}` 的 `{form}` 没有见证入口",
+                device.vendor
+            );
+        }
+    }
+}
+
+/// 六段互不重叠、合起来覆盖正文：形式标记是唯一的切分点，少一段就是装配缺一步。
+#[test]
+fn the_epilogue_sections_are_disjoint_and_cover_the_body() {
+    for device in devices() {
+        let markers = prof::atom::Epilogue::ALL
+            .iter()
+            .map(|form| prof::device::epi_marker(*form))
+            .collect::<Vec<_>>();
+        let mut rest = device.epilogue;
+        for marker in markers {
+            let (_, tail) = rest
+                .split_once(marker.as_str())
+                .unwrap_or_else(|| panic!("`{}` 缺标记 `{marker}`", device.vendor));
+            rest = tail;
+        }
+        assert!(
+            !rest.contains("/* epi: "),
+            "`{}` 有多余的写回段",
+            device.vendor
+        );
+    }
+}
+
+/// 标记缺席时返回 `None` 而不是切出整段：构建期已经保证六段齐全，运行期不该靠猜。
+#[test]
+fn a_missing_epilogue_marker_yields_none() {
+    let mut bare = *devices().first().expect("至少一台设备");
+    bare.epilogue = "/* epi: bias */\n$0[$1] = $2;\n";
+    assert!(bare.epilogue_of(prof::atom::Epilogue::Bias).is_some());
+    assert!(bare.epilogue_of(prof::atom::Epilogue::Scale).is_none());
+}

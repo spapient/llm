@@ -303,6 +303,12 @@ impl Profile {
             errors.extend(files.probe(provide));
             errors.extend(signature_fields(provide));
         }
+        errors.extend(epi_duplicates(&self.epilogue));
+        for (index, epi) in self.epilogue.iter().enumerate() {
+            errors.extend(epi_shape(epi, index));
+            let make = |detail: String| bad(epi_at(index, "witness"), detail);
+            errors.extend(files.probe_witness(epi.witness.as_ref(), &make));
+        }
         errors.extend(self.simt_lanes());
         errors.extend(self.exec_units());
         let passed = errors.is_empty().then_some(());

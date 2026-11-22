@@ -245,7 +245,7 @@ git status --short                    # 只允许本轮认领文件
 
 - **v2.7（engine S++ 收敛：`src/` 归零测试、21 组合并、单文件全 ≤400）**：`crates/engine` 从
   26 个 `.rs` / 15,404 行收到 **38 个 `.rs` / 10,600 行**（−4,804 行、−31%），`src/` 生产文件**全部 ≤400 行**
-  （最大 `norm.rs` 398），测试文件全部 ≤800（最大 `tests/metal_executor.rs` 796），**`src/` 里零 `#[test]`**。
+  （最大 `norm.rs` 398），测试文件全部 ≤800（最大 `cli/tests/device.rs` 767），**`src/` 里零 `#[test]`**。
   **① `src/` 只放生产代码**：`batch` / `kv` / `platform` / `program` / `radix` 五处 `mod tests` 与 `ifb` 的内联
   测试块共 1,705 行全部外移到 `tests/`，父模块只留 `#[cfg(test)] #[path = "../tests/<name>.rs"] mod tests;`
   —— 与 v2.4（cli）/ v2.6（testkit）同一条结构门，测试数量不变（151 lib + 14 `schedule` + 3 = 168 全绿）。

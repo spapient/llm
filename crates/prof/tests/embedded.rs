@@ -50,3 +50,29 @@ fn select_reports_unsupported_when_nothing_matches() {
     let error = crate::prof::select(profiles, &detected).expect_err("无命中必须报错");
     assert_eq!(error.code(), diagnostic::Code::Unsupported);
 }
+
+/// 六种写回形式是装配的必经之路：每份档案都要六条齐全、各有一条见证。
+///
+/// 缺一条在构建期就会炸（`codegen` 按形式找段），但那时报的是"片段里没有这一段"；
+/// 在档案层拦下来，诊断才指向写错的档案。
+#[test]
+fn every_archive_declares_the_six_epilogue_forms() {
+    for name in crate::names() {
+        let table = crate::embedded(name).expect("名字都能取到表");
+        let profile = crate::prof::Profile::parse(table).expect("内置档案可解析");
+        let forms = profile
+            .epilogue
+            .iter()
+            .map(|epi| epi.form)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            forms,
+            crate::atom::Epilogue::ALL,
+            "`{name}` 的 `[[epilogue]]` 必须六种形式各一条"
+        );
+        assert!(
+            profile.epilogue.iter().all(|epi| epi.witness.is_some()),
+            "`{name}` 的每条写回供给都要有见证"
+        );
+    }
+}

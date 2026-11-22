@@ -4,6 +4,7 @@
 //! 六种形式由 `spec::epilogue` 的语法写死，档案只回答"这台设备怎么实现它、证据到哪一级"。
 use super::super::*;
 use super::provide::witness_fields;
+use super::witness::shape_details;
 
 /// `[[epilogue]]` 数组：缺省为空（旧档案不写这一段），写了就要六种形式齐全。
 pub(super) fn parse_epilogues(table: &Table) -> Result<Vec<EpiProvide>, ProfileError> {
@@ -36,4 +37,46 @@ fn witness_of_epi(entry: &Table, index: usize) -> Result<Witness, ProfileError> 
         return Err(missing(epi_at(index, "witness")));
     };
     witness_fields(table, |key| epi_witness_at(index, key))
+}
+
+/// 一条写回供给的形状：等级要得起见证就必须有，写了就必须有入口名与期望值。
+pub(super) fn epi_shape(epi: &EpiProvide, index: usize) -> Vec<ProfileError> {
+    let Some(witness) = epi.witness.as_ref() else {
+        let grade = epi.grade;
+        return if grade.is_verified() {
+            let detail = format!("{grade} 要求 `witness = {{ file, func, expect }}`");
+            vec![bad(epi_at(index, "witness"), detail)]
+        } else {
+            Vec::new()
+        };
+    };
+    let make = |(key, detail): (&'static str, String)| bad(epi_witness_at(index, key), detail);
+    shape_details(witness).into_iter().map(make).collect()
+}
+
+/// 六种形式各一条：形式重名时"这台设备怎么实现 bias"就没有唯一答案；
+/// 见证入口重名时，通过的结论无法归属到哪一种形式。
+pub(super) fn epi_duplicates(all: &[EpiProvide]) -> Vec<ProfileError> {
+    let mut forms: BTreeMap<Epilogue, usize> = BTreeMap::new();
+    let mut entries: BTreeMap<(&str, &str), usize> = BTreeMap::new();
+    let mut errors = Vec::new();
+    for (index, epi) in all.iter().enumerate() {
+        let form = epi.form;
+        if let Some(first) = forms.insert(form, index) {
+            let detail = format!("`{form}` 已经在 epilogue[{first}] 声明过：六种形式各一条");
+            errors.push(bad(epi_at(index, "form"), detail));
+        }
+        let Some(witness) = epi.witness.as_ref() else {
+            continue;
+        };
+        let key = (witness.file.as_str(), witness.func.as_str());
+        if let Some(first) = entries.insert(key, index) {
+            let detail = format!(
+                "见证 `{}` 同时被 epilogue[{first}] 与 epilogue[{index}] 引用：一条见证只能证明一种形式",
+                witness.func
+            );
+            errors.push(bad(epi_witness_at(index, "func"), detail));
+        }
+    }
+    errors
 }

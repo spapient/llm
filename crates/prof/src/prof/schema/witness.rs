@@ -28,22 +28,28 @@ pub(super) fn witness_shape(provide: &Provide) -> Vec<ProfileError> {
     let Some(witness) = provide.witness.as_ref() else {
         return missing_witness(provide).into_iter().collect();
     };
+    let make = |(_, detail): (&'static str, String)| witness_error(provide, detail);
+    shape_details(witness).into_iter().map(make).collect()
+}
+/// 见证形状的判据本体：键是 `func` / `expect`，两种供给（原语与写回形式）共用一份。
+pub(super) fn shape_details(witness: &Witness) -> Vec<(&'static str, String)> {
     let len = witness.expect.len();
     let too_many = format!("期望输出 {len} 个，超过上限 {}", Witness::MAX_OUT);
     let checks = [
         (
             witness.func.is_empty(),
+            "func",
             "见证必须给出入口函数名，否则无法执行".to_string(),
         ),
         (
             witness.expect.is_empty(),
+            "expect",
             "见证必须给出期望输出，否则无法对拍".to_string(),
         ),
-        (len > Witness::MAX_OUT, too_many),
+        (len > Witness::MAX_OUT, "expect", too_many),
     ];
-    let failed = checks.into_iter().filter(|(failed, _)| *failed);
-    let make = |(_, detail): (bool, String)| witness_error(provide, detail);
-    failed.map(make).collect()
+    let failed = checks.into_iter().filter(|(failed, ..)| *failed);
+    failed.map(|(_, key, detail)| (key, detail)).collect()
 }
 /// 没有见证时唯一说得通的理由是等级还不到 `L2`——等级是执行的结论，不是自述。
 pub(super) fn missing_witness(provide: &Provide) -> Option<ProfileError> {
@@ -110,14 +116,23 @@ impl<'a> WitnessFiles<'a> {
     }
     /// 一条供给的文件级判据：文件要在，且真的声明了那个入口函数；不判断跑不跑得通。
     pub(super) fn probe(&mut self, provide: &Provide) -> Vec<ProfileError> {
-        let (Some(witnesses), Some(witness)) = (self.witnesses, provide.witness.as_ref()) else {
+        let make = |detail: String| witness_error(provide, detail);
+        self.probe_witness(provide.witness.as_ref(), &make)
+    }
+    /// 判据本体：诊断由调用方成形（原语与写回形式各有自己的字段路径）。
+    pub(super) fn probe_witness(
+        &mut self,
+        witness: Option<&Witness>,
+        error: &dyn Fn(String) -> ProfileError,
+    ) -> Vec<ProfileError> {
+        let (Some(witnesses), Some(witness)) = (self.witnesses, witness) else {
             return Vec::new();
         };
         let source = self.source(witnesses, &witness.file);
         let found = source.map(|text| declares(text, witness));
         match found {
             None => self.report(witnesses, &witness.file),
-            Some(false) => vec![witness_error(provide, absent_function(witness))],
+            Some(false) => vec![error(absent_function(witness))],
             Some(true) => Vec::new(),
         }
     }
