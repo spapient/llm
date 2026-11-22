@@ -3,6 +3,7 @@
 
 [op]
 name     = "dequant_i4"
+stem     = "dequant_packed"
 skeleton = "elementwise"
 summary  = "y[n] = scale*(nibble-8)，输入为打包字节"
 

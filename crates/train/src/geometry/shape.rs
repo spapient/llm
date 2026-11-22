@@ -1,7 +1,7 @@
 //! 职责：几何形状面——`Geometry` 各变体的形状核对、窗口几何与共享工具。
 
 use diagnostic::{Code, Error, Result};
-use nn::conv::conv::ConvGeom;
+use nn::conv::ConvGeom;
 
 use super::{EPS, Geometry};
 

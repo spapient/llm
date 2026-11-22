@@ -19,8 +19,6 @@ pub struct Absence {
 /// 有性质测试套件的成员——与源码里实际出现的性质测试块一一对应。
 pub const COVERED: &[&str] = &[
     "algorithm",
-    "conv",
-    "gemm",
     "nn",
     "rng",
     "shard",
@@ -39,11 +37,6 @@ pub const PLANNED: &[(&str, &str)] = &[
         "该断言\"每个算子恰好被访问一次\"与\"加法梯度是求和\"；但同一批公式的生产路径在 \
          `train`（刚补上梯度对拍），先坐实那边再回填这里的遍历纪律。",
     ),
-    (
-        "optim",
-        "该复制 `train::optimizer` 的单步闭式解；动手前须确认 `optim` 与 `train` 不是同一份\
-         实现的两次抄写，否则性质会在两处各写一遍、各漂一半。",
-    ),
 ];
 
 /// 缺口上限：只许减，不许随手加。
@@ -51,12 +44,6 @@ pub const PLANNED_MAX: usize = 2;
 
 /// 有明确替代覆盖、因而**不该**再写性质测试的成员，按理由归类。
 pub const ABSENT: &[Absence] = &[
-    Absence {
-        members: &["frag"],
-        reason: "片段层：六台设备的片段正文与见证是**要被设备编译器读的代码**，Rust 侧只剩生成器给出的\
-                 四张表，没有算法可断言。真值是 `crates/frag/tests/fragments.rs` 的逐条对账与见证执行，\
-                 以及 `cutile::gate` 的语言前端解析；写成性质只剩\"结构等于结构\"，比编译器已保证的弱。",
-    },
     Absence {
         members: &["cutile", "device"],
         reason: "发射路径：结论要么要真设备（`testkit::gating` 的跳过语义，本机恒定 skip 等于空转），\
@@ -67,8 +54,6 @@ pub const ABSENT: &[Absence] = &[
             "annotation",
             "diagnostic",
             "dtype",
-            "op",
-            "prim",
             "spec",
             "storage",
         ],
@@ -84,7 +69,9 @@ pub const ABSENT: &[Absence] = &[
     Absence {
         members: &["engine", "prof", "serve"],
         reason: "调度与时序：要可控时钟与线程排练才能断言，现有场景用例已用假时钟钉死时间线；\
-                 随机化调度只会让失败不可复现——在这类代码里不可复现等于没有失败。",
+                 随机化调度只会让失败不可复现——在这类代码里不可复现等于没有失败。\
+                 片段正文与见证（原 `frag`）随声明层一并落在 `prof/src/<vendor>/`，\
+                 真值是 `prof` 的逐条对账用例，写在性质层只会退化成\"结构等于结构\"。",
     },
     Absence {
         members: &["formats", "fuzz", "snapshot", "tokenizer", "weights"],

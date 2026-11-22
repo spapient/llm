@@ -10,72 +10,31 @@ pub(crate) use diagnostic::data::{Table, Value};
 use diagnostic::{Code, Error};
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
-/// 输出语言闭集（cutile README §5.4 的 `emit` 列）。设备与输出语言是两个维度：
-/// 同一条 `cuda` emit 同时服务 NVIDIA 与 MUSA。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Emit {
-    /// CUDA C++。
-    Cuda,
-    /// PTX 汇编。
-    Ptx,
-    /// HIP。
-    Hip,
-    /// OpenCL C。
-    Opencl,
-    /// SPIR-V。
-    Spirv,
-    /// Metal Shading Language。
-    Metal,
-    /// 昇腾 AscendC。
-    Ascendc,
-    /// 可移植 C。
-    C,
-    /// WGSL。
-    Wgsl,
-}
-impl Closed for Emit {
-    /// 闭集全量；顺序即 `Emit::SPEC` 的下标，也就是变体判别值。
-    const ALL: &'static [Self] = &[
-        Self::Cuda,
-        Self::Ptx,
-        Self::Hip,
-        Self::Opencl,
-        Self::Spirv,
-        Self::Metal,
-        Self::Ascendc,
-        Self::C,
-        Self::Wgsl,
-    ];
-    fn as_str(self) -> &'static str {
-        Self::SPEC[self as usize].0
-    }
-    fn idx(self) -> usize {
-        self as usize
-    }
-}
-crate::inherent_names!(Emit);
-impl Emit {
-    /// 名字与源文件扩展名，一行一个变体（顺序与 [`Emit::ALL`] 一致）：
-    /// 名字与后缀是同一份事实，写成一张表，改名时不会漏掉 `ext`。
-    const SPEC: &'static [(&'static str, &'static str)] = &[
-        ("cuda", "cu"),
-        ("ptx", "ptx"),
-        ("hip", "hip"),
-        ("opencl", "cl"),
-        ("spirv", "spv"),
-        ("metal", "metal"),
-        ("ascendc", "cpp"),
-        ("c", "c"),
-        ("wgsl", "wgsl"),
-    ];
-    /// 生成的源文件扩展名（只回答后缀，不回答这种语言能否编出产物）。
-    pub const fn ext(self) -> &'static str {
-        Self::SPEC[self as usize].1
-    }
-}
-impl fmt::Display for Emit {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
+
+crate::closed_enum! {
+    /// 输出语言闭集（cutile README §5.4 的 `emit` 列）。设备与输出语言是两个维度：
+    /// 同一条 `cuda` emit 同时服务 NVIDIA 与 MUSA。附加列 `ext` 是生成的源文件扩展名
+    /// （只回答后缀，不回答这种语言能否编出产物）。
+    Emit {
+        ext:
+        // CUDA C++。
+        Cuda => ("cuda", "cu"),
+        // PTX 汇编。
+        Ptx => ("ptx", "ptx"),
+        // HIP。
+        Hip => ("hip", "hip"),
+        // OpenCL C。
+        Opencl => ("opencl", "cl"),
+        // SPIR-V。
+        Spirv => ("spirv", "spv"),
+        // Metal Shading Language。
+        Metal => ("metal", "metal"),
+        // 昇腾 AscendC。
+        Ascendc => ("ascendc", "cpp"),
+        // 可移植 C。
+        C => ("c", "c"),
+        // WGSL。
+        Wgsl => ("wgsl", "wgsl"),
     }
 }
 /// 档案的元信息。
@@ -369,10 +328,6 @@ pub(crate) fn witness_error(provide: &Provide, detail: impl Into<String>) -> Pro
 pub(crate) fn closed_names<E: Closed>(all: &'static [E]) -> Vec<&'static str> {
     all.iter().map(|item| item.as_str()).collect()
 }
-/// 数据类型闭集的名字表：`DType` 是 L1 外部类型，用它自己的 `name()`。
-pub(crate) fn dtype_names() -> Vec<&'static str> {
-    DType::ALL.iter().map(|dt| dt.name()).collect()
-}
 /// 解析闭集里的名字；闭集外一律 `Unknown`，并把闭集内容一起报出来。
 pub(crate) fn closed<E: Closed>(name: &str, field: impl fmt::Display) -> Result<E, ProfileError> {
     E::parse(name).ok_or_else(|| unknown(field, name, &closed_names(E::ALL)))
@@ -510,18 +465,35 @@ pub fn builtin_profiles() -> &'static [Profile] {
 
 /// 按探测指纹从一组档案里挑出唯一命中、且规则最具体的一份。
 pub fn select<'a>(profiles: &'a [Profile], detected: &Detected) -> diagnostic::Result<&'a Profile> {
-    let Some((idx, profile)) = profiles
-        .iter()
-        .enumerate()
-        .filter(|(_, profile)| profile.matches(detected))
-        .max_by_key(|(_, profile)| profile.specificity())
-    else {
+    // 单遍：同时找最优者与同分冲突者（`max_by_key` 的相等取后者 + 第一个非最优的同分者）。
+    let mut best: Option<(usize, &Profile)> = None;
+    let mut rival: Option<&Profile> = None;
+    for (idx, profile) in profiles.iter().enumerate() {
+        if !profile.matches(detected) {
+            continue;
+        }
+        match best {
+            None => best = Some((idx, profile)),
+            Some((_, top)) if profile.specificity() > top.specificity() => {
+                best = Some((idx, profile));
+                rival = None;
+            }
+            Some((_, top)) if profile.specificity() == top.specificity() => {
+                if rival.is_none() {
+                    rival = Some(top);
+                }
+                best = Some((idx, profile));
+            }
+            Some(_) => {}
+        }
+    }
+    let Some((_, profile)) = best else {
         return Err(
             Error::new(Code::Unsupported, format!("没有档案匹配该指纹：{detected}"))
                 .with("prof::select"),
         );
     };
-    match rival(profiles, detected, idx, profile.specificity()) {
+    match rival {
         Some(other) => Err(Error::new(
             Code::Invalid,
             format!(
@@ -532,22 +504,6 @@ pub fn select<'a>(profiles: &'a [Profile], detected: &Detected) -> diagnostic::R
         .with("prof::select")),
         None => Ok(profile),
     }
-}
-
-/// 与最优者同等具体、同样命中的另一份档案：选择没有唯一答案。
-pub(crate) fn rival<'a>(
-    profiles: &'a [Profile],
-    detected: &Detected,
-    best: usize,
-    top: usize,
-) -> Option<&'a Profile> {
-    profiles
-        .iter()
-        .enumerate()
-        .find(|(idx, profile)| {
-            *idx != best && profile.specificity() == top && profile.matches(detected)
-        })
-        .map(|(_, profile)| profile)
 }
 pub use crate::schema::WitnessLookup;
 #[cfg(test)]

@@ -3,6 +3,7 @@ base = "add_f32"
 
 [op]
 name     = "mul_f32"
+stem     = "binary"
 skeleton = "elementwise"
 summary  = "y[n] = a[n] * b[n]"
 

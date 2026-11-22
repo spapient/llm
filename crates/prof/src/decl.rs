@@ -12,43 +12,17 @@ pub const MAX_VARIANTS: usize = 8;
 /// 轴展开后的 tile 候选上限（cutile README §4.1）。
 pub const MAX_TILES: usize = 8;
 
-/// 骨架闭集（cutile README 附录 B）：决定用哪个模板基座。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Skeleton {
-    /// 逐元素。
-    Elementwise,
-    /// 归约。
-    Reduce,
-    /// 矩阵乘。
-    Gemm,
-    /// 扫描。
-    Scan,
-}
-
-impl crate::atom::Closed for Skeleton {
-    /// 闭集全量。
-    const ALL: &'static [Self] = &[Self::Elementwise, Self::Reduce, Self::Gemm, Self::Scan];
-
-    /// 声明层写法。
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Elementwise => "elementwise",
-            Self::Reduce => "reduce",
-            Self::Gemm => "gemm",
-            Self::Scan => "scan",
-        }
-    }
-
-    fn idx(self) -> usize {
-        self as usize
-    }
-}
-
-crate::inherent_names!(Skeleton);
-
-impl fmt::Display for Skeleton {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
+crate::closed_enum! {
+    /// 骨架闭集（cutile README 附录 B）：决定用哪个模板基座。
+    Skeleton {
+        // 逐元素。
+        Elementwise => "elementwise",
+        // 归约。
+        Reduce => "reduce",
+        // 矩阵乘。
+        Gemm => "gemm",
+        // 扫描。
+        Scan => "scan",
     }
 }
 

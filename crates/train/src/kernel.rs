@@ -70,7 +70,7 @@ impl Kernel for Reference {
 }
 
 impl Reference {
-    /// 按实例几何前向：算术复用 `nn::conv::conv` / `nn::kernel::norm` 的真实现，与声明档内核同一份算术。
+    /// 按实例几何前向：算术复用 `nn::conv` / `nn::kernel::norm` 的真实现，与声明档内核同一份算术。
     fn shaped(
         &mut self,
         op: &str,

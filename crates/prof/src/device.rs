@@ -152,3 +152,63 @@ pub enum Status {
         reason: &'static str,
     },
 }
+
+// ── 内嵌表查询 ────────────────────────────────────────────────────────
+
+use crate::fragment::FragmentSet;
+use std::sync::OnceLock;
+
+/// 每台设备一行（顺序同 [`DEVICES`]，即生成期按 vendor 升序）。
+pub fn devices() -> &'static [crate::Device] {
+    &crate::DEVICES
+}
+
+/// 按 vendor 查设备行；没有登记时 `None`。表按 vendor 升序（生成序），二分查找。
+pub fn device(vendor: &str) -> Option<&'static crate::Device> {
+    let index = crate::DEVICES
+        .binary_search_by_key(&vendor, |entry| entry.vendor)
+        .ok()?;
+    Some(&crate::DEVICES[index])
+}
+
+/// 按 vendor 查片段源码根（那个设备目录）；没有登记时 `None`。
+pub fn dir_of(vendor: &str) -> Option<&'static str> {
+    let index = crate::ROOTS
+        .binary_search_by_key(&vendor, |(have, _)| have)
+        .ok()?;
+    Some(crate::ROOTS[index].1)
+}
+
+/// 按 `(vendor, ext)` 查内嵌片段；没有登记时返回 `None`（调用方改读磁盘）。
+///
+/// 内嵌表构建期已校验（签名声明、`(prim, impl)` 与档案对账），装载不再重复解析；
+/// 首次查询把六台设备一次建成缓存，之后按需克隆——克隆只付一份 `String` 分配（见 [`Fragment`]）。
+pub fn builtin(vendor: &str, ext: &str) -> Option<FragmentSet> {
+    static CACHE: OnceLock<Vec<Option<FragmentSet>>> = OnceLock::new();
+    let sets = CACHE.get_or_init(|| {
+        crate::BUILTIN
+            .iter()
+            .map(|entry| {
+                let mut set = FragmentSet::new(entry.vendor, entry.ext);
+                for (prim, source) in entry.fragments {
+                    set.insert(*prim, *source).ok()?;
+                }
+                Some(set)
+            })
+            .collect()
+    });
+    let index = crate::BUILTIN
+        .binary_search_by_key(&(vendor, ext), |entry| (entry.vendor, entry.ext))
+        .ok()?;
+    sets[index].clone()
+}
+
+/// 按 `(vendor, ext)` 查内嵌见证；没有登记时返回 `None`（调用方改读磁盘）。
+pub fn builtin_witness(vendor: &str, ext: &str) -> Option<&'static str> {
+    let index = crate::WITNESS
+        .binary_search_by_key(&(vendor, ext), |(have_vendor, have_ext, _)| {
+            (*have_vendor, *have_ext)
+        })
+        .ok()?;
+    Some(crate::WITNESS[index].2)
+}

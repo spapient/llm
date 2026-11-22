@@ -2,6 +2,7 @@
 
 [op]
 name     = "gemm_i4"
+stem     = "gemm_packed"
 skeleton = "gemm"
 summary  = "Y[m,n] = f32(sum_k i4(A[m,k]) i4(B[k,n]))"
 

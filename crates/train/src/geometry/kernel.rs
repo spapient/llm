@@ -1,7 +1,7 @@
 //! 职责：几何微核——`Geometry` 各变体的前向/反向数值实现。
 
 use diagnostic::Result;
-use nn::conv::conv::Conv2d;
+use nn::conv::Conv2d;
 use nn::kernel::norm::BatchNorm2d;
 
 use super::shape::*;
@@ -379,7 +379,7 @@ pub(super) fn backward_layer(
     Ok(vec![dx, dgamma, dbeta])
 }
 
-/// 二维卷积反向：复用 `nn::conv::conv::Conv2d::backward_f32`，产出 `dx/dweight/dbias`。
+/// 二维卷积反向：复用 `nn::conv::Conv2d::backward_f32`，产出 `dx/dweight/dbias`。
 pub(super) fn backward_conv2d(
     inputs: &[Vec<f32>],
     incoming: &[f32],

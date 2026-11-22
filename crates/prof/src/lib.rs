@@ -65,25 +65,102 @@ pub mod atom {
 
 pub use spec::inherent_names;
 
+/// 声明一个闭集枚举：变体、`ALL`、名字表、`Display` 与固有 `parse` 由同一张表展开，
+/// 名字因此只有一份（与 `spec::atom::vocabulary!` 同构，多出「附加列」一臂）。
+///
+/// 变体顺序即 `ALL` 顺序、即位集下标（`idx = self as usize`）；`as_str` 按 `idx` 查同序名字表，
+/// 展开的查找与渲染都是表驱动（ccn = 1）。带附加列的形式（`ext: Cuda => ("cuda", "cu")`）
+/// 额外生成一个 `const fn ext(self) -> &'static str`，供 `Emit::ext` 这类"名字之外的列"用。
+///
+/// ```ignore
+/// closed_enum! {
+///     /// 输出语言闭集。
+///     Emit {
+///         ext: Cuda => ("cuda", "cu"), Metal => ("metal", "metal"),
+///     }
+///     Skeleton {
+///         Elementwise => "elementwise", Reduce => "reduce",
+///     }
+/// }
+/// ```
+#[macro_export]
+macro_rules! closed_enum {
+    (
+        $(#[$doc:meta])*
+        $name:ident { $extra:ident: $($variant:ident => ($text:literal, $value:literal)),* $(,)? }
+    ) => {
+        $crate::closed_enum! { $(#[$doc])* $name { $($variant => $text),* } }
+        impl $name {
+            /// 附加列取值（按闭集顺序）。
+            #[must_use]
+            pub const fn $extra(self) -> &'static str {
+                const VALUES: &[&str] = &[$($value),*];
+                // `Closed::idx` 是 trait 方法，不能出现在 `const fn` 里；闭集是 fieldless enum，
+                // 判别值就是 `ALL` 的下标，`as usize` 与 `idx()` 同值。
+                VALUES[self as usize]
+            }
+        }
+    };
+    (
+        $(#[$doc:meta])*
+        $name:ident { $($variant:ident => $text:literal),* $(,)? }
+    ) => {
+        $(#[$doc])*
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        // 变体的文档就是它的跨层名字：名字表只有一份，文档不该是第二份手抄。
+        pub enum $name { $(#[doc = $text] $variant,)* }
+
+        impl $crate::atom::Closed for $name {
+            const ALL: &'static [Self] = &[$(Self::$variant),*];
+            fn as_str(self) -> &'static str {
+                const NAMES: &[&str] = &[$($text),*];
+                NAMES[self.idx()]
+            }
+            fn idx(self) -> usize {
+                self as usize
+            }
+        }
+        impl core::fmt::Display for $name {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                f.write_str(self.as_str())
+            }
+        }
+        impl $name {
+            /// 闭集全量（见 [`crate::atom::Closed::ALL`]）。
+            pub const ALL: &'static [Self] = <Self as $crate::atom::Closed>::ALL;
+            /// 跨层名字（见 [`crate::atom::Closed::as_str`]）。
+            #[must_use]
+            pub fn as_str(self) -> &'static str {
+                <Self as $crate::atom::Closed>::as_str(self)
+            }
+            /// 按名字解析（见 [`crate::atom::Closed::parse`]）。
+            #[must_use]
+            pub fn parse(name: &str) -> Option<Self> {
+                <Self as $crate::atom::Closed>::parse(name)
+            }
+        }
+    };
+}
+
 // ---- 词汇层 ------------------------------------------------------------------
 //
 // `model` / `sig` / `sch` / `tpl` / `einsum` 这些词汇定义在 `spec`，但下游一座座 crate
 // 只依赖 `prof`。从这里转出，「算子声明 + 词汇」就沿同一个 crate 名到达，消费者不必为
-// 读一个 `Model` 再加一条 `spec` 依赖。`layout` 例外：`prof` 自己有一个同名模块
-// （设备片段布局），词汇侧的布局规格走 `prof::sch::layout`。
+// 读一个 `Model` 再加一条 `spec` 依赖。词汇侧的布局规格走 `prof::sch::layout`。
 pub use spec::{einsum, model, operator, quant, same_bytes, sample, sch, sig, tpl};
 pub use spec::{dropout, formula, init, parse, rnd};
 
 pub mod device;
 pub mod prof;
 pub mod sign;
-pub mod stems;
+/// 保留词的历史路径：三个常量住在 [`sign`]，`stems::*` 兼容下游既有引用。
+pub mod stems {
+    pub use crate::sign::{EPILOGUE_STEM, MARKER, WITNESS_STEM};
+}
 
 pub use atom::Prim;
-pub use device::{Builtin, Device, Image, Status};
-pub use builtin::{builtin, builtin_witness, device, devices, dir_of};
-pub use fragment::{Fragment, FragmentSet, SIGN_MARKER};
-pub use layout::{Layout, WITNESS_STEM, layer_root, load};
+pub use device::{builtin, builtin_witness, device, devices, dir_of, Builtin, Device, Image, Status};
+pub use fragment::{Fragment, FragmentSet, Layout, SIGN_MARKER, WITNESS_STEM, layer_root, load};
 
 /// 构建期生成的档案表（`build.rs` 读 `src/<vendor>/<vendor>.toml` 展开成 `Table` 字面量）。
 #[allow(clippy::all, missing_docs)]
@@ -98,14 +175,10 @@ include!(concat!(env!("OUT_DIR"), "/tables.rs"));
 
 pub use generated::{embedded, names};
 
-mod builtin;
 mod fragment;
-mod layout;
 
 mod eval;
-mod provide;
 mod schema;
-mod witness;
 
 #[cfg(test)]
 #[path = "../tests/embedded.rs"]
@@ -120,83 +193,22 @@ mod declared_generated {
 
 pub use declared_generated::declared;
 
-/// 全量算子清单里「名字 → 模板 stem」的那一半：**唯一一次**声明。
+/// 全量算子清单里「名字 → 模板 stem」的那一半：由 [`build.rs`](../build.rs) 与声明表同一次
+/// 扫描生成（`ops/*.toml` 的 `[op].stem`），语料是唯一事实源——加算子 = 加两个文件。
 ///
 /// 这里不含任何内核类型：本 crate 只回答"有哪些算子、各自用哪份模板"。谁实现它们由
 /// `nn::registry` 回答——那张表按名字与本表逐条对齐，错位在编译期就失败。
 #[macro_export]
 macro_rules! for_each_template {
     ($m:ident) => {
-        $m! {
-            adaptive_pool_f32 => "adaptive_pool_f32",
-            add_f32 => "binary",
-            attention_f32 => "attention_f32",
-            avg_pool2d_f32 => "avg_pool2d_f32",
-            batch_norm_f32 => "batch_norm_f32",
-            conv2d_f32 => "conv2d_f32",
-            decode_attention_f32 => "decode_attention_f32",
-            decode_flash_attention_f32 => "decode_flash_attention_f32",
-            dequant_i2 => "dequant_packed",
-            dequant_i4 => "dequant_packed",
-            dequant_i8 => "dequant_i8",
-            div_f32 => "binary",
-            embed_f32 => "embed_f32",
-            exp_f32 => "exp_f32",
-            flash_attention_f32 => "flash_attention_f32",
-            gelu_f32 => "gelu_f32",
-            gemm_f32 => "gemm_f32",
-            gemm_i2 => "gemm_packed",
-            gemm_i4 => "gemm_packed",
-            gemm_i8 => "gemm_i8",
-            gemv_f32 => "gemv_f32",
-            gemv_i2 => "gemv_packed",
-            gemv_i4 => "gemv_packed",
-            gemv_i8 => "gemv_i8",
-            group_norm_f32 => "group_norm_f32",
-            hard_sigmoid_f32 => "hard_sigmoid_f32",
-            instance_norm_f32 => "instance_norm_f32",
-            interpolate_f32 => "interpolate_f32",
-            latent_attention_f32 => "latent_attention_f32",
-            layer_norm_f32 => "layer_norm_f32",
-            leaky_relu_f32 => "leaky_relu_f32",
-            log_f32 => "log_f32",
-            matmul_f32 => "matmul_f32",
-            matmul_i8 => "matmul_i8",
-            max_f32 => "max_f32",
-            max_pool1d_f32 => "max_pool1d_f32",
-            max_pool2d_f32 => "max_pool2d_f32",
-            min_f32 => "min_f32",
-            mul_f32 => "binary",
-            reduce_max_f32 => "reduce_max_f32",
-            reduce_sum_f32 => "reduce_sum_f32",
-            relu_f32 => "relu_f32",
-            residual_add_f32 => "binary",
-            rmsnorm_f32 => "rmsnorm_f32",
-            rope_f32 => "rope_f32",
-            scale_f32 => "scale_f32",
-            scan_f32 => "scan_f32",
-            sigmoid_f32 => "sigmoid_f32",
-            silu_f32 => "silu_f32",
-            softmax_f32 => "softmax_f32",
-            sub_f32 => "binary",
-            tanh_f32 => "tanh_f32",
-        }
+        include!(concat!(env!("OUT_DIR"), "/template_list.rs"))
     };
 }
 
-/// 模板表：算子名 → `src/ops/<stem>.k` 的正文，`include_str!` 在编译期读入。
+/// 模板表：算子名 → `ops/<stem>.k` 的正文，`include_str!` 在编译期读入，与
+/// [`for_each_template!`] 同一次扫描生成。
 mod templates {
-    macro_rules! impl_templates {
-        ($($name:ident => $stem:literal),* $(,)?) => {
-            /// 算子名与模板正文，顺序与 [`for_each_template!`] 一致。
-            pub const TEMPLATES: [(&str, &str); <[()]>::len(&[$(impl_templates!(@one $stem)),*])] = [
-                $((stringify!($name), include_str!(concat!("ops/", $stem, ".k")))),*
-            ];
-        };
-        (@one $stem:literal) => { () };
-    }
-
-    crate::for_each_template!(impl_templates);
+    include!(concat!(env!("OUT_DIR"), "/templates_table.rs"));
 }
 
 pub use templates::TEMPLATES;
@@ -208,12 +220,10 @@ pub mod catalogue {
     pub use crate::declared_generated::names;
     pub use crate::templates::TEMPLATES;
 
-    /// 按名字取模板正文；名字不在清单里时返回 `None`。
+    /// 按名字取模板正文；名字不在清单里时返回 `None`。表按名升序（生成序），二分查找。
     pub fn template(name: &str) -> Option<&'static str> {
-        TEMPLATES
-            .iter()
-            .find(|(entry, _)| *entry == name)
-            .map(|(_, text)| *text)
+        let index = TEMPLATES.binary_search_by_key(&name, |(entry, _)| entry).ok()?;
+        Some(TEMPLATES[index].1)
     }
 
     /// 一次注册：一个算子的三件事——名字、语义表、是否可微（模板问 [`template`]）。
@@ -271,7 +281,9 @@ pub mod catalogue {
 
     /// 按名字取一条内嵌算子；名字不在清单里时返回 `None`。
     pub fn named(name: &str) -> Option<Op> {
-        let (entry, template) = TEMPLATES.iter().find(|(entry, _)| *entry == name)?;
+        let (entry, template) = TEMPLATES.binary_search_by_key(&name, |(entry, _)| entry)
+            .ok()
+            .map(|index| TEMPLATES[index])?;
         Some(Op::new(entry, crate::declared(entry)?, template))
     }
 

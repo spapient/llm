@@ -11,8 +11,8 @@ fn the_registry_and_the_model_annotations_are_mirrors() {
     // 规则的另一种写法：新增一副骨架时，把它的注解名加进这里，规则跟着扩。
     const PRODUCERS: [&str; 1] = ["#[annotation::model("];
 
-    let lib = fs::read_to_string(root().join("crates/op/src/lib.rs"))
-        .expect("`crates/op/src/lib.rs` 必须存在");
+    let lib = fs::read_to_string(root().join("crates/nn/src/registry.rs"))
+        .expect("`crates/nn/src/registry.rs` 必须存在");
     // 注册表现在由 `for_each_operator!` 生成（`REGISTRY` 是它的投影）：名字、可微性与语义表都由
     // `Operator` 派生（`Operator::NAME` / `DIFFERENTIABLE` / `model_of`），文本里不再有手写的注册名与
     // `Model` 字面量。锚点因此从 `registry! {` 换到那张宏表：每行是
@@ -28,10 +28,13 @@ fn the_registry_and_the_model_annotations_are_mirrors() {
         let Some((_, rest)) = line.trim().split_once(": $crate::") else {
             continue;
         };
-        let Some((ty, _skeleton)) = rest.split_once(" =>") else {
+        // 表项形如 `名字: $crate::kernel::gemm_f32::GemmF32,`：模板正文归 `prof::catalogue`，
+        // 表里只有名字与内核类型，因此到这里就结束。
+        let ty = rest.split([',', '\n']).next().unwrap_or_default().trim();
+        if !ty.contains("::") {
             continue;
-        };
-        types.push(ty.trim().to_string());
+        }
+        types.push(ty.to_string());
     }
     assert!(
         types.len() >= 2,
@@ -105,7 +108,9 @@ fn the_registry_and_the_model_annotations_are_mirrors() {
             ));
             continue;
         };
-        let module = module_path.split("::").next().unwrap_or(module_path);
+        // 整条模块路径都交给 `locate_module`：并入 `nn` 后算子多住在 `kernel::` / `conv::`
+        // 这一层壳下面，只取首段会定位到壳文件（壳里没有注解，也没有实体）。
+        let module = module_path;
         let file = locate_module(module)
             .unwrap_or_else(|| panic!("`{name}` 指向 `{ty}`，但 `pub mod {module}` 读不到"));
         let text = fs::read_to_string(&file).expect("读模块文件");
