@@ -4,7 +4,9 @@
 //! 因此常量折叠、长度守卫与 C 发射全部原样复用。归约链、缺失的链接、可写链接与 `extent` 不一致
 //! 一律拒绝，而不是猜一个意思。
 
-use super::{Access, Expr, Kernel, Parameter, ScalarType, ValueType, VerificationError, Write};
+use crate::kernel::{
+    Access, Expr, Kernel, Parameter, ScalarType, ValueType, VerificationError, Write,
+};
 
 impl Kernel {
     /// Fuse a pointwise consumer into this pointwise producer.

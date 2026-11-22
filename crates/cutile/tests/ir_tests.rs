@@ -1,5 +1,5 @@
-use super::pass::{nodes, normalize};
 use super::*;
+use crate::pass::{Pass, Pipeline, nodes, normalize};
 
 #[crate::dsl]
 #[allow(dead_code)]
@@ -95,7 +95,7 @@ fn dot() -> Kernel {
         "out",
         0,
         Expr::Binary {
-            op: BinaryOp::Mul,
+            op: Arith::Mul,
             left: Box::new(Expr::Load("a".to_string())),
             right: Box::new(Expr::Load("b".to_string())),
         },
@@ -211,7 +211,7 @@ fn non_f32_bufs_are_rejected() {
 fn optimizer_keeps_operations_that_leave_the_finite_range() {
     let mut kernel = minimal();
     kernel.write = Write::Map(Expr::Binary {
-        op: BinaryOp::Div,
+        op: Arith::Div,
         left: Box::new(Expr::F32(1.0f32.to_bits())),
         right: Box::new(Expr::F32(0.0f32.to_bits())),
     });
@@ -342,7 +342,7 @@ impl Pass for LowerSubtraction {
             return Ok(kernel);
         };
         let Expr::Binary {
-            op: BinaryOp::Sub,
+            op: Arith::Sub,
             left,
             right,
         } = inner.as_ref()
@@ -398,13 +398,13 @@ fn pass_manager_applies_custom_passes_in_order() {
     };
     let mut kernel = minimal();
     kernel.name = "middle".to_string();
-    let forward = PassManager::new()
+    let forward = Pipeline::new()
         .push(towards_left)
         .push(towards_right)
         .run(kernel.clone())
         .expect("custom passes run");
     assert_eq!(forward.name, "left");
-    let backward = PassManager::new()
+    let backward = Pipeline::new()
         .push(towards_right)
         .push(towards_left)
         .run(kernel)
@@ -427,12 +427,12 @@ fn a_pass_sees_work_created_by_a_later_pass_on_the_next_sweep() {
         "extent",
         "out",
         Expr::Neg(Box::new(Expr::Binary {
-            op: BinaryOp::Sub,
+            op: Arith::Sub,
             left: Box::new(Expr::F32(0.0f32.to_bits())),
             right: Box::new(Expr::F32(2.0f32.to_bits())),
         })),
     );
-    let peeled = PassManager::new()
+    let peeled = Pipeline::new()
         .push(CancelDoubleNegation)
         .push(LowerSubtraction)
         .run(kernel)
@@ -459,7 +459,7 @@ fn a_pipeline_that_never_settles_is_an_error() {
             Ok(kernel)
         }
     }
-    let error = PassManager::new()
+    let error = Pipeline::new()
         .push(Grow)
         .run(minimal())
         .expect_err("a growing pass never settles");
@@ -483,7 +483,7 @@ fn an_invalid_kernel_from_a_pass_names_the_pass() {
             Ok(kernel)
         }
     }
-    let error = PassManager::new()
+    let error = Pipeline::new()
         .push(Broken)
         .run(minimal())
         .expect_err("a pass that breaks the signature must be reported");
@@ -506,10 +506,10 @@ fn the_fixpoint_reaches_the_emitted_c() {
         "extent",
         "out",
         Expr::Binary {
-            op: BinaryOp::Mul,
+            op: Arith::Mul,
             left: Box::new(Expr::Load("input".to_string())),
             right: Box::new(Expr::Binary {
-                op: BinaryOp::Add,
+                op: Arith::Add,
                 left: Box::new(Expr::F32(0.5f32.to_bits())),
                 right: Box::new(Expr::F32(0.5f32.to_bits())),
             }),
@@ -529,7 +529,7 @@ fn load(name: &str) -> Expr {
     Expr::Load(name.to_string())
 }
 
-fn binary(op: BinaryOp, left: Expr, right: Expr) -> Expr {
+fn binary(op: Arith, left: Expr, right: Expr) -> Expr {
     Expr::Binary {
         op,
         left: Box::new(left),
@@ -605,7 +605,7 @@ fn any_expr(rng: &mut Rng, depth: u32) -> Expr {
     if rng.next().is_multiple_of(5) {
         return Expr::Neg(Box::new(any_expr(rng, depth - 1)));
     }
-    let op = rng.pick(&[BinaryOp::Add, BinaryOp::Sub, BinaryOp::Mul, BinaryOp::Div]);
+    let op = rng.pick(&[Arith::Add, Arith::Sub, Arith::Mul, Arith::Div]);
     binary(op, any_expr(rng, depth - 1), any_expr(rng, depth - 1))
 }
 
@@ -628,7 +628,7 @@ fn operands() -> Vec<Expr> {
 fn shapes() -> Vec<Expr> {
     let operands = operands();
     let mut shapes = Vec::new();
-    for op in [BinaryOp::Add, BinaryOp::Sub, BinaryOp::Mul, BinaryOp::Div] {
+    for op in [Arith::Add, Arith::Sub, Arith::Mul, Arith::Div] {
         for left in &operands {
             shapes.push(Expr::Neg(Box::new(left.clone())));
             shapes.push(Expr::Neg(Box::new(Expr::Neg(Box::new(left.clone())))));

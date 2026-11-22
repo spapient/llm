@@ -2,9 +2,9 @@
 //! 解析、`lower` 的派发接缝。不依赖任何真机——设备路径的文本产出在 `device` 的 backends 测试里
 //! 用 Metal 再兜一道。
 
-use super::{kind, lower, source, REDUCE_CHUNK, REDUCE_FUNC};
+use super::{REDUCE_CHUNK, REDUCE_FUNC, kind, lower, source};
 use crate::backend::Lower;
-use cutile::ir::{Access, BinaryOp, Expr, Kernel, Parameter, ScalarType, ValueType};
+use cutile::kernel::{Access, Arith, Expr, Kernel, Parameter, ScalarType, ValueType};
 use cutile::prof::Emit;
 use diagnostic::Code;
 use op::decl::Grid;
@@ -88,15 +88,20 @@ fn map_with_single_scalar_routes_to_pointwise() {
 fn map_with_extra_scalar_routes_to_serial() {
     let kernel = Kernel::map(
         "scale",
-        vec![read("a"), write("y"), len("N"), Parameter {
-            name: "s".to_string(),
-            ty: ValueType::Scalar(ScalarType::F32),
-        }],
+        vec![
+            read("a"),
+            write("y"),
+            len("N"),
+            Parameter {
+                name: "s".to_string(),
+                ty: ValueType::Scalar(ScalarType::F32),
+            },
+        ],
         "i",
         "N",
         "y",
         Expr::Binary {
-            op: BinaryOp::Mul,
+            op: Arith::Mul,
             left: Box::new(Expr::Load("a".to_string())),
             right: Box::new(Expr::Scalar("s".to_string())),
         },
@@ -125,7 +130,7 @@ fn dot_reduce_with_two_inputs_routes_to_serial() {
         "y",
         0,
         Expr::Binary {
-            op: BinaryOp::Mul,
+            op: Arith::Mul,
             left: Box::new(Expr::Load("a".to_string())),
             right: Box::new(Expr::Load("b".to_string())),
         },
@@ -142,8 +147,14 @@ fn map_emit_k_round_trips_through_signature() {
     let [a, y, n] = signature.params() else {
         panic!("copy 应有三个形参");
     };
-    assert_eq!((a.name.as_str(), a.ctype, a.mutable), ("a", CType::F32, false));
-    assert_eq!((y.name.as_str(), y.ctype, y.mutable), ("y", CType::F32, true));
+    assert_eq!(
+        (a.name.as_str(), a.ctype, a.mutable),
+        ("a", CType::F32, false)
+    );
+    assert_eq!(
+        (y.name.as_str(), y.ctype, y.mutable),
+        ("y", CType::F32, true)
+    );
     assert_eq!((n.name.as_str(), n.ctype), ("N", CType::Int));
     assert_eq!(signature.output(), Some("y"));
 
@@ -158,13 +169,16 @@ fn map_emit_k_round_trips_through_signature() {
 fn reduce_source_prepends_preamble() {
     let (text, signature) = source(&sum_kernel(), "/* pre */").unwrap();
     assert_eq!(signature.op(), "sum");
-    assert!(text.starts_with("/* pre */void cutile_sum_kernel("), "{text}");
+    assert!(
+        text.starts_with("/* pre */void cutile_sum_kernel("),
+        "{text}"
+    );
     assert!(text.contains("y[0] += a[i];"), "{text}");
 }
 
 #[test]
 fn lower_reports_unsupported_for_host_c_backend() {
-    let error = lower(Emit::C, &copy_kernel(), "", &sample(4))
-        .expect_err("host C 后端没有生产态 lowering");
+    let error =
+        lower(Emit::C, &copy_kernel(), "", &sample(4)).expect_err("host C 后端没有生产态 lowering");
     assert_eq!(error.code(), Code::Unsupported);
 }

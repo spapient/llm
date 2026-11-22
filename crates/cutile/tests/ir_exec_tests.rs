@@ -3,7 +3,7 @@
 //! 字符串断言只能证明发射器写了哪些字；这里把源码交给 `cc` 编译、运行，再按 IEEE-754
 //! 位模式比较，覆盖 ±0、次正规数、无穷、NaN、溢出与长度守卫。归约还额外锁住累加顺序。
 
-use crate::ir::{Access, BinaryOp, Expr, Kernel, Parameter, ScalarType, ValueType};
+use crate::kernel::{Access, Arith, Expr, Kernel, Parameter, ScalarType, ValueType};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::PathBuf;
@@ -37,7 +37,7 @@ fn scalar(name: &str) -> Parameter {
     }
 }
 
-fn binary(op: BinaryOp, left: Expr, right: Expr) -> Expr {
+fn binary(op: Arith, left: Expr, right: Expr) -> Expr {
     Expr::Binary {
         op,
         left: Box::new(left),
@@ -63,12 +63,8 @@ fn affine() -> Kernel {
         "extent",
         "output",
         binary(
-            BinaryOp::Add,
-            binary(
-                BinaryOp::Mul,
-                load("input"),
-                Expr::Scalar("scale".to_string()),
-            ),
+            Arith::Add,
+            binary(Arith::Mul, load("input"), Expr::Scalar("scale".to_string())),
             Expr::F32(3.0f32.to_bits()),
         ),
     )
@@ -87,7 +83,7 @@ fn scaled_negation() -> Kernel {
         "extent",
         "output",
         Expr::Neg(Box::new(binary(
-            BinaryOp::Div,
+            Arith::Div,
             load("input"),
             Expr::F32(3.0f32.to_bits()),
         ))),
@@ -108,7 +104,7 @@ fn dot() -> Kernel {
         "len",
         "out",
         0,
-        binary(BinaryOp::Mul, load("a"), load("b")),
+        binary(Arith::Mul, load("a"), load("b")),
     )
 }
 
@@ -342,12 +338,8 @@ fn producer() -> Kernel {
         "extent",
         "mid",
         binary(
-            BinaryOp::Add,
-            binary(
-                BinaryOp::Mul,
-                load("input"),
-                Expr::Scalar("scale".to_string()),
-            ),
+            Arith::Add,
+            binary(Arith::Mul, load("input"), Expr::Scalar("scale".to_string())),
             Expr::F32(3.0f32.to_bits()),
         ),
     )
@@ -366,8 +358,8 @@ fn consumer() -> Kernel {
         "extent",
         "output",
         binary(
-            BinaryOp::Sub,
-            binary(BinaryOp::Mul, load("mid"), Expr::F32(2.0f32.to_bits())),
+            Arith::Sub,
+            binary(Arith::Mul, load("mid"), Expr::F32(2.0f32.to_bits())),
             Expr::F32(1.0f32.to_bits()),
         ),
     )
@@ -385,7 +377,7 @@ fn consumer_of(name: &str, access: Access) -> Kernel {
         "i",
         "extent",
         "out",
-        binary(BinaryOp::Mul, load(name), Expr::F32(2.0f32.to_bits())),
+        binary(Arith::Mul, load(name), Expr::F32(2.0f32.to_bits())),
     )
 }
 

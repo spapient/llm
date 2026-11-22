@@ -1,7 +1,7 @@
 //! Typed-IR pass framework: named transforms over a [`Kernel`], driven to a fixpoint.
 //!
 //! 一个 [`Pass`] 只做一件事：把内核变成另一个内核（LLVM 的 pass 模型，规模压到 `#[dsl]` 这一族）。
-//! [`PassManager::run`] 就是全部契约——进来先校验，把注册的 pass 扫到不动点，**每个 pass 之后**
+//! [`Pipeline::run`] 就是全部契约——进来先校验，把注册的 pass 扫到不动点，**每个 pass 之后**
 //! 再校验一次；离开管理器的内核在任何构建下都合法，与注册了哪些 pass 无关。
 //!
 //! 为什么要扫不止一轮：管理器**不要求**调用方按依赖顺序注册。任一 pass 都可能在已经跑过的 pass
@@ -10,7 +10,7 @@
 //! 上限耗尽说明流水线在震荡，此时**报错**（MLIR 的 "did not converge"），而不是悄悄截断一段
 //! 半成品内核。对自定义 pass 的要求因此只有一条：要么严格收缩，要么幂等。
 
-use super::{BinaryOp, Expr, Kernel, VerificationError};
+use crate::kernel::{Arith, Expr, Kernel, VerificationError};
 
 /// One named transform over a kernel.
 ///
@@ -19,7 +19,7 @@ use super::{BinaryOp, Expr, Kernel, VerificationError};
 /// [`VerificationError`] when the kernel must be rejected.
 ///
 /// 契约只有一条：**要么严格收缩，要么幂等**。管理器会反复扫描直到内核不再变化，每次调用都改
-/// 一点的 pass 会被判为不收敛（见 [`PassManager::run`]）。
+/// 一点的 pass 会被判为不收敛（见 [`Pipeline::run`]）。
 pub trait Pass {
     /// Short, stable name used for diagnostics.
     fn name(&self) -> &'static str;
@@ -30,17 +30,17 @@ pub trait Pass {
 
 /// An ordered list of passes, swept left-to-right to a fixpoint.
 #[derive(Default)]
-pub struct PassManager {
+pub struct Pipeline {
     passes: Vec<Box<dyn Pass>>,
 }
 
-impl PassManager {
-    /// An empty pipeline; append passes with [`PassManager::push`].
+impl Pipeline {
+    /// An empty pipeline; append passes with [`Pipeline::push`].
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// 标准通道：化简（代数定律 + 常量折叠）→ 去死形参。校验由 [`PassManager::run`] 提供。
+    /// 标准通道：化简（代数定律 + 常量折叠）→ 去死形参。校验由 [`Pipeline::run`] 提供。
     pub fn standard() -> Self {
         Self::new().push(Simplify).push(EliminateDeadParams)
     }
@@ -209,16 +209,16 @@ fn double_negation(expression: &Expr) -> Option<Expr> {
 
 fn mul_one(expression: &Expr) -> Option<Expr> {
     let one = 1.0f32.to_bits();
-    identity(expression, BinaryOp::Mul, Side::Right, one)
-        .or_else(|| identity(expression, BinaryOp::Mul, Side::Left, one))
+    identity(expression, Arith::Mul, Side::Right, one)
+        .or_else(|| identity(expression, Arith::Mul, Side::Left, one))
 }
 
 fn div_one(expression: &Expr) -> Option<Expr> {
-    identity(expression, BinaryOp::Div, Side::Right, 1.0f32.to_bits())
+    identity(expression, Arith::Div, Side::Right, 1.0f32.to_bits())
 }
 
 fn sub_zero(expression: &Expr) -> Option<Expr> {
-    identity(expression, BinaryOp::Sub, Side::Right, 0.0f32.to_bits())
+    identity(expression, Arith::Sub, Side::Right, 0.0f32.to_bits())
 }
 
 /// 字面量落在哪一侧。只有乘法两侧都看：它可交换，换边不改变任何一位。
@@ -229,7 +229,7 @@ enum Side {
 }
 
 /// `x op bits → x`：`bits` 那一侧是字面量时返回另一侧。`x op 1 → x` 这类恒等的唯一判据。
-fn identity(expression: &Expr, op: BinaryOp, side: Side, bits: u32) -> Option<Expr> {
+fn identity(expression: &Expr, op: Arith, side: Side, bits: u32) -> Option<Expr> {
     let Expr::Binary {
         op: found,
         left,
@@ -302,140 +302,5 @@ fn expr_mentions(expression: &Expr, name: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::super::{Access, Parameter, ScalarType, ValueType};
-    use super::{BinaryOp, EliminateDeadParams, Expr, Kernel, Pass, PassManager, normalize};
-
-    fn literal(value: f32) -> Expr {
-        Expr::F32(value.to_bits())
-    }
-
-    fn load(name: &str) -> Expr {
-        Expr::Load(name.to_string())
-    }
-
-    fn param(name: &str, ty: ValueType) -> Parameter {
-        Parameter {
-            name: name.to_string(),
-            ty,
-        }
-    }
-
-    fn out_buf() -> Parameter {
-        param(
-            "out",
-            ValueType::Buf {
-                element: ScalarType::F32,
-                access: Access::ReadWrite,
-            },
-        )
-    }
-
-    fn extent() -> Parameter {
-        param("extent", ValueType::Scalar(ScalarType::Usize))
-    }
-
-    fn binary(op: BinaryOp, left: Expr, right: Expr) -> Expr {
-        Expr::Binary {
-            op,
-            left: Box::new(left),
-            right: Box::new(right),
-        }
-    }
-
-    /// 定律表逐条验证，并顺带钉住两条边界：`x + 0.0` 必须原样保留（`-0.0` 反例），
-    /// 子项先规约好的结果必须在同一趟里被父节点用上。
-    #[test]
-    fn laws_normalize_bottom_up() {
-        let add = binary(BinaryOp::Add, load("a"), literal(0.0));
-        let cases = [
-            (
-                Expr::Neg(Box::new(Expr::Neg(Box::new(load("a"))))),
-                load("a"),
-            ),
-            (binary(BinaryOp::Mul, load("a"), literal(1.0)), load("a")),
-            (binary(BinaryOp::Mul, literal(1.0), load("a")), load("a")),
-            (binary(BinaryOp::Div, load("a"), literal(1.0)), load("a")),
-            (binary(BinaryOp::Sub, load("a"), literal(0.0)), load("a")),
-            (
-                binary(BinaryOp::Add, literal(0.5), literal(0.5)),
-                literal(1.0),
-            ),
-            (Expr::Neg(Box::new(literal(2.0))), literal(-2.0)),
-            (
-                binary(
-                    BinaryOp::Mul,
-                    load("a"),
-                    binary(BinaryOp::Add, literal(0.5), literal(0.5)),
-                ),
-                load("a"),
-            ),
-            (add.clone(), add),
-        ];
-        for (input, expected) in cases {
-            assert_eq!(normalize(input), expected);
-        }
-    }
-
-    #[test]
-    fn eliminate_dead_params_drops_unused_scalars_only() {
-        let kernel = Kernel::map(
-            "keep",
-            vec![
-                out_buf(),
-                extent(),
-                param("unused", ValueType::Scalar(ScalarType::F32)),
-                param("used", ValueType::Scalar(ScalarType::F32)),
-            ],
-            "i",
-            "extent",
-            "out",
-            Expr::Scalar("used".to_string()),
-        );
-        let kernel = EliminateDeadParams.run(kernel).expect("eliminate");
-        let names: Vec<&str> = kernel
-            .params
-            .iter()
-            .map(|parameter| parameter.name.as_str())
-            .collect();
-        assert_eq!(names, ["out", "extent", "used"]);
-    }
-
-    #[test]
-    fn standard_pipeline_is_idempotent() {
-        let kernel = Kernel::map(
-            "clean",
-            vec![
-                out_buf(),
-                extent(),
-                param("unused", ValueType::Scalar(ScalarType::F32)),
-            ],
-            "i",
-            "extent",
-            "out",
-            Expr::Neg(Box::new(Expr::Neg(Box::new(literal(2.0))))),
-        );
-        let once = PassManager::standard().run(kernel.clone()).expect("once");
-        let twice = PassManager::standard().run(once.clone()).expect("twice");
-        assert_eq!(once, twice);
-    }
-
-    #[test]
-    fn run_rejects_invalid_kernels() {
-        let kernel = Kernel::map(
-            "bad",
-            vec![
-                out_buf(),
-                param("extent", ValueType::Scalar(ScalarType::F32)),
-            ],
-            "i",
-            "extent",
-            "out",
-            literal(0.0),
-        );
-        let error = PassManager::new()
-            .run(kernel)
-            .expect_err("non-usize extent is rejected");
-        assert!(error.to_string().contains("loop extent"));
-    }
-}
+#[path = "../tests/pass_tests.rs"]
+mod pass_tests;

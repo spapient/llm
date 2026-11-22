@@ -1,4 +1,4 @@
-//! typed IR（`cutile::ir::Kernel`）→ [`Lower`]/设备 dispatch 的直通桥。
+//! typed IR（`cutile::kernel::Kernel`）→ [`Lower`]/设备 dispatch 的直通桥。
 //!
 //! [`Kernel`] 自带 `.k` 正文发射（[`Kernel::emit_k`]）；本模块只做三件事：把 `Write::Map` /
 //! `Write::Reduce` 映射成 [`Lower`] 形态、把 `.k` 正文解析成 [`Signature`]，再经
@@ -6,7 +6,7 @@
 //! 「这段 typed IR 该降成什么形态、长成什么 `.k` 文本」，不回答「这一份具体跑多长」。
 
 use crate::backend::Lower;
-use cutile::ir::{Access, Expr, Kernel, ValueType, Write};
+use cutile::kernel::{Access, Expr, Kernel, ValueType, Write};
 use cutile::prof::Emit;
 use diagnostic::{Code, Error, Result};
 use op::decl::Grid;
@@ -40,13 +40,16 @@ pub fn lower(emit: Emit, kernel: &Kernel, preamble: &str, sample: &Sample) -> Re
     let kind = kind_of(&kernel);
     let (text, signature) = source(&kernel, preamble)?;
     let backend = crate::device::spec(emit).ok_or_else(|| {
-        Error::new(Code::Unsupported, format!("本机没有 `{emit}` 语言的生产态后端"))
+        Error::new(
+            Code::Unsupported,
+            format!("本机没有 `{emit}` 语言的生产态后端"),
+        )
     })?;
     backend.lower(&text, &signature, sample, &kind)
 }
 
 /// 校验失败统一换成诊断错误；typed IR 只报「为什么不成形」，诊断层再补桥接上下文。
-fn verify_failed(error: cutile::ir::VerificationError) -> Error {
+fn verify_failed(error: cutile::kernel::VerificationError) -> Error {
     Error::new(Code::Invalid, format!("typed IR 校验失败：{error}")).with("cutile::optim::ir")
 }
 

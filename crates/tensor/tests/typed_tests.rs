@@ -99,5 +99,8 @@ fn shape_layout_algebra_matches_runtime_semantics() {
     assert_eq!(shape.element_bytes(DType::F32), 96);
     assert_eq!(Shape::<2>::new([2, 4]).element_bytes(DType::U4), 4);
     assert_eq!(Strides::contiguous(&shape).steps(), &[12, 4, 1]);
-    assert_eq!(Strides::ordered(&shape, Order::ColMajor).steps(), &[1, 2, 6]);
+    assert_eq!(
+        Strides::ordered(&shape, Order::ColMajor).steps(),
+        &[1, 2, 6]
+    );
 }

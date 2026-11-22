@@ -175,7 +175,7 @@ pub fn model(attribute: TokenStream, item: TokenStream) -> TokenStream {
     )
 }
 
-/// 将受限的 Rust 逐点 kernel 函数转换为 `cutile::ir::Kernel` 构造器。
+/// 将受限的 Rust 逐点 kernel 函数转换为 `cutile::kernel::Kernel` 构造器。
 ///
 /// 第一版接受一层 `for i in 0..n` 循环、一个 `out[i] = expr` 写入，以及 f32 标量/缓冲区。
 /// 原函数保留为 CPU 参考实现；生成的 `__dsl_ir_<name>()` 返回可验证、可优化、可发射的 typed IR。

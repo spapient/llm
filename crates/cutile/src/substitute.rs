@@ -1,6 +1,8 @@
 //! 职责：片段拼接（README §4.2、§10.1、§10.2 的 ④）。
 
 use crate::decl::{OpDecl, TileCombo};
+use prof::atom::{ActKind, DType, Epilogue};
+use spec::epilogue::{QUANT_SCALE, Step};
 use std::collections::BTreeMap;
 
 /// 词法与行号唯一的错误构造器直接转发：词法只有一份，声明解析与拼接看同一套 `{{…}}` 规则。
@@ -158,25 +160,18 @@ pub struct EpiArgs<'a> {
 /// `gelu` / `silu` 不在表里：它们要 `exp` / `erf`，而设备侧数学函数的拼写各语言不同
 /// （OpenCL 只有 `exp`、CUDA 有 `expf`、纯 C 要 `<math.h>`），所以那两种形式必须先在
 /// `epilogue.<ext>` 里落成设备自己的段落，不能由一个跨设备的表达式表假装通用。
-const ACT_EXPR: [(prof::atom::ActKind, &str); 3] = [
-    (prof::atom::ActKind::Relu, "(_v > 0.0f) ? _v : 0.0f"),
+const ACT_EXPR: [(ActKind, &str); 3] = [
+    (ActKind::Relu, "(_v > 0.0f) ? _v : 0.0f"),
+    (ActKind::LeakyRelu, "(_v >= 0.0f) ? _v : 0.01f * _v"),
     (
-        prof::atom::ActKind::LeakyRelu,
-        "(_v >= 0.0f) ? _v : 0.01f * _v",
-    ),
-    (
-        prof::atom::ActKind::HardSigmoid,
+        ActKind::HardSigmoid,
         "(_v / 6.0f + 0.5f < 0.0f) ? 0.0f : \
          ((_v / 6.0f + 0.5f > 1.0f) ? 1.0f : (_v / 6.0f + 0.5f))",
     ),
 ];
 
 /// 量化位宽：`quant` 步骤的 `$3`，与 `gemm::epilogue` 的对称网格边界一一对应。
-const QUANT_BITS: [(prof::atom::DType, &str); 3] = [
-    (prof::atom::DType::I8, "8"),
-    (prof::atom::DType::I4, "4"),
-    (prof::atom::DType::I2, "2"),
-];
+const QUANT_BITS: [(DType, &str); 3] = [(DType::I8, "8"), (DType::I4, "4"), (DType::I2, "2")];
 
 /// 写回尾块装配：按 `steps` 的顺序逐段取设备文本、填占位符、拼成一段可直接放进内核尾部的语句块。
 ///
@@ -189,7 +184,7 @@ const QUANT_BITS: [(prof::atom::DType, &str); 3] = [
 /// 设备缺该形式的段、激活形式还没有设备侧段落、`quant` 位宽超出 `i8/i4/i2` 时返回 `invalid`。
 pub fn epilogue(
     device: &prof::Device,
-    steps: &[spec::epilogue::Step],
+    steps: &[Step],
     args: &EpiArgs<'_>,
 ) -> diagnostic::Result<String> {
     let mut text = String::new();
@@ -204,11 +199,7 @@ pub fn epilogue(
 }
 
 /// 一步的段文本：先定位形式与四个槽位，再交给 [`splice`] 填。
-fn block(
-    device: &prof::Device,
-    step: &spec::epilogue::Step,
-    args: &EpiArgs<'_>,
-) -> diagnostic::Result<String> {
+fn block(device: &prof::Device, step: &Step, args: &EpiArgs<'_>) -> diagnostic::Result<String> {
     let (form, slots) = slots(step, args)?;
     let section = device
         .epilogue_of(form)
@@ -219,25 +210,17 @@ fn block(
 
 /// 形式与四个槽位：前三步交给 [`slots_head`]、其余交给 [`slots_tail`]，把六臂 match 压成两段、
 /// 每段都远低于圈复杂度上限。
-fn slots(
-    step: &spec::epilogue::Step,
-    args: &EpiArgs<'_>,
-) -> diagnostic::Result<(prof::atom::Epilogue, [String; 4])> {
+fn slots(step: &Step, args: &EpiArgs<'_>) -> diagnostic::Result<(Epilogue, [String; 4])> {
     match step {
-        spec::epilogue::Step::Bias
-        | spec::epilogue::Step::Act(_)
-        | spec::epilogue::Step::Residual => slots_head(step, args),
+        Step::Bias | Step::Act(_) | Step::Residual => slots_head(step, args),
         _ => slots_tail(step, args),
     }
 }
 
 /// 前三步的槽位：只有 `act` 的 `$3` 不是调用点给的（那是注入的激活表达式）。
-fn slots_head(
-    step: &spec::epilogue::Step,
-    args: &EpiArgs<'_>,
-) -> diagnostic::Result<(prof::atom::Epilogue, [String; 4])> {
-    use prof::atom::Epilogue;
-    use spec::epilogue::Step;
+fn slots_head(step: &Step, args: &EpiArgs<'_>) -> diagnostic::Result<(Epilogue, [String; 4])> {
+    use Epilogue;
+    use Step;
     Ok(match step {
         Step::Bias => (
             Epilogue::Bias,
@@ -256,12 +239,9 @@ fn slots_head(
 }
 
 /// 后三步的槽位：`scale` 的 `$1` 是标量字面量，`quant` 的 `$1` / `$3` 是步长与位宽。
-fn slots_tail(
-    step: &spec::epilogue::Step,
-    args: &EpiArgs<'_>,
-) -> diagnostic::Result<(prof::atom::Epilogue, [String; 4])> {
-    use prof::atom::Epilogue;
-    use spec::epilogue::Step;
+fn slots_tail(step: &Step, args: &EpiArgs<'_>) -> diagnostic::Result<(Epilogue, [String; 4])> {
+    use Epilogue;
+    use Step;
     Ok(match step {
         Step::Scale(alpha) => (
             Epilogue::Scale,
@@ -276,7 +256,7 @@ fn slots_tail(
             Epilogue::Quant,
             [
                 args.out.to_string(),
-                format!("{:?}f", spec::epilogue::QUANT_SCALE),
+                format!("{:?}f", QUANT_SCALE),
                 args.count.to_string(),
                 bits(*dtype)?.to_string(),
             ],
@@ -290,7 +270,7 @@ fn slots_tail(
 }
 
 /// 激活形式 → 注入表达式；不在 [`ACT_EXPR`] 里的形式说明它还没有设备段落。
-fn act(kind: prof::atom::ActKind) -> diagnostic::Result<&'static str> {
+fn act(kind: ActKind) -> diagnostic::Result<&'static str> {
     ACT_EXPR
         .iter()
         .find(|(have, _)| *have == kind)
@@ -308,7 +288,7 @@ fn act(kind: prof::atom::ActKind) -> diagnostic::Result<&'static str> {
 }
 
 /// `quant` 位宽 → 位数字面量。
-fn bits(dtype: prof::atom::DType) -> diagnostic::Result<&'static str> {
+fn bits(dtype: DType) -> diagnostic::Result<&'static str> {
     QUANT_BITS
         .iter()
         .find(|(have, _)| *have == dtype)
@@ -322,7 +302,7 @@ fn bits(dtype: prof::atom::DType) -> diagnostic::Result<&'static str> {
 }
 
 /// 设备文本缺这一形式时的错误：捎上 vendor 与扩展名，一眼能定位是哪份 `epilogue.<ext>`。
-fn missing_section(device: &prof::Device, form: prof::atom::Epilogue) -> diagnostic::Error {
+fn missing_section(device: &prof::Device, form: Epilogue) -> diagnostic::Error {
     diagnostic::Error::new(
         diagnostic::Code::Invalid,
         format!(

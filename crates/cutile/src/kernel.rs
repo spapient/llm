@@ -8,11 +8,8 @@
 
 use core::fmt::{self, Write as _};
 
-mod fuse;
-mod pass;
-mod validate;
-pub use pass::{Pass, PassManager};
-use validate::verify_core;
+use crate::pass::Pipeline;
+use crate::validate::verify_core;
 
 /// Scalar element types represented by the initial pointwise IR.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,12 +76,12 @@ impl ValueType {
         }
     }
 
-    fn is_buf(self) -> bool {
+    pub(crate) fn is_buf(self) -> bool {
         matches!(self, ValueType::Buf { .. })
     }
 
     /// `f32` 缓冲是唯一能发射成 C 的缓冲类型；`usize` 缓冲在校验阶段就被打回。
-    fn element_ok(self) -> bool {
+    pub(crate) fn element_ok(self) -> bool {
         match self {
             ValueType::Scalar(_) => true,
             ValueType::Buf {
@@ -107,7 +104,7 @@ pub struct Parameter {
 
 /// Arithmetic operations supported by the pointwise expression IR.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BinaryOp {
+pub enum Arith {
     /// Addition.
     Add,
     /// Subtraction.
@@ -118,24 +115,24 @@ pub enum BinaryOp {
     Div,
 }
 
-impl BinaryOp {
+impl Arith {
     /// Infix symbol used when emitting C.
     fn c_symbol(self) -> &'static str {
         match self {
-            BinaryOp::Add => "+",
-            BinaryOp::Sub => "-",
-            BinaryOp::Mul => "*",
-            BinaryOp::Div => "/",
+            Arith::Add => "+",
+            Arith::Sub => "-",
+            Arith::Mul => "*",
+            Arith::Div => "/",
         }
     }
 
     /// Apply the operation to two `f32` operands.
-    fn apply(self, left: f32, right: f32) -> f32 {
+    pub(crate) fn apply(self, left: f32, right: f32) -> f32 {
         match self {
-            BinaryOp::Add => left + right,
-            BinaryOp::Sub => left - right,
-            BinaryOp::Mul => left * right,
-            BinaryOp::Div => left / right,
+            Arith::Add => left + right,
+            Arith::Sub => left - right,
+            Arith::Mul => left * right,
+            Arith::Div => left / right,
         }
     }
 }
@@ -154,7 +151,7 @@ pub enum Expr {
     /// Binary f32 arithmetic.
     Binary {
         /// Operation.
-        op: BinaryOp,
+        op: Arith,
         /// Left operand.
         left: Box<Expr>,
         /// Right operand.
@@ -169,7 +166,7 @@ pub struct VerificationError {
 }
 
 impl VerificationError {
-    fn new(message: impl Into<String>) -> Self {
+    pub(crate) fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
         }
@@ -200,7 +197,7 @@ pub enum Write {
 
 impl Write {
     /// Expression evaluated once per iteration.
-    fn expr(&self) -> &Expr {
+    pub(crate) fn expr(&self) -> &Expr {
         match self {
             Write::Map(value) => value,
             Write::Reduce { value, .. } => value,
@@ -208,7 +205,7 @@ impl Write {
     }
 
     /// Mutable access to the expression evaluated once per iteration.
-    fn expr_mut(&mut self) -> &mut Expr {
+    pub(crate) fn expr_mut(&mut self) -> &mut Expr {
         match self {
             Write::Map(value) => value,
             Write::Reduce { value, .. } => value,
@@ -216,7 +213,7 @@ impl Write {
     }
 
     /// Fixed slot a reduction accumulates into; `None` for pointwise stores.
-    fn slot(&self) -> Option<u32> {
+    pub(crate) fn slot(&self) -> Option<u32> {
         match self {
             Write::Reduce { at, .. } => Some(*at),
             Write::Map(_) => None,
@@ -312,17 +309,12 @@ impl Kernel {
     /// 轮次不用魔法数：上限是初始 `cost`（形参数 + 节点数），严格收缩的 pass 必然在此之前收敛，耗尽
     /// 即视为流水线震荡并报错。
     pub fn optimize(&self) -> Result<Self, VerificationError> {
-        PassManager::standard().run(self.clone())
+        Pipeline::standard().run(self.clone())
     }
 
     /// Emit portable C; return status 1 when a guarded length is violated.
     pub fn emit_c(&self) -> Result<String, VerificationError> {
-        let kernel = self.optimize()?;
-        let mut source = String::from("#include <stddef.h>\n");
-        write_signature(&mut source, &kernel.name, &kernel.params)?;
-        write_guards(&mut source, &kernel);
-        write_loop(&mut source, &kernel);
-        Ok(source)
+        self.emit(Target::C)
     }
 
     /// Emit the `.k`-format serial body the device lowering seam consumes (the `optim::ir` bridge
@@ -331,27 +323,101 @@ impl Kernel {
     /// guard-free loop. Unlike [`Self::emit_c`], it pairs no buffer lengths, emits no guards and no
     /// `#include` — the vendor backend wraps this body into its grid / chunk / serial skeleton.
     pub fn emit_k(&self) -> Result<String, VerificationError> {
+        self.emit(Target::K)
+    }
+
+    /// 两种目标共用的骨架：先优化到范式，再拼签名、守卫、循环。
+    fn emit(&self, target: Target) -> Result<String, VerificationError> {
         let kernel = self.optimize()?;
         let mut source = String::new();
-        write_k_signature(&mut source, &kernel.name, &kernel.params)?;
-        write_k_loop(&mut source, &kernel);
+        target.prologue(&mut source);
+        write_signature(&mut source, target, &kernel.name, &kernel.params)?;
+        target.guards(&mut source, &kernel);
+        write_loop(&mut source, target, &kernel);
         Ok(source)
     }
 }
 
-/// 形参声明 + 每个缓冲的隐式长度参数：`buffer` 与其长度成对出现，顺序与 `check_generated` 对齐。
+/// 发射目标。两边的正文是同一段循环，只差四处——入口签名、长度配对与守卫、循环变量类型、
+/// 循环收尾。把这四处收进一个枚举，正文就只写一遍；少一份副本就少一处「改了一边忘了另一边」。
+#[derive(Clone, Copy)]
+enum Target {
+    /// 可移植 C：配对 `size_t` 长度、带守卫、`return 0` 收尾。
+    C,
+    /// 设备 `.k` 正文：无长度配对、无守卫，入口与返回交给 vendor 骨架。
+    K,
+}
+
+impl Target {
+    /// 循环变量的 C 拼写：C 用 `size_t` 对齐 `size_t` 长度；`.k` 用 `int` 对齐 `int` 长度标量，
+    /// 规避有符号 / 无符号比较。
+    fn int(self) -> &'static str {
+        match self {
+            Target::C => "size_t",
+            Target::K => "int",
+        }
+    }
+
+    /// 入口签名前段：C 用 `int` 原名，`.k` 用 `void` 加前缀名。
+    fn entry(self, name: &str) -> String {
+        match self {
+            Target::C => format!("int {name}("),
+            Target::K => format!("void cutile_{name}_kernel("),
+        }
+    }
+
+    /// 形参的 C 拼写。`.k` 把 `usize` 长度标量收敛成 `int`（签名解析认 `int`），其余同
+    /// [`ValueType::c_type`]。
+    fn declaration(self, ty: ValueType) -> Option<&'static str> {
+        match (self, ty) {
+            (Target::K, ValueType::Scalar(ScalarType::Usize)) => Some("int"),
+            _ => ty.c_type(),
+        }
+    }
+
+    /// 是否给每个缓冲补一个隐式长度参数。只有 C 需要：设备后端的长度就是标量形参本身。
+    fn pairs_lengths(self) -> bool {
+        matches!(self, Target::C)
+    }
+
+    /// 头文件。`.k` 不要——vendor 骨架已经 include 过。
+    fn prologue(self, source: &mut String) {
+        if let Target::C = self {
+            source.push_str("#include <stddef.h>\n");
+        }
+    }
+
+    /// 越界守卫。`.k` 不要——设备骨架接管入口与返回，没有 `return 1` 可写。
+    fn guards(self, source: &mut String, kernel: &Kernel) {
+        if let Target::C = self {
+            write_guards(source, kernel);
+        }
+    }
+
+    /// 循环收尾：C 的入口要自己的返回值，`.k` 的返回交给骨架。
+    fn trailer(self) -> &'static str {
+        match self {
+            Target::C => ";\n    }\n    return 0;\n}\n",
+            Target::K => ";\n    }\n}\n",
+        }
+    }
+}
+
+/// 形参声明，C 还给每个缓冲补一个隐式长度参数：`buffer` 与其长度成对出现，顺序与
+/// `check_generated` 对齐。
 fn write_signature(
     source: &mut String,
+    target: Target,
     name: &str,
     params: &[Parameter],
 ) -> Result<(), VerificationError> {
-    let _ = write!(source, "int {name}(");
+    source.push_str(&target.entry(name));
     let mut bufs = 0;
     for (idx, parameter) in params.iter().enumerate() {
         if idx != 0 {
             source.push_str(", ");
         }
-        bufs += write_parameter(source, parameter, bufs)?;
+        bufs += write_parameter(source, target, parameter, bufs)?;
     }
     source.push_str(") {\n");
     Ok(())
@@ -359,10 +425,11 @@ fn write_signature(
 
 fn write_parameter(
     source: &mut String,
+    target: Target,
     parameter: &Parameter,
     bufs: usize,
 ) -> Result<usize, VerificationError> {
-    let Some(declaration) = parameter.ty.c_type() else {
+    let Some(declaration) = target.declaration(parameter.ty) else {
         return Err(VerificationError::new(format!(
             "unsupported buffer type for `{}`",
             parameter.name
@@ -370,7 +437,7 @@ fn write_parameter(
     };
     let separator = if declaration.ends_with('*') { "" } else { " " };
     let _ = write!(source, "{declaration}{separator}{}", parameter.name);
-    if !parameter.ty.is_buf() {
+    if !(target.pairs_lengths() && parameter.ty.is_buf()) {
         return Ok(0);
     }
     let _ = write!(source, ", size_t {}", buf_length_name(bufs));
@@ -397,95 +464,37 @@ fn write_guards(source: &mut String, kernel: &Kernel) {
     }
 }
 
-fn write_loop(source: &mut String, kernel: &Kernel) {
-    match &kernel.write {
-        Write::Map(_) => write_map_header(source, kernel),
-        Write::Reduce { at, .. } => write_reduce_header(source, kernel, *at),
-    }
+/// 循环正文：头、写回值、收尾。两种目标共用同一份正文，差异全在 `target` 里。
+fn write_loop(source: &mut String, target: Target, kernel: &Kernel) {
+    write_header(source, target, kernel, kernel.write.slot());
     write_expr(source, kernel.write.expr(), &kernel.idx);
-    source.push_str(";\n    }\n    return 0;\n}\n");
+    source.push_str(target.trailer());
 }
 
-fn write_map_header(source: &mut String, kernel: &Kernel) {
+/// 循环头加上写回语句的左半段：循环变量类型由 `target` 定，归约多一个常量槽。
+fn write_header(source: &mut String, target: Target, kernel: &Kernel, at: Option<u32>) {
+    let index = target.int();
+    let Kernel {
+        idx,
+        extent,
+        output,
+        ..
+    } = kernel;
     let _ = write!(
         source,
-        "    for (size_t {0} = 0; {0} < {1}; ++{0}) {{\n        {2}[{0}] = ",
-        kernel.idx, kernel.extent, kernel.output
+        "    for ({index} {idx} = 0; {idx} < {extent}; ++{idx}) {{\n        {output}["
     );
-}
-
-fn write_reduce_header(source: &mut String, kernel: &Kernel, at: u32) {
-    let _ = write!(
-        source,
-        "    for (size_t {0} = 0; {0} < {1}; ++{0}) {{\n        {2}[{3}] += ",
-        kernel.idx, kernel.extent, kernel.output, at
-    );
-}
-
-/// `.k` 入口签名：`void cutile_{name}_kernel(...)`，参数不带长度配对——长度就是标量形参本身。
-fn write_k_signature(
-    source: &mut String,
-    name: &str,
-    params: &[Parameter],
-) -> Result<(), VerificationError> {
-    let _ = write!(source, "void cutile_{name}_kernel(");
-    for (idx, parameter) in params.iter().enumerate() {
-        if idx != 0 {
-            source.push_str(", ");
+    match at {
+        Some(at) => {
+            let _ = write!(source, "{at}] += ");
         }
-        write_k_parameter(source, parameter)?;
-    }
-    source.push_str(") {\n");
-    Ok(())
-}
-
-/// `.k` 形参声明：`usize` 长度标量收敛成 `int`（签名解析认 `int`），其余照 [`ValueType::c_type`]。
-fn write_k_parameter(source: &mut String, parameter: &Parameter) -> Result<(), VerificationError> {
-    let declaration = match parameter.ty {
-        ValueType::Scalar(ScalarType::Usize) => "int",
-        _ => {
-            let Some(declaration) = parameter.ty.c_type() else {
-                return Err(VerificationError::new(format!(
-                    "unsupported buffer type for `{}`",
-                    parameter.name
-                )));
-            };
-            declaration
+        None => {
+            let _ = write!(source, "{idx}] = ");
         }
-    };
-    let separator = if declaration.ends_with('*') { "" } else { " " };
-    let _ = write!(source, "{declaration}{separator}{}", parameter.name);
-    Ok(())
-}
-
-/// `.k` 正文循环：循环变量用 `int`（与 `int` 长度标量同型，规避有符号/无符号比较），结尾不加
-/// `return`——设备骨架（grid / chunk / serial）接管入口与返回。
-fn write_k_loop(source: &mut String, kernel: &Kernel) {
-    match &kernel.write {
-        Write::Map(_) => write_k_map_header(source, kernel),
-        Write::Reduce { at, .. } => write_k_reduce_header(source, kernel, *at),
     }
-    write_expr(source, kernel.write.expr(), &kernel.idx);
-    source.push_str(";\n    }\n}\n");
 }
 
-fn write_k_map_header(source: &mut String, kernel: &Kernel) {
-    let _ = write!(
-        source,
-        "    for (int {0} = 0; {0} < {1}; ++{0}) {{\n        {2}[{0}] = ",
-        kernel.idx, kernel.extent, kernel.output
-    );
-}
-
-fn write_k_reduce_header(source: &mut String, kernel: &Kernel, at: u32) {
-    let _ = write!(
-        source,
-        "    for (int {0} = 0; {0} < {1}; ++{0}) {{\n        {2}[{3}] += ",
-        kernel.idx, kernel.extent, kernel.output, at
-    );
-}
-
-fn buf_length_name(buf: usize) -> String {
+pub(crate) fn buf_length_name(buf: usize) -> String {
     format!("cutile_len_{buf}")
 }
 
@@ -515,7 +524,7 @@ fn write_compound(source: &mut String, expression: &Expr, idx: &str) {
     }
 }
 
-fn write_binary(source: &mut String, op: BinaryOp, left: &Expr, right: &Expr, idx: &str) {
+fn write_binary(source: &mut String, op: Arith, left: &Expr, right: &Expr, idx: &str) {
     source.push('(');
     write_expr(source, left, idx);
     let _ = write!(source, " {} ", op.c_symbol());
@@ -524,5 +533,5 @@ fn write_binary(source: &mut String, op: BinaryOp, left: &Expr, right: &Expr, id
 }
 
 #[cfg(test)]
-#[path = "../../tests/ir_tests.rs"]
+#[path = "../tests/ir_tests.rs"]
 mod ir_tests;

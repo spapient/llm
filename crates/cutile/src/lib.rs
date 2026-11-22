@@ -1,6 +1,6 @@
 //! 职责：cutile —— 设备无关的 kernel DSL 与编译前端。
 //!
-//! 现有生产链路实现 [`README.md`](../README.md) 的模板式 P0 纵切面；`ir` 是开始迁移的 typed 内核
+//! 现有生产链路实现 [`README.md`](../README.md) 的模板式 P0 纵切面；`kernel` 是开始迁移的 typed 内核
 //! （写回分逐点 / 归约，并可把两个核拼成一个），当前不取代旧模板，也不宣称具备通用优化或 GPU 执行能力。
 //!
 //! ```text
@@ -21,7 +21,7 @@
 //! | ③ 变体选择与 roofline 估值 | [`plan`] |
 //! | ④ 槽位与 `@原语` 替换 | [`substitute`]、[`ast`] |
 //! | ⑤ 成文与片段行数判据 | [`emit`] |
-//! | typed IR 迁移起点（内核 + 写回 + 融合 + 优化通道） | [`ir`] |
+//! | typed IR：内核 + 写回 + 双目标发射、校验、融合、优化通道 | [`kernel`]、[`validate`]、[`fuse`]、[`pass`] |
 //! | ⑤ 指纹、锁、落盘与容量回收 | [`cache`] |
 //! | 设备探测与存储寻址 | [`probe`]、[`space`] |
 //! | 对拍口径（相对误差 + 按 dtype 阈值） | [`mod@reference`] |
@@ -90,14 +90,17 @@ pub mod cache;
 pub mod cap;
 pub mod dirs;
 pub mod emit;
+pub mod fuse;
 pub mod harness;
-pub mod ir;
+pub mod kernel;
 mod lru;
+pub mod pass;
 pub mod plan;
 pub mod probe;
 pub mod reference;
 pub mod space;
 pub mod substitute;
+pub mod validate;
 // 生产态内核发射与基准封装（M3-2 / M3-10）已搬到 `engine`（L6）：Metal / CUDA 的 vendor 语法
 // 不进 cutile，机制层只经 `llm_optim::backend::Codegen::lower` / `llm_optim::backend::Codegen::harness`
 // 缝分派（`docs/ARCHITECTURE.md` 的 L3 契约：cutile 不出现厂商字面量）。

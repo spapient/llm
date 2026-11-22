@@ -1,4 +1,4 @@
-//! Rust 函数前端：把一个 `for idx in 0..extent` 循环 + 一次写回翻译成 `cutile::ir::Kernel`。
+//! Rust 函数前端：把一个 `for idx in 0..extent` 循环 + 一次写回翻译成 `cutile::kernel::Kernel`。
 //!
 //! 只接受逐点 `output[idx] = expr` 与归约 `output[at] += expr`；其余形状、类型与表达式在展开期各
 //! 报一条带 span 的错，原函数原样保留为 CPU 参考实现。装配期再按 `Kernel::new` 的闭集摊平。
@@ -40,7 +40,7 @@ struct Param {
     kind: ParamKind,
 }
 
-/// lowering 的成品：循环变量、上界、输出缓冲，以及已摊平的 `cutile::ir::Write` 表达式。
+/// lowering 的成品：循环变量、上界、输出缓冲，以及已摊平的 `cutile::kernel::Write` 表达式。
 struct Body {
     idx: String,
     extent: String,
@@ -104,7 +104,7 @@ fn map_body(
         idx,
         extent,
         output,
-        quote!(::cutile::ir::Write::Map(#value)),
+        quote!(::cutile::kernel::Write::Map(#value)),
     ))
 }
 
@@ -118,7 +118,7 @@ fn reduce_body(
     reduce_op(assign)?;
     let (output, at) = reduce_output(assign, params)?;
     let value = parse_expr(assign.right.as_ref(), &idx, params)?;
-    let write = quote!(::cutile::ir::Write::Reduce { at: #at, value: #value });
+    let write = quote!(::cutile::kernel::Write::Reduce { at: #at, value: #value });
     Ok(Body::new(idx, extent, output, write))
 }
 
@@ -423,22 +423,22 @@ fn param_kind(params: &[Param], name: &str) -> Option<ParamKind> {
         .map(|param| param.kind)
 }
 
-/// 形参类型 → `cutile::ir::ValueType`：`&[f32]` 只读、`&mut [f32]` 可写、其余是标量。
+/// 形参类型 → `cutile::kernel::ValueType`：`&[f32]` 只读、`&mut [f32]` 可写、其余是标量。
 fn ir_value_type(kind: ParamKind) -> TokenStream2 {
-    let element = quote!(::cutile::ir::ScalarType::F32);
+    let element = quote!(::cutile::kernel::ScalarType::F32);
     match kind {
         ParamKind::BufRead => quote! {
-            ::cutile::ir::ValueType::Buf { element: #element, access: ::cutile::ir::Access::Read }
+            ::cutile::kernel::ValueType::Buf { element: #element, access: ::cutile::kernel::Access::Read }
         },
         ParamKind::BufWrite => quote! {
-            ::cutile::ir::ValueType::Buf {
+            ::cutile::kernel::ValueType::Buf {
                 element: #element,
-                access: ::cutile::ir::Access::ReadWrite,
+                access: ::cutile::kernel::Access::ReadWrite,
             }
         },
-        ParamKind::F32 => quote!(::cutile::ir::ValueType::Scalar(#element)),
-        ParamKind::Usize => quote!(::cutile::ir::ValueType::Scalar(
-            ::cutile::ir::ScalarType::Usize
+        ParamKind::F32 => quote!(::cutile::kernel::ValueType::Scalar(#element)),
+        ParamKind::Usize => quote!(::cutile::kernel::ValueType::Scalar(
+            ::cutile::kernel::ScalarType::Usize
         )),
     }
 }
@@ -453,15 +453,15 @@ fn render(function: &ItemFn, params: &[Param], body: &Body) -> TokenStream2 {
         .map(|parameter| {
             let name = &parameter.name;
             let ty = ir_value_type(parameter.kind);
-            quote! { ::cutile::ir::Parameter { name: #name.to_string(), ty: #ty } }
+            quote! { ::cutile::kernel::Parameter { name: #name.to_string(), ty: #ty } }
         })
         .collect::<Vec<_>>();
     let (idx, extent, output, write) = (&body.idx, &body.extent, &body.output, &body.write);
     quote! {
         #[doc(hidden)]
         #[allow(missing_docs)]
-        #visibility fn #generated() -> ::cutile::ir::Kernel {
-            ::cutile::ir::Kernel::new(#name, vec![#(#ir_params),*], #idx, #extent, #output, #write)
+        #visibility fn #generated() -> ::cutile::kernel::Kernel {
+            ::cutile::kernel::Kernel::new(#name, vec![#(#ir_params),*], #idx, #extent, #output, #write)
         }
     }
 }
@@ -505,7 +505,7 @@ fn float_literal(lit: &ExprLit) -> syn::Result<TokenStream2> {
         return fail(literal.span(), "kernel float literals must be finite");
     }
     let bits = value.to_bits();
-    Ok(quote!(::cutile::ir::Expr::F32(#bits)))
+    Ok(quote!(::cutile::kernel::Expr::F32(#bits)))
 }
 
 /// 名字在表达式里要么是 `f32` 标量，要么是「必须带下标读取」的缓冲；循环变量只能当下标用。
@@ -516,7 +516,7 @@ fn scalar_use(path: &ExprPath, idx: &str, params: &[Param]) -> syn::Result<Token
         None => return fail(path.span(), &format!("unknown kernel value `{name}`")),
     };
     match kind {
-        ParamKind::F32 => Ok(quote!(::cutile::ir::Expr::Scalar(#name.to_string()))),
+        ParamKind::F32 => Ok(quote!(::cutile::kernel::Expr::Scalar(#name.to_string()))),
         ParamKind::BufRead | ParamKind::BufWrite => fail(
             path.span(),
             "buffer values must be read with `buffer[loop_idx]`",
@@ -546,7 +546,7 @@ fn buf_load(buf: &Expr, at: &Expr, idx: &str, params: &[Param]) -> syn::Result<T
         param_kind(params, &name),
         Some(ParamKind::BufRead | ParamKind::BufWrite)
     ) {
-        return Ok(quote!(::cutile::ir::Expr::Load(#name.to_string())));
+        return Ok(quote!(::cutile::kernel::Expr::Load(#name.to_string())));
     }
     fail(ident.span(), &format!("`{name}` is not a buffer parameter"))
 }
@@ -556,7 +556,7 @@ fn negate(unary: &ExprUnary, idx: &str, params: &[Param]) -> syn::Result<TokenSt
         return fail(unary.span(), UNSUPPORTED);
     }
     let value = parse_expr(unary.expr.as_ref(), idx, params)?;
-    Ok(quote!(::cutile::ir::Expr::Neg(Box::new(#value))))
+    Ok(quote!(::cutile::kernel::Expr::Neg(Box::new(#value))))
 }
 
 fn binary_expr(binary: &ExprBinary, idx: &str, params: &[Param]) -> syn::Result<TokenStream2> {
@@ -564,8 +564,8 @@ fn binary_expr(binary: &ExprBinary, idx: &str, params: &[Param]) -> syn::Result<
     let left = parse_expr(binary.left.as_ref(), idx, params)?;
     let right = parse_expr(binary.right.as_ref(), idx, params)?;
     Ok(quote! {
-        ::cutile::ir::Expr::Binary {
-            op: ::cutile::ir::BinaryOp::#operator,
+        ::cutile::kernel::Expr::Binary {
+            op: ::cutile::kernel::Arith::#operator,
             left: Box::new(#left),
             right: Box::new(#right),
         }
