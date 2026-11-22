@@ -17,6 +17,23 @@ fn dot_reduce(a: &[f32], b: &[f32], out: &mut [f32], len: usize) {
     }
 }
 
+fn buf(name: &str, access: Access) -> Parameter {
+    Parameter {
+        name: name.to_string(),
+        ty: ValueType::Buf {
+            element: ScalarType::F32,
+            access,
+        },
+    }
+}
+
+fn scalar(name: &str, ty: ScalarType) -> Parameter {
+    Parameter {
+        name: name.to_string(),
+        ty: ValueType::Scalar(ty),
+    }
+}
+
 /// 只有 `output` + `extent` 的最小合法内核，别的判据都从它派生出来。
 fn minimal() -> Kernel {
     Kernel::map(
@@ -285,24 +302,188 @@ fn optimize_drops_dead_params_before_emission() {
     assert!(!source.contains("dead"), "{source}");
 }
 
-/// `Pass` 可组合：自定义通道按注册顺序施加到内核上。
+/// 一个幂等的改名 pass：只认 `from`，改到 `to`，之后再跑什么都不变。
+#[derive(Clone, Copy)]
+struct Rename {
+    name: &'static str,
+    from: &'static str,
+    to: &'static str,
+}
+
+impl Pass for Rename {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn run(&self, mut kernel: Kernel) -> Result<Kernel, VerificationError> {
+        if kernel.name == self.from {
+            kernel.name = self.to.to_string();
+        }
+        Ok(kernel)
+    }
+}
+
+/// 把 `-(0 - y)` 降成 `-(-y)`：一条「暴露双重取负」的 pass，自己严格收缩。
+struct LowerSubtraction;
+
+impl Pass for LowerSubtraction {
+    fn name(&self) -> &'static str {
+        "lower-subtraction"
+    }
+
+    fn run(&self, mut kernel: Kernel) -> Result<Kernel, VerificationError> {
+        let Write::Map(Expr::Neg(inner)) = &kernel.write else {
+            return Ok(kernel);
+        };
+        let Expr::Binary {
+            op: BinaryOp::Sub,
+            left,
+            right,
+        } = inner.as_ref()
+        else {
+            return Ok(kernel);
+        };
+        let Expr::F32(bits) = left.as_ref() else {
+            return Ok(kernel);
+        };
+        if *bits != 0.0f32.to_bits() {
+            return Ok(kernel);
+        }
+        let value = Expr::Neg(Box::new(right.as_ref().clone()));
+        kernel.write = Write::Map(Expr::Neg(Box::new(value)));
+        Ok(kernel)
+    }
+}
+
+/// 撤掉 `-(-y)`。
+struct CancelDoubleNegation;
+
+impl Pass for CancelDoubleNegation {
+    fn name(&self) -> &'static str {
+        "cancel-double-negation"
+    }
+
+    fn run(&self, mut kernel: Kernel) -> Result<Kernel, VerificationError> {
+        let Write::Map(Expr::Neg(inner)) = &kernel.write else {
+            return Ok(kernel);
+        };
+        let Expr::Neg(value) = inner.as_ref() else {
+            return Ok(kernel);
+        };
+        kernel.write = Write::Map(value.as_ref().clone());
+        Ok(kernel)
+    }
+}
+
+/// `Pass` 可组合。寄存器要求的是「结果稳定」，不是「调用方排好依赖」：互相交换的 pass 无论怎么
+/// 注册都会收敛到同一个范式（上面反序那条已证），所以顺序只在两个 pass **真正冲突**时才决定结果。
+/// 这里让两条改名对 `middle` 各持一词，正序得 `left`，反序得 `right`。
 #[test]
 fn pass_manager_applies_custom_passes_in_order() {
-    struct Rename;
-    impl Pass for Rename {
+    let towards_left = Rename {
+        name: "middle-to-left",
+        from: "middle",
+        to: "left",
+    };
+    let towards_right = Rename {
+        name: "middle-to-right",
+        from: "middle",
+        to: "right",
+    };
+    let mut kernel = minimal();
+    kernel.name = "middle".to_string();
+    let forward = PassManager::new()
+        .push(towards_left)
+        .push(towards_right)
+        .run(kernel.clone())
+        .expect("custom passes run");
+    assert_eq!(forward.name, "left");
+    let backward = PassManager::new()
+        .push(towards_right)
+        .push(towards_left)
+        .run(kernel)
+        .expect("custom passes run");
+    assert_eq!(backward.name, "right");
+}
+
+/// 管理器不要求调用方排好依赖：`CancelDoubleNegation` 注册在 `LowerSubtraction` **之前**，而它要
+/// 消掉的 `-(-x)` 只有后者才造得出来，所以这条恒等只能靠下一轮扫描完成。两轮各自严格收缩，
+/// 因此驱动一定会重扫——这正是「一轮算完」测不出来的性质。
+#[test]
+fn a_pass_sees_work_created_by_a_later_pass_on_the_next_sweep() {
+    let kernel = Kernel::map(
+        "peel",
+        vec![
+            buf("out", Access::ReadWrite),
+            scalar("extent", ScalarType::Usize),
+        ],
+        "i",
+        "extent",
+        "out",
+        Expr::Neg(Box::new(Expr::Binary {
+            op: BinaryOp::Sub,
+            left: Box::new(Expr::F32(0.0f32.to_bits())),
+            right: Box::new(Expr::F32(2.0f32.to_bits())),
+        })),
+    );
+    let peeled = PassManager::new()
+        .push(CancelDoubleNegation)
+        .push(LowerSubtraction)
+        .run(kernel)
+        .expect("two sweeps reach the normal form");
+    assert_eq!(peeled.write, Write::Map(Expr::F32(2.0f32.to_bits())));
+}
+
+/// 只加不减的 pass 不会被悄悄截断：上限（初始 `cost`）耗尽后 `run` 报错，调用方拿到的是
+/// 「没收敛」，而不是一段半成品内核。
+#[test]
+fn a_pipeline_that_never_settles_is_an_error() {
+    struct Grow;
+    impl Pass for Grow {
         fn name(&self) -> &'static str {
-            "rename"
+            "grow"
         }
 
         fn run(&self, mut kernel: Kernel) -> Result<Kernel, VerificationError> {
-            kernel.name.push_str("_p");
+            let Write::Map(value) = &kernel.write else {
+                return Ok(kernel);
+            };
+            let wrapped = Expr::Neg(Box::new(value.clone()));
+            kernel.write = Write::Map(wrapped);
             Ok(kernel)
         }
     }
-    let kernel = minimal();
-    let renamed = PassManager::new()
-        .add(Rename)
-        .run(kernel.clone())
-        .expect("custom pass runs");
-    assert_eq!(renamed.name, "copy_p");
+    let error = PassManager::new()
+        .push(Grow)
+        .run(minimal())
+        .expect_err("a growing pass never settles");
+    assert!(error.to_string().contains("did not settle"), "{error}");
+}
+
+/// 化简一路走到发射器：`input * (0.5 + 0.5)` 在 C 里只剩 `input`。
+#[test]
+fn the_fixpoint_reaches_the_emitted_c() {
+    let kernel = Kernel::map(
+        "half",
+        vec![
+            buf("out", Access::ReadWrite),
+            scalar("extent", ScalarType::Usize),
+            buf("input", Access::Read),
+        ],
+        "i",
+        "extent",
+        "out",
+        Expr::Binary {
+            op: BinaryOp::Mul,
+            left: Box::new(Expr::Load("input".to_string())),
+            right: Box::new(Expr::Binary {
+                op: BinaryOp::Add,
+                left: Box::new(Expr::F32(0.5f32.to_bits())),
+                right: Box::new(Expr::F32(0.5f32.to_bits())),
+            }),
+        },
+    );
+    let source = kernel.emit_c().expect("emits");
+    assert!(source.contains("= input[i];"), "{source}");
+    assert!(!source.contains("0.5"), "{source}");
 }

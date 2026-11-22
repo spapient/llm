@@ -31,6 +31,7 @@
 //! | 一次编译的上下文与产物（`Run` / `Prepared`） | `pipeline` |
 //! | 见证执行与语言门 | [`witness`]、`gate` |
 //! | 命令策略与结构化报告 | [`doctor`]、[`verify`]、[`mod@bench`]、[`execution`] |
+//! | typed IR 直通 Lower / 设备 dispatch 的桥 | [`ir`] |
 //! | 跨档案的后端能力台账 | [`ledger`] |
 //!
 //! `pipeline` 与 `gate` 保持私有：它们是接缝而不是 API——外部只该看到"能跑/不能跑"的结论，不该
@@ -60,6 +61,7 @@ pub mod build;
 pub mod device;
 pub mod doctor;
 pub mod execution;
+pub mod ir;
 pub mod ledger;
 pub mod runner;
 pub mod toolchain;

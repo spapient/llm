@@ -37,9 +37,11 @@
 | 用例 | — | 149 单测 + 2 doctest | `cargo test -p cutile --all-features` |
 
 **迁移记录（2026-11-22）**：`#[dsl]` → typed IR 已打通 f32 的两种写回（逐点 `output[idx] = expr` 与
-归约 `output[at] += expr`），外加把两个核拼成一个的 `Kernel::fuse`；包含结构校验、常量折叠和 portable C
-发射，并用 `cc` 编译执行发射结果、与 Rust 参考实现逐位对拍。它仍未替换旧模板链路，也未接入设备
-dispatch。上表的 P0 数字是本次迁移前的基线，不能代表迁移后的代码量或执行覆盖率。
+归约 `output[at] += expr`），外加把两个核拼成一个的 `Kernel::fuse`；包含结构校验、把代数定律与常量折叠
+合成一张定律表并在每个节点上跑到不动点的化简、死形参消除，以及两条发射：portable C 与经 `optim::ir` 接
+`Lower` 的 `.k` 正文。前者用 `cc` 编译执行、与 Rust 参考实现逐位对拍；后者已接上设备 dispatch（Metal 等
+vendor 后端），但 `Image` 仍未接。它仍未替换旧模板链路。上表的 P0 数字是本次迁移前的基线，不能代表迁移
+后的代码量或执行覆盖率。
 
 "P0 已落地"指 §16 的五项判据都已有可执行答案；四条命令就是它的全部入口：
 
@@ -91,7 +93,7 @@ CPU 后端在本机（macOS / Apple clang）真实编译并执行，`max_rel_err
 |---|---|---|
 | CuTile Rust | 借用检查器级别的数据竞争证明；Tile IR 里有 NVIDIA 自己的调度器 | cutile 计划用宿主侧 `partition()` 继承 Rust 借用检查（§4.4，**P0 尚未实现**），但**不接管设备调度**，交给各家原生编译器 |
 | TileLang | 算子生态与 Python 上手速度；tile 级 API 覆盖广 | cutile 只覆盖闭集里的算子（今天 36 条），超出即报错；不提供 Python 前端 |
-| CubeCL | IR 级优化、后端成熟度、社区 | 现有模板链路没有 IR，因此**拿不到跨算子融合**；新 typed IR 目前只有逐点、归约两种写回与两核融合，未支持设备执行（§10.3）。 |
+| CubeCL | IR 级优化、后端成熟度、社区 | 现有模板链路没有 IR，因此**拿不到跨算子融合**；新 typed IR 目前只有逐点、归约两种写回与两核融合，`.k` 正文已接 `Lower` / 设备 dispatch 但 `Image` 与布局推导未接（§10.3）。 |
 | CuTe DSL | 布局代数的表达完备性 | cutile 用 4 构造子的闭集换可判定性，非常规布局在闭集外直接拒绝 |
 | 旧工程 `llm.u` | 真机覆盖面与性能台账的严谨度 | cutile 继承它的台账方法（证据分级），但用自动生成的见证替代人填 |
 
@@ -188,7 +190,7 @@ crates/cutile/                  # 模板前端 + typed IR 迁移起点
 ├── README.md                   # 本文
 └── src/
     ├── lib.rs                  # 公开面、DSL 宏 re-export、SCHEMA_VER
-    ├── ir/                     # typed IR：mod（Kernel + Write + 折叠 + C 发射）/ validate（六道闸）/ fuse（两核拼接）
+    ├── ir/                     # typed IR：mod（Kernel + Write + C/.k 发射）/ validate（六道闸）/ pass（定律表 + 不动点通道）/ fuse（两核拼接）
     ├── builtin.rs              # 三层数据的装载与交叉校验（声明 / 档案 / 片段）
     ├── cap.rs                  # ② negotiate：需求 ∩ 供给、降级链、诊断构造
     ├── ast.rs                  # 模板渲染的可见中间产物（ADR 0017 的 L1）
@@ -801,7 +803,7 @@ text      = { any } ;            (* 片段拼接时原样保留 *)
 （逐点）或 `output[0] += expr`（归约，累加到固定槽位）。宏在编译期解析/限制 Rust AST，生成
 `Kernel::map(...)` 或 `Kernel::reduce(...)`。两种写回不是两个类型，而是同一类型里的一份数据——
 `Write::{Map, Reduce { at }}`——因此 `ir::validate` 的六道校验（名字、形参、生成名、`extent`、输出、
-表达式类型）、常量折叠与 C 发射各自只有一份，发射时只在「长度守卫 + 循环体」处分道。`Kernel::fuse`
+表达式类型）、定律表化简与两条发射（C / `.k`）各自只有一份，发射时只在「长度守卫 + 循环体」处分道。`Kernel::fuse`
 再把「读输入 → 写中间」与「读中间 → 写输出」拼成一个核，中间结果不落回全局内存。
 
 **证据强度**：`tests/ir_exec_tests.rs` 把发射出的 C 与一个生成的 `main` 交给 `cc` 编译执行，再按

@@ -1,9 +1,10 @@
 //! Typed, target-neutral IR for the `#[dsl]` kernel family.
 //!
 //! 一张 [`Kernel`] 覆盖三种写法：逐点 `output[idx] = value`、归约 `output[at] += value`、以及由
-//! 前两者组合出的融合核（[`Kernel::fuse`]）。这一层做校验、规范化、常量折叠、死形参消除与可移植
-//! C 发射——后四者排成 [`PassManager`] 里的有序通道；它还没接 `Lower`/`Image`，所以任何「性能
-//! 提升」都不该由它来宣称。
+//! 前两者组合出的融合核（[`Kernel::fuse`]）。这一层做校验、规范化、常量折叠、死形参消除，并发射
+//! 两种目标文本：可移植 C（[`Kernel::emit_c`]）与设备 lowering 的 `.k` 正文（[`Kernel::emit_k`]，
+//! 经 `optim::ir` 桥接入 `Lower`/设备 dispatch）。`Image` 尚未接上，所以「性能提升」只能由桥接后
+//! 的设备路径宣称，不由这一层单独宣称。
 
 use core::fmt::{self, Write as _};
 
@@ -304,8 +305,12 @@ impl Kernel {
         )
     }
 
-    /// Run the standard pass pipeline: verify → canonicalize → fold constants → drop dead
-    /// parameters → verify. The result is a valid, simplified kernel.
+    /// Run the standard pipeline to a fixpoint: verify, then simplify (algebraic laws + constant
+    /// folding), then drop dead parameters, sweeping until a whole round leaves the kernel
+    /// unchanged, then verify again. The result is a valid kernel in normal form.
+    ///
+    /// 轮次不用魔法数：上限是初始 `cost`（形参数 + 节点数），严格收缩的 pass 必然在此之前收敛，耗尽
+    /// 即视为流水线震荡并报错。
     pub fn optimize(&self) -> Result<Self, VerificationError> {
         PassManager::standard().run(self.clone())
     }
@@ -317,6 +322,19 @@ impl Kernel {
         write_signature(&mut source, &kernel.name, &kernel.params)?;
         write_guards(&mut source, &kernel);
         write_loop(&mut source, &kernel);
+        Ok(source)
+    }
+
+    /// Emit the `.k`-format serial body the device lowering seam consumes (the `optim::ir` bridge
+    /// feeds it to the vendor backends' `Codegen::lower`): a `void` entry
+    /// `cutile_{name}_kernel` with plain `const float *`/`float *`/`int` parameters and a single
+    /// guard-free loop. Unlike [`Self::emit_c`], it pairs no buffer lengths, emits no guards and no
+    /// `#include` — the vendor backend wraps this body into its grid / chunk / serial skeleton.
+    pub fn emit_k(&self) -> Result<String, VerificationError> {
+        let kernel = self.optimize()?;
+        let mut source = String::new();
+        write_k_signature(&mut source, &kernel.name, &kernel.params)?;
+        write_k_loop(&mut source, &kernel);
         Ok(source)
     }
 }
@@ -400,6 +418,69 @@ fn write_reduce_header(source: &mut String, kernel: &Kernel, at: u32) {
     let _ = write!(
         source,
         "    for (size_t {0} = 0; {0} < {1}; ++{0}) {{\n        {2}[{3}] += ",
+        kernel.idx, kernel.extent, kernel.output, at
+    );
+}
+
+/// `.k` 入口签名：`void cutile_{name}_kernel(...)`，参数不带长度配对——长度就是标量形参本身。
+fn write_k_signature(
+    source: &mut String,
+    name: &str,
+    params: &[Parameter],
+) -> Result<(), VerificationError> {
+    let _ = write!(source, "void cutile_{name}_kernel(");
+    for (idx, parameter) in params.iter().enumerate() {
+        if idx != 0 {
+            source.push_str(", ");
+        }
+        write_k_parameter(source, parameter)?;
+    }
+    source.push_str(") {\n");
+    Ok(())
+}
+
+/// `.k` 形参声明：`usize` 长度标量收敛成 `int`（签名解析认 `int`），其余照 [`ValueType::c_type`]。
+fn write_k_parameter(source: &mut String, parameter: &Parameter) -> Result<(), VerificationError> {
+    let declaration = match parameter.ty {
+        ValueType::Scalar(ScalarType::Usize) => "int",
+        _ => {
+            let Some(declaration) = parameter.ty.c_type() else {
+                return Err(VerificationError::new(format!(
+                    "unsupported buffer type for `{}`",
+                    parameter.name
+                )));
+            };
+            declaration
+        }
+    };
+    let separator = if declaration.ends_with('*') { "" } else { " " };
+    let _ = write!(source, "{declaration}{separator}{}", parameter.name);
+    Ok(())
+}
+
+/// `.k` 正文循环：循环变量用 `int`（与 `int` 长度标量同型，规避有符号/无符号比较），结尾不加
+/// `return`——设备骨架（grid / chunk / serial）接管入口与返回。
+fn write_k_loop(source: &mut String, kernel: &Kernel) {
+    match &kernel.write {
+        Write::Map(_) => write_k_map_header(source, kernel),
+        Write::Reduce { at, .. } => write_k_reduce_header(source, kernel, *at),
+    }
+    write_expr(source, kernel.write.expr(), &kernel.idx);
+    source.push_str(";\n    }\n}\n");
+}
+
+fn write_k_map_header(source: &mut String, kernel: &Kernel) {
+    let _ = write!(
+        source,
+        "    for (int {0} = 0; {0} < {1}; ++{0}) {{\n        {2}[{0}] = ",
+        kernel.idx, kernel.extent, kernel.output
+    );
+}
+
+fn write_k_reduce_header(source: &mut String, kernel: &Kernel, at: u32) {
+    let _ = write!(
+        source,
+        "    for (int {0} = 0; {0} < {1}; ++{0}) {{\n        {2}[{3}] += ",
         kernel.idx, kernel.extent, kernel.output, at
     );
 }
