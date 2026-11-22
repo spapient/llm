@@ -4,42 +4,49 @@ use crate::collective::Reduce;
 use diagnostic::Result;
 
 /// 张量并行里线性层的两种切法。
+///
+/// 判别式就是它在 `TABLE` 里的行号（`#[repr(usize)]`），于是短名、被切轴、所需归约三件事
+/// 写在同一行里：加一种切法只加一行。旧形态是三个各自两臂的 `match`——"`Row` 忘了要
+/// `Sum`"这类错只会在反向传播时表现为静默的梯度翻倍。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(usize)]
 pub enum Sharding {
     /// 按列切：切输出维，分片直接进下一层，不需要通信。
-    Column,
+    Column = 0,
     /// 按行切：切输入维，每个 rank 产出一份部分和，必须求和归约。
-    Row,
+    Row = 1,
 }
+
+/// 一种切法的全部事实：短名、被切的是权重 `[out, in]` 的哪一维、合并所需的归约。
+type Row = (&'static str, usize, Option<Reduce>);
 
 impl Sharding {
     /// 全部切法，供日志与测试遍历。
     pub const ALL: [Self; 2] = [Self::Column, Self::Row];
 
+    /// 每种切法一行。行序必须与判别式一致（三个访问器都走 `TABLE[self as usize]`），
+    /// 这条由 `tests` 里的 `every_sharding_row_matches_its_discriminant` 钉住。
+    const TABLE: [Row; 2] = [("column", 0, None), ("row", 1, Some(Reduce::Sum))];
+
+    fn row(self) -> Row {
+        Self::TABLE[self as usize]
+    }
+
     /// 稳定的短名。
     pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Column => "column",
-            Self::Row => "row",
-        }
+        self.row().0
     }
 
     /// 被切的是权重 `[out, in]` 的哪一维。
     ///
     /// 全 crate 只有这一处把切法翻译成轴：分片形状、随份数变化的长度都从它派生。
     pub fn axis(self) -> usize {
-        match self {
-            Self::Column => 0,
-            Self::Row => 1,
-        }
+        self.row().1
     }
 
     /// 合并各 rank 的输出需要哪种归约；`Column` 不需要（`None`）。
     pub fn merge(self) -> Option<Reduce> {
-        match self {
-            Self::Column => None,
-            Self::Row => Some(Reduce::Sum),
-        }
+        self.row().2
     }
 }
 

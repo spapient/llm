@@ -27,7 +27,7 @@ pub struct PrimCall {
     pub body: String,
 }
 
-/// 原语调用参数的 owned 版本，对应 [`op::tpl::Arg`]。
+/// 原语调用参数的 owned 版本，对应 [`spec::tpl::Arg`]。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CallArg {
     /// 位置参数。

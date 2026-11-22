@@ -81,8 +81,9 @@ pub use ::prof::prof;
 
 // 声明层的词汇表（布局构造子、调度模板、模板词法）与解析结果的事实源在 `op`：
 // `cutile` 只消费它们，因此原地转发路径，机制里没有第二份闭集。
-pub use ::op::decl;
-pub use ::op::{layout, model, sch, sig};
+pub use ::prof::decl;
+pub use spec::sch::layout;
+pub use spec::{model, sch, sig};
 
 pub mod ast;
 pub mod builtin;

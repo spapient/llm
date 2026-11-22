@@ -57,10 +57,10 @@
 /// 能力词汇表定义在 [`spec::atom`]（`spec` 在 `prof` 之上，词汇是双方共用的契约）；
 /// `prof` 侧再转出键、需求与跨度，`prof::atom::*` 的历史路径保持不变。
 pub mod atom {
-    pub use crate::key::KernelKey;
-    pub use crate::need::{Attr, Need, Provide, Witness};
-    pub use spec::span::Span;
     pub use spec::atom::*;
+    pub use spec::key::KernelKey;
+    pub use spec::need::{Attr, Need, Provide, Witness};
+    pub use spec::span::Span;
 }
 
 pub use spec::inherent_names;
@@ -94,8 +94,6 @@ mod fragment;
 mod layout;
 
 mod eval;
-mod key;
-mod need;
 mod provide;
 mod schema;
 mod witness;
@@ -209,7 +207,7 @@ pub mod catalogue {
             .map(|(_, text)| *text)
     }
 
-    /// 一次注册：一个算子的四件事——名字、模板、语义表、是否可微。
+    /// 一次注册：一个算子的三件事——名字、语义表、是否可微（模板问 [`template`]）。
     ///
     /// 这是**注册表的值类型**：`nn::REGISTRY` 按 [`for_each_template!`](crate::for_each_template)
     /// 的同一顺序逐条填它，于是"有哪些算子"只有一份，`cutile` 与下游只认这个结构，不认识任何
@@ -218,8 +216,6 @@ pub mod catalogue {
     pub struct Registration {
         /// 算子名（与 `src/ops/<name>.toml` 的文件名一致）。
         pub name: &'static str,
-        /// `<stem>.k` 的正文。
-        pub template: &'static str,
         /// 代价、样本与标量参考。
         pub model: spec::model::Model,
         /// 训练反向图里是否可微：`true` 的算子必须配套一条反向公式。

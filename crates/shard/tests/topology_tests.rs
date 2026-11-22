@@ -175,3 +175,46 @@ fn an_idx_outside_its_own_degree_is_refused() {
     }
     assert_eq!(topology.rank(1, 2, 3), Ok(23));
 }
+
+/// 行序 = 判别式：`degree` / `place` / `as_str` 都走 `NAMES_[self as usize]`，这条约定错了
+/// 不会有编译错误，只会把组切到别的维上去。
+#[test]
+fn every_axis_row_matches_its_discriminant() {
+    let topology = Topology::new(2, 3, 5).expect("合法");
+    let table = [
+        (Parallel::Tensor, "tp", topology.tp()),
+        (Parallel::Pipeline, "pp", topology.pp()),
+        (Parallel::Data, "dp", topology.dp()),
+    ];
+    for (row, (axis, name, degree)) in table.into_iter().enumerate() {
+        assert_eq!(axis as usize, row, "{name} 的行号与判别式不一致");
+        assert_eq!(axis.as_str(), name);
+        // 组大小就是该维的并行度——判别式若指错了维，这里会拿到别的进制。
+        assert_eq!(
+            topology.group(axis, 0).expect("首组").size(),
+            degree,
+            "{name} 的组大小不是它自己的并行度"
+        );
+    }
+}
+
+/// 布局只有一条规则：rank 是 `[tp_idx, pp_idx, dp_idx]` 按 `[tp, pp, dp]` 编码的混合进制数。
+/// 反解与它逐点互逆（上面那条钉住了），这里钉"编码本身就是那条公式"。
+#[test]
+fn the_rank_is_the_mixed_radix_code_of_its_axes() {
+    for (tp, pp, dp) in [(2, 3, 5), (4, 1, 2), (1, 1, 7)] {
+        let topology = Topology::new(tp, pp, dp).expect("合法");
+        for dp_idx in 0..dp {
+            for pp_idx in 0..pp {
+                for tp_idx in 0..tp {
+                    let expected = dp_idx * tp * pp + pp_idx * tp + tp_idx;
+                    assert_eq!(
+                        topology.rank(tp_idx, pp_idx, dp_idx),
+                        Ok(u32::try_from(expected).expect("world ≤ u32::MAX")),
+                        "{tp}·{pp}·{dp} 的 ({tp_idx}, {pp_idx}, {dp_idx}) 不是混合进制数"
+                    );
+                }
+            }
+        }
+    }
+}

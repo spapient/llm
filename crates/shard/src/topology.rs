@@ -3,28 +3,36 @@
 use crate::collective::Group;
 use diagnostic::Result;
 
+/// 维数：rank 布局的进制表有多长。
+const DIM: usize = 3;
+
 /// 三种并行维度。
+///
+/// 判别式**就是**它在 `[tp, pp, dp]` 里的位置（最次要维在前）：`#[repr(usize)]` 把这条约定
+/// 变成类型的一部分，于是短名、并行度、组内下标全都走同一张行表，不再各自写一个三臂 `match`
+/// ——旧形态下加一维要改四处，漏掉一处只会在某些输入上悄悄错位。行序由 `tests` 里的
+/// `every_axis_row_matches_its_discriminant` 钉住。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(usize)]
 pub enum Parallel {
     /// 张量并行：同一层的权重按列切。
-    Tensor,
+    Tensor = 0,
     /// 流水并行：层按段切。
-    Pipeline,
+    Pipeline = 1,
     /// 数据并行：同一份权重、不同的批。
-    Data,
+    Data = 2,
 }
 
 impl Parallel {
     /// 全部维度，供日志与 `doctor` 遍历。
-    pub const ALL: [Self; 3] = [Self::Tensor, Self::Pipeline, Self::Data];
+    pub const ALL: [Self; DIM] = [Self::Tensor, Self::Pipeline, Self::Data];
+
+    /// 每个维度一行：稳定的短名。行序 = 判别式。
+    const NAMES: [&'static str; DIM] = ["tp", "pp", "dp"];
 
     /// 稳定的短名。
     pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Tensor => "tp",
-            Self::Pipeline => "pp",
-            Self::Data => "dp",
-        }
+        Self::NAMES[self as usize]
     }
 }
 
@@ -106,7 +114,8 @@ impl Topology {
         Ok(())
     }
 
-    /// 由三个下标算出全局 rank：`dp_idx · (tp · pp) + pp_idx · tp + tp_idx`。
+    /// 由三个下标算出全局 rank：`dp_idx · (tp · pp) + pp_idx · tp + tp_idx`，即把
+    /// `[tp_idx, pp_idx, dp_idx]` 按 `[tp, pp, dp]` 这组进制编码成一个混合进制数。
     ///
     /// # Errors
     ///
@@ -115,7 +124,7 @@ impl Topology {
         self.check_axis(Parallel::Tensor, tp_idx)?;
         self.check_axis(Parallel::Pipeline, pp_idx)?;
         self.check_axis(Parallel::Data, dp_idx)?;
-        let flat = dp_idx * self.plan() + pp_idx * self.tp + tp_idx;
+        let flat = mix([tp_idx, pp_idx, dp_idx], self.radices());
         // `new` 已把 world 限在 u32 以内，而 flat < world，故这次收窄不会失败。
         u32::try_from(flat).map_err(|_| invalid!("shard::Topology::rank", "rank {flat} 超出 u32"))
     }
@@ -134,17 +143,22 @@ impl Topology {
                 self.world
             );
         }
-        let within = position % self.plan();
-        Ok((within % self.tp, within / self.tp, position / self.plan()))
+        let [tp, pp, dp] = spread(position, self.radices());
+        Ok((tp, pp, dp))
     }
 
     /// 第 `idx` 个指定维度的进程组：组内只沿该维移动，另外两维固定。
+    ///
+    /// 组是一条**等差序列**：沿本维加一位就是加这一维的步长，所以整组由「首成员」与步长两个数
+    /// 决定，成员不必再逐个走 [`Topology::rank`] 的三次下标校验。组号则只在另外两维里解码。
     ///
     /// # Errors
     ///
     /// `idx` 超出该维的组数（即 `world / 该维并行度`）。
     pub fn group(&self, parallel: Parallel, idx: usize) -> Result<Group> {
-        let count = self.world / self.degree(parallel);
+        let own = parallel as usize;
+        let degree = self.degree(parallel);
+        let count = self.world / degree;
         if idx >= count {
             fail!(
                 "shard::Topology::group",
@@ -152,39 +166,50 @@ impl Topology {
                 parallel.as_str()
             );
         }
-        let ranks = (0..self.degree(parallel))
-            .map(|step| {
-                let [tp, pp, dp] = self.place(parallel, idx, step);
-                self.rank(tp, pp, dp)
-            })
-            .collect::<Result<Vec<u32>>>()?;
+        let stride = self.strides()[own];
+        let head = self.head(own, idx);
+        let ranks: Vec<u32> = (0..degree)
+            .map(|step| u32::try_from(head + step * stride))
+            .collect::<Result<_, _>>()
+            .map_err(|_| invalid!("shard::Topology::group", "组内 rank 超出 u32"))?;
         Group::new(ranks)
     }
 
-    /// `tp · pp`：数据维之外的世界大小（也是 `Data` 组内的 rank 步长）。
-    fn plan(&self) -> usize {
-        self.tp * self.pp
+    /// 三个维度的进制，从最次要维排到最主维：全 crate 唯一的一处 rank 布局配置。
+    fn radices(&self) -> [usize; DIM] {
+        [self.tp, self.pp, self.dp]
     }
 
     /// 某一维的并行度，也是它每个组的大小。
     fn degree(&self, parallel: Parallel) -> usize {
-        match parallel {
-            Parallel::Tensor => self.tp,
-            Parallel::Pipeline => self.pp,
-            Parallel::Data => self.dp,
-        }
+        self.radices()[parallel as usize]
     }
 
-    /// 组的第 `step` 个成员在三个维上的下标：`idx` 是组号，`step` 是组内下标。
+    /// 每一维的 rank 步长：沿该维加一位，rank 就加这么多。`strides[k] = ∏_{j<k} radices[j]`。
     ///
-    /// 组号由**另外两维**按 rank 布局的次要→主要次序解出（先除小组、后除大组），本维只由
-    /// `step` 决定——"这一组只沿本维移动"这条判据就在这里落地。
-    fn place(&self, parallel: Parallel, idx: usize, step: usize) -> [usize; 3] {
-        match parallel {
-            Parallel::Tensor => [step, idx % self.pp, idx / self.pp],
-            Parallel::Pipeline => [idx % self.tp, step, idx / self.tp],
-            Parallel::Data => [idx % self.tp, idx / self.tp, step],
+    /// 这是 [`Topology::group`] 能用等差序列表示成员的唯一依据，也是 rank 布局的第三种等价说法。
+    fn strides(&self) -> [usize; DIM] {
+        let radices = self.radices();
+        let mut strides = [1; DIM];
+        for k in 1..DIM {
+            strides[k] = strides[k - 1] * radices[k - 1];
         }
+        strides
+    }
+
+    /// 第 `idx` 个 `own` 维组成员里最小那个的 rank：`idx` 只由**另外两维**解码，本维填 0。
+    fn head(&self, own: usize, idx: usize) -> usize {
+        let radices = self.radices();
+        let strides = self.strides();
+        let mut head = 0;
+        let mut rest = idx;
+        for (axis, radix) in radices.iter().enumerate() {
+            if axis != own {
+                head += (rest % radix) * strides[axis];
+                rest /= radix;
+            }
+        }
+        head
     }
 
     /// 某一维的下标必须落在它自己的并行度以内。
@@ -199,6 +224,31 @@ impl Topology {
         }
         Ok(())
     }
+}
+
+/// 混合进制编码：`digits` 与 `radices` 都从最次要维（变化最快）排到最主维。
+///
+/// 这就是 rank 布局本身——`[tp_idx, pp_idx, dp_idx]` 与 `[tp, pp, dp]` 编码出的正是
+/// `dp_idx · tp · pp + pp_idx · tp + tp_idx`。写成循环而不是三条手写乘法，是因为反解
+/// （`spread`）必须与它是同一个进制的另一侧，两者共用一份 `radices` 就没有"各说一套"的余地。
+fn mix(digits: [usize; DIM], radices: [usize; DIM]) -> usize {
+    let mut flat = 0;
+    let mut stride = 1;
+    for (digit, radix) in digits.iter().zip(radices) {
+        flat += digit * stride;
+        stride *= radix;
+    }
+    flat
+}
+
+/// `mix` 的逆：把 `flat` 拆成每一维的下标。
+fn spread(mut flat: usize, radices: [usize; DIM]) -> [usize; DIM] {
+    let mut digits = [0; DIM];
+    for (digit, radix) in digits.iter_mut().zip(radices) {
+        *digit = flat % radix;
+        flat /= radix;
+    }
+    digits
 }
 
 #[cfg(test)]

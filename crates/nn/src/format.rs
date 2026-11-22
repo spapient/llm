@@ -186,7 +186,7 @@ fn quantized_reason(quant: Quant) -> String {
 
 /// 算子在语义表里声明的分组；`None` = 算子未注册或未声明分组。
 fn kernel_group(op: &str) -> Option<usize> {
-    op::model(op).map(|model| model.group as usize)
+    crate::registry::model(op).map(|model| model.group as usize)
 }
 
 #[cfg(test)]

@@ -5,17 +5,17 @@
 //! `crates/prof/src/<vendor>/<vendor>.toml` 声称具备的能力，中间的任何错位都是缺陷。
 
 mod ascend {
-    use prof::ascend::*;
+    use llm_prof::ascend::*;
     testkit::device_suite!();
 }
 
 mod cpu {
-    use prof::cpu::*;
+    use llm_prof::cpu::*;
     testkit::device_suite!();
 }
 
 mod intel {
-    use prof::intel::*;
+    use llm_prof::intel::*;
     testkit::device_suite!();
 
     /// 宿主 `cc` 编得过 `.cl` 只是因为它写的是标量 C；OpenCL 前端才是这份文件的真读者。
@@ -44,16 +44,16 @@ mod intel {
 }
 
 mod metal {
-    use prof::metal::*;
+    use llm_prof::metal::*;
     testkit::device_suite!();
 }
 
 mod musa {
-    use prof::musa::*;
+    use llm_prof::musa::*;
     testkit::device_suite!();
 }
 
 mod nvidia {
-    use prof::nvidia::*;
+    use llm_prof::nvidia::*;
     testkit::device_suite!();
 }

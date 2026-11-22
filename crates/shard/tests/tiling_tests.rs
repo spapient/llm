@@ -197,3 +197,18 @@ mod properties {
         }
     }
 }
+
+/// 行序 = 判别式：三个访问器都走 `TABLE[self as usize]`，行序错了只会静默切错轴或漏掉归约。
+#[test]
+fn every_sharding_row_matches_its_discriminant() {
+    let table = [
+        (Sharding::Column, "column", 0usize, None),
+        (Sharding::Row, "row", 1, Some(Reduce::Sum)),
+    ];
+    for (row, (sharding, name, axis, merge)) in table.into_iter().enumerate() {
+        assert_eq!(sharding as usize, row, "{name} 的行号与判别式不一致");
+        assert_eq!(sharding.as_str(), name);
+        assert_eq!(sharding.axis(), axis);
+        assert_eq!(sharding.merge(), merge);
+    }
+}

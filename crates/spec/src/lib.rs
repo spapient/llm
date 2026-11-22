@@ -29,6 +29,8 @@
 #![deny(unsafe_code)]
 
 pub mod atom;
+pub mod key;
+pub mod need;
 pub mod einsum;
 pub mod epilogue;
 pub mod model;

@@ -366,5 +366,5 @@ mod variant;
 pub use expand::{expand, tiles};
 
 #[cfg(test)]
-#[path = "../tests/decl_tests.rs"]
+#[path = "../tests/decl.rs"]
 mod tests;

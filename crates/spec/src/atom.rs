@@ -4,6 +4,8 @@ use core::fmt;
 use core::hash::Hash;
 use core::marker::PhantomData;
 
+pub use crate::key::KernelKey;
+pub use crate::need::{Attr, Need, Provide, Witness};
 use crate::span::Span;
 
 

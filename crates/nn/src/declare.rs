@@ -244,7 +244,7 @@ impl Bounds {
 
     /// 由算子语义推出下界。
     ///
-    /// 两个宽度按 [`Model::projection`](op::model::Model::projection) 的口径给 `(输入宽度,
+    /// 两个宽度按 [`Model::projection`](crate::model::Model::projection) 的口径给 `(输入宽度,
     /// 输出宽度)`：算子自己的轴角色把它们翻成具名轴，层不必知道规约轴在表达式里叫 `m` 还是 `k`，
     /// 也不必知道量化分组的派生轴怎么切。
     ///
@@ -259,8 +259,8 @@ impl Bounds {
         Ok(Self::of_cost((model.cost)(&shape)?))
     }
 
-    /// 通用形状入口：把 `(a, b)` 交给算子自己的 [`Model::shape_ctx`](op::model::Model::shape_ctx)
-    /// 翻成具名轴，再由 [`Model::cost`](op::model::Model::cost) 推出下界。
+    /// 通用形状入口：把 `(a, b)` 交给算子自己的 [`Model::shape_ctx`](crate::model::Model::shape_ctx)
+    /// 翻成具名轴，再由 [`Model::cost`](crate::model::Model::cost) 推出下界。
     ///
     /// 与 [`Bounds::of_op`] 的分工：投影算子按轴角色（输入/输出）把宽度填进规约轴与输出轴；单轴逐元素、
     /// 归约、注意力这类形状由算子骨架自己定义的，走本入口。两条路径都只调用算子语义表的
@@ -301,7 +301,7 @@ impl Bounds {
     }
 
     /// 由算子语义表给出的代价转成下界：字段一一对应，不做二次解释。
-    fn of_cost(cost: op::einsum::Cost) -> Self {
+    fn of_cost(cost: crate::einsum::Cost) -> Self {
         Self {
             read: cost.read,
             write: cost.write,
@@ -354,8 +354,8 @@ impl Bounds {
 /// 取算子的语义表：没有就报"声明了却不能对拍"，并点名是哪个入口要的。
 ///
 /// 两个入口（投影 / 通用形状）的诊断只差这个点名，措辞收在这里一份。
-fn model_of(op_name: &str, site: &'static str) -> Result<op::model::Model> {
-    op::model(op_name).ok_or_else(|| {
+fn model_of(op_name: &str, site: &'static str) -> Result<crate::model::Model> {
+    crate::registry::model(op_name).ok_or_else(|| {
         Error::new(
             Code::Missing,
             format!("算子 `{op_name}` 没有语义表，无法推出下界"),

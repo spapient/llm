@@ -7,7 +7,8 @@ use crate::sch::Masking;
 use core::cmp::Ordering;
 use core::fmt;
 use diagnostic::{Code, Error};
-use op::model::{Cost, Model};
+use ::prof::catalogue::Registration;
+use spec::model::{Cost, Model};
 
 /// 一次 plan 的产物。
 #[derive(Debug, Clone, PartialEq)]
@@ -254,15 +255,24 @@ fn payoff(profile: &Profile, before: Cost, after: Cost, fused: Cost, seam: u64) 
     })
 }
 
+/// 在语义表里按名字取投影。表与 [`::prof::catalogue::TEMPLATES`] 同序，由持有内核的 `nn` 提供。
+fn model_of<'a>(models: &'a [Registration], name: &str) -> Option<&'a Model> {
+    models
+        .iter()
+        .find(|entry| entry.name == name)
+        .map(|entry| &entry.model)
+}
+
 /// 接缝的代数：取两侧代价与中间量的字节数。
 ///
 /// 接缝只认一条输出槽（与 [`crate::reference::verify_fusion`] 同一条判据），此时生产者的
 /// `Cost::write` 就是那条槽；消费者读它一次是同样的字节，所以省下 `2 × write`。任何一步不成立都
 /// 给出判决而不是猜数：缺语义投影、多槽缝隙、代价不成立是"无从打分"，代价表与缝不一致是"拼不出来"。
-fn seam(fusion: &Fusion) -> Result<(Cost, Cost, u64), Verdict> {
-    let (Some(producer), Some(consumer)) =
-        (op::model(&fusion.producer), op::model(&fusion.consumer))
-    else {
+fn seam(fusion: &Fusion, models: &[Registration]) -> Result<(Cost, Cost, u64), Verdict> {
+    let (Some(producer), Some(consumer)) = (
+        model_of(models, &fusion.producer),
+        model_of(models, &fusion.consumer),
+    ) else {
         return Err(Verdict::Unscorable(format!(
             "`{}` → `{}` 有一侧没有语义投影，算不出 roofline",
             fusion.producer, fusion.consumer
@@ -276,7 +286,7 @@ fn seam(fusion: &Fusion) -> Result<(Cost, Cost, u64), Verdict> {
             outputs.join("`, `")
         )));
     };
-    let (Some(before), Some(after)) = (cost_of(&producer), cost_of(&consumer)) else {
+    let (Some(before), Some(after)) = (cost_of(producer), cost_of(consumer)) else {
         return Err(Verdict::Unscorable(format!(
             "`{}` 或 `{}` 在自己的生产形状上给不出代价",
             fusion.producer, fusion.consumer
@@ -318,8 +328,8 @@ fn merged(profile: &Profile, before: Cost, after: Cost, seam: u64) -> Verdict {
 /// 4 GiB 样本。这是结构性上界，三件事它不算：流水掩盖（按变体算，在加速比里两边相消）、融合核多
 /// 出来的寄存器压力、代码变大带来的指令缓存代价。所以 [`Payoff::speedup`] 是"值不值得动手"的判据，
 /// 不是实测。
-pub fn score(profile: &Profile, fusion: &Fusion) -> Verdict {
-    seam(fusion).map_or_else(
+pub fn score(profile: &Profile, fusion: &Fusion, models: &[Registration]) -> Verdict {
+    seam(fusion, models).map_or_else(
         |verdict| verdict,
         |(before, after, seam)| merged(profile, before, after, seam),
     )
@@ -330,11 +340,16 @@ pub fn score(profile: &Profile, fusion: &Fusion) -> Verdict {
 /// 打不出分的候选留在表里并带原因——它们不是"被过滤掉"，而是"这一条今天还不成立"，报告据此才知道
 /// 下一步该补形状、补样本还是补峰值。这正是 README §9.1 那条"12 条被接受、0 条可对拍"的基线从
 /// 一句口头事实变成一张可执行的工作清单。
-pub fn ranking(profile: &Profile, ops: &[OpDecl], budget: usize) -> Vec<(Fusion, Verdict)> {
+pub fn ranking(
+    profile: &Profile,
+    ops: &[OpDecl],
+    budget: usize,
+    models: &[Registration],
+) -> Vec<(Fusion, Verdict)> {
     let mut ranked: Vec<(Fusion, Verdict)> = fusions(ops, budget)
         .into_iter()
         .map(|fusion| {
-            let verdict = score(profile, &fusion);
+            let verdict = score(profile, &fusion, models);
             (fusion, verdict)
         })
         .collect();

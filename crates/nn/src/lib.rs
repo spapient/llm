@@ -8,7 +8,7 @@
 //! **依赖**：`weights`、`tensor`、`op`、`diagnostic`。**被依赖**：`train`。
 //!
 //! `nn` 是 DSL 的**消费者**而不是并列层：层定义唯一的产出是一份 [`ContractSpec`]，里面的算子名
-//! 必须已经存在于 `op::builtin()`。写错名字在这里就失败，而不是等到 emit 阶段才报"未知算子"。
+//! 必须已经存在于 `prof::catalogue::all()`。写错名字在这里就失败，而不是等到 emit 阶段才报"未知算子"。
 //!
 //! # 下界有三种状态，不是一个数
 //!
@@ -163,8 +163,14 @@ pub use stack::{Floor, Stack, Unpriced, WEIGHT_SUFFIX};
 /// 稠密计算核：矩阵乘族、激活、归一化、反量化、逐元素、归约与 SIMD/SME 通道。
 ///
 /// 它原先独立成 crate（`gemm`），与本 crate 之间的唯一通路是 `op` 的 `pub use` 门面；合并后
-/// 层定义直接引用内核，`op` 退回纯声明层。
+/// 层定义直接引用内核，声明层退回 `prof`。
 pub mod kernel;
+
+/// 神经算子：卷积族、注意力族、池化与范数、扫描骨架（原独立 crate `conv`）。
+pub mod conv;
+
+/// 算子注册表：名字 → 语义表 + 可微性。与 `prof::catalogue` 按名字逐条对齐，错位在编译期失败。
+pub mod registry;
 
 /// 内核模块按原路径转出：内核源码与新下游都写 `nn::gemv::…` / `nn::gemm::…`。
 ///
@@ -199,7 +205,7 @@ pub use tensor::Shape;
 
 /// 已声明的算子名清单，仅用于报错文案（热路径不调用）。
 fn declared_ops() -> String {
-    let names: Vec<&str> = op::builtin().iter().map(op::Op::name).collect();
+    let names: Vec<&str> = prof::catalogue::all().iter().map(prof::catalogue::Op::name).collect();
     format!("已声明：{}", names.join("、"))
 }
 
@@ -243,7 +249,7 @@ pub struct ContractSpec {
 }
 
 impl ContractSpec {
-    /// 校验并构造：`ops` 必须既存在于 `op::builtin()`，又有 `op::model()` 的语义表。
+    /// 校验并构造：`ops` 必须既存在于 [`prof::catalogue::all`]，又有 [`registry::model`] 的语义表。
     ///
     /// `ops` 收 `impl Into<String>` 的任意可迭代物：字面量数组 `["gemv_i4"]` 与已拼好的
     /// `Vec<String>` 都能直接传，调用侧不必为一条静态名字写 `.to_string()`。
@@ -268,14 +274,14 @@ impl ContractSpec {
         let mut checked = Vec::new();
         for wanted in ops {
             let wanted = wanted.into();
-            if op::builtin_named(&wanted).is_none() {
+            if prof::catalogue::named(&wanted).is_none() {
                 return Err(Error::new(
                     Code::Missing,
                     format!("算子 `{wanted}` 没有声明（{}）", declared_ops()),
                 )
                 .with("nn::ContractSpec::new"));
             }
-            if op::model(&wanted).is_none() {
+            if registry::model(&wanted).is_none() {
                 return Err(Error::new(
                     Code::Missing,
                     format!("算子 `{wanted}` 没有语义表，层无法推出下界也无法对拍"),

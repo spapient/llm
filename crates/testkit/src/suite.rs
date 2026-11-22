@@ -21,7 +21,7 @@
 #[macro_export]
 macro_rules! device_suite {
     () => {
-        use prof::prof::{Profile, builtin_profiles};
+        use ::llm_prof::prof::{Profile, builtin_profiles};
 
         /// 档案里与 `DEVICE.vendor` 同名的那台设备。
         fn profile() -> Result<Profile, String> {
@@ -70,7 +70,7 @@ macro_rules! device_suite {
                 fragments: &fragments,
                 prims: &prims,
                 provides: &provides,
-                epilogue_stem: prof::stems::EPILOGUE_STEM,
+                epilogue_stem: ::llm_prof::stems::EPILOGUE_STEM,
                 source: DEVICE.source,
             }))
         }

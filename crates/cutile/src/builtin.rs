@@ -6,7 +6,7 @@ use crate::probe::select;
 use crate::prof::Detected;
 use crate::prof::Profile;
 use diagnostic::{Code, Error};
-use op::Op;
+use ::prof::catalogue::Op;
 use std::sync::{Arc, OnceLock};
 
 /// 保留的设备名：不走档案查找，按本机探测挑一份档案。命令行默认值在 `cli` 侧另存一份，这里是库内比对口径。
@@ -29,7 +29,7 @@ impl Catalogue {
     /// 两份表都存在 [`Arc`] 后面，重复调用只做一次引用计数递增，不再逐条深拷贝整张声明表。
     pub fn try_builtin() -> diagnostic::Result<Self> {
         CATALOGUE
-            .get_or_init(|| Self::assemble(op::builtin(), Self::builtin_profiles()?))
+            .get_or_init(|| Self::assemble(::prof::catalogue::all(), Self::builtin_profiles()?))
             .clone()
     }
 

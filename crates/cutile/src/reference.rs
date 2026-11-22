@@ -4,7 +4,7 @@ use crate::atom::DType;
 use crate::decl::Fusion;
 use crate::sig::CType;
 use diagnostic::{Code, Error};
-use op::model::{Model, Sample, Values};
+use spec::model::{Model, Sample, Values};
 
 /// 对拍口径：`max|got − want| / max|want|`。
 pub fn max_rel_err(got: &[f32], want: &[f32]) -> f64 {
@@ -123,7 +123,7 @@ pub struct Oracle {
 /// 值串起来：缝从证据里来，不从调用点的字符串来。因此下列情况一律拒绝，而不是算一个近似值：
 ///
 /// - 自融合（[`Fusion::is_self`]）：循环携带依赖，`compose` 不会产出它，手搓的也不接受；
-/// - 多输出生产者：标量参考只给一条输出（[`op::model::Model::reference`]），拼不出完整桥接；
+/// - 多输出生产者：标量参考只给一条输出（[`Model::reference`]），拼不出完整桥接；
 /// - 非 `F32` 缝：同一原因，`U8` 槽位没有字节级 oracle 值可喂。
 ///
 /// 每条缝的读槽位还必须在样本里存在且长度与生产者输出一致——这是"缝上的形状也确实对得上"的
