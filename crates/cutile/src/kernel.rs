@@ -473,7 +473,7 @@ fn write_loop(source: &mut String, target: Target, kernel: &Kernel) {
 
 /// 循环头加上写回语句的左半段：循环变量类型由 `target` 定，归约多一个常量槽。
 fn write_header(source: &mut String, target: Target, kernel: &Kernel, at: Option<u32>) {
-    let index = target.int();
+    let ty = target.int();
     let Kernel {
         idx,
         extent,
@@ -482,7 +482,7 @@ fn write_header(source: &mut String, target: Target, kernel: &Kernel, at: Option
     } = kernel;
     let _ = write!(
         source,
-        "    for ({index} {idx} = 0; {idx} < {extent}; ++{idx}) {{\n        {output}["
+        "    for ({ty} {idx} = 0; {idx} < {extent}; ++{idx}) {{\n        {output}["
     );
     match at {
         Some(at) => {
