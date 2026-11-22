@@ -54,15 +54,11 @@ impl Attention {
         head_dim: usize,
         algo: AttentionAlgo,
     ) -> Result<Self> {
-        for (label, value) in [("seq", seq), ("head_dim", head_dim)] {
-            if value == 0 {
-                return Err(Error::new(
-                    Code::Invalid,
-                    format!("注意力层 {label} 必须非零（{label} = {value}）"),
-                )
-                .with("nn::Attention::new"));
-            }
-        }
+        crate::nonzero_all(
+            "nn::Attention::new",
+            "注意力层 ",
+            &[("seq", seq), ("head_dim", head_dim)],
+        )?;
         Ok(Self {
             spec: __layer_spec_Attention!(name, seq, head_dim, algo.operator())?,
             seq,
@@ -153,20 +149,16 @@ impl AttentionBlock {
 
     /// 几何口径校验：四个宽度非零，且 `kv_width` 整除 `head_dim`。
     fn validate(hidden: usize, kv_width: usize, head_dim: usize, seq: usize) -> Result<()> {
-        for (label, value) in [
-            ("hidden", hidden),
-            ("kv_width", kv_width),
-            ("head_dim", head_dim),
-            ("seq", seq),
-        ] {
-            if value == 0 {
-                return Err(Error::new(
-                    Code::Invalid,
-                    format!("注意力块 {label} 必须非零（{label} = {value}）"),
-                )
-                .with("nn::AttentionBlock::new"));
-            }
-        }
+        crate::nonzero_all(
+            "nn::AttentionBlock::new",
+            "注意力块 ",
+            &[
+                ("hidden", hidden),
+                ("kv_width", kv_width),
+                ("head_dim", head_dim),
+                ("seq", seq),
+            ],
+        )?;
         if !kv_width.is_multiple_of(head_dim) {
             return Err(Error::new(
                 Code::Invalid,
@@ -313,15 +305,11 @@ impl LatentAttention {
     /// `seq` / `latent` / `heads` 任一为零（[`Code::Invalid`]）；算子未注册或没有语义表
     /// （[`ContractSpec::new`] 上报）。
     pub fn new(name: impl Into<String>, seq: usize, latent: usize, heads: usize) -> Result<Self> {
-        for (label, value) in [("seq", seq), ("latent", latent), ("heads", heads)] {
-            if value == 0 {
-                return Err(Error::new(
-                    Code::Invalid,
-                    format!("潜空间注意力层 {label} 必须非零（{label} = {value}）"),
-                )
-                .with("nn::LatentAttention::new"));
-            }
-        }
+        crate::nonzero_all(
+            "nn::LatentAttention::new",
+            "潜空间注意力层 ",
+            &[("seq", seq), ("latent", latent), ("heads", heads)],
+        )?;
         Ok(Self {
             spec: __layer_spec_LatentAttention!(name, seq, latent, Self::OPERATOR)?,
             seq,

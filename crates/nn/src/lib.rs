@@ -51,7 +51,6 @@ use diagnostic::{Code, Error, Result};
 mod attention;
 mod axis;
 mod bounds;
-mod embed;
 mod engram;
 mod format;
 mod lm_head {
@@ -62,7 +61,6 @@ mod lm_head {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
     pub struct LmHead;
 }
-mod matmul;
 mod param_role {
     //! 参数角色闭集：一个参数槽归哪个优化器组（D11；权重衰减豁免与可训练判定由角色派生）。
 
@@ -104,6 +102,7 @@ mod param_role {
 }
 mod classic;
 mod pointwise;
+mod projection;
 mod stack;
 
 #[doc(inline)]
@@ -113,8 +112,6 @@ pub use attention::{Attention, AttentionAlgo, AttentionBlock, LatentAttention};
 pub use bounds::Bounds;
 
 #[doc(inline)]
-pub use embed::Embedding;
-
 #[doc(inline)]
 pub use engram::{Bypass, MemoryBlock, Table, allocate, next_prime, phi, slot_of, slots};
 
@@ -122,8 +119,6 @@ pub use engram::{Bypass, MemoryBlock, Table, allocate, next_prime, phi, slot_of,
 pub use lm_head::LmHead;
 
 #[doc(inline)]
-pub use matmul::MatMul;
-
 #[doc(inline)]
 pub use format::WeightFormat;
 
@@ -135,12 +130,15 @@ pub use classic::{
     AdaptiveAvgPool2d, AvgPool2d, BatchNorm2d, Conv1d, Conv2d, ConvTranspose1d, ConvTranspose2d,
     GroupNorm, InstanceNorm, Interpolate, LayerNorm, MaxPool1d, MaxPool2d,
 };
+
+#[doc(inline)]
 pub use pointwise::{
-    Add, Gelu, HardSigmoid, LeakyRelu, Mul, ResidualAdd, RmsNorm, Rope, Scale, Silu, Softmax,
+    Add, Gelu, HardSigmoid, LeakyRelu, Mul, ReduceMax, ReduceSum, ResidualAdd, RmsNorm, Rope,
+    Scale, Silu, Softmax,
 };
 
 #[doc(inline)]
-pub use pointwise::{ReduceMax, ReduceSum};
+pub use projection::{Embedding, MatMul};
 
 #[doc(inline)]
 pub use stack::{Floor, Stack, Unpriced, WEIGHT_SUFFIX};
@@ -151,6 +149,22 @@ pub use tensor::Shape;
 
 /// 层下界的结果：[`Contract::bounds`] 的返回类型。
 pub type BoundsResult = Result<Option<Bounds>>;
+
+/// 逐个校验「必须非零」的维度，失败时点名装配位（`site`）。
+///
+/// `prefix` 自带分隔符（如 `"注意力层 "` / `"Embedding 的 "`），因此各层原有文案逐字保留。
+fn nonzero_all(site: &str, prefix: &str, axes: &[(&str, usize)]) -> Result<()> {
+    for (label, value) in axes {
+        if *value == 0 {
+            return Err(Error::new(
+                Code::Invalid,
+                format!("{prefix}{label} 必须非零（{label} = {value}）"),
+            )
+            .with(site));
+        }
+    }
+    Ok(())
+}
 
 /// 层定义产出的声明：名字、输出形状、要用的算子名与参数角色。
 #[derive(Debug, Clone, PartialEq, Eq)]
