@@ -23,13 +23,13 @@ const CHAINS: usize = 4;
 ///
 /// 实测每多一条行流就多一条 DRAM 预取流，2026-11-22 扫描 2/4/8 得到 55.1／48.9／44.7 GiB/s，
 /// 故取 2：`x` 复用与流数的最优点，再往上就是流数占主导。
-pub(crate) const COLS: usize = 4;
+pub(crate) const COLS: usize = 2;
 
 /// 段宽：一条累加链一次推进的元素数，与 [`WIDE`] 同义但可独立调（见 [`COLS`] 的扫描）。
 const SPAN: usize = 8;
 
 /// 每条行的独立累加链数：行并行度只有 [`COLS`]，链不够就喂不满 4 拍的乘加延迟。
-const DEPTH: usize = 1;
+const DEPTH: usize = 2;
 
 /// 逐元素通道的权重取法：稠密 `f32` 直取，对称 `int8` 按二补数重新解释。
 ///
