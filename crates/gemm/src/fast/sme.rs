@@ -345,3 +345,61 @@ unsafe fn port_rounds(rounds: usize) {
         );
     }
 }
+
+/// 取数混合探针：每轮 **1 条 `a` 载入 + 4 条 `b` 载入 + 4 条 `fmopa`**，与 [`sme_tile`] 内层
+/// 的指令配比逐条同构（16×64 瓦片即 `a` 16 个 f32 = 64 B、`b` 64 个 f32 = 256 B）。
+///
+/// 与 [`port_run`] 的差就是「取数代价」：两者 `fmopa` 条数相同，只差这 5 条 load。
+/// 地址**固定不推进**，即每一轮都命中同一批缓存行——这是取数端口的**上限**，真实内核走不同行
+/// 只会更慢，所以据此算出的取数代价偏小、缺口偏小，拿它下结论不夸大（A3 保守值）。
+///
+/// 本机无 SME 或 `rounds == 0` 时返回 `false` 且不执行任何 SME 指令。只在 `bench` 特性下编译。
+#[cfg(all(feature = "bench", target_arch = "aarch64"))]
+pub fn port_mix(rounds: usize, a: &[f32; 16], b: &[f32; 64]) -> bool {
+    if rounds == 0 || !available() {
+        return false;
+    }
+    #[allow(unsafe_code)]
+    unsafe {
+        mix_rounds(rounds, a.as_ptr(), b.as_ptr());
+    }
+    true
+}
+
+/// 固定地址的外积 + 载入循环：`smstart` → `rounds` 轮 → `smstop`，读边界由调用方的数组长度保证。
+#[cfg(all(feature = "bench", target_arch = "aarch64"))]
+#[target_feature(enable = "sme")]
+#[allow(unsafe_code)]
+#[inline(never)]
+unsafe fn mix_rounds(rounds: usize, a: *const f32, b: *const f32) {
+    let (b1, b2, b3) = unsafe { (b.add(16), b.add(32), b.add(48)) };
+    unsafe {
+        asm!(
+            "smstart",
+            "smstart za",
+            "ptrue p0.s",
+            "zero {{ za0.s }}",
+            "zero {{ za1.s }}",
+            "zero {{ za2.s }}",
+            "zero {{ za3.s }}",
+            "2:",
+            "ld1w {{ z0.s }}, p0/z, [{a}]",
+            "ld1w {{ z1.s }}, p0/z, [{b}]",
+            "ld1w {{ z2.s }}, p0/z, [{b1}]",
+            "ld1w {{ z3.s }}, p0/z, [{b2}]",
+            "ld1w {{ z4.s }}, p0/z, [{b3}]",
+            "fmopa za0.s, p0/m, p0/m, z0.s, z1.s",
+            "fmopa za1.s, p0/m, p0/m, z0.s, z2.s",
+            "fmopa za2.s, p0/m, p0/m, z0.s, z3.s",
+            "fmopa za3.s, p0/m, p0/m, z0.s, z4.s",
+            "subs {k}, {k}, #1",
+            "b.ne 2b",
+            "smstop za",
+            "smstop",
+            a = in(reg) a, b = in(reg) b, b1 = in(reg) b1, b2 = in(reg) b2, b3 = in(reg) b3,
+            k = inout(reg) rounds => _,
+            out("z0") _, out("z1") _, out("z2") _, out("z3") _, out("z4") _, out("p0") _,
+            options(nostack),
+        );
+    }
+}
