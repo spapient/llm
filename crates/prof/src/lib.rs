@@ -54,26 +54,39 @@
 
 #![deny(unsafe_code)]
 
-/// 能力词汇表定义在 [`spec::atom`]（`spec` 在 `prof` 之上，词汇是双方共用的契约）；
-/// `prof` 侧再转出键、需求与跨度，`prof::atom::*` 的历史路径保持不变。
-pub mod atom {
-    pub use spec::atom::*;
-    pub use spec::key::KernelKey;
-    pub use spec::need::{Attr, Need, Provide, Witness};
-    pub use spec::span::Span;
-}
-
-pub use spec::inherent_names;
-
 mod annotate;
 
-// ---- 词汇层 ------------------------------------------------------------------
+// ---- 词汇层：算子契约 ---------------------------------------------------------
 //
-// `model` / `sig` / `sch` / `tpl` / `einsum` 这些词汇定义在 `spec`，但下游一座座 crate
-// 只依赖 `prof`。从这里转出，「算子声明 + 词汇」就沿同一个 crate 名到达，消费者不必为
-// 读一个 `Model` 再加一条 `spec` 依赖。词汇侧的布局规格走 `prof::sch::layout`。
-pub use spec::{dropout, formula, init, parse, rnd};
-pub use spec::{einsum, model, operator, quant, same_bytes, sample, sch, sig, tpl};
+// [`atom`] 是唯一的词汇表：原语闭集、存储位、数据类型、属性键、证据等级，以及需求/供给的
+// 代数（[`atom::Need`] / [`atom::Provide`] / [`atom::Span`] / [`atom::KernelKey`]）。其余模块
+// 是契约本身：[`sig`] 是 ABI 的唯一事实源，[`sch`] 是布局闭集，[`tpl`] 是模板词法，
+// [`einsum`] 出代价表达式与求和语义，[`model`] 出语义模型，[`sample`] 出确定性样本，
+// [`operator`] 把三者缝成一张算子契约，[`epilogue`] 是写回阶段的文法。
+//
+// 这些词汇与档案、片段同住一个 crate，理由不是"都跟设备有关"，而是**同一条文法**：档案声明
+// "这台设备能拼出 `dot`"，片段声明"`dot` 在 `.metal` 里这么写"，模板与签名就是两边的共同语言。
+// 拆成两个 crate 只会让这份语言多一层转发（`pub use spec::…`，一行代码也没少），
+// 所以词汇随档案落地：`prof::atom` / `prof::sig` / `prof::model` 是它唯一的公开路径。
+pub mod atom;
+pub mod einsum;
+pub mod epilogue;
+pub mod model;
+pub mod operator;
+pub mod sample;
+pub mod sch;
+pub mod sig;
+pub mod tpl;
+
+pub use model::quant;
+pub use sample::{dropout, init, rnd};
+pub use sch::layout;
+pub use sig::same_bytes;
+pub use tpl::{formula, parse};
+
+#[cfg(test)]
+#[path = "../tests/spec/support/lib_spec_tests.rs"]
+mod spec_tests;
 
 pub mod device;
 pub mod prof;

@@ -4,7 +4,7 @@ use crate::atom::DType;
 use crate::decl::Fusion;
 use crate::sig::CType;
 use diagnostic::{Code, Error};
-use spec::model::{Model, Sample, Values};
+use prof::model::{Model, Sample, Values};
 
 /// 对拍口径：`max|got − want| / max|want|`。
 pub fn max_rel_err(got: &[f32], want: &[f32]) -> f64 {

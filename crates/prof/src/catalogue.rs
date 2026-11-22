@@ -23,7 +23,7 @@ pub struct Registration {
     /// 算子名（与 `src/ops/<name>.toml` 的文件名一致）。
     pub name: &'static str,
     /// 代价、样本与标量参考。
-    pub model: spec::model::Model,
+    pub model: crate::model::Model,
     /// 训练反向图里是否可微：`true` 的算子必须配套一条反向公式。
     pub differentiable: bool,
 }

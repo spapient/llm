@@ -243,7 +243,7 @@ pub fn check_monotonic<S: AsRef<str>>(variants: &[(S, f64)]) -> diagnostic::Resu
 }
 
 #[cfg(test)]
-#[path = "../tests/sch_tests.rs"]
+#[path = "../tests/spec/sch_tests.rs"]
 mod tests;
 
 pub mod layout {
@@ -353,6 +353,6 @@ pub mod layout {
 
     #[cfg(test)]
     mod tests {
-        include!("../tests/layout_tests.rs");
+        include!("../tests/spec/layout_tests.rs");
     }
 }

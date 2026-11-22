@@ -56,7 +56,7 @@
 //! # 例子
 //!
 //! ```
-//! use llm_spec::einsum::{Bits, Expr, Extents, Formula, Operand};
+//! use llm_prof::einsum::{Bits, Expr, Extents, Formula, Operand};
 //!
 //! // int4 权重、按 32 个元素一组缩放的 GEMV：
 //! let expr = Expr::parse("nm,m,ng,n->n").expect("表达式合法");
@@ -121,7 +121,7 @@ const NAMES: [&str; Bits::ALL.len()] = ["4", "8", "16", "32", "64", "2"];
 const WIDTHS: [u32; Bits::ALL.len()] = [4, 8, 16, 32, 64, 2];
 
 /// `Bits` 的词汇表由 [`crate::atom::Closed`] 单点声明，`ALL` / `as_str` / `parse` 由
-/// [`prof::inherent_names!`] 以同名固有项转发。
+/// [`crate::inherent_names!`] 以同名固有项转发。
 impl crate::atom::Closed for Bits {
     const ALL: &'static [Self] = &[
         Self::Four,
@@ -195,5 +195,5 @@ impl Cost {
 }
 
 #[cfg(test)]
-#[path = "../tests/einsum_tests.rs"]
+#[path = "../tests/spec/einsum_tests.rs"]
 mod tests;

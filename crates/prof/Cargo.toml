@@ -16,10 +16,11 @@ autotests = false
 device-image = []
 
 [dependencies]
-dtype = { path = "../dtype", package = "llm-dtype" }
+# 契约词汇（`atom`/`sig`/`sch`/`tpl`/`einsum`/`model`/`sample`/`operator`/`epilogue`）
+# 与档案同住本 crate：模板与签名是设备档案与片段正文的共同文法，拆开只会多一层转发。
+annotation = { path = "../annotation", package = "llm-annotation" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
-# 声明语料的词法与签名（`tpl`/`sig`/`sch`）在契约层：本 crate 只解析，不定义语法。
-spec = { path = "../spec", package = "llm-spec" }
+dtype = { path = "../dtype", package = "llm-dtype" }
 
 [dev-dependencies]
 # 片段层对账用例（`device_suite!`）在独立集成测试里，以外部 `prof::` 引用本 crate；

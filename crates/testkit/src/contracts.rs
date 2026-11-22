@@ -446,7 +446,7 @@ pub(crate) fn closed_vocabularies_are_declared_once() {
     let (allowed, offenders) = offenders_of("closed", &hits);
     assert!(
         offenders.is_empty(),
-        "这些闭集表该用 `impl spec::atom::Closed for ..` + `inherent_names!`：{}",
+        "这些闭集表该用 `impl prof::atom::Closed for ..` + `inherent_names!`：{}",
         describe(&offenders)
     );
 
@@ -463,11 +463,11 @@ pub(crate) fn closed_vocabularies_are_declared_once() {
     }
 
     // 契约的另一半：`Closed` 的实现必须写成切片，这样才能与 `ALL` 的顺序、`idx` 的下标一致。
-    let prof = root().join("crates/spec/src/atom.rs");
-    let text = fs::read_to_string(&prof).expect("`crates/spec/src/atom.rs` 必须存在");
+    let text = fs::read_to_string(root().join("crates/prof/src/atom.rs"))
+        .expect("`crates/prof/src/atom.rs` 必须存在");
     assert!(
         text.contains("const ALL: &'static [Self]"),
-        "`spec::atom` 的闭集表必须写成切片"
+        "`prof::atom` 的闭集表必须写成切片"
     );
     assert!(
         text.contains("macro_rules! inherent_names"),
@@ -528,12 +528,12 @@ pub(crate) fn bitsets_have_exactly_one_implementation() {
     let (_, offenders) = offenders_of("bitset", &hits);
     assert!(
         offenders.is_empty(),
-        "位集只允许 `spec::atom::Set<E, WORDS>` 一份实现：{}",
+        "位集只允许 `prof::atom::Set<E, WORDS>` 一份实现：{}",
         describe(&offenders)
     );
 
-    let atom = fs::read_to_string(root().join("crates/spec/src/atom.rs"))
-        .expect("`crates/spec/src/atom.rs` 必须存在");
+    let atom = fs::read_to_string(root().join("crates/prof/src/atom.rs"))
+        .expect("`crates/prof/src/atom.rs` 必须存在");
     assert!(
         atom.contains("pub struct Set<E: Closed, const WORDS: usize>"),
         "唯一实现 `Set<E, WORDS>` 不见了：这条规则的替代品是空的"

@@ -90,14 +90,9 @@ names = ["Behaviour", "Repro", "Seed", "Target"]
 reason = "模糊测试的目标、种子、行为描述与复现样本；工具成员，不参与运行时分层"
 
 [[ownership.unlisted]]
-crate = "spec"
-names = ["Access", "Arg", "Axis", "AxisRole", "AxisSpec", "CType", "Formula", "Param", "ShapeCtx", "SplitMix64", "Values", "Witness"]
-reason = "契约层内部类型（访问模式、算子参数、轴角色与轴规格、C 类型、公式缓存句柄、形状上下文、计数器型随机）；随 L 拆分从 `op` 迁到 `spec`，公开面是 `Operator` / `Model` / 签名"
-
-[[ownership.unlisted]]
 crate = "prof"
-names = ["Constant", "Detected", "Emit", "MatchRule", "Mem", "Meta", "ProfileError", "Recipe", "Simt", "Unit"]
-reason = "档案行表的列类型与匹配规则（公开面是 `Archive`/`Profile`），加上随 `op`/`prim` 解散一并迁来的声明解析结果（骨架 / 网格映射 / 轴候选 / tile 组合 / 变体闭集）与内嵌片段条目 `Builtin`。`Axis` 与 `spec::einsum::formula::Index`（原 `Axis`）同名不同概念——所有权门按名字全局判重，故两边各登记一次。`Attr`/`Mismatch`/`Need`/`Provide`/`Span`/`Witness` 随词汇层迁去 `spec`，`AttrKey`/`Grade`/`Prim`/`Space` 由 `closed!` 宏生成、扫描器认不出定义行，故四者不再登记"
+names = ["Access", "Arg", "AxisRole", "AxisSpec", "Constant", "CType", "Detected", "Emit", "Formula", "MatchRule", "Mem", "Meta", "Param", "ProfileError", "Recipe", "ShapeCtx", "Simt", "SplitMix64", "Unit", "Values", "Witness"]
+reason = "档案行表的列类型与匹配规则（公开面是 `Archive`/`Profile`），加上随 `op`/`prim` 解散迁来的声明解析结果（骨架 / 网格映射 / 轴候选 / tile 组合 / 变体闭集）与内嵌片段条目 `Builtin`；`spec` 并入本 crate 后又多了契约词汇的内部类型（访问模式、算子参数、轴角色与轴规格、C 类型、公式缓存句柄、形状上下文、计数器型随机）。`Axis` 在声明层与 `einsum::formula` 各有一份，同名不同物：表里只登记声明层那一份，本基线不再重复；`AttrKey`/`Grade`/`Prim`/`Space` 由 `closed!` 宏生成、扫描器认不出定义行，故四者不再登记"
 
 [[ownership.unlisted]]
 crate = "storage"

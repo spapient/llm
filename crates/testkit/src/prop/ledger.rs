@@ -54,7 +54,6 @@ pub const ABSENT: &[Absence] = &[
             "annotation",
             "diagnostic",
             "dtype",
-            "spec",
             "storage",
         ],
         reason: "词汇表：枚举、错误码与注册表行。唯一的不变量是\"每个取值都被处理过一次\"，\

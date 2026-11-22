@@ -495,6 +495,25 @@ mod parse {
 use check::*;
 use parse::*;
 
+/// `const` 上下文里逐字节比两个名字（没有可用的 `str` 比较）。
+///
+/// 注解与注册表的编译期断言靠它：`assert!(::prof::same_bytes(NAME, "gemv_i4"))`。
+/// 这里是唯一实现，`nn` 只是重导出别名。
+pub const fn same_bytes(left: &str, right: &str) -> bool {
+    let (left, right) = (left.as_bytes(), right.as_bytes());
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut idx = 0;
+    while idx < left.len() {
+        if left[idx] != right[idx] {
+            return false;
+        }
+        idx += 1;
+    }
+    true
+}
+
 #[cfg(test)]
-#[path = "../tests/sig_tests.rs"]
+#[path = "../tests/spec/sig_tests.rs"]
 mod tests;

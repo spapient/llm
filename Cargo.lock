@@ -333,7 +333,6 @@ dependencies = [
  "llm-diagnostic",
  "llm-nn",
  "llm-prof",
- "llm-spec",
  "llm-testkit",
 ]
 
@@ -648,7 +647,6 @@ dependencies = [
  "llm-annotation",
  "llm-diagnostic",
  "llm-prof",
- "llm-spec",
  "llm-tensor",
  "llm-testkit",
  "llm-weights",
@@ -660,9 +658,9 @@ dependencies = [
 name = "llm-prof"
 version = "0.1.0"
 dependencies = [
+ "llm-annotation",
  "llm-diagnostic",
  "llm-dtype",
- "llm-spec",
  "llm-testkit",
  "toml",
 ]
@@ -713,16 +711,6 @@ dependencies = [
  "llm-testkit",
  "llm-weights",
  "llm-wire",
-]
-
-[[package]]
-name = "llm-spec"
-version = "0.1.0"
-dependencies = [
- "llm-annotation",
- "llm-diagnostic",
- "llm-dtype",
- "llm-testkit",
 ]
 
 [[package]]

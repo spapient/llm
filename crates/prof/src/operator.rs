@@ -50,7 +50,7 @@ pub const fn model_of<T: Operator>() -> Model {
 #[macro_export]
 macro_rules! operator_here {
     ($ty:ty, $op:tt, $arity:literal, $shape:expr, $differentiable:literal, $reference:path) => {
-        ::llm_spec::operator_via!(
+        $crate::operator_via!(
             @impl $ty,
             $op,
             $arity,
@@ -70,7 +70,7 @@ macro_rules! operator_here {
 #[macro_export]
 macro_rules! operator_via {
     ($ty:ty, $op:tt, $arity:literal, $shape:expr, $differentiable:literal, $skel:ident, $axes:expr) => {
-        ::llm_spec::operator_via!(
+        $crate::operator_via!(
             @impl $ty,
             $op,
             $arity,
@@ -85,7 +85,7 @@ macro_rules! operator_via {
         );
     };
     (grained $ty:ty, $op:tt, $arity:literal, $shape:expr, $differentiable:literal, $skel:ident, $axes:expr) => {
-        ::llm_spec::operator_via!(
+        $crate::operator_via!(
             @impl $ty,
             $op,
             $arity,
@@ -103,11 +103,11 @@ macro_rules! operator_via {
         @impl $ty:ty, $op:tt, $arity:literal, $shape:expr, $differentiable:literal, $group:expr,
         $axes:expr, $project:path, $cost:path, $sample:path, $reference:path
     ) => {
-        impl ::llm_spec::operator::Operator for $ty {
+        impl $crate::operator::Operator for $ty {
             const NAME: &'static str = $op;
             const SHAPE: (usize, usize) = $shape;
-            const DTYPE: ::llm_spec::model::DType = ::llm_spec::model::DType::F32;
-            const AXES: &'static [::llm_spec::model::AxisSpec] = $axes;
+            const DTYPE: $crate::model::DType = $crate::model::DType::F32;
+            const AXES: &'static [$crate::model::AxisSpec] = $axes;
             const DIFFERENTIABLE: bool = $differentiable;
             const GROUP: u32 = $group;
             const ARITY: usize = $arity;
@@ -115,21 +115,21 @@ macro_rules! operator_via {
             fn shape_ctx(
                 m: usize,
                 n: usize,
-            ) -> ::core::result::Result<::llm_spec::model::ShapeCtx, ::diagnostic::Error> {
+            ) -> ::core::result::Result<$crate::model::ShapeCtx, ::diagnostic::Error> {
                 $project(m, n)
             }
 
             fn cost(
-                shape: &::llm_spec::model::ShapeCtx,
-            ) -> ::core::result::Result<::llm_spec::model::Cost, ::diagnostic::Error> {
+                shape: &$crate::model::ShapeCtx,
+            ) -> ::core::result::Result<$crate::model::Cost, ::diagnostic::Error> {
                 $cost(shape)
             }
 
-            fn sample(m: usize, n: usize) -> ::llm_spec::model::Sample {
+            fn sample(m: usize, n: usize) -> $crate::model::Sample {
                 $sample(m, n)
             }
 
-            fn reference(sample: &::llm_spec::model::Sample) -> ::diagnostic::Result<Vec<f32>> {
+            fn reference(sample: &$crate::model::Sample) -> ::diagnostic::Result<Vec<f32>> {
                 $reference(sample)
             }
         }

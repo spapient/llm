@@ -516,6 +516,6 @@ pub mod quant {
 
     #[cfg(test)]
     mod tests {
-        include!("../tests/quant_tests.rs");
+        include!("../tests/spec/quant_tests.rs");
     }
 }

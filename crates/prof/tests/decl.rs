@@ -1,4 +1,4 @@
-use spec::sch;
+use crate::sch;
 
 use super::*;
 use diagnostic::data::Value as TValue;
@@ -87,7 +87,7 @@ fn minimal(name: &str, template: &str, phases: Vec<Phase>) -> OpDecl {
         consts: Vec::new(),
         variants: Vec::new(),
         template: template.to_string(),
-        signature: spec::sig::Signature::parse(name, template).expect("签名"),
+        signature: crate::sig::Signature::parse(name, template).expect("签名"),
         phases,
     }
 }
@@ -109,7 +109,7 @@ fn compose_pairs_a_producer_write_with_a_consumer_read_of_the_same_dtype() {
         fusion
             .seams
             .iter()
-            .all(|seam| seam.ctype == spec::sig::CType::F32)
+            .all(|seam| seam.ctype == crate::sig::CType::F32)
     );
 }
 

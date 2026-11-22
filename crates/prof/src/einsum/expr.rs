@@ -152,5 +152,5 @@ fn check_output(terms: &[Vec<char>], output: &[char], text: &str) -> Result<(), 
 
 #[cfg(test)]
 mod tests {
-    include!("../../tests/einsum.rs");
+    include!("../../tests/spec/einsum.rs");
 }

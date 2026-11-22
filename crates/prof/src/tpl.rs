@@ -264,7 +264,7 @@ pub mod parse {
 }
 
 #[cfg(test)]
-#[path = "../tests/tpl_tests.rs"]
+#[path = "../tests/spec/tpl_tests.rs"]
 mod tests;
 
 pub mod formula {
@@ -300,8 +300,8 @@ pub mod formula {
     #[macro_export]
     macro_rules! formula_cell {
         () => {{
-            static CACHE: ::llm_spec::einsum::FormulaCache =
-                ::llm_spec::einsum::FormulaCache::new();
+            static CACHE: $crate::einsum::FormulaCache =
+                $crate::einsum::FormulaCache::new();
             &CACHE
         }};
     }

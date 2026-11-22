@@ -44,7 +44,7 @@ pub mod rnd {
     #[cfg(test)]
     #[cfg(test)]
     mod tests {
-        include!("../tests/rnd_tests.rs");
+        include!("../tests/spec/rnd_tests.rs");
     }
 }
 
@@ -92,7 +92,7 @@ pub mod dropout {
     #[cfg(test)]
     #[cfg(test)]
     mod tests {
-        include!("../tests/dropout_tests.rs");
+        include!("../tests/spec/dropout_tests.rs");
     }
 }
 
@@ -250,6 +250,6 @@ pub mod init {
     #[cfg(test)]
     #[cfg(test)]
     mod tests {
-        include!("../tests/init_tests.rs");
+        include!("../tests/spec/init_tests.rs");
     }
 }

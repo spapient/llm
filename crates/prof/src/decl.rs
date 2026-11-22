@@ -7,9 +7,9 @@
 use crate::atom::Need;
 use core::fmt;
 use diagnostic::{Code, Error};
-use spec::sch::Schedule;
-use spec::sch::layout::LayoutSpec;
-use spec::sig::CType;
+use crate::sch::Schedule;
+use crate::sch::layout::LayoutSpec;
+use crate::sig::CType;
 
 /// 变体数上限（cutile README §4.1）。
 pub const MAX_VARIANTS: usize = 8;
@@ -101,7 +101,7 @@ pub struct OpDecl {
     /// 模板文本。
     pub template: String,
     /// 内核签名：从模板的入口函数解析，是 ABI 的唯一事实源。
-    pub signature: spec::sig::Signature,
+    pub signature: crate::sig::Signature,
     /// 数据流阶段：谁在哪一阶段读/写哪个槽位；单内核算子就是一段（名字 = 算子名）。
     pub phases: Vec<Phase>,
 }
@@ -126,7 +126,7 @@ pub struct Seam {
     /// 消费者的读槽位名（融合时以临时缓冲桥接，名字不必相同）。
     pub to: String,
     /// 缝上的类型（两侧一致才合法；只可能是缓冲类型 F32 / U8）。
-    pub ctype: spec::sig::CType,
+    pub ctype: crate::sig::CType,
 }
 
 /// 一次合法的生产者→消费者融合。
@@ -171,7 +171,7 @@ impl Fusion {
 
 impl OpDecl {
     /// 槽位的声明类型：缓冲形参才有；标量或未知名返回 `None`。
-    pub fn slot_type(&self, name: &str) -> Option<spec::sig::CType> {
+    pub fn slot_type(&self, name: &str) -> Option<crate::sig::CType> {
         self.signature
             .params()
             .iter()
@@ -400,13 +400,13 @@ fn check_chain(variants: &[Variant]) -> diagnostic::Result<()> {
         .iter()
         .map(|variant| (variant.name.as_str(), variant.mma_share))
         .collect();
-    spec::sch::check_monotonic(&chain).map_err(|detail| field("variants", detail.message()))?;
+    crate::sch::check_monotonic(&chain).map_err(|detail| field("variants", detail.message()))?;
     let Some(head) = variants.first() else {
         return Ok(());
     };
-    spec::sch::check_masking(
+    crate::sch::check_masking(
         &head.name,
-        spec::sch::Masking::of(head.mma_share, &head.schedule),
+        crate::sch::Masking::of(head.mma_share, &head.schedule),
     )
     .map_err(|detail| field("variants", detail.message()))
 }

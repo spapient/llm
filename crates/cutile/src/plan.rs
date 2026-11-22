@@ -8,7 +8,7 @@ use core::cmp::Ordering;
 use core::fmt;
 use diagnostic::{Code, Error};
 use ::prof::catalogue::Registration;
-use spec::model::{Cost, Model};
+use prof::model::{Cost, Model};
 
 /// 一次 plan 的产物。
 #[derive(Debug, Clone, PartialEq)]

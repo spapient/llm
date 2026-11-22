@@ -208,5 +208,5 @@ fn error(line: usize, message: impl Into<String>) -> Error {
 }
 
 #[cfg(test)]
-#[path = "../tests/epilogue_tests.rs"]
+#[path = "../tests/spec/epilogue_tests.rs"]
 mod tests;

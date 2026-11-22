@@ -1,8 +1,8 @@
 //! 职责：被测内核的宿主 C 基准封装：把一份 `.k` 内核与样本拼成可计时的 `main()`。
 
 use diagnostic::{Code, Error};
-use spec::model::{Sample, Values};
-use spec::sig::{CType, Signature};
+use prof::model::{Sample, Values};
+use prof::sig::{CType, Signature};
 
 /// 把样本与内核源码拼成一个可执行的 `main()`：warmup 若干次后逐次计时、打印输出位模式。
 ///

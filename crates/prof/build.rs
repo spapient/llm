@@ -86,8 +86,6 @@ struct Device {
     witness: PathBuf,
     /// 档案路径：生成的代码按路径读，生成器也拿它当输入登记。
     archive: PathBuf,
-    /// 已解析的档案本体：档案表与片段表读的是同一份解析结果，不会各读一次盘。
-    doc: toml::Table,
     /// 尾块六段的名字，按出现顺序。
     forms: Vec<String>,
 }
@@ -209,7 +207,6 @@ fn scan(dir: &Path, name: &str, files: Vec<PathBuf>) -> Device {
         epilogue,
         witness,
         archive,
-        doc,
         forms,
     }
 }

@@ -5,8 +5,8 @@ use diagnostic::data::{Table, Value};
 
 use crate::atom::{Attr, AttrKey, Closed, Need, Prim, Set, Span};
 use crate::prof::scalar_texts;
-use spec::sch::layout::LayoutSpec;
-use spec::tpl::{Arg, Template};
+use crate::sch::layout::LayoutSpec;
+use crate::tpl::{Arg, Template};
 
 use super::{Axis, Chunk, Grid, OpDecl, Phase, Skeleton, Variant, field, tiles, variants};
 
@@ -63,7 +63,7 @@ impl OpDecl {
     fn declared(table: &Table, template: &str) -> diagnostic::Result<Self> {
         let ((name, skeleton, summary), (axes, needs, layouts, variants), (consts, grid, chunk)) =
             parts(table)?;
-        let signature = spec::sig::Signature::parse(&name, template)?;
+        let signature = crate::sig::Signature::parse(&name, template)?;
         let phases = phases(table, &name, &signature)?;
         Ok(Self {
             name,
@@ -552,7 +552,7 @@ pub fn extras(table: &Table) -> diagnostic::Result<Extras> {
 pub fn phases(
     table: &Table,
     op: &str,
-    signature: &spec::sig::Signature,
+    signature: &crate::sig::Signature,
 ) -> diagnostic::Result<Vec<Phase>> {
     let Some(rows) = table.table_array("phases") else {
         return Ok(vec![Phase {
@@ -565,7 +565,7 @@ pub fn phases(
 }
 
 /// 一条阶段：`name` 必填，`reads`/`writes` 是槽位名数组，每个名字都必须是签名的缓冲形参。
-fn phase(op: &str, row: &Table, signature: &spec::sig::Signature) -> diagnostic::Result<Phase> {
+fn phase(op: &str, row: &Table, signature: &crate::sig::Signature) -> diagnostic::Result<Phase> {
     let name = row
         .string("name")
         .map(str::to_string)
@@ -582,7 +582,7 @@ fn slot_names(
     op: &str,
     row: &Table,
     key: &str,
-    signature: &spec::sig::Signature,
+    signature: &crate::sig::Signature,
 ) -> diagnostic::Result<Vec<String>> {
     let Some(names) = row.string_array(key) else {
         return Ok(Vec::new());
