@@ -36,7 +36,7 @@ pub fn cost<F: Format>(shape: &ShapeCtx) -> Result<Cost, Error> {
     };
     F::formula()?
         .cost(&extents)
-        .map_err(|error| error.with("op::gemv::cost"))
+        .map_err(|error| error.with("nn::gemv::cost"))
 }
 
 /// 确定性样本：同一形状永远得到同一组输入。

@@ -19,8 +19,17 @@ device-image = []
 dtype = { path = "../dtype", package = "llm-dtype" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 
+[dev-dependencies]
+# 片段层对账用例（`device_suite!`）在独立集成测试里，以外部 `prof::` 引用本 crate；
+# 因此本 crate 的测试面需要 testkit，而 testkit 本身不依赖 prof，不成环。
+testkit = { path = "../testkit", package = "llm-testkit" }
+
 [lints]
 workspace = true
+
+[[test]]
+name = "fragments"
+path = "tests/fragments.rs"
 
 [build-dependencies]
 # 构建期共享内核（扫描/读取/生成）在 diagnostic 的 build feature 下，运行期不引入 toml。

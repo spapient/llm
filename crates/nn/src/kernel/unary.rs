@@ -34,7 +34,7 @@ pub fn project_shape(len: usize, _: usize) -> Result<ShapeCtx, Error> {
 pub fn cost<U: Unary>(shape: &ShapeCtx) -> Result<Cost, Error> {
     U::formula()?
         .cost(shape.extents())
-        .map_err(|error| error.with("op::unary::cost"))
+        .map_err(|error| error.with("nn::unary::cost"))
 }
 
 /// 确定性样本：第一个参数是元素数。
@@ -101,7 +101,7 @@ macro_rules! unary_f32 {
             const OPERANDS: &'static [$crate::einsum::OperandSpec] =
                 &$crate::einsum::f32_io_operands();
 
-            const FRAME: &'static str = "op::unary::formula";
+            const FRAME: &'static str = "nn::unary::formula";
 
             fn cache() -> &'static $crate::einsum::FormulaCache {
                 $crate::formula_cell!()

@@ -43,7 +43,7 @@ pub fn project_shape(len: usize, _: usize) -> Result<ShapeCtx, Error> {
 pub fn cost<R: Reduce>(shape: &ShapeCtx) -> Result<Cost, Error> {
     R::formula()?
         .cost(shape.extents())
-        .map_err(|error| error.with("op::reduce::cost"))
+        .map_err(|error| error.with("nn::reduce::cost"))
 }
 
 /// 确定性样本：输入 len 个，输出 1 个。
@@ -110,7 +110,7 @@ macro_rules! reduce_f32 {
             const OPERANDS: &'static [$crate::einsum::OperandSpec] =
                 &$crate::einsum::f32_io_operands();
 
-            const FRAME: &'static str = "op::reduce::formula";
+            const FRAME: &'static str = "nn::reduce::formula";
 
             fn cache() -> &'static $crate::einsum::FormulaCache {
                 $crate::formula_cell!()

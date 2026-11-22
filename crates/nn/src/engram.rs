@@ -1,7 +1,7 @@
 //! Engram 条件记忆（§5.8.2）：哈希 N-gram、`O(1)` 槽、ρ 稀疏分配。
 
 use diagnostic::{Code, Error, Result};
-use op::scan::Scalar;
+use crate::conv::scan::Scalar;
 
 use crate::{Contract, ContractSpec, ParamRole, Shape};
 

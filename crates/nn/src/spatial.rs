@@ -15,9 +15,9 @@
 use crate::ContractSpec as Spec;
 use crate::{ContractSpec, nonzero};
 use diagnostic::Result;
-use op::conv::ConvGeom;
-use op::conv::{Conv1d as OpConv1, Conv2d as OpConv2, MaxPool1d as OpPool1, MaxPool2d as OpPool2};
-use op::deconv::{ConvTranspose1d as OpDeconv1, ConvTranspose2d as OpDeconv2};
+use crate::conv::conv::ConvGeom;
+use crate::conv::{Conv1d as OpConv1, Conv2d as OpConv2, MaxPool1d as OpPool1, MaxPool2d as OpPool2};
+use crate::conv::deconv::{ConvTranspose1d as OpDeconv1, ConvTranspose2d as OpDeconv2};
 
 /// 一维卷积与转置卷积绑定的算子：im2col 之后就是一次矩阵乘。
 const GEMM: &str = "gemm_f32";
@@ -371,7 +371,7 @@ impl AvgPool2d {
     ) -> Result<Self> {
         let layer = "nn::AvgPool2d::new";
         nonzero(c, "channels", layer)?;
-        let (oh, ow) = op::conv::AvgPool2d {
+        let (oh, ow) = crate::conv::conv::AvgPool2d {
             geom,
             count_include_pad,
         }
@@ -401,14 +401,14 @@ impl AdaptiveAvgPool2d {
     }
 }
 
-/// 插值层：`[h, w, c]` → `[oh, ow, c]`，取样方式见 [`op::conv::Sampler`]。
+/// 插值层：`[h, w, c]` → `[oh, ow, c]`，取样方式见 [`crate::conv::conv::Sampler`]。
 ///
 /// 它比 `planar!` 那一族多一件**真状态**：`sampler` 不改输出边长，却决定算子怎么取样。
 /// 因此不塞进宏，而是显式带上——并且必须能读回（`sampler()`），否则它又会退化成死字段。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Interpolate {
     spec: Spec,
-    sampler: op::conv::Sampler,
+    sampler: crate::conv::conv::Sampler,
     oh: usize,
     ow: usize,
     c: usize,
@@ -422,7 +422,7 @@ impl Interpolate {
     /// 目标尺寸或通道为零时返回说明。
     pub fn new(
         name: impl Into<String>,
-        sampler: op::conv::Sampler,
+        sampler: crate::conv::conv::Sampler,
         oh: usize,
         ow: usize,
         c: usize,
@@ -452,7 +452,7 @@ impl Interpolate {
     }
 
     /// 取样方式。
-    pub fn sampler(&self) -> op::conv::Sampler {
+    pub fn sampler(&self) -> crate::conv::conv::Sampler {
         self.sampler
     }
 }

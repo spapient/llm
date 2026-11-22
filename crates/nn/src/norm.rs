@@ -6,10 +6,10 @@
 
 use diagnostic::{Code, Error, Result};
 // 归一化层现在是 `Scalar` 泛型；经典层登记只针对 `f32` 声明档，这里给出一份具体别名。
-type OpBatch = op::norm::BatchNorm2d<f32>;
-type OpGroup = op::norm::GroupNorm<f32>;
-type OpInst = op::norm::InstanceNorm<f32>;
-type OpLayer = op::norm::LayerNorm<f32>;
+type OpBatch = crate::kernel::norm::BatchNorm2d<f32>;
+type OpGroup = crate::kernel::norm::GroupNorm<f32>;
+type OpInst = crate::kernel::norm::InstanceNorm<f32>;
+type OpLayer = crate::kernel::norm::LayerNorm<f32>;
 use crate::ContractSpec as Spec;
 use crate::{Bounds, BoundsResult, Contract, ContractSpec, nonzero, spec_accessors};
 

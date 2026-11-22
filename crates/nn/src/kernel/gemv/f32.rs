@@ -17,7 +17,7 @@ impl<const B: usize> crate::formula::FormulaOwner for gemv::Dense<B> {
         OperandSpec::write("y", Bits::ThirtyTwo),
     ];
 
-    const FRAME: &'static str = "op::gemv::formula";
+    const FRAME: &'static str = "nn::gemv::formula";
 
     fn cache() -> &'static FormulaCache {
         crate::formula_cell!()

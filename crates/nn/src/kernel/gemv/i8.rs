@@ -14,7 +14,7 @@ impl<const G: usize> crate::formula::FormulaOwner for gemv::SymI8<G> {
     // 权重是 8 位（每元素 1 字节），其余同打包格式：操作数表走同一条展开。
     scaled_operands!(I8.bits);
 
-    const FRAME: &'static str = "op::gemv::formula";
+    const FRAME: &'static str = "nn::gemv::formula";
 
     fn cache() -> &'static FormulaCache {
         crate::formula_cell!()

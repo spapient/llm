@@ -27,7 +27,7 @@ pub trait Binary: FormulaOwner {
 pub fn cost<B: Binary>(shape: &ShapeCtx) -> Result<Cost, Error> {
     B::formula()?
         .cost(shape.extents())
-        .map_err(|error| error.with("op::elementwise::cost"))
+        .map_err(|error| error.with("nn::elementwise::cost"))
 }
 
 /// 确定性样本：第一个参数是元素数（轴 `n`），第二个参数逐元素算子不用。
@@ -112,7 +112,7 @@ macro_rules! binary_f32 {
             const OPERANDS: &'static [$crate::einsum::OperandSpec] =
                 &$crate::einsum::f32_binary_operands();
 
-            const FRAME: &'static str = "op::elementwise::formula";
+            const FRAME: &'static str = "nn::elementwise::formula";
 
             fn cache() -> &'static $crate::einsum::FormulaCache {
                 $crate::formula_cell!()

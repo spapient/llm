@@ -179,7 +179,7 @@ impl<P: PackedRow, const G: usize> FormulaOwner for Packed<P, G> {
 
     scaled_operands!(P::ROW.bits);
 
-    const FRAME: &'static str = "op::gemv::formula";
+    const FRAME: &'static str = "nn::gemv::formula";
 
     fn cache() -> &'static FormulaCache {
         // 缓存单元格由标记类型各自持有，避免泛型 static 被合并成跨配置共享的一份。
