@@ -16,9 +16,11 @@
 //! 设备前端（`ccec` / `clang -cl-std`）由 `cutile::gate` 与设备 crate 自己的用例管。
 
 /// 把一台设备的片段层判据摊成 `#[test]` 函数。
+///
+/// 不收参数：P0 闭集在 [`crate::device::P0`] 里只有一份，设备 crate 无从挑一个让自己变绿的闭集。
 #[macro_export]
 macro_rules! device_suite {
-    ($p0:expr) => {
+    () => {
         use prof::prof::{Profile, builtin_profiles};
 
         /// 档案里与 `DEVICE.vendor` 同名的那台设备。
