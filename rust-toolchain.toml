@@ -1,6 +1,10 @@
-# 1.100 正式版尚未发布：先 pin 到 rustc 1.100.0-nightly 对应的 nightly。
-# 正式发布后把 channel 改成 "1.100" 即可，其余配置无需改动。
+# 不再需要 nightly：两处不稳定能力已用 `#[cfg(nightly)]` 挂起，并各配一条 stable 退路
+# （`crates/gemm/build.rs` 按 `rustc --version` 判定并产出该 cfg）：
+#   - `gemv::simd` 的手写车道 → stable 走 `gemv/simd_scalar.rs`；
+#   - `fast::sme` 的 ZA 外积 → stable 走 NEON 通道。
+# 因此这里钉一个**已发布**的 stable：clone 下来 `cargo build` 直接能过，
+# 想验证 nightly 通道则显式 `cargo +nightly test`。
 [toolchain]
-channel = "nightly-2026-09-01"
+channel = "stable"
 components = ["clippy", "rustfmt"]
 profile = "minimal"

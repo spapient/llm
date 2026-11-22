@@ -128,14 +128,16 @@ fn sdot_peak(c: &mut Criterion) {
         fast::port_sdot,
         2 * fast::SDOT_MAC_PER_ROUND,
     );
-    // 取数受限曲线：每轮 4 A + 4 B load 配 16 `sdot`，与生产微内核每 `k16` 步逐条对齐。
-    let (a, b) = ([3i8; 64], [5i8; 64]);
+    // 取数受限曲线：每 `k16` 步 4 条 A load + 4 条 B load 配 16 条 `sdot`，k 取 1024 使
+    // 地址在环内单调推进（地址不随循环变化会被 LLVM 把 load 整体提出循环，那样测的是纯端口）。
+    let k = 1024usize;
+    let (a, b) = (vec![3i8; 4 * k], vec![5i8; 4 * k]);
     ported_ops(
         c,
         "i8_peak",
-        "_mix",
-        |rounds| fast::port_sdot_mix(rounds, &a, &b),
-        2 * fast::SDOT_MIX_MAC_PER_ROUND,
+        "_block",
+        |rounds| fast::port_sdot_block(rounds, &a, &b, k),
+        2 * fast::SDOT_BLOCK_MAC_PER_K * k,
     );
 }
 

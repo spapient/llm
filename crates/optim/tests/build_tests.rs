@@ -47,7 +47,7 @@ fn declared_path(op: &OpDecl) -> Path {
     let variant = &op.variants[0];
     Path {
         variant: variant.name.clone(),
-        index: 0,
+        idx: 0,
         schedule: variant.schedule,
         mma_share: variant.mma_share,
     }

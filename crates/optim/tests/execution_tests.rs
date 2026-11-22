@@ -11,7 +11,7 @@ fn sample(m: usize, n: usize) -> Sample {
         m,
         n,
         scalars: Vec::new(),
-        buffers: Vec::new(),
+        bufs: Vec::new(),
     }
 }
 

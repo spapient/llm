@@ -3,7 +3,7 @@
 //! 生产文件只留执行与判据，用例集中于此。
 
 use super::*;
-use op::model::Buffer;
+use op::model::Buf;
 
 #[test]
 fn an_attainment_above_one_is_an_invalid_measurement_not_a_pass() {
@@ -79,16 +79,16 @@ fn working_set_is_every_input_buffer_but_not_the_output() {
         m: 1,
         n: 2,
         scalars: Vec::new(),
-        buffers: vec![
-            Buffer {
+        bufs: vec![
+            Buf {
                 name: "w",
                 values: Values::U8(vec![0; 8]),
             },
-            Buffer {
+            Buf {
                 name: "x",
                 values: Values::F32(vec![1.0; 4]),
             },
-            Buffer {
+            Buf {
                 name: "y",
                 values: Values::F32(vec![0.0; 64]),
             },
