@@ -1,9 +1,9 @@
 //! 扁平缓冲与缓冲分配：[`Buf`] + [`Allocator`] + `CpuAllocator`。
 //!
 //! **拥有**：`Buf`、`Allocator`、`CpuAllocator`。
-//! **不拥有**：排列顺序与步幅累积（归 `tensor`，这里再导出 [`Order`] 保持路径兼容）、
-//! 布局代数与重排（归 `tensor`：`Tensor` 的 `permute` / `to_contiguous` 已是唯一的零拷贝 + 一次实体化路径，
-//! 本层不再提供第二套措辞）、逻辑张量元数据（归 `tensor`）、地址空间（`GM` / `FAST` / `REG` 归
+//! **不拥有**：形状与字节数（归 `tensor`：`Shape::numel` / `Shape::element_bytes`）、
+//! 布局代数与重排（本仓没有这一层：排布由算子契约与设备 Fragment 描述，见 ADR 0053）、
+//! 地址空间（`GM` / `FAST` / `REG` 归
 //! `cutile` / `prof`）、设备私有句柄（藏在后端边界 crate 后，ADR 0025 §2）。
 //! **依赖**：`tensor`、`diagnostic`。**被依赖**：`weights`、`engine`。
 //!
@@ -15,16 +15,17 @@
 //! # 例子
 //!
 //! ```
-//! use llm_storage::{Buf, Order};
-//! use tensor::Shape;
+//! use llm_storage::Buf;
+//! use tensor::{DType, Shape};
 //!
 //! let buf = Buf::from_bytes(vec![0, 1, 2, 3, 4, 5]);
 //! assert_eq!(buf.len(), 6);
 //!
-//! // 步幅累积只有一份实现，就在 `tensor`：同一形状换顺序即换步长。
+//! // 同一个形状，元素宽度不同则字节数不同：亚字节精度按位向上取整。
 //! let shape = Shape::new([2, 3]);
-//! assert_eq!(shape.strides(Order::RowMajor), vec![3, 1]);
-//! assert_eq!(shape.strides(Order::ColMajor), vec![1, 2]);
+//! assert_eq!(shape.numel(), 6);
+//! assert_eq!(shape.element_bytes(DType::F32), 24);
+//! assert_eq!(shape.element_bytes(DType::U4), 3);
 //! ```
 
 #![deny(unsafe_code)]
@@ -40,6 +41,3 @@ pub use mmap::Mmap;
 
 pub use alloc::{Allocator, CpuAllocator};
 pub use buf::Buf;
-
-/// 排列顺序的主人在 `tensor`；这里再导出，保持 `storage::Order` 的既有路径。
-pub use tensor::Order;

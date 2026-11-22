@@ -5,7 +5,7 @@
 
 use super::*;
 
-use crate::{BatchNorm2d, GroupNorm, InstanceNorm, LayerNorm};
+use crate::{BatchNorm2d, Bounds, Contract, GroupNorm, InstanceNorm, LayerNorm};
 
 fn geom3() -> ConvGeom {
     ConvGeom {
@@ -28,6 +28,37 @@ fn conv2d_registers_its_shape_and_conv_operator() {
     // 下界来自 conv2d_f32 的语义表（每输出 2·k²·cin、三读一写），因此有正 FLOPs 与正字节。
     let floor = layer.bounds().expect("合法").expect("有算子");
     assert!(floor.flops() > 0.0 && floor.bytes() > 0);
+}
+
+#[test]
+fn spatial_floors_are_the_output_shape_rule() {
+    // 这一族的 `impl Contract` 都由 `priced!` 生成，下界实参不再写在各层里：行 = 输出 numel / 末轴，
+    // 宽 = 末轴。口径收成一份之后，"抄错一个乘积"的风险也收成了一份、且编译器看不见——本用例把
+    // 这条规则钉在具体层上：任何一层换了字段、换了轴序，这里立刻不等。
+    let conv = Conv2d::new("stem.conv", 3, 64, geom3(), 32, 32).expect("合法");
+    assert_eq!(
+        conv.bounds().expect("合法").expect("可计价"),
+        Bounds::of_ctx(CONV, 32 * 32, 64).expect("合法")
+    );
+
+    // 二维池化由 `planar!` 生成、一维池化手写：两条路径必须给出同一个口径。
+    let pool2 = MaxPool2d::new("p2", geom3(), 8, 8, 4).expect("合法");
+    assert_eq!(
+        pool2.bounds().expect("合法").expect("可计价"),
+        Bounds::of_ctx("max_pool2d_f32", 8 * 8, 4).expect("合法")
+    );
+    let pool1 = MaxPool1d::new("p1", 2, 2, 0, 8, 4).expect("合法");
+    assert_eq!(
+        pool1.bounds().expect("合法").expect("可计价"),
+        Bounds::of_ctx("max_pool1d_f32", 4, 4).expect("合法")
+    );
+
+    // 反卷积的输出通道存在算子结构体里（`deconv.cout`），与"末轴"是不是同一个数要由这里保证。
+    let up = ConvTranspose1d::new("up", 4, 6, 2, 2, 0, 9).expect("合法");
+    assert_eq!(
+        up.bounds().expect("合法").expect("可计价"),
+        Bounds::of_ctx(GEMM, 18, 6).expect("合法")
+    );
 }
 
 #[test]

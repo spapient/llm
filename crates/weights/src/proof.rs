@@ -329,14 +329,14 @@ pub(crate) fn prove(leaves: &[Digest], idx: usize) -> Option<Proof> {
         return None;
     }
     let mut level = leaves.to_vec();
-    let mut idx = idx;
+    // 折叠游标与返回的下标是两个东西：游标逐层减半，`Proof::idx` 必须留着叶子原位。
+    let mut at = idx;
     let mut siblings = Vec::new();
     while level.len() > 1 {
         pad(&mut level);
-        let sibling = idx ^ 1;
-        siblings.push(level[sibling]);
+        siblings.push(level[at ^ 1]);
         level = fold(level);
-        idx /= 2;
+        at /= 2;
     }
     Some(Proof { idx, siblings })
 }

@@ -270,12 +270,16 @@ fn recurrent_parts(entry: &str) -> Option<(&str, Tensor, usize, usize)> {
 /// 成一遍——与检查点里的一条不差才认。认的是「这份权重就是这一层」，不是「它大概像这一层」。
 fn recurrent_layer(block: &str, entries: &[&Entry]) -> Option<Recurrent> {
     let shape = |tensor: Tensor, level: usize, dir: usize| {
-        entries.iter().find_map(|entry| match recurrent_parts(entry.name())? {
-            (prefix, kind, at, side) if prefix == block && kind == tensor && at == level && side == dir => {
-                Some(entry.shape().dims().to_vec())
-            }
-            _ => None,
-        })
+        entries
+            .iter()
+            .find_map(|entry| match recurrent_parts(entry.name())? {
+                (prefix, kind, at, side)
+                    if prefix == block && kind == tensor && at == level && side == dir =>
+                {
+                    Some(entry.shape().dims().to_vec())
+                }
+                _ => None,
+            })
     };
     let matrix = |tensor: Tensor| match shape(tensor, 0, 0)?.as_slice() {
         [rows, cols] => Some((*rows, *cols)),
@@ -283,7 +287,9 @@ fn recurrent_layer(block: &str, entries: &[&Entry]) -> Option<Recurrent> {
     };
     let (rows, hidden) = matrix(Tensor::WeightHh)?;
     let (_, input) = matrix(Tensor::WeightIh)?;
-    let gates = (hidden != 0).then(|| rows / hidden).filter(|g| g * hidden == rows)?;
+    let gates = (hidden != 0)
+        .then(|| rows / hidden)
+        .filter(|g| g * hidden == rows)?;
     let (layers, dirs) = entries
         .iter()
         .filter_map(|entry| recurrent_parts(entry.name()))
@@ -292,11 +298,22 @@ fn recurrent_layer(block: &str, entries: &[&Entry]) -> Option<Recurrent> {
             (layers.max(level + 1), dirs.max(dir + 1))
         });
     let bias = shape(Tensor::BiasIh, 0, 0).is_some();
-    let layer = Recurrent::new(block, Cell::of_gates(gates)?, input, hidden, layers, dirs, bias).ok()?;
+    let layer = Recurrent::new(
+        block,
+        Cell::of_gates(gates)?,
+        input,
+        hidden,
+        layers,
+        dirs,
+        bias,
+    )
+    .ok()?;
     let mut wanted = layer.weight_entries();
     let mut actual: Vec<(String, Shape)> = entries
         .iter()
-        .filter(|entry| matches!(recurrent_parts(entry.name()), Some((prefix, ..)) if prefix == block))
+        .filter(
+            |entry| matches!(recurrent_parts(entry.name()), Some((prefix, ..)) if prefix == block),
+        )
         .map(|entry| (entry.name().to_string(), entry.shape().clone()))
         .collect();
     // 按名字排序后逐条比对：条目名在候选里唯一，名字序也就唯一。

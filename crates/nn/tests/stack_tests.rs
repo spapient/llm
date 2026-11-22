@@ -356,7 +356,10 @@ fn a_partial_recurrent_family_is_reported_not_priced_as_a_projection() {
         Entry::new("blk.lstm.weight_ih_l0", DType::F32, Shape::new([20, 16])).at(0),
     ]))
     .expect("形状合法");
-    assert!(model.layers().is_empty(), "没有 `weight_hh` 就定不出门数与隐宽");
+    assert!(
+        model.layers().is_empty(),
+        "没有 `weight_hh` 就定不出门数与隐宽"
+    );
     assert_eq!(
         model.uncovered(),
         ["blk.lstm.weight_ih_l0"],

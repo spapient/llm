@@ -133,7 +133,7 @@ pub mod import {
 
     use diagnostic::{Code, Error, Result};
 
-    use crate::gguf::{Gguf, Kind};
+    use crate::gguf::{Gguf, Kind, Tensor};
     use crate::safetensors::{Archive as StArchive, File as StFile};
     use crate::torch::Checkpoint;
     use crate::{Entry, Loader, Reader, Segment, Wire};
@@ -231,32 +231,47 @@ pub mod import {
     }
 
     /// GGUF 归档 → 中性段流：标量 `F32`/`F16` 直映 Wire；GGML 块量化（`Q8_0`/`Q4_K`/`Q5_K`/
-    /// `Q6_K` 等）显式 [`Code::Unsupported`]，本刀不做反量化，也不把块字节塞进标量段伪装。
+    /// `Q6_K`）在导入时按元素反量化成 `F32` 段。
+    ///
+    /// 打包字节不能原样落段：中性 `Wire` 只描述标量与打包整数，段的长度口径又是
+    /// `dtype × 元素数`，把块字节按标量宽度塞进去就是伪装。反量化的代价是块格式在导入时
+    /// 展开（Q4_K 每 256 元素 144 字节 → 1024 字节），换来的是段里的值可按元素校验。
     ///
     /// # Errors
     ///
-    /// [`Code::Unsupported`]：张量类型是未映射的 GGML 块量化；其余读取错误透传 GGUF 解析诊断。
+    /// 块的字节数与元素数不整除、或布局不符时由 `formats` 显式拒绝；其余读取错误透传解析诊断。
     pub fn segments_from_gguf(arch: &Gguf<'_>) -> Result<Vec<Segment>> {
-        let mut out = Vec::with_capacity(arch.tensors().len());
-        for tensor in arch.tensors() {
-            let wire = gguf_wire(tensor.kind, &tensor.name)?;
-            let raw = arch.raw(tensor)?.to_vec();
-            out.push(segment_from_entry(&tensor.name, wire, &tensor.shape, raw)?);
-        }
-        Ok(out)
+        arch.tensors()
+            .iter()
+            .map(|tensor| segment_from_gguf(arch, tensor))
+            .collect()
     }
 
-    /// GGML 类型 → 中性 Wire：标量 `F32`/`F16` 直映；块量化显式 `Unsupported`，不反量化、不塞伪装段。
-    fn gguf_wire(kind: Kind, name: &str) -> Result<Wire> {
+    /// 一个 GGML 张量 → 中性段。
+    fn segment_from_gguf(arch: &Gguf<'_>, tensor: &Tensor) -> Result<Segment> {
+        let data = gguf_bytes(arch, tensor)?;
+        segment_from_entry(&tensor.name, gguf_wire(tensor.kind), &tensor.shape, data)
+    }
+
+    /// 张量类型 → 中性 Wire：标量直映，块量化反量化后一律 `F32`。
+    fn gguf_wire(kind: Kind) -> Wire {
         match kind {
-            Kind::F32 => Ok(Wire::F32),
-            Kind::F16 => Ok(Wire::F16),
-            other => Err(Error::new(
-                Code::Unsupported,
-                format!("GGUF 张量 `{name}` 的块量化 {other:?} 不支持导入：未实现反量化"),
-            )
-            .with("weights::import::segments_from_gguf")),
+            Kind::F16 => Wire::F16,
+            _ => Wire::F32,
         }
+    }
+
+    /// 张量值 → 段存储字节：标量取原始小端字节（不重排），块量化按元素反量化成 f32。
+    fn gguf_bytes(arch: &Gguf<'_>, tensor: &Tensor) -> Result<Vec<u8>> {
+        match tensor.kind {
+            Kind::F32 | Kind::F16 => Ok(arch.raw(tensor)?.to_vec()),
+            _ => Ok(f32_bytes(arch.floats(&tensor.name)?)),
+        }
+    }
+
+    /// f32 序列 → 小端字节，即段的存储口径。
+    fn f32_bytes(values: Vec<f32>) -> Vec<u8> {
+        values.into_iter().flat_map(f32::to_le_bytes).collect()
     }
 
     /// torch 检查点 → 同一中性段流；读不通的归档或对象流在 `torch` 解析层已显式失败，

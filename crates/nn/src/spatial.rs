@@ -13,7 +13,7 @@
 //! - **池化/插值**各绑自己的真算子，代价表即算子的语义表。
 
 use crate::ContractSpec as Spec;
-use crate::{Bounds, BoundsResult, Contract, ContractSpec, nonzero, spec_accessors};
+use crate::{ContractSpec, nonzero};
 use diagnostic::Result;
 use op::conv::ConvGeom;
 use op::conv::{Conv1d as OpConv1, Conv2d as OpConv2, MaxPool1d as OpPool1, MaxPool2d as OpPool2};
@@ -82,13 +82,7 @@ impl Conv1d {
     }
 }
 
-impl Contract for Conv1d {
-    spec_accessors!();
-
-    fn bounds(&self) -> BoundsResult {
-        Bounds::of_ctx(GEMM, self.ol, self.cout).map(Some)
-    }
-}
+crate::priced!(Conv1d, GEMM);
 
 /// 二维卷积层：NHWC 输入 `[h, w, cin]`，输出 `[oh, ow, cout]`。
 #[crate::spec(name = $name, out = [$oh, $ow, $cout], ops = [$op])]
@@ -145,13 +139,7 @@ impl Conv2d {
     }
 }
 
-impl Contract for Conv2d {
-    spec_accessors!();
-
-    fn bounds(&self) -> BoundsResult {
-        Bounds::of_ctx(CONV, self.oh * self.ow, self.cout).map(Some)
-    }
-}
+crate::priced!(Conv2d, CONV);
 
 /// 一维反卷积层：`[l, cin]` → `[ol, cout]`，权重 `[cin, cout, k]`。
 #[crate::spec(name = $name, out = [$ol, $cout], ops = [$op])]
@@ -196,13 +184,7 @@ impl ConvTranspose1d {
     }
 }
 
-impl Contract for ConvTranspose1d {
-    spec_accessors!();
-
-    fn bounds(&self) -> BoundsResult {
-        Bounds::of_ctx(GEMM, self.ol, self.deconv.cout).map(Some)
-    }
-}
+crate::priced!(ConvTranspose1d, GEMM);
 
 /// 二维反卷积层：`[h, w, cin]` → `[oh, ow, cout]`，权重 `[cin, cout, kh, kw]`。
 #[crate::spec(name = $name, out = [$oh, $ow, $cout], ops = [$op])]
@@ -252,13 +234,7 @@ impl ConvTranspose2d {
     }
 }
 
-impl Contract for ConvTranspose2d {
-    spec_accessors!();
-
-    fn bounds(&self) -> BoundsResult {
-        Bounds::of_ctx(GEMM, self.oh * self.ow, self.deconv.cout).map(Some)
-    }
-}
+crate::priced!(ConvTranspose2d, GEMM);
 
 /// 一维最大池化层：`[l, c]` → `[ol, c]`。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -300,13 +276,7 @@ impl MaxPool1d {
     }
 }
 
-impl Contract for MaxPool1d {
-    spec_accessors!();
-
-    fn bounds(&self) -> BoundsResult {
-        Bounds::of_ctx("max_pool1d_f32", self.ol, self.c).map(Some)
-    }
-}
+crate::priced!(MaxPool1d, "max_pool1d_f32");
 
 /// `[h, w, c] → [oh, ow, c]` 这一族的共用骨架。
 ///
@@ -349,13 +319,7 @@ macro_rules! planar {
             }
         }
 
-        impl Contract for $ty {
-            spec_accessors!();
-
-            fn bounds(&self) -> BoundsResult {
-                Bounds::of_ctx($op, self.oh * self.ow, self.c).map(Some)
-            }
-        }
+        crate::priced!($ty, $op);
     };
 }
 
@@ -493,13 +457,7 @@ impl Interpolate {
     }
 }
 
-impl Contract for Interpolate {
-    spec_accessors!();
-
-    fn bounds(&self) -> BoundsResult {
-        Bounds::of_ctx("interpolate_f32", self.oh * self.ow, self.c).map(Some)
-    }
-}
+crate::priced!(Interpolate, "interpolate_f32");
 
 #[cfg(test)]
 #[path = "../tests/classic_tests.rs"]

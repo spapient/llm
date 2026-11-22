@@ -90,6 +90,9 @@ fn every_idx_proves_against_root() {
             "下标 {idx} 应验证通过"
         );
 
+        // 证明里回填的必须是叶子原位，不是折叠到最后的那层下标（每层减半后恒为 0）。
+        assert_eq!(proof.idx(), idx, "证明要记住叶子原位 {idx}");
+
         // 证明长度为 ceil(log2 n)。
 
         assert_eq!(proof.siblings.len(), 3);

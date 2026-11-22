@@ -180,6 +180,34 @@ macro_rules! spec_accessors {
     };
 }
 
+/// 下界只由「一次上下文算子：`numel / 末轴` 行 × 末轴宽」决定的层。
+///
+/// 这一族（卷积、反卷积、池化、插值、逐元）的输出形状已经把两件事写清楚了：末轴是通道，
+/// 前面各轴合成外层行数。手写这些层就是把同一句 `of_ctx(op, 行, 通道)` 连同它的乘法抄 N 遍，
+/// 而抄错的后果是编译器不会报的静默错价——下界实参与输出形状本来就该同源，本宏让它们同源。
+///
+/// 一行调用替掉五行，顺带保证不会漏掉 `spec_accessors!()`——漏了就不实现 `Contract`。
+/// 下界口径不同（按投影一对宽度、按归约到标量、按格式计价）的层仍手写，本宏只收这一种。
+///
+/// 末轴取 `unwrap_or(1)` 只为标量形状不 panic、除法不除零：零轴层在构造期已被各层自己拒绝
+/// （`nonzero_channels` / `nonzero`），这里不再伪造第二道校验。
+#[macro_export]
+macro_rules! priced {
+    ($(#[$doc:meta])* $ty:ident, $op:expr) => {
+        impl $crate::Contract for $ty {
+            $crate::spec_accessors!();
+
+            $(#[$doc])*
+            fn bounds(&self) -> $crate::BoundsResult {
+                let out = self.output();
+                let width = out.dim(out.rank().saturating_sub(1)).unwrap_or(1);
+                let rows = out.numel() / width.max(1);
+                $crate::Bounds::of_ctx($op, rows, width).map(Some)
+            }
+        }
+    };
+}
+
 /// 只读访问器表：`名字 -> 类型 = 字段`，字段必填（访问器返字段值，不做计算）。
 ///
 /// 一行一条的写法与 [`layer_delegate!`] 同源：层数多、访问器都是"返字段"，手写会把

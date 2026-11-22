@@ -234,7 +234,8 @@ fn the_gate_count_identifies_the_cell() {
     for cell in Cell::ALL {
         assert_eq!(Cell::of_gates(cell.gates()), Some(cell));
     }
-    let gates: std::collections::BTreeSet<usize> = Cell::ALL.iter().map(|cell| cell.gates()).collect();
+    let gates: std::collections::BTreeSet<usize> =
+        Cell::ALL.iter().map(|cell| cell.gates()).collect();
     assert_eq!(
         gates.len(),
         Cell::ALL.len(),

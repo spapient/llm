@@ -300,7 +300,8 @@ pub mod descriptors {
                 Error::new(Code::Missing, format!("参数表缺权重条目 `{entry}`")).with(SITE),
             );
         };
-        let product: usize = desc.shape.iter().product();
+        // 饱和乘法：形状来自模型描述，回绕出的偏小数会骗过与整块长度的比对。
+        let product: usize = tensor::product(&desc.shape);
         if product != block.len() {
             return Err(Error::new(
                 Code::Invalid,

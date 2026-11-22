@@ -39,6 +39,8 @@
 不再复述每一次的数字；配置层的现状见 [ADR 0022](adr/0022-build-time-corpora.md) 与
 [ADR 0023](adr/0023-settings-to-cli.md)。
 
+**合并判据是「同构」，不是「消费者数量」。** 一个成员只有一条入边时，它通常是边界而不是肥肉：`storage` 独自持有全仓唯一的 `unsafe` 岛（`tensor` 是 `deny(unsafe_code)` 且有 11 个消费者），`algorithm` 刻意不产 `ContractSpec`（`nn` 专产），`shard` 坐 L5 而 `train` 坐 L6。可合并的硬信号只有一个——两个成员的 `lib.rs` / `build.rs` 除专名外**逐字相同**：六台设备 crate 并入 `frag` 时按这条判据删掉 512 行、补回 55 行，净省 457 行。反面的账同样要算：一次合并能省的至多是该 crate 的 `Cargo.toml`（全仓 1060 行 / 33 个，约 32 行）加一段头注释，指望靠合并兑现「代码大量减少」是算错账。裁决过程与测量数字见 [lld.md](lld.md) v3.0.90。
+
 允许的边（当前全量，共 166 条，含 57 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benchmarks` / `testkit` 的边不参与运行时方向判定）：
 
 ```
@@ -125,8 +127,8 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 | `Payoff` | `cutile` | 一条融合候选的 roofline 增益：`unfused_s` 是两侧各自 `max(算力, 带宽)` 之和，`fused_s` 是复合代价的定界。`max` 次可加保证 `fused ≤ unfused`，`speedup` 因此恒 ≥ 1——代数结论，不是拟合 |
 | `Oracle` | `cutile` | 融合对拍的读数：`got` 是消费者在**全部缝**都桥接之后的产出，`bridged` 是实际桥接的 `(生产者输出, 消费者槽位)` 对。`reference::verify_fusion` 是 `Fusion` 的唯一实例化入口——缝从代数的证据里来，不从调用点的字符串来；自融合、多输出生产者、非 `F32` 缝、缝上形状不符一律显式拒绝（`Invalid` / `Unsupported`），而不是算出一个「差不多」的值。README §9 的契约「每个被接受的融合都必须能生成一条对拍」由 `crates/cutile/tests/reference_tests.rs` 在整张内置注册表上执行 |
 | `Bench` / `Throughput` / `Peak` / `Verdict` / `Performance` / `CostCoefficients` | `optim` | `bench` 的实测口径与达成率判定；口径无效或没有峰值时 `is_measured` 为假。`CostCoefficients` 用实测 p50 反推有效带宽 / 算力，回填进 roofline 当分母（替代档案峰值） |
-| `Tensor` / `View` / `Owned` / `Store` / `Rank` / `Element` / `Shape` / `Order` / `AxisLen` | `tensor` | 只有一个 `Tensor<B, R, K>`，三个泛型位各管一件事：`B: Store<K>` 是元素存在哪（借来的 `&[K]` / 持有的 `Owned<K>`）、`R: Rank` 是秩从哪来（`[usize; D]` 编译期定长 / `Vec<usize>` 运行期长度）、`K: Element` 是元素是什么（`f32` / `i8` / `u8`，精度是类型常量而不是字段）。与 Burn `Tensor<B, const D, K>` 同形，两处差异刻意的：`B` 是**存储**不是后端算子集（算子由 `op` 的注册表给出，`B: Backend` 会带来百方法接口，见 ADR 0053）、`R` 是 `const D` 的**超集**（运行期 batch / segment 几何进同一个类型，ADR 0046）。`View<'a, K>` 就是 `Tensor<&'a [K], Vec<usize>, K>` 的别名。重排代数不止「换轴」：`broadcast` 把被扩展轴的步长写成 0（零拷贝复用同一份元素，转置表达不出来），`narrow` 只前移起点（借用存储才开放，持有时要复制，那就不是视图），`to_contiguous` 把前两者摊成紧凑缓冲，于是能接着 `reshape`。偏移、可达性、连续性与取行只有 `layout` 一份实现，连续步长只有 `shape::accumulate` 一份实现，`Shape::strides(order)` 直接给 `Vec<usize>`——步长不是另一种形状，不再有第四个「每轴一个 `usize`」的平行容器。于是两种秩、两种存储不可能漂移。运行期精度的字节视图**不在本层**：那份契约由 `weights::Descriptor` 持有，容量算术由 `Shape::element_bytes` 给出，不再有第二份声明。设备地址不泄漏到本层 |
-| `Buf` / `Allocator` / `CpuAllocator` | `storage` | 扁平缓冲与分配（布局代数归 `tensor`）；`Allocator` 是分配 / 释放 / 显式拷贝的边界 trait，设备后端在边界 crate 实现同一 trait；本层不做隐式跨设备拷贝 |
+| `Shape` / `AxisLen` / `product` / `DType` | `tensor` | 只做无执行的元数据描述：`Shape` 记各轴长度，`numel` 是饱和乘积（溢出到 `usize::MAX` 而不是回绕——长度可能来自不受信任的权重文件头），`element_bytes(dtype)` 折字节数，亚字节按位向上取整的唯一实现是 `DType::bytes_for`；`AxisLen` 是轴长的 `usize` / `u64` 双口径；`DType` 只再导出，元素类型闭集与 `Class` 数值类别的唯一源在 L1 `dtype`。**本层没有 `Tensor` / `View`**：步长视图代数曾在此占 1,247 行，实测其全仓消费者只有 `llm status` 面板的一行样例、计算路径为零，而本仓的抽象单位是「算子契约 + 设备 Fragment + 执行缝」（ADR 0053），排布由算子声明持有，不在元数据层再建第二套措辞。设备地址不泄漏到本层 |
+| `Buf` / `Allocator` / `CpuAllocator` | `storage` | 扁平缓冲与分配（排布归算子声明，本层不持有布局）；`Allocator` 是分配 / 释放 / 显式拷贝的边界 trait，设备后端在边界 crate 实现同一 trait；本层不做隐式跨设备拷贝 |
 | `Stream` / `Graph` / `Launch` / `Device` / `Operand` / `OperandRole` / `ScalarSlots` | `engine` | 提交与执行，不编译 kernel；`Device` 只是运行时标识标签，不持私有句柄；`ScalarSlots` 是定长类型化闭集标量槽（[ADR 0043](adr/0043-program-scalar-slots.md)），位置参数不折进 1 元素 f32 缓冲 |
 | `Sequence` / `Scheduler` / `Progress` | `engine` | 连续批与序列状态；准入后每生成一个 token 才预留它要落的那页，`Blocked` 时不改任何状态；`Sequence` 是已生成 token 的唯一存放处 |
 | `Page` / `Table` / `Cache` / `Pager` | `engine` | 分页 KV 的页管理与页内数据：引用计数 O(1) 判定越界 / 重复归还 / 下溢，归零才回池且只有最后一个持有者归还时清零；行宽由装载模型的一侧给 |
@@ -208,7 +210,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 - `cutile::space::Space`（GM / FAST / REG）是**语言概念**，`prof::atom::Space` 是它的档案表示；档案侧只认字节；
 - `optim::bench::Verdict`（达成率：能否与档案峰值比较）、`tool::regress::Judgement`（相对基线有无回退）、
   `tool::card::Standing`（这一格成立了没有）三态名不同是刻意的，它们会同时出现在一份报告里；
-- kernel 侧操作数视图与 `tensor::Tensor` 是两回事：前者不得依赖 `tensor`，后者不得假装能做 kernel 分区。
+- kernel 侧操作数视图**不在 `tensor`**：排布（分片、步长、窗口）由算子声明与设备 Fragment 持有，`tensor` 只描述形状与字节数，两者不得互相假装；
   该视图在 P0 **尚未实现**——`cutile` 只接收裸指针与标量，分片由调用方给；
 - `nn::LmHead` 这类注解声明与 `Linear::new` 这类运行期构造走同一条 `ContractSpec::new` 校验路径，
   注解不建注册表（否则就是第二份事实源，见 [ADR 0005](adr/0005-annotations-as-contracts.md)）。

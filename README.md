@@ -70,33 +70,25 @@ cargo run -p llm-cli --bin cutile -- cache gc --limit 1073741824                
 `cargo run -p llm-cli --bin llm` 的 `片段层 prim` 一行会逐台列出 `=源码` / `=metallib N B/M 个符号`；
 `CUTILE_REQUIRE_IMAGE=metal` 把"缺镜像"升级成构建失败。细节见 [`crates/prim/README.md`](crates/prim/README.md)。
 
-## 张量形状算子面（`tensor`）
+## 形状描述面（`tensor`）
 
-`Tensor<B, R, K>` 与 Burn 的 `Tensor<B, const D, K>` 同构：第一个位置是存储，第二个是秩，
-第三个是元素类型。差别在秩可二选一——`[usize; D]` 是编译期秩（形状/步长是栈上定长数组，
-秩错在编译期拦下），`Vec<usize>` 是运行期秩（batch / segment 几何要到运行期才知道）；同一套
-算子两种秩通用，存储可以是借来的 `&[K]` 或自持的 `Owned<K>`。
+`tensor` 只回答"数据长什么样、占几个字节"：**不持有元素、不重排布局、不执行**。它拥有三样东西，
+各自都是全仓唯一事实源：
 
-整套形状算子是 `(起点偏移, 各轴长度, 各轴步长)` 上的整数运算，**除 `flip` 外一个元素都不搬**，
-派生视图与源张量共用同一块存储：
+- **`Shape`** —— 各轴长度。`numel()` 是饱和乘积（`numel` 可能来自不受信任的权重文件头，回绕会把
+  巨大张量报成很小，所以溢出饱和而非回绕）；`element_bytes(dtype)` 把元素数折成字节数，亚字节精度
+  按位向上取整，因此 `Shape::new([2, 3])` 的 `u4` 只占 3 字节、`f32` 占 24 字节。
+- **`AxisLen`** —— 轴长的整数口径（`usize` / `u64` 各一份），形状构造因此不为两种宽度各写一遍。
+- **`DType` 的再导出** —— 元素类型闭集的唯一源在 L1 `dtype`（24 个变体、`Class` 数值类别、位宽），
+  本层只转出名字，不复制任何分类。
 
-| 算子 | 秩 | 语义 |
-|---|---|---|
-| `broadcast` | 不变 | 前导新轴 + 单例扩展，步长写 0 |
-| `narrow` / `slice`（含 `Slice::stepped`） | 不变 | 沿一轴 / 多轴取段，段可带步长（降采样视图） |
-| `chunks` / `split` | 不变 | 等分 / 按段长切分，各段借用同一存储；段长越界夹紧，不 panic |
-| `select` / `unbind` | −1 | 固定某轴一个下标 / 逐个固定并一次借出 N 份 |
-| `squeeze` / `unsqueeze` | ∓1 | 去掉 / 插入长为 1 的轴 |
-| `diagonal` | −1 | 两轴折一轴（长度取小、步长相加），对角即视图 |
-| `flatten` | 变短 | 把行主序紧凑的一段轴压成一个；不紧凑返回 `None` |
-| `transpose` / `permute` / `movedim` | 不变 | 换轴序 / 搬一轴（其余轴次序不动） |
-| `slice_fill` / `slice_assign` | 不变 | 就地写同一个窗口（仅自持存储） |
-| `flip` | 不变 | 沿指定轴反向读出——步长无符号，只有它要搬数据 |
-
-改秩的算子要写目标秩见证（`t.select::<[usize; 1]>(0, 3)`），因为稳定 Rust 算不出 `D - 1`——
-与 Burn 的 `.squeeze::<2>()` 同一手法，只是这里 `Vec<usize>` 也可以。逐算子实现代价与对 Burn 的
-逐条比较在 [`docs/COMPARISON-llm-llmu-burn.md`](docs/COMPARISON-llm-llmu-burn.md) §3.3，
-源码 [`crates/tensor/src/tensor.rs`](crates/tensor/src/tensor.rs) 的模块文档有同一张表。
+**为什么没有 `Tensor`。** 此前本层有一套完整的步长视图代数（`broadcast` / `narrow` / `permute` /
+`diagonal` / `slice_fill` …，1,247 行）。实测它在全仓的消费者只有 `llm status` 面板那一行样例数据，
+**计算路径一个都没有**；而本仓的抽象单位是"算子契约 + 设备 Fragment + 执行缝"（ADR 0053），
+排布由算子声明持有，不在元数据层再建第二套措辞。于是按死代码删除，`llm status` 改印 `Shape` 与
+`DType` 的真实读数。删掉的能力各有去向或"本无用户"的如实标注，逐条记在
+[`docs/COMPARISON-llm-llmu-burn.md`](docs/COMPARISON-llm-llmu-burn.md) §3.3；源码见
+[`crates/tensor/src/lib.rs`](crates/tensor/src/lib.rs) 的模块文档。
 
 ## 配置
 

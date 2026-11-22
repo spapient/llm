@@ -171,11 +171,16 @@ impl<'a> Quantized<'a> {
         self.weight.shape().dims()[0]
     }
 
-    /// 每个元素的位数：逐元素 `I8` 为 8，打包的 `U8`/`U4` 为 4。
+    /// 每个元素的量化位数：打包容器（`u8` 一个字节两个 nibble、`u4` 一格半字节）是 4 位，
+    /// 逐元素容器是它自己的位宽（`i8` → 8）。
+    ///
+    /// 容器位宽不等于量化位数（`u8` 容器装两组 4 位），所以这里不能直接从 `DType::bits` 取。
+    /// 定义域由 [`Packed::width`] 收窄到 `U4` / `U8` / `I8`；兜底分支答的是"逐元素位宽"，
+    /// 将来多一个逐元素容器时得到的是真值，不会被静默报成 4 位。
     pub fn bits(&self) -> u8 {
         match self.weight.dtype() {
-            DType::I8 => 8,
-            _ => 4,
+            DType::U8 | DType::U4 => 4,
+            other => other.bits() as u8,
         }
     }
 
@@ -273,7 +278,7 @@ fn dims(weight: &Entry, scales: &Entry, ctx: &str) -> Result<Option<(usize, usiz
         ))
         .with(ctx));
     }
-    let float = matches!(scales.dtype(), DType::F32 | DType::F16 | DType::BF16);
+    let float = scales.dtype().is_float();
     Ok(float.then_some((second, groups)))
 }
 

@@ -7,10 +7,14 @@ mod fixture;
 
 #[test]
 fn f16_to_f32_handles_subnormals_infinity_nan_and_zero() {
-    assert_eq!(f16_to_f32(0x0001), 5.960_464_5e-8);
+    assert_eq!(f16_to_f32(0x0001), 5.960_464_5e-8, "最小次正规数");
+    assert_eq!(f16_to_f32(0x03FF), 6.097_555e-5, "最大次正规数");
+    assert_eq!(f16_to_f32(0x0400), 6.103_515_6e-5, "最小正规数");
     assert!(f16_to_f32(0xFC00).is_infinite() && f16_to_f32(0xFC00) < 0.0);
+    assert_eq!(f16_to_f32(0x7C00), f32::INFINITY, "正无穷");
     assert!(f16_to_f32(0x7C01).is_nan());
     assert_eq!(f16_to_f32(0), 0.0);
+    assert_eq!(f16_to_f32(0x8000).to_bits(), 0x8000_0000, "负零保留符号位");
 }
 
 #[test]
@@ -32,45 +36,36 @@ fn value_accessors_return_their_own_variant() {
 
 #[test]
 fn kind_maps_ggml_codes_and_delegates_layout() {
-    const CODES: [(u32, Kind); 6] = [
-        (0, Kind::F32),
-        (1, Kind::F16),
-        (8, Kind::Q8_0),
-        (12, Kind::Q4_K),
-        (13, Kind::Q5_K),
-        (14, Kind::Q6_K),
-    ];
-    assert_eq!(SUPPORTED.len(), CODES.len(), "支持表与锁定码表必须同规模");
-    for (code, kind) in CODES {
-        assert_eq!(kind.code(), code);
-        assert_eq!(Kind::from_code(code).unwrap(), kind);
-        let hits = SUPPORTED.iter().filter(|(other, _)| *other == kind).count();
-        assert_eq!(hits, 1, "{kind:?} 在 SUPPORTED 里必须恰好出现一次");
-    }
-    assert!(Kind::from_code(2).is_err(), "未支持的 ggml 码必须显式失败");
-    assert!(Kind::from_code(15).is_err(), "未支持的 ggml 码必须显式失败");
+    // 码、布局、元素数、字节数合成一行：六种类型各占一行，两张并列的表会各自漂移。
     // 线格式写死成字面量，才不是拿上游常量自证：`QType`/`DType` 改口径时这里必须一起改。
-    const WIRE: [(Kind, Layout, usize, usize); 6] = [
-        (Kind::F32, Layout::Scalar(DType::F32), 1, 4),
-        (Kind::F16, Layout::Scalar(DType::F16), 1, 2),
-        (Kind::Q8_0, Layout::Block(QType::Q8_0), 32, 34),
-        (Kind::Q4_K, Layout::Block(QType::Q4_K), 256, 144),
-        (Kind::Q5_K, Layout::Block(QType::Q5_K), 256, 176),
-        (Kind::Q6_K, Layout::Block(QType::Q6_K), 256, 210),
+    const WIRE: [(u32, Kind, Layout, usize, usize); 6] = [
+        (0, Kind::F32, Layout::Scalar(DType::F32), 1, 4),
+        (1, Kind::F16, Layout::Scalar(DType::F16), 1, 2),
+        (8, Kind::Q8_0, Layout::Block(QType::Q8_0), 32, 34),
+        (12, Kind::Q4_K, Layout::Block(QType::Q4_K), 256, 144),
+        (13, Kind::Q5_K, Layout::Block(QType::Q5_K), 256, 176),
+        (14, Kind::Q6_K, Layout::Block(QType::Q6_K), 256, 210),
     ];
-    for (kind, layout, elems, span) in WIRE {
+    assert_eq!(SUPPORTED.len(), WIRE.len(), "支持表与锁定码表必须同规模");
+    for (code, kind, layout, elems, span) in WIRE {
+        assert_eq!(kind.code(), code, "{kind:?} 的 ggml 码");
+        assert_eq!(Kind::from_code(code).unwrap(), kind);
         assert_eq!(kind.layout().expect("布局"), layout, "{kind:?}");
         assert_eq!(kind.elems().expect("布局"), elems, "{kind:?} 元素数");
         assert_eq!(kind.span().expect("布局"), span, "{kind:?} 字节数");
+        let hits = SUPPORTED.iter().filter(|(other, _)| *other == kind).count();
+        assert_eq!(hits, 1, "{kind:?} 在 SUPPORTED 里必须恰好出现一次");
         // 委派口径：块格式的元素数/字节数必须与 dtype 的 QType 表一致。
         match layout {
             Layout::Block(qtype) => {
-                assert_eq!(span, qtype.block_bytes() as usize, "{kind:?}");
-                assert_eq!(elems, qtype.block_len() as usize, "{kind:?}");
+                let delegated = (qtype.block_len() as usize, qtype.block_bytes() as usize);
+                assert_eq!((elems, span), delegated, "{kind:?}");
             }
             Layout::Scalar(dtype) => assert_eq!(span, dtype.bytes_for(1) as usize, "{kind:?}"),
         }
     }
+    assert!(Kind::from_code(2).is_err(), "未支持的 ggml 码必须显式失败");
+    assert!(Kind::from_code(15).is_err(), "未支持的 ggml 码必须显式失败");
 }
 
 #[test]

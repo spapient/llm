@@ -178,8 +178,9 @@ pub(crate) fn check_weight(plan: &LayerPlan, params: &Params) -> Result<()> {
     if plan.weight_shape.is_empty() {
         return Err(weight_shape_missing());
     }
-    let weight_len = plan.weight_shape.iter().product();
-    let scales_len = (!plan.scales_shape.is_empty()).then(|| plan.scales_shape.iter().product());
+    // 形状积走 `tensor::product` 的饱和乘法：回绕会乘出一个偏小的数骗过下面的长度核对。
+    let weight_len = tensor::product(&plan.weight_shape);
+    let scales_len = (!plan.scales_shape.is_empty()).then(|| tensor::product(&plan.scales_shape));
     check_weight_entry(
         params,
         entry,

@@ -158,10 +158,9 @@ fn quant_round_trip(out: &mut [f32], dtype: DType) -> diagnostic::Result<()> {
 
 /// 对称网格边界：`i2 → [-2, 1]`、`i4 → [-8, 7]`、`i8 → [-128, 127]`；其余位宽拒绝。
 fn quant_bounds(dtype: DType) -> diagnostic::Result<(f32, f32)> {
+    // 定义域是这条对称网格接受的三个精度；位宽从 `DType::bits` 取，不在此再写一遍字面量。
     let bits = match dtype {
-        DType::I2 => 2,
-        DType::I4 => 4,
-        DType::I8 => 8,
+        DType::I2 | DType::I4 | DType::I8 => dtype.bits(),
         _ => {
             return Err(Error::new(
                 Code::Invalid,
@@ -169,9 +168,8 @@ fn quant_bounds(dtype: DType) -> diagnostic::Result<(f32, f32)> {
             ));
         }
     };
-    let min = -(1 << (bits - 1)) as f32;
-    let max = ((1 << (bits - 1)) - 1) as f32;
-    Ok((min, max))
+    let half = 1u32 << (bits - 1);
+    Ok((-(half as f32), (half - 1) as f32))
 }
 
 /// 形状不符的错误。

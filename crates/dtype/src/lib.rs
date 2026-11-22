@@ -98,7 +98,7 @@ mod format;
 pub mod mxtype;
 pub mod qtype;
 
-pub use dtype::DType;
+pub use dtype::{Class, DType, DTypeSpec};
 pub use format::{BlockFormat, Format, Layout, UnknownCode, UnknownName};
 pub use mxtype::{Element, MxType};
 pub use qtype::QType;

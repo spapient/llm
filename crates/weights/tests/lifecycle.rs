@@ -146,9 +146,40 @@ fn maps_scalar_gguf_tensors_to_neutral_segments() {
 }
 
 #[test]
-fn rejects_gguf_block_quantization_without_dequantizing() {
+fn imports_every_block_kind_as_dequantized_f32() {
     let raw = fixture::standard();
     let file = Gguf::parse(&raw).unwrap();
-    let error = segments_from_gguf(&file).expect_err("块量化必须显式失败");
-    assert_eq!(error.code(), Code::Unsupported);
+    let segments = segments_from_gguf(&file).expect("块量化在导入时反量化");
+    let values = |name: &str| -> Vec<f32> {
+        let segment = segments.iter().find(|s| s.name() == name).expect("段");
+        assert_eq!(segment.dtype(), DType::F32, "{name} 反量化后是 f32");
+        segment
+            .data
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b))
+            .collect()
+    };
+    assert_eq!(
+        values("q8.weight"),
+        (0..32).map(|i| i as f32 - 16.0).collect::<Vec<f32>>()
+    );
+    // 夹具的块量化是 d=1.0、min=0、scales 全 1、qs 全 0x21，数值按 GGML 规范手推：
+    // Q4_K 每 64 值是 32 个 1.0 后接 32 个 2.0；Q6_K 每 128 值是 64 个 -31.0 后接 64 个 -30.0。
+    for group in values("q4.weight").chunks(64) {
+        assert!(group[..32].iter().all(|&v| v == 1.0), "Q4_K 低位");
+        assert!(group[32..].iter().all(|&v| v == 2.0), "Q4_K 高位");
+    }
+    for group in values("q6.weight").chunks(128) {
+        assert!(group[..64].iter().all(|&v| v == -31.0), "Q6_K 低位");
+        assert!(group[64..].iter().all(|&v| v == -30.0), "Q6_K 高位");
+    }
+    // Q5_K 的 qh 全 0x5A：组 0/1 是 1.0/18.0，组 2/3 是 17.0/2.0。
+    for (g, chunk) in values("q5.weight").chunks(64).enumerate() {
+        let (low, high) = if g < 2 { (1.0, 18.0) } else { (17.0, 2.0) };
+        let (a, b) = chunk.split_at(32);
+        assert!(a.iter().all(|&v| v == low), "Q5_K 组 {g} 低位");
+        assert!(b.iter().all(|&v| v == high), "Q5_K 组 {g} 高位");
+    }
 }
