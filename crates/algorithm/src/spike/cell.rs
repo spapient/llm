@@ -20,7 +20,7 @@ impl Spiking {
     ///
     /// 通道为零、权重/尺度长度与几何不符、输入宽度大到整数累加会越过 `i32`、尺度非有限或非正、
     /// 门槛非正、泄漏出 `[0,1]`、`reset ≥ threshold`（会让下一拍立刻再发放）——都返回
-    /// [`Code::Invalid`]，且不留下半截对象。
+    /// `Code::Invalid`，且不留下半截对象。
     pub fn new(
         weights: Vec<i8>,
         scale: Vec<f32>,
@@ -80,11 +80,11 @@ impl Spiking {
     /// # Errors
     ///
     /// 状态来自别的输出维度、`spikes`/`out` 长度与几何不符、脉冲不在 `{−1,0,+1}`——都返回
-    /// [`Code::Invalid`]；失败的那一步不推进任何膜电位（累加缓冲只是暂存）。
+    /// `Code::Invalid`；失败的那一步不推进任何膜电位（累加缓冲只是暂存）。
     pub fn step(&self, spikes: &[i8], state: &mut Membrane, out: &mut [i8]) -> Result<usize> {
         self.check_state(state)?;
         if spikes.len() != self.inputs {
-            return Err(bad(format!(
+            return Err(invalid(SITE, format!(
                 "脉冲长度 {} 与输入宽度 {} 不符",
                 spikes.len(),
                 self.inputs
@@ -100,7 +100,7 @@ impl Spiking {
     ///
     /// # Errors
     ///
-    /// 状态来自别的输出维度、事件宽度与输入宽度不符、`out` 长度不符——都返回 [`Code::Invalid`]。
+    /// 状态来自别的输出维度、事件宽度与输入宽度不符、`out` 长度不符——都返回 `Code::Invalid`。
     pub fn drive(
         &self,
         events: &Events<f32>,
@@ -109,7 +109,7 @@ impl Spiking {
     ) -> Result<usize> {
         self.check_state(state)?;
         if events.width() != self.inputs {
-            return Err(bad(format!(
+            return Err(invalid(SITE, format!(
                 "事件宽度 {} 与输入宽度 {} 不符",
                 events.width(),
                 self.inputs
@@ -154,13 +154,13 @@ impl Spiking {
     /// 一条事件的三件判据（位置在宽度内、取值三元、零脉冲不累加）与它的累加。
     fn pulse(&self, column: usize, spike: i8, state: &mut Membrane) -> Result<()> {
         if column >= self.inputs {
-            return Err(bad(format!(
+            return Err(invalid(SITE, format!(
                 "脉冲位置 {column} 越界（宽度 {}）",
                 self.inputs
             )));
         }
         if !ternary(spike) {
-            return Err(bad(format!("脉冲取值必须是 −1/0/+1，得到 {spike}")));
+            return Err(invalid(SITE, format!("脉冲取值必须是 −1/0/+1，得到 {spike}")));
         }
         if spike == 0 {
             return Ok(());
@@ -172,7 +172,7 @@ impl Spiking {
     /// 输出缓冲判据：一格对应一个输出通道，短了会少算行、长了会留下没人写过的格。
     fn check_out(&self, out: &[i8]) -> Result<()> {
         if out.len() != self.outputs {
-            return Err(bad(format!(
+            return Err(invalid(SITE, format!(
                 "输出缓冲 {} 格与输出通道 {} 不符",
                 out.len(),
                 self.outputs
@@ -214,45 +214,21 @@ impl Spiking {
         check_dynamics(self.threshold, self.leak, self.reset)
     }
 
-    /// 几何判据：先判宽度上界，再判两条长度——上界不过时连权重都不该读。
+    /// 几何判据：先判宽度上界，再核对量化格点——上界不过时连权重都不该读。
     fn check_geometry(&self) -> Result<()> {
         self.check_width()?;
-        self.check_lengths()
+        check_lattice(&self.weights, &self.scale, self.inputs, self.outputs)
     }
 
     /// 宽度判据：通道非零，且输入宽到会让整数累加越过 `i32` 时直接拒绝。
     fn check_width(&self) -> Result<()> {
         if self.inputs == 0 || self.outputs == 0 {
-            return Err(bad("输入与输出通道都必须为正"));
+            return Err(invalid(SITE, "输入与输出通道都必须为正"));
         }
         if self.inputs > i32::MAX as usize / WEIGHT_MAGNITUDE {
-            return Err(bad(format!(
+            return Err(invalid(SITE, format!(
                 "输入宽度 {} 过大：整数累加会越过 i32",
                 self.inputs
-            )));
-        }
-        Ok(())
-    }
-
-    /// 长度判据：权重按 `[outputs, inputs]` 行主序，尺度一条对一行。
-    fn check_lengths(&self) -> Result<()> {
-        let width = self
-            .inputs
-            .checked_mul(self.outputs)
-            .ok_or_else(|| bad("权重形状溢出"))?;
-        if self.weights.len() != width {
-            return Err(bad(format!(
-                "权重长度 {} 与 {}×{} 不符",
-                self.weights.len(),
-                self.outputs,
-                self.inputs
-            )));
-        }
-        if self.scale.len() != self.outputs {
-            return Err(bad(format!(
-                "反量化尺度 {} 条与输出通道 {} 不符",
-                self.scale.len(),
-                self.outputs
             )));
         }
         Ok(())
@@ -261,7 +237,7 @@ impl Spiking {
     /// 状态判据：膜电位必须属于同宽度的层。
     fn check_state(&self, state: &Membrane) -> Result<()> {
         if state.outputs != self.outputs {
-            return Err(bad(format!(
+            return Err(invalid(SITE, format!(
                 "膜电位属于 {} 个通道的层，本层是 {}",
                 state.outputs, self.outputs
             )));
@@ -295,7 +271,7 @@ impl Spiking {
     /// # Errors
     ///
     /// 状态来自别的输出维度、脉冲长度/取值不合、输出梯度长度不符或非有限、梯度缓冲布局不符、
-    /// 代理梯度窗宽非正——都返回 [`Code::Invalid`]，且失败时 `grad` 一格都不写。
+    /// 代理梯度窗宽非正——都返回 `Code::Invalid`，且失败时 `grad` 一格都不写。
     pub fn backward(
         &self,
         spikes: &[i8],
@@ -350,14 +326,14 @@ impl Spiking {
     /// 脉冲判据：长度与输入宽度一致、取值三元——与 [`Spiking::pulse`] 用的是同一个 [`ternary`]。
     fn check_spikes(&self, spikes: &[i8]) -> Result<()> {
         if spikes.len() != self.inputs {
-            return Err(bad(format!(
+            return Err(invalid(SITE, format!(
                 "脉冲长度 {} 与输入宽度 {} 不符",
                 spikes.len(),
                 self.inputs
             )));
         }
         match spikes.iter().find(|spike| !ternary(**spike)) {
-            Some(spike) => Err(bad(format!("脉冲取值必须是 −1/0/+1，得到 {spike}"))),
+            Some(spike) => Err(invalid(SITE, format!("脉冲取值必须是 −1/0/+1，得到 {spike}"))),
             None => Ok(()),
         }
     }

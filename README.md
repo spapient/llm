@@ -89,7 +89,7 @@ cargo run -p llm-cli --bin cutile -- cache gc --limit 1073741824                
 | `squeeze` / `unsqueeze` | ∓1 | 去掉 / 插入长为 1 的轴 |
 | `diagonal` | −1 | 两轴折一轴（长度取小、步长相加），对角即视图 |
 | `flatten` | 变短 | 把行主序紧凑的一段轴压成一个；不紧凑返回 `None` |
-| `transpose` / `permute` | 不变 | 换轴序 |
+| `transpose` / `permute` / `movedim` | 不变 | 换轴序 / 搬一轴（其余轴次序不动） |
 | `slice_fill` / `slice_assign` | 不变 | 就地写同一个窗口（仅自持存储） |
 | `flip` | 不变 | 沿指定轴反向读出——步长无符号，只有它要搬数据 |
 

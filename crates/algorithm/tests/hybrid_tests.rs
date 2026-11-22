@@ -4,6 +4,7 @@
 //! 用例回答，于是 `hybrid.rs` 只装结构、不装断言。
 
 use super::*;
+use diagnostic::Code;
 
 /// 小几何：2 头 × 头宽 2 = 4（= 前馈宽），潜在 2 + RoPE 1 = 每 token 3 个元素。
 const WIDTH: usize = 4;

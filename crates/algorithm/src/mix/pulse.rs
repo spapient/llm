@@ -1,6 +1,7 @@
 //! γ 脉冲通道：事件编码 `Encode_event`（§1.5）与 INT8-Spiking 事件臂（E14 / E15）。
 
-use diagnostic::{Code, Error, Result};
+use crate::invalid;
+use diagnostic::Result;
 use op::scan::Scalar;
 
 use crate::csa::finite;
@@ -139,10 +140,10 @@ impl<S: Scalar> Encoder<S> {
     /// 步长非有限或非正、门槛不在 `1..=127`——返回 `Code::Invalid`。
     pub fn new(scale: S, threshold: i32) -> Result<Self> {
         if !finite(scale) || scale <= S::ZERO {
-            return Err(fail(format!("步长必须是有限正数，得到 {scale:?}")));
+            return Err(invalid(SITE, format!("步长必须是有限正数，得到 {scale:?}")));
         }
         if !(1..=MAX_CODE).contains(&threshold) {
-            return Err(fail(format!(
+            return Err(invalid(SITE, format!(
                 "发放门槛必须落在 1..={MAX_CODE}，得到 {threshold}"
             )));
         }
@@ -276,7 +277,7 @@ fn pair_gain<S: Scalar>(encoder: &Encoder<S>, u: &[S], v: &[S]) -> Result<Option
 /// 一对样本的入口契约：长度相等且各自都有限。
 fn check_pair<S: Scalar>(u: &[S], v: &[S]) -> Result<()> {
     if u.len() != v.len() {
-        return Err(fail(format!(
+        return Err(invalid(SITE, format!(
             "样本对的两段长度必须相等，得到 {} 与 {}",
             u.len(),
             v.len()
@@ -349,18 +350,18 @@ fn squared_distance<S: Scalar>(a: &[S], b: &[S]) -> f64 {
 /// 几何与容量一次判清：形状对了才谈累加，容量装得下才允许用普通 `i32` 加法。
 fn check_geometry(got: usize, rows: usize, cols: usize, width: usize) -> Result<()> {
     if rows.checked_mul(cols) != Some(got) {
-        return Err(fail(format!(
+        return Err(invalid(SITE, format!(
             "权重长度必须是 rows × cols = {rows} × {cols}，得到 {got}"
         )));
     }
     if width != cols {
-        return Err(fail(format!(
+        return Err(invalid(SITE, format!(
             "事件宽度必须等于权重列数 {cols}，得到 {width}"
         )));
     }
     let cell = (MAX_CODE as usize) * (MAX_CODE as usize);
     if cols.saturating_mul(cell) > i32::MAX as usize {
-        return Err(fail(format!(
+        return Err(invalid(SITE, format!(
             "列数 {cols} × 单格上限 {cell} 超出 i32 累加容量"
         )));
     }
@@ -372,12 +373,7 @@ fn check_finite<S: Scalar>(values: &[S]) -> Result<()> {
     if values.iter().all(|&v| finite(v)) {
         return Ok(());
     }
-    Err(fail("激活含非有限值".to_string()))
-}
-
-/// 统一的失败构造：出处固定、码位固定，报错文案各自不同。
-fn fail(message: String) -> Error {
-    Error::new(Code::Invalid, message).with(SITE)
+    Err(invalid(SITE, "激活含非有限值".to_string()))
 }
 
 #[cfg(test)]

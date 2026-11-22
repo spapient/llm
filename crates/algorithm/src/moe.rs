@@ -2,7 +2,8 @@
 
 use std::cmp::Ordering;
 
-use diagnostic::{Code, Error, Result};
+use crate::invalid;
+use diagnostic::Result;
 use op::scan::Scalar;
 
 use crate::csa::{accumulate, dot, finite};
@@ -111,14 +112,10 @@ impl<S: Scalar> Moe<S> {
             .collect();
         let dist = self.calib.to_dist(&scores);
         if let Some(bad) = dist.iter().position(|&d| !finite(d)) {
-            return Err(Error::new(
-                Code::Invalid,
-                format!(
+            return Err(invalid(SITE, format!(
                     "路由分布第 {bad} 项非有限（分数 {:?}）：内积已溢出",
                     scores[bad]
-                ),
-            )
-            .with(SITE));
+                )));
         }
         Ok(renormalized(ranked(dist, self.active)))
     }
@@ -144,18 +141,10 @@ impl<S: Scalar> Moe<S> {
     /// 入口校验：宽度与非有限值。
     fn check_input(&self, x: &[S]) -> Result<()> {
         if x.len() != self.width {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("输入宽度必须是 {}，得到 {}", self.width, x.len()),
-            )
-            .with(SITE));
+            return Err(invalid(SITE, format!("输入宽度必须是 {}，得到 {}", self.width, x.len())));
         }
         if let Some(bad) = x.iter().position(|&v| !finite(v)) {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("输入第 {bad} 项非有限：路由分数会把这些值带进分布"),
-            )
-            .with(SITE));
+            return Err(invalid(SITE, format!("输入第 {bad} 项非有限：路由分数会把这些值带进分布")));
         }
         Ok(())
     }
@@ -200,14 +189,10 @@ fn check_shape<S: Scalar>(
     in_range(active, count)?;
     let expected = product(count, width)?;
     if router.len() != expected {
-        return Err(Error::new(
-            Code::Invalid,
-            format!(
+        return Err(invalid(SITE, format!(
                 "路由矩阵必须是 [专家数 {count}, width {width}] = {expected} 个元素，得到 {}",
                 router.len()
-            ),
-        )
-        .with(SITE));
+            )));
     }
     check_experts(width, experts)
 }
@@ -217,11 +202,7 @@ fn nonzero(width: usize, count: usize) -> Result<()> {
     if width > 0 && count > 0 {
         return Ok(());
     }
-    Err(Error::new(
-        Code::Invalid,
-        format!("宽度与专家数都必须非零，得到 width = {width}、专家 {count} 个"),
-    )
-    .with(SITE))
+    Err(invalid(SITE, format!("宽度与专家数都必须非零，得到 width = {width}、专家 {count} 个")))
 }
 
 /// 激活数在 `1..=count` 之间。
@@ -229,11 +210,7 @@ fn in_range(active: usize, count: usize) -> Result<()> {
     if (1..=count).contains(&active) {
         return Ok(());
     }
-    Err(Error::new(
-        Code::Invalid,
-        format!("激活数必须在 1..={count} 之间，得到 {active}"),
-    )
-    .with(SITE))
+    Err(invalid(SITE, format!("激活数必须在 1..={count} 之间，得到 {active}")))
 }
 
 /// 每个专家都是一张 `[width, width]` 方阵。
@@ -247,7 +224,7 @@ fn check_experts<S: Scalar>(width: usize, experts: &[Vec<S>]) -> Result<()> {
 /// 方阵元素数 `width × width`，溢出即拒绝。
 fn product(a: usize, b: usize) -> Result<usize> {
     a.checked_mul(b)
-        .ok_or_else(|| Error::new(Code::Invalid, format!("方阵尺寸溢出（{a} × {b}）")).with(SITE))
+        .ok_or_else(|| invalid(SITE, format!("方阵尺寸溢出（{a} × {b}）")))
 }
 
 /// 一张方阵的尺寸校验。
@@ -256,14 +233,10 @@ fn check_matrix<S: Scalar>(what: &str, width: usize, matrix: &[S]) -> Result<()>
     if matrix.len() == expected {
         return Ok(());
     }
-    Err(Error::new(
-        Code::Invalid,
-        format!(
+    Err(invalid(SITE, format!(
             "{what} 必须是 [width, width] = {expected} 个元素，得到 {}（width = {width}）",
             matrix.len()
-        ),
-    )
-    .with(SITE))
+        )))
 }
 
 #[cfg(test)]

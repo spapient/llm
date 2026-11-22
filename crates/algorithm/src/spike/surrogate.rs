@@ -44,7 +44,7 @@ impl Surrogate {
     pub(super) fn check_window(&self) -> Result<()> {
         let width = self.width();
         if !finite(width) || width <= 0.0 {
-            return Err(bad(format!("代理梯度的窗宽必须有限为正，得到 {width:?}")));
+            return Err(invalid(SITE, format!("代理梯度的窗宽必须有限为正，得到 {width:?}")));
         }
         Ok(())
     }
@@ -94,7 +94,7 @@ impl Gradients {
         let shape = [self.weights.len(), self.scale.len(), self.current.len()];
         let want = [weights, outputs, outputs];
         if shape != want {
-            return Err(bad(format!("梯度缓冲 {shape:?} 与本层 {want:?} 不符")));
+            return Err(invalid(SITE, format!("梯度缓冲 {shape:?} 与本层 {want:?} 不符")));
         }
         Ok(())
     }

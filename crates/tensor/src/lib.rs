@@ -20,7 +20,8 @@
 //! [`Tensor::broadcast`] 用步长 0 表达广播，[`Tensor::narrow`] / [`Tensor::slice`] 把起点前移
 //! 成子视图，[`Tensor::chunks`] / [`Tensor::split`] 借同一存储分段，[`Tensor::select`] /
 //! [`Tensor::unbind`] / [`Tensor::squeeze`] / [`Tensor::unsqueeze`] / [`Tensor::flatten`] /
-//! [`Tensor::diagonal`] 改秩，[`Tensor::transpose`] / [`Tensor::permute`] 换轴序，[`Tensor::slice_fill`] /
+//! [`Tensor::diagonal`] 改秩，[`Tensor::transpose`] / [`Tensor::permute`] / [`Tensor::movedim`] 换轴序（`movedim`
+//! 只搬一轴、其余轴次序不动，是 `transpose` 表达不出的那种），[`Tensor::slice_fill`] /
 //! [`Tensor::slice_assign`] 往同一个窗口里就地写（自持存储才可写）。改秩的六个要写目标见证
 //! （`t.select::<[usize; 1]>(0, 3)`），因为稳定 Rust 算不出 `D - 1`——Burn 的 `.squeeze::<2>()`
 //! 同理，只是那边只能是定长数组，这里 `Vec<usize>` 也可以。
@@ -116,6 +117,10 @@ mod element {
 #[cfg(test)]
 #[path = "../tests/tensor_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../tests/view_tests.rs"]
+mod view_tests;
 
 #[cfg(test)]
 #[path = "../tests/typed_tests.rs"]

@@ -39,7 +39,8 @@
 //! 本层的循环结构——本层因此可以在没有它的情况下逐字节走完，装上它就是换条件。解码侧与之对称：
 //! [`crate::Backread`] 让每个字节回读自己及更早的表示，可见集正好是本层已经收口的那些。
 
-use diagnostic::{Code, Error, Result};
+use crate::invalid;
+use diagnostic::Result;
 use op::scan::Scalar;
 
 use crate::codec::{ByteDecoder, ByteEncoder};
@@ -125,15 +126,11 @@ impl<S: Scalar> Emitter<S> {
         decoder: ByteDecoder<S>,
     ) -> Result<Self> {
         if encoder.dim() != decoder.width() {
-            return Err(Error::new(
-                Code::Invalid,
-                format!(
+            return Err(invalid(SITE, format!(
                     "表示宽度 {} 与输出头宽度 {} 不等：条件喂不进这一个头",
                     encoder.dim(),
                     decoder.width()
-                ),
-            )
-            .with(SITE));
+                )));
         }
         Ok(Self {
             rule,
@@ -158,15 +155,11 @@ impl<S: Scalar> Emitter<S> {
     /// `Code::Invalid`。失败时旧状态原样保留：先在局部队列里攒完再一次性换上。
     pub fn seed(&mut self, prompt: &[u8], scores: &[S]) -> Result<()> {
         if prompt.len() != scores.len() {
-            return Err(Error::new(
-                Code::Invalid,
-                format!(
+            return Err(invalid(SITE, format!(
                     "预填充 {} 个字节却给了 {} 个分数：分数是逐字节的",
                     prompt.len(),
                     scores.len()
-                ),
-            )
-            .with(SITE));
+                )));
         }
         let replay = replay(&self.rule, &self.encoder, prompt, scores)?;
         self.bytes = replay.bytes;

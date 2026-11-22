@@ -3,6 +3,7 @@
 //! 生产文件只留执行与判据，用例集中于此；N3 行数门限不再受用例增删影响。
 
 use super::*;
+use diagnostic::Code;
 use crate::codec::{BYTES, ORDERS};
 use nn::Table;
 

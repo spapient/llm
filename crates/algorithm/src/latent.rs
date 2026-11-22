@@ -29,7 +29,8 @@
 //! 泛型（`f32` 前向、`f64` 对拍）；点积、softmax、加权累加与块表寻址都复用 `csa` 的那几份，
 //! 不因模块边界重写。
 
-use diagnostic::{Code, Error, Result};
+use crate::invalid;
+use diagnostic::Result;
 use op::scan::Scalar;
 
 use crate::csa::{BlockTable, accumulate, dot, softmax_row};
@@ -88,14 +89,10 @@ impl<S: Scalar> Layer<S> {
             ("o", &self.o),
         ] {
             if matrix.len() != stride {
-                return Err(Error::new(
-                    Code::Invalid,
-                    format!(
+                return Err(invalid(SITE, format!(
                         "投影 {label} 有 {} 个元素，应当是 width × width = {stride}（width = {width}）",
                         matrix.len()
-                    ),
-                )
-                .with(SITE));
+                    )));
             }
         }
         Ok(())
@@ -122,11 +119,7 @@ impl<S: Scalar> Global<S> {
     pub fn new(width: usize, factor: usize, window: usize, layers: Vec<Layer<S>>) -> Result<Self> {
         let stride = stride(width)?;
         if factor.min(window) == 0 {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("块表几何必须非零（factor = {factor}，window = {window}）"),
-            )
-            .with(SITE));
+            return Err(invalid(SITE, format!("块表几何必须非零（factor = {factor}，window = {window}）")));
         }
         for layer in &layers {
             layer.check_geometry(width, stride)?;
@@ -215,14 +208,10 @@ impl<S: Scalar> Backread<S> {
     pub fn new(width: usize, layers: Vec<Layer<S>>) -> Result<Self> {
         let stride = stride(width)?;
         if !(LOCAL_MIN..=LOCAL_MAX).contains(&layers.len()) {
-            return Err(Error::new(
-                Code::Invalid,
-                format!(
+            return Err(invalid(SITE, format!(
                     "逆向 cross-attention 的层数是闭集 {LOCAL_MIN}..={LOCAL_MAX}，给了 {}",
                     layers.len()
-                ),
-            )
-            .with(SITE));
+                )));
         }
         for layer in &layers {
             layer.check_geometry(width, stride)?;
@@ -264,29 +253,21 @@ impl<S: Scalar> Backread<S> {
     fn check_patches(&self, reps: &[S], glyphs: &[S], patches: &Patches) -> Result<()> {
         let visible = rows(reps.len(), self.width)?;
         if visible != patches.len() {
-            return Err(Error::new(
-                Code::Invalid,
-                format!(
+            return Err(invalid(SITE, format!(
                     "表示有 {visible} 行，patch 有 {} 个：一行一个 patch",
                     patches.len()
-                ),
-            )
-            .with(SITE));
+                )));
         }
         let expected = glyph_stride(patches, self.width)?;
         if glyphs.len() == expected {
             return Ok(());
         }
-        Err(Error::new(
-            Code::Invalid,
-            format!(
+        Err(invalid(SITE, format!(
                 "本地向量有 {} 个元素，应当是 bytes × width = {} × {} = {expected}",
                 glyphs.len(),
                 patches.bytes(),
                 self.width
-            ),
-        )
-        .with(SITE))
+            )))
     }
 
     /// 一层：每个字节的查询回读可见 patch，读到的值与自己的状态相加（残差）。
@@ -344,33 +325,30 @@ impl<S: Scalar> Backread<S> {
 /// `width × width`，宽度为零或乘积溢出都是入口错误。
 fn stride(width: usize) -> Result<usize> {
     if width == 0 {
-        return Err(Error::new(Code::Invalid, "列宽不能为零").with(SITE));
+        return Err(invalid(SITE, "列宽不能为零"));
     }
     width
         .checked_mul(width)
-        .ok_or_else(|| Error::new(Code::Invalid, format!("{width} × {width} 溢出")))
+        .ok_or_else(|| invalid(SITE, format!("{width} × {width} 溢出")))
 }
 
 /// 一行一个 patch：列长必须是宽度的整数倍，否则「第几行是哪个 patch」无从谈起。
 fn rows(len: usize, width: usize) -> Result<usize> {
     if width == 0 || !len.is_multiple_of(width) {
-        return Err(Error::new(
-            Code::Invalid,
+        return Err(invalid(
+            SITE,
             format!("表示列有 {len} 个元素，不是宽度 {width} 的整数倍"),
-        )
-        .with(SITE));
+        ));
     }
     Ok(len / width)
 }
 
 /// 逐字节本地向量的元素数（`bytes × width`），溢出即入口错误。
 fn glyph_stride(patches: &Patches, width: usize) -> Result<usize> {
-    patches.bytes().checked_mul(width).ok_or_else(|| {
-        Error::new(
-            Code::Invalid,
-            format!("{} 个字节 × {width} 溢出", patches.bytes()),
-        )
-    })
+    patches
+        .bytes()
+        .checked_mul(width)
+        .ok_or_else(|| invalid(SITE, format!("{} 个字节 × {width} 溢出", patches.bytes())))
 }
 
 /// 行主序方阵乘向量：不引第三个转置视角，`[r, c]` 就是 `r * width + c`。

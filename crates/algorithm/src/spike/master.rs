@@ -22,7 +22,7 @@ impl Master {
     /// # Errors
     ///
     /// 长度与 `inputs·outputs` / `outputs` 不符、权重或尺度非有限、尺度非正、动力学越界，
-    /// 一律 [`Code::Invalid`]。
+    /// 一律 `Code::Invalid`。
     pub fn new(
         weights: Vec<f32>,
         scale: Vec<f32>,
@@ -90,7 +90,7 @@ impl Master {
     /// # Errors
     ///
     /// 梯度布局与本层不符、学习率非有限或非正、更新把某条尺度推成非正（说明步长把量化区间
-    /// 走穿了）——都返回 [`Code::Invalid`]，且失败时一格参数都不写。
+    /// 走穿了）——都返回 `Code::Invalid`，且失败时一格参数都不写。
     pub fn descend(&mut self, grad: &Gradients, lr: f32) -> Result<()> {
         grad.layout(self.weights.len(), self.outputs)?;
         check_learning_rate(lr)?;
@@ -116,7 +116,7 @@ impl Master {
             .iter()
             .find(|value| !finite(**value) || **value <= 0.0)
         {
-            Some(value) => Err(bad(format!(
+            Some(value) => Err(invalid(SITE, format!(
                 "更新后的反量化尺度必须有限为正，得到 {value:?}（学习率 {lr} 把量化区间走穿了）"
             ))),
             None => Ok(scale),
@@ -125,32 +125,8 @@ impl Master {
 
     /// 构造判据：两条长度、权重的有限性、尺度的有限正性、动力学范围。
     pub(super) fn check_master(&self) -> Result<()> {
-        self.check_shape()?;
+        check_lattice(&self.weights, &self.scale, self.inputs, self.outputs)?;
         self.check_values()
-    }
-
-    /// 形状判据：相乘不溢出，两条长度都对。
-    fn check_shape(&self) -> Result<()> {
-        let want = self
-            .inputs
-            .checked_mul(self.outputs)
-            .ok_or_else(|| bad("输入宽度与输出通道相乘溢出"))?;
-        if self.weights.len() != want {
-            return Err(bad(format!(
-                "权重 {} 格与 {inputs}×{outputs} 不符",
-                self.weights.len(),
-                inputs = self.inputs,
-                outputs = self.outputs
-            )));
-        }
-        if self.scale.len() != self.outputs {
-            return Err(bad(format!(
-                "反量化尺度 {} 条与输出通道 {} 不符",
-                self.scale.len(),
-                self.outputs
-            )));
-        }
-        Ok(())
     }
 
     /// 取值判据：权重有限、尺度有限为正、动力学在范围内。

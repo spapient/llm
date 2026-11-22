@@ -31,6 +31,17 @@
 
 #![deny(unsafe_code)]
 
+use diagnostic::{Code, Error};
+
+/// 入口拒绝：几何、取值、顺序任一不合。
+///
+/// 全 crate 只这一处绑定 `Code::Invalid` 与站点标签，各族只负责说清「为什么」——`site` 是
+/// `algorithm::<族>`，让诊断能指回是哪一族拒绝的。在此之前 15 个文件各自写
+/// `Error::new(Code::Invalid, …).with(SITE)`，84 处、每处 3–6 行，其中 2 处还漏掉了站点标签。
+pub(crate) fn invalid(site: &'static str, message: impl Into<String>) -> Error {
+    Error::new(Code::Invalid, message).with(site)
+}
+
 mod attnres;
 mod codec;
 mod csa;
@@ -47,7 +58,8 @@ mod patch;
 mod policy;
 mod spike;
 
-/// 17 族 → 生产层栈的接线台账。
+// 模块说明只在 `wire.rs` 头部的 `//!` 里：外层 `///` 会被并进同一个 doc 块，并按 crate 根
+// 作用域解析其中的内链，于是同模块的 `Blocked` / `ledger` 反而"不在作用域"。
 pub mod wire;
 
 #[doc(inline)]

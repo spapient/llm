@@ -27,7 +27,7 @@
 //! | [`squeeze`](Self::squeeze) / [`unsqueeze`](Self::unsqueeze) | ∓1 | 去掉长为 1 的轴 / 插入长为 1 的轴 |
 //! | [`diagonal`](Self::diagonal) | -1 | 两轴折成一轴（长度取小、步长相加），对角即视图 |
 //! | [`flatten`](Self::flatten) | 变短 | 把行主序紧凑的一段轴压成一个 |
-//! | [`transpose`](Self::transpose) / [`permute`](Self::permute) | 不变 | 换轴序 |
+//! | [`transpose`](Self::transpose) / [`permute`](Self::permute) / [`movedim`](Self::movedim) | 不变 | 换轴序 / 搬一轴（其余轴次序不动） |
 //! | [`slice_fill`](Self::slice_fill) / [`slice_assign`](Self::slice_assign) | 不变 | 就地写同一个窗口（仅自持存储） |
 //! | [`flip`](Self::flip) | 不变 | 沿指定轴反向读出——步长无符号，只有它要搬数据 |
 //!
@@ -185,6 +185,21 @@ where
     #[doc(alias = "swap_dims")]
     pub fn transpose(self, a: usize, b: usize) -> Option<Self> {
         self.reaxis(|rank| rank.swapped(a, b))
+    }
+
+    /// 把一轴搬到另一位置：其余轴的相对次序保持不动（`transpose` 只交换两轴，做不到这一点）。
+    ///
+    /// 与 [`transpose`](Self::transpose) / [`permute`](Self::permute) 同一笔账：只重排轴长与步长，
+    /// 零拷贝、与存储形态无关。`from == to` 是恒等；越界返回 `None`。
+    #[doc(alias = "moveaxis")]
+    pub fn movedim(self, from: usize, to: usize) -> Option<Self> {
+        let rank = self.rank();
+        if from >= rank || to >= rank {
+            return None;
+        }
+        let mut order: Vec<usize> = (0..rank).filter(|&axis| axis != from).collect();
+        order.insert(to, from);
+        self.permute(order)
     }
 
     /// 按 `order` 重排各轴：置换是零拷贝的元数据重排。

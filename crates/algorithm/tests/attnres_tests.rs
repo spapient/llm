@@ -1,4 +1,5 @@
 use super::*;
+use diagnostic::Code;
 
 /// 4 维的层。
 fn layer() -> AttnRes {

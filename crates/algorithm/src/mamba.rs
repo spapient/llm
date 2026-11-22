@@ -22,7 +22,8 @@
 //! 读数用**本 token 更新之后**的状态（与 `kda` 的读法一致），因此单个 token 读得到自己写下的东西；
 //! 跨 token 的因果由调用次序保证，不由本模块合成。
 
-use diagnostic::{Code, Error, Result};
+use crate::invalid;
+use diagnostic::Result;
 use op::scan::{Scalar, exp_trapezoid};
 
 use crate::csa::finite;
@@ -177,7 +178,7 @@ impl<S: Scalar> Mamba<S> {
         if carry.planes.len() == cells && carry.taps.len() == self.width {
             return Ok(());
         }
-        Err(fail(format!(
+        Err(invalid(SITE, format!(
             "状态几何必须是 [{} 个实值分量, {} 个输入]，得到 [{}, {}]",
             cells,
             self.width,
@@ -209,12 +210,12 @@ fn mixed<S: Scalar>(select: &[S], pairs: usize, rank: usize, state: usize) -> S 
 /// 几何三问：任一维为零、秩超过状态维、尺寸相乘溢出。
 fn check_shape(width: usize, pairs: usize, rank: usize) -> Result<()> {
     if [width, pairs, rank].contains(&0) {
-        return Err(fail(format!(
+        return Err(invalid(SITE, format!(
             "宽度、状态维数与秩都必须非零，得到 width = {width}、pairs = {pairs}、rank = {rank}"
         )));
     }
     if rank > pairs {
-        return Err(fail(format!(
+        return Err(invalid(SITE, format!(
             "秩 {rank} 不能超过状态维数 {pairs}：行多于列的选择矩阵必有线性相关"
         )));
     }
@@ -223,7 +224,7 @@ fn check_shape(width: usize, pairs: usize, rank: usize) -> Result<()> {
         .and_then(|n| n.checked_mul(2))
         .is_none()
     {
-        return Err(fail(format!("状态尺寸溢出（{width} × {pairs} × 2）")));
+        return Err(invalid(SITE, format!("状态尺寸溢出（{width} × {pairs} × 2）")));
     }
     Ok(())
 }
@@ -258,10 +259,10 @@ fn check_spectrum<S: Scalar>(decay: &[S], phase: &[S]) -> Result<()> {
 /// 一个状态维的稳定性：非有限值报错在前，正实部报错在后（两者都可能同时成立）。
 fn check_lambda<S: Scalar>(cell: usize, real: S, imaginary: S) -> Result<()> {
     if !finite(real) || !finite(imaginary) {
-        return Err(fail(format!("第 {cell} 个状态维的 λ 非有限")));
+        return Err(invalid(SITE, format!("第 {cell} 个状态维的 λ 非有限")));
     }
     if real > S::ZERO {
-        return Err(fail(format!(
+        return Err(invalid(SITE, format!(
             "第 {cell} 个状态维的 λ 实部必须 ≤ 0（正实部每步放大，几步就到 inf），得到 {real:?}"
         )));
     }
@@ -285,13 +286,13 @@ fn every_finite<S: Scalar>(values: &[S]) -> Result<()> {
     if values.iter().all(|&v| finite(v)) {
         return Ok(());
     }
-    Err(fail("输入、步长或选择量含非有限值".to_string()))
+    Err(invalid(SITE, "输入、步长或选择量含非有限值".to_string()))
 }
 
 /// 步长必须严格为正：零步长读不到这一次输入，负步长把时间倒着走。
 fn check_positive<S: Scalar>(delta: &[S]) -> Result<()> {
     if let Some(channel) = delta.iter().position(|&v| v <= S::ZERO) {
-        return Err(fail(format!(
+        return Err(invalid(SITE, format!(
             "第 {channel} 个通道的步长必须为正，得到 {:?}",
             delta[channel]
         )));
@@ -304,12 +305,7 @@ fn check_len(what: &str, got: usize, want: usize) -> Result<()> {
     if got == want {
         return Ok(());
     }
-    Err(fail(format!("{what}宽度必须是 {want}，得到 {got}")))
-}
-
-/// 统一的失败构造：出处固定、码位固定，报错文案各自不同。
-fn fail(message: String) -> Error {
-    Error::new(Code::Invalid, message).with(SITE)
+    Err(invalid(SITE, format!("{what}宽度必须是 {want}，得到 {got}")))
 }
 
 #[cfg(test)]

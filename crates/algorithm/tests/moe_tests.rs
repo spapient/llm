@@ -1,4 +1,5 @@
 use super::*;
+use diagnostic::Code;
 
 /// 专家 `e` 是 `(e + 1)·Id`：输出可直接按系数手算，路由对不对一眼可见。
 fn experts<S: Scalar>(count: usize, width: usize) -> Vec<Vec<S>> {

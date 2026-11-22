@@ -152,7 +152,7 @@ pub fn hybrid_layer(h: &Hybrid<f32>, seq: usize, idx: usize) -> Result<Vec<Box<d
 }
 
 /// `tower` 的接线：每层压栈的 `hybrid` 各自两段。入参是构造塔时交进去的注意力层——塔内部按
-/// [`Gear`](crate::tower) 交错成私有列表，只吐 [`Kind`](crate::tower) 序，不吐层引用，所以从不
+/// `tower::Gear` 交错成私有列表，只吐 `tower::Kind` 序，不吐层引用，所以从不
 /// 变量更强的入口取。KDA 记忆段不贡献层：算子还没有，所以只是部分接通。
 ///
 /// # Errors

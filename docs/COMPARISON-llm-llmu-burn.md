@@ -204,6 +204,7 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 | `flatten(start, end)`           | ✅ 相邻轴按行主序压成一轴，不紧凑则 `None`                                        | ✅ `flatten`/`reshape`   | 先核轴长之积与步长，再 splice                      |
 | `diagonal::<R2>(a, b)`          | ✅ 两轴折一轴（长度取小、步长相加），对角即视图，零拷贝                                     | ✅ `diagonal`            | O(轴数)：折步长 + 一次 splice；对角元素全在同一条算术级数上 |
 | `broadcast(dims)`               | ✅ 前导新轴 + 单例扩展，步长写 0，零拷贝                                          | ✅ `expand`              | O(轴数)                                  |
+| `movedim(from, to)`             | ✅ 搬一轴、其余轴次序不动（`transpose` 只交换两轴）                              | ✅ `movedim`             | 与 `permute` 同一条路径：造一条置换交给它校验，无新几何        |
 | `flip(axes)`                    | ✅ 沿各轴反向读出，借来视图也能翻                                               | ✅ `flip`                | O(numel)：无符号步长表达不出倒读，这一步必须搬数据         |
 
 **判定：**

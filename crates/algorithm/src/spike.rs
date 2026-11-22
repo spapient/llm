@@ -20,7 +20,8 @@
 //! **本模块只给脉冲臂**：STE 代理梯度训练不在里面（`train` 侧没有脉冲反传），能效（E13）也不
 //! 由它出数——那需要目标设备上的实测卡。这里给的是「怎么算」以及可测的不变量。
 
-use diagnostic::{Code, Error, Result};
+use crate::invalid;
+use diagnostic::Result;
 
 use crate::csa::finite;
 use crate::mix::{Events, Lif};
@@ -39,14 +40,14 @@ fn ternary(spike: i8) -> bool {
 /// 输出侧梯度判据：长度与输出通道一致，取值有限。
 fn check_gradient(d_out: &[f32], outputs: usize) -> Result<()> {
     if d_out.len() != outputs {
-        return Err(bad(format!(
+        return Err(invalid(SITE, format!(
             "输出梯度 {} 格与输出通道 {} 不符",
             d_out.len(),
             outputs
         )));
     }
     match d_out.iter().find(|value| !finite(**value)) {
-        Some(value) => Err(bad(format!("输出梯度必须是有限值，得到 {value:?}"))),
+        Some(value) => Err(invalid(SITE, format!("输出梯度必须是有限值，得到 {value:?}"))),
         None => Ok(()),
     }
 }
@@ -55,14 +56,14 @@ fn check_gradient(d_out: &[f32], outputs: usize) -> Result<()> {
 /// 浮点权重判据：`NaN` 经 `round().clamp()` 会落成某个看着正常的 `i8`，只能在量化之前挡住。
 fn check_weights(weights: &[f32]) -> Result<()> {
     match weights.iter().find(|weight| !finite(**weight)) {
-        Some(weight) => Err(bad(format!("浮点主权重必须是有限值，得到 {weight:?}"))),
+        Some(weight) => Err(invalid(SITE, format!("浮点主权重必须是有限值，得到 {weight:?}"))),
         None => Ok(()),
     }
 }
 
 fn check_learning_rate(lr: f32) -> Result<()> {
     if !finite(lr) || lr <= 0.0 {
-        return Err(bad(format!("学习率必须有限为正，得到 {lr:?}")));
+        return Err(invalid(SITE, format!("学习率必须有限为正，得到 {lr:?}")));
     }
     Ok(())
 }
@@ -73,9 +74,34 @@ fn check_scale(scale: &[f32]) -> Result<()> {
         .iter()
         .find(|value| !finite(**value) || **value <= 0.0)
     {
-        Some(value) => Err(bad(format!("反量化尺度必须是有限正数，得到 {value:?}"))),
+        Some(value) => Err(invalid(SITE, format!("反量化尺度必须是有限正数，得到 {value:?}"))),
         None => Ok(()),
     }
+}
+
+/// 量化格点判据：权重按 `[outputs, inputs]` 行主序占 `inputs × outputs` 格，尺度一条对一行。
+///
+/// 元素类型不参与判断，只数格——浮点主权重（`Master`）与定点权重（`Spiking`）用的是同一套
+/// 量化布局，所以这里是唯一一份长度核对。少一条尺度就有输出通道没有尺度可乘，多一条就是尺度
+/// 覆盖了不存在的通道；两者都只能在这里挡住，因为乘的时候按 `[row]` 取，越界不会报错。
+fn check_lattice<T>(weights: &[T], scale: &[f32], inputs: usize, outputs: usize) -> Result<()> {
+    let want = inputs
+        .checked_mul(outputs)
+        .ok_or_else(|| invalid(SITE, "输入宽度与输出通道相乘溢出"))?;
+    if weights.len() != want {
+        return Err(invalid(SITE, format!(
+            "权重 {} 格与 {inputs}×{outputs} 不符",
+            weights.len()
+        )));
+    }
+    if scale.len() != outputs {
+        return Err(invalid(SITE, format!(
+            "反量化尺度 {} 条与输出通道 {} 不符",
+            scale.len(),
+            outputs
+        )));
+    }
+    Ok(())
 }
 
 /// 动力学判据：门槛有限正、泄漏落在 `[0,1]`、重置有限且低于门槛。
@@ -88,7 +114,7 @@ fn check_dynamics(threshold: f32, leak: f32, reset: f32) -> Result<()> {
 /// 门槛判据：有限且为正（零门槛会让每一步都发放）。
 fn check_threshold(threshold: f32) -> Result<()> {
     if !finite(threshold) || threshold <= 0.0 {
-        return Err(bad(format!("发放门槛必须有限为正，得到 {threshold:?}")));
+        return Err(invalid(SITE, format!("发放门槛必须有限为正，得到 {threshold:?}")));
     }
     Ok(())
 }
@@ -96,7 +122,7 @@ fn check_threshold(threshold: f32) -> Result<()> {
 /// 泄漏判据：落在 `[0,1]`——`0` 是纯 IF，`1` 是每步清零。
 fn check_leak(leak: f32) -> Result<()> {
     if !finite(leak) || !(..=1.0).contains(&leak) || leak < 0.0 {
-        return Err(bad(format!("泄漏比例必须落在 [0,1]，得到 {leak:?}")));
+        return Err(invalid(SITE, format!("泄漏比例必须落在 [0,1]，得到 {leak:?}")));
     }
     Ok(())
 }
@@ -104,16 +130,11 @@ fn check_leak(leak: f32) -> Result<()> {
 /// 重置判据：有限且低于门槛，否则下一拍会立刻再发放一次。
 fn check_reset(threshold: f32, reset: f32) -> Result<()> {
     if !finite(reset) || reset >= threshold {
-        return Err(bad(format!(
+        return Err(invalid(SITE, format!(
             "重置值必须有限且低于门槛 {threshold}，得到 {reset:?}"
         )));
     }
     Ok(())
-}
-
-/// 入口失败。
-fn bad(why: impl Into<String>) -> Error {
-    Error::new(Code::Invalid, why).with(SITE)
 }
 
 mod cell;

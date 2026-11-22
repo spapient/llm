@@ -77,11 +77,7 @@ impl<S: Scalar> Tower<S> {
     /// `hidden` 宽度不是本栈宽度时返回 `Code::Invalid`。
     pub fn seed(&self, hidden: &[S]) -> Result<Vec<Vec<S>>> {
         if hidden.len() != self.width {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("初值宽度是 {}，本栈宽度是 {}", hidden.len(), self.width),
-            )
-            .with(SITE));
+            return Err(invalid(SITE, format!("初值宽度是 {}，本栈宽度是 {}", hidden.len(), self.width)));
         }
         Ok(vec![hidden.to_vec(); self.streams])
     }
@@ -131,22 +127,14 @@ impl<S: Scalar> Tower<S> {
     /// [`accumulate`] 静默只加重叠部分。
     fn check_streams(&self, streams: &[Vec<S>]) -> Result<()> {
         if streams.len() != self.streams {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("流条数是 {}，本栈是 {}", streams.len(), self.streams),
-            )
-            .with(SITE));
+            return Err(invalid(SITE, format!("流条数是 {}，本栈是 {}", streams.len(), self.streams)));
         }
         match streams.iter().position(|row| row.len() != self.width) {
-            Some(bad) => Err(Error::new(
-                Code::Invalid,
-                format!(
+            Some(bad) => Err(invalid(SITE, format!(
                     "第 {bad} 条流宽度是 {}，本栈宽度是 {}",
                     streams[bad].len(),
                     self.width
-                ),
-            )
-            .with(SITE)),
+                ))),
             None => Ok(()),
         }
     }
