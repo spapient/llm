@@ -22,11 +22,11 @@
 //! 分词与打乱（`tokenizer`；打乱只改变游标推进方式）、层定义（`nn`）、参数（`weights`）、
 //! 拓扑与集合通信（`shard`）、检查点字节格式（`snapshot`；编码、版本与偏移校验不在训练循环里再做一遍）。
 //! **依赖**：`nn`、`autograd`、`weights`、`shard`、`tensor`、`op`、`diagnostic`、`snapshot`。
-//! **被依赖**：`cli`、`benchmarks`、`fuzz`、`testkit`。
+//! **被依赖**：`cli`、`benchmarks`、`fuzz`、`serve`、`testkit`。
 //!
-//! 入口只做模块声明与再导出：实现按上面五条轴分布在 13 个子模块（`backprop`、`dist`、
-//! `geometry`、`kernel`、`learner`、`loss`、`optimizer`、`pool`、`rl`、`samples`、
-//! `schedule`、`session`、`store`）里。
+//! 入口只做模块声明与再导出：实现按上面五条轴分布在 14 个子模块里（`backprop`、`dist`、
+//! `geometry`、`kernel`、`learner`、`loss`、`optimizer`、`pool`、`rl`、`rng`、`samples`、
+//! `schedule`、`session`、`store`；`rng` 是并入的计数器型确定性随机，独立于五条轴）。
 //!
 //! # 例子
 //!
@@ -49,6 +49,7 @@ mod loss;
 mod optimizer;
 mod pool;
 mod rl;
+mod rng;
 mod samples;
 mod schedule;
 mod session;
@@ -70,6 +71,7 @@ pub use loss::{
 };
 pub use optimizer::{Adam, Group, Muon, Optimizer, OwnedSlot, Sgd, Slot};
 pub use rl::{Grpo, advantage, clipped_surrogate, entropy, grpo_loss, log_prob, policy_loss};
+pub use rng::{Bernoulli, Normal, Rng, Uniform, block};
 pub use samples::{Batch, Chunks, Dataset};
 pub use schedule::{Anneal, Schedule};
 pub use session::{Checkpoint, ParamSlot, Session, Step, TrainConfig, operators, resume};

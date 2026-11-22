@@ -208,35 +208,43 @@ pub(crate) fn decode_quant(cur: &mut Cursor<'_>, want: usize) -> Result<Vec<f32>
 
 /// 小端字节 ↔ 标量的宽度事实：f32/f64 各一条实现。`to_le_bytes`/`from_le_bytes` 据此泛化，
 /// 不再每个标量类型各写一份「flat_map / as_chunks + from_le_bytes」。
-trait Le: Copy + 'static {
+pub(crate) trait Le: Copy + 'static {
     const WIDTH: usize;
-    fn to_le(self) -> [u8; Self::WIDTH];
-    fn from_le(bytes: [u8; Self::WIDTH]) -> Self;
+    /// 把标量的小端字节追加进缓冲。
+    fn push_le(self, out: &mut Vec<u8>);
+    /// 从恰好 `WIDTH` 字节的切片解出一个标量。
+    fn from_le(chunk: &[u8]) -> Self;
 }
 
 impl Le for f32 {
     const WIDTH: usize = 4;
-    fn to_le(self) -> [u8; 4] {
-        f32::to_le_bytes(self)
+    fn push_le(self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&f32::to_le_bytes(self));
     }
-    fn from_le(bytes: [u8; 4]) -> Self {
-        f32::from_le_bytes(bytes)
+    fn from_le(chunk: &[u8]) -> Self {
+        f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])
     }
 }
 
 impl Le for f64 {
     const WIDTH: usize = 8;
-    fn to_le(self) -> [u8; 8] {
-        f64::to_le_bytes(self)
+    fn push_le(self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&f64::to_le_bytes(self));
     }
-    fn from_le(bytes: [u8; 8]) -> Self {
-        f64::from_le_bytes(bytes)
+    fn from_le(chunk: &[u8]) -> Self {
+        f64::from_le_bytes([
+            chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
+        ])
     }
 }
 
 /// 标量序列 → 小端字节。
 pub(crate) fn to_le_bytes<T: Le>(values: &[T]) -> Vec<u8> {
-    values.iter().flat_map(|&v| v.to_le()).collect()
+    let mut out = Vec::with_capacity(values.len() * T::WIDTH);
+    for &v in values {
+        v.push_le(&mut out);
+    }
+    out
 }
 
 /// 小端字节 → 标量序列：字节数必须恰为 `want` 个标量，截断与余量都显式报错。
@@ -251,9 +259,7 @@ pub(crate) fn from_le_bytes<T: Le>(bytes: &[u8], want: usize) -> Result<Vec<T>> 
     }
     let mut out = Vec::with_capacity(want);
     for chunk in bytes.chunks_exact(T::WIDTH) {
-        let mut raw = [0u8; T::WIDTH];
-        raw.copy_from_slice(chunk);
-        out.push(T::from_le(raw));
+        out.push(T::from_le(chunk));
     }
     Ok(out)
 }

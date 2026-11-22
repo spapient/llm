@@ -21,7 +21,6 @@ pub const COVERED: &[&str] = &[
     "algorithm",
     "fuzz",
     "nn",
-    "rng",
     "shard",
     "testkit",
     "train",

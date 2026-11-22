@@ -17,6 +17,9 @@ use cutile::builtin::Catalogue;
 use diagnostic::{Code, Error};
 use wire::sink::Sink;
 
+// 判据 trait 走 `crate::Target`：本文件被三个 crate 各自 `#[path]` 包含（库自身的测试模块、
+// `tests/parsers.rs`、15 个 harness 入口），三方都在自己的 crate 根提供 `Target` 这个名字；
+// 不能用 `llm_fuzz::Target`——库自身按名字自引用会解不出这条路径。
 use crate::Target;
 
 /// 文本解析器的公共外壳：非 UTF-8 不是"解析失败"，而是"这份输入不适用于文本入口"。
@@ -423,7 +426,7 @@ pub struct DistSampler;
 
 impl Target for DistSampler {
     fn name(&self) -> &str {
-        "rng::dist"
+        "train::rng"
     }
 
     fn run(&self, input: &[u8]) -> Result<(), Error> {
@@ -458,8 +461,8 @@ fn words_of(params: [u8; 16]) -> [u32; 4] {
 
 /// Philox 确定性：同一 seed 起两条流，`u32`/`f32` 逐位一致，且 `next_f32` 落在 [0,1)。
 fn philox_is_deterministic(seed: u64) -> Result<(), Error> {
-    let mut left = rng::Rng::new(seed);
-    let mut right = rng::Rng::new(seed);
+    let mut left = train::Rng::new(seed);
+    let mut right = train::Rng::new(seed);
     for _ in 0..16 {
         if left.next_u32() != right.next_u32() {
             return Err(inconsistent("同 seed 的两条 Philox 流 u32 序列分叉"));
@@ -478,11 +481,11 @@ fn philox_is_deterministic(seed: u64) -> Result<(), Error> {
 /// 均匀分布：参数合法时样本必须落在闭区间内（浮点取整下上界按闭区间判）。
 fn uniform_in_range(seed: u64, words: [u32; 4]) -> Result<(), Error> {
     let (lo, hi) = (f32::from_bits(words[1]), f32::from_bits(words[2]));
-    let Ok(uniform) = rng::Uniform::new(lo, hi) else {
+    let Ok(uniform) = train::Uniform::new(lo, hi) else {
         return Ok(());
     };
     let span_finite = (hi - lo).is_finite();
-    let mut rng = rng::Rng::new(seed);
+    let mut rng = train::Rng::new(seed);
     for _ in 0..64 {
         let sample = uniform.sample(&mut rng);
         if outside(span_finite, sample, lo, hi) {
@@ -500,10 +503,10 @@ fn outside(span_finite: bool, sample: f32, lo: f32, hi: f32) -> bool {
 /// 伯努利端点：p=0 恒 false、p=1 恒 true。
 fn bernoulli_endpoints(seed: u64, words: [u32; 4]) -> Result<(), Error> {
     let p = f32::from_bits(words[3]);
-    let Ok(bernoulli) = rng::Bernoulli::new(p) else {
+    let Ok(bernoulli) = train::Bernoulli::new(p) else {
         return Ok(());
     };
-    let mut rng = rng::Rng::new(seed);
+    let mut rng = train::Rng::new(seed);
     for _ in 0..64 {
         if hits_wrong_endpoint(bernoulli.sample(&mut rng), p) {
             return Err(inconsistent("Bernoulli 端点概率抽到了反例"));
@@ -521,10 +524,10 @@ fn hits_wrong_endpoint(hit: bool, p: f32) -> bool {
 fn normal_is_finite(seed: u64, words: [u32; 4]) -> Result<(), Error> {
     let mean = f32::from_bits(words[0]);
     let std = 1.0 + (words[1] & 0x3FF) as f32 * 0.001;
-    let Ok(normal) = rng::Normal::new(mean, std) else {
+    let Ok(normal) = train::Normal::new(mean, std) else {
         return Ok(());
     };
-    let mut rng = rng::Rng::new(seed);
+    let mut rng = train::Rng::new(seed);
     for _ in 0..64 {
         if !normal.sample(&mut rng).is_finite() {
             return Err(inconsistent("Normal 样本非有限"));

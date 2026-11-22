@@ -39,7 +39,6 @@ tool = { path = "../tools", package = "llm-tools" }
 testkit = { path = "../testkit", package = "llm-testkit" }
 # 语义 oracle：能力协商、确定性随机与形状算术都要对真实实现取不变量。
 cutile = { path = "../cutile" }
-rng = { path = "../rng", package = "llm-rng" }
 # 属性层：Burn 式随机生成 + 收缩，覆盖 fuzzer 难以命中的组合空间。
 proptest = { workspace = true }
 

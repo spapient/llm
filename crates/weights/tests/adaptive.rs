@@ -1,14 +1,11 @@
 //! `adaptive` 模块的单元测试。
 use super::*;
 
-/// 档位表与位宽表必须同长：两处错位会让 `widths` 报出另一档的位宽。
+/// 档位表必须按位宽升序覆盖 `{2,3,4,8}`：降档贪心假定 `LADDER[i]` 的位宽随下标单调递增。
 #[test]
-fn ladder_and_bits_stay_in_step() {
-    assert_eq!(LADDER.len(), BITS.len());
-
-    for (level, &scheme) in LADDER.iter().enumerate() {
-        assert_eq!(scheme.bits, BITS[level]);
-    }
+fn ladder_widths_ascend_and_cover_the_supported_bits() {
+    let widths: Vec<u8> = LADDER.iter().map(|scheme| scheme.bits).collect();
+    assert_eq!(widths, vec![2, 3, 4, 8]);
 }
 
 /// 分组区间：末组按剩余元素收窄，不越界也不丢元素。

@@ -501,13 +501,13 @@ fn cuda_lower(
     match kind {
         // 逐块归一化两族与扫描自己就产出多段源码，不经过下面的单文件包装。
         ChunkRmsnorm { chunk } => {
-            crate::norm::cuda_chunk_rmsnorm(kernel, signature, sample, *chunk)
+            crate::cuda::cuda_chunk_rmsnorm(kernel, signature, sample, *chunk)
         }
         ChunkSoftmax { chunk } => {
-            crate::norm::cuda_chunk_softmax(kernel, signature, sample, *chunk)
+            crate::cuda::cuda_chunk_softmax(kernel, signature, sample, *chunk)
         }
         ChunkScan { chunk, decay } => {
-            crate::norm::cuda_chunk_scan(kernel, signature, sample, *chunk, *decay)
+            crate::cuda::cuda_chunk_scan(kernel, signature, sample, *chunk, *decay)
         }
         QuantizedGemvI4 { threads } => {
             crate::cuda::cuda_quantized_gemv_i4(signature, *threads).map(single_file)
@@ -1269,13 +1269,13 @@ fn cuda_segments(
 ) -> Result<String> {
     match &launch.kind {
         Lower::ChunkRmsnorm { chunk } => {
-            crate::norm::cuda_rmsnorm(kernel, signature, sample, *chunk)
+            crate::cuda::cuda_rmsnorm(kernel, signature, sample, *chunk)
         }
         Lower::ChunkSoftmax { chunk } => {
-            crate::norm::cuda_softmax(kernel, signature, sample, *chunk)
+            crate::cuda::cuda_softmax(kernel, signature, sample, *chunk)
         }
         Lower::ChunkScan { chunk, decay } => {
-            crate::norm::cuda_scan(kernel, signature, sample, *chunk, *decay)
+            crate::cuda::cuda_scan(kernel, signature, sample, *chunk, *decay)
         }
         other => Err(unsupported("CUDA", other)),
     }

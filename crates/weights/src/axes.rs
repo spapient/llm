@@ -164,6 +164,7 @@ pub fn search(w: &[f32], m: usize, n: usize) -> Result<Pick> {
     // 其余四轴只在逐位成立且严格小于基线时才有胜出可能。
     Ok(AXES[1..]
         .iter()
+        .copied()
         .filter_map(|cfg| {
             let payload = cfg.encode(w, m, n)?;
             sound(cfg, &payload, shape, w).then(|| frame(cfg.kind(), m, n, payload))
@@ -263,9 +264,10 @@ fn frame(axis: Axis, m: usize, n: usize, payload: Vec<u8>) -> Pick {
 /// 载荷逐位还原判据：编码后的载荷直接反解并对质，跳过 `frame → head` 的再解析——
 /// 帧头本就是写端刚构造的，读端重解析它并不会让结果更可信，只是多一次分配与越界检查。
 fn sound(cfg: &dyn AxisCfg, payload: &[u8], shape: (usize, usize), w: &[f32]) -> bool {
-    cfg.decode(&mut Cursor::new(payload), shape).is_ok_and(|got| {
-        got.len() == w.len() && got.iter().zip(w).all(|(a, b)| a.to_bits() == b.to_bits())
-    })
+    cfg.decode(&mut Cursor::new(payload), shape)
+        .is_ok_and(|got| {
+            got.len() == w.len() && got.iter().zip(w).all(|(a, b)| a.to_bits() == b.to_bits())
+        })
 }
 
 // —— 秩轴载荷：证书 + 两个低秩因子 + 残差的落盘与读回，读端自证（原 `rank` 平铺进 `axes`）——

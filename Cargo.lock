@@ -629,7 +629,6 @@ dependencies = [
  "libfuzzer-sys",
  "llm-cli",
  "llm-diagnostic",
- "llm-rng",
  "llm-serve",
  "llm-storage",
  "llm-tensor",
@@ -668,25 +667,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "llm-rng"
-version = "0.1.0"
-dependencies = [
- "llm-diagnostic",
- "llm-testkit",
- "proptest",
-]
-
-[[package]]
 name = "llm-serve"
 version = "0.1.0"
 dependencies = [
  "llm-diagnostic",
  "llm-engine",
  "llm-nn",
- "llm-rng",
  "llm-tensor",
  "llm-testkit",
  "llm-tokenizer",
+ "llm-train",
  "llm-weights",
  "llm-wire",
 ]

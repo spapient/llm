@@ -2,7 +2,7 @@
 
 use crate::macros::name_set;
 use diagnostic::{Code, Error, Result};
-use rng::Rng;
+use train::Rng;
 use std::cmp::Ordering;
 
 /// 一步前向：给定序列与批页账视图，给出下一个位置的 logits。

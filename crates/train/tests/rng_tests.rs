@@ -1,19 +1,9 @@
-//! `llm-rng` 的性质测试：计数器型引擎的代数定律与分布的端点定律。
+//! 计数器型引擎与分布闭集的测试：已知答案向量、端点定律、跨 API 定律与统计档。
 //!
-//! 这里只写**从定义推出**的性质，不重述实现：
-//!
-//! * 计数器型引擎的定义决定了 `block` 是 `(key, stream, idx)` 的**纯函数**，
-//!   而 `Rng::next_u32` 只是按同一函数顺序取词——所以两者必须逐词一致。
-//!   这条跨 API 定律是本文件的核心：只测其中一侧时，缓冲推进错位可以长期不被发现。
-//! * `next_f32` 的定义是 `(u >> 8) / 2^24`，所以它的像集是 [0,1) 上的二进网格，
-//!   且**取不到 1**。伯努利的 `p = 1` 必定成功、`p = 0` 必定失败就是这条的直接推论；
-//!   写成理想化的 `u <= p` 会在 `p = 0` 处偶尔为真，这正是要钉住的缺陷。
-//!
-//! 统计档（频率、矩）用固定的大样本量：引擎是确定性的，因此给定输入后结果是常量，
-//! 不存在"这条测试偶尔红"的情形，容差可以按 CLT 收紧而不必留陈旧的宽裕量。
+//! 引擎是确定性的，因此已知答案向量必须逐词命中；性质层只写**从定义推出**的定律，不重述实现。
+//! 统计档（频率、矩）用固定的大样本量：给定输入后结果是常量，不存在"偶尔红"，容差可以按 CLT 收紧。
 
-use crate::dist::{Bernoulli, Normal, Uniform};
-use crate::philox::{Rng, block};
+use super::*;
 use proptest::prelude::*;
 
 /// 统计档的样本量：`sd(mean) = 1/√N ≈ 0.011`，足以让 0.05 的容差落在 4σ 之外。
@@ -21,6 +11,206 @@ const N: usize = 8_192;
 
 /// 2^24：`next_f32` 的网格步长。
 const GRID: f32 = 16_777_216.0;
+
+// ---- 引擎单元测试 ----
+
+#[test]
+fn same_key_stream_idx_produces_the_same_block() {
+    let first = block(0x1234_5678_9ABC_DEF0, 7, 100);
+    let again = block(0x1234_5678_9ABC_DEF0, 7, 100);
+    assert_eq!(first, again, "计数器派生必须是确定性的");
+}
+
+#[test]
+fn different_streams_do_not_share_a_sequence() {
+    let seed = 42u64;
+    let a = block(seed, 0, 0);
+    let b = block(seed, 1, 0);
+    assert_ne!(a, b, "独立流号必须给出不同序列");
+}
+
+#[test]
+fn rng_is_deterministic_and_bounded() {
+    let mut left = Rng::new(1234);
+    let mut right = Rng::new(1234);
+    for _ in 0..17 {
+        assert_eq!(left.next_u32(), right.next_u32(), "同种子序列一致");
+    }
+}
+
+#[test]
+fn next_f32_stays_in_the_half_open_unit_interval() {
+    let mut rng = Rng::new(7);
+    let mut seen_nonzero = false;
+    for _ in 0..64 {
+        let value = rng.next_f32();
+        assert!(
+            (0.0..1.0).contains(&value),
+            "均匀量必须落在 [0,1)，得到 {value}"
+        );
+        seen_nonzero |= value > 0.0;
+    }
+    assert!(seen_nonzero, "高 24 位映射不能塌缩成全零");
+}
+
+/// 已知答案向量：与独立参考实现逐词核对的 Philox4x32-10 输出。
+///
+/// 覆盖零种子、非零种子、跨 32 位边界的种子、同一流内连续三个计数器；任何轮函数、
+/// 乘法高低位或轮密钥递推写偏都会在这里被抓住。
+#[test]
+fn known_answer_vectors_match_the_reference_philox() {
+    let cases = [
+        (
+            0u64,
+            0u32,
+            0u64,
+            [0x01BF_6E88, 0x0113_DC1E, 0x0FF2_CC34, 0x6B72_E23A],
+        ),
+        (
+            123_456,
+            7,
+            100,
+            [0xB99B_391E, 0x068B_CDA9, 0x83BC_9EFA, 0x3292_3104],
+        ),
+        (
+            0x1234_5678_9ABC_DEF0,
+            7,
+            100,
+            [0xD45C_6E74, 0x6860_CD9F, 0xD917_D187, 0x9734_C29E],
+        ),
+        (
+            9,
+            3,
+            0,
+            [0x8AA2_DF03, 0x713D_E75A, 0x704C_584E, 0x581A_FDAC],
+        ),
+        (
+            9,
+            3,
+            1,
+            [0xC2E8_B289, 0x77BF_5997, 0x45C2_B652, 0x9850_3DDF],
+        ),
+        (
+            9,
+            3,
+            2,
+            [0xFDBC_B116, 0x27FB_AB4E, 0xE85F_C832, 0xBAC6_B546],
+        ),
+    ];
+    for (key, stream, idx, expected) in cases {
+        assert_eq!(
+            block(key, stream, idx),
+            expected,
+            "key {key:#x} stream {stream} idx {idx}"
+        );
+    }
+}
+
+#[test]
+fn sequential_blocks_match_direct_counter_derivation() {
+    let mut rng = Rng::with_stream(9, 3);
+    for idx in 0..3u64 {
+        let direct = block(9, 3, idx);
+        let buffered = std::array::from_fn(|_| rng.next_u32());
+        assert_eq!(buffered, direct, "顺序缓冲必须与直接派生逐词一致");
+    }
+}
+
+// ---- 新增词位与批量填充 ----
+
+#[test]
+fn next_u64_packs_two_consecutive_u32s() {
+    let mut rng = Rng::new(7);
+    let hi = rng.next_u32();
+    let lo = rng.next_u32();
+    let mut again = Rng::new(7);
+    assert_eq!(again.next_u64(), (u64::from(hi) << 32) | u64::from(lo));
+}
+
+#[test]
+fn next_f64_stays_in_the_half_open_unit_interval() {
+    let mut rng = Rng::new(11);
+    let mut seen_nonzero = false;
+    for _ in 0..64 {
+        let value = rng.next_f64();
+        assert!((0.0..1.0).contains(&value), "f64 均匀量出界：{value}");
+        seen_nonzero |= value > 0.0;
+    }
+    assert!(seen_nonzero, "53 位映射不能塌缩成全零");
+}
+
+#[test]
+fn fill_matches_the_sequential_stream_at_every_length() {
+    for seed in [0u64, 1, 9, 0xDEAD_BEEF] {
+        for len in 0..=17usize {
+            let mut streamed = Rng::new(seed);
+            let expected: Vec<u32> = (0..len).map(|_| streamed.next_u32()).collect();
+            let mut filled = Rng::new(seed);
+            let mut actual = vec![0; len];
+            filled.fill(&mut actual);
+            assert_eq!(actual, expected, "seed {seed} len {len} 批量填充与顺序流分叉");
+        }
+    }
+}
+
+// ---- 分布单元测试 ----
+
+#[test]
+fn uniform_respects_endpoints_and_is_reproducible() {
+    let distribution = Uniform::new(-3.0, 5.0).expect("区间合法");
+    let mut left = Rng::new(2024);
+    let mut right = Rng::new(2024);
+    for _ in 0..16 {
+        let value = distribution.sample(&mut left);
+        assert!((-3.0..5.0).contains(&value), "落在 [lo,hi)");
+        assert_eq!(distribution.sample(&mut right), value, "同种子可复现");
+    }
+}
+
+#[test]
+fn uniform_rejects_empty_or_non_finite_range() {
+    assert!(Uniform::new(1.0, 1.0).is_err());
+    assert!(Uniform::new(1.0, f32::NAN).is_err());
+    assert!(Uniform::new(f32::INFINITY, 2.0).is_err());
+    assert!(Uniform::new(2.0, 1.0).is_err());
+}
+
+#[test]
+fn bernoulli_probability_is_bounded() {
+    assert!(Bernoulli::new(0.0).is_ok());
+    assert!(Bernoulli::new(1.0).is_ok());
+    assert!(Bernoulli::new(-0.1).is_err());
+    assert!(Bernoulli::new(1.2).is_err());
+    assert!(Bernoulli::new(f32::NAN).is_err());
+
+    let always = Bernoulli::new(1.0).expect("p=1 合法");
+    let never = Bernoulli::new(0.0).expect("p=0 合法");
+    let mut rng = Rng::new(1);
+    assert!(always.sample(&mut rng));
+    assert!(!never.sample(&mut rng));
+}
+
+#[test]
+fn normal_samples_are_finite_and_reproducible() {
+    let distribution = Normal::new(1.0, 0.25).expect("参数合法");
+    let mut left = Rng::new(11);
+    let mut right = Rng::new(11);
+    for _ in 0..16 {
+        let value = distribution.sample(&mut left);
+        assert!(value.is_finite(), "正态样本必须有限");
+        assert_eq!(distribution.sample(&mut right), value, "同种子可复现");
+    }
+}
+
+#[test]
+fn normal_rejects_non_positive_or_non_finite_std() {
+    assert!(Normal::new(0.0, 0.0).is_err());
+    assert!(Normal::new(0.0, -1.0).is_err());
+    assert!(Normal::new(f32::NAN, 1.0).is_err());
+    assert!(Normal::new(0.0, f32::INFINITY).is_err());
+}
+
+// ---- 性质测试 ----
 
 proptest! {
     #![proptest_config(testkit::prop::config())]
