@@ -107,14 +107,36 @@ impl fmt::Display for MatchRule {
         match self {
             Self::Exact(text) => f.write_str(text),
             Self::Range { lo, hi } => write!(f, "{lo}..{hi}"),
-            Self::Contains(tokens) => write!(f, "contains: {}", tokens.join("|")),
-            Self::Set { base, members } => write!(f, "{base}{{{}}}", members.join(",")),
-            Self::OneOf(branches) => {
-                let parts: Vec<String> = branches.iter().map(ToString::to_string).collect();
-                f.write_str(&parts.join("|"))
+            Self::Contains(tokens) => {
+                f.write_str("contains: ")?;
+                joined(f, "|", tokens)
             }
+            Self::Set { base, members } => {
+                write!(f, "{base}{{")?;
+                joined(f, ",", members)?;
+                f.write_str("}")
+            }
+            Self::OneOf(branches) => joined(f, "|", branches),
         }
     }
+}
+
+/// 用分隔符把一串条目写进格式化器：不先收集 `Vec<String>`，也不为每个成员造 `String`。
+fn joined<T: fmt::Display>(
+    f: &mut fmt::Formatter<'_>,
+    sep: &str,
+    items: &[T],
+) -> fmt::Result {
+    let mut rest = items.iter();
+    let Some(first) = rest.next() else {
+        return Ok(());
+    };
+    write!(f, "{first}")?;
+    for item in rest {
+        f.write_str(sep)?;
+        write!(f, "{item}")?;
+    }
+    Ok(())
 }
 pub(crate) fn parse_version(text: &str) -> Option<Vec<u32>> {
     let parts = text.trim().split('.');
@@ -147,9 +169,13 @@ impl Detected {
 }
 impl fmt::Display for Detected {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let pair = |(key, value): (&String, &String)| format!("{key}={value}");
-        let parts: Vec<String> = self.attrs.iter().map(pair).collect();
-        f.write_str(&parts.join(" "))
+        for (at, (key, value)) in self.attrs.iter().enumerate() {
+            if at > 0 {
+                f.write_str(" ")?;
+            }
+            write!(f, "{key}={value}")?;
+        }
+        Ok(())
     }
 }
 /// 存储容量与 bank 数。
