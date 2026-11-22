@@ -1,7 +1,10 @@
 //! 职责：Metal 执行器与内核的真机测试装配。
 //!
-//! 子模块按被测面切开：契约冒烟 / GEMM 基准 / 注意力 / 张量核路径。
+//! 子模块按被测面切开：契约冒烟 / 正确性判据 / GEMM 基准 / 注意力 / 张量核路径。
 //! 本文件只做装配与共享夹具，不含任何断言。
+//!
+//! `correctness` 与其余三份基准用例互补：基准出吞吐、对拍用可精确表示的夹具输入；
+//! `correctness` 只出判据，输入非退化且判据本身可证（详见该文件头部说明）。
 
 use super::harness::*;
 use super::*;
@@ -11,6 +14,7 @@ use llm_optim::execution::{Mode, program};
 
 mod attention;
 mod contract;
+mod correctness;
 mod gemm;
 mod tensor;
 

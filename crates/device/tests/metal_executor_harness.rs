@@ -370,7 +370,9 @@ pub(super) fn half_precision(value: f32) -> f32 {
     if dropped > 0x1000 || (dropped == 0x1000 && kept & 1 == 1) {
         kept += 1;
     }
-    f32::from_bits(sign | exponent | (kept << 13))
+    // 进位要**加**进指数域而不是或进去：`kept` 进位到 1024 时 `kept << 13` 落在指数域最低位，
+    // 指数为奇数（如 [0.25,0.5) 的 125）时该位已置 1，或运算会把它吞掉——`0.4999` 会算成 `0.25`。
+    f32::from_bits(sign + exponent + (kept << 13))
 }
 
 /// 张量核 `relaxed` 口径的对拍阈值：输入只有 10 位尾数、硬件还可能低精度累加，故放到 5e-3；

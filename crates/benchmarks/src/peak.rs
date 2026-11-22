@@ -119,7 +119,13 @@ fn sme_peak(c: &mut Criterion) {
 /// 两条指令路径的吞吐上限不同，拿 f32 峰值当分母是口径混用（F2/F18）。
 /// 与 SME 不同，NEON 是每核一份的，所以整机分母**实测**而不是「单核 × 核数」推出来。
 fn sdot_peak(c: &mut Criterion) {
-    ported_ops(c, "i8_peak", "", fast::port_sdot, 2 * fast::SDOT_MAC_PER_ROUND);
+    ported_ops(
+        c,
+        "i8_peak",
+        "",
+        fast::port_sdot,
+        2 * fast::SDOT_MAC_PER_ROUND,
+    );
 }
 
 /// 把端口探针跑成与 [`machine_peak`] 同口径的曲线：`Barrier` 齐步、只计计算段、取各线程最大值
