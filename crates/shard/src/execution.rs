@@ -572,132 +572,116 @@ fn pop_one(sources: &mut Vec<String>, role: &str) -> diagnostic::Result<String> 
         .ok_or_else(|| Error::new(Code::Internal, format!("{role} lowering 少一段设备源")))
 }
 
-/// 内核形态：目标 lowering 的来源 + 可选的形状前置条件。
+/// 内核形态：目标 lowering 的来源 + 是否严格要求该形态。
 #[derive(Debug, Clone)]
 pub struct Mode {
-    plan: Plan,
-    gate: Option<Gate>,
+    target: Target,
     strict: bool,
 }
 
 /// 目标 lowering 的来源。
 #[derive(Debug, Clone)]
-enum Plan {
+enum Target {
     /// 按声明派生：`multi` 取多段族（分块归约/归一化/扫描），否则单源（分块族退串行）。
-    Declared {
-        /// 是否保留多段形态。
-        multi: bool,
-    },
+    Declared { multi: bool },
     /// 显式形态：几何由调用方给。
     Exact(Lower),
     /// 循环注入：`[grid]` 必须声明，网格各维随 [`Stages::dims`] 回给主机。
     Grid,
 }
 
-/// 形状前置条件：`(流水线, m, n, 目标 lowering) -> 是否成立`。
-type Gate = fn(&Run<'_>, &Sample, &Lower) -> bool;
-
 impl Mode {
     /// 单源、按声明：分块族退串行（一源一内核）。
     pub fn declared() -> Self {
-        Self::plain(Plan::Declared { multi: false })
+        Self::declared_with(false)
     }
 
     /// 多段、按声明：分块归约/归一化/扫描按 `[chunk]` 与 `[needs]` 切段。
     pub fn segmented() -> Self {
-        Self::plain(Plan::Declared { multi: true })
+        Self::declared_with(true)
     }
 
     /// 逐点网格。非纯逐点形直接报错，不回落（逐点网格覆盖不了别的正文）。
     pub fn pointwise() -> Self {
-        Self::gated(Lower::Pointwise, pointwise_ready, true)
+        Self::exact(Lower::Pointwise, true)
     }
 
     /// 循环注入网格：`[grid]` 必须声明，网格各维随 [`Stages::dims`] 回给主机。
     pub fn loop_injected() -> Self {
         Self {
-            plan: Plan::Grid,
-            gate: None,
+            target: Target::Grid,
             strict: false,
         }
     }
 
     /// WMMA 张量核。
     pub fn wmma() -> Self {
-        Self::plain(Plan::Exact(Lower::WmmaGemm))
+        Self::exact(Lower::WmmaGemm, false)
     }
 
     /// 分块 GEMM：形状不整除时回落 [`Self::declared`]。
     pub fn tiled(tile: usize, per_thread: usize) -> Self {
-        Self::gated(Lower::TiledGemm { tile, per_thread }, tile_ready, false)
+        Self::exact(Lower::TiledGemm { tile, per_thread }, false)
     }
 
     /// 分块 attention：一个 threadgroup 负责一个查询行。
     pub fn tiled_attention(threads: usize) -> Self {
-        Self::gated(Lower::TiledAttention { threads }, attention_ready, false)
+        Self::exact(Lower::TiledAttention { threads }, false)
     }
 
     /// simdgroup 分片 GEMM。
     pub fn simdgroup(row_frags: usize, col_frags: usize) -> Self {
-        Self::gated(
+        Self::exact(
             Lower::SimdGroupGemm {
                 row_frags,
                 col_frags,
             },
-            simdgroup_ready,
             false,
         )
     }
 
     /// 张量核 GEMM。
     pub fn tensor(geometry: TensorGeometry) -> Self {
-        Self::gated(Lower::TensorGemm { geometry }, tensor_ready, false)
+        Self::exact(Lower::TensorGemm { geometry }, false)
     }
 
     /// int8 分块 GEMM（`i8` 输入、`i32` 累加、`f32` 输出）。
     pub fn int8(tile: usize) -> Self {
-        Self::gated(Lower::Int8Gemm { tile }, int8_ready, false)
+        Self::exact(Lower::Int8Gemm { tile }, false)
     }
 
     /// flash attention：K/V 按块流式扫描，行内不保留完整分数向量。
     pub fn flash(threads: usize, block: usize) -> Self {
-        Self::gated(Lower::FlashAttention { threads, block }, flash_ready, false)
+        Self::exact(Lower::FlashAttention { threads, block }, false)
     }
 
-    /// 无前置条件的形态。
-    fn plain(plan: Plan) -> Self {
+    fn declared_with(multi: bool) -> Self {
         Self {
-            plan,
-            gate: None,
+            target: Target::Declared { multi },
             strict: false,
         }
     }
 
-    /// 带前置条件的显式形态。
-    fn gated(lower: Lower, gate: Gate, strict: bool) -> Self {
+    fn exact(lower: Lower, strict: bool) -> Self {
         Self {
-            plan: Plan::Exact(lower),
-            gate: Some(gate),
+            target: Target::Exact(lower),
             strict,
         }
     }
 
     /// 形态 → 目标 lowering。声明形态现场派生，显式形态原样给出。
     fn lower(&self, op: &OpDecl, op_name: &str) -> diagnostic::Result<Lower> {
-        match &self.plan {
-            Plan::Declared { multi: false } => single_kind(op),
-            Plan::Declared { multi: true } => kind(op),
-            Plan::Exact(lower) => Ok(lower.clone()),
-            Plan::Grid => Ok(Lower::Loop(grid_of(op, op_name)?.clone())),
+        match &self.target {
+            Target::Declared { multi: false } => single_kind(op),
+            Target::Declared { multi: true } => kind(op),
+            Target::Exact(lower) => Ok(lower.clone()),
+            Target::Grid => Ok(Lower::Loop(grid_of(op, op_name)?.clone())),
         }
     }
 
     /// 前置条件不成立时回落声明形态；`strict` 形态直接报错。
     fn pick(&self, lower: Lower, run: &Run<'_>, sample: &Sample) -> diagnostic::Result<Lower> {
-        let Some(gate) = self.gate else {
-            return Ok(lower);
-        };
-        if gate(run, sample, &lower) {
+        if ready(&lower, run, sample) {
             return Ok(lower);
         }
         if self.strict {
@@ -708,7 +692,7 @@ impl Mode {
 
     /// 循环注入的网格各维：其它形态不给（派发几何由 [`super::launch`] 现算）。
     fn grid_dims(&self, lower: &Lower, sample: &Sample) -> diagnostic::Result<Option<Vec<usize>>> {
-        let Plan::Grid = self.plan else {
+        let Target::Grid = self.target else {
             return Ok(None);
         };
         let Lower::Loop(grid) = lower else {
@@ -823,17 +807,45 @@ fn grid_of<'a>(op: &'a OpDecl, op_name: &str) -> diagnostic::Result<&'a Grid> {
 // ── 形态前置条件 ────────────────────────────────────────────────────────
 // 判据逐条搬自原各入口；契约本身写在 `Lower` 各变体的文档里，这里只说成立与否。
 
-/// 纯逐点：正文不吃跨元素依赖，一元素一线程成立。
-fn pointwise_ready(run: &Run<'_>, _sample: &Sample, _lower: &Lower) -> bool {
-    run.op.pointwise()
-}
-
-/// 分块 GEMM：可分块、块几何合法、`M/N/K` 都能被 `tile` 整除。
-fn tile_ready(run: &Run<'_>, sample: &Sample, lower: &Lower) -> bool {
-    let &Lower::TiledGemm { tile, per_thread } = lower else {
-        return false;
-    };
-    is_gemm(run, tile) && valid_block(tile, per_thread) && shapes(sample, tile)
+/// 一个 lowering 对给定流水线/样本是否成立。无前置的形态（声明派生、循环注入、WMMA 等）恒成立。
+fn ready(lower: &Lower, run: &Run<'_>, sample: &Sample) -> bool {
+    match lower {
+        Lower::Pointwise => run.op.pointwise(),
+        Lower::TiledGemm { tile, per_thread } => {
+            is_gemm(run, *tile) && valid_block(*tile, *per_thread) && shapes(sample, *tile)
+        }
+        Lower::TiledAttention { threads } => {
+            tileable_threads(*threads)
+                && run.op.skeleton == Skeleton::Elementwise
+                && attention_shape(run, sample)
+        }
+        Lower::SimdGroupGemm {
+            row_frags,
+            col_frags,
+        } => {
+            fragment_span(*row_frags, *col_frags)
+                && fragment_shape(run, sample, *row_frags, *col_frags)
+        }
+        Lower::TensorGemm { geometry } => {
+            run.op.skeleton == Skeleton::Gemm
+                && sample.n > 0
+                && divides(sample.m, geometry.tile_m)
+                && geometry_ready(*geometry)
+        }
+        Lower::FlashAttention { threads, block } => {
+            tileable_threads(*threads)
+                && batching_block(*threads, *block)
+                && run.op.skeleton == Skeleton::Elementwise
+                && attention_shape(run, sample)
+        }
+        Lower::Int8Gemm { tile } => {
+            (2..=32).contains(tile)
+                && run.op.skeleton == Skeleton::Gemm
+                && int8_signature(run)
+                && shapes(sample, *tile)
+        }
+        _ => true,
+    }
 }
 
 /// 算子是否是可分块 GEMM，且块边长合法（`tile == 0` 恒假，避免除零）。
@@ -861,18 +873,6 @@ fn divides(value: usize, tile: usize) -> bool {
     tile != 0 && value.is_multiple_of(tile)
 }
 
-/// simdgroup GEMM：片段数在 `1..=4`、`K % 8 == 0`、`M/N` 分别被 `8·片段数` 整除。
-fn simdgroup_ready(run: &Run<'_>, sample: &Sample, lower: &Lower) -> bool {
-    let &Lower::SimdGroupGemm {
-        row_frags,
-        col_frags,
-    } = lower
-    else {
-        return false;
-    };
-    fragment_span(row_frags, col_frags) && fragment_shape(run, sample, row_frags, col_frags)
-}
-
 /// 每个 simdgroup 沿 M/N 的输出片段数限定在 `1..=4`（`8×8` 片段，最多 `32×32` 输出）。
 fn fragment_span(row_frags: usize, col_frags: usize) -> bool {
     (1..=4).contains(&row_frags) && (1..=4).contains(&col_frags)
@@ -890,31 +890,9 @@ fn fragment_shape(run: &Run<'_>, sample: &Sample, row_frags: usize, col_frags: u
         && divides(sample.n, 8 * col_frags)
 }
 
-/// 张量核 GEMM：Gemm 骨架、几何参数成闭集、`M` 被 `tile_m` 整除。
-fn tensor_ready(run: &Run<'_>, sample: &Sample, lower: &Lower) -> bool {
-    let &Lower::TensorGemm { geometry } = lower else {
-        return false;
-    };
-    run.op.skeleton == Skeleton::Gemm
-        && sample.n > 0
-        && divides(sample.m, geometry.tile_m)
-        && geometry_ready(geometry)
-}
-
 /// 张量核几何的三档前置都满足：跨度档位、规约块/simdgroup、线程组内存占用。
 fn geometry_ready(geometry: TensorGeometry) -> bool {
     geometry.spans_ok() && geometry.block_ok() && geometry.fits_threadgroup_memory()
-}
-
-/// int8 GEMM：块边长合法、Gemm 骨架、int8 签名、`M/N/K` 都能被 `tile` 整除。
-fn int8_ready(run: &Run<'_>, sample: &Sample, lower: &Lower) -> bool {
-    let &Lower::Int8Gemm { tile } = lower else {
-        return false;
-    };
-    (2..=32).contains(&tile)
-        && run.op.skeleton == Skeleton::Gemm
-        && int8_signature(run)
-        && shapes(sample, tile)
 }
 
 /// 签名是不是 int8 GEMM：`(u8 *a, u8 *b, float *y, int M, int N, int K)`。
@@ -927,30 +905,9 @@ fn int8_signature(run: &Run<'_>) -> bool {
             && [m, n, k].iter().all(|param| param.ctype == CType::Int))
 }
 
-/// flash attention：线程/块几何合法、elementwise 骨架、注意力签名与形状。
-fn flash_ready(run: &Run<'_>, sample: &Sample, lower: &Lower) -> bool {
-    let &Lower::FlashAttention { threads, block } = lower else {
-        return false;
-    };
-    tileable_threads(threads)
-        && batching_block(threads, block)
-        && run.op.skeleton == Skeleton::Elementwise
-        && attention_shape(run, sample)
-}
-
 /// 键块大小：`[32, 1024]` 内且是线程数的整数倍，保证每轮线程负载均匀。
 fn batching_block(threads: usize, block: usize) -> bool {
     (32..=1024).contains(&block) && block.is_multiple_of(threads)
-}
-
-/// 分块 attention 的前置条件：线程数合法、elementwise 骨架、4 缓冲 + 2 标量的注意力签名。
-fn attention_ready(run: &Run<'_>, sample: &Sample, lower: &Lower) -> bool {
-    let &Lower::TiledAttention { threads } = lower else {
-        return false;
-    };
-    tileable_threads(threads)
-        && run.op.skeleton == Skeleton::Elementwise
-        && attention_shape(run, sample)
 }
 
 /// 线程数必须是 [32, 1024] 内的 2 的幂（树归约与线程组上限）。
