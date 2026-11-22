@@ -221,7 +221,7 @@ diagnostic → （叶：错误类型 + `toml`，被大量成员消费；它自�
 「限定取值范围的词汇表」（原语、精度、存储层、属性键、证据等级、输出语言、骨架）必须回答同一组问题：
 **全量是什么、跨层名字是什么、位集下标是什么**。写三遍就是三份会漂移的事实源，因此由一个契约收口：
 
-- `impl Closed for X { const ALL; fn as_str; fn index; }` 是**唯一**声明处，`parse` 由 `ALL` + `as_str` 派生；
+- `impl Closed for X { const ALL; fn as_str; fn idx; }` 是**唯一**声明处，`parse` 由 `ALL` + `as_str` 派生；
 - 已实现 `dtype::Format` 的精度类型由一条 blanket 接上，`Display` / `FromStr` / 可选 `serde` 名字
   都取自同一张行表，不存在"序列化一套、显示一套"；
 - `prof::inherent_names!(X)` 生成同名固有转发，调用点写法不变、逻辑仍只有一份；
