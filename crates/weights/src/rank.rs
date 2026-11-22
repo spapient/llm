@@ -7,7 +7,7 @@ use crate::ledger;
 use wire::leb::Cursor;
 
 use crate::axes::area;
-use crate::axes::codec::{bytes_to_f32, f32_bytes, pack_bytes, payload_cap, unpack_marked, word};
+use crate::codec::{bytes_to_f32, f32_bytes, pack_bytes, payload_cap, unpack_marked, word};
 
 /// 低秩载荷：秩由证书给出，证书不通过就不压，证书本身随载荷落盘。
 pub(crate) fn rank_payload(w: &[f32], m: usize, n: usize) -> Option<Vec<u8>> {

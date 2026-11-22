@@ -1,23 +1,20 @@
 //! 五轴自适应选码（配置化）：`raw / dict / sparse / quant / rank` 五个候选，每个候选只有在解码后
 //! 与原始位模式逐元素一致（`to_bits` 相等）时才被采纳，最终在通过验证的候选里取字节最小者。
 
-pub(crate) mod codec;
-pub(crate) mod rank;
-
 use crate::bad;
 use diagnostic::{Error, Result};
 
 use crate::ledger;
 use wire::leb::Cursor;
 
-use crate::axes::codec::{
+use crate::codec::{
     bytes_to_f32, decode_dict, decode_quant, decode_sparse, dict_payload, f32_bytes, pack_bytes,
     payload_cap, quant_payload, sparse_payload, unpack_bytes,
 };
-use crate::axes::rank::{decode_rank, rank_head, rank_payload};
+use crate::rank::{decode_rank, rank_head, rank_payload};
 
 #[cfg(test)]
-pub(crate) use crate::axes::rank::{f64_bytes, framed};
+pub(crate) use crate::rank::{f64_bytes, framed};
 
 /// artifact 魔数（v4：`rank` 载荷改存低秩项的两个因子而非整张 `L`，v1–v3 不再可读）。
 const MAGIC: [u8; 4] = *b"AX04";

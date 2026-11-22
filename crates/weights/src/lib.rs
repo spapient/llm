@@ -48,6 +48,16 @@ mod seg;
 mod stored;
 mod writer;
 
+// —— 平铺的子模块：原各父模块的单文件子目录，拍平到顶层 ——
+pub(crate) mod codec;
+pub(crate) mod decode;
+pub(crate) mod header;
+pub(crate) mod note;
+pub(crate) mod plan;
+pub(crate) mod rank;
+pub(crate) mod reason;
+pub(crate) mod text;
+
 // —— 量化方案：仿射方案与外部量化条目 ——
 pub mod quant;
 
