@@ -86,6 +86,81 @@ impl Contract for Attention {
     }
 }
 
+// 解码期注意力：`q_rows` 行 query 各扫一遍 KV 历史，历史长度不进形状。
+//
+// 与 [`Attention`] 的差别在于谁承担 KV 长度：prefill 的 `seq` 既是行数又是因果长度，
+// 而解码期每步只来少量新行（`q_rows` 常为 1），历史长度 `h` 是运行期状态、不是层的形状。
+// 因此本层的 `bounds` 走算子语义表里固定的声明档 `HIST = 4`，是**松下界**（下界允许偏松，
+// 但只要装配侧的 KV 缓存长于声明档，真实代价就更高，方向不会反）。
+
+/// 解码期注意力层：输出 `[q_rows, head_dim]`，历史长度由算子语义表的声明档给出。
+#[crate::spec(name = $name, out = [$q_rows, $head_dim], ops = [$op])]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodeAttention {
+    q_rows: usize,
+    head_dim: usize,
+    algo: AttentionAlgo,
+}
+
+impl DecodeAttention {
+    /// 朴素 decode 算子名。
+    pub const NAIVE: &str = "decode_attention_f32";
+    /// Flash decode 算子名。
+    pub const FLASH: &str = "decode_flash_attention_f32";
+
+    /// 由层名、query 行数、头宽与算法构造。
+    ///
+    /// # Errors
+    ///
+    /// `q_rows` / `head_dim` 任一为零（[`Code::Invalid`]）；算子未注册或没有语义表
+    /// （[`ContractSpec::new`] 上报）。
+    pub fn new(
+        name: impl Into<String>,
+        q_rows: usize,
+        head_dim: usize,
+        algo: AttentionAlgo,
+    ) -> Result<Self> {
+        crate::nonzero_all(
+            "nn::DecodeAttention::new",
+            "解码注意力层 ",
+            &[("q_rows", q_rows), ("head_dim", head_dim)],
+        )?;
+        Ok(Self {
+            spec: __layer_spec_DecodeAttention!(name, q_rows, head_dim, Self::operator(algo))?,
+            q_rows,
+            head_dim,
+            algo,
+        })
+    }
+
+    /// 算法对应的 decode 算子名。
+    fn operator(algo: AttentionAlgo) -> &'static str {
+        match algo {
+            AttentionAlgo::Naive => Self::NAIVE,
+            AttentionAlgo::Flash => Self::FLASH,
+        }
+    }
+
+    crate::accessors! {
+        /// 本次解码的 query 行数（轴 `q`），通常为 1。
+        q_rows -> usize = q_rows,
+        /// 头宽（轴 `d`）。
+        head_dim -> usize = head_dim,
+        /// 选用的算法。
+        algo -> AttentionAlgo = algo,
+    }
+}
+
+impl Contract for DecodeAttention {
+    spec_accessors!();
+
+    fn bounds(&self) -> BoundsResult {
+        // 历史轴 `h` 由算子的 `project_shape` 固定为声明档 `HIST`，层给不出真实 KV 长度
+        // ⇒ 这是松下界；`q_rows` / `head_dim` 是层真正知道的两轴。
+        Bounds::of_ctx(Self::operator(self.algo), self.q_rows, self.head_dim).map(Some)
+    }
+}
+
 // 注意力组合块：Q/K/V 三个投影 + 注意力 + 输出投影，内聚成一个 [`Contract`] 层。
 //
 // 单独的 [`Attention`](crate::Attention) 只消费已经切好的 `q/k/v` 三路；真实模型里这三路

@@ -73,3 +73,47 @@ fn a_zero_dimension_latent_attention_is_rejected() {
         assert!(error.to_string().contains("潜空间注意力层"), "{error}");
     }
 }
+
+#[test]
+fn decode_binds_its_own_operators_and_keeps_history_out_of_the_shape() {
+    for (algo, op) in [
+        (AttentionAlgo::Naive, DecodeAttention::NAIVE),
+        (AttentionAlgo::Flash, DecodeAttention::FLASH),
+    ] {
+        let layer = DecodeAttention::new("blk.0.decode", 1, 64, algo).expect("合法");
+        assert_eq!(layer.spca().ops(), [op]);
+        assert_eq!(layer.output().dims(), [1, 64]);
+        assert_eq!(layer.q_rows(), 1);
+        assert_eq!(layer.head_dim(), 64);
+        assert_eq!(layer.algo(), algo);
+    }
+}
+
+#[test]
+fn decode_floor_is_linear_in_query_rows_because_history_is_a_declared_tier() {
+    let one = DecodeAttention::new("d", 1, 64, AttentionAlgo::Flash).expect("合法");
+    let two = DecodeAttention::new("d", 2, 64, AttentionAlgo::Flash).expect("合法");
+    let one = one.bounds().expect("合法").expect("有算子");
+    let two = two.bounds().expect("合法").expect("有算子");
+    assert_eq!(
+        two.flops(),
+        2.0 * one.flops(),
+        "历史轴固定，代价只随 query 行数线性走"
+    );
+    assert!(one.read() > 0 && one.write() > 0);
+    let prefill = Attention::new("p", 1, 64, AttentionAlgo::Flash)
+        .expect("合法")
+        .bounds()
+        .expect("合法")
+        .expect("有算子");
+    assert_ne!(one, prefill, "解码骨架与 prefill 不同，层不许假装两者同价");
+}
+
+#[test]
+fn a_zero_dimension_decode_is_rejected() {
+    for (q_rows, head_dim) in [(0, 64), (1, 0)] {
+        let error = DecodeAttention::new("x", q_rows, head_dim, AttentionAlgo::Naive).unwrap_err();
+        assert_eq!(error.code(), Code::Invalid);
+        assert!(error.to_string().contains("解码注意力层"), "{error}");
+    }
+}

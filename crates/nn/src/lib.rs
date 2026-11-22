@@ -101,12 +101,11 @@ mod param_role {
     }
 }
 mod classic;
-mod pointwise;
-mod projection;
+mod single;
 mod stack;
 
 #[doc(inline)]
-pub use attention::{Attention, AttentionAlgo, AttentionBlock, LatentAttention};
+pub use attention::{Attention, AttentionAlgo, AttentionBlock, DecodeAttention, LatentAttention};
 
 #[doc(inline)]
 pub use bounds::Bounds;
@@ -132,13 +131,10 @@ pub use classic::{
 };
 
 #[doc(inline)]
-pub use pointwise::{
-    Add, Gelu, HardSigmoid, LeakyRelu, Mul, ReduceMax, ReduceSum, ResidualAdd, RmsNorm, Rope,
-    Scale, Silu, Softmax,
+pub use single::{
+    Add, Embedding, Gelu, HardSigmoid, LeakyRelu, MatMul, Mul, ReduceMax, ReduceSum, ResidualAdd,
+    RmsNorm, Rope, Scale, Silu, Softmax,
 };
-
-#[doc(inline)]
-pub use projection::{Embedding, MatMul};
 
 #[doc(inline)]
 pub use stack::{Floor, Stack, Unpriced, WEIGHT_SUFFIX};
@@ -146,6 +142,12 @@ pub use stack::{Floor, Stack, Unpriced, WEIGHT_SUFFIX};
 /// 形状由 `tensor` 拥有（见 `docs/ARCHITECTURE.md` 第三节），这里再导出：`Contract::output` 本来就返回它，
 /// 消费者与 `#[spec]` 生成的代码都不该为此额外依赖 `tensor`。
 pub use tensor::Shape;
+
+/// 已声明的算子名清单，仅用于报错文案（热路径不调用）。
+fn declared_ops() -> String {
+    let names: Vec<&str> = op::builtin().iter().map(op::Op::name).collect();
+    format!("已声明：{}", names.join("、"))
+}
 
 /// 层下界的结果：[`Contract::bounds`] 的返回类型。
 pub type BoundsResult = Result<Option<Bounds>>;
@@ -196,35 +198,31 @@ impl ContractSpec {
         ops: impl IntoIterator<Item = impl Into<String>>,
         role: ParamRole,
     ) -> Result<Self> {
-        let ops: Vec<String> = ops.into_iter().map(Into::into).collect();
-        let known = op::builtin();
-        for wanted in &ops {
-            if !known.iter().any(|declared| declared.name() == wanted) {
+        // 热路径不建整表：每层只按名字查一次（`builtin_named` 无分配），全表清单只在
+        // 报错时才拼——装配一个几百层的模型不该为每条算子名付一次全表 `Vec` 的分配。
+        let mut checked = Vec::new();
+        for wanted in ops {
+            let wanted = wanted.into();
+            if op::builtin_named(&wanted).is_none() {
                 return Err(Error::new(
                     Code::Missing,
-                    format!(
-                        "算子 `{wanted}` 没有声明（已声明：{}）",
-                        known
-                            .iter()
-                            .map(op::Op::name)
-                            .collect::<Vec<_>>()
-                            .join("、")
-                    ),
+                    format!("算子 `{wanted}` 没有声明（{}）", declared_ops()),
                 )
                 .with("nn::ContractSpec::new"));
             }
-            if op::model(wanted).is_none() {
+            if op::model(&wanted).is_none() {
                 return Err(Error::new(
                     Code::Missing,
                     format!("算子 `{wanted}` 没有语义表，层无法推出下界也无法对拍"),
                 )
                 .with("nn::ContractSpec::new"));
             }
+            checked.push(wanted);
         }
         Ok(Self {
             name: name.into(),
             output,
-            ops,
+            ops: checked,
             role,
         })
     }
