@@ -374,9 +374,9 @@ pub mod driver {
         program.push_str(&format!(
             "    for (int i = 0; i < {max}; ++i) local[i] = 0.0f;\n    int n = 0;\n    switch (tid) {{\n"
         ));
-        for (index, (_, _, witness)) in selected.iter().enumerate() {
+        for (idx, (_, _, witness)) in selected.iter().enumerate() {
             program.push_str(&format!(
-                "        case {index}: n = {}(local); break;\n",
+                "        case {idx}: n = {}(local); break;\n",
                 witness.func
             ));
         }

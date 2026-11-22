@@ -302,7 +302,7 @@ pub enum Loss<'a> {
 impl<'a> Loss<'a> {
     /// 由 logits 与 labels 计算 [`Outcome`]；几何/参数校验透传。RL 的 `logits`/`labels` 不参与
     /// （`new_logp` 已预计算）。
-    pub fn compute(&self, logits: &[f32], labels: &[f32], vocab: usize) -> Result<Outcome> {
+    pub fn compute_loss(&self, logits: &[f32], labels: &[f32], vocab: usize) -> Result<Outcome> {
         match self {
             Self::Classify => classify(logits, labels, vocab),
             Self::Distill { teacher, config } => distill(logits, teacher, labels, vocab, *config),

@@ -10,7 +10,7 @@
 # 设计表原写的 `os >= 26` 没有进指纹：`cutile::probe` 目前只采集 CPU 的 `algorithm`/`features`，
 # 尚未采集 `sw_vers`；写一条当前永远无法满足的条件，只会让档案看起来更严格、实际更难命中。
 # 两级存储的物理名是 MSL 的地址空间：GM = `device`，FAST = `threadgroup`，REG = `thread`。
-# 同一原语可以有多条 `provides`：`dot` 的 `simd_dp4a`（i8×4）与 `simd_fma`（标量 f32）是两种
+# 同一原语可以有多条 `provides`：`dot` 的 `simd_dp4a`（i8×4）与 `fma4`（四累加器 f32）是两种
 # 能力，合并成一条会变成少写字段。
 
 [meta]

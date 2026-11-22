@@ -87,7 +87,7 @@ fn known_answer_vectors_match_the_reference_philox() {
         assert_eq!(
             block(key, stream, idx),
             expected,
-            "key {key:#x} stream {stream} index {idx}"
+            "key {key:#x} stream {stream} idx {idx}"
         );
     }
 }

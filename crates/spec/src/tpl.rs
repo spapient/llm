@@ -312,7 +312,7 @@ pub mod guard {
     use diagnostic::{Code, Error, Result};
 
     /// 一条长度约束：缓冲不足时报出名称、实际长度与下限。
-    fn check(actual: usize, required: usize, what: &str) -> Result<()> {
+    fn check_count(actual: usize, required: usize, what: &str) -> Result<()> {
         if actual < required {
             return Err(Error::new(
                 Code::Invalid,
@@ -325,7 +325,7 @@ pub mod guard {
     /// 一组约束，逐条短路；把多处 `?` 收进一个出口，调用点只写一次。
     pub fn check_all(bounds: &[(usize, usize, &str)]) -> Result<()> {
         for &(actual, required, what) in bounds {
-            check(actual, required, what)?;
+            check_count(actual, required, what)?;
         }
         Ok(())
     }

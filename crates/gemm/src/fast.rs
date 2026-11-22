@@ -161,7 +161,7 @@ fn scoped_f32(a: &[f32], b: &[f32], out: &mut [f32], m: usize, n: usize, k: usiz
                 let r0 = ti * per;
                 let rows = block.len() / n;
                 let a_t = &a[r0 * k..(r0 + rows) * k];
-                s.spawn(move || compute(a_t, bp, b, rows, n, k, block));
+                s.spawn(move || compute_gemm(a_t, bp, b, rows, n, k, block));
             }
         });
     });
@@ -172,12 +172,12 @@ pub fn gemm_f32_single(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: 
     let npad = n.div_ceil(NR) * NR;
     with_panels(npad * k, |bpack| {
         pack_b_f32_into(bpack, b, n, k);
-        compute(a, bpack, b, m, n, k, out);
+        compute_gemm(a, bpack, b, m, n, k, out);
     });
 }
 
 /// 单线程块计算：A 打包成 8 行面板，再 j 外层、面板内层跑微内核；残尾走标量。
-fn compute(a: &[f32], bpack: &[f32], b: &[f32], rows: usize, n: usize, k: usize, out: &mut [f32]) {
+fn compute_gemm(a: &[f32], bpack: &[f32], b: &[f32], rows: usize, n: usize, k: usize, out: &mut [f32]) {
     let full = rows / MR;
     let apack = pack_panels(a, full, k);
     let mut first = true;
@@ -286,7 +286,7 @@ mod micro;
 
 /// i8 `sdot` 端口峰值探针（K8 的分母），只在测量容器里导出。
 #[cfg(all(feature = "bench", target_arch = "aarch64"))]
-pub use i8::{SDOT_BLOCK_MAC_PER_K, SDOT_MAC_PER_ROUND, port_sdot, port_sdot_block};
+pub use i8::{SDOT_MAC_PER_ROUND, port_sdot, port_sdot_block, SDOT_BLOCK_MAC_PER_K};
 use i8::{f32_calc, f32_pack, threads_override};
 pub use i8::{gemm_i8, gemm_i8_checked, gemm_i8_single};
 use micro::{Layout, Span, Sweep, Tile, edge, micro_packed};

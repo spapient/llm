@@ -147,7 +147,7 @@ pub fn verify_fusion(
 /// 校验融合值本身是否可对拍，并列出要桥接的 `(生产者写槽位, 消费者读槽位)`。
 /// 只看名字与类型：形状要到 `bridge_one` 里才拿得到样本，所以放在那里报。
 fn plan(fusion: &Fusion) -> diagnostic::Result<Vec<(String, String)>> {
-    check(fusion)?;
+    check_fusion(fusion)?;
     let from = sole_output(fusion)?;
     let targets = seam_targets(fusion, from)?;
     Ok(targets
@@ -157,7 +157,7 @@ fn plan(fusion: &Fusion) -> diagnostic::Result<Vec<(String, String)>> {
 }
 
 /// 先排除不可对拍的形状：空融合与自融合。
-fn check(fusion: &Fusion) -> diagnostic::Result<()> {
+fn check_fusion(fusion: &Fusion) -> diagnostic::Result<()> {
     if fusion.seams.is_empty() {
         return Err(reject("融合值为空：没有任何缝，就没有可对拍的程序"));
     }

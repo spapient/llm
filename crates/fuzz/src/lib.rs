@@ -92,7 +92,7 @@ pub mod contract {
     }
 
     /// 核对单条用例的三条契约；违约返回第一条证据。
-    pub fn check(target: &dyn Target, case: u64, input: Vec<u8>) -> Result<(), Finding> {
+    pub fn check_target(target: &dyn Target, case: u64, input: Vec<u8>) -> Result<(), Finding> {
         let name = target.name().to_string();
         let first = judge(target, &input);
         if let Behaviour::Panicked { .. } = first {
@@ -112,13 +112,13 @@ pub mod contract {
 
     /// 跑 `cases` 个确定性用例；全部符合契约返回 `Ok(())`，否则返回第一条证据。
     pub fn sweep(target: &dyn Target, seed: &Seed, cases: u64) -> Result<(), Finding> {
-        (0..cases).try_for_each(|case| check(target, case, seed.derive(case)))
+        (0..cases).try_for_each(|case| check_target(target, case, seed.derive(case)))
     }
 
     /// 跑 `cases` 个确定性用例，收齐**全部**违约证据。
     pub fn sweep_all(target: &dyn Target, seed: &Seed, cases: u64) -> Vec<Finding> {
         (0..cases)
-            .filter_map(|case| check(target, case, seed.derive(case)).err())
+            .filter_map(|case| check_target(target, case, seed.derive(case)).err())
             .collect()
     }
 
@@ -393,7 +393,8 @@ pub mod seed {
     impl Seed {
         /// 派生第 `idx` 个用例：范例的一份确定性扰动。
         pub fn derive(&self, idx: u64) -> Vec<u8> {
-            let mut rng = Rng::new(fingerprint(&self.0) ^ idx.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+            let mut rng =
+                Rng::new(fingerprint(&self.0) ^ idx.wrapping_mul(0x9E37_79B9_7F4A_7C15));
             let mut out = self.0.clone();
             if out.is_empty() {
                 // 空范例没有可删可改的位置：从流里造 0..=2 个边界字节，仍然覆盖空串、单字节与
@@ -516,7 +517,7 @@ pub mod seed {
     }
 }
 
-pub use contract::{check, sweep, sweep_all};
+pub use contract::{check_target, sweep, sweep_all};
 pub use finding::{Behaviour, Finding, Repro, repro};
 pub use seed::Seed;
 
@@ -533,7 +534,7 @@ pub trait Target {
     where
         Self: Sized,
     {
-        check(self, 0, input.to_vec())
+        check_target(self, 0, input.to_vec())
     }
 }
 

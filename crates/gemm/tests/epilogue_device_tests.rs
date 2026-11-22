@@ -148,7 +148,7 @@ fn reference(scenario: &Scenario) -> Vec<f32> {
 }
 
 /// 跑一个场景：装配 → 编译 → 执行 → 逐元素比。
-fn check(device: &prof::Device, scenario: &Scenario) -> Result<(), String> {
+fn check_device(device: &prof::Device, scenario: &Scenario) -> Result<(), String> {
     let text = source(device, scenario)?;
     let want = reference(scenario);
     let calls = [testkit::witness::Call {
@@ -180,7 +180,7 @@ fn every_device_runs_the_declared_epilogue() {
     let mut failures = Vec::new();
     for device in prim::devices() {
         for scenario in SCENARIOS {
-            if let Err(error) = check(device, scenario) {
+            if let Err(error) = check_device(device, scenario) {
                 failures.push(error);
             }
         }

@@ -43,7 +43,7 @@ impl Table {
 }
 
 impl Store for Table {
-    fn compute(&mut self, op: &str, inputs: &[Var], output: Var) -> Result<()> {
+    fn compute_step(&mut self, op: &str, inputs: &[Var], output: Var) -> Result<()> {
         let mut args = [0.0f32; 4];
         if inputs.len() > args.len() {
             return Err(Error::new(
@@ -316,7 +316,7 @@ fn a_sequence_from_another_schedule_is_rejected() {
 fn a_store_failure_stops_the_replay() {
     struct Refuse;
     impl Store for Refuse {
-        fn compute(&mut self, _: &str, _: &[Var], _: Var) -> Result<()> {
+        fn compute_step(&mut self, _: &str, _: &[Var], _: Var) -> Result<()> {
             Err(Error::new(Code::Unsupported, "设备拒绝"))
         }
         fn free(&mut self, _: Var) {}

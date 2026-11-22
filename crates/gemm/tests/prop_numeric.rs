@@ -682,10 +682,8 @@ proptest! {
         let m = crate::gemv::GROUP * groups;
         let w = crate::gemv::packed::weights(m, n, 1);
         let (x, s, mut out) = (vec![1.0f32; m], vec![1.0f32; len], vec![0.0f32; n]);
-        let ok = match len.checked_div(n) {
-            Some(per_row) if len % n == 0 && per_row > 0 => m.is_multiple_of(per_row),
-            _ => false,
-        };
+        let per_row = len / n;
+        let ok = len.is_multiple_of(n) && per_row > 0 && m.is_multiple_of(per_row);
         prop_assert_eq!(
             gemv_i8::forward(&x, &w, &s, &mut out).is_ok(),
             ok,

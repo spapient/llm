@@ -14,7 +14,11 @@ impl Scheduler {
     /// 这些都属于调用方的状态错误，而不是"页不够"。
     pub fn advance(&mut self, sequence: &mut Sequence) -> Result<Progress> {
         let idx = self.check_advance(sequence)?;
-        if !self.extend(idx, self.next_pages(sequence), "engine::Scheduler::advance")? {
+        if !self.extend(
+            idx,
+            self.next_pages(sequence),
+            "engine::Scheduler::advance",
+        )? {
             return Ok(Progress::Blocked);
         }
         self.take_step(idx, sequence)
@@ -40,7 +44,12 @@ impl Scheduler {
     }
 
     /// 把第 `idx` 条页表扩到 `needed` 页；池不够时返回 `false`，三者都不动。
-    pub(super) fn extend(&mut self, idx: usize, needed: usize, site: &'static str) -> Result<bool> {
+    pub(super) fn extend(
+        &mut self,
+        idx: usize,
+        needed: usize,
+        site: &'static str,
+    ) -> Result<bool> {
         let extra = needed.saturating_sub(self.running[idx].table.len());
         if extra == 0 {
             return Ok(true);

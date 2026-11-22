@@ -234,7 +234,7 @@ fn check_counts(selected: &[Selected<'_>], counts: &[i64]) -> diagnostic::Result
 }
 
 /// 与 `expect` 对拍：超过阈值就是这条见证不成立（顺带打印两个数组，差在哪一眼可见）。
-fn checked(prim: Prim, witness: &Witness, got: &[f32], tolerance: f64) -> diagnostic::Result<f64> {
+fn checked_error(prim: Prim, witness: &Witness, got: &[f32], tolerance: f64) -> diagnostic::Result<f64> {
     let error = reference::max_rel_err(got, &witness.expect);
     if error <= tolerance {
         return Ok(error);

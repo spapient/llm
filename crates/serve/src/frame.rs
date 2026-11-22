@@ -234,7 +234,7 @@ impl Envelope {
 
     /// 整帧字节数（帧头 + 载荷 + 校验尾）。
     pub fn encoded_len(&self) -> Result<usize> {
-        self.check()
+        self.check_frame()
             .map_err(|error| error.with("proto::Envelope::encoded_len"))?;
         Ok(HEADER_LEN + self.payload.len() + trailer_len(self.version))
     }
@@ -242,7 +242,7 @@ impl Envelope {
     /// 编码成一帧，复用调用方已有的缓冲。
     pub fn encode_into(&self, out: &mut Vec<u8>) -> Result<()> {
         let len = self
-            .check()
+            .check_frame()
             .map_err(|error| error.with("proto::Envelope::encode_into"))?;
         let start = out.len();
         out.extend_from_slice(&MAGIC.to_le_bytes());
@@ -303,7 +303,7 @@ impl Envelope {
     }
 
     /// 写出去之前的自检：版本必须是本端支持的，载荷必须能装进 `u32` 且不超过上限。
-    fn check(&self) -> Result<u32> {
+    fn check_frame(&self) -> Result<u32> {
         if !self.version.is_supported() {
             return Err(Error::new(
                 Code::Invalid,

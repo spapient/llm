@@ -11,7 +11,7 @@ fn bad(message: &str) -> Error {
 }
 
 /// 校验谓词不成立时返回 [`bad`]；成立为 `Ok`。分布参数校验共用这一条出口。
-fn check(ok: bool, message: &str) -> Result<()> {
+fn ensure(ok: bool, message: &str) -> Result<()> {
     if ok { Ok(()) } else { Err(bad(message)) }
 }
 
@@ -24,8 +24,8 @@ pub struct Uniform {
 impl Uniform {
     /// 校验端点有限且 `lo < hi`；相等、空区间、NaN 或无穷都拒绝。
     pub fn new(lo: f32, hi: f32) -> Result<Self> {
-        check(lo.is_finite() && hi.is_finite(), "均匀区间端点必须有限")?;
-        check(
+        ensure(lo.is_finite() && hi.is_finite(), "均匀区间端点必须有限")?;
+        ensure(
             lo.partial_cmp(&hi) == Some(Ordering::Less),
             "均匀区间必须满足 lo < hi",
         )?;
@@ -46,7 +46,7 @@ pub struct Bernoulli {
 impl Bernoulli {
     /// 校验概率落在 `[0, 1]` 内且有限。
     pub fn new(p: f32) -> Result<Self> {
-        check(
+        ensure(
             p.is_finite() && (0.0..=1.0).contains(&p),
             "伯努利概率必须是 [0,1] 内的有限值",
         )?;
@@ -68,8 +68,8 @@ pub struct Normal {
 impl Normal {
     /// 校验均值有限、标准差为正且有限。
     pub fn new(mean: f32, std: f32) -> Result<Self> {
-        check(mean.is_finite() && std.is_finite(), "正态参数必须有限")?;
-        check(
+        ensure(mean.is_finite() && std.is_finite(), "正态参数必须有限")?;
+        ensure(
             std.partial_cmp(&0.0) == Some(Ordering::Greater),
             "标准差必须为正数",
         )?;

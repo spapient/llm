@@ -77,7 +77,7 @@ fn usage() -> Result<()> {
 }
 
 /// 读权重、跑闭环：三者都在算，都归这里。
-fn compute(command: &Command<'_>) -> Result<()> {
+fn run_command(command: &Command<'_>) -> Result<()> {
     match command {
         Command::Status { weights } => status::status(weights.as_deref()),
         Command::Run {

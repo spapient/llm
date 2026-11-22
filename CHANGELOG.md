@@ -37,13 +37,27 @@
     `gemv/packed.rs` 一行没动。
   - `fast::sme` 的 ZA 外积 → 整块只在 `nightly + aarch64` 存在，stable 上 `gemm_f32` 直接走 NEON
     通道。模块门控之后块内 26 条 `#[cfg(target_arch = "aarch64")]` 全部冗余，一并删除，
-    `sme::gemm` 里那条"非 aarch64 恒假"的分支也随之下线，文件净减 27 行。
+    `sme::gemm` 里那条"非 aarch64 恒假"的分支也随之下线，文件净减 28 行。
   - `benchmarks` 的 SME 端口探针（`port_run`/`port_mix`）随之门控；`sdot_peak` 从 `sme_peak`
     里提出来单独调用，i8 峰值口径在 stable 上照常测量。
   - `rust-toolchain.toml` 的 `channel` 从 `nightly-2026-09-01` 改为 `stable`，工作区
-    `rust-version` 从 `1.100`（当时尚未发布）改为 `1.99`；CI 的 14 处工具链引用同步换成 `1.99.1`。
+    `rust-version` 从 `1.100`（当时尚未发布）改为 `1.99`，`clippy.toml` 的 `msrv` 同步回 `1.99`
+    （否则 clippy 自报"两处 MSRV 不一致"）；CI 的工具链引用除 `fmt` 一格外全部换成 `1.99.1`。
   - 新增 CI job `nightly channel`（macOS / aarch64）跑 `cargo test -p llm-gemm --lib`：默认工具链
     已是 stable，没有这条守卫，上面两条 `cfg(nightly)` 通道会静默腐坏。
+  - 构建/测试/clippy/deny/coverage 全部落到 stable。`crates/gemm` 为此净 **+52 行**
+    （新增 `gemv/simd_scalar.rs` 80 行、`fast/sme.rs` 411→383 减 28 行——后者是纯减法，
+    模块被门控后块内 26 条 `#[cfg(target_arch = "aarch64")]` 全成冗余），已在
+    `scripts/loc-budget.sh` 按"（一）本次 +52 /（二）并发会话 +237"两笔分开登记，
+    `SRC_MAX` 93800 → 94200（实测 94,089）。
+  - **取证**：`cargo test -p llm-gemm --lib` → stable **242 passed**、nightly **254 passed**；
+    差的 12 条正是 `fast::sme::tests::*`（5）与 `gemv::simd::tests::*`（7），即 `cfg(nightly)`
+    被置上与未置上的恰是设计里那两条通道，而不是"两边都编译、退化无人发现"。
+  - **`fmt` 门单独留在 nightly**：rustfmt 的排版随版本漂移，仓库的格式基线是 nightly 的 rustfmt 产出的。
+    实测用 stable 1.99 的 rustfmt 重排会把 `device/tests/metal/correctness.rs` 从 800 行展到 807
+    （`FILE_MAX` 一票否决）、把 `fast/i8.rs` 的多行布尔条件解析成 `Ccn=7`——是门禁变红而不是更整齐，
+    且要为此改三个与工具链无关的文件。故格式门与构建工具链解耦，`fmt` 固定 nightly，
+    README 的命令表同步改成 `cargo +nightly fmt --all`。
 
 - **`testkit` 的 L3 跨层对拍按"一个文件答一个问题"拆开，手写 LCG 删除**。`crates/testkit/src/l3.rs`
   （242 行）此前同时住着一个自造 `Lcg`、六个夹具与四类判据，文件头还声称随机源是本 crate 的 `Rng`——

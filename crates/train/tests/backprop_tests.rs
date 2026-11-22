@@ -157,7 +157,11 @@ fn unary_grad(op: &str, p0: &[f32], output_len: usize) -> Result<Vec<f32>> {
     session.register_parameter(p, ParamRole::Trainable, p0.to_vec())?;
     session.bufs().compute(op, &[p], y)?;
     sum_backward(&mut session, y, out)?;
-    Ok(session.bufs().gradient(p).expect("p 梯度应在场").to_vec())
+    Ok(session
+        .bufs()
+        .gradient(p)
+        .expect("p 梯度应在场")
+        .to_vec())
 }
 
 /// `loss = reduce_sum(op(p))` 的公共夹具：单路参数中心差分，`loss(p)` 给整标量。
@@ -315,7 +319,9 @@ fn check_affine(
     session.register_parameter(g, ParamRole::Trainable, g0.to_vec())?;
     session.register_parameter(b, ParamRole::Trainable, b0.to_vec())?;
     match geometry {
-        Some(geometry) => session.bufs().compute_shaped(op, &[x, g, b], y, geometry)?,
+        Some(geometry) => session
+            .bufs()
+            .compute_shaped(op, &[x, g, b], y, geometry)?,
         None => session.bufs().compute(op, &[x, g, b], y)?,
     }
     sum_backward(&mut session, y, out)?;

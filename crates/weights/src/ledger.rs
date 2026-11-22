@@ -7,7 +7,7 @@ use diagnostic::Result;
 
 use crate::svd;
 
-pub use crate::ledger::note::{audit, check};
+pub use crate::ledger::note::{audit, check_note};
 
 /// 账本 schema 标识。
 pub const SCHEMA: &str = "llm.cert.v1";
@@ -214,7 +214,7 @@ pub fn certify(w: &[f32], m: usize, n: usize) -> Result<Option<Certified>> {
 /// 一次 f64 分解加秩判定：`k = min(m,n) >= 2` 由 [`certify`] 保证。
 fn decompose(w: &[f32], m: usize, n: usize, k: usize) -> Result<Option<Certified>> {
     let a: Vec<f64> = w.iter().map(|&x| x as f64).collect();
-    let d = svd::compute(&a, m, n)?;
+    let d = svd::compute_svd(&a, m, n)?;
     // ε 只有算法项：后验残差是本次分解的实测值，不是机器精度的估计。
     let eps = residual(&a, &d.reconstruct(k));
     let Some(rank) = certified_rank(&d.sigma, eps) else {
@@ -260,7 +260,7 @@ fn assemble(
         equal,
         lossless: equal,
     };
-    check(&note)?;
+    check_note(&note)?;
     Ok(Certified {
         rank,
         low,

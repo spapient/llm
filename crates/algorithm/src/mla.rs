@@ -312,7 +312,7 @@ impl<S: Scalar> Mla<S> {
         t: usize,
         path: Path,
     ) -> Result<Vec<S>> {
-        self.check(cache, q_nope, q_rope, t)?;
+        self.check_cache(cache, q_nope, q_rope, t)?;
         let mut out = vec![S::ZERO; self.heads * self.head_dim];
         for head in 0..self.heads {
             let mut scores = self.scores(head, cache, q_nope, q_rope, t, path);
@@ -324,7 +324,7 @@ impl<S: Scalar> Mla<S> {
     }
 
     /// 入口校验：缓存几何、位置与两条查询的宽度。
-    fn check(&self, cache: &Latent<S>, q_nope: &[S], q_rope: &[S], t: usize) -> Result<()> {
+    fn check_cache(&self, cache: &Latent<S>, q_nope: &[S], q_rope: &[S], t: usize) -> Result<()> {
         if [cache.latent_width(), cache.rope_width()] != [self.latent, self.rope] {
             return Err(Error::new(
                 Code::Invalid,

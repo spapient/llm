@@ -62,7 +62,14 @@ fn gamma(n: usize) -> f64 {
 /// 单个输出元素的 f64 参考与其前向误差界：返回 `(Σa·b, γ_{2k}·Σ|a·b|)`。
 ///
 /// 参考在 f64 里独立重算，与设备的任何一条路径不共享一行算术（对照见算子侧 F6 自我对拍）。
-fn reference_and_bound(a: &[f32], b: &[f32], n: usize, k: usize, i: usize, j: usize) -> (f64, f64) {
+fn reference_and_bound(
+    a: &[f32],
+    b: &[f32],
+    n: usize,
+    k: usize,
+    i: usize,
+    j: usize,
+) -> (f64, f64) {
     let mut want = 0.0f64;
     let mut magnitude = 0.0f64;
     for p in 0..k {
@@ -78,15 +85,7 @@ fn reference_and_bound(a: &[f32], b: &[f32], n: usize, k: usize, i: usize, j: us
 ///
 /// 界随数据缩放——`Σ|a·b|` 大就放宽、接近零就收紧。这正是不需要手调常数的原因：
 /// 定值阈值（如 `1e-3`）在真值量级跨十几个数量级时必然要么太松、要么误报。
-fn assert_within_bound(
-    label: &str,
-    got: &[f32],
-    a: &[f32],
-    b: &[f32],
-    m: usize,
-    n: usize,
-    k: usize,
-) {
+fn assert_within_bound(label: &str, got: &[f32], a: &[f32], b: &[f32], m: usize, n: usize, k: usize) {
     assert_eq!(got.len(), m * n, "{label} 的输出元素数应与 M·N 一致");
     let mut worst = (0.0f64, 0usize, 0usize);
     for i in 0..m {
@@ -137,6 +136,12 @@ fn half_to_f32(bits: u16) -> f32 {
         _ => (1.0 + mantissa as f32 / 1024.0) * 2f32.powi(exponent - 15),
     };
     if sign == 1 { -magnitude } else { magnitude }
+}
+
+/// 显式收缩轴的稠密 GEMM 样本：`K` 不是 `(m, n)` 的函数，模型自带的 [`op::matmul::sample`]
+/// 把它钉在生产形状 4096 上，用它生成 MSL 就等于让内核拿 4096 去算 96×80×96 的题。
+fn gemm_sample(m: usize, n: usize, k: usize) -> op::model::Sample {
+    op::matmul::sample_k(m, n, k)
 }
 
 /// 注意力输出的相对 Frobenius 误差 `‖got − want‖ / ‖want‖`。
@@ -228,7 +233,8 @@ fn gemm_stays_within_forward_error_bound_on_full_mantissa_inputs() {
     let grid = [M as u32, N as u32, 1];
 
     // 路径一：标量网格（每线程算一个输出元素）。
-    let grid_pipe = grid_pipeline(&device, &catalogue, &dirs, "matmul_f32", M, N, "标量网格");
+    let sample = gemm_sample(M, N, K);
+    let grid_pipe = grid_pipeline_sample(&device, &catalogue, &dirs, "matmul_f32", &sample, "标量网格");
     assert!(
         queue.execute(&grid_pipe, &[&a_buf, &b_buf, &y], grid, [1, 1, 1]),
         "标量网格派发应成功"
@@ -244,17 +250,9 @@ fn gemm_stays_within_forward_error_bound_on_full_mantissa_inputs() {
     );
 
     // 路径二：threadgroup 分块（16×16，M/N/K 都是 16 的整数倍，前置条件成立）。
-    let tiled = program(
-        &catalogue,
-        &dirs,
-        "matmul_f32",
-        Metal,
-        Mode::tiled(16, 1),
-        M,
-        N,
-    )
-    .and_then(|stages| stages.one("分块"))
-    .expect("分块 MSL 应能生成");
+    let tiled = program_sample(&catalogue, &dirs, "matmul_f32", Metal, Mode::tiled(16, 1), &sample)
+        .and_then(|stages| stages.one("分块"))
+        .expect("分块 MSL 应能生成");
     assert!(
         tiled.contains("threadgroup float As["),
         "96/80/96 都是 16 的倍数，应走分块 lowering"
@@ -297,7 +295,9 @@ fn gemm_handles_ragged_tail_shapes_and_refuses_to_pretend_it_tiled() {
         let mut y = output_buf(&device, m * n, "Y");
         let label = format!("{m}×{n}×{k}");
 
-        let grid_pipe = grid_pipeline(&device, &catalogue, &dirs, "matmul_f32", m, n, "标量网格");
+        let sample = gemm_sample(m, n, k);
+        let grid_pipe =
+            grid_pipeline_sample(&device, &catalogue, &dirs, "matmul_f32", &sample, "标量网格");
         assert!(
             queue.execute(
                 &grid_pipe,
@@ -310,17 +310,10 @@ fn gemm_handles_ragged_tail_shapes_and_refuses_to_pretend_it_tiled() {
         assert_within_bound(&label, &read_back(y.as_mut_bytes()), &a, &b, m, n, k);
 
         // 不整除时 `Mode::tiled` 的前置条件不成立：必须回落到标量路径。
-        let fallback = program(
-            &catalogue,
-            &dirs,
-            "matmul_f32",
-            Metal,
-            Mode::tiled(16, 1),
-            m,
-            n,
-        )
-        .and_then(|stages| stages.one("分块"))
-        .expect("不整除时应能回落到标量路径");
+        let fallback =
+            program_sample(&catalogue, &dirs, "matmul_f32", Metal, Mode::tiled(16, 1), &sample)
+                .and_then(|stages| stages.one("分块"))
+                .expect("不整除时应能回落到标量路径");
         assert!(
             !fallback.contains("threadgroup float As["),
             "{label} 不被 16 整除，不得走分块 lowering"
@@ -355,17 +348,10 @@ fn gemm_writes_every_output_and_repeats_bit_exactly() {
     let grid = [M as u32, N as u32, 1];
     let block = [16, 16, 1];
 
-    let tiled = program(
-        &catalogue,
-        &dirs,
-        "matmul_f32",
-        Metal,
-        Mode::tiled(16, 1),
-        M,
-        N,
-    )
-    .and_then(|stages| stages.one("分块"))
-    .expect("分块 MSL 应能生成");
+    let sample = gemm_sample(M, N, K);
+    let tiled = program_sample(&catalogue, &dirs, "matmul_f32", Metal, Mode::tiled(16, 1), &sample)
+        .and_then(|stages| stages.one("分块"))
+        .expect("分块 MSL 应能生成");
     let tiled_pipe = device.compile(&tiled).expect("分块 MSL 应能编译");
 
     fill_nan(&mut y);
@@ -378,7 +364,15 @@ fn gemm_writes_every_output_and_repeats_bit_exactly() {
         read_back(&first).iter().all(|value| value.is_finite()),
         "分块内核必须写满每个输出元素，NaN 残留即漏写"
     );
-    assert_within_bound("分块写满 96×80×96", &read_back(&first), &a, &b, M, N, K);
+    assert_within_bound(
+        "分块写满 96×80×96",
+        &read_back(&first),
+        &a,
+        &b,
+        M,
+        N,
+        K,
+    );
 
     // 再填一遍 NaN 再派发：初值不影响结果，两次必须逐位相同。
     fill_nan(&mut y);
@@ -463,24 +457,22 @@ fn int8_gemm_is_bit_exact_against_i32_accumulation() {
             b.iter().map(|&value| value as i8).collect(),
         );
         let mut acc = vec![0i32; m * n];
-        op::matmul_i8::forward_tiled(&signed_a, &signed_b, m, n, k, &mut acc)
-            .expect("CPU i32 参考");
+        op::matmul_i8::forward_tiled(&signed_a, &signed_b, m, n, k, &mut acc).expect("CPU i32 参考");
 
         let a_buf = upload_bytes(&device, &a, "A-int8");
         let b_buf = upload_bytes(&device, &b, "B-int8");
         let mut y = output_buf(&device, m * n, "Y-int8");
 
-        let msl = program(
+        let msl = program_sample(
             &catalogue,
             &dirs,
             "matmul_i8",
             Metal,
             Mode::int8(tile),
-            m,
-            n,
+            &op::matmul_i8::sample_k(m, n, k),
         )
         .and_then(|stages| stages.one("int8"))
-        .unwrap_or_else(|error| panic!("{label} 的 MSL 应能生成：{error}"));
+            .unwrap_or_else(|error| panic!("{label} 的 MSL 应能生成：{error}"));
         let tiled = msl.contains("threadgroup int As[");
         match (m % tile, n % tile, k % tile) {
             (0, 0, 0) => assert!(tiled, "{label} 三个轴都整除，应走 int8 分块 lowering"),
@@ -489,12 +481,7 @@ fn int8_gemm_is_bit_exact_against_i32_accumulation() {
 
         let pipe = device.compile(&msl).expect("int8 MSL 应能编译");
         assert!(
-            queue.execute(
-                &pipe,
-                &[&a_buf, &b_buf, &y],
-                [m as u32, n as u32, 1],
-                [tile as u32, tile as u32, 1]
-            ),
+            queue.execute(&pipe, &[&a_buf, &b_buf, &y], [m as u32, n as u32, 1], [tile as u32, tile as u32, 1]),
             "{label} 派发应成功"
         );
         let got = read_back(y.as_mut_bytes());
@@ -507,11 +494,7 @@ fn int8_gemm_is_bit_exact_against_i32_accumulation() {
                 idx % n
             );
         }
-        println!(
-            "{label}：{} 个元素逐位相等（{}）",
-            m * n,
-            if tiled { "分块" } else { "回落标量" }
-        );
+        println!("{label}：{} 个元素逐位相等（{}）", m * n, if tiled { "分块" } else { "回落标量" });
     }
 }
 
@@ -563,15 +546,7 @@ fn attention_survives_score_overflow_and_matches_closed_form() {
     };
 
     // 路径一：每查询行一线程的标量网格。
-    let grid_pipe = grid_pipeline(
-        &device,
-        &catalogue,
-        &dirs,
-        "attention_f32",
-        S,
-        D,
-        "网格注意力",
-    );
+    let grid_pipe = grid_pipeline(&device, &catalogue, &dirs, "attention_f32", S, D, "网格注意力");
     assert!(
         queue.execute(
             &grid_pipe,
@@ -748,19 +723,19 @@ fn tensor_gemm_large_shape_is_verified_on_sampled_elements() {
     crate::backends::install();
     let (catalogue, dirs) = catalogue_and_dirs("engine-metal-large-sample");
 
-    // 夹具上传的输入就是 `matmul_values` 的确定性输出，这里重新算一遍拿到同一批数。
-    let mut stage = tensor_stage(&device, &queue, (M, N, K), false);
-    let (a, b) = matmul_values(M, N, K);
+    // 满尾数输入：夹具的 `matmul_values` 是 0.25 的整数倍，进 half 无损，误差恒为 `0.00e0`，
+    // 于是这条用例只能验覆盖、验不了舍入。换成必然要舍入的取值，报告出来的数字才有含义。
+    let (a, b) = full_mantissa_values(M, N, K);
+    let mut stage = tensor_stage_from(&device, &queue, (M, N, K), (a.clone(), b.clone()), false);
 
     let geometry = crate::tiled::tensor_geometry(M, N, K);
-    let msl = program(
+    let msl = program_sample(
         &catalogue,
         &dirs,
         "matmul_f32",
         Metal,
         Mode::tensor(geometry),
-        M,
-        N,
+        &gemm_sample(M, N, K),
     )
     .and_then(|stages| stages.one("张量核"))
     .expect("张量核 MSL 应能生成");
@@ -782,8 +757,7 @@ fn tensor_gemm_large_shape_is_verified_on_sampled_elements() {
         let mut want = 0.0f64;
         for p in 0..K {
             // 设备侧 A 与 B 都按 half 精度进入张量核，参考按同一精度舍入后再在 f64 里累加。
-            want +=
-                f64::from(half_precision(a[i * K + p])) * f64::from(half_precision(b[p * N + j]));
+            want += f64::from(half_precision(a[i * K + p])) * f64::from(half_precision(b[p * N + j]));
         }
         let value = got[i * N + j];
         assert!(

@@ -97,14 +97,14 @@ impl<S: Scalar> Mhc<S> {
     /// 流的条数不是 `M`、任一条宽度为零、或各条宽度不一致——都返回 `Code::Invalid`。宽度不一致时
     /// 逐元素相加会把不同位置的数拼在一起，通道错位却没有一处报错。
     pub fn mix_streams(&self, streams: &[Vec<S>]) -> Result<Vec<Vec<S>>> {
-        let width = self.check(streams)?;
+        let width = self.check_streams(streams)?;
         Ok((0..self.streams)
             .map(|r| self.blend(r, streams, width))
             .collect())
     }
 
     /// 入口校验：流条数与各条宽度一致，返回公共宽度。
-    fn check(&self, streams: &[Vec<S>]) -> Result<usize> {
+    fn check_streams(&self, streams: &[Vec<S>]) -> Result<usize> {
         if streams.len() != self.streams {
             return Err(Error::new(
                 Code::Invalid,

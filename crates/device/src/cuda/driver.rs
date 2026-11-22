@@ -113,7 +113,12 @@ pub fn cuda_chunk_reduce_driver(
     fold: &str,
 ) -> Result<String> {
     let output = output_name(signature)?;
-    let emit = cuda_launch("kernel_main", &blocks.to_string(), 1, &buf_args(signature));
+    let emit = cuda_launch(
+        "kernel_main",
+        &blocks.to_string(),
+        1,
+        &buf_args(signature),
+    );
     let head = cuda_prologue(device_source);
     Driver::new(signature, sample, output, blocks)
         .folding(fold)

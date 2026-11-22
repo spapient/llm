@@ -121,7 +121,7 @@ impl Gate {
 
     /// 判定一个**已超限**的测量；返回 `Some(理由)` 即门禁失败。
     #[must_use]
-    pub fn check(&self, over: &Over) -> Option<String> {
+    pub fn reject_reason(&self, over: &Over) -> Option<String> {
         let allowed = self
             .debt
             .get(&over.key)

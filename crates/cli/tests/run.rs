@@ -330,7 +330,9 @@ fn the_first_layer_computes_the_hand_arithmetic_on_its_own_bytes() {
         .get(&format!("blk.0.attn_q{}", nn::WEIGHT_SUFFIX))
         .expect("条目存在");
     let w = weights::load_f32(entry, &file).expect("f32 条目");
-    let x: Vec<f32> = (0..8).map(|idx| (idx % 8) as f32 * 0.125 - 0.5).collect();
+    let x: Vec<f32> = (0..8)
+        .map(|idx| (idx % 8) as f32 * 0.125 - 0.5)
+        .collect();
     let model = op::model(nn::Linear::DENSE).expect("稠密语义");
     let sample = op::model::bind(&model, 8, 4, &x, &w).expect("形状自洽");
 

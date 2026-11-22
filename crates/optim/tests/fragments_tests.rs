@@ -16,10 +16,10 @@ fn units_of(
     for op in catalogue.ops() {
         let combos = decl::expand(op).expect("tile 候选");
         let variant = op.variants.first().expect("降级链至少一档");
-        for (index, combo) in combos.iter().enumerate() {
+        for (idx, combo) in combos.iter().enumerate() {
             let body = substitute::render(op, combo, fragments).expect("片段拼得进去");
             let source = emit::assemble(profile, op, variant, combo, &body);
-            units.push((format!("{}_{index}", op.name), source.text));
+            units.push((format!("{}_{idx}", op.name), source.text));
         }
     }
     units

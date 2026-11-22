@@ -146,7 +146,7 @@ fn gradients_by_level(case: &Case, schedule: &Schedule) -> Vec<f64> {
 }
 
 /// 一个用例的全部断言。
-fn check(case: &Case, round: u32) {
+fn check_case(case: &Case, round: u32) {
     let schedule = case.tape.backward(case.loss).expect("loss 在图上");
     let analytic = gradients(case, &schedule);
     let levels = gradients_by_level(case, &schedule);
@@ -221,7 +221,7 @@ fn random_graphs_match_central_differences() {
     let mut rng = Rng::new(0xC0FF_EE12);
     for round in 0..200 {
         let case = random_case(&mut rng);
-        check(&case, round);
+        check_case(&case, round);
     }
 }
 
@@ -236,7 +236,7 @@ fn a_shared_input_is_accumulated_once_per_edge() {
     let mut values = vec![0.0; tape.vars() as usize];
     values[x.id() as usize] = 2.0;
     let case = Case { tape, values, loss };
-    check(&case, 0);
+    check_case(&case, 0);
     let analytic = gradients(&case, &case.tape.backward(loss).expect("在图上"));
     assert_eq!(analytic[x.id() as usize], 6.0);
 }

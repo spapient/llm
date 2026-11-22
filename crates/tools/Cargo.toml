@@ -34,3 +34,7 @@ path = "tests/card.rs"
 [[test]]
 name = "lex"
 path = "tests/lex.rs"
+
+[[test]]
+name = "words"
+path = "tests/words.rs"

@@ -4,8 +4,8 @@ use super::*;
 fn the_world_is_the_product_of_the_three_axes() {
     let topology = Topology::new(4, 2, 3).expect("合法");
     assert_eq!(topology.world(), 24);
-    assert!(topology.check(24).is_ok());
-    assert_eq!(topology.check(12).unwrap_err().code(), Code::Invalid);
+    assert!(topology.check_world(24).is_ok());
+    assert_eq!(topology.check_world(12).unwrap_err().code(), Code::Invalid);
     assert_eq!(Topology::new(0, 1, 1).unwrap_err().code(), Code::Invalid);
 }
 
@@ -63,8 +63,8 @@ fn a_topology_whose_world_does_not_fit_in_u32_is_refused() {
     // 卡在 u32::MAX 之下的乘积仍然合法，且 world 是精确值而不是饱和值。
     let huge = Topology::new(65_535, 65_535, 1).expect("乘积 4_294_836_225 < u32::MAX");
     assert_eq!(huge.world(), 4_294_836_225);
-    assert!(huge.check(4_294_836_225).is_ok());
-    assert_eq!(huge.check(usize::MAX).unwrap_err().code(), Code::Invalid);
+    assert!(huge.check_world(4_294_836_225).is_ok());
+    assert_eq!(huge.check_world(usize::MAX).unwrap_err().code(), Code::Invalid);
 }
 
 /// 三个维度的组必须各自把 `0..world` 恰切一遍：不多不少、不重叠。

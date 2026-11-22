@@ -108,29 +108,29 @@ fn gamma(n: usize) -> f64 {
     nu / (1.0 - nu)
 }
 
-fn check(m: usize, n: usize, k: usize) {
+fn check_gemm(m: usize, n: usize, k: usize) {
     check_gemm(m, n, k, gemm_f32, "fast gemm 与标量参考容差内一致");
 }
 
 #[test]
 fn matches_scalar_on_tile_multiples() {
-    check(64, 64, 96);
+    check_gemm(64, 64, 96);
 }
 
 #[test]
 fn matches_scalar_on_ragged_edges() {
-    check(100, 70, 4093);
+    check_gemm(100, 70, 4093);
 }
 
 #[test]
 fn matches_scalar_trivial() {
-    check(1, 1, 1);
-    check(7, 3, 5);
+    check_gemm(1, 1, 1);
+    check_gemm(7, 3, 5);
 }
 
 #[test]
 fn matches_scalar_on_prefill_shape() {
-    check(256, 256, 4096);
+    check_gemm(256, 256, 4096);
 }
 
 /// 吞吐基线：`cargo test --release -p llm-op --lib fast::bench_throughput -- --ignored --nocapture`

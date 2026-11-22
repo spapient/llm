@@ -14,6 +14,10 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # rustfmt 的排版随版本漂移：本仓库的格式基线由 nightly 的 rustfmt 定，用 stable 1.99 的 rustfmt
+  # 反而会把部分文件"展开"（实测 `device/tests/metal/correctness.rs` 800→807 行顶破 FILE_MAX，
+  # `fast/i8.rs` 的多行条件把 Ccn 抬到 7），是门禁变红而不是更整齐。故格式门固定在 nightly，
+  # 与构建用的 stable 解耦——`rust-toolchain.toml` 换 stable 不影响这一条。
   fmt:
     name: fmt
     runs-on: ubuntu-latest
@@ -21,7 +25,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.99.1"
+          toolchain: "nightly"
           components: rustfmt
       - run: cargo fmt --all --check
 

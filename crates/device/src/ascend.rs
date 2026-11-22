@@ -154,7 +154,12 @@ fn ascend_main(
 
 /// 单个缓冲的 host 声明 + GM 分配 + （只读时）入向拷贝；输出缓冲的长度取 `output_len`
 /// （与 CUDA 同口径：分块归约的产物长度可以大于签名的单元素 `y`）。
-fn ascend_buf(param: &Param, sample: &Sample, output: &str, output_len: usize) -> Result<String> {
+fn ascend_buf(
+    param: &Param,
+    sample: &Sample,
+    output: &str,
+    output_len: usize,
+) -> Result<String> {
     let Some(buf) = sample.buf(&param.name) else {
         return Err(Error::new(Code::Internal, "签名与样本已对齐（漂移）"));
     };

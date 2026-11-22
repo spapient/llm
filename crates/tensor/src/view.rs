@@ -146,7 +146,8 @@ impl<'a, E: Element> View<'a, E> {
         if idx.len() != self.shape.rank() {
             return None;
         }
-        idx.iter()
+        idx
+            .iter()
             .enumerate()
             .try_fold(0usize, |acc, (axis, &position)| {
                 acc.checked_add(self.axis_offset(axis, position)?)

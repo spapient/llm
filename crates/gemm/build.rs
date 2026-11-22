@@ -7,6 +7,8 @@
 fn main() {
     println!("cargo::rustc-check-cfg=cfg(nightly)");
     println!("cargo::rerun-if-changed=build.rs");
+    println!("cargo::rerun-if-env-changed=RUSTC");
+    println!("cargo::rerun-if-env-changed=RUSTC_BOOTSTRAP");
     if nightly() {
         println!("cargo::rustc-cfg=nightly");
     }

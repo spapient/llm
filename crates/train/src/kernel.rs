@@ -7,11 +7,11 @@ use diagnostic::{Code, Error, Result};
 /// 一步前向：`op(inputs) → output`；契约是"输入此刻都在"与"输出要被完整写入"。
 pub trait Kernel {
     /// 用 `inputs` 算出 `output`；出错时这块输出缓冲会被还回池子，不会留下半个值。
-    fn compute(&mut self, op: &str, inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()>;
+    fn compute_step(&mut self, op: &str, inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()>;
 
     /// 按算子实例几何算一步前向。默认忽略几何、退回声明档语义：只有能解析实例几何的执行器
     /// 才覆盖它，其余实现保持既有行为，不因新增一条通道而被迫改动。
-    fn compute_shaped(
+    fn compute_shaped_step(
         &mut self,
         op: &str,
         inputs: &[View<'_>],
@@ -20,7 +20,7 @@ pub trait Kernel {
         running: Option<&mut crate::Running>,
     ) -> Result<()> {
         let _ = (geometry, running);
-        self.compute(op, inputs, output)
+        self.compute_step(op, inputs, output)
     }
 }
 
@@ -29,7 +29,7 @@ pub trait Kernel {
 pub struct Reference;
 
 impl Kernel for Reference {
-    fn compute_shaped(
+    fn compute_shaped_step(
         &mut self,
         op: &str,
         inputs: &[View<'_>],
@@ -39,11 +39,11 @@ impl Kernel for Reference {
     ) -> Result<()> {
         match geometry {
             Some(geometry) => self.shaped(op, inputs, output, geometry, running),
-            None => self.compute(op, inputs, output),
+            None => self.compute_step(op, inputs, output),
         }
     }
 
-    fn compute(&mut self, op: &str, inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+    fn compute_step(&mut self, op: &str, inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
         match KERNELS.iter().find(|entry| entry.op == op) {
             Some(entry) => (entry.run)(inputs, output),
             None => {

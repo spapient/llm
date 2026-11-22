@@ -17,7 +17,7 @@ fn diagonal_singular_values_are_exact() {
     for (i, d) in diag.iter().enumerate() {
         a[i * 4 + i] = *d;
     }
-    let svd = compute(&a, 4, 4).expect("svd");
+    let svd = compute_svd(&a, 4, 4).expect("svd");
     for (got, want) in svd.sigma.iter().zip(diag.iter()) {
         assert!((got - want).abs() < 1e-10, "got {got} want {want}");
     }
@@ -32,7 +32,7 @@ fn full_reconstruction_residual_is_machine_order() {
     };
     for (m, n) in [(8, 8), (12, 6), (6, 12), (20, 10)] {
         let a: Vec<f64> = (0..m * n).map(|_| next()).collect();
-        let svd = compute(&a, m, n).expect("svd");
+        let svd = compute_svd(&a, m, n).expect("svd");
         let k = m.min(n);
         assert_eq!(svd.sigma.len(), k);
         let back = svd.reconstruct(k);
@@ -50,7 +50,7 @@ fn truncated_reconstruction_is_monotonic() {
     for i in 0..6 {
         a[i * 6 + i] = 6.0 - i as f64;
     }
-    let svd = compute(&a, 6, 6).expect("svd");
+    let svd = compute_svd(&a, 6, 6).expect("svd");
     let mut prev = f64::INFINITY;
     for r in 1..=6 {
         let err = frob_resid(&a, &svd.reconstruct(r));
@@ -68,7 +68,7 @@ fn singular_values_are_descending_and_nonnegative() {
             (rng >> 40) as f64 / (1u64 << 24) as f64
         })
         .collect();
-    let svd = compute(&a, 8, 8).expect("svd");
+    let svd = compute_svd(&a, 8, 8).expect("svd");
     for pair in svd.sigma.windows(2) {
         assert!(pair[0] >= pair[1]);
         assert!(pair[0] >= 0.0);
@@ -77,8 +77,8 @@ fn singular_values_are_descending_and_nonnegative() {
 
 #[test]
 fn bad_shape_is_an_error() {
-    assert!(compute(&[1.0], 2, 2).is_err());
-    assert!(compute(&[], 0, 4).is_err());
+    assert!(compute_svd(&[1.0], 2, 2).is_err());
+    assert!(compute_svd(&[], 0, 4).is_err());
 }
 
 /// 信号秩选择：结构化的秩边界有相对谱隙 → 秩 10；满秩噪声平坦谱 → 拒压；单一奇异值无从比较 → 拒压。
@@ -108,12 +108,12 @@ fn svd_throughput() {
         let mut c_samples = [0.0f64; 5];
         for slot in &mut c_samples {
             let start = std::time::Instant::now();
-            let svd = compute(&a, n, n).expect("svd");
+            let svd = compute_svd(&a, n, n).expect("svd");
             std::hint::black_box(&svd);
             *slot = start.elapsed().as_secs_f64();
         }
         c_samples.sort_by(f64::total_cmp);
-        let svd = compute(&a, n, n).expect("svd");
+        let svd = compute_svd(&a, n, n).expect("svd");
         let mut r_samples = [0.0f64; 5];
         for slot in &mut r_samples {
             let start = std::time::Instant::now();

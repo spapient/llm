@@ -13,7 +13,7 @@ pub(crate) fn render(declaration: &Declaration, ty: &str) -> String {
     let mut code = String::with_capacity(STATIC_ROOM);
     spec(&mut code, declaration, ty);
     contract(&mut code, declaration, ty);
-    check(&mut code, declaration, ty);
+    check_module(&mut code, declaration, ty);
     code
 }
 
@@ -76,7 +76,7 @@ fn contract(code: &mut String, declaration: &Declaration, ty: &str) {
 }
 
 /// 第三块：`#[cfg(test)]` 校验模块，核对"注解里的算子仍然存在"。
-fn check(code: &mut String, declaration: &Declaration, ty: &str) {
+fn check_module(code: &mut String, declaration: &Declaration, ty: &str) {
     code.push_str("#[cfg(test)]\n#[allow(non_snake_case)]\n");
     let _ = writeln!(code, "mod __layer_check_{ty} {{");
     code.push_str("    #[test]\n    fn the_annotation_still_matches_the_declared_operators() {\n");

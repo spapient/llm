@@ -12,7 +12,7 @@ const RUN: &str = "autograd::Replay::run";
 /// 激活值的存放：重放只决定"算哪一步、什么时候丢"，真的算与存由调用方给。
 pub trait Store {
     /// 重算一步前向 `op(inputs) -> output`；输入此刻必须都在，失败由 [`Replay::run`] 原样上抛。
-    fn compute(&mut self, op: &str, inputs: &[Var], output: Var) -> Result<()>;
+    fn compute_step(&mut self, op: &str, inputs: &[Var], output: Var) -> Result<()>;
 
     /// 交还一块激活：之后它的值不再被读，直到被重新算出来；实现不必区分检查点与临时值。
     fn free(&mut self, var: Var);
@@ -128,7 +128,7 @@ impl Replay {
             let node = tape
                 .node(var)
                 .ok_or_else(|| internal(RUN, format!("变量 {} 没有生产者，无法重算", var.id())))?;
-            store.compute(node.op(), node.inputs(), var)?;
+            store.compute_step(node.op(), node.inputs(), var)?;
             computed = computed.saturating_add(1);
         }
         Ok(computed)

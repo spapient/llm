@@ -73,7 +73,7 @@ fn sample_names_and_types_must_match_the_signature() {
 
     let mut mistyped = sample();
     mistyped.bufs[2].values = Values::U8(vec![0; 2]);
-    let error = signature.check(&mistyped).expect_err("类型不符");
+    let error = signature.check_sample(&mistyped).expect_err("类型不符");
     assert_eq!(error.code(), Code::Invalid);
     assert!(error.to_string().contains("scales"), "{error}");
     assert!(error.to_string().contains("float"), "{error}");
@@ -83,13 +83,13 @@ fn sample_names_and_types_must_match_the_signature() {
         name: "bias",
         values: Values::F32(vec![0.0; 2]),
     });
-    let error = signature.check(&stray).expect_err("多出的缓冲");
+    let error = signature.check_sample(&stray).expect_err("多出的缓冲");
     assert_eq!(error.code(), Code::Invalid);
     assert!(error.to_string().contains("bias"), "{error}");
 
     let mut missing = sample();
     missing.scalars.retain(|(name, _)| *name != "gsz");
-    let error = signature.check(&missing).expect_err("缺标量");
+    let error = signature.check_sample(&missing).expect_err("缺标量");
     assert_eq!(error.code(), Code::Missing);
     assert!(error.to_string().contains("gsz"), "{error}");
 }

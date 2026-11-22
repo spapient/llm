@@ -233,7 +233,7 @@ impl<S: Scalar> ByteDecoder<S> {
     /// 表示宽度不是本层的 `width` 时返回 `Code::Invalid`：宽了是把别的层的数据喂进来，窄了会静默
     /// 少读几维（内积照算不误，结果却是另一个数）。
     pub fn logits(&self, state: &[S]) -> Result<Vec<S>> {
-        self.check(state)?;
+        self.check_state(state)?;
         Ok(self
             .projection
             .chunks_exact(self.width)
@@ -284,7 +284,7 @@ impl<S: Scalar> ByteDecoder<S> {
     }
 
     /// 入口校验：表示的宽度。
-    fn check(&self, state: &[S]) -> Result<()> {
+    fn check_state(&self, state: &[S]) -> Result<()> {
         if state.len() == self.width {
             return Ok(());
         }

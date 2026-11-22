@@ -166,7 +166,11 @@ pub(super) fn expect_number(value: &Value, path: impl fmt::Display) -> Result<f3
     }
 }
 /// 其余键一律视为枚举型属性；闭集外的键直接报错，避免"写了但没人看"。
-pub(super) fn attrs(entry: &Table, idx: usize, provide: &mut Provide) -> Result<(), ProfileError> {
+pub(super) fn attrs(
+    entry: &Table,
+    idx: usize,
+    provide: &mut Provide,
+) -> Result<(), ProfileError> {
     for (key, value) in entry.entries() {
         if !parsed_key(key) {
             provide.attrs.push(one_attr(idx, key, value)?);

@@ -29,7 +29,7 @@ workspace；入口二进制要用 `-p llm-cli --bin llm|cutile` 指定。
 
 | 命令 | 作用 |
 |---|---|
-| `cargo fmt --all` | 按 `rustfmt.toml` 格式化所有成员 |
+| `cargo +nightly fmt --all` | 按 `rustfmt.toml` 格式化所有成员（**必须显式 `+nightly`**：排版基线是 nightly 的 rustfmt，stable 的会把部分文件展开并顶破 `FILE_MAX`/`Ccn` 门） |
 | `cargo clippy --workspace --all-targets --all-features` | 静态检查（lint 策略见根 `Cargo.toml` 的 `[workspace.lints]`） |
 | `cargo test --workspace` | 运行测试 |
 | `cargo doc --workspace --no-deps --open` | 生成并打开文档 |

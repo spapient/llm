@@ -49,7 +49,7 @@ impl Tape {
 
     /// 把已存在的叶子升级为梯度终点；只允许升级**还没被任何节点引用**的叶子（否则会漏掉梯度）。
     pub fn retain(&mut self, var: Var) -> Result<()> {
-        let idx = self.check(var, "autograd::Tape::retain")?;
+        let idx = self.check_var(var, "autograd::Tape::retain")?;
         if self.producer[idx].is_some() {
             return Err(invalid(
                 "autograd::Tape::retain",
@@ -88,12 +88,12 @@ impl Tape {
         requirement: Requirement,
     ) -> Result<Var> {
         let op = op.into();
-        let (_, deepest) = self.checked(&op, inputs, requirement)?;
+        let (_, deepest) = self.check_inputs(&op, inputs, requirement)?;
         Ok(self.push(op, inputs, requirement, deepest))
     }
 
     /// 记录的公共校验：算子名非空、输入存在、声明的需求与输入相容。
-    fn checked(
+    fn check_inputs(
         &self,
         op: &str,
         inputs: &[Var],
@@ -140,7 +140,7 @@ impl Tape {
     /// 整图审计：逐个节点复核输入存在、算子名非空、声明的需求与输入相容。
     pub fn validate(&self) -> Result<()> {
         for node in self.nodes() {
-            self.checked(node.op(), node.inputs(), node.requirement())
+            self.check_inputs(node.op(), node.inputs(), node.requirement())
                 .map(|_| ())
                 .map_err(|error| {
                     error.with(format!(
@@ -244,7 +244,7 @@ impl Tape {
         let mut merged = Requirement::None;
         let mut deepest = 0;
         for input in inputs {
-            let idx = self.check(*input, site)?;
+            let idx = self.check_var(*input, site)?;
             merged = merged.merged(self.requirement[idx]);
             deepest = deepest.max(self.depth[idx]);
         }
@@ -257,7 +257,7 @@ impl Tape {
     }
 
     /// 编号校验：越界即"引用了一个还没创建的变量"。
-    fn check(&self, var: Var, site: &'static str) -> Result<usize> {
+    fn check_var(&self, var: Var, site: &'static str) -> Result<usize> {
         if var.id() as usize >= self.requirement.len() {
             return Err(invalid(
                 site,

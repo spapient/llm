@@ -155,7 +155,7 @@ fn read_ledger(path: &str) -> Result<String> {
 }
 
 /// `check`：打开期 CRC 已校验；逐段 `load` 触发解码与逐位还原，按解码条目数汇报。
-pub(crate) fn check(input: &str) -> Result<()> {
+pub(crate) fn check_archive(input: &str) -> Result<()> {
     let bytes = read_container(input, "llm check")?;
     let archive = Archive::parse(&bytes).map_err(|error| error.with("llm check"))?;
     let decoded = decode_all(&archive, "llm check")?;

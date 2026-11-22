@@ -103,7 +103,7 @@ const GATES: &[GateSpec] = &[
 
 impl GateSpec {
     /// 有效检查参数：表内固定的语法检查参数 + 档案自己声明的语言版本开关。
-    fn check<'a>(&'a self, profile: &'a Profile) -> Vec<&'a str> {
+    fn args_for<'a>(&'a self, profile: &'a Profile) -> Vec<&'a str> {
         let mut arguments: Vec<&str> = self.check.to_vec();
         arguments.extend(
             profile
@@ -170,7 +170,7 @@ fn parse_all(spec: &GateSpec, profile: &Profile, dirs: &Dirs) -> diagnostic::Res
         });
     };
     let dir = scratch(dirs, "gate");
-    let arguments = spec.check(profile);
+    let arguments = spec.args_for(profile);
     let parsed = write_and_parse(spec, &arguments, &selected, dirs, &dir);
     let _ = std::fs::remove_dir_all(&dir);
     parsed?;

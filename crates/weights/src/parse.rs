@@ -291,7 +291,9 @@ fn resolve_one(stored: &[Stored], idx: usize, rep: usize) -> Result<(Codec, usiz
             len,
             crc,
         } => Ok((*codec, *start, *len, *crc)),
-        StoredInner::Ref { .. } => Err(bad(format!("引用段 `{idx}` 的代表段 `{rep}` 本身是引用"))),
+        StoredInner::Ref { .. } => {
+            Err(bad(format!("引用段 `{idx}` 的代表段 `{rep}` 本身是引用")))
+        }
     }
 }
 

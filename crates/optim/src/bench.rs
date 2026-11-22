@@ -535,8 +535,8 @@ fn working_set(sample: &Sample, output: &str) -> u64 {
     sample
         .bufs
         .iter()
-        .filter(|buffer| buffer.name != output)
-        .map(|buffer| match &buffer.values {
+        .filter(|buf| buf.name != output)
+        .map(|buf| match &buf.values {
             Values::F32(values) => 4 * values.len() as u64,
             Values::U8(values) => values.len() as u64,
         })

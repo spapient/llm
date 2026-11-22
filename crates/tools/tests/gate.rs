@@ -31,7 +31,7 @@ use diagnostic::data::{Table, Value};
 use llm_tools::{
     analyze, call, ccn, docs, dup,
     gate::{Gate, Metric, Over},
-    lex, strip_tests, submodules, test_modules,
+    lex, strip_tests, submodules, test_modules, words,
 };
 
 const MIN_SOURCES: usize = 100;
@@ -130,6 +130,18 @@ fn scan_production(
     if let Err(err) = lex::parse(&raw) {
         bad.push(format!("{name}: 词法错误 {err:?}"));
     }
+    vocabulary(&name, &raw, bad);
+}
+
+/// 一概念一词：标识符级词表。
+///
+/// `scripts/name-lint.sh` 只看文件名，看不到 `buffer` 与 `buf` 同时存在于一个概念上；这里
+/// 按标识符判定，外来 API 名（Metal 选择器、`char_indices`、`Index` 等）在词表里豁免。
+/// 用原文而非 `strip_tests` 后的文本：测试与被测代码是同一个词表。
+fn vocabulary(name: &str, src: &str, bad: &mut Vec<String>) {
+    for hit in words::scan(src).unwrap_or_else(|err| panic!("{name}: {err:?}")) {
+        bad.push(format!("{name}: {}", hit.describe()));
+    }
 }
 
 /// 构建脚本：词法 + 单文件行数。构建期 `expect(OUT_DIR)` 与 `fail()` panic 不纳入零 panic 门。
@@ -148,6 +160,7 @@ fn scan_build_script(
     if let Err(err) = lex::parse(&raw) {
         bad.push(format!("{name}: 词法错误 {err:?}"));
     }
+    vocabulary(&name, &raw, bad);
 }
 
 /// 外部集成测试与 `#[path]` 挂进 `src` 的测试模块。
@@ -161,6 +174,7 @@ fn scan_integration_test(gate: &Gate, root: &Path, path: &Path, bad: &mut Vec<St
     if let Err(err) = lex::parse(&raw) {
         bad.push(format!("{name}: 词法错误 {err:?}"));
     }
+    vocabulary(&name, &raw, bad);
     let lines = raw.lines().count();
     if lines > gate.test_limit() {
         bad.push(format!(
@@ -185,7 +199,7 @@ fn judge(
         return;
     }
     live.entry(key.to_string()).or_default().insert(metric);
-    if let Some(reason) = gate.check(&Over {
+    if let Some(reason) = gate.reject_reason(&Over {
         key: key.to_string(),
         metric,
         value,
@@ -633,9 +647,9 @@ fn a_debt_row_without_a_metric_is_rejected() {
 #[test]
 fn a_debt_row_registers_only_the_metrics_it_names() {
     let (gate, over) = debt_gate(9, 9);
-    assert!(gate.check(&over).is_none(), "登记范围内应通过");
+    assert!(gate.reject_reason(&over).is_none(), "登记范围内应通过");
     assert!(
-        gate.check(&Over { value: 10, ..over }).is_some(),
+        gate.reject_reason(&Over { value: 10, ..over }).is_some(),
         "超过登记值应失败"
     );
     assert_eq!(
@@ -650,7 +664,7 @@ fn a_debt_row_registers_only_the_metrics_it_names() {
 fn a_register_above_the_measurement_must_be_lowered() {
     let (gate, over) = debt_gate(47, 6);
     assert_eq!(
-        gate.check(&over).unwrap(),
+        gate.reject_reason(&over).unwrap(),
         "crates/x/src/y.rs:run#0: Ccn 实测 6 < 登记 47：把基线条目改成 6",
         "顶着 47 的登记值活着的 ccn=6 必须被要求记账"
     );
@@ -689,13 +703,13 @@ fn a_satisfied_metric_must_drop_even_when_the_identity_is_still_live() {
 #[test]
 fn ratchet_blocks_new_and_worse_allows_within_budget() {
     let (gate, over) = debt_gate(9, 10);
-    assert!(gate.check(&over).is_some(), "恶化必须失败");
+    assert!(gate.reject_reason(&over).is_some(), "恶化必须失败");
     assert!(
-        gate.check(&Over { value: 9, ..over }).is_none(),
+        gate.reject_reason(&Over { value: 9, ..over }).is_none(),
         "登记范围内应通过（此时仍超阈值）"
     );
     assert!(
-        gate.check(&Over {
+        gate.reject_reason(&Over {
             key: "crates/x/src/y.rs:new#0".into(),
             ..over
         })

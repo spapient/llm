@@ -99,7 +99,7 @@ impl Topology {
     }
 
     /// 校验启动的进程数与拓扑一致（不一致时继续跑只会得到静默的错误结果）。
-    pub fn check(&self, world: usize) -> Result<()> {
+    pub fn check_world(&self, world: usize) -> Result<()> {
         if world != self.world() {
             return Err(Error::new(
                 Code::Invalid,

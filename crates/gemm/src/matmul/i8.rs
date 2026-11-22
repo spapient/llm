@@ -115,11 +115,17 @@ pub fn cost(shape: &ShapeCtx) -> Result<Cost> {
 
 /// 确定性样本：`a` / `b` 为对称 i8（u8 字节承载有符号码），`y` 为 f32 零缓冲。
 pub fn sample(m: usize, n: usize) -> Sample {
+    sample_k(m, n, K)
+}
+
+/// 显式收缩轴长度的确定性样本：与 [`sample`] 同构，只有 `K` 由调用方给定。
+pub fn sample_k(m: usize, n: usize, k: usize) -> Sample {
     super::sample_of(
         m,
         n,
-        Values::U8(deterministic_i8(m * K, 1)),
-        Values::U8(deterministic_i8(K * n, 2)),
+        k,
+        Values::U8(deterministic_i8(m * k, 1)),
+        Values::U8(deterministic_i8(k * n, 2)),
     )
 }
 

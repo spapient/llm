@@ -127,7 +127,7 @@ impl Signature {
     /// # Errors
     ///
     /// 任一不匹配都返回带算子名、形参名与两侧类型的说明。
-    pub fn check(&self, sample: &Sample) -> diagnostic::Result<()> {
+    pub fn check_sample(&self, sample: &Sample) -> diagnostic::Result<()> {
         self.check_params(sample)?;
         self.check_extra_bufs(sample)?;
         self.check_extra_scalars(sample)
@@ -226,7 +226,7 @@ impl Signature {
     ///
     /// 签名与样本不一致时先由 [`Self::check`] 返回说明。
     pub fn call_args(&self, sample: &Sample) -> diagnostic::Result<String> {
-        self.check(sample)?;
+        self.check_sample(sample)?;
         let parts: Vec<String> = self
             .params
             .iter()

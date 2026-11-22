@@ -93,7 +93,32 @@ cd "$(dirname "$0")/.."
 # 性质测试工作的台账）、`crates/gemm`（sme/simd）与 `crates/prof` 的既有文件增删。
 # 这部分不是本次改动；若那些会话撤回，本预算必须同步下调对应行数——**预算跟随能力，不反过来**：
 # 本次上调换来的是"融合候选值不值得动手"从无据可查变成可执行，而不是总量数字变好看。
-SRC_MAX=93800      # N6：crates/*/src 总行数
+# 93800 → 94200：两笔，分开登记。实测 94,089 行（`crates/*/src`，409 个文件）。
+#
+# （一）本次：**去掉 nightly 依赖，让 stable 能直接构建**，`crates/gemm` 净 **+52 行**，逐项。
+# `crates/gemm/src/gemv/simd_scalar.rs` 80 行（新增）：`gemv::simd` 的 16 车道解包点积在 stable 上
+# 没有 `std::simd`，需要一个同名同签名的替身才能让 `gemv/f32.rs`、`i8.rs`、`packed.rs` 一行不改。
+# 它不是"随便一份标量点积"：`WIDE`/`CHAINS` 与向量版逐字相同（16 个元素一段、4 条独立累加链轮转、
+# 段内逐条 `mul_add`），所以每条链累加的元素序列与向量版逐车道一一对应、只差最后一步归约
+# （`reduce_sum` 树形 vs 这里顺序）；这既是"两份实现结果一致"的可核对依据，也让 LLVM 在 stable 上
+# 能把同一段源码自动向量化。打包格式的两条入口用 `Option<Infallible>` / `Infallible` 表达"stable 上
+# 不可达"，省掉调用点的 `cfg`，也省掉一份永假分支。
+# 同一笔里 **-28 行是删掉的**：`fast/sme.rs` 411 → 383——整个模块已被 `#[cfg(all(nightly,
+# target_arch = "aarch64"))]` 罩住，块内 26 条 `#[cfg(target_arch = "aarch64")]` 从此全是冗余，
+# 连同 `sme::gemm` 里那条"非 aarch64 恒假"的分支一并下线。这是纯减法，能力一条没少
+# （nightly 上 5 条 SME 对拍、7 条 `gemv::simd` 用例照常出现，见下）。
+# 取证：`cargo test -p llm-gemm --lib` → stable **242 passed**、nightly **254 passed**，
+# 差的正是 `fast::sme::tests::*`（5 条）与 `gemv::simd::tests::*`（7 条）——即 `cfg(nightly)`
+# 确实被置上、被置空的各是设计里那两条通道，而不是"两边都编译但没人发现退化"。
+# `crates/gemm/build.rs` 28 行产出该 cfg，位置在 crate 根、不在 `crates/*/src` 下，不计入本项。
+#
+# （二）同一 checkout 上并发会话的在飞改动，登记以免密度门被"别人的改动"染红：实测余下 **+237 行**
+# 来自 `crates/optim`（execution/program/pipeline/verify/sweep）、`crates/tools`（`words.rs` 等）、
+# `crates/benchmarks`（kernel/peak）与 `crates/gemm` 的既有文件。这部分不是本次改动；
+# 若那些会话撤回，本预算必须同步下调对应行数——**预算跟随能力，不反过来**。
+# 本次上调换来的是"clone 下来 `cargo build` 直接能过"，而不是总量数字变好看：
+# 上面那 80 行是这份可分发性的**代价**，不是能力扩张，所以没有顺手把别的债一起抬进来。
+SRC_MAX=94200      # N6：crates/*/src 总行数
 FILE_MAX=400       # N3：生产文件 S++ 线
 FILE_VETO=600      # N3：>600 一票否决
 CRATE_MAX=8000     # N2：单 crate

@@ -4,7 +4,7 @@ use super::gemm;
 /// 直接调用 SME 内核（越过 `gemm_f32` 的分派），用刚过规模门槛的小形状覆盖：
 /// 多行块 × 多列组、单列组、单行块三种铺法。三种形状都必须落在 `MR = 16` / `NR = 64`
 /// 的整铺上，否则内核会拒绝而用例变成在测分派（F6）。
-fn check(m: usize, n: usize, k: usize) {
+fn check_sme(m: usize, n: usize, k: usize) {
     check_gemm(
         m,
         n,
@@ -16,17 +16,17 @@ fn check(m: usize, n: usize, k: usize) {
 
 #[test]
 fn sme_matches_on_tile_multiples() {
-    check(128, 128, 128);
+    check_sme(128, 128, 128);
 }
 
 #[test]
 fn sme_matches_on_single_col_group() {
-    check(128, 64, 128);
+    check_sme(128, 64, 128);
 }
 
 #[test]
 fn sme_matches_on_single_row_block() {
-    check(16, 64, 1024);
+    check_sme(16, 64, 1024);
 }
 
 /// 多线程铺法：`t = min(线程数, m/16, n/64)` 由形状决定，三个单线程用例的 `t` 都是 1，
@@ -48,5 +48,5 @@ fn sme_matches_at_full_thread_count() {
 fn check_threaded(m: usize, n: usize, k: usize) {
     let t = super::threads_for(m, n);
     assert!(t >= 2, "{m}×{n}×{k} 只切出 {t} 个线程，线程化分支未被覆盖");
-    check(m, n, k);
+    check_sme(m, n, k);
 }

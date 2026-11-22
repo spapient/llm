@@ -93,8 +93,8 @@ fn a_ctx_rejects_an_empty_axis_instead_of_pricing_zero() {
 #[test]
 fn bind_puts_real_numbers_where_the_reference_reads_them() {
     let model = crate::model("gemv_f32").expect("稠密语义");
-    let x: Vec<f32> = (0..8).map(|index| index as f32).collect();
-    let w: Vec<f32> = (0..16).map(|index| index as f32 * 0.5).collect();
+    let x: Vec<f32> = (0..8).map(|idx| idx as f32).collect();
+    let w: Vec<f32> = (0..16).map(|idx| idx as f32 * 0.5).collect();
     let sample = bind(&model, 8, 2, &x, &w).expect("形状合法");
 
     assert_eq!(sample.f32("x").expect("输入"), x.as_slice());

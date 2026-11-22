@@ -69,7 +69,7 @@ pub fn signal_rank(sigma: &[f64]) -> Option<usize> {
 }
 
 /// 对行主序 `a[m*n]` 做 SVD。
-pub fn compute(a: &[f64], m: usize, n: usize) -> Result<Svd> {
+pub fn compute_svd(a: &[f64], m: usize, n: usize) -> Result<Svd> {
     if !fits(a.len(), m, n) {
         return Err(Error::new(
             Code::Invalid,

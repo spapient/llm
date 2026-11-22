@@ -135,7 +135,7 @@ impl Kda {
         key: &[S],
         value: &[S],
     ) -> Result<()> {
-        self.check(memory)?;
+        self.check_memory(memory)?;
         self.check_values("值", value, self.value_dim)?;
         let (write, key) = self.gated_write(gate, write, key)?;
         for (value_idx, row) in memory.cells.chunks_exact_mut(self.key_dim).enumerate() {
@@ -159,7 +159,7 @@ impl Kda {
     ///
     /// 记忆几何与本层不符、查询宽度不符或查询含非有限值——返回 `Code::Invalid`。
     pub fn read<S: Scalar>(&self, memory: &Memory<S>, query: &[S]) -> Result<Vec<S>> {
-        self.check(memory)?;
+        self.check_memory(memory)?;
         self.check_values("查询", query, self.key_dim)?;
         Ok(memory
             .cells
@@ -169,7 +169,7 @@ impl Kda {
     }
 
     /// 状态几何必须与本层一致：错配的记忆是别的层的，读出来的数没有意义。
-    fn check<S: Scalar>(&self, memory: &Memory<S>) -> Result<()> {
+    fn check_memory<S: Scalar>(&self, memory: &Memory<S>) -> Result<()> {
         if memory.key_dim == self.key_dim && memory.value_dim == self.value_dim {
             return Ok(());
         }

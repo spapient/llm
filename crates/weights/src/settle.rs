@@ -316,7 +316,7 @@ fn certificate_of(archive: &Archive<'_>, seg: &Stored) -> Cert {
 pub(crate) fn sound_cert(note: &ledger::Note) -> Cert {
     let usable =
         note.method == ledger::EpsMethod::Residual && note.bound == ledger::Bound::Diagnostic;
-    if usable && ledger::check(note).is_ok() {
+    if usable && ledger::check_note(note).is_ok() {
         Cert::Diagnostic
     } else {
         Cert::Refused

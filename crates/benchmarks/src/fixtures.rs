@@ -6,7 +6,7 @@ use std::fmt;
 use testkit::Rng;
 
 /// 夹具失败：把原因写到 stderr，再以非零码退出。
-pub(crate) fn checked<T, E: fmt::Display>(result: Result<T, E>, what: &str) -> T {
+pub(crate) fn checked_or_exit<T, E: fmt::Display>(result: Result<T, E>, what: &str) -> T {
     match result {
         Ok(value) => value,
         Err(error) => {

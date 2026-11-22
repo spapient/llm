@@ -347,7 +347,7 @@ fn body<'a>(code: &'a str, name: &str) -> &'a str {
 /// 这条判据比计时更硬：`forbid(unsafe_code)` 下挂不了计数分配器，而毫秒数在 CI 上会抖；"每份声明
 /// 只分配一次"是结构事实，代码一退化就红。
 #[test]
-fn rendering_allocates_only_its_output_buffer() {
+fn rendering_allocates_only_its_output_buf() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/render.rs");
     let code = code_only(&fs::read_to_string(&path).expect("源码可读"));
     for entry in ["render", "render_model", "render_runtime"] {

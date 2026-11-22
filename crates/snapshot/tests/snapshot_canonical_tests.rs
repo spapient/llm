@@ -206,7 +206,12 @@ fn random_snapshots_keep_the_length_promise_and_the_bytes() {
             let bytes = dims.iter().product::<usize>() * 4;
             offset += (lcg(&mut state) % 512) as usize;
             entries.push(
-                Entry::new(format!("blk.{round}.w{idx}"), DType::F32, Shape::new(dims)).at(offset),
+                Entry::new(
+                    format!("blk.{round}.w{idx}"),
+                    DType::F32,
+                    Shape::new(dims),
+                )
+                .at(offset),
             );
             offset += bytes.max(1);
         }

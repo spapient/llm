@@ -60,7 +60,7 @@ impl AttnRes {
     /// 查询宽度不是 `d`、坐标集为空、坐标集里任一宽度不是 `d`、或任一输入非有限——返回
     /// `Code::Invalid`（放行会让 `NaN` 分数经 softmax 铺满整组权重）。
     pub fn mix<S: Scalar>(&self, query: &[S], values: &[&[S]]) -> Result<Vec<S>> {
-        self.check(query, values, "坐标集")?;
+        self.check_inputs(query, values, "坐标集")?;
         let scores: Vec<S> = values.iter().map(|value| dot(query, value)).collect();
         self.combine(&scores, values)
     }
@@ -110,7 +110,7 @@ impl AttnRes {
     }
 
     /// 入口校验：查询宽度与坐标集。
-    fn check<S: Scalar>(&self, query: &[S], values: &[&[S]], what: &str) -> Result<()> {
+    fn check_inputs<S: Scalar>(&self, query: &[S], values: &[&[S]], what: &str) -> Result<()> {
         self.check_row(query, "查询")?;
         self.check_rows(values, what)
     }

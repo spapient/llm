@@ -91,7 +91,7 @@ impl Format {
     pub const FOOTER_BYTES: usize = 4;
 
     /// 校验文件头：魔数一致且版本相同，不符时返回 [`Code::Invalid`]。
-    pub fn check(bytes: &[u8]) -> Result<()> {
+    pub fn check_bytes(bytes: &[u8]) -> Result<()> {
         let magic = need(bytes, 0..Self::MAGIC.len(), 0)?;
         let raw = need(
             bytes,
@@ -402,7 +402,7 @@ impl Snapshot {
 
     /// 只验字节：魔数、版本与 CRC-32，不解析条目表（巡检、备份、下载后自检不必付出一次解码）。
     pub fn verify(bytes: &[u8]) -> Result<()> {
-        Format::check(bytes)?;
+        Format::check_bytes(bytes)?;
         let Some(end) = bytes.len().checked_sub(Format::FOOTER_BYTES) else {
             return Err(truncated(bytes.len()));
         };

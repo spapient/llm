@@ -157,8 +157,12 @@ fn a_quantized_int8_projection_assembles_and_matches_the_reference() {
 #[test]
 fn a_quantized_int4_archive_loads_and_matches_the_reference() {
     let in_features = 32usize;
-    let x: Vec<f32> = (0..in_features).map(|idx| 1.0 + idx as f32 * 0.1).collect();
-    let codes: Vec<i8> = (0..in_features).map(|idx| (idx as i8 % 5) - 2).collect();
+    let x: Vec<f32> = (0..in_features)
+        .map(|idx| 1.0 + idx as f32 * 0.1)
+        .collect();
+    let codes: Vec<i8> = (0..in_features)
+        .map(|idx| (idx as i8 % 5) - 2)
+        .collect();
     let w = pack_codes(4, &codes);
     let scales = [0.25f32];
     let mut reference = vec![0.0; 1];

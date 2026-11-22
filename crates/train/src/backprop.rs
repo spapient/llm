@@ -85,7 +85,11 @@ fn copy_into(dst: &mut Vec<f32>, src: &[f32]) {
 }
 
 /// 把各输入的前向值整块拷出只读快照；任一前向值不在场即回缺失。
-fn collect_inputs<K: Kernel>(bufs: &Bufs<K>, step: &Node, out: &mut Vec<Vec<f32>>) -> Result<()> {
+fn collect_inputs<K: Kernel>(
+    bufs: &Bufs<K>,
+    step: &Node,
+    out: &mut Vec<Vec<f32>>,
+) -> Result<()> {
     let inputs = step.inputs();
     out.resize_with(inputs.len(), Vec::new);
     for (slot, &input) in out.iter_mut().zip(inputs) {
@@ -110,12 +114,18 @@ fn apply_formula<K: Kernel>(
 }
 
 /// 记一份梯度贡献；图外输入没有梯度缓冲，直接丢弃。
-fn feed<K: Kernel>(bufs: &mut Bufs<K>, tape: &Tape, var: Var, contrib: Vec<f32>) -> Result<()> {
+fn feed<K: Kernel>(
+    bufs: &mut Bufs<K>,
+    tape: &Tape,
+    var: Var,
+    contrib: Vec<f32>,
+) -> Result<()> {
     let receives = tape
         .requirement(var)
         .is_some_and(|requirement| !requirement.is_none());
     if receives {
-        bufs.accumulate_gradient(var, &contrib)
+        bufs
+            .accumulate_gradient(var, &contrib)
             .map_err(|error| error.with(SITE))?;
     }
     Ok(())
@@ -126,20 +136,24 @@ fn seed_loss<K: Kernel>(bufs: &mut Bufs<K>, loss: Var, scratch: &mut Scratch) ->
     let width = values(bufs, loss)?.len();
     scratch.ones.clear();
     scratch.ones.resize(width, 1.0);
-    bufs.load_gradient(loss, &scratch.ones)
+    bufs
+        .load_gradient(loss, &scratch.ones)
         .map_err(|error| error.with(SITE))?;
     Ok(())
 }
 
 /// 读变量在场的前向 f32 值；缺失是重放/装配口径问题。
 fn values<K: Kernel>(bufs: &Bufs<K>, var: Var) -> Result<&[f32]> {
-    bufs.value(var).and_then(|view| view.f32()).ok_or_else(|| {
-        Error::new(
-            Code::Missing,
-            format!("变量 {} 的前向值不在场，无法反传", var.id()),
-        )
-        .with(SITE)
-    })
+    bufs
+        .value(var)
+        .and_then(|view| view.f32())
+        .ok_or_else(|| {
+            Error::new(
+                Code::Missing,
+                format!("变量 {} 的前向值不在场，无法反传", var.id()),
+            )
+            .with(SITE)
+        })
 }
 
 /// 读节点输出已就位的上游梯度；缺失说明拓扑序上有前驱没回传到。

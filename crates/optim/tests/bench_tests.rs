@@ -74,7 +74,7 @@ fn the_measured_p50_backfills_effective_cost_coefficients() {
 }
 
 #[test]
-fn working_set_is_every_input_buffer_but_not_the_output() {
+fn working_set_is_every_input_buf_but_not_the_output() {
     let sample = Sample {
         m: 1,
         n: 2,

@@ -110,7 +110,7 @@ fn the_builtin_template_only_uses_declared_primitives() {
 }
 
 #[test]
-fn a_signature_with_an_unsupported_buffer_type_is_rejected_at_load() {
+fn a_signature_with_an_unsupported_buf_type_is_rejected_at_load() {
     // ABI 的唯一事实源是 `.k` 的签名：把 `scales` 写成 `double *` 必须在装载期就失败，
     // 而不是等 `cc` 报 C 的指针类型不兼容——诊断要带算子名与形参名。
     let op = int4();

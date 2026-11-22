@@ -490,9 +490,9 @@ fn tileable_threads(threads: usize) -> bool {
 /// 注意力签名与形状：4 缓冲（q/k/v/y）+ 2 标量（S/D），且形状落在共享内存/头宽上限内。
 fn attention_shape(run: &Run<'_>, sample: &Sample) -> bool {
     let params = run.op.signature.params();
-    let buffers = params.iter().filter(|p| p.ctype.is_buf()).count();
+    let bufs = params.iter().filter(|p| p.ctype.is_buf()).count();
     let scalars = params.iter().filter(|p| !p.ctype.is_buf()).count();
-    buffers == 4 && scalars == 2 && in_bounds(sample.m, sample.n)
+    bufs == 4 && scalars == 2 && in_bounds(sample.m, sample.n)
 }
 
 /// `S·4` 字节的分数块不超过 32 KiB 线程组内存，头宽不超过模板的 64。

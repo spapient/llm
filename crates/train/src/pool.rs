@@ -389,7 +389,7 @@ impl<K: Kernel> Bufs<K> {
 }
 
 impl<K: Kernel> Store for Bufs<K> {
-    fn compute(&mut self, op: &str, inputs: &[Var], output: Var) -> Result<()> {
+    fn compute_step(&mut self, op: &str, inputs: &[Var], output: Var) -> Result<()> {
         self.run(op, inputs, output, None)
     }
 

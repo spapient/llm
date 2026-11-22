@@ -216,7 +216,7 @@ fn valid() -> Note {
 fn note_roundtrips_through_bytes() {
     let note = valid();
 
-    assert!(check(&note).is_ok());
+    assert!(check_note(&note).is_ok());
 
     let bytes = note.to_bytes();
 
@@ -267,7 +267,7 @@ fn the_synthesis_error_adds_the_two_disjoint_terms() {
         ..valid()
     };
 
-    assert!(check(&note).is_ok());
+    assert!(check_note(&note).is_ok());
 
     assert!((note.synth() - 3e-3).abs() < 1e-18);
 }
@@ -282,7 +282,7 @@ fn a_candidate_only_measurement_cannot_sign_a_pass() {
         ..valid()
     };
 
-    assert!(check(&note).is_err());
+    assert!(check_note(&note).is_err());
 
     // 退到 Open 就不矛盾：它本来就没说“稳定”。
 
@@ -292,7 +292,7 @@ fn a_candidate_only_measurement_cannot_sign_a_pass() {
         ..note
     };
 
-    assert!(check(&open).is_ok());
+    assert!(check_note(&open).is_ok());
 }
 
 #[test]
@@ -303,7 +303,7 @@ fn an_l0_prime_candidate_bound_cannot_sign_lossless() {
         ..valid()
     };
 
-    assert!(check(&note).is_err());
+    assert!(check_note(&note).is_err());
 
     let open = Note {
         stable: Stable::Open,
@@ -315,7 +315,7 @@ fn an_l0_prime_candidate_bound_cannot_sign_lossless() {
         ..note
     };
 
-    assert!(check(&open).is_ok());
+    assert!(check_note(&open).is_ok());
 }
 
 #[test]
@@ -326,7 +326,7 @@ fn a_rank_choice_must_name_its_bound() {
         ..valid()
     };
 
-    assert!(check(&note).is_err());
+    assert!(check_note(&note).is_err());
 
     // 没用秩选择时，“未声明界”只是如实记录。
 
@@ -338,7 +338,7 @@ fn a_rank_choice_must_name_its_bound() {
         ..note
     };
 
-    assert!(check(&unused).is_ok());
+    assert!(check_note(&unused).is_ok());
 }
 
 #[test]
@@ -355,7 +355,7 @@ fn a_compensation_error_only_belongs_to_the_residual_mode() {
         ..valid()
     };
 
-    assert!(check(&trunc).is_err());
+    assert!(check_note(&trunc).is_err());
 }
 
 #[test]
@@ -366,7 +366,7 @@ fn a_bitwise_roundtrip_forbids_counting_the_compensation_twice() {
         ..valid()
     };
 
-    assert!(check(&note).is_err());
+    assert!(check_note(&note).is_err());
 }
 
 #[test]
@@ -405,7 +405,7 @@ fn invariant_violations_are_rejected() {
         ..valid()
     };
 
-    assert!(check(&base).is_err());
+    assert!(check_note(&base).is_err());
 
     let contradictory = Note {
         lossless: true,
@@ -417,5 +417,5 @@ fn invariant_violations_are_rejected() {
         ..base
     };
 
-    assert!(check(&contradictory).is_err());
+    assert!(check_note(&contradictory).is_err());
 }

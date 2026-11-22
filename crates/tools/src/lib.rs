@@ -14,6 +14,7 @@ pub mod lex;
 pub mod regress;
 pub mod stats;
 pub mod strip;
+pub mod words;
 
 /// 构建期生成的词汇表（`build.rs` 读 `lints/vocabulary.toml` 展开成 `Grid` 字面量）。
 #[allow(clippy::all, missing_docs)]

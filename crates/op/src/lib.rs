@@ -202,12 +202,12 @@ crate::for_each_operator!(registry_impl);
 
 /// 名字是否在注册表里；const 上下文可用。
 pub const fn contains(name: &str) -> bool {
-    let mut index = 0;
-    while index < REGISTRY.len() {
-        if same_bytes(name, REGISTRY[index].name) {
+    let mut idx = 0;
+    while idx < REGISTRY.len() {
+        if same_bytes(name, REGISTRY[idx].name) {
             return true;
         }
-        index += 1;
+        idx += 1;
     }
     false
 }

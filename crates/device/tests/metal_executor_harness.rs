@@ -1,7 +1,7 @@
 use super::*;
 use llm_optim::backend::TensorGeometry;
 use llm_optim::execution::Backend::Metal;
-use llm_optim::execution::{Mode, program};
+use llm_optim::execution::{Mode, program, program_sample};
 
 pub(super) fn bench_device(hint: &str) -> Option<(MetalDevice, MetalCommandQueue)> {
     let Some(device) = MetalDevice::system_default() else {
@@ -32,6 +32,23 @@ pub(super) fn matmul_inputs(m: usize, n: usize, k: usize) -> (Vec<f32>, Vec<f32>
 pub(super) fn matmul_values(m: usize, n: usize, k: usize) -> (Vec<f32>, Vec<f32>) {
     let a: Vec<f32> = (0..m * k).map(|i| ((i % 5) as f32) * 0.25 - 0.5).collect();
     let b: Vec<f32> = (0..k * n).map(|i| ((i % 7) as f32) * 0.2 - 0.4).collect();
+    (a, b)
+}
+
+/// 满尾数样本：每个值都用足 f32 的 24 位有效位（`[0.5, 1)` 内的规约数再缩放到 `(0.7, 1)`
+/// 区间）。这种输入进入 half 必然要舍入，因而能验出「张量核确实按 half 精度舍入」而不是
+/// 靠夹具恰好可精确表示而得出的假零误差。
+pub(super) fn full_mantissa_values(m: usize, n: usize, k: usize) -> (Vec<f32>, Vec<f32>) {
+    // xorshift64*：确定性、无外部依赖，低位也参与高位运算，避免 `i % 7` 那种短周期。
+    let mut state = 0x9e37_79b9_7f4a_7c15u64;
+    let mut next = || {
+        state ^= state >> 12;
+        state ^= state << 25;
+        state ^= state >> 27;
+        (state.wrapping_mul(0x2545_f491_4f6c_dd1d) >> 40) as f32 / (1u32 << 24) as f32
+    };
+    let a = (0..m * k).map(|_| 0.7 + next() * 0.3).collect();
+    let b = (0..k * n).map(|_| 0.7 + next() * 0.3).collect();
     (a, b)
 }
 
@@ -101,6 +118,23 @@ pub(super) fn grid_pipeline(
     what: &str,
 ) -> MetalPipeline {
     let msl = program(catalogue, dirs, kernel, Metal, Mode::declared(), m, n)
+        .and_then(|stages| stages.one("降源"))
+        .unwrap_or_else(|_| panic!("{what} MSL 应能生成"));
+    device
+        .compile(&msl)
+        .unwrap_or_else(|| panic!("{what} MSL 应能编译"))
+}
+
+/// 同 [`grid_pipeline`]，但形状由样本显式给出（`K` 不是 `(m, n)` 的函数，只能这样传）。
+pub(super) fn grid_pipeline_sample(
+    device: &MetalDevice,
+    catalogue: &cutile::builtin::Catalogue,
+    dirs: &cutile::dirs::Dirs,
+    kernel: &str,
+    sample: &op::model::Sample,
+    what: &str,
+) -> MetalPipeline {
+    let msl = program_sample(catalogue, dirs, kernel, Metal, Mode::declared(), sample)
         .and_then(|stages| stages.one("降源"))
         .unwrap_or_else(|_| panic!("{what} MSL 应能生成"));
     device
@@ -412,10 +446,23 @@ impl TensorStage {
 pub(super) fn tensor_stage(
     device: &MetalDevice,
     queue: &MetalCommandQueue,
-    (m, n, k): (usize, usize, usize),
+    shape: (usize, usize, usize),
     want_reference: bool,
 ) -> TensorStage {
+    let (m, n, k) = shape;
     let (a, b) = matmul_values(m, n, k);
+    tensor_stage_from(device, queue, shape, (a, b), want_reference)
+}
+
+/// 同 [`tensor_stage`]，输入由调用方给定：样本值能否精确表示成 half，直接决定这条用例
+/// 能不能验出舍入误差，因而必须可由用例自己掌握而不是钉在夹具里。
+pub(super) fn tensor_stage_from(
+    device: &MetalDevice,
+    queue: &MetalCommandQueue,
+    (m, n, k): (usize, usize, usize),
+    (a, b): (Vec<f32>, Vec<f32>),
+    want_reference: bool,
+) -> TensorStage {
     let a_buf = upload(device, &a, "A");
     let b_buf = upload(device, &b, "B");
     let bt_buf = device.new_buf(n * k * 2).expect("Bt 缓冲");

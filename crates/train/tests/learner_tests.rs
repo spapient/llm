@@ -260,7 +260,9 @@ fn records_distillation_loss_when_metric_is_distill() -> Result<()> {
     sizes.set(teacher, Shape::new([VOCAB]), DType::F32);
 
     let learner = run_metric_batch(tape, sizes, p, x, logits, loss, |session| {
-        session.bufs().load(teacher, Data::F32(vec![1.0; VOCAB]))?;
+        session
+            .bufs()
+            .load(teacher, Data::F32(vec![1.0; VOCAB]))?;
         Ok(Metric::Distill {
             teacher,
             config: Distill::new(2.0, 0.5),

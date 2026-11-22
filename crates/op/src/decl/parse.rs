@@ -154,15 +154,15 @@ pub(super) fn grid_dims(section: &Table) -> diagnostic::Result<Vec<(String, Stri
     let dims = items
         .iter()
         .enumerate()
-        .map(|(index, item)| grid_item(index, item))
+        .map(|(idx, item)| grid_item(idx, item))
         .collect::<diagnostic::Result<Vec<_>>>()?;
     check_grid_dims(&dims)?;
     Ok(dims)
 }
 
 /// 解析一维：`"线程:标量"`，两个名字都不能为空。
-pub(super) fn grid_item(index: usize, item: &Value) -> diagnostic::Result<(String, String)> {
-    let path = format!("grid.dims[{index}]");
+pub(super) fn grid_item(idx: usize, item: &Value) -> diagnostic::Result<(String, String)> {
+    let path = format!("grid.dims[{idx}]");
     let Value::Str(text) = item else {
         return Err(field(&path, "必须是 `线程:标量` 字符串"));
     };

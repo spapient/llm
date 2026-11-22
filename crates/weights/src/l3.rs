@@ -46,7 +46,7 @@ impl Rung {
             ("b", offset),
         ];
         for (name, value) in facts {
-            check(name, value)?;
+            check_value(name, value)?;
         }
         Ok(Self {
             rho,
@@ -121,7 +121,7 @@ pub struct Chain {
 impl Chain {
     /// 由输入界与逐段事实构造；`input` 必须非负有限（`R = ‖x‖₂` 的上界）。
     pub fn new(input: f64, rungs: Vec<Rung>) -> Result<Self> {
-        check("R", input)?;
+        check_value("R", input)?;
         Ok(Self {
             input,
             rungs,
@@ -282,7 +282,7 @@ fn latent_sum(rungs: &[Rung]) -> f64 {
 }
 
 /// 单个量必须是有限非负数：负的范数不是"更紧的界"，`NaN` 更会让整条比较链静默失效。
-fn check(label: &str, value: f64) -> Result<()> {
+fn check_value(label: &str, value: f64) -> Result<()> {
     if !value.is_finite() || value < 0.0 {
         return Err(bad(format!("{label} 必须是有限的非负数，实际 {value}")));
     }

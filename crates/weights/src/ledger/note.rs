@@ -96,7 +96,7 @@ fn tail(cur: &mut Cursor<'_>) -> Result<([f64; 4], [bool; 2])> {
 }
 
 /// 不变量校验：证书自己能查的矛盾，全部在这里挡住。
-pub fn check(n: &Note) -> Result<()> {
+pub fn check_note(n: &Note) -> Result<()> {
     encoded(n)?;
     measured(n)?;
     compensated(n)?;
@@ -177,7 +177,7 @@ fn rules(table: &[(bool, &str)]) -> Result<()> {
 
 /// 读取侧复核：证书里凡是能从载荷自身重算的，都要重算一遍。
 pub fn audit(note: &Note, m: usize, n: usize, low: &[f32], rest: &[f32]) -> Result<()> {
-    check(note)?;
+    check_note(note)?;
     let rank = note.rank as usize;
     let facts = [
         (note.used, "证书没记录秩选择，却出现在秩载荷里"),

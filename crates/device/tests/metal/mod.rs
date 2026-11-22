@@ -10,7 +10,7 @@ use super::harness::*;
 use super::*;
 use llm_optim::backend::TensorGeometry;
 use llm_optim::execution::Backend::Metal;
-use llm_optim::execution::{Mode, program};
+use llm_optim::execution::{Mode, program, program_sample};
 
 mod attention;
 mod contract;

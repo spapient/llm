@@ -79,7 +79,7 @@ impl<S: Scalar> Boundary<S> {
 
     /// 入口校验：参数、下标与**本字节及前一个字节**的分数都在定义域内。
     fn probe(self, scores: &[S], idx: usize) -> Result<()> {
-        self.check()?;
+        self.check_patch()?;
         if idx >= scores.len() {
             return Err(Error::new(
                 Code::Invalid,
@@ -103,7 +103,7 @@ impl<S: Scalar> Boundary<S> {
     }
 
     /// 参数自检：越界的参数不切分，也不被夹到边界值上。
-    fn check(self) -> Result<()> {
+    fn check_patch(self) -> Result<()> {
         match self {
             Self::Entropy { global, rise } => thresholds(global, rise),
             Self::Rate { window, top } => ranks(window, top),

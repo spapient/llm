@@ -291,7 +291,7 @@ pub(crate) struct Components {
 /// 一次 f64 SVD → 秩 / 低秩项 `L_r` / 显式残差 `C = W − L_r`；无谱隙即拒压。
 pub(crate) fn decompose(w: &[f32], m: usize, n: usize) -> Result<Option<Components>> {
     let a: Vec<f64> = w.iter().map(|&x| f64::from(x)).collect();
-    let d = svd::compute(&a, m, n)?;
+    let d = svd::compute_svd(&a, m, n)?;
     let Some(rank) = svd::signal_rank(&d.sigma) else {
         return Ok(None);
     };

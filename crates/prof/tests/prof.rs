@@ -506,7 +506,7 @@ fn a_declared_witness_is_validated_below_l2() {
 /// 两条签名不能共用一份见证：执行通过的结论必须能归属到具体的那一条。
 ///
 /// 见证证明的是"这条签名写的是什么算法"，共用入口会让"每条 provides 都有见证"退化成
-/// "每条都指向同一份证据"——`mmad` 与 `scalar_fma` 正是两种算法。
+/// "每条都指向同一份证据"——`mmad` 与 `fma4` 正是两种算法。
 #[test]
 fn a_witness_may_serve_only_one_signature() {
     let mut profile = Profile::parse(ascend()).expect("可解析");

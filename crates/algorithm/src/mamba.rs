@@ -127,7 +127,7 @@ impl<S: Scalar> Mamba<S> {
         select_b: &[S],
         select_c: &[S],
     ) -> Result<Vec<S>> {
-        self.check(carry)?;
+        self.check_carry(carry)?;
         self.check_inputs(input, delta, select_b, select_c)?;
         let mut output = vec![S::ZERO; self.width];
         for (channel, slot) in output.iter_mut().enumerate() {
@@ -172,7 +172,7 @@ impl<S: Scalar> Mamba<S> {
     }
 
     /// 状态几何必须与本层一致：错配的状态是别的层的，读出来的数没有意义。
-    fn check(&self, carry: &Carry<S>) -> Result<()> {
+    fn check_carry(&self, carry: &Carry<S>) -> Result<()> {
         let cells = self.width * self.pairs * 2;
         if carry.planes.len() == cells && carry.taps.len() == self.width {
             return Ok(());

@@ -88,8 +88,8 @@ fn verify_rows(listed: &[Value], entries: &[Settled]) -> Result<()> {
 /// 顶层的两个标量格：`schema` 与 `file_len` 都得按规范写法与这份字节相等。
 fn verify_header(root: &[(String, Value)], settled: &Settlement) -> Result<()> {
     only(root, &["schema", "file_len", "tensors"], "账本")?;
-    check(root, "schema", SCHEMA, "账本")?;
-    check(root, "file_len", &settled.file_len().to_string(), "账本")
+    check_field(root, "schema", SCHEMA, "账本")?;
+    check_field(root, "file_len", &settled.file_len().to_string(), "账本")
 }
 
 /// 条目数必须与段表一致：多一条、少一条都是错位的账。
@@ -109,7 +109,7 @@ fn verify_row(fields: &[(String, Value)], entry: &Settled) -> Result<()> {
     let names: Vec<&str> = want.iter().map(|(key, _)| *key).collect();
     only(fields, &names, entry.name())?;
     for (key, value) in &want {
-        check(fields, key, value, entry.name())?;
+        check_field(fields, key, value, entry.name())?;
     }
     Ok(())
 }
@@ -128,7 +128,7 @@ fn only(fields: &[(String, Value)], allowed: &[&str], owner: &str) -> Result<()>
 }
 
 /// 一格账的比对：键必须在、且按**规范写法**逐字等于现算值。
-fn check(fields: &[(String, Value)], key: &str, want: &str, owner: &str) -> Result<()> {
+fn check_field(fields: &[(String, Value)], key: &str, want: &str, owner: &str) -> Result<()> {
     let text = written(field(fields, key, owner)?)?;
     if text == want {
         return Ok(());

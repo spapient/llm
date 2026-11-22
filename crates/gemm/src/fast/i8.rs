@@ -10,12 +10,14 @@ use std::thread;
 
 use diagnostic::{Code, Error, Result};
 
-use super::compute;
+use super::compute_gemm;
 use super::pack::b_groups;
 use super::pool::{Bufs, Job, Shape, pool, run_pooled};
 use super::tn;
 
 pub(super) const I8_MR: usize = 4;
+
+const RC_SWEEP: usize = 0;
 
 /// i8 微内核列数（4 个 int32x4 累加器 × 4 行 = 16 寄存器，避开溢出）。
 pub(super) const I8_NR: usize = 4;
@@ -112,7 +114,7 @@ pub(super) fn f32_calc(j: &Job, slot: usize) {
         if j.tn {
             tn::compute_tn(a_l, bp, b, rows, j.n, j.k, out_l);
         } else {
-            compute(a_l, bp, b, rows, j.n, j.k, out_l);
+            compute_gemm(a_l, bp, b, rows, j.n, j.k, out_l);
         }
     }
 }
@@ -294,11 +296,7 @@ pub const SDOT_BLOCK_MAC_PER_K: usize = 16;
 /// `false` 且不执行任何向量指令。只在 `bench` 特性下编译。
 #[cfg(all(feature = "bench", target_arch = "aarch64"))]
 pub fn port_sdot_block(rounds: usize, a: &[i8], b: &[i8], k: usize) -> bool {
-    if rounds == 0
-        || k == 0
-        || k % 16 != 0
-        || a.len() < 4 * k
-        || b.len() < 4 * k
+    if rounds == 0 || k == 0 || k % 16 != 0 || a.len() < 4 * k || b.len() < 4 * k
         || !std::arch::is_aarch64_feature_detected!("dotprod")
     {
         return false;
@@ -345,7 +343,7 @@ unsafe fn sdot_block_rounds(rounds: usize, ap: *const i8, bp: *const i8, k: usiz
 
 /// B 转置打包成 `[nblk][nb][k]`（同列 k 连续），返回 `(面板, n 补齐到 8)`。
 mod kernel {
-    use super::{I8_MR, I8_NR};
+    use super::{I8_MR, I8_NR, RC_SWEEP};
 
     /// 单线程块计算（B 面板已备）：**N 分组在最外层**，每组 8×k 的 B 瓦片常驻 L1，
     /// 被本线程所有行对复用——否则每行对都把整块 B 重读一遍，卡在内存带宽。
@@ -360,7 +358,11 @@ mod kernel {
     ) {
         let kvec = k - k % 16;
         // 行块要让 A 的 `rc × k` 字节留在 L1（约 128KB），否则每个列块都要从 L2 重拉整块 A。
-        let rc = ((1usize << 17) / k.max(1)).clamp(I8_MR, 256);
+        let rc = if RC_SWEEP > 0 {
+            RC_SWEEP
+        } else {
+            ((1usize << 17) / k.max(1)).clamp(I8_MR, 256)
+        };
         let rc = (rc / I8_MR) * I8_MR;
         let mut r0 = 0;
         while r0 < rows {

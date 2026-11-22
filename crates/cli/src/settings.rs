@@ -127,7 +127,12 @@ impl Settings {
     }
 
     /// 一条参数的下标推进：`--set` / `--config` 消费两条，其余原样留下。
-    fn next_idx(&mut self, args: &[String], idx: usize, rest: &mut Vec<String>) -> Result<usize> {
+    fn next_idx(
+        &mut self,
+        args: &[String],
+        idx: usize,
+        rest: &mut Vec<String>,
+    ) -> Result<usize> {
         if args[idx] == "--set" {
             self.apply_at(args, idx)
         } else if args[idx] == "--config" {

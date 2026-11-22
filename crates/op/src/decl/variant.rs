@@ -15,7 +15,7 @@ pub(super) fn variants(table: &Table) -> diagnostic::Result<Vec<Variant>> {
         .unwrap_or_default()
         .iter()
         .enumerate()
-        .map(|(index, entry)| variant(index, entry))
+        .map(|(idx, entry)| variant(idx, entry))
         .collect::<diagnostic::Result<_>>()?;
     check_count(&variants)?;
     variants.sort_by_key(|variant| variant.order);
@@ -58,35 +58,35 @@ fn check_chain(variants: &[Variant]) -> diagnostic::Result<()> {
 }
 
 /// 一个 `[[variants]]` 段：名字与优先级、调度、非 MMA 占比、增量需求。
-fn variant(index: usize, entry: &Table) -> diagnostic::Result<Variant> {
-    let (name, order) = identity(index, entry)?;
-    let schedule = schedule(index, entry)?;
-    let mma_share = share(index, entry)?;
+fn variant(idx: usize, entry: &Table) -> diagnostic::Result<Variant> {
+    let (name, order) = identity(idx, entry)?;
+    let schedule = schedule(idx, entry)?;
+    let mma_share = share(idx, entry)?;
     Ok(Variant {
         name,
         order,
         schedule,
         mma_share,
-        extra_needs: extra_needs(index, entry)?,
+        extra_needs: extra_needs(idx, entry)?,
     })
 }
 
 /// 变体名与优先级：两个键都必填，负的 `order` 按 0 处理。
-fn identity(index: usize, entry: &Table) -> diagnostic::Result<(String, u32)> {
+fn identity(idx: usize, entry: &Table) -> diagnostic::Result<(String, u32)> {
     let name = entry
         .string("name")
-        .ok_or_else(|| field(&field_path(index, "name"), "缺失"))?
+        .ok_or_else(|| field(&field_path(idx, "name"), "缺失"))?
         .to_string();
     let order = entry
         .int("order")
-        .ok_or_else(|| field(&field_path(index, "order"), "缺失"))?
+        .ok_or_else(|| field(&field_path(idx, "order"), "缺失"))?
         .max(0) as u32;
     Ok((name, order))
 }
 
 /// 调度：`schedule` 必须落在调度闭集内。
-fn schedule(index: usize, entry: &Table) -> diagnostic::Result<Schedule> {
-    let path = field_path(index, "schedule");
+fn schedule(idx: usize, entry: &Table) -> diagnostic::Result<Schedule> {
+    let path = field_path(idx, "schedule");
     let text = entry
         .string("schedule")
         .ok_or_else(|| field(&path, "缺失"))?;
@@ -94,8 +94,8 @@ fn schedule(index: usize, entry: &Table) -> diagnostic::Result<Schedule> {
 }
 
 /// 非 MMA 占比：`0..=1` 之间。
-fn share(index: usize, entry: &Table) -> diagnostic::Result<f64> {
-    let path = field_path(index, "mma_share");
+fn share(idx: usize, entry: &Table) -> diagnostic::Result<f64> {
+    let path = field_path(idx, "mma_share");
     let mma_share = entry
         .float("mma_share")
         .ok_or_else(|| field(&path, "缺失"))?;
@@ -106,11 +106,11 @@ fn share(index: usize, entry: &Table) -> diagnostic::Result<f64> {
 }
 
 /// `extra_needs`：变体自己追加的需求。
-fn extra_needs(index: usize, entry: &Table) -> diagnostic::Result<Vec<Need>> {
+fn extra_needs(idx: usize, entry: &Table) -> diagnostic::Result<Vec<Need>> {
     let Some(section) = entry.table("extra_needs") else {
         return Ok(Vec::new());
     };
-    let prefix = field_path(index, "");
+    let prefix = field_path(idx, "");
     section
         .entries()
         .iter()
@@ -119,6 +119,6 @@ fn extra_needs(index: usize, entry: &Table) -> diagnostic::Result<Vec<Need>> {
 }
 
 /// `variants[i].{name}` 形式的字段路径；`name` 为空时只剩前缀。
-fn field_path(index: usize, name: &str) -> String {
-    format!("variants[{index}].{name}")
+fn field_path(idx: usize, name: &str) -> String {
+    format!("variants[{idx}].{name}")
 }
