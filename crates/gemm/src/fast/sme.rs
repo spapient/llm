@@ -29,18 +29,11 @@ fn available() -> bool {
 
 /// 16×64 整铺 SME GEMM：`out[m,n] = a[m,k] · b[k,n]`。
 pub(super) fn gemm(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f32]) -> bool {
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        let _ = (a, b, m, n, k, out);
-        false
+    if rejects(m, n, k) {
+        return false;
     }
-    {
-        if rejects(m, n, k) {
-            return false;
-        }
-        packed(a, b, m, n, k, out, threads_for(m, n));
-        true
-    }
+    packed(a, b, m, n, k, out, threads_for(m, n));
+    true
 }
 
 /// 线程数：行块（`m/MR`）与列组（`n/NR`）同时决定上限，两者都不能切出空槽。
