@@ -39,11 +39,19 @@ fn check_group_norm(groups: usize, channels: usize, layer: &str) -> Result<()> {
 /// 展开成两件事——那条轴的只读访问器、以及「下界一律问语义表」的 `Contract` 实现。
 /// 与 `layer_delegate!` 同一个理由：同一段结构抄四遍时，第五遍一定会抄错一处。
 macro_rules! norm_contract {
-    ($ty:ident, $op:literal, $axis:ident) => {
+    ($ty:ident, $op:literal, $axis:ident, $opty:ident) => {
         impl $ty {
             #[doc = concat!("归一化所沿那条轴的尺寸（`", stringify!($axis), "`）。")]
             pub fn $axis(&self) -> usize {
                 self.$axis
+            }
+
+            /// 归一化算子的参数袋：`eps`、以及该层独有的 `momentum` / `groups`。
+            ///
+            /// 存了就必须能读回。否则它只是会被拷贝、会被比较、却永远不参与判断的状态，
+            /// 而调用方想核对超参时只能回到构造它的地方。
+            pub fn norm(&self) -> &$opty {
+                &self.norm
             }
         }
 
@@ -97,7 +105,7 @@ impl BatchNorm2d {
     }
 }
 
-norm_contract!(BatchNorm2d, "batch_norm_f32", channels);
+norm_contract!(BatchNorm2d, "batch_norm_f32", channels, OpBatch);
 
 /// 组归一化层：`(n, group)` 内按 `(C/G, spatial)` 统计。规格构造口径同 [`BatchNorm2d`]。
 #[derive(Debug, Clone, PartialEq)]
@@ -131,7 +139,7 @@ impl GroupNorm {
     }
 }
 
-norm_contract!(GroupNorm, "group_norm_f32", channels);
+norm_contract!(GroupNorm, "group_norm_f32", channels, OpGroup);
 
 /// 实例归一化层：等价于 `GroupNorm(groups = channels)`。规格构造口径同 [`BatchNorm2d`]。
 #[derive(Debug, Clone, PartialEq)]
@@ -161,7 +169,7 @@ impl InstanceNorm {
     }
 }
 
-norm_contract!(InstanceNorm, "instance_norm_f32", channels);
+norm_contract!(InstanceNorm, "instance_norm_f32", channels, OpInst);
 
 /// 层归一化层：逐行在最后一维 `width` 上统计。规格构造口径同 [`BatchNorm2d`]。
 #[derive(Debug, Clone, PartialEq)]
@@ -187,4 +195,4 @@ impl LayerNorm {
     }
 }
 
-norm_contract!(LayerNorm, "layer_norm_f32", width);
+norm_contract!(LayerNorm, "layer_norm_f32", width, OpLayer);

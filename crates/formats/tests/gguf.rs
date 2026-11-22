@@ -6,7 +6,7 @@ use crate::quant::f16_to_f32;
 mod fixture;
 
 #[test]
-fn half_specials() {
+fn f16_to_f32_handles_subnormals_infinity_nan_and_zero() {
     assert_eq!(f16_to_f32(0x0001), 5.960_464_5e-8);
     assert!(f16_to_f32(0xFC00).is_infinite() && f16_to_f32(0xFC00) < 0.0);
     assert!(f16_to_f32(0x7C01).is_nan());
@@ -14,7 +14,7 @@ fn half_specials() {
 }
 
 #[test]
-fn value_views_match_variant() {
+fn value_accessors_return_their_own_variant() {
     assert_eq!(Value::Int(-7).int(), Some(-7));
     assert_eq!(Value::Float(1.5).float(), Some(1.5));
     assert_eq!(Value::Bool(true).bool(), Some(true));
@@ -82,17 +82,12 @@ fn undecoded_qtypes_are_explicit() {
             Layout::Block(qtype) => Some(*qtype),
         })
         .collect();
-    assert_eq!(
-        decoded,
-        [QType::Q8_0, QType::Q4_K, QType::Q5_K, QType::Q6_K]
-    );
+    let pinned = [QType::Q8_0, QType::Q4_K, QType::Q5_K, QType::Q6_K];
+    assert_eq!(decoded, pinned);
     // 其余 QType 尚无解码器；接上时要同步这张表与 `blocked` 的分派。
     assert_eq!(QType::ALL.len() - decoded.len(), 21);
     for qtype in &decoded {
-        assert!(
-            QType::ALL.contains(qtype),
-            "{qtype:?} 必须在 dtype 的闭集里"
-        );
+        assert!(QType::ALL.contains(qtype), "{qtype:?}");
     }
 }
 

@@ -127,10 +127,9 @@ unsafe fn fma_pure_rounds(rounds: usize) {
         let mut acc = [vdupq_n_f32(0.0); 16];
         let av = vdupq_n_f32(1.000_000_1);
         for _ in 0..rounds {
-            for (i, chain) in acc.iter_mut().enumerate() {
-                *chain = vfmaq_laneq_f32::<{ 0 }>(*chain, av, av);
-                // 通道下标取自循环计数，保证 16 条互不依赖而非同一条的串行链。
-                std::hint::black_box(i);
+            // 16 个累加器互不依赖：每条只读自己，不构成串行链。
+            for chain in &mut acc {
+                *chain = vfmaq_f32(*chain, av, av);
             }
         }
         std::hint::black_box(acc);

@@ -42,8 +42,8 @@ fn the_bias_costs_two_vectors_per_direction() {
 /// 每层每方向四件张量，名字与真实 checkpoint 逐字相同（反向加 `_reverse`）。
 #[test]
 fn every_direction_owns_the_four_checkpoint_tensors() {
-    let layer = Recurrent::new("r", Cell::Gru, 16, 8, 2, 2, true).expect("合法");
-    let entries = layer.weight_entries("blk");
+    let layer = Recurrent::new("blk.gru", Cell::Gru, 16, 8, 2, 2, true).expect("合法");
+    let entries = layer.weight_entries();
     assert_eq!(entries.len(), 2 * 2 * 4, "两层双向 × 四件");
     let names: Vec<&str> = entries.iter().map(|(name, _)| name.as_str()).collect();
     assert_eq!(
@@ -67,10 +67,10 @@ fn every_direction_owns_the_four_checkpoint_tensors() {
 /// 形状按门堆叠：矩阵 `[门数·隐宽, 该侧宽]`、偏置 `[门数·隐宽]`；隐侧第二维永远是隐宽。
 #[test]
 fn the_entry_shapes_stack_the_gates() {
-    let layer = Recurrent::new("r", Cell::Lstm, 16, 8, 2, 2, true).expect("合法");
+    let layer = Recurrent::new("blk.lstm", Cell::Lstm, 16, 8, 2, 2, true).expect("合法");
     let shape = |name: &str| {
         layer
-            .weight_entries("blk")
+            .weight_entries()
             .into_iter()
             .find(|(n, _)| n == name)
             .map(|(_, shape)| shape.dims().to_vec())
@@ -98,7 +98,7 @@ fn the_parameter_total_equals_the_declared_tensors() {
         for bias in [false, true] {
             let layer = Recurrent::new("r", cell, 6, 5, 2, 2, bias).expect("合法");
             let declared: usize = layer
-                .weight_entries("blk")
+                .weight_entries()
                 .iter()
                 .map(|(_, shape)| shape.numel())
                 .sum();
@@ -226,4 +226,19 @@ fn zero_sizes_and_impossible_directions_are_rejected() {
     assert_eq!(of(16, 8, 1, 0).code(), Code::Invalid);
     assert_eq!(of(16, 8, 1, 3).code(), Code::Invalid, "三向不存在");
     assert!(of(16, 8, 1, 3).to_string().contains("dirs = 3"));
+}
+
+/// 门数是单元的唯一标识：`of_gates` 是 `gates` 的逆，且三种单元的门数不撞车。
+#[test]
+fn the_gate_count_identifies_the_cell() {
+    for cell in Cell::ALL {
+        assert_eq!(Cell::of_gates(cell.gates()), Some(cell));
+    }
+    let gates: std::collections::BTreeSet<usize> = Cell::ALL.iter().map(|cell| cell.gates()).collect();
+    assert_eq!(
+        gates.len(),
+        Cell::ALL.len(),
+        "门数重复会让从检查点反推单元变成猜"
+    );
+    assert_eq!(Cell::of_gates(2), None, "两门不是任何一种单元");
 }

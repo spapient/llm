@@ -299,3 +299,67 @@ fn a_scale_with_no_matching_group_is_named_not_silently_priced() {
         floor.unpriced()[0]
     );
 }
+
+/// 一份真实 LSTM 检查点：2 层、双向、隐宽 5、输入 16。
+///
+/// 第二层的输入宽是 `隐宽·2 = 10` 而不是 16，故意与首层不同：若识别实现把「第一层吃输入宽」
+/// 抄成「每层都吃输入宽」，这条用例就会在重新生成那一步对不上。
+fn lstm_entries() -> Vec<Entry> {
+    let (input, hidden, gates, layers, dirs) = (16usize, 5usize, 4usize, 2usize, 2usize);
+    let mut entries = Vec::new();
+    let mut at = 0usize;
+    for level in 0..layers {
+        let width = if level == 0 { input } else { hidden * dirs };
+        for dir in 0..dirs {
+            let rev = if dir == 0 { "" } else { "_reverse" };
+            let rows = gates * hidden;
+            for (suffix, shape) in [
+                ("weight_ih", Shape::new([rows, width])),
+                ("weight_hh", Shape::new([rows, hidden])),
+                ("bias_ih", Shape::new([rows])),
+                ("bias_hh", Shape::new([rows])),
+            ] {
+                let name = format!("blk.lstm.{suffix}_l{level}{rev}");
+                let offset = at;
+                at += shape.element_bytes(DType::F32);
+                entries.push(Entry::new(name, DType::F32, shape).at(offset));
+            }
+        }
+    }
+    entries
+}
+
+/// 四件权重被认成**一次**循环层，而不是八次投影。
+#[test]
+fn a_recurrent_family_is_recognised_from_its_own_shapes() {
+    let model = Stack::from_header(&header(lstm_entries())).expect("形状合法");
+    assert_eq!(model.layers().len(), 1, "四件 × 层 × 方向只算一层");
+    let layer = model.layers()[0].recurrent().expect("认出的是循环层");
+    assert_eq!(layer.cell(), Cell::Lstm, "门数 4 反推出四门单元");
+    assert_eq!(
+        (layer.input(), layer.hidden(), layer.layers(), layer.dirs()),
+        (16, 5, 2, 2),
+        "输入宽看 `weight_ih`、隐宽看 `weight_hh` 的第二维、规模看层号最大值"
+    );
+    assert!(layer.bias(), "有 `bias_ih` 就是带偏置的单元");
+    assert!(model.uncovered().is_empty(), "四件全部归入这一层");
+    assert!(
+        model.floor().total().flops() > 0.0,
+        "认出来就要能计价，否则只是换了个地方放名字"
+    );
+}
+
+/// 缺一件就一件都不认：秩为 2 的 `weight_ih_l0` 不会被悄悄当成一个投影。
+#[test]
+fn a_partial_recurrent_family_is_reported_not_priced_as_a_projection() {
+    let model = Stack::from_header(&header(vec![
+        Entry::new("blk.lstm.weight_ih_l0", DType::F32, Shape::new([20, 16])).at(0),
+    ]))
+    .expect("形状合法");
+    assert!(model.layers().is_empty(), "没有 `weight_hh` 就定不出门数与隐宽");
+    assert_eq!(
+        model.uncovered(),
+        ["blk.lstm.weight_ih_l0"],
+        "认不出就如实报出：把它当投影会让层名与真实张量对不上"
+    );
+}

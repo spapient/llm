@@ -112,13 +112,11 @@ pub use attention::{Attention, AttentionAlgo, AttentionBlock, DecodeAttention, L
 pub use declare::Bounds;
 
 #[doc(inline)]
-#[doc(inline)]
 pub use engram::{Bypass, MemoryBlock, Table, allocate, next_prime, phi, slot_of, slots};
 
 #[doc(inline)]
 pub use lm_head::LmHead;
 
-#[doc(inline)]
 #[doc(inline)]
 pub use format::WeightFormat;
 
@@ -299,6 +297,14 @@ pub trait Contract {
 
     /// 若这一层是条件记忆层，返回它的类型化视图。
     fn memory(&self) -> Option<&crate::engram::MemoryBlock> {
+        None
+    }
+
+    /// 若这一层是循环层，返回它的类型化视图。
+    ///
+    /// 与 [`Contract::linear`] 同一个用途：从检查点装配一侧只拿到 `dyn Contract`，要读回
+    /// 「几层、几个方向、哪种单元」就得靠这条下行通道，而不是再猜一次名字。
+    fn recurrent(&self) -> Option<&crate::recurrent::Recurrent> {
         None
     }
 }

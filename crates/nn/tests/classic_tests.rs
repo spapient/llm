@@ -97,11 +97,14 @@ fn norm_layers_check_their_geometry() {
     assert_eq!(bn.output().dims(), [64]);
     assert_eq!(bn.spca().ops(), ["batch_norm_f32"]);
     assert!(bn.bounds().expect("合法").is_some());
+    // 超参存了就必须能读回：否则它只是会被拷贝、会被比较、却永不参与判断的状态。
+    assert_eq!((bn.norm().eps, bn.norm().momentum), (1e-5, 0.1));
     assert!(BatchNorm2d::new("bn", 64, 0.0, 0.1).is_err());
     assert!(BatchNorm2d::new("bn", 64, 1e-5, 1.5).is_err());
 
     let gn = GroupNorm::new("gn", 8, 64, 1e-5).expect("合法");
     assert_eq!(gn.output().dims(), [64]);
+    assert_eq!(gn.norm().groups, 8);
     assert!(GroupNorm::new("gn", 8, 60, 1e-5).is_err());
 
     let ins = InstanceNorm::new("in", 32, 1e-5).expect("合法");

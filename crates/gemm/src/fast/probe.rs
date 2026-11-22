@@ -70,6 +70,15 @@ const I8_PURE: Probe = Probe {
     run: super::i8::port_sdot,
 };
 
+/// 纯 f32 FMA 端口：16 个累加器、零 load，与生产瓦片体同形状（K7 的理想上限）。
+#[cfg(all(feature = "bench", target_arch = "aarch64"))]
+const FMA_PURE: Probe = Probe {
+    group: "fma_peak",
+    suffix: "",
+    ops_per_round: 2 * super::micro::FMA_MAC_PER_K,
+    run: super::micro::port_fma,
+};
+
 /// `k` 取 1024 使地址在环内单调推进——地址不随循环变化时 LLVM 会把 load 整体提出循环，
 /// 那样测的是纯端口而非「取数受限」端口（第一版就是这么错的，见 [`super::i8::port_sdot_block`]）。
 #[cfg(all(feature = "bench", target_arch = "aarch64"))]
@@ -88,14 +97,28 @@ const I8_BLOCK: Probe = Probe {
     },
 };
 
+/// 取数受限的 f32 端口：每步 2 条 A load + 2 条 B load 配 16 条 lane-indexed FMA，
+/// 与生产瓦片体 [`super::micro::fma_step`] 逐指令一致。
+#[cfg(all(feature = "bench", target_arch = "aarch64"))]
+const FMA_BLOCK: Probe = Probe {
+    group: "fma_peak",
+    suffix: "_block",
+    ops_per_round: 2 * super::micro::FMA_MAC_PER_K * PROBE_K,
+    run: |rounds| {
+        static A: [f32; super::NR * PROBE_K] = [1.0; super::NR * PROBE_K];
+        static B: [f32; super::NR * PROBE_K] = [1.0; super::NR * PROBE_K];
+        super::micro::port_fma_block(rounds, &A, &B, PROBE_K)
+    },
+};
+
 #[cfg(all(feature = "bench", nightly, target_arch = "aarch64"))]
-const PROBES: &[Probe] = &[SME_PURE, SME_MIX, I8_PURE, I8_BLOCK];
+const PROBES: &[Probe] = &[SME_PURE, SME_MIX, I8_PURE, I8_BLOCK, FMA_PURE, FMA_BLOCK];
 #[cfg(all(
     feature = "bench",
     not(all(nightly, target_arch = "aarch64")),
     target_arch = "aarch64"
 ))]
-const PROBES: &[Probe] = &[I8_PURE, I8_BLOCK];
+const PROBES: &[Probe] = &[I8_PURE, I8_BLOCK, FMA_PURE, FMA_BLOCK];
 /// 非 aarch64 没有 `sdot` 微内核，一条探针都没有。
 #[cfg(all(feature = "bench", not(target_arch = "aarch64")))]
 const PROBES: &[Probe] = &[];

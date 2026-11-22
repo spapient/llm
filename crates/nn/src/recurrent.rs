@@ -43,6 +43,14 @@ impl Cell {
         }
     }
 
+    /// 由门数反推单元类型：[`Cell::gates`] 的逆。
+    ///
+    /// 检查点里没有「这是 GRU 还是 LSTM」的标记，只有 `weight_hh` 的行列比。用同一张门表反推，
+    /// 而不是再写一份 `4 => Lstm` 的映射：表改了两侧一起改。
+    pub fn of_gates(gates: usize) -> Option<Self> {
+        Self::ALL.into_iter().find(|cell| cell.gates() == gates)
+    }
+
     /// 单元名：诊断文案与权重条目都用它，不再有第二份拼写。
     pub const fn name(self) -> &'static str {
         match self {
@@ -228,23 +236,23 @@ impl Recurrent {
         })
     }
 
-    /// 一件权重的名字：`{块}.{单元}.{后缀}_l{层}`，反向再加 `_reverse`——与 PyTorch 的
-    /// `lstm.weight_ih_l0` / `lstm.weight_hh_l0_reverse` 逐字相同。
-    pub fn weight_entry(&self, block: &str, level: usize, dir: usize, tensor: Tensor) -> String {
+    /// 一件权重的名字：`{层名}.{后缀}_l{层}{_reverse}`——与 PyTorch 的 `lstm.weight_ih_l0` /
+    /// `lstm.weight_hh_l0_reverse` 逐字相同。
+    ///
+    /// 前缀就是本层自己的名字，不再另插一个单元段：真实 checkpoint 里的模块名是调用方定的
+    /// （`self.rnn = nn.GRU(..)` 存出来是 `rnn.weight_ih_l0`），多插一段 `gru.` 反而对不上。
+    pub fn weight_entry(&self, level: usize, dir: usize, tensor: Tensor) -> String {
         let rev = if dir == 0 { "" } else { "_reverse" };
-        format!(
-            "{block}.{}.{}_l{level}{rev}",
-            self.cell.name(),
-            tensor.suffix()
-        )
+        format!("{}.{}_l{level}{rev}", self.spec.name(), tensor.suffix())
     }
 
     /// 全部权重条目与形状，按 `(层, 方向, 件)` 升序——装配侧按它逐条取张量并核对形状。
-    pub fn weight_entries(&self, block: &str) -> Vec<(String, Shape)> {
+    ///
+    /// 这份清单是双向的：[`crate::Stack::from_header`] 从检查点认出循环层时，按它把名字与形状
+    /// 逐条重新生成一遍，全对上才认。
+    pub fn weight_entries(&self) -> Vec<(String, Shape)> {
         self.tensors()
-            .map(|(level, dir, tensor, shape)| {
-                (self.weight_entry(block, level, dir, tensor), shape)
-            })
+            .map(|(level, dir, tensor, shape)| (self.weight_entry(level, dir, tensor), shape))
             .collect()
     }
 
@@ -262,6 +270,10 @@ impl Recurrent {
 
 impl Contract for Recurrent {
     spec_accessors!();
+
+    fn recurrent(&self) -> Option<&Recurrent> {
+        Some(self)
+    }
 
     fn bounds(&self) -> BoundsResult {
         let mut total = Bounds::ZERO;

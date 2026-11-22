@@ -264,7 +264,6 @@ impl Contract for ConvTranspose2d {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MaxPool1d {
     spec: ContractSpec,
-    pool: OpPool1,
     ol: usize,
     c: usize,
 }
@@ -285,10 +284,11 @@ impl MaxPool1d {
     ) -> Result<Self> {
         let layer = "nn::MaxPool1d::new";
         nonzero(c, "channels", layer)?;
-        let pool = OpPool1 { k, s, p };
-        let ol = pool.len(l)?;
+        // 算子结构体只在构造时用来算输出长度，之后没有访问器能读到它——存着就是一份
+        // 会被拷贝、会被比较、却永远不参与判断的状态。
+        let ol = OpPool1 { k, s, p }.len(l)?;
         let spec = Spec::new(name, crate::Shape::new([ol, c]), ["max_pool1d_f32"])?;
-        Ok(Self { spec, pool, ol, c })
+        Ok(Self { spec, ol, c })
     }
 
     crate::accessors! {
