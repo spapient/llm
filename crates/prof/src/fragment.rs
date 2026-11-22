@@ -8,6 +8,7 @@ use diagnostic::{Code, Error};
 use std::collections::BTreeMap;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// 签名声明的标记：片段第一行 `/* cutile-sign: <prim>/<impl> */` 里的 `cutile-sign:`。
 pub const SIGN_MARKER: &str = crate::sign::MARKER;
@@ -118,8 +119,18 @@ fn declaration_parts(first: &str, prim: Prim) -> diagnostic::Result<(&str, &str)
 }
 
 /// 某个 vendor 的片段集合。
+///
+/// 正文放在 [`Arc`] 后面：内置表一次装好六台设备，之后每次取用只加一次引用计数，克隆是 O(1)
+/// 而不是把两三百段片段（每段一份 `String`）重新拷一遍。写时复制由 [`Arc::make_mut`] 保证——
+/// 克隆之后 [`FragmentSet::insert`] 改的是自己那份，原集合不受影响。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FragmentSet {
+    inner: Arc<Inner>,
+}
+
+/// 片段集合的正文：共享单元（所有读方法都只读它，只有 `insert` 会触发写时复制）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Inner {
     vendor: String,
     ext: String,
     fragments: BTreeMap<Prim, Vec<Fragment>>,
@@ -129,9 +140,11 @@ impl FragmentSet {
     /// 新建空集合。
     pub fn new(vendor: &str, ext: &str) -> Self {
         Self {
-            vendor: vendor.to_string(),
-            ext: ext.to_string(),
-            fragments: BTreeMap::new(),
+            inner: Arc::new(Inner {
+                vendor: vendor.to_string(),
+                ext: ext.to_string(),
+                fragments: BTreeMap::new(),
+            }),
         }
     }
 
@@ -143,11 +156,12 @@ impl FragmentSet {
     /// 返回 `invalid`。
     pub fn insert(&mut self, prim: Prim, source: impl Into<String>) -> diagnostic::Result<()> {
         let fragment = Fragment::parse(prim, source)?;
-        let list = self.fragments.entry(prim).or_default();
-        if list
-            .iter()
-            .any(|existing| existing.implementation() == fragment.implementation())
-        {
+        // 先判重再取写权限：重复登记是错误路径，没有理由为它先复制一份共享正文。
+        let duplicate = self.inner.fragments.get(&prim).is_some_and(|list| {
+            list.iter()
+                .any(|existing| existing.implementation() == fragment.implementation())
+        });
+        if duplicate {
             return Err(Error::new(
                 Code::Invalid,
                 format!(
@@ -156,6 +170,10 @@ impl FragmentSet {
                 ),
             ));
         }
+        let list = Arc::make_mut(&mut self.inner)
+            .fragments
+            .entry(prim)
+            .or_default();
         list.push(fragment);
         Ok(())
     }
@@ -177,7 +195,8 @@ impl FragmentSet {
 
     /// 取某条实现对应的片段（含签名声明）。
     pub fn fragment_impl(&self, prim: Prim, implementation: &str) -> Option<&Fragment> {
-        self.fragments
+        self.inner
+            .fragments
             .get(&prim)?
             .iter()
             .find(|fragment| fragment.implementation() == implementation)
@@ -190,7 +209,8 @@ impl FragmentSet {
 
     /// 遍历某原语登记的全部片段（按登记顺序）。
     pub fn fragments_of(&self, prim: Prim) -> &[Fragment] {
-        self.fragments
+        self.inner
+            .fragments
             .get(&prim)
             .map(Vec::as_slice)
             .unwrap_or_default()
@@ -198,27 +218,27 @@ impl FragmentSet {
 
     /// 设备名。
     pub fn vendor(&self) -> &str {
-        &self.vendor
+        &self.inner.vendor
     }
 
     /// 片段所在的扩展名。
     pub fn ext(&self) -> &str {
-        &self.ext
+        &self.inner.ext
     }
 
     /// 片段总数（同一原语的多条实现分别计数）。
     pub fn len(&self) -> usize {
-        self.fragments.values().map(Vec::len).sum()
+        self.inner.fragments.values().map(Vec::len).sum()
     }
 
     /// 是否为空。
     pub fn is_empty(&self) -> bool {
-        self.fragments.values().all(Vec::is_empty)
+        self.inner.fragments.values().all(Vec::is_empty)
     }
 
     /// 取某原语登记的首份片段。
     fn first(&self, prim: &Prim) -> Option<&Fragment> {
-        self.fragments.get(prim)?.first()
+        self.inner.fragments.get(prim)?.first()
     }
 }
 
