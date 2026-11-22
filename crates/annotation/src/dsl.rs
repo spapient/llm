@@ -23,58 +23,7 @@ struct Param {
 
 fn portable_ident(ident: &Ident) -> syn::Result<String> {
     let name = ident.to_string();
-    let mut bytes = name.bytes();
-    let valid_start = bytes
-        .next()
-        .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_');
-    let valid_chars = valid_start && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
-    let keyword = [
-        "auto",
-        "break",
-        "case",
-        "char",
-        "const",
-        "continue",
-        "default",
-        "do",
-        "double",
-        "else",
-        "enum",
-        "extern",
-        "float",
-        "for",
-        "goto",
-        "if",
-        "inline",
-        "int",
-        "long",
-        "register",
-        "restrict",
-        "return",
-        "short",
-        "signed",
-        "sizeof",
-        "static",
-        "struct",
-        "switch",
-        "typedef",
-        "union",
-        "unsigned",
-        "void",
-        "volatile",
-        "while",
-        "_Alignas",
-        "_Atomic",
-        "_Bool",
-        "_Complex",
-        "_Generic",
-        "_Imaginary",
-        "_Noreturn",
-        "_Static_assert",
-        "_Thread_local",
-    ]
-    .contains(&name.as_str());
-    if valid_chars && !keyword {
+    if is_c_identifier(&name) {
         Ok(name)
     } else {
         Err(Error::new(
@@ -83,6 +32,25 @@ fn portable_ident(ident: &Ident) -> syn::Result<String> {
         ))
     }
 }
+
+/// 标识符形状 + 不在 C 关键字表里：两件事分开数条件，复杂度各自留在个位数。
+fn is_c_identifier(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    let start = bytes
+        .next()
+        .is_some_and(|byte| matches!(byte, b'a'..=b'z' | b'A'..=b'Z' | b'_'));
+    let rest = bytes.all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'z' | b'A'..=b'Z' | b'_'));
+    start && rest && !C_KEYWORDS.contains(&name)
+}
+
+/// C11 关键字闭集（`kernel identifiers` 会被写进 C 片段，撞上它就不是合法标识符）。
+const C_KEYWORDS: &[&str] = &[
+    "auto", "break", "case", "char", "const", "continue", "default", "do", "double", "else",
+    "enum", "extern", "float", "for", "goto", "if", "inline", "int", "long", "register",
+    "restrict", "return", "short", "signed", "sizeof", "static", "struct", "switch", "typedef",
+    "union", "unsigned", "void", "volatile", "while", "_Alignas", "_Atomic", "_Bool", "_Complex",
+    "_Generic", "_Imaginary", "_Noreturn", "_Static_assert", "_Thread_local",
+];
 
 /// Parse, type-check, and lower the supported Rust function subset.
 pub(crate) fn expand(attribute: TokenStream, item: TokenStream) -> TokenStream {
@@ -107,88 +75,114 @@ fn lower(attribute: &TokenStream, function: &ItemFn) -> syn::Result<TokenStream2
             "`#[dsl]` takes no arguments",
         ));
     }
-    let signature = &function.sig;
-    portable_ident(&signature.ident)?;
-    if signature.asyncness.is_some()
-        || signature.constness.is_some()
-        || signature.unsafety.is_some()
-        || signature.abi.is_some()
-        || !signature.generics.params.is_empty()
-        || signature.generics.where_clause.is_some()
-        || signature.variadic.is_some()
-        || !matches!(signature.output, syn::ReturnType::Default)
-    {
+    check_signature(&function.sig)?;
+    let params = parse_parameters(&function.sig)?;
+    let loop_stmt = single_loop(function)?;
+    let (index, extent) = parse_loop(loop_stmt, &params)?;
+    let (output, value) = parse_assignment(single_assignment(loop_stmt)?, &index, &params)?;
+    Ok(render(function, &params, Body {
+        index: &index,
+        extent: &extent,
+        output: &output,
+        value,
+    }))
+}
+
+/// 这一族只接受「非泛型、安全、同步、返回 `()`」的函数；八条修饰符各占一行而不是串成一条 `||` 链。
+fn check_signature(signature: &syn::Signature) -> syn::Result<()> {
+    let rejected = [
+        signature.asyncness.is_some(),
+        signature.constness.is_some(),
+        signature.unsafety.is_some(),
+        signature.abi.is_some(),
+        signature.variadic.is_some(),
+        signature.generics.where_clause.is_some(),
+        !signature.generics.params.is_empty(),
+        !matches!(signature.output, syn::ReturnType::Default),
+    ];
+    if rejected.into_iter().any(|rejected| rejected) {
         return Err(Error::new(
             signature.span(),
             "`#[dsl]` currently supports non-generic, safe, synchronous functions returning `()`",
         ));
     }
+    Ok(())
+}
 
-    let mut params = Vec::with_capacity(signature.inputs.len());
-    for argument in &signature.inputs {
-        let syn::FnArg::Typed(argument) = argument else {
-            return Err(Error::new(
-                argument.span(),
-                "`self` parameters are not supported",
-            ));
-        };
-        let Pat::Ident(pattern) = argument.pat.as_ref() else {
-            return Err(Error::new(
-                argument.pat.span(),
-                "kernel parameters must use simple identifier patterns",
-            ));
-        };
-        if pattern.by_ref.is_some() || pattern.mutability.is_some() || pattern.subpat.is_some() {
-            return Err(Error::new(
-                pattern.span(),
-                "kernel parameters must use unmodified identifier patterns",
-            ));
-        }
-        let kind = parameter_kind(&argument.ty)?;
-        params.push(Param {
-            name: portable_ident(&pattern.ident)?,
-            kind,
-        });
-    }
+fn parse_parameters(signature: &syn::Signature) -> syn::Result<Vec<Param>> {
+    let params = signature
+        .inputs
+        .iter()
+        .map(parse_parameter)
+        .collect::<syn::Result<Vec<_>>>()?;
     unique_parameters(&params, signature)?;
+    Ok(params)
+}
 
+fn parse_parameter(argument: &syn::FnArg) -> syn::Result<Param> {
+    let syn::FnArg::Typed(argument) = argument else {
+        return Err(Error::new(
+            argument.span(),
+            "`self` parameters are not supported",
+        ));
+    };
+    let pattern = identifier_pattern(&argument.pat)?;
+    Ok(Param {
+        name: portable_ident(&pattern.ident)?,
+        kind: parameter_kind(&argument.ty)?,
+    })
+}
+
+/// 参数与循环变量都必须是「光秃秃的标识符」：带 `ref` / `mut` / 子模式的形状无法摊平成 C 的形参。
+fn identifier_pattern(pattern: &Pat) -> syn::Result<&syn::PatIdent> {
+    let Pat::Ident(pattern) = pattern else {
+        return Err(Error::new(
+            pattern.span(),
+            "kernel parameters must use simple identifier patterns",
+        ));
+    };
+    if pattern.by_ref.is_some() || pattern.mutability.is_some() || pattern.subpat.is_some() {
+        return Err(Error::new(
+            pattern.span(),
+            "kernel parameters must use unmodified identifier patterns",
+        ));
+    }
+    Ok(pattern)
+}
+
+/// 内核体被限定成「恰好一个 `for index in 0..extent` 循环」，其余形状一律报错而不是猜一个意思。
+fn single_loop(function: &ItemFn) -> syn::Result<&ExprForLoop> {
     let [Stmt::Expr(Expr::ForLoop(loop_stmt), _)] = function.block.stmts.as_slice() else {
         return Err(Error::new(
             function.block.span(),
             "kernel body must contain exactly one `for index in 0..extent` loop",
         ));
     };
-    let (index, extent) = parse_loop(loop_stmt, &params)?;
+    Ok(loop_stmt)
+}
+
+fn single_assignment(loop_stmt: &ExprForLoop) -> syn::Result<&ExprAssign> {
     let [Stmt::Expr(Expr::Assign(assign), _)] = loop_stmt.body.stmts.as_slice() else {
         return Err(Error::new(
             loop_stmt.body.span(),
             "kernel loop must contain exactly one indexed assignment",
         ));
     };
-    let (output, value) = parse_assignment(assign, &index, &params)?;
+    Ok(assign)
+}
 
+/// 这是一次 lowering 的成品：起点、终点与两侧的表达式，装配成 `Kernel::new` 的调用。
+struct Body<'a> {
+    index: &'a str,
+    extent: &'a str,
+    output: &'a str,
+    value: TokenStream2,
+}
+
+fn render(function: &ItemFn, params: &[Param], body: Body<'_>) -> TokenStream2 {
     let ir_params = params.iter().map(|parameter| {
         let name = &parameter.name;
-        let ty = match parameter.kind {
-            ParamKind::BufferRead => quote! {
-                ::cutile::ir::ValueType::Buffer {
-                    element: ::cutile::ir::ScalarType::F32,
-                    access: ::cutile::ir::Access::Read,
-                }
-            },
-            ParamKind::BufferWrite => quote! {
-                ::cutile::ir::ValueType::Buffer {
-                    element: ::cutile::ir::ScalarType::F32,
-                    access: ::cutile::ir::Access::ReadWrite,
-                }
-            },
-            ParamKind::F32 => quote! {
-                ::cutile::ir::ValueType::Scalar(::cutile::ir::ScalarType::F32)
-            },
-            ParamKind::Usize => quote! {
-                ::cutile::ir::ValueType::Scalar(::cutile::ir::ScalarType::Usize)
-            },
-        };
+        let ty = ir_value_type(parameter.kind);
         quote! {
             ::cutile::ir::Parameter {
                 name: #name.to_string(),
@@ -196,16 +190,19 @@ fn lower(attribute: &TokenStream, function: &ItemFn) -> syn::Result<TokenStream2
             }
         }
     });
-    let fn_name = portable_ident(&signature.ident)?;
-    let generated_name = format_ident!("__dsl_ir_{}", signature.ident);
+    let fn_name = &function.sig.ident;
+    let generated_name = format_ident!("__dsl_ir_{}", fn_name);
     let visibility = &function.vis;
-
-    Ok(quote! {
+    let index = body.index;
+    let extent = body.extent;
+    let output = body.output;
+    let value = body.value;
+    quote! {
         #[doc(hidden)]
         #[allow(missing_docs)]
         #visibility fn #generated_name() -> ::cutile::ir::Kernel {
             ::cutile::ir::Kernel::new(
-                #fn_name,
+                #fn_name.to_string(),
                 vec![#(#ir_params),*],
                 #index,
                 #extent,
@@ -213,7 +210,30 @@ fn lower(attribute: &TokenStream, function: &ItemFn) -> syn::Result<TokenStream2
                 #value,
             )
         }
-    })
+    }
+}
+
+fn ir_value_type(kind: ParamKind) -> TokenStream2 {
+    match kind {
+        ParamKind::BufferRead => quote! {
+            ::cutile::ir::ValueType::Buffer {
+                element: ::cutile::ir::ScalarType::F32,
+                access: ::cutile::ir::Access::Read,
+            }
+        },
+        ParamKind::BufferWrite => quote! {
+            ::cutile::ir::ValueType::Buffer {
+                element: ::cutile::ir::ScalarType::F32,
+                access: ::cutile::ir::Access::ReadWrite,
+            }
+        },
+        ParamKind::F32 => quote! {
+            ::cutile::ir::ValueType::Scalar(::cutile::ir::ScalarType::F32)
+        },
+        ParamKind::Usize => quote! {
+            ::cutile::ir::ValueType::Scalar(::cutile::ir::ScalarType::Usize)
+        },
+    }
 }
 
 fn parameter_kind(ty: &Type) -> syn::Result<ParamKind> {
