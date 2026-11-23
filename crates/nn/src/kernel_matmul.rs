@@ -233,12 +233,15 @@ fn check_dims<P: Precision>(
     Ok(())
 }
 
+/// 裸切片骨架函数指针：标量与 tile 两条公共入口各自传入对应的微内核。
+type MatmulKernel<P: Precision> = fn(&[P], &[P], usize, usize, usize, &mut [P::Acc]);
+
 /// 校验两条二维视图与输出缓冲，再把裸切片交给指定骨架；标量与 tile 两条入口共用这套装配。
 fn run<P: Precision>(
     a: View<'_, P>,
     b: View<'_, P>,
     out: &mut [P::Acc],
-    kernel: fn(&[P], &[P], usize, usize, usize, &mut [P::Acc]),
+    kernel: MatmulKernel<P>,
 ) -> Result<()> {
     let (m, k, n) = dim2_pair(a.dims(), b.dims(), P::NAME)?;
     check_dims(a.as_slice(), b.as_slice(), m, n, k, out)?;
