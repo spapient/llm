@@ -12,7 +12,8 @@ fn sample_i8(len: usize, salt: u32) -> Vec<i8> {
         .collect()
 }
 
-fn check_i8(m: usize, n: usize, k: usize) {
+/// 生成确定性 i8 输入，跑一遍分块参考，返回 `(a, b, want)` 供对拍或并发复用。
+fn i8_want(m: usize, n: usize, k: usize) -> (Vec<i8>, Vec<i8>, Vec<i32>) {
     let a = sample_i8(m * k, 1);
     let b = sample_i8(k * n, 2);
     let mut want = vec![0i32; m * n];
@@ -22,6 +23,11 @@ fn check_i8(m: usize, n: usize, k: usize) {
         &mut want,
     )
     .unwrap();
+    (a, b, want)
+}
+
+fn check_i8(m: usize, n: usize, k: usize) {
+    let (a, b, want) = i8_want(m, n, k);
     let mut got = vec![0i32; m * n];
     gemm_i8(&a, &b, m, n, k, &mut got);
     assert_eq!(got, want, "gemm_i8 与参考逐元素相等（整数无舍入）");
@@ -48,15 +54,7 @@ fn i8_concurrent_calls_are_isolated() {
     let shapes = [(64usize, 64usize, 96usize), (80, 32, 128), (96, 48, 64)];
     thread::scope(|s| {
         for (m, n, k) in shapes {
-            let a = sample_i8(m * k, 1);
-            let b = sample_i8(k * n, 2);
-            let mut want = vec![0i32; m * n];
-            crate::matmul_i8::forward_tiled(
-        tensor::View::matrix(m, k, &a).unwrap(),
-        tensor::View::matrix(k, n, &b).unwrap(),
-        &mut want,
-    )
-    .unwrap();
+            let (a, b, want) = i8_want(m, n, k);
             s.spawn(move || {
                 for _ in 0..200 {
                     let mut got = vec![0i32; m * n];

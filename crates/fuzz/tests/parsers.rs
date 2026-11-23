@@ -25,7 +25,7 @@
 #[path = "../src/drivers.rs"]
 mod drivers;
 
-use llm_fuzz::{Seed, Target, sweep};
+use llm_fuzz::{Seed, sweep};
 
 /// 每个目标跑多少条派生用例。
 ///

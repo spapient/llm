@@ -22,6 +22,8 @@ use wire::sink::Sink;
 // 目标 `#[path]` 包含，`llm_fuzz::Target` 在库内靠 `extern crate self as llm_fuzz` 自引用。
 #[path = "seeds.rs"]
 mod seeds;
+// 仅经 `#[path]` 包含本文件的测试二进制消费；库内 `cfg(test)` 编译单元不引用，故放开未用告警。
+#[allow(unused_imports)]
 pub use seeds::edges;
 
 /// 文本解析器的公共外壳：非 UTF-8 不是"解析失败"，而是"这份输入不适用于文本入口"。
@@ -546,7 +548,9 @@ fn normal_is_finite(seed: u64, words: [u32; 4]) -> Result<(), Error> {
 pub struct Entry {
     /// harness 二进制名（= 语料目录名）。
     pub binary: &'static str,
-    /// 把任意字节接成「接受/拒绝」的适配器。
+    /// 把任意字节接成「接受/拒绝」的适配器。仅遍历二进制（`parsers`）读取；语料生成二进制
+    /// 只取 `binary`/`seed`，按编译单元计未读，故放开 dead_code。
+    #[allow(dead_code)]
     pub adapter: &'static dyn Target,
     /// 一份被适配器接受的合法范例。
     pub seed: Vec<u8>,

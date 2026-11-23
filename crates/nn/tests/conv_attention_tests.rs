@@ -43,24 +43,8 @@ fn decode_flash_and_plain_agree_with_single_query_row() {
     let (q_rows, hist, d) = (1, 5, 4);
     let (q, k, v) = decode_qkv(q_rows, hist, d);
 
-    let mut plain = vec![0.0f32; q_rows * d];
-    decode_forward(
-        tensor::View::matrix(q_rows, d, &q).expect("q 二维"),
-        tensor::View::matrix(hist, d, &k).expect("k 二维"),
-        tensor::View::matrix(hist, d, &v).expect("v 二维"),
-        &mut plain,
-    )
-    .expect("朴素 decode");
+    let (plain, flash) = decode_pair(q_rows, hist, d, &q, &k, &v);
     assert!(testkit::all_finite(&plain));
-
-    let mut flash = vec![0.0f32; q_rows * d];
-    decode_flash_forward(
-        tensor::View::matrix(q_rows, d, &q).expect("q 二维"),
-        tensor::View::matrix(hist, d, &k).expect("k 二维"),
-        tensor::View::matrix(hist, d, &v).expect("v 二维"),
-        &mut flash,
-    )
-    .expect("flash decode");
     assert!(
         testkit::approx_eq(&flash, &plain, 1e-5),
         "decode 朴素与 flash 必须一致：逐元素绝对容差 1e-5"
@@ -72,23 +56,7 @@ fn decode_supports_multiple_query_rows_against_history() {
     let (q_rows, hist, d) = (2, 4, 4);
     let (q, k, v) = decode_qkv(q_rows, hist, d);
 
-    let mut plain = vec![0.0f32; q_rows * d];
-    decode_forward(
-        tensor::View::matrix(q_rows, d, &q).expect("q 二维"),
-        tensor::View::matrix(hist, d, &k).expect("k 二维"),
-        tensor::View::matrix(hist, d, &v).expect("v 二维"),
-        &mut plain,
-    )
-    .expect("朴素 decode");
-    let mut flash = vec![0.0f32; q_rows * d];
-    decode_flash_forward(
-        tensor::View::matrix(q_rows, d, &q).expect("q 二维"),
-        tensor::View::matrix(hist, d, &k).expect("k 二维"),
-        tensor::View::matrix(hist, d, &v).expect("v 二维"),
-        &mut flash,
-    )
-    .expect("flash decode");
-
+    let (plain, flash) = decode_pair(q_rows, hist, d, &q, &k, &v);
     assert_plain_flash(&plain, &flash);
 }
 
@@ -196,6 +164,25 @@ fn attention_rejects_zero_head_width() {
         flash_reference(&sample(8, 0)).is_err(),
         "flash 参考同样守卫头宽"
     );
+}
+
+/// 同一条 q/k/v 各跑一遍朴素与 flash decode，返回两份输出供上层对拍。
+fn decode_pair(
+    q_rows: usize,
+    hist: usize,
+    d: usize,
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+) -> (Vec<f32>, Vec<f32>) {
+    let qv = tensor::View::matrix(q_rows, d, q).expect("q 二维");
+    let kv = tensor::View::matrix(hist, d, k).expect("k 二维");
+    let vv = tensor::View::matrix(hist, d, v).expect("v 二维");
+    let mut plain = vec![0.0f32; q_rows * d];
+    decode_forward(qv.clone(), kv.clone(), vv.clone(), &mut plain).expect("朴素 decode");
+    let mut flash = vec![0.0f32; q_rows * d];
+    decode_flash_forward(qv, kv, vv, &mut flash).expect("flash decode");
+    (plain, flash)
 }
 
 /// 无头 decode 的确定性 q/k/v：`q` 取 `q_rows` 行、`k`/`v` 各取 `hist` 行，同一条线性序列。

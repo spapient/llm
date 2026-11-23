@@ -1,5 +1,27 @@
 use super::*;
 
+/// 量化 gemv 对拍夹具：跑一遍参考内核、绑三路输入，返回输入编号、输出槽与参考缓冲。
+fn quant_gemv_smoke(
+    executor: &mut CpuExecutor,
+    x: &[f32],
+    w: &[u8],
+    scales: &[f32],
+    forward: fn(tensor::View<'_, f32>, &[u8], tensor::View<'_, f32>, &mut [f32]) -> Result<()>,
+) -> (Vec<u32>, u32, Vec<f32>) {
+    let mut reference = vec![0.0; 1];
+    forward(
+        tensor::View::one(x),
+        w,
+        tensor::View::one(scales),
+        &mut reference,
+    )
+    .expect("参考");
+    bind(executor, 0, x);
+    bind_u8(executor, 1, w);
+    bind(executor, 2, scales);
+    (vec![0, 1, 2], 3, reference)
+}
+
 kernel_smoke!(
     gemv_runs_through_the_registered_kernel,
     "gemv_f32",
@@ -85,18 +107,7 @@ kernel_smoke!(
         let x = [1.0, 2.0, 3.0, 4.0];
         let w = pack_codes(4, &[1, 2, 3, 4]);
         let scales = [0.5f32];
-        let mut reference = vec![0.0; 1];
-        nn::gemv_i4::forward(
-            tensor::View::one(&x),
-            &w,
-            tensor::View::one(&scales),
-            &mut reference,
-        )
-        .expect("参考");
-        bind(executor, 0, &x);
-        bind_u8(executor, 1, &w);
-        bind(executor, 2, &scales);
-        (vec![0, 1, 2], 3, reference)
+        quant_gemv_smoke(executor, &x, &w, &scales, nn::gemv_i4::forward)
     }
 );
 
@@ -108,18 +119,7 @@ kernel_smoke!(
         let x = [1.0, 2.0, 3.0, 4.0];
         let w: Vec<u8> = [1i8, 2, 3, 4].iter().map(|value| *value as u8).collect();
         let scales = [0.5f32];
-        let mut reference = vec![0.0; 1];
-        nn::gemv_i8::forward(
-            tensor::View::one(&x),
-            &w,
-            tensor::View::one(&scales),
-            &mut reference,
-        )
-        .expect("参考");
-        bind(executor, 0, &x);
-        bind_u8(executor, 1, &w);
-        bind(executor, 2, &scales);
-        (vec![0, 1, 2], 3, reference)
+        quant_gemv_smoke(executor, &x, &w, &scales, nn::gemv_i8::forward)
     }
 );
 
@@ -188,18 +188,7 @@ kernel_smoke!(
         let x = [1.0, 2.0, 3.0, 4.0];
         let w = pack_codes(2, &[1, -1, 0, 1]);
         let scales = [0.5f32];
-        let mut reference = vec![0.0; 1];
-        nn::gemv_i2::forward(
-            tensor::View::one(&x),
-            &w,
-            tensor::View::one(&scales),
-            &mut reference,
-        )
-        .expect("参考");
-        bind(executor, 0, &x);
-        bind_u8(executor, 1, &w);
-        bind(executor, 2, &scales);
-        (vec![0, 1, 2], 3, reference)
+        quant_gemv_smoke(executor, &x, &w, &scales, nn::gemv_i2::forward)
     }
 );
 

@@ -56,8 +56,10 @@ pub(crate) fn elementwise(c: &mut Criterion) {
     let a: Vec<f32> = (0..VECTOR).map(|i| i as f32 * 0.5 - 1.0).collect();
     let b: Vec<f32> = (0..VECTOR).map(|i| i as f32 * 0.25 + 0.5).collect();
     let mut out = vec![0.0f32; VECTOR];
+    let va = View::one(&a);
+    let vb = View::one(&b);
     checked_or_exit(
-        elementwise::forward::<Add>(View::one(&a), View::one(&b), &mut out),
+        elementwise::forward::<Add>(va.clone(), vb.clone(), &mut out),
         "缓冲等长",
     );
 
@@ -66,8 +68,8 @@ pub(crate) fn elementwise(c: &mut Criterion) {
     group.bench_function("forward", |iter| {
         iter.iter(|| {
             black_box(elementwise::forward::<Add>(
-                View::one(black_box(&a)),
-                View::one(black_box(&b)),
+                va.clone(),
+                vb.clone(),
                 black_box(&mut out),
             ))
         })
@@ -80,8 +82,9 @@ pub(crate) fn gemv(c: &mut Criterion) {
     let weights: Vec<f32> = (0..ROW * ROW).map(|i| (i as f32 * 0.001).sin()).collect();
     let x: Vec<f32> = (0..ROW).map(|i| (i as f32 * 0.002).cos()).collect();
     let mut out = vec![0.0f32; ROW];
+    let v = View::one(&x);
     checked_or_exit(
-        gemv_f32::forward(View::one(&x), &weights, &mut out),
+        gemv_f32::forward(v.clone(), &weights, &mut out),
         "形状与缓冲等长",
     );
 
@@ -91,11 +94,11 @@ pub(crate) fn gemv(c: &mut Criterion) {
     group.bench_function("decode_1x4096x4096", |iter| {
         iter.iter(|| {
             black_box(gemv_f32::forward(
-                View::one(black_box(&x)),
+                v.clone(),
                 black_box(&weights),
                 black_box(&mut out),
             ))
-        })
+        });
     });
     group.finish();
 }
@@ -161,20 +164,13 @@ pub(crate) fn gemv_quant(c: &mut Criterion) {
 /// `softmax_f32::forward`：decode 一行 4096 个 f32 的三趟数值稳定归一化。
 pub(crate) fn softmax(c: &mut Criterion) {
     let (x, mut out) = row();
-    checked_or_exit(
-        softmax_f32::forward(View::one(&x), &mut out),
-        "输入与输出等长",
-    );
+    let v = View::one(&x);
+    checked_or_exit(softmax_f32::forward(v.clone(), &mut out), "输入与输出等长");
 
     let mut group = c.benchmark_group("softmax_f32");
     group.throughput(Throughput::Elements(ROW as u64));
     group.bench_function("decode_1x4096", |iter| {
-        iter.iter(|| {
-            black_box(softmax_f32::forward(
-                View::one(black_box(&x)),
-                black_box(&mut out),
-            ))
-        })
+        iter.iter(|| black_box(softmax_f32::forward(v.clone(), black_box(&mut out))))
     });
     group.finish();
 }
@@ -182,21 +178,13 @@ pub(crate) fn softmax(c: &mut Criterion) {
 /// `rope_f32::forward`：decode 一行 4096 个 f32 的二维位置旋转（位置取 7）。
 pub(crate) fn rope(c: &mut Criterion) {
     let (x, mut out) = row();
-    checked_or_exit(
-        rope_f32::forward(7, View::one(&x), &mut out),
-        "输入与输出等长",
-    );
+    let v = View::one(&x);
+    checked_or_exit(rope_f32::forward(7, v.clone(), &mut out), "输入与输出等长");
 
     let mut group = c.benchmark_group("rope_f32");
     group.throughput(Throughput::Elements(ROW as u64));
     group.bench_function("decode_1x4096", |iter| {
-        iter.iter(|| {
-            black_box(rope_f32::forward(
-                7,
-                View::one(black_box(&x)),
-                black_box(&mut out),
-            ))
-        })
+        iter.iter(|| black_box(rope_f32::forward(7, v.clone(), black_box(&mut out))))
     });
     group.finish();
 }
@@ -205,21 +193,17 @@ pub(crate) fn rope(c: &mut Criterion) {
 pub(crate) fn rmsnorm(c: &mut Criterion) {
     let (x, mut out) = row();
     let gamma: Vec<f32> = (0..ROW).map(|i| 0.5 + i as f32 * 0.01).collect();
+    let vx = View::one(&x);
+    let vg = View::one(&gamma);
     checked_or_exit(
-        rmsnorm_f32::forward(View::one(&x), View::one(&gamma), &mut out),
+        rmsnorm_f32::forward(vx.clone(), vg.clone(), &mut out),
         "三个缓冲等长",
     );
 
     let mut group = c.benchmark_group("rmsnorm_f32");
     group.throughput(Throughput::Elements(ROW as u64));
     group.bench_function("decode_1x4096", |iter| {
-        iter.iter(|| {
-            black_box(rmsnorm_f32::forward(
-                View::one(black_box(&x)),
-                View::one(black_box(&gamma)),
-                black_box(&mut out),
-            ))
-        })
+        iter.iter(|| rmsnorm_f32::forward(vx.clone(), vg.clone(), black_box(&mut out)))
     });
     group.finish();
 }
@@ -228,17 +212,13 @@ pub(crate) fn rmsnorm(c: &mut Criterion) {
 pub(crate) fn silu(c: &mut Criterion) {
     let x: Vec<f32> = (0..ROW).map(|i| i as f32 * 0.25 - 4.0).collect();
     let mut out = vec![0.0f32; ROW];
-    checked_or_exit(silu_f32::forward(View::one(&x), &mut out), "输入与输出等长");
+    let v = View::one(&x);
+    checked_or_exit(silu_f32::forward(v.clone(), &mut out), "输入与输出等长");
 
     let mut group = c.benchmark_group("silu_f32");
     group.throughput(Throughput::Elements(ROW as u64));
     group.bench_function("decode_1x4096", |iter| {
-        iter.iter(|| {
-            black_box(silu_f32::forward(
-                View::one(black_box(&x)),
-                black_box(&mut out),
-            ))
-        })
+        iter.iter(|| black_box(silu_f32::forward(v.clone(), black_box(&mut out))))
     });
     group.finish();
 }
@@ -462,17 +442,17 @@ fn f32_paths(group: &mut BenchmarkGroup<'_, WallTime>) {
 
         group.bench_function(BenchmarkId::new("f32", &shape), |iter| {
             iter.iter(|| {
-                matmul::matmul_tiled(black_box(&a), black_box(&b), m, n, k, black_box(&mut out));
+                matmul::matmul_tiled(black_box(&a), black_box(&b), m, n, k, black_box(&mut out))
             });
         });
         group.bench_function(BenchmarkId::new("f32_fast_single", &shape), |iter| {
             iter.iter(|| {
-                fast::gemm_f32_single(black_box(&a), black_box(&b), m, n, k, black_box(&mut out));
+                fast::gemm_f32_single(black_box(&a), black_box(&b), m, n, k, black_box(&mut out))
             });
         });
         group.bench_function(BenchmarkId::new("f32_fast_threads", &shape), |iter| {
             iter.iter(|| {
-                fast::gemm_f32(black_box(&a), black_box(&b), m, n, k, black_box(&mut out));
+                fast::gemm_f32(black_box(&a), black_box(&b), m, n, k, black_box(&mut out))
             });
         });
     }
@@ -546,13 +526,11 @@ fn i8_fast_paths(
 ) {
     group.bench_function(BenchmarkId::new("i8_fast_single", shape), |iter| {
         iter.iter(|| {
-            fast::gemm_i8_single(black_box(a), black_box(b), m, n, k, black_box(&mut *out));
+            fast::gemm_i8_single(black_box(a), black_box(b), m, n, k, black_box(&mut *out))
         });
     });
     group.bench_function(BenchmarkId::new("i8_fast_threads", shape), |iter| {
-        iter.iter(|| {
-            fast::gemm_i8(black_box(a), black_box(b), m, n, k, black_box(&mut *out));
-        });
+        iter.iter(|| fast::gemm_i8(black_box(a), black_box(b), m, n, k, black_box(&mut *out)));
     });
 }
 
