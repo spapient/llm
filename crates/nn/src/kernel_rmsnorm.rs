@@ -108,10 +108,9 @@ pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
 /// # Errors
 ///
 /// 三个缓冲等长，或输入为空时返回说明：空行没有可统计的均方根。
-pub fn forward(x: View<'_, f32>, gamma: View<'_, f32>, out: ViewMut<'_, f32>) -> diagnostic::Result<()> {
+pub fn forward(x: View<'_, f32>, gamma: View<'_, f32>, out: &mut [f32]) -> diagnostic::Result<()> {
     let x = x.as_slice();
     let gamma = gamma.as_slice();
-    let out = out.into_slice_mut();
     check_kernel(x, gamma, out)?;
     let rms = (sum_sq(x) / (x.len() as f32) + EPS).sqrt();
     for ((out, x), gamma) in out.iter_mut().zip(x).zip(gamma) {
@@ -162,19 +161,18 @@ fn check_batch_rows(x: &[f32], row_dim: usize) -> Result<(), Error> {
 pub fn forward_batch(
     x: View<'_, f32>,
     gamma: View<'_, f32>,
-    out: ViewMut<'_, f32>,
+    out: &mut [f32],
     row_dim: usize,
 ) -> diagnostic::Result<()> {
     let x = x.as_slice();
     let gamma = gamma.as_slice();
-    let out = out.into_slice_mut();
     let batch = rmsnorm_batch_segments(x, gamma, out, row_dim)?;
     for b in 0..batch {
         let start = b * row_dim;
         forward(
             View::one(&x[start..start + row_dim]),
             View::one(gamma),
-            ViewMut::one(&mut out[start..start + row_dim]),
+            &mut out[start..start + row_dim],
         )?;
     }
     Ok(())
