@@ -68,8 +68,11 @@ pub(crate) const VENDORS: [&str; 8] = [
 
 /// 越界岛白名单：`docs/adr/0035-unsafe-ffi-boundary.md` §6 的表格，路径 → `allow(unsafe_code)` 条数。
 pub(crate) const UNSAFE_ISLANDS: &[(&str, usize)] = &[
-    ("crates/device/src/metal/executor.rs", 1),
-    ("crates/nn/src/kernel_fast.rs", 34),
+    ("crates/device/src/executor.rs", 1),
+    ("crates/nn/src/kernel_fast_i8.rs", 12),
+    ("crates/nn/src/kernel_fast_micro.rs", 11),
+    ("crates/nn/src/kernel_fast_pool.rs", 3),
+    ("crates/nn/src/kernel_fast_sme.rs", 8),
     ("crates/storage/src/mmap.rs", 1),
 ];
 

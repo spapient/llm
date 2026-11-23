@@ -53,8 +53,11 @@ P3 要在边界 crate 挂 Metal/CUDA 后端（ADR 0025 §1、§9；ADR 0028 §3 
 | 位置 | 越界对象（§1 类别） | 不变量与对外视图 |
 |---|---|---|
 | `crates/storage/src/mmap.rs`（模块级，1 处） | mmap 映射 | 模块级 allow；只读、私有映射、`Drop` 归还、线程归属；对外只暴露拥有型 `&[u8]` 视图 |
-| `crates/device/src/metal/executor.rs`（模块级，1 处） | FFI 调用 + 设备缓冲句柄 | 手写 `objc_msgSend` 与 Metal 运行时符号；+1 保留的对象在 `Drop` 恰好 `-release` 一次，句柄私有、不跨线程，自动释放对象由 autorelease 池收口；对外是 `Executor` / `Allocator` 的安全实现 |
-| `crates/nn/src/kernel_fast.rs`（34 处，函数级） | 裸指针切片重建 + SIMD intrinsics + 内联汇编 + 跨线程发布 | `fast`（`i8`/`micro`/`pool`/`sme`）四段随平铺拆分落在 `kernel_fast.rs`（12 + 11 + 3 + 8 = 34 处，见下方修订）；字节量化族、公共微内核、线程池与 aarch64 SME 路径同住一处，瓦片体 `sdot_tile`/`fma_step` 仍由生产与探针共用同一份，端口峰值探针仍受 `bench` 门控 |
+| `crates/device/src/executor.rs`（模块级，1 处） | FFI 调用 + 设备缓冲句柄 | 手写 `objc_msgSend` 与 Metal 运行时符号；+1 保留的对象在 `Drop` 恰好 `-release` 一次，句柄私有、不跨线程，自动释放对象由 autorelease 池收口；对外是 `Executor` / `Allocator` 的安全实现 |
+| `crates/nn/src/kernel_fast_i8.rs`（函数级，12 处） | 裸指针切片重建 + i8 `sdot` intrinsics | i8 sdot 微内核 MR4×NR4；瓦片体 `sdot_tile` 由生产与探针共用同一份；包装只做长度守卫与指针透传，工人只为读边界负责 |
+| `crates/nn/src/kernel_fast_micro.rs`（函数级，11 处） | 裸指针切片重建 + NEON intrinsics | f32 8×8 寄存器块微内核；瓦片体 `fma_step` 由生产与探针共用同一份；包装只做长度守卫与指针透传 |
+| `crates/nn/src/kernel_fast_pool.rs`（函数级，3 处） | 跨线程发布裸指针 | 常驻 GEMM 线程池：任务只发布裸指针 + 一次闸门；裸指针只活到 `done` 齐、主线程返回前 |
+| `crates/nn/src/kernel_fast_sme.rs`（函数级，8 处） | 内联汇编 + SME intrinsics | aarch64 SME 16×64 ZA 外积；nightly + `target_arch = "aarch64"` 门控；探针入口受 `bench` 特性门控，生产公开面不含该项 |
 
 `gemm` 那几行是**存量冻结**：只许减少，不许增加。要新增一行，先改本表，并说明这个越界点为什么
 不能落在边界 crate。拆文件不改变冻结口径——`fast.rs` 拆成 `fast/` 目录后按文件重新列举，
