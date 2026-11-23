@@ -86,7 +86,7 @@ mod layout;
 // 元素类型、能力分类与浮点位域的唯一事实源在 L1 `dtype`：全精度 24 变体，这里不再自定义枚举。
 pub use dtype::{Class, DType, DTypeSpec, FloatLayout};
 
-pub use element::Element;
+pub use element::{BoolElement, Element, FloatElement, IntElement, NumericElement};
 pub use rank::Rank;
 pub use shape::{AxisLen, Order, Shape, Slice, product};
 pub use store::{Owned, Store, StoreMut};
@@ -106,8 +106,18 @@ mod element {
     //! `half::f16`/`half::bf16`。亚字节精度（`U1`/`U2`/`U4`/`I1`/`I2`/`I4`/`F4`/`F8*`）没有原生
     //! 标量，**不进 `Element`**——它们由 [`DType`] 的位宽表一等公民地表达，需要时由上层反量化成
     //! 原生标量，不在类型层硬造打包标量。
+    //!
+    //! 能力标记 [`FloatElement`]/[`IntElement`]/[`BoolElement`] 是 sealed 层级：只把原生标量按
+    //! 浮点 / 整数 / 布尔封闭分组，供算子族 trait 把 `Elem` bound 收紧到对应分组。它**不进**
+    //! [`Tensor`](crate::Tensor) 的公开签名位——张量三泛型仍是 `B`/`R`/`K`，能力域的注册名精度档
+    //! 拦阻（`gemv_i4` 这类）仍在构造期，见 ADR 0053 §2/§3。
 
     use crate::DType;
+
+    mod sealed {
+        /// 封闭标记：只有本 crate 内能 impl，外部类型无法把自己接进能力分组。
+        pub trait Sealed {}
+    }
 
     /// 元素类型：`K` 的约束。
     ///
@@ -118,12 +128,34 @@ mod element {
         const DTYPE: DType;
     }
 
+    /// 数值元素能力标记：可参与乘加的浮点与整数封闭分组；布尔不在其列。
+    pub trait NumericElement: Element + sealed::Sealed {}
+
+    /// 浮点元素能力标记：原生浮点标量的封闭分组。
+    pub trait FloatElement: NumericElement {}
+
+    /// 整数元素能力标记：原生有符号 / 无符号标量的封闭分组。
+    pub trait IntElement: NumericElement {}
+
+    /// 布尔元素能力标记。
+    pub trait BoolElement: Element + sealed::Sealed {}
+
     macro_rules! element {
         ($($scalar:ty => $dtype:expr),+ $(,)?) => {
             $(
                 impl Element for $scalar {
                     const DTYPE: DType = $dtype;
                 }
+            )+
+        };
+    }
+
+    macro_rules! sealed_group {
+        ($trait_:ident, $($scalar:ty),+ $(,)?) => {
+            $(
+                impl sealed::Sealed for $scalar {}
+                impl NumericElement for $scalar {}
+                impl $trait_ for $scalar {}
             )+
         };
     }
@@ -143,6 +175,12 @@ mod element {
         half::f16 => DType::F16,
         half::bf16 => DType::BF16,
     }
+
+    sealed_group!(FloatElement, f32, f64, half::f16, half::bf16);
+    sealed_group!(IntElement, u8, u16, u32, u64, i8, i16, i32, i64);
+
+    impl sealed::Sealed for bool {}
+    impl BoolElement for bool {}
 }
 
 #[cfg(test)]

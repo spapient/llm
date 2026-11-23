@@ -367,7 +367,11 @@ fn dequant_i8(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
 /// `[a: f32] → y: f32`：位置取样本约定的 7。
 fn rope_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
     let (a,) = <(f32,) as Inputs>::unpack(inputs, "rope_f32")?;
-    nn::rope_f32::forward(7, tensor::View::one(a), output_slice::<f32>("rope_f32", output)?)
+    nn::rope_f32::forward(
+        7,
+        tensor::View::one(a),
+        output_slice::<f32>("rope_f32", output)?,
+    )
 }
 
 /// 标量内核表：长度就是 [`nn::registry::REGISTRY`] 的长度，名字与顺序由下面的 `const` 断言锁住。

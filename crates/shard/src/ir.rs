@@ -9,8 +9,8 @@ use crate::backend::Lower;
 use cutile::kernel::{Access, Expr, Kernel, ValueType, Write};
 use cutile::prof::Emit;
 use diagnostic::{Code, Error, Result};
-use nn::model::Sample;
-use nn::sig::Signature;
+use prof::model::Sample;
+use prof::sig::Signature;
 use prof::decl::Grid;
 
 /// 分块归约的默认块大小：与逐点线程数同阶，兼顾占用与主机折叠成本。

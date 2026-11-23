@@ -17,7 +17,7 @@ use cutile::dirs::Dirs;
 use cutile::emit::Fragment;
 use cutile::prof::{Emit, Profile};
 use diagnostic::{Code, Error};
-use nn::model::Sample;
+use prof::model::Sample;
 use prof::decl::OpDecl;
 
 /// 一台设备的 L2 证据：逐形状编译、执行、与参考对拍。回答什么：产物在形状矩阵每一格上算出来的数

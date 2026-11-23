@@ -265,7 +265,12 @@ kernel_smoke!(
         let x = [1.0, 2.0, 3.0];
         let gamma = [1.0, 1.0, 1.0];
         let mut reference = vec![0.0; 3];
-        nn::rmsnorm_f32::forward(tensor::View::one(&x), tensor::View::one(&gamma), &mut reference).expect("参考");
+        nn::rmsnorm_f32::forward(
+            tensor::View::one(&x),
+            tensor::View::one(&gamma),
+            &mut reference,
+        )
+        .expect("参考");
         bind(executor, 0, &x);
         bind(executor, 1, &gamma);
         (vec![0, 1], 2, reference)
@@ -282,7 +287,12 @@ fn binary_elementwise_runs_through_the_registered_kernel() {
     let mut mul_ref = vec![0.0; 2];
     nn::mul_f32::forward(tensor::View::one(&a), tensor::View::one(&b), &mut mul_ref).expect("参考");
     let mut residual_ref = vec![0.0; 2];
-    nn::residual_add_f32::forward(tensor::View::one(&a), tensor::View::one(&b), &mut residual_ref).expect("参考");
+    nn::residual_add_f32::forward(
+        tensor::View::one(&a),
+        tensor::View::one(&b),
+        &mut residual_ref,
+    )
+    .expect("参考");
 
     let mut executor = cpu();
     bind(&mut executor, 0, &a);
@@ -377,7 +387,8 @@ fn a_graph_chains_through_the_same_bindings() {
     let b = [3.0, 4.0];
 
     let mut middle = vec![0.0; 2];
-    nn::add_f32::forward(tensor::View::one(&a), tensor::View::one(&b), &mut middle).expect("参考：加和");
+    nn::add_f32::forward(tensor::View::one(&a), tensor::View::one(&b), &mut middle)
+        .expect("参考：加和");
     let mut reference = vec![0.0; 2];
     nn::silu_f32::forward(tensor::View::one(&middle), &mut reference).expect("参考：激活");
 

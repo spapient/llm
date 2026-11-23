@@ -108,7 +108,7 @@ fn pipeline_runs_in_declared_order() {
 
 // 写回尾块的设备对拍：把 `epilogue.<ext>` 里的真实段落按声明顺序装配、编译、执行，再与
 // `crate::epilogue::apply` 逐元素比。
-// 
+//
 // 这是「写回真的接到了设备」的可执行证据：被测的不是另一份 C 算术，而是装配器（`cutile::substitute::epilogue`）
 // 对每台设备吐出的那段文本本身。六台设备共用同一组场景，语义漂移会直接落在某一台上。
 

@@ -77,7 +77,7 @@ macro_rules! elementwise_div_tests {
             $forward(
                 tensor::View::one(&[1.0, -1.0]),
                 tensor::View::one(&[0.0, 0.0]),
-                &mut out
+                &mut out,
             )
             .expect("等长");
             assert!(out[0].is_sign_positive(), "1/0 = +inf");

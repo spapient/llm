@@ -164,7 +164,10 @@ pub mod exp_f32 {
         {
             // 边界：exp(0)=1、大负数下溢为 0、exp(1)=e。
             let mut out = vec![0.0; 3];
-            assert!(forward(tensor::View::one(&[0.0, -1000.0, 1.0]), &mut out).is_ok(), "等长");
+            assert!(
+                forward(tensor::View::one(&[0.0, -1000.0, 1.0]), &mut out).is_ok(),
+                "等长"
+            );
             assert_eq!(out[0], 1.0, "exp(0)=1");
             assert_eq!(out[1], 0.0, "exp(-1000) 下溢为 0");
             assert!((out[2] - std::f32::consts::E).abs() < 1e-6, "exp(1)=e");
@@ -267,7 +270,10 @@ pub mod leaky_relu_f32 {
         {
             // 三个锚点：正区恒等、负区按 slope 缩放、零点两侧连续。
             let mut out = [0.0; 3];
-            assert!(forward(tensor::View::one(&[-2.0, 0.0, 2.0]), &mut out).is_ok(), "等长");
+            assert!(
+                forward(tensor::View::one(&[-2.0, 0.0, 2.0]), &mut out).is_ok(),
+                "等长"
+            );
             assert!((out[0] - (-2.0 * SLOPE)).abs() < 1e-6, "负区 {}", out[0]);
             assert_eq!(out[1], 0.0, "零点");
             assert_eq!(out[2], 2.0, "正区恒等");
@@ -287,7 +293,10 @@ pub mod relu_f32 {
         {
             // 三个锚点：负区归零、零保持、正区恒等。
             let mut out = [0.0; 3];
-            assert!(forward(tensor::View::one(&[-2.0, 0.0, 2.0]), &mut out).is_ok(), "等长");
+            assert!(
+                forward(tensor::View::one(&[-2.0, 0.0, 2.0]), &mut out).is_ok(),
+                "等长"
+            );
             assert_eq!(out[0], 0.0, "负区归零");
             assert_eq!(out[1], 0.0, "零点");
             assert_eq!(out[2], 2.0, "正区恒等");
@@ -355,7 +364,10 @@ pub mod hard_sigmoid_f32 {
         {
             // 三段：下饱和 0、中心 0.5、上饱和 1，以及两端斜率 1/6。
             let mut out = [0.0; 4];
-            assert!(forward(tensor::View::one(&[-6.0, 0.0, 6.0, 3.0]), &mut out).is_ok(), "等长");
+            assert!(
+                forward(tensor::View::one(&[-6.0, 0.0, 6.0, 3.0]), &mut out).is_ok(),
+                "等长"
+            );
             assert_eq!(out[0], 0.0, "下饱和");
             assert_eq!(out[1], 0.5, "中心");
             assert_eq!(out[2], 1.0, "上饱和");

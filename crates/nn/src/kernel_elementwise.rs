@@ -75,7 +75,11 @@ pub fn reference<B: Binary>(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
 /// # Errors
 ///
 /// 两个输入等长、且与输出等长，否则返回说明。
-pub fn forward<B: Binary>(a: View<'_, f32>, b: View<'_, f32>, out: &mut [f32]) -> diagnostic::Result<()> {
+pub fn forward<B: Binary>(
+    a: View<'_, f32>,
+    b: View<'_, f32>,
+    out: &mut [f32],
+) -> diagnostic::Result<()> {
     let a = a.as_slice();
     let b = b.as_slice();
     if a.len() != b.len() || a.len() != out.len() {

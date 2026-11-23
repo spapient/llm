@@ -116,7 +116,11 @@ fn gather(idx: &[f32], table: &[f32], dim: usize) -> diagnostic::Result<Vec<f32>
 /// # Errors
 ///
 /// 缓冲长度不自洽、表长不符或下标越界时返回说明。
-pub fn forward(idx: View<'_, f32>, table: View<'_, f32>, out: &mut [f32]) -> diagnostic::Result<()> {
+pub fn forward(
+    idx: View<'_, f32>,
+    table: View<'_, f32>,
+    out: &mut [f32],
+) -> diagnostic::Result<()> {
     let idx = idx.as_slice();
     let table = table.as_slice();
     let tokens = idx.len();

@@ -6,11 +6,7 @@ macro_rules! reduce_op_tests {
             let sample = crate::reduce::sample::<$ty>(128, 1);
             let expected = crate::reduce::reference::<$ty>(&sample).expect("参考可计算");
             let mut out = vec![0.0];
-            $forward(
-                tensor::View::one(sample.f32("a").expect("a")),
-                &mut out
-            )
-            .expect("单元素输出");
+            $forward(tensor::View::one(sample.f32("a").expect("a")), &mut out).expect("单元素输出");
             assert_eq!(out, expected);
         }
 

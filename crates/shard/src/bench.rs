@@ -12,7 +12,7 @@ use cutile::builtin::{AUTO_DEVICE, Catalogue};
 use cutile::dirs::Dirs;
 use cutile::prof::{Emit, Profile};
 use diagnostic::{Code, Error};
-use nn::model::{Cost, Sample, Values};
+use prof::model::{Cost, Sample, Values};
 use prof::decl::OpDecl;
 use std::path::PathBuf;
 

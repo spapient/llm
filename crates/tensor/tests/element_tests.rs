@@ -4,7 +4,11 @@
 //! 钉住映射，防止某个 impl 漂移到相邻精度；亚字节精度没有原生标量，不在此列（由 `DType` 位宽表
 //! 表达，见 `TestKit` 的 `no_storage` 用例）。
 
-use crate::{DType, Element};
+use crate::{BoolElement, DType, Element, FloatElement, IntElement};
+
+fn assert_float<T: FloatElement>() {}
+fn assert_int<T: IntElement>() {}
+fn assert_bool<T: BoolElement>() {}
 
 #[test]
 fn bool_maps_to_bool() {
@@ -33,6 +37,19 @@ fn floats_map_to_their_widths() {
     assert_eq!(f64::DTYPE, DType::F64);
     assert_eq!(half::f16::DTYPE, DType::F16);
     assert_eq!(half::bf16::DTYPE, DType::BF16);
+}
+
+#[test]
+fn markers_split_closed_groups() {
+    assert_float::<f32>();
+    assert_float::<f64>();
+    assert_float::<half::f16>();
+    assert_float::<half::bf16>();
+    assert_int::<u8>();
+    assert_int::<u32>();
+    assert_int::<i8>();
+    assert_int::<i64>();
+    assert_bool::<bool>();
 }
 
 #[test]

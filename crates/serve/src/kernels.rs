@@ -136,7 +136,12 @@ fn rmsnorm_f32(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]
     let x = input_f32("rmsnorm_f32", inputs, 0)?;
     let gamma = input_f32("rmsnorm_f32", inputs, 1)?;
     let out = output_f32("rmsnorm_f32", outputs, 0)?;
-    nn::rmsnorm_f32::forward_batch(tensor::View::one(x), tensor::View::one(gamma), out, gamma.len())
+    nn::rmsnorm_f32::forward_batch(
+        tensor::View::one(x),
+        tensor::View::one(gamma),
+        out,
+        gamma.len(),
+    )
 }
 
 /// 注意力三路适配：`q/k/v → out`；头宽 `d` 取算子静态语义表，序列长 `s` 由 `q` 长推出，
@@ -166,11 +171,7 @@ fn flash_attention_f32(
     inputs: &[View<'_>],
     outputs: &mut [ViewMut<'_>],
 ) -> Result<()> {
-    attention_paths(
-        inputs,
-        outputs,
-        nn::conv::attention::flash_forward,
-    )
+    attention_paths(inputs, outputs, nn::conv::attention::flash_forward)
 }
 
 /// decode 三路适配：`q/hist_k/hist_v → out`；第四路输入为 ragged 段长表（ADR 0046 §8）走批段
@@ -382,7 +383,12 @@ dequant_packed!(dequant_i2, dequant_i4);
 fn dequant_i8(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
     let q = input_f32("dequant_i8", inputs, 0)?;
     let out = output_f32("dequant_i8", outputs, 0)?;
-    nn::dequant_i8::forward(nn::dequant_i8::SCALE, nn::dequant_i8::ZERO, tensor::View::one(q), out)
+    nn::dequant_i8::forward(
+        nn::dequant_i8::SCALE,
+        nn::dequant_i8::ZERO,
+        tensor::View::one(q),
+        out,
+    )
 }
 
 /// 量化 GEMM 算术入口：两路打包字节 + 静态几何 `(m, n)` → 浮点输出。

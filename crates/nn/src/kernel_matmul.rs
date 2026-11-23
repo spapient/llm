@@ -31,6 +31,7 @@ use std::ops::Range;
 use diagnostic::{Code, Error, Result};
 
 use crate::model::{AxisRole, AxisSpec, Buf, Cost, Sample, ShapeCtx, Values};
+use tensor::NumericElement;
 
 /// 输出 tile 行数。
 pub const TILE_M: usize = 64;
@@ -51,7 +52,10 @@ pub const TN_COLS: usize = 32;
 pub const TN_K: usize = 256;
 
 /// 收缩轴可变 GEMM 的精度契约：两档只差元素类型、累加器与一次乘加。
-pub trait Precision: Copy {
+///
+/// `Self` 是参与乘加的元素，收紧到 [`NumericElement`](tensor::NumericElement)：浮点与整数封闭分组，
+/// 布尔与打包 lane 不能进乘加族。打包量化权重仍走 `gemv::Element` 分派 trait，不在此域。
+pub trait Precision: Copy + NumericElement {
     /// 累加器与输出元素：`f32` 档就是 [`f32`]，`i8` 档是 [`i32`]（转回 f32 由注册侧做）。
     type Acc: Copy + Default;
 

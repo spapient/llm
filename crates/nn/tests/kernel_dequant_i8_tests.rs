@@ -39,7 +39,10 @@ fn dequant_i8_rejects_zero_scale_and_out_of_domain_zero() {
     let q = [8.0f32, 12.0];
     let mut out = [0.0; 2];
 
-    assert!(forward(0.0, ZERO, tensor::View::one(&q), &mut out).is_err(), "零标度拒绝");
+    assert!(
+        forward(0.0, ZERO, tensor::View::one(&q), &mut out).is_err(),
+        "零标度拒绝"
+    );
     assert!(
         forward(f32::INFINITY, ZERO, tensor::View::one(&q), &mut out).is_err(),
         "非有限标度拒绝"

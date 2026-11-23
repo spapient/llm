@@ -6,8 +6,8 @@ use cutile::decl::Grid;
 use cutile::dirs::Dirs;
 use cutile::prof::{Emit, Profile};
 use diagnostic::{Code, Error, Result};
-use nn::model::Sample;
-use nn::sig::Signature;
+use prof::model::Sample;
+use prof::sig::Signature;
 
 /// 一次执行回读出来的东西：每条见证写出的个数 + 按顺序回读的 f32 值。
 pub type Readback = (Vec<i64>, Vec<f32>);

@@ -12,7 +12,7 @@ use cutile::dirs::Dirs;
 use cutile::emit::Fragment;
 use cutile::prof::{Emit, Profile};
 use diagnostic::{Code, Error};
-use nn::model::Sample;
+use prof::model::Sample;
 use prof::decl::{Grid, OpDecl};
 
 /// 一次真机执行：调用方给的样本 → 编译 → 跑一次 → 与标量参考对拍。
