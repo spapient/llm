@@ -15,15 +15,19 @@ const SITE: &str = "train::dataset::sampler";
 pub(crate) enum Sampler {
     /// `0, 1, …, n−1`，不洗牌。
     Sequential { order: Vec<usize>, cursor: usize },
-    /// Fisher–Yates 洗牌；构造时按种子洗定一次，序列可由种子重建。
+    /// Fisher–Yates 洗牌；每轮按种子派生独立流重洗，序列可由种子重建。
     Shuffled {
+        seed: u64,
+        epoch: u64,
         order: Vec<usize>,
         cursor: usize,
     },
-    /// 轮盘有放回：构造时按权重抽 `n` 个批索引。
+    /// 轮盘有放回：每轮按权重重抽 `n` 个批索引。
     Weighted {
         weights: Vec<f32>,
         total: f32,
+        seed: u64,
+        epoch: u64,
         order: Vec<usize>,
         cursor: usize,
     },
@@ -54,15 +58,22 @@ impl Sampler {
         let mut order: Vec<usize> = (0..n).collect();
         let mut rng = Rng::with_stream(seed, 0);
         shuffle(&mut rng, &mut order);
-        Self::Shuffled { order, cursor: 0 }
+        Self::Shuffled {
+            seed,
+            epoch: 0,
+            order,
+            cursor: 0,
+        }
     }
 
     fn weighted(n: usize, weights: Vec<f32>, seed: u64) -> Result<Self> {
         let total = validate_weights(&weights, n)?;
-        let order = draw_round(&weights, total, seed, n);
+        let order = draw_round(&weights, total, seed, 0, n);
         Ok(Self::Weighted {
             weights,
             total,
+            seed,
+            epoch: 0,
             order,
             cursor: 0,
         })
@@ -93,14 +104,22 @@ impl Sampler {
         Some(index)
     }
 
-    /// 回到本轮开头：游标归位，重放构造时排好的同一条序；不在此重洗或重抽。
+    /// 进入新一轮：顺序只归游标；洗牌 / 加权按派生流重洗或重抽，游标归位。
     pub(crate) fn reset(&mut self) {
-        let cursor = match self {
-            Self::Sequential { cursor, .. } => cursor,
-            Self::Shuffled { cursor, .. } => cursor,
-            Self::Weighted { cursor, .. } => cursor,
-        };
-        *cursor = 0;
+        match self {
+            Self::Sequential { cursor, .. } => *cursor = 0,
+            Self::Shuffled { seed, epoch, order, cursor } => {
+                *epoch += 1;
+                let mut rng = Rng::with_stream(*seed, *epoch as u32);
+                shuffle(&mut rng, order);
+                *cursor = 0;
+            }
+            Self::Weighted { weights, total, seed, epoch, order, cursor } => {
+                *epoch += 1;
+                *order = draw_round(weights, *total, *seed, *epoch, order.len());
+                *cursor = 0;
+            }
+        }
     }
 
     fn order(&self) -> &[usize] {
@@ -143,8 +162,8 @@ fn validate_weights(weights: &[f32], n: usize) -> Result<f32> {
 }
 
 /// 轮盘有放回抽 `n` 个批索引；规模未标定前用 O(n) 轮盘，别名表按基准再上。
-fn draw_round(weights: &[f32], total: f32, seed: u64, n: usize) -> Vec<usize> {
-    let mut rng = Rng::with_stream(seed, 0);
+fn draw_round(weights: &[f32], total: f32, seed: u64, epoch: u64, n: usize) -> Vec<usize> {
+    let mut rng = Rng::with_stream(seed, epoch as u32);
     (0..n).map(|_| draw(&mut rng, weights, total)).collect()
 }
 

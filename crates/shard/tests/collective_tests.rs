@@ -74,7 +74,7 @@ fn the_kind_table_follows_the_enum_order() {
         );
         assert_eq!(
             kind.as_str(),
-            Reduce::TABLE[position].0,
+            Reduce::SHORT[position].0,
             "{kind:?} 的短名与表里第 {position} 行不符"
         );
     }
@@ -141,7 +141,7 @@ fn a_non_finite_value_is_never_silently_dropped() {
 #[test]
 fn folding_nothing_is_not_a_value() {
     for kind in Reduce::ALL {
-        assert_eq!(kind.fold(&[]), None, "{kind:?} 给空输入编了一个值");
+        assert_eq!(kind.fold::<f32>(&[]), None, "{kind:?} 给空输入编了一个值");
     }
     assert_eq!(Reduce::Sum.fold(&[1.0]), Some(1.0));
     assert_eq!(Reduce::Max.fold(&[-4.0, -7.0]), Some(-4.0));
@@ -252,7 +252,7 @@ fn a_width_mismatch_is_refused_on_both_sides() {
             .code(),
         Code::Invalid
     );
-    assert_eq!(Local::new(topology(), 0).unwrap_err().code(), Code::Invalid);
+    assert_eq!(Local::<f32>::new(topology(), 0).unwrap_err().code(), Code::Invalid);
 }
 
 /// [`Local::reduce_into`] 是 [`Local::reduce`] 不分配的那条路径，[`Collective::all_reduce`] 走它。

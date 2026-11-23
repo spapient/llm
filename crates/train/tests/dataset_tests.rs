@@ -58,18 +58,13 @@ fn shuffle_keeps_every_batch_exactly_once() {
 #[test]
 fn reset_returns_to_the_first_batch_of_the_round() {
     let tokens: Vec<u32> = (0..6).collect();
-    let config = LoaderConfig::new(1, 1).expect("几何合法");
-    let seeded = LoaderConfig {
-        shuffle: Some(11),
-        ..config
-    };
-    let mut loader = Loader::with_config(&tokens, seeded).expect("装配");
+    let mut loader = Loader::new(&tokens, 1, 1).expect("顺序流");
 
     let first_round = drain_tokens(&mut loader);
     loader.reset();
     let again = drain_tokens(&mut loader);
 
-    assert_eq!(first_round, again, "重置后必须重放本轮首批起的同一条序");
+    assert_eq!(first_round, again, "顺序流重置后必须重放同一条序");
 }
 
 #[test]
