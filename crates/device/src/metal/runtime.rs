@@ -4,6 +4,7 @@ use cutile::dirs::Dirs;
 use diagnostic::{Code, Error, Result};
 use llm_optim::backend::Readback;
 use llm_optim::driver;
+use llm_optim::witness::MAX_OUT;
 use prof::prof::Profile;
 use std::path::{Path, PathBuf};
 use std::process::Command;
