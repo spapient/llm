@@ -95,6 +95,12 @@ impl<'a, K: Element> ViewMut<'a, K> {
     pub fn one(slice: &'a mut [K]) -> Self {
         assemble(vec![slice.len()], vec![1], 0, slice)
     }
+
+    /// 二维可写视图：`rows × cols` 行主序连续。口径同 [`View::matrix`]，只是存储可写，
+    /// 用作矩阵族算子的输出操作数。
+    pub fn matrix(rows: usize, cols: usize, slice: &'a mut [K]) -> Result<Self> {
+        Self::new(vec![rows, cols], slice)
+    }
 }
 
 impl<B, R, K> Tensor<B, R, K>

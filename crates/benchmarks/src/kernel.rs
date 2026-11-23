@@ -10,6 +10,7 @@ use nn::{
     elementwise, fast, gemm_f32, gemm_i2, gemm_i4, gemm_i8, gemv_f32, gemv_i4, matmul, matmul_i8,
     rmsnorm_f32, rope_f32, silu_f32, softmax_f32,
 };
+use tensor::View;
 use std::fmt;
 use std::hint::black_box;
 use std::thread;
@@ -55,15 +56,18 @@ pub(crate) fn elementwise(c: &mut Criterion) {
     let a: Vec<f32> = (0..VECTOR).map(|i| i as f32 * 0.5 - 1.0).collect();
     let b: Vec<f32> = (0..VECTOR).map(|i| i as f32 * 0.25 + 0.5).collect();
     let mut out = vec![0.0f32; VECTOR];
-    checked_or_exit(elementwise::forward::<Add>(&a, &b, &mut out), "缓冲等长");
+    checked_or_exit(
+        elementwise::forward::<Add>(View::one(&a), View::one(&b), &mut out),
+        "缓冲等长",
+    );
 
     let mut group = c.benchmark_group("elementwise/add_f32");
     group.throughput(Throughput::Elements(VECTOR as u64));
     group.bench_function("forward", |iter| {
         iter.iter(|| {
             black_box(elementwise::forward::<Add>(
-                black_box(&a),
-                black_box(&b),
+                View::one(black_box(&a)),
+                View::one(black_box(&b)),
                 black_box(&mut out),
             ))
         })
@@ -76,7 +80,7 @@ pub(crate) fn gemv(c: &mut Criterion) {
     let weights: Vec<f32> = (0..ROW * ROW).map(|i| (i as f32 * 0.001).sin()).collect();
     let x: Vec<f32> = (0..ROW).map(|i| (i as f32 * 0.002).cos()).collect();
     let mut out = vec![0.0f32; ROW];
-    checked_or_exit(gemv_f32::forward(&x, &weights, &mut out), "形状与缓冲等长");
+    checked_or_exit(gemv_f32::forward(View::one(&x), &weights, &mut out), "形状与缓冲等长");
 
     let mut group = c.benchmark_group("gemv_f32");
     // 时间与带宽两条口径都归档：读者不必自己换算。
@@ -84,7 +88,7 @@ pub(crate) fn gemv(c: &mut Criterion) {
     group.bench_function("decode_1x4096x4096", |iter| {
         iter.iter(|| {
             black_box(gemv_f32::forward(
-                black_box(&x),
+                View::one(black_box(&x)),
                 black_box(&weights),
                 black_box(&mut out),
             ))
@@ -121,7 +125,10 @@ pub(crate) fn gemv_quant(c: &mut Criterion) {
 
     scalar(&mut out);
     let expected = out.clone();
-    checked_or_exit(gemv_i4::forward(&x, &weights, &scales, &mut out), GEOM);
+    checked_or_exit(
+        gemv_i4::forward(View::one(&x), &weights, View::one(&scales), &mut out),
+        GEOM,
+    );
     for (j, (&got, &want)) in out.iter().zip(&expected).enumerate() {
         let slack = 1e-5 * want.abs().max(1.0);
         assert!(
@@ -138,9 +145,9 @@ pub(crate) fn gemv_quant(c: &mut Criterion) {
     group.bench_function("vector_decode_1x4096x4096", |iter| {
         iter.iter(|| {
             black_box(gemv_i4::forward(
-                black_box(&x),
+                View::one(black_box(&x)),
                 black_box(&weights),
-                black_box(&scales),
+                View::one(black_box(&scales)),
                 black_box(&mut out),
             ))
         })
@@ -151,12 +158,12 @@ pub(crate) fn gemv_quant(c: &mut Criterion) {
 /// `softmax_f32::forward`：decode 一行 4096 个 f32 的三趟数值稳定归一化。
 pub(crate) fn softmax(c: &mut Criterion) {
     let (x, mut out) = row();
-    checked_or_exit(softmax_f32::forward(&x, &mut out), "输入与输出等长");
+    checked_or_exit(softmax_f32::forward(View::one(&x), &mut out), "输入与输出等长");
 
     let mut group = c.benchmark_group("softmax_f32");
     group.throughput(Throughput::Elements(ROW as u64));
     group.bench_function("decode_1x4096", |iter| {
-        iter.iter(|| black_box(softmax_f32::forward(black_box(&x), black_box(&mut out))))
+        iter.iter(|| black_box(softmax_f32::forward(View::one(black_box(&x)), black_box(&mut out))))
     });
     group.finish();
 }
@@ -164,12 +171,12 @@ pub(crate) fn softmax(c: &mut Criterion) {
 /// `rope_f32::forward`：decode 一行 4096 个 f32 的二维位置旋转（位置取 7）。
 pub(crate) fn rope(c: &mut Criterion) {
     let (x, mut out) = row();
-    checked_or_exit(rope_f32::forward(7, &x, &mut out), "输入与输出等长");
+    checked_or_exit(rope_f32::forward(7, View::one(&x), &mut out), "输入与输出等长");
 
     let mut group = c.benchmark_group("rope_f32");
     group.throughput(Throughput::Elements(ROW as u64));
     group.bench_function("decode_1x4096", |iter| {
-        iter.iter(|| black_box(rope_f32::forward(7, black_box(&x), black_box(&mut out))))
+        iter.iter(|| black_box(rope_f32::forward(7, View::one(black_box(&x)), black_box(&mut out))))
     });
     group.finish();
 }
@@ -178,15 +185,15 @@ pub(crate) fn rope(c: &mut Criterion) {
 pub(crate) fn rmsnorm(c: &mut Criterion) {
     let (x, mut out) = row();
     let gamma: Vec<f32> = (0..ROW).map(|i| 0.5 + i as f32 * 0.01).collect();
-    checked_or_exit(rmsnorm_f32::forward(&x, &gamma, &mut out), "三个缓冲等长");
+    checked_or_exit(rmsnorm_f32::forward(View::one(&x), View::one(&gamma), &mut out), "三个缓冲等长");
 
     let mut group = c.benchmark_group("rmsnorm_f32");
     group.throughput(Throughput::Elements(ROW as u64));
     group.bench_function("decode_1x4096", |iter| {
         iter.iter(|| {
             black_box(rmsnorm_f32::forward(
-                black_box(&x),
-                black_box(&gamma),
+                View::one(black_box(&x)),
+                View::one(black_box(&gamma)),
                 black_box(&mut out),
             ))
         })
@@ -198,18 +205,18 @@ pub(crate) fn rmsnorm(c: &mut Criterion) {
 pub(crate) fn silu(c: &mut Criterion) {
     let x: Vec<f32> = (0..ROW).map(|i| i as f32 * 0.25 - 4.0).collect();
     let mut out = vec![0.0f32; ROW];
-    checked_or_exit(silu_f32::forward(&x, &mut out), "输入与输出等长");
+    checked_or_exit(silu_f32::forward(View::one(&x), &mut out), "输入与输出等长");
 
     let mut group = c.benchmark_group("silu_f32");
     group.throughput(Throughput::Elements(ROW as u64));
     group.bench_function("decode_1x4096", |iter| {
-        iter.iter(|| black_box(silu_f32::forward(black_box(&x), black_box(&mut out))))
+        iter.iter(|| black_box(silu_f32::forward(View::one(black_box(&x)), black_box(&mut out))))
     });
     group.finish();
 }
 
-/// 一档内核的签名：同一份 A/B 缓冲上写 `out`，失败原样返回。
-type Kernel<A, C, E> = fn(&[A], &[A], usize, usize, usize, &mut [C]) -> Result<(), E>;
+/// 一档内核的签名：同一份 A/B 二维视图上写 `out`，失败原样返回。
+type Dual<A, C, E> = fn(View<'_, A>, View<'_, A>, &mut [C]) -> Result<(), E>;
 
 /// 同一份 A/B 缓冲上的两档内核：标量参考与分块执行路径。
 fn dual<A, C, E: fmt::Display>(
@@ -217,32 +224,26 @@ fn dual<A, C, E: fmt::Display>(
     (a, b, out): (&[A], &[A], &mut [C]),
     (m, n, k): (usize, usize, usize),
     names: [&str; 2],
-    scalar: Kernel<A, C, E>,
-    tiled: Kernel<A, C, E>,
-) {
-    checked_or_exit(scalar(a, b, m, n, k, &mut *out), GEOM);
+    scalar: Dual<A, C, E>,
+    tiled: Dual<A, C, E>,
+) where
+    A: tensor::Element,
+{
+    let av = checked_or_exit(View::matrix(m, k, a), GEOM);
+    let bv = checked_or_exit(View::matrix(k, n, b), GEOM);
+    checked_or_exit(scalar(av, bv, &mut *out), GEOM);
     group.bench_function(names[0], |iter| {
         iter.iter(|| {
-            black_box(scalar(
-                black_box(a),
-                black_box(b),
-                m,
-                n,
-                k,
-                black_box(&mut *out),
-            ))
+            let av = View::matrix(m, k, black_box(a)).expect(GEOM);
+            let bv = View::matrix(k, n, black_box(b)).expect(GEOM);
+            black_box(scalar(av, bv, black_box(&mut *out)))
         })
     });
     group.bench_function(names[1], |iter| {
         iter.iter(|| {
-            black_box(tiled(
-                black_box(a),
-                black_box(b),
-                m,
-                n,
-                k,
-                black_box(&mut *out),
-            ))
+            let av = View::matrix(m, k, black_box(a)).expect(GEOM);
+            let bv = View::matrix(k, n, black_box(b)).expect(GEOM);
+            black_box(tiled(av, bv, black_box(&mut *out)))
         })
     });
 }
@@ -344,12 +345,19 @@ fn projection(c: &mut Criterion) {
     group.throughput(Throughput::Bytes(
         ((x.len() + w.len()) * size_of::<f32>()) as u64,
     ));
-    checked_or_exit(matmul::forward_tn_tiled(&x, &w, rows, N, K, &mut out), GEOM);
+    checked_or_exit(
+        matmul::forward_tn_tiled(
+            View::matrix(rows, K, &x).expect(GEOM),
+            View::matrix(N, K, &w).expect(GEOM),
+            &mut out,
+        ),
+        GEOM,
+    );
     group.bench_function("row_by_row_gemv", |iter| {
         iter.iter(|| {
             for row in 0..rows {
                 black_box(ok(gemv_f32::forward(
-                    black_box(&x[row * K..][..K]),
+                    View::one(black_box(&x[row * K..][..K])),
                     black_box(&w),
                     black_box(&mut out[row * N..][..N]),
                 )));
@@ -358,26 +366,16 @@ fn projection(c: &mut Criterion) {
     });
     group.bench_function("tiled", |iter| {
         iter.iter(|| {
-            black_box(matmul::forward_tn_tiled(
-                black_box(&x),
-                black_box(&w),
-                black_box(rows),
-                black_box(N),
-                black_box(K),
-                black_box(&mut out),
-            ))
+            let xv = View::matrix(rows, K, black_box(&x)).expect(GEOM);
+            let wv = View::matrix(N, K, black_box(&w)).expect(GEOM);
+            black_box(matmul::forward_tn_tiled(xv, wv, black_box(&mut out)))
         })
     });
     group.bench_function("packed", |iter| {
         iter.iter(|| {
-            fast::gemm_f32_tn(
-                black_box(&x),
-                black_box(&w),
-                black_box(rows),
-                black_box(N),
-                black_box(K),
-                black_box(&mut out),
-            )
+            let xv = View::matrix(rows, K, black_box(&x)).expect(GEOM);
+            let wv = View::matrix(N, K, black_box(&w)).expect(GEOM);
+            fast::gemm_f32_tn(xv, wv, black_box(&mut out))
         })
     });
     group.finish();

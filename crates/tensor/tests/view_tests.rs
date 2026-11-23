@@ -1,4 +1,4 @@
-use crate::{Owned, Shape, Slice, Tensor, View};
+use crate::{Owned, Shape, Slice, Tensor, View, ViewMut};
 
 #[test]
 fn a_broadcast_axis_gets_stride_zero_and_reads_the_same_element() {
@@ -91,6 +91,19 @@ fn matrix_constructor_carries_two_axis_lengths() {
     assert_eq!(view.row(1), Some(&[4.0, 5.0, 6.0][..]));
     // 元素数与 `rows·cols` 不符在校验拦下。
     assert!(View::matrix(2, 2, &buf[..]).is_err());
+}
+
+#[test]
+fn mutable_matrix_constructor_carries_two_axis_lengths_and_writes_back() {
+    let mut buf = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let mut view = ViewMut::matrix(2, 3, &mut buf[..]).expect("2×3");
+    assert_eq!(view.dims(), [2, 3]);
+    assert!(view.is_contiguous());
+    view.as_slice_mut()[4] = 99.0;
+    assert_eq!(&buf[..], [1.0, 2.0, 3.0, 4.0, 99.0, 6.0]);
+    // 元素数与 `rows·cols` 不符在校验拦下。
+    let mut other = [0.0f32; 6];
+    assert!(ViewMut::matrix(2, 2, &mut other[..]).is_err());
 }
 
 #[test]
