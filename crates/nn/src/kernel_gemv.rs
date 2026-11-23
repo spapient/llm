@@ -1201,7 +1201,6 @@ mod simd {
         include!("../tests/kernel_simd_tests.rs");
     }
 }
-/// stable 退路：同名同签名，只是把车道换成标量。
 #[cfg(not(nightly))]
 mod simd {
     //! stable 退路：与 nightly 版的 `super::simd` 同名同签名，只是不做显式车道。

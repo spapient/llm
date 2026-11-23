@@ -515,10 +515,10 @@ fn cuda_lower(
             crate::cuda::cuda_chunk_scan(kernel, signature, sample, *chunk, *decay)
         }
         QuantizedGemvI4 { threads } => {
-            crate::cuda::cuda_quantized_gemv_i4(signature, *threads).map(single_file)
+            crate::cuda::cuda_quantized_gemv_i4(signature, *threads).map(|source| vec![source])
         }
         // 其余骨架都只吐一段源码；分派单独一层，是为了让这一层只回答「哪一族」。
-        _ => cuda_single_source(kind, kernel, signature, sample).map(single_file),
+        _ => cuda_single_source(kind, kernel, signature, sample).map(|source| vec![source]),
     }
 }
 
@@ -541,11 +541,6 @@ fn cuda_single_source(
             "该骨架产出多段源码，应在 cuda_lower 分派，不应落到单段兜底".to_string(),
         )),
     }
-}
-
-/// 单段源码 → 单元素文件表（CUDA 生产态单段骨架只产出一个翻译单元）。
-fn single_file(source: String) -> Vec<String> {
-    vec![source]
 }
 
 fn cuda_program(profile: &Profile, dirs: &Dirs, selected: &[Selected<'_>]) -> Result<String> {
@@ -605,24 +600,18 @@ pub fn compile_run_cuda(
     label: &str,
 ) -> Result<(String, String)> {
     let dir = driver::scratch(dirs, &format!("{label}-cuda"));
-    let outcome = cuda_in_dir(&dir, profile, program, label, dirs);
+    let (src, exe) = (
+        dir.join(format!("{label}.cu")),
+        dir.join(format!("{label}.exe")),
+    );
+    let outcome = (|| {
+        driver::write_text(&src, program)?;
+        cuda_compile(&exe, &src, profile, dirs)?;
+        let mut command = Command::new(&exe);
+        driver::run_exe(&mut command, &exe, "CUDA 执行失败")
+    })();
     let _ = std::fs::remove_dir_all(&dir);
     outcome
-}
-
-fn cuda_in_dir(
-    dir: &Path,
-    profile: &Profile,
-    program: &str,
-    label: &str,
-    dirs: &Dirs,
-) -> Result<(String, String)> {
-    let src = dir.join(format!("{label}.cu"));
-    let exe = dir.join(format!("{label}.exe"));
-    driver::write_text(&src, program)?;
-    cuda_compile(&exe, &src, profile, dirs)?;
-    let mut command = Command::new(&exe);
-    driver::run_exe(&mut command, &exe, "CUDA 执行失败")
 }
 
 fn cuda_compile(exe: &Path, src: &Path, profile: &Profile, dirs: &Dirs) -> Result<()> {

@@ -945,18 +945,8 @@ fn softmax_norm_map(signature: &Signature, sample: &Sample) -> Result<String> {
     Ok(chunk_entry(signature, NORM, "float max, float sum", &body))
 }
 
-/// 归一化段（`NORM`）逐元素改写，其余段（`PARTIAL` / `EXPSUM`）每线程一块：线程下标语句由入口
-/// 的职责定，不由调用方各自挑。
-fn tid_stmt(entry: &str) -> &'static str {
-    if entry == NORM {
-        Cuda::POINT_STMT
-    } else {
-        Cuda::GRID_STMT
-    }
-}
-
-/// 分块族的 map 入口：签名缓冲形参 + 额外标量（`rms` / `max` / `sum`），入口名与线程下标语句由
-/// [`tid_stmt`] 给。
+/// 分块族的 map 入口：签名缓冲形参 + 额外标量（`rms` / `max` / `sum`）。线程下标语句由入口职责定
+/// ——归一化段（`NORM`）逐元素改写，其余段（`PARTIAL` / `EXPSUM`）每线程一块——不留给调用方挑。
 fn chunk_entry(signature: &Signature, entry: &str, extra: &str, body: &str) -> String {
     let bufs = Cuda::bufs(signature);
     let bufs = if extra.is_empty() {
@@ -964,7 +954,12 @@ fn chunk_entry(signature: &Signature, entry: &str, extra: &str, body: &str) -> S
     } else {
         format!("{bufs},\n    {extra}")
     };
-    Cuda::kernel_entry("", "", &bufs, ("", tid_stmt(entry)), body, entry)
+    let stmt = if entry == NORM {
+        Cuda::POINT_STMT
+    } else {
+        Cuda::GRID_STMT
+    };
+    Cuda::kernel_entry("", "", &bufs, ("", stmt), body, entry)
 }
 
 /// 唯一只读缓冲名（Softmax 形态）；缺或多都返回 `Invalid`。

@@ -544,8 +544,8 @@ mod tests {
     include!("../tests/kernel_matmul_tests.rs");
 }
 
-/// 大 K 对称 int8 GEMM 的语义与精度档：`Y[m, n] = Σ_k A[m, k] · B[k, n]`，累加器 `i32`。
 pub mod i8 {
+    //! 大 K 对称 int8 GEMM 的语义与精度档：`Y[m, n] = Σ_k A[m, k] · B[k, n]`，累加器 `i32`。
     //! 职责：i8 矩阵乘的标量/分块出口与形状投影。
     use diagnostic::Result;
 

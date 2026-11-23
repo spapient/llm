@@ -249,29 +249,6 @@ pub(crate) fn host_library() -> &'static str {
 // Metal 分块族内核：归约、扫描、`rmsnorm`、`softmax` 的设备源拼装，以及计时基准驱动。
 // ---------------------------------------------------------------------------
 
-/// 生产态 Metal 分块归约内核（[`crate::dialect::Dialect::chunk_reduce`] 的 Metal 方言）。
-pub fn metal_chunk_reduce(
-    kernel_source: &str,
-    signature: &Signature,
-    sample: &Sample,
-    chunk: usize,
-    reduce_func: &str,
-) -> Result<String> {
-    Metal::chunk_reduce(kernel_source, signature, sample, chunk, reduce_func)
-}
-
-/// [`metal_chunk_reduce`] 的具名版本：多段程序里部分归约段要与其他段区分入口名。
-pub fn metal_chunk_reduce_entry(
-    kernel_source: &str,
-    signature: &Signature,
-    sample: &Sample,
-    chunk: usize,
-    reduce_func: &str,
-    entry: &str,
-) -> Result<String> {
-    Metal::chunk_reduce_entry(kernel_source, signature, sample, chunk, reduce_func, entry)
-}
-
 /// 生产态分块扫描内核：把时间轴串行递推切成 `chunk` 元素一块，返回两段内核源 `(局部扫描, 校正)`。
 ///
 /// 1. 局部扫描：每线程 `g` 对块 `[g·chunk, min(chunk, N-g·chunk))` 做基 0 扫描，写 `y`；
@@ -325,7 +302,7 @@ fn chunk_scan_correct(output: &str, chunk: usize, len: i64, decay: f32) -> Strin
 
 /// 生产态分块 RMSNorm：两段内核 + 主机折叠。
 ///
-/// 1. **部分平方和**：复用 [`metal_chunk_reduce`]，把 `x` 切成块、每线程用 `_cutile_sumsq_f32`
+/// 1. **部分平方和**：复用 [`Metal::chunk_reduce`]，把 `x` 切成块、每线程用 `_cutile_sumsq_f32`
 ///    归约一块、部分和写 `y[g]`；
 /// 2. **归一化**：每线程 `g` 用主机折叠出的 `rms`（`sqrt(Σx²/N + eps)`）归一化一块。
 pub fn metal_chunk_rmsnorm(
@@ -334,7 +311,7 @@ pub fn metal_chunk_rmsnorm(
     sample: &Sample,
     chunk: usize,
 ) -> Result<(String, String)> {
-    let partial = metal_chunk_reduce_entry(
+    let partial = Metal::chunk_reduce_entry(
         kernel_source,
         signature,
         sample,
@@ -356,7 +333,7 @@ pub fn metal_chunk_rmsnorm(
 
 /// 生产态分块 Softmax：三段内核 + 两次主机折叠。
 ///
-/// 1. **部分最大值**：复用 [`metal_chunk_reduce`]，`_cutile_max_f32` 归约一块、部分最大写 `y[g]`；
+/// 1. **部分最大值**：复用 [`Metal::chunk_reduce`]，`_cutile_max_f32` 归约一块、部分最大写 `y[g]`；
 /// 2. **部分指数和**：每线程 `g` 用主机折叠出的 `max` 做 `_cutile_exp_sum_f32(x, …, max)`，写 `y[g]`；
 /// 3. **归一化**：每线程 `g` 用 `max`/`sum` 做 `_cutile_exp_norm_f32`，写 `y` 全行。
 pub fn metal_chunk_softmax(
@@ -365,7 +342,7 @@ pub fn metal_chunk_softmax(
     sample: &Sample,
     chunk: usize,
 ) -> Result<(String, String, String)> {
-    let max = metal_chunk_reduce_entry(
+    let max = Metal::chunk_reduce_entry(
         kernel_source,
         signature,
         sample,
@@ -892,7 +869,7 @@ pub fn reduce(
 ) -> Result<Source> {
     let prep = Prep::of(signature, sample, chunk)?;
     // `sum` / `max` 取哪一步由 `.k` 模板的 `reduce.op` 派生，折叠本身只有一份。
-    let device = metal_chunk_reduce(kernel_source, signature, sample, chunk, func)?;
+    let device = Metal::chunk_reduce(kernel_source, signature, sample, chunk, func)?;
     let step = if func.contains("max") {
         MAX_STEP
     } else {

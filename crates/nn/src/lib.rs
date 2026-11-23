@@ -62,8 +62,6 @@ extern crate self as nn;
 #[doc(inline)]
 pub use annotation::spec;
 
-use diagnostic::{Code, Error, Result};
-
 mod attention;
 mod declare;
 mod engram;
@@ -220,112 +218,6 @@ pub use sch::layout;
 /// 形状由 `tensor` 拥有（见 `docs/ARCHITECTURE.md` 第三节），这里再导出：`Contract::output` 本来就返回它，
 /// 消费者与 `#[spec]` 生成的代码都不该为此额外依赖 `tensor`。
 pub use tensor::Shape;
-
-/// 线性层：`y = x · W`。用哪个算子由权重编码 [`WeightFormat`] 决定，而不是一个全局常量。
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Linear {
-    spec: ContractSpec,
-    in_features: usize,
-    out_features: usize,
-    format: WeightFormat,
-}
-
-impl Linear {
-    /// 默认编码（[`WeightFormat::INT4`]）对应的算子名。
-    pub const OP: &str = "gemv_i4";
-
-    /// 稠密 f32 权重对应的算子名。
-    pub const DENSE: &str = "gemv_f32";
-
-    /// 对称 int8 权重对应的算子名。
-    pub const I8: &str = "gemv_i8";
-
-    /// 对称 int2 权重对应的算子名。
-    pub const I2: &str = "gemv_i2";
-
-    /// 由输入/输出宽度构造，按 int4 权重（[`WeightFormat::INT4`]）计价；两个宽度都必须非零。
-    pub fn new(name: impl Into<String>, in_features: usize, out_features: usize) -> Result<Self> {
-        Self::with_format(name, WeightFormat::INT4, in_features, out_features)
-    }
-
-    /// 按给定的权重编码构造。
-    ///
-    /// 编码没有对应算子时（例如 f16 / bf16 / i8），层的 `ops` 为空：它仍然是一个合法的投影
-    /// 声明，只是推不出下界。把它做成 `Err` 反而会逼调用方"随便挑一个格式"来让构造成功。
-    ///
-    /// # Errors
-    ///
-    /// 任一宽度为零（[`Code::Invalid`]）；算子名由编码给出却没有通过 [`ContractSpec::new`] 的校验
-    /// （只可能发生在编码与 `op` 注册表不一致时）。
-    pub fn with_format(
-        name: impl Into<String>,
-        format: WeightFormat,
-        in_features: usize,
-        out_features: usize,
-    ) -> Result<Self> {
-        if in_features == 0 || out_features == 0 {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("线性层宽度必须非零（in = {in_features}，out = {out_features}）"),
-            )
-            .with("nn::Linear::with_format"));
-        }
-        let spec = ContractSpec::new_with_role(
-            name,
-            Shape::new([out_features]),
-            format.operator(),
-            ParamRole::Trainable,
-        )?;
-        Ok(Self {
-            spec,
-            in_features,
-            out_features,
-            format,
-        })
-    }
-
-    crate::accessors! {
-        /// 输入宽度。
-        in_features -> usize = in_features,
-        /// 输出宽度。
-        out_features -> usize = out_features,
-        /// 权重编码。它决定了本层用哪个算子，也决定了"这一层的下界是否可算"。
-        format -> WeightFormat = format,
-    }
-
-    /// 本层的性能下界，见 [`Contract::bounds`]。
-    pub fn bounds(&self) -> BoundsResult {
-        <Self as Contract>::bounds(self)
-    }
-}
-
-impl Contract for Linear {
-    spec_accessors!();
-
-    fn linear(&self) -> Option<&Linear> {
-        Some(self)
-    }
-
-    fn bounds(&self) -> BoundsResult {
-        // 编码没有算子：不是"下界为零"，而是"这个格式还没有可计价的内核"。
-        // 如实报出而不是拿另一个格式的算子凑一个数——那正是改造前 F32 权重按 int4
-        // 报出 10 MiB 的原因。
-        let Some(operator) = self.format.operator() else {
-            // 理由由编码自己给：`Int4 { group }` 要说出"分组不同"，`Packed4` 要说出"缺标度条目"，
-            // 否则读完只知道"没有算子"，不知道该改文件还是该换内核。
-            return Err(Error::new(
-                Code::Unsupported,
-                format!(
-                    "层 `{}` 的权重{}，无法推出下界",
-                    self.spec.name(),
-                    self.format.unpriced_reason()
-                ),
-            )
-            .with("nn::Linear::bounds"));
-        };
-        Bounds::of_op(operator, self.in_features, self.out_features).map(Some)
-    }
-}
 
 #[cfg(test)]
 #[path = "../tests/lib_tests.rs"]

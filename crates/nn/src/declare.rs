@@ -41,9 +41,9 @@ pub type BoundsResult = Result<Option<Bounds>>;
 
 /// 已声明的算子名清单，仅用于报错文案（热路径不调用）。
 fn declared_ops() -> String {
-    let names: Vec<&str> = crate::prof::catalogue::all()
+    let names: Vec<&str> = prof::catalogue::all()
         .iter()
-        .map(crate::prof::catalogue::Op::name)
+        .map(prof::catalogue::Op::name)
         .collect();
     format!("已声明：{}", names.join("、"))
 }
@@ -85,7 +85,7 @@ pub struct ContractSpec {
 }
 
 impl ContractSpec {
-    /// 校验并构造：`ops` 必须既存在于 [`crate::prof::catalogue::all`]，又有 [`registry::model`] 的语义表。
+    /// 校验并构造：`ops` 必须既存在于 [`prof::catalogue::all`]，又有 [`registry::model`] 的语义表。
     ///
     /// `ops` 收 `impl Into<String>` 的任意可迭代物：字面量数组 `["gemv_i4"]` 与已拼好的
     /// `Vec<String>` 都能直接传，调用侧不必为一条静态名字写 `.to_string()`。
@@ -110,14 +110,14 @@ impl ContractSpec {
         let mut checked = Vec::new();
         for wanted in ops {
             let wanted = wanted.into();
-            if crate::prof::catalogue::named(&wanted).is_none() {
+            if prof::catalogue::named(&wanted).is_none() {
                 return Err(Error::new(
                     Code::Missing,
                     format!("算子 `{wanted}` 没有声明（{}）", declared_ops()),
                 )
                 .with("nn::ContractSpec::new"));
             }
-            if registry::model(&wanted).is_none() {
+            if crate::registry::model(&wanted).is_none() {
                 return Err(Error::new(
                     Code::Missing,
                     format!("算子 `{wanted}` 没有语义表，层无法推出下界也无法对拍"),
@@ -279,7 +279,7 @@ impl Linear {
 }
 
 impl Contract for Linear {
-    spec_accessors!();
+    crate::spec_accessors!();
 
     fn linear(&self) -> Option<&Linear> {
         Some(self)

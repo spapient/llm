@@ -2,6 +2,7 @@
 //! 两条判定、以及重导出面本身。`ParamRole` 的动作原在单独文件，挂同一模块故合并。
 
 use super::*;
+use diagnostic::Code;
 
 /// 只声明了输出、没有输入宽度：层合法，但没有可计价的形状。
 #[crate::spec(name = "no_axes", out = [8], ops = ["gemv_i4"])]
