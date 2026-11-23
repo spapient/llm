@@ -7,16 +7,19 @@ macro_rules! unary_pair_tests {
             let expected = crate::unary::reference::<$ty>(&sample).expect("参考可计算");
             let mut out = vec![0.0; 128];
             let a = sample.f32("a").expect("a 存在");
-            $forward(a, &mut out).expect("缓冲等长");
+            $forward(tensor::View::one(a), &mut out).expect("缓冲等长");
             assert_eq!(out, expected);
         }
 
         #[test]
         fn rejects_mismatched_length_and_allows_empty() {
             let mut out = vec![0.0; 3];
-            assert!($forward(&[1.0, 2.0], &mut out).is_err(), "输出比输入长");
+            assert!(
+                $forward(tensor::View::one(&[1.0, 2.0]), &mut out).is_err(),
+                "输出比输入长"
+            );
             let mut empty = vec![];
-            $forward(&[], &mut empty).expect("空行逐元素放行");
+            $forward(tensor::View::one(&[]), &mut empty).expect("空行逐元素放行");
         }
     };
 }
@@ -40,7 +43,7 @@ macro_rules! unary_op_tests {
                 sample.bufs[0].values = crate::model::Values::F32(a.to_vec());
                 let expected = crate::unary::reference::<$ty>(&sample).expect("参考可计算");
                 let mut out = vec![0.0; a.len()];
-                $forward(a, &mut out).expect("等长");
+                $forward(tensor::View::one(a), &mut out).expect("等长");
                 assert_eq!(out, expected, "用例 {idx}");
                 assert!(out.iter().all(|v| v.is_finite()), "用例 {idx}：结果有限");
             }
