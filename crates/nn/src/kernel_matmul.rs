@@ -44,6 +44,19 @@ pub(crate) fn dim2(dims: &[usize], op: &str) -> Result<(usize, usize)> {
     Ok((rows, cols))
 }
 
+/// 两条二维视图的收缩轴对齐：返回 `(m, k, n)`，`a` 的列与 `b` 的行不符时说明。
+pub(crate) fn dim2_pair(a: &[usize], b: &[usize], op: &str) -> Result<(usize, usize, usize)> {
+    let (m, ka) = dim2(a, op)?;
+    let (kb, n) = dim2(b, op)?;
+    if ka != kb {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("{op} 收缩轴不符：a·k={ka}，b·k={kb}"),
+        ));
+    }
+    Ok((m, ka, n))
+}
+
 /// 输出 tile 行数。
 pub const TILE_M: usize = 64;
 

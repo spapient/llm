@@ -7,8 +7,8 @@ pub mod i2 {
     //! `gemm_i2`：对称 int2 矩阵乘。骨架在 [`crate::gemm`]，本模块只有"对称 int2"这一份格式
     //! 契约：A、B 是打包 2 位码（每字节 4 个，低 2 位在前），对称零点取配置表 [`I2`]；取样、
     //! 打包长度与整数点积由骨架按 [`I2`] 一行配置读出，点积在 `i32` 上精确累加后转 f32。
-    pub use crate::gemm::{AXES, K, project_shape};
     use crate::gemm as skel;
+    pub use crate::gemm::{AXES, K, project_shape};
 
     use crate::quant::I2;
 
@@ -33,8 +33,8 @@ pub mod i4 {
     //! `gemm_i4`：对称 int4 矩阵乘。骨架在 [`crate::gemm`]，本模块只有"对称 int4"这一份格式
     //! 契约：A、B 是打包 nibble（每字节 2 个，低 4 位在前、高 4 位在后），对称零点取配置表
     //! [`I4`]；取样、打包长度与整数点积由骨架按 [`I4`] 一行配置读出，点积在 `i32` 上精确累加。
-    pub use crate::gemm::{AXES, K, project_shape};
     use crate::gemm as skel;
+    pub use crate::gemm::{AXES, K, project_shape};
 
     use crate::quant::I4;
 
@@ -59,8 +59,8 @@ pub mod i8 {
     //! `gemm_i8`：对称 int8 矩阵乘。骨架在 [`crate::gemm`]，本模块只有"对称 int8"这一份格式
     //! 契约：`u8` 承载 int8 位模式，点积先在 `i32` 上精确累加（对应 CUDA `dp4a`：每 4 对 int8
     //! 乘积累加进一个 int32），再收敛成 f32。CPU 没有 dp4a，退化为标量整数点积。
-    pub use crate::gemm::{AXES, K, project_shape};
     use crate::gemm as skel;
+    pub use crate::gemm::{AXES, K, project_shape};
 
     use crate::quant::I8;
 
@@ -112,8 +112,8 @@ pub mod f32 {
     //! `gemm_f32`：稠密 f32 矩阵乘。骨架在 [`crate::gemm`]，本模块只有"稠密 f32"这一份格式
     //! 契约：元素类型、位宽、样本取值与点积算术。CPU 片段没有 MMA 原语，算术走通用稠密 tile
     //! （[`crate::matmul::matmul_tiled`]），与标量双重循环逐位一致。
-    pub use crate::gemm::{AXES, K, project_shape};
     use crate::gemm as skel;
+    pub use crate::gemm::{AXES, K, project_shape};
 
     crate::gemm_variant!(
         Dense,

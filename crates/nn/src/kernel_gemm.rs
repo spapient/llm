@@ -532,14 +532,7 @@ macro_rules! gemm_variant {
             b: tensor::View<'_, f32>,
             out: &mut [f32],
         ) -> diagnostic::Result<()> {
-            let (m, ka) = $crate::kernel::matmul::dim2(a.dims(), $op)?;
-            let (kb, n) = $crate::kernel::matmul::dim2(b.dims(), $op)?;
-            if ka != kb {
-                return Err(diagnostic::Error::new(
-                    diagnostic::Code::Invalid,
-                    format!("{} 收缩轴不符：a·k={ka}，b·k={kb}", $op),
-                ));
-            }
+            let (m, _, n) = $crate::kernel::matmul::dim2_pair(a.dims(), b.dims(), $op)?;
             $crate::gemm::forward::<$name>(a.as_slice(), b.as_slice(), m, n, out)
         }
 

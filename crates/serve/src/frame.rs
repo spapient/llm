@@ -365,7 +365,9 @@ impl Decoder {
         self.compact();
         self.buf.extend_from_slice(bytes);
         let available = &self.buf[self.start..];
-        if available.len() >= HEADER_LEN && let Err(error) = header(available) {
+        if available.len() >= HEADER_LEN
+            && let Err(error) = header(available)
+        {
             let error = error.with("proto::Decoder::push");
             self.poisoned = Some(error.clone());
             return Err(error);

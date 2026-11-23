@@ -10,10 +10,10 @@ use nn::{
     elementwise, fast, gemm_f32, gemm_i2, gemm_i4, gemm_i8, gemv_f32, gemv_i4, matmul, matmul_i8,
     rmsnorm_f32, rope_f32, silu_f32, softmax_f32,
 };
-use tensor::View;
 use std::fmt;
 use std::hint::black_box;
 use std::thread;
+use tensor::View;
 
 /// 缓冲尺寸与 `m·n·k` 对不上时的失败文案。
 const GEOM: &str = "缓冲尺寸与 m·n·k 一致";
@@ -80,7 +80,10 @@ pub(crate) fn gemv(c: &mut Criterion) {
     let weights: Vec<f32> = (0..ROW * ROW).map(|i| (i as f32 * 0.001).sin()).collect();
     let x: Vec<f32> = (0..ROW).map(|i| (i as f32 * 0.002).cos()).collect();
     let mut out = vec![0.0f32; ROW];
-    checked_or_exit(gemv_f32::forward(View::one(&x), &weights, &mut out), "形状与缓冲等长");
+    checked_or_exit(
+        gemv_f32::forward(View::one(&x), &weights, &mut out),
+        "形状与缓冲等长",
+    );
 
     let mut group = c.benchmark_group("gemv_f32");
     // 时间与带宽两条口径都归档：读者不必自己换算。
@@ -158,12 +161,20 @@ pub(crate) fn gemv_quant(c: &mut Criterion) {
 /// `softmax_f32::forward`：decode 一行 4096 个 f32 的三趟数值稳定归一化。
 pub(crate) fn softmax(c: &mut Criterion) {
     let (x, mut out) = row();
-    checked_or_exit(softmax_f32::forward(View::one(&x), &mut out), "输入与输出等长");
+    checked_or_exit(
+        softmax_f32::forward(View::one(&x), &mut out),
+        "输入与输出等长",
+    );
 
     let mut group = c.benchmark_group("softmax_f32");
     group.throughput(Throughput::Elements(ROW as u64));
     group.bench_function("decode_1x4096", |iter| {
-        iter.iter(|| black_box(softmax_f32::forward(View::one(black_box(&x)), black_box(&mut out))))
+        iter.iter(|| {
+            black_box(softmax_f32::forward(
+                View::one(black_box(&x)),
+                black_box(&mut out),
+            ))
+        })
     });
     group.finish();
 }
@@ -171,12 +182,21 @@ pub(crate) fn softmax(c: &mut Criterion) {
 /// `rope_f32::forward`：decode 一行 4096 个 f32 的二维位置旋转（位置取 7）。
 pub(crate) fn rope(c: &mut Criterion) {
     let (x, mut out) = row();
-    checked_or_exit(rope_f32::forward(7, View::one(&x), &mut out), "输入与输出等长");
+    checked_or_exit(
+        rope_f32::forward(7, View::one(&x), &mut out),
+        "输入与输出等长",
+    );
 
     let mut group = c.benchmark_group("rope_f32");
     group.throughput(Throughput::Elements(ROW as u64));
     group.bench_function("decode_1x4096", |iter| {
-        iter.iter(|| black_box(rope_f32::forward(7, View::one(black_box(&x)), black_box(&mut out))))
+        iter.iter(|| {
+            black_box(rope_f32::forward(
+                7,
+                View::one(black_box(&x)),
+                black_box(&mut out),
+            ))
+        })
     });
     group.finish();
 }
@@ -185,7 +205,10 @@ pub(crate) fn rope(c: &mut Criterion) {
 pub(crate) fn rmsnorm(c: &mut Criterion) {
     let (x, mut out) = row();
     let gamma: Vec<f32> = (0..ROW).map(|i| 0.5 + i as f32 * 0.01).collect();
-    checked_or_exit(rmsnorm_f32::forward(View::one(&x), View::one(&gamma), &mut out), "三个缓冲等长");
+    checked_or_exit(
+        rmsnorm_f32::forward(View::one(&x), View::one(&gamma), &mut out),
+        "三个缓冲等长",
+    );
 
     let mut group = c.benchmark_group("rmsnorm_f32");
     group.throughput(Throughput::Elements(ROW as u64));
@@ -210,7 +233,12 @@ pub(crate) fn silu(c: &mut Criterion) {
     let mut group = c.benchmark_group("silu_f32");
     group.throughput(Throughput::Elements(ROW as u64));
     group.bench_function("decode_1x4096", |iter| {
-        iter.iter(|| black_box(silu_f32::forward(View::one(black_box(&x)), black_box(&mut out))))
+        iter.iter(|| {
+            black_box(silu_f32::forward(
+                View::one(black_box(&x)),
+                black_box(&mut out),
+            ))
+        })
     });
     group.finish();
 }
@@ -231,20 +259,12 @@ fn dual<A, C, E: fmt::Display>(
 {
     let av = checked_or_exit(View::matrix(m, k, a), GEOM);
     let bv = checked_or_exit(View::matrix(k, n, b), GEOM);
-    checked_or_exit(scalar(av, bv, &mut *out), GEOM);
+    checked_or_exit(scalar(av.clone(), bv.clone(), &mut *out), GEOM);
     group.bench_function(names[0], |iter| {
-        iter.iter(|| {
-            let av = View::matrix(m, k, black_box(a)).expect(GEOM);
-            let bv = View::matrix(k, n, black_box(b)).expect(GEOM);
-            black_box(scalar(av, bv, black_box(&mut *out)))
-        })
+        iter.iter(|| black_box(scalar(av.clone(), bv.clone(), black_box(&mut *out))))
     });
     group.bench_function(names[1], |iter| {
-        iter.iter(|| {
-            let av = View::matrix(m, k, black_box(a)).expect(GEOM);
-            let bv = View::matrix(k, n, black_box(b)).expect(GEOM);
-            black_box(tiled(av, bv, black_box(&mut *out)))
-        })
+        iter.iter(|| black_box(tiled(av.clone(), bv.clone(), black_box(&mut *out))))
     });
 }
 
@@ -345,12 +365,10 @@ fn projection(c: &mut Criterion) {
     group.throughput(Throughput::Bytes(
         ((x.len() + w.len()) * size_of::<f32>()) as u64,
     ));
+    let xv = checked_or_exit(View::matrix(rows, K, &x), GEOM);
+    let wv = checked_or_exit(View::matrix(N, K, &w), GEOM);
     checked_or_exit(
-        matmul::forward_tn_tiled(
-            View::matrix(rows, K, &x).expect(GEOM),
-            View::matrix(N, K, &w).expect(GEOM),
-            &mut out,
-        ),
+        matmul::forward_tn_tiled(xv.clone(), wv.clone(), &mut out),
         GEOM,
     );
     group.bench_function("row_by_row_gemv", |iter| {
@@ -366,17 +384,15 @@ fn projection(c: &mut Criterion) {
     });
     group.bench_function("tiled", |iter| {
         iter.iter(|| {
-            let xv = View::matrix(rows, K, black_box(&x)).expect(GEOM);
-            let wv = View::matrix(N, K, black_box(&w)).expect(GEOM);
-            black_box(matmul::forward_tn_tiled(xv, wv, black_box(&mut out)))
+            black_box(matmul::forward_tn_tiled(
+                xv.clone(),
+                wv.clone(),
+                black_box(&mut out),
+            ))
         })
     });
     group.bench_function("packed", |iter| {
-        iter.iter(|| {
-            let xv = View::matrix(rows, K, black_box(&x)).expect(GEOM);
-            let wv = View::matrix(N, K, black_box(&w)).expect(GEOM);
-            fast::gemm_f32_tn(xv, wv, black_box(&mut out))
-        })
+        iter.iter(|| fast::gemm_f32_tn(xv.clone(), wv.clone(), black_box(&mut out)))
     });
     group.finish();
 }
@@ -470,34 +486,52 @@ fn i8_paths(group: &mut BenchmarkGroup<'_, WallTime>, parallel: usize) {
         let mut out = vec![0i32; m * n];
         let shape = format!("{m}x{n}x{k}");
         group.throughput(Throughput::Elements((2 * m * n * k) as u64));
+        let av = checked_or_exit(View::matrix(m, k, &a), GEOM);
+        let bv = checked_or_exit(View::matrix(k, n, &b), GEOM);
         checked_or_exit(
-            matmul_i8::forward_tiled(
-                View::matrix(m, k, &a).expect(GEOM),
-                View::matrix(k, n, &b).expect(GEOM),
-                &mut out,
-            ),
+            matmul_i8::forward_tiled(av.clone(), bv.clone(), &mut out),
             GEOM,
         );
 
         group.bench_function(BenchmarkId::new("i8", &shape), |iter| {
             iter.iter(|| {
-                let av = View::matrix(m, k, black_box(&a)).expect(GEOM);
-                let bv = View::matrix(k, n, black_box(&b)).expect(GEOM);
-                black_box(matmul_i8::forward_tiled(av, bv, black_box(&mut out)))
+                black_box(matmul_i8::forward_tiled(
+                    av.clone(),
+                    bv.clone(),
+                    black_box(&mut out),
+                ))
             });
         });
-        group.bench_function(BenchmarkId::new("i8_threads", &shape), |iter| {
-            iter.iter(|| {
-                spread(parallel, m, n, &mut out, |start, rows, part| {
-                    let av = View::matrix(rows, k, &a[start * k..(start + rows) * k]).expect(GEOM);
-                    let bv = View::matrix(k, n, &b).expect(GEOM);
-                    black_box(ok(matmul_i8::forward_tiled(av, bv, part)));
-                });
-                black_box(out.len())
-            })
-        });
+        i8_threads(group, parallel, &a, &b, &mut out, &shape, (m, n, k));
         i8_fast_paths(group, &a, &b, (m, n, k), &mut out, &shape);
     }
+}
+
+/// 线程化分块基准：按行切 `out`，每段子视图在回调内以 let-else 兜底。
+fn i8_threads(
+    group: &mut BenchmarkGroup<'_, WallTime>,
+    parallel: usize,
+    a: &[i8],
+    b: &[i8],
+    out: &mut [i32],
+    shape: &str,
+    geo: (usize, usize, usize),
+) {
+    let (m, n, k) = geo;
+    group.bench_function(BenchmarkId::new("i8_threads", shape), |iter| {
+        iter.iter(|| {
+            spread(parallel, m, n, out, |start, rows, part| {
+                let Ok(av) = View::matrix(rows, k, &a[start * k..(start + rows) * k]) else {
+                    return;
+                };
+                let Ok(bv) = View::matrix(k, n, b) else {
+                    return;
+                };
+                black_box(ok(matmul_i8::forward_tiled(av, bv, part)));
+            });
+            black_box(out.len())
+        })
+    });
 }
 
 /// K8 的分子必须是生产路径：卷积实际调的是 `fast::gemm_i8`（`sdot` 内核 + 线程池），

@@ -2,8 +2,8 @@
 
 use crate::macros::name_set;
 use diagnostic::{Code, Error, Result};
-use train::Rng;
 use std::cmp::Ordering;
+use train::Rng;
 
 /// 一步前向：给定序列与批页账视图，给出下一个位置的 logits。
 pub trait Predict {

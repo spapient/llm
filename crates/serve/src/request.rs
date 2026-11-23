@@ -191,13 +191,10 @@ impl Router {
 
     /// 匹配一条端点：方法大小写不敏感，路径逐字节比较。
     fn find(&self, method: &str, path: &str) -> Option<&dyn Endpoint> {
-        self.endpoints
-            .iter()
-            .map(Box::as_ref)
-            .find(|endpoint| {
-                endpoint.route().method().eq_ignore_ascii_case(method)
-                    && endpoint.route().path() == path
-            })
+        self.endpoints.iter().map(Box::as_ref).find(|endpoint| {
+            endpoint.route().method().eq_ignore_ascii_case(method)
+                && endpoint.route().path() == path
+        })
     }
 }
 

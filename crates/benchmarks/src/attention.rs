@@ -28,37 +28,39 @@ fn read_bytes(s: usize) -> u64 {
     (s * D * 3 * size_of::<f32>()) as u64
 }
 
-/// 一条 prefill 内核基准：三条输入是 `s×d` 二维视图，做一次前向。
+/// prefill 内核入口：三条只读视图做一次前向。
+type Run3<E> = fn(View<'_, f32>, View<'_, f32>, View<'_, f32>, &mut [f32]) -> Result<(), E>;
+
+/// 一条 prefill 基准：预检装配三条 `s×d` 视图，闭包内复用。
 fn one<E: fmt::Display>(
     sample: &mut Sample,
     group: &mut BenchmarkGroup<'_, WallTime>,
     name: &str,
     s: usize,
-    run: impl Fn(View<'_, f32>, View<'_, f32>, View<'_, f32>, &mut [f32]) -> Result<(), E>,
+    run: Run3<E>,
 ) {
-    let q = View::matrix(s, D, &sample.q).expect(SIZED);
-    let k = View::matrix(s, D, &sample.k).expect(SIZED);
-    let v = View::matrix(s, D, &sample.v).expect(SIZED);
-    checked_or_exit(run(q, k, v, &mut sample.out), SIZED);
-    bench(group, name, sample, s, run);
+    let qv = checked_or_exit(View::matrix(s, D, &sample.q), SIZED);
+    let kv = checked_or_exit(View::matrix(s, D, &sample.k), SIZED);
+    let vv = checked_or_exit(View::matrix(s, D, &sample.v), SIZED);
+    checked_or_exit(
+        run(qv.clone(), kv.clone(), vv.clone(), &mut sample.out),
+        SIZED,
+    );
+    bench3(group, name, run, qv, kv, vv, &mut sample.out);
 }
 
-/// 四条切片上一次前向的计时循环：几何在调用前已校验，视图每次迭代重新装配。
-fn bench<E: fmt::Display>(
+/// 三条视图上的计时循环：几何在预检阶段已校验，视图按迭代复用。
+fn bench3<E: fmt::Display>(
     group: &mut BenchmarkGroup<'_, WallTime>,
     name: &str,
-    sample: &mut Sample,
-    s: usize,
-    run: impl Fn(View<'_, f32>, View<'_, f32>, View<'_, f32>, &mut [f32]) -> Result<(), E>,
+    run: Run3<E>,
+    qv: View<'_, f32>,
+    kv: View<'_, f32>,
+    vv: View<'_, f32>,
+    out: &mut [f32],
 ) {
     group.bench_function(name, |iter| {
-        iter.iter(|| {
-            let q = View::matrix(s, D, black_box(&sample.q)).expect(SIZED);
-            let k = View::matrix(s, D, black_box(&sample.k)).expect(SIZED);
-            let v = View::matrix(s, D, black_box(&sample.v)).expect(SIZED);
-            let out = black_box(&mut *sample.out);
-            black_box(run(q, k, v, out))
-        })
+        iter.iter(|| black_box(run(qv.clone(), kv.clone(), vv.clone(), black_box(out))))
     });
 }
 
@@ -72,7 +74,7 @@ pub(crate) fn flash_decode(c: &mut Criterion) {
         &mut group,
         "flash_decode_128x64",
         DECODE_S,
-        |q, k, v, out| attention::flash_forward(q, k, v, out),
+        attention::flash_forward,
     );
     group.finish();
 }
@@ -89,7 +91,7 @@ pub(crate) fn prefill(c: &mut Criterion) {
         &mut online,
         "online_1024x64",
         PREFILL_S,
-        |q, k, v, out| attention::flash_forward(q, k, v, out),
+        attention::flash_forward,
     );
     online.finish();
 
@@ -100,7 +102,7 @@ pub(crate) fn prefill(c: &mut Criterion) {
         &mut dense,
         "naive_1024x64",
         PREFILL_S,
-        |q, k, v, out| attention::forward(q, k, v, out),
+        attention::forward,
     );
     dense.finish();
 }
@@ -123,7 +125,15 @@ fn hist_pair(c: &mut Criterion, hist: usize) {
     let mut group = c.benchmark_group("decode_attention_f32");
     group.throughput(Throughput::Elements(kv_len as u64));
     let name = format!("naive_hist{hist}x{D}");
-    decode_one(&mut group, &name, &q, &k, &v, &mut out, hist, attention::decode_forward);
+    decode_one(
+        &mut group,
+        &name,
+        &q,
+        &k,
+        &v,
+        &mut out,
+        attention::decode_forward,
+    );
     let name = format!("flash_hist{hist}x{D}");
     decode_one(
         &mut group,
@@ -132,13 +142,12 @@ fn hist_pair(c: &mut Criterion, hist: usize) {
         &k,
         &v,
         &mut out,
-        hist,
         attention::decode_flash_forward,
     );
     group.finish();
 }
 
-/// decode 的一条内核：`q` 单行 `d`，`k`/`v` 按 `hist·d`，`out` 回到单行。
+/// decode 的一条内核：预检装配 `q` 单行、`k/v` 历史两行视图，闭包内复用。
 fn decode_one<E: fmt::Display>(
     group: &mut BenchmarkGroup<'_, WallTime>,
     name: &str,
@@ -146,19 +155,14 @@ fn decode_one<E: fmt::Display>(
     k: &[f32],
     v: &[f32],
     out: &mut [f32],
-    hist: usize,
-    run: impl Fn(View<'_, f32>, View<'_, f32>, View<'_, f32>, &mut [f32]) -> Result<(), E>,
+    run: Run3<E>,
 ) {
-    let qv = View::matrix(1, D, q).expect("decode 几何");
-    let kv = View::matrix(hist, D, k).expect("decode 几何");
-    let vv = View::matrix(hist, D, v).expect("decode 几何");
-    checked_or_exit(run(qv, kv, vv, out), "decode 几何");
+    let hist = k.len() / D;
+    let qv = checked_or_exit(View::matrix(1, D, q), "decode 几何");
+    let kv = checked_or_exit(View::matrix(hist, D, k), "decode 几何");
+    let vv = checked_or_exit(View::matrix(hist, D, v), "decode 几何");
+    checked_or_exit(run(qv.clone(), kv.clone(), vv.clone(), out), "decode 几何");
     group.bench_function(name, |iter| {
-        iter.iter(|| {
-            let qv = View::matrix(1, D, black_box(q)).expect("decode 几何");
-            let kv = View::matrix(hist, D, black_box(k)).expect("decode 几何");
-            let vv = View::matrix(hist, D, black_box(v)).expect("decode 几何");
-            black_box(run(qv, kv, vv, black_box(out)))
-        })
+        iter.iter(|| black_box(run(qv.clone(), kv.clone(), vv.clone(), black_box(out))))
     });
 }

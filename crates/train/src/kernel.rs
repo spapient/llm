@@ -362,7 +362,11 @@ fn triple<'a>(
     v: &'a [f32],
     rows: usize,
     d: usize,
-) -> Result<(tensor::View<'a, f32>, tensor::View<'a, f32>, tensor::View<'a, f32>)> {
+) -> Result<(
+    tensor::View<'a, f32>,
+    tensor::View<'a, f32>,
+    tensor::View<'a, f32>,
+)> {
     Ok((
         tensor::View::matrix(rows, d, q)?,
         tensor::View::matrix(rows, d, k)?,
@@ -405,7 +409,11 @@ fn decode_triple<'a>(
     q_rows: usize,
     hist: usize,
     d: usize,
-) -> Result<(tensor::View<'a, f32>, tensor::View<'a, f32>, tensor::View<'a, f32>)> {
+) -> Result<(
+    tensor::View<'a, f32>,
+    tensor::View<'a, f32>,
+    tensor::View<'a, f32>,
+)> {
     Ok((
         tensor::View::matrix(q_rows, d, q)?,
         tensor::View::matrix(hist, d, k)?,
