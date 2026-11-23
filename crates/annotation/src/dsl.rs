@@ -7,9 +7,9 @@ use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{format_ident, quote};
 use syn::{
-    BinOp, Error, Expr, ExprAssign, ExprBinary, ExprForLoop, ExprLit, ExprMethodCall,
-    ExprPath, ExprUnary, Ident, ItemFn, Lit, Pat, PatIdent, Stmt, Type, TypePath,
-    TypeReference, UnOp, spanned::Spanned,
+    BinOp, Error, Expr, ExprAssign, ExprBinary, ExprForLoop, ExprLit, ExprMethodCall, ExprPath,
+    ExprUnary, Ident, ItemFn, Lit, Pat, PatIdent, Stmt, Type, TypePath, TypeReference, UnOp,
+    spanned::Spanned,
 };
 
 /// 一处拒绝语的构造：`Error::new` 直接塞进 `return` 会让每条错误路径都折成四行。
@@ -468,7 +468,8 @@ fn render(function: &ItemFn, params: &[Param], body: &Body) -> TokenStream2 {
 }
 
 /// 表达式这一族的统一拒绝语：把「能用什么」写在一处，免得三个分支各说一套。
-const UNSUPPORTED: &str = "unsupported expression: f32 params, buf loads, finite literals, + - * /, abs, min, max";
+const UNSUPPORTED: &str =
+    "unsupported expression: f32 params, buf loads, finite literals, + - * /, abs, min, max";
 const ARITHMETIC: &str = "supported arithmetic is `+`, `-`, `*`, and `/`";
 const METHODS: [(&str, usize); 3] = [("abs", 0), ("min", 1), ("max", 1)];
 
@@ -495,10 +496,6 @@ fn parse_compound(expression: &Expr, idx: &str, params: &[Param]) -> syn::Result
         Expr::Binary(binary) => binary_expr(binary, idx, params),
         Expr::Unary(unary) => negate(unary, idx, params),
         Expr::MethodCall(method) => method_call(method, idx, params),
-        Expr::Call(call) => match call.func.as_ref() {
-            Expr::MethodCall(method) => method_call(method, idx, params),
-            other => fail(other.span(), UNSUPPORTED),
-        },
         _ => fail(expression.span(), UNSUPPORTED),
     }
 }
@@ -520,7 +517,10 @@ fn method_call(method: &ExprMethodCall, idx: &str, params: &[Param]) -> syn::Res
         "abs" => Ok(quote!(::cutile::kernel::Expr::Abs(Box::new(#receiver)))),
         "min" | "max" => {
             let argument = parse_expr(&method.args[0], idx, params)?;
-            let variant = Ident::new(if name == "min" { "Min" } else { "Max" }, method.method.span());
+            let variant = Ident::new(
+                if name == "min" { "Min" } else { "Max" },
+                method.method.span(),
+            );
             Ok(quote! {
                 ::cutile::kernel::Expr::#variant {
                     left: Box::new(#receiver),

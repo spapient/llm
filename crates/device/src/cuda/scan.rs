@@ -2,15 +2,15 @@
 //! [`super::segments`]，这里只写扫描特有的两段生成与携带前缀折叠。
 
 use crate::dialect::{
-    Cuda, bind_chunk_loop, carry_fold, chunk_head, inject_chunk_preamble, launch_args,
-    length_scalar, scan_correct_body, scalar_name, thread_param_typed,
+    Cuda, Dialect, bind_chunk_loop, carry_fold, chunk_head, inject_chunk_preamble, launch_args,
+    length_scalar, scalar_name, scan_correct_body, thread_param_typed,
 };
 use cutile::harness::output_name;
 use diagnostic::Result;
 use prof::model::Sample;
 use prof::sig::Signature;
 
-use super::segments::{Stage, carry_scaffold, driver, launch};
+use super::segments::{carry_scaffold, driver, launch};
 use super::shared::cuda_launch_params;
 
 /// 校正段入口（把携带前缀的衰减贡献加回块内）。

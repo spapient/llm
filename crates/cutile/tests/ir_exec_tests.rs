@@ -329,6 +329,8 @@ fn negation_and_division_match_rust_including_signed_zero() {
     assert_same(&run.bits, &expected, "scaled_negation");
 }
 
+// 参考侧必须显式 `min`/`max` 镜像 IR 节点；adversarial 输入含 NaN，`clamp` 会 panic，故不替换。
+#[allow(clippy::manual_clamp)]
 #[test]
 fn abs_min_max_emitted_c_matches_rust_bit_for_bit() {
     let input = adversarial();
@@ -537,13 +539,14 @@ fn dot_reduce(a: &[f32], b: &[f32], out: &mut [f32], len: usize) {
 
 /// 宏前端把 `.abs()` / `.min()` / `.max()` 翻成同一组新组合子，执行链与手写 IR 逐位一致。
 #[crate::dsl]
-#[allow(dead_code)]
+#[allow(dead_code, clippy::manual_clamp)]
 fn clipped_dsl(input: &[f32], output: &mut [f32], extent: usize) {
     for i in 0..extent {
         output[i] = input[i].abs().min(2.0).max(-1.0);
     }
 }
 
+#[allow(clippy::manual_clamp)]
 #[test]
 fn macro_method_front_end_matches_rust_after_execution() {
     let input = adversarial();

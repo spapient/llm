@@ -2,7 +2,7 @@
 //! [`super::segments`]，这里只写各族的段生成与折叠顺序。
 
 use crate::dialect::{
-    Cuda, EXPSUM, NORM, PARTIAL, RMS_EPS, chunk_head, length_scalar, readonly_bufs,
+    Cuda, Dialect, EXPSUM, NORM, PARTIAL, RMS_EPS, chunk_head, length_scalar, readonly_bufs,
 };
 use cutile::harness::output_name;
 use diagnostic::{Code, Error, Result};
@@ -10,13 +10,9 @@ use prof::model::Sample;
 use prof::sig::Signature;
 
 use super::segments::{
-    Stage, driver, fold_max, fold_sum, launch, launch_threads, partial_copy,
-    partial_scaffold_step,
+    Stage, driver, fold_max, fold_sum, launch, launch_threads, partial_copy, partial_scaffold_step,
 };
 use super::shared::buf_args;
-
-/// 部分归约 / 部分指数和 / 归一化三段入口：与 Metal 侧同源，直接复用 [`crate::dialect`] 的常量。
-pub(crate) use crate::dialect::{EXPSUM as _, NORM as _, PARTIAL as _};
 
 /// 分块 RMSNorm 的设备段：`(部分平方和, 归一化)`。第一段写 `y[g] = Σx²` 的部分和，
 /// 主机折叠出 `rms` 后第二段按块回写 `y = gamma * x / rms`。

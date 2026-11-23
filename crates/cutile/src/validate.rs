@@ -134,14 +134,14 @@ fn compound_type(params: &[Parameter], expression: &Expr) -> Result<ScalarType, 
     match expression {
         Expr::Neg(value) => unary_f32(params, value, "negation"),
         Expr::Abs(value) => unary_f32(params, value, "absolute value"),
-        Expr::Binary { left, right, .. } | Expr::Min { left, right } | Expr::Max { left, right } => {
-            binary_type(params, left, right)
-        }
+        Expr::Binary { left, right, .. }
+        | Expr::Min { left, right }
+        | Expr::Max { left, right } => binary_type(params, left, right),
         Expr::Fma { a, b, c } => ternary_type(params, a, b, c),
         // 叶子由 [`value_type`] 前置分流到本函数之外；列全是穷尽 match 的要求。
-        Expr::F32(_) | Expr::Scalar(_) | Expr::Load(_) => {
-            Err(VerificationError::new("leaf expression reached compound typing"))
-        }
+        Expr::F32(_) | Expr::Scalar(_) | Expr::Load(_) => Err(VerificationError::new(
+            "leaf expression reached compound typing",
+        )),
     }
 }
 
@@ -171,7 +171,11 @@ fn load_type(params: &[Parameter], name: &str) -> Result<ScalarType, Verificatio
 }
 
 /// 一元 f32 组合子（取负、绝对值）：子表达式必须算 f32，结果仍是 f32。
-fn unary_f32(params: &[Parameter], value: &Expr, what: &str) -> Result<ScalarType, VerificationError> {
+fn unary_f32(
+    params: &[Parameter],
+    value: &Expr,
+    what: &str,
+) -> Result<ScalarType, VerificationError> {
     let ty = value_type(params, value)?;
     if ty == ScalarType::F32 {
         return Ok(ty);

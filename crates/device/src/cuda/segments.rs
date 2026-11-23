@@ -4,7 +4,7 @@
 
 use crate::dialect::length_usize;
 use cutile::harness::output_name;
-use diagnostic::{Error, Result};
+use diagnostic::Result;
 use prof::model::Sample;
 use prof::sig::Signature;
 

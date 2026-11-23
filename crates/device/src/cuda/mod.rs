@@ -9,16 +9,16 @@ pub(crate) mod scan;
 pub(crate) mod segments;
 pub(crate) mod shared;
 
-pub use chunk::{cuda_rmsnorm, cuda_softmax, cuda_rmsnorm_driver, cuda_softmax_driver};
+pub use chunk::{cuda_rmsnorm, cuda_rmsnorm_driver, cuda_softmax, cuda_softmax_driver};
 pub use gemm::gemm_kernel;
 pub use grid::{
-    buf_args, cuda_benchmark_driver, cuda_chunk_reduce, cuda_chunk_reduce_driver, cuda_grid_kernel,
-    cuda_harness, cuda_loop_driver, cuda_loop_kernel, cuda_point_driver, cuda_quantized_gemv_i4,
-    cuda_grid_driver,
+    cuda_benchmark_driver, cuda_chunk_reduce, cuda_chunk_reduce_driver, cuda_grid_driver,
+    cuda_grid_kernel, cuda_harness, cuda_loop_driver, cuda_loop_kernel, cuda_point_driver,
+    cuda_quantized_gemv_i4,
 };
 pub use scan::{cuda_scan, cuda_scan_driver};
 
 // crate 内复用的族入口（旧文件为 `pub(crate)`，不向外部泄漏）。
 pub(crate) use chunk::{cuda_chunk_rmsnorm, cuda_chunk_softmax};
 pub(crate) use scan::cuda_chunk_scan;
-pub(crate) use shared::host_buf_decl;
+pub use shared::{buf_args, host_buf_decl};

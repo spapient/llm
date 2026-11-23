@@ -1,7 +1,7 @@
 //! 单源网格族：逐点 / 循环注入内核、合作式 int4 GEMV、串行 harness，以及各自的 host 驱动。
 //! 公共 host 装配、缓冲与回读在 [`super::shared`]，这里只换内核壳与派发行。
 
-use crate::dialect::{Cuda, f32_output_shape, launch_args, length_scalar};
+use crate::dialect::{Cuda, Dialect, f32_output_shape, launch_args, length_scalar};
 use cutile::harness::{output_name, output_of};
 use diagnostic::{Code, Error, Result};
 use prof::decl::Grid;
@@ -9,11 +9,18 @@ use prof::model::Sample;
 use prof::sig::{Param, Signature};
 
 use super::shared::{
-    CUDA_CHECK_PROLOGUE, CUDA_EPILOGUE, Driver, alloc_guards, buf_args, cuda_grid,
-    cuda_host_bufs_grid, cuda_launch, cuda_launch_params, cuda_prologue, cuda_readback,
-    cuda_release, musa_shims, program, timing_loop,
+    CUDA_CHECK_PROLOGUE, CUDA_EPILOGUE, Driver, alloc_guards, buf_args, cuda_host_bufs_grid,
+    cuda_launch, cuda_launch_params, cuda_prologue, cuda_readback, cuda_release, musa_shims,
+    program, timing_loop,
 };
 
+/// 生产态 CUDA 循环注入网格内核（`[grid]` 骨架的 CUDA 方言）：gemv 一维、gemm 二维共用。
+///
+/// 与 Metal 版同一条文本改写（循环头绑到线程下标、正文跨步原样保留），差异只在方言
+/// [`crate::dialect::Cuda`] 里三处语法：内部内核追加 `int3 tid`、`kernel_main` 用 `blockIdx` 装配
+/// `tid`、设备函数用 `__device__`。空网格（`dims` 为空）退化为串行：不追加 `tid`、不绑循环。
+///
+/// # Errors：模板里找不到声明的循环、签名与样本不一致时返回说明。
 pub fn cuda_loop_kernel(
     kernel_source: &str,
     signature: &Signature,
@@ -159,6 +166,9 @@ pub fn cuda_chunk_reduce(
     Cuda::chunk_reduce(kernel_source, signature, sample, chunk, reduce_func)
 }
 
+/// 生产态分块归约程序：`blocks` 个线程各归约一块，回读部分结果后由主机折叠成一个输出。
+///
+/// # Errors：缺输出缓冲、输出不是 f32、样本缺缓冲时返回说明。
 pub fn cuda_chunk_reduce_driver(
     device_source: &str,
     signature: &Signature,
@@ -189,9 +199,7 @@ pub fn cuda_grid_driver(
     program(device_source, signature, sample, output, output_len, &emit)
 }
 
-/// host 侧缓冲声明、设备分配与只读入向拷贝；输出缓冲长度用显式 `output_len`（分块归约的部分
-/// 结果数），而非样本里的单元素。
-
+/// 生产态 CUDA 逐点网格内核（[`Dialect::grid_kernel`] 的 CUDA 方言）。
 pub fn cuda_grid_kernel(
     kernel_source: &str,
     signature: &Signature,
@@ -232,6 +240,10 @@ pub fn cuda_point_driver(
     )
 }
 
+/// 拼出可在 GPU 上真实执行的 CUDA 程序：`.k` 内核转 `__device__`，单线程 `__global__` 包装在
+/// `<<<1,1>>>` 里调用，host `main` 负责分配/拷贝/回读——**语义对拍门**，性能另由 roofline 门承载。
+///
+/// # Errors：缺输出缓冲、输出不是 f32、样本缺缓冲，或签名与样本不一致。
 pub fn cuda_harness(kernel_source: &str, signature: &Signature, sample: &Sample) -> Result<String> {
     let (output, values) = output_of(signature, sample)?;
     let kernel = signature.kernel();
@@ -283,4 +295,3 @@ pub(crate) fn cuda_wrapper(kernel: &str, params: &[Param], launch_args: &str) ->
         cuda_params(params)
     )
 }
-

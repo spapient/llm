@@ -2,8 +2,8 @@
 //! 单次派发公共装配（[`Driver`]）、发射与位级回读。各形态子模块只换派发那一行，不另拼第二份
 //! host 流程。
 
-use crate::dialect::{Cuda, readback_bits};
-use cutile::harness::{c_literal, c_type, output_name};
+use crate::dialect::{Cuda, Dialect, readback_bits};
+use cutile::harness::{c_literal, c_type};
 use diagnostic::{Code, Error, Result};
 use prof::model::{Sample, Values};
 use prof::sig::{Param, Signature};
@@ -215,10 +215,8 @@ pub(crate) fn cuda_readback(output: &str, len: usize, fold: Option<&str>, checke
     )
 }
 
-/// 生产态分块归约程序：`blocks` 个线程各归约一块，回读部分结果后由主机折叠成一个输出。
-///
-/// # Errors：缺输出缓冲、输出不是 f32、样本缺缓冲时返回说明。
-
+/// host 侧缓冲声明、设备分配与只读入向拷贝；输出缓冲长度用显式 `output_len`（分块归约的部分
+/// 结果数），而非样本里的单元素。
 pub(crate) fn cuda_host_bufs_grid(
     sample: &Sample,
     params: &[Param],
@@ -237,7 +235,7 @@ pub(crate) fn cuda_host_bufs_grid(
 
 /// C 系 host 侧缓冲声明：只读落静态初值、可写开数组。CUDA 与昇腾逐字同源（`h_` 主机数组 +
 /// 设备侧 `d_` 指针），Metal 的 ObjC host 不用这套（见 [`crate::metal`]）。
-pub(crate) fn host_buf_decl(param: &Param, values: &Values, ctype: &str, size: usize) -> String {
+pub fn host_buf_decl(param: &Param, values: &Values, ctype: &str, size: usize) -> String {
     if param.mutable {
         format!("    {ctype} h_{}[{size}];\n", param.name)
     } else {
@@ -307,7 +305,7 @@ pub(crate) fn cuda_release(signature: &Signature) -> String {
 }
 
 /// 启动实参：只传缓冲（形状是编译期常量，不进内核形参）。
-pub(crate) fn buf_args(signature: &Signature) -> String {
+pub fn buf_args(signature: &Signature) -> String {
     signature
         .params()
         .iter()
