@@ -90,29 +90,9 @@ impl Header {
     pub fn new(entries: Vec<Entry>, data_start: usize) -> Result<Self> {
         let mut sorted = entries;
         sorted.sort_by_key(Entry::offset);
-        for entry in &sorted {
-            if entry.offset < data_start {
-                return Err(Error::new(
-                    Code::Invalid,
-                    format!(
-                        "条目 `{}` 的偏移 {} 早于数据段起点 {data_start}",
-                        entry.name(),
-                        entry.offset
-                    ),
-                )
-                .with(SITE));
-            }
-        }
-        for pair in sorted.windows(2) {
-            check_overlap(&pair[0], &pair[1])?;
-        }
-        let mut idx = HashMap::with_capacity(sorted.len());
-        for (position, entry) in sorted.iter().enumerate() {
-            let name = entry.name();
-            if idx.insert(name.to_owned(), position).is_some() {
-                return Err(Error::new(Code::Invalid, format!("权重条目 `{name}` 重复")).with(SITE));
-            }
-        }
+        check_start(&sorted, data_start)?;
+        check_pairs(&sorted)?;
+        let idx = build_idx(&sorted)?;
         Ok(Self {
             entries: sorted,
             idx,
@@ -204,6 +184,44 @@ fn check_overlap(left: &Entry, right: &Entry) -> Result<()> {
         ),
     )
     .with(SITE))
+}
+
+/// 每条目起点不得早于数据段起点。
+fn check_start(sorted: &[Entry], data_start: usize) -> Result<()> {
+    for entry in sorted {
+        if entry.offset < data_start {
+            return Err(Error::new(
+                Code::Invalid,
+                format!(
+                    "条目 `{}` 的偏移 {} 早于数据段起点 {data_start}",
+                    entry.name(),
+                    entry.offset
+                ),
+            )
+            .with(SITE));
+        }
+    }
+    Ok(())
+}
+
+/// 相邻两条目（已按偏移排序）逐一校验区间不重叠。
+fn check_pairs(sorted: &[Entry]) -> Result<()> {
+    for pair in sorted.windows(2) {
+        check_overlap(&pair[0], &pair[1])?;
+    }
+    Ok(())
+}
+
+/// 名字 → 序号索引；重名报错。
+fn build_idx(sorted: &[Entry]) -> Result<HashMap<String, usize>> {
+    let mut idx = HashMap::with_capacity(sorted.len());
+    for (position, entry) in sorted.iter().enumerate() {
+        let name = entry.name();
+        if idx.insert(name.to_owned(), position).is_some() {
+            return Err(Error::new(Code::Invalid, format!("权重条目 `{name}` 重复")).with(SITE));
+        }
+    }
+    Ok(idx)
 }
 
 /// 零拷贝后端：把条目字节**借**出来（内存切片、映射或测试夹具）。
