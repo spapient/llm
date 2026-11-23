@@ -391,7 +391,7 @@ llm 文档列的形状族（`tensor.rs:20-31`）：`broadcast/narrow/slice/chunk
 | 1–2 | 仅声明、配置标签或占位，无真实链路 |
 | 0 | 缺失 |
 
-> 分数是当前代码快照的相对成熟度，不是能力上限；三仓定位不同（Burn 通用训练框架 / llm.u LLM 推理多后端执行 / llm 面向 Burn 能力端口的分层重构），总分须结合权重视角解读。后端真机运行激活、训练数值正确性本轮未核，相关维度按代码结构定档；**HEAD 已提交树 train/device 源码面上一轮断裂已静态闭合，但整 lib 编译被 cutile 未提交中间态阻塞，未取得干净 check/test 观测，受影响维度按「结构在位、静态对齐已核、运行观测缺失」定档**。
+> 分数是当前代码快照的相对成熟度，不是能力上限；三仓定位不同（Burn 通用训练框架 / llm.u LLM 推理多后端执行 / llm 面向 Burn 能力端口的分层重构），总分须结合权重视角解读。CPU 参考后端的训练数值正确性本轮已由 train 梯度对拍观测；后端真机（Metal/CUDA/昇腾）运行激活本轮未核，相关维度按代码结构定档；**工作树仍有 cutile/device/engine 未提交中间态，整 lib 干净 check/test 观测可能被并发改动打断，受影响维度按「结构在位、静态对齐已核、运行观测缺失」定档**。
 
 ### 17.2 维度速览表
 
@@ -402,7 +402,7 @@ llm 文档列的形状族（`tensor.rs:20-31`）：`broadcast/narrow/slice/chunk
 | 3 | 后端执行成熟度/性能 | 3 | 6 | 8 | llm 生产装配仅 CPU（`serve/src/model.rs:27`），Metal 仅测试构造，CUDA/昇腾无 Executor impl，真机激活未核；llm.u 多后端 GEMM/内核族厚，真机激活本轮未复跑；Burn 跨后端可跑完整算子集 |
 | 4 | 算子/内核覆盖 | 4 | 4 | 9 | llm 52 注册算子 + 四层契约；llm.u 七臂内核族；Burn 张量 API 全套 + linalg/einsum/fusion |
 | 5 | nn 层完整度 | 5 | 3 | 9 | llm conv/pool/norm/attn/embed/rope 齐，无 RNN；llm.u 无 conv/pool/RNN；Burn 8 大类 + 49 Config 含 RNN/Transformer |
-| 6 | 自动微分 | 5 | 2 | 10 | llm 独立 tape/schedule/account/plan/replay 元数据层，gradcheck 中心差分对拍 200 随机图（顺序/扇出/终点剪枝可复现解析梯度），train 接线 confirmed；workspace `check` 全绿，但 train backprop 测试编译仍被 cutile `kernel.rs` E0515/E0282 外部 WIP 挡住、cli Metal 16 例运行时对拍未过，闭环真实算子梯度数值仍未取得运行观测；任意可微装饰器/梯度快照/分布式归 train/device 侧；llm.u 逐层手写 bwd；Burn 后端装饰器任意可微 + checkpoint |
+| 6 | 自动微分 | 7 | 2 | 10 | llm 独立 tape/schedule/account/plan/replay 元数据层；autograd gradcheck 200 随机图中心差分对拍；train `Reference` CPU 内核后端 43 例中心差分对拍全绿（unary/pool/norm/RL/attention/geometry，解析梯度在 ABSOLUTE 2e-3 + RELATIVE 0.05 内），Replay 紧预算重算闭环 5 例与前向逐位一致、重放步数等于计划承诺，进程内 2-rank 数据并行梯度平均/求和会话级 E2E 在位（231 train 测试全绿）；缺口：无后端装饰器式任意可微闭包（算子按名注册、显式 `record`）、分布式无真实传输后端/NCCL、GPU 后端梯度激活未观测、独立梯度快照导出未落地；llm.u 逐层手写 bwd；Burn 后端装饰器任意可微 + checkpoint |
 | 7 | 优化器 | 4 | 3 | 9 | llm Sgd/Adam/Muon；llm.u 仅 Adam；Burn 12 个 impl + LBFGS/Momentum/累积/裁剪/衰减 |
 | 8 | 调度/训练循环 | 3 | 4 | 9 | llm Session/Learner/evaluate/账表/优化步静态在位，HEAD 树静态类型对齐已核，整 lib 编译与运行观测被 cutile 未提交态阻塞（见 §13.1）；llm.u Session/Trainer + Cosine；Burn Learner/early stopping/sharder/logger |
 | 9 | 损失函数 | 5 | 4 | 9 | llm CE/argmax/mse/bce/huber/hinge + Distill/Grpo（策略族物理拆至 `loss_rl.rs`，`loss.rs:10,12` 挂载再导出）；llm.u 7 fn；Burn 17 种 loss（含 CTC/RNNT/三元组/NLL） |
@@ -424,7 +424,7 @@ llm 文档列的形状族（`tensor.rs:20-31`）：`broadcast/narrow/slice/chunk
 
 | | llm | llm.u | Burn |
 | --- | --- | --- | --- |
-| 平均分 | **4.95** | **3.35** | **8.30** |
+| 平均分 | **5.05** | **3.35** | **8.30** |
 
 **B. LLM 推理/性能视角（侧重后端执行、推理服务、量化、内核 DSL；训练指标/数据集/RNN 降权，权重合计 100）**
 
@@ -443,20 +443,21 @@ llm 文档列的形状族（`tensor.rs:20-31`）：`broadcast/narrow/slice/chunk
 | 3 | 张量/类型系统 | 10 | 2 | 10 |
 | 3 | 随机数/确定性 | 7 | 1 | 8 |
 | 3 | 测试/质量门禁 | 4 | 4 | 8 |
-| 2 | 自动微分 | 5 | 2 | 10 |
+| 2 | 自动微分 | 7 | 2 | 10 |
 | 2 | 优化器 | 4 | 3 | 9 |
 | 2 | 调度/训练循环 | 3 | 4 | 9 |
 | 2 | 损失函数 | 5 | 4 | 9 |
 | 2 | 生态/示例/文档 | 4 | 4 | 8 |
 | 1 | 指标/评估器 | 3 | 1 | 10 |
 | 1 | 数据集管线 | 3 | 1 | 9 |
-| | **加权总分** | **5.07** | **4.30** | **7.43** |
+| | **加权总分** | **5.11** | **4.30** | **7.43** |
 
 ### 17.4 相对上一版向量的校准说明
 
+- **#6 自动微分 5 → 7（llm）**：本轮 train `Reference` CPU 内核后端 43 例中心差分对拍全绿（unary/pool/norm/RL/attention/geometry）、Replay 紧预算重算与前向逐位一致、进程内 2-rank 数据并行梯度平均/求和会话级 E2E 取得运行观测，闭环真实算子梯度数值缺口闭合；仍缺后端装饰器式任意可微闭包、真实分布式传输/NCCL、GPU 后端梯度激活与独立梯度快照导出，故定 7（主体完整、少量缺口）而非 8–10。
 - **#11 数据集管线 1 → 3（llm）**：上一版因 `dataset/mod.rs`+`sampler.rs` 编译断裂定 1；本轮 HEAD 树静态复核 `Dataset` trait / `Loader`/`Chunks` / 顺序·洗牌·加权三族采样 / 权重校验 / `dataset_tests.rs` 181 行均在位且类型对齐已核，静态链路达最小可用；整 lib 编译与运行数值仍待 cutile 未提交中间态闭合后复核，故定 3 而非更高。
 - **#8 调度/训练循环 维持 3（llm）**：上一版 5→3 因 train lib 编译断裂；本轮 HEAD 树 Session/Learner/evaluate/账表/优化步静态在位、类型对齐已核，但整 lib 编译被 cutile 阻塞、运行观测缺失，维持 3。
 - **#19 测试/质量门禁 维持 4（llm）**：测试计数 2737、架构契约与 fuzz 结构在位；本轮未取得干净 check/fmt/clippy/test 观测，静态门赤字清单未能复核，门闭合度不明，维持 4。
 - **#17 内核 DSL 维持 5（llm）**：工作区 cutile 子节点抽象重构处中间态（E0599/E0308），归属未提交 diff，不计入已提交基线；HEAD 树 cutile 协商/转发结构在位、内核覆盖待扩，维持 5。
 - **计数校正**：llm 2737 测试、Burn 6784 测试；Burn 17 种 loss（18 文件含 reduction）、12 个优化器；档位不变。
-- 后端真机性能、训练数值精度、HTTP 端到端接通仍属未取证边界；cutile 工作区改动闭合、整 lib 编译恢复后，#8/#11/#19 可重新定档。
+- 后端真机性能与精度、HTTP 端到端接通仍属未取证边界；CPU 参考后端训练数值正确性本轮已由梯度对拍观测。cutile 工作区改动闭合、整 lib 编译恢复后，#8/#11/#19 可重新定档。
