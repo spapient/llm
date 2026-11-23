@@ -1,12 +1,15 @@
 use super::*;
 
+/// 量化 gemv 参考内核的函数指针形态：`x/w/scales → out`。
+type QuantGemv = fn(tensor::View<'_, f32>, &[u8], tensor::View<'_, f32>, &mut [f32]) -> Result<()>;
+
 /// 量化 gemv 对拍夹具：跑一遍参考内核、绑三路输入，返回输入编号、输出槽与参考缓冲。
 fn quant_gemv_smoke(
     executor: &mut CpuExecutor,
     x: &[f32],
     w: &[u8],
     scales: &[f32],
-    forward: fn(tensor::View<'_, f32>, &[u8], tensor::View<'_, f32>, &mut [f32]) -> Result<()>,
+    forward: QuantGemv,
 ) -> (Vec<u32>, u32, Vec<f32>) {
     let mut reference = vec![0.0; 1];
     forward(

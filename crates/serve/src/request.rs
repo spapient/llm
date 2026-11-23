@@ -38,38 +38,15 @@ impl Request {
     pub fn parse(body: &[u8]) -> Result<Self> {
         let text = std::str::from_utf8(body)
             .map_err(|_| Error::new(Code::Invalid, "请求体不是 UTF-8").with(Self::SITE))?;
-        let (mut id, mut prompt, mut max_new) = (None, None, None);
+        let mut slots = Slots {
+            id: None,
+            prompt: None,
+            max_new: None,
+        };
         for (idx, line) in text.lines().enumerate() {
-            let line = line.strip_suffix('\r').unwrap_or(line);
-            if line.trim().is_empty() {
-                continue;
-            }
-            let Some((key, value)) = line.split_once('=') else {
-                return Err(line_error(idx + 1, "每行必须是 `键=值`"));
-            };
-            let (key, value) = (key.trim(), value.trim());
-            match key {
-                "id" => parse_once(&mut id, idx + 1, key, value, "u64")?,
-                "prompt" => {
-                    if prompt.is_some() {
-                        return Err(duplicate(idx + 1, key));
-                    }
-                    prompt = Some(value.to_string());
-                }
-                "max_new" => parse_once(&mut max_new, idx + 1, key, value, "usize")?,
-                _ => {
-                    return Err(line_error(
-                        idx + 1,
-                        &format!("未知字段 `{key}`：只认 id / prompt / max_new"),
-                    ));
-                }
-            }
+            slots.fill(idx + 1, line)?;
         }
-        Ok(Request {
-            id: id.ok_or_else(|| missing("id"))?,
-            prompt: prompt.ok_or_else(|| missing("prompt"))?,
-            max_new: max_new.ok_or_else(|| missing("max_new"))?,
-        })
+        slots.build()
     }
 
     /// 请求编号：由客户端给，重复编号会被准入拒绝成 `400`。
@@ -88,6 +65,62 @@ impl Request {
     }
 
     const SITE: &'static str = "serve::Request::parse";
+}
+
+/// 解析途中的三个待填槽位；行级分派与必填收口各占一处，避免 `parse` 堆条件。
+struct Slots {
+    id: Option<u64>,
+    prompt: Option<String>,
+    max_new: Option<usize>,
+}
+
+impl Slots {
+    /// 处理一行：吞空行与 CRLF 尾，拆出 `键=值` 后分派到槽位。
+    fn fill(&mut self, number: usize, raw: &str) -> Result<()> {
+        let line = raw.strip_suffix('\r').unwrap_or(raw);
+        if line.trim().is_empty() {
+            return Ok(());
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            return Err(line_error(number, "每行必须是 `键=值`"));
+        };
+        self.assign(number, key.trim(), value.trim())
+    }
+
+    /// 把一行 `键=值` 分派到对应槽位；重复键、未知键、数值非法都在此报错。
+    fn assign(&mut self, number: usize, key: &str, value: &str) -> Result<()> {
+        match key {
+            "id" => return parse_once(&mut self.id, number, key, value, "u64"),
+            "max_new" => return parse_once(&mut self.max_new, number, key, value, "usize"),
+            "prompt" => {
+                if self.prompt.is_some() {
+                    return Err(duplicate(number, key));
+                }
+                self.prompt = Some(value.to_string());
+            }
+            _ => {
+                return Err(line_error(
+                    number,
+                    &format!("未知字段 `{key}`：只认 id / prompt / max_new"),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// 三个必填槽位收口为请求；缺字段具名报错。
+    fn build(self) -> Result<Request> {
+        Ok(Request {
+            id: require(self.id, "id")?,
+            prompt: require(self.prompt, "prompt")?,
+            max_new: require(self.max_new, "max_new")?,
+        })
+    }
+}
+
+/// 必填槽位取值；缺字段具名报错。
+fn require<T>(slot: Option<T>, field: &str) -> Result<T> {
+    slot.ok_or_else(|| missing(field))
 }
 
 /// 数值字段解析 + 重复键拒绝；`type_name` 只用于错误文案。

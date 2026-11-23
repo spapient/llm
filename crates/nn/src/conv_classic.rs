@@ -40,8 +40,8 @@ macro_rules! window_op {
         }
 
         /// 声明档前向：与参考共用同一条 `run`，几何与样本一致。
-        pub fn forward(x: tensor::View<'_, f32>, out: &mut [f32]) -> diagnostic::Result<()> {
-            run::<f32>(x.as_slice(), out)
+        pub fn forward(x: tensor::View<'_, f32>, out: tensor::ViewMut<'_, f32>) -> diagnostic::Result<()> {
+            run::<f32>(x.as_slice(), out.as_slice_mut())
         }
 
         /// 标量代价：显式口径，浮点运算与字节读写见本模块装配行的注释。
@@ -74,9 +74,9 @@ macro_rules! norm_op {
             x: tensor::View<'_, f32>,
             gamma: tensor::View<'_, f32>,
             beta: tensor::View<'_, f32>,
-            out: &mut [f32],
+            out: tensor::ViewMut<'_, f32>,
         ) -> diagnostic::Result<()> {
-            run::<f32>(x.as_slice(), gamma.as_slice(), beta.as_slice(), out)
+            run::<f32>(x.as_slice(), gamma.as_slice(), beta.as_slice(), out.as_slice_mut())
         }
 
         /// 标量代价：显式口径，浮点运算与字节读写见本模块装配行的注释。

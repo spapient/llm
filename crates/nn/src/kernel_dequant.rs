@@ -172,8 +172,8 @@ pub trait Packed {
     /// # Errors
     ///
     /// 缓冲长度与打包宽度不符、标度为零或零点越出码域时返回说明。
-    fn forward(scale: f32, zero: f32, q: &[u8], out: &mut [f32]) -> diagnostic::Result<()> {
-        forward_packed(scale, zero, q, out, Self::cpb())
+    fn forward(scale: f32, zero: f32, q: &[u8], out: tensor::ViewMut<'_, f32>) -> diagnostic::Result<()> {
+        forward_packed(scale, zero, q, out.as_slice_mut(), Self::cpb())
     }
 }
 
@@ -218,7 +218,7 @@ macro_rules! dequant_packed {
         }
 
         /// 内核本体：结果写进调用方给的缓冲。
-        pub fn forward(scale: f32, zero: f32, q: &[u8], out: &mut [f32]) -> diagnostic::Result<()> {
+        pub fn forward(scale: f32, zero: f32, q: &[u8], out: tensor::ViewMut<'_, f32>) -> diagnostic::Result<()> {
             <$name as $crate::dequant::Packed>::forward(scale, zero, q, out)
         }
 
@@ -285,7 +285,7 @@ pub mod i8 {
     use crate::dequant;
     use crate::model::{Buf, Cost, Sample, ShapeCtx, Values, cost_n};
     use diagnostic::{Code, Error};
-    use tensor::View;
+    use tensor::{View, ViewMut};
 
     // 单轴定义复用 unary 骨架。
     pub use crate::unary::AXES;
@@ -341,9 +341,10 @@ pub mod i8 {
         scale: f32,
         zero: f32,
         q: View<'_, f32>,
-        out: &mut [f32],
+        out: ViewMut<'_, f32>,
     ) -> diagnostic::Result<()> {
         let q = q.as_slice();
+        let out = out.as_slice_mut();
         if q.len() != out.len() {
             return Err(Error::new(
                 Code::Invalid,
