@@ -14,9 +14,9 @@ use cutile::decl::Skeleton;
 use cutile::dirs::Dirs;
 use cutile::prof::Emit;
 use diagnostic::{Code, Error};
+use prof::decl::{Grid, OpDecl};
 use prof::model::Sample;
 use prof::sig::CType;
-use prof::decl::{Grid, OpDecl};
 
 /// 错误定位：所有形态共用这一个站点（换形态不改定位）。
 const SITE: &str = "shard::execution::program";

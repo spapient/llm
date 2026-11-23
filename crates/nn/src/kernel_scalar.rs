@@ -1,13 +1,18 @@
 //! 浮点标量闭集：一份算术骨架为 `f32` / `f64` / `half::f16` / `half::bf16` 实现。
 
 use core::fmt::Debug;
+use tensor::FloatElement;
 
 /// 浮点标量闭集：`f32` / `f64` / `half::f16` / `half::bf16` 满足；`nn` 的脉冲 / 合成 / 决策头复用本 trait。
+///
+/// 元素域收紧到 [`FloatElement`](tensor::FloatElement)：只有封闭浮点标量可进超越函数 / 浮点算术族，
+/// 整数与布尔不在其列。
 pub trait Scalar:
     Copy
     + PartialEq
     + PartialOrd
     + Debug
+    + FloatElement
     + core::ops::Add<Output = Self>
     + core::ops::Sub<Output = Self>
     + core::ops::Mul<Output = Self>

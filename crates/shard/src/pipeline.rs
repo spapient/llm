@@ -9,8 +9,8 @@ use cutile::harness;
 use cutile::plan::{self, Plan};
 use cutile::prof::Profile;
 use diagnostic::{Code, Error};
-use prof::model::{Model, Sample};
 use prof::decl::OpDecl;
+use prof::model::{Model, Sample};
 
 /// 这次要跑的那条流水线：算子、语义模型、设备档案与执行证据。
 #[derive(Debug)]

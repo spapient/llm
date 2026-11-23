@@ -8,10 +8,13 @@ use diagnostic::{Code, Error, Result};
 
 use crate::conv::ConvGeom;
 use crate::kernel::fast;
+use tensor::NumericElement;
 
 /// 前向标量缝：f32 与对称 i8（i32 累加）共用同一套前向/散射算法，
 /// 只有 GEMM 后端与零值随类型切换。换后端只需新增一个 impl，调用方不变。
-trait DeconvScalar: Copy + Default {
+///
+/// 元素收紧到 [`NumericElement`](tensor::NumericElement)：乘加族只接浮点 / 整数封闭分组。
+trait DeconvScalar: Copy + Default + NumericElement {
     /// 累加/输出类型：f32 → f32，i8 → i32。
     type Acc: Copy + Default + AddAssign;
 
