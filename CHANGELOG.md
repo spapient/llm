@@ -101,7 +101,7 @@
   （`Gguf` / `Tensor` 随格式层早先的并入一并归位）。**验证**：`cargo test -p llm-testkit --lib` 99 条
   （层表/边集/所有权/边界四个方向全绿）、`cargo test -p llm-prof` 156 + 56 条、`cargo check --workspace
   --all-targets` 零错误零告警。**没做也不打算混进来的**：`model::AxisRole`（`Input`/`Output`）与
-  `einsum::formula::AxisRole`（`Batch`/`Free`/`Reduced`/`Grouped`）同名不同物——前者是层填轴的语义角色，
+  `einsum::AxisRole`（`Batch`/`Free`/`Reduced`/`Grouped`）同名不同物——前者是层填轴的语义角色，
   后者是一条轴在求和式里的身份，合并它们会造出一个两边都不好用的词。
 ### Added
 
