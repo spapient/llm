@@ -529,4 +529,3 @@ pub fn distillation_loss(
     let scale = dist.temperature * dist.temperature;
     Ok((1.0 - dist.alpha) * hard + dist.alpha * scale * soft)
 }
-
