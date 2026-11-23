@@ -44,6 +44,14 @@ fn main() {
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_DEVICE_IMAGE");
     println!("cargo:rerun-if-env-changed=CUTILE_REQUIRE_IMAGE");
 
+    // 工具链探测：`cfg(nightly)` 决定 `native::sme` 是否存在（SME 特性仍 unstable）。
+    println!("cargo::rustc-check-cfg=cfg(nightly)");
+    println!("cargo::rerun-if-env-changed=RUSTC");
+    println!("cargo::rerun-if-env-changed=RUSTC_BOOTSTRAP");
+    if nightly() {
+        println!("cargo::rustc-cfg=nightly");
+    }
+
     let devices = devices_of(&src);
     let images = env::var_os("CARGO_FEATURE_DEVICE_IMAGE").is_some();
     let tables = buildtables::tables_of(&devices, &out, images);
@@ -466,4 +474,16 @@ fn variant(name: &str) -> String {
 fn fail(message: impl std::fmt::Display) -> ! {
     eprintln!("prof::build: {message}");
     std::process::exit(1)
+}
+
+/// 本机 `rustc` 是不是 nightly：版本串带 `-nightly`，或者 `RUSTC_BOOTSTRAP` 已开。
+fn nightly() -> bool {
+    if std::env::var_os("RUSTC_BOOTSTRAP").is_some() {
+        return true;
+    }
+    let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+    std::process::Command::new(rustc)
+        .arg("--version")
+        .output()
+        .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).contains("nightly"))
 }

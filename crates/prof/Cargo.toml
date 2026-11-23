@@ -14,6 +14,9 @@ autotests = false
 # 构建期真编设备镜像（`build.rs` 调 `xcrun metal`）。默认只有源码：镜像要工具链、要时间，
 # 缺了就只是 `Status::NoRecipe` / `Status::Skipped` 一行原因，构建不因此失败。
 device-image = []
+# 端口峰值探针（`native::gemm8x8::port_fma` / `native::sme::port_run`）：nn 的 `bench` 特性
+# 转发到这里，生产构建不带。
+bench = []
 
 [dependencies]
 # 契约词汇（`atom`/`sig`/`sch`/`tpl`/`einsum`/`model`/`sample`/`operator`/`epilogue`）

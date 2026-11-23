@@ -11,8 +11,9 @@ publish = false
 autotests = false
 
 [features]
-# 仅测量容器使用：SME 端口峰值探针（`kernel::fast::port_run`）。生产构建不带此特性。
-bench = []
+# 仅测量容器使用：SME/NEON 端口峰值探针（`kernel::fast::port_run` 等）。生产构建不带此特性。
+# 探针本体已随微内核迁到 prof，本特性转发以复用同一份 `#[cfg(feature = "bench")]`。
+bench = ["prof/bench"]
 
 [dependencies]
 annotation = { path = "../annotation", package = "llm-annotation" }

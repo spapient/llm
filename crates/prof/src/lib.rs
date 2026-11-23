@@ -53,6 +53,18 @@
 //! ```
 
 #![deny(unsafe_code)]
+// 主机原生内核（`native`）在 nightly 上走手写 SME/NEON 车道，stable 上走标量退路：与 nn 的
+// `lib.rs` 同一套门控。`aarch64_unstable_target_feature` / `stdarch_aarch64_feature_detection`
+// 只在 aarch64 上存在，x86_64 等目标直接声明就是 E0635，因此还要按架构门控。
+#![cfg_attr(nightly, feature(portable_simd))]
+#![cfg_attr(
+    all(nightly, target_arch = "aarch64"),
+    feature(aarch64_unstable_target_feature)
+)]
+#![cfg_attr(
+    all(nightly, target_arch = "aarch64"),
+    feature(stdarch_aarch64_feature_detection)
+)]
 
 mod annotate;
 
@@ -88,6 +100,11 @@ pub use tpl::{formula, parse};
 #[cfg(test)]
 #[path = "../tests/spec/support/lib_spec_tests.rs"]
 mod spec_tests;
+
+/// 主机原生微内核（NEON 8×8 / Apple SME 16×64）与内核供给配置表：`nn` 的 GEMM 骨架经
+/// `prof::native::*` 借用微内核，`cutile` 的 tile DSL IR 经 [`native::gemm_negotiate`] 择优调用。
+/// 与 `device` 同是「被上层消费、不反向依赖上层」的设备实现层。
+pub mod native;
 
 pub mod device;
 pub mod prof;
