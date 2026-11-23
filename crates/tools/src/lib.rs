@@ -27,3 +27,5 @@ pub use gate::Gate;
 pub use generated::vocabulary;
 pub use lex::{Delim, Pos, Token, parse};
 pub use strip::{strip_tests, submodules, test_modules};
+
+mod error;

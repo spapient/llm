@@ -5,7 +5,7 @@
 
 use std::fmt::Write as _;
 
-use diagnostic::{Code, Error, Result};
+use diagnostic::{Error, Result};
 
 use crate::bench::Harness;
 use crate::escape::quote;
@@ -19,7 +19,7 @@ const CONFIDENCE: f64 = 0.95;
 
 /// 配置错误：上下文统一带 `tools::card::` 前缀。
 fn invalid(ctx: &str, message: impl Into<String>) -> Error {
-    Error::new(Code::Invalid, message).with(format!("tools::card::{ctx}"))
+    crate::error::invalid("card", ctx, message)
 }
 
 /// 卡片上那个数怎么从样本聚出来。

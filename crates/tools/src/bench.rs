@@ -1,11 +1,11 @@
 //! 统一基准记录结构（M1-C2）：一条算子 / 层 / 整模型基准的身份、形状、批次、精度、后端与
 //! roofline 上界。
 
-use diagnostic::{Code, Error, Result};
+use diagnostic::{Error, Result};
 
 /// 配置错误：上下文统一带 `tools::bench::` 前缀。
 fn invalid(ctx: &str, message: impl Into<String>) -> Error {
-    Error::new(Code::Invalid, message).with(format!("tools::bench::{ctx}"))
+    crate::error::invalid("bench", ctx, message)
 }
 
 /// 条目层级：算子内核、层、整模型。
