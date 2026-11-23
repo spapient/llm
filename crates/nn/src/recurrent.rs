@@ -147,7 +147,7 @@ impl Recurrent {
     ///
     /// # Errors
     ///
-    /// 任一尺寸为零、或 `dirs` 不在 `{1, 2}`（[`Code::Invalid`]）；算子未在 `op` 注册或
+    /// 任一尺寸为零、或 `dirs` 不在 `{1, 2}`（[`Code::Invalid`]）；算子未在 `registry` 注册或
     /// 没有语义表（[`ContractSpec`] 的上报）。
     pub fn new(
         name: impl Into<String>,

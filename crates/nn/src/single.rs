@@ -90,7 +90,7 @@ impl Embedding {
     ///
     /// # Errors
     ///
-    /// `vocab` / `dim` / `tokens` 任一为零（[`Code::Invalid`]）；算子未在 `op` 注册或没有
+    /// `vocab` / `dim` / `tokens` 任一为零（[`Code::Invalid`]）；算子未在 `registry` 注册或没有
     /// 语义表（[`crate::ContractSpec::new`] 上报）。
     pub fn new(name: impl Into<String>, vocab: usize, dim: usize, tokens: usize) -> Result<Self> {
         crate::nonzero_all(
@@ -241,7 +241,7 @@ impl MatMul {
     ///
     /// # Errors
     ///
-    /// `rows` / `cols` 任一为零（[`Code::Invalid`]）；算子未在 `op` 注册或没有语义表
+    /// `rows` / `cols` 任一为零（[`Code::Invalid`]）；算子未在 `registry` 注册或没有语义表
     /// （[`crate::ContractSpec::new`] 上报）。
     pub fn new(name: impl Into<String>, rows: usize, cols: usize) -> Result<Self> {
         Self::with_precision(name, rows, cols, Precision::F32, Gauge::Short)
@@ -255,7 +255,7 @@ impl MatMul {
     ///
     /// # Errors
     ///
-    /// `rows` / `cols` 任一为零（[`Code::Invalid`]）；选中的算子未在 `op` 注册或没有语义表。
+    /// `rows` / `cols` 任一为零（[`Code::Invalid`]）；选中的算子未在 `registry` 注册或没有语义表。
     pub fn with_precision(
         name: impl Into<String>,
         rows: usize,

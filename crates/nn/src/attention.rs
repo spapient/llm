@@ -46,7 +46,7 @@ impl Attention {
     ///
     /// # Errors
     ///
-    /// `seq` / `head_dim` 任一为零（[`Code::Invalid`]）；算子未在 `op` 注册或没有语义表
+    /// `seq` / `head_dim` 任一为零（[`Code::Invalid`]）；算子未在 `registry` 注册或没有语义表
     /// （[`crate::ContractSpec::new`] 上报）。
     pub fn new(
         name: impl Into<String>,
@@ -193,7 +193,7 @@ impl AttentionBlock {
     ///
     /// - `hidden` / `kv_width` / `head_dim` / `seq` 任一为零（[`Code::Invalid`]）；
     /// - `kv_width` 不是 `head_dim` 的整数倍（头数不是整数）；
-    /// - 任一层引用的算子未在 `op` 注册或没有语义表（由子层 [`ContractSpec`] 上报）。
+    /// - 任一层引用的算子未在 `registry` 注册或没有语义表（由子层 [`ContractSpec`] 上报）。
     pub fn new(
         name: impl Into<String>,
         hidden: usize,

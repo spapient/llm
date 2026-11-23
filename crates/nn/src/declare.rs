@@ -94,7 +94,7 @@ macro_rules! layer_delegate {
             /// 本层绑定的算子名。
             pub const OP: &str = $op;
 
-            /// 由层名与元素数构造；元素数为零、或算子未在 `op` 注册时返回说明。
+            /// 由层名与元素数构造；元素数为零、或算子未在 `registry` 注册时返回说明。
             pub fn new(name: impl Into<String>, len: usize) -> diagnostic::Result<Self> {
                 Ok(Self {
                     inner: $crate::declare::AxisCore::new(name, Self::OP, len, $kind, $role)?,
@@ -168,7 +168,7 @@ impl OpLayer {
     ///
     /// # Errors
     ///
-    /// 元素数为零，或算子名未在 `op` 注册 / 没有语义表（[`crate::ContractSpec::new`] 上报）。
+    /// 元素数为零，或算子名未在 `registry` 注册 / 没有语义表（[`crate::ContractSpec::new`] 上报）。
     pub fn new(
         name: impl Into<String>,
         op: &'static str,

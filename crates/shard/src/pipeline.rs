@@ -147,9 +147,7 @@ pub(crate) fn model_for(name: &str) -> diagnostic::Result<Model> {
     nn::registry::model(name).ok_or_else(|| {
         Error::new(
             Code::Missing,
-            format!(
-                "算子 `{name}` 没有语义模型：`nn::registry` 的 `model()` 注册表里没有它"
-            ),
+            format!("算子 `{name}` 没有语义模型：`nn::registry` 的 `model()` 注册表里没有它"),
         )
     })
 }

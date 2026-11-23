@@ -208,7 +208,7 @@ impl Linear {
     /// # Errors
     ///
     /// 任一宽度为零（[`Code::Invalid`]）；算子名由编码给出却没有通过 [`ContractSpec::new`] 的校验
-    /// （只可能发生在编码与 `op` 注册表不一致时）。
+    /// （只可能发生在编码与 `registry` 注册表不一致时）。
     pub fn with_format(
         name: impl Into<String>,
         format: crate::WeightFormat,
