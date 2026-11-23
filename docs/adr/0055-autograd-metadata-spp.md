@@ -12,7 +12,7 @@
 - **边界是架构定死的**：`autograd` 只产出反向图的**元数据**——谁在图上、按什么顺序执行、梯度何时齐、
   激活留哪些何时还。梯度缓冲、前向激活值、算子反向公式归 `train`；前向计算归 `nn` / `cutile`。
   本层不认识张量数值，也不注册算子（`crates/autograd/src/lib.rs` 头部四问）。
-- **现状基线（2026-11-24 实测）**：src 8 文件 2,045 行（最大 `schedule.rs` 341 行），tests 8 文件 1,909 行、
+- **现状基线（2026-11-24 实测）**：src 9 文件 2,045 行（最大 `schedule.rs` 341 行），tests 8 文件 1,909 行、
   68 个 `#[test]`；jscpd 0 克隆；lib 65 例 + `gradcheck` 3 例全绿；`llm-train` / `testkit` / `benchmarks`
   对本层的公开面编译通过。
 - **可枚举缺口（在本层边界内）**：
@@ -35,7 +35,7 @@ Burn 的"后端装饰器任意可微 + 梯度快照 + 分布式梯度"落在后�
 proc-macro 或分布式梯度。公开类型名保持不变（所有权表 18 个 `pub` 类型逐条保留），`train` / `testkit` /
 `benchmarks` 的调用点不改。
 
-### 2. 模块按概念归并：src 8 → 7，测试 8 → 7
+### 2. 模块按概念归并：src 9 → 8，测试 8 → 7
 
 | 目标文件 | 概念 | 吸收自 |
 |---|---|---|
@@ -69,12 +69,14 @@ proc-macro 或分布式梯度。公开类型名保持不变（所有权表 18 �
 
 `Config { ordering, policy }` 是唯一配置入口：排序（深度 / 插入序）× 显存策略（自动 / 全留 / 分段）。
 段数中心（√n 与预算一半配额 ±2 档）是求解器内部启发式，不上升为公开旋钮——当前没有第二个消费者，
-按"删无消费者公开面"原则不提前暴露。`Config` 补构造期 fluent setter，保持 `new` / `default` 与既有
-测试用例不变。
+按"删无消费者公开面"原则不提前暴露。`Config` 补两个构造期 fluent 构造器
+`with_ordering` / `with_policy`（`const fn`，复制后改一个策略位），保持 `new` / `default`
+与既有测试用例不变。
 
 ### 5. 注解：契约落到访问器与错误站点
 
-- 只读查询访问器补 `#[must_use]`；值类型补齐 `Debug / Clone / Copy / PartialEq / Eq / Hash` 派生。
+- 只读查询/判定/计数访问器补 `#[must_use]`（返回 `Iterator` 等自带 must_use 的类型不重复标注）；
+  值类型派生保持现状：`Node` 持 `Arc` 不标 `Copy`，其余数值类型配齐 `Debug / Clone / Copy / PartialEq / Eq / Hash`。
 - 每个 `pub` 项的文档写清不变量、失败类别（`# Errors`）与前置条件；内部错误统一走 `invalid` /
   `internal` 两个诊断工厂，不在生产面写字符串兜底或 `unwrap`。
 - 闭集枚举（`Role` / `Requirement` / `Ordering` / `MemoryPolicy`）的短名方法保持唯一分派点。
@@ -114,7 +116,8 @@ proc-macro 或分布式梯度。公开类型名保持不变（所有权表 18 �
 | 轮次 | src 行数 | Δ | src 文件 | Δ | tests 行数 | Δ | tests 文件 | Δ | jscpd | 主要动作 | 门禁 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|
 | 基线 | 2,045 | — | 9 | — | 1,909 | — | 8 | — | 0 | 取证：65 lib + 3 gradcheck + 2 doc 全绿 | 待收尾 |
-| 本轮 | 2,030 | −15 | 8 | −1 | 1,900 | −9 | 7 | −1 | 0 | `segment` 续体并入 `facts`；`account` 用例并入 `schedule`；剪除 `Schedule` 只写不读的 `vars` 字段；归并后 rustfmt/clippy 0 告警 | 收尾一次跑 |
+| 本轮 | 2,030 | −15 | 8 | −1 | 1,900 | −9 | 7 | −1 | 0 | `segment` 续体并入 `facts`；`account` 用例并入 `schedule`；剪除 `Schedule` 只写不读的 `vars` 字段；查询访问器补 `#[must_use]`；`Config` 补
+`with_ordering` / `with_policy`；归并后 rustfmt/clippy 0 告警 | 收尾一次跑 |
 
 > 本 crate 归并前已 jscpd 0 克隆、静态门全绿，压缩空间在文件归并与死字段，不在逐行删码；强制砍行
 > 会触碰 N3 内聚与反模式 #2，故本轮以"同一概念一处存放"为准，不做行数换结构。
