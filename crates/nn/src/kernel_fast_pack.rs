@@ -22,13 +22,17 @@
 
     /// 一个列组面板的内层转置：`first` 起 `NR` 列 × 全 `k` 行 → `dst[base..]`。
     ///
-    /// `transposed` 只决定源下标：
-    /// - `false`（Nt）：`src[q*n + first + c]`，B 按 `[k][n]` 驻留，整行 `copy_from_slice`；
-    /// - `true`（Tn）：`src[(first+c)*k + q]`，W 按 `[n][k]` 驻留，逐元素转置。
+    /// 面板布局由微内核取数方式决定，编译期固化，两种不能互替：
+    /// - 步主 `[q][NR]`（`COL_MAJOR=false`）：每个收缩步 `q` 的 `NR` 列连续（f32 NEON 向量按步加载）；
+    /// - 列主 `[NR][k]`（`COL_MAJOR=true`）：每列的 `k` 个元素连续（i8 sdot 按列主取数）。
     ///
-    /// 元素类型与列宽在编译期固化，f32 / i8 共用这一份内层下标；整段、分片与池化三种外层
-    /// 遍历只差列组下标，内层下标只有这一份。
-    pub(super) fn panel_tile<T: Copy, const NR: usize>(
+    /// 布局用 `bool` 作 const 标签：const 泛型只接受整数 / bool / char。`transposed` 只决定源下标
+    /// （仅步主布局有 Tn 视角）：
+    /// - `false`（Nt）：`src[q*n + first + c]`，B 按 `[k][n]` 驻留；
+    /// - `true`（Tn）：`src[(first+c)*k + q]`，W 按 `[n][k]` 驻留。
+    ///
+    /// 元素类型、列宽与面板布局在编译期固化；整段、分片与池化三种外层遍历只差列组下标。
+    pub(super) fn panel_tile<T: Copy, const NR: usize, const COL_MAJOR: bool>(
         src: &[T],
         dst: &mut [T],
         n: usize,
@@ -38,21 +42,32 @@
         transposed: bool,
     ) {
         let cols = if first < n { NR.min(n - first) } else { 0 };
-        for q in 0..k {
-            let row = base + q * NR;
-            if transposed {
-                for (c, slot) in dst[row..row + cols].iter_mut().enumerate() {
-                    *slot = src[(first + c) * k + q];
+        if COL_MAJOR {
+            // 列主：列 `nb` 占连续 `k` 个槽；源恒为行主 B（Nt），无 Tn 视角。
+            for nb in 0..cols {
+                let jj = first + nb;
+                let off = base + nb * k;
+                for q in 0..k {
+                    dst[off + q] = src[q * n + jj];
                 }
-            } else {
-                let src0 = q * n + first;
-                dst[row..row + cols].copy_from_slice(&src[src0..src0 + cols]);
+            }
+        } else {
+            for q in 0..k {
+                let row = base + q * NR;
+                if transposed {
+                    for (c, slot) in dst[row..row + cols].iter_mut().enumerate() {
+                        *slot = src[(first + c) * k + q];
+                    }
+                } else {
+                    let src0 = q * n + first;
+                    dst[row..row + cols].copy_from_slice(&src[src0..src0 + cols]);
+                }
             }
         }
     }
 
     /// 整段串行打包：`n` 对齐到 `NR`，补零列由零初始化的面板缓冲承担。
-    pub(super) fn pack_serial<T: Copy, const NR: usize>(
+    pub(super) fn pack_serial<T: Copy, const NR: usize, const COL_MAJOR: bool>(
         bpack: &mut [T],
         b: &[T],
         n: usize,
@@ -62,13 +77,13 @@
         let npad = n.div_ceil(NR) * NR;
         debug_assert_eq!(bpack.len(), npad * k);
         for jb in 0..npad / NR {
-            panel_tile::<T, NR>(b, bpack, n, k, jb * NR, jb * k * NR, transposed);
+            panel_tile::<T, NR, COL_MAJOR>(b, bpack, n, k, jb * NR, jb * k * NR, transposed);
         }
     }
 
     /// 一段连续列组分片：`chunk` 覆盖每组 `NR` 列，按 `base_group` 起。列组与面板槽一一对应，
     /// 按 `bi` 串行推进（写入位置互不重叠），故此处保留循环而非整块批量搬运。
-    pub(super) fn pack_span<T: Copy, const NR: usize>(
+    pub(super) fn pack_span<T: Copy, const NR: usize, const COL_MAJOR: bool>(
         chunk: &mut [T],
         b: &[T],
         n: usize,
@@ -78,7 +93,15 @@
     ) {
         let blocks = chunk.len() / (NR * k);
         for bi in 0..blocks {
-            panel_tile::<T, NR>(b, chunk, n, k, (base_group + bi) * NR, bi * k * NR, transposed);
+            panel_tile::<T, NR, COL_MAJOR>(
+                b,
+                chunk,
+                n,
+                k,
+                (base_group + bi) * NR,
+                bi * k * NR,
+                transposed,
+            );
         }
     }
 
@@ -92,12 +115,12 @@
         base: usize,
         transposed: bool,
     ) {
-        panel_tile::<f32, NR>(src, dst, n, k, first, base, transposed);
+        panel_tile::<f32, NR, false>(src, dst, n, k, first, base, transposed);
     }
 
     /// B 打包成 `[jblk][p][NR]`：微内核每条 `p` 只需两次连续向量加载（行主序 B 是每 `p` 跨一条行）。
     pub(super) fn pack_b_f32_into(bpack: &mut [f32], b: &[f32], n: usize, k: usize) {
-        pack_serial::<f32, NR>(bpack, b, n, k, false);
+        pack_serial::<f32, NR, false>(bpack, b, n, k, false);
     }
 
     /// 单个并行分片：本槽承担的列组顺序打包进 `chunk`。
@@ -108,7 +131,7 @@
         k: usize,
         base_group: usize,
     ) {
-        pack_span::<f32, NR>(chunk, b, n, k, base_group, false);
+        pack_span::<f32, NR, false>(chunk, b, n, k, base_group, false);
     }
 
     /// 并行 B 打包：按 8 列组切线程。`k·n` 小的时候串行更划算（线程创建比转置贵）。

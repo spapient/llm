@@ -2,19 +2,12 @@
 // 槽位：{{op}} 是算子名，@prim(...) 由片段层逐个替换。
 // 布局契约（由声明层校验）：a={{a}} b={{b}}
 //
-// 标量三重循环（CPU 无 MMA 片段）。复用 load/store，M/N/K 是整数标量。
+// 矩阵乘收缩轴 K=8；每个输出元素一个 1×1 块，收缩 K 个元素，交给 @mma 的标量 tile。
+// 设备差异全部在 prim/<vendor>/mma.<ext> 里（nn 不直接调用设备）。
 void cutile_{{op}}_kernel(const float *a, const float *b, float *y, int M, int N, int K) {
     for (int i = 0; i < M; ++i) {
         for (int j = 0; j < N; ++j) {
-            float acc = 0.0f;
-            for (int p = 0; p < K; ++p) {
-                const float *ap = 0;
-                const float *bp = 0;
-                @load(ap, a + i * K + p);
-                @load(bp, b + p * N + j);
-                acc += ap[0] * bp[0];
-            }
-            @store(y, i * N + j, acc);
+            @mma(y + i * N + j, a + i * K, b + j, 1, 1, K, K, N, N);
         }
     }
 }

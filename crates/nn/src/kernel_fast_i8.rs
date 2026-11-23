@@ -527,7 +527,7 @@
         pub(super) fn pack_b(b: &[i8], n: usize, k: usize) -> (Vec<i8>, usize) {
             let npad = n.div_ceil(I8_NR) * I8_NR;
             let mut bpack = vec![0i8; npad * k];
-            pack_serial::<i8, I8_NR>(&mut bpack, b, n, k, false);
+            pack_serial::<i8, I8_NR, true>(&mut bpack, b, n, k, false);
             (bpack, npad)
         }
 
@@ -546,7 +546,7 @@
             thread::scope(|s| {
                 for (gi, chunk) in bpack.chunks_mut(span).enumerate() {
                     let blk0 = gi * per;
-                    s.spawn(move || pack_span::<i8, I8_NR>(chunk, b, n, k, blk0, false));
+                    s.spawn(move || pack_span::<i8, I8_NR, true>(chunk, b, n, k, blk0, false));
                 }
             });
             (bpack, npad)

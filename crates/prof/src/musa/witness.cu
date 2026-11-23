@@ -101,6 +101,22 @@ int witness_atomic(float *out) {
     return 1;
 }
 
+/* mma/scalar_tile: 2×2 × 2×2 标量分块乘加（单位阵右侧，C = A）→ {1, 2, 3, 4} */
+int witness_mma_scalar(float *out) {
+    const float a[4] = {1.0f, 2.0f, 3.0f, 4.0f};
+    const float b[4] = {1.0f, 0.0f, 0.0f, 1.0f};
+    for (int i = 0; i < 2; ++i) {
+        for (int j = 0; j < 2; ++j) {
+            float acc = 0.0f;
+            for (int t = 0; t < 2; ++t) {
+                acc += a[i * 2 + t] * b[t * 2 + j];
+            }
+            out[i * 2 + j] = acc;
+        }
+    }
+    return 4;
+}
+
 /* mma/wmma.tf32: 2×2 × 单位阵 → C = A = {1, 2, 3, 4} */
 int witness_mma(float *out) {
     const float a[4] = {1.0f, 2.0f, 3.0f, 4.0f};
