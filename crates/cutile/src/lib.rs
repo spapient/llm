@@ -96,6 +96,7 @@ pub mod fuse;
 pub mod harness;
 pub mod kernel;
 mod lru;
+pub mod native;
 pub mod pass;
 pub mod plan;
 pub mod probe;

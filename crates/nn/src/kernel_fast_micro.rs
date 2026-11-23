@@ -1,7 +1,7 @@
 //! 职责：微内核整行块扫描的只读侧（[`Sweep`]）与标量残块兜底（[`edge`]）。
 //!
-//! 8×8 寄存器块本体（[`Tile`](prof::native::gemm8x8::Tile)、`micro_packed`、NEON/AVX2/scalar
-//! 三架构实现与端口探针）已上提 `prof::native::gemm8x8`；本文件只留 GEMM 骨架职责：面板扫描坐标、
+//! 8×8 寄存器块本体（[`Tile`](cutile::native::gemm8x8::Tile)、`micro_packed`、NEON/AVX2/scalar
+//! 三架构实现与端口探针）已上提 `cutile::native::gemm8x8`；本文件只留 GEMM 骨架职责：面板扫描坐标、
 //! 权重布局寻址、残行残列标量点积。nn 不持有任何 arch/feature 门与汇编片段。
 
 /// 一次整行块扫描的只读侧：指针、面板与三个尺寸一次带走（实参不散成一长串）。

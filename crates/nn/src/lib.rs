@@ -44,7 +44,8 @@
 //
 // 本 crate 只用到 `portable_simd`（16 车道 `std::simd` 源码，架构无关，不按目标门控）。
 // SME（`sme`）与 i8 dotprod（`dotprod`）的 `target_feature` 与运行时探测门已随瓦片通道迁入
-// `prof::native`，各自在 `prof` 的 `lib.rs` 按 nightly + aarch64 声明，本 crate 不再持有。
+// `prof::native`，各自在 `prof` 的 `lib.rs` 按 nightly + aarch64 声明；本 crate 经
+// `cutile::native` 转发调用（nn → cutile → prof），不再持有这些门，也不直接 import `prof` 的内核层。
 #![cfg_attr(nightly, feature(portable_simd))]
 
 // 生成的代码用 `::nn::..` 指回本 crate，因此 crate 内部也必须能按名字解析到自己：

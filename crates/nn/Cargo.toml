@@ -17,6 +17,8 @@ bench = ["prof/bench"]
 
 [dependencies]
 annotation = { path = "../annotation", package = "llm-annotation" }
+# 内核协商面经 `cutile` 转发到 `prof::native`：nn 不直接 import `prof` 的内核层，走 nn → cutile → prof。
+cutile = { path = "../cutile" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 half = { workspace = true, features = ["num-traits"] }
 num-traits = { workspace = true }
@@ -25,8 +27,6 @@ tensor = { path = "../tensor", package = "llm-tensor" }
 weights = { path = "../weights", package = "llm-weights" }
 
 [dev-dependencies]
-# 设备侧写回尾块要真的装配并执行：装配器在 `cutile`，设备表在 `prof`，参考口径在本 crate。
-cutile = { path = "../cutile" }
 proptest = { workspace = true }
 testkit = { path = "../testkit", package = "llm-testkit" }
 

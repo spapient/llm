@@ -1,6 +1,6 @@
 //! 职责：i8 sdot 微内核的**打包、扫描与调度骨架**。
 // i8 sdot 通道：MR=4 × NR=4，B 转置打包成「每列 k 连续」。瓦片本体（aarch64 dotprod
-// `sdot_tile` / `dot_one` / `harvest`）与端口探针已上提 `prof::native::i8`；本文件只留
+// `sdot_tile` / `dot_one` / `harvest`）与端口探针已上提 `cutile::native::i8`；本文件只留
 // 面板打包、行块扫描、标量兜底与多线程分派，不持 arch/feature 门与汇编片段。
 // ---------------------------------------------------------------------------
 
@@ -17,11 +17,11 @@ use super::pool::{Bufs, Job, Shape, pool, run_pooled};
 use super::threads_override;
 use super::tn;
 
-// i8 sdot 瓦片几何：单一事实源在 `prof::native::i8_geo`，重导出别名供本模块与经 `super::` 引用的用例。
-pub(super) use prof::native::i8_geo::{MR as I8_MR, NR as I8_NR};
+// i8 sdot 瓦片几何：单一事实源在 `cutile::native::i8_geo`，重导出别名供本模块与经 `super::` 引用的用例。
+pub(super) use cutile::native::i8_geo::{MR as I8_MR, NR as I8_NR};
 
 // 瓦片坐标与 dotprod 分派入口住在 prof 岛：探测、`target_feature` 与 `unsafe` 全收在岛内。
-use prof::native::i8::{Gram, dot_block};
+use cutile::native::i8::{Gram, dot_block};
 
 /// 行块高度：让 A 的 `rc × k` 字节留在 L1（约 128KiB），否则每个列块都要从 L2 重拉整块 A。
 ///

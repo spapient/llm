@@ -42,7 +42,7 @@
 
 **合并判据是「同构」，不是「消费者数量」。** 一个成员只有一条入边时，它通常是边界而不是肥肉：`storage` 独自持有全仓唯一的 `unsafe` 岛（`tensor` 是 `deny(unsafe_code)` 且有 11 个消费者），`algorithm` 刻意不产 `ContractSpec`（`nn` 专产），`shard` 坐 L5 而 `train` 坐 L6。可合并的硬信号只有一个——两个成员的 `lib.rs` / `build.rs` 除专名外**逐字相同**：六台设备 crate 并入 `prof`（原 `frag`）时按这条判据删掉 512 行、补回 55 行，净省 457 行。反面的账同样要算：一次合并能省的至多是该 crate 的 `Cargo.toml`（全仓 1060 行 / 33 个，约 32 行）加一段头注释，指望靠合并兑现「代码大量减少」是算错账。裁决过程与测量数字见 [lld.md](lld.md) v3.0.90。
 
-允许的边（当前全量，共 123 条，含 55 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benchmarks` / `testkit` 的边不参与运行时方向判定）：
+允许的边（当前全量，共 123 条，含 54 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benchmarks` / `testkit` 的边不参与运行时方向判定）：
 
 ```
 diagnostic → （叶：错误类型 + `toml`，被大量成员消费；运行时出边为零；`+dev` 只登记夹具）
@@ -56,7 +56,7 @@ storage    → diagnostic, tensor, wire    +dev: testkit（扁平缓冲与分配
 tokenizer  → diagnostic（词表与分词）
 weights    → diagnostic, dtype, storage, tensor, wire    +dev: storage, testkit（`storage` 由 `mmap` feature 可选启用，复用其唯一 unsafe 岛）
 autograd   → diagnostic, tensor    +dev: testkit（反向图与显存计划）
-nn         → annotation, diagnostic, prof, tensor, weights    +dev: cutile, testkit（内核装配 + 神经算子 + 唯一注册表；`cutile` 只在 dev 图里（写回尾块测试要真装配））
+nn         → annotation, diagnostic, cutile, prof, tensor, weights    +dev: testkit（内核装配 + 神经算子 + 唯一注册表；`cutile::native` 是到 `prof::native` 的零成本转发面，nn 经它上提 i8/sme 探针与瓦片几何，不再直引 prof 内核层）
 algorithm  → diagnostic, nn    +dev: prof, testkit（架构变体的参考语义：产出张量流而非 `ContractSpec`，故不认识 `tensor` / `weights`）
 shard      → cutile, diagnostic, nn, prof    +dev: testkit（切分拓扑、集合通信与原 `optim` 的编译执行面）
 train      → autograd, diagnostic, nn, prof, shard, storage, tensor, weights    +dev: testkit

@@ -1,4 +1,4 @@
-use prof::native::sme::{gemm, threads_for};
+use cutile::native::sme::{gemm, threads_for};
 
 /// 直接调用 SME 内核（越过 `gemm_f32` 的分派），用刚过规模门槛的小形状覆盖：
 /// 多行块 × 多列组、单列组、单行块三种铺法。三种形状都必须落在 `MR = 16` / `NR = 64`

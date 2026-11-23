@@ -8,7 +8,8 @@
 // 本 crate 只用到 `portable_simd`（`std::simd`，用在 `gemv::simd` 的解包点积）。它**不按目标门控**：
 // 架构无关的 16 车道源码，aarch64 上落成 NEON、x86_64 上落成 SSE2 基线，两个目标编译同一份算术。
 // SME 与 i8 dotprod 通道本体已迁入 `prof::native`，各自的 `sme` / `dotprod` `target_feature` 与
-// 运行时探测门在 `prof` 的 `lib.rs` 按 nightly + aarch64 声明，本 crate 不再持有这些门。
+// 运行时探测门在 `prof` 的 `lib.rs` 按 nightly + aarch64 声明；本 crate 经 `cutile::native`
+// 转发调用（nn → cutile → prof），不再持有这些门，也不直接 import `prof` 的内核层。
 
 #[path = "kernel_dequant.rs"]
 pub mod dequant;

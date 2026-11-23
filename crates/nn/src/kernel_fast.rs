@@ -11,26 +11,26 @@ mod pack;
 #[path = "kernel_fast_pool.rs"]
 mod pool;
 
-// 面板暂存池、线程数、对齐助手都是设备无关的公共件，本体单点住在 `prof::native`，
+// 面板暂存池、线程数、对齐助手都是设备无关的公共件，本体单点住在 `cutile::native`，
 // 这里只重导出别名供本族子模块经 `super::` 引用；nn 不持有这些实现（B-1 收口）。
-pub(super) use prof::native::{align_up, threads_override, with_panels};
+pub(super) use cutile::native::{align_up, threads_override, with_panels};
 
-// SME 通道本体在 `prof::native::sme`（`target_feature` / 特性探测门收在 prof），本模块只经
+// SME 通道本体在 `cutile::native::sme`（`target_feature` / 特性探测门收在 prof），本模块只经
 // 协商面 `gemm_negotiate` 调用，不写 arch/feature 门；其余情形走 NEON 8×8 通道。
 use pack::{pack_b_f32_into, pack_b_f32_par_into, pack_panels_into};
 use pool::{Bufs, Shape, pool, run_pooled};
 
-/// 端口峰值探针只在测量容器里导出（`bench` 特性），生产构建看不到它；本体在 `prof::native::sme`。
+/// 端口峰值探针只在测量容器里导出（`bench` 特性），生产构建看不到它；本体在 `cutile::native::sme`。
 #[cfg(all(feature = "bench", nightly, target_arch = "aarch64"))]
-pub use prof::native::sme::{port_mix, port_run};
+pub use cutile::native::sme::{port_mix, port_run};
 
 #[path = "kernel_fast_tn.rs"]
 mod tn;
 pub use tn::{MIN_ROWS, gemm_f32_tn};
 
-// f32 NEON 瓦片几何：单一事实源在 `prof::native::f32`，这里重导出别名供本族子模块经
+// f32 NEON 瓦片几何：单一事实源在 `cutile::native::f32`，这里重导出别名供本族子模块经
 // `super::MR/NR/KB` 引用；数值不在本 crate 再写一份。
-pub(crate) use prof::native::f32::{KB, MR, NR};
+pub(crate) use cutile::native::f32::{KB, MR, NR};
 
 /// 多线程稠密 f32 GEMM：`out[m,n] = a[m,k] · b[k,n]`。
 ///
@@ -41,7 +41,7 @@ pub fn gemm_f32(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f
     check_dims(a, b, m, n, k, out);
     // 协商面：把 16×64 整铺的大 GEMM 交给注册表里能接住的专用通道（SME ZA 外积）；
     // 小题、不可整铺或通道不存在时返回 `false`，退回下方 NEON 8×8 通道。nn 不写任何 arch/feature 门。
-    if prof::native::gemm_negotiate(a, b, m, n, k, out) {
+    if cutile::native::gemm_negotiate(a, b, m, n, k, out) {
         return;
     }
     let blocks = m.div_ceil(MR);
@@ -287,9 +287,11 @@ mod i8;
 #[path = "kernel_fast_micro.rs"]
 mod micro;
 
-/// i8 `sdot` 端口峰值探针（K8 的分母），只在测量容器里导出；本体在 `prof::native::i8`。
+/// i8 `sdot` 端口峰值探针（K8 的分母），只在测量容器里导出；本体在 `cutile::native::i8`。
 #[cfg(all(feature = "bench", target_arch = "aarch64"))]
-pub use prof::native::i8::{SDOT_BLOCK_MAC_PER_K, SDOT_MAC_PER_ROUND, port_sdot, port_sdot_block};
+pub use cutile::native::i8::{
+    SDOT_BLOCK_MAC_PER_K, SDOT_MAC_PER_ROUND, port_sdot, port_sdot_block,
+};
 
 /// 端口探针清单：哪几条指令路径可测，由这里统一回答（调用方不写 `cfg`）。
 #[cfg(feature = "bench")]
@@ -300,14 +302,14 @@ pub use probe::{Probe, probes};
 
 use i8::{f32_calc, f32_pack};
 pub use i8::{gemm_i8, gemm_i8_checked, gemm_i8_single};
-// 扫描骨架只读侧（Sweep/Span/Layout/残块 edge）留 nn；8×8 微内核本体与 Tile 住在 prof::native。
+// 扫描骨架只读侧（Sweep/Span/Layout/残块 edge）留 nn；8×8 微内核本体与 Tile 住在 cutile::native。
+use cutile::native::gemm8x8::{Tile, micro_packed};
 use micro::{Layout, Span, Sweep, edge};
-use prof::native::gemm8x8::{Tile, micro_packed};
 
 #[cfg(test)]
 mod tests {
     include!("../tests/kernel_fast_tests.rs");
-    // SME 对拍：参考算术在 nn，被测内核入口在 prof::native::sme；仅 nightly + aarch64 编译。
+    // SME 对拍：参考算术在 nn，被测内核入口在 cutile::native::sme；仅 nightly + aarch64 编译。
     #[cfg(all(nightly, target_arch = "aarch64"))]
     include!("../tests/kernel_sme_tests.rs");
 }

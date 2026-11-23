@@ -40,7 +40,7 @@ const SME_PURE: Probe = Probe {
     group: "sme_peak",
     suffix: "",
     ops_per_round: SME_FLOPS_PER_ROUND,
-    run: prof::native::sme::port_run,
+    run: cutile::native::sme::port_run,
 };
 #[cfg(all(feature = "bench", nightly, target_arch = "aarch64"))]
 const SME_MIX: Probe = Probe {
@@ -56,7 +56,7 @@ const SME_MIX: Probe = Probe {
 fn sme_mix_probe(rounds: usize) -> bool {
     static A: [f32; 16] = [1.0; 16];
     static B: [f32; 64] = [1.0; 64];
-    prof::native::sme::port_mix(rounds, &A, &B)
+    cutile::native::sme::port_mix(rounds, &A, &B)
 }
 
 /// 纯 `sdot` 端口：零 load 的理想上限。
@@ -64,8 +64,8 @@ fn sme_mix_probe(rounds: usize) -> bool {
 const I8_PURE: Probe = Probe {
     group: "i8_peak",
     suffix: "",
-    ops_per_round: 2 * prof::native::i8::SDOT_MAC_PER_ROUND,
-    run: prof::native::i8::port_sdot,
+    ops_per_round: 2 * cutile::native::i8::SDOT_MAC_PER_ROUND,
+    run: cutile::native::i8::port_sdot,
 };
 
 /// 纯 f32 FMA 端口：16 个累加器、零 load，与生产瓦片体同形状（K7 的理想上限）。
@@ -73,12 +73,12 @@ const I8_PURE: Probe = Probe {
 const FMA_PURE: Probe = Probe {
     group: "fma_peak",
     suffix: "",
-    ops_per_round: 2 * prof::native::gemm8x8::FMA_MAC_PER_K,
-    run: prof::native::gemm8x8::port_fma,
+    ops_per_round: 2 * cutile::native::gemm8x8::FMA_MAC_PER_K,
+    run: cutile::native::gemm8x8::port_fma,
 };
 
 /// `k` 取 1024 使地址在环内单调推进——地址不随循环变化时 LLVM 会把 load 整体提出循环，
-/// 那样测的是纯端口而非「取数受限」端口（第一版就是这么错的，见 [`prof::native::i8::port_sdot_block`]）。
+/// 那样测的是纯端口而非「取数受限」端口（第一版就是这么错的，见 [`cutile::native::i8::port_sdot_block`]）。
 #[cfg(all(feature = "bench", target_arch = "aarch64"))]
 const PROBE_K: usize = 1024;
 
@@ -87,25 +87,25 @@ const PROBE_K: usize = 1024;
 const I8_BLOCK: Probe = Probe {
     group: "i8_peak",
     suffix: "_block",
-    ops_per_round: 2 * prof::native::i8::SDOT_BLOCK_MAC_PER_K * PROBE_K,
+    ops_per_round: 2 * cutile::native::i8::SDOT_BLOCK_MAC_PER_K * PROBE_K,
     run: |rounds| {
         static A: [i8; 4 * PROBE_K] = [3; 4 * PROBE_K];
         static B: [i8; 4 * PROBE_K] = [5; 4 * PROBE_K];
-        prof::native::i8::port_sdot_block(rounds, &A, &B, PROBE_K)
+        cutile::native::i8::port_sdot_block(rounds, &A, &B, PROBE_K)
     },
 };
 
 /// 取数受限的 f32 端口：每步 2 条 A load + 2 条 B load 配 16 条 lane-indexed FMA，
-/// 与生产瓦片体 `prof::native::gemm8x8::fma_step` 逐指令一致。
+/// 与生产瓦片体 `cutile::native::gemm8x8::fma_step` 逐指令一致。
 #[cfg(all(feature = "bench", target_arch = "aarch64"))]
 const FMA_BLOCK: Probe = Probe {
     group: "fma_peak",
     suffix: "_block",
-    ops_per_round: 2 * prof::native::gemm8x8::FMA_MAC_PER_K * PROBE_K,
+    ops_per_round: 2 * cutile::native::gemm8x8::FMA_MAC_PER_K * PROBE_K,
     run: |rounds| {
         static A: [f32; super::NR * PROBE_K] = [1.0; super::NR * PROBE_K];
         static B: [f32; super::NR * PROBE_K] = [1.0; super::NR * PROBE_K];
-        prof::native::gemm8x8::port_fma_block(rounds, &A, &B, PROBE_K)
+        cutile::native::gemm8x8::port_fma_block(rounds, &A, &B, PROBE_K)
     },
 };
 
