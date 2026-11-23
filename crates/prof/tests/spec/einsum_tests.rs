@@ -1,9 +1,9 @@
 // einsum 三层的测试：表达式解析、轴长度表与代价推导。
 //
-// 三个测试段原先分别被 `einsum.rs` 的 `expr` / `extents` / `formula` 模块用 `include!`
-// 挂载；合并为一份后统一挂在本文件，由 `expr` 的测试模块 `include!` 进来。三段的引用面各自
-// 保留：表达式段沿用 `use super::*`（`expr` 模块），轴表与代价段通过 `crate::einsum` 的再导出
-// 取同一批类型。Bits / Cost 自身的用例在 `cost_tests.rs`（挂 `src/einsum.rs`）。
+// `einsum` 已平铺为单文件，本文件与 `cost_tests.rs` 由 `src/einsum.rs` 的测试模块按顺序
+// `include!` 进来，两段共用同一个测试模块；`use super::*` 因此解析到 `einsum` 模块本身，
+// 轴表与代价段直接用 `crate::einsum` 的再导出取类型。Bits / Cost 自身的用例在同目录的
+// `cost_tests.rs`。
 
 use super::*;
 

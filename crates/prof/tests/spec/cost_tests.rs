@@ -1,5 +1,3 @@
-use super::*;
-
 #[test]
 fn a_closed_set_reports_every_width() {
     let widths: Vec<u32> = Bits::ALL.iter().map(|bits| bits.bits()).collect();
