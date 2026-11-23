@@ -398,6 +398,16 @@ pub(crate) fn readback_bits(src: &str, len: usize, indent: &str) -> String {
     )
 }
 
+/// 模板填空：`@name` 逐个替换成对应文本。设备源以「原始文本 + `@占位`」的形式保存成数据，装配处只
+/// 做一次填空——`format!` 的花括号转义不进模板，模板可逐字与厂商语法对照。全 crate 只有这一处。
+pub(crate) fn fill(template: &str, pairs: &[(&str, &str)]) -> String {
+    pairs
+        .iter()
+        .fold(template.to_owned(), |text, (name, value)| {
+            text.replace(&format!("@{name}"), value)
+        })
+}
+
 /// 输出缓冲的（名字，元素数）：只接受非空 f32，回读路径按 float 解释字节。三端 benchmark/回读共用。
 pub(crate) fn f32_output_shape(signature: &Signature, sample: &Sample) -> Result<(String, usize)> {
     let output = output_name(signature)?;

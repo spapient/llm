@@ -14,14 +14,14 @@ use llm_optim::backend::{Readback, Source};
 use llm_optim::driver;
 use llm_optim::witness::MAX_OUT;
 use nn::model::{Sample, Values};
-use nn::sig::{Param, Signature};
+use nn::sig::Signature;
 use prof::decl::Grid;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::dialect::{
     Dialect, EXPSUM, Metal, NORM, PARTIAL, RMS_EPS, SCAN_CORRECT, SCAN_LOCAL, carry_fold,
-    chunk_head, f32_output_shape, launch_args, length_scalar, length_usize, readback_bits,
+    chunk_head, f32_output_shape, fill, launch_args, length_scalar, length_usize, readback_bits,
     readonly_bufs, scalar_name, scan_correct_body,
 };
 
@@ -100,64 +100,70 @@ fn metal_launch(kernel: &str, signature: &Signature, sample: &Sample) -> Result<
     ))
 }
 
-/// 缓冲绑定段：只读输入的初值、`MTLBuffer` 分配、`setBuffer` 槽位与可写输出的元素数，按签名序
-/// 一次生成。单线程语义门与网格发射只在「入口名 + 发射几何」上不同，绑定与回读必须逐字同源。
-fn metal_bindings(
-    signature: &Signature,
-    sample: &Sample,
-) -> Result<(String, String, String, usize)> {
-    let mut data = String::new();
-    let mut allocs = String::new();
-    let mut sets = String::new();
-    let mut out_len = 0usize;
-    for (slot, param) in signature
-        .params()
-        .iter()
-        .filter(|p| p.ctype.is_buf())
-        .enumerate()
-    {
-        let buf = sample
-            .buf(&param.name)
-            .ok_or_else(|| Error::new(Code::Internal, "签名与样本已对齐（漂移）"))?;
-        let base = param.ctype.c_name();
-        let len = buf.values.len();
-        if param.mutable {
-            out_len = len;
-            allocs.push_str(&format!(
-                "        id<MTLBuffer> b_{name} = [device newBufferWithLength:{len} * sizeof({base}) options:MTLResourceStorageModeShared];\n",
-                name = param.name,
-                len = len,
-                base = base
-            ));
-        } else {
-            data.push_str(&literal_decl(&param.name, base, &buf.values));
-            allocs.push_str(&format!(
-                "        id<MTLBuffer> b_{name} = [device newBufferWithBytes:init_{name} length:sizeof(init_{name}) options:MTLResourceStorageModeShared];\n",
-                name = param.name
+/// 一条缓冲在 host 侧的三份文本：初值字面量、`MTLBuffer` 分配、`setBuffer` 绑定。
+///
+/// 单段驱动、基准驱动与多段驱动只差三个数据位——输出容量（`None` 取样本原长）、分配失败是否立即
+/// 返回（语义门不查，基准/多段查）、绑定行缩进——拼装逻辑因此只有这一份。
+#[derive(Default)]
+struct Wiring {
+    data: String,
+    allocs: String,
+    sets: String,
+    /// 唯一可写输出缓冲的元素数（与 `capacity` 同口径）。
+    out_len: usize,
+}
+
+impl Wiring {
+    /// 按签名序走一遍缓冲参数，`capacity` 换掉输出缓冲的样本长度（部分结果数）。
+    fn of(
+        signature: &Signature,
+        sample: &Sample,
+        capacity: Option<usize>,
+        checked: bool,
+        indent: usize,
+    ) -> Result<Self> {
+        let mut wiring = Self::default();
+        let pad = " ".repeat(indent);
+        for (slot, param) in signature
+            .params()
+            .iter()
+            .filter(|param| param.ctype.is_buf())
+            .enumerate()
+        {
+            let buf = sample
+                .buf(&param.name)
+                .ok_or_else(|| Error::new(Code::Internal, "签名与样本已对齐（漂移）"))?;
+            let base = param.ctype.c_name();
+            let len = capacity.unwrap_or(buf.values.len());
+            if param.mutable {
+                wiring.out_len = len;
+                wiring.allocs.push_str(&output_alloc(&param.name, base, len, checked));
+            } else {
+                wiring.data.push_str(&literal_decl(&param.name, base, &buf.values));
+                wiring.allocs.push_str(&input_alloc(&param.name, checked));
+            }
+            wiring.sets.push_str(&format!(
+                "{pad}[encoder setBuffer:b_{} offset:0 atIndex:{slot}];\n",
+                param.name
             ));
         }
-        sets.push_str(&format!(
-            "        [encoder setBuffer:b_{name} offset:0 atIndex:{slot}];\n",
-            name = param.name,
-            slot = slot
-        ));
+        Ok(wiring)
     }
-    Ok((data, allocs, sets, out_len))
 }
 
 /// host 驱动（单线程语义门）：把样本数据作为只读缓冲的初值，发射 `cutile_launch`，回读唯一可写
 /// 输出的位模式——验证「算得对不对」，不回答「跑得多快」。
 fn metal_harness_driver(signature: &Signature, sample: &Sample, output: &str) -> Result<String> {
-    let (data, allocs, sets, out_len) = metal_bindings(signature, sample)?;
-    Ok(metal_driver_template(
-        &data,
-        &allocs,
-        &sets,
+    let wiring = Wiring::of(signature, sample, None, false, 8)?;
+    let body = dispatch_body(&wiring.sets, [1; 3], [1; 3]);
+    Ok(host_program(
+        IMPORTS_STDLIB,
+        &wiring.data,
+        &host_prologue("cutile_launch"),
+        &wiring.allocs,
+        &body,
         output,
-        out_len,
-        "cutile_launch",
-        [1; 3],
-        [1; 3],
+        wiring.out_len,
     ))
 }
 
@@ -173,10 +179,87 @@ pub fn metal_dispatch_driver(
     block: [usize; 3],
 ) -> Result<String> {
     let (output, _) = output_of(signature, sample)?;
-    let (data, allocs, sets, out_len) = metal_bindings(signature, sample)?;
-    Ok(metal_driver_template(
-        &data, &allocs, &sets, output, out_len, entry, grid, block,
+    let wiring = Wiring::of(signature, sample, None, false, 8)?;
+    let body = dispatch_body(&wiring.sets, grid, block);
+    Ok(host_program(
+        IMPORTS_STDLIB,
+        &wiring.data,
+        &host_prologue(entry),
+        &wiring.allocs,
+        &body,
+        output,
+        wiring.out_len,
     ))
+}
+
+/// 单个 Metal host 程序的骨架：import 段 + 静态初值 + `main` +「前导 / 缓冲 / 正文」三块数据 + 回读。
+/// 单段派发、基准、多段三族只在这三块数据上不同，骨架只有这一份。
+const HOST_PROGRAM: &str = r#"@imports@data
+int main(int argc, const char **argv) {
+    @autoreleasepool {
+        if (argc < 2) { fprintf(stderr, "usage: driver <metallib>\n"); return 2; }
+@prologue@@allocs@@body@        const float *out = (const float *)b_@output@.contents;
+@readback@
+    }
+    return 0;
+}
+"#;
+
+/// import 段的三档：语义门与基准按需取 `stdlib.h`，多段驱动的 `sqrt` 要 `math.h`。
+const IMPORTS_STDLIB: &str = "#import <Foundation/Foundation.h>\n#import <Metal/Metal.h>\n#include <stdio.h>\n#include <stdlib.h>\n\n";
+const IMPORTS_STDIO: &str = "#import <Foundation/Foundation.h>\n#import <Metal/Metal.h>\n#include <stdio.h>\n\n";
+const IMPORTS_MATH: &str = "#import <Foundation/Foundation.h>\n#import <Metal/Metal.h>\n#include <stdio.h>\n#include <math.h>\n\n";
+
+/// 按数据模板装配一个 host 程序；`body` 是 `@autoreleasepool` 块里除回读之外的正文。
+fn host_program(
+    imports: &str,
+    data: &str,
+    prologue: &str,
+    allocs: &str,
+    body: &str,
+    output: &str,
+    out_len: usize,
+) -> String {
+    fill(
+        HOST_PROGRAM,
+        &[
+            ("imports", imports),
+            ("data", data),
+            ("prologue", prologue),
+            ("allocs", allocs),
+            ("body", body),
+            ("output", output),
+            ("readback", &readback_bits("out", out_len, "        ")),
+        ],
+    )
+}
+
+/// 单段派发正文：建命令队列、一次发射、等完成。
+const DISPATCH_BODY: &str = r#"        id<MTLCommandQueue> queue = [device newCommandQueue];
+        id<MTLCommandBuffer> buffer = [queue commandBuffer];
+        id<MTLComputeCommandEncoder> encoder = [buffer computeCommandEncoder];
+        [encoder setComputePipelineState:pipeline];
+@sets@        [encoder dispatchThreads:MTLSizeMake(@gx, @gy, @gz) threadsPerThreadgroup:MTLSizeMake(@bx, @by, @bz)];
+        [encoder endEncoding];
+        [buffer commit];
+        [buffer waitUntilCompleted];
+        if (buffer.error) { fprintf(stderr, "内核执行失败：%s\n", buffer.error.localizedDescription.UTF8String); return 7; }
+"#;
+
+/// 单段派发正文的填空：绑定段 + 两套几何。
+fn dispatch_body(sets: &str, grid: [usize; 3], block: [usize; 3]) -> String {
+    fill(
+        DISPATCH_BODY,
+        &[
+            ("sets", sets),
+            ("gx", &grid[0].to_string()),
+            ("gy", &grid[1].to_string()),
+            ("gz", &grid[2].to_string()),
+            ("bx", &block[0].to_string()),
+            ("by", &block[1].to_string()),
+            ("bz", &block[2].to_string()),
+        ],
+    )
 }
 
 /// host 驱动共用的前导：取默认设备、装载 metallib、取入口函数、建管线。
@@ -190,32 +273,59 @@ fn literal_decl(name: &str, base: &str, values: &Values) -> String {
     )
 }
 
-/// 输出缓冲的分配：可变、按元素数一次开满。
-fn output_alloc(name: &str, base: &str, len: usize) -> String {
-    format!(
-        "        id<MTLBuffer> b_{name} = [device newBufferWithLength:{len} * sizeof({base}) options:MTLResourceStorageModeShared];\n\
-         \x20       if (!b_{name}) {{ fprintf(stderr, \"Metal 输出缓冲分配失败\\n\"); return 7; }}\n",
-    )
+/// 输出缓冲的分配：可变、按元素数一次开满；`checked` 决定分配失败是否立即返回。
+fn output_alloc(name: &str, base: &str, len: usize, checked: bool) -> String {
+    let alloc = format!(
+        "        id<MTLBuffer> b_{name} = [device newBufferWithLength:{len} * sizeof({base}) options:MTLResourceStorageModeShared];\n"
+    );
+    if checked {
+        return format!(
+            "{alloc}        if (!b_{name}) {{ fprintf(stderr, \"Metal 输出缓冲分配失败\\n\"); return 7; }}\n"
+        );
+    }
+    alloc
 }
 
-/// 输入缓冲的分配：按静态初值的长度原样拷入。
-fn input_alloc(name: &str) -> String {
-    format!(
-        "        id<MTLBuffer> b_{name} = [device newBufferWithBytes:init_{name} length:sizeof(init_{name}) options:MTLResourceStorageModeShared];\n\
-         \x20       if (!b_{name}) {{ fprintf(stderr, \"Metal 输入缓冲分配失败\\n\"); return 7; }}\n",
-    )
+/// 输入缓冲的分配：按静态初值的长度原样拷入；`checked` 决定分配失败是否立即返回。
+fn input_alloc(name: &str, checked: bool) -> String {
+    let alloc = format!(
+        "        id<MTLBuffer> b_{name} = [device newBufferWithBytes:init_{name} length:sizeof(init_{name}) options:MTLResourceStorageModeShared];\n"
+    );
+    if checked {
+        return format!(
+            "{alloc}        if (!b_{name}) {{ fprintf(stderr, \"Metal 输入缓冲分配失败\\n\"); return 7; }}\n"
+        );
+    }
+    alloc
 }
 
+/// 基准驱动的一轮调度：建 command buf、设缓冲与管线、按 16 批发射、提交并等待。
+///
+/// 预热与计时两段只在尾巴上分叉（错误文本与返回码），所以这一轮本身只写一份数据。
 const METAL_ROUND: &str = r#"            id<MTLCommandBuffer> buffer = [queue commandBuffer];
             id<MTLComputeCommandEncoder> encoder = [buffer computeCommandEncoder];
             [encoder setComputePipelineState:pipeline];
-@SETS@            for (int batch = 0; batch < 16; ++batch) {
-                [encoder dispatchThreads:MTLSizeMake(@GRID_X@, @GRID_Y@, @GRID_Z@)
-                    threadsPerThreadgroup:MTLSizeMake(@THREAD_X@, @THREAD_Y@, @THREAD_Z@)];
+@sets            for (int batch = 0; batch < 16; ++batch) {
+                [encoder dispatchThreads:MTLSizeMake(@grid_x, @grid_y, @grid_z)
+                    threadsPerThreadgroup:MTLSizeMake(@thread_x, @thread_y, @thread_z)];
             }
             [encoder endEncoding];
             [buffer commit];
             [buffer waitUntilCompleted];
+"#;
+
+/// 基准驱动正文：预热两轮后按 `repeat` 轮各跑 16 批，每轮报一次 GPU 时间戳。
+const BENCH_BODY: &str = r#"        id<MTLCommandQueue> queue = [device newCommandQueue];
+        if (!queue) { fprintf(stderr, "Metal 命令队列创建失败\n"); return 7; }
+        for (int warm = 0; warm < 2; ++warm) {
+@round            if (buffer.error) { fprintf(stderr, "内核预热失败：%s\n", buffer.error.localizedDescription.UTF8String); return 8; }
+        }
+        for (int sample = 0; sample < @repeat; ++sample) {
+@round            if (buffer.error) { fprintf(stderr, "内核执行失败：%s\n", buffer.error.localizedDescription.UTF8String); return 9; }
+            double elapsed = (buffer.GPUEndTime - buffer.GPUStartTime) * 1.0e9;
+            if (!(elapsed > 0.0)) { fprintf(stderr, "Metal GPU 时间戳不可用\n"); return 10; }
+            fprintf(stderr, "ns %.3f\n", elapsed / 16.0);
+        }
 "#;
 
 /// host 驱动共用的前导：取默认设备、装载 metallib、取入口函数、建管线。
@@ -380,77 +490,30 @@ pub fn metal_benchmark_driver(
     repeat: usize,
 ) -> Result<String> {
     let (output, out_len) = f32_output_shape(signature, sample)?;
-    let (data, allocs, sets) = bench_wiring(signature, sample)?;
-    let source = r#"#import <Foundation/Foundation.h>
-#import <Metal/Metal.h>
-#include <stdio.h>
-
-@DATA@
-int main(int argc, const char **argv) {
-    @autoreleasepool {
-        if (argc < 2) { fprintf(stderr, "usage: driver <metallib>\n"); return 2; }
-@PROLOGUE@@ALLOCS@        id<MTLCommandQueue> queue = [device newCommandQueue];
-        if (!queue) { fprintf(stderr, "Metal 命令队列创建失败\n"); return 7; }
-        for (int warm = 0; warm < 2; ++warm) {
-@ROUND@            if (buffer.error) { fprintf(stderr, "内核预热失败：%s\n", buffer.error.localizedDescription.UTF8String); return 8; }
-        }
-        for (int sample = 0; sample < @REPEAT@; ++sample) {
-@ROUND@            if (buffer.error) { fprintf(stderr, "内核执行失败：%s\n", buffer.error.localizedDescription.UTF8String); return 9; }
-            double elapsed = (buffer.GPUEndTime - buffer.GPUStartTime) * 1.0e9;
-            if (!(elapsed > 0.0)) { fprintf(stderr, "Metal GPU 时间戳不可用\n"); return 10; }
-            fprintf(stderr, "ns %.3f\n", elapsed / 16.0);
-        }
-        const float *out = (const float *)b_@OUTPUT@.contents;
-@READBACK@
-    }
-    return 0;
-}
-"#
-    .replace("@DATA@", &data)
-    .replace("@ALLOCS@", &allocs)
-    .replace("@ROUND@", METAL_ROUND)
-    .replace("@PROLOGUE@", &host_prologue("kernel_main"))
-    .replace("@SETS@", &sets)
-    .replace("@GRID_X@", &grid[0].to_string())
-    .replace("@GRID_Y@", &grid[1].to_string())
-    .replace("@GRID_Z@", &grid[2].to_string())
-    .replace("@THREAD_X@", &threads[0].to_string())
-    .replace("@THREAD_Y@", &threads[1].to_string())
-    .replace("@THREAD_Z@", &threads[2].to_string())
-    .replace("@REPEAT@", &repeat.to_string())
-    .replace("@OUTPUT@", &output)
-    .replace("@READBACK@", &readback_bits("out", out_len, "        "));
-    Ok(source)
-}
-
-/// 按签名顺序给每条缓冲写「声明 / 分配 / 绑定」三份文本：可变的是输出，不可变的先落成静态初值。
-fn bench_wiring(signature: &Signature, sample: &Sample) -> Result<(String, String, String)> {
-    let mut data = String::new();
-    let mut allocs = String::new();
-    let mut sets = String::new();
-    for (slot, param) in signature
-        .params()
-        .iter()
-        .filter(|param| param.ctype.is_buf())
-        .enumerate()
-    {
-        let buf = sample
-            .buf(&param.name)
-            .ok_or_else(|| Error::new(Code::Internal, "签名与样本已对齐（漂移）"))?;
-        let base = param.ctype.c_name();
-        let name = param.name.as_ref();
-        let len = buf.values.len();
-        if param.mutable {
-            allocs.push_str(&output_alloc(name, base, len));
-        } else {
-            data.push_str(&literal_decl(name, base, &buf.values));
-            allocs.push_str(&input_alloc(name));
-        }
-        sets.push_str(&format!(
-            "            [encoder setBuffer:b_{name} offset:0 atIndex:{slot}];\n",
-        ));
-    }
-    Ok((data, allocs, sets))
+    let wiring = Wiring::of(signature, sample, None, true, 12)?;
+    let body = fill(
+        BENCH_BODY,
+        &[
+            ("round", METAL_ROUND),
+            ("repeat", &repeat.to_string()),
+            ("sets", &wiring.sets),
+            ("grid_x", &grid[0].to_string()),
+            ("grid_y", &grid[1].to_string()),
+            ("grid_z", &grid[2].to_string()),
+            ("thread_x", &threads[0].to_string()),
+            ("thread_y", &threads[1].to_string()),
+            ("thread_z", &threads[2].to_string()),
+        ],
+    );
+    Ok(host_program(
+        IMPORTS_STDIO,
+        &wiring.data,
+        &host_prologue("kernel_main"),
+        &wiring.allocs,
+        &body,
+        &output,
+        out_len,
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -487,56 +550,24 @@ pub(crate) fn metal_multistage_driver(
     stages: &[MetalStage<'_>],
 ) -> Result<String> {
     let output = output_name(signature)?;
-    let (data, allocs) = metal_bufs(signature, sample, capacity, scratch)?;
-    let body = metal_stages(stages);
-    Ok(format!(
-        r#"#import <Foundation/Foundation.h>
-#import <Metal/Metal.h>
-#include <stdio.h>
-#include <math.h>
-
-{data}
-int main(int argc, const char **argv) {{
-    @autoreleasepool {{
-        if (argc < 2) {{ fprintf(stderr, "usage: driver <metallib>\n"); return 2; }}
-{library}{allocs}        id<MTLCommandQueue> queue = [device newCommandQueue];
-{body}        const float *out = (const float *)b_{output}.contents;
-{readback}
-    }}
-    return 0;
-}}
-"#,
-        data = data,
-        library = host_library(),
-        allocs = allocs,
-        body = body,
-        output = output,
-        readback = readback_bits("out", read, "        "),
-    ))
-}
-
-/// 缓冲装载：只读缓冲落字面量、可写缓冲按 `capacity` 开满，折叠用的中间缓冲另开 f32。
-fn metal_bufs(
-    signature: &Signature,
-    sample: &Sample,
-    capacity: usize,
-    scratch: &[(&str, usize)],
-) -> Result<(String, String)> {
-    let mut data = String::new();
-    let mut allocs = String::new();
-    for param in signature
-        .params()
-        .iter()
-        .filter(|param| param.ctype.is_buf())
-    {
-        let (literal, alloc) = metal_param(param, sample, capacity)?;
-        data.push_str(&literal);
-        allocs.push_str(&alloc);
-    }
+    let wiring = Wiring::of(signature, sample, Some(capacity), true, 12)?;
+    let mut allocs = wiring.allocs;
     for (name, len) in scratch {
-        allocs.push_str(&output_alloc(name, "float", *len));
+        allocs.push_str(&output_alloc(name, "float", *len, true));
     }
-    Ok((data, allocs))
+    let body = format!(
+        "        id<MTLCommandQueue> queue = [device newCommandQueue];\n{}",
+        metal_stages(stages)
+    );
+    Ok(host_program(
+        IMPORTS_MATH,
+        &wiring.data,
+        host_library(),
+        &allocs,
+        &body,
+        &output,
+        read,
+    ))
 }
 
 /// 段体：每段一份发射 + 该段自己的主机折叠（折叠串由调用方给，不在驱动里拼第二份算式）。
@@ -547,21 +578,6 @@ fn metal_stages(stages: &[MetalStage<'_>]) -> String {
         body.push_str(stage.fold);
     }
     body
-}
-
-/// 一个缓冲参数的两段：只读的落地为字面量，可写的按 `capacity` 开满。
-fn metal_param(param: &Param, sample: &Sample, capacity: usize) -> Result<(String, String)> {
-    let base = param.ctype.c_name();
-    if param.mutable {
-        return Ok((String::new(), output_alloc(&param.name, base, capacity)));
-    }
-    let buf = sample
-        .buf(&param.name)
-        .ok_or_else(|| Error::new(Code::Internal, "签名与样本已对齐（漂移）"))?;
-    Ok((
-        literal_decl(&param.name, base, &buf.values),
-        input_alloc(&param.name),
-    ))
 }
 
 /// 单段发射：取入口函数、建管线、设缓冲、派发、提交并等待。
@@ -593,62 +609,6 @@ fn metal_stage(idx: usize, stage: &MetalStage<'_>) -> String {
         gx = stage.grid[0],
         gy = stage.grid[1],
         gz = stage.grid[2],
-    )
-}
-
-/// 一轮调度：建 command buf、设缓冲与管线、按 16 批发射、提交并等待。
-///
-/// 预热与计时两段只在尾巴上分叉（错误文本与返回码），所以这一轮本身只写一份：
-/// 占位符在插入后由同一批 [`str::replace`] 补齐（`@ROUND@` 先于 `@SETS@` 等）。
-/// 驱动正文模板：只拼字面与已算好的片段，不含循环与错误处理（那些留在 `metal_driver`）。
-#[allow(clippy::too_many_arguments)]
-fn metal_driver_template(
-    data: &str,
-    allocs: &str,
-    sets: &str,
-    output: &str,
-    out_len: usize,
-    entry: &str,
-    grid: [usize; 3],
-    block: [usize; 3],
-) -> String {
-    format!(
-        r#"#import <Foundation/Foundation.h>
-#import <Metal/Metal.h>
-#include <stdio.h>
-#include <stdlib.h>
-
-{data}
-int main(int argc, const char **argv) {{
-    @autoreleasepool {{
-        if (argc < 2) {{ fprintf(stderr, "usage: driver <metallib>\n"); return 2; }}
-{prologue}{allocs}        id<MTLCommandQueue> queue = [device newCommandQueue];
-        id<MTLCommandBuffer> buffer = [queue commandBuffer];
-        id<MTLComputeCommandEncoder> encoder = [buffer computeCommandEncoder];
-        [encoder setComputePipelineState:pipeline];
-{sets}        [encoder dispatchThreads:MTLSizeMake({gx}, {gy}, {gz}) threadsPerThreadgroup:MTLSizeMake({bx}, {by}, {bz})];
-        [encoder endEncoding];
-        [buffer commit];
-        [buffer waitUntilCompleted];
-        if (buffer.error) {{ fprintf(stderr, "内核执行失败：%s\n", buffer.error.localizedDescription.UTF8String); return 7; }}
-        const float *out = (const float *)b_{output}.contents;
-{readback}
-    }}
-    return 0;
-}}
-"#,
-        data = data,
-        allocs = allocs,
-        prologue = host_prologue(entry),
-        sets = sets,
-        output = output,
-        readback = readback_bits("out", out_len, "        "),
-        gx = grid[0],
-        gy = grid[1],
-        gz = grid[2],
-        bx = block[0],
-        by = block[1],
-        bz = block[2]
     )
 }
 

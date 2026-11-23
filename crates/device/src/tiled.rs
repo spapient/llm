@@ -1,6 +1,6 @@
 //! 设备侧分块 lowering：共享内存 GEMM 与（后续）分块注意力。
 
-use crate::dialect::sample_usize;
+use crate::dialect::{fill, sample_usize};
 use diagnostic::{Code, Error, Result};
 use nn::model::Sample;
 use nn::sig::{CType, Param, Signature};
@@ -760,15 +760,6 @@ fn flash_attention_msl(q: &str, k: &str, v: &str, y: &str, shape: Flash) -> Stri
     )
 }
 
-/// 模板填空：`@name` 逐个替换成对应文本。
-fn fill(template: &str, pairs: &[(&str, &str)]) -> String {
-    pairs
-        .iter()
-        .fold(template.to_string(), |text, (name, value)| {
-            text.replace(&format!("@{name}"), value)
-        })
-}
-
 /// 一个寄存器输出维的回写：除以 `l` 后只写本线程负责的那一维。
 fn flash_output(y: &str, n: usize, shape: Flash) -> String {
     if shape.dim.is_multiple_of(shape.threads) {
@@ -783,7 +774,7 @@ fn flash_output(y: &str, n: usize, shape: Flash) -> String {
     )
 }
 
-/// flash 内核模板：`@name` 占位由 [`fill`] 替换。
+/// flash 内核模板：`@name` 占位由 [`crate::dialect::fill`] 替换。
 const FLASH_KERNEL: &str = "#include <metal_stdlib>\n\
          using namespace metal;\n\
          kernel void kernel_main(\n\

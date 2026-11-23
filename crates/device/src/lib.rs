@@ -15,7 +15,7 @@
 //! 可执行产物。两者混在一个 crate 里时，`engine` 有 60% 的行数在做与状态机无关的字符串装配，
 //! 单 crate 密度预算（≤8,000 行）被这类装配撑破。
 //!
-//! 分层口径：**契约在 `engine`，实现在本 crate**。`metal::executor` 实现的
+//! 分层口径：**契约在 `engine`，实现在本 crate**。[`executor`] 实现的
 //! [`Executor`](engine::exec::Executor) 是 `engine` 定义的缝，本 crate 只填实现，因此
 //! `device → engine` 是唯一方向。
 //!
@@ -38,7 +38,6 @@ pub mod backends;
 pub mod cuda;
 mod dialect;
 #[cfg(target_os = "macos")]
-#[path = "metal/executor.rs"]
 pub mod executor;
 pub mod metal;
 pub mod platform;

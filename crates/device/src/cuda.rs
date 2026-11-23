@@ -146,7 +146,7 @@ pub(crate) fn buf_args(signature: &Signature) -> String {
 ///
 /// 1. 缓冲区（`cuda_host_bufs_grid` + `alloc_guards`）
 /// 2. 计时（`timing_loop`，先热身再按轮计时）
-/// 3. 回读（`readback_block`，按位打印）
+/// 3. 回读（`cuda_readback`，按位打印）
 /// 4. 释放（`cuda_release`）
 ///
 /// 本函数只负责按上述顺序拼装，不含任何格式串。
@@ -178,7 +178,7 @@ pub fn cuda_benchmark_driver(
     source.push_str(&alloc_guards(signature));
     source.push_str("    CUTILE_CUDA_CHECK(cudaGetLastError());\n");
     source.push_str(&timing_loop(grid, threads, launch_args, repeat));
-    source.push_str(&readback_block(&output, out_len));
+    source.push_str(&cuda_readback(&output, out_len, None, true));
     source.push_str(&cuda_release(signature));
     source.push_str(CUDA_EPILOGUE);
     Ok(source)
@@ -254,14 +254,6 @@ pub(crate) fn alloc_guards(signature: &Signature) -> String {
         ));
     }
     out
-}
-
-/// 回读块：把输出缓冲拷回主机并按位打印（打印循环下沉到 [`readback_bits`]）。
-pub(crate) fn readback_block(output: &str, len: usize) -> String {
-    format!(
-        "    CUTILE_CUDA_CHECK(cudaMemcpy(h_{output}, d_{output}, {len} * sizeof(float), cudaMemcpyDeviceToHost));\n{}",
-        readback_bits(&format!("h_{output}"), len, "    ")
-    )
 }
 
 /// 计时循环：先热身两轮，再按 `repeat` 轮计时，每轮固定 16 次 launch 后报单次纳秒。
@@ -342,10 +334,7 @@ impl<'a> Driver<'a> {
             self.output_len,
         )?);
         text.push_str(emit);
-        let readback = match self.fold {
-            Some(fold) => cuda_folded_readback(self.output, self.output_len, fold),
-            None => cuda_readback(self.output, self.output_len),
-        };
+        let readback = cuda_readback(self.output, self.output_len, self.fold, false);
         text.push_str(&readback);
         text.push_str(&cuda_release(self.signature));
         text.push_str("    return 0;\n}\n");
@@ -378,15 +367,30 @@ pub(crate) fn cuda_launch(kernel: &str, grid: &str, threads: usize, args: &str) 
 
 /// 结果回读：设备 → 主机，再按 `float` 位模式逐元素打印（打印循环下沉到
 /// [`readback_bits`]，三端共用同一份 `union` 位级保真代码）。
-pub(crate) fn cuda_readback(output: &str, len: usize) -> String {
-    format!(
-        "    cudaMemcpy(h_{output}, d_{output}, {len} * sizeof(float), cudaMemcpyDeviceToHost);\n{}",
-        readback_bits(&format!("h_{output}"), len, "    ")
-    )
-}
-
-/// 结果回读（主机折叠）：分块归约读到 `len` 个部分结果，按 `fold` 折成一个再打印。
-pub(crate) fn cuda_folded_readback(output: &str, len: usize, fold: &str) -> String {
+///
+/// `fold` 给定时把 `len` 个部分结果在主机折成一个输出（`max` 取大、其余求和）；`checked` 决定
+/// memcpy 是否套 `CUTILE_CUDA_CHECK`（基准驱动套，语义门 harness 不套）。
+pub(crate) fn cuda_readback(
+    output: &str,
+    len: usize,
+    fold: Option<&str>,
+    checked: bool,
+) -> String {
+    let copy = if checked {
+        format!(
+            "    CUTILE_CUDA_CHECK(cudaMemcpy(h_{output}, d_{output}, {len} * sizeof(float), cudaMemcpyDeviceToHost));\n"
+        )
+    } else {
+        format!(
+            "    cudaMemcpy(h_{output}, d_{output}, {len} * sizeof(float), cudaMemcpyDeviceToHost);\n"
+        )
+    };
+    let Some(fold) = fold else {
+        return format!(
+            "{copy}{}",
+            readback_bits(&format!("h_{output}"), len, "    ")
+        );
+    };
     let (init, combine) = if fold == "max" {
         (
             "-3.402823466e38f",
@@ -396,13 +400,7 @@ pub(crate) fn cuda_folded_readback(output: &str, len: usize, fold: &str) -> Stri
         ("0.0f", format!("acc += h_{output}[i];"))
     };
     format!(
-        "    cudaMemcpy(h_{output}, d_{output}, {len} * sizeof(float), cudaMemcpyDeviceToHost);\n\
-         \x20   float acc = {init};\n\
-         \x20   for (int i = 0; i < {len}; ++i) {{\n\
-         \x20       {combine}\n\
-         \x20   }}\n\
-         \x20   union {{ float f; unsigned int u; }} v; v.f = acc;\n\
-         \x20   printf(\"%u\\n\", v.u);\n"
+        "{copy}    float acc = {init};\n    for (int i = 0; i < {len}; ++i) {{\n        {combine}\n    }}\n    union {{ float f; unsigned int u; }} v; v.f = acc;\n    printf(\"%u\\n\", v.u);\n"
     )
 }
 
@@ -1009,7 +1007,7 @@ fn driver(
             args,
         },
     );
-    text.push_str(&cuda_readback(output, len));
+    text.push_str(&cuda_readback(output, len, None, false));
     text.push_str(free);
     text.push_str(&cuda_release(signature));
     text.push_str("    return 0;\n}\n");
