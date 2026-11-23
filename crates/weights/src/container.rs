@@ -81,7 +81,7 @@ impl Entry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Header {
     entries: Vec<Entry>,
-    index: HashMap<String, usize>,
+    idx: HashMap<String, usize>,
     data_start: usize,
 }
 
@@ -106,16 +106,16 @@ impl Header {
         for pair in sorted.windows(2) {
             check_overlap(&pair[0], &pair[1])?;
         }
-        let mut index = HashMap::with_capacity(sorted.len());
+        let mut idx = HashMap::with_capacity(sorted.len());
         for (position, entry) in sorted.iter().enumerate() {
             let name = entry.name();
-            if index.insert(name.to_owned(), position).is_some() {
+            if idx.insert(name.to_owned(), position).is_some() {
                 return Err(Error::new(Code::Invalid, format!("权重条目 `{name}` 重复")).with(SITE));
             }
         }
         Ok(Self {
             entries: sorted,
-            index,
+            idx,
             data_start,
         })
     }
@@ -127,7 +127,7 @@ impl Header {
 
     /// 按名字查条目（一次解析期建名索引，之后每次查询 O(1)）。
     pub fn get(&self, name: &str) -> Option<&Entry> {
-        self.index
+        self.idx
             .get(name)
             .and_then(|&position| self.entries.get(position))
     }

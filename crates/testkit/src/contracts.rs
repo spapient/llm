@@ -112,7 +112,7 @@ fn locate(module: &str, depth: usize) -> Option<PathBuf> {
     }
     // 声明是唯一真相：文件名可以自由取（`#[path = "kernel_gemv.rs"] pub mod gemv;`），
     // 所以「模块路径 → 文件」只能由声明处推导，不能由文件名反推。
-    if let Some(found) = module_index().get(module) {
+    if let Some(found) = module_idx().get(module) {
         return Some(found.clone());
     }
     let roots = op_roots();
@@ -234,9 +234,9 @@ fn aliases() -> &'static std::collections::BTreeMap<String, Vec<String>> {
 ///
 /// 这条索引让「源码怎么拆、文件叫什么」与「模块路径」彻底解耦——否则每拆一次文件，
 /// 契约门禁就得跟着改一遍路径猜测。
-fn module_index() -> &'static std::collections::BTreeMap<String, PathBuf> {
-    static INDEX: OnceLock<std::collections::BTreeMap<String, PathBuf>> = OnceLock::new();
-    INDEX.get_or_init(|| {
+fn module_idx() -> &'static std::collections::BTreeMap<String, PathBuf> {
+    static IDX: OnceLock<std::collections::BTreeMap<String, PathBuf>> = OnceLock::new();
+    IDX.get_or_init(|| {
         let mut out = std::collections::BTreeMap::new();
         for (crate_name, file) in sources() {
             if !in_op_family(&crate_name) || file.file_stem().is_some_and(|stem| stem != "lib") {
@@ -342,7 +342,7 @@ fn declared_paths() -> &'static std::collections::BTreeMap<PathBuf, String> {
     REVERSE.get_or_init(|| {
         let mut out: std::collections::BTreeMap<PathBuf, String> =
             std::collections::BTreeMap::new();
-        for (module, file) in module_index() {
+        for (module, file) in module_idx() {
             let key = normalize(file);
             match out.get(&key) {
                 Some(existing) if existing.len() <= module.len() => {}
