@@ -263,9 +263,12 @@ fn child_file(owner: &std::path::Path, name: &str, explicit: Option<&str>) -> Op
     } else {
         dir.join(&stem)
     };
-    [base.join(format!("{name}.rs")), base.join(name).join("mod.rs")]
-        .into_iter()
-        .find(|candidate| candidate.exists())
+    [
+        base.join(format!("{name}.rs")),
+        base.join(name).join("mod.rs"),
+    ]
+    .into_iter()
+    .find(|candidate| candidate.exists())
 }
 
 /// 递归跟随声明：内联模块只换栈不换文件，`#[path]`/同名文件换文件。
@@ -301,10 +304,14 @@ fn walk_declarations(
                     let mut path = prefix.to_vec();
                     path.extend(stack.iter().map(|(_, name)| name.clone()));
                     let joined = path.join("::");
-                    out.entry(joined).or_insert_with(|| file.to_path_buf());
+                    out.entry(joined.clone())
+                        .or_insert_with(|| file.to_path_buf());
                     if !inline {
                         stack.pop();
                         if let Some(child) = child_file(file, &name, pending.as_deref()) {
+                            // 非内联模块的实体是子文件（`#[path]` / 同名 `.rs` / 目录 `mod.rs`）：
+                            // 父路径回填到实体，声明处骨架只在找不到子文件时兜底。
+                            out.insert(joined.clone(), child.clone());
                             walk_declarations(&child, &path, out);
                         }
                     }
@@ -321,10 +328,7 @@ fn module_declaration(line: &str) -> Option<(String, bool)> {
         .or_else(|| line.strip_prefix("pub(crate) mod "))
         .or_else(|| line.strip_prefix("mod "))?;
     let inline = rest.ends_with('{');
-    let name = rest
-        .trim_end_matches('{')
-        .trim_end_matches(';')
-        .trim();
+    let name = rest.trim_end_matches('{').trim_end_matches(';').trim();
     let valid = !name.is_empty()
         && name
             .chars()
@@ -465,7 +469,12 @@ fn use_tree(statement: &str, owner: &str) -> Vec<(String, String)> {
             }
         }
         None => {
-            let (source, alias) = split_alias(body);
+            // 无花括号时 source 可能带 `::` 前缀（`use decode::semantics as decode_attention`），
+            // 前缀必须保留，不能像花括号条目那样按词尾标识符截断。
+            let (source, alias) = match body.rsplit_once(" as ") {
+                Some((source, alias)) => (source.trim(), ident(alias)),
+                None => (body.trim(), body.trim()),
+            };
             let (prefix, name) = match source.rsplit_once("::") {
                 Some((prefix, name)) => (prefix, name),
                 None => ("", source),
