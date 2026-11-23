@@ -6,8 +6,8 @@
 use crate::bad;
 use diagnostic::{Code, Error, Result};
 
-use crate::quant::Quant;
 use crate::Wire;
+use crate::quant::Quant;
 use std::borrow::Cow;
 use wire::leb::{self, Cursor};
 use wire::sink::Sink;
@@ -431,8 +431,7 @@ pub(crate) fn lossless_entry(seg: &Stored) -> bool {
 #[path = "seg_layout.rs"]
 pub(crate) mod seg_layout;
 
-pub(crate) use seg_layout::{fixed, layout, read_descs, FOOTER_LEN};
-
+pub(crate) use seg_layout::{FOOTER_LEN, fixed, layout, read_descs};
 
 // —— 描述符解码路径：帧头、形状、量化参数与三条长度判据 ——
 

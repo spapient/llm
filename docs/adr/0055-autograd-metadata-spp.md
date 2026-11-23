@@ -116,8 +116,8 @@ proc-macro 或分布式梯度。公开类型名保持不变（所有权表 18 �
 | 轮次 | src 行数 | Δ | src 文件 | Δ | tests 行数 | Δ | tests 文件 | Δ | jscpd | 主要动作 | 门禁 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|
 | 基线 | 2,045 | — | 9 | — | 1,909 | — | 8 | — | 0 | 取证：65 lib + 3 gradcheck + 2 doc 全绿 | 待收尾 |
-| 本轮 | 2,030 | −15 | 8 | −1 | 1,900 | −9 | 7 | −1 | 0 | `segment` 续体并入 `facts`；`account` 用例并入 `schedule`；剪除 `Schedule` 只写不读的 `vars` 字段；查询访问器补 `#[must_use]`；`Config` 补
-`with_ordering` / `with_policy`；归并后 rustfmt/clippy 0 告警 | 收尾一次跑 |
+| 概念归并 | 2,030 | −15 | 8 | −1 | 1,900 | −9 | 7 | −1 | 0 | `segment` 续体并入 `facts`；`account` 用例并入 `schedule`；剪除 `Schedule` 只写不读的 `vars` 字段 | 归并后 rustfmt/clippy 0 告警 |
+| 注解与配置 | 2,109 | +79 | 8 | 0 | 1,915 | +15 | 7 | 0 | 0 | 查询/判定/计数访问器补 `#[must_use]`；`Config` 补 `with_ordering` / `with_policy` 构造器及对应用例；66 lib + 3 gradcheck + 2 doc 全绿 | 收尾一次跑 |
 
 > 本 crate 归并前已 jscpd 0 克隆、静态门全绿，压缩空间在文件归并与死字段，不在逐行删码；强制砍行
 > 会触碰 N3 内聚与反模式 #2，故本轮以"同一概念一处存放"为准，不做行数换结构。
