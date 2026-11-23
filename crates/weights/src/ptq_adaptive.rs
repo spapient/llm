@@ -2,8 +2,7 @@
 
 use crate::bad;
 use crate::ptq::{
-    decompose, dequantize, quantize, span, validate_compensate, Components, I2, I3, I4, I8,
-    Scheme,
+    Components, I2, I3, I4, I8, Scheme, decompose, dequantize, quantize, span, validate_compensate,
 };
 use diagnostic::Result;
 
@@ -106,11 +105,7 @@ fn validate(m: usize, n: usize, w: &[f32], target_snr_db: f64) -> Result<()> {
 }
 
 /// 按目标信噪比推出误差预算并量化残差。
-fn adaptive_for(
-    group: usize,
-    parts: &Components,
-    target_snr_db: f64,
-) -> Result<Adaptive> {
+fn adaptive_for(group: usize, parts: &Components, target_snr_db: f64) -> Result<Adaptive> {
     let target_err = parts.norm * 10f64.powf(-target_snr_db / 20.0);
     adaptive_quantize(group, &parts.rest, target_err)
 }
