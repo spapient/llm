@@ -46,7 +46,6 @@ mod closed;
 mod archive;
 mod container;
 mod lifecycle;
-mod parse;
 mod rans;
 mod seg;
 mod writer;

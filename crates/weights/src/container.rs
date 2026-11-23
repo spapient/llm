@@ -2,7 +2,7 @@
 //! f32 解码入口。名字唯一、区间不重叠、长度/类型判据都在这里收口，格式适配层
 //! （safetensors/gguf/bin/json）只做「字节段 → Entry/Header」映射，不重复这些判据。
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 
 use diagnostic::{Code, Error, Result};
 use storage::snapshot::{Manifest, ManifestEntry};
@@ -88,20 +88,31 @@ pub struct Header {
 impl Header {
     /// 校验并构造：名字唯一、区间按偏移有序且不重叠、起点不早于数据段。
     pub fn new(entries: Vec<Entry>, data_start: usize) -> Result<Self> {
-        let mut seen = BTreeSet::new();
-        for entry in &entries {
-            check_entry(&mut seen, entry, data_start)?;
-        }
         let mut sorted = entries;
         sorted.sort_by_key(Entry::offset);
+        for entry in &sorted {
+            if entry.offset < data_start {
+                return Err(Error::new(
+                    Code::Invalid,
+                    format!(
+                        "条目 `{}` 的偏移 {} 早于数据段起点 {data_start}",
+                        entry.name(),
+                        entry.offset
+                    ),
+                )
+                .with(SITE));
+            }
+        }
         for pair in sorted.windows(2) {
             check_overlap(&pair[0], &pair[1])?;
         }
-        let index = sorted
-            .iter()
-            .enumerate()
-            .map(|(position, entry)| (entry.name().to_owned(), position))
-            .collect();
+        let mut index = HashMap::with_capacity(sorted.len());
+        for (position, entry) in sorted.iter().enumerate() {
+            let name = entry.name();
+            if index.insert(name.to_owned(), position).is_some() {
+                return Err(Error::new(Code::Invalid, format!("权重条目 `{name}` 重复")).with(SITE));
+            }
+        }
         Ok(Self {
             entries: sorted,
             index,
@@ -175,30 +186,6 @@ impl Manifest for Header {
     fn build(entries: Vec<Entry>, data_start: usize) -> Result<Self> {
         Self::new(entries, data_start)
     }
-}
-
-/// 单条目的两条判据：名字不能重复、起点不能早于数据段。
-fn check_entry<'a>(
-    seen: &mut BTreeSet<&'a str>,
-    entry: &'a Entry,
-    data_start: usize,
-) -> Result<()> {
-    let name = entry.name();
-    if !seen.insert(name) {
-        let message = format!("权重条目 `{name}` 重复");
-        return Err(Error::new(Code::Invalid, message).with(SITE));
-    }
-    if entry.offset < data_start {
-        return Err(Error::new(
-            Code::Invalid,
-            format!(
-                "条目 `{name}` 的偏移 {} 早于数据段起点 {data_start}",
-                entry.offset
-            ),
-        )
-        .with(SITE));
-    }
-    Ok(())
 }
 
 /// 相邻两条目（已按偏移排序）不能重叠：重叠意味着后者的起点落在前者的字节区间里。

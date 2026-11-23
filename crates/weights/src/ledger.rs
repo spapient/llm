@@ -30,7 +30,7 @@ closed_enum! {
         Backward = 0 => "verified_backward_error",
         /// 已验证残差：本次分解的后验 `‖A − UΣVᵀ‖_F`，[`certify`] 用的就是这条。
         Residual = 1 => "verified_residual",
-        /// 只够做候选筛查（幂迭代等）：**不能**支撑证书，见 [`check`]。
+        /// 只够做候选筛查（幂迭代等）：**不能**支撑证书，见 [`check_note`]。
         Candidate = 2 => "candidate_only",
     }
 }

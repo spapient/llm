@@ -39,15 +39,21 @@ fn benchmark_grid(grid: &prof::decl::Grid, sample: &Sample) -> Result<[usize; 3]
     Ok(dims)
 }
 
-/// 一个网格标量就是这一维的长度：必须是正数的样本取值。
-fn grid_extent(scalar: &str, sample: &Sample) -> Result<usize> {
+/// 一个必须为正的整数标量：网格维（[`grid_extent`]）与输出宽度（[`warp_rows`]）共用这一判据，
+/// 缺取值、负数与零全在这一处报。
+fn positive_scalar(sample: &Sample, scalar: &str, what: &str) -> Result<usize> {
     let value = sample
         .scalar(scalar)
-        .ok_or_else(|| Error::new(Code::Invalid, format!("网格标量 `{scalar}` 没有样本取值")))?;
+        .ok_or_else(|| Error::new(Code::Invalid, format!("{what} `{scalar}` 没有样本取值")))?;
     usize::try_from(value)
         .ok()
         .filter(|extent| *extent > 0)
-        .ok_or_else(|| Error::new(Code::Invalid, format!("网格标量 `{scalar}` 必须为正数")))
+        .ok_or_else(|| Error::new(Code::Invalid, format!("{what} `{scalar}` 必须为正数")))
+}
+
+/// 一个网格维的长度：逐点网格与分块网格选型共用。
+fn grid_extent(scalar: &str, sample: &Sample) -> Result<usize> {
+    positive_scalar(sample, scalar, "网格标量")
 }
 
 /// CUDA 与昇腾的 host 驱动共用这一段字面：同一个 `driver::readback` 在两种产物上必须读出同一种
@@ -163,23 +169,23 @@ impl Driver for AscendBackend {
 impl Backend for AscendBackend {}
 
 fn ascend_program(profile: &Profile, dirs: &Dirs, selected: &[Selected<'_>]) -> Result<String> {
-    let mut program = ascend_head(profile);
-    let files = as_ascend_device(driver::witness_files(selected, dirs, driver::C_PARAMS)?);
+    let mut program = witness_head(
+        "#include \"acl/acl.h\"\n#include \"kernel_operator.h\"\n#include <cstdio>\n#include <cstdlib>\n",
+        profile,
+    );
+    let files = device_fn(
+        driver::witness_files(selected, dirs, driver::C_PARAMS)?,
+        "__aicore__",
+    );
     driver::push_sources(&mut program, &files);
     push_ascend_kernel(&mut program, MAX_OUT, selected);
     push_ascend_main(&mut program, MAX_OUT, selected.len());
     Ok(program)
 }
 
-/// 头：AscendCL（host 侧分配 / 发射 / 回读）与 AscendC 的内核入口（`__aicore__` / `GM_ADDR` /
-/// `GetBlockIdx`）。与 CUDA 的 `<cuda_runtime.h>` 是同一位置的一件事。
-fn ascend_head(profile: &Profile) -> String {
-    let mut head = String::from(
-        "#include \"acl/acl.h\"\n\
-         #include \"kernel_operator.h\"\n\
-         #include <cstdio>\n\
-         #include <cstdlib>\n",
-    );
+/// 见证程序头：包含行 + 档案 preamble（非空才追加，与三家编译器的 `-include` 同位）。
+fn witness_head(includes: &str, profile: &Profile) -> String {
+    let mut head = String::from(includes);
     if !profile.preamble.is_empty() {
         head.push_str(&profile.preamble);
         head.push('\n');
@@ -187,12 +193,17 @@ fn ascend_head(profile: &Profile) -> String {
     head
 }
 
-/// 见证函数改成 AscendC 设备函数：与 CUDA 的 `__device__` 同一个位置。不加这一层，函数只有宿主
+/// 见证函数加设备函数前缀（CUDA `__device__` / AscendC `__aicore__`）：不加这一层，函数只有宿主
 /// 链接性，核函数里调用它会被当成未声明的设备符号；见证本身是纯标量 C，不需要别的改写。
-fn as_ascend_device(files: driver::Sources) -> driver::Sources {
+fn device_fn(files: driver::Sources, prefix: &str) -> driver::Sources {
     files
         .into_iter()
-        .map(|(file, text)| (file, text.replace("int witness", "__aicore__ int witness")))
+        .map(|(file, text)| {
+            (
+                file,
+                text.replace("int witness", &format!("{prefix} int witness")),
+            )
+        })
         .collect()
 }
 
@@ -367,13 +378,7 @@ fn warp_lanes(threads: usize) -> Result<usize> {
 
 /// 输出宽度 `N` 必须存在且为正整数：零行或负行没有可写的输出。
 fn warp_rows(sample: &Sample) -> Result<usize> {
-    let rows = sample
-        .scalar("N")
-        .ok_or_else(|| Error::new(Code::Invalid, "gemv_i4 样本缺少输出宽度 N"))?;
-    usize::try_from(rows)
-        .ok()
-        .filter(|rows| *rows > 0)
-        .ok_or_else(|| Error::new(Code::Invalid, "gemv_i4 输出宽度 N 必须为正数"))
+    positive_scalar(sample, "N", "gemv_i4 输出宽度")
 }
 
 pub(crate) struct CudaBackend;
@@ -544,28 +549,15 @@ fn single_file(source: String) -> Vec<String> {
 }
 
 fn cuda_program(profile: &Profile, dirs: &Dirs, selected: &[Selected<'_>]) -> Result<String> {
-    let mut program = cuda_head(profile);
-    let files = as_device(driver::witness_files(selected, dirs, driver::C_PARAMS)?);
+    let mut program = witness_head("#include <cuda_runtime.h>\n#include <cstdio>\n", profile);
+    let files = device_fn(
+        driver::witness_files(selected, dirs, driver::C_PARAMS)?,
+        "__device__",
+    );
     driver::push_sources(&mut program, &files);
     push_cuda_kernel(&mut program, MAX_OUT, selected);
     push_cuda_main(&mut program, MAX_OUT, selected.len());
     Ok(program)
-}
-
-fn cuda_head(profile: &Profile) -> String {
-    let mut head = String::from("#include <cuda_runtime.h>\n#include <cstdio>\n");
-    if !profile.preamble.is_empty() {
-        head.push_str(&profile.preamble);
-        head.push('\n');
-    }
-    head
-}
-
-fn as_device(files: driver::Sources) -> driver::Sources {
-    files
-        .into_iter()
-        .map(|(file, text)| (file, text.replace("int witness", "__device__ int witness")))
-        .collect()
 }
 
 fn push_cuda_kernel(program: &mut String, max: usize, selected: &[Selected<'_>]) {

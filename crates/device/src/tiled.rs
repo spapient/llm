@@ -1,5 +1,6 @@
 //! 设备侧分块 lowering：共享内存 GEMM 与（后续）分块注意力。
 
+use crate::dialect::sample_usize;
 use diagnostic::{Code, Error, Result};
 use nn::model::Sample;
 use nn::sig::{CType, Param, Signature};
@@ -26,14 +27,14 @@ fn scalar_params(signature: &Signature) -> Vec<&Param> {
         .collect()
 }
 
+/// 共享块 GEMM 各族的报错出处。
+const TILED_SITE: &str = "engine::tiled::metal_tiled_gemm";
+
 /// 三条缓冲名（按签名序：A、B、Y）。
 fn gemm_bufs(signature: &Signature) -> Result<(&str, &str, &str)> {
     match buf_params(signature).as_slice() {
         [a, b, y] => Ok((a.name.as_str(), b.name.as_str(), y.name.as_str())),
-        _ => Err(
-            Error::new(Code::Internal, "GEMM 签名需要 3 个缓冲（A/B/Y）")
-                .with("engine::tiled::metal_tiled_gemm"),
-        ),
+        _ => Err(Error::new(Code::Internal, "GEMM 签名需要 3 个缓冲（A/B/Y）").with(TILED_SITE)),
     }
 }
 
@@ -41,25 +42,15 @@ fn gemm_bufs(signature: &Signature) -> Result<(&str, &str, &str)> {
 fn gemm_dims(signature: &Signature, sample: &Sample) -> Result<(usize, usize, usize)> {
     match scalar_params(signature).as_slice() {
         [m, n, k] => Ok((dim(sample, m)?, dim(sample, n)?, dim(sample, k)?)),
-        _ => Err(
-            Error::new(Code::Internal, "GEMM 签名需要 3 个整数标量（M/N/K）")
-                .with("engine::tiled::metal_tiled_gemm"),
-        ),
+        _ => {
+            Err(Error::new(Code::Internal, "GEMM 签名需要 3 个整数标量（M/N/K）").with(TILED_SITE))
+        }
     }
 }
 
 /// 一个整数标量的样本取值（必须存在且非负）。
 fn dim(sample: &Sample, param: &Param) -> Result<usize> {
-    let value = sample.scalar(&param.name);
-    value
-        .and_then(|v| usize::try_from(v).ok())
-        .ok_or_else(|| {
-            Error::new(
-                Code::Invalid,
-                format!("标量 `{}` 缺非负样本取值", param.name),
-            )
-        })
-        .map_err(|error| error.with("engine::tiled::metal_tiled_gemm"))
+    sample_usize(sample, &param.name, "标量", TILED_SITE)
 }
 
 /// 四条缓冲名（按签名序：Q、K、V、Y）。
@@ -399,7 +390,7 @@ fn tiled_gemm_msl(
     per_thread: usize,
 ) -> String {
     if per_thread == 1 {
-        return simple_tiled_gemm_msl(a, b, y, n, k, tile);
+        return shared_tile_gemm_msl(a, b, y, n, k, tile, TileMath::F32);
     }
     register_blocked_gemm_msl(a, b, y, n, k, tile, per_thread)
 }
@@ -521,38 +512,95 @@ fn simdgroup_gemm_msl(
     src
 }
 
-/// 分块 GEMM 各形态共用的 MSL 前导：三路设备缓冲接口 + 网格/线程组下标；常量行由调用方续写。
-fn tiled_gemm_head(a: &str, b: &str, y: &str) -> String {
+/// 分块 GEMM 各形态共用的 MSL 前导：三路设备缓冲接口（`elem` 是 A/B 的元素类型）+ 网格/线程组
+/// 下标；常量行由调用方续写。
+fn tiled_gemm_head(a: &str, b: &str, y: &str, elem: &str) -> String {
     format!(
         "#include <metal_stdlib>\n\
          using namespace metal;\n\
          kernel void kernel_main(\n\
-         \x20    device float* d_{a} [[buffer(0)]],\n\
-         \x20    device float* d_{b} [[buffer(1)]],\n\
+         \x20    device {elem}* d_{a} [[buffer(0)]],\n\
+         \x20    device {elem}* d_{b} [[buffer(1)]],\n\
          \x20    device float* d_{y} [[buffer(2)]],\n\
          \x20    uint3 gid [[thread_position_in_grid]],\n\
          \x20    uint3 lid [[thread_position_in_threadgroup]]) {{\n"
     )
 }
 
-/// 简单分块 GEMM（每线程一输出）的 MSL 正文。
-fn simple_tiled_gemm_msl(a: &str, b: &str, y: &str, n: usize, k: usize, tile: usize) -> String {
-    let mut src = tiled_gemm_head(a, b, y);
+/// 共享块 GEMM 的数值口径：`f32` 直接乘加；`int8` 在 `int` 共享块里累加、写回时收窄成 `f32`。
+/// 两种口径的搬运、屏障与收缩循环逐字相同，只有「缓冲/共享块类型、读入提升、写回收窄」不同。
+#[derive(Clone, Copy)]
+enum TileMath {
+    F32,
+    Int8,
+}
+
+impl TileMath {
+    /// A/B 缓冲的 C 类型与共享块（等价于累加器）的 C 类型。
+    fn types(self) -> (&'static str, &'static str) {
+        match self {
+            Self::F32 => ("float", "float"),
+            Self::Int8 => ("const char", "int"),
+        }
+    }
+
+    /// 读入一项：`int8` 先提升到 `int`，避免每次乘加重复做符号扩展。
+    fn load(self, expr: &str) -> String {
+        match self {
+            Self::F32 => expr.to_owned(),
+            Self::Int8 => format!("int({expr})"),
+        }
+    }
+
+    /// 累加器声明行。
+    fn accumulator(self) -> &'static str {
+        match self {
+            Self::F32 => "    float acc = 0.0f;\n",
+            Self::Int8 => "    int acc = 0;\n",
+        }
+    }
+
+    /// 写回表达式的叶子。
+    fn result(self) -> &'static str {
+        match self {
+            Self::F32 => "acc",
+            Self::Int8 => "float(acc)",
+        }
+    }
+}
+
+/// 简单分块 GEMM（每线程一输出）的 MSL 正文：`tile×tile` 的 A/B 块协同搬进线程组内存，收缩轴在
+/// 共享块上复用。f32 与 int8 共用这一份骨架，差异全在 [`TileMath`]。
+fn shared_tile_gemm_msl(
+    a: &str,
+    b: &str,
+    y: &str,
+    n: usize,
+    k: usize,
+    tile: usize,
+    math: TileMath,
+) -> String {
+    let (elem, block) = math.types();
+    let mut src = tiled_gemm_head(a, b, y, elem);
     src.push_str(&format!(
         "\x20    const uint N = {n}, K = {k}, T = {tile};\n\
-         \x20    threadgroup float As[{tile}][{tile}];\n\
-         \x20    threadgroup float Bs[{tile}][{tile}];\n\
+         \x20    threadgroup {block} As[{tile}][{tile}];\n\
+         \x20    threadgroup {block} Bs[{tile}][{tile}];\n\
          \x20    const uint i = gid.x, j = gid.y, li = lid.x, lj = lid.y;\n\
-         \x20    float acc = 0.0f;\n\
+         {acc}\
          \x20    for (uint kk = 0; kk < K; kk += T) {{\n\
-         \x20        As[li][lj] = d_{a}[i * K + kk + lj];\n\
-         \x20        Bs[li][lj] = d_{b}[(kk + li) * N + j];\n\
+         \x20        As[li][lj] = {a_load};\n\
+         \x20        Bs[li][lj] = {b_load};\n\
          \x20        threadgroup_barrier(mem_flags::mem_threadgroup);\n\
          \x20        for (uint p = 0; p < T; ++p) acc += As[li][p] * Bs[p][lj];\n\
          \x20        threadgroup_barrier(mem_flags::mem_threadgroup);\n\
          \x20    }}\n\
-         \x20    d_{y}[i * N + j] = acc;\n\
-         }}"
+         \x20    d_{y}[i * N + j] = {result};\n\
+         }}",
+        acc = math.accumulator(),
+        a_load = math.load(&format!("d_{a}[i * K + kk + lj]")),
+        b_load = math.load(&format!("d_{b}[(kk + li) * N + j]")),
+        result = math.result(),
     ));
     src
 }
@@ -568,7 +616,7 @@ fn register_blocked_gemm_msl(
     per_thread: usize,
 ) -> String {
     let threads = tile / per_thread;
-    let mut src = tiled_gemm_head(a, b, y);
+    let mut src = tiled_gemm_head(a, b, y, "float");
     src.push_str(&format!(
         "\x20    const uint N = {n}, K = {k}, T = {tile}, PT = {per_thread}, TT = {threads};\n\
          \x20    threadgroup float As[{tile}][{tile}];\n\
@@ -1045,7 +1093,15 @@ fn int8_signature(signature: &Signature) -> bool {
 /// `tile == 0` 或任一维度不能被 `tile` 整除时返回说明。
 pub fn metal_int8_gemm_program(m: usize, n: usize, k: usize, tile: usize) -> Result<String> {
     check_int8_shape(m, n, k, tile)?;
-    Ok(int8_gemm_msl(n, k, tile))
+    Ok(shared_tile_gemm_msl(
+        "a",
+        "b",
+        "y",
+        n,
+        k,
+        tile,
+        TileMath::Int8,
+    ))
 }
 
 /// int8 GEMM 的形状前置条件：分块必须整除三个维度，否则尾块会读越界。
@@ -1061,31 +1117,3 @@ fn check_int8_shape(m: usize, n: usize, k: usize, tile: usize) -> Result<()> {
 
 /// int8 GEMM 的报错出处。
 const INT8_SITE: &str = "engine::tiled::metal_int8_gemm_program";
-
-/// int8 GEMM 的 MSL 正文：共享块以 `int` 存放，避免每次乘加重复做符号扩展。
-fn int8_gemm_msl(n: usize, k: usize, tile: usize) -> String {
-    format!(
-        "#include <metal_stdlib>\n\
-         using namespace metal;\n\
-         kernel void kernel_main(\n\
-         \x20    device const char* d_a [[buffer(0)]],\n\
-         \x20    device const char* d_b [[buffer(1)]],\n\
-         \x20    device float* d_y [[buffer(2)]],\n\
-         \x20    uint3 gid [[thread_position_in_grid]],\n\
-         \x20    uint3 lid [[thread_position_in_threadgroup]]) {{\n\
-         \x20    const uint N = {n}, K = {k}, T = {tile};\n\
-         \x20    threadgroup int As[{tile}][{tile}];\n\
-         \x20    threadgroup int Bs[{tile}][{tile}];\n\
-         \x20    const uint i = gid.x, j = gid.y, li = lid.x, lj = lid.y;\n\
-         \x20    int acc = 0;\n\
-         \x20    for (uint kk = 0; kk < K; kk += T) {{\n\
-         \x20        As[li][lj] = int(d_a[i * K + kk + lj]);\n\
-         \x20        Bs[li][lj] = int(d_b[(kk + li) * N + j]);\n\
-         \x20        threadgroup_barrier(mem_flags::mem_threadgroup);\n\
-         \x20        for (uint p = 0; p < T; ++p) acc += As[li][p] * Bs[p][lj];\n\
-         \x20        threadgroup_barrier(mem_flags::mem_threadgroup);\n\
-         \x20    }}\n\
-         \x20    d_y[i * N + j] = float(acc);\n\
-         }}"
-    )
-}

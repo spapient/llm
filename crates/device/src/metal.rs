@@ -891,26 +891,14 @@ pub fn reduce(
     func: &str,
 ) -> Result<Source> {
     let prep = Prep::of(signature, sample, chunk)?;
-    let (device, host) = reduce_parts(kernel_source, signature, sample, chunk, func, &prep)?;
-    Ok(Source::Pair { device, host })
-}
-
-/// 归约的段与主机折叠：`sum` / `max` 取哪一步由 `func` 派生，折叠本身只有一份。
-fn reduce_parts(
-    kernel_source: &str,
-    signature: &Signature,
-    sample: &Sample,
-    chunk: usize,
-    func: &str,
-    prep: &Prep<'_>,
-) -> Result<(String, String)> {
+    // `sum` / `max` 取哪一步由 `.k` 模板的 `reduce.op` 派生，折叠本身只有一份。
     let device = metal_chunk_reduce(kernel_source, signature, sample, chunk, func)?;
     let step = if func.contains("max") {
         MAX_STEP
     } else {
         SUM_STEP
     };
-    let fold = fold_parts(prep.output, prep.blocks, step);
+    let fold = fold(&format!("b_{}", prep.output), None, prep.blocks, step);
     let host = metal_multistage_driver(
         signature,
         sample,
@@ -924,7 +912,7 @@ fn reduce_parts(
             fold: &fold,
         }],
     )?;
-    Ok((device, host))
+    Ok(Source::Pair { device, host })
 }
 
 /// 分块 RMSNorm 程序：部分平方和段 → `rms` 折叠 → 归一化段。
@@ -939,18 +927,6 @@ pub fn rmsnorm(
     chunk: usize,
 ) -> Result<Source> {
     let prep = Prep::of(signature, sample, chunk)?;
-    let (device, host) = rmsnorm_parts(kernel_source, signature, sample, chunk, &prep)?;
-    Ok(Source::Pair { device, host })
-}
-
-/// RMSNorm 的段与主机折叠：平方和折成 `rms` 只走一份算式（[`rms_fold`]）。
-fn rmsnorm_parts(
-    kernel_source: &str,
-    signature: &Signature,
-    sample: &Sample,
-    chunk: usize,
-    prep: &Prep<'_>,
-) -> Result<(String, String)> {
     let (partial, norm) = metal_chunk_rmsnorm(kernel_source, signature, sample, chunk)?;
     let device = concat(&partial, &[(norm.as_str(), NORM)])?;
     let (x, gamma) = normalization_reads(signature)?;
@@ -977,7 +953,7 @@ fn rmsnorm_parts(
             },
         ],
     )?;
-    Ok((device, host))
+    Ok(Source::Pair { device, host })
 }
 
 /// 分块 Softmax 程序：部分最大段 → `max` 折叠 → 部分指数和段 → `sum` 折叠 → 归一化段。
@@ -992,24 +968,13 @@ pub fn softmax(
     chunk: usize,
 ) -> Result<Source> {
     let prep = Prep::of(signature, sample, chunk)?;
-    let (device, host) = softmax_parts(kernel_source, signature, sample, chunk, &prep)?;
-    Ok(Source::Pair { device, host })
-}
-
-/// Softmax 的段与主机折叠：`max` 与 `sum` 各落一个单独缓冲，留给下一段当入口参数。
-fn softmax_parts(
-    kernel_source: &str,
-    signature: &Signature,
-    sample: &Sample,
-    chunk: usize,
-    prep: &Prep<'_>,
-) -> Result<(String, String)> {
+    // `max` 与 `sum` 各落一个单独缓冲，留给下一段当入口参数。
     let (max, expsum, norm) = metal_chunk_softmax(kernel_source, signature, sample, chunk)?;
     let device = concat(&max, &[(expsum.as_str(), EXPSUM), (norm.as_str(), NORM)])?;
     let x = only_read(signature)?;
     let parts = format!("b_{}", prep.output);
-    let fold_max = fold_into(&parts, "b_max", prep.blocks, MAX_STEP);
-    let fold_sum = fold_into(&parts, "b_sum", prep.blocks, SUM_STEP);
+    let fold_max = fold(&parts, Some("b_max"), prep.blocks, MAX_STEP);
+    let fold_sum = fold(&parts, Some("b_sum"), prep.blocks, SUM_STEP);
     let exp_bufs = ["max", x, prep.output];
     let norm_bufs = ["max", "sum", x, prep.output];
     let host = metal_multistage_driver(
@@ -1039,7 +1004,7 @@ fn softmax_parts(
             },
         ],
     )?;
-    Ok((device, host))
+    Ok(Source::Pair { device, host })
 }
 
 /// 分块扫描程序：局部扫描段 → 携带前缀折叠（f64）→ 校正段。
@@ -1055,19 +1020,7 @@ pub fn scan(
     decay: f32,
 ) -> Result<Source> {
     let prep = Prep::of(signature, sample, chunk)?;
-    let (device, host) = scan_parts(kernel_source, signature, sample, chunk, decay, &prep)?;
-    Ok(Source::Pair { device, host })
-}
-
-/// 扫描的段与携带前缀折叠：`a^len` 用平方乘，块长最多 `chunk` 次乘法。
-fn scan_parts(
-    kernel_source: &str,
-    signature: &Signature,
-    sample: &Sample,
-    chunk: usize,
-    decay: f32,
-    prep: &Prep<'_>,
-) -> Result<(String, String)> {
+    // 携带前缀的 `a^len` 用平方乘，块长最多 `chunk` 次乘法。
     let (local, correct) = metal_chunk_scan(kernel_source, signature, sample, chunk, decay)?;
     let device = concat(&local, &[(correct.as_str(), SCAN_CORRECT)])?;
     let fold = fold_carry(prep.output, chunk, prep.len, decay);
@@ -1093,7 +1046,7 @@ fn scan_parts(
             },
         ],
     )?;
-    Ok((device, host))
+    Ok(Source::Pair { device, host })
 }
 
 /// 签名里全部缓冲的名字（按 `buf(i)` 顺序）。
@@ -1161,17 +1114,21 @@ fn concat(first: &str, more: &[(&str, &str)]) -> Result<String> {
     Ok(text)
 }
 
-/// 部分结果折叠：把 `parts[0..blocks]` 折成一个值写回 `parts[0]`。
-fn fold_parts(output: &str, blocks: usize, combine: &str) -> String {
+/// 部分结果折叠：把 `parts[0..blocks]` 折成一个值落地。`target` 为 `None` 时就在 `parts[0]` 就地写
+/// （归约）；`Some(buf)` 则写给留给下一段的独立缓冲（Softmax 的 `max` / `sum`）。
+fn fold(parts: &str, target: Option<&str>, blocks: usize, step: &str) -> String {
+    let (read, write) = match target {
+        None => (
+            format!("float *parts = (float *){parts}.contents;"),
+            "parts[0] = acc;".to_string(),
+        ),
+        Some(target) => (
+            format!("const float *parts = (const float *)({parts}).contents;"),
+            format!("((float *)({target}).contents)[0] = acc;"),
+        ),
+    };
     format!(
-        "        {{\n            float *parts = (float *)b_{output}.contents;\n            float acc = parts[0];\n            for (int g = 1; g < {blocks}; ++g) {{ {combine} }}\n            parts[0] = acc;\n        }}\n"
-    )
-}
-
-/// 部分结果折叠到另一个缓冲：Softmax 的 `max` / `sum` 要留给下一段当独立入口参数。
-fn fold_into(parts: &str, target: &str, blocks: usize, step: &str) -> String {
-    format!(
-        "        {{\n            const float *parts = (const float *)({parts}).contents;\n            float acc = parts[0];\n            for (int g = 1; g < {blocks}; ++g) {{ {step} }}\n            ((float *)({target}).contents)[0] = acc;\n        }}\n"
+        "        {{\n            {read}\n            float acc = parts[0];\n            for (int g = 1; g < {blocks}; ++g) {{ {step} }}\n            {write}\n        }}\n"
     )
 }
 

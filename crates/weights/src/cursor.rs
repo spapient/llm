@@ -74,14 +74,21 @@ impl<'a> Cursor<'a> {
         Ok(self.take(1)?[0])
     }
 
-    /// 定宽 4 字节小端整数（ZIP/GGUF/pickle 的「字」）：与 [`Self::uint`] 同一段解码，只多一步收窄。
+    /// 定宽 4 字节小端整数（ZIP/GGUF/pickle 的「字」）。
     pub(crate) fn word(&mut self) -> Result<u32> {
-        u32::try_from(self.uint(4)?).map_err(|_| bad("字超出 u32"))
+        self.fixed().map(u32::from_le_bytes)
     }
 
     /// 定宽 8 字节小端整数（GGUF 的计数与偏移）。
     pub(crate) fn wide(&mut self) -> Result<u64> {
-        self.uint(8)
+        self.fixed().map(u64::from_le_bytes)
+    }
+
+    /// 定宽 `N` 字节小端整数：先按 [`Self::take`] 定界，再一次性 `from_le_bytes`，不经 `u64` 往返。
+    fn fixed<const N: usize>(&mut self) -> Result<[u8; N]> {
+        let mut raw = [0u8; N];
+        raw.copy_from_slice(self.take(N)?);
+        Ok(raw)
     }
 
     /// 变宽小端整数：宽度由调用方（opcode 或长度前缀）给出。

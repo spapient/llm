@@ -20,6 +20,16 @@
   `cargo test -p llm-testkit --lib` 的架构门通过 tensor 的命名与边集（边总数同步为 122）。
 ### Changed
 
+- **`crates/weights` 的自有 `.u` 容器收口：`parse` 并入 `seg`、闭集宏三份体合一、`Header` 校验单趟、定宽整数不再经 `u64` 往返**。
+  容器帧解析与段元数据原本互相 import（`parse` 用 `seg` 的描述符，`seg` 又用 `parse` 的帧解析），现合成一个
+  模块 `seg`（段元数据 + 存储帧 + 容器帧），`archive` 只从一处取帧函数、`parse.rs` 删除；`closed_enum!` 的枚举
+  定义 / `from_code` / `as_str` 各写一份收成 `@def` / `@from_code` / `@as_str` 三个内部臂，`named_enum!` 沦为
+  复用内部臂的薄封装；`Header::new` 去掉 `BTreeSet` 与逐条 `check_entry`，排序后单趟查起点、`windows(2)` 查重叠、
+  建名索引时用 `HashMap::insert().is_some()` 顺带查重名；`cursor` 的 `word`/`wide` 走一次 `from_le_bytes`，删掉
+  永不触发的 `u64` 收窄分支。三条错误文案与 `SITE`、公开 API 均不变。**验证**：`cargo test -p llm-weights
+  --all-features` 全绿（247 unit + 16 round_trip + 3 doc），`clippy --all-targets --all-features -D warnings` 与
+  `fmt --check` 零告警。
+
 - **`crates/fuzz` 登记表合一 + 判据自引用 + 热路径零分配：命名、架构与吞吐一起收口到 S++ 口径**。
   上一版把驱动与种子收进 `src/`，但「目标名 → 适配器」与「目标名 → 种子」仍是两份平行数组，靠下标
   配对，顺序一错就会把 A 的种子悄悄灌给 B。现在 `src/drivers.rs` 底部新增 `Entry` / `registry()`：

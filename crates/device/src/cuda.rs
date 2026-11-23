@@ -85,15 +85,20 @@ pub fn cuda_loop_driver(
 ) -> Result<String> {
     let (output, values) = output_of(signature, sample)?;
     let grid = cuda_grid(dims);
-    let args = buf_args(signature);
     let emit = cuda_launch(
         "kernel_main",
         &format!("dim3({}, {}, {})", grid[0], grid[1], grid[2]),
         1,
-        &args,
+        &buf_args(signature),
     );
-    let head = cuda_prologue(device_source);
-    Driver::new(signature, sample, output, values.len()).assemble(&head, &emit)
+    program(
+        device_source,
+        signature,
+        sample,
+        output,
+        values.len(),
+        &emit,
+    )
 }
 
 /// 文件头一行 include 段 + 设备源码；设备源码缺尾换行时补一个，免得 `main` 粘在最后一行上。
@@ -348,6 +353,20 @@ impl<'a> Driver<'a> {
     }
 }
 
+/// 单次派发的完整 host 程序：前导（include + 设备源）、`main`、缓冲、一次发射、回读、释放。
+/// 逐点 / 网格 / 循环注入三种单次派发只在发射那一行上不同。
+fn program(
+    device_source: &str,
+    signature: &Signature,
+    sample: &Sample,
+    output: &str,
+    output_len: usize,
+    emit: &str,
+) -> Result<String> {
+    let head = cuda_prologue(device_source);
+    Driver::new(signature, sample, output, output_len).assemble(&head, emit)
+}
+
 /// 一次派发 + 同步失败即报错：内核名、网格、线程数与实参由调用方给，报错那一行只有这一份。
 pub(crate) fn cuda_launch(kernel: &str, grid: &str, threads: usize, args: &str) -> String {
     format!(
@@ -417,8 +436,7 @@ pub fn cuda_grid_driver(
 ) -> Result<String> {
     let output = output_name(signature)?;
     let emit = cuda_launch("kernel_main", &grid.to_string(), 1, &buf_args(signature));
-    let head = cuda_prologue(device_source);
-    Driver::new(signature, sample, output, output_len).assemble(&head, &emit)
+    program(device_source, signature, sample, output, output_len, &emit)
 }
 
 /// host 侧缓冲声明、设备分配与只读入向拷贝；输出缓冲长度用显式 `output_len`（分块归约的部分
@@ -530,7 +548,14 @@ pub fn cuda_point_driver(
         threads,
         &buf_args(signature),
     );
-    program(device_source, signature, sample, &output, values.len(), &emit)
+    program(
+        device_source,
+        signature,
+        sample,
+        output,
+        values.len(),
+        &emit,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -807,7 +832,12 @@ fn shape(signature: &Signature, sample: &Sample) -> Result<(usize, usize, usize)
 
 /// 单个形状标量的样本值：缺取值或不是非负 `usize` 都在这里报，不留给几何算式去越界。
 fn scalar_of(param: &Param, sample: &Sample) -> Result<usize> {
-    sample_usize(sample, &param.name, "WMMA GEMM 的标量", "engine::cuda::shape")
+    sample_usize(
+        sample,
+        &param.name,
+        "WMMA GEMM 的标量",
+        "engine::cuda::shape",
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -884,7 +914,7 @@ fn rmsnorm_map(signature: &Signature, sample: &Sample) -> Result<String> {
         gamma = gamma,
         y = y,
     );
-    Ok(point_entry(signature, NORM, "float rms", &body))
+    Ok(chunk_entry(signature, NORM, "float rms", &body))
 }
 
 /// Softmax 第二段：`y[g] = Σ exp(x - max)` 的部分和（`max` 由主机折叠传入）。
@@ -898,7 +928,7 @@ fn softmax_expsum_map(signature: &Signature, sample: &Sample, chunk: usize) -> R
         x = x,
         y = y,
     );
-    Ok(map_entry(signature, EXPSUM, "float max", &body))
+    Ok(chunk_entry(signature, EXPSUM, "float max", &body))
 }
 
 /// Softmax 第三段：`y[start + j] = exp(x - max) / sum`。
@@ -912,29 +942,29 @@ fn softmax_norm_map(signature: &Signature, sample: &Sample) -> Result<String> {
         x = x,
         y = y,
     );
-    Ok(point_entry(signature, NORM, "float max, float sum", &body))
+    Ok(chunk_entry(signature, NORM, "float max, float sum", &body))
 }
 
-/// 一个分块 map 入口：签名缓冲形参 + 额外标量（`rms` / `max` / `sum`），入口名由调用方给。
-fn map_entry(signature: &Signature, entry: &str, extra: &str, body: &str) -> String {
+/// 归一化段（`NORM`）逐元素改写，其余段（`PARTIAL` / `EXPSUM`）每线程一块：线程下标语句由入口
+/// 的职责定，不由调用方各自挑。
+fn tid_stmt(entry: &str) -> &'static str {
+    if entry == NORM {
+        Cuda::POINT_STMT
+    } else {
+        Cuda::GRID_STMT
+    }
+}
+
+/// 分块族的 map 入口：签名缓冲形参 + 额外标量（`rms` / `max` / `sum`），入口名与线程下标语句由
+/// [`tid_stmt`] 给。
+fn chunk_entry(signature: &Signature, entry: &str, extra: &str, body: &str) -> String {
     let bufs = Cuda::bufs(signature);
     let bufs = if extra.is_empty() {
         bufs
     } else {
         format!("{bufs},\n    {extra}")
     };
-    Cuda::kernel_entry("", "", &bufs, ("", Cuda::GRID_STMT), body, entry)
-}
-
-/// 一个逐元素网格入口：每线程一个元素，线程下标符号是 `n`（[`Cuda`] 的 [`Dialect::POINT_STMT`]）。
-fn point_entry(signature: &Signature, entry: &str, extra: &str, body: &str) -> String {
-    let bufs = Cuda::bufs(signature);
-    let bufs = if extra.is_empty() {
-        bufs
-    } else {
-        format!("{bufs},\n    {extra}")
-    };
-    Cuda::kernel_entry("", "", &bufs, ("", Cuda::POINT_STMT), body, entry)
+    Cuda::kernel_entry("", "", &bufs, ("", tid_stmt(entry)), body, entry)
 }
 
 /// 唯一只读缓冲名（Softmax 形态）；缺或多都返回 `Invalid`。
@@ -950,19 +980,21 @@ fn single_read<'a>(signature: &'a Signature, family: &str) -> Result<&'a str> {
     }
 }
 
-/// 分块归一化驱动骨架：多段设备源（仅首段带 preamble）→ host 串联程序的几何、主机缓冲、
-/// 部分结果脚手架与收尾（回读、释放、`return 0`）只有这一份。
+/// 分块族 host 程序的骨架：多段设备源（仅首段带 preamble）→ `main` → 主机缓冲 → 中间段脚手架 →
+/// 各段派发与主机折叠 → 回读 → 额外缓冲释放 → 全部缓冲释放。`scaffold` 给中间段声明与用完即释的
+/// 缓冲，`reduce` 写派发与折叠；归一化与扫描的差异全在这两个参数里，骨架只有这一份。
 fn driver(
     segments: &[String],
     signature: &Signature,
     sample: &Sample,
     chunk: usize,
+    args: &str,
+    scaffold: impl FnOnce(usize) -> (String, &'static str),
     reduce: impl FnOnce(&mut String, Stage<'_>),
 ) -> Result<String> {
     let len = length_usize(signature, sample)?;
     let grid = len.div_ceil(chunk);
     let output = output_name(signature)?;
-    let args = buf_args(signature);
     let mut text = program_head(segments);
     text.push_str("int main(void) {\n");
     text.push_str(&cuda_host_bufs_grid(
@@ -971,17 +1003,19 @@ fn driver(
         output,
         len,
     )?);
-    text.push_str(&partial_scaffold(grid));
+    let (decl, free) = scaffold(grid);
+    text.push_str(&decl);
     reduce(
         &mut text,
         Stage {
             len,
             grid,
             output,
-            args: &args,
+            args,
         },
     );
     text.push_str(&cuda_readback(output, len));
+    text.push_str(free);
     text.push_str(&cuda_release(signature));
     text.push_str("    return 0;\n}\n");
     Ok(text)
@@ -1050,16 +1084,25 @@ pub fn cuda_rmsnorm_driver(
     sample: &Sample,
     chunk: usize,
 ) -> Result<String> {
-    driver(segments, signature, sample, chunk, |text, stage| {
-        partial_pass(text, &stage);
-        text.push_str(&fold_sum());
-        text.push_str(&format!(
-            "    float rms = sqrtf(sum / (float){len} + {eps}f);\n",
-            len = stage.len,
-            eps = RMS_EPS
-        ));
-        normalized_pass(text, &stage, "rms");
-    })
+    let args = buf_args(signature);
+    driver(
+        segments,
+        signature,
+        sample,
+        chunk,
+        &args,
+        partial_scaffold_step,
+        |text, stage| {
+            partial_pass(text, &stage);
+            text.push_str(&fold_sum());
+            text.push_str(&format!(
+                "    float rms = sqrtf(sum / (float){len} + {eps}f);\n",
+                len = stage.len,
+                eps = RMS_EPS
+            ));
+            normalized_pass(text, &stage, "rms");
+        },
+    )
 }
 
 /// 分块 Softmax 的完整 CUDA 程序：部分最大 → 折叠 max → 部分指数和 → 折叠 sum → 归一化。
@@ -1069,14 +1112,23 @@ pub fn cuda_softmax_driver(
     sample: &Sample,
     chunk: usize,
 ) -> Result<String> {
-    driver(segments, signature, sample, chunk, |text, stage| {
-        partial_pass(text, &stage);
-        text.push_str(&fold_max());
-        text.push_str(&launch(EXPSUM, stage.grid, stage.args, "max"));
-        partial_pass(text, &stage);
-        text.push_str(&fold_sum());
-        normalized_pass(text, &stage, "max, sum");
-    })
+    let args = buf_args(signature);
+    driver(
+        segments,
+        signature,
+        sample,
+        chunk,
+        &args,
+        partial_scaffold_step,
+        |text, stage| {
+            partial_pass(text, &stage);
+            text.push_str(&fold_max());
+            text.push_str(&launch(EXPSUM, stage.grid, stage.args, "max"));
+            partial_pass(text, &stage);
+            text.push_str(&fold_sum());
+            normalized_pass(text, &stage, "max, sum");
+        },
+    )
 }
 
 /// 程序头：CUDA include、错误检查宏、多段设备源。
@@ -1104,9 +1156,24 @@ fn entry_of(segment: &str) -> &str {
     segment.rfind(MARK).map_or(segment, |at| &segment[at + 2..])
 }
 
-/// host 侧部分结果的脚手架：网格数 `G` 与回读数组。
+/// host 侧部分结果的脚手架：网格数 `G`、回读数组，无额外缓冲要释放。
 fn partial_scaffold(grid: usize) -> String {
     format!("    int G = {grid};\n    float h_tmp[{grid}];\n")
+}
+
+/// [`driver`] 的零额外缓冲脚手架：部分结果直接落在输出缓冲的前 `G` 个槽。
+fn partial_scaffold_step(grid: usize) -> (String, &'static str) {
+    (partial_scaffold(grid), "")
+}
+
+/// 扫描的脚手架：块数 `G`、携带前缀设备缓冲 `d_c` 与主机数组 `h_c`（用完即释放）。
+fn carry_scaffold(grid: usize) -> (String, &'static str) {
+    (
+        format!(
+            "    int G = {grid};\n    float *d_c = 0;\n    cudaMalloc((void **)&d_c, G * sizeof(float));\n    float h_c[{grid}];\n"
+        ),
+        "    cudaFree(d_c);\n",
+    )
 }
 
 /// 一次派发 + 同步检查；`extra` 是追加的标量实参（`rms` / `max` / `sum`），空则不追加。
@@ -1236,35 +1303,27 @@ pub fn cuda_scan_driver(
     chunk: usize,
     decay: f32,
 ) -> Result<String> {
-    let len = length_usize(signature, sample)?;
-    let grid = len.div_ceil(chunk);
-    let output = output_name(signature)?;
     let args = launch_args(sample, signature.params())?;
-    let mut text = program_head(segments);
-    text.push_str("int main(void) {\n");
-    text.push_str(&cuda_host_bufs_grid(
+    driver(
+        segments,
+        signature,
         sample,
-        signature.params(),
-        output,
-        len,
-    )?);
-    text.push_str(&format!(
-        "    int G = {grid};\n    float *d_c = 0;\n    cudaMalloc((void **)&d_c, G * sizeof(float));\n    float h_c[{grid}];\n"
-    ));
-    text.push_str(&launch("kernel_main", grid, &args, ""));
-    text.push_str(&format!(
-        "    cudaMemcpy(h_{output}, d_{output}, {len} * sizeof(float), cudaMemcpyDeviceToHost);\n"
-    ));
-    text.push_str(&fold_carry(output, chunk, len as i64, decay));
-    text.push_str("    cudaMemcpy(d_c, h_c, G * sizeof(float), cudaMemcpyHostToDevice);\n");
-    text.push_str(&format!(
-        "    {CORRECT}<<<G, 1>>>(d_c, d_{output});\n    CUTILE_CUDA_CHECK();\n"
-    ));
-    text.push_str(&cuda_readback(output, len));
-    text.push_str("    cudaFree(d_c);\n");
-    text.push_str(&cuda_release(signature));
-    text.push_str("    return 0;\n}\n");
-    Ok(text)
+        chunk,
+        &args,
+        carry_scaffold,
+        |text, stage| {
+            let (len, grid, output) = (stage.len, stage.grid, stage.output);
+            text.push_str(&launch("kernel_main", grid, stage.args, ""));
+            text.push_str(&format!(
+                "    cudaMemcpy(h_{output}, d_{output}, {len} * sizeof(float), cudaMemcpyDeviceToHost);\n"
+            ));
+            text.push_str(&fold_carry(output, chunk, len as i64, decay));
+            text.push_str("    cudaMemcpy(d_c, h_c, G * sizeof(float), cudaMemcpyHostToDevice);\n");
+            text.push_str(&format!(
+                "    {CORRECT}<<<G, 1>>>(d_c, d_{output});\n    CUTILE_CUDA_CHECK();\n"
+            ));
+        },
+    )
 }
 
 /// 主机折叠（f64）：`C_{g+1} = a^len · C_g + y[start+len-1]`；`a^len` 用逐次乘法。

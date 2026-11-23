@@ -8,9 +8,8 @@ use diagnostic::Result;
 
 use crate::Codec;
 use crate::cursor::u32_at;
-use crate::parse::{FOOTER_LEN, fixed, layout, read_descs};
 use crate::proof::{Digest, Proof};
-use crate::seg::{Stored, lossless_entry};
+use crate::seg::{FOOTER_LEN, Stored, fixed, layout, lossless_entry, read_descs};
 use crate::writer::{GLOBAL_CRC, SEG_CRC};
 
 /// 内存容器：绑定在输入字节上，不复制数据。
