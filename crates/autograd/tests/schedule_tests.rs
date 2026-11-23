@@ -486,13 +486,11 @@ fn an_empty_account_accepts_nothing() {
         account.settle(node).expect_err("没有调度").code(),
         Code::Invalid
     );
-    assert!(
-        account
-            .settle(node)
-            .expect_err("没有调度")
-            .to_string()
-            .contains("不是本次调度")
-    );
+    assert!(account
+        .settle(node)
+        .expect_err("没有调度")
+        .to_string()
+        .contains("不是本次调度"));
 }
 
 /// 每个输入都有扇出，图上变量的计数与独立统计一致；不进图的变量不收账。
