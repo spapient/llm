@@ -307,11 +307,13 @@
         }
 
         fn forward(
-            x: &[f32],
+            x: View<'_, f32>,
             weights: &[Self::Elem],
-            scales: &[f32],
+            scales: View<'_, f32>,
             out: &mut [f32],
         ) -> diagnostic::Result<()> {
+            let x = x.as_slice();
+            let scales = scales.as_slice();
             non_empty(out.len())?;
             if C::SCALES.is_some() {
                 forward_rows(x, weights, scales, out, 1, scaled_dot::<C>)
