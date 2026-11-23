@@ -83,14 +83,17 @@ mod store;
 // 布局算式的唯一实现：偏移 / 可达性 / 连续性 / 取行 + 全部形状代数，两种秩、两种存储共用。
 mod layout;
 
+// 张量方法面：算术 / 归约 / 统计，按元素能力分组收紧 bound。
+mod ops;
+
 // 元素类型、能力分类与浮点位域的唯一事实源在 L1 `dtype`：全精度 24 变体，这里不再自定义枚举。
 pub use dtype::{Class, DType, DTypeSpec, FloatLayout};
 
-pub use element::{BoolElement, Element, FloatElement, IntElement, NumericElement};
+pub use element::{BoolElement, Element, FloatElement, IntElement, NumericElement, OrderedElement};
 pub use rank::Rank;
 pub use shape::{AxisLen, Order, Shape, Slice, product};
 pub use store::{Owned, Store, StoreMut};
-pub use tensor::{Tensor, View, ViewMut};
+pub use tensor::{DynTensor, Tensor, View, ViewMut};
 
 use diagnostic::{Code, Error};
 
@@ -131,6 +134,11 @@ mod element {
     /// 数值元素能力标记：可参与乘加的浮点与整数封闭分组；布尔不在其列。
     pub trait NumericElement: Element + sealed::Sealed {}
 
+    /// 可有序比较的数值元素：`min` / `max` / `argmax` / 闭包比较以此为 bound。
+    ///
+    /// 只要求 `PartialOrd`：浮点含 NaN，不满足全序 `Ord`，但归约取极值仍有偏序语义可用。
+    pub trait OrderedElement: NumericElement + PartialOrd {}
+
     /// 浮点元素能力标记：原生浮点标量的封闭分组。
     pub trait FloatElement: NumericElement {}
 
@@ -155,6 +163,7 @@ mod element {
             $(
                 impl sealed::Sealed for $scalar {}
                 impl NumericElement for $scalar {}
+                impl OrderedElement for $scalar {}
                 impl $trait_ for $scalar {}
             )+
         };
@@ -206,3 +215,7 @@ mod shape_tests;
 #[cfg(test)]
 #[path = "../tests/element_tests.rs"]
 mod element_tests;
+
+#[cfg(test)]
+#[path = "../tests/ops_tests.rs"]
+mod ops_tests;

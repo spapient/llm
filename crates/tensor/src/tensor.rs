@@ -70,6 +70,13 @@ pub type View<'a, K> = Tensor<&'a [K], Vec<usize>, K>;
 /// 借用调用方缓冲的可写张量：运行期秩 + 借来的可写元素，用作算子输出操作数。
 pub type ViewMut<'a, K> = Tensor<&'a mut [K], Vec<usize>, K>;
 
+/// 擦除后的自持张量：存储自持、秩运行期——后端进出的统一形态（对标 Burn 的 `BridgeTensor`）。
+///
+/// 编译期秩与借用存储在装配边界 downgrade 成这一形态；设备后端只认这一张量类型进出，
+/// 不再区分视图来自调用方缓冲还是自持分配。同步取出数据走 [`Tensor::to_vec`] /
+/// [`DynTensor::into_vec`]；异步出口在执行缝侧接流，本层不持有设备句柄。
+pub type DynTensor<K> = Tensor<Owned<K>, Vec<usize>, K>;
+
 impl<'a, K: Element> View<'a, K> {
     /// 一维只读视图：唯一轴长即缓冲长度，行主序连续。
     ///
@@ -500,9 +507,36 @@ where
     }
 
     /// 形状照抄、步长重算、起点归零，配上一块新的连续缓冲：摊平与翻转共用这一处收尾。
-    fn respell(&self, buf: Vec<K>) -> Tensor<Owned<K>, R, K> {
+    pub(crate) fn respell(&self, buf: Vec<K>) -> Tensor<Owned<K>, R, K> {
         let steps = R::contiguous(self.dims.as_slice()).unwrap_or_else(|| self.dims.clone());
         assemble(self.dims.clone(), steps, 0, Owned::from(buf))
+    }
+
+    /// 借出现有存储，得到运行期秩的只读视图；元数据照抄，不复制元素。
+    pub fn as_view(&self) -> View<'_, K> {
+        assemble(
+            self.dims.as_slice().to_vec(),
+            self.steps.as_slice().to_vec(),
+            self.base,
+            self.buf.slice(),
+        )
+    }
+
+    /// 物化成自持连续张量；已是连续布局时保留形状，非连续先摊平到紧凑内存。
+    #[must_use]
+    pub fn into_owned(self) -> Tensor<Owned<K>, R, K> {
+        self.to_contiguous()
+    }
+
+    /// 擦除秩与存储：降级为运行期秩的自持张量，作为后端进出的统一形态。
+    pub fn into_dyn(self) -> DynTensor<K> {
+        let owned = self.to_contiguous();
+        assemble(
+            owned.dims.as_slice().to_vec(),
+            owned.steps.as_slice().to_vec(),
+            owned.base,
+            owned.buf,
+        )
     }
 }
 
@@ -515,6 +549,16 @@ where
     /// 可写元素：自持张量与借来的可写视图（[`ViewMut`]）共用这一处访问器。
     pub fn as_slice_mut(&mut self) -> &mut [K] {
         self.buf.slice_mut()
+    }
+
+    /// 借出可写视图（自持存储或 `&mut [K]` 借入）；元数据照抄，不复制元素。
+    pub fn as_view_mut(&mut self) -> ViewMut<'_, K> {
+        assemble(
+            self.dims.as_slice().to_vec(),
+            self.steps.as_slice().to_vec(),
+            self.base,
+            self.buf.slice_mut(),
+        )
     }
 }
 

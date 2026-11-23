@@ -62,6 +62,16 @@ impl<E> Owned<E> {
         elems.resize(len, E::default());
         Ok(Self(elems))
     }
+
+    /// 自持缓冲的只读切片。
+    pub fn as_slice(&self) -> &[E] {
+        &self.0
+    }
+
+    /// 拆出底层 `Vec`：自持张量交出存储所有权。
+    pub fn into_vec(self) -> Vec<E> {
+        self.0
+    }
 }
 
 impl<E> From<Vec<E>> for Owned<E> {
