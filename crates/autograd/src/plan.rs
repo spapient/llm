@@ -3,11 +3,11 @@
 use diagnostic::Result;
 use tensor::{DType, Shape};
 
+use crate::Var;
 use crate::facts::{Facts, NONE};
 use crate::invalid;
 use crate::schedule::{Ordering, Schedule};
 use crate::tape::Tape;
-use crate::Var;
 
 /// 诊断来源：本模块只有一个入口。
 pub(crate) const SITE: &str = "autograd::Plan::of";

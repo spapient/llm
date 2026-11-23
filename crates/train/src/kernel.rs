@@ -185,7 +185,6 @@ macro_rules! gemm {
 
 unary!(
     adaptive_pool_f32 => adaptive_pool,
-    abs_f32 => abs_f32,
     avg_pool2d_f32 => avg_pool2d,
     interpolate_f32 => interpolate,
     max_pool1d_f32 => max_pool1d,
@@ -194,17 +193,14 @@ unary!(
     gelu_f32 => gelu_f32,
     hard_sigmoid_f32 => hard_sigmoid_f32,
     leaky_relu_f32 => leaky_relu_f32,
-    neg_f32 => neg_f32,
     relu_f32 => relu_f32,
     log_f32 => log_f32,
     silu_f32 => silu_f32,
     softmax_f32 => softmax_f32,
     reduce_max_f32 => reduce_max_f32,
-    reduce_prod_f32 => reduce_prod_f32,
     reduce_sum_f32 => reduce_sum_f32,
     scale_f32 => scale_f32,
     sigmoid_f32 => sigmoid_f32,
-    square_f32 => square_f32,
     scan_f32 => scan_f32,
     tanh_f32 => tanh_f32
 );
@@ -215,7 +211,6 @@ binary!(
     max_f32,
     min_f32,
     mul_f32,
-    remainder_f32,
     rmsnorm_f32,
     residual_add_f32,
     sub_f32
@@ -357,7 +352,6 @@ fn rope_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
 
 /// 标量内核表：长度就是 [`nn::registry::REGISTRY`] 的长度，名字与顺序由下面的 `const` 断言锁住。
 const KERNELS: [Entry; nn::registry::REGISTRY.len()] = kernel_table![
-    abs_f32,
     adaptive_pool_f32,
     add_f32,
     attention_f32,
@@ -397,12 +391,9 @@ const KERNELS: [Entry; nn::registry::REGISTRY.len()] = kernel_table![
     max_pool2d_f32,
     min_f32,
     mul_f32,
-    neg_f32,
     reduce_max_f32,
-    reduce_prod_f32,
     reduce_sum_f32,
     relu_f32,
-    remainder_f32,
     residual_add_f32,
     rmsnorm_f32,
     rope_f32,
@@ -411,7 +402,6 @@ const KERNELS: [Entry; nn::registry::REGISTRY.len()] = kernel_table![
     sigmoid_f32,
     silu_f32,
     softmax_f32,
-    square_f32,
     sub_f32,
     tanh_f32,
 ];

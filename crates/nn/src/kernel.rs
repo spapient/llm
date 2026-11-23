@@ -45,18 +45,16 @@ pub mod unary;
 // 一元 / 二元 / 归约 / 反量化 / GEMV / GEMM 骨架内的声明式子模块，re-export 到 crate 根
 // 保持 `<crate>::<name>::MODEL` / `forward` 路径。
 pub use dequant::{dequant_i2, dequant_i4, i8 as dequant_i8};
-pub use elementwise::{
-    add_f32, div_f32, max_f32, min_f32, mul_f32, remainder_f32, residual_add_f32, sub_f32,
-};
+pub use elementwise::{add_f32, div_f32, max_f32, min_f32, mul_f32, residual_add_f32, sub_f32};
 pub use epilogue::apply as apply_epilogue;
 pub use gemm::{f32 as gemm_f32, i2 as gemm_i2, i4 as gemm_i4, i8 as gemm_i8};
 pub use gemv::{f32 as gemv_f32, i2 as gemv_i2, i4 as gemv_i4, i8 as gemv_i8};
 pub use matmul::i8 as matmul_i8;
-pub use reduce::{reduce_max_f32, reduce_prod_f32, reduce_sum_f32};
+pub use reduce::{reduce_max_f32, reduce_sum_f32};
 pub use scalar::Scalar;
 pub use unary::{
-    abs_f32, exp_f32, gelu_f32, hard_sigmoid_f32, leaky_relu_f32, log_f32, neg_f32, relu_f32,
-    scale_f32, sigmoid_f32, silu_f32, square_f32, tanh_f32,
+    exp_f32, gelu_f32, hard_sigmoid_f32, leaky_relu_f32, log_f32, relu_f32, scale_f32, sigmoid_f32,
+    silu_f32, tanh_f32,
 };
 pub use {embed as embed_f32, rmsnorm as rmsnorm_f32, rope as rope_f32, softmax as softmax_f32};
 

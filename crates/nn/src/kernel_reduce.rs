@@ -102,7 +102,7 @@ pub fn forward<R: Reduce>(a: View<'_, f32>, out: &mut [f32]) -> diagnostic::Resu
 /// 新增一种归约加一次调用即可。
 #[macro_export]
 macro_rules! reduce_f32 {
-    ($name:ident, $alias:ident, $op:tt, $cases:expr, $start:expr, $fold:expr, $diff:literal) => {
+    ($name:ident, $alias:ident, $op:tt, $cases:expr, $start:expr, $fold:expr) => {
         #[doc = concat!("`", $op, "` 的标记类型：初值与折叠见 `start`/`fold`，骨架见 `crate::reduce`。")]
         pub struct $name;
 
@@ -126,7 +126,7 @@ macro_rules! reduce_f32 {
 
         // 基座契约（ADR 0050）：只转发族骨架，不写第二份算术。迁移期与 `#[model]` 生成的
         // `MODEL` 并存，两者一致性由 `operator::tests` 逐字段锁住。
-        $crate::operator_via!($name, $op, 1, (4096, 1), $diff, super, $crate::reduce::AXES);
+        $crate::operator_via!($name, $op, 1, (4096, 1), true, super, $crate::reduce::AXES);
 
         #[annotation::model(name = $op, shape = [4096, 1], dtype = "f32", skeleton = "reduce")]
         #[doc = concat!("`", $op, "` 的语义别名。")]
@@ -147,10 +147,6 @@ macro_rules! reduce_f32 {
             $crate::reduce::test_support::reduce_op_tests!($name, forward, $start);
             $crate::reduce::test_support::reduce_saturating_tests!($name, forward, $cases);
         }
-    };
-    // 缺省可微：既有算子沿用 `true`；不可微调子在显式位传 `false`。
-    ($name:ident, $alias:ident, $op:tt, $cases:expr, $start:expr, $fold:expr) => {
-        $crate::reduce_f32! { $name, $alias, $op, $cases, $start, $fold, true }
     };
 }
 
@@ -198,24 +194,5 @@ pub mod reduce_sum_f32 {
         ],
         0.0,
         |acc, x| acc + x
-    );
-}
-
-pub mod reduce_prod_f32 {
-    //! 连乘归约：`y[0] = ∏ a[0..n]`；空输入折叠到初值 1。
-
-    crate::reduce_f32!(
-        Prod,
-        ReduceProdF32,
-        "reduce_prod_f32",
-        &[
-            &[1.0, 1.0, 1.0],
-            &[2.0, 3.0, 2.0],
-            &[0.0, 4.0],
-            &[-1.0, -2.0, 3.0],
-        ],
-        1.0,
-        |acc, x| acc * x,
-        false
     );
 }
