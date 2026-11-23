@@ -37,7 +37,7 @@
 
 use crate::geometry::{Geometry, Running};
 pub use crate::kernel::{Data, Inputs, Kernel, Kind, Lane, Reference, View, ViewMut};
-use crate::kernel::{no_storage, zeroed};
+use crate::kernel::{fits, lane_of, no_storage, zeroed};
 use autograd::{Sizes, Store, Var};
 use diagnostic::{Code, Error, Result};
 use tensor::{DType, Shape};
@@ -104,7 +104,7 @@ buckets!(
 impl Pool {
     /// 一块 `dtype` 的零值缓冲：先试空闲表，没有再向分配器要（"取多少元素"只在这里算一次）。
     pub(crate) fn block(&mut self, dtype: DType, shape: &Shape) -> Result<Data> {
-        match Kind::of(dtype) {
+        match lane_of(dtype) {
             Some(Kind::F32) => Ok(Data::F32(self.acquire_f32(shape.numel())?)),
             Some(Kind::U8) => Ok(Data::U8(self.acquire_u8(shape.element_bytes(dtype))?)),
             None => Err(no_storage(dtype)),
@@ -242,7 +242,7 @@ impl<K: Kernel> Bufs<K> {
             );
             return Err(Error::new(Code::Internal, message).with(SITE));
         };
-        if !data.fits(dtype) || data.bytes() != shape.element_bytes(dtype) as u64 {
+        if !fits(&data, dtype) || data.bytes() != shape.element_bytes(dtype) as u64 {
             return Err(mismatch(var, shape, dtype, &data));
         }
         self.install(slot, data);

@@ -4,6 +4,7 @@
 use crate::pool::SITE;
 use diagnostic::{Code, Error, Result};
 use nn::kernel_table;
+use storage::{LaneBuf, LaneView, LaneViewMut};
 use tensor::DType;
 
 /// 一步前向：`op(inputs) → output`；契约是"输入此刻都在"与"输出要被完整写入"。
@@ -435,36 +436,15 @@ pub(crate) fn zeroed<T: Clone>(len: usize, value: T) -> Result<Vec<T>> {
     Ok(buf)
 }
 
-/// 一块 lane 的字节数。
-fn bytes_of<L: Lane>(values: &[L]) -> u64 {
-    size_of_val(values) as u64
-}
+/// 缓冲的存储形态：[`storage::Lane`] 的 train 别名；元素类型 → 形态的映射留在本层。
+pub type Kind = storage::Lane;
 
-/// 缓冲的存储形态：[`Lane`] 的运行时标签，只在"元素类型 → 形态"与视图标记两处出现。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Kind {
-    /// 32 位浮点。
-    F32,
-    /// 按位打包的整型。
-    U8,
-}
-
-impl Kind {
-    /// 元素类型 → 存储形态；没有标量存储的类型（`F16` / `BF16` 等）为 `None`。
-    pub(crate) const fn of(dtype: DType) -> Option<Self> {
-        match dtype {
-            DType::F32 => Some(Self::F32),
-            DType::I8 | DType::U4 => Some(Self::U8),
-            _ => None,
-        }
-    }
-
-    /// 名字：只用于错误说明。
-    const fn name(self) -> &'static str {
-        match self {
-            Self::F32 => "f32",
-            Self::U8 => "u8",
-        }
+/// 元素类型 → 存储形态；没有标量存储的类型（`F16` / `BF16` 等）为 `None`。
+pub(crate) const fn lane_of(dtype: DType) -> Option<Kind> {
+    match dtype {
+        DType::F32 => Some(Kind::F32),
+        DType::I8 | DType::U4 => Some(Kind::U8),
+        _ => None,
     }
 }
 
@@ -522,109 +502,18 @@ pub(crate) fn no_storage(dtype: DType) -> Error {
 }
 
 /// 一块真实缓冲：与登记的 [`DType`] 一一对应的两种形态（常驻值与激活共用）。
-#[derive(Debug, Clone, PartialEq)]
-pub enum Data {
-    /// 32 位浮点。
-    F32(Vec<f32>),
-    /// 按位打包的整型（`I8` 或 `U4`），字节序与内核一致。
-    U8(Vec<u8>),
-}
+/// 公共定义在 [`storage::LaneBuf`]，本别名保留训练缝既有命名。
+pub type Data = LaneBuf;
 
-impl Data {
-    /// 这块缓冲的存储形态。
-    pub fn kind(&self) -> Kind {
-        match self {
-            Self::F32(_) => Kind::F32,
-            Self::U8(_) => Kind::U8,
-        }
-    }
+/// 只读视图：一次 [`Kernel::compute_step`] 的输入。公共定义在 [`storage::LaneView`]。
+pub type View<'a> = LaneView<'a>;
 
-    /// 字节数：`size_of_val` 在编译期就知道元素宽度，热路径上没有分支。
-    pub fn bytes(&self) -> u64 {
-        match self {
-            Self::F32(values) => bytes_of(values),
-            Self::U8(values) => bytes_of(values),
-        }
-    }
+/// 可写视图：一次 [`Kernel::compute_step`] 的输出。公共定义在 [`storage::LaneViewMut`]。
+pub type ViewMut<'a> = LaneViewMut<'a>;
 
-    /// 只读视图：[`Kernel`] 看到的输入。
-    pub fn view(&self) -> View<'_> {
-        match self {
-            Self::F32(values) => View::F32(values),
-            Self::U8(values) => View::U8(values),
-        }
-    }
-
-    /// 可变视图：[`Kernel`] 写的输出。
-    pub fn view_mut(&mut self) -> ViewMut<'_> {
-        match self {
-            Self::F32(values) => ViewMut::F32(values),
-            Self::U8(values) => ViewMut::U8(values),
-        }
-    }
-
-    /// 与登记的元数据是否相容：登记的 [`DType`] 折成形态后必须与这块缓冲同一条 lane。
-    pub(crate) fn fits(&self, dtype: DType) -> bool {
-        Kind::of(dtype) == Some(self.kind())
-    }
-}
-
-/// 只读视图：一次 [`Kernel::compute_step`] 的输入。
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum View<'a> {
-    /// 32 位浮点。
-    F32(&'a [f32]),
-    /// 按位打包的整型。
-    U8(&'a [u8]),
-}
-
-impl<'a> View<'a> {
-    /// 这一格是哪个存储形态。
-    pub fn kind(&self) -> Kind {
-        match self {
-            Self::F32(_) => Kind::F32,
-            Self::U8(_) => Kind::U8,
-        }
-    }
-
-    /// 当成 `f32` 读；不是浮点缓冲时为 `None`。
-    pub fn f32(&self) -> Option<&'a [f32]> {
-        <f32 as Lane>::slice(*self)
-    }
-
-    /// 当成按位打包的整型读；不是 `u8` 缓冲时为 `None`。
-    pub fn u8(&self) -> Option<&'a [u8]> {
-        <u8 as Lane>::slice(*self)
-    }
-}
-
-/// 可写视图：一次 [`Kernel::compute_step`] 的输出。
-#[derive(Debug, PartialEq)]
-pub enum ViewMut<'a> {
-    /// 32 位浮点。
-    F32(&'a mut [f32]),
-    /// 按位打包的整型。
-    U8(&'a mut [u8]),
-}
-
-impl<'a> ViewMut<'a> {
-    /// 这一格是哪个存储形态。
-    pub fn kind(&self) -> Kind {
-        match self {
-            Self::F32(_) => Kind::F32,
-            Self::U8(_) => Kind::U8,
-        }
-    }
-
-    /// 当成 `f32` 写；不是浮点缓冲时为 `None`。
-    pub fn f32(&mut self) -> Option<&mut [f32]> {
-        <f32 as Lane>::slice_mut(self)
-    }
-
-    /// 当成按位打包的整型写；不是 `u8` 缓冲时为 `None`。
-    pub fn u8(&mut self) -> Option<&mut [u8]> {
-        <u8 as Lane>::slice_mut(self)
-    }
+/// 与登记的元数据是否相容：登记的 [`DType`] 折成形态后必须与这块缓冲同一条 lane。
+pub(crate) fn fits(data: &Data, dtype: DType) -> bool {
+    lane_of(dtype) == Some(data.lane())
 }
 
 /// 一组输入 lane 的**类型级**表示：`(f32, u8, f32)` ↔ `(&[f32], &[u8], &[f32])`。
@@ -653,7 +542,7 @@ fn joined(kinds: impl Iterator<Item = Kind>) -> String {
 /// 元数不符：把两边逐格的 lane 摆在一起。
 fn wrong_arity(op: &str, expected: &[Kind], inputs: &[View<'_>]) -> Error {
     let want = joined(expected.iter().copied());
-    let got = joined(inputs.iter().map(View::kind));
+    let got = joined(inputs.iter().map(View::lane));
     Error::new(
         Code::Invalid,
         format!("`{op}` 的输入必须是 [{want}]，实际是 [{got}]"),
@@ -668,7 +557,7 @@ pub(crate) fn input_slice<'a, L: Lane>(
     view: &'a View<'a>,
 ) -> Result<&'a [L]> {
     let slot = format!("第 {idx} 个输入");
-    L::slice(*view).ok_or_else(|| wrong_lane(op, &slot, L::KIND, view.kind()))
+    L::slice(*view).ok_or_else(|| wrong_lane(op, &slot, L::KIND, view.lane()))
 }
 
 /// 取输出并断言它是 `L`。
@@ -676,7 +565,7 @@ pub(crate) fn output_slice<'a, L: Lane>(
     op: &str,
     view: &'a mut ViewMut<'_>,
 ) -> Result<&'a mut [L]> {
-    let actual = view.kind();
+    let actual = view.lane();
     L::slice_mut(view).ok_or_else(|| wrong_lane(op, "输出", L::KIND, actual))
 }
 

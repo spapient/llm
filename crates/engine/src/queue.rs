@@ -244,111 +244,11 @@ impl Executor for LocalExecutor {
 }
 
 /// 一段已绑定缓冲的存储形态：32 位浮点，或按位打包的字节（i4/i8 lane）。
-#[derive(Debug, Clone, PartialEq)]
-pub enum Buf {
-    /// 32 位浮点。
-    F32(Vec<f32>),
-    /// 按位打包的整型：i8 逐元素一字节，i4 每字节两个 nibble；字节序与内核一致。
-    U8(Vec<u8>),
-}
+/// 公共定义在 [`storage::LaneBuf`]，本别名保留执行缝既有命名。
+pub type Buf = storage::LaneBuf;
 
-impl Buf {
-    /// 当成 `f32` 读；不是浮点缓冲时为 `None`。
-    pub fn f32(&self) -> Option<&[f32]> {
-        match self {
-            Self::F32(values) => Some(values),
-            Self::U8(_) => None,
-        }
-    }
+/// 只读视图：一次 [`Program::run`] 的输入操作数。公共定义在 [`storage::LaneView`]。
+pub type View<'a> = storage::LaneView<'a>;
 
-    /// 当成打包字节读；不是字节缓冲时为 `None`。
-    pub fn u8(&self) -> Option<&[u8]> {
-        match self {
-            Self::U8(values) => Some(values),
-            Self::F32(_) => None,
-        }
-    }
-
-    /// 元素个数：f32 元素数或打包字节数。
-    pub fn len(&self) -> usize {
-        match self {
-            Self::F32(values) => values.len(),
-            Self::U8(values) => values.len(),
-        }
-    }
-
-    /// 是否没有元素。
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    /// 只读视图。
-    pub(super) fn view(&self) -> View<'_> {
-        match self {
-            Self::F32(values) => View::F32(values),
-            Self::U8(values) => View::U8(values),
-        }
-    }
-
-    /// 可写视图。
-    pub(super) fn view_mut(&mut self) -> ViewMut<'_> {
-        match self {
-            Self::F32(values) => ViewMut::F32(values),
-            Self::U8(values) => ViewMut::U8(values),
-        }
-    }
-}
-
-/// 只读视图：一次 [`Program::run`] 的输入操作数。
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum View<'a> {
-    /// 32 位浮点。
-    F32(&'a [f32]),
-    /// 按位打包的整型。
-    U8(&'a [u8]),
-}
-
-impl<'a> View<'a> {
-    /// 当成 `f32` 读；不是浮点缓冲时为 `None`。
-    pub fn f32(&self) -> Option<&'a [f32]> {
-        match self {
-            Self::F32(values) => Some(*values),
-            Self::U8(_) => None,
-        }
-    }
-
-    /// 当成打包字节读；不是字节缓冲时为 `None`。
-    pub fn u8(&self) -> Option<&'a [u8]> {
-        match self {
-            Self::U8(values) => Some(*values),
-            Self::F32(_) => None,
-        }
-    }
-}
-
-/// 可写视图：一次 [`Program::run`] 的输出操作数。
-#[derive(Debug, PartialEq)]
-pub enum ViewMut<'a> {
-    /// 32 位浮点。
-    F32(&'a mut [f32]),
-    /// 按位打包的整型。
-    U8(&'a mut [u8]),
-}
-
-impl<'a> ViewMut<'a> {
-    /// 当成 `f32` 写；不是浮点缓冲时为 `None`。
-    pub fn f32_mut(&mut self) -> Option<&mut [f32]> {
-        match self {
-            Self::F32(values) => Some(values),
-            Self::U8(_) => None,
-        }
-    }
-
-    /// 当成打包字节写；不是字节缓冲时为 `None`。
-    pub fn u8_mut(&mut self) -> Option<&mut [u8]> {
-        match self {
-            Self::U8(values) => Some(values),
-            Self::F32(_) => None,
-        }
-    }
-}
+/// 可写视图：一次 [`Program::run`] 的输出操作数。公共定义在 [`storage::LaneViewMut`]。
+pub type ViewMut<'a> = storage::LaneViewMut<'a>;
