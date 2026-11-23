@@ -491,6 +491,7 @@
 
     mod pack {
         use super::super::pack::{pack_serial, pack_span};
+        use super::align_up;
         use super::thread;
         use super::threads_override;
         use super::I8_NR;

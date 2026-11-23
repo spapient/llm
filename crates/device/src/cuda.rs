@@ -10,9 +10,9 @@ use crate::dialect::{
 };
 use cutile::harness::{c_literal, c_type, output_name, output_of};
 use diagnostic::{Code, Error, Result};
-use nn::model::{Sample, Values};
-use nn::sig::{Param, Signature};
 use prof::decl::Grid;
+use prof::model::{Sample, Values};
+use prof::sig::{Param, Signature};
 
 /// 生产态 CUDA 循环注入网格内核（`[grid]` 骨架的 CUDA 方言）：gemv 一维、gemm 二维共用。
 ///

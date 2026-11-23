@@ -6,7 +6,7 @@
 //! 以及六平台执行合同（[`platform`]，缺设备只能 `OPEN` 的那一格）。
 //! **不拥有**：序列状态、页账、准入与提交契约（那些在 `engine`）——本 crate **依赖** `engine`
 //! 的 [`Executor`](engine::exec::Executor) 缝来落地设备执行体，方向单边，无反向依赖。
-//! **依赖**：`cutile`（L3 机制层：`Backend`/`Source`/`Profile` 缝）、`op`（内核契约）、`prof`、`diagnostic`。
+//! **依赖**：`cutile`（L3 机制层：`Backend`/`Source`/`Profile` 缝）、`prof`（内核契约词汇与档案）、`engine`、`diagnostic`。
 //!
 //! # 为什么与 `engine` 分家
 //!

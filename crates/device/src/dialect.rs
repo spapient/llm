@@ -12,9 +12,9 @@ pub(crate) const SCAN_CORRECT: &str = "kernel_scan_correct";
 
 use cutile::harness::output_name;
 use diagnostic::{Code, Error, Result};
-use nn::model::{Sample, Values};
-use nn::sig::{Param, Signature};
 use prof::decl::Grid;
+use prof::model::{Sample, Values};
+use prof::sig::{Param, Signature};
 
 /// 厂商语法面：后端无关的 lowering 原语里需要厂商语法的那几处，抽成方法 + 关联常量，并把
 /// lowering 原语本身作为**默认方法**在这里一次实现。

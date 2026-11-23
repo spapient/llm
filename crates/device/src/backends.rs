@@ -4,15 +4,15 @@ pub use crate::metal::{compile_run_metal, metal_driver, metal_kernel};
 // 三条厂商链共用的导入面：避免各写一份重复块。
 pub(crate) use crate::dialect::Dialect;
 pub(crate) use cutile::dirs::Dirs;
-pub(crate) use cutile::prof::{Emit, Profile};
 pub(crate) use diagnostic::{Code, Error, Result};
 pub(crate) use llm_optim::backend::Lower::*;
 pub(crate) use llm_optim::backend::{Backend, Codegen, Driver, Launch, Lower, Readback, Source};
 pub(crate) use llm_optim::driver;
 pub(crate) use llm_optim::toolchain::Toolchain;
 pub(crate) use llm_optim::witness::{MAX_OUT, Scope, Selected};
-pub(crate) use nn::model::Sample;
-pub(crate) use nn::sig::Signature;
+pub(crate) use prof::model::Sample;
+pub(crate) use prof::prof::{Emit, Profile};
+pub(crate) use prof::sig::Signature;
 
 // ---------------------------------------------------------------------------
 // 基准几何与见证回读：三条厂商链共用，因此不归任何一家
@@ -967,8 +967,8 @@ fn push_metal_kernel(program: &mut String, max: usize, selected: &[Selected<'_>]
 use crate::cuda::host_buf_decl;
 use crate::dialect::readback_bits;
 use cutile::harness::{c_type, output_of};
-use nn::model::Values;
-use nn::sig::Param;
+use prof::model::Values;
+use prof::sig::Param;
 
 /// AscendCL 的调用守卫：失败时报出是哪个调用并返回非零。
 pub(crate) const ACL_GUARD: &str = "static int cutile_acl(const char *what, aclError code) {\n\

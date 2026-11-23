@@ -1,4 +1,4 @@
-//! CPU 推理内核桥：把 `op` 的标量参考适配成 engine 可登记的 [`Program`]。
+//! CPU 推理内核桥：把 `nn` 的标量参考适配成 engine 可登记的 [`Program`]。
 //!
 //! 落点裁决见 `docs/adr/0025-runtime-backend-abstraction.md`；设备数据与机制的边界见
 //! `docs/ARCHITECTURE.md` 第一、二节。
@@ -17,7 +17,7 @@
 //!
 //! # 不拥有
 //!
-//! 执行/调度/KV 簿记（`engine`）、算子声明与参考算术（`op`）、层形状语义（`nn`）、
+//! 执行/调度/KV 簿记（`engine`）、算子声明（`prof`）、参考算术与层形状语义（`nn`）、
 //! 权重字节读取（`weights`）。本模块不出现设备厂商或后端类型的特判分支。
 //!
 //! # 范围

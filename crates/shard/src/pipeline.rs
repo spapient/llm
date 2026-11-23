@@ -148,7 +148,7 @@ pub(crate) fn model_for(name: &str) -> diagnostic::Result<Model> {
         Error::new(
             Code::Missing,
             format!(
-                "算子 `{name}` 没有语义模型：`crates/op/src/lib.rs` 的 `model()` 注册表里没有它"
+                "算子 `{name}` 没有语义模型：`nn::registry` 的 `model()` 注册表里没有它"
             ),
         )
     })

@@ -8,14 +8,14 @@
 
 use cutile::dirs::Dirs;
 use cutile::harness::{c_literal, output_name, output_of};
-use cutile::prof::Profile;
 use diagnostic::{Code, Error, Result};
 use llm_optim::backend::{Readback, Source};
 use llm_optim::driver;
 use llm_optim::witness::MAX_OUT;
-use nn::model::{Sample, Values};
-use nn::sig::Signature;
 use prof::decl::Grid;
+use prof::model::{Sample, Values};
+use prof::prof::Profile;
+use prof::sig::Signature;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 

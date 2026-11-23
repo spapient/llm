@@ -75,7 +75,11 @@ pub(super) fn threads_override() -> usize {
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .filter(|x| *x > 0)
-        .unwrap_or_else(|| thread::available_parallelism().map(|x| x.get()).unwrap_or(1))
+        .unwrap_or_else(|| {
+            thread::available_parallelism()
+                .map(|x| x.get())
+                .unwrap_or(1)
+        })
 }
 
 /// 向上对齐到 `block` 的整数倍：面板列宽补齐到 NR/I8_NR，补零列由零初始化面板承担。

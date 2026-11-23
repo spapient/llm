@@ -2,8 +2,8 @@
 
 use crate::dialect::{fill, sample_usize};
 use diagnostic::{Code, Error, Result};
-use nn::model::Sample;
-use nn::sig::{CType, Param, Signature};
+use prof::model::Sample;
+use prof::sig::{CType, Param, Signature};
 
 // ---------------------------------------------------------------------------
 // 签名 → 缓冲名与几何：各族共用
