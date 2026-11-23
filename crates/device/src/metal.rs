@@ -132,27 +132,9 @@ impl Wiring {
         {
             let base = param.ctype.c_name();
             if param.mutable {
-                // 输出容量由调用方给定时不必回看样本：分块族的部分结果数大于样本里的最终输出长。
-                let len = match capacity {
-                    Some(capacity) => capacity,
-                    None => sample
-                        .buf(&param.name)
-                        .ok_or_else(|| Error::new(Code::Internal, "签名与样本已对齐（漂移）"))?
-                        .values
-                        .len(),
-                };
-                wiring.out_len = len;
-                wiring
-                    .allocs
-                    .push_str(&output_alloc(&param.name, base, len, checked));
+                wiring.emit_output(&param.name, base, sample, capacity, checked)?;
             } else {
-                let buf = sample
-                    .buf(&param.name)
-                    .ok_or_else(|| Error::new(Code::Internal, "签名与样本已对齐（漂移）"))?;
-                wiring
-                    .data
-                    .push_str(&literal_decl(&param.name, base, &buf.values));
-                wiring.allocs.push_str(&input_alloc(&param.name, checked));
+                wiring.emit_input(&param.name, base, sample, checked)?;
             }
             wiring.sets.push_str(&format!(
                 "{pad}[encoder setBuffer:b_{} offset:0 atIndex:{slot}];\n",
@@ -160,6 +142,39 @@ impl Wiring {
             ));
         }
         Ok(wiring)
+    }
+
+    /// 可变输出缓冲：容量取调用方给定值，否则回看样本；分配一次开满。
+    fn emit_output(
+        &mut self,
+        name: &str,
+        base: &str,
+        sample: &Sample,
+        capacity: Option<usize>,
+        checked: bool,
+    ) -> Result<()> {
+        let len = match capacity {
+            Some(capacity) => capacity,
+            None => sample
+                .buf(name)
+                .ok_or_else(|| Error::new(Code::Internal, "签名与样本已对齐（漂移）"))?
+                .values
+                .len(),
+        };
+        self.out_len = len;
+        self.allocs
+            .push_str(&output_alloc(name, base, len, checked));
+        Ok(())
+    }
+
+    /// 只读输入缓冲：声明静态初值数组并分配只读缓冲。
+    fn emit_input(&mut self, name: &str, base: &str, sample: &Sample, checked: bool) -> Result<()> {
+        let buf = sample
+            .buf(name)
+            .ok_or_else(|| Error::new(Code::Internal, "签名与样本已对齐（漂移）"))?;
+        self.data.push_str(&literal_decl(name, base, &buf.values));
+        self.allocs.push_str(&input_alloc(name, checked));
+        Ok(())
     }
 }
 
