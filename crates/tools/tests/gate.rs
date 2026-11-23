@@ -360,6 +360,32 @@ fn module_dir(file: &Path) -> PathBuf {
     }
 }
 
+#[test]
+fn cfg_test_mount_sets_test_scope_only_under_test_chain() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("workspace root");
+    let production = rust_files(&root.join("crates"));
+    let mounted = mounted_test_modules(&production);
+
+    // cfg(test) 父模块链下、经 `#[path]` 平级挂载的种子夹具归测试口径。
+    let seeds = root.join("crates/fuzz/src/seeds.rs");
+    assert!(
+        mounted.contains(&seeds),
+        "cfg(test) 链下 #[path] 挂载的 seeds 应纳入测试口径",
+    );
+
+    // 生产入口 `#[path]` 拆出去、`pub use` 复用的子模块不得被测试口径豁免。
+    for prod in ["tower.rs", "pulse.rs", "cell.rs"] {
+        let path = root.join(format!("crates/algorithm/src/{prod}"));
+        assert!(
+            !mounted.contains(&path),
+            "生产拆分子模块 {prod} 不得按测试口径豁免",
+        );
+    }
+}
+
 /// 仓库内相对路径，失败时退回原样，保证坏消息里能定位文件。
 /// 分隔符统一成 `/`：台账基线按正斜杠登记，Windows 的反斜杠不能参与匹配。
 fn label(root: &Path, path: &Path) -> String {

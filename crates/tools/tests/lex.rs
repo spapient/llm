@@ -324,13 +324,3 @@ fn a_file_within_budget_is_silent() {
     let text = (0..8).map(|_| "x").collect::<Vec<_>>().join("\n");
     assert_eq!(file_lines(&text, &line_gate()), None);
 }
-
-#[test]
-fn repro_kernel_lex() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let path = root.join("../../crates/benchmarks/src/kernel.rs");
-    let raw = std::fs::read_to_string(path).unwrap();
-    let res = parse(&raw);
-    println!("parse result: {:?}", res.as_ref().map_err(|e| e.message()));
-    assert!(res.is_ok());
-}
