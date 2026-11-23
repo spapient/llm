@@ -18,10 +18,10 @@
 //!    标量参考实现，`geometry` 是各经典算子的实例几何与前向/反向参考数值（梯度对拍的基准）。
 //!
 //! **拥有**：上面点名的全部类型，加上承载静态契约的 `Kind`、`Lane`、`Inputs` 与 [`OperatorSetOps`]。
-//! **不拥有**：图与记录顺序、激活的显存计划（`autograd`）、算子注册表与声明档语义（`op`）、
+//! **不拥有**：图与记录顺序、激活的显存计划（`autograd`）、算子注册表（`nn`）与声明档语义（`prof`）、
 //! 分词与打乱（`tokenizer`；打乱只改变游标推进方式）、层定义（`nn`）、参数（`weights`）、
-//! 拓扑与集合通信（`shard`）、检查点字节格式（`snapshot`；编码、版本与偏移校验不在训练循环里再做一遍）。
-//! **依赖**：`nn`、`autograd`、`weights`、`shard`、`tensor`、`op`、`diagnostic`、`snapshot`。
+//! 拓扑与集合通信（`shard`）、检查点字节格式（`storage`；编码、版本与偏移校验不在训练循环里再做一遍）。
+//! **依赖**：`nn`、`autograd`、`weights`、`shard`、`tensor`、`prof`、`storage`、`diagnostic`。
 //! **被依赖**：`cli`、`benchmarks`、`fuzz`、`serve`、`testkit`。
 //!
 //! 入口只做模块声明与再导出：实现按上面五条轴分布在 9 个子模块里（`backprop`、`geometry`、`kernel`、
