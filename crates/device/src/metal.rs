@@ -880,8 +880,7 @@ pub fn rmsnorm(
     chunk: usize,
 ) -> Result<Source> {
     let prep = Prep::of(signature, sample, chunk)?;
-    let (partial, norm) = metal_chunk_rmsnorm(kernel_source, signature, sample, chunk)?;
-    let device = concat(&partial, &[(norm.as_str(), NORM)])?;
+    let device = rmsnorm_device(kernel_source, signature, sample, chunk)?;
     let (x, gamma) = normalization_reads(signature)?;
     let fold = rms_fold(prep.output, prep.blocks, prep.len);
     let map = ["rms", x, gamma, prep.output];
@@ -909,6 +908,17 @@ pub fn rmsnorm(
     Ok(Source::Pair { device, host })
 }
 
+/// RMSNorm 设备段：部分平方和段与归一化段拼成一份设备源。
+fn rmsnorm_device(
+    kernel_source: &str,
+    signature: &Signature,
+    sample: &Sample,
+    chunk: usize,
+) -> Result<String> {
+    let (partial, norm) = metal_chunk_rmsnorm(kernel_source, signature, sample, chunk)?;
+    concat(&partial, &[(norm.as_str(), NORM)])
+}
+
 /// 分块 Softmax 程序：部分最大段 → `max` 折叠 → 部分指数和段 → `sum` 折叠 → 归一化段。
 ///
 /// # Errors
@@ -922,8 +932,7 @@ pub fn softmax(
 ) -> Result<Source> {
     let prep = Prep::of(signature, sample, chunk)?;
     // `max` 与 `sum` 各落一个单独缓冲，留给下一段当入口参数。
-    let (max, expsum, norm) = metal_chunk_softmax(kernel_source, signature, sample, chunk)?;
-    let device = concat(&max, &[(expsum.as_str(), EXPSUM), (norm.as_str(), NORM)])?;
+    let device = softmax_device(kernel_source, signature, sample, chunk)?;
     let x = only_read(signature)?;
     let parts = format!("b_{}", prep.output);
     let fold_max = fold(&parts, Some("b_max"), prep.blocks, MAX_STEP);
@@ -958,6 +967,17 @@ pub fn softmax(
         ],
     )?;
     Ok(Source::Pair { device, host })
+}
+
+/// Softmax 设备段：部分最大、指数和、归一化三段拼成一份设备源。
+fn softmax_device(
+    kernel_source: &str,
+    signature: &Signature,
+    sample: &Sample,
+    chunk: usize,
+) -> Result<String> {
+    let (max, expsum, norm) = metal_chunk_softmax(kernel_source, signature, sample, chunk)?;
+    concat(&max, &[(expsum.as_str(), EXPSUM), (norm.as_str(), NORM)])
 }
 
 /// 分块扫描程序：局部扫描段 → 携带前缀折叠（f64）→ 校正段。
