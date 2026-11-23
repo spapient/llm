@@ -105,7 +105,7 @@ fn xcrun(tool: &str, flags: &[String]) -> Command {
 }
 
 fn metal_driver_exe(dir: &Path) -> Result<PathBuf> {
-    metal_driver_exe_from(dir, &metal_driver(crate::dialect::MAX_OUT), "driver", "见证")
+    metal_driver_exe_from(dir, &metal_driver(MAX_OUT), "driver", "见证")
 }
 
 fn metal_readback(exe: &Path, metalib: &Path, count: usize) -> Result<Readback> {

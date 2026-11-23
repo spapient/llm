@@ -366,9 +366,7 @@ fn expr_mentions(expression: &Expr, name: &str) -> bool {
         Expr::Neg(value) | Expr::Abs(value) => expr_mentions(value, name),
         Expr::Binary { left, right, .. }
         | Expr::Min { left, right }
-        | Expr::Max { left, right } => {
-            expr_mentions(left, name) || expr_mentions(right, name)
-        }
+        | Expr::Max { left, right } => expr_mentions(left, name) || expr_mentions(right, name),
         Expr::Fma { a, b, c } => {
             expr_mentions(a, name) || expr_mentions(b, name) || expr_mentions(c, name)
         }

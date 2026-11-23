@@ -183,6 +183,10 @@ pub enum Expr {
     },
 }
 
+
+
+
+
 /// Verification failure for malformed or unsupported typed IR.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerificationError {
@@ -559,6 +563,7 @@ fn write_compound(source: &mut String, expression: &Expr, idx: &str) {
         Expr::F32(_) | Expr::Scalar(_) | Expr::Load(_) => {}
     }
 }
+
 
 fn write_binary(source: &mut String, op: Arith, left: &Expr, right: &Expr, idx: &str) {
     source.push('(');
