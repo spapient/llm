@@ -74,7 +74,7 @@
         k: usize,
         transposed: bool,
     ) {
-        let npad = n.div_ceil(NR) * NR;
+        let npad = align_up(n, NR);
         debug_assert_eq!(bpack.len(), npad * k);
         for jb in 0..npad / NR {
             panel_tile::<T, NR, COL_MAJOR>(b, bpack, n, k, jb * NR, jb * k * NR, transposed);
