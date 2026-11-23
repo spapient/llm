@@ -9,7 +9,7 @@ contract) with no arithmetic, and every mechanism is a pure computation with a t
 | pointwise | `RmsNorm`, `Rope`, `Silu`, `Gelu`, `Softmax`, `ResidualAdd`, `Scale`, `Add`, `Mul`, `ReduceSum`, `ReduceMax` |
 | conditional memory | `Bypass`, `MemoryBlock`, `Table` |
 
-Arithmetic lives in `llm-op`; this crate names the shapes, the bounds and the contracts, and by
+Arithmetic lives in `llm-nn` (kernel family); this crate names the shapes, the bounds and the contracts, and by
 `#[spec]` keeps "declared cost" and "executed op" the same fact.
 
 ## Mechanisms

@@ -185,7 +185,7 @@ impl Sample {
             .find(|buf| buf.name == name)
             .ok_or_else(|| {
                 Error::new(Code::Missing, format!("样本里没有缓冲 `{name}`"))
-                    .with("op::model::Sample::set")
+                    .with("prof::model::Sample::set")
             })?;
         if !buf.values.same_kind(&values) {
             return Err(Error::new(
@@ -196,7 +196,7 @@ impl Sample {
                     values.describe()
                 ),
             )
-            .with("op::model::Sample::set"));
+            .with("prof::model::Sample::set"));
         }
         let (want, got) = (buf.values.len(), values.len());
         if want != got {
@@ -204,7 +204,7 @@ impl Sample {
                 Code::Invalid,
                 format!("缓冲 `{name}` 声明了 {want} 个元素，换入 {got} 个"),
             )
-            .with("op::model::Sample::set"));
+            .with("prof::model::Sample::set"));
         }
         buf.values = values;
         Ok(())
@@ -245,7 +245,7 @@ fn shape(model: &Model, m: usize, n: usize) -> diagnostic::Result<()> {
             Code::Invalid,
             format!("形状 {m}x{n} 不自洽：m 必须是形状粒度 {group} 的正整数倍"),
         )
-        .with("op::model::bind"));
+        .with("prof::model::bind"));
     }
     Ok(())
 }
@@ -257,14 +257,14 @@ fn lengths(m: usize, n: usize, x: &[f32], w: &[f32]) -> diagnostic::Result<()> {
             Code::Invalid,
             format!("输入向量长度 {} 与输入宽度 {m} 不符", x.len()),
         )
-        .with("op::model::bind"));
+        .with("prof::model::bind"));
     }
     if w.len() != n * m {
         return Err(Error::new(
             Code::Invalid,
             format!("权重元素数 {} 与 {n}×{m} 不符", w.len()),
         )
-        .with("op::model::bind"));
+        .with("prof::model::bind"));
     }
     Ok(())
 }
@@ -277,9 +277,9 @@ fn dense(sample: &Sample) -> diagnostic::Result<()> {
             Code::Unsupported,
             "该算子的权重缓冲是打包字节（量化），真实 f32 权重不能注入：先按算子声明的分组量化",
         )
-        .with("op::model::bind")),
+        .with("prof::model::bind")),
         None => {
-            Err(Error::new(Code::Missing, "算子样本里没有权重缓冲 `w`").with("op::model::bind"))
+            Err(Error::new(Code::Missing, "算子样本里没有权重缓冲 `w`").with("prof::model::bind"))
         }
     }
 }
@@ -352,7 +352,7 @@ impl ShapeCtx {
         self.extents
             .clone()
             .group(label, base, divisor)
-            .map_err(|error| error.with("op::model::ShapeCtx"))
+            .map_err(|error| error.with("prof::model::ShapeCtx"))
     }
 }
 
@@ -403,14 +403,14 @@ impl Model {
                 Code::Unsupported,
                 "算子没有声明输入轴（`AxisRole::Input`），不能按投影计价",
             )
-            .with("op::model::Model::projection")
+            .with("prof::model::Model::projection")
         })?;
         let output = self.axis(AxisRole::Output).ok_or_else(|| {
             Error::new(
                 Code::Unsupported,
                 "算子没有声明输出轴（`AxisRole::Output`），不能按投影计价",
             )
-            .with("op::model::Model::projection")
+            .with("prof::model::Model::projection")
         })?;
         ShapeCtx::new([(input, in_features), (output, out_features)])
     }

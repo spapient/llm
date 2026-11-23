@@ -121,12 +121,12 @@ fn forward_rejects_mismatched_bufs() {
 }
 
 /// E10 计算可预测性（`#[ignore]`：
-/// `cargo test -p llm-op --lib -- e10_predictability --release --ignored --nocapture`）。
+/// `cargo test -p llm-nn --lib -- e10_predictability --release --ignored --nocapture`）。
 ///
 /// 口径与 §10.10 E10 卡一致：预热后对固定窗口（20 次 512×512×512 tile 矩阵乘）计 120 个
 /// 窗口墙钟，`CV_t = σ_t/μ_t`，并报 P50/P95/P99。热节流项本机无传感器轨迹，单列不混入。
 #[test]
-#[ignore = "E10 可预测性基准：cargo test -p llm-op --lib -- e10_predictability --release --ignored --nocapture"]
+#[ignore = "E10 可预测性基准：cargo test -p llm-nn --lib -- e10_predictability --release --ignored --nocapture"]
 fn e10_predictability() {
     let (m, n, k) = (512usize, 512usize, 512usize);
     let a = sample(m * k, 11);

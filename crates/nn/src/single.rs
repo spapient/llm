@@ -163,7 +163,7 @@ pub enum Precision {
 
 /// 「精度 × 档位 → 算子名」的全部已注册组合，唯一事实源。
 ///
-/// 表的行数就是 `crates/op` 里 gemm 骨架注册的算子数（6 条）；台账 v3.0.74 记有它们的来历。
+/// 表的行数就是 `nn` 里 gemm 骨架注册的算子数（6 条）；台账 v3.0.74 记有它们的来历。
 const RUNGS: [(Precision, Gauge, &str); 6] = [
     (Precision::F32, Gauge::Short, MatMul::OP),
     (Precision::F32, Gauge::Long, "matmul_f32"),

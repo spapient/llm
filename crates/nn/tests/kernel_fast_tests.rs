@@ -133,7 +133,7 @@ fn matches_scalar_on_prefill_shape() {
     check_fast_gemm(256, 256, 4096);
 }
 
-/// 吞吐基线：`cargo test --release -p llm-op --lib fast::bench_throughput -- --ignored --nocapture`
+/// 吞吐基线：`cargo test --release -p llm-nn --lib fast::bench_throughput -- --ignored --nocapture`
 #[test]
 #[ignore = "吞吐基线，手动跑"]
 fn bench_throughput() {

@@ -115,12 +115,12 @@ fn scan_matches_semigroup_recurrence() {
 }
 
 /// M1 log-log 斜率实测（`#[ignore]`：
-/// `cargo test -p llm-op --lib -- scan_loglog_slope --release --ignored --nocapture`）。
+/// `cargo test -p llm-nn --lib -- scan_loglog_slope --release --ignored --nocapture`）。
 ///
 /// 口径与 §10.10 M1 卡一致：n ∈ {4K..128K}，每点多测取最小值，对 (ln n, ln T) 做最小二乘，
 /// 报斜率 k 与其 95% CI。产品串行核 `scan_f32::forward` 与第二份实现 `scan_blelloch` 各测一条。
 #[test]
-#[ignore = "M1 复杂度基准：cargo test -p llm-op --lib -- scan_loglog_slope --release --ignored --nocapture"]
+#[ignore = "M1 复杂度基准：cargo test -p llm-nn --lib -- scan_loglog_slope --release --ignored --nocapture"]
 fn scan_loglog_slope() {
     let ns = [4096usize, 8192, 16384, 32768, 65536, 131072];
     let reps = 30usize;

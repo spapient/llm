@@ -279,7 +279,7 @@ fn avg_pool_counts_only_real_cells() {
     assert!((got[0] - x[0]).abs() < 1e-6, "剔除补零后只剩左上单元");
 }
 
-/// 卷积端到端吞吐（含 im2col + 分配）：`cargo test --release -p llm-op --lib -- --ignored --nocapture bench_conv`
+/// 卷积端到端吞吐（含 im2col + 分配）：`cargo test --release -p llm-nn --lib -- --ignored --nocapture bench_conv`
 #[test]
 #[ignore = "卷积吞吐基线，手动跑"]
 fn bench_conv() {

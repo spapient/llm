@@ -331,7 +331,7 @@ fn the_model_expansion_names_only_the_contract_crate() {
         "I4",
     );
     assert!(
-        !code.contains("::llm_op::"),
+        !code.contains("::llm_nn::"),
         "展开里不该出现注册表 crate 的路径：{code}"
     );
     assert!(

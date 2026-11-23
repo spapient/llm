@@ -4,8 +4,8 @@
 //! （写回分逐点 / 归约，并可把两个核拼成一个），当前不取代旧模板，也不宣称具备通用优化或 GPU 执行能力。
 //!
 //! ```text
-//! 声明层 crates/op/ops/<op>.{toml,k}   档案层 crates/prof/devices/<vendor>.toml
-//! 片段层 prim/<vendor>/<prim>.<ext>（数据在 `crates/prim`，本 crate 只拼接与 emit）
+//! 声明层 crates/prof/src/ops/<op>.{toml,k}   档案层 crates/prof/src/<vendor>/<vendor>.toml
+//! 片段层 prof/src/<vendor>/<prim>.<ext>（数据都在 `prof`，本 crate 只拼接与 emit）
 //!        ① expand  →  ② negotiate  →  ③ select  →  ④ substitute  →  ⑤ emit + cache
 //! ```
 //!
