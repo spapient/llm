@@ -141,6 +141,11 @@ fn substitute_compound(expression: &Expr, name: &str, replacement: &Expr) -> Exp
             left: Box::new(substitute(left, name, replacement)),
             right: Box::new(substitute(right, name, replacement)),
         },
+        Expr::Fma { a, b, c } => Expr::Fma {
+            a: Box::new(substitute(a, name, replacement)),
+            b: Box::new(substitute(b, name, replacement)),
+            c: Box::new(substitute(c, name, replacement)),
+        },
         leaf => leaf.clone(),
     }
 }

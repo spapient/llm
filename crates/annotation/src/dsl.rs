@@ -7,7 +7,7 @@ use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{format_ident, quote};
 use syn::{
-    BinOp, Error, Expr, ExprAssign, ExprBinary, ExprCall, ExprForLoop, ExprLit,
+    BinOp, Error, Expr, ExprAssign, ExprBinary, ExprForLoop, ExprLit, ExprMethodCall,
     ExprPath, ExprUnary, Ident, ItemFn, Lit, Pat, PatIdent, Stmt, Type, TypePath,
     TypeReference, UnOp, spanned::Spanned,
 };
@@ -494,16 +494,17 @@ fn parse_compound(expression: &Expr, idx: &str, params: &[Param]) -> syn::Result
     match expression {
         Expr::Binary(binary) => binary_expr(binary, idx, params),
         Expr::Unary(unary) => negate(unary, idx, params),
-        Expr::Call(call) => method_call(call, idx, params),
+        Expr::MethodCall(method) => method_call(method, idx, params),
+        Expr::Call(call) => match call.func.as_ref() {
+            Expr::MethodCall(method) => method_call(method, idx, params),
+            other => fail(other.span(), UNSUPPORTED),
+        },
         _ => fail(expression.span(), UNSUPPORTED),
     }
 }
 
 /// 方法组合子闭集：`abs()` 一元，`min(y)` / `max(y)` 二元；其余方法名在展开期打回。
-fn method_call(call: &ExprCall, idx: &str, params: &[Param]) -> syn::Result<TokenStream2> {
-    let Expr::MethodCall(method) = call.func.as_ref() else {
-        return fail(call.span(), UNSUPPORTED);
-    };
+fn method_call(method: &ExprMethodCall, idx: &str, params: &[Param]) -> syn::Result<TokenStream2> {
     let name = method.method.to_string();
     let Some((_, arity)) = METHODS.iter().find(|(known, _)| *known == name.as_str()) else {
         return fail(method.method.span(), "unsupported kernel method");

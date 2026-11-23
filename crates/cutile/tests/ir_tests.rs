@@ -225,6 +225,32 @@ fn abs_min_max_emit_math_libcalls() {
     assert!(source.contains("fminf("), "{source}");
 }
 
+/// 显式构造的 `fmaf` 作为一等表达式发射；它不依赖收缩通道，构造即保留。
+#[test]
+fn fma_emits_math_libcall() {
+    let value = Expr::Fma {
+        a: Box::new(Expr::Load("a".to_string())),
+        b: Box::new(Expr::Load("b".to_string())),
+        c: Box::new(Expr::Load("c".to_string())),
+    };
+    let kernel = Kernel::map(
+        "affine",
+        vec![
+            buf("a", Access::Read),
+            buf("b", Access::Read),
+            buf("c", Access::Read),
+            buf("out", Access::ReadWrite),
+            scalar("extent", ScalarType::Usize),
+        ],
+        "i",
+        "extent",
+        "out",
+        value,
+    );
+    let source = kernel.emit_c().expect("fma emits C");
+    assert!(source.contains("fmaf(a[i], b[i], c[i])"), "{source}");
+}
+
 /// `usize` 缓冲本身合法（还能当形参），但它装不下 `f32`，必须在校验期就被挡下。
 #[test]
 fn non_f32_bufs_are_rejected() {
@@ -590,6 +616,9 @@ fn evaluate(expression: &Expr, inputs: [f32; 2]) -> f32 {
         }
         Expr::Min { left, right } => evaluate(left, inputs).min(evaluate(right, inputs)),
         Expr::Max { left, right } => evaluate(left, inputs).max(evaluate(right, inputs)),
+        Expr::Fma { a, b, c } => {
+            evaluate(a, inputs).mul_add(evaluate(b, inputs), evaluate(c, inputs))
+        }
     }
 }
 

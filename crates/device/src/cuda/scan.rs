@@ -1,84 +1,19 @@
-pub(crate) fn program_head(segments: &[String]) -> String {
-    let mut text = String::from(
-        "#include <cuda_runtime.h>\n#include <cstdio>\n\
-         #define CUTILE_CUDA_CHECK() do { cudaError_t error = cudaDeviceSynchronize(); \
-         if (error != cudaSuccess) { fprintf(stderr, \"cuda: %s\\n\", cudaGetErrorString(error)); return 1; } } while (0)\n",
-    );
-    for (idx, segment) in segments.iter().enumerate() {
-        let piece = if idx == 0 {
-            segment.as_str()
-        } else {
-            entry_of(segment)
-        };
-        text.push_str(piece);
-        text.push_str("\n\n");
-    }
-    text
-}
+//! 分块扫描族：局部扫描段 + 携带前缀校正段，以及主机折叠前缀的串联驱动。多段公共装配在
+//! [`super::segments`]，这里只写扫描特有的两段生成与携带前缀折叠。
 
-/// 后续段的入口部分：从段内最后一个 `__global__` 起截断（preamble 与模板函数只在首段保留）。
-fn entry_of(segment: &str) -> &str {
-    const MARK: &str = "\n\n__global__ void ";
-    segment.rfind(MARK).map_or(segment, |at| &segment[at + 2..])
-}
+use crate::dialect::{
+    Cuda, bind_chunk_loop, carry_fold, chunk_head, inject_chunk_preamble, launch_args,
+    length_scalar, scan_correct_body, scalar_name, thread_param_typed,
+};
+use cutile::harness::output_name;
+use diagnostic::Result;
+use prof::model::Sample;
+use prof::sig::Signature;
 
-/// host 侧部分结果的脚手架：网格数 `G`、回读数组，无额外缓冲要释放。
-fn partial_scaffold(grid: usize) -> String {
-    format!("    int G = {grid};\n    float h_tmp[{grid}];\n")
-}
+use super::segments::{Stage, carry_scaffold, driver, launch};
+use super::shared::cuda_launch_params;
 
-/// [`driver`] 的零额外缓冲脚手架：部分结果直接落在输出缓冲的前 `G` 个槽。
-fn partial_scaffold_step(grid: usize) -> (String, &'static str) {
-    (partial_scaffold(grid), "")
-}
-
-/// 扫描的脚手架：块数 `G`、携带前缀设备缓冲 `d_c` 与主机数组 `h_c`（用完即释放）。
-fn carry_scaffold(grid: usize) -> (String, &'static str) {
-    (
-        format!(
-            "    int G = {grid};\n    float *d_c = 0;\n    cudaMalloc((void **)&d_c, G * sizeof(float));\n    float h_c[{grid}];\n"
-        ),
-        "    cudaFree(d_c);\n",
-    )
-}
-
-pub(crate) fn launch(entry: &str, grid: usize, args: &str, extra: &str) -> String {
-    launch_threads(entry, grid, 1, args, extra)
-}
-
-/// 带块内线程数的派发（归一化段逐元素，块内 256 线程；kernel 侧自带 `n < N` 守卫）。
-pub(crate) fn launch_threads(
-    entry: &str,
-    blocks: usize,
-    threads: usize,
-    args: &str,
-    extra: &str,
-) -> String {
-    let extra = if extra.is_empty() {
-        String::new()
-    } else {
-        format!(", {extra}")
-    };
-    format!("    {entry}<<<{blocks}, {threads}>>>({args}{extra});\n    CUTILE_CUDA_CHECK();\n")
-}
-
-/// 把 `y` 前 `G` 个槽的部分结果回读到 `h_tmp`。
-pub(crate) fn partial_copy(output: &str, grid: usize) -> String {
-    format!("    cudaMemcpy(h_tmp, d_{output}, {grid} * sizeof(float), cudaMemcpyDeviceToHost);\n")
-}
-
-/// 主机折叠部分最大值；初值与 `.k` 模板同口径（f32 最小正规数的负数）。
-fn fold_max() -> String {
-    String::from(
-        "    float max = -3.402823466e38f;\n    for (int i = 0; i < G; ++i) { if (h_tmp[i] > max) max = h_tmp[i]; }\n",
-    )
-}
-
-/// 主机折叠部分指数和。
-fn fold_sum() -> String {
-    String::from("    float sum = 0.0f;\n    for (int i = 0; i < G; ++i) { sum += h_tmp[i]; }\n")
-}
-
+/// 校正段入口（把携带前缀的衰减贡献加回块内）。
 pub(crate) const CORRECT: &str = "kernel_correct";
 
 /// CUDA 分块扫描的设备段：`(局部扫描, 校正)`。

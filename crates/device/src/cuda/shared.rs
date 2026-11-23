@@ -1,3 +1,13 @@
+//! CUDA host 驱动公共骨架：前导/收尾字面、MUSA 垫片、分配守卫、计时循环、缓冲声明与分配、
+//! 单次派发公共装配（[`Driver`]）、发射与位级回读。各形态子模块只换派发那一行，不另拼第二份
+//! host 流程。
+
+use crate::dialect::{Cuda, readback_bits};
+use cutile::harness::{c_literal, c_type, output_name};
+use diagnostic::{Code, Error, Result};
+use prof::model::{Sample, Values};
+use prof::sig::{Param, Signature};
+
 pub(crate) const CUDA_CHECK_PROLOGUE: &str = r#"
 #define CUTILE_CUDA_CHECK(expr) do { \
     cudaError_t cutile_error = (expr); \
@@ -130,9 +140,27 @@ impl<'a> Driver<'a> {
     }
 }
 
+/// 文件头一行 include 段 + 设备源码；设备源码缺尾换行时补一个，免得 `main` 粘在最后一行上。
+pub(crate) fn cuda_head(includes: &str, device_source: &str) -> String {
+    let mut text = String::from(includes);
+    text.push_str(device_source);
+    if !device_source.ends_with('\n') {
+        text.push('\n');
+    }
+    text
+}
+
+/// CUDA 前导：运行时与 stdio 两行 include + 设备源。
+pub(crate) fn cuda_prologue(device_source: &str) -> String {
+    cuda_head(
+        "#include <cuda_runtime.h>\n#include <cstdio>\n",
+        device_source,
+    )
+}
+
 /// 单次派发的完整 host 程序：前导（include + 设备源）、`main`、缓冲、一次发射、回读、释放。
 /// 逐点 / 网格 / 循环注入三种单次派发只在发射那一行上不同。
-fn program(
+pub(crate) fn program(
     device_source: &str,
     signature: &Signature,
     sample: &Sample,
@@ -263,4 +291,28 @@ pub(crate) fn cuda_launch_params(signature: &Signature) -> String {
     } else {
         format!("{bufs},\n    {scalars}")
     }
+}
+
+/// 收尾：释放每个缓冲参数对应的设备端指针（只释放真分配过的，标量是值传递）。
+pub(crate) fn cuda_release(signature: &Signature) -> String {
+    let mut text = String::new();
+    for param in signature
+        .params()
+        .iter()
+        .filter(|param| param.ctype.is_buf())
+    {
+        text.push_str(&format!("    cudaFree(d_{});\n", param.name));
+    }
+    text
+}
+
+/// 启动实参：只传缓冲（形状是编译期常量，不进内核形参）。
+pub(crate) fn buf_args(signature: &Signature) -> String {
+    signature
+        .params()
+        .iter()
+        .filter(|param| param.ctype.is_buf())
+        .map(|param| format!("d_{}", param.name))
+        .collect::<Vec<_>>()
+        .join(", ")
 }

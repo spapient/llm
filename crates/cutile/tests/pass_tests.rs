@@ -70,6 +70,14 @@ fn laws_normalize_bottom_up() {
             literal(3.0),
         ),
         (
+            Expr::Fma {
+                a: Box::new(literal(2.0)),
+                b: Box::new(literal(3.0)),
+                c: Box::new(literal(4.0)),
+            },
+            literal(10.0),
+        ),
+        (
             binary(
                 Arith::Mul,
                 load("a"),
@@ -144,4 +152,52 @@ fn run_rejects_invalid_kernels() {
         .run(kernel)
         .expect_err("non-usize extent is rejected");
     assert!(error.to_string().contains("loop extent"));
+}
+
+/// 收缩通道把 `a * b + c`（乘法在任一侧）收缩成 `fmaf`，且收敛后幂等。
+#[test]
+fn contracted_pipeline_fuses_multiply_add() {
+    let buf = |name: &str| {
+        param(
+            name,
+            ValueType::Buf {
+                element: ScalarType::F32,
+                access: Access::Read,
+            },
+        )
+    };
+    let affine = |value: Expr| {
+        Kernel::map(
+            "affine",
+            vec![out_buf(), extent(), buf("a"), buf("b"), buf("c")],
+            "i",
+            "extent",
+            "out",
+            value,
+        )
+    };
+
+    let left_mul = affine(binary(
+        Arith::Add,
+        binary(Arith::Mul, load("a"), load("b")),
+        load("c"),
+    ));
+    let right_mul = affine(binary(
+        Arith::Add,
+        load("c"),
+        binary(Arith::Mul, load("a"), load("b")),
+    ));
+
+    for kernel in [left_mul, right_mul] {
+        let contracted = Pipeline::contracted().run(kernel).expect("contract");
+        assert!(
+            matches!(contracted.write.expr(), Expr::Fma { .. }),
+            "expected fma, got {:?}",
+            contracted.write.expr()
+        );
+        let again = Pipeline::contracted()
+            .run(contracted.clone())
+            .expect("idempotent");
+        assert_eq!(contracted, again);
+    }
 }

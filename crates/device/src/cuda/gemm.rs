@@ -1,3 +1,11 @@
+//! WMMA 张量核特化的 f32 GEMM CUDA lowering：分块共享内存载入、4 片段 `mma_sync`、整除守卫消解。
+
+use crate::dialect::sample_usize;
+use cutile::harness::output_name;
+use diagnostic::{Code, Error, Result};
+use prof::model::Sample;
+use prof::sig::{Param, Signature};
+
 const TILE: usize = 64;
 /// 单个累积片段边长。
 const FRAG: usize = 32;

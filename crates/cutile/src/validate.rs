@@ -137,6 +137,11 @@ fn compound_type(params: &[Parameter], expression: &Expr) -> Result<ScalarType, 
         Expr::Binary { left, right, .. } | Expr::Min { left, right } | Expr::Max { left, right } => {
             binary_type(params, left, right)
         }
+        Expr::Fma { a, b, c } => ternary_type(params, a, b, c),
+        // 叶子由 [`value_type`] 前置分流到本函数之外；列全是穷尽 match 的要求。
+        Expr::F32(_) | Expr::Scalar(_) | Expr::Load(_) => {
+            Err(VerificationError::new("leaf expression reached compound typing"))
+        }
     }
 }
 
@@ -186,6 +191,26 @@ fn binary_type(
     }
     Err(VerificationError::new(
         "pointwise arithmetic operands must both be f32",
+    ))
+}
+
+/// 三元 f32 组合子（融合乘加）：三个操作数都必须算 f32，结果仍是 f32。
+fn ternary_type(
+    params: &[Parameter],
+    a: &Expr,
+    b: &Expr,
+    c: &Expr,
+) -> Result<ScalarType, VerificationError> {
+    let (a, b, c) = (
+        value_type(params, a)?,
+        value_type(params, b)?,
+        value_type(params, c)?,
+    );
+    if a == ScalarType::F32 && b == ScalarType::F32 && c == ScalarType::F32 {
+        return Ok(ScalarType::F32);
+    }
+    Err(VerificationError::new(
+        "fused multiply-add operands must all be f32",
     ))
 }
 

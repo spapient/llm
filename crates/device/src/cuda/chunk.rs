@@ -1,5 +1,22 @@
+//! 分块归一化族：RMSNorm 两段、Softmax 三段的设备 map 与 host 串联驱动。多段公共装配在
+//! [`super::segments`]，这里只写各族的段生成与折叠顺序。
+
+use crate::dialect::{
+    Cuda, EXPSUM, NORM, PARTIAL, RMS_EPS, chunk_head, length_scalar, readonly_bufs,
+};
+use cutile::harness::output_name;
+use diagnostic::{Code, Error, Result};
+use prof::model::Sample;
+use prof::sig::Signature;
+
+use super::segments::{
+    Stage, driver, fold_max, fold_sum, launch, launch_threads, partial_copy,
+    partial_scaffold_step,
+};
+use super::shared::buf_args;
+
 /// 部分归约 / 部分指数和 / 归一化三段入口：与 Metal 侧同源，直接复用 [`crate::dialect`] 的常量。
-pub(crate) use crate::dialect::{EXPSUM, NORM, PARTIAL};
+pub(crate) use crate::dialect::{EXPSUM as _, NORM as _, PARTIAL as _};
 
 /// 分块 RMSNorm 的设备段：`(部分平方和, 归一化)`。第一段写 `y[g] = Σx²` 的部分和，
 /// 主机折叠出 `rms` 后第二段按块回写 `y = gamma * x / rms`。
@@ -127,56 +144,6 @@ fn single_read<'a>(signature: &'a Signature, family: &str) -> Result<&'a str> {
         )
         .with("engine::cuda")),
     }
-}
-
-/// 分块族 host 程序的骨架：多段设备源（仅首段带 preamble）→ `main` → 主机缓冲 → 中间段脚手架 →
-/// 各段派发与主机折叠 → 回读 → 额外缓冲释放 → 全部缓冲释放。`scaffold` 给中间段声明与用完即释的
-/// 缓冲，`reduce` 写派发与折叠；归一化与扫描的差异全在这两个参数里，骨架只有这一份。
-fn driver(
-    segments: &[String],
-    signature: &Signature,
-    sample: &Sample,
-    chunk: usize,
-    args: &str,
-    scaffold: impl FnOnce(usize) -> (String, &'static str),
-    reduce: impl FnOnce(&mut String, Stage<'_>),
-) -> Result<String> {
-    let len = length_usize(signature, sample)?;
-    let grid = len.div_ceil(chunk);
-    let output = output_name(signature)?;
-    let mut text = program_head(segments);
-    text.push_str("int main(void) {\n");
-    text.push_str(&cuda_host_bufs_grid(
-        sample,
-        signature.params(),
-        output,
-        len,
-    )?);
-    let (decl, free) = scaffold(grid);
-    text.push_str(&decl);
-    reduce(
-        &mut text,
-        Stage {
-            len,
-            grid,
-            output,
-            args,
-        },
-    );
-    text.push_str(&cuda_readback(output, len, None, false));
-    text.push_str(free);
-    text.push_str(&cuda_release(signature));
-    text.push_str("    return 0;\n}\n");
-    Ok(text)
-}
-
-/// 驱动中段拿到的几何与实参：`len` 是归约长度，`grid` 是块数，`output` 是输出缓冲名，
-/// `args` 是签名的缓冲实参（追加标量由各段自己给 `extra`）。
-struct Stage<'a> {
-    len: usize,
-    grid: usize,
-    output: &'a str,
-    args: &'a str,
 }
 
 /// 一段块级归约的派发与回读：`PARTIAL` 段在块内归约后写进输出缓冲，再拷回主机供下一段折叠。

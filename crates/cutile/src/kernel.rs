@@ -555,6 +555,8 @@ fn write_compound(source: &mut String, expression: &Expr, idx: &str) {
         Expr::Fma { a, b, c } => write_call(source, "fmaf", &[a.as_ref(), b.as_ref(), c.as_ref()], idx),
         Expr::Min { left, right } => write_call(source, "fminf", &[left.as_ref(), right.as_ref()], idx),
         Expr::Max { left, right } => write_call(source, "fmaxf", &[left.as_ref(), right.as_ref()], idx),
+        // 叶子由 [`write_expr`] 前置分流到本函数之外；落到这里即空体，不再发射。
+        Expr::F32(_) | Expr::Scalar(_) | Expr::Load(_) => {}
     }
 }
 

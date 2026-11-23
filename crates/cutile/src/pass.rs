@@ -45,6 +45,15 @@ impl Pipeline {
         Self::new().push(Simplify).push(EliminateDeadParams)
     }
 
+    /// 收缩通道：化简 → 乘加收缩（`a * b + c` → 一条 FMA）→ 去死形参。收缩会改变舍入，因此
+    /// 不进入位精确的 [`Pipeline::standard`]，只在作者显式要求融合指令时启用。
+    pub fn contracted() -> Self {
+        Self::new()
+            .push(Simplify)
+            .push(FuseFma)
+            .push(EliminateDeadParams)
+    }
+
     /// Append one pass and return the manager for chaining.
     pub fn push<P: Pass + 'static>(mut self, pass: P) -> Self {
         self.passes.push(Box::new(pass));
@@ -119,6 +128,7 @@ pub(super) fn nodes(expression: &Expr) -> usize {
         Expr::Binary { left, right, .. } | Expr::Min { left, right } | Expr::Max { left, right } => {
             1 + nodes(left) + nodes(right)
         }
+        Expr::Fma { a, b, c } => 1 + nodes(a) + nodes(b) + nodes(c),
         _ => 1,
     }
 }
@@ -150,7 +160,7 @@ type Law = fn(&Expr) -> Option<Expr>;
 ///
 /// 这些判断不是靠注释成立的：`tests/ir_tests.rs` 的解释执行用例枚举每条律的形状，在 `±0`、次正规、
 /// `inf`、`NaN` 上逐位比较化简前后，塞进一条不成立的律就会红。
-const RULES: [(&str, Law); 8] = [
+const RULES: [(&str, Law); 9] = [
     ("double-negation", double_negation),
     ("mul-one", mul_one),
     ("div-one", div_one),
@@ -159,6 +169,7 @@ const RULES: [(&str, Law); 8] = [
     ("fold-binary", fold_binary),
     ("fold-abs", fold_abs),
     ("fold-minmax", fold_minmax),
+    ("fold-fma", fold_fma),
 ];
 
 /// 自底向上求范式：先把子节点各自规约到不动点，再在本节点上反复施加第一条命中的定律。
@@ -306,6 +317,17 @@ fn fold_minmax(expression: &Expr) -> Option<Expr> {
     finite(if minimum { left.min(right) } else { left.max(right) })
 }
 
+/// 三个字面量的 FMA 折叠到 `fmaf` 的正确舍入结果；与 [`fold_binary`] 一样，非有限结果不折叠。
+fn fold_fma(expression: &Expr) -> Option<Expr> {
+    let Expr::Fma { a, b, c } = expression else {
+        return None;
+    };
+    let (Expr::F32(a), Expr::F32(b), Expr::F32(c)) = (a.as_ref(), b.as_ref(), c.as_ref()) else {
+        return None;
+    };
+    finite(f32::from_bits(*a).mul_add(f32::from_bits(*b), f32::from_bits(*c)))
+}
+
 /// 非有限结果不折叠：`0.0 / 0.0` 留在 IR 里，发射出去仍是原来的语义。
 fn finite(value: f32) -> Option<Expr> {
     value.is_finite().then(|| Expr::F32(value.to_bits()))
@@ -340,8 +362,93 @@ fn expr_mentions(expression: &Expr, name: &str) -> bool {
         Expr::Binary { left, right, .. } | Expr::Min { left, right } | Expr::Max { left, right } => {
             expr_mentions(left, name) || expr_mentions(right, name)
         }
+        Expr::Fma { a, b, c } => {
+            expr_mentions(a, name) || expr_mentions(b, name) || expr_mentions(c, name)
+        }
         Expr::F32(_) => false,
     }
+}
+
+/// 乘加收缩：把 `a * b + c`（乘法可在任一侧）改写为一条 FMA。这是**舍入改变**的优化，等价于
+/// CUDA 的 fast-math，因此只出现在 [`Pipeline::contracted`]，绝不到位精确的 [`RULES`] 表里。
+struct FuseFma;
+
+impl Pass for FuseFma {
+    fn name(&self) -> &'static str {
+        "fuse-fma"
+    }
+
+    fn run(&self, kernel: Kernel) -> Result<Kernel, VerificationError> {
+        let mut kernel = kernel;
+        let expression = kernel.write.expr().clone();
+        *kernel.write.expr_mut() = contract(expression);
+        Ok(kernel)
+    }
+}
+
+/// 自底向上收缩：先缩子项，再在本节点上尝试 `(a * b) + c → fmaf(a, b, c)`。
+fn contract(expression: Expr) -> Expr {
+    let expression = match expression {
+        Expr::Neg(value) => Expr::Neg(Box::new(contract(*value))),
+        Expr::Abs(value) => Expr::Abs(Box::new(contract(*value))),
+        Expr::Binary { op, left, right } => Expr::Binary {
+            op,
+            left: Box::new(contract(*left)),
+            right: Box::new(contract(*right)),
+        },
+        Expr::Min { left, right } => Expr::Min {
+            left: Box::new(contract(*left)),
+            right: Box::new(contract(*right)),
+        },
+        Expr::Max { left, right } => Expr::Max {
+            left: Box::new(contract(*left)),
+            right: Box::new(contract(*right)),
+        },
+        Expr::Fma { a, b, c } => Expr::Fma {
+            a: Box::new(contract(*a)),
+            b: Box::new(contract(*b)),
+            c: Box::new(contract(*c)),
+        },
+        leaf => leaf,
+    };
+    fuse_multiply_add(expression.clone()).unwrap_or(expression)
+}
+
+/// `(a * b) + c` 或 `c + (a * b)` 命中则收缩；否则 `None`。只认乘法的字面形状，不递归。
+fn fuse_multiply_add(expression: Expr) -> Option<Expr> {
+    let Expr::Binary {
+        op: Arith::Add,
+        left,
+        right,
+    } = expression
+    else {
+        return None;
+    };
+    if let Expr::Binary {
+        op: Arith::Mul,
+        left: a,
+        right: b,
+    } = left.as_ref()
+    {
+        return Some(Expr::Fma {
+            a: a.clone(),
+            b: b.clone(),
+            c: right,
+        });
+    }
+    if let Expr::Binary {
+        op: Arith::Mul,
+        left: a,
+        right: b,
+    } = right.as_ref()
+    {
+        return Some(Expr::Fma {
+            a: a.clone(),
+            b: b.clone(),
+            c: left,
+        });
+    }
+    None
 }
 
 #[cfg(test)]

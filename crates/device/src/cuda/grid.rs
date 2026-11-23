@@ -1,3 +1,19 @@
+//! 单源网格族：逐点 / 循环注入内核、合作式 int4 GEMV、串行 harness，以及各自的 host 驱动。
+//! 公共 host 装配、缓冲与回读在 [`super::shared`]，这里只换内核壳与派发行。
+
+use crate::dialect::{Cuda, f32_output_shape, launch_args, length_scalar};
+use cutile::harness::{output_name, output_of};
+use diagnostic::{Code, Error, Result};
+use prof::decl::Grid;
+use prof::model::Sample;
+use prof::sig::{Param, Signature};
+
+use super::shared::{
+    CUDA_CHECK_PROLOGUE, CUDA_EPILOGUE, Driver, alloc_guards, buf_args, cuda_grid,
+    cuda_host_bufs_grid, cuda_launch, cuda_launch_params, cuda_prologue, cuda_readback,
+    cuda_release, musa_shims, program, timing_loop,
+};
+
 pub fn cuda_loop_kernel(
     kernel_source: &str,
     signature: &Signature,
@@ -78,24 +94,6 @@ pub fn cuda_loop_driver(
     )
 }
 
-/// 文件头一行 include 段 + 设备源码；设备源码缺尾换行时补一个，免得 `main` 粘在最后一行上。
-pub(crate) fn cuda_head(includes: &str, device_source: &str) -> String {
-    let mut text = String::from(includes);
-    text.push_str(device_source);
-    if !device_source.ends_with('\n') {
-        text.push('\n');
-    }
-    text
-}
-
-/// CUDA 前导：运行时与 stdio 两行 include + 设备源。
-pub(crate) fn cuda_prologue(device_source: &str) -> String {
-    cuda_head(
-        "#include <cuda_runtime.h>\n#include <cstdio>\n",
-        device_source,
-    )
-}
-
 /// `[grid]` 求出的各维大小 → `dim3` 的三维；缺的维保持 1（`dim3` 的缺省就是 1）。
 pub(crate) fn cuda_grid(dims: &[usize]) -> [usize; 3] {
     let mut grid = [1usize; 3];
@@ -103,17 +101,6 @@ pub(crate) fn cuda_grid(dims: &[usize]) -> [usize; 3] {
         *slot = *size;
     }
     grid
-}
-
-/// 启动实参：只传缓冲（形状是编译期常量，不进内核形参）。
-pub(crate) fn buf_args(signature: &Signature) -> String {
-    signature
-        .params()
-        .iter()
-        .filter(|param| param.ctype.is_buf())
-        .map(|param| format!("d_{}", param.name))
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 /// 生产态 CUDA/MUSA 基准驱动：每次采样用 `cudaEvent` 记一对时间戳，热身后按 `repeat` 轮
@@ -159,19 +146,6 @@ pub fn cuda_benchmark_driver(
     source.push_str(&cuda_release(signature));
     source.push_str(CUDA_EPILOGUE);
     Ok(source)
-}
-
-/// 收尾：释放每个缓冲参数对应的设备端指针（只释放真分配过的，标量是值传递）。
-pub(crate) fn cuda_release(signature: &Signature) -> String {
-    let mut text = String::new();
-    for param in signature
-        .params()
-        .iter()
-        .filter(|param| param.ctype.is_buf())
-    {
-        text.push_str(&format!("    cudaFree(d_{});\n", param.name));
-    }
-    text
 }
 
 /// 生产态 CUDA 分块归约内核（[`Dialect::chunk_reduce`] 的 CUDA 方言）。
