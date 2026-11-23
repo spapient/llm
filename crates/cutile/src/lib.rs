@@ -92,6 +92,7 @@ pub mod cache;
 pub mod cap;
 pub mod dirs;
 pub mod emit;
+mod expr;
 pub mod fuse;
 pub mod harness;
 pub mod kernel;

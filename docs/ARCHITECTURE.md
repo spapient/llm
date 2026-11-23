@@ -13,7 +13,7 @@
 | 层 | 成员 | 职责 | 不允许出现 |
 |---|---|---|---|
 | L1 基础设施 | `diagnostic`、`dtype`、`wire`、`tools` | 错误类型与声明数据树（`data`：构建期语料在运行期的形状，**没有解析器**）、精度闭集、与领域无关的字节码闭集（CRC-32 / LEB128 / Sink / 对齐落位 / `Invalid` 构造点）、静态质量门与回退判定 | 任何运行时领域语义、任何 TOML 解析 |
-| L2 数据层 | `prof` | 算子契约与设备档案同住一个 crate。契约侧出签名 / 样本 / 语义表 / 求和表达式 / 模板词法，以及 `atom` 这一层词汇（原语、存储位、数据类型、属性键、证据等级、需求与供给的代数 `Need` / `Provide` / `Span` / `KernelKey`）；档案侧出声明层与模板正文：`OpDecl` 解析、`catalogue` 的 52 条算子模板、六台设备的原语片段与见证（一台设备一个模块，`src/<设备>/` 放语料，`build.rs` 一次把它解析成每台设备的 `FRAGMENTS` / `PRIMS` / `EPILOGUE` / `DEVICE` 表，并在编译期拼成一张聚合表，按 `Layout` 决定读内嵌表还是读盘）。两者同住是因为它们是**同一条文法**：档案声明"这台设备能拼出 `dot`"，片段声明"`dot` 这么写"，模板与签名就是两边的共同语言——拆成两个 crate 只会多一层 `pub use` 转发，一行代码也不会少 | 契约/档案子域不得出现机制代码（拼接、协商、emit）、设备知识与厂商内核正文；主机 CPU 微内核本体只允许收在 `native` 受控岛（arch 门 / 特性探测 / `unsafe` 由 unsafe 岛白名单钉死），其余子域不持内核正文 |
+| L2 数据层 | `prof` | 算子契约与设备档案同住一个 crate。契约侧出签名 / 样本 / 语义表 / 求和表达式 / 模板词法，以及 `atom` 这一层词汇（原语、存储位、数据类型、属性键、证据等级、需求与供给的代数 `Need` / `Provide` / `Span` / `KernelKey`）；档案侧出声明层与模板正文：`OpDecl` 解析、`catalogue` 的 57 条算子模板、六台设备的原语片段与见证（一台设备一个模块，`src/<设备>/` 放语料，`build.rs` 一次把它解析成每台设备的 `FRAGMENTS` / `PRIMS` / `EPILOGUE` / `DEVICE` 表，并在编译期拼成一张聚合表，按 `Layout` 决定读内嵌表还是读盘）。两者同住是因为它们是**同一条文法**：档案声明"这台设备能拼出 `dot`"，片段声明"`dot` 这么写"，模板与签名就是两边的共同语言——拆成两个 crate 只会多一层 `pub use` 转发，一行代码也不会少 | 契约/档案子域不得出现机制代码（拼接、协商、emit）、设备知识与厂商内核正文；主机 CPU 微内核本体只允许收在 `native` 受控岛（arch 门 / 特性探测 / `unsafe` 由 unsafe 岛白名单钉死），其余子域不持内核正文 |
 | L3 内核 | `cutile` | 纯机制：协商 → 拼接 → emit → 缓存指纹，一行也不执行。只产设备源与指纹，换掉工具链不影响它；执行侧（工具链探测、编译、验见证、测速）随原 `optim` 并入 `shard`，因为那部分要碰编译器与设备，换掉执行方式不该动框架 | 设备厂商特判、运行时依赖 |
 | L4 运行时 | `tensor`、`storage`、`tokenizer` | 张量元数据、布局搬运、文本边界、检查点字节格式（`snapshot` 折进 `storage`：`Snapshot<Manifest>` 泛型，字节只写相对上一条的差 + CRC-32 尾部，不认识训练循环） | 模型语义、调度策略 |
 | L5 模型与训练 | `weights`、`autograd`、`nn`、`algorithm`、`shard` | 权重结构与自有 `.u` 容器、外部权重格式只读适配（torch `.bin` 的 ZIP+pickle 栈机、GGUF、JSON，只吐四要素不判语义）、反向图与显存计划、层定义与内核族（`nn` 同时拥有内核装配、神经算子与唯一注册表 `REGISTRY`——注册表必须持有内核类型才能装进语义表，故它与内核同住）、架构变体的参考语义（不产出 `ContractSpec`）、切分拓扑与集合通信、以及原 `optim` 的编译执行面 | 进程 / 服务语义 |
@@ -42,7 +42,7 @@
 
 **合并判据是「同构」，不是「消费者数量」。** 一个成员只有一条入边时，它通常是边界而不是肥肉：`storage` 独自持有全仓唯一的 `unsafe` 岛（`tensor` 是 `deny(unsafe_code)` 且有 11 个消费者），`algorithm` 刻意不产 `ContractSpec`（`nn` 专产），`shard` 坐 L5 而 `train` 坐 L6。可合并的硬信号只有一个——两个成员的 `lib.rs` / `build.rs` 除专名外**逐字相同**：六台设备 crate 并入 `prof`（原 `frag`）时按这条判据删掉 512 行、补回 55 行，净省 457 行。反面的账同样要算：一次合并能省的至多是该 crate 的 `Cargo.toml`（全仓 1060 行 / 33 个，约 32 行）加一段头注释，指望靠合并兑现「代码大量减少」是算错账。裁决过程与测量数字见 [lld.md](lld.md) v3.0.90。
 
-允许的边（当前全量，共 123 条，含 54 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benchmarks` / `testkit` 的边不参与运行时方向判定）：
+允许的边（当前全量，共 124 条，含 54 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benchmarks` / `testkit` 的边不参与运行时方向判定）：
 
 ```
 diagnostic → （叶：错误类型 + `toml`，被大量成员消费；运行时出边为零；`+dev` 只登记夹具）
@@ -61,7 +61,7 @@ algorithm  → diagnostic, nn    +dev: prof, testkit（架构变体的参考语�
 shard      → cutile, diagnostic, nn, prof    +dev: testkit（切分拓扑、集合通信与原 `optim` 的编译执行面）
 train      → autograd, diagnostic, nn, prof, shard, storage, tensor, weights    +dev: testkit
 engine     → diagnostic, storage, tensor    +dev: testkit
-device     → cutile, diagnostic, engine, prof, shard    +dev: nn, tensor, testkit（设备源 lowering 与厂商后端（`metal::executor` 是唯一 unsafe 岛）；`nn` 只在 dev 图里供对拍参考核与注册表，生产面不认识算子层）
+device     → cutile, diagnostic, engine, prof, shard, storage    +dev: nn, tensor, testkit（设备源 lowering 与厂商后端（`metal::executor` 是唯一 unsafe 岛）；`nn` 只在 dev 图里供对拍参考核与注册表，生产面不认识算子层）
 serve      → diagnostic, engine, nn, train, tensor, tokenizer, weights, wire    +dev: testkit（形状积只经 `tensor::product` 的饱和乘法：回绕出的偏小数会骗过权重长度核对）
 cli        → cutile, device, diagnostic, engine, nn, prof, serve, shard, tensor, tokenizer, train, weights    +dev: storage（L7 组合根：只做命令分派与各层装配，不定义新类型）
 annotation → （叶：工具边，`#[model]` 注解，不参与方向判定）
@@ -127,6 +127,7 @@ testkit    → （叶    +dev: autograd, cutile, nn, prof, tensor, tools, train,
 | `Buf` / `Allocator` / `CpuAllocator` / `LaneBuf` / `LaneView` / `LaneViewMut` | `storage` | 扁平缓冲与分配（排布归算子声明，本层不持有布局）；`Allocator` 是分配 / 释放 / 显式拷贝的边界 trait，设备后端在边界 crate 实现同一 trait；本层不做隐式跨设备拷贝。`LaneBuf` / `LaneView` / `LaneViewMut` 是 `f32` 与打包 `u8` 两条 lane 的公共缓冲与视图枚举，`engine` 的 `Buf`/`View`/`ViewMut` 与 `train` 的 `Data`/`View`/`ViewMut` 只做类型别名引用，不再各抄一份 `F32/U8` 副本；形状不在这里解释 |
 | `Manifest` / `ManifestEntry` | `storage` | 检查点字节格式的两条契约：`Manifest` 是"有序条目 + 数据段起点"，`ManifestEntry` 是一条条目的名字 / 布局 / 字节区间。字节格式因此不必反向依赖 `weights`——`weights::Header` 实现它，环不存在 |
 | `Stream` / `Graph` / `Launch` / `Device` / `Operand` / `OperandRole` / `ScalarSlots` | `engine` | 提交与执行，不编译 kernel；`Device` 只是运行时标识标签，不持私有句柄；`ScalarSlots` 是定长类型化闭集标量槽（[ADR 0043](adr/0043-program-scalar-slots.md)），位置参数不折进 1 元素 f32 缓冲 |
+| `VacantExecutor` | `engine` | 尚未接入运行时的设备后端位：只登记厂商标签，不持设备句柄 / 内核表 / 宿主缓冲；提交、登记内核、绑定与取回操作数一律回 `Code::Unsupported` 并带站点；真机管线落地后在同一 `Executor` 缝上升格，缝的其余消费方不改 |
 | `Sequence` / `Scheduler` / `Progress` | `engine` | 连续批与序列状态；准入后每生成一个 token 才预留它要落的那页，`Blocked` 时不改任何状态；`Sequence` 是已生成 token 的唯一存放处 |
 | `Page` / `Table` / `Cache` / `Pager` | `engine` | 分页 KV 的页管理与页内数据：引用计数 O(1) 判定越界 / 重复归还 / 下溢，归零才回池且只有最后一个持有者归还时清零；行宽由装载模型的一侧给 |
 | `Slot` | `engine` | 一个 token 在 KV 缓存里的位置（页号 + 页内偏移），写 kernel 的一侧不必自己再算一遍 |
