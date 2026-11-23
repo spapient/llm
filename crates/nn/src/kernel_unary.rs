@@ -128,7 +128,7 @@ macro_rules! unary_f32 {
         /// # Errors
         ///
         /// 输入与输出等长，否则返回说明。
-        pub fn forward(a: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
+        pub fn forward(a: View<'_, f32>, out: &mut [f32]) -> diagnostic::Result<()> {
             $crate::unary::forward::<$name>(a, out)
         }
 
