@@ -210,8 +210,8 @@ const HOST_PROGRAM: &str = r#"@imports@data
 int main(int argc, const char **argv) {
     @autoreleasepool {
         if (argc < 2) { fprintf(stderr, "usage: driver <metallib>\n"); return 2; }
-@prologue@@allocs@@body@        const float *out = (const float *)b_@output@.contents;
-@readback@
+@prologue@allocs@body        const float *out = (const float *)b_@output.contents;
+@readback
     }
     return 0;
 }
@@ -252,7 +252,7 @@ const DISPATCH_BODY: &str = r#"        id<MTLCommandQueue> queue = [device newCo
         id<MTLCommandBuffer> buffer = [queue commandBuffer];
         id<MTLComputeCommandEncoder> encoder = [buffer computeCommandEncoder];
         [encoder setComputePipelineState:pipeline];
-@sets@        [encoder dispatchThreads:MTLSizeMake(@gx, @gy, @gz) threadsPerThreadgroup:MTLSizeMake(@bx, @by, @bz)];
+@sets        [encoder dispatchThreads:MTLSizeMake(@gx, @gy, @gz) threadsPerThreadgroup:MTLSizeMake(@bx, @by, @bz)];
         [encoder endEncoding];
         [buffer commit];
         [buffer waitUntilCompleted];
@@ -504,11 +504,10 @@ pub fn metal_benchmark_driver(
 ) -> Result<String> {
     let (output, out_len) = f32_output_shape(signature, sample)?;
     let wiring = Wiring::of(signature, sample, None, true, 12)?;
-    let body = fill(
-        BENCH_BODY,
+    // 两层模板各填各的：一轮调度先落成文本，再嵌进基准正文——填空不跨模板递归。
+    let round = fill(
+        METAL_ROUND,
         &[
-            ("round", METAL_ROUND),
-            ("repeat", &repeat.to_string()),
             ("sets", &wiring.sets),
             ("grid_x", &grid[0].to_string()),
             ("grid_y", &grid[1].to_string()),
@@ -517,6 +516,10 @@ pub fn metal_benchmark_driver(
             ("thread_y", &threads[1].to_string()),
             ("thread_z", &threads[2].to_string()),
         ],
+    );
+    let body = fill(
+        BENCH_BODY,
+        &[("round", &round), ("repeat", &repeat.to_string())],
     );
     Ok(host_program(
         IMPORTS_STDIO,

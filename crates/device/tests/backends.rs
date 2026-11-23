@@ -770,20 +770,29 @@ fn assert_metal_compiles(stem: &str, msl: &str, flags: &[String]) {
     compiled.unwrap_or_else(|error| panic!("MSL 应能通过 xcrun metal 编译：{error}"));
 }
 
+/// `@` 在数据模板里是占位符前导；渲染后仍留下裸 `@` 说明某个占位漏填，而 Objective-C 只认
+/// `@autoreleasepool` 与 `@"..."`——这类残留在编译器眼里是语法错，在这里先拦下。
+fn stray_placeholder(text: &str) -> Option<&str> {
+    text.lines().find(|line| {
+        let mut rest = *line;
+        while let Some(at) = rest.find('@') {
+            let tail = &rest[at + 1..];
+            if !(tail.starts_with("autoreleasepool") || tail.starts_with('"')) {
+                return true;
+            }
+            rest = tail;
+        }
+        false
+    })
+}
+
 #[test]
-fn dump_metal_programs_for_diff() {
-    let Ok(dir) = std::env::var("DUMP_DIR") else {
-        return;
-    };
+fn metal_host_programs_leave_no_template_placeholders() {
     let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置算子");
     let op = catalogue.op("gemv_f32").expect("gemv_f32 声明");
     let model = nn::registry::model("gemv_f32").expect("gemv_f32 模型");
     let sample = (model.sample)(2, 4);
-    let write = |name: &str, text: &str| {
-        std::fs::write(format!("{dir}/{name}"), text).expect("写 dump");
-    };
-    let (_, host) = crate::metal::metal_harness("", &op.signature, &sample).expect("语义门");
-    write("harness.m", &host);
+    let (_, harness) = crate::metal::metal_harness("", &op.signature, &sample).expect("语义门");
     let dispatch = crate::metal::metal_dispatch_driver(
         &op.signature,
         &sample,
@@ -792,10 +801,9 @@ fn dump_metal_programs_for_diff() {
         [1, 1, 1],
     )
     .expect("派发");
-    write("dispatch.m", &dispatch);
-    let bench = crate::metal::metal_benchmark_driver(&op.signature, &sample, [2, 1, 1], [1, 1, 1], 3)
-        .expect("基准");
-    write("bench.m", &bench);
+    let bench =
+        crate::metal::metal_benchmark_driver(&op.signature, &sample, [2, 1, 1], [1, 1, 1], 3)
+            .expect("基准");
     let rop = catalogue.op("rmsnorm_f32").expect("rmsnorm 声明");
     let rmodel = nn::registry::model("rmsnorm_f32").expect("rmsnorm 模型");
     let rsample = (rmodel.sample)(2, 8);
@@ -804,5 +812,33 @@ fn dump_metal_programs_for_diff() {
     else {
         panic!("多段驱动应是 Pair");
     };
-    write("multistage.m", &host);
+    for (name, program) in [
+        ("语义门", &harness),
+        ("派发", &dispatch),
+        ("基准", &bench),
+        ("多段", &host),
+    ] {
+        assert_eq!(
+            stray_placeholder(program),
+            None,
+            "{name} host 程序有未填的模板占位：{program}"
+        );
+        assert_eq!(
+            program.matches("int main(").count(),
+            1,
+            "{name} 应只有一个 main"
+        );
+    }
+}
+
+/// 模板填空的契约：单趟扫描、相邻占位合法、未知占位原样保留（Objective-C 的 `@"..."` 靠这条）。
+#[test]
+fn template_fill_scans_once_and_keeps_unknown_placeholders() {
+    let fill = crate::dialect::fill;
+    assert_eq!(
+        fill("@a@b|@c.@", &[("a", "1"), ("b", "2"), ("c", "3")]),
+        "12|3.@"
+    );
+    assert_eq!(fill("@a", &[("a", "@b"), ("b", "X")]), "@b");
+    assert_eq!(fill("@\"x\"", &[]), "@\"x\"");
 }

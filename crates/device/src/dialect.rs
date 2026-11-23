@@ -400,12 +400,33 @@ pub(crate) fn readback_bits(src: &str, len: usize, indent: &str) -> String {
 
 /// 模板填空：`@name` 逐个替换成对应文本。设备源以「原始文本 + `@占位`」的形式保存成数据，装配处只
 /// 做一次填空——`format!` 的花括号转义不进模板，模板可逐字与厂商语法对照。全 crate 只有这一处。
+///
+/// 单趟扫描：占位名到第一个非标识符字符为止（`@a@b`、`@a,`、`@a ` 都是合法写法），已插入的文本
+/// 不会被二次替换，未知占位原样输出——Objective-C 的 `@"..."` 因此安然通过，写错的名字也不会被
+/// 静默吞掉。渲染结果里的裸 `@` 另有 host 程序的专项用例兜住。
 pub(crate) fn fill(template: &str, pairs: &[(&str, &str)]) -> String {
-    pairs
-        .iter()
-        .fold(template.to_owned(), |text, (name, value)| {
-            text.replace(&format!("@{name}"), value)
-        })
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(at) = rest.find('@') {
+        out.push_str(&rest[..at]);
+        let tail = &rest[at + 1..];
+        // 占位名到第一个非标识符字符为止：`@sets ` / `@bytes[` / `@a,` 都是同一个名字的词法边界。
+        let end = tail
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(tail.len());
+        let (name, after) = tail.split_at(end);
+        match pairs.iter().find(|(key, _)| *key == name) {
+            Some((_, value)) => out.push_str(value),
+            // 未知占位（含 Objective-C 的 `@"..."`）原样输出：不静默吞掉调用方写错的名字。
+            None => {
+                out.push('@');
+                out.push_str(name);
+            }
+        }
+        rest = after;
+    }
+    out.push_str(rest);
+    out
 }
 
 /// 输出缓冲的（名字，元素数）：只接受非空 f32，回读路径按 float 解释字节。三端 benchmark/回读共用。
