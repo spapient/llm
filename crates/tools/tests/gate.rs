@@ -27,7 +27,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use diagnostic::data::{Table, Value};
 use llm_tools::{
     analyze, call, ccn, docs, dup,
     gate::{Gate, Metric, Over},
@@ -543,10 +542,10 @@ fn walk_sources(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 // ---------------------------------------------------------------------------
-// Gate 结构本身：阈值解析、闭集键校验、棘轮结清（见 `gate/ratchet.rs`）
+// Gate 结构本身：阈值解析、闭集键校验、棘轮结清（见 `ratchet.rs`）
 // ---------------------------------------------------------------------------
 
-#[path = "gate/ratchet.rs"]
+#[path = "ratchet.rs"]
 mod ratchet;
 
 /// 架构变体对拍用例总数的下限：17 份逐族对拍、245 条用例（`algorithm` 恢复后的实测值）。
