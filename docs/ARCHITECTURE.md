@@ -90,10 +90,9 @@ testkit    → （叶    +dev: autograd, cutile, nn, prof, tensor, tools, train,
 | `Expr` / `Extents` / `Operand` / `Axes` / `Bits` / `Cost` / `Buf` | `prof` | 求和表达式的语义：一条式子推出 `flops` 与最少流量；`Buf` 是内核样本的具名缓冲。不认识设备、tile 或片段 |
 | `Signature` / `Sample` / `Model` | `prof` | 算子声明与语义（签名 / 样本 / 标量参考）；签名是 ABI 的唯一事实源，实参顺序、输出名与输出类型都由它派生；`bind` 是真实数据进入样本的唯一入口 |
 | `Op` | `prof` | 算子的注册身份：注册名与可微性由 `Operator` 派生，模板正文归目录，注册表是它唯一的投影面 |
-| `Capability` | `prof` | 后端能力表一条登记：一副骨架族支持一个元素档；只放骨架族与元素档，不认识设备字面量，backend 维留待 P3 对账扩列 |
+| `Capability` | `prof` | 后端能力表：一条登记「一副骨架族支持哪个元素档」，`supports` 按骨架族 × 元素档两维查表，缺项返回 `false` 由上层按缺的是哪一族、哪一档定位，不回泛化 `Unsupported`；第三维 `backend` 留待接 `Executor`/后端真实实现逐条对账后再补，本层不认识设备字面量 |
 | `Precision` | `nn` | 收缩轴可变 GEMM 的精度契约（元素类型 + 累加器 + 一次乘加），遍历与尺寸校验只写一份 |
 | `OperandSpec` / `FormulaCache` / `FormulaOwner` / `Row` / `Operator` | `prof` | 打包格式的静态表（`Row` 全 `const`）、表达式缓存，以及六族骨架之上的统一语义契约（[ADR 0050](adr/0050-operator-base.md)）。`FormulaOwner` 是一条求和表达式的唯一载体：`EXPR` / `OPERANDS` / `FRAME` 加**每个实现一份**的缓存单元格——写在泛型骨架里的 `static` 只有一份，先解析的式子会覆盖后面的，故缓存按实现分而不是按骨架分 |
-| `Capability` | `prof` | 后端能力表：一条登记「一副骨架族支持哪个元素档」，`supports` 按骨架族 × 元素档两维查表，缺项返回 `false` 由上层按缺的是哪一族、哪一档定位，不回泛化 `Unsupported`；第三维 `backend` 留待接 `Executor`/后端真实实现逐条对账后再补，本层不认识设备字面量 |
 | `Format` / `Element` / `Conf` | `nn` | 打包格式的派生配置（`Conf` 只收骨架运行期要的 `cpb` / `zero` / `offsets`）与样本缓冲元素闭集 |
 | `Template` / `Segment` / `LayoutSpec` / `Schedule` / `Masking` | `prof` | 声明侧的三张闭集：模板词法、布局构造子与调度模板；`cutile` 只消费，不持第二份 |
 | `OpDecl` | `prof` | 声明解析结果（名字 + 槽位 + 档位 + 供给）：只由 `src/ops/` 语料解析出来，不认识内核类型 |
@@ -180,7 +179,7 @@ testkit    → （叶    +dev: autograd, cutile, nn, prof, tensor, tools, train,
 | `Snapshot` / `Format` / `Facts` | `storage`（`snapshot` 模块） | 检查点字节格式与恢复事实：字节只写相对上一条的差、尾部 CRC-32；`verify` 只验字节，`check_weights` 要求条目表与权重文件逐条相同。不依赖任何训练侧类型，写出同样的字节即可换掉实现 |
 | `Moments` / `SlotMoments` / `GradAccum` / `Ties` | `storage`（`snapshot` 模块） | 快照携带的优化器状态段：矩状态按槽位自持、累积梯度带计数、权重绑定表是 `(源槽, 回填槽)` 下标对；编解码与字节格式同源，训练侧只读写不重新定义 |
 | `Schedule` / `Anneal` / `Step` / `Session` / `TrainConfig` / `ParamSlot` / `Checkpoint` / `Distributed` | `train` | 训练循环状态：纯函数学习率调度与衰减曲线、一次会话复用同一张图 / 缓冲 / 优化器、参数槽与分布式装配（后端契约在 `shard`） |
-| `Batch` / `Dataset` / `Chunks` / `Loader` / `LoaderConfig` | `train`（`dataset` 模块） | 训练样本：借用调用方 token 缓冲（零分配 / 零拷贝），两个构造函数共用同一份几何校验，批总数在构造期算好，`Dataset` 对象安全；`LoaderConfig` 收口批几何（rows/cols）与三态互斥采样方式（权重 / 洗牌 / 顺序）到构造期，`Loader` 是按配置装配批的泛型实现 |
+| `Batch` / `Dataset` / `Chunks` | `train`（`samples` 模块） | 训练样本：借用调用方 token 缓冲（零分配 / 零拷贝），两个构造函数共用同一份几何校验，批总数在构造期算好，`Dataset` 对象安全 |
 | `Optimizer` / `Sgd` / `Adam` / `Group` / `Slot` / `OwnedSlot` | `train` | 优化器：对象安全 trait，矩状态按槽位编号自持；参数组由 `ParamRole` 派生，不按字段名猜（矩状态与累积梯度的**类型**归 `storage`，本层只持有并步进） |
 | `Muon` | `train` | 矩阵参数的近似正交化更新：更新量只由方向决定，非矩阵槽**拒绝**而不是悄悄跳过 |
 | `Bufs` / `Kernel` / `Reference` / `Data` / `View` / `ViewMut` / `Kind` / `Lane` / `Sealed` / `Inputs` / `OperatorSetOps` | `train` | 激活缓冲：`autograd::Store` 在训练侧的落地（按计划分配与交还、按等长空闲表复用），算术交给 `Kernel`；本层不定义算子、不碰 `unsafe`。`Data`/`View`/`ViewMut`/`Kind` 是 `storage::LaneBuf`/`LaneView`/`LaneViewMut`/`Lane` 的别名，本层只保留 lane 静态契约（`Lane`/`Inputs`/`Sealed`）与 `DType`→lane 映射 |
