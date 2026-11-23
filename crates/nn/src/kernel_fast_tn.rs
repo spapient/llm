@@ -1,5 +1,5 @@
 //! 线性层布局（TN）的稠密 f32 GEMM：`out[rows,n] = x[rows,k] · w[n,k]ᵀ`。
-use tensor::{View, ViewMut};
+use tensor::View;
 
 use super::pack::{group_panel, pack_panel};
 use super::pool::{Bufs, Shape, pool, run_pooled};
@@ -17,14 +17,13 @@ pub const MIN_ROWS: usize = MR;
 /// # Panics
 ///
 /// 三条缓冲长度不足 `rows·k` / `n·k` / `rows·n` 时 panic（调用方先校验）。
-pub fn gemm_f32_tn(x: View<'_, f32>, w: View<'_, f32>, out: ViewMut<'_, f32>) {
+pub fn gemm_f32_tn(x: View<'_, f32>, w: View<'_, f32>, out: &mut [f32]) {
     assert_eq!(x.dims().len(), 2, "gemm_f32_tn 需要二维输入");
     assert_eq!(w.dims().len(), 2, "gemm_f32_tn 需要二维输入");
     let (rows, k) = (x.dims()[0], x.dims()[1]);
     let (n, k2) = (w.dims()[0], w.dims()[1]);
     assert_eq!(k, k2, "gemm_f32_tn 收缩轴不符");
     let (x, w) = (x.as_slice(), w.as_slice());
-    let out = out.into_slice_mut();
     check_dims_tn(x, w, rows, n, k, out);
     let t = threads_override().min(rows.div_ceil(MR)).max(1);
     if t <= 1 {

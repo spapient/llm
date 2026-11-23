@@ -4,7 +4,7 @@
 use std::thread;
 
 use diagnostic::{Code, Error, Result};
-use tensor::{View, ViewMut};
+use tensor::View;
 
 #[path = "kernel_fast_pack.rs"]
 mod pack;
@@ -81,7 +81,7 @@ pub fn gemm_f32(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f
 
 /// 显式错误版稠密 f32 GEMM：三条缓冲与 `(m, n, k)` 严格相等才跑，不符返回 [`Code::Invalid`]，
 /// 不 panic。算术同 [`gemm_f32`]（NEON 微内核 + 多槽池）。
-pub fn gemm_f32_checked(a: View<'_, f32>, b: View<'_, f32>, out: ViewMut<'_, f32>) -> Result<()> {
+pub fn gemm_f32_checked(a: View<'_, f32>, b: View<'_, f32>, out: &mut [f32]) -> Result<()> {
     let (m, k) = super::matmul::dim2(a.dims(), "gemm_f32")?;
     let (k2, n) = super::matmul::dim2(b.dims(), "gemm_f32")?;
     if k != k2 {
@@ -90,7 +90,6 @@ pub fn gemm_f32_checked(a: View<'_, f32>, b: View<'_, f32>, out: ViewMut<'_, f32
             format!("gemm_f32 收缩轴不符：a·k={k}，b·k={k2}"),
         ));
     }
-    let out = out.into_slice_mut();
     if out.len() != m * n {
         return Err(Error::new(
             Code::Invalid,

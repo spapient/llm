@@ -3,7 +3,7 @@
 use crate::formula::FormulaOwner;
 use crate::model::{AxisRole, AxisSpec, Buf, Cost, Sample, ShapeCtx, Values};
 use diagnostic::{Code, Error};
-use tensor::{View, ViewMut};
+use tensor::View;
 
 /// 归约算子随语义变化的部分。
 pub trait Reduce: FormulaOwner {
@@ -81,9 +81,8 @@ pub fn reference<R: Reduce>(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
 /// # Errors
 ///
 /// 输出缓冲不是单元素时返回说明。
-pub fn forward<R: Reduce>(a: View<'_, f32>, out: ViewMut<'_, f32>) -> diagnostic::Result<()> {
+pub fn forward<R: Reduce>(a: View<'_, f32>, out: &mut [f32]) -> diagnostic::Result<()> {
     let a = a.as_slice();
-    let out = out.into_slice_mut();
     if out.len() != 1 {
         return Err(Error::new(
             Code::Invalid,
@@ -138,7 +137,7 @@ macro_rules! reduce_f32 {
         /// # Errors
         ///
         /// 输出不是单元素时返回说明。
-        pub fn forward(a: tensor::View<'_, f32>, out: tensor::ViewMut<'_, f32>) -> diagnostic::Result<()> {
+        pub fn forward(a: tensor::View<'_, f32>, out: &mut [f32]) -> diagnostic::Result<()> {
             $crate::reduce::forward::<$name>(a, out)
         }
 
