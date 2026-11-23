@@ -194,6 +194,37 @@ fn generated_length_names_cannot_collide_with_parameters() {
     assert!(error.to_string().contains("generated buffer length"));
 }
 
+/// `abs` / `min` / `max` 发射成 math 库调用，并带上 `<math.h>`。
+#[test]
+fn abs_min_max_emit_math_libcalls() {
+    let zero = Expr::F32(0.0f32.to_bits());
+    let value = Expr::Min {
+        left: Box::new(Expr::Max {
+            left: Box::new(Expr::Load("a".to_string())),
+            right: Box::new(zero),
+        }),
+        right: Box::new(Expr::Abs(Box::new(Expr::Load("b".to_string())))),
+    };
+    let kernel = Kernel::map(
+        "clampish",
+        vec![
+            buf("a", Access::Read),
+            buf("b", Access::Read),
+            buf("out", Access::ReadWrite),
+            scalar("extent", ScalarType::Usize),
+        ],
+        "i",
+        "extent",
+        "out",
+        value,
+    );
+    let source = kernel.emit_c().expect("abs/min/max emit C");
+    assert!(source.contains("#include <math.h>"), "{source}");
+    assert!(source.contains("fmaxf(a[i], 0.0f)"), "{source}");
+    assert!(source.contains("fabsf(b[i])"), "{source}");
+    assert!(source.contains("fminf("), "{source}");
+}
+
 /// `usize` 缓冲本身合法（还能当形参），但它装不下 `f32`，必须在校验期就被挡下。
 #[test]
 fn non_f32_bufs_are_rejected() {
@@ -553,9 +584,12 @@ fn evaluate(expression: &Expr, inputs: [f32; 2]) -> f32 {
         Expr::F32(bits) => f32::from_bits(*bits),
         Expr::Load(name) | Expr::Scalar(name) => slot(name),
         Expr::Neg(value) => -evaluate(value, inputs),
+        Expr::Abs(value) => evaluate(value, inputs).abs(),
         Expr::Binary { op, left, right } => {
             op.apply(evaluate(left, inputs), evaluate(right, inputs))
         }
+        Expr::Min { left, right } => evaluate(left, inputs).min(evaluate(right, inputs)),
+        Expr::Max { left, right } => evaluate(left, inputs).max(evaluate(right, inputs)),
     }
 }
 

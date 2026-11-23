@@ -90,6 +90,28 @@ fn scaled_negation() -> Kernel {
     )
 }
 
+/// `out[i] = max(min(abs(a[i]), 2.0), -1.0)`：绝对值 + 二元 min/max 一条链，覆盖新组合子的发射对拍。
+fn clipped() -> Kernel {
+    Kernel::map(
+        "clipped",
+        vec![
+            buf("a", Access::Read),
+            buf("output", Access::ReadWrite),
+            length("extent"),
+        ],
+        "i",
+        "extent",
+        "output",
+        Expr::Max {
+            left: Box::new(Expr::Min {
+                left: Box::new(Expr::Abs(Box::new(load("a")))),
+                right: Box::new(Expr::F32(2.0f32.to_bits())),
+            }),
+            right: Box::new(Expr::F32((-1.0f32).to_bits())),
+        },
+    )
+}
+
 /// `out[0] += a[k] * b[k]`：归约族的写回形状。
 fn dot() -> Kernel {
     Kernel::reduce(
@@ -308,6 +330,23 @@ fn negation_and_division_match_rust_including_signed_zero() {
 }
 
 #[test]
+fn abs_min_max_emitted_c_matches_rust_bit_for_bit() {
+    let input = adversarial();
+    let call = format!("clipped(input, {LEN}, output, {LEN}, {LEN})");
+    let run = run(
+        "clipped",
+        &clipped().emit_c().expect("clipped emits C"),
+        &pointwise_main(&call, &input),
+    );
+    assert_eq!(run.rc, 0);
+    let expected: Vec<f32> = input
+        .iter()
+        .map(|value| value.abs().min(2.0f32).max(-1.0f32))
+        .collect();
+    assert_same(&run.bits, &expected, "clipped");
+}
+
+#[test]
 fn reduce_emitted_c_accumulates_in_the_same_order() {
     let a = adversarial();
     let b = rotated(&a);
@@ -494,6 +533,34 @@ fn dot_reduce(a: &[f32], b: &[f32], out: &mut [f32], len: usize) {
     for k in 0..len {
         out[0] += a[k] * b[k];
     }
+}
+
+/// 宏前端把 `.abs()` / `.min()` / `.max()` 翻成同一组新组合子，执行链与手写 IR 逐位一致。
+#[crate::dsl]
+#[allow(dead_code)]
+fn clipped_dsl(input: &[f32], output: &mut [f32], extent: usize) {
+    for i in 0..extent {
+        output[i] = input[i].abs().min(2.0).max(-1.0);
+    }
+}
+
+#[test]
+fn macro_method_front_end_matches_rust_after_execution() {
+    let input = adversarial();
+    let call = format!("clipped_dsl(input, {LEN}, output, {LEN}, {LEN})");
+    let run = run(
+        "clipped_dsl",
+        &__dsl_ir_clipped_dsl()
+            .emit_c()
+            .expect("macro method IR emits C"),
+        &pointwise_main(&call, &input),
+    );
+    assert_eq!(run.rc, 0);
+    let expected: Vec<f32> = input
+        .iter()
+        .map(|value| value.abs().min(2.0f32).max(-1.0f32))
+        .collect();
+    assert_same(&run.bits, &expected, "clipped_dsl");
 }
 
 #[test]

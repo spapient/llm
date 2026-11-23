@@ -69,15 +69,13 @@ pub enum ValueType {
 }
 
 impl ValueType {
-    /// C declaration for this parameter, or `None` when the element type has no C spelling.
-    fn c_type(self) -> Option<&'static str> {
+    /// C declaration for this parameter, or `None` when the element type has no buffer spelling.
+    fn c_type(self) -> Option<String> {
         match self {
-            ValueType::Scalar(element) => Some(element.c_name()),
-            ValueType::Buf {
-                element: ScalarType::F32,
-                access,
-            } => Some(access.c_pointer()),
-            ValueType::Buf { .. } => None,
+            ValueType::Scalar(element) => Some(element.c_name().to_string()),
+            ValueType::Buf { element, access } => {
+                element.buffer_ok().then(|| access.c_pointer(element.c_name()))
+            }
         }
     }
 
@@ -85,15 +83,11 @@ impl ValueType {
         matches!(self, ValueType::Buf { .. })
     }
 
-    /// `f32` 缓冲是唯一能发射成 C 的缓冲类型；`usize` 缓冲在校验阶段就被打回。
+    /// 标量总能发射；缓冲元素必须在 [`ScalarType::buffer_ok`] 闭集内，否则校验阶段就打回。
     pub(crate) fn element_ok(self) -> bool {
         match self {
             ValueType::Scalar(_) => true,
-            ValueType::Buf {
-                element: ScalarType::F32,
-                ..
-            } => true,
-            ValueType::Buf { .. } => false,
+            ValueType::Buf { element, .. } => element.buffer_ok(),
         }
     }
 }
@@ -153,10 +147,35 @@ pub enum Expr {
     Load(String),
     /// Negate an f32 expression.
     Neg(Box<Expr>),
+    /// Absolute value of an f32 expression.
+    Abs(Box<Expr>),
     /// Binary f32 arithmetic.
     Binary {
         /// Operation.
         op: Arith,
+        /// Left operand.
+        left: Box<Expr>,
+        /// Right operand.
+        right: Box<Expr>,
+    },
+    /// Fused multiply-add `a * b + c`, evaluated with a single rounding.
+    Fma {
+        /// Multiplicand.
+        a: Box<Expr>,
+        /// Multiplier.
+        b: Box<Expr>,
+        /// Addend.
+        c: Box<Expr>,
+    },
+    /// Element-wise minimum of two f32 expressions.
+    Min {
+        /// Left operand.
+        left: Box<Expr>,
+        /// Right operand.
+        right: Box<Expr>,
+    },
+    /// Element-wise maximum of two f32 expressions.
+    Max {
         /// Left operand.
         left: Box<Expr>,
         /// Right operand.
@@ -317,6 +336,13 @@ impl Kernel {
         Pipeline::standard().run(self.clone())
     }
 
+    /// Run the contracted pipeline: standard simplification plus multiply-add contraction
+    /// (`a * b + c` → a single fused multiply-add). Contraction changes rounding, so it is opt-in;
+    /// use it for inner-product / affine kernels that want the fused instruction.
+    pub fn optimize_contracted(&self) -> Result<Self, VerificationError> {
+        Pipeline::contracted().run(self.clone())
+    }
+
     /// Emit portable C; return status 1 when a guarded length is violated.
     pub fn emit_c(&self) -> Result<String, VerificationError> {
         self.emit(Target::C)
@@ -373,9 +399,9 @@ impl Target {
 
     /// 形参的 C 拼写。`.k` 把 `usize` 长度标量收敛成 `int`（签名解析认 `int`），其余同
     /// [`ValueType::c_type`]。
-    fn declaration(self, ty: ValueType) -> Option<&'static str> {
+    fn declaration(self, ty: ValueType) -> Option<String> {
         match (self, ty) {
-            (Target::K, ValueType::Scalar(ScalarType::Usize)) => Some("int"),
+            (Target::K, ValueType::Scalar(ScalarType::Usize)) => Some("int".to_string()),
             _ => ty.c_type(),
         }
     }
@@ -385,10 +411,10 @@ impl Target {
         matches!(self, Target::C)
     }
 
-    /// 头文件。`.k` 不要——vendor 骨架已经 include 过。
+    /// 头文件。`.k` 不要——vendor 骨架已经 include 过。`<math.h>` 供 `fabsf` / `fminf` / `fmaxf`。
     fn prologue(self, source: &mut String) {
         if let Target::C = self {
-            source.push_str("#include <stddef.h>\n");
+            source.push_str("#include <stddef.h>\n#include <math.h>\n");
         }
     }
 
@@ -524,8 +550,11 @@ fn write_compound(source: &mut String, expression: &Expr, idx: &str) {
             write_expr(source, value, idx);
             source.push(')');
         }
+        Expr::Abs(value) => write_call(source, "fabsf", &[value.as_ref()], idx),
         Expr::Binary { op, left, right } => write_binary(source, *op, left, right, idx),
-        _ => {}
+        Expr::Fma { a, b, c } => write_call(source, "fmaf", &[a.as_ref(), b.as_ref(), c.as_ref()], idx),
+        Expr::Min { left, right } => write_call(source, "fminf", &[left.as_ref(), right.as_ref()], idx),
+        Expr::Max { left, right } => write_call(source, "fmaxf", &[left.as_ref(), right.as_ref()], idx),
     }
 }
 
@@ -534,6 +563,19 @@ fn write_binary(source: &mut String, op: Arith, left: &Expr, right: &Expr, idx: 
     write_expr(source, left, idx);
     let _ = write!(source, " {} ", op.c_symbol());
     write_expr(source, right, idx);
+    source.push(')');
+}
+
+/// Emit a C function call over already-rendered argument expressions, comma-separated.
+fn write_call(source: &mut String, function: &str, args: &[&Expr], idx: &str) {
+    source.push_str(function);
+    source.push('(');
+    for (position, argument) in args.iter().enumerate() {
+        if position != 0 {
+            source.push_str(", ");
+        }
+        write_expr(source, argument, idx);
+    }
     source.push(')');
 }
 

@@ -7,8 +7,9 @@ use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{format_ident, quote};
 use syn::{
-    BinOp, Error, Expr, ExprAssign, ExprBinary, ExprForLoop, ExprLit, ExprPath, ExprUnary, Ident,
-    ItemFn, Lit, Pat, PatIdent, Stmt, Type, TypePath, TypeReference, UnOp, spanned::Spanned,
+    BinOp, Error, Expr, ExprAssign, ExprBinary, ExprCall, ExprForLoop, ExprLit,
+    ExprPath, ExprUnary, Ident, ItemFn, Lit, Pat, PatIdent, Stmt, Type, TypePath,
+    TypeReference, UnOp, spanned::Spanned,
 };
 
 /// 一处拒绝语的构造：`Error::new` 直接塞进 `return` 会让每条错误路径都折成四行。
@@ -467,8 +468,9 @@ fn render(function: &ItemFn, params: &[Param], body: &Body) -> TokenStream2 {
 }
 
 /// 表达式这一族的统一拒绝语：把「能用什么」写在一处，免得三个分支各说一套。
-const UNSUPPORTED: &str = "unsupported expression: f32 params, buf loads, finite literals, + - * /";
+const UNSUPPORTED: &str = "unsupported expression: f32 params, buf loads, finite literals, + - * /, abs, min, max";
 const ARITHMETIC: &str = "supported arithmetic is `+`, `-`, `*`, and `/`";
+const METHODS: [(&str, usize); 3] = [("abs", 0), ("min", 1), ("max", 1)];
 
 /// 表达式三层：括号剥壳 → 叶子（字面量/标量/加载）→ 组合子（二元、取负）。
 fn parse_expr(expression: &Expr, idx: &str, params: &[Param]) -> syn::Result<TokenStream2> {
@@ -492,7 +494,40 @@ fn parse_compound(expression: &Expr, idx: &str, params: &[Param]) -> syn::Result
     match expression {
         Expr::Binary(binary) => binary_expr(binary, idx, params),
         Expr::Unary(unary) => negate(unary, idx, params),
+        Expr::Call(call) => method_call(call, idx, params),
         _ => fail(expression.span(), UNSUPPORTED),
+    }
+}
+
+/// 方法组合子闭集：`abs()` 一元，`min(y)` / `max(y)` 二元；其余方法名在展开期打回。
+fn method_call(call: &ExprCall, idx: &str, params: &[Param]) -> syn::Result<TokenStream2> {
+    let Expr::MethodCall(method) = call.func.as_ref() else {
+        return fail(call.span(), UNSUPPORTED);
+    };
+    let name = method.method.to_string();
+    let Some((_, arity)) = METHODS.iter().find(|(known, _)| *known == name.as_str()) else {
+        return fail(method.method.span(), "unsupported kernel method");
+    };
+    if method.args.len() != *arity {
+        return fail(
+            method.method.span(),
+            &format!("`{name}` takes {} argument(s)", arity),
+        );
+    }
+    let receiver = parse_expr(&method.receiver, idx, params)?;
+    match name.as_str() {
+        "abs" => Ok(quote!(::cutile::kernel::Expr::Abs(Box::new(#receiver)))),
+        "min" | "max" => {
+            let argument = parse_expr(&method.args[0], idx, params)?;
+            let variant = Ident::new(if name == "min" { "Min" } else { "Max" }, method.method.span());
+            Ok(quote! {
+                ::cutile::kernel::Expr::#variant {
+                    left: Box::new(#receiver),
+                    right: Box::new(#argument),
+                }
+            })
+        }
+        _ => fail(method.method.span(), "unsupported kernel method"),
     }
 }
 

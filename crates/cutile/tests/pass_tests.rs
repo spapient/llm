@@ -54,6 +54,21 @@ fn laws_normalize_bottom_up() {
         (binary(Arith::Sub, load("a"), literal(0.0)), load("a")),
         (binary(Arith::Add, literal(0.5), literal(0.5)), literal(1.0)),
         (Expr::Neg(Box::new(literal(2.0))), literal(-2.0)),
+        (Expr::Abs(Box::new(literal(-2.5))), literal(2.5)),
+        (
+            Expr::Min {
+                left: Box::new(literal(1.0)),
+                right: Box::new(literal(3.0)),
+            },
+            literal(1.0),
+        ),
+        (
+            Expr::Max {
+                left: Box::new(literal(1.0)),
+                right: Box::new(literal(3.0)),
+            },
+            literal(3.0),
+        ),
         (
             binary(
                 Arith::Mul,

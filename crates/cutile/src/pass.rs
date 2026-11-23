@@ -112,11 +112,13 @@ fn cost(kernel: &Kernel) -> usize {
     kernel.params.len() + nodes(kernel.write.expr())
 }
 
-/// 表达式节点数：每个二元 / 取负节点各算一，叶子算一。
+/// 表达式节点数：每个二元 / 一元节点各算一，叶子算一。
 pub(super) fn nodes(expression: &Expr) -> usize {
     match expression {
-        Expr::Binary { left, right, .. } => 1 + nodes(left) + nodes(right),
-        Expr::Neg(value) => 1 + nodes(value),
+        Expr::Neg(value) | Expr::Abs(value) => 1 + nodes(value),
+        Expr::Binary { left, right, .. } | Expr::Min { left, right } | Expr::Max { left, right } => {
+            1 + nodes(left) + nodes(right)
+        }
         _ => 1,
     }
 }
@@ -148,13 +150,15 @@ type Law = fn(&Expr) -> Option<Expr>;
 ///
 /// 这些判断不是靠注释成立的：`tests/ir_tests.rs` 的解释执行用例枚举每条律的形状，在 `±0`、次正规、
 /// `inf`、`NaN` 上逐位比较化简前后，塞进一条不成立的律就会红。
-const RULES: [(&str, Law); 6] = [
+const RULES: [(&str, Law); 8] = [
     ("double-negation", double_negation),
     ("mul-one", mul_one),
     ("div-one", div_one),
     ("sub-zero", sub_zero),
     ("fold-negation", fold_negation),
     ("fold-binary", fold_binary),
+    ("fold-abs", fold_abs),
+    ("fold-minmax", fold_minmax),
 ];
 
 /// 自底向上求范式：先把子节点各自规约到不动点，再在本节点上反复施加第一条命中的定律。
@@ -168,10 +172,24 @@ const RULES: [(&str, Law); 6] = [
 pub(super) fn normalize(expression: Expr) -> Expr {
     let mut expression = match expression {
         Expr::Neg(value) => Expr::Neg(Box::new(normalize(*value))),
+        Expr::Abs(value) => Expr::Abs(Box::new(normalize(*value))),
         Expr::Binary { op, left, right } => Expr::Binary {
             op,
             left: Box::new(normalize(*left)),
             right: Box::new(normalize(*right)),
+        },
+        Expr::Min { left, right } => Expr::Min {
+            left: Box::new(normalize(*left)),
+            right: Box::new(normalize(*right)),
+        },
+        Expr::Max { left, right } => Expr::Max {
+            left: Box::new(normalize(*left)),
+            right: Box::new(normalize(*right)),
+        },
+        Expr::Fma { a, b, c } => Expr::Fma {
+            a: Box::new(normalize(*a)),
+            b: Box::new(normalize(*b)),
+            c: Box::new(normalize(*c)),
         },
         leaf => leaf,
     };
@@ -265,6 +283,29 @@ fn fold_binary(expression: &Expr) -> Option<Expr> {
     finite(op.apply(f32::from_bits(*left), f32::from_bits(*right)))
 }
 
+fn fold_abs(expression: &Expr) -> Option<Expr> {
+    let Expr::Abs(value) = expression else {
+        return None;
+    };
+    let Expr::F32(bits) = value.as_ref() else {
+        return None;
+    };
+    finite(f32::from_bits(*bits).abs())
+}
+
+fn fold_minmax(expression: &Expr) -> Option<Expr> {
+    let (minimum, left, right) = match expression {
+        Expr::Min { left, right } => (true, left, right),
+        Expr::Max { left, right } => (false, left, right),
+        _ => return None,
+    };
+    let (Expr::F32(left), Expr::F32(right)) = (left.as_ref(), right.as_ref()) else {
+        return None;
+    };
+    let (left, right) = (f32::from_bits(*left), f32::from_bits(*right));
+    finite(if minimum { left.min(right) } else { left.max(right) })
+}
+
 /// 非有限结果不折叠：`0.0 / 0.0` 留在 IR 里，发射出去仍是原来的语义。
 fn finite(value: f32) -> Option<Expr> {
     value.is_finite().then(|| Expr::F32(value.to_bits()))
@@ -295,8 +336,10 @@ impl Pass for EliminateDeadParams {
 fn expr_mentions(expression: &Expr, name: &str) -> bool {
     match expression {
         Expr::Scalar(used) | Expr::Load(used) => used == name,
-        Expr::Neg(value) => expr_mentions(value, name),
-        Expr::Binary { left, right, .. } => expr_mentions(left, name) || expr_mentions(right, name),
+        Expr::Neg(value) | Expr::Abs(value) => expr_mentions(value, name),
+        Expr::Binary { left, right, .. } | Expr::Min { left, right } | Expr::Max { left, right } => {
+            expr_mentions(left, name) || expr_mentions(right, name)
+        }
         Expr::F32(_) => false,
     }
 }

@@ -132,9 +132,11 @@ fn value_type(params: &[Parameter], expression: &Expr) -> Result<ScalarType, Ver
 
 fn compound_type(params: &[Parameter], expression: &Expr) -> Result<ScalarType, VerificationError> {
     match expression {
-        Expr::Neg(value) => negated_type(params, value),
-        Expr::Binary { left, right, .. } => binary_type(params, left, right),
-        _ => Err(VerificationError::new("unsupported expression node")),
+        Expr::Neg(value) => unary_f32(params, value, "negation"),
+        Expr::Abs(value) => unary_f32(params, value, "absolute value"),
+        Expr::Binary { left, right, .. } | Expr::Min { left, right } | Expr::Max { left, right } => {
+            binary_type(params, left, right)
+        }
     }
 }
 
@@ -152,10 +154,7 @@ fn scalar_type(params: &[Parameter], name: &str) -> Result<ScalarType, Verificat
 
 fn load_type(params: &[Parameter], name: &str) -> Result<ScalarType, VerificationError> {
     match parameter(params, name) {
-        Some(ValueType::Buf {
-            element: ScalarType::F32,
-            ..
-        }) => Ok(ScalarType::F32),
+        Some(ValueType::Buf { element, .. }) if element.buffer_ok() => Ok(ScalarType::F32),
         Some(ValueType::Buf { .. }) => Err(VerificationError::new(format!(
             "buffer `{name}` does not contain f32 elements"
         ))),
@@ -166,12 +165,13 @@ fn load_type(params: &[Parameter], name: &str) -> Result<ScalarType, Verificatio
     }
 }
 
-fn negated_type(params: &[Parameter], value: &Expr) -> Result<ScalarType, VerificationError> {
+/// 一元 f32 组合子（取负、绝对值）：子表达式必须算 f32，结果仍是 f32。
+fn unary_f32(params: &[Parameter], value: &Expr, what: &str) -> Result<ScalarType, VerificationError> {
     let ty = value_type(params, value)?;
     if ty == ScalarType::F32 {
         return Ok(ty);
     }
-    Err(VerificationError::new("unary negation requires f32"))
+    Err(VerificationError::new(format!("unary {what} requires f32")))
 }
 
 fn binary_type(
