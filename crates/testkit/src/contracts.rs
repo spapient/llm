@@ -186,7 +186,6 @@ fn locate(module: &str, depth: usize) -> Option<PathBuf> {
     let tail = module.rsplit("::").next().unwrap_or(module);
     let mut candidates: Vec<&String> = aliases().get(tail).into_iter().flatten().collect();
     candidates.sort_by_key(|source| source.matches("::").count());
-    eprintln!("DEBUG locate module={module} depth={depth} candidates={candidates:?}");
     for source in candidates {
         if source != module
             && let Some(found) = locate(source, depth + 1)
@@ -213,9 +212,6 @@ fn aliases() -> &'static std::collections::BTreeMap<String, Vec<String>> {
                 continue;
             };
             let owner = module_path_of(&file);
-            if file.file_name().is_some_and(|n| n.to_string_lossy().contains("classic")) {
-                eprintln!("DEBUG owner {} -> {owner}", file.display());
-            }
             for statement in use_statements(&text) {
                 for (source, alias) in use_tree(&statement, &owner) {
                     let candidates = out.entry(alias).or_default();
@@ -247,9 +243,6 @@ fn module_index() -> &'static std::collections::BTreeMap<String, PathBuf> {
                 continue;
             }
             walk_declarations(&file, &[], &mut out);
-        }
-        for k in out.keys().filter(|k| k.contains("adaptive") || k.contains("pool")) {
-            eprintln!("DEBUG index {k}");
         }
 
         out
