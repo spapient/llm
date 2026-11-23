@@ -169,7 +169,7 @@ llm 文档列的形状族（`tensor.rs:20-31`）：`broadcast/narrow/slice/chunk
 
 | 对照点 | llm | llm.u | Burn |
 | --- | --- | --- | --- |
-| 图/tape 结构 | `autograd` 4,026 行（src 2,109 / tests 1,917）：`Requirement/Role/Var/Node/Tape/Ordering/Schedule/Summary/Account/MemoryPolicy/Plan/Budget/Sizes/Footprint/Choice/Config/Replay/Store`（ADR 0055） | 手写反向（`exec` 内 `plan.rs`/`teacher`） | `burn-autodiff` 12.4k：`graph/grads/checkpoint/distributed/ops/runtime/backend` |
+| 图/tape 结构 | `autograd` 4,029 行（src 2,112 / tests 1,917）：`Requirement/Role/Var/Node/Tape/Ordering/Schedule/Summary/Account/MemoryPolicy/Plan/Budget/Sizes/Footprint/Choice/Config/Replay/Store`（ADR 0055） | 手写反向（`exec` 内 `plan.rs`/`teacher`） | `burn-autodiff` 12.4k：`graph/grads/checkpoint/distributed/ops/runtime/backend` |
 | train 接线 | `session.rs:5` 引 `Tape/Var`；`backprop/learner/pool` 同引 confirmed | train 复用 exec 计算面 | autodiff 作后端装饰器挂接 |
 | 梯度检查点 | segment 级（`autograd` 结构内，`MemoryPolicy` 自动/全留/分段三档） | 未见独立检查点策略 | `autodiff/checkpoint` 策略可配 |
 | 状态 | 元数据层闭环：`gradcheck` 中心差分对拍 200 张随机图（扇出累加、detach 分支、分层与顺序逐位一致、重复反向逐位一致、图外参数梯度恰为 0）；train 闭环真实算子梯度数值仍待 cutile/nn 中间态闭合后运行观测 | 手写反向，成熟度本轮未深核 | 生产级梯度跟踪/快照/反向 |
@@ -402,7 +402,7 @@ llm 文档列的形状族（`tensor.rs:20-31`）：`broadcast/narrow/slice/chunk
 | 3 | 后端执行成熟度/性能 | 3 | 6 | 8 | llm 生产装配仅 CPU（`serve/src/model.rs:27`），Metal 仅测试构造，CUDA/昇腾无 Executor impl，真机激活未核；llm.u 多后端 GEMM/内核族厚，真机激活本轮未复跑；Burn 跨后端可跑完整算子集 |
 | 4 | 算子/内核覆盖 | 4 | 4 | 9 | llm 52 注册算子 + 四层契约；llm.u 七臂内核族；Burn 张量 API 全套 + linalg/einsum/fusion |
 | 5 | nn 层完整度 | 5 | 3 | 9 | llm conv/pool/norm/attn/embed/rope 齐，无 RNN；llm.u 无 conv/pool/RNN；Burn 8 大类 + 49 Config 含 RNN/Transformer |
-| 6 | 自动微分 | 5 | 2 | 10 | llm 独立 tape/schedule/account/plan/replay 元数据层，gradcheck 中心差分对拍 200 随机图（顺序/扇出/终点剪枝可复现解析梯度），train 接线 confirmed；闭环真实算子梯度数值待运行观测，任意可微装饰器/梯度快照/分布式归 train/device 侧；llm.u 逐层手写 bwd；Burn 后端装饰器任意可微 + checkpoint |
+| 6 | 自动微分 | 5 | 2 | 10 | llm 独立 tape/schedule/account/plan/replay 元数据层，gradcheck 中心差分对拍 200 随机图（顺序/扇出/终点剪枝可复现解析梯度），train 接线 confirmed；workspace `check` 全绿，但 train backprop 测试编译仍被 cutile `kernel.rs` E0515/E0282 外部 WIP 挡住、cli Metal 16 例运行时对拍未过，闭环真实算子梯度数值仍未取得运行观测；任意可微装饰器/梯度快照/分布式归 train/device 侧；llm.u 逐层手写 bwd；Burn 后端装饰器任意可微 + checkpoint |
 | 7 | 优化器 | 4 | 3 | 9 | llm Sgd/Adam/Muon；llm.u 仅 Adam；Burn 12 个 impl + LBFGS/Momentum/累积/裁剪/衰减 |
 | 8 | 调度/训练循环 | 3 | 4 | 9 | llm Session/Learner/evaluate/账表/优化步静态在位，HEAD 树静态类型对齐已核，整 lib 编译与运行观测被 cutile 未提交态阻塞（见 §13.1）；llm.u Session/Trainer + Cosine；Burn Learner/early stopping/sharder/logger |
 | 9 | 损失函数 | 5 | 4 | 9 | llm CE/argmax/mse/bce/huber/hinge + Distill/Grpo（策略族物理拆至 `loss_rl.rs`，`loss.rs:10,12` 挂载再导出）；llm.u 7 fn；Burn 17 种 loss（含 CTC/RNNT/三元组/NLL） |
