@@ -185,7 +185,7 @@ where
             .into_iter()
             .enumerate()
             .reduce(|(i, a), (j, b)| if b >= a { (j, b) } else { (i, a) })
-            .map(|(index, _)| index)
+            .map(|(idx, _)| idx)
     }
 
     /// 逐元素绝对差不超过 `eps`；形状不一致或元素数不符直接 `false`。

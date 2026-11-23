@@ -57,6 +57,19 @@ pub(crate) fn dim2_pair(a: &[usize], b: &[usize], op: &str) -> Result<(usize, us
     Ok((m, ka, n))
 }
 
+/// 转置布局（TN）几何：`x[rows,k]` 配 `w[n,k]`，收缩轴都是末列；返回 `(rows, n, k)`。
+pub(crate) fn tn_geom(x: &[usize], w: &[usize]) -> Result<(usize, usize, usize)> {
+    let (rows, k) = dim2(x, "matmul_tn")?;
+    let (n, k2) = dim2(w, "matmul_tn")?;
+    if k != k2 {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("matmul_tn 收缩轴不符：x·k={k}，w·k={k2}"),
+        ));
+    }
+    Ok((rows, n, k))
+}
+
 /// 输出 tile 行数。
 pub const TILE_M: usize = 64;
 
@@ -220,6 +233,19 @@ fn check_dims<P: Precision>(
     Ok(())
 }
 
+/// 校验两条二维视图与输出缓冲，再把裸切片交给指定骨架；标量与 tile 两条入口共用这套装配。
+fn run<P: Precision>(
+    a: View<'_, P>,
+    b: View<'_, P>,
+    out: &mut [P::Acc],
+    kernel: fn(&[P], &[P], usize, usize, usize, &mut [P::Acc]),
+) -> Result<()> {
+    let (m, k, n) = dim2_pair(a.dims(), b.dims(), P::NAME)?;
+    check_dims(a.as_slice(), b.as_slice(), m, n, k, out)?;
+    kernel(a.as_slice(), b.as_slice(), m, n, k, out);
+    Ok(())
+}
+
 /// 标量参考入口：校验尺寸后写 `out`。
 ///
 /// # Errors
@@ -230,17 +256,7 @@ pub fn forward_scalar<P: Precision>(
     b: View<'_, P>,
     out: &mut [P::Acc],
 ) -> Result<()> {
-    let (m, k) = dim2(a.dims(), P::NAME)?;
-    let (k2, n) = dim2(b.dims(), P::NAME)?;
-    if k != k2 {
-        return Err(Error::new(
-            Code::Invalid,
-            format!("{} 收缩轴不符：a·k={k}，b·k={k2}", P::NAME),
-        ));
-    }
-    check_dims(a.as_slice(), b.as_slice(), m, n, k, out)?;
-    matmul_scalar(a.as_slice(), b.as_slice(), m, n, k, out);
-    Ok(())
+    run(a, b, out, matmul_scalar)
 }
 
 /// tile 实现入口：校验尺寸后写 `out`。
@@ -253,17 +269,7 @@ pub fn forward_tiled<P: Precision>(
     b: View<'_, P>,
     out: &mut [P::Acc],
 ) -> Result<()> {
-    let (m, k) = dim2(a.dims(), P::NAME)?;
-    let (k2, n) = dim2(b.dims(), P::NAME)?;
-    if k != k2 {
-        return Err(Error::new(
-            Code::Invalid,
-            format!("{} 收缩轴不符：a·k={k}，b·k={k2}", P::NAME),
-        ));
-    }
-    check_dims(a.as_slice(), b.as_slice(), m, n, k, out)?;
-    matmul_tiled(a.as_slice(), b.as_slice(), m, n, k, out);
-    Ok(())
+    run(a, b, out, matmul_tiled)
 }
 
 /// 线性层布局（TN）的标量参考：`out[r, j] = Σ_p x[r, p]·w[j, p]`，每个元素按 `p` 顺序独立累加。
@@ -382,14 +388,7 @@ fn check_tn_dims(x: &[f32], w: &[f32], rows: usize, n: usize, k: usize, out: &[f
 ///
 /// 三条缓冲长度与 `(rows, n, k)` 不符时返回说明。
 pub fn forward_tn_scalar(x: View<'_, f32>, w: View<'_, f32>, out: &mut [f32]) -> Result<()> {
-    let (rows, k) = dim2(x.dims(), "matmul_tn")?;
-    let (n, k2) = dim2(w.dims(), "matmul_tn")?;
-    if k != k2 {
-        return Err(Error::new(
-            Code::Invalid,
-            format!("matmul_tn 收缩轴不符：x·k={k}，w·k={k2}"),
-        ));
-    }
+    let (rows, n, k) = tn_geom(x.dims(), w.dims())?;
     check_tn_dims(x.as_slice(), w.as_slice(), rows, n, k, out)?;
     matmul_tn_scalar(x.as_slice(), w.as_slice(), rows, n, k, out);
     Ok(())
@@ -401,14 +400,7 @@ pub fn forward_tn_scalar(x: View<'_, f32>, w: View<'_, f32>, out: &mut [f32]) ->
 ///
 /// 三条缓冲长度与 `(rows, n, k)` 不符时返回说明。
 pub fn forward_tn_tiled(x: View<'_, f32>, w: View<'_, f32>, out: &mut [f32]) -> Result<()> {
-    let (rows, k) = dim2(x.dims(), "matmul_tn")?;
-    let (n, k2) = dim2(w.dims(), "matmul_tn")?;
-    if k != k2 {
-        return Err(Error::new(
-            Code::Invalid,
-            format!("matmul_tn 收缩轴不符：x·k={k}，w·k={k2}"),
-        ));
-    }
+    let (rows, n, k) = tn_geom(x.dims(), w.dims())?;
     check_tn_dims(x.as_slice(), w.as_slice(), rows, n, k, out)?;
     matmul_tn_tiled(x.as_slice(), w.as_slice(), rows, n, k, out);
     Ok(())

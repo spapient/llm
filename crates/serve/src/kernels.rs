@@ -159,7 +159,7 @@ fn attention_paths(
     let (q, k, v, out) = attention_inputs(inputs, outputs)?;
     let d = nn::conv::attention::MODEL.shape.1;
     let s = q.len() / d;
-    let (qv, kv, vv) = triple(q, k, v, s, d)?;
+    let (qv, kv, vv) = tensor::View::matrix_triple(s, d, q, k, v)?;
     run(qv, kv, vv, out)
 }
 
@@ -173,25 +173,6 @@ fn attention_inputs<'a, 'b>(
     let v = input_f32("attention", inputs, 2)?;
     let out = output_f32("attention", outputs, 0)?;
     Ok((q, k, v, out))
-}
-
-/// 三条同宽行主序视图：`q/k/v` 都是 `rows×d`。
-fn triple<'a>(
-    q: &'a [f32],
-    k: &'a [f32],
-    v: &'a [f32],
-    rows: usize,
-    d: usize,
-) -> Result<(
-    tensor::View<'a, f32>,
-    tensor::View<'a, f32>,
-    tensor::View<'a, f32>,
-)> {
-    Ok((
-        tensor::View::matrix(rows, d, q)?,
-        tensor::View::matrix(rows, d, k)?,
-        tensor::View::matrix(rows, d, v)?,
-    ))
 }
 
 /// 朴素自注意力适配：走稠密分块 tile 路径。

@@ -95,6 +95,21 @@ impl<'a, K: Element> View<'a, K> {
     pub fn matrix(rows: usize, cols: usize, slice: &'a [K]) -> Result<Self> {
         Self::new(vec![rows, cols], slice)
     }
+
+    /// 三条同宽二维只读视图：`q/k/v` 都是 `rows×cols`，注意力族 prefill/decode 输入的公共装配。
+    pub fn matrix_triple(
+        rows: usize,
+        cols: usize,
+        q: &'a [K],
+        k: &'a [K],
+        v: &'a [K],
+    ) -> Result<(Self, Self, Self)> {
+        Ok((
+            Self::matrix(rows, cols, q)?,
+            Self::matrix(rows, cols, k)?,
+            Self::matrix(rows, cols, v)?,
+        ))
+    }
 }
 
 impl<'a, K: Element> ViewMut<'a, K> {

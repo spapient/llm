@@ -33,7 +33,7 @@ fn shape_mismatch_is_rejected_not_broadcast() {
 }
 
 #[test]
-fn reductions_pick_extrema_and_index() {
+fn reductions_pick_extrema_and_idx() {
     let view = matrix(&[3.0, 1.0, 4.0, 1.0, 5.0, 9.0], 2, 3);
     assert_eq!(view.sum(), Some(23.0));
     assert_eq!(view.max(), Some(9.0));
@@ -66,7 +66,7 @@ fn owned_conversions_keep_elements() {
 }
 
 #[test]
-fn mutable_view_shares_the_owned_buffer() {
+fn mutable_view_shares_the_owned_buf() {
     let mut owned = Tensor::<Owned<f32>, Vec<usize>, f32>::zeros(vec![2, 2]).expect("分配");
     let mut write = owned.as_view_mut();
     write.as_slice_mut()[0] = 7.0;

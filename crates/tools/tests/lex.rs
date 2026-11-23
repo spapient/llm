@@ -152,10 +152,12 @@ fn braces_inside_strings_do_not_break_strip() {
 #[test]
 fn names_only_the_modules_mounted_under_cfg_test() {
     let src = "#[cfg(test)]\nmod mirror;\n#[cfg(test)]\npub(crate) mod boundary;\nmod production;\n#[cfg(not(test))]\nmod bench;\n#[cfg(test)]\nmod inline {\n    fn t() {}\n}\n";
-    assert_eq!(
-        test_modules(src).expect("mods"),
-        ["mirror".to_owned(), "boundary".to_owned()],
-    );
+    let mods: Vec<String> = test_modules(src)
+        .expect("mods")
+        .into_iter()
+        .map(|mount| mount.name)
+        .collect();
+    assert_eq!(mods, ["mirror".to_owned(), "boundary".to_owned()]);
 }
 
 // ---------------------------------------------------------------------------
@@ -321,4 +323,14 @@ fn an_oversized_file_is_flagged() {
 fn a_file_within_budget_is_silent() {
     let text = (0..8).map(|_| "x").collect::<Vec<_>>().join("\n");
     assert_eq!(file_lines(&text, &line_gate()), None);
+}
+
+#[test]
+fn repro_kernel_lex() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let path = root.join("../../crates/benchmarks/src/kernel.rs");
+    let raw = std::fs::read_to_string(path).unwrap();
+    let res = parse(&raw);
+    println!("parse result: {:?}", res.as_ref().map_err(|e| e.message()));
+    assert!(res.is_ok());
 }

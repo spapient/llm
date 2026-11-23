@@ -31,7 +31,9 @@ use diagnostic::data::{Table, Value};
 use llm_tools::{
     analyze, call, ccn, docs, dup,
     gate::{Gate, Metric, Over},
-    lex, strip_tests, submodules, test_modules, words,
+    lex,
+    strip::Mount,
+    strip_tests, submodules, test_modules, words,
 };
 
 const MIN_SOURCES: usize = 100;
@@ -320,8 +322,8 @@ fn mounted_test_modules(production: &[PathBuf]) -> BTreeSet<PathBuf> {
         let Ok(names) = names else {
             continue;
         };
-        for name in names {
-            let target = mount_candidates(&file, &name)
+        for mount in names {
+            let target = mount_candidates(&file, &mount)
                 .into_iter()
                 .find(|path| path.is_file());
             if let Some(target) = target
@@ -334,13 +336,18 @@ fn mounted_test_modules(production: &[PathBuf]) -> BTreeSet<PathBuf> {
     out
 }
 
-/// `mod 名字;` 的两个可能落点：`目录/名字.rs` 与 `目录/名字/mod.rs`。
-fn mount_candidates(file: &Path, name: &str) -> [PathBuf; 2] {
+/// `mod 名字;` 的落点：显式 `#[path]` 相对当前文件目录优先，否则按模块名推断
+/// `目录/名字.rs` 与 `目录/名字/mod.rs`。
+fn mount_candidates(file: &Path, mount: &Mount) -> Vec<PathBuf> {
+    let parent = file.parent().unwrap_or_else(|| Path::new(""));
+    let mut out = Vec::new();
+    if let Some(path) = &mount.path {
+        out.push(parent.join(path));
+    }
     let dir = module_dir(file);
-    [
-        dir.join(format!("{name}.rs")),
-        dir.join(name).join("mod.rs"),
-    ]
+    out.push(dir.join(format!("{}.rs", mount.name)));
+    out.push(dir.join(mount.name.clone()).join("mod.rs"));
+    out
 }
 
 /// 声明文件的子模块目录：`lib.rs`/`main.rs`/`mod.rs` 的子模块与自身同目录，其余以文件名命名

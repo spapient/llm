@@ -351,27 +351,8 @@ fn attention_paths(
     let out = output_slice::<f32>("attention_f32", output)?;
     let d = nn::conv::attention::MODEL.shape.1;
     let s = batches("attention_f32", q.len(), d)?;
-    let (qv, kv, vv) = triple(q, k, v, s, d)?;
+    let (qv, kv, vv) = tensor::View::matrix_triple(s, d, q, k, v)?;
     run(qv, kv, vv, out)
-}
-
-/// 三条同宽行主序视图：`q/k/v` 都是 `rows×d`。
-fn triple<'a>(
-    q: &'a [f32],
-    k: &'a [f32],
-    v: &'a [f32],
-    rows: usize,
-    d: usize,
-) -> Result<(
-    tensor::View<'a, f32>,
-    tensor::View<'a, f32>,
-    tensor::View<'a, f32>,
-)> {
-    Ok((
-        tensor::View::matrix(rows, d, q)?,
-        tensor::View::matrix(rows, d, k)?,
-        tensor::View::matrix(rows, d, v)?,
-    ))
 }
 
 /// `[q, k, v: f32] → y: f32`：尺寸由声明宽度推导；算术走稠密分块 tile。
