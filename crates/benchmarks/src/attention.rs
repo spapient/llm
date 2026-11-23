@@ -1,4 +1,4 @@
-//! attention 基准：decode 单头、prefill 的 online / dense 与各自 tiled 对照。
+//! attention 基准：decode 单头、prefill 的 online 与 dense 两条路径。
 
 use crate::fixtures::{Sample, checked_or_exit};
 use criterion::measurement::WallTime;
@@ -6,6 +6,7 @@ use criterion::{BenchmarkGroup, Criterion, Throughput};
 use nn::conv::attention;
 use std::fmt;
 use std::hint::black_box;
+use tensor::View;
 
 /// decode 的代表 KV 长度。
 const DECODE_S: usize = 128;
@@ -27,47 +28,36 @@ fn read_bytes(s: usize) -> u64 {
     (s * D * 3 * size_of::<f32>()) as u64
 }
 
-/// 一条内核基准：`run` 拿四条等长切片做一次前向。
+/// 一条 prefill 内核基准：三条输入是 `s×d` 二维视图，做一次前向。
 fn one<E: fmt::Display>(
     sample: &mut Sample,
     group: &mut BenchmarkGroup<'_, WallTime>,
     name: &str,
-    run: impl Fn(&[f32], &[f32], &[f32], &mut [f32]) -> Result<(), E>,
+    s: usize,
+    run: impl Fn(View<'_, f32>, View<'_, f32>, View<'_, f32>, &mut [f32]) -> Result<(), E>,
 ) {
-    checked_or_exit(run(&sample.q, &sample.k, &sample.v, &mut sample.out), SIZED);
-    bench(
-        group,
-        name,
-        (&sample.q, &sample.k, &sample.v, &mut sample.out),
-        run,
-    );
+    let q = View::matrix(s, D, &sample.q).expect(SIZED);
+    let k = View::matrix(s, D, &sample.k).expect(SIZED);
+    let v = View::matrix(s, D, &sample.v).expect(SIZED);
+    checked_or_exit(run(q, k, v, &mut sample.out), SIZED);
+    bench(group, name, sample, s, run);
 }
 
-/// decode 的一条内核：`q` 单行 `d`，`k`/`v` 按 `hist·d`，`out` 回到单行。
-fn decode_one<E: fmt::Display>(
-    group: &mut BenchmarkGroup<'_, WallTime>,
-    name: &str,
-    (q, k, v, out): (&[f32], &[f32], &[f32], &mut [f32]),
-    hist: usize,
-    run: impl Fn(&[f32], &[f32], &[f32], &mut [f32], usize, usize, usize) -> Result<(), E>,
-) {
-    checked_or_exit(run(q, k, v, out, 1, hist, D), "decode 几何");
-    bench(group, name, (q, k, v, out), |q, k, v, out| {
-        run(q, k, v, out, 1, hist, D)
-    });
-}
-
-/// 四条切片上一次前向的计时循环：`run` 只认切片，几何在调用前已校验。
+/// 四条切片上一次前向的计时循环：几何在调用前已校验，视图每次迭代重新装配。
 fn bench<E: fmt::Display>(
     group: &mut BenchmarkGroup<'_, WallTime>,
     name: &str,
-    (q, k, v, out): (&[f32], &[f32], &[f32], &mut [f32]),
-    run: impl Fn(&[f32], &[f32], &[f32], &mut [f32]) -> Result<(), E>,
+    sample: &mut Sample,
+    s: usize,
+    run: impl Fn(View<'_, f32>, View<'_, f32>, View<'_, f32>, &mut [f32]) -> Result<(), E>,
 ) {
     group.bench_function(name, |iter| {
         iter.iter(|| {
-            let out = black_box(&mut *out);
-            black_box(run(black_box(q), black_box(k), black_box(v), out))
+            let q = View::matrix(s, D, black_box(&sample.q)).expect(SIZED);
+            let k = View::matrix(s, D, black_box(&sample.k)).expect(SIZED);
+            let v = View::matrix(s, D, black_box(&sample.v)).expect(SIZED);
+            let out = black_box(&mut *sample.out);
+            black_box(run(q, k, v, out))
         })
     });
 }
@@ -81,12 +71,13 @@ pub(crate) fn flash_decode(c: &mut Criterion) {
         &mut sample,
         &mut group,
         "flash_decode_128x64",
-        |q, k, v, out| attention::flash_forward(q, k, v, out, DECODE_S, D),
+        DECODE_S,
+        |q, k, v, out| attention::flash_forward(q, k, v, out),
     );
     group.finish();
 }
 
-/// prefill：online 与 dense 两条路径，各自与 tiled 版本对照。
+/// prefill：online 与 dense 两条路径。
 pub(crate) fn prefill(c: &mut Criterion) {
     let mut sample = Sample::new(PREFILL_S * D);
     let bytes = read_bytes(PREFILL_S);
@@ -97,21 +88,20 @@ pub(crate) fn prefill(c: &mut Criterion) {
         &mut sample,
         &mut online,
         "online_1024x64",
-        |q, k, v, out| attention::flash_forward(q, k, v, out, PREFILL_S, D),
+        PREFILL_S,
+        |q, k, v, out| attention::flash_forward(q, k, v, out),
     );
-    one(&mut sample, &mut online, "tiled_1024x64", |q, k, v, out| {
-        attention::tiled::flash_tiled_forward(q, k, v, out, PREFILL_S, D)
-    });
     online.finish();
 
     let mut dense = c.benchmark_group("attention_dense_f32");
     dense.throughput(Throughput::Bytes(bytes));
-    one(&mut sample, &mut dense, "naive_1024x64", |q, k, v, out| {
-        attention::forward(q, k, v, out, PREFILL_S, D)
-    });
-    one(&mut sample, &mut dense, "tiled_1024x64", |q, k, v, out| {
-        attention::tiled::forward(q, k, v, out, PREFILL_S, D)
-    });
+    one(
+        &mut sample,
+        &mut dense,
+        "naive_1024x64",
+        PREFILL_S,
+        |q, k, v, out| attention::forward(q, k, v, out),
+    );
     dense.finish();
 }
 
@@ -133,16 +123,42 @@ fn hist_pair(c: &mut Criterion, hist: usize) {
     let mut group = c.benchmark_group("decode_attention_f32");
     group.throughput(Throughput::Elements(kv_len as u64));
     let name = format!("naive_hist{hist}x{D}");
-    let lanes: (&[f32], &[f32], &[f32], &mut [f32]) = (&q, &k, &v, &mut out);
-    decode_one(&mut group, &name, lanes, hist, attention::decode_forward);
+    decode_one(&mut group, &name, &q, &k, &v, &mut out, hist, attention::decode_forward);
     let name = format!("flash_hist{hist}x{D}");
-    let lanes: (&[f32], &[f32], &[f32], &mut [f32]) = (&q, &k, &v, &mut out);
     decode_one(
         &mut group,
         &name,
-        lanes,
+        &q,
+        &k,
+        &v,
+        &mut out,
         hist,
         attention::decode_flash_forward,
     );
     group.finish();
+}
+
+/// decode 的一条内核：`q` 单行 `d`，`k`/`v` 按 `hist·d`，`out` 回到单行。
+fn decode_one<E: fmt::Display>(
+    group: &mut BenchmarkGroup<'_, WallTime>,
+    name: &str,
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    out: &mut [f32],
+    hist: usize,
+    run: impl Fn(View<'_, f32>, View<'_, f32>, View<'_, f32>, &mut [f32]) -> Result<(), E>,
+) {
+    let qv = View::matrix(1, D, q).expect("decode 几何");
+    let kv = View::matrix(hist, D, k).expect("decode 几何");
+    let vv = View::matrix(hist, D, v).expect("decode 几何");
+    checked_or_exit(run(qv, kv, vv, out), "decode 几何");
+    group.bench_function(name, |iter| {
+        iter.iter(|| {
+            let qv = View::matrix(1, D, black_box(q)).expect("decode 几何");
+            let kv = View::matrix(hist, D, black_box(k)).expect("decode 几何");
+            let vv = View::matrix(hist, D, black_box(v)).expect("decode 几何");
+            black_box(run(qv, kv, vv, black_box(out)))
+        })
+    });
 }

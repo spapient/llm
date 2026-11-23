@@ -470,31 +470,28 @@ fn i8_paths(group: &mut BenchmarkGroup<'_, WallTime>, parallel: usize) {
         let mut out = vec![0i32; m * n];
         let shape = format!("{m}x{n}x{k}");
         group.throughput(Throughput::Elements((2 * m * n * k) as u64));
-        checked_or_exit(matmul_i8::forward_tiled(&a, &b, m, n, k, &mut out), GEOM);
+        checked_or_exit(
+            matmul_i8::forward_tiled(
+                View::matrix(m, k, &a).expect(GEOM),
+                View::matrix(k, n, &b).expect(GEOM),
+                &mut out,
+            ),
+            GEOM,
+        );
 
         group.bench_function(BenchmarkId::new("i8", &shape), |iter| {
             iter.iter(|| {
-                black_box(matmul_i8::forward_tiled(
-                    black_box(&a),
-                    black_box(&b),
-                    m,
-                    n,
-                    k,
-                    black_box(&mut out),
-                ))
+                let av = View::matrix(m, k, black_box(&a)).expect(GEOM);
+                let bv = View::matrix(k, n, black_box(&b)).expect(GEOM);
+                black_box(matmul_i8::forward_tiled(av, bv, black_box(&mut out)))
             });
         });
         group.bench_function(BenchmarkId::new("i8_threads", &shape), |iter| {
             iter.iter(|| {
                 spread(parallel, m, n, &mut out, |start, rows, part| {
-                    black_box(ok(matmul_i8::forward_tiled(
-                        &a[start * k..(start + rows) * k],
-                        &b,
-                        rows,
-                        n,
-                        k,
-                        part,
-                    )));
+                    let av = View::matrix(rows, k, &a[start * k..(start + rows) * k]).expect(GEOM);
+                    let bv = View::matrix(k, n, &b).expect(GEOM);
+                    black_box(ok(matmul_i8::forward_tiled(av, bv, part)));
                 });
                 black_box(out.len())
             })
