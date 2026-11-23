@@ -1,5 +1,4 @@
-use super::super::tests::check_gemm;
-use super::gemm;
+use prof::native::sme::{gemm, threads_for};
 
 /// 直接调用 SME 内核（越过 `gemm_f32` 的分派），用刚过规模门槛的小形状覆盖：
 /// 多行块 × 多列组、单列组、单行块三种铺法。三种形状都必须落在 `MR = 16` / `NR = 64`
@@ -46,7 +45,7 @@ fn sme_matches_at_full_thread_count() {
 /// 线程化用例的前置断言：本机必须真的切出 ≥2 个线程，否则用例名在撒谎（F6：看起来测了线程化，
 /// 实际 `t = 1` 又回到单线程）。单核机器上这条会红——那是正确行为，它说明线程化分支无人覆盖。
 fn check_threaded(m: usize, n: usize, k: usize) {
-    let t = super::threads_for(m, n);
+    let t = threads_for(m, n);
     assert!(t >= 2, "{m}×{n}×{k} 只切出 {t} 个线程，线程化分支未被覆盖");
     check_sme(m, n, k);
 }

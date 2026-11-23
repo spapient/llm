@@ -250,11 +250,14 @@ fn batch_first_defaults_to_seq_first_and_does_not_touch_weights() {
     let def = Recurrent::new("r", Cell::Lstm, 16, 8, 2, 2, true).expect("合法");
     assert!(!def.batch_first(), "默认 seq-first");
 
-    let bf =
-        Recurrent::with_layout("r", Cell::Lstm, 16, 8, 2, 2, true, true).expect("合法");
+    let bf = Recurrent::with_layout("r", Cell::Lstm, 16, 8, 2, 2, true, true).expect("合法");
     assert!(bf.batch_first(), "with_layout 显式 batch-first");
 
-    assert_eq!(bf.weight_entries(), def.weight_entries(), "布局不进权重清单");
+    assert_eq!(
+        bf.weight_entries(),
+        def.weight_entries(),
+        "布局不进权重清单"
+    );
     assert_eq!(bf.param_bytes(), def.param_bytes(), "布局不影响参数量");
     assert_eq!(
         bf.bounds().expect("合法"),
@@ -267,11 +270,19 @@ fn batch_first_defaults_to_seq_first_and_does_not_touch_weights() {
 #[test]
 fn state_dims_stack_layers_and_directions() {
     let uni = Recurrent::new("r", Cell::Rnn, 16, 8, 3, 1, true).expect("合法");
-    assert_eq!(uni.state_dims(5), [3, 5, 8], "单向三层：[layers, batch, hidden]");
+    assert_eq!(
+        uni.state_dims(5),
+        [3, 5, 8],
+        "单向三层：[layers, batch, hidden]"
+    );
     assert!(!uni.has_cell_state(), "RNN 无单元态");
 
     let bi = Recurrent::new("r", Cell::Gru, 16, 8, 2, 2, true).expect("合法");
-    assert_eq!(bi.state_dims(5), [4, 5, 8], "双向两层：[layers·dirs, batch, hidden]");
+    assert_eq!(
+        bi.state_dims(5),
+        [4, 5, 8],
+        "双向两层：[layers·dirs, batch, hidden]"
+    );
     assert!(!bi.has_cell_state(), "GRU 无单元态");
 
     let lstm = Recurrent::new("r", Cell::Lstm, 16, 8, 1, 1, true).expect("合法");
@@ -288,8 +299,7 @@ fn sequence_output_dims_follow_the_layout() {
         "seq-first：[seq, batch, hidden·2]"
     );
 
-    let bf =
-        Recurrent::with_layout("r", Cell::Lstm, 16, 8, 1, 2, true, true).expect("合法");
+    let bf = Recurrent::with_layout("r", Cell::Lstm, 16, 8, 1, 2, true, true).expect("合法");
     assert_eq!(
         bf.sequence_output_dims(3, 7),
         [3, 7, 16],

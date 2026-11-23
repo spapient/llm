@@ -311,12 +311,7 @@ fn micro_packed_avx2(panel: &[f32], b: &[f32], out: &mut [f32], tile: Tile) {
 /// 读回上一步的 8 个累加向量（x86_64 非首块续算用）。
 #[cfg(target_arch = "x86_64")]
 #[allow(unsafe_code)]
-fn micro_load(
-    out: &[f32],
-    row0: usize,
-    n: usize,
-    j: usize,
-) -> [std::arch::x86_64::__m256; 8] {
+fn micro_load(out: &[f32], row0: usize, n: usize, j: usize) -> [std::arch::x86_64::__m256; 8] {
     unsafe {
         use std::arch::x86_64::*;
         let prev = out.as_ptr();

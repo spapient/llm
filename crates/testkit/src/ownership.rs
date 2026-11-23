@@ -302,16 +302,22 @@ pub(crate) fn is_public_definition(line: &str, name: &str, kinds: &[&str]) -> bo
         return false;
     };
     let rest = rest.trim_start();
+    // `pub const fn name(..)` 在 kind 前还有一层 `const`：两个候选前缀都试，普通 `pub const NAME`
+    // 仍由 `const` kind 命中，`const fn` 则剥掉 `const` 后由 `fn` kind 命中。
+    let rest_no_const = rest.strip_prefix("const ").unwrap_or(rest);
     kinds.iter().any(|kind| {
-        rest.strip_prefix(kind)
-            .and_then(|tail| tail.strip_prefix(' '))
-            .is_some_and(|tail| {
-                tail.strip_prefix(name).is_some_and(|after| {
-                    after
-                        .chars()
-                        .next()
-                        .is_none_or(|next| !(next.is_alphanumeric() || next == '_'))
+        [rest, rest_no_const].iter().any(|candidate| {
+            candidate
+                .strip_prefix(kind)
+                .and_then(|tail| tail.strip_prefix(' '))
+                .is_some_and(|tail| {
+                    tail.strip_prefix(name).is_some_and(|after| {
+                        after
+                            .chars()
+                            .next()
+                            .is_none_or(|next| !(next.is_alphanumeric() || next == '_'))
+                    })
                 })
-            })
+        })
     })
 }

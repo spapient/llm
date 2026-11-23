@@ -70,9 +70,7 @@ pub(crate) const VENDORS: [&str; 8] = [
 pub(crate) const UNSAFE_ISLANDS: &[(&str, usize)] = &[
     ("crates/device/src/executor.rs", 1),
     ("crates/nn/src/kernel_fast_i8.rs", 12),
-    ("crates/nn/src/kernel_fast_micro.rs", 11),
     ("crates/nn/src/kernel_fast_pool.rs", 3),
-    ("crates/nn/src/kernel_fast_sme.rs", 8),
     ("crates/prof/src/native/gemm8x8.rs", 11),
     ("crates/prof/src/native/sme.rs", 8),
     ("crates/storage/src/mmap.rs", 1),

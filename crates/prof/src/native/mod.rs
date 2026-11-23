@@ -85,7 +85,11 @@ pub fn threads_override() -> usize {
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .filter(|x| *x > 0)
-        .unwrap_or_else(|| thread::available_parallelism().map(|x| x.get()).unwrap_or(1))
+        .unwrap_or_else(|| {
+            thread::available_parallelism()
+                .map(|x| x.get())
+                .unwrap_or(1)
+        })
 }
 
 /// 向上对齐到 `block` 的整数倍：面板列宽补齐到 NR/I8_NR，补零列由零初始化面板承担。
@@ -110,7 +114,7 @@ pub struct Native {
 
 /// 可用的主机原生微内核表——**编译期配置**：哪一行存在由工具链与目标架构决定，调用方看不到 `cfg`。
 ///
-/// 目前只登记 SME 这一条「整铺大 GEMM」的专用通道；NEON/AVX2 8×8 是 `nn` 骨架里恒在的兜底，
+/// 目前只登记 SME 这一条「整铺大 GEMM」的专用通道；NEON/AVX2 8×8 是 [`gemm8x8`] 里恒在的兜底，
 /// 不登记（它没有拒绝条件，`gemm_negotiate` 命中前先由它接单没有意义）。
 pub const GEMM_KERNELS: &[Native] = &[
     #[cfg(all(nightly, target_arch = "aarch64"))]
@@ -125,13 +129,8 @@ pub const GEMM_KERNELS: &[Native] = &[
 /// 协商入口：按表序问「这块谁能算」，第一个接住的写回 `out` 并返回 `true`；无人接返回 `false`。
 ///
 /// 这是 `nn` / `cutile` 与设备解耦的唯一面：它们只问结果，不关心哪条通道、哪套特性门。
-pub fn gemm_negotiate(
-    a: &[f32],
-    b: &[f32],
-    m: usize,
-    n: usize,
-    k: usize,
-    out: &mut [f32],
-) -> bool {
-    GEMM_KERNELS.iter().any(|kernel| (kernel.run)(a, b, m, n, k, out))
+pub fn gemm_negotiate(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f32]) -> bool {
+    GEMM_KERNELS
+        .iter()
+        .any(|kernel| (kernel.run)(a, b, m, n, k, out))
 }

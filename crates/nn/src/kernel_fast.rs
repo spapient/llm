@@ -10,50 +10,18 @@ mod pack;
 #[path = "kernel_fast_pool.rs"]
 mod pool;
 
-// 打包面板的暂存区：按线程复用，用完即还。
-//
-// 打包出来的是「整段 B 面板」，`n = k = 4096` 时是 `4096 × 4096 × 4 B = 67 MB`。每次调用现分配，
-// 光 `calloc` 与首次触页就要几十毫秒，而 decode 与 prefill 都是**同一线程反复调**同一个几何，
-// 这块内存每步都用得上，却每步被丢掉一次。这里让每个调用线程留一块只增不减的缓冲：
-//
-// - **只按线程共享，不跨线程**：并发调用各占一个线程私有的缓冲，不存在两次调用同时写同一块；
-//   池里的 worker 只是拿到主线程的裸指针去写自己的分片，收回发生在 [`with_panels`] 返回之前。
-// - **只扩容，不缩小**：几何变了就扩容一次，之后小几何沿用它前面的部分。常驻量等于本线程见过的
-//   最大面板，与「每次分配再释放」的峰值一致（面板本来就要整块驻留）。
-// - **重入退化为临时缓冲**：若某个打包路径在一次借用期间又调 [`with_panels`]，`RefCell` 已经在
-//   借出状态，这里退化成一次性 `Vec`——宁可多分配一次，也不 panic。
-thread_local! {
-    /// 本线程的面板暂存区；长度只增不减。
-    static PANELS: std::cell::RefCell<Vec<f32>> = const { std::cell::RefCell::new(Vec::new()) };
-}
+// 面板暂存池、线程数、对齐助手都是设备无关的公共件，本体单点住在 `prof::native`，
+// 这里只重导出别名供本族子模块经 `super::` 引用；nn 不持有这些实现（B-1 收口）。
+pub(super) use prof::native::{align_up, threads_override, with_panels};
 
-/// 借一块长度 `len` 的 f32 暂存区（不足则扩容并清零新增部分），返回 `f` 的结果。
-fn with_panels<R>(len: usize, f: impl FnOnce(&mut [f32]) -> R) -> R {
-    PANELS.with(|cell| match cell.try_borrow_mut() {
-        Ok(mut buf) => {
-            if buf.len() < len {
-                buf.resize(len, 0.0);
-            }
-            f(&mut buf[..len])
-        }
-        // 重入（同一次调用里又借一次）：这一次用临时缓冲，语义不变。
-        Err(_) => f(&mut vec![0.0f32; len]),
-    })
-}
-
-/// SME 通道要 `#[target_feature(enable = "sme")]` 与 `is_aarch64_feature_detected!("sme")`，
-/// 两者都还没稳定，因此整块只在「nightly + aarch64」存在；其余情形 `gemm_f32` 走 NEON 通道，
-/// 结果一模一样，只是没有 ZA 外积。
-#[cfg(all(nightly, target_arch = "aarch64"))]
-#[path = "kernel_fast_sme.rs"]
-mod sme;
-
+// SME 通道本体在 `prof::native::sme`（`target_feature` / 特性探测门收在 prof），本模块只经
+// 协商面 `gemm_negotiate` 调用，不写 arch/feature 门；其余情形走 NEON 8×8 通道。
 use pack::{pack_b_f32_into, pack_b_f32_par_into, pack_panels_into};
 use pool::{Bufs, Shape, pool, run_pooled};
 
-/// 端口峰值探针只在测量容器里导出（`bench` 特性），生产构建看不到它。
+/// 端口峰值探针只在测量容器里导出（`bench` 特性），生产构建看不到它；本体在 `prof::native::sme`。
 #[cfg(all(feature = "bench", nightly, target_arch = "aarch64"))]
-pub use sme::{port_mix, port_run};
+pub use prof::native::sme::{port_mix, port_run};
 
 #[path = "kernel_fast_tn.rs"]
 mod tn;
@@ -62,21 +30,6 @@ pub use tn::{MIN_ROWS, gemm_f32_tn};
 // f32 NEON 瓦片几何：单一事实源在 `prof::native::f32`，这里重导出别名供本族子模块经
 // `super::MR/NR/KB` 引用；数值不在本 crate 再写一份。
 pub(crate) use prof::native::f32::{KB, MR, NR};
-pub(crate) use prof::native::align_up;
-
-/// 线程数：`LLM_THREADS` 环境变量优先，否则全核。四档 GEMM（f32 Nt/Tn、i8、SME）共用，
-/// 与具体精度无关，故住在 fast 根而不是某个精度模块里。
-pub(super) fn threads_override() -> usize {
-    std::env::var("LLM_THREADS")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .filter(|x| *x > 0)
-        .unwrap_or_else(|| {
-            thread::available_parallelism()
-                .map(|x| x.get())
-                .unwrap_or(1)
-        })
-}
 
 /// 多线程稠密 f32 GEMM：`out[m,n] = a[m,k] · b[k,n]`。
 ///
@@ -85,9 +38,9 @@ pub(super) fn threads_override() -> usize {
 /// 三条缓冲长度不足 `m·k` / `k·n` / `m·n` 时 panic（调用方先校验）。
 pub fn gemm_f32(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f32]) {
     check_dims(a, b, m, n, k, out);
-    // SME 通道：16×64 整铺的大 GEMM 交给 ZA 外积；小题或不可整铺时退回下方 NEON 通道。
-    #[cfg(all(nightly, target_arch = "aarch64"))]
-    if sme::gemm(a, b, m, n, k, out) {
+    // 协商面：把 16×64 整铺的大 GEMM 交给注册表里能接住的专用通道（SME ZA 外积）；
+    // 小题、不可整铺或通道不存在时返回 `false`，退回下方 NEON 8×8 通道。nn 不写任何 arch/feature 门。
+    if prof::native::gemm_negotiate(a, b, m, n, k, out) {
         return;
     }
     let blocks = m.div_ceil(MR);
@@ -349,9 +302,14 @@ pub use probe::{Probe, probes};
 
 use i8::{f32_calc, f32_pack};
 pub use i8::{gemm_i8, gemm_i8_checked, gemm_i8_single};
-use micro::{Layout, Span, Sweep, Tile, edge, micro_packed};
+// 扫描骨架只读侧（Sweep/Span/Layout/残块 edge）留 nn；8×8 微内核本体与 Tile 住在 prof::native。
+use micro::{Layout, Span, Sweep, edge};
+use prof::native::gemm8x8::{Tile, micro_packed};
 
 #[cfg(test)]
 mod tests {
     include!("../tests/kernel_fast_tests.rs");
+    // SME 对拍：参考算术在 nn，被测内核入口在 prof::native::sme；仅 nightly + aarch64 编译。
+    #[cfg(all(nightly, target_arch = "aarch64"))]
+    include!("../tests/kernel_sme_tests.rs");
 }
