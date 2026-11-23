@@ -108,6 +108,7 @@
     /// 池化打包的槽轮转体：本槽从 `slot` 起按 `p` 步长接管列组，每组一次面板转置。
     /// 整段（[`pack_serial`]）、分片（[`pack_span`]）与池化轮转三种外层遍历只差列组下标；
     /// 布局与源视角仍由 `COL_MAJOR` / `transposed` 标签钉住。
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn group_panel<T: Copy, const NR: usize, const COL_MAJOR: bool>(
         b: &[T],
         buf: &mut [T],

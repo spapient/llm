@@ -116,12 +116,7 @@
         p: usize,
         slot: usize,
     ) {
-        let groups = npad / NR;
-        let mut g = slot;
-        while g < groups {
-            pack_panel(w, buf, n, k, g * NR, g * k * NR, true);
-            g += p;
-        }
+        group_panel::<f32, NR, false>(w, buf, n, k, npad, p, slot, true);
     }
 
     /// 一段行的计算：A 面板打包 + 按 [`KB`] 分块扫列 + 行残尾。

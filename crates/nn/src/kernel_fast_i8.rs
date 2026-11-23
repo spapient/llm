@@ -11,7 +11,7 @@
     use diagnostic::{Code, Error, Result};
 
     use super::compute_gemm;
-    use super::pack::b_groups;
+    use super::pack::{b_groups, group_panel};
     use super::pool::{Bufs, Job, Shape, pool, run_pooled};
     use super::tn;
 
@@ -41,31 +41,13 @@
             })
     }
 
-    /// 打包阶段：本槽负责的列组按 `p` 步长轮转，别槽的列组由别槽打包。
+    /// 打包阶段：本槽负责的列组按 `p` 步长轮转，别槽的列组由别槽打包（列主面板走泛型轮转体）。
+    #[allow(unsafe_code)]
     pub(super) fn i8_pack(j: &Job, slot: usize) {
-        let p = j.p;
-        let groups = j.npad / I8_NR;
-        #[allow(unsafe_code)]
         unsafe {
-            let b = j.b as *const i8;
-            let bp = j.buf as *mut i8;
-            let n = j.n;
-            let k = j.k;
-            let mut g = slot;
-            while g < groups {
-                for nb in 0..I8_NR {
-                    let jj = g * I8_NR + nb;
-                    if jj < n {
-                        let dst = bp.add((g * I8_NR + nb) * k);
-                        let mut q = 0;
-                        while q < k {
-                            *dst.add(q) = *b.add(q * n + jj);
-                            q += 1;
-                        }
-                    }
-                }
-                g += p;
-            }
+            let b = std::slice::from_raw_parts(j.b as *const i8, j.k * j.n);
+            let bp = std::slice::from_raw_parts_mut(j.buf as *mut i8, j.npad * j.k);
+            group_panel::<i8, I8_NR, true>(b, bp, j.n, j.k, j.npad, j.p, slot, false);
         }
     }
 
