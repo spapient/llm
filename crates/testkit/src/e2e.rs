@@ -7,7 +7,7 @@ use crate::{Rng, approx_eq, cosine_similarity};
 use autograd::{Sizes, Store, Tape};
 use nn::{Contract, Stack};
 use nn::{gemv_f32, gemv_i2, gemv_i4, gemv_i8};
-use tensor::{DType, Shape};
+use tensor::{DType, Shape, View};
 use train::{Bufs, Data, Reference};
 use weights::ptq::{self, I2, I4, I8};
 use weights::safetensors::Archive;
@@ -210,7 +210,7 @@ fn ptq_quantized_gemv_keeps_cosine_with_the_f32_reference() {
     let weights: Vec<f32> = (0..N * M).map(|_| rng.signed_unit()).collect();
 
     let mut reference = vec![0.0f32; N];
-    gemv_f32::forward(&x, &weights, &mut reference).expect("稠密参考可算");
+    gemv_f32::forward(View::one(&x), &weights, &mut reference).expect("稠密参考可算");
 
     // i2 只有三档码，余弦阈值逐级放宽；i4/i8 随位宽收紧。
     assert_quantized("i8", I8, gemv_i8::forward, 0.999, &x, &weights, &reference);
@@ -225,7 +225,7 @@ fn ptq_quantized_gemv_keeps_cosine_with_the_f32_reference() {
 fn assert_quantized<E: std::fmt::Debug>(
     name: &str,
     scheme: ptq::Scheme,
-    run: impl FnOnce(&[f32], &[u8], &[f32], &mut [f32]) -> Result<(), E>,
+    run: impl FnOnce(View<'_, f32>, &[u8], View<'_, f32>, &mut [f32]) -> Result<(), E>,
     min_cosine: f32,
     x: &[f32],
     weights: &[f32],
@@ -242,7 +242,7 @@ fn assert_quantized<E: std::fmt::Debug>(
     }
 
     let mut out = vec![0.0f32; N];
-    run(x, &packed, &scales, &mut out).expect("融合内核可算");
+    run(View::one(x), &packed, View::one(&scales), &mut out).expect("融合内核可算");
     let cosine = cosine_similarity(reference, &out).expect("两条向量非零");
     assert!(
         cosine >= min_cosine,

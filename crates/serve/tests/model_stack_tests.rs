@@ -140,7 +140,7 @@ fn a_quantized_int8_projection_assembles_and_matches_the_reference() {
     let w: Vec<u8> = (0..32).map(|idx| ((idx as i8 % 5) - 2) as u8).collect();
     let scales = [0.5f32];
     let mut reference = vec![0.0; 1];
-    nn::gemv_i8::forward(&x, &w, &scales, &mut reference).expect("参考");
+    nn::gemv_i8::forward(tensor::View::one(&x), &w, tensor::View::one(&scales), &mut reference).expect("参考");
 
     let stack = Stack::new(vec![
         Linear::with_format("blk.0", WeightFormat::INT8, 32, 1).expect("层"),
@@ -469,7 +469,7 @@ fn a_two_layer_composite_model_logits_match_the_reference() {
     )
     .expect("参考归一化");
     let mut reference = vec![0.0; out];
-    nn::gemv_f32::forward(&normed, &w2, &mut reference).expect("参考输出投影");
+    nn::gemv_f32::forward(tensor::View::one(&normed), &w2, &mut reference).expect("参考输出投影");
 
     assert_close(&produced, &reference);
 }
