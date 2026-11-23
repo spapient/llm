@@ -208,6 +208,19 @@ witness = { file = "metal/witness.metal", func = "witness_atomic", expect = [5.0
 # 档案描述的是**设备**，不只是 P0 的 `gemv_i4`：M 系列的 GPU 有 simdgroup 矩阵单元
 # （`simdgroup_matrix`）、lane 内交换/广播/前缀扫描，以及 SFU 的 `exp2`/`rcp`。它们没有片段
 # 文本（P0 模板不调用），所以等级是 L0——"声明了 + 有见证源码"，不是"本机能跑"。
+# gemm_f32 真正调用的标量 tile（有片段正文，L2），与下一条设备矩阵单元并存。
+[[provides]]
+prim     = "mma"
+impl     = "scalar_tile"
+m        = "<=8"
+n        = "<=8"
+k        = "<=8"
+dt       = ["f32"]
+space    = ["REG"]
+accuracy = ["fp32"]
+grade    = "L2"
+witness  = { file = "metal/witness.metal", func = "witness_mma_scalar", expect = [1.0, 2.0, 3.0, 4.0] }
+
 [[provides]]
 prim     = "mma"
 impl     = "simdgroup_matrix"

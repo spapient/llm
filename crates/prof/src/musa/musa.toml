@@ -218,6 +218,19 @@ witness = { file = "musa/witness.cu", func = "witness_atomic", expect = [5.0] }
 
 # mp_22 的矩阵核：MUSA 的 WMMA 是 16×16×8 一族（`t_wmma_v4…v7` 实测全部编得过、tf32 版
 # 10.60 TFLOPS 居首）。P0 模板不用它，故等级 L1——"本机能编能跑，但还没接进产物"。
+# gemm_f32 真正调用的标量 tile（有片段正文，L2），与下一条设备矩阵单元并存。
+[[provides]]
+prim     = "mma"
+impl     = "scalar_tile"
+m        = "<=8"
+n        = "<=8"
+k        = "<=8"
+dt       = ["f32"]
+space    = ["REG"]
+accuracy = ["fp32"]
+grade    = "L2"
+witness  = { file = "musa/witness.cu", func = "witness_mma_scalar", expect = [1.0, 2.0, 3.0, 4.0] }
+
 [[provides]]
 prim     = "mma"
 impl     = "wmma.tf32"
