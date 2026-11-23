@@ -169,7 +169,7 @@ llm 文档列的形状族（`tensor.rs:20-31`）：`broadcast/narrow/slice/chunk
 
 | 对照点 | llm | llm.u | Burn |
 | --- | --- | --- | --- |
-| 图/tape 结构 | `autograd` 4,024 行（src 2,109 / tests 1,915）：`Requirement/Role/Var/Node/Tape/Ordering/Schedule/Summary/Account/MemoryPolicy/Plan/Budget/Sizes/Footprint/Choice/Config/Replay/Store`（ADR 0055） | 手写反向（`exec` 内 `plan.rs`/`teacher`） | `burn-autodiff` 12.4k：`graph/grads/checkpoint/distributed/ops/runtime/backend` |
+| 图/tape 结构 | `autograd` 4,026 行（src 2,109 / tests 1,917）：`Requirement/Role/Var/Node/Tape/Ordering/Schedule/Summary/Account/MemoryPolicy/Plan/Budget/Sizes/Footprint/Choice/Config/Replay/Store`（ADR 0055） | 手写反向（`exec` 内 `plan.rs`/`teacher`） | `burn-autodiff` 12.4k：`graph/grads/checkpoint/distributed/ops/runtime/backend` |
 | train 接线 | `session.rs:5` 引 `Tape/Var`；`backprop/learner/pool` 同引 confirmed | train 复用 exec 计算面 | autodiff 作后端装饰器挂接 |
 | 梯度检查点 | segment 级（`autograd` 结构内，`MemoryPolicy` 自动/全留/分段三档） | 未见独立检查点策略 | `autodiff/checkpoint` 策略可配 |
 | 状态 | 元数据层闭环：`gradcheck` 中心差分对拍 200 张随机图（扇出累加、detach 分支、分层与顺序逐位一致、重复反向逐位一致、图外参数梯度恰为 0）；train 闭环真实算子梯度数值仍待 cutile/nn 中间态闭合后运行观测 | 手写反向，成熟度本轮未深核 | 生产级梯度跟踪/快照/反向 |
