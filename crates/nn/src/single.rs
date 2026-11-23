@@ -134,11 +134,12 @@ impl Contract for Embedding {
 /// 两档的下界相差 512 倍，所以档位必须由层**声明**——拿小档的算子给大档的层计价，
 /// 报出来的就是一条偏小 512 倍的下界。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
 pub enum Gauge {
     /// `K = 8`：小收缩轴（逐 token 的投影级矩阵乘）。
-    Short,
+    Short = 0,
     /// `K = 4096`：大收缩轴。
-    Long,
+    Long = 1,
 }
 
 /// 矩阵乘的元素精度：**对称量化、无分组标度**。
@@ -148,15 +149,16 @@ pub enum Gauge {
 /// 没有这条声明。分组是投影侧的口径，矩阵乘侧只按精度选内核，所以这里是另一条轴，而不是
 /// 把 `WeightFormat` 的 `group` 字段勉强塞进来。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
 pub enum Precision {
     /// 稠密 32 位浮点。
-    F32,
+    F32 = 0,
     /// 对称 2 位整数。
-    Int2,
+    Int2 = 1,
     /// 对称 4 位整数。
-    Int4,
+    Int4 = 2,
     /// 对称 8 位整数。
-    Int8,
+    Int8 = 3,
 }
 
 /// 「精度 × 档位 → 算子名」的全部已注册组合，唯一事实源。
@@ -196,6 +198,9 @@ impl Precision {
     ///
     /// 组合写成一张表而不是 `match` 分支：这里要表达的是「哪些格子里有内核」这个二维事实，
     /// 表里有就是有、没写就是没有，读者一眼能看出空着的那两格（int2 / int4 × `K = 4096`）。
+    // `precision as u8 == self as u8` 与 `rung as u8 == gauge as u8` 比较的是**判别值**，
+    // 因此两个枚举都声明了 `#[repr(u8)]` + 显式判别值：`RUNGS` 里的顺序不再隐含成契约，
+    // 调整枚举成员顺序也不会让查表悄悄换行。
     pub const fn operator(self, gauge: Gauge) -> Option<&'static str> {
         let mut idx = 0;
         while idx < RUNGS.len() {

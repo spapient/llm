@@ -4,6 +4,20 @@
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
 ## [Unreleased]
+### Fixed
+
+- **`crates/tensor` 恢复泛型张量 `Tensor<B, R, K>` 与整套步长视图代数**。上一轮把这一层按「零消费者」
+  删成只剩 `Shape` / `DType`，但张量/类型系统是框架地基，删掉后秩与元素类型退回注册名、布局能力
+  整体缺失。现在从 `326df52e^` 逐文件恢复 `layout` / `rank` / `store` / `tensor` 与 5 个测试文件，
+  并手写 `src/lib.rs` 以恢复模块结构、`invalid()` 构造路径与 `deny(unsafe_code)`：`B: Store` 管元素
+  存在哪（借来的 `&[K]` / 持有的 `Owned<K>`），`R: Rank` 管秩从哪来（`[usize; D]` 编译期定长 /
+  `Vec<usize>` 运行期长度），`K: Element` 管元素精度，目标秩写成类型见证。**增强**：`Element` 覆盖
+  13 个原生标量（`bool`、`u8`–`u64`、`i8`–`i64`、`f32`/`f64`、`half::f16`/`bf16`），亚字节精度仍由
+  `DType` 位宽表一等公民地表达（不进 `Element`，因为无原生标量）；新增 `tests/element_tests.rs` 逐标量
+  钉住 `DType` 映射并锁住 5 个亚字节变体。`[dependencies]` 补 `diagnostic`（构造期 `Invalid`）与
+  `half`，`+dev` 补 `testkit` / `proptest`。**验证**：`cargo test -p llm-tensor` **95 单元测试 +
+  1 doctest 全绿**（`tensor` / `view` / `typed` / `prop_shape` / `shape` / `element` 六组）；
+  `cargo test -p llm-testkit --lib` 的架构门通过 tensor 的命名与边集（边总数同步为 122）。
 ### Changed
 
 - **`crates/fuzz` 登记表合一 + 判据自引用 + 热路径零分配：命名、架构与吞吐一起收口到 S++ 口径**。

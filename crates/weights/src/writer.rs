@@ -245,12 +245,10 @@ impl Writer {
         Ok(count.0 + 4)
     }
 
-    /// 整份容器的精确字节数；与 [`Writer::finish`] 走同一编码路径。
+    /// 整份容器的精确字节数；与 [`Writer::finish`] 走同一编码路径，长度预演只此一处实现。
     pub fn encoded_len(&self, align_log: u8) -> Result<usize> {
         let plan = self.prepare(align_log)?;
-        let mut count = Count::default();
-        self.write_body_in(&plan, &mut count, align_log)?;
-        Ok(count.0 + 4)
+        self.expected_len(&plan, align_log)
     }
 
     /// 写进调用方固定缓冲，返回写入字节数；装不下时返回错误而不截断。

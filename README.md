@@ -70,24 +70,38 @@ cargo run -p llm-cli --bin cutile -- cache gc --limit 1073741824                
 `cargo run -p llm-cli --bin llm` 的 `片段层 prim` 一行会逐台列出 `=源码` / `=metallib N B/M 个符号`；
 `CUTILE_REQUIRE_IMAGE=metal` 把"缺镜像"升级成构建失败。细节见 [`crates/prof/README.md`](crates/prof/README.md)。
 
-## 形状描述面（`tensor`）
+## 形状与视图代数（`tensor`）
 
-`tensor` 只回答"数据长什么样、占几个字节"：**不持有元素、不重排布局、不执行**。它拥有三样东西，
-各自都是全仓唯一事实源：
+`tensor` 只有一个类型族：`Tensor<B, R, K>`，三个泛型位各管一件事——`B: Store` 是元素存在哪
+（借来的 `&[K]` / 持有的 `Owned<K>`），`R: Rank` 是秩从哪来（`[usize; D]` 编译期定长 /
+`Vec<usize>` 运行期长度），`K: Element` 是元素是什么（`bool` / `u8`–`u64` / `i8`–`i64` /
+`f32` / `f64` / `f16` / `bf16`，精度是类型常量而不是字段）。这与 Burn 的 `Tensor<B, const D, K>`
+同形：形状、元素数、可达性与溢出在构造期一次拦下，做不到的调用在编译期就过不去
+（`t.select::<[usize; 1]>(0, 3)` 写出目标秩，换成别的秩编译不过）。
 
-- **`Shape`** —— 各轴长度。`numel()` 是饱和乘积（`numel` 可能来自不受信任的权重文件头，回绕会把
-  巨大张量报成很小，所以溢出饱和而非回绕）；`element_bytes(dtype)` 把元素数折成字节数，亚字节精度
-  按位向上取整，因此 `Shape::new([2, 3])` 的 `u4` 只占 3 字节、`f32` 占 24 字节。
-- **`AxisLen`** —— 轴长的整数口径（`usize` / `u64` 各一份），形状构造因此不为两种宽度各写一遍。
+布局是 `(起点偏移, 各轴长度, 各轴步长)` 三元组，整套形状算子只做 O(轴数) 的整数运算、与存储
+形态无关：`broadcast` 用步长 0 表达广播，`narrow` / `slice` 前移起点，`chunks` / `split` /
+`unbind` 借同一存储分段，`select` / `squeeze` / `unsqueeze` / `flatten` / `diagonal` 改秩，
+`transpose` / `permute` / `movedim` 换轴序，`slice_fill` / `slice_assign` 就地写自己的缓冲；
+带步长切片（`Slice::stepped`，对应 Burn 的 `s![..;2]`）同样零拷贝。只有 `flip` 按镜像下标重算
+并返回自持张量——无符号步长表达不出倒走。偏移、可达性、连续性与取行只有 `layout` 一份实现，
+连续步长只有 `shape::accumulate` 一份定义，两种秩、两种存储因此不可能漂移。
+
+它拥有三样全仓唯一事实源，另有两处比 Burn 更硬：
+
+- **`Shape`** —— 各轴长度；`numel()` 是饱和乘积（长度可能来自不受信任的权重文件头，溢出饱和
+  而非回绕），`element_bytes(dtype)` 按位向上取整，`u4` 的 `[2, 3]` 只占 3 字节、`f32` 占 24 字节。
+- **`AxisLen`** —— 轴长的 `usize` / `u64` 双口径，形状构造不为两种宽度各写一遍。
 - **`DType` 的再导出** —— 元素类型闭集的唯一源在 L1 `dtype`（24 个变体、`Class` 数值类别、位宽），
   本层只转出名字，不复制任何分类。
+- **亚字节精度是一等公民** —— `U1`/`U2`/`U4`/`I4`/`F4` 与 `F32` 同表，字节数由
+  `DType::bytes_for` 位级进位；Burn 的 `Element` 要求 `size_of` 整除，亚字节只能靠外部打包约定。
+- **能力层是分类表的一列** —— `Class` 住在 `DTypeSpec` 行表里，`is_float`/`is_integer` 是它的
+  `const fn` 投影；Burn 的 `Kind` 每多一档就多一层泛型参数。
 
-**为什么没有 `Tensor`。** 此前本层有一套完整的步长视图代数（`broadcast` / `narrow` / `permute` /
-`diagonal` / `slice_fill` …，1,247 行）。实测它在全仓的消费者只有 `llm status` 面板那一行样例数据，
-**计算路径一个都没有**；而本仓的抽象单位是"算子契约 + 设备 Fragment + 执行缝"（ADR 0053），
-排布由算子声明持有，不在元数据层再建第二套措辞。于是按死代码删除，`llm status` 改印 `Shape` 与
-`DType` 的真实读数。删掉的能力各有去向或"本无用户"的如实标注，逐条记在
-[`docs/COMPARISON-llm-llmu-burn.md`](docs/COMPARISON-llm-llmu-burn.md) §3.3；源码见
+`B` 是**存储**而不是后端算子集，`R` 是 `const D` 的**超集**，这两处是刻意的分工（ADR 0053 /
+ADR 0046）；其余布局与类型能力与 Burn 对齐，并在亚字节与分类表上更宽。逐维打分与可复核证据见
+[`docs/COMPARISON-llm-llmu-burn.md`](docs/COMPARISON-llm-llmu-burn.md) §3.3 与 §16；源码见
 [`crates/tensor/src/lib.rs`](crates/tensor/src/lib.rs) 的模块文档。
 
 ## 配置

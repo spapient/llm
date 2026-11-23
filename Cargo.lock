@@ -707,7 +707,11 @@ dependencies = [
 name = "llm-tensor"
 version = "0.1.0"
 dependencies = [
+ "half",
+ "llm-diagnostic",
  "llm-dtype",
+ "llm-testkit",
+ "proptest",
 ]
 
 [[package]]

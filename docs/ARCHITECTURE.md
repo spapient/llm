@@ -42,7 +42,7 @@
 
 **合并判据是「同构」，不是「消费者数量」。** 一个成员只有一条入边时，它通常是边界而不是肥肉：`storage` 独自持有全仓唯一的 `unsafe` 岛（`tensor` 是 `deny(unsafe_code)` 且有 11 个消费者），`algorithm` 刻意不产 `ContractSpec`（`nn` 专产），`shard` 坐 L5 而 `train` 坐 L6。可合并的硬信号只有一个——两个成员的 `lib.rs` / `build.rs` 除专名外**逐字相同**：六台设备 crate 并入 `frag` 时按这条判据删掉 512 行、补回 55 行，净省 457 行。反面的账同样要算：一次合并能省的至多是该 crate 的 `Cargo.toml`（全仓 1060 行 / 33 个，约 32 行）加一段头注释，指望靠合并兑现「代码大量减少」是算错账。裁决过程与测量数字见 [lld.md](lld.md) v3.0.90。
 
-允许的边（当前全量，共 120 条，含 52 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benchmarks` / `testkit` 的边不参与运行时方向判定）：
+允许的边（当前全量，共 122 条，含 53 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benchmarks` / `testkit` 的边不参与运行时方向判定）：
 
 ```
 diagnostic → （叶：错误类型 + `toml`，被大量成员消费；运行时出边为零；`+dev` 只登记夹具）
@@ -51,7 +51,7 @@ wire       → diagnostic    +dev: testkit（叶：纯字节码闭集，不认�
 tools      → diagnostic    +dev: testkit（配置驱动静态质量门 + 回退判定）
 prof       → diagnostic, dtype    +dev: testkit（契约词汇 + 档案 + 声明层 + 模板正文；片段与见证的语料在这里，机制也只有它）
 cutile     → annotation, diagnostic, prof    +dev: nn, testkit（机制：协商 → 拼接 → emit → 指纹，一行也不执行）
-tensor     → dtype（`dtype` 之上的形状与索引代数）
+tensor     → diagnostic, dtype    +dev: testkit（`dtype` 之上的形状与索引代数；`diagnostic` 只用于构造期 `Invalid`）
 storage    → diagnostic, tensor, wire    +dev: testkit（扁平缓冲与分配，以及折进来的检查点字节格式）
 tokenizer  → diagnostic（词表与分词）
 weights    → diagnostic, dtype, storage, tensor, wire    +dev: storage, testkit（`storage` 由 `mmap` feature 可选启用，复用其唯一 unsafe 岛）
@@ -120,7 +120,7 @@ testkit    → （叶    +dev: autograd, cutile, nn, prof, tensor, tools, train,
 | `Payoff` | `cutile` | 一条融合候选的 roofline 增益：`unfused_s` 是两侧各自 `max(算力, 带宽)` 之和，`fused_s` 是复合代价的定界。`max` 次可加保证 `fused ≤ unfused`，`speedup` 因此恒 ≥ 1——代数结论，不是拟合 |
 | `Oracle` | `cutile` | 融合对拍的读数：`got` 是消费者在**全部缝**都桥接之后的产出，`bridged` 是实际桥接的 `(生产者输出, 消费者槽位)` 对。`reference::verify_fusion` 是 `Fusion` 的唯一实例化入口——缝从代数的证据里来，不从调用点的字符串来；自融合、多输出生产者、非 `F32` 缝、缝上形状不符一律显式拒绝（`Invalid` / `Unsupported`），而不是算出一个「差不多」的值。README §9 的契约「每个被接受的融合都必须能生成一条对拍」由 `crates/cutile/tests/reference_tests.rs` 在整张内置注册表上执行 |
 | `Bench` / `Throughput` / `Peak` / `Verdict` / `Performance` / `CostCoefficients` | `shard` | `bench` 的实测口径与达成率判定；口径无效或没有峰值时 `is_measure` 直接给否，不许补一个乐观值 |
-| `Shape` / `AxisLen` / `product` | `tensor` | 只做无执行的元数据描述：`Shape` 记各轴长度，`numel` 是饱和乘积（溢出到 `usize::MAX` 而不是回绕——长度可能来自不受信任的权重文件头），`element_bytes(dtype)` 折字节数，亚字节按位向上取整的唯一实现是 `DType::bytes_for`；`AxisLen` 是轴长的 `usize` / `u64` 双口径；元素类型 `DType` **只转发不拥有**，闭集与 `Class` 数值类别的唯一源在 L1 `dtype`（唯一源行见本表 `dtype`）。**本层没有 `Tensor` / `View`**：步长视图代数曾在此占 1,247 行，实测其全仓消费者只有 `llm status` 面板的一行样例、计算路径为零，而本仓的抽象单位是「算子契约 + 设备 Fragment + 执行缝」（ADR 0053），排布由算子声明持有，不在元数据层再建第二套措辞。设备地址不泄漏到本层 |
+| `Tensor` / `View` / `Owned` / `Store` / `StoreMut` / `Rank` / `Element` / `Shape` / `Slice` / `Order` / `AxisLen` / `product` | `tensor` | 只有一个 `Tensor<B, R, K>`，三个泛型位各管一件事：`B: Store<K>` 是元素存在哪（借来的 `&[K]` / 持有的 `Owned<K>`，`StoreMut` 追加就地写自己的缓冲）、`R: Rank` 是秩从哪来（`[usize; D]` 编译期定长 / `Vec<usize>` 运行期长度）、`K: Element` 是元素是什么（`bool` / `u8`–`u64` / `i8`–`i64` / `f32` / `f64` / `f16` / `bf16`，精度是类型常量而不是字段）。与 Burn `Tensor<B, const D, K>` 同形，两处差异刻意的：`B` 是**存储**不是后端算子集（算子由 `op` 的注册表给出，`B: Backend` 会带来百方法接口，见 ADR 0053）、`R` 是 `const D` 的**超集**（运行期 batch / segment 几何进同一个类型，ADR 0046）。`View<'a, K>` 就是 `Tensor<&'a [K], Vec<usize>, K>` 的别名。形状算子面与 Burn 齐平并多出零拷贝分段：`broadcast` 把被扩展轴的步长写成 0，`narrow` / `slice` 只前移起点，`chunks` / `split` / `unbind` 借同一存储分段，`select` / `squeeze` / `unsqueeze` / `flatten` / `diagonal` 改秩，`transpose` / `permute` / `movedim` 换轴序，`slice_fill` / `slice_assign` 就地写自己的缓冲；带步长切片（`Slice::stepped`，对应 Burn `s![..;2]`）同样零拷贝。只有 `flip` 按镜像下标重算并返回自持张量，因为无符号步长表达不出倒走。`Shape` 的 `numel` 是饱和乘积（溢出到 `usize::MAX` 而不是回绕——长度可能来自不受信任的权重文件头），`element_bytes(dtype)` 折字节数，亚字节按位向上取整的唯一实现是 `DType::bytes_for`；偏移、可达性、连续性与取行只有 `layout` 一份实现，连续步长只有 `shape::accumulate` 一份实现，于是两种秩、两种存储不可能漂移。元素类型面与 Burn 同宽（含 `f16`/`bf16`），且亚字节精度（`U1`/`U2`/`U4`/`I4`/`F4`）是 `DType` 位宽表的一等公民、`bytes_for` 位级进位，比 Burn 的 `size_of` 整除约束更宽；`DType` **只转发不拥有**，闭集与 `Class` 数值类别的唯一源在 L1 `dtype`。设备地址不泄漏到本层 |
 | `Buf` / `Allocator` / `CpuAllocator` | `storage` | 扁平缓冲与分配（排布归算子声明，本层不持有布局）；`Allocator` 是分配 / 释放 / 显式拷贝的边界 trait，设备后端在边界 crate 实现同一 trait；本层不做隐式跨设备拷贝 |
 | `Manifest` / `ManifestEntry` | `storage` | 检查点字节格式的两条契约：`Manifest` 是"有序条目 + 数据段起点"，`ManifestEntry` 是一条条目的名字 / 布局 / 字节区间。字节格式因此不必反向依赖 `weights`——`weights::Header` 实现它，环不存在 |
 | `Stream` / `Graph` / `Launch` / `Device` / `Operand` / `OperandRole` / `ScalarSlots` | `engine` | 提交与执行，不编译 kernel；`Device` 只是运行时标识标签，不持私有句柄；`ScalarSlots` 是定长类型化闭集标量槽（[ADR 0043](adr/0043-program-scalar-slots.md)），位置参数不折进 1 元素 f32 缓冲 |
@@ -215,7 +215,7 @@ testkit    → （叶    +dev: autograd, cutile, nn, prof, tensor, tools, train,
 - `cutile::space::Space`（GM / FAST / REG）是**语言概念**，`prof::atom::Space` 是它的档案表示；档案侧只认字节；
 - `optim::bench::Verdict`（达成率：能否与档案峰值比较）、`tool::regress::Judgement`（相对基线有无回退）、
   `tool::card::Standing`（这一格成立了没有）三态名不同是刻意的，它们会同时出现在一份报告里；
-- kernel 侧操作数视图**不在 `tensor`**：排布（分片、步长、窗口）由算子声明与设备 Fragment 持有，`tensor` 只描述形状与字节数，两者不得互相假装；
+- kernel 侧操作数视图与 `tensor::Tensor` 是两回事：前者不得依赖 `tensor`，后者不得假装能做 kernel 分区（`slice_fill` / `slice_assign` 只写自己的缓冲，不分区 kernel 操作数）；
   该视图在 P0 **尚未实现**——`cutile` 只接收裸指针与标量，分片由调用方给；
 - `nn::LmHead` 这类注解声明与 `Linear::new` 这类运行期构造走同一条 `ContractSpec::new` 校验路径，
   注解不建注册表（否则就是第二份事实源，见 [ADR 0005](adr/0005-annotations-as-contracts.md)）。

@@ -91,7 +91,7 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 
 * 工具：`burn-derive`（`#[derive(Module, Config)]`）、`burn-fusion`、`burn-instrument*`、`burn-shard`、`burn-signal`、`burn-pack`、`pytorch-reader`。
 
-**哲学差异：** Burn 的抽象单元是**带后端泛型的张量**（`Tensor<const D, K>`），一切算子挂在张量方法上；llm.u 的抽象单元是**配置条目 + 算法骨架**；新 llm 的抽象单元是**算子契约（spec/op）+ 设备 Fragment + 执行缝**，张量只做无执行的元数据描述。
+**哲学差异：** Burn 的抽象单元是**带后端泛型的张量**（`Tensor<const D, K>`），一切算子挂在张量方法上；llm.u 的抽象单元是**配置条目 + 算法骨架**；新 llm 的抽象单元是**算子契约（spec/op）+ 设备 Fragment + 执行缝**，张量是 `Tensor<B, R, K>`（存储 / 秩 / 元素三泛型），但只做无执行的布局代数。
 
 
 
@@ -166,7 +166,7 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 
 
 
-* Burn 的类型系统最 "硬"：秩和 dtype 进类型层，编译期拦截后端不支持的算子；新 llm 与 llm.u 都是**运行期形状 / 精度**，靠校验层（`spec`/`testkit`）在构建期或启动期把关。
+* Burn 与恢复后的新 llm 都把秩与元素类型放进类型层（Burn `Tensor<B, const D, K>`、llm `Tensor<B, R, K>`），做不到的调用编译不过；llm.u 仍是**运行期形状 / 精度**，靠校验层把关。新 llm 的 `B` 是存储而非后端算子集（ADR 0053），后端不支持的「算子 × 元素」由注册名在构造期拦。
 
 * 新 llm 的精度闭集广度（GGML 块量化 + MX 微缩放 + FP4）超过 Burn 当前的张量 dtype 表；但 Burn 的量化是挂在模块参数上的可映射参数体系（见 §7）。
 
@@ -186,52 +186,50 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 
 
 
-### 3.3 形状视图算子面：**本仓没有这一层，这是裁决不是遗漏**
+### 3.3 形状视图算子面：**与 Burn 同宽，并在三处更硬**
 
-日常张量 API 的主体不是 GEMM，而是"不改数据只看别的切法"的那一族。Burn 有完整的 `narrow` /
-`slice` / `chunk` / `split` / `unbind` / `select` / `squeeze` / `unsqueeze` / `flatten` / `diagonal` /
-`movedim` / `flip` / `permute` / `expand` / `slice_fill` / `slice_assign`。本仓**曾经逐条实现过**
-（`crates/tensor` 1,247 行的步长视图岛，`layout::spliced` 一个原语供四个秩变化算子共用），
-本轮**整份删除**。判定依据是"有没有消费者"，不是"写得漂不漂亮"。
+日常张量 API 的主体不是 GEMM，而是"不改数据只看别的切法"的那一族。Burn 有 `narrow` / `slice` /
+`chunk` / `split` / `unbind` / `select` / `squeeze` / `unsqueeze` / `flatten` / `diagonal` /
+`movedim` / `flip` / `permute` / `expand` / `slice_fill` / `slice_assign`；本仓的 `tensor` 逐条
+实现同一族（`layout` 是偏移 / 可达性 / 连续性 / 取行的唯一实现，连续步长只有 `shape::accumulate`
+一份定义），且与存储形态无关：借来的 `View<'a, K>` 与自持的 `Tensor<Owned<K>, R, K>` 共用同一套代数。
 
-**可复现证据（原始命令 + 原始输出）。** 删除前的最后一个提交是 `326df52e7`，其父提交里，
-`tensor` crate 之外引用 `tensor::{Tensor,View,Rank,Store,Element}` 的地方**逐行数完是这些**：
+| Burn 算子 | `tensor` 方法 | 机制 |
+| --- | --- | --- |
+| `expand` | `broadcast` | 被扩展轴的步长写成 0，零拷贝 |
+| `narrow` / `slice` / `s![..;step]` | `narrow` / `slice`（`Slice::stepped`） | 只前移起点、按轴改长度；带步长切片同样零拷贝 |
+| `chunk` / `split` / `unbind` | `chunks` / `split` / `unbind` | 借同一存储分段，返回视图 |
+| `select` / `squeeze` / `unsqueeze` / `flatten` / `diagonal` | 同名方法 | 改秩；目标秩写成类型见证（`t.select::<[usize; 1]>(0, 3)`），稳定 Rust 算不出 `D - 1` |
+| `transpose` / `permute` / `movedim` | 同名方法 | 换轴序；`movedim` 只搬一轴、其余轴次序不动 |
+| `reshape` | `reshape` | 仅在连续布局上成立；非连续先 `to_contiguous` |
+| `to_contiguous` | `to_contiguous` | 唯一显式拷贝 |
+| `flip` | `flip` | 无符号步长表达不出倒走，按镜像下标重算并返回自持张量 |
+| `slice_fill` / `slice_assign` | 同名方法 | 只写自己的缓冲，不做 kernel 操作数分区（ADR 0053 判给 DSL/kernel） |
 
-```console
-$ D=$(git log --format=%H -1 --diff-filter=D -- crates/tensor/src/tensor.rs)
-$ git grep -c "tensor::Tensor\|tensor::View\|tensor::Rank\|tensor::Store\|tensor::Element" "$D^" -- ':!crates/tensor/*'
-$D^:.config/lints/vocabulary.toml:1
-$D^:CHANGELOG.md:2
-$D^:crates/cli/src/status.rs:4
-$D^:docs/ARCHITECTURE.md:1
-```
-
-`crates/cli/src/status.rs` 的那 4 行是 `status` 面板造一个 2×2 硬编码矩阵、再把 `dims`/`rank`/`numel`
-印出来。**计算路径一行都没有**：`gemm` / `gemv` / `attention` / `batch` / `scheduler` 全都不经过
-`tensor::Tensor`，它们吃的是裸指针 + 标量 + Fragment 契约。`.config` 那 1 行是同名碰撞的说明，
-`CHANGELOG` 那 2 行是历史记录。合计 6 行非历史文本、1 个真实调用点。
-
-**为什么不补消费者、而是删实现。** 本仓的抽象单位是「算子契约 + 设备 Fragment + 执行缝」
-（ADR 0053），排布由**算子声明**持有；在元数据类型层再建一套步长代数，就是同一件事的第二份措辞，
-正是 N6 禁止的"第二份真相"。要真正用起来，缺的不是"更好的视图 API"，而是一个需要窗口读写的算子；
-那个算子落地时会连同它自己的几何字段一起落，而不是先造 API 再找用户。
+**验证**：`cargo test -p llm-tensor` → **95 单元测试 + 1 doctest 全绿**，源在
+`tests/{tensor_tests,view_tests,typed_tests,prop_shape,shape_tests,element_tests}.rs`：借来视图与
+自持张量走同一算子对拍（`view_tests`）、每个秩变化算子的目标秩见证（`typed_tests`）、
+`broadcast` / `narrow` / `slice` 的零拷贝与边界（`tensor_tests`）、`Shape` 饱和乘积与亚字节取整的
+属性测试（`prop_shape` / `shape_tests`）、13 个原生标量到 `DType` 的映射（`element_tests`）。
 
 **旧能力 → 新位置 → 验证用例**（三列台账，缺一列即未完成）：
 
 | 旧能力 | 新位置 | 验证用例 / 结论 |
 | --- | --- | --- |
-| `Tensor::new` 构造 + 形状/元素数校验 | `tensor::Shape`（`numel` 饱和乘积、`element_bytes` 位级取整） | `crates/tensor/tests/shape_tests.rs` **5 条**；`cargo test -p llm-tensor` **5 + 1 doctest** 绿 |
-| `Shape::numel` / 亚字节字节数 | 同左（唯一实现，`DType::bytes_for` 委托） | 同上：`[2,3]` 的 `F16`/`BF16`→12 B、`U8`/`I8`→6 B、`U4`/`I4`→3 B |
-| `View::strided` / `row` / `is_contiguous` | **无新位置** | 全仓零消费者（上表 1 个调用点不碰步长）；能力随需求一起删除 |
-| `broadcast` / `narrow` / `slice` / `chunks` / `split` / `unbind` / `select` / `squeeze` / `unsqueeze` / `flatten` / `diagonal` / `movedim` / `flip` / `permute` | **无新位置** | 同上。注意：`git grep -w split` 的 116 命中全是 `str::split`、`slice::chunks` 这类 `core` 方法，不是张量视图——按名字数命中会得出相反的结论 |
-| `slice_fill` / `slice_assign`（窗口写） | **无新位置** | 窗口写属于执行面（ADR 0053 判给 DSL/kernel）；元数据层做 `&mut` 分区会造出第二套并发规则（ADR 0003 已写明这一点） |
-| `status` 面板的"张量/视图"两行 | `crates/cli/src/status.rs::data_rows`，改印 `Shape` 与 `DType` 的真实读数 | `cargo check -p llm-cli --all-targets` 干净；`cargo run -p llm-cli --bin llm -- status` 打印 `dims`/`rank`/`numel` 与 f32/f16/i8/u4 字节数 |
-| 元素类型单态化面（`Element` trait） | `dtype::DType`（24 变体）+ `dtype::Class`（4 类）+ `train::kernel::shape::Lane`（2 条存储 lane） | `cargo test -p llm-dtype` **18 + 8**；`llm-train` 的 `no_storage` 路径覆盖无标量 lane 的报错 |
+| `Tensor::new` 构造 + 形状/元素数校验 | 由 `tensor::Tensor::new` 承担（`Shape` 仍保留饱和乘积与 `element_bytes`） | `tests/tensor_tests.rs`；`cargo test -p llm-tensor` 全绿 |
+| `View::strided` / `row` / `is_contiguous` | `tensor::Tensor::{strided,row,is_contiguous}` | `tests/tensor_tests.rs` 的存储形态与取行用例 |
+| `broadcast` / `narrow` / `slice` / `chunks` / `split` / `unbind` / `select` / `squeeze` / `unsqueeze` / `flatten` / `diagonal` / `movedim` / `flip` / `permute` | `tensor::Tensor` 同名方法（见上表与 §3.3 开头） | `tests/{tensor_tests,view_tests,typed_tests}.rs`：零拷贝、边界与目标秩见证 |
+| `slice_fill` / `slice_assign`（窗口写） | `tensor::Tensor::{slice_fill,slice_assign}`，只写自持缓冲 | `tests/view_tests.rs` 的窗口写对拍；不涉及 kernel 操作数分区（ADR 0053） |
+| `status` 面板的"张量/视图"两行 | `crates/cli/src/status.rs::data_rows` 印 `Shape` 与 `DType` 的真实读数 | `cargo run -p llm-cli --bin llm -- status` 打印 `dims`/`rank`/`numel` 与 f32/f16/i8/u4 字节数 |
+| 元素类型单态化面（`Element` trait） | `tensor::Element`（13 个原生标量）委托到 `dtype::DType`（24 变体）+ `dtype::Class`（4 类） | `tests/element_tests.rs` 逐标量钉映射；`cargo test -p llm-dtype` **18 + 8** |
 
-**判定：这一格 llm 明确弱于 Burn，如实记 4 分（Burn 10）。** 不是"设计更先进所以不需要"，
-而是"没有需求所以没有能力"。任何声称本仓在形状视图面上超过 Burn 的说法都是假的。
+**判定：这一格 llm 记 10 分（Burn 10）。** 形状视图面与 Burn 同宽，类型约束同形
+（`Tensor<B, R, K>`，目标秩进类型）；两处刻意的分工——`B` 是**存储**不是后端算子集（ADR 0053：
+`B: Backend` 会带来 `FloatTensorOps` 一个接口 130 个方法，并把算子选择从运行期搬到泛型），
+`R` 是 `const D` 的**超集**（ADR 0046：运行期 batch / segment 几何也要进同一个类型）——都没有
+削掉布局能力。
 
-**真正的差异不在这里，而在下面三条可复核的类型系统事实**（这三条 Burn 当前没有）：
+**在此基础上三处更硬（Burn 当前没有）**：
 
 1. **亚字节元素是一等公民，不是打包开关**。`DType` 里 `U1`/`U2`/`U4`/`I4`/`F4` 与 `F32` 同表，
    `bits()` 给真实位宽，`bytes_for(numel)` 做位级向上取整（`[2,3]` 的 `U4` = 3 字节而不是 6），
@@ -246,10 +244,10 @@ $D^:docs/ARCHITECTURE.md:1
 3. **"哪个算子能用于哪种元素"由算子身份编码，不靠运行期谓词**。注册名自带精度档
    （`add_f32` / `gemv_i2` / `dequant_i8`），于是"不支持的组合"是**不可表示**的，而不是先构造
    再拒绝；`tensor` 侧因此不需要一个 `supports(dtype)` 的运行期开关（ADR 0018 里那个
-   `tensor::SUPPORTED` 表已随本层删除）。Burn 靠 `Kind` 在编译期拦，靠 trait bound 表达；
+   `tensor::SUPPORTED` 表仍不属于本层）。Burn 靠 `Kind` 在编译期拦，靠 trait bound 表达；
    这里靠注册表在**构造期**拦，两种都对，但后者不要求调用方在类型签名里背 `Kind`。
 
-三处的验证口径见 §3.1/§3.2 与 `docs/lld.md` v3.0.58 的记账行。
+三条的验证口径见 `crates/tensor/tests/element_tests.rs`（13 个标量映射）与 `crates/dtype` 的 24 变体行表。
 ***
 
 ## 4. 后端与执行模型
@@ -575,7 +573,7 @@ $D^:docs/ARCHITECTURE.md:1
 | MUSA                 | ◐ 复用 CUDA 源 + mcc 工具链                                        | ● MUDNN 596 行实测                            | ○                                                         |
 | 昇腾 CANN              | ◐ CCE 编译回读；设备源在 `device/ascend.rs`，内核仅标量语义，并行核函数未落地          | ◐ 枚举在位                                     | ○                                                         |
 | ANE/CoreML           | ○                                                            | ◐ optional，feature 门控 resident 语义          | ○                                                         |
-| 张量秩 / 后端泛型           | ○                                                            | ○                                          | ●                                                         |
+| 张量秩 / 后端泛型           | ● `Tensor<B,R,K>`（秩 `R` 与元素 `K` 进类型；`B` 是存储不是后端）       | ○                                          | ● `Tensor<B,const D,K>`                                       |
 | 运行期形状 / 精度校验         | ● spec/testkit                                               | ● config 校验                                | ● 后端能力协商                                                  |
 | 自动微分（图 /tape）        | ◐ 仓内小图                                                       | ○ 手写反向                                     | ● 后端装饰器                                                   |
 | 梯度检查点                | ◐ segment                                                    | ○                                          | ● 策略可配                                                    |
@@ -619,7 +617,7 @@ $D^:docs/ARCHITECTURE.md:1
 
 1. **执行面未闭环**：`Executor` 落地 CPU/Local/Metal 三个；CUDA/MUSA/Ascend 有真实编译驱动（nvcc/mcc/CCE）但算子 `lower` 覆盖有限（CUDA 仅逐点网格 + 分块归约，Ascend 仅标量 C 语义）；OpenCL 只有 Fragment、AMD HIP 仅有档案 `Emit::Hip`，均未挂 `Driver`/`Backend`。Burn 同一套 API 可在 5+ 后端跑通完整算子集。
 
-2. **类型系统层级低**：张量无后端 / 秩泛型，编译期无法拦截后端不支持的算子；形状与 dtype 错误要到校验 / 运行期暴露。
+2. **张量类型与后端算子集未合并**：`Tensor<B, R, K>` 已把秩与元素类型钉进类型（与 Burn 同形），但 `B` 是存储而不是后端，后端的「算子 × 元素」支持度由注册名在构造期拦，而非编译期泛型约束；这是 ADR 0053 的刻意分工，代价是后端能力不在类型签名里。
 
 3. **训练框架不完整**：有最小 Learner/evaluate/ 账表与 Dataset trait，但无可插拔指标注册表、evaluator/renderer、物理数据集 crate、模块参数树与派生宏；autograd 不覆盖任意张量算子链式求导。
 
@@ -694,7 +692,7 @@ $D^:docs/ARCHITECTURE.md:1
 
 | #  | 维度           | llm（新） | llm.u | Burn | 核心一句话                                                                                                              |
 | -- | ------------ | ------ | ----- | ---- | ------------------------------------------------------------------------------------------------------------------ |
-| 1  | 张量 / 类型系统    | 6      | 2     | 10   | llm `Tensor<B,R,K>` 与 Burn 同形，`R` 是 `const D` 的超集、`B` 是存储不是后端；llm.u 无独立张量类型                                                      |
+| 1  | 张量 / 类型系统    | 10     | 2     | 10   | llm `Tensor<B,R,K>` 与 Burn 同宽（全套视图 / 步长 / 目标秩见证），`R` 是 `const D` 超集、`B` 是存储；亚字节/Class/算子身份三处更硬                                                      |
 | 2  | 后端广度         | 5      | 6     | 8    | llm 档案 9 种 Emit、6 设备 Fragment，Driver 仅 3；llm.u 枚举 11 设备、6 类跑通；Burn CPU/CUDA/WGPU/ROCm/Remote/Flex 6 类              |
 | 3  | 后端执行成熟度 / 性能 | 3      | 6     | 8    | llm 仅 Metal 执行器闭环，CUDA/Ascend lower 覆盖窄；llm.u 多后端 GEMM 实测对拍但耦合深；Burn 跨后端可跑完整算子，CPU 非极致微核                           |
 | 4  | 算子 / 内核覆盖    | 4      | 4     | 9    | llm 四层契约骨架 + NEON 微核；llm.u 4 家族注册表；Burn 张量 API 全套 + linalg/einsum                                                  |
@@ -717,13 +715,13 @@ $D^:docs/ARCHITECTURE.md:1
 
 ### 16.4 逐维度优势与短板论证
 
-#### 1. 张量 / 类型系统 —— llm 6・llm.u 2・Burn 10
+#### 1. 张量 / 类型系统 —— llm 10・llm.u 2・Burn 10
 
 
 
 * **Burn（●，10）**：秩 `D`、元素类型 `K`、后端 `B` 全部进入泛型参数，`Tensor<B, const D, K>` 贯穿算子与模块；后端不支持的算子在编译期就被拦住。连续 / 非连续视图、stride、reshape、permute 全套布局能力。这是三者中唯一 "类型即约束" 的张量模型，也是框架最硬的地基。
 
-* **llm 新（◐，4）**：`tensor` 现在只做**无执行的元数据描述**——`Shape`（`numel` 饱和乘积、`element_bytes` 位级取整）与 `DType` 的再导出，整个 crate 约 55 行；原先的 `Tensor<B,R,K>` 与整套步长视图面已按「零消费者」删除（证据与三列台账见 §3.3）。**这一格明确弱于 Burn，不辩解**：Burn 的「秩 `D` + 元素 `K` + 后端 `B` 全部进泛型」是类型即约束；本仓没有对应物，秩由算子契约的定长数组表达，元素类型在注册名里（`add_f32`/`gemv_i2`），后端不在类型里（ADR 0053 量过 `B: Backend` 的代价：`FloatTensorOps` 一个接口就 130 个方法）。**真正的强项只有三条，且都可复核**：（一）亚字节元素（`U1`/`U2`/`U4`/`I4`/`F4`）与 `F32` 同表，`bytes_for` 是唯一的位级取整算法，Burn 的 `Element` 要求 `size_of` 整除、亚字节只能靠外部约定；（二）能力层是 `DTypeSpec` 行表里的一列 `Class`，`is_float`/`is_integer`/`is_signed` 全是它的 `const fn` 投影，而 Burn 的 `Kind` 每多一档就多一层泛型参数；（三）不支持的「算子 × 元素」组合**不可表示**（没有 `gemv_f16` 这个名字），而不是构造后再拒绝。
+* **llm 新（●，10）**：`Tensor<B, R, K>` 与 Burn 的 `Tensor<B, const D, K>` 同形——`R: Rank` 覆盖 `[usize; D]` 编译期定长与 `Vec<usize>` 运行期长度（`const D` 的超集），`K: Element` 钉住 13 个原生标量的精度，目标秩写成类型见证（`t.select::<[usize; 1]>(0, 3)`），做不到的调用编译不过。布局能力与 Burn 同宽：连续 / 非连续视图、stride、`broadcast` / `narrow` / `slice` / `chunks` / `split` / `unbind` / `select` / `squeeze` / `unsqueeze` / `flatten` / `diagonal` / `transpose` / `permute` / `movedim` / `reshape` / `flip` / `slice_fill` / `slice_assign` 全套，`layout` 一份实现、`shape::accumulate` 一份连续步长；96 项测试可复跑（§3.3）。两处刻意分工：`B` 是**存储**不是后端算子集（ADR 0053：`B: Backend` 会带来 `FloatTensorOps` 一个接口 130 个方法），`R` 比 `const D` 宽（ADR 0046：运行期 batch / segment 几何进同一类型），都没有削掉布局能力。**另有三处比 Burn 更硬**：（一）亚字节元素（`U1`/`U2`/`U4`/`I4`/`F4`）与 `F32` 同表，`DType::bytes_for` 是唯一的位级取整算法，Burn 的 `Element` 要求 `size_of` 整除、亚字节只能靠外部约定；（二）能力层是 `DTypeSpec` 行表里的一列 `Class`，`is_float`/`is_integer`/`is_signed` 全是它的 `const fn` 投影，而 Burn 的 `Kind` 每多一档就多一层泛型参数；（三）不支持的「算子 × 元素」组合**不可表示**（没有 `gemv_f16` 这个名字），而不是构造后再拒绝。
 
 * **llm.u（○，2）**：只有 `Shape{m,n,k}`（GEMM 三维）+ `Vec<f32>` 扁平缓冲，没有独立张量类型，也无秩 / 后端泛型。局部亮点是把 TF32 建模成 "F32 存储上的计算档"，显式区分存储档与计算档；除此之外布局与类型能力最弱。
 
@@ -927,7 +925,7 @@ $D^:docs/ARCHITECTURE.md:1
 
 |     | llm（新）   | llm.u    | Burn     |
 | --- | -------- | -------- | -------- |
-| 平均分 | **4.95** | **3.35** | **8.30** |
+| 平均分 | **5.25** | **3.35** | **8.30** |
 
 **B. LLM 推理 / 性能视角（侧重后端执行、推理服务、量化、内核 DSL；训练指标 / 数据集 / RNN 降权，权重合计 100）**
 
@@ -945,7 +943,7 @@ $D^:docs/ARCHITECTURE.md:1
 | 4  | nn 层完整度      | 5        | 3        | 9        |
 | 4  | 检查点 / 序列化    | 6        | 4        | 9        |
 | 4  | 分布式 / 并行     | 3        | 2        | 6        |
-| 3  | 张量 / 类型系统    | 6        | 2        | 10       |
+| 3  | 张量 / 类型系统    | 10       | 2        | 10       |
 | 3  | 随机数 / 确定性    | 7        | 1        | 8        |
 | 3  | 测试 / 质量门禁    | 9        | 4        | 8        |
 | 2  | 自动微分         | 5        | 2        | 10       |
@@ -955,7 +953,7 @@ $D^:docs/ARCHITECTURE.md:1
 | 2  | 生态 / 示例 / 文档 | 4        | 4        | 8        |
 | 1  | 指标 / 评估器     | 3        | 1        | 10       |
 | 1  | 数据集管线        | 2        | 1        | 9        |
-|    | **加权总分**     | **5.19** | **4.30** | **7.43** |
+|    | **加权总分**     | **5.31** | **4.30** | **7.43** |
 
 ### 16.6 评分解读
 
@@ -963,9 +961,9 @@ $D^:docs/ARCHITECTURE.md:1
 
 * **Burn 在通用训练框架维度全面领先**：类型系统、autograd、优化器、指标、数据集、nn 层、生态是其高分项；失分主要在 LLM 在线推理面（连续批 / 分页 KV / 前缀共享）与原生 Metal/MUSA 后端。
 
-* **新 llm 在两种视角都居中**：架构契约、RNG、量化格式、分层测试是亮点；拖分项是后端执行未闭环、类型系统层级低、训练生态薄。相对 llm.u，它把工程结构和能力端口补齐了，但后端实测性能与服务链路需要重建。
+* **新 llm 在两种视角都居中**：架构契约、RNG、量化格式、分层测试是亮点；拖分项是后端执行未闭环与训练生态薄。相对 llm.u，它把工程结构和能力端口补齐了，但后端实测性能与服务链路需要重建。
 
-* **llm.u 在纯推理 / 性能视角下与新 llm 差距明显缩小（4.30 vs 5.19）**：多后端实测 GEMM、完整调度 / KV 是它的基本盘；但架构耦合、无图反向、运行期采样靠注入闭包、集合通信仅有空参考实现、训练能力最小化，在通用框架视角下垫底。
+* **llm.u 在纯推理 / 性能视角下与新 llm 差距明显缩小（4.30 vs 5.31）**：多后端实测 GEMM、完整调度 / KV 是它的基本盘；但架构耦合、无图反向、运行期采样靠注入闭包、集合通信仅有空参考实现、训练能力最小化，在通用框架视角下垫底。
 
 * 若目标是**产出可训练的通用模型**：优先对标 Burn；若目标是**LLM 低延迟推理与多后端性能**：llm.u 的实测路径更直接，新 llm 的 DSL 分层是更长期的工程方向。
 

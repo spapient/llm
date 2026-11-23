@@ -1,4 +1,4 @@
-//! 潜空间注意力的语义锚与「内核 ↔ 参考」对拍。
+// 潜空间注意力的语义锚与「内核 ↔ 参考」对拍。
 
 use crate::conv::attention::latent::{forward, reference, sample};
 

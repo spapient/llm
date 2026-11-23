@@ -497,167 +497,97 @@ fn check_group_norm(groups: usize, channels: usize, layer: &str) -> Result<()> {
     Ok(())
 }
 
-/// 归一化层的 `Contract` 面：四个层只差**算子名**与**所沿轴的名字**，其余逐字相同。
-/// 展开成两件事——那条轴的只读访问器、以及「下界一律问语义表」的 `Contract` 实现。
-/// 与 `layer_delegate!` 同一个理由：同一段结构抄四遍时，第五遍一定会抄错一处。
-macro_rules! norm_contract {
-    ($ty:ident, $op:literal, $axis:ident, $opty:ident) => {
-        impl $ty {
-            #[doc = concat!("归一化所沿那条轴的尺寸（`", stringify!($axis), "`）。")]
-            pub fn $axis(&self) -> usize {
-                self.$axis
+/// 四个归一化层只差三处：公开签名、构造前校验、算子参数袋；结构体、规格装配、那两条访问器
+/// 与 `Contract` 委托四层逐字相同。收进一个宏体写一次，每层就只剩一行声明——签名、校验、
+/// 参数袋并排，差异一眼可见。
+macro_rules! norm_layer {
+    (
+        $(#[$d:meta])* $t:ident, $o:ident, $p:literal, $a:ident;
+        ($($arg:ident: $aty:ty),*);
+        $chk:block;
+        ($($f:ident),*)
+    ) => {
+        $(#[$d])*
+        #[derive(Debug, Clone, PartialEq)]
+        pub struct $t {
+            spec: ContractSpec,
+            norm: $o,
+            $a: usize,
+        }
+        impl $t {
+            /// 构造。
+            ///
+            /// # Errors
+            ///
+            /// 轴长为零、`eps ≤ 0`，或该层独有的参数（`momentum` 越界、`channels` 不能被
+            /// `groups` 整除）不合法时返回说明。
+            pub fn new(name: impl Into<String>, $($arg: $aty),*) -> Result<Self> {
+                $chk
+                let norm = $o { $($f),* };
+                let spec = Spec::new(name, crate::Shape::new([$a]), [$p])?;
+                Ok(Self { spec, norm, $a })
+            }
+
+            #[doc = concat!("归一化所沿那条轴的尺寸（`", stringify!($a), "`）。")]
+            pub fn $a(&self) -> usize {
+                self.$a
             }
 
             /// 归一化算子的参数袋：`eps`、以及该层独有的 `momentum` / `groups`。
-            ///
-            /// 存了就必须能读回。否则它只是会被拷贝、会被比较、却永远不参与判断的状态，
-            /// 而调用方想核对超参时只能回到构造它的地方。
-            pub fn norm(&self) -> &$opty {
+            pub fn norm(&self) -> &$o {
                 &self.norm
             }
         }
 
-        impl Contract for $ty {
+        impl Contract for $t {
             spec_accessors!();
 
             fn bounds(&self) -> BoundsResult {
                 // 层不写第二份流量公式：下界向算子语义表要。
-                Bounds::of_ctx($op, self.$axis, 1).map(Some)
+                Bounds::of_ctx($p, self.$a, 1).map(Some)
             }
         }
     };
 }
 
-/// 批归一化层（NHWC，最后维 `channels`）。
-#[derive(Debug, Clone, PartialEq)]
-pub struct BatchNorm2d {
-    spec: ContractSpec,
-    norm: OpBatch,
-    channels: usize,
-}
-
-impl BatchNorm2d {
-    /// 构造：`eps` 与 `momentum` 由调用方给。
-    ///
-    /// # Errors
-    ///
-    /// 通道为零、`eps ≤ 0` 或 `momentum` 越界时返回说明。
-    pub fn new(name: impl Into<String>, channels: usize, eps: f32, momentum: f32) -> Result<Self> {
+norm_layer!(
+    /// 批归一化层（NHWC，最后维 `channels`）。
+    BatchNorm2d, OpBatch, "batch_norm_f32", channels;
+    (channels: usize, eps: f32, momentum: f32);
+    {
         let layer = "nn::BatchNorm2d::new";
         nonzero(channels, "channels", layer)?;
         check_eps(eps, layer)?;
         if !(0.0..=1.0).contains(&momentum) {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("{layer}: `momentum` 必须落在 [0, 1]"),
-            )
-            .with(layer));
+            return Err(Error::new(Code::Invalid, format!("{layer}: `momentum` 必须落在 [0, 1]")).with(layer));
         }
-        let norm = OpBatch {
-            channels,
-            eps,
-            momentum,
-        };
-        let spec = Spec::new(name, crate::Shape::new([channels]), ["batch_norm_f32"])?;
-        Ok(Self {
-            spec,
-            norm,
-            channels,
-        })
-    }
-}
+    };
+    (channels, eps, momentum)
+);
 
-norm_contract!(BatchNorm2d, "batch_norm_f32", channels, OpBatch);
+norm_layer!(
+    /// 组归一化层：`(n, group)` 内按 `(C/G, spatial)` 统计。规格构造口径同 [`BatchNorm2d`]。
+    GroupNorm, OpGroup, "group_norm_f32", channels;
+    (groups: usize, channels: usize, eps: f32);
+    { check_group_norm(groups, channels, "nn::GroupNorm::new")?; check_eps(eps, "nn::GroupNorm::new")?; };
+    (groups, channels, eps)
+);
 
-/// 组归一化层：`(n, group)` 内按 `(C/G, spatial)` 统计。规格构造口径同 [`BatchNorm2d`]。
-#[derive(Debug, Clone, PartialEq)]
-pub struct GroupNorm {
-    spec: ContractSpec,
-    norm: OpGroup,
-    channels: usize,
-}
+norm_layer!(
+    /// 实例归一化层：等价于 `GroupNorm(groups = channels)`。规格构造口径同 [`BatchNorm2d`]。
+    InstanceNorm, OpInst, "instance_norm_f32", channels;
+    (channels: usize, eps: f32);
+    { nonzero(channels, "channels", "nn::InstanceNorm::new")?; check_eps(eps, "nn::InstanceNorm::new")?; };
+    (channels, eps)
+);
 
-impl GroupNorm {
-    /// 构造：`channels` 必须能被 `groups` 整除。
-    ///
-    /// # Errors
-    ///
-    /// 组数/通道为零、不能整除或 `eps ≤ 0` 时返回说明。
-    pub fn new(name: impl Into<String>, groups: usize, channels: usize, eps: f32) -> Result<Self> {
-        let layer = "nn::GroupNorm::new";
-        check_group_norm(groups, channels, layer)?;
-        check_eps(eps, layer)?;
-        let norm = OpGroup {
-            groups,
-            channels,
-            eps,
-        };
-        let spec = Spec::new(name, crate::Shape::new([channels]), ["group_norm_f32"])?;
-        Ok(Self {
-            spec,
-            norm,
-            channels,
-        })
-    }
-}
-
-norm_contract!(GroupNorm, "group_norm_f32", channels, OpGroup);
-
-/// 实例归一化层：等价于 `GroupNorm(groups = channels)`。规格构造口径同 [`BatchNorm2d`]。
-#[derive(Debug, Clone, PartialEq)]
-pub struct InstanceNorm {
-    spec: ContractSpec,
-    norm: OpInst,
-    channels: usize,
-}
-
-impl InstanceNorm {
-    /// 构造。
-    ///
-    /// # Errors
-    ///
-    /// 通道为零或 `eps ≤ 0` 时返回说明。
-    pub fn new(name: impl Into<String>, channels: usize, eps: f32) -> Result<Self> {
-        let layer = "nn::InstanceNorm::new";
-        nonzero(channels, "channels", layer)?;
-        check_eps(eps, layer)?;
-        let norm = OpInst { channels, eps };
-        let spec = Spec::new(name, crate::Shape::new([channels]), ["instance_norm_f32"])?;
-        Ok(Self {
-            spec,
-            norm,
-            channels,
-        })
-    }
-}
-
-norm_contract!(InstanceNorm, "instance_norm_f32", channels, OpInst);
-
-/// 层归一化层：逐行在最后一维 `width` 上统计。规格构造口径同 [`BatchNorm2d`]。
-#[derive(Debug, Clone, PartialEq)]
-pub struct LayerNorm {
-    spec: ContractSpec,
-    norm: OpNorm,
-    width: usize,
-}
-
-impl LayerNorm {
-    /// 构造。
-    ///
-    /// # Errors
-    ///
-    /// 宽度为零或 `eps ≤ 0` 时返回说明。
-    pub fn new(name: impl Into<String>, width: usize, eps: f32) -> Result<Self> {
-        let layer = "nn::LayerNorm::new";
-        nonzero(width, "width", layer)?;
-        check_eps(eps, layer)?;
-        let norm = OpNorm { width, eps };
-        let spec = Spec::new(name, crate::Shape::new([width]), ["layer_norm_f32"])?;
-        Ok(Self { spec, norm, width })
-    }
-}
-
-norm_contract!(LayerNorm, "layer_norm_f32", width, OpNorm);
+norm_layer!(
+    /// 层归一化层：逐行在最后一维 `width` 上统计。规格构造口径同 [`BatchNorm2d`]。
+    LayerNorm, OpNorm, "layer_norm_f32", width;
+    (width: usize, eps: f32);
+    { nonzero(width, "width", "nn::LayerNorm::new")?; check_eps(eps, "nn::LayerNorm::new")?; };
+    (width, eps)
+);
 
 #[cfg(test)]
 #[path = "../tests/classic_tests.rs"]

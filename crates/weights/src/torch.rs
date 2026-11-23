@@ -118,51 +118,42 @@ type Handler = fn(&mut Vm<'_>, u8) -> Result<()>;
 /// opcode → 处理函数。整张表就是 pickle 的能力清单：删掉一行，那条 opcode 就退化成「未知」错误。
 static OPS: [Option<Handler>; 256] = ops();
 
+/// 把「处理函数 → opcode 集合」的平铺声明填进表：表本身就是能力清单，
+/// 按协议分组写比逐条 `table[..] = Some(..)` 更贴近语义，也不易漏码。
+macro_rules! ops_table {
+    ($table:ident, $($handler:ident => $($code:literal),+;)+) => {
+        $($(
+            $table[$code as usize] = Some($handler);
+        )+)+
+    };
+}
+
 const fn ops() -> [Option<Handler>; 256] {
     let mut table: [Option<Handler>; 256] = [None; 256];
-    // 协议框架：版本号 1 字节、帧长 8 字节，都不影响重建结果。
-    table[b'\x80' as usize] = Some(opaque);
-    table[b'\x95' as usize] = Some(opaque);
-    // 空容器与标记：`(` 是 MARK，其余是空 dict/list 与 `()`。
-    table[b'(' as usize] = Some(placeholder);
-    table[b'}' as usize] = Some(placeholder);
-    table[b']' as usize] = Some(placeholder);
-    table[b')' as usize] = Some(placeholder);
-    table[b'\x89' as usize] = Some(placeholder);
-    table[b'\x88' as usize] = Some(placeholder);
-    table[b'\x81' as usize] = Some(newobj);
-    // 文本：长度前缀 4 字节（`X`）或 1 字节（`\x8c`）。
-    table[b'X' as usize] = Some(string);
-    table[b'\x8c' as usize] = Some(string);
-    // 浮点与全局名。
-    table[b'G' as usize] = Some(opaque);
-    table[b'c' as usize] = Some(global);
-    table[b'\x93' as usize] = Some(global);
-    // 整数：`K`/`M` 无符号 1/2 字节，`J` 补码 4 字节，`\x8a`/`\x8b` 长度前缀 1/4 字节。
-    table[b'K' as usize] = Some(integer);
-    table[b'M' as usize] = Some(integer);
-    table[b'J' as usize] = Some(integer);
-    table[b'\x8a' as usize] = Some(integer);
-    table[b'\x8b' as usize] = Some(integer);
-    // 元组：`t` 读 MARK 起的一段，`\x85..\x87` 按 1/2/3 个成员。
-    table[b't' as usize] = Some(tuple);
-    table[b'\x85' as usize] = Some(tuple);
-    table[b'\x86' as usize] = Some(tuple);
-    table[b'\x87' as usize] = Some(tuple);
-    // memo 与对象图。
-    table[b'q' as usize] = Some(memo_op);
-    table[b'r' as usize] = Some(memo_op);
-    table[b'\x94' as usize] = Some(memo_op);
-    table[b'h' as usize] = Some(memo_op);
-    table[b'j' as usize] = Some(memo_op);
-    table[b'Q' as usize] = Some(persistent_load);
-    table[b'R' as usize] = Some(reduce);
-    // 容器写入与出栈。
-    table[b'u' as usize] = Some(set_item);
-    table[b's' as usize] = Some(set_item);
-    table[b'a' as usize] = Some(append);
-    table[b'e' as usize] = Some(append);
-    table[b'b' as usize] = Some(discard);
+    ops_table!(table,
+        // 协议框架：版本号 1 字节、帧长 8 字节，都不影响重建结果。
+        opaque => b'\x80', b'\x95';
+        // 空容器与标记：`(` 是 MARK，其余是空 dict/list 与 `()`。
+        placeholder => b'(', b'}', b']', b')', b'\x89', b'\x88';
+        newobj => b'\x81';
+        // 文本：长度前缀 4 字节（`X`）或 1 字节（`\x8c`）。
+        string => b'X', b'\x8c';
+        // 浮点与全局名。
+        opaque => b'G';
+        global => b'c', b'\x93';
+        // 整数：`K`/`M` 无符号 1/2 字节，`J` 补码 4 字节，`\x8a`/`\x8b` 长度前缀 1/4 字节。
+        integer => b'K', b'M', b'J', b'\x8a', b'\x8b';
+        // 元组：`t` 读 MARK 起的一段，`\x85..\x87` 按 1/2/3 个成员。
+        tuple => b't', b'\x85', b'\x86', b'\x87';
+        // memo 与对象图。
+        memo_op => b'q', b'r', b'\x94', b'h', b'j';
+        persistent_load => b'Q';
+        reduce => b'R';
+        // 容器写入与出栈。
+        set_item => b'u', b's';
+        append => b'a', b'e';
+        discard => b'b';
+    );
     table
 }
 
