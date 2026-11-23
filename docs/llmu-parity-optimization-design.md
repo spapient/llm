@@ -76,7 +76,7 @@
 ### 1.4 已经领先、不许在追赶中丢掉的长板
 
 - 唯一依赖规则可执行门禁：向上依赖、成环在编译/测试阶段不可能出现。
-- 算子清单（`op::REGISTRY` 24 条）、设备档案、族别归属各有唯一声明处，不存在手写第二份映射。
+- 算子清单（`nn::registry::REGISTRY` 24 条）、设备档案、族别归属各有唯一声明处，不存在手写第二份映射。
 - 错误类型唯一 `diagnostic::{Code, Error, Result}`；新错误不另立类型。
 - 核心 `unsafe_code = "deny"`；FFI/mmap 收敛在隔离文件与 feature 后。
 - 运行时外部依赖趋零；锁文件 122 条 vs 基线 220 条。
@@ -108,8 +108,8 @@
 
 | 层 | 成员 | 现状判定 | 长板 | 待补动作 | 归属 |
 |---|---|---|---|---|---|
-| L1 基础 | `diagnostic` `testkit` `dtype` `wire` `tool` | 实现 | 唯一错误类型、精度闭集、字节码闭集、静态门与回退判定 | 解析器收敛到一份；报告排版合一 | P0 |
-| L2 数据 | `prof` `op` `prim` | 实现（声明/数据） | 24 条算子清单、einsum 代价单源、设备档案 L0–L3 证据分级 | 装饰性骨架名清理；算子按 decode 序接后端实现 | M1→M3 |
+| L1 基础 | `diagnostic` `dtype` `wire` `tools` | 实现 | 唯一错误类型、精度闭集、字节码闭集、静态门与回退判定（`testkit` 是夹具工具成员，不计入运行时分层） | 解析器收敛到一份；报告排版合一 | P0 |
+| L2 数据 | `prof` | 实现（声明/数据） | 24 条算子清单、einsum 代价单源、设备档案 L0–L3 证据分级 | 装饰性骨架名清理；算子按 decode 序接后端实现 | M1→M3 |
 | L3 内核 | `cutile` | 片段 + 见证 | 协商/拼接/emit/编译执行/内容寻址缓存骨架；命令共用一条流水线 | 产物缓存砍台账；驻留执行从子进程 harness 接到引擎 | M1 |
 | L4 运行时 | `tensor` `storage` `tokenizer` | 大部分实现 | 张量元数据/布局搬运、BPE/unigram 词法、feature 门控 mmap | mmap 进生产源；可写分配器接驻留缓冲；编解码接生产链路 | M1-A/B |
 | L5 模型训练 | `weights` `autograd` `data` `nn` `shard` | 契约/簿记为主 | 多格式读取、反图与显存计划、层契约下界、拓扑簿记 | 驻留权重；参数组声明；反传接优化器；样本通路；集合通信实现 | T1/M2/M3 |
@@ -121,7 +121,7 @@
 ### 2.1 功能需求
 
 - **F1 装载与驻留**：统一 `Entry`/`Descriptor` 抽象；支持整文件映射与流式读两条源；未压缩段零拷贝借用，压缩段显式解压；权重在装载期一次性解码进驻留缓冲，生成循环内不再读文件、不再二次分配元素缓冲。
-- **F2 CPU 单序列前向**：embed → 注意力块 → 归一化 → lm_head 出 logits；进程内 `Program` 执行，输出与独立 `op` 标量参考对拍达标；接 `Sampling` 产出第一个真实 decode token。
+- **F2 CPU 单序列前向**：embed → 注意力块 → 归一化 → lm_head 出 logits；进程内 `Program` 执行，输出与独立 `nn` 标量参考对拍达标；接 `Sampling` 产出第一个真实 decode token。
 - **F3 训练闭环**：前向缓存 → 反向可达节点计划 → 梯度裁剪 → 优化器更新 → 学习率调度 → checkpoint 存/载；补 `train` CLI 命令；样本通路先接最小语料夹具，真实语料随数据层落地。
 - **F4 KV 与连续批**：页表背后是真实张量缓冲；多序列每序列一步前向；准入只依据能力闭集与 KV 状态；前缀页共引用随 prefix cache 落地。
 - **F5 后端边界**：同一 `Executor`/`Allocator`/`Collective` trait 下挂 CPU 与后续 Metal/CUDA；FFI 与 `unsafe` 只在独立边界 crate；核心继续安全 Rust。
@@ -163,8 +163,8 @@ L7 llm bin                 组装，不定义新类型
 
 | 关注点 | 机制 | 不允许的写法 |
 |---|---|---|
-| 层与参数声明 | `#[annotation::spec]`（`nn` 内重导出为 `#[spec]`）产出 `ContractSpec`；算子侧 `#[annotation::model]` 产出 `Model` 条目；可训练参数、参数组、权重格式进声明；形状/算子名与 `op::REGISTRY` 双向锁死 | 手写第二份层构造字面量；调度代码硬编码层名宽度 |
-| 算子与内核 | 算子声明在 `op`；`Program`/CPU 内核经注册表挂载；多后端实现同一算子按能力闭集选择 | 算子里写 `if Metal {} else if CUDA {}` |
+| 层与参数声明 | `#[annotation::spec]`（`nn` 内重导出为 `#[spec]`）产出 `ContractSpec`；算子侧 `#[annotation::model]` 产出 `Model` 条目；可训练参数、参数组、权重格式进声明；形状/算子名与 `nn::registry::REGISTRY` 双向锁死 | 手写第二份层构造字面量；调度代码硬编码层名宽度 |
+| 算子与内核 | 算子声明在 `prof`；`Program`/CPU 内核经 `nn` 注册表挂载；多后端实现同一算子按能力闭集选择 | 算子里写 `if Metal {} else if CUDA {}` |
 | 后端 | `Executor`/`Allocator`/`Collective` trait；CPU 首实现，设备实现挂边界 crate | 模型/调度持有具体设备类型 |
 | 权重源 | 既有 `Reader`（借用）/`Loader`（拷贝）trait；mmap、文件流、远端分块各为一实现 | 装载路径散落 `fs::read` 整文件读入 |
 | 优化器 | `Optimizer` trait + 参数组元数据；SGD/Adam 为实现；矩状态按参数组分配 | 优化器直接改私有字段、绕过梯度需求分类 |
@@ -208,12 +208,12 @@ graph TD
 ### 4.2 M1-B CPU 单序列前向闭环
 
 - **目标**：一条真实链路上从 token 到 logits 到采样 token，进程内对拍达标。
-- **改动落点**：`engine`、`serve`、`nn`、`op`、`tensor`。
+- **改动落点**：`engine`、`serve`、`nn`、`tensor`。
 - **设计要点**：
   1. 注册表驱动的 CPU 内核桥：算子名 → `Program` 映射表（补缺口 G1）；`CpuExecutor` 装配生产图（补 G2）。
   2. 首批 decode 主路径算子：`gemv_f32`、`softmax_f32`、`rmsnorm_f32`、`silu/gelu`、add/mul/residual/scale、两条归约；`rope_f32` 与注意力随 M2；标量/形状通道按 D9 落定长类型化闭集槽（不查表）。
   3. `Predict` 生产实现接全族首层：投影/点wise/归一化首层由装配侧提供隐向量输入，不再直接 `Unsupported`；序列上下文按层族别折成输入缓冲。
-  4. 进程内对拍 harness：同一输入跑 `Program` 输出与独立 `op::forward` 参考，`testkit::close` 判 `max_rel_err`（补 G6）。
+  4. 进程内对拍 harness：同一输入跑 `Program` 输出与独立 `nn` 标量参考，`testkit::close` 判 `max_rel_err`（补 G6）。
   5. `Sampling` 接入端点步：logits → 采样 → `emit` 记账；停止符/上限/被挡三态保持现有 `Step` 结局分类。
 - **复用既有**：`Completion` 生成循环（`completion.rs:243-281`）、`Batch/Sequence/Pager` 簿记、op 24 条标量参考、nn 层栈。
 - **验收**：一层/两层合成模型端到端前向对拍达标；单序列 decode 出 token；首批算子基准入回归基线；无新增热路径 `dyn` 分发。
@@ -222,7 +222,7 @@ graph TD
 ### 4.3 M1-C 基准 harness 骨架
 
 - **目标**：在出第一个后端数字前把对照口径定死。
-- **改动落点**：`benches`、`tool::regress`、`testkit`。
+- **改动落点**：`benches`、`tools::regress`、`testkit`。
 - **要点**：统一记录硬件/驱动/形状/批次/精度/后端标识/roofline 上界；先记 llama.cpp CPU 同模型对照；本机无基线时登记跳过而非伪造数字。
 - **验收**：每条 M1 算子/层/整模型有对照条目；CI 守不回归，跨机绝对值不进结论。
 

@@ -3,7 +3,7 @@
 // 布局契约（由声明层校验）：a={{a}}
 //
 // 一元骨架：读一个数、算 0.5*x*(1+erf(x/sqrt(2)))、写一个数。
-// erf 用 Abramowitz-Stegun 7.1.26（与 op::gelu_f32::erf 同一份系数），保证两侧对拍零漂移；
+// erf 用 Abramowitz-Stegun 7.1.26（与 nn::gelu_f32::erf 同一份系数），保证两侧对拍零漂移；
 // 其中的 exp 走 preamble 软件标量接口，绝对值用条件取，不依赖数学库。
 
 static float gelu_erf(float x) {

@@ -280,7 +280,7 @@ pub mod formula {
         /// 表达式各项的位宽与方向，顺序与 [`FormulaOwner::EXPR`] 的项一一对应。
         const OPERANDS: &'static [OperandSpec];
 
-        /// 解析失败时的诊断帧：点名是哪一族在读表达式（如 `op::unary::formula`）。
+        /// 解析失败时的诊断帧：点名是哪一族在读表达式（如 `prof::unary::formula`）。
         const FRAME: &'static str;
 
         /// 本实现的缓存单元格。

@@ -31,7 +31,7 @@
 //! 上表到 `emit` + `cache` 为止：旧模板链路把三份输入折成源文本与缓存键，
 //! 不碰进程、不碰设备、不跑内核。凡是要拼一次编译、跑一次设备、或给出"能跑/不能跑"结论的模块
 //! （`backend`、`build`、`device`、`runner`、`gate`、`pipeline`、`toolchain`、`witness`、
-//! `verify`、`execution` 与 `doctor` / `bench` / `ledger` 三份报告）住在 `optim`——那才是
+//! `verify`、`execution` 与 `doctor` / `bench` / `ledger` 三份报告）住在 `shard`——那才是
 //! "机制 / 命令策略"的分界线：跨过去就必须有证据，而证据来自执行。
 //!
 //! # 例子
@@ -56,7 +56,7 @@
 //! ```
 //!
 //! 上面用的是**按档案自述**的协商：§16 的判据问的是声明粒度，不该随本机有没有这块卡而变。
-//! 执行路径（`optim` 的 `doctor` / `verify` / `bench`）用 [`cap::negotiate_with`]，它还要求供给
+//! 执行路径（`shard` 的 `doctor` / `verify` / `bench`）用 [`cap::negotiate_with`]，它还要求供给
 //! 出现在这次执行得到的 [`cap::Proof`] 里——`grade` 是执行的结论，不是 TOML 的结论。
 //!
 //! # 工程条款（README §3.2）
@@ -108,7 +108,7 @@ pub mod validate;
 // 缝分派（`docs/ARCHITECTURE.md` 的 L3 契约：cutile 不出现厂商字面量）。
 //
 // 接缝与命令策略（`backend`、`build`、`device`、`gate`、`pipeline`、`runner`、`toolchain`、
-// `witness`、`verify`、`execution`）住在 `optim`：它们要拼一次编译、跑一次设备，而本 crate
+// `witness`、`verify`、`execution`）住在 `shard`（extern 别名 `llm-optim`）：它们要拼一次编译、跑一次设备，而本 crate
 // 只做"把三层数据变成源文本"这段旧模板前端（①②③④⑤）。
 
 #[cfg(test)]

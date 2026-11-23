@@ -13,7 +13,7 @@
 架构纪律是本仓的长板：7 层单向依赖、类型唯一主人、闭集单一事实源、25 条 ADR，且这些契约由 `tests/architecture.rs` / `tests/contracts.rs` 可执行地守门。测试体系的**静态结构质量高**（约 970 个 libtest 用例、nextest 隔离并行、doc-test、fuzz、依赖卫生、重复率硬门齐备），但测试**行为覆盖与回归能力存在结构性缺口**：
 
 1. 测试金字塔中间薄：内联单测密集，面向公共 API 的外部集成层与进程级端到端层几乎为空；
-2. 性能回归闭环未接通：基准只产数字，判定库 `tool::regress` 无消费者，CI 只编译不测量；
+2. 性能回归闭环未接通：基准只产数字，判定库 `tools::regress` 无消费者，CI 只编译不测量；
 3. 真机/真权重/真后端类测试的门控夹具已建好但基本未接入，CI 环境下这些路径默认永不执行；
 4. 覆盖率门禁只守 `cutile` 一个成员，其余成员无下限、无趋势；
 5. 当前运行时本就是契约/簿记原型（无后端、无可写缓冲、无 socket、无通信后端），部分缺口是阶段未到；但门禁绿灯容易被误读为"行为可用"，需要在报告口径上把**结构正确**与**行为可用**分开。
@@ -98,21 +98,21 @@ graph TD
 
 ### 2.5 根入口层存在职责违约（沿用 audit P3-3 / P3-4）
 
-- **事实**：`src/main.rs` 定义了层类型；`src/bin/cutile.rs` 约 760 行是人可读排版，属于 `tool::Report` 职责域。
+- **事实**：`src/main.rs` 定义了层类型；`src/bin/cutile.rs` 约 760 行是人可读排版，属于 `tools` 报告职责域。
 - **影响**：L7"不定义新类型、只组装"的架构约定被入口代码突破；排版逻辑无公共层测试可挂。
 - **等级**：P2。
-- **建议**：排版下沉 `tool` 后，由 `tool` 的测试守护；入口层只留分派。
+- **建议**：排版下沉 `tools` 后，由 `tools` 的测试守护；入口层只留分派。
 
 ### 2.6 静态质量门的扫描面小于全仓（沿用 audit P1-7）
 
-- **事实**：`tool` 门禁只扫 `crates/*/src`，`build.rs`、`crates/*/tests/`、根 `src/`、`docs/adr/**`、各 crate README 不在扫描内；宏体、UFCS 形式、`assert!`/`unreachable!` 有漏匹配。
+- **事实**：`tools` 门禁只扫 `crates/*/src`，`build.rs`、`crates/*/tests/`、根 `src/`、`docs/adr/**`、各 crate README 不在扫描内；宏体、UFCS 形式、`assert!`/`unreachable!` 有漏匹配。
 - **影响**："零 unwrap / 零 panic 入口"之类结论不能从门禁绿灯直接推出；生产边界外的代码处于盲区。
 - **等级**：P1（门禁可绕过）。
 - **建议**：把扫描集扩展到 build.rs 与根入口；补 UFCS 与宏体识别；每条漏扫路径在审计报告中显式登记。
 
 ### 2.7 工具成员的依赖定性与编译事实有缝隙（沿用 audit P3-1）
 
-- **事实**：`annotation` 不参与方向判定，但它是 `op`/`nn` 的硬编译依赖。
+- **事实**：`annotation` 不参与方向判定，但它是 `nn`/`cutile` 的硬编译依赖。
 - **影响**：架构文档措辞与 `cargo metadata` 形状不完全一致，评审时易误判工具边无约束。
 - **等级**：P3。
 - **建议**：在架构契约中把"不参与方向判定"与"参与编译依赖"两件事分栏写清。
@@ -123,7 +123,7 @@ graph TD
 
 ### 3.1 内联测试可达私有项，公共 API 边界覆盖不足
 
-- **事实**：测试绝大多数是源码旁的 `#[cfg(test)]` 模块；外部 `tests/` 目录只覆盖 `annotation`、`autograd`、`dtype`、`fuzz`、`tool`、`weights`。`cli`、`engine`、`serve`、`train`、`nn`、`op`、`prim`、`prof`、`shard`、`storage`、`tensor`、`tokenizer`、`wire`、`data`、`diagnostic`、`cutile` 没有外部集成测试。
+- **事实**：测试绝大多数是源码旁的 `#[cfg(test)]` 模块；外部 `tests/` 目录只覆盖 `annotation`、`autograd`、`dtype`、`fuzz`、`tools`、`weights`。`cli`、`engine`、`serve`、`train`、`nn`、`prof`、`shard`、`storage`、`tensor`、`tokenizer`、`wire`、`diagnostic`、`cutile` 没有外部集成测试。
 - **影响**：单测与内部实现强耦合——重构私有结构时测试被迫一起改；公共 API 的签名、错误码、跨 crate 行为没有黑盒验证。
 - **等级**：P1。
 - **建议**：对外暴露稳定 API 的 crate（尤其 `engine`、`serve`、`weights`、`wire`、`tokenizer`）补 `tests/` 黑盒用例；内联测试保留给私有算法与不变量。
@@ -168,7 +168,7 @@ graph TD
 
 ### 3.7 装饰性闭集变体没有构造点，测试不会暴露死变体（沿用 audit P1-6）
 
-- **事实**：`op::decl::Skeleton` 的 `Attention` / `Scan` 全仓无构造点；`Skeleton::Gemm` 仅测试里构造。
+- **事实**：`prof::decl::Skeleton` 的 `Attention` / `Scan` 全仓无构造点；`Skeleton::Gemm` 仅测试里构造。
 - **影响**：一个"闭集"事实上是装饰性的，违反本仓自己的单一事实源契约。
 - **等级**：P2。
 - **建议**：删除无构造变体，或补构造点与对应测试；闭集成员必须被测试或生产路径至少引用一次。
@@ -239,7 +239,7 @@ graph TD
 
 ### 5.2 回归判定库已实现但未接线，性能闭环为空
 
-- **事实**：`tool::regress` 提供 `Case` / `Baseline` / `Judgement`（方向、预算百分比、通过/回退/改善判定）；但 `benches/` 与 CI 中没有任何代码构造基线或调用 `judge`，基准文件只在文档注释里说明"是否回退由 regress 负责"。
+- **事实**：`tools::regress` 提供 `Case` / `Baseline` / `Judgement`（方向、预算百分比、通过/回退/改善判定）；但 `benches/` 与 CI 中没有任何代码构造基线或调用 `judge`，基准文件只在文档注释里说明"是否回退由 regress 负责"。
 - **影响**：性能退化不会被门禁发现；库是死代码式预留，基线格式与阈值从未在真实基准上验证过。
 - **等级**：P1。
 - **建议**：M1 第一个真实算子基准落地时，同步接入 regress：基线随仓登记（条目、方向、预算、硬件前提），CI 在固定环境跑测量并判 `regressed`；无固定硬件的环境只编译、不判定。
@@ -288,7 +288,7 @@ graph TD
 - **事实**：coverage job 采集全 workspace lcov，但 `fail-under` 只对 `cutile`（行 75% / 函数 70%）；其余成员无下限、无趋势对比。
 - **影响**：核心算子、解析器、调度/服务代码的覆盖下滑不会被门禁发现。
 - **等级**：P1。
-- **建议**：先对 `wire`、`dtype`、`weights`、`op` 加保守下限；覆盖率趋势随 artifact 留存，防单次波动。
+- **建议**：先对 `wire`、`dtype`、`weights`、`nn` 加保守下限；覆盖率趋势随 artifact 留存，防单次波动。
 
 ### 6.2 两套测试运行器，行为可能分叉
 
@@ -352,7 +352,7 @@ graph TD
 
 1. 对外稳定 crate 补 `tests/` 黑盒集成测试；CLI 进程级 e2e（assert_cmd）（§3.1、§4.2）。
 2. 后端/执行器 trait 定型时配套 mock 夹具；serve/engine/train 接缝用 mock 驱动（§4.3）。
-3. 第一个真实算子基准同步接通 `tool::regress` 基线判定与元数据归档（§5.2、§5.3）。
+3. 第一个真实算子基准同步接通 `tools::regress` 基线判定与元数据归档（§5.2、§5.3）。
 4. 跨层数值对拍链路：weights → nn 栈 → train 缓冲（§4.5）。
 5. fuzz 目标补快照编解码、serve 帧解码、wire 密封（§4.6）。
 

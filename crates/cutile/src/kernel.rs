@@ -3,7 +3,7 @@
 //! 一张 [`Kernel`] 覆盖三种写法：逐点 `output[idx] = value`、归约 `output[at] += value`、以及由
 //! 前两者组合出的融合核（[`Kernel::fuse`]）。这一层做校验、规范化、常量折叠、死形参消除，并发射
 //! 两种目标文本：可移植 C（[`Kernel::emit_c`]）与设备 lowering 的 `.k` 正文（[`Kernel::emit_k`]，
-//! 经 `optim::ir` 桥接入 `Lower`/设备 dispatch）。`Image` 尚未接上，所以「性能提升」只能由桥接后
+//! 经 `shard::ir` 桥接入 `Lower`/设备 dispatch）。`Image` 尚未接上，所以「性能提升」只能由桥接后
 //! 的设备路径宣称，不由这一层单独宣称。
 
 use core::fmt::{self, Write as _};
@@ -317,7 +317,7 @@ impl Kernel {
         self.emit(Target::C)
     }
 
-    /// Emit the `.k`-format serial body the device lowering seam consumes (the `optim::ir` bridge
+    /// Emit the `.k`-format serial body the device lowering seam consumes (the `shard::ir` bridge
     /// feeds it to the vendor backends' `Codegen::lower`): a `void` entry
     /// `cutile_{name}_kernel` with plain `const float *`/`float *`/`int` parameters and a single
     /// guard-free loop. Unlike [`Self::emit_c`], it pairs no buffer lengths, emits no guards and no

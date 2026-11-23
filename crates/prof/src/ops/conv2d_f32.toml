@@ -1,6 +1,6 @@
 # conv2d_f32：y[i,j,co] = bias[co] + Σ_{ki,kj,ci} x[窗口][ci]·weight[(ki·k+kj)·cin+ci][co]，same 补零。
 # 归到 elementwise 骨架（声明档固定 4×4 / cin 2 / cout 3 / k3 s1 p1），算术由模板展开、
-# 语义与标量参考复用 op::conv 的 im2col+GEMM 真实现。
+# 语义与标量参考复用 nn::conv 的 im2col+GEMM 真实现。
 base = "silu_f32"
 
 [op]

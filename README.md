@@ -36,13 +36,13 @@ workspace；入口二进制要用 `-p llm-cli --bin llm|cutile` 指定。
 
 ## 分层与依赖
 
-七层从下到上：L1 基础设施（`diagnostic` `dtype` `wire` `tool`）→ L2 数据（`prof` `op` `prim`）
+七层从下到上：L1 基础设施（`diagnostic` `dtype` `wire` `tools`）→ L2 数据（`prof`）
 → L3 内核（`cutile`）→ L4 运行时（`tensor` `storage` `tokenizer`）→ L5 模型与训练（`weights`
-`autograd` `nn` `shard`）→ L6 调度与服务（`train` `engine` `serve`）→ L7 入口（`cli`）。
+`autograd` `nn` `algorithm` `shard`）→ L6 调度与服务（`train` `engine` `device` `serve`）→ L7 入口（`cli`）。
 `annotation` / `fuzz` / `benchmarks` / `testkit` 是工具成员，不计入运行时分层。
 
 唯一一条依赖规则：**依赖只能指向更低的层（同层只能依赖更靠左的成员）**。因此向上依赖不可能通过、
-环不可能出现、数据层永远不会知道机制（`op` / `prof` / `prim` 不依赖 `cutile`）。各层职责、边清单、
+环不可能出现、数据层永远不会知道机制（`prof` 不依赖 `cutile`）。各层职责、边清单、
 所有权表与新增成员三步都在 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
 
 ## kernel 纵切面
@@ -60,13 +60,13 @@ cargo run -p llm-cli --bin cutile -- cache gc --limit 1073741824                
 
 | 设备 | 现状 | 说明 |
 |---|---|---|
-| `cpu` | **L2** | 生成的 C 由 `cc` 编译执行，与 `crates/op` 的标量参考对拍 `max_rel_err = 0`（通道：语义基准——串行是这一路的定义，并行形态由设备通道证） |
+| `cpu` | **L2** | 生成的 C 由 `cc` 编译执行，与 `crates/nn` 的标量参考对拍 `max_rel_err = 0`（通道：语义基准——串行是这一路的定义，并行形态由设备通道证） |
 | `metal` | **L2** | 真机实测：36 个算子**全部**按声明发射并行网格（`[grid]` / `[chunk]`），无一回落单线程；`gemv_i4` 4096² 的 `bench --repeat 50` 连跑三次为 p50 0.049–0.059 ms、177–213 GB/s、带宽达成率 57.6%–69.3%（峰值 307.2 GB/s）——**仍低于 70% 门槛，按 §16 承认需要特化代码**（单次采样曾到 0.044 ms / 77.6%，波动说明这是偏乐观样本，不采纳） |
 | `musa` | **L2**（上一轮实测） | MTT S4000（mp_22）曾 36/36 经 `mcc` 编成执行、`max_rel_err ≤ 3.88e-7`；本轮那台机器上**没有该设备**，`verify` 按「缺设备即失败」如实缺席，不记为通过 |
 | `nvidia` / `intel` | L1 | 仅有档案、片段与见证；`verify` 会**失败**（缺设备即失败），协商拒绝未验证能力 |
 
 `metal` 的设备侧代码还能在构建期编成 `metallib` 并嵌进二进制：`cargo build -p llm-cli --features device-image`
-（默认是源码调试，只带片段与见证）。哪台设备带了什么由 `prim::devices()` 回答，
+（默认是源码调试，只带片段与见证）。哪台设备带了什么由 `prof::devices()` 回答，
 `cargo run -p llm-cli --bin llm` 的 `片段层 prim` 一行会逐台列出 `=源码` / `=metallib N B/M 个符号`；
 `CUTILE_REQUIRE_IMAGE=metal` 把"缺镜像"升级成构建失败。细节见 [`crates/prof/README.md`](crates/prof/README.md)。
 

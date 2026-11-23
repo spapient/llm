@@ -15,7 +15,7 @@
 | 用途 | 命令（工作目录 `/Users/fei/code/llm`） |
 |---|---|
 | 成员清单 | `grep -A30 'members' Cargo.toml` → `crates/*` |
-| 算子注册表 | `grep -oE '"[a-z0-9_]+_(f32\|i4\|i8)"' crates/op/src/lib.rs \| sort -u` → 24 条 |
+| 算子注册表 | `grep -oE '"[a-z0-9_]+_(f32\|i4\|i8)"' crates/nn/src/registry.rs \| sort -u` → 24 条 |
 | 谁依赖 `engine` | `grep -l 'llm-engine\|../engine' crates/*/Cargo.toml` → 仅 `engine` 自身与 `serve` |
 | engine 执行契约 | `sed -n '257,425p' crates/engine/src/exec.rs` |
 | engine KV 数据 | `sed -n '204,393p' crates/engine/src/kv.rs` |
@@ -34,13 +34,13 @@
 
 | 层 | 成员 | 运行时相关职责 |
 |---|---|---|
-| L1 | `diagnostic`、`testkit`、`dtype`、`wire`、`tool` | 唯一错误类型；浮点对拍/随机数/设备跳过夹具；精度闭集 |
-| L2 | `prof`、`op`、`prim` | 设备能力闭集；算子声明/签名/样本/标量参考；原语片段 |
+| L1 | `diagnostic`、`dtype`、`wire`、`tools` | 唯一错误类型；精度闭集；字节码闭集；静态质量门（`testkit` 是夹具工具成员，不计入运行时分层） |
+| L2 | `prof` | 算子契约（声明 / 签名 / 样本 / 语义表 / 模板词法）与设备档案、原语片段；标量参考在 L5 `nn` |
 | L3 | `cutile` | 协商 → 拼接 → emit → 编译执行；产物按内容寻址缓存 |
 | L4 | `tensor`、`storage`、`tokenizer` | 张量元数据与双形态；分配器 trait 与字节缓冲；文本边界 |
-| L5 | `weights`、`autograd`、`data`、`nn`、`shard` | 权重容器；反向图；样本；层定义（Contract/Stack/Linear/Attention）；切分拓扑与集合通信 trait |
-| L6 | `train`、`engine`、`serve`、`cli` | 训练循环与参考内核；连续批/序列/KV/提交执行；端点契约与线格式；命令行解析 |
-| L7 | `llm`（bin） | 组装各层，**不定义新类型**（门禁 `tests/architecture.rs:217` `the_entry_point_defines_no_types`） |
+| L5 | `weights`、`autograd`、`nn`、`algorithm`、`shard` | 权重容器；反向图；层定义（Contract/Stack/Linear/Attention）与唯一注册表；架构变体参考语义；切分拓扑与集合通信 |
+| L6 | `train`、`engine`、`device`、`serve` | 训练循环与参考内核；连续批/序列/KV/提交执行；设备源 lowering 与厂商后端；端点契约与线格式 |
+| L7 | `cli`（bin：`llm`、`cutile`） | 组装各层，**不定义新类型**（门禁 `tests/architecture.rs:217` `the_entry_point_defines_no_types`） |
 
 唯一规则：**依赖只能指向更低层；同层只能依赖更靠左成员**。方向、成员集合、边集合、所有权表由 `tests/architecture.rs` 双向解析守门（成员 `:29`、边 `:57`、方向 `:80`、所有权公开定义 `:125`、pub 类型入表或基线 `:152`）。
 
@@ -77,11 +77,14 @@
 - `Stack`：`new` / `of(Vec<Box<dyn Contract>>)` / `from_header` / `layers` / `uncovered` / `floor`（`stack.rs:107-197`）。
 - `ContractSpec`：层名、输出形状、算子名列表（`nn/src/lib.rs:101-159`）。
 
-**算子声明与参考（`op`）**
+**算子契约与档案（`prof`）**
 
-- `REGISTRY`：24 条编译期闭集，名/声明/模板/语义表同属一条（`op/src/lib.rs:122-164`）。
-- `Model`：cost/sample/reference 三个 fn 指针、dtype、轴角色、形状粒度；`model::bind(model, m, n, x, w)` 是真实数据进样本的唯一入口，量化权重明确拒绝注入（`model.rs:181-200`）。
-- 签名形参闭集：`F32` / `U8` / `Int`（标量）；标量不占缓冲（`sig.rs:18-39`）。
+- `Model`：cost/sample/reference 三个 fn 指针、dtype、轴角色、形状粒度；`model::bind(model, m, n, x, w)` 是真实数据进样本的唯一入口，量化权重明确拒绝注入（`prof/src/model.rs:181-200`）。
+- 签名形参闭集：`F32` / `U8` / `Int`（标量）；标量不占缓冲（`prof/src/sig.rs:18-39`）。
+
+**注册表与参考内核（`nn`）**
+
+- `REGISTRY`：24 条编译期闭集，名/声明/模板/语义表同属一条（`nn/src/registry.rs:122-164`）。
 - f32 标量参考 `forward` 已是全函数签名：一元 `softmax/silu/gelu/scale/reduce_max/reduce_sum`；二元 `add/mul/residual_add/rmsnorm/gemv`；特殊 `rope_f32(pos, x, out)`、`embed_f32(idx, table, out)`（行向量 gather）、`attention_f32(q,k,v,out,heads,d)`；量化族 `gemv_i4/i8`、`gemm_i4/i8`、`dequant_i4/i8` 走 i4/i8 lane（旧称 u8 指字节通道形态，见 §5.3）。
 
 **权重（`weights`）**
@@ -100,13 +103,13 @@
 
 **训练侧可借鉴机制（`train`，模式先例，不作代码复用件）**
 
-- `Kernel` trait：`compute(op, inputs: &[View], output: &mut ViewMut)`；`Reference` 算术复用 `op` 参考实现（`kernel.rs:17-36`）。
+- `Kernel` trait：`compute_step(op: &str, inputs: &[View], output: &mut ViewMut)`；`Reference` 算术复用 `nn` 参考实现（`train/src/kernel.rs:10-36`）。
 - `KERNELS` 表长度与顺序同 `REGISTRY`，编译期 `const` 断言锁死（`kernel.rs:168-197`）；unary/binary/gemm 宏按 lane 拆形参（`kernel.rs:60-100`）。全 24 算子覆盖，含 `attention_f32` / `flash_attention_f32` / 两条 decode 变体 / `rope_f32` / 量化族（`kernel.rs:102-166`）。
 - 形状推导在 `kernel.rs` 的 `shape` 模块（`Kind` / `Lane` sealed / `Data` / `View` / `Inputs`）。`train` 不依赖 `engine`（`crates/train/Cargo.toml`），其 `View`/`Lane` 缓冲形态与 engine `Vec<f32>` 不同形。
 
 ### 1.3 当前唯一跑通的“前向”路径
 
-根包 `llm run`（`src/main.rs:330-360`）逐层：权重条目字节 → `decode_f32` → `op::model::bind` 造样本 → `cutile::execution::execute` **子进程**编译片段并回读输出与 `max_rel_err` → `x = executed.output`；不支持的层停下，已算结果保留。`Stack` 由头部装配（`main.rs:266`、`:455-469`）。
+根包 `llm run`（`src/main.rs:330-360`）逐层：权重条目字节 → `decode_f32` → `prof::model::bind` 造样本 → `shard::execution::execute` **子进程**编译片段并回读输出与 `max_rel_err` → `x = executed.output`；不支持的层停下，已算结果保留。`Stack` 由头部装配（`main.rs:266`、`:455-469`）。
 
 这条路径是**验证/对拍 harness**，不是生产运行时：每算子一次子进程编译，不经过 `engine::Executor`，没有驻留权重、没有 KV、没有 `Predict` 装配。
 
@@ -125,12 +128,12 @@ CpuExecutor::register(Program 表) ── submit(Graph, Stream) ──▶ sync �
                                    │
                           Bindings 读出 logits/激活
                                    │
-                    独立重算 op 标量参考 ──对拍 max_rel_err（testkit::close）
+                    独立重算 nn 标量参考 ──对拍 max_rel_err（testkit::close）
 ```
 
 - 权重在装载期一次性解码进驻留缓冲；生成循环内不再读文件。
 - 图由层定义装配：算子名取 `ContractSpec::ops` / `WeightFormat::operator`，激活编号在层间接线，权重编号绑参数表。
-- `Program` 算术 P1 直接调 `op` 标量参考（正确性基线）；hot 路径优化留待实测 roofline 后逐算子替换。
+- `Program` 算术 P1 直接调 `nn` 标量参考（正确性基线）；hot 路径优化留待实测 roofline 后逐算子替换。
 
 ### 2.2 P2（推理运行时，M2）
 
@@ -167,7 +170,7 @@ prefix cache：共享前缀的页被多条序列共引用，复用而非重算
 | G3 | `Program::run` 只有 f32 切片，无形状/标量上下文（`exec.rs:388`） | `rope_f32(pos, x, out)` 的位置标量、`attention` 的 heads/head_dim 没有通道；形状只能从切片长度猜。P1 只接纯切片算子，标量通道 P2 再议 | `serve::model`；engine trait 预留扩展（§5.1） |
 | G4 | `Bindings` 只有 `u32 → Vec<f32>`，无 dtype/形状元数据（`exec.rs:396-425`） | 编号 ↔ 形状/条目名描述表留装配侧（D10）；engine 保持纯缓冲，只读访问器仅当后端实现证明需要时再补 | `serve` 装配侧为主 |
 | G5 | 形状/下界推导只在 `train` 的 `kernel.rs` 的 `shape` 模块；训练 `View` lane 与 engine `Vec<f32>` 不是同一缓冲形态 | 装配侧的形状推导不能直接复用 train 缓冲视图；需要一份面向 `Vec<f32>` 的窄形状适配 | `serve::model` |
-| G6 | 对拍只在 `cutile::execution` 子进程回路；无进程内单层前向对拍 harness | M1 需要进程内：同一输入两份计算（Program 输出 vs 独立 `op::forward` 参考），`testkit::close` 判 `max_rel_err` | `serve::model` + dev testkit |
+| G6 | 对拍只在 `shard::execution` 子进程回路；无进程内单层前向对拍 harness | M1 需要进程内：同一输入两份计算（Program 输出 vs 独立 `nn` 标量参考），`testkit::close` 判 `max_rel_err` | `serve::model` + dev testkit |
 
 ### 3.2 P2 缺口
 
@@ -202,10 +205,10 @@ prefix cache：共享前缀的页被多条序列共引用，复用而非重算
 
 | 候选 | 判决 | 证据与理由 |
 |---|---|---|
-| 适配类型放 `engine` | 排除 | 既定裁决：engine 不加 `op` 边，只认不透明编号与 `Executor`/`Program` 契约，不引用算子闭集（`exec.rs:9-10`，ADR 0025 §4） |
+| 适配类型放 `engine` | 排除 | 既定裁决：engine 不加算子层边（`nn`/`prof`），只认不透明编号与 `Executor`/`Program` 契约，不引用算子闭集（`exec.rs:9-10`，ADR 0025 §4） |
 | 装配/`Predict` 放根 bin `llm` | 排除 | L7 禁止定义新类型（`architecture.rs:217`）；bin 只做注入式组装 |
 | 复用 `train` 承载运行时 Program | 排除 | ① `train` 不依赖 `engine`（`crates/train/Cargo.toml`），而 `train → engine` 是同层向右，方向非法；② 语义是训练循环，`Kernel`/`View`/`Lane` sealed 缓冲形态与 engine `Vec<f32>` 不同形；③ `serve → train` 同样是同层向右，非法 |
-| **`serve` 内新增模型模块** | **采纳** | 唯一同时满足：已依赖 `engine`；可合法向下补 `op`/`nn`/`weights`/`tensor` 边（L6→L2/L5/L4）；`Predict`/`Sampling`/`Completion` trait 本就归 `serve` |
+| **`serve` 内新增模型模块** | **采纳** | 唯一同时满足：已依赖 `engine`；可合法向下补 `nn`/`weights`/`tensor` 边（L6→L5/L4）；`Predict`/`Sampling`/`Completion` trait 本就归 `serve` |
 
 ### 4.2 落点：`crates/serve/src/model_host.rs`（下称 `serve::model_host`）
 
@@ -219,12 +222,12 @@ L6 顺序不变：`train` → `engine` → `serve` → `cli`；不新增成员�
 - 生产 `Predict` 实现（CPU 模型）；
 - 进程内对拍 harness 的装配侧。
 
-**不拥有**：执行/调度/KV 簿记（engine）；算子声明与参考算术（op）；层形状语义（nn）；权重字节读取（weights）；错误类型（diagnostic）。
+**不拥有**：执行/调度/KV 簿记（engine）；算子声明（`prof`）与参考算术（`nn`）；层形状语义（nn）；权重字节读取（weights）；错误类型（diagnostic）。
 
 **依赖变化**（`crates/serve/Cargo.toml` + `ARCHITECTURE.md` 边表同步）：
 
 - 已有：`diagnostic`、`engine`、`tokenizer`；`+dev: testkit`。
-- 新增向下边：`op`、`nn`、`weights`；`tensor` 仅在装配侧做形状/视图校验时引入，能不引则不引。
+- 新增向下边：`nn`、`weights`；`tensor` 仅在装配侧做形状/视图校验时引入，能不引则不引。
 - `serve` 不依赖 `train`、`cutile`、`shard`；设备后端代码不进本模块。
 
 **边界修订**：`generate.rs:3` 与 serve 模块头注释里"服务层不实现模型"改为分层表述——端点契约、路由、线格式保持模型无关；CPU 模型实现是注入到 `Completion` 的 `Predict` 提供者，收在 `model` 模块内；Metal/CUDA 真设备后端仍按 ADR 0025 收在独立边界 crate，不回流 serve。
@@ -238,14 +241,14 @@ L6 顺序不变：`train` → `engine` → `serve` → `cli`；不新增成员�
 | `Batch` / `Sequence` / `Pager` / `write_kv` / `kv` | `engine::batch`、`engine::kv` | 直接复用（P2 接 KV 时） |
 | `Stack` / `Contract` / `Linear` / `Attention` / `WeightFormat` | `nn` | 直接复用装配输入与算子名选择 |
 | `File` / `Header` / `Stored` 权重读取 | `weights` | 直接复用；条目字节解码 f32 沿用 `main.rs:decode_f32` 的 `as_chunks` 整块口径 |
-| 标量参考 `op::<op>::forward` | `op` | 直接调用：P1 既是生产 CPU 算术，也是对拍参考的独立重算源 |
+| 标量参考 `nn::<op>` 内核 | `nn` | 直接调用：P1 既是生产 CPU 算术，也是对拍参考的独立重算源 |
 | 内核表 const 锁定 + unary/binary/gemm 宏 + 同名同序断言 | `train::kernel.rs:60-197` | **复刻模式**，不复刻代码：train 的 `View`/`Lane` 适配层不带过来，适配函数直接收 `&[&[f32]]` / `&mut [&mut [f32]]` |
 | 对拍口径 `close` / `approx_eq` / `all_finite` | `testkit` | 直接复用（dev 依赖） |
 
 ### 4.4 门禁同步清单（不新增成员，只补边与所有权）
 
-1. `crates/serve/Cargo.toml`：补 `op`、`nn`、`weights`（按需 `tensor`）依赖，`.workspace = true` 口径沿用既有成员写法。
-2. `docs/ARCHITECTURE.md` 边表：`serve → op, nn, weights`（`serve → tensor` 视需要）；层表行职责描述补"注入式 CPU 模型提供者"。
+1. `crates/serve/Cargo.toml`：补 `nn`、`weights`（按需 `tensor`）依赖，`.workspace = true` 口径沿用既有成员写法。
+2. `docs/ARCHITECTURE.md` 边表：`serve → nn, weights`（`serve → tensor` 视需要）；层表行职责描述补"注入式 CPU 模型提供者"。
 3. 所有权表：`serve::model` 每个新 `pub` 类型登记主人 `serve`；不进表的私有类型不受影响；存量基线 `lints/vocabulary.toml` 仅在必要时补登。
 4. `tests/architecture.rs` 自动核对：边集合、方向、所有权公开定义；`tests/contracts.rs` 注解/注册表镜像不受影响。
 5. 内核表仿 `train::KERNELS` 写编译期同名同序 `const` 断言。
@@ -261,11 +264,11 @@ L6 顺序不变：`train` → `engine` → `serve` → `cli`；不新增成员�
 | 算子 | 额外形参 | 来源 |
 |---|---|---|
 | `rope_f32` | `pos: usize`（解码位置） | `Sequence::produced + prompt_len`，随步变化；进定长类型化标量槽 |
-| `attention_f32` / `flash_attention_f32` | 序列长 `s`、头宽 `d` | 两条 prefill 已进 serve CPU 内核桥：`d` 取静态 `op::attention::MODEL.shape.1`，`s = q.len()/d`；decode 变体 `q_rows = q.len()/d`、`hist = k.len()/d` 同法切片长推，均不需运行时标量槽 |
+| `attention_f32` / `flash_attention_f32` | 序列长 `s`、头宽 `d` | 两条 prefill 已进 serve CPU 内核桥：`d` 取静态 `prof::model::Model.shape.1`，`s = q.len()/d`；decode 变体 `q_rows = q.len()/d`、`hist = k.len()/d` 同法切片长推，均不需运行时标量槽 |
 | `embed_f32` | 运行时无额外形参；行宽 `D` 由 `out.len()/idx.len()` 推导，表长锁 `V·D` | 切片几何自洽 |
 | 量化族 | i4/i8 lane（见 §5.3 术语），P3 再议 | — |
 
-**已定方案（D9）**：`Node`/`Launch` 上扩**定长类型化闭集标量槽**（位置、头数、头宽等固定槽位），不引入字符串键查表；静态头宽仍取 `op::MODEL.shape`；`Program::run` 缓冲切片签名不变。槽位集合在 ADR 0043 落档后冻结，新增槽位走 ADR 修订，不在热路径加 `HashMap` 查找。
+**已定方案（D9）**：`Node`/`Launch` 上扩**定长类型化闭集标量槽**（位置、头数、头宽等固定槽位），不引入字符串键查表；静态头宽仍取 `prof::model::Model.shape`；`Program::run` 缓冲切片签名不变。槽位集合在 ADR 0043 落档后冻结，新增槽位走 ADR 修订，不在热路径加 `HashMap` 查找。
 
 **被否备选**：`Vec<ParamSlot>{ name: String, value: i64 }` 名值表——热路径字符串查表，违反零动态分发；把标量塞进 `Launch` 三轴——几何与语义参数混在一起，设备后端映射网格时会误读；把位置编进 1 元素 f32 缓冲——类型不安全，是隐藏约定。
 
@@ -297,8 +300,8 @@ P1/P2 的 `Program` 保持 f32 切片闭集。i4/i8 适配随 P3 量化内核一
 
 ### 5.5 对拍口径
 
-- 进程内对拍：Program 输出缓冲与独立重算的 `op::forward` 参考缓冲逐元素比较，口径用 `testkit::close(abs, rel)` / `approx_eq`；`all_finite` 先排非有限值。
-- 参考与生产算术在 P1 是同一份 `op` 语义的两次调用；第二份独立参考（如手写闭式）随算子覆盖度补，不在 M1 强求。
+- 进程内对拍：Program 输出缓冲与独立重算的 `nn` 标量参考缓冲逐元素比较，口径用 `testkit::close(abs, rel)` / `approx_eq`；`all_finite` 先排非有限值。
+- 参考与生产算术在 P1 是同一份 `nn` 参考语义的两次调用；第二份独立参考（如手写闭式）随算子覆盖度补，不在 M1 强求。
 - 跨后端对拍（CPU vs Metal/CUDA）是 M3 门：同输入同形状，输出 `max_rel_err` 在 dtype 容忍阈值内。
 
 ---
@@ -307,8 +310,8 @@ P1/P2 的 `Program` 保持 f32 切片闭集。i4/i8 适配随 P3 量化内核一
 
 ### 6.1 注册表锁定，不写特判分支
 
-- 内核表是编译期定长数组，覆盖到的 f32 算子子集；表内名字顺序对 `op::REGISTRY` 做 `const` 子集断言（复刻 `train::kernel.rs:168-197` 先例）；未覆盖的算子在查表时返回 `Unsupported`，而不是留一个静默的空入口。
-- 适配函数按形参 arity 分宏生成：unary `[f32]→[f32]`、binary `[f32,f32]→[f32]`、gemv `[x, w]→[out]`；每个适配只做拆切片 + 调 `op::<op>::forward`，算术不重写。
+- 内核表是编译期定长数组，覆盖到的 f32 算子子集；表内名字顺序对 `nn::registry::REGISTRY` 做 `const` 子集断言（复刻 `train::kernel.rs:168-197` 先例）；未覆盖的算子在查表时返回 `Unsupported`，而不是留一个静默的空入口。
+- 适配函数按形参 arity 分宏生成：unary `[f32]→[f32]`、binary `[f32,f32]→[f32]`、gemv `[x, w]→[out]`；每个适配只做拆切片 + 调 `nn::<op>` 内核，算术不重写。
 - 算子名选择来自 `WeightFormat::operator` / `ContractSpec::ops`，装配代码不出现算子名字面量的 `match` 特判；后端选择来自能力闭集，不出现厂商分支。
 
 ### 6.2 整块 slice，批量处理
@@ -320,7 +323,7 @@ P1/P2 的 `Program` 保持 f32 切片闭集。i4/i8 适配随 P3 量化内核一
 ### 6.3 声明驱动
 
 - 层 → 节点的接线由 `Contract` 的形状与算子列表驱动；形状不符在装配期报 `Invalid`，不带进执行期。
-- 新算子接入：补 `op` 声明 + 表里一行适配；不改 engine、不改调度、不改端点。
+- 新算子接入：补 `prof` 声明 + 表里一行适配；不改 engine、不改调度、不改端点。
 
 ### 6.4 失败原子性
 
@@ -333,7 +336,7 @@ P1/P2 的 `Program` 保持 f32 切片闭集。i4/i8 适配随 P3 量化内核一
 
 ### P1 收尾（M1：CPU 前向可重复、对拍达标、首批对照数字、零新增 unsafe）
 
-1. **serve 模块落地**：`src/model.rs`；补 `op`/`nn`/`weights` 向下边；边表与所有权表同步（§4.4）；模块头注释按 §4.2 修订边界表述。P1 不改 engine trait。
+1. **serve 模块落地**：`src/model.rs`；补 `nn`/`weights` 向下边；边表与所有权表同步（§4.4）；模块头注释按 §4.2 修订边界表述。P1 不改 engine trait。
 2. **内核桥**：const 锁定的 Program 表，先覆盖纯切片主路径 `gemv_f32`、`softmax_f32`、`rmsnorm_f32`、`silu_f32`、`gelu_f32`、`add/mul/residual/scale`、两条归约；`rope`/`attention` 随 P2 接入。
 3. **装配器**：`Stack`/`Linear`/`Attention` → `Graph` + 权重 Bindings；驻留参数表。
 4. **单层前向对拍 harness**：进程内双算 + `testkit` 判误差；登记首批基准数字到 roadmap §1.1。
@@ -342,9 +345,9 @@ P1/P2 的 `Program` 保持 f32 切片闭集。i4/i8 适配随 P3 量化内核一
 #### 落地记录（第一刀：内核桥 + 进程内对拍）
 
 - 模块 `serve::model` 已落地（`pub mod model`）；本轮向下边只补 `op`（边表 96 → 97，dev 仍 32）。`nn`/`weights` 边随步骤 3 装配器与驻留参数表一起补，未引用不提前扩面。
-- 内核表 `KERNELS` 覆盖 11 个 f32 纯切片算子：`add/gelu/gemv/mul/reduce_max/reduce_sum/residual_add/rmsnorm/scale/silu/softmax`；`const` 子集断言锁定每条名字都在 `op::REGISTRY` 内；未覆盖算子不登记，执行时由 `CpuExecutor` 按名拒绝。
-- 适配宏 `unary`/`binary`/`gemv` 只拆切片 + 调 `op::<op>::forward`；算术不重写；无 `unsafe`。
-- 对拍 harness（`tests/model_tests.rs`）：经执行器跑注册内核，与独立 `op::forward` 参考双算，`all_finite` 排非有限后 `close(1e-6, 1e-6)` 判误差；含一条图内编号串联（add → silu）与一条未覆盖算子拒绝用例。
+- 内核表 `KERNELS` 覆盖 11 个 f32 纯切片算子：`add/gelu/gemv/mul/reduce_max/reduce_sum/residual_add/rmsnorm/scale/silu/softmax`；`const` 子集断言锁定每条名字都在 `nn::registry::REGISTRY` 内；未覆盖算子不登记，执行时由 `CpuExecutor` 按名拒绝。
+- 适配宏 `unary`/`binary`/`gemv` 只拆切片 + 调 `nn::<op>` 内核；算术不重写；无 `unsafe`。
+- 对拍 harness（`tests/model_tests.rs`）：经执行器跑注册内核，与独立 `nn` 标量参考双算，`all_finite` 排非有限后 `close(1e-6, 1e-6)` 判误差；含一条图内编号串联（add → silu）与一条未覆盖算子拒绝用例。
 - **下一刀（步骤 3）**：补 `nn`/`weights` 边；`Stack`/`Linear` → `Graph` 装配器 + 驻留参数表；真实权重解码进驻留缓冲；生产 `Predict` 宿主。
 - 本刀门禁：engine/serve 测试全绿（serve lib 72、protocol 8、doctest 3）；`cargo clippy --workspace --all-targets -- -D warnings` 零告警；`fmt --check` 干净；architecture 8、contracts 5 全过。
 
@@ -354,7 +357,7 @@ P1/P2 的 `Program` 保持 f32 切片闭集。i4/i8 适配随 P3 量化内核一
 - `Params`：条目名 → f32 整块；`CpuModel` 把 `Stack` 的 F32 线性层装配成 `engine::Graph`，权重在构造期驻留一次，`forward` 每步只覆写输入与逐层激活缓冲，不重新分配。
 - 装配期校验：空栈 `Invalid`；非投影层、非 F32、无算子名 `Unsupported`；缺权重 `Missing`；权重长度不符、层间宽度链断裂 `Invalid`。算子名只取 `WeightFormat::operator()`，不写名字面量 `match`。
 - 编号隔离：激活从 0 起（输入 0、逐层输出 1..），权重从 `WEIGHT_BASE = 10_000` 起；编号按层索引推导，无显式计数器自增。
-- 测试（`tests/model_tests.rs`）：两层 F32 链 `forward` 与串行 `op::gemv_f32` 参考对拍；权重长度不符、缺权重、非 F32、宽度链断裂四条装配期错误用例。
+- 测试（`tests/model_tests.rs`）：两层 F32 链 `forward` 与串行 `nn::gemv_f32` 参考对拍；权重长度不符、缺权重、非 F32、宽度链断裂四条装配期错误用例。
 - **未做（切分）**：`Predict` trait 实现留 P2 嵌入/词表通路落地后——`Sequence` 只有 token、尚无嵌入查表通路，本轮不硬造把 token 当向量的实现；宿主先暴露张量级 `forward(&[f32]) -> Vec<f32>`。KV 账由调度器持有，模型不另存。
 - 本刀门禁：serve lib 77、protocol 8、doctest 3 全绿；`cargo clippy --workspace --all-targets -- -D warnings` 零告警；`fmt --check` 干净；architecture 8、contracts 5 全过。
 
@@ -362,7 +365,7 @@ P1/P2 的 `Program` 保持 f32 切片闭集。i4/i8 适配随 P3 量化内核一
 
 - 补 `serve → weights` 生产边（边表 98 → 99，dev 仍 32）；f32 小端解包下沉 weights 为公共件 `decode_f32`（`as_chunks::<4>` 解包，余字节非零报 `Invalid`），serve 不另写 `from_le_bytes` 循环。
 - `Params::from_stack(stack, header, loader)`：逐层按 `{层名}.weight` 查头部条目；`entry_for` 缺条目报 `Missing`，`load_f32` 判 dtype——非 F32 返回 `None` 不解包（留装配期按格式拒绝），F32 走 `Loader::load` + `decode_f32` 解码进驻留表。serve 只依赖 `Loader` 契约，不直接 `File::open`；路径打开与 bin 串联留调用方。
-- 测试：内存 safetensors 归档（`Archive::parse`）两层 F32 装载后装配 `forward`，与串行 `op::gemv_f32` 参考对拍；头部缺条目 `Missing`；非 F32 条目装载期跳过、装配期 `Unsupported`。weights 侧 `decode_f32` 两条单测：完整字解包对拍、尾部半字 `Invalid`。
+- 测试：内存 safetensors 归档（`Archive::parse`）两层 F32 装载后装配 `forward`，与串行 `nn::gemv_f32` 参考对拍；头部缺条目 `Missing`；非 F32 条目装载期跳过、装配期 `Unsupported`。weights 侧 `decode_f32` 两条单测：完整字解包对拍、尾部半字 `Invalid`。
 - **未做（切分）**：`Predict` trait 实现仍待 P2 嵌入/词表通路；`File::open` 路径装载与命令行串联留调用方/后续刀。
 - 本刀门禁：serve lib 80、protocol 8、doctest 3 全绿；weights 测试全绿；`cargo clippy --workspace --all-targets -- -D warnings` 零告警；`fmt --check` 干净；architecture 8、contracts 5 全过。
 
@@ -371,7 +374,7 @@ P1/P2 的 `Program` 保持 f32 切片闭集。i4/i8 适配随 P3 量化内核一
 - 装配器从仅认 `Linear` 扩到按算子族别接线：`Projection`（输入向量 + 驻留权重 `[out,in]`）、`Unary`（单路输入等长输出、无权重）、`Norm`（输入 + 驻留 gamma `[width]`）。族别由常量表 `UNARY_OPS` / `NORM_OPS` 检索，算子名取 `spca().ops()`，不写层类型 match，也不写后端厂商分支。
 - 几何：投影宽度取 `linear()` 视图；一元/归一化宽度取 `output()` 单轴形状 `[width]`，标量（归约）与多轴形状在装配期报 `Invalid`。宽度链：投影输入对上一层输出，等长族输出对上一层输出；权重期望长度按族别 `weight_len` 派生（投影 `in×out`、归一化 `width`、一元 `None`）。
 - 本刀不接：二元残差（需旁路 DAG 接线）、归约、rope、注意力、查表层，均按 `Unsupported` 拒绝；残差旁路与 KV 通路随注意力刀落地。
-- 测试：投影→silu、投影→rmsnorm 两条混合链 forward 与串行 `op::gemv_f32 → silu/rmsnorm` 对拍；一元宽度链断裂 `Invalid`、缺 gamma `Missing`、二元残差 `Unsupported` 三条拒绝用例。
+- 测试：投影→silu、投影→rmsnorm 两条混合链 forward 与串行 `nn::gemv_f32 → silu/rmsnorm` 对拍；一元宽度链断裂 `Invalid`、缺 gamma `Missing`、二元残差 `Unsupported` 三条拒绝用例。
 - 本刀门禁：serve lib 85、protocol 8、doctest 3 全绿；`cargo clippy --workspace --all-targets -- -D warnings` 零告警；`fmt --check` 干净；静态复杂度门通过；architecture 8、contracts 5 全过。无新增 pub 类型与依赖边，边表/所有权表不变。
 
 #### 落地记录（P2-2a：`embed_f32` 改造为行向量 gather）
@@ -412,7 +415,7 @@ P1/P2 的 `Program` 保持 f32 切片闭集。i4/i8 适配随 P3 量化内核一
 
 #### 落地记录（P2-4a：注意力 prefill 两条进 CPU 内核表 + 模块拆分）
 
-- `attention_f32` / `flash_attention_f32` 登记进 serve CPU 内核表：三路 `q/k/v → out`，头宽 `d` 取静态 `op::attention::MODEL.shape.1`，序列长 `s` 由 `q.len()/d` 推出，形状不符交算子参考校验；朴素与 Flash 同几何只换内核算式。几何口径复刻 `train` 桥（`d` 取静态语义表、`s` 由切片长推），本刀不引入 Program 运行时标量槽。
+- `attention_f32` / `flash_attention_f32` 登记进 serve CPU 内核表：三路 `q/k/v → out`，头宽 `d` 取静态 `prof::model::Model.shape.1`，序列长 `s` 由 `q.len()/d` 推出，形状不符交算子参考校验；朴素与 Flash 同几何只换内核算式。几何口径复刻 `train` 桥（`d` 取静态语义表、`s` 由切片长推），本刀不引入 Program 运行时标量槽。
 - 模块拆分：原 `model.rs` 超 899 行行数上限，按职责拆成 `model/mod.rs`（编译期锁定的算子表与适配函数）与 `model/assemble.rs`（层栈装配、驻留参数表、前向宿主 `CpuModel`）；`mod.rs` 经 `pub use` 把 `CpuModel` / `Params` 放回 `serve::model` 路径，外部引用不变。
 - 清理过渡死账：路线 A 模型内部 KV 账（`SequenceKv` / `KvCache`）无持有者，且将被 §5.4 路线 B 的 Batch 只读视图取代，删除其 src 副本与平行测试副本；行追加、历史拼接与淘汰机制待 P2-4 主体按 Batch 页行视图重新落地，不在无视图通道时预留死代码。
 - **未做（切分主体）**：Q/K/V 三路投影写回页行、历史 K/V 读入拼块、注意力族接装配链、残差旁路、decode 变长历史变体登记；Predict 路线 B 视图形态与图扇出/旁路通道在主体刀定形（§5.1、§5.4）。
@@ -504,7 +507,7 @@ P1/P2 的 `Program` 保持 f32 切片闭集。i4/i8 适配随 P3 量化内核一
 | 项 | 落点 | 触发时点 |
 |---|---|---|
 | Program 标量槽形状（已定 D9 / ADR 0043）：定长类型化闭集槽，不用名值表；`Program::run` 缓冲签名不变 | ADR 0043 正文动工前补齐 | P2 接 rope/attention 时按已定形状落地 |
-| `serve::model_host` 模块与最终向下边表（是否引 `tensor`） | ARCHITECTURE 边表 + 所有权表 | 已定模块 `model_host`；已补 `op`、`nn`、`weights`；`tensor` 暂不引 |
+| `serve::model_host` 模块与最终向下边表（是否引 `tensor`） | ARCHITECTURE 边表 + 所有权表 | 已定模块 `model_host`；已补 `nn`、`weights`；`tensor` 暂不引 |
 | Predict/KV 传参路线（A/B） | 路线 B 已定形：`logits(&mut self, &Sequence, &mut Batch)`（#50 落地，见 §5.4 与 §7 P2-4 记录） | 已定 |
 | 嵌入算子形态：改造 `embed_f32` 为行向量 gather（表 `[V,D]`，按 idx 取整行到 `[n,D]`），不新增算子 | op `f32_small.rs` 的 `embed_f32` 模块 + `.toml` + `.k` + 自测；复用 `embed` 骨架 | 已落地（#58）：三参 arity 不变，train 桥与注册表行未动；骨架闭集 12 个不扩 |
 | unsafe/FFI 边界规则（函数/句柄越界白名单、局部 allow 收敛点） | 已落档 [ADR 0035](adr/0035-unsafe-ffi-boundary.md)；边界 crate 实现随 P3 填入 | 已定规则 |

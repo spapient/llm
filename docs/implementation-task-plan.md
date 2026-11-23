@@ -103,7 +103,7 @@
 | 权重源 | 既有 `Reader`（借用）/ `Loader`（拷贝）trait（`weights::lib.rs:268/277`） | L5 weights | 沿用既有 trait，不另立平行 `Source` 父 trait；一条源一份实现；缺失类型编译期报错，不静默降级为整文件读入 |
 | 优化器 | `Optimizer` | L5/L6 train | `step(params, grads, meta: &ParamRole)`；矩状态优化器自持；角色元数据来自 `nn::ContractSpec` 声明（D2/D11） |
 | 采样 | `Sampling` | L6 serve | 温度/top-k/top-p 参数进闭集档案；实现经注入挂载到 `Completion` |
-| 算子内核 | `Program`（engine 既有）+ 注册表 | L6 serve 适配 | 算子名 → `Program` const 锁定表；适配只拆切片调 `op::forward`，不重写算术 |
+| 算子内核 | `Program`（engine 既有）+ 注册表 | L6 serve 适配 | 算子名 → `Program` const 锁定表；适配只拆切片调 `nn` 标量参考内核，不重写算术 |
 
 选择规则：
 
@@ -116,7 +116,7 @@
 ### 2.3 注解边界
 
 - proc-macro 只做**声明展开**：`spec` 产出 `ContractSpec`，`model` 产出 `Model` 条目与常量表、骨架名投影；不持有运行期注册表，不做代码生成以外的魔法。
-- 新算子接入路径固定四件：`op` 声明一行 + `.toml`/`.k` 片段 + 语义模块（cost/sample/reference）+ 注解 `#[annotation::model]`；train/serve 内核表按口径补适配。新层经 `#[spec]` 声明 `ContractSpec`。
+- 新算子接入路径固定四件：`prof` 声明一行 + `.toml`/`.k` 片段 + 语义模块（cost/sample/reference）+ 注解 `#[annotation::model]`；train/serve 内核表按口径补适配。新层经 `#[spec]` 声明 `ContractSpec`。
 - 新层接入：`nn::Contract` 类型视图优先；族别归属走常量表检索，外层不按层名前缀分组扇出。
 - 注解例外表合一后，注册名 → (骨架, 参考入口, 模块) 一行三列；缺省取骨架默认。
 
@@ -155,7 +155,7 @@
 
 - 数值对拍：`testkit::close(left, right, abs, rel)`，`abs/rel` 取 dtype 容忍表；`all_finite` 先排非有限值。
 - 训练梯度：gradcheck 阈值取既有 autograd 校验口径；checkpoint 往返张量逐位一致。
-- 基准：criterion 入 `tool::regress` 基线，CI 只守不回归；跨机绝对值不进结论（roadmap §7）。
+- 基准：criterion 入 `tools::regress` 基线，CI 只守不回归；跨机绝对值不进结论（roadmap §7）。
 - 每条任务出口同时过 design §8.3 四维门：能力（清单逐条回归）、性能（同硬件对照或 roofline 上界）、质量（对拍/负例/门禁）、密度（同口径机制行数）。
 
 ### 2.9 文档与代码指针同步
@@ -174,11 +174,11 @@
 | P0-1 | 回填 §1.1 事实漂移：注册表 24、测试 1,391、行数粗口径待优化后重测、KV 数据状态、指针与 ADR 编号（本轮活文档已回填，留一次一致性复核） | 全仓文档 | 无 | design/roadmap/backend/iteration/ARCHITECTURE 计数与指针一致 | 文档链接门通过；无陈旧计数；历史快照不回写 | — |
 | P0-2 | 注解双表合一：`REFERENCE_OVERRIDES`+`MODULE_OVERRIDES` 合并为一行三列表 | `annotation` | D7 | 单表 `(名, 参考覆盖, 模块覆盖)`；查找仍闭集 | 注解生成测试全绿；无第二份按名查找循环 | 宏去留裁决留 D7 |
 | P0-3 | 大文件按职责轴拆分（design §5.4 表）：先 `weights/bin.rs`、`src/bin/cutile/main.rs`、`train/snapshot.rs` | 对应 crate | 行数预算 | 解析/排版/台账移出机制文件；单文件 ≤899 | gate 行数与 ccn 过门；测试断言不削 | 其余大文件随阶段内拆 |
-| P0-4 | 报告/排版合一：audit/tool/witness 三处报告器收敛为一个 | `tool` / `diagnostic` | 10k-analysis §6.2 | 单一报告器，三处调用 | 输出条目不丢；测试不跌 | — |
+| P0-4 | 报告/排版合一：audit/tools/witness 三处报告器收敛为一个 | `tools` / `diagnostic` | 10k-analysis §6.2 | 单一报告器，三处调用 | 输出条目不丢；测试不跌 | — |
 | P0-5 | 手写解析收敛到一份；是否引入唯一解析依赖按 D5 实测阈值裁决 | `diagnostic` | D5 | 解析单源；依赖取舍入 ADR | 解析负例全绿 | toml+serde 引入未拍板前不接 |
 | P0-6 | 关键纯函数属性/模糊加固：解析、归约、归一化、词表查找等补表驱动边界用例；退化情形进 `fuzz` sweep | `fuzz` / 对应 crate | 无 | 纯函数边界用例集；fuzz 种子与 sweep 接入 | 负例覆盖空/非对齐/越界/饱和；不新增生产依赖 | libfuzzer harness 仅 feature 门控。现状注记：三族内部纯函数 / 结构化张量的 fuzz sweep 接线经裁决移除（与 fuzz 入口解析器契约边界错配），边界用例归各自仓内单测；fuzz 只保留不可信字节入口解析器目标 |
-| P0-7 | 片段参数类型签名交叉校验：注解/声明/模板三者参数类型一致，不一致编译期或测试期拒绝 | `annotation` / `op` | P0-2 | 交叉校验条目 + 守护测试 | 错配片段被拒；既有 24 条全过 | 跨设备文本同构校验随后端阶段 |
-| P0-8 | 已具备能力回归守护：P9 多格式往返 round_trip、P13 设备档案 L0–L3 闭集，纳入常驻回归 | `weights` / `prof` / `tool` | 无 | 守护测试入 workspace 回归 | 格式往返全绿；档案闭集不被绕过 | — |
+| P0-7 | 片段参数类型签名交叉校验：注解/声明/模板三者参数类型一致，不一致编译期或测试期拒绝 | `annotation` / `prof` | P0-2 | 交叉校验条目 + 守护测试 | 错配片段被拒；既有 24 条全过 | 跨设备文本同构校验随后端阶段 |
+| P0-8 | 已具备能力回归守护：P9 多格式往返 round_trip、P13 设备档案 L0–L3 闭集，纳入常驻回归 | `weights` / `prof` / `tools` | 无 | 守护测试入 workspace 回归 | 格式往返全绿；档案闭集不被绕过 | — |
 
 ### 3.1 M1-A 装载与驻留权重
 
@@ -187,26 +187,26 @@
 | M1-A1 | 收口既有 `Reader`/`Loader`：复核 `Archive`/`File` 实现与边界检查单点；非 Unix 缺失类型编译报错，不提供假装映射的空实现 | `weights` | D1 | trait 形状文档化；既有实现负例补齐 | 装载负例（缺条目/非 F32/尾半字/长度不符）全绿 | 远端分块源 |
 | M1-A2 | `MmapSource` 实现 `Reader`（Unix feature 门控，复用 `storage::Mmap` 唯一 unsafe 岛）；`Archive::load` 既有 Cow 二分（Store→Borrowed / Rans→Owned，`archive.rs:182-186`）保持，mmap 只让 Store 段经映射借用 | `weights`/`storage` | M1-A1、D1 | 映射借用生命周期断言；压缩段 `Owned` 断言 | raw 零拷贝有测试证据；压缩段必须 `Owned`；新增 unsafe 为零 | 设备权重驻留、热更新 |
 | M1-A3 | 驻留缓冲接线：装配期按描述符一次解码进驻留 `Buffer`；循环内不二次分配 | `weights`/`serve` | M1-A2 | 参数表驻留路径；激活编号复用 | 装载基准 RSS/时延可重复；`CpuModel::forward` 形态保留 | — |
-| M1-A4 | 装载基准 harness：mmap vs read 首条/全量、冷热缓存、RSS 与时延 | `benches`/`tool::regress` | M1-A3 | 对照条目入回归基线 | 数字可重复；跨机绝对值不进结论 | — |
+| M1-A4 | 装载基准 harness：mmap vs read 首条/全量、冷热缓存、RSS 与时延 | `benchmarks`/`tools::regress` | M1-A3 | 对照条目入回归基线 | 数字可重复；跨机绝对值不进结论 | — |
 
 ### 3.2 M1-B CPU 单序列前向闭环
 
 | ID | 任务 | 归属 crate | 依赖 | 交付物 | 验收门 | 暂缓 |
 |---|---|---|---|---|---|---|
 | M1-B1 | CPU 内核桥补缺口：既有 `KERNELS` const 子集表加固；未覆盖名查表返回 `Unsupported`，不留静默空入口 | `serve` | 既有 `kernels.rs` | 子集断言锁注册表；适配按 unary/binary/gemv 分宏 | 表内每条名字在 REGISTRY；重名拒绝 | 标量槽（rope/attention 通道，见 M1-B6） |
-| M1-B2 | 首批纯切片主路径算子内核落地：gemv/softmax/rmsnorm/silu/gelu/add/mul/residual/scale/两条归约 | `serve`/`op` | M1-B1 | Program 适配 + 进程内双算对拍 | `testkit::close` 达标；all_finite 先排 | rope、attention、量化 i4/i8 lane |
+| M1-B2 | 首批纯切片主路径算子内核落地：gemv/softmax/rmsnorm/silu/gelu/add/mul/residual/scale/两条归约 | `serve`/`nn` | M1-B1 | Program 适配 + 进程内双算对拍 | `testkit::close` 达标；all_finite 先排 | rope、attention、量化 i4/i8 lane |
 | M1-B3 | 装配器补全族首层通路：embedding 查表已注册；投影/点wise/归一化首层由装配侧提供隐向量输入，不再直接 `Unsupported` | `serve`/`nn` | M1-B1 | 全族 `LayerPlan` 接线；宽度链校验 | 两层合成模型端到端对拍；宽度断裂负例 | 多 token 矩阵主链 |
-| M1-B4 | 进程内对拍 harness：同输入 Program 输出 vs 独立 `op::forward` 参考 | `serve`/`testkit`(dev) | M1-B2 | 双算 + `max_rel_err` 判定 | 一层/两层模型对拍达标；负例齐全 | 第二份独立闭式参考 |
+| M1-B4 | 进程内对拍 harness：同输入 Program 输出 vs 独立 `nn` 标量参考 | `serve`/`testkit`(dev) | M1-B2 | 双算 + `max_rel_err` 判定 | 一层/两层模型对拍达标；负例齐全 | 第二份独立闭式参考 |
 | M1-B5 | `Sampling` 接端点步：logits → 采样 → emit 记账；停止符/上限/被挡三态保持 | `serve` | M1-B3 | 注入式采样进 `Completion` | 坏温度/空候选/top-p 越界负例 | top-p 校准表细化 |
-| M1-B6 | 按 D9 落地标量/形状通道：`Node`/`Launch` 加定长类型化闭集槽（rope 位置、heads、head_dim），不引入字符串键查表；静态头宽仍取 `op::MODEL.shape`；`Program::run` 缓冲切片签名不变 | `engine`/`serve` | D9 | 标量槽类型 + 最小 CPU 实现 | 槽位形状进 ADR 0043；未接算子仍按名拒绝；热路径无 map 查找 | 多 token 矩阵几何 |
+| M1-B6 | 按 D9 落地标量/形状通道：`Node`/`Launch` 加定长类型化闭集槽（rope 位置、heads、head_dim），不引入字符串键查表；静态头宽仍取 `prof::model::Model.shape`；`Program::run` 缓冲切片签名不变 | `engine`/`serve` | D9 | 标量槽类型 + 最小 CPU 实现 | 槽位形状进 ADR 0043；未接算子仍按名拒绝；热路径无 map 查找 | 多 token 矩阵几何 |
 | M1-B7 | 按 D10 落元数据：编号 ↔ 形状/条目名描述表留 `serve` 装配侧；engine `Bindings` 保持纯缓冲；只读形状访问器仅当后端实现证明需要时再补 | `serve`/`engine` | D10 | 装配侧描述符表 + 宽度链校验 | 形状断裂装配期拒绝；负例齐全；engine 不解释编号 | 设备侧形状元数据 |
 
 ### 3.3 M1-C 基准 harness 骨架
 
 | ID | 任务 | 归属 crate | 依赖 | 交付物 | 验收门 | 暂缓 |
 |---|---|---|---|---|---|---|
-| M1-C1 | 机制代码口径分账：排除 tests/内联测试/fuzz/benches/build.rs/生成片段/vendor，按 L1–L7 出本仓基线；排除规则与分账表入档可复跑 | `tool` | 10k-analysis §6.1、design §5.3 | 同口径机制行数表 + 分账规则文档 | 分账规则可复跑；不与含测试口径混 | 对标分母同口径采集 |
-| M1-C2 | 统一基准记录：硬件/驱动/形状/批次/精度/后端标识/roofline 上界；无基线登记跳过不伪造 | `benches`/`testkit` | M1-C1 | 对照条目结构 | 每条算子/层/模型有条目；CI 守不回归 | 跨机绝对值结论 |
+| M1-C1 | 机制代码口径分账：排除 tests/内联测试/fuzz/benches/build.rs/生成片段/vendor，按 L1–L7 出本仓基线；排除规则与分账表入档可复跑 | `tools` | 10k-analysis §6.1、design §5.3 | 同口径机制行数表 + 分账规则文档 | 分账规则可复跑；不与含测试口径混 | 对标分母同口径采集 |
+| M1-C2 | 统一基准记录：硬件/驱动/形状/批次/精度/后端标识/roofline 上界；无基线登记跳过不伪造 | `benchmarks`/`testkit` | M1-C1 | 对照条目结构 | 每条算子/层/模型有条目；CI 守不回归 | 跨机绝对值结论 |
 
 ### 3.4 T1 训练最小闭环（不阻塞 M1 推理出口）
 
@@ -222,10 +222,10 @@
 
 | ID | 任务 | 归属 crate | 依赖 | 交付物 | 验收门 | 暂缓 |
 |---|---|---|---|---|---|---|
-| M2-1 | 多层层偏移行切片、多头展平头内切片；注意力 Program 接 KV 行映射 | `serve`/`engine`/`op` | M1-B2、M1-B6 | 层偏移表归装配侧；KV 行进绑定缓冲 | 多步 decode 与参考序列对拍 | 头内并行特化 |
+| M2-1 | 多层层偏移行切片、多头展平头内切片；注意力 Program 接 KV 行映射 | `serve`/`engine`/`nn` | M1-B2、M1-B6 | 层偏移表归装配侧；KV 行进绑定缓冲 | 多步 decode 与参考序列对拍 | 头内并行特化 |
 | M2-2 | 模型内核级批量几何：调度批步进 `Batch::step` 已落地（守回归）；本任务把 executor 图从单序列几何扩到批内多序列一步，`Predict` 视需要补批量视图（G9/G11） | `serve`/`engine` | M1-B5 | 模型侧批前向通路；批量视图接口 | 多序列跑通；调度不违反页表不变量；批量对拍达标 | 序列并行 |
 | M2-3 | prefix cache 接线：准入时前缀匹配 → `Pager::share` 采纳共享页；淘汰/回收判定走既有 `release` 计数归 0 路径；引用计数原语已在 `Cache`/`Pager` 在位，不重做 | `engine::kv`/`serve` | M2-2、D12 | 前缀匹配表；共享句柄；回收不变量 | 共享/回收对拍；前缀一致/不一致负例；重复归还不越界 | 跨请求前缀复用预热 |
-| M2-4 | decode 基准 harness：单序列/批次 TPOT、吞吐、内存；对照 llama.cpp 同硬件曲线 | `benches`/`serve` | M2-2 | 对照曲线入表 | KV 分配/释放有对拍；内存占用入表 | — |
+| M2-4 | decode 基准 harness：单序列/批次 TPOT、吞吐、内存；对照 llama.cpp 同硬件曲线 | `benchmarks`/`serve` | M2-2 | 对照曲线入表 | KV 分配/释放有对拍；内存占用入表 | — |
 
 ### 3.6 M3 后端边界、量化与性能
 
@@ -233,9 +233,9 @@
 |---|---|---|---|---|---|---|
 | M3-1 | 边界 crate 骨架 + ADR-0035 复核：`Executor`/`Allocator` 实现；FFI/`unsafe` 局部 allow 收敛边界内 | 新边界成员 | D6、ADR-0035 | 边界依赖方向守门 | 边界 crate 之外零新增 unsafe；架构门通过 | 第三加速链路 |
 | M3-2 | Metal 本机跑通 M2 同一前向；CUDA 在 win 远端（T600 sm_75 / CUDA 13.3）验；设备内核管线未建前只编译+契约对拍 | 边界成员 | M3-1 | 两条后端同一 trait 挂载 | 同输入同形状对拍一致；未建设备内核前不出吞吐数字 | 图 capture 特化 |
-| M3-3 | 量化 `i4`/`i8` lane：Program 适配 + 反量化内核挂载（字节通道形态见 backend §5.3） | `op`/`serve`/边界 | M3-1 | i4/i8 lane Program 通路 | 量化权重对拍；零点/分组负例 | FP8/AWQ/GPTQ 新格式 |
+| M3-3 | 量化 `i4`/`i8` lane：Program 适配 + 反量化内核挂载（字节通道形态见 backend §5.3） | `nn`/`serve`/边界 | M3-1 | i4/i8 lane Program 通路 | 量化权重对拍；零点/分组负例 | FP8/AWQ/GPTQ 新格式 |
 | M3-4 | `Collective` 通信原型（NCCL/Metal 对等经 trait 挂） | `shard`/边界 | M3-1 | 通信后端实现 | 集合对拍；拓扑簿记不改 | 大规模分布式 |
-| M3-5 | roofline 达成率报告；按 decode 瓶颈序逐算子优化 | `benches`/`op` | M3-2 | 达成率可追 | 同后端对比 burn/candle 有对照数字 | wmma/wgmma 手写张量核 |
+| M3-5 | roofline 达成率报告；按 decode 瓶颈序逐算子优化 | `benchmarks`/`nn` | M3-2 | 达成率可追 | 同后端对比 burn/candle 有对照数字 | wmma/wgmma 手写张量核 |
 
 ### 3.7 M4 模型与服务化
 
@@ -243,7 +243,7 @@
 |---|---|---|---|---|---|---|
 | M4-1 | 主流权重格式端到端装载与前向（接 M1-A 源抽象）；容器字节解析为中性 `VocabSource` → `Vocab::try_new`（D13），挂到 `Tokenizer`，不再仅靠外部注入 | `weights`/`serve`/`tokenizer` | M1-A、M2 | 真实权重 + vocab 生成通路 | 给定真实权重跑通生成；词表指纹沿用既有 `Fingerprint` 对拍 | vision/多模态 |
 | M4-2 | `Endpoint` 的真实 HTTP 实现；传输层与端点模型分离 | `serve` | D8 | HTTP 后端替换桩路由 | 契约测试全绿；并发/流式通路 | gRPC |
-| M4-3 | 服务基准：并发与 P50/P99、TTFT/TPOT/prefix 命中 | `benches`/`serve` | M4-2 | 服务对照入表 | 同负载对照 vLLM/TRT-LLM 口径登记 | 通用 GPU 峰值竞争 |
+| M4-3 | 服务基准：并发与 P50/P99、TTFT/TPOT/prefix 命中 | `benchmarks`/`serve` | M4-2 | 服务对照入表 | 同负载对照 vLLM/TRT-LLM 口径登记 | 通用 GPU 峰值竞争 |
 
 ### 3.8 显式暂缓清单（本路线不做；接口形状预留，不删既有模块）
 
@@ -275,7 +275,7 @@
 | D6 | 后端 trait 形状 | 沿用 ADR-0025 的 `Executor`/`Allocator`/`Collective`/`Program`；CPU 首实现验证形状后再挂 Metal/CUDA；第二后端出现前不预埋多余泛型参数 | 为双后端现在预埋设备泛型；后端私有假设上浮到模型/调度代码 | 四 trait 已定形（`exec.rs:261/383`、`storage.rs:171`、`shard/collective.rs:11`）；`LocalExecutor` 契约后端 + `CpuExecutor` 注册表在位 | 修订 0025 或 0040（M3-1 前） |
 | D7 | 注解宏去留 | 保留两个既有注解宏：`#[annotation::model]`（算子侧产出 `Model` 条目）、`#[annotation::spec]`（`nn` 内重导出为 `#[spec]`，产出 `ContractSpec`）；宏只做声明展开，不持运行期注册表 | 普通构造函数替代宏 | 27 个算子模块挂 `model`（R-20）；`spec` 覆盖 nn 层；去掉宏会把声明负担抬回每个模块 | 0041（已落档） |
 | D8 | 服务传输层 | M4 再接 HTTP；当前端点契约（`Endpoint::route/call`）保持零依赖；传输实现与端点模型分离 | M2 提前接 axum/tokio | `Endpoint` trait 已定形（`serve/src/lib.rs:182`），无 socket | 0042 |
-| D9 | Program 标量/形状通道 | 在 `Node`/`Launch` 上扩**定长类型化标量槽**；首批槽位仅 rope 解码位置；heads/head_dim 等静态几何仍取 `op::MODEL.shape`，不进运行时槽；槽位集合闭集冻结，新增走 ADR 修订；不引入字符串键查表；`Program::run` 缓冲切片签名不变 | 把位置标量塞成 1 元素缓冲；节点上挂 `HashMap` 标量上下文；静态几何也压成运行时槽 | `Launch` 现仅 grid/block（`exec.rs:42-47`）；rope 需位置标量，attention 头数/头宽可由静态形状推；热路径不能加 map 查找 | 0043 |
+| D9 | Program 标量/形状通道 | 在 `Node`/`Launch` 上扩**定长类型化标量槽**；首批槽位仅 rope 解码位置；heads/head_dim 等静态几何仍取 `prof::model::Model.shape`，不进运行时槽；槽位集合闭集冻结，新增走 ADR 修订；不引入字符串键查表；`Program::run` 缓冲切片签名不变 | 把位置标量塞成 1 元素缓冲；节点上挂 `HashMap` 标量上下文；静态几何也压成运行时槽 | `Launch` 现仅 grid/block（`exec.rs:42-47`）；rope 需位置标量，attention 头数/头宽可由静态形状推；热路径不能加 map 查找 | 0043 |
 | D10 | Bindings 元数据落点 | 编号 ↔ 形状/条目名描述表留在 `serve` 装配侧；engine `Bindings` 保持纯缓冲 `BTreeMap<u32, Vec<f32>>`；不先给 engine 加形状访问器，后端实现证明需要时再补只读视图 | 形状元数据下沉 engine Bindings；装配侧按层名前缀猜形状 | `Bindings` 现无形状字段（`exec.rs:396-425`）；ADR-0025 §2 规定 engine 不解释编号含义；宽度链校验属装配职责 | 0044 |
 | D11 | 参数角色闭集落点 | `ContractSpec` 扩展 `ParamRole` 闭集（Trainable / Bias / Norm / Embedding 等），由层构造器填值；wd 豁免、可训练判定从角色派生 | 角色写进优化器配置；按权重条目名字符串猜角色 | 现 `ContractSpec` 无角色字段（R-16）；`nn` 层是构造期唯一知道自身角色的地方 | 0037（随 D2 同档落） |
 | D12 | KV 前缀共享接线 | 引用计数/共享/回收原语已在 `engine::kv` 落地；本路线只做前缀匹配、准入时 `share` 采纳共享页、淘汰与回收判定；不改页池数据结构 | 在 serve 侧另造一套共享账；重写 Cache 引用计数 | `Cache::share/release/reference_count` 在位（`kv.rs:470-555`），`Pager::share/release` 已接线 | 记录在 M2-3，不单列 ADR |

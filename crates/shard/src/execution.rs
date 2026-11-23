@@ -241,7 +241,7 @@ fn length_of(op: &OpDecl, sample: &Sample) -> diagnostic::Result<usize> {
                 Code::Invalid,
                 format!("`{}` 没有长度标量，网格无从派生", op.name),
             )
-            .with("cutile::execution::launch")
+            .with("shard::execution::launch")
         })?;
     dim_size(&name, sample)
 }
@@ -431,7 +431,7 @@ fn chunk_size(op: &OpDecl) -> diagnostic::Result<usize> {
             Code::Unsupported,
             format!("`{}` 没有声明 `[chunk]`", op.name),
         )
-        .with("cutile::execution::program")
+        .with("shard::execution::program")
     })?;
     Ok(chunk.size)
 }
@@ -462,14 +462,14 @@ pub(crate) fn grid_dims(grid: &Grid, sample: &Sample) -> diagnostic::Result<Vec<
 pub(super) fn dim_size(scalar: &str, sample: &Sample) -> diagnostic::Result<usize> {
     let size = sample.scalar(scalar).ok_or_else(|| {
         Error::new(Code::Invalid, format!("网格标量 `{scalar}` 没有样本取值"))
-            .with("cutile::execution::program")
+            .with("shard::execution::program")
     })?;
     usize::try_from(size).map_err(|_| {
         Error::new(
             Code::Invalid,
             format!("网格标量 `{scalar}` = {size} 不是非负 usize"),
         )
-        .with("cutile::execution::program")
+        .with("shard::execution::program")
     })
 }
 

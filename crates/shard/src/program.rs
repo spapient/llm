@@ -19,7 +19,7 @@ use nn::sig::CType;
 use prof::decl::{Grid, OpDecl};
 
 /// 错误定位：所有形态共用这一个站点（换形态不改定位）。
-const SITE: &str = "cutile::execution::program";
+const SITE: &str = "shard::execution::program";
 
 /// 后端：厂商档案键 + 输出方言。机制层只认这两个取值，厂商实现归 `device`（L6）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

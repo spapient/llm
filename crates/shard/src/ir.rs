@@ -45,7 +45,7 @@ pub fn lower(emit: Emit, kernel: &Kernel, preamble: &str, sample: &Sample) -> Re
 
 /// 校验失败统一换成诊断错误；typed IR 只报「为什么不成形」，诊断层再补桥接上下文。
 fn verify_failed(error: cutile::kernel::VerificationError) -> Error {
-    Error::new(Code::Invalid, format!("typed IR 校验失败：{error}")).with("cutile::optim::ir")
+    Error::new(Code::Invalid, format!("typed IR 校验失败：{error}")).with("shard::ir")
 }
 
 fn optimize(kernel: &Kernel) -> Result<Kernel> {

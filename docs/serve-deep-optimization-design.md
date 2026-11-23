@@ -1,7 +1,7 @@
 # `llm-serve` 深度优化：架构评审与设计
 
 - 日期：2026-11-17
-- 取证口径：当前工作树 `crates/serve/` 全部源码 + 测试；依赖契约取 `engine` / `nn` / `op` / `tokenizer` / `diagnostic` 公开 API；仓库约束取 `docs/ARCHITECTURE.md`、ADR 0005/0006/0016/0019/0020/0022/0023/0025。
+- 取证口径：当前工作树 `crates/serve/` 全部源码 + 测试；依赖契约取 `engine` / `nn` / `tokenizer` / `diagnostic` 公开 API；仓库约束取 `docs/ARCHITECTURE.md`、ADR 0005/0006/0016/0019/0020/0022/0023/0025。
 - 基线度量：生产源码 **2 533** 行，内联测试 **394** 行，外部测试 **1 425** 行；`cargo test -p llm-serve` 101 条单测 + 3 条 doctest 全绿；`cargo clippy -p llm-serve` 无警告。
 - 定位：本文是**架构评审 + 优化设计**，不是一次性重写。所有改动按"不破坏公开契约、测试基线全绿"的前提分阶段落地；结构性决策以 ADR 草案形式给出，待评审采纳后再动代码。
 
@@ -71,7 +71,7 @@ graph TD
     Predict --> Model["model::CpuModel"]
     Model --> Assemble["assemble: Stack → Graph<br/>四族 plan 分流"]
     Model --> Kernels["model::KERNELS<br/>14 条 fn 指针适配表"]
-    Kernels --> Op["op::REGISTRY（编译期子集断言）"]
+    Kernels --> Op["nn::registry::REGISTRY（编译期子集断言）"]
     Model --> Params["Params: BTreeMap&lt;String, Vec&lt;f32&gt;&gt;"]
 
     Completion --> Resp["Response → Envelope"]
@@ -149,7 +149,7 @@ graph TD
 |---|---|---|---|
 | Q1 | 端点管线（解析 → 编词 → 准入 → 生成 → 包帧）写死在 `Completion::answer`，第二个端点（健康检查 / 未来的 chat）无法复用阶段机与错误归位规则 | `completion.rs:174-183` | P2 |
 | Q2 | `Step` 枚举是 `Progress` 的服务侧投影 + 停止态；两个状态机概念并存，映射规则 `progress()` 手写 | `completion.rs:41-67`、`completion.rs:296-302` | P1 |
-| Q3 | 编译期注册表子集断言手写三个 `const fn`（字节逐字符比较），`op` 侧若已有 const 查询能力可复用 | `model/mod.rs:203-239` | P1（**已落地**：`op::contains` const 入口上线，serve 本地副本删除） |
+| Q3 | 编译期注册表子集断言手写三个 `const fn`（字节逐字符比较），`nn` 侧若已有 const 查询能力可复用 | `model/mod.rs:203-239` | P1（**已落地**：`nn::registry::contains` const 入口上线，serve 本地副本删除） |
 | Q4 | `encode_prompt` 是单行转发，没有附加契约逻辑；作为文档化边界可保留，但要明确它不是第二套分词入口 | `lib.rs:184-189` | — |
 
 ---
@@ -175,7 +175,7 @@ graph TD
     Model --> Families["族别描述符表<br/>Projection / Unary / Norm / Embedding"]
     Families --> Assemble["装配器：宽度链 + 权重形状校验"]
     Model --> Kernels["内核表: 宏派生名字 + fn 指针，编译期断言子集"]
-    Kernels --> Op["op::REGISTRY"]
+    Kernels --> Op["nn::registry::REGISTRY"]
 
     Pipeline --> Resp["Response / Envelope"] --> Proto["proto（保持现状）"]
 ```
@@ -250,12 +250,12 @@ struct Field<T> {
 ### ADR-0031：内核适配表由宏单一事实源派生
 
 **状态**：已采纳（P0 落地；Q3 注册表 const 查询复用已落地），正式条目 [adr/0031](adr/0031-kernel-macro-derived-table.md)
-**上下文**：三套适配宏同构（D3），表项名字符串与函数名双份（D4）。算子名是 `op::$run` 的词汇表事实，serve 表不该再抄一份字符串。
+**上下文**：三套适配宏同构（D3），表项名字符串与函数名双份（D4）。算子名是 `nn::$run` 的词汇表事实，serve 表不该再抄一份字符串。
 
 **决策**：
 1. 合并为一个 `kernel!` 宏，按 arity 分支（`unary` / `binary` / `gemv` / `attention`），适配函数名与注册名都由 `stringify!($run)` 派生；
 2. `KERNELS` 表项不再手写 `op: "..."`，宏展开时从标识符取名字；
-3. 编译期子集断言改为调 `op` 侧可复用的 const 查询：`op::contains` 已补出，serve 不保留自己的字节比较实现。
+3. 编译期子集断言改为调 `nn` 侧可复用的 const 查询：`nn::registry::contains` 已补出，serve 不保留自己的字节比较实现。
 
 **备选**：
 - 上提为 `#[kernel]` proc-macro —— 当前内核族与调用方都只有 serve 一处，proc-macro 是 P2；等第二处消费再做。
@@ -349,7 +349,7 @@ trait Pipeline {
 ### 7.1 现状可复用机制
 
 - `llm-annotation` 已有 `#[spec]`（生成 `nn::Contract`）与 `#[model]`（生成算子 `MODEL` 常量 + const 断言 + 校验测试）；文法与渲染分层、可单测，不依赖 `syn/quote`。
-- serve 当前**未引用** annotation crate；`op` / `nn` 以工具边使用它。
+- serve 当前**未引用** annotation crate；`nn` 以工具边使用它。
 
 ### 7.2 分两步落地
 
@@ -366,7 +366,7 @@ trait Pipeline {
 ### 7.3 注解边界（沿用 ADR 0005）
 
 - 注解只承载可静态判定的契约（名字、arity、族别、编码）；行为仍由手写代码给出，用 trait bound 绑死。
-- 注解不建运行期注册表；注册表唯一事实源仍是 `op::REGISTRY`。
+- 注解不建运行期注册表；注册表唯一事实源仍是 `nn::registry::REGISTRY`。
 - 被标注项不得带泛型参数（沿用现有注解判据）。
 
 ---
@@ -421,7 +421,7 @@ trait Pipeline {
 |---|---|---|
 | Strategy（策略） | `Sampling` 已是策略端口；`Greedy` 是其一实现 | 保持；温度 / top-k 策略未来接同一端口，不新造分支 |
 | Port / Adapter（端口适配器） | `Predict` / `Tokenizer` 倒置；CPU 内核 fn 指针表是 Adapter | 准入补 `Admitter` 端口（ADR-0029）；内核适配器随 ADR-0031 收敛 |
-| Registry（注册表） | `KERNELS` 表 + `op::REGISTRY` 子集断言 | 不建第二份运行期注册表；表项名字由宏派生，断言复用上游 |
+| Registry（注册表） | `KERNELS` 表 + `nn::registry::REGISTRY` 子集断言 | 不建第二份运行期注册表；表项名字由宏派生，断言复用上游 |
 | Builder（构造器） | `Request::Builder` 逐行累积 | 改为描述符驱动（ADR-0030），Builder 累积职责保留 |
 | Template Method（阶段机） | 无；管线写死在 `Completion::answer` | P2 抽 `Pipeline` trait（ADR-0033），第二端点触发 |
 | Table-driven（表驱动） | 协议常量、算子适配表 | 请求字段、族别、闭集三处接入表驱动（§6） |
@@ -456,7 +456,7 @@ trait Pipeline {
 1. `Admitter` 端口 + 三态翻译唯一实现（ADR-0029），旧入口薄委托。
 2. Router 泛型挂载（G1）；`State` 自由方法归位（G4）；`Step` / `Progress` 映射收敛（Q2）。
 3. 族别描述符表（ADR-0032）；本地闭集宏（ADR-0034）。
-4. Q3 注册表断言复用上游 const 查询：`op::contains` 已上线，serve 本地 const 字节比较副本删除。
+4. Q3 注册表断言复用上游 const 查询：`nn::registry::contains` 已上线，serve 本地 const 字节比较副本删除。
 
 ### 阶段 P2：条件触发项 / 上游阻塞项
 
@@ -485,7 +485,7 @@ trait Pipeline {
 | `router.rs` | — | 泛型 `mount` | 端点索引表（N 增长后） |
 | `generate.rs` | 一趟 argmax；帧预分配 | 闭集宏接入 | logits 缓冲复用 |
 | `completion.rs` | 编词路径去二次收集 | 方法归位 `State`；`Step` 收敛 | `Pipeline` trait 拆分 |
-| `kernels.rs`（原 `model/mod.rs`） | 宏合一；名字派生 | const 断言复用上游 `op::contains`（Q3 已落地） | `#[kernel]` 上提 |
+| `kernels.rs`（原 `model/mod.rs`） | 宏合一；名字派生 | const 断言复用上游 `nn::registry::contains`（Q3 已落地） | `#[kernel]` 上提 |
 | `assembly.rs`（原 `model/assemble.rs`） | — | 族别描述符；编号基址常量归位（C4 已落地） | 输入缓冲覆写（P4，阻塞） |
 | `protocol.rs` / `frame.rs` / `decoder.rs` / `crc.rs`（原 `proto/`） | — | 闭集宏接入 `Kind` | — |
 
@@ -494,7 +494,7 @@ trait Pipeline {
 ## 附录 B：评审待决问题
 
 1. `admit`（Scheduler 路径）是否还有生产消费者？**现状**：公开 `admit` 仍被 11 处调用点依赖——根演示 `src/main.rs:218`、`serve/src/tests.rs` 8 处、`serve/tests/protocol.rs` 3 处；生产端点 Completion 走 `admit_batch`（Batch 路径）。**阻塞点**：删除属公开 API 变更；**复核判据**：传输层落地、演示与测试全部切到 `Batch` 路径后，再裁决移除旧 Scheduler 委托与对应用例。
-2. ~~`op::REGISTRY` 是否暴露 const 查询入口~~ **已解决**：`op::contains` const fn 上线（`crates/op/src/lib.rs`），serve 子集断言改调上游，本地 const 字节比较副本删除（ADR-0031 Q3）。遗留小注：本工具链 const 上下文 `str` 相等比较未稳定，逐字节比对收在 `op::contains` 私有 helper 内；const `str` 比较稳定后可再简化。
+2. ~~`nn::registry::REGISTRY` 是否暴露 const 查询入口~~ **已解决**：`nn::registry::contains` const fn 上线（`crates/nn/src/registry.rs`），serve 子集断言改调上游，本地 const 字节比较副本删除（ADR-0031 Q3）。遗留小注：本工具链 const 上下文 `str` 相等比较未稳定，逐字节比对收在 `nn::registry::contains` 私有 helper 内；const `str` 比较稳定后可再简化。
 3. 闭集复用：**已决**本轮走本地宏（ADR-0034），不申请 serve→prof 边；若闭集继续增长或 prof 对本层成为合法依赖，再重议切换。
 4. **Q1 阶段机（ADR-0033）**：阻塞于第二端点出现。当前只有 Completion 一个生产端点；健康检查 / chat 等第二套端点落地时，再抽 `Pipeline` trait 收解析→编词→准入→生成→包帧阶段机与错误归位规则。
 5. **proc-macro 上提**：阻塞于第二处消费者。出现第二处内核桥（设备后端适配器）或第二套端点声明时，再评估 `#[kernel]` / `#[route]` 上提到 `llm-annotation`（§7.2）。

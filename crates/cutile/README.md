@@ -270,7 +270,7 @@ TOML 解析与运行时配置不在本 crate：它们是与领域无关的基础
 
 - **unsafe 边界**：本 crate 不含 `unsafe`。`runner` 通过 `cc` 子进程编译并运行生成的源文件，不与设备 SDK 链接，因此没有需要白名单的 FFI 段；若将来引入真机驱动，`unsafe` 只允许出现在 `device` 编排模块的新增驱动段里，并且每个 `unsafe` 块必须写明安全前提（前条件、后条件、失败行为）。
 - **文档豁免**：`substitute.rs` / `emit.rs` 与 `cache.rs` 的私有项允许 `#[allow(missing_docs)]`，公开项不豁免；`crates/prof/src/<vendor>/**` 目标是 C/CL/MSL/CUDA 源码，不受 Rust 文档检查约束。
-- **配置边界**：依赖方向固定为 `llm → cutile → {op, prof, prim}`（命令策略与机制同处一个 crate；反向边不存在），其中 `prim → prof`（片段靠词汇表校验文件名），`op`/`prof`/`diagnostic` 之间互不依赖，任何一层都不得反向依赖 `cutile`。本 crate 不得自行读环境变量、不得拼相对路径、不得新增配置键：
+- **配置边界**：依赖方向固定为 `llm → cutile → {prof, annotation, diagnostic}`（命令策略与机制同处一个 crate；反向边不存在），声明词汇、档案与片段同属 `prof`（片段靠词汇表校验文件名），`prof` 自身依赖 `diagnostic` / `dtype`，任何一层都不得反向依赖 `cutile`。本 crate 不得自行读环境变量、不得拼相对路径、不得新增配置键：
   - 缓存目录、工作目录、可选数据根（`data.root`）以 `crate::dirs::Dirs` 传入，**纯数据**：内核不读环境变量、不拼默认路径；
   - 新增配置项的入口在 `llm-cli::settings` 的键表（一行一个）；`--set` 里未登记的键由那一层直接报错，本 crate 不认键名；
   - 默认目录取平台用户目录（macOS `~/Library/Caches/cutile/cache`、Linux `$XDG_CACHE_HOME/cutile/cache`、Windows `%LOCALAPPDATA%\cutile\cache`），与仓库布局、启动目录都无关；没有配置文件，需要偏离默认时用 `CUTILE_*` 环境变量或 `--set`。
@@ -373,7 +373,7 @@ for (kb = 0; kb < NB; ++kb) {
 
 **诊断精度承诺**：解析错误定位到 `(文件, 行, 槽位名)`，不承诺列号。这是省代码的正确做法——先把精度降下来，解析器才能小。
 
-**错误契约**：`cutile`（连同 `op`、`prof`、`prim`、`cutile`）的失败一律是 `diagnostic::Error`，类别取自闭集 `Code`：缺能力 `unsupported`、输入不合法 `invalid`、缺东西 `missing`、读写 `io`、本层不变量被破坏 `internal`。诊断文字把算子名、形参名、行号作为上下文帧挂上，不再手拼前缀；`Result<_, String>` 在这五个 crate 里已经绝迹（`tests/architecture.rs` 会扫）。数据层（`prof` / `prim`）自己给类别：档案写错、片段第一行不是签名声明是 `invalid`，文件不在是 `missing`（`Error::from_io` 是这条判定的唯一来源），`cutile` 只往上挂"哪个厂商、哪一层"的上下文帧，不重新分类；装载期的多条失败用 `Error::also` 逐行追加，首条决定退出码，其余行各自带类别。类别同时是退出码：`Code::exit_code()` 给出 `2 / 3 / 4 / 5 / 70`，所以 `verify` 遇到"本机没有该设备"是 `3`，而 `--shape 3x1` 写错是 `2`。
+**错误契约**：`cutile`（连同 `prof`、`nn`）的失败一律是 `diagnostic::Error`，类别取自闭集 `Code`：缺能力 `unsupported`、输入不合法 `invalid`、缺东西 `missing`、读写 `io`、本层不变量被破坏 `internal`。诊断文字把算子名、形参名、行号作为上下文帧挂上，不再手拼前缀；`Result<_, String>` 在这些数据/机制 crate 里已经绝迹（`tests/architecture.rs` 会扫）。数据层（`prof`）自己给类别：档案写错、片段第一行不是签名声明是 `invalid`，文件不在是 `missing`（`Error::from_io` 是这条判定的唯一来源），`cutile` 只往上挂"哪个厂商、哪一层"的上下文帧，不重新分类；装载期的多条失败用 `Error::also` 逐行追加，首条决定退出码，其余行各自带类别。类别同时是退出码：`Code::exit_code()` 给出 `2 / 3 / 4 / 5 / 70`，所以 `verify` 遇到"本机没有该设备"是 `3`，而 `--shape 3x1` 写错是 `2`。
 
 ### 4.3 一份声明的作用域
 
@@ -845,9 +845,9 @@ pub struct CacheKey {
 
 ### 11.1 双源对拍
 
-每个算子在 `crates/op/src/<name>.rs` 有一份标量参考实现（不依赖任何设备、不依赖片段），由 `op::model::Model::reference` 暴露；`cutile/src/reference.rs` 只保留对拍口径——`max|got−want| / max|want|`，阈值按数据类型：整数精确、f16/bf16 ≤ 1e-3、f32 ≤ 1e-5。片段只与参考对拍，**片段之间不互相对拍**（否则一个错会传染成"两个都对"）。
+每个算子的标量参考算术在 `nn`（内核经注册表派发，不依赖任何设备、不依赖片段），由 `prof::model::Model.reference` 入口登记；`cutile/src/reference.rs` 只保留对拍口径——`max|got−want| / max|want|`，阈值按数据类型：整数精确、f16/bf16 ≤ 1e-3、f32 ≤ 1e-5。片段只与参考对拍，**片段之间不互相对拍**（否则一个错会传染成"两个都对"）。
 
-输出类型也只有一份说法：`.k` 的可写输出是什么，回读就按什么解释。`op::sig::Signature::output_type`
+输出类型也只有一份说法：`.k` 的可写输出是什么，回读就按什么解释。`prof::sig::Signature::output_type`
 把它读出来，`#[annotation::model]` 生成的校验把 `Model::dtype` 与它逐项比较（注解写 `f16` 而内核写
 `float *y` 是测试红灯，而不是"阈值看起来不太对"），`harness::harness` 在拼任何 C 之前就拒掉非
 `float` 的输出——否则 C 编译器只会吐一句 `incompatible pointer type`，不带算子名与缓冲名。本节开头
@@ -902,7 +902,7 @@ host C，与片段语言无关，所以自检跳过档案的 `[compile].preamble
 两头落空。现在 `Verified.witnesses`（设备执行）与 `Verified.self_checked`（自检）相加等于该设备
 声明的全部见证：一份见证只执行一次，由能给出更强结论的范围执行。
 
-**设备是一张 `const` 描述符表**：执行层只有一台统一设备，按档案的 `Emit` 在 `const SPECS` 表里分发；每一行登记这门语言的探测、程序生成与执行回读三个函数指针，没有 `match`、没有 `dyn`，也不按厂商各写一套 Rust 前端类型。片段本体来自 `prim`，本层只拼接、编译、起进程、回读。每条见证的写出上限以 const 泛型 `OUT` 传进程序生成函数，生成的程序里缓冲区尺寸是字面量。`emit = metal` 因此有了真正的设备执行：MSL →
+**设备是一张 `const` 描述符表**：执行层只有一台统一设备，按档案的 `Emit` 在 `const SPECS` 表里分发；每一行登记这门语言的探测、程序生成与执行回读三个函数指针，没有 `match`、没有 `dyn`，也不按厂商各写一套 Rust 前端类型。片段本体来自 `prof` 的 `<vendor>/` 片段，本层只拼接、编译、起进程、回读。每条见证的写出上限以 const 泛型 `OUT` 传进程序生成函数，生成的程序里缓冲区尺寸是字面量。`emit = metal` 因此有了真正的设备执行：MSL →
 `metallib` → host 驱动发射到 GPU → 回读；等级仍停在 `L1`，因为 `L2` 要的是**内核**跑通并对拍，
 见证执行只完成其中的见证那一段。
 
@@ -1011,7 +1011,7 @@ CPU 频率状态更稳），`min` 只表示最好情况。它同时打印输入�
 
 ### 12.2 三个可测的构建期判据
 
-1. **流水掩盖**：`(1 - mma_share) / stages ≤ 20%`，否则要求换 S3/S4。判据在**装载期**落到声明上（`op::sch::check_masking`）：只判降级链的首选变体，不达标即拒绝解析——首选都盖不住，只能加级数或承认这条路径不走 MMA（`mma_share = 0` 的变体没有可掩盖的对象，判据不适用）。兜底变体不判：它们存在的理由正是“设备缺原语时仍能跑”，用质量判据把它们判死等于取消显式降级；它们的账照样进报告——`Plan` 携带 `(mma_share, stages, unmasked)`，`doctor`/`bench` 的计划行直接给结论（`未掩盖 19%（阈值 20%，达标）` / `未掩盖 65%（阈值 20%，未达标：降级兜底）`），判定的数与打印的数是同一组。
+1. **流水掩盖**：`(1 - mma_share) / stages ≤ 20%`，否则要求换 S3/S4。判据在**装载期**落到声明上（`prof::sch::check_masking`）：只判降级链的首选变体，不达标即拒绝解析——首选都盖不住，只能加级数或承认这条路径不走 MMA（`mma_share = 0` 的变体没有可掩盖的对象，判据不适用）。兜底变体不判：它们存在的理由正是“设备缺原语时仍能跑”，用质量判据把它们判死等于取消显式降级；它们的账照样进报告——`Plan` 携带 `(mma_share, stages, unmasked)`，`doctor`/`bench` 的计划行直接给结论（`未掩盖 19%（阈值 20%，达标）` / `未掩盖 65%（阈值 20%，未达标：降级兜底）`），判定的数与打印的数是同一组。
 2. **存储契约**：声明的搬运量（`bytes` 上界）必须落在它声明的每个存储层容量内，`swz` 粒度必须 ≤ 档案 bank 数，否则构建期失败（§6.2）。这条只看数据，因此对尚未有真机的设备也生效；判定先于缓存命中执行，报告里的容量与用量就是判定比较过的那两个数（`space::capacity` + `build::contract` 的返回值），不另算一份。
 3. **变体收益单调**：降级链上 `mma_share` 必须单调不增；违反说明 `extra_needs` 写反了。
 
@@ -1037,12 +1037,12 @@ CPU 频率状态更稳），`min` 只表示最好情况。它同时打印输入�
 |---|---:|---|
 | `prof` schema + 3 份档案 + 校验 | 240 | nvidia / intel / cpu |
 | `cap` 协商 + 诊断 | 280 | 判定与需求差异；§8.2 的文本只在 `NoPath` 的 `Display` |
-| `layout` 4 构造子 + 声明式（在 `op`） | 200 | swz 只用一种参数；正规形等槽位形状（P3） |
+| `layout` 4 构造子 + 声明式（在 `prof`） | 200 | swz 只用一种参数；正规形等槽位形状（P3） |
 | `space` | 120 | 三级映射 + 容量取值/校验 + 对齐校验 |
 | `prim` 片段 | 240 | 10 原语 × 3 设备 × 8 行 |
-| `sch`（在 `op`） | 140 | S1 + S2 |
+| `sch`（在 `prof`） | 140 | S1 + S2 |
 | `ops` 声明 + 模板 + 语义 + **解析** | 440 | `gemv_i4` 一份：声明/模板 + 代价/样本/参考 + `decl`/`tpl` |
-| `substitute` + `emit` | 300 | 替换 + 成文（词法在 `op`） |
+| `substitute` + `emit` | 300 | 替换 + 成文（词法在 `prof`） |
 | `cache` | 140 | 指纹 + 锁 + 落盘 + LRU 回收 |
 | `probe` | 120 | 三个后端 + 假指纹注入 |
 | `plan` | 80 | 取声明的 tile + roofline 估算 |
@@ -1065,10 +1065,10 @@ LRU 回收、残留清理）、`device` 791 + `backend` 615（三种前端的编
 |---|---:|---:|---|
 | `prof` | 240 | 600 | 8 份档案 + 证据台账生成 + 指纹家族 |
 | `cap` | 280 | 520 | 参数化区间匹配 + 三档诊断 + 闭集变更检查 |
-| `layout`（在 `op`） | 200 | 460 | 4 构造子全组合 + 正规形 + repack 计费 |
+| `layout`（在 `prof`） | 200 | 460 | 4 构造子全组合 + 正规形 + repack 计费 |
 | `space` | 120 | 240 | 昇腾 L1 / Metal threadgroup / CPU 栈 |
 | `prim` | 240 | 1,240 | 16 原语 × ≤8 设备，约 128 段 × 9.7 行 |
-| `sch`（在 `op`） | 140 | 420 | S3 warp 专门化 + S4 ping-pong |
+| `sch`（在 `prof`） | 140 | 420 | S3 warp 专门化 + S4 ping-pong |
 | `ops` | 440 | 3,300 | 12 算子 × 220 行（含各自的代价/样本/参考） |
 | `substitute` + `emit` | 300 | 680 | 语法检查 + 位置信息 + 多 emit |
 | `cache` | 140 | 300 | 跨版本迁移 + 更细的占用统计 |
@@ -1079,15 +1079,15 @@ LRU 回收、残留清理）、`device` 791 + `backend` 615（三种前端的编
 | `cutile`（在 `cutile`） | 100 | 240 | `doctor` / `verify` / `bench` 的结构化报告 + `--emit-ledger` 台账（排版在驱动方） |
 | **合计** | **2,540 + 100**（`cutile` 在 `cutile`） | **9,520** | |
 
-**这张表按 12 个算子写，实际闭集是 36 条**（`op::REGISTRY`）：`ops` 一行若按今天的规模重算就是 36 × 220 ≈ 7,920 行，
+**这张表按 12 个算子写，实际闭集是 36 条**（`nn::registry::REGISTRY`）：`ops` 一行若按今天的规模重算就是 36 × 220 ≈ 7,920 行，
 P3 合计随之按同比例上调（表里的 9,520 是 12 条口径，不是今天的事实）。差额不是「预算失效」，而是 D1（§18 的 12 个算子清单）在落地时被更早的需求顶开——
 本表保留原口径是为了让每一笔增量都对得上，而不是拿新总数掩盖旧估算。
 
-`ops` 一行的量计在预算里，但它现在不在 `cutile`：声明、模板与算子语义（代价/样本/标量参考）都住在
-`crates/op`，连同**解析本身**（`op::decl`）与三张闭集（`op::layout` / `op::sch` / `op::tpl`）；
-`cutile` 侧只剩装载与交叉校验（`builtin.rs`）、拼接与 emit，以及对拍口径。P3 增加算子
+`ops` 一行的量计在预算里，但它现在不在 `cutile`：声明、模板与算子语义（代价/样本）都住在 `prof`，
+连同**解析本身**（`prof::decl`）与三张闭集（`prof::sch::layout` / `prof::sch` / `prof::tpl`）；
+标量参考算术在 `nn`；`cutile` 侧只剩装载与交叉校验（`builtin.rs`）、拼接与 emit，以及对拍口径。P3 增加算子
 只增数据与一页语义，不动机制。
-`prof` 同理：档案（`devices/*.toml`）住在 `crates/prof`，`cutile` 侧只剩 `prof.rs` 的 schema 与校验，
+`prof` 同理：档案（`<vendor>/*.toml`）住在 `crates/prof`，`cutile` 侧只剩 `prof.rs` 的 schema 与校验，
 新增设备同样是"只加数据"。
 
 ### 13.3 为什么这 9,520 不是幻觉：三笔消元
@@ -1215,7 +1215,7 @@ cargo run --bin cutile -- cache gc --limit 1073741824         # 缺省上限 2 G
 
 | # | 待决 | 影响 | 建议决策点 |
 |---|---|---|---|
-| D1 | ~~12 个算子的最终清单~~ **已按需求落地**：闭集今天 36 条声明（`op::REGISTRY` 是唯一事实源），§4 的 12 条候选是当时的预算口径 | `ops/` 一行按 36 × 220 ≈ 7,920 行重算（§13.2 的 9,520 是 12 条口径） | 再扩一条算子须先改 `REGISTRY` 与 `ops/<op>.{toml,k}`，并按 §13.2 重算预算 |
+| D1 | ~~12 个算子的最终清单~~ **已按需求落地**：闭集今天 36 条声明（`nn::registry::REGISTRY` 是唯一事实源），§4 的 12 条候选是当时的预算口径 | `ops/` 一行按 36 × 220 ≈ 7,920 行重算（§13.2 的 9,520 是 12 条口径） | 再扩一条算子须先改 `REGISTRY` 与 `prof/src/ops/<op>.{toml,k}`，并按 §13.2 重算预算 |
 | D2 | 布局闭集取哪 4 个构造子（本文取 row/col/swz/pad） | 决定是否需要 `@repack` | P1 用 row + swz 两种跑通，P2 补 col/pad；片段能声明布局之后再补 `@repack` 计费 |
 | D3 | `cutile` 是否直接依赖 `syn`/`serde`/`toml` | 影响供应链治理与 `substitute`/`emit` 行数 | P0 用手写解析 + 手写序列化，证明可行性后再评估 |
 | D4 | 昇腾与可移植 GPU 的 `provides` 来源 | 只能 L0/L1 | 先标 `grade = L1`，协商自动降级；有真机再补见证 |
@@ -1257,10 +1257,10 @@ wc -l crates/device/c/*                                                         
 | 术语 | 含义 |
 |---|---|
 | 算子（op） | 声明层的最小单位，对应 `../prof/src/ops` |
-| 档案（archive） | 档案层的最小单位，对应 `crates/prof/devices/<name>.toml`：一台设备的能力与证据 |
+| 档案（archive） | 档案层的最小单位，对应 `crates/prof/src/<vendor>/<vendor>.toml`：一台设备的能力与证据 |
 | 骨架（skeleton） | 算子的结构类别，闭集 4 个；决定用哪个模板基座 |
 | 原语（prim） | 模板唯一可调用的指令级操作，闭集 16 个 |
-| 片段（fragment） | 某原语在某设备上的实现，`crates/prim/<vendor>/<prim>.<ext>` |
+| 片段（fragment） | 某原语在某设备上的实现，`crates/prof/src/<vendor>/<prim>.<ext>` |
 | 变体（variant） | 轴取值 + 调度 + 布局的组合，每算子 ≤ 8 |
 | 能力签名 | `(prim, 形状区间, 位集, 存储集, 实现名, 证据等级)` |
 | 见证（witness） | 证明某条 `provides` 为真的一段最小 kernel + 期望值 |
@@ -1281,4 +1281,4 @@ wc -l crates/device/c/*                                                         
 | FA-4 的流水与重叠结论 | 《FlashAttention-4: Algorithm and Kernel Pipelining Co-Design for Asymmetric Hardware Scaling》，论文口径，非本项目实测 |
 | 配置驱动 + 能力协商的工程先例 | `/Users/fei/code/llm.u`：`config/device.toml`、`crates/config/src/negotiate.rs`、`docs/capability-matrix.md`、`docs/device-capability-config.md` |
 
-**许可与归属**：本文只借鉴上述实现的机制与公开结论，不复制其源码。若后续片段实现参考了某一具体实现（例如 CubeCL 的 wgmma 序列），必须在 `crates/prim/<vendor>/NOTICE` 中保留原许可与出处；本项目自身维持 `MIT OR Apache-2.0` 双许可。
+**许可与归属**：本文只借鉴上述实现的机制与公开结论，不复制其源码。若后续片段实现参考了某一具体实现（例如 CubeCL 的 wgmma 序列），必须在 `crates/prof/src/<vendor>/NOTICE` 中保留原许可与出处；本项目自身维持 `MIT OR Apache-2.0` 双许可。

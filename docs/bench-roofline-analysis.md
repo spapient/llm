@@ -8,7 +8,7 @@
 
 ## 一、这份文档回答什么
 
-`#63` 是「基准实测 + roofline 瓶颈定位」。实测部分已经在 `crates/benches` 里跑起来（7 条 criterion 基准、`tool::regress` 门禁、macos-aarch64 基线）；本文补的是后半部分：**每条基准的上界是多少、实测达成了多少、瓶颈落在哪一侧**。文中每个数字都能从归档 JSON 里读出来，也能在本机重跑复现。
+`#63` 是「基准实测 + roofline 瓶颈定位」。实测部分已经在 `crates/benches` 里跑起来（7 条 criterion 基准、`tools::regress` 门禁、macos-aarch64 基线）；本文补的是后半部分：**每条基准的上界是多少、实测达成了多少、瓶颈落在哪一侧**。文中每个数字都能从归档 JSON 里读出来，也能在本机重跑复现。
 
 结论先写在这里：
 
@@ -107,7 +107,7 @@ cargo test -p llm-benches --test regress
 
 | 路线图条目 | 本文的落点 |
 |---|---|
-| §2.1「输入固定、硬件与驱动记录、批次与形状记录、回归门禁守护」 | 报告里有 `shape` / `batch` / `dtype` / `backend` / `host` / `cpu` / `os` / `toolchain`；基线由 `tool::regress` 守护 |
+| §2.1「输入固定、硬件与驱动记录、批次与形状记录、回归门禁守护」 | 报告里有 `shape` / `batch` / `dtype` / `backend` / `host` / `cpu` / `os` / `toolchain`；基线由 `tools::regress` 守护 |
 | §4「性能测量：吞吐/时延/带宽 roofline 回归门禁」 | 每条基准多一份 `read_bytes` / `write_bytes` / `flops` / `roofline_ns` / `achieved_percent` / `bottleneck`，与 ns 一起归档 |
 | §5「基准 harness：统一测量接口；新后端自动接入对照」 | 后端是 `SCENARIOS` 表里的一列而不是常量；新增后端 = 表里加一行，判定与归档不动 |
 | §6 P1「criterion 产出真实时延/吞吐采样入回归基线」 | 7 条基线 + 6 条搬运上界全部进门禁（`registered_baselines_stay_within_their_budget` / `registered_ceilings_stay_within_their_budget`） |

@@ -51,7 +51,7 @@ bw        = { value = 307.2e9, src = "256/8*9.6e9" }
 [compile]
 # 语言版本按本机工具链实测写：`xcrun metal -dM -E` 报 `__METAL_VERSION__ 410`，即 4.1。
 # 原先钉的 3.1 会让**每一份**生成的 MSL 编不过——3.1 起指针参数必须显式写地址空间，而共享的
-# 算子模板（`crates/op/ops/*.k`）写的是不带地址空间的 `const float *x`：这条钉子与 emit 层的
+# 算子模板（`crates/prof/src/ops/*.k`）写的是不带地址空间的 `const float *x`：这条钉子与 emit 层的
 # ABI 互相矛盾，实际能编的是 4.1 这一档。改这条要与模板 ABI 一起改，不能只改一边。
 flags = ["-std=metal4.1"]
 preamble = """

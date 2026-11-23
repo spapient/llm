@@ -64,7 +64,7 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 | -------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
 | L1 基础设施  | `diagnostic` `rng` `dtype` `wire` `formats` `tools`                       | 错误类型、确定性随机、精度闭集、字节码闭集、外部格式只读适配                                         |
 | L2 数据层   | `prof` `spec` `gemm` `conv` `op` `cpu/cuda/metal/musa/opencl/rocm` `prim` | 算子四层契约 + 六份设备原语片段与见证                                                   |
-| L3 内核    | `cutile` `optim`                                                          | 协商→拼接→emit→指纹（cutile，不执行）；doctor/verify/bench/execution（optim，碰编译器与设备） |
+| L3 内核    | `cutile` `shard`                                                          | 协商→拼接→emit→指纹（cutile，不执行）；doctor/verify/bench/execution（shard，碰编译器与设备） |
 | L4 运行时   | `tensor` `storage` `tokenizer`                                            | 张量元数据、布局搬运、文本边界                                                        |
 | L5 模型与训练 | `weights` `snapshot` `autograd` `nn` `algorithm` `shard`                  | 权重结构、检查点、反向图、层定义、架构参考语义、切分拓扑                                           |
 | L6 调度与服务 | `train` `engine` `device` `serve`                                         | 训练循环、连续批 / KV 页账、提交执行体、设备源 lowering、端点契约                               |
@@ -131,7 +131,7 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 
 
 
-* 新 llm 刻意把外部依赖压到最低：后端 FFI 不直链 `cudarc/metal`，而是走 `cutile` DSL 生成设备源（`.cu/.metal/.cl/.cpp`）+ `optim` 的 `Driver` 编译执行；这是与 llm.u 最大的工程转向。
+* 新 llm 刻意把外部依赖压到最低：后端 FFI 不直链 `cudarc/metal`，而是走 `cutile` DSL 生成设备源（`.cu/.metal/.cl/.cpp`）+ `shard` 的 `Driver` 编译执行；这是与 llm.u 最大的工程转向。
 
 * llm.u 直接链 `cudarc`/`metal`/`coreml-native`，后端能力受这些 crate 的 API 面约束。
 
@@ -301,7 +301,7 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 
 * `engine::exec::Executor`：`device() / submit(graph, stream) / sync() / register_program() / bind_f32/bind_bytes() / fetch_*()`；`LocalExecutor`、`CpuExecutor`、`MetalExecutor` 三个实现。
 
-* `optim::backend`：`Codegen`（出设备源）+ `Driver`（编译 / 运行）+ `Backend = Codegen + Driver + Sync`；`register` 静态注册表；`CudaBackend`/`MetalBackend`/`AscendBackend` 已实现三 trait；OpenCL/MUSA/ROCm Fragment 在位，执行缝实现需逐一核对。
+* `shard::backend`：`Codegen`（出设备源）+ `Driver`（编译 / 运行）+ `Backend = Codegen + Driver + Sync`；`register` 静态注册表；`CudaBackend`/`MetalBackend`/`AscendBackend` 已实现三 trait；OpenCL/MUSA/ROCm Fragment 在位，执行缝实现需逐一核对。
 
 * `engine::Program`：按名登记内核体。
 
@@ -326,7 +326,7 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 |       | llm（新）                                                                                                     | llm.u                                            | Burn                                                                                                  |
 | ----- | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------- |
 | 内核抽象  | `cutile`：能力协商 → Fragment 拼接 → emit → 指纹缓存；`spec` 模板词法与代价表达式；六设备 Fragment 编译期扫描成 `FRAGMENTS/PRIMS/DEVICE` 表 | 内核直接写在各 backend 模块；`kernel` crate 只放 attn/ssm 阶段 | CubeCL：设备无关内核语言 + cubek IR；`burn-cubecl` 把 IR  lowering 到 CUDA/HIP/WGPU/CPU；`burn-cubecl-fusion` 算子融合 |
-| 自定义内核 | 写 Fragment + 见证，经 `optim::doctor/verify/bench` 对账                                                          | 加 backend 实现                                     | 写 CubeCL 内核（`examples/custom-cubecl-kernel` / `custom-wgpu-kernel`）                                   |
+| 自定义内核 | 写 Fragment + 见证，经 `shard::doctor/verify/bench` 对账                                                          | 加 backend 实现                                     | 写 CubeCL 内核（`examples/custom-cubecl-kernel` / `custom-wgpu-kernel`）                                   |
 
 
 
@@ -419,7 +419,7 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 |           | llm（新）                                                                                                       | llm.u                               | Burn                                                                                                                                                                                     |
 | --------- | ------------------------------------------------------------------------------------------------------------ | ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 优化器 trait | `Optimizer`（`Slot/OwnedSlot`、weight decay、clip\_norm）                                                        | 自由函数 + `Adam` 结构                    | `Optimizer` trait（module 级参数映射 + state）                                                                                                                                                  |
-| 已实现       | `Sgd` `Adam` `Muon`(+momentum/Nesterov/eps)，实现在 `train/optimizer`（`optim` crate 是内核编译 / 对账 /bench 工具链，非优化器库） | `sgd` 函数、`Adam`(lr/wd 解耦权重衰减 /step) | 直接 `impl Optimizer` 10 个：`Sgd` `Adam` `AdamW` `AdaGrad` `Adafactor` `Adan` `RmsProp` `Lamb` `Lion` `Muon`；另有 `LBFGS` `Momentum` 配套结构；+ 梯度累积 `grad_accum`、梯度裁剪 `grad_clipping`、衰减 `decay` |
+| 已实现       | `Sgd` `Adam` `Muon`(+momentum/Nesterov/eps)，实现在 `train/optimizer`（`shard` crate 是内核编译 / 对账 /bench 工具链，非优化器库） | `sgd` 函数、`Adam`(lr/wd 解耦权重衰减 /step) | 直接 `impl Optimizer` 10 个：`Sgd` `Adam` `AdamW` `AdaGrad` `Adafactor` `Adan` `RmsProp` `Lamb` `Lion` `Muon`；另有 `LBFGS` `Momentum` 配套结构；+ 梯度累积 `grad_accum`、梯度裁剪 `grad_clipping`、衰减 `decay` |
 
 ### 8.2 学习率调度 / 训练循环
 
@@ -883,7 +883,7 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 
 * **Burn（●，9）**：CubeCL 设备无关内核语言 + cubek IR，lowering 到 CUDA/HIP/WGPU/CPU；`burn-cubecl-fusion` 算子融合；有自定义内核示例，DSL 已成熟并承载真实内核。
 
-* **llm 新（◐，6）**：`cutile` 能力协商 → Fragment 拼接 → emit → 指纹缓存，`spec` 模板词法与代价表达式，六设备 Fragment 编译期扫成表；`optim` 侧 doctor/verify/bench 对账。DSL 只生成设备源、不执行，成熟度与覆盖面仍低于 CubeCL。
+* **llm 新（◐，6）**：`cutile` 能力协商 → Fragment 拼接 → emit → 指纹缓存，`prof` 模板词法与代价表达式，六设备 Fragment 编译期扫成表；`shard` 侧 doctor/verify/bench 对账。DSL 只生成设备源、不执行，成熟度与覆盖面仍低于 CubeCL。
 
 * **llm.u（○，2）**：内核直接写在各 backend 模块，`kernel` crate 只放 attn/ssm 阶段；没有设备无关 IR 或 DSL。
 
