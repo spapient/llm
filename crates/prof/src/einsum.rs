@@ -7,10 +7,10 @@
 //! **拥有**：[`Expr`]、[`Extents`]、[`Axis`] / [`Axes`]、[`Operand`] / [`OperandSpec`]、[`Bits`]、
 //! [`Cost`]，以及四条骨架共用的表达式缓存 [`FormulaCache`]。
 //! **不拥有**：设备峰值（[`crate::prof`]）、roofline 的编排（`cutile::plan`）、算子声明与样本（[`crate`]）。
-//! **依赖**：`diagnostic`（全仓唯一的错误类型）。**被依赖**：`op` 的算子语义（用本模块推导代价）。
+//! **依赖**：`diagnostic`（全仓唯一的错误类型）。**被依赖**：本 crate 的算子语义模型（用本模块推导代价），并经 `nn` 注册表对齐。
 //!
 //! 它原是一个独立成员（`llm-einsum`），唯一消费者是 `op`；并入后 `Cost` 与 `OpDecl` 同处一个
-//! crate，算子文件不必再为"代价来自哪里"跨越 crate 边界，`op::model` 的再导出也不再是补丁。
+//! crate，算子文件不必再为"代价来自哪里"跨越 crate 边界，`prof::model` 的再导出也不再是补丁。
 //!
 //! 本模块原先按职责拆成 `einsum/` 下的 `expr` / `extents` / `formula` / `formula/axes` / `cache`
 //! 五个文件，但它们共用同一条表达式与同一张轴表，彼此互相 import；现在平铺为单个文件，`mod`、

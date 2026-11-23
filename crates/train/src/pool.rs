@@ -10,7 +10,7 @@
 //! 对账，而计划保留的检查点必须在重放开始前就在场。
 //!
 //! 两条语义轴平铺在同一条轴里：[`crate::kernel`] 是形态/视图/拆包契约与标量参考内核适配，本模块是
-//! 等长空闲表与 [`Bufs`] 落地——持有该层统一的诊断站点，并把 `op` 的算子清单展开成
+//! 等长空闲表与 [`Bufs`] 落地——持有该层统一的诊断站点，并把 `nn` 的算子清单展开成
 //! [`OperatorSetOps`] 的默认方法。
 //!
 //! # 例子
@@ -537,7 +537,7 @@ fn missing_input(output: Var, input: Var) -> Error {
 //
 // 从 `nn::for_each_operator!` 的同一张清单展开，没有第二份装配表：后端只需实现
 // `OperatorSetOps::apply` 一个原语，其余方法都是默认方法，名字取 `Operator::NAME`、
-// 输入个数取 `Operator::ARITY`。方法名与 `Operator::NAME` 在 `op` 里编译期逐字节对拍，
+// 输入个数取 `Operator::ARITY`。方法名与 `Operator::NAME` 在 `nn` 里编译期逐字节对拍，
 // 因此注册表、API 面与样本不会各自漂移。
 
 /// 把算子清单展开成 trait：一个原语 + 每个算子一条默认方法。

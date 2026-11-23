@@ -381,7 +381,7 @@ fn module_path_of(file: &std::path::Path) -> String {
     if let Some(declared) = declared_paths().get(&normalize(file)) {
         return declared.clone();
     }
-    // 家族有四家，模块路径一律相对各自的 `crates/<crate>/src` 算：写死 `op` 会让另外三家的
+    // 家族有多家，模块路径一律相对各自的 `crates/<crate>/src` 算：写死其中某一家 crate 名会让其余各家的
     // 路径多出一层 crate 名，`gemv/f32.rs` 就不再等于 `gemv::f32`。
     let rel = file
         .strip_prefix(root().join("crates"))

@@ -7,7 +7,7 @@
 //! | `K` | [`Element`] | 元素是什么 | `f32` / `i8` / `u8`，精度钉在类型上 |
 //!
 //! 与 Burn `Tensor<B, const D, K>` 只差两处，都是刻意的：`B` 是存储而不是后端算子集（算子由
-//! `op` 数据驱动注册表给出，泛型派发会带来 `FloatTensorOps` 那种百方法接口，见 ADR 0053），
+//! `nn` 数据驱动注册表给出，泛型派发会带来 `FloatTensorOps` 那种百方法接口，见 ADR 0053），
 //! `R` 是 `[usize; D]` 的超集（运行期 batch / segment 几何也要进同一个类型，ADR 0046）。
 //! 其余全部继承：连续与非连续布局、stride、transpose、permute、reshape 都是零拷贝的元数据
 //! 重排；形状、元素数、可达性与溢出在构造期一次拦下。

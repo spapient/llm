@@ -14,7 +14,7 @@ pub(crate) struct Scenario {
     pub(crate) scenario: &'static str,
     /// 后端标识：同一算子在不同后端上各占一行，基线按它区分（不是写死的常量）。
     pub(crate) backend: &'static str,
-    /// `op` 注册表里的算子名：`nn::Bounds` 用它取语义表，roofline 的分子由它推出。
+    /// `nn` 注册表里的算子名：`nn::Bounds` 用它取语义表，roofline 的分子由它推出。
     pub(crate) op: &'static str,
     /// 形状（归档报告的 `shape` 字段）。
     pub(crate) shape: &'static [usize],
@@ -28,7 +28,7 @@ pub(crate) struct Scenario {
 
 /// 全部接入基线判定的真实算子基准；分组 / 用例名与 `src/*.rs` 逐字一致。
 ///
-/// 七个场景的后端都是 `cpu-reference`：它们调用的是 `op` 里的标量参考实现。加真实后端时
+/// 七个场景的后端都是 `cpu-reference`：它们调用的是 `nn` 里的标量参考实现。加真实后端时
 /// 只是在这张表里多一行同形状、不同 `backend` 的记录，判定与归档不动。
 /// 台账行：`scenario` 由 `group` / `benchmark` 用 `concat!` 在编译期拼出，不再逐行重抄一遍
 /// （N6：记录名只有一份真相）；`group, benchmark => "记录名"` 只给历史上另起过名的六个条目。

@@ -56,7 +56,7 @@ pub trait Scalar:
 /// 零/一/负无穷常量与 `f64`/`usize` 的进出转换式；逐字写四份会把 14 个方法的加/减/乘/除与
 /// 超越函数复制成四胞胎（jscpd 的克隆源）。数学函数统一走 [`num_traits::Float`]：`f32`/`f64`
 /// 由该 trait 直接委托给原生实现，`half` 类型由 half 自带实现经 `f32` 往返得到，语义与精度由
-/// half 侧保证，`op` 侧不复制任何一份算术。
+/// half 侧保证，骨架侧不复制任何一份算术。
 macro_rules! impl_scalar {
     ($ty:ty, $zero:expr, $one:expr, $neg_inf:expr, $from_f64:expr, $from_usize:expr, $to_f64:expr, $to_usize:expr) => {
         impl Scalar for $ty {

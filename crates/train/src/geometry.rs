@@ -11,7 +11,7 @@ use nn::kernel::norm::{BatchNorm2d, GroupNorm, LayerNorm};
 
 // ---- 静态规格与声明档表 ------------------------------------------------------
 
-/// 归一化 eps：与 `nn::conv::classic` 四个声明档模块的 `EPS` 同值（算术来源留在 op 侧）。
+/// 归一化 eps：与 `nn::conv::classic` 四个声明档模块的 `EPS` 同值（算术来源留在 `nn` 侧）。
 pub const EPS: f32 = nn::conv::batch_norm::EPS;
 
 /// BatchNorm 的滑动统计动量：只用于更新 running，不参与输出。

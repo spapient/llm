@@ -6,9 +6,9 @@
 //! 薄适配器（`http`），以及线格式
 //! （`protocol`：`Envelope`/`Frame`/`Decoder`/`Kind`/`Version`；`proto` 是兼容重导出路径）；
 //! 注入 [`Predict`] 的 CPU 模型提供者收在 `kernels` / `assembly`（`model` 是兼容重导出路径）。
-//! **不拥有**：序列状态与页账（`engine`）、分词（`tokenizer`）、算子算术
-//! （`op`）、层定义（`nn`）、权重条目字节与读取契约（`weights`）、gRPC 服务器；
-//! Metal/CUDA 真设备后端收在独立边界 crate，不回流本层。**依赖**：`engine`、`nn`、`op`、`tokenizer`、`diagnostic`、`weights`。**被依赖**：`llm`。
+//! **不拥有**：序列状态与页账（`engine`）、分词（`tokenizer`）、算子参考算术与层定义（`nn`）、
+//! 权重条目字节与读取契约（`weights`）、gRPC 服务器；
+//! Metal/CUDA 真设备后端收在独立边界 crate，不回流本层。**依赖**：`engine`、`nn`、`train`、`tensor`、`tokenizer`、`diagnostic`、`weights`、`wire`。**被依赖**：`llm`。
 //!
 //! 传输层收在 `http`：单线程把 socket 字节解成 `方法 + 路径 + 请求体` 交给 [`Router::call`]，
 //! 后者分派到 [`Completion`]，后者完成"解析 → 编词 → 准入 → 逐步前向 + 采样 → 归还页 → 包成帧"。

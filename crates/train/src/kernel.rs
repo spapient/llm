@@ -1,5 +1,5 @@
 //! 缓冲形态、视图与标量参考内核：`f32` 与按位打包 `u8` 两条 lane 的静态契约，以及把视图适配到
-//! `op` 参考实现的标量内核表。
+//! `nn` 参考实现的标量内核表。
 
 use crate::pool::SITE;
 use diagnostic::{Code, Error, Result};
@@ -31,7 +31,7 @@ pub trait Kernel {
     }
 }
 
-/// 标量参考内核：不碰设备，逐元素算，算术复用 `op` 的参考实现（同一份语义的两次执行）。
+/// 标量参考内核：不碰设备，逐元素算，算术复用 `nn` 的参考实现（同一份语义的两次执行）。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Reference;
 

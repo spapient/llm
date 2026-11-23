@@ -704,7 +704,7 @@ fn reconcile(ctx: &str, label: &str, unit: &str, saved: usize, current: usize) -
     .with(ctx))
 }
 
-/// 训练层的算子引用：`nn` 的层定义必须先通过 `op` 的闭集校验。
+/// 训练层的算子引用：`nn` 的层定义必须先通过 `nn` 注册表的闭集校验。
 pub fn operators(layer: &dyn nn::Contract) -> &[String] {
     layer.spca().ops()
 }

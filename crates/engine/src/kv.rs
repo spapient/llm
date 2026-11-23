@@ -1,6 +1,6 @@
 //! 分页 KV 缓存：[`Page`]、[`Table`]、[`Cache`]（页号簿记）与 [`Pager`]（页池 + 页里的数据）。
 //!
-//! **拥有**：`Page`、`Table`、`Cache`、`Pager`。**不拥有**：注意力算子（`cutile` 的 `op` 会声明它）、
+//! **拥有**：`Page`、`Table`、`Cache`、`Pager`。**不拥有**：注意力算子（`nn` 的层会绑定它）、
 //! 多层 KV 的行内布局（层的偏移表归模型：本层只按"一个 token 一行"寻址）。
 //! **依赖**：`tensor`、`diagnostic`。**被依赖**：`engine::Scheduler`（本模块并入后与它同 crate）。
 //!

@@ -72,7 +72,7 @@ fn gemv_row_batch_rejects_inconsistent_geometry() {
     assert!(executor.run(&node).is_err());
 }
 
-// 4 位量化乘加：`x: f32, w: u8, scales: f32 → y: f32`，与独立 `op` 参考对拍。
+// 4 位量化乘加：`x: f32, w: u8, scales: f32 → y: f32`，与独立 `nn` 参考对拍。
 kernel_smoke!(
     gemv_i4_runs_through_the_registered_kernel,
     "gemv_i4",
@@ -89,7 +89,7 @@ kernel_smoke!(
     }
 );
 
-// 8 位量化乘加：权重逐元素 int8 位模式打包进 `u8`，与独立 `op` 参考对拍。
+// 8 位量化乘加：权重逐元素 int8 位模式打包进 `u8`，与独立 `nn` 参考对拍。
 kernel_smoke!(
     gemv_i8_runs_through_the_registered_kernel,
     "gemv_i8",
@@ -106,7 +106,7 @@ kernel_smoke!(
     }
 );
 
-// 4 位反量化：打包字节每字节两个 nibble，scale/zero 取样本常量，与独立 `op` 参考对拍。
+// 4 位反量化：打包字节每字节两个 nibble，scale/zero 取样本常量，与独立 `nn` 参考对拍。
 kernel_smoke!(
     dequant_i4_runs_through_the_registered_kernel,
     "dequant_i4",
@@ -125,7 +125,7 @@ kernel_smoke!(
     }
 );
 
-// 8 位反量化：码点本身是 `f32`，scale/zero 取样本常量，与独立 `op` 参考对拍。
+// 8 位反量化：码点本身是 `f32`，scale/zero 取样本常量，与独立 `nn` 参考对拍。
 kernel_smoke!(
     dequant_i8_runs_through_the_registered_kernel,
     "dequant_i8",
@@ -144,7 +144,7 @@ kernel_smoke!(
     }
 );
 
-// 2 位反量化：每字节四个码，scale/zero 取样本常量，与独立 `op` 参考对拍。
+// 2 位反量化：每字节四个码，scale/zero 取样本常量，与独立 `nn` 参考对拍。
 kernel_smoke!(
     dequant_i2_runs_through_the_registered_kernel,
     "dequant_i2",
@@ -163,7 +163,7 @@ kernel_smoke!(
     }
 );
 
-// 2 位量化乘加：`x: f32, w: u8, scales: f32 → y: f32`，与独立 `op` 参考对拍。
+// 2 位量化乘加：`x: f32, w: u8, scales: f32 → y: f32`，与独立 `nn` 参考对拍。
 kernel_smoke!(
     gemv_i2_runs_through_the_registered_kernel,
     "gemv_i2",
@@ -183,7 +183,7 @@ kernel_smoke!(
 /// 量化 GEMM 经注册 Program 对拍：A/B 打包字节、Y 浮点；几何由样本静态轴与缓冲长度反推。
 ///
 /// 三条位宽 lane 共用同一套夹具：样本缓冲取 `nn::<lane>::sample`，参考走同一 `forward`，
-/// 执行器拆两路 u8 输入、一路 f32 输出；打包规则完全来自 `op`，夹具不重写。
+/// 执行器拆两路 u8 输入、一路 f32 输出；打包规则完全来自 `nn`，夹具不重写。
 fn gemm_quant_matches_reference(
     lane: &str,
     a: &[u8],
@@ -200,7 +200,7 @@ fn gemm_quant_matches_reference(
     assert_close(&produced, reference);
 }
 
-/// int4 矩阵乘：样本 A/B 为打包 nibble，与独立 `op` 参考对拍。
+/// int4 矩阵乘：样本 A/B 为打包 nibble，与独立 `nn` 参考对拍。
 #[test]
 fn gemm_i4_runs_through_the_registered_kernel() {
     let (m, n) = (2, 3);
@@ -213,7 +213,7 @@ fn gemm_i4_runs_through_the_registered_kernel() {
     gemm_quant_matches_reference("gemm_i4", a, b, m, n, &reference);
 }
 
-/// int8 矩阵乘：样本 A/B 为逐元素字节，与独立 `op` 参考对拍。
+/// int8 矩阵乘：样本 A/B 为逐元素字节，与独立 `nn` 参考对拍。
 #[test]
 fn gemm_i8_runs_through_the_registered_kernel() {
     let (m, n) = (2, 3);
@@ -226,7 +226,7 @@ fn gemm_i8_runs_through_the_registered_kernel() {
     gemm_quant_matches_reference("gemm_i8", a, b, m, n, &reference);
 }
 
-/// int2 矩阵乘：样本 A/B 为打包 2 位码，与独立 `op` 参考对拍。
+/// int2 矩阵乘：样本 A/B 为打包 2 位码，与独立 `nn` 参考对拍。
 #[test]
 fn gemm_i2_runs_through_the_registered_kernel() {
     let (m, n) = (2, 3);
@@ -415,7 +415,7 @@ fn an_uncovered_operator_is_refused_by_name() {
     assert!(error.to_string().contains("gemm_f32"), "{error}");
 }
 
-/// decode 两条注意力内核经登记表跑通：与独立 `op` decode 参考对拍。
+/// decode 两条注意力内核经登记表跑通：与独立 `nn` decode 参考对拍。
 #[test]
 fn decode_attention_kernels_match_the_reference() {
     let sample = nn::conv::decode_attention::sample(1, 8);

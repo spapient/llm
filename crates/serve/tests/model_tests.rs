@@ -56,7 +56,7 @@ fn run_one(
     executor.get(output).expect("输出缓冲").to_vec()
 }
 
-/// 对拍口径：先排非有限值，再走绝对 + 相对双项预算。同一份 `op` 语义两次调用，
+/// 对拍口径：先排非有限值，再走绝对 + 相对双项预算。同一份 `nn` 语义两次调用，
 /// 位级应一致，容差只兜浮点读回误差。
 fn assert_close(produced: &[f32], reference: &[f32]) {
     assert!(all_finite(produced), "生产路径出现非有限值");

@@ -11,7 +11,7 @@ use crate::ownership::{is_public_definition, public_item_name};
 pub(crate) const MESSAGE_FRAGMENTS: &[&str] = &[];
 
 /// 错误边界不得退回字符串（`docs/ARCHITECTURE.md` 第三节）：凡是被 L7 直接调用的层——数据层
-/// （`op` / `prof` / `prim`）、内核层（`cutile`，含 `report`）——失败类型必须是
+/// （`prof`）、内核层（`cutile`，含 `report`）——失败类型必须是
 /// `diagnostic::Error`，否则类别与退出码就失去了来源。
 #[test]
 pub(crate) fn the_error_boundary_does_not_fall_back_to_strings() {

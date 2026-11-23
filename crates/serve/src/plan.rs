@@ -314,7 +314,7 @@ fn projection_plan(
 
 /// 投影的驻留权重与标度形状：稠密 `[out, in]` 整块 f32；量化给打包字节
 /// `[out, in/cpb]` 加标度 `[out, in/group]`。每字节码数读 [`nn::quant::Row`] 配置表，
-/// 与 `op` 的 GEMV/GEMM/反量化同一事实源（`I4.cpb=2`、`I8.cpb=1`）；分组来自格式声明。
+/// 与 `nn` 的 GEMV/GEMM/反量化同一事实源（`I4.cpb=2`、`I8.cpb=1`）；分组来自格式声明。
 pub(crate) fn projection_shapes(
     format: WeightFormat,
     in_features: usize,
