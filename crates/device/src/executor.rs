@@ -428,10 +428,10 @@ impl Executor for MetalExecutor {
 }
 
 #[cfg(test)]
-#[path = "metal_executor_harness.rs"]
+#[path = "../tests/metal_executor_harness.rs"]
 mod harness;
 #[cfg(test)]
-#[path = "metal/mod.rs"]
+#[path = "../tests/metal/mod.rs"]
 mod tests;
 
 /// 一条 Metal 共享缓冲句柄（+1 保留，`Drop` 释放）；`contents` 是 CPU 可访问的字节视图。
