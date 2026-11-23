@@ -40,24 +40,11 @@ pub fn submodules(src: &str) -> Result<Vec<Mount>> {
 fn modules(src: &str, only_test: bool) -> Result<Vec<Mount>> {
     let tokens = parse(src)?;
     let mut out = Vec::new();
-    let mut attr = Attr::default();
-    let mut idx = 0;
-    while idx < tokens.len() {
-        if let Some((hash, bracket)) = attr_at(&tokens, idx) {
-            attr.absorb(&tokens[hash], &tokens[bracket]);
-            idx = bracket + 1;
-            continue;
+    split_items(&tokens, |attr, item| {
+        if let Some(mount) = declared(item, only_test, attr.is_test, attr.path.clone()) {
+            out.push(mount);
         }
-        let end = item_end(&tokens, idx);
-        out.extend(declared(
-            &tokens[idx..=end],
-            only_test,
-            attr.is_test,
-            attr.path.clone(),
-        ));
-        attr = Attr::default();
-        idx = end + 1;
-    }
+    });
     Ok(out)
 }
 

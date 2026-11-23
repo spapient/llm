@@ -471,7 +471,18 @@ fn render(function: &ItemFn, params: &[Param], body: &Body) -> TokenStream2 {
 const UNSUPPORTED: &str =
     "unsupported expression: f32 params, buf loads, finite literals, + - * /, abs, min, max";
 const ARITHMETIC: &str = "supported arithmetic is `+`, `-`, `*`, and `/`";
-const METHODS: [(&str, usize); 3] = [("abs", 0), ("min", 1), ("max", 1)];
+/// 方法组合子闭集：`abs()` 一元无 IR 变体，`min`/`max` 带一个参数与对应 IR 变体。
+struct Method {
+    name: &'static str,
+    arity: usize,
+    variant: Option<&'static str>,
+}
+
+const METHODS: [Method; 3] = [
+    Method { name: "abs", arity: 0, variant: None },
+    Method { name: "min", arity: 1, variant: Some("Min") },
+    Method { name: "max", arity: 1, variant: Some("Max") },
+];
 
 /// 表达式三层：括号剥壳 → 叶子（字面量/标量/加载）→ 组合子（二元、取负）。
 fn parse_expr(expression: &Expr, idx: &str, params: &[Param]) -> syn::Result<TokenStream2> {
@@ -500,27 +511,24 @@ fn parse_compound(expression: &Expr, idx: &str, params: &[Param]) -> syn::Result
     }
 }
 
-/// 方法组合子闭集：`abs()` 一元，`min(y)` / `max(y)` 二元；其余方法名在展开期打回。
+/// 按 [`METHODS`] 闭集展开方法组合子；未登记的方法名在展开期打回。
 fn method_call(method: &ExprMethodCall, idx: &str, params: &[Param]) -> syn::Result<TokenStream2> {
     let name = method.method.to_string();
-    let Some((_, arity)) = METHODS.iter().find(|(known, _)| *known == name.as_str()) else {
+    let Some(known) = METHODS.iter().find(|candidate| candidate.name == name.as_str()) else {
         return fail(method.method.span(), "unsupported kernel method");
     };
-    if method.args.len() != *arity {
+    if method.args.len() != known.arity {
         return fail(
             method.method.span(),
-            &format!("`{name}` takes {} argument(s)", arity),
+            &format!("`{name}` takes {} argument(s)", known.arity),
         );
     }
     let receiver = parse_expr(&method.receiver, idx, params)?;
-    match name.as_str() {
-        "abs" => Ok(quote!(::cutile::kernel::Expr::Abs(Box::new(#receiver)))),
-        "min" | "max" => {
+    match known.variant {
+        None => Ok(quote!(::cutile::kernel::Expr::Abs(Box::new(#receiver)))),
+        Some(variant) => {
             let argument = parse_expr(&method.args[0], idx, params)?;
-            let variant = Ident::new(
-                if name == "min" { "Min" } else { "Max" },
-                method.method.span(),
-            );
+            let variant = Ident::new(variant, method.method.span());
             Ok(quote! {
                 ::cutile::kernel::Expr::#variant {
                     left: Box::new(#receiver),
@@ -528,7 +536,6 @@ fn method_call(method: &ExprMethodCall, idx: &str, params: &[Param]) -> syn::Res
                 }
             })
         }
-        _ => fail(method.method.span(), "unsupported kernel method"),
     }
 }
 
