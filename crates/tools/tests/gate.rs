@@ -777,3 +777,44 @@ fn mounted(dir: &Path, suite: &Path) -> bool {
             .any(|path| std::fs::canonicalize(path).is_ok_and(|real| real == target))
     })
 }
+
+#[test]
+fn tmp_compare_baseline_ccn() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("workspace root");
+    let pairs: [(&str, &str); 6] = [
+        ("nn_src_kernel_fast.rs", "crates/nn/src/kernel_fast.rs"),
+        ("nn_src_kernel_fast_i8.rs", "crates/nn/src/kernel_fast_i8.rs"),
+        ("nn_src_kernel_fast_tn.rs", "crates/nn/src/kernel_fast_tn.rs"),
+        (
+            "nn_src_conv_attention_decode.rs",
+            "crates/nn/src/conv_attention_decode.rs",
+        ),
+        ("train_src_kernel.rs", "crates/train/src/kernel.rs"),
+        ("serve_src_kernels.rs", "crates/serve/src/kernels.rs"),
+    ];
+    for (base_name, cur_rel) in pairs {
+        let base = Path::new("/tmp/b4g_base").join(base_name);
+        let cur = root.join(cur_rel);
+        for (tag, p) in [("base", &base), ("cur", &cur)] {
+            let raw = std::fs::read_to_string(p).unwrap_or_default();
+            let text = strip_tests(&raw).unwrap_or_default();
+            for f in analyze(&text).unwrap_or_default() {
+                if f.ccn as usize > 5 || f.nloc as usize > 60 {
+                    eprintln!(
+                        "{tag} {}:{}#{} ccn={} nloc={}",
+                        cur_rel, f.name, f.nth, f.ccn, f.nloc
+                    );
+                }
+            }
+            eprintln!(
+                "{tag} {} call={}",
+                cur_rel,
+                call::scan(&text).unwrap_or_default().len()
+            );
+        }
+    }
+    panic!("tmp compare");
+}
