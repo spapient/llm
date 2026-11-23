@@ -20,6 +20,16 @@
   `cargo test -p llm-testkit --lib` 的架构门通过 tensor 的命名与边集（边总数同步为 122）。
 ### Changed
 
+- **`crates/prof` 的 `einsum` 子树平铺成单个文件，轴长度表两张 `BTreeMap` 合成一张**。`einsum/` 下的
+  `expr` / `extents` / `formula` / `formula/axes` / `cache` 五个文件共用同一条表达式与同一张轴表，
+  彼此互相 import，拆开只多出 `mod`、`pub use` 与跨文件 `use`；现在全部并进 `prof/src/einsum.rs`
+  （解析 → 轴长度 → 操作数 → 轴分解 → 代价推导 → 缓存按依赖顺序排开），5 个文件与整个目录删除，
+  `is_label` / `NOT_LABEL` 随之降为模块私有。`Extents` 的 `entries` + `groups` 两张表合成一张
+  `BTreeMap<char, Entry>`（`Entry { len, group: Option<(char, usize)> }`），一条轴的长度与分组来历
+  同住一格，声明分组轴时不再需要「写长度、再写分组」两处手工同步。公开 API（`prof::einsum::*`）与
+  表达式文法、代价口径均不变。**验证**：`cargo test -p llm-prof` 全绿，`clippy --all-targets
+  -D warnings`、`fmt --check` 与 `RUSTDOCFLAGS="-D warnings" cargo doc` 零告警。
+
 - **`crates/weights` 的自有 `.u` 容器收口：`parse` 并入 `seg`、闭集宏三份体合一、`Header` 校验单趟、定宽整数不再经 `u64` 往返**。
   容器帧解析与段元数据原本互相 import（`parse` 用 `seg` 的描述符，`seg` 又用 `parse` 的帧解析），现合成一个
   模块 `seg`（段元数据 + 存储帧 + 容器帧），`archive` 只从一处取帧函数、`parse.rs` 删除；`closed_enum!` 的枚举

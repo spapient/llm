@@ -33,7 +33,7 @@ crates/prof/
 │   ├── sig.rs             # 入口签名（ABI 唯一事实源）+ same_bytes（const 名字比较）
 │   ├── sch.rs             # 布局闭集与调度模板；sch/layout.rs 是构造子
 │   ├── tpl.rs             # 模板词法（`{{…}}` 与 `@原语`）
-│   ├── einsum.rs          # 代价表达式与求和语义；einsum/formula.rs 是求值面（含校验与项算术）
+│   ├── einsum.rs          # 代价表达式与求和语义：解析、轴长度表、轴分解、代价推导与缓存同住一份
 │   ├── model.rs           # 语义模型：粒度、形状、样本、标量参考
 │   ├── sample.rs          # 确定性样本：rnd / dropout / init
 │   ├── operator.rs        # 算子契约与 `operator_here!` / `operator_via!` 注解宏
