@@ -6,13 +6,17 @@
 //! `cfg(target_arch)` / `cfg(nightly)` / 特性探测——那些门全部收在本模块里。
 //!
 //! 目录布局照 `prof/src/nvidia/cvt.cu` 的形态：一个设备/通道一个专门文件
-//! ([`gemm8x8`] 是 NEON/AVX2/scalar 的 8×8 寄存器块，[`sme`] 是 Apple SME 16×64 ZA 外积)，
-//! 本文件只放**公共方法**：暂存面板、线程数、对齐，与那张协商表。
+//! ([`gemm8x8`] 是 NEON/AVX2/scalar 的 8×8 寄存器块，[`i8`] 是 aarch64 dotprod 4×4
+//! `sdot` 块，[`sme`] 是 Apple SME 16×64 ZA 外积)，本文件只放**公共方法**：暂存面板、
+//! 线程数、对齐，与那张协商表。
 
 use std::thread;
 
 /// f32 8×8 寄存器块微内核（NEON lane-indexed FMA / AVX2+FMA / scalar 兜底）。
 pub mod gemm8x8;
+
+/// i8 `sdot` 4×4 寄存器块微内核（aarch64 dotprod）与端口探针；非 aarch64 交回标量兜底。
+pub mod i8;
 
 /// Apple SME 16×64 微内核：nightly + aarch64 才存在（`target_feature(enable = "sme")` 仍不稳定）。
 #[cfg(all(nightly, target_arch = "aarch64"))]
