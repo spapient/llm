@@ -48,21 +48,25 @@ impl Account {
     }
 
     /// 还差几份梯度贡献；0 表示齐全。编号不在本次调度里时也返回 0。
+    #[must_use]
     pub fn pending(&self, var: Var) -> u32 {
         self.pending.get(var.id() as usize).copied().unwrap_or(0)
     }
 
     /// 该变量的梯度是否已经齐全（它的反向步骤现在可以执行）。
+    #[must_use]
     pub fn ready(&self, var: Var) -> bool {
         self.graph(var) && self.pending(var) == 0
     }
 
     /// 已结算的步数。
+    #[must_use]
     pub fn settled(&self) -> usize {
         self.settled
     }
 
     /// 是否每一步都已结算。
+    #[must_use]
     pub fn finished(&self) -> bool {
         self.settled == self.steps
     }

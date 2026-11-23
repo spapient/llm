@@ -269,7 +269,12 @@ fn local_start(bytes: &[u8], local: usize) -> Result<usize> {
 
 /// ZIP64 extra 里第 `field` 个 8 字节真值：逐个 extra 字段头（id u16 + 长 u16）往前挪，
 /// 找到 id 0x0001 就按槽位取；声明长度装不下该槽位显式失败。
-fn zip64_extra(bytes: &[u8], extra_start: usize, extra_len: usize, field: usize) -> Result<u64> {
+pub(crate) fn zip64_extra(
+    bytes: &[u8],
+    extra_start: usize,
+    extra_len: usize,
+    field: usize,
+) -> Result<u64> {
     let stop = extra_start.saturating_add(extra_len);
     let mut at = extra_start;
     while at.checked_add(4).is_some_and(|end| end <= stop) {

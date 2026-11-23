@@ -182,65 +182,45 @@ pub enum Expr {
         right: Box<Expr>,
     },
 }
+
 impl Expr {
-    /// 直接子节点（按发射顺序）；叶子返回空表。只读遍历走这里，重建见 [`map_children`]。
-    pub(crate) fn children(&self) -> Vec<&Expr> {
+    /// 按发射顺序排列的直接子节点；叶子返回空切片。只读遍历（计数、引用扫描）走这里，
+    /// 与 [`map_children`] 的重建分派各管一面；新增复合变体只补这一处元数据。
+    pub(crate) fn children(&self) -> &[&Expr] {
         match self {
-            Expr::Neg(value) | Expr::Abs(value) => vec![value.as_ref()],
+            Expr::Neg(value) | Expr::Abs(value) => &[value.as_ref()],
             Expr::Binary { left, right, .. }
             | Expr::Min { left, right }
-            | Expr::Max { left, right } => vec![left.as_ref(), right.as_ref()],
-            Expr::Fma { a, b, c } => vec![a.as_ref(), b.as_ref(), c.as_ref()],
-            Expr::F32(_) | Expr::Scalar(_) | Expr::Load(_) => Vec::new(),
+            | Expr::Max { left, right } => &[left.as_ref(), right.as_ref()],
+            Expr::Fma { a, b, c } => &[a.as_ref(), b.as_ref(), c.as_ref()],
+            Expr::F32(_) | Expr::Scalar(_) | Expr::Load(_) => &[],
         }
     }
 
-    /// 逐子节点应用 `map`，再按原变体重建；叶子原样返回。
+    /// 对子节点逐个应用 `map`，再按原变体重建；叶子原样返回。
     pub(crate) fn map_children(&self, map: &mut dyn FnMut(&Expr) -> Expr) -> Expr {
-        let rebuilt: Vec<Expr> = self.children().iter().map(|child| map(child)).collect();
-        match rebuilt.len() {
-            0 => self.clone(),
-            1 => self.rebuild_unary(&rebuilt),
-            2 => self.rebuild_binary(&rebuilt),
-            _ => self.rebuild_ternary(&rebuilt),
-        }
-    }
-
-    fn rebuild_unary(&self, c: &[Expr]) -> Expr {
         match self {
-            Expr::Neg(_) => Expr::Neg(Box::new(c[0].clone())),
-            Expr::Abs(_) => Expr::Abs(Box::new(c[0].clone())),
-            _ => self.clone(),
-        }
-    }
-
-    fn rebuild_binary(&self, c: &[Expr]) -> Expr {
-        match self {
-            Expr::Binary { op, .. } => Expr::Binary {
+            Expr::Neg(value) => Expr::Neg(Box::new(map(value))),
+            Expr::Abs(value) => Expr::Abs(Box::new(map(value))),
+            Expr::Binary { op, left, right } => Expr::Binary {
                 op: *op,
-                left: Box::new(c[0].clone()),
-                right: Box::new(c[1].clone()),
+                left: Box::new(map(left)),
+                right: Box::new(map(right)),
             },
-            Expr::Min { .. } => Expr::Min {
-                left: Box::new(c[0].clone()),
-                right: Box::new(c[1].clone()),
+            Expr::Min { left, right } => Expr::Min {
+                left: Box::new(map(left)),
+                right: Box::new(map(right)),
             },
-            Expr::Max { .. } => Expr::Max {
-                left: Box::new(c[0].clone()),
-                right: Box::new(c[1].clone()),
+            Expr::Max { left, right } => Expr::Max {
+                left: Box::new(map(left)),
+                right: Box::new(map(right)),
             },
-            _ => self.clone(),
-        }
-    }
-
-    fn rebuild_ternary(&self, c: &[Expr]) -> Expr {
-        match self {
-            Expr::Fma { .. } => Expr::Fma {
-                a: Box::new(c[0].clone()),
-                b: Box::new(c[1].clone()),
-                c: Box::new(c[2].clone()),
+            Expr::Fma { a, b, c } => Expr::Fma {
+                a: Box::new(map(a)),
+                b: Box::new(map(b)),
+                c: Box::new(map(c)),
             },
-            _ => self.clone(),
+            leaf => leaf.clone(),
         }
     }
 }
@@ -614,21 +594,22 @@ fn write_compound(source: &mut String, expression: &Expr, idx: &str) {
         }
         Expr::Binary { op, left, right } => write_binary(source, *op, left, right, idx),
         Expr::Abs(..) | Expr::Fma { .. } | Expr::Min { .. } | Expr::Max { .. } => {
-            write_call(source, call_name(expression), &expression.children(), idx);
+            let (function, args) = call_target(expression);
+            write_call(source, function, args, idx);
         }
         // 叶子由 [`write_expr`] 前置分流到本函数之外；落到这里即空体，不再发射。
         Expr::F32(_) | Expr::Scalar(_) | Expr::Load(_) => {}
     }
 }
 
-/// C 库函数名；实参顺序统一由 [`Expr::children`] 给出。其余变体不会进入本查表。
-fn call_name(expression: &Expr) -> &'static str {
+/// C 库调用形态：函数名 + 按发射顺序排列的子节点。仅覆盖 [`write_compound`] 的 Call 组合子组。
+fn call_target(expression: &Expr) -> (&'static str, &[&Expr]) {
     match expression {
-        Expr::Abs(..) => "fabsf",
-        Expr::Fma { .. } => "fmaf",
-        Expr::Min { .. } => "fminf",
-        Expr::Max { .. } => "fmaxf",
-        _ => "",
+        Expr::Abs(value) => ("fabsf", &[value.as_ref()]),
+        Expr::Fma { a, b, c } => ("fmaf", &[a.as_ref(), b.as_ref(), c.as_ref()]),
+        Expr::Min { left, right } => ("fminf", &[left.as_ref(), right.as_ref()]),
+        Expr::Max { left, right } => ("fmaxf", &[left.as_ref(), right.as_ref()]),
+        _ => unreachable!("call_target only covers call forms"),
     }
 }
 

@@ -47,16 +47,19 @@ impl Replay {
     }
 
     /// 计划承诺的重算步数：与 [`Plan::replayed`] 同值，执行前后都可以对账。
+    #[must_use]
     pub fn expected(&self) -> u64 {
         self.expected
     }
 
     /// 编入的重算指令条数：同一激活在不同步重复展开会各记一条，供审计与容量预估。
+    #[must_use]
     pub fn compute_count(&self) -> usize {
         self.compute.len()
     }
 
     /// 编入的释放指令条数：到寿激活逐块交还，一条指令对应一次 [`Store::free`]。
+    #[must_use]
     pub fn free_count(&self) -> usize {
         self.free.len()
     }

@@ -123,12 +123,17 @@ fn cost(kernel: &Kernel) -> usize {
 
 /// 表达式节点数：本节点一算一，子节点递归求和。
 pub(super) fn nodes(expression: &Expr) -> usize {
-    1 + expression
-        .children()
-        .iter()
-        .map(|child| nodes(child))
-        .sum::<usize>()
+    match expression {
+        Expr::Neg(value) | Expr::Abs(value) => 1 + nodes(value),
+        Expr::Binary { left, right, .. }
+        | Expr::Min { left, right }
+        | Expr::Max { left, right } => 1 + nodes(left) + nodes(right),
+        Expr::Fma { a, b, c } => 1 + nodes(a) + nodes(b) + nodes(c),
+        _ => 1,
+    }
 }
+
+/// 把所有代数定律在每个节点上跑到不动点。
 struct Simplify;
 
 impl Pass for Simplify {
@@ -176,7 +181,29 @@ const RULES: [(&str, Law); 9] = [
 /// 内层循环的终止不靠 `debug_assert`：预算取起始节点数，每次命中至少消掉一个节点，所以
 /// **任何构建下**都只会改写有限次——一条写错的律最多让化简变慢，不会让编译器打转。
 pub(super) fn normalize(expression: Expr) -> Expr {
-    let mut expression = expression.map_children(&mut |child| normalize(child.clone()));
+    let mut expression = match expression {
+        Expr::Neg(value) => Expr::Neg(Box::new(normalize(*value))),
+        Expr::Abs(value) => Expr::Abs(Box::new(normalize(*value))),
+        Expr::Binary { op, left, right } => Expr::Binary {
+            op,
+            left: Box::new(normalize(*left)),
+            right: Box::new(normalize(*right)),
+        },
+        Expr::Min { left, right } => Expr::Min {
+            left: Box::new(normalize(*left)),
+            right: Box::new(normalize(*right)),
+        },
+        Expr::Max { left, right } => Expr::Max {
+            left: Box::new(normalize(*left)),
+            right: Box::new(normalize(*right)),
+        },
+        Expr::Fma { a, b, c } => Expr::Fma {
+            a: Box::new(normalize(*a)),
+            b: Box::new(normalize(*b)),
+            c: Box::new(normalize(*c)),
+        },
+        leaf => leaf,
+    };
     let mut budget = nodes(&expression);
     while budget > 0 {
         let Some((rule, next)) = first_match(&expression) else {
@@ -191,6 +218,8 @@ pub(super) fn normalize(expression: Expr) -> Expr {
     }
     expression
 }
+
+/// 第一条命中的定律；名称一起返回，只用于诊断。
 fn first_match(expression: &Expr) -> Option<(&'static str, Expr)> {
     RULES
         .iter()
@@ -334,12 +363,20 @@ fn expr_mentions(expression: &Expr, name: &str) -> bool {
     match expression {
         Expr::Scalar(used) | Expr::Load(used) => used == name,
         Expr::F32(_) => false,
-        other => other
-            .children()
-            .iter()
-            .any(|child| expr_mentions(child, name)),
+        Expr::Neg(value) | Expr::Abs(value) => expr_mentions(value, name),
+        Expr::Binary { left, right, .. }
+        | Expr::Min { left, right }
+        | Expr::Max { left, right } => {
+            expr_mentions(left, name) || expr_mentions(right, name)
+        }
+        Expr::Fma { a, b, c } => {
+            expr_mentions(a, name) || expr_mentions(b, name) || expr_mentions(c, name)
+        }
     }
 }
+
+/// 乘加收缩：把 `a * b + c`（乘法可在任一侧）改写为一条 FMA。这是**舍入改变**的优化，等价于
+/// CUDA 的 fast-math，因此只出现在 [`Pipeline::contracted`]，绝不到位精确的 [`RULES`] 表里。
 struct FuseFma;
 
 impl Pass for FuseFma {
@@ -357,9 +394,33 @@ impl Pass for FuseFma {
 
 /// 自底向上收缩：先缩子项，再在本节点上尝试 `(a * b) + c → fmaf(a, b, c)`。
 fn contract(expression: Expr) -> Expr {
-    let expression = expression.map_children(&mut |child| contract(child.clone()));
+    let expression = match expression {
+        Expr::Neg(value) => Expr::Neg(Box::new(contract(*value))),
+        Expr::Abs(value) => Expr::Abs(Box::new(contract(*value))),
+        Expr::Binary { op, left, right } => Expr::Binary {
+            op,
+            left: Box::new(contract(*left)),
+            right: Box::new(contract(*right)),
+        },
+        Expr::Min { left, right } => Expr::Min {
+            left: Box::new(contract(*left)),
+            right: Box::new(contract(*right)),
+        },
+        Expr::Max { left, right } => Expr::Max {
+            left: Box::new(contract(*left)),
+            right: Box::new(contract(*right)),
+        },
+        Expr::Fma { a, b, c } => Expr::Fma {
+            a: Box::new(contract(*a)),
+            b: Box::new(contract(*b)),
+            c: Box::new(contract(*c)),
+        },
+        leaf => leaf,
+    };
     fuse_multiply_add(expression.clone()).unwrap_or(expression)
 }
+
+/// `(a * b) + c` 或 `c + (a * b)` 命中则收缩；否则 `None`。只认乘法的字面形状，不递归。
 fn fuse_multiply_add(expression: Expr) -> Option<Expr> {
     let Expr::Binary {
         op: Arith::Add,

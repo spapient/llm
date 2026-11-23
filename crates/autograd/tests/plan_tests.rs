@@ -101,6 +101,21 @@ fn of_config_forwards_the_configured_memory_policy() {
 }
 
 #[test]
+fn config_fluent_builders_copy_with_one_policy_changed() {
+    let base = Config::default();
+    let reordered = base.with_ordering(Ordering::Insertion);
+    let forced = base.with_policy(MemoryPolicy::KeepAll);
+
+    // fluent 构造器不改原配置。
+    assert_eq!(base.ordering(), Ordering::Depth);
+    assert_eq!(base.policy(), MemoryPolicy::Auto);
+    assert_eq!(reordered.ordering(), Ordering::Insertion);
+    assert_eq!(reordered.policy(), MemoryPolicy::Auto);
+    assert_eq!(forced.ordering(), Ordering::Depth);
+    assert_eq!(forced.policy(), MemoryPolicy::KeepAll);
+}
+
+#[test]
 fn a_budget_below_the_floor_is_unsupported() {
     let mut tape = Tape::new();
     let p = tape.parameter();

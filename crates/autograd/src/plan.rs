@@ -121,31 +121,37 @@ impl Plan {
     }
 
     /// 走的是哪条路。
+    #[must_use]
     pub fn choice(&self) -> Choice {
         self.choice
     }
 
     /// 生成本计划时采用的策略。
+    #[must_use]
     pub fn policy(&self) -> MemoryPolicy {
         self.policy
     }
 
     /// 计划针对的预算。
+    #[must_use]
     pub fn budget(&self) -> Budget {
         self.budget
     }
 
     /// 保留的激活，按前向顺序（编号升序）；这就是要留在显存里的全部中间结果。
+    #[must_use]
     pub fn saved(&self) -> &[Var] {
         &self.saved
     }
 
     /// 该变量的值是否被保留（没被消费的节点输出与叶子都不是保留对象）。
+    #[must_use]
     pub fn keep(&self, var: Var) -> bool {
         self.keep.get(var.id() as usize).copied().unwrap_or(false)
     }
 
     /// 该变量在反向走到第几步之后可以释放；不保留时为 `None`。
+    #[must_use]
     pub fn release(&self, var: Var) -> Option<usize> {
         let step = *self.release.get(var.id() as usize)?;
         if step == NONE || !self.keep(var) {
@@ -155,21 +161,25 @@ impl Plan {
     }
 
     /// 保留的字节数：反向一开始就占着的量。
+    #[must_use]
     pub fn retained(&self) -> u64 {
         self.retained
     }
 
     /// 按本计划执行的峰值字节数（保守上界）。
+    #[must_use]
     pub fn peak(&self) -> u64 {
         self.peak
     }
 
     /// 必然下界：任何计划都绕不过的峰值。
+    #[must_use]
     pub fn floor(&self) -> u64 {
         self.floor
     }
 
     /// 一次反向里要重放的步数合计：预算换来的计算代价。
+    #[must_use]
     pub fn replayed(&self) -> u64 {
         self.replayed
     }
@@ -188,6 +198,7 @@ impl Budget {
     }
 
     /// 预算字节数。
+    #[must_use]
     pub const fn bytes(self) -> u64 {
         self.bytes
     }
@@ -216,6 +227,7 @@ pub enum MemoryPolicy {
 
 impl MemoryPolicy {
     /// 策略短名：诊断与报告里的稳定标签。
+    #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Auto => "auto",
@@ -273,6 +285,7 @@ impl Sizes {
     }
 
     /// 一个变量登记的形状与元素类型；没登记时为 `None`。
+    #[must_use]
     pub fn get(&self, var: Var) -> Option<(&Shape, DType)> {
         self.entries
             .get(var.id() as usize)
@@ -281,11 +294,13 @@ impl Sizes {
     }
 
     /// 表的长度：覆盖到的变量数（含还没登记的槽位），与 `Tape::vars()` 同口径。
+    #[must_use]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
     /// 是否还没有任何变量被登记过（表的长度为 0）。
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
@@ -314,13 +329,29 @@ impl Config {
     }
 
     /// 反向步骤的排序策略。
+    #[must_use]
     pub const fn ordering(self) -> Ordering {
         self.ordering
     }
 
     /// 显存规划策略。
+    #[must_use]
     pub const fn policy(self) -> MemoryPolicy {
         self.policy
+    }
+
+    /// 复制一份配置，只换排序策略；不改动原配置（构造期组合）。
+    #[must_use]
+    pub const fn with_ordering(mut self, ordering: Ordering) -> Self {
+        self.ordering = ordering;
+        self
+    }
+
+    /// 复制一份配置，只换显存策略；不改动原配置（构造期组合）。
+    #[must_use]
+    pub const fn with_policy(mut self, policy: MemoryPolicy) -> Self {
+        self.policy = policy;
+        self
     }
 }
 

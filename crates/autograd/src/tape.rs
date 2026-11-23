@@ -122,16 +122,19 @@ impl Tape {
     }
 
     /// 全部节点，按前向顺序。
+    #[must_use]
     pub fn nodes(&self) -> &[Node] {
         &self.nodes
     }
 
     /// 变量需求；编号不存在时为 `None`。
+    #[must_use]
     pub fn requirement(&self, var: Var) -> Option<Requirement> {
         self.requirement.get(var.id() as usize).copied()
     }
 
     /// 变量出身（参数 / 常量 / 激活）；编号不存在时为 `None`。
+    #[must_use]
     pub fn role(&self, var: Var) -> Option<Role> {
         let requirement = self.requirement(var)?;
         Some(Role::of(requirement, self.node(var).is_none()))
@@ -154,37 +157,44 @@ impl Tape {
     }
 
     /// 变量深度；编号不存在时为 `None`。
+    #[must_use]
     pub fn depth(&self, var: Var) -> Option<u32> {
         self.depth.get(var.id() as usize).copied()
     }
 
     /// 产出该变量的节点；叶子与不存在的编号都是 `None`。
+    #[must_use]
     pub fn node(&self, var: Var) -> Option<&Node> {
         let idx = (*self.producer.get(var.id() as usize)?)?;
         self.nodes.get(idx as usize)
     }
 
     /// 变量总数（叶子加算子输出），也是下一个变量的编号。
+    #[must_use]
     pub fn vars(&self) -> u32 {
         self.next
     }
 
     /// 由编号取回变量；编号不存在时为 `None`（缓冲按编号稠密布局，拿来回路转用）。
+    #[must_use]
     pub fn var(&self, id: u32) -> Option<Var> {
         (id < self.next).then(|| Var::at(id))
     }
 
     /// 节点数（不含叶子）。
+    #[must_use]
     pub fn len(&self) -> usize {
         self.nodes.len()
     }
 
     /// 是否没有任何算子调用。
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
     }
 
     /// 反向顺序：**全部**节点的逆序，不做可达性剪枝（执行反向请用 [`Tape::backward`]）。
+    #[must_use]
     pub fn backward_order(&self) -> Vec<Var> {
         self.nodes.iter().rev().map(Node::output).collect()
     }

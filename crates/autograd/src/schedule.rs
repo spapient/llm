@@ -20,6 +20,7 @@ pub enum Ordering {
 
 impl Ordering {
     /// 策略短名：诊断与报告里的稳定标签。
+    #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Depth => "depth",
@@ -58,26 +59,31 @@ impl Schedule {
     }
 
     /// 反向的起点：它的梯度是 1，不参与累加。
+    #[must_use]
     pub fn loss(&self) -> Var {
         self.loss
     }
 
     /// 反向步骤，按执行顺序。
+    #[must_use]
     pub fn steps(&self) -> &[Node] {
         &self.steps
     }
 
     /// 需要取走的梯度：loss 可达、需求为 [`Requirement::Grad`] 的变量，按编号升序。
+    #[must_use]
     pub fn endpoints(&self) -> &[Var] {
         &self.endpoints
     }
 
     /// 步骤数。
+    #[must_use]
     pub fn len(&self) -> usize {
         self.steps.len()
     }
 
     /// 是否没有步骤（loss 本身就是叶子）。
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.steps.is_empty()
     }
@@ -89,11 +95,13 @@ impl Schedule {
     }
 
     /// 本计划采用的排序策略。
+    #[must_use]
     pub fn ordering(&self) -> Ordering {
         self.ordering
     }
 
     /// 按这个计划执行反向的账本。
+    #[must_use]
     pub fn account(&self) -> Account {
         let mut account = Account::new();
         account.rebuild(self);
@@ -253,56 +261,67 @@ impl Summary {
     }
 
     /// 变量总数（叶子加算子输出）。
+    #[must_use]
     pub fn vars(&self) -> u32 {
         self.vars
     }
 
     /// 节点总数（算子输出的个数）。
+    #[must_use]
     pub fn nodes(&self) -> usize {
         self.nodes
     }
 
     /// 输入边总数：所有节点的输入个数之和。
+    #[must_use]
     pub fn edges(&self) -> usize {
         self.edges
     }
 
     /// 最深节点的深度；空图为 0。
+    #[must_use]
     pub fn max_depth(&self) -> u32 {
         self.max_depth
     }
 
     /// 参数终点叶子个数。
+    #[must_use]
     pub fn parameters(&self) -> usize {
         self.parameters
     }
 
     /// 不进反向的常量叶子个数。
+    #[must_use]
     pub fn constants(&self) -> usize {
         self.constants
     }
 
     /// 算子输出（激活）个数。
+    #[must_use]
     pub fn activations(&self) -> usize {
         self.activations
     }
 
     /// 反向步骤数（可达节点个数）；未连调度时为 0。
+    #[must_use]
     pub fn steps(&self) -> usize {
         self.steps
     }
 
     /// 梯度终点个数；未连调度时为 0。
+    #[must_use]
     pub fn endpoints(&self) -> usize {
         self.endpoints
     }
 
     /// 可达变量个数（终点加每个步骤输出）；未连调度时为 0。
+    #[must_use]
     pub fn reachable(&self) -> usize {
         self.reachable
     }
 
     /// 不在 loss 可达集里的变量个数；未连调度时为 0。
+    #[must_use]
     pub fn dead(&self) -> usize {
         self.dead
     }

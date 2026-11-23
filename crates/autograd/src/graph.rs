@@ -25,11 +25,13 @@ impl Role {
     }
 
     /// 该角色是否要取走梯度：只有参数终点有自己的梯度缓冲。
+    #[must_use]
     pub fn is_parameter(self) -> bool {
         matches!(self, Self::Parameter)
     }
 
     /// 短名：诊断与报告里的稳定标签，与变体一一对应。
+    #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Constant => "constant",
@@ -53,21 +55,25 @@ pub enum Requirement {
 
 impl Requirement {
     /// 是否在图上（参与反向）。
+    #[must_use]
     pub fn requires(self) -> bool {
         !self.is_none()
     }
 
     /// 是否完全在反向之外。
+    #[must_use]
     pub fn is_none(self) -> bool {
         matches!(self, Self::None)
     }
 
     /// 是否是梯度终点。
+    #[must_use]
     pub fn is_endpoint(self) -> bool {
         matches!(self, Self::Grad)
     }
 
     /// 合并两个需求：都不需要梯度才是 `None`，否则输出只能是中间节点。
+    #[must_use]
     pub fn merged(self, other: Self) -> Self {
         match self.is_none() && other.is_none() {
             true => Self::None,
@@ -93,6 +99,7 @@ pub struct Var {
 
 impl Var {
     /// 编号。编号按创建顺序单调递增，因此"编号大"就是"更晚创建"。
+    #[must_use]
     pub fn id(&self) -> u32 {
         self.id
     }
@@ -133,26 +140,31 @@ impl Node {
     }
 
     /// 产出的变量。
+    #[must_use]
     pub fn output(&self) -> Var {
         self.output
     }
 
     /// 算子名（与 `prof::catalogue::Op::name` 一致，便于把反向公式与声明对上）。
+    #[must_use]
     pub fn op(&self) -> &str {
         &self.op
     }
 
     /// 输入变量。
+    #[must_use]
     pub fn inputs(&self) -> &[Var] {
         &self.inputs
     }
 
     /// 深度：输入的最大深度加一，叶子为 0。反向顺序按它降序排。
+    #[must_use]
     pub fn depth(&self) -> u32 {
         self.depth
     }
 
     /// 产出变量的需求。
+    #[must_use]
     pub fn requirement(&self) -> Requirement {
         self.requirement
     }
