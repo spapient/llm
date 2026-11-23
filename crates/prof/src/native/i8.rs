@@ -7,6 +7,15 @@
 //!
 //! 生产微内核（[`dot_block`]）与取数受限探针（[`port_sdot_block`]）共用同一份瓦片体
 //! [`sdot_tile`]：探针的全部意义是「与生产逐指令一致」，两份写法必然漂移（N5/可替换）。
+//!
+//! # 不变量
+//!
+//! 本文件是 `prof::native` 的 i8 sdot 隔离岛：模块级放行 `unsafe_code`（与 storage mmap、
+//! device executor 同一形态），所有裸指针与 NEON `dotprod` intrinsic 只出现在这里。安全入口
+//! [`dot_block`] / [`port_sdot`] / [`port_sdot_block`] 先做运行时探测与形状守卫，再进 `unsafe`
+//! 工人；工人只读调用方给定的打包面板，写回长度由调用方的行段/列段布局保证。
+
+#![allow(unsafe_code)]
 
 use super::i8_geo::{MR, NR};
 
@@ -36,7 +45,6 @@ pub fn dot_block(a: &[i8], bpack: &[i8], out: &mut [i32], g: Gram) -> bool {
         return false;
     }
     // 安全性：dotprod 已运行时探测；A/B 行段与列段长度由调用方的打包布局保证。
-    #[allow(unsafe_code)]
     unsafe {
         dot_one(a, bpack, out, g);
     }
@@ -53,7 +61,6 @@ pub fn dot_block(a: &[i8], bpack: &[i8], out: &mut [i32], g: Gram) -> bool {
 /// aarch64 dotprod：一个 4 列块的 4 行（`unsafe` 岛）。
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "dotprod")]
-#[allow(unsafe_code)]
 unsafe fn dot_one(a: &[i8], bpack: &[i8], out: &mut [i32], g: Gram) {
     unsafe {
         let ap = a.as_ptr().add(g.r * g.k);
@@ -66,7 +73,6 @@ unsafe fn dot_one(a: &[i8], bpack: &[i8], out: &mut [i32], g: Gram) {
 /// 一个 4 列块的收口：水平求和 + 标量补 `kvec..k` 的余数，写回 4 行。
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "dotprod")]
-#[allow(unsafe_code)]
 unsafe fn harvest(
     ap: *const i8,
     bp: *const i8,
@@ -101,7 +107,6 @@ unsafe fn harvest(
 /// `kvec` 是向量化段长度，标量尾巴由 `nn` 骨架补，不在这里。
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "dotprod")]
-#[allow(unsafe_code)]
 #[inline]
 unsafe fn sdot_tile(
     ap: *const i8,
@@ -156,7 +161,6 @@ pub fn port_sdot(rounds: usize) -> bool {
         return false;
     }
     // 安全性：dotprod 已运行时探测；函数体内只有寄存器运算，不触碰内存。
-    #[allow(unsafe_code)]
     unsafe {
         sdot_rounds(rounds);
     }
@@ -166,7 +170,6 @@ pub fn port_sdot(rounds: usize) -> bool {
 /// 纯 `sdot` 循环：12 个累加器互不依赖，累加结果进 `black_box` 防整段消除。
 #[cfg(all(feature = "bench", target_arch = "aarch64"))]
 #[target_feature(enable = "dotprod")]
-#[allow(unsafe_code)]
 #[inline(never)]
 unsafe fn sdot_rounds(rounds: usize) {
     use std::arch::aarch64::*;
@@ -221,7 +224,6 @@ pub fn port_sdot_block(rounds: usize, a: &[i8], b: &[i8], k: usize) -> bool {
         return false;
     }
     // 安全性：dotprod 已运行时探测；A/B 各 4k 字节已在上面校验。
-    #[allow(unsafe_code)]
     unsafe {
         sdot_block_rounds(rounds, a.as_ptr(), b.as_ptr(), k);
     }
@@ -231,7 +233,6 @@ pub fn port_sdot_block(rounds: usize, a: &[i8], b: &[i8], k: usize) -> bool {
 /// 取数受限循环：4 行 × 4 列累加器，每 k16 步 4 条 A load + 4 条 B load + 16 条 `sdot`。
 #[cfg(all(feature = "bench", target_arch = "aarch64"))]
 #[target_feature(enable = "dotprod")]
-#[allow(unsafe_code)]
 #[inline(never)]
 unsafe fn sdot_block_rounds(rounds: usize, ap: *const i8, bp: *const i8, k: usize) {
     unsafe {

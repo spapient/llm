@@ -42,27 +42,52 @@ pub(super) fn panel_tile<T: Copy, const NR: usize, const COL_MAJOR: bool>(
     base: usize,
     transposed: bool,
 ) {
-    let cols = if first < n { NR.min(n - first) } else { 0 };
     if COL_MAJOR {
-        // 列主：列 `nb` 占连续 `k` 个槽；源恒为行主 B（Nt），无 Tn 视角。
-        for nb in 0..cols {
-            let jj = first + nb;
-            let off = base + nb * k;
-            for q in 0..k {
-                dst[off + q] = src[q * n + jj];
-            }
-        }
+        panel_col_major::<T, NR>(src, dst, n, k, first, base);
     } else {
+        panel_row_major::<T, NR>(src, dst, n, k, first, base, transposed);
+    }
+}
+
+/// 列主打包：列 `nb` 占连续 `k` 个槽；源恒为行主 B（Nt），无 Tn 视角。
+fn panel_col_major<T: Copy, const NR: usize>(
+    src: &[T],
+    dst: &mut [T],
+    n: usize,
+    k: usize,
+    first: usize,
+    base: usize,
+) {
+    let cols = if first < n { NR.min(n - first) } else { 0 };
+    for nb in 0..cols {
+        let jj = first + nb;
+        let off = base + nb * k;
         for q in 0..k {
-            let row = base + q * NR;
-            if transposed {
-                for (c, slot) in dst[row..row + cols].iter_mut().enumerate() {
-                    *slot = src[(first + c) * k + q];
-                }
-            } else {
-                let src0 = q * n + first;
-                dst[row..row + cols].copy_from_slice(&src[src0..src0 + cols]);
+            dst[off + q] = src[q * n + jj];
+        }
+    }
+}
+
+/// 行主打包：`transposed` 时源按 `[col][k]` 读（Tn），否则按行主 `[row][n]` 整块拷贝。
+fn panel_row_major<T: Copy, const NR: usize>(
+    src: &[T],
+    dst: &mut [T],
+    n: usize,
+    k: usize,
+    first: usize,
+    base: usize,
+    transposed: bool,
+) {
+    let cols = if first < n { NR.min(n - first) } else { 0 };
+    for q in 0..k {
+        let row = base + q * NR;
+        if transposed {
+            for (c, slot) in dst[row..row + cols].iter_mut().enumerate() {
+                *slot = src[(first + c) * k + q];
             }
+        } else {
+            let src0 = q * n + first;
+            dst[row..row + cols].copy_from_slice(&src[src0..src0 + cols]);
         }
     }
 }
