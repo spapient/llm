@@ -13,6 +13,10 @@
 //!
 //! 声明是**逐时间步**的：输出形状给 `[hidden·dirs]`，时间步由调用方展开；下界因此也是
 //! 单步的下界，乘上步数即整段循环的代价。这样层不必凭空编一个序列长度来让它听起来更贵。
+//!
+//! 序列布局（batch 与 seq 谁在前）与初态/末态形状是运行时几何：[`Recurrent::batch_first`]
+//! 记布局，[`Recurrent::sequence_output_dims`] / [`Recurrent::state_dims`] 按 batch、seq
+//! 推出全序列输出与隐态（LSTM 另有同形单元态）的维度；这些几何不进权重清单，也不参与计价。
 
 use diagnostic::{Code, Error, Result};
 use tensor::Shape;
@@ -170,6 +174,7 @@ impl Recurrent {
     /// 默认 `true`，两侧默认值不同，跨框架对拍时必须把布局显式对齐。
     ///
     /// 布局是运行时几何，不进权重清单：从检查点反推时一律取 seq-first，不会因此认不出权重。
+    #[allow(clippy::too_many_arguments)]
     pub fn with_layout(
         name: impl Into<String>,
         cell: Cell,
@@ -241,6 +246,31 @@ impl Recurrent {
         cell -> Cell = cell,
         /// 是否带门偏置。
         bias -> bool = bias,
+        /// 输入/输出是否 batch-first：`true` 为 `[batch, seq, …]`，`false` 为 `[seq, batch, …]`。
+        batch_first -> bool = batch_first,
+    }
+
+    /// 初态/末态隐状态的形状：`[layers·dirs, batch, hidden]`。
+    ///
+    /// 层数与方向沿第一维堆叠，与 PyTorch `h_n` 的 `[layers·dirs, batch, hidden]` 口径一致；
+    /// 单向退化为 `[layers, batch, hidden]`。LSTM 的单元态 `c` 与隐态同形（见 [`Self::has_cell_state`]）。
+    pub fn state_dims(&self, batch: usize) -> Vec<usize> {
+        vec![self.layers * self.dirs, batch, self.hidden]
+    }
+
+    /// 全序列输出形状：按 [`Self::batch_first`] 交换 batch 与 seq 两轴，末轴是 `hidden·dirs`。
+    pub fn sequence_output_dims(&self, batch: usize, seq: usize) -> Vec<usize> {
+        let out = self.hidden * self.dirs;
+        if self.batch_first {
+            vec![batch, seq, out]
+        } else {
+            vec![seq, batch, out]
+        }
+    }
+
+    /// 本单元是否带单元态：LSTM 另有一条与隐态同形的 `c`，RNN/GRU 只有隐态 `h`。
+    pub fn has_cell_state(&self) -> bool {
+        self.cell == Cell::Lstm
     }
 
     /// 唯一的一份「每层每方向：`(层, 方向, 输入宽, 门堆叠行数)`」。

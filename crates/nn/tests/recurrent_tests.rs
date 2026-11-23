@@ -243,3 +243,56 @@ fn the_gate_count_identifies_the_cell() {
     );
     assert_eq!(Cell::of_gates(2), None, "两门不是任何一种单元");
 }
+
+/// 布局默认 seq-first（PyTorch 口径）；显式 batch-first 只改布局，不进权重清单、不改参数量与下界。
+#[test]
+fn batch_first_defaults_to_seq_first_and_does_not_touch_weights() {
+    let def = Recurrent::new("r", Cell::Lstm, 16, 8, 2, 2, true).expect("合法");
+    assert!(!def.batch_first(), "默认 seq-first");
+
+    let bf =
+        Recurrent::with_layout("r", Cell::Lstm, 16, 8, 2, 2, true, true).expect("合法");
+    assert!(bf.batch_first(), "with_layout 显式 batch-first");
+
+    assert_eq!(bf.weight_entries(), def.weight_entries(), "布局不进权重清单");
+    assert_eq!(bf.param_bytes(), def.param_bytes(), "布局不影响参数量");
+    assert_eq!(
+        bf.bounds().expect("合法"),
+        def.bounds().expect("合法"),
+        "布局不影响下界"
+    );
+}
+
+/// 末态隐态形状按 `[layers·dirs, batch, hidden]` 堆叠；LSTM 另带同形单元态，RNN/GRU 没有。
+#[test]
+fn state_dims_stack_layers_and_directions() {
+    let uni = Recurrent::new("r", Cell::Rnn, 16, 8, 3, 1, true).expect("合法");
+    assert_eq!(uni.state_dims(5), [3, 5, 8], "单向三层：[layers, batch, hidden]");
+    assert!(!uni.has_cell_state(), "RNN 无单元态");
+
+    let bi = Recurrent::new("r", Cell::Gru, 16, 8, 2, 2, true).expect("合法");
+    assert_eq!(bi.state_dims(5), [4, 5, 8], "双向两层：[layers·dirs, batch, hidden]");
+    assert!(!bi.has_cell_state(), "GRU 无单元态");
+
+    let lstm = Recurrent::new("r", Cell::Lstm, 16, 8, 1, 1, true).expect("合法");
+    assert!(lstm.has_cell_state(), "LSTM 带单元态，与隐态同形");
+}
+
+/// 全序列输出按布局交换 batch 与 seq 两轴，末轴恒为 `hidden·dirs`。
+#[test]
+fn sequence_output_dims_follow_the_layout() {
+    let sf = Recurrent::new("r", Cell::Lstm, 16, 8, 1, 2, true).expect("合法");
+    assert_eq!(
+        sf.sequence_output_dims(3, 7),
+        [7, 3, 16],
+        "seq-first：[seq, batch, hidden·2]"
+    );
+
+    let bf =
+        Recurrent::with_layout("r", Cell::Lstm, 16, 8, 1, 2, true, true).expect("合法");
+    assert_eq!(
+        bf.sequence_output_dims(3, 7),
+        [3, 7, 16],
+        "batch-first：[batch, seq, hidden·2]"
+    );
+}

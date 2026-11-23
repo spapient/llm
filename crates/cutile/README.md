@@ -1,8 +1,9 @@
 # cutile DSL —— 设备无关的替换式 kernel DSL
 
 > 版本 v1.1 · 2026-11-14 · 状态：P0 纵切面已落地，P1–P4 仍是 §17 的目标（替代 v0.3 的 `tess` 草案）
-> 落地位置：前端机制在 `crates/cutile`，执行半边（编译/见证/报告）在 `../optim`，
-> 三层数据在 `crates/op`、`crates/prof`、`crates/prim`；
+> 落地位置：前端机制在 `crates/cutile`，执行半边（编译/见证/报告）在 `crates/shard`
+> （extern 别名 `llm-optim`）；算子声明/模板/契约词汇/档案/片段在 `crates/prof`，
+> 注册表与标量参考在 `crates/nn`；
 > 本文只定义 cutile，不涉及运行时之外的训练/服务层
 > 本文既是本 crate 的 README，也是整条流水线的设计契约：§0 给结论与现状，§3–§12 给机制，
 > §13–§16 给预算与判据，附录给行数口径与复现命令；`tess` 仅作为历史代号保留
@@ -16,7 +17,7 @@
 三条边界先说清，后面所有取舍都由它们推导出来：
 
 1. **当前生产模板链路不做通用编译器。** 它仍是"展开 → 协商 → 替换 → 发出 → 缓存"；typed IR 正在逐族引入，f32 逐点与归约两种写回见 §10.3。它尚未接入设备执行，不能据此声称已有通用 pass 或自动布局推导。
-2. **不做通用算子。** 算子闭集今天 36 条声明（`op::REGISTRY` 是唯一事实源，本文不复述清单）、原语闭集 16 个、布局闭集 4 个、调度闭集 4 个、设备档案 ≤ 8 份。申请闭集之外的组合，显式报错并给出最近可行解，**绝不静默变慢**。
+2. **不做通用算子。** 算子闭集今天 36 条声明（`nn::registry::REGISTRY` 是唯一事实源，本文不复述清单）、原语闭集 16 个、布局闭集 4 个、调度闭集 4 个、设备档案 ≤ 8 份。申请闭集之外的组合，显式报错并给出最近可行解，**绝不静默变慢**。
 3. **设备无关是硬约束，不是卖点。** 同一份算子声明与同一份模板，必须能在 NVIDIA / AMD / Intel / Apple / 昇腾 / MUSA / CPU / 可移植 GPU 上产出可运行代码；任何"只在某一家的硬件上成立"的设计，直接出局。
 
 这三条对应三个已知的失败模式：CubeCL 用通用 IR 换覆盖面，代价是 30 万行；CuTile 用绑定单一硬件换表达力，代价是换不了设备；TileLang 用 pass 推导换易用性，代价是布局不可控。cutile 选的是第四条路：**声明足够窄，窄到可以穷举；穷举足够全，全到覆盖 LLM 的算子面。**
@@ -28,17 +29,17 @@
 
 | 维度 | 本文目标 | 当前实测 | 复核命令 |
 |---|---|---|---|
-| 算子声明 | 12 | **22** | `ls crates/op/ops/*.toml \| wc -l` |
-| 设备档案 | 8 | **6**：nvidia / intel / metal / ascend / musa / cpu | `ls crates/prof/devices/*.toml` |
+| 算子声明 | 12 | **22** | `ls crates/prof/src/ops/*.toml \| wc -l` |
+| 设备档案 | 8 | **6**：nvidia / intel / metal / ascend / musa / cpu | `ls crates/prof/src/<vendor>/*.toml` |
 | 原语闭集 | 16 | 16 | `prof::atom::Prim::ALL` |
-| 片段 | 16 × ≤8 | 6 厂商 × 9 段片段 + 见证 | `ls crates/prim/<vendor>/` |
-| 布局 / 调度 | 4 / 4 | 4 / 4 | `op::layout::LayoutSpec` / `op::sch::Schedule` |
+| 片段 | 16 × ≤8 | 6 厂商 × 9 段片段 + 见证 | `ls crates/prof/src/<vendor>/` |
+| 布局 / 调度 | 4 / 4 | 4 / 4 | `prof::sch::LayoutSpec` / `prof::sch::Schedule` |
 | 机制代码 | 9,520（预算） | 4,533 行（测试全部经 `#[path]` 挂在 `tests/`，`src/` 内零测试体） | `wc -l crates/cutile/src/*.rs` |
 | 用例 | — | 134 单测 + 2 doctest | `cargo test -p cutile --all-features` |
 
 **迁移记录（2026-11-22）**：`#[dsl]` → typed IR 已打通 f32 的两种写回（逐点 `output[idx] = expr` 与
 归约 `output[at] += expr`），外加把两个核拼成一个的 `Kernel::fuse`；包含结构校验、把代数定律与常量折叠
-合成一张定律表并在每个节点上跑到不动点的化简、死形参消除，以及两条发射：portable C 与经 `optim::ir` 接
+合成一张定律表并在每个节点上跑到不动点的化简、死形参消除，以及两条发射：portable C 与经 `shard::ir` 接
 `Lower` 的 `.k` 正文。前者用 `cc` 编译执行、与 Rust 参考实现逐位对拍；后者已接上设备 dispatch（Metal 等
 vendor 后端），但 `Image` 仍未接。它仍未替换旧模板链路。上表的 P0 数字是本次迁移前的基线，不能代表迁移
 后的代码量或执行覆盖率。
@@ -115,7 +116,7 @@ CPU 后端在本机（macOS / Apple clang）真实编译并执行，`max_rel_err
 2. **能力必须是参数化的，不是字符串。** `provides = ["mma"]` 这种写法无法表达"我的 MMA 只支持 m=16"；能力签名必须是 `(原语, 形状区间, 数据类型, 存储空间)`，协商做区间包含判断。
 3. **布局是契约，不是推导结果。** 布局只能四选一，写错写不出来的布局就写不出来；落到设备上的唯一硬约束（swizzle 粒度 ≤ bank 数）在构建期校验，不合就失败。
 4. **调度是枚举，不是搜索空间。** 4 个调度模板覆盖从 elementwise 到 ping-pong attention 的全部需要；用户选模板 + 填槽位，不写流水线。
-5. **正确性来自双源。** 每个算子在 `crates/op` 有一份与设备无关的标量参考实现（`op::model::Model::reference`），片段只与参考对拍；片段写错不会"看起来对"。
+5. **正确性来自双源。** 每个算子在 `crates/nn` 有一份与设备无关的标量参考实现，登记进 `prof::model::Model` 的 `reference` 入口；片段只与参考对拍；片段写错不会"看起来对"。
 6. **每个能力声明都要有见证。** 档案里写 `provides` 一律附带证据等级 L0–L3；`verify` 拒绝把 L1 当验证，缺设备时**失败而不是跳过**。
 7. **可解释性是产品能力。** 任何一次选择都必须能回答"为什么是这个变体、缓存为什么命中/失效、缺了哪个原子、最近的可行变体是什么"。
 
@@ -123,14 +124,14 @@ CPU 后端在本机（macOS / Apple clang）真实编译并执行，`max_rel_err
 
 ## 3. 架构：三层声明 + 三组闭集 + 一条 lowering
 
-三层数据分属三个 crate：**声明层**在 `crates/op`（`ops/`）、**档案层**在 `crates/prof`（`devices/`）、
-**片段层**在 `crates/prim`（`<vendor>/`），三者都是纯数据、不含机制；解析、协商、拼接、emit 全部在
-`crates/cutile`。依赖方向 `cutile → {op, prof, prim}`、`prim → prof`（片段文件名必须落在原语闭集内），
-`op` 与另外两者之间没有依赖。
+三层数据同属 `crates/prof`：**声明层** `src/ops/`（`.toml` 声明 + `.k` 模板）、**档案层**
+`src/<vendor>/<vendor>.toml`、**片段层** `src/<vendor>/<prim>.<ext>`，三者都是纯数据、不含机制；
+算子注册表与标量参考在 `crates/nn`。解析、协商、拼接、emit 全部在 `crates/cutile`，编译/执行/见证在
+`crates/shard`。依赖方向 `cutile → prof`、`prof → {diagnostic, dtype}`，互不反向。
 
 ```
         声明层（人写）                     档案层（每设备一份）              片段层（每原子每设备一段）
-   ops/<op>.toml   ops/<op>.k          devices/<vendor>.toml           prim/<vendor>/<prim>.<ext>
+   ops/<op>.toml   ops/<op>.k          <vendor>/<vendor>.toml           <vendor>/<prim>.<ext>
    骨架+轴+需求+布局   模板文本            指纹/存储/能力/工具链/证据         10–30 行的指令级实现
         │                 │                      │                              │
         └────────┬────────┴──────────┬───────────┴──────────────┬───────────────┘
@@ -152,46 +153,31 @@ CPU 后端在本机（macOS / Apple clang）真实编译并执行，`max_rel_err
 [`docs/ARCHITECTURE.md`](../../docs/ARCHITECTURE.md) 第一、二节。
 
 ```
-crates/op/                      # 声明层：纯数据 + 解析，不含机制
-├── Cargo.toml
-├── README.md                   # 两个文件各写什么、如何新增算子
-├── build.rs                    # ops/*.toml → $OUT_DIR/declared.rs（运行期无 TOML）
-├── ops/                        # 36 份声明（.toml 声明 + .k 模板成对出现）
-│   ├── attn_decode.toml        #   { skeleton, axes, needs, variants, layouts }
-│   └── attn_decode.k           #   模板文本（C 风格 + {{插值}} + @原语）
-└── src/
-    ├── lib.rs                  # REGISTRY / builtin / model；声明表来自构建期生成物
-    ├── decl.rs                 # OpDecl：轴展开、变体链、调用点参数校验
-    ├── tpl.rs                  # 模板词法：文本 / {{槽位}} / @原语(...)
-    ├── sig.rs                  # 能力签名的声明侧（与档案层同一张属性键表）
-    ├── sch.rs                  # 布局与调度的闭集（`layout` / `sch` 两个模块，4 + 4）
-    ├── model.rs                # 一条求和表达式 + 确定性样本 + 标量参考
-    ├── einsum.rs               # flops / bytes 由表达式与操作数位宽推出
-    └── <族>.rs                 # 算子族语义（f32_small / unary / elementwise / reduce / attention / gemv / gemm / dequant / scan），与 ops/<op>.k 对应
-
-crates/prof/                    # 档案层：纯数据，不含机制
+crates/prof/                    # 契约词汇 + 档案 + 片段：纯数据，不含协商/执行机制
 ├── Cargo.toml
 ├── README.md                   # 一份档案写什么、如何新增设备
-├── build.rs                    # devices/*.toml → $OUT_DIR/embedded.rs
-├── devices/                    # 6 份档案（目标 8）：ascend / cpu / intel / metal / musa / nvidia
+├── build.rs                    # 构建期生成 embedded.rs（档案）/ tables.rs（片段）/ declared.rs（算子声明）
 └── src/
-    ├── lib.rs                  # BUILTIN 内嵌档案与索引
-    ├── prof.rs                 # schema：指纹、存储、能力、证据等级
-    └── atom.rs                 # 词汇表：原语 / 存储 / 属性键 / 证据等级
+    ├── ops/                    # 算子语料：<stem>.toml 声明 + <stem>.k 模板成对出现
+    │   ├── attn_decode.toml   #   { skeleton, axes, needs, variants, layouts }
+    │   └── attn_decode.k       #   模板文本（C 风格 + {{插值}} + @原语）
+    ├── <vendor>/               # 六台设备：<vendor>.toml 档案 + <prim>.<ext> 片段 + witness.<ext>
+    │                           #   ascend / cpu / intel / metal / musa / nvidia
+    ├── atom.rs                 # 词汇表：16 原语、位集、AttrKey / Grade、Need / Provide / Span / KernelKey
+    ├── sig.rs / sch.rs / tpl.rs        # 签名 ABI、布局与调度闭集、模板词法
+    ├── decl.rs / ingest.rs              # OpDecl 轴展开/变体链、声明语料摄入
+    ├── model.rs / sample.rs / einsum.rs # 语义模型、确定性样本、代价表达式与求和语义
+    ├── operator.rs / epilogue.rs        # 算子契约、写回尾块文法
+    ├── prof.rs / schema.rs / decode.rs  # 档案 schema、推导式求值、表值解码
+    ├── catalogue.rs / need.rs / sign.rs # 算子目录、需求供给代数、片段签名行
+    ├── device.rs               # Device / Fragment / FragmentSet、装载与内置表
+    ├── witness.rs / annotate.rs         # 见证校验、闭集枚举宏
+    └── buildops.rs / buildtables.rs / buildimage.rs  # 构建期生成器
 
-crates/prim/                    # 片段层：纯数据，不含机制
-├── Cargo.toml
-├── README.md                   # 片段与见证各写什么、如何新增设备
-├── build.rs                    # <vendor>/<prim>.<ext> → $OUT_DIR/tables.rs
-├── cpu/                        # 9 段片段 + witness.c，文件名即原语名
-│   ├── dot.c
-│   ├── reduce.c
-│   └── witness.c               # 见证源码（L2 证据），装载片段时跳过
-├── nvidia/  intel/  metal/  ascend/   # 同构：cu / cl / metal / cpp（musa 同 cu）
+crates/nn/                      # 层定义 + 算子注册表 + 标量参考算术（kernel 家族）
 └── src/
-    ├── lib.rs                  # BUILTIN / WITNESS 查表、Fragment::parse（签名声明）
-    ├── device.rs               # 设备镜像：这次构建带上的源码与可选设备侧二进制
-    └── tables.rs               # 构建期生成物的 include! 落点（只有数据）
+    ├── registry.rs             # REGISTRY：名字 → prof::model::Model，与 prof::catalogue 按名对齐
+    └── kernel/                 # gemv / gemm / matmul 等参考实现与 SIMD/SME 通道
 
 crates/cutile/                  # 模板前端 + typed IR 迁移起点
 ├── Cargo.toml
@@ -212,10 +198,10 @@ crates/cutile/                  # 模板前端 + typed IR 迁移起点
     ├── reference.rs            # 对拍口径：相对误差 + 按数据类型的阈值
     ├── harness.rs              # 被测内核的 C / CUDA 基准封装生成（两种方言同模块）
     ├── dirs.rs                 # 三个目录的纯数据值对象（默认路径在调用方，本模块不读环境变量）
-    ├── probe.rs / space.rs     # 设备探测与形状空间（纯数据；起进程在 `optim`）
+    ├── probe.rs / space.rs     # 设备探测与形状空间（纯数据；起进程在 `shard`）
     └── lru.rs                  # 缓存条目的残留、锁状态与回收判据（`Residue` / `Gc` / `State`）
 
-crates/optim/                  # 执行半边：编译、执行、见证、语言门与四份报告
+crates/shard/                  # 执行半边：编译、执行、见证、语言门与四份报告（cli/device 以别名 llm-optim 引用）
 └── src/
     ├── toolchain.rs            # 编译器/驱动探测与身份（cc/clang/gcc、nvcc、xcrun metal、MSVC cl）
     ├── runner.rs               # 编译、执行与回读原语（可执行文件、Outcome、分位样本、位模式解码）
@@ -228,7 +214,7 @@ crates/optim/                  # 执行半边：编译、执行、见证、语�
     └── doctor.rs / verify.rs / bench.rs / execution.rs   # 命令策略与结构化报告
 ```
 
-前端与执行分处 `crates/cutile` 与 `../optim`，划线判据是**证据从哪来**：
+前端与执行分处 `crates/cutile` 与 `crates/shard`，划线判据是**证据从哪来**：
 前端只回答"这段源文本长什么样"，跨过 `witness` 之后必须有"这台机器上真的跑出过这个结果"。
 执行半边内部**分层不混**：`build` / `runner` / `toolchain` / `device` / `cap` / `cache` / `emit`
 是机制（决定"产物长什么样"），`doctor` / `verify` / `bench` / `execution` 是命令策略；`ledger` 跨档案聚合证据行与矩阵格，不经 `pipeline`
@@ -236,13 +222,13 @@ crates/optim/                  # 执行半边：编译、执行、见证、语�
 调用前者。这条接缝是可检验的：改"怎么审"不需要动任何一行生成逻辑，`pipeline.rs` 是唯一的
 共同入口——四条命令各写一遍流水线曾让同一台设备在两个命令里得出不同结论。
 
-闭集与解析不在本 crate：布局构造子、调度模板、模板词法、`OpDecl` 的解析都在 `crates/op`
-（`op::layout` / `op::sch` / `op::tpl` / `op::decl`）；`cutile::layout` 与 `cutile::sch` 是
+闭集与解析不在本 crate：布局构造子、调度模板、模板词法、`OpDecl` 的解析都在 `prof`
+（`prof::sch::layout` / `prof::sch` / `prof::tpl` / `prof::decl`）；`cutile::layout` 与 `cutile::sch` 是
 `pub use` 转发路径，模块路径不变，但闭集只有一份。命令行文法同样不在本 crate：它是
 `llm-cli::cutile` 的 `CutileCommand`，驱动方是 `llm-cli` 包的 `src/bin/cutile.rs`（L7 入口，只做
 解析 → `cutile` → 排版 → 退出码），因此 `cutile` 不再持有第二套命令语法或第二套输出排版。
 
-TOML 解析与运行时配置不在本 crate：它们是与领域无关的基础设施。语料（`ops/*.toml`、`devices/*.toml`）
+TOML 解析与运行时配置不在本 crate：它们是与领域无关的基础设施。语料（`ops/*.toml`、`<vendor>/*.toml`）
 在构建期由各自的 `build.rs` 解析成 `diagnostic::data` 的表，运行期没有任何 TOML 解析器
 （[ADR 0022](../../docs/adr/0022-build-time-corpora.md)）；
 配置策略同样不在本 crate：本 crate 只声明"我要哪三个目录"（`crate::dirs::Dirs`，纯数据），默认目录、
@@ -252,25 +238,26 @@ TOML 解析与运行时配置不在本 crate：它们是与领域无关的基础
 都不必改本 crate 一行。它曾在本 crate 的 `settings/` 里，删掉配置文件层（ADR 0022）之后
 剩下的三层不足以撑起一套分层机制，于是整块上移。
 
-声明层数据也不在本 crate：它在 `crates/op`（包名 `op`，只依赖 `std`），`cutile` 单向依赖它。
-因此新增算子、改声明或改模板都不必动本 crate 的代码，数据与机制不会混成一处。
-算子的**语义**同样在那里（`op::model`）：一条求和表达式、确定性样本、标量参考与内核实参——`cutile`
+声明层数据也不在本 crate：算子语料（`<stem>.toml` 声明 + `<stem>.k` 模板）与算子语义都在 `prof`，
+`cutile` 单向依赖它。因此新增算子、改声明或改模板都不必动本 crate 的代码，数据与机制不会混成一处。
+算子的**语义**同样在那里（`prof::model`）：一条求和表达式、确定性样本与内核实参——`cutile`
 只消费它们，代码里不出现任何算子名或算子专属的流量公式。`flops` 与 `bytes` 不再手写：它们由语义层
-`op::einsum` 从表达式与操作数位宽推出（`Cost` 的所有权在那里，`op::model` 只再导出）。
+`prof::einsum` 从表达式与操作数位宽推出（`Cost` 的所有权在那里，`prof::model` 只再导出）。
+标量参考算术在 `nn`，由 `prof::model::Model` 的 `reference` 入口登记。
 分组轴（`scales[n, g]` 的 `g = m/GROUP`）
 声明为派生轴，只计流量、不计运算次数——否则 roofline 的 `flops` 会多乘一个因子。
 
-档案层同理，在 `crates/prof`（包名 `prof`）：新增设备只加 `devices/<name>.toml` 并在
+档案层同理，在 `crates/prof`（包名 `llm-prof`）：新增设备只加 `src/<vendor>/<vendor>.toml` 并在
 `BUILTIN` 里补一行，`cutile` 侧一行不改。
 
-片段层在 `crates/prim`（包名 `prim`，只依赖 `prof` 的词汇表）：`<vendor>/<prim>.<ext>` 是"这条能力怎么写"。
-装载（`prim::builtin` / `prim::load`）随数据一起搬走，文件名不属于原语闭集即报错；`witness.<ext>`
+片段层同样在 `crates/prof`（`src/<vendor>/`，词汇表来自本 crate）：`<vendor>/<prim>.<ext>` 是"这条能力怎么写"。
+装载（`prof::device::builtin` / `prof::device::load`）随数据一起搬走，文件名不属于原语闭集即报错；`witness.<ext>`
 与片段同目录同扩展名，装载时按名字跳过。档案里的 `witness` 因此是**相对片段层根**的路径
-（仓库内根是 `crates/prim`，设置 `data.root` 时是 `<data.root>/prim`），`cutile` 不再需要知道自己
+（仓库内根是 `crates/prof/src/<vendor>`，设置 `data.root` 时是 `<data.root>/prim`），`cutile` 不再需要知道自己
 的清单目录在哪。
 
 每段片段的第一行是**签名声明** `/* cutile-sign: <prim>/<impl> */`：同一原语在档案里可以有多条
-签名（`dot` 的 `dp4a` 与标量 `fma`），片段只说"这段文本写的是哪一条"。`prim::Fragment::parse`
+签名（`dot` 的 `dp4a` 与标量 `fma`），片段只说"这段文本写的是哪一条"。`prof::device::Fragment::parse`
 在装载期解析它——缺声明、声明的原语与文件名不一致、`impl` 为空都直接报错；`Catalogue::validate`
 再用 `cap::fragment_gaps`（与 `negotiate` 同一张需求表、同一个 `select`）判定"协商会挑中的那条
 实现"是否正是"片段声明写的那条"。缺这一段时，"能协商"与"能生成"可以同时为真却指向不同的算法，
@@ -282,7 +269,7 @@ TOML 解析与运行时配置不在本 crate：它们是与领域无关的基础
 `crates/cutile` 已是 workspace 成员，继承 `version/edition/rust-version/license/repository` 与 `[lints] workspace = true`。`missing_docs`、`unsafe_op_in_unsafe_fn`、`clippy::all`+`cargo` 全部生效，因此本设计必须自带三条工程条款：
 
 - **unsafe 边界**：本 crate 不含 `unsafe`。`runner` 通过 `cc` 子进程编译并运行生成的源文件，不与设备 SDK 链接，因此没有需要白名单的 FFI 段；若将来引入真机驱动，`unsafe` 只允许出现在 `device` 编排模块的新增驱动段里，并且每个 `unsafe` 块必须写明安全前提（前条件、后条件、失败行为）。
-- **文档豁免**：`substitute.rs` / `emit.rs` 与 `cache.rs` 的私有项允许 `#[allow(missing_docs)]`，公开项不豁免；`crates/prim/**` 目标是 C/CL/MSL 源码，不受 Rust 文档检查约束。
+- **文档豁免**：`substitute.rs` / `emit.rs` 与 `cache.rs` 的私有项允许 `#[allow(missing_docs)]`，公开项不豁免；`crates/prof/src/<vendor>/**` 目标是 C/CL/MSL/CUDA 源码，不受 Rust 文档检查约束。
 - **配置边界**：依赖方向固定为 `llm → cutile → {op, prof, prim}`（命令策略与机制同处一个 crate；反向边不存在），其中 `prim → prof`（片段靠词汇表校验文件名），`op`/`prof`/`diagnostic` 之间互不依赖，任何一层都不得反向依赖 `cutile`。本 crate 不得自行读环境变量、不得拼相对路径、不得新增配置键：
   - 缓存目录、工作目录、可选数据根（`data.root`）以 `crate::dirs::Dirs` 传入，**纯数据**：内核不读环境变量、不拼默认路径；
   - 新增配置项的入口在 `llm-cli::settings` 的键表（一行一个）；`--set` 里未登记的键由那一层直接报错，本 crate 不认键名；
@@ -352,13 +339,13 @@ mma_share = 0.40
 要点：
 
 - `needs` 是**算子级公共需求**，`extra_needs` 是**变体级增量需求**，两者必须用同一套能力签名词汇（不是字符串数组）。`naive` 不需要 `shuffle`、也不需要 `load_async`——这一点必须能在数据里表达，否则协商对"降级"无效。
-- `mma_share` 是该变体在 roofline 模型里**落在 MMA 上的时间占比**：未掩盖的非 MMA 时间就是 `(1 - mma_share) / stages`。首选变体必须把它压到 20% 以内，否则装载期直接拒绝（判据在 `op::sch::check_masking`，见 §12.2）。
+- `mma_share` 是该变体在 roofline 模型里**落在 MMA 上的时间占比**：未掩盖的非 MMA 时间就是 `(1 - mma_share) / stages`。首选变体必须把它压到 20% 以内，否则装载期直接拒绝（判据在 `prof::sch::check_masking`，见 §12.2）。
 - **`schedule` 只进计划，不改正文**：`pipe<2>` / `pipe<3>` 是**建模**上的流水级数，掩盖账按它算；
   P0 的片段把 `load_async` 降成同步加载（档案据此登记 `stages = ["1"]`，见 §5），所以同一算子的
   `pipe2` 与 `direct` 生成的内核正文相同，差别只在头部的 `variant=` / `schedule=` 和 `plan` 行。
   真做多级预取要新增一条供给签名并升证据等级，而不是在需求的 `stages` 里填个大数字——填了只会让
   「已验证的供给必须有正文」这条闸亮红。
-- **调用点是签名的第二半**：模板里 `@原语(key: value)` 的命名参数会原样拼进片段文本，说的就是"这次生成用的是哪条签名"。若 `key` 属于能力属性闭集（`sat` / `op` / `axis` / `kind` / `accuracy` / `group` / `lanes` / `src` / `dst` / `stages` / `exec`），它必须在该变体的 `needs` / `extra_needs` 里声明且取值被允许，否则设备会按声明的值被验证、代码却按模板的值生成；闭集之外的命名参数（如 `along:`）是片段级提示，协商不检查它们，留给片段。判据在装载期（`op::decl::OpDecl::check_call_arguments`），错误带变体名、模板行号与原语名。
+- **调用点是签名的第二半**：模板里 `@原语(key: value)` 的命名参数会原样拼进片段文本，说的就是"这次生成用的是哪条签名"。若 `key` 属于能力属性闭集（`sat` / `op` / `axis` / `kind` / `accuracy` / `group` / `lanes` / `src` / `dst` / `stages` / `exec`），它必须在该变体的 `needs` / `extra_needs` 里声明且取值被允许，否则设备会按声明的值被验证、代码却按模板的值生成；闭集之外的命名参数（如 `along:`）是片段级提示，协商不检查它们，留给片段。判据在装载期（`prof::ingest` 的调用点参数校验），错误带变体名、模板行号与原语名。
 - `axes` 的笛卡尔积是**tile 候选**（≤ 8），`[[variants]]` 是**降级链**（≤ 8），两者不是同一维度：前者决定一次编译内的分块，后者决定用哪套调度。P0 只取笛卡尔积的**第一个**组合（轴取值的顺序即优先级，与降级链同一口径）；在候选之间比较需要占用率/分块收益这类可推导常数，P0 的档案里没有，所以不做（§9）。
 - 变体数上限 8；`axes` 乘积超过 8 直接拒绝，报错时给出建议剪掉的轴。
 - 为什么是 TOML 而不是 `#[op]` 过程宏：声明要可 diff、可被 `verify` 单独校验、不引入 `syn`/`quote` 依赖（见 §18 D3）。Rust 只在**新增骨架**时才写——骨架闭集只有 4 个，写满即止。
@@ -510,7 +497,7 @@ exec  = ["cube"]         # 加载期校验：cube 必须访问得到上面声明
 于是协商里没有厂商分支：`Need` 写 `exec = ["vector"]` 就是"我要 vector 实现的点积"，
 `Provide::covers` 用同一套集合/区间判定回答"有没有"；档案若写 `exec = ["cube"]` 却声明
 `space = ["GM"]`，加载期直接报 ``provides[dot].space：`cube` 访问不到 [GM]``，而不是等真机跑错。
-新增设备乃至新增一种执行单元都只改 `devices/<name>.toml`，`cutile` 一行不动。
+新增设备乃至新增一种执行单元都只改 `src/<vendor>/<vendor>.toml`，`cutile` 一行不动。
 
 ### 5.3 档案（`../prof/src/nvidia/nvidia.toml`）
 
@@ -594,7 +581,7 @@ witness = { file = "nvidia/witness.cu", func = "witness_mma", expect = [1.0] }
 
 ### 6.2 声明式与判定
 
-`[layouts]` 的取值就是闭集里的构造子本身：`op::layout::LayoutSpec` 负责解析、校验，并渲染回同一串文本
+`[layouts]` 的取值就是闭集里的构造子本身：`prof::sch::LayoutSpec` 负责解析、校验，并渲染回同一串文本
 （`row` / `col` / `swz<3,3,3>` / `pad(4)`）。这串文本既是模板插值（`{{w}}`）的内容，也是缓存键里的一项——
 布局在构建期的身份是**声明**，不是某个具体形状下的步长。
 
@@ -695,7 +682,7 @@ error: attn_decode 在 ascend(sm-) 上没有可行变体
     pipe3        ✗ （load_async 缺失）
     smem_only    ✓ （可用，预计 mma_share 0.61，比目标低 0.21）
     naive        ✓
-  建议：改用 smem_only（预计 -26% 峰值），或在 crates/prof/devices/ascend.toml 补 load_async 的 L2 见证
+  建议：改用 smem_only（预计 -26% 峰值），或在 crates/prof/src/ascend/ascend.toml 补 load_async 的 L2 见证
 ```
 
 每条诊断必须包含三件事：**缺什么原子**、**供给方实际是什么**、**最近的可行解与代价**。这三件事是 CubeCL（只报编译错）、TileLang（只报 pass 失败）、CuTile（只报 Tile IR 版本不符）都给不出的。
@@ -741,7 +728,7 @@ P3 的完成标准：表里出现至少一台设备的两个形状桶，且 `ben
 
 ### 9.1 融合与对拍契约
 
-`plan::fusions` 在一个半径 `ceil(√budget)` 的窗口里枚举候选，`op::decl::compose` 是唯一的判定者：生产者某个**写**槽位与消费者某个**读**槽位同名同类型才成一条缝（`Seam`），缝集非空才是一次融合（`Fusion`）。缝的名字可以不同——真值由 `reference::verify_fusion` 用自己的桥接缓冲补上。
+`plan::fusions` 在一个半径 `ceil(√budget)` 的窗口里枚举候选，`prof::decl::compose` 是唯一的判定者：生产者某个**写**槽位与消费者某个**读**槽位同名同类型才成一条缝（`Seam`），缝集非空才是一次融合（`Fusion`）。缝的名字可以不同——真值由 `reference::verify_fusion` 用自己的桥接缓冲补上。
 
 契约是**三段**，每一段都由 `crates/cutile/tests/reference_tests.rs` 执行，而不是写在注释里：
 
