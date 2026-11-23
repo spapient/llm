@@ -390,10 +390,22 @@ fn reference_block(
         ),
         BlockWeights::Int4((wq, sq), (wk, sk), (wv, sv), (wo, so)) => reference_block_core(
             input,
-            |q| nn::gemv_i4::forward(tensor::View::one(embedded), wq, tensor::View::one(sq), q).expect("参考 q"),
-            |k| nn::gemv_i4::forward(tensor::View::one(embedded), wk, tensor::View::one(sk), k).expect("参考 k"),
-            |v| nn::gemv_i4::forward(tensor::View::one(embedded), wv, tensor::View::one(sv), v).expect("参考 v"),
-            |attn, o| nn::gemv_i4::forward(tensor::View::one(attn), wo, tensor::View::one(so), o).expect("参考 o"),
+            |q| {
+                nn::gemv_i4::forward(tensor::View::one(embedded), wq, tensor::View::one(sq), q)
+                    .expect("参考 q")
+            },
+            |k| {
+                nn::gemv_i4::forward(tensor::View::one(embedded), wk, tensor::View::one(sk), k)
+                    .expect("参考 k")
+            },
+            |v| {
+                nn::gemv_i4::forward(tensor::View::one(embedded), wv, tensor::View::one(sv), v)
+                    .expect("参考 v")
+            },
+            |attn, o| {
+                nn::gemv_i4::forward(tensor::View::one(attn), wo, tensor::View::one(so), o)
+                    .expect("参考 o")
+            },
         ),
     }
 }

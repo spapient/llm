@@ -24,7 +24,12 @@ fn gemv_row_batch_runs_each_row_against_the_shared_weight() {
     let mut reference = vec![0.0; n * 2];
     for row in 0..2 {
         let xs = &x[row * m..(row + 1) * m];
-        nn::gemv_f32::forward(tensor::View::one(xs), &w, &mut reference[row * n..(row + 1) * n]).expect("参考行");
+        nn::gemv_f32::forward(
+            tensor::View::one(xs),
+            &w,
+            &mut reference[row * n..(row + 1) * n],
+        )
+        .expect("参考行");
     }
 
     let produced = run_gemv_rows(&x, &w, m, n, 2);
@@ -81,7 +86,13 @@ kernel_smoke!(
         let w = pack_codes(4, &[1, 2, 3, 4]);
         let scales = [0.5f32];
         let mut reference = vec![0.0; 1];
-        nn::gemv_i4::forward(tensor::View::one(&x), &w, tensor::View::one(&scales), &mut reference).expect("参考");
+        nn::gemv_i4::forward(
+            tensor::View::one(&x),
+            &w,
+            tensor::View::one(&scales),
+            &mut reference,
+        )
+        .expect("参考");
         bind(executor, 0, &x);
         bind_u8(executor, 1, &w);
         bind(executor, 2, &scales);
@@ -98,7 +109,13 @@ kernel_smoke!(
         let w: Vec<u8> = [1i8, 2, 3, 4].iter().map(|value| *value as u8).collect();
         let scales = [0.5f32];
         let mut reference = vec![0.0; 1];
-        nn::gemv_i8::forward(tensor::View::one(&x), &w, tensor::View::one(&scales), &mut reference).expect("参考");
+        nn::gemv_i8::forward(
+            tensor::View::one(&x),
+            &w,
+            tensor::View::one(&scales),
+            &mut reference,
+        )
+        .expect("参考");
         bind(executor, 0, &x);
         bind_u8(executor, 1, &w);
         bind(executor, 2, &scales);
@@ -172,7 +189,13 @@ kernel_smoke!(
         let w = pack_codes(2, &[1, -1, 0, 1]);
         let scales = [0.5f32];
         let mut reference = vec![0.0; 1];
-        nn::gemv_i2::forward(tensor::View::one(&x), &w, tensor::View::one(&scales), &mut reference).expect("参考");
+        nn::gemv_i2::forward(
+            tensor::View::one(&x),
+            &w,
+            tensor::View::one(&scales),
+            &mut reference,
+        )
+        .expect("参考");
         bind(executor, 0, &x);
         bind_u8(executor, 1, &w);
         bind(executor, 2, &scales);

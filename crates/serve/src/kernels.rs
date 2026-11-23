@@ -335,7 +335,12 @@ fn gemv_quant(
 ) -> Result<()> {
     let m = launch.block[1] as usize;
     if m == 0 || x.len() == m {
-        return single(tensor::View::one(x), weights, tensor::View::one(scales), out);
+        return single(
+            tensor::View::one(x),
+            weights,
+            tensor::View::one(scales),
+            out,
+        );
     }
     batch(
         x,

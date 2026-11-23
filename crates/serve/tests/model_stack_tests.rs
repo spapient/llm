@@ -121,7 +121,13 @@ fn a_quantized_int4_projection_assembles_and_matches_the_reference() {
     let w = pack_codes(4, &codes);
     let scales = [0.5f32];
     let mut reference = vec![0.0; 1];
-    nn::gemv_i4::forward(tensor::View::one(&x), &w, tensor::View::one(&scales), &mut reference).expect("参考");
+    nn::gemv_i4::forward(
+        tensor::View::one(&x),
+        &w,
+        tensor::View::one(&scales),
+        &mut reference,
+    )
+    .expect("参考");
 
     let stack = Stack::new(vec![
         Linear::with_format("blk.0", WeightFormat::INT4, 32, 1).expect("层"),
@@ -140,7 +146,13 @@ fn a_quantized_int8_projection_assembles_and_matches_the_reference() {
     let w: Vec<u8> = (0..32).map(|idx| ((idx as i8 % 5) - 2) as u8).collect();
     let scales = [0.5f32];
     let mut reference = vec![0.0; 1];
-    nn::gemv_i8::forward(tensor::View::one(&x), &w, tensor::View::one(&scales), &mut reference).expect("参考");
+    nn::gemv_i8::forward(
+        tensor::View::one(&x),
+        &w,
+        tensor::View::one(&scales),
+        &mut reference,
+    )
+    .expect("参考");
 
     let stack = Stack::new(vec![
         Linear::with_format("blk.0", WeightFormat::INT8, 32, 1).expect("层"),
@@ -162,7 +174,13 @@ fn a_quantized_int4_archive_loads_and_matches_the_reference() {
     let w = pack_codes(4, &codes);
     let scales = [0.25f32];
     let mut reference = vec![0.0; 1];
-    nn::gemv_i4::forward(tensor::View::one(&x), &w, tensor::View::one(&scales), &mut reference).expect("参考");
+    nn::gemv_i4::forward(
+        tensor::View::one(&x),
+        &w,
+        tensor::View::one(&scales),
+        &mut reference,
+    )
+    .expect("参考");
 
     let bytes = archive_of(&[
         ArchiveEntry {
