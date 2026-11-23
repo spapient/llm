@@ -1,7 +1,7 @@
 //! RMSNorm：`y[n] = gamma[n] * x[n] / sqrt(mean(x[0..n]^2) + eps)`。
 use crate::model::{Buf, Cost, Sample, ShapeCtx, Values, cost_n, x_buf};
 use diagnostic::{Code, Error};
-use tensor::{View, ViewMut};
+use tensor::View;
 
 /// 数值稳定项：均方根里加的小常数。
 pub const EPS: f32 = 1e-6;

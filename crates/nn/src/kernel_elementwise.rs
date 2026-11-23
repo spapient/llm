@@ -78,10 +78,11 @@ pub fn reference<B: Binary>(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
 pub fn forward<B: Binary>(
     a: View<'_, f32>,
     b: View<'_, f32>,
-    out: &mut [f32],
+    out: ViewMut<'_, f32>,
 ) -> diagnostic::Result<()> {
     let a = a.as_slice();
     let b = b.as_slice();
+    let out = out.into_slice_mut();
     if a.len() != b.len() || a.len() != out.len() {
         return Err(Error::new(
             Code::Invalid,
@@ -157,7 +158,7 @@ macro_rules! binary_f32 {
         /// # Errors
         ///
         /// 三个缓冲等长，否则返回说明。
-        pub fn forward(a: tensor::View<'_, f32>, b: tensor::View<'_, f32>, out: &mut [f32]) -> diagnostic::Result<()> {
+        pub fn forward(a: tensor::View<'_, f32>, b: tensor::View<'_, f32>, out: tensor::ViewMut<'_, f32>) -> diagnostic::Result<()> {
             $crate::elementwise::forward::<$name>(a, b, out)
         }
 

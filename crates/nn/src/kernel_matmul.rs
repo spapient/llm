@@ -31,7 +31,7 @@ use std::ops::Range;
 use diagnostic::{Code, Error, Result};
 
 use crate::model::{AxisRole, AxisSpec, Buf, Cost, Sample, ShapeCtx, Values};
-use tensor::{NumericElement, View};
+use tensor::{NumericElement, View, ViewMut};
 
 /// 取二维视图的 `(rows, cols)`；秩不符按算子名报错。矩阵乘族各出口共用这一处几何解包。
 pub(crate) fn dim2(dims: &[usize], op: &str) -> Result<(usize, usize)> {
@@ -390,8 +390,9 @@ fn check_tn_dims(x: &[f32], w: &[f32], rows: usize, n: usize, k: usize, out: &[f
 /// # Errors
 ///
 /// 三条缓冲长度与 `(rows, n, k)` 不符时返回说明。
-pub fn forward_tn_scalar(x: View<'_, f32>, w: View<'_, f32>, out: &mut [f32]) -> Result<()> {
+pub fn forward_tn_scalar(x: View<'_, f32>, w: View<'_, f32>, out: ViewMut<'_, f32>) -> Result<()> {
     let (rows, n, k) = tn_geom(x.dims(), w.dims())?;
+    let out = out.into_slice_mut();
     check_tn_dims(x.as_slice(), w.as_slice(), rows, n, k, out)?;
     matmul_tn_scalar(x.as_slice(), w.as_slice(), rows, n, k, out);
     Ok(())
@@ -402,8 +403,9 @@ pub fn forward_tn_scalar(x: View<'_, f32>, w: View<'_, f32>, out: &mut [f32]) ->
 /// # Errors
 ///
 /// 三条缓冲长度与 `(rows, n, k)` 不符时返回说明。
-pub fn forward_tn_tiled(x: View<'_, f32>, w: View<'_, f32>, out: &mut [f32]) -> Result<()> {
+pub fn forward_tn_tiled(x: View<'_, f32>, w: View<'_, f32>, out: ViewMut<'_, f32>) -> Result<()> {
     let (rows, n, k) = tn_geom(x.dims(), w.dims())?;
+    let out = out.into_slice_mut();
     check_tn_dims(x.as_slice(), w.as_slice(), rows, n, k, out)?;
     matmul_tn_tiled(x.as_slice(), w.as_slice(), rows, n, k, out);
     Ok(())
