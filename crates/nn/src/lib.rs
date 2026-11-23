@@ -42,18 +42,10 @@
 // nightly 上走手写车道，stable 上走 `kernel.rs` 里 `gemv::simd` 的标量退路，两边的能力差异
 // 只在「向量化没向量化」，不在语义。`rust-toolchain.toml` 不必把整个工作区钉在 nightly。
 //
-// `aarch64_unstable_target_feature` 与 `stdarch_aarch64_feature_detection` 这两个特性名**只在
-// aarch64 上存在**，x86_64 等目标直接声明就是 E0635，因此还要按架构门控；`portable_simd` 是
-// 架构无关的 16 车道 `std::simd` 源码，不按目标门控。
+// 本 crate 只用到 `portable_simd`（16 车道 `std::simd` 源码，架构无关，不按目标门控）。
+// SME（`sme`）与 i8 dotprod（`dotprod`）的 `target_feature` 与运行时探测门已随瓦片通道迁入
+// `prof::native`，各自在 `prof` 的 `lib.rs` 按 nightly + aarch64 声明，本 crate 不再持有。
 #![cfg_attr(nightly, feature(portable_simd))]
-#![cfg_attr(
-    all(nightly, target_arch = "aarch64"),
-    feature(aarch64_unstable_target_feature)
-)]
-#![cfg_attr(
-    all(nightly, target_arch = "aarch64"),
-    feature(stdarch_aarch64_feature_detection)
-)]
 
 // 生成的代码用 `::nn::..` 指回本 crate，因此 crate 内部也必须能按名字解析到自己：
 // 这样注解在 `nn` 自己身上（`lm_head` 模块里的 `LmHead`）与在下游 crate 里是同一套展开。

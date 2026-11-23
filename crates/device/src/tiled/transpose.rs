@@ -13,7 +13,7 @@ use diagnostic::{Code, Error, Result};
 /// # Errors
 ///
 /// `rows` 或 `cols` 为 0 时返回说明。
-pub fn metal_transpose_half(rows: usize, cols: usize) -> Result<String> {
+pub(crate) fn metal_transpose_half(rows: usize, cols: usize) -> Result<String> {
     if rows == 0 || cols == 0 {
         return Err(Error::new(Code::Invalid, "转置要求行列均非零")
             .with("engine::tiled::metal_transpose_half"));

@@ -27,7 +27,7 @@ fn scalar_params(signature: &Signature) -> Vec<&Param> {
 const TILED_SITE: &str = "engine::tiled::metal_tiled_gemm";
 
 /// 三条缓冲名（按签名序：A、B、Y）。
-fn gemm_bufs(signature: &Signature) -> Result<(&str, &str, &str)> {
+pub(crate) fn gemm_bufs(signature: &Signature) -> Result<(&str, &str, &str)> {
     match buf_params(signature).as_slice() {
         [a, b, y] => Ok((a.name.as_str(), b.name.as_str(), y.name.as_str())),
         _ => Err(Error::new(Code::Internal, "GEMM 签名需要 3 个缓冲（A/B/Y）").with(TILED_SITE)),
@@ -35,7 +35,7 @@ fn gemm_bufs(signature: &Signature) -> Result<(&str, &str, &str)> {
 }
 
 /// 三个整数标量 `(M, N, K)` 的样本值。
-fn gemm_dims(signature: &Signature, sample: &Sample) -> Result<(usize, usize, usize)> {
+pub(crate) fn gemm_dims(signature: &Signature, sample: &Sample) -> Result<(usize, usize, usize)> {
     match scalar_params(signature).as_slice() {
         [m, n, k] => Ok((dim(sample, m)?, dim(sample, n)?, dim(sample, k)?)),
         _ => {
@@ -50,7 +50,7 @@ fn dim(sample: &Sample, param: &Param) -> Result<usize> {
 }
 
 /// 四条缓冲名（按签名序：Q、K、V、Y）。
-fn attention_bufs(signature: &Signature) -> Result<(&str, &str, &str, &str)> {
+pub(crate) fn attention_bufs(signature: &Signature) -> Result<(&str, &str, &str, &str)> {
     match buf_params(signature).as_slice() {
         [q, k, v, y] => Ok((
             q.name.as_str(),
@@ -66,7 +66,7 @@ fn attention_bufs(signature: &Signature) -> Result<(&str, &str, &str, &str)> {
 }
 
 /// 两个整数标量 `(S, D)` 的样本值。
-fn attention_dims(signature: &Signature, sample: &Sample) -> Result<(usize, usize)> {
+pub(crate) fn attention_dims(signature: &Signature, sample: &Sample) -> Result<(usize, usize)> {
     match scalar_params(signature).as_slice() {
         [s, d] => Ok((dim(sample, s)?, dim(sample, d)?)),
         _ => Err(

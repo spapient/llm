@@ -5,14 +5,10 @@
 // nightly 上走手写车道，stable 上走 `gemv::simd` 的标量退路，两边的能力差异只在
 // 「向量化没向量化」，不在语义。这样 `rust-toolchain.toml` 不必把整个工作区钉在某个 nightly。
 //
-// 三个特性各自还有额外的门：
-// - `aarch64_unstable_target_feature`：放行 `#[target_feature(enable = "dotprod")]`（i8 `sdot` 通道）。
-// - `stdarch_aarch64_feature_detection`：放行运行时探测 `is_aarch64_feature_detected!("dotprod")`。
-//   上面这两个特性名**只在 aarch64 上存在**：x86_64 等其它目标根本不认识，直接声明会 E0635
-//   （unknown feature）。特性门不是惰性的，名字在编译目标上不认识就是硬错误，因此还要按架构门控。
-//   SME 通道本体已上提 `prof::native::sme`，它自己的 `sme` 特性门在 `prof` 的 `lib.rs` 声明。
-// - `portable_simd`：`std::simd`，用在 `gemv::simd` 的解包点积。**不按目标门控**，因为它是
-//   架构无关的 16 车道源码：aarch64 上落成 NEON、x86_64 上落成 SSE2 基线，两个目标编译的是同一份算术。
+// 本 crate 只用到 `portable_simd`（`std::simd`，用在 `gemv::simd` 的解包点积）。它**不按目标门控**：
+// 架构无关的 16 车道源码，aarch64 上落成 NEON、x86_64 上落成 SSE2 基线，两个目标编译同一份算术。
+// SME 与 i8 dotprod 通道本体已迁入 `prof::native`，各自的 `sme` / `dotprod` `target_feature` 与
+// 运行时探测门在 `prof` 的 `lib.rs` 按 nightly + aarch64 声明，本 crate 不再持有这些门。
 
 #[path = "kernel_dequant.rs"]
 pub mod dequant;
