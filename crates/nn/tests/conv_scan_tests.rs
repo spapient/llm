@@ -140,12 +140,12 @@ fn scan_loglog_slope() {
         let x: Vec<f32> = (0..n).map(|_| next_f32()).collect();
         let mut out = vec![0.0f32; n];
         for _ in 0..3 {
-            crate::conv::scan::f32::forward(&x, &mut out).expect("等长");
+            crate::conv::scan::f32::forward(tensor::View::one(x.as_slice()), &mut out).expect("等长");
         }
         let mut best = f64::INFINITY;
         for _ in 0..reps {
             let t = std::time::Instant::now();
-            crate::conv::scan::f32::forward(&x, &mut out).expect("等长");
+            crate::conv::scan::f32::forward(tensor::View::one(x.as_slice()), &mut out).expect("等长");
             best = best.min(t.elapsed().as_secs_f64());
         }
         fwd_points.push((n as f64, best));

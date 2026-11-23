@@ -9,8 +9,8 @@ fn rmsnorm_groups_batch_rows_against_the_single_row_reference() {
     for row in 0..2 {
         let start = row * 3;
         nn::rmsnorm_f32::forward(
-            &x[start..start + 3],
-            &gamma,
+            tensor::View::one(&x[start..start + 3]),
+            tensor::View::one(&gamma),
             &mut reference[start..start + 3],
         )
         .expect("参考：逐行归一化");
@@ -35,7 +35,7 @@ fn rope_rotates_batch_segments_by_the_position_table() {
         let start = seq * head_dim;
         nn::rope_f32::forward_heads(
             pos as usize,
-            &x[start..start + head_dim],
+            tensor::View::one(&x[start..start + head_dim]),
             &mut reference[start..start + head_dim],
             head_dim,
         )

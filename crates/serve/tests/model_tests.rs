@@ -337,16 +337,16 @@ fn reference_block_core(
     let mut v = vec![0.0; kv];
     project_v(&mut v);
     let mut q_rot = vec![0.0; kv];
-    nn::rope_f32::forward_heads(pos, &q, &mut q_rot, head_dim).expect("参考 rope q");
+    nn::rope_f32::forward_heads(pos, tensor::View::one(&q), &mut q_rot, head_dim).expect("参考 rope q");
     let mut k_rot = vec![0.0; kv];
-    nn::rope_f32::forward_heads(pos, &k, &mut k_rot, head_dim).expect("参考 rope k");
+    nn::rope_f32::forward_heads(pos, tensor::View::one(&k), &mut k_rot, head_dim).expect("参考 rope k");
     let mut attn = vec![0.0; kv];
     nn::conv::attention::decode_forward_heads(&q_rot, hist_k, hist_v, &mut attn, 1, hist, head_dim)
         .expect("参考注意力");
     let mut o = vec![0.0; hidden];
     project_o(&attn, &mut o);
     let mut residual = vec![0.0; hidden];
-    nn::residual_add_f32::forward(&o, embedded, &mut residual).expect("参考残差");
+    nn::residual_add_f32::forward(tensor::View::one(&o), tensor::View::one(embedded), &mut residual).expect("参考残差");
     (residual, k_rot, v)
 }
 
@@ -605,7 +605,7 @@ fn embed_table(vocab: usize, dim: usize) -> Vec<f32> {
 /// 串行参考：单 token 查表 → 投影一行；权重 `[out, in]`，输出宽 `w.len()/dim`。
 fn reference_row(table: &[f32], w: &[f32], token: u32, dim: usize) -> Vec<f32> {
     let mut embedded = vec![0.0; dim];
-    nn::embed_f32::forward(&[token as f32], table, &mut embedded).expect("参考查表");
+    nn::embed_f32::forward(tensor::View::one(&[token as f32]), tensor::View::one(table), &mut embedded).expect("参考查表");
     let mut out = vec![0.0; w.len() / dim];
     nn::gemv_f32::forward(&embedded, w, &mut out).expect("参考投影");
     out
@@ -644,7 +644,7 @@ fn memory_reference(
     dim: usize,
 ) -> Vec<f32> {
     let mut out = vec![0.0; dim];
-    nn::embed_f32::forward(&[token as f32], table, &mut out).expect("参考查表");
+    nn::embed_f32::forward(tensor::View::one(&[token as f32]), tensor::View::one(table), &mut out).expect("参考查表");
     let Some(slot) = nn::slot_of(history, order, seed, buckets) else {
         return out;
     };

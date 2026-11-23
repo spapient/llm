@@ -262,7 +262,7 @@ fn a_projection_then_unary_activation_matches_the_reference() {
 
     let hidden = gemv_hidden(&x, &w1);
     let mut reference = vec![0.0; 2];
-    nn::silu_f32::forward(&hidden, &mut reference).expect("参考：激活");
+    nn::silu_f32::forward(tensor::View::one(&hidden), &mut reference).expect("参考：激活");
 
     let stack = Stack::of(vec![
         Box::new(Linear::with_format("blk.0", WeightFormat::F32, 3, 2).expect("层")),
@@ -283,7 +283,7 @@ fn a_projection_then_rmsnorm_matches_the_reference() {
 
     let hidden = gemv_hidden(&x, &w1);
     let mut reference = vec![0.0; 2];
-    nn::rmsnorm_f32::forward(&hidden, &gamma, &mut reference).expect("参考：归一化");
+    nn::rmsnorm_f32::forward(tensor::View::one(&hidden), tensor::View::one(&gamma), &mut reference).expect("参考：归一化");
 
     let stack = Stack::of(vec![
         Box::new(Linear::with_format("blk.0", WeightFormat::F32, 3, 2).expect("层")),
@@ -332,7 +332,7 @@ fn a_binary_layer_takes_a_bypass_activation_matches_the_reference() {
 
     let hidden = gemv_hidden(&x, &w1);
     let mut reference = vec![0.0; 2];
-    nn::add_f32::forward(&hidden, &hidden, &mut reference).expect("参考：二元相加");
+    nn::add_f32::forward(tensor::View::one(&hidden), tensor::View::one(&hidden), &mut reference).expect("参考：二元相加");
 
     let stack = Stack::of(vec![
         Box::new(Linear::with_format("blk.0", WeightFormat::F32, 3, 2).expect("层")),
@@ -352,7 +352,7 @@ fn a_binary_mul_layer_takes_a_bypass_activation_matches_the_reference() {
 
     let hidden = gemv_hidden(&x, &w1);
     let mut reference = vec![0.0; 2];
-    nn::mul_f32::forward(&hidden, &hidden, &mut reference).expect("参考：二元相乘");
+    nn::mul_f32::forward(tensor::View::one(&hidden), tensor::View::one(&hidden), &mut reference).expect("参考：二元相乘");
 
     let stack = Stack::of(vec![
         Box::new(Linear::with_format("blk.0", WeightFormat::F32, 3, 2).expect("层")),
@@ -447,7 +447,7 @@ fn a_two_layer_composite_model_logits_match_the_reference() {
         sequence.len(),
     );
     let mut normed = vec![0.0; hidden];
-    nn::rmsnorm_f32::forward(&residual, &gamma, &mut normed).expect("参考归一化");
+    nn::rmsnorm_f32::forward(tensor::View::one(&residual), tensor::View::one(&gamma), &mut normed).expect("参考归一化");
     let mut reference = vec![0.0; out];
     nn::gemv_f32::forward(&normed, &w2, &mut reference).expect("参考输出投影");
 

@@ -102,7 +102,7 @@ macro_rules! kernel {
         fn $run(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
             let input = input_f32(stringify!($run), inputs, 0)?;
             let output = output_f32(stringify!($run), outputs, 0)?;
-            nn::$run::forward(input, output)
+            nn::$run::forward(tensor::View::one(input), output)
         }
     )*};
     ($($run:ident),* ; binary) => {$(
@@ -110,7 +110,7 @@ macro_rules! kernel {
             let left = input_f32(stringify!($run), inputs, 0)?;
             let right = input_f32(stringify!($run), inputs, 1)?;
             let output = output_f32(stringify!($run), outputs, 0)?;
-            nn::$run::forward(left, right, output)
+            nn::$run::forward(tensor::View::one(left), tensor::View::one(right), output)
         }
     )*};
 }
@@ -136,7 +136,7 @@ fn rmsnorm_f32(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]
     let x = input_f32("rmsnorm_f32", inputs, 0)?;
     let gamma = input_f32("rmsnorm_f32", inputs, 1)?;
     let out = output_f32("rmsnorm_f32", outputs, 0)?;
-    nn::rmsnorm_f32::forward_batch(x, gamma, out, gamma.len())
+    nn::rmsnorm_f32::forward_batch(tensor::View::one(x), tensor::View::one(gamma), out, gamma.len())
 }
 
 /// 注意力三路适配：`q/k/v → out`；头宽 `d` 取算子静态语义表，序列长 `s` 由 `q` 长推出，
@@ -382,7 +382,7 @@ dequant_packed!(dequant_i2, dequant_i4);
 fn dequant_i8(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
     let q = input_f32("dequant_i8", inputs, 0)?;
     let out = output_f32("dequant_i8", outputs, 0)?;
-    nn::dequant_i8::forward(nn::dequant_i8::SCALE, nn::dequant_i8::ZERO, q, out)
+    nn::dequant_i8::forward(nn::dequant_i8::SCALE, nn::dequant_i8::ZERO, tensor::View::one(q), out)
 }
 
 /// 量化 GEMM 算术入口：两路打包字节 + 静态几何 `(m, n)` → 浮点输出。
@@ -424,9 +424,9 @@ gemm_quant_kernel!(
 /// 按头宽选 RoPE 入口：头宽 0 或等于整段（单头）走单头旋转，否则按头分段重计频率。
 fn run_rope(pos: usize, x: &[f32], out: &mut [f32], head_dim: usize) -> Result<()> {
     if head_dim == 0 || head_dim == x.len() {
-        nn::rope_f32::forward(pos, x, out)
+        nn::rope_f32::forward(pos, tensor::View::one(x), out)
     } else {
-        nn::rope_f32::forward_heads(pos, x, out, head_dim)
+        nn::rope_f32::forward_heads(pos, tensor::View::one(x), out, head_dim)
     }
 }
 
@@ -450,7 +450,7 @@ fn rope_f32(launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) ->
 /// 批位置表通道：`positions[b]` 折 usize，段内复用多头旋转编排。
 fn rope_batch(table: &[f32], x: &[f32], out: &mut [f32], head_dim: usize) -> Result<()> {
     let positions: Vec<usize> = table.iter().map(|&pos| pos as usize).collect();
-    nn::rope_f32::forward_batch(&positions, x, out, head_dim)
+    nn::rope_f32::forward_batch(&positions, tensor::View::one(x), out, head_dim)
 }
 
 /// 单序列标量槽通道：未填位置给 `Invalid`；头宽 0 或等于整段走单头旋转。

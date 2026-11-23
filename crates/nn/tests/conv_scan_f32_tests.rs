@@ -5,7 +5,7 @@ fn scan_matches_the_scalar_reference() {
     let sample = sample(128, 1);
     let expected = reference(&sample).expect("参考可计算");
     let mut out = vec![0.0; 128];
-    forward(sample.f32("x").expect("x"), &mut out).expect("等长");
+    forward(tensor::View::one(sample.f32("x").expect("x")), &mut out).expect("等长");
     assert_eq!(out, expected);
 }
 
@@ -14,12 +14,12 @@ fn scan_matches_the_scalar_reference() {
 fn scan_rejects_mismatched_output_length() {
     let mut out = vec![0.0; 3];
     assert!(
-        forward(&[1.0, 2.0], &mut out).is_err(),
+        forward(tensor::View::one(&[1.0, 2.0]), &mut out).is_err(),
         "输出比输入长必须拒绝"
     );
     let mut short = vec![0.0; 1];
     assert!(
-        forward(&[1.0, 2.0, 3.0], &mut short).is_err(),
+        forward(tensor::View::one(&[1.0, 2.0, 3.0]), &mut short).is_err(),
         "输出比输入短必须拒绝"
     );
 }
@@ -31,7 +31,7 @@ fn scan_is_geometric_decay_for_impulse() {
     let x = [1.0f32, 0.0, 0.0, 0.0, 0.0];
     let expected = [1.0f32, 0.5, 0.25, 0.125, 0.0625];
     let mut out = vec![0.0; x.len()];
-    forward(&x, &mut out).expect("等长");
+    forward(tensor::View::one(&x), &mut out).expect("等长");
     for (idx, (got, want)) in out.iter().zip(expected).enumerate() {
         assert!((got - want).abs() < 1e-6, "第 {idx} 步：{got} vs {want}");
     }
@@ -41,7 +41,7 @@ fn scan_is_geometric_decay_for_impulse() {
 #[test]
 fn scan_allows_empty_sequence() {
     let mut out = vec![];
-    forward(&[], &mut out).expect("空序列放行");
+    forward(tensor::View::one(&[]), &mut out).expect("空序列放行");
     assert_eq!(reference(&sample(0, 1)).expect("空参考"), Vec::<f32>::new());
 }
 
@@ -61,9 +61,9 @@ fn m11_prefix_is_invariant_to_future_tokens() {
     let full: Vec<f32> = (0..256).map(|_| next()).collect();
     for t in [1usize, 7, 31, 64, 127, 255] {
         let mut prefix_out = vec![0.0f32; t];
-        forward(&full[..t], &mut prefix_out).expect("等长");
+        forward(tensor::View::one(&full[..t]), &mut prefix_out).expect("等长");
         let mut full_out = vec![0.0f32; full.len()];
-        forward(&full, &mut full_out).expect("等长");
+        forward(tensor::View::one(full.as_slice()), &mut full_out).expect("等长");
         assert_eq!(
             &full_out[..t],
             prefix_out.as_slice(),

@@ -113,8 +113,18 @@ struct Entry {
 }
 
 /// 标量内核表：算子名由适配函数的标识符派生（两者同名是同一条判据）。
-/// 一元 `[f32] → [f32]` 适配：套用算子的标量实现。
+/// 一元 `[f32] → [f32]` 适配：套用算子的标量实现，输入包成只读张量视图。
 macro_rules! unary {
+    ($($run:ident => $module:ident),* $(,)?) => {$(
+        fn $run(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+            let (a,) = <(f32,) as Inputs>::unpack(inputs, stringify!($run))?;
+            nn::$module::forward(tensor::View::one(a), output_slice::<f32>(stringify!($run), output)?)
+        }
+    )*};
+}
+
+/// 尚未接张量视图的一元族（多维 pool / 插值，几何仍走标量参数）：输入保持裸切片。
+macro_rules! unary_raw {
     ($($run:ident => $module:ident),* $(,)?) => {$(
         fn $run(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
             let (a,) = <(f32,) as Inputs>::unpack(inputs, stringify!($run))?;
@@ -123,12 +133,12 @@ macro_rules! unary {
     )*};
 }
 
-/// 二元 `[f32, f32] → [f32]` 适配。
+/// 二元 `[f32, f32] → [f32]` 适配：两个输入都包成只读张量视图。
 macro_rules! binary {
     ($($run:ident),* $(,)?) => {$(
         fn $run(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
             let (a, b) = <(f32, f32) as Inputs>::unpack(inputs, stringify!($run))?;
-            nn::$run::forward(a, b, output_slice::<f32>(stringify!($run), output)?)
+            nn::$run::forward(tensor::View::one(a), tensor::View::one(b), output_slice::<f32>(stringify!($run), output)?)
         }
     )*};
 }
@@ -158,18 +168,20 @@ macro_rules! gemm {
     )*};
 }
 
-unary!(
+unary_raw!(
     adaptive_pool_f32 => adaptive_pool,
     avg_pool2d_f32 => avg_pool2d,
+    interpolate_f32 => interpolate,
+    max_pool1d_f32 => max_pool1d,
+    max_pool2d_f32 => max_pool2d
+);
+unary!(
     exp_f32 => exp_f32,
     gelu_f32 => gelu_f32,
     hard_sigmoid_f32 => hard_sigmoid_f32,
     leaky_relu_f32 => leaky_relu_f32,
     relu_f32 => relu_f32,
-    interpolate_f32 => interpolate,
     log_f32 => log_f32,
-    max_pool1d_f32 => max_pool1d,
-    max_pool2d_f32 => max_pool2d,
     silu_f32 => silu_f32,
     softmax_f32 => softmax_f32,
     reduce_max_f32 => reduce_max_f32,
@@ -338,12 +350,24 @@ macro_rules! dequant {
     )*};
 }
 
-dequant!((dequant_i2, u8), (dequant_i4, u8), (dequant_i8, f32));
+dequant!((dequant_i2, u8), (dequant_i4, u8));
+
+/// i8 反量化：f32 承载量化整数，输入包只读张量视图。
+fn dequant_i8(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+    let (q,) = <(f32,) as Inputs>::unpack(inputs, "dequant_i8")?;
+    let out = output_slice::<f32>("dequant_i8", output)?;
+    nn::dequant_i8::forward(
+        nn::dequant_i8::SCALE,
+        nn::dequant_i8::ZERO,
+        tensor::View::one(q),
+        out,
+    )
+}
 
 /// `[a: f32] → y: f32`：位置取样本约定的 7。
 fn rope_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
     let (a,) = <(f32,) as Inputs>::unpack(inputs, "rope_f32")?;
-    nn::rope_f32::forward(7, a, output_slice::<f32>("rope_f32", output)?)
+    nn::rope_f32::forward(7, tensor::View::one(a), output_slice::<f32>("rope_f32", output)?)
 }
 
 /// 标量内核表：长度就是 [`nn::registry::REGISTRY`] 的长度，名字与顺序由下面的 `const` 断言锁住。

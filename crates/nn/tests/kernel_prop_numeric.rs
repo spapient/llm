@@ -22,19 +22,19 @@ use testkit::prop;
 /// 走一遍 softmax 并把结果拿出来；长度合法由调用方保证。
 fn softmax(x: &[f32]) -> Vec<f32> {
     let mut out = vec![0.0; x.len()];
-    softmax_f32::forward(x, &mut out).expect("等长");
+    softmax_f32::forward(tensor::View::one(x), &mut out).expect("等长");
     out
 }
 
 fn rmsnorm(x: &[f32], gamma: &[f32]) -> Vec<f32> {
     let mut out = vec![0.0; x.len()];
-    rmsnorm_f32::forward(x, gamma, &mut out).expect("等长");
+    rmsnorm_f32::forward(tensor::View::one(x), tensor::View::one(gamma), &mut out).expect("等长");
     out
 }
 
 fn rope(pos: usize, x: &[f32]) -> Vec<f32> {
     let mut out = vec![0.0; x.len()];
-    rope_f32::forward(pos, x, &mut out).expect("等长");
+    rope_f32::forward(pos, tensor::View::one(x), &mut out).expect("等长");
     out
 }
 

@@ -71,7 +71,7 @@ fn gelu_delegates_to_unary_kernel() {
     let mut out = input;
     apply(&steps, &mut out, 5, None, None).unwrap();
     let mut reference = input;
-    crate::gelu_f32::forward(&input, &mut reference).unwrap();
+    crate::gelu_f32::forward(tensor::View::one(&input), &mut reference).unwrap();
     assert_eq!(out, reference);
 }
 

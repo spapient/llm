@@ -500,9 +500,9 @@ fn a_three_operator_chain_runs_forward_through_the_reference_kernel() {
     let mut h_ref = vec![0.0f32; N];
     nn::gemv_f32::forward(&input, &weights, &mut h_ref).expect("gemv 参考");
     let mut r_ref = vec![0.0f32; N];
-    nn::rope_f32::forward(7, &h_ref, &mut r_ref).expect("rope 参考");
+    nn::rope_f32::forward(7, tensor::View::one(&h_ref), &mut r_ref).expect("rope 参考");
     let mut expected = vec![0.0f32; N];
-    nn::softmax_f32::forward(&r_ref, &mut expected).expect("softmax 参考");
+    nn::softmax_f32::forward(tensor::View::one(&r_ref), &mut expected).expect("softmax 参考");
 
     assert_eq!(
         f32s(&store, p),
