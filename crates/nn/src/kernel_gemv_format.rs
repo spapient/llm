@@ -7,6 +7,7 @@
     use super::forward::{forward_dense, forward_rows, scaled_dot};
     use super::packed;
     use super::shape::non_empty;
+    use tensor::View;
 
     /// 权重元素：进样本、读缓冲、拼 `_Generic` 三处都按它分派。
     pub trait Element: Copy + PartialEq + std::fmt::Debug + 'static {
@@ -130,10 +131,13 @@
         fn weights(m: usize, n: usize) -> Vec<Self::Elem>;
 
         /// 内核本体：`m = x.len()`、`n = out.len()`，结果写进调用方给的缓冲。
+        ///
+        /// 激活 `x` 与标度 `scales` 是普通 `f32` 元素，包成只读张量视图；权重按位宽打包或
+        /// 位模式承载，保持裸切片（亚字节/重解释语义不进 tensor 元素集）。
         fn forward(
-            x: &[f32],
+            x: View<'_, f32>,
             weights: &[Self::Elem],
-            scales: &[f32],
+            scales: View<'_, f32>,
             out: &mut [f32],
         ) -> diagnostic::Result<()>;
     }
@@ -208,12 +212,12 @@
         }
 
         fn forward(
-            x: &[f32],
+            x: View<'_, f32>,
             weights: &[u8],
-            scales: &[f32],
+            scales: View<'_, f32>,
             out: &mut [f32],
         ) -> diagnostic::Result<()> {
-            packed::forward_rows(x, weights, scales, out, P::ROW.cpb, P::ROW.table)
+            packed::forward_rows(x.as_slice(), weights, scales.as_slice(), out, P::ROW.cpb, P::ROW.table)
         }
     }
 
