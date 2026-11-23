@@ -107,7 +107,7 @@ pub fn forward<B: Binary>(
 macro_rules! binary_f32 {
     (
         $name:ident, $alias:ident, $op:tt, $kind:ident,
-        $apply:expr
+        $apply:expr, $diff:literal
         $(, $input_a:expr, $input_b:expr)?
     ) => {
         #[doc = concat!("`", $op, "` 的标记类型：逐元素二元运算见 `apply`，骨架见 `crate::elementwise`。")]
@@ -143,7 +143,7 @@ macro_rules! binary_f32 {
             $op,
             2,
             (4096, 4096),
-            true,
+            $diff,
             super,
             $crate::elementwise::AXES
         );
@@ -165,6 +165,16 @@ macro_rules! binary_f32 {
         mod tests {
             use super::*;
             $crate::elementwise::test_support::$kind!($name, forward);
+        }
+    };
+    // 缺省可微：既有算子沿用 `true`；不可微调子在显式位传 `false`。
+    (
+        $name:ident, $alias:ident, $op:tt, $kind:ident,
+        $apply:expr
+        $(, $input_a:expr, $input_b:expr)?
+    ) => {
+        $crate::binary_f32! {
+            $name, $alias, $op, $kind, $apply, true $(, $input_a, $input_b)?
         }
     };
 }
@@ -229,5 +239,18 @@ pub mod residual_add_f32 {
         |x, y| x + y,
         |len| (0..len).map(|i| (i as f32) * 0.5).collect(),
         |len| (0..len).map(|i| (i as f32) * 0.25).collect()
+    );
+}
+
+pub mod remainder_f32 {
+    //! 逐元素余数：`y[n] = a[n] % b[n]`（余数符号同被除数，IEEE 余数语义）。
+
+    crate::binary_f32!(
+        Remainder,
+        RemainderF32,
+        "remainder_f32",
+        elementwise_pair_tests,
+        |x, y| x % y,
+        false
     );
 }

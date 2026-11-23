@@ -7,8 +7,8 @@
 //!
 //! # 训练样本
 //!
-//! **拥有**：`Batch`、`Dataset`、`Chunks`。**不拥有**：分词（`tokenizer`）、打乱、打包与训练/验证集
-//! 切分（打乱与打包只改变 [`Chunks`] 里游标的推进方式，切分是调用方按行区间的选择）。
+//! **拥有**：`Batch`、`Dataset`、`Chunks`、`Loader`、`LoaderConfig`。**不拥有**：分词（`tokenizer`）、
+//! 打乱、打包与训练/验证集切分（打乱与打包只改变 [`Chunks`] 里游标的推进方式，切分是调用方按行区间的选择）。
 //!
 //! 契约的重点是"形状即校验"：`rows * cols` 必须等于 token 数，否则训练循环会在第 N 步才发现
 //! 偏移错位——那时已经烧掉了几个小时。两个构造函数共用同一份几何校验（行列非零、乘积不溢出），
@@ -195,7 +195,11 @@ impl<K: Kernel, O: Optimizer, C: Collective> Learner<K, O, C> {
     /// # Errors
     ///
     /// 批几何、前向或评估入账任一步失败都会透传；评估几何不自洽是 [`Code::Invalid`]。
-    pub fn evaluate<'a, F>(&mut self, dataset: &mut dyn Dataset<'a, Item = u32>, mut forward: F) -> Result<()>
+    pub fn evaluate<'a, F>(
+        &mut self,
+        dataset: &mut dyn Dataset<'a, Item = u32>,
+        mut forward: F,
+    ) -> Result<()>
     where
         F: FnMut(&mut Session<K, O, C>, &[u32]) -> Result<ForwardOut>,
     {

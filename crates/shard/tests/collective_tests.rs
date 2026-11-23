@@ -252,7 +252,10 @@ fn a_width_mismatch_is_refused_on_both_sides() {
             .code(),
         Code::Invalid
     );
-    assert_eq!(Local::<f32>::new(topology(), 0).unwrap_err().code(), Code::Invalid);
+    assert_eq!(
+        Local::<f32>::new(topology(), 0).unwrap_err().code(),
+        Code::Invalid
+    );
 }
 
 /// [`Local::reduce_into`] 是 [`Local::reduce`] 不分配的那条路径，[`Collective::all_reduce`] 走它。

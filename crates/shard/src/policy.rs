@@ -46,7 +46,7 @@ impl Priority {
     }
 
     /// 由短名反解；未知短名返回 `None`。
-    pub fn from_str(value: &str) -> Option<Self> {
+    pub fn from_name(value: &str) -> Option<Self> {
         Self::ALL
             .into_iter()
             .find(|priority| priority.as_str() == value)
@@ -163,3 +163,7 @@ impl Default for ParallelConfig {
         Self::single()
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/policy_tests.rs"]
+mod tests;

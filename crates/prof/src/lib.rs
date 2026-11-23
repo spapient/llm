@@ -81,6 +81,7 @@ mod annotate;
 // 拆成两个 crate 只会让这份语言多一层转发（`pub use spec::…`，一行代码也没少），
 // 所以词汇随档案落地：`prof::atom` / `prof::sig` / `prof::model` 是它唯一的公开路径。
 pub mod atom;
+pub mod capability;
 pub mod einsum;
 pub mod epilogue;
 pub mod model;

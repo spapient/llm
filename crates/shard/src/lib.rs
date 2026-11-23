@@ -98,13 +98,13 @@ macro_rules! refuse_at {
 }
 
 mod collective;
+mod policy;
 mod tiling;
 mod topology;
-mod policy;
 
 mod remote;
 
-pub use collective::{Collective, Group, Local, Reduce, Remote};
+pub use collective::{Collective, Group, Local, Reduce, ReduceScalar, Remote};
 pub use policy::{ParallelConfig, Priority};
 pub use remote::FileRemote;
 pub use tiling::{Sharding, Tiling};

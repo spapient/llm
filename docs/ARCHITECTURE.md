@@ -173,6 +173,7 @@ testkit    → （叶    +dev: autograd, cutile, nn, prof, tensor, tools, train,
 | `Local` | `shard` | 进程内集合通信：每个 rank 一份镜像，让 TP/DP 的数值语义在没有 NCCL 的机器上也能被 `cargo test` 验证 |
 | `Remote` / `FileRemote` | `shard` | 远端集合通信：`Remote` 是未挂载占位（同一 `Collective` 端口，`all_reduce` 返回 `Unsupported` 且不改动调用方缓冲），`FileRemote` 是文件传输的真实实现（`world × width` 槽位、小端字节序、跨进程、无 `unsafe`） |
 | `RuntimeConfig` / `LanguageFront` | `shard` | 运行时可配置旋钮（纯数据，由 `cli` 注入）：各语言语法门、host 自检参数、L3 达成率门槛、缓存锁等待；codegen 常量（`POINT_THREADS` 等）不进这里 |
+| `ReduceScalar` / `ParallelConfig` / `Priority` | `shard` | 集合通信元素档约束（加法/乘法/偏序/中立元，浮点极值传播 NaN）；并行策略纯数据（TP/PP/DP 度数、归约种类、平均开关、调度优先级），由 `Distributed` 装配；只持部署形态，不读 toml、不发起通信。约束自包含在 shard，不反向依赖 `tensor` 元素层级 |
 | `Snapshot` / `Format` / `Facts` | `storage`（`snapshot` 模块） | 检查点字节格式与恢复事实：字节只写相对上一条的差、尾部 CRC-32；`verify` 只验字节，`check_weights` 要求条目表与权重文件逐条相同。不依赖任何训练侧类型，写出同样的字节即可换掉实现 |
 | `Moments` / `SlotMoments` / `GradAccum` / `Ties` | `storage`（`snapshot` 模块） | 快照携带的优化器状态段：矩状态按槽位自持、累积梯度带计数、权重绑定表是 `(源槽, 回填槽)` 下标对；编解码与字节格式同源，训练侧只读写不重新定义 |
 | `Schedule` / `Anneal` / `Step` / `Session` / `TrainConfig` / `ParamSlot` / `Checkpoint` / `Distributed` | `train` | 训练循环状态：纯函数学习率调度与衰减曲线、一次会话复用同一张图 / 缓冲 / 优化器、参数槽与分布式装配（后端契约在 `shard`） |

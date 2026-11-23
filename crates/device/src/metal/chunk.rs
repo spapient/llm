@@ -6,7 +6,7 @@ use prof::model::Sample;
 use prof::sig::Signature;
 
 use crate::dialect::{
-    EXPSUM, Dialect, Metal, NORM, PARTIAL, SCAN_CORRECT, chunk_head, length_scalar, scalar_name,
+    Dialect, EXPSUM, Metal, NORM, PARTIAL, SCAN_CORRECT, chunk_head, length_scalar, scalar_name,
     scan_correct_body,
 };
 

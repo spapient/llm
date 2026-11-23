@@ -6,8 +6,8 @@ use crate::backends::common::{
     witness_readback,
 };
 use crate::platform::{detect_musa, detect_nvcc, find_cl, musa_device};
-use diagnostic::{Code, Error, Result};
 use cutile::dirs::Dirs;
+use diagnostic::{Code, Error, Result};
 use llm_optim::backend::{Backend, Codegen, Driver, Launch, Lower, Readback, Source};
 use llm_optim::driver;
 use llm_optim::toolchain::Toolchain;

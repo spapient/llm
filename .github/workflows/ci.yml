@@ -239,6 +239,10 @@ jobs:
         run: cargo llvm-cov nextest -p llm-dtype --all-features --locked --fail-under-lines 88 --fail-under-functions 88
       - name: Coverage floor (weights)
         run: cargo llvm-cov nextest -p llm-weights --all-features --locked --fail-under-lines 70 --fail-under-functions 64
+      # 门禁 crate：纯 Rust 无平台探测分支。本地干净基线行 94.5% / 函数 94.9%，下限留单次样本波动余量，
+      # 只防整体回退；every_source 全仓门的红绿由存量债负责，不在本覆盖率门口径内。
+      - name: Coverage floor (tools)
+        run: cargo llvm-cov nextest -p llm-tools --all-features --locked --fail-under-lines 88 --fail-under-functions 85
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
         with:

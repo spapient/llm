@@ -182,10 +182,68 @@ pub enum Expr {
         right: Box<Expr>,
     },
 }
+impl Expr {
+    /// 直接子节点（按发射顺序）；叶子返回空表。只读遍历走这里，重建见 [`map_children`]。
+    pub(crate) fn children(&self) -> Vec<&Expr> {
+        match self {
+            Expr::Neg(value) | Expr::Abs(value) => vec![value.as_ref()],
+            Expr::Binary { left, right, .. }
+            | Expr::Min { left, right }
+            | Expr::Max { left, right } => vec![left.as_ref(), right.as_ref()],
+            Expr::Fma { a, b, c } => vec![a.as_ref(), b.as_ref(), c.as_ref()],
+            Expr::F32(_) | Expr::Scalar(_) | Expr::Load(_) => Vec::new(),
+        }
+    }
 
+    /// 逐子节点应用 `map`，再按原变体重建；叶子原样返回。
+    pub(crate) fn map_children(&self, map: &mut dyn FnMut(&Expr) -> Expr) -> Expr {
+        let rebuilt: Vec<Expr> = self.children().iter().map(|child| map(child)).collect();
+        match rebuilt.len() {
+            0 => self.clone(),
+            1 => self.rebuild_unary(&rebuilt),
+            2 => self.rebuild_binary(&rebuilt),
+            _ => self.rebuild_ternary(&rebuilt),
+        }
+    }
 
+    fn rebuild_unary(&self, c: &[Expr]) -> Expr {
+        match self {
+            Expr::Neg(_) => Expr::Neg(Box::new(c[0].clone())),
+            Expr::Abs(_) => Expr::Abs(Box::new(c[0].clone())),
+            _ => self.clone(),
+        }
+    }
 
+    fn rebuild_binary(&self, c: &[Expr]) -> Expr {
+        match self {
+            Expr::Binary { op, .. } => Expr::Binary {
+                op: *op,
+                left: Box::new(c[0].clone()),
+                right: Box::new(c[1].clone()),
+            },
+            Expr::Min { .. } => Expr::Min {
+                left: Box::new(c[0].clone()),
+                right: Box::new(c[1].clone()),
+            },
+            Expr::Max { .. } => Expr::Max {
+                left: Box::new(c[0].clone()),
+                right: Box::new(c[1].clone()),
+            },
+            _ => self.clone(),
+        }
+    }
 
+    fn rebuild_ternary(&self, c: &[Expr]) -> Expr {
+        match self {
+            Expr::Fma { .. } => Expr::Fma {
+                a: Box::new(c[0].clone()),
+                b: Box::new(c[1].clone()),
+                c: Box::new(c[2].clone()),
+            },
+            _ => self.clone(),
+        }
+    }
+}
 
 /// Verification failure for malformed or unsupported typed IR.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -555,15 +613,24 @@ fn write_compound(source: &mut String, expression: &Expr, idx: &str) {
             source.push(')');
         }
         Expr::Binary { op, left, right } => write_binary(source, *op, left, right, idx),
-        Expr::Abs(value) => write_call(source, "fabsf", &[value.as_ref()], idx),
-        Expr::Fma { a, b, c } => write_call(source, "fmaf", &[a.as_ref(), b.as_ref(), c.as_ref()], idx),
-        Expr::Min { left, right } => write_call(source, "fminf", &[left.as_ref(), right.as_ref()], idx),
-        Expr::Max { left, right } => write_call(source, "fmaxf", &[left.as_ref(), right.as_ref()], idx),
+        Expr::Abs(..) | Expr::Fma { .. } | Expr::Min { .. } | Expr::Max { .. } => {
+            write_call(source, call_name(expression), &expression.children(), idx);
+        }
         // 叶子由 [`write_expr`] 前置分流到本函数之外；落到这里即空体，不再发射。
         Expr::F32(_) | Expr::Scalar(_) | Expr::Load(_) => {}
     }
 }
 
+/// C 库函数名；实参顺序统一由 [`Expr::children`] 给出。其余变体不会进入本查表。
+fn call_name(expression: &Expr) -> &'static str {
+    match expression {
+        Expr::Abs(..) => "fabsf",
+        Expr::Fma { .. } => "fmaf",
+        Expr::Min { .. } => "fminf",
+        Expr::Max { .. } => "fmaxf",
+        _ => "",
+    }
+}
 
 fn write_binary(source: &mut String, op: Arith, left: &Expr, right: &Expr, idx: &str) {
     source.push('(');

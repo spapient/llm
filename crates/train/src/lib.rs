@@ -25,7 +25,7 @@
 //! **被依赖**：`cli`、`benchmarks`、`fuzz`、`serve`、`testkit`。
 //!
 //! 入口只做模块声明与再导出：实现按上面五条轴分布在 9 个子模块里（`backprop`、`geometry`、`kernel`、
-//! `learner`（含 `Batch`/`Dataset`/`Chunks`）、`loss`（含策略族）、`optimizer`、`pool`（含 `store` 门面）、
+//! `learner`（含 `Batch`/`Dataset`/`Chunks`/`Loader`/`LoaderConfig`）、`loss`（含策略族）、`optimizer`、`pool`（含 `store` 门面）、
 //! `rng`、`session`（含学习率调度与分布式编排）；`rng` 是并入的计数器型确定性随机，独立于五条轴）。
 //!
 //! # 例子
@@ -59,7 +59,7 @@ mod support;
 
 pub use geometry::{Geometry, Running};
 pub use learner::{
-    Batch, Chunks, Dataset, ForwardOut, Loader, LoaderConfig, Learner, Metric, MetricPoint,
+    Batch, Chunks, Dataset, ForwardOut, Learner, Loader, LoaderConfig, Metric, MetricPoint,
     MetricsBoard,
 };
 pub use loss::{

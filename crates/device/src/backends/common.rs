@@ -17,10 +17,7 @@ pub(crate) fn benchmark_output_len(signature: &Signature, sample: &Sample) -> Re
 }
 
 /// 网格各维从样本取值并校验在一到三维内；返回补到三维的尺寸。
-pub(crate) fn benchmark_grid(
-    grid: &prof::decl::Grid,
-    sample: &Sample,
-) -> Result<[usize; 3]> {
+pub(crate) fn benchmark_grid(grid: &prof::decl::Grid, sample: &Sample) -> Result<[usize; 3]> {
     if grid.dims.is_empty() || grid.dims.len() > 3 {
         return Err(Error::new(
             Code::Unsupported,

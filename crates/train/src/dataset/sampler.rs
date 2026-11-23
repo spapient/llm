@@ -99,22 +99,34 @@ impl Sampler {
         if *cursor == order.len() {
             return None;
         }
-        let index = order[*cursor];
+        let idx = order[*cursor];
         *cursor += 1;
-        Some(index)
+        Some(idx)
     }
 
     /// 进入新一轮：顺序只归游标；洗牌 / 加权按派生流重洗或重抽，游标归位。
     pub(crate) fn reset(&mut self) {
         match self {
             Self::Sequential { cursor, .. } => *cursor = 0,
-            Self::Shuffled { seed, epoch, order, cursor } => {
+            Self::Shuffled {
+                seed,
+                epoch,
+                order,
+                cursor,
+            } => {
                 *epoch += 1;
                 let mut rng = Rng::with_stream(*seed, *epoch as u32);
                 shuffle(&mut rng, order);
                 *cursor = 0;
             }
-            Self::Weighted { weights, total, seed, epoch, order, cursor } => {
+            Self::Weighted {
+                weights,
+                total,
+                seed,
+                epoch,
+                order,
+                cursor,
+            } => {
                 *epoch += 1;
                 *order = draw_round(weights, *total, *seed, *epoch, order.len());
                 *cursor = 0;
@@ -139,6 +151,11 @@ fn shuffle(rng: &mut Rng, order: &mut [usize]) {
     }
 }
 
+/// 单条权重合法：有限且非负。
+fn weight_is_valid(w: f32) -> bool {
+    w.is_finite() && w >= 0.0
+}
+
 /// 校验权重：长度对齐、有限、非负、总质量为正；返回总权重。
 fn validate_weights(weights: &[f32], n: usize) -> Result<f32> {
     if weights.len() != n {
@@ -148,13 +165,10 @@ fn validate_weights(weights: &[f32], n: usize) -> Result<f32> {
         )
         .with(SITE));
     }
-    let mut total = 0.0;
-    for &w in weights {
-        if !w.is_finite() || w < 0.0 {
-            return Err(Error::new(Code::Invalid, "权重必须是有限非负数").with(SITE));
-        }
-        total += w;
+    if !weights.iter().all(|&w| weight_is_valid(w)) {
+        return Err(Error::new(Code::Invalid, "权重必须是有限非负数").with(SITE));
     }
+    let total: f32 = weights.iter().sum();
     if total <= 0.0 {
         return Err(Error::new(Code::Invalid, "权重总质量必须为正").with(SITE));
     }

@@ -1159,7 +1159,13 @@ impl<E: Collective> Distributed<E> {
         let Some(collective) = self.collective.as_mut() else {
             return Ok(());
         };
-        synchronize(collective, &group, self.policy.reduce(), self.policy.average(), slots)?;
+        synchronize(
+            collective,
+            &group,
+            self.policy.reduce(),
+            self.policy.average(),
+            slots,
+        )?;
         Ok(())
     }
 }
@@ -1182,6 +1188,9 @@ fn synchronize<E: Collective>(
 }
 
 /// 按组大小缩小平坦后的梯度；组大小为 0 是构造错误，不是可降级情形。
+///
+/// 各槽元素互相独立、无串行依赖；但安全 Rust 边界内没有可调用的整块浮点向量化原语，
+/// 故保留逐元素除法，不引入 rayon/unsafe SIMD。
 fn scale(slots: &mut [&mut [f32]], group: &Group) -> Result<()> {
     let divisor = group.size() as f32;
     if divisor == 0.0 {

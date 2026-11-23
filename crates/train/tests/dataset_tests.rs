@@ -29,7 +29,10 @@ fn different_shuffle_seeds_yield_different_orders() {
     let tokens: Vec<u32> = (0..8).collect();
     let make = |seed| {
         let config = LoaderConfig::new(1, 1).expect("几何合法");
-        let seeded = LoaderConfig { shuffle: Some(seed), ..config };
+        let seeded = LoaderConfig {
+            shuffle: Some(seed),
+            ..config
+        };
         drain_tokens(&mut Loader::with_config(&tokens, seeded).expect("装配"))
     };
 

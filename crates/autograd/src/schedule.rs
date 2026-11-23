@@ -32,7 +32,6 @@ impl Ordering {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Schedule {
     loss: Var,
-    vars: u32,
     ordering: Ordering,
     graph: Vec<bool>,
     steps: Vec<Node>,
@@ -44,7 +43,6 @@ impl Default for Schedule {
         // 空计划还没有起点：`loss` 只是占位，规划一次之前它不对应任何变量。
         Self {
             loss: Var::at(0),
-            vars: 0,
             ordering: Ordering::default(),
             graph: Vec::new(),
             steps: Vec::new(),
@@ -143,11 +141,10 @@ impl Schedule {
     }
 
     /// 复用缓冲：位图按变量数补零，表清空但保留容量。
-    fn reset(&mut self, loss: Var, vars: u32) {
+    fn reset(&mut self, loss: Var, var_count: u32) {
         self.loss = loss;
-        self.vars = vars;
         self.graph.clear();
-        self.graph.resize(vars as usize, false);
+        self.graph.resize(var_count as usize, false);
         self.steps.clear();
         self.endpoints.clear();
     }

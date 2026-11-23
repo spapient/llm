@@ -1,7 +1,6 @@
 //! Metal host 驱动骨架：缓冲装配（初值 / 分配 / 绑定）、host 程序模板、单段派发与基准两轮正文。
 //! 单段语义门、网格派发、基准驱动、多段驱动只在「前导 / 缓冲 / 正文」三块数据上不同，骨架只有这一份。
 
-use cutile::dirs::Dirs;
 use cutile::harness::{c_literal, output_of};
 use diagnostic::{Code, Error, Result};
 use prof::model::{Sample, Values};
@@ -71,18 +70,13 @@ impl Wiring {
                 .len(),
         };
         self.out_len = len;
-        self.allocs.push_str(&output_alloc(name, base, len, checked));
+        self.allocs
+            .push_str(&output_alloc(name, base, len, checked));
         Ok(())
     }
 
     /// 只读输入缓冲：声明静态初值数组并分配只读缓冲。
-    fn emit_input(
-        &mut self,
-        name: &str,
-        base: &str,
-        sample: &Sample,
-        checked: bool,
-    ) -> Result<()> {
+    fn emit_input(&mut self, name: &str, base: &str, sample: &Sample, checked: bool) -> Result<()> {
         let buf = sample
             .buf(name)
             .ok_or_else(|| Error::new(Code::Internal, "签名与样本已对齐（漂移）"))?;
@@ -317,7 +311,10 @@ pub fn metal_benchmark_driver(
             ("thread_z", &threads[2].to_string()),
         ],
     );
-    let body = fill(BENCH_BODY, &[("round", &round), ("repeat", &repeat.to_string())]);
+    let body = fill(
+        BENCH_BODY,
+        &[("round", &round), ("repeat", &repeat.to_string())],
+    );
     Ok(host_program(
         IMPORTS_STDIO,
         &wiring.data,

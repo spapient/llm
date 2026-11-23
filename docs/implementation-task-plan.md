@@ -173,7 +173,7 @@
 |---|---|---|---|---|---|---|
 | P0-1 | 回填 §1.1 事实漂移：注册表 24、测试 1,391、行数粗口径待优化后重测、KV 数据状态、指针与 ADR 编号（本轮活文档已回填，留一次一致性复核） | 全仓文档 | 无 | design/roadmap/backend/iteration/ARCHITECTURE 计数与指针一致 | 文档链接门通过；无陈旧计数；历史快照不回写 | — |
 | P0-2 | 注解双表合一：`REFERENCE_OVERRIDES`+`MODULE_OVERRIDES` 合并为一行三列表 | `annotation` | D7 | 单表 `(名, 参考覆盖, 模块覆盖)`；查找仍闭集 | 注解生成测试全绿；无第二份按名查找循环 | 宏去留裁决留 D7 |
-| P0-3 | 大文件按职责轴拆分（design §5.4 表）：先 `weights/bin.rs`、`src/bin/cutile/main.rs`、`train/snapshot.rs` | 对应 crate | 行数预算 | 解析/排版/台账移出机制文件；单文件 ≤899 | gate 行数与 ccn 过门；测试断言不削 | 其余大文件随阶段内拆 |
+| P0-3 | 大文件按职责轴拆分（design §5.4 表）：先 `weights/bin.rs`、`src/bin/cutile/main.rs`、`train/snapshot.rs` | 对应 crate | 行数预算 | 解析/排版/台账移出机制文件；单文件 ≤899。**已落地**：`crates/device` 三巨石按职责轴拆成目录子模块——`cuda/` 7 文件（shared/grid/gemm/chunk/scan/segments/mod）、`backends/` 7 文件（common/ascend/harness/cuda/metal/parallel/mod）、`metal/` 8 文件（host/device/chunk/stage/program/runtime/witness/mod）；对外 `llm_device::{cuda,backends,metal}::*` 路径不变，父 `mod.rs` 只做模块声明与重导出，子模块私有 helper 不外泄。拆分前 3 文件 3,832 行，拆分后 22 文件最大 360 行（gate 生产单文件 600 上限内），lib/test 编译、clippy `-D warnings` 零告警、fmt 干净、gate 行数/CCN/NLOC 无 device 红项 | gate 行数与 ccn 过门；测试断言不削 | 其余大文件（weights/train/annotation/prof/fuzz/tensor/cutile）随阶段内拆 |
 | P0-4 | 报告/排版合一：audit/tools/witness 三处报告器收敛为一个 | `tools` / `diagnostic` | 10k-analysis §6.2 | 单一报告器，三处调用 | 输出条目不丢；测试不跌 | — |
 | P0-5 | 手写解析收敛到一份；是否引入唯一解析依赖按 D5 实测阈值裁决 | `diagnostic` | D5 | 解析单源；依赖取舍入 ADR | 解析负例全绿 | toml+serde 引入未拍板前不接 |
 | P0-6 | 关键纯函数属性/模糊加固：解析、归约、归一化、词表查找等补表驱动边界用例；退化情形进 `fuzz` sweep | `fuzz` / 对应 crate | 无 | 纯函数边界用例集；fuzz 种子与 sweep 接入 | 负例覆盖空/非对齐/越界/饱和；不新增生产依赖 | libfuzzer harness 仅 feature 门控。现状注记：三族内部纯函数 / 结构化张量的 fuzz sweep 接线经裁决移除（与 fuzz 入口解析器契约边界错配），边界用例归各自仓内单测；fuzz 只保留不可信字节入口解析器目标 |

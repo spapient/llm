@@ -236,7 +236,10 @@ impl Reduce {
     /// 把一个非空切片折成一个值；空切片返回 `None`。
     pub fn fold<T: ReduceScalar>(self, values: &[T]) -> Option<T> {
         let (first, rest) = values.split_first()?;
-        Some(rest.iter().fold(*first, |acc, value| self.apply(acc, *value)))
+        Some(
+            rest.iter()
+                .fold(*first, |acc, value| self.apply(acc, *value)),
+        )
     }
 }
 
@@ -414,10 +417,7 @@ impl<T: ReduceScalar> Collective<T> for Local<T> {
         buf.fill(reduce.identity());
         for (idx, rank) in group.ranks().iter().enumerate() {
             let replica = self.replica(*rank)?;
-            for (out, value) in buf[idx * width..(idx + 1) * width]
-                .iter_mut()
-                .zip(replica)
-            {
+            for (out, value) in buf[idx * width..(idx + 1) * width].iter_mut().zip(replica) {
                 *out = reduce.apply(*out, *value);
             }
         }

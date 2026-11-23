@@ -91,7 +91,7 @@ macro_rules! unary_f32 {
     (
         $name:ident, $alias:ident, $op:tt,
         $kind:ident, $edge:tt,
-        $apply:expr
+        $apply:expr, $diff:literal
         $(, $input:expr)?
     ) => {
         #[doc = concat!("`", $op, "` 的标记类型：逐元素一元运算见 `apply`，骨架见 `crate::unary`。")]
@@ -117,7 +117,7 @@ macro_rules! unary_f32 {
         }
 
         // 基座契约（ADR 0050）：只转发族骨架，不写第二份算术。
-        $crate::operator_via!($name, $op, 1, (4096, 4096), true, super, $crate::unary::AXES);
+        $crate::operator_via!($name, $op, 1, (4096, 4096), $diff, super, $crate::unary::AXES);
 
         #[annotation::model(name = $op, shape = [4096, 4096], dtype = "f32", skeleton = "unary")]
         #[doc = concat!("`", $op, "` 的语义别名。")]
@@ -141,6 +141,17 @@ macro_rules! unary_f32 {
             fn edge_cases_match_reference() {
                 $edge
             }
+        }
+    };
+    // 缺省可微：既有算子沿用 `true`；不可微调子在显式位传 `false`。
+    (
+        $name:ident, $alias:ident, $op:tt,
+        $kind:ident, $edge:tt,
+        $apply:expr
+        $(, $input:expr)?
+    ) => {
+        $crate::unary_f32! {
+            $name, $alias, $op, $kind, $edge, $apply, true $(, $input)?
         }
     };
 }
@@ -399,5 +410,77 @@ pub mod scale_f32 {
         },
         |x| ALPHA * x,
         |len| (0..len).map(|i| ((i as f32) * 0.25) - 2.0).collect()
+    );
+}
+
+pub mod abs_f32 {
+    //! 逐元素绝对值：`y[n] = |a[n]|`。
+
+    crate::unary_f32!(
+        Abs,
+        AbsF32,
+        "abs_f32",
+        unary_op_tests,
+        {
+            // 三个锚点：负区取正、零点、正区恒等。
+            let mut out = [0.0; 3];
+            assert!(
+                forward(tensor::View::one(&[-3.0, 0.0, 2.0]), &mut out).is_ok(),
+                "等长"
+            );
+            assert_eq!(out[0], 3.0, "负区取正");
+            assert_eq!(out[1], 0.0, "零点");
+            assert_eq!(out[2], 2.0, "正区恒等");
+        },
+        |x| x.abs(),
+        false
+    );
+}
+
+pub mod neg_f32 {
+    //! 逐元素取负：`y[n] = -a[n]`。
+
+    crate::unary_f32!(
+        Neg,
+        NegF32,
+        "neg_f32",
+        unary_op_tests,
+        {
+            // 三个锚点：负负得正、零点、正区取负。
+            let mut out = [0.0; 3];
+            assert!(
+                forward(tensor::View::one(&[-2.0, 0.0, 3.0]), &mut out).is_ok(),
+                "等长"
+            );
+            assert_eq!(out[0], 2.0, "负负得正");
+            assert_eq!(out[1], 0.0, "零点");
+            assert_eq!(out[2], -3.0, "正区取负");
+        },
+        |x| -x,
+        false
+    );
+}
+
+pub mod square_f32 {
+    //! 逐元素平方：`y[n] = a[n]²`。
+
+    crate::unary_f32!(
+        Square,
+        SquareF32,
+        "square_f32",
+        unary_pair_tests,
+        {
+            // 三个锚点：零、正数平方、负数平方同正。
+            let mut out = [0.0; 3];
+            assert!(
+                forward(tensor::View::one(&[0.0, 3.0, -2.0]), &mut out).is_ok(),
+                "等长"
+            );
+            assert_eq!(out[0], 0.0, "零平方");
+            assert_eq!(out[1], 9.0, "3²");
+            assert_eq!(out[2], 4.0, "(-2)²");
+        },
+        |x| x * x,
+        false
     );
 }

@@ -17,6 +17,7 @@ use prof::catalogue::Registration;
 macro_rules! for_each_operator {
     ($m:ident) => {
         $m! {
+            abs_f32: $crate::kernel::abs_f32::AbsF32,
             adaptive_pool_f32: $crate::conv::adaptive_pool::AdaptivePoolModel,
             add_f32: $crate::kernel::add_f32::AddF32,
             attention_f32: $crate::conv::attention::AttentionF32,
@@ -56,9 +57,12 @@ macro_rules! for_each_operator {
             max_pool2d_f32: $crate::conv::max_pool2d::MaxPool2dModel,
             min_f32: $crate::kernel::min_f32::MinF32,
             mul_f32: $crate::kernel::mul_f32::MulF32,
+            neg_f32: $crate::kernel::neg_f32::NegF32,
             reduce_max_f32: $crate::kernel::reduce_max_f32::ReduceMaxF32,
+            reduce_prod_f32: $crate::kernel::reduce_prod_f32::ReduceProdF32,
             reduce_sum_f32: $crate::kernel::reduce_sum_f32::ReduceSumF32,
             relu_f32: $crate::kernel::relu_f32::ReluF32,
+            remainder_f32: $crate::kernel::remainder_f32::RemainderF32,
             residual_add_f32: $crate::kernel::residual_add_f32::ResidualAddF32,
             rmsnorm_f32: $crate::kernel::rmsnorm_f32::RmsNormF32,
             rope_f32: $crate::kernel::rope_f32::RopeF32,
@@ -67,6 +71,7 @@ macro_rules! for_each_operator {
             sigmoid_f32: $crate::kernel::sigmoid_f32::SigmoidF32,
             silu_f32: $crate::kernel::silu_f32::SiluF32,
             softmax_f32: $crate::kernel::softmax_f32::SoftmaxF32,
+            square_f32: $crate::kernel::square_f32::SquareF32,
             sub_f32: $crate::kernel::sub_f32::SubF32,
             tanh_f32: $crate::kernel::tanh_f32::TanhF32,
         }

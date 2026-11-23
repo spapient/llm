@@ -2,16 +2,16 @@
 
 use crate::backends::common::{device_fn, witness_head, witness_readback};
 use crate::platform::{ascend_device, detect_cce};
-use diagnostic::{Code, Error, Result};
 use cutile::dirs::Dirs;
+use diagnostic::{Code, Error, Result};
 use llm_optim::backend::{Backend, Codegen, Driver, Readback, Source};
 use llm_optim::driver;
 use llm_optim::toolchain::Toolchain;
 use llm_optim::witness::{MAX_OUT, Scope, Selected};
-use prof::prof::Profile;
-use prof::sig::Signature;
 use prof::model::Sample;
 use prof::prof::Emit;
+use prof::prof::Profile;
+use prof::sig::Signature;
 use std::path::Path;
 use std::process::Command;
 

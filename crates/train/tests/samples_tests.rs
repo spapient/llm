@@ -10,7 +10,10 @@ fn a_batch_must_match_its_shape() {
         Batch::new(&[1, 2, 3], 2, 2).unwrap_err().code(),
         Code::Invalid
     );
-    assert_eq!(Batch::<u32>::new(&[], 0, 2).unwrap_err().code(), Code::Invalid);
+    assert_eq!(
+        Batch::<u32>::new(&[], 0, 2).unwrap_err().code(),
+        Code::Invalid
+    );
 }
 
 #[test]
@@ -78,7 +81,7 @@ fn both_constructors_read_geometry_in_the_same_order() {
 
 #[test]
 fn an_empty_stream_yields_no_batch() {
-    let mut dataset = Chunks::new(&[], 1, 2).expect("空流也是合法输入");
+    let mut dataset = Chunks::<u32>::new(&[], 1, 2).expect("空流也是合法输入");
     assert_eq!(dataset.cols(), 2);
     assert_eq!(dataset.batches(), 0);
     assert_eq!(dataset.remaining_batches(), 0);

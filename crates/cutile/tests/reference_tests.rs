@@ -91,6 +91,7 @@ fn every_accepted_fusion_is_either_testable_or_named_unrealizable() {
             .unwrap_or(false);
         if !declared {
             unshaped += 1;
+            eprintln!("UNSHAPED {} -> {}", fusion.producer, fusion.consumer);
             continue;
         }
         match verify_fusion(producer, consumer, fusion, &mut sample) {
@@ -104,6 +105,7 @@ fn every_accepted_fusion_is_either_testable_or_named_unrealizable() {
                 );
                 assert_eq!(oracle.got.len(), consumer.shape.1.max(1), "产出长度");
                 testable += 1;
+                eprintln!("TESTABLE {} -> {}", fusion.producer, fusion.consumer);
             }
             Err(error) => {
                 assert_ne!(

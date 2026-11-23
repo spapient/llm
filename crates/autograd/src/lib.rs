@@ -63,7 +63,6 @@ mod graph;
 mod plan;
 mod replay;
 mod schedule;
-mod segment;
 mod tape;
 
 pub use account::Account;

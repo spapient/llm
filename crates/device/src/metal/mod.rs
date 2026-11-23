@@ -20,4 +20,3 @@ pub use witness::metal_driver;
 // crate 内复用的族入口（旧文件为 `pub(crate)`，不向外部泄漏）。
 pub(crate) use chunk::{metal_chunk_rmsnorm, metal_chunk_scan, metal_chunk_softmax};
 pub(crate) use runtime::run_metal;
-pub(crate) use stage::{MetalStage, metal_multistage_driver};

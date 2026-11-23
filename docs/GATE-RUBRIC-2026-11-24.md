@@ -30,7 +30,7 @@
 | 重复率门 | jscpd `threshold: 0`，`minLines: 5`、`minTokens: 80` | `.config/.jscpd.json` |
 | 静态阈值 | ccn 5 / nloc 60 / file 600 / test 800；Call 预算 0 | `.config/lints/vocabulary.toml` `[gate]`，`gate::limit` |
 | CI job | 14：fmt、clippy、test(nextest)、doc、metal、asan、msrv、nightly、dup(jscpd)、gates、deny+machete、coverage、bench 回归、fuzz | `.github/workflows/ci.yml` |
-| 覆盖率下限 | cutile 行 75 / 函 70；wire 68 / 64；dtype 88 / 88；weights 70 / 64（tools 自身未设下限） | ci.yml `coverage` job |
+| 覆盖率下限 | cutile 行 75 / 函 70；wire 68 / 64；dtype 88 / 88；weights 70 / 64；**tools 行 88 / 函 85**（本地基线行 94.5% / 函 94.9%） | ci.yml `coverage` job |
 
 ### 规则面清单（13 族）
 
@@ -62,7 +62,7 @@
 | D 泛型 / 声明化密度 | 同构 ≥3 份（≥5 行 / ≥80 token）全部泛型 / 宏 / 表驱动 | 错误工厂、遍历骨架已收敛；7 处短名 match 属闭集安全且未达同构体量 | ◐ | 7 | 跑 jscpd threshold 0 复核；新增同构先判体量再决定是否抽 |
 | E 规模 / 密度 | 无超线文件；公开项密度 ≤80 行 / 项 | 15 文件 2715 行，最大 408；公开项密度 ≈21.7 行 / 项 | ● | 9 | 公开项逐个核调用方（N11），死导出即删 |
 | F 分析器性能 | 单次分析耗时有基线与回归门；热点复杂度可证 | 非热路径；`ccn::holder` 为 O(F·P) 线性归属，未 benchmark | ○ | 5 | 先 micro-bench 取单文件分析耗时基线；再决定是否上区间归属 |
-| G CI / 证据完备 | 本地与 CI 同一命令；覆盖率 / 重复 / 许可证 / 回归全进门 | 14 job 覆盖 fmt/clippy/test/doc/asan/msrv/nightly/coverage/bench/fuzz/deny/jscpd/architecture/name | ● | 9 | tools 自身加覆盖率下限（见 §4 缺口） |
+| G CI / 证据完备 | 本地与 CI 同一命令；覆盖率 / 重复 / 许可证 / 回归全进门 | 14 job 覆盖 fmt/clippy/test/doc/asan/msrv/nightly/coverage/bench/fuzz/deny/jscpd/architecture/name；tools 覆盖率下限已挂（行 88 / 函 85） | ● | 9 | 下限随基线刷新上调；其余族反向用例补全后再评 |
 | H 测试分层 | 单测试文件 ≤800；夹具复用；每族反向验证（注入违规即红） | 4 target 91 例，平铺 tests/；部分族缺反向注入用例 | ◐ | 7 | 逐族补「注入违规 → 门变红」反向用例；统计夹具复用率 |
 
 **等权参考分**（八维算术平均，仅作基线锚点，不作交付结论）：(7+7+9+7+9+5+9+7)/8 ≈ **7.5**。
@@ -71,14 +71,15 @@
 
 ## 4. 差距清单（按优先级）
 
-### G1 — 分析器自身覆盖率下限（证据缺口，可直接补）
+### G1 — 分析器自身覆盖率下限（已落地）
 
-- 现状：tools 有 102 例集成测试，但 ci.yml `coverage` job 的下限只挂 cutile / wire / dtype / weights，
-  tools 自身无 `--fail-under` 下限。
-- 10 分线：tools 行 / 函数覆盖率设保守下限，只防整体回退，不卡单次平台波动。
-- 补丁：在 coverage job 增 `cargo llvm-cov nextest -p llm-tools --fail-under-lines <x> --fail-under-functions <y>`；
-  下限取本地干净基线留余量。
-- 度量：先跑 `cargo llvm-cov nextest -p llm-tools` 取当前行 / 函数覆盖率，再定下限值（待校准，不拍脑袋）。
+- 基线：tools 91 例集成测试，本地干净基线行覆盖 94.5%（2356/2494）、函数覆盖 94.9%（224/236），
+  取证命令 `cargo llvm-cov test -p llm-tools --all-features -- --skip every_source_passes_the_static_gate`。
+- 落地：ci.yml `coverage` job 增 `Coverage floor (tools)`：
+  `cargo llvm-cov nextest -p llm-tools --all-features --locked --fail-under-lines 88 --fail-under-functions 85`。
+- 口径：tools 纯 Rust、无平台探测分支，下限留单次样本波动余量（行 −6.5、函 −9.9 点），只防整体回退；
+  `every_source` 全仓门的红绿由存量债负责，不在本覆盖率门口径内。
+- 复核：本机 `--fail-under-lines 88 --fail-under-functions 85` 退出码 0，过线。
 
 ### G2 — severity / 优先级分级（能力增量，跨模型）
 
@@ -107,7 +108,7 @@
   nth/ccn/nloc、target/line），强抽会丢信息或被迫做宽 enum；tools 是 L1，不能反向依赖 L2 prof 的宏。
 - **不拆 tools 文件**：15 文件各族内聚，最大 408 行；再拆只会增文件数，不符 N2/N4。
 - **不放宽任何阈值**：阈值只收紧；新增档位必须进 `[gate]` 闭集并经构建期校验。
-- **不把计划测试 / 未来算子写成当前已通过**：G1–G4 在落地前均记待校准。
+- **不把计划测试 / 未来算子写成当前已通过**：G2–G4 在落地前均记待校准；G1 已落地并复核过线。
 
 ## 6. 风险与回滚
 
@@ -135,6 +136,7 @@ npx --yes jscpd
 bash scripts/name-lint.sh
 bash scripts/loc-budget.sh
 
-# 覆盖率基线（定 G1 下限前先取数）
-cargo llvm-cov nextest -p llm-tools
+# 覆盖率基线与下限复核（红用例为全仓存量债，取 tools 自身覆盖时跳过）
+cargo llvm-cov test -p llm-tools --all-features -- --skip every_source_passes_the_static_gate
+cargo llvm-cov nextest -p llm-tools --all-features --fail-under-lines 88 --fail-under-functions 85
 ```

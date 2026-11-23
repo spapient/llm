@@ -4,8 +4,8 @@
 use crate::backends::common::{benchmark_grid, benchmark_output_len};
 use crate::dialect::Dialect;
 use crate::platform::detect_metal;
-use diagnostic::{Code, Error, Result};
 use cutile::dirs::Dirs;
+use diagnostic::{Code, Error, Result};
 use llm_optim::backend::{Backend, Codegen, Driver, Launch, Lower, Readback, Source};
 use llm_optim::driver;
 use llm_optim::toolchain::Toolchain;
@@ -146,7 +146,9 @@ fn metal_lower(
     kind: &Lower,
 ) -> Result<Vec<String>> {
     match kind {
-        Lower::Pointwise => crate::metal::metal_grid_kernel(kernel, signature, sample).map(|s| vec![s]),
+        Lower::Pointwise => {
+            crate::metal::metal_grid_kernel(kernel, signature, sample).map(|s| vec![s])
+        }
         Lower::QuantizedGemvI4 { .. } => Err(Error::new(
             Code::Unsupported,
             "合作式 int4 GEMV 当前仅落地在 CUDA/MUSA",

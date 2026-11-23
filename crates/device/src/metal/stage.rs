@@ -5,7 +5,7 @@ use diagnostic::Result;
 use prof::model::Sample;
 use prof::sig::Signature;
 
-use crate::metal::host::{IMPORTS_MATH, host_library, host_program, output_alloc, Wiring};
+use crate::metal::host::{IMPORTS_MATH, Wiring, host_library, host_program, output_alloc};
 
 /// 一段内核：入口名、缓冲槽位名、网格、段后主机折叠文本。
 pub(crate) struct MetalStage<'a> {

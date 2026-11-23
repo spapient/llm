@@ -7,7 +7,7 @@ use prof::model::Sample;
 use prof::sig::Signature;
 
 use crate::dialect::{
-    EXPSUM, Dialect, Metal, NORM, PARTIAL, RMS_EPS, SCAN_CORRECT, SCAN_LOCAL, carry_fold,
+    Dialect, EXPSUM, Metal, NORM, PARTIAL, RMS_EPS, SCAN_CORRECT, SCAN_LOCAL, carry_fold,
     length_usize, readonly_bufs,
 };
 use crate::metal::chunk::{metal_chunk_rmsnorm, metal_chunk_scan, metal_chunk_softmax};

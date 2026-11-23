@@ -125,27 +125,5 @@ fn substitute_load(loaded: &str, name: &str, replacement: &Expr) -> Expr {
 }
 
 fn substitute_compound(expression: &Expr, name: &str, replacement: &Expr) -> Expr {
-    match expression {
-        Expr::Neg(value) => Expr::Neg(Box::new(substitute(value, name, replacement))),
-        Expr::Abs(value) => Expr::Abs(Box::new(substitute(value, name, replacement))),
-        Expr::Binary { op, left, right } => Expr::Binary {
-            op: *op,
-            left: Box::new(substitute(left, name, replacement)),
-            right: Box::new(substitute(right, name, replacement)),
-        },
-        Expr::Min { left, right } => Expr::Min {
-            left: Box::new(substitute(left, name, replacement)),
-            right: Box::new(substitute(right, name, replacement)),
-        },
-        Expr::Max { left, right } => Expr::Max {
-            left: Box::new(substitute(left, name, replacement)),
-            right: Box::new(substitute(right, name, replacement)),
-        },
-        Expr::Fma { a, b, c } => Expr::Fma {
-            a: Box::new(substitute(a, name, replacement)),
-            b: Box::new(substitute(b, name, replacement)),
-            c: Box::new(substitute(c, name, replacement)),
-        },
-        leaf => leaf.clone(),
-    }
+    expression.map_children(&mut |child| substitute(child, name, replacement))
 }

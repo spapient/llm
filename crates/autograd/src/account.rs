@@ -153,7 +153,3 @@ impl Account {
         Ok((*pending == 0).then_some(input))
     }
 }
-
-#[cfg(test)]
-#[path = "../tests/account_tests.rs"]
-mod tests;

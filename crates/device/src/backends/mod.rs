@@ -9,6 +9,21 @@ pub(crate) mod harness;
 pub(crate) mod metal;
 pub(crate) mod parallel;
 
+// 测试经 `use super::*` 取用的裸名：旧巨石文件顶部的 crate 内重导出面，拆分后由本文件聚合保留。
+// 仅 `#[cfg(test)]` 编译：lib 代码走子模块路径，这些别名不参与生产导入面。
+#[cfg(test)]
+mod test_imports {
+    pub(crate) use super::metal::MetalBackend;
+    pub(crate) use super::parallel::{cuda, fold_of, metal, unsupported};
+    pub(crate) use crate::platform::{ascend_device, detect_cce};
+    pub(crate) use diagnostic::Code;
+    pub(crate) use llm_optim::backend::{Driver, Launch, Lower, Source};
+    pub(crate) use prof::model::Sample;
+    pub(crate) use prof::sig::Signature;
+}
+#[cfg(test)]
+pub(crate) use test_imports::*;
+
 pub use crate::metal::{compile_run_metal, metal_driver, metal_kernel};
 
 static METAL_BACKEND: metal::MetalBackend = metal::MetalBackend;
