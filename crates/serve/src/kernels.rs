@@ -164,10 +164,10 @@ fn attention_paths(
 }
 
 /// 拆出 prefill 三路读入与一路写出视图。
-fn attention_inputs(
-    inputs: &[View<'_>],
-    outputs: &mut [ViewMut<'_>],
-) -> Result<DecodeViews<'_, '_>> {
+fn attention_inputs<'a, 'b>(
+    inputs: &'a [View<'a>],
+    outputs: &'b mut [ViewMut<'_>],
+) -> Result<DecodeViews<'a, 'b>> {
     let q = input_f32("attention", inputs, 0)?;
     let k = input_f32("attention", inputs, 1)?;
     let v = input_f32("attention", inputs, 2)?;
@@ -176,13 +176,13 @@ fn attention_inputs(
 }
 
 /// 三条同宽行主序视图：`q/k/v` 都是 `rows×d`。
-fn triple(
-    q: &[f32],
-    k: &[f32],
-    v: &[f32],
+fn triple<'a>(
+    q: &'a [f32],
+    k: &'a [f32],
+    v: &'a [f32],
     rows: usize,
     d: usize,
-) -> Result<(tensor::View<'_, f32>, tensor::View<'_, f32>, tensor::View<'_, f32>)> {
+) -> Result<(tensor::View<'a, f32>, tensor::View<'a, f32>, tensor::View<'a, f32>)> {
     Ok((
         tensor::View::matrix(rows, d, q)?,
         tensor::View::matrix(rows, d, k)?,
@@ -339,13 +339,13 @@ fn project_rows(x: &[f32], weights: &[f32], out: &mut [f32], m: usize, n: usize)
 }
 
 /// 两条 TN 行主序视图：`x` 是 `rows×m`、`weights` 是 `n×m`。
-fn row_pair(
-    x: &[f32],
-    weights: &[f32],
+fn row_pair<'a>(
+    x: &'a [f32],
+    weights: &'a [f32],
     rows: usize,
     n: usize,
     m: usize,
-) -> Result<(tensor::View<'_, f32>, tensor::View<'_, f32>)> {
+) -> Result<(tensor::View<'a, f32>, tensor::View<'a, f32>)> {
     Ok((
         tensor::View::matrix(rows, m, x)?,
         tensor::View::matrix(n, m, weights)?,
