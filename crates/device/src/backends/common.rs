@@ -4,7 +4,7 @@
 use diagnostic::{Code, Error, Result};
 use llm_optim::driver;
 use prof::model::Sample;
-use prof::prof::{Emit, Profile};
+use prof::prof::Profile;
 use prof::sig::Signature;
 
 /// 基准输出缓冲长度：取样本里输出缓冲的元素数（分块归约的部分结果数由调用方另给）。

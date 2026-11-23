@@ -216,3 +216,7 @@ impl<'a> Dataset<'a> for Loader<'a> {
 #[cfg(test)]
 #[path = "../../tests/samples_tests.rs"]
 mod samples_tests;
+
+#[cfg(test)]
+#[path = "../../tests/dataset_tests.rs"]
+mod dataset_tests;

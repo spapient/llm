@@ -36,7 +36,7 @@ pub fn install() {
 mod tests;
 
 #[cfg(test)]
-#[path = "../../testkit/tests/kernel.rs"]
+#[path = "../../../testkit/tests/kernel.rs"]
 mod cutile_x_kernel;
 
 #[cfg(test)]

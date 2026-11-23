@@ -1,7 +1,7 @@
 use super::*;
 
 /// 收集一个数据集全部批的 token 序列（每批压成一段）。
-fn drain_tokens(mut dataset: impl Dataset<'a, Item = u32>) -> Vec<Vec<u32>> {
+fn drain_tokens<'a>(dataset: &mut dyn Dataset<'a, Item = u32>) -> Vec<Vec<u32>> {
     let mut out = Vec::new();
     while let Some(batch) = dataset.next_batch() {
         out.push(batch.tokens().to_vec());
@@ -18,8 +18,8 @@ fn same_shuffle_seed_replays_the_same_order() {
         ..config
     };
 
-    let first = drain_tokens(Loader::with_config(&tokens, seeded.clone()).expect("装配"));
-    let second = drain_tokens(Loader::with_config(&tokens, seeded).expect("装配"));
+    let first = drain_tokens(&mut Loader::with_config(&tokens, seeded.clone()).expect("装配"));
+    let second = drain_tokens(&mut Loader::with_config(&tokens, seeded).expect("装配"));
 
     assert_eq!(first, second, "同种子必须重放出同一条批序");
 }
@@ -27,10 +27,10 @@ fn same_shuffle_seed_replays_the_same_order() {
 #[test]
 fn different_shuffle_seeds_yield_different_orders() {
     let tokens: Vec<u32> = (0..8).collect();
-    let mut make = |seed| {
+    let make = |seed| {
         let config = LoaderConfig::new(1, 1).expect("几何合法");
         let seeded = LoaderConfig { shuffle: Some(seed), ..config };
-        drain_tokens(Loader::with_config(&tokens, seeded).expect("装配"))
+        drain_tokens(&mut Loader::with_config(&tokens, seeded).expect("装配"))
     };
 
     let a = make(0);
@@ -47,7 +47,7 @@ fn shuffle_keeps_every_batch_exactly_once() {
         ..config
     };
 
-    let mut collected = drain_tokens(Loader::with_config(&tokens, seeded).expect("装配"));
+    let mut collected = drain_tokens(&mut Loader::with_config(&tokens, seeded).expect("装配"));
     let mut flat: Vec<u32> = collected.iter().flatten().copied().collect();
     flat.sort_unstable();
 

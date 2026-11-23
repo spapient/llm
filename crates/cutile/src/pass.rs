@@ -181,7 +181,29 @@ const RULES: [(&str, Law); 9] = [
 /// 内层循环的终止不靠 `debug_assert`：预算取起始节点数，每次命中至少消掉一个节点，所以
 /// **任何构建下**都只会改写有限次——一条写错的律最多让化简变慢，不会让编译器打转。
 pub(super) fn normalize(expression: Expr) -> Expr {
-    let mut expression = expression.map_children(&mut normalize);
+    let mut expression = match expression {
+        Expr::Neg(value) => Expr::Neg(Box::new(normalize(*value))),
+        Expr::Abs(value) => Expr::Abs(Box::new(normalize(*value))),
+        Expr::Binary { op, left, right } => Expr::Binary {
+            op,
+            left: Box::new(normalize(*left)),
+            right: Box::new(normalize(*right)),
+        },
+        Expr::Min { left, right } => Expr::Min {
+            left: Box::new(normalize(*left)),
+            right: Box::new(normalize(*right)),
+        },
+        Expr::Max { left, right } => Expr::Max {
+            left: Box::new(normalize(*left)),
+            right: Box::new(normalize(*right)),
+        },
+        Expr::Fma { a, b, c } => Expr::Fma {
+            a: Box::new(normalize(*a)),
+            b: Box::new(normalize(*b)),
+            c: Box::new(normalize(*c)),
+        },
+        leaf => leaf,
+    };
     let mut budget = nodes(&expression);
     while budget > 0 {
         let Some((rule, next)) = first_match(&expression) else {
@@ -340,14 +362,16 @@ impl Pass for EliminateDeadParams {
 fn expr_mentions(expression: &Expr, name: &str) -> bool {
     match expression {
         Expr::Scalar(used) | Expr::Load(used) => used == name,
+        Expr::F32(_) => false,
         Expr::Neg(value) | Expr::Abs(value) => expr_mentions(value, name),
         Expr::Binary { left, right, .. }
         | Expr::Min { left, right }
-        | Expr::Max { left, right } => expr_mentions(left, name) || expr_mentions(right, name),
+        | Expr::Max { left, right } => {
+            expr_mentions(left, name) || expr_mentions(right, name)
+        }
         Expr::Fma { a, b, c } => {
             expr_mentions(a, name) || expr_mentions(b, name) || expr_mentions(c, name)
         }
-        Expr::F32(_) => false,
     }
 }
 

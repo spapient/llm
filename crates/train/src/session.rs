@@ -1028,15 +1028,14 @@ impl Schedule {
 /// 分布式编排的诊断站点（站名保持 `"train::Distributed"`，与 [`SITE`] 区分）。
 const DIST_SITE: &str = "train::Distributed";
 
-/// 分布式编排配置：拓扑、本进程 rank 与通信后端；梯度同步口径随配置走。
+/// 分布式编排配置：拓扑、本进程 rank、通信后端与一份并行策略口径；梯度同步口径随策略走。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Distributed<E: Collective> {
     topology: Topology,
     rank: u32,
     collective: Option<E>,
-    /// 归约后是否除以数据并行组数（`true` = 平均梯度，`false` = 求和梯度）。
-    average: bool,
-    reduce: Reduce,
+    /// 归约种类、平均开关与通信优先级；三维度数与拓扑一致。
+    policy: ParallelConfig,
 }
 
 impl Distributed<Remote> {
@@ -1046,8 +1045,7 @@ impl Distributed<Remote> {
             topology: Topology::single(),
             rank: 0,
             collective: None,
-            average: true,
-            reduce: Reduce::Sum,
+            policy: ParallelConfig::single(),
         }
     }
 }
@@ -1055,10 +1053,36 @@ impl Distributed<Remote> {
 impl<E: Collective> Distributed<E> {
     /// 由拓扑、本 rank 与通信后端构造；rank 必须落在拓扑世界内，否则归约组派生时会越界。
     ///
+    /// 策略口径取默认（求和、平均、普通优先级）；要改归约种类/优先级走 [`Self::with_reduce`] /
+    /// [`Self::with_priority`]，或直接用 [`Self::from_config`] 传入完整策略。
+    ///
     /// # Errors
     ///
-    /// `rank` 超出 `0..world`（[`Code::Invalid`]）。
+    /// `rank` 超出 `0..world`（[`Code::Invalid`]），或策略度数回校验失败。
     pub fn new(topology: Topology, rank: u32, collective: E) -> Result<Self> {
+        if rank as usize >= topology.world() {
+            return Err(Error::new(
+                Code::Invalid,
+                format!("rank {rank} 超出拓扑世界 0..{}", topology.world()),
+            )
+            .with(DIST_SITE));
+        }
+        let policy = ParallelConfig::new(topology.tp(), topology.pp(), topology.dp())?;
+        Ok(Self {
+            topology,
+            rank,
+            collective: Some(collective),
+            policy,
+        })
+    }
+
+    /// 由完整并行策略、本 rank 与通信后端构造；拓扑由策略度数派生。
+    ///
+    /// # Errors
+    ///
+    /// 策略度数非法（零维/上界溢出），或 `rank` 超出世界范围。
+    pub fn from_config(rank: u32, collective: E, policy: ParallelConfig) -> Result<Self> {
+        let topology = policy.topology()?;
         if rank as usize >= topology.world() {
             return Err(Error::new(
                 Code::Invalid,
@@ -1070,15 +1094,31 @@ impl<E: Collective> Distributed<E> {
             topology,
             rank,
             collective: Some(collective),
-            average: true,
-            reduce: Reduce::Sum,
+            policy,
         })
     }
 
     /// 归约后取平均（默认）；`false` 保留求和梯度。
     pub fn with_average(mut self, average: bool) -> Self {
-        self.average = average;
+        self.policy = self.policy.with_average(average);
         self
+    }
+
+    /// 覆盖组内归约种类。
+    pub fn with_reduce(mut self, reduce: Reduce) -> Self {
+        self.policy = self.policy.with_reduce(reduce);
+        self
+    }
+
+    /// 覆盖通信调度优先级。
+    pub fn with_priority(mut self, priority: Priority) -> Self {
+        self.policy = self.policy.with_priority(priority);
+        self
+    }
+
+    /// 并行策略只读投影。
+    pub fn policy(&self) -> ParallelConfig {
+        self.policy
     }
 
     /// 拓扑只读投影。
@@ -1119,7 +1159,7 @@ impl<E: Collective> Distributed<E> {
         let Some(collective) = self.collective.as_mut() else {
             return Ok(());
         };
-        synchronize(collective, &group, self.reduce, self.average, slots)?;
+        synchronize(collective, &group, self.policy.reduce(), self.policy.average(), slots)?;
         Ok(())
     }
 }
