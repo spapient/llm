@@ -2,16 +2,17 @@
 
 use std::path::Path;
 
-/// P0 闭集：`crates/op/ops/*.k` 真的会 `@` 到的七个原语，模板按名字取片段。
+/// P0 闭集：`crates/op/ops/*.k` 真的会 `@` 到的八个原语，模板按名字取片段。
 ///
 /// 这是**算子模板**的事实，不是某台设备的事实，因此六台设备共用一份。设备模块自带
 /// 一份的写法会让 [`Contract::check_p0_set`] 的可信度落到被检查方手里：各设备缩一缩自己
 /// 的闭集，门禁就绿了。闭集留在这里，设备只能选择覆盖它或暴露缺口。
-pub const P0: [&str; 7] = [
+pub const P0: [&str; 8] = [
     "cvt",
     "dot",
     "load",
     "load_async",
+    "mma",
     "quant",
     "reduce",
     "store",
@@ -205,7 +206,7 @@ impl<'a> Contract<'a> {
         Ok(())
     }
 
-    /// 目录是闭集：只有 P0 的九个 `<prim>.<ext>` 与一个 `witness.<ext>`。`prof::codegen` 的扫描器
+    /// 目录是闭集：只有 P0 的八个 `<prim>.<ext>` 与一个 `witness.<ext>`。`prof::codegen` 的扫描器
     /// 只认这两种名字，多出来的设备源文件会在构建期被拒——这里提前说清是哪个文件。
     ///
     /// `.rs` 不算内容：片段目录就是 crate 的 `src/`，`lib.rs` 与它住在一起。

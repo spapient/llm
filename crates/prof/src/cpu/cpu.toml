@@ -308,10 +308,11 @@ op      = ["add", "max"]
 grade   = "L0"
 witness = { file = "cpu/witness.c", func = "witness_atomic", expect = [5.0] }
 
-# ── 闭集其余四条：CPU 真的能算，但 P0 模板不调用 ────────────────────────────
+# ── 闭集其余四条：mma 已接进 gemm_f32 模板，其余三条 P0 不调用 ──────────────
 # 与加速器的同六条（`mma`/`shuffle`/`broadcast`/`scan`/`exp2`/`rcp`）不同，这里少了
 # `shuffle`/`broadcast`：它们要求 `[simt].group > 1`，单 lane 设备声明它们就是伪造证据。
-# 这四条没有片段文本，等级因此是 L0——矩阵补的是覆盖，不是等级。
+# `mma/scalar_tile` 是 gemm_f32 真正调用的标量 tile，有片段正文，等级 L2；
+# `scan`/`exp2`/`rcp` 没有片段文本，等级因此是 L0——矩阵补的是覆盖，不是等级。
 [[provides]]
 prim     = "mma"
 impl     = "scalar_tile"
@@ -321,7 +322,7 @@ k        = "<=8"
 dt       = ["f32"]
 space    = ["REG"]
 accuracy = ["fp32"]
-grade    = "L0"
+grade    = "L2"
 witness  = { file = "cpu/witness.c", func = "witness_mma", expect = [1.0, 2.0, 3.0, 4.0] }
 
 # 单线程前缀和：`sum` 与 `max` 走同一段循环，只是结合运算不同。
