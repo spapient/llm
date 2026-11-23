@@ -256,22 +256,33 @@ fn matmul_i8(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
     let (a, b) = <(u8, u8) as Inputs>::unpack(inputs, "matmul_i8")?;
     let out = output_slice::<f32>("matmul_i8", output)?;
     let (m, n) = matrix_geometry("matmul_i8", a.len(), out.len(), nn::matmul_i8::K)?;
-    let mut acc = vec![0i32; m * n];
     let (a, b) = (signed(a), signed(b));
     let (av, bv) = matrix_pair(&a, &b, m, n, nn::matmul_i8::K)?;
+    finish_i8(av, bv, out, m, n)
+}
+
+/// `i32` 累加缓冲：跑 int8 GEMM 后把累加结果拓宽成 f32 输出。
+fn finish_i8(
+    av: tensor::View<'_, i8>,
+    bv: tensor::View<'_, i8>,
+    out: &mut [f32],
+    m: usize,
+    n: usize,
+) -> Result<()> {
+    let mut acc = vec![0i32; m * n];
     nn::fast::gemm_i8_checked(av, bv, &mut acc)?;
     widen(acc, out);
     Ok(())
 }
 
 /// 两行主序矩阵视图对：`a` 是 `m×k`、`b` 是 `k×n`。
-fn matrix_pair<K: tensor::Element>(
-    a: &[K],
-    b: &[K],
+fn matrix_pair<'a, K: tensor::Element>(
+    a: &'a [K],
+    b: &'a [K],
     m: usize,
     n: usize,
     k: usize,
-) -> Result<(tensor::View<'_, K>, tensor::View<'_, K>)> {
+) -> Result<(tensor::View<'a, K>, tensor::View<'a, K>)> {
     Ok((
         tensor::View::matrix(m, k, a)?,
         tensor::View::matrix(k, n, b)?,
@@ -340,10 +351,23 @@ fn attention_paths(
     let out = output_slice::<f32>("attention_f32", output)?;
     let d = nn::conv::attention::MODEL.shape.1;
     let s = batches("attention_f32", q.len(), d)?;
-    let qv = tensor::View::matrix(s, d, q)?;
-    let kv = tensor::View::matrix(s, d, k)?;
-    let vv = tensor::View::matrix(s, d, v)?;
+    let (qv, kv, vv) = triple(q, k, v, s, d)?;
     run(qv, kv, vv, out)
+}
+
+/// 三条同宽行主序视图：`q/k/v` 都是 `rows×d`。
+fn triple<'a>(
+    q: &'a [f32],
+    k: &'a [f32],
+    v: &'a [f32],
+    rows: usize,
+    d: usize,
+) -> Result<(tensor::View<'a, f32>, tensor::View<'a, f32>, tensor::View<'a, f32>)> {
+    Ok((
+        tensor::View::matrix(rows, d, q)?,
+        tensor::View::matrix(rows, d, k)?,
+        tensor::View::matrix(rows, d, v)?,
+    ))
 }
 
 /// `[q, k, v: f32] → y: f32`：尺寸由声明宽度推导；算术走稠密分块 tile。
@@ -361,12 +385,32 @@ fn decode_paths(inputs: &[View<'_>], output: &mut ViewMut<'_>, run: DecodeKernel
     let (q, k, v) = <(f32, f32, f32) as Inputs>::unpack(inputs, "decode_attention_f32")?;
     let out = output_slice::<f32>("decode_attention_f32", output)?;
     let d = nn::conv::decode_attention::MODEL.shape.1;
-    let q_rows = batches("decode_attention_f32", q.len(), d)?;
-    let hist = batches("decode_attention_f32", k.len(), d)?;
-    let qv = tensor::View::matrix(q_rows, d, q)?;
-    let kv = tensor::View::matrix(hist, d, k)?;
-    let vv = tensor::View::matrix(hist, d, v)?;
+    let (q_rows, hist) = decode_geom(q.len(), k.len(), d)?;
+    let (qv, kv, vv) = decode_triple(q, k, v, q_rows, hist, d)?;
     run(qv, kv, vv, out)
+}
+
+/// decode 几何：查询行数与历史行数各按头宽反推。
+fn decode_geom(q_len: usize, k_len: usize, d: usize) -> Result<(usize, usize)> {
+    let q_rows = batches("decode_attention_f32", q_len, d)?;
+    let hist = batches("decode_attention_f32", k_len, d)?;
+    Ok((q_rows, hist))
+}
+
+/// decode 三视图：`q` 是 `q_rows×d`，`k/v` 是 `hist×d`。
+fn decode_triple<'a>(
+    q: &'a [f32],
+    k: &'a [f32],
+    v: &'a [f32],
+    q_rows: usize,
+    hist: usize,
+    d: usize,
+) -> Result<(tensor::View<'a, f32>, tensor::View<'a, f32>, tensor::View<'a, f32>)> {
+    Ok((
+        tensor::View::matrix(q_rows, d, q)?,
+        tensor::View::matrix(hist, d, k)?,
+        tensor::View::matrix(hist, d, v)?,
+    ))
 }
 
 /// decode 注意力：`q/k/v → out`。
@@ -387,11 +431,30 @@ fn latent_attention_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result
     let (q, k, v) = <(f32, f32, f32) as Inputs>::unpack(inputs, "latent_attention_f32")?;
     let out = output_slice::<f32>("latent_attention_f32", output)?;
     let w = nn::conv::attention::latent::MODEL.shape.1;
-    let r = batches("latent_attention_f32", q.len(), w)?;
-    let t = batches("latent_attention_f32", k.len(), w)?;
-    let qv = tensor::View::matrix(r, w, q)?;
-    let kv = tensor::View::matrix(t, w, k)?;
+    let (r, t) = latent_geom(q.len(), k.len(), w)?;
+    let (qv, kv) = row_pair(q, k, r, t, w)?;
     nn::conv::attention::latent_forward(qv, kv, v, out)
+}
+
+/// 潜空间几何：查询行数与键行数各按行宽反推。
+fn latent_geom(q_len: usize, k_len: usize, w: usize) -> Result<(usize, usize)> {
+    let r = batches("latent_attention_f32", q_len, w)?;
+    let t = batches("latent_attention_f32", k_len, w)?;
+    Ok((r, t))
+}
+
+/// 两条同宽行主序视图：`a` 是 `ra×w`、`b` 是 `rb×w`。
+fn row_pair<'a>(
+    a: &'a [f32],
+    b: &'a [f32],
+    ra: usize,
+    rb: usize,
+    w: usize,
+) -> Result<(tensor::View<'a, f32>, tensor::View<'a, f32>)> {
+    Ok((
+        tensor::View::matrix(ra, w, a)?,
+        tensor::View::matrix(rb, w, b)?,
+    ))
 }
 
 /// 反量化适配：`[q] → y: f32`，scale/zero 取样本常量；打包与逐元素两档只差输入 lane。

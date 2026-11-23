@@ -156,16 +156,38 @@ fn attention_paths(
     outputs: &mut [ViewMut<'_>],
     run: AttentionKernel,
 ) -> Result<()> {
+    let (q, k, v, out) = attention_inputs(inputs, outputs)?;
+    let d = nn::conv::attention::MODEL.shape.1;
+    let s = q.len() / d;
+    let (qv, kv, vv) = triple(q, k, v, s, d)?;
+    run(qv, kv, vv, out)
+}
+
+/// 拆出 prefill 三路读入与一路写出视图。
+fn attention_inputs(
+    inputs: &[View<'_>],
+    outputs: &mut [ViewMut<'_>],
+) -> Result<DecodeViews<'_, '_>> {
     let q = input_f32("attention", inputs, 0)?;
     let k = input_f32("attention", inputs, 1)?;
     let v = input_f32("attention", inputs, 2)?;
     let out = output_f32("attention", outputs, 0)?;
-    let d = nn::conv::attention::MODEL.shape.1;
-    let s = q.len() / d;
-    let qv = tensor::View::matrix(s, d, q)?;
-    let kv = tensor::View::matrix(s, d, k)?;
-    let vv = tensor::View::matrix(s, d, v)?;
-    run(qv, kv, vv, out)
+    Ok((q, k, v, out))
+}
+
+/// 三条同宽行主序视图：`q/k/v` 都是 `rows×d`。
+fn triple(
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    rows: usize,
+    d: usize,
+) -> Result<(tensor::View<'_, f32>, tensor::View<'_, f32>, tensor::View<'_, f32>)> {
+    Ok((
+        tensor::View::matrix(rows, d, q)?,
+        tensor::View::matrix(rows, d, k)?,
+        tensor::View::matrix(rows, d, v)?,
+    ))
 }
 
 /// 朴素自注意力适配：走稠密分块 tile 路径。
@@ -305,18 +327,29 @@ fn gemv_inputs<'a, 'b>(
 /// 行批投影：整块 `x` 按 `m` 切段、`out` 按 `n` 切段。
 fn project_rows(x: &[f32], weights: &[f32], out: &mut [f32], m: usize, n: usize) -> Result<()> {
     let rows = row_batch_rows(x, out, m, n)?;
+    let (xv, wv) = row_pair(x, weights, rows, n, m)?;
     if rows == 1 {
         return nn::gemv_f32::forward(tensor::View::one(x), weights, out);
     }
     if rows >= nn::fast::MIN_ROWS {
-        let xv = tensor::View::matrix(rows, m, x)?;
-        let wv = tensor::View::matrix(n, m, weights)?;
         nn::fast::gemm_f32_tn(xv, wv, out);
         return Ok(());
     }
-    let xv = tensor::View::matrix(rows, m, x)?;
-    let wv = tensor::View::matrix(n, m, weights)?;
     nn::matmul::forward_tn_tiled(xv, wv, out)
+}
+
+/// 两条 TN 行主序视图：`x` 是 `rows×m`、`weights` 是 `n×m`。
+fn row_pair(
+    x: &[f32],
+    weights: &[f32],
+    rows: usize,
+    n: usize,
+    m: usize,
+) -> Result<(tensor::View<'_, f32>, tensor::View<'_, f32>)> {
+    Ok((
+        tensor::View::matrix(rows, m, x)?,
+        tensor::View::matrix(n, m, weights)?,
+    ))
 }
 
 /// 行批几何校验并给出输出行数：`x` 是 `rows × m`，`out` 必须是 `rows × n`。

@@ -195,15 +195,21 @@ fn fit(w: &[f32], min: f32, step: f32) -> Option<(Vec<u32>, u32)> {
 
 pub(crate) fn decode_quant(cur: &mut Cursor<'_>, want: usize) -> Result<Vec<f32>> {
     let bytes = unpack_bytes(cur, payload_cap(want))?;
-    let mut at = 0;
-    let min = word(&bytes, &mut at, "quant 头截断").map(f32::from_bits)?;
-    let [exponent, width] = take::<2>(&bytes, &mut at, "quant 头截断")?;
-    if width > 8 {
-        return Err(bad("quant 位宽超过 8"));
-    }
+    let (min, exponent, width, at) = quant_head(&bytes)?;
     let codes = unpack_bits(&bytes[at..], want, width)?;
     let step = 2.0f32.powi(exponent as i8 as i32);
     Ok(codes.iter().map(|&c| min + c as f32 * step).collect())
+}
+
+/// quant 头：最小基准、指数、位宽与码流起点；位宽 > 8 拒绝。
+fn quant_head(bytes: &[u8]) -> Result<(f32, u8, u8, usize)> {
+    let mut at = 0;
+    let min = word(bytes, &mut at, "quant 头截断").map(f32::from_bits)?;
+    let [exponent, width] = take::<2>(bytes, &mut at, "quant 头截断")?;
+    if width > 8 {
+        return Err(bad("quant 位宽超过 8"));
+    }
+    Ok((min, exponent, width, at))
 }
 
 /// 小端字节 ↔ 标量的宽度事实：f32/f64 各一条实现。`to_le_bytes`/`from_le_bytes` 据此泛化，
@@ -303,17 +309,30 @@ fn unpack_bits(src: &[u8], count: usize, width: u8) -> Result<Vec<u32>> {
     let mut bits = 0u32;
     let mut at = 0usize;
     for _ in 0..count {
-        while bits < width as u32 {
-            let byte = src.get(at).copied().ok_or_else(|| bad("quant 码流截断"))?;
-            acc |= (byte as u64) << bits;
-            at += 1;
-            bits += 8;
-        }
+        refill(src, &mut at, &mut acc, &mut bits, width)?;
         out.push((acc & ((1u64 << width) - 1)) as u32);
         acc >>= width;
         bits -= width as u32;
     }
     Ok(out)
+}
+
+/// 补足累加器到 `width` 位：位流逐字节串行推进，无法整块预取，故保留 while；
+/// 原地推进字节位置、位缓存与已用位数。
+fn refill(
+    src: &[u8],
+    at: &mut usize,
+    acc: &mut u64,
+    bits: &mut u32,
+    width: u8,
+) -> Result<()> {
+    while *bits < width as u32 {
+        let byte = src.get(*at).copied().ok_or_else(|| bad("quant 码流截断"))?;
+        *acc |= (byte as u64) << *bits;
+        *at += 1;
+        *bits += 8;
+    }
+    Ok(())
 }
 
 /// 从 `buf` 的 `at` 处取 `N` 字节并推进偏移；越界用 `missing` 文案报错。
