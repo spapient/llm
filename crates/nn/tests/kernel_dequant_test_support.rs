@@ -31,7 +31,7 @@ macro_rules! dequant_packed_tests {
         #[test]
         fn rejects_zero_scale_and_out_of_domain_zero() {
             let q = [0x52u8];
-            let mut out = [0.0; $cpb];
+            let mut out = vec![0.0; $cpb];
 
             assert!($forward(0.0, $zero, &q, &mut out).is_err(), "零标度拒绝");
             assert!(

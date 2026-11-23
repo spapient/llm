@@ -5,7 +5,7 @@
 //! 1. **循环状态**——[`Schedule`]/[`Anneal`]（学习率是完全确定的函数）、[`Session`]/[`TrainConfig`]、
 //!    [`Step`]/[`Checkpoint`]（"恢复所需的最小事实集"：步数、图规模、批形状、层数、权重条目数、
 //!    并行度，少任何一项恢复出来的都不是原来那次训练）、[`Distributed`]、[`Learner`]/[`MetricsBoard`]、
-//!    [`Batch`]/[`Dataset`]/[`Chunks`]（`samples`；唯一消费者是 [`Learner`]，故批几何与批总数只有一处算）。
+//!    [`Batch`]/[`Dataset`]/[`Chunks`]（`learner`；唯一消费者是 [`Learner`]，故批几何与批总数只有一处算）。
 //! 2. **目标函数**——[`Loss`]/[`Outcome`] 与分类/回归损失、蒸馏族（[`Distill`]、`kl_div`、
 //!    `log_softmax`）、策略族（[`Grpo`]、`policy_loss`、`clipped_surrogate`、`entropy`）。三族共用
 //!    `loss` 的几何校验与数值助手，因此只有一份长度/词表/行数契约。
@@ -24,9 +24,9 @@
 //! **依赖**：`nn`、`autograd`、`weights`、`shard`、`tensor`、`op`、`diagnostic`、`snapshot`。
 //! **被依赖**：`cli`、`benchmarks`、`fuzz`、`serve`、`testkit`。
 //!
-//! 入口只做模块声明与再导出：实现按上面五条轴分布在 14 个子模块里（`backprop`、`dist`、
-//! `geometry`、`kernel`、`learner`、`loss`、`optimizer`、`pool`、`rl`、`rng`、`samples`、
-//! `schedule`、`session`、`store`；`rng` 是并入的计数器型确定性随机，独立于五条轴）。
+//! 入口只做模块声明与再导出：实现按上面五条轴分布在 9 个子模块里（`backprop`、`geometry`、`kernel`、
+//! `learner`（含 `Batch`/`Dataset`/`Chunks`）、`loss`（含策略族）、`optimizer`、`pool`（含 `store` 门面）、
+//! `rng`、`session`（含学习率调度与分布式编排）；`rng` 是并入的计数器型确定性随机，独立于五条轴）。
 //!
 //! # 例子
 //!
@@ -42,19 +42,14 @@
 #![deny(unsafe_code)]
 
 mod backprop;
-mod dist;
 pub mod geometry;
 mod kernel;
 mod learner;
 mod loss;
 mod optimizer;
 mod pool;
-mod rl;
 mod rng;
-mod samples;
-mod schedule;
 mod session;
-mod store;
 
 /// 训练侧测试共用的夹具图（`tests/support.rs`）：在 crate 根挂一次，测试模块引用它，
 /// 而不是在自己的内联模块里另写一份相对路径——内联模块的 `#[path]` 基准是虚拟目录，跨级上跳会失败。
@@ -62,18 +57,18 @@ mod store;
 #[path = "../tests/support.rs"]
 mod support;
 
-pub use dist::{Distributed, Local, Remote};
 pub use geometry::{Geometry, Running};
-pub use learner::{ForwardOut, Learner, Metric, MetricPoint, MetricsBoard};
+pub use learner::{Batch, Chunks, Dataset, ForwardOut, Learner, Metric, MetricPoint, MetricsBoard};
 pub use loss::{
-    Distill, Loss, Outcome, argmax_hits, bce_with_logits, cross_entropy, distillation_loss, hinge,
-    huber, kl_div, kl_per_row, log_softmax, mse,
+    Distill, Grpo, Loss, Outcome, advantage, argmax_hits, bce_with_logits, clipped_surrogate,
+    cross_entropy, distillation_loss, entropy, grpo_loss, hinge, huber, kl_div, kl_per_row,
+    log_prob, log_softmax, mse, policy_loss,
 };
 pub use optimizer::{Adam, Group, Muon, Optimizer, OwnedSlot, Sgd, Slot};
-pub use rl::{Grpo, advantage, clipped_surrogate, entropy, grpo_loss, log_prob, policy_loss};
+pub use pool::OperatorSetOps;
+pub use pool::{Bufs, Data, Inputs, Kernel, Kind, Lane, Reference, View, ViewMut};
 pub use rng::{Bernoulli, Normal, Rng, Uniform, block};
-pub use samples::{Batch, Chunks, Dataset};
-pub use schedule::{Anneal, Schedule};
-pub use session::{Checkpoint, ParamSlot, Session, Step, TrainConfig, operators, resume};
-pub use store::OperatorSetOps;
-pub use store::{Bufs, Data, Inputs, Kernel, Kind, Lane, Reference, View, ViewMut};
+pub use session::{
+    Anneal, Checkpoint, Distributed, Local, ParamSlot, Remote, Schedule, Session, Step,
+    TrainConfig, operators, resume,
+};

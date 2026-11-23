@@ -110,6 +110,11 @@ fn locate(module: &str, depth: usize) -> Option<PathBuf> {
     if depth > ALIAS_DEPTH {
         return None;
     }
+    // 声明是唯一真相：文件名可以自由取（`#[path = "kernel_gemv.rs"] pub mod gemv;`），
+    // 所以「模块路径 → 文件」只能由声明处推导，不能由文件名反推。
+    if let Some(found) = module_index().get(module) {
+        return Some(found.clone());
+    }
     let roots = op_roots();
     // 按相对路径在家族各家根下探测：名字在谁家就返回谁家的实体。
     let find = |relative: String| {
@@ -126,12 +131,12 @@ fn locate(module: &str, depth: usize) -> Option<PathBuf> {
         // 内联模块（`activation.rs` 里的 `pub mod embed { … }`、`classic.rs` 里的
         // `pub mod pool { pub mod adaptive { … } }`）没有自己的文件，注解与实体都在外层骨架里：
         // 逐级上溯到第一个**确实声明了下一段**的文件。这条判据是必要的——只按"文件存在"上溯，
-        // `fast::i8::gemm_i8` 这类纯函数重导出会被错认成 `fast/i8.rs` 的算子实体。
+        // `kernel::fast::i8::gemm_i8` 这类纯函数重导出会被错认成算子实体所在的文件。
         let segments: Vec<&str> = module.split("::").collect();
         let leaf = segments.last().copied().unwrap_or_default();
         // 判据是「这个文件声明了**目标段**」而不是「声明了中间段」：`conv.rs` 声明了
-        // `pub mod classic`，但实体在 `conv/classic.rs` 的内联 `pub mod batch` 里，
-        // 认中间段会把壳文件当成实体文件（壳里没有注解，也没有算子）。
+        // `pub mod classic`，实体在同一文件的更深一层内联 `pub mod batch` 里，
+        // 认中间段会把只声明模块名的位置当成实体位置。
         for cut in (1..segments.len()).rev() {
             let Some(candidate) = find(format!("{}.rs", segments[..cut].join("/"))) else {
                 continue;
@@ -220,8 +225,162 @@ fn aliases() -> &'static std::collections::BTreeMap<String, Vec<String>> {
     })
 }
 
+/// 模块路径 → 实体文件的索引，由**声明处**递归推导（`OnceLock` 只建一次）。
+///
+/// 三条判据，全部来自 Rust 的模块解析规则本身，不看文件名与模块名是否同名：
+/// - `#[path = "X.rs"] pub mod name;`：`X.rs` 相对**声明所在文件**解析（`src/` 下的扁平文件即由此接入）；
+/// - `pub mod name;`：`name.rs` / `name/mod.rs`（`lib.rs` 与 `mod.rs` 的子模块与自身同目录）；
+/// - `pub mod name { … }`：内联模块，实体就在本文件里。
+///
+/// 这条索引让「源码怎么拆、文件叫什么」与「模块路径」彻底解耦——否则每拆一次文件，
+/// 契约门禁就得跟着改一遍路径猜测。
+fn module_index() -> &'static std::collections::BTreeMap<String, PathBuf> {
+    static INDEX: OnceLock<std::collections::BTreeMap<String, PathBuf>> = OnceLock::new();
+    INDEX.get_or_init(|| {
+        let mut out = std::collections::BTreeMap::new();
+        for (crate_name, file) in sources() {
+            if !in_op_family(&crate_name) || file.file_stem().is_some_and(|stem| stem != "lib") {
+                continue;
+            }
+            walk_declarations(&file, &mut Vec::new(), &mut out);
+        }
+        
+        out
+    })
+}
+
+/// `#[path]` 与 `pub mod name;` 的解析：把声明所在文件的子模块文件找出来。
+fn child_file(owner: &std::path::Path, name: &str, explicit: Option<&str>) -> Option<PathBuf> {
+    let dir = owner.parent()?;
+    if let Some(relative) = explicit {
+        let candidate = dir.join(relative);
+        return candidate.exists().then_some(candidate);
+    }
+    // `lib.rs` / `mod.rs` 的子模块与自身同目录，其余文件（`foo.rs`）的子模块在 `foo/` 里。
+    let stem = owner.file_stem()?.to_string_lossy().into_owned();
+    let base = if stem == "lib" || stem == "mod" {
+        dir.to_path_buf()
+    } else {
+        dir.join(&stem)
+    };
+    [base.join(format!("{name}.rs")), base.join(name).join("mod.rs")]
+        .into_iter()
+        .find(|candidate| candidate.exists())
+}
+
+/// 递归跟随声明：内联模块只换栈不换文件，`#[path]`/同名文件换文件。
+///
+/// 缩进栈取代花括号计数：全仓 `cargo fmt` 门禁保证「内联模块的深度 = 缩进 / 4」，
+/// 而花括号计数会被字符串里的 `{`（格式化参数）打乱。
+fn walk_declarations(
+    file: &std::path::Path,
+    prefix: &mut Vec<String>,
+    out: &mut std::collections::BTreeMap<String, PathBuf>,
+) {
+    let Some(text) = source_text(file) else {
+        return;
+    };
+    let mut stack: Vec<(usize, String)> = Vec::new();
+    let mut explicit: Option<String> = None;
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        let indent = line.len() - trimmed.len();
+        if let Some(rest) = trimmed.strip_prefix("#[path = \"") {
+            explicit = rest.split('"').next().map(str::to_string);
+            continue;
+        }
+        if !trimmed.starts_with('#') && !trimmed.is_empty() {
+            // 属性行之外的任何一行都清掉待用属性：`#[path]` 只对它紧邻的那条 `mod` 生效。
+            if !trimmed.starts_with("//") {
+                let pending = explicit.take();
+                if let Some((name, inline)) = module_declaration(trimmed) {
+                    while stack.last().is_some_and(|(depth, _)| *depth >= indent) {
+                        stack.pop();
+                    }
+                    stack.push((indent, name.clone()));
+                    let mut path = prefix.clone();
+                    path.extend(stack.iter().map(|(_, name)| name.clone()));
+                    let joined = path.join("::");
+                    out.entry(joined).or_insert_with(|| file.to_path_buf());
+                    if !inline {
+                        stack.pop();
+                        if let Some(child) = child_file(file, &name, pending.as_deref()) {
+                            walk_declarations(&child, &mut path, out);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// 一行是不是模块声明：返回 `(模块名, 是否内联)`。
+fn module_declaration(line: &str) -> Option<(String, bool)> {
+    let rest = line
+        .strip_prefix("pub mod ")
+        .or_else(|| line.strip_prefix("pub(crate) mod "))
+        .or_else(|| line.strip_prefix("mod "))?;
+    let inline = rest.ends_with('{');
+    let name = rest
+        .trim_end_matches('{')
+        .trim_end_matches(';')
+        .trim();
+    let valid = !name.is_empty()
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_');
+    valid.then(|| (name.to_string(), inline))
+}
+
+/// 文件 → 声明出的模块路径（取最短的一条：一个文件被多处声明时，最短的是它的规范位置）。
+fn declared_paths() -> &'static std::collections::BTreeMap<PathBuf, String> {
+    static REVERSE: OnceLock<std::collections::BTreeMap<PathBuf, String>> = OnceLock::new();
+    REVERSE.get_or_init(|| {
+        for (alias, sources) in aliases() {
+            if alias.contains("adaptive") || alias.contains("avg_pool") {
+                eprintln!("DEBUG alias {alias} -> {sources:?}");
+            }
+        }
+        for key in module_index().keys().filter(|k| k.contains("classic")) {
+            eprintln!("DEBUG index {key}");
+        }
+        let mut out: std::collections::BTreeMap<PathBuf, String> =
+            std::collections::BTreeMap::new();
+        for (module, file) in module_index() {
+            let key = normalize(file);
+            match out.get(&key) {
+                Some(existing) if existing.len() <= module.len() => {}
+                _ => {
+                    out.insert(key, module.clone());
+                }
+            }
+        }
+        out
+    })
+}
+
+/// 词法规整：去掉 `.` 与可消的 `..`，让「同一条路径的不同写法」比较得上。
+fn normalize(path: &std::path::Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 /// 文件自己的模块路径（`gemv/f32.rs` → `gemv::f32`，`lib.rs` → 空）。
 fn module_path_of(file: &std::path::Path) -> String {
+    // 声明索引优先：`#[path = "kernel_matmul.rs"] pub mod matmul;` 之后文件名不再等于模块路径，
+    // 只有声明处知道这个文件是谁的实体。
+    if let Some(declared) = declared_paths().get(&normalize(file)) {
+        return declared.clone();
+    }
     // 家族有四家，模块路径一律相对各自的 `crates/<crate>/src` 算：写死 `op` 会让另外三家的
     // 路径多出一层 crate 名，`gemv/f32.rs` 就不再等于 `gemv::f32`。
     let rel = file
@@ -269,19 +428,36 @@ fn use_tree(statement: &str, owner: &str) -> Vec<(String, String)> {
         .split_once("use ")
         .map(|(_, rest)| rest.trim_end_matches(';').trim())
         .unwrap_or("");
+    // `use` 的路径是相对**所在模块**解析的：`super::` 逐层上溯、`self::` 原地、`crate::` 绝对。
+    // 声明索引让 owner 与文件名解耦（`kernel_matmul.rs` 的 owner 是 `kernel::matmul`），
+    // 这条解析才可能对——按文件名算 owner 时，`super::` 会被拼成 `kernel_matmul::super::…`。
     let join = |prefix: &str, name: &str| {
-        if prefix.is_empty() {
-            return name.to_string();
+        let mut parts: Vec<&str> = owner.split("::").filter(|seg| !seg.is_empty()).collect();
+        let mut rest = prefix;
+        loop {
+            if rest == "super" {
+                parts.pop();
+                rest = "";
+            } else if let Some(tail) = rest.strip_prefix("super::") {
+                parts.pop();
+                rest = tail;
+            } else if rest == "self" {
+                rest = "";
+            } else if let Some(tail) = rest.strip_prefix("self::") {
+                rest = tail;
+            } else if rest == "crate" {
+                parts.clear();
+                rest = "";
+            } else if let Some(tail) = rest.strip_prefix("crate::") {
+                parts.clear();
+                rest = tail;
+            } else {
+                break;
+            }
         }
-        let absolute = prefix
-            .strip_prefix("crate::")
-            .or_else(|| (prefix == "crate").then_some(""));
-        match absolute {
-            Some("") => name.to_string(),
-            Some(tail) => format!("{tail}::{name}"),
-            None if owner.is_empty() => format!("{prefix}::{name}"),
-            None => format!("{owner}::{prefix}::{name}"),
-        }
+        parts.extend(rest.split("::").filter(|seg| !seg.is_empty()));
+        parts.push(name);
+        parts.join("::")
     };
     let mut out = Vec::new();
     match body.split_once('{') {

@@ -1,17 +1,19 @@
-//! 训练会话：tape → 反传计划 → 梯度需求分类 → 梯度缓冲 → 优化器步的最小闭环。
+//! 训练会话：tape → 反传计划 → 梯度需求分类 → 梯度缓冲 → 优化器步的最小闭环；学习率调度
+//! （[`Schedule`] / [`Anneal`]）与分布式同步配置（[`Distributed`]）与它同住一处——会话是它们唯一的
+//! 装配者，调度曲线与同步口径都随 [`TrainConfig`] 走。
 
 use autograd::{Requirement, Sizes, Tape, Var};
 use diagnostic::{Code, Error, Result};
 use nn::ParamRole;
-use shard::Collective;
+use shard::{Collective, Group, Parallel, Reduce, Topology};
 use tensor::{DType, Shape};
 
-use crate::dist::Distributed;
 use crate::optimizer::{Optimizer, OwnedSlot, Slot};
 use crate::pool::Bufs;
-use crate::schedule::{Anneal, Schedule as LrSchedule};
 use crate::{Data, Kernel};
 use storage::{GradAccum, Moments, SlotMoments, Ties};
+
+pub use shard::{Local, Remote};
 use weights::Snapshot;
 
 /// 本模块诊断站点。
@@ -180,7 +182,7 @@ pub struct Session<K: Kernel, O: Optimizer, C: Collective = shard::Remote> {
     distributed: Distributed<C>,
     backward: autograd::Schedule,
     slots: Vec<ParamSlot>,
-    lr_schedule: LrSchedule,
+    lr_schedule: Schedule,
     config: TrainConfig,
     step: u64,
     /// 当前累积窗口内已汇总的 micro-batch 数；满 `accumulation` 才步进一次。
@@ -217,7 +219,7 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
         config: TrainConfig,
         distributed: Distributed<C>,
     ) -> Result<Self> {
-        let lr_schedule = LrSchedule::with(
+        let lr_schedule = Schedule::with(
             config.warmup_steps,
             config.max_steps,
             config.anneal,
@@ -902,3 +904,257 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
 #[cfg(test)]
 #[path = "../tests/session_tests.rs"]
 mod tests;
+
+// ---- 学习率调度：warmup 升到峰值，之后按曲线降到下限比例 ----
+
+/// 衰减曲线闭集：warmup 段对所有策略一致，差别只在 warmup 之后怎么降到学习率下限。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum Anneal {
+    /// 线性衰减：与峰值成比例匀速下行，只有两个参数、`lr()` 是纯函数，可解释性优先。
+    #[default]
+    Linear,
+    /// 余弦衰减：warmup 后按 `½(1 + cos(π·p))` 平滑下行，是 LLM 训练主流的末段收敛形态。
+    Cosine,
+    /// 恒定：warmup 后保持峰值，下限不参与下行。
+    Constant,
+}
+
+impl Anneal {
+    /// 曲线短名：诊断与报告里的稳定标签。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Linear => "linear",
+            Self::Cosine => "cosine",
+            Self::Constant => "constant",
+        }
+    }
+
+    /// 归一化形状：`1.0` 为峰值、`0.0` 为谷底；谷底比例由 [`factor`](Self::factor) 统一插值。
+    fn shaped(self, progress: f32) -> f32 {
+        match self {
+            Self::Constant => 1.0,
+            Self::Linear => 1.0 - progress,
+            Self::Cosine => 0.5 * (1.0 + (core::f32::consts::PI * progress).cos()),
+        }
+    }
+
+    /// 曲线在进度 `progress ∈ [0, 1]` 处的因子：`min_ratio` 为谷底，`1.0` 为峰值。
+    fn factor(self, progress: f32, min_ratio: f32) -> f32 {
+        let progress = progress.clamp(0.0, 1.0);
+        min_ratio + (1.0 - min_ratio) * self.shaped(progress)
+    }
+}
+
+/// 学习率调度：warmup 升到峰值，之后按 [`Anneal`] 曲线降到下限比例。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Schedule {
+    warmup: u64,
+    total: u64,
+    anneal: Anneal,
+    min_ratio: f32,
+}
+
+impl Schedule {
+    /// 线性衰减到 0：`total` 必须非零，`warmup` 不得超过 `total`。
+    pub fn new(warmup: u64, total: u64) -> Result<Self> {
+        Self::with(warmup, total, Anneal::Linear, 0.0)
+    }
+
+    /// 全参构造；`min_ratio` 是谷底占峰值的比例，必须落在 `[0, 1]`。
+    pub fn with(warmup: u64, total: u64, anneal: Anneal, min_ratio: f32) -> Result<Self> {
+        if total == 0 {
+            return Err(Error::new(Code::Invalid, "总步数不能为 0").with("train::Schedule::with"));
+        }
+        if warmup > total {
+            return Err(
+                Error::new(Code::Invalid, format!("warmup {warmup} 超过总步数 {total}"))
+                    .with("train::Schedule::with"),
+            );
+        }
+        if !(0.0..=1.0).contains(&min_ratio) {
+            return Err(
+                Error::new(Code::Invalid, format!("下限比例 {min_ratio} 不在 [0, 1]"))
+                    .with("train::Schedule::with"),
+            );
+        }
+        Ok(Self {
+            warmup,
+            total,
+            anneal,
+            min_ratio,
+        })
+    }
+
+    /// warmup 步数。
+    pub fn warmup(&self) -> u64 {
+        self.warmup
+    }
+
+    /// 总步数。
+    pub fn total(&self) -> u64 {
+        self.total
+    }
+
+    /// 衰减曲线。
+    pub fn anneal(&self) -> Anneal {
+        self.anneal
+    }
+
+    /// 谷底占峰值的比例。
+    pub fn min_ratio(&self) -> f32 {
+        self.min_ratio
+    }
+
+    /// 第 `step` 步的学习率：`peak` 是 warmup 结束时的值，超过 `total` 后为 0。
+    pub fn lr(&self, peak: f32, step: u64) -> f32 {
+        if step >= self.total {
+            return 0.0;
+        }
+        if self.warmup > 0 && step < self.warmup {
+            // 第 0 步已经有非零学习率，否则前若干步等于白跑。
+            return peak * ((step + 1) as f32) / (self.warmup as f32);
+        }
+        let span = self.total - self.warmup;
+        if span == 0 {
+            return peak;
+        }
+        let progress = (step - self.warmup) as f32 / span as f32;
+        peak * self.anneal.factor(progress, self.min_ratio)
+    }
+}
+
+// ---- 分布式训练编排：拓扑绑定 + 梯度同步后端，配置化挂到训练会话上 ----
+
+/// 分布式编排的诊断站点（站名保持 `"train::Distributed"`，与 [`SITE`] 区分）。
+const DIST_SITE: &str = "train::Distributed";
+
+/// 分布式编排配置：拓扑、本进程 rank 与通信后端；梯度同步口径随配置走。
+#[derive(Debug, Clone, PartialEq)]
+pub struct Distributed<E: Collective> {
+    topology: Topology,
+    rank: u32,
+    collective: Option<E>,
+    /// 归约后是否除以数据并行组数（`true` = 平均梯度，`false` = 求和梯度）。
+    average: bool,
+    reduce: Reduce,
+}
+
+impl Distributed<Remote> {
+    /// 单进程恒等编排：无拓扑、无后端，梯度不同步。后续装配多进程时用 [`Self::new`]。
+    pub fn none() -> Self {
+        Self {
+            topology: Topology::single(),
+            rank: 0,
+            collective: None,
+            average: true,
+            reduce: Reduce::Sum,
+        }
+    }
+}
+
+impl<E: Collective> Distributed<E> {
+    /// 由拓扑、本 rank 与通信后端构造；rank 必须落在拓扑世界内，否则归约组派生时会越界。
+    ///
+    /// # Errors
+    ///
+    /// `rank` 超出 `0..world`（[`Code::Invalid`]）。
+    pub fn new(topology: Topology, rank: u32, collective: E) -> Result<Self> {
+        if rank as usize >= topology.world() {
+            return Err(Error::new(
+                Code::Invalid,
+                format!("rank {rank} 超出拓扑世界 0..{}", topology.world()),
+            )
+            .with(DIST_SITE));
+        }
+        Ok(Self {
+            topology,
+            rank,
+            collective: Some(collective),
+            average: true,
+            reduce: Reduce::Sum,
+        })
+    }
+
+    /// 归约后取平均（默认）；`false` 保留求和梯度。
+    pub fn with_average(mut self, average: bool) -> Self {
+        self.average = average;
+        self
+    }
+
+    /// 拓扑只读投影。
+    pub fn topology(&self) -> Topology {
+        self.topology
+    }
+
+    /// 本进程全局 rank。
+    pub fn rank(&self) -> u32 {
+        self.rank
+    }
+
+    /// 数据并行组：同一份权重、不同微批的进程集合；单进程退化成 `[0]`。
+    pub fn data_group(&self) -> Result<Group> {
+        let idx = self.topology.idxs(self.rank)?.2;
+        self.topology.group(Parallel::Data, idx)
+    }
+
+    /// 组大小（数据并行度）；单进程为 1。
+    pub fn data_parallel(&self) -> usize {
+        self.topology.dp()
+    }
+
+    /// 是否接了真实通信后端：`false` 时同步是恒等回路，不产生网络动作。
+    pub fn is_distributed(&self) -> bool {
+        self.collective.is_some()
+    }
+
+    /// 把全部槽位梯度在数据并行组内同步：先组内归约，再按组数取平均（配置开启时）。
+    ///
+    /// 缓冲长度与槽位对齐由调用方保证；后端返回的错误原样透传。单进程无后端时直接返回。
+    ///
+    /// # Errors
+    ///
+    /// 组派生越界、后端归约失败，或平均除数为 0 时返回对应 [`Code`]。
+    pub fn sync_grads(&mut self, slots: &mut [&mut [f32]]) -> Result<()> {
+        let group = self.data_group()?;
+        let Some(collective) = self.collective.as_mut() else {
+            return Ok(());
+        };
+        synchronize(collective, &group, self.reduce, self.average, slots)?;
+        Ok(())
+    }
+}
+
+/// 组内归约各槽梯度；配置开启平均时再按数据并行组数取均值。
+fn synchronize<E: Collective>(
+    collective: &mut E,
+    group: &Group,
+    reduce: Reduce,
+    average: bool,
+    slots: &mut [&mut [f32]],
+) -> Result<()> {
+    for grads in slots.iter_mut() {
+        collective.all_reduce(group, reduce, grads)?;
+    }
+    if average {
+        scale(slots, group)?;
+    }
+    Ok(())
+}
+
+/// 按组大小缩小平坦后的梯度；组大小为 0 是构造错误，不是可降级情形。
+fn scale(slots: &mut [&mut [f32]], group: &Group) -> Result<()> {
+    let divisor = group.size() as f32;
+    if divisor == 0.0 {
+        return Err(Error::new(Code::Internal, "数据并行组大小为 0").with(DIST_SITE));
+    }
+    for grads in slots.iter_mut() {
+        for slot in grads.iter_mut() {
+            *slot /= divisor;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "../tests/dist_tests.rs"]
+mod dist_tests;

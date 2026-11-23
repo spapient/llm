@@ -1,9 +1,9 @@
 //! 目标函数：分类/回归/排序损失、蒸馏族与策略族共用一份几何校验与数值助手。
 //!
 //! 三族同住一处是因为它们校验的是同一个契约（`[rows, vocab]` 展平、标签在词表内、行数为正），
-//! 拆开就得让每族各带一份长度/词表/行数检查或互相 `pub(crate)` 借用；这里只有一份。
+//! 拆开就得让每族各带一份长度/词表/行数检查或互相借用；这里只有一份。策略族（GRPO / PPO）的
+//! 前向纯计算原语也在本文件，与组合损失共用同一份裁剪范围 `ε` 与 KL 惩罚系数 `β` 的校验。
 
-use crate::rl::{Grpo, grpo_loss};
 use diagnostic::{Code, Error, Result};
 
 /// 本模块诊断站点。
@@ -19,7 +19,7 @@ pub(crate) const DISTILL_SITE: &str = "train::distill";
 ///
 /// 词表为 0、标签为空、logits 长度不是 `rows · vocab`、或标签越界/非整数/为负时返回
 /// [`Code::Invalid`]。
-pub(crate) fn check_geometry(logits: &[f32], labels: &[f32], vocab: usize) -> Result<usize> {
+fn check_geometry(logits: &[f32], labels: &[f32], vocab: usize) -> Result<usize> {
     let rows = labels.len();
     check_vocab(vocab)?;
     check_rows(rows)?;
@@ -36,21 +36,21 @@ fn check_labels(labels: &[f32], vocab: usize) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn check_vocab(vocab: usize) -> Result<()> {
+fn check_vocab(vocab: usize) -> Result<()> {
     if vocab == 0 {
         return Err(Error::new(Code::Invalid, "词表宽度不能为 0").with(SITE));
     }
     Ok(())
 }
 
-pub(crate) fn check_rows(rows: usize) -> Result<()> {
+fn check_rows(rows: usize) -> Result<()> {
     if rows == 0 {
         return Err(Error::new(Code::Invalid, "标签为空：没有可评估的样本行").with(SITE));
     }
     Ok(())
 }
 
-pub(crate) fn check_logits_len(logits_len: usize, rows: usize, vocab: usize) -> Result<()> {
+fn check_logits_len(logits_len: usize, rows: usize, vocab: usize) -> Result<()> {
     let expected = rows * vocab;
     if logits_len != expected {
         let message =
@@ -61,7 +61,7 @@ pub(crate) fn check_logits_len(logits_len: usize, rows: usize, vocab: usize) -> 
 }
 
 /// 校验两个长度相等；不等返回 [`Code::Invalid`]。`what` 标识被校验的一侧。
-pub(crate) fn check_len(actual: usize, expected: usize, what: &str) -> Result<()> {
+fn check_len(actual: usize, expected: usize, what: &str) -> Result<()> {
     if actual != expected {
         let message = format!("{what} 长度 {actual} 与期望 {expected} 不符");
         return Err(Error::new(Code::Invalid, message).with(SITE));
@@ -83,14 +83,14 @@ fn check_label(label: f32, vocab: usize) -> Result<()> {
 }
 
 /// 一行的数值稳定归约：返回 `(行内最大值 · scale, Σ exp(v·scale − max))`。
-pub(crate) fn exp_sum(row: &[f32], scale: f32) -> (f32, f32) {
+fn exp_sum(row: &[f32], scale: f32) -> (f32, f32) {
     let max = row.iter().copied().fold(f32::MIN, f32::max) * scale;
     let sum = row.iter().map(|value| (value * scale - max).exp()).sum();
     (max, sum)
 }
 
 /// 一行的 `logsumexp`：`max + ln Σ exp(v − max)`。
-pub(crate) fn logsumexp(row: &[f32]) -> f32 {
+fn logsumexp(row: &[f32]) -> f32 {
     let (max, sum) = exp_sum(row, 1.0);
     max + sum.ln()
 }
@@ -119,11 +119,7 @@ fn row_argmax(row: &[f32]) -> usize {
 /// # Errors
 ///
 /// 几何不自洽或标签越界时返回 [`Code::Invalid`]。
-pub(crate) fn evaluate(
-    logits: &[f32],
-    labels: &[f32],
-    vocab: usize,
-) -> Result<(f64, usize, usize)> {
+fn evaluate(logits: &[f32], labels: &[f32], vocab: usize) -> Result<(f64, usize, usize)> {
     let rows = check_geometry(logits, labels, vocab)?;
     let mut nll_sum = 0.0f64;
     let mut correct = 0usize;
@@ -286,7 +282,7 @@ pub enum Loss<'a> {
     },
     /// GRPO：裁剪策略梯度 + 参考 KL 惩罚。
     Grpo {
-        /// 当前策略逐 token log-prob（由 [`crate::rl::log_prob`] 预计算）。
+        /// 当前策略逐 token log-prob（由 [`log_prob`] 预计算）。
         new_logp: &'a [f32],
         /// 行为策略逐 token log-prob（冻结）。
         old_logp: &'a [f32],
@@ -523,8 +519,235 @@ pub fn distillation_loss(
     dist: Distill,
 ) -> Result<f32> {
     check_alpha(dist.alpha)?;
-    let hard = crate::loss::cross_entropy(student, labels, vocab)?;
+    let hard = cross_entropy(student, labels, vocab)?;
     let soft = kl_div(student, teacher, vocab, dist.temperature)?;
     let scale = dist.temperature * dist.temperature;
     Ok((1.0 - dist.alpha) * hard + dist.alpha * scale * soft)
 }
+
+// ---- 策略族：GRPO / PPO 的前向纯计算原语 ----
+
+/// RL 策略族的诊断站点（站名保持 `"train::rl"`，与目标函数的站点区分）。
+const RL_SITE: &str = "train::rl";
+
+/// 校验 logits 几何（词表/行数/长度），返回行数。
+fn check_rl_logits_shape(logits_len: usize, vocab: usize) -> Result<usize> {
+    check_vocab(vocab)?;
+    let rows = logits_len / vocab;
+    check_rows(rows)?;
+    check_logits_len(logits_len, rows, vocab)?;
+    Ok(rows)
+}
+
+/// 单行 log-prob：`logits[action] − logsumexp(logits)`。
+fn row_log_prob(slice: &[f32], action: usize) -> f32 {
+    slice[action] - logsumexp(slice)
+}
+
+/// 单行熵：`−Σ softmax·log softmax = logsumexp − Σ softmax·logits`。
+fn row_entropy(row: &[f32]) -> f32 {
+    let (max, sum) = exp_sum(row, 1.0);
+    let lse = max + sum.ln();
+    let mut h = 0.0f32;
+    for &v in row {
+        let p = (v - max).exp() / sum;
+        h -= p * (v - lse);
+    }
+    h
+}
+
+/// 采样动作的 log-prob：`logits[action] − logsumexp(logits)`，逐样本写回 `out`。
+///
+/// `logits` 按行展平成 `[rows, vocab]`，`actions` 长 `rows`（f32 承载类别索引，与 `embed_f32`
+/// 同一索引惯例），`out` 长 `rows`。
+///
+/// # Errors
+///
+/// 几何不自洽、动作越界/非整数、或 `out` 与 `actions` 不等长时返回 [`Code::Invalid`]。
+pub fn log_prob(logits: &[f32], actions: &[f32], vocab: usize, out: &mut [f32]) -> Result<()> {
+    let rows = check_geometry(logits, actions, vocab)?;
+    check_len(out.len(), rows, "out")?;
+    for (row, o) in out.iter_mut().enumerate() {
+        let slice = &logits[row * vocab..(row + 1) * vocab];
+        *o = row_log_prob(slice, actions[row] as usize);
+    }
+    Ok(())
+}
+
+/// 熵均值：`−Σ softmax·log softmax`，逐行计算后取算术平均（探索正则项）。
+///
+/// # Errors
+///
+/// 词表为 0、无行、或 logits 长度不是 `vocab` 整数倍时返回 [`Code::Invalid`]。
+pub fn entropy(logits: &[f32], vocab: usize) -> Result<f32> {
+    let rows = check_rl_logits_shape(logits.len(), vocab)?;
+    let mut sum = 0.0f64;
+    for row in logits.chunks_exact(vocab) {
+        sum += row_entropy(row) as f64;
+    }
+    Ok((sum / rows as f64) as f32)
+}
+
+/// 组内 advantage：`(reward − mean) / std`（z-score），写回 `out`。
+///
+/// 全体 reward 相等时 std 为 0，advantage 恒 0（无相对优势）。
+///
+/// # Errors
+///
+/// reward 为空、或 `out` 与 `reward` 不等长时返回 [`Code::Invalid`]。
+pub fn advantage(rewards: &[f32], out: &mut [f32]) -> Result<()> {
+    check_rows(rewards.len())?;
+    check_len(out.len(), rewards.len(), "out")?;
+    let mean = rewards.iter().sum::<f32>() / rewards.len() as f32;
+    let variance = rewards.iter().map(|r| (r - mean).powi(2)).sum::<f32>() / rewards.len() as f32;
+    let std = variance.sqrt();
+    let inv_std = if std > 0.0 { 1.0 / std } else { 0.0 };
+    for (o, &r) in out.iter_mut().zip(rewards) {
+        *o = (r - mean) * inv_std;
+    }
+    Ok(())
+}
+
+/// REINFORCE 策略损失：`−mean(advantage · log_prob)`。
+///
+/// 最大化期望回报等价于最小化该损失；PPO / GRPO 的 ratio 裁剪在其上叠加（后续接入）。
+///
+/// # Errors
+///
+/// 任一为空、或两者不等长时返回 [`Code::Invalid`]。
+pub fn policy_loss(log_probs: &[f32], advantages: &[f32]) -> Result<f32> {
+    check_rows(log_probs.len())?;
+    check_len(advantages.len(), log_probs.len(), "advantage")?;
+    let sum: f64 = log_probs
+        .iter()
+        .zip(advantages)
+        .map(|(&p, &a)| (a * p) as f64)
+        .sum();
+    Ok(-(sum / log_probs.len() as f64) as f32)
+}
+
+/// GRPO / PPO 训练损失配置：裁剪范围 `ε` 与参考 KL 惩罚系数 `β`。
+#[derive(Clone, Copy, Debug)]
+pub struct Grpo {
+    epsilon: f32,
+    beta: f32,
+}
+
+impl Grpo {
+    /// 构造 GRPO 配置；`epsilon`/`beta` 的合法性在损失入口校验（保持 `const`）。
+    pub const fn new(epsilon: f32, beta: f32) -> Self {
+        Self { epsilon, beta }
+    }
+
+    /// 裁剪范围 `ε`（非负）。
+    pub const fn epsilon(self) -> f32 {
+        self.epsilon
+    }
+
+    /// 参考 KL 惩罚系数 `β`（非负）。
+    pub const fn beta(self) -> f32 {
+        self.beta
+    }
+}
+
+/// 裁剪范围 ε 必须是非负有限数。
+fn check_epsilon(epsilon: f32) -> Result<()> {
+    if epsilon < 0.0 || !epsilon.is_finite() {
+        return Err(
+            Error::new(Code::Invalid, format!("裁剪范围 ε={epsilon} 必须非负有限")).with(RL_SITE),
+        );
+    }
+    Ok(())
+}
+
+/// KL 惩罚系数 β 必须是非负有限数。
+fn check_beta(beta: f32) -> Result<()> {
+    if beta < 0.0 || !beta.is_finite() {
+        return Err(
+            Error::new(Code::Invalid, format!("KL 惩罚系数 β={beta} 必须非负有限")).with(RL_SITE),
+        );
+    }
+    Ok(())
+}
+
+/// 校验四个逐元素数组等长且非空，返回元素数。
+fn check_quad_len(a: usize, b: usize, c: usize, d: usize) -> Result<usize> {
+    check_rows(a)?;
+    check_len(b, a, "old_logp")?;
+    check_len(c, a, "advantage")?;
+    check_len(d, a, "out")?;
+    Ok(a)
+}
+
+/// 单 token 裁剪代理：`min(ratio·a, clamp(ratio, low, high)·a)`，`ratio = exp(n − old)`。
+fn clipped_term(n: f32, old: f32, a: f32, low: f32, high: f32) -> f32 {
+    let ratio = (n - old).exp();
+    let clipped = ratio.clamp(low, high);
+    (ratio * a).min(clipped * a)
+}
+
+/// 逐 token 裁剪代理：`min(ratio·A, clamp(ratio, 1−ε, 1+ε)·A)`，写回 `out`。
+///
+/// `ratio = exp(new_logp − old_logp)`。逐元素独立，advantage 由调用方按 token 广播
+/// （GRPO 中同一 completion 的所有 token 共享同一 advantage）。
+///
+/// # Errors
+///
+/// `ε` 为负、四个数组任一为空或不等长时返回 [`Code::Invalid`]。
+pub fn clipped_surrogate(
+    new_logp: &[f32],
+    old_logp: &[f32],
+    advantages: &[f32],
+    epsilon: f32,
+    out: &mut [f32],
+) -> Result<()> {
+    check_epsilon(epsilon)?;
+    check_quad_len(new_logp.len(), old_logp.len(), advantages.len(), out.len())?;
+    let low = 1.0 - epsilon;
+    let high = 1.0 + epsilon;
+    for (((o, &n), &old), &a) in out.iter_mut().zip(new_logp).zip(old_logp).zip(advantages) {
+        *o = clipped_term(n, old, a, low, high);
+    }
+    Ok(())
+}
+
+/// GRPO 组合损失：`−mean(min(ratio·A, clamp(ratio)·A)) + β·mean(KL_ref)`。
+///
+/// `new_logp`/`old_logp`/`advantages`/`ref_kl` 四数组等长（逐 token 对齐），`ref_kl` 由
+/// [`kl_per_row`] 预计算（每 token 的 `KL(π ‖ π_ref)`）。`β=0` 退化为纯裁剪策略梯度，
+/// `ε=0` 退化为无裁剪的 REINFORCE + KL 惩罚。
+///
+/// # Errors
+///
+/// `ε` 或 `β` 为负、四数组任一为空或不等长时返回 [`Code::Invalid`]。
+pub fn grpo_loss(
+    new_logp: &[f32],
+    old_logp: &[f32],
+    advantages: &[f32],
+    ref_kl: &[f32],
+    grpo: Grpo,
+) -> Result<f32> {
+    check_epsilon(grpo.epsilon)?;
+    check_beta(grpo.beta)?;
+    let rows = check_quad_len(
+        new_logp.len(),
+        old_logp.len(),
+        advantages.len(),
+        ref_kl.len(),
+    )?;
+    let low = 1.0 - grpo.epsilon;
+    let high = 1.0 + grpo.epsilon;
+    let mut surrogate_sum = 0.0f64;
+    let mut kl_sum = 0.0f64;
+    for (((&n, &old), &a), &kl) in new_logp.iter().zip(old_logp).zip(advantages).zip(ref_kl) {
+        surrogate_sum += clipped_term(n, old, a, low, high) as f64;
+        kl_sum += kl as f64;
+    }
+    let surrogate_mean = surrogate_sum / rows as f64;
+    let kl_mean = kl_sum / rows as f64;
+    Ok((-surrogate_mean + grpo.beta as f64 * kl_mean) as f32)
+}
+
+#[cfg(test)]
+#[path = "../tests/rl_tests.rs"]
+mod rl_tests;

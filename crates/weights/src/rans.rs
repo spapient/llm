@@ -201,7 +201,7 @@ fn read_freq(cur: &mut &[u8]) -> Result<[u32; NSYMBOLS]> {
     let mut freq = [0u32; NSYMBOLS];
     let present = (0..NSYMBOLS).filter(|&symbol| bitmap[symbol / 8] & (1 << (symbol % 8)) != 0);
     for symbol in present {
-        freq[symbol] = u32::from(le_u16(cur)?) + 1;
+        freq[symbol] = u32::from(u16::from_le_bytes(take::<2>(cur)?)) + 1;
     }
     let sum = freq.iter().try_fold(0u32, |acc, &f| acc.checked_add(f));
     if sum != Some(TOTAL_FREQ) {
@@ -217,18 +217,6 @@ fn take<const N: usize>(cur: &mut &[u8]) -> Result<[u8; N]> {
         .ok_or_else(|| bad("rANS 流截断"))?;
     *cur = rest;
     Ok(*head)
-}
-
-/// 定宽小端 `u16`：`take::<2>` 加一次 `from_le_bytes` 收窄。
-#[inline]
-fn le_u16(cur: &mut &[u8]) -> Result<u16> {
-    take::<2>(cur).map(u16::from_le_bytes)
-}
-
-/// 定宽小端 `u32`：`take::<4>` 加一次 `from_le_bytes` 收窄。
-#[inline]
-fn le_u32(cur: &mut &[u8]) -> Result<u32> {
-    take::<4>(cur).map(u32::from_le_bytes)
 }
 
 /// 编码一个符号：必要时先把状态高位字节写进 lane 缓冲，再推进状态。
@@ -351,7 +339,7 @@ fn header(cur: &mut &[u8], cap: usize) -> Result<(usize, Table, [u32; 2 * NLANES
     let table = Table::build(read_freq(cur)?);
     let mut words = [0u32; 2 * NLANES];
     for word in &mut words {
-        *word = le_u32(cur)?;
+        *word = u32::from_le_bytes(take::<4>(cur)?);
     }
     Ok((len, table, words))
 }
@@ -411,7 +399,7 @@ fn decode_one(
 
 /// 读出帧头声明的原始长度，并核对调用方给定的上限。
 fn declared_len(cur: &mut &[u8], cap: usize) -> Result<usize> {
-    let len = le_u32(cur)? as usize;
+    let len = u32::from_le_bytes(take::<4>(cur)?) as usize;
     if len > cap {
         return Err(bad(format!("rANS 帧声明 {len} 字节，超过上限 {cap}")));
     }

@@ -6,7 +6,7 @@
 use crate::dialect::{
     Cuda, Dialect, RMS_EPS, bind_chunk_loop, carry_fold, chunk_head, f32_output_shape,
     inject_chunk_preamble, launch_args, length_scalar, length_usize, readback_bits, readonly_bufs,
-    scalar_name, scan_correct_body, thread_param_typed,
+    sample_usize, scalar_name, scan_correct_body, thread_param_typed,
 };
 use cutile::harness::{c_literal, c_type, output_name, output_of};
 use diagnostic::{Code, Error, Result};
@@ -530,11 +530,7 @@ pub fn cuda_point_driver(
         threads,
         &buf_args(signature),
     );
-    let head = cuda_head(
-        "#include <cuda_runtime.h>\n#include <cstdio>\n",
-        device_source,
-    );
-    Driver::new(signature, sample, output, values.len()).assemble(&head, &emit)
+    program(device_source, signature, sample, &output, values.len(), &emit)
 }
 
 // ---------------------------------------------------------------------------
@@ -811,20 +807,7 @@ fn shape(signature: &Signature, sample: &Sample) -> Result<(usize, usize, usize)
 
 /// 单个形状标量的样本值：缺取值或不是非负 `usize` 都在这里报，不留给几何算式去越界。
 fn scalar_of(param: &Param, sample: &Sample) -> Result<usize> {
-    let value = sample.scalar(&param.name).ok_or_else(|| {
-        Error::new(
-            Code::Invalid,
-            format!("WMMA GEMM 的标量 `{}` 没有样本取值", param.name),
-        )
-        .with("engine::cuda::shape")
-    })?;
-    usize::try_from(value).map_err(|_| {
-        Error::new(
-            Code::Invalid,
-            format!("WMMA GEMM 的标量 `{}` = {value} 不是非负 usize", param.name),
-        )
-        .with("engine::cuda::shape")
-    })
+    sample_usize(sample, &param.name, "WMMA GEMM 的标量", "engine::cuda::shape")
 }
 
 // ---------------------------------------------------------------------------

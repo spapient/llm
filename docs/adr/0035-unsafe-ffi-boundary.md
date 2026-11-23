@@ -54,10 +54,7 @@ P3 要在边界 crate 挂 Metal/CUDA 后端（ADR 0025 §1、§9；ADR 0028 §3 
 |---|---|---|
 | `crates/storage/src/mmap.rs`（模块级，1 处） | mmap 映射 | 模块级 allow；只读、私有映射、`Drop` 归还、线程归属；对外只暴露拥有型 `&[u8]` 视图 |
 | `crates/device/src/metal/executor.rs`（模块级，1 处） | FFI 调用 + 设备缓冲句柄 | 手写 `objc_msgSend` 与 Metal 运行时符号；+1 保留的对象在 `Drop` 恰好 `-release` 一次，句柄私有、不跨线程，自动释放对象由 autorelease 池收口；对外是 `Executor` / `Allocator` 的安全实现 |
-| `crates/nn/src/kernel/fast/i8.rs`（12 处，函数级） | 裸指针切片重建 + SIMD intrinsics | 字节量化族的越界点随实现在此。只在 `aarch64` 的 NEON 微内核、`x86_64` 的 AVX2/FMA 微内核与打包/回写段；瓦片体 `sdot_tile` 由生产与 `_block` 探针**共用同一份**（N5），故探针不另开越界点 |
-| `crates/nn/src/kernel/fast/micro.rs`（11 处，函数级） | 裸指针切片重建 + SIMD intrinsics | 公共微内核（点积 / 归约 / 打包回写）。瓦片体 `fma_step` 由 `micro_packed` 与 `fma_peak/{1,16,18}_block` 探针**共用同一份**（N5），同 `i8` 的 `sdot_tile` 形态：探针若自写一份瓦片体，既多一座岛又会让分母与分子漂移 |
-| `crates/nn/src/kernel/fast/pool.rs`（3 处，函数级） | 裸指针跨线程发布 | 任务只发布指针 + 一次 `Barrier`，主线程自旋等到全部 worker 完成才返回 |
-| `crates/nn/src/kernel/fast/sme.rs`（8 处，函数级） | 裸指针切片重建 + SIMD intrinsics + 内联汇编 | aarch64 SME 路径。第 5、6 处是 **端口峰值探针** `port_run`/`port_mix`：`bench` 特性下才编译，`z0`/`z1` 与 ZA 常驻，内层只有 `fmopa`（`port_run`）或 `fmopa` + 5 条 `ld1w`（`port_mix`），零 store。探测必须留在这里——探针与被测内核用同一条指令路径，搬到测量容器会让 `unsafe` 岛变成两个 |
+| `crates/nn/src/kernel_fast.rs`（34 处，函数级） | 裸指针切片重建 + SIMD intrinsics + 内联汇编 + 跨线程发布 | `fast`（`i8`/`micro`/`pool`/`sme`）四段随平铺拆分落在 `kernel_fast.rs`（12 + 11 + 3 + 8 = 34 处，见下方修订）；字节量化族、公共微内核、线程池与 aarch64 SME 路径同住一处，瓦片体 `sdot_tile`/`fma_step` 仍由生产与探针共用同一份，端口峰值探针仍受 `bench` 门控 |
 
 `gemm` 那几行是**存量冻结**：只许减少，不许增加。要新增一行，先改本表，并说明这个越界点为什么
 不能落在边界 crate。拆文件不改变冻结口径——`fast.rs` 拆成 `fast/` 目录后按文件重新列举，
@@ -67,9 +64,9 @@ P3 要在边界 crate 挂 Metal/CUDA 后端（ADR 0025 §1、§9；ADR 0028 §3 
 
 `i8.rs` 由 8 涨到 12、`micro.rs` 由 6 涨到 11 是同一形态的**有意增量**：把生产微内核的瓦片体抽成`sdot_tile`（i8）与 `fma_step`（f32）后，探针与被测内核共用一份实现，代价是每个新函数各自一个 `#[allow]`，收益是**消掉一份重复的瓦片体**——若探针自写一份，分母就与分子不同源，K7/K8 变成两个内核相除。其中 `i8.rs` 的 4 处是上一轮合并 `sdot_tile` 时新增、本轮才补登记（欠账，已补）。新增的 f32 探针只在 `bench` 特性下编译，生产公开面不含该项；不变量与 `micro_packed` 一致：包装只做长度守卫与指针透传，工人只为 `fma_step` 的读边界（`NR*k` 内的 `NR` 行）负责。
 
-六个文件、三个逻辑岛：`storage` 的 mmap、`device` 的 Metal FFI、`gemm` 的 CPU 微内核——最后一行
-跨 `fast.rs` 与 `fast/pool.rs` 两个文件，是同一个 P1 待搬出的欠账岛（两文件同属一个内核的
-微内核段与线程池段，不变量一致：裸指针只活到 `done` 齐、主线程返回前）。
+三个文件、三个逻辑岛：`storage` 的 mmap、`device` 的 Metal FFI、`nn` 的 CPU 微内核——最后一行
+即 `kernel_fast.rs`，是同一个 P1 待搬出的欠账岛（微内核段与线程池段同住一个内核文件，不变量一致：
+裸指针只活到 `done` 齐、主线程返回前）。
 
 ## 备选方案
 
@@ -111,3 +108,5 @@ P3 要在边界 crate 挂 Metal/CUDA 后端（ADR 0025 §1、§9；ADR 0028 §3 
 - 2026-11-18：评审通过（G1/G2/G3）并置 Accepted：① trait 清单订正为四 trait（`Executor`/`Program`/`Allocator`/`Collective`）且 `Device` 为 struct；② 白名单增第 5 类「通信/进程级库句柄」；③ 补 FFI 绑定默认策略（手写 `extern "C"`、零依赖）。
 - 2026-11-21：补 §6「现状越界点」：四个文件（`storage` mmap、`device::metal::executor`、`op::fast` 两处）穷尽为可执行白名单，门禁落在 `testkit/tests/architecture.rs`；`op` 的 14 处明确为 P1 待搬出的存量冻结。
 - 2026-11-22：`op::fast` 增 x86_64 AVX2/FMA 微内核（与 NEON 同一组不变量，仍属同一逻辑岛），`fast.rs` 11 → 14 处，`op` 合计 17 处；白名单与门禁同步更新，未放宽任何阈值。
+- 2026-11-23：`nn::kernel` 由 `kernel/` 目录合并回单文件 `kernel.rs`（`fast` 四段 `i8`/`micro`/`pool`/`sme` 的 34 处越界点随合并回 `kernel.rs`），§6 表格与 `testkit/src/boundary.rs` 白名单同步改回单行；总处数仍为 36，存量冻结口径不变。
+- 2026-11-23：`nn::kernel` 由单文件 `kernel.rs` 平铺为「门面 + 每族一文件」（`kernel_fast.rs` 等 15 个 `kernel_*.rs`、`conv_*.rs` 8 个），`unsafe` 岛随 `fast` 段落到 `kernel_fast.rs`；§6 表格与白名单同步到新路径，总处数仍为 36，存量冻结口径不变。

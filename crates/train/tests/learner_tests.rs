@@ -306,7 +306,7 @@ fn records_grpo_loss_when_metric_is_grpo() -> Result<()> {
 
 /// 学习率调度：warmup 后按曲线衰减到零。
 mod schedule {
-    use crate::schedule::*;
+    use crate::session::*;
 
     use diagnostic::Code;
 

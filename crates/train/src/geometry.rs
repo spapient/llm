@@ -1027,7 +1027,7 @@ impl Geometry {
     ///
     /// # Errors
     ///
-    /// 任一处不符返回 [`Code::Invalid`](diagnostic::Code::Invalid)。
+    /// 任一处不符返回 [`Code::Invalid`]。
     pub fn check_shape(self, lens: &[usize], out: usize) -> Result<()> {
         if lens.len() != self.arity() {
             return Err(invalid(format!(
@@ -1304,7 +1304,7 @@ impl Geometry {
     ///
     /// # Errors
     ///
-    /// 形状与实例不符时返回 [`Code::Invalid`](diagnostic::Code::Invalid)。
+    /// 形状与实例不符时返回 [`Code::Invalid`]。
     pub fn backward(self, inputs: &[Vec<f32>], incoming: &[f32]) -> Result<Vec<Vec<f32>>> {
         self.check_shape(
             &inputs.iter().map(Vec::len).collect::<Vec<_>>(),

@@ -322,6 +322,26 @@ pub(crate) fn read_input(signature: &Signature) -> Result<&str> {
         )
 }
 
+/// 样本里一个整数标量的 `usize` 视图：缺取值与不是非负整数都在这一处报，`context` 说明是哪一族
+/// （`网格标量` / `WMMA GEMM 的标量` …），`site` 是诊断出处。各族几何判定的唯一出口。
+pub(crate) fn sample_usize(
+    sample: &Sample,
+    name: &str,
+    context: &str,
+    site: &str,
+) -> Result<usize> {
+    let value = sample.scalar(name).ok_or_else(|| {
+        Error::new(Code::Invalid, format!("{context} `{name}` 没有样本取值")).with(site)
+    })?;
+    usize::try_from(value).map_err(|_| {
+        Error::new(
+            Code::Invalid,
+            format!("{context} `{name}` = {value} 不是非负 usize"),
+        )
+        .with(site)
+    })
+}
+
 /// 长度标量的 `usize` 视图；负值或超长返回 `Invalid`。归约 / 扫描 / 归一化三族的几何判定共用。
 pub(crate) fn length_usize(signature: &Signature, sample: &Sample) -> Result<usize> {
     let len = length_scalar(signature, sample)?;

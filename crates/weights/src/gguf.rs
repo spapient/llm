@@ -657,24 +657,21 @@ fn decode_q6k(raw: &[u8], out: &mut [f32]) -> Result<()> {
     Ok(())
 }
 
-/// `Q4_0`/`Q5_0`/`Q5_1` 共用的「f16 缩放 + 低 4 位量化点」解码。三者只是块长、有无 f16 min 与
-/// 有无第 5 位（`qh`）不同：`QH_AT = usize::MAX` 表示无第 5 位（Q4_0），`SIGNED` 区分「减偏置」
-/// （Q4_0 减 8、Q5_0 减 16）与「加 min」（Q5_1）。参数在实例化时被常量折叠，不引入运行时分支。
+/// `Q4_0`/`Q5_0`/`Q5_1` 共用的「f16 缩放 + 低 4 位量化点」解码：三者只是块长、有无 f16 min 与
+/// 有无第 5 位不同。`QH_AT = usize::MAX` 表示无第 5 位（Q4_0），`SIGNED` 区分「减偏置」
+/// （Q4_0 减 8、Q5_0 减 16）与「加 min」（Q5_1）；参数在实例化时被常量折叠，无运行时分支。
 fn decode_low4<const BLOCK: usize, const QH_AT: usize, const SIGNED: bool>(
     raw: &[u8],
     out: &mut [f32],
 ) -> Result<()> {
-    // 量化点低半字节起点：无 qh 时紧跟 f16 缩放，有 qh 时再越过 4 字节第 5 位。
-    let qs_at: usize = if QH_AT == usize::MAX { 2 } else { QH_AT + 4 };
-    // 符号偏置：Q4_0 减 8、Q5_0 减 16；无符号（Q5_1）不用偏置，改用块内 min。
-    let bias: f32 = if SIGNED {
-        if QH_AT == usize::MAX { 8.0 } else { 16.0 }
-    } else {
-        0.0
-    };
-
     let (blocks, _) = raw.as_chunks::<BLOCK>();
     let (slots, _) = out.as_chunks_mut::<32>();
+    // 量化点起点与符号偏置：无 qh 时紧跟 f16 缩放并减 8，有 qh 时越过 4 字节第 5 位并减 16。
+    let (qs_at, bias) = if QH_AT == usize::MAX {
+        (2, if SIGNED { 8.0 } else { 0.0 })
+    } else {
+        (QH_AT + 4, if SIGNED { 16.0 } else { 0.0 })
+    };
     for (slot, block) in slots.iter_mut().zip(blocks) {
         let d = half_at(block, 0);
         let m = if SIGNED { 0.0 } else { half_at(block, 2) };
@@ -691,34 +688,30 @@ fn decode_low4<const BLOCK: usize, const QH_AT: usize, const SIGNED: bool>(
         for (j, &q) in block[qs_at..].iter().enumerate() {
             let hi0 = (((qh >> j) & 1) as u8) << 4;
             let hi1 = (((qh >> (j + 16)) & 1) as u8) << 4;
-            slot[j] = low4_value::<SIGNED>(d, (q & 0x0F) | hi0, bias, m);
-            slot[j + 16] = low4_value::<SIGNED>(d, (q >> 4) | hi1, bias, m);
+            let (lo, hi) = ((q & 0x0F) | hi0, (q >> 4) | hi1);
+            if SIGNED {
+                slot[j] = d * (f32::from(lo) - bias);
+                slot[j + 16] = d * (f32::from(hi) - bias);
+            } else {
+                slot[j] = d * f32::from(lo) + m;
+                slot[j + 16] = d * f32::from(hi) + m;
+            }
         }
     }
     Ok(())
 }
 
-/// 单个量化点 → f32：有符号减偏置、无符号加 min。`SIGNED` 在实例化时折叠。
-#[inline]
-fn low4_value<const SIGNED: bool>(d: f32, q: u8, bias: f32, m: f32) -> f32 {
-    if SIGNED {
-        d * (f32::from(q) - bias)
-    } else {
-        d * f32::from(q) + m
-    }
-}
-
-/// `Q4_0`：块 32、18 字节。前 2 字节 f16 scale，后 16 字节 32 个 4-bit 量化点，低半字节是前 16 元素。
+/// `Q4_0`：块 32、18 字节，4-bit 量化点（减 8）。
 fn decode_q4_0(raw: &[u8], out: &mut [f32]) -> Result<()> {
     decode_low4::<18, { usize::MAX }, true>(raw, out)
 }
 
-/// `Q5_0`：块 32、22 字节。f16 scale + 4 字节第 5 位 + 16 字节低 4 位；量化点有符号（减 16）。
+/// `Q5_0`：块 32、22 字节，4-bit 低半字节 + 第 5 位（减 16）。
 fn decode_q5_0(raw: &[u8], out: &mut [f32]) -> Result<()> {
     decode_low4::<22, 2, true>(raw, out)
 }
 
-/// `Q5_1`：块 32、24 字节。f16 scale + f16 min + 4 字节第 5 位 + 16 字节低 4 位；无符号量化点加 min。
+/// `Q5_1`：块 32、24 字节，无符号量化点加 f16 min。
 fn decode_q5_1(raw: &[u8], out: &mut [f32]) -> Result<()> {
     decode_low4::<24, 4, false>(raw, out)
 }

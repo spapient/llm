@@ -1,4 +1,4 @@
-use crate::dist::Distributed;
+use crate::session::Distributed;
 use diagnostic::{Code, Result};
 use shard::{Local, Topology};
 

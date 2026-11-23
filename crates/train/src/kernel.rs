@@ -1,7 +1,7 @@
 //! 缓冲形态、视图与标量参考内核：`f32` 与按位打包 `u8` 两条 lane 的静态契约，以及把视图适配到
 //! `op` 参考实现的标量内核表。
 
-use crate::store::SITE;
+use crate::pool::SITE;
 use diagnostic::{Code, Error, Result};
 use nn::kernel_table;
 use tensor::DType;
