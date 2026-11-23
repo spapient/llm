@@ -1,6 +1,7 @@
 //! RMSNorm：`y[n] = gamma[n] * x[n] / sqrt(mean(x[0..n]^2) + eps)`。
 use crate::model::{Buf, Cost, Sample, ShapeCtx, Values, cost_n, x_buf};
 use diagnostic::{Code, Error};
+use tensor::View;
 
 /// 数值稳定项：均方根里加的小常数。
 pub const EPS: f32 = 1e-6;
@@ -107,7 +108,9 @@ pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
 /// # Errors
 ///
 /// 三个缓冲等长，或输入为空时返回说明：空行没有可统计的均方根。
-pub fn forward(x: &[f32], gamma: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
+pub fn forward(x: View<'_, f32>, gamma: View<'_, f32>, out: &mut [f32]) -> diagnostic::Result<()> {
+    let x = x.as_slice();
+    let gamma = gamma.as_slice();
     check_kernel(x, gamma, out)?;
     let rms = (sum_sq(x) / (x.len() as f32) + EPS).sqrt();
     for ((out, x), gamma) in out.iter_mut().zip(x).zip(gamma) {
@@ -156,17 +159,19 @@ fn check_batch_rows(x: &[f32], row_dim: usize) -> Result<(), Error> {
 ///
 /// 行宽为 0、gamma 与行宽不等长、x/out 不等长、缓冲非行宽倍数或为空时返回说明。
 pub fn forward_batch(
-    x: &[f32],
-    gamma: &[f32],
+    x: View<'_, f32>,
+    gamma: View<'_, f32>,
     out: &mut [f32],
     row_dim: usize,
 ) -> diagnostic::Result<()> {
+    let x = x.as_slice();
+    let gamma = gamma.as_slice();
     let batch = rmsnorm_batch_segments(x, gamma, out, row_dim)?;
     for b in 0..batch {
         let start = b * row_dim;
         forward(
-            &x[start..start + row_dim],
-            gamma,
+            View::one(&x[start..start + row_dim]),
+            View::one(gamma),
             &mut out[start..start + row_dim],
         )?;
     }

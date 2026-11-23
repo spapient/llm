@@ -285,6 +285,7 @@ pub mod i8 {
     use crate::dequant;
     use crate::model::{Buf, Cost, Sample, ShapeCtx, Values, cost_n};
     use diagnostic::{Code, Error};
+    use tensor::View;
 
     // 单轴定义复用 unary 骨架。
     pub use crate::unary::AXES;
@@ -336,7 +337,8 @@ pub mod i8 {
     /// # Errors
     ///
     /// 输入与输出等长、标度非零有限、零点在 `0..=15` 码域内，否则返回说明。
-    pub fn forward(scale: f32, zero: f32, q: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
+    pub fn forward(scale: f32, zero: f32, q: View<'_, f32>, out: &mut [f32]) -> diagnostic::Result<()> {
+        let q = q.as_slice();
         if q.len() != out.len() {
             return Err(Error::new(
                 Code::Invalid,

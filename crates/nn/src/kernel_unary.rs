@@ -128,7 +128,7 @@ macro_rules! unary_f32 {
         /// # Errors
         ///
         /// 输入与输出等长，否则返回说明。
-        pub fn forward(a: View<'_, f32>, out: &mut [f32]) -> diagnostic::Result<()> {
+        pub fn forward(a: tensor::View<'_, f32>, out: &mut [f32]) -> diagnostic::Result<()> {
             $crate::unary::forward::<$name>(a, out)
         }
 
@@ -164,7 +164,7 @@ pub mod exp_f32 {
         {
             // 边界：exp(0)=1、大负数下溢为 0、exp(1)=e。
             let mut out = vec![0.0; 3];
-            assert!(forward(View::one(&[0.0, -1000.0, 1.0]), &mut out).is_ok(), "等长");
+            assert!(forward(tensor::View::one(&[0.0, -1000.0, 1.0]), &mut out).is_ok(), "等长");
             assert_eq!(out[0], 1.0, "exp(0)=1");
             assert_eq!(out[1], 0.0, "exp(-1000) 下溢为 0");
             assert!((out[2] - std::f32::consts::E).abs() < 1e-6, "exp(1)=e");
@@ -186,7 +186,7 @@ pub mod log_f32 {
             // 边界：ln(1)=0、ln(e)=1。
             let mut out = vec![0.0; 2];
             assert!(
-                forward(View::one(&[1.0, std::f32::consts::E]), &mut out).is_ok(),
+                forward(tensor::View::one(&[1.0, std::f32::consts::E]), &mut out).is_ok(),
                 "等长"
             );
             assert_eq!(out[0], 0.0, "ln(1)=0");
@@ -242,7 +242,7 @@ pub mod silu_f32 {
         {
             // silu(1) = sigmoid(1)：1/(1+e^-1) 的已知值钉住。
             let mut out = [0.0; 1];
-            assert!(forward(View::one(&[1.0]), &mut out).is_ok(), "等长");
+            assert!(forward(tensor::View::one(&[1.0]), &mut out).is_ok(), "等长");
             assert!(
                 (out[0] - 0.731_058_6).abs() < 1e-6,
                 "silu(1) = {out}",
@@ -267,7 +267,7 @@ pub mod leaky_relu_f32 {
         {
             // 三个锚点：正区恒等、负区按 slope 缩放、零点两侧连续。
             let mut out = [0.0; 3];
-            assert!(forward(View::one(&[-2.0, 0.0, 2.0]), &mut out).is_ok(), "等长");
+            assert!(forward(tensor::View::one(&[-2.0, 0.0, 2.0]), &mut out).is_ok(), "等长");
             assert!((out[0] - (-2.0 * SLOPE)).abs() < 1e-6, "负区 {}", out[0]);
             assert_eq!(out[1], 0.0, "零点");
             assert_eq!(out[2], 2.0, "正区恒等");
@@ -287,7 +287,7 @@ pub mod relu_f32 {
         {
             // 三个锚点：负区归零、零保持、正区恒等。
             let mut out = [0.0; 3];
-            assert!(forward(View::one(&[-2.0, 0.0, 2.0]), &mut out).is_ok(), "等长");
+            assert!(forward(tensor::View::one(&[-2.0, 0.0, 2.0]), &mut out).is_ok(), "等长");
             assert_eq!(out[0], 0.0, "负区归零");
             assert_eq!(out[1], 0.0, "零点");
             assert_eq!(out[2], 2.0, "正区恒等");
@@ -308,7 +308,7 @@ pub mod sigmoid_f32 {
             // 三个锚点：σ(0)=0.5、σ(1)、两端饱和（不溢出成 NaN）。
             let mut out = [0.0; 4];
             assert!(
-                forward(View::one(&[0.0, 1.0, -1000.0, 1000.0]), &mut out).is_ok(),
+                forward(tensor::View::one(&[0.0, 1.0, -1000.0, 1000.0]), &mut out).is_ok(),
                 "等长"
             );
             assert_eq!(out[0], 0.5, "σ(0)");
@@ -332,7 +332,7 @@ pub mod tanh_f32 {
             // 三个锚点：tanh(0)=0、tanh(1) 的已知值、两端饱和（线性函数族不可能满足）。
             let mut out = [0.0; 4];
             assert!(
-                forward(View::one(&[0.0, 1.0, -1000.0, 1000.0]), &mut out).is_ok(),
+                forward(tensor::View::one(&[0.0, 1.0, -1000.0, 1000.0]), &mut out).is_ok(),
                 "等长"
             );
             assert_eq!(out[0], 0.0, "tanh(0)");
@@ -355,7 +355,7 @@ pub mod hard_sigmoid_f32 {
         {
             // 三段：下饱和 0、中心 0.5、上饱和 1，以及两端斜率 1/6。
             let mut out = [0.0; 4];
-            assert!(forward(View::one(&[-6.0, 0.0, 6.0, 3.0]), &mut out).is_ok(), "等长");
+            assert!(forward(tensor::View::one(&[-6.0, 0.0, 6.0, 3.0]), &mut out).is_ok(), "等长");
             assert_eq!(out[0], 0.0, "下饱和");
             assert_eq!(out[1], 0.5, "中心");
             assert_eq!(out[2], 1.0, "上饱和");
@@ -382,7 +382,7 @@ pub mod scale_f32 {
         {
             // scale(1) = ALPHA：把样本常量与内核模板常量钉在同一处。
             let mut out = [0.0; 1];
-            assert!(forward(View::one(&[1.0]), &mut out).is_ok(), "等长");
+            assert!(forward(tensor::View::one(&[1.0]), &mut out).is_ok(), "等长");
             assert_eq!(out[0], ALPHA, "scale(1) = ALPHA");
         },
         |x| ALPHA * x,

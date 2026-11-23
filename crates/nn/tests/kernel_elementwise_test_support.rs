@@ -8,7 +8,7 @@ macro_rules! elementwise_pair_tests {
             let mut out = vec![0.0; 128];
             let a = sample.f32("a").expect("a 存在");
             let b = sample.f32("b").expect("b 存在");
-            $forward(a, b, &mut out).expect("缓冲等长");
+            $forward(tensor::View::one(a), tensor::View::one(b), &mut out).expect("缓冲等长");
             assert_eq!(out, expected);
         }
 
@@ -16,15 +16,26 @@ macro_rules! elementwise_pair_tests {
         fn rejects_each_mismatched_pair_and_allows_empty() {
             let mut out = vec![0.0; 2];
             assert!(
-                $forward(&[1.0], &[1.0, 2.0], &mut out).is_err(),
+                $forward(
+                    tensor::View::one(&[1.0]),
+                    tensor::View::one(&[1.0, 2.0]),
+                    &mut out
+                )
+                .is_err(),
                 "a 与 b 不等"
             );
             assert!(
-                $forward(&[1.0, 2.0], &[1.0], &mut out).is_err(),
+                $forward(
+                    tensor::View::one(&[1.0, 2.0]),
+                    tensor::View::one(&[1.0]),
+                    &mut out
+                )
+                .is_err(),
                 "b 与 out 不等"
             );
             let mut empty = vec![];
-            $forward(&[], &[], &mut empty).expect("空输入逐元素放行");
+            $forward(tensor::View::one(&[]), tensor::View::one(&[]), &mut empty)
+                .expect("空输入逐元素放行");
         }
     };
 }
@@ -49,7 +60,7 @@ macro_rules! elementwise_binary_tests {
                 sample.bufs[1].values = crate::model::Values::F32(b.to_vec());
                 let expected = crate::elementwise::reference::<$ty>(&sample).expect("参考可计算");
                 let mut out = vec![0.0; a.len()];
-                $forward(a, b, &mut out).expect("等长");
+                $forward(tensor::View::one(a), tensor::View::one(b), &mut out).expect("等长");
                 assert_eq!(out, expected, "用例 {idx}");
             }
         }
@@ -63,7 +74,12 @@ macro_rules! elementwise_div_tests {
         #[test]
         fn division_by_zero_matches_ieee() {
             let mut out = vec![0.0; 2];
-            $forward(&[1.0, -1.0], &[0.0, 0.0], &mut out).expect("等长");
+            $forward(
+                tensor::View::one(&[1.0, -1.0]),
+                tensor::View::one(&[0.0, 0.0]),
+                &mut out
+            )
+            .expect("等长");
             assert!(out[0].is_sign_positive(), "1/0 = +inf");
             assert!(out[1].is_sign_negative(), "-1/0 = -inf");
             assert!(out.iter().all(|x| x.is_infinite()), "除零得无穷");

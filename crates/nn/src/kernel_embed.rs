@@ -1,6 +1,7 @@
 //! Embedding 行查表：`y[n, :] = table[idx[n], :]`（行向量 gather）。
 use crate::model::{AxisRole, AxisSpec, Buf, Cost, Sample, ShapeCtx, Values};
 use diagnostic::{Code, Error};
+use tensor::View;
 
 /// 权重表行数（闭集内的固定档）。
 pub const VOCAB: usize = 64;
@@ -115,7 +116,9 @@ fn gather(idx: &[f32], table: &[f32], dim: usize) -> diagnostic::Result<Vec<f32>
 /// # Errors
 ///
 /// 缓冲长度不自洽、表长不符或下标越界时返回说明。
-pub fn forward(idx: &[f32], table: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
+pub fn forward(idx: View<'_, f32>, table: View<'_, f32>, out: &mut [f32]) -> diagnostic::Result<()> {
+    let idx = idx.as_slice();
+    let table = table.as_slice();
     let tokens = idx.len();
     if tokens == 0 {
         return Err(Error::new(Code::Invalid, "embed 索引为空"));

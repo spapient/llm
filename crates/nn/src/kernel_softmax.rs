@@ -1,6 +1,7 @@
 //! Softmax：`y[n] = exp(x[n] - max(x)) / sum_k exp(x[k] - max(x))`。
 use crate::model::{Cost, Sample, ShapeCtx, cost_n};
 use diagnostic::{Code, Error};
+use tensor::View;
 
 // 单轴定义与形状投影复用 unary 骨架：本文件只声明 softmax 特有的代价、样本与遍历。
 pub use crate::unary::{AXES, project_shape};
@@ -50,7 +51,8 @@ pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
 /// # Errors
 ///
 /// 输入与输出等长，或输入为空时返回说明：空行没有可归一化的分母。
-pub fn forward(x: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
+pub fn forward(x: View<'_, f32>, out: &mut [f32]) -> diagnostic::Result<()> {
+    let x = x.as_slice();
     if x.len() != out.len() {
         return Err(Error::new(
             Code::Invalid,

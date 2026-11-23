@@ -185,6 +185,7 @@ pub mod f32 {
     //! `scan_f32`：β 指数梯形扫描（§5.6）的离散递推 `s_t = a·s_{t-1} + b·x_t`。
     use crate::model::{Cost, Sample, ShapeCtx, cost_n};
     use diagnostic::{Code, Error};
+    use tensor::View;
 
     // 单轴定义与形状投影复用 unary 骨架：时间轴 `n` 既是输入轴也是输出轴。
     pub use crate::kernel::unary::{AXES, project_shape};
@@ -229,7 +230,8 @@ pub mod f32 {
     /// # Errors
     ///
     /// 输入与输出不等长时返回说明。
-    pub fn forward(x: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
+    pub fn forward(x: View<'_, f32>, out: &mut [f32]) -> diagnostic::Result<()> {
+        let x = x.as_slice();
         if x.len() != out.len() {
             return Err(Error::new(
                 Code::Invalid,

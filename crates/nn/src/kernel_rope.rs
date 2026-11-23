@@ -13,6 +13,7 @@ use std::rc::Rc;
 
 use crate::model::{Cost, Sample, ShapeCtx, cost_n};
 use diagnostic::{Code, Error};
+use tensor::View;
 
 /// 频率底数。
 pub const BASE: f32 = 10000.0;
@@ -104,8 +105,8 @@ fn rotate_rows(x: &[f32], pos: f32, freq: &[f32], out: &mut [f32]) {
 /// # Errors
 ///
 /// 输入与输出长度不一致时返回说明；末尾无法配对的奇数元素原样透传（不报错）。
-pub fn forward(pos: usize, x: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
-    rotate_into(x, pos as f32, out)
+pub fn forward(pos: usize, x: View<'_, f32>, out: &mut [f32]) -> diagnostic::Result<()> {
+    rotate_into(x.as_slice(), pos as f32, out)
 }
 
 /// 校验多头旋转长度并派生头数；非法头宽、不等长或非头宽倍数在此一次性拦下。
@@ -130,10 +131,11 @@ fn rope_heads(x: &[f32], out: &[f32], head_dim: usize) -> diagnostic::Result<usi
 /// 头宽为 0、缓冲不是头宽的整数倍，或输入输出长度不一致时返回说明。
 pub fn forward_heads(
     pos: usize,
-    x: &[f32],
+    x: View<'_, f32>,
     out: &mut [f32],
     head_dim: usize,
 ) -> diagnostic::Result<()> {
+    let x = x.as_slice();
     rope_heads(x, out, head_dim)?;
     rotate_heads(pos, x, out, head_dim, frequencies(head_dim).as_ref());
     Ok(())
@@ -183,10 +185,11 @@ fn rope_batch_segments(
 /// `positions` 为空、头宽为 0、输入输出不等长或长度不是批段整数倍时返回说明。
 pub fn forward_batch(
     positions: &[usize],
-    x: &[f32],
+    x: View<'_, f32>,
     out: &mut [f32],
     head_dim: usize,
 ) -> diagnostic::Result<()> {
+    let x = x.as_slice();
     let seg = rope_batch_segments(positions, x, out, head_dim)?;
     // 先把每个序列的段形状校验完，再统一写：任一序列非法时不会留下写了一半的输出。
     for start in (0..x.len()).step_by(seg) {

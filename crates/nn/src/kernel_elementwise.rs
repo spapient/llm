@@ -153,7 +153,7 @@ macro_rules! binary_f32 {
         /// # Errors
         ///
         /// 三个缓冲等长，否则返回说明。
-        pub fn forward(a: &[f32], b: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
+        pub fn forward(a: tensor::View<'_, f32>, b: tensor::View<'_, f32>, out: &mut [f32]) -> diagnostic::Result<()> {
             $crate::elementwise::forward::<$name>(a, b, out)
         }
 
