@@ -502,19 +502,21 @@ mod test_support {
 ///
 /// 出口按元素类型分两路：稠密 `f32` 的两路激活是二维只读视图，几何从 `dims()` 取；打包档
 /// `u8` 是位流，行宽按字节折算，保留裸切片与调用方给出的 `m`/`n`（裁决：打包位模式不进 View）。
+/// 变体公共样板：标记类型、`Gemm` 契约、基座转发、语义别名与测试挂载。两路只在元素类型与
+/// `forward` 形态上分叉，其余装配收敛到本宏，避免两份逐字相同的展开模板。
 #[macro_export]
-macro_rules! gemm_variant {
+macro_rules! gemm_variant_shared {
     (
         $name:ident, $alias:ident,
         $op:tt, $kind:ident, $differentiable:literal,
-        f32, $bits:expr,
-        $( $methods:item ),* $(,)?
+        $bits:expr, $elem:ty,
+        $( $methods:tt ),* $(,)?
     ) => {
         #[doc = concat!("`", $op, "` 的标记类型：格式契约（取样 / 打包 / 点积）见 `crate::gemm` 的 `Gemm` 骨架。")]
         pub struct $name;
 
         impl $crate::gemm::Gemm for $name {
-            type Elem = f32;
+            type Elem = $elem;
 
             const OP: &'static str = $op;
 
@@ -525,16 +527,6 @@ macro_rules! gemm_variant {
 
         // 基座契约（ADR 0050）：三条行为从 `Gemm` 骨架转发，粒度由注解的骨架默认值给出。
         $crate::operator_via!($name, $op, 2, (16, 16), $differentiable, skel, $crate::gemm::AXES);
-
-        #[doc = concat!("`", $op, "` 内核本体：结果写进调用方给的缓冲。")]
-        pub fn forward(
-            a: tensor::View<'_, f32>,
-            b: tensor::View<'_, f32>,
-            out: &mut [f32],
-        ) -> diagnostic::Result<()> {
-            let (m, _, n) = $crate::kernel::matmul::dim2_pair(a.dims(), b.dims(), $op)?;
-            $crate::gemm::forward::<$name>(a.as_slice(), b.as_slice(), m, n, out)
-        }
 
         #[annotation::model(name = $op, shape = [16, 16], dtype = "f32", skeleton = "gemm")]
         #[doc = concat!("`", $op, "` 矩阵乘的语义别名。")]
@@ -546,6 +538,32 @@ macro_rules! gemm_variant {
             $crate::gemm::test_support::$kind!($name);
         }
     };
+}
+
+/// 装配一档 GEMM 精度变体的完整公开面：标记类型、`Gemm` 实现、`forward` 入口、注解别名与测试挂载。
+#[macro_export]
+macro_rules! gemm_variant {
+    (
+        $name:ident, $alias:ident,
+        $op:tt, $kind:ident, $differentiable:literal,
+        f32, $bits:expr,
+        $( $methods:item ),* $(,)?
+    ) => {
+        $crate::gemm_variant_shared!(
+            $name, $alias, $op, $kind, $differentiable, $bits, f32,
+            $( $methods ),*
+        );
+
+        #[doc = concat!("`", $op, "` 内核本体：结果写进调用方给的缓冲。")]
+        pub fn forward(
+            a: tensor::View<'_, f32>,
+            b: tensor::View<'_, f32>,
+            out: &mut [f32],
+        ) -> diagnostic::Result<()> {
+            let (m, _, n) = $crate::kernel::matmul::dim2_pair(a.dims(), b.dims(), $op)?;
+            $crate::gemm::forward::<$name>(a.as_slice(), b.as_slice(), m, n, out)
+        }
+    };
 
     (
         $name:ident, $alias:ident,
@@ -553,21 +571,10 @@ macro_rules! gemm_variant {
         u8, $bits:expr,
         $( $methods:item ),* $(,)?
     ) => {
-        #[doc = concat!("`", $op, "` 的标记类型：格式契约（取样 / 打包 / 点积）见 `crate::gemm` 的 `Gemm` 骨架。")]
-        pub struct $name;
-
-        impl $crate::gemm::Gemm for $name {
-            type Elem = u8;
-
-            const OP: &'static str = $op;
-
-            const BITS: $crate::einsum::Bits = $bits;
-
-            $( $methods )*
-        }
-
-        // 基座契约（ADR 0050）：三条行为从 `Gemm` 骨架转发，粒度由注解的骨架默认值给出。
-        $crate::operator_via!($name, $op, 2, (16, 16), $differentiable, skel, $crate::gemm::AXES);
+        $crate::gemm_variant_shared!(
+            $name, $alias, $op, $kind, $differentiable, $bits, u8,
+            $( $methods ),*
+        );
 
         #[doc = concat!("`", $op, "` 内核本体：结果写进调用方给的缓冲。")]
         pub fn forward(
@@ -578,16 +585,6 @@ macro_rules! gemm_variant {
             out: &mut [f32],
         ) -> diagnostic::Result<()> {
             $crate::gemm::forward::<$name>(a, b, m, n, out)
-        }
-
-        #[annotation::model(name = $op, shape = [16, 16], dtype = "f32", skeleton = "gemm")]
-        #[doc = concat!("`", $op, "` 矩阵乘的语义别名。")]
-        pub type $alias = $name;
-
-        #[cfg(test)]
-        mod tests {
-            use super::*;
-            $crate::gemm::test_support::$kind!($name);
         }
     };
 }

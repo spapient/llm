@@ -110,6 +110,14 @@ impl<'a, K: Element> View<'a, K> {
             Self::matrix(rows, cols, v)?,
         ))
     }
+
+    /// 拆出内部借用切片，保留构造视图时的借用生命周期 `'a`。
+    ///
+    /// [`as_slice`](Self::as_slice) 的生命周期绑在 `&self` 上；执行缝要把视图再交回调用方缓冲
+    /// 时需要保留到原始借用 `'a`，走本入口。内部引用是 `Copy`，不会挪走视图本身。
+    pub fn borrowed_slice(&self) -> &'a [K] {
+        self.buf
+    }
 }
 
 impl<'a, K: Element> ViewMut<'a, K> {
@@ -122,6 +130,18 @@ impl<'a, K: Element> ViewMut<'a, K> {
     /// 用作矩阵族算子的输出操作数。
     pub fn matrix(rows: usize, cols: usize, slice: &'a mut [K]) -> Result<Self> {
         Self::new(vec![rows, cols], slice)
+    }
+}
+
+impl<B, R, K> PartialEq for Tensor<B, R, K>
+where
+    R: Rank,
+    K: Element + PartialEq,
+    B: Store<K>,
+{
+    /// 形状逐轴一致，且逻辑序元素逐一相等；非连续布局也按 [`to_vec`](Self::to_vec) 的逻辑序比较。
+    fn eq(&self, other: &Self) -> bool {
+        self.dims() == other.dims() && self.to_vec() == other.to_vec()
     }
 }
 

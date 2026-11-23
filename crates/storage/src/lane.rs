@@ -1,8 +1,12 @@
 //! 运行时 lane 缓冲与视图：`f32` 与按位打包 `u8` 两条存储形态的公共定义。
 //!
 //! engine 的执行缝缓冲与 train 的训练槽缓冲共用同一份枚举，不再各写一份 `F32/U8` 副本。
-//! 上层只经这些视图取切片；**形状不在这里解释**——几何归 [`tensor::Shape`](llm_tensor::Shape)
-//! 与算子实例几何，执行缝按编号绑定缓冲（ADR 0044）。
+//!
+//! 标签枚举保留：操作数列表要异质承载浮点与打包字节，单泛型列表装不下两种元素类型；枚举内部
+//! 承载 [`tensor::View`] / [`tensor::ViewMut`]，形状与步长一等公民。**几何仍不在这里解释**——
+//! 二维几何归算子实例几何，执行缝按编号绑定缓冲（ADR 0044），一期操作数是一维连续视图。
+
+use tensor::{View, ViewMut};
 
 /// 一条存储 lane 的运行时标签。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -78,30 +82,30 @@ impl LaneBuf {
         }
     }
 
-    /// 只读视图。
+    /// 只读视图：借自持缓冲构造一维连续张量视图，元数据照抄、不复制元素。
     pub fn view(&self) -> LaneView<'_> {
         match self {
-            Self::F32(values) => LaneView::F32(values),
-            Self::U8(values) => LaneView::U8(values),
+            Self::F32(values) => LaneView::F32(View::one(values)),
+            Self::U8(values) => LaneView::U8(View::one(values)),
         }
     }
 
-    /// 可写视图。
+    /// 可写视图：借出可写一维连续张量视图。
     pub fn view_mut(&mut self) -> LaneViewMut<'_> {
         match self {
-            Self::F32(values) => LaneViewMut::F32(values),
-            Self::U8(values) => LaneViewMut::U8(values),
+            Self::F32(values) => LaneViewMut::F32(ViewMut::one(values)),
+            Self::U8(values) => LaneViewMut::U8(ViewMut::one(values)),
         }
     }
 }
 
-/// 只读视图：一次执行/前向步的输入操作数。
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// 只读视图：一次执行/前向步的输入操作数。内部是张量视图，标签区分元素 lane。
+#[derive(Debug, Clone)]
 pub enum LaneView<'a> {
     /// 32 位浮点。
-    F32(&'a [f32]),
+    F32(View<'a, f32>),
     /// 按位打包的整型。
-    U8(&'a [u8]),
+    U8(View<'a, u8>),
 }
 
 impl<'a> LaneView<'a> {
@@ -113,30 +117,30 @@ impl<'a> LaneView<'a> {
         }
     }
 
-    /// 当成 `f32` 读；不是浮点缓冲时为 `None`。
+    /// 当成 `f32` 读；不是浮点缓冲时为 `None`。返回原始借用生命周期 `'a`。
     pub fn f32(&self) -> Option<&'a [f32]> {
         match self {
-            Self::F32(values) => Some(*values),
+            Self::F32(values) => Some(values.borrowed_slice()),
             Self::U8(_) => None,
         }
     }
 
-    /// 当成按位打包的整型读；不是字节缓冲时为 `None`。
+    /// 当成按位打包的整型读；不是字节缓冲时为 `None`。返回原始借用生命周期 `'a`。
     pub fn u8(&self) -> Option<&'a [u8]> {
         match self {
-            Self::U8(values) => Some(*values),
+            Self::U8(values) => Some(values.borrowed_slice()),
             Self::F32(_) => None,
         }
     }
 }
 
-/// 可写视图：一次执行/前向步的输出操作数。
-#[derive(Debug, PartialEq)]
+/// 可写视图：一次执行/前向步的输出操作数。内部是可写张量视图。
+#[derive(Debug)]
 pub enum LaneViewMut<'a> {
     /// 32 位浮点。
-    F32(&'a mut [f32]),
+    F32(ViewMut<'a, f32>),
     /// 按位打包的整型。
-    U8(&'a mut [u8]),
+    U8(ViewMut<'a, u8>),
 }
 
 impl<'a> LaneViewMut<'a> {
@@ -151,7 +155,7 @@ impl<'a> LaneViewMut<'a> {
     /// 当成 `f32` 写；不是浮点缓冲时为 `None`。
     pub fn f32_mut(&mut self) -> Option<&mut [f32]> {
         match self {
-            Self::F32(values) => Some(values),
+            Self::F32(values) => Some(values.as_slice_mut()),
             Self::U8(_) => None,
         }
     }
@@ -159,7 +163,7 @@ impl<'a> LaneViewMut<'a> {
     /// 当成按位打包的整型写；不是字节缓冲时为 `None`。
     pub fn u8_mut(&mut self) -> Option<&mut [u8]> {
         match self {
-            Self::U8(values) => Some(values),
+            Self::U8(values) => Some(values.as_slice_mut()),
             Self::F32(_) => None,
         }
     }

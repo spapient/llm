@@ -598,7 +598,7 @@ pub trait Lane: sealed::Sealed + Copy + Default + 'static {
     const KIND: Kind;
 
     /// 从输入视图里取这一条 lane 的切片；形态不符时为 `None`。
-    fn slice<'b>(view: View<'b>) -> Option<&'b [Self]>;
+    fn slice<'b>(view: &'b View<'b>) -> Option<&'b [Self]>;
 
     /// 输出侧的同一条契约。
     fn slice_mut<'a, 'b: 'a>(view: &'a mut ViewMut<'b>) -> Option<&'a mut [Self]>;
@@ -610,16 +610,16 @@ macro_rules! lane {
         impl Lane for $lane {
             const KIND: Kind = Kind::$kind;
 
-            fn slice<'b>(view: View<'b>) -> Option<&'b [Self]> {
+            fn slice<'b>(view: &'b View<'b>) -> Option<&'b [Self]> {
                 match view {
-                    View::$kind(values) => Some(values),
+                    View::$kind(values) => Some(values.borrowed_slice()),
                     _ => None,
                 }
             }
 
             fn slice_mut<'a, 'b: 'a>(view: &'a mut ViewMut<'b>) -> Option<&'a mut [Self]> {
                 match view {
-                    ViewMut::$kind(values) => Some(values),
+                    ViewMut::$kind(values) => Some(values.as_slice_mut()),
                     _ => None,
                 }
             }
@@ -692,7 +692,7 @@ pub(crate) fn input_slice<'a, L: Lane>(
     view: &'a View<'a>,
 ) -> Result<&'a [L]> {
     let slot = format!("第 {idx} 个输入");
-    L::slice(*view).ok_or_else(|| wrong_lane(op, &slot, L::KIND, view.lane()))
+    L::slice(view).ok_or_else(|| wrong_lane(op, &slot, L::KIND, view.lane()))
 }
 
 /// 取输出并断言它是 `L`。
