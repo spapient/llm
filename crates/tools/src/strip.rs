@@ -106,22 +106,32 @@ impl Attr {
 
 /// 递归遍历一层 token：标记本层 cfg(test) 条目，并进入分组处理嵌套的 cfg(test)。
 fn collect(tokens: &[Token], blank: &mut [bool]) {
+    split_items(tokens, |attr, item| {
+        let Some(last) = item.last() else {
+            return;
+        };
+        attr.blank_if_test(last, blank);
+        for token in item {
+            if let Token::Group { items, .. } = token {
+                collect(items, blank);
+            }
+        }
+    });
+}
+
+/// 按「属性 → 条目」切分一层 token：连续属性先吸收进 [`Attr`]，遇到条目把已吸收的属性
+/// 与条目 token 段交给 `visit`；`modules` 与 `collect` 共用这一份下标推进。
+fn split_items(tokens: &[Token], mut visit: impl FnMut(Attr, &[Token])) {
     let mut attr = Attr::default();
     let mut idx = 0;
     while idx < tokens.len() {
         if let Some((hash, bracket)) = attr_at(tokens, idx) {
             attr.absorb(&tokens[hash], &tokens[bracket]);
-            idx = bracket + 1; // 跳过 `#`（与可选 `!`）与 `[..]`
+            idx = bracket + 1;
             continue;
         }
-
         let end = item_end(tokens, idx);
-        attr.blank_if_test(&tokens[end], blank);
-        for token in &tokens[idx..=end] {
-            if let Token::Group { items, .. } = token {
-                collect(items, blank);
-            }
-        }
+        visit(attr, &tokens[idx..=end]);
         attr = Attr::default();
         idx = end + 1;
     }

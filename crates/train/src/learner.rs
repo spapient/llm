@@ -161,9 +161,9 @@ impl<K: Kernel, O: Optimizer, C: Collective> Learner<K, O, C> {
     ///
     /// 批几何、前向、计划、梯度入账或优化步任一步失败都会透传；评估几何不自洽也是
     /// [`Code::Invalid`]。
-    pub fn run<'a, F, G>(
+    pub fn run<F, G>(
         &mut self,
-        dataset: &mut dyn Dataset<'a>,
+        dataset: &mut dyn Dataset<Item = u32>,
         epochs: u64,
         mut forward: F,
         mut backward: G,
@@ -173,6 +173,7 @@ impl<K: Kernel, O: Optimizer, C: Collective> Learner<K, O, C> {
         G: FnMut(&mut Session<K, O, C>) -> Result<()>,
     {
         for _epoch in 0..epochs {
+            dataset.reset();
             while let Some(batch) = dataset.next_batch() {
                 self.train_batch(
                     batch.rows(),
@@ -194,7 +195,7 @@ impl<K: Kernel, O: Optimizer, C: Collective> Learner<K, O, C> {
     /// # Errors
     ///
     /// 批几何、前向或评估入账任一步失败都会透传；评估几何不自洽是 [`Code::Invalid`]。
-    pub fn evaluate<'a, F>(&mut self, dataset: &mut dyn Dataset<'a>, mut forward: F) -> Result<()>
+    pub fn evaluate<F>(&mut self, dataset: &mut dyn Dataset<Item = u32>, mut forward: F) -> Result<()>
     where
         F: FnMut(&mut Session<K, O, C>, &[u32]) -> Result<ForwardOut>,
     {
@@ -533,10 +534,10 @@ fn validate(point: &MetricPoint) -> Result<()> {
     Ok(())
 }
 
-#[path = "learner_dataset.rs"]
+#[path = "dataset/mod.rs"]
 pub(crate) mod dataset;
 
-pub use dataset::{Batch, Chunks, Dataset};
+pub use dataset::{Batch, Chunks, Dataset, Loader, LoaderConfig};
 
 #[cfg(test)]
 #[path = "../tests/learner_tests.rs"]
