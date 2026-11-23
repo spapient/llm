@@ -65,8 +65,8 @@ fn sme_mix_probe(rounds: usize) -> bool {
 const I8_PURE: Probe = Probe {
     group: "i8_peak",
     suffix: "",
-    ops_per_round: 2 * super::i8::SDOT_MAC_PER_ROUND,
-    run: super::i8::port_sdot,
+    ops_per_round: 2 * prof::native::i8::SDOT_MAC_PER_ROUND,
+    run: prof::native::i8::port_sdot,
 };
 
 /// 纯 f32 FMA 端口：16 个累加器、零 load，与生产瓦片体同形状（K7 的理想上限）。
@@ -79,7 +79,7 @@ const FMA_PURE: Probe = Probe {
 };
 
 /// `k` 取 1024 使地址在环内单调推进——地址不随循环变化时 LLVM 会把 load 整体提出循环，
-/// 那样测的是纯端口而非「取数受限」端口（第一版就是这么错的，见 [`super::i8::port_sdot_block`]）。
+/// 那样测的是纯端口而非「取数受限」端口（第一版就是这么错的，见 [`prof::native::i8::port_sdot_block`]）。
 #[cfg(all(feature = "bench", target_arch = "aarch64"))]
 const PROBE_K: usize = 1024;
 
@@ -88,11 +88,11 @@ const PROBE_K: usize = 1024;
 const I8_BLOCK: Probe = Probe {
     group: "i8_peak",
     suffix: "_block",
-    ops_per_round: 2 * super::i8::SDOT_BLOCK_MAC_PER_K * PROBE_K,
+    ops_per_round: 2 * prof::native::i8::SDOT_BLOCK_MAC_PER_K * PROBE_K,
     run: |rounds| {
         static A: [i8; 4 * PROBE_K] = [3; 4 * PROBE_K];
         static B: [i8; 4 * PROBE_K] = [5; 4 * PROBE_K];
-        super::i8::port_sdot_block(rounds, &A, &B, PROBE_K)
+        prof::native::i8::port_sdot_block(rounds, &A, &B, PROBE_K)
     },
 };
 

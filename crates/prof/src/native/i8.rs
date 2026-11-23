@@ -8,7 +8,7 @@
 //! 生产微内核（[`dot_block`]）与取数受限探针（[`port_sdot_block`]）共用同一份瓦片体
 //! [`sdot_tile`]：探针的全部意义是「与生产逐指令一致」，两份写法必然漂移（N5/可替换）。
 
-use super::i8::{MR, NR};
+use super::i8_geo::{MR, NR};
 
 /// 一个 4 列块的坐标：起点行 `r`、列块起点 `blk`，矩阵列宽 `n`、内积长 `k` 与向量化长 `kvec`。
 #[derive(Clone, Copy)]
