@@ -901,7 +901,7 @@ fn metal_chunk_lower(
 ) -> Result<Vec<String>> {
     match kind {
         ChunkReduce { chunk, func } => {
-            crate::metal::metal_chunk_reduce(kernel, signature, sample, *chunk, func)
+            crate::metal::Metal::chunk_reduce(kernel, signature, sample, *chunk, func)
                 .map(|s| vec![s])
         }
         ChunkScan { chunk, decay } => {
