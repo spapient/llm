@@ -470,3 +470,45 @@ fn a_failed_node_stays_in_the_queue() {
     assert_eq!(executor.len(), 1, "没跑完的条目不许出队");
     assert_eq!(executor.get(0).expect("输入原样放回"), [1.0]);
 }
+
+/// 未接入运行时的设备后端位：只登记厂商标签，提交与登记一律回 `Unsupported`，
+/// 绑定 / 取回不占用缓冲——缺设备证据不静默成功，也不另造运行时 trait。
+#[test]
+fn vacant_executor_rejects_every_runtime_surface() {
+    let mut executor = VacantExecutor::new(Device::new("cuda", "sm_90"));
+    assert_eq!(executor.device().vendor(), "cuda");
+    assert_eq!(executor.vendor(), "cuda");
+
+    let error = executor
+        .submit(&graph(&["gemv_i4"]), Stream::new(0))
+        .unwrap_err();
+    assert_eq!(error.code(), Code::Unsupported);
+    assert!(error.to_string().contains("cuda"), "错误要带上厂商标签");
+
+    let program: Box<dyn Program> = Box::new(CountingProgram);
+    let error = executor.register_program(program).unwrap_err();
+    assert_eq!(error.code(), Code::Unsupported);
+
+    assert!(executor.bind_f32(0, vec![1.0]).is_none());
+    assert!(executor.bind_bytes(0, vec![1u8]).is_none());
+    assert!(executor.fetch_f32(0).is_none());
+    assert!(executor.fetch_bytes(0).is_none());
+}
+
+/// 满足 [`Program`] 的最小占位体：只用于登记位被拒这条路径，不真正跑。
+struct CountingProgram;
+
+impl Program for CountingProgram {
+    fn name(&self) -> &str {
+        "placeholder"
+    }
+
+    fn run(
+        &self,
+        _launch: Launch,
+        _inputs: &[View<'_>],
+        _outputs: &mut [ViewMut<'_>],
+    ) -> Result<()> {
+        Err(Error::new(Code::Internal, "占位体不应被执行"))
+    }
+}

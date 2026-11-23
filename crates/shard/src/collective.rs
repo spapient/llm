@@ -41,51 +41,37 @@ pub trait ReduceScalar:
     }
 }
 
-impl ReduceScalar for f32 {
-    const ZERO: Self = 0.0;
-    const ONE: Self = 1.0;
-    const MIN_LIMIT: Self = f32::NEG_INFINITY;
-    const MAX_LIMIT: Self = f32::INFINITY;
+/// 浮点标量档批量实现：单位元取 0/1 与无穷界，极值覆写以传播 NaN。
+macro_rules! impl_float_scalar {
+    ($($ty:ty),+ $(,)?) => {
+        $(
+            impl ReduceScalar for $ty {
+                const ZERO: Self = 0.0;
+                const ONE: Self = 1.0;
+                const MIN_LIMIT: Self = <$ty>::NEG_INFINITY;
+                const MAX_LIMIT: Self = <$ty>::INFINITY;
 
-    fn max(left: Self, right: Self) -> Self {
-        if left.is_nan() || right.is_nan() {
-            f32::NAN
-        } else {
-            f32::max(left, right)
-        }
-    }
+                fn max(left: Self, right: Self) -> Self {
+                    if left.is_nan() || right.is_nan() {
+                        <$ty>::NAN
+                    } else {
+                        <$ty>::max(left, right)
+                    }
+                }
 
-    fn min(left: Self, right: Self) -> Self {
-        if left.is_nan() || right.is_nan() {
-            f32::NAN
-        } else {
-            f32::min(left, right)
-        }
-    }
+                fn min(left: Self, right: Self) -> Self {
+                    if left.is_nan() || right.is_nan() {
+                        <$ty>::NAN
+                    } else {
+                        <$ty>::min(left, right)
+                    }
+                }
+            }
+        )+
+    };
 }
 
-impl ReduceScalar for f64 {
-    const ZERO: Self = 0.0;
-    const ONE: Self = 1.0;
-    const MIN_LIMIT: Self = f64::NEG_INFINITY;
-    const MAX_LIMIT: Self = f64::INFINITY;
-
-    fn max(left: Self, right: Self) -> Self {
-        if left.is_nan() || right.is_nan() {
-            f64::NAN
-        } else {
-            f64::max(left, right)
-        }
-    }
-
-    fn min(left: Self, right: Self) -> Self {
-        if left.is_nan() || right.is_nan() {
-            f64::NAN
-        } else {
-            f64::min(left, right)
-        }
-    }
-}
+impl_float_scalar!(f32, f64);
 
 /// 整数标量档批量实现：单位元取类型零/一与类型上下界，极值按偏序，无 NaN。
 macro_rules! impl_integer_scalar {

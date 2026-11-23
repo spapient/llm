@@ -3,10 +3,13 @@
 //! 断言的是文本，不是行为：渲染器只拼字符串，于是"生成的代码长什么样"可以被逐字钉住。
 
 use crate::decl::{
-    DTYPES, Declaration, ModelDecl, RuntimeDecl, SKELETONS, parse, parse_model, parse_runtime,
+    DTYPES, Declaration, ModelDecl, RuntimeDecl, SKELETONS, parse, parse_model, parse_parallel,
+    parse_runtime,
 };
 use crate::fixture::lex;
-use crate::render::{MODEL_ROOM, RUNTIME_ROOM, STATIC_ROOM, render, render_model, render_runtime};
+use crate::render::{
+    MODEL_ROOM, RUNTIME_ROOM, STATIC_ROOM, render, render_model, render_parallel, render_runtime,
+};
 
 fn declaration(text: &str) -> Declaration {
     parse(&lex(text)).expect("合法注解")
@@ -430,5 +433,39 @@ fn an_unlisted_skeleton_falls_back_to_a_compile_error() {
     let code = render_model(&decl, "M");
     assert!(code.contains("compile_error!"), "{code}");
     assert!(code.contains("骨架"), "{code}");
+    assert_balanced(&code);
+}
+
+/// 全量策略：度数、归约变体、平均开关、优先级变体逐字落进访问器。
+#[test]
+fn a_parallel_declaration_renders_the_policy_accessor() {
+    let decl = parse_parallel(&lex(
+        r#"tp = 2, pp = 1, dp = 4, reduce = "max", average = false, priority = "high""#,
+    ))
+    .expect("合法");
+    let code = render_parallel(&decl, "Block");
+    assert!(
+        code.contains("::shard::ParallelConfig::new(2, 1, 4)"),
+        "{code}"
+    );
+    assert!(code.contains("::shard::Reduce::Max"), "{code}");
+    assert!(code.contains(".with_average(false)"), "{code}");
+    assert!(code.contains("::shard::Priority::High"), "{code}");
+    assert!(code.contains("fn __parallel_config()"), "{code}");
+    assert_balanced(&code);
+}
+
+/// 缺省策略回落求和 / 平均 / 普通优先级，变体名与单进程口径一致。
+#[test]
+fn a_default_parallel_declaration_renders_sum_normal() {
+    let decl = parse_parallel(&lex("")).expect("合法");
+    let code = render_parallel(&decl, "Block");
+    assert!(
+        code.contains("::shard::ParallelConfig::new(1, 1, 1)"),
+        "{code}"
+    );
+    assert!(code.contains("::shard::Reduce::Sum"), "{code}");
+    assert!(code.contains(".with_average(true)"), "{code}");
+    assert!(code.contains("::shard::Priority::Normal"), "{code}");
     assert_balanced(&code);
 }

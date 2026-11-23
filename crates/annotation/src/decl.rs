@@ -469,3 +469,113 @@ pub(crate) fn runtime_target(tokens: &[Token], attribute: &str) -> Result<String
         ),
     ))
 }
+
+/// `#[parallel(..)]` 的归约闭集短名；行序与 `shard::Reduce` 行表一一对应。
+pub(crate) const REDUCES: [&str; 4] = ["sum", "max", "min", "prod"];
+
+/// `#[parallel(..)]` 的优先级闭集短名；行序与 `Priority` 行表一一对应。
+pub(crate) const PRIORITIES: [&str; 3] = ["high", "normal", "low"];
+
+/// `#[parallel(..)]` 解析后的六件事实：三维度数、归约种类、平均开关、调度优先级。
+///
+/// 短名原样保留，渲染层再映射成 `shard` 侧的枚举变体；注解层不反向依赖 `shard` 的类型。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ParallelDecl {
+    /// 张量并行度。
+    pub(crate) tp: usize,
+    /// 流水并行度。
+    pub(crate) pp: usize,
+    /// 数据并行度。
+    pub(crate) dp: usize,
+    /// 归约种类短名（[`REDUCES`] 之一）。
+    pub(crate) reduce: String,
+    /// 归约后是否按数据并行组数取平均。
+    pub(crate) average: bool,
+    /// 调度优先级短名（[`PRIORITIES`] 之一）。
+    pub(crate) priority: String,
+}
+
+/// `#[parallel(..)]` 的键表：三维度数可选（缺省 1），口径键可选（缺省求和 / 平均 / 普通）。
+const PARALLEL: [KeySpec<'static>; 6] = [
+    row("tp", degree_value, "张量并行度只能声明一次", None),
+    row("pp", degree_value, "流水并行度只能声明一次", None),
+    row("dp", degree_value, "数据并行度只能声明一次", None),
+    row(
+        "reduce",
+        reduce_value,
+        "归约种类只能声明一次",
+        Some(" = \"sum\""),
+    ),
+    row("average", flag_value, "平均开关只能声明一次", None),
+    row(
+        "priority",
+        priority_value,
+        "调度优先级只能声明一次",
+        Some(" = \"normal\""),
+    ),
+];
+
+/// 解析 `#[parallel(tp = .., pp = .., dp = .., reduce = "..", average = .., priority = "..")]`。
+/// 所有键可选；缺省口径与 `ParallelConfig::single()` 一致。
+pub(crate) fn parse_parallel(tokens: &[Token]) -> Result<ParallelDecl, Error> {
+    let values = collect(tokens, &PARALLEL)?;
+    Ok(ParallelDecl {
+        tp: degree_of(&values[0], 1),
+        pp: degree_of(&values[1], 1),
+        dp: degree_of(&values[2], 1),
+        reduce: defaulted(&values[3], "sum").to_string(),
+        average: !matches!(values[4].text(), "false"),
+        priority: defaulted(&values[5], "normal").to_string(),
+    })
+}
+
+/// 未写的度数回落到单进程 1；零值在 [`degree_value`] 里已被拒绝。
+fn degree_of(value: &Value, fallback: usize) -> usize {
+    match value {
+        Value::Width(width, _) => *width,
+        _ => fallback,
+    }
+}
+
+/// 一个并行度：十进制正整数；零度并行切不出组，构造期就拒。
+fn degree_value(cursor: &mut Cursor<'_>, at: Position, spec: &KeySpec<'_>) -> Result<Value, Error> {
+    let token = cursor.next(&format!("`{}` 的值", spec.name))?;
+    let width = unsigned(token).map_err(|error| error.rebased(at))?;
+    if width == 0 {
+        return Err(Error::at(
+            at,
+            format!("`{}` 并行度必须大于 0：零度并行没有可切的组", spec.name),
+        ));
+    }
+    Ok(Value::Width(width, at))
+}
+
+/// `reduce = ".."`：归约闭集。
+fn reduce_value(cursor: &mut Cursor<'_>, at: Position, spec: &KeySpec<'_>) -> Result<Value, Error> {
+    closed_value(cursor, at, spec, "归约种类", &REDUCES)
+}
+
+/// `priority = ".."`：优先级闭集。
+fn priority_value(
+    cursor: &mut Cursor<'_>,
+    at: Position,
+    spec: &KeySpec<'_>,
+) -> Result<Value, Error> {
+    closed_value(cursor, at, spec, "优先级", &PRIORITIES)
+}
+
+/// `average = true | false`：布尔字面量；只认两个标识符，落空走解析层的缺省 `true`。
+fn flag_value(cursor: &mut Cursor<'_>, at: Position, spec: &KeySpec<'_>) -> Result<Value, Error> {
+    let token = cursor.next(&format!("`{}` 的值", spec.name))?;
+    match token {
+        Token::Ident(word) if word == "true" || word == "false" => Ok(Value::Text(word.clone())),
+        other => Err(Error::at(
+            at,
+            format!(
+                "`{}` 只能是 `true` 或 `false`，得到 {}",
+                spec.name,
+                other.describe()
+            ),
+        )),
+    }
+}

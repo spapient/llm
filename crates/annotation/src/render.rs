@@ -1,6 +1,6 @@
 //! 渲染：把一份声明拼成源码。只做字符串拼接、不维护状态、不接触 `proc_macro`，因此可以用纯文本断言测试。
 
-use crate::decl::{DTYPES, Declaration, ModelDecl, RuntimeDecl, SKELETONS};
+use crate::decl::{DTYPES, Declaration, ModelDecl, ParallelDecl, RuntimeDecl, SKELETONS};
 use std::fmt::Write;
 
 /// 三块输出的预留容量：按最长的真实声明留足余量，于是"渲染一次 = 一次分配"真的成立。
@@ -272,3 +272,55 @@ impl std::fmt::Display for Quoted<'_> {
 fn literal(code: &mut String, text: &str) {
     let _ = write!(code, "{}", Quoted(text));
 }
+
+/// 把 `#[parallel(..)]` 渲染成策略访问器：度数走 `ParallelConfig::new`，口径走三条 `with_*` 覆盖链。
+///
+/// 注解只声明静态意图；访问器在首次调用时构造 [`ParallelConfig`]，不复制字段表，也不发起通信。
+/// 闭集短名在解析层已校验，这里的变体兜底分支不可达。
+pub(crate) fn render_parallel(declaration: &ParallelDecl, ty: &str) -> String {
+    let reduce = reduce_variant(&declaration.reduce);
+    let priority = priority_variant(&declaration.priority);
+    let average = if declaration.average { "true" } else { "false" };
+    let mut code = String::with_capacity(PARALLEL_ROOM);
+    code.push_str("#[automatically_derived]\n");
+    let _ = writeln!(code, "impl {ty} {{");
+    code.push_str("    #[doc(hidden)]\n    #[allow(dead_code)]\n");
+    code.push_str("    fn __parallel_config() -> ::shard::ParallelConfig {\n");
+    let _ = writeln!(
+        code,
+        "        ::shard::ParallelConfig::new({}, {}, {})",
+        declaration.tp, declaration.pp, declaration.dp
+    );
+    code.push_str("            .expect(\"注解度数已在编译期校验非零；此处仅拒绝 u32 上界溢出\")\n");
+    code.push_str(&format!(
+        "            .with_reduce(::shard::Reduce::{reduce})\n"
+    ));
+    code.push_str(&format!("            .with_average({average})\n"));
+    code.push_str(&format!(
+        "            .with_priority(::shard::Priority::{priority})\n"
+    ));
+    code.push_str("    }\n}\n");
+    code
+}
+
+/// 归约短名 → `Reduce` 变体名。
+fn reduce_variant(short: &str) -> &str {
+    match short {
+        "max" => "Max",
+        "min" => "Min",
+        "prod" => "Prod",
+        _ => "Sum",
+    }
+}
+
+/// 优先级短名 → `Priority` 变体名。
+fn priority_variant(short: &str) -> &str {
+    match short {
+        "high" => "High",
+        "low" => "Low",
+        _ => "Normal",
+    }
+}
+
+/// 并行策略访问器的预留容量。
+pub(crate) const PARALLEL_ROOM: usize = 768;

@@ -508,7 +508,7 @@ fn op_chunked_softmax_matches_reference(op_name: &str) {
     // 槽位：0 = x、1 = y（部分结果临时占 y 前 G 个槽）、2 = max、3 = sum。
     let x = sample.f32("x").expect("softmax 输入");
     bind_f32(&mut executor, 0, x);
-    executor.reserve_bytes(1, expected.len() * 4).expect("y 缓冲");
+    executor.bind_bytes(1, expected.len() * 4).expect("y 缓冲");
 
     let stream = engine::exec::Stream::new(0);
     let launch = engine::exec::Launch::new([grid_size, 1, 1], [1, 1, 1]);

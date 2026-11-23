@@ -1,6 +1,6 @@
 //! 注解层：把契约与 kernel 声明写成属性，由编译器检查，而不是手写重复样板。
 //!
-//! **拥有**：`#[spec]` / `#[model]` 契约宏与 `#[dsl]` kernel 前端。宏只在调用点的 crate 里展开，
+//! **拥有**：`#[spec]` / `#[model]` 契约宏、`#[parallel]` 并行策略宏与 `#[dsl]` kernel 前端。宏只在调用点的 crate 里展开，
 //! 生成代码指向契约或 IR 路径；kernel 语法由 `syn` 解析、`quote` 生成，编译期依赖不进入运行期依赖图。
 //!
 //! 注解承载的只是**可静态判定**的契约：层是（名字、输出形状、算子），语义表是（注册名、生产形状、
@@ -172,6 +172,22 @@ pub fn model(attribute: TokenStream, item: TokenStream) -> TokenStream {
         decl::parse_model,
         render::render_model,
         syntax::model_target,
+    )
+}
+
+/// 把 `#[parallel(tp = .., pp = .., dp = .., reduce = "..", average = .., priority = "..")]`
+/// 展开成一条返回 `shard::ParallelConfig` 的策略访问器（注解层不依赖 shard，路径字符串推迟到消费方解析）。
+///
+/// 键全部可选，缺省口径与 `ParallelConfig::single()` 一致；归约种类与优先级在注解层就按闭集校验。
+#[proc_macro_attribute]
+pub fn parallel(attribute: TokenStream, item: TokenStream) -> TokenStream {
+    expand_with(
+        attribute,
+        item,
+        "parallel",
+        decl::parse_parallel,
+        render::render_parallel,
+        syntax::target_name,
     )
 }
 

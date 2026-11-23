@@ -34,7 +34,7 @@
 pub use crate::cpu::{Bindings, CpuExecutor, Program};
 pub use crate::queue::{Buf, View, ViewMut};
 pub use crate::queue::{Executor, LocalExecutor, Queued, Trace};
-pub use crate::queue::{check_operands, enqueue};
+pub use crate::queue::{VacantExecutor, check_operands, enqueue};
 
 #[cfg(test)]
 #[path = "../tests/exec.rs"]

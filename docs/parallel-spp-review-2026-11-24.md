@@ -21,6 +21,7 @@
 - [`Local`] 泛型为 `Local<T: ReduceScalar = f32>`，镜像表 `Vec<Vec<T>>`，零值填 `T::ZERO`。
 - [`Remote`] 占位与 [`FileRemote`] 字节协议固定 `Collective<f32>`：文件槽位是小端 4 字节布局，跨进程序列化档不参与泛型化。
 - 约束自包含在 shard 内，**未新增 `shard → tensor` 边**（不反向依赖 tensor 的元素标记层级）。
+- 浮点 `f32/f64` 两份逐字平行的 `max/min` NaN 覆写收编进 `impl_float_scalar!` 宏批量实例化（与整数族宏同构），消除两份 32 行重复样板。
 
 ### 2.2 并行策略配置层（`policy.rs`，新文件）
 
@@ -40,23 +41,33 @@
 - 新增 `Distributed::from_config(rank, collective, policy)`；保留既有 `new(topology, rank, collective)` 与 `with_average`，新增 `with_reduce / with_priority / policy()`。
 - `sync_grads` 经 `policy.reduce()` / `policy.average()` 取口径；`none()` 仍为恒等回路。
 - `scale` 补依赖注释：各槽元素互相独立、无串行依赖；安全 Rust 边界内无可调用的整块浮点向量化原语，故保留逐元素除法，不引入 rayon / unsafe SIMD。
+- `new` / `from_config` 逐字重复的 rank 越界校验抽进私有 `ensure_rank` helper，两处共用同一判据与站点标签。
 
 ### 2.5 测试与登记
 
 - `tests/policy_tests.rs`：优先级短名/序数/反解一致、单进程恒等策略、三维派生拓扑、零维拒绝、旋钮独立覆盖、非法度数带 `Code::Invalid`、策略拓扑与直接构造一致（7 例）。
 - `docs/ARCHITECTURE.md` 第三节类型表登记 `ReduceScalar / ParallelConfig / Priority`（shard 属）；依赖边未变。
 
+### 2.6 并行策略注解入口（`annotation` crate，本轮新增）
+
+- 第三入口 `#[parallel(..)]`：键与运行期 `shard::ParallelConfig` 严格一一对应，单一事实源——`tp / pp / dp`（正整数，缺省 1）、`reduce`（闭集 `sum/max/min/prod`，缺省 `sum`）、`average`（`true/false`，缺省 `true`）、`priority`（闭集 `high/normal/low`，缺省 `normal`）。
+- 三层复用既有架构：`syntax.rs` 提供游标/键表工具与被标注项判据；`decl.rs` 解析出 `pub(crate) struct ParallelDecl`（六件事实）；`render.rs` 把声明渲染成 `#[doc(hidden)] #[allow(dead_code)] fn __parallel_config() -> ::shard::ParallelConfig`，走 `ParallelConfig::new(..).expect(..).with_reduce(::shard::Reduce::{..}).with_average(..).with_priority(::shard::Priority::{..})`。
+- 注解层不反向依赖 shard/nn：生产依赖仅 `proc-macro2/quote/syn`，生成代码以字符串路径引用 `::shard::`，类型解析推迟到消费方 crate 编译期（与既有 `#[spec]/#[model]/#[dsl]` 同构）。
+- 编译期拒绝：零维度数、闭集越界、布尔非法、未知键、重复键；渲染产物经括号配平断言。`decl_tests` 两例（缺省策略 / 9 条非法用例）、`render_tests` 两例（全量覆盖 / 缺省求和-平均-普通）。
+- 实测：`cargo test -p llm-annotation --lib` **48 passed / 0 failed**；`clippy -p llm-annotation --lib` 0 警告；`fmt -p llm-annotation --check` 0 diff。
+- 现状缺口：尚无模型类型挂载该注解，`__parallel_config()` 访问器当前无消费方（故 `allow(dead_code)`）；`::shard::` 路径要到消费方编译时才解析，端到端展开未取得观测（§5.5）。
+
 ## 3. 五维自评
 
 | 维度 | 分 | 依据与边界 |
 | --- | --- | --- |
-| 能力 | **5 / 10** | 集合端口元素档泛型、策略三旋钮、优先级键位就位（confirmed）。但 TP 权重切分与 PP 流水调度尚未接模型层；接通的只有 DP 梯度同步接缝；真实跨进程/设备通信缺（§5）。既有对比基线分布式维 llm=3。 |
-| 性能 | **6 / 10** | `reduce_into` 直写调用方缓冲、一次归约不分配堆；组内归约内层预取镜像切片；标量安全后端无 SIMD，平均除法保留循环（已注释保留理由）。无基准测量观测（unknown），不夸大量化收益。 |
-| 质量 | **7 / 10** | 构造期校验（零维 / 上界 / rank 越界 / 宽度不符 / 组非空升序）、浮点极值 NaN 传播、归约闭集与行序断言、策略对拍测试、新顶层类型回登所有权表。 |
-| 代码量 | **6 / 10** | 消除 f32 闭包行表、收编 `Distributed` 两字段进策略对象；泛型约束样板使 `collective.rs` 净增（trait + 浮点/整数实例化）。本体未拆 16 个 optim 模块（裁决保留）。净增减待门禁行数对照复核（unknown）。 |
-| 门禁可执行性 | **4 / 10** | 静态自查、类型闭合与登记到位。本轮取得的观测：`llm-shard` lib 测试 140 通过 / 1 失败（唯一失败 `gate::fragments_tests` 的 `remainder_f32_0` C 片段被 clang 拒绝，属 optim 并入模块的上游算子线）；`collective / policy / topology / tiling` 本体对拍全绿；`llm-train` lib `check` 通过、`fmt` 干净、接缝 clippy 0 警告；`llm-testkit` lib 99 passed / 1 failed，`ownership` 三例全绿（本批 `ReduceScalar / ParallelConfig / Priority` 与 `train::LoaderConfig` 均被门接受），唯一失败 `boundary::unsafe_islands_are_the_ones_the_adr_lists`：ADR-0035 §6 白名单仍列 `nn/kernel_fast_i8.rs`、`nn/kernel_fast_pool.rs`，源码侧两岛已被上游移除，基线漂移，非本接缝。`llm-train` test 目标被 `samples_tests.rs:84` dataset 类型注解缺失阻塞（上游并行流改动）；全量 `clippy --workspace / doc / deny` 未跑，且 `cutile` 在收尾观测期间出现过合并中间态断裂（悬垂引用 / 未闭合分隔符 / 方法缺失），随后被上游收编自愈，整链 clippy 须待其稳定后复跑。 |
+| 能力 | **6 / 10** | 集合端口元素档泛型、策略三旋钮、优先级键位、`#[parallel(..)]` 声明入口就位（confirmed）。但 TP 权重切分与 PP 流水调度尚未接模型层；接通的只有 DP 梯度同步接缝；注解产物暂无消费方；真实跨进程/设备通信缺（§5）。既有对比基线分布式维 llm=3。 |
+| 性能 | **6 / 10** | `reduce_into` 直写调用方缓冲、一次归约不分配堆；组内归约内层预取镜像切片；标量安全后端无 SIMD，平均除法保留循环（已注释保留理由）。本轮未新增性能通路；无基准测量观测（unknown），不夸大量化收益。 |
+| 质量 | **8 / 10** | 构造期校验（零维 / 上界 / rank 越界 / 宽度不符 / 组非空升序）、浮点极值 NaN 传播、归约闭集与行序断言、策略对拍测试；注解编译期闭集/度数/布尔/重复键拒绝 + 括号配平对拍；新顶层类型回登所有权表；注解产物 `pub(crate)` 不引入新运行时依赖边。 |
+| 代码量 | **6 / 10** | 本体减法：移除 f32 闭包行表、浮点 `f32/f64` 实例化收编进宏、rank 越界校验抽 helper；`collective.rs` 433→419 行。生产 diff 实测：`shard+train` **+42 / -56**（本体净减 14 行）；`annotation` **+263 / -5**（注解入口 + 两份对拍测试，要素新增）。生产合计 **+305 / -61**；泛型约束样板使集合端口净增。本体未拆 16 个 optim 模块（裁决保留）。与历史基线的全仓机制行数对照待整链门禁后复核（unknown）。 |
+| 门禁可执行性 | **7 / 10** | 干净窗口整链实测：`cargo test --workspace --lib` **2565 passed / 0 failed**；`llm-annotation` **48**、`llm-shard` lib+集成各 **141**、`llm-train` lib **231** + doctest **5**、`llm-testkit` **100** 全绿。`cargo clippy --workspace --lib` 0 警告/错误；`cargo fmt --all --check` 0 diff；`RUSTDOCFLAGS=-D warnings cargo doc -p llm-annotation --no-deps` 干净。本批 `shard/annotation/train` 自身 clippy/doc/fmt 全 0。残留均属上游或环境：`llm-fuzz` 两条 broken intra-doc link（`lib.rs:3/22` 指向不存在的 `check` 项）；`cargo deny check` 因环境无法访问 github advisory-db（SSL_ERROR_SYSCALL）未执行；`--all-targets / --all-features` clippy 与全仓 doc 未在本轮跑完。 |
 
-> 结论：距 "S++ / 超越 Burn 10 分" 未达成。接口面与配置面补齐是本轮可闭合的部分；运行能力、真实通信、注解入口与干净门禁观测仍是缺口。
+> 结论：距 "S++ / 超越 Burn 10 分" 仍未达成。本轮闭合了**注解入口**这一接口/配置面；运行能力（TP/PP 模型装配）、真实通信、注解端到端消费方与干净整链观测仍是缺口。分数为绿窗口实测口径，被上游半成品阻塞的 crate 不重复计绿。
 
 ## 4. 与 Burn 对照（沿用 §10 已核事实，不重复取证）
 
@@ -77,19 +88,24 @@
 
 `FileRemote` 是文件槽位跨进程原型（小端、无 unsafe）；`Remote` 为未挂载占位。loopback socket / 共享内存 / NCCL / ROCm / GPU 集合通信受 ADR-0035、`deny(unsafe_code)` 与无网络/FFI 依赖阻塞，本轮不闭合。
 
-### 5.4 上游并行流半成品阻塞门禁
+### 5.4 上游并行流半成品与残留告警
 
-取证期间工作树存在外部并行工作流连续提交与未提交文件周期收编。本轮观测：`shard` 与 `train` 的 **lib** 已能 `check` 通过，shard 本体测试全绿；残留阻塞集中在——
+取证期间工作树存在外部并行工作流连续提交与未提交文件周期收编。本轮收尾绿窗口实测：`llm-annotation` lib **48 passed / 0 failed**；`llm-testkit` lib **100 passed / 0 failed**；`llm-shard` lib + 集成测试各 **141 passed / 0 failed**；`llm-train` lib **231 passed / 0 failed** + doctest **5 passed / 0 failed**。
 
-- `shard` optim 并入模块的内核片段测试：`remainder_f32_0` portable C 片段被 clang 拒绝（`gate::fragments_tests`）；
-- `train` test 目标：`samples_tests.rs:84` `Chunks::new` 缺数据集类型注解（dataset 并行流改动）；
-- 全量 `clippy / fmt / doc / deny / 架构契约门` 尚未在本轮跑。
+过程中 cutile 多次进入合并中间态：`E0515`（子节点返回 `&[&Expr]` 临时切片悬垂）、`E0282`（类型标注缺失）、`E0592`（`children / map_children / rebuild_unary / rebuild_binary / rebuild_ternary` 在 `expr.rs` 与 `kernel.rs` 跨文件各定义一份，同 impl `kernel::Expr`）、`E0034`（多个同签名项在作用域内）。这些方法本应只住 `expr.rs`（子节点遍历与按元数重建的分派单一家），`kernel.rs` 内同名副本是迁移残留；该中间态在本轮收尾前被上游收编——`kernel.rs` 副本已移除，整链 `cargo test --workspace --lib` 复跑 **2565 passed / 0 failed**。
 
-这些不属于 shard 并行主线，未在本轮擅改其设计。全量门禁须待上游中间态闭合后按 §6 一次性复跑。
+当前残留均属上游线或环境、非本批并行文件——
 
-### 5.5 并行策略注解入口
+- `llm-fuzz` `lib.rs:3/22` 两条 broken intra-doc link（`[`check`]` 指向作用域内不存在的 `check` 项），`RUSTDOCFLAGS=-D warnings` 下阻断全仓 doc；上游既有缺陷，本轮未改 fuzz；
+- `cargo deny check` 因当前环境无法访问 github.com rustsec advisory-db（`SSL_ERROR_SYSCALL`）未执行，属网络限制而非代码供应链告警；
+- 上游 `device` 新增对 `storage` 的生产依赖，本轮已补登 `docs/ARCHITECTURE.md` 边表（`device → storage`），总数 123→124（`+dev` 边 54 不变）；`prof` 算子模板表 52→57 条同步订正；
+- 干净窗口 `clippy --workspace --lib` 0、`fmt --all --check` 0 diff；`--all-targets / --all-features` clippy 与全仓 doc 未在本轮跑完。
 
-`#[parallel(..)]` proc-macro 第三入口未落地：当前模型层 TP/PP 装配尚无消费方，先造注解产物会形成第二个事实源（违反仓内"注解即契约、行为在 trait 上"原则）。`ParallelConfig` 已作为注解键与运行期配置对齐的单一事实源；注解入口待模型层并行装配落地后补，复用 `annotation` 既有的 `Streams` 依赖倒置路径。
+这些不属于 shard 并行主线，未在本轮擅改其设计。全量门禁待上游 fuzz doc 链接与网络条件具备后按 §6 一次性复跑。
+
+### 5.5 注解端到端消费方
+
+`#[parallel(..)]` 入口本体已落地并在 annotation crate 内编译/测试通过（§2.6），但尚无模型类型挂载：生成的 `__parallel_config()` 访问器当前无人调用（`allow(dead_code)`），`::shard::` 路径要到消费方 crate 编译时才解析。模型层 TP/PP 装配落地后，由具体类型实现并行 trait 并经该访问器取 `ParallelConfig`，才构成端到端展开验证；在此之前不造第二事实源。
 
 ## 6. 收尾门禁命令（待上游闭合后一次跑）
 
@@ -99,7 +115,7 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo fmt --all --check
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 cargo deny check
-cargo test -p llm-testkit --test architecture --test contracts
+cargo test -p llm-testkit --lib
 ```
 
-成员名 / 测试目标名以 `cargo metadata --no-deps` 当前结果为准；旧 `llm-tool` / `tool gate` 命名可能已随 `tools` 改名变化。
+成员名 / 测试目标名以 `cargo metadata --no-deps` 当前结果为准；旧 `llm-tool` / `tool gate` 命名可能已随 `tools` 改名变化，testkit 架构/所有权/层边门经 `--lib` 跑（旧 `--test architecture/contracts` 目标名已失效）。

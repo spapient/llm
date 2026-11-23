@@ -247,6 +247,80 @@ impl Executor for LocalExecutor {
 /// 公共定义在 [`storage::LaneBuf`]，本别名保留执行缝既有命名。
 pub type Buf = storage::LaneBuf;
 
+/// 尚未接入运行时的设备后端位：只登记设备标签，不持有设备句柄、内核表或宿主缓冲。
+///
+/// CUDA / Ascend 等厂商运行时执行器在真机管线落地前，先在同一条 [`Executor`] 缝上落位：
+/// 除 [`device()`](Executor::device) 给出标签外，提交、登记内核、绑定与取回操作数一律回
+/// [`Code::Unsupported`] 并带站点——缺证据不静默成功，也不另造一套运行时 trait（ADR 0051 §4）。
+/// 真机管线接入后，把该位升级为持有句柄的具体执行器，缝的其余消费方不改。
+pub struct VacantExecutor {
+    device: Device,
+}
+
+impl fmt::Debug for VacantExecutor {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("VacantExecutor")
+            .field("device", &self.device)
+            .finish()
+    }
+}
+
+impl VacantExecutor {
+    /// 由厂商与架构标签构造一个未接入运行时的设备后端位。
+    pub fn new(device: Device) -> Self {
+        Self { device }
+    }
+
+    /// 这一位登记的厂商标签（`cuda` / `ascend` …），只作台账标记，不产生热路径分派。
+    pub fn vendor(&self) -> &str {
+        self.device.vendor()
+    }
+
+    /// 未接入运行时：提交一幅图被拒，错误类别 [`Code::Unsupported`]。
+    fn rejected(&self, action: &'static str) -> Error {
+        Error::new(
+            Code::Unsupported,
+            format!(
+                "{} 后端尚未接入运行时执行器，{}",
+                self.device.vendor(),
+                action
+            ),
+        )
+        .with("engine::VacantExecutor")
+    }
+}
+
+impl Executor for VacantExecutor {
+    fn device(&self) -> &Device {
+        &self.device
+    }
+
+    fn submit(&mut self, _graph: &Graph, _stream: Stream) -> Result<()> {
+        Err(self.rejected("不能提交图"))
+    }
+
+    fn register_program(&mut self, _program: Box<dyn Program>) -> Result<()> {
+        Err(self.rejected("不能登记内核"))
+    }
+
+    fn bind_f32(&mut self, _id: u32, _values: Vec<f32>) -> Option<Vec<f32>> {
+        None
+    }
+
+    fn bind_bytes(&mut self, _id: u32, _values: Vec<u8>) -> Option<Vec<u8>> {
+        None
+    }
+
+    fn fetch_f32(&self, _id: u32) -> Option<&[f32]> {
+        None
+    }
+
+    fn fetch_bytes(&self, _id: u32) -> Option<&[u8]> {
+        None
+    }
+}
+
 /// 只读视图：一次 [`Program::run`] 的输入操作数。公共定义在 [`storage::LaneView`]。
 pub type View<'a> = storage::LaneView<'a>;
 

@@ -4,7 +4,8 @@
 //! 加一个键、加一种取值文法，断言的落点是同一个文件。
 
 use crate::decl::{
-    GEMM_SKELETON_NAMES, KEYS, is_runtime, parse, parse_model, parse_runtime, runtime_target,
+    GEMM_SKELETON_NAMES, KEYS, is_runtime, parse, parse_model, parse_parallel, parse_runtime,
+    runtime_target,
 };
 use crate::fixture::lex;
 use crate::syntax::{
@@ -399,4 +400,46 @@ fn a_runtime_target_must_be_a_named_field_struct() {
         runtime_target(&lex("struct Layer<T> { x: T }"), "spec"),
         "泛型",
     );
+}
+
+/// 空注解回落单进程默认策略；键序随意、可独立覆盖。
+#[test]
+fn parallel_annotation_defaults_to_single_process_policy() {
+    let empty = parse_parallel(&lex("")).expect("空注解合法");
+    assert_eq!(empty.tp, 1);
+    assert_eq!(empty.pp, 1);
+    assert_eq!(empty.dp, 1);
+    assert_eq!(empty.reduce, "sum");
+    assert!(empty.average);
+    assert_eq!(empty.priority, "normal");
+
+    let full = parse_parallel(&lex(
+        r#"dp = 4, tp = 2, priority = "high", reduce = "max", average = false, pp = 1"#,
+    ))
+    .expect("合法");
+    assert_eq!(full.tp, 2);
+    assert_eq!(full.pp, 1);
+    assert_eq!(full.dp, 4);
+    assert_eq!(full.reduce, "max");
+    assert!(!full.average);
+    assert_eq!(full.priority, "high");
+}
+
+/// 并行策略的每条非法写法都被闭集 / 度数 / 布尔判据拦下。
+#[test]
+fn every_bad_parallel_annotation_is_rejected() {
+    let cases = [
+        (r#"tp = 0"#, "大于 0"),
+        (r#"pp = 0"#, "大于 0"),
+        (r#"reduce = "mean""#, "归约"),
+        (r#"priority = "urgent""#, "优先级"),
+        (r#"average = 1"#, "字面量"),
+        (r#"average = "yes""#, "false"),
+        (r#"role = "x""#, "未知的注解键"),
+        (r#"tp = 2, tp = 4"#, "重复"),
+        (r#"reduce = "sum", reduce = "max""#, "重复"),
+    ];
+    for (text, needle) in cases {
+        reject(parse_parallel(&lex(text)), needle);
+    }
 }

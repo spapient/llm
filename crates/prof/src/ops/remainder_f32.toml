@@ -1,10 +1,8 @@
-# 逐元素余数：y[n] = a[n] % b[n]（余数符号同被除数）。复用 binary 共享内核，只差运算符。
+# 逐元素余数：y[n] = a[n] - floor(a[n] / b[n])·b[n]，符号同被除数。浮点不能套用整数 `%` 二元模板。
 base = "add_f32"
 
 [op]
 name     = "remainder_f32"
+stem     = "remainder_f32"
 skeleton = "elementwise"
 summary  = "y[n] = a[n] % b[n]"
-
-[consts]
-binop = "%"

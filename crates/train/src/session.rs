@@ -1060,13 +1060,7 @@ impl<E: Collective> Distributed<E> {
     ///
     /// `rank` 超出 `0..world`（[`Code::Invalid`]），或策略度数回校验失败。
     pub fn new(topology: Topology, rank: u32, collective: E) -> Result<Self> {
-        if rank as usize >= topology.world() {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("rank {rank} 超出拓扑世界 0..{}", topology.world()),
-            )
-            .with(DIST_SITE));
-        }
+        Self::ensure_rank(&topology, rank)?;
         let policy = ParallelConfig::new(topology.tp(), topology.pp(), topology.dp())?;
         Ok(Self {
             topology,
@@ -1083,6 +1077,17 @@ impl<E: Collective> Distributed<E> {
     /// 策略度数非法（零维/上界溢出），或 `rank` 超出世界范围。
     pub fn from_config(rank: u32, collective: E, policy: ParallelConfig) -> Result<Self> {
         let topology = policy.topology()?;
+        Self::ensure_rank(&topology, rank)?;
+        Ok(Self {
+            topology,
+            rank,
+            collective: Some(collective),
+            policy,
+        })
+    }
+
+    /// `rank` 必须落在拓扑世界内，否则归约组派生时越界。
+    fn ensure_rank(topology: &Topology, rank: u32) -> Result<()> {
         if rank as usize >= topology.world() {
             return Err(Error::new(
                 Code::Invalid,
@@ -1090,12 +1095,7 @@ impl<E: Collective> Distributed<E> {
             )
             .with(DIST_SITE));
         }
-        Ok(Self {
-            topology,
-            rank,
-            collective: Some(collective),
-            policy,
-        })
+        Ok(())
     }
 
     /// 归约后取平均（默认）；`false` 保留求和梯度。
