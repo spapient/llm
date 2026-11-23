@@ -279,7 +279,7 @@ TOML 解析与运行时配置不在本 crate：它们是与领域无关的基础
 
 ## 4. 声明层：用户写什么
 
-用户只写两个文件，都在 `../prof/src/ops` 下（`ops/*.toml` 在构建期由 `op` 的 `build.rs` 解析成声明表，
+用户只写两个文件，都在 `../prof/src/ops` 下（`ops/*.toml` 在构建期由 `prof` 的 `build.rs` 解析成声明表，
 `cutile` 只消费解析结果，不解释存放位置）。
 
 ### 4.1 算子声明（`../prof/src/ops`）

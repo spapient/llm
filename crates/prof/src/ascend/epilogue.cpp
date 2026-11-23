@@ -4,7 +4,7 @@
  * 占位符契约与其余设备一致（$0 输出/行主序，$1 第二操作数，$2 元素数或列数，$3 本步参数）。
  * AscendC 侧只有 C++ 前端可用，钳位走 `<math.h>` 的 `fminf`/`fmaxf`。
  *
- * 数值口径以 crates/gemm/src/epilogue.rs 为准。
+ * 数值口径以 crates/prof/src/epilogue.rs 为准。
  */
 
 /* epi: bias */

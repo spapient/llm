@@ -37,7 +37,7 @@ pub enum Step {
 
 /// 量化步长：`quant` 往返的网格间隔，也是对称整数量化的反量化系数。
 ///
-/// 唯一事实源放在这里：算术侧执行（`gemm::epilogue`）与设备侧装配
+/// 唯一事实源放在这里：算术侧执行（`nn::epilogue`）与设备侧装配
 /// （`cutile::substitute::epilogue`）都读这一个常数，免得两处各写一份、日后悄悄分叉。
 pub const QUANT_SCALE: f32 = 0.25;
 

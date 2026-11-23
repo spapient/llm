@@ -209,7 +209,7 @@ pub use kernel::{
     sigmoid_f32, silu_f32, softmax_f32, sub_f32, tanh_f32,
 };
 
-// 契约层在 `spec`：内核源码与骨架宏都按 crate 根解析契约路径，这里把它们搬回来，于是内核源码
+// 契约层在 `prof`：内核源码与骨架宏都按 crate 根解析契约路径，这里把它们搬回来，于是内核源码
 // 里写的是 `crate::model::…` / `crate::operator_via!`，而不是到处写依赖 crate 名。
 pub use model::quant;
 pub use prof::same_bytes;

@@ -16,15 +16,7 @@
 
     use std::simd::{f32x4, simd_swizzle};
 
-    /// SME 微内核行数：一个 16×16 ZA 瓦片覆盖 16 行。
-    const MR: usize = 16;
-
-    /// SME 微内核列数：4 个 ZA 瓦片各 16 列，一次写回 64 列。
-    const NR: usize = 64;
-
-    /// 规模门槛（元素数）：低于此值的 GEMM，`smstart`/`smstop` 与打包的固定成本超过外积收益，
-    /// 交给 NEON 更划算。
-    const MIN_ELEMS: usize = 1 << 20;
+    use prof::native::sme::{MIN_ELEMS, MR, NR};
 
     /// 运行时探测：本机是否存在 SME（Apple M4/M5 起）。
     fn available() -> bool {

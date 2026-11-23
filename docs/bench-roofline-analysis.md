@@ -8,7 +8,7 @@
 
 ## 一、这份文档回答什么
 
-`#63` 是「基准实测 + roofline 瓶颈定位」。实测部分已经在 `crates/benches` 里跑起来（7 条 criterion 基准、`tools::regress` 门禁、macos-aarch64 基线）；本文补的是后半部分：**每条基准的上界是多少、实测达成了多少、瓶颈落在哪一侧**。文中每个数字都能从归档 JSON 里读出来，也能在本机重跑复现。
+`#63` 是「基准实测 + roofline 瓶颈定位」。实测部分已经在 `crates/benchmarks` 里跑起来（7 条 criterion 基准、`tools::regress` 门禁、macos-aarch64 基线）；本文补的是后半部分：**每条基准的上界是多少、实测达成了多少、瓶颈落在哪一侧**。文中每个数字都能从归档 JSON 里读出来，也能在本机重跑复现。
 
 结论先写在这里：
 
@@ -25,7 +25,7 @@
 | 档位（拿哪一档的分母去比） | 工作集大小：≤64 KiB 记 `l1`、≤2 MiB 记 `l2`、其余记 `dram` | 拿 L1 里的往返去比主存带宽，达成率就没有意义 |
 | 达成率 → 瓶颈分类 | ≥85% 记 `bandwidth`，否则记 `not-bandwidth` | 与 `lld` E7 的带宽门槛同一口径；低于门槛只否定「带宽主导」，不猜是算力还是延迟 |
 
-三档是三个**测量点**（16 KiB / 1 MiB / 64 MiB），不是猜出来的缓存容量；档与档之间留了四倍余量。机型、系统、工具链与上界一起登记在 `crates/benches/tests/regress.rs` 的 `HOSTS` / `CEILINGS` 里——换芯片、换系统或换编译器，就必须重新登记，未登记的主机在 CI 上直接跳过判定。
+三档是三个**测量点**（16 KiB / 1 MiB / 64 MiB），不是猜出来的缓存容量；档与档之间留了四倍余量。机型、系统、工具链与上界一起登记在 `crates/benchmarks/tests/regress.rs` 的 `HOSTS` / `CEILINGS` 里——换芯片、换系统或换编译器，就必须重新登记，未登记的主机在 CI 上直接跳过判定。
 
 本机三档实测上界（`mem_stream`，2026-11-16）：
 
@@ -101,7 +101,7 @@ cargo bench -p llm-benches
 cargo test -p llm-benches --test regress
 ```
 
-`crates/benches/tests/regress.rs` 是唯一的判定点：基线、上界、主机档案都在那里，未建档的主机（例如 CI 的 `linux-x86_64`）会跳过判定而不是拿别的机器的数判。
+`crates/benchmarks/tests/regress.rs` 是唯一的判定点：基线、上界、主机档案都在那里，未建档的主机（例如 CI 的 `linux-x86_64`）会跳过判定而不是拿别的机器的数判。
 
 ## 六、与路线图条目的对应
 

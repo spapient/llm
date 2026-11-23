@@ -1,5 +1,5 @@
 # 不再需要 nightly：两处不稳定能力已用 `#[cfg(nightly)]` 挂起，并各配一条 stable 退路
-# （`crates/gemm/build.rs` 按 `rustc --version` 判定并产出该 cfg）：
+# （`crates/nn/build.rs` 按 `rustc --version` 判定并产出该 cfg）：
 #   - `gemv::simd` 的手写车道 → stable 走 `gemv/simd_scalar.rs`；
 #   - `fast::sme` 的 ZA 外积 → stable 走 NEON 通道。
 # 因此这里钉一个**已发布**的 stable：clone 下来 `cargo build` 直接能过，

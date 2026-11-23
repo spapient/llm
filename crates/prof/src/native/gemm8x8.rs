@@ -5,11 +5,7 @@
 //! 由 `nn` 的 `kernel_fast` 经 [`Tile`]/[`micro_packed`] 调用，由测量容器经 [`port_fma`]/
 //! [`port_fma_block`] 计时（`bench` 特性），三者共用同一份瓦片体 [`fma_step`]。
 
-/// 微内核行数。
-const MR: usize = 8;
-
-/// 微内核列数（两个 NEON 向量 / 一个 AVX2 向量）。
-const NR: usize = 8;
+use super::f32::{MR, NR};
 
 /// 一个待算的 8×8 微内核块：左上角 `(row0, j)`、矩阵列宽 `n`、内积分块长 `kb`、是否首块。
 #[derive(Clone, Copy)]

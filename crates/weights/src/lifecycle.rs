@@ -240,7 +240,7 @@ pub mod import {
     ///
     /// # Errors
     ///
-    /// 块的字节数与元素数不整除、或布局不符时由 `formats` 显式拒绝；其余读取错误透传解析诊断。
+    /// 块的字节数与元素数不整除、或布局不符时由 `weights` 显式拒绝；其余读取错误透传解析诊断。
     pub fn segments_from_gguf(arch: &Gguf<'_>) -> Result<Vec<Segment>> {
         arch.tensors()
             .iter()

@@ -101,12 +101,13 @@ pub use tpl::{formula, parse};
 #[path = "../tests/spec/support/lib_spec_tests.rs"]
 mod spec_tests;
 
-// 主机原生微内核（NEON 8×8 / Apple SME 16×64）与内核供给配置表：`nn` 的 GEMM 骨架经
-// `prof::native::*` 借用微内核，`cutile` 的 tile DSL IR 经 `native::gemm_negotiate` 择优调用。
-// 与 `device` 同是「被上层消费、不反向依赖上层」的设备实现层。
-//
-// 阶段 2 落地：模块本体尚未迁入，声明先行会触发 E0583；待 host 原语片落地时恢复此模块与文档。
-// pub mod native;
+/// 主机原生微内核的瓦片几何与供给配置：`nn` 的 GEMM 骨架经 `prof::native::*` 借用瓦片尺寸与
+/// 几何工具，`cutile` 的 tile DSL IR 经 `native::gemm_negotiate` 择优调用。与 `device` 同是
+/// 「被上层消费、不反向依赖上层」的设备实现层。
+///
+/// 现阶段本模块只承载编译期常量与纯几何工具；intrinsic 瓦片本体（NEON/AVX2、i8 sdot、SME
+/// ZA）随后续切片迁入隔离子岛。
+pub mod native;
 
 pub mod device;
 pub mod prof;

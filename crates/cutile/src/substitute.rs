@@ -8,10 +8,10 @@ use std::collections::BTreeMap;
 /// 词法与行号唯一的错误构造器直接转发：词法只有一份，声明解析与拼接看同一套 `{{…}}` 规则。
 pub use prof::tpl::{Arg, Segment, error, lex};
 
-// 片段层的事实源在 `prim` crate（`<vendor>/<prim>.<ext>`）：本模块只做拼接，不持有片段。
+// 片段层的事实源在 `prof`（`<vendor>/<prim>.<ext>`）：本模块只做拼接，不持有片段。
 pub use prof::FragmentSet;
 
-/// 片段层缺少 `prim` 时的统一错误：ast 展开与本模块拼接都走这条，免得两处各写一遍格式串。
+/// 片段层缺少原语片段时的统一错误：ast 展开与本模块拼接都走这条，免得两处各写一遍格式串。
 pub(crate) fn missing_fragment(
     line: usize,
     prim: crate::atom::Prim,
@@ -170,14 +170,14 @@ const ACT_EXPR: [(ActKind, &str); 3] = [
     ),
 ];
 
-/// 量化位宽：`quant` 步骤的 `$3`，与 `gemm::epilogue` 的对称网格边界一一对应。
+/// 量化位宽：`quant` 步骤的 `$3`，与 `nn::epilogue` 的对称网格边界一一对应。
 const QUANT_BITS: [(DType, &str); 3] = [(DType::I8, "8"), (DType::I4, "4"), (DType::I2, "2")];
 
 /// 写回尾块装配：按 `steps` 的顺序逐段取设备文本、填占位符、拼成一段可直接放进内核尾部的语句块。
 ///
 /// 六段文本的事实源是设备的 `epilogue.<ext>`（[`prof::Device::epilogue`]）：本函数只做「按形式取段 →
 /// 填 `$0`..`$3` → 按声明顺序拼接」，不持有第二份算术。唯一的算术是激活表达式（[`ACT_EXPR`]），
-/// 它与 `gemm::unary` 的标量核由执行对拍钉住。
+/// 它与 `nn::unary` 的标量核由执行对拍钉住。
 ///
 /// # Errors
 ///

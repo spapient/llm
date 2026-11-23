@@ -31,7 +31,7 @@
 
 | 口径 | `llmu-p2` | `llm.u` | 当前 `llm` | 备注 |
 |---|---:|---:|---:|---|
-| crate 数 | 13 | 14 | 24 目录 + 根包（lock 内内部包 31） | 当前含工具成员 `annotation`/`fuzz`/`benches` |
+| crate 数 | 13 | 14 | 24 目录 + 根包（lock 内内部包 31） | 当前含工具成员 `annotation`/`fuzz`/`benchmarks` |
 | Rust 总行数 | — | 104,592 | 76,839 | 粗口径，含注释与测试；机制代码分母见 §5.3 |
 | `#[test]` 函数 | 801 | 1,127 | 1,396（workspace 实测通过，0 失败，1 ignored） | 函数数与"实测通过"口径不同，只作量级参照 |
 | 锁文件条目 | 204 | 220 | 122 | 条目含内部包；当前运行时第三方依赖基本为零 |
@@ -200,7 +200,7 @@ graph TD
   1. 收口既有 `Reader`/`Loader`：Unix 上补 `MmapSource`（feature 门控，复用 `storage::Mmap` 唯一 unsafe 岛）实现 `Reader` 零拷贝；既有 `File` Loader（seek+read）复核边界检查单点；非 Unix 只留文件源，缺失类型在编译期报错，不静默降级为整文件读入。
   2. `Archive` 借用路径保持 `Cow<'a, [u8]>`：raw 段 `Borrowed`，rANS 段 `Owned`；`File` 流后端在有映射后备时对 raw 条目返回借用切片。
   3. 驻留缓冲：装配期按描述符一次性解码权重进驻留 `Buffer`；生成循环只覆写输入与逐层激活，不重新分配元素缓冲（`CpuModel::forward` 现有形态保留，补投影/归一化首层通路）。
-  4. 基准：mmap vs read 的首条/全量装载、冷/热缓存、RSS 与时延入 `benches`；数字回填 roadmap §1.1。
+  4. 基准：mmap vs read 的首条/全量装载、冷/热缓存、RSS 与时延入 `benchmarks`；数字回填 roadmap §1.1。
 - **复用既有**：`Reader`/`Loader` 双 trait（`weights/src/lib.rs:264-292`）、`Mmap`（`storage/src/lib.rs` 的内联 `mmap` 模块）、`Entry`/`Descriptor`/段 CRC 校验。
 - **验收**：raw 条目零拷贝有测试证据（借用生命周期断言）；压缩段解压边界与余数失败有负例；装载基准可重复；架构门通过；新增 unsafe 为零。
 - **暂缓**：远端分块源、权重热更新、设备权重驻留。
@@ -222,7 +222,7 @@ graph TD
 ### 4.3 M1-C 基准 harness 骨架
 
 - **目标**：在出第一个后端数字前把对照口径定死。
-- **改动落点**：`benches`、`tools::regress`、`testkit`。
+- **改动落点**：`benchmarks`、`tools::regress`、`testkit`。
 - **要点**：统一记录硬件/驱动/形状/批次/精度/后端标识/roofline 上界；先记 llama.cpp CPU 同模型对照；本机无基线时登记跳过而非伪造数字。
 - **验收**：每条 M1 算子/层/整模型有对照条目；CI 守不回归，跨机绝对值不进结论。
 
@@ -284,7 +284,7 @@ graph TD
 
 ### 5.3 密度倍数口径（"少 15 倍"怎么算）
 
-- **分子（本仓机制代码）**：只统计生产机制 Rust；排除 `tests/`、`#[cfg(test)]` 体内、`fuzz`/`benches` 工具成员、`build.rs`、生成片段与 vendor。按 L1–L7 分账（base/semantic/kernel/runtime/model/train/serve/entry，沿用 `10k-analysis.md §6.1`）。
+- **分子（本仓机制代码）**：只统计生产机制 Rust；排除 `tests/`、`#[cfg(test)]` 体内、`fuzz`/`benchmarks` 工具成员、`build.rs`、生成片段与 vendor。按 L1–L7 分账（base/semantic/kernel/runtime/model/train/serve/entry，沿用 `10k-analysis.md §6.1`）。
 - **分母（对标框架机制代码）**：同一排除规则下取对方 Rust 机制行；C/C++ 框架（llama.cpp）只在"机制等价职责"口径上对照，不拿全文件行数直接除。
 - **倍数目标**：核心机制集相对 burn/candle/cubecl 同口径机制代码达到约 1/15；相对 `llm.u` 的提升以"同能力下机制行数下降 + 能力不退化"双条件衡量，**不接受靠砍功能凑倍数**。
 - **回填规则**：M1 出口先重测本仓机制基线；M3/M4 出口在同口径下回填与各框架的实际倍数；未重测前文档不写具体倍数结论。

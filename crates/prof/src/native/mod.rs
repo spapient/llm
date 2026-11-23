@@ -18,6 +18,35 @@ pub mod gemm8x8;
 #[cfg(all(nightly, target_arch = "aarch64"))]
 pub mod sme;
 
+/// f32 NEON 寄存器瓦片几何（8×8 块）——编译期常量的单一事实源。
+pub mod f32 {
+    /// 微内核行数。
+    pub const MR: usize = 8;
+    /// 微内核列数（两个 NEON 向量 / 一个 AVX2 向量）。
+    pub const NR: usize = 8;
+    /// K 方向内积分块宽度：`K = 4096` 时整段 B 面板有 4MB，按 256 切块让 A 面板与 B 瓦片同时
+    /// 驻留 L1/L2。
+    pub const KB: usize = 256;
+}
+
+/// i8 sdot 寄存器瓦片几何（4×4 块）。瓦片本体尚未迁入，配置常量先在此就位。
+pub mod i8 {
+    /// 微内核行数：四行共享同一 B 向量，摊薄 B 加载。
+    pub const MR: usize = 4;
+    /// 微内核列数：4 个 int32x4 累加器 × 4 行 = 16 寄存器，避开溢出。
+    pub const NR: usize = 4;
+}
+
+/// Apple SME ZA 外积瓦片几何（16×64）。
+pub mod sme_geo {
+    /// 微内核行数：一个 16×16 ZA 瓦片覆盖 16 行。
+    pub const MR: usize = 16;
+    /// 微内核列数：4 个 ZA 瓦片各 16 列，一次写回 64 列。
+    pub const NR: usize = 64;
+    /// 规模门槛（元素数）：低于此值 `smstart`/`smstop` 与打包固定成本超过外积收益，交回 NEON。
+    pub const MIN_ELEMS: usize = 1 << 20;
+}
+
 // 打包面板的暂存区：按线程复用，用完即还。
 //
 // 打包出来的是「整段 B 面板」，`n = k = 4096` 时是 `4096 × 4096 × 4 B = 67 MB`。每次调用现分配，

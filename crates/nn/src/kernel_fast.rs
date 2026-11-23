@@ -59,14 +59,10 @@ pub use sme::{port_mix, port_run};
 mod tn;
 pub use tn::{MIN_ROWS, gemm_f32_tn};
 
-/// 微内核行数。
-const MR: usize = 8;
-
-/// 微内核列数（两个 NEON 向量）。
-const NR: usize = 8;
-
-/// 内积分块长度：`K = 4096` 时整段 B 面板有 4MB，按 256 切块让 A 面板与 B 瓦片同时驻留 L1/L2。
-const KB: usize = 256;
+// f32 NEON 瓦片几何：单一事实源在 `prof::native::f32`，这里重导出别名供本族子模块经
+// `super::MR/NR/KB` 引用；数值不在本 crate 再写一份。
+pub(crate) use prof::native::f32::{KB, MR, NR};
+pub(crate) use prof::native::align_up;
 
 /// 线程数：`LLM_THREADS` 环境变量优先，否则全核。四档 GEMM（f32 Nt/Tn、i8、SME）共用，
 /// 与具体精度无关，故住在 fast 根而不是某个精度模块里。
@@ -80,11 +76,6 @@ pub(super) fn threads_override() -> usize {
                 .map(|x| x.get())
                 .unwrap_or(1)
         })
-}
-
-/// 向上对齐到 `block` 的整数倍：面板列宽补齐到 NR/I8_NR，补零列由零初始化面板承担。
-const fn align_up(x: usize, block: usize) -> usize {
-    x.div_ceil(block) * block
 }
 
 /// 多线程稠密 f32 GEMM：`out[m,n] = a[m,k] · b[k,n]`。

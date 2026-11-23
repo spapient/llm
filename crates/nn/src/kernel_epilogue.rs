@@ -2,7 +2,7 @@
 //!
 //! 六步闭集来自 [`prof::epilogue::Step`]：`bias` / `act` / `residual` / `scale` / `quant` / `store`。
 //! 本模块不持有任何算术——激活逐个取 [`crate::unary`] 的标量核，量化用 [`crate::dequant::SCALE`]
-//! 做对称 round-trip，残差与缩放直接就地累加。契约层（`spec`）只声明"有哪些步"，执行层在这里
+//! 做对称 round-trip，残差与缩放直接就地累加。契约层（`prof`）只声明"有哪些步"，执行层在这里
 //! 决定"每一步落在哪个既有内核上"。
 
 use diagnostic::{Code, Error};

@@ -58,11 +58,13 @@ P3 要在边界 crate 挂 Metal/CUDA 后端（ADR 0025 §1、§9；ADR 0028 §3 
 | `crates/nn/src/kernel_fast_micro.rs`（函数级，11 处） | 裸指针切片重建 + NEON intrinsics | f32 8×8 寄存器块微内核；瓦片体 `fma_step` 由生产与探针共用同一份；包装只做长度守卫与指针透传 |
 | `crates/nn/src/kernel_fast_pool.rs`（函数级，3 处） | 跨线程发布裸指针 | 常驻 GEMM 线程池：任务只发布裸指针 + 一次闸门；裸指针只活到 `done` 齐、主线程返回前 |
 | `crates/nn/src/kernel_fast_sme.rs`（函数级，8 处） | 内联汇编 + SME intrinsics | aarch64 SME 16×64 ZA 外积；nightly + `target_arch = "aarch64"` 门控；探针入口受 `bench` 特性门控，生产公开面不含该项 |
+| `crates/prof/src/native/gemm8x8.rs`（函数级，11 处） | 裸指针切片重建 + NEON/AVX2 intrinsics | f32 8×8 寄存器块微内核；`fma_step` 生产与探针共用；nn `kernel_fast_micro.rs` 的迁入副本，接线并对拍一致后删除 nn 侧对应岛 |
+| `crates/prof/src/native/sme.rs`（函数级，8 处） | 内联汇编 + SME intrinsics | aarch64 SME 16×64 ZA 外积；nightly + `target_arch = "aarch64"` 门控；nn `kernel_fast_sme.rs` 的迁入副本，同上 |
 
 `gemm` 那几行是**存量冻结**：只许减少，不许增加。要新增一行，先改本表，并说明这个越界点为什么
 不能落在边界 crate。拆文件不改变冻结口径——`fast` 平铺拆成 `kernel_fast_{i8,micro,pool,sme}.rs`
 后按文件重新列举，
-总数由 17 涨到 21 是拆分时每个微内核各自重建切片的重复，**属于需要往下削的欠账而不是新增许可**；当前各行相加 **36 处**（nn 12+11+3+8=34，device 1，storage 1）。此前文首写「总计 26」与各行相加 27 已不符，本轮一并改正为按表求和。另删除一处**空头许可**：`crates/nn/src/kernel/fast/probe.rs` 曾有模块级 `#![allow(unsafe_code)]` 而文件内`unsafe` 用量为 0（`git grep unsafe` 只命中那一行本身），已删——白名单里挂一个不越界的文件，等于把「可枚举」这条判据本身弄假。
+总数由 17 涨到 21 是拆分时每个微内核各自重建切片的重复，**属于需要往下削的欠账而不是新增许可**；当前各行相加 **55 处**（nn 12+11+3+8=34，prof native 11+8=19，device 1，storage 1）。prof 两岛是 nn `micro`/`sme` 岛的迁入副本，处于**双份过渡态**：接线并对拍一致后删除 nn 侧对应岛，prof 计数保留、nn 计数回落，这 19 处不是新增越界面。此前文首写「总计 26」与各行相加 27 已不符，本轮一并改正为按表求和。另删除一处**空头许可**：`crates/nn/src/kernel/fast/probe.rs` 曾有模块级 `#![allow(unsafe_code)]` 而文件内`unsafe` 用量为 0（`git grep unsafe` 只命中那一行本身），已删——白名单里挂一个不越界的文件，等于把「可枚举」这条判据本身弄假。
 
 `sme.rs` 由 4 涨到 8 是**唯一一次有意的增量**：四个探针入口（`port_run`/`port_mix` 各一个安全包装 + 一个 `#[target_feature]` 工人）不是新的越界面，而是把已在岛内的 `fmopa` 与 `ld1w` 路径暴露成可计时的循环，用来给出 GF/s 的分母与**取数代价**（否则 K7 只能拿 NEON 峰值当分母，那是口径混用）。它们受 `bench` 特性门控，生产公开面不含该项，不变量与 `sme_tile` 一致：包装只做 `available()` 判定与指针透传，工人只为 `smstart`/`smstop` 配对与读边界负责，`port_run` 完全不接触内存，`port_mix` 只读调用方给的 `&[f32; 16]` 与 `&[f32; 64]`（各恰好一次读满，无越界）。
 

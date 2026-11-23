@@ -17,7 +17,8 @@
     use super::threads_override;
     use super::tn;
 
-    pub(super) const I8_MR: usize = 4;
+    // i8 sdot 瓦片几何：单一事实源在 `prof::native::i8`，重导出别名供本模块与经 `super::` 引用的用例。
+    pub(super) use prof::native::i8::{MR as I8_MR, NR as I8_NR};
 
     /// 行块高度：让 A 的 `rc × k` 字节留在 L1（约 128KiB），否则每个列块都要从 L2 重拉整块 A。
     ///
@@ -26,9 +27,6 @@
     fn row_chunk(k: usize) -> usize {
         ((1usize << 17) / k.max(1)).clamp(I8_MR, 256)
     }
-
-    /// i8 微内核列数（4 个 int32x4 累加器 × 4 行 = 16 寄存器，避开溢出）。
-    pub(super) const I8_NR: usize = 4;
 
     /// 打包阶段：本槽负责的列组按 `p` 步长轮转，别槽的列组由别槽打包（列主面板走泛型轮转体）。
     #[allow(unsafe_code)]

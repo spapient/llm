@@ -5,7 +5,7 @@
  * 量化钳位写成显式分支而非 `metal::clamp`：后者只在内核里有定义，而尾块要能被宿主编译器
  * 原样编译并执行，才能与 `gemm` 的口径对拍。
  *
- * 数值口径以 crates/gemm/src/epilogue.rs 为准。
+ * 数值口径以 crates/prof/src/epilogue.rs 为准。
  */
 
 /* epi: bias */

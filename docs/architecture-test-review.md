@@ -22,13 +22,13 @@
 
 | 项 | 现状 | 证据 |
 |---|---|---|
-| 成员 | 24 个 crate + 根包 `llm`；工具成员 `annotation` / `fuzz` / `benches` 不参与运行时方向判定 | `Cargo.toml`、`ARCHITECTURE.md §一` |
+| 成员 | 24 个 crate + 根包 `llm`；工具成员 `annotation` / `fuzz` / `benchmarks` 不参与运行时方向判定 | `Cargo.toml`、`ARCHITECTURE.md §一` |
 | 分层 | L1 基础 → L2 数据 → L3 内核 → L4 运行时 → L5 模型训练 → L6 调度服务 → L7 入口；依赖只能向下或同层向左 | `ARCHITECTURE.md §二` |
 | 契约测试 | `tests/architecture.rs`（成员/边/方向/所有权对 `cargo metadata` + 文档双向校验）、`tests/contracts.rs`（闭集/位集/注册表-注解镜像） | `tests/` |
 | 单元测试 | 以源码旁 `#[cfg(test)] mod tests` 为主；外部 `tests/` 目录仅 6 个 crate、13 个文件 | `crates/*/tests/` |
 | 测试夹具 | 内部 `testkit`（对拍、门控、临时目录、确定性 PRNG、CRC 参考）；生产零外部测试框架 | `crates/testkit/src/lib.rs` |
 | 模糊测试 | 3 个 libFuzzer target（cli / weights json / safetensors）+ 1 个确定性扰动 sweep（512 例 × 3 目标） | `crates/fuzz/`、CI `fuzz` job |
-| 基准 | 5 个 criterion 微基准：elementwise、span_parse、negotiate、wire_codec、weights_container | `crates/benches/criterion/` |
+| 基准 | 5 个 criterion 微基准：elementwise、span_parse、negotiate、wire_codec、weights_container | `crates/benchmarks/src/` |
 | CI 门禁 | fmt、clippy `-D warnings`、nextest 三平台矩阵、MSRV、doc-test/文档、jscpd、cargo-deny、cargo-machete、覆盖率（仅 cutile 下限）、bench 编译、fuzz 有界运行 | `.github/workflows/ci.yml`、`scripts/ci.sh` |
 | 运行时成熟度 | 执行/张量/KV/服务/训练/分布式均为契约或簿记，无真实流、设备队列、可写缓冲、socket、通信后端 | `engine/src/exec.rs`、`engine/src/kv.rs`、`serve/src/lib.rs`；roadmap §3 |
 
