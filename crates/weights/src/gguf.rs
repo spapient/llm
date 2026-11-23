@@ -666,39 +666,53 @@ fn decode_low4<const BLOCK: usize, const QH_AT: usize, const SIGNED: bool>(
 ) -> Result<()> {
     let (blocks, _) = raw.as_chunks::<BLOCK>();
     let (slots, _) = out.as_chunks_mut::<32>();
-    // 量化点起点与符号偏置：无 qh 时紧跟 f16 缩放并减 8，有 qh 时越过 4 字节第 5 位并减 16。
-    let (qs_at, bias) = if QH_AT == usize::MAX {
+    let (qs_at, bias) = low4_geom::<QH_AT, SIGNED>();
+    for (slot, block) in slots.iter_mut().zip(blocks) {
+        decode_low4_block::<QH_AT, SIGNED>(slot, block, qs_at, bias);
+    }
+    Ok(())
+}
+
+/// 量化点起点与符号偏置：无 qh 时紧跟 f16 缩放并减 8，有 qh 时越过 4 字节第 5 位并减 16。
+fn low4_geom<const QH_AT: usize, const SIGNED: bool>() -> (usize, f32) {
+    if QH_AT == usize::MAX {
         (2, if SIGNED { 8.0 } else { 0.0 })
     } else {
         (QH_AT + 4, if SIGNED { 16.0 } else { 0.0 })
+    }
+}
+
+/// 解一个 32 槽块：高低半字节拆出，按符号减偏置或无符号加 min 写回。
+fn decode_low4_block<const QH_AT: usize, const SIGNED: bool>(
+    slot: &mut [f32],
+    block: &[u8],
+    qs_at: usize,
+    bias: f32,
+) {
+    let d = half_at(block, 0);
+    let m = if SIGNED { 0.0 } else { half_at(block, 2) };
+    let qh = if QH_AT == usize::MAX {
+        0
+    } else {
+        u32::from_le_bytes([
+            block[QH_AT],
+            block[QH_AT + 1],
+            block[QH_AT + 2],
+            block[QH_AT + 3],
+        ])
     };
-    for (slot, block) in slots.iter_mut().zip(blocks) {
-        let d = half_at(block, 0);
-        let m = if SIGNED { 0.0 } else { half_at(block, 2) };
-        let qh = if QH_AT == usize::MAX {
-            0
+    for (j, &q) in block[qs_at..].iter().enumerate() {
+        let hi0 = (((qh >> j) & 1) as u8) << 4;
+        let hi1 = (((qh >> (j + 16)) & 1) as u8) << 4;
+        let (lo, hi) = ((q & 0x0F) | hi0, (q >> 4) | hi1);
+        if SIGNED {
+            slot[j] = d * (f32::from(lo) - bias);
+            slot[j + 16] = d * (f32::from(hi) - bias);
         } else {
-            u32::from_le_bytes([
-                block[QH_AT],
-                block[QH_AT + 1],
-                block[QH_AT + 2],
-                block[QH_AT + 3],
-            ])
-        };
-        for (j, &q) in block[qs_at..].iter().enumerate() {
-            let hi0 = (((qh >> j) & 1) as u8) << 4;
-            let hi1 = (((qh >> (j + 16)) & 1) as u8) << 4;
-            let (lo, hi) = ((q & 0x0F) | hi0, (q >> 4) | hi1);
-            if SIGNED {
-                slot[j] = d * (f32::from(lo) - bias);
-                slot[j + 16] = d * (f32::from(hi) - bias);
-            } else {
-                slot[j] = d * f32::from(lo) + m;
-                slot[j + 16] = d * f32::from(hi) + m;
-            }
+            slot[j] = d * f32::from(lo) + m;
+            slot[j + 16] = d * f32::from(hi) + m;
         }
     }
-    Ok(())
 }
 
 /// `Q4_0`：块 32、18 字节，4-bit 量化点（减 8）。
