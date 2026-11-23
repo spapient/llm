@@ -219,7 +219,11 @@ fn conv2d_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
 /// 稠密向量投影：输入列表按算子操作数声明 `[weights, x]` 排列。
 fn gemv_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
     let (weights, x) = <(f32, f32) as Inputs>::unpack(inputs, "gemv_f32")?;
-    nn::gemv_f32::forward(tensor::View::one(x), weights, output_slice::<f32>("gemv_f32", output)?)
+    nn::gemv_f32::forward(
+        tensor::View::one(x),
+        weights,
+        output_slice::<f32>("gemv_f32", output)?,
+    )
 }
 gemm!(
     (gemm_f32, f32, nn::gemm_f32::K),

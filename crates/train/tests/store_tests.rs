@@ -505,8 +505,7 @@ fn a_three_operator_chain_runs_forward_through_the_reference_kernel() {
 
     // 手工逐环：与图上同一顺序、同一套算子参考。rope 在参考内核里固定位置 7。
     let mut h_ref = vec![0.0f32; N];
-    nn::gemv_f32::forward(tensor::View::one(&input[..]), &weights, &mut h_ref)
-        .expect("gemv 参考");
+    nn::gemv_f32::forward(tensor::View::one(&input[..]), &weights, &mut h_ref).expect("gemv 参考");
     let mut r_ref = vec![0.0f32; N];
     nn::rope_f32::forward(7, tensor::View::one(&h_ref), &mut r_ref).expect("rope 参考");
     let mut expected = vec![0.0f32; N];
