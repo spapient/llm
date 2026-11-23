@@ -68,6 +68,16 @@ const NR: usize = 8;
 /// 内积分块长度：`K = 4096` 时整段 B 面板有 4MB，按 256 切块让 A 面板与 B 瓦片同时驻留 L1/L2。
 const KB: usize = 256;
 
+/// 线程数：`LLM_THREADS` 环境变量优先，否则全核。四档 GEMM（f32 Nt/Tn、i8、SME）共用，
+/// 与具体精度无关，故住在 fast 根而不是某个精度模块里。
+pub(super) fn threads_override() -> usize {
+    std::env::var("LLM_THREADS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|x| *x > 0)
+        .unwrap_or_else(|| thread::available_parallelism().map(|x| x.get()).unwrap_or(1))
+}
+
 /// 多线程稠密 f32 GEMM：`out[m,n] = a[m,k] · b[k,n]`。
 ///
 /// # Panics
@@ -337,7 +347,7 @@ mod probe;
 #[cfg(feature = "bench")]
 pub use probe::{Probe, probes};
 
-use i8::{f32_calc, f32_pack, threads_override};
+use i8::{f32_calc, f32_pack};
 pub use i8::{gemm_i8, gemm_i8_checked, gemm_i8_single};
 use micro::{Layout, Span, Sweep, Tile, edge, micro_packed};
 

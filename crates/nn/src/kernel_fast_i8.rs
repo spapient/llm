@@ -13,6 +13,7 @@
     use super::compute_gemm;
     use super::pack::{b_groups, group_panel};
     use super::pool::{Bufs, Job, Shape, pool, run_pooled};
+    use super::threads_override;
     use super::tn;
 
     pub(super) const I8_MR: usize = 4;
@@ -27,19 +28,6 @@
 
     /// i8 微内核列数（4 个 int32x4 累加器 × 4 行 = 16 寄存器，避开溢出）。
     pub(super) const I8_NR: usize = 4;
-
-    /// 线程数：`LLM_THREADS` 环境变量优先，否则全核。
-    pub(super) fn threads_override() -> usize {
-        std::env::var("LLM_THREADS")
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok())
-            .filter(|x| *x > 0)
-            .unwrap_or_else(|| {
-                thread::available_parallelism()
-                    .map(|x| x.get())
-                    .unwrap_or(1)
-            })
-    }
 
     /// 打包阶段：本槽负责的列组按 `p` 步长轮转，别槽的列组由别槽打包（列主面板走泛型轮转体）。
     #[allow(unsafe_code)]
