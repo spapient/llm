@@ -769,3 +769,40 @@ fn assert_metal_compiles(stem: &str, msl: &str, flags: &[String]) {
     let _ = std::fs::remove_dir_all(&dir);
     compiled.unwrap_or_else(|error| panic!("MSL 应能通过 xcrun metal 编译：{error}"));
 }
+
+#[test]
+fn dump_metal_programs_for_diff() {
+    let Ok(dir) = std::env::var("DUMP_DIR") else {
+        return;
+    };
+    let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置算子");
+    let op = catalogue.op("gemv_f32").expect("gemv_f32 声明");
+    let model = nn::registry::model("gemv_f32").expect("gemv_f32 模型");
+    let sample = (model.sample)(2, 4);
+    let write = |name: &str, text: &str| {
+        std::fs::write(format!("{dir}/{name}"), text).expect("写 dump");
+    };
+    let (_, host) = crate::metal::metal_harness("", &op.signature, &sample).expect("语义门");
+    write("harness.m", &host);
+    let dispatch = crate::metal::metal_dispatch_driver(
+        &op.signature,
+        &sample,
+        "kernel_main",
+        [2, 1, 1],
+        [1, 1, 1],
+    )
+    .expect("派发");
+    write("dispatch.m", &dispatch);
+    let bench = crate::metal::metal_benchmark_driver(&op.signature, &sample, [2, 1, 1], [1, 1, 1], 3)
+        .expect("基准");
+    write("bench.m", &bench);
+    let rop = catalogue.op("rmsnorm_f32").expect("rmsnorm 声明");
+    let rmodel = nn::registry::model("rmsnorm_f32").expect("rmsnorm 模型");
+    let rsample = (rmodel.sample)(2, 8);
+    let Source::Pair { host, .. } =
+        crate::metal::rmsnorm("", &rop.signature, &rsample, 4).expect("多段")
+    else {
+        panic!("多段驱动应是 Pair");
+    };
+    write("multistage.m", &host);
+}

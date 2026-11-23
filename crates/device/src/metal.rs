@@ -130,16 +130,28 @@ impl Wiring {
             .filter(|param| param.ctype.is_buf())
             .enumerate()
         {
-            let buf = sample
-                .buf(&param.name)
-                .ok_or_else(|| Error::new(Code::Internal, "签名与样本已对齐（漂移）"))?;
             let base = param.ctype.c_name();
-            let len = capacity.unwrap_or(buf.values.len());
             if param.mutable {
+                // 输出容量由调用方给定时不必回看样本：分块族的部分结果数大于样本里的最终输出长。
+                let len = match capacity {
+                    Some(capacity) => capacity,
+                    None => sample
+                        .buf(&param.name)
+                        .ok_or_else(|| Error::new(Code::Internal, "签名与样本已对齐（漂移）"))?
+                        .values
+                        .len(),
+                };
                 wiring.out_len = len;
-                wiring.allocs.push_str(&output_alloc(&param.name, base, len, checked));
+                wiring
+                    .allocs
+                    .push_str(&output_alloc(&param.name, base, len, checked));
             } else {
-                wiring.data.push_str(&literal_decl(&param.name, base, &buf.values));
+                let buf = sample
+                    .buf(&param.name)
+                    .ok_or_else(|| Error::new(Code::Internal, "签名与样本已对齐（漂移）"))?;
+                wiring
+                    .data
+                    .push_str(&literal_decl(&param.name, base, &buf.values));
                 wiring.allocs.push_str(&input_alloc(&param.name, checked));
             }
             wiring.sets.push_str(&format!(
@@ -167,7 +179,7 @@ fn metal_harness_driver(signature: &Signature, sample: &Sample, output: &str) ->
     ))
 }
 
-/// host 驱动（网格发射）：初值与绑定同 `metal_driver`，入口名与几何由调用方给——逐点与循环注入
+/// host 驱动（网格发射）：初值与绑定同语义门那份，入口名与几何由调用方给——逐点与循环注入
 /// 的入口是 `kernel_main`，线程组与总线程数分别由 `block` / `grid` 给出。
 ///
 /// # Errors：缺输出缓冲、签名与样本不一致时返回说明。
@@ -207,7 +219,8 @@ int main(int argc, const char **argv) {
 
 /// import 段的三档：语义门与基准按需取 `stdlib.h`，多段驱动的 `sqrt` 要 `math.h`。
 const IMPORTS_STDLIB: &str = "#import <Foundation/Foundation.h>\n#import <Metal/Metal.h>\n#include <stdio.h>\n#include <stdlib.h>\n\n";
-const IMPORTS_STDIO: &str = "#import <Foundation/Foundation.h>\n#import <Metal/Metal.h>\n#include <stdio.h>\n\n";
+const IMPORTS_STDIO: &str =
+    "#import <Foundation/Foundation.h>\n#import <Metal/Metal.h>\n#include <stdio.h>\n\n";
 const IMPORTS_MATH: &str = "#import <Foundation/Foundation.h>\n#import <Metal/Metal.h>\n#include <stdio.h>\n#include <math.h>\n\n";
 
 /// 按数据模板装配一个 host 程序；`body` 是 `@autoreleasepool` 块里除回读之外的正文。
@@ -565,7 +578,7 @@ pub(crate) fn metal_multistage_driver(
         host_library(),
         &allocs,
         &body,
-        &output,
+        output,
         read,
     ))
 }

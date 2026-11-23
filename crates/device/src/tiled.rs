@@ -459,21 +459,14 @@ fn simdgroup_gemm_msl(
     row_frags: usize,
     col_frags: usize,
 ) -> String {
-    let mut src = format!(
-        "#include <metal_stdlib>\n\
-         using namespace metal;\n\
-         kernel void kernel_main(\n\
-         \x20    device const float* d_{a} [[buffer(0)]],\n\
-         \x20    device const float* d_{b} [[buffer(1)]],\n\
-         \x20    device float* d_{y} [[buffer(2)]],\n\
-         \x20    uint3 gid [[thread_position_in_grid]],\n\
-         \x20    uint3 lid [[thread_position_in_threadgroup]]) {{\n\
-         \x20    const uint N = {n}, K = {k}, R = {row_frags}, C = {col_frags};\n\
+    let mut src = tiled_gemm_head(a, b, y, "const float");
+    src.push_str(&format!(
+        "\x20    const uint N = {n}, K = {k}, R = {row_frags}, C = {col_frags};\n\
          \x20    threadgroup float zeros[64];\n\
          \x20    for (uint i = lid.x; i < 64; i += 32) zeros[i] = 0.0f;\n\
          \x20    threadgroup_barrier(mem_flags::mem_threadgroup);\n\
          \x20    const uint row0 = (gid.x / 32) * (8 * R), col0 = gid.y * (8 * C);\n"
-    );
+    ));
     each_pair(row_frags, col_frags, |r, c| {
         src.push_str(&format!(
             "    simdgroup_float8x8 acc_{r}_{c};\n\

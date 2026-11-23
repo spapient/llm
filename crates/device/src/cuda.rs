@@ -370,12 +370,7 @@ pub(crate) fn cuda_launch(kernel: &str, grid: &str, threads: usize, args: &str) 
 ///
 /// `fold` 给定时把 `len` 个部分结果在主机折成一个输出（`max` 取大、其余求和）；`checked` 决定
 /// memcpy 是否套 `CUTILE_CUDA_CHECK`（基准驱动套，语义门 harness 不套）。
-pub(crate) fn cuda_readback(
-    output: &str,
-    len: usize,
-    fold: Option<&str>,
-    checked: bool,
-) -> String {
+pub(crate) fn cuda_readback(output: &str, len: usize, fold: Option<&str>, checked: bool) -> String {
     let copy = if checked {
         format!(
             "    CUTILE_CUDA_CHECK(cudaMemcpy(h_{output}, d_{output}, {len} * sizeof(float), cudaMemcpyDeviceToHost));\n"
