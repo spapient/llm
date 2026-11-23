@@ -59,6 +59,21 @@
         }
     }
 
+    /// 单个并行分片：本槽承担的列组顺序打包进 `chunk`。列组与面板槽一一对应，按 `bi`
+    /// 串行推进（写入位置互不重叠），故此处保留循环而非整块批量搬运。
+    fn pack_b_chunk(
+        chunk: &mut [f32],
+        b: &[f32],
+        n: usize,
+        k: usize,
+        base_group: usize,
+    ) {
+        let blocks = chunk.len() / (NR * k);
+        for bi in 0..blocks {
+            pack_panel(b, chunk, n, k, (base_group + bi) * NR, bi * k * NR, false);
+        }
+    }
+
     /// 并行 B 打包：按 8 列组切线程。`k·n` 小的时候串行更划算（线程创建比转置贵）。
     pub(super) fn pack_b_f32_par_into(bpack: &mut [f32], b: &[f32], n: usize, k: usize, t: usize) {
         let groups = n.div_ceil(NR);
@@ -70,12 +85,7 @@
         let span = per * NR * k;
         thread::scope(|s| {
             for (gi, chunk) in bpack.chunks_mut(span).enumerate() {
-                s.spawn(move || {
-                    let blocks = chunk.len() / (NR * k);
-                    for bi in 0..blocks {
-                        pack_panel(b, chunk, n, k, (gi * per + bi) * NR, bi * k * NR, false);
-                    }
-                });
+                s.spawn(move || pack_b_chunk(chunk, b, n, k, gi * per));
             }
         });
     }

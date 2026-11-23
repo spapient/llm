@@ -95,18 +95,12 @@ macro_rules! unary_f32 {
         #[doc = concat!("`", $op, "` 的标记类型：逐元素一元运算见 `apply`，骨架见 `crate::unary`。")]
         pub struct $name;
 
-        impl $crate::formula::FormulaOwner for $name {
-            const EXPR: &'static str = "n,n->n";
-
-            const OPERANDS: &'static [$crate::einsum::OperandSpec] =
-                &$crate::einsum::f32_io_operands();
-
-            const FRAME: &'static str = "nn::unary::formula";
-
-            fn cache() -> &'static $crate::einsum::FormulaCache {
-                $crate::formula_cell!()
-            }
-        }
+        $crate::formula_owner!(
+            $name,
+            "n,n->n",
+            $crate::einsum::f32_io_operands(),
+            "nn::unary::formula"
+        );
 
         impl $crate::unary::Unary for $name {
             fn apply(x: f32) -> f32 {

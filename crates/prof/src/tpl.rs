@@ -304,6 +304,25 @@ pub mod formula {
             &CACHE
         }};
     }
+
+    /// 装配一份 [`FormulaOwner`]：表达式、操作数表、诊断帧与缓存单元格一次写全，
+    /// 避免每族骨架把同一份 impl 样板抄一遍。
+    #[macro_export]
+    macro_rules! formula_owner {
+        ($ty:ident, $expr:expr, $operands:expr, $frame:expr) => {
+            impl $crate::formula::FormulaOwner for $ty {
+                const EXPR: &'static str = $expr;
+
+                const OPERANDS: &'static [$crate::einsum::OperandSpec] = &$operands;
+
+                const FRAME: &'static str = $frame;
+
+                fn cache() -> &'static $crate::einsum::FormulaCache {
+                    $crate::formula_cell!()
+                }
+            }
+        };
+    }
 }
 
 pub mod guard {

@@ -106,18 +106,12 @@ macro_rules! binary_f32 {
         #[doc = concat!("`", $op, "` 的标记类型：逐元素二元运算见 `apply`，骨架见 `crate::elementwise`。")]
         pub struct $name;
 
-        impl $crate::formula::FormulaOwner for $name {
-            const EXPR: &'static str = "n,n,n->n";
-
-            const OPERANDS: &'static [$crate::einsum::OperandSpec] =
-                &$crate::einsum::f32_binary_operands();
-
-            const FRAME: &'static str = "nn::elementwise::formula";
-
-            fn cache() -> &'static $crate::einsum::FormulaCache {
-                $crate::formula_cell!()
-            }
-        }
+        $crate::formula_owner!(
+            $name,
+            "n,n,n->n",
+            $crate::einsum::f32_binary_operands(),
+            "nn::elementwise::formula"
+        );
 
         impl $crate::elementwise::Binary for $name {
             fn apply(x: f32, y: f32) -> f32 {

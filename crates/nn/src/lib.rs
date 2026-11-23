@@ -216,7 +216,7 @@ pub use prof::same_bytes;
 pub(crate) use prof::tpl::guard;
 pub use prof::tpl::{formula, parse};
 pub use prof::{einsum, model, operator, sample, sch, sig, tpl};
-pub use prof::{formula_cell, operator_here, operator_via};
+pub use prof::{formula_cell, formula_owner, operator_here, operator_via};
 pub use sch::layout;
 
 /// 形状由 `tensor` 拥有（见 `docs/ARCHITECTURE.md` 第三节），这里再导出：`Contract::output` 本来就返回它，

@@ -31,3 +31,7 @@ pub use scan::f32 as scan_f32;
 #[cfg(test)]
 #[path = "../tests/conv_tests.rs"]
 mod conv_tests;
+
+#[cfg(test)]
+#[path = "../tests/conv_prop_tests.rs"]
+mod conv_prop_tests;

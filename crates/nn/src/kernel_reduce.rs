@@ -104,18 +104,12 @@ macro_rules! reduce_f32 {
         #[doc = concat!("`", $op, "` 的标记类型：初值与折叠见 `start`/`fold`，骨架见 `crate::reduce`。")]
         pub struct $name;
 
-        impl $crate::formula::FormulaOwner for $name {
-            const EXPR: &'static str = "n,o->o";
-
-            const OPERANDS: &'static [$crate::einsum::OperandSpec] =
-                &$crate::einsum::f32_io_operands();
-
-            const FRAME: &'static str = "nn::reduce::formula";
-
-            fn cache() -> &'static $crate::einsum::FormulaCache {
-                $crate::formula_cell!()
-            }
-        }
+        $crate::formula_owner!(
+            $name,
+            "n,o->o",
+            $crate::einsum::f32_io_operands(),
+            "nn::reduce::formula"
+        );
 
         impl $crate::reduce::Reduce for $name {
             fn start() -> f32 {
