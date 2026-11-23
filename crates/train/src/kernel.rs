@@ -123,16 +123,6 @@ macro_rules! unary {
     )*};
 }
 
-/// 尚未接张量视图的一元族（多维 pool / 插值，几何仍走标量参数）：输入保持裸切片。
-macro_rules! unary_raw {
-    ($($run:ident => $module:ident),* $(,)?) => {$(
-        fn $run(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
-            let (a,) = <(f32,) as Inputs>::unpack(inputs, stringify!($run))?;
-            nn::$module::forward(a, output_slice::<f32>(stringify!($run), output)?)
-        }
-    )*};
-}
-
 /// 二元 `[f32, f32] → [f32]` 适配：两个输入都包成只读张量视图。
 macro_rules! binary {
     ($($run:ident),* $(,)?) => {$(
@@ -150,16 +140,33 @@ macro_rules! norm {
         fn $run(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
             let (x, gamma, beta) =
                 <(f32, f32, f32) as Inputs>::unpack(inputs, stringify!($run))?;
-            nn::$module::forward(x, gamma, beta, output_slice::<f32>(stringify!($run), output)?)
+            nn::$module::forward(
+                tensor::View::one(x),
+                tensor::View::one(gamma),
+                tensor::View::one(beta),
+                output_slice::<f32>(stringify!($run), output)?,
+            )
         }
     )*};
 }
 
 /// 矩阵乘适配：`m` 由 `K` 与缓冲长度推导（`i4` 每字节两个 nibble），`n` 由输出长度推导。
+/// 稠密 `f32` 两路激活包二维只读视图；打包 `u8` 是位流，保留裸切片与静态几何。
 macro_rules! gemm {
-    ($(($run:ident, $lane:ident, $div:expr)),* $(,)?) => {$(
+    ($(($run:ident, f32, $div:expr)),* $(,)?) => {$(
         fn $run(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
-            let (a, b) = <($lane, $lane) as Inputs>::unpack(inputs, stringify!($run))?;
+            let (a, b) = <(f32, f32) as Inputs>::unpack(inputs, stringify!($run))?;
+            let out = output_slice::<f32>(stringify!($run), output)?;
+            let m = a.len() / $div;
+            let rows = batches(stringify!($run), out.len(), m)?;
+            let av = tensor::View::matrix(m, $div, a)?;
+            let bv = tensor::View::matrix($div, rows, b)?;
+            nn::$run::forward(av, bv, out)
+        }
+    )*};
+    ($(($run:ident, u8, $div:expr)),* $(,)?) => {$(
+        fn $run(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+            let (a, b) = <(u8, u8) as Inputs>::unpack(inputs, stringify!($run))?;
             let out = output_slice::<f32>(stringify!($run), output)?;
             let m = a.len() / $div;
             let rows = batches(stringify!($run), out.len(), m)?;
@@ -168,14 +175,12 @@ macro_rules! gemm {
     )*};
 }
 
-unary_raw!(
+unary!(
     adaptive_pool_f32 => adaptive_pool,
     avg_pool2d_f32 => avg_pool2d,
     interpolate_f32 => interpolate,
     max_pool1d_f32 => max_pool1d,
-    max_pool2d_f32 => max_pool2d
-);
-unary!(
+    max_pool2d_f32 => max_pool2d,
     exp_f32 => exp_f32,
     gelu_f32 => gelu_f32,
     hard_sigmoid_f32 => hard_sigmoid_f32,
@@ -213,7 +218,12 @@ norm!(
 /// 二维卷积适配：`[x, weight, bias] → y`，声明档单样本几何由算子模块定。
 fn conv2d_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
     let (x, weight, bias) = <(f32, f32, f32) as Inputs>::unpack(inputs, "conv2d_f32")?;
-    nn::conv::conv2d::forward(x, weight, bias, output_slice::<f32>("conv2d_f32", output)?)
+    nn::conv::conv2d::forward(
+        tensor::View::one(x),
+        tensor::View::one(weight),
+        tensor::View::one(bias),
+        output_slice::<f32>("conv2d_f32", output)?,
+    )
 }
 
 /// 稠密向量投影：输入列表按算子操作数声明 `[weights, x]` 排列。
@@ -225,8 +235,8 @@ fn gemv_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
         output_slice::<f32>("gemv_f32", output)?,
     )
 }
+gemm!((gemm_f32, f32, nn::gemm_f32::K),);
 gemm!(
-    (gemm_f32, f32, nn::gemm_f32::K),
     (gemm_i2, u8, nn::gemm_i2::K / 4),
     (gemm_i4, u8, nn::gemm_i4::K / 2),
     (gemm_i8, u8, nn::gemm_i8::K),
@@ -237,7 +247,10 @@ fn matmul_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
     let (a, b) = <(f32, f32) as Inputs>::unpack(inputs, "matmul_f32")?;
     let out = output_slice::<f32>("matmul_f32", output)?;
     let (m, n) = matrix_geometry("matmul_f32", a.len(), out.len(), nn::matmul::K)?;
-    nn::fast::gemm_f32_checked(a, b, m, n, nn::matmul::K, out)
+    let k = nn::matmul::K;
+    let av = tensor::View::matrix(m, k, a)?;
+    let bv = tensor::View::matrix(k, n, b)?;
+    nn::fast::gemm_f32_checked(av, bv, out)
 }
 
 /// 大 K 对称 int8 GEMM：输入是承载有符号码的 `u8`，`i32` 精确累加后转 `f32`。
@@ -247,7 +260,10 @@ fn matmul_i8(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
     let (m, n) = matrix_geometry("matmul_i8", a.len(), out.len(), nn::matmul_i8::K)?;
     let mut acc = vec![0i32; m * n];
     let (a, b) = (signed(a), signed(b));
-    nn::fast::gemm_i8_checked(&a, &b, m, n, nn::matmul_i8::K, &mut acc)?;
+    let k = nn::matmul_i8::K;
+    let av = tensor::View::matrix(m, k, &a)?;
+    let bv = tensor::View::matrix(k, n, &b)?;
+    nn::fast::gemm_i8_checked(av, bv, &mut acc)?;
     widen(acc, out);
     Ok(())
 }
@@ -270,11 +286,21 @@ fn signed(bytes: &[u8]) -> Vec<i8> {
     bytes.iter().map(|&x| x as i8).collect()
 }
 
-/// 稠密自注意力内核入口：`q/k/v → out`，查询行数 `heads` 与头宽 `d` 随几何传入。
-type AttentionKernel = fn(&[f32], &[f32], &[f32], &mut [f32], usize, usize) -> Result<()>;
+/// 稠密自注意力内核入口：`q/k/v` 是二维只读视图，几何从视图形状取，结果写进调用方缓冲。
+type AttentionKernel = fn(
+    tensor::View<'_, f32>,
+    tensor::View<'_, f32>,
+    tensor::View<'_, f32>,
+    &mut [f32],
+) -> Result<()>;
 
-/// decode 注意力内核入口：`q/k/v → out`，查询行数 `q_rows`、历史行数 `hist` 与头宽 `d` 随几何传入。
-type DecodeKernel = fn(&[f32], &[f32], &[f32], &mut [f32], usize, usize, usize) -> Result<()>;
+/// decode 注意力内核入口：`q/k/v` 是二维只读视图，查询/历史行数与头宽从视图形状取。
+type DecodeKernel = fn(
+    tensor::View<'_, f32>,
+    tensor::View<'_, f32>,
+    tensor::View<'_, f32>,
+    &mut [f32],
+) -> Result<()>;
 
 /// 量化 GEMV 适配：`[x: f32, w: u8, scales: f32] → y: f32`。三档位宽同一条形参表，
 /// 只差一行算术入口，因此适配只写一份。
@@ -303,8 +329,11 @@ fn attention_paths(
     let (q, k, v) = <(f32, f32, f32) as Inputs>::unpack(inputs, "attention_f32")?;
     let out = output_slice::<f32>("attention_f32", output)?;
     let d = nn::conv::attention::MODEL.shape.1;
-    let heads = batches("attention_f32", q.len(), d)?;
-    run(q, k, v, out, heads, d)
+    let s = batches("attention_f32", q.len(), d)?;
+    let qv = tensor::View::matrix(s, d, q)?;
+    let kv = tensor::View::matrix(s, d, k)?;
+    let vv = tensor::View::matrix(s, d, v)?;
+    run(qv, kv, vv, out)
 }
 
 /// `[q, k, v: f32] → y: f32`：尺寸由声明宽度推导；算术走稠密分块 tile。
@@ -324,7 +353,10 @@ fn decode_paths(inputs: &[View<'_>], output: &mut ViewMut<'_>, run: DecodeKernel
     let d = nn::conv::decode_attention::MODEL.shape.1;
     let q_rows = batches("decode_attention_f32", q.len(), d)?;
     let hist = batches("decode_attention_f32", k.len(), d)?;
-    run(q, k, v, out, q_rows, hist, d)
+    let qv = tensor::View::matrix(q_rows, d, q)?;
+    let kv = tensor::View::matrix(hist, d, k)?;
+    let vv = tensor::View::matrix(hist, d, v)?;
+    run(qv, kv, vv, out)
 }
 
 /// decode 注意力：`q/k/v → out`。
@@ -345,7 +377,11 @@ fn latent_attention_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result
     let (q, k, v) = <(f32, f32, f32) as Inputs>::unpack(inputs, "latent_attention_f32")?;
     let out = output_slice::<f32>("latent_attention_f32", output)?;
     let w = nn::conv::attention::latent::MODEL.shape.1;
-    nn::conv::attention::latent_forward(q, k, v, out, w)
+    let r = batches("latent_attention_f32", q.len(), w)?;
+    let t = batches("latent_attention_f32", k.len(), w)?;
+    let qv = tensor::View::matrix(r, w, q)?;
+    let kv = tensor::View::matrix(t, w, k)?;
+    nn::conv::attention::latent_forward(qv, kv, v, out)
 }
 
 /// 反量化适配：`[q] → y: f32`，scale/zero 取样本常量；打包与逐元素两档只差输入 lane。

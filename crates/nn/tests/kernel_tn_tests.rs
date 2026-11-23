@@ -17,7 +17,11 @@ fn tn_matches_transposed_nt_bit_patterns() {
         }
         let mut got = vec![0.0f32; rows * n];
         let mut want = vec![0.0f32; rows * n];
-        super::gemm_f32_tn(&x, &w, rows, n, k, &mut got);
+        super::gemm_f32_tn(
+            tensor::View::matrix(rows, k, &x).expect("x 二维"),
+            tensor::View::matrix(n, k, &w).expect("w 二维"),
+            &mut got,
+        );
         super::super::gemm_f32(&x, &wt, rows, n, k, &mut want);
         assert_eq!(got, want, "TN 与 NT（转置后）应当逐位相同：{rows}×{n}×{k}");
     }

@@ -79,6 +79,15 @@ impl<'a, K: Element> View<'a, K> {
     pub fn one(slice: &'a [K]) -> Self {
         assemble(vec![slice.len()], vec![1], 0, slice)
     }
+
+    /// 二维只读视图：`rows × cols` 行主序连续。
+    ///
+    /// 矩阵族内核的输入本来就是一段连续二维切片，但两条轴长都要由调用方显式给出（不像一维
+    /// [`View::one`] 能从缓冲长度反推唯一轴），因此仍走 [`Tensor::new`](Self::new) 的 `Result`，
+    /// 在校验拦下元素数与 `rows·cols` 不符。
+    pub fn matrix(rows: usize, cols: usize, slice: &'a [K]) -> Result<Self> {
+        Self::new(vec![rows, cols], slice)
+    }
 }
 
 impl<'a, K: Element> ViewMut<'a, K> {
@@ -114,7 +123,8 @@ where
     }
 
     /// 两种形态共用的连续构造：先核元素数，再推连续步长。
-    fn build(dims: R, buf: B, marker: &str) -> Result<Self> {        let numel = product(dims.as_slice());
+    fn build(dims: R, buf: B, marker: &str) -> Result<Self> {
+        let numel = product(dims.as_slice());
         let len = buf.slice().len();
         if len != numel {
             return Err(invalid(

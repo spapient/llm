@@ -1,6 +1,7 @@
 //! 职责：int8 GEMM 与 i32 累加的位级一致性判据。
 
 use super::*;
+use tens::View;
 
 /// int8 GEMM 的判据是**逐位相等**，不是误差界：`i8×i8` 的乘积与 `i32` 累加都不会舍入，
 /// 因而设备输出必须与 CPU 的 `i32` 参考完全一致（`|acc| ≤ 2.1e6 < 2^24`，转 f32 亦精确）。
@@ -27,8 +28,12 @@ fn int8_gemm_is_bit_exact_against_i32_accumulation() {
             b.iter().map(|&value| value as i8).collect(),
         );
         let mut acc = vec![0i32; m * n];
-        nn::matmul_i8::forward_tiled(&signed_a, &signed_b, m, n, k, &mut acc)
-            .expect("CPU i32 参考");
+        nn::matmul_i8::forward_tiled(
+            View::matrix(m, k, &signed_a).expect("a 二维"),
+            View::matrix(k, n, &signed_b).expect("b 二维"),
+            &mut acc,
+        )
+        .expect("CPU i32 参考");
 
         let a_buf = upload_bytes(&device, &a, "A-int8");
         let b_buf = upload_bytes(&device, &b, "B-int8");

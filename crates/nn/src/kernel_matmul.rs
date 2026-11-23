@@ -31,7 +31,18 @@ use std::ops::Range;
 use diagnostic::{Code, Error, Result};
 
 use crate::model::{AxisRole, AxisSpec, Buf, Cost, Sample, ShapeCtx, Values};
-use tensor::NumericElement;
+use tensor::{NumericElement, View};
+
+/// 取二维视图的 `(rows, cols)`；秩不符按算子名报错。矩阵乘族各出口共用这一处几何解包。
+pub(crate) fn dim2(dims: &[usize], op: &str) -> Result<(usize, usize)> {
+    let &[rows, cols] = dims else {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("{op} 需要二维张量，实际秩 {}", dims.len()),
+        ));
+    };
+    Ok((rows, cols))
+}
 
 /// 输出 tile 行数。
 pub const TILE_M: usize = 64;
@@ -202,15 +213,20 @@ fn check_dims<P: Precision>(
 ///
 /// 三条缓冲长度与 `(m, n, k)` 不符时返回说明。
 pub fn forward_scalar<P: Precision>(
-    a: &[P],
-    b: &[P],
-    m: usize,
-    n: usize,
-    k: usize,
+    a: View<'_, P>,
+    b: View<'_, P>,
     out: &mut [P::Acc],
 ) -> Result<()> {
-    check_dims(a, b, m, n, k, out)?;
-    matmul_scalar(a, b, m, n, k, out);
+    let (m, k) = dim2(a.dims(), P::NAME)?;
+    let (k2, n) = dim2(b.dims(), P::NAME)?;
+    if k != k2 {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("{} 收缩轴不符：a·k={k}，b·k={k2}", P::NAME),
+        ));
+    }
+    check_dims(a.as_slice(), b.as_slice(), m, n, k, out)?;
+    matmul_scalar(a.as_slice(), b.as_slice(), m, n, k, out);
     Ok(())
 }
 
@@ -220,15 +236,20 @@ pub fn forward_scalar<P: Precision>(
 ///
 /// 三条缓冲长度与 `(m, n, k)` 不符时返回说明。
 pub fn forward_tiled<P: Precision>(
-    a: &[P],
-    b: &[P],
-    m: usize,
-    n: usize,
-    k: usize,
+    a: View<'_, P>,
+    b: View<'_, P>,
     out: &mut [P::Acc],
 ) -> Result<()> {
-    check_dims(a, b, m, n, k, out)?;
-    matmul_tiled(a, b, m, n, k, out);
+    let (m, k) = dim2(a.dims(), P::NAME)?;
+    let (k2, n) = dim2(b.dims(), P::NAME)?;
+    if k != k2 {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("{} 收缩轴不符：a·k={k}，b·k={k2}", P::NAME),
+        ));
+    }
+    check_dims(a.as_slice(), b.as_slice(), m, n, k, out)?;
+    matmul_tiled(a.as_slice(), b.as_slice(), m, n, k, out);
     Ok(())
 }
 
@@ -347,16 +368,17 @@ fn check_tn_dims(x: &[f32], w: &[f32], rows: usize, n: usize, k: usize, out: &[f
 /// # Errors
 ///
 /// 三条缓冲长度与 `(rows, n, k)` 不符时返回说明。
-pub fn forward_tn_scalar(
-    x: &[f32],
-    w: &[f32],
-    rows: usize,
-    n: usize,
-    k: usize,
-    out: &mut [f32],
-) -> Result<()> {
-    check_tn_dims(x, w, rows, n, k, out)?;
-    matmul_tn_scalar(x, w, rows, n, k, out);
+pub fn forward_tn_scalar(x: View<'_, f32>, w: View<'_, f32>, out: &mut [f32]) -> Result<()> {
+    let (rows, k) = dim2(x.dims(), "matmul_tn")?;
+    let (n, k2) = dim2(w.dims(), "matmul_tn")?;
+    if k != k2 {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("matmul_tn 收缩轴不符：x·k={k}，w·k={k2}"),
+        ));
+    }
+    check_tn_dims(x.as_slice(), w.as_slice(), rows, n, k, out)?;
+    matmul_tn_scalar(x.as_slice(), w.as_slice(), rows, n, k, out);
     Ok(())
 }
 
@@ -365,16 +387,17 @@ pub fn forward_tn_scalar(
 /// # Errors
 ///
 /// 三条缓冲长度与 `(rows, n, k)` 不符时返回说明。
-pub fn forward_tn_tiled(
-    x: &[f32],
-    w: &[f32],
-    rows: usize,
-    n: usize,
-    k: usize,
-    out: &mut [f32],
-) -> Result<()> {
-    check_tn_dims(x, w, rows, n, k, out)?;
-    matmul_tn_tiled(x, w, rows, n, k, out);
+pub fn forward_tn_tiled(x: View<'_, f32>, w: View<'_, f32>, out: &mut [f32]) -> Result<()> {
+    let (rows, k) = dim2(x.dims(), "matmul_tn")?;
+    let (n, k2) = dim2(w.dims(), "matmul_tn")?;
+    if k != k2 {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("matmul_tn 收缩轴不符：x·k={k}，w·k={k2}"),
+        ));
+    }
+    check_tn_dims(x.as_slice(), w.as_slice(), rows, n, k, out)?;
+    matmul_tn_tiled(x.as_slice(), w.as_slice(), rows, n, k, out);
     Ok(())
 }
 

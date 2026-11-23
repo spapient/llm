@@ -59,30 +59,48 @@ fn bounds(values: &[f32], idx_set: &[usize]) -> (f32, f32) {
 
 fn conv2d_run(x: &[f32], weight: &[f32], bias: &[f32]) -> Vec<f32> {
     let mut out = vec![0.0f32; conv2d::OH * conv2d::OW * conv2d::COUT];
-    conv2d::forward(x, weight, bias, &mut out).expect("定长缓冲");
+    conv2d::forward(
+        tensor::View::one(x),
+        tensor::View::one(weight),
+        tensor::View::one(bias),
+        &mut out,
+    )
+    .expect("定长缓冲");
     out
 }
 
 /// 一维窗口族与插值的统一调用口径：输入定长、输出定长、无参数。
 fn window_run(
-    forward: fn(&[f32], &mut [f32]) -> diagnostic::Result<()>,
+    forward: fn(tensor::View<'_, f32>, &mut [f32]) -> diagnostic::Result<()>,
     x: &[f32],
     len: usize,
 ) -> Vec<f32> {
     let mut out = vec![0.0f32; len];
-    forward(x, &mut out).expect("定长缓冲");
+    forward(tensor::View::one(x), &mut out).expect("定长缓冲");
     out
 }
 
 fn attention_run(q: &[f32], k: &[f32], v: &[f32], s: usize, d: usize) -> Vec<f32> {
     let mut out = vec![0.0f32; s * d];
-    attention::forward(q, k, v, &mut out, s, d).expect("等长");
+    attention::forward(
+        tensor::View::matrix(s, d, q).expect("q 二维"),
+        tensor::View::matrix(s, d, k).expect("k 二维"),
+        tensor::View::matrix(s, d, v).expect("v 二维"),
+        &mut out,
+    )
+    .expect("等长");
     out
 }
 
 fn flash_run(q: &[f32], k: &[f32], v: &[f32], s: usize, d: usize) -> Vec<f32> {
     let mut out = vec![0.0f32; s * d];
-    attention::flash_forward(q, k, v, &mut out, s, d).expect("等长");
+    attention::flash_forward(
+        tensor::View::matrix(s, d, q).expect("q 二维"),
+        tensor::View::matrix(s, d, k).expect("k 二维"),
+        tensor::View::matrix(s, d, v).expect("v 二维"),
+        &mut out,
+    )
+    .expect("等长");
     out
 }
 

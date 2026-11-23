@@ -15,8 +15,10 @@ fn assert_tiled_matches(m: usize, n: usize, k: usize) {
     let b = sample(k * n, 11);
     let mut expected = vec![0i32; m * n];
     let mut actual = vec![0i32; m * n];
-    forward_scalar(&a, &b, m, n, k, &mut expected).expect("参考可计算");
-    forward_tiled(&a, &b, m, n, k, &mut actual).expect("tile 可计算");
+    let av = tensor::View::matrix(m, k, &a).expect("a 二维");
+    let bv = tensor::View::matrix(k, n, &b).expect("b 二维");
+    forward_scalar(av.clone(), bv.clone(), &mut expected).expect("参考可计算");
+    forward_tiled(av, bv, &mut actual).expect("tile 可计算");
     assert_eq!(actual, expected, "i8 tile 必须与标量参考逐位一致");
 }
 
@@ -45,7 +47,12 @@ fn tiled_matches_scalar_on_trivial_shapes() {
 #[test]
 fn empty_contraction_yields_zeros() {
     let mut out = vec![1i32; 4];
-    forward_tiled(&[], &[], 2, 2, 0, &mut out).expect("k=0 合法");
+    forward_tiled(
+        tensor::View::matrix(2, 0, &[]).expect("空收缩 a"),
+        tensor::View::matrix(0, 2, &[]).expect("空收缩 b"),
+        &mut out,
+    )
+    .expect("k=0 合法");
     assert_eq!(out, vec![0i32; 4], "空收缩轴输出必须全零");
 }
 
@@ -54,8 +61,10 @@ fn forward_rejects_mismatched_bufs() {
     let a = vec![0i8; 8];
     let b = vec![0i8; 8];
     let mut out = vec![0i32; 8];
-    assert!(
-        forward_scalar(&a, &b, 3, 3, 3, &mut out).is_err(),
-        "尺寸不符必须报错"
-    );
+    let result = (|| {
+        let av = tensor::View::matrix(3, 3, &a)?;
+        let bv = tensor::View::matrix(3, 3, &b)?;
+        forward_scalar(av, bv, &mut out)
+    })();
+    assert!(result.is_err(), "尺寸不符必须报错");
 }

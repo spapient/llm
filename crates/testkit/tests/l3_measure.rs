@@ -38,7 +38,12 @@ pub fn distance(a: &[f32], b: &[f32]) -> f64 {
 /// 行主序 `[rows, k]` × `[n, k]ᵀ`：走 `serve`/`train` 用的那份 TN 分块内核，不另写参考乘法。
 pub fn forward(x: &[f32], w: &[f32], rows: usize, n: usize, k: usize) -> Vec<f32> {
     let mut out = vec![0.0f32; rows * n];
-    nn::matmul::forward_tn_tiled(x, w, rows, n, k, &mut out).expect("几何由用例自己保证");
+    nn::matmul::forward_tn_tiled(
+        tensor::View::matrix(rows, k, x).expect("x 二维"),
+        tensor::View::matrix(n, k, w).expect("w 二维"),
+        &mut out,
+    )
+    .expect("几何由用例自己保证");
     out
 }
 

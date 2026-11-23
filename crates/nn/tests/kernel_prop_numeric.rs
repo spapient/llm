@@ -451,7 +451,11 @@ proptest! {
         let mut want = vec![0.0; rows * n];
         matmul_scalar::<f32>(&x, &transposed, rows, n, k, &mut want);
         let mut got = vec![0.0; rows * n];
-        fast::gemm_f32_tn(&x, &w, rows, n, k, &mut got);
+        fast::gemm_f32_tn(
+            tensor::View::matrix(rows, k, &x).expect("x 二维"),
+            tensor::View::matrix(n, k, &w).expect("w 二维"),
+            &mut got,
+        );
         prop::assert_within_rel(&got, &want, 1e-5, "gemm_f32_tn 对转置后的标量积");
     }
 
@@ -718,16 +722,33 @@ proptest! {
         let w = crate::gemv::packed::weights(m, n, 1);
         let (s, x) = (vec![1.0f32; n], vec![1.0f32; rows * m]);
         let mut good = vec![0.0f32; rows * n];
-        let geo = crate::gemv::Geometry::new(rows, m, n);
-        prop_assert!(gemv_i8::forward_batch(&x, &w, &s, geo, &mut good).is_ok(), "几何一致必须接受");
-        let (x, geo, out) = match mode {
-            0 => (&x[..], crate::gemv::Geometry::new(0, m, n), rows * n),
-            1 => (&x[..rows * m - 1], geo, rows * n),
-            _ => (&x[..], geo, rows * n + 1),
-        };
+        let xv = tensor::View::matrix(rows, m, &x).expect("几何一致");
         prop_assert!(
-            gemv_i8::forward_batch(x, &w, &s, geo, &mut vec![0.0f32; out]).is_err(),
-            "mode {mode} 的几何必须拒绝"
+            gemv_i8::forward_batch(xv, &w, tensor::View::one(&s), &mut good).is_ok(),
+            "几何一致必须接受"
         );
+        let rejected = match mode {
+            0 => (|| {
+                let xv = tensor::View::matrix(0, m, &x[..0])?;
+                gemv_i8::forward_batch(xv, &w, tensor::View::one(&s), &mut vec![0.0f32; rows * n])
+            })()
+            .is_err(),
+            1 => (|| {
+                let xv = tensor::View::matrix(rows, m, &x[..rows * m - 1])?;
+                gemv_i8::forward_batch(xv, &w, tensor::View::one(&s), &mut vec![0.0f32; rows * n])
+            })()
+            .is_err(),
+            _ => (|| {
+                let xv = tensor::View::matrix(rows, m, &x)?;
+                gemv_i8::forward_batch(
+                    xv,
+                    &w,
+                    tensor::View::one(&s),
+                    &mut vec![0.0f32; rows * n + 1],
+                )
+            })()
+            .is_err(),
+        };
+        prop_assert!(rejected, "mode {mode} 的几何必须拒绝");
     }
 }

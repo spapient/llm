@@ -2,6 +2,7 @@ use super::*;
 use llm_optim::backend::TensorGeometry;
 use llm_optim::execution::Backend::Metal;
 use llm_optim::execution::{Mode, program, program_sample};
+use tens::View;
 
 pub(crate) fn bench_device(hint: &str) -> Option<(MetalDevice, MetalCommandQueue)> {
     let Some(device) = MetalDevice::system_default() else {
@@ -195,7 +196,12 @@ pub(crate) fn int8_gemm() -> Int8Gemm {
         b.iter().map(|&x| x as i8).collect(),
     );
     let mut acc = vec![0i32; m * n];
-    nn::matmul_i8::forward_tiled(&sa, &sb, m, n, k, &mut acc).expect("CPU 参考");
+    nn::matmul_i8::forward_tiled(
+        View::matrix(m, k, &sa).expect("a 二维"),
+        View::matrix(k, n, &sb).expect("b 二维"),
+        &mut acc,
+    )
+    .expect("CPU 参考");
     Int8Gemm {
         m,
         n,

@@ -8,6 +8,7 @@
 use std::thread;
 
 use diagnostic::{Code, Error, Result};
+use tensor::View;
 
 use super::align_up;
 use super::compute_gemm;
@@ -143,14 +144,16 @@ pub fn gemm_i8(a: &[i8], b: &[i8], m: usize, n: usize, k: usize, out: &mut [i32]
 
 /// 显式错误版对称 int8 GEMM：三条缓冲与 `(m, n, k)` 严格相等才跑，不符返回 [`Code::Invalid`]，
 /// 不 panic。算术同 [`gemm_i8`]（i32 精确累加，与 [`crate::matmul_i8::forward_tiled`] 逐位一致）。
-pub fn gemm_i8_checked(
-    a: &[i8],
-    b: &[i8],
-    m: usize,
-    n: usize,
-    k: usize,
-    out: &mut [i32],
-) -> Result<()> {
+pub fn gemm_i8_checked(a: View<'_, i8>, b: View<'_, i8>, out: &mut [i32]) -> Result<()> {
+    let (m, k) = crate::kernel::matmul::dim2(a.dims(), "gemm_i8")?;
+    let (k2, n) = crate::kernel::matmul::dim2(b.dims(), "gemm_i8")?;
+    if k != k2 {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("gemm_i8 收缩轴不符：a·k={k}，b·k={k2}"),
+        ));
+    }
+    let (a, b) = (a.as_slice(), b.as_slice());
     if a.len() != m * k || b.len() != k * n || out.len() != m * n {
         return Err(Error::new(
             Code::Invalid,

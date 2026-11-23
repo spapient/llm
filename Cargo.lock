@@ -591,6 +591,7 @@ dependencies = [
  "llm-nn",
  "llm-prof",
  "llm-shard",
+ "llm-tensor",
  "llm-testkit",
 ]
 

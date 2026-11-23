@@ -83,6 +83,17 @@ fn materialising_a_transpose_reorders_the_elements() {
 }
 
 #[test]
+fn matrix_constructor_carries_two_axis_lengths() {
+    let buf = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let view = View::matrix(2, 3, &buf[..]).expect("2×3");
+    assert_eq!(view.dims(), [2, 3]);
+    assert!(view.is_contiguous());
+    assert_eq!(view.row(1), Some(&[4.0, 5.0, 6.0][..]));
+    // 元素数与 `rows·cols` 不符在校验拦下。
+    assert!(View::matrix(2, 2, &buf[..]).is_err());
+}
+
+#[test]
 fn a_contiguous_tensor_materialises_to_an_equal_copy() {
     let buf = [1.0f32, 2.0, 3.0, 4.0];
     let dense: View<'_, f32> = View::new(Shape::new([2, 2]), &buf[..]).expect("2×2");

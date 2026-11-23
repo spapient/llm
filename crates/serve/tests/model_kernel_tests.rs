@@ -387,9 +387,21 @@ fn attention_runs_through_the_registered_kernel() {
     let s = q.len() / d;
 
     let mut plain = vec![0.0; q.len()];
-    nn::conv::attention::forward(q, k, v, &mut plain, s, d).expect("朴素参考");
+    nn::conv::attention::forward(
+        tensor::View::matrix(s, d, q).expect("q 二维"),
+        tensor::View::matrix(s, d, k).expect("k 二维"),
+        tensor::View::matrix(s, d, v).expect("v 二维"),
+        &mut plain,
+    )
+    .expect("朴素参考");
     let mut flash = vec![0.0; q.len()];
-    nn::conv::attention::flash_forward(q, k, v, &mut flash, s, d).expect("flash 参考");
+    nn::conv::attention::flash_forward(
+        tensor::View::matrix(s, d, q).expect("q 二维"),
+        tensor::View::matrix(s, d, k).expect("k 二维"),
+        tensor::View::matrix(s, d, v).expect("v 二维"),
+        &mut flash,
+    )
+    .expect("flash 参考");
 
     let mut executor = cpu();
     bind(&mut executor, 0, q);
@@ -459,11 +471,21 @@ fn decode_attention_kernels_match_the_reference() {
     let (d, hist) = (8, 4);
 
     let mut naive_reference = vec![0.0; d];
-    nn::conv::attention::decode_forward(&q, &k, &v, &mut naive_reference, 1, hist, d)
-        .expect("朴素参考");
+    nn::conv::attention::decode_forward(
+        tensor::View::matrix(1, d, &q).expect("q 二维"),
+        tensor::View::matrix(hist, d, &k).expect("k 二维"),
+        tensor::View::matrix(hist, d, &v).expect("v 二维"),
+        &mut naive_reference,
+    )
+    .expect("朴素参考");
     let mut flash_reference = vec![0.0; d];
-    nn::conv::attention::decode_flash_forward(&q, &k, &v, &mut flash_reference, 1, hist, d)
-        .expect("flash 参考");
+    nn::conv::attention::decode_flash_forward(
+        tensor::View::matrix(1, d, &q).expect("q 二维"),
+        tensor::View::matrix(hist, d, &k).expect("k 二维"),
+        tensor::View::matrix(hist, d, &v).expect("v 二维"),
+        &mut flash_reference,
+    )
+    .expect("flash 参考");
 
     let mut executor = cpu();
     bind(&mut executor, 0, &q);

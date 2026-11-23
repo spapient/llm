@@ -144,13 +144,23 @@ macro_rules! gemv_packed {
 
         /// 行批内核：`x` 是 `rows × m`、`out` 是 `rows × n`，一行权重只解包一次服务所有输入行。
         pub fn forward_batch(
-            x: &[f32],
+            x: tensor::View<'_, f32>,
             weights: &[u8],
-            scales: &[f32],
-            geo: $crate::gemv::Geometry,
+            scales: tensor::View<'_, f32>,
             out: &mut [f32],
         ) -> diagnostic::Result<()> {
-            $crate::gemv::packed::forward_batch(x, weights, scales, geo, out, $row.cpb, $row.table)
+            let (rows, m) = $crate::kernel::matmul::dim2(x.dims(), $op)?;
+            let n = out.len().checked_div(rows).unwrap_or(0);
+            let geo = $crate::gemv::Geometry::new(rows, m, n);
+            $crate::gemv::packed::forward_batch(
+                x.as_slice(),
+                weights,
+                scales.as_slice(),
+                geo,
+                out,
+                $row.cpb,
+                $row.table,
+            )
         }
 
         #[cfg(test)]
@@ -392,13 +402,21 @@ pub mod i8 {
 
     /// 行批内核：`x` 是 `rows × m`、`out` 是 `rows × n`，一行权重只读一遍。
     pub fn forward_batch(
-        x: &[f32],
+        x: tensor::View<'_, f32>,
         weights: &[u8],
-        scales: &[f32],
-        geo: gemv::Geometry,
+        scales: tensor::View<'_, f32>,
         out: &mut [f32],
     ) -> diagnostic::Result<()> {
-        gemv::forward_plain_batch::<gemv::SymI8<GROUP>>(x, weights, scales, geo, out)
+        let (rows, m) = crate::kernel::matmul::dim2(x.dims(), "gemv_i8")?;
+        let n = out.len().checked_div(rows).unwrap_or(0);
+        let geo = gemv::Geometry::new(rows, m, n);
+        gemv::forward_plain_batch::<gemv::SymI8<GROUP>>(
+            x.as_slice(),
+            weights,
+            scales.as_slice(),
+            geo,
+            out,
+        )
     }
 
     #[cfg(test)]

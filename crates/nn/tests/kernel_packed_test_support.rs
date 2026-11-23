@@ -46,10 +46,9 @@ macro_rules! packed_gemv_batch_tests {
 
             let mut batched = vec![0.0f32; rows * n];
             $forward_batch(
-                &x,
+                tensor::View::matrix(rows, m, &x).expect("x 二维"),
                 &weights,
-                &scales,
-                $crate::gemv::Geometry::new(rows, m, n),
+                tensor::View::one(&scales),
                 &mut batched,
             )
             .expect("行批可算");
@@ -71,13 +70,10 @@ macro_rules! packed_gemv_batch_tests {
             let weights = $crate::gemv::packed::weights(4 * $group, 2, $cpb);
             let scales = vec![1.0f32; 2 * 4];
             let mut out = vec![0.0f32; 4];
-            let error = $forward_batch(
-                &[1.0f32; 3 * 4 * $group],
-                &weights,
-                &scales,
-                $crate::gemv::Geometry::new(4, 4 * $group, 2),
-                &mut out,
-            )
+            let error = (|| {
+                let xv = tensor::View::matrix(4, 4 * $group, &[1.0f32; 3 * 4 * $group])?;
+                $forward_batch(xv, &weights, tensor::View::one(&scales), &mut out)
+            })()
             .expect_err("行数与缓冲不符必须拒绝");
             assert_eq!(error.code(), ::diagnostic::Code::Invalid);
         }

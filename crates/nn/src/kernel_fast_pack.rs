@@ -1,4 +1,3 @@
-
 //! 打包：把 A 的行块转成 `[p][MR]`、把 B 的列组转成 `[jblk][p][NR]` 面板。
 use std::thread;
 

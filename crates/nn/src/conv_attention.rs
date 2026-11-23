@@ -230,34 +230,56 @@ pub fn flash_reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
 
 /// 朴素内核本体：prefill 自注意力是 `decode` 的 `q_rows = hist = s` 特例，结果写进 `out`。
 ///
+/// `q`/`k`/`v` 都是 `s × d` 连续二维视图，序列长与头宽从视图形状取；长度不符仍由内部守卫拦下。
+///
 /// # Errors
 ///
-/// 长度不符、头宽为 0，或序列长为 0 时返回说明。
+/// 秩不是二维、长度不符、头宽为 0，或序列长为 0 时返回说明。
 pub fn forward(
-    q: &[f32],
-    k: &[f32],
-    v: &[f32],
+    q: tensor::View<'_, f32>,
+    k: tensor::View<'_, f32>,
+    v: tensor::View<'_, f32>,
     out: &mut [f32],
-    s: usize,
-    d: usize,
 ) -> diagnostic::Result<()> {
-    decode(q, k, v, out, s, s, d, Mode::Naive)
+    let (s, d) = crate::kernel::matmul::dim2(q.dims(), "attention_f32")?;
+    crate::kernel::matmul::dim2(k.dims(), "attention_f32")?;
+    crate::kernel::matmul::dim2(v.dims(), "attention_f32")?;
+    decode(
+        q.as_slice(),
+        k.as_slice(),
+        v.as_slice(),
+        out,
+        s,
+        s,
+        d,
+        Mode::Naive,
+    )
 }
 
 /// Flash 内核本体：online softmax，单遍 K/V，写进 `out`。prefill 口径同 [`forward`]。
 ///
 /// # Errors
 ///
-/// 长度不符、头宽为 0，或序列长为 0 时返回说明。
+/// 秩不是二维、长度不符、头宽为 0，或序列长为 0 时返回说明。
 pub fn flash_forward(
-    q: &[f32],
-    k: &[f32],
-    v: &[f32],
+    q: tensor::View<'_, f32>,
+    k: tensor::View<'_, f32>,
+    v: tensor::View<'_, f32>,
     out: &mut [f32],
-    s: usize,
-    d: usize,
 ) -> diagnostic::Result<()> {
-    decode(q, k, v, out, s, s, d, Mode::Online)
+    let (s, d) = crate::kernel::matmul::dim2(q.dims(), "flash_attention_f32")?;
+    crate::kernel::matmul::dim2(k.dims(), "flash_attention_f32")?;
+    crate::kernel::matmul::dim2(v.dims(), "flash_attention_f32")?;
+    decode(
+        q.as_slice(),
+        k.as_slice(),
+        v.as_slice(),
+        out,
+        s,
+        s,
+        d,
+        Mode::Online,
+    )
 }
 
 #[path = "conv_attention_decode.rs"]

@@ -1,6 +1,7 @@
 //! 大 K 对称 int8 GEMM 的语义与精度档：`Y[m, n] = Σ_k A[m, k] · B[k, n]`，累加器 `i32`。
 //! 职责：i8 矩阵乘的标量/分块出口与形状投影。骨架算术在 [`crate::matmul`]。
 use diagnostic::Result;
+use tensor::View;
 
 use crate::model::{Cost, Sample, ShapeCtx, Values};
 
@@ -22,16 +23,17 @@ const BLOCK_COLS: usize = 16;
 /// # Errors
 ///
 /// 三条缓冲长度与 `(m, n, k)` 不符时返回说明。
-pub fn forward_tiled(
-    a: &[i8],
-    b: &[i8],
-    m: usize,
-    n: usize,
-    k: usize,
-    out: &mut [i32],
-) -> Result<()> {
-    super::check_dims(a, b, m, n, k, out)?;
-    blocked(a, b, m, n, k, out);
+pub fn forward_tiled(a: View<'_, i8>, b: View<'_, i8>, out: &mut [i32]) -> Result<()> {
+    let (m, k) = super::dim2(a.dims(), "matmul_i8")?;
+    let (k2, n) = super::dim2(b.dims(), "matmul_i8")?;
+    if k != k2 {
+        return Err(diagnostic::Error::new(
+            diagnostic::Code::Invalid,
+            format!("matmul_i8 收缩轴不符：a·k={k}，b·k={k2}"),
+        ));
+    }
+    super::check_dims(a.as_slice(), b.as_slice(), m, n, k, out)?;
+    blocked(a.as_slice(), b.as_slice(), m, n, k, out);
     Ok(())
 }
 
@@ -78,15 +80,7 @@ fn widen(row: &[i8]) -> [i32; BLOCK_COLS] {
 }
 
 /// 列尾（`j0..n`）：块内按行标量累加，结果与分块逐位一致。
-fn edge_cols(
-    a: &[i8],
-    b: &[i8],
-    out: &mut [i32],
-    i0: usize,
-    mut j0: usize,
-    n: usize,
-    k: usize,
-) {
+fn edge_cols(a: &[i8], b: &[i8], out: &mut [i32], i0: usize, mut j0: usize, n: usize, k: usize) {
     while j0 < n {
         for r in 0..BLOCK_ROWS {
             let mut acc = 0i32;

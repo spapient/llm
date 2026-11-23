@@ -499,19 +499,22 @@ mod test_support {
 /// 生成一份 GEMM 精度变体的完整公开面：标记类型、[`Gemm`] 实现、`forward` 入口、
 /// [`annotation::model`] 注解与测试挂载。差异只随后面的关联项（取样 / 打包 / 点积契约）变化；
 /// 新增一档精度只需加一行调用，不另写样板。
+///
+/// 出口按元素类型分两路：稠密 `f32` 的两路激活是二维只读视图，几何从 `dims()` 取；打包档
+/// `u8` 是位流，行宽按字节折算，保留裸切片与调用方给出的 `m`/`n`（裁决：打包位模式不进 View）。
 #[macro_export]
 macro_rules! gemm_variant {
     (
         $name:ident, $alias:ident,
         $op:tt, $kind:ident, $differentiable:literal,
-        $elem:ty, $bits:expr,
+        f32, $bits:expr,
         $( $methods:item ),* $(,)?
     ) => {
         #[doc = concat!("`", $op, "` 的标记类型：格式契约（取样 / 打包 / 点积）见 `crate::gemm` 的 `Gemm` 骨架。")]
         pub struct $name;
 
         impl $crate::gemm::Gemm for $name {
-            type Elem = $elem;
+            type Elem = f32;
 
             const OP: &'static str = $op;
 
@@ -525,8 +528,58 @@ macro_rules! gemm_variant {
 
         #[doc = concat!("`", $op, "` 内核本体：结果写进调用方给的缓冲。")]
         pub fn forward(
-            a: &[$elem],
-            b: &[$elem],
+            a: tensor::View<'_, f32>,
+            b: tensor::View<'_, f32>,
+            out: &mut [f32],
+        ) -> diagnostic::Result<()> {
+            let (m, ka) = $crate::kernel::matmul::dim2(a.dims(), $op)?;
+            let (kb, n) = $crate::kernel::matmul::dim2(b.dims(), $op)?;
+            if ka != kb {
+                return Err(diagnostic::Error::new(
+                    diagnostic::Code::Invalid,
+                    format!("{} 收缩轴不符：a·k={ka}，b·k={kb}", $op),
+                ));
+            }
+            $crate::gemm::forward::<$name>(a.as_slice(), b.as_slice(), m, n, out)
+        }
+
+        #[annotation::model(name = $op, shape = [16, 16], dtype = "f32", skeleton = "gemm")]
+        #[doc = concat!("`", $op, "` 矩阵乘的语义别名。")]
+        pub type $alias = $name;
+
+        #[cfg(test)]
+        mod tests {
+            use super::*;
+            $crate::gemm::test_support::$kind!($name);
+        }
+    };
+
+    (
+        $name:ident, $alias:ident,
+        $op:tt, $kind:ident, $differentiable:literal,
+        u8, $bits:expr,
+        $( $methods:item ),* $(,)?
+    ) => {
+        #[doc = concat!("`", $op, "` 的标记类型：格式契约（取样 / 打包 / 点积）见 `crate::gemm` 的 `Gemm` 骨架。")]
+        pub struct $name;
+
+        impl $crate::gemm::Gemm for $name {
+            type Elem = u8;
+
+            const OP: &'static str = $op;
+
+            const BITS: $crate::einsum::Bits = $bits;
+
+            $( $methods )*
+        }
+
+        // 基座契约（ADR 0050）：三条行为从 `Gemm` 骨架转发，粒度由注解的骨架默认值给出。
+        $crate::operator_via!($name, $op, 2, (16, 16), $differentiable, skel, $crate::gemm::AXES);
+
+        #[doc = concat!("`", $op, "` 内核本体：结果写进调用方给的缓冲。")]
+        pub fn forward(
+            a: &[u8],
+            b: &[u8],
             m: usize,
             n: usize,
             out: &mut [f32],

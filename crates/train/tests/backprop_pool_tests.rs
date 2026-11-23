@@ -16,7 +16,7 @@ fn max_pool1d_matches_central_differences() -> Result<()> {
     let x0 = ramp(total);
     check_shaped_grad("max_pool1d_f32", &x0, out, |px| {
         let mut y = vec![0.0f32; out];
-        nn::conv::max_pool1d::forward(px, &mut y).expect("前向");
+        nn::conv::max_pool1d::forward(tensor::View::one(px), &mut y).expect("前向");
         y.iter().sum()
     })
 }
@@ -27,7 +27,7 @@ fn max_pool2d_matches_central_differences() -> Result<()> {
     let x0 = ramp(side * side);
     check_shaped_grad("max_pool2d_f32", &x0, side * side, |px| {
         let mut y = vec![0.0f32; side * side];
-        nn::conv::max_pool2d::forward(px, &mut y).expect("前向");
+        nn::conv::max_pool2d::forward(tensor::View::one(px), &mut y).expect("前向");
         y.iter().sum()
     })
 }
@@ -38,7 +38,7 @@ fn avg_pool2d_matches_central_differences() -> Result<()> {
     let x0 = ramp(side * side);
     check_shaped_grad("avg_pool2d_f32", &x0, side * side, |px| {
         let mut y = vec![0.0f32; side * side];
-        nn::conv::avg_pool2d::forward(px, &mut y).expect("前向");
+        nn::conv::avg_pool2d::forward(tensor::View::one(px), &mut y).expect("前向");
         y.iter().sum()
     })
 }
@@ -49,7 +49,7 @@ fn adaptive_pool_matches_central_differences() -> Result<()> {
     let x0 = ramp(side * side);
     check_shaped_grad("adaptive_pool_f32", &x0, out * out, |px| {
         let mut y = vec![0.0f32; out * out];
-        nn::conv::adaptive_pool::forward(px, &mut y).expect("前向");
+        nn::conv::adaptive_pool::forward(tensor::View::one(px), &mut y).expect("前向");
         y.iter().sum()
     })
 }
@@ -64,7 +64,7 @@ fn interpolate_matches_central_differences() -> Result<()> {
     let x0 = ramp(h * w);
     check_shaped_grad("interpolate_f32", &x0, out * out, |px| {
         let mut y = vec![0.0f32; out * out];
-        nn::conv::interpolate::forward(px, &mut y).expect("前向");
+        nn::conv::interpolate::forward(tensor::View::one(px), &mut y).expect("前向");
         y.iter().sum()
     })
 }
@@ -76,7 +76,13 @@ fn batch_norm_matches_central_differences() -> Result<()> {
     let (x0, g0, b0) = (ramp(total), gain(), shift());
     check_affine_grad("batch_norm_f32", &x0, &g0, &b0, total, |px, pg, pb| {
         let mut y = vec![0.0f32; total];
-        nn::conv::batch_norm::forward(px, pg, pb, &mut y).expect("前向");
+        nn::conv::batch_norm::forward(
+            tensor::View::one(px),
+            tensor::View::one(pg),
+            tensor::View::one(pb),
+            &mut y,
+        )
+        .expect("前向");
         y.iter().sum()
     })
 }
@@ -88,7 +94,13 @@ fn group_norm_matches_central_differences() -> Result<()> {
     let (x0, g0, b0) = (ramp(total), gain(), shift());
     check_affine_grad("group_norm_f32", &x0, &g0, &b0, total, |px, pg, pb| {
         let mut y = vec![0.0f32; total];
-        nn::conv::group_norm::forward(px, pg, pb, &mut y).expect("前向");
+        nn::conv::group_norm::forward(
+            tensor::View::one(px),
+            tensor::View::one(pg),
+            tensor::View::one(pb),
+            &mut y,
+        )
+        .expect("前向");
         y.iter().sum()
     })
 }
@@ -100,7 +112,13 @@ fn instance_norm_matches_central_differences() -> Result<()> {
     let (x0, g0, b0) = (ramp(total), gain(), shift());
     check_affine_grad("instance_norm_f32", &x0, &g0, &b0, total, |px, pg, pb| {
         let mut y = vec![0.0f32; total];
-        nn::conv::instance_norm::forward(px, pg, pb, &mut y).expect("前向");
+        nn::conv::instance_norm::forward(
+            tensor::View::one(px),
+            tensor::View::one(pg),
+            tensor::View::one(pb),
+            &mut y,
+        )
+        .expect("前向");
         y.iter().sum()
     })
 }
@@ -114,7 +132,13 @@ fn layer_norm_matches_central_differences() -> Result<()> {
     let b0 = shift();
     check_affine_grad("layer_norm_f32", &x0, &g0, &b0, total, |px, pg, pb| {
         let mut y = vec![0.0f32; total];
-        nn::conv::layer_norm::forward(px, pg, pb, &mut y).expect("前向");
+        nn::conv::layer_norm::forward(
+            tensor::View::one(px),
+            tensor::View::one(pg),
+            tensor::View::one(pb),
+            &mut y,
+        )
+        .expect("前向");
         y.iter().sum()
     })
 }

@@ -17,7 +17,13 @@ fn zero_scores_degrade_to_uniform_average_of_the_compressed_values() {
     let bufs = bufs(&s);
     let (k, v) = (bufs[1], bufs[2]);
     let mut y = vec![0.0f32; 2 * 4];
-    forward(&q, k, v, &mut y, 8).expect("长度自洽");
+    forward(
+        tensor::View::matrix(2, 8, &q).expect("q 二维"),
+        tensor::View::matrix(2, 8, k).expect("k 二维"),
+        v,
+        &mut y,
+    )
+    .expect("长度自洽");
     // 全零查询 ⇒ 分数全等 ⇒ softmax 均匀 ⇒ 输出是压缩 v 的行均值。
     let mean: Vec<f32> = (0..4).map(|c| (v[c] + v[4 + c]) / 2.0).collect();
     for row in 0..2 {
@@ -33,7 +39,13 @@ fn a_single_key_value_row_passes_through_unchanged() {
     let k = vec![0.4f32, 0.1, -0.3, 0.6, 0.2, -0.8, 0.1, 0.3];
     let v = vec![-1.5f32, 2.5, 0.25];
     let mut y = vec![0.0f32; 3];
-    forward(&q, &k, &v, &mut y, 8).expect("长度自洽");
+    forward(
+        tensor::View::matrix(1, 8, &q).expect("q 二维"),
+        tensor::View::matrix(1, 8, &k).expect("k 二维"),
+        &v,
+        &mut y,
+    )
+    .expect("长度自洽");
     // 只有一条键 ⇒ 权重恒为 1 ⇒ 输出就是那一行压缩值。
     assert_eq!(y, v);
 }
@@ -52,8 +64,20 @@ fn the_rope_tail_moves_the_scores() {
         moved[8 + c] = base[8 + c] + 3.0;
     }
     let (mut ya, mut yb) = (vec![0.0f32; 8], vec![0.0f32; 8]);
-    forward(q, &base, v, &mut ya, 8).expect("长度自洽");
-    forward(q, &moved, v, &mut yb, 8).expect("长度自洽");
+    forward(
+        tensor::View::matrix(2, 8, q).expect("q 二维"),
+        tensor::View::matrix(2, 8, &base).expect("base 二维"),
+        v,
+        &mut ya,
+    )
+    .expect("长度自洽");
+    forward(
+        tensor::View::matrix(2, 8, q).expect("q 二维"),
+        tensor::View::matrix(2, 8, &moved).expect("moved 二维"),
+        v,
+        &mut yb,
+    )
+    .expect("长度自洽");
     assert!(
         ya.iter().zip(&yb).any(|(a, b)| (a - b).abs() > 1e-4),
         "尾段应当移动分数"
@@ -68,7 +92,13 @@ fn the_kernel_agrees_with_the_reference_on_the_declared_sample() {
         let k = s.f32("k").expect("k");
         let v = s.f32("v").expect("v");
         let mut y = vec![0.0f32; 3 * 4];
-        forward(q, k, v, &mut y, 8).expect("长度自洽");
+        forward(
+            tensor::View::matrix(3, 8, q).expect("q 二维"),
+            tensor::View::matrix(3, 8, k).expect("k 二维"),
+            v,
+            &mut y,
+        )
+        .expect("长度自洽");
         y
     };
     let want = reference(&s).expect("参考可算");
@@ -86,7 +116,13 @@ fn the_output_width_may_be_narrower_than_the_read_width() {
     let k: Vec<f32> = (0..t * w).map(|i| (i as f32 * 0.11).cos()).collect();
     let v: Vec<f32> = (0..t * dc).map(|i| i as f32 * 0.25 - 1.0).collect();
     let mut y = vec![0.0f32; r * dc];
-    forward(&q, &k, &v, &mut y, w).expect("长度自洽");
+    forward(
+        tensor::View::matrix(r, w, &q).expect("q 二维"),
+        tensor::View::matrix(t, w, &k).expect("k 二维"),
+        &v,
+        &mut y,
+    )
+    .expect("长度自洽");
     // 期望值手算：分数 → softmax → 加权。
     let scale = (w as f32).sqrt();
     for row in 0..r {

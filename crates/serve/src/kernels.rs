@@ -35,7 +35,12 @@ use nn::kernel_table;
 pub(crate) const SITE: &str = "serve::model";
 
 /// 注意力内核入口：`q/k/v → out`，序列长 `s` 与头宽 `d` 随几何传入。
-type AttentionKernel = fn(&[f32], &[f32], &[f32], &mut [f32], usize, usize) -> Result<()>;
+type AttentionKernel = fn(
+    tensor::View<'_, f32>,
+    tensor::View<'_, f32>,
+    tensor::View<'_, f32>,
+    &mut [f32],
+) -> Result<()>;
 
 /// decode 注意力内核入口：`q/k/v → out`，查询行数 `q_rows`、历史行数 `hist` 与头宽 `d` 随几何传入。
 type DecodeKernel = fn(&[f32], &[f32], &[f32], &mut [f32], usize, usize, usize) -> Result<()>;
@@ -157,7 +162,10 @@ fn attention_paths(
     let out = output_f32("attention", outputs, 0)?;
     let d = nn::conv::attention::MODEL.shape.1;
     let s = q.len() / d;
-    run(q, k, v, out, s, d)
+    let qv = tensor::View::matrix(s, d, q)?;
+    let kv = tensor::View::matrix(s, d, k)?;
+    let vv = tensor::View::matrix(s, d, v)?;
+    run(qv, kv, vv, out)
 }
 
 /// 朴素自注意力适配：走稠密分块 tile 路径。
@@ -301,10 +309,14 @@ fn project_rows(x: &[f32], weights: &[f32], out: &mut [f32], m: usize, n: usize)
         return nn::gemv_f32::forward(tensor::View::one(x), weights, out);
     }
     if rows >= nn::fast::MIN_ROWS {
-        nn::fast::gemm_f32_tn(x, weights, rows, n, m, out);
+        let xv = tensor::View::matrix(rows, m, x)?;
+        let wv = tensor::View::matrix(n, m, weights)?;
+        nn::fast::gemm_f32_tn(xv, wv, out);
         return Ok(());
     }
-    nn::matmul::forward_tn_tiled(x, weights, rows, n, m, out)
+    let xv = tensor::View::matrix(rows, m, x)?;
+    let wv = tensor::View::matrix(n, m, weights)?;
+    nn::matmul::forward_tn_tiled(xv, wv, out)
 }
 
 /// 行批几何校验并给出输出行数：`x` 是 `rows × m`，`out` 必须是 `rows × n`。
@@ -319,9 +331,9 @@ fn row_batch_rows(x: &[f32], out: &[f32], m: usize, n: usize) -> Result<usize> {
 type GemvQuantFn =
     fn(x: tensor::View<'_, f32>, w: &[u8], s: tensor::View<'_, f32>, out: &mut [f32]) -> Result<()>;
 
-/// 量化 GEMV 行批算术入口：`rows × m` 的输入 → `rows × n` 的输出。
+/// 量化 GEMV 行批算术入口：`rows × m` 的输入 → `rows × n` 的输出；激活是二维只读视图，标度一维，打包权重保持裸字节。
 type GemvQuantBatchFn =
-    fn(x: &[f32], w: &[u8], s: &[f32], geo: nn::gemv::Geometry, out: &mut [f32]) -> Result<()>;
+    fn(x: tensor::View<'_, f32>, w: &[u8], s: tensor::View<'_, f32>, out: &mut [f32]) -> Result<()>;
 
 /// `[x: f32, w: u8, scales: f32] → y: f32`：量化 GEMV 通用桥接，按批行数分流。
 fn gemv_quant(
@@ -342,11 +354,11 @@ fn gemv_quant(
             out,
         );
     }
+    let rows = x.len() / m;
     batch(
-        x,
+        tensor::View::matrix(rows, m, x)?,
         weights,
-        scales,
-        nn::gemv::Geometry::new(x.len() / m, m, launch.block[0] as usize),
+        tensor::View::one(scales),
         out,
     )
 }
