@@ -56,9 +56,9 @@ macro_rules! packed_gemv_batch_tests {
             let mut stepwise = vec![0.0f32; rows * n];
             for row in 0..rows {
                 $forward(
-                    &x[row * m..(row + 1) * m],
+                    tensor::View::one(&x[row * m..(row + 1) * m]),
                     &weights,
-                    &scales,
+                    tensor::View::one(&scales),
                     &mut stepwise[row * n..(row + 1) * n],
                 )
                 .expect("单行可算");
@@ -89,10 +89,10 @@ macro_rules! packed_gemv_tests {
     ($ty:ty, $model:ident, $group:ident, $forward:ident, $w_bytes:expr, $sample_w:expr) => {
         #[test]
         fn forward_rejects_a_buf_that_does_not_fit_the_shapes() {
-            let error = $forward(&[1.0; 4], &[], &[1.0], &mut [0.0; 1]).expect_err("权重太短");
+            let error = $forward(tensor::View::one(&[1.0; 4]), &[], tensor::View::one(&[1.0]), &mut [0.0; 1]).expect_err("权重太短");
             assert_eq!(error.code(), ::diagnostic::Code::Invalid);
             assert!(
-                $forward(&[1.0; 4], &[0u8; $w_bytes], &[1.0], &mut []).is_err(),
+                $forward(tensor::View::one(&[1.0; 4]), &[0u8; $w_bytes], tensor::View::one(&[1.0]), &mut []).is_err(),
                 "空输出"
             );
         }
@@ -163,7 +163,7 @@ macro_rules! non_finite_scale_test {
             let w = vec![0u8; m / (8 / $bits)];
             let x = vec![1.0; m];
             for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-                let error = forward(&x, &w, &[bad], &mut [0.0; 1]).expect_err("非有限标度必须拒绝");
+                let error = forward(tensor::View::one(&x), &w, tensor::View::one(&[bad]), &mut [0.0; 1]).expect_err("非有限标度必须拒绝");
                 assert_eq!(error.code(), ::diagnostic::Code::Invalid);
             }
         }
@@ -260,7 +260,7 @@ macro_rules! packed_gemv_value_tests {
                     .expect("参考可算");
             // 复用一块脏缓冲：结果必须是覆盖写，读到的不能是上一次的残留。
             let mut out = vec![f32::NAN; n];
-            forward(&x, &w, &scales, &mut out).expect("内核可算");
+            forward(tensor::View::one(&x), &w, tensor::View::one(&scales), &mut out).expect("内核可算");
             assert_eq!(out, expected, "内核与参考必须是同一段算术");
         }
 
@@ -278,7 +278,7 @@ macro_rules! packed_gemv_value_tests {
             let scales = vec![0.25, 0.5, 1.0, -1.0];
 
             let mut out = vec![f32::NAN; n];
-            forward(&x, &w, &scales, &mut out).expect("内核可算");
+            forward(tensor::View::one(&x), &w, tensor::View::one(&scales), &mut out).expect("内核可算");
 
             let row = |weights: [f32; 8], scale: [f32; 2]| {
                 scale[0] * (0..4).map(|k| weights[k] * x[k]).sum::<f32>()

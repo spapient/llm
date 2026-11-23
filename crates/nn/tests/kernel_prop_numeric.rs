@@ -74,7 +74,7 @@ fn scaled(len: usize) -> impl Strategy<Value = Vec<f32>> {
 /// 稠密 GEMV 一行定义：`out[j] = Σ_k w[j·m+k]·x[k]`。
 fn gemv_f32_of(x: &[f32], w: &[f32], n: usize) -> Vec<f32> {
     let mut out = vec![0.0f32; n];
-    gemv_f32::forward(x, w, &mut out).expect("形状非空");
+    gemv_f32::forward(tensor::View::one(x), w, &mut out).expect("形状非空");
     out
 }
 
@@ -569,7 +569,7 @@ proptest! {
         let w = crate::gemv::packed::weights(m, n, 1);
         let s: Vec<f32> = (0..n * groups).map(|i| [0.25f32, 0.5, 1.0, 2.0][i % 4]).collect();
         let mut got = vec![0.0f32; n];
-        gemv_i8::forward(x, &w, &s, &mut got).expect("形状合法");
+        gemv_i8::forward(tensor::View::one(x), &w, tensor::View::one(&s), &mut got).expect("形状合法");
         prop::assert_exact("gemv_i8 对定义", &got, &i8_reference(x, &w, &s, n, groups));
     }
 
@@ -585,9 +585,9 @@ proptest! {
         let s: Vec<f32> = vec![1.0; n * groups];
         let (mut left, mut right, mut both) =
             (vec![0.0f32; n], vec![0.0f32; n], vec![0.0f32; n]);
-        gemv_i8::forward(a, &w, &s, &mut left).expect("形状合法");
-        gemv_i8::forward(b, &w, &s, &mut right).expect("形状合法");
-        gemv_i8::forward(&summed, &w, &s, &mut both).expect("形状合法");
+        gemv_i8::forward(tensor::View::one(a), &w, tensor::View::one(&s), &mut left).expect("形状合法");
+        gemv_i8::forward(tensor::View::one(b), &w, tensor::View::one(&s), &mut right).expect("形状合法");
+        gemv_i8::forward(tensor::View::one(&summed), &w, tensor::View::one(&s), &mut both).expect("形状合法");
         let want: Vec<f32> = left.iter().zip(&right).map(|(p, q)| p + q).collect();
         prop::assert_exact("gemv_i8(x₁+x₂)", &both, &want);
     }
@@ -602,7 +602,7 @@ proptest! {
         let w = crate::gemv::packed::weights(m, n, 2);
         let s: Vec<f32> = (0..n * groups).map(|i| [0.5f32, 1.0, 2.0, 0.25][i % 4]).collect();
         let mut got = vec![0.0f32; n];
-        gemv_i4::forward(x, &w, &s, &mut got).expect("形状合法");
+        gemv_i4::forward(tensor::View::one(x), &w, tensor::View::one(&s), &mut got).expect("形状合法");
         let want = packed_reference(x, &w, &s, n, groups, 2, I4.table);
         prop::assert_exact("gemv_i4 对打包定义", &got, &want);
     }
@@ -617,7 +617,7 @@ proptest! {
         let w = crate::gemv::packed::weights(m, n, 4);
         let s: Vec<f32> = (0..n * groups).map(|i| [1.0f32, 0.5][i % 2]).collect();
         let mut got = vec![0.0f32; n];
-        gemv_i2::forward(x, &w, &s, &mut got).expect("形状合法");
+        gemv_i2::forward(tensor::View::one(x), &w, tensor::View::one(&s), &mut got).expect("形状合法");
         let want = packed_reference(x, &w, &s, n, groups, 4, I2.table);
         prop::assert_exact("gemv_i2 对打包定义", &got, &want);
     }
@@ -632,9 +632,9 @@ proptest! {
     #[test]
     fn gemv_rejects_an_empty_output(m in 1usize..=32, x in ints(32)) {
         let x = &x[..m];
-        prop_assert!(gemv_f32::forward(x, &[], &mut []).is_err(), "f32 的 n = 0 必须拒绝");
+        prop_assert!(gemv_f32::forward(tensor::View::one(x), &[], &mut []).is_err(), "f32 的 n = 0 必须拒绝");
         prop_assert!(
-            gemv_i8::forward(x, &[], &[], &mut []).is_err(),
+            gemv_i8::forward(tensor::View::one(x), &[], tensor::View::one(&[]), &mut []).is_err(),
             "i8 的 n = 0 必须拒绝"
         );
     }
@@ -647,12 +647,12 @@ proptest! {
         let x = &w[..m];
         let (need, mut out) = (n * m, vec![0.0f32; n]);
         prop_assert!(
-            gemv_f32::forward(x, &w[..need - 1], &mut out).is_err(),
+            gemv_f32::forward(tensor::View::one(x), &w[..need - 1], &mut out).is_err(),
             "权重 {} < {need} 必须拒绝",
             need - 1
         );
         prop_assert!(
-            gemv_f32::forward(x, &w[..need], &mut out).is_ok(),
+            gemv_f32::forward(tensor::View::one(x), &w[..need], &mut out).is_ok(),
             "权重恰好 {need} 必须接受"
         );
     }
@@ -665,11 +665,11 @@ proptest! {
         let x: Vec<f32> = (0..m).map(|k| k as f32 * 0.25).collect();
         let mut out = vec![0.0f32; n];
         prop_assert!(
-            <crate::gemv::f32::F32 as crate::gemv::Format>::forward(&x, &w[..n * m], &[], &mut out).is_ok(),
+            <crate::gemv::f32::F32 as crate::gemv::Format>::forward(tensor::View::one(&x), &w[..n * m], tensor::View::one(&[]), &mut out).is_ok(),
             "空标度必须接受"
         );
         prop_assert!(
-            <crate::gemv::f32::F32 as crate::gemv::Format>::forward(&x, &w[..n * m], &[s], &mut out).is_err(),
+            <crate::gemv::f32::F32 as crate::gemv::Format>::forward(tensor::View::one(&x), &w[..n * m], tensor::View::one(&[s]), &mut out).is_err(),
             "稠密格式收到标度必须拒绝"
         );
     }
@@ -685,7 +685,7 @@ proptest! {
         let per_row = len / n;
         let ok = len.is_multiple_of(n) && per_row > 0 && m.is_multiple_of(per_row);
         prop_assert_eq!(
-            gemv_i8::forward(&x, &w, &s, &mut out).is_ok(),
+            gemv_i8::forward(tensor::View::one(&x), &w, tensor::View::one(&s), &mut out).is_ok(),
             ok,
             "{} 个标度配 n = {}、m = {} 的可接受性",
             len, n, m
@@ -700,11 +700,11 @@ proptest! {
         let m = crate::gemv::GROUP * groups;
         let w = crate::gemv::packed::weights(m, n, 1);
         let (x, mut s, mut out) = (vec![1.0f32; m], vec![1.0f32; n * groups], vec![0.0f32; n]);
-        prop_assert!(gemv_i8::forward(&x, &w, &s, &mut out).is_ok(), "全有限必须接受");
+        prop_assert!(gemv_i8::forward(tensor::View::one(&x), &w, tensor::View::one(&s), &mut out).is_ok(), "全有限必须接受");
         let at = slot % s.len();
         s[at] = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY][which];
         prop_assert!(
-            gemv_i8::forward(&x, &w, &s, &mut out).is_err(),
+            gemv_i8::forward(tensor::View::one(&x), &w, tensor::View::one(&s), &mut out).is_err(),
             "第 {at} 个标度非有限必须拒绝"
         );
     }

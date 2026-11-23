@@ -90,7 +90,7 @@ pub use element::{BoolElement, Element, FloatElement, IntElement, NumericElement
 pub use rank::Rank;
 pub use shape::{AxisLen, Order, Shape, Slice, product};
 pub use store::{Owned, Store, StoreMut};
-pub use tensor::{Tensor, View};
+pub use tensor::{Tensor, View, ViewMut};
 
 use diagnostic::{Code, Error};
 

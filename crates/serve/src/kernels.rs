@@ -278,7 +278,7 @@ fn gemv_f32(launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) ->
     let (x, weights, out) = gemv_inputs(inputs, outputs)?;
     let m = launch.block[1] as usize;
     if m == 0 || x.len() == m {
-        return nn::gemv_f32::forward(x, weights, out);
+        return nn::gemv_f32::forward(tensor::View::one(x), weights, out);
     }
     project_rows(x, weights, out, m, launch.block[0] as usize)
 }
@@ -298,7 +298,7 @@ fn gemv_inputs<'a, 'b>(
 fn project_rows(x: &[f32], weights: &[f32], out: &mut [f32], m: usize, n: usize) -> Result<()> {
     let rows = row_batch_rows(x, out, m, n)?;
     if rows == 1 {
-        return nn::gemv_f32::forward(x, weights, out);
+        return nn::gemv_f32::forward(tensor::View::one(x), weights, out);
     }
     if rows >= nn::fast::MIN_ROWS {
         nn::fast::gemm_f32_tn(x, weights, rows, n, m, out);
@@ -315,8 +315,9 @@ fn row_batch_rows(x: &[f32], out: &[f32], m: usize, n: usize) -> Result<usize> {
     Ok(x.len() / m)
 }
 
-/// 量化 GEMV 单行算术入口：一个输入向量 → 一个输出向量。
-type GemvQuantFn = fn(x: &[f32], w: &[u8], s: &[f32], out: &mut [f32]) -> Result<()>;
+/// 量化 GEMV 单行算术入口：一个输入向量 → 一个输出向量。激活与标度是只读张量视图，打包权重保持裸字节。
+type GemvQuantFn =
+    fn(x: tensor::View<'_, f32>, w: &[u8], s: tensor::View<'_, f32>, out: &mut [f32]) -> Result<()>;
 
 /// 量化 GEMV 行批算术入口：`rows × m` 的输入 → `rows × n` 的输出。
 type GemvQuantBatchFn =
@@ -334,7 +335,7 @@ fn gemv_quant(
 ) -> Result<()> {
     let m = launch.block[1] as usize;
     if m == 0 || x.len() == m {
-        return single(x, weights, scales, out);
+        return single(tensor::View::one(x), weights, tensor::View::one(scales), out);
     }
     batch(
         x,

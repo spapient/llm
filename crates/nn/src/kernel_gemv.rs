@@ -134,9 +134,9 @@ macro_rules! gemv_packed {
 
         /// 内核本体：`m = x.len()`、`n = out.len()`，结果写进调用方给的缓冲。
         pub fn forward(
-            x: &[f32],
+            x: tensor::View<'_, f32>,
             weights: &[u8],
-            scales: &[f32],
+            scales: tensor::View<'_, f32>,
             out: &mut [f32],
         ) -> diagnostic::Result<()> {
             <$alias as $crate::gemv::Format>::forward(x, weights, scales, out)
@@ -260,8 +260,12 @@ pub mod f32 {
     crate::operator_via!(grained F32, "gemv_f32", 2, (4096, 4096), true, super, gemv::AXES);
 
     /// 内核本体：`m = x.len()`、`n = out.len()`，结果写进调用方给的缓冲。
-    pub fn forward(x: &[f32], weights: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
-        <F32 as gemv::Format>::forward(x, weights, &[], out)
+    pub fn forward(
+        x: tensor::View<'_, f32>,
+        weights: &[f32],
+        out: &mut [f32],
+    ) -> diagnostic::Result<()> {
+        <F32 as gemv::Format>::forward(x, weights, tensor::View::one(&[]), out)
     }
 
     #[cfg(test)]
@@ -378,9 +382,9 @@ pub mod i8 {
 
     /// 内核本体：`m = x.len()`、`n = out.len()`，结果写进调用方给的缓冲。
     pub fn forward(
-        x: &[f32],
+        x: tensor::View<'_, f32>,
         weights: &[u8],
-        scales: &[f32],
+        scales: tensor::View<'_, f32>,
         out: &mut [f32],
     ) -> diagnostic::Result<()> {
         <I8 as gemv::Format>::forward(x, weights, scales, out)

@@ -26,6 +26,19 @@ impl<E> Store<E> for &[E] {
     }
 }
 
+/// 借来的可写存储：`B = &'a mut [K]`，输出缓冲以张量形态进入算子，构造时同样不另包一层。
+impl<E> Store<E> for &mut [E] {
+    fn slice(&self) -> &[E] {
+        self
+    }
+}
+
+impl<E> StoreMut<E> for &mut [E] {
+    fn slice_mut(&mut self) -> &mut [E] {
+        self
+    }
+}
+
 /// 自己持有的存储。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Owned<E>(Vec<E>);

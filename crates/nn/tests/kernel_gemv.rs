@@ -54,7 +54,7 @@ fn the_scalar_reference_matches_a_hand_computed_dot_product() {
     let x = [1.0f32, 2.0, 3.0, 4.0];
     let w = [1.0f32, 2.0, 3.0, 4.0];
     let mut y = [0.0f32; 1];
-    forward(&x, &w, &mut y).expect("合法");
+    forward(tensor::View::one(&x), &w, &mut y).expect("合法");
     assert_eq!(y, [30.0]);
 }
 
@@ -80,7 +80,7 @@ fn forward_matches_the_scalar_reference_on_the_deterministic_sample() {
     let x = sample.f32("x").expect("x");
     let w = sample.f32("w").expect("w");
     let mut out = vec![0.0f32; expected.len()];
-    forward(x, w, &mut out).expect("合法形状");
+    forward(tensor::View::one(x), w, &mut out).expect("合法形状");
     assert_eq!(out, expected, "稠密 GEMV 内核与参考必须逐位一致");
 }
 
@@ -89,7 +89,7 @@ fn a_row_that_is_shorter_than_declared_is_rejected() {
     let x = [1.0f32; 4];
     let w = [1.0f32; 4];
     let mut y = [0.0f32; 2];
-    let error = forward(&x, &w, &mut y).expect_err("两行只有一行权重");
+    let error = forward(tensor::View::one(&x), &w, &mut y).expect_err("两行只有一行权重");
     assert_eq!(error.code(), Code::Invalid);
     assert!(error.to_string().contains("权重长度"), "{error}");
 }
@@ -100,7 +100,7 @@ fn the_dense_format_refuses_a_scales_buf() {
     let x = [1.0f32; 4];
     let w = [1.0f32; 4];
     let mut y = [0.0f32; 1];
-    let error = <F32 as Format>::forward(&x, &w, &[1.0], &mut y).expect_err("稠密格式没有标度");
+    let error = <F32 as Format>::forward(tensor::View::one(&x), &w, tensor::View::one(&[1.0]), &mut y).expect_err("稠密格式没有标度");
     assert_eq!(error.code(), Code::Invalid);
     assert!(error.to_string().contains("标度"), "{error}");
 }
@@ -183,7 +183,7 @@ fn the_dense_dot_stays_inside_the_gamma_bound_against_a_wider_reference() {
         .map(|k| (f64::from(weight[k]) * f64::from(x[k])).abs())
         .sum();
     let mut y = [0.0f32; 1];
-    forward(&x, &weight, &mut y).expect("合法形状");
+    forward(tensor::View::one(&x), &weight, &mut y).expect("合法形状");
     // γ_M = M·u/(1−M·u)，u = 2⁻²⁴。逐行版的重排更松，γ_M 是上界（误差方向保守）。
     let u = f64::from(f32::EPSILON) / 2.0;
     let gamma = M as f64 * u / (1.0 - (M as f64) * u);
@@ -213,7 +213,7 @@ fn the_row_blocked_forward_stays_inside_the_gamma_bound_with_an_odd_row_count() 
         .map(|k| ((k * 13 % 59) as f32 - 29.0) / 3.0)
         .collect();
     let mut y = vec![0.0f32; N];
-    forward(&x, &weight, &mut y).expect("合法形状");
+    forward(tensor::View::one(&x), &weight, &mut y).expect("合法形状");
     let u = f64::from(f32::EPSILON) / 2.0;
     let gamma = M as f64 * u / (1.0 - (M as f64) * u);
     for r in 0..N {

@@ -9,7 +9,7 @@ fn forward_matches_a_hand_written_sum() {
     let scales = [0.5f32];
     let mut out = [0.0f32; 1];
 
-    forward(&x, &w, &scales, &mut out).expect("合法");
+    forward(tensor::View::one(&x), &w, tensor::View::one(&scales), &mut out).expect("合法");
     let expected = 0.5 * (1.0 * 1.0 + 2.0 * 2.0 + 3.0 * 3.0 + 4.0 * 4.0);
     assert!((out[0] - expected).abs() < 1e-6, "{:?}", out);
 }
@@ -22,7 +22,7 @@ fn negative_bytes_are_interpreted_as_signed() {
     let scales = [1.0f32];
     let mut out = [0.0f32; 1];
 
-    forward(&x, &w, &scales, &mut out).expect("合法");
+    forward(tensor::View::one(&x), &w, tensor::View::one(&scales), &mut out).expect("合法");
     assert!((out[0] - 1.0).abs() < 1e-6, "-1 + 2 = 1，实际 {}", out[0]);
 }
 
@@ -71,7 +71,7 @@ fn quantized_logits_keep_cosine_with_the_f32_reference() {
     }
 
     let mut quantized = vec![0.0f32; N];
-    forward(&x, &packed, &scales, &mut quantized).expect("合成形状合法");
+    forward(tensor::View::one(&x), &packed, tensor::View::one(&scales), &mut quantized).expect("合成形状合法");
 
     let cosine = cosine_similarity(&reference, &quantized).expect("两条向量非零");
     assert!(

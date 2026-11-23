@@ -179,6 +179,6 @@
     ) -> diagnostic::Result<Vec<f32>> {
         let want = required_weights(weights.len(), n, F::row(m))?;
         let mut y = vec![0.0f32; n];
-        F::forward(x, &weights[..want], scales, &mut y)?;
+        F::forward(tensor::View::one(x), &weights[..want], tensor::View::one(scales), &mut y)?;
         Ok(y)
     }

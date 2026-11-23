@@ -67,6 +67,9 @@ pub struct Tensor<B, R = Vec<usize>, K = f32> {
 /// 借用调用方缓冲的只读张量：运行期秩 + 借来的元素。
 pub type View<'a, K> = Tensor<&'a [K], Vec<usize>, K>;
 
+/// 借用调用方缓冲的可写张量：运行期秩 + 借来的可写元素，用作算子输出操作数。
+pub type ViewMut<'a, K> = Tensor<&'a mut [K], Vec<usize>, K>;
+
 impl<'a, K: Element> View<'a, K> {
     /// 一维只读视图：唯一轴长即缓冲长度，行主序连续。
     ///
@@ -74,6 +77,13 @@ impl<'a, K: Element> View<'a, K> {
     /// 给出，构造期不可能失败，因此不走 [`Tensor::new`](Self::new) 的 `Result`。多维几何必须
     /// 显式传入形状，仍走 `new` 在校验拦下轴数与元素数不符。
     pub fn one(slice: &'a [K]) -> Self {
+        assemble(vec![slice.len()], vec![1], 0, slice)
+    }
+}
+
+impl<'a, K: Element> ViewMut<'a, K> {
+    /// 一维可写视图：唯一轴长即缓冲长度，行主序连续。口径同 [`View::one`]，只是存储可写。
+    pub fn one(slice: &'a mut [K]) -> Self {
         assemble(vec![slice.len()], vec![1], 0, slice)
     }
 }
@@ -104,8 +114,7 @@ where
     }
 
     /// 两种形态共用的连续构造：先核元素数，再推连续步长。
-    fn build(dims: R, buf: B, marker: &str) -> Result<Self> {
-        let numel = product(dims.as_slice());
+    fn build(dims: R, buf: B, marker: &str) -> Result<Self> {        let numel = product(dims.as_slice());
         let len = buf.slice().len();
         if len != numel {
             return Err(invalid(
@@ -481,6 +490,18 @@ where
     }
 }
 
+impl<B, R, K> Tensor<B, R, K>
+where
+    R: Rank,
+    K: Element,
+    B: StoreMut<K>,
+{
+    /// 可写元素：自持张量与借来的可写视图（[`ViewMut`]）共用这一处访问器。
+    pub fn as_slice_mut(&mut self) -> &mut [K] {
+        self.buf.slice_mut()
+    }
+}
+
 /// 广播时第 `axis` 轴的步长：前导新轴为 0；同长沿用源步长；源轴长为 1 则恒读同一元素。
 ///
 /// 秩、轴长对不上都不是广播，返回 `None`。
@@ -518,11 +539,6 @@ where
         let dims = dims.into();
         let buf = Owned::zeros(product(dims.as_slice()))?;
         Self::build(dims, buf, "tensor::Tensor::zeros")
-    }
-
-    /// 可写元素。
-    pub fn as_slice_mut(&mut self) -> &mut [K] {
-        self.buf.slice_mut()
     }
 
     /// 就地写 `ranges` 那一窗：窗口内每个位置都写成 `value`，窗口外原样。
