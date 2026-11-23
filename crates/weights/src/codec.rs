@@ -319,13 +319,7 @@ fn unpack_bits(src: &[u8], count: usize, width: u8) -> Result<Vec<u32>> {
 
 /// 补足累加器到 `width` 位：位流逐字节串行推进，无法整块预取，故保留 while；
 /// 原地推进字节位置、位缓存与已用位数。
-fn refill(
-    src: &[u8],
-    at: &mut usize,
-    acc: &mut u64,
-    bits: &mut u32,
-    width: u8,
-) -> Result<()> {
+fn refill(src: &[u8], at: &mut usize, acc: &mut u64, bits: &mut u32, width: u8) -> Result<()> {
     while *bits < width as u32 {
         let byte = src.get(*at).copied().ok_or_else(|| bad("quant 码流截断"))?;
         *acc |= (byte as u64) << *bits;
