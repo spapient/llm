@@ -496,7 +496,7 @@ fn a_row_batch_projection_equals_row_by_row_gemv() {
     let mut row_by_row = vec![0.0f32; rows * n];
     for row in 0..rows {
         nn::gemv_f32::forward(
-            &x[row * m..(row + 1) * m],
+            tensor::View::one(&x[row * m..(row + 1) * m]),
             &weights,
             &mut row_by_row[row * n..(row + 1) * n],
         )
@@ -508,6 +508,6 @@ fn a_row_batch_projection_equals_row_by_row_gemv() {
     let mut single = vec![0.0f32; n];
     project_rows(&x[..m], &weights, &mut single, m, n).expect("单行投影");
     let mut reference = vec![0.0f32; n];
-    nn::gemv_f32::forward(&x[..m], &weights, &mut reference).expect("gemv");
+    nn::gemv_f32::forward(tensor::View::one(&x[..m]), &weights, &mut reference).expect("gemv");
     assert_eq!(single, reference, "decode 口径必须与 gemv 逐位一致");
 }

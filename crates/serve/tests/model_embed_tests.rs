@@ -40,7 +40,7 @@ fn an_embedding_then_projection_matches_the_reference() {
         e
     };
     let mut reference = vec![0.0; 2];
-    nn::gemv_f32::forward(&embedded, &w, &mut reference).expect("参考：投影");
+    nn::gemv_f32::forward(tensor::View::one(&embedded), &w, &mut reference).expect("参考：投影");
 
     let stack = embed_projection_stack(vocab, dim);
     let params = params_of(&[
