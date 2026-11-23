@@ -2,6 +2,7 @@
 
 pub use crate::metal::{compile_run_metal, metal_driver, metal_kernel};
 // 三条厂商链共用的导入面：避免各写一份重复块。
+pub(crate) use crate::dialect::Dialect;
 pub(crate) use cutile::dirs::Dirs;
 pub(crate) use cutile::prof::{Emit, Profile};
 pub(crate) use diagnostic::{Code, Error, Result};
@@ -901,7 +902,7 @@ fn metal_chunk_lower(
 ) -> Result<Vec<String>> {
     match kind {
         ChunkReduce { chunk, func } => {
-            crate::metal::Metal::chunk_reduce(kernel, signature, sample, *chunk, func)
+            crate::dialect::Metal::chunk_reduce(kernel, signature, sample, *chunk, func)
                 .map(|s| vec![s])
         }
         ChunkScan { chunk, decay } => {
