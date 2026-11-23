@@ -17,7 +17,7 @@ use prof::sig::{CType, Signature};
 /// # Errors
 ///
 /// 签名不足三条缓冲或三个整数标量、样本缺标量、或 `tile == 0` 时返回说明。
-pub(crate) fn metal_tiled_gemm(
+pub fn metal_tiled_gemm(
     _kernel: &str,
     signature: &Signature,
     sample: &Sample,
@@ -62,7 +62,7 @@ fn tiled_gemm_msl(
 /// # Errors
 ///
 /// 签名不足三条缓冲或三个整数标量、样本缺标量、片段数不在 `1..=4`、或 `K` 不是 8 的倍数时返回说明。
-pub(crate) fn metal_simdgroup_gemm(
+pub fn metal_simdgroup_gemm(
     _kernel: &str,
     signature: &Signature,
     sample: &Sample,
@@ -305,7 +305,7 @@ fn register_blocked_gemm_msl(
 /// # Errors
 ///
 /// 签名不是 `(u8 a, u8 b, float y, int M, int N, int K)`、样本缺标量，或形状不满足分块整除时返回说明。
-pub(crate) fn metal_int8_gemm(
+pub fn metal_int8_gemm(
     _kernel: &str,
     signature: &Signature,
     sample: &Sample,
@@ -355,7 +355,7 @@ fn int8_signature(signature: &Signature) -> bool {
 /// # Errors
 ///
 /// `tile == 0` 或任一维度不能被 `tile` 整除时返回说明。
-pub(crate) fn metal_int8_gemm_program(m: usize, n: usize, k: usize, tile: usize) -> Result<String> {
+pub fn metal_int8_gemm_program(m: usize, n: usize, k: usize, tile: usize) -> Result<String> {
     check_int8_shape(m, n, k, tile)?;
     Ok(shared_tile_gemm_msl(
         "a",

@@ -8,7 +8,7 @@ use prof::sig::Signature;
 
 /// 张量核 GEMM 的几何选型：按输出规模在两组实测配置间取优，并让规约块尽量整除 `K`。
 #[must_use]
-pub(crate) fn tensor_geometry(m: usize, n: usize, k: usize) -> TensorGeometry {
+pub fn tensor_geometry(m: usize, n: usize, k: usize) -> TensorGeometry {
     let small = m * n <= 4 * 1024 * 1024;
     // 行跨度必须整除 `M`（`matmul2d` 整块读 A），小 `M` 时逐档降到能整除的最大跨度；
     // 一个都不整除说明这个形状走不了张量核，留给调用方回落，这里仍给 128 让校验报错。
@@ -52,7 +52,7 @@ pub(crate) fn tensor_geometry(m: usize, n: usize, k: usize) -> TensorGeometry {
 /// # Errors
 ///
 /// 签名不足三条缓冲或三个整数标量、样本缺标量、或几何参数越界时返回说明。
-pub(crate) fn metal_tensor_gemm(
+pub fn metal_tensor_gemm(
     _kernel: &str,
     signature: &Signature,
     sample: &Sample,

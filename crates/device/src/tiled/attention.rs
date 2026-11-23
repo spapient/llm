@@ -19,7 +19,7 @@ use prof::sig::Signature;
 ///
 /// 签名不足 4 缓冲（q/k/v/y）或 2 整数标量（S/D）、样本缺标量、线程/块几何非法、
 /// 或头宽 `D` 不在 `1..=64` 时返回说明。
-pub(crate) fn metal_flash_attention(
+pub fn metal_flash_attention(
     _kernel: &str,
     signature: &Signature,
     sample: &Sample,
@@ -251,7 +251,7 @@ fn flash_acc_update(v: &str, n: usize, shape: Flash, tail: bool) -> String {
 /// # Errors
 ///
 /// 签名不足 4 缓冲（q/k/v/y）或 2 整数标量（S/D）、样本缺标量、或线程数非法时返回说明。
-pub(crate) fn metal_tiled_attention(
+pub fn metal_tiled_attention(
     _kernel: &str,
     signature: &Signature,
     sample: &Sample,
