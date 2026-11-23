@@ -28,6 +28,11 @@ impl ScalarType {
             ScalarType::Usize => "size_t",
         }
     }
+
+    /// Whether this type may be held in a buffer parameter. `usize` is an extent scalar only.
+    pub(crate) fn buffer_ok(self) -> bool {
+        matches!(self, ScalarType::F32)
+    }
 }
 
 /// Buf access required by a kernel parameter.
@@ -40,11 +45,11 @@ pub enum Access {
 }
 
 impl Access {
-    /// C pointer declaration for an `f32` buffer held with this access.
-    fn c_pointer(self) -> &'static str {
+    /// C pointer declaration for a buffer of the given element spelling, held with this access.
+    fn c_pointer(self, element: &str) -> String {
         match self {
-            Access::Read => "const float *",
-            Access::ReadWrite => "float *",
+            Access::Read => format!("const {element} *"),
+            Access::ReadWrite => format!("{element} *"),
         }
     }
 }
