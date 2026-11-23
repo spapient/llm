@@ -214,9 +214,7 @@ fn ternary_type(
         .iter()
         .all(|&ty| ty == ScalarType::F32)
         .then_some(ScalarType::F32)
-        .ok_or_else(|| {
-            VerificationError::new("fused multiply-add operands must all be f32")
-        })
+        .ok_or_else(|| VerificationError::new("fused multiply-add operands must all be f32"))
 }
 
 fn literal_type(bits: u32) -> Result<ScalarType, VerificationError> {

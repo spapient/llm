@@ -10,7 +10,7 @@ fn a_batch_must_match_its_shape() {
         Batch::new(&[1, 2, 3], 2, 2).unwrap_err().code(),
         Code::Invalid
     );
-    assert_eq!(Batch::new(&[], 0, 2).unwrap_err().code(), Code::Invalid);
+    assert_eq!(Batch::<u32>::new(&[], 0, 2).unwrap_err().code(), Code::Invalid);
 }
 
 #[test]
@@ -179,7 +179,7 @@ fn the_trait_object_reports_and_yields_the_same_stream() {
     let tokens: [u32; 9] = [0, 1, 2, 3, 4, 5, 6, 7, 8];
     let mut chunks = Chunks::new(&tokens, 1, 3).expect("数据");
     // 走 trait 对象路径：三个计数与取批都由 trait 分发，验证对象安全契约。
-    let ds: &mut dyn Dataset<'_> = &mut chunks;
+    let ds: &mut dyn Dataset<'_, Item = u32> = &mut chunks;
     assert_eq!(ds.cols(), 3);
     assert_eq!(ds.batches(), 3);
     assert_eq!(ds.remaining_batches(), 3);

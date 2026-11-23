@@ -479,9 +479,21 @@ struct Method {
 }
 
 const METHODS: [Method; 3] = [
-    Method { name: "abs", arity: 0, variant: None },
-    Method { name: "min", arity: 1, variant: Some("Min") },
-    Method { name: "max", arity: 1, variant: Some("Max") },
+    Method {
+        name: "abs",
+        arity: 0,
+        variant: None,
+    },
+    Method {
+        name: "min",
+        arity: 1,
+        variant: Some("Min"),
+    },
+    Method {
+        name: "max",
+        arity: 1,
+        variant: Some("Max"),
+    },
 ];
 
 /// 表达式三层：括号剥壳 → 叶子（字面量/标量/加载）→ 组合子（二元、取负）。
@@ -514,7 +526,10 @@ fn parse_compound(expression: &Expr, idx: &str, params: &[Param]) -> syn::Result
 /// 按 [`METHODS`] 闭集展开方法组合子；未登记的方法名在展开期打回。
 fn method_call(method: &ExprMethodCall, idx: &str, params: &[Param]) -> syn::Result<TokenStream2> {
     let name = method.method.to_string();
-    let Some(known) = METHODS.iter().find(|candidate| candidate.name == name.as_str()) else {
+    let Some(known) = METHODS
+        .iter()
+        .find(|candidate| candidate.name == name.as_str())
+    else {
         return fail(method.method.span(), "unsupported kernel method");
     };
     if method.args.len() != known.arity {

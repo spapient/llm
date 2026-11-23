@@ -8,9 +8,10 @@ use llm_optim::backend::{Backend, Codegen, Driver, Readback, Source};
 use llm_optim::driver;
 use llm_optim::toolchain::Toolchain;
 use llm_optim::witness::{MAX_OUT, Scope, Selected};
-use prof::prof::{Emit, Profile};
+use prof::prof::Profile;
 use prof::sig::Signature;
 use prof::model::Sample;
+use prof::prof::Emit;
 use std::path::Path;
 use std::process::Command;
 

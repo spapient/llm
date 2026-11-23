@@ -297,6 +297,30 @@ fn external_and_pure_anchor_links_are_skipped() {
     assert!(links(doc).is_empty());
 }
 
+#[test]
+fn links_carry_line_numbers_across_multiple_lines() {
+    let doc = "第一行无链接。\n第二行 [a](guide.md)。\n第三行 [b](note.md#top)。";
+    assert_eq!(
+        links(doc),
+        vec![
+            Link {
+                target: "guide.md".to_string(),
+                line: 2
+            },
+            Link {
+                target: "note.md".to_string(),
+                line: 3
+            },
+        ]
+    );
+}
+
+#[test]
+fn empty_and_unclosed_links_are_skipped() {
+    let doc = "[]()\n[open](note.md 未闭合";
+    assert!(links(doc).is_empty());
+}
+
 // ---------------------------------------------------------------------------
 // dup：文件行数闸门
 // ---------------------------------------------------------------------------

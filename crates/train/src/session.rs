@@ -602,7 +602,7 @@ impl Checkpoint {
     pub fn new(
         step: u64,
         tape: &autograd::Tape,
-        batch: &crate::Batch<'_>,
+        batch: &crate::Batch<'_, u32>,
         layers: usize,
         weights: &weights::Header,
         topology: shard::Topology,

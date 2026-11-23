@@ -73,9 +73,9 @@ impl ValueType {
     fn c_type(self) -> Option<String> {
         match self {
             ValueType::Scalar(element) => Some(element.c_name().to_string()),
-            ValueType::Buf { element, access } => element
-                .buf_ok()
-                .then(|| access.c_pointer(element.c_name())),
+            ValueType::Buf { element, access } => {
+                element.buf_ok().then(|| access.c_pointer(element.c_name()))
+            }
         }
     }
 

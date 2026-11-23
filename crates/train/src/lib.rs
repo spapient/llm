@@ -58,7 +58,10 @@ mod session;
 mod support;
 
 pub use geometry::{Geometry, Running};
-pub use learner::{Batch, Chunks, Dataset, ForwardOut, Learner, Metric, MetricPoint, MetricsBoard};
+pub use learner::{
+    Batch, Chunks, Dataset, ForwardOut, Loader, LoaderConfig, Learner, Metric, MetricPoint,
+    MetricsBoard,
+};
 pub use loss::{
     Distill, Grpo, Loss, Outcome, advantage, argmax_hits, bce_with_logits, clipped_surrogate,
     cross_entropy, distillation_loss, entropy, grpo_loss, hinge, huber, kl_div, kl_per_row,

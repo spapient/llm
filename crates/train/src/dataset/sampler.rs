@@ -11,6 +11,7 @@ use crate::rng::Rng;
 const SITE: &str = "train::dataset::sampler";
 
 /// 一条采样序的闭集实现。
+#[derive(Debug, Clone)]
 pub(crate) enum Sampler {
     /// `0, 1, …, n−1`，不洗牌。
     Sequential { order: Vec<usize>, cursor: usize },
@@ -39,10 +40,10 @@ impl Sampler {
         shuffle: Option<u64>,
         weights: Option<Vec<f32>>,
     ) -> Result<Self> {
-        match weights {
-            Some(weights) => Self::weighted(batches, weights, shuffle.unwrap_or(0)),
-            Some(seed) => Ok(Self::shuffled(batches, seed)),
-            None => Ok(Self::sequential(batches)),
+        match (weights, shuffle) {
+            (Some(weights), _) => Self::weighted(batches, weights, shuffle.unwrap_or(0)),
+            (None, Some(seed)) => Ok(Self::shuffled(batches, seed)),
+            (None, None) => Ok(Self::sequential(batches)),
         }
     }
 

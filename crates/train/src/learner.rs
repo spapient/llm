@@ -38,13 +38,13 @@
 //! assert_eq!(again.next().expect("第二批").tokens(), [2, 3]);
 //! ```
 //!
-//! 它也是**对象安全**的：`&mut dyn Dataset<'a>` 与具体类型走同一条取批路径，所以按批消费的
+//! 它也是**对象安全**的：`&mut dyn Dataset<Item = u32>` 与具体类型走同一条取批路径，所以按批消费的
 //! 代码可以只依赖 trait。
 //!
 //! ```
 //! use llm_train::{Chunks, Dataset};
 //!
-//! fn drain<'a>(dataset: &mut dyn Dataset<'a>) -> usize {
+//! fn drain<'a>(dataset: &mut dyn Dataset<'a, Item = u32>) -> usize {
 //!     core::iter::from_fn(|| dataset.next_batch()).count()
 //! }
 //!
@@ -161,9 +161,9 @@ impl<K: Kernel, O: Optimizer, C: Collective> Learner<K, O, C> {
     ///
     /// 批几何、前向、计划、梯度入账或优化步任一步失败都会透传；评估几何不自洽也是
     /// [`Code::Invalid`]。
-    pub fn run<F, G>(
+    pub fn run<'a, F, G>(
         &mut self,
-        dataset: &mut dyn Dataset<Item = u32>,
+        dataset: &mut dyn Dataset<'a, Item = u32>,
         epochs: u64,
         mut forward: F,
         mut backward: G,
@@ -195,7 +195,7 @@ impl<K: Kernel, O: Optimizer, C: Collective> Learner<K, O, C> {
     /// # Errors
     ///
     /// 批几何、前向或评估入账任一步失败都会透传；评估几何不自洽是 [`Code::Invalid`]。
-    pub fn evaluate<F>(&mut self, dataset: &mut dyn Dataset<Item = u32>, mut forward: F) -> Result<()>
+    pub fn evaluate<'a, F>(&mut self, dataset: &mut dyn Dataset<'a, Item = u32>, mut forward: F) -> Result<()>
     where
         F: FnMut(&mut Session<K, O, C>, &[u32]) -> Result<ForwardOut>,
     {

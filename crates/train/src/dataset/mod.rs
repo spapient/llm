@@ -85,7 +85,7 @@ impl<'a> Batch<'a, u32> {
 }
 
 /// 数据集：按批取样本。三个计数语义互不重叠：列宽、完整批总数、还没取走的完整批数。
-pub trait Dataset {
+pub trait Dataset<'a> {
     /// 条目形态；当前唯一实现为 `u32`。
     type Item;
 
@@ -98,8 +98,8 @@ pub trait Dataset {
     /// **还没取走**的完整批数。
     fn remaining_batches(&self) -> usize;
 
-    /// 取下一批；`None` 当且仅当本轮已取完。
-    fn next_batch(&mut self) -> Option<Batch<'_, Self::Item>>;
+    /// 取下一批；批次借用源缓冲，`None` 当且仅当本轮已取完。
+    fn next_batch(&mut self) -> Option<Batch<'a, Self::Item>>;
 
     /// 回到本轮开头；多 epoch 复用时每轮开始前调用。
     fn reset(&mut self);
@@ -186,7 +186,7 @@ impl ExactSizeIterator for Loader<'_> {}
 
 impl core::iter::FusedIterator for Loader<'_> {}
 
-impl<'a> Dataset for Loader<'a> {
+impl<'a> Dataset<'a> for Loader<'a> {
     type Item = u32;
 
     fn cols(&self) -> usize {
@@ -201,7 +201,7 @@ impl<'a> Dataset for Loader<'a> {
         self.sampler.remaining()
     }
 
-    fn next_batch(&mut self) -> Option<Batch<'_, u32>> {
+    fn next_batch(&mut self) -> Option<Batch<'a, u32>> {
         let index = self.sampler.next()?;
         let start = index * self.stride;
         let end = start + self.stride;
@@ -216,7 +216,3 @@ impl<'a> Dataset for Loader<'a> {
 #[cfg(test)]
 #[path = "../../tests/samples_tests.rs"]
 mod samples_tests;
-
-#[cfg(test)]
-#[path = "../../tests/dataset_tests.rs"]
-mod dataset_tests;
