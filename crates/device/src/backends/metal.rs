@@ -2,6 +2,7 @@
 //! 装配在本模块；MSL 设备源与 ObjC host 驱动骨架在 [`crate::metal`]，并行程序装配见 [`super::parallel`]。
 
 use crate::backends::common::{benchmark_grid, benchmark_output_len};
+use crate::dialect::Dialect;
 use crate::platform::detect_metal;
 use diagnostic::{Code, Error, Result};
 use cutile::dirs::Dirs;
@@ -10,7 +11,7 @@ use llm_optim::driver;
 use llm_optim::toolchain::Toolchain;
 use llm_optim::witness::{MAX_OUT, Scope, Selected};
 use prof::model::Sample;
-use prof::prof::Profile;
+use prof::prof::{Emit, Profile};
 use prof::sig::Signature;
 
 use super::parallel;

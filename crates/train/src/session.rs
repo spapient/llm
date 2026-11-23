@@ -5,7 +5,7 @@
 use autograd::{Requirement, Sizes, Tape, Var};
 use diagnostic::{Code, Error, Result};
 use nn::ParamRole;
-use shard::{Collective, Group, Parallel, Reduce, Topology};
+use shard::{Collective, Group, Parallel, ParallelConfig, Priority, Reduce, Topology};
 use tensor::{DType, Shape};
 
 use crate::optimizer::{Optimizer, OwnedSlot, Slot};

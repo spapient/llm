@@ -5,21 +5,19 @@
 pub(crate) mod ascend;
 pub(crate) mod common;
 pub(crate) mod cuda;
+pub(crate) mod harness;
 pub(crate) mod metal;
 pub(crate) mod parallel;
 
 pub use crate::metal::{compile_run_metal, metal_driver, metal_kernel};
-// 三条厂商链共用的导入面：避免各写一份重复块。
-pub(crate) use crate::dialect::Dialect;
+
+// 测试模块经 `super::*` 取用的类型与常量，这里一并重导出。
 pub(crate) use cutile::dirs::Dirs;
-pub(crate) use diagnostic::{Code, Error, Result};
-pub(crate) use llm_optim::backend::Lower::*;
-pub(crate) use llm_optim::backend::{Backend, Codegen, Driver, Launch, Lower, Readback, Source};
-pub(crate) use llm_optim::driver;
-pub(crate) use llm_optim::toolchain::Toolchain;
-pub(crate) use llm_optim::witness::{MAX_OUT, Scope, Selected};
+pub(crate) use diagnostic::{Code, Result};
+pub(crate) use llm_optim::backend::{Codegen, Driver, Launch, Lower, Source};
+pub(crate) use llm_optim::witness::{MAX_OUT, Scope};
 pub(crate) use prof::model::Sample;
-pub(crate) use prof::prof::{Emit, Profile};
+pub(crate) use prof::prof::Profile;
 pub(crate) use prof::sig::Signature;
 
 static METAL_BACKEND: metal::MetalBackend = metal::MetalBackend;
@@ -34,7 +32,7 @@ pub fn install() {
 }
 
 #[cfg(test)]
-#[path = "../tests/backends.rs"]
+#[path = "../../tests/backends.rs"]
 mod tests;
 
 #[cfg(test)]
@@ -42,5 +40,5 @@ mod tests;
 mod cutile_x_kernel;
 
 #[cfg(test)]
-#[path = "../tests/program.rs"]
+#[path = "../../tests/program.rs"]
 mod program_tests;

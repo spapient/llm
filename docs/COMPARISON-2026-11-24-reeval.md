@@ -27,6 +27,7 @@
 | 优化器 | `crates/train/src/optimizer.rs:3,186` `Sgd`/`Adam`/`Muon`；AdamW 解耦衰减 + 偏差修正 + 范数裁剪 | 优化器实现在位 | 定义与结构 confirmed | confirmed |
 | train 数据集/采样器搬迁断裂 | `crates/train/src/dataset/mod.rs:38,142,176`；`dataset/sampler.rs:14,44,56`；`session.rs:605` | 已提交 `86ff1531`：`Batch<'a,Item>` 加泛型后 `session.rs:605` 调用点缺 `Item`（E0107）；`Sampler` 未 derive `Debug/Clone`（E0277）；`from_config`  match 误用 weights 臂接 seed（E0308）；`Iterator::next` 生命周期未透传 `'a`；`learner.rs:540` unused imports | train lib 本快照**编译失败**（5 error + 1 warning）；静态结构在位但不可编译运行 | confirmed（编译断裂，已提交） |
 | cutile 未提交改动 | `crates/cutile/src/kernel.rs:566-569` `call_target` | 工作区未提交 diff：`&[value.as_ref()]`/`&[a,b,c]` 临时切片经 `&[&Expr]` 返回（E0515 ×4） | 4 error 归属未提交工作区改动，非已提交基线 | confirmed（未提交改动引入） |
+| device 后端搬迁断裂 | `backends/ascend.rs:18`；`backends/metal.rs:42,43,268`；`backends/mod.rs:18`；`dialect.rs:184,202,308` | 已提交快照：`harness.rs` 漏挂模块声明（E0432）；`prof::prof::Emit` 跨 crate 导入解析不到（E0425/E0433）；Metal 的 `Dialect` impl 漏 `chunk_reduce`（E0599） | device lib 本快照**编译失败**（4 error + 15 warning）；后端结构在位但不可编译 | confirmed（编译断裂，已提交） |
 
 > 未覆盖范围（本轮未逐项深核）：llm.u 各后端在真机上的运行激活与性能；Burn 后端在本机设备的实测；三仓训练数值精度对拍；`benchmarks` 数值结果。这些项下文只给代码结构层面的定级。
 
@@ -146,7 +147,7 @@ llm 文档列的形状族（`tensor.rs:20-31`）：`broadcast/narrow/slice/chunk
 | OpenCL/SYCL/INTEL | `device/src/…` intel fragment（`backend/intel` 在 llm.u 1352 行） | feature `opencl`/`sycl`/`clblast`；`backend/blas` 2984 行 | — |
 | MUSA / 昇腾 / ANE | 源生成 / 档案位流，无执行器 impl | `musa` feature；`npu.rs`；`ane → dep:coreml-native` | — |
 
-> 激活边界纪律：上表 llm 一行，"代码目录/源生成存在"不等于该后端在生产入口被选中。本轮 confirmed 的生产设备选择只有 `serve/src/model.rs:27` 的 CPU；Metal 仅测试构造；CUDA/昇腾无 `Executor` 实现。llm.u 后端的真机运行激活本轮未取证（unknown）；Burn 各后端运行状态以其仓库 CI/文档为准，本轮未在本机复跑。
+> 激活边界纪律：上表 llm 一行，"代码目录/源生成存在"不等于该后端在生产入口被选中。本轮 confirmed 的生产设备选择只有 `serve/src/model.rs:27` 的 CPU；Metal 仅测试构造；CUDA/昇腾无 `Executor` 实现。另需注意：`llm-device` crate 本快照编译断裂（E0432/E0425/E0599，见 §13.1），表内后端结构在位但当前不可编译。llm.u 后端的真机运行激活本轮未取证（unknown）；Burn 各后端运行状态以其仓库 CI/文档为准，本轮未在本机复跑。
 
 ### 4.2 执行缝（trait 面）
 
@@ -202,14 +203,14 @@ llm 文档列的形状族（`tensor.rs:20-31`）：`broadcast/narrow/slice/chunk
 
 | 对照点 | llm | llm.u | Burn |
 | --- | --- | --- | --- |
-| 训练循环 | `train` 12.8k：session/learner/backprop/loss/optimizer/geometry/kernel/pool/rng；forward/backward 以闭包注入（`learner.rs:164-182`） | `train` 7.8k：loss/优化器/调度/打包/检查点/rollout 桥 | `burn-train` 33.1k：完整训练循环/指标/检查点 |
+| 训练循环 | `train` 13.1k：session/learner/backprop/loss/optimizer/geometry/kernel/pool/rng；forward/backward 以闭包注入（`learner.rs:164-182`）；**本快照 train lib 编译断裂，循环不可编译运行**（见 §13.1） | `train` 7.8k：loss/优化器/调度/打包/检查点/rollout 桥 | `burn-train` 34.4k：完整训练循环/指标/检查点 |
 | 优化器 | `Sgd/Adam`(AdamW 解耦衰减 + 偏差修正 + 全局范数裁剪) `/Muon`（`optimizer.rs:3,186`） | 仅 `Adam`（`train/src/optim.rs:12`） | 12 个具体优化器：sgd/adam/adamw/adan/lamb/lbfgs/lion/momentum/muon/rmsprop/adafactor/adagrad + decay/grad_accum/parallel |
 | LR 调度 | warmup + anneal（`session.rs` `Schedule`） | cosine + warmup 类 | `burn-optim/lr_scheduler` 多策略 |
 | loss | cross_entropy/argmax_hits/mse/bce_with_logits/huber/hinge（`loss.rs:148` 等）+ Distill/Grpo 枚举变体（`loss.rs:282,289`），策略族函数体在 `loss_rl.rs:109,201`（`loss.rs:9` `#[path]` 挂为 `mod rl`） | 复用 exec 计算面 | 17 种 nn loss（18 文件含 reduction）+ train 指标 |
 | 指标/评估 | Learner 账表 + evaluate；无可插拔指标/渲染器 | 未见独立指标注册表 | 30+ 指标（burn-train） |
-| 数据集 | `Dataset` trait + chunks 游标；无物理数据源 | 未见独立 dataset crate | `burn-dataset` |
+| 数据集 | `Dataset` trait + chunks 游标结构在位；**dataset/sampler 本快照编译断裂**，无物理数据源 | 未见独立 dataset crate | `burn-dataset` |
 | 检查点 | weights/storage 自描述编码 + CRC-32 + 恢复事实 | checkpoint 字节存档 | `burn-store`/checkpoint 完整 |
-| RL | log_prob/entropy/advantage/GRPO 槽位（`loss.rs` Grpo/Distill） | rollout 桥 | `burn-rl`：env/policy/buffer |
+| RL | log_prob/entropy/advantage/GRPO 槽位（`loss_rl.rs` 策略族；`loss.rs:282,289` Distill/Grpo 枚举变体） | rollout 桥 | `burn-rl`：env/policy/buffer |
 
 ## 9. 推理服务与运行时
 
@@ -281,6 +282,10 @@ llm 文档列的形状族（`tensor.rs:20-31`）：`broadcast/narrow/slice/chunk
     - 生命周期 `dataset/mod.rs:176:9`：`Iterator::next` 经 `self.next_batch()` 返回的批生命周期绑到 `&mut self`，未透传到 `'a`。
     - warning `learner.rs:540`：unused imports `LoaderConfig`/`Loader`。
   - `cutile` lib 4 × E0515 `kernel.rs:566-569`：**未提交** diff 新增 `call_target`，把 `&[value.as_ref()]`/`&[a,b,c]` 临时切片经 `&[&Expr]` 返回，引用函数内临时值；归属工作区未提交改动，非已提交基线。
+  - `llm-device` lib 4 error + 15 warning（均已提交，device 工作区干净）：
+    - E0432 `backends/ascend.rs:18`：`use super::harness::{ACL_GUARD, ascend_harness}`；`harness.rs` 文件在位但 `backends/mod.rs` 漏挂 `mod harness;`。
+    - E0425/E0433 `backends/metal.rs:42,43`、`backends/common.rs:7`、`backends/mod.rs:14-23`：`Emit` 类型在作用域内找不到；`Emit` 是 `prof/src/prof.rs:17` 内 `closed_enum!` 生成的闭集枚举，`mod.rs:18` 经 `prof::prof::{Emit, Profile}` 跨 crate 导入，可见性/导出面解析不到。
+    - E0599 `backends/metal.rs:268:36`：`Dialect::chunk_reduce` 不在 `dialect::Metal` 上；`impl Dialect for Metal`（`dialect.rs:308`）漏实现 `chunk_reduce`/`chunk_reduce_entry`（trait 声明于 `dialect.rs:184,202`）。
 - `cargo clippy --workspace --all-targets`：编译阶段即失败，未达 lint 报告，不可判定为绿。
 - `cargo fmt --check`：exit 1，2 处 Diff，均在 `cutile/src/kernel.rs` 未提交改动。
 - `cargo test --workspace`：编译先挂，本轮未跑成；上一快照静态门 `every_source_passes_the_static_gate` 拦截的 19 项行数/复杂度赤字（weights 5、prof einsum、train 6、device 4、fuzz harness Call=1、tensor.rs 730 行）属既有基线（#44），本快照未能复核其当前清单。
@@ -335,7 +340,7 @@ llm 文档列的形状族（`tensor.rs:20-31`）：`broadcast/narrow/slice/chunk
 
 1. **后端运行面窄**：生产入口本轮见到的只有 CPU 装配（`serve/src/model.rs:27`）；Metal 仅测试构造，CUDA/ROCm/OpenCL/MUSA/昇腾无 `Executor` 实现。Burn 经 CubeCL 提供跨设备生产后端。
 2. **算子/层广度**：Burn 有 RNN、完整 Transformer encoder/decoder、17 种 loss、12 个优化器、30+ 指标、dataset、linalg/einsum/fusion/IR；llm 层与 loss/优化器面更窄，RNN/可插拔指标/物理数据源缺位。
-3. **张量算子深度**：llm 逻辑张量数值算子仅 12 个元素/归约，重算子在 nn；Burn tensor 24.9k 行、后端算子族全。
+3. **张量算子深度**：llm 逻辑张量数值算子仅 12 个元素/归约，重算子在 nn；Burn tensor 25.9k 行、后端算子族全。
 4. **模块派生与生态**：llm 无 Module derive 宏、无远程后端、无独立 dataset crate。
 
 ### 15.2 llm 的相对强项（本轮证据支持）
@@ -349,6 +354,7 @@ llm 文档列的形状族（`tensor.rs:20-31`）：`broadcast/narrow/slice/chunk
 
 - **编译断裂（已提交 `86ff1531`，train lib 5 error + 1 warning）**：`dataset/mod.rs`+`sampler.rs` 搬迁未闭合——`Batch` 泛型调用点未补 `Item`、`Sampler` 缺 `Debug/Clone` derive、`from_config` match 误用 weights 臂接 seed、`Iterator::next` 生命周期未透传 `'a`。断裂未修前训练/数据集维度不可编译运行。
 - **编译断裂（未提交工作区改动，cutile lib 4 E0515）**：`cutile/src/kernel.rs` 新增 `call_target` 返回临时切片引用；改动未提交，闭合前 cutile lib 编译不过。
+- **编译断裂（已提交，device lib 4 error + 15 warning）**：`harness` 模块声明遗漏；`prof::prof::Emit` 跨 crate 导入面解析不到；`impl Dialect for Metal` 漏 `chunk_reduce`/`chunk_reduce_entry`。后端 device crate 本快照不可编译。
 - 静态门 19 项行数/复杂度超标（weights 5、prof einsum、train 6、device 4、fuzz harness Call=1、tensor.rs 730 行），gate 测试 1 例失败；需拆文件/降复杂度，运行时生产代码不允许挂债（#44）。
 - `tensor/src/tensor.rs:140` `into_slice_mut` 在输出侧回退后无生产调用方，作为 pub 消费式解包方法保留；去留属 API 口径决策。
 
@@ -388,8 +394,8 @@ llm 文档列的形状族（`tensor.rs:20-31`）：`broadcast/narrow/slice/chunk
 | # | 维度 | llm | llm.u | Burn | 本轮定档依据 |
 | -- | --- | --- | --- | --- | --- |
 | 1 | 张量/类型系统 | 10 | 2 | 10 | llm `Tensor<B,R,K>` 双秩 + sealed 分组 + 三视图桥；llm.u 扁平 Tensor/View；Burn `Tensor<const D,K>` |
-| 2 | 后端广度 | 5 | 6 | 8 | llm 六厂商 Fragment/源生成，Executor 实现者仅 Metal/Cpu/Local；llm.u feature 门控 cuda/metal/intel/blas/rocm/musa/opencl/ane；Burn CubeCL 多 runtime + Flex/Remote |
-| 3 | 后端执行成熟度/性能 | 3 | 6 | 8 | llm 生产装配仅 CPU（`serve/src/model.rs:27`），Metal 仅测试构造，CUDA/昇腾无 Executor impl；llm.u 多后端 GEMM/内核族厚，真机激活本轮未复跑；Burn 跨后端可跑完整算子集 |
+| 2 | 后端广度 | 5 | 6 | 8 | llm 六厂商 Fragment/源生成，Executor 实现者仅 Metal/Cpu/Local；device lib 本快照编译断裂（E0432/E0425/E0599，见 §13.1）；llm.u feature 门控 cuda/metal/intel/blas/rocm/musa/opencl/ane；Burn CubeCL 多 runtime + Flex/Remote |
+| 3 | 后端执行成熟度/性能 | 3 | 6 | 8 | llm 生产装配仅 CPU（`serve/src/model.rs:27`），Metal 仅测试构造，CUDA/昇腾无 Executor impl，device crate 编译未闭合；llm.u 多后端 GEMM/内核族厚，真机激活本轮未复跑；Burn 跨后端可跑完整算子集 |
 | 4 | 算子/内核覆盖 | 4 | 4 | 9 | llm 52 注册算子 + 四层契约；llm.u 七臂内核族；Burn 张量 API 全套 + linalg/einsum/fusion |
 | 5 | nn 层完整度 | 5 | 3 | 9 | llm conv/pool/norm/attn/embed/rope 齐，无 RNN；llm.u 无 conv/pool/RNN；Burn 8 大类 + 49 Config 含 RNN/Transformer |
 | 6 | 自动微分 | 5 | 2 | 10 | llm 独立 tape/plan/replay 仓内小图，train 接线 confirmed，梯度数值未对拍；llm.u 逐层手写 bwd；Burn 后端装饰器任意可微 + checkpoint |
