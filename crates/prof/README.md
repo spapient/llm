@@ -143,12 +143,12 @@ host 自检），值不对就整台设备失败。
 
 校验与等级解耦：**声明了见证就校验它**，即使这条供给还是 `L0`/`L1`。这样加速器可以先有证据
 文本（`nvidia/witness.cu`、`intel/witness.cl`、`ascend/witness.cpp`、`metal/witness.metal` 已经登记在
-`prim::WITNESS`），
+`prof::WITNESS`），
 文件名或函数名写错会在装载期暴露，而不是等升 `L2` 才发现。自检则更进一步：它按 host C ABI
 真正编译执行这些见证，期望值写错会当场失败（结论记作 `Scope::Host`）。但自检**不**说明设备
 具备该能力，因此不改写等级：`nvidia` / `intel` / `ascend` / `metal` 仍停在 `L0`/`L1`，协商继续把它们的
 每条提供视为不具备。`musa` 是唯一例外——它的 36 个算子在 S4000 上真正编、真正跑、真正对拍过，
-等级按执行结论写成 `L2`（见 `crates/musa/`）。
+等级按执行结论写成 `L2`（见 `crates/prof/src/musa/`）。
 
 自检还有一个盲区：它只证明“这段代码在 C 里成立”。`metal/witness.metal` 曾写成 `float *out`
 （MSL 没有默认地址空间），host `cc` 一路绿灯而 `xcrun metal` 编不过——那份证据从未在自己
@@ -185,15 +185,15 @@ P0 九条不多不少、每条签名都是带见证的供给且入口名与 `PRI
 上限、见证自足（没有引号包含，所以复制到临时目录里也编得过）、每条供给至少有正文或见证之一；
 最后把每条见证真的编成可执行文件执行一遍，与 `expect` 对拍。判据只有一份、六台设备共用，
 新增设备只加数据（`tests/fragments.rs` 里一张 `P0` 清单），判据一行不改——连九条用例本身也不抄：
-`testkit::device_suite!(P0)` 把它们摊成该 crate 的 `#[test]` 函数，文件里剩下的只有文档、`P0`
+`testkit::suite::device_suite!(P0)` 把它们摊成该 crate 的 `#[test]` 函数，文件里剩下的只有文档、`P0`
 与一行调用。判据只产出缺陷、不自己 panic，断言留在用例里。
 
 ## 新增设备 / 新增执行单元
 
 1. 在 `src/<name>/` 下写 `<name>.toml` 与片段 / 见证正文（键必须属于闭集，写错字段会在解析期报错）；
 2. 目录本身就是清单：`build.rs` 扫 `src/*/*.toml`，加一个目录就是加一台设备，`lib.rs` 不登记 vendor；
-3. `cargo test -p prof` —— `every_embedded_entry_is_a_device_archive` 会把"生成表里缺一份档案"直接判为失败；
-   `cargo test -p llm-<name>` 再对一遍片段层契约（见上），它同时把每条见证在本机执行一次；
+3. `cargo test -p llm-prof` —— `every_embedded_entry_is_a_device_archive` 会把"生成表里缺一份档案"直接判为失败；
+   同一测试目标再对一遍片段层契约（见上），它同时把每条见证在本机执行一次；
 4. `cargo run --bin cutile -- doctor --op gemv_i4 --device <name>` 看协商结果（`units:` 那一行就是本档案的执行单元）；
 5. 有真机时 `cargo run --bin cutile -- verify --op gemv_i4 --devices <name>` 对拍并回填 `grade` / `witness`。
 
@@ -203,5 +203,5 @@ P0 九条不多不少、每条签名都是带见证的供给且入口名与 `PRI
   由 `build.rs` 与档案一起展开成表。
 - **原语片段**（`src/<vendor>/<prim>.<ext>`）与见证源码**也在本 crate**：它们是数据，不是代码。
 - **机制**：协商（`cap`）、选择（`plan`）、拼接（`substitute`）与 emit（`emit`）、探测（`probe`）都在 `cutile`；
-  依赖方向固定为 `llm → cutile → {prof, prim}`、`prim → prof`、`{prof, prim} → diagnostic`，本 crate 不依赖 `cutile`。
+  依赖方向固定为 `llm → cutile → prof`、`prof → {diagnostic, dtype}`，本 crate 不依赖 `cutile`。
 - 构建与工具链配置：见根目录的 `Cargo.toml`、`clippy.toml`、`rustfmt.toml`。

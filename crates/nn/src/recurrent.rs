@@ -134,13 +134,15 @@ pub struct Recurrent {
     dirs: usize,
     cell: Cell,
     bias: bool,
+    batch_first: bool,
 }
 
 impl Recurrent {
     /// 门投影的算子名：一层一方向就是一次 `(输入宽 + 隐宽) → 门数·隐宽` 的 GEMV。
     pub const GEMV: &str = "gemv_f32";
 
-    /// 由层名、单元、输入宽、隐宽、层数、方向数与偏置开关构造。
+    /// 由层名、单元、输入宽、隐宽、层数、方向数与偏置开关构造；序列布局取 **seq-first**
+    /// （`batch_first = false`，PyTorch 口径）。需要 batch-first 布局时走 [`Self::with_layout`]。
     ///
     /// 单向输出 `[hidden]`、双向输出 `[hidden·2]`：双向把两个方向的结果拼接，故输出宽是
     /// `hidden · dirs`；第一层吃 `input`，其后的层吃上一层的拼接结果。
@@ -158,8 +160,28 @@ impl Recurrent {
         dirs: usize,
         bias: bool,
     ) -> Result<Self> {
+        Self::with_layout(name, cell, input, hidden, layers, dirs, bias, false)
+    }
+
+    /// 同 [`Self::new`]，但显式声明输入/输出的序列布局。
+    ///
+    /// `batch_first = true`：输入与全序列输出按 `[batch, seq, hidden·dirs]`；`false`：按
+    /// `[seq, batch, hidden·dirs]`。默认值取 `false`（PyTorch 口径）；Burn 的 `batch_first`
+    /// 默认 `true`，两侧默认值不同，跨框架对拍时必须把布局显式对齐。
+    ///
+    /// 布局是运行时几何，不进权重清单：从检查点反推时一律取 seq-first，不会因此认不出权重。
+    pub fn with_layout(
+        name: impl Into<String>,
+        cell: Cell,
+        input: usize,
+        hidden: usize,
+        layers: usize,
+        dirs: usize,
+        bias: bool,
+        batch_first: bool,
+    ) -> Result<Self> {
         crate::nonzero_all(
-            "nn::Recurrent::new",
+            "nn::Recurrent::with_layout",
             "循环层 ",
             &[
                 ("input", input),
@@ -178,6 +200,7 @@ impl Recurrent {
             dirs,
             cell,
             bias,
+            batch_first,
         })
     }
 
