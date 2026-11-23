@@ -531,3 +531,32 @@ fn movedim_is_identity_when_the_axis_stays_and_none_when_out_of_range() {
     assert!(view.clone().movedim(2, 0).is_none(), "源轴越界");
     assert!(view.movedim(0, 2).is_none(), "目标位置越界");
 }
+
+#[test]
+fn shape_operators_reject_out_of_range_axes_without_panicking() {
+    let values = counted();
+    let view: View<'_, f32> = View::new(Shape::new([3, 4]), &values).expect("视图");
+
+    // 轴号 / 下标越界：重排与减秩算子一律返回 `None`，不在定长数组上越界读。
+    assert!(
+        view.clone().transpose(0, 9).is_none(),
+        "transpose 目标轴越界"
+    );
+    assert!(
+        view.clone().select::<Vec<usize>>(9, 0).is_none(),
+        "select 轴越界"
+    );
+    assert!(
+        view.clone().select::<Vec<usize>>(0, 9).is_none(),
+        "select 下标越界"
+    );
+    assert!(
+        view.clone().squeeze::<Vec<usize>>(9).is_none(),
+        "squeeze 轴越界"
+    );
+    assert!(view.clone().permute([0, 9]).is_none(), "permute 取值超出秩");
+
+    // 只产出集合的切分算子：轴越界给空集合，越界读不发生。
+    assert!(view.chunks(9, 2).next().is_none(), "chunks 轴越界为空");
+    assert!(view.unbind::<Vec<usize>>(9).is_empty(), "unbind 轴越界为空");
+}
