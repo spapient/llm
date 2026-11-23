@@ -304,7 +304,12 @@ pub mod dequant {
         /// # Errors
         ///
         /// 输入与输出等长、标度非零有限、零点在 `0..=15` 码域内，否则返回说明。
-        pub fn forward(scale: f32, zero: f32, q: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
+        pub fn forward(
+            scale: f32,
+            zero: f32,
+            q: &[f32],
+            out: &mut [f32],
+        ) -> diagnostic::Result<()> {
             if q.len() != out.len() {
                 return Err(Error::new(
                     Code::Invalid,
@@ -986,7 +991,13 @@ pub mod fast {
         }
 
         /// 并行 B 打包：按 8 列组切线程。`k·n` 小的时候串行更划算（线程创建比转置贵）。
-        pub(super) fn pack_b_f32_par_into(bpack: &mut [f32], b: &[f32], n: usize, k: usize, t: usize) {
+        pub(super) fn pack_b_f32_par_into(
+            bpack: &mut [f32],
+            b: &[f32],
+            n: usize,
+            k: usize,
+            t: usize,
+        ) {
             let groups = n.div_ceil(NR);
             if t <= 1 || n * k < (1 << 16) {
                 pack_b_f32_into(bpack, b, n, k);
@@ -1545,7 +1556,13 @@ pub mod fast {
         }
 
         /// 16 对齐的整段：按 16×16 瓦片做 4×4 转置，返回尾部起点。
-        fn pack_tiles(src: &[f32], dst: &mut [f32], k: usize, rowbase: usize, dstbase: usize) -> usize {
+        fn pack_tiles(
+            src: &[f32],
+            dst: &mut [f32],
+            k: usize,
+            rowbase: usize,
+            dstbase: usize,
+        ) -> usize {
             let mut kk0 = 0usize;
             while kk0 + 16 <= k {
                 for r in 0..4usize {
@@ -1910,7 +1927,15 @@ pub mod fast {
         }
 
         /// 兜底（池不可用）：打包一次后 shared 给 scope 线程，行块按 MR 对齐切。
-        fn scoped_tn(x: &[f32], w: &[f32], out: &mut [f32], rows: usize, n: usize, k: usize, t: usize) {
+        fn scoped_tn(
+            x: &[f32],
+            w: &[f32],
+            out: &mut [f32],
+            rows: usize,
+            n: usize,
+            k: usize,
+            t: usize,
+        ) {
             let npad = n.div_ceil(NR) * NR;
             let per = rows.div_ceil(MR).div_ceil(t) * MR;
             super::with_panels(npad * k, |bpack| {
@@ -3207,7 +3232,11 @@ pub mod fast {
         }
 
         /// 权重在 `w` 里的寻址三元组：`(基址, 内积步长, 列步长)`——两种布局在这一处收敛。
-        pub(super) fn weight_stride(span: Span, k0: usize, layout: Layout) -> (usize, usize, usize) {
+        pub(super) fn weight_stride(
+            span: Span,
+            k0: usize,
+            layout: Layout,
+        ) -> (usize, usize, usize) {
             match layout {
                 Layout::Nt => (k0 * span.n + span.j, span.n, 1),
                 Layout::Tn => (span.j * span.stride + k0, 1, span.stride),
@@ -4221,7 +4250,10 @@ pub mod gemv {
         }
 
         /// 格式自证：派生轴的除数必须就是形状粒度。
-        pub const fn derived_matches_grain(grain: usize, derived: Option<(char, char, usize)>) -> bool {
+        pub const fn derived_matches_grain(
+            grain: usize,
+            derived: Option<(char, char, usize)>,
+        ) -> bool {
             match derived {
                 Some((_, _, divisor)) => divisor == grain,
                 None => true,
@@ -4630,7 +4662,11 @@ pub mod gemv {
         }
 
         /// 行批几何：行数非零，输入与输出的长度分别对上 `rows × m` 与 `rows × n`。
-        pub(super) fn batch_geometry(x: usize, out: usize, geo: Geometry) -> diagnostic::Result<()> {
+        pub(super) fn batch_geometry(
+            x: usize,
+            out: usize,
+            geo: Geometry,
+        ) -> diagnostic::Result<()> {
             if geo.rows == 0 {
                 return Err(Error::new(Code::Invalid, "行批至少一行"));
             }
@@ -4727,7 +4763,10 @@ pub mod gemv {
 
         /// 把骨架的逐行点积接口接到 [`dot_row`]：骨架只给分组元素数 `group`，解包点积还要每组字节数
         /// `group / cpb`、每字节码数与反量化表。
-        fn row_dot(cpb: usize, dequant: &[f32]) -> impl Fn(&[u8], &[f32], &[f32], usize) -> f32 + '_ {
+        fn row_dot(
+            cpb: usize,
+            dequant: &[f32],
+        ) -> impl Fn(&[u8], &[f32], &[f32], usize) -> f32 + '_ {
             move |w_row, x, s_row, group| dot_row(w_row, x, s_row, group / cpb, group, cpb, dequant)
         }
 
@@ -4740,12 +4779,20 @@ pub mod gemv {
             cpb: usize,
             dequant: &[f32],
         ) -> diagnostic::Result<()> {
-            let ctx = super::forward::scaled_row_ctx(x.len(), out.len(), scales, weights.len(), cpb)?;
+            let ctx =
+                super::forward::scaled_row_ctx(x.len(), out.len(), scales, weights.len(), cpb)?;
             if let Some(affine) = super::simd::admit(cpb, out.len(), ctx, dequant) {
                 super::simd::forward_batch(&[x], weights, scales, affine, out);
                 return Ok(());
             }
-            super::forward::forward_rows_scaled(x, weights, scales, out, ctx, row_dot(cpb, dequant));
+            super::forward::forward_rows_scaled(
+                x,
+                weights,
+                scales,
+                out,
+                ctx,
+                row_dot(cpb, dequant),
+            );
             Ok(())
         }
 
@@ -4905,7 +4952,11 @@ pub mod gemv {
         }
 
         /// 权重至少要够 `n` 行、每行 `row` 个元素，返回这个下界。
-        pub(crate) fn required_weights(weights: usize, n: usize, row: usize) -> Result<usize, Error> {
+        pub(crate) fn required_weights(
+            weights: usize,
+            n: usize,
+            row: usize,
+        ) -> Result<usize, Error> {
             let want = n.saturating_mul(row);
             if weights < want {
                 return Err(Error::new(
@@ -5030,7 +5081,12 @@ pub mod gemv {
         }
 
         /// 校验并构造 [`Affine`]：`n` 是输出宽度（权重行数），`ctx` 是入口已经量好的行形状。
-        pub(crate) fn admit(cpb: usize, n: usize, ctx: ScaledRow, dequant: &[f32]) -> Option<Affine> {
+        pub(crate) fn admit(
+            cpb: usize,
+            n: usize,
+            ctx: ScaledRow,
+            dequant: &[f32],
+        ) -> Option<Affine> {
             // 码表长度 `1 << width`，`width = 8 / cpb`（与 `quant::width_cpb` 同一公式）。
             let zero = affine_zero(dequant, 1 << crate::quant::width_cpb(cpb))?;
             let lanes = lanes_of(ctx.group / cpb)?;
@@ -6007,7 +6063,14 @@ pub mod matmul {
     }
 
     /// 线性层布局（TN）的标量参考：`out[r, j] = Σ_p x[r, p]·w[j, p]`，每个元素按 `p` 顺序独立累加。
-    pub fn matmul_tn_scalar(x: &[f32], w: &[f32], rows: usize, n: usize, k: usize, out: &mut [f32]) {
+    pub fn matmul_tn_scalar(
+        x: &[f32],
+        w: &[f32],
+        rows: usize,
+        n: usize,
+        k: usize,
+        out: &mut [f32],
+    ) {
         for r in 0..rows {
             let xrow = &x[r * k..][..k];
             let orow = &mut out[r * n..][..n];
@@ -6098,7 +6161,14 @@ pub mod matmul {
     }
 
     /// 线性层布局的尺寸校验：输入 `rows × k`、权重 `n × k`、输出 `rows × n`。
-    fn check_tn_dims(x: &[f32], w: &[f32], rows: usize, n: usize, k: usize, out: &[f32]) -> Result<()> {
+    fn check_tn_dims(
+        x: &[f32],
+        w: &[f32],
+        rows: usize,
+        n: usize,
+        k: usize,
+        out: &[f32],
+    ) -> Result<()> {
         if x.len() != rows * k || w.len() != n * k || out.len() != rows * n {
             return Err(Error::new(
                 Code::Invalid,
@@ -6330,7 +6400,8 @@ pub mod matmul {
         use crate::model::{Cost, Sample, ShapeCtx, Values};
 
         pub use super::{
-            AXES, K, TILE_K, TILE_M, TILE_N, forward_scalar, matmul_scalar, matmul_tiled, project_shape,
+            AXES, K, TILE_K, TILE_M, TILE_N, forward_scalar, matmul_scalar, matmul_tiled,
+            project_shape,
         };
 
         /// 输出块行数：4 行共用每一条 `B` 行块的读取。
@@ -6425,7 +6496,15 @@ pub mod matmul {
         }
 
         /// 行尾（`i0..m`）：不足 [`BLOCK_ROWS`] 的行逐元素累加。
-        fn edge_rows(a: &[i8], b: &[i8], out: &mut [i32], mut i0: usize, m: usize, n: usize, k: usize) {
+        fn edge_rows(
+            a: &[i8],
+            b: &[i8],
+            out: &mut [i32],
+            mut i0: usize,
+            m: usize,
+            n: usize,
+            k: usize,
+        ) {
             while i0 < m {
                 for j in 0..n {
                     let mut acc = 0i32;
@@ -6581,7 +6660,8 @@ pub mod norm {
                 } else {
                     var[ci]
                 };
-                running_var[ci] = (S::ONE - self.momentum) * running_var[ci] + self.momentum * unbiased;
+                running_var[ci] =
+                    (S::ONE - self.momentum) * running_var[ci] + self.momentum * unbiased;
             }
             affine(x, gamma, beta, &mean, &var, self.eps, c, count, out);
             Ok(())
@@ -7321,7 +7401,8 @@ pub mod rope {
         let x = sample.f32("x")?;
         let pos = sample
             .scalar("pos")
-            .ok_or_else(|| Error::new(Code::Invalid, "rope 样本缺标量 `pos`"))? as f32;
+            .ok_or_else(|| Error::new(Code::Invalid, "rope 样本缺标量 `pos`"))?
+            as f32;
         rotate(x, pos)
     }
 

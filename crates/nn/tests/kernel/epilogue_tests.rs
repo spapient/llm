@@ -1,4 +1,4 @@
-//! `epilogue::apply` 的执行面：几何步、激活步、量化步、顺序与错误。
+// `epilogue::apply` 的执行面：几何步、激活步、量化步、顺序与错误。
 
 use super::apply;
 use prof::epilogue::parse;
