@@ -111,7 +111,7 @@ pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
 pub fn forward(x: View<'_, f32>, gamma: View<'_, f32>, out: ViewMut<'_, f32>) -> diagnostic::Result<()> {
     let x = x.as_slice();
     let gamma = gamma.as_slice();
-    let out = out.as_slice_mut();
+    let out = out.into_slice_mut();
     check_kernel(x, gamma, out)?;
     let rms = (sum_sq(x) / (x.len() as f32) + EPS).sqrt();
     for ((out, x), gamma) in out.iter_mut().zip(x).zip(gamma) {
@@ -167,7 +167,7 @@ pub fn forward_batch(
 ) -> diagnostic::Result<()> {
     let x = x.as_slice();
     let gamma = gamma.as_slice();
-    let out = out.as_slice_mut();
+    let out = out.into_slice_mut();
     let batch = rmsnorm_batch_segments(x, gamma, out, row_dim)?;
     for b in 0..batch {
         let start = b * row_dim;

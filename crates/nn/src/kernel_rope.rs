@@ -106,7 +106,7 @@ fn rotate_rows(x: &[f32], pos: f32, freq: &[f32], out: &mut [f32]) {
 ///
 /// 输入与输出长度不一致时返回说明；末尾无法配对的奇数元素原样透传（不报错）。
 pub fn forward(pos: usize, x: View<'_, f32>, out: ViewMut<'_, f32>) -> diagnostic::Result<()> {
-    rotate_into(x.as_slice(), pos as f32, out.as_slice_mut())
+    rotate_into(x.as_slice(), pos as f32, out.into_slice_mut())
 }
 
 /// 校验多头旋转长度并派生头数；非法头宽、不等长或非头宽倍数在此一次性拦下。
@@ -136,7 +136,7 @@ pub fn forward_heads(
     head_dim: usize,
 ) -> diagnostic::Result<()> {
     let x = x.as_slice();
-    let out = out.as_slice_mut();
+    let out = out.into_slice_mut();
     rope_heads(x, out, head_dim)?;
     rotate_heads(pos, x, out, head_dim, frequencies(head_dim).as_ref());
     Ok(())
@@ -191,7 +191,7 @@ pub fn forward_batch(
     head_dim: usize,
 ) -> diagnostic::Result<()> {
     let x = x.as_slice();
-    let out = out.as_slice_mut();
+    let out = out.into_slice_mut();
     let seg = rope_batch_segments(positions, x, out, head_dim)?;
     // 先把每个序列的段形状校验完，再统一写：任一序列非法时不会留下写了一半的输出。
     for start in (0..x.len()).step_by(seg) {

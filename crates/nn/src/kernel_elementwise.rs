@@ -82,7 +82,7 @@ pub fn forward<B: Binary>(
 ) -> diagnostic::Result<()> {
     let a = a.as_slice();
     let b = b.as_slice();
-    let out = out.as_slice_mut();
+    let out = out.into_slice_mut();
     if a.len() != b.len() || a.len() != out.len() {
         return Err(Error::new(
             Code::Invalid,

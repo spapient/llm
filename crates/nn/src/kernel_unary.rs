@@ -70,7 +70,7 @@ pub fn reference<U: Unary>(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
 /// 输入与输出等长，否则返回说明。
 pub fn forward<U: Unary>(a: View<'_, f32>, out: ViewMut<'_, f32>) -> diagnostic::Result<()> {
     let a = a.as_slice();
-    let out = out.as_slice_mut();
+    let out = out.into_slice_mut();
     if a.len() != out.len() {
         return Err(Error::new(
             Code::Invalid,

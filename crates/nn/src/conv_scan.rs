@@ -232,7 +232,7 @@ pub mod f32 {
     /// 输入与输出不等长时返回说明。
     pub fn forward(x: View<'_, f32>, out: ViewMut<'_, f32>) -> diagnostic::Result<()> {
         let x = x.as_slice();
-        let out = out.as_slice_mut();
+        let out = out.into_slice_mut();
         if x.len() != out.len() {
             return Err(Error::new(
                 Code::Invalid,

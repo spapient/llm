@@ -84,7 +84,7 @@ pub fn gemm_f32(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f
 pub fn gemm_f32_checked(a: View<'_, f32>, b: View<'_, f32>, out: ViewMut<'_, f32>) -> Result<()> {
     let (m, k) = super::matmul::dim2(a.dims(), "gemm_f32")?;
     let (k2, n) = super::matmul::dim2(b.dims(), "gemm_f32")?;
-    let out = out.as_slice_mut();
+    let out = out.into_slice_mut();
     if k != k2 {
         return Err(Error::new(
             Code::Invalid,

@@ -173,7 +173,7 @@ pub trait Packed {
     ///
     /// 缓冲长度与打包宽度不符、标度为零或零点越出码域时返回说明。
     fn forward(scale: f32, zero: f32, q: &[u8], out: tensor::ViewMut<'_, f32>) -> diagnostic::Result<()> {
-        forward_packed(scale, zero, q, out.as_slice_mut(), Self::cpb())
+        forward_packed(scale, zero, q, out.into_slice_mut(), Self::cpb())
     }
 }
 
@@ -344,7 +344,7 @@ pub mod i8 {
         out: ViewMut<'_, f32>,
     ) -> diagnostic::Result<()> {
         let q = q.as_slice();
-        let out = out.as_slice_mut();
+        let out = out.into_slice_mut();
         if q.len() != out.len() {
             return Err(Error::new(
                 Code::Invalid,

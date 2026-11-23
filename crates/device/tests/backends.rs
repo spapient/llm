@@ -5,6 +5,7 @@ use cutile::prof::Profile;
 use llm_optim::backend::{Codegen, Source};
 use llm_optim::witness::{MAX_OUT, Scope};
 use std::path::Path;
+
 /// 装配 Metal / CUDA 后端（幂等，进程级只装一次）。引擎测试直接调 `MetalBackend`/`CudaBackend` 的
 /// `Codegen`/`Driver` 方法；经 `llm_optim::witness::device_available` 判断真机在场时，先注入注册表。
 fn ensure_backends() {
@@ -427,7 +428,6 @@ fn an_ascend_harness_is_a_single_ascendc_translation_unit() {
 
 #[path = "backends_production.rs"]
 mod production;
-
 
 /// `@` 在数据模板里是占位符前导；渲染后仍留下裸 `@` 说明某个占位漏填，而 Objective-C 只认
 /// `@autoreleasepool` 与 `@"..."`——这类残留在编译器眼里是语法错，在这里先拦下。

@@ -131,6 +131,15 @@ impl<'a, K: Element> ViewMut<'a, K> {
     pub fn matrix(rows: usize, cols: usize, slice: &'a mut [K]) -> Result<Self> {
         Self::new(vec![rows, cols], slice)
     }
+
+    /// 消费可写视图，取出内部可写借用切片；形状与步长元数据随之丢弃。
+    ///
+    /// 入口内核只按连续切片写结果时，用本入口把视图扁平化：视图是一次性输出操作数，
+    /// 消费它取切片不留下第二个别名，也不需要再经 [`as_slice_mut`](Self::as_slice_mut)
+    /// 走可变借用绑定。
+    pub fn into_slice_mut(self) -> &'a mut [K] {
+        self.buf
+    }
 }
 
 impl<B, R, K> PartialEq for Tensor<B, R, K>

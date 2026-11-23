@@ -24,7 +24,7 @@ pub fn gemm_f32_tn(x: View<'_, f32>, w: View<'_, f32>, out: ViewMut<'_, f32>) {
     let (n, k2) = (w.dims()[0], w.dims()[1]);
     assert_eq!(k, k2, "gemm_f32_tn 收缩轴不符");
     let (x, w) = (x.as_slice(), w.as_slice());
-    let out = out.as_slice_mut();
+    let out = out.into_slice_mut();
     check_dims_tn(x, w, rows, n, k, out);
     let t = threads_override().min(rows.div_ceil(MR)).max(1);
     if t <= 1 {
