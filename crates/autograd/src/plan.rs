@@ -228,7 +228,7 @@ pub enum MemoryPolicy {
 impl MemoryPolicy {
     /// 策略短名：诊断与报告里的稳定标签。
     #[must_use]
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Auto => "auto",
             Self::KeepAll => "keep-all",

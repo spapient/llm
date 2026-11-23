@@ -41,14 +41,18 @@ impl Facts {
         // 按**整张图**的变量数开表：释放点的传播会沿被丢弃的链往上走，链上可能有调度外的祖先。
         let (last_use, producer) = uses(steps, vars as usize);
         // 候选 = 被调度消费过的**算子输出**：叶子常驻、loss 的输出没人消费，都不进预算。
-        let output = |id: u32| last_use[id as usize] != NONE && tape.node(Var::at(id)).is_some();
-        let bytes: Vec<u64> = (0..vars)
-            .map(|id| match output(id) {
-                true => footprint.bytes(Var::at(id)),
-                false => 0,
-            })
-            .collect();
-        let candidates: Vec<u32> = (0..vars).filter(|id| output(*id)).collect();
+        // 一趟扫描同时落字节表与候选表：`node` 查找只做一次；双输出向量无法在单趟迭代里
+        // 同时收集，故保留循环（各变量判定彼此无串行依赖）。
+        let mut bytes = vec![0u64; vars as usize];
+        let mut candidates: Vec<u32> = Vec::with_capacity(vars as usize);
+        for id in 0..vars {
+            let var = Var::at(id);
+            if last_use[id as usize] != NONE && tape.node(var).is_some() {
+                let slot = id as usize;
+                bytes[slot] = footprint.bytes(var);
+                candidates.push(id);
+            }
+        }
         let order: Vec<u32> = candidates
             .iter()
             .copied()
@@ -214,95 +218,7 @@ impl Facts {
             replayed: ledger.replayed,
         }
     }
-}
 
-/// 分段试算复用的缓冲：并行数组只按变量数分配一次。
-pub(crate) struct Scratch {
-    wide: Vec<u64>,
-    work: Vec<u64>,
-    stamp: Vec<u32>,
-}
-
-impl Scratch {
-    pub(crate) fn new(len: usize) -> Self {
-        Self {
-            wide: vec![0; len],
-            work: vec![0; len],
-            stamp: vec![0; len],
-        }
-    }
-}
-
-/// 每个变量的生产者与最后一次被消费的反向步号；没被消费为 [`NONE`]。
-fn uses(steps: &[Node], len: usize) -> (Vec<u32>, Vec<u32>) {
-    let mut last_use = vec![NONE; len];
-    let mut producer = vec![NONE; len];
-    for (idx, step) in steps.iter().enumerate() {
-        producer[step.output().id() as usize] = idx as u32;
-        for input in step.inputs() {
-            // 反向顺序遍历，最后一次覆盖就是"最后一次被消费"。
-            last_use[input.id() as usize] = idx as u32;
-        }
-    }
-    (last_use, producer)
-}
-
-/// 必然下界：某一步同时要放下的输入字节和的最大值。
-fn floor_of(steps: &[Node], bytes: &[u64]) -> u64 {
-    let mut stamp = vec![0u32; bytes.len()];
-    let mut floor = 0u64;
-    for (idx, step) in steps.iter().enumerate() {
-        let mut sum = 0u64;
-        each_input(step, &mut stamp, idx as u32 + 1, |slot| {
-            sum = sum.saturating_add(bytes[slot]);
-        });
-        floor = floor.max(sum);
-    }
-    floor
-}
-
-/// 一步的输入去重后逐个交给 `visit`：同一个输入只算一次（只有一块缓冲）。
-fn each_input(step: &Node, stamp: &mut [u32], mark: u32, mut visit: impl FnMut(usize)) {
-    for input in step.inputs() {
-        let slot = input.id() as usize;
-        if stamp[slot] == mark {
-            continue;
-        }
-        stamp[slot] = mark;
-        visit(slot);
-    }
-}
-
-/// 把一步的重算需求推给它的输入：输出被丢弃且仍被需要，链上的祖先就得活到那一步。
-fn carry(release: &mut [u32], node: &Node, keep: &[bool], bytes: &[u64]) {
-    let output = node.output().id() as usize;
-    if keep[output] || release[output] == NONE {
-        return;
-    }
-    let needed = release[output];
-    for input in node.inputs() {
-        let slot = input.id() as usize;
-        if later(release[slot], needed, bytes[slot]) {
-            release[slot] = needed;
-        }
-    }
-}
-
-/// 释放点是否要往后推到 `needed`：零字节的不占预算，没记过（`NONE`）与记得更早的都算。
-fn later(seen: u32, needed: u32, bytes: u64) -> bool {
-    bytes > 0 && (seen == NONE || seen < needed)
-}
-
-/// 一个保留集的账：所有数字必须来自同一次统计，否则峰值、重放步数与释放点会对不上。
-#[derive(Debug, Clone)]
-pub(crate) struct Ledger {
-    pub(crate) retained: u64,
-    pub(crate) peak: u64,
-    pub(crate) replayed: u64,
-    /// 每个变量最后一次被需要（直接消费或作为重算起点）的反向步号。
-    pub(crate) release: Vec<u32>,
-}
-impl Facts {
     /// 分段：段数由预算解出来，段界上的激活保留，段内的丢弃后重放。
     pub(crate) fn plan(
         &self,
@@ -390,4 +306,91 @@ impl Facts {
         // 第一个激活没有更早的检查点可依，必须留；否则第一段无从重放。
         keep[self.order[0] as usize] = true;
     }
+}
+
+/// 分段试算复用的缓冲：并行数组只按变量数分配一次。
+pub(crate) struct Scratch {
+    wide: Vec<u64>,
+    work: Vec<u64>,
+    stamp: Vec<u32>,
+}
+
+impl Scratch {
+    pub(crate) fn new(len: usize) -> Self {
+        Self {
+            wide: vec![0; len],
+            work: vec![0; len],
+            stamp: vec![0; len],
+        }
+    }
+}
+
+/// 一个保留集的账：所有数字必须来自同一次统计，否则峰值、重放步数与释放点会对不上。
+#[derive(Debug, Clone)]
+pub(crate) struct Ledger {
+    pub(crate) retained: u64,
+    pub(crate) peak: u64,
+    pub(crate) replayed: u64,
+    /// 每个变量最后一次被需要（直接消费或作为重算起点）的反向步号。
+    pub(crate) release: Vec<u32>,
+}
+
+/// 每个变量的生产者与最后一次被消费的反向步号；没被消费为 [`NONE`]。
+fn uses(steps: &[Node], len: usize) -> (Vec<u32>, Vec<u32>) {
+    let mut last_use = vec![NONE; len];
+    let mut producer = vec![NONE; len];
+    for (idx, step) in steps.iter().enumerate() {
+        producer[step.output().id() as usize] = idx as u32;
+        for input in step.inputs() {
+            // 反向顺序遍历，最后一次覆盖就是"最后一次被消费"。
+            last_use[input.id() as usize] = idx as u32;
+        }
+    }
+    (last_use, producer)
+}
+
+/// 必然下界：某一步同时要放下的输入字节和的最大值。
+fn floor_of(steps: &[Node], bytes: &[u64]) -> u64 {
+    let mut stamp = vec![0u32; bytes.len()];
+    let mut floor = 0u64;
+    for (idx, step) in steps.iter().enumerate() {
+        let mut sum = 0u64;
+        each_input(step, &mut stamp, idx as u32 + 1, |slot| {
+            sum = sum.saturating_add(bytes[slot]);
+        });
+        floor = floor.max(sum);
+    }
+    floor
+}
+
+/// 一步的输入去重后逐个交给 `visit`：同一个输入只算一次（只有一块缓冲）。
+fn each_input(step: &Node, stamp: &mut [u32], mark: u32, mut visit: impl FnMut(usize)) {
+    for input in step.inputs() {
+        let slot = input.id() as usize;
+        if stamp[slot] == mark {
+            continue;
+        }
+        stamp[slot] = mark;
+        visit(slot);
+    }
+}
+
+/// 把一步的重算需求推给它的输入：输出被丢弃且仍被需要，链上的祖先就得活到那一步。
+fn carry(release: &mut [u32], node: &Node, keep: &[bool], bytes: &[u64]) {
+    let output = node.output().id() as usize;
+    if keep[output] || release[output] == NONE {
+        return;
+    }
+    let needed = release[output];
+    for input in node.inputs() {
+        let slot = input.id() as usize;
+        if later(release[slot], needed, bytes[slot]) {
+            release[slot] = needed;
+        }
+    }
+}
+
+/// 释放点是否要往后推到 `needed`：零字节的不占预算，没记过（`NONE`）与记得更早的都算。
+fn later(seen: u32, needed: u32, bytes: u64) -> bool {
+    bytes > 0 && (seen == NONE || seen < needed)
 }

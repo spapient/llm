@@ -16,7 +16,7 @@ pub enum Role {
 
 impl Role {
     /// 由需求与"是否为叶子"推出角色；没有生产者的才是叶子。
-    pub fn of(requirement: Requirement, is_leaf: bool) -> Self {
+    pub const fn of(requirement: Requirement, is_leaf: bool) -> Self {
         match is_leaf {
             true if requirement.is_endpoint() => Self::Parameter,
             true => Self::Constant,
@@ -26,13 +26,13 @@ impl Role {
 
     /// 该角色是否要取走梯度：只有参数终点有自己的梯度缓冲。
     #[must_use]
-    pub fn is_parameter(self) -> bool {
+    pub const fn is_parameter(self) -> bool {
         matches!(self, Self::Parameter)
     }
 
     /// 短名：诊断与报告里的稳定标签，与变体一一对应。
     #[must_use]
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Constant => "constant",
             Self::Parameter => "parameter",
@@ -56,25 +56,25 @@ pub enum Requirement {
 impl Requirement {
     /// 是否在图上（参与反向）。
     #[must_use]
-    pub fn requires(self) -> bool {
+    pub const fn requires(self) -> bool {
         !self.is_none()
     }
 
     /// 是否完全在反向之外。
     #[must_use]
-    pub fn is_none(self) -> bool {
+    pub const fn is_none(self) -> bool {
         matches!(self, Self::None)
     }
 
     /// 是否是梯度终点。
     #[must_use]
-    pub fn is_endpoint(self) -> bool {
+    pub const fn is_endpoint(self) -> bool {
         matches!(self, Self::Grad)
     }
 
     /// 合并两个需求：都不需要梯度才是 `None`，否则输出只能是中间节点。
     #[must_use]
-    pub fn merged(self, other: Self) -> Self {
+    pub const fn merged(self, other: Self) -> Self {
         match self.is_none() && other.is_none() {
             true => Self::None,
             false => Self::Backward,
