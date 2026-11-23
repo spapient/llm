@@ -67,6 +67,17 @@ pub struct Tensor<B, R = Vec<usize>, K = f32> {
 /// 借用调用方缓冲的只读张量：运行期秩 + 借来的元素。
 pub type View<'a, K> = Tensor<&'a [K], Vec<usize>, K>;
 
+impl<'a, K: Element> View<'a, K> {
+    /// 一维只读视图：唯一轴长即缓冲长度，行主序连续。
+    ///
+    /// 逐元素 / 归约这类单操作数内核，输入本来就是一段连续切片；几何只有一个长度，由缓冲自身
+    /// 给出，构造期不可能失败，因此不走 [`Tensor::new`](Self::new) 的 `Result`。多维几何必须
+    /// 显式传入形状，仍走 `new` 在校验拦下轴数与元素数不符。
+    pub fn one(slice: &'a [K]) -> Self {
+        assemble(vec![slice.len()], vec![1], 0, slice)
+    }
+}
+
 impl<B, R, K> Tensor<B, R, K>
 where
     R: Rank,

@@ -3,6 +3,7 @@
 use crate::formula::FormulaOwner;
 use crate::model::{AxisRole, AxisSpec, Buf, Cost, Sample, ShapeCtx, Values};
 use diagnostic::{Code, Error};
+use tensor::View;
 
 /// 逐元素一元算子随语义变化的那部分。
 pub trait Unary: FormulaOwner {
@@ -67,7 +68,8 @@ pub fn reference<U: Unary>(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
 /// # Errors
 ///
 /// 输入与输出等长，否则返回说明。
-pub fn forward<U: Unary>(a: &[f32], out: &mut [f32]) -> diagnostic::Result<()> {
+pub fn forward<U: Unary>(a: View<'_, f32>, out: &mut [f32]) -> diagnostic::Result<()> {
+    let a = a.as_slice();
     if a.len() != out.len() {
         return Err(Error::new(
             Code::Invalid,
