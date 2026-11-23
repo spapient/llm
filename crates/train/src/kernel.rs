@@ -247,9 +247,7 @@ fn matmul_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
     let (a, b) = <(f32, f32) as Inputs>::unpack(inputs, "matmul_f32")?;
     let out = output_slice::<f32>("matmul_f32", output)?;
     let (m, n) = matrix_geometry("matmul_f32", a.len(), out.len(), nn::matmul::K)?;
-    let k = nn::matmul::K;
-    let av = tensor::View::matrix(m, k, a)?;
-    let bv = tensor::View::matrix(k, n, b)?;
+    let (av, bv) = matrix_pair(a, b, m, n, nn::matmul::K)?;
     nn::fast::gemm_f32_checked(av, bv, out)
 }
 
@@ -260,12 +258,24 @@ fn matmul_i8(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
     let (m, n) = matrix_geometry("matmul_i8", a.len(), out.len(), nn::matmul_i8::K)?;
     let mut acc = vec![0i32; m * n];
     let (a, b) = (signed(a), signed(b));
-    let k = nn::matmul_i8::K;
-    let av = tensor::View::matrix(m, k, &a)?;
-    let bv = tensor::View::matrix(k, n, &b)?;
+    let (av, bv) = matrix_pair(&a, &b, m, n, nn::matmul_i8::K)?;
     nn::fast::gemm_i8_checked(av, bv, &mut acc)?;
     widen(acc, out);
     Ok(())
+}
+
+/// 两行主序矩阵视图对：`a` 是 `m×k`、`b` 是 `k×n`。
+fn matrix_pair<K: tensor::Element>(
+    a: &[K],
+    b: &[K],
+    m: usize,
+    n: usize,
+    k: usize,
+) -> Result<(tensor::View<'_, K>, tensor::View<'_, K>)> {
+    Ok((
+        tensor::View::matrix(m, k, a)?,
+        tensor::View::matrix(k, n, b)?,
+    ))
 }
 
 /// `i32` 精确累加结果 → `f32` 输出：算子的输出类型在声明里，累加精度在这里。

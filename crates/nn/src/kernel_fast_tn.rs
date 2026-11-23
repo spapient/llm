@@ -18,8 +18,10 @@ pub const MIN_ROWS: usize = MR;
 ///
 /// 三条缓冲长度不足 `rows·k` / `n·k` / `rows·n` 时 panic（调用方先校验）。
 pub fn gemm_f32_tn(x: View<'_, f32>, w: View<'_, f32>, out: &mut [f32]) {
-    let (rows, k) = crate::kernel::matmul::dim2(x.dims(), "gemm_f32_tn").expect("二维输入");
-    let (n, k2) = crate::kernel::matmul::dim2(w.dims(), "gemm_f32_tn").expect("二维输入");
+    assert_eq!(x.dims().len(), 2, "gemm_f32_tn 需要二维输入");
+    assert_eq!(w.dims().len(), 2, "gemm_f32_tn 需要二维输入");
+    let (rows, k) = (x.dims()[0], x.dims()[1]);
+    let (n, k2) = (w.dims()[0], w.dims()[1]);
     assert_eq!(k, k2, "gemm_f32_tn 收缩轴不符");
     let (x, w) = (x.as_slice(), w.as_slice());
     check_dims_tn(x, w, rows, n, k, out);

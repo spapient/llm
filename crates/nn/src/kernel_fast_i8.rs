@@ -153,22 +153,13 @@ pub fn gemm_i8_checked(a: View<'_, i8>, b: View<'_, i8>, out: &mut [i32]) -> Res
             format!("gemm_i8 收缩轴不符：a·k={k}，b·k={k2}"),
         ));
     }
-    let (a, b) = (a.as_slice(), b.as_slice());
-    if a.len() != m * k || b.len() != k * n || out.len() != m * n {
+    if out.len() != m * n {
         return Err(Error::new(
             Code::Invalid,
-            format!(
-                "gemm_i8 缓冲尺寸不符：a={} b={} out={}，期望 m·k={} k·n={} m·n={}",
-                a.len(),
-                b.len(),
-                out.len(),
-                m * k,
-                k * n,
-                m * n
-            ),
+            format!("gemm_i8 输出缓冲不符：out={}，期望 m·n={}", out.len(), m * n),
         ));
     }
-    gemm_i8(a, b, m, n, k, out);
+    gemm_i8(a.as_slice(), b.as_slice(), m, n, k, out);
     Ok(())
 }
 

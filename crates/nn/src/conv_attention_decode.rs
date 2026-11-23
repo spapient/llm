@@ -496,14 +496,32 @@ pub mod semantics {
         Ok((q_rows, hist, d))
     }
 
+    /// 把样本三条切片包成 `q_rows×d` / `hist×d` 二维视图。
+    fn views<'a>(
+        q: &'a [f32],
+        k: &'a [f32],
+        v: &'a [f32],
+        q_rows: usize,
+        hist: usize,
+        d: usize,
+    ) -> diagnostic::Result<(
+        tensor::View<'a, f32>,
+        tensor::View<'a, f32>,
+        tensor::View<'a, f32>,
+    )> {
+        Ok((
+            tensor::View::matrix(q_rows, d, q)?,
+            tensor::View::matrix(hist, d, k)?,
+            tensor::View::matrix(hist, d, v)?,
+        ))
+    }
+
     /// 朴素参考：query 对历史 K/V 做一遍数值稳定 softmax，再对 `V` 加权。
     pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
         let (q_rows, hist, d) = geometry(sample)?;
         let (q, k, v) = crate::conv::attention::qkv(sample)?;
+        let (qv, kv, vv) = views(q, k, v, q_rows, hist, d)?;
         let mut out = vec![0.0; q_rows * d];
-        let qv = tensor::View::matrix(q_rows, d, q)?;
-        let kv = tensor::View::matrix(hist, d, k)?;
-        let vv = tensor::View::matrix(hist, d, v)?;
         crate::conv::attention::decode_forward(qv, kv, vv, &mut out)?;
         Ok(out)
     }

@@ -90,22 +90,13 @@ pub fn gemm_f32_checked(a: View<'_, f32>, b: View<'_, f32>, out: &mut [f32]) -> 
             format!("gemm_f32 收缩轴不符：a·k={k}，b·k={k2}"),
         ));
     }
-    let (a, b) = (a.as_slice(), b.as_slice());
-    if a.len() != m * k || b.len() != k * n || out.len() != m * n {
+    if out.len() != m * n {
         return Err(Error::new(
             Code::Invalid,
-            format!(
-                "gemm_f32 缓冲尺寸不符：a={} b={} out={}，期望 m·k={} k·n={} m·n={}",
-                a.len(),
-                b.len(),
-                out.len(),
-                m * k,
-                k * n,
-                m * n
-            ),
+            format!("gemm_f32 输出缓冲不符：out={}，期望 m·n={}", out.len(), m * n),
         ));
     }
-    gemm_f32(a, b, m, n, k, out);
+    gemm_f32(a.as_slice(), b.as_slice(), m, n, k, out);
     Ok(())
 }
 
