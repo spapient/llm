@@ -34,7 +34,7 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 
 1. **关键差距不在 "有没有目录"，而在 "缝后面是不是真实现"。** 新 llm 的 `Executor`/`Collective`/`Backend` trait 端口齐全，但 GPU 执行器目前仅 Metal 一个真实实现，远端集合通信返回 `Unsupported`；Burn 的端口后面是跨 CPU/CUDA/WGPU/ROCm 的可运行内核与可训练模型。
 
-2. **llm.u 的长板是多后端实测性能**（CPU NEON/AVX2/AVX-512、Metal、OpenCL/SYCL、CUDA cuBLAS、MUSA 均有 GEMM 数据与对拍；ROCm 仅 SSM 内核库加载 / 探测，非完整 GEMM 后端），这一点 Burn 的 CPU/CUDA 后端不以极致微核调优为目标；新 llm 把 llm.u 的微核沉淀进 `gemm`/`conv`/`cutile`，但后端执行面尚在重建。
+2. **llm.u 的长板是多后端实测性能**（CPU NEON/AVX2/AVX-512、Metal、OpenCL/SYCL、CUDA cuBLAS、MUSA 均有 GEMM 数据与对拍；ROCm 仅 SSM 内核库加载 / 探测，非完整 GEMM 后端），这一点 Burn 的 CPU/CUDA 后端不以极致微核调优为目标；新 llm 把 llm.u 的微核沉淀进 `nn`/`cutile`，但后端执行面尚在重建。
 
 
 
@@ -62,8 +62,8 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 
 | 层        | 代表 crate                                                                  | 职责                                                                     |
 | -------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| L1 基础设施  | `diagnostic` `rng` `dtype` `wire` `formats` `tools`                       | 错误类型、确定性随机、精度闭集、字节码闭集、外部格式只读适配                                         |
-| L2 数据层   | `prof` `spec` `gemm` `conv` `op` `cpu/cuda/metal/musa/opencl/rocm` `prim` | 算子四层契约 + 六份设备原语片段与见证                                                   |
+| L1 基础设施  | `diagnostic` `dtype` `wire` `tools`                                                     | 错误类型、精度闭集、字节码闭集、外部格式只读适配（归 `weights`）                                         |
+| L2 数据层   | `prof`                                                                                 | 算子契约 + 设备档案 + 原语片段与见证                                                   |
 | L3 内核    | `cutile` `shard`                                                          | 协商→拼接→emit→指纹（cutile，不执行）；doctor/verify/bench/execution（shard，碰编译器与设备） |
 | L4 运行时   | `tensor` `storage` `tokenizer`                                            | 张量元数据、布局搬运、文本边界                                                        |
 | L5 模型与训练 | `weights` `snapshot` `autograd` `nn` `algorithm` `shard`                  | 权重结构、检查点、反向图、层定义、架构参考语义、切分拓扑                                           |
@@ -158,7 +158,7 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 | 维度       | llm（新）                                                                                                                          | llm.u                                                                                                | Burn                                                                                                    |
 | -------- | ------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
 | 张量类型     | 一个 `Tensor<B, R, K>`：`B` 存储（`&[K]` 借来 / `Owned<K>` 持有）、`R` 秩（`[usize; D]` 编译期 / `Vec<usize>` 运行期）、`K` 元素类型；重排代数覆盖广播（步长 0）、分段（`narrow`）与物化（`to_contiguous`），后两者是换轴表达不出来的 | `Shape{m,n,k}`（GEMM 三维）+ `Vec<f32>` 扁平缓冲；无独立张量类型                                                     | `Tensor<const D: usize, K = Float>`：**秩 D 编译期定、元素类型 K 编译期定、后端 B 泛型**                                    |
-| 后端 / 秩泛型 | 有秩泛型（`R` 覆盖编译期与运行期两种，是 `const D` 的超集）；`B` 是**存储**而非后端，张量层不做执行——算子由 `op` 的数据驱动注册表给出 | 无后端泛型；无秩泛型                                                                                           | `Tensor<B, const D, K>`，后端作为泛型参数贯穿算子与模块                                                                 |
+| 后端 / 秩泛型 | 有秩泛型（`R` 覆盖编译期与运行期两种，是 `const D` 的超集）；`B` 是**存储**而非后端，张量层不做执行——算子由 `nn` 的数据驱动注册表给出 | 无后端泛型；无秩泛型                                                                                           | `Tensor<B, const D, K>`，后端作为泛型参数贯穿算子与模块                                                                 |
 | 布局       | 逻辑布局 + `Layout<B>` 块格式；`storage` 负责布局搬运                                                                                         | 行主序扁平；tiling/pack 在 GEMM 路径内部                                                                        | 连续 / 非连续视图、stride 张量、reshape/permute 全套                                                                 |
 | 元素类型     | L1 `dtype` 闭集：标量 `DType` + 块量化 `QType`(GGML `Q4_K` 等) + 微缩放 `MxType`(OCP MX / NVFP4) + `Element`(E2M1/E2M3/E3M2/E4M3/E5M2/INT8) | `Prec` 枚举：F32/Tf32/F16/Bf16/I8/I4/I3/I2/F8E4M3/F8E5M2/Fp4/F64 (声明未实现)；`Compute` 累加档 I32/F32/Tf32/F64 | `FloatDType`(F32/F16/BF16) + `IntDType`(I32 等) + `QuantValue`(Q8F/Q8S/Q4F/Q4S/Q2F/Q2S + E4M3/E5M2/E2M1) |
 
@@ -172,7 +172,7 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 
 * llm.u 的 `Prec` 把 TF32 建模为 "F32 存储上的计算档"，这一点 Burn 由后端 dtype 能力承担，不显式区分存储档与计算档。
 
-* 新 llm 的 Fragment 源（每设备 9 份：`cvt/dot/epilogue/load/load_async/quant/reduce/store/witness`）是**模板占位 + 少量真实微核**（如 `dot/fma4` 四路 FMA 链），GEMM 大内核在 `gemm`/`cutile` 侧经 DSL 拼接；llm.u 的后端源是直接可编译的 cuBLAS 封装与手写 Metal/OpenCL 内核。
+* 新 llm 的 Fragment 源（每设备 9 份：`cvt/dot/epilogue/load/load_async/quant/reduce/store/witness`）是**模板占位 + 少量真实微核**（如 `dot/fma4` 四路 FMA 链），GEMM 大内核在 `nn`/`cutile` 侧经 DSL 拼接；llm.u 的后端源是直接可编译的 cuBLAS 封装与手写 Metal/OpenCL 内核。
 
 ### 3.2 算子接口与注册表
 
@@ -180,9 +180,9 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 
 |        | llm（新）                                                                                                                  | llm.u                                                                                                          | Burn                                                                                           |
 | ------ | ----------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| 算子契约   | 四层：`spec`(签名 / 样本 / 语义表 / 代价表达式 / 模板词法) → `gemm`(内核族) → `conv`(NN 算子) → `op`(声明解析 + 唯一 `REGISTRY`)；`spec::einsum` 推求和语义 | `reg.rs` 家族表：matmul (5 impl)/elemwise/attention (3 impl)/reduce；`Reg::get` 按 family+impl 解析                    | 算子是张量方法（`tensor.matmul()`, `.relu()`, `.conv2d()`…），经 `BridgeKind`/ 后端 bridge 分发到 `Backend` 算子 |
+| 算子契约   | 两层：`prof`(签名 / 样本 / 语义表 / 代价表达式 / 模板词法 / 档案片段) → `nn`(内核族 / NN 算子 / 唯一 `REGISTRY`)；`prof::einsum` 推求和语义 | `reg.rs` 家族表：matmul (5 impl)/elemwise/attention (3 impl)/reduce；`Reg::get` 按 family+impl 解析                    | 算子是张量方法（`tensor.matmul()`, `.relu()`, `.conv2d()`…），经 `BridgeKind`/ 后端 bridge 分发到 `Backend` 算子 |
 | 算子扩展   | 新增算子要写 spec 契约 + 样本 + 六设备 Fragment + 见证                                                                                 | 配置条目选骨架 + 实现 + 参数；内核在 backend 侧                                                                                | 实现 `Backend` 对应算子方法，张量 API 自动获得；可写 CubeCL 自定义内核                                                |
-| 图 / IR | `graph` 不在新仓独立 crate（并入 engine/exec 缝）；`spec` 出算子级 IR                                                                   | `graph` crate：`Tensor` enum (F32/Tf32 存 f32，F16/Bf16 存 u16 raw bits)、`Node`/`fuse`/`lower`/`reference`/`sheet` | `burn-ir`、`burn-fusion`：后端无关的算子图与融合 pass                                                       |
+| 图 / IR | `graph` 不在新仓独立 crate（并入 engine/exec 缝）；`prof` 出算子级 IR                                                                   | `graph` crate：`Tensor` enum (F32/Tf32 存 f32，F16/Bf16 存 u16 raw bits)、`Node`/`fuse`/`lower`/`reference`/`sheet` | `burn-ir`、`burn-fusion`：后端无关的算子图与融合 pass                                                       |
 
 
 
@@ -325,7 +325,7 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 
 |       | llm（新）                                                                                                     | llm.u                                            | Burn                                                                                                  |
 | ----- | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------- |
-| 内核抽象  | `cutile`：能力协商 → Fragment 拼接 → emit → 指纹缓存；`spec` 模板词法与代价表达式；六设备 Fragment 编译期扫描成 `FRAGMENTS/PRIMS/DEVICE` 表 | 内核直接写在各 backend 模块；`kernel` crate 只放 attn/ssm 阶段 | CubeCL：设备无关内核语言 + cubek IR；`burn-cubecl` 把 IR  lowering 到 CUDA/HIP/WGPU/CPU；`burn-cubecl-fusion` 算子融合 |
+| 内核抽象  | `cutile`：能力协商 → Fragment 拼接 → emit → 指纹缓存；`prof` 模板词法与代价表达式；六设备 Fragment 编译期扫描成 `FRAGMENTS/PRIMS/DEVICE` 表 | 内核直接写在各 backend 模块；`kernel` crate 只放 attn/ssm 阶段 | CubeCL：设备无关内核语言 + cubek IR；`burn-cubecl` 把 IR  lowering 到 CUDA/HIP/WGPU/CPU；`burn-cubecl-fusion` 算子融合 |
 | 自定义内核 | 写 Fragment + 见证，经 `shard::doctor/verify/bench` 对账                                                          | 加 backend 实现                                     | 写 CubeCL 内核（`examples/custom-cubecl-kernel` / `custom-wgpu-kernel`）                                   |
 
 
@@ -374,7 +374,7 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 
 * **llm.u**：定位 LLM/SSM 推理。架构变体以权重名模式识别（MLP / Exposed mixer / Vocab / State），SSM 前向扫描 + 反向 scan 在位；无 CNN/ViT/RNN 层。`config.spec` 里有 `vit` 字样但属配置枚举，未落地视觉栈。
 
-* **llm（新）**：`algorithm` crate 参考语义覆盖 `attnres / csa / kda / mhc / mla / mamba / moe / hybrid / mix / latent / spike / patch / policy / gating`；`nn` 补齐了经典 CNN / 归一化 / 池化；`spec` 是算子契约层而非预训练模型库。
+* **llm（新）**：`algorithm` crate 参考语义覆盖 `attnres / csa / kda / mhc / mla / mamba / moe / hybrid / mix / latent / spike / patch / policy / gating`；`nn` 补齐了经典 CNN / 归一化 / 池化；`prof` 是算子契约层而非预训练模型库。
 
 * **Burn**：`burn-nn` 是通用层库，配合 `burn-vision`、示例（mnist、modern-lstm、text-classification、text-generation、dqn、wgan）可直接搭可训练模型；不含 Llama/Qwen 等预训练权重加载模型定义（有 `pytorch-reader` 导权重）。
 
@@ -456,7 +456,7 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 | 连续批   | `engine/ifb` + `serve/admit`                                                                                                                                  | `scheduler.step/commit` 连续批                                                                                                                                             | 无                                                             |
 | 投机采样  | `serve/speculate`                                                                                                                                             | `engine/scheduler/speculative`；`exec/teacher`(math/mod)                                                                                                                 | 无                                                             |
 | 端点契约  | `serve/endpoint`：Route/Status/Response/Endpoint；`protocol`；`http`（单线程 HTTP/1.1 薄适配器，socket 字节解成方法 + 路径 + 请求体交 Router）；`completion/frame/request/model/params` | `serve`：openai schema(chat/completions)、`route` 纯逻辑路由；**HTTP 层未接 axum/tokio（serve 零依赖），router/shutdown 待实现**；transport/assemble/detokenize/ensemble/health/admin/facade | `examples/server`；`burn-remote` 提供远程推理 client/server          |
-| 权重格式  | `formats`：GGUF(470+159)、torch `.bin`(ZIP+pickle 栈机 409+180)、JSON；`weights`：safetensors (whole-buffer/header/mmap)；自有 `.u` 容器                                  | `storage`：gguf/safetensors/legacy/tans/merkle/sign/cert/patch/lattice；`exec/format`：HF `config.json`/tokenizer、zip 状态字典 (pickle 协议 2)、pytorch\_model.bin → `.u` 归档      | `pytorch-reader` + `burn-store`/burnpack                      |
+| 权重格式  | `weights`：GGUF(470+159)、torch `.bin`(ZIP+pickle 栈机 409+180)、JSON、safetensors (whole-buffer/header/mmap)；自有 `.u` 容器                                  | `storage`：gguf/safetensors/legacy/tans/merkle/sign/cert/patch/lattice；`exec/format`：HF `config.json`/tokenizer、zip 状态字典 (pickle 协议 2)、pytorch\_model.bin → `.u` 归档      | `pytorch-reader` + `burn-store`/burnpack                      |
 | 分词    | `tokenizer` crate：Tokenizer trait + 字节级参考实现                                                                                                                   | `proto/decode` 采样；`serve/token/detokenize`                                                                                                                              | 无内置分词器                                                        |
 
 ### 9.2 服务能力判定
@@ -494,7 +494,7 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 
 |           | llm（新）                                                                             | llm.u                                                                                                                 | Burn                                                              |
 | --------- | ---------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| RNG crate | `rng`：Philox4x32-10 counter 引擎，显式 seed/stream/index；`Uniform`/`Normal`/`Bernoulli` | 无独立 RNG crate；`tool`/`proto` 侧用 `rand 0.9`/`rand_distr`（StdRng/Normal/Uniform）做初始化；运行期采样由外部注入闭包 `impl FnMut() -> f64` | `rand` 生态；`Device::seed(u64)`；张量 `Distribution::Uniform/Normal/…` |
+| RNG | `train::rng`：Philox4x32-10 counter 引擎，显式 seed/stream/index；`Uniform`/`Normal`/`Bernoulli` | 无独立 RNG crate；`tool`/`proto` 侧用 `rand 0.9`/`rand_distr`（StdRng/Normal/Uniform）做初始化；运行期采样由外部注入闭包 `impl FnMut() -> f64` | `rand` 生态；`Device::seed(u64)`；张量 `Distribution::Uniform/Normal/…` |
 | 可复现性      | counter-based，分 stream/index，可复现                                                   | 依赖注入闭包，确定性由调用方冻结种子                                                                                                    | 后端种子语义（可能全局生效）                                                    |
 
 
@@ -517,17 +517,13 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 
 后端能力（`Compute`）：sgemm /sgemm\_reuse/sgemm\_dtype (TF32) / 常驻权重 sgemm\_wt/wk/adam 设备端 /fetch；`trains()`/`teach()`/`dev_mode()` 能力位；SSM 前向扫描与 prep/dot/scan/turn/bc 反向。
 
-### 12.2 新 llm 算子四层
+### 12.2 本仓算子面
 
 
 
-* `spec`：算子签名、样本、语义表、代价表达式、模板词法、einsum 求和推导。
+* `prof`：算子签名、样本、语义表、代价表达式、模板词法、einsum 求和推导、设备档案与片段见证；声明解析。
 
-* `gemm`：matmul/gemv 家族、激活、归一化、量化；`fast` 微核（i8/micro/pool/probe/sme）。
-
-* `conv`：卷积 / 反卷积、注意力、池化、归一化层。
-
-* `op`：声明解析 + 唯一注册表 `REGISTRY`。
+* `nn`：matmul/gemv 家族、激活、归一化、量化；卷积 / 反卷积、注意力、池化、归一化层；唯一注册表 `REGISTRY`。
 
 * `algorithm`：架构参考语义（attn/csa/kda/mhc/mla/mamba/moe/hybrid/mix/latent/spike/patch/policy/gating）。
 
@@ -751,7 +747,7 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 
 * **Burn（●，9）**：张量方法全套 —— 线性代数（matmul/einsum/linalg）、conv/pool/norm、激活、归约、逐元素、形状变换、采样、量化张量；自定义内核走 CubeCL，扩展面完整。
 
-* **llm 新（◐，4）**：算子四层契约 `spec→gemm→conv→op` + 唯一注册表 `REGISTRY`，`spec` 出算子级 IR 与 einsum 求和语义；但真实内核面以 NEON 微核与少量 Fragment 为主，大算子族的 lowering 尚未补齐。
+* **llm 新（◐，4）**：算子两层契约 `prof`(声明/语义表/档案片段) → `nn`(内核族/唯一注册表 `REGISTRY`)，`prof` 出算子级 IR 与 einsum 求和语义；但真实内核面以 NEON 微核与少量 Fragment 为主，大算子族的 lowering 尚未补齐。
 
 * **llm.u（◐，4）**：4 家族注册表（matmul 5 impl /elemwise/attention 3 impl /reduce），能力位含 sgemm、复用、TF32、常驻权重、设备端 adam、SSM 前反向；但算子集围绕 LLM/SSM 裁剪，不是通用张量算子集。
 
@@ -873,7 +869,7 @@ Burn 生产代码约为新 llm 的 **4.0×**、llm.u 的 **4.4×**；测试代�
 
 * **Burn（●，8）**：rand 生态，`Device::seed(u64)`，张量 `Distribution` Uniform/Normal 等；种子语义可能全局生效，复现粒度略粗于 counter 模型。
 
-* **llm 新（●，7）**：`rng` crate 用 Philox4x32-10 counter 引擎，显式 seed/stream/index，提供 Uniform/Normal/Bernoulli；counter-based 可复现、可分流，确定性设计最细。
+* **llm 新（●，7）**：`train::rng` 用 Philox4x32-10 counter 引擎，显式 seed/stream/index，提供 Uniform/Normal/Bernoulli；counter-based 可复现、可分流，确定性设计最细。
 
 * **llm.u（○，1）**：无独立 RNG，采样由外部注入闭包 `FnMut() -> f64`，测试用线性种子伪随机；确定性完全依赖调用方冻结种子。
 
