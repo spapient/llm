@@ -31,7 +31,7 @@
 
 ### 2.3 优先级（`policy.rs`）
 
-- [`Priority`] 闭集 `High / Normal / Low`，`#[repr(usize)]`；`ALL` 表、`as_str`、`ordinal`（越小越先调度）、`from_str`；实现 `Ord` 可排序。
+- [`Priority`] 闭集 `High / Normal / Low`，`#[repr(usize)]`；`ALL` 表、`as_str`、`ordinal`（越小越先调度）、`from_name`（反解短名，`None` 表未知名）；实现 `Ord` 可排序。
 - 优先级作为策略元数据挂进 `Distributed`；**批量多组并发时的排队排序执行点尚未接线**（当前训练循环一次只同步一个 DP 组，见 §5.2）。
 
 ### 2.4 训练装配接缝（`train/src/session.rs`）
@@ -54,7 +54,7 @@
 | 性能 | **6 / 10** | `reduce_into` 直写调用方缓冲、一次归约不分配堆；组内归约内层预取镜像切片；标量安全后端无 SIMD，平均除法保留循环（已注释保留理由）。无基准测量观测（unknown），不夸大量化收益。 |
 | 质量 | **7 / 10** | 构造期校验（零维 / 上界 / rank 越界 / 宽度不符 / 组非空升序）、浮点极值 NaN 传播、归约闭集与行序断言、策略对拍测试、新顶层类型回登所有权表。 |
 | 代码量 | **6 / 10** | 消除 f32 闭包行表、收编 `Distributed` 两字段进策略对象；泛型约束样板使 `collective.rs` 净增（trait + 浮点/整数实例化）。本体未拆 16 个 optim 模块（裁决保留）。净增减待门禁行数对照复核（unknown）。 |
-| 门禁可执行性 | **4 / 10** | 静态自查、类型闭合与登记到位。本轮取得的观测：`llm-shard` lib 测试 140 通过 / 1 失败（唯一失败 `gate::fragments_tests` 的 `remainder_f32_0` C 片段被 clang 拒绝，属 optim 并入模块的上游算子线）；`collective / policy / topology / tiling` 本体对拍全绿；`llm-train` lib `check` 通过。`llm-train` test 目标被 `samples_tests.rs:84` dataset 类型注解缺失阻塞（上游并行流改动，与本接缝无关）；全量 `clippy / fmt / doc / deny / 架构契约门` 未跑。 |
+| 门禁可执行性 | **4 / 10** | 静态自查、类型闭合与登记到位。本轮取得的观测：`llm-shard` lib 测试 140 通过 / 1 失败（唯一失败 `gate::fragments_tests` 的 `remainder_f32_0` C 片段被 clang 拒绝，属 optim 并入模块的上游算子线）；`collective / policy / topology / tiling` 本体对拍全绿；`llm-train` lib `check` 通过、`fmt` 干净、接缝 clippy 0 警告；`llm-testkit` lib 99 passed / 1 failed，`ownership` 三例全绿（本批 `ReduceScalar / ParallelConfig / Priority` 与 `train::LoaderConfig` 均被门接受），唯一失败 `boundary::unsafe_islands_are_the_ones_the_adr_lists`：ADR-0035 §6 白名单仍列 `nn/kernel_fast_i8.rs`、`nn/kernel_fast_pool.rs`，源码侧两岛已被上游移除，基线漂移，非本接缝。`llm-train` test 目标被 `samples_tests.rs:84` dataset 类型注解缺失阻塞（上游并行流改动）；全量 `clippy --workspace / doc / deny` 未跑，且 `cutile` 在收尾观测期间出现过合并中间态断裂（悬垂引用 / 未闭合分隔符 / 方法缺失），随后被上游收编自愈，整链 clippy 须待其稳定后复跑。 |
 
 > 结论：距 "S++ / 超越 Burn 10 分" 未达成。接口面与配置面补齐是本轮可闭合的部分；运行能力、真实通信、注解入口与干净门禁观测仍是缺口。
 

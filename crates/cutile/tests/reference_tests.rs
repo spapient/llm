@@ -79,9 +79,13 @@ fn every_accepted_fusion_is_either_testable_or_named_unrealizable() {
         };
         // 样本按消费者声明构造：融合核的 ABI 就是消费者那一侧，缝写进去的也是它的槽位。
         let mut sample = (consumer.sample)(consumer.shape.0, consumer.shape.1);
-        let declared = decls
-            .iter()
-            .find(|decl| decl.name == fusion.producer)
+        let producer_decl = decls.iter().find(|d| d.name == fusion.producer);
+        if let Some(decl) = producer_decl {
+            let reads: Vec<&String> = decl.phases.iter().flat_map(|p| p.reads.iter()).collect();
+            let bufs: Vec<&String> = sample.bufs.iter().map(|b| &b.name).collect();
+            eprintln!("PAIR {} -> {} reads={:?} bufs={:?}", fusion.producer, fusion.consumer, reads, bufs);
+        }
+        let declared = producer_decl
             .map(|decl| {
                 decl.phases
                     .iter()
@@ -130,13 +134,14 @@ fn every_accepted_fusion_is_either_testable_or_named_unrealizable() {
         accepted.len(),
         "被接受的融合必须逐条落到某一种结局"
     );
-    // 实测基线：内置注册表的 ABI 互不相同——`gemv_f32` 的 `y` 是 `[N]`，elementwise 是 `[M*N]`，
-    // 多数算子的样本面也不共享缓冲名——所以今天几何可实现的条数是 0。这不是回归，而是
-    // "代数只看名字与类型、不看形状"的必然结果。这条断言是绊线：一旦有人把形状也纳入代数，
-    // 它会在这里失败，届时同步放宽为 `testable > 0` 并把 `plan::fusions` 的形状判据补上。
+    // 实测基线：内置注册表的 ABI 互不相同——`gemv_f32` 的 `y` 是 `[N]`，elementwise 是 `[M*N]`。
+    // 代数只看名字与类型、不看形状；可测条数是随注册表构成漂移的快照绊线。当前唯一可测融合是
+    // `abs_f32 -> add_f32`：新增一元 elementwise 落入二元邻近窗口，同秩同长，生产者产出经
+    // `run_fused` 桥进消费者输入槽；oracle 链路由 `the_fused_oracle_bridges_every_seam...` 独立
+    // 对拍背书。再增 elementwise 邻近对、或把形状也纳入代数时，须逐条复核 oracle 后再调基线。
     assert_eq!(
-        testable, 0,
-        "内置注册表上还不存在几何可实现的融合（可测 {testable} / 几何不可行 {unrealizable} / 未构造样本 {unshaped}）"
+        testable, 1,
+        "几何可实现融合条数偏离当前快照（可测 {testable} / 几何不可行 {unrealizable} / 未构造样本 {unshaped}）"
     );
 }
 
