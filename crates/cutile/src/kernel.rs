@@ -83,11 +83,11 @@ impl ValueType {
         matches!(self, ValueType::Buf { .. })
     }
 
-    /// 标量总能发射；缓冲元素必须在 [`ScalarType::buffer_ok`] 闭集内，否则校验阶段就打回。
+    /// 标量总能发射；缓冲元素必须在 [`ScalarType::buf_ok`] 闭集内，否则校验阶段就打回。
     pub(crate) fn element_ok(self) -> bool {
         match self {
             ValueType::Scalar(_) => true,
-            ValueType::Buf { element, .. } => element.buffer_ok(),
+            ValueType::Buf { element, .. } => element.buf_ok(),
         }
     }
 }

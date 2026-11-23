@@ -159,7 +159,7 @@ fn scalar_type(params: &[Parameter], name: &str) -> Result<ScalarType, Verificat
 
 fn load_type(params: &[Parameter], name: &str) -> Result<ScalarType, VerificationError> {
     match parameter(params, name) {
-        Some(ValueType::Buf { element, .. }) if element.buffer_ok() => Ok(ScalarType::F32),
+        Some(ValueType::Buf { element, .. }) if element.buf_ok() => Ok(ScalarType::F32),
         Some(ValueType::Buf { .. }) => Err(VerificationError::new(format!(
             "buffer `{name}` does not contain f32 elements"
         ))),
@@ -205,17 +205,18 @@ fn ternary_type(
     b: &Expr,
     c: &Expr,
 ) -> Result<ScalarType, VerificationError> {
-    let (a, b, c) = (
+    let types = [
         value_type(params, a)?,
         value_type(params, b)?,
         value_type(params, c)?,
-    );
-    if a == ScalarType::F32 && b == ScalarType::F32 && c == ScalarType::F32 {
-        return Ok(ScalarType::F32);
-    }
-    Err(VerificationError::new(
-        "fused multiply-add operands must all be f32",
-    ))
+    ];
+    types
+        .iter()
+        .all(|&ty| ty == ScalarType::F32)
+        .then_some(ScalarType::F32)
+        .ok_or_else(|| {
+            VerificationError::new("fused multiply-add operands must all be f32")
+        })
 }
 
 fn literal_type(bits: u32) -> Result<ScalarType, VerificationError> {
