@@ -11,15 +11,6 @@ pub(crate) mod parallel;
 
 pub use crate::metal::{compile_run_metal, metal_driver, metal_kernel};
 
-// 测试模块经 `super::*` 取用的类型与常量，这里一并重导出。
-pub(crate) use cutile::dirs::Dirs;
-pub(crate) use diagnostic::{Code, Result};
-pub(crate) use llm_optim::backend::{Codegen, Driver, Launch, Lower, Source};
-pub(crate) use llm_optim::witness::{MAX_OUT, Scope};
-pub(crate) use prof::model::Sample;
-pub(crate) use prof::prof::Profile;
-pub(crate) use prof::sig::Signature;
-
 static METAL_BACKEND: metal::MetalBackend = metal::MetalBackend;
 static CUDA_BACKEND: cuda::CudaBackend = cuda::CudaBackend;
 static ASCEND_BACKEND: ascend::AscendBackend = ascend::AscendBackend;

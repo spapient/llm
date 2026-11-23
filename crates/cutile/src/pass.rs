@@ -121,16 +121,9 @@ fn cost(kernel: &Kernel) -> usize {
     kernel.params.len() + nodes(kernel.write.expr())
 }
 
-/// 表达式节点数：每个二元 / 一元节点各算一，叶子算一。
+/// 表达式节点数：本节点一算一，子节点递归求和。
 pub(super) fn nodes(expression: &Expr) -> usize {
-    match expression {
-        Expr::Neg(value) | Expr::Abs(value) => 1 + nodes(value),
-        Expr::Binary { left, right, .. }
-        | Expr::Min { left, right }
-        | Expr::Max { left, right } => 1 + nodes(left) + nodes(right),
-        Expr::Fma { a, b, c } => 1 + nodes(a) + nodes(b) + nodes(c),
-        _ => 1,
-    }
+    1 + expression.children().iter().map(nodes).sum::<usize>()
 }
 
 /// 把所有代数定律在每个节点上跑到不动点。
@@ -366,9 +359,7 @@ fn expr_mentions(expression: &Expr, name: &str) -> bool {
         Expr::Neg(value) | Expr::Abs(value) => expr_mentions(value, name),
         Expr::Binary { left, right, .. }
         | Expr::Min { left, right }
-        | Expr::Max { left, right } => {
-            expr_mentions(left, name) || expr_mentions(right, name)
-        }
+        | Expr::Max { left, right } => expr_mentions(left, name) || expr_mentions(right, name),
         Expr::Fma { a, b, c } => {
             expr_mentions(a, name) || expr_mentions(b, name) || expr_mentions(c, name)
         }

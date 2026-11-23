@@ -47,7 +47,7 @@ fn shuffle_keeps_every_batch_exactly_once() {
         ..config
     };
 
-    let mut collected = drain_tokens(&mut Loader::with_config(&tokens, seeded).expect("装配"));
+    let collected = drain_tokens(&mut Loader::with_config(&tokens, seeded).expect("装配"));
     let mut flat: Vec<u32> = collected.iter().flatten().copied().collect();
     flat.sort_unstable();
 

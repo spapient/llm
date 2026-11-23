@@ -550,19 +550,24 @@ fn write_compound(source: &mut String, expression: &Expr, idx: &str) {
             write_expr(source, value, idx);
             source.push(')');
         }
-        Expr::Abs(value) => write_call(source, "fabsf", &[value.as_ref()], idx),
         Expr::Binary { op, left, right } => write_binary(source, *op, left, right, idx),
-        Expr::Fma { a, b, c } => {
-            write_call(source, "fmaf", &[a.as_ref(), b.as_ref(), c.as_ref()], idx)
-        }
-        Expr::Min { left, right } => {
-            write_call(source, "fminf", &[left.as_ref(), right.as_ref()], idx)
-        }
-        Expr::Max { left, right } => {
-            write_call(source, "fmaxf", &[left.as_ref(), right.as_ref()], idx)
+        Expr::Abs(..) | Expr::Fma { .. } | Expr::Min { .. } | Expr::Max { .. } => {
+            let (function, args) = call_target(expression);
+            write_call(source, function, args, idx);
         }
         // 叶子由 [`write_expr`] 前置分流到本函数之外；落到这里即空体，不再发射。
         Expr::F32(_) | Expr::Scalar(_) | Expr::Load(_) => {}
+    }
+}
+
+/// C 库调用形态：函数名 + 按发射顺序排列的子节点。仅覆盖 [`write_compound`] 的 Call 组合子组。
+fn call_target(expression: &Expr) -> (&'static str, &[&Expr]) {
+    match expression {
+        Expr::Abs(value) => ("fabsf", &[value.as_ref()]),
+        Expr::Fma { a, b, c } => ("fmaf", &[a.as_ref(), b.as_ref(), c.as_ref()]),
+        Expr::Min { left, right } => ("fminf", &[left.as_ref(), right.as_ref()]),
+        Expr::Max { left, right } => ("fmaxf", &[left.as_ref(), right.as_ref()]),
+        _ => unreachable!("call_target only covers call forms"),
     }
 }
 
