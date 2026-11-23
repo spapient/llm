@@ -105,6 +105,27 @@
         }
     }
 
+    /// 池化打包的槽轮转体：本槽从 `slot` 起按 `p` 步长接管列组，每组一次面板转置。
+    /// 整段（[`pack_serial`]）、分片（[`pack_span`]）与池化轮转三种外层遍历只差列组下标；
+    /// 布局与源视角仍由 `COL_MAJOR` / `transposed` 标签钉住。
+    pub(super) fn group_panel<T: Copy, const NR: usize, const COL_MAJOR: bool>(
+        b: &[T],
+        buf: &mut [T],
+        n: usize,
+        k: usize,
+        npad: usize,
+        p: usize,
+        slot: usize,
+        transposed: bool,
+    ) {
+        let groups = npad / NR;
+        let mut g = slot;
+        while g < groups {
+            panel_tile::<T, NR, COL_MAJOR>(b, buf, n, k, g * NR, g * NR * k, transposed);
+            g += p;
+        }
+    }
+
     /// f32 列组面板内层转置（Tn 入口复用，签名保持不变）。
     pub(super) fn pack_panel(
         src: &[f32],
@@ -160,10 +181,5 @@
         p: usize,
         slot: usize,
     ) {
-        let groups = npad / NR;
-        let mut g = slot;
-        while g < groups {
-            pack_panel(b, buf, n, k, g * NR, g * k * NR, false);
-            g += p;
-        }
+        group_panel::<f32, NR, false>(b, buf, n, k, npad, p, slot, false);
     }
