@@ -102,8 +102,8 @@ reason = "`Running` 是 BatchNorm 滚动统计值类型（每通道均值/方差
 
 [[ownership.unlisted]]
 crate = "tools"
-names = ["Call", "Direction", "Link", "Over"]
-reason = "复杂度与回归门禁的行类型；工具成员，公开面是 `Report`"
+names = ["Call", "Direction", "Link", "Mount", "Over"]
+reason = "复杂度与回归门禁的行类型，以及 `Mount`（`mod 名字;` 的模块名与显式 `#[path]` 相对路径描述，供剔除测试条目时判定挂载归属）；工具成员，公开面是 `Report`"
 
 [[ownership.unlisted]]
 crate = "weights"

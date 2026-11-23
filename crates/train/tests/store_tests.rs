@@ -352,8 +352,12 @@ fn a_plan_drives_the_store_and_every_replay_matches_the_forward() {
                 let actual = store.value(*input).expect("重放后输入必须在场");
                 let expected = truth[input.id() as usize].clone().expect("前向算过");
                 let same = match (actual, expected) {
-                    (View::F32(actual), Data::F32(expected)) => actual.borrowed_slice() == expected.as_slice(),
-                    (View::U8(actual), Data::U8(expected)) => actual.borrowed_slice() == expected.as_slice(),
+                    (View::F32(actual), Data::F32(expected)) => {
+                        actual.borrowed_slice() == expected.as_slice()
+                    }
+                    (View::U8(actual), Data::U8(expected)) => {
+                        actual.borrowed_slice() == expected.as_slice()
+                    }
                     _ => false,
                 };
                 assert!(
