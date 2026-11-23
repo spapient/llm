@@ -323,7 +323,7 @@ fn the_model_renderer_projects_the_operator_contract() {
 }
 
 /// 注解只认识契约 crate：展开到任何 crate 都成立。它不该提到注册表（`builtin_named` / `model(..)`）、
-/// 某个执行核（`gemv::Format`）或 `.k` 签名——那些事实分别属于 `op` 与 `gemm`，由各自的测试核对。
+/// 某个执行核（`gemv::Format`）或 `.k` 签名——那些事实分别属于 `nn` 与 `prof`，由各自的测试核对。
 #[test]
 fn the_model_expansion_names_only_the_contract_crate() {
     let code = render_model(
@@ -340,7 +340,7 @@ fn the_model_expansion_names_only_the_contract_crate() {
     );
     assert!(
         !code.contains("__model_check") && !code.contains("#[cfg(test)]"),
-        "注解不生成测试模块（注册表驱动的一致性是 `op` 的测试）：{code}"
+        "注解不生成测试模块（注册表驱动的一致性是 `nn` 的测试）：{code}"
     );
 }
 

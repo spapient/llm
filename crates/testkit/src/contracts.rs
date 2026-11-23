@@ -242,7 +242,7 @@ fn module_index() -> &'static std::collections::BTreeMap<String, PathBuf> {
             if !in_op_family(&crate_name) || file.file_stem().is_some_and(|stem| stem != "lib") {
                 continue;
             }
-            walk_declarations(&file, &mut Vec::new(), &mut out);
+            walk_declarations(&file, &[], &mut out);
         }
         
         out
@@ -274,7 +274,7 @@ fn child_file(owner: &std::path::Path, name: &str, explicit: Option<&str>) -> Op
 /// 而花括号计数会被字符串里的 `{`（格式化参数）打乱。
 fn walk_declarations(
     file: &std::path::Path,
-    prefix: &mut Vec<String>,
+    prefix: &[String],
     out: &mut std::collections::BTreeMap<String, PathBuf>,
 ) {
     let Some(text) = source_text(file) else {
@@ -298,14 +298,14 @@ fn walk_declarations(
                         stack.pop();
                     }
                     stack.push((indent, name.clone()));
-                    let mut path = prefix.clone();
+                    let mut path = prefix.to_vec();
                     path.extend(stack.iter().map(|(_, name)| name.clone()));
                     let joined = path.join("::");
                     out.entry(joined).or_insert_with(|| file.to_path_buf());
                     if !inline {
                         stack.pop();
                         if let Some(child) = child_file(file, &name, pending.as_deref()) {
-                            walk_declarations(&child, &mut path, out);
+                            walk_declarations(&child, &path, out);
                         }
                     }
                 }

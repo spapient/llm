@@ -53,7 +53,7 @@
 //!
 //! # Panics
 //!
-//! 生成的实现会在首次调用 `Contract::spca()` 时构造 `::nn::ContractSpec`；若注解引用了 `op`
+//! 生成的实现会在首次调用 `Contract::spca()` 时构造 `::nn::ContractSpec`；若注解引用了 `nn`
 //! 声明层里不存在的算子，那里会 panic 并说明是哪个层。正常情况下走不到：生成的校验测试会在
 //! `cargo test` 里先失败。
 

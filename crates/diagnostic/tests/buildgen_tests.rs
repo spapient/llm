@@ -70,7 +70,7 @@ fn read_accepts_a_table_and_rejects_a_parse_error() {
 
 #[test]
 fn relative_strips_the_base_prefix() {
-    let base = Path::new("/repo/crates/op");
+    let base = Path::new("/repo/crates/prof");
     let path = base.join("ops/add.toml");
     assert_eq!(relative(base, &path), "ops/add.toml");
 }

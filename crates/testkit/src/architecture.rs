@@ -81,7 +81,7 @@ pub(crate) struct Edge {
     pub(crate) dev: bool,
 }
 
-/// `llm-op` 与文档里的 `op` 指同一个成员（包名带 `llm-` 前缀，层表用短名）。
+/// `llm-nn` 与文档里的 `nn` 指同一个成员（包名带 `llm-` 前缀，层表用短名）。
 pub(crate) fn short(name: &str) -> String {
     let name = name.trim();
     name.strip_prefix("llm-").unwrap_or(name).to_string()

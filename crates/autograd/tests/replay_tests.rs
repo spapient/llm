@@ -100,7 +100,7 @@ fn consume(table: &mut Table, step: &Node) -> Result<()> {
     Ok(())
 }
 
-/// 测试用的标量语义；与 `op` 里的真算子无关，只负责让数值随位置变化。
+/// 测试用的标量语义；与 `nn` 里的真算子无关，只负责让数值随位置变化。
 fn eval(op: &str, args: &[f32]) -> Result<f32> {
     match (op, args) {
         ("add", [a, b]) => Ok(a + b),

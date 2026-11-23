@@ -4,8 +4,8 @@
 //! 深度轴（[`AttnRes`]）、路由与残差（[`Moe`]、[`Mhc`]、[`Hybrid`]、[`Tower`]）、脉冲三段
 //! （[`Spiking`]、[`Membrane`]、[`Surrogate`]）、byte-latent 三段（[`Patches`]、[`ByteEncoder`]、
 //! [`Emitter`]）与因果决策律（[`pi`] / [`gamma`] / [`Calib`]）。
-//! **不拥有**：层声明与下界（`nn`）、算子语义（`op`）、权重字节（`weights`）、kernel（`cutile`）。
-//! **依赖**：`nn`（只取 `engram` 的 [`Table`](nn::Table) 与 [`Bypass`](nn::Bypass)）、`op`、`diagnostic`。
+//! **不拥有**：层声明与下界（`nn`）、算子契约与参考算术（`prof`/`nn`）、权重字节（`weights`）、kernel（`cutile`）。
+//! **依赖**：`nn`（只取 `engram` 的 [`Table`](nn::Table) 与 [`Bypass`](nn::Bypass)）、`diagnostic`。
 //! **被依赖**：无——没有二进制链接本 crate（见下）。
 //!
 //! # 与 `nn` 分开的判据是产出，不是主题
@@ -108,7 +108,7 @@ use nn::{Contract, LatentAttention, MatMul};
 /// 一族还缺什么。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Blocked {
-    /// 缺算子：名字是 `op` 注册表里**尚未**存在的那个。
+    /// 缺算子：名字是 `nn` 注册表里**尚未**存在的那个。
     Operator(&'static str),
     /// 缺层：算子有，`nn` 没有能承载它的层。
     Layer(&'static str),
@@ -180,7 +180,7 @@ const fn f(name: &'static str, wiring: Wiring) -> Family {
 /// 事实——只有把文件删掉才发现没人依赖它。于是每一族在这里留一行，写明它落成几个 `nn` 层、
 /// 还缺什么。缺的是什么必须具名，而且分三种，因为三种的补法完全不同：
 ///
-/// - [`Blocked::Operator`]：算子层没有（要被 `op` 注册 + `ops/` 语料 + 内核模板），[`ledger`] 会用
+/// - [`Blocked::Operator`]：算子层没有（要在 `nn` 注册表登记 + `prof` 档案语料 + 内核模板），[`ledger`] 会用
 ///   [`nn::builtin_named`] 复核——声明挡住了而算子其实已经存在时，台账就是过期了，测试会失败。
 /// - [`Blocked::Layer`]：算子有，但 `nn` 里没有能承载它的层，几何喂不进去。
 /// - [`Blocked::Geometry`]：层与算子都有，但这一族的某条路径与现有几何冲突（例如 MLA 的

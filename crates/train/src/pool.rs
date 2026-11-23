@@ -1,8 +1,8 @@
 //! 分配与复用：等长空闲表 + [`Bufs`]，把 [`autograd::Store`] 落到真实内存。
 //!
 //! **拥有**：`Bufs`、`Pool`、`Kernel`、`Reference`、`Data`、`View`、`ViewMut`，以及承载静态契约的
-//! `Kind`、`Lane`、`Inputs`。**不拥有**：显存计划（`autograd::Plan`）、反向调度、形状表、算子语义
-//! （`op`）。**依赖**：`autograd`、`tensor`、`op`、`diagnostic`。
+//! `Kind`、`Lane`、`Inputs`。**不拥有**：显存计划（`autograd::Plan`）、反向调度、形状表、算子参考算术
+//! （`nn`）。**依赖**：`autograd`、`tensor`、`nn`、`prof`、`diagnostic`。
 //!
 //! 三条硬约束：缓冲只有 `f32` 与按位打包的 `u8` 两种形态（`unsafe_code = deny`，"把字节重解释成
 //! 浮点"这条路关着，`F16` / `BF16` 于是在编译期就被拒绝）；内核表与 [`nn::registry::REGISTRY`] 同名同序，
