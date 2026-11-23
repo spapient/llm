@@ -6,10 +6,8 @@
 use crate::bad;
 use diagnostic::{Code, Error, Result};
 
-use crate::cursor::{u16_at, u32_at};
 use crate::quant::Quant;
-use crate::writer::{GLOBAL_CRC, MAGIC, MAX_ALIGN_LOG, SEG_CRC, VERSION};
-use crate::{Wire, align_up};
+use crate::Wire;
 use std::borrow::Cow;
 use wire::leb::{self, Cursor};
 use wire::sink::Sink;
