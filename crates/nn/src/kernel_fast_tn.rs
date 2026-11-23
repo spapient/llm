@@ -1,5 +1,5 @@
     //! 线性层布局（TN）的稠密 f32 GEMM：`out[rows,n] = x[rows,k] · w[n,k]ᵀ`。
-    use super::pack::pack_panel;
+    use super::pack::{group_panel, pack_panel};
     use super::pool::{Bufs, Shape, pool, run_pooled};
     use super::{Layout, MR, NR, threads_override};
 
