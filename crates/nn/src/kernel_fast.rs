@@ -78,6 +78,11 @@ pub(super) fn threads_override() -> usize {
         .unwrap_or_else(|| thread::available_parallelism().map(|x| x.get()).unwrap_or(1))
 }
 
+/// 向上对齐到 `block` 的整数倍：面板列宽补齐到 NR/I8_NR，补零列由零初始化面板承担。
+const fn align_up(x: usize, block: usize) -> usize {
+    x.div_ceil(block) * block
+}
+
 /// 多线程稠密 f32 GEMM：`out[m,n] = a[m,k] · b[k,n]`。
 ///
 /// # Panics
@@ -97,7 +102,7 @@ pub fn gemm_f32(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f
         return;
     }
     // 常驻池：打包与计算共用一次发布（一次 Barrier 隔开两阶段），无重复 spawn。
-    let npad = n.div_ceil(NR) * NR;
+    let npad = align_up(n, NR);
     with_panels(npad * k, |buf| {
         if run_pooled(
             pool(),
@@ -163,7 +168,7 @@ fn check_dims(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &[f32]) {
 
 /// 兜底（池不可用）：B 打包一次后 shared 给 scope 线程。
 fn scoped_f32(a: &[f32], b: &[f32], out: &mut [f32], m: usize, n: usize, k: usize, t: usize) {
-    let npad = n.div_ceil(NR) * NR;
+    let npad = align_up(n, NR);
     let blocks = m.div_ceil(MR);
     // 行块按 MR 对齐：否则 18 线程切 256 行会得到 15 行/线程，8 行走微内核、7 行掉回标量尾块。
     let per = blocks.div_ceil(t) * MR;
@@ -183,7 +188,7 @@ fn scoped_f32(a: &[f32], b: &[f32], out: &mut [f32], m: usize, n: usize, k: usiz
 
 /// 单线程稠密 f32 GEMM（基准确认内核质量用）：`out[m,n] = a[m,k] · b[k,n]`。
 pub fn gemm_f32_single(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f32]) {
-    let npad = n.div_ceil(NR) * NR;
+    let npad = align_up(n, NR);
     with_panels(npad * k, |bpack| {
         pack_b_f32_into(bpack, b, n, k);
         compute_gemm(a, bpack, b, m, n, k, out);

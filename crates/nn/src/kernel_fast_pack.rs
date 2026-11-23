@@ -1,7 +1,7 @@
     //! 打包：把 A 的行块转成 `[p][MR]`、把 B 的列组转成 `[jblk][p][NR]` 面板。
     use std::thread;
 
-    use super::{MR, NR};
+    use super::{align_up, MR, NR};
 
     /// A 的每个 8 行块转置成 `[p][8]` 面板：微内核每条 `p` 只需两次连续向量加载。
     ///

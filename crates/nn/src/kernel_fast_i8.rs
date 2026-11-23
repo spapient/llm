@@ -10,6 +10,7 @@
 
     use diagnostic::{Code, Error, Result};
 
+    use super::align_up;
     use super::compute_gemm;
     use super::pack::{b_groups, group_panel};
     use super::pool::{Bufs, Job, Shape, pool, run_pooled};
@@ -106,7 +107,7 @@
             "gemm_i8 尺寸不符"
         );
         let cpu = threads_override();
-        let npad = n.div_ceil(I8_NR) * I8_NR;
+        let npad = align_up(n, I8_NR);
         let groups = npad / I8_NR;
         let t = cpu.min(m.div_ceil(I8_MR)).min(groups).max(1);
         if t <= 1 {
@@ -495,7 +496,7 @@
         use super::I8_NR;
 
         pub(super) fn pack_b(b: &[i8], n: usize, k: usize) -> (Vec<i8>, usize) {
-            let npad = n.div_ceil(I8_NR) * I8_NR;
+            let npad = align_up(n, I8_NR);
             let mut bpack = vec![0i8; npad * k];
             pack_serial::<i8, I8_NR, true>(&mut bpack, b, n, k, false);
             (bpack, npad)
@@ -504,7 +505,7 @@
         /// 并行 B 打包：转置是跨 `n` 字节步长的 cache-miss 密集写，小 `n` 大 `k` 时串行打包
         /// 会独占整段耗时（如 256×256×4096 的 1MB 面板），这里按 4 列组切成线程。
         pub(super) fn pack_b_par(b: &[i8], n: usize, k: usize) -> (Vec<i8>, usize) {
-            let npad = n.div_ceil(I8_NR) * I8_NR;
+            let npad = align_up(n, I8_NR);
             let groups = npad / I8_NR;
             let t = threads_override().min(groups);
             if t <= 1 || npad * k < (1 << 16) {

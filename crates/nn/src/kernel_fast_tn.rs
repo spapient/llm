@@ -1,7 +1,7 @@
     //! 线性层布局（TN）的稠密 f32 GEMM：`out[rows,n] = x[rows,k] · w[n,k]ᵀ`。
     use super::pack::{group_panel, pack_panel};
     use super::pool::{Bufs, Shape, pool, run_pooled};
-    use super::{Layout, MR, NR, threads_override};
+    use super::{align_up, Layout, MR, NR, threads_override};
 
     /// 走这条入口的最少行数：一个完整微内核行块。再少的批只有残行（标量），打包的转置成本摊不回来，
     /// 调用方应当继续用按列驻留的 tile 核。
@@ -37,7 +37,7 @@
 
     /// 单线程：整段打包一次，再按行块算完整段 K。
     fn single_tn(x: &[f32], w: &[f32], rows: usize, n: usize, k: usize, out: &mut [f32]) {
-        let npad = n.div_ceil(NR) * NR;
+        let npad = align_up(n, NR);
         super::with_panels(npad * k, |bpack| {
             pack_tn_into(bpack, w, n, k);
             compute_tn(x, bpack, w, rows, n, k, out);
@@ -54,7 +54,7 @@
         out: &mut [f32],
         t: usize,
     ) -> bool {
-        let npad = n.div_ceil(NR) * NR;
+        let npad = align_up(n, NR);
         super::with_panels(npad * k, |buf| {
             run_pooled(
                 pool(),
@@ -81,7 +81,7 @@
 
     /// 兜底（池不可用）：打包一次后 shared 给 scope 线程，行块按 MR 对齐切。
     fn scoped_tn(x: &[f32], w: &[f32], out: &mut [f32], rows: usize, n: usize, k: usize, t: usize) {
-        let npad = n.div_ceil(NR) * NR;
+        let npad = align_up(n, NR);
         let per = rows.div_ceil(MR).div_ceil(t) * MR;
         super::with_panels(npad * k, |bpack| {
             pack_tn_into(bpack, w, n, k);
@@ -99,7 +99,7 @@
 
     /// 整段打包（单槽、兜底路径与单线程用）：面板布局与父模块一致，只是源按 `[n][k]` 读。
     fn pack_tn_into(bpack: &mut [f32], w: &[f32], n: usize, k: usize) {
-        let npad = n.div_ceil(NR) * NR;
+        let npad = align_up(n, NR);
         debug_assert_eq!(bpack.len(), npad * k);
         for g in 0..npad / NR {
             pack_panel(w, bpack, n, k, g * NR, g * k * NR, true);
