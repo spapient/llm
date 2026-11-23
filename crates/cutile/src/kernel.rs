@@ -30,7 +30,7 @@ impl ScalarType {
     }
 
     /// Whether this type may be held in a buffer parameter. `usize` is an extent scalar only.
-    pub(crate) fn buffer_ok(self) -> bool {
+    pub(crate) fn buf_ok(self) -> bool {
         matches!(self, ScalarType::F32)
     }
 }
@@ -74,7 +74,7 @@ impl ValueType {
         match self {
             ValueType::Scalar(element) => Some(element.c_name().to_string()),
             ValueType::Buf { element, access } => element
-                .buffer_ok()
+                .buf_ok()
                 .then(|| access.c_pointer(element.c_name())),
         }
     }
