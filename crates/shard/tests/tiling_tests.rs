@@ -212,3 +212,61 @@ fn every_sharding_row_matches_its_discriminant() {
         assert_eq!(sharding.merge(), merge);
     }
 }
+
+/// 列切取连续行段：两份按行序拼回必须逐元素等于原权重。
+#[test]
+fn column_split_keeps_the_contiguous_row_block() {
+    let tiling = Tiling::new(Sharding::Column, 2, 4, 2).expect("整除");
+    let full: Vec<i32> = (0..8).collect();
+
+    let local = |rank| tiling.split(rank, &full).expect("份下标在区间内");
+    let (a, b) = (local(0), local(1));
+
+    assert_eq!(a, [0, 1, 2, 3]);
+    assert_eq!(b, [4, 5, 6, 7]);
+    assert_eq!([a, b].concat(), full, "列切两份按行序拼回原样");
+}
+
+/// 行切按行取列段：每行左右两段接回原行；跨行不连续，子块行序与原权重一致。
+#[test]
+fn row_split_cuts_columns_within_each_row() {
+    let tiling = Tiling::new(Sharding::Row, 2, 2, 4).expect("整除");
+    let full: Vec<i32> = (0..8).collect();
+
+    let a = tiling.split(0, &full).expect("rank 0");
+    let b = tiling.split(1, &full).expect("rank 1");
+    assert_eq!(a, [0, 1, 4, 5]);
+    assert_eq!(b, [2, 3, 6, 7]);
+
+    for row in 0..2 {
+        let lo = row * 4;
+        let merged = [&a[row * 2..row * 2 + 2], &b[row * 2..row * 2 + 2]].concat();
+        assert_eq!(merged, full[lo..lo + 4], "第 {row} 行左右两段接回原行");
+    }
+}
+
+/// 切片泛型到任意 `Copy` 元素档：u32 与 i32 各自独立于归约标量档。
+#[test]
+fn split_is_generic_over_a_copy_element() {
+    let tiling = Tiling::new(Sharding::Row, 2, 2, 2).expect("整除");
+    let full = vec![1u32, 2, 3, 4];
+    let local = tiling.split(1, &full).expect("u32 档切片");
+    assert_eq!(local, [2, 4]);
+}
+
+/// 缓冲长度不符形状积、份下标越界都必须拒绝；切片不做长度猜测补齐。
+#[test]
+fn split_rejects_length_mismatch_and_rank_out_of_range() {
+    let tiling = Tiling::new(Sharding::Column, 2, 4, 2).expect("整除");
+    let wrong = vec![0i32; 7];
+    assert_eq!(
+        tiling.split(0, &wrong).unwrap_err().code(),
+        Code::Invalid,
+        "长度 7 不等于形状积 8"
+    );
+    assert_eq!(
+        tiling.split(2, &[0i32; 8]).unwrap_err().code(),
+        Code::Invalid,
+        "份下标 2 越出 0..2"
+    );
+}

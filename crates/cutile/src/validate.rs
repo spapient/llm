@@ -133,7 +133,7 @@ fn value_type(params: &[Parameter], expression: &Expr) -> Result<ScalarType, Ver
 fn compound_type(params: &[Parameter], expression: &Expr) -> Result<ScalarType, VerificationError> {
     match expression {
         Expr::Neg(value) => unary_f32(params, value, "negation"),
-        Expr::Abs(value) => unary_f32(params, value, "absolute value"),
+        Expr::Unary { op, child } => unary_f32(params, child, op.c_name()),
         Expr::Binary { left, right, .. }
         | Expr::Min { left, right }
         | Expr::Max { left, right } => binary_type(params, left, right),

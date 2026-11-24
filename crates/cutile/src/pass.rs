@@ -124,7 +124,7 @@ fn cost(kernel: &Kernel) -> usize {
 /// 表达式节点数：本节点一算一，子节点递归求和。
 pub(super) fn nodes(expression: &Expr) -> usize {
     match expression {
-        Expr::Neg(value) | Expr::Abs(value) => 1 + nodes(value),
+        Expr::Neg(value) | Expr::Unary { child: value, .. } => 1 + nodes(value),
         Expr::Binary { left, right, .. }
         | Expr::Min { left, right }
         | Expr::Max { left, right } => 1 + nodes(left) + nodes(right),
@@ -167,7 +167,7 @@ const RULES: [(&str, Law); 9] = [
     ("sub-zero", sub_zero),
     ("fold-negation", fold_negation),
     ("fold-binary", fold_binary),
-    ("fold-abs", fold_abs),
+    ("fold-unary", fold_unary),
     ("fold-minmax", fold_minmax),
     ("fold-fma", fold_fma),
 ];
@@ -272,14 +272,15 @@ fn fold_binary(expression: &Expr) -> Option<Expr> {
     finite(op.apply(f32::from_bits(*left), f32::from_bits(*right)))
 }
 
-fn fold_abs(expression: &Expr) -> Option<Expr> {
-    let Expr::Abs(value) = expression else {
+/// 一元组合子字面量折叠：子项是字面量时按算子表求值；非有限结果留给目标端 IEEE 语义。
+fn fold_unary(expression: &Expr) -> Option<Expr> {
+    let Expr::Unary { op, child } = expression else {
         return None;
     };
-    let Expr::F32(bits) = value.as_ref() else {
+    let Expr::F32(bits) = child.as_ref() else {
         return None;
     };
-    finite(f32::from_bits(*bits).abs())
+    finite(op.apply(f32::from_bits(*bits)))
 }
 
 fn fold_minmax(expression: &Expr) -> Option<Expr> {

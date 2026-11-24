@@ -127,6 +127,47 @@ impl Tiling {
         Ok((rank * width, width))
     }
 
+    /// 取第 `rank` 份的本地权重子块（行主序 `[out, in]`）。
+    ///
+    /// 列切的行段在缓冲里连续，一次切出整段；行切的列段跨行分散，只能按行拷列段——行内仍是
+    /// 整块拷贝，外层按行循环是数据布局决定的分散拷贝，不是逐元素遍历。切片只产出本 rank 本地
+    /// 子块，不装载进图、不发起通信。
+    ///
+    /// # Errors
+    ///
+    /// `rank` 越出份数（复用 [`Self::range`]）；`full` 长度不等于完整形状积，或形状积溢出。
+    pub fn split<T: Copy>(&self, rank: usize, full: &[T]) -> Result<Vec<T>> {
+        let (start, width) = self.range(rank)?;
+        let [out, inp] = self.shape;
+        let expected = out
+            .checked_mul(inp)
+            .ok_or_else(|| invalid!("shard::Tiling::split", "权重形状积溢出"))?;
+        if full.len() != expected {
+            fail!(
+                "shard::Tiling::split",
+                "权重长度 {} 与完整形状 [{out}, {inp}] 的积 {expected} 不符",
+                full.len()
+            );
+        }
+        match self.sharding {
+            // 输出维行段连续：整段一次切片，不逐元素拷。
+            Sharding::Column => {
+                let lo = start * inp;
+                let hi = lo + width * inp;
+                Ok(full[lo..hi].to_vec())
+            }
+            // 输入维列段：行与行之间不连续，外层按行取列段；每行内部整块复制。
+            Sharding::Row => {
+                let mut local = Vec::with_capacity(out * width);
+                for row in 0..out {
+                    let begin = row * inp;
+                    local.extend_from_slice(&full[begin + start..begin + start + width]);
+                }
+                Ok(local)
+            }
+        }
+    }
+
     /// 被切维在每份里的长度：构造期已保证整除。
     fn width(&self) -> usize {
         self.shape[self.sharding.axis()] / self.parts

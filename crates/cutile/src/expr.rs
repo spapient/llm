@@ -7,7 +7,7 @@ impl Expr {
     /// 与 [`map_children`] 的重建分派各管一面；新增复合变体只补这一处元数据。
     pub(crate) fn children(&self) -> Vec<&Expr> {
         match self {
-            Expr::Neg(value) | Expr::Abs(value) => vec![value.as_ref()],
+            Expr::Neg(value) | Expr::Unary { child: value, .. } => vec![value.as_ref()],
             Expr::Binary { left, right, .. }
             | Expr::Min { left, right }
             | Expr::Max { left, right } => vec![left.as_ref(), right.as_ref()],
@@ -38,7 +38,10 @@ impl Expr {
     fn rebuild_unary(&self, child: Expr) -> Expr {
         match self {
             Expr::Neg(_) => Expr::Neg(Box::new(child)),
-            Expr::Abs(_) => Expr::Abs(Box::new(child)),
+            Expr::Unary { op, .. } => Expr::Unary {
+                op: *op,
+                child: Box::new(child),
+            },
             _ => self.clone(),
         }
     }

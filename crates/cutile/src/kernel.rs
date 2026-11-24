@@ -136,6 +136,68 @@ impl Arith {
     }
 }
 
+/// 一元 f32 数学 / 取整组合子闭集。
+///
+/// 每个算子只在这一处登记 C 发射名与 Rust 主机求值；校验、遍历、折叠、解释执行都从这张表取，
+/// 不为单个变体各写一份 match 臂。结果仍是 `f32`——比较 / 选择这类出布尔值的组合子不在本闭集。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnaryOp {
+    /// `|x|`
+    Abs,
+    /// `√x`
+    Sqrt,
+    /// `e^x`
+    Exp,
+    /// `ln x`
+    Ln,
+    /// `sin x`
+    Sin,
+    /// `cos x`
+    Cos,
+    /// 向正无穷取整。
+    Ceil,
+    /// 向负无穷取整。
+    Floor,
+    /// 四舍五入到最近整数，半入远离零。
+    Round,
+    /// 截断到整数。
+    Trunc,
+}
+
+impl UnaryOp {
+    /// C `<math.h>` 函数名。
+    pub(crate) const fn c_name(self) -> &'static str {
+        match self {
+            UnaryOp::Abs => "fabsf",
+            UnaryOp::Sqrt => "sqrtf",
+            UnaryOp::Exp => "expf",
+            UnaryOp::Ln => "logf",
+            UnaryOp::Sin => "sinf",
+            UnaryOp::Cos => "cosf",
+            UnaryOp::Ceil => "ceilf",
+            UnaryOp::Floor => "floorf",
+            UnaryOp::Round => "roundf",
+            UnaryOp::Trunc => "truncf",
+        }
+    }
+
+    /// 主机侧 f32 求值：解释执行、字面量折叠与参考对拍共用同一口径，避免两边各写一套数学定义。
+    pub fn apply(self, value: f32) -> f32 {
+        match self {
+            UnaryOp::Abs => value.abs(),
+            UnaryOp::Sqrt => value.sqrt(),
+            UnaryOp::Exp => value.exp(),
+            UnaryOp::Ln => value.ln(),
+            UnaryOp::Sin => value.sin(),
+            UnaryOp::Cos => value.cos(),
+            UnaryOp::Ceil => value.ceil(),
+            UnaryOp::Floor => value.floor(),
+            UnaryOp::Round => value.round(),
+            UnaryOp::Trunc => value.trunc(),
+        }
+    }
+}
+
 /// Typed expression nodes. Buf loads use the kernel's implicit loop index.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
@@ -147,8 +209,13 @@ pub enum Expr {
     Load(String),
     /// Negate an f32 expression.
     Neg(Box<Expr>),
-    /// Absolute value of an f32 expression.
-    Abs(Box<Expr>),
+    /// A unary math / rounding combinator over one f32 expression.
+    Unary {
+        /// Registered unary operator.
+        op: UnaryOp,
+        /// Operand.
+        child: Box<Expr>,
+    },
     /// Binary f32 arithmetic.
     Binary {
         /// Operation.
@@ -411,7 +478,7 @@ impl Target {
         matches!(self, Target::C)
     }
 
-    /// 头文件。`.k` 不要——vendor 骨架已经 include 过。`<math.h>` 供 `fabsf` / `fminf` / `fmaxf`。
+    /// 头文件。`.k` 不要——vendor 骨架已经 include 过。`<math.h>` 供一元数学 / 取整与 min/max/fma 库调用。
     fn prologue(self, source: &mut String) {
         if let Target::C = self {
             source.push_str("#include <stddef.h>\n#include <math.h>\n");
@@ -551,7 +618,7 @@ fn write_compound(source: &mut String, expression: &Expr, idx: &str) {
             source.push(')');
         }
         Expr::Binary { op, left, right } => write_binary(source, *op, left, right, idx),
-        Expr::Abs(_) | Expr::Fma { .. } | Expr::Min { .. } | Expr::Max { .. } => {
+        Expr::Unary { .. } | Expr::Fma { .. } | Expr::Min { .. } | Expr::Max { .. } => {
             write_call(source, call_name(expression), &expression.children(), idx)
         }
         // 叶子由 [`write_expr`] 前置分流到本函数之外；落到这里即空体，不再发射。
@@ -562,7 +629,7 @@ fn write_compound(source: &mut String, expression: &Expr, idx: &str) {
 /// 复合变体对应的 C 库函数名；非调用形态返回空串，不 panic。
 fn call_name(expression: &Expr) -> &'static str {
     match expression {
-        Expr::Abs(_) => "fabsf",
+        Expr::Unary { op, .. } => op.c_name(),
         Expr::Fma { .. } => "fmaf",
         Expr::Min { .. } => "fminf",
         Expr::Max { .. } => "fmaxf",

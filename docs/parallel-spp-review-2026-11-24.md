@@ -78,17 +78,28 @@
 - 裸 `#[parallel]` 用例回落单进程默认口径（1×1×1 / Sum / 平均 / Normal）。实测该文件 **2 passed / 0 failed**。
 - 边界：消费方落在 dev 测试侧，生产 `Session` 装配仍由既有 `from_config / new` 驱动；模型层把注解访问器接入真实 `nn` 装配（TP 权重切分、PP 层段）属 §5.1 未闭合项。
 
+### 2.10 模型层归属计划（`placement.rs`，新文件）
+
+- [`Assembler`] 消费 `nn::Stack` 层清单（`shard → nn` 既有边，不反向让 nn 认识 shard），由 [`Plan`] 或 [`ParallelConfig`] 驱动，逐条产出 [`Placement<T>`]：
+  - **PP**：层名首个数字段解析为块号，落在 `Plan::layer_range` 段内才 `held`；无块号的非分层参数（嵌入、归一化、块外项）所有 PP 副本持有；
+  - **TP**：段内投影按后缀角色定切法（`.q/.k/.v` 列切、`.o` 行切，未登记角色回退列切），用 [`Tiling`] 算本 rank 分片形状与权重行/列范围；段外层不建分片计划；
+  - **DP**：副本不切层不切权重，归属视图不做 DP 裁剪（DP 只驱动梯度归约）。
+- [`Placement<T>`] 载荷泛型：装配侧自带的层句柄/键原样带回，计划层不解引用；[`LinearGeo`] 是脱离 `nn::Linear` 引用的投影几何只读副本。`Assembler::from_config(rank, &policy)` 与 `Distributed::from_config` 走同一条策略→拓扑判据。
+- 只产归属几何与权重范围计划：不装载真实权重、不发起通信。
+- 对拍（`tests/placement_tests.rs`，7 例）：单进程全持完整形状；PP=2 两块各归一个 rank、非分层双副本持有；TP=2 Q 列切输出维、O 行切输入维；段外层无分片计划；每个块恰好被一个 PP rank 持有；奇数输出宽不可整除拒绝；后缀切法表逐项核对。
+- 端到端 dev 链（`train/tests/parallel_config_tests.rs` 第 3 例）：注解策略 → `Assembler::from_config` → `place_stack` 归属一份 nn 栈，分片形状断言通过。
+
 ## 3. 五维自评
 
 | 维度 | 分 | 依据与边界 |
 | --- | --- | --- |
-| 能力 | **7 / 10** | 集合端口元素档泛型、策略三旋钮、`#[parallel(..)]` 声明入口就位；本轮补 TP/PP/DP 计划视图（`Plan` 三轴下标 + 三轴组 + PP 层段）、优先级有序提交队列（`Job/Queue`）、注解→策略→`Distributed::from_config` 端到端 dev 链（confirmed）。缺口仍在：TP 权重切分 / PP 流水尚未接 `nn` 装配真实张量；接通的运行通路只有 DP 梯度同步；真实跨进程/设备通信缺（§5.1/5.3）。既有对比基线分布式维 llm=3。 |
-| 性能 | **6 / 10** | `reduce_into` 直写调用方缓冲、一次归约不分配堆；组内归约内层预取镜像切片；标量安全后端无 SIMD，平均除法保留循环（已注释保留理由）。本轮队列排序是批次提交点的 `Vec::sort_by_key`（稳定、小批量），不在归约热路径上；未新增热路径通路，无基准测量观测（unknown），不夸大量化收益。 |
-| 质量 | **9 / 10** | 构造期校验（零维 / 上界 / rank 越界 / 宽度不符 / 组非空升序 / 层段整除）、浮点极值 NaN 传播、归约闭集与行序断言；计划层全 rank 归属与层段划分无重叠无遗漏对拍；队列同档保序不变量对拍；注解编译期闭集/度数/布尔/重复键拒绝 + 端到端类型解析；新顶层类型回登所有权表，dev 工具边回登边表；`testkit` 所有权/层边/契约门全绿。 |
-| 代码量 | **6 / 10** | 上一轮本体减法：移除 f32 闭包行表、浮点实例化收编进宏、rank 越界校验抽 helper（`collective.rs` 433→419）。本轮为补能力接缝：新增 `plan.rs` 111 行、`schedule.rs` 76 行，`lib.rs`/`session.rs`/`Cargo.toml` 挂载共 9 行，测试 163 行；能力件以新增为主，本轮未再拆本体。16 个并入 optim 模块保持原位。 |
-| 门禁可执行性 | **8 / 10** | 本轮相关 crate 干净窗口实测：`llm-shard` lib **149** + doc **1**、`llm-train` lib **233** + doctest **5**、`llm-annotation` **48**、`llm-testkit` **100** 全绿；`cargo clippy --workspace --lib` 0 警告/错误；`cargo fmt --all --check` 0 diff。整链唯一失败为上游在途 `llm-device` Metal pointwise 对拍 1 条（`got -1.125 want -0.125`，改动文件 `device/tests/metal/.../pointwise.rs` 与 `prof/src/ops/{max,min}_f32.toml` 均非本批并行文件），未介入。残留：`llm-fuzz` 两条 broken intra-doc link；`cargo deny` 受网络限制未跑；全仓 doc / `--all-targets` clippy 未在本轮跑完。 |
+| 能力 | **8 / 10** | 集合端口元素档泛型、策略三旋钮、`#[parallel(..)]` 入口、`Plan` 三轴视图、`Job/Queue` 排队原语就位；本轮把归属计划接到 `nn` 层清单：PP 按块号切段、段外层不建分片，TP 按后缀角色列/行切出本 rank 分片形状与权重范围，注解策略→`Assembler`→层归属 dev 链打通（confirmed）。缺口仍在：归属几何尚未驱动真实权重切片装载（Params/Graph）；PP 跨段流水调度、TP 集合通信未接运行图；接通的运行通路只有 DP 梯度同步；真实跨进程/设备通信缺（§5.1/5.3）。既有对比基线分布式维 llm=3。 |
+| 性能 | **6 / 10** | `reduce_into` 直写调用方缓冲、一次归约不分配堆；组内归约内层预取镜像切片；标量安全后端无 SIMD，平均除法保留循环（已注释保留理由）。归属计划是装配期一次性遍历层清单，不进前向/反向热路径；队列排序是批次提交点的 `Vec::sort_by_key`（稳定、小批量）。未新增热路径通路，无基准测量观测（unknown），不夸大量化收益。 |
+| 质量 | **9 / 10** | 构造期校验（零维 / 上界 / rank 越界 / 宽度不符 / 组非空升序 / 层段整除 / TP 切维整除）、浮点极值 NaN 传播、归约闭集与行序断言；计划层全 rank 归属与层段无重叠无遗漏对拍；归属侧每块恰好归一个 PP rank、非分层双副本持有、段外无分片计划对拍；队列同档保序不变量；注解编译期闭集/度数/布尔/重复键拒绝 + 端到端类型解析；新顶层类型回登所有权表，dev 工具边回登边表；`testkit` 所有权/层边/契约门全绿。 |
+| 代码量 | **6 / 10** | 上一轮本体减法：移除 f32 闭包行表、浮点实例化收编进宏、rank 越界校验抽 helper（`collective.rs` 433→419）。本轮为补装配接缝：新增 `placement.rs`（计划 + 泛型载荷 + 切法后缀表）与一份对拍测试；能力件以新增为主，未再拆本体，16 个并入 optim 模块保持原位。 |
+| 门禁可执行性 | **8 / 10** | 本轮相关 crate 干净窗口实测：`llm-shard` lib **156**、`llm-train` lib **234** + doctest **5**、`llm-nn` **528**（4 ignored）、`llm-annotation` **48**、`llm-testkit` **100** 全绿；`cargo clippy` 相关 lib 0 警告；`cargo fmt --all --check` 0 diff。整链唯一失败为上游在途 `llm-device` Metal pointwise 对拍 1 条（`got -1.125 want -0.125`，改动文件 `device/tests/metal/.../pointwise.rs` 与 `prof/src/ops/{max,min}_f32.toml` 均非本批并行文件），未介入。残留：`llm-fuzz` 两条 broken intra-doc link；`cargo deny` 受网络限制未跑；全仓 doc / `--all-targets` clippy 未在本轮跑完。 |
 
-> 结论：距 "S++ / 超越 Burn 10 分" 仍未达成。本轮闭合了**计划视图、优先级排队原语、注解端到端消费方**三处接缝；运行能力（TP/PP 模型层真实张量装配）、真实跨进程通信、干净整链观测仍是缺口。分数为绿窗口实测口径，被上游半成品阻塞的 crate 不重复计绿。
+> 结论：距 "S++ / 超越 Burn 10 分" 仍未达成。本轮把 TP/PP 归属从拓扑视图推进到 **nn 层清单可对拍的装配计划**；真实权重切片装载进图、PP 跨段流水、TP/DP 运行时集合通信、跨进程后端仍是缺口。分数为绿窗口实测口径，被上游半成品阻塞的 crate 不重复计绿。
 
 ## 4. 与 Burn 对照（沿用 §10 已核事实，不重复取证）
 
@@ -97,9 +108,14 @@
 
 ## 5. 未闭合项与阻塞
 
-### 5.1 TP / PP 未接模型层
+### 5.1 TP / PP 未接运行图
 
-拓扑、`Tiling` 切分结构与本轮 `Plan` 计划视图（三轴组 + PP 层段）在位，但权重按 TP 列/行切分、PP 层段与流水调度尚未接到 `nn` 装配与 `Session`；`Plan::layer_range` 给出的层段区间还没驱动真实权重/层的归属。当前 `Distributed` 运行时只驱动 DP 组内梯度同步。
+归属计划已接 `nn` 层清单：`Assembler` 按块号做 PP 段过滤、按后缀角色出 TP 列/行分片形状与权重范围（§2.10，对拍通过）。仍未闭合：
+
+- 归属几何尚未驱动**真实权重切片装载**：`Params`/装配管线仍按整块权重绑定，没有按 `shard_shape`/`shard_range` 取行/列子块；
+- PP 只做了段内层过滤，跨段的流水调度（段间激活传递、micro-batch 排队）未接；
+- TP 分片后的集合通信（列切无需合并、行切需求和归约）还停在 `Tiling::merge` 标注，未接 `Collective` 运行调用；
+- 生产装配侧（`serve` Graph / `train` tape）尚未持有 `Assembler` 归属结果——当前消费方在 dev 测试。
 
 ### 5.2 优先级排序执行点
 
@@ -111,7 +127,7 @@
 
 ### 5.4 上游并行流半成品与残留告警
 
-取证期间工作树存在外部并行工作流连续提交与未提交文件周期收编。本轮收尾绿窗口实测：`llm-annotation` lib **48 passed / 0 failed**；`llm-testkit` lib **100 passed / 0 failed**；`llm-shard` lib **149 passed / 0 failed** + doc **1**；`llm-train` lib **233 passed / 0 failed** + doctest **5 passed / 0 failed**。
+取证期间工作树存在外部并行工作流连续提交与未提交文件周期收编。本轮收尾绿窗口实测：`llm-annotation` lib **48 passed / 0 failed**；`llm-testkit` lib **100 passed / 0 failed**；`llm-shard` lib **156 passed / 0 failed**；`llm-train` lib **234 passed / 0 failed** + doctest **5 passed / 0 failed**；`llm-nn` **528 passed**（4 ignored）。
 
 过程中 cutile 多次进入合并中间态：`E0515`（子节点返回 `&[&Expr]` 临时切片悬垂）、`E0282`（类型标注缺失）、`E0592`（`children / map_children / rebuild_unary / rebuild_binary / rebuild_ternary` 在 `expr.rs` 与 `kernel.rs` 跨文件各定义一份，同 impl `kernel::Expr`）、`E0034`（多个同签名项在作用域内）。这些方法本应只住 `expr.rs`（子节点遍历与按元数重建的分派单一家），`kernel.rs` 内同名副本是迁移残留；该中间态在上一轮收尾前被上游收编——`kernel.rs` 副本已移除。
 
@@ -127,7 +143,7 @@
 
 ### 5.5 注解端到端消费方（dev 链已通，生产装配未接）
 
-`#[parallel(..)]` → `__parallel_config()` → `Distributed::from_config` 已在 `train` dev 集成测试打通（§2.9，2 passed / 0 failed），`::shard::` 路径在消费方编译期解析为真实类型。剩余缺口：消费方目前只在 dev 测试侧，生产 `Session`/模型层尚未把注解访问器接入真实 `nn` 装配；那一步与 §5.1 的 TP/PP 张量装配同批闭合，在此之前不造第二事实源。
+`#[parallel(..)]` → `__parallel_config()` → `Distributed::from_config` 与 `Assembler::from_config` → `place_stack` 两条 dev 链均在 `train` 集成测试打通（§2.9/§2.10，3 passed / 0 failed），`::shard::` 路径在消费方编译期解析为真实类型。剩余缺口：消费方目前只在 dev 测试侧，生产 `Session`/`serve` 装配尚未持有归属结果；那一步与 §5.1 的真实权重切片装载同批闭合，在此之前不造第二事实源。
 
 ## 6. 收尾门禁命令（待上游闭合后一次跑）
 

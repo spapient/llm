@@ -40,6 +40,8 @@ pub struct Placement<T> {
     tiling: Option<Tiling>,
     shard_shape: Option<[usize; 2]>,
     shard_range: Option<(usize, usize)>,
+    /// 本 rank 在 TP 组内的份号；段外或非投影层为 0（切片时段外回 [`None`]，不读它）。
+    part: usize,
     payload: T,
 }
 
@@ -79,6 +81,18 @@ impl<T> Placement<T> {
         self.shard_range
     }
 
+    /// 按本 rank 归属几何把完整权重取成本 rank 本地子块；段外层或非投影层返回 [`None`]。
+    ///
+    /// 切片只产出本地子块，不装载进图、不发起通信；行切子块合并仍需 [`Sharding::merge`]
+    /// 标注的求和归约，运行时接线未闭合。
+    ///
+    /// # Errors
+    ///
+    /// 完整权重长度与形状积不符（委托 [`Tiling::split`]）。
+    pub fn split<E: Copy>(&self, full: &[E]) -> Option<Result<Vec<E>>> {
+        self.tiling.map(|tiling| tiling.split(self.part, full))
+    }
+
     /// 装配侧自带的载荷原样带回。
     pub fn into_payload(self) -> T {
         self.payload
@@ -114,7 +128,9 @@ fn sharding_of(name: &str) -> Sharding {
 ///
 /// `blk.0.q` → `0`；`tok_embeddings` → `None`。段序按名字书写顺序，不依赖固定前缀。
 fn layer_index(name: &str) -> Option<usize> {
-    name.split('.').filter_map(|seg| seg.parse::<usize>().ok()).next()
+    name.split('.')
+        .filter_map(|seg| seg.parse::<usize>().ok())
+        .next()
 }
 
 /// 装配归属计划：由本 rank 的 [`Plan`] 驱动，把层清单归到本 rank 名下。
@@ -165,34 +181,32 @@ impl Assembler {
     }
 
     /// 单条归属：PP 段判定 + 段内投影 TP 分片。
-    fn assign<'a, T>(
+    fn assign<T>(
         &self,
         start: usize,
         end: usize,
-        layer: &'a dyn Contract,
+        layer: &dyn Contract,
         payload: T,
     ) -> Result<Placement<T>> {
         let name = layer.name().to_string();
         let block = layer_index(&name);
-        let held = block.map(|index| index >= start && index < end).unwrap_or(true);
+        let held = block
+            .map(|index| index >= start && index < end)
+            .unwrap_or(true);
 
         let linear = layer.linear();
         let geo = linear.map(|linear| LinearGeo {
             in_features: linear.in_features(),
             out_features: linear.out_features(),
         });
+        let rank = self.plan.tp_idx();
 
         let (tiling, shard_shape, shard_range) = match (held, linear) {
             (true, Some(linear)) => {
                 let parts = self.plan.topology().tp();
                 let sharding = sharding_of(&name);
-                let tiling = Tiling::new(
-                    sharding,
-                    parts,
-                    linear.out_features(),
-                    linear.in_features(),
-                )?;
-                let rank = self.plan.tp_idx();
+                let tiling =
+                    Tiling::new(sharding, parts, linear.out_features(), linear.in_features())?;
                 let shape = tiling.weight_shape(rank)?;
                 let range = tiling.range(rank)?;
                 (Some(tiling), Some(shape), Some(range))
@@ -208,6 +222,7 @@ impl Assembler {
             tiling,
             shard_shape,
             shard_range,
+            part: rank,
             payload,
         })
     }

@@ -10,32 +10,85 @@ use syn::{
 use super::{Param, ParamKind, at_loop_idx, fail, param_kind, path_ident, portable_ident};
 
 /// 表达式这一族的统一拒绝语：把「能用什么」写在一处，免得三个分支各说一套。
-const UNSUPPORTED: &str =
-    "unsupported expression: f32 params, buf loads, finite literals, + - * /, abs, min, max";
+const UNSUPPORTED: &str = "unsupported expression: f32 params, buf loads, finite literals, + - * /, \
+     abs/sqrt/exp/ln/sin/cos/ceil/floor/round/trunc, min, max";
 const ARITHMETIC: &str = "supported arithmetic is `+`, `-`, `*`, and `/`";
 
-/// 方法组合子闭集：`abs()` 一元无 IR 变体，`min`/`max` 带一个参数与对应 IR 变体。
+/// 方法组合子的 IR 形状：一元落 `Expr::Unary`，二元落 `Min`/`Max`。
+enum MethodKind {
+    /// 一元算子，括号内是 [`cutile::kernel::UnaryOp`] 变体名。
+    Unary(&'static str),
+    /// 二元逐点组合子，括号内是 `Expr` 变体名（`Min` / `Max`）。
+    Binary(&'static str),
+}
+
+/// 方法组合子闭集：方法名 + 元数 + IR 形状。
 struct Method {
     name: &'static str,
     arity: usize,
-    variant: Option<&'static str>,
+    kind: MethodKind,
 }
 
-const METHODS: [Method; 3] = [
+const METHODS: [Method; 12] = [
     Method {
         name: "abs",
         arity: 0,
-        variant: None,
+        kind: MethodKind::Unary("Abs"),
+    },
+    Method {
+        name: "sqrt",
+        arity: 0,
+        kind: MethodKind::Unary("Sqrt"),
+    },
+    Method {
+        name: "exp",
+        arity: 0,
+        kind: MethodKind::Unary("Exp"),
+    },
+    Method {
+        name: "ln",
+        arity: 0,
+        kind: MethodKind::Unary("Ln"),
+    },
+    Method {
+        name: "sin",
+        arity: 0,
+        kind: MethodKind::Unary("Sin"),
+    },
+    Method {
+        name: "cos",
+        arity: 0,
+        kind: MethodKind::Unary("Cos"),
+    },
+    Method {
+        name: "ceil",
+        arity: 0,
+        kind: MethodKind::Unary("Ceil"),
+    },
+    Method {
+        name: "floor",
+        arity: 0,
+        kind: MethodKind::Unary("Floor"),
+    },
+    Method {
+        name: "round",
+        arity: 0,
+        kind: MethodKind::Unary("Round"),
+    },
+    Method {
+        name: "trunc",
+        arity: 0,
+        kind: MethodKind::Unary("Trunc"),
     },
     Method {
         name: "min",
         arity: 1,
-        variant: Some("Min"),
+        kind: MethodKind::Binary("Min"),
     },
     Method {
         name: "max",
         arity: 1,
-        variant: Some("Max"),
+        kind: MethodKind::Binary("Max"),
     },
 ];
 
@@ -89,7 +142,7 @@ fn method_call(method: &ExprMethodCall, idx: &str, params: &[Param]) -> syn::Res
     build_method(known, method, receiver, idx, params)
 }
 
-/// 方法变体的 IR 构造：`abs` 一元，`min`/`max` 二元；与查找 / 校验分流，压低单函数复杂度。
+/// 方法变体的 IR 构造：一元落 `Unary`，`min`/`max` 落二元；与查找 / 校验分流，压低单函数复杂度。
 fn build_method(
     known: &Method,
     method: &ExprMethodCall,
@@ -97,9 +150,17 @@ fn build_method(
     idx: &str,
     params: &[Param],
 ) -> syn::Result<TokenStream2> {
-    match known.variant {
-        None => Ok(quote!(::cutile::kernel::Expr::Abs(Box::new(#receiver)))),
-        Some(variant) => {
+    match known.kind {
+        MethodKind::Unary(op) => {
+            let op = Ident::new(op, method.method.span());
+            Ok(quote! {
+                ::cutile::kernel::Expr::Unary {
+                    op: ::cutile::kernel::UnaryOp::#op,
+                    child: Box::new(#receiver),
+                }
+            })
+        }
+        MethodKind::Binary(variant) => {
             let argument = parse_expr(&method.args[0], idx, params)?;
             let variant = Ident::new(variant, method.method.span());
             Ok(quote! {

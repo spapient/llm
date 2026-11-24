@@ -203,7 +203,10 @@ fn abs_min_max_emit_math_libcalls() {
             left: Box::new(Expr::Load("a".to_string())),
             right: Box::new(zero),
         }),
-        right: Box::new(Expr::Abs(Box::new(Expr::Load("b".to_string())))),
+        right: Box::new(Expr::Unary {
+            op: UnaryOp::Abs,
+            child: Box::new(Expr::Load("b".to_string())),
+        }),
     };
     let kernel = Kernel::map(
         "clampish",
@@ -610,7 +613,7 @@ fn evaluate(expression: &Expr, inputs: [f32; 2]) -> f32 {
         Expr::F32(bits) => f32::from_bits(*bits),
         Expr::Load(name) | Expr::Scalar(name) => slot(name),
         Expr::Neg(value) => -evaluate(value, inputs),
-        Expr::Abs(value) => evaluate(value, inputs).abs(),
+        Expr::Unary { op, child } => op.apply(evaluate(child, inputs)),
         Expr::Binary { op, left, right } => {
             op.apply(evaluate(left, inputs), evaluate(right, inputs))
         }
@@ -667,6 +670,19 @@ fn any_expr(rng: &mut Rng, depth: u32) -> Expr {
     }
     if rng.next().is_multiple_of(5) {
         return Expr::Neg(Box::new(any_expr(rng, depth - 1)));
+    }
+    if rng.next().is_multiple_of(7) {
+        let op = rng.pick(&[
+            UnaryOp::Abs,
+            UnaryOp::Ceil,
+            UnaryOp::Floor,
+            UnaryOp::Round,
+            UnaryOp::Trunc,
+        ]);
+        return Expr::Unary {
+            op,
+            child: Box::new(any_expr(rng, depth - 1)),
+        };
     }
     let op = rng.pick(&[Arith::Add, Arith::Sub, Arith::Mul, Arith::Div]);
     binary(op, any_expr(rng, depth - 1), any_expr(rng, depth - 1))
@@ -741,4 +757,53 @@ fn every_law_preserves_every_bit_it_touches() {
         let original = any_expr(&mut rng, 4);
         assert_sound(&original, &normalize(original.clone()));
     }
+}
+
+/// 一元闭集逐族发射成对应 `<math.h>` 库调用；表驱动遍历，新增算子只在闭集里登记一行。
+#[test]
+fn unary_ops_emit_their_math_libcalls() {
+    let cases = [
+        (UnaryOp::Abs, "fabsf"),
+        (UnaryOp::Sqrt, "sqrtf"),
+        (UnaryOp::Exp, "expf"),
+        (UnaryOp::Ln, "logf"),
+        (UnaryOp::Sin, "sinf"),
+        (UnaryOp::Cos, "cosf"),
+        (UnaryOp::Ceil, "ceilf"),
+        (UnaryOp::Floor, "floorf"),
+        (UnaryOp::Round, "roundf"),
+        (UnaryOp::Trunc, "truncf"),
+    ];
+    for (op, call) in cases {
+        let kernel = Kernel::map(
+            "unary",
+            vec![
+                buf("input", Access::Read),
+                buf("out", Access::ReadWrite),
+                scalar("extent", ScalarType::Usize),
+            ],
+            "i",
+            "extent",
+            "out",
+            Expr::Unary {
+                op,
+                child: Box::new(Expr::Load("input".to_string())),
+            },
+        );
+        let source = kernel.emit_c().expect("unary emits C");
+        assert!(source.contains("#include <math.h>"), "{source}");
+        assert!(source.contains(&format!("{call}(input[i])")), "{source}");
+    }
+}
+
+/// 一元组合子的子表达式必须算 `f32`：套在 `usize` 标量上在校验期就被打回。
+#[test]
+fn unary_rejects_non_f32_operand() {
+    let mut kernel = minimal();
+    kernel.write = Write::Map(Expr::Unary {
+        op: UnaryOp::Abs,
+        child: Box::new(Expr::Scalar("extent".to_string())),
+    });
+    let error = kernel.verify().expect_err("usize operand is rejected");
+    assert!(error.to_string().contains("f32"), "{error}");
 }

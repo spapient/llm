@@ -3,7 +3,7 @@
 //! 字符串断言只能证明发射器写了哪些字；这里把源码交给 `cc` 编译、运行，再按 IEEE-754
 //! 位模式比较，覆盖 ±0、次正规数、无穷、NaN、溢出与长度守卫。归约还额外锁住累加顺序。
 
-use crate::kernel::{Access, Arith, Expr, Kernel, Parameter, ScalarType, ValueType};
+use crate::kernel::{Access, Arith, Expr, Kernel, Parameter, ScalarType, UnaryOp, ValueType};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::PathBuf;
@@ -104,7 +104,10 @@ fn clipped() -> Kernel {
         "output",
         Expr::Max {
             left: Box::new(Expr::Min {
-                left: Box::new(Expr::Abs(Box::new(load("a")))),
+                left: Box::new(Expr::Unary {
+                    op: UnaryOp::Abs,
+                    child: Box::new(load("a")),
+                }),
                 right: Box::new(Expr::F32(2.0f32.to_bits())),
             }),
             right: Box::new(Expr::F32((-1.0f32).to_bits())),
@@ -346,6 +349,45 @@ fn abs_min_max_emitted_c_matches_rust_bit_for_bit() {
         .map(|value| value.abs().min(2.0f32).max(-1.0f32))
         .collect();
     assert_same(&run.bits, &expected, "clipped");
+}
+
+/// 位级对齐的一元族（绝对值与取整）经 `cc -O2` 编译执行，与 Rust 参考逐位对拍。
+/// 超越函数（sqrt/exp/ln/sin/cos）存在 libm ulp 差，不进这条逐位通道，走容差对拍另案。
+#[test]
+fn bitwise_unary_ops_emitted_c_match_rust_bit_for_bit() {
+    let input = adversarial();
+    for op in [
+        UnaryOp::Abs,
+        UnaryOp::Ceil,
+        UnaryOp::Floor,
+        UnaryOp::Round,
+        UnaryOp::Trunc,
+    ] {
+        let kernel = Kernel::map(
+            "rounding",
+            vec![
+                buf("input", Access::Read),
+                buf("output", Access::ReadWrite),
+                length("extent"),
+            ],
+            "i",
+            "extent",
+            "output",
+            Expr::Unary {
+                op,
+                child: Box::new(load("input")),
+            },
+        );
+        let call = format!("rounding(input, {LEN}, output, {LEN}, {LEN})");
+        let run = run(
+            "rounding",
+            &kernel.emit_c().expect("unary emits C"),
+            &pointwise_main(&call, &input),
+        );
+        assert_eq!(run.rc, 0);
+        let expected: Vec<f32> = input.iter().map(|value| op.apply(*value)).collect();
+        assert_same(&run.bits, &expected, "rounding");
+    }
 }
 
 #[test]

@@ -58,9 +58,32 @@ fn annotation_policy_drives_layer_assembly_placement() -> Result<()> {
     let placed = assembler.place_stack(&stack, 1)?;
     assert!(placed.iter().all(|p| p.held()));
 
-    let q = placed.iter().find(|p| p.name() == "blk.0.q").expect("Q 列切");
+    let q = placed
+        .iter()
+        .find(|p| p.name() == "blk.0.q")
+        .expect("Q 列切");
     assert_eq!(q.shard_shape(), Some([12, 12]));
-    let o = placed.iter().find(|p| p.name() == "blk.0.o").expect("O 行切");
+    let o = placed
+        .iter()
+        .find(|p| p.name() == "blk.0.o")
+        .expect("O 行切");
     assert_eq!(o.shard_shape(), Some([12, 12]));
+    Ok(())
+}
+
+#[test]
+fn annotation_policy_drives_the_local_weight_slice() -> Result<()> {
+    // 策略 → 归属几何 → 完整权重取本 rank 本地子块；只切片，不装载进图、不发起通信。
+    let policy = Sharded::__parallel_config();
+    let stack = Stack::new(vec![Linear::new("blk.0.q", 12, 24)?])?;
+
+    let assembler = Assembler::from_config(0, &policy)?;
+    let placed = assembler.place_stack(&stack, 1)?;
+    let q = placed.iter().find(|p| p.name() == "blk.0.q").expect("Q");
+
+    let full: Vec<f32> = (0..24 * 12).map(|i| i as f32).collect();
+    let local = q.split(&full).expect("Q 有分片")?;
+    assert_eq!(local.len(), 12 * 12, "TP=2 列切取前 12 行");
+    assert_eq!(local[..12], full[..12], "rank 0 子块首行与完整权重首行一致");
     Ok(())
 }
