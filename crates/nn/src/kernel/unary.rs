@@ -76,6 +76,70 @@ pub fn reference<U: Unary>(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
     Ok(a.iter().map(|x| U::apply_f32(*x)).collect())
 }
 
+/// f16 确定性样本：f32 夹具按 IEEE binary16 收窄，输入/输出缓冲都是 [`Values::F16`]。
+pub fn sample_f16<U: Unary>(len: usize, _: usize) -> Sample {
+    let a = U::input(len)
+        .iter()
+        .map(|x| half::f16::from_f32(*x))
+        .collect();
+    Sample {
+        m: len,
+        n: len,
+        scalars: vec![("N", len as i64)],
+        bufs: vec![
+            Buf {
+                name: "a",
+                values: Values::F16(a),
+            },
+            Buf {
+                name: "y",
+                values: Values::F16(vec![half::f16::from_f32(0.0); len]),
+            },
+        ],
+    }
+}
+
+/// f16 标量参考：逐元素应用 `apply::<half::f16>`，结果上 cast f32（对拍通道归一 f32）。
+pub fn reference_f16<U: Unary>(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
+    Ok(sample
+        .f16("a")?
+        .iter()
+        .map(|x| U::apply(*x).to_f32())
+        .collect())
+}
+
+/// bf16 确定性样本：f32 夹具按 bfloat16 收窄，输入/输出缓冲都是 [`Values::Bf16`]。
+pub fn sample_bf16<U: Unary>(len: usize, _: usize) -> Sample {
+    let a = U::input(len)
+        .iter()
+        .map(|x| half::bf16::from_f32(*x))
+        .collect();
+    Sample {
+        m: len,
+        n: len,
+        scalars: vec![("N", len as i64)],
+        bufs: vec![
+            Buf {
+                name: "a",
+                values: Values::Bf16(a),
+            },
+            Buf {
+                name: "y",
+                values: Values::Bf16(vec![half::bf16::from_f32(0.0); len]),
+            },
+        ],
+    }
+}
+
+/// bf16 标量参考：逐元素应用 `apply::<half::bf16>`，结果上 cast f32。
+pub fn reference_bf16<U: Unary>(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
+    Ok(sample
+        .bf16("a")?
+        .iter()
+        .map(|x| U::apply(*x).to_f32())
+        .collect())
+}
+
 /// 内核本体：结果写进调用方给的缓冲，泛型到浮点标量档 `K`。
 ///
 /// # Errors
@@ -192,6 +256,56 @@ macro_rules! unary_f32 {
     ) => {
         $crate::unary_f32! {
             $name, $alias, $op, $kind, $edge, $apply, true $(, $input)?
+        }
+    };
+}
+
+/// 生成一份**指定精度档**的一元逐元素算子公开面：与 [`unary_f32`] 同一份泛型 `apply` 骨架，
+/// 只差档配置（dtype 字符串 / [`DType`](crate::model::DType) / 标量类型 / 操作数位宽 / 样本 / 参考）。
+/// 「加一档=加一次调用」：算法闭包只写一遍，档差异全是数据参数。
+#[macro_export]
+macro_rules! unary_tier {
+    (
+        $name:ident, $alias:ident, $op:tt,
+        $dtype:literal, $dt:expr, $k:ty, $operands:expr, $sample:path, $reference:path,
+        $apply:expr, $diff:literal
+        $(, $input:expr)?
+    ) => {
+        #[doc = concat!("`", $op, "` 的标记类型：逐元素一元运算见 `apply`，骨架见 `crate::unary`。")]
+        pub struct $name;
+
+        $crate::formula_owner!($name, "n,n->n", $operands, "nn::unary::formula");
+
+        impl $crate::unary::Unary for $name {
+            fn apply<K: $crate::kernel::scalar::Scalar>(x: K) -> K {
+                let apply: fn(K) -> K = $apply;
+                apply(x)
+            }
+
+            $( fn input(len: usize) -> Vec<f32> {
+                const INPUT: fn(usize) -> Vec<f32> = $input;
+                INPUT(len)
+            } )?
+        }
+
+        $crate::operator_via!(
+            @impl $name, $op, 1, (4096, 4096), $diff, 1, $crate::unary::AXES,
+            $crate::unary::project_shape,
+            $crate::unary::cost::<$name>,
+            $sample, $reference, $dt
+        );
+
+        #[annotation::model(name = $op, shape = [4096, 4096], dtype = $dtype, skeleton = "unary")]
+        #[doc = concat!("`", $op, "` 的语义别名。")]
+        pub type $alias = $name;
+
+        /// 内核入口：结果写进调用方给的缓冲。
+        ///
+        /// # Errors
+        ///
+        /// 输入与输出等长，否则返回说明。
+        pub fn forward(a: tensor::View<'_, $k>, out: &mut [$k]) -> diagnostic::Result<()> {
+            $crate::unary::forward::<$k, $name>(a, out)
         }
     };
 }

@@ -103,10 +103,19 @@ macro_rules! operator_via {
         @impl $ty:ty, $op:tt, $arity:literal, $shape:expr, $differentiable:literal, $group:expr,
         $axes:expr, $project:path, $cost:path, $sample:path, $reference:path
     ) => {
+        $crate::operator_via!(
+            @impl $ty, $op, $arity, $shape, $differentiable, $group, $axes,
+            $project, $cost, $sample, $reference, $crate::model::DType::F32
+        );
+    };
+    (
+        @impl $ty:ty, $op:tt, $arity:literal, $shape:expr, $differentiable:literal, $group:expr,
+        $axes:expr, $project:path, $cost:path, $sample:path, $reference:path, $dtype:expr
+    ) => {
         impl $crate::operator::Operator for $ty {
             const NAME: &'static str = $op;
             const SHAPE: (usize, usize) = $shape;
-            const DTYPE: $crate::model::DType = $crate::model::DType::F32;
+            const DTYPE: $crate::model::DType = $dtype;
             const AXES: &'static [$crate::model::AxisSpec] = $axes;
             const DIFFERENTIABLE: bool = $differentiable;
             const GROUP: u32 = $group;

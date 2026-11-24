@@ -102,7 +102,10 @@ pub use cost::Cost;
 pub use expr::Expr;
 pub use extents::Extents;
 pub use formula::Formula;
-pub use operand::{Access, Operand, OperandSpec, f32_binary_operands, f32_io_operands};
+pub use operand::{
+    Access, Operand, OperandSpec, bf16_io_operands, f16_io_operands, f32_binary_operands,
+    f32_io_operands,
+};
 
 #[cfg(test)]
 mod tests {

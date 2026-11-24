@@ -53,6 +53,24 @@ pub const fn f32_io_operands() -> [OperandSpec; 2] {
     ]
 }
 
+/// f16 一读一写的标准操作数：`a` 读、`y` 写，元素 16 位（半精度一元/归约共用）。
+#[must_use]
+pub const fn f16_io_operands() -> [OperandSpec; 2] {
+    [
+        OperandSpec::read("a", Bits::Sixteen),
+        OperandSpec::write("y", Bits::Sixteen),
+    ]
+}
+
+/// bf16 一读一写的标准操作数：`a` 读、`y` 写，元素 16 位（brain 浮点一元/归约共用）。
+#[must_use]
+pub const fn bf16_io_operands() -> [OperandSpec; 2] {
+    [
+        OperandSpec::read("a", Bits::Sixteen),
+        OperandSpec::write("y", Bits::Sixteen),
+    ]
+}
+
 /// f32 两读一写的标准操作数：`a`、`b` 读、`y` 写（二元逐元素）。
 #[must_use]
 pub const fn f32_binary_operands() -> [OperandSpec; 3] {

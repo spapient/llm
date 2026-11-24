@@ -39,6 +39,14 @@ fn declarations(manifest: &Path) -> diagnostic::Result<(String, String, String)>
     ))
 }
 
+/// 单份展开条目：算子名 / 模板 stem / 表字面量行 / 档名。
+struct Entry {
+    name: String,
+    stem: String,
+    row: String,
+    tier: Option<String>,
+}
+
 /// 逐文件扫描：`(算子名, 模板 stem, 表字面量行)` 三份同序清单，展开 `base` 继承与 `tiers` 档后生成。
 ///
 /// 一份档案声明 `[op].tiers = ["f32", "f16", …]` 时，按档展开成多个算子名 `<算法>_<档>`，
@@ -50,35 +58,66 @@ fn scan(
     manifest: &Path,
     files: &[PathBuf],
 ) -> diagnostic::Result<(Vec<String>, Vec<String>, String, Vec<Option<String>>)> {
-    let mut entries: Vec<(String, String, String, Option<String>)> = Vec::new();
+    let entries = collect_entries(ops, manifest, files)?;
+    Ok(flatten(entries))
+}
+
+/// 读入并解析（含 `base` 继承）一份档案表。
+fn resolved_table(ops: &Path, path: &Path) -> diagnostic::Result<toml::Table> {
+    resolve(ops, buildgen::read(path)?)
+}
+
+/// 逐档生成一条表字面量行。
+fn tier_row(exp_name: &str, exp_table: &toml::Table) -> diagnostic::Result<String> {
+    Ok(format!(
+        "            (\"{exp_name}\", {}),",
+        buildgen::emit(exp_table, exp_name)?
+    ))
+}
+
+/// 遍历档案文件，逐档展开成行条目（保持文件序，稍后由 [`flatten`] 统一排序）。
+fn collect_entries(
+    ops: &Path,
+    manifest: &Path,
+    files: &[PathBuf],
+) -> diagnostic::Result<Vec<Entry>> {
+    let mut entries: Vec<Entry> = Vec::new();
     for path in files {
         println!(
             "cargo:rerun-if-changed={}",
             buildgen::relative(manifest, path)
         );
         let name = file_stem(path);
-        let table = resolve(ops, buildgen::read(path)?)?;
+        let table = resolved_table(ops, path)?;
         let stem = stem_of(&table, name, ops);
         for (exp_name, exp_table, tier) in expand_tiers(name, &table)? {
-            let row = format!(
-                "            (\"{exp_name}\", {}),",
-                buildgen::emit(&exp_table, &exp_name)?
-            );
-            entries.push((exp_name, stem.clone(), row, tier));
+            let row = tier_row(&exp_name, &exp_table)?;
+            entries.push(Entry {
+                name: exp_name,
+                stem,
+                row,
+                tier,
+            });
         }
     }
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(entries)
+}
+
+/// 条目按名升序，汇总成名字表 / 模板表 / 行清单 / 档名表四份同序清单。
+fn flatten(entries: Vec<Entry>) -> (Vec<String>, Vec<String>, String, Vec<Option<String>>) {
+    let mut entries = entries;
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
     let mut names = Vec::new();
     let mut stems = Vec::new();
     let mut tiers = Vec::new();
     let mut rows = String::new();
-    for (name, stem, row, tier) in entries {
-        names.push(name);
-        stems.push(stem);
-        tiers.push(tier);
-        let _ = writeln!(rows, "{row}");
+    for entry in entries {
+        names.push(entry.name);
+        stems.push(entry.stem);
+        tiers.push(entry.tier);
+        let _ = writeln!(rows, "{}", entry.row);
     }
-    Ok((names, stems, rows, tiers))
+    (names, stems, rows, tiers)
 }
 
 /// 按 `[op].tiers` 把一份算法档案展开成逐档算子表；无 `tiers` 时原样返回单条（名=文件名）。
@@ -125,14 +164,17 @@ fn substitute_dt(table: &mut toml::Table, tier: &str) {
     for (key, value) in table.iter_mut() {
         match value {
             toml::Value::Table(inner) => substitute_dt(inner, tier),
-            toml::Value::Array(arr) if key == "dt" => {
-                for item in arr.iter_mut() {
-                    if item.as_str().is_some() {
-                        *item = toml::Value::String(tier.to_string());
-                    }
-                }
-            }
+            toml::Value::Array(arr) if key == "dt" => replace_dt_tokens(arr, tier),
             _ => {}
+        }
+    }
+}
+
+/// 把 `dt` 数组里的字符串精度 token 整体换成本档；非字符串项原样保留。
+fn replace_dt_tokens(arr: &mut Vec<toml::Value>, tier: &str) {
+    for item in arr.iter_mut() {
+        if item.as_str().is_some() {
+            *item = toml::Value::String(tier.to_string());
         }
     }
 }
