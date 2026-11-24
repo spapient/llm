@@ -7,11 +7,12 @@ use llm_tools::gate::{Gate, Metric, Over};
 
 use super::scan_integration_test;
 
-/// 本仓库三个阈值的键与值；改动它们就改 `lints/vocabulary.toml`。
-const GATE_KEYS: [(&str, i64); 4] = [
+/// 本仓库五个阈值的键与值；改动它们就改 `lints/vocabulary.toml`。
+const GATE_KEYS: [(&str, i64); 5] = [
     ("ccn_max", 5),
     ("nloc_max", 60),
-    ("file_max_lines", 600),
+    ("file_max_lines", 899),
+    ("file_min_lines", 300),
     ("test_max_lines", 800),
 ];
 
@@ -52,7 +53,7 @@ fn the_project_config_lists_only_root_entry_legacy_debt() {
         [Metric::Ccn, Metric::Nloc, Metric::Lines, Metric::Call].map(|metric| gate.limit(metric));
     assert_eq!(
         limits,
-        [5, 60, 600, 0],
+        [5, 60, 899, 0],
         "阈值来自构建期生成的 `lints/vocabulary.toml`；`Call` 没有预算"
     );
     for msg in gate.stale(&BTreeMap::new()) {

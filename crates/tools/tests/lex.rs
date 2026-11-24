@@ -331,6 +331,7 @@ fn line_gate() -> Gate {
         ("ccn_max", Value::int(5)),
         ("nloc_max", Value::int(60)),
         ("file_max_lines", Value::int(10)),
+        ("file_min_lines", Value::int(1)),
         ("test_max_lines", Value::int(10)),
     ];
     Gate::from_table(&Table::from_pairs(vec![("gate", Value::table(thresholds))]))
