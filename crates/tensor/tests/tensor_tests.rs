@@ -279,3 +279,28 @@ fn an_unaffordable_owned_tensor_is_an_error_not_an_abort() {
     let error = OwnedF32::zeros(Shape::new([usize::MAX])).expect_err("地址空间装不下");
     assert_eq!(error.code(), Code::Invalid);
 }
+
+
+#[test]
+fn column_major_construction_uses_the_same_logical_element_order() {
+    let values = [1i32, 4, 2, 5, 3, 6];
+    let view: View<'_, i32> =
+        View::with_order(Shape::new([2, 3]), &values, Order::ColMajor).expect("列主序");
+    assert_eq!(view.strides(), [1, 2]);
+    assert_eq!(view.at([1, 0]), Some(4));
+    assert_eq!(view.at([0, 1]), Some(2));
+    assert_eq!(view.to_vec(), [1, 2, 3, 4, 5, 6]);
+    assert!(!view.is_contiguous(), "列主序不是行主序紧凑布局");
+    let turned = view.transpose(0, 1).expect("交换两轴");
+    assert!(turned.is_contiguous());
+    assert_eq!(turned.to_vec(), values);
+}
+
+#[test]
+fn ordered_zero_allocation_preserves_the_requested_layout() {
+    let tensor: Tensor<Owned<f32>> =
+        Tensor::zeros_with_order(vec![2, 3], Order::ColMajor).expect("列主序分配");
+    assert_eq!(tensor.strides(), [1, 2]);
+    assert_eq!(tensor.numel(), 6);
+    assert!(tensor.as_slice().iter().all(|&value| value == 0.0));
+}

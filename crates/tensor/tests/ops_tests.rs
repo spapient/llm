@@ -104,3 +104,53 @@ fn closed_groups_cover_numeric_scalars() {
     ordered::<u32>();
     numeric::<half::f16>();
 }
+
+
+#[test]
+fn map_can_change_the_element_type_without_changing_rank() {
+    let tensor: Tensor<&[i32], [usize; 2], i32> =
+        Tensor::new([2, 2], [0, 1, 2, 3].as_slice()).expect("视图");
+    let positive: Tensor<Owned<bool>, [usize; 2], bool> = tensor.map(|value| value > 0);
+    assert_eq!(positive.dims(), [2, 2]);
+    assert_eq!(positive.to_vec(), [false, true, true, true]);
+}
+
+#[test]
+fn binary_operations_accept_different_storage_and_rank_witnesses() {
+    let left: Tensor<&[i32], [usize; 2], i32> =
+        Tensor::new([2, 2], [1, 2, 3, 4].as_slice()).expect("定秩借用");
+    let right: Tensor<Owned<i32>> =
+        Tensor::new(vec![2, 2], Owned::from(vec![4, 3, 2, 1])).expect("动态秩自持");
+    let sum = left.add(&right).expect("形状一致");
+    assert_eq!(sum.to_vec(), [5, 5, 5, 5]);
+    let widened: Tensor<Owned<i64>, [usize; 2], i64> = left
+        .zip_with(&right, |a, b| i64::from(a * b))
+        .expect("输出类型可改变");
+    assert_eq!(widened.to_vec(), [4, 6, 6, 4]);
+}
+
+#[test]
+fn extreme_positions_keep_the_first_of_equal_values() {
+    let view: View<'_, i32> = View::new(vec![4], &[2, 1, 2, 1]).expect("视图");
+    assert_eq!(view.argmax(), Some(0));
+    assert_eq!(view.argmin(), Some(1));
+}
+
+#[test]
+fn integer_close_checks_never_overflow() {
+    let low: View<'_, i64> = View::new(vec![1], &[i64::MIN]).expect("视图");
+    let high: View<'_, i64> = View::new(vec![1], &[i64::MAX]).expect("视图");
+    assert!(!low.all_close(&high, i64::MAX));
+    assert!(low.all_close(&low, 0));
+    assert!(!low.all_close(&low, -1), "负容差不能放行任何值");
+}
+
+#[test]
+fn complete_owned_tensor_into_vec_reuses_its_allocation() {
+    let tensor: Tensor<Owned<i32>> =
+        Tensor::new(vec![2, 2], Owned::from(vec![1, 2, 3, 4])).expect("张量");
+    let pointer = tensor.as_slice().as_ptr();
+    let values = tensor.into_vec();
+    assert_eq!(values, [1, 2, 3, 4]);
+    assert_eq!(pointer, values.as_ptr(), "完整连续张量不应再次分配");
+}

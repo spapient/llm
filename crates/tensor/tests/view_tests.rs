@@ -584,3 +584,47 @@ fn shape_operators_reject_out_of_range_axes_without_panicking() {
     assert!(view.chunks(9, 2).next().is_none(), "chunks 轴越界为空");
     assert!(view.unbind::<Vec<usize>>(9).is_empty(), "unbind 轴越界为空");
 }
+
+
+#[test]
+fn borrowed_mutable_views_support_the_same_window_writes() {
+    let mut values = [0i32; 6];
+    {
+        let mut view = ViewMut::matrix(2, 3, &mut values).expect("可写矩阵");
+        view.slice_fill([0..1, 1..3], 7).expect("填充首行窗口");
+        view.slice_assign([1..2, 0..2], [8, 9])
+            .expect("赋值次行窗口");
+    }
+    assert_eq!(values, [0, 7, 7, 8, 9, 0]);
+}
+
+#[test]
+fn rank_algebra_has_no_sixteen_axis_ceiling() {
+    let view: View<'_, u8> = View::new(vec![1; 20], &[9]).expect("20 秩视图");
+    let lifted = view.unsqueeze::<Vec<usize>>(20).expect("提升到 21 秩");
+    let window = lifted
+        .slice(vec![0..1; 21])
+        .expect("21 秩窗口不再受栈数组容量限制");
+    let flat = window.flatten::<Vec<usize>>(0, 21).expect("压平单例轴");
+    let scalar = flat.select::<Vec<usize>>(0, 0).expect("压成标量");
+    assert_eq!(scalar.rank(), 0);
+    assert_eq!(scalar.to_vec(), [9]);
+}
+
+#[test]
+fn stride_arithmetic_overflow_is_rejected_without_panicking() {
+    let stepped: View<'_, u8> =
+        View::strided(vec![1], vec![usize::MAX], &[3]).expect("单例轴步长不可达但合法");
+    assert!(
+        stepped
+            .slice([Slice::stepped(0, 1, usize::MAX)])
+            .is_none(),
+        "切片步长乘法必须受检"
+    );
+    let diagonal: View<'_, u8> =
+        View::strided(vec![1, 1], vec![usize::MAX, 1], &[3]).expect("单例对角");
+    assert!(
+        diagonal.diagonal::<Vec<usize>>(0, 1).is_none(),
+        "对角步长加法必须受检"
+    );
+}

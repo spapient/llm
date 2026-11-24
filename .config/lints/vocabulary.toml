@@ -321,7 +321,7 @@ min_lines_baseline = [
   "crates/train/src/kernel/attention.rs",
   "crates/train/src/loss/rl.rs",
   "crates/train/src/rng.rs",
-  "crates/weights/src/l3.rs",
+  "crates/weights/src/chain.rs",
 ]
 
 # `[[gate.debt]]` 存量棘轮：只登记入口编排层（`crates/cli/src/`）的既有超标。登记表是实测快照：

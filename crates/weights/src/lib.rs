@@ -440,8 +440,8 @@ pub use crate::archive::VOCAB_NAME;
 
 pub use archive::{Archive, E8_RATIO, Metrics, Proof};
 pub use axes::{Axis, AxisSet};
-pub use dtype::DType as Wire;
 pub use chain::{Bracket, Chain, Ruling, Rung};
+pub use dtype::DType as Wire;
 
 pub use ptq::*;
 pub use quant::{Quant, Quantized};
