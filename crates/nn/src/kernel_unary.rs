@@ -134,8 +134,15 @@ macro_rules! unary_f32 {
             } )?
         }
 
-        // 基座契约（ADR 0050）：只转发族骨架，不写第二份算术。
-        $crate::operator_via!($name, $op, 1, (4096, 4096), $diff, super, $crate::unary::AXES);
+        // 基座契约（ADR 0050）：只转发族骨架，不写第二份算术；骨架走绝对路径，算子模块
+        // 嵌在哪一层都不依赖 `super` 的父模块解析。
+        $crate::operator_via!(
+            @impl $name, $op, 1, (4096, 4096), $diff, 1, $crate::unary::AXES,
+            $crate::unary::project_shape,
+            $crate::unary::cost::<$name>,
+            $crate::unary::sample::<$name>,
+            $crate::unary::reference::<$name>
+        );
 
         #[annotation::model(name = $op, shape = [4096, 4096], dtype = "f32", skeleton = "unary")]
         #[doc = concat!("`", $op, "` 的语义别名。")]
@@ -175,12 +182,6 @@ macro_rules! unary_f32 {
 }
 
 #[cfg(test)]
-mod test_support {
+pub(crate) mod test_support {
     include!("../tests/kernel_unary_test_support.rs");
 }
-
-/// 算子实例表：同一副一元骨架的逐元素算子，隔在独立文件里压住单文件行数硬线。
-#[path = "kernel_unary_ops.rs"]
-pub mod ops;
-
-pub use ops::*;

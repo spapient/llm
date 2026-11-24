@@ -1,6 +1,6 @@
 # 0054：算子/内核覆盖——骨架族泛型 + 目录行表 + 能力表，覆盖对齐 Burn 而边际实现压到一行
 
-- 状态：P1 切片已落地（f32 三骨架 + 首批 5 个不可微算子 + 能力表骨架 + sign/recip 两个一元算子；unary/reduce 执行侧已挂接元素档 `K`）；完整元素档贯通、五新族与算子级 bwd 列后续批次，落地进度以代码与门禁为准
+- 状态：P1 切片已落地（f32 三骨架 + 首批 5 个不可微算子 + 能力表骨架 + sign/recip 与 sin/cos/sqrt 一元算子；unary/reduce 执行侧已挂接元素档 `K`；一元实例拆平级壳文件压线）；完整元素档贯通、五新族与算子级 bwd 列后续批次，落地进度以代码与门禁为准
 - 日期：2026-11-24
 - 相关：[0050](0050-operator-base.md)（`Operator` 基座六族语义）、[0053](0053-typed-operators.md)（清单驱动注册表与类型化 API 面）、[0018](0018-dtype-single-source.md)（精度单一事实源）、[0052](0052-execution-platform-contract.md)（六平台执行合同）、[0005](0005-annotations-as-contracts.md)（注解即契约）、[0013](0013-dense-projection-operator.md)（加算子只加数据）
 
@@ -96,6 +96,8 @@ Burn 的覆盖单位是**后端 trait 方法 + 每后端实现**：ADR 0053 已�
 - **能力表骨架（闭集收口）**：`prof/src/capability.rs` 提供 `Capability { skeleton: Skeleton, dtype: DType }` 行表、`CAPABILITIES` 与 `supports(skeleton, dtype)` 查表。骨架键取 `Skeleton` 闭集枚举而非自由字符串：族名只有声明层一张表可解析，编译期堵死悬空族名（旧版 `&'static str` 键曾登记闭集外的 `"unary"`，一元/二元同归 `Elementwise`）。当前登记 `Elementwise`/`Reduce`/`Gemm` × `F32` 三行；`Scan` 族与低比特档实现覆盖/取值通道未核通，不凭目录名单签发为能力。backend 第三维按 ADR 0050 边界留注释占位（L2 不认识设备字面量），P3 接 `Executor` 对账后扩列。含三则单测：已登记 f32 三族可查、未知族/档判缺项、表内骨架键回指闭集全量对账。
 - **模板减码**：抽共享 `unary_fn.k`（`{{unexpr}}` 表达式槽位）承接三个一元算子；`remainder_f32` 复用现成 `binary.k`（`binop="%"`）；`reduce_prod_f32` 因归约 preamble 无并行乘积原语，写独立标量折叠 `.k`，并行归约原语标 PARTIAL。
 - **S1 首批纯表达式一元算子**：`sign_f32`（三分支符号，`DIFFERENTIABLE=false`，0 点不可微）、`recip_f32`（`1.0/x`，零除域受限，`DIFFERENTIABLE=false`，0 奇异）。二者复用共享 `unary_fn.k` 模板、不新增内核文件；七落点（nn 骨架模块与宏调用、`kernel.rs` re-export、`lib.rs` 根导出、`registry.rs` 字典序行、`train/kernel.rs` 适配映射与 `KERNELS` 表行、prof `.toml` 档案、共享模板）齐全。测试分两档：全域有限算子走对拍 + 长度负例 + 饱和/重复边界且查有限性；域受限（会产 Inf/NaN）算子仅对拍 + 长度负例。Rust 参考侧与 C 模板同用三分支显式实现，避免 `f32::signum` 在零点口径分叉。落地后目录 `.toml`、registry 清单、train `KERNELS` 表三表各 59 条，编译期名字/顺序双断言兜底；cutile 几何可测融合对仍为 1（未新增可桥接邻近对，基线不变）。
+- **S2 数学一元算子**：`sin_f32`/`cos_f32`（`_cutile_sin/cos_f32`）、`sqrt_f32`（`_cutile_sqrt_f32`，样本夹具取非负避开负入 NaN）。三者复用共享 `unary_fn.k`、不新增内核文件；三后端 preamble 原语 `sqrt/sin/cos/pow` 均已注册。本轮只接前向、不接 bwd 族，按 S12 口径显式 `DIFFERENTIABLE=false`，故不进 `FORMULAS` 反向公式目录（编译期 `formulas_cover` 守「可微必配公式」互锁）。`sqrt` 走非负夹具的 pair 档；`sin`/`cos` 避开 MAX/MIN 大数约化，同样走 pair 档。七落点齐全，三表各 62 条。
+- **一元实例拆平级壳文件压线**：算子实例段从 `kernel_unary.rs` 抽到 `kernel_unary_ops.rs`，作为 `kernel` 下与 `unary`（trait/宏/骨架）平级的壳模块 `unary_ops`，照 `elementwise`/`reduce` 既有平级壳先例；`kernel.rs` 从 `unary_ops` 重导出，`<crate>::<name>` 路径不变。骨架装配改走绝对路径 `crate::unary::{project_shape,cost,sample,reference}`，不再依赖 `super::` 的父模块解析，算子模块嵌在哪一层都不影响定位；test_support 挂载改 `pub(crate)` 供平级壳测试宏可见。拆分后骨架 187 行、实例 456 行，均在单文件 600 行硬线内。
 
 ### 裁决与边界
 
@@ -105,7 +107,8 @@ Burn 的覆盖单位是**后端 trait 方法 + 每后端实现**：ADR 0053 已�
 
 ### 门禁状态与未测
 
-- 截至回写：`llm-prof` 164 + 56 + 3 passed（1 ignored）、`llm-nn` 491 + 2 passed（4 ignored）、`llm-train` 231 + 5 passed、`cutile` 139 + 2 passed、`llm-serve` 197 passed、`llm-annotation` 48 + 6 passed；全量 `--workspace --exclude llm-fuzz` 无 FAILED，`clippy --workspace --exclude llm-fuzz --all-targets` 无 error/warning。注册表与算子目录的编译期名字/顺序双断言通过；能力表三则对账测试通过。
+- 截至回写：`llm-prof` 164 + 56 + 3 passed（1 ignored）、`llm-nn` 499 + 2 passed（4 ignored）、`llm-train` 231 + 5 passed、`cutile` 139 + 2 passed、`llm-serve` 197 passed、`llm-annotation` 48 + 6 passed；全量 `--workspace --exclude llm-fuzz` 除静态门外无 FAILED，`clippy --workspace --exclude llm-fuzz --all-targets` 无 error/warning，`cargo fmt --check --all` 干净。注册表与算子目录的编译期名字/顺序双断言通过；能力表三则对账测试通过；testkit 注解↔注册表镜像对账通过。
+- **静态质量门存量越线（非本批引入）**：`prof/einsum.rs`、`train/session.rs`、`train/backprop.rs`、`train/geometry.rs`、`tensor/tensor.rs` 在 HEAD 基线即超单文件 600 行硬线，`fuzz/harness.rs` 有 Call 存量项；`train/kernel.rs` HEAD 609 行已越线，本批仅按七落点登记新增适配/表行。这些属并行线在途收口范围，本任务不越界拆分适配层；本批推越的 `kernel_unary.rs` 已按平级壳拆分回线。棘轮口径下存量只准降，恶化必失败，列入 P3 收口。
 - `llm-train`/`llm-serve` 经传递依赖链上的 cutile，曾处于并行线「子节点抽象回退」中途（`children`/`map_children` 签名与调用方暂不同步、doctest rlib 路径陈旧的中间态）；本轮回切后各 crate 单测与 doctest 复跑均通过，不在中间态上签发对拍结论。
 - 净降行数与文件数、jscpd 重复度降幅：**待实测**，先以现有 nn/tensor/prof 基线扫描后定值，不在落地前写未测降幅。
 

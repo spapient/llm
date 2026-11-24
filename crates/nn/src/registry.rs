@@ -68,6 +68,7 @@ macro_rules! for_each_operator {
             residual_add_f32: $crate::kernel::residual_add_f32::ResidualAddF32,
             rmsnorm_f32: $crate::kernel::rmsnorm_f32::RmsNormF32,
             rope_f32: $crate::kernel::rope_f32::RopeF32,
+            rsqrt_f32: $crate::kernel::rsqrt_f32::RsqrtF32,
             scale_f32: $crate::kernel::scale_f32::ScaleF32,
             scan_f32: $crate::conv::scan_f32::ScanF32,
             sigmoid_f32: $crate::kernel::sigmoid_f32::SigmoidF32,

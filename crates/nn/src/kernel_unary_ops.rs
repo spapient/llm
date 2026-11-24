@@ -389,7 +389,11 @@ pub mod cos_f32 {
             // 锚点：cos(0)=1、cos(π/2)≈0。
             let mut out = [0.0; 2];
             assert!(
-                forward(tensor::View::one(&[0.0, std::f32::consts::FRAC_PI_2]), &mut out).is_ok(),
+                forward(
+                    tensor::View::one(&[0.0, std::f32::consts::FRAC_PI_2]),
+                    &mut out
+                )
+                .is_ok(),
                 "等长"
             );
             assert_eq!(out[0], 1.0, "cos(0)");
@@ -412,7 +416,11 @@ pub mod sin_f32 {
             // 锚点：sin(0)=0、sin(π/2)=1。
             let mut out = [0.0; 2];
             assert!(
-                forward(tensor::View::one(&[0.0, std::f32::consts::FRAC_PI_2]), &mut out).is_ok(),
+                forward(
+                    tensor::View::one(&[0.0, std::f32::consts::FRAC_PI_2]),
+                    &mut out
+                )
+                .is_ok(),
                 "等长"
             );
             assert_eq!(out[0], 0.0, "sin(0)");
@@ -434,12 +442,39 @@ pub mod sqrt_f32 {
         {
             // 锚点：√0=0、√4=2。
             let mut out = [0.0; 2];
-            assert!(forward(tensor::View::one(&[0.0, 4.0]), &mut out).is_ok(), "等长");
+            assert!(
+                forward(tensor::View::one(&[0.0, 4.0]), &mut out).is_ok(),
+                "等长"
+            );
             assert_eq!(out[0], 0.0, "√0");
             assert_eq!(out[1], 2.0, "√4");
         },
         |x| x.sqrt(),
         false,
         |len| (0..len).map(|i| (i as f32) * 0.25).collect()
+    );
+}
+
+pub mod rsqrt_f32 {
+    //! 逐元素倒数平方根：`y[n] = 1/√a[n]`；零/负入奇异，样本夹具取正且非零。
+
+    crate::unary_f32!(
+        Rsqrt,
+        RsqrtF32,
+        "rsqrt_f32",
+        unary_pair_tests,
+        {
+            // 锚点：1/√1=1、1/√4=0.5；不含 0，避开零除奇异。
+            let mut out = [0.0; 2];
+            assert!(
+                forward(tensor::View::one(&[1.0, 4.0]), &mut out).is_ok(),
+                "等长"
+            );
+            assert_eq!(out[0], 1.0, "1/√1");
+            assert_eq!(out[1], 0.5, "1/√4");
+        },
+        |x| 1.0 / x.sqrt(),
+        false,
+        |len| (0..len).map(|i| (i + 1) as f32 * 0.25).collect()
     );
 }

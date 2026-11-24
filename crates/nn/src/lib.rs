@@ -199,7 +199,7 @@ pub use kernel::{
     embed_f32, exp_f32, gelu_f32, gemm_f32, gemm_i2, gemm_i4, gemm_i8, gemv_f32, gemv_i2, gemv_i4,
     gemv_i8, hard_sigmoid_f32, leaky_relu_f32, log_f32, matmul_i8, max_f32, min_f32, mul_f32,
     neg_f32, recip_f32, reduce_max_f32, reduce_prod_f32, reduce_sum_f32, relu_f32, remainder_f32,
-    residual_add_f32, rmsnorm_f32, rope_f32, scale_f32, sigmoid_f32, sign_f32, sin_f32, silu_f32,
+    residual_add_f32, rmsnorm_f32, rope_f32, rsqrt_f32, scale_f32, sigmoid_f32, sign_f32, silu_f32, sin_f32,
     softmax_f32, sqrt_f32, square_f32, sub_f32, tanh_f32,
 };
 
