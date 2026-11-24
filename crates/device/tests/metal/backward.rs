@@ -138,7 +138,7 @@ fn run_entry(entry: &Entry) {
         &dx,
         &want,
         1e-3,
-        &format!("{entry.op} Metal 反向梯度与中心差分"),
+        &format!("{} Metal 反向梯度与中心差分", entry.op),
     );
 }
 
