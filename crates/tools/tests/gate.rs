@@ -318,9 +318,7 @@ fn is_thin_entry(path: &Path) -> bool {
     if matches!(name, "lib.rs" | "main.rs" | "mod.rs") {
         return true;
     }
-    let in_fuzz = path
-        .components()
-        .any(|part| part.as_os_str() == "fuzz");
+    let in_fuzz = path.components().any(|part| part.as_os_str() == "fuzz");
     in_fuzz && name.starts_with("fuzz_")
 }
 

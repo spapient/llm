@@ -93,7 +93,13 @@ impl Gate {
         let table = root
             .table("gate")
             .ok_or_else(|| invalid("vocabulary.toml 缺 [gate]"))?;
-        let [max_ccn, max_nloc, max_file_lines, min_file_lines, max_test_lines] = thresholds(table)?;
+        let [
+            max_ccn,
+            max_nloc,
+            max_file_lines,
+            min_file_lines,
+            max_test_lines,
+        ] = thresholds(table)?;
         let gate = Self {
             max_ccn,
             max_nloc,
@@ -202,16 +208,12 @@ const THRESHOLDS: [&str; 5] = [
     "test_max_lines",
 ];
 
-/// `[gate]` 的闭集：四个阈值键 + `debt` 表。拼错的键会被拒绝，而不是静默地不起作用——
+/// `[gate]` 的闭集：五个阈值键 + `debt` 表与 `min_lines_baseline` 数组。拼错的键会被拒绝，而不是静默地不起作用——
 /// 一条从未被读到的「档位」比没有这条档位更糟：它让人以为门禁在管那件事。
 fn unknown_keys(table: &Table) -> Result<()> {
-    match table
-        .entries()
-        .iter()
-        .find(|(name, _)| {
-            name != "debt" && name != "min_lines_baseline" && !THRESHOLDS.contains(&name.as_str())
-        })
-    {
+    match table.entries().iter().find(|(name, _)| {
+        name != "debt" && name != "min_lines_baseline" && !THRESHOLDS.contains(&name.as_str())
+    }) {
         Some((name, _)) => Err(invalid(&format!("[gate] 未知键 {name}"))),
         None => Ok(()),
     }

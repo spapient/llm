@@ -14,7 +14,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # rustfmt 的排版随版本漂移：本仓库的格式基线由 nightly 的 rustfmt 定，用 stable 1.99 的 rustfmt
+  # rustfmt 的排版随版本漂移：本仓库的格式基线由 nightly 的 rustfmt 定，用 stable 1.100.0 的 rustfmt
   # 反而会把部分文件"展开"（实测 `device/tests/metal/correctness.rs` 800→807 行顶破 FILE_MAX，
   # `fast/i8.rs` 的多行条件把 Ccn 抬到 7），是门禁变红而不是更整齐。故格式门固定在 nightly，
   # 与构建用的 stable 解耦——`rust-toolchain.toml` 换 stable 不影响这一条。
@@ -36,7 +36,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.99.1"
+          toolchain: "1.100.0"
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
@@ -52,7 +52,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.99.1"
+          toolchain: "1.100.0"
       - uses: Swatinem/rust-cache@v2
       - name: Install nextest
         uses: taiki-e/install-action@nextest
@@ -87,7 +87,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.99.1"
+          toolchain: "1.100.0"
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p llm-device --lib --locked metal
 
@@ -98,21 +98,21 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.99.1"
+          toolchain: "1.100.0"
       - uses: Swatinem/rust-cache@v2
       - run: RUSTFLAGS="-Zsanitizer=address" cargo test -p llm-device --lib --locked
 
   msrv:
-    name: msrv (1.99.1)
+    name: msrv (1.100.0)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Install MSRV toolchain
         run: |
-          # MSRV 就是 README 承诺的 1.99：stable 通道，不再是 nightly
+          # MSRV 就是 README 承诺的 1.100.0：stable 通道，不再是 nightly
           rm -f rust-toolchain.toml
-          rustup toolchain install 1.99.1 --profile minimal --no-self-update
-          rustup default 1.99.1
+          rustup toolchain install 1.100.0 --profile minimal --no-self-update
+          rustup default 1.100.0
       - uses: Swatinem/rust-cache@v2
       # libtest 会收集 `[[test]]` 目标：三个 libfuzzer harness 是 `harness = false`、`no_main`，
       # 被 libtest 直接运行会进入模糊循环。它们归独立 fuzz job 构建与有界运行；这里排除整个
@@ -142,7 +142,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.99.1"
+          toolchain: "1.100.0"
       - uses: Swatinem/rust-cache@v2
       - run: cargo doc --workspace --no-deps --all-features --locked
       # doc-test 不由 nextest 执行：这里单独跑，文档块里的示例也必须编得过、断言成立。
@@ -155,7 +155,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.99.1"
+          toolchain: "1.100.0"
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -175,7 +175,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.99.1"
+          toolchain: "1.100.0"
       - uses: Swatinem/rust-cache@v2
       # 静态门：源文件圈复杂度 / 行数 / 命名 / unsafe 计数 / Call 门等硬阈值。
       # ratchet：新增身份必进表、已登记值恶化必失败，与 `.config/lints/vocabulary.toml` 单一来源一致。
@@ -216,7 +216,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.99.1"
+          toolchain: "1.100.0"
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
       - name: Install cargo-llvm-cov
@@ -257,7 +257,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.99.1"
+          toolchain: "1.100.0"
       - uses: Swatinem/rust-cache@v2
       # CI 只保证基准代码始终可编译；实测与基线判定在固定硬件上跑（跨机器绝对值不可比）。
       - name: Build benchmarks
@@ -289,7 +289,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.99.1"
+          toolchain: "1.100.0"
       - uses: Swatinem/rust-cache@v2
       # libFuzzer 运行时与 ASan 由 clang 提供；Rust 侧只接 `libfuzzer-sys` 垫片。
       - name: Install clang
