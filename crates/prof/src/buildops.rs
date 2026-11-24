@@ -94,7 +94,7 @@ fn collect_entries(
             let row = tier_row(&exp_name, &exp_table)?;
             entries.push(Entry {
                 name: exp_name,
-                stem,
+                stem: stem.clone(),
                 row,
                 tier,
             });

@@ -17,6 +17,7 @@ use prof::catalogue::Registration;
 macro_rules! for_each_operator {
     ($m:ident) => {
         $m! {
+            abs_f16: $crate::kernel::abs_f16::AbsF16,
             abs_f32: $crate::kernel::abs_f32::AbsF32,
             adaptive_pool_f32: $crate::conv::adaptive_pool::AdaptivePoolModel,
             add_f32: $crate::kernel::add_f32::AddF32,
