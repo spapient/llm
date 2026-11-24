@@ -208,8 +208,8 @@ pub use kernel::{
 // 里写的是 `crate::model::…` / `crate::operator_via!`，而不是到处写依赖 crate 名。
 pub use model::quant;
 pub use prof::same_bytes;
-pub(crate) use prof::tpl::guard;
 pub use prof::tpl::formula;
+pub(crate) use prof::tpl::guard;
 pub use prof::{einsum, model, operator, sample, sch, sig, tpl};
 pub use prof::{formula_cell, formula_owner, operator_here, operator_via};
 pub use sch::layout;

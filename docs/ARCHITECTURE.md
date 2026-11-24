@@ -134,7 +134,7 @@ testkit    → （叶    +dev: autograd, cutile, nn, prof, tensor, tools, train,
 | `Page` / `Table` / `Cache` / `Pager` | `engine` | 分页 KV 的页管理与页内数据：引用计数 O(1) 判定越界 / 重复归还 / 下溢，归零才回池且只有最后一个持有者归还时清零；行宽由装载模型的一侧给 |
 | `Slot` | `engine` | 一个 token 在 KV 缓存里的位置（页号 + 页内偏移），写 kernel 的一侧不必自己再算一遍 |
 | `Radix` | `engine` | 满块前缀树：自己就是页的持有者，`evict` 只摘 LRU 叶；页复用与位置账（`Sequence::prefilled`）是同一份 |
-| `Batch` / `Admission` | `engine` | 连续批：`emit` 是"记账 + 推进"的唯一入口；`Admission` 让"页不够"成为可重试的 503 而不是请求非法。与 `train::Batch`（数据单位）同名不同物 |
+| `Batch` / `Admission` / `SequenceOutcome` | `engine` | 连续批：`emit` 是"记账 + 推进"的唯一入口；`Admission` 让"页不够"成为可重试的 503 而不是请求非法。`SequenceOutcome` 是批内逐条序列的结果视图（序列句柄 + 当步进度），由 `outcomes` / `outcome` 随批结果返回。与 `train::Batch`（数据单位）同名不同物 |
 | `Budget` / `Candidate` / `Phase` / `Verdict` | `engine`（`ifb` 模块） | 一次迭代的可行域与相位：`pack` 判"这一轮塞得下几行"，与 `admit` 判"这辈子跑不跑得完"分开；相位是序列自己的事实，不是调用方贴的标签。唯一消费者是 `serve::Completion` 的批调度：`round` 先把本层一次提交的粒度收进预算、再把 `Packed` 的行原样下发，于是"这一轮算几行"只有一个来源（打包给配额、`chunk` 给块尾，取小的那个） |
 | `Executor` | `prof`（`runtime::exec`） | 设备后端核心缝：`device` / `submit` / `sync`；不含 CPU 内核表、宿主缓冲绑定或设备私有句柄 |
 | `Executor` / `Trace` / `Program` / `Bindings` / `Buf` / `View` / `ViewMut` / `CpuExecutor` | `engine` | CPU 执行体与引擎扩展缝（[ADR 0051](adr/0051-execution-backend-base.md)）：`Program` 按名字登记、重名拒绝，`Bindings` 是编号 ↔ 缓冲的操作数表，`CpuExecutor` 入队并在 `sync` 时就地执行；`Trace` 只记录不改语义。`Buf`/`View`/`ViewMut` 是 `storage::LaneBuf`/`LaneView`/`LaneViewMut` 的别名，执行缝只按编号绑定缓冲、不解释形状（ADR 0044） |

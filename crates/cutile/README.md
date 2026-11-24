@@ -164,7 +164,7 @@ crates/prof/                    # 契约词汇 + 档案 + 片段：纯数据，�
     ├── <vendor>/               # 六台设备：<vendor>.toml 档案 + <prim>.<ext> 片段 + witness.<ext>
     │                           #   ascend / cpu / intel / metal / musa / nvidia
     ├── atom.rs                 # 词汇表：16 原语、位集、AttrKey / Grade、Need / Provide / Span / KernelKey
-    ├── sig.rs / sch.rs / tpl.rs        # 签名 ABI、布局与调度闭集、模板词法
+    ├── sig.rs / sch.rs / tpl.rs / text.rs  # 签名 ABI、布局调度、模板词法与共享扫描原语
     ├── decl.rs / ingest.rs              # OpDecl 轴展开/变体链、声明语料摄入
     ├── model.rs / sample.rs / einsum.rs # 语义模型、确定性样本、代价表达式与求和语义
     ├── operator.rs / epilogue.rs        # 算子契约、写回尾块文法

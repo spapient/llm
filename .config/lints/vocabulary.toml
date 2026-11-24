@@ -72,8 +72,8 @@ reason = "行表类型、分类闭集与解析错误；表形状仍在演进，�
 
 [[ownership.unlisted]]
 crate = "engine"
-names = ["LocalExecutor", "SequenceOutcome"]
-reason = "`LocalExecutor` 是只记账的同步 CPU 队列（`Executor` 基座本身已进对外所有权表）、`SequenceOutcome` 是批内逐条结果视图，同属内部实现，不进对外所有权表"
+names = ["LocalExecutor"]
+reason = "`LocalExecutor` 是 `Executor` 基座的只记账同步 CPU 实现（提交入队、按流排水，持注入分配器），未接真机后端；作为本地/测试后端保留在门面后，对外契约以 `Executor` 缝为准，故不进所有权表"
 
 [[ownership.unlisted]]
 crate = "fuzz"
@@ -234,19 +234,19 @@ min_lines_baseline = [
   "crates/prof/src/capability.rs",
   "crates/prof/src/catalogue.rs",
   "crates/prof/src/decode.rs",
-  "crates/prof/src/einsum.rs",
-  "crates/prof/src/axis.rs",
-  "crates/prof/src/bits.rs",
-  "crates/prof/src/cache.rs",
-  "crates/prof/src/cost.rs",
-  "crates/prof/src/expr.rs",
-  "crates/prof/src/extents.rs",
-  "crates/prof/src/formula.rs",
-  "crates/prof/src/operand.rs",
+  "crates/prof/src/einsum/mod.rs",
+  "crates/prof/src/einsum/axis.rs",
+  "crates/prof/src/einsum/bits.rs",
+  "crates/prof/src/einsum/cache.rs",
+  "crates/prof/src/einsum/cost.rs",
+  "crates/prof/src/einsum/expr.rs",
+  "crates/prof/src/einsum/extents.rs",
+  "crates/prof/src/einsum/formula.rs",
+  "crates/prof/src/einsum/operand.rs",
   "crates/prof/src/epilogue.rs",
-  "crates/prof/src/native.rs",
-  "crates/prof/src/i8.rs",
-  "crates/prof/src/runtime.rs",
+  "crates/prof/src/native/mod.rs",
+  "crates/prof/src/native/i8.rs",
+  "crates/prof/src/runtime/mod.rs",
   "crates/prof/src/need.rs",
   "crates/prof/src/operator.rs",
   "crates/prof/src/sample.rs",
