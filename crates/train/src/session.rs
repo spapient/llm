@@ -54,7 +54,7 @@ impl Default for TrainConfig {
 }
 
 impl TrainConfig {
-    /// 构造并校验：总步数非零、warmup 不超过总步数、学习率非负、累积窗口非零。
+    /// 构造并校验全部训练数值；公开字段的后续修改可由 [`Self::validate`] 再检查。
     pub fn new(
         learning_rate: f32,
         warmup_steps: u64,
@@ -62,23 +62,7 @@ impl TrainConfig {
         clip_norm: Option<f32>,
         accumulation: u32,
     ) -> Result<Self> {
-        if max_steps == 0 {
-            return Err(Error::new(Code::Invalid, "总步数不能为 0").with(SITE));
-        }
-        if warmup_steps > max_steps {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("warmup {warmup_steps} 超过总步数 {max_steps}"),
-            )
-            .with(SITE));
-        }
-        if learning_rate < 0.0 {
-            return Err(Error::new(Code::Invalid, "学习率不能为负").with(SITE));
-        }
-        if accumulation == 0 {
-            return Err(Error::new(Code::Invalid, "累积窗口不能为 0").with(SITE));
-        }
-        Ok(Self {
+        let config = Self {
             learning_rate,
             warmup_steps,
             max_steps,
@@ -86,7 +70,36 @@ impl TrainConfig {
             accumulation,
             anneal: Anneal::default(),
             min_ratio: 0.0,
-        })
+        };
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// 校验配置不变量；`Session` 装配时再次调用，防止公开字段被直接改成非法值。
+    pub fn validate(&self) -> Result<()> {
+        if self.max_steps == 0 {
+            return Err(Error::new(Code::Invalid, "总步数不能为 0").with(SITE));
+        }
+        if self.warmup_steps > self.max_steps {
+            return Err(Error::new(
+                Code::Invalid,
+                format!("warmup {} 超过总步数 {}", self.warmup_steps, self.max_steps),
+            )
+            .with(SITE));
+        }
+        if !self.learning_rate.is_finite() || self.learning_rate < 0.0 {
+            return Err(Error::new(Code::Invalid, "学习率必须是有限非负数").with(SITE));
+        }
+        if self.clip_norm.is_some_and(|clip| !clip.is_finite() || clip <= 0.0) {
+            return Err(Error::new(Code::Invalid, "裁剪范数必须是有限正数").with(SITE));
+        }
+        if self.accumulation == 0 {
+            return Err(Error::new(Code::Invalid, "累积窗口不能为 0").with(SITE));
+        }
+        if !(0.0..=1.0).contains(&self.min_ratio) {
+            return Err(Error::new(Code::Invalid, "下限比例必须在 [0, 1]").with(SITE));
+        }
+        Ok(())
     }
 
     /// 按可选覆盖构造：未给的字段取 [`Default`]。
@@ -97,14 +110,35 @@ impl TrainConfig {
         clip_norm: Option<f32>,
         accumulation: Option<u32>,
     ) -> Result<Self> {
-        let base = Self::default();
-        Self::new(
-            learning_rate.unwrap_or(base.learning_rate),
-            warmup_steps.unwrap_or(base.warmup_steps),
-            max_steps.unwrap_or(base.max_steps),
-            clip_norm.or(base.clip_norm),
-            accumulation.unwrap_or(base.accumulation),
+        Self::default().overridden(
+            learning_rate,
+            warmup_steps,
+            max_steps,
+            clip_norm,
+            accumulation,
         )
+    }
+
+    /// 在当前配置上应用可选覆盖，保留调度曲线等未覆盖字段。
+    pub fn overridden(
+        self,
+        learning_rate: Option<f32>,
+        warmup_steps: Option<u64>,
+        max_steps: Option<u64>,
+        clip_norm: Option<f32>,
+        accumulation: Option<u32>,
+    ) -> Result<Self> {
+        let config = Self {
+            learning_rate: learning_rate.unwrap_or(self.learning_rate),
+            warmup_steps: warmup_steps.unwrap_or(self.warmup_steps),
+            max_steps: max_steps.unwrap_or(self.max_steps),
+            clip_norm: clip_norm.or(self.clip_norm),
+            accumulation: accumulation.unwrap_or(self.accumulation),
+            anneal: self.anneal,
+            min_ratio: self.min_ratio,
+        };
+        config.validate()?;
+        Ok(config)
     }
 
     /// 设置 warmup 之后的衰减曲线（builder 风格，覆盖默认的线性衰减）。
@@ -216,10 +250,12 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
         tape: Tape,
         sizes: Sizes,
         kernel: K,
-        optimizer: O,
+        mut optimizer: O,
         config: TrainConfig,
         distributed: Distributed<C>,
     ) -> Result<Self> {
+        config.validate()?;
+        optimizer.set_clip_norm(config.clip_norm);
         let lr_schedule = Schedule::with(
             config.warmup_steps,
             config.max_steps,
@@ -507,13 +543,16 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
     /// 某槽梯度未装入、后端归约失败，或优化器步进校验失败（[`Code::Invalid`] /
     /// [`Code::Missing`]）。
     pub fn optimize(&mut self) -> Result<()> {
-        self.accum = self.accum.saturating_add(1);
-        if self.accum < self.config.accumulation {
+        let next = self.accum.saturating_add(1);
+        if next < self.config.accumulation {
             // 累积窗口未满：保留已汇总的梯度，等下一批 micro-batch，本批不步进。
+            self.accum = next;
             return Ok(());
         }
+        self.step_once()?;
+        // 只有完整步进成功才提交窗口状态；失败时调用方仍能看到未提交的窗口计数。
         self.accum = 0;
-        self.step_once()
+        Ok(())
     }
 
     /// 窗口已满：汇总梯度 → 组内同步 → 优化器步进 → 镜像参数 → 清空梯度，步号 +1。

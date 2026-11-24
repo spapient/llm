@@ -108,33 +108,51 @@ pub trait Dataset<'a> {
     fn reset(&mut self);
 }
 
+/// 批采样方式：三种策略由类型保证互斥，随机流只由显式种子派生。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub enum Sampling {
+    /// 按条目原顺序取完整批。
+    #[default]
+    Sequential,
+    /// 每轮按种子派生独立流重洗批序。
+    Shuffle { seed: u64 },
+    /// 按每批的非负权重有放回抽样。
+    Weighted { weights: Vec<f32>, seed: u64 },
+}
+
 /// 批装配配置：几何与采样方式一次性收口到构造期，热路径不再做合法性分支检查。
-///
-/// 采样三态互斥，按 [`Loader::with_config`] 的装配次序裁决：给了 [`weights`](Self::weights)
-/// 就走加权有放回抽样，否则给了 [`shuffle`](Self::shuffle) 就按种子洗牌，两者都缺走顺序。
-/// 洗牌与加权的随机流只由种子派生，同一种子重放同一条批序，不依赖线程或全局随机源。
 #[derive(Debug, Clone, PartialEq)]
 pub struct LoaderConfig {
     /// 每批行数；构造期校验非零。
     pub rows: usize,
     /// 列宽（每行条目数）；构造期校验非零且 `rows * cols` 不溢出。
     pub cols: usize,
-    /// `Some(seed)` 每轮按种子派生独立流重洗批序；`None` 顺序推进。
-    pub shuffle: Option<u64>,
-    /// 每批非负权重；`Some` 时按权重有放回抽批；与 `shuffle` 互斥，权重优先。
-    pub weights: Option<Vec<f32>>,
+    /// 批采样方式。
+    pub sampling: Sampling,
 }
 
 impl LoaderConfig {
     /// 校验行列非零且乘积不溢出；采样方式默认顺序。
     pub fn new(rows: usize, cols: usize) -> Result<Self> {
-        stride(rows, cols, SITE)?;
-        Ok(Self {
+        let config = Self {
             rows,
             cols,
-            shuffle: None,
-            weights: None,
-        })
+            sampling: Sampling::Sequential,
+        };
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// 校验批几何；公开字段被直接修改后也可在装配边界重新检查。
+    pub fn validate(&self) -> Result<()> {
+        stride(self.rows, self.cols, SITE).map(|_| ())
+    }
+
+    /// 设置互斥的采样策略。
+    #[must_use]
+    pub fn with_sampling(mut self, sampling: Sampling) -> Self {
+        self.sampling = sampling;
+        self
     }
 }
 

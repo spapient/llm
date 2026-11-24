@@ -541,7 +541,7 @@ fn validate(point: &MetricPoint) -> Result<()> {
 #[path = "dataset/mod.rs"]
 pub(crate) mod dataset;
 
-pub use dataset::{Batch, Chunks, Dataset, Loader, LoaderConfig};
+pub use dataset::{Batch, Chunks, Dataset, Loader, LoaderConfig, Sampling};
 
 #[cfg(test)]
 #[path = "../tests/learner_tests.rs"]

@@ -42,6 +42,7 @@
 #![deny(unsafe_code)]
 
 mod backprop;
+mod config;
 pub mod geometry;
 mod kernel;
 mod learner;
@@ -57,10 +58,11 @@ mod session;
 #[path = "../tests/support.rs"]
 mod support;
 
+pub use config::TrainSpec;
 pub use geometry::{Geometry, Running};
 pub use learner::{
     Batch, Chunks, Dataset, ForwardOut, Learner, Loader, LoaderConfig, Metric, MetricPoint,
-    MetricsBoard,
+    MetricsBoard, Sampling,
 };
 pub use loss::{
     Distill, Grpo, Loss, Outcome, advantage, argmax_hits, bce_with_logits, clipped_surrogate,

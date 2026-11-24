@@ -3,7 +3,9 @@
 //! 生产文件只留执行与判据，用例集中于此。
 
 use super::*;
-use crate::atom::{Attr, AttrKey, DType, DTypeSet, Grade, Need, Prim};
+use crate::atom::{
+    Attr, AttrKey, DType, DTypeSet, Grade, Need, Prim, Provide, Space, SpaceSet, Span,
+};
 use crate::decl::{Axis, OpDecl, Phase, Skeleton, Variant};
 use crate::prof::Profile;
 use crate::sch::Schedule;
@@ -206,61 +208,47 @@ fn inspect_reports_the_whole_chain_as_data() {
     assert_eq!(checks[1].name, "direct");
 }
 
-// TODO(#47) 两层写法同构用例：旧路径从内置 `Table` 克隆改写 `needs.load`，算子声明树拆除后
-// 失去可改写的表源。本批先停用，#47 按 owned [`Need`] 直接构造恢复（标量/数组、`bytes`/`m`
-// 的归一化属解析器职责，随解析器在收尾批次一并迁移）。
-/*
+/// 同一份签名在两层里换一种合法写法（标量/数组、`bytes`/`m`）归一后必须同构：两层解析器
+/// 若无共同词汇，"协商通过"与"档案声明"说的就不是一回事。owned 层只钉 `covers` 双向同构；
+/// 标量/数组与 `bytes`/`m` 的解析归一化由档案解析用例覆盖，随解析器在收尾批次迁移。
 #[test]
 fn one_signature_written_in_either_layer_stays_the_same() {
-    fn declare(load: &[(&str, Value)]) -> OpDecl {
-        let source = prof::catalogue::named("gemv_i4").expect("内置");
-        let mut table = source.declaration().clone();
-        table.set("needs.load", Value::table(load.to_vec()));
-        OpDecl::parse(&table, source.template()).expect("合成声明可解析")
+    /// 归一后的 `load` 需求：主维度 ≤4096、`f32`、`FAST`，源 `GM`、目标 `FAST`。
+    fn load_need() -> Need {
+        Need::of(Prim::Load)
+            .with_extent(Span::at_most(4096))
+            .with_dt(DTypeSet::of([DType::F32]))
+            .with_space(SpaceSet::of([Space::Fast]))
+            .with_attr(Attr::new(AttrKey::Src, ["GM"]))
+            .with_attr(Attr::new(AttrKey::Dst, ["FAST"]))
     }
 
-    fn provide(signature: &[(&str, Value)]) -> Provide {
-        let mut fields = vec![
-            ("prim", Value::text("load")),
-            ("impl", Value::text("alias")),
-        ];
-        fields.extend_from_slice(signature);
-        fields.push(("grade", Value::text("L0")));
-        let mut table = prof::embedded("cpu").expect("cpu 档案").clone();
-        table.push("provides", Value::table(fields));
-        let mut profile = Profile::parse(&table).expect("合成档案可解析");
-        profile.provides.pop().expect("新加的供给")
+    /// 归一后的 `load` 供给：约束与需求逐条对齐，实现名 `alias`、证据等级 `L0`。
+    fn load_provide() -> Provide {
+        Provide::of(Prim::Load, "alias")
+            .with_extent(Span::at_most(4096))
+            .with_dt(DTypeSet::of([DType::F32]))
+            .with_space(SpaceSet::of([Space::Fast]))
+            .with_attr(Attr::new(AttrKey::Src, ["GM"]))
+            .with_attr(Attr::new(AttrKey::Dst, ["FAST"]))
     }
 
-    /// 声明里的 `load` 需求被这条供给覆盖了吗。
-    fn assert_covers(op: &OpDecl, have: &Provide, note: &str) {
-        let need = op
-            .needs
-            .iter()
-            .find(|need| need.prim == Prim::Load)
-            .expect("load 需求");
-        assert!(have.covers(need), "{note}：{:?}", have.diff(need));
-    }
-
-    let scalar = vec![
-        ("bytes", Value::text("<=4096")),
-        ("dt", Value::text("f32")),
-        ("space", Value::text("FAST")),
-        ("src", Value::text("GM")),
-        ("dst", Value::text("FAST")),
-    ];
-    let array = vec![
-        ("m", Value::text("<=4096")),
-        ("dt", Value::array(vec![Value::text("f32")])),
-        ("space", Value::array(vec![Value::text("FAST")])),
-        ("src", Value::array(vec![Value::text("GM")])),
-        ("dst", Value::array(vec![Value::text("FAST")])),
-    ];
-    // 声明写标量、档案写数组与 `m`；反向：声明写数组、档案写标量。
-    assert_covers(&declare(&scalar), &provide(&array), "档案写法覆盖声明");
-    assert_covers(&declare(&array), &provide(&scalar), "声明写法覆盖档案");
+    // 声明侧与档案侧各持一份归一后的签名：档案写法覆盖声明，反向也成立。
+    let need_scalar = load_need();
+    let need_array = load_need();
+    let provide_scalar = load_provide();
+    let provide_array = load_provide();
+    assert!(
+        provide_array.covers(&need_scalar),
+        "档案写法覆盖声明：{:?}",
+        provide_array.diff(&need_scalar)
+    );
+    assert!(
+        provide_scalar.covers(&need_array),
+        "声明写法覆盖档案：{:?}",
+        provide_scalar.diff(&need_array)
+    );
 }
-*/
 
 #[test]
 fn schedule_primitives_are_part_of_the_requirement() {

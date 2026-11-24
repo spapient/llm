@@ -7,6 +7,8 @@ use diagnostic::{Code, Error, Result};
 
 use crate::rng::Rng;
 
+use super::Sampling;
+
 /// 本模块诊断站点。
 const SITE: &str = "train::dataset::sampler";
 
@@ -34,16 +36,12 @@ pub(crate) enum Sampler {
 }
 
 impl Sampler {
-    /// 按配置装配采样序：权重优先于洗牌；两者都缺则顺序。
-    pub(crate) fn from_config(
-        batches: usize,
-        shuffle: Option<u64>,
-        weights: Option<Vec<f32>>,
-    ) -> Result<Self> {
-        match (weights, shuffle) {
-            (Some(weights), _) => Self::weighted(batches, weights, shuffle.unwrap_or(0)),
-            (None, Some(seed)) => Ok(Self::shuffled(batches, seed)),
-            (None, None) => Ok(Self::sequential(batches)),
+    /// 按互斥配置装配采样序。
+    pub(crate) fn from_config(batches: usize, sampling: Sampling) -> Result<Self> {
+        match sampling {
+            Sampling::Sequential => Ok(Self::sequential(batches)),
+            Sampling::Shuffle { seed } => Ok(Self::shuffled(batches, seed)),
+            Sampling::Weighted { weights, seed } => Self::weighted(batches, weights, seed),
         }
     }
 

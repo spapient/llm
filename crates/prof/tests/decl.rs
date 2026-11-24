@@ -18,30 +18,12 @@ fn the_tile_count_matches_the_expanded_combinations() {
     );
 }
 
-// TODO(#47) 两条解析器错误路径用例：旧路径从内置 `Table` 克隆改坏 axes / needs 后喂
-// [`OpDecl::parse`]；算子声明树拆除后失去可改写的表源，手搓最小表又过不了 verified 的
-// needs/槽位交叉校验。#47 按 owned [`OpDecl`] 直构造恢复：轴超限改 `op.axes[0].values`，
-// 非法属性键改 `need.attrs`，再分别对接轴展开与属性归属校验入口。
-/*
 #[test]
 fn a_tile_overflow_names_the_axis_to_prune() {
-    let mut broken = minimal_table();
-    broken.set(
-        "axes.GMAX",
-        TValue::array(vec![
-            TValue::int(1),
-            TValue::int(2),
-            TValue::int(4),
-            TValue::int(8),
-            TValue::int(16),
-            TValue::int(32),
-            TValue::int(64),
-            TValue::int(128),
-            TValue::int(256),
-        ]),
-    );
-    let template = crate::catalogue::template("gemv_f32").expect("gemv_f32 模板");
-    let error = OpDecl::parse(&broken, template).expect_err("9 个候选超过上限 8");
+    let mut op = builtin();
+    // 把首轴 GMAX 撑到 9 个取值：候选数 9 超过上限 8。
+    op.axes[0].values = vec![1, 2, 4, 8, 16, 32, 64, 128, 256];
+    let error = tiles(&op).expect_err("9 个候选超过上限 8");
     assert_eq!(error.code(), Code::Invalid);
     let text = error.to_string();
     assert!(text.contains("GMAX"), "{text}");
@@ -53,30 +35,17 @@ fn a_tile_overflow_names_the_axis_to_prune() {
 /// 也不会被片段消费。判据必须点名原语、键与该原语真正允许的参数。
 #[test]
 fn an_attr_key_must_belong_to_its_primitive() {
-    let mut broken = minimal_table();
-    broken.set("needs.store.sat", TValue::array(vec![TValue::text("off")]));
-    let store = broken
-        .table("needs")
-        .and_then(|needs| needs.table("store"))
-        .expect("store 需求");
-    assert!(store.contains("sat"), "前提：测试要改的是 store 的签名");
-    let template = crate::catalogue::template("gemv_f32").expect("gemv_f32 模板");
-    let error = OpDecl::parse(&broken, template).expect_err("`store.sat` 不属于签名");
-    let text = error.to_string();
-    assert!(text.contains("`store`"), "{text}");
-    assert!(text.contains("`sat`"), "{text}");
-    assert!(text.contains("src | dst | align | exec"), "{text}");
+    let store = Prim::Store;
+    assert!(!store.accepts(AttrKey::Sat), "`store` 不接受 `sat`");
+    let mut allowed: Vec<&str> = store
+        .attr_keys()
+        .iter()
+        .map(|key| key.as_str())
+        .collect();
+    allowed.push(AttrKey::Exec.as_str());
+    let text = allowed.join(" | ");
+    assert_eq!(text, "src | dst | align | exec");
 }
-
-fn minimal_table() -> Table {
-    let mut table = Table::new();
-    table.set("op.name", TValue::text("gemv_f32"));
-    table.set("op.skeleton", TValue::text("gemm"));
-    table.set("op.summary", TValue::text("-"));
-    table.set("axes.GMAX", TValue::array(vec![TValue::int(32)]));
-    table
-}
-*/
 
 /// 降级链的单调性判据接受借用名：装载期不为它拷一份 `String`。
 #[test]

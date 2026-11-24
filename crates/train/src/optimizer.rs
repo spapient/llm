@@ -120,6 +120,9 @@ pub trait Optimizer {
     /// 任一槽位参数/梯度长度不一致（[`Code::Invalid`]）时返回说明，不做半截更新。
     fn step(&mut self, slots: &mut [Slot<'_>], lr: f32) -> Result<()>;
 
+    /// 由会话装配统一设置全局梯度范数上限；`None` 表示不裁剪。
+    fn set_clip_norm(&mut self, clip_norm: Option<f32>);
+
     /// 从快照回载矩状态与优化器步数；无矩优化器只接受空表。
     ///
     /// # Errors
@@ -257,6 +260,10 @@ impl Default for Adam {
 }
 
 impl Optimizer for Adam {
+    fn set_clip_norm(&mut self, clip_norm: Option<f32>) {
+        self.clip_norm = clip_norm;
+    }
+
     fn step(&mut self, slots: &mut [Slot<'_>], lr: f32) -> Result<()> {
         check_slots(slots)?;
         let scale = clip_scale(global_norm(slots), self.clip_norm);
@@ -355,6 +362,10 @@ impl Default for Sgd {
 }
 
 impl Optimizer for Sgd {
+    fn set_clip_norm(&mut self, clip_norm: Option<f32>) {
+        self.clip_norm = clip_norm;
+    }
+
     fn step(&mut self, slots: &mut [Slot<'_>], lr: f32) -> Result<()> {
         check_slots(slots)?;
         let scale = clip_scale(global_norm(slots), self.clip_norm);

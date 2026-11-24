@@ -118,6 +118,10 @@ impl Default for Muon {
 }
 
 impl Optimizer for Muon {
+    fn set_clip_norm(&mut self, clip_norm: Option<f32>) {
+        self.clip_norm = clip_norm;
+    }
+
     fn step(&mut self, slots: &mut [Slot<'_>], lr: f32) -> Result<()> {
         check_slots(slots)?;
         let shapes = shapes_of(slots)?;
