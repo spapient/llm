@@ -8,7 +8,7 @@
 
 | 仓库 | revision | worktree 状态 | 规模（源码实测，剔除 `target`） | 测试数（`#[test]`/`#[tokio::test]` 计数） |
 | --- | --- | --- | --- | --- |
-| llm（新） | `64233760` 2026-11-24 15:00 +0800（取证区间 HEAD 被并行工作流连续推进，cf81efb8→64233760） | 工作区 5 项 `M`：代码侧仅 `autograd/src/schedule.rs`、`autograd/src/tape.rs` 两文件小改（未提交，不计基线）；其余为文档（含本报告、ADR、review 笔记）。上一轮 `cos/sin/sqrt` unary 增量已收进 HEAD 基线 | 净口径（剔 `target` 与 `.claude/worktrees` 副本）22 crate，690 `.rs`，167,119 行 | 2787 |
+| llm（新） | `521a6c07` 2026-11-24 15:18 +0800（取证区间 HEAD 由 `cf81efb8`→`64233760`→`521a6c07` 连续推进；编译/测试观测在 `64233760` 时刻取得，后续 autograd/shard 测试小改不改变维度定档） | 工作区干净；取证时代码侧未提交仅 `autograd/src/schedule.rs`、`autograd/src/tape.rs` 小改（已收进 HEAD）；上一轮 `cos/sin/sqrt` unary 增量已进基线 | 净口径（剔 `target` 与 `.claude/worktrees` 副本）22 crate，690 `.rs`，167,104 行 | 2787 |
 | llm.u | `cf4e8fe3` 2026-11-11 04:55 +0800 | 170 项未提交；结论以 HEAD 已提交代码为准，脏改动仅作快照差异 | 15 crate，344 `.rs`，104,592 行（剔所有层级 `target/` 与 fuzz 生成 codegen） | 1127 |
 | Burn | `c81a9042` 2026-11-22 13:06 -0500 | 干净（零改动） | 42 crate dirs，1989 `.rs`，490,469 行 | 6788 |
 
@@ -60,7 +60,7 @@
 | --- | --- | --- | --- |
 | crate 数 | 22 | 15 | 42 |
 | `.rs` 文件 | 690 | 344 | 1989 |
-| 源码行 | 167,119 | 104,592 | 490,469 |
+| 源码行 | 167,104 | 104,592 | 490,469 |
 | 测试计数 | 2787 | 1127 | 6788 |
 
 ### 2.2 llm 生产行 Top crate（行，HEAD 基线实测）
@@ -72,7 +72,7 @@
 | train | 13,461 | 训练循环状态、loss、优化器、检查点、数据集 |
 | prof | 12,705 | 能力档案 + 设备片段构建期对齐 |
 | device | 11,633 | 设备源 lowering 与厂商后端 |
-| shard | 10,700 | 拓扑/流水线/切分/见证/集合通信参考 |
+| shard | 10,689 | 拓扑/流水线/切分/见证/集合通信参考 |
 | algorithm | 10,397 | 注意力/SSM/记忆/路由变体语义 |
 | serve | 10,098 | 请求文法、采样、补全端点、路由 |
 | cutile | 8,617 | 内核 DSL：AST/emit/fuse/pass/plan |
@@ -179,7 +179,7 @@ llm 文档列的形状族（`tensor.rs:20-31`）：`broadcast/narrow/slice/chunk
 | 图/tape 结构 | `autograd` 4,044 行（src 2,119 / tests 1,925）：`Requirement/Role/Var/Node/Tape/Ordering/Schedule/Summary/Account/MemoryPolicy/Plan/Budget/Sizes/Footprint/Choice/Config/Replay/Store`（ADR 0055） | 手写反向（`exec` 内 `plan.rs`/`teacher`） | `burn-autodiff` 12.4k：`graph/grads/checkpoint/distributed/ops/runtime/backend` |
 | train 接线 | `session.rs:5` 引 `Tape/Var`；`backprop/learner/pool` 同引 confirmed | train 复用 exec 计算面 | autodiff 作后端装饰器挂接 |
 | 梯度检查点 | segment 级（`autograd` 结构内，`MemoryPolicy` 自动/全留/分段三档） | 未见独立检查点策略 | `autodiff/checkpoint` 策略可配 |
-| 状态 | 元数据层闭环：`gradcheck` 中心差分对拍 200 张随机图（扇出累加、detach 分支、分层与顺序逐位一致、重复反向逐位一致、图外参数梯度恰为 0）；train 闭环 `Reference` CPU 后端 50 例解析梯度 vs 中心差分对拍实测通过（含 conv2d/GRPO/KL/端到端 SGD）；真机后端梯度仍未观测 | 手写反向，成熟度本轮未深核 | 生产级梯度跟踪/快照/反向 |
+| 状态 | 元数据层闭环：`gradcheck` 中心差分对拍 200 张随机图（扇出累加、detach 分支、分层与顺序逐位一致、重复反向逐位一致、图外参数梯度恰为 0）；train 闭环 `Reference` CPU 后端 50 例解析梯度 vs 中心差分对拍实测通过（含 conv2d/GRPO/KL/端到端 SGD）；按 `Var` 自持的独立梯度快照 `GradientSnapshot` 已落地，脱离累积窗口与缓冲生命周期；真机后端梯度仍未观测（设备缝只有前向） | 手写反向，成熟度本轮未深核 | 生产级梯度跟踪/快照/反向 |
 
 ## 6. 模型层（nn）
 
@@ -401,7 +401,7 @@ llm 文档列的形状族（`tensor.rs:20-31`）：`broadcast/narrow/slice/chunk
 | 1–2 | 仅声明、配置标签或占位，无真实链路 |
 | 0 | 缺失 |
 
-> 分数是当前代码快照的相对成熟度，不是能力上限；三仓定位不同（Burn 通用训练框架 / llm.u LLM 推理多后端执行 / llm 面向 Burn 能力端口的分层重构），总分须结合权重视角解读。本轮整 workspace `cargo check` 绿、`cargo test --workspace` 2369 passed / 1 failed，CPU `Reference` 后端解析梯度 vs 中心差分对拍 50 例实测通过；后端真机（Metal/CUDA/昇腾）运行激活本轮未核，相关维度按代码结构定档。新增两维：#21 unsafe/内存安全边界、#22 依赖精简/供应链厚度（该维为「薄=高分」方向，依赖越少、系统绑定越弱得分越高）。工作区未提交 autograd 两文件小改只作快照差异，不计入已提交基线。
+> 分数是当前代码快照的相对成熟度，不是能力上限；三仓定位不同（Burn 通用训练框架 / llm.u LLM 推理多后端执行 / llm 面向 Burn 能力端口的分层重构），总分须结合权重视角解读。本轮整 workspace `cargo check` 绿、`cargo test --workspace` 2369 passed / 1 failed，CPU `Reference` 后端解析梯度 vs 中心差分对拍 50 例实测通过；后端真机（Metal/CUDA/昇腾）运行激活本轮未核，相关维度按代码结构定档。新增两维：#21 unsafe/内存安全边界、#22 依赖精简/供应链厚度（该维为「薄=高分」方向，依赖越少、系统绑定越弱得分越高）。取证时 autograd 两文件小改后续已收进 HEAD，不另计快照差异。
 
 ### 17.2 维度速览表
 
@@ -412,7 +412,7 @@ llm 文档列的形状族（`tensor.rs:20-31`）：`broadcast/narrow/slice/chunk
 | 3 | 后端执行成熟度/性能 | 3 | 6 | 8 | llm 生产装配仅 CPU（`serve/src/model.rs:27`），Metal 仅测试构造，CUDA/昇腾无 Executor impl，真机激活未核；llm.u 多后端 GEMM/内核族厚，真机激活本轮未复跑；Burn 跨后端可跑完整算子集 |
 | 4 | 算子/内核覆盖 | 5 | 4 | 9 | llm 注册表 **70 条**算子（elementwise/unary/激活/norm/attention/pool/conv/reduce/embed/rope/gemm·gemv·matmul f32+i2/i4/i8/dequant）+ 四层契约，unary 族本轮已进 HEAD 基线；真机内核激活未核；llm.u 七臂内核族；Burn 张量 API 全套 + linalg/einsum/fusion |
 | 5 | nn 层完整度 | 5 | 3 | 9 | llm conv/pool/norm/attn/embed/rope 齐，无 RNN；llm.u 无 conv/pool/RNN；Burn 8 大类 + 49 Config 含 RNN/Transformer |
-| 6 | 自动微分 | 7 | 2 | 10 | llm 独立 tape/schedule/account/plan/replay 元数据层；本轮 `cargo test -p llm-train backprop` 50 例全绿：`Reference` CPU 后端解析梯度与中心差分逐参数对拍（ABSOLUTE 2e-3 + RELATIVE 0.05），含 conv2d/GRPO/distillation KL/端到端 SGD；缺口：无后端装饰器式任意可微闭包（算子按名注册、显式 `record`）、分布式无真实传输后端/NCCL、GPU 后端梯度激活未观测；梯度侧仅有逐 Var 取读（`gradient`/`take_gradient`）与按槽 `GradAccum` 窗口快照（`accum_snapshot`），无脱离优化器窗口的 Var→向量独立快照导出；llm.u 逐层手写 bwd；Burn 后端装饰器任意可微 + checkpoint |
+| 6 | 自动微分 | 7 | 2 | 10 | llm 独立 tape/schedule/account/plan/replay 元数据层；本轮 `cargo test -p llm-train backprop` 50 例全绿：`Reference` CPU 后端解析梯度与中心差分逐参数对拍（ABSOLUTE 2e-3 + RELATIVE 0.05），含 conv2d/GRPO/distillation KL/端到端 SGD；梯度侧已落地按 `Var` 自持的独立快照 `GradientSnapshot`（`Session::gradient_snapshot`，副本脱离累积窗口计数与缓冲生命周期，清零/步进后仍有效）；剩余缺口：无后端装饰器式任意可微闭包（算子按名注册、显式 `record`）、分布式无真实传输后端/NCCL、GPU/真机后端梯度激活未观测——`Kernel`/`Executor` 缝当前只有前向，反向公式是 train 侧 CPU 标量参考实现，设备侧无梯度核生成与派发通路；llm.u 逐层手写 bwd；Burn 后端装饰器任意可微 + checkpoint |
 | 7 | 优化器 | 4 | 3 | 9 | llm Sgd/Adam/Muon；llm.u 仅 Adam；Burn 12 个 impl + LBFGS/Momentum/累积/裁剪/衰减 |
 | 8 | 调度/训练循环 | 5 | 4 | 9 | llm Session/Learner/evaluate/账表/优化步在位，本轮基线编译绿，backprop 套件含 `an_arbitrary_geometry_trains_end_to_end_under_sgd` 端到端 SGD 训练例实测通过；真机/大规模训练收敛与调度仍未核；llm.u Session/Trainer + Cosine；Burn Learner/early stopping/sharder/logger |
 | 9 | 损失函数 | 5 | 4 | 9 | llm CE/argmax/mse/bce/huber/hinge + Distill/Grpo（策略族物理拆至 `loss_rl.rs`，`loss.rs:10,12` 挂载再导出）；llm.u 7 fn；Burn 17 种 loss（含 CTC/RNNT/三元组/NLL） |
@@ -471,10 +471,10 @@ llm 文档列的形状族（`tensor.rs:20-31`）：`broadcast/narrow/slice/chunk
 - **#8 调度/训练循环 3 → 5（llm）**：上一版因 train lib 被 cutile 未提交中间态阻塞、编译与运行观测缺失定 3；本轮 `cargo check --workspace` 绿，`cargo test -p llm-train backprop` 50 例全绿，含 `an_arbitrary_geometry_trains_end_to_end_under_sgd` 端到端 SGD 训练例实测通过，Session/Learner/evaluate/账表/优化步链路达最小可用闭环；真机大规模训练收敛、调度策略仍未核，故定 5 而非更高。
 - **#4 算子/内核覆盖 4 → 5（llm）**：上一版注册表 52 条定 4；本轮上一轮 unary 增量收进 HEAD 基线，注册表展开 **70 条**，elementwise/unary/激活/norm/attention/pool/conv/reduce/embed/rope/gemm·gemv·matmul 与 i2/i4/i8/dequant 族齐备；各算子真机内核激活仍未核、无 RNN 类算子，故定 5（骨架在位、部分实现）而非 6–7。
 - **#19 测试/质量门禁 维持 5（llm）**：本轮整 workspace `cargo check` 绿、`cargo test --workspace` 2369 passed / 1 failed，唯一红灯为 tools 静态门 3 项 train 文件 Lines 存量赤字（#44，非编译错误）；静态门未清、clippy/fmt 未收尾复跑，维持 5。
-- **#6 自动微分 维持 7（llm）**：本轮独立读测试源码复核，`Reference` CPU 内核后端解析梯度与中心差分逐参数对拍，50 例实测通过（上一版口径 43 例）；仍缺后端装饰器式任意可微闭包、真实分布式传输/NCCL、GPU 后端梯度激活，以及脱离优化器窗口的 Var→向量独立梯度快照（现有逐 Var 取读与按槽 `GradAccum` 窗口快照），维持 7。
+- **#6 自动微分 维持 7（llm）**：本轮独立读测试源码复核，`Reference` CPU 内核后端解析梯度与中心差分逐参数对拍，50 例实测通过（上一版口径 43 例）；脱离优化器窗口的 Var→向量独立梯度快照已补 `GradientSnapshot`（`gradient_snapshot`，测试覆盖清零后副本仍有效、常量叶子不入快照）。仍缺：后端装饰器式任意可微闭包、真实分布式传输/NCCL、GPU 后端梯度激活——`Kernel`/`Executor` 仅前向缝，反向为 train CPU 标量公式，设备侧无梯度核通路，维持 7。
 - **#11 数据集管线 维持 3（llm）**：`Dataset` trait / `Loader`/`Chunks` / 三族采样 / 权重校验 / 181 行测试在位且基线编译绿；仍无物理分词/打包源，维持 3。
 - **#17 内核 DSL 维持 5（llm）**：上一版因 cutile 未提交抽象重构中间态存疑；本轮 `cargo clean -p cutile` 后 `Finished`，中间态已收进 HEAD；但 DSL 仍为 P0 模板纵切面 + typed kernel 起步，内核覆盖待扩，维持 5。
 - **#21 unsafe/内存安全边界（llm 8 / llm.u 3 / Burn 6）**：llm `unsafe_code`/`unsafe_op_in_unsafe_fn` 均 deny，101 处 unsafe（块 67+fn 23+impl 5+extern 6）集中为显式岛；llm.u 441 处（块 322+fn 104+impl 15）分散且 lint 仅 cli deny；Burn 246 处（块 208+fn 27+impl 11）、未设 deny/forbid。计数口径为源码 `unsafe {`/`unsafe fn`/`unsafe impl`/extern unsafe，已排除所有层级 `target/` 与 fuzz 生成 codegen。
 - **#22 依赖精简/供应链（llm 9 / llm.u 4 / Burn 5）**：该维「薄=高分」。llm 运行期依赖极薄、无厂商系统绑定；llm.u 携带 cudarc/metal/libloading/coreml/clblast 厚系统栈；Burn 跨后端谱系最宽（serde/wgpu/metal/half/bytemuck/ndarray 等）。
-- **计数校正**：llm 2787 测试、690 `.rs`、167,119 行；llm.u 1127、344 `.rs`、104,592 行；Burn 6788 测试、1989 `.rs`、490,469 行；档位不变。
+- **计数校正**：llm 2787 测试、690 `.rs`、167,104 行；llm.u 1127、344 `.rs`、104,592 行；Burn 6788 测试、1989 `.rs`、490,469 行；档位不变。
 - 后端真机性能与精度、HTTP 端到端接通仍属未取证边界；CPU 参考后端训练数值正确性本轮已由梯度对拍观测。静态门存量赤字（#44）拆分治理完成后，#19 可重新定档。
