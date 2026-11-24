@@ -1,0 +1,12 @@
+# 逐元素平方根：y[n] = √a[n]；负入按 IEEE 得 NaN，样本夹具取非负。
+# 一元骨架，与 gelu 同布局/needs/变体，只差右值表达式；sqrt 走 preamble 软件标量接口。
+base = "gelu_f32"
+
+[op]
+name     = "sqrt_f32"
+stem     = "unary_fn"
+skeleton = "elementwise"
+summary  = "y[n] = sqrt(a[n])"
+
+[consts]
+unexpr = "_cutile_sqrt_f32(x)"

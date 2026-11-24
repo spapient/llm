@@ -556,3 +556,70 @@ pub mod recip_f32 {
         false
     );
 }
+
+pub mod cos_f32 {
+    //! 逐元素余弦：`y[n] = cos(a[n])`。
+
+    crate::unary_f32!(
+        Cos,
+        CosF32,
+        "cos_f32",
+        unary_pair_tests,
+        {
+            // 锚点：cos(0)=1、cos(π/2)≈0。
+            let mut out = [0.0; 2];
+            assert!(
+                forward(tensor::View::one(&[0.0, std::f32::consts::FRAC_PI_2]), &mut out).is_ok(),
+                "等长"
+            );
+            assert_eq!(out[0], 1.0, "cos(0)");
+            assert!(out[1].abs() < 1e-6, "cos(π/2)≈0");
+        },
+        |x| x.cos(),
+        false
+    );
+}
+
+pub mod sin_f32 {
+    //! 逐元素正弦：`y[n] = sin(a[n])`。
+
+    crate::unary_f32!(
+        Sin,
+        SinF32,
+        "sin_f32",
+        unary_pair_tests,
+        {
+            // 锚点：sin(0)=0、sin(π/2)=1。
+            let mut out = [0.0; 2];
+            assert!(
+                forward(tensor::View::one(&[0.0, std::f32::consts::FRAC_PI_2]), &mut out).is_ok(),
+                "等长"
+            );
+            assert_eq!(out[0], 0.0, "sin(0)");
+            assert!((out[1] - 1.0).abs() < 1e-6, "sin(π/2)=1");
+        },
+        |x| x.sin(),
+        false
+    );
+}
+
+pub mod sqrt_f32 {
+    //! 逐元素平方根：`y[n] = √a[n]`；负入按 IEEE 得 NaN，样本夹具取非负。
+
+    crate::unary_f32!(
+        Sqrt,
+        SqrtF32,
+        "sqrt_f32",
+        unary_pair_tests,
+        {
+            // 锚点：√0=0、√4=2。
+            let mut out = [0.0; 2];
+            assert!(forward(tensor::View::one(&[0.0, 4.0]), &mut out).is_ok(), "等长");
+            assert_eq!(out[0], 0.0, "√0");
+            assert_eq!(out[1], 2.0, "√4");
+        },
+        |x| x.sqrt(),
+        false,
+        |len| (0..len).map(|i| (i as f32) * 0.25).collect()
+    );
+}
