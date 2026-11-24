@@ -53,7 +53,7 @@ P3 要在边界 crate 挂 Metal/CUDA 后端（ADR 0025 §1、§9；ADR 0028 §3 
 | 位置 | 越界对象（§1 类别） | 不变量与对外视图 |
 |---|---|---|
 | `crates/storage/src/mmap.rs`（模块级，1 处） | mmap 映射 | 模块级 allow；只读、私有映射、`Drop` 归还、线程归属；对外只暴露拥有型 `&[u8]` 视图 |
-| `crates/engine/src/metal.rs`（模块级，1 处） | FFI 调用 + 设备缓冲句柄 | 手写 `objc_msgSend` 与 Metal 运行时符号；+1 保留的对象在 `Drop` 恰好 `-release` 一次，句柄私有、不跨线程，自动释放对象由 autorelease 池收口；对外是 `Executor` / `Allocator` 的安全实现 |
+| `crates/prof/src/runtime/metal.rs`（模块级，1 处） | FFI 调用 + 设备缓冲句柄 | 手写 `objc_msgSend` 与 Metal 运行时符号；+1 保留的对象在 `Drop` 恰好 `-release` 一次，句柄私有、不跨线程，自动释放对象由 autorelease 池收口；对外是 `prof::runtime::exec::Executor` 的安全实现 |
 | `crates/nn/src/kernel/fast/i8.rs`（函数级，4 处） | 裸指针切片重建（打包/计算包装） | i8 sdot 瓦片体 `sdot_tile` / `dot_one` / `harvest` 与端口探针已迁入 `prof::native::i8`；nn 侧只剩面板打包与行段计算的裸指针重建包装，长度守卫由调用方打包布局保证 |
 | `crates/nn/src/kernel/fast/pool.rs`（函数级，3 处） | 跨线程发布裸指针 | 常驻 GEMM 线程池：任务只发布裸指针 + 一次闸门；裸指针只活到 `done` 齐、主线程返回前 |
 | `crates/prof/src/native/gemm8x8.rs`（函数级，11 处） | 裸指针切片重建 + NEON/AVX2 intrinsics | f32 8×8 寄存器块微内核；`fma_step` 生产与探针共用；nn `kernel_fast_micro.rs` 的瓦片体迁出后 nn 岛已清空，本岛是唯一宿主 |
@@ -69,7 +69,7 @@ P3 要在边界 crate 挂 Metal/CUDA 后端（ADR 0025 §1、§9；ADR 0028 §3 
 
 `i8.rs` 由 8 涨到 12、`micro.rs` 由 6 涨到 11 是同一形态的**有意增量**：把生产微内核的瓦片体抽成`sdot_tile`（i8）与 `fma_step`（f32）后，探针与被测内核共用一份实现，代价是每个新函数各自一个 `#[allow]`，收益是**消掉一份重复的瓦片体**——若探针自写一份，分母就与分子不同源，K7/K8 变成两个内核相除。其中 `i8.rs` 的 4 处是上一轮合并 `sdot_tile` 时新增、本轮才补登记（欠账，已补）。新增的 f32 探针只在 `bench` 特性下编译，生产公开面不含该项；不变量与 `micro_packed` 一致：包装只做长度守卫与指针透传，工人只为 `fma_step` 的读边界（`NR*k` 内的 `NR` 行）负责。
 
-三个逻辑岛：`storage` 的 mmap、`device` 的 Metal FFI、CPU 微内核——瓦片 intrinsic 段已收进
+三个逻辑岛：`storage` 的 mmap、`prof::runtime` 的 Metal FFI、CPU 微内核——瓦片 intrinsic 段已收进
 `prof::native` 三岛（`gemm8x8` / `i8` / `sme`），`nn` 这一组只剩 `i8` 的打包/计算裸指针包装
 与 `pool` 线程池（裸指针只活到 `done` 齐、主线程返回前）；线程池与并发机制仍留 nn，属调度骨架
 而非设备原语。

@@ -189,7 +189,7 @@ fn submit_read(
     decl: &prof::decl::OpDecl,
     len: usize,
 ) -> Vec<f32> {
-    use engine::exec::Executor as _;
+    use prof::runtime::exec::Executor as _;
 
     let mut graph = engine::exec::Graph::new();
     graph.push(node);

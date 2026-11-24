@@ -288,7 +288,7 @@ fn op_chunked_reduce_matches_reference_cuda(op_name: &str) {
 /// 浮点舍入，仍落在 f32 阈值（1e-5）内。
 #[cfg(target_os = "macos")]
 fn op_chunked_scan_matches_reference(op_name: &str) {
-    use engine::exec::Executor as _;
+    use prof::runtime::exec::Executor as _;
 
     let Some(setup) = chunk_setup(op_name, "scan", scalar_len) else {
         return;
@@ -384,7 +384,7 @@ fn op_chunked_scan_matches_reference(op_name: &str) {
 /// 3. 归一化：每线程 g 算 `y = gamma·x/rms`。折叠用 f64，分块误差仍在 f32 阈值内。
 #[cfg(target_os = "macos")]
 fn op_chunked_rmsnorm_matches_reference(op_name: &str) {
-    use engine::exec::Executor as _;
+    use prof::runtime::exec::Executor as _;
 
     let Some(setup) = chunk_setup(op_name, "rmsnorm", |_, sample| {
         sample.scalar("N").expect("长度标量") as u32
@@ -467,7 +467,7 @@ fn op_chunked_rmsnorm_matches_reference(op_name: &str) {
 /// 折叠 + 归一化」五阶段（三段内核 + 两次主机折叠），与标量参考对拍。
 #[cfg(target_os = "macos")]
 fn op_chunked_softmax_matches_reference(op_name: &str) {
-    use engine::exec::Executor as _;
+    use prof::runtime::exec::Executor as _;
 
     let Some(setup) = chunk_setup(op_name, "softmax", |_, sample| {
         sample.scalar("N").expect("长度标量") as u32
