@@ -73,13 +73,34 @@ impl GradientEntry {
 /// 已接设备反向核的逐点一元算子闭集；其余可微算子（归一化 / 注意力 / 卷积 / 矩阵乘等）反向仍
 /// 只走 `train` CPU 标量公式，设备通道待各自的多趟规约核扩入。
 pub const POINTWISE: &[GradientEntry] = &[
-    GradientEntry { op: "relu_f32", deriv: Deriv::Relu },
-    GradientEntry { op: "leaky_relu_f32", deriv: Deriv::LeakyRelu },
-    GradientEntry { op: "sigmoid_f32", deriv: Deriv::SigmoidOut },
-    GradientEntry { op: "tanh_f32", deriv: Deriv::TanhOut },
-    GradientEntry { op: "exp_f32", deriv: Deriv::ExpOut },
-    GradientEntry { op: "silu_f32", deriv: Deriv::Silu },
-    GradientEntry { op: "gelu_f32", deriv: Deriv::Gelu },
+    GradientEntry {
+        op: "relu_f32",
+        deriv: Deriv::Relu,
+    },
+    GradientEntry {
+        op: "leaky_relu_f32",
+        deriv: Deriv::LeakyRelu,
+    },
+    GradientEntry {
+        op: "sigmoid_f32",
+        deriv: Deriv::SigmoidOut,
+    },
+    GradientEntry {
+        op: "tanh_f32",
+        deriv: Deriv::TanhOut,
+    },
+    GradientEntry {
+        op: "exp_f32",
+        deriv: Deriv::ExpOut,
+    },
+    GradientEntry {
+        op: "silu_f32",
+        deriv: Deriv::Silu,
+    },
+    GradientEntry {
+        op: "gelu_f32",
+        deriv: Deriv::Gelu,
+    },
 ];
 
 /// 按算子名取反向核描述；未登记返回 `None`（该算子反向不在设备通道内）。
