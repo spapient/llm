@@ -585,7 +585,6 @@ fn shape_operators_reject_out_of_range_axes_without_panicking() {
     assert!(view.unbind::<Vec<usize>>(9).is_empty(), "unbind 轴越界为空");
 }
 
-
 #[test]
 fn borrowed_mutable_views_support_the_same_window_writes() {
     let mut values = [0i32; 6];
@@ -616,9 +615,7 @@ fn stride_arithmetic_overflow_is_rejected_without_panicking() {
     let stepped: View<'_, u8> =
         View::strided(vec![1], vec![usize::MAX], &[3]).expect("单例轴步长不可达但合法");
     assert!(
-        stepped
-            .slice([Slice::stepped(0, 1, usize::MAX)])
-            .is_none(),
+        stepped.slice([Slice::stepped(0, 1, usize::MAX)]).is_none(),
         "切片步长乘法必须受检"
     );
     let diagonal: View<'_, u8> =

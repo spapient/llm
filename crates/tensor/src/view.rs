@@ -48,12 +48,7 @@ where
         let dims = dims.into();
         let lead = dims.as_slice().len().checked_sub(self.rank())?;
         let mut steps = dims.clone();
-        for (axis, (&want, step)) in dims
-            .as_slice()
-            .iter()
-            .zip(steps.as_slice_mut())
-            .enumerate()
-        {
+        for (axis, (&want, step)) in dims.as_slice().iter().zip(steps.as_slice_mut()).enumerate() {
             *step = broadcast_step((lead, self.dims(), self.strides()), (axis, want))?;
         }
         Some(assemble(dims, steps, self.base, self.buf))

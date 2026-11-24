@@ -280,7 +280,6 @@ fn an_unaffordable_owned_tensor_is_an_error_not_an_abort() {
     assert_eq!(error.code(), Code::Invalid);
 }
 
-
 #[test]
 fn column_major_construction_uses_the_same_logical_element_order() {
     let values = [1i32, 4, 2, 5, 3, 6];

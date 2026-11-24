@@ -105,7 +105,6 @@ fn closed_groups_cover_numeric_scalars() {
     numeric::<half::f16>();
 }
 
-
 #[test]
 fn map_can_change_the_element_type_without_changing_rank() {
     let tensor: Tensor<&[i32], [usize; 2], i32> =
@@ -119,7 +118,7 @@ fn map_can_change_the_element_type_without_changing_rank() {
 fn binary_operations_accept_different_storage_and_rank_witnesses() {
     let left: Tensor<&[i32], [usize; 2], i32> =
         Tensor::new([2, 2], [1, 2, 3, 4].as_slice()).expect("定秩借用");
-    let right: Tensor<Owned<i32>> =
+    let right: Tensor<Owned<i32>, Vec<usize>, i32> =
         Tensor::new(vec![2, 2], Owned::from(vec![4, 3, 2, 1])).expect("动态秩自持");
     let sum = left.add(&right).expect("形状一致");
     assert_eq!(sum.to_vec(), [5, 5, 5, 5]);
@@ -147,7 +146,7 @@ fn integer_close_checks_never_overflow() {
 
 #[test]
 fn complete_owned_tensor_into_vec_reuses_its_allocation() {
-    let tensor: Tensor<Owned<i32>> =
+    let tensor: Tensor<Owned<i32>, Vec<usize>, i32> =
         Tensor::new(vec![2, 2], Owned::from(vec![1, 2, 3, 4])).expect("张量");
     let pointer = tensor.as_slice().as_ptr();
     let values = tensor.into_vec();

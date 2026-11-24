@@ -236,13 +236,16 @@ fn latent_loss(
     total
 }
 
+/// 参数图夹具的返回积：会话、参数变量、算子输出与标量损失。
+type ParameterSession = (Session<Reference, Sgd>, Vec<Var>, Var, Var);
+
 /// 任意元数参数图夹具：统一建图、形状表、参数登记与声明档/实例几何前向。
 fn parameter_session(
     op: &str,
     values: &[&[f32]],
     output: usize,
     geometry: Option<Geometry>,
-) -> Result<(Session<Reference, Sgd>, Vec<Var>, Var, Var)> {
+) -> Result<ParameterSession> {
     let mut tape = Tape::new();
     let params: Vec<Var> = values.iter().map(|_| tape.parameter()).collect();
     let y = tape.record(op, &params).expect("记录 y");
@@ -259,7 +262,9 @@ fn parameter_session(
         session.register_parameter(param, ParamRole::Trainable, value.to_vec())?;
     }
     match geometry {
-        Some(geometry) => session.bufs().compute_shaped_step(op, &params, y, geometry)?,
+        Some(geometry) => session
+            .bufs()
+            .compute_shaped_step(op, &params, y, geometry)?,
         None => session.bufs().compute_step(op, &params, y)?,
     }
     Ok((session, params, y, out))

@@ -82,8 +82,7 @@ fn check_attention_grad(
     v0: Vec<f32>,
     objective: impl Fn(&[f32], &[f32], &[f32]) -> f32,
 ) -> Result<()> {
-    let (mut session, params, y, loss) =
-        parameter_session(op, &[&q0, &k0, &v0], lengths[3], None)?;
+    let (mut session, params, y, loss) = parameter_session(op, &[&q0, &k0, &v0], lengths[3], None)?;
     let (q, k, v) = (params[0], params[1], params[2]);
     sum_backward(&mut session, y, loss)?;
     let f = &objective;

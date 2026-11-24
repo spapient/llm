@@ -175,11 +175,11 @@ impl Geometry {
 
 /// 表中大写标识符取自该行 `nn::conv` 模块，数字与布尔字面量原样进入几何。
 macro_rules! declaration_value {
+    ($module:ident, $value:literal) => {
+        $value
+    };
     ($module:ident, $value:ident) => {
         nn::conv::$module::$value
-    };
-    ($module:ident, $value:expr) => {
-        $value
     };
 }
 

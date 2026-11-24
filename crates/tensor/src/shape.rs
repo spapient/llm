@@ -60,7 +60,7 @@ pub(crate) fn accumulate(dims: &[usize], steps: &mut [usize], order: Order) {
 
 /// 秩见证：编译期定长 `[usize; D]` 或运行期变长 `Vec<usize>`。
 ///
-/// 实现只需提供切片访问和受检迭代构造；重排、连续步长与填充均有统一默认实现。
+/// 实现只需提供切片访问和受检切片构造；重排、连续步长与填充均有统一默认实现。
 pub trait Rank: Clone {
     /// 轴值切片。
     fn as_slice(&self) -> &[usize];
@@ -68,14 +68,15 @@ pub trait Rank: Clone {
     /// 可写轴值切片。
     fn as_slice_mut(&mut self) -> &mut [usize];
 
-    /// 从迭代器构造；元素数与目标秩不符时返回 `None`。
-    #[must_use]
-    fn from_iter(values: impl IntoIterator<Item = usize>) -> Option<Self>;
-
     /// 从切片构造；长度与目标秩不符时返回 `None`。
     #[must_use]
-    fn from_slice(values: &[usize]) -> Option<Self> {
-        Self::from_iter(values.iter().copied())
+    fn from_slice(values: &[usize]) -> Option<Self>;
+
+    /// 从迭代器构造；内置秩容器覆盖为零临时集合的高效路径。
+    #[must_use]
+    fn from_iter(values: impl IntoIterator<Item = usize>) -> Option<Self> {
+        let values = values.into_iter().collect::<Vec<_>>();
+        Self::from_slice(&values)
     }
 
     /// 构造 `len` 个相同轴值。
@@ -151,6 +152,10 @@ impl Rank for Vec<usize> {
         self
     }
 
+    fn from_slice(values: &[usize]) -> Option<Self> {
+        Some(values.to_vec())
+    }
+
     fn from_iter(values: impl IntoIterator<Item = usize>) -> Option<Self> {
         Some(values.into_iter().collect())
     }
@@ -163,6 +168,10 @@ impl<const D: usize> Rank for [usize; D] {
 
     fn as_slice_mut(&mut self) -> &mut [usize] {
         self
+    }
+
+    fn from_slice(values: &[usize]) -> Option<Self> {
+        Self::try_from(values).ok()
     }
 
     fn from_iter(values: impl IntoIterator<Item = usize>) -> Option<Self> {

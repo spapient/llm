@@ -258,4 +258,10 @@ fn nvidia_matmul_uses_pedantic_cublas_and_cached_device_storage() {
     assert_eq!(source.matches("cublasSgemm(").count(), 1);
     assert!(!source.contains("CUBLAS_COMPUTE_32F_FAST_TF32"));
     assert!(!source.contains("cudaDeviceSynchronize"));
+
+    let profile = crate::prof::builtin_profiles()
+        .into_iter()
+        .find(|profile| profile.meta.vendor == "nvidia")
+        .expect("NVIDIA 档案");
+    assert!(profile.flags.iter().any(|flag| flag == "-lcublas"));
 }

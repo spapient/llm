@@ -238,3 +238,29 @@ fn a_static_rank_owned_tensor_walks_the_whole_shape_surface() {
         "静态秩下 select 同样只减一秩"
     );
 }
+
+#[derive(Clone)]
+struct ExternalRank(Vec<usize>);
+
+impl crate::Rank for ExternalRank {
+    fn as_slice(&self) -> &[usize] {
+        &self.0
+    }
+
+    fn as_slice_mut(&mut self) -> &mut [usize] {
+        &mut self.0
+    }
+
+    fn from_slice(values: &[usize]) -> Option<Self> {
+        Some(Self(values.to_vec()))
+    }
+}
+
+#[test]
+fn legacy_rank_implementations_use_the_generic_default_extensions() {
+    let tensor: Tensor<&[u8], ExternalRank, u8> =
+        Tensor::new(ExternalRank(vec![2, 2]), [1u8, 2, 3, 4].as_slice()).expect("外部秩见证");
+    let row = tensor.select::<ExternalRank>(0, 1).expect("默认迭代构造");
+    assert_eq!(row.dims(), [2]);
+    assert_eq!(row.iter().sum::<u8>(), 7);
+}
