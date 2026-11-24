@@ -9,8 +9,6 @@
 //! * 打包格式的通道（`admit` / `forward_batch`）在 stable 上恒为不可达：调用方
 //!   `gemv::packed` 本来就有标量叶 `forward::forward_rows_scaled` 兜底，那条路径一直都在。
 
-use core::convert::Infallible;
-
 use super::ScaledRow;
 
 /// 宽档车道数，与向量版一致：决定 [`elementwise`] 的分段宽度。
@@ -133,23 +131,30 @@ pub(crate) fn elementwise<T: Load>(w: &[T], x: &[f32]) -> f32 {
     total
 }
 
+/// 打包格式的通道参数占位：与 nightly 版的 `Affine` 对位的稳定退路类型；
+/// [`admit`] 恒为 `None`，这个值永远不会被构造出来。
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct StableChannel;
+
 /// 打包格式的通道参数：stable 上没有向量通道，恒为 `None`，调用方落到标量叶。
 pub(crate) fn admit(
     _cpb: usize,
     _n: usize,
     _ctx: ScaledRow,
     _dequant: &[f32],
-) -> Option<Infallible> {
+) -> Option<StableChannel> {
     None
 }
 
 /// 只有 [`admit`] 返回 `Some` 才会走到这里，而 stable 上它永远不返回 `Some`。
+///
+/// 留空壳只是为了与 nightly 版同名同形；参数用 [`StableChannel`] 而不是 `Infallible`，
+/// 避免编译器把这个退路分支推断成 never 发散而触发 `unreachable_code`。
 pub(crate) fn forward_batch(
     _rows: &[&[f32]],
     _weights: &[u8],
     _scales: &[f32],
-    never: Infallible,
+    _channel: StableChannel,
     _out: &mut [f32],
 ) {
-    match never {}
 }

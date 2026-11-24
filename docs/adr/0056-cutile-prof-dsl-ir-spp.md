@@ -86,10 +86,10 @@ WebGPU/wgpu/CPU，配算子融合与 autotune；`burn-cubecl` 25,240 行、`burn
 | D 泛型 / 声明化密度 | 同构 ≥3 份全部泛型 / 宏 / 表驱动 | pass / Target / 词汇表 / `UnaryFn` 闭集均表驱动；新增一元族只登记一行（C 名 + 主机求值），校验/遍历/折叠/解释/发射从表取 | ● | 8 | 维持；新增同构先判体量再抽（N7 门槛 ≥3 份 / ≥5 行 / ≥80 token） |
 | E 规模 / 密度 | 无超线文件；公开项密度受控 | prof `einsum/` 拆分后最大 `device.rs` 570；cutile 发射侧拆入 `printer.rs`（242），`kernel.rs` 431，最大 `cap.rs` 599，均 <600 | ● | 8 | 拆分后 jscpd 零克隆；净删生产行随后续批次实测 |
 | F IR / 发射器性能 | 生成与优化有耗时基线与回归门；热点复杂度可证 | pass 为不动点线性扫描；无 micro-bench 基线；非热路径 | ○ | 5 | 先取单 kernel 优化 / 发射耗时基线，再决定是否上区间归属 |
-| G 设备执行 / 证据完备 | 多 runtime lowering 可跑，真机对拍 + roofline 达标 | typed IR 未接设备执行；本机仅 macOS Metal 逐点族真机对拍；win（RTX A3000）CUDA 硬件 + nvcc13.3 + MSVC cl 工具链闭环探针已跑通，但仓内 CUDA 后端对拍套件尚未同步到 win 运行；Ascend/ROCm/Intel/MUSA 无证据 | ○ | 3 | 见开放项 G2/G3；仓内后端真机对拍跑通前不签 CUDA 执行结论 |
+| G 设备执行 / 证据完备 | 多 runtime lowering 可跑，真机对拍 + roofline 达标 | typed IR 未接设备执行（G2 仍开）；本机 macOS Metal 逐点族真机对拍；win（RTX A3000 12GB, sm86）经仓内 `CudaBackend` 跑通 nvidia 档案 **18 条见证**：nvcc 13.3 `-ccbin` cl 19.51 真编译整份 `.cu` → 设备 launch → 回读 f32 按 `expect` 切段对拍，`max_rel_err` 全 0、`scope=Device`（prof 片段链路 L2 见证层，非 typed IR 核）；无 roofline（L3）；Ascend/ROCm/Intel/MUSA 无证据 | ◐ | 4 | 见 G2/G3；CUDA prof 见证层真机对拍已闭合（18/18），typed IR 设备执行、roofline 达标与其余 runtime 落地前不签更高档 |
 | H 测试分层 | 每族反向注入用例；夹具复用；测试文件 ≤800 | IR 有 ir/pass/exec 三类测试；一元族独立 `unary_tests.rs`（发射断言 + 非 f32 反向用例），位级族进 `ir_exec` 逐位对拍；`ir_tests.rs` 760 行线内 | ◐ | 7 | 逐表达式族补「非法节点 → 校验红」反向用例 |
 
-**等权参考分（算术平均，仅基线锚点，不作交付结论）**：(5+6+7+8+8+5+3+7)/8 ≈ **6.1**，
+**等权参考分（算术平均，仅基线锚点，不作交付结论）**：(5+6+7+8+8+5+4+7)/8 ≈ **6.3**，
 基线维度 17 的 llm 6。Burn 9 分的差额主要在 G（多 runtime 真机执行 + 融合 + autotune）与
 A（类型覆盖面），这两块均受 ADR 0017 / 0054 冻结，不在本批闭合。
 
@@ -155,9 +155,11 @@ A（类型覆盖面），这两块均受 ADR 0017 / 0054 冻结，不在本批�
 - **G2 设备执行闭环**：typed IR 替换旧模板链路，接 `Image` 与布局推导；`.k` 正文经 `shard::ir`
   桥进 vendor `Codegen::lower` 后，IR 核才能宣称设备执行。
 - **G3 多 runtime 真机对拍 + roofline**：CUDA/Ascend/ROCm/Intel/MUSA 真机证据；性能达 roofline
-  70%（L3）是 ADR 0017 解冻 L2 的条件之一。CUDA 第一站 = win（`win`@192.168.0.65，A3000）：
-  先把当前仓同步到该机（现有副本均为旧代次快照、非 git 仓），再跑 `llm-device` 的 CUDA 生成 / 编译 /
-  回读对拍，核 `nvcc_ready()` 在 win 判真；Ascend/ROCm/Intel/MUSA 设备通道本轮未探测。
+  70%（L3）是 ADR 0017 解冻 L2 的条件之一。CUDA 第一站 win（`win`@192.168.0.65，A3000）已闭合：
+  当前仓已同步到该机，`llm-device` 的 nvidia 档案 18 条见证经 nvcc 真编译 + 设备执行 + 回读对拍全过
+  （`every_nvidia_witness_runs_on_the_cuda_device`，`nvcc_ready()` 在 win 判真）；本档仍是 prof
+  片段链路见证层，typed IR 核的设备执行走 G2。剩余：roofline 计时 / 达标率未测；
+  Ascend/ROCm/Intel/MUSA 设备通道本轮未探测。
 - **G4 注解 / 通道配置化**：IR standard/contracted 通道选择、`#[dsl(contracted)]` 闭集配置位，
   待 G2 让前端有生产消费者后接入；走声明表，不写第二套按名分派。
 - **G5 autotune**：变体择优从链序首命中升级到实测计时选优；依赖 G3 真机计时通道。
@@ -167,21 +169,28 @@ A（类型覆盖面），这两块均受 ADR 0017 / 0054 冻结，不在本批�
 
 ## 未知与未测
 
-- **CUDA / Windows 硬件与工具链通道已实测可达（confirmed），仓内后端对拍仍未在 win 跑过（PARTIAL）**：
+- **CUDA / Windows 硬件与工具链通道已实测可达（confirmed）**：
   前一轮把"执行环境注册表内无 Windows 实例"当成"无 Windows 通道"，漏扫了 `~/.ssh/config` 里的局域网主机
-  `win → 192.168.0.65`（用户 `fei`，密钥 `id_ed25519_mac_local`）。本轮经 SSH 实测该机：
-  - GPU：NVIDIA RTX A3000 12GB，驱动 621.14，UMD CUDA 13.5；`nvidia-smi` 正常。
-  - 工具链：`nvcc` 13.3 V13.3.33（`CUDA_PATH` 在位、nvcc 在 PATH）；MSVC `cl.exe` 14.51.36231
-    （VS18 BuildTools，vswhere 定位，与仓内 `platform::find_cl` 同一路径）；Rust `rustc`/`cargo`
-    1.100.0-nightly。
+  `win → 192.168.0.65`（用户 `fei`，密钥 `id_ed25519_mac_local`）。经 SSH 实测该机：
+  - GPU：NVIDIA RTX A3000 12GB（sm86 Ada，UUID `GPU-fc44195b-6612-39b9-bc3f-f88ea2c737f3`），驱动 621.14；`nvidia-smi` 正常。
+  - 工具链：`nvcc` 13.3 V13.3.33（`CUDA_PATH` 在位、nvcc 在 PATH）；MSVC 工具集 14.51.36231 /
+    `cl.exe` 19.51.36256 x64（VS18 BuildTools，vswhere 定位，与仓内 `platform::find_cl` 同一路径）；
+    Rust 固定 `rustc`/`cargo` 1.100.0-nightly（`nightly-2026-09-01`）。
   - 闭环探针：一条 8 线程平方 kernel 经 `nvcc -ccbin <cl.exe>` 编译并在 A3000 上运行，回读
     `0 1 4 9 16 25 36 49`、`cudaGetLastError = 0`；编译执行链路打通（探针临时目录已清理）。
-- **仓内 CUDA 套件尚未在 win 跑（PARTIAL，缺口是代码同步，不是无设备）**：win 上现有源码副本
-  （`llm-cuda`/`llm-verify`/`llm_clean`/`llm_b`）均为旧代次快照——无当前 `device` crate，cutile 无
-  typed IR（`kernel/expr/pass/validate/printer`），且都不是 git 仓；当前仓在本机 MBP。把当前仓同步到
-  win 后，方可 `cargo test -p llm-device` 跑仓内 CUDA 生成 / 编译 / 回读对拍，并核 `nvcc_ready()`
-  （`detect_nvcc` + `find_cl`）在 win 判真。linux 云主机仍无 GPU / `nvcc` / `cargo` / 仓库副本，不能
-  作为 CUDA 通道。
+- **仓内 CUDA 见证层已在 win 真机跑通（confirmed，L2 见证层，非 typed IR 核）**：当前仓已从 MBP 同步到
+  `C:\Users\fei\llm-sync`（target 落 `D:\cargo-target\llm-sync`，非 git 副本）。`cargo test -p llm-device`
+  在 win 1.100.0-nightly 下：lib **51** passed（含新增 `every_nvidia_witness_runs_on_the_cuda_device`），
+  schedule 集成 **14** passed；nvidia 档案 **18** 条见证整份 `.cu` 经 `compile_run_cuda` 真编译 →
+  A3000 launch → 回读 f32 按 `expect` 切段对拍，`max_rel_err` 全 `0.000e0`、`scope=Device`，
+  `nvcc_ready()` 判真（`detect_nvcc` + `find_cl` 均命中）。
+  边界：① 走 prof 档案旧模板片段链路，typed IR 核接设备执行仍属 G2；② 档案 `cc=sm_75`（T600 口径），
+  实测机 A3000 为 sm86，靠 sm75 cubin 向后兼容跑通，未在原生 sm75 卡复测；③ L0 条目（`mma.sync`/
+  `shuffle`/`broadcast`/`scan`/`exp2`/`rcp`/`commit_wait`/`bar`）也被 `run_all` 执行回读通过，但执行
+  证据不回写档案 `grade`，等级上调另案；④ 无 roofline 计时；⑤ `metal_suite` 是 macOS-only 套件，
+  顶部无条件 `use llm_device::executor::*`，而 `executor` 模块 `#[cfg(target_os = "macos")]`，win 上编该
+  目标会 `E0432`——本轮 win 只跑 lib + schedule，未编 `metal_suite`，跨平台测试装配门另案补。
+  linux 云主机仍无 GPU / `nvcc` / `cargo` / 仓库副本，不能作为 CUDA 通道。
 - **性能数字待校准**：IR 优化 / 发射无耗时基线；roofline 达标率、跨算子融合收益均未实测，不在落地
   前写提速承诺。
 - **超越函数精度口径未定档**：Sqrt/Exp/Ln/Sin/Cos 的 Rust `f32` 方法与 C `<math.h>` 库实现存在 ulp
@@ -195,6 +204,9 @@ A（类型覆盖面），这两块均受 ADR 0017 / 0054 冻结，不在本批�
 - `llm-prof`：lib **164** + 集成 **56** + doctest **3** passed（1 ignored）；`llm-nn` **528** passed
   （4 ignored）、`cutile` **142** libtest + **2** doctest passed、`llm-annotation` **48 + 6** passed
   （2 ignored doctest）。下游 `nn`/`cutile` 经 `cargo check` 编译通过，einsum 拆分与一元闭集路径无回归。
+- win（A3000 / rustc 1.100.0-nightly）`llm-device`：lib **51** passed、schedule 集成 **14** passed，
+  0 failed；nvidia 18 条见证真机编译执行回读对拍全过（`max_rel_err=0`、`scope=Device`）。mac 侧同套
+  lib **66** passed，新 CUDA 用例在无 nvcc 环境经 `testkit::skip` 登记跳过、不计失败。
 - `cargo clippy -p cutile -p llm-annotation --all-targets -- -D warnings` 零 error/warning；
   `cargo fmt --check -p cutile -p llm-annotation` 干净。
 - 静态门：einsum 八个子模块与 cutile 本批文件全部过行数 / CCN / NLOC 闸；`every_source_passes_the_static_gate`
@@ -214,5 +226,8 @@ A（类型覆盖面），这两块均受 ADR 0017 / 0054 冻结，不在本批�
 - S2 一元闭集与发射拆分同为纯类型 / 模块搬迁：回滚 = `Expr::Unary` 退回独立 `Abs` 变体、删
   `printer.rs`/`unary_tests.rs` 并把渲染函数并回 `kernel.rs`，前端 `METHODS` 回退到 3 项；无持久状态、
   无设备写路径。
+- CUDA 真机见证用例（`backends.rs` 的 `every_nvidia_witness_runs_on_the_cuda_device` + `nvidia_profile`）
+  为纯测试增补，生产路径无改动；回滚 = 删该用例与辅助函数。win 同步副本 `C:\Users\fei\llm-sync` 非 git，
+  不纳入回滚边界。
 - 本批未触碰并发在途文件（shard plan/schedule、train session/backprop、tensor、weights gguf 等）；
-  提交前按 `git status --short` 划边界，只认领 cutile/annotation 本批文件与本 ADR。
+  提交前按 `git status --short` 划边界，只认领 cutile/annotation/device 测试本批文件与本 ADR。

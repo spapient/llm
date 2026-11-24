@@ -30,6 +30,12 @@ multiple_crate_versions = "allow"
 todo = "deny"
 unimplemented = "deny"
 
+[workspace.lints.cargo]
+# `llm-fuzz` 的 `libfuzzer-sys` 由 `engine` feature 门控，只被 required-features 为
+# `engine` 的 harness 目标引用；unused-dependencies 分析跟不上可选依赖 + `cfg(unix)` +
+# feature 门控这一组合，会对默认/全量清单解析误报，故工作区统一放行。
+unused_dependencies = "allow"
+
 [profile.dev.package."*"]
 opt-level = 2
 

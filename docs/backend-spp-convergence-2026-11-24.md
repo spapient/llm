@@ -239,6 +239,7 @@ tensor   1,990 行 /  7 文件 / pub  13 / 最大 tensor.rs:730        布局算
 | R1.1（执行缝单路，2026-11-24 09:30） | 待测 | trait 4 签名→2 | 0 | 待测 | `Executor` 绑取双路合并为 `bind(id, Buf)` / `fetch(id) -> &Buf`（lane 标签复用 `storage::LaneBuf`）；`Trace` 装饰器同步减薄；serve 装配/模型与 engine、serve 测试改走单路；nn 五处手写线性夹具闭包复用 `model::linear` 配置助手 | cutile 139 / annotation 48 / engine 100+3 / storage 40+1 / nn 483+2 / serve 197+3 绿；clippy `-D warnings` 全仓零告警；fmt 干净；全仓 check 通过 |
 | R3.1（三族骨架元素泛型，2026-11-24） | 待测 | 三族 `Unary`/`Binary`/`Reduce` 挂关联类型 `type K: Element` | 0 | 待测 | 执行侧 `apply`/`fold`/`forward` 按 `Self::K` 抽象（范式同 `Gemm::Plain::Elem`）；对拍侧保留 f32 标量核 `apply_f32`/`fold_f32`/`start_f32`，`reference` 仍归一返回 `Vec<f32>`；宏内绑定 `type K = f32`，`apply` 与 `apply_f32` 同闭包；epilogue 标量表改指 `apply_f32`。未动 prof `Values`/`reference` 裸槽与对拍下游 f32 归一（列 P2） | 全仓 check 通过；nn 491+2 绿、engine 100+3、serve 197+3；clippy `-D warnings` 聚焦包零告警；fmt 干净 |
 | R5.1（tensor.rs 拆目录，2026-11-24） | 待测 | 730 → 269 / 381 / 100 | +2（目录子模块） | 待测 | 布局形状算子下沉 `tensor/shape.rs`（轴重排/广播/切片/分段/改秩/物化/视图降级 + `broadcast_step`/`gather_strided`/`gather`/`seat`/`is_permutation` 自由函数）；可写访问与自持分配/窗口写下沉 `tensor/owned.rs`；字段 `dims`/`steps`/`base`/`buf`、`assemble`、`window` 提 `pub(crate)`，`respell` 同通道；对外重导出 `DynTensor`/`Tensor`/`View`/`ViewMut` 路径不变 | tensor 109+1 对拍基线 0 failed；全仓 lib check 绿；clippy 零告警；fmt 干净；gate `Lines=730` 红灯清除 |
+| R3.2（密度门上下限 + 命名首批，2026-11-24） | 待测 | 上限 600→899；新增下限 300 | 0 | 待测 | `[gate]` 增 `file_min_lines=300`、`file_max_lines=899`；薄入口 `lib/main/mod.rs` 与 fuzz 垫片扫描侧豁免；211 个既存正交模块登记 `min_lines_baseline` 棘轮（条目达标即删、只准缩短），新增独立文件硬卡 ≥300；命名门改零容忍（无类别豁免、无存量基线清单）；weights 五族目录下沉：`torch.rs→torch/mod.rs`+`torch_tensor→torch/tensor`+`torch_zip→torch/zip`，`gguf/ptq/safetensors/seg` 同族下沉，6 个下划线文件名清零；工具链固定 1.100.0 | 全仓 check 通过；nn 529+4、engine 100+2、serve 197+3、weights 247+16+3 绿；tools/weights clippy `-D warnings` 零告警；fmt 干净；静态门下限红账清零，剩余 train 超上限 / fuzz Call / shard Ccn 为既存并发股红账 |
 
 ## 6. 风险与红线
 
@@ -247,7 +248,7 @@ tensor   1,990 行 /  7 文件 / pub  13 / 最大 tensor.rs:730        布局算
 - **无第二真相**：算子身份以 prof 目录为唯一出处；能力表、注册表、类型化 API 一张清单派生；不引入第二张名字表或运行时字符串分派。
 - **无第二套后端名**：运行时基座只认 `Executor`；`shard::backend::Backend` 保留机制缝角色（ADR 0051 §1）。
 - **依赖方向**：device → engine 单边；不反向依赖 serve / nn；越界 FFI 仍收敛在 ADR 0035 白名单岛。
-- **密度预算只收不放宽**：>600 否决、>400 拆案；阈值漂移按反模式 #1 处理。
+- **密度预算只收不放宽**：>899 否决、>400 拆案；生产文件不足 300 行不允许单开（薄入口 lib/main/mod 与 fuzz 垫片除外）；阈值漂移按反模式 #1 处理。
 
 ## 7. 动工前待办（R0 出口）
 
