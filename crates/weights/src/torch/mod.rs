@@ -471,26 +471,24 @@ fn append(vm: &mut Vm<'_>, op: u8) -> Result<()> {
     }
 }
 
-#[path = "torch_tensor.rs"]
-pub(crate) mod torch_tensor;
+pub(crate) mod tensor;
 
-pub(crate) use torch_tensor::{as_tuple, into_str, storage_handle, tensor_of};
+pub(crate) use tensor::{as_tuple, into_str, storage_handle, tensor_of};
 
-#[path = "torch_zip.rs"]
-pub(crate) mod torch_zip;
+pub(crate) mod zip;
 
-pub(crate) use torch_zip::Zip;
+pub(crate) use zip::Zip;
 #[cfg(test)]
-pub(crate) use torch_zip::zip64_extra;
+pub(crate) use zip::zip64_extra;
 
 #[cfg(test)]
-#[path = "../tests/torch.rs"]
+#[path = "../../tests/torch.rs"]
 mod tests;
 
 #[cfg(test)]
-#[path = "../tests/pickle.rs"]
+#[path = "../../tests/pickle.rs"]
 mod pickle_tests;
 
 #[cfg(test)]
-#[path = "../tests/zip.rs"]
+#[path = "../../tests/zip.rs"]
 mod zip_tests;
