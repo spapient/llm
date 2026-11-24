@@ -4,7 +4,7 @@
 //! 这些类型只描述一次图提交与设备标签，不认识算子档案、设备厂商句柄或 CPU 内核表；
 //! 设备后端在 [`crate::runtime`] 岛内实现本缝，上层编排只按名字与几何提交节点。
 
-use diagnostic::Result;
+use diagnostic::{Code, Error, Result};
 
 /// 定长类型化闭集标量槽（D9 / ADR 0043）：首批仅 rope 解码位置。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
