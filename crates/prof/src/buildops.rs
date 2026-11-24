@@ -182,7 +182,7 @@ fn substitute_dt(table: &mut toml::Table, tier: &str) {
 }
 
 /// 把 `dt` 数组里的字符串精度 token 整体换成本档；非字符串项原样保留。
-fn replace_dt_tokens(arr: &mut Vec<toml::Value>, tier: &str) {
+fn replace_dt_tokens(arr: &mut [toml::Value], tier: &str) {
     for item in arr.iter_mut() {
         if item.as_str().is_some() {
             *item = toml::Value::String(tier.to_string());
