@@ -59,7 +59,7 @@ pub(crate) fn dict_payload(w: &[f32]) -> Option<Vec<u8>> {
         return None; // 全唯一，字典表 + 全宽索引必然大于 raw，无收益。
     }
     let width = idx_width(values.len());
-    let indices: HashMap<u32, u32> = values
+    let idxs: HashMap<u32, u32> = values
         .iter()
         .enumerate()
         .map(|(id, &bits)| (bits, id as u32))
@@ -72,7 +72,7 @@ pub(crate) fn dict_payload(w: &[f32]) -> Option<Vec<u8>> {
     }
     // 定宽小端：哈希查询均摊 O(1)，索引仍取排序表序号，输出与二分实现逐位一致。
     for value in w {
-        let id = indices.get(&value.to_bits()).copied()?;
+        let id = idxs.get(&value.to_bits()).copied()?;
         payload.extend_from_slice(&id.to_le_bytes()[..width]);
     }
     Some(pack_bytes(&payload))

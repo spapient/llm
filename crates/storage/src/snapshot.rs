@@ -433,15 +433,19 @@ fn decode_facts(cursor: &mut Cursor<'_>) -> Result<Facts> {
     for (slot, label) in counts.iter_mut().zip(labels) {
         *slot = cursor.count(label)?;
     }
-    let fingerprint = u64::from_le_bytes(
-        cursor
-            .take(8)?
-            .try_into()
-            .map_err(|_| codec::invalid("配置指纹必须是 8 字节小端整数"))?,
-    );
+    let fingerprint = decode_fingerprint(cursor)?;
     Facts::new(step, counts[0], counts[1], counts[2], counts[3])
         .map(|facts| facts.with_config_fingerprint(fingerprint))
         .map_err(error_ctx)
+}
+
+/// 定宽配置指纹独立解码，避免字节转换与恢复事实校验纠缠。
+fn decode_fingerprint(cursor: &mut Cursor<'_>) -> Result<u64> {
+    let bytes = cursor.take(8)?;
+    let bytes = bytes
+        .try_into()
+        .map_err(|_| codec::invalid("配置指纹必须是 8 字节小端整数"))?;
+    Ok(u64::from_le_bytes(bytes))
 }
 
 /// 条目表构造失败挂上解码上下文。

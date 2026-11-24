@@ -40,7 +40,7 @@ fn build_train_spec(
     train::TrainSpec::new(session, spec.loader).map_err(|error| error.with("llm train"))
 }
 
-/// 显式训练选项按字段解析：学习率 / 裁剪为 `f32`，warmup / 步数为 `u64`，累积窗为 `u32`。
+/// 显式训练选项按字段解析：学习率 / 裁剪为 `f32`，无符号档位统一在整数入口解析。
 fn parse_overrides(
     lr: Option<&str>,
     clip: Option<&str>,
@@ -48,13 +48,29 @@ fn parse_overrides(
     steps: Option<&str>,
     accumulation: Option<&str>,
 ) -> Result<train::TrainOverrides> {
+    let learning_rate = parse_optional_f32(lr, "--lr")?;
+    let clip_norm = parse_optional_f32(clip, "--clip")?;
+    let (warmup_steps, max_steps, accumulation) = parse_train_uints(warmup, steps, accumulation)?;
     Ok(train::TrainOverrides {
-        learning_rate: parse_optional_f32(lr, "--lr")?,
-        clip_norm: parse_optional_f32(clip, "--clip")?,
-        warmup_steps: parse_optional_uint(warmup, "--warmup")?,
-        max_steps: parse_optional_uint(steps, "--steps")?,
-        accumulation: parse_optional_uint(accumulation, "--accumulation")?,
+        learning_rate,
+        warmup_steps,
+        max_steps,
+        clip_norm,
+        accumulation,
     })
+}
+
+/// 无符号档位：warmup / 步数是 `u64`，累积窗是 `u32`，类型随快照事实口径固定。
+fn parse_train_uints(
+    warmup: Option<&str>,
+    steps: Option<&str>,
+    accumulation: Option<&str>,
+) -> Result<(Option<u64>, Option<u64>, Option<u32>)> {
+    Ok((
+        parse_optional_uint(warmup, "--warmup")?,
+        parse_optional_uint(steps, "--steps")?,
+        parse_optional_uint(accumulation, "--accumulation")?,
+    ))
 }
 
 /// `--load`：从快照读出恢复事实、条目表、矩状态、累积窗口与权重绑定表并排版汇报。

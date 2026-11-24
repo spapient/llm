@@ -352,10 +352,10 @@ fn substitute_ctype(text: &str, tier: &str) -> String {
     }
     let mut out = String::with_capacity(text.len());
     let mut last = 0;
-    for (index, _) in text.match_indices("float") {
-        let end = index + "float".len();
-        if standalone(text, index, end) {
-            out.push_str(&text[last..index]);
+    for (idx, _) in text.match_indices("float") {
+        let end = idx + "float".len();
+        if standalone(text, idx, end) {
+            out.push_str(&text[last..idx]);
             out.push_str(token);
             last = end;
         }
@@ -369,9 +369,9 @@ fn is_ident(character: char) -> bool {
     character.is_alphanumeric() || character == '_'
 }
 
-/// `float` 在 `index` 处是否为独立单词：前后都不接标识符字符。
-fn standalone(text: &str, index: usize, end: usize) -> bool {
-    let before = index == 0 || !text[..index].chars().next_back().is_some_and(is_ident);
+/// `float` 在 `idx` 处是否为独立单词：前后都不接标识符字符。
+fn standalone(text: &str, idx: usize, end: usize) -> bool {
+    let before = idx == 0 || !text[..idx].chars().next_back().is_some_and(is_ident);
     let after = end >= text.len() || !text[end..].chars().next().is_some_and(is_ident);
     before && after
 }

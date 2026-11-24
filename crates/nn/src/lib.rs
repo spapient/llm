@@ -56,7 +56,6 @@ extern crate self as nn;
 pub use annotation::spec;
 
 mod attention;
-mod config;
 mod contract;
 mod declare;
 mod engram;
@@ -120,11 +119,11 @@ mod stack;
 pub use attention::{Attention, AttentionAlgo, AttentionBlock, DecodeAttention, LatentAttention};
 
 #[doc(inline)]
-pub use config::{LayerConfig, ModelConfig};
-#[doc(inline)]
 pub use contract::{BoundsResult, Contract, ContractSpec, Linear};
 #[doc(inline)]
 pub use declare::{Bounds, OpLayer};
+#[doc(inline)]
+pub use stack::{LayerConfig, ModelConfig};
 #[doc(inline)]
 pub use weight::WeightFormat;
 

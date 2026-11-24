@@ -806,6 +806,10 @@ fn matrix_of(shape: &Shape) -> Option<(usize, usize)> {
 #[path = "../tests/session_tests.rs"]
 mod tests;
 
+#[cfg(test)]
+#[path = "../tests/session/config.rs"]
+mod config_tests;
+
 // ---- 分布式训练编排：拓扑绑定 + 梯度同步后端，配置化挂到训练会话上 ----
 
 /// 分布式编排的诊断站点（站名保持 `"train::Distributed"`，与 [`SITE`] 区分）。

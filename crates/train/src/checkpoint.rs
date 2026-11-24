@@ -145,33 +145,9 @@ impl TrainSpec {
         hash_config(&mut hash, &self.session);
         hash.number(self.loader.rows as u64);
         hash.number(self.loader.cols as u64);
-        match &self.loader.sampling {
-            crate::Sampling::Sequential => hash.number(0),
-            crate::Sampling::Shuffle { seed } => {
-                hash.number(1);
-                hash.number(*seed);
-            }
-            crate::Sampling::Weighted { weights, seed } => {
-                hash.number(2);
-                hash.number(*seed);
-                hash.number(weights.len() as u64);
-                for &weight in weights {
-                    hash.number(weight.to_bits().into());
-                }
-            }
-        }
+        hash_sampling(&mut hash, &self.loader.sampling);
         hash.text(self.objective.as_str());
-        match self.objective {
-            ObjectiveConfig::Classify => {}
-            ObjectiveConfig::Distill(config) => {
-                hash.number(config.temperature().to_bits().into());
-                hash.number(config.alpha().to_bits().into());
-            }
-            ObjectiveConfig::Grpo(config) => {
-                hash.number(config.epsilon().to_bits().into());
-                hash.number(config.beta().to_bits().into());
-            }
-        }
+        hash_objective(&mut hash, &self.objective);
         hash.finish()
     }
 }
@@ -199,6 +175,40 @@ fn hash_config(hash: &mut StableHash, config: &TrainConfig) {
     hash.number(config.accumulation.into());
     hash.text(config.anneal.as_str());
     hash.number(config.min_ratio.to_bits().into());
+}
+
+/// 数据采样策略按变体编号、种子及权重原位哈希，保持指纹输入顺序稳定。
+fn hash_sampling(hash: &mut StableHash, sampling: &crate::Sampling) {
+    match sampling {
+        crate::Sampling::Sequential => hash.number(0),
+        crate::Sampling::Shuffle { seed } => {
+            hash.number(1);
+            hash.number(*seed);
+        }
+        crate::Sampling::Weighted { weights, seed } => {
+            hash.number(2);
+            hash.number(*seed);
+            hash.number(weights.len() as u64);
+            for &weight in weights {
+                hash.number(weight.to_bits().into());
+            }
+        }
+    }
+}
+
+/// 静态目标的名称已先行写入，这里只追加各变体自己的数值参数。
+fn hash_objective(hash: &mut StableHash, objective: &ObjectiveConfig) {
+    match objective {
+        ObjectiveConfig::Classify => {}
+        ObjectiveConfig::Distill(config) => {
+            hash.number(config.temperature().to_bits().into());
+            hash.number(config.alpha().to_bits().into());
+        }
+        ObjectiveConfig::Grpo(config) => {
+            hash.number(config.epsilon().to_bits().into());
+            hash.number(config.beta().to_bits().into());
+        }
+    }
 }
 
 /// 格式固定的小端 FNV-1a：不依赖 `DefaultHasher` 的实现细节。
@@ -329,7 +339,16 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
     ///
     /// 矩表/累积表槽位数或槽内长度不符、ties 编号越界或两端长度不符，一律 [`Code::Invalid`]。
     pub fn restore_snapshot(&mut self, snapshot: &Snapshot) -> Result<()> {
-        let saved = snapshot.config_fingerprint();
+        self.check_config_fingerprint(snapshot.config_fingerprint())?;
+        self.restore_moments(snapshot.moments())?;
+        self.restore_accum(snapshot.accum())?;
+        self.restore_ties(snapshot.ties())?;
+        self.step = snapshot.facts().step();
+        Ok(())
+    }
+
+    /// 旧快照的零指纹表示未声明；非零指纹必须先于任何状态写入完成校验。
+    fn check_config_fingerprint(&self, saved: u64) -> Result<()> {
         if saved != 0 && saved != self.config_fingerprint {
             return Err(Error::new(
                 Code::Invalid,
@@ -340,10 +359,6 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
             )
             .with(SITE));
         }
-        self.restore_moments(snapshot.moments())?;
-        self.restore_accum(snapshot.accum())?;
-        self.restore_ties(snapshot.ties())?;
-        self.step = snapshot.facts().step();
         Ok(())
     }
 

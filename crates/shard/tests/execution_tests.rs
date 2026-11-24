@@ -219,7 +219,7 @@ fn configured_conv2d_supports_rectangular_strided_batches() {
         name: "weight",
         values: prof::model::Values::F32(
             (0..2 * 3 * 2 * 2)
-                .map(|index| 0.05 + (index % 7) as f32 * 0.03)
+                .map(|idx| 0.05 + (idx % 7) as f32 * 0.03)
                 .collect(),
         ),
     });
