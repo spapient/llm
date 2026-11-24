@@ -128,9 +128,7 @@ fn run_entry(entry: &Entry) {
         .iter()
         .zip(&dout)
         .map(|(&value, &upstream)| {
-            let forward = (entry.f)(value);
             let central = ((entry.f)(value + STEP) - (entry.f)(value - STEP)) / (2.0 * STEP);
-            let _ = forward;
             upstream * central
         })
         .collect();
