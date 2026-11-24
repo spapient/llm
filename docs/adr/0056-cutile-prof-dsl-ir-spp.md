@@ -1,7 +1,8 @@
 # 0056：prof 真内核与 cutile DSL/IR——10 分标尺裁决、可闭合切片与冻结边界
 
 - 状态：已采纳（已闭合 `einsum` 减码拆分切片 + cutile typed IR 表驱动一元闭集与发射模块拆分；
-  typed IR 元素档贯通、跨算子融合、设备执行与 CUDA 真机证据列开放项 / PARTIAL，不以未测能力签发满分）
+  CUDA prof 见证层已在 win A3000 真机对拍闭合；typed IR 元素档贯通、跨算子融合、typed IR 核接设备
+  执行与 roofline 列开放项 / PARTIAL，不以未测能力签发满分）
 - 日期：2026-11-24
 - 相关：[0017](0017-kernel-ast-and-ir-freeze.md)（单 kernel AST 与运行时张量 IR 冻结）、
   [0054](0054-operator-coverage-spp.md)（骨架元素档 `K` 分层与贯通硬点）、
