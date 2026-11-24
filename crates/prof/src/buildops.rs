@@ -39,15 +39,18 @@ fn declarations(manifest: &Path) -> diagnostic::Result<(String, String, String)>
     ))
 }
 
-/// 逐文件扫描：`(算子名, 模板 stem, 表字面量行)` 三份同序清单，展开 `base` 继承后生成。
+/// 逐文件扫描：`(算子名, 模板 stem, 表字面量行)` 三份同序清单，展开 `base` 继承与 `tiers` 档后生成。
+///
+/// 一份档案声明 `[op].tiers = ["f32", "f16", …]` 时，按档展开成多个算子名 `<算法>_<档>`，
+/// 共享同一份模板 stem，`dt` 叶子与 `[op].name` 随档替换——「加一档=加一行」的数据驱动档维度。
+/// 无 `tiers` 的档案逐字走旧路径（名=文件名）。展开后全体按名升序排序，二分查找的「有序」
+/// 不变量因此与档展开兼容（注册表与目录仍同序）。
 fn scan(
     ops: &Path,
     manifest: &Path,
     files: &[PathBuf],
 ) -> diagnostic::Result<(Vec<String>, Vec<String>, String)> {
-    let mut names = Vec::new();
-    let mut stems = Vec::new();
-    let mut rows = String::new();
+    let mut entries: Vec<(String, String, String)> = Vec::new();
     for path in files {
         println!(
             "cargo:rerun-if-changed={}",
@@ -55,15 +58,81 @@ fn scan(
         );
         let name = file_stem(path);
         let table = resolve(ops, buildgen::read(path)?)?;
-        stems.push(stem_of(&table, name, ops));
-        let _ = writeln!(
-            rows,
-            "            (\"{name}\", {}),",
-            buildgen::emit(&table, name)?
-        );
-        names.push(name.to_string());
+        let stem = stem_of(&table, name, ops);
+        for (exp_name, exp_table) in expand_tiers(name, &table)? {
+            let row = format!(
+                "            (\"{exp_name}\", {}),",
+                buildgen::emit(&exp_table, &exp_name)?
+            );
+            entries.push((exp_name, stem.clone(), row));
+        }
+    }
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut names = Vec::new();
+    let mut stems = Vec::new();
+    let mut rows = String::new();
+    for (name, stem, row) in entries {
+        names.push(name);
+        stems.push(stem);
+        let _ = writeln!(rows, "{row}");
     }
     Ok((names, stems, rows))
+}
+
+/// 按 `[op].tiers` 把一份算法档案展开成逐档算子表；无 `tiers` 时原样返回单条（名=文件名）。
+///
+/// 档名取 `<算法>_<档>`：算法名是 `[op].name`（缺省文件名）去掉既有 `_<档>` 后缀。每档把
+/// `[op].name` 设为展开名、所有 `dt` 数组里的精度 token 替换为本档，其余声明逐字共享。
+fn expand_tiers(
+    name: &str,
+    table: &toml::Table,
+) -> diagnostic::Result<Vec<(String, toml::Table)>> {
+    let tiers = table
+        .get("op")
+        .and_then(|value| value.as_table())
+        .and_then(|op| op.get("tiers"))
+        .and_then(|value| value.as_array());
+    let Some(tiers) = tiers else {
+        return Ok(vec![(name.to_string(), table.clone())]);
+    };
+    let algo = table
+        .get("op")
+        .and_then(|value| value.as_table())
+        .and_then(|op| op.get("name"))
+        .and_then(|value| value.as_str())
+        .unwrap_or(name);
+    let algo = algo.rsplit_once('_').map_or(algo, |(head, _)| head);
+    let mut out = Vec::new();
+    for tier in tiers {
+        let tier = tier.as_str().unwrap_or_else(|| {
+            fail(format!("`{name}.toml` 的 tiers 元素必须是字符串档名"))
+        });
+        let mut expanded = table.clone();
+        substitute_dt(&mut expanded, tier);
+        if let Some(op) = expanded.get_mut("op").and_then(|v| v.as_table_mut()) {
+            op.remove("tiers");
+            op.insert("name".into(), toml::Value::String(format!("{algo}_{tier}")));
+        }
+        out.push((format!("{algo}_{tier}"), expanded));
+    }
+    Ok(out)
+}
+
+/// 递归把表里所有 `dt` 数组的精度 token 替换为 `tier`（`[needs].*.dt` 等叶子）。
+fn substitute_dt(table: &mut toml::Table, tier: &str) {
+    for (key, value) in table.iter_mut() {
+        match value {
+            toml::Value::Table(inner) => substitute_dt(inner, tier),
+            toml::Value::Array(arr) if key == "dt" => {
+                for item in arr.iter_mut() {
+                    if item.as_str().is_some() {
+                        *item = toml::Value::String(tier.to_string());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// 文件名 stem；不是合法 UTF-8 就构建期失败（生成代码里要写进 `&'static str`）。
