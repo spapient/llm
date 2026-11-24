@@ -13,7 +13,7 @@
 //! 自己。`weights::Header` 实现 `Manifest`，于是 `weights::Snapshot` 只是
 //! `snapshot::Snapshot<Header>` 的别名——`storage` 不必反向依赖 `weights`，成环的边不存在。
 //!
-//! `mmap` feature 只在 **Unix** 目标上生效：`Mmap` 是 `mmap(2)` 的薄封装（见 [`mmap`] 模块，
+//! `mmap` feature 只在 **Unix** 目标上生效：`Mmap` 是 `mmap(2)` 的薄封装（见 `mmap` 模块，
 //! 全仓唯一 unsafe 岛），非 Unix 目标没有这套 FFI。其它目标上该 feature 是空操作、`Mmap`
 //! 不存在——这是刻意的取舍：用"整文件读入"冒充映射会让"不占内存"这个前提失真，而缺失的
 //! 类型在消费者那里是编译错误，不是静默降级。

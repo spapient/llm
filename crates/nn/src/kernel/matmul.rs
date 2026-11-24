@@ -21,7 +21,7 @@
 //! # 一副骨架，两档精度
 //!
 //! 收缩轴可变的 GEMM 有两档：[`Precision for f32`] 稠密（累加器 `f32`，对拍按 IEEE 容差）与
-//! [`Precision for i8`] 对称 int8（累加器 `i32`，对拍逐位相等，见 [`matmul_i8`]）。两者的分块遍历、
+//! [`Precision for i8`] 对称 int8（累加器 `i32`，对拍逐位相等，见 `matmul_i8`）。两者的分块遍历、
 //! 尺寸校验、轴表与生产形状全同，只差「元素类型 + 累加器 + 一次乘加」，因此骨架只写这一份、
 //! 按元素类型单态化——[`Precision`] 是那份差异的唯一出处。
 
@@ -90,7 +90,7 @@ pub const TN_K: usize = 256;
 
 /// 收缩轴可变 GEMM 的精度契约：两档只差元素类型、累加器与一次乘加。
 ///
-/// `Self` 是参与乘加的元素，收紧到 [`NumericElement`](tensor::NumericElement)：浮点与整数封闭分组，
+/// `Self` 是参与乘加的元素，收紧到 `NumericElement`：浮点与整数封闭分组，
 /// 布尔与打包 lane 不能进乘加族。打包量化权重仍走 `gemv::Element` 分派 trait，不在此域。
 pub trait Precision: Copy + NumericElement {
     /// 累加器与输出元素：`f32` 档就是 [`f32`]，`i8` 档是 [`i32`]（转回 f32 由注册侧做）。

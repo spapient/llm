@@ -15,7 +15,7 @@
 //!
 //! | 事实 | 落在哪 | 理由 |
 //! |---|---|---|
-//! | 权重元素类型、位宽、解包方式 | [`Format::Elem`] / [`FormulaOwner::OPERANDS`] / `forward` | 只有代码能表达，且必须进单态化 |
+//! | 权重元素类型、位宽、解包方式 | [`Format::Elem`] / `FormulaOwner::OPERANDS` / `forward` | 只有代码能表达，且必须进单态化 |
 //! | 稠密格式的分块宽度 | [`Dense`] 的 const 参数 | 它出现在最内层循环的 `chunks` 上，是真正的热路径常数 |
 //! | 量化格式的声明粒度 | [`Quantized`] 的 const 参数 | 它决定派生轴除数与样本里的标度个数（代价与样本，冷路径） |
 //! | 实际分组大小 | 运行时数据（`scales` 长度 / `gsz` 实参） | 模板本身就是 `int gsz` 的运行时参数，钉进类型会让训练侧按 8 元素分组的调用编译不过 |
@@ -88,7 +88,7 @@ mod packed_test_support {
 pub const GROUP: usize = 32;
 
 /// 生成一份「打包量化」GEMV 精度变体的完整公开面：`GROUP` 常量、`PackedRow` 标记、
-/// [`annotation::model`] 别名、`forward` 入口与测试挂载。`i2`/`i4` 只差一行 [`Row`]；
+/// [`annotation::model`] 别名、`forward` 入口与测试挂载。`i2`/`i4` 只差一行 `Row`；
 /// 新增一档打包精度加一次调用即可。
 #[macro_export]
 macro_rules! gemv_packed {
@@ -246,12 +246,12 @@ pub mod f32 {
             elem
         }
 
-        /// 稠密 `f32` 走 [`simd::elementwise`]：`WIDE` 条车道 × 独立累加链，整段乘加编译成向量指令。
+        /// 稠密 `f32` 走 `simd::elementwise`：`WIDE` 条车道 × 独立累加链，整段乘加编译成向量指令。
         fn dot(w_row: &[f32], x: &[f32]) -> f32 {
             super::simd::elementwise(w_row, x)
         }
 
-        /// 行并行：一份 `x` 段摊到 [`COLS`](super::simd::COLS) 行，解码阶段每 64 B 权重的取数
+        /// 行并行：一份 `x` 段摊到 `COLS` 行，解码阶段每 64 B 权重的取数
         /// 从单行版的 8 次降到 6 次，是 K9 从 40 GiB/s 抬到 66 GiB/s 的主因。
         fn dot_four(w: &[f32], x: &[f32], m: usize, out: &mut [f32]) {
             super::simd::elementwise_four(w, x, m, out)
@@ -373,7 +373,7 @@ pub mod i8 {
             f32::from(elem as i8)
         }
 
-        /// 对称 `int8` 走 [`simd::elementwise`]：位模式原样重解释成 `i8` 再展宽，零点 0 无需偏移。
+        /// 对称 `int8` 走 `simd::elementwise`：位模式原样重解释成 `i8` 再展宽，零点 0 无需偏移。
         fn dot(w_row: &[u8], x: &[f32]) -> f32 {
             super::simd::elementwise(w_row, x)
         }

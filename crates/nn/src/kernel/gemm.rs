@@ -169,7 +169,7 @@ pub fn sample<G: Gemm>(m: usize, n: usize) -> Sample {
     }
 }
 
-/// 打包配置：取样/长度/点积共用一行 [`Row`](crate::quant::Row) 的位宽事实。
+/// 打包配置：取样/长度/点积共用一行 `Row` 的位宽事实。
 pub struct Conf {
     /// 每字节码数。
     pub cpb: usize,

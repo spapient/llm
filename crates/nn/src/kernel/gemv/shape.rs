@@ -22,7 +22,7 @@ pub fn project_shape(m: usize, n: usize) -> Result<ShapeCtx, Error> {
     ShapeCtx::new([('m', m), ('n', n)])
 }
 
-/// 标量代价：完全由 [`FormulaOwner::EXPR`] 与操作数位宽推出，本函数不含任何流量常数。
+/// 标量代价：完全由 `FormulaOwner::EXPR` 与操作数位宽推出，本函数不含任何流量常数。
 ///
 /// 调用方只给基本轴；派生轴由格式自己声明——分组是算子语义，不是每个层都该抄一遍的常数。
 ///

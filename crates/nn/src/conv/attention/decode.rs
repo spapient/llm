@@ -83,7 +83,7 @@ mod kernel {
         decode(q, k, v, out, q_rows, hist, d, Mode::Naive)
     }
 
-    /// 单头 flash 内核（裸切片骨架）：online softmax 单遍扫历史 K/V，写进 `out`。口径同 [`single_naive`]。
+    /// 单头 flash 内核（裸切片骨架）：online softmax 单遍扫历史 K/V，写进 `out`。口径同 `single_naive`。
     pub(crate) fn single_flash(
         q: &[f32],
         k: &[f32],
@@ -96,7 +96,7 @@ mod kernel {
         decode(q, k, v, out, q_rows, hist, d, Mode::Online)
     }
 
-    /// 二维视图公共出口：朴素 decode，几何从视图形状取，解包后走 [`single_naive`]。
+    /// 二维视图公共出口：朴素 decode，几何从视图形状取，解包后走 `single_naive`。
     pub fn decode_forward(
         q: tensor::View<'_, f32>,
         k: tensor::View<'_, f32>,
@@ -123,7 +123,7 @@ mod kernel {
         )
     }
 
-    /// 二维视图公共出口：flash decode，口径同 [`decode_forward`]，走 [`single_flash`]。
+    /// 二维视图公共出口：flash decode，口径同 [`decode_forward`]，走 `single_flash`。
     pub fn decode_flash_forward(
         q: tensor::View<'_, f32>,
         k: tensor::View<'_, f32>,
@@ -239,7 +239,7 @@ mod kernel {
         decode_flash_forward_heads,
         decode_heads,
         "多头朴素 decode 内核：头数由 `q` 长度派生，布局同 `decode_heads`，头内走 [`decode_forward`]。\n\n# Errors\n\n同 `decode_heads`。",
-        "多头 flash decode 内核：头数由 `q` 长度派生，布局同 `decode_heads`，头内走 [`decode_flash_forward`]。\n\n# Errors\n\n同 `decode_heads`。",
+        "多头 flash decode 内核：头数由 `q` 长度派生，布局同 `decode_heads`，头内走 `decode_flash_forward`。\n\n# Errors\n\n同 `decode_heads`。",
         q: &[f32],
         k: &[f32],
         v: &[f32],
@@ -317,7 +317,7 @@ mod kernel {
         decode_flash_forward_batch,
         decode_batch,
         "批量朴素 decode 内核：段内走 [`decode_forward`]，布局同 `decode_batch`。\n\n# Errors\n\n同 `decode_batch`。",
-        "批量 flash decode 内核：段内走 [`decode_flash_forward`]，布局同 `decode_batch`。\n\n# Errors\n\n同 `decode_batch`。",
+        "批量 flash decode 内核：段内走 `decode_flash_forward`，布局同 `decode_batch`。\n\n# Errors\n\n同 `decode_batch`。",
         q: &[f32],
         k: &[f32],
         v: &[f32],
@@ -408,7 +408,7 @@ mod kernel {
         decode_flash_forward_batch_var,
         decode_batch_var,
         "变长批量朴素 decode：段内走 [`decode_forward`]，布局同 `decode_batch_var`。\n\n# Errors\n\n同 `decode_batch_var`。",
-        "变长批量 flash decode：段内走 [`decode_flash_forward`]，布局同 `decode_batch_var`。\n\n# Errors\n\n同 `decode_batch_var`。",
+        "变长批量 flash decode：段内走 `decode_flash_forward`，布局同 `decode_batch_var`。\n\n# Errors\n\n同 `decode_batch_var`。",
         q: &[f32],
         k: &[f32],
         v: &[f32],
@@ -527,7 +527,7 @@ pub mod semantics {
     }
 
     /// Flash 参考：flash 只是同一数学的**优化**（online softmax 单遍扫 K/V），语义锚仍取朴素定义。
-    /// 指回 [`decode_flash_forward`] 会让"内核对不对"与"参考对不对"落在同一行代码上（F6 自我对拍）。
+    /// 指回 `decode_flash_forward` 会让"内核对不对"与"参考对不对"落在同一行代码上（F6 自我对拍）。
     pub fn decode_flash_reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
         reference(sample)
     }
@@ -540,7 +540,7 @@ pub mod semantics {
     pub type DecodeAttentionF32 = DecodeAttention;
 
     /// Flash decode 注意力标记类型：形状、样本、代价与朴素 [`DecodeAttention`] 共用，语义锚也共用朴素
-    /// 定义（[`decode_flash_reference`] 转调 [`reference`]）；两者差在**内核**，不在数学。
+    /// 定义（[`decode_flash_reference`] 转调 `reference`）；两者差在**内核**，不在数学。
     /// `const = "DECODE_FLASH_MODEL"` 让两个算子同模块各持一份语义表。
     pub struct DecodeFlashAttention;
 

@@ -253,7 +253,7 @@ pub trait Plain: FormulaOwner {
 
     /// 一段权重与输入的逐元素点积：默认逐元素标量推进。
     ///
-    /// `f32` 与对称 `int8` 都覆盖成 [`simd::elementwise`] 的向量通道——这里是唯一一处
+    /// `f32` 与对称 `int8` 都覆盖成 `simd::elementwise` 的向量通道——这里是唯一一处
     /// 配置能自己决定"用哪台机器算这一行"，其余算术全部锁在骨架里。
     fn dot(w_row: &[Self::Elem], x: &[f32]) -> f32 {
         w_row
@@ -263,10 +263,10 @@ pub trait Plain: FormulaOwner {
             .sum()
     }
 
-    /// [`COLS`](super::simd::COLS) 行并行点积：`w` 是连续 [`COLS`](super::simd::COLS) 条行、
-    /// 每行 `m` 个元素，结果写进 `out` 的 [`COLS`](super::simd::COLS) 个槽。
+    /// `COLS` 行并行点积：`w` 是连续 `COLS` 条行、
+    /// 每行 `m` 个元素，结果写进 `out` 的 `COLS` 个槽。
     ///
-    /// 默认逐行转发 [`Plain::dot`]；稠密 `f32` 覆盖成 [`simd::elementwise_four`]，
+    /// 默认逐行转发 [`Plain::dot`]；稠密 `f32` 覆盖成 `simd::elementwise_four`，
     /// 一份 `x` 段摊到多行。行数由 `COLS` 编译期定死，没有运行期分支。
     fn dot_four(w: &[Self::Elem], x: &[f32], m: usize, out: &mut [f32]) {
         for (r, o) in out.iter_mut().enumerate() {

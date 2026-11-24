@@ -134,7 +134,7 @@ pub(crate) struct ScaledRow {
     pub row: usize,
 }
 
-/// 行批逐元素入口：按配置选择带标度 / 无标度两条骨架，与 [`Format::forward`] 同一分叉。
+/// 行批逐元素入口：按配置选择带标度 / 无标度两条骨架，与 `Format::forward` 同一分叉。
 pub fn forward_plain_batch<C: Plain>(
     x: &[f32],
     weights: &[C::Elem],

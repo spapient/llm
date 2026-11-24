@@ -55,7 +55,7 @@ pub type ViewMut<'a, K> = Tensor<&'a mut [K], Vec<usize>, K>;
 ///
 /// 编译期秩与借用存储在装配边界 downgrade 成这一形态；设备后端只认这一张量类型进出，
 /// 不再区分视图来自调用方缓冲还是自持分配。同步取出数据走 [`Tensor::to_vec`] /
-/// [`DynTensor::into_vec`]；异步出口在执行缝侧接流，本层不持有设备句柄。
+/// `into_vec`；异步出口在执行缝侧接流，本层不持有设备句柄。
 pub type DynTensor<K> = Tensor<Owned<K>, Vec<usize>, K>;
 
 impl<'a, K: Element> View<'a, K> {

@@ -2,8 +2,8 @@
 //!
 //! 这是「能算一块 8×8 的内核」的最小单位，**不含扫描骨架**：面板怎么切、残列怎么收、权重怎么寻址
 //! 都是 `nn` 的 GEMM 骨架职责，本文件只回答「给一块打包好的 8×8，把累加器算出来写回」。
-//! 由 `nn` 的 `kernel_fast` 经 [`Tile`]/[`micro_packed`] 调用，由测量容器经 [`port_fma`]/
-//! [`port_fma_block`] 计时（`bench` 特性），三者共用同一份瓦片体 [`fma_step`]。
+//! 由 `nn` 的 `kernel_fast` 经 `Tile`/`micro_packed` 调用，由测量容器经 `port_fma`/
+//! `port_fma_block` 计时（`bench` 特性），三者共用同一份瓦片体 `fma_step`。
 
 use super::f32::{MR, NR};
 
@@ -51,7 +51,7 @@ pub fn micro_packed(panel: &[f32], b: &[f32], out: &mut [f32], tile: Tile) {
 
 /// 一个收缩步的 8×8 瓦片体：4 条 `vld1q` 取数 + 16 条 lane-indexed FMA。
 ///
-/// 生产微内核 [`micro_packed`] 与取数受限端口探针 [`fma_block_rounds`] 共用**这一份**——
+/// 生产微内核 `micro_packed` 与取数受限端口探针 [`fma_block_rounds`] 共用**这一份**——
 /// 探针的全部意义是「与生产逐指令一致」，两份写法必然漂移（N5）。`pp` 是 A 面板每步
 /// `MR` 个 f32、`bp` 是 B 面板每步 `NR` 个 f32，两者步距都是 8 即 32 字节。
 #[cfg(target_arch = "aarch64")]

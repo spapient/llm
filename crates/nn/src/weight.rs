@@ -50,13 +50,13 @@ const FORMATS: &[(DType, WeightFormat)] = &[
 ];
 
 impl WeightFormat {
-    /// 对称 int2 的默认格式：32 元素分组（与 int4 共用内核的 group 声明档），即 [`Linear::I2`] 的输入格式。
+    /// 对称 int2 的默认格式：32 元素分组（与 int4 共用内核的 group 声明档），即 `Linear::I2` 的输入格式。
     pub const INT2: Self = Self::Int2 { group: 32 };
 
-    /// 量化侧的默认格式：int4 + 32 元素分组，即 [`Linear::OP`] 的输入格式。
+    /// 量化侧的默认格式：int4 + 32 元素分组，即 `Linear::OP` 的输入格式。
     pub const INT4: Self = Self::Int4 { group: 32 };
 
-    /// 对称 int8 的默认格式：32 元素分组，即 [`Linear::I8`] 的输入格式。
+    /// 对称 int8 的默认格式：32 元素分组，即 `Linear::I8` 的输入格式。
     pub const INT8: Self = Self::Int8 { group: 32 };
 
     /// 由权重的元素类型推出格式：查 `FORMATS` 的那一个方向。

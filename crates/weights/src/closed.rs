@@ -19,14 +19,14 @@ macro_rules! closed_enum {
             )+
         }
     ) => {
-        closed_enum!(@def
+        closed_enum!(@str_only
             $(#[$meta])*
             $vis enum $name {
                 $( $(#[$variant_meta])* $variant = $code, )+
             }
+            { $( $variant => $sname, )+ }
         );
         closed_enum!(@from_code $name { $( $code => $variant, )+ });
-        closed_enum!(@as_str $name { $( $variant => $sname, )+ });
     };
 
     // 无短名：只有枚举与 from_code。
@@ -100,6 +100,24 @@ macro_rules! closed_enum {
             }
         }
     };
+
+    // —— 内部臂：只带短名（枚举定义 + as_str），不带 from_code；供外层两个臂共用 ——
+    (
+        @str_only
+        $(#[$meta:meta])*
+        $vis:vis enum $name:ident {
+            $( $(#[$variant_meta:meta])* $variant:ident = $code:literal, )+
+        }
+        { $( $vs:ident => $sname:literal, )+ }
+    ) => {
+        closed_enum!(@def
+            $(#[$meta])*
+            $vis enum $name {
+                $( $(#[$variant_meta])* $variant = $code, )+
+            }
+        );
+        closed_enum!(@as_str $name { $( $vs => $sname, )+ });
+    };
 }
 
 /// 只带短名的闭集枚举：没有线上数值码，只有账本/文本里的字符串写法。
@@ -115,12 +133,12 @@ macro_rules! named_enum {
             )+
         }
     ) => {
-        closed_enum!(@def
+        closed_enum!(@str_only
             $(#[$meta])*
             $vis enum $name {
                 $( $(#[$variant_meta])* $variant = $code, )+
             }
+            { $( $variant => $sname, )+ }
         );
-        closed_enum!(@as_str $name { $( $variant => $sname, )+ });
     };
 }

@@ -58,7 +58,7 @@ pub struct ContractSpec {
 }
 
 impl ContractSpec {
-    /// 校验并构造：`ops` 必须既存在于 [`prof::catalogue::all`]，又有 [`registry::model`] 的语义表。
+    /// 校验并构造：`ops` 必须既存在于 [`prof::catalogue::all`]，又有 `registry::model` 的语义表。
     ///
     /// `ops` 收 `impl Into<String>` 的任意可迭代物：字面量数组 `["gemv_i4"]` 与已拼好的
     /// `Vec<String>` 都能直接传，调用侧不必为一条静态名字写 `.to_string()`。
@@ -183,7 +183,7 @@ pub struct Linear {
 }
 
 impl Linear {
-    /// 默认编码（[`WeightFormat::INT4`]）对应的算子名。
+    /// 默认编码（`WeightFormat::INT4`）对应的算子名。
     pub const OP: &str = "gemv_i4";
 
     /// 稠密 f32 权重对应的算子名。
@@ -195,7 +195,7 @@ impl Linear {
     /// 对称 int2 权重对应的算子名。
     pub const I2: &str = "gemv_i2";
 
-    /// 由输入/输出宽度构造，按 int4 权重（[`WeightFormat::INT4`]）计价；两个宽度都必须非零。
+    /// 由输入/输出宽度构造，按 int4 权重（`WeightFormat::INT4`）计价；两个宽度都必须非零。
     pub fn new(name: impl Into<String>, in_features: usize, out_features: usize) -> Result<Self> {
         Self::with_format(name, crate::WeightFormat::INT4, in_features, out_features)
     }

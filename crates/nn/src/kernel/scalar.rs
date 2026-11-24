@@ -5,7 +5,7 @@ use tensor::FloatElement;
 
 /// 浮点标量闭集：`f32` / `f64` / `half::f16` / `half::bf16` 满足；`nn` 的脉冲 / 合成 / 决策头复用本 trait。
 ///
-/// 元素域收紧到 [`FloatElement`](tensor::FloatElement)：只有封闭浮点标量可进超越函数 / 浮点算术族，
+/// 元素域收紧到 `FloatElement`：只有封闭浮点标量可进超越函数 / 浮点算术族，
 /// 整数与布尔不在其列。
 pub trait Scalar:
     Copy

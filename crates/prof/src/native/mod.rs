@@ -1,13 +1,13 @@
 //! 主机原生微内核（`prof::native`）：设备无关的 CPU 高吞吐内核与它们的协商入口。
 //!
 //! `prof` 是抽象隔离层（DSL 侧）：它把「在什么设备上、用哪条微内核算一块 GEMM」收成
-//! 一张**编译期配置表** [`GEMM_KERNELS`] 加一个协商函数 [`gemm_negotiate`]。调用方（`nn` 的
+//! 一张**编译期配置表** `GEMM_KERNELS` 加一个协商函数 `gemm_negotiate`。调用方（`nn` 的
 //! GEMM 骨架、未来的 `cutile` tile DSL IR）只问一句「这块谁能算」，不必写任何
 //! `cfg(target_arch)` / `cfg(nightly)` / 特性探测——那些门全部收在本模块里。
 //!
 //! 目录布局照 `prof/src/nvidia/cvt.cu` 的形态：一个设备/通道一个专门文件
-//! ([`gemm8x8`] 是 NEON/AVX2/scalar 的 8×8 寄存器块，[`i8`] 是 aarch64 dotprod 4×4
-//! `sdot` 块，[`sme`] 是 Apple SME 16×64 ZA 外积)，本文件只放**公共方法**：暂存面板、
+//! (`gemm8x8` 是 NEON/AVX2/scalar 的 8×8 寄存器块，`i8` 是 aarch64 dotprod 4×4
+//! `sdot` 块，`sme` 是 Apple SME 16×64 ZA 外积)，本文件只放**公共方法**：暂存面板、
 //! 线程数、对齐，与那张协商表。
 
 use std::thread;
@@ -33,7 +33,7 @@ pub mod f32 {
     pub const KB: usize = 256;
 }
 
-/// i8 sdot 寄存器瓦片几何（4×4 块）：配置常量的单一事实源，瓦片本体在 [`i8`]。
+/// i8 sdot 寄存器瓦片几何（4×4 块）：配置常量的单一事实源，瓦片本体在 `i8`。
 pub mod i8_geo {
     /// 微内核行数：四行共享同一 B 向量，摊薄 B 加载。
     pub const MR: usize = 4;
@@ -114,7 +114,7 @@ pub struct Native {
 
 /// 可用的主机原生微内核表——**编译期配置**：哪一行存在由工具链与目标架构决定，调用方看不到 `cfg`。
 ///
-/// 目前只登记 SME 这一条「整铺大 GEMM」的专用通道；NEON/AVX2 8×8 是 [`gemm8x8`] 里恒在的兜底，
+/// 目前只登记 SME 这一条「整铺大 GEMM」的专用通道；NEON/AVX2 8×8 是 `gemm8x8` 里恒在的兜底，
 /// 不登记（它没有拒绝条件，`gemm_negotiate` 命中前先由它接单没有意义）。
 pub const GEMM_KERNELS: &[Native] = &[
     #[cfg(all(nightly, target_arch = "aarch64"))]
