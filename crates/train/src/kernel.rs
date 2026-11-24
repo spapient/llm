@@ -7,7 +7,6 @@ use nn::kernel_table;
 use storage::{LaneBuf, LaneView, LaneViewMut};
 use tensor::DType;
 
-#[path = "kernel_attention.rs"]
 pub(crate) mod attention;
 
 use attention::{

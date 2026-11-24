@@ -197,7 +197,7 @@ macro_rules! binary_f32 {
 
 #[cfg(test)]
 mod test_support {
-    include!("../tests/kernel_elementwise_test_support.rs");
+    include!("../../tests/kernel_elementwise_test_support.rs");
 }
 
 // 声明式算子表：同一副二元骨架的七个算子，每个算子一个 `pub mod` 保持 `nn::<name>::forward`

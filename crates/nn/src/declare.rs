@@ -5,7 +5,7 @@
 //! 去 [`registry`](crate::registry) 里查，`nn` 不认识除算子名以外的领域知识。
 //!
 //! 契约三件（[`Contract`] / [`ContractSpec`] / [`Linear`]）在 [`crate::contract`]，权重编码
-//! 在 [`crate::weight_format`]，本模块经 crate 根路径引用它们。
+//! 在 [`crate::weight`]，本模块经 crate 根路径引用它们。
 //!
 //! # 下界有三种状态，不是一个数
 //!

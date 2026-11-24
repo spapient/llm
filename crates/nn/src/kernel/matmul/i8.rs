@@ -168,5 +168,5 @@ fn deterministic_i8(len: usize, salt: u32) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    include!("../tests/kernel_matmul_i8_tests.rs");
+    include!("../../../tests/kernel_matmul_i8_tests.rs");
 }

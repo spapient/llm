@@ -387,7 +387,6 @@ impl Optimizer for Sgd {
     }
 }
 
-#[path = "optimizer_muon.rs"]
 pub(crate) mod muon;
 
 pub use muon::Muon;

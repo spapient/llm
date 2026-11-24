@@ -6,9 +6,7 @@ use std::thread;
 use diagnostic::{Code, Error, Result};
 use tensor::View;
 
-#[path = "kernel_fast_pack.rs"]
 mod pack;
-#[path = "kernel_fast_pool.rs"]
 mod pool;
 
 // 面板暂存池、线程数、对齐助手都是设备无关的公共件，本体单点住在 `cutile::native`，
@@ -24,7 +22,6 @@ use pool::{Bufs, Shape, pool, run_pooled};
 #[cfg(all(feature = "bench", nightly, target_arch = "aarch64"))]
 pub use cutile::native::sme::{port_mix, port_run};
 
-#[path = "kernel_fast_tn.rs"]
 mod tn;
 pub use tn::{MIN_ROWS, gemm_f32_tn};
 
@@ -282,9 +279,7 @@ fn sweep_columns(sweep: Sweep<'_>, out: &mut [f32], k0: usize, kb: usize, first:
     }
 }
 
-#[path = "kernel_fast_i8.rs"]
 mod i8;
-#[path = "kernel_fast_micro.rs"]
 mod micro;
 
 /// i8 `sdot` 端口峰值探针（K8 的分母），只在测量容器里导出；本体在 `cutile::native::i8`。
@@ -295,7 +290,6 @@ pub use cutile::native::i8::{
 
 /// 端口探针清单：哪几条指令路径可测，由这里统一回答（调用方不写 `cfg`）。
 #[cfg(feature = "bench")]
-#[path = "kernel_fast_probe.rs"]
 mod probe;
 #[cfg(feature = "bench")]
 pub use probe::{Probe, probes};
@@ -308,8 +302,8 @@ use micro::{Layout, Span, Sweep, edge};
 
 #[cfg(test)]
 mod tests {
-    include!("../tests/kernel_fast_tests.rs");
+    include!("../../tests/kernel_fast_tests.rs");
     // SME 对拍：参考算术在 nn，被测内核入口在 cutile::native::sme；仅 nightly + aarch64 编译。
     #[cfg(all(nightly, target_arch = "aarch64"))]
-    include!("../tests/kernel_sme_tests.rs");
+    include!("../../tests/kernel_sme_tests.rs");
 }

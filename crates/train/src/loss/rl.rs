@@ -227,5 +227,5 @@ pub fn grpo_loss(
 }
 
 #[cfg(test)]
-#[path = "../tests/rl_tests.rs"]
+#[path = "../../tests/rl_tests.rs"]
 mod rl_tests;

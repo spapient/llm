@@ -101,7 +101,7 @@ pub fn config() -> ProptestConfig {
 /// `1.0`，与"严格小于 `limit`"的契约不符，所以上界压到这里。
 const BELOW_ONE: f32 = 1.0 - f32::EPSILON / 2.0;
 
-/// 有界 squash：`limit · |v| / (1 + |v|)`，幅值压在 [`BELOW_ONE`]，再按 `v` 的符号还原。
+/// 有界 squash：`limit · |v| / (1 + |v|)`，幅值压在 BELOW_ONE，再按 `v` 的符号还原。
 ///
 /// 对**全部** `f32` 位模式都返回 `(−limit, limit)` 内的有限值：`±inf` 与 `NaN` 经
 /// `f32::min` 的"忽略 NaN"语义落回 `BELOW_ONE`，于是生成器不必先滤掉它们。
@@ -186,7 +186,7 @@ pub fn assert_exact(what: &str, got: &[f32], want: &[f32]) {
 /// 缺了后半个问题，`crate` 从有性质退化成没有性质的唯一症状是**没人发现**——
 /// 那正是手抄配置曾经造成过的静默变弱。
 ///
-/// 三条硬约束由 [`crate::prop_discipline`] 的双向覆盖门强制：台账与源码扫描必须逐成员一致、
+/// 三条硬约束由 prop_discipline 这个双向覆盖门强制：台账与源码扫描必须逐成员一致、
 /// 每条理由必须具体且互不相同、已登记缺口的数量有上限（否则"以后补"会变成永远不补的垃圾桶）。
 pub mod ledger {
     /// 一条"为什么这个成员不需要性质测试"的分类理由。

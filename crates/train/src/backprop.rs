@@ -8,15 +8,11 @@ use crate::kernel::{Kernel, same_str};
 use crate::pool::Bufs;
 mod formulas;
 use formulas::{
-    adaptive_pool, passthrough, mul, scale, sub, div,
-    exp, log, min, max, max_pool1d, max_pool2d,
-    silu, gelu, hard_sigmoid, instance_norm, interpolate, layer_norm,
-    leaky_relu, relu, sigmoid, tanh, reduce_sum, reduce_max,
-    softmax, gemv, group_norm, gemm, embed, rmsnorm,
-    rope, attention, latent_attention, avg_pool2d, batch_norm, conv2d,
-    decode_attention,
+    adaptive_pool, attention, avg_pool2d, batch_norm, conv2d, decode_attention, div, embed, exp,
+    gelu, gemm, gemv, group_norm, hard_sigmoid, instance_norm, interpolate, latent_attention,
+    layer_norm, leaky_relu, log, max, max_pool1d, max_pool2d, min, mul, passthrough, reduce_max,
+    reduce_sum, relu, rmsnorm, rope, scale, sigmoid, silu, softmax, sub, tanh,
 };
-
 
 /// 本模块诊断站点。
 pub(crate) const SITE: &str = "train::backprop";

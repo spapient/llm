@@ -59,19 +59,15 @@ macro_rules! scaled_grain {
     };
 }
 
-#[path = "kernel_gemv_format.rs"]
 mod format;
-#[path = "kernel_gemv_forward.rs"]
 mod forward;
-#[path = "kernel_gemv_packed.rs"]
 pub mod packed;
-#[path = "kernel_gemv_shape.rs"]
 mod shape;
 #[cfg(nightly)]
-#[path = "kernel_gemv_simd_nightly.rs"]
+#[path = "gemv/simd/nightly.rs"]
 mod simd;
 #[cfg(not(nightly))]
-#[path = "kernel_gemv_simd_stable.rs"]
+#[path = "gemv/simd/stable.rs"]
 mod simd;
 pub use format::{
     Dense, Element, Format, Packed, PackedRow, Plain, PlainFmt, QuantI4, Quantized, SymI8,
@@ -85,7 +81,7 @@ pub(crate) use shape::scale_of;
 
 #[cfg(test)]
 mod packed_test_support {
-    include!("../tests/kernel_packed_test_support.rs");
+    include!("../../tests/kernel_packed_test_support.rs");
 }
 
 /// 打包量化的分组长度：一行权重的元素个数是它的整数倍，标度按它分组记账。
@@ -280,7 +276,7 @@ pub mod f32 {
 
     #[cfg(test)]
     mod tests {
-        include!("../tests/kernel_gemv.rs");
+        include!("../../tests/kernel_gemv.rs");
     }
 }
 pub mod i2 {
@@ -421,7 +417,7 @@ pub mod i8 {
 
     #[cfg(test)]
     mod tests {
-        include!("../tests/kernel_gemv_i8.rs");
+        include!("../../tests/kernel_gemv_i8.rs");
     }
 }
 

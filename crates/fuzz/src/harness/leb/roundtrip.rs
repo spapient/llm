@@ -2,9 +2,9 @@
 #![cfg_attr(unix, no_main)]
 
 #[allow(dead_code)]
-#[path = "drivers.rs"]
+#[path = "../../drivers.rs"]
 mod drivers;
 
-include!("harness.rs");
+include!("../../harness.rs");
 
 fuzz_harness!(drivers::LebRoundtrip);

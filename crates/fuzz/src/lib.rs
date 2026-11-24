@@ -565,4 +565,5 @@ pub trait Target {
 #[allow(dead_code)]
 mod drivers;
 #[cfg(test)]
+#[path = "acceptance.rs"]
 mod fuzz_tests;

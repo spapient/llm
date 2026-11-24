@@ -282,9 +282,7 @@ pub fn flash_forward(
     )
 }
 
-#[path = "conv_attention_decode.rs"]
 mod decode;
-#[path = "conv_attention_latent.rs"]
 pub mod latent;
 pub use decode::{
     decode_flash_forward, decode_flash_forward_batch, decode_flash_forward_batch_var,
@@ -326,9 +324,9 @@ crate::operator_here!(
 
 #[cfg(test)]
 mod latent_attention_tests {
-    include!("../tests/conv_latent_attention_tests.rs");
+    include!("../../tests/conv_latent_attention_tests.rs");
 }
 #[cfg(test)]
 mod tests {
-    include!("../tests/conv_attention_tests.rs");
+    include!("../../tests/conv_attention_tests.rs");
 }

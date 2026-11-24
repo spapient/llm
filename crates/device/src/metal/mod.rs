@@ -1,5 +1,5 @@
-//! Metal 后端执行层：host 驱动骨架（[`host`]）、单段设备源（[`device`]）、分块段源（[`chunk`]）、
-//! 多段装配（[`stage`]）、合成程序（[`program`]）、运行时编译执行（[`runtime`]）与见证驱动（[`witness`]）。
+//! Metal 后端执行层：host 驱动骨架（`host`）、单段设备源（`device`）、分块段源（`chunk`）、
+//! 多段装配（`stage`）、合成程序（`program`）、运行时编译执行（`runtime`）与见证驱动（`witness`）。
 //! 对外路径仍为 `llm_device::metal::*`；内部 helper 只在 crate 内可见，经本文件聚合重导出。
 
 pub(crate) mod chunk;

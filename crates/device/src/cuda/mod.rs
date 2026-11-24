@@ -1,5 +1,5 @@
-//! CUDA 后端执行层：按职责拆成共享骨架（[`shared`]）、单源网格族（[`grid`]）、WMMA GEMM
-//! （[`gemm`]）、归一化/softmax（[`chunk`]）、分块扫描（[`scan`]）与多段公共装配（[`segments`]）。
+//! CUDA 后端执行层：按职责拆成共享骨架（`shared`）、单源网格族（`grid`）、WMMA GEMM
+//! （`gemm`）、归一化/softmax（`chunk`）、分块扫描（`scan`）与多段公共装配（`segments`）。
 //! 对外路径仍为 `llm_device::cuda::*`；内部 helper 只在 crate 内可见，经本文件聚合重导出。
 
 pub(crate) mod chunk;

@@ -27,7 +27,7 @@ pub fn metal_harness(
     Ok((msl, metal_harness_driver(signature, sample, output)?))
 }
 
-/// 生产态 Metal 逐点网格内核（[`Dialect::grid_kernel`] 的 Metal 方言）。
+/// 生产态 Metal 逐点网格内核（`Dialect::grid_kernel` 的 Metal 方言）。
 ///
 /// 带长度守卫：`dispatchThreads` 会把总线程数向上取整到线程组的整数倍，末组多出来的线程必须
 /// 自己跳过——否则越界线程会往缓冲尾部之外写，把别的缓冲改掉而结果看起来「只是有点错」。

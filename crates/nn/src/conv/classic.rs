@@ -156,20 +156,16 @@ fn norm_reference(
 }
 
 /// 二维卷积（声明档 `4×4, cin 2, cout 3, k=3, s=1, p=1`，same 输出）。
-#[path = "conv_classic_conv2d.rs"]
 pub mod conv2d;
 
 /// 窗口族：最大池化（1d/2d）、平均池化与自适应池化，共用 [`crate::conv::classic`] 的
 /// `window_op!` 装配。
-#[path = "conv_classic_pool.rs"]
 pub mod pool;
 
 /// 双线性插值（声明档 2×2 → 4×4，`align_corners = false`）。
-#[path = "conv_classic_interpolate.rs"]
 pub mod interpolate;
 
 /// 归一化族：批 / 组 / 实例 / 层，四种统计范围共用 [`crate::conv::classic`] 的 `norm_op!` 装配。
-#[path = "conv_classic_norm.rs"]
 pub mod norm;
 
 // 公开路径保持为 `classic::{max_pool1d, …, layer_norm}`，`lib.rs` 与测试据此取名。
@@ -182,5 +178,5 @@ pub use pool::{
 
 #[cfg(test)]
 mod tests {
-    include!("../tests/conv_classic_tests.rs");
+    include!("../../tests/conv_classic_tests.rs");
 }

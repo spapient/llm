@@ -40,7 +40,7 @@ pub fn tensor_geometry(m: usize, n: usize, k: usize) -> TensorGeometry {
 ///
 /// 语义与模板逐元素相同（`Y[i][j] = Σ_p A[i][p]·B[p][j]`），但乘加走 GPU 的矩阵乘单元而不是
 /// 标量 FMA。前置条件由调用方保证：`M % tile_m == 0`；B 必须是**布局前置过的** `N×K` half
-/// （见 [`metal_transpose_half`]），A 仍是 `M×K` 的 f32 行主序。
+/// （见 `metal_transpose_half`），A 仍是 `M×K` 的 f32 行主序。
 ///
 /// 输出块取矩形而非方阵：线程组内存只被 N 方向跨度占用（B 片是 `tile_n × k_tile`），把 M 方向
 /// 压小就换来同尺寸共享内存下两倍的线程组数，尾部波次更满、延迟隐藏更好——这也是线程组资源

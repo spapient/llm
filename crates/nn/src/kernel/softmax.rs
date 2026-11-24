@@ -92,5 +92,5 @@ crate::operator_here!(Softmax, "softmax_f32", 1, (4096, 4096), true, reference);
 
 #[cfg(test)]
 mod tests {
-    include!("../tests/kernel_softmax.rs");
+    include!("../../tests/kernel_softmax.rs");
 }

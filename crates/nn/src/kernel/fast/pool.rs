@@ -383,5 +383,5 @@ pub(super) fn run_pooled(
 
 #[cfg(test)]
 mod tests {
-    include!("../tests/kernel_pool_tests.rs");
+    include!("../../../tests/kernel_pool_tests.rs");
 }

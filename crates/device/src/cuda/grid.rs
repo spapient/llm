@@ -17,7 +17,7 @@ use super::shared::{
 /// 生产态 CUDA 循环注入网格内核（`[grid]` 骨架的 CUDA 方言）：gemv 一维、gemm 二维共用。
 ///
 /// 与 Metal 版同一条文本改写（循环头绑到线程下标、正文跨步原样保留），差异只在方言
-/// [`crate::dialect::Cuda`] 里三处语法：内部内核追加 `int3 tid`、`kernel_main` 用 `blockIdx` 装配
+/// `crate::dialect::Cuda` 里三处语法：内部内核追加 `int3 tid`、`kernel_main` 用 `blockIdx` 装配
 /// `tid`、设备函数用 `__device__`。空网格（`dims` 为空）退化为串行：不追加 `tid`、不绑循环。
 ///
 /// # Errors：模板里找不到声明的循环、签名与样本不一致时返回说明。
@@ -64,16 +64,16 @@ __global__ void kernel_main({params}) {{
     ))
 }
 
-/// CUDA 串行（零维网格）与循环注入：由 [`Dialect::serial_kernel`] / [`Dialect::injected_kernel`]
-/// 以 `Cuda` 方言落地，缓冲声明取 [`Dialect::bufs`]，标量由 [`crate::dialect::launch_args`] 内联进内部内核，
+/// CUDA 串行（零维网格）与循环注入：由 `Dialect::serial_kernel` / `Dialect::injected_kernel`
+/// 以 `Cuda` 方言落地，缓冲声明取 `Dialect::bufs`，标量由 `crate::dialect::launch_args` 内联进内部内核，
 /// `kernel_main` 不再重复声明标量形参。
 ///
 /// 生产态 CUDA 循环注入的 host 驱动：按 `dims` 组成 `dim3` 网格发射 `kernel_main`，
 /// 分配/拷贝/回读与 [`cuda_grid_driver`] 同一口径（输出长度取样本值）。
 ///
-/// 实参只传缓冲：`kernel_main` 的形参表由 [`Dialect::tid_kernel_main`] 生成，只有缓冲——
+/// 实参只传缓冲：`kernel_main` 的形参表由 `Dialect::tid_kernel_main` 生成，只有缓冲——
 /// 标量在 `tid_kernel_main` 里已按样本值内联进内部内核调用，不再进发射实参。这里若跟着
-/// [`crate::dialect::launch_args`] 传全套形参，就会出现「实参 7 个、形参 4 个」的编译错误（`nvcc`/`mcc` 同报
+/// `crate::dialect::launch_args` 传全套形参，就会出现「实参 7 个、形参 4 个」的编译错误（`nvcc`/`mcc` 同报
 /// `too many arguments`），而这正是真机上才暴露的那类漂移。
 ///
 /// # Errors：缺输出缓冲、输出不是 f32、样本缺缓冲时返回说明。
@@ -155,7 +155,7 @@ pub fn cuda_benchmark_driver(
     Ok(source)
 }
 
-/// 生产态 CUDA 分块归约内核（[`Dialect::chunk_reduce`] 的 CUDA 方言）。
+/// 生产态 CUDA 分块归约内核（`Dialect::chunk_reduce` 的 CUDA 方言）。
 pub fn cuda_chunk_reduce(
     kernel_source: &str,
     signature: &Signature,
@@ -199,7 +199,7 @@ pub fn cuda_grid_driver(
     program(device_source, signature, sample, output, output_len, &emit)
 }
 
-/// 生产态 CUDA 逐点网格内核（[`Dialect::grid_kernel`] 的 CUDA 方言）。
+/// 生产态 CUDA 逐点网格内核（`Dialect::grid_kernel` 的 CUDA 方言）。
 pub fn cuda_grid_kernel(
     kernel_source: &str,
     signature: &Signature,

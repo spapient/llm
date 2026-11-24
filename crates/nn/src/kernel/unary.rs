@@ -5,6 +5,8 @@ use crate::model::{AxisRole, AxisSpec, Buf, Cost, Sample, ShapeCtx, Values};
 use diagnostic::{Code, Error};
 use tensor::{Element, View};
 
+pub(crate) mod ops;
+
 /// 逐元素一元算子随语义变化的那部分。
 ///
 /// 元素档 [`K`](Unary::K) 是执行侧泛型挂接，范式同 `Gemm::Plain::Elem`：算术与前向
@@ -183,5 +185,5 @@ macro_rules! unary_f32 {
 
 #[cfg(test)]
 pub(crate) mod test_support {
-    include!("../tests/kernel_unary_test_support.rs");
+    include!("../../tests/kernel_unary_test_support.rs");
 }

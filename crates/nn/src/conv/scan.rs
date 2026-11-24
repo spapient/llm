@@ -178,7 +178,7 @@ pub fn apply_scan<S: Scalar>(steps: &[SsmStep<S>], init: S) -> Vec<S> {
 
 #[cfg(test)]
 mod tests {
-    include!("../tests/conv_scan_tests.rs");
+    include!("../../tests/conv_scan_tests.rs");
 }
 
 pub mod f32 {
@@ -257,6 +257,6 @@ pub mod f32 {
 
     #[cfg(test)]
     mod tests {
-        include!("../tests/conv_scan_f32_tests.rs");
+        include!("../../tests/conv_scan_f32_tests.rs");
     }
 }

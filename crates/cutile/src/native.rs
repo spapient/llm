@@ -1,8 +1,8 @@
 //! `cutile::native`：主机原生微内核的转发面（nn → cutile → prof）。
 //!
 //! 真正的微内核体、`target_feature` 门、特性探测与协商表全在 [`prof::native`]：一个设备/通道
-//! 一个专门文件（[`gemm8x8`] 是 NEON/AVX2/scalar 的 8×8 寄存器块，[`i8`] 是 aarch64 dotprod
-//! 4×4 `sdot` 块，[`sme`] 是 Apple SME 16×64 ZA 外积）。本模块只做一层**零成本转发** `pub use`，
+//! 一个专门文件（`gemm8x8` 是 NEON/AVX2/scalar 的 8×8 寄存器块，`i8` 是 aarch64 dotprod
+//! 4×4 `sdot` 块，`sme` 是 Apple SME 16×64 ZA 外积）。本模块只做一层**零成本转发** `pub use`，
 //! 把「cutile 调用 prof」这条调用关系记录在 crate 图里，不复制任何实现：
 //!
 //! ```text

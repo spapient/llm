@@ -1,21 +1,13 @@
 //! 神经算子：卷积 / 反卷积（`geom` / `pool` / `interp` / `deconv`）、注意力（`attention`）、
 //! 池化与范数（`classic`）、扫描骨架（`scan`）。
 
-#[path = "conv_attention.rs"]
 pub mod attention;
-#[path = "conv_classic.rs"]
 pub mod classic;
-#[path = "conv_deconv.rs"]
 pub mod deconv;
-#[path = "conv_geom.rs"]
 mod geom;
-#[path = "conv_interp.rs"]
 mod interp;
-#[path = "conv_pool.rs"]
 mod pool;
-#[path = "conv_scan.rs"]
 pub mod scan;
-#[path = "conv_support.rs"]
 mod support;
 
 pub use attention::decode_attention;

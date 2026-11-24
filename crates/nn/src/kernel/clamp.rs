@@ -98,5 +98,5 @@ crate::operator_here!(Clamp, "clamp_f32", 1, (4096, 4096), false, reference);
 
 #[cfg(test)]
 mod tests {
-    include!("../tests/kernel_clamp.rs");
+    include!("../../tests/kernel_clamp.rs");
 }

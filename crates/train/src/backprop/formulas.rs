@@ -1,9 +1,9 @@
 //! 各算子的解析反向公式：逐输入贡献与注意力族逐行反向本体。
 
+use super::{Ctx, SITE};
 use diagnostic::{Code, Error, Result};
 use std::cell::RefCell;
 use std::rc::Rc;
-use super::{Ctx, SITE};
 
 // ---- 注意力反向公式：自注意力 / 潜空间 / decode 三种前向共享的逐行反向本体 ----
 
@@ -606,4 +606,3 @@ fn gelu_grad(x: f32) -> f32 {
     let erf_term = 0.5 * (1.0 + nn::gelu_f32::erf(x * std::f32::consts::FRAC_1_SQRT_2));
     erf_term + x * normal
 }
-

@@ -348,7 +348,7 @@ fn int8_signature(signature: &Signature) -> bool {
 
 /// int8 分块 GEMM 的 MSL：`A[M,K]·B[K,N]`，`i8` 输入、`i32` 累加、`f32` 输出。
 ///
-/// 语义与 [`nn::matmul_i8`] 的参考实现逐元素相同（整数累加，结果精确）。每个线程组把
+/// 语义与 `nn::matmul_i8` 的参考实现逐元素相同（整数累加，结果精确）。每个线程组把
 /// `tile×tile` 的 A/B 块搬进线程组内存，收缩轴在共享块上复用；要求 `M/N/K` 都能被
 /// `tile` 整除。派发几何：`grid = [M, N]`、`block = [tile, tile]`。
 ///

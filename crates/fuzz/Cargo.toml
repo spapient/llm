@@ -59,91 +59,91 @@ harness = false
 # 仅在 `engine` feature 下编译。
 [[test]]
 name = "fuzz_cli"
-path = "src/fuzz_cli.rs"
+path = "src/harness/cli.rs"
 harness = false
 required-features = ["engine"]
 
 [[test]]
 name = "fuzz_weights_json"
-path = "src/fuzz_weights_json.rs"
+path = "src/harness/weights/json.rs"
 harness = false
 required-features = ["engine"]
 
 [[test]]
 name = "fuzz_weights_safetensors"
-path = "src/fuzz_weights_safetensors.rs"
+path = "src/harness/weights/safetensors.rs"
 harness = false
 required-features = ["engine"]
 
 [[test]]
 name = "fuzz_weights_archive"
-path = "src/fuzz_weights_archive.rs"
+path = "src/harness/weights/archive.rs"
 harness = false
 required-features = ["engine"]
 
 [[test]]
 name = "fuzz_train_snapshot"
-path = "src/fuzz_train_snapshot.rs"
+path = "src/harness/train/snapshot.rs"
 harness = false
 required-features = ["engine"]
 
 [[test]]
 name = "fuzz_serve_frames"
-path = "src/fuzz_serve_frames.rs"
+path = "src/harness/serve/frames.rs"
 harness = false
 required-features = ["engine"]
 
 [[test]]
 name = "fuzz_http_head"
-path = "src/fuzz_http_head.rs"
+path = "src/harness/http/head.rs"
 harness = false
 required-features = ["engine"]
 
 [[test]]
 name = "fuzz_wire_sealed"
-path = "src/fuzz_wire_sealed.rs"
+path = "src/harness/wire/sealed.rs"
 harness = false
 required-features = ["engine"]
 
 [[test]]
 name = "fuzz_wire_leb"
-path = "src/fuzz_wire_leb.rs"
+path = "src/harness/wire/leb.rs"
 harness = false
 required-features = ["engine"]
 
 [[test]]
 name = "fuzz_lex"
-path = "src/fuzz_lex.rs"
+path = "src/harness/lex.rs"
 harness = false
 required-features = ["engine"]
 
 [[test]]
 name = "fuzz_crc"
-path = "src/fuzz_crc.rs"
+path = "src/harness/crc.rs"
 harness = false
 required-features = ["engine"]
 
 [[test]]
 name = "fuzz_leb_roundtrip"
-path = "src/fuzz_leb_roundtrip.rs"
+path = "src/harness/leb/roundtrip.rs"
 harness = false
 required-features = ["engine"]
 
 [[test]]
 name = "fuzz_shape"
-path = "src/fuzz_shape.rs"
+path = "src/harness/shape.rs"
 harness = false
 required-features = ["engine"]
 
 [[test]]
 name = "fuzz_cutile_negotiate"
-path = "src/fuzz_cutile_negotiate.rs"
+path = "src/harness/cutile/negotiate.rs"
 harness = false
 required-features = ["engine"]
 
 [[test]]
 name = "fuzz_dist"
-path = "src/fuzz_dist.rs"
+path = "src/harness/dist.rs"
 harness = false
 required-features = ["engine"]
 

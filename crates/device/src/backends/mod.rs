@@ -1,5 +1,5 @@
 //! Metal / CUDA / 昇腾设备后端：实现 [`llm_optim::backend::Backend`]（`Codegen` 出源 + `Driver` 跑源）。
-//! 三族各占一子模块，共享几何与回读在 [`common`]，`Launch` 并行装配在 [`parallel`]；本文件只保留
+//! 三族各占一子模块，共享几何与回读在 `common`，`Launch` 并行装配在 `parallel`；本文件只保留
 //! 进程级注册入口与跨模块重导出，对外路径仍为 `llm_device::backends::*`。
 
 pub(crate) mod ascend;

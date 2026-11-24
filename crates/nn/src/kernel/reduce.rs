@@ -179,7 +179,7 @@ macro_rules! reduce_f32 {
 
 #[cfg(test)]
 mod test_support {
-    include!("../tests/kernel_reduce_test_support.rs");
+    include!("../../tests/kernel_reduce_test_support.rs");
 }
 
 // 声明式算子表：同一副归约骨架的两种算子（最大值 / 求和），每个算子一个 `pub mod` 保持

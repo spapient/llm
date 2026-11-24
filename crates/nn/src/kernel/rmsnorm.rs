@@ -189,5 +189,5 @@ pub struct RmsNorm;
 
 #[cfg(test)]
 mod tests {
-    include!("../tests/kernel_rmsnorm.rs");
+    include!("../../tests/kernel_rmsnorm.rs");
 }

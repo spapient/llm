@@ -60,7 +60,7 @@ mod contract;
 mod declare;
 mod engram;
 mod recurrent;
-mod weight_format;
+mod weight;
 mod lm_head {
     //! `lm_head`：由注解声明的固定形状层。
 
@@ -120,7 +120,7 @@ pub use contract::{BoundsResult, Contract, ContractSpec, Linear};
 #[doc(inline)]
 pub use declare::{Bounds, OpLayer};
 #[doc(inline)]
-pub use weight_format::WeightFormat;
+pub use weight::WeightFormat;
 
 /// 构造期非零校验：层族共用的私有辅助，经 crate 根路径 `crate::nonzero` / `crate::nonzero_all` 引用。
 pub(crate) use contract::{nonzero, nonzero_all};

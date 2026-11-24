@@ -6,7 +6,6 @@
 
 use diagnostic::{Code, Error, Result};
 
-#[path = "loss_rl.rs"]
 pub(crate) mod rl;
 
 pub use rl::{Grpo, advantage, clipped_surrogate, entropy, grpo_loss, log_prob, policy_loss};

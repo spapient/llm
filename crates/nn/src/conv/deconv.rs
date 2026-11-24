@@ -459,5 +459,5 @@ fn scatter1_at<T: Copy + AddAssign>(
 
 #[cfg(test)]
 mod tests {
-    include!("../tests/conv_deconv_tests.rs");
+    include!("../../tests/conv_deconv_tests.rs");
 }

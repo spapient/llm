@@ -495,7 +495,7 @@ fn sample_unpacked<G: Gemm>(a: &[G::Elem], b: &[G::Elem], m: usize, n: usize) ->
 /// 稠密 f32 跑独立 f64 闭式校验（整数闭式不适用，但那不等于只能自我对拍）。形状矩阵只定义一次。
 #[cfg(test)]
 mod test_support {
-    include!("../tests/kernel_gemm_test_support.rs");
+    include!("../../tests/kernel_gemm_test_support.rs");
 }
 
 /// 生成一份 GEMM 精度变体的完整公开面：标记类型、[`Gemm`] 实现、`forward` 入口、
@@ -592,6 +592,5 @@ macro_rules! gemm_variant {
 }
 
 /// 四档精度变体（int2 / int4 / int8 / f32）：骨架在本文件，格式契约见 variants。
-#[path = "kernel_gemm_variants.rs"]
 mod variants;
 pub use variants::{f32, i2, i4, i8};

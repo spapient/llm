@@ -1,14 +1,14 @@
 //! 会话快照与视图装配：可恢复检查点的最小事实集、快照回载校验、优化器视图的取走/归还/镜像。
 
+use super::{ParamSlot, SITE, Session, SlotMeta};
+use crate::optimizer::{Optimizer, OwnedSlot};
+use crate::pool::Bufs;
+use crate::{Data, Kernel};
 use autograd::Var;
 use diagnostic::{Code, Error, Result};
 use shard::Collective;
 use storage::{GradAccum, Moments, SlotMoments, Ties};
 use weights::Snapshot;
-use crate::optimizer::{Optimizer, OwnedSlot};
-use crate::pool::Bufs;
-use crate::{Data, Kernel};
-use super::{ParamSlot, Session, SlotMeta, SITE};
 
 // ---- 可恢复检查点：只记"要复现这次训练必须知道的东西" ----
 
@@ -344,7 +344,10 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
 // 参数/梯度按槽整块取走、步进后整块归还与镜像。
 impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
     /// 汇总各槽的参数/梯度可变视图；任一槽梯度未装入即报错。
-    pub(super) fn collect_views(slots: &mut [ParamSlot], bufs: &mut Bufs<K>) -> Result<Vec<OwnedSlot>> {
+    pub(super) fn collect_views(
+        slots: &mut [ParamSlot],
+        bufs: &mut Bufs<K>,
+    ) -> Result<Vec<OwnedSlot>> {
         let meta: Vec<SlotMeta> = slots
             .iter()
             .map(|slot| (slot.var(), slot.role(), slot.matrix()))
@@ -381,7 +384,11 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
     }
 
     /// 收集视图失败时的局部归还：已装配的前 `views.len()` 个槽对应 `slots` 前缀。
-    pub(super) fn return_views_prefix(slots: &mut [ParamSlot], bufs: &mut Bufs<K>, views: Vec<OwnedSlot>) {
+    pub(super) fn return_views_prefix(
+        slots: &mut [ParamSlot],
+        bufs: &mut Bufs<K>,
+        views: Vec<OwnedSlot>,
+    ) {
         Self::return_views(&mut slots[..views.len()], bufs, views);
     }
 
@@ -394,4 +401,3 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
         Ok(())
     }
 }
-

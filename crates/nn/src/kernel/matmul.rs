@@ -576,9 +576,8 @@ fn deterministic(len: usize, salt: u32) -> Vec<f32> {
 
 #[cfg(test)]
 mod tests {
-    include!("../tests/kernel_matmul_tests.rs");
+    include!("../../tests/kernel_matmul_tests.rs");
 }
 
 /// 对称 int8 GEMM 变体：标量/分块出口与形状投影，骨架算术在本模块。
-#[path = "kernel_matmul_i8.rs"]
 pub mod i8;
