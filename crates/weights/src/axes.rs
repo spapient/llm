@@ -248,7 +248,7 @@ fn shape_overflow() -> Error {
 fn frame(axis: Axis, m: usize, n: usize, payload: Vec<u8>) -> Pick {
     let mut artifact = Vec::with_capacity(HEAD + payload.len());
     artifact.extend_from_slice(&MAGIC);
-    artifact.push(axis as u8);
+    artifact.push(axis.code());
     artifact.extend_from_slice(&(m as u32).to_le_bytes());
     artifact.extend_from_slice(&(n as u32).to_le_bytes());
     artifact.extend(payload);
