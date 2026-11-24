@@ -133,11 +133,11 @@
 
 - llm 的 `R` 同时接受定长数组与运行期 `Vec<usize>`；Burn 的 `D` 只能是编译期定长数组。llm 文档自述这是刻意放宽：运行期 batch / segment 几何要进同一类型（ADR 0046）。
 - llm 的 `B` 是**存储**而不是后端算子集；算子由 `nn` 数据驱动注册表给出，不走泛型派发的百方法后端接口（ADR 0053）。Burn 的 `Backend` 是算子族 trait 组合（见 §4.2）。
-- llm 逻辑张量数值算子面薄：`ops.rs` 12 个元素/归约（`map/add/sub/mul/div/add_scalar/mul_scalar/sum/max/min/argmax/all_close`），`tensor.rs` 45 个形状/构造/存取方法；重算子在 `nn` crate。Burn `burn-tensor` 24.9k 行，算子面显著更宽。
+- llm 逻辑张量数值算子面薄：`ops.rs` 12 个元素/归约（`map/add/sub/mul/div/add_scalar/mul_scalar/sum/max/min/argmax/all_close`），tensor 层 45 个形状/构造/存取方法；重算子在 `nn` crate。Burn `burn-tensor` 25.9k 行，算子面显著更宽。
 
 ### 3.2 算子接口与注册表
 
-- **llm**：编译期 const 注册表 `REGISTRY`（`nn/src/registry.rs:79`），`for_each_operator!` 单清单声明 52 个算子（`:20-71`），名字与 `prof::catalogue` 同序，错位编译期失败；查表二分（`:123`）。算子类型由清单一次展开类型化 API，注册表/类型化入口/样本三者不漂移。
+- **llm**：编译期 const 注册表 `REGISTRY`（`nn/src/registry.rs:97`），`for_each_operator!` 单清单声明 70 个算子（`:17-91`），名字与 `prof::catalogue` 同序，错位编译期失败（断言 `:109,:113`）；查表二分（`:131`）。算子类型由清单一次展开类型化 API，注册表/类型化入口/样本三者不漂移。
 - **llm.u**：`exec/src/reg.rs` `Impl` 七臂枚举 `Gemm/Scalar/Qgemm/Attention/Kv/Map/Reduce`（`:32-41`），`dispatch!` 宏 match 非穷尽静态分派，漏改编译失败；`Factory = fn() -> Impl`（`:68`）。
 - **Burn**：算子是 `Backend` trait 上的关联方法族，后端逐个实现；无仓内名字注册表。
 
@@ -176,7 +176,7 @@ llm 文档列的形状族（`tensor.rs:20-31`）：`broadcast/narrow/slice/chunk
 
 | 对照点 | llm | llm.u | Burn |
 | --- | --- | --- | --- |
-| 图/tape 结构 | `autograd` 4,048 行（src 2,123 / tests 1,925）：`Requirement/Role/Var/Node/Tape/Ordering/Schedule/Summary/Account/MemoryPolicy/Plan/Budget/Sizes/Footprint/Choice/Config/Replay/Store`（ADR 0055） | 手写反向（`exec` 内 `plan.rs`/`teacher`） | `burn-autodiff` 12.4k：`graph/grads/checkpoint/distributed/ops/runtime/backend` |
+| 图/tape 结构 | `autograd` 4,044 行（src 2,119 / tests 1,925）：`Requirement/Role/Var/Node/Tape/Ordering/Schedule/Summary/Account/MemoryPolicy/Plan/Budget/Sizes/Footprint/Choice/Config/Replay/Store`（ADR 0055） | 手写反向（`exec` 内 `plan.rs`/`teacher`） | `burn-autodiff` 12.4k：`graph/grads/checkpoint/distributed/ops/runtime/backend` |
 | train 接线 | `session.rs:5` 引 `Tape/Var`；`backprop/learner/pool` 同引 confirmed | train 复用 exec 计算面 | autodiff 作后端装饰器挂接 |
 | 梯度检查点 | segment 级（`autograd` 结构内，`MemoryPolicy` 自动/全留/分段三档） | 未见独立检查点策略 | `autodiff/checkpoint` 策略可配 |
 | 状态 | 元数据层闭环：`gradcheck` 中心差分对拍 200 张随机图（扇出累加、detach 分支、分层与顺序逐位一致、重复反向逐位一致、图外参数梯度恰为 0）；train 闭环 `Reference` CPU 后端 50 例解析梯度 vs 中心差分对拍实测通过（含 conv2d/GRPO/KL/端到端 SGD）；真机后端梯度仍未观测 | 手写反向，成熟度本轮未深核 | 生产级梯度跟踪/快照/反向 |
@@ -185,8 +185,8 @@ llm 文档列的形状族（`tensor.rs:20-31`）：`broadcast/narrow/slice/chunk
 
 ### 6.1 层/算子清单
 
-- **llm `nn`**（23.3k）：注册表 52 算子（`registry.rs:20-71`）——elementwise（add/sub/mul/div/max/min/scale/residual）、激活（gelu/silu/relu/sigmoid/tanh/exp/log/leaky_relu/hard_sigmoid）、归一化（rmsnorm/batch/group/instance/layer norm）、注意力（attention/flash/decode_attention/decode_flash/latent）、池化（adaptive/avg/max pool1d/2d）、卷积（conv2d）、reduce（max/sum）、embed、rope、scan、softmax、gemm/gemv/matmul（f32 + i2/i4/i8）、dequant（i2/i4/i8）。层声明 `Linear`/`OpLayer`/`ContractSpec`/`Bounds`（`contract.rs:178`、`declare.rs:161,285`）。
-- **Burn `burn-nn`**（29.5k）：`modules/` 下 attention/cache/conv/embedding/dropout/linear/interpolate/norm/pool/pos_encoding/rnn/transformer/unfold/rope_encoding/pixel_shuffle/fold/noise/identity/pairwise_distance/cosine_similarity；`loss/` 18 个文件（17 种 loss + `reduction` 归约工具；BCE/cross_entropy/ctc/gaussian_nll/hinge_embedding/huber/kldiv/lp_loss/margin_ranking/mse/multi_margin/poisson/rnnt/smooth_l1/soft_margin/triplet/cosine_embedding）。
+- **llm `nn`**（24.0k）：注册表 70 算子（`registry.rs:17-91`）——elementwise/unary（add/sub/mul/div/max/min/scale/residual/abs/ceil/clamp/exp/exp2/floor/log/log1p/neg/recip/round/rsqrt/sign/square/sin/cos/sqrt/trunc/remainder/exp2）、激活（gelu/silu/relu/sigmoid/tanh/leaky_relu/hard_sigmoid）、归一化（rmsnorm/batch/group/instance/layer norm）、注意力（attention/flash/decode_attention/decode_flash/latent）、池化（adaptive/avg/max pool1d/2d）、卷积（conv2d）、reduce（max/sum/prod）、embed、rope、scan、softmax、gemm/gemv/matmul（f32 + i2/i4/i8）、dequant（i2/i4/i8）。层声明 `Linear`/`OpLayer`/`ContractSpec`/`Bounds`（`contract.rs:178`、`declare.rs:161,285`）。
+- **Burn `burn-nn`**（29.6k）：`modules/` 下 attention/cache/conv/embedding/dropout/linear/interpolate/norm/pool/pos_encoding/rnn/transformer/unfold/rope_encoding/pixel_shuffle/fold/noise/identity/pairwise_distance/cosine_similarity；`loss/` 19 个文件（17 种 loss + `mod`/`reduction`；BCE/cross_entropy/ctc/gaussian_nll/hinge_embedding/huber/kldiv/lp_loss/margin_ranking/mse/multi_margin/poisson/rnnt/smooth_l1/soft_margin/triplet/cosine_embedding）。
 - **llm.u `exec`**：`Impl` 七臂（Gemm/Scalar/Qgemm/Attention/Kv/Map/Reduce）。
 
 ### 6.2 架构变体覆盖
@@ -217,11 +217,11 @@ llm 文档列的形状族（`tensor.rs:20-31`）：`broadcast/narrow/slice/chunk
 | 训练循环 | `train` 13.3k：session/learner/backprop/loss/optimizer/geometry/kernel/pool/rng；forward/backward 以闭包注入（`learner.rs:164-182`）；基线编译本轮绿，backprop 套件含端到端 SGD 训练例实测通过；真机大规模收敛未核（见 §13.1） | `train` 7.8k：loss/优化器/调度/打包/检查点/rollout 桥 | `burn-train` 34.4k：完整训练循环/指标/检查点 |
 | 优化器 | `Sgd/Adam`(AdamW 解耦衰减 + 偏差修正 + 全局范数裁剪) `/Muon`（`optimizer.rs:186 Adam`、`:334 Sgd`、`:393 pub use muon::Muon`） | 仅 `Adam`（`train/src/optim.rs:12`） | 12 个具体优化器：sgd/adam/adamw/adan/lamb/lbfgs/lion/momentum/muon/rmsprop/adafactor/adagrad + decay/grad_accum/parallel |
 | LR 调度 | warmup + anneal（`session.rs` `Schedule`） | cosine + warmup 类 | `burn-optim/lr_scheduler` 多策略 |
-| loss | cross_entropy/argmax_hits/mse/bce_with_logits/huber/hinge（`loss.rs:148` 等）+ Distill/Grpo 枚举变体（`loss.rs:282,289`），策略族函数体在 `loss_rl.rs:109,201`（`loss.rs:10` `mod rl`、`:12` 再导出） | 复用 exec 计算面 | 17 种 nn loss（18 文件含 reduction）+ train 指标 |
+| loss | cross_entropy/argmax_hits/mse/bce_with_logits/huber/hinge（`loss.rs:148` 等）+ Distill（`loss.rs:361`）/Grpo 枚举变体，策略族函数体在 `loss_rl.rs:109,201`（`loss.rs:10` `mod rl`、`:12` 再导出） | 复用 exec 计算面 | 17 种 nn loss（19 文件含 mod/reduction）+ train 指标 |
 | 指标/评估 | Learner 账表 + evaluate；无可插拔指标/渲染器 | 未见独立指标注册表 | 30+ 指标（burn-train） |
 | 数据集 | `Dataset` trait + `Loader`/`Chunks` + 顺序/洗牌/加权三族采样 + 权重校验，基线编译绿；无物理分词/打包源 | 未见独立 dataset crate | `burn-dataset` |
 | 检查点 | weights/storage 自描述编码 + CRC-32 + 恢复事实 | checkpoint 字节存档 | `burn-store`/checkpoint 完整 |
-| RL | log_prob/entropy/advantage/GRPO 槽位（`loss_rl.rs` 策略族；`loss.rs:282,289` Distill/Grpo 枚举变体） | rollout 桥 | `burn-rl`：env/policy/buffer |
+| RL | log_prob/entropy/advantage/GRPO 槽位（`loss_rl.rs:109` Grpo、`:201` grpo_loss；`loss.rs:361` Distill） | rollout 桥 | `burn-rl`：env/policy/buffer |
 
 ## 9. 推理服务与运行时
 
@@ -255,9 +255,9 @@ llm 文档列的形状族（`tensor.rs:20-31`）：`broadcast/narrow/slice/chunk
 
 ## 12. 算子与内核覆盖（按家族实测）
 
-### 12.1 llm 注册算子（52 项，`registry.rs:20-71`）
+### 12.1 llm 注册算子（70 项，`registry.rs:17-91`）
 
-池化（adaptive_pool/avg_pool2d/max_pool1d/max_pool2d）、卷积（conv2d）、归一化（batch/group/instance/layer/rmsnorm）、注意力（attention/flash/decode_attention/decode_flash/latent）、elementwise（add/div/max/min/mul/sub/residual_add/scale）、激活（exp/gelu/hard_sigmoid/leaky_relu/relu/log/silu/sigmoid/tanh）、归约（reduce_max/reduce_sum）、embed、rope、scan、softmax、矩阵族（gemm_f32/matmul_f32/gemv_f32 + gemm_i2/i4/i8、gemv_i2/i4/i8、matmul_i8）、反量化（dequant_i2/i4/i8）。
+池化（adaptive_pool/avg_pool2d/max_pool1d/max_pool2d）、卷积（conv2d）、插值（interpolate）、归一化（batch/group/instance/layer/rmsnorm）、注意力（attention/flash/decode_attention/decode_flash/latent）、elementwise（add/div/max/min/mul/sub/residual_add/scale/neg/recip/remainder/clip/clamp）、unary（abs/ceil/floor/round/trunc/sign/exp/exp2/log/log1p/rsqrt/square/sin/cos/sqrt）、激活（gelu/hard_sigmoid/leaky_relu/relu/silu/sigmoid/tanh）、归约（reduce_max/reduce_sum/reduce_prod）、embed、rope、scan、softmax、矩阵族（gemm_f32/matmul_f32/gemv_f32 + gemm_i2/i4/i8、gemv_i2/i4/i8、matmul_i8）、反量化（dequant_i2/i4/i8）。
 
 ### 12.2 llm.u 内核族（`reg.rs:32-41`）
 
@@ -413,7 +413,7 @@ llm 文档列的形状族（`tensor.rs:20-31`）：`broadcast/narrow/slice/chunk
 | 4 | 算子/内核覆盖 | 5 | 4 | 9 | llm 注册表 **70 条**算子（elementwise/unary/激活/norm/attention/pool/conv/reduce/embed/rope/gemm·gemv·matmul f32+i2/i4/i8/dequant）+ 四层契约，unary 族本轮已进 HEAD 基线；真机内核激活未核；llm.u 七臂内核族；Burn 张量 API 全套 + linalg/einsum/fusion |
 | 5 | nn 层完整度 | 5 | 3 | 9 | llm conv/pool/norm/attn/embed/rope 齐，无 RNN；llm.u 无 conv/pool/RNN；Burn 8 大类 + 49 Config 含 RNN/Transformer |
 | 6 | 自动微分 | 7 | 2 | 10 | llm 独立 tape/schedule/account/plan/replay 元数据层；本轮 `cargo test -p llm-train backprop` 50 例全绿：`Reference` CPU 后端解析梯度与中心差分逐参数对拍（ABSOLUTE 2e-3 + RELATIVE 0.05），含 conv2d/GRPO/distillation KL/端到端 SGD；缺口：无后端装饰器式任意可微闭包（算子按名注册、显式 `record`）、分布式无真实传输后端/NCCL、GPU 后端梯度激活未观测；梯度侧仅有逐 Var 取读（`gradient`/`take_gradient`）与按槽 `GradAccum` 窗口快照（`accum_snapshot`），无脱离优化器窗口的 Var→向量独立快照导出；llm.u 逐层手写 bwd；Burn 后端装饰器任意可微 + checkpoint |
-| 7 | 优化器 | 4 | 3 | 9 | llm Sgd/Adam/Muon；llm.u 仅 Adam；Burn 13 个 impl + LBFGS/Momentum/累积/裁剪/衰减 |
+| 7 | 优化器 | 4 | 3 | 9 | llm Sgd/Adam/Muon；llm.u 仅 Adam；Burn 12 个 impl + LBFGS/Momentum/累积/裁剪/衰减 |
 | 8 | 调度/训练循环 | 5 | 4 | 9 | llm Session/Learner/evaluate/账表/优化步在位，本轮基线编译绿，backprop 套件含 `an_arbitrary_geometry_trains_end_to_end_under_sgd` 端到端 SGD 训练例实测通过；真机/大规模训练收敛与调度仍未核；llm.u Session/Trainer + Cosine；Burn Learner/early stopping/sharder/logger |
 | 9 | 损失函数 | 5 | 4 | 9 | llm CE/argmax/mse/bce/huber/hinge + Distill/Grpo（策略族物理拆至 `loss_rl.rs`，`loss.rs:10,12` 挂载再导出）；llm.u 7 fn；Burn 17 种 loss（含 CTC/RNNT/三元组/NLL） |
 | 10 | 指标/评估器 | 3 | 1 | 10 | llm 仅 loss/命中/样本数账表；llm.u 仅 perplexity；Burn 30+ 指标 + evaluator/renderer |
