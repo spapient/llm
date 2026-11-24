@@ -96,8 +96,7 @@ pub use model::quant;
 pub use sample::{dropout, init, rnd};
 pub use sch::layout;
 pub use sig::same_bytes;
-pub use tpl::{formula, parse};
-
+pub use tpl::formula;
 #[cfg(test)]
 #[path = "../tests/spec/support/lib_spec_tests.rs"]
 mod spec_tests;
@@ -141,6 +140,7 @@ pub use generated::{embedded, names};
 
 mod decode;
 mod schema;
+mod text;
 mod witness;
 
 pub mod decl;

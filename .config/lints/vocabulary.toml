@@ -67,12 +67,12 @@ reason = "命令文法内部类型；`cli` 的公开面是 `Invocation`/`Command
 
 [[ownership.unlisted]]
 crate = "cutile"
-names = ["CallArg", "ChainStep", "FragmentGap", "Lock", "NeedReport", "PrimCall", "SpaceUse", "Unlock", "UnaryFn"]
+names = ["CallArg", "ChainStep", "FragmentGap", "NeedReport", "PrimCall", "Unlock"]
 reason = "内核 DSL 的协商前端与结果类型；`UnaryFn` 是一元数学算子（Abs/Sqrt/Exp/Ln/Trig/取整）发射名与主机求值闭集；按 `crates/cutile/README.md` 的分节归类，待分节稳定后逐节进表（执行期五个名字随拆分迁到 `optim`）"
 
 [[ownership.unlisted]]
 crate = "dtype"
-names = ["BlockFormat", "Class", "DTypeSpec", "ElementSpec", "Family", "MxTypeSpec", "QTypeSpec", "UnknownCode", "UnknownName"]
+names = ["BlockFormat", "ElementSpec", "Family", "MxTypeSpec", "QTypeSpec", "UnknownCode", "UnknownName"]
 reason = "行表类型、分类闭集与解析错误；表形状仍在演进，按闭集整体进表比逐项更清楚"
 
 [[ownership.unlisted]]
@@ -87,7 +87,7 @@ reason = "模糊测试的驱动侧适配与目标件：每个 `Target` 实现对
 
 [[ownership.unlisted]]
 crate = "prof"
-names = ["Access", "Arg", "AxisRole", "AxisSpec", "Constant", "CType", "Detected", "Emit", "Formula", "MatchRule", "Mem", "Meta", "Param", "ProfileError", "Recipe", "ShapeCtx", "Simt", "SplitMix64", "Unit", "Values", "Witness"]
+names = ["Access", "Constant", "Formula", "Mem", "Meta", "Param", "ProfileError", "Recipe", "Simt", "SplitMix64", "Unit", "Witness"]
 reason = "档案行表的列类型与匹配规则（公开面是 `Archive`/`Profile`），加上随 `op`/`prim` 解散迁来的声明解析结果（骨架 / 网格映射 / 轴候选 / tile 组合 / 变体闭集）与内嵌片段条目 `Builtin`；`spec` 并入本 crate 后又多了契约词汇的内部类型（访问模式、算子参数、轴角色与轴规格、C 类型、公式缓存句柄、形状上下文、计数器型随机）。`Axis` 在声明层与 `einsum` 各有一份，同名不同物：表里只登记声明层那一份，本基线不再重复；`AttrKey`/`Grade`/`Prim`/`Space` 由 `vocabulary!` / `closed_enum!` 宏生成、扫描器认不出定义行，故四者不再登记"
 
 [[ownership.unlisted]]
@@ -102,12 +102,12 @@ reason = "复杂度与回归门禁的行类型，以及 `Mount`（`mod 名字;` 
 
 [[ownership.unlisted]]
 crate = "weights"
-names = ["Axis", "Gguf", "Pick", "Sha256", "Svd", "Tensor"]
+names = ["Axis", "Pick", "Sha256", "Svd", "Tensor"]
 reason = "选码与哈希内部件：五轴选码的候选与结果（`axes` 的 `Axis`/`Pick`）、`svd` 分解件与哈希内部件；谱隙证书的 `Certified`/`Note`/`Stable`/`Mode`/`EpsMethod`/`Bound` 已进所有权表（它们决定秩，是可读的判定口径而不是实现细节），公开生产面是表里的读写契约与容器类型。外部格式的解析件随 `formats` 并入本 crate：`Gguf` 是 GGUF 头部 + 数据区视图，`Tensor` 是 GGUF 与 torch 两种文件里各一条的张量目录项（`gguf::Tensor` / `torch::Tensor`，同名不同物、靠路径区分），都只吐「名字 + 类型 + 形状 + 字节区间」、不带任何容器判据；torch `.bin` 的读出结果收进 `torch::Checkpoint`（与所有权表里的 `train::Checkpoint` 同名不同物，靠路径区分），`Bin` 随 torch 解析重写为只读 `Checkpoint` 后注销"
 
 [[ownership.unlisted]]
 crate = "wire"
-names = ["Count", "FileSink", "Measured", "Sink", "SliceSink", "Uint"]
+names = ["Uint"]
 reason = "字节码闭集的接收器与无符号整数标记族；公开面是 CRC/LEB/Sink 这组函数与 trait，内部实现件待边界稳定后逐项进表。`leb::Cursor` 已作为读游标进入所有权表的 `Cursor` 行，不再留在基线里"
 
 [gate]
@@ -239,6 +239,7 @@ min_lines_baseline = [
   "crates/prof/src/capability.rs",
   "crates/prof/src/catalogue.rs",
   "crates/prof/src/decode.rs",
+  "crates/prof/src/einsum.rs",
   "crates/prof/src/einsum/axis.rs",
   "crates/prof/src/einsum/bits.rs",
   "crates/prof/src/einsum/cache.rs",
@@ -248,11 +249,14 @@ min_lines_baseline = [
   "crates/prof/src/einsum/formula.rs",
   "crates/prof/src/einsum/operand.rs",
   "crates/prof/src/epilogue.rs",
+  "crates/prof/src/native.rs",
   "crates/prof/src/native/i8.rs",
+  "crates/prof/src/runtime.rs",
   "crates/prof/src/need.rs",
   "crates/prof/src/operator.rs",
   "crates/prof/src/sample.rs",
   "crates/prof/src/sign.rs",
+  "crates/prof/src/text.rs",
   "crates/prof/src/witness.rs",
   "crates/serve/src/admit.rs",
   "crates/serve/src/block.rs",

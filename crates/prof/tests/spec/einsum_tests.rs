@@ -1,7 +1,7 @@
 // einsum 三层的测试：表达式解析、轴长度表与代价推导。
 //
-// `einsum` 已按职责轴拆为 `src/einsum/` 目录模块，本文件与 `cost_tests.rs` 由
-// `src/einsum/mod.rs` 的测试模块按顺序
+// `einsum` 按职责轴拆成 src 根下的扁平文件，本文件与 `cost_tests.rs` 由
+// `src/einsum.rs` 的测试模块按顺序
 // `include!` 进来，两段共用同一个测试模块；`use super::*` 因此解析到 `einsum` 模块本身，
 // 轴表与代价段直接用 `crate::einsum` 的再导出取类型。Bits / Cost 自身的用例在同目录的
 // `cost_tests.rs`。

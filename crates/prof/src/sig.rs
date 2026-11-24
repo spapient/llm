@@ -1,7 +1,7 @@
 //! 内核签名：从 `.k` 的入口函数声明解析形参，供执行侧派生实参列表与输出缓冲。
 
 use crate::model::{DType, Sample};
-use crate::parse::{line_error as at, matching_paren, split_top_level};
+use crate::text::{line_error as at, matching_paren, split_top_level};
 use diagnostic::{Code, Error};
 
 /// 形参的类型。
@@ -330,7 +330,7 @@ mod check {
     }
 
     pub(super) fn line_of(text: &str, offset: usize) -> usize {
-        crate::parse::count_newlines(&text[..offset.min(text.len())]) + 1
+        crate::text::count_newlines(&text[..offset.min(text.len())]) + 1
     }
 }
 

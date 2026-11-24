@@ -209,7 +209,7 @@ pub use kernel::{
 pub use model::quant;
 pub use prof::same_bytes;
 pub(crate) use prof::tpl::guard;
-pub use prof::tpl::{formula, parse};
+pub use prof::tpl::formula;
 pub use prof::{einsum, model, operator, sample, sch, sig, tpl};
 pub use prof::{formula_cell, formula_owner, operator_here, operator_via};
 pub use sch::layout;

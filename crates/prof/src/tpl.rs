@@ -13,7 +13,7 @@
 //! （每处调用一次，与模板里写了几条 `@` 同阶）。
 
 use crate::atom::Prim;
-use crate::parse::{matching_paren, split_top_level};
+use crate::text::{matching_paren, split_top_level};
 use diagnostic::Error;
 
 /// 模板片段。
@@ -129,7 +129,7 @@ impl<'a> Template<'a> {
 
 /// 模板拼接错误（只给行号，不给列）。
 pub fn error(line: usize, message: impl Into<String>) -> Error {
-    crate::parse::line_error(line, message)
+    crate::text::line_error(line, message)
 }
 
 /// 词法：把模板切成 [`Segment`]。
@@ -140,7 +140,7 @@ pub fn lex(template: &str) -> Vec<Segment<'_>> {
 /// 跳过一个构造：推进 `consumed` 个字节，并把其中的换行计入行号。
 fn advance(template: &str, from: usize, consumed: usize, line: &mut usize) -> usize {
     let to = from + consumed;
-    *line += crate::parse::count_newlines(&template[from..to]);
+    *line += crate::text::count_newlines(&template[from..to]);
     to
 }
 
@@ -207,60 +207,6 @@ fn is_key(key: &str) -> bool {
         && key
             .chars()
             .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-}
-
-pub mod parse {
-    //! 声明层解析原语：括号深度、行号与带行号的错误。
-
-    use diagnostic::{Code, Error};
-
-    /// 括号深度的一步：`(` 加深、`)` 回退（退到 0 之前即不配对），其它字符不动。
-    pub(crate) fn depth_step(depth: usize, ch: char) -> Option<usize> {
-        match ch {
-            '(' => Some(depth + 1),
-            ')' => depth.checked_sub(1),
-            _ => Some(depth),
-        }
-    }
-
-    /// 带行号的解析错误：`Error::new(Code::Invalid, message)` 再挂一个「第 N 行」上下文。
-    pub(crate) fn line_error(line: usize, message: impl Into<String>) -> Error {
-        Error::new(Code::Invalid, message).with(format!("第 {line} 行"))
-    }
-
-    /// 一段文本里的换行数：绝对行号（`sig::line_of`）与增量行号（`tpl::advance`）共用。
-    pub(crate) fn count_newlines(text: &str) -> usize {
-        text.bytes().filter(|byte| *byte == b'\n').count()
-    }
-
-    /// 从 `open` 处的 `(` 找配对的 `)`：深度归零的那一格就是答案，返回绝对下标。
-    pub(crate) fn matching_paren(text: &str, open: usize) -> Option<usize> {
-        let mut depth = 0usize;
-        for (idx, ch) in text[open..].char_indices() {
-            depth = depth_step(depth, ch)?;
-            if depth == 0 {
-                return Some(open + idx);
-            }
-        }
-        None
-    }
-
-    /// 按顶层逗号切分：括号内的逗号不算顶层。返回每个片段的 `(字节偏移, 原文)`。
-    pub(crate) fn split_top_level(inner: &str) -> Vec<(usize, &str)> {
-        let mut parts = Vec::new();
-        let mut depth = 0usize;
-        let mut start = 0usize;
-        for (idx, ch) in inner.char_indices() {
-            let at_comma = ch == ',' && depth == 0;
-            depth = depth_step(depth, ch).unwrap_or_default();
-            if at_comma {
-                parts.push((start, &inner[start..idx]));
-                start = idx + 1;
-            }
-        }
-        parts.push((start, &inner[start..]));
-        parts
-    }
 }
 
 #[cfg(test)]

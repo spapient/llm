@@ -86,21 +86,13 @@
 //! assert_eq!(cost.write, 8 * 4);
 //! ```
 
-#[path = "einsum_axis.rs"]
 pub mod axis;
-#[path = "einsum_bits.rs"]
 pub mod bits;
-#[path = "einsum_cache.rs"]
 pub mod cache;
-#[path = "einsum_cost.rs"]
 pub mod cost;
-#[path = "einsum_expr.rs"]
 pub mod expr;
-#[path = "einsum_extents.rs"]
 pub mod extents;
-#[path = "einsum_formula.rs"]
 pub mod formula;
-#[path = "einsum_operand.rs"]
 pub mod operand;
 
 pub use axis::{Axes, Axis, AxisRole};

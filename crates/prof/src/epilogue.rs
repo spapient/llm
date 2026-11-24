@@ -89,7 +89,7 @@ fn push_step<'a>(out: &mut Vec<(usize, &'a str)>, text: &'a str, start: usize, e
     if piece.is_empty() {
         return;
     }
-    let line = crate::tpl::parse::count_newlines(&text[..start + leading]) + 1;
+    let line = crate::text::count_newlines(&text[..start + leading]) + 1;
     out.push((line, piece));
 }
 
