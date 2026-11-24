@@ -246,7 +246,11 @@ impl<'a> Contract<'a> {
         found: &mut Vec<String>,
     ) -> Result<(), String> {
         let entry = entry.map_err(|error| format!("`{}` 的片段目录项不可读：{error}", self.id))?;
-        if entry.file_type().map_err(|error| error.to_string())?.is_dir() {
+        if entry
+            .file_type()
+            .map_err(|error| error.to_string())?
+            .is_dir()
+        {
             return Ok(());
         }
         let name = entry.file_name().to_string_lossy().into_owned();

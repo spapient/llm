@@ -247,8 +247,8 @@ impl Writer {
     }
 
     /// 等待各段线程收尾并按下标汇总；线程异常按错误上抛。
-    fn join_plans<'a>(
-        handles: Vec<std::thread::JoinHandle<Vec<(usize, Plan<'a>)>>>,
+    fn join_plans<'scope, 'a>(
+        handles: Vec<std::thread::ScopedJoinHandle<'scope, Vec<(usize, Plan<'a>)>>>,
     ) -> Result<Vec<(usize, Plan<'a>)>> {
         let mut plans = Vec::new();
         for handle in handles {

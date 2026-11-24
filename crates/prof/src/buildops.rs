@@ -120,7 +120,7 @@ fn expand_tiers(name: &str, table: &toml::Table) -> Vec<(String, Option<String>)
             .unwrap_or_else(|| fail(format!("`{name}.toml` 的 tiers 元素必须是字符串档名")));
         entries.push((format!("{algorithm}_{tier}"), Some(tier.to_string())));
     }
-    Ok(entries)
+    entries
 }
 
 /// 文件名 stem；生成代码需要合法的 UTF-8 字符串。
@@ -143,11 +143,7 @@ fn template_stem(table: &toml::Table, name: &str) -> String {
 
 /// 解析并严格校验 `kernels.toml`，拒绝未知段、模板、后端与非整数因子。
 fn tuning_of(table: toml::Table, devices: &[Device], entries: &[Entry]) -> Tuning {
-    for key in table.keys() {
-        if key != "unroll" {
-            fail(format!("`kernels.toml.{key}` 未知：目前只支持 `[unroll]`"));
-        }
-    }
+    validate_top_keys(&table);
     let mut tuning = Tuning::default();
     let Some(unroll) = table.get("unroll") else {
         return tuning;
@@ -156,35 +152,60 @@ fn tuning_of(table: toml::Table, devices: &[Device], entries: &[Entry]) -> Tunin
         .as_table()
         .unwrap_or_else(|| fail("`kernels.toml.unroll` 必须是表"));
     for (stem, config) in unroll {
-        if !entries.iter().any(|entry| entry.stem == *stem) {
-            fail(format!("`kernels.toml.unroll.{stem}` 不是已声明的模板"));
-        }
-        let config = config
-            .as_table()
-            .unwrap_or_else(|| fail(format!("`kernels.toml.unroll.{stem}` 必须是内联表")));
-        let mut factors = BTreeMap::new();
-        for (backend, value) in config {
-            if backend != "default" && !devices.iter().any(|device| device.name == *backend) {
-                fail(format!(
-                    "`kernels.toml.unroll.{stem}.{backend}` 不是已登记后端或 `default`"
-                ));
-            }
-            let factor = value.as_integer().unwrap_or_else(|| {
-                fail(format!(
-                    "`kernels.toml.unroll.{stem}.{backend}` 必须是非负整数"
-                ))
-            });
-            let factor = u32::try_from(factor).unwrap_or_else(|_| {
-                fail(format!(
-                    "`kernels.toml.unroll.{stem}.{backend}` 必须在 0..={} 之间",
-                    u32::MAX
-                ))
-            });
-            factors.insert(backend.clone(), factor);
-        }
+        let factors = parse_stem_unroll(stem, config, devices, entries);
         tuning.unroll.insert(stem.clone(), factors);
     }
     tuning
+}
+
+/// 顶层只允许 `[unroll]`；其余键属于未登记的调优族。
+fn validate_top_keys(table: &toml::Table) {
+    for key in table.keys() {
+        if key != "unroll" {
+            fail(format!("`kernels.toml.{key}` 未知：目前只支持 `[unroll]`"));
+        }
+    }
+}
+
+/// 解析单份模板的展开配置：先确认 stem 已声明，再逐后端取因子。
+fn parse_stem_unroll(
+    stem: &str,
+    config: &toml::Value,
+    devices: &[Device],
+    entries: &[Entry],
+) -> BTreeMap<String, u32> {
+    if !entries.iter().any(|entry| entry.stem == stem) {
+        fail(format!("`kernels.toml.unroll.{stem}` 不是已声明的模板"));
+    }
+    let config = config
+        .as_table()
+        .unwrap_or_else(|| fail(format!("`kernels.toml.unroll.{stem}` 必须是内联表")));
+    let mut factors = BTreeMap::new();
+    for (backend, value) in config {
+        let factor = parse_backend_factor(stem, backend, value, devices);
+        factors.insert(backend.clone(), factor);
+    }
+    factors
+}
+
+/// 解析单个后端因子：后端必须是 `default` 或已登记 vendor，因子为非负整数。
+fn parse_backend_factor(stem: &str, backend: &str, value: &toml::Value, devices: &[Device]) -> u32 {
+    if backend != "default" && !devices.iter().any(|device| device.name == backend) {
+        fail(format!(
+            "`kernels.toml.unroll.{stem}.{backend}` 不是已登记后端或 `default`"
+        ));
+    }
+    let factor = value.as_integer().unwrap_or_else(|| {
+        fail(format!(
+            "`kernels.toml.unroll.{stem}.{backend}` 必须是非负整数"
+        ))
+    });
+    u32::try_from(factor).unwrap_or_else(|_| {
+        fail(format!(
+            "`kernels.toml.unroll.{stem}.{backend}` 必须在 0..={} 之间",
+            u32::MAX
+        ))
+    })
 }
 
 /// `template_list.rs`：算子名与模板 stem 的宏清单，顺序与 [`crate::OPS`] 一致。

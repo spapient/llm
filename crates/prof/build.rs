@@ -259,10 +259,8 @@ fn archive_of(dir: &Path, name: &str) -> toml::Table {
 ///
 /// 这里只解析来源策略，具体 stem 是否存在由 `buildops` 在完整算子矩阵上校验。
 fn kernel_base_of(doc: &toml::Table, name: &str) -> Option<String> {
-    let Some(value) = doc.get("kernels") else {
-        return None;
-    };
-    let kernels = value
+    let kernels = doc
+        .get("kernels")?
         .as_table()
         .unwrap_or_else(|| fail(format!("`{name}.kernels` 必须是表")));
     for key in kernels.keys() {

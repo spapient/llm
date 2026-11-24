@@ -13,7 +13,7 @@ impl Format {
     pub const MAGIC: [u8; 4] = *b"LLMC";
 
     /// 当前格式版本：字段集、编码顺序或校验方式变化时必须递增；版本之间不兼容，只支持当前版本。
-    pub const VERSION: u16 = 5;
+    pub const VERSION: u16 = 6;
 
     /// 文件头字节数（魔数 + 版本）。
     pub const HEADER_BYTES: usize = Self::MAGIC.len() + 2;
