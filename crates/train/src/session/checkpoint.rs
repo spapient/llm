@@ -137,10 +137,11 @@ impl Checkpoint {
 }
 
 impl TrainSpec {
-    /// 完整训练配置的确定指纹；优化器以具体类型名纳入，浮点按 IEEE 位模式哈希。
-    pub fn config_fingerprint(&self, optimizer: &str) -> u64 {
+    /// 完整训练配置的确定指纹；优化器类型与静态超参均纳入，浮点按 IEEE 位模式哈希。
+    pub fn config_fingerprint<O: Optimizer + ?Sized>(&self, optimizer: &O) -> u64 {
         let mut hash = StableHash::new("train-spec-v1");
-        hash.text(optimizer);
+        hash.text(std::any::type_name::<O>());
+        optimizer.write_config(&mut |value| hash.number(value));
         hash_config(&mut hash, &self.session);
         hash.number(self.loader.rows as u64);
         hash.number(self.loader.cols as u64);

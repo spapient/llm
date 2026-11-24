@@ -325,8 +325,7 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
             config.min_ratio,
         )?;
         let bufs = Bufs::new(sizes.clone(), kernel);
-        let config_fingerprint =
-            checkpoint::session_fingerprint(&config, std::any::type_name::<O>());
+        let config_fingerprint = checkpoint::session_fingerprint(&config, &optimizer);
         Ok(Self {
             tape,
             sizes,

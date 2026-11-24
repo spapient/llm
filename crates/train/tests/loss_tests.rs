@@ -1,4 +1,7 @@
-use crate::{argmax_hits, bce_with_logits, cross_entropy, hinge, huber, mse};
+use crate::{
+    Grpo, advantage, argmax_hits, bce_with_logits, clipped_surrogate, cross_entropy, entropy,
+    grpo_loss, hinge, huber, log_prob, mse, policy_loss,
+};
 use diagnostic::{Code, Result};
 
 #[test]

@@ -156,6 +156,12 @@ pub trait Optimizer {
         let _ = shapes;
         self.restore(momentum, variance, step)
     }
+
+    /// 把影响更新的静态超参数写入恢复指纹；运行态矩与步数不得写入。
+    /// 自定义优化器的缺省实现只区分具体类型，内置优化器逐项覆盖浮点位模式与开关。
+    fn write_config(&self, sink: &mut dyn FnMut(u64)) {
+        let _ = sink;
+    }
 }
 
 /// 全局梯度范数（L2）：跨全部槽位汇总，裁剪按这个范数统一缩比。
@@ -197,6 +203,15 @@ fn rescale(slots: &mut [Slot<'_>], scale: f32, divide: bool) {
         } else {
             *grad *= scale;
         }
+    }
+}
+
+/// 衰减与裁剪共用同一恢复指纹投影，避免各优化器漏写 `Option` 的有无标记。
+fn write_decay_clip(weight_decay: f32, clip_norm: Option<f32>, sink: &mut dyn FnMut(u64)) {
+    sink(weight_decay.to_bits().into());
+    sink(clip_norm.is_some().into());
+    if let Some(norm) = clip_norm {
+        sink(norm.to_bits().into());
     }
 }
 

@@ -182,3 +182,36 @@ fn unroll_configuration_follows_the_template_stem() {
         }
     }
 }
+
+/// MUSA 特化必须保持共享 ABI，并保留真实设备内核、分块同步与三侧边界守卫。
+/// 这里只检查源码契约；是否可由 mcc 编译及真机数值/性能由设备测试另行证明。
+#[test]
+fn musa_matmul_specialization_preserves_abi_and_device_contract() {
+    let reference = crate::catalogue::named("matmul_f32")
+        .expect("共享矩阵乘声明")
+        .to_decl()
+        .expect("共享声明有效");
+    let specialized = crate::catalogue::for_device(&reference, "musa").expect("MUSA 矩阵乘特化");
+    assert!(matches!(specialized, std::borrow::Cow::Owned(_)));
+    assert_eq!(specialized.signature, reference.signature);
+    assert_eq!(specialized.needs, reference.needs);
+    assert_eq!(specialized.layouts, reference.layouts);
+
+    let source = &specialized.template;
+    for required in [
+        "__global__",
+        "__shared__",
+        "__syncthreads()",
+        "<<<grid, block>>>",
+        "row < M && k < K",
+        "bk < K && col < N",
+        "row < M && col < N",
+        "cudaGetLastError()",
+        "cudaDeviceSynchronize()",
+    ] {
+        assert!(source.contains(required), "MUSA 特化缺 `{required}`");
+    }
+    assert_eq!(source.matches("#pragma unroll 4").count(), 1);
+    assert!(!source.contains("#include <wmma"));
+    assert!(!source.contains("nvcuda::wmma"));
+}

@@ -302,6 +302,7 @@ witness = { file = "musa/witness.cu", func = "witness_rcp", expect = [0.25, 0.5]
 #define cudaMemcpyHostToDevice musaMemcpyHostToDevice
 #define cudaMemcpyDeviceToHost musaMemcpyDeviceToHost
 #define cudaDeviceSynchronize musaDeviceSynchronize
+#define cudaGetLastError musaGetLastError
 #define cudaGetErrorString musaGetErrorString
 """
 "cuda_fp16.h" = """
