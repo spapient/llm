@@ -5,6 +5,14 @@ use std::process::ExitCode;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut settings = match llm_cli::settings::Settings::load() {
+        Ok(settings) => settings,
+        Err(error) => return finish(Err(error)),
+    };
+    let args = match settings.apply_arguments(&args) {
+        Ok(rest) => rest,
+        Err(error) => return finish(Err(error)),
+    };
     let invocation = match llm_cli::Invocation::parse(&args) {
         Ok(invocation) => invocation,
         Err(error) => {
@@ -13,7 +21,7 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    finish(llm_cli::entry(&invocation))
+    finish(llm_cli::entry_with_settings(&invocation, &settings))
 }
 
 /// 命令结果 → 退出码：成功走 0，失败按诊断码分级打印。

@@ -56,17 +56,26 @@ use diagnostic::{Code, Error, Result};
 /// 命令分派：解析后的命令接到对应编排；输出由各编排函数落到 stdout，
 /// 错误交给二进制入口汇总成退出码。
 pub fn entry(invocation: &Invocation<'_>) -> Result<()> {
+    let settings = settings::Settings::load()?;
+    entry_with_settings(invocation, &settings)
+}
+
+/// 使用已加载的来源配置分派；二进制入口在解析 argv 前剥离 `--set` / `--config`。
+pub fn entry_with_settings(
+    invocation: &Invocation<'_>,
+    settings: &settings::Settings,
+) -> Result<()> {
     shard::backends::install();
-    route(invocation.command())
+    route(invocation.command(), settings)
 }
 
 /// 一级分派：自处理的命令直接落地，其余按类别下推。
-fn route(command: &Command<'_>) -> Result<()> {
+fn route(command: &Command<'_>, settings: &settings::Settings) -> Result<()> {
     match command {
         Command::Help => usage(),
         Command::Platform => platform::report(),
         Command::Status { .. } | Command::Run { .. } | Command::Train { .. } => {
-            run_command(command)
+            run_command(command, settings)
         }
         other => objects(other),
     }
@@ -79,7 +88,7 @@ fn usage() -> Result<()> {
 }
 
 /// 读权重、跑闭环：三者都在算，都归这里。
-fn run_command(command: &Command<'_>) -> Result<()> {
+fn run_command(command: &Command<'_>, settings: &settings::Settings) -> Result<()> {
     match command {
         Command::Status { weights } => status::status(weights.as_deref()),
         Command::Run {
@@ -95,6 +104,7 @@ fn run_command(command: &Command<'_>) -> Result<()> {
             accumulation,
             load,
         } => train::train_run(
+            settings,
             lr.as_deref(),
             warmup.as_deref(),
             steps.as_deref(),

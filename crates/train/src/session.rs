@@ -1,6 +1,6 @@
-//! 训练会话：tape → 反传计划 → 梯度需求分类 → 梯度缓冲 → 优化器步的最小闭环；学习率调度
-//! （[`Schedule`] / [`Anneal`]）与分布式同步配置（[`Distributed`]）与它同住一处——会话是它们唯一的
-//! 装配者，调度曲线与同步口径都随 [`TrainConfig`] 走。快照事实集与视图装配在 [`checkpoint`]。
+//! 训练会话：tape → 反传计划 → 梯度需求分类 → 梯度缓冲 → 优化器步的最小闭环；分布式同步配置
+//! （[`Distributed`]）与它同住一处——会话是它唯一的装配者，同步口径随 [`TrainConfig`] 走。学习率
+//! 调度曲线在 [`schedule`](crate::schedule)；快照事实集与视图装配在 [`checkpoint`]。
 
 use autograd::{Requirement, Sizes, Tape, Var};
 use diagnostic::{Code, Error, Result};
@@ -10,7 +10,8 @@ use tensor::{DType, Shape};
 
 use crate::optimizer::{Optimizer, Slot};
 use crate::pool::Bufs;
-use crate::{Data, Kernel};
+use crate::schedule::{Anneal, Schedule};
+use crate::{Data, Kernel, LoaderConfig};
 use storage::{GradAccum, Ties};
 
 pub use shard::{Local, Remote};
@@ -77,6 +78,13 @@ impl TrainConfig {
 
     /// 校验配置不变量；`Session` 装配时再次调用，防止公开字段被直接改成非法值。
     pub fn validate(&self) -> Result<()> {
+        self.check_schedule()?;
+        self.check_regularization()?;
+        Ok(())
+    }
+
+    /// 调度与学习率口径：总步数、warmup 关系、学习率非负有限。
+    fn check_schedule(&self) -> Result<()> {
         if self.max_steps == 0 {
             return Err(Error::new(Code::Invalid, "总步数不能为 0").with(SITE));
         }
@@ -90,7 +98,15 @@ impl TrainConfig {
         if !self.learning_rate.is_finite() || self.learning_rate < 0.0 {
             return Err(Error::new(Code::Invalid, "学习率必须是有限非负数").with(SITE));
         }
-        if self.clip_norm.is_some_and(|clip| !clip.is_finite() || clip <= 0.0) {
+        Ok(())
+    }
+
+    /// 正则与累积口径：裁剪范数为正有限、累积窗口非零、下限比例落在 `[0, 1]`。
+    fn check_regularization(&self) -> Result<()> {
+        if self
+            .clip_norm
+            .is_some_and(|clip| !clip.is_finite() || clip <= 0.0)
+        {
             return Err(Error::new(Code::Invalid, "裁剪范数必须是有限正数").with(SITE));
         }
         if self.accumulation == 0 {
@@ -166,6 +182,29 @@ impl TrainConfig {
     /// 梯度累积窗口。
     pub fn accumulation(&self) -> u32 {
         self.accumulation
+    }
+}
+
+/// 一次训练装配的静态配置；运行状态仍由 `Session`、`Loader` 等对象分别持有。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TrainSpec {
+    /// 会话、学习率调度与梯度累积配置。
+    pub session: TrainConfig,
+    /// 数据批几何与互斥采样策略。
+    pub loader: LoaderConfig,
+}
+
+impl TrainSpec {
+    /// 在装配边界统一校验各子配置。
+    pub fn new(session: TrainConfig, loader: LoaderConfig) -> Result<Self> {
+        session.validate()?;
+        loader.validate()?;
+        Ok(Self { session, loader })
+    }
+
+    /// 拆成各运行对象的独立配置。
+    pub fn into_parts(self) -> (TrainConfig, LoaderConfig) {
+        (self.session, self.loader)
     }
 }
 
@@ -617,124 +656,6 @@ fn matrix_of(shape: &Shape) -> Option<(usize, usize)> {
 #[cfg(test)]
 #[path = "../tests/session_tests.rs"]
 mod tests;
-
-// ---- 学习率调度：warmup 升到峰值，之后按曲线降到下限比例 ----
-
-/// 衰减曲线闭集：warmup 段对所有策略一致，差别只在 warmup 之后怎么降到学习率下限。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub enum Anneal {
-    /// 线性衰减：与峰值成比例匀速下行，只有两个参数、`lr()` 是纯函数，可解释性优先。
-    #[default]
-    Linear,
-    /// 余弦衰减：warmup 后按 `½(1 + cos(π·p))` 平滑下行，是 LLM 训练主流的末段收敛形态。
-    Cosine,
-    /// 恒定：warmup 后保持峰值，下限不参与下行。
-    Constant,
-}
-
-impl Anneal {
-    /// 曲线短名：诊断与报告里的稳定标签。
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Linear => "linear",
-            Self::Cosine => "cosine",
-            Self::Constant => "constant",
-        }
-    }
-
-    /// 归一化形状：`1.0` 为峰值、`0.0` 为谷底；谷底比例由 [`factor`](Self::factor) 统一插值。
-    fn shaped(self, progress: f32) -> f32 {
-        match self {
-            Self::Constant => 1.0,
-            Self::Linear => 1.0 - progress,
-            Self::Cosine => 0.5 * (1.0 + (core::f32::consts::PI * progress).cos()),
-        }
-    }
-
-    /// 曲线在进度 `progress ∈ [0, 1]` 处的因子：`min_ratio` 为谷底，`1.0` 为峰值。
-    fn factor(self, progress: f32, min_ratio: f32) -> f32 {
-        let progress = progress.clamp(0.0, 1.0);
-        min_ratio + (1.0 - min_ratio) * self.shaped(progress)
-    }
-}
-
-/// 学习率调度：warmup 升到峰值，之后按 [`Anneal`] 曲线降到下限比例。
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Schedule {
-    warmup: u64,
-    total: u64,
-    anneal: Anneal,
-    min_ratio: f32,
-}
-
-impl Schedule {
-    /// 线性衰减到 0：`total` 必须非零，`warmup` 不得超过 `total`。
-    pub fn new(warmup: u64, total: u64) -> Result<Self> {
-        Self::with(warmup, total, Anneal::Linear, 0.0)
-    }
-
-    /// 全参构造；`min_ratio` 是谷底占峰值的比例，必须落在 `[0, 1]`。
-    pub fn with(warmup: u64, total: u64, anneal: Anneal, min_ratio: f32) -> Result<Self> {
-        if total == 0 {
-            return Err(Error::new(Code::Invalid, "总步数不能为 0").with("train::Schedule::with"));
-        }
-        if warmup > total {
-            return Err(
-                Error::new(Code::Invalid, format!("warmup {warmup} 超过总步数 {total}"))
-                    .with("train::Schedule::with"),
-            );
-        }
-        if !(0.0..=1.0).contains(&min_ratio) {
-            return Err(
-                Error::new(Code::Invalid, format!("下限比例 {min_ratio} 不在 [0, 1]"))
-                    .with("train::Schedule::with"),
-            );
-        }
-        Ok(Self {
-            warmup,
-            total,
-            anneal,
-            min_ratio,
-        })
-    }
-
-    /// warmup 步数。
-    pub fn warmup(&self) -> u64 {
-        self.warmup
-    }
-
-    /// 总步数。
-    pub fn total(&self) -> u64 {
-        self.total
-    }
-
-    /// 衰减曲线。
-    pub fn anneal(&self) -> Anneal {
-        self.anneal
-    }
-
-    /// 谷底占峰值的比例。
-    pub fn min_ratio(&self) -> f32 {
-        self.min_ratio
-    }
-
-    /// 第 `step` 步的学习率：`peak` 是 warmup 结束时的值，超过 `total` 后为 0。
-    pub fn lr(&self, peak: f32, step: u64) -> f32 {
-        if step >= self.total {
-            return 0.0;
-        }
-        if self.warmup > 0 && step < self.warmup {
-            // 第 0 步已经有非零学习率，否则前若干步等于白跑。
-            return peak * ((step + 1) as f32) / (self.warmup as f32);
-        }
-        let span = self.total - self.warmup;
-        if span == 0 {
-            return peak;
-        }
-        let progress = (step - self.warmup) as f32 / span as f32;
-        peak * self.anneal.factor(progress, self.min_ratio)
-    }
-}
 
 // ---- 分布式训练编排：拓扑绑定 + 梯度同步后端，配置化挂到训练会话上 ----
 

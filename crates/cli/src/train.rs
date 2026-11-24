@@ -62,7 +62,7 @@ fn parse_train_uints(
 }
 
 /// `--load`：从快照读出恢复事实、条目表、矩状态、累积窗口与权重绑定表并排版汇报。
-fn report_recovered(path: &str, config: &train::TrainConfig) -> Result<()> {
+fn report_recovered(path: &str, spec: &train::TrainSpec) -> Result<()> {
     let snapshot = weights::Snapshot::read(std::path::Path::new(path))?;
     let facts = snapshot.facts();
     let moments = snapshot.moments();
@@ -93,7 +93,7 @@ fn report_recovered(path: &str, config: &train::TrainConfig) -> Result<()> {
             format!(
                 "{} / {} micro-batch",
                 snapshot.accum().count(),
-                config.accumulation()
+                spec.session.accumulation()
             ),
         )
         .row("权重绑定", format!("{} 对", snapshot.ties().pairs().len()));
@@ -101,8 +101,9 @@ fn report_recovered(path: &str, config: &train::TrainConfig) -> Result<()> {
     Ok(())
 }
 
-/// 无 `--load`：排版配置；会话闭环由 `train::Session` 装配。
-fn report_train_config(config: &train::TrainConfig) {
+/// 无 `--load`：排版完整装配配置；会话闭环由 `train::Session` 消费其中的会话配置。
+fn report_train_config(spec: &train::TrainSpec) {
+    let config = &spec.session;
     let report = Panel::new("llm —— 训练配置（会话闭环由 train::Session 装配）")
         .row("学习率", format!("{}", config.learning_rate))
         .row(
@@ -115,7 +116,11 @@ fn report_train_config(config: &train::TrainConfig) {
                 .clip_norm
                 .map_or_else(|| "不裁剪".to_string(), |value| format!("{value}")),
         )
-        .row("累积", format!("{} micro-batch", config.accumulation()));
+        .row("累积", format!("{} micro-batch", config.accumulation()))
+        .row(
+            "批形状",
+            format!("{} × {}", spec.loader.rows, spec.loader.cols),
+        );
     print!("{}", report.render());
 }
 

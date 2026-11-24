@@ -467,6 +467,72 @@ fn stepping_without_a_gradient_is_rejected() -> Result<()> {
     Ok(())
 }
 
+/// 会话配置是全局裁剪的事实源：四槽梯度的总范数为 8，裁剪到 1 后每格更新 0.05。
+#[test]
+fn session_config_drives_the_optimizer_clip() -> Result<()> {
+    let (tape, sizes, p, _x, _loss) = fixture();
+    let config = TrainConfig::new(0.1, 0, 1, Some(1.0), 1)?;
+    let mut session = open_session(tape, sizes, config);
+    session.register_parameter(p, ParamRole::Trainable, vec![1.0; N])?;
+    session.load_gradient(p, &[4.0; N])?;
+
+    session.optimize()?;
+
+    for &param in session.slots()[0].params() {
+        assert!((param - 0.95).abs() < 1e-6, "配置裁剪未生效：{param}");
+    }
+    Ok(())
+}
+
+/// 满窗步进失败时不提交 micro-batch 计数，也不推进优化器步号。
+#[test]
+fn a_failed_window_step_does_not_commit_its_counter() -> Result<()> {
+    let (tape, sizes, p, _x, _loss) = fixture();
+    let config = TrainConfig::new(0.1, 0, 1, None, 2)?;
+    let mut session = open_session(tape, sizes, config);
+    session.register_parameter(p, ParamRole::Trainable, vec![1.0; N])?;
+
+    session.optimize().expect("窗口未满，不需要梯度");
+    assert_eq!(session.accumulated_microbatches(), 1);
+    let error = session.optimize().expect_err("满窗时缺梯度");
+    assert_eq!(error.code(), Code::Missing);
+    assert_eq!(session.accumulated_microbatches(), 1);
+    assert_eq!(session.step(), 0);
+    Ok(())
+}
+
+/// 所有浮点配置都拒绝非有限值；裁剪阈值还必须是正数。
+#[test]
+fn train_config_rejects_non_finite_and_non_positive_values() {
+    for learning_rate in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -1.0] {
+        let error = TrainConfig::new(learning_rate, 0, 1, None, 1).expect_err("非法学习率必须拒绝");
+        assert_eq!(error.code(), Code::Invalid);
+    }
+    for clip_norm in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+        let error =
+            TrainConfig::new(0.1, 0, 1, Some(clip_norm), 1).expect_err("非法裁剪范数必须拒绝");
+        assert_eq!(error.code(), Code::Invalid);
+    }
+}
+
+/// TrainSpec 只组合纯数据，并在装配边界重新校验公开字段。
+#[test]
+fn train_spec_validates_session_and_loader_together() -> Result<()> {
+    let session = TrainConfig::new(0.2, 1, 3, Some(0.5), 2)?;
+    let loader = crate::LoaderConfig::new(2, 3)?;
+    let spec = crate::TrainSpec::new(session.clone(), loader.clone())?;
+    assert_eq!(spec.into_parts(), (session, loader));
+
+    let invalid = crate::TrainConfig {
+        learning_rate: f32::NAN,
+        ..TrainConfig::default()
+    };
+    let error = crate::TrainSpec::new(invalid, crate::LoaderConfig::default())
+        .expect_err("公开字段绕过构造器后仍要在装配边界拒绝");
+    assert_eq!(error.code(), Code::Invalid);
+    Ok(())
+}
+
 /// 可选覆盖：缺项取默认值、给出的字段生效；非法值仍走 [`TrainConfig::new`] 校验。
 #[test]
 fn overrides_fall_back_to_default_without_duplicating_constants() {

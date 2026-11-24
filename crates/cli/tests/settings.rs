@@ -307,3 +307,65 @@ fn discovery_never_anchors_to_the_repository_checkout() {
         cache.display()
     );
 }
+
+#[test]
+fn train_spec_defaults_come_from_the_train_types() {
+    let roots = Roots::new(test_home());
+    let settings = Settings::defaults(&roots);
+    assert_eq!(
+        settings.train_spec().expect("默认训练配置合法"),
+        train::TrainSpec::default()
+    );
+}
+
+#[test]
+fn train_settings_project_environment_and_cli_overrides() {
+    let roots = Roots::new(test_home());
+    let mut settings = Settings::load_with(&roots, |name| match name {
+        "CUTILE_TRAIN_LEARNING_RATE" => Some("0.2".to_string()),
+        "CUTILE_TRAIN_WARMUP_STEPS" => Some("2".to_string()),
+        "CUTILE_TRAIN_MAX_STEPS" => Some("8".to_string()),
+        "CUTILE_TRAIN_BATCH_ROWS" => Some("2".to_string()),
+        "CUTILE_TRAIN_BATCH_COLS" => Some("4".to_string()),
+        _ => None,
+    })
+    .expect("训练环境配置合法");
+    settings
+        .apply_override("train.learning_rate=0.5")
+        .expect("CLI 覆盖学习率");
+    settings
+        .apply_override("train.accumulation=3")
+        .expect("CLI 覆盖累积窗口");
+    settings
+        .apply_override("train.clip_norm=0.25")
+        .expect("CLI 覆盖裁剪");
+
+    let spec = settings.train_spec().expect("投影合法");
+    assert_eq!(spec.session.learning_rate, 0.5);
+    assert_eq!(spec.session.warmup_steps, 2);
+    assert_eq!(spec.session.max_steps, 8);
+    assert_eq!(spec.session.accumulation, 3);
+    assert_eq!(spec.session.clip_norm, Some(0.25));
+    assert_eq!((spec.loader.rows, spec.loader.cols), (2, 4));
+}
+
+#[test]
+fn invalid_train_values_are_rejected_at_parse_or_validation() {
+    let roots = Roots::new(test_home());
+    let mut settings = Settings::defaults(&roots);
+    for (key, value) in [
+        ("train.learning_rate", "NaN"),
+        ("train.clip_norm", "inf"),
+        ("train.max_steps", "-1"),
+    ] {
+        let error = settings
+            .apply_override(&format!("{key}={value}"))
+            .expect_err("非法配置值必须拒绝");
+        assert_eq!(error.code(), Code::Invalid);
+    }
+
+    settings
+        .apply_override("train.clip_norm=0")
+        .expect("数值解析成功，语义校验在投影边界");
+    assert_eq!(settings.train_spec().unwrap_err().code(), Code::Invalid);
+}

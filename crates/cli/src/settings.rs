@@ -254,8 +254,7 @@ impl Settings {
 
     fn usize(&self, key: Key) -> Result<usize> {
         let value = self.uint(key).unwrap_or(0);
-        usize::try_from(value)
-            .map_err(|_| invalid(format!("`{}` 超出 usize 范围", key.dotted())))
+        usize::try_from(value).map_err(|_| invalid(format!("`{}` 超出 usize 范围", key.dotted())))
     }
 
     /// 投影成内核只认的三目录纯数据：缓存 / 工作 / 数据根；`cutile` 不读环境变量（ADR 0023）。

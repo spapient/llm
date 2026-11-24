@@ -267,3 +267,39 @@ fn a_run_never_ends_in_a_panic() {
         );
     }
 }
+
+#[test]
+fn train_reads_config_files_and_explicit_flags_override_them() {
+    let path =
+        std::env::temp_dir().join(format!("llm-cli-train-config-{}.toml", std::process::id()));
+    std::fs::write(
+        &path,
+        "[train]\nlearning_rate = 0.125\nmax_steps = 8\nbatch_rows = 2\nbatch_cols = 4\nclip_norm = 0.25\n",
+    )
+    .expect("写训练配置");
+    let output = llm()
+        .arg("--config")
+        .arg(&path)
+        .args(["train", "--lr", "0.5"])
+        .output()
+        .expect("进程可派生");
+    std::fs::remove_file(&path).ok();
+
+    assert_eq!(output.status.code(), Some(0), "合法训练配置必须成功");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("0.5"), "显式 --lr 应覆盖文件：{stdout}");
+    assert!(stdout.contains("warmup 0/8"), "总步数应来自文件：{stdout}");
+    assert!(stdout.contains("0.25"), "裁剪应来自文件：{stdout}");
+    assert!(stdout.contains("2 × 4"), "批形状应来自文件：{stdout}");
+}
+
+#[test]
+fn train_rejects_non_finite_values_from_set() {
+    let output = llm()
+        .args(["--set", "train.learning_rate=NaN", "train"])
+        .output()
+        .expect("进程可派生");
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("有限数"), "诊断应说明非有限值：{stderr}");
+}

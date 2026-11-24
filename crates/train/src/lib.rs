@@ -42,7 +42,6 @@
 #![deny(unsafe_code)]
 
 mod backprop;
-mod config;
 pub mod geometry;
 mod kernel;
 mod learner;
@@ -50,6 +49,7 @@ mod loss;
 mod optimizer;
 mod pool;
 mod rng;
+mod schedule;
 mod session;
 
 /// 训练侧测试共用的夹具图（`tests/support.rs`）：在 crate 根挂一次，测试模块引用它，

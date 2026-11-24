@@ -24,6 +24,8 @@ pub const USAGE: &str = "\
   cutile verify --op <算子>   cutile bench --op <算子>   cutile doctor
 
 选项：
+  --config <文件>        读取 TOML 配置（默认 < 文件 < CUTILE_* < 命令行）
+  --set <键=值>          覆盖登记的配置键，如 train.learning_rate=0.001
   --weights <文件>        safetensors 权重文件（`status` / `run` 用；`run` 必需）
   --in <文件>             输入路径（`import` 的 safetensors 源；`inspect` / `check` / `deploy` / `settle` / `audit` 的 `.u` 容器；六者都必需）
   --out <文件>            输出路径（`import` 的 `.u` 容器，必需）；`settle` 的账本文件（可选）
