@@ -11,7 +11,15 @@ fn sample(len: usize, salt: i32) -> Vec<i8> {
 fn assert_tiled_matches(m: usize, n: usize, k: usize) {
     let a = sample(m * k, 7);
     let b = sample(k * n, 11);
-    let (expected, actual) = run_both::<i8>(&a, &b, m, n, k);
+    let (expected, actual) = run_both::<i8, _, _>(
+        &a,
+        &b,
+        m,
+        n,
+        k,
+        forward_scalar,
+        super::forward_tiled,
+    );
     assert_eq!(actual, expected, "i8 tile 必须与标量参考逐位一致");
 }
 

@@ -15,7 +15,15 @@ fn sample(len: usize, salt: u32) -> Vec<f32> {
 fn assert_tiled_matches(m: usize, n: usize, k: usize) {
     let a = sample(m * k, 1);
     let b = sample(k * n, 2);
-    let (expected, actual) = run_both::<f32>(&a, &b, m, n, k);
+    let (expected, actual) = run_both::<f32, _, _>(
+        &a,
+        &b,
+        m,
+        n,
+        k,
+        forward_scalar,
+        forward_tiled,
+    );
     // K=4096 级 f32 累加的顺序误差在 1e-3 量级，rtol 取 1e-3、atol 取 1e-3。
     close_enough(&actual, &expected, 1e-3, 1e-3).expect("tile 与标量参考在容差内一致");
 }
