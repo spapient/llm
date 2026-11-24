@@ -91,7 +91,7 @@ macro_rules! impl_scalar {
         impl Precision for $ty {
             type Acc = $ty;
             fn mac(acc: &mut Self::Acc, a: Self, b: Self) {
-                *acc = *acc + a * b;
+                *acc += a * b;
             }
         }
         impl Scalar for $ty {
