@@ -74,7 +74,7 @@ fn the_kind_table_follows_the_enum_order() {
         );
         assert_eq!(
             kind.as_str(),
-            Reduce::SHORT[position].0,
+            Reduce::NAMES[position],
             "{kind:?} 的短名与表里第 {position} 行不符"
         );
     }

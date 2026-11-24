@@ -6,3 +6,7 @@ pub mod exec;
 #[cfg(target_os = "macos")]
 #[path = "metal/runtime.rs"]
 pub mod metal;
+
+#[cfg(windows)]
+#[path = "intel/opencl.rs"]
+pub mod opencl;

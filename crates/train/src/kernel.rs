@@ -408,40 +408,6 @@ fn signed(bytes: &[u8]) -> Vec<i8> {
     bytes.iter().map(|&x| x as i8).collect()
 }
 
-/// i8 反量化：f32 承载量化整数，输入包只读张量视图。
-fn dequant_i8(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
-    let (q,) = <(f32,) as Inputs>::unpack(inputs, "dequant_i8")?;
-    let out = output_slice::<f32>("dequant_i8", output)?;
-    nn::dequant_i8::forward(
-        nn::dequant_i8::SCALE,
-        nn::dequant_i8::ZERO,
-        tensor::View::one(q),
-        out,
-    )
-}
-
-/// clamp：`[x] → y`，界取模块常量 `LO` / `HI`（签名通道只支持整数标量）。
-fn clamp_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
-    let (x,) = <(f32,) as Inputs>::unpack(inputs, "clamp_f32")?;
-    let out = output_slice::<f32>("clamp_f32", output)?;
-    nn::clamp_f32::forward(
-        nn::clamp_f32::LO,
-        nn::clamp_f32::HI,
-        tensor::View::one(x),
-        out,
-    )
-}
-
-/// `[a: f32] → y: f32`：位置取样本约定的 7。
-fn rope_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
-    let (a,) = <(f32,) as Inputs>::unpack(inputs, "rope_f32")?;
-    nn::rope_f32::forward(
-        7,
-        tensor::View::one(a),
-        output_slice::<f32>("rope_f32", output)?,
-    )
-}
-
 // ---- 反向共享的旋转与正交化数值核心 ----
 
 /// `rope_f32` 的固定位置：前向与反向同为 7（标量槽尚未接进训练内核）。

@@ -227,11 +227,20 @@ impl Geometry {
 
     /// 输出元素数。前向缓冲长度必须与它相等。
     pub fn outputs(self) -> usize {
+        let plane = |len, k, s, p, width, channels| {
+            pool_len(len, k, s, p)
+                .and_then(|out| Ok(out * pool_len(width, k, s, p)? * channels))
+                .unwrap_or(0)
+        };
         match self {
             Self::Pool1d { k, s, p, l, c } => pool_len(l, k, s, p).map_or(0, |ol| ol * c),
-            Self::Pool2d { .. } | Self::Avg2d { .. } | Self::Conv2d { .. } => spatial_outputs(self),
+            Self::Pool2d { k, s, p, h, w, c }
+            | Self::Avg2d { k, s, p, h, w, c, .. } => plane(h, k, s, p, w, c),
             Self::Adaptive { oh, ow, c, .. } | Self::Interp { oh, ow, c, .. } => oh * ow * c,
-            Self::Norm { .. } | Self::Group { .. } | Self::Layer { .. } => norm_outputs(self),
+            Self::Norm { n, spatial, channels }
+            | Self::Group { n, spatial, channels, .. } => n * spatial * channels,
+            Self::Conv2d { k, s, p, h, w, cout, .. } => plane(h, k, s, p, w, cout),
+            Self::Layer { rows, width } => rows * width,
         }
     }
 

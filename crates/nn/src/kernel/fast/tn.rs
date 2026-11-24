@@ -18,13 +18,9 @@ pub const MIN_ROWS: usize = MR;
 ///
 /// 三条缓冲长度不足 `rows·k` / `n·k` / `rows·n` 时 panic（调用方先校验）。
 pub fn gemm_f32_tn(x: View<'_, f32>, w: View<'_, f32>, out: &mut [f32]) {
-    assert_eq!(x.dims().len(), 2, "gemm_f32_tn 需要二维输入");
-    assert_eq!(w.dims().len(), 2, "gemm_f32_tn 需要二维输入");
-    let (rows, k) = (x.dims()[0], x.dims()[1]);
-    let (n, k2) = (w.dims()[0], w.dims()[1]);
-    assert_eq!(k, k2, "gemm_f32_tn 收缩轴不符");
+    let (rows, n, k) = super::matmul::tn_geom(x.dims(), w.dims()).expect("gemm_f32_tn 几何不符");
     let (x, w) = (x.as_slice(), w.as_slice());
-    check_dims_tn(x, w, rows, n, k, out);
+    super::check_dims(x, w, rows, n, k, out);
     let t = threads_override().min(rows.div_ceil(MR)).max(1);
     if t <= 1 {
         single_tn(x, w, rows, n, k, out);
@@ -33,14 +29,6 @@ pub fn gemm_f32_tn(x: View<'_, f32>, w: View<'_, f32>, out: &mut [f32]) {
     if !pooled_tn(x, w, rows, n, k, out, t) {
         scoped_tn(x, w, out, rows, n, k, t);
     }
-}
-
-/// 尺寸校验：三条缓冲不足 `rows·k` / `n·k` / `rows·n` 时 panic。
-fn check_dims_tn(x: &[f32], w: &[f32], rows: usize, n: usize, k: usize, out: &[f32]) {
-    assert!(
-        x.len() >= rows * k && w.len() >= n * k && out.len() >= rows * n,
-        "gemm_f32_tn 尺寸不符"
-    );
 }
 
 /// 单线程：整段打包一次，再按行块算完整段 K。

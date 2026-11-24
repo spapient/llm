@@ -624,24 +624,23 @@ fn build_layer(block: &str, entries: &[&Entry]) -> Option<Recurrent> {
 
 /// 某一件某层某方向的二维形状；缺这一件或不是二维就返回 `None`。
 fn matrix_of(block: &str, entries: &[&Entry], tensor: RecurrentTensor) -> Option<(usize, usize)> {
-    match shape_of(block, entries, tensor, 0, 0)?.as_slice() {
+    match shape_of(block, entries, tensor, 0, 0)?.dims() {
         [rows, cols] => Some((*rows, *cols)),
         _ => None,
     }
 }
 
-/// 某一件某层某方向的形状。
-fn shape_of(
+/// 借用匹配条目的形状，避免每次查询都分配一个临时 `Vec`。
+fn shape_of<'a>(
     block: &str,
-    entries: &[&Entry],
+    entries: &[&'a Entry],
     tensor: RecurrentTensor,
     level: usize,
     dir: usize,
-) -> Option<Vec<usize>> {
+) -> Option<&'a Shape> {
     entries.iter().find_map(|entry| {
         let found = recurrent_parts(entry.name())?;
-        // 四元组一次比完：层名、件、层号、方向，少一个都算别的条目。
-        (found == (block, tensor, level, dir)).then(|| entry.shape().dims().to_vec())
+        (found == (block, tensor, level, dir)).then(|| entry.shape())
     })
 }
 

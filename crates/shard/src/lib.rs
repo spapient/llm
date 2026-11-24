@@ -105,11 +105,8 @@ mod placement;
 mod tiling;
 mod topology;
 
-mod remote;
-
-pub use collective::{Collective, Group, Local, Reduce, ReduceScalar, Remote};
+pub use collective::{Collective, FileRemote, Group, Local, Reduce, ReduceScalar, Remote};
 pub use placement::{Assembler, LinearGeo, Placement};
-pub use remote::FileRemote;
 pub use tiling::{Sharding, Tiling};
 pub use topology::{Job, Parallel, ParallelConfig, Plan, Priority, Queue, Topology};
 

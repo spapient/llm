@@ -39,34 +39,12 @@ pub fn sample(len: usize, _: usize) -> Sample {
     }
 }
 
-/// 参考两参前置：长度一致且非空（空行没有可统计的均方根）。
-fn check_ref(x: &[f32], gamma: &[f32]) -> diagnostic::Result<()> {
+/// 公共前置：输入与权重等长且非空；输出长度由对应入口单独核对。
+fn check(x: &[f32], gamma: &[f32]) -> diagnostic::Result<()> {
     if x.len() != gamma.len() {
         return Err(Error::new(
             Code::Invalid,
             format!("x 与 gamma 长度不一致：{} 与 {}", x.len(), gamma.len()),
-        ));
-    }
-    if x.is_empty() {
-        return Err(Error::new(
-            Code::Invalid,
-            "rmsnorm 输入不能为空：均方根无定义",
-        ));
-    }
-    Ok(())
-}
-
-/// 内核三参前置：等长且非空。
-fn check_kernel(x: &[f32], gamma: &[f32], out: &[f32]) -> diagnostic::Result<()> {
-    if x.len() != gamma.len() || x.len() != out.len() {
-        return Err(Error::new(
-            Code::Invalid,
-            format!(
-                "缓冲长度不一致：x {}、gamma {}、out {}",
-                x.len(),
-                gamma.len(),
-                out.len()
-            ),
         ));
     }
     if x.is_empty() {

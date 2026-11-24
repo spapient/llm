@@ -229,7 +229,7 @@ where
         let numel = product(dims.as_slice());
         let len = storage.slice().len();
         if len != numel {
-            return Err(invalid_message::<K, _>(&dims, numel, len, marker));
+            return Err(element_count_error::<K, _>(&dims, numel, len, marker));
         }
         let strides = R::ordered(dims.as_slice(), order).ok_or_else(|| {
             crate::invalid(
@@ -299,11 +299,16 @@ where
 
     /// 按行主序逻辑顺序读取元素，不创建中间 `Vec`。
     ///
-    /// 转置、广播和带步长切片都按各自元数据遍历；连续物化仍走整段拷贝快路径。
+    /// 连续布局直接迭代原切片；转置、广播和带步长切片使用步长迭代器。
     pub fn iter(&self) -> impl ExactSizeIterator<Item = K> + '_ {
-        let source = self.storage.slice();
-        layout::Offsets::<R>::new(self.dims(), self.strides(), self.base, &[])
-            .map(move |offset| source[offset])
+        LogicalValues::<R, K>::new(
+            self.dims(),
+            self.strides(),
+            self.base,
+            self.numel(),
+            self.is_contiguous(),
+            self.storage.slice(),
+        )
     }
 
     /// 用同一形状和连续新存储重建张量。
@@ -348,7 +353,7 @@ where
 }
 
 /// 连续构造错误的统一文案。
-fn invalid_message<K: Element, R: Rank>(
+fn element_count_error<K: Element, R: Rank>(
     dims: &R,
     numel: usize,
     len: usize,
@@ -643,3 +648,51 @@ impl From<Range<usize>> for Slice {
         Self::new(range.start, range.end)
     }
 }
+
+/// 逻辑值迭代器：连续切片快路径与通用步长路径共享一个公开方法。
+enum LogicalValues<'a, R, K> {
+    Contiguous(core::slice::Iter<'a, K>),
+    Strided {
+        source: &'a [K],
+        offsets: layout::Offsets<'a, R>,
+    },
+}
+
+impl<'a, R: Rank, K> LogicalValues<'a, R, K> {
+    fn new(
+        dims: &'a [usize],
+        strides: &'a [usize],
+        base: usize,
+        numel: usize,
+        contiguous: bool,
+        source: &'a [K],
+    ) -> Self {
+        if contiguous && let Some(values) = source.get(base..base.saturating_add(numel)) {
+            return Self::Contiguous(values.iter());
+        }
+        Self::Strided {
+            source,
+            offsets: layout::Offsets::new(dims, strides, base, &[]),
+        }
+    }
+}
+
+impl<R: Rank, K: Copy> Iterator for LogicalValues<'_, R, K> {
+    type Item = K;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Contiguous(values) => values.next().copied(),
+            Self::Strided { source, offsets } => offsets.next().map(|offset| source[offset]),
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match self {
+            Self::Contiguous(values) => values.size_hint(),
+            Self::Strided { offsets, .. } => offsets.size_hint(),
+        }
+    }
+}
+
+impl<R: Rank, K: Copy> ExactSizeIterator for LogicalValues<'_, R, K> {}

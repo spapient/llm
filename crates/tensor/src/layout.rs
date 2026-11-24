@@ -452,15 +452,13 @@ impl<'a, R: Rank> Offsets<'a, R> {
         base: usize,
         turn: &[bool],
     ) -> Option<usize> {
-        dims.iter()
-            .enumerate()
-            .try_fold(base, |at, (axis, &dim)| {
-                if !turn.get(axis).copied().unwrap_or(false) {
-                    return Some(at);
-                }
-                let step = *strides.get(axis)?;
-                shifted(at, step, dim.saturating_sub(1))
-            })
+        dims.iter().enumerate().try_fold(base, |at, (axis, &dim)| {
+            if !turn.get(axis).copied().unwrap_or(false) {
+                return Some(at);
+            }
+            let step = *strides.get(axis)?;
+            shifted(at, step, dim.saturating_sub(1))
+        })
     }
 
     /// 行进到下一个逻辑位置；最后一个元素之后不再做无效偏移运算。
@@ -613,11 +611,11 @@ where
         )
     }
 
-    /// 沿 `axis` 等分为至多 `pieces` 个非空借用视图。
+    /// 沿 `axis` 等分为至多 `pieces` 个非空借用视图，分段按需惰性构造。
     pub fn chunks(&self, axis: usize, pieces: usize) -> impl Iterator<Item = Tensor<&[K], R, K>> {
         let dim = self.dims().get(axis).copied().unwrap_or(0);
         let size = dim.div_ceil(pieces.max(1));
-        self.split(axis, (0..pieces).map(move |_| size)).into_iter()
+        self.segments(axis, (0..pieces).map(move |_| size))
     }
 
     /// 按给定段长依次切分；越界段夹到剩余长度，请求耗尽后停止。
@@ -626,21 +624,26 @@ where
         axis: usize,
         sizes: impl IntoIterator<Item = usize>,
     ) -> Vec<Tensor<&[K], R, K>> {
+        self.segments(axis, sizes).collect()
+    }
+
+    /// 惰性分段，调用方选择收集或直接消费。
+    fn segments(
+        &self,
+        axis: usize,
+        sizes: impl IntoIterator<Item = usize>,
+    ) -> impl Iterator<Item = Tensor<&[K], R, K>> {
         let dim = self.dims().get(axis).copied().unwrap_or(0);
         let mut start = 0usize;
-        let mut parts = Vec::new();
-        for len in sizes {
+        sizes.into_iter().map_while(move |len| {
             let len = len.min(dim.saturating_sub(start));
             if len == 0 {
-                break;
+                return None;
             }
-            let Some(piece) = self.segment(axis, start, len) else {
-                break;
-            };
-            parts.push(piece);
+            let piece = self.segment(axis, start, len)?;
             start += len;
-        }
-        parts
+            Some(piece)
+        })
     }
 
     /// 构造一个借用分段。

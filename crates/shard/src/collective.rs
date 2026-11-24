@@ -6,6 +6,7 @@
 use core::ops::{Add, Mul};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::mem::size_of;
 use std::path::PathBuf;
 
 use crate::Code;
