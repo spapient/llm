@@ -178,8 +178,8 @@ fn metal_kernel(entry: &GradientEntry, len: usize) -> String {
     )
 }
 
-/// CUDA 逐点反向核：256 线程一块，线程下标由 `blockIdx`/`threadIdx` 装配；长度守卫同上。
-fn cuda_kernel(entry: &GradientEntry, _len: usize) -> String {
+/// CUDA 逐点反向核：256 线程一块，线程下标由 `blockIdx`/`threadIdx` 装配；长度守卫内联字面量。
+fn cuda_kernel(entry: &GradientEntry, len: usize) -> String {
     let name = format!("{}_grad", entry.op);
     let body = body_lines(entry.deriv, &CUDA_INTR);
     let body = body
@@ -189,13 +189,12 @@ fn cuda_kernel(entry: &GradientEntry, _len: usize) -> String {
         .join("\n");
     format!(
         "__global__ void {name}(\n\
-         \x20    const float* x,\n\
-         \x20    const float* y,\n\
-         \x20    const float* dout,\n\
-         \x20    float* dx,\n\
-         \x20    int n) {{\n\
+         \x20    const float* __restrict__ x,\n\
+         \x20    const float* __restrict__ y,\n\
+         \x20    const float* __restrict__ dout,\n\
+         \x20    float* __restrict__ dx) {{\n\
          \x20    int i = blockIdx.x * blockDim.x + threadIdx.x;\n\
-         \x20    if (i >= n) return;\n\
+         \x20    if (i >= {len}) return;\n\
          {body}\n\
          }}"
     )
