@@ -1,10 +1,10 @@
 //! 优化器矩状态、累积窗口梯度与权重绑定表的快照类型、编码与解码。
 
 use crate::codec::{Cursor, frame, invalid};
+use crate::sink::Sink;
 use crate::snapshot;
 use crate::snapshot::PREALLOC;
 use diagnostic::{Code, Error, Result};
-use crate::sink::Sink;
 
 /// 一个矩状态/累积梯度槽最少占 1 字节（槽长 varint）；解码据此把声明槽位与剩余字节对账。
 pub(crate) const MIN_MOMENT_SLOT: usize = 1;

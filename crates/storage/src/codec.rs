@@ -2,9 +2,9 @@
 
 use std::ops::Range;
 
+use crate::leb::Cursor as LebCursor;
 use diagnostic::{Code, Error, Result};
 use tensor::DType;
-use crate::leb::Cursor as WireCursor;
 
 use crate::ManifestEntry;
 use crate::snapshot::PREALLOC;
@@ -72,16 +72,16 @@ fn dtype(tag: u8) -> Result<DType> {
         .ok_or_else(|| invalid(format!("未知的元素类型标签 {tag}")))
 }
 
-/// 逐字节读取器：在 `leb::Cursor` 之上保留快照侧的字段上下文与错误词汇。
+/// 逐字节读取器：在 `crate::leb::Cursor` 之上保留快照侧的字段上下文与错误词汇。
 pub(crate) struct Cursor<'a> {
-    inner: WireCursor<'a>,
+    inner: LebCursor<'a>,
     /// 当前消费偏移；测试用它给名字块切片区间定位。
     pub(crate) offset: usize,
 }
 
 impl<'a> Cursor<'a> {
     pub(crate) fn new(bytes: &'a [u8], offset: usize) -> Result<Self> {
-        let mut inner = WireCursor::new(bytes);
+        let mut inner = LebCursor::new(bytes);
         inner.take(offset).map_err(|_| truncated(offset))?;
         Ok(Self { inner, offset })
     }

@@ -3,8 +3,8 @@
 //! 这几条都是**等号或不等号**，不掺容差：编码少写一个续位字节就成了非规范码，
 //! 游标多吞一个字节后段就全错位，CRC 没能抓住单比特翻转则封口形同虚设。
 
-use llm_wire::sink::{Sink, SliceSink};
-use llm_wire::{crc, leb};
+use llm_storage::sink::{Sink, SliceSink};
+use llm_storage::{crc, leb};
 use proptest::prelude::*;
 use testkit::prop;
 

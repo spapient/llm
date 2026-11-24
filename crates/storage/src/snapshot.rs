@@ -27,11 +27,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::codec;
 pub use crate::format::{Facts, Format};
+use crate::leb::write;
+use crate::sink::{Count, FileSink, Sealed, Sink, SliceSink};
 pub use crate::state::{GradAccum, Moments, SlotMoments, Ties};
 use diagnostic::{Code, Error, Result};
 use tensor::DType;
-use crate::leb::write;
-use crate::sink::{Count, FileSink, Sealed, Sink, SliceSink};
 
 use crate::codec::{Cursor, difference, invalid, mismatch, read_entries, tag, truncated};
 use crate::state::{

@@ -8,7 +8,7 @@
 
 | 仓库 | revision | worktree 状态 | 规模（源码实测，剔除 `target`） | 测试数（`#[test]`/`#[tokio::test]` 计数） |
 | --- | --- | --- | --- | --- |
-| llm（新） | HEAD `a6d0667b` 2026-11-24 21:15:24 +0800（取证区间 HEAD 由 `521a6c07`→`6db0e545`→`740d7c12`→`9525fe6b`→`a6d0667b` 连续推进；规模/结构锚 HEAD 提交基线，编译/测试观测取自取证时点工作区磁盘快照） | 取证后期工作区已收编干净（唯一改动为本报告自身）；prof `runtime/native/einsum` 目录拆平上移平铺、`wire` 回退目录均已进入提交基线。HEAD 基线已取消独立 `device` crate，后端代码迁入 `prof`/`shard` | HEAD 基线 22 crate，653 `.rs`，156,919 行（剔 `target` 与 `.claude/worktrees` 副本） | 2716 |
+| llm（新） | HEAD `a88dbbb5` 2026-11-24 21:18:07 +0800（取证区间 HEAD 由 `521a6c07`→`6db0e545`→`740d7c12`→`9525fe6b`→`a6d0667b`→`a88dbbb5` 连续推进；规模/结构锚 HEAD 提交基线，编译/测试观测取自取证时点工作区磁盘快照） | 工作区 mixed：`wire` crate 11 文件暂存删除（wire→storage 收口中途），`testkit/src/prop.rs`、`storage/Cargo.toml`/测试、`prof/src/sme.rs`、`Cargo.lock`、`.config`、`docs/ARCHITECTURE.md` 小改，加本报告；prof `runtime/native/einsum` 目录拆平已进基线。HEAD 基线已取消独立 `device` crate，后端代码迁入 `prof`/`shard` | HEAD 基线 22 crate，653 `.rs`，156,919 行（剔 `target` 与 `.claude/worktrees` 副本） | 2716 |
 | llm.u | `cf4e8fe3` 2026-11-11 04:55 +0800 | 170 项未提交；结论以 HEAD 已提交代码为准，脏改动仅作快照差异 | 15 crate，349 `.rs`，104,592 行（剔所有层级 `target/` 与 fuzz 生成 codegen） | 1127 |
 | Burn | `c81a9042` 2026-11-22 13:06 -0500 | 干净（零改动） | 42 crate dirs，1989 `.rs`，490,469 行 | 6788 |
 
@@ -217,7 +217,7 @@ llm 文档列的形状族（`tensor.rs:20-31`）：`broadcast/narrow/slice/chunk
 | 训练循环 | `train` 13.6k：session/learner/backprop/loss/optimizer/geometry/kernel/pool/rng；forward/backward 以闭包注入（`learner.rs:168-183`）；基线编译本轮绿，backprop 套件含端到端 SGD 训练例实测通过；真机大规模收敛未核（见 §13.1） | `train` 7.8k：loss/优化器/调度/打包/检查点/rollout 桥 | `burn-train` 34.4k：完整训练循环/指标/检查点 |
 | 优化器 | `Sgd/Adam`(AdamW 解耦衰减 + 偏差修正 + 全局范数裁剪) `/Muon`（`optimizer.rs:186 Adam`、`:334 Sgd`、`:392 pub use muon::Muon`） | 仅 `Adam`（`train/src/optim.rs:12`） | 12 个具体优化器：sgd/adam/adamw/adan/lamb/lbfgs/lion/momentum/muon/rmsprop/adafactor/adagrad + decay/grad_accum/parallel |
 | LR 调度 | warmup + anneal（`session.rs` `Schedule`） | cosine + warmup 类 | `burn-optim/lr_scheduler` 多策略 |
-| loss | cross_entropy/argmax_hits/mse/bce_with_logits/huber/hinge（`loss.rs:148` 等）+ Distill（`loss.rs:360`）/Grpo 枚举变体，策略族函数体在 `loss/rl.rs:109,201`（`loss.rs:9` `mod rl`、`:11` 再导出） | 复用 exec 计算面 | 17 种 nn loss（19 文件含 mod/reduction）+ train 指标 |
+| loss | cross_entropy/argmax_hits/mse/bce/huber/hinge（`loss.rs:147` 等）+ Distill（`loss.rs:360`）/Grpo 枚举变体，策略族函数体在 `loss/rl.rs:109,201`（`loss.rs:9` `mod rl`、`:11` 再导出） | 复用 exec 计算面 | 17 种 nn loss（19 文件含 mod/reduction）+ train 指标 |
 | 指标/评估 | Learner 账表 + evaluate；无可插拔指标/渲染器 | 未见独立指标注册表 | 30+ 指标（burn-train） |
 | 数据集 | `Dataset` trait + `Loader`/`Chunks` + 顺序/洗牌/加权三族采样 + 权重校验，基线编译绿；无物理分词/打包源 | 未见独立 dataset crate | `burn-dataset` |
 | 检查点 | weights/storage 自描述编码 + CRC-32 + 恢复事实 | checkpoint 字节存档 | `burn-store`/checkpoint 完整 |
@@ -279,13 +279,13 @@ llm 文档列的形状族（`tensor.rs:20-31`）：`broadcast/narrow/slice/chunk
 | --- | --- | --- | --- |
 | lint 门槛 | unsafe_code/unsafe_op_in_unsafe_fn/missing_docs/unused_lifetimes deny，clippy all/cargo/needless_range_loop deny；dbg/todo/unimplemented deny | device/engine/exec/tool 源码 forbid、cli/benches Cargo deny，其余分 crate 未统一 | 成熟 CI/deny 配置 |
 | 外部运行期依赖 | 极薄：half/num-traits；bytemuck/serde/toml optional | 多后端 feature 拉 cudarc/metal/libloading/coreml-native/clblast | wgpu/metal/serde/half/bytemuck/ndarray 等（cudarc 经 cubecl） |
-| 测试计数 | 2703 | 1127 | 6788 |
-| 静态门 | `tools` config 驱动质量门；本轮 gate 测试 `every_source_passes_the_static_gate` 拦截 4 项 `storage/src/` 碎文件低于下限 300 行（HEAD 基线存量赤字，见 §13.1） | 未见同构静态门 | CI 门 |
+| 测试计数 | 2716 | 1127 | 6788 |
+| 静态门 | `tools` config 驱动质量门；最终稳态 `every_source_passes_the_static_gate` 绿，取证中途曾拦截 `storage/src/` 碎文件低于下限（迁移中途快照，见 §13.1） | 未见同构静态门 | CI 门 |
 | 文档/契约 | ADR 目录（`docs/adr`）、层职责自述写在各 lib.rs 头部 | config-first 契约 | contributor book/book |
 
-### 13.1 本轮门禁实测（llm，HEAD `a6d0667b`，toolchain 1.100.0）
+### 13.1 本轮门禁实测（llm，HEAD `a88dbbb5`，toolchain 1.100.0）
 
-> 取证期间 llm 存在并行工作流连续提交与未提交文件周期收编，HEAD 在区间内由 `521a6c07` 推进到 `a6d0667b`，现场先后观察到 `wire` 删除→重建、`prof` 平铺→目录化→再拆平上移的迁移状态；到取证后期工作区已收编干净（唯一改动为本报告自身）。下列结论按「基线编译/测试观测（取证时点磁盘快照）」与「HEAD 提交基线结构」分开记账。
+> 取证期间 llm 存在并行工作流连续自动提交与未提交文件周期收编，HEAD 在区间内由 `521a6c07` 推进到 `a88dbbb5`，现场先后观察到 `wire` 删除→重建、`prof` 平铺→目录化→再拆平上移的迁移状态。下列结论按「基线编译/测试观测（取证时点磁盘快照）」与「HEAD 提交基线结构」分开记账；取证时点之后的并行自动提交未纳入能力裁决。
 
 **编译观测（本轮实测，confirmed）**
 
@@ -295,12 +295,12 @@ llm 文档列的形状族（`tensor.rs:20-31`）：`broadcast/narrow/slice/chunk
 **测试观测（本轮实测，confirmed）**
 
 - `cargo test -p llm-train backprop`：**50 passed / 0 failed**（0.01s，186 filtered），CPU `Reference` 后端解析梯度与中心差分数值梯度逐参数对拍，含端到端 SGD 训练例、conv2d/GRPO/distillation KL 图对拍。
-- `cargo test --workspace`：**2258 passed / 1 failed**（9 ignored）。唯一红灯为 `llm-tools --test gate` 的静态门 `every_source_passes_the_static_gate`（`crates/tools/tests/gate.rs:108`）；其余单测/集成测全绿。
-- 静态门 4 项碎文件低于下限 300 行（`storage/src/sink.rs` 198、`crc.rs` 70、`fault.rs` 18、`leb.rs` 141；非编译错误）：4 文件已在 HEAD 基线挂载为 `storage` 的 `pub mod`，属基线静态门存量赤字；`wire` crate 下同名文件并存，为 wire→storage 迁移双份中途态。上一轮 3 项 train 文件超长赤字（`session.rs`/`backprop.rs`/`geometry.rs`）本轮已随 train 目录化拆分闭合，不再出现在告警列表。
+- `cargo test --workspace`（最终稳态快照）：**2872 passed / 0 failed / 21 ignored**（运行通过实例聚合，含各 crate lib/integration/fuzz 多 target；源码 `#[test]`/`#[tokio::test]` 标签计数 2716）。
+- 取证中途曾观测到三类迁移中途红灯，后被并行工作流收编/同步，最终稳态全绿：① `wire` 目录缺失时刻 `cargo metadata` 失败、testkit 架构门 panic；② tools 静态门 `every_source_passes_the_static_gate`（`gate.rs:108`）拦截 4 项 `storage/src/{sink,crc,fault,leb}.rs` 碎文件低于下限 300 行（198/70/18/141）；③ testkit `layer::the_declared_edges_are_exactly_the_workspace_edges` 因 wire 暂存删除、边账本未同步而失败。上述均属迁移过程快照，不计入 HEAD 基线能力裁决；上一轮 3 项 train 文件超长赤字（`session.rs`/`backprop.rs`/`geometry.rs`）本轮已随 train 目录化拆分闭合。
 
 **工作区状态（取证后期）**
 
-- 工作区已收编干净（`git status` 唯一改动为本报告自身）；取证中途出现的 wire 暂存回退、prof 平铺文件删除/目录化重组均已由并行工作流收编进提交基线。HEAD 基线 22 crate、653 `.rs`、156,919 行、2716 测试标签。
+- 未提交改动：`wire` crate 11 文件暂存删除（wire→storage 收口中途）、`testkit/src/prop.rs`、`storage/Cargo.toml` 与 `storage/tests/{crc,leb,sink}_tests.rs`、`prof/src/sme.rs`、`Cargo.lock`、`.config/lints/vocabulary.toml`、`docs/ARCHITECTURE.md` 小改，加本报告；这些未提交分歧只作快照差异，不计入已提交基线。HEAD 基线 22 crate、653 `.rs`、156,919 行、2716 测试标签。
 
 **本轮仍未取得干净观测（unknown）**
 
@@ -368,9 +368,9 @@ llm 文档列的形状族（`tensor.rs:20-31`）：`broadcast/narrow/slice/chunk
 
 ### 15.3 本轮发现的存量债务（llm）
 
-- **未提交增量（快照差异，不计基线）**：暂存 `A` wire 12 文件回退、`D` prof 16 平铺旧文件、`??` storage 2 测试；HEAD 基线已取消独立 `device` crate，设备源/执行缝/见证迁入 `prof`/`shard`，迁移途中的 wire 归属与 prof 目录化尚未在提交基线完全收口。
-- **基线编译/测试观测已取得（本轮实测）**：`cargo check --workspace` `Finished` 无 error；`cargo test --workspace` 2258 passed / 1 failed（9 ignored），唯一红灯为 tools 静态门（4 项 wire 碎文件低于下限，未提交回退产物，非编译错误）；train `Reference` 后端梯度对拍 50 例全绿。`cargo clippy --workspace --all-targets`、`cargo fmt --check` 未在收尾门禁外单独复跑。
-- 静态门：上一轮 3 项 train 文件超长赤字（`session.rs`/`backprop.rs`/`geometry.rs`）已随目录化拆分闭合；本轮告警为未提交 wire 回退的 4 个碎文件（低于下限 300 行）。
+- **结构迁移中途态**：HEAD 基线已取消独立 `device` crate，设备源/执行缝/见证迁入 `prof`/`shard`；`wire` 与 `storage` 同名 codec 文件双份并存（wire→storage 迁移尚未完全收口）；prof 子目录本轮拆平到 `prof/src/` 平铺。
+- **基线编译/测试观测已取得（本轮实测）**：`cargo check --workspace` `Finished` 无 error；最终稳态 `cargo test --workspace` 2872 passed / 0 failed / 21 ignored；train `Reference` 后端梯度对拍 50 例全绿。取证中途曾出现 gate 碎文件告警与 testkit 边账本不一致红灯，均在收编后转绿（§13.1）。`cargo clippy --workspace --all-targets`、`cargo fmt --check` 未在收尾门禁外单独复跑。
+- 静态门：上一轮 3 项 train 文件超长赤字（`session.rs`/`backprop.rs`/`geometry.rs`）已随目录化拆分闭合；取证中途 `storage/src/{sink,crc,fault,leb}.rs` 4 个碎文件低于下限 300 行曾触发告警，最终稳态已转绿。
 - `tensor/src/tensor.rs:121` `into_slice_mut` 在输出侧回退后无生产调用方（全仓 grep 仅定义处一处），作为 pub 消费式解包方法保留；去留属 API 口径决策。
 
 ### 15.4 llm.u 的定位
@@ -402,7 +402,7 @@ llm 文档列的形状族（`tensor.rs:20-31`）：`broadcast/narrow/slice/chunk
 | 1–2 | 仅声明、配置标签或占位，无真实链路 |
 | 0 | 缺失 |
 
-> 分数是当前代码快照的相对成熟度，不是能力上限；三仓定位不同（Burn 通用训练框架 / llm.u LLM 推理多后端执行 / llm 面向 Burn 能力端口的分层重构），总分须结合权重视角解读。本轮整 workspace `cargo check` 绿、`cargo test --workspace` 2258 passed / 1 failed（9 ignored），CPU `Reference` 后端解析梯度 vs 中心差分对拍 50 例实测通过；后端真机（Metal/CUDA/昇腾）运行激活与设备反向通路本轮未核，相关维度按代码结构定档。新增两维：#21 unsafe/内存安全边界、#22 依赖精简/供应链厚度（该维为「薄=高分」方向，依赖越少、系统绑定越弱得分越高）。工作区未提交的 wire 回退/prof 目录化差异不计入已提交基线。
+> 分数是当前代码快照的相对成熟度，不是能力上限；三仓定位不同（Burn 通用训练框架 / llm.u LLM 推理多后端执行 / llm 面向 Burn 能力端口的分层重构），总分须结合权重视角解读。本轮整 workspace `cargo check` 绿、`cargo test --workspace` 2872 passed / 0 failed（21 ignored），CPU `Reference` 后端解析梯度 vs 中心差分对拍 50 例实测通过；后端真机（Metal/CUDA/昇腾）运行激活与设备反向通路本轮未核，相关维度按代码结构定档。新增两维：#21 unsafe/内存安全边界、#22 依赖精简/供应链厚度（该维为「薄=高分」方向，依赖越少、系统绑定越弱得分越高）。取证中途的 wire/prof 重组差异均已收编进提交基线，未提交改动仅为本报告自身。
 
 ### 17.2 维度速览表
 
@@ -426,9 +426,9 @@ llm 文档列的形状族（`tensor.rs:20-31`）：`broadcast/narrow/slice/chunk
 | 16 | 随机数/确定性 | 7 | 1 | 8 | llm 计数器 PRNG + 三分布可复现；llm.u 采样注入闭包；Burn rand/seed/Distribution |
 | 17 | 内核 DSL 扩展 | 5 | 2 | 9 | llm cutile 协商/拼接/emit/指纹，自述仅 P0 模板纵切面 + typed kernel 起步；`cutile/src/native.rs` 为 nn→cutile→prof::native 零成本转发面；本轮 clean 后 cutile 基线编译绿；llm.u 内核直写后端；Burn CubeCL IR 成熟多 runtime lowering + 融合 |
 | 18 | 架构/可维护性 | 8 | 3 | 8 | llm 七层契约 + testkit 强制守分层 + ADR；llm.u device/exec 耦合、unsafe 分散；Burn crate 分层清晰 + derive 宏 |
-| 19 | 测试/质量门禁 | 5 | 4 | 8 | llm 2677 测试计数；本轮 `cargo check --workspace` 绿、`cargo test --workspace` 2258 passed / 1 failed（9 ignored），唯一红灯为 tools 静态门 `every_source_passes_the_static_gate`（`gate.rs:108`，4 项 wire 碎文件低于下限 300 行，未提交回退产物，非编译错误）；llm.u 1127 测试 + fuzz nightly；Burn 6788 测试 + backend-tests 套件 + CI |
+| 19 | 测试/质量门禁 | 5 | 4 | 8 | llm 2716 测试标签（运行聚合 2872 passed / 0 failed / 21 ignored）；本轮 `cargo check --workspace` 绿，最终稳态 workspace 测试全绿，train `Reference` 梯度对拍 50 例通过；testkit 分层/账本/所有权门 + tools 静态门齐全；取证中途曾现 gate 碎文件告警与 testkit 边账本不一致红灯，收编后转绿；wire→storage 收口仍有未提交中途态，clippy/fmt 未收尾复跑；llm.u 1127 测试 + fuzz nightly；Burn 6788 测试 + backend-tests 套件 + CI |
 | 20 | 生态/示例/文档 | 4 | 4 | 8 | llm 内部架构文档/ADR 完备，无对外模型与示例；llm.u README/perf 实测台账详尽；Burn book + 示例生态 |
-| 21 | unsafe/内存安全边界 | 8 | 3 | 6 | llm workspace lint `unsafe_code = "deny"`、`unsafe_op_in_unsafe_fn = "deny"`；本轮精确计数 **95** 处（unsafe 块 67 + unsafe fn 23 + unsafe impl 5 + extern unsafe 0），集中 `prof/runtime/metal.rs`(37)、`prof/native/{sme,gemm8x8,i8}.rs`(14/14/12)、`cli/tests/audit.rs`(7)、`storage/mmap.rs`(5)、`nn/kernel/fast/{i8,pool}.rs`(4/2) 显式岛；llm.u **441** 处（块 322 + fn 104 + impl 15），散见 device/ffi·opencl·simd·blas、exec/tests、cuda 后端；lint 仅 device/engine/exec/tool forbid、cli/benches deny，其余分 crate 未统一；Burn **242** 处（块 204 + fn 27 + impl 11），未检索到 `forbid/deny unsafe_code`，散见 graph/cast/quantization/dispatch |
+| 21 | unsafe/内存安全边界 | 8 | 3 | 6 | llm workspace lint `unsafe_code = "deny"`、`unsafe_op_in_unsafe_fn = "deny"`；本轮精确计数 **95** 处（unsafe 块 67 + unsafe fn 23 + unsafe impl 5 + extern unsafe 0），集中 `prof/src/metal.rs`(37)、`prof/src/{sme,gemm8x8,i8}.rs`(14/14/12)、`cli/tests/audit.rs`(7)、`storage/mmap.rs`(5)、`nn/kernel/fast/{i8,pool}.rs`(4/2) 显式岛；llm.u **441** 处（块 322 + fn 104 + impl 15），散见 device/ffi·opencl·simd·blas、exec/tests、cuda 后端；lint 仅 device/engine/exec/tool forbid、cli/benches deny，其余分 crate 未统一；Burn **242** 处（块 204 + fn 27 + impl 11），未检索到 `forbid/deny unsafe_code`，散见 graph/cast/quantization/dispatch |
 | 22 | 依赖精简/供应链 | 9 | 4 | 5 | 方向：运行期依赖越薄、系统绑定越少越高分。llm 运行期外部依赖仅 half、num-traits，bytemuck/serde(derive)/toml 为 optional，无 cudarc/metal-rs/libloading/wgpu/coreml/opencl 运行期绑定（Metal 为手写 objc FFI，未引 metal-rs crate）；llm.u 厚系统栈：cudarc 0.19(cuda-13000/cublas/cublaslt/f16)、metal 0.33、libloading 0.8、coreml-native 0.2、clblast/opencl、musa 门控；Burn 谱系最宽（按 Cargo.toml 直接声明重数）：serde 18/num-traits 12/wgpu 11/wgpu-msl 11/metal 9/half 6/bytemuck 4/serde_json 4/ndarray 1，cudarc 0（经 cubecl） |
 
 ### 17.3 总分
@@ -473,11 +473,11 @@ llm 文档列的形状族（`tensor.rs:20-31`）：`broadcast/narrow/slice/chunk
 
 - **#8 调度/训练循环 维持 5（llm）**：本轮 `cargo check --workspace` 绿，`cargo test -p llm-train backprop` 50 例全绿，含 `an_arbitrary_geometry_trains_end_to_end_under_sgd` 端到端 SGD 训练例实测通过；Session/Learner/evaluate/账表/优化步链路达最小可用闭环；真机/大规模训练收敛与调度策略仍未核，故定 5 而非更高。
 - **#4 算子/内核覆盖 维持 5（llm）**：本轮注册表实测 **71 条**（上一版 70），elementwise/unary/激活/norm/attention/pool/conv/reduce/embed/rope/gemm·gemv·matmul 与 i2/i4/i8/dequant 族齐备；各算子真机内核激活仍未核、无 RNN 类算子，故定 5（骨架在位、部分实现）而非 6–7。
-- **#19 测试/质量门禁 维持 5（llm）**：本轮整 workspace `cargo check` 绿、`cargo test --workspace` 2258 passed / 1 failed（9 ignored），唯一红灯为 tools 静态门；本轮告警为 4 项未提交 wire 回退碎文件低于下限 300 行（非编译错误），上一版 3 项 train 文件超长赤字已随 train 目录化拆分闭合；静态门未清、clippy/fmt 未收尾复跑，维持 5。
-- **#6 自动微分 维持 7（llm）**：本轮独立复核 `Reference` CPU 内核后端解析梯度与中心差分逐参数对拍，50 例实测通过；脱离优化器窗口的 Var→向量独立梯度快照已补 `GradientSnapshot`（`gradient_snapshot`，副本脱离累积窗口与缓冲生命周期，清零/步进后仍有效）。**设备反向通路本轮降级为 unknown**：HEAD 取消旧 `device` crate 后，仓内未检出设备反向梯度核契约或 Metal/CUDA 反向派发接口，`prof/runtime/metal.rs` 仅前向执行缝；`docs/evidence/cuda-backward-probes/` 下 `.cu` 为仓外历史对拍材料、未接进仓内通道，不计入仓内能力。仍缺后端装饰器式任意可微闭包、NCCL/RDMA/socket 高速织物与多进程 spawn E2E（现有进程内 `Local` + 文件后端 `FileRemote`）；CPU 参考后端闭环完整、设备反向属横向覆盖缺口，故维持 7 不降档，也不再借历史材料加分。
+- **#19 测试/质量门禁 维持 5（llm）**：本轮整 workspace `cargo check` 绿，最终稳态 `cargo test --workspace` 2872 passed / 0 failed（21 ignored）；testkit 分层/账本/所有权门与 tools 静态门齐全。取证中途曾现 gate 碎文件告警与 testkit 边账本不一致红灯，收编后转绿；wire→storage 收口仍有未提交中途态，clippy/fmt 未收尾复跑，故维持 5 而非 6。
+- **#6 自动微分 维持 7（llm）**：本轮独立复核 `Reference` CPU 内核后端解析梯度与中心差分逐参数对拍，50 例实测通过；脱离优化器窗口的 Var→向量独立梯度快照已补 `GradientSnapshot`（`gradient_snapshot`，副本脱离累积窗口与缓冲生命周期，清零/步进后仍有效）。**设备反向通路本轮降级为 unknown**：HEAD 取消旧 `device` crate 后，仓内未检出设备反向梯度核契约或 Metal/CUDA 反向派发接口，`prof/src/metal.rs` 仅前向执行缝；`docs/evidence/cuda-backward-probes/` 下 `.cu` 为仓外历史对拍材料、未接进仓内通道，不计入仓内能力。仍缺后端装饰器式任意可微闭包、NCCL/RDMA/socket 高速织物与多进程 spawn E2E（现有进程内 `Local` + 文件后端 `FileRemote`）；CPU 参考后端闭环完整、设备反向属横向覆盖缺口，故维持 7 不降档，也不再借历史材料加分。
 - **#11 数据集管线 维持 3（llm）**：`Dataset` trait / `Loader`/`Chunks` / 三族采样 / 权重校验 / 184 行测试在位且基线编译绿；仍无物理分词/打包源，维持 3。
 - **#17 内核 DSL 维持 5（llm）**：cutile 基线编译绿；但 DSL 仍为 P0 模板纵切面 + typed kernel 起步，内核覆盖待扩，维持 5。
 - **#21 unsafe/内存安全边界（llm 8 / llm.u 3 / Burn 6）**：llm `unsafe_code`/`unsafe_op_in_unsafe_fn` 均 deny，**95** 处 unsafe（块 67+fn 23+impl 5+extern 0）集中为显式岛；llm.u **441** 处（块 322+fn 104+impl 15）分散且 lint 仅 cli deny；Burn **242** 处（块 204+fn 27+impl 11）、未设 deny/forbid。计数口径为源码 `unsafe {`/`unsafe fn`/`unsafe impl`/extern unsafe，已排除所有层级 `target/` 与 fuzz 生成 codegen。
 - **#22 依赖精简/供应链（llm 9 / llm.u 4 / Burn 5）**：该维「薄=高分」。llm 运行期依赖极薄、无厂商系统绑定；llm.u 携带 cudarc/metal/libloading/coreml/clblast 厚系统栈；Burn 跨后端谱系最宽（serde/wgpu/wgpu-msl/metal/half/bytemuck/ndarray 等）。
-- **规模计数校正**：llm 2677 测试、659 `.rs`、159,269 行；llm.u 1127 测试、349 `.rs`、104,592 行；Burn 6788 测试、1989 `.rs`、490,469 行；档位不变。
-- 后端真机性能与精度、HTTP 端到端接通、设备反向激活仍属未取证边界；CPU 参考后端训练数值正确性本轮已由梯度对拍观测。静态门未提交回退产物收编完成后，#19 可重新定档。
+- **规模计数校正**：llm 2716 测试标签、653 `.rs`、156,919 行；llm.u 1127 测试、349 `.rs`、104,592 行；Burn 6788 测试、1989 `.rs`、490,469 行；档位不变。
+- 后端真机性能与精度、HTTP 端到端接通、设备反向激活仍属未取证边界；CPU 参考后端训练数值正确性本轮已由梯度对拍观测。wire→storage 收口落定、clippy/fmt 收尾复跑后，#19 可重新定档。

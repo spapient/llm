@@ -1,4 +1,6 @@
 use super::*;
+use proptest::prelude::*;
+use testkit::prop;
 
 #[test]
 fn integers_round_trip_across_boundaries() {
@@ -73,5 +75,41 @@ fn random_u64_values_round_trip_through_canonical_encoding() {
         assert!(buf.len() <= 10, "u64 的 LEB128 最多 10 字节");
         let decoded: u64 = Cursor::new(&buf).read().expect("随机值必为规范编码");
         assert_eq!(decoded, value);
+    }
+}
+
+/// 最小 LEB128 字节数：`7` 位一位，零值占一字节。
+fn minimal_len(value: u64) -> usize {
+    (64 - value.leading_zeros()).max(1).div_ceil(7) as usize
+}
+
+proptest! {
+    #![proptest_config(prop::config())]
+
+    /// 编码→解码是恒等，且长度是最小值：末尾补 `0x80` 续位字节或整字节零宽都会在这里露馅。
+    #[test]
+    fn every_u64_round_trips_at_its_minimal_length(value in any::<u64>()) {
+        let mut bytes = Vec::new();
+        write(&mut bytes, value);
+        prop_assert_eq!(bytes.len(), minimal_len(value), "{} 的编码不是最小长度", value);
+        let mut cursor = Cursor::new(&bytes);
+        let decoded: u64 = cursor.read().expect("自己写出的编码必须可读");
+        prop_assert_eq!(decoded, value);
+        prop_assert!(cursor.remaining().is_empty(), "解码后应当正好读空");
+    }
+
+    /// 游标位置纪律：读完前一段，`remaining` 恰是后一段——既不吞一个字节，也不回退。
+    #[test]
+    fn a_cursor_hands_the_tail_back_untouched(
+        head in any::<u64>(),
+        tail in proptest::collection::vec(any::<u8>(), 0..=8),
+    ) {
+        let mut bytes = Vec::new();
+        write(&mut bytes, head);
+        bytes.extend_from_slice(&tail);
+        let mut cursor = Cursor::new(&bytes);
+        let _: u64 = cursor.read().expect("首段可读");
+        prop_assert_eq!(cursor.remaining(), tail.as_slice());
+        prop_assert_eq!(cursor.pos(), bytes.len() - tail.len());
     }
 }

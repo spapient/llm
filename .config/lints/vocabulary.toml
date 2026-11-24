@@ -106,9 +106,9 @@ names = ["Axis", "Pick", "Sha256", "Svd", "Tensor"]
 reason = "选码与哈希内部件：五轴选码的候选与结果（`axes` 的 `Axis`/`Pick`）、`svd` 分解件与哈希内部件；谱隙证书的 `Certified`/`Note`/`Stable`/`Mode`/`EpsMethod`/`Bound` 已进所有权表（它们决定秩，是可读的判定口径而不是实现细节），公开生产面是表里的读写契约与容器类型。外部格式的解析件随 `formats` 并入本 crate：`Gguf` 是 GGUF 头部 + 数据区视图，`Tensor` 是 GGUF 与 torch 两种文件里各一条的张量目录项（`gguf::Tensor` / `torch::Tensor`，同名不同物、靠路径区分），都只吐「名字 + 类型 + 形状 + 字节区间」、不带任何容器判据；torch `.bin` 的读出结果收进 `torch::Checkpoint`（与所有权表里的 `train::Checkpoint` 同名不同物，靠路径区分），`Bin` 随 torch 解析重写为只读 `Checkpoint` 后注销"
 
 [[ownership.unlisted]]
-crate = "wire"
+crate = "storage"
 names = ["Uint"]
-reason = "字节码闭集的接收器与无符号整数标记族；公开面是 CRC/LEB/Sink 这组函数与 trait，内部实现件待边界稳定后逐项进表。`leb::Cursor` 已作为读游标进入所有权表的 `Cursor` 行，不再留在基线里"
+reason = "随原 wire 字节码闭集并入 storage：CRC-32 / LEB128 / Sink 接收器 / 对齐落位 / `Invalid` 构造点。`Uint` 是 LEB 无符号整数标记族；公开面是 `crc`/`leb`/`sink` 这组函数与 trait，内部实现件待边界稳定后逐项进表。`leb::Cursor` 已作为读游标进入所有权表的 `Cursor` 行，不再留在基线里"
 
 [gate]
 # 静态质量门阈值（`tools` 分析器消费，`cargo test` 不可绕过）。
@@ -276,9 +276,13 @@ min_lines_baseline = [
   "crates/shard/src/topology.rs",
   "crates/storage/src/alloc.rs",
   "crates/storage/src/buf.rs",
+  "crates/storage/src/crc.rs",
+  "crates/storage/src/fault.rs",
   "crates/storage/src/format.rs",
   "crates/storage/src/lane.rs",
+  "crates/storage/src/leb.rs",
   "crates/storage/src/mmap.rs",
+  "crates/storage/src/sink.rs",
   "crates/storage/src/state.rs",
   "crates/tensor/src/ops.rs",
   "crates/tensor/src/rank.rs",
@@ -321,10 +325,6 @@ min_lines_baseline = [
   "crates/weights/src/cursor.rs",
   "crates/weights/src/l3.rs",
   "crates/weights/src/svd.rs",
-  "crates/wire/src/crc.rs",
-  "crates/wire/src/fault.rs",
-  "crates/wire/src/leb.rs",
-  "crates/wire/src/sink.rs",
 ]
 
 # `[[gate.debt]]` 存量棘轮：只登记入口编排层（`crates/cli/src/`）的既有超标。登记表是实测快照：

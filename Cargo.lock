@@ -704,6 +704,7 @@ dependencies = [
  "llm-diagnostic",
  "llm-tensor",
  "llm-testkit",
+ "proptest",
 ]
 
 [[package]]
@@ -776,15 +777,6 @@ dependencies = [
  "llm-dtype",
  "llm-storage",
  "llm-tensor",
- "llm-testkit",
- "proptest",
-]
-
-[[package]]
-name = "llm-wire"
-version = "0.1.0"
-dependencies = [
- "llm-diagnostic",
  "llm-testkit",
  "proptest",
 ]

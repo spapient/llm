@@ -204,12 +204,12 @@ pub mod ledger {
         "nn",
         "serve",
         "shard",
+        "storage",
         "tensor",
         "testkit",
         "tokenizer",
         "train",
         "weights",
-        "wire",
     ];
 
     /// 已登记、尚未补上的缺口；每条都带一句"补什么、为什么还没补"。
@@ -233,7 +233,7 @@ pub mod ledger {
                      要么是 PTX 文本形状——而它的真值是实测吞吐，断言文本只会锁死实现。",
         },
         Absence {
-            members: &["annotation", "diagnostic", "dtype", "storage"],
+            members: &["annotation", "diagnostic", "dtype"],
             reason: "词汇表：枚举、错误码与注册表行。唯一的不变量是\"每个取值都被处理过一次\"，\
                      而它由穷举 `match` 在编译期强制（加一个变体不处理就编译不过）——\
                      性质测试在这里提供的不是覆盖，是重复。",

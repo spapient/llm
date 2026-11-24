@@ -4,9 +4,9 @@
 //! `sink` 三个模块当作第三方依赖使用时，长度承诺、规范性与错误类别是否真的成立。唯一实现细节
 //! 依赖是 `Count` 与 `Vec` 必须走同一条编码路径——那正是 `Sink` 抽象存在的理由。
 
-use llm_wire::crc;
-use llm_wire::leb::{Cursor, write};
-use llm_wire::sink::{Count, FileSink, Measured, Sealed, Sink, SliceSink};
+use llm_storage::crc;
+use llm_storage::leb::{Cursor, write};
+use llm_storage::sink::{Count, FileSink, Measured, Sealed, Sink, SliceSink};
 
 #[test]
 fn counting_and_writing_agree_byte_for_byte() {

@@ -1,8 +1,11 @@
 //! 扁平缓冲、缓冲分配与检查点字节格式：[`Buf`] + [`Allocator`] + `CpuAllocator` + [`snapshot`]，
-//! 以及 [`LaneBuf`] / [`LaneView`] / [`LaneViewMut`] 两条 `f32`/打包 `u8` lane 的公共缓冲与视图。
+//! 以及 [`LaneBuf`] / [`LaneView`] / [`LaneViewMut`] 两条 `f32`/打包 `u8` lane 的公共缓冲与视图；
+//! 另含与领域无关的字节码闭集：CRC-32 [`crc`]、LEB128 变长整数 [`leb`]、统一字节输出接收器
+//! [`sink`]，以及对齐落位 [`align_up`]、`Invalid` 错误构造点 [`bad`] / [`or_bad`]（原 `wire` crate 并入）。
 //!
 //! **拥有**：`Buf`、`Lane`、`LaneBuf`、`LaneView`、`LaneViewMut`、`Allocator`、`CpuAllocator`、
-//! `snapshot` 的字节布局与两条契约（`Manifest` / `ManifestEntry`）。
+//! `snapshot` 的字节布局与两条契约（`Manifest` / `ManifestEntry`），以及 `crc` / `leb` / `sink` /
+//! `fault` 与 `align_up` 这组纯字节格式基础件。
 //! **不拥有**：形状与字节数（归 `tensor`：`Shape::numel` / `Shape::element_bytes`）、
 //! 布局代数与重排（本仓没有这一层：排布由算子契约与设备 Fragment 描述，见 ADR 0053）、
 //! 地址空间（`GM` / `FAST` / `REG` 归

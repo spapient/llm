@@ -215,10 +215,10 @@ pub(crate) mod text {
     use crate::fixtures::checked_or_exit;
     use criterion::{Criterion, Throughput};
     use std::hint::black_box;
-    use tokenizer::{Bpe, Bytes, DecoderStream, Merge, Tokenizer, VocabFamily, VocabSource};
     use storage::crc::update;
     use storage::leb::{Cursor, write};
     use storage::sink::{Count, Sealed, Sink};
+    use tokenizer::{Bpe, Bytes, DecoderStream, Merge, Tokenizer, VocabFamily, VocabSource};
 
     /// 语料目标字节数。
     const TARGET_BYTES: usize = 4096;
