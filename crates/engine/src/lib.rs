@@ -80,6 +80,10 @@ pub mod radix;
 pub mod scheduler;
 pub mod sequence;
 
+/// Metal FFI 执行器（仅 macOS）：`Executor` 缝的 Metal 实现，ADR 0035 唯一 Metal 越界岛。
+#[cfg(target_os = "macos")]
+pub mod metal;
+
 pub use batch::{Admission, Batch, SequenceOutcome};
 pub use ifb::{Budget, Candidate, Phase, Verdict, chunk, pack};
 pub use scheduler::Scheduler;

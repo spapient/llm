@@ -277,51 +277,6 @@ pub mod abs_f32 {
     );
 }
 
-pub mod abs_f16 {
-    //! 逐元素绝对值（f16 档）：`y[n] = |a[n]|`，与 f32 共享同一份泛型 `apply`，只差档配置。
-
-    crate::unary_tier!(
-        Abs,
-        AbsF16,
-        "abs_f16",
-        "f16",
-        crate::model::DType::F16,
-        half::f16,
-        crate::einsum::f16_io_operands(),
-        crate::unary::sample_f16::<Abs>,
-        crate::unary::reference_f16::<Abs>,
-        |x| x.abs(),
-        false
-    );
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn f16_abs_negates_negative_and_keeps_zero() {
-            let a = [
-                half::f16::from_f32(-3.0),
-                half::f16::from_f32(0.0),
-                half::f16::from_f32(2.0),
-            ];
-            let mut out = [half::f16::from_f32(0.0); 3];
-            forward(tensor::View::one(&a), &mut out).expect("等长");
-            assert_eq!(out[0].to_f32(), 3.0, "负区取正");
-            assert_eq!(out[1].to_f32(), 0.0, "零点");
-            assert_eq!(out[2].to_f32(), 2.0, "正区恒等");
-        }
-
-        #[test]
-        fn f16_sample_and_reference_round_trip_through_f32() {
-            let sample = crate::unary::sample_f16::<Abs>(8, 8);
-            let reference = crate::unary::reference_f16::<Abs>(&sample).expect("f16 参考");
-            assert_eq!(reference.len(), 8);
-            assert!(reference.iter().all(|value| *value >= 0.0), "绝对值非负");
-        }
-    }
-}
-
 pub mod neg_f32 {
     //! 逐元素取负：`y[n] = -a[n]`。
 

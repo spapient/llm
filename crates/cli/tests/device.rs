@@ -13,8 +13,8 @@ use llm_optim::execution::{Mode, program};
 
 /// Metal 执行器（真机不在场时 `None`；没有设备不是失败）。
 #[cfg(target_os = "macos")]
-fn metal_executor() -> Option<::device::executor::MetalExecutor> {
-    ::device::executor::MetalExecutor::new("metal", "arm64")
+fn metal_executor() -> Option<::engine::metal::MetalExecutor> {
+    ::engine::metal::MetalExecutor::new("metal", "arm64")
 }
 
 /// 生成 `Mode::declared()` 的单通道 Metal 源并注册成 `op_name`。
@@ -25,7 +25,7 @@ fn declared_metal(
     op_name: &str,
     m: usize,
     n: usize,
-) -> Option<::device::executor::MetalExecutor> {
+) -> Option<::engine::metal::MetalExecutor> {
     let msl = program(catalogue, dirs, op_name, Metal, Mode::declared(), m, n)
         .and_then(|s| s.one("降源"))
         .expect("内核应能生成");
@@ -42,7 +42,7 @@ fn segmented_metal(
     op_name: &str,
     m: usize,
     n: usize,
-) -> Option<(::device::executor::MetalExecutor, String, String)> {
+) -> Option<(::engine::metal::MetalExecutor, String, String)> {
     let (first, second) = program(catalogue, dirs, op_name, Metal, Mode::segmented(), m, n)
         .and_then(|s| s.two("分段"))
         .expect("分段内核应能生成");
@@ -490,7 +490,7 @@ fn op_chunked_softmax_matches_reference(op_name: &str) {
         program(&catalogue, &dirs, op_name, Metal, Mode::segmented(), m, n)
             .and_then(|s| s.three("softmax"))
             .expect("分段内核应能生成");
-    let Some(mut executor) = ::device::executor::MetalExecutor::new("metal", "arm64") else {
+    let Some(mut executor) = ::engine::metal::MetalExecutor::new("metal", "arm64") else {
         return;
     };
     executor
@@ -512,7 +512,7 @@ fn op_chunked_softmax_matches_reference(op_name: &str) {
 
     let stream = engine::exec::Stream::new(0);
     let launch = engine::exec::Launch::new([grid_size, 1, 1], [1, 1, 1]);
-    let read_partials = |executor: &mut ::device::executor::MetalExecutor| {
+    let read_partials = |executor: &mut ::engine::metal::MetalExecutor| {
         let bytes = executor.buf_mut(1).expect("部分结果可读").as_mut_bytes();
         read_f32(bytes, grid_size as usize)
     };

@@ -53,7 +53,7 @@ P3 要在边界 crate 挂 Metal/CUDA 后端（ADR 0025 §1、§9；ADR 0028 §3 
 | 位置 | 越界对象（§1 类别） | 不变量与对外视图 |
 |---|---|---|
 | `crates/storage/src/mmap.rs`（模块级，1 处） | mmap 映射 | 模块级 allow；只读、私有映射、`Drop` 归还、线程归属；对外只暴露拥有型 `&[u8]` 视图 |
-| `crates/device/src/executor.rs`（模块级，1 处） | FFI 调用 + 设备缓冲句柄 | 手写 `objc_msgSend` 与 Metal 运行时符号；+1 保留的对象在 `Drop` 恰好 `-release` 一次，句柄私有、不跨线程，自动释放对象由 autorelease 池收口；对外是 `Executor` / `Allocator` 的安全实现 |
+| `crates/engine/src/metal.rs`（模块级，1 处） | FFI 调用 + 设备缓冲句柄 | 手写 `objc_msgSend` 与 Metal 运行时符号；+1 保留的对象在 `Drop` 恰好 `-release` 一次，句柄私有、不跨线程，自动释放对象由 autorelease 池收口；对外是 `Executor` / `Allocator` 的安全实现 |
 | `crates/nn/src/kernel/fast/i8.rs`（函数级，4 处） | 裸指针切片重建（打包/计算包装） | i8 sdot 瓦片体 `sdot_tile` / `dot_one` / `harvest` 与端口探针已迁入 `prof::native::i8`；nn 侧只剩面板打包与行段计算的裸指针重建包装，长度守卫由调用方打包布局保证 |
 | `crates/nn/src/kernel/fast/pool.rs`（函数级，3 处） | 跨线程发布裸指针 | 常驻 GEMM 线程池：任务只发布裸指针 + 一次闸门；裸指针只活到 `done` 齐、主线程返回前 |
 | `crates/prof/src/native/gemm8x8.rs`（函数级，11 处） | 裸指针切片重建 + NEON/AVX2 intrinsics | f32 8×8 寄存器块微内核；`fma_step` 生产与探针共用；nn `kernel_fast_micro.rs` 的瓦片体迁出后 nn 岛已清空，本岛是唯一宿主 |

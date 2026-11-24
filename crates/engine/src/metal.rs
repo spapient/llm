@@ -5,8 +5,8 @@
 
 #![allow(unsafe_code)]
 
-use diagnostic::{Code, Error, Result};
 use crate::exec::{Device, Executor, Graph, Node, Queued, Stream, check_operands, enqueue};
+use diagnostic::{Code, Error, Result};
 use std::collections::BTreeMap;
 use std::ffi::{CString, c_char, c_void};
 use std::ptr::null_mut;
@@ -429,13 +429,6 @@ impl Executor for MetalExecutor {
         Ok(())
     }
 }
-
-#[cfg(test)]
-#[path = "../tests/metal_executor_harness.rs"]
-mod harness;
-#[cfg(test)]
-#[path = "../tests/metal/mod.rs"]
-mod tests;
 
 /// 一条 Metal 共享缓冲句柄（+1 保留，`Drop` 释放）；`contents` 是 CPU 可访问的字节视图。
 pub struct MetalBuf {

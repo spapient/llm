@@ -15,9 +15,8 @@
 //! 可执行产物。两者混在一个 crate 里时，`engine` 有 60% 的行数在做与状态机无关的字符串装配，
 //! 单 crate 密度预算（≤8,000 行）被这类装配撑破。
 //!
-//! 分层口径：**契约在 `engine`，实现在本 crate**。[`executor`] 实现的
-//! [`Executor`](engine::exec::Executor) 是 `engine` 定义的缝，本 crate 只填实现，因此
-//! `device → engine` 是唯一方向。
+//! 分层口径：**契约在 `engine`，实现在本 crate**。Metal `Executor` 实现已回迁
+//! `engine::metal`，本 crate 只保留其余后端装配，`device → engine` 是唯一方向。
 //!
 //! # 三条厂商链互不共享状态
 //!
@@ -28,8 +27,8 @@
 //!
 //! # 越界岛
 //!
-//! [`executor`] 是全仓四个 `unsafe` 岛之一（Metal FFI，同 `storage::mmap` 形态），
-//! 全仓默认 `deny(unsafe_code)`，只有该文件内 `#![allow(unsafe_code)]`。岛的行数与位置由
+//! Metal FFI 岛在 `engine::metal`（同 `storage::mmap` 形态）；全仓默认 `deny(unsafe_code)`，
+//! 只有该模块内 `#![allow(unsafe_code)]`。岛的行数与位置由
 //! `testkit` 的 `unsafe_islands_are_the_ones_the_adr_lists` 逐个点名，ADR 0035 是唯一出处。
 
 #![deny(unsafe_code)]
@@ -38,8 +37,6 @@ pub mod backends;
 pub mod backward;
 pub mod cuda;
 mod dialect;
-#[cfg(target_os = "macos")]
-pub mod executor;
 pub mod metal;
 pub mod platform;
 pub mod tiled;
