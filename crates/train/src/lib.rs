@@ -58,7 +58,6 @@ mod session;
 #[path = "../tests/support.rs"]
 mod support;
 
-pub use config::TrainSpec;
 pub use geometry::{Geometry, Running};
 pub use learner::{
     Batch, Chunks, Dataset, ForwardOut, Learner, Loader, LoaderConfig, Metric, MetricPoint,
@@ -73,7 +72,8 @@ pub use optimizer::{Adam, Group, Muon, Optimizer, OwnedSlot, Sgd, Slot};
 pub use pool::OperatorSetOps;
 pub use pool::{Bufs, Data, Inputs, Kernel, Kind, Lane, Reference, View, ViewMut};
 pub use rng::{Bernoulli, Normal, Rng, Uniform, block};
+pub use schedule::{Anneal, Schedule};
 pub use session::{
-    Anneal, Checkpoint, Distributed, GradientSnapshot, Local, ParamSlot, Remote, Schedule, Session,
-    Step, TrainConfig, operators, resume,
+    Checkpoint, Distributed, GradientSnapshot, Local, ParamSlot, Remote, Session, Step, TrainConfig,
+    TrainSpec, operators, resume,
 };
