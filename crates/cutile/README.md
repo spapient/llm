@@ -201,7 +201,7 @@ crates/cutile/                  # 模板前端 + typed IR 迁移起点
     ├── probe.rs / space.rs     # 设备探测与形状空间（纯数据；起进程在 `shard`）
     └── lru.rs                  # 缓存条目的残留、锁状态与回收判据（`Residue` / `Gc` / `State`）
 
-crates/shard/                  # 执行半边：编译、执行、见证、语言门与四份报告（cli/device 以别名 llm-optim 引用）
+crates/shard/                  # 执行半边：编译、执行、见证、语言门与四份报告（cli/device 以 `shard` 依赖引用）
 └── src/
     ├── toolchain.rs            # 编译器/驱动探测与身份（cc/clang/gcc、nvcc、xcrun metal、MSVC cl）
     ├── runner.rs               # 编译、执行与回读原语（可执行文件、Outcome、分位样本、位模式解码）
