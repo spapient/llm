@@ -120,14 +120,13 @@ fn parse_all(
             ),
         });
     };
-    let dir = scratch(dirs, "gate");
     let arguments = args_for(spec, profile);
-    let parsed = write_and_parse(spec, &arguments, &selected, dirs, &dir);
-    let _ = std::fs::remove_dir_all(&dir);
-    parsed?;
-    Ok(LanguageGate::Passed {
-        front: format!("{} {}", toolchain.id(), arguments.join(" ")),
-        witnesses: selected.len(),
+    with_scratch(dirs, "gate", |dir| {
+        write_and_parse(spec, &arguments, &selected, dirs, dir)?;
+        Ok(LanguageGate::Passed {
+            front: format!("{} {}", toolchain.id(), arguments.join(" ")),
+            witnesses: selected.len(),
+        })
     })
 }
 

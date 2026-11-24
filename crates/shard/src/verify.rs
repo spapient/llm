@@ -326,11 +326,165 @@ fn gate_parts(gate: &LanguageGate) -> Option<String> {
     }
 }
 
+/// 逐形状编译、执行并与标量参考对拍，形成一台设备的 L2 证据。
+///
+/// # Errors
+///
+/// 设备不是 C 参考通道、缺编译器、协商失败、编译执行失败或任一对拍判据不成立。
+pub fn verify_one(
+    op: &OpDecl,
+    profile: &Profile,
+    dirs: &Dirs,
+    proof: &Proof,
+) -> diagnostic::Result<Verified> {
+    let run = Run::new(op, profile, proof.clone())?;
+    let tool = host_tool(profile)?;
+    let path = run
+        .negotiate()
+        .map_err(|error| Error::new(Code::Unsupported, error.to_string()))?;
+    check_rejected_shapes(u64::from(run.model.group.max(1)))?;
+    let mut verified = blank(&run, tool.as_ref());
+    verified.variant = path.variant.clone();
+    Sweep {
+        run: &run,
+        dirs,
+        tool,
+        path,
+        tolerance: cutile::reference::tolerance(run.model.dtype),
+        verified,
+    }
+    .measure()
+}
+
+fn host_tool(profile: &Profile) -> diagnostic::Result<Option<toolchain::Toolchain>> {
+    if profile.meta.emit == Emit::C {
+        return Ok(toolchain::detect());
+    }
+    Err(Error::new(
+        Code::Unsupported,
+        format!(
+            "设备 `{}` 的生产态 verify 走 prof::runtime FFI 后端岛，shard 只保留 C 参考通道",
+            profile.meta.id
+        ),
+    ))
+}
+
+struct Sweep<'a> {
+    run: &'a Run<'a>,
+    dirs: &'a Dirs,
+    tool: Option<toolchain::Toolchain>,
+    path: Path,
+    tolerance: f64,
+    verified: Verified,
+}
+
+impl Sweep<'_> {
+    fn measure(mut self) -> diagnostic::Result<Verified> {
+        for shape in verify_shapes(&self.run.model) {
+            self.cell(shape)?;
+        }
+        Ok(self.verified)
+    }
+
+    fn cell(&mut self, shape: (u64, u64)) -> diagnostic::Result<()> {
+        let (sample, prepared) = self.prepare(shape)?;
+        self.verified.channel = Channel::Reference;
+        let (bits, artifact) = self.host(&sample, &prepared)?;
+        let want = (self.run.model.reference)(&sample)?;
+        let expect = sample.buf("y").map_or(sample.n, |y| y.values.len());
+        let error = parity(&bits, &want, expect, shape, self.tolerance)?;
+        let out = &mut self.verified;
+        out.max_rel_err = out.max_rel_err.max(error);
+        out.shapes.push(shape);
+        out.artifacts.extend(artifact);
+        out.fragment = Fragment::new(prepared.source.lines());
+        out.key = prepared.key.hex();
+        out.tile = prepared.plan.tile.to_string();
+        Ok(())
+    }
+
+    fn prepare(&self, (m, n): (u64, u64)) -> diagnostic::Result<(Sample, Prepared)> {
+        let (m, n) = (m as usize, n as usize);
+        let sample = self.run.sample(m, n);
+        let prepared = self.run.prepare(&self.path, self.dirs, m, n)?;
+        Ok((sample, prepared))
+    }
+
+    fn host(
+        &self,
+        sample: &Sample,
+        prepared: &Prepared,
+    ) -> diagnostic::Result<(Vec<f32>, Option<Artifact>)> {
+        let program = prepared.harness(self.run.op, sample, 1)?;
+        let (outcome, artifact) = build::execute(
+            self.run.profile,
+            self.tool.as_ref(),
+            &prepared.key,
+            &program,
+            self.dirs,
+        )?;
+        Ok((outcome.bits, Some(artifact)))
+    }
+}
+
+fn blank(run: &Run<'_>, tool: Option<&toolchain::Toolchain>) -> Verified {
+    Verified {
+        device: String::new(),
+        channel: Channel::Harness,
+        vendor: run.profile.meta.vendor.clone(),
+        id: run.profile.meta.id.clone(),
+        variant: String::new(),
+        tile: String::new(),
+        shapes: Vec::new(),
+        witnesses: 0,
+        self_checked: 0,
+        max_rel_err: 0.0,
+        fragment: Fragment::new(0),
+        tool_ver: run.profile.meta.tool_ver.clone(),
+        toolchain: tool.map(toolchain::Toolchain::id),
+        toolchain_agrees: tool.is_some_and(|tool| tool.agrees_with(&run.profile.meta.tool_ver)),
+        flags: run.profile.flags.join(" "),
+        key: String::new(),
+        artifacts: Vec::new(),
+    }
+}
+
+fn parity(
+    bits: &[f32],
+    want: &[f32],
+    expect: usize,
+    (m, n): (u64, u64),
+    tolerance: f64,
+) -> diagnostic::Result<f64> {
+    if bits.len() != expect {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("形状 {m}x{n}：内核只输出 {} 个数，期望 {expect}", bits.len()),
+        ));
+    }
+    let error = cutile::reference::max_rel_err(bits, want);
+    if error > tolerance {
+        return Err(Error::new(
+            Code::Invalid,
+            format!("形状 {m}x{n} 对拍失败：max_rel_err {error:.3e} > {tolerance:.0e}"),
+        ));
+    }
+    Ok(error)
+}
+
+fn check_rejected_shapes(group: u64) -> diagnostic::Result<()> {
+    for (m, n) in rejected_shapes(group) {
+        let shape = format!("{m}x{n}");
+        if parse_shape(&shape, group).is_ok() {
+            return Err(Error::new(
+                Code::Internal,
+                format!("形状 `{shape}` 必须被拒绝：M 必须是组大小 {group} 的整数倍"),
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 #[path = "../tests/verify_tests.rs"]
 mod tests;
-
-// 测量面在本 crate 的 `sweep` 里：`verify::{verify_one, Lane}` 是既有路径，继续从这里转出。
-#[allow(unused_imports)] // 测试经 `use super::*` 用到 `Lane`，lib 构建下没人引用。
-pub(crate) use crate::sweep::Lane;
-pub use crate::sweep::verify_one;

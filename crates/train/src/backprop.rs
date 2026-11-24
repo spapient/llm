@@ -190,7 +190,7 @@ struct Entry {
 /// 断言在编译期守住。
 /// 展开公式目录：`op => formula` 一行一条，数组长度由下方 [`FORMULAS`] 的声明给定。
 macro_rules! formulas {
-    ($($op:literal => $formula:ident),* $(,)?) => {
+    ($($op:literal => $formula:expr),* $(,)?) => {
         [$(Entry { op: $op, formula: $formula }),*]
     };
 }

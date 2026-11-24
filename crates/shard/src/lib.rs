@@ -127,7 +127,6 @@ pub mod ledger;
 pub mod pipeline;
 pub mod platform;
 pub mod runner;
-pub mod sweep;
 pub mod toolchain;
 pub mod verify;
 pub mod witness;

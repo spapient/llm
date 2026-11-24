@@ -30,7 +30,7 @@ fn the_ascend_emit_reports_the_prof_runtime_lane() {
         .profile("ascend")
         .cloned()
         .expect("ascend 档案");
-    let error = Lane::ready(&profile).expect_err("shard 不再生成设备 verify 程序");
+    let error = host_tool(&profile).expect_err("shard 不再生成设备 verify 程序");
     assert_eq!(error.code(), Code::Unsupported);
     assert!(error.message().contains("prof::runtime"), "{error}");
 }
