@@ -7,7 +7,7 @@
 //! 布局代数与重排（本仓没有这一层：排布由算子契约与设备 Fragment 描述，见 ADR 0053）、
 //! 地址空间（`GM` / `FAST` / `REG` 归
 //! `cutile` / `prof`）、设备私有句柄（藏在后端边界 crate 后，ADR 0025 §2）。
-//! **依赖**：`tensor`、`diagnostic`、`wire`。**被依赖**：`weights`、`engine`、`train`。
+//! **依赖**：`tensor`、`diagnostic`。**被依赖**：`weights`、`engine`、`train`。
 //!
 //! `snapshot` 是**泛型**的：字节格式只需要"有序条目 + 数据段起点"，不需要知道权重文件怎么校验
 //! 自己。`weights::Header` 实现 `Manifest`，于是 `weights::Snapshot` 只是

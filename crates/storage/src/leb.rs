@@ -129,11 +129,11 @@ fn checked_group(byte: u8, shift: u32) -> Result<u64> {
 }
 
 fn bad(message: &str) -> Error {
-    Error::new(Code::Invalid, message).with("wire::leb")
+    Error::new(Code::Invalid, message).with("storage::leb")
 }
 
 fn end(what: &str) -> Error {
-    Error::new(Code::Invalid, format!("字节不足，读不出 {what}")).with("wire::leb")
+    Error::new(Code::Invalid, format!("字节不足，读不出 {what}")).with("storage::leb")
 }
 
 #[cfg(test)]

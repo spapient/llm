@@ -8,7 +8,7 @@
 
 | 仓库 | revision | worktree 状态 | 规模（源码实测，剔除 `target`） | 测试数（`#[test]`/`#[tokio::test]` 计数） |
 | --- | --- | --- | --- | --- |
-| llm（新） | HEAD `9525fe6b` 2026-11-24 21:00:05 +0800（取证区间 HEAD 由 `521a6c07`→`6db0e545`→`740d7c12`→`9525fe6b` 连续推进；规模/结构锚 HEAD 提交基线，编译/测试观测取自当前工作区磁盘快照） | 工作区 mixed：prof `runtime/native/einsum` 目录拆平上移平铺、部分文件 `R`/`M` 收编中途；这些未提交分歧只作快照差异，不计入已提交基线。HEAD 基线已取消独立 `device` crate，后端代码迁入 `prof`/`shard`；`wire` 回退目录已重新进 HEAD 成员 | HEAD 基线 22 crate，646 `.rs`，156,323 行（剔 `target` 与 `.claude/worktrees` 副本） | 2703 |
+| llm（新） | HEAD `a6d0667b` 2026-11-24 21:15:24 +0800（取证区间 HEAD 由 `521a6c07`→`6db0e545`→`740d7c12`→`9525fe6b`→`a6d0667b` 连续推进；规模/结构锚 HEAD 提交基线，编译/测试观测取自取证时点工作区磁盘快照） | 取证后期工作区已收编干净（唯一改动为本报告自身）；prof `runtime/native/einsum` 目录拆平上移平铺、`wire` 回退目录均已进入提交基线。HEAD 基线已取消独立 `device` crate，后端代码迁入 `prof`/`shard` | HEAD 基线 22 crate，653 `.rs`，156,919 行（剔 `target` 与 `.claude/worktrees` 副本） | 2716 |
 | llm.u | `cf4e8fe3` 2026-11-11 04:55 +0800 | 170 项未提交；结论以 HEAD 已提交代码为准，脏改动仅作快照差异 | 15 crate，349 `.rs`，104,592 行（剔所有层级 `target/` 与 fuzz 生成 codegen） | 1127 |
 | Burn | `c81a9042` 2026-11-22 13:06 -0500 | 干净（零改动） | 42 crate dirs，1989 `.rs`，490,469 行 | 6788 |
 
@@ -59,9 +59,9 @@
 | 指标 | llm | llm.u | Burn |
 | --- | --- | --- | --- |
 | crate 数 | 22 | 15 | 42 |
-| `.rs` 文件 | 646 | 349 | 1989 |
-| 源码行 | 156,323 | 104,592 | 490,469 |
-| 测试计数 | 2703 | 1127 | 6788 |
+| `.rs` 文件 | 653 | 349 | 1989 |
+| 源码行 | 156,919 | 104,592 | 490,469 |
+| 测试计数 | 2716 | 1127 | 6788 |
 
 ### 2.2 llm 生产行 Top crate（行，HEAD 基线实测）
 
@@ -279,13 +279,13 @@ llm 文档列的形状族（`tensor.rs:20-31`）：`broadcast/narrow/slice/chunk
 | --- | --- | --- | --- |
 | lint 门槛 | unsafe_code/unsafe_op_in_unsafe_fn/missing_docs/unused_lifetimes deny，clippy all/cargo/needless_range_loop deny；dbg/todo/unimplemented deny | device/engine/exec/tool 源码 forbid、cli/benches Cargo deny，其余分 crate 未统一 | 成熟 CI/deny 配置 |
 | 外部运行期依赖 | 极薄：half/num-traits；bytemuck/serde/toml optional | 多后端 feature 拉 cudarc/metal/libloading/coreml-native/clblast | wgpu/metal/serde/half/bytemuck/ndarray 等（cudarc 经 cubecl） |
-| 测试计数 | 2677 | 1127 | 6788 |
-| 静态门 | `tools` config 驱动质量门；本轮 gate 测试 `every_source_passes_the_static_gate` 拦截 4 项 `wire` 碎文件低于下限 300 行（未提交暂存回退产物，见 §13.1） | 未见同构静态门 | CI 门 |
+| 测试计数 | 2703 | 1127 | 6788 |
+| 静态门 | `tools` config 驱动质量门；本轮 gate 测试 `every_source_passes_the_static_gate` 拦截 4 项 `storage/src/` 碎文件低于下限 300 行（HEAD 基线存量赤字，见 §13.1） | 未见同构静态门 | CI 门 |
 | 文档/契约 | ADR 目录（`docs/adr`）、层职责自述写在各 lib.rs 头部 | config-first 契约 | contributor book/book |
 
-### 13.1 本轮门禁实测（llm，HEAD `740d7c12`，toolchain 1.100.0）
+### 13.1 本轮门禁实测（llm，HEAD `a6d0667b`，toolchain 1.100.0）
 
-> 取证期间 llm 存在并行工作流连续提交与未提交文件周期收编，HEAD 在区间内由 `521a6c07` 推进到 `740d7c12`，并现场观察到 `wire` 删除→重建、`prof` 平铺→目录化的迁移中途状态；下列结论按「基线编译/测试观测（当前工作区磁盘快照）」与「HEAD 提交基线结构」「未提交暂存快照差异」分开记账，未提交 diff 不计入已提交基线。
+> 取证期间 llm 存在并行工作流连续提交与未提交文件周期收编，HEAD 在区间内由 `521a6c07` 推进到 `a6d0667b`，现场先后观察到 `wire` 删除→重建、`prof` 平铺→目录化→再拆平上移的迁移状态；到取证后期工作区已收编干净（唯一改动为本报告自身）。下列结论按「基线编译/测试观测（取证时点磁盘快照）」与「HEAD 提交基线结构」分开记账。
 
 **编译观测（本轮实测，confirmed）**
 
@@ -296,11 +296,11 @@ llm 文档列的形状族（`tensor.rs:20-31`）：`broadcast/narrow/slice/chunk
 
 - `cargo test -p llm-train backprop`：**50 passed / 0 failed**（0.01s，186 filtered），CPU `Reference` 后端解析梯度与中心差分数值梯度逐参数对拍，含端到端 SGD 训练例、conv2d/GRPO/distillation KL 图对拍。
 - `cargo test --workspace`：**2258 passed / 1 failed**（9 ignored）。唯一红灯为 `llm-tools --test gate` 的静态门 `every_source_passes_the_static_gate`（`crates/tools/tests/gate.rs:108`）；其余单测/集成测全绿。
-- 静态门 4 项碎文件低于下限 300 行（`wire/src/sink.rs` 198、`crc.rs` 70、`fault.rs` 18、`leb.rs` 141；非编译错误）：这 4 个文件属未提交暂存回退的 wire 模块，HEAD 基线中 wire 已并入 `storage`；上一轮 3 项 train 文件超长赤字（`session.rs`/`backprop.rs`/`geometry.rs`）本轮已随 train 目录化拆分闭合，不再出现在告警列表。
+- 静态门 4 项碎文件低于下限 300 行（`storage/src/sink.rs` 198、`crc.rs` 70、`fault.rs` 18、`leb.rs` 141；非编译错误）：4 文件已在 HEAD 基线挂载为 `storage` 的 `pub mod`，属基线静态门存量赤字；`wire` crate 下同名文件并存，为 wire→storage 迁移双份中途态。上一轮 3 项 train 文件超长赤字（`session.rs`/`backprop.rs`/`geometry.rs`）本轮已随 train 目录化拆分闭合，不再出现在告警列表。
 
-**工作区未提交快照差异（不计基线）**
+**工作区状态（取证后期）**
 
-- 暂存 `A`：wire 12 文件回退恢复；暂存 `D`：prof 16 个平铺旧文件删除（目录化重组）；未跟踪 `??`：`storage/tests/crc_tests.rs`、`storage/tests/leb_tests.rs`。HEAD 基线 21 crate、659 `.rs`、159,269 行、2677 测试。
+- 工作区已收编干净（`git status` 唯一改动为本报告自身）；取证中途出现的 wire 暂存回退、prof 平铺文件删除/目录化重组均已由并行工作流收编进提交基线。HEAD 基线 22 crate、653 `.rs`、156,919 行、2716 测试标签。
 
 **本轮仍未取得干净观测（unknown）**
 
@@ -314,7 +314,7 @@ llm 文档列的形状族（`tensor.rs:20-31`）：`broadcast/narrow/slice/chunk
 | --- | --- | --- | --- |
 | CPU 内核（手写 SIMD 微核） | ◐ NEON/I8/SME 微核在位；AVX 路径待核 | ◐ simd/gemm/blas 在位，本机未复跑 | ● CPU 后端可用 |
 | CUDA 后端 | ○ 源生成在位，无 Executor impl | ◐ cuda 9.5k + cudarc feature，运行状态 ？ | ● CubeCL CUDA |
-| Metal 后端 | ◐ executor impl 在位（`prof/runtime/metal.rs`），仓内未见生产构造点 | ◐ metal 4.3k + metal feature，运行状态 ？ | ◐ CubeCL wgpu/MSL |
+| Metal 后端 | ◐ executor impl 在位（`prof/src/metal.rs`），仓内未见生产构造点 | ◐ metal 4.3k + metal feature，运行状态 ？ | ◐ CubeCL wgpu/MSL |
 | AMD ROCm/HIP | ○ 未发现后端目录 | ◐ rocm feature + libloading | ● CubeCL HIP |
 | OpenCL/SYCL/INTEL | ○ 仅 fragment | ● intel 1.4k + blas 3.0k + opencl/sycl feature | ○ |
 | MUSA / 昇腾 / ANE | ◐ 源/档案位流，无执行器 | ◐ musa/npu/ane feature 门控 | ○ |

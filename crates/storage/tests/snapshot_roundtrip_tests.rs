@@ -245,7 +245,7 @@ fn every_flipped_bit_is_rejected() {
 #[test]
 fn the_checksum_matches_its_bitwise_definition() {
     assert_eq!(
-        wire::crc::crc32(b"123456789"),
+        crate::crc::crc32(b"123456789"),
         0xCBF4_3926,
         "IEEE 802.3 的标准检验值"
     );
@@ -263,7 +263,7 @@ fn the_checksum_matches_its_bitwise_definition() {
             };
         }
     }
-    assert_eq!(wire::crc::crc32(&bytes), !crc);
+    assert_eq!(crate::crc::crc32(&bytes), !crc);
 }
 
 #[test]

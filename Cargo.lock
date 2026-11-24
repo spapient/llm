@@ -704,7 +704,6 @@ dependencies = [
  "llm-diagnostic",
  "llm-tensor",
  "llm-testkit",
- "llm-wire",
 ]
 
 [[package]]

@@ -230,7 +230,7 @@ pub(crate) fn snapshot() -> Snapshot {
 /// 用任意正文重新封上校验和：只有测试会造"CRC 正确但正文有问题"的文件。
 pub(crate) fn seal(payload: &[u8]) -> Vec<u8> {
     let mut bytes = payload.to_vec();
-    bytes.extend_from_slice(&wire::crc::crc32(payload).to_le_bytes());
+    bytes.extend_from_slice(&crate::crc::crc32(payload).to_le_bytes());
     bytes
 }
 
