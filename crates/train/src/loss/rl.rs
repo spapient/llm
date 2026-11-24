@@ -225,4 +225,3 @@ pub fn grpo_loss(
     let kl_mean = kl_sum / rows as f64;
     Ok((-surrogate_mean + f64::from(grpo.beta) * kl_mean) as f32)
 }
-

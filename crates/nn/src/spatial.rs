@@ -35,13 +35,14 @@ fn nonzero_channels(cin: usize, cout: usize, layer: &str) -> Result<()> {
     Ok(())
 }
 
-/// 卷积族声明：字段、构造参数、几何计划、输出轴和特有方法都由声明点给出。
-/// 公共部分只保留通道校验、注解规格装配与下界接线，不隐藏任何几何算法。
-macro_rules! convolution_layer {
+/// 空间层的平铺声明：字段、签名、校验、几何计划、输出轴与特有方法都在声明点可见。
+/// `check: |layer|` 只绑定诊断位置；计划直接产出字段，公共骨架不隐藏任何几何算法。
+macro_rules! spatial_layer {
     (
         $(#[$meta:meta])* $layer:ident, $spec:ident, $op:expr;
         ($($field:ident: $fty:ty),*);
-        ($cin:ident: usize, $cout:ident: usize $(, $arg:ident: $aty:ty)*);
+        ($($arg:ident: $aty:ty),*);
+        check: |$site:ident| $check:block;
         $plan:block;
         ($($axis:expr),*);
         {$($methods:tt)*}
@@ -57,15 +58,10 @@ macro_rules! convolution_layer {
             ///
             /// # Errors
             ///
-            /// 通道或几何为零、输入无法形成合法输出，或算子规格无效时返回说明。
-            pub fn new(
-                name: impl Into<String>,
-                $cin: usize,
-                $cout: usize,
-                $($arg: $aty),*
-            ) -> Result<Self> {
-                let layer = concat!("nn::", stringify!($layer), "::new");
-                nonzero_channels($cin, $cout, layer)?;
+            /// 参数或几何不合法、输入无法形成合法输出，或算子规格无效时返回说明。
+            pub fn new(name: impl Into<String>, $($arg: $aty),*) -> Result<Self> {
+                let $site = concat!("nn::", stringify!($layer), "::new");
+                $check
                 let ($($field),*) = $plan;
                 let spec = $spec!(name, $($axis,)* $op)?;
                 Ok(Self { spec, $($field),* })
@@ -78,12 +74,13 @@ macro_rules! convolution_layer {
     };
 }
 
-convolution_layer!(
+spatial_layer!(
     /// 一维卷积层：NHWC 输入 `[l, cin]`，输出 `[ol, cout]`。
     #[crate::spec(name = $name, out = [$ol, $cout], ops = [$op])]
     Conv1d, __layer_spec_Conv1d, GEMM;
     (cin: usize, cout: usize, geom: ConvGeom, ol: usize);
     (cin: usize, cout: usize, geom: ConvGeom, l: usize);
+    check: |layer| { nonzero_channels(cin, cout, layer)?; };
     {
         let kernel = OpConv1::new(cin, cout, geom.kw, geom.sw, geom.pw);
         let ol = kernel.len(l)?;
@@ -105,12 +102,13 @@ convolution_layer!(
     }
 );
 
-convolution_layer!(
+spatial_layer!(
     /// 二维卷积层：NHWC 输入 `[h, w, cin]`，输出 `[oh, ow, cout]`。
     #[crate::spec(name = $name, out = [$oh, $ow, $cout], ops = [$op])]
     Conv2d, __layer_spec_Conv2d, CONV;
     (cin: usize, cout: usize, geom: ConvGeom, oh: usize, ow: usize);
     (cin: usize, cout: usize, geom: ConvGeom, h: usize, w: usize);
+    check: |layer| { nonzero_channels(cin, cout, layer)?; };
     {
         let kernel = OpConv2::new(cin, cout, geom);
         let (oh, ow) = kernel.shape(h, w)?;
@@ -134,12 +132,13 @@ convolution_layer!(
     }
 );
 
-convolution_layer!(
+spatial_layer!(
     /// 一维反卷积层：`[l, cin]` → `[ol, cout]`，权重 `[cin, cout, k]`。
     #[crate::spec(name = $name, out = [$ol, $cout], ops = [$op])]
     ConvTranspose1d, __layer_spec_ConvTranspose1d, GEMM;
     (deconv: OpDeconv1, ol: usize);
     (cin: usize, cout: usize, k: usize, s: usize, p: usize, l: usize);
+    check: |layer| { nonzero_channels(cin, cout, layer)?; };
     {
         let deconv = OpDeconv1::new(cin, cout, k, s, p);
         let ol = deconv.len(l)?;
@@ -160,12 +159,13 @@ convolution_layer!(
     }
 );
 
-convolution_layer!(
+spatial_layer!(
     /// 二维反卷积层：`[h, w, cin]` → `[oh, ow, cout]`，权重 `[cin, cout, kh, kw]`。
     #[crate::spec(name = $name, out = [$oh, $ow, $cout], ops = [$op])]
     ConvTranspose2d, __layer_spec_ConvTranspose2d, GEMM;
     (deconv: OpDeconv2, oh: usize, ow: usize);
     (cin: usize, cout: usize, geom: ConvGeom, h: usize, w: usize);
+    check: |layer| { nonzero_channels(cin, cout, layer)?; };
     {
         let deconv = OpDeconv2::new(cin, cout, geom);
         let oh = deconv.oh(h)?;
@@ -186,228 +186,137 @@ convolution_layer!(
     }
 );
 
-/// 一维最大池化层：`[l, c]` → `[ol, c]`。
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct MaxPool1d {
-    spec: ContractSpec,
-    ol: usize,
-    c: usize,
-}
-
-impl MaxPool1d {
-    /// 构造。
-    ///
-    /// # Errors
-    ///
-    /// 窗口/步长为零，或输入短于窗口时返回说明。
-    pub fn new(
-        name: impl Into<String>,
-        k: usize,
-        s: usize,
-        p: usize,
-        l: usize,
-        c: usize,
-    ) -> Result<Self> {
-        let layer = "nn::MaxPool1d::new";
-        nonzero(c, "channels", layer)?;
-        // 算子结构体只在构造时用来算输出长度，之后没有访问器能读到它——存着就是一份
-        // 会被拷贝、会被比较、却永远不参与判断的状态。
+spatial_layer!(
+    /// 一维最大池化层：`[l, c]` → `[ol, c]`。
+    #[crate::spec(name = $name, out = [$ol, $c], ops = [$op])]
+    MaxPool1d, __layer_spec_MaxPool1d, "max_pool1d_f32";
+    (ol: usize, c: usize);
+    (k: usize, s: usize, p: usize, l: usize, c: usize);
+    check: |layer| { nonzero(c, "channels", layer)?; };
+    {
+        // 算子只负责构造期几何计算，不作为永远读不到的状态存进层。
         let ol = OpPool1 { k, s, p }.len(l)?;
-        let spec = Spec::new(name, crate::Shape::new([ol, c]), ["max_pool1d_f32"])?;
-        Ok(Self { spec, ol, c })
-    }
-
-    crate::accessors! {
-        /// 输出长度。
-        #[allow(clippy::len_without_is_empty)]
-        len -> usize = ol,
-        /// 通道数。
-        channels -> usize = c,
-    }
-}
-
-crate::priced!(MaxPool1d, "max_pool1d_f32");
-
-/// `[h, w, c] → [oh, ow, c]` 这一族的共用骨架。
-///
-/// 二维池化（最大/平均/自适应）与插值**只差一件事**：绑哪个算子。输出边长的算法属于算子自己，
-/// 因此各自手写构造；而"存什么、怎么读、下界按什么算"三件事一模一样，只剩这一份。
-///
-/// 算子结构体不再作为字段保存：它只在构造时用来算输出边长，之后没有任何访问器能读到它，
-/// 留着就是一份会被拷贝、会被比较、却永远不参与判断的状态。
-macro_rules! planar {
-    ($(#[$doc:meta])* $ty:ident, $op:literal) => {
-        $(#[$doc])*
-        #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-        pub struct $ty {
-            spec: Spec,
-            oh: usize,
-            ow: usize,
-            c: usize,
-        }
-
-        impl $ty {
-            /// 输出边长。
-            pub fn shape(&self) -> (usize, usize) {
-                (self.oh, self.ow)
-            }
-
-            /// 通道数。
-            pub fn channels(&self) -> usize {
-                self.c
-            }
-
-            /// 四个构造函数的尾巴都是这一句：边长已由算子算好，这里只登记规格。
-            fn plan(name: impl Into<String>, oh: usize, ow: usize, c: usize) -> Result<Self> {
-                let spec = Spec::new(name, crate::Shape::new([oh, ow, c]), [$op])?;
-                Ok(Self {
-                    spec,
-                    oh,
-                    ow,
-                    c,
-                })
-            }
-        }
-
-        crate::priced!($ty, $op);
+        (ol, c)
     };
-}
-
-planar!(
-    /// 二维最大池化层：`[h, w, c]` → `[oh, ow, c]`。规格构造口径同 [`MaxPool1d`]。
-    MaxPool2d,
-    "max_pool2d_f32"
-);
-
-impl MaxPool2d {
-    /// 构造。
-    ///
-    /// # Errors
-    ///
-    /// 窗口/步长为零，或输入短于窗口时返回说明。
-    pub fn new(
-        name: impl Into<String>,
-        geom: ConvGeom,
-        h: usize,
-        w: usize,
-        c: usize,
-    ) -> Result<Self> {
-        let layer = "nn::MaxPool2d::new";
-        nonzero(c, "channels", layer)?;
-        let (oh, ow) = OpPool2 { geom }.shape(h, w)?;
-        Self::plan(name, oh, ow, c)
+    (ol, c);
+    {
+        crate::accessors! {
+            /// 输出长度。
+            #[allow(clippy::len_without_is_empty)]
+            len -> usize = ol,
+            /// 通道数。
+            channels -> usize = c,
+        }
     }
-}
-
-planar!(
-    /// 二维平均池化层：口径同 [`MaxPool2d`]，`count_include_pad` 决定补零是否计入分母。
-    AvgPool2d,
-    "avg_pool2d_f32"
 );
 
-impl AvgPool2d {
-    /// 构造。
-    ///
-    /// # Errors
-    ///
-    /// 窗口/步长为零，或输入短于窗口时返回说明。
-    pub fn new(
-        name: impl Into<String>,
-        geom: ConvGeom,
-        count_include_pad: bool,
-        h: usize,
-        w: usize,
-        c: usize,
-    ) -> Result<Self> {
-        let layer = "nn::AvgPool2d::new";
-        nonzero(c, "channels", layer)?;
+spatial_layer!(
+    /// 二维最大池化层：`[h, w, c]` → `[oh, ow, c]`。
+    #[crate::spec(name = $name, out = [$oh, $ow, $c], ops = [$op])]
+    MaxPool2d, __layer_spec_MaxPool2d, "max_pool2d_f32";
+    (oh: usize, ow: usize, c: usize);
+    (geom: ConvGeom, h: usize, w: usize, c: usize);
+    check: |layer| { nonzero(c, "channels", layer)?; };
+    {
+        let (oh, ow) = OpPool2 { geom }.shape(h, w)?;
+        (oh, ow, c)
+    };
+    (oh, ow, c);
+    {
+        /// 输出边长。
+        pub fn shape(&self) -> (usize, usize) {
+            (self.oh, self.ow)
+        }
+
+        crate::accessors! {
+            /// 通道数。
+            channels -> usize = c,
+        }
+    }
+);
+
+spatial_layer!(
+    /// 二维平均池化层：`count_include_pad` 决定补零是否计入分母。
+    #[crate::spec(name = $name, out = [$oh, $ow, $c], ops = [$op])]
+    AvgPool2d, __layer_spec_AvgPool2d, "avg_pool2d_f32";
+    (oh: usize, ow: usize, c: usize);
+    (geom: ConvGeom, count_include_pad: bool, h: usize, w: usize, c: usize);
+    check: |layer| { nonzero(c, "channels", layer)?; };
+    {
         let (oh, ow) = crate::conv::AvgPool2d {
             geom,
             count_include_pad,
         }
         .shape(h, w)?;
-        Self::plan(name, oh, ow, c)
-    }
-}
+        (oh, ow, c)
+    };
+    (oh, ow, c);
+    {
+        /// 输出边长。
+        pub fn shape(&self) -> (usize, usize) {
+            (self.oh, self.ow)
+        }
 
-planar!(
-    /// 自适应平均池化层：任意输入压到固定 `[oh, ow, c]`。规格构造口径同 [`MaxPool1d`]。
-    AdaptiveAvgPool2d,
-    "adaptive_pool_f32"
+        crate::accessors! {
+            /// 通道数。
+            channels -> usize = c,
+        }
+    }
 );
 
-impl AdaptiveAvgPool2d {
-    /// 构造。
-    ///
-    /// # Errors
-    ///
-    /// 目标尺寸或通道为零时返回说明。
-    pub fn new(name: impl Into<String>, oh: usize, ow: usize, c: usize) -> Result<Self> {
-        let layer = "nn::AdaptiveAvgPool2d::new";
+spatial_layer!(
+    /// 自适应平均池化层：任意输入压到固定 `[oh, ow, c]`。
+    #[crate::spec(name = $name, out = [$oh, $ow, $c], ops = [$op])]
+    AdaptiveAvgPool2d, __layer_spec_AdaptiveAvgPool2d, "adaptive_pool_f32";
+    (oh: usize, ow: usize, c: usize);
+    (oh: usize, ow: usize, c: usize);
+    check: |layer| {
         nonzero(oh, "oh", layer)?;
         nonzero(ow, "ow", layer)?;
         nonzero(c, "channels", layer)?;
-        Self::plan(name, oh, ow, c)
+    };
+    { (oh, ow, c) };
+    (oh, ow, c);
+    {
+        /// 输出边长。
+        pub fn shape(&self) -> (usize, usize) {
+            (self.oh, self.ow)
+        }
+
+        crate::accessors! {
+            /// 通道数。
+            channels -> usize = c,
+        }
     }
-}
+);
 
-/// 插值层：`[h, w, c]` → `[oh, ow, c]`，取样方式见 [`crate::conv::Sampler`]。
-///
-/// 它比 `planar!` 那一族多一件**真状态**：`sampler` 不改输出边长，却决定算子怎么取样。
-/// 因此不塞进宏，而是显式带上——并且必须能读回（`sampler()`），否则它又会退化成死字段。
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Interpolate {
-    spec: Spec,
-    sampler: crate::conv::Sampler,
-    oh: usize,
-    ow: usize,
-    c: usize,
-}
-
-impl Interpolate {
-    /// 构造。
-    ///
-    /// # Errors
-    ///
-    /// 目标尺寸或通道为零时返回说明。
-    pub fn new(
-        name: impl Into<String>,
-        sampler: crate::conv::Sampler,
-        oh: usize,
-        ow: usize,
-        c: usize,
-    ) -> Result<Self> {
-        let layer = "nn::Interpolate::new";
+spatial_layer!(
+    /// 插值层：`[h, w, c]` → `[oh, ow, c]`；`sampler` 是决定取样方式的真实状态。
+    #[crate::spec(name = $name, out = [$oh, $ow, $c], ops = [$op])]
+    Interpolate, __layer_spec_Interpolate, "interpolate_f32";
+    (sampler: crate::conv::Sampler, oh: usize, ow: usize, c: usize);
+    (sampler: crate::conv::Sampler, oh: usize, ow: usize, c: usize);
+    check: |layer| {
         nonzero(oh, "oh", layer)?;
         nonzero(ow, "ow", layer)?;
         nonzero(c, "channels", layer)?;
-        let spec = Spec::new(name, crate::Shape::new([oh, ow, c]), ["interpolate_f32"])?;
-        Ok(Self {
-            spec,
-            sampler,
-            oh,
-            ow,
-            c,
-        })
-    }
+    };
+    { (sampler, oh, ow, c) };
+    (oh, ow, c);
+    {
+        /// 输出边长。
+        pub fn shape(&self) -> (usize, usize) {
+            (self.oh, self.ow)
+        }
 
-    /// 输出边长。
-    pub fn shape(&self) -> (usize, usize) {
-        (self.oh, self.ow)
+        crate::accessors! {
+            /// 通道数。
+            channels -> usize = c,
+            /// 取样方式。
+            sampler -> crate::conv::Sampler = sampler,
+        }
     }
-
-    /// 通道数。
-    pub fn channels(&self) -> usize {
-        self.c
-    }
-
-    /// 取样方式。
-    pub fn sampler(&self) -> crate::conv::Sampler {
-        self.sampler
-    }
-}
-
-crate::priced!(Interpolate, "interpolate_f32");
+);
 
 // ============================ 归一化 ============================
 //

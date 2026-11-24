@@ -1,6 +1,8 @@
 //! Muon：矩阵参数的 Newton–Schulz 近似正交化更新，含 Gram 分解与多项式迭代助手。
 
-use crate::optimizer::{Optimizer, SITE, Slot, check_slots, clip_scale, decay_rate, global_norm};
+use crate::optimizer::{
+    Optimizer, SITE, Slot, check_slots, clip_scale, decay_rate, global_norm, write_decay_clip,
+};
 use diagnostic::{Code, Error, Result};
 
 /// Muon（MomentUm Orthogonalized by Newton–Schulz）：矩阵参数的近似正交化更新。
@@ -149,6 +151,14 @@ impl Optimizer for Muon {
         self.velocity = momentum;
         self.step = step;
         Ok(())
+    }
+
+    fn write_config(&self, sink: &mut dyn FnMut(u64)) {
+        for value in [self.momentum, self.eps] {
+            sink(value.to_bits().into());
+        }
+        sink(self.nesterov.into());
+        write_decay_clip(self.weight_decay, self.clip_norm, sink);
     }
 }
 

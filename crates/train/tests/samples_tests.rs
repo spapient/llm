@@ -193,7 +193,6 @@ fn the_trait_object_reports_and_yields_the_same_stream() {
     assert!(ds.next_batch().is_none(), "取空后 trait 路径同样终止");
 }
 
-
 /// 收集一个数据集全部批的 token 序列（每批压成一段）。
 fn drain_tokens<'a>(dataset: &mut dyn Dataset<'a, Item = u32>) -> Vec<Vec<u32>> {
     let mut out = Vec::new();

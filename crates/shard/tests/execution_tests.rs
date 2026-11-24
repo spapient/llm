@@ -4,6 +4,9 @@
 
 use super::*;
 
+/// 独立标量参考入口；执行断言与表驱动用例共用这一签名。
+type ReferenceFn = fn(&Sample) -> diagnostic::Result<Vec<f32>>;
+
 fn sample(m: usize, n: usize) -> Sample {
     // `check_sample` 只读 m/n：空缓冲与空标量足以驱动形状判据，不引入任何硬件或夹具。
     Sample {
@@ -60,11 +63,7 @@ fn check_parity_reports_the_error_within_tolerance() {
 }
 
 /// 走真实 C 编译执行，并额外对拍朴素参考，避免 flash 内核与参考共享同一错误。
-fn assert_cpu_matches(
-    op: &str,
-    sample: &Sample,
-    reference: fn(&Sample) -> diagnostic::Result<Vec<f32>>,
-) {
+fn assert_cpu_matches(op: &str, sample: &Sample, reference: ReferenceFn) {
     let root = std::env::temp_dir().join(format!(
         "cutile-wide-attention-{op}-{}-{}",
         sample.n,
@@ -111,12 +110,32 @@ fn decode_flash_attention_supports_head_widths_beyond_the_accumulator_block() {
 
 #[test]
 fn spatial_kernels_match_their_default_models() {
-    let cases: [(_, _, fn(&Sample) -> diagnostic::Result<Vec<f32>>); 5] = [
-        ("conv2d_f32", nn::conv::conv2d::sample(16, 3), nn::conv::conv2d::reference),
-        ("adaptive_pool_f32", nn::conv::adaptive_pool::sample(64, 64), nn::conv::adaptive_pool::reference),
-        ("avg_pool2d_f32", nn::conv::avg_pool2d::sample(64, 64), nn::conv::avg_pool2d::reference),
-        ("max_pool2d_f32", nn::conv::max_pool2d::sample(64, 64), nn::conv::max_pool2d::reference),
-        ("interpolate_f32", nn::conv::interpolate::sample(64, 64), nn::conv::interpolate::reference),
+    let cases: [(&str, Sample, ReferenceFn); 5] = [
+        (
+            "conv2d_f32",
+            nn::conv::conv2d::sample(16, 3),
+            nn::conv::conv2d::reference,
+        ),
+        (
+            "adaptive_pool_f32",
+            nn::conv::adaptive_pool::sample(64, 64),
+            nn::conv::adaptive_pool::reference,
+        ),
+        (
+            "avg_pool2d_f32",
+            nn::conv::avg_pool2d::sample(64, 64),
+            nn::conv::avg_pool2d::reference,
+        ),
+        (
+            "max_pool2d_f32",
+            nn::conv::max_pool2d::sample(64, 64),
+            nn::conv::max_pool2d::reference,
+        ),
+        (
+            "interpolate_f32",
+            nn::conv::interpolate::sample(64, 64),
+            nn::conv::interpolate::reference,
+        ),
     ];
     for (name, sample, reference) in cases {
         assert_cpu_matches(name, &sample, reference);

@@ -80,90 +80,45 @@ impl AxisSet {
     }
 }
 
-/// 轴配置闭集：下标即码位（[`Axis`] 判别值的逆）。
-const AXES: [&dyn AxisCfg; 5] = [&Raw, &Dict, &Sparse, &Quant, &Rank];
-
-/// 一轴的编码/解码配置：搜索与验证只面向本 trait，不感知具体轴。
-trait AxisCfg {
-    /// 本轴码位。
-    fn kind(&self) -> Axis;
-    /// 编码为载荷；`None` 表示该轴对输入不适用。
-    fn encode(&self, w: &[f32], m: usize, n: usize) -> Option<Vec<u8>>;
-    /// 从载荷游标解码一张 `shape = (m, n)` 的矩阵（游标已越过 [`HEAD`]）。
-    fn decode(&self, cur: &mut Cursor<'_>, shape: (usize, usize)) -> Result<Vec<f32>>;
+/// 一轴的声明式能力表：编码与解码同源注册，调用点不需要逐个感知具体轴。
+#[derive(Clone, Copy)]
+struct AxisSpec {
+    axis: Axis,
+    encode: fn(&[f32], usize, usize) -> Option<Vec<u8>>,
+    decode: fn(&mut Cursor<'_>, (usize, usize)) -> Result<Vec<f32>>,
 }
 
-/// 原始字节轴。
-struct Raw;
-/// 唯一值字典轴。
-struct Dict;
-/// 结构化稀疏轴。
-struct Sparse;
-/// 精确网格量化轴。
-struct Quant;
-/// 精确低秩 + 残差轴。
-struct Rank;
-
-impl AxisCfg for Raw {
-    fn kind(&self) -> Axis {
-        Axis::Raw
-    }
-    fn encode(&self, w: &[f32], _: usize, _: usize) -> Option<Vec<u8>> {
-        Some(pack_bytes(&f32_bytes(w)))
-    }
-    fn decode(&self, cur: &mut Cursor<'_>, shape: (usize, usize)) -> Result<Vec<f32>> {
-        let want = area(shape);
-        bytes_to_f32(&unpack_bytes(cur, payload_cap(want))?, want)
-    }
-}
-
-impl AxisCfg for Dict {
-    fn kind(&self) -> Axis {
-        Axis::Dict
-    }
-    fn encode(&self, w: &[f32], _: usize, _: usize) -> Option<Vec<u8>> {
-        dict_payload(w)
-    }
-    fn decode(&self, cur: &mut Cursor<'_>, shape: (usize, usize)) -> Result<Vec<f32>> {
-        decode_dict(cur, area(shape))
-    }
-}
-
-impl AxisCfg for Sparse {
-    fn kind(&self) -> Axis {
-        Axis::Sparse
-    }
-    fn encode(&self, w: &[f32], _: usize, _: usize) -> Option<Vec<u8>> {
-        sparse_payload(w)
-    }
-    fn decode(&self, cur: &mut Cursor<'_>, shape: (usize, usize)) -> Result<Vec<f32>> {
-        decode_sparse(cur, area(shape))
-    }
-}
-
-impl AxisCfg for Quant {
-    fn kind(&self) -> Axis {
-        Axis::Quant
-    }
-    fn encode(&self, w: &[f32], _: usize, _: usize) -> Option<Vec<u8>> {
-        quant_payload(w)
-    }
-    fn decode(&self, cur: &mut Cursor<'_>, shape: (usize, usize)) -> Result<Vec<f32>> {
-        decode_quant(cur, area(shape))
-    }
-}
-
-impl AxisCfg for Rank {
-    fn kind(&self) -> Axis {
-        Axis::Rank
-    }
-    fn encode(&self, w: &[f32], m: usize, n: usize) -> Option<Vec<u8>> {
-        rank_payload(w, m, n)
-    }
-    fn decode(&self, cur: &mut Cursor<'_>, shape: (usize, usize)) -> Result<Vec<f32>> {
-        decode_rank(cur, shape)
-    }
-}
+/// 轴闭集：下标即 [`Axis::code`]；新增轴只在这里登记一次。
+const AXES: [AxisSpec; 5] = [
+    AxisSpec {
+        axis: Axis::Raw,
+        encode: |w, _, _| Some(pack_bytes(&f32_bytes(w))),
+        decode: |cur, shape| {
+            let want = area(shape);
+            bytes_to_f32(&unpack_bytes(cur, payload_cap(want))?, want)
+        },
+    },
+    AxisSpec {
+        axis: Axis::Dict,
+        encode: |w, _, _| dict_payload(w),
+        decode: |cur, shape| decode_dict(cur, area(shape)),
+    },
+    AxisSpec {
+        axis: Axis::Sparse,
+        encode: |w, _, _| sparse_payload(w),
+        decode: |cur, shape| decode_sparse(cur, area(shape)),
+    },
+    AxisSpec {
+        axis: Axis::Quant,
+        encode: |w, _, _| quant_payload(w),
+        decode: |cur, shape| decode_quant(cur, area(shape)),
+    },
+    AxisSpec {
+        axis: Axis::Rank,
+        encode: rank_payload,
+        decode: decode_rank,
+    },
+];
 
 /// 通过逐位验证的最小候选。
 #[derive(Clone, Debug)]
@@ -200,18 +155,17 @@ pub fn search_with_axes(w: &[f32], m: usize, n: usize, axes: AxisSet) -> Result<
     let shape = (m, n);
     // `Raw` 恒可用，是基线；基线必须先自身逐位成立，破了就是压缩器实现 bug，报错而不是 panic。
     let base_payload = pack_bytes(&f32_bytes(w));
-    if !sound(&Raw, &base_payload, shape, w) {
+    if !sound(&AXES[0], &base_payload, shape, w) {
         return Err(bad("raw 基线没能逐位还原，压缩器自身不自洽"));
     }
     let base = frame(Axis::Raw, m, n, base_payload);
     // 其余四轴只在逐位成立且严格小于基线时才有胜出可能。
     Ok(AXES[1..]
         .iter()
-        .copied()
-        .filter(|cfg| axes.contains(cfg.kind()))
-        .filter_map(|cfg| {
-            let payload = cfg.encode(w, m, n)?;
-            sound(cfg, &payload, shape, w).then(|| frame(cfg.kind(), m, n, payload))
+        .filter(|spec| axes.contains(spec.axis))
+        .filter_map(|spec| {
+            let payload = (spec.encode)(w, m, n)?;
+            sound(spec, &payload, shape, w).then(|| frame(spec.axis, m, n, payload))
         })
         .filter(|pick| pick.len() < base.len())
         .min_by_key(Pick::len)
@@ -245,9 +199,9 @@ pub fn expand(artifact: &[u8]) -> Result<Vec<u8>> {
 pub fn decode(artifact: &[u8]) -> Result<Vec<f32>> {
     let (axis, m, n) = head(artifact)?;
     let want = area((m, n));
-    let cfg = AXES[axis as usize];
+    let spec = &AXES[axis as usize];
     let mut cur = Cursor::new(&artifact[HEAD..]);
-    let out = cfg.decode(&mut cur, (m, n))?;
+    let out = (spec.decode)(&mut cur, (m, n))?;
     if out.len() != want {
         return Err(bad("解码长度与形状不符"));
     }

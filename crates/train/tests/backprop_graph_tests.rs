@@ -285,7 +285,6 @@ fn unsupported_operator_backward_is_rejected() -> Result<()> {
     Ok(())
 }
 
-
 /// 端到端蒸馏 KL：`kl = sum(p_s · (ln p_s - ln p_t))` 用图上原语搭出来
 /// （softmax→log→sub→mul→reduce_sum），反传后与解析单行 KL 中心差分对拍。
 ///

@@ -82,7 +82,7 @@ fn run_metric_batch(
                 .load(logits, Data::F32(vec![0.0, 10.0, 0.0]))?;
             let metric = metric(session)?;
             session.bufs().compute_step("add_f32", &[p, x], loss)?;
-                    Ok(ForwardOut {
+            Ok(ForwardOut {
                 logits,
                 loss,
                 metric: Some(metric),
@@ -119,7 +119,11 @@ fn learner_runs_a_batch_and_records_metrics() -> Result<()> {
     assert_eq!(point.accuracy(), 1.0, "argmax 命中标签");
     assert!(point.loss < 1e-3, "对齐类别 NLL 趋近 0");
     assert_eq!(learner.session().step(), 1, "窗口 1，每批步进一次");
-    assert_eq!(learner.session().losses().len(), 1, "Learner 统一记录一次 loss");
+    assert_eq!(
+        learner.session().losses().len(),
+        1,
+        "Learner 统一记录一次 loss"
+    );
     Ok(())
 }
 

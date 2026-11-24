@@ -141,8 +141,7 @@ macro_rules! kernel_adapter {
     };
     (norm!($run:ident => $module:ident)) => {
         fn $run(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
-            let (x, gamma, beta) =
-                <(f32, f32, f32) as Inputs>::unpack(inputs, stringify!($run))?;
+            let (x, gamma, beta) = <(f32, f32, f32) as Inputs>::unpack(inputs, stringify!($run))?;
             nn::$module::forward(
                 tensor::View::one(x),
                 tensor::View::one(gamma),

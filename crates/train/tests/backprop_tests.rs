@@ -461,7 +461,6 @@ fn a_warm_backward_pass_reuses_its_scratch() -> Result<()> {
     Ok(())
 }
 
-
 /// 任意几何 + 真优化器闭环：`loss = reduce_sum(batch_norm(x, gamma, beta))`。
 ///
 /// 标准化后每通道均值恰为 0，于是 `loss = Σ_c beta_c * n * spatial`，

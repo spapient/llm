@@ -268,7 +268,6 @@ fn max_matches_central_differences() -> Result<()> {
     })
 }
 
-
 /// 几何反向对拍：前向取元素和，交给 `check_geometry_grad` 做中心差分。
 fn sum_grad(op: &str, geometry: Geometry, x0: &[f32]) -> Result<()> {
     check_geometry_grad(op, geometry, x0, |px| {

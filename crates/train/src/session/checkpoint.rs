@@ -1,10 +1,10 @@
 //! 会话快照与视图装配：可恢复检查点的最小事实集、快照回载校验、优化器视图的取走/归还/镜像。
 
 use super::{ParamSlot, SITE, Session, SlotMeta, TrainConfig, TrainSpec};
+use crate::Kernel;
 use crate::loss::ObjectiveConfig;
 use crate::optimizer::{Optimizer, OwnedSlot};
 use crate::pool::Bufs;
-use crate::Kernel;
 use autograd::Var;
 use diagnostic::{Code, Error, Result};
 use shard::Collective;
@@ -177,9 +177,13 @@ impl TrainSpec {
 }
 
 /// 只有会话配置时的默认指纹；完整装配可用 [`TrainSpec::config_fingerprint`] 覆盖。
-pub(super) fn session_fingerprint(config: &TrainConfig, optimizer: &str) -> u64 {
+pub(super) fn session_fingerprint<O: Optimizer + ?Sized>(
+    config: &TrainConfig,
+    optimizer: &O,
+) -> u64 {
     let mut hash = StableHash::new("train-session-v1");
-    hash.text(optimizer);
+    hash.text(std::any::type_name::<O>());
+    optimizer.write_config(&mut |value| hash.number(value));
     hash_config(&mut hash, config);
     hash.finish()
 }
@@ -372,7 +376,7 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
         Ok(())
     }
 
-    /// 单槽矩长度对账：一阶矩必须等长；二阶矩可等长，或由无一阶外矩的实现留空。
+    /// 单槽矩长度对账：一阶矩必须等长；二阶矩可等长，或由无二阶矩的实现留空。
     fn check_moment_slot_length(&self, idx: usize, slot: &SlotMoments) -> Result<()> {
         let want = self.slots[idx].params().len();
         if slot.m().len() != want || !(slot.v().is_empty() || slot.v().len() == want) {

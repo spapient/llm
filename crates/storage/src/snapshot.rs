@@ -433,9 +433,12 @@ fn decode_facts(cursor: &mut Cursor<'_>) -> Result<Facts> {
     for (slot, label) in counts.iter_mut().zip(labels) {
         *slot = cursor.count(label)?;
     }
-    let fingerprint = u64::from_le_bytes(cursor.take(8)?.try_into().map_err(|_| {
-        codec::invalid("配置指纹必须是 8 字节小端整数")
-    })?);
+    let fingerprint = u64::from_le_bytes(
+        cursor
+            .take(8)?
+            .try_into()
+            .map_err(|_| codec::invalid("配置指纹必须是 8 字节小端整数"))?,
+    );
     Facts::new(step, counts[0], counts[1], counts[2], counts[3])
         .map(|facts| facts.with_config_fingerprint(fingerprint))
         .map_err(error_ctx)

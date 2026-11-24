@@ -376,6 +376,13 @@ impl Optimizer for Adam {
         self.step = step;
         Ok(())
     }
+
+    fn write_config(&self, sink: &mut dyn FnMut(u64)) {
+        for value in [self.beta1, self.beta2, self.eps] {
+            sink(value.to_bits().into());
+        }
+        write_decay_clip(self.weight_decay, self.clip_norm, sink);
+    }
 }
 
 /// 泛型混合优化器：矩阵槽走 `M`，其余槽走 `N`；矩状态按全局槽序号确定性拆分与恢复。
@@ -419,21 +426,19 @@ impl<M: Optimizer, N: Optimizer> Hybrid<M, N> {
 
     /// 单槽校验：矩阵形状不含零维，梯度逐项有限。
     fn check_slot(idx: usize, slot: &Slot<'_>) -> Result<()> {
-        if let Some((rows, cols)) = slot.shape {
-            if rows == 0 || cols == 0 {
-                return Err(Error::new(
-                    Code::Invalid,
-                    format!("第 {idx} 槽矩阵形状 [{rows}, {cols}] 含零维"),
-                )
-                .with(SITE));
-            }
-        }
-        if let Some(bad) = slot.grads.iter().position(|grad| !grad.is_finite()) {
+        if let Some((rows, cols)) = slot.shape
+            && (rows == 0 || cols == 0)
+        {
             return Err(Error::new(
                 Code::Invalid,
-                format!("第 {idx} 槽梯度第 {bad} 项非有限"),
+                format!("第 {idx} 槽矩阵形状 [{rows}, {cols}] 含零维"),
             )
             .with(SITE));
+        }
+        if let Some(bad) = slot.grads.iter().position(|grad| !grad.is_finite()) {
+            return Err(
+                Error::new(Code::Invalid, format!("第 {idx} 槽梯度第 {bad} 项非有限")).with(SITE),
+            );
         }
         Ok(())
     }
@@ -497,9 +502,18 @@ impl<M: Optimizer, N: Optimizer> Optimizer for Hybrid<M, N> {
         shapes: &[Option<(usize, usize)>],
     ) -> Result<()> {
         check_shaped_len(&momentum, &variance, shapes)?;
-        let (mm, mv, nm, nv) = split_shaped(momentum, variance, shapes)?;
-        restore_part(&mut self.matrix, mm, mv, step)?;
-        restore_part(&mut self.other, nm, nv, step)
+        let states = split_shaped(momentum, variance, shapes)?;
+        states.matrix.restore(&mut self.matrix, step)?;
+        states.other.restore(&mut self.other, step)
+    }
+
+    fn write_config(&self, sink: &mut dyn FnMut(u64)) {
+        self.matrix.write_config(sink);
+        self.other.write_config(sink);
+        sink(self.clip_norm.is_some().into());
+        if let Some(norm) = self.clip_norm {
+            sink(norm.to_bits().into());
+        }
     }
 }
 
@@ -509,55 +523,65 @@ fn check_shaped_len(
     variance: &[Vec<f32>],
     shapes: &[Option<(usize, usize)>],
 ) -> Result<()> {
-    if momentum.len() != variance.len() || (!momentum.is_empty() && momentum.len() != shapes.len()) {
-        return Err(Error::new(
-            Code::Invalid,
-            "混合优化器恢复：矩状态与槽形状表长度不一致",
-        )
-        .with(SITE));
+    if momentum.len() != variance.len() || (!momentum.is_empty() && momentum.len() != shapes.len())
+    {
+        return Err(
+            Error::new(Code::Invalid, "混合优化器恢复：矩状态与槽形状表长度不一致").with(SITE),
+        );
     }
     Ok(())
 }
 
-/// 按槽形状把矩状态拆进矩阵与标量四列；矩阵槽校验长度与形状乘积一致。
+/// 一条优化器路由的矩状态：一阶矩与二阶矩始终按槽对齐。
+#[derive(Default)]
+struct MomentState {
+    momentum: Vec<Vec<f32>>,
+    variance: Vec<Vec<f32>>,
+}
+
+impl MomentState {
+    /// 二阶矩全为空表示无矩实现；否则保留逐槽对齐交给子优化器校验。
+    fn restore<O: Optimizer>(self, optimizer: &mut O, step: u64) -> Result<()> {
+        let variance = if self.variance.iter().all(Vec::is_empty) {
+            Vec::new()
+        } else {
+            self.variance
+        };
+        optimizer.restore(self.momentum, variance, step)
+    }
+}
+
+/// 混合优化器的分路结果：矩阵槽与其他槽各自持有一份矩状态。
+#[derive(Default)]
+struct PartitionedMoments {
+    matrix: MomentState,
+    other: MomentState,
+}
+
+/// 按槽形状拆分矩状态；矩阵槽先校验长度与形状乘积，再按路由归并。
 fn split_shaped(
     momentum: Vec<Vec<f32>>,
     variance: Vec<Vec<f32>>,
     shapes: &[Option<(usize, usize)>],
-) -> Result<(Vec<Vec<f32>>, Vec<Vec<f32>>, Vec<Vec<f32>>, Vec<Vec<f32>>)> {
-    let (mut mm, mut mv, mut nm, mut nv) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-    for (idx, (m, v)) in momentum.into_iter().zip(variance).enumerate() {
-        if let Some((rows, cols)) = shapes[idx] {
-            if rows.checked_mul(cols) != Some(m.len()) {
+) -> Result<PartitionedMoments> {
+    let mut states = PartitionedMoments::default();
+    for (idx, (momentum, variance)) in momentum.into_iter().zip(variance).enumerate() {
+        let target = if let Some((rows, cols)) = shapes[idx] {
+            if rows.checked_mul(cols) != Some(momentum.len()) {
                 return Err(Error::new(
                     Code::Invalid,
                     format!("第 {idx} 槽矩状态长度与矩阵形状不符"),
                 )
                 .with(SITE));
             }
-            mm.push(m);
-            mv.push(v);
+            &mut states.matrix
         } else {
-            nm.push(m);
-            nv.push(v);
-        }
+            &mut states.other
+        };
+        target.momentum.push(momentum);
+        target.variance.push(variance);
     }
-    Ok((mm, mv, nm, nv))
-}
-
-/// 子表二阶矩全为空表示无矩实现；否则保留逐槽对齐交给子优化器校验。
-fn restore_part<O: Optimizer>(
-    optimizer: &mut O,
-    momentum: Vec<Vec<f32>>,
-    variance: Vec<Vec<f32>>,
-    step: u64,
-) -> Result<()> {
-    let variance = if variance.iter().all(Vec::is_empty) {
-        Vec::new()
-    } else {
-        variance
-    };
-    optimizer.restore(momentum, variance, step)
+    Ok(states)
 }
 
 #[cfg(test)]
@@ -628,6 +652,10 @@ impl Optimizer for Sgd {
             return Err(Error::new(Code::Invalid, message).with(SITE));
         }
         Ok(())
+    }
+
+    fn write_config(&self, sink: &mut dyn FnMut(u64)) {
+        write_decay_clip(self.weight_decay, self.clip_norm, sink);
     }
 }
 

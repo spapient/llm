@@ -12,7 +12,6 @@ __global__ void cutile_musa_matmul_f32_tile(
     const int row = (int)blockIdx.y * CUTILE_MUSA_TILE + (int)threadIdx.y;
     const int col = (int)blockIdx.x * CUTILE_MUSA_TILE + (int)threadIdx.x;
     float acc = 0.0f;
-    /* cutile-unroll */
     for (int base = 0; base < K; base += CUTILE_MUSA_TILE) {
         const int k = base + (int)threadIdx.x;
         as[threadIdx.y][threadIdx.x] =
@@ -21,6 +20,7 @@ __global__ void cutile_musa_matmul_f32_tile(
         bs[threadIdx.y][threadIdx.x] =
             bk < K && col < N ? b[bk * N + col] : 0.0f;
         __syncthreads();
+        /* cutile-unroll */
         for (int p = 0; p < CUTILE_MUSA_TILE; ++p) {
             acc += as[threadIdx.y][p] * bs[p][threadIdx.x];
         }

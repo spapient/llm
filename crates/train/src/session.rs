@@ -359,8 +359,7 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
     /// 绑定包含目标、批几何与采样的完整配置指纹。
     pub fn bind_recovery_config(&mut self, spec: &TrainSpec) -> Result<()> {
         spec.validate()?;
-        self.config_fingerprint =
-            spec.config_fingerprint(std::any::type_name::<O>());
+        self.config_fingerprint = spec.config_fingerprint(&self.optimizer);
         Ok(())
     }
 

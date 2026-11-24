@@ -35,6 +35,7 @@ fn a_shared_prefix_may_cut_through_a_character() {
         // 五个恢复事实 + 权重数据段起点。
         cursor.varint().expect("头部事实");
     }
+    cursor.take(8).expect("配置指纹");
     assert_eq!(cursor.count("条目数").expect("条目数"), 2);
 
     // 第一条：名字全写，随后跳过布局与偏移。
@@ -162,9 +163,11 @@ fn an_integer_wider_than_u64_is_rejected() {
 #[test]
 fn an_entry_count_beyond_the_bytes_is_rejected_before_allocating() {
     let mut payload = snapshot().encode().expect("编码")[..Format::HEADER_BYTES].to_vec();
-    for value in [0u64, 1, 1, 1, 1, 0] {
+    for value in [0u64, 1, 1, 1, 1] {
         push_varint(&mut payload, value);
     }
+    payload.extend_from_slice(&0u64.to_le_bytes());
+    push_varint(&mut payload, 0);
     push_varint(&mut payload, 1_000_000);
     let error = Snapshot::decode(&seal(&payload)).expect_err("计数超限");
     assert!(error.to_string().contains("权重条目"), "{error}");
@@ -307,15 +310,16 @@ fn a_corrupted_file_names_its_path() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// 版本 5 布局的固定字节黄金向量：往返测试只能证明"编码与解码对称"，布局若被对称地改动它
+/// 版本 6 布局的固定字节黄金向量：往返测试只能证明"编码与解码对称"，布局若被对称地改动它
 /// 察觉不到；黄金向量把当前字段顺序、类型标签与压缩写法钉死。任何不是格式版本递增的布局漂移，
 /// 都会在这里逐字节失败。
 #[test]
-fn a_golden_vector_pins_the_version_five_layout() {
-    const GOLDEN: [u8; 30] = [
+fn a_golden_vector_pins_the_version_six_layout() {
+    const GOLDEN: [u8; 38] = [
         0x4C, 0x4C, 0x4D, 0x43, // `LLMC`
-        0x05, 0x00, // 版本 5（小端 u16）
+        0x06, 0x00, // 版本 6（小端 u16）
         0x01, 0x01, 0x01, 0x01, 0x01, // step=1、world=1、layers=1、rows=1、cols=1
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // 未声明的配置指纹
         0x00, // data_start=0
         0x01, // 条目数 1
         0x00, 0x00, 0x01, 0x77, // 名：前 0 后 0，中段 1 字节 `w`
@@ -324,7 +328,7 @@ fn a_golden_vector_pins_the_version_five_layout() {
         0x00, 0x00, // 矩状态：0 槽、步数 0
         0x00, 0x00, // 累积梯度：窗口 0 批、0 槽
         0x00, // 权重绑定：0 对
-        0x30, 0x1E, 0xC8, 0xE8, // CRC-32（小端）
+        0xA6, 0xEC, 0x6E, 0x33, // CRC-32（小端）
     ];
 
     let facts = Facts::new(1, 1, 1, 1, 1).expect("事实");

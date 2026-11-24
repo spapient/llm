@@ -30,7 +30,7 @@ use std::ops::Range;
 
 use diagnostic::{Code, Error, Result};
 
-use crate::model::{AxisRole, AxisSpec, Buf, Cost, Sample, ShapeCtx, Values};
+use crate::model::{Buf, Cost, Sample, ShapeCtx, Values};
 use tensor::View;
 
 /// 取二维视图的 `(rows, cols)`；秩不符按算子名报错。矩阵乘族各出口共用这一处几何解包。
@@ -440,21 +440,8 @@ pub(crate) fn pair_views<'a, K: Precision>(
 /// 收缩轴长度（生产档）：prefill 主链路 GEMM 的 K。
 pub const K: usize = 4096;
 
-/// 三轴：`m`/`k` 输入，`n` 输出（角色与 [`crate::gemm::AXES`] 一致，收缩轴长度由 [`K`] 给定）。
-pub const AXES: &[AxisSpec] = &[
-    AxisSpec {
-        role: AxisRole::Input,
-        label: 'm',
-    },
-    AxisSpec {
-        role: AxisRole::Input,
-        label: 'k',
-    },
-    AxisSpec {
-        role: AxisRole::Output,
-        label: 'n',
-    },
-];
+/// 三轴角色与固定档 GEMM 完全同源；只有本模块的 [`K`] 取生产档。
+pub use crate::gemm::AXES;
 
 /// 形状投影：输出 `m×n`，收缩轴 `k = K`（生产档）。
 ///

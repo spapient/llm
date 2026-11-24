@@ -30,10 +30,10 @@ fn a_snapshot_round_trips_through_its_bytes() {
 
 #[test]
 fn config_fingerprint_round_trips_as_a_stable_u64() {
-    let snapshot = snapshot().with_config_fingerprint(0x0123_4567_89ab_cdef);
-    let restored = Snapshot::decode(&snapshot.encode().expect("编码")).expect("解码");
+    let configured = snapshot().with_config_fingerprint(0x0123_4567_89ab_cdef);
+    let restored = Snapshot::decode(&configured.encode().expect("编码")).expect("解码");
     assert_eq!(restored.config_fingerprint(), 0x0123_4567_89ab_cdef);
-    assert_eq!(restored, snapshot);
+    assert_eq!(restored, configured);
     assert_eq!(snapshot().config_fingerprint(), 0, "缺省表示未声明");
 }
 

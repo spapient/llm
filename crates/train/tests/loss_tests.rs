@@ -424,7 +424,6 @@ mod distill {
     }
 }
 
-
 /// 对齐类别顶到最高时，log-prob 应趋近 0。
 #[test]
 fn log_prob_is_near_zero_for_the_peaked_action() -> Result<()> {

@@ -560,31 +560,37 @@ fn overrides_fall_back_to_default_without_duplicating_constants() {
     );
 }
 
-/// 配置指纹稳定且覆盖调度、目标、数据采样与优化器类型。
+/// 配置指纹稳定且覆盖调度、目标、数据采样、优化器类型与静态超参。
 #[test]
 fn train_spec_fingerprint_is_stable_and_field_sensitive() {
     let base = TrainSpec::default();
-    let fingerprint = base.config_fingerprint("Sgd");
-    assert_eq!(base.config_fingerprint("Sgd"), fingerprint);
-    assert_ne!(base.config_fingerprint("Adam"), fingerprint);
+    let sgd = Sgd::new();
+    let fingerprint = base.config_fingerprint(&sgd);
+    assert_eq!(base.config_fingerprint(&sgd), fingerprint);
+    assert_ne!(base.config_fingerprint(&crate::Adam::new()), fingerprint);
+    assert_ne!(
+        base.config_fingerprint(&Sgd::new().with_weight_decay(0.1)),
+        fingerprint,
+        "优化器超参漂移也必须拒绝"
+    );
     let mut changed = base.clone();
     changed.session.anneal = crate::Anneal::Cosine;
-    assert_ne!(changed.config_fingerprint("Sgd"), fingerprint);
+    assert_ne!(changed.config_fingerprint(&sgd), fingerprint);
     let mut changed = base.clone();
     changed.session.clip_norm = Some(1.0);
-    assert_ne!(changed.config_fingerprint("Sgd"), fingerprint);
+    assert_ne!(changed.config_fingerprint(&sgd), fingerprint);
     let mut changed = base.clone();
     changed.objective = ObjectiveConfig::Distill(crate::Distill::new(2.0, 0.5));
-    assert_ne!(changed.config_fingerprint("Sgd"), fingerprint);
+    assert_ne!(changed.config_fingerprint(&sgd), fingerprint);
     let mut changed = base.clone();
     changed.loader.sampling = Sampling::Shuffle { seed: 7 };
-    assert_ne!(changed.config_fingerprint("Sgd"), fingerprint);
+    assert_ne!(changed.config_fingerprint(&sgd), fingerprint);
     let mut changed = base;
     changed.loader.sampling = Sampling::Weighted {
         weights: vec![0.25, 0.75],
         seed: 11,
     };
-    assert_ne!(changed.config_fingerprint("Sgd"), fingerprint);
+    assert_ne!(changed.config_fingerprint(&sgd), fingerprint);
 }
 
 /// 非零指纹在结构校验之前对账，失败时不写步数、梯度或绑定状态。
@@ -641,7 +647,12 @@ fn parameter_views_and_gradients_reuse_their_allocations() {
         .expect("登记参数");
     session.load_gradient(p, &[0.5; N]).expect("梯度就位");
     let params = session.slots[0].params.as_ptr();
-    let mirrored = session.bufs.value(p).and_then(|view| view.f32()).expect("参数镜像").as_ptr();
+    let mirrored = session
+        .bufs
+        .value(p)
+        .and_then(|view| view.f32())
+        .expect("参数镜像")
+        .as_ptr();
     let gradients = session.bufs.gradient(p).expect("梯度").as_ptr();
     type BenchSession = Session<Reference, Sgd, Remote>;
     let views = BenchSession::collect_views(&mut session.slots, &mut session.bufs).expect("取视图");
@@ -649,7 +660,15 @@ fn parameter_views_and_gradients_reuse_their_allocations() {
     BenchSession::mirror_params(&session.slots, &mut session.bufs).expect("镜像参数");
     assert_eq!(session.slots[0].params.as_ptr(), params);
     assert_eq!(session.bufs.gradient(p).expect("梯度").as_ptr(), gradients);
-    assert_eq!(session.bufs.value(p).and_then(|view| view.f32()).expect("参数镜像").as_ptr(), mirrored);
+    assert_eq!(
+        session
+            .bufs
+            .value(p)
+            .and_then(|view| view.f32())
+            .expect("参数镜像")
+            .as_ptr(),
+        mirrored
+    );
     session.zero_gradients();
     session.load_gradient(p, &[0.25; N]).expect("重新装梯度");
     assert_eq!(session.bufs.gradient(p).expect("梯度").as_ptr(), gradients);
@@ -677,9 +696,7 @@ fn parameter_view_pipeline_copy_benchmark() {
         BenchSession::mirror_params(&session.slots, &mut session.bufs).expect("镜像参数");
     }
     let elapsed = started.elapsed();
-    println!(
-        "parameter-view pipeline: {ITERS} iterations x {WIDTH} f32 in {elapsed:?}"
-    );
+    println!("parameter-view pipeline: {ITERS} iterations x {WIDTH} f32 in {elapsed:?}");
 }
 
 /// 检查点事实集：恢复所需的最小事实集与偏差拒绝。
@@ -741,7 +758,12 @@ mod checkpoint {
     #[test]
     fn a_checkpoint_becomes_a_snapshot_that_round_trips() {
         let (checkpoint, header, _topology) = fixture();
+        let checkpoint = checkpoint.with_config_fingerprint(0x0123_4567_89ab_cdef);
         let snapshot = checkpoint.snapshot(&header).expect("快照");
+        assert_eq!(
+            snapshot.config_fingerprint(),
+            checkpoint.config_fingerprint()
+        );
         let bytes = snapshot.encode().expect("编码");
         let restored = weights::Snapshot::decode(&bytes).expect("解码");
         let facts = restored.facts();
