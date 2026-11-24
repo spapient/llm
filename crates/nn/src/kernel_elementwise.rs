@@ -259,7 +259,7 @@ pub mod residual_add_f32 {
 }
 
 pub mod remainder_f32 {
-    //! 逐元素余数：`y[n] = a[n] % b[n]`（余数符号同被除数，IEEE 余数语义）。
+    //! 逐元素余数：`y[n] = a[n] % b[n]`（fmod：商向零截断，结果符号同被除数）。
 
     crate::binary_f32!(
         Remainder,

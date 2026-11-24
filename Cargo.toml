@@ -52,5 +52,6 @@ num-traits = "0.2.19"
 proc-macro2 = "1.0"
 proptest = "1.12.0"
 quote = "1.0"
+similar-asserts = "2.0.0"
 syn = { version = "2.0", features = ["full"] }
 toml = "1.2.1"

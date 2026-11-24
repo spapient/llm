@@ -236,8 +236,15 @@ jobs:
       - name: Install nextest
         uses: taiki-e/install-action@nextest
       # 覆盖率采集与主测试运行器一致走 nextest（lib/集成/二进制测试并行隔离执行）。
+      # 口径说明：doctest 不由 nextest 执行，`cargo llvm-cov --doc` 采集文档示例覆盖目前仍是
+      # 不稳定特性（需 nightly，见 cargo-llvm-cov issue #2）；本仓文档示例的**正确性**由独立
+      # `doc` job 的 `cargo test --doc -D warnings` 断言，覆盖率数字以 lib/集成测试为准，不把
+      # 不稳定的 doctest 覆盖并进硬门口径。
       - name: Generate lcov
         run: cargo llvm-cov nextest --workspace --all-features --locked --lcov --output-path lcov.info
+      # 整体覆盖率摘要：打印到 job 日志留痕，便于观察回退趋势；硬下限仍由下面分 crate floor 把守。
+      - name: Coverage summary
+        run: cargo llvm-cov report --text
       # 硬门：cutile 行/函数覆盖率低于下限即失败。下限低于本地干净基线（行 82.9% / 函数 83.2%），
       # 给 ubuntu 上不可用的 Metal/NVCC 探测分支留出平台差异余量，只防整体回退、不卡单次波动。
       - name: Coverage floor (cutile)

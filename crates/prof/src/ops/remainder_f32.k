@@ -1,9 +1,10 @@
-// cutile 模板：remainder_f32 —— 逐元素 IEEE 754 余数。
+// cutile 模板：remainder_f32 —— 逐元素 fmod（截断商余数）。
 // 槽位：{{op}} 是算子名，@prim(...) 由片段层逐个替换。
 // 布局契约（由声明层校验）：a={{a}}  b={{b}}
 //
-// C99 / OpenCL 都没有 `fmodf` 后缀；先用 `copysign(x - floor(x / y) * y, x)` 写在标量上，
-// 结果符号同被除数，各后端 preamble 只取基础内建函数。
+// 语义对齐 nn 参考闭包 `x % y`：`y = x - trunc(x / v)·v`，商向零截断，结果符号同被除数
+// （C99 fmod / Rust f32 Rem 口径）。取整走后端 preamble 的 `_cutile_trunc_f32`，与一元
+// `trunc_f32` 同一可移植接缝；不在模板里裸写 floor / copysign，避免负商非整数时与参考分歧。
 void cutile_{{op}}_kernel(const float *a, const float *b, float *y, int N) {
     for (int n = 0; n < N; ++n) {
         const float *ap = 0;
@@ -12,7 +13,7 @@ void cutile_{{op}}_kernel(const float *a, const float *b, float *y, int N) {
         @load(bp, b + n);
         const float x = ap[0];
         const float v = bp[0];
-        const float out = copysign(x - floor(x / v) * v, x);
+        const float out = x - _cutile_trunc_f32(x / v) * v;
         @store(y, n, out);
     }
 }

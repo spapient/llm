@@ -7,7 +7,12 @@
 # `[[buffer(0)]]` 与外来 API（`MTLBuffer`/`atIndex`）必须豁免，而裸 grep 无法区分。
 # 那条判据在 `crates/tools/src/words.rs`，由 `cargo test -p llm-tools --test gate` 守。
 #
-# 文件名零下划线零容忍：限定词一律下沉到目录，不设类别豁免、不留存量基线。
+# 命名分层（决策见 docs/adr/0057 §1）：
+# - 符号命名（类型 UpperCamelCase、函数/变量/模块 snake_case、常量 SCREAMING_SNAKE）src 与
+#   tests 同一套官方规则；本脚本的符号后缀/泛名/类型后缀判据扫 src，tests 符号由 clippy 兜底。
+# - src 文件名零下划线零容忍：限定词一律下沉到目录，不设类别豁免、不留存量基线。
+# - tests/ 文件名允许下划线（`<topic>_tests.rs` 主题聚合惯例），豁免文件名下沉规则；豁免的
+#   只是文件名，测试内符号仍守官方规则。故下面的文件名判据只扫 crates/*/src，不扫 tests/。
 set -eu
 cd "$(dirname "$0")/.."
 
