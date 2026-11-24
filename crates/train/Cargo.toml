@@ -23,6 +23,7 @@ storage = { path = "../storage", package = "llm-storage" }
 [dev-dependencies]
 testkit = { path = "../testkit", package = "llm-testkit" }
 proptest = { workspace = true }
+annotation = { path = "../annotation", package = "llm-annotation" }
 
 [lints]
 workspace = true

@@ -5,7 +5,9 @@
 //! - 通信：[`Collective`]（后端端口）、进程内实现 [`Local`]、未挂载的远端占位 [`Remote`]，
 //!   以及端口签名里的两个值类型 [`Group`]（升序进程组）与 [`Reduce`]（归约闭集与它的算术）；
 //! - 拓扑：[`Topology`]（TP/PP/DP 世界与进程组）、[`Parallel`]（并行维度）；
-//! - 切分：[`Sharding`]（按列 / 按行）与 [`Tiling`]（一层线性权重的 TP 形状与合并方式）。
+//! - 切分：[`Sharding`]（按列 / 按行）与 [`Tiling`]（一层线性权重的 TP 形状与合并方式）；
+//! - 计划：[`Plan`]（由拓扑与本 rank 派生三轴下标、各轴通信组与 PP 流水层段，只读视图）；
+//! - 排队：[`Queue`] / [`Job`]（同一批次内按 [`Priority`] 序数有序提交，不改变归约数值）。
 //!
 //! # 四个文件的分界是"互相定义的量"，不是行数
 //!
@@ -98,15 +100,19 @@ macro_rules! refuse_at {
 }
 
 mod collective;
+mod plan;
 mod policy;
+mod schedule;
 mod tiling;
 mod topology;
 
 mod remote;
 
 pub use collective::{Collective, Group, Local, Reduce, ReduceScalar, Remote};
+pub use plan::Plan;
 pub use policy::{ParallelConfig, Priority};
 pub use remote::FileRemote;
+pub use schedule::{Job, Queue};
 pub use tiling::{Sharding, Tiling};
 pub use topology::{Parallel, Topology};
 

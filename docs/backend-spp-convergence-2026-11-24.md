@@ -214,7 +214,7 @@ tensor   1,990 行 /  7 文件 / pub  13 / 最大 tensor.rs:730        布局算
 1. 删无消费者公开面（调用点 0 且不在架构登记）→ 直接删，进 P4 砍面清单。
 2. jscpd 命中（≥5 行 / ≥80 token）抽一份；阈值 0。
 3. 同构两份热路径 → 泛型 / 宏；配置化进声明表。
-4. 越界大文件拆分：>600 一票否决先清（train/geometry.rs 1,404、train/session.rs 1,209、prof/einsum.rs 1,054〔刻意平铺，需新 ADR〕、train/backprop.rs 916、testkit/contracts.rs 753、tensor/tensor.rs 730、annotation/dsl.rs 643、train/kernel.rs 605、fuzz/drivers.rs 602）。
+4. 越界大文件拆分：>600 一票否决先清（train/geometry.rs 1,404、train/session.rs 1,209、prof/einsum.rs 1,054〔刻意平铺，需新 ADR〕、train/backprop.rs 916、testkit/contracts.rs 753、~~tensor/tensor.rs 730~~〔✅ R5.1 已拆：tensor.rs 269 + tensor/shape.rs 381 + tensor/owned.rs 100，对外 `llm_tensor::Tensor` 路径不变〕、annotation/dsl.rs 643、train/kernel.rs 605、fuzz/drivers.rs 602）。
 5. 命名 lint 清零：66 个 `*_*.rs` 按 N5 改名单一概念词；限定词下沉到目录；例外仅 `_new` 构造惯例与 prof/prim 领域 `impl`。
 
 ## 4. 泛型 / 注解 / 配置化 / 优先 落点对照
@@ -238,6 +238,7 @@ tensor   1,990 行 /  7 文件 / pub  13 / 最大 tensor.rs:730        布局算
 | R5 | ≤96,100 | 净减 ≥5% | — | | 0 | 砍无消费者面；jscpd 抽同构；>600 清零；命名清零 | 九门全绿 |
 | R1.1（执行缝单路，2026-11-24 09:30） | 待测 | trait 4 签名→2 | 0 | 待测 | `Executor` 绑取双路合并为 `bind(id, Buf)` / `fetch(id) -> &Buf`（lane 标签复用 `storage::LaneBuf`）；`Trace` 装饰器同步减薄；serve 装配/模型与 engine、serve 测试改走单路；nn 五处手写线性夹具闭包复用 `model::linear` 配置助手 | cutile 139 / annotation 48 / engine 100+3 / storage 40+1 / nn 483+2 / serve 197+3 绿；clippy `-D warnings` 全仓零告警；fmt 干净；全仓 check 通过 |
 | R3.1（三族骨架元素泛型，2026-11-24） | 待测 | 三族 `Unary`/`Binary`/`Reduce` 挂关联类型 `type K: Element` | 0 | 待测 | 执行侧 `apply`/`fold`/`forward` 按 `Self::K` 抽象（范式同 `Gemm::Plain::Elem`）；对拍侧保留 f32 标量核 `apply_f32`/`fold_f32`/`start_f32`，`reference` 仍归一返回 `Vec<f32>`；宏内绑定 `type K = f32`，`apply` 与 `apply_f32` 同闭包；epilogue 标量表改指 `apply_f32`。未动 prof `Values`/`reference` 裸槽与对拍下游 f32 归一（列 P2） | 全仓 check 通过；nn 491+2 绿、engine 100+3、serve 197+3；clippy `-D warnings` 聚焦包零告警；fmt 干净 |
+| R5.1（tensor.rs 拆目录，2026-11-24） | 待测 | 730 → 269 / 381 / 100 | +2（目录子模块） | 待测 | 布局形状算子下沉 `tensor/shape.rs`（轴重排/广播/切片/分段/改秩/物化/视图降级 + `broadcast_step`/`gather_strided`/`gather`/`seat`/`is_permutation` 自由函数）；可写访问与自持分配/窗口写下沉 `tensor/owned.rs`；字段 `dims`/`steps`/`base`/`buf`、`assemble`、`window` 提 `pub(crate)`，`respell` 同通道；对外重导出 `DynTensor`/`Tensor`/`View`/`ViewMut` 路径不变 | tensor 109+1 对拍基线 0 failed；全仓 lib check 绿；clippy 零告警；fmt 干净；gate `Lines=730` 红灯清除 |
 
 ## 6. 风险与红线
 

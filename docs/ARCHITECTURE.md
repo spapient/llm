@@ -42,7 +42,7 @@
 
 **合并判据是「同构」，不是「消费者数量」。** 一个成员只有一条入边时，它通常是边界而不是肥肉：`storage` 独自持有全仓唯一的 `unsafe` 岛（`tensor` 是 `deny(unsafe_code)` 且有 11 个消费者），`algorithm` 刻意不产 `ContractSpec`（`nn` 专产），`shard` 坐 L5 而 `train` 坐 L6。可合并的硬信号只有一个——两个成员的 `lib.rs` / `build.rs` 除专名外**逐字相同**：六台设备 crate 并入 `prof`（原 `frag`）时按这条判据删掉 512 行、补回 55 行，净省 457 行。反面的账同样要算：一次合并能省的至多是该 crate 的 `Cargo.toml`（全仓 1060 行 / 33 个，约 32 行）加一段头注释，指望靠合并兑现「代码大量减少」是算错账。裁决过程与测量数字见 [lld.md](lld.md) v3.0.90。
 
-允许的边（当前全量，共 123 条，含 54 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benchmarks` / `testkit` 的边不参与运行时方向判定）：
+允许的边（当前全量，共 124 条，含 55 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benchmarks` / `testkit` 的边不参与运行时方向判定）：
 
 ```
 diagnostic → （叶：错误类型 + `toml`，被大量成员消费；运行时出边为零；`+dev` 只登记夹具）
@@ -59,7 +59,7 @@ autograd   → diagnostic, tensor    +dev: testkit（反向图与显存计划）
 nn         → annotation, diagnostic, cutile, prof, tensor, weights    +dev: testkit（内核装配 + 神经算子 + 唯一注册表；`cutile::native` 是到 `prof::native` 的零成本转发面，nn 经它上提 i8/sme 探针与瓦片几何，不再直引 prof 内核层）
 algorithm  → diagnostic, nn    +dev: prof, testkit（架构变体的参考语义：产出张量流而非 `ContractSpec`，故不认识 `tensor` / `weights`）
 shard      → cutile, diagnostic, nn, prof    +dev: testkit（切分拓扑、集合通信与原 `optim` 的编译执行面）
-train      → autograd, diagnostic, nn, prof, shard, storage, tensor, weights    +dev: testkit
+train      → autograd, diagnostic, nn, prof, shard, storage, tensor, weights    +dev: annotation, testkit
 engine     → diagnostic, storage, tensor    +dev: testkit
 device     → cutile, diagnostic, engine, prof, shard    +dev: nn, tensor, testkit（设备源 lowering 与厂商后端（`metal::executor` 是唯一 unsafe 岛）；`nn` 只在 dev 图里供对拍参考核与注册表，生产面不认识算子层）
 serve      → diagnostic, engine, nn, train, tensor, tokenizer, weights, wire    +dev: testkit（形状积只经 `tensor::product` 的饱和乘法：回绕出的偏小数会骗过权重长度核对）
@@ -177,6 +177,8 @@ testkit    → （叶    +dev: autograd, cutile, nn, prof, tensor, tools, train,
 | `Remote` / `FileRemote` | `shard` | 远端集合通信：`Remote` 是未挂载占位（同一 `Collective` 端口，`all_reduce` 返回 `Unsupported` 且不改动调用方缓冲），`FileRemote` 是文件传输的真实实现（`world × width` 槽位、小端字节序、跨进程、无 `unsafe`） |
 | `RuntimeConfig` / `LanguageFront` | `shard` | 运行时可配置旋钮（纯数据，由 `cli` 注入）：各语言语法门、host 自检参数、L3 达成率门槛、缓存锁等待；codegen 常量（`POINT_THREADS` 等）不进这里 |
 | `ReduceScalar` / `ParallelConfig` / `Priority` | `shard` | 集合通信元素档约束（加法/乘法/偏序/中立元，浮点极值传播 NaN）；并行策略纯数据（TP/PP/DP 度数、归约种类、平均开关、调度优先级），由 `Distributed` 装配；只持部署形态，不读 toml、不发起通信。约束自包含在 shard，不反向依赖 `tensor` 元素层级 |
+| `Plan` | `shard` | 并行计划视图：由拓扑与本 rank 派生 TP/PP/DP 三轴下标、各维通信组与 PP 流水层段；只读数据，不持缓冲、不发起通信，层段整除判据与 `Tiling` 同口径（摊余数构造期拒绝） |
+| `Job` / `Queue` | `shard` | 集合操作优先级排队：作业绑定调度优先级与泛型载荷，排空时按 `Priority` 序数稳定排序（同档保持入队先后）；只定批次内提交顺序，不引线程池、不改变任何归约数值 |
 | `Snapshot` / `Format` / `Facts` | `storage`（`snapshot` 模块） | 检查点字节格式与恢复事实：字节只写相对上一条的差、尾部 CRC-32；`verify` 只验字节，`check_weights` 要求条目表与权重文件逐条相同。不依赖任何训练侧类型，写出同样的字节即可换掉实现 |
 | `Moments` / `SlotMoments` / `GradAccum` / `Ties` | `storage`（`snapshot` 模块） | 快照携带的优化器状态段：矩状态按槽位自持、累积梯度带计数、权重绑定表是 `(源槽, 回填槽)` 下标对；编解码与字节格式同源，训练侧只读写不重新定义 |
 | `Schedule` / `Anneal` / `Step` / `Session` / `TrainConfig` / `ParamSlot` / `Checkpoint` / `Distributed` | `train` | 训练循环状态：纯函数学习率调度与衰减曲线、一次会话复用同一张图 / 缓冲 / 优化器、参数槽与分布式装配（后端契约在 `shard`） |

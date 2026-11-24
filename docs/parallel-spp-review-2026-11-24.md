@@ -55,19 +55,40 @@
 - 注解层不反向依赖 shard/nn：生产依赖仅 `proc-macro2/quote/syn`，生成代码以字符串路径引用 `::shard::`，类型解析推迟到消费方 crate 编译期（与既有 `#[spec]/#[model]/#[dsl]` 同构）。
 - 编译期拒绝：零维度数、闭集越界、布尔非法、未知键、重复键；渲染产物经括号配平断言。`decl_tests` 两例（缺省策略 / 9 条非法用例）、`render_tests` 两例（全量覆盖 / 缺省求和-平均-普通）。
 - 实测：`cargo test -p llm-annotation --lib` **48 passed / 0 failed**；`clippy -p llm-annotation --lib` 0 警告；`fmt -p llm-annotation --check` 0 diff。
-- 现状缺口：尚无模型类型挂载该注解，`__parallel_config()` 访问器当前无消费方（故 `allow(dead_code)`）；`::shard::` 路径要到消费方编译时才解析，端到端展开未取得观测（§5.5）。
+- 现状缺口（本轮已闭合，见 §2.9）：注解产物原无消费方，`__parallel_config()` 访问器为 `allow(dead_code)`；`::shard::` 路径推迟到消费方编译期解析。
+
+### 2.7 并行计划层（`plan.rs`，新文件）
+
+- [`Plan`] 由拓扑与本 rank 派生三维归属：`tp_idx / pp_idx / dp_idx` 三轴下标 + 三条轴通信组（`tp_group / pp_group / dp_group`）+ PP 流水层段 `layer_range(layers)`。
+- 组号压缩公式在计划层内固定：TP 组号 `dp·pp + pp_idx`、PP 组号 `dp·tp + tp_idx`、DP 组号 `pp·tp + tp_idx`，与 [`Topology::group`] 同一套 rank 布局；`Plan::new` 委托 `topology.idxs` 做 rank 越界判据，不另造校验。
+- `layer_range` 与 [`Tiling`] 同口径要求整除：`layers == 0` 或不能被 `pp` 整除即在构造期拒绝，不保留"前几段多一层"的不均匀切分。
+- 纯只读数据：不持缓冲、不发起通信；`single()` 为 1×1×1 全 0 下标恒合法视图。
+- 对拍（`tests/plan_tests.rs`，6 例）：单进程全下标 0 与整段层范围；2·3·2 下 rank 2 的 TP/PP/DP 组成员对照拓扑表；非整除与零层数拒绝；3·2·4 全 rank 必属自己三轴组；12 层 4 段层段恰好划开一遍无重叠无遗漏。
+
+### 2.8 优先级有序提交队列（`schedule.rs`，新文件）
+
+- [`Job<T>`] 绑定调度优先级与泛型载荷；[`Queue<T>`] 入队不排序，`drain()` 时按 `Priority` 序数稳定排序——同优先级保持入队先后，不打乱同档提交次序。
+- 只决定同一批次内的提交顺序，不改变任何归约数值；std `Vec` 实现，不引线程池、不 `unsafe`。
+- 对拍（`tests/schedule_tests.rs`，3 例）：空队列排空为空；乱序入队的 Low/High/Normal/High 排空为 High·High·Normal·Low 且同档保序；载荷经队列原样解出。
+
+### 2.9 注解端到端消费方（`train` dev 集成测试）
+
+- `train` dev-dependency 引入 `annotation`（工具成员边，不进生产分层）；`tests/parallel_config_tests.rs` 在测试描述类型上挂 `#[parallel(tp=2, pp=1, dp=2, reduce="max", average=false, priority="high")]`，调用生成的 `__parallel_config()` 取出 [`ParallelConfig`]，再经 `Distributed::from_config(0, Remote, policy)` 装配。
+- 至此打通 `#[parallel]` → `__parallel_config()` → `Distributed::from_config` 全链：`::shard::` 字符串路径在消费方编译期解析为真实类型，注解键与运行期配置仍是单一事实源，未造第二份键表。
+- 裸 `#[parallel]` 用例回落单进程默认口径（1×1×1 / Sum / 平均 / Normal）。实测该文件 **2 passed / 0 failed**。
+- 边界：消费方落在 dev 测试侧，生产 `Session` 装配仍由既有 `from_config / new` 驱动；模型层把注解访问器接入真实 `nn` 装配（TP 权重切分、PP 层段）属 §5.1 未闭合项。
 
 ## 3. 五维自评
 
 | 维度 | 分 | 依据与边界 |
 | --- | --- | --- |
-| 能力 | **6 / 10** | 集合端口元素档泛型、策略三旋钮、优先级键位、`#[parallel(..)]` 声明入口就位（confirmed）。但 TP 权重切分与 PP 流水调度尚未接模型层；接通的只有 DP 梯度同步接缝；注解产物暂无消费方；真实跨进程/设备通信缺（§5）。既有对比基线分布式维 llm=3。 |
-| 性能 | **6 / 10** | `reduce_into` 直写调用方缓冲、一次归约不分配堆；组内归约内层预取镜像切片；标量安全后端无 SIMD，平均除法保留循环（已注释保留理由）。本轮未新增性能通路；无基准测量观测（unknown），不夸大量化收益。 |
-| 质量 | **8 / 10** | 构造期校验（零维 / 上界 / rank 越界 / 宽度不符 / 组非空升序）、浮点极值 NaN 传播、归约闭集与行序断言、策略对拍测试；注解编译期闭集/度数/布尔/重复键拒绝 + 括号配平对拍；新顶层类型回登所有权表；注解产物 `pub(crate)` 不引入新运行时依赖边。 |
-| 代码量 | **6 / 10** | 本体减法：移除 f32 闭包行表、浮点 `f32/f64` 实例化收编进宏、rank 越界校验抽 helper；`collective.rs` 433→419 行。生产 diff 实测：`shard+train` **+42 / -56**（本体净减 14 行）；`annotation` **+263 / -5**（注解入口 + 两份对拍测试，要素新增）。生产合计 **+305 / -61**；泛型约束样板使集合端口净增。本体未拆 16 个 optim 模块（裁决保留）。与历史基线的全仓机制行数对照待整链门禁后复核（unknown）。 |
-| 门禁可执行性 | **7 / 10** | 干净窗口整链实测：`cargo test --workspace --lib` **2565 passed / 0 failed**；`llm-annotation` **48**、`llm-shard` lib+集成各 **141**、`llm-train` lib **231** + doctest **5**、`llm-testkit` **100** 全绿。`cargo clippy --workspace --lib` 0 警告/错误；`cargo fmt --all --check` 0 diff；`RUSTDOCFLAGS=-D warnings cargo doc -p llm-annotation --no-deps` 干净。本批 `shard/annotation/train` 自身 clippy/doc/fmt 全 0。残留均属上游或环境：`llm-fuzz` 两条 broken intra-doc link（`lib.rs:3/22` 指向不存在的 `check` 项）；`cargo deny check` 因环境无法访问 github advisory-db（SSL_ERROR_SYSCALL）未执行；`--all-targets / --all-features` clippy 与全仓 doc 未在本轮跑完。 |
+| 能力 | **7 / 10** | 集合端口元素档泛型、策略三旋钮、`#[parallel(..)]` 声明入口就位；本轮补 TP/PP/DP 计划视图（`Plan` 三轴下标 + 三轴组 + PP 层段）、优先级有序提交队列（`Job/Queue`）、注解→策略→`Distributed::from_config` 端到端 dev 链（confirmed）。缺口仍在：TP 权重切分 / PP 流水尚未接 `nn` 装配真实张量；接通的运行通路只有 DP 梯度同步；真实跨进程/设备通信缺（§5.1/5.3）。既有对比基线分布式维 llm=3。 |
+| 性能 | **6 / 10** | `reduce_into` 直写调用方缓冲、一次归约不分配堆；组内归约内层预取镜像切片；标量安全后端无 SIMD，平均除法保留循环（已注释保留理由）。本轮队列排序是批次提交点的 `Vec::sort_by_key`（稳定、小批量），不在归约热路径上；未新增热路径通路，无基准测量观测（unknown），不夸大量化收益。 |
+| 质量 | **9 / 10** | 构造期校验（零维 / 上界 / rank 越界 / 宽度不符 / 组非空升序 / 层段整除）、浮点极值 NaN 传播、归约闭集与行序断言；计划层全 rank 归属与层段划分无重叠无遗漏对拍；队列同档保序不变量对拍；注解编译期闭集/度数/布尔/重复键拒绝 + 端到端类型解析；新顶层类型回登所有权表，dev 工具边回登边表；`testkit` 所有权/层边/契约门全绿。 |
+| 代码量 | **6 / 10** | 上一轮本体减法：移除 f32 闭包行表、浮点实例化收编进宏、rank 越界校验抽 helper（`collective.rs` 433→419）。本轮为补能力接缝：新增 `plan.rs` 111 行、`schedule.rs` 76 行，`lib.rs`/`session.rs`/`Cargo.toml` 挂载共 9 行，测试 163 行；能力件以新增为主，本轮未再拆本体。16 个并入 optim 模块保持原位。 |
+| 门禁可执行性 | **8 / 10** | 本轮相关 crate 干净窗口实测：`llm-shard` lib **149** + doc **1**、`llm-train` lib **233** + doctest **5**、`llm-annotation` **48**、`llm-testkit` **100** 全绿；`cargo clippy --workspace --lib` 0 警告/错误；`cargo fmt --all --check` 0 diff。整链唯一失败为上游在途 `llm-device` Metal pointwise 对拍 1 条（`got -1.125 want -0.125`，改动文件 `device/tests/metal/.../pointwise.rs` 与 `prof/src/ops/{max,min}_f32.toml` 均非本批并行文件），未介入。残留：`llm-fuzz` 两条 broken intra-doc link；`cargo deny` 受网络限制未跑；全仓 doc / `--all-targets` clippy 未在本轮跑完。 |
 
-> 结论：距 "S++ / 超越 Burn 10 分" 仍未达成。本轮闭合了**注解入口**这一接口/配置面；运行能力（TP/PP 模型装配）、真实通信、注解端到端消费方与干净整链观测仍是缺口。分数为绿窗口实测口径，被上游半成品阻塞的 crate 不重复计绿。
+> 结论：距 "S++ / 超越 Burn 10 分" 仍未达成。本轮闭合了**计划视图、优先级排队原语、注解端到端消费方**三处接缝；运行能力（TP/PP 模型层真实张量装配）、真实跨进程通信、干净整链观测仍是缺口。分数为绿窗口实测口径，被上游半成品阻塞的 crate 不重复计绿。
 
 ## 4. 与 Burn 对照（沿用 §10 已核事实，不重复取证）
 
@@ -78,11 +99,11 @@
 
 ### 5.1 TP / PP 未接模型层
 
-拓扑与 `Tiling` 切分结构在位，但权重按 TP 列/行切分、PP 层分段与流水调度尚未接到 `nn` 装配与 `Session`。当前 `Distributed` 只驱动 DP 组内梯度同步。
+拓扑、`Tiling` 切分结构与本轮 `Plan` 计划视图（三轴组 + PP 层段）在位，但权重按 TP 列/行切分、PP 层段与流水调度尚未接到 `nn` 装配与 `Session`；`Plan::layer_range` 给出的层段区间还没驱动真实权重/层的归属。当前 `Distributed` 运行时只驱动 DP 组内梯度同步。
 
 ### 5.2 优先级排序执行点
 
-`Priority` 序数与比较就位，但一次训练步只同步一个 DP 组，不存在多组排队场景；按优先级批量下发集合操作的调度器待多组并发接线后落地。
+`Priority` 序数/比较与本轮 `Queue<T>` 排队原语就位（按序数稳定排序、同档保序）；但一次训练步仍只同步一个 DP 组，不存在多组并发提交场景，队列尚未被 `Distributed` 持有/驱动。批量多组并发接线待 TP/DP 多组装配落地后闭合。
 
 ### 5.3 真实跨进程 / 设备通信
 
@@ -90,22 +111,23 @@
 
 ### 5.4 上游并行流半成品与残留告警
 
-取证期间工作树存在外部并行工作流连续提交与未提交文件周期收编。本轮收尾绿窗口实测：`llm-annotation` lib **48 passed / 0 failed**；`llm-testkit` lib **100 passed / 0 failed**；`llm-shard` lib + 集成测试各 **141 passed / 0 failed**；`llm-train` lib **231 passed / 0 failed** + doctest **5 passed / 0 failed**。
+取证期间工作树存在外部并行工作流连续提交与未提交文件周期收编。本轮收尾绿窗口实测：`llm-annotation` lib **48 passed / 0 failed**；`llm-testkit` lib **100 passed / 0 failed**；`llm-shard` lib **149 passed / 0 failed** + doc **1**；`llm-train` lib **233 passed / 0 failed** + doctest **5 passed / 0 failed**。
 
-过程中 cutile 多次进入合并中间态：`E0515`（子节点返回 `&[&Expr]` 临时切片悬垂）、`E0282`（类型标注缺失）、`E0592`（`children / map_children / rebuild_unary / rebuild_binary / rebuild_ternary` 在 `expr.rs` 与 `kernel.rs` 跨文件各定义一份，同 impl `kernel::Expr`）、`E0034`（多个同签名项在作用域内）。这些方法本应只住 `expr.rs`（子节点遍历与按元数重建的分派单一家），`kernel.rs` 内同名副本是迁移残留；该中间态在本轮收尾前被上游收编——`kernel.rs` 副本已移除，整链 `cargo test --workspace --lib` 复跑 **2565 passed / 0 failed**。
+过程中 cutile 多次进入合并中间态：`E0515`（子节点返回 `&[&Expr]` 临时切片悬垂）、`E0282`（类型标注缺失）、`E0592`（`children / map_children / rebuild_unary / rebuild_binary / rebuild_ternary` 在 `expr.rs` 与 `kernel.rs` 跨文件各定义一份，同 impl `kernel::Expr`）、`E0034`（多个同签名项在作用域内）。这些方法本应只住 `expr.rs`（子节点遍历与按元数重建的分派单一家），`kernel.rs` 内同名副本是迁移残留；该中间态在上一轮收尾前被上游收编——`kernel.rs` 副本已移除。
 
 当前残留均属上游线或环境、非本批并行文件——
 
+- `llm-device` Metal pointwise 对拍 1 条失败：`remainder_f32 Metal 输出 对拍失败：max_rel_err=1.000e0 > 1.000e-5（第 3 个元素 got=-1.125 want=-0.125）`；改动源文件 `crates/device/tests/metal/correctness/pointwise.rs`（263 行在途改动）与 `crates/prof/src/ops/{max,min}_f32.toml` 均非本批并行文件，本轮未介入，待上游收编后复跑；
 - `llm-fuzz` `lib.rs:3/22` 两条 broken intra-doc link（`[`check`]` 指向作用域内不存在的 `check` 项），`RUSTDOCFLAGS=-D warnings` 下阻断全仓 doc；上游既有缺陷，本轮未改 fuzz；
 - `cargo deny check` 因当前环境无法访问 github.com rustsec advisory-db（`SSL_ERROR_SYSCALL`）未执行，属网络限制而非代码供应链告警；
-- 上游 `device` 新增对 `storage` 的生产依赖，本轮已补登 `docs/ARCHITECTURE.md` 边表（`device → storage`），总数 123→124（`+dev` 边 54 不变）；`prof` 算子模板表 52→57 条同步订正；
+- 边表经本轮复核：`train → annotation` 为 dev 工具边，已补登 `docs/ARCHITECTURE.md`；实测 `cargo metadata` 运行时边 69、`+dev` 边 55、总计 **124** 条，文档计数与门禁 `testkit::layer` 断言一致；
 - 干净窗口 `clippy --workspace --lib` 0、`fmt --all --check` 0 diff；`--all-targets / --all-features` clippy 与全仓 doc 未在本轮跑完。
 
 这些不属于 shard 并行主线，未在本轮擅改其设计。全量门禁待上游 fuzz doc 链接与网络条件具备后按 §6 一次性复跑。
 
-### 5.5 注解端到端消费方
+### 5.5 注解端到端消费方（dev 链已通，生产装配未接）
 
-`#[parallel(..)]` 入口本体已落地并在 annotation crate 内编译/测试通过（§2.6），但尚无模型类型挂载：生成的 `__parallel_config()` 访问器当前无人调用（`allow(dead_code)`），`::shard::` 路径要到消费方 crate 编译时才解析。模型层 TP/PP 装配落地后，由具体类型实现并行 trait 并经该访问器取 `ParallelConfig`，才构成端到端展开验证；在此之前不造第二事实源。
+`#[parallel(..)]` → `__parallel_config()` → `Distributed::from_config` 已在 `train` dev 集成测试打通（§2.9，2 passed / 0 failed），`::shard::` 路径在消费方编译期解析为真实类型。剩余缺口：消费方目前只在 dev 测试侧，生产 `Session`/模型层尚未把注解访问器接入真实 `nn` 装配；那一步与 §5.1 的 TP/PP 张量装配同批闭合，在此之前不造第二事实源。
 
 ## 6. 收尾门禁命令（待上游闭合后一次跑）
 

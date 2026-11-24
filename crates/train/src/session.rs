@@ -1207,3 +1207,7 @@ fn scale(slots: &mut [&mut [f32]], group: &Group) -> Result<()> {
 #[cfg(test)]
 #[path = "../tests/dist_tests.rs"]
 mod dist_tests;
+
+#[cfg(test)]
+#[path = "../tests/parallel_config_tests.rs"]
+mod parallel_config_tests;

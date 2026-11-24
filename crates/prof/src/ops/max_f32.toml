@@ -3,5 +3,6 @@ base = "add_f32"
 
 [op]
 name     = "max_f32"
+stem     = "max_f32"
 skeleton = "elementwise"
 summary  = "y[n] = max(a[n], b[n])"

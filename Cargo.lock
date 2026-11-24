@@ -750,6 +750,7 @@ dependencies = [
 name = "llm-train"
 version = "0.1.0"
 dependencies = [
+ "llm-annotation",
  "llm-autograd",
  "llm-diagnostic",
  "llm-nn",

@@ -101,16 +101,20 @@ Burn 的覆盖单位是**后端 trait 方法 + 每后端实现**：ADR 0053 已�
 - **S2 取整四族与 log1p/exp2**：`ceil_f32`/`floor_f32`/`round_f32`/`trunc_f32`（全域有限，走 `unary_op_tests` 饱和/重复边界档；`round` 半值远离零，与 Rust `f32::round` 口径对拍钉住）、`log1p_f32`（域 x>-1，夹具取非负 pair 档）、`exp2_f32`（夹具压上溢 pair 档）。六者均 `DIFFERENTIABLE=false`，不进 `FORMULAS`。取整四函数在**六台后端** preamble 各挂一行包裹：cpu/ascend/nvidia/musa 用 libm `ceilf/floorf/roundf/truncf`，intel(OpenCL C)/metal 用无后缀内建 `ceil/floor/round/trunc`；`log1p` 按 `_cutile_log_f32(1.0f + x)`、`exp2` 按 `_cutile_exp_f32(x·ln2)` 表达式复用既有 log/exp 片段绕开缺失软件接口，与 rsqrt 同策略。六者复用共享 `unary_fn.k`、零新增 `.k` 文件；七落点齐全，三表各 70 条。目录按文件 stem 字节序排列，`exp2`/`log1p` 的数字前缀（`2`/`1`）码位小于下划线，排在 `exp`/`log` 之前，registry 与 `KERNELS` 表同序对齐，编译期双断言兜底。
 - **clamp 标量界通道边界（诚实标注）**：内核签名闭集 `CType` 只有 f32/u8 指针与整数标量，无 f32 标量形参；`Sample.scalars` 仅 i64 形状标量，`Values` 档位闭集仅张量 Vec。故 `lo`/`hi` 在目录样本与真机内核模板层固化为模块常量（`LO=-1.0`/`HI=1.0`），同 `dequant_i8` 的 scale/zero 口径；运行时可变的 f32 标量参数通道（一等 f32 scalar 位 + 模板形参 + 取值通道）随 `pow_scalar`/scale 真标量化批次接入，列 P2。本批 `clamp` 图输入仅 `x` 一路（ARITY=1），train 适配层取模块常量转发；参考侧保留 f32 标量形参以便界负例与饱和裁剪直接对拍。
 - **一元实例拆平级壳文件压线**：算子实例段从 `kernel_unary.rs` 抽到 `kernel_unary_ops.rs`，作为 `kernel` 下与 `unary`（trait/宏/骨架）平级的壳模块 `unary_ops`，照 `elementwise`/`reduce` 既有平级壳先例；`kernel.rs` 从 `unary_ops` 重导出，`<crate>::<name>` 路径不变。骨架装配改走绝对路径 `crate::unary::{project_shape,cost,sample,reference}`，不再依赖 `super::` 的父模块解析，算子模块嵌在哪一层都不影响定位；test_support 挂载改 `pub(crate)` 供平级壳测试宏可见。拆分后骨架 187 行、实例 591 行，均在单文件 600 行硬线内。
+- **Metal 真机逐点族端到端对拍（跨后端真内核切片）**：新增 `device/tests/metal/correctness/pointwise.rs`，表驱动单夹具覆盖一元 / 二元两档：31 个 f32 逐点算子（25 一元 + `add/sub/mul/max/min/div` 6 二元）经 `program_sample(Metal, Mode::pointwise())` 出 MSL → 真机编译 → 派发 → 回读 → CPU 同式参考对拍。装配 / 编译 / 派发 / 回读 / 断言只写一次（`run_entry`），每个算子一行配置（目录 key、参考闭包、域内输入生成器、容差）；复用 harness 既有 `bench_device`/`catalogue_and_dirs`/`upload`/`output_buf`/`read_back`。纯操作 / 取整族位级对齐（断言前把 `±0.0` 归一为 `+0`，只零号位分歧不算错）；库函数 / exp 组合 / 除法族给 `1e-5` 相对容差。本机 macOS Metal 设备真跑通过；无设备时 `bench_device` early return，不计失败。此前 Metal 真机测点只覆盖 GEMM / attention / 张量核路径，逐点族无端到端对拍，Pointwise lowering 的设备源生成—编译—派发—回读链路由此测点钉住。
+- **档案 stem 继承缺陷修复**：`max_f32`/`min_f32` 原 `base = "add_f32"`，`[op].stem` 随 base 继承为 `binary`，独立 `max_f32.k`/`min_f32.k` 未被目录引用，真机落到加法共享 `binary.k` 模板（`binop="+"`）。补显式 `stem = "max_f32"`/`"min_f32"` 指向各自独立 `.k`，修法同 `remainder_f32` 既有显式 stem。修复后 max/min 三元比较模板在 Metal 真机生效并对拍通过。
+
 
 ### 裁决与边界
 
 - **骨架元素档 `K` 分层落地进度**。仓内先例是「执行侧泛型 `K`、对拍侧 f32 归一」：`Gemm` 用关联类型 `type Elem: Element`。本轮 `Unary`/`Reduce` 已按同构分层挂接执行侧 `K`：trait 声明 `type K: Element`，执行侧方法 `apply`/`start`/`fold` 按 `Self::K` 抽象，另设 `apply_f32`/`start_f32`/`fold_f32` 作对拍通道归一入口（既有档与执行侧同一闭包）；宏实例填 `type K = f32`，`reference` 仍返回 `Vec<f32>`，`forward` 走 `View<'_, U::K>`。`Binary` 族仍钉 f32，未泛型化。贯通完整 `K` 泛型仍卡在三个硬点：① `Model.sample`/`reference` 是裸 `fn` 指针槽（erased 装配槽，签名必须具体，存不下泛型结果）；② `Values` 档位闭集仅 `F32(Vec<f32>)`/`U8(Vec<u8>)`；③ 对拍下游（`need.rs`/`schema.rs`/cutile `reference.rs`）按 f32 归一，阈值与桥接宽度未按元素档分档。此外 `operator_via!` 的 `DTYPE` 仍硬编 `DType::F32`，算子级档参数化缺口列 P2。一次贯通会牵动整条取值通道与 52 个算子 reference、verify 阈值与桥接宽度，属大重构，单列后续批次；本轮先在 f32 三骨架内补算子，不动 prof 通道。
-- **列 P2/PARTIAL**：Compare/Logical/Structure/ReduceDim/Sample 五新族；mean/argmin/采样分布；算子级 bwd 族；跨后端真内核覆盖。
+- **列 P2/PARTIAL**：Compare/Logical/Structure/ReduceDim/Sample 五新族；mean/argmin/采样分布；算子级 bwd 族；跨后端真内核覆盖（Metal 一族 Pointwise 链路本轮已真机对拍，CUDA/Ascend/Intel/MUSA 真机成熟度另案，见「未知与未测」）。
 - **cutile 融合绊线基线更新**：新增 `abs_f32` 落入 `add_f32` 邻近窗口，凑出首条几何可测融合 `abs_f32 -> add_f32`（同秩同长，生产者产出经 `run_fused` 桥进消费者输入槽；oracle 链路由 `the_fused_oracle_bridges_every_seam...` 独立对拍背书）。参考测试快照由 `testable == 0` 更新为 `testable == 1`，注释标明该条数随注册表构成漂移、再增 elementwise 邻近对或纳入形状代数时须逐条复核 oracle。
 
 ### 门禁状态与未测
 
 - 截至回写：`llm-prof` 164 + 56 + 3 passed（1 ignored）、`llm-nn` 528 passed（4 ignored）、`llm-train` 231 + 5 passed、`cutile` 139 passed、`llm-serve` 197 passed、`llm-annotation` 48 + 6 passed、`llm-testkit` 100 passed、`llm-shard` 141 passed；全量 `--workspace --exclude llm-fuzz` 除静态门外无 FAILED，`clippy --workspace --exclude llm-fuzz --all-targets` 无 error/warning，`cargo fmt --check --all` 干净。注册表与算子目录的编译期名字/顺序双断言通过；能力表三则对账测试通过；testkit 注解↔注册表镜像与签名↔样本对账通过。静态门剩余 7 项为 HEAD 即在的存量越线（einsum/session/backprop/geometry/tensor 行数、harness 调用数、train kernel.rs 适配层），拆分收口属并行在途批次，本批未新增越线文件。
+- 本轮跨后端切片复跑：`llm-device` 65 passed（12 ignored，含新增 Metal 逐点真机对拍 1 条、31 个逐点算子）、`llm-prof` 164 + 56、`llm-nn` 528、`llm-shard` 149 全部通过；`clippy -p llm-device -p llm-prof --all-targets -D warnings` 无 error/warning；新测点文件 347 行（测试面 800 线内），静态门本批命名项（`buffers`/`index`）已清零，未新增行数 / 复杂度越线。全量 `cargo fmt --check` 当前受并行线在途文件（shard/train 测试）中间态影响，本批仅格式化新增 `pointwise.rs`，未替并行线改写其排版。
 - **静态质量门存量越线（非本批引入）**：`prof/einsum.rs`、`train/session.rs`、`train/backprop.rs`、`train/geometry.rs`、`tensor/tensor.rs` 在 HEAD 基线即超单文件 600 行硬线，`fuzz/harness.rs` 有 Call 存量项；`train/kernel.rs` HEAD 609 行已越线，本批仅按七落点登记新增适配/表行。这些属并行线在途收口范围，本任务不越界拆分适配层；本批推越的 `kernel_unary.rs` 已按平级壳拆分回线。棘轮口径下存量只准降，恶化必失败，列入 P3 收口。
 - `llm-train`/`llm-serve` 经传递依赖链上的 cutile，曾处于并行线「子节点抽象回退」中途（`children`/`map_children` 签名与调用方暂不同步、doctest rlib 路径陈旧的中间态）；本轮回切后各 crate 单测与 doctest 复跑均通过，不在中间态上签发对拍结论。
 - 净降行数与文件数、jscpd 重复度降幅：**待实测**，先以现有 nn/tensor/prof 基线扫描后定值，不在落地前写未测降幅。
@@ -130,7 +134,8 @@ Burn 的覆盖单位是**后端 trait 方法 + 每后端实现**：ADR 0053 已�
 
 ## 未知与未测
 
-- 后端可跑性取决于 Executor/Backend 重建（维度「后端执行成熟度」另案）；本 ADR 只定算子契约、骨架与能力表，不签发跨后端可跑。
+- 后端可跑性取决于 Executor/Backend 重建（维度「后端执行成熟度」另案）；本 ADR 只定算子契约、骨架与能力表，不签发跨后端可跑。本轮真机对拍仅在本机 macOS Metal 一族成立：Pointwise lowering 的设备源生成—编译—派发—回读—CPU 参考链路由 `pointwise.rs` 31 个逐点算子钉住。CUDA/Ascend 本机无硬件、Intel/MUSA 无 device 执行后端模块，其真机成熟度无设备证据，不签发；其余后端的逐点族对拍随硬件/执行后端接入后补。
+- `remainder_f32` 语义口径未统一：设备 `.k` 用 `copysign(x - floor(x/v)·v, x)`（floor 向负无穷余数），nn 参考 `x % y` 为 fmod（trunc 向零），负商结果差一个除数；本轮未纳入真机对拍，待模板与参考统一为同一余数语义（fmod 或 IEEE remainder 二选一）后再补测点。
 - 高阶线代、3d/转置卷积、采样分布完整度的首批范围，待几何骨架复用度实测后判别。
 - Burn `burn-linalg` 内部实现深度未逐行读；对照方法面以 `burn-tensor/src/tensor/api` 与 `burn-backend/src/backend/ops` 清单为准。
 - 减码区间、tile 宽度、批次尺寸为待校准参数，需给出测量方式后定值。
