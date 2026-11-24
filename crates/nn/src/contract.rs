@@ -78,11 +78,37 @@ impl ContractSpec {
         ops: impl IntoIterator<Item = impl Into<String>>,
         role: ParamRole,
     ) -> Result<Self> {
-        // 热路径不建整表：每层只按名字查一次（`builtin_named` 无分配），全表清单只在
-        // 报错时才拼——装配一个几百层的模型不该为每条算子名付一次全表 `Vec` 的分配。
-        let mut checked = Vec::new();
+        let name = name.into();
+        if name.trim().is_empty() {
+            return Err(Error::new(Code::Invalid, "层名不能为空或只含空白").with("nn::ContractSpec"));
+        }
+        if let Some(axis) = output.dims().iter().position(|dim| *dim == 0) {
+            return Err(Error::new(
+                Code::Invalid,
+                format!("层 `{name}` 的输出第 {axis} 轴为零宽"),
+            )
+            .with("nn::ContractSpec"));
+        }
+        output
+            .dims()
+            .iter()
+            .try_fold(1usize, |size, dim| size.checked_mul(*dim))
+            .ok_or_else(|| {
+                Error::new(Code::Invalid, format!("层 `{name}` 的输出元素数溢出"))
+                    .with("nn::ContractSpec")
+            })?;
+
+        // 热路径不建整表：每层只按名字查一次，全表清单只在报错时才拼。
+        let mut checked: Vec<String> = Vec::new();
         for wanted in ops {
             let wanted = wanted.into();
+            if checked.contains(&wanted) {
+                return Err(Error::new(
+                    Code::Invalid,
+                    format!("层 `{name}` 重复声明算子 `{wanted}`"),
+                )
+                .with("nn::ContractSpec"));
+            }
             if prof::catalogue::named(&wanted).is_none() {
                 return Err(Error::new(
                     Code::Missing,
@@ -100,7 +126,7 @@ impl ContractSpec {
             checked.push(wanted);
         }
         Ok(Self {
-            name: name.into(),
+            name,
             output,
             ops: checked,
             role,

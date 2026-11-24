@@ -40,7 +40,7 @@ impl AxisCore {
     /// 元素数为零（[`Code::Invalid`]）。`kind` 只用于诊断文案点名族别。
     pub(crate) fn new(
         name: impl Into<String>,
-        op: &'static str,
+        op: impl Into<String>,
         len: usize,
         kind: &str,
         role: ParamRole,
@@ -155,24 +155,22 @@ macro_rules! axis {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct OpLayer {
     inner: AxisCore,
-    op: &'static str,
 }
 
 impl OpLayer {
-    /// 由层名、算子名、元素数与参数角色构造。算子名取自登记过的名字（如 `"relu_f32"`）。
+    /// 由层名、算子名、元素数与参数角色构造。算子名可直接来自运行时配置。
     ///
     /// # Errors
     ///
     /// 元素数为零，或算子名未在 `registry` 注册 / 没有语义表（[`crate::ContractSpec::new`] 上报）。
     pub fn new(
         name: impl Into<String>,
-        op: &'static str,
+        op: impl Into<String>,
         len: usize,
         role: ParamRole,
     ) -> Result<Self> {
         Ok(Self {
             inner: AxisCore::new(name, op, len, "配置化单轴层", role)?,
-            op,
         })
     }
 
@@ -186,9 +184,9 @@ impl OpLayer {
         self.inner.len() == 0
     }
 
-    /// 本层绑定的算子名：就是构造时给的那一个。
-    pub fn op(&self) -> &'static str {
-        self.op
+    /// 本层绑定的算子名，直接读自已校验规格，不另存一份字符串。
+    pub fn op(&self) -> &str {
+        self.inner.spca().ops().first().map_or_default(String::as_str)
     }
 }
 

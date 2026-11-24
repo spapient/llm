@@ -3,13 +3,15 @@
 //! 段元数据（`Descriptor`/`Segment`）与容器帧本是同一件事的两半：容器帧的每条描述符就是一段
 //! 的元数据，落位结果就是 `Stored`。两者原先互相 import，现在合成一个模块。
 
+use crate::align_up;
 use crate::bad;
 use diagnostic::{Code, Error, Result};
 
 use crate::Wire;
 use crate::quant::Quant;
+use crate::writer::{GLOBAL_CRC, MAGIC, MAX_ALIGN_LOG, SEG_CRC, VERSION};
 use std::borrow::Cow;
-use storage::leb::{self, Cursor};
+use storage::leb::{self, Cursor, u16_at, u32_at};
 use storage::sink::Sink;
 
 closed_enum! { @coded_unsupported

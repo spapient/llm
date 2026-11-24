@@ -74,6 +74,6 @@ pub use pool::{Bufs, Data, Inputs, Kernel, Kind, Lane, Reference, View, ViewMut}
 pub use rng::{Bernoulli, Normal, Rng, Uniform, block};
 pub use schedule::{Anneal, Schedule};
 pub use session::{
-    Checkpoint, Distributed, GradientSnapshot, Local, ParamSlot, Remote, Session, Step, TrainConfig,
-    TrainSpec, operators, resume,
+    Checkpoint, Distributed, GradientSnapshot, Local, ParamSlot, Remote, Session, Step,
+    TrainConfig, TrainSpec, operators, resume,
 };

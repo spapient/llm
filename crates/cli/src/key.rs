@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 const PREFIX: &str = "CUTILE";
 
 /// 配置值闭集：值类型由每个键在 `Key` 闭集里声明，`describe` 与消费投影按类型收窄。
-/// 变体只保留键表实际使用的类型；新键需要 Int/Float 时再加（值解析处一行分支）。
+/// 变体只保留键表实际使用的类型，解析与显示随闭集同步扩展。
 #[derive(Debug, Clone, PartialEq)]
 pub enum SettingValue {
     /// 路径：相对路径按启动目录解析（与 `--set` 口径一致）。

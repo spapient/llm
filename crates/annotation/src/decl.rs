@@ -7,9 +7,9 @@ use crate::syntax::{
 };
 
 /// 注解允许的键；顺序即错误信息里的提示顺序。
-pub(crate) const KEYS: [&str; 4] = ["name", "out", "in", "ops"];
+pub(crate) const KEYS: [&str; 5] = ["name", "out", "in", "ops", "role"];
 
-/// 层解析后的四件事实：名字、输出形状、输入宽度、算子列表。
+/// 层解析后的五件事实：名字、输出形状、输入宽度、算子列表与可选参数角色。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Declaration {
     /// 层名（与权重条目前缀一致）。
@@ -20,10 +20,12 @@ pub(crate) struct Declaration {
     pub(crate) input: Option<usize>,
     /// 要引用的算子名，已去重且非空。
     pub(crate) ops: Vec<String>,
+    /// 参数角色短名；缺省沿用 `Trainable`。
+    pub(crate) role: Option<String>,
 }
 
 /// `#[spec(..)]` 的静态键表，顺序即「未知键」提示里的顺序。
-const LAYER: [KeySpec<'static>; 4] = [
+const LAYER: [KeySpec<'static>; 5] = [
     row(KEYS[0], text_value, "名字只能声明一次", Some(" = \"..\"")),
     row(KEYS[1], axes_value, "输出形状只能声明一次", Some(" = [..]")),
     row(KEYS[2], in_value, "输入宽度只能声明一次", None),
@@ -33,6 +35,7 @@ const LAYER: [KeySpec<'static>; 4] = [
         "算子列表只能声明一次",
         Some(" = [\"..\"]"),
     ),
+    row(KEYS[4], role_value, "参数角色只能声明一次", None),
 ];
 
 /// 解析注解本体；任何一处不合文法都只产出一条带位置的错误。
@@ -51,7 +54,19 @@ pub(crate) fn parse(tokens: &[Token]) -> Result<Declaration, Error> {
         out: values[1].axes().0.to_vec(),
         input: input_width(&values)?,
         ops,
+        role: match values[4].text() {
+            "" => None,
+            role => Some(role.to_string()),
+        },
     })
+}
+
+/// 静态参数角色：与 `nn::ParamRole` 的稳定短名一一对应。
+const ROLES: [&str; 4] = ["trainable", "bias", "norm", "embedding"];
+
+/// `role = "norm"`：在注解文法里就拒绝不在闭集里的角色。
+fn role_value(cursor: &mut Cursor<'_>, at: Position, spec: &KeySpec<'_>) -> Result<Value, Error> {
+    closed_value(cursor, at, spec, "参数角色", &ROLES)
 }
 
 /// `in` 只对单轴输出（一次投影）有意义：多轴输出把某一根轴冒充 `n`，只会给出假下界。

@@ -155,6 +155,26 @@ impl Stack {
         })
     }
 
+    /// 由运行时配置构造层栈；每层复用自己的公开构造器，重名在最后统一拒绝。
+    ///
+    /// # Errors
+    ///
+    /// 任一层配置非法或构造后的层名重复时返回对应诊断，并带上配置序号。
+    pub fn from_configs(
+        configs: impl IntoIterator<Item = crate::LayerConfig>,
+    ) -> Result<Self> {
+        let layers = configs
+            .into_iter()
+            .enumerate()
+            .map(|(idx, config)| {
+                config
+                    .build()
+                    .map_err(|error| error.with(format!("配置第 {idx} 层")))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Self::of(layers)
+    }
+
     /// 按权重文件的条目推出层清单。
     ///
     /// 秩为 2 的条目 → 一次 [`Linear`]（`[out, in]`），**权重编码由条目自己的 `dtype` 决定**

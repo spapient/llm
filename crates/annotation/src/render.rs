@@ -29,7 +29,12 @@ fn spec(code: &mut String, declaration: &Declaration, ty: &str) {
     code.push_str(CONST);
     code.push('\n');
     code.push_str("        SPEC.get_or_init(|| {\n");
-    code.push_str("            let declaration = ::nn::ContractSpec::new(");
+    let constructor = if declaration.role.is_some() {
+        "new_with_role"
+    } else {
+        "new"
+    };
+    let _ = write!(code, "            let declaration = ::nn::ContractSpec::{constructor}(");
     literal(code, &declaration.name);
     code.push_str(", ");
     shape_of(code, &declaration.out, |code, dim| {
@@ -40,7 +45,18 @@ fn spec(code: &mut String, declaration: &Declaration, ty: &str) {
         literal(code, op);
         code.push_str(".to_string()");
     });
-    code.push_str("]);\n");
+    code.push_str("]");
+    if let Some(role) = &declaration.role {
+        let variant = match role.as_str() {
+            "trainable" => "Trainable",
+            "bias" => "Bias",
+            "norm" => "Norm",
+            "embedding" => "Embedding",
+            _ => unreachable!("角色已在注解解析期校验"),
+        };
+        let _ = write!(code, ", ::nn::ParamRole::{variant}");
+    }
+    code.push_str(");\n");
     code.push_str("            match declaration {\n");
     code.push_str("                ::core::result::Result::Ok(spec) => spec,\n");
     code.push_str(
