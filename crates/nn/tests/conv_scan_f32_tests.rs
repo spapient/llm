@@ -12,16 +12,9 @@ fn scan_matches_the_scalar_reference() {
 /// 输入与输出长度不一致时拒绝；非对齐长度不静默截断。
 #[test]
 fn scan_rejects_mismatched_output_length() {
-    let mut out = vec![0.0; 3];
-    assert!(
-        forward(tensor::View::one(&[1.0, 2.0]), &mut out).is_err(),
-        "输出比输入长必须拒绝"
-    );
-    let mut short = vec![0.0; 1];
-    assert!(
-        forward(tensor::View::one(&[1.0, 2.0, 3.0]), &mut short).is_err(),
-        "输出比输入短必须拒绝"
-    );
+    testkit::assert_rejects_length_mismatch(|input, out| {
+        forward(tensor::View::one(input), out).is_err()
+    });
 }
 
 /// 递推初态为零：`y[t] = Σ_{k≤t} ā^(t-k)·b̄·x[k]`。取 `x = [1, 0, 0, …]` 得几何衰减

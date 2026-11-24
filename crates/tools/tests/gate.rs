@@ -310,7 +310,8 @@ fn is_production(path: &Path) -> bool {
 }
 
 /// 行数下限豁免的薄文件：模块入口（`lib.rs`/`main.rs`/`mod.rs`）只做声明与重导出，
-/// libFuzzer 垫片（`fuzz/src/fuzz_*.rs`）入口只有一行、判据在 `drivers.rs`。
+/// libFuzzer 垫片入口只有一行、判据在 `drivers.rs`——旧扁平 `fuzz_*.rs` 与目录化后的
+/// `harness/**/*.rs` 同形态（`no_main` + 挂 `drivers` + `include!` 共享 `harness.rs` + 一行宏展开）。
 fn is_thin_entry(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
@@ -319,7 +320,10 @@ fn is_thin_entry(path: &Path) -> bool {
         return true;
     }
     let in_fuzz = path.components().any(|part| part.as_os_str() == "fuzz");
-    in_fuzz && name.starts_with("fuzz_")
+    if !in_fuzz {
+        return false;
+    }
+    name.starts_with("fuzz_") || path.components().any(|part| part.as_os_str() == "harness")
 }
 
 /// `#[cfg(test)] mod 名字;` 挂载的文件集合；递归展开——被挂载的文件自己也可能挂载子模块，

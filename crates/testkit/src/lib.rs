@@ -93,7 +93,7 @@ pub use compare::{
     COSINE_GUARD, Scale, all_finite, approx_eq, assert_close, assert_rel_with, assert_within_rel,
     close, cosine_similarity, max_rel_err,
 };
-pub use fixture::{pack_codes, safetensors_bytes};
+pub use fixture::{assert_rejects_length_mismatch, pack_codes, safetensors_bytes};
 pub use gating::{device_enabled, device_or_skip, skip, skip_count, skip_none, skipped_reasons};
 pub use hash::{assert_table_matches_bitwise, crc32_bitwise};
 pub use rng::{Rng, sample};
