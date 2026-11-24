@@ -1,7 +1,7 @@
 use super::*;
-use shard::execution::POINT_THREADS;
 use nn::model::{Buf, Values};
 use prof::decl::Grid;
+use shard::execution::POINT_THREADS;
 
 const POINT_SOURCE: &str = "void cutile_scale_f32_kernel(const float *a, float *y, int N) {}\n";
 

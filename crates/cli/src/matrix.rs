@@ -4,9 +4,9 @@ use cutile::atom::Prim;
 use cutile::plan::Verdict;
 use cutile::prof::Profile;
 use diagnostic::render::{Align, Sheet};
+use prof::decl::Fusion;
 use shard::ledger::{BackendRow, LedgerCell, Status};
 use shard::verify::Verified;
-use prof::decl::Fusion;
 use std::fmt::Write as _;
 
 /// 台账矩阵：证据汇总表 + 原语×后端对照表 + 逐条证据说明。

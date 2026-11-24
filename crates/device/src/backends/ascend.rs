@@ -4,14 +4,14 @@ use crate::backends::common::{device_fn, witness_head, witness_readback};
 use crate::platform::{ascend_device, detect_cce};
 use cutile::dirs::Dirs;
 use diagnostic::{Code, Error, Result};
-use shard::backend::{Backend, Codegen, Driver, Readback, Source};
-use shard::driver;
-use shard::toolchain::Toolchain;
-use shard::witness::{MAX_OUT, Scope, Selected};
 use prof::model::Sample;
 use prof::prof::Emit;
 use prof::prof::Profile;
 use prof::sig::Signature;
+use shard::backend::{Backend, Codegen, Driver, Readback, Source};
+use shard::driver;
+use shard::toolchain::Toolchain;
+use shard::witness::{MAX_OUT, Scope, Selected};
 use std::path::Path;
 use std::process::Command;
 

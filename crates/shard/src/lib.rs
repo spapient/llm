@@ -122,7 +122,7 @@ pub use topology::{Parallel, Topology};
 pub mod config;
 pub use config::{LanguageFront, RuntimeConfig};
 
-// ---- 优化面（原 `optim` crate 并入） ----------------------------------------
+// ---- 优化面（执行半边自旧 crate 并入） ----------------------------------------
 //
 // `device` / `cli` 以 `shard::` 名义消费这些路径：后端契约、工具链、执行驱动。
 pub mod backend;
@@ -145,9 +145,9 @@ pub mod witness;
 
 // 设备执行面（回迁自 llm-device）：后端装配、方言 lowering、六平台合同与过渡内核族。
 pub mod backends;
-mod cuda;
+pub mod cuda;
 mod dialect;
-mod metal;
-mod tiled;
+pub mod metal;
+pub mod tiled;
 
 pub use runner::{compile_flags, driver};

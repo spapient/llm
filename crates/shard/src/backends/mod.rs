@@ -15,9 +15,9 @@ pub(crate) mod parallel;
 mod test_imports {
     pub(crate) use super::metal::MetalBackend;
     pub(crate) use super::parallel::{cuda, fold_of, metal, unsupported};
+    pub(crate) use crate::backend::{Driver, Launch, Lower, Source};
     pub(crate) use crate::platform::{ascend_device, detect_cce};
     pub(crate) use diagnostic::Code;
-    pub(crate) use crate::backend::{Driver, Launch, Lower, Source};
     pub(crate) use prof::model::Sample;
     pub(crate) use prof::sig::Signature;
 }

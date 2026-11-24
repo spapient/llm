@@ -2,9 +2,9 @@
 
 use super::geometry::{gemm_bufs, gemm_dims};
 use diagnostic::{Code, Error, Result};
-use shard::backend::TensorGeometry;
 use prof::model::Sample;
 use prof::sig::Signature;
+use shard::backend::TensorGeometry;
 
 /// 张量核 GEMM 的几何选型：按输出规模在两组实测配置间取优，并让规约块尽量整除 `K`。
 #[must_use]

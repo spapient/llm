@@ -1,10 +1,10 @@
 //! Metal 运行时胶水：一次性目录内编 `.metal → .air → .metallib`、链接 ObjC host 驱动、执行并回读位模式。
 
-use cutile::dirs::Dirs;
-use diagnostic::{Code, Error, Result};
 use crate::backend::Readback;
 use crate::driver;
 use crate::witness::MAX_OUT;
+use cutile::dirs::Dirs;
+use diagnostic::{Code, Error, Result};
 use prof::prof::Profile;
 use std::path::{Path, PathBuf};
 use std::process::Command;

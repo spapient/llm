@@ -1,8 +1,8 @@
 //! 三条厂商链共用的几何与见证回读：输出长度、网格维校验、正整数标量、位模式回读字面。
 //! 这些原语与厂商无关，单列一份，避免 CUDA / 昇腾 / Metal 各抄一份漂移。
 
-use diagnostic::{Code, Error, Result};
 use crate::driver;
+use diagnostic::{Code, Error, Result};
 use prof::model::Sample;
 use prof::prof::Profile;
 use prof::sig::Signature;

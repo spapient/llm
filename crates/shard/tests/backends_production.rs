@@ -2,9 +2,9 @@
 
 use super::*;
 
-use cutile::dirs::Dirs;
 use crate::execution::Backend::Metal;
 use crate::execution::{Mode, program};
+use cutile::dirs::Dirs;
 
 #[test]
 fn production_grid_kernel_compiles_for_a_real_op() {

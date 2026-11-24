@@ -6,13 +6,13 @@ use crate::dialect::Dialect;
 use crate::platform::detect_metal;
 use cutile::dirs::Dirs;
 use diagnostic::{Code, Error, Result};
+use prof::model::Sample;
+use prof::prof::{Emit, Profile};
+use prof::sig::Signature;
 use shard::backend::{Backend, Codegen, Driver, Launch, Lower, Readback, Source};
 use shard::driver;
 use shard::toolchain::Toolchain;
 use shard::witness::{MAX_OUT, Scope, Selected};
-use prof::model::Sample;
-use prof::prof::{Emit, Profile};
-use prof::sig::Signature;
 
 use super::parallel;
 

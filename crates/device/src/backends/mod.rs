@@ -17,9 +17,9 @@ mod test_imports {
     pub(crate) use super::parallel::{cuda, fold_of, metal, unsupported};
     pub(crate) use crate::platform::{ascend_device, detect_cce};
     pub(crate) use diagnostic::Code;
-    pub(crate) use shard::backend::{Driver, Launch, Lower, Source};
     pub(crate) use prof::model::Sample;
     pub(crate) use prof::sig::Signature;
+    pub(crate) use shard::backend::{Driver, Launch, Lower, Source};
 }
 #[cfg(test)]
 pub(crate) use test_imports::*;

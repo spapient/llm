@@ -1,7 +1,7 @@
 //! `llm platform`：把六平台执行合同打成一张表（[ADR 0052](../../../docs/adr/0052-execution-platform-contract.md)）。
 
-use shard::platform::{Machine, Row, Standing, audit};
 use diagnostic::Result;
+use shard::platform::{Machine, Row, Standing, audit};
 use std::fmt::Write as _;
 
 /// 打印一台机器上的六行裁决；返回 `()`，因为"这台机器没有 CUDA"不是错误。

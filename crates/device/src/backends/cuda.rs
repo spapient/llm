@@ -8,14 +8,14 @@ use crate::backends::common::{
 use crate::platform::{detect_musa, detect_nvcc, find_cl, musa_device};
 use cutile::dirs::Dirs;
 use diagnostic::{Code, Error, Result};
-use shard::backend::{Backend, Codegen, Driver, Launch, Lower, Readback, Source};
-use shard::driver;
-use shard::toolchain::Toolchain;
-use shard::witness::{MAX_OUT, Scope, Selected};
 use prof::decl::Grid;
 use prof::model::Sample;
 use prof::prof::{Emit, Profile};
 use prof::sig::Signature;
+use shard::backend::{Backend, Codegen, Driver, Launch, Lower, Readback, Source};
+use shard::driver;
+use shard::toolchain::Toolchain;
+use shard::witness::{MAX_OUT, Scope, Selected};
 use std::path::Path;
 use std::process::Command;
 

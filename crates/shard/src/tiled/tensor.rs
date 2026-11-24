@@ -1,8 +1,8 @@
 //! 张量核心 GEMM（Metal 4 `matmul2d`）：几何选型 + MSL 正文。
 
 use super::geometry::{gemm_bufs, gemm_dims};
-use diagnostic::{Code, Error, Result};
 use crate::backend::TensorGeometry;
+use diagnostic::{Code, Error, Result};
 use prof::model::Sample;
 use prof::sig::Signature;
 

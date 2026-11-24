@@ -2,9 +2,9 @@
 
 use cutile::harness::output_name;
 use diagnostic::{Code, Error, Result};
-use shard::backend::Source;
 use prof::model::Sample;
 use prof::sig::Signature;
+use shard::backend::Source;
 
 use crate::dialect::{
     Dialect, EXPSUM, Metal, NORM, PARTIAL, RMS_EPS, SCAN_CORRECT, SCAN_LOCAL, carry_fold,

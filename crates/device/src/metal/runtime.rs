@@ -2,10 +2,10 @@
 
 use cutile::dirs::Dirs;
 use diagnostic::{Code, Error, Result};
+use prof::prof::Profile;
 use shard::backend::Readback;
 use shard::driver;
 use shard::witness::MAX_OUT;
-use prof::prof::Profile;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 

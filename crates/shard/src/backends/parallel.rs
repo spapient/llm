@@ -1,8 +1,8 @@
 //! 声明 → 并行程序：把 cutile 推出的 [`Launch`] 装配成「设备源 + 按网格发射的 host 驱动」。
 //! CUDA 与 Metal 各走一套合成入口；分块族的段数与折叠是一体的，这层只回答「什么形态配哪份程序」。
 
-use diagnostic::{Code, Error, Result};
 use crate::backend::{Launch, Lower, Source};
+use diagnostic::{Code, Error, Result};
 use prof::decl::Grid;
 use prof::model::Sample;
 use prof::sig::Signature;

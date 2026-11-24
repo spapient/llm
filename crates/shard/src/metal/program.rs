@@ -1,8 +1,8 @@
 //! Metal 多段并行程序：分块族（归约 / 归一化 / 扫描 / Softmax）的「多段发射 + 主机折叠」装配。
 
+use crate::backend::Source;
 use cutile::harness::output_name;
 use diagnostic::{Code, Error, Result};
-use crate::backend::Source;
 use prof::model::Sample;
 use prof::sig::Signature;
 

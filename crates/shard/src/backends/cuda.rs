@@ -1,17 +1,17 @@
 //! CUDA / MUSA 后端：`Codegen` 出 `.cu`、`Driver` 跑 `nvcc` / `mcc`。几何选型、lowering 分派、
 //! witness 装配与编译运行在本模块；并行程序装配见 [`super::parallel`]。
 
+use crate::backend::{Backend, Codegen, Driver, Launch, Lower, Readback, Source};
 use crate::backends::common::{
     benchmark_grid, benchmark_output_len, device_fn, positive_scalar, witness_head,
     witness_readback,
 };
-use crate::platform::{detect_musa, detect_nvcc, find_cl, musa_device};
-use cutile::dirs::Dirs;
-use diagnostic::{Code, Error, Result};
-use crate::backend::{Backend, Codegen, Driver, Launch, Lower, Readback, Source};
 use crate::driver;
+use crate::platform::{detect_musa, detect_nvcc, find_cl, musa_device};
 use crate::toolchain::Toolchain;
 use crate::witness::{MAX_OUT, Scope, Selected};
+use cutile::dirs::Dirs;
+use diagnostic::{Code, Error, Result};
 use prof::decl::Grid;
 use prof::model::Sample;
 use prof::prof::{Emit, Profile};

@@ -1,15 +1,15 @@
 //! Metal 后端：`Codegen` 出 MSL、`Driver` 跑 `xcrun metal` + `metallib`。lowering 分派与 witness
 //! 装配在本模块；MSL 设备源与 ObjC host 驱动骨架在 [`crate::metal`]，并行程序装配见 [`super::parallel`]。
 
+use crate::backend::{Backend, Codegen, Driver, Launch, Lower, Readback, Source};
 use crate::backends::common::{benchmark_grid, benchmark_output_len};
 use crate::dialect::Dialect;
-use crate::platform::detect_metal;
-use cutile::dirs::Dirs;
-use diagnostic::{Code, Error, Result};
-use crate::backend::{Backend, Codegen, Driver, Launch, Lower, Readback, Source};
 use crate::driver;
+use crate::platform::detect_metal;
 use crate::toolchain::Toolchain;
 use crate::witness::{MAX_OUT, Scope, Selected};
+use cutile::dirs::Dirs;
+use diagnostic::{Code, Error, Result};
 use prof::model::Sample;
 use prof::prof::{Emit, Profile};
 use prof::sig::Signature;

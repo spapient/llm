@@ -1,13 +1,13 @@
 //! 昇腾（AscendC）后端：单源方言，`.cpp` 里同时放核函数与 AscendCL host 驱动，`ccec` 拆两段。
 
-use crate::backends::common::{device_fn, witness_head, witness_readback};
-use crate::platform::{ascend_device, detect_cce};
-use cutile::dirs::Dirs;
-use diagnostic::{Code, Error, Result};
 use crate::backend::{Backend, Codegen, Driver, Readback, Source};
+use crate::backends::common::{device_fn, witness_head, witness_readback};
 use crate::driver;
+use crate::platform::{ascend_device, detect_cce};
 use crate::toolchain::Toolchain;
 use crate::witness::{MAX_OUT, Scope, Selected};
+use cutile::dirs::Dirs;
+use diagnostic::{Code, Error, Result};
 use prof::model::Sample;
 use prof::prof::Emit;
 use prof::prof::Profile;

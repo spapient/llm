@@ -30,8 +30,8 @@
 //! `dialect`）、不碰设备内存（`metal`）。它只回答"这一行现在能不能开门"，以及开门时手里那张
 //! 证据长什么样。
 
-use diagnostic::{Code, Error, Result};
 use crate::toolchain::{Toolchain, parse_version, probe};
+use diagnostic::{Code, Error, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
