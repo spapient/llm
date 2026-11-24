@@ -174,23 +174,9 @@ impl Precision {
         }
     }
 
-    /// 本精度在给定档位下的算子名；算子表没有注册这个组合时返回 `None`。
-    ///
-    /// 组合写成一张表而不是 `match` 分支：这里要表达的是「哪些格子里有内核」这个二维事实，
-    /// 表里有就是有、没写就是没有，读者一眼能看出空着的那两格（int2 / int4 × `K = 4096`）。
-    // `precision as u8 == self as u8` 与 `rung as u8 == gauge as u8` 比较的是**判别值**，
-    // 因此两个枚举都声明了 `#[repr(u8)]` + 显式判别值：`RUNGS` 里的顺序不再隐含成契约，
-    // 调整枚举成员顺序也不会让查表悄悄换行。
+    /// 返回该精度与档位的算子；未注册组合返回 `None`。
     pub const fn operator(self, gauge: Gauge) -> Option<&'static str> {
-        let mut idx = 0;
-        while idx < RUNGS.len() {
-            let (precision, rung, operator) = RUNGS[idx];
-            if precision as u8 == self as u8 && rung as u8 == gauge as u8 {
-                return Some(operator);
-            }
-            idx += 1;
-        }
-        None
+        OPERATORS[self as usize][gauge as usize]
     }
 }
 

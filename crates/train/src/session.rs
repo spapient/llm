@@ -267,9 +267,9 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
         crate::backprop::backprop(&mut self.bufs, &self.tape, &self.backward)
     }
 
-    /// 已登记的参数槽。
-    pub fn slots(&self) -> &[ParamSlot] {
-        &self.slots
+    ref_getters! {
+        /// 已登记的参数槽。
+        slots => slots: &[ParamSlot],
     }
 
     /// 激活/参数缓冲（前向装载与重算走这里）。

@@ -229,8 +229,8 @@ fn nvidia_matmul_uses_pedantic_cublas_and_cached_device_storage() {
         .expect("共享矩阵乘声明")
         .to_decl()
         .expect("共享声明有效");
-    let specialized = crate::catalogue::for_device(&reference, "nvidia")
-        .expect("NVIDIA cuBLAS 矩阵乘特化");
+    let specialized =
+        crate::catalogue::for_device(&reference, "nvidia").expect("NVIDIA cuBLAS 矩阵乘特化");
     assert!(matches!(specialized, std::borrow::Cow::Owned(_)));
     assert_eq!(specialized.signature, reference.signature);
     assert_eq!(specialized.needs, reference.needs);
@@ -250,7 +250,10 @@ fn nvidia_matmul_uses_pedantic_cublas_and_cached_device_storage() {
         "N, M, K, &alpha, state.b, N, state.a, K, &beta, state.y, N",
         "cudaMemcpyDeviceToHost",
     ] {
-        assert!(source.contains(required), "NVIDIA cuBLAS 特化缺 `{required}`");
+        assert!(
+            source.contains(required),
+            "NVIDIA cuBLAS 特化缺 `{required}`"
+        );
     }
     assert_eq!(source.matches("cublasSgemm(").count(), 1);
     assert!(!source.contains("CUBLAS_COMPUTE_32F_FAST_TF32"));

@@ -18,7 +18,7 @@
 //! assert_eq!(view.strides(), [3, 1]);
 //! assert_eq!(view.iter().sum::<f32>(), 21.0);
 //!
-//! let fixed: Tensor<&[f32], [usize; 2], f32> = Tensor::new([3, 2], &values)?;
+//! let fixed: Tensor<&[f32], [usize; 2], f32> = Tensor::new([3, 2], values.as_slice())?;
 //! assert_eq!(fixed.transpose(0, 1).expect("轴合法").dims(), [2, 3]);
 //! # Ok::<(), diagnostic::Error>(())
 //! ```
