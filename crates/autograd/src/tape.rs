@@ -88,12 +88,8 @@ impl Tape {
         requirement: Requirement,
     ) -> Result<Var> {
         let op = op.into();
-        let (_, deepest) = self.check_inputs(
-            &op,
-            inputs,
-            requirement,
-            "autograd::Tape::record_with",
-        )?;
+        let (_, deepest) =
+            self.check_inputs(&op, inputs, requirement, "autograd::Tape::record_with")?;
         Ok(self.push(op, inputs, requirement, deepest))
     }
 
@@ -155,14 +151,14 @@ impl Tape {
                 node.requirement(),
                 "autograd::Tape::validate",
             )
-                .map(|_| ())
-                .map_err(|error| {
-                    error.with(format!(
-                        "节点 {}（算子 `{}`）",
-                        node.output().id(),
-                        node.op()
-                    ))
-                })?;
+            .map(|_| ())
+            .map_err(|error| {
+                error.with(format!(
+                    "节点 {}（算子 `{}`）",
+                    node.output().id(),
+                    node.op()
+                ))
+            })?;
         }
         Ok(())
     }
