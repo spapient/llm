@@ -138,8 +138,7 @@ impl<E: Executor> CpuModel<E> {
             Buf::F32(vec![0.0; self.assembly.input_len * batch]),
         );
         for (id, len) in &self.assembly.activations {
-            self.executor
-                .bind(*id, Buf::F32(vec![0.0; len * batch]));
+            self.executor.bind(*id, Buf::F32(vec![0.0; len * batch]));
         }
     }
 
@@ -448,12 +447,9 @@ fn reorder_history_row(
 
 /// 取回已预绑的投影缓冲；编号在装配期绑定，取回失败或 lane 不符归内部错误。
 fn bound_slice<'a, E: Executor>(executor: &'a E, id: u32, what: &str) -> Result<&'a [f32]> {
-    executor
-        .fetch(id)
-        .and_then(Buf::f32)
-        .ok_or_else(|| {
-            Error::new(Code::Internal, format!("{what} 投影缓冲已预绑，取回失败")).with(SITE)
-        })
+    executor.fetch(id).and_then(Buf::f32).ok_or_else(|| {
+        Error::new(Code::Internal, format!("{what} 投影缓冲已预绑，取回失败")).with(SITE)
+    })
 }
 
 impl<E: Executor> crate::Predict for CpuModel<E> {

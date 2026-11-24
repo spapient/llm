@@ -29,7 +29,7 @@ pub fn sample(len: usize, _: usize) -> Sample {
             x_buf(len),
             Buf {
                 name: "gamma",
-                values: Values::F32((0..len).map(|i| 0.5 + (i as f32) * 0.01).collect()),
+                values: Values::F32(crate::model::linear(len, 0.01, 0.5)),
             },
             Buf {
                 name: "y",

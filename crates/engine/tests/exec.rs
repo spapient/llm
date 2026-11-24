@@ -1,4 +1,5 @@
 use super::*;
+use crate::exec::Buf;
 use diagnostic::{Code, Error, Result};
 use storage::CpuAllocator;
 
@@ -285,8 +286,8 @@ fn a_cpu_executor_writes_through_the_bound_operands() {
     executor
         .register(Box::new(Scale { factor: 2.0 }))
         .expect("登记");
-    executor.bind(0, vec![1.0, 2.0, 3.0]);
-    executor.bind(1, vec![0.0; 3]);
+    executor.bind(0, Buf::F32(vec![1.0, 2.0, 3.0]));
+    executor.bind(1, Buf::F32(vec![0.0; 3]));
 
     let mut node = Node::new("scale", Launch::new([1, 1, 1], [3, 1, 1]));
     node.bind_input(0).bind_output(1);
@@ -304,10 +305,10 @@ fn a_graph_chains_through_the_same_bindings() {
         .register(Box::new(Scale { factor: 3.0 }))
         .expect("登记");
     executor.register(Box::new(Add)).expect("登记");
-    executor.bind(0, vec![1.0, 1.0]);
-    executor.bind(1, vec![0.0; 2]);
-    executor.bind(2, vec![10.0, 20.0]);
-    executor.bind(3, vec![0.0; 2]);
+    executor.bind(0, Buf::F32(vec![1.0, 1.0]));
+    executor.bind(1, Buf::F32(vec![0.0; 2]));
+    executor.bind(2, Buf::F32(vec![10.0, 20.0]));
+    executor.bind(3, Buf::F32(vec![0.0; 2]));
 
     let mut scaled = Node::new("scale", Launch::new([1, 1, 1], [2, 1, 1]));
     scaled.bind_input(0).bind_output(1);
@@ -334,7 +335,7 @@ fn a_graph_chains_through_the_same_bindings() {
 #[test]
 fn an_unregistered_kernel_is_refused_by_name() {
     let mut executor = cpu();
-    executor.bind(0, vec![1.0]);
+    executor.bind(0, Buf::F32(vec![1.0]));
     let mut node = Node::new("softmax_f32", Launch::new([1, 1, 1], [1, 1, 1]));
     node.bind_output(0);
     let error = executor.run(&node).unwrap_err();
@@ -362,7 +363,7 @@ fn an_unbound_operand_is_refused() {
     executor
         .register(Box::new(Scale { factor: 1.0 }))
         .expect("登记");
-    executor.bind(0, vec![1.0]);
+    executor.bind(0, Buf::F32(vec![1.0]));
     let mut node = Node::new("scale", Launch::new([1, 1, 1], [1, 1, 1]));
     node.bind_input(0).bind_output(9);
     let error = executor.run(&node).unwrap_err();
@@ -376,7 +377,7 @@ fn the_same_operand_cannot_be_both_input_and_output() {
     executor
         .register(Box::new(Scale { factor: 2.0 }))
         .expect("登记");
-    executor.bind(0, vec![1.0]);
+    executor.bind(0, Buf::F32(vec![1.0]));
     let mut node = Node::new("scale", Launch::new([1, 1, 1], [1, 1, 1]));
     node.bind_input(0).bind_output(0);
     let error = executor.run(&node).unwrap_err();
@@ -405,7 +406,7 @@ fn a_failing_kernel_still_returns_its_bufs() {
 
     let mut executor = cpu();
     executor.register(Box::new(Wrong)).expect("登记");
-    executor.bind(0, vec![5.0]);
+    executor.bind(0, Buf::F32(vec![5.0]));
     let mut node = Node::new("wrong", Launch::new([1, 1, 1], [1, 1, 1]));
     node.bind_input(0);
     assert!(executor.run(&node).is_err());
@@ -416,8 +417,14 @@ fn a_failing_kernel_still_returns_its_bufs() {
 fn bindings_replace_and_report_their_size() {
     let mut bindings = Bindings::new();
     assert!(bindings.is_empty());
-    assert_eq!(bindings.bind_f32(0, vec![1.0]), None);
-    assert_eq!(bindings.bind_f32(0, vec![2.0]), Some(vec![1.0]));
+    assert_eq!(bindings.bind(0, Buf::F32(vec![1.0])), None);
+    assert_eq!(
+        bindings
+            .bind(0, Buf::F32(vec![2.0]))
+            .as_ref()
+            .and_then(Buf::f32),
+        Some(&[1.0][..])
+    );
     assert_eq!(bindings.get(0), Some(&[2.0][..]));
     assert_eq!(bindings.get(1), None);
     assert_eq!(bindings.len(), 1);
@@ -430,9 +437,9 @@ fn a_cpu_sync_drains_only_the_named_stream() {
     executor
         .register(Box::new(Scale { factor: 2.0 }))
         .expect("登记");
-    executor.bind(0, vec![1.0, 1.0]);
-    executor.bind(1, vec![0.0; 2]);
-    executor.bind(2, vec![0.0; 2]);
+    executor.bind(0, Buf::F32(vec![1.0, 1.0]));
+    executor.bind(1, Buf::F32(vec![0.0; 2]));
+    executor.bind(2, Buf::F32(vec![0.0; 2]));
 
     let mut first = Node::new("scale", Launch::new([1, 1, 1], [2, 1, 1]));
     first.bind_input(0).bind_output(1);
@@ -457,7 +464,7 @@ fn a_cpu_sync_drains_only_the_named_stream() {
 #[test]
 fn a_failed_node_stays_in_the_queue() {
     let mut executor = cpu();
-    executor.bind(0, vec![1.0]);
+    executor.bind(0, Buf::F32(vec![1.0]));
     let mut node = Node::new("scale", Launch::new([1, 1, 1], [1, 1, 1]));
     node.bind_input(0).bind_output(1);
     let mut graph = Graph::new();
@@ -489,10 +496,9 @@ fn vacant_executor_rejects_every_runtime_surface() {
     let error = executor.register_program(program).unwrap_err();
     assert_eq!(error.code(), Code::Unsupported);
 
-    assert!(executor.bind_f32(0, vec![1.0]).is_none());
-    assert!(executor.bind_bytes(0, vec![1u8]).is_none());
-    assert!(executor.fetch_f32(0).is_none());
-    assert!(executor.fetch_bytes(0).is_none());
+    assert!(executor.bind(0, Buf::F32(vec![1.0])).is_none());
+    assert!(executor.bind(0, Buf::U8(vec![1u8])).is_none());
+    assert!(executor.fetch(0).is_none());
 }
 
 /// 满足 [`Program`] 的最小占位体：只用于登记位被拒这条路径，不真正跑。

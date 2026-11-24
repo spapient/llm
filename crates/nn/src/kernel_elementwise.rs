@@ -237,8 +237,8 @@ pub mod residual_add_f32 {
         "residual_add_f32",
         elementwise_binary_tests,
         |x, y| x + y,
-        |len| (0..len).map(|i| (i as f32) * 0.5).collect(),
-        |len| (0..len).map(|i| (i as f32) * 0.25).collect()
+        |len| crate::model::linear(len, 0.5, 0.0),
+        |len| crate::model::linear(len, 0.25, 0.0)
     );
 }
 

@@ -45,7 +45,7 @@ fn rope_rotates_batch_segments_by_the_position_table() {
     let mut executor = cpu();
     bind(&mut executor, 0, &x);
     bind(&mut executor, 1, &positions);
-    executor.bind(2, vec![0.0; 4]);
+    executor.bind(2, Buf::F32(vec![0.0; 4]));
     let mut node = Node::new(
         "rope_f32",
         Launch::new([1, 1, 1], [head_dim as u32, head_dim as u32, 1]),
@@ -90,7 +90,7 @@ fn decode_attention_groups_batch_segments_by_the_history_table() {
     bind(&mut executor, 1, &k);
     bind(&mut executor, 2, &v);
     bind(&mut executor, 3, &hist_table);
-    executor.bind(4, vec![0.0; reference.len()]);
+    executor.bind(4, Buf::F32(vec![0.0; reference.len()]));
     let mut node = Node::new(
         "decode_attention_f32",
         Launch::new([1, 1, 1], [(heads * d) as u32, d as u32, 1]),

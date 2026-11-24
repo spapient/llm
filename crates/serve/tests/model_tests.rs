@@ -5,7 +5,7 @@ use crate::model::CpuModel;
 use crate::proto::{Decoder, Envelope, HEADER_LEN, Kind, MAX_PAYLOAD, TRAILER_LEN, Version};
 use crate::{Response, Route, Status};
 use diagnostic::Code;
-use engine::exec::{CpuExecutor, Device, Executor, Graph, Launch, Node, Stream, Trace};
+use engine::exec::{Buf, CpuExecutor, Device, Executor, Graph, Launch, Node, Stream, Trace};
 use engine::kv::{Cache, Pager};
 use engine::{Batch, Scheduler, Sequence};
 use nn::{
@@ -30,12 +30,12 @@ fn plain_batch() -> Batch {
 
 /// 绑一块输入缓冲。
 fn bind(executor: &mut CpuExecutor, id: u32, values: &[f32]) {
-    executor.bind(id, values.to_vec());
+    executor.bind(id, Buf::F32(values.to_vec()));
 }
 
 /// 绑一块打包字节缓冲（量化 lane 权重 / 码点）。
 fn bind_u8(executor: &mut CpuExecutor, id: u32, values: &[u8]) {
-    executor.bind_u8(id, values.to_vec());
+    executor.bind(id, Buf::U8(values.to_vec()));
 }
 
 /// 跑一个单节点：输出整块零初始化，执行后取回。
@@ -46,7 +46,7 @@ fn run_one(
     output: u32,
     len: usize,
 ) -> Vec<f32> {
-    executor.bind(output, vec![0.0; len]);
+    executor.bind(output, Buf::F32(vec![0.0; len]));
     let mut node = Node::new(op, Launch::new([1, 1, 1], [len as u32, 0, 1]));
     for &id in inputs {
         node.bind_input(id);
@@ -587,7 +587,7 @@ fn run_gemv_rows(x: &[f32], w: &[f32], m: usize, n: usize, rows: usize) -> Vec<f
     bind(&mut executor, 0, x);
     bind(&mut executor, 1, w);
     let output = 2;
-    executor.bind(output, vec![0.0; n * rows]);
+    executor.bind(output, Buf::F32(vec![0.0; n * rows]));
     let mut node = Node::new("gemv_f32", Launch::new([1, 1, 1], [n as u32, m as u32, 1]));
     node.bind_input(0);
     node.bind_input(1);

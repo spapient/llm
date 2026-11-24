@@ -93,7 +93,7 @@ fn gemv_row_batch_rejects_inconsistent_geometry() {
     bind(&mut executor, 0, &[1.0, 2.0]);
     bind(&mut executor, 1, &[0.0; 6]);
     let output = 2;
-    executor.bind(output, vec![0.0; 4]);
+    executor.bind(output, Buf::F32(vec![0.0; 4]));
     let mut node = Node::new("gemv_f32", Launch::new([1, 1, 1], [2, 3, 1]));
     node.bind_input(0);
     node.bind_input(1);
@@ -261,7 +261,7 @@ fn a_quantized_weight_bound_as_f32_is_rejected_by_the_kernel() {
     bind(&mut executor, 0, &[1.0; 4]);
     bind(&mut executor, 1, &[0.0; 2]);
     bind(&mut executor, 2, &[0.5]);
-    executor.bind(3, vec![0.0; 1]);
+    executor.bind(3, Buf::F32(vec![0.0; 1]));
 
     let mut node = Node::new("gemv_i4", Launch::new([1, 1, 1], [1, 1, 1]));
     node.bind_input(0)
@@ -422,8 +422,8 @@ fn a_graph_chains_through_the_same_bindings() {
     let mut executor = cpu();
     bind(&mut executor, 0, &a);
     bind(&mut executor, 1, &b);
-    executor.bind(2, vec![0.0; 2]);
-    executor.bind(3, vec![0.0; 2]);
+    executor.bind(2, Buf::F32(vec![0.0; 2]));
+    executor.bind(3, Buf::F32(vec![0.0; 2]));
 
     let mut summed = Node::new("add_f32", Launch::new([1, 1, 1], [2, 1, 1]));
     summed.bind_input(0).bind_input(1).bind_output(2);
@@ -444,7 +444,7 @@ fn a_graph_chains_through_the_same_bindings() {
 #[test]
 fn an_uncovered_operator_is_refused_by_name() {
     let mut executor = cpu();
-    executor.bind(0, vec![1.0, 2.0]);
+    executor.bind(0, Buf::F32(vec![1.0, 2.0]));
     let mut node = Node::new("gemm_f32", Launch::new([1, 1, 1], [2, 1, 1]));
     node.bind_input(0).bind_output(1);
 
@@ -504,7 +504,7 @@ fn an_empty_decode_history_is_rejected_by_the_kernel() {
     bind(&mut executor, 0, &vec![0.0; d]);
     bind(&mut executor, 1, &[]);
     bind(&mut executor, 2, &[]);
-    executor.bind(3, vec![0.0; d]);
+    executor.bind(3, Buf::F32(vec![0.0; d]));
 
     let mut node = Node::new(
         "decode_attention_f32",

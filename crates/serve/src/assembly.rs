@@ -556,10 +556,7 @@ pub(crate) fn bind_weights<E: Executor>(
 
 /// 预绑输入与各逐层激活的零缓冲：执行时只覆写，不在图运行期分配。
 pub(crate) fn bind_activations<E: Executor>(executor: &mut E, assembly: &Assembly) {
-    executor.bind(
-        assembly.input,
-        Buf::F32(vec![0.0; assembly.input_len]),
-    );
+    executor.bind(assembly.input, Buf::F32(vec![0.0; assembly.input_len]));
     for (id, len) in &assembly.activations {
         executor.bind(*id, Buf::F32(vec![0.0; *len]));
     }

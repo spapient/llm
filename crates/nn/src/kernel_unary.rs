@@ -207,7 +207,7 @@ pub mod log_f32 {
             assert!((out[1] - 1.0).abs() < 1e-6, "ln(e)=1");
         },
         |x| x.ln(),
-        |len| (0..len).map(|i| 0.5 + i as f32 * 0.25).collect()
+        |len| crate::model::linear(len, 0.25, 0.5)
     );
 }
 
@@ -409,7 +409,7 @@ pub mod scale_f32 {
             assert_eq!(out[0], ALPHA, "scale(1) = ALPHA");
         },
         |x| ALPHA * x,
-        |len| (0..len).map(|i| ((i as f32) * 0.25) - 2.0).collect()
+        |len| crate::model::linear(len, 0.25, -2.0)
     );
 }
 
