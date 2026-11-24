@@ -168,6 +168,32 @@ fn every_metal_witness_runs_on_the_gpu() {
     assert!(runs.iter().all(|run| run.max_rel_err <= 1e-5), "{runs:?}");
 }
 
+fn nvidia_profile() -> Profile {
+    cutile::builtin::Catalogue::try_builtin()
+        .expect("内置数据")
+        .profile("nvidia")
+        .cloned()
+        .expect("nvidia 档案")
+}
+
+#[test]
+fn every_nvidia_witness_runs_on_the_cuda_device() {
+    ensure_backends();
+    let profile = nvidia_profile();
+    if !llm_optim::witness::device_available(&profile) {
+        testkit::skip("engine: CUDA/nvcc 工具链或 MSVC 宿主不在本机，GPU 见证用例未运行");
+        return;
+    }
+    let dirs = Dirs::under(std::env::temp_dir().join("engine-cuda-witness"));
+    let runs = llm_optim::witness::run_all(&profile, &dirs).expect("CUDA 见证必须全部通过");
+    assert_eq!(runs.len(), profile.provides.len(), "每条声明都要有结果");
+    assert!(
+        runs.iter().all(|run| run.scope == Scope::Device),
+        "GPU 上跑出来的结论不能被降级成自检"
+    );
+    assert!(runs.iter().all(|run| run.max_rel_err <= 1e-5), "{runs:?}");
+}
+
 #[test]
 fn the_metal_front_end_demands_an_explicit_address_space() {
     ensure_backends();

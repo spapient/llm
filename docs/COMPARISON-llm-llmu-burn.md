@@ -376,7 +376,7 @@
 | 模糊测试 | `fuzz` crate（contract：种子 / 目标 trait / 不变量），`libfuzzer-sys` optional，nightly 独立运行 | `fuzz` 目录（独立 nightly 运行） | 后端测试套件 `burn-backend-tests` |
 | 基准 | `benchmarks` crate（attention/io/kernel/model/peak/protocol） | `benches`：CPU/Metal/OpenCL/CLBlast/SYCL/CUDA/MUSA 多后端实测 + 对拍 | `benchmarks.toml` + criterion |
 | 错误处理 | `diagnostic::Error/Code`（含 Unsupported） | `proto::error::Err/Result` | 后端错误 trait |
-| 工具链 | edition 2024 / Rust 1.99；resolver 3；release thin LTO + codegen-units 1；手写 SIMD / Apple SME 走 `#[cfg(nightly)]`，stable 等价退路 | resolver 2；release thin LTO + codegen-units 1 | 常规 MSRV 策略 |
+| 工具链 | edition 2024 / Rust 1.100.0；resolver 3；release thin LTO + codegen-units 1；手写 SIMD / Apple SME 走 `#[cfg(nightly)]`，stable 等价退路 | resolver 2；release thin LTO + codegen-units 1 | 常规 MSRV 策略 |
 
 ---
 
