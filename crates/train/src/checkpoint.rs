@@ -72,51 +72,27 @@ impl Checkpoint {
         })
     }
 
-    /// 绑定保存时的训练配置指纹。
-    pub fn with_config_fingerprint(mut self, fingerprint: u64) -> Self {
-        self.config_fingerprint = fingerprint;
-        self
+    builders! {
+        /// 绑定保存时的训练配置指纹。
+        with_config_fingerprint => config_fingerprint: u64,
     }
-
-    /// 保存时的训练配置指纹。
-    pub fn config_fingerprint(&self) -> u64 {
-        self.config_fingerprint
-    }
-
-    /// 步号。
-    pub fn step(&self) -> u64 {
-        self.step
-    }
-
-    /// 反向图节点数的内存诊断量；不进快照、恢复时不据此对账。图结构一致性由权重条目表
-    /// 与层算子契约守卫，而不是靠节点数。
-    pub fn tape_nodes(&self) -> usize {
-        self.tape_nodes
-    }
-
-    /// 批的行数。
-    pub fn batch_rows(&self) -> usize {
-        self.batch_rows
-    }
-
-    /// 批的列宽。
-    pub fn batch_cols(&self) -> usize {
-        self.batch_cols
-    }
-
-    /// 训练层数。
-    pub fn layers(&self) -> usize {
-        self.layers
-    }
-
-    /// 权重条目数。
-    pub fn weight_entries(&self) -> usize {
-        self.weight_entries
-    }
-
-    /// 恢复时要求的进程数。
-    pub fn world(&self) -> usize {
-        self.world
+    getters! {
+        /// 保存时的训练配置指纹。
+        config_fingerprint => config_fingerprint: u64,
+        /// 步号。
+        step => step: u64,
+        /// 反向图节点数的内存诊断量；不进快照，图结构由权重条目表与层算子契约守卫。
+        tape_nodes => tape_nodes: usize,
+        /// 批的行数。
+        batch_rows => batch_rows: usize,
+        /// 批的列宽。
+        batch_cols => batch_cols: usize,
+        /// 训练层数。
+        layers => layers: usize,
+        /// 权重条目数。
+        weight_entries => weight_entries: usize,
+        /// 恢复时要求的进程数。
+        world => world: usize,
     }
 
     /// 把这些事实与当前权重表组合成可落盘的快照。
@@ -255,10 +231,10 @@ impl GradientSnapshot {
         Self { entries }
     }
 
-    /// 全部条目：变量与其梯度向量。
-    #[must_use]
-    pub fn entries(&self) -> &[(Var, Vec<f32>)] {
-        &self.entries
+    ref_getters! {
+        /// 全部条目：变量与其梯度向量。
+        #[must_use]
+        entries => entries: &[(Var, Vec<f32>)],
     }
 
     /// 取一个变量的梯度向量；快照里没有该变量时为 `None`。

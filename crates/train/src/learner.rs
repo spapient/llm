@@ -143,14 +143,11 @@ impl<K: Kernel, O: Optimizer, C: Collective> Learner<K, O, C> {
         })
     }
 
-    /// 会话状态（只读）。
-    pub fn session(&self) -> &Session<K, O, C> {
-        &self.session
-    }
-
-    /// 指标看板（只读）。
-    pub fn board(&self) -> &MetricsBoard {
-        &self.board
+    ref_getters! {
+        /// 会话状态（只读）。
+        session => session: &Session<K, O, C>,
+        /// 指标看板（只读）。
+        board => board: &MetricsBoard,
     }
 
     /// 跑指定 epoch 数；每个完整批走一次前向评估、入账与优化步。

@@ -50,95 +50,49 @@ pub fn cost<U: Unary>(shape: &ShapeCtx) -> Result<Cost, Error> {
         .map_err(|error| error.with("nn::unary::cost"))
 }
 
-/// 确定性样本：第一个参数是元素数。
-pub fn sample<U: Unary>(len: usize, _: usize) -> Sample {
-    Sample {
-        m: len,
-        n: len,
-        scalars: vec![("N", len as i64)],
-        bufs: vec![
-            Buf {
-                name: "a",
-                values: Values::F32(U::input(len)),
-            },
-            Buf {
-                name: "y",
-                values: Values::F32(vec![0.0; len]),
-            },
-        ],
-    }
+/// 一档浮点样本与参考的完整声明：类型、`Values` 变体和读取器只配置一次。
+/// 输入夹具先收窄到目标档，参考再应用同一份泛型 `apply`，对拍结果统一回到 f32。
+macro_rules! sample_tier {
+    ($sample:ident, $reference:ident, $k:ty, $variant:ident, $read:ident) => {
+        /// 构造这一精度档的确定性一元样本；第一个参数是元素数。
+        pub fn $sample<U: Unary>(len: usize, _: usize) -> Sample {
+            fn values<K: Scalar>(input: Vec<f32>) -> Vec<K> {
+                input
+                    .into_iter()
+                    .map(|x| K::from_f64(f64::from(x)))
+                    .collect()
+            }
+            Sample {
+                m: len,
+                n: len,
+                scalars: vec![("N", len as i64)],
+                bufs: vec![
+                    Buf {
+                        name: "a",
+                        values: Values::$variant(values::<$k>(U::input(len))),
+                    },
+                    Buf {
+                        name: "y",
+                        values: Values::$variant(values::<$k>(vec![0.0; len])),
+                    },
+                ],
+            }
+        }
+
+        /// 逐元素执行这一档的标量核，并把结果转换成统一的 f32 对拍面。
+        pub fn $reference<U: Unary>(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
+            Ok(sample
+                .$read("a")?
+                .iter()
+                .map(|x| U::apply(*x).to_f64() as f32)
+                .collect())
+        }
+    };
 }
 
-/// 标量参考：逐元素应用 f32 标量核 [`Unary::apply_f32`]。样本通道当前只有 f32，
-/// 非 f32 档随取值通道批次接入。
-pub fn reference<U: Unary>(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
-    let a = sample.f32("a")?;
-    Ok(a.iter().map(|x| U::apply_f32(*x)).collect())
-}
-
-/// f16 确定性样本：f32 夹具按 IEEE binary16 收窄，输入/输出缓冲都是 [`Values::F16`]。
-pub fn sample_f16<U: Unary>(len: usize, _: usize) -> Sample {
-    let a = U::input(len)
-        .iter()
-        .map(|x| half::f16::from_f32(*x))
-        .collect();
-    Sample {
-        m: len,
-        n: len,
-        scalars: vec![("N", len as i64)],
-        bufs: vec![
-            Buf {
-                name: "a",
-                values: Values::F16(a),
-            },
-            Buf {
-                name: "y",
-                values: Values::F16(vec![half::f16::from_f32(0.0); len]),
-            },
-        ],
-    }
-}
-
-/// f16 标量参考：逐元素应用 `apply::<half::f16>`，结果上 cast f32（对拍通道归一 f32）。
-pub fn reference_f16<U: Unary>(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
-    Ok(sample
-        .f16("a")?
-        .iter()
-        .map(|x| U::apply(*x).to_f32())
-        .collect())
-}
-
-/// bf16 确定性样本：f32 夹具按 bfloat16 收窄，输入/输出缓冲都是 [`Values::Bf16`]。
-pub fn sample_bf16<U: Unary>(len: usize, _: usize) -> Sample {
-    let a = U::input(len)
-        .iter()
-        .map(|x| half::bf16::from_f32(*x))
-        .collect();
-    Sample {
-        m: len,
-        n: len,
-        scalars: vec![("N", len as i64)],
-        bufs: vec![
-            Buf {
-                name: "a",
-                values: Values::Bf16(a),
-            },
-            Buf {
-                name: "y",
-                values: Values::Bf16(vec![half::bf16::from_f32(0.0); len]),
-            },
-        ],
-    }
-}
-
-/// bf16 标量参考：逐元素应用 `apply::<half::bf16>`，结果上 cast f32。
-pub fn reference_bf16<U: Unary>(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
-    Ok(sample
-        .bf16("a")?
-        .iter()
-        .map(|x| U::apply(*x).to_f32())
-        .collect())
-}
+sample_tier!(sample, reference, f32, F32, f32);
+sample_tier!(sample_f16, reference_f16, half::f16, F16, f16);
+sample_tier!(sample_bf16, reference_bf16, half::bf16, Bf16, bf16);
 
 /// 内核本体：结果写进调用方给的缓冲，泛型到浮点标量档 `K`。
 ///

@@ -73,9 +73,9 @@ impl<'a, Item> Batch<'a, Item> {
 }
 
 impl<'a> Batch<'a, u32> {
-    /// token 序列（`Item = u32` 的兼容访问器）。
-    pub fn tokens(&self) -> &'a [u32] {
-        self.items
+    getters! {
+        /// token 序列（`Item = u32` 的兼容访问器）。
+        tokens => items: &'a [u32],
     }
 }
 

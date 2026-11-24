@@ -2,8 +2,8 @@
 
 use diagnostic::{Code, Error, Result};
 
-use crate::loss::ObjectiveConfig;
 use crate::LoaderConfig;
+use crate::loss::ObjectiveConfig;
 
 /// 配置校验沿用会话诊断站点，保持既有错误上下文稳定。
 const SITE: &str = "train::Session";
@@ -86,24 +86,15 @@ impl Schedule {
         })
     }
 
-    /// warmup 步数。
-    pub fn warmup(&self) -> u64 {
-        self.warmup
-    }
-
-    /// 总步数。
-    pub fn total(&self) -> u64 {
-        self.total
-    }
-
-    /// 衰减曲线。
-    pub fn anneal(&self) -> Anneal {
-        self.anneal
-    }
-
-    /// 谷底占峰值的比例。
-    pub fn min_ratio(&self) -> f32 {
-        self.min_ratio
+    getters! {
+        /// warmup 步数。
+        warmup => warmup: u64,
+        /// 总步数。
+        total => total: u64,
+        /// 衰减曲线。
+        anneal => anneal: Anneal,
+        /// 谷底占峰值的比例。
+        min_ratio => min_ratio: f32,
     }
 
     /// 第 `step` 步的学习率：`peak` 是 warmup 结束时的值，超过 `total` 后为 0。
@@ -256,31 +247,19 @@ impl TrainConfig {
         Ok(config)
     }
 
-    /// 设置 warmup 之后的衰减曲线（builder 风格，覆盖默认的线性衰减）。
-    pub fn with_anneal(mut self, anneal: Anneal) -> Self {
-        self.anneal = anneal;
-        self
+    builders! {
+        /// 设置 warmup 之后的衰减曲线（builder 风格，覆盖默认的线性衰减）。
+        with_anneal => anneal: Anneal,
+        /// 设置谷底比例；越界不静默修正，装配调度时拒绝。
+        with_min_ratio => min_ratio: f32,
     }
-
-    /// 设置谷底占峰值的比例（builder 风格）；越界不静默修正，装配调度时拒绝。
-    pub fn with_min_ratio(mut self, min_ratio: f32) -> Self {
-        self.min_ratio = min_ratio;
-        self
-    }
-
-    /// 衰减曲线。
-    pub fn anneal(&self) -> Anneal {
-        self.anneal
-    }
-
-    /// 谷底占峰值的比例。
-    pub fn min_ratio(&self) -> f32 {
-        self.min_ratio
-    }
-
-    /// 梯度累积窗口。
-    pub fn accumulation(&self) -> u32 {
-        self.accumulation
+    getters! {
+        /// 衰减曲线。
+        anneal => anneal: Anneal,
+        /// 谷底占峰值的比例。
+        min_ratio => min_ratio: f32,
+        /// 梯度累积窗口。
+        accumulation => accumulation: u32,
     }
 }
 

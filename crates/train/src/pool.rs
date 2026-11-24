@@ -386,15 +386,11 @@ impl<K: Kernel> Bufs<K> {
         }
     }
 
-    /// 当前占用的字节数（含常驻值）。
-    pub fn live(&self) -> u64 {
-        self.live
-    }
-
-    /// 占用字节数的峰值：与 [`autograd::Plan::peak`] 同口径之处是"都按真实占用量统计"，
-    /// 差一处是这里也含常驻的参数与输入。
-    pub fn peak(&self) -> u64 {
-        self.peak
+    getters! {
+        /// 当前占用的字节数（含常驻值）。
+        live => live: u64,
+        /// 峰值与激活计划同按真实占用量统计，但这里也含常驻参数与输入。
+        peak => peak: u64,
     }
 
     /// 把峰值重新对齐到当前占用：分段测量（前向一段、重放一段）时各测各的。
@@ -424,9 +420,9 @@ impl<K: Kernel> Bufs<K> {
         self.peak = 0;
     }
 
-    /// 形状表。
-    pub fn sizes(&self) -> &Sizes {
-        &self.sizes
+    ref_getters! {
+        /// 形状表。
+        sizes => sizes: &Sizes,
     }
 
     /// 变量对应的槽位；越界说明 `Sizes` 与 `Tape` 不同源。

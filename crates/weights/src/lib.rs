@@ -375,19 +375,26 @@ mod writer;
 // —— 平铺的子模块：原各父模块的单文件子目录，拍平到顶层 ——
 pub(crate) mod codec;
 
-// —— 量化方案：仿射方案与外部量化条目 ——
+// —— 量化：磁盘方案、成对推断与 2/3/4/8-bit 对称 PTQ ——
 pub mod quant;
 
-// —— 2/4/8-bit 对称 PTQ：f32 → 打包码的正向量化与其反解（离线换算，ADR 0018） ——
-pub mod ptq;
-
-// —— 完整性证明：Merkle + SHA-256 ——
-mod proof;
+// —— PTQ 公开路径：实现与磁盘量化方案同居 `quant`，调用方无需感知文件布局 ——
+pub mod ptq {
+    pub use crate::quant::{
+        Adaptive, AdaptiveCompensated, Compensated, I2, I3, I4, I8, Scheme, adaptive_quantize,
+        compensate, compensate_adaptive, dequantize, quantize,
+    };
+}
 
 // —— 谱隙证书链：f64 单边 Jacobi SVD、谱隙判定账本、五轴无损选码（.u v2 张量级压缩侧车）——
 pub mod axes;
 pub mod ledger;
-pub mod svd;
+pub mod svd {
+    pub use crate::ledger::{REL_GAP, Svd, compute_svd, signal_rank};
+    pub(crate) use crate::ledger::{
+        Spectral, factor_low, norm, residual, residual32, spectral_gap,
+    };
+}
 
 // —— 沉降账本：LLD §4.7 的逐张量体积 / 原因 / 无损判决，全部由落盘字节现算 ——
 pub mod settle;
@@ -430,16 +437,12 @@ pub(crate) mod gguf_fixture;
 /// 词表段保留名（字节容器占位，不接 tokenizer）。
 pub use crate::archive::VOCAB_NAME;
 
-pub use archive::{Archive, E8_RATIO, Metrics};
+pub use archive::{Archive, E8_RATIO, Metrics, Proof};
 pub use axes::{Axis, AxisSet};
 pub use dtype::DType as Wire;
 pub use l3::{Bracket, Chain, Ruling, Rung};
 
-pub use proof::Proof;
-pub use ptq::{
-    Adaptive, AdaptiveCompensated, Compensated, I2, I3, I4, I8, Scheme, adaptive_quantize,
-    compensate, compensate_adaptive, dequantize, quantize,
-};
+pub use ptq::*;
 pub use quant::{Quant, Quantized};
 pub use seg::Codec;
 pub use seg::Segment;

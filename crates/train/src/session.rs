@@ -1,6 +1,5 @@
-//! 训练会话：tape → 反传计划 → 梯度需求分类 → 梯度缓冲 → 优化器步的最小闭环；分布式同步配置
-//! （[`Distributed`]）与它同住一处——会话是它唯一的装配者，同步口径随 [`TrainConfig`] 走。学习率
-//! 调度曲线与训练配置同住此处；快照事实集与视图装配在 [`checkpoint`]。
+//! 训练会话：tape → 反传计划 → 梯度需求分类 → 梯度缓冲 → 优化器步的最小闭环。
+//! 静态配置与调度曲线在 [`config`](crate::config)，快照事实集与视图装配在 [`checkpoint`]。
 
 use autograd::{Requirement, Sizes, Tape, Var};
 use diagnostic::{Code, Error, Result};
@@ -8,12 +7,12 @@ use nn::ParamRole;
 use shard::{Collective, Group, Parallel, ParallelConfig, Priority, Reduce, Topology};
 use tensor::{DType, Shape};
 
-use crate::loss::ObjectiveConfig;
 use crate::optimizer::{Optimizer, Slot};
 use crate::pool::Bufs;
-use crate::{Data, Kernel, LoaderConfig};
+use crate::{Data, Kernel};
 use storage::{GradAccum, Ties};
 
+pub use crate::config::{Anneal, Schedule, TrainConfig, TrainOverrides, TrainSpec};
 pub use shard::{Local, Remote};
 #[path = "checkpoint.rs"]
 mod checkpoint;
@@ -35,24 +34,17 @@ pub struct ParamSlot {
 }
 
 impl ParamSlot {
-    /// 参数对应的图变量。
-    pub fn var(&self) -> Var {
-        self.var
+    getters! {
+        /// 参数对应的图变量。
+        var => var: Var,
+        /// 参数角色：分组与衰减豁免的派生依据。
+        role => role: ParamRole,
+        /// 矩阵形状 `(rows, cols)`：二阶张量给出形状，否则 `None`。
+        matrix => matrix: Option<(usize, usize)>,
     }
-
-    /// 参数角色：分组与衰减豁免的派生依据。
-    pub fn role(&self) -> ParamRole {
-        self.role
-    }
-
-    /// 矩阵形状 `(rows, cols)`：登记形状是二阶张量时给出，否则 `None`。
-    pub fn matrix(&self) -> Option<(usize, usize)> {
-        self.matrix
-    }
-
-    /// 当前参数值（只读）。
-    pub fn params(&self) -> &[f32] {
-        &self.params
+    ref_getters! {
+        /// 当前参数值（只读）。
+        params => params: &[f32],
     }
 
     /// 当前参数值（可变视图由优化器步进借用）。
@@ -139,14 +131,13 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
         })
     }
 
-    /// 分布式编排（只读）。
-    pub fn distributed(&self) -> &Distributed<C> {
-        &self.distributed
+    ref_getters! {
+        /// 分布式编排（只读）。
+        distributed => distributed: &Distributed<C>,
     }
-
-    /// 当前恢复配置指纹。
-    pub fn config_fingerprint(&self) -> u64 {
-        self.config_fingerprint
+    getters! {
+        /// 当前恢复配置指纹。
+        config_fingerprint => config_fingerprint: u64,
     }
 
     /// 绑定包含目标、批几何与采样的完整配置指纹。
@@ -362,19 +353,15 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
         Ok(loss)
     }
 
-    /// 已记录的 loss 序列（每步一条）。
-    pub fn losses(&self) -> &[f32] {
-        &self.losses
+    ref_getters! {
+        /// 已记录的 loss 序列（每步一条）。
+        losses => losses: &[f32],
+        /// 配置快照。
+        config => config: &TrainConfig,
     }
-
-    /// 当前步数。
-    pub fn step(&self) -> u64 {
-        self.step
-    }
-
-    /// 配置快照。
-    pub fn config(&self) -> &TrainConfig {
-        &self.config
+    getters! {
+        /// 当前步数。
+        step => step: u64,
     }
 
     /// 登记一批的几何：批次形状往返一致——`rows * cols` 必须等于 token 数。
@@ -487,10 +474,6 @@ fn matrix_of(shape: &Shape) -> Option<(usize, usize)> {
 #[path = "../tests/session_tests.rs"]
 mod tests;
 
-#[cfg(test)]
-#[path = "../tests/session/config.rs"]
-mod config_tests;
-
 // ---- 分布式训练编排：拓扑绑定 + 梯度同步后端，配置化挂到训练会话上 ----
 
 /// 分布式编排的诊断站点（站名保持 `"train::Distributed"`，与 [`SITE`] 区分）。
@@ -584,19 +567,13 @@ impl<E: Collective> Distributed<E> {
         self
     }
 
-    /// 并行策略只读投影。
-    pub fn policy(&self) -> ParallelConfig {
-        self.policy
-    }
-
-    /// 拓扑只读投影。
-    pub fn topology(&self) -> Topology {
-        self.topology
-    }
-
-    /// 本进程全局 rank。
-    pub fn rank(&self) -> u32 {
-        self.rank
+    getters! {
+        /// 并行策略只读投影。
+        policy => policy: ParallelConfig,
+        /// 拓扑只读投影。
+        topology => topology: Topology,
+        /// 本进程全局 rank。
+        rank => rank: u32,
     }
 
     /// 数据并行组：同一份权重、不同微批的进程集合；单进程退化成 `[0]`。
