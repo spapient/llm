@@ -3,7 +3,7 @@
 //! 字符串断言只能证明发射器写了哪些字；这里把源码交给 `cc` 编译、运行，再按 IEEE-754
 //! 位模式比较，覆盖 ±0、次正规数、无穷、NaN、溢出与长度守卫。归约还额外锁住累加顺序。
 
-use crate::kernel::{Access, Arith, Expr, Kernel, Parameter, ScalarType, UnaryOp, ValueType};
+use crate::kernel::{Access, Arith, Expr, Kernel, Parameter, ScalarType, UnaryFn, ValueType};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::PathBuf;
@@ -105,7 +105,7 @@ fn clipped() -> Kernel {
         Expr::Max {
             left: Box::new(Expr::Min {
                 left: Box::new(Expr::Unary {
-                    op: UnaryOp::Abs,
+                    op: UnaryFn::Abs,
                     child: Box::new(load("a")),
                 }),
                 right: Box::new(Expr::F32(2.0f32.to_bits())),
@@ -357,11 +357,11 @@ fn abs_min_max_emitted_c_matches_rust_bit_for_bit() {
 fn bitwise_unary_ops_emitted_c_match_rust_bit_for_bit() {
     let input = adversarial();
     for op in [
-        UnaryOp::Abs,
-        UnaryOp::Ceil,
-        UnaryOp::Floor,
-        UnaryOp::Round,
-        UnaryOp::Trunc,
+        UnaryFn::Abs,
+        UnaryFn::Ceil,
+        UnaryFn::Floor,
+        UnaryFn::Round,
+        UnaryFn::Trunc,
     ] {
         let kernel = Kernel::map(
             "rounding",

@@ -95,6 +95,7 @@ pub mod emit;
 mod expr;
 pub mod fuse;
 pub mod harness;
+mod printer;
 pub mod kernel;
 mod lru;
 pub mod native;

@@ -179,7 +179,7 @@ testkit    → （叶    +dev: autograd, cutile, nn, prof, tensor, tools, train,
 | `ReduceScalar` / `ParallelConfig` / `Priority` | `shard` | 集合通信元素档约束（加法/乘法/偏序/中立元，浮点极值传播 NaN）；并行策略纯数据（TP/PP/DP 度数、归约种类、平均开关、调度优先级），由 `Distributed` 装配；只持部署形态，不读 toml、不发起通信。约束自包含在 shard，不反向依赖 `tensor` 元素层级 |
 | `Plan` | `shard` | 并行计划视图：由拓扑与本 rank 派生 TP/PP/DP 三轴下标、各维通信组与 PP 流水层段；只读数据，不持缓冲、不发起通信，层段整除判据与 `Tiling` 同口径（摊余数构造期拒绝） |
 | `Job` / `Queue` | `shard` | 集合操作优先级排队：作业绑定调度优先级与泛型载荷，排空时按 `Priority` 序数稳定排序（同档保持入队先后）；只定批次内提交顺序，不引线程池、不改变任何归约数值 |
-| `Assembler` / `Placement` / `LinearGeo` | `shard` | 模型层并行归属：把 `nn` 层清单映射到本 rank 的 PP 段与 TP 分片几何；`Placement` 带泛型载荷（装配侧句柄原样带回），段外层不建分片计划，非分层参数各副本持有；只产归属几何与权重范围，不装载权重、不发通信 |
+| `Assembler` / `Placement` / `LinearGeo` | `shard` | 模型层并行归属：把 `nn` 层清单映射到本 rank 的 PP 段与 TP 分片几何；`Placement` 带泛型载荷（装配侧句柄原样带回），段外层不建分片计划，非分层参数各副本持有；可按几何取本 rank 本地子块（`Copy` 元素档泛型切片），但只产归属几何与本地子块，不装载进图、不发通信 |
 | `Snapshot` / `Format` / `Facts` | `storage`（`snapshot` 模块） | 检查点字节格式与恢复事实：字节只写相对上一条的差、尾部 CRC-32；`verify` 只验字节，`check_weights` 要求条目表与权重文件逐条相同。不依赖任何训练侧类型，写出同样的字节即可换掉实现 |
 | `Moments` / `SlotMoments` / `GradAccum` / `Ties` | `storage`（`snapshot` 模块） | 快照携带的优化器状态段：矩状态按槽位自持、累积梯度带计数、权重绑定表是 `(源槽, 回填槽)` 下标对；编解码与字节格式同源，训练侧只读写不重新定义 |
 | `Schedule` / `Anneal` / `Step` / `Session` / `TrainConfig` / `ParamSlot` / `Checkpoint` / `Distributed` | `train` | 训练循环状态：纯函数学习率调度与衰减曲线、一次会话复用同一张图 / 缓冲 / 优化器、参数槽与分布式装配（后端契约在 `shard`） |

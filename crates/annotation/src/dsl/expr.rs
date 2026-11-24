@@ -16,7 +16,7 @@ const ARITHMETIC: &str = "supported arithmetic is `+`, `-`, `*`, and `/`";
 
 /// 方法组合子的 IR 形状：一元落 `Expr::Unary`，二元落 `Min`/`Max`。
 enum MethodKind {
-    /// 一元算子，括号内是 [`cutile::kernel::UnaryOp`] 变体名。
+    /// 一元算子，括号内是 [`cutile::kernel::UnaryFn`] 变体名。
     Unary(&'static str),
     /// 二元逐点组合子，括号内是 `Expr` 变体名（`Min` / `Max`）。
     Binary(&'static str),
@@ -155,7 +155,7 @@ fn build_method(
             let op = Ident::new(op, method.method.span());
             Ok(quote! {
                 ::cutile::kernel::Expr::Unary {
-                    op: ::cutile::kernel::UnaryOp::#op,
+                    op: ::cutile::kernel::UnaryFn::#op,
                     child: Box::new(#receiver),
                 }
             })

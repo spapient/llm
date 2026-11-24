@@ -1,15 +1,15 @@
 use super::*;
-use nn::{Linear, Stack};
+use nn::{Embedding, Linear, Stack};
 
 use crate::{Plan, Sharding, Topology};
 
 /// 两层模型：块 0 的 Q/O、块 1 的 Q，外加一块无块号的嵌入参数。
 fn sample() -> Stack {
-    Stack::new(vec![
-        Linear::new("blk.0.q", 12, 24).expect("in=12, out=24"),
-        Linear::new("blk.0.o", 24, 12).expect("in=24, out=12"),
-        Linear::new("blk.1.q", 12, 24).expect("in=12, out=24"),
-        Linear::new("tok_embeddings", 12, 48).expect("嵌入表"),
+    Stack::of(vec![
+        Box::new(Linear::new("blk.0.q", 12, 24).expect("in=12, out=24")),
+        Box::new(Linear::new("blk.0.o", 24, 12).expect("in=24, out=12")),
+        Box::new(Linear::new("blk.1.q", 12, 24).expect("in=12, out=24")),
+        Box::new(Embedding::new("tok_embeddings", 48, 12, 1).expect("嵌入表")),
     ])
     .expect("层名唯一")
 }

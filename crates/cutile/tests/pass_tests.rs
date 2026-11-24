@@ -1,4 +1,4 @@
-use crate::kernel::{Access, Arith, Expr, Kernel, Parameter, ScalarType, UnaryOp, ValueType};
+use crate::kernel::{Access, Arith, Expr, Kernel, Parameter, ScalarType, UnaryFn, ValueType};
 use crate::pass::{EliminateDeadParams, Pass, Pipeline, normalize};
 
 fn literal(value: f32) -> Expr {
@@ -56,42 +56,42 @@ fn laws_normalize_bottom_up() {
         (Expr::Neg(Box::new(literal(2.0))), literal(-2.0)),
         (
             Expr::Unary {
-                op: UnaryOp::Abs,
+                op: UnaryFn::Abs,
                 child: Box::new(literal(-2.5)),
             },
             literal(2.5),
         ),
         (
             Expr::Unary {
-                op: UnaryOp::Sqrt,
+                op: UnaryFn::Sqrt,
                 child: Box::new(literal(4.0)),
             },
             literal(2.0),
         ),
         (
             Expr::Unary {
-                op: UnaryOp::Ceil,
+                op: UnaryFn::Ceil,
                 child: Box::new(literal(1.2)),
             },
             literal(2.0),
         ),
         (
             Expr::Unary {
-                op: UnaryOp::Floor,
+                op: UnaryFn::Floor,
                 child: Box::new(literal(1.7)),
             },
             literal(1.0),
         ),
         (
             Expr::Unary {
-                op: UnaryOp::Round,
+                op: UnaryFn::Round,
                 child: Box::new(literal(1.5)),
             },
             literal(2.0),
         ),
         (
             Expr::Unary {
-                op: UnaryOp::Trunc,
+                op: UnaryFn::Trunc,
                 child: Box::new(literal(1.9)),
             },
             literal(1.0),
