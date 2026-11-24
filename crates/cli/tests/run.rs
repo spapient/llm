@@ -5,7 +5,7 @@ use super::*;
 fn ensure_backends() {
     use std::sync::OnceLock;
     static INSTALLED: OnceLock<()> = OnceLock::new();
-    INSTALLED.get_or_init(::device::backends::install);
+    INSTALLED.get_or_init(::shard::backends::install);
 }
 
 /// 写一份两层稠密权重（`[out, in]` 行主序），取值落在 2 的负幂网格上：乘积与累加在 f32
