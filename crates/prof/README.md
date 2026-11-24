@@ -34,7 +34,12 @@ crates/prof/
 │   ├── sch.rs             # 布局闭集与调度模板；layout 构造子内联在本文件
 │   ├── tpl.rs             # 模板词法（`{{…}}` 与 `@原语`）
 │   ├── text.rs            # 共享文本扫描：括号配对、顶层逗号切分、行号与诊断错误
-│   ├── einsum.rs          # 代价表达式与求和语义；子文件 axis/bits/cache/cost/expr/extents/formula/operand 挂在 src 根
+│   ├── einsum/           # 代价表达式与求和语义
+│   │   ├── mod.rs        #   公开面与文档口径
+│   │   ├── axis.rs       #   轴角色、flops 口径与轴长度表
+│   │   ├── expr.rs       #   显式 einsum 文法
+│   │   ├── formula.rs    #   操作数配对、流量推导与表达式缓存
+│   │   └── operand.rs    #   操作数、位宽闭集与代价分量
 │   ├── model.rs           # 语义模型：粒度、形状、样本、标量参考
 │   ├── sample.rs          # 确定性样本：rnd / dropout / init
 │   ├── operator.rs        # 算子契约与 `operator_here!` / `operator_via!` 注解宏
@@ -49,8 +54,15 @@ crates/prof/
 │   ├── need.rs            # 需求与供给的代数：`Need` / `Provide` / `Attr` 与协商口径
 │   ├── annotate.rs        # 闭集枚举宏 `closed_enum!`（变体 / 名字表 / Display / parse 同表展开）
 │   ├── device.rs          # 设备行 + 片段层：Device / Image / Status、Fragment / FragmentSet / Layout / load
-│   ├── native.rs          # 主机微内核岛；子文件 gemm8x8/i8/sme 挂在 src 根，公开路径仍是 `prof::native::*`
-│   ├── runtime.rs         # 设备运行时后端岛；子文件 exec/metal 挂在 src 根，公开路径仍是 `prof::runtime::*`
+│   ├── native/           # 主机微内核岛：公共几何、暂存面板与三条 CPU 通道
+│   │   ├── mod.rs
+│   │   ├── gemm8x8.rs
+│   │   ├── i8.rs
+│   │   └── sme.rs
+│   ├── runtime/          # 设备运行时后端岛：队列、缓冲、管线与执行器
+│   │   ├── mod.rs
+│   │   ├── exec.rs
+│   │   └── metal.rs
 │   ├── sign.rs            # 片段签名行 `/* cutile-sign: <prim>/<impl> */`（ADR 0027 §5；构建期与本层共用）
 │   ├── lib.rs             # 公开面：模块声明 + 生成表的出口（运行期不解析 TOML、不读目录）
 │   ├── buildtables.rs     # 构建期：片段 → FRAGMENTS / PRIMS / EPILOGUE / DEVICE

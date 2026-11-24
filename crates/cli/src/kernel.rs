@@ -42,7 +42,7 @@ pub const DEFAULT_PROFILE: &str = "cpu";
 
 /// 内核层审计命令。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum CutileCommand<'a> {
+pub enum CutileCommand<'a> {
     /// 打印整条流水线的每一步。
     Doctor {
         /// 算子名。
