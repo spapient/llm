@@ -119,7 +119,7 @@ proc-macro 或分布式梯度。公开类型名保持不变（所有权表 18 �
 | 概念归并 | 2,030 | −15 | 8 | −1 | 1,900 | −9 | 7 | −1 | 0 | `segment` 续体并入 `facts`；`account` 用例并入 `schedule`；剪除 `Schedule` 只写不读的 `vars` 字段 | 归并后 rustfmt/clippy 0 告警 |
 | 注解与配置 | 2,109 | +79 | 8 | 0 | 1,917 | +17 | 7 | 0 | 0 | 查询/判定/计数访问器补 `#[must_use]`；`Config` 补 `with_ordering` / `with_policy` 构造器及对应用例；66 lib + 3 gradcheck + 2 doc 全绿 | 收尾一次跑 |
 | 编译期与单趟 | 2,112 | +3 | 8 | 0 | 1,917 | 0 | 7 | 0 | 0 | `Facts::new` 三趟变量扫描收一趟（`node` 查找一次、候选表预留容量）；两个 `impl Facts` 合并为一块；枚举纯匹配访问器收 `const fn` | check / clippy `-D warnings` / 66 lib + 3 gradcheck + 2 doc / fmt / jscpd 0 全绿 |
-| 站点订正 | 2,123 | +11 | 8 | 0 | 1,925 | +8 | 7 | 0 | 0 | 诊断站点随调用口透传：`record` / `record_with` / `validate` / `plan_with` 各标自身站点，不再借 `record_with` 之名；tests 行数对账到实测 1,925 | 收尾一次跑 |
+| 站点订正 | 2,123 | +11 | 8 | 0 | 1,925 | +8 | 7 | 0 | 0 | 诊断站点随调用口透传：`record` / `record_with` / `validate` / `plan_with` 各标自身站点，不再借 `record_with` 之名；tests 行数对账到实测 1,925 | check（autograd+train/testkit/benchmarks）/ clippy `-D warnings` / 66 lib + 3 gradcheck + 2 doc / fmt / jscpd 0 全绿；train backprop 50 + lib 235、testkit 100 全绿；静态门无 autograd 条目 |
 
 > 本 crate 归并前已 jscpd 0 克隆、静态门全绿，压缩空间在文件归并与死字段，不在逐行删码；强制砍行
 > 会触碰 N3 内聚与反模式 #2，故本轮以"同一概念一处存放"为准，不做行数换结构。
