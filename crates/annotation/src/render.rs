@@ -403,18 +403,11 @@ fn variant_path(table: &'static [(&str, &str)], prefix: &str, short: &str) -> St
 
 /// 表达式结果取 code；错误分支不可达（同上），退空串占位。
 fn expression(result: Result<String, String>) -> String {
-    match result {
-        Ok(code) => code,
-        Err(_) => String::new(),
-    }
+    result.unwrap_or_default()
 }
 
 /// 一组短名逐项查表；返回第一条未映射的错误文案。
-fn list_error(
-    table: &'static [(&str, &str)],
-    kind: &str,
-    names: &[String],
-) -> Result<(), String> {
+fn list_error(table: &'static [(&str, &str)], kind: &str, names: &[String]) -> Result<(), String> {
     names
         .iter()
         .find_map(|name| match lookup(table, name) {
@@ -691,11 +684,7 @@ fn schedule_parameterized(text: &str) -> Result<String, String> {
 }
 
 /// 调度形状闭集：`pipe` / `ws` / `pingpong` 三族及各自参数个数。
-fn schedule_shape(
-    text: &str,
-    name: &str,
-    numbers: &[u32],
-) -> Result<String, String> {
+fn schedule_shape(text: &str, name: &str, numbers: &[u32]) -> Result<String, String> {
     match (name, numbers) {
         ("pipe", [stages]) => Ok(format!(
             "::llm_prof::sch::Schedule::Pipe {{ stages: {stages} }}"
@@ -752,12 +741,9 @@ fn pad_layout(text: &str) -> Result<String, String> {
 
 /// 拆 `name<args>`：返回名字与尖括号内参数串。
 fn split_args(text: &str) -> Option<(&str, String)> {
-    let open = text.find('<')?;
-    let close = text.rfind('>')?;
-    if open >= close {
-        return None;
-    }
-    Some((text[..open].trim(), text[open + 1..close].to_string()))
+    let (name, rest) = text.split_once('<')?;
+    let args = rest.strip_suffix('>')?;
+    Some((name.trim(), args.to_string()))
 }
 
 /// 逗号分隔的无符号整数参数列表。

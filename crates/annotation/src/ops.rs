@@ -17,14 +17,25 @@ use crate::decl::{
 pub(crate) fn collect(ops_dir: &Path) -> Result<Vec<OpModel>, String> {
     let mut entries: Vec<OpModel> = Vec::new();
     for path in toml_files(ops_dir)? {
-        let file_stem = path_stem(&path)?;
-        let resolved = resolve(ops_dir, read_table(&path)?)?;
-        for (name, table) in expand_tiers(&file_stem, &resolved)? {
-            entries.push(parse_model(&name, &table)?);
-        }
+        collect_file(ops_dir, &path, &mut entries)?;
     }
     entries.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(entries)
+}
+
+/// 单份档案：继承合并后按档展开，逐档收进结果。
+fn collect_file(dir: &Path, path: &Path, entries: &mut Vec<OpModel>) -> Result<(), String> {
+    let file_stem = path_stem(path)?;
+    let resolved = resolve(dir, read_table(path)?)?;
+    push_tiers(&file_stem, &resolved, entries)
+}
+
+/// 把一份档案展开出的各档算子压入结果。
+fn push_tiers(file_stem: &str, resolved: &Table, entries: &mut Vec<OpModel>) -> Result<(), String> {
+    for (name, table) in expand_tiers(file_stem, resolved)? {
+        entries.push(parse_model(&name, &table)?);
+    }
+    Ok(())
 }
 
 /// 目录下全部 `.toml` 文件，按文件名升序（与生成序一致）。
@@ -84,44 +95,78 @@ fn merge(mut base: Table, over: Table) -> Table {
 
 /// 按 `[op].tiers` 把一份算法档案展开成逐档算子；无 `tiers` 时原样返回单条（名 = 文件名）。
 fn expand_tiers(file_stem: &str, table: &Table) -> Result<Vec<(String, Table)>, String> {
-    let tiers = op_section(table)?.get("tiers").and_then(Value::as_array);
-    let Some(tiers) = tiers else {
+    let Some(tiers) = op_section(table)?.get("tiers").and_then(Value::as_array) else {
         return Ok(vec![(file_stem.to_string(), table.clone())]);
     };
+    let algo = algo_name(table, file_stem)?;
+    expand_collect(&algo, table, tiers)
+}
+
+/// 逐档克隆档案、替换精度并压入结果。
+fn expand_collect(
+    algo: &str,
+    table: &Table,
+    tiers: &[Value],
+) -> Result<Vec<(String, Table)>, String> {
+    let mut out = Vec::new();
+    for tier in tiers {
+        push_tier(&mut out, tier, algo, table)?;
+    }
+    Ok(out)
+}
+
+/// 算法名：取 `op.name` 末段档名之前的前缀；缺省回退文件名。
+fn algo_name(table: &Table, file_stem: &str) -> Result<String, String> {
     let algo = op_section(table)?
         .get("name")
         .and_then(Value::as_str)
         .unwrap_or(file_stem);
-    let algo = algo.rsplit_once('_').map_or(algo, |(head, _)| head);
-    let mut out = Vec::new();
-    for tier in tiers {
-        let tier = tier
-            .as_str()
-            .ok_or_else(|| "`tiers` 元素必须是字符串档名".to_string())?;
-        let mut expanded = table.clone();
-        substitute_dt(&mut expanded, tier);
-        if let Some(op) = expanded.get_mut("op").and_then(Value::as_table_mut) {
-            op.remove("tiers");
-            op.insert("name".into(), Value::String(format!("{algo}_{tier}")));
-        }
-        out.push((format!("{algo}_{tier}"), expanded));
+    Ok(algo
+        .rsplit_once('_')
+        .map_or(algo.to_string(), |(head, _)| head.to_string()))
+}
+
+/// 单档：克隆档案、替换 `dt` 精度、剥掉 `tiers` 并改名为 `<算法>_<档>`。
+fn push_tier(
+    out: &mut Vec<(String, Table)>,
+    tier: &Value,
+    algo: &str,
+    table: &Table,
+) -> Result<(), String> {
+    let tier = tier
+        .as_str()
+        .ok_or_else(|| "`tiers` 元素必须是字符串档名".to_string())?;
+    let mut expanded = table.clone();
+    substitute_dt(&mut expanded, tier);
+    if let Some(op) = expanded.get_mut("op").and_then(Value::as_table_mut) {
+        op.remove("tiers");
+        op.insert("name".into(), Value::String(format!("{algo}_{tier}")));
     }
-    Ok(out)
+    out.push((format!("{algo}_{tier}"), expanded));
+    Ok(())
 }
 
 /// 递归把所有 `dt` 数组里的精度 token 替换为本档。
 fn substitute_dt(table: &mut Table, tier: &str) {
     for (key, value) in table.iter_mut() {
-        match value {
-            Value::Table(inner) => substitute_dt(inner, tier),
-            Value::Array(arr) if key == "dt" => {
-                for item in arr.iter_mut() {
-                    if item.as_str().is_some() {
-                        *item = Value::String(tier.to_string());
-                    }
-                }
-            }
-            _ => {}
+        apply_substitution(key, value, tier);
+    }
+}
+
+/// 按值类型分流：子表递归，`dt` 数组逐项替换，其余不动。
+fn apply_substitution(key: &str, value: &mut Value, tier: &str) {
+    match value {
+        Value::Table(inner) => substitute_dt(inner, tier),
+        Value::Array(arr) if key == "dt" => substitute_dt_array(arr, tier),
+        _ => {}
+    }
+}
+
+/// `dt` 数组：字符串精度项换成本档，其余形态保留。
+fn substitute_dt_array(arr: &mut [Value], tier: &str) {
+    for item in arr.iter_mut() {
+        if item.as_str().is_some() {
+            *item = Value::String(tier.to_string());
         }
     }
 }
@@ -130,6 +175,28 @@ fn substitute_dt(table: &mut Table, tier: &str) {
 
 /// 一份档案解析成算子模型；模板正文占位由 #46 接 `TEMPLATES` 表按名配对。
 fn parse_model(name: &str, table: &Table) -> Result<OpModel, String> {
+    let (skeleton, summary) = header_of(table, name)?;
+    let (axes, needs) = parse_axes_needs(table)?;
+    let (layouts, grid, chunk, consts) = parse_layout_geometry(table)?;
+    let (variants, phases) = parse_tail(name, table)?;
+    Ok(OpModel {
+        name: name.to_string(),
+        skeleton,
+        summary,
+        axes,
+        needs,
+        layouts,
+        grid,
+        chunk,
+        consts,
+        variants,
+        template: String::new(),
+        phases,
+    })
+}
+
+/// `[op]` 段内骨架与摘要两个标量字段。
+fn header_of(table: &Table, name: &str) -> Result<(String, String), String> {
     let op = op_section(table)?;
     let skeleton = op
         .get("skeleton")
@@ -141,21 +208,38 @@ fn parse_model(name: &str, table: &Table) -> Result<OpModel, String> {
         .and_then(Value::as_str)
         .unwrap_or("-")
         .to_string();
-    let model = OpModel {
-        name: name.to_string(),
-        skeleton,
-        summary,
-        axes: parse_axes(table)?,
-        needs: parse_needs(table)?,
-        layouts: parse_layouts(table)?,
-        grid: parse_grid(table)?,
-        chunk: parse_chunk(table)?,
-        consts: parse_consts(table)?,
-        variants: parse_variants(name, table)?,
-        template: String::new(),
-        phases: parse_phases(name, table)?,
-    };
-    Ok(model)
+    Ok((skeleton, summary))
+}
+
+/// 轴与需求两组能力签名。
+fn parse_axes_needs(table: &Table) -> Result<(Vec<AxisModel>, Vec<NeedModel>), String> {
+    let axes = parse_axes(table)?;
+    let needs = parse_needs(table)?;
+    Ok((axes, needs))
+}
+
+/// 布局 / 网格 / 分块 / 常量四类几何字段的解码结果。
+type Geometry = (
+    Vec<(String, String)>,
+    Option<GridModel>,
+    Option<ChunkModel>,
+    Vec<(String, String)>,
+);
+
+/// 布局 / 网格 / 分块 / 常量四类几何字段。
+fn parse_layout_geometry(table: &Table) -> Result<Geometry, String> {
+    let layouts = parse_layouts(table)?;
+    let grid = parse_grid(table)?;
+    let chunk = parse_chunk(table)?;
+    let consts = parse_consts(table)?;
+    Ok((layouts, grid, chunk, consts))
+}
+
+/// 降级链与阶段列表。
+fn parse_tail(name: &str, table: &Table) -> Result<(Vec<VariantModel>, Vec<PhaseModel>), String> {
+    let variants = parse_variants(name, table)?;
+    let phases = parse_phases(name, table)?;
+    Ok((variants, phases))
 }
 
 /// `[op]` 段；缺失时报带算子名的说明。
@@ -173,25 +257,31 @@ fn parse_axes(table: &Table) -> Result<Vec<AxisModel>, String> {
     };
     section
         .iter()
-        .map(|(key, value)| {
-            let items = value
-                .as_array()
-                .ok_or_else(|| format!("`axes.{key}` 必须是数组"))?;
-            let values = items
-                .iter()
-                .map(|item| {
-                    item.as_integer()
-                        .and_then(|number| u32::try_from(number).ok())
-                        .filter(|number| *number > 0)
-                        .ok_or_else(|| format!("`axes.{key}` 每个取值必须是正整数"))
-                })
-                .collect::<Result<Vec<u32>, String>>()?;
-            Ok(AxisModel {
-                name: key.clone(),
-                values,
-            })
-        })
+        .map(|(key, value)| parse_axis(key, value))
         .collect()
+}
+
+/// 单条轴：数组里逐项解析正整数。
+fn parse_axis(key: &str, value: &Value) -> Result<AxisModel, String> {
+    let items = value
+        .as_array()
+        .ok_or_else(|| format!("`axes.{key}` 必须是数组"))?;
+    let values = items
+        .iter()
+        .map(parse_axis_value)
+        .collect::<Result<Vec<u32>, String>>()?;
+    Ok(AxisModel {
+        name: key.to_string(),
+        values,
+    })
+}
+
+/// 单个轴取值：正整数。
+fn parse_axis_value(item: &Value) -> Result<u32, String> {
+    item.as_integer()
+        .and_then(|number| u32::try_from(number).ok())
+        .filter(|number| *number > 0)
+        .ok_or_else(|| "`axes` 每个取值必须是正整数".to_string())
 }
 
 /// `[needs]`：算子级公共需求，每条一个原语的能力签名。
@@ -220,19 +310,61 @@ fn parse_need(prim: &str, detail: &Value) -> Result<NeedModel, String> {
         attrs: Vec::new(),
     };
     for (name, value) in table {
-        match name.as_str() {
-            "m" | "bytes" | "extent" => need.extent = parse_span(value)?,
-            "n" => need.n = parse_span(value)?,
-            "k" => need.k = parse_span(value)?,
-            "dt" => need.dt = names(value)?,
-            "space" => need.space = names(value)?,
-            _ => need.attrs.push(AttrModel {
-                key: name.clone(),
-                values: names(value)?,
-            }),
-        }
+        apply_field(&mut need, name, value)?;
     }
     Ok(need)
+}
+
+/// 字段分流：区间维度 → 槽位，集合键 → 列表，其余进属性。
+fn apply_field(need: &mut NeedModel, name: &str, value: &Value) -> Result<(), String> {
+    if is_span_key(name) {
+        return apply_span_field(need, name, value);
+    }
+    if is_list_key(name) {
+        return apply_list_field(need, name, value);
+    }
+    apply_attr(need, name, value)
+}
+
+/// 维度键是否挂区间槽位。
+fn is_span_key(name: &str) -> bool {
+    matches!(name, "m" | "bytes" | "extent" | "n" | "k")
+}
+
+/// 集合键是否挂字符串列表。
+fn is_list_key(name: &str) -> bool {
+    matches!(name, "dt" | "space")
+}
+
+/// 区间字段分派到对应槽位。
+fn apply_span_field(need: &mut NeedModel, name: &str, value: &Value) -> Result<(), String> {
+    let slot = match name {
+        "m" | "bytes" | "extent" => &mut need.extent,
+        "n" => &mut need.n,
+        "k" => &mut need.k,
+        _ => return Ok(()),
+    };
+    *slot = parse_span(value)?;
+    Ok(())
+}
+
+/// 集合字段分派到对应列表。
+fn apply_list_field(need: &mut NeedModel, name: &str, value: &Value) -> Result<(), String> {
+    match name {
+        "dt" => need.dt = names(value)?,
+        "space" => need.space = names(value)?,
+        _ => {}
+    }
+    Ok(())
+}
+
+/// 兜底进自由属性列表。
+fn apply_attr(need: &mut NeedModel, name: &str, value: &Value) -> Result<(), String> {
+    need.attrs.push(AttrModel {
+        key: name.to_string(),
+        values: names(value)?,
+    });
+    Ok(())
 }
 
 /// `[layouts]`：槽位名 → 布局写法原文。
@@ -260,18 +392,33 @@ fn parse_grid(table: &Table) -> Result<Option<GridModel>, String> {
         .get("dims")
         .and_then(Value::as_array)
         .ok_or_else(|| "`grid.dims` 缺失".to_string())?;
+    let pairs = grid_pairs(dims)?;
+    Ok(Some(GridModel { dims: pairs }))
+}
+
+/// 逐条解析网格项。
+fn grid_pairs(dims: &[Value]) -> Result<Vec<(String, String)>, String> {
     let mut pairs = Vec::new();
     for item in dims {
-        let text = item
-            .as_str()
-            .ok_or_else(|| "`grid.dims` 元素必须是字符串".to_string())?;
-        let (thread, scalar) = text
-            .split_once(':')
-            .filter(|(thread, scalar)| !thread.is_empty() && !scalar.is_empty())
-            .ok_or_else(|| format!("`grid.dims` 项 `{text}` 必须是 `线程:标量`"))?;
-        pairs.push((thread.to_string(), scalar.to_string()));
+        pairs.push(parse_grid_pair(item)?);
     }
-    Ok(Some(GridModel { dims: pairs }))
+    Ok(pairs)
+}
+
+/// 单条网格项：`线程:标量`，两侧都不能为空。
+fn parse_grid_pair(item: &Value) -> Result<(String, String), String> {
+    let text = item
+        .as_str()
+        .ok_or_else(|| "`grid.dims` 元素必须是字符串".to_string())?;
+    let (thread, scalar) =
+        split_grid(text).ok_or_else(|| format!("`grid.dims` 项 `{text}` 必须是 `线程:标量`"))?;
+    Ok((thread.to_string(), scalar.to_string()))
+}
+
+/// 拆 `线程:标量`；任一侧为空则视为写法非法。
+fn split_grid(text: &str) -> Option<(&str, &str)> {
+    let (thread, scalar) = text.split_once(':')?;
+    (!thread.is_empty() && !scalar.is_empty()).then_some((thread, scalar))
 }
 
 /// `[chunk]`：分块并行块长；缺省返回 `None`。
@@ -307,39 +454,61 @@ fn parse_variants(name: &str, table: &Table) -> Result<Vec<VariantModel>, String
         return Ok(Vec::new());
     };
     rows.iter()
-        .map(|row| {
-            let row = row
-                .as_table()
-                .ok_or_else(|| format!("`{name}.variants` 元素必须是表"))?;
-            let variant = VariantModel {
-                name: row
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| format!("`{name}.variants.name` 缺失"))?
-                    .to_string(),
-                order: row
-                    .get("order")
-                    .and_then(Value::as_integer)
-                    .and_then(|number| u32::try_from(number).ok())
-                    .ok_or_else(|| format!("`{name}.variants.order` 缺失"))?,
-                schedule: row
-                    .get("schedule")
-                    .and_then(Value::as_str)
-                    .unwrap_or("direct")
-                    .to_string(),
-                mma_share: row
-                    .get("mma_share")
-                    .and_then(|value| {
-                        value
-                            .as_float()
-                            .or_else(|| value.as_integer().map(|number| number as f64))
-                    })
-                    .unwrap_or(0.0),
-                extra_needs: Vec::new(),
-            };
-            Ok(variant)
-        })
+        .map(|row| parse_variant_row(name, row))
         .collect()
+}
+
+/// 单条变体行解析。
+fn parse_variant_row(name: &str, row: &Value) -> Result<VariantModel, String> {
+    let row = row
+        .as_table()
+        .ok_or_else(|| format!("`{name}.variants` 元素必须是表"))?;
+    let vname = variant_name(name, row)?;
+    let order = variant_order(name, row)?;
+    let schedule = variant_schedule(row);
+    let mma_share = variant_share(row);
+    Ok(VariantModel {
+        name: vname,
+        order,
+        schedule,
+        mma_share,
+        extra_needs: Vec::new(),
+    })
+}
+
+/// 变体名；缺失时报带算子名的说明。
+fn variant_name(name: &str, row: &Table) -> Result<String, String> {
+    row.get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("`{name}.variants.name` 缺失"))
+        .map(str::to_string)
+}
+
+/// 变体顺序号：非负整数。
+fn variant_order(name: &str, row: &Table) -> Result<u32, String> {
+    row.get("order")
+        .and_then(Value::as_integer)
+        .and_then(|number| u32::try_from(number).ok())
+        .ok_or_else(|| format!("`{name}.variants.order` 缺失"))
+}
+
+/// 变体调度写法；缺省直连。
+fn variant_schedule(row: &Table) -> String {
+    row.get("schedule")
+        .and_then(Value::as_str)
+        .unwrap_or("direct")
+        .to_string()
+}
+
+/// `mma_share`：浮点优先，整数按浮点收；缺省 0。
+fn variant_share(row: &Table) -> f64 {
+    row.get("mma_share")
+        .and_then(|value| {
+            value
+                .as_float()
+                .or_else(|| value.as_integer().map(|number| number as f64))
+        })
+        .unwrap_or(0.0)
 }
 
 /// `[[phases]]`：显式数据流阶段；缺省空表，owned 化按签名派生单阶段。
@@ -347,23 +516,36 @@ fn parse_phases(name: &str, table: &Table) -> Result<Vec<PhaseModel>, String> {
     let Some(rows) = table.get("phases").and_then(Value::as_array) else {
         return Ok(Vec::new());
     };
-    rows.iter()
-        .map(|row| {
-            let row = row
-                .as_table()
-                .ok_or_else(|| format!("`{name}.phases` 元素必须是表"))?;
-            let phase = PhaseModel {
-                name: row
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| format!("`{name}.phases.name` 缺失"))?
-                    .to_string(),
-                reads: string_list(row.get("reads"))?,
-                writes: string_list(row.get("writes"))?,
-            };
-            Ok(phase)
-        })
-        .collect()
+    rows.iter().map(|row| parse_phase_row(name, row)).collect()
+}
+
+/// 单条阶段行解析。
+fn parse_phase_row(name: &str, row: &Value) -> Result<PhaseModel, String> {
+    let row = row
+        .as_table()
+        .ok_or_else(|| format!("`{name}.phases` 元素必须是表"))?;
+    let pname = phase_name(name, row)?;
+    let (reads, writes) = phase_slots(row)?;
+    Ok(PhaseModel {
+        name: pname,
+        reads,
+        writes,
+    })
+}
+
+/// 阶段名；缺失时报带算子名的说明。
+fn phase_name(name: &str, row: &Table) -> Result<String, String> {
+    row.get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("`{name}.phases.name` 缺失"))
+        .map(str::to_string)
+}
+
+/// 阶段读 / 写槽位名列表。
+fn phase_slots(row: &Table) -> Result<(Vec<String>, Vec<String>), String> {
+    let reads = string_list(row.get("reads"))?;
+    let writes = string_list(row.get("writes"))?;
+    Ok((reads, writes))
 }
 
 // ── 值解码 ─────────────────────────────────────────────────────────────────
@@ -418,15 +600,36 @@ fn parse_span(value: &Value) -> Result<SpanModel, String> {
     let text = value
         .as_str()
         .ok_or_else(|| "区间必须是字符串（`16`、`16..64`、`<=512`）".to_string())?;
-    let text = text.trim();
+    span_from_text(text.trim())
+}
+
+/// 区间文本分派：上界前缀优先，其余按 `..` 切分。
+fn span_from_text(text: &str) -> Result<SpanModel, String> {
     if let Some(rest) = text.strip_prefix("<=") {
         return Ok(SpanModel::AtMost(parse_u32(rest)?));
     }
+    span_range(text)
+}
+
+/// 含 `..` 的区间：无上界为 AtLeast，两侧齐全为 Range，否则按精确值。
+fn span_range(text: &str) -> Result<SpanModel, String> {
     match text.split_once("..") {
-        Some((lo, hi)) if hi.trim().is_empty() => Ok(SpanModel::AtLeast(parse_u32(lo)?)),
-        Some((lo, hi)) => Ok(SpanModel::Range(parse_u32(lo)?, parse_u32(hi)?)),
+        Some((lo, hi)) => range_tail(lo, hi),
         None => Ok(SpanModel::Exact(parse_u32(text)?)),
     }
+}
+
+/// 已切出上下界：上界为空为 AtLeast，否则闭区间。
+fn range_tail(lo: &str, hi: &str) -> Result<SpanModel, String> {
+    if hi.trim().is_empty() {
+        return Ok(SpanModel::AtLeast(parse_u32(lo)?));
+    }
+    span_range_pair(lo, hi)
+}
+
+/// 闭区间两段各自解析。
+fn span_range_pair(lo: &str, hi: &str) -> Result<SpanModel, String> {
+    Ok(SpanModel::Range(parse_u32(lo)?, parse_u32(hi)?))
 }
 
 /// 一个非负十进制整数。
