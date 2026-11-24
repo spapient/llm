@@ -153,7 +153,7 @@ fn copy_dir(from: &Path, to: &Path) {
 #[test]
 fn a_declaration_name_must_match_its_file_name() {
     let source = prof::catalogue::named("add_f32").expect("内置");
-    let op = Op::new("renamed", source.declaration(), source.template());
+    let op = Op::new("renamed", source.view(), source.template());
     let profiles = Catalogue::try_builtin()
         .expect("内置数据")
         .profiles

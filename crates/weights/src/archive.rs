@@ -7,10 +7,10 @@ use crate::bad;
 use diagnostic::Result;
 
 use crate::Codec;
-use storage::leb::u32_at;
 use crate::proof::{Digest, Proof};
 use crate::seg::{FOOTER_LEN, Stored, fixed, layout, lossless_entry, read_descs};
 use crate::writer::{GLOBAL_CRC, SEG_CRC};
+use storage::leb::u32_at;
 
 /// 内存容器：绑定在输入字节上，不复制数据。
 #[derive(Debug)]

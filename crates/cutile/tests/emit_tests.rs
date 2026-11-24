@@ -24,8 +24,10 @@ fn fnv_is_stable_and_distinguishes_inputs() {
 #[test]
 fn assemble_puts_provenance_in_the_header() {
     let profile = Profile::parse(prof::embedded("cpu").expect("cpu 档案")).expect("档案");
-    let declaration = &prof::catalogue::named("gemv_i4").expect("内置");
-    let op = OpDecl::parse(declaration.declaration(), declaration.template()).expect("声明");
+    let op = prof::catalogue::named("gemv_i4")
+        .expect("内置")
+        .to_decl()
+        .expect("声明");
     let variant = &op.variants[0];
     let combo = crate::decl::expand(&op).expect("展开").remove(0);
     let source = assemble(&profile, &op, variant, &combo, "int x;\n");

@@ -398,6 +398,18 @@ Rust 官方与微软训练材料的一致口径：
 - **门禁处置**：`into_decl` 初版 Ccn=6 超 `ccn_max=5`，按口径（`?`/`if`/`match`/`&&/||` 各 +1，闭包内条件归属外层）把阶段构造拆成 `declare_phases`（空视图派生单阶段）+ `view_phase`（单阶段槽位校验）两层辅助，父函数条件数降到阈值内；8 个新公开视图类型按门规进 `ARCHITECTURE.md` 第三节所有权表（不走 `unlisted` baseline）。收尾全门：`fmt --check` 干净、`clippy --workspace --all-targets -D warnings` 零告警、`nextest --workspace` 2844 passed / 17 skipped / 0 failed、doc-test 绿、tools gate 15 过、testkit 架构/所有权 100 过、name-lint 0 命中。
 - **未做（归后续批次）**：`OpView` 尚未接生产链（`declared.rs` OnceLock 树仍在）；闭集序号「名字→序号」O(1) 定位随批次 C 宏展开时由数组下标天然给出，prof 侧不另建索引结构；新公开视图类型的 ownership baseline 登记归批次 F 收尾。
 
+### 12.6.1 批次 C 落地记录（2026-11-24，算子链接线）
+
+- **路线（ADR 0022 重议条款）**：模板正文不进视图，`OpView` 不持 template；模板由调用方按算子名从既有 `TEMPLATES` const 表（`include_str!` + 档级内联，编译期 const 数组，非 OnceLock 树）配对传入。签名仍从模板解析（ABI 唯一事实源）；模板侧三条校验（槽位 / needs / 调用参数）保留在 prof owned 化与装载路径。
+- **接线落点**：`prof/src/lib.rs` 加 `extern crate self as llm_prof;` 自别名（宏产物硬编码全限定 `::llm_prof::…`，crate 内部展开无此外部 crate 名）；`ops_generated` 模块 `annotation::prof_ops!()` 展开 `pub const OPS: [OpView; N]`（按名升序，`#[allow(missing_docs)]`）。`catalogue.rs` 重写：`Op{ name, view: &'static OpView, template: &'static str }`，`named(name)` 走 `TEMPLATES` 二分得模板 + `OPS` 二分得视图，`all()` 按名配对；`Op::to_decl()` → `OpDecl::from_view(view, template)`（`into_decl` 后接 `verified`）。
+- **拆动态树**：删 `declared_generated` 模块 include 与 `pub use declared`；`buildops.rs` 精简为只产 `template_list.rs` + `templates_table.rs`（删 `emit_declared`/`tier_row`/`Entry.row`，`Generated.rows` 四元组改三元组，`declarations_of` 返回 `(String, String)`）；`build.rs` 主循环删 `declared.rs` 写盘。保留 buildops 内 resolve 继承合并、`stem_of` 校验、`expand_tiers` 档展开、`emit_templates` 档级 C 类型替换。
+- **宏修正**：`annotation/src/decl.rs` 删 `template: String`；`render.rs` 删 template 行，layouts/consts/grid dims 项包 `(…)` 元组括号，`mma_share` 渲染加 `f64` 后缀。
+- **生产消费点**：`cutile/src/builtin.rs` `assemble` 由 `OpDecl::parse(op.declaration(), op.template())` 改为 `op.to_decl()`。
+- **测试迁移**：prof `tests/decl.rs` 内置自洽/compose 用例改 `to_decl()`；cutile plan/emit/reference/builtin/cap 用例改 `to_decl`，轴顺序用例改直改 owned `op.axes[0].values`，`Op::new` 三参改 `(name, source.view(), source.template())`；shard `build_tests.rs` 篡改用例改 owned：`declared_bytes` 遍历 needs 改 `extent = Span::at_most(limit)`，`declared_swizzle` 遍历 layouts 改 `LayoutSpec::Swz{40,3,3}`，`builtin()` 改 `to_decl()`。
+- **停用用例（归 #47 按 owned 恢复）**：cutile `one_signature_written_in_either_layer_stays_the_same`（Table 解析器标量/数组、bytes/m 归一化同构）；prof `a_tile_overflow_names_the_axis_to_prune`、`an_attr_key_must_belong_to_its_primitive`（最小表过不了 `verified` 的 needs/槽位交叉校验）。旧"clone 内置 Table 篡改字段"手法在视图链下无桥接：静态镜像不含动态树，无法反解回 Table。
+- **实测**：`cargo check --workspace --all-targets` 全绿；`clippy -p llm-prof/-cutile/-llm-shard/-llm-nn/-llm-train --lib --all-targets` 零告警；`cargo fmt --check` 干净。测试：annotation 55 lib + 6 集成、prof 162 lib + 56 集成（1 doc ignored）、cutile 141 lib、nn 536 lib（4 ignored）、shard 161 lib、train 236 lib，全绿。
+- **未做（归后续批次）**：档案链 `ProfileView` 拆 `embedded.rs`（批次 D）；tools 链 `GateView` 拆 `vocabulary.rs` OnceLock<Table>（批次 E）；ingest Table 段解析器与 `buildgen::emit` 拆除、`diagnostic::data` 树依赖清零（批次 F）；三条停用用例按 owned 恢复；`buildops::declarations_of` 残留"declarations"命名待清理。
+
 ### 12.5 已知坑
 
 - stable proc-macro 无 `tracked_path`：宏读的 TOML 改动不自动重编；兜底用源内 `include_str!` 纳入 cargo 跟踪，或保留极薄 build.rs 只发 `rerun-if-changed`（不产代码）。

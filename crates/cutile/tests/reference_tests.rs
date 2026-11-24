@@ -56,9 +56,7 @@ fn every_accepted_fusion_is_either_testable_or_named_unrealizable() {
     let sources = prof::catalogue::all();
     let decls: Vec<crate::decl::OpDecl> = sources
         .iter()
-        .map(|source| {
-            crate::decl::OpDecl::parse(source.declaration(), source.template()).expect("声明自洽")
-        })
+        .map(|source| source.to_decl().expect("声明自洽"))
         .collect();
     let models: Vec<(&str, Model)> = sources
         .iter()
@@ -139,8 +137,10 @@ fn every_accepted_fusion_is_either_testable_or_named_unrealizable() {
 
 /// 建一条真实的声明：内置算子的 TOML + 模板，过一遍拼装期校验。
 fn declared(name: &str) -> crate::decl::OpDecl {
-    let source = prof::catalogue::named(name).expect("内置算子");
-    crate::decl::OpDecl::parse(source.declaration(), source.template()).expect("声明自洽")
+    prof::catalogue::named(name)
+        .expect("内置算子")
+        .to_decl()
+        .expect("声明自洽")
 }
 
 #[test]

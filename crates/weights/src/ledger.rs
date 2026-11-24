@@ -7,6 +7,144 @@ use storage::sink::Sink;
 
 use crate::svd;
 
+// —— 闭集枚举的单一生成点（原 closed 平铺进 ledger）：`#[repr(u8)]` 判别值与 from_code 同出一表 ——
+// 线上码位稳定是容器格式的一部分，因此每个变体的码位只写一次——枚举本身与它的
+// 反向解析不再各维护一份 `match`，未知码统一显式拒绝、不静默回退。带短名的枚举
+// 还把账本/文本里的字符串写法一并生成，短名与码位同源、不会漂移。
+
+/// 生成一个带稳定判别值的闭集枚举，以及它的 `from_code`；带 `=> "短名"` 时再生成 `as_str`。
+///
+/// 每个变体带 `= 码位`；`from_code` 按判别值反向解析，未知码返回 [`crate::bad`] 的
+/// `Invalid` 错误。变体上的文档注释原样保留。
+macro_rules! closed_enum {
+    // 带短名：枚举 + from_code + as_str。
+    (
+        $(#[$meta:meta])*
+        $vis:vis enum $name:ident {
+            $(
+                $(#[$variant_meta:meta])*
+                $variant:ident = $code:literal => $sname:literal,
+            )+
+        }
+    ) => {
+        closed_enum!(@str_only
+            $(#[$meta])*
+            $vis enum $name {
+                $( $(#[$variant_meta])* $variant = $code, )+
+            }
+            { $( $variant => $sname, )+ }
+        );
+        closed_enum!(@from_code $name { $( $code => $variant, )+ });
+    };
+
+    // 无短名：只有枚举与 from_code。
+    (
+        $(#[$meta:meta])*
+        $vis:vis enum $name:ident {
+            $(
+                $(#[$variant_meta:meta])*
+                $variant:ident = $code:literal,
+            )+
+        }
+    ) => {
+        closed_enum!(@def
+            $(#[$meta])*
+            $vis enum $name {
+                $( $(#[$variant_meta])* $variant = $code, )+
+            }
+        );
+        closed_enum!(@from_code $name { $( $code => $variant, )+ });
+    };
+
+    // —— 内部臂：枚举定义 / 反向解析 / 字符串写法，各只写一份 ——
+    (
+        @def
+        $(#[$meta:meta])*
+        $vis:vis enum $name:ident {
+            $( $(#[$variant_meta:meta])* $variant:ident = $code:literal, )+
+        }
+    ) => {
+        $(#[$meta])*
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        #[repr(u8)]
+        $vis enum $name {
+            $( $(#[$variant_meta])* $variant = $code, )+
+        }
+    };
+
+    (
+        @from_code
+        $name:ident {
+            $( $code:literal => $variant:ident, )+
+        }
+    ) => {
+        impl $name {
+            /// 从码位解析；未知码显式报错，不静默回退。
+            pub(crate) fn from_code(code: u8) -> diagnostic::Result<Self> {
+                match code {
+                    $( $code => Ok(Self::$variant), )+
+                    other => Err(crate::bad(format!(
+                        "未知 {} 码 {other}",
+                        stringify!($name)
+                    ))),
+                }
+            }
+        }
+    };
+
+    (
+        @as_str
+        $name:ident {
+            $( $variant:ident => $sname:literal, )+
+        }
+    ) => {
+        impl $name {
+            /// 账本/线上的字符串写法（闭集，码位稳定）。
+            #[must_use]
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $( Self::$variant => $sname, )+
+                }
+            }
+        }
+    };
+
+    // —— 内部臂：只带短名（枚举定义 + as_str），不带 from_code；供外层两个臂共用 ——
+    (
+        @str_only
+        $(#[$meta:meta])*
+        $vis:vis enum $name:ident {
+            $( $(#[$variant_meta:meta])* $variant:ident = $code:literal, )+
+        }
+        { $( $vs:ident => $sname:literal, )+ }
+    ) => {
+        closed_enum!(@def
+            $(#[$meta])*
+            $vis enum $name {
+                $( $(#[$variant_meta])* $variant = $code, )+
+            }
+        );
+        closed_enum!(@as_str $name { $( $vs => $sname, )+ });
+    };
+
+    // 只带短名：没有线上数值码的反向解析，只有枚举定义与 `as_str`；调用首 token 写 `@named`。
+    (
+        @named
+        $(#[$nm:meta])*
+        $v:vis enum $e:ident {
+            $( $(#[$vm:meta])* $var:ident = $c:literal => $sn:literal, )+
+        }
+    ) => {
+        closed_enum!(@str_only
+            $(#[$nm])*
+            $v enum $e {
+                $( $(#[$vm])* $var = $c, )+
+            }
+            { $( $var => $sn, )+ }
+        );
+    };
+}
+
 /// 账本 schema 标识。
 pub const SCHEMA: &str = "llm.cert.v1";
 
@@ -84,26 +222,6 @@ pub struct Certified {
     pub note: Note,
 }
 
-/// `left · right` 的 `m×n` 重构，行主序 `f64`。
-pub(crate) fn factor_low(
-    left: &[f64],
-    right: &[f64],
-    (m, n): (usize, usize),
-    rank: usize,
-) -> Vec<f64> {
-    let mut out = vec![0.0f64; m * n];
-    for i in 0..m {
-        for c in 0..n {
-            let mut sum = 0.0;
-            for j in 0..rank {
-                sum += left[i * rank + j] * right[j * n + c];
-            }
-            out[i * n + c] = sum;
-        }
-    }
-    out
-}
-
 /// 可判秩域内的最大秩：`σ_r − σ_{r+1} > 2ε` 的最后一点。
 pub(crate) fn certified_rank(sigma: &[f64], eps: f64) -> Option<usize> {
     (1..sigma.len())
@@ -152,14 +270,13 @@ pub fn certify(w: &[f32], m: usize, n: usize) -> Result<Option<Certified>> {
 
 /// 一次 f64 分解加秩判定：`k = min(m,n) >= 2` 由 [`certify`] 保证。
 fn decompose(w: &[f32], m: usize, n: usize, k: usize) -> Result<Option<Certified>> {
-    let a: Vec<f64> = w.iter().map(|&x| x as f64).collect();
-    let d = svd::compute_svd(&a, m, n)?;
+    let s = svd::Spectral::open(w, m, n)?;
     // ε 只有算法项：后验残差是本次分解的实测值，不是机器精度的估计。
-    let eps = residual(&a, &d.reconstruct(k));
-    let Some(rank) = certified_rank(&d.sigma, eps) else {
+    let eps = svd::residual(&s.a, &s.svd.reconstruct(k));
+    let Some(rank) = certified_rank(&s.svd.sigma, eps) else {
         return Ok(None);
     };
-    assemble(w, &d, (m, n), rank, eps).map(Some)
+    assemble(w, &s.svd, (m, n), rank, eps).map(Some)
 }
 
 /// 受认证秩处的产物与自证证书：低秩项、显式残差、逐位往返与 [`Note`] 都出自同一次分解。
@@ -170,8 +287,8 @@ fn assemble(
     rank: usize,
     eps: f64,
 ) -> Result<Certified> {
-    let (left, right) = factors(d, rank);
-    let low64 = factor_low(&left, &right, (m, n), rank);
+    let (left, right) = d.factors(rank);
+    let low64 = svd::factor_low(&left, &right, (m, n), rank);
     // 低秩项一旦落盘就只剩 `f32` 精度，所以显式残差也必须在 `f32` 世界里取差：拿 `f64` 的差去
     // 存，残差里装的是分解的舍入噪声（每个元素一个非零 ulp），整张残差因此不可压，因子化的
     // 收益被它整块吃掉。取 `f32` 的差则「能精确表示的矩阵残差恰好为零」。
@@ -193,7 +310,7 @@ fn assemble(
         bound: Bound::Diagnostic,
         gap,
         eps,
-        decomp: residual32(w, &low),
+        decomp: svd::residual32(w, &low),
         // 残差 `C` 以 `f32` 原样落盘，补偿侧没有再编码一次，所以它这里的误差精确为零。
         comp: 0.0,
         equal,
@@ -208,35 +325,6 @@ fn assemble(
         right,
         note,
     })
-}
-
-/// 秩-`rank` 的两个因子：`left[i,j] = u[i,j]·σ_j`（`m×r`）、`right[j,c] = v[c,j]`（`r×n`）。
-fn factors(d: &svd::Svd, rank: usize) -> (Vec<f64>, Vec<f64>) {
-    let ((m, n), k) = (d.shape(), d.sigma.len());
-    let mut left = Vec::with_capacity(m * rank);
-    for i in 0..m {
-        left.extend((0..rank).map(|j| d.u[i * k + j] * d.sigma[j]));
-    }
-    let mut right = Vec::with_capacity(rank * n);
-    for j in 0..rank {
-        right.extend((0..n).map(|c| d.v[c * k + j]));
-    }
-    (left, right)
-}
-
-/// 后验残差 `‖A − B‖_F`：`ε_alg` 的实测值。
-fn residual(a: &[f64], b: &[f64]) -> f64 {
-    norm(a.iter().zip(b).map(|(x, y)| x - y))
-}
-
-/// 落盘精度上的差范数：`decomp` 记的是「`f32` 低秩项与原矩阵之间还剩多少」，与 `rest` 同源。
-fn residual32(a: &[f32], b: &[f32]) -> f64 {
-    norm(a.iter().zip(b).map(|(&x, &y)| f64::from(x) - f64::from(y)))
-}
-
-/// Frobenius 范数：`ε`、截断误差与它在读端的复核都走这一份定义。
-pub(crate) fn norm(values: impl Iterator<Item = f64>) -> f64 {
-    values.map(|v| v * v).sum::<f64>().sqrt()
 }
 
 /// 形状判据：`m`、`n` 非零且元素数与乘积一致；返回奇异值个数 `min(m,n)`。
@@ -452,8 +540,8 @@ pub fn audit(note: &Note, m: usize, n: usize, low: &[f32], rest: &[f32]) -> Resu
     if let Some((_, why)) = facts.iter().find(|(holds, _)| !*holds) {
         return Err(bad(why));
     }
-    let truncation = norm(rest.iter().map(|&v| f64::from(v)));
-    let weight = norm(
+    let truncation = svd::norm(rest.iter().map(|&v| f64::from(v)));
+    let weight = svd::norm(
         low.iter()
             .zip(rest)
             .map(|(&l, &r)| f64::from(l) + f64::from(r)),

@@ -5,37 +5,45 @@
 use super::*;
 #[cfg(unix)]
 use crate::toolchain;
-use diagnostic::data::{Table, Value};
 use nn::model::Sample;
 
 fn cpu_profile() -> Profile {
     Profile::parse(prof::embedded("cpu").expect("cpu 档案")).expect("档案可解析")
 }
 
-/// 只改声明表里的某一处（模板不变）：用来构造"缓存键不变、判定结果变了"的输入。
-fn declared(mutate: impl FnOnce(&mut Table)) -> OpDecl {
-    let source = prof::catalogue::named("gemv_i4").expect("内置");
-    let mut declaration = source.declaration().clone();
-    mutate(&mut declaration);
-    OpDecl::parse(&declaration, source.template()).expect("声明可解析")
+/// 只改 owned 声明里的某一处（模板不变）：用来构造"缓存键不变、判定结果变了"的输入。
+fn declared(mutate: impl FnOnce(&mut OpDecl)) -> OpDecl {
+    let mut op = builtin();
+    mutate(&mut op);
+    op
 }
 
 /// 把所有搬运原语的 `bytes` 上限改到 `limit`。
-fn declared_bytes(limit: &str) -> OpDecl {
-    declared(|declaration| {
-        for prim in ["load", "store", "load_async"] {
-            declaration.set(&format!("needs.{prim}.bytes"), Value::text(limit));
+fn declared_bytes(limit: u32) -> OpDecl {
+    declared(|op| {
+        for need in &mut op.needs {
+            if matches!(need.prim, Prim::Load | Prim::Store | Prim::LoadAsync) {
+                need.extent = cutile::atom::Span::at_most(limit);
+            }
         }
     })
 }
 
 fn declared_swizzle() -> OpDecl {
-    declared(|declaration| declaration.set("layouts.w", Value::text("swz<40,3,3>")))
+    declared(|op| {
+        for (slot, layout) in &mut op.layouts {
+            if slot == "w" {
+                *layout = LayoutSpec::Swz { b: 40, m: 3, s: 3 };
+            }
+        }
+    })
 }
 
 fn builtin() -> OpDecl {
-    let source = &prof::catalogue::named("gemv_i4").expect("内置");
-    OpDecl::parse(source.declaration(), source.template()).expect("内置声明可解析")
+    prof::catalogue::named("gemv_i4")
+        .expect("内置")
+        .to_decl()
+        .expect("内置声明可解析")
 }
 
 fn cpu_path(op: &OpDecl) -> Path {
@@ -67,7 +75,7 @@ fn dirs(root: &std::path::Path) -> Dirs {
 
 #[test]
 fn declared_traffic_beyond_the_fast_capacity_fails_the_build() {
-    let op = declared_bytes("<=1048576");
+    let op = declared_bytes(1_048_576);
     let error = contract(&op, &cpu_profile(), &declared_path(&op)).unwrap_err();
     assert_eq!(error.code(), Code::Unsupported);
     assert!(error.to_string().contains("FAST"), "{error}");
@@ -111,7 +119,7 @@ fn a_cached_source_cannot_exempt_the_declaration_from_the_contract() {
     let tile = first_tile(&op);
     source(&op, &profile, &path, &tile, &dirs).expect("合法声明可构建");
 
-    let invalid = declared_bytes("<=1048576");
+    let invalid = declared_bytes(1_048_576);
     let error = source(&invalid, &profile, &path, &tile, &dirs).unwrap_err();
     assert!(
         error.to_string().contains("524288"),

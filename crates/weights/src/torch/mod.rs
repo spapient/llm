@@ -253,7 +253,10 @@ impl<'a> Vm<'a> {
 
     fn line(&mut self) -> Result<String> {
         let len = or_bad(
-            self.cursor.remaining().iter().position(|&byte| byte == b'\n'),
+            self.cursor
+                .remaining()
+                .iter()
+                .position(|&byte| byte == b'\n'),
             "GLOBAL 缺换行",
         )?;
         let text = self.cursor.text(len)?;

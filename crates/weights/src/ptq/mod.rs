@@ -3,6 +3,7 @@
 use std::ops::Range;
 
 use crate::bad;
+use crate::codec;
 use crate::svd;
 use diagnostic::Result;
 
@@ -75,29 +76,22 @@ pub fn quantize(scheme: Scheme, group: usize, x: &[f32]) -> Result<(Vec<u8>, Vec
     validate_quantize(scheme, group, x)?;
 
     let groups = x.len().div_ceil(group);
-    let mut packed = vec![0u8; scheme.packed_len(x.len())];
+    let mut codes = Vec::with_capacity(x.len());
     let mut scales = Vec::with_capacity(groups);
 
     for g in 0..groups {
-        let range = span(group, x.len(), g);
-        let lo = range.start;
-        let slice = &x[range];
+        let slice = &x[span(group, x.len(), g)];
         let scale = group_scale(scheme, slice);
         scales.push(scale);
-
-        for (i, &v) in slice.iter().enumerate() {
+        for &v in slice {
             let signed = (v / scale).round() as i32;
             let signed = signed.clamp(-(scheme.max_code as i32), scheme.max_code as i32);
-            pack_bits(
-                &mut packed,
-                lo + i,
-                scheme.bits,
-                (signed + scheme.zero) as u8,
-            );
+            codes.push((signed + scheme.zero) as u8 as u32);
         }
     }
 
-    Ok((packed, scales))
+    // 码位单调递增，交给唯一的流式位打包器：一次顺序写，不再逐元素算 `idx*width/8`。
+    Ok((codec::pack_bits(&codes, scheme.bits), scales))
 }
 
 /// 量化参数校验：分组、正码上限、输入有限性。
@@ -141,18 +135,16 @@ pub fn dequantize(
 ) -> Result<()> {
     validate_dequantize(scheme, packed, scales, group, out)?;
 
-    // 按组取 scale：`scales[g]` 在整组内不变，逐元素 `i / group` 是一次多余的整数除法，
-    // 且把尺度的读取变成随索引跳动的访存。按组切片后每组只取一次 scale。
+    // 一次流式解包出全部码（与写端同一个位编解码器），再按组取 scale：`scales[g]` 在整组内
+    // 不变，按组切片后每组只取一次 scale，逐元素不再算 `idx*width/8` 的位偏移除法。
+    let codes = codec::unpack_bits(packed, out.len(), scheme.bits)?;
     let len = out.len();
+    // 标度条数已校验为 `ceil(len/group)`，每组区间必非空，无需再判空跳出。
     for (g, &scale) in scales.iter().enumerate() {
         let range = span(group, len, g);
-        if range.is_empty() {
-            break;
-        }
         let lo = range.start;
         for (offset, slot) in out[range].iter_mut().enumerate() {
-            let field = unpack_bits(packed, lo + offset, scheme.bits);
-            *slot = scale * decode_code(scheme, field);
+            *slot = scale * decode_code(scheme, codes[lo + offset] as u8);
         }
     }
     Ok(())
@@ -185,30 +177,6 @@ fn decode_code(scheme: Scheme, field: u8) -> f32 {
     } else {
         field as f32 - scheme.zero as f32
     }
-}
-
-/// 把第 `idx` 个 `width` 位码写入位流（低码在前）；跨字节边界时高位溢到下一字节。
-fn pack_bits(packed: &mut [u8], idx: usize, width: u8, code: u8) {
-    let bit = idx * width as usize;
-    let byte = bit / 8;
-    let shift = (bit % 8) as u32;
-    let value = (code as u32) << shift;
-    packed[byte] |= value as u8;
-    if shift + width as u32 > 8 {
-        packed[byte + 1] |= (value >> 8) as u8;
-    }
-}
-
-/// 从位流读出第 `idx` 个 `width` 位码；跨字节边界时低位溢到下一字节。
-fn unpack_bits(packed: &[u8], idx: usize, width: u8) -> u8 {
-    let bit = idx * width as usize;
-    let byte = bit / 8;
-    let shift = (bit % 8) as u32;
-    let mut value = (packed[byte] as u32) >> shift;
-    if shift + width as u32 > 8 {
-        value |= (packed[byte + 1] as u32) << (8 - shift);
-    }
-    (value & ((1u32 << width) - 1)) as u8
 }
 
 /// 第 `g` 组在 `len` 个元素里的区间；末组可能短于 `group`。常规量化与自适应档共用一份。
@@ -296,34 +264,25 @@ pub(crate) struct Components {
 
 /// 一次 f64 SVD → 秩 / 低秩项 `L_r` / 显式残差 `C = W − L_r`；无谱隙即拒压。
 pub(crate) fn decompose(w: &[f32], m: usize, n: usize) -> Result<Option<Components>> {
-    let a: Vec<f64> = w.iter().map(|&x| f64::from(x)).collect();
-    let d = svd::compute_svd(&a, m, n)?;
-    let Some(rank) = svd::signal_rank(&d.sigma) else {
+    let s = svd::Spectral::open(w, m, n)?;
+    let Some(rank) = svd::signal_rank(&s.svd.sigma) else {
         return Ok(None);
     };
-    let rows = d.reconstruct(rank);
+    let rows = s.svd.reconstruct(rank);
     let low: Vec<f32> = rows.iter().map(|&x| x as f32).collect();
-    let rest: Vec<f32> = a
-        .iter()
-        .zip(&rows)
-        .map(|(orig, l)| (orig - l) as f32)
-        .collect();
+    let rest: Vec<f32> =
+        s.a.iter()
+            .zip(&rows)
+            .map(|(orig, l)| (orig - l) as f32)
+            .collect();
     Ok(Some(Components {
         rank,
-        sigma1: d.sigma[0],
-        gap: spectral_gap(&d.sigma, rank),
+        sigma1: s.svd.sigma[0],
+        gap: svd::spectral_gap(&s.svd.sigma, rank),
         low,
         rest,
-        norm: a.iter().map(|v| v * v).sum::<f64>().sqrt(),
+        norm: s.norm,
     }))
-}
-
-/// 截断处上方那道缝：`σ_r − σ_{r+1}`；已到最后一个奇异值时退化成 `σ_r`（下面没有值可供相减）。
-fn spectral_gap(sigma: &[f64], r: usize) -> f64 {
-    match sigma.get(r) {
-        Some(&below) => sigma[r - 1] - below,
-        None => sigma[r - 1],
-    }
 }
 
 /// 残差打包 → 回解：编解码只有 [`quantize`] / [`dequantize`] 一份定义，补偿不另写一套。

@@ -43,7 +43,11 @@ impl Op {
         view: &'static crate::decl::OpView,
         template: &'static str,
     ) -> Self {
-        Self { name, view, template }
+        Self {
+            name,
+            view,
+            template,
+        }
     }
 
     /// 算子名（与 `<name>.toml` 的文件名一致）。

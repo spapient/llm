@@ -1,14 +1,15 @@
 use super::*;
 use crate::prof::Profile;
-use diagnostic::data::Value;
 
 fn profile() -> Profile {
     Profile::parse(prof::embedded("cpu").expect("cpu 档案")).expect("档案")
 }
 
 fn op() -> OpDecl {
-    let source = &prof::catalogue::named("gemv_i4").expect("内置");
-    OpDecl::parse(source.declaration(), source.template()).expect("声明")
+    prof::catalogue::named("gemv_i4")
+        .expect("内置")
+        .to_decl()
+        .expect("声明")
 }
 
 fn path(mma_share: f64) -> Path {
@@ -86,14 +87,8 @@ fn a_falling_back_variant_is_reported_not_rejected() {
 #[test]
 fn declaration_order_decides_the_tile_not_its_size() {
     // 轴取值顺序即优先级：把 64 写在前面就取 64，即使它更大。
-    let source = &prof::catalogue::named("gemv_i4").expect("内置");
-    let mut reordered = source.declaration().clone();
-    reordered.set(
-        "axes.GMAX",
-        Value::array(vec![Value::int(64), Value::int(32)]),
-    );
-    assert_ne!(&reordered, source.declaration(), "声明里的轴写法变了");
-    let op = OpDecl::parse(&reordered, source.template()).expect("声明");
+    let mut op = op();
+    op.axes[0].values = vec![64, 32];
     let plan = select(&op, &profile(), &path(0.62), cost()).expect("可选择");
     assert_eq!(plan.tile.summary(), "GMAX=64");
 }
@@ -101,13 +96,8 @@ fn declaration_order_decides_the_tile_not_its_size() {
 #[test]
 fn prediction_is_the_same_for_every_tile() {
     // 模型里没有可比较的量：两个候选的预测必须相同，否则说明有人给 predict 编了常数。
-    let source = &prof::catalogue::named("gemv_i4").expect("内置");
-    let mut swapped = source.declaration().clone();
-    swapped.set(
-        "axes.GMAX",
-        Value::array(vec![Value::int(32), Value::int(64)]),
-    );
-    let wide = OpDecl::parse(&swapped, source.template()).expect("声明");
+    let mut wide = op();
+    wide.axes[0].values = vec![32, 64];
     let narrow = select(&op(), &profile(), &path(0.62), cost()).expect("可选择");
     let wide = select(&wide, &profile(), &path(0.62), cost()).expect("可选择");
     assert_eq!(narrow.predicted_s, wide.predicted_s);
@@ -133,8 +123,10 @@ fn the_window_radius_is_solved_from_the_budget() {
 #[test]
 fn pruning_caps_at_the_budget_and_keeps_a_composable_pair() {
     let parse = |name: &str| {
-        let source = prof::catalogue::named(name).expect("内置");
-        OpDecl::parse(source.declaration(), source.template()).expect("声明")
+        prof::catalogue::named(name)
+            .expect("内置")
+            .to_decl()
+            .expect("声明")
     };
     let gemv = parse("gemv_f32");
     let gelu = parse("gelu_f32");
@@ -164,15 +156,17 @@ fn models() -> &'static [prof::catalogue::Registration] {
 fn decls() -> Vec<OpDecl> {
     prof::catalogue::all()
         .iter()
-        .map(|source| OpDecl::parse(source.declaration(), source.template()).expect("声明自洽"))
+        .map(|source| source.to_decl().expect("声明自洽"))
         .collect()
 }
 
 /// 一条真实候选：`adaptive_pool_f32` 的 `y` 接 `attention_f32` 的输入（生产形状对得上）。
 fn pool_into_attention() -> Fusion {
     let parse = |name: &str| {
-        let source = prof::catalogue::named(name).expect("内置");
-        OpDecl::parse(source.declaration(), source.template()).expect("声明")
+        prof::catalogue::named(name)
+            .expect("内置")
+            .to_decl()
+            .expect("声明")
     };
     compose(&parse("adaptive_pool_f32"), &parse("attention_f32")).expect("能拼")
 }

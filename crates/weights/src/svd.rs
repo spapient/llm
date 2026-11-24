@@ -53,6 +53,20 @@ impl Svd {
         }
         out
     }
+
+    /// 秩-`r` 的两个因子：`left[i,j] = u[i,j]·σ_j`（`m×r`）、`right[j,c] = v[c,j]`（`r×n`）。
+    pub(crate) fn factors(&self, rank: usize) -> (Vec<f64>, Vec<f64>) {
+        let ((m, n), k) = (self.shape(), self.sigma.len());
+        let mut left = Vec::with_capacity(m * rank);
+        for i in 0..m {
+            left.extend((0..rank).map(|j| self.u[i * k + j] * self.sigma[j]));
+        }
+        let mut right = Vec::with_capacity(rank * n);
+        for j in 0..rank {
+            right.extend((0..n).map(|c| self.v[c * k + j]));
+        }
+        (left, right)
+    }
 }
 
 /// 信号秩选择的相对谱隙阈值。
@@ -226,6 +240,75 @@ fn rotation(alpha: f64, beta: f64, gamma: f64) -> (f64, f64) {
     let t = tau.signum() / (tau.abs() + (1.0 + tau * tau).sqrt());
     let c = 1.0 / (1.0 + t * t).sqrt();
     (c, c * t)
+}
+
+// —— 谱证书共享数学：范数、残差、因子化低秩项与谱隙，账本与补偿侧同出一门 ——
+
+/// Frobenius 范数：`ε`、截断误差与它在读端的复核都走这一份定义。
+pub(crate) fn norm(values: impl Iterator<Item = f64>) -> f64 {
+    values.map(|v| v * v).sum::<f64>().sqrt()
+}
+
+/// 后验残差 `‖A − B‖_F`（f64）：`ε_alg` 的实测值。
+pub(crate) fn residual(a: &[f64], b: &[f64]) -> f64 {
+    norm(a.iter().zip(b).map(|(x, y)| x - y))
+}
+
+/// 落盘精度上的差范数（f32）：`decomp` 记的是 f32 低秩项与原矩阵之间还剩多少，与 `rest` 同源。
+pub(crate) fn residual32(a: &[f32], b: &[f32]) -> f64 {
+    norm(a.iter().zip(b).map(|(&x, &y)| f64::from(x) - f64::from(y)))
+}
+
+/// 截断处上方那道缝：`σ_r − σ_{r+1}`；已到最后一个奇异值时退化成 `σ_r`（下面没有值可供相减）。
+pub(crate) fn spectral_gap(sigma: &[f64], r: usize) -> f64 {
+    match sigma.get(r) {
+        Some(&below) => sigma[r - 1] - below,
+        None => sigma[r - 1],
+    }
+}
+
+/// `left · right` 的 `m×n` 重构（行主序 f64）：写端与读端共用，因子化低秩项只算一份。
+pub(crate) fn factor_low(
+    left: &[f64],
+    right: &[f64],
+    (m, n): (usize, usize),
+    rank: usize,
+) -> Vec<f64> {
+    let mut out = vec![0.0f64; m * n];
+    for i in 0..m {
+        for c in 0..n {
+            let mut sum = 0.0;
+            for j in 0..rank {
+                sum += left[i * rank + j] * right[j * n + c];
+            }
+            out[i * n + c] = sum;
+        }
+    }
+    out
+}
+
+/// 一次谱分解的共享产物：f64 工作矩阵、SVD 与整体范数同出一门；秩选择与残差精度由调用方定。
+pub(crate) struct Spectral {
+    /// 原矩阵升到 f64 的工作副本。
+    pub(crate) a: Vec<f64>,
+    /// 这次分解。
+    pub(crate) svd: Svd,
+    /// 整体 Frobenius 范数 `‖W‖_F`。
+    pub(crate) norm: f64,
+}
+
+impl Spectral {
+    /// f32 → f64 → 一次 SVD → 整体范数：账本与补偿侧共用的分解入口，转换与分解只写一份。
+    pub(crate) fn open(w: &[f32], m: usize, n: usize) -> Result<Self> {
+        let a: Vec<f64> = w.iter().map(|&x| f64::from(x)).collect();
+        let svd = compute_svd(&a, m, n)?;
+        let total = norm(a.iter().copied());
+        Ok(Self {
+            a,
+            svd,
+            norm: total,
+        })
+    }
 }
 
 #[cfg(test)]

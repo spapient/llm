@@ -5,6 +5,7 @@ use crate::bad;
 use diagnostic::{Error, Result};
 
 use crate::ledger;
+use crate::svd;
 use storage::leb::Cursor;
 
 use crate::codec::{
@@ -323,9 +324,9 @@ fn factors_of(
     Ok((left, right, at))
 }
 
-/// 因子 → 低秩项（`f32`）：与写端同一个 [`ledger::factor_low`]，读端不另算一遍。
+/// 因子 → 低秩项（`f32`）：与写端同一个 [`svd::factor_low`]，读端不另算一遍。
 fn low_of(left: &[f64], right: &[f64], (m, n): (usize, usize), rank: usize) -> Vec<f32> {
-    ledger::factor_low(left, right, (m, n), rank)
+    svd::factor_low(left, right, (m, n), rank)
         .iter()
         .map(|&v| v as f32)
         .collect()

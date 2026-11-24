@@ -278,7 +278,7 @@ pub(crate) fn bytes_to_f32(bytes: &[u8], want: usize) -> Result<Vec<f32>> {
     from_le_bytes(bytes, want)
 }
 
-fn pack_bits(codes: &[u32], width: u8) -> Vec<u8> {
+pub(crate) fn pack_bits(codes: &[u32], width: u8) -> Vec<u8> {
     if width == 0 {
         return Vec::new();
     }
@@ -300,7 +300,7 @@ fn pack_bits(codes: &[u32], width: u8) -> Vec<u8> {
     out
 }
 
-fn unpack_bits(src: &[u8], count: usize, width: u8) -> Result<Vec<u32>> {
+pub(crate) fn unpack_bits(src: &[u8], count: usize, width: u8) -> Result<Vec<u32>> {
     if width == 0 {
         return Ok(vec![0; count]);
     }
