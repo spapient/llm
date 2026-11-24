@@ -77,8 +77,8 @@ reason = "行表类型、分类闭集与解析错误；表形状仍在演进，�
 
 [[ownership.unlisted]]
 crate = "engine"
-names = ["LocalExecutor", "Queued", "SequenceOutcome"]
-reason = "`LocalExecutor` 是只记账的同步 CPU 队列（`Executor` 基座本身已进对外所有权表）、`Queued` 是队列条目、`SequenceOutcome` 是批内逐条结果视图，同属内部实现，不进对外所有权表"
+names = ["LocalExecutor", "SequenceOutcome"]
+reason = "`LocalExecutor` 是只记账的同步 CPU 队列（`Executor` 基座本身已进对外所有权表）、`SequenceOutcome` 是批内逐条结果视图，同属内部实现，不进对外所有权表"
 
 [[ownership.unlisted]]
 crate = "fuzz"
@@ -211,6 +211,7 @@ min_lines_baseline = [
   "crates/engine/src/exec.rs",
   "crates/engine/src/ifb.rs",
   "crates/engine/src/pager.rs",
+  "crates/engine/src/queue.rs",
   "crates/engine/src/radix.rs",
   "crates/engine/src/sequence.rs",
   "crates/fuzz/src/harness.rs",
