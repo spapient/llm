@@ -1,4 +1,4 @@
-//! 序列状态机：页数口径 [`pages_for`] 与单个请求的生命周期 [`Sequence`]。
+//! 序列状态机：页数口径 `pages_for` 与单个请求的生命周期 [`Sequence`]。
 
 use crate::invalid;
 use diagnostic::Result;
@@ -9,12 +9,12 @@ pub(crate) fn pages_for(tokens: usize, page_size: usize) -> usize {
     tokens.div_ceil(page_size).max(1)
 }
 
-/// [`Scheduler::advance`] 的结局："生成了一步"与"这一步没生成"必须能分开。
+/// `Scheduler::advance` 的结局："生成了一步"与"这一步没生成"必须能分开。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Progress {
     /// 生成了一个 token，序列还在跑。
     Running,
-    /// 生成了一个 token，序列已结束（页仍然占着，直到 [`Scheduler::finish`]）。
+    /// 生成了一个 token，序列已结束（页仍然占着，直到 `Scheduler::finish`）。
     Done,
     /// 这一步需要的页不够：没有生成 token，序列与页表都没变，可以稍后原样重试。
     Blocked,
@@ -175,7 +175,7 @@ impl Sequence {
 
     /// 提前结束（采到停止符）：只改状态，不生成 token、也不碰页账。
     ///
-    /// 与 `max_new` 到顶的区别只在计数：两种结束都不增不删页，页由 [`Scheduler::finish`] 归还。
+    /// 与 `max_new` 到顶的区别只在计数：两种结束都不增不删页，页由 `Scheduler::finish` 归还。
     /// 已经结束的序列再 `stop` 是调用方的 bug——重复结束会让"为什么结束"变成两种说法。
     ///
     /// # Errors

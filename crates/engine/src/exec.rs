@@ -1,7 +1,7 @@
 //! 提交与执行：[`Stream`]、[`Graph`]、[`Node`]、[`Launch`]、[`Operand`] 与 [`Executor`] 契约。
 //!
-//! 本模块只有提交契约这一件事（图、流、节点、操作数）。执行器缝与记账在 [`crate::queue`]，
-//! 缓冲视图与 CPU 执行体在 [`crate::cpu`]：三段只经公开类型相接，没有共享的私有状态。
+//! 本模块只有提交契约这一件事（图、流、节点、操作数）。执行器缝与记账在 `crate::queue`，
+//! 缓冲视图与 CPU 执行体在 `crate::cpu`：三段只经公开类型相接，没有共享的私有状态。
 //! **拥有**：`Stream`、`Graph`、`Node`、`Launch`、`Operand`、`Executor`。**不拥有**：编译 kernel
 //! （`cutile::runner` 负责"源文件 → 可执行文件"，产物按 `(模板, 档案, flags)` 由 `cutile::build` 缓存；本 crate 只负责
 //! "图提交到流"，每 step 都发生）、缓冲分配（`storage`）。

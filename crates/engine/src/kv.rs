@@ -45,7 +45,7 @@ use crate::invalid;
 use diagnostic::Result;
 use tensor::Shape;
 
-/// 页池上的页内数据（实现见 [`crate::pager`]）：给页表要页、写行、读行。
+/// 页池上的页内数据（实现见 `crate::pager`）：给页表要页、写行、读行。
 pub use crate::pager::Pager;
 
 /// 满块前缀树（实现见 [`crate::radix`]）：页池只记「谁在看」，树记「哪段前缀对应哪一页」。
