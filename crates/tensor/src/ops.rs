@@ -7,10 +7,29 @@ use diagnostic::Result;
 use crate::element::{Element, NumericElement, OrderedElement};
 use crate::{Owned, Rank, Store, Tensor, invalid};
 
-/// 元素绝对值能力，仅供 [`Tensor::all_close`] 的闭集标量使用。
+/// 绝对值与受溢出保护的绝对差比较。
 pub trait Abs: Default {
-    /// 返回非负绝对值。
+    /// 返回非负绝对值；有符号整数最小值饱和到最大值。
     fn abs(self) -> Self;
+
+    /// 判断 `|self - rhs| <= eps`，整数减法不得溢出。
+    fn abs_diff_le(self, rhs: Self, eps: Self) -> bool;
+}
+
+macro_rules! float_abs {
+    ($($scalar:ty),+ $(,)?) => {
+        $(
+            impl Abs for $scalar {
+                fn abs(self) -> Self {
+                    if self < Self::default() { -self } else { self }
+                }
+
+                fn abs_diff_le(self, rhs: Self, eps: Self) -> bool {
+                    (self - rhs).abs() <= eps
+                }
+            }
+        )+
+    };
 }
 
 macro_rules! signed_abs {
@@ -18,7 +37,12 @@ macro_rules! signed_abs {
         $(
             impl Abs for $scalar {
                 fn abs(self) -> Self {
-                    if self < Self::default() { -self } else { self }
+                    self.saturating_abs()
+                }
+
+                fn abs_diff_le(self, rhs: Self, eps: Self) -> bool {
+                    eps >= 0
+                        && (self as i128 - rhs as i128).unsigned_abs() <= eps as u128
                 }
             }
         )+
@@ -32,12 +56,17 @@ macro_rules! unsigned_abs {
                 fn abs(self) -> Self {
                     self
                 }
+
+                fn abs_diff_le(self, rhs: Self, eps: Self) -> bool {
+                    self.abs_diff(rhs) <= eps
+                }
             }
         )+
     };
 }
 
-signed_abs!(f32, f64, half::f16, half::bf16, i8, i16, i32, i64);
+float_abs!(f32, f64, half::f16, half::bf16);
+signed_abs!(i8, i16, i32, i64);
 unsigned_abs!(u8, u16, u32, u64);
 
 impl<B, R, K> Tensor<B, R, K>

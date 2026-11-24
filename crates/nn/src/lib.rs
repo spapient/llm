@@ -111,7 +111,6 @@ mod param_role {
         }
     }
 }
-mod single;
 mod spatial;
 mod stack;
 
@@ -119,7 +118,11 @@ mod stack;
 pub use attention::{Attention, AttentionAlgo, AttentionBlock, DecodeAttention, LatentAttention};
 
 #[doc(inline)]
-pub use contract::{BoundsResult, Contract, ContractSpec, Linear};
+pub use contract::{
+    Add, BoundsResult, Contract, ContractSpec, Div, Embedding, Exp, Gauge, Gelu, HardSigmoid,
+    LeakyRelu, Linear, Log, MatMul, Max, Min, Mul, Precision, Relu, RmsNorm, Rope, Scale, Scan,
+    Sigmoid, Silu, Softmax, Sub, Tanh,
+};
 #[doc(inline)]
 pub use declare::{Bounds, OpLayer};
 #[doc(inline)]
@@ -147,12 +150,6 @@ pub use spatial::{
 
 #[doc(inline)]
 pub use recurrent::{Cell, Recurrent, RecurrentTensor};
-
-#[doc(inline)]
-pub use single::{
-    Add, Div, Embedding, Exp, Gauge, Gelu, HardSigmoid, LeakyRelu, Log, MatMul, Max, Min, Mul,
-    Precision, Relu, RmsNorm, Rope, Scale, Scan, Sigmoid, Silu, Softmax, Sub, Tanh,
-};
 
 #[doc(inline)]
 pub use stack::{Floor, Stack, Unpriced, WEIGHT_SUFFIX};

@@ -20,13 +20,7 @@ where
     /// 把一轴搬到另一位置，其余轴的相对顺序不变。
     #[doc(alias = "moveaxis")]
     pub fn movedim(self, from: usize, to: usize) -> Option<Self> {
-        let rank = self.rank();
-        if from >= rank || to >= rank {
-            return None;
-        }
-        let mut order: Vec<usize> = (0..rank).filter(|&axis| axis != from).collect();
-        order.insert(to, from);
-        self.permute(order)
+        self.reaxis(|axes| axes.moved(from, to))
     }
 
     /// 按完整轴排列重排元数据。
@@ -112,7 +106,7 @@ where
             .cloned()
             .map(Into::into)
             .collect::<Vec<_>>();
-        layout::window(&self.dims, &self.steps, self.base, &slices)
+        layout::window(&self.dims, &self.steps, self.base, slices)
     }
 
     /// 沿 `axis` 等分为至多 `pieces` 个非空借用视图。

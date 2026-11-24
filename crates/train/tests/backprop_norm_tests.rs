@@ -25,9 +25,14 @@ fn attention_matches_central_differences() -> Result<()> {
     let q0 = (0..len).map(|i| 0.07 * i as f32 - 0.5).collect();
     let k0 = (0..len).map(|i| -0.05 * i as f32 + 0.4).collect();
     let v0 = (0..len).map(|i| 0.09 * i as f32 - 0.3).collect();
-    check_attention_grad("attention_f32", [len; 5], q0, k0, v0, |q, k, v| {
-        attention_loss(q, k, v, s, s, d)
-    })
+    check_attention_grad(
+        "attention_f32",
+        [len, len, len, len, 1],
+        q0,
+        k0,
+        v0,
+        |q, k, v| attention_loss(q, k, v, s, s, d),
+    )
 }
 
 /// `latent_attention` 的写宽为 `dc = W/2`，三路梯度仍分别做中心差分。
@@ -83,15 +88,36 @@ fn check_attention_grad(
     let loss = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
     let sizes = support::sizes_of(
         &tape,
-        &[(q, lengths[0]), (k, lengths[1]), (v, lengths[2]), (y, lengths[3]), (loss, 1)],
+        &[
+            (q, lengths[0]),
+            (k, lengths[1]),
+            (v, lengths[2]),
+            (y, lengths[3]),
+            (loss, 1),
+        ],
     );
     let mut session = attention_session(tape, sizes, [q, k, v], [&q0, &k0, &v0])?;
     session.bufs().compute_step(op, &[q, k, v], y)?;
     sum_backward(&mut session, y, loss)?;
     let f = &objective;
-    check_grad(session.bufs().gradient(q).expect("q 梯度"), &q0, "q", |x| f(x, &k0, &v0));
-    check_grad(session.bufs().gradient(k).expect("k 梯度"), &k0, "k", |x| f(&q0, x, &v0));
-    check_grad(session.bufs().gradient(v).expect("v 梯度"), &v0, "v", |x| f(&q0, &k0, x));
+    check_grad(
+        session.bufs().gradient(q).expect("q 梯度"),
+        &q0,
+        "q",
+        |x| f(x, &k0, &v0),
+    );
+    check_grad(
+        session.bufs().gradient(k).expect("k 梯度"),
+        &k0,
+        "k",
+        |x| f(&q0, x, &v0),
+    );
+    check_grad(
+        session.bufs().gradient(v).expect("v 梯度"),
+        &v0,
+        "v",
+        |x| f(&q0, &k0, x),
+    );
     Ok(())
 }
 

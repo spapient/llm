@@ -1,12 +1,128 @@
 //! 数值微核：各经典算子变体的前向/反向参考实现（梯度对拍基准）。
 
 use super::shapes::{Window, bounds, norm_group, pool_len, pool2d_out, square, window1d, window2d};
-use crate::geometry::{EPS, MOMENTUM, Running};
+use crate::geometry::{EPS, Geometry, MOMENTUM, Running};
 use diagnostic::Result;
-use nn::conv::Conv2d;
-use nn::kernel::norm::BatchNorm2d;
+use nn::conv::{AdaptiveAvgPool2d, AvgPool2d, Conv2d, Interpolate, MaxPool1d, MaxPool2d, Sampler};
+use nn::kernel::norm::{BatchNorm2d, GroupNorm, LayerNorm};
 
 // ---- 数值微核：各变体的前向/反向实现 -----------------------------------------
+
+/// 前向总路由：归一化与卷积直接投影配置，五种空间算子进入独立小路由。
+pub(crate) fn forward(
+    g: Geometry,
+    inputs: &[&[f32]],
+    out: &mut [f32],
+    running: Option<&mut Running>,
+) -> Result<()> {
+    match g {
+        Geometry::Norm {
+            n,
+            spatial,
+            channels,
+        } => forward_batch_norm(inputs, out, running, n, spatial, channels),
+        Geometry::Group {
+            groups,
+            n,
+            spatial,
+            channels,
+        } => GroupNorm {
+            groups,
+            channels,
+            eps: EPS,
+        }
+        .forward(inputs[0], inputs[1], inputs[2], n, spatial, out),
+        Geometry::Layer { width, .. } => {
+            LayerNorm { width, eps: EPS }.forward(inputs[0], inputs[1], inputs[2], out)
+        }
+        Geometry::Conv2d {
+            k,
+            s,
+            p,
+            h,
+            w,
+            cin,
+            cout,
+        } => Conv2d::new(cin, cout, square(k, s, p)).forward_f32(
+            inputs[0],
+            inputs[1],
+            inputs[2],
+            1,
+            (h, w),
+            out,
+        ),
+        _ => forward_spatial(g, inputs, out),
+    }
+}
+
+/// 空间算子二级路由：池化与 reshape 各自只处理自己的闭集。
+fn forward_spatial(g: Geometry, inputs: &[&[f32]], out: &mut [f32]) -> Result<()> {
+    match g {
+        Geometry::Adaptive { .. } | Geometry::Interp { .. } => forward_reshape(g, inputs, out),
+        _ => forward_pool(g, inputs, out),
+    }
+}
+
+/// 池化前向：由实例配置构造对应 `nn` 算子，批大小只从已校验的输入长度推出。
+fn forward_pool(g: Geometry, inputs: &[&[f32]], out: &mut [f32]) -> Result<()> {
+    match g {
+        Geometry::Pool1d { k, s, p, l, c } => {
+            let n = inputs[0].len() / (l * c);
+            MaxPool1d { k, s, p }.forward(inputs[0], n, l, c, out)
+        }
+        Geometry::Pool2d { k, s, p, h, w, c } => {
+            let n = inputs[0].len() / (h * w * c);
+            MaxPool2d {
+                geom: square(k, s, p),
+            }
+            .forward(inputs[0], n, h, w, c, out)
+        }
+        Geometry::Avg2d {
+            k,
+            s,
+            p,
+            h,
+            w,
+            c,
+            count_include_pad,
+        } => {
+            let n = inputs[0].len() / (h * w * c);
+            AvgPool2d {
+                geom: square(k, s, p),
+                count_include_pad,
+            }
+            .forward(inputs[0], n, h, w, c, out)
+        }
+        _ => unreachable!("pool 只接收池化几何"),
+    }
+}
+
+/// 自适应池化与插值前向：二者共享输出平面，采样策略由配置决定。
+fn forward_reshape(g: Geometry, inputs: &[&[f32]], out: &mut [f32]) -> Result<()> {
+    match g {
+        Geometry::Adaptive { oh, ow, h, w, c } => {
+            let n = inputs[0].len() / (h * w * c);
+            AdaptiveAvgPool2d { oh, ow }.forward(inputs[0], n, h, w, c, out)
+        }
+        Geometry::Interp {
+            oh,
+            ow,
+            h,
+            w,
+            c,
+            linear,
+        } => {
+            let n = inputs[0].len() / (h * w * c);
+            let sampler = if linear {
+                Sampler::Linear
+            } else {
+                Sampler::Nearest
+            };
+            Interpolate { sampler, oh, ow }.forward(inputs[0], n, h, w, c, out)
+        }
+        _ => unreachable!("reshape 只接收自适应池化或插值几何"),
+    }
+}
 
 /// 批归一化前向：有滚动统计就原地递推（训练语义），否则用一次性局部统计。
 pub(crate) fn forward_batch_norm(

@@ -50,6 +50,61 @@ pub(crate) fn norm_outputs(g: Geometry) -> usize {
     }
 }
 
+/// 按几何族核对输入与输出长度；每个分支只做配置投影，实际判据由下方共享函数拥有。
+pub(crate) fn check_geometry(g: Geometry, lens: &[usize], out: usize) -> Result<()> {
+    match g {
+        Geometry::Norm {
+            n,
+            spatial,
+            channels,
+        } => check_norm(lens, out, n, spatial, channels),
+        Geometry::Group {
+            groups,
+            n,
+            spatial,
+            channels,
+        } => check_group(lens, out, groups, n, spatial, channels),
+        Geometry::Layer { rows, width } => check_layer(lens, out, rows, width),
+        Geometry::Conv2d {
+            k,
+            s,
+            p,
+            h,
+            w,
+            cin,
+            cout,
+        } => check_conv2d_shape(lens, out, Window { k, s, p }, (h, w, cin, cout)),
+        _ => check_spatial(g, lens, out),
+    }
+}
+
+/// 池化族的形状投影；自适应与插值转交 reshape 判据。
+fn check_spatial(g: Geometry, lens: &[usize], out: usize) -> Result<()> {
+    match g {
+        Geometry::Pool1d { k, s, p, l, c } => check_pool1d(lens, out, k, s, p, l, c),
+        Geometry::Pool2d { k, s, p, h, w, c } => {
+            check_spatial_pool(lens, out, Window { k, s, p }, (h, w, c), "二维池化")
+        }
+        Geometry::Avg2d {
+            k, s, p, h, w, c, ..
+        } => check_spatial_pool(lens, out, Window { k, s, p }, (h, w, c), "二维平均池化"),
+        _ => check_reshape(g, lens, out),
+    }
+}
+
+/// 自适应池化与插值共用输入平面和输出平面判据，诊断仍保留具体算子族。
+fn check_reshape(g: Geometry, lens: &[usize], out: usize) -> Result<()> {
+    match g {
+        Geometry::Adaptive { oh, ow, h, w, c } => {
+            check_spatial_reshape(lens, out, (oh, ow), (h, w, c), "自适应池化")
+        }
+        Geometry::Interp {
+            oh, ow, h, w, c, ..
+        } => check_spatial_reshape(lens, out, (oh, ow), (h, w, c), "插值"),
+        _ => unreachable!("reshape 只接收自适应池化或插值几何"),
+    }
+}
+
 /// 一维池化的形状核对：输入 `n·l·c`、输出 `n·ol·c`。
 pub(crate) fn check_pool1d(
     lens: &[usize],

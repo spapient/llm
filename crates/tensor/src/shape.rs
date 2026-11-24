@@ -109,6 +109,24 @@ pub trait Rank: Clone {
         Some(out)
     }
 
+    /// 搬动一轴并保持其余轴的相对顺序，不创建排列索引。
+    #[must_use]
+    fn moved(&self, from: usize, to: usize) -> Option<Self> {
+        let mut out = self.clone();
+        let axes = out.as_slice_mut();
+        if from >= axes.len() || to >= axes.len() {
+            return None;
+        }
+        let value = axes[from];
+        if from < to {
+            axes.copy_within(from + 1..=to, from);
+        } else {
+            axes.copy_within(to..from, to + 1);
+        }
+        axes[to] = value;
+        Some(out)
+    }
+
     /// 按排列重排；长度或轴值不合法返回 `None`。
     #[must_use]
     fn permuted(&self, order: &[usize]) -> Option<Self> {

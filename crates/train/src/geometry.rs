@@ -3,8 +3,7 @@
 //! 本文件只留静态规格（`EPS`/`MOMENTUM`/[`Running`]/[`Geometry`]/`DECLARED`）与方法分派；
 //! 形状核对与窗口几何在 `shapes`，逐变体前向/反向数值微核在 `kernels`。
 use diagnostic::{Code, Error, Result};
-use nn::conv::{AdaptiveAvgPool2d, AvgPool2d, Conv2d, Interpolate, MaxPool1d, MaxPool2d, Sampler};
-use nn::kernel::norm::{BatchNorm2d, GroupNorm, LayerNorm};
+use nn::kernel::norm::BatchNorm2d;
 
 // ---- 静态规格与声明档表 ------------------------------------------------------
 
@@ -212,13 +211,9 @@ mod kernels;
 mod shapes;
 use kernels::{
     backward_adaptive, backward_avg2d, backward_conv2d, backward_group, backward_interp,
-    backward_layer, backward_norm, backward_pool1d, backward_pool2d, forward_batch_norm,
+    backward_layer, backward_norm, backward_pool1d, backward_pool2d,
 };
-use shapes::{
-    Window, check_conv2d_shape, check_group, check_layer, check_norm, check_pool1d,
-    check_spatial_pool, check_spatial_reshape, invalid, norm_outputs, pool_len, spatial_outputs,
-    square,
-};
+use shapes::{Window, invalid, norm_outputs, pool_len, spatial_outputs};
 
 // ---- 方法分派：形状核对 + 逐变体路由 -----------------------------------------
 impl Geometry {
@@ -257,60 +252,7 @@ impl Geometry {
                 self.arity()
             )));
         }
-        self.check_pool(lens, out)
-    }
-
-    /// 池化族核对：一维/二维最大池化与二维平均池化；其余变体委托重排族。
-    fn check_pool(self, lens: &[usize], out: usize) -> Result<()> {
-        match self {
-            Self::Pool1d { k, s, p, l, c } => check_pool1d(lens, out, k, s, p, l, c),
-            Self::Pool2d { k, s, p, h, w, c } => {
-                check_spatial_pool(lens, out, Window { k, s, p }, (h, w, c), "二维池化")
-            }
-            Self::Avg2d {
-                k, s, p, h, w, c, ..
-            } => check_spatial_pool(lens, out, Window { k, s, p }, (h, w, c), "二维平均池化"),
-            rest => rest.check_reshape(lens, out),
-        }
-    }
-
-    /// 空间重排族核对：自适应池化、插值与二维卷积；其余变体委托归一化族。
-    fn check_reshape(self, lens: &[usize], out: usize) -> Result<()> {
-        match self {
-            Self::Adaptive { oh, ow, h, w, c } => {
-                check_spatial_reshape(lens, out, (oh, ow), (h, w, c), "自适应池化")
-            }
-            Self::Interp {
-                oh, ow, h, w, c, ..
-            } => check_spatial_reshape(lens, out, (oh, ow), (h, w, c), "插值"),
-            Self::Conv2d {
-                k, s, p, h, w, cin, cout,
-            } => check_conv2d_shape(lens, out, Window { k, s, p }, (h, w, cin, cout)),
-            rest => rest.check_norm(lens, out),
-        }
-    }
-
-    /// 归一化与全连接族核对：批归一化、分组归一化、层归一化；兜底臂仅为类型穷尽。
-    #[allow(unreachable_patterns)]
-    fn check_norm(self, lens: &[usize], out: usize) -> Result<()> {
-        match self {
-            Self::Norm {
-                n,
-                spatial,
-                channels,
-            } => check_norm(lens, out, n, spatial, channels),
-            Self::Group {
-                groups,
-                n,
-                spatial,
-                channels,
-            } => check_group(lens, out, groups, n, spatial, channels),
-            Self::Layer { rows, width } => check_layer(lens, out, rows, width),
-            other => Err(Error::new(
-                Code::Internal,
-                format!("几何变体 `{other:?}` 未进入形状核对族"),
-            )),
-        }
+        shapes::check_geometry(self, lens, out)
     }
 
     /// 按实例几何前向：算术全部复用 `nn::conv` / `nn::kernel::norm` 的真实现。
@@ -339,90 +281,7 @@ impl Geometry {
             &inputs.iter().map(|x| x.len()).collect::<Vec<_>>(),
             out.len(),
         )?;
-        match self {
-            Self::Pool1d { k, s, p, l, c } => {
-                let n = inputs[0].len() / (l * c);
-                MaxPool1d { k, s, p }.forward(inputs[0], n, l, c, out)
-            }
-            Self::Pool2d { k, s, p, h, w, c } => {
-                let n = inputs[0].len() / (h * w * c);
-                MaxPool2d {
-                    geom: square(k, s, p),
-                }
-                .forward(inputs[0], n, h, w, c, out)
-            }
-            Self::Avg2d {
-                k,
-                s,
-                p,
-                h,
-                w,
-                c,
-                count_include_pad,
-            } => {
-                let n = inputs[0].len() / (h * w * c);
-                AvgPool2d {
-                    geom: square(k, s, p),
-                    count_include_pad,
-                }
-                .forward(inputs[0], n, h, w, c, out)
-            }
-            Self::Adaptive { oh, ow, h, w, c } => {
-                let n = inputs[0].len() / (h * w * c);
-                AdaptiveAvgPool2d { oh, ow }.forward(inputs[0], n, h, w, c, out)
-            }
-            Self::Interp {
-                oh,
-                ow,
-                h,
-                w,
-                c,
-                linear,
-            } => {
-                let n = inputs[0].len() / (h * w * c);
-                let sampler = if linear {
-                    Sampler::Linear
-                } else {
-                    Sampler::Nearest
-                };
-                Interpolate { sampler, oh, ow }.forward(inputs[0], n, h, w, c, out)
-            }
-            Self::Norm {
-                n,
-                spatial,
-                channels,
-            } => forward_batch_norm(inputs, out, running, n, spatial, channels),
-            Self::Group {
-                groups,
-                n,
-                spatial,
-                channels,
-            } => GroupNorm {
-                groups,
-                channels,
-                eps: EPS,
-            }
-            .forward(inputs[0], inputs[1], inputs[2], n, spatial, out),
-            Self::Layer { width, .. } => {
-                LayerNorm { width, eps: EPS }.forward(inputs[0], inputs[1], inputs[2], out)
-            }
-            Self::Conv2d {
-                k,
-                s,
-                p,
-                h,
-                w,
-                cin,
-                cout,
-            } => Conv2d::new(cin, cout, square(k, s, p)).forward_f32(
-                inputs[0],
-                inputs[1],
-                inputs[2],
-                1,
-                (h, w),
-                out,
-            ),
-        }
+        kernels::forward(self, inputs, out, running)
     }
 
     /// 推理前向：`Norm` 用给定的滚动统计归一化、不改状态；其余变体与训练一致。
@@ -483,7 +342,15 @@ impl Geometry {
             Self::Pool2d { k, s, p, h, w, c } => {
                 backward_pool2d(inputs, incoming, Window { k, s, p }, (h, w, c))
             }
-            Self::Avg2d { k, s, p, h, w, c, count_include_pad } => backward_avg2d(
+            Self::Avg2d {
+                k,
+                s,
+                p,
+                h,
+                w,
+                c,
+                count_include_pad,
+            } => backward_avg2d(
                 inputs,
                 incoming,
                 Window { k, s, p },
@@ -493,19 +360,35 @@ impl Geometry {
             Self::Adaptive { oh, ow, h, w, c } => {
                 backward_adaptive(inputs, incoming, oh, ow, h, w, c)
             }
-            Self::Interp { oh, ow, h, w, c, linear } => {
-                backward_interp(inputs, incoming, (oh, ow), (h, w, c), linear)
-            }
-            Self::Norm { n, spatial, channels } => {
-                backward_norm(inputs, incoming, n, spatial, channels)
-            }
-            Self::Group { groups, n, spatial, channels } => {
-                backward_group(inputs, incoming, groups, n, spatial, channels)
-            }
+            Self::Interp {
+                oh,
+                ow,
+                h,
+                w,
+                c,
+                linear,
+            } => backward_interp(inputs, incoming, (oh, ow), (h, w, c), linear),
+            Self::Norm {
+                n,
+                spatial,
+                channels,
+            } => backward_norm(inputs, incoming, n, spatial, channels),
+            Self::Group {
+                groups,
+                n,
+                spatial,
+                channels,
+            } => backward_group(inputs, incoming, groups, n, spatial, channels),
             Self::Layer { rows, width } => backward_layer(inputs, incoming, rows, width),
-            Self::Conv2d { k, s, p, h, w, cin, cout } => {
-                backward_conv2d(inputs, incoming, Window { k, s, p }, (h, w, cin, cout))
-            }
+            Self::Conv2d {
+                k,
+                s,
+                p,
+                h,
+                w,
+                cin,
+                cout,
+            } => backward_conv2d(inputs, incoming, Window { k, s, p }, (h, w, cin, cout)),
         }
     }
 }

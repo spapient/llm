@@ -220,7 +220,7 @@ pub fn certificate(artifact: &[u8]) -> Result<Option<ledger::Note>> {
 fn check_shape(w: &[f32], m: usize, n: usize) -> Result<()> {
     let want = checked_area(m, n)?;
     check_dim_bounds(m, n)?;
-    if m == 0 || n == 0 || w.len() != want {
+    if [m, n].contains(&0) || w.len() != want {
         return Err(bad(format!("形状不合法 m={m} n={n} len={}", w.len())));
     }
     Ok(())

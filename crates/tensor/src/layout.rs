@@ -150,18 +150,15 @@ pub(crate) fn window<R: Rank>(
     dims: &R,
     steps: &R,
     base: usize,
-    slices: &[Slice],
+    slices: impl IntoIterator<Item = Slice>,
 ) -> Option<Layout<R>> {
-    if slices.len() > dims.as_slice().len() {
-        return None;
-    }
     let mut out = Layout {
         base,
         dims: dims.clone(),
         steps: steps.clone(),
     };
-    for (axis, slice) in slices.iter().enumerate() {
-        place(&mut out, axis, *slice)?;
+    for (axis, slice) in slices.into_iter().enumerate() {
+        place(&mut out, axis, slice)?;
     }
     Some(out)
 }

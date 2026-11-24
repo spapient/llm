@@ -1,5 +1,6 @@
 //! 职责：GGUF v3 只读解析——头部、KV 元数据表与张量信息表、数据区定位，以及分块反量化入口。
 
+use crate::codec::{decode_scalar, f16_to_f32, half_at};
 use diagnostic::{Code, Error, Result};
 use dtype::{DType, QType};
 use storage::bad;
@@ -519,46 +520,6 @@ fn blocked(kind: Kind, raw: &[u8], out: &mut [f32]) -> Result<()> {
         Some((_, decode)) => decode(raw, out),
         None => Err(bad(format!("{kind:?} 不是分块格式"))),
     }
-}
-
-/// 标量格式：固定宽度小端，逐元素转换；长度不符即报错（`what` 是类型名）。
-fn decode_scalar<const N: usize>(
-    raw: &[u8],
-    out: &mut [f32],
-    what: &str,
-    convert: impl Fn([u8; N]) -> f32,
-) -> Result<()> {
-    let (chunks, tail) = raw.as_chunks::<N>();
-    if !tail.is_empty() || chunks.len() != out.len() {
-        return Err(bad(format!("{what} 长度不符")));
-    }
-    for (slot, block) in out.iter_mut().zip(chunks) {
-        *slot = convert(*block);
-    }
-    Ok(())
-}
-
-/// 半精度位模式 → f32，含次正规、无穷与 NaN。
-///
-/// 写成无分支的位运算而不是三条 `return`：早退分支会让 LLVM 放弃对整个循环向量化
-/// （F16 张量逐元素都要走这里）。实测同进程交错 20 轮、两种输入分布均稳定快 1.23×，
-/// 且全部 65536 个位模式与旧实现逐位相同（NaN 也比 bits）。
-pub(crate) fn f16_to_f32(bits: u16) -> f32 {
-    let sign = u32::from(bits & 0x8000) << 16;
-    let exp = u32::from(bits >> 10) & 0x1F;
-    let frac = u32::from(bits & 0x03FF);
-    // 指数：1..=30 直接 +112 重偏；31（inf/NaN）必须抬到 f32 的 255，用 select 而非分支。
-    let e = if exp == 31 { 255 } else { exp + 112 };
-    let normal = sign | (e << 23) | (frac << 13);
-    // 次正规数 = frac×2⁻²⁴。把 (1+frac/1024)×2⁻¹⁴ 当作 f32 算出来再减去 2⁻¹⁴，
-    // 正好剩 frac×2⁻²⁴；省掉「数前导零再移位」那条分支。
-    let magic = f32::from_bits((frac + 0x1C400) << 13);
-    let denorm = (magic - f32::from_bits(0x3880_0000)).to_bits();
-    f32::from_bits(if exp == 0 { sign | denorm } else { normal })
-}
-
-fn half_at(raw: &[u8], at: usize) -> f32 {
-    f16_to_f32(u16::from_le_bytes([raw[at], raw[at + 1]]))
 }
 
 fn decode_q8(raw: &[u8], out: &mut [f32]) -> Result<()> {

@@ -246,18 +246,33 @@ fn latent_loss(
     total
 }
 
-/// 注意力三路对拍共用的会话装配：开裸会话后把 `q` / `k` / `v` 按初值登记成可训练参数。
-fn attention_session(
-    tape: Tape,
-    sizes: Sizes,
-    params: [Var; 3],
-    values: [&[f32]; 3],
-) -> Result<Session<Reference, Sgd>> {
+/// 任意元数参数图夹具：统一建图、形状表、参数登记与声明档/实例几何前向。
+fn parameter_session(
+    op: &str,
+    values: &[&[f32]],
+    output: usize,
+    geometry: Option<Geometry>,
+) -> Result<(Session<Reference, Sgd>, Vec<Var>, Var, Var)> {
+    let mut tape = Tape::new();
+    let params: Vec<Var> = values.iter().map(|_| tape.parameter()).collect();
+    let y = tape.record(op, &params).expect("记录 y");
+    let out = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
+    let mut entries: Vec<_> = params
+        .iter()
+        .zip(values)
+        .map(|(&var, value)| (var, value.len()))
+        .collect();
+    entries.extend([(y, output), (out, 1)]);
+    let sizes = support::sizes_of(&tape, &entries);
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
-    for (param, value) in params.into_iter().zip(values) {
+    for (&param, value) in params.iter().zip(values) {
         session.register_parameter(param, ParamRole::Trainable, value.to_vec())?;
     }
-    Ok(session)
+    match geometry {
+        Some(geometry) => session.bufs().compute_shaped_step(op, &params, y, geometry)?,
+        None => session.bufs().compute_step(op, &params, y)?,
+    }
+    Ok((session, params, y, out))
 }
 
 /// 一元"长度会变"的算子：`loss = Σ op(p)`，对 `p` 逐元素中心差分。

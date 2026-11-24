@@ -9,7 +9,9 @@ use diagnostic::Result;
 use crate::Codec;
 use crate::Segment;
 use crate::Wire;
-use crate::seg::{FOOTER_LEN, Stored, fixed, layout, lossless_entry, read_descs};
+pub(crate) use crate::container::MetricsAcc;
+pub use crate::container::{E8_RATIO, Metrics};
+use crate::seg::{FOOTER_LEN, Stored, fixed, layout, read_descs};
 use crate::writer::{GLOBAL_CRC, SEG_CRC};
 use storage::leb::u32_at;
 
@@ -196,135 +198,6 @@ fn decode_frame<'a>(raw: &'a [u8], codec: Codec, want: usize) -> Result<Cow<'a, 
 
 /// 词表段保留名：字节容器占位；字节 → `VocabSource` 解析留给后续刀，本层不接 tokenizer。
 pub const VOCAB_NAME: &str = "llm.vocab";
-
-/// E8 体积门：`ratio_param ≤ 1/24`（LLD §E8「24× 无损」）。
-pub const E8_RATIO: f64 = 1.0 / 24.0;
-
-/// 度量累加器：逐段把 numel、FP16 参考体积、无损判定与 REF 命中/节省字节收拢到一处。
-pub(crate) struct MetricsAcc {
-    params: u64,
-    v_fp16: u64,
-    ref_hits: usize,
-    ref_saved_bytes: u64,
-    lossless: bool,
-}
-
-impl Default for MetricsAcc {
-    /// 空容器按无损计：无条目即无有损段；逐段再用「与」收口，任一段有损即整体有损。
-    fn default() -> Self {
-        Self {
-            params: 0,
-            v_fp16: 0,
-            ref_hits: 0,
-            ref_saved_bytes: 0,
-            lossless: true,
-        }
-    }
-}
-
-impl MetricsAcc {
-    /// 累加单段；引用段计入命中数与逻辑字节节省。
-    pub(crate) fn add(&mut self, seg: &Stored) -> Result<()> {
-        let numel = tensor::product(seg.shape());
-        self.params = self.params.saturating_add(numel);
-        self.v_fp16 = self.v_fp16.saturating_add(numel.saturating_mul(2));
-        self.lossless = self.lossless && lossless_entry(seg);
-        if seg.is_ref() {
-            self.ref_hits += 1;
-            let logical = u64::try_from(seg.logical_len()?).unwrap_or(u64::MAX);
-            self.ref_saved_bytes = self.ref_saved_bytes.saturating_add(logical);
-        }
-        Ok(())
-    }
-
-    /// 收口为 [`Metrics`]：条目数与容器体积由调用方提供，体积比在此处现算。
-    pub(crate) fn finish(self, entries: usize, v_artifact: usize) -> Metrics {
-        let ratio = if self.v_fp16 == 0 {
-            0.0
-        } else {
-            v_artifact as f64 / self.v_fp16 as f64
-        };
-        Metrics {
-            entries,
-            params: self.params,
-            v_artifact,
-            v_fp16: self.v_fp16,
-            ratio,
-            lossless: self.lossless,
-            ref_hits: self.ref_hits,
-            ref_saved_bytes: self.ref_saved_bytes,
-        }
-    }
-}
-
-/// 容器度量：条目数、参数总数、体积对比与无损口径；全部在打开容器后现算。
-#[derive(Debug, Clone)]
-pub struct Metrics {
-    pub(crate) entries: usize,
-    pub(crate) params: u64,
-    pub(crate) v_artifact: usize,
-    pub(crate) v_fp16: u64,
-    pub(crate) ratio: f64,
-    pub(crate) lossless: bool,
-    pub(crate) ref_hits: usize,
-    pub(crate) ref_saved_bytes: u64,
-}
-
-impl Metrics {
-    /// 条目总数（段表行数，含引用段）。
-    pub fn entries(&self) -> usize {
-        self.entries
-    }
-
-    /// 参数总数：各段 `numel` 乘积之和，溢出饱和。
-    pub fn params(&self) -> u64 {
-        self.params
-    }
-
-    /// 容器文件字节数（含头部、对齐填充与两级 CRC）。
-    pub fn v_artifact(&self) -> usize {
-        self.v_artifact
-    }
-
-    /// 全量 FP16 参考体积：Σ `numel × 2`，溢出饱和。
-    pub fn v_fp16(&self) -> u64 {
-        self.v_fp16
-    }
-
-    /// 体积比：`V_artifact / V_FP16`；`V_FP16` 为 0 时记 0。
-    pub fn ratio(&self) -> f64 {
-        self.ratio
-    }
-
-    /// 参数级体积比 `V_artifact / (params × 2)`，即 LLD §E8 的 `ratio_param`。
-    pub fn ratio_param(&self) -> f64 {
-        let denom = self.params.saturating_mul(2);
-        if denom == 0 {
-            return 0.0;
-        }
-        self.v_artifact as f64 / denom as f64
-    }
-
-    /// E8 裁决：24× 体积门与逐位无损**同时**成立才算通过（LLD §E8「必须且不可降级」）。
-    pub fn e8_pass(&self) -> bool {
-        self.params > 0 && self.lossless && self.ratio_param() <= E8_RATIO
-    }
-
-    /// 无损标志：所有条目都不带量化方案，且 codec 属于无损的 `Store`/`Rans`/`Axes`。
-    pub fn lossless(&self) -> bool {
-        self.lossless
-    }
-
-    /// REF 命中数：被去重写成引用的段数。
-    pub fn ref_hits(&self) -> usize {
-        self.ref_hits
-    }
-
-    /// REF 节省字节数：引用段逻辑字节之和（未重复落盘的部分），溢出饱和。
-    pub fn ref_saved_bytes(&self) -> u64 {
-        self.ref_saved_bytes
-    }
-}
 
 // —— 容器生命周期模式、增量补丁与外部源导入桥接 ——
 
