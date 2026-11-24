@@ -93,7 +93,18 @@ macro_rules! norm_op {
     };
     ($ty:ident, $alias:ident, $op:tt, $scalars:expr, $gamma:expr, $beta:expr,
      $flops:expr, $reads:expr) => {
-        norm_op!($ty, $alias, $op, N * S * C, C, $scalars, $gamma, $beta, $flops, $reads);
+        norm_op!(
+            $ty,
+            $alias,
+            $op,
+            N * S * C,
+            C,
+            $scalars,
+            $gamma,
+            $beta,
+            $flops,
+            $reads
+        );
     };
 }
 
@@ -462,17 +473,10 @@ pub mod norm {
     /// 组归一化（声明档 `G=2, C=4, spatial=2, n=2`）。
     pub mod group {
         use super::super::*;
+        pub use super::{C, EPS, N, S};
 
         /// 归一化分组数。
         pub const G: usize = 2;
-        /// 通道数。
-        pub const C: usize = 4;
-        /// 步长或空间尺寸。
-        pub const S: usize = 2;
-        /// 批大小。
-        pub const N: usize = 2;
-        /// 数值稳定性 epsilon。
-        pub const EPS: f32 = 1e-5;
 
         pub(crate) fn run<S: Scalar>(
             x: &[S],
@@ -492,10 +496,6 @@ pub mod norm {
             GroupNormModel,
             GroupNorm,
             "group_norm_f32",
-            64,
-            64,
-            N * S * C,
-            C,
             vec![
                 ("N", (N * S * C) as i64),
                 ("G", G as i64),
@@ -512,15 +512,7 @@ pub mod norm {
     /// 实例归一化（声明档 `C=4, spatial=2, n=2`）。
     pub mod instance {
         use super::super::*;
-
-        /// 通道数。
-        pub const C: usize = 4;
-        /// 步长或空间尺寸。
-        pub const S: usize = 2;
-        /// 批大小。
-        pub const N: usize = 2;
-        /// 数值稳定性 epsilon。
-        pub const EPS: f32 = 1e-5;
+        pub use super::{C, EPS, N, S};
 
         pub(crate) fn run<S: Scalar>(
             x: &[S],
@@ -539,10 +531,6 @@ pub mod norm {
             InstanceNormModel,
             InstanceNorm,
             "instance_norm_f32",
-            64,
-            64,
-            N * S * C,
-            C,
             vec![("N", (N * S * C) as i64), ("C", C as i64), ("S", S as i64)],
             0.75,
             -0.25,
@@ -554,13 +542,12 @@ pub mod norm {
     /// 层归一化（声明档 `3 行 × 4 宽`）。
     pub mod layer {
         use super::super::*;
+        pub use super::EPS;
 
         /// 层归一化行数。
         pub const R: usize = 3;
         /// 输入宽度或归一化宽度。
         pub const W: usize = 4;
-        /// 数值稳定性 epsilon。
-        pub const EPS: f32 = 1e-5;
 
         pub(crate) fn run<S: Scalar>(
             x: &[S],
@@ -579,8 +566,6 @@ pub mod norm {
             LayerNormModel,
             LayerNorm,
             "layer_norm_f32",
-            64,
-            64,
             R * W,
             W,
             vec![("N", (R * W) as i64), ("R", R as i64), ("W", W as i64)],

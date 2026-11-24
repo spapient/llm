@@ -277,64 +277,27 @@ fn sum_grad(op: &str, geometry: Geometry, x0: &[f32]) -> Result<()> {
     })
 }
 
-#[test]
-fn max_pool1d_matches_central_differences() -> Result<()> {
-    let total = nn::conv::max_pool1d::L;
-    let out = nn::conv::max_pool1d::OL;
-    let x0 = ramp(total);
-    check_shaped_grad("max_pool1d_f32", &x0, out, |px| {
-        let mut y = vec![0.0f32; out];
-        nn::conv::max_pool1d::forward(tensor::View::one(px), &mut y).expect("前向");
-        y.iter().sum()
-    })
+/// 声明档一元前向的中心差分测试由同一张参数表生成，测试名与覆盖点保持独立。
+macro_rules! declared_sum_grad {
+    ($( $name:ident => ($module:ident, $input:expr, $output:expr) ),* $(,)?) => {$(
+        #[test]
+        fn $name() -> Result<()> {
+            let (input, output) = ($input, $output);
+            check_shaped_grad(concat!(stringify!($module), "_f32"), &ramp(input), output, |px| {
+                let mut y = vec![0.0f32; output];
+                nn::conv::$module::forward(tensor::View::one(px), &mut y).expect("前向");
+                y.iter().sum()
+            })
+        }
+    )*};
 }
 
-#[test]
-fn max_pool2d_matches_central_differences() -> Result<()> {
-    let side = nn::conv::max_pool2d::H;
-    let x0 = ramp(side * side);
-    check_shaped_grad("max_pool2d_f32", &x0, side * side, |px| {
-        let mut y = vec![0.0f32; side * side];
-        nn::conv::max_pool2d::forward(tensor::View::one(px), &mut y).expect("前向");
-        y.iter().sum()
-    })
-}
-
-#[test]
-fn avg_pool2d_matches_central_differences() -> Result<()> {
-    let side = nn::conv::avg_pool2d::H;
-    let x0 = ramp(side * side);
-    check_shaped_grad("avg_pool2d_f32", &x0, side * side, |px| {
-        let mut y = vec![0.0f32; side * side];
-        nn::conv::avg_pool2d::forward(tensor::View::one(px), &mut y).expect("前向");
-        y.iter().sum()
-    })
-}
-
-#[test]
-fn adaptive_pool_matches_central_differences() -> Result<()> {
-    let (side, out) = (nn::conv::adaptive_pool::H, nn::conv::adaptive_pool::OH);
-    let x0 = ramp(side * side);
-    check_shaped_grad("adaptive_pool_f32", &x0, out * out, |px| {
-        let mut y = vec![0.0f32; out * out];
-        nn::conv::adaptive_pool::forward(tensor::View::one(px), &mut y).expect("前向");
-        y.iter().sum()
-    })
-}
-
-#[test]
-fn interpolate_matches_central_differences() -> Result<()> {
-    let (h, w, out) = (
-        nn::conv::interpolate::H,
-        nn::conv::interpolate::W,
-        nn::conv::interpolate::OH,
-    );
-    let x0 = ramp(h * w);
-    check_shaped_grad("interpolate_f32", &x0, out * out, |px| {
-        let mut y = vec![0.0f32; out * out];
-        nn::conv::interpolate::forward(tensor::View::one(px), &mut y).expect("前向");
-        y.iter().sum()
-    })
+declared_sum_grad! {
+    max_pool1d_matches_central_differences => (max_pool1d, nn::conv::max_pool1d::L, nn::conv::max_pool1d::OL),
+    max_pool2d_matches_central_differences => (max_pool2d, nn::conv::max_pool2d::H * nn::conv::max_pool2d::W, nn::conv::max_pool2d::H * nn::conv::max_pool2d::W),
+    avg_pool2d_matches_central_differences => (avg_pool2d, nn::conv::avg_pool2d::H * nn::conv::avg_pool2d::W, nn::conv::avg_pool2d::H * nn::conv::avg_pool2d::W),
+    adaptive_pool_matches_central_differences => (adaptive_pool, nn::conv::adaptive_pool::H * nn::conv::adaptive_pool::W, nn::conv::adaptive_pool::OH * nn::conv::adaptive_pool::OW),
+    interpolate_matches_central_differences => (interpolate, nn::conv::interpolate::H * nn::conv::interpolate::W, nn::conv::interpolate::OH * nn::conv::interpolate::OW),
 }
 
 /// 声明档三元输入共用同一中心差分骨架；每条仍生成独立命名的测试。

@@ -219,9 +219,15 @@ pub fn certificate(artifact: &[u8]) -> Result<Option<ledger::Note>> {
 /// 形状判据：维数可写入 `u32`、均非零、乘积不溢出且与元素数一致。
 fn check_shape(w: &[f32], m: usize, n: usize) -> Result<()> {
     let want = checked_area(m, n)?;
+    check_dim_bounds(m, n)?;
     if m == 0 || n == 0 || w.len() != want {
         return Err(bad(format!("形状不合法 m={m} n={n} len={}", w.len())));
     }
+    Ok(())
+}
+
+/// 两个维度都必须落在线上 `u32` 范围内。
+fn check_dim_bounds(m: usize, n: usize) -> Result<()> {
     if u32::try_from(m).is_err() || u32::try_from(n).is_err() {
         return Err(bad("形状维度超过线上 u32 范围"));
     }

@@ -1,35 +1,42 @@
-//! 形状：每个轴的长度与元素数 / 字节数推导。
+//! 形状、切片与秩见证：轴长推导和轴容器只在这里定义。
 
 use core::ops::Range;
 
 use dtype::DType;
 
-pub use order::Order;
+/// 元素在扁平缓冲里的排列顺序。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Order {
+    /// 行主序：最后一轴相邻（C / NumPy 默认）。
+    RowMajor,
+    /// 列主序：第一轴相邻（Fortran / 列主序矩阵接口）。
+    ColMajor,
+}
 
-/// 轴长度的整数类型：元素数乘积 [`product`] 需要的最小接口。
+/// 轴长度支持的整数运算。
 pub trait AxisLen: Copy {
-    /// 乘法单位元：空轴序列（标量）的元素个数。
+    /// 空轴序列（标量）的元素数。
     const ONE: Self;
 
-    /// 饱和乘法。
+    /// 饱和乘法，避免不受信任的形状回绕成小元素数。
     fn mul_saturated(self, rhs: Self) -> Self;
 }
 
-impl AxisLen for usize {
-    const ONE: Self = 1;
+macro_rules! axis_len {
+    ($($integer:ty),+ $(,)?) => {
+        $(
+            impl AxisLen for $integer {
+                const ONE: Self = 1;
 
-    fn mul_saturated(self, rhs: Self) -> Self {
-        usize::saturating_mul(self, rhs)
-    }
+                fn mul_saturated(self, rhs: Self) -> Self {
+                    self.saturating_mul(rhs)
+                }
+            }
+        )+
+    };
 }
 
-impl AxisLen for u64 {
-    const ONE: Self = 1;
-
-    fn mul_saturated(self, rhs: Self) -> Self {
-        u64::saturating_mul(self, rhs)
-    }
-}
+axis_len!(usize, u64);
 
 /// 各轴长度的饱和乘积；空切片为 1（标量）。
 #[must_use]
@@ -37,22 +44,116 @@ pub fn product<A: AxisLen>(dims: &[A]) -> A {
     dims.iter().fold(A::ONE, |acc, dim| acc.mul_saturated(*dim))
 }
 
-/// 按 `order` 把连续步长写进 `steps`：`steps[axis]` 是该侧全部轴长之积。
-///
-/// 累乘是串行依赖，保留循环。这是"连续"的**唯一**定义：[`Shape::strides`]、编译期秩与运行期秩的
-/// [`Rank::contiguous`](crate::Rank::contiguous)、以及 [`Tensor::is_contiguous`](crate::Tensor)
-/// 的期望值全部经由本函数，任何一处口径变更不会漏改第二遍。
+/// 按 `order` 原地推导连续步长，是所有构造与连续性判断的唯一规则。
 pub(crate) fn accumulate(dims: &[usize], steps: &mut [usize], order: Order) {
-    let mut acc = 1usize;
+    let mut stride = 1usize;
     for offset in 0..steps.len() {
-        // 行主序从最后一轴起累积，列主序从第一轴起——同一段循环，只有轴向不同。
         let axis = match order {
             Order::RowMajor => steps.len() - 1 - offset,
             Order::ColMajor => offset,
         };
         let Some(&dim) = dims.get(axis) else { break };
-        steps[axis] = acc;
-        acc = acc.saturating_mul(dim);
+        steps[axis] = stride;
+        stride = stride.saturating_mul(dim);
+    }
+}
+
+/// 秩见证：编译期定长 `[usize; D]` 或运行期变长 `Vec<usize>`。
+///
+/// 实现只需提供切片访问和受检迭代构造；重排、连续步长与填充均有统一默认实现。
+pub trait Rank: Clone {
+    /// 轴值切片。
+    fn as_slice(&self) -> &[usize];
+
+    /// 可写轴值切片。
+    fn as_slice_mut(&mut self) -> &mut [usize];
+
+    /// 从迭代器构造；元素数与目标秩不符时返回 `None`。
+    #[must_use]
+    fn from_iter(values: impl IntoIterator<Item = usize>) -> Option<Self>;
+
+    /// 从切片构造；长度与目标秩不符时返回 `None`。
+    #[must_use]
+    fn from_slice(values: &[usize]) -> Option<Self> {
+        Self::from_iter(values.iter().copied())
+    }
+
+    /// 构造 `len` 个相同轴值。
+    #[must_use]
+    fn filled(len: usize, value: usize) -> Option<Self> {
+        Self::from_iter(core::iter::repeat_n(value, len))
+    }
+
+    /// 按指定排列顺序推导连续步长。
+    #[must_use]
+    fn ordered(dims: &[usize], order: Order) -> Option<Self> {
+        let mut steps = Self::filled(dims.len(), 0)?;
+        accumulate(dims, steps.as_slice_mut(), order);
+        Some(steps)
+    }
+
+    /// 行主序连续步长。
+    #[must_use]
+    fn contiguous(dims: &[usize]) -> Option<Self> {
+        Self::ordered(dims, Order::RowMajor)
+    }
+
+    /// 交换两轴；轴越界返回 `None`。
+    #[must_use]
+    fn swapped(&self, a: usize, b: usize) -> Option<Self> {
+        if a >= self.as_slice().len() || b >= self.as_slice().len() {
+            return None;
+        }
+        let mut out = self.clone();
+        out.as_slice_mut().swap(a, b);
+        Some(out)
+    }
+
+    /// 按排列重排；长度或轴值不合法返回 `None`。
+    #[must_use]
+    fn permuted(&self, order: &[usize]) -> Option<Self> {
+        if order.len() != self.as_slice().len() {
+            return None;
+        }
+        Self::from_iter(
+            order
+                .iter()
+                .map(|&axis| self.as_slice().get(axis).copied())
+                .collect::<Option<Vec<_>>>()?,
+        )
+    }
+}
+
+impl Rank for Vec<usize> {
+    fn as_slice(&self) -> &[usize] {
+        self
+    }
+
+    fn as_slice_mut(&mut self) -> &mut [usize] {
+        self
+    }
+
+    fn from_iter(values: impl IntoIterator<Item = usize>) -> Option<Self> {
+        Some(values.into_iter().collect())
+    }
+}
+
+impl<const D: usize> Rank for [usize; D] {
+    fn as_slice(&self) -> &[usize] {
+        self
+    }
+
+    fn as_slice_mut(&mut self) -> &mut [usize] {
+        self
+    }
+
+    fn from_iter(values: impl IntoIterator<Item = usize>) -> Option<Self> {
+        let mut values = values.into_iter();
+        let mut out = [0; D];
+        for slot in &mut out {
+            *slot = values.next()?;
+        }
+        values.next().is_none().then_some(out)
     }
 }
 
@@ -71,7 +172,7 @@ impl Shape {
         &self.0
     }
 
-    /// 轴数（rank）。标量为 0。
+    /// 轴数；标量为 0。
     pub fn rank(&self) -> usize {
         self.0.len()
     }
@@ -81,20 +182,17 @@ impl Shape {
         self.0.get(axis).copied()
     }
 
-    /// 元素个数：各轴长度之积，空形状为 1。
+    /// 元素个数；空形状为 1。
     pub fn numel(&self) -> usize {
         product(&self.0)
     }
 
-    /// 该元素类型下需要的字节数（按位向上取整，`U4` 会小于 `numel`）。
+    /// 该元素类型下需要的字节数，亚字节精度按位向上取整。
     pub fn element_bytes(&self, dtype: DType) -> usize {
         element_bytes(self.numel(), dtype)
     }
 
-    /// 按 `order` 推出的连续步长：与 [`Tensor`](crate::Tensor) 构造期同一套累积规则。
-    ///
-    /// 步长不是另一种形状，就是"每轴一个 `usize`"的同一类数，因此直接给 [`Vec`]——不必再引入
-    /// 一个平行容器，再写一份 `new` / `as_slice` / `From`。
+    /// 按 `order` 推导连续步长。
     pub fn strides(&self, order: Order) -> Vec<usize> {
         let mut strides = vec![0; self.0.len()];
         accumulate(&self.0, &mut strides, order);
@@ -102,57 +200,36 @@ impl Shape {
     }
 }
 
-/// 元素个数 → 字节数：`usize` 溢出按上限夹取（`U4` 按位向上取整，会小于 `numel`）。
+/// 元素个数转字节数；地址空间溢出按上限夹取。
 pub(crate) fn element_bytes(numel: usize, dtype: DType) -> usize {
     let numel = u64::try_from(numel).unwrap_or(u64::MAX);
     usize::try_from(dtype.bytes_for(numel)).unwrap_or(usize::MAX)
 }
 
-/// 让运行期秩的 [`Tensor`](crate::Tensor) 直接吃 [`Shape`]，既有调用点不必改写法。
 impl From<Shape> for Vec<usize> {
     fn from(shape: Shape) -> Self {
         shape.0
     }
 }
 
-mod order {
-    //! 排列顺序：同一组元素在扁平缓冲里沿哪个轴相邻。
-
-    /// 元素在扁平缓冲里的排列顺序。
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub enum Order {
-        /// 行主序：最后一轴相邻（C / numpy 默认）。
-        RowMajor,
-        /// 列主序：第一轴相邻（Fortran / cuBLAS 的 `T` 位）。
-        ColMajor,
-    }
-}
-
-/// 一段切片：`start..end` 加上读取步长（Burn 的 `s![..;2]`）。
-///
-/// 步长只改元数据里的 `steps[axis]`，所以带步长的 [`slice`](crate::Tensor::slice) 依旧一个
-/// 元素都不搬——降采样、隔行取列都是视图。`Range<usize>` 经 `From` 直接当连续段用。
+/// 半开切片区间及读取步长。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Slice {
     /// 起始下标（含）。
     pub start: usize,
     /// 结束下标（不含）。
     pub end: usize,
-    /// 读取步长：`1` 即连续。
+    /// 读取步长，必须大于 0。
     pub step: usize,
 }
 
 impl Slice {
     /// 连续段，等价于 `start..end`。
     pub const fn new(start: usize, end: usize) -> Self {
-        Self {
-            start,
-            end,
-            step: 1,
-        }
+        Self { start, end, step: 1 }
     }
 
-    /// 跳着读的段：该轴每 `step` 个位置取一个。
+    /// 每隔 `step` 个位置读取一次。
     pub const fn stepped(start: usize, end: usize, step: usize) -> Self {
         Self { start, end, step }
     }

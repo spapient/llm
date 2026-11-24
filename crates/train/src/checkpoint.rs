@@ -2,9 +2,9 @@
 
 use super::{ParamSlot, SITE, Session, SlotMeta};
 use crate::loss::ObjectiveConfig;
-use crate::{Kernel, LoaderConfig};
 use crate::optimizer::{Optimizer, OwnedSlot};
 use crate::pool::Bufs;
+use crate::{Kernel, LoaderConfig};
 use autograd::Var;
 use diagnostic::{Code, Error, Result};
 use shard::Collective;

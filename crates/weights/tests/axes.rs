@@ -55,6 +55,48 @@ fn dict_payload_has_stable_wire_bytes() {
 }
 
 #[test]
+fn dictionary_indices_roundtrip_at_every_width_boundary() {
+    for unique in [1usize, 256, 257, 65_536, 65_537] {
+        let weights: Vec<f32> = (0..unique * 2)
+            .map(|index| f32::from_bits((index % unique) as u32))
+            .collect();
+        let payload = dict_payload(&weights).expect("重复输入必须可用字典");
+        let decoded = decode_dict(&mut Cursor::new(&payload), weights.len()).expect("字典解码");
+        assert!(
+            decoded
+                .iter()
+                .zip(&weights)
+                .all(|(left, right)| left.to_bits() == right.to_bits()),
+            "唯一值数量 {unique} 的索引宽度往返失败"
+        );
+    }
+}
+
+#[test]
+fn dictionary_rejects_an_unknown_index_width() {
+    let mut bytes = vec![0]; // store 标记
+    for word in [3, 1, 0, 0] {
+        bytes.extend_from_slice(&word.to_le_bytes());
+    }
+    let error = decode_dict(&mut Cursor::new(&bytes), 1).expect_err("宽度 3 不合法");
+    assert!(error.to_string().contains("索引宽度 3"), "{error}");
+}
+
+#[test]
+fn overflowing_or_unrepresentable_shapes_are_errors() {
+    let error = search(&[], usize::MAX, 2).expect_err("形状乘法不得回绕");
+    assert!(error.to_string().contains("形状溢出"), "{error}");
+    let error = compress(&[], usize::MAX, 2).expect_err("字节入口同样不得回绕");
+    assert!(error.to_string().contains("形状溢出"), "{error}");
+
+    #[cfg(target_pointer_width = "64")]
+    {
+        let error = search(&[], u32::MAX as usize + 1, 1).expect_err("维度必须能写入 u32");
+        assert!(error.to_string().contains("u32"), "{error}");
+    }
+}
+
+#[test]
 fn sparse_roundtrips_zero_heavy() {
     let mut w = vec![0.0f32; 4096];
 

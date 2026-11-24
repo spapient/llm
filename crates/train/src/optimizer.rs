@@ -766,7 +766,6 @@ fn scale_factor(rows: usize, cols: usize) -> f32 {
     SCALE_COEF * (rows.max(cols) as f32).sqrt()
 }
 
-
 #[cfg(test)]
 #[path = "../tests/optimizer_tests.rs"]
 mod tests;

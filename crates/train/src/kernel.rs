@@ -576,6 +576,11 @@ pub(crate) fn rope_grad(x: &[f32], grad: &[f32]) -> Vec<f32> {
     dx
 }
 
+/// Newton–Schulz 的迭代次数：Muon 参考实现取 5，够把 `[0.3, 3]` 的谱压到 1 附近。
+const NS_STEPS: usize = 5;
+
+/// 五次迭代的多项式系数 `(a, b, c)`：`X ← aX + b(XA) + c(XA²)`，`A` 是小边上的 Gram。
+const NS_COEF: (f32, f32, f32) = (3.4445, -4.7750, 2.0315);
 
 /// 近似正交化：先按 Frobenius 范数归一，再迭代 [`NS_STEPS`] 次 Newton–Schulz。
 pub(crate) fn orthogonalize(grad: &[f32], rows: usize, cols: usize, eps: f32) -> Vec<f32> {
