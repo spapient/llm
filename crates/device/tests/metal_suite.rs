@@ -6,7 +6,7 @@
 //! - `harness`：真机夹具（设备/队列、上传回读、CPU 对拍、计时）。
 //! - `backends` / `metal`：被测面。
 
-use llm_device::executor::*;
+use engine::metal::*;
 
 pub use llm_device::tiled;
 

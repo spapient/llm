@@ -310,6 +310,37 @@ macro_rules! unary_tier {
     };
 }
 
+/// f16 档一元算子注册面：与 f32 共享同一份泛型 `apply` 骨架，只差档配置（见 [`unary_tier`]）。
+/// 档实例住在基础设施侧而非 f32 算子目录，避免目录文件触及行数上限；新增一档即在此加一次调用。
+pub mod abs_f16 {
+    //! 逐元素绝对值（f16 档）：`y[n] = |a[n]|`。
+    crate::unary_tier!(
+        Abs,
+        AbsF16,
+        "abs_f16",
+        "f16",
+        crate::model::DType::F16,
+        half::f16,
+        crate::einsum::f16_io_operands(),
+        crate::unary::sample_f16::<Abs>,
+        crate::unary::reference_f16::<Abs>,
+        |x| x.abs(),
+        false
+    );
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        crate::unary::test_support::unary_tier_tests!(
+            crate::unary::sample_f16::<Abs>,
+            crate::unary::reference_f16::<Abs>,
+            half::f16,
+            f16,
+            forward
+        );
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod test_support {
     include!("../../tests/kernel_unary_test_support.rs");

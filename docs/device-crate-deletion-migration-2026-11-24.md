@@ -1,6 +1,6 @@
 # device crate 删除与设备内核下沉迁移方案（2026-11-24）
 
-- 状态：方案已确认归属，批次施工中（任务 #29/#30/#31/#32）
+- 状态：**#29（Metal FFI Executor → engine）已落地，check/clippy/fmt/testkit 全绿**；#30/#31/#32 施工中（任务 #30/#31/#32）
 - 触发：`crates/device` 不应再持有设备内核正文；整机删除，职责按层归位到对应设备专属代码
 - 范围：`crates/device` 全部 `src`（7218 行）+ `tests`（3712 行）
 
@@ -16,8 +16,8 @@
 | `cli/src/cutile.rs:34` | `device::backends::install()` | #30 |
 | `cli/src/platform.rs:3` | `device::platform::{Machine, Row, Standing, audit}` | #30 |
 | `cli/tests/run.rs:8` | `::device::backends::install` | #30 |
-| `cli/tests/run.rs:94,106,114,128,136,187` | `::device::executor::MetalExecutor` | #29 |
-| `cli/tests/device.rs:17,31,45` | `::device::executor::MetalExecutor` | #29 |
+| `cli/tests/run.rs:94,106,114,128,136,187` | ~~`::device::executor::MetalExecutor`~~ → `::engine::metal::MetalExecutor` | #29 ✅ |
+| `cli/tests/device.rs:17,31,45` | ~~`::device::executor::MetalExecutor`~~ → `::engine::metal::MetalExecutor` | #29 ✅ |
 
 甄别排除（**不是** `llm-device` 依赖，是各自 crate 的内部同名模块，搬迁时不得改动）：
 
@@ -53,6 +53,7 @@
   - `engine::exec::{Executor, Queued, check_operands, enqueue}` → `crate::queue::{...}`（`exec.rs` 已 re-export，可统一走 `crate::exec`）
 - 岛：`#![allow(unsafe_code)]` 随迁；对外类型 `MetalDevice / MetalExecutor / MetalBuf / MetalPipeline / MetalCommandQueue` 由 engine 重导出。
 - 连带测试：`tests/metal_executor_harness.rs`(579)、`tests/metal/mod.rs`(30) 及其下 `attention/backward/contract/correctness/gemm/tensor` 与后端生成链耦合，**不在 #29 迁**，随 #30/#31 对应链回迁；#29 先回迁生产代码并摘掉 executor.rs 末尾的 test mod 挂载。
+- **#29 落地记录（已闭环）**：生产代码落 `crates/engine/src/metal.rs`，engine lib 以 `#[cfg(target_os="macos")] pub mod metal;` 挂出；device `platform.rs:118` 的 Metal 探测改指 `engine::metal::MetalDevice`，`device/src/executor.rs` 已删、lib 模块声明已撤；cli 测试与 `device/tests/metal_suite.rs` 的 executor 类型路径改走 `engine::metal`；`testkit/src/boundary.rs` 的 `UNSAFE_ISLANDS` 岛路径改 `crates/engine/src/metal.rs`（计数 1）；ADR 0035 §6 岛表、`ARCHITECTURE.md` 所有权表 L139（归属 device→engine）与 L20/L64 死链同步；engine lib 头部注释口径更新。harness / `metal/*` 真机夹具仍挂 `device/tests/`，待 #30/#31 随链回迁。
 
 ### 2.2 A/E/B → shard（批次 #30）
 
