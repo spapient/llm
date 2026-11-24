@@ -363,7 +363,8 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
                 )
                 .with(SITE));
             };
-            let params = slots[idx].params().to_vec();
+            // 参数向量随视图整块移交；同步/步进后由原所有者归还，不再为每次更新复制一份。
+            let params = std::mem::take(&mut slots[idx].params);
             views.push(OwnedSlot {
                 params,
                 grads,
@@ -378,7 +379,7 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
     /// 归还缓冲；是否清空梯度由步进收尾决定。
     pub(super) fn return_views(slots: &mut [ParamSlot], bufs: &mut Bufs<K>, views: Vec<OwnedSlot>) {
         for (slot, view) in slots.iter_mut().zip(views) {
-            slot.params.copy_from_slice(&view.params);
+            slot.params = view.params;
             bufs.put_back_gradient(slot.var(), view.grads);
         }
     }
@@ -395,7 +396,7 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
     /// 把优化器写回后的参数值镜像回激活缓冲，供下一轮前向复用。
     pub(super) fn mirror_params(slots: &[ParamSlot], bufs: &mut Bufs<K>) -> Result<()> {
         for slot in slots {
-            bufs.load(slot.var(), Data::F32(slot.params.clone()))
+            bufs.overwrite_f32(slot.var(), &slot.params)
                 .map_err(|error| error.with(SITE))?;
         }
         Ok(())
