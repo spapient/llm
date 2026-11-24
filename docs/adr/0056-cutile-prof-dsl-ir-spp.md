@@ -44,7 +44,7 @@ WebGPU/wgpu/CPU，配算子融合与 autotune；`burn-cubecl` 25,240 行、`burn
   等 23 变体 + MX 族），prof 不另造类型枚举。
 - 优先路径已配置驱动：`cap.rs` 协商按 TOML 降级链序命中第一个可行变体即停（`Path::is_head` 标识
   首选），不做自动打分；`plan.rs` 按声明顺序取 tile，roofline 只给估值。
-- 主机真内核隔离子岛 `native/`：f32 NEON/AVX2 8×8 `gemm8x8`、i8 dotprod 4×4 `sdot`、Apple SME
+- 主机真内核隔离子岛平铺为 `native.rs` 与 `native_{gemm8x8,i8,sme}.rs`：f32 NEON/AVX2 8×8 `gemm8x8`、i8 dotprod 4×4 `sdot`、Apple SME
   16×64 ZA 外积；`gemm_negotiate` 经编译期配置表 `GEMM_KERNELS` 择优，arch 门 / 特性探测 / unsafe
   全收在岛内。
 - 存量越线：`einsum.rs` 1054 行，超单文件 600 硬线（N3 一票否决项）。

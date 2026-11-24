@@ -19,71 +19,108 @@ pub enum AttentionAlgo {
 }
 
 impl AttentionAlgo {
-    /// 算法对应的已注册算子名。
+    /// 算法对应的 prefill 算子名。
     pub fn operator(self) -> &'static str {
+        self.select(Attention::NAIVE, Attention::FLASH)
+    }
+
+    /// 算法分派只写一次；各层声明自己的两个算子名。
+    fn select(self, naive: &'static str, flash: &'static str) -> &'static str {
         match self {
-            Self::Naive => Attention::NAIVE,
-            Self::Flash => Attention::FLASH,
+            Self::Naive => naive,
+            Self::Flash => flash,
         }
     }
 }
 
-/// 注意力层。
-#[crate::spec(name = $name, out = [$seq, $head_dim], ops = [$op])]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Attention {
-    seq: usize,
-    head_dim: usize,
-    algo: AttentionAlgo,
+/// 声明一类二维注意力层：注解定义形状，表项定义行轴、算子和代价口径。
+///
+/// 公共骨架只生成一次；`bounds` 仍由每个声明显式给出，避免混淆 prefill 与 decode 的历史轴。
+macro_rules! attention_layer {
+    (
+        $(#[$meta:meta])*
+        $layer:ident {
+            spec: $spec:ident,
+            rows: $rows:ident,
+            kind: $kind:literal,
+            rows_doc: $rows_doc:literal,
+            naive: $naive:literal,
+            flash: $flash:literal,
+            bounds: |$this:ident| $bounds:expr $(,)?
+        }
+    ) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+        pub struct $layer {
+            $rows: usize,
+            head_dim: usize,
+            algo: AttentionAlgo,
+        }
+
+        impl $layer {
+            /// 朴素路径算子名。
+            pub const NAIVE: &str = $naive;
+            /// Flash 路径算子名。
+            pub const FLASH: &str = $flash;
+
+            #[doc = concat!("由层名、`", stringify!($rows), "`、头宽与算法构造。")]
+            ///
+            /// # Errors
+            ///
+            #[doc = concat!("`", stringify!($rows), "` / `head_dim` 任一为零（[`Code::Invalid`]）；")]
+            /// 算子未注册或没有语义表（[`ContractSpec::new`] 上报）。
+            pub fn new(
+                name: impl Into<String>,
+                $rows: usize,
+                head_dim: usize,
+                algo: AttentionAlgo,
+            ) -> Result<Self> {
+                crate::nonzero_all(
+                    concat!("nn::", stringify!($layer), "::new"),
+                    $kind,
+                    &[(stringify!($rows), $rows), ("head_dim", head_dim)],
+                )?;
+                Ok(Self {
+                    spec: $spec!(name, $rows, head_dim, algo.select(Self::NAIVE, Self::FLASH))?,
+                    $rows,
+                    head_dim,
+                    algo,
+                })
+            }
+
+            crate::accessors! {
+                #[doc = $rows_doc]
+                $rows -> usize = $rows,
+                /// 头宽（轴 `d`）。
+                head_dim -> usize = head_dim,
+                /// 选用的算法。
+                algo -> AttentionAlgo = algo,
+            }
+        }
+
+        impl Contract for $layer {
+            spec_accessors!();
+
+            fn bounds(&self) -> BoundsResult {
+                let $this = self;
+                $bounds
+            }
+        }
+    };
 }
 
-impl Attention {
-    /// 朴素注意力算子名。
-    pub const NAIVE: &str = "attention_f32";
-    /// Flash 注意力算子名。
-    pub const FLASH: &str = "flash_attention_f32";
-
-    /// 由层名、序列长、头宽与算法构造。
-    ///
-    /// # Errors
-    ///
-    /// `seq` / `head_dim` 任一为零（[`Code::Invalid`]）；算子未在 `registry` 注册或没有语义表
-    /// （[`crate::ContractSpec::new`] 上报）。
-    pub fn new(
-        name: impl Into<String>,
-        seq: usize,
-        head_dim: usize,
-        algo: AttentionAlgo,
-    ) -> Result<Self> {
-        crate::nonzero_all(
-            "nn::Attention::new",
-            "注意力层 ",
-            &[("seq", seq), ("head_dim", head_dim)],
-        )?;
-        Ok(Self {
-            spec: __layer_spec_Attention!(name, seq, head_dim, algo.operator())?,
-            seq,
-            head_dim,
-            algo,
-        })
-    }
-
-    crate::accessors! {
-        /// 序列长（轴 `s`）。
-        seq -> usize = seq,
-        /// 头宽（轴 `d`）。
-        head_dim -> usize = head_dim,
-        /// 选用的算法。
-        algo -> AttentionAlgo = algo,
-    }
-}
-
-impl Contract for Attention {
-    spec_accessors!();
-
-    fn bounds(&self) -> BoundsResult {
-        // 注意力声明了输入轴 `s` 与输出轴 `d`，按投影角色翻译宽度；代价仍来自算子语义表。
-        Bounds::of_op(self.algo.operator(), self.seq, self.head_dim).map(Some)
+attention_layer! {
+    /// 注意力层。
+    #[crate::spec(name = $name, out = [$seq, $head_dim], ops = [$op])]
+    Attention {
+        spec: __layer_spec_Attention,
+        rows: seq,
+        kind: "注意力层 ",
+        rows_doc: "序列长（轴 `s`）。",
+        naive: "attention_f32",
+        flash: "flash_attention_f32",
+        // 输入轴 `s` 与输出轴 `d` 按投影角色翻译宽度；代价仍来自算子语义表。
+        bounds: |layer| Bounds::of_op(layer.algo().operator(), layer.seq(), layer.head_dim()).map(Some),
     }
 }
 
@@ -93,72 +130,22 @@ impl Contract for Attention {
 // 而解码期每步只来少量新行（`q_rows` 常为 1），历史长度 `h` 是运行期状态、不是层的形状。
 // 因此本层的 `bounds` 走算子语义表里固定的声明档 `HIST = 4`，是**松下界**（下界允许偏松，
 // 但只要装配侧的 KV 缓存长于声明档，真实代价就更高，方向不会反）。
-
-/// 解码期注意力层：输出 `[q_rows, head_dim]`，历史长度由算子语义表的声明档给出。
-#[crate::spec(name = $name, out = [$q_rows, $head_dim], ops = [$op])]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct DecodeAttention {
-    q_rows: usize,
-    head_dim: usize,
-    algo: AttentionAlgo,
-}
-
-impl DecodeAttention {
-    /// 朴素 decode 算子名。
-    pub const NAIVE: &str = "decode_attention_f32";
-    /// Flash decode 算子名。
-    pub const FLASH: &str = "decode_flash_attention_f32";
-
-    /// 由层名、query 行数、头宽与算法构造。
-    ///
-    /// # Errors
-    ///
-    /// `q_rows` / `head_dim` 任一为零（[`Code::Invalid`]）；算子未注册或没有语义表
-    /// （[`ContractSpec::new`] 上报）。
-    pub fn new(
-        name: impl Into<String>,
-        q_rows: usize,
-        head_dim: usize,
-        algo: AttentionAlgo,
-    ) -> Result<Self> {
-        crate::nonzero_all(
-            "nn::DecodeAttention::new",
-            "解码注意力层 ",
-            &[("q_rows", q_rows), ("head_dim", head_dim)],
-        )?;
-        Ok(Self {
-            spec: __layer_spec_DecodeAttention!(name, q_rows, head_dim, Self::operator(algo))?,
-            q_rows,
-            head_dim,
-            algo,
-        })
-    }
-
-    /// 算法对应的 decode 算子名。
-    fn operator(algo: AttentionAlgo) -> &'static str {
-        match algo {
-            AttentionAlgo::Naive => Self::NAIVE,
-            AttentionAlgo::Flash => Self::FLASH,
-        }
-    }
-
-    crate::accessors! {
-        /// 本次解码的 query 行数（轴 `q`），通常为 1。
-        q_rows -> usize = q_rows,
-        /// 头宽（轴 `d`）。
-        head_dim -> usize = head_dim,
-        /// 选用的算法。
-        algo -> AttentionAlgo = algo,
-    }
-}
-
-impl Contract for DecodeAttention {
-    spec_accessors!();
-
-    fn bounds(&self) -> BoundsResult {
-        // 历史轴 `h` 由算子的 `project_shape` 固定为声明档 `HIST`，层给不出真实 KV 长度
-        // ⇒ 这是松下界；`q_rows` / `head_dim` 是层真正知道的两轴。
-        Bounds::of_ctx(Self::operator(self.algo), self.q_rows, self.head_dim).map(Some)
+attention_layer! {
+    /// 解码期注意力层：输出 `[q_rows, head_dim]`，历史长度由算子语义表的声明档给出。
+    #[crate::spec(name = $name, out = [$q_rows, $head_dim], ops = [$op])]
+    DecodeAttention {
+        spec: __layer_spec_DecodeAttention,
+        rows: q_rows,
+        kind: "解码注意力层 ",
+        rows_doc: "本次解码的 query 行数（轴 `q`），通常为 1。",
+        naive: "decode_attention_f32",
+        flash: "decode_flash_attention_f32",
+        // `HIST` 是声明档而非真实 KV 长度；query 行数与头宽才是层知道的两轴。
+        bounds: |layer| Bounds::of_ctx(
+            layer.algo().select(DecodeAttention::NAIVE, DecodeAttention::FLASH),
+            layer.q_rows(),
+            layer.head_dim(),
+        ).map(Some),
     }
 }
 

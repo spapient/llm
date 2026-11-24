@@ -2,6 +2,7 @@
 
 [op]
 name     = "matmul_i8"
+stem     = "gemm_i8"
 skeleton = "gemm"
 summary  = "Y[m,n] = f32(sum_k i8(A[m,k]) i8(B[k,n])) (K=4096)"
 

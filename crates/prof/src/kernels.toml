@@ -1,7 +1,7 @@
 # 微内核调优的唯一事实源；键名是模板 stem，不是注册后的算子名。
 #
-# 每份正文用独立的 `/* cutile-unroll */` 注释标出外层热点循环；构建器只替换锚点，
-# 不在 Rust 中判断厂商，也不复制模板。`default` 是设备默认值，vendor 键覆盖它；
+# 每份正文至多用一个 `/* cutile-unroll */` 标出待展开循环；矩阵乘标在收缩轴 K 上。
+# 构建器只替换锚点，不在 Rust 中判断厂商，也不复制模板。`default` 是设备默认值，vendor 键覆盖它；
 # `cpu = 0` 保持参考实现的循环顺序，便于数值对拍。新增后端无需修改本文件，除非要专门调优。
 
 [unroll]
@@ -10,4 +10,3 @@ unary_fn    = { default = 4, cpu = 0 }
 matmul_f32  = { default = 4, cpu = 0 }
 gemm_packed = { default = 4, cpu = 0 }
 gemm_i8     = { default = 4, cpu = 0 }
-matmul_i8   = { default = 4, cpu = 0 }

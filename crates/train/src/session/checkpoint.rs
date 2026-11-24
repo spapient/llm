@@ -1,6 +1,7 @@
 //! 会话快照与视图装配：可恢复检查点的最小事实集、快照回载校验、优化器视图的取走/归还/镜像。
 
-use super::{ParamSlot, SITE, Session, SlotMeta};
+use super::{ParamSlot, SITE, Session, SlotMeta, TrainConfig, TrainSpec};
+use crate::loss::ObjectiveConfig;
 use crate::optimizer::{Optimizer, OwnedSlot};
 use crate::pool::Bufs;
 use crate::Kernel;
@@ -46,6 +47,7 @@ pub struct Checkpoint {
     layers: usize,
     weight_entries: usize,
     world: usize,
+    config_fingerprint: u64,
 }
 
 impl Checkpoint {
@@ -69,7 +71,19 @@ impl Checkpoint {
             layers,
             weight_entries: weights.entries().len(),
             world: topology.world(),
+            config_fingerprint: 0,
         })
+    }
+
+    /// 绑定保存时的训练配置指纹。
+    pub fn with_config_fingerprint(mut self, fingerprint: u64) -> Self {
+        self.config_fingerprint = fingerprint;
+        self
+    }
+
+    /// 保存时的训练配置指纹。
+    pub fn config_fingerprint(&self) -> u64 {
+        self.config_fingerprint
     }
 
     /// 步号。
