@@ -215,18 +215,26 @@ impl Settings {
 
     /// 投影成训练装配纯数据；train 不读配置文件、环境变量或 argv。
     pub fn train_spec(&self) -> Result<train::TrainSpec> {
-        let session = train::TrainConfig::with_overrides(
+        train::TrainSpec::new(self.session_config()?, self.loader_config()?)
+    }
+
+    /// 会话侧覆盖参数；未给的字段取 [`TrainConfig`](train::TrainConfig) 默认值。
+    fn session_config(&self) -> Result<train::TrainConfig> {
+        train::TrainConfig::with_overrides(
             self.float(Key::TrainLearningRate),
             self.uint(Key::TrainWarmupSteps),
             self.uint(Key::TrainMaxSteps),
             self.float(Key::TrainClipNorm),
             self.u32(Key::TrainAccumulation)?,
-        )?;
-        let loader = train::LoaderConfig::new(
+        )
+    }
+
+    /// 数据批几何；采样策略默认顺序遍历。
+    fn loader_config(&self) -> Result<train::LoaderConfig> {
+        train::LoaderConfig::new(
             self.usize(Key::TrainBatchRows)?,
             self.usize(Key::TrainBatchCols)?,
-        )?;
-        train::TrainSpec::new(session, loader)
+        )
     }
 
     fn float(&self, key: Key) -> Option<f32> {

@@ -10,31 +10,17 @@ pub const MODE_NAME: &str = "llm.mode";
 /// 优化器状态段的命名空间前缀。
 const OPT_PREFIX: &str = "opt.";
 
-/// 容器生命周期模式。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Mode {
-    /// 训练断点：含优化器/动量/方差等 `opt.` 状态。
-    Train,
-    /// 推理发布：剥离训练状态的精简产物。
-    Infer,
+closed_enum! { @coded
+    /// 容器生命周期模式。
+    pub enum Mode {
+        /// 训练断点：含优化器/动量/方差等 `opt.` 状态。
+        Train = 0,
+        /// 推理发布：剥离训练状态的精简产物。
+        Infer = 1,
+    }
 }
 
 impl Mode {
-    fn code(self) -> u8 {
-        match self {
-            Mode::Train => 0,
-            Mode::Infer => 1,
-        }
-    }
-
-    fn from_code(code: u8) -> Result<Self> {
-        match code {
-            0 => Ok(Mode::Train),
-            1 => Ok(Mode::Infer),
-            other => Err(bad(format!("mode: 未知码 {other}"))),
-        }
-    }
-
     /// 编码为可写进容器的标记段：保留名、`U8` 单轴、1 字节。
     pub fn to_segment(self) -> Result<Segment> {
         Segment::new(MODE_NAME, Wire::U8, vec![1], None, vec![self.code()])

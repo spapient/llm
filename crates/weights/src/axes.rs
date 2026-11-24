@@ -21,19 +21,20 @@ const MAGIC: [u8; 4] = *b"AX04";
 /// 固定头长度：magic(4) + axis(1) + m(4) + n(4)。
 const HEAD: usize = 13;
 
-/// 候选轴（闭集，码位稳定）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Axis {
-    /// 原始 f32 字节，rANS 熵编码基线。
-    Raw = 0,
-    /// 唯一值字典 + 索引。
-    Dict = 1,
-    /// 非零位置 + 值。
-    Sparse = 2,
-    /// 精确 2^e 网格量化。
-    Quant = 3,
-    /// 精确低秩 + 残差，秩由 L0 谱隙证书给出。
-    Rank = 4,
+closed_enum! { @coded
+    /// 候选轴（闭集，码位稳定）。
+    pub enum Axis {
+        /// 原始 f32 字节，rANS 熵编码基线。
+        Raw = 0,
+        /// 唯一值字典 + 索引。
+        Dict = 1,
+        /// 非零位置 + 值。
+        Sparse = 2,
+        /// 精确 2^e 网格量化。
+        Quant = 3,
+        /// 精确低秩 + 残差，秩由 L0 谱隙证书给出。
+        Rank = 4,
+    }
 }
 
 /// 轴配置闭集：下标即码位（[`Axis`] 判别值的逆）。
@@ -118,14 +119,6 @@ impl AxisCfg for Rank {
     }
     fn decode(&self, cur: &mut Cursor<'_>, shape: (usize, usize)) -> Result<Vec<f32>> {
         decode_rank(cur, shape)
-    }
-}
-
-impl Axis {
-    fn from_code(code: u8) -> Result<Self> {
-        AXES.get(usize::from(code))
-            .map(|cfg| cfg.kind())
-            .ok_or_else(|| bad(format!("未知轴码 {code}")))
     }
 }
 

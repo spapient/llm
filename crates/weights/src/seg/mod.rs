@@ -12,23 +12,19 @@ use std::borrow::Cow;
 use storage::leb::{self, Cursor};
 use storage::sink::Sink;
 
-/// 段级编解码闭集：码位稳定，未知码在打开期拒绝。
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Codec {
-    /// 原样字节（code 0）。
-    Store = 0,
-    /// rANS 熵编码帧（code 1）。
-    Rans = 1,
-    /// 五轴无损选码帧（code 2）。
-    Axes = 2,
+closed_enum! { @coded_unsupported
+    /// 段级编解码闭集：码位稳定，未知码在打开期按 `Unsupported` 拒绝。
+    pub enum Codec {
+        /// 原样字节（code 0）。
+        Store = 0,
+        /// rANS 熵编码帧（code 1）。
+        Rans = 1,
+        /// 五轴无损选码帧（code 2）。
+        Axes = 2,
+    }
 }
 
 impl Codec {
-    /// 线上码位。
-    pub(crate) fn code(self) -> u8 {
-        self as u8
-    }
-
     /// 段体解码：codec 码位与解码器的对应只此一处。
     pub(crate) fn decode<'a>(self, raw: &'a [u8], want: usize) -> Result<Cow<'a, [u8]>> {
         Ok(match self {
@@ -36,18 +32,6 @@ impl Codec {
             Self::Rans => Cow::Owned(crate::rans::decode(raw, want)?),
             Self::Axes => Cow::Owned(crate::axes::expand(raw)?),
         })
-    }
-
-    /// 从码位解析；未知码显式报错而非静默回退。
-    pub(crate) fn from_code(code: u8) -> Result<Self> {
-        match code {
-            0 => Ok(Self::Store),
-            1 => Ok(Self::Rans),
-            2 => Ok(Self::Axes),
-            other => Err(
-                Error::new(Code::Unsupported, format!("未知段 codec {other}")).with("weights::seg"),
-            ),
-        }
     }
 }
 

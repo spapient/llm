@@ -24,9 +24,9 @@
 //! **依赖**：`nn`、`autograd`、`weights`、`shard`、`tensor`、`prof`、`storage`、`diagnostic`。
 //! **被依赖**：`cli`、`benchmarks`、`fuzz`、`serve`、`testkit`。
 //!
-//! 入口只做模块声明与再导出：实现按上面五条轴分布在 9 个子模块里（`backprop`、`geometry`、`kernel`、
+//! 入口只做模块声明与再导出：实现按上面五条轴分布在 10 个子模块里（`backprop`、`geometry`、`kernel`、
 //! `learner`（含 `Batch`/`Dataset`/`Chunks`/`Loader`/`LoaderConfig`）、`loss`（含策略族）、`optimizer`、`pool`（含 `store` 门面）、
-//! `rng`、`session`（含学习率调度与分布式编排）；`rng` 是并入的计数器型确定性随机，独立于五条轴）。
+//! `rng`、`schedule`（学习率调度曲线）、`session`（会话与分布式编排）；`rng` 是并入的计数器型确定性随机，独立于五条轴）。
 //!
 //! # 例子
 //!
