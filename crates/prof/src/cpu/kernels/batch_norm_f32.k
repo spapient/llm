@@ -1,4 +1,4 @@
-// cutile 模板：batch_norm_f32 —— 批归一化（NHWC 布局，(n*S+s)*C+c）
+// cutile cpu 微内核：batch_norm_f32 —— 批归一化（NHWC 布局，(n*S+s)*C+c）
 // 槽位：{{op}} 是算子名，@prim(...) 由片段层逐个替换。
 // 布局契约（由声明层校验）：x={{x}} gamma={{gamma}} beta={{beta}} y={{y}}
 //

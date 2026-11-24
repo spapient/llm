@@ -1,4 +1,4 @@
-// cutile 模板：leaky_relu_f32 —— 逐元素 LeakyReLU
+// cutile musa 微内核：leaky_relu_f32 —— 逐元素 LeakyReLU
 // 槽位：{{op}} 是算子名，@prim(...) 由片段层逐个替换。
 // 布局契约（由声明层校验）：a={{a}}
 //

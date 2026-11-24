@@ -1,4 +1,4 @@
-// cutile 模板：gemv_i8 —— 对称 int8 解码 GEMV（不打包、零点 0）
+// cutile cpu 微内核：gemv_i8 —— 对称 int8 解码 GEMV（不打包、零点 0）
 // 槽位：{{GMAX}} 来自 [axes]，{{op}} 是算子名，@prim(...) 由片段层逐个替换。
 // 布局契约（由声明层校验）：w={{w}} x={{x}}
 // quant.c 只承载 int4 解包；int8 的有符号解释是普通标量转换，这里内联，不占 quant 原语。

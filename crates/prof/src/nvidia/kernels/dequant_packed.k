@@ -1,4 +1,4 @@
-// cutile 模板：dequant_packed —— int2/int4 打包反量化（每字节 cpb 个 width 位码）
+// cutile nvidia 微内核：dequant_packed —— int2/int4 打包反量化（每字节 cpb 个 width 位码）
 // 槽位：{{op}} 是算子名，{{cpb}}/{{width}}/{{zero}} 来自 [consts]；@prim(...) 由片段层替换。
 // 布局契约（由声明层校验）：q={{q}}
 // 前提：N 为 cpb 的倍数，循环按 N/cpb 成组解包；非整倍数宽度由调用侧前置校验拒绝。

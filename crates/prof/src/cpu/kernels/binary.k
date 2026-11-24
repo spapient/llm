@@ -1,4 +1,4 @@
-// cutile 模板：binary —— 逐元素二元运算的共享内核（add/mul 等只差一个运算符）
+// cutile cpu 微内核：binary —— 逐元素二元运算的共享内核（add/mul 等只差一个运算符）
 // 槽位：{{op}} 是算子名，{{binop}} 来自 [consts]；@prim(...) 由片段层逐个替换。
 // binop 是逐元素运算符（"+" / "*"），落在 ap[0] 与 bp[0] 之间；其余结构完全一致。
 void cutile_{{op}}_kernel(const float *a, const float *b, float *y, int N) {

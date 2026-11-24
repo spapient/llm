@@ -1,4 +1,4 @@
-// cutile 模板：interpolate_f32 —— 双线性插值（声明档 2x2 -> 4x4, align_corners=false）
+// cutile cpu 微内核：interpolate_f32 —— 双线性插值（声明档 2x2 -> 4x4, align_corners=false）
 // 槽位：{{op}} 是算子名，@prim(...) 由片段层逐个替换。
 // 布局契约（由声明层校验）：x={{x}} y={{y}}
 //

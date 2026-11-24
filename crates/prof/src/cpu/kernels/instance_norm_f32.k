@@ -1,4 +1,4 @@
-// cutile 模板：instance_norm_f32 —— 实例归一化（NHWC 布局）
+// cutile cpu 微内核：instance_norm_f32 —— 实例归一化（NHWC 布局）
 // 槽位：{{op}} 是算子名，@prim(...) 由片段层逐个替换。
 // 布局契约（由声明层校验）：x={{x}} gamma={{gamma}} beta={{beta}} y={{y}}
 //

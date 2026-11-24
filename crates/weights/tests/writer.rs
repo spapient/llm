@@ -87,6 +87,7 @@ fn with_config_matches_builders() {
     let mut configured = Writer::with(Config {
         checksum: false,
         compress: false,
+        ..Config::default()
     });
     configured.push(seg("a", vec![1u8; 64])).expect("追加");
 
@@ -119,6 +120,7 @@ fn write_to_path_without_checksums_round_trips() {
     let mut writer = Writer::with(Config {
         checksum: false,
         compress: false,
+        ..Config::default()
     });
     writer.push(seg("a", vec![7u8; 64])).expect("追加");
     writer.write_to_path(6, &target).expect("落盘");

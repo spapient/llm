@@ -1,4 +1,4 @@
-// cutile 模板：softmax_f32 —— Softmax
+// cutile ascend 微内核：softmax_f32 —— Softmax
 // 槽位：{{op}} 是算子名，@prim(...) 由片段层逐个替换。
 // 布局契约（由声明层校验）：x={{x}}
 //

@@ -318,7 +318,7 @@ fn standalone(text: &str, idx: usize, end: usize) -> bool {
 
 /// 一个算子的模板名：`[op].stem` 缺省为算子名；共享模板（`binary`/`gemm_packed`…）在语料里
 /// 显式声明。模板文件必须存在，写错在构建期就失败。
-fn stem_of(table: &toml::Table, name: &str, ops: &Path) -> String {
+fn stem_of(table: &toml::Table, name: &str, ops: &Path, devices: &[Device]) -> String {
     let stem = table
         .get("op")
         .and_then(|value| value.as_table())
@@ -326,11 +326,15 @@ fn stem_of(table: &toml::Table, name: &str, ops: &Path) -> String {
         .and_then(|value| value.as_str())
         .unwrap_or(name)
         .to_string();
-    let template = ops.join(format!("{stem}.k"));
-    if !template.is_file() {
-        fail(format!(
-            "`{name}.toml` 声明的模板 `{stem}.k` 不存在：stem 必须指向 `ops/` 里的同名文件"
-        ));
+    let src = ops.parent().unwrap_or_else(|| fail("`ops/` 没有源码父目录"));
+    for device in devices {
+        let template = kernel_path(src, device, &stem);
+        if !template.is_file() {
+            fail(format!(
+                "`{name}.toml` 声明的模板 `{stem}.k` 在 `{}` 后端不存在：每个设备必须提供同名实现",
+                device.name
+            ));
+        }
     }
     stem
 }

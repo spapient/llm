@@ -38,6 +38,9 @@ pub fn source(
     tile: &TileCombo,
     dirs: &Dirs,
 ) -> diagnostic::Result<(Source, CacheKey)> {
+    // 算子契约跨后端共享，但正文实现归设备目录；缓存键与 AST 都必须从这次真正选择的正文派生。
+    let specialized = prof::catalogue::for_device(op, &profile.meta.vendor)?;
+    let op = specialized.as_ref();
     // 契约先于缓存：声明里的搬运量只影响判定、不影响源文本，所以它不在缓存键里。
     // 如果把判定放在命中之后，一份已落盘的旧源文本就成了“声明越界也免检”的通行证。
     contract(op, profile, path)?;

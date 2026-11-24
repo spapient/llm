@@ -1,4 +1,4 @@
-// cutile 模板：reduce_prod_f32 —— 连乘归约。
+// cutile nvidia 微内核：reduce_prod_f32 —— 连乘归约。
 // 槽位：{{op}} 是算子名，@prim(...) 由片段层逐个替换。
 // 布局契约（由声明层校验）：a={{a}}
 //

@@ -118,31 +118,28 @@ struct Entry {
     run: fn(&[View<'_>], &mut ViewMut<'_>) -> Result<()>,
 }
 
-/// 标量内核表：算子名由适配函数的标识符派生（两者同名是同一条判据）。
-/// 一元 `[f32] → [f32]` 适配：套用算子的标量实现，输入包成只读张量视图。
-macro_rules! unary {
-    ($($run:ident => $module:ident),* $(,)?) => {$(
+/// 单行内核声明的适配器：声明种类决定拆包与调用形态，自定义函数只登记表项。
+macro_rules! kernel_adapter {
+    (unary!($run:ident => $module:ident)) => {
         fn $run(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
             let (a,) = <(f32,) as Inputs>::unpack(inputs, stringify!($run))?;
-            nn::$module::forward(tensor::View::one(a), output_slice::<f32>(stringify!($run), output)?)
+            nn::$module::forward(
+                tensor::View::one(a),
+                output_slice::<f32>(stringify!($run), output)?,
+            )
         }
-    )*};
-}
-
-/// 二元 `[f32, f32] → [f32]` 适配：两个输入都包成只读张量视图。
-macro_rules! binary {
-    ($($run:ident),* $(,)?) => {$(
+    };
+    (binary!($run:ident)) => {
         fn $run(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
             let (a, b) = <(f32, f32) as Inputs>::unpack(inputs, stringify!($run))?;
-            nn::$run::forward(tensor::View::one(a), tensor::View::one(b), output_slice::<f32>(stringify!($run), output)?)
+            nn::$run::forward(
+                tensor::View::one(a),
+                tensor::View::one(b),
+                output_slice::<f32>(stringify!($run), output)?,
+            )
         }
-    )*};
-}
-
-/// 归一化 `[x, gamma, beta] → [y]` 适配：三个 f32 输入、一个 f32 输出；
-/// 声明档几何（通道数、空间、批大小）固定在算子模块里，由层侧的真实几何另行决定。
-macro_rules! norm {
-    ($($run:ident => $module:ident),* $(,)?) => {$(
+    };
+    (norm!($run:ident => $module:ident)) => {
         fn $run(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
             let (x, gamma, beta) =
                 <(f32, f32, f32) as Inputs>::unpack(inputs, stringify!($run))?;
@@ -153,24 +150,21 @@ macro_rules! norm {
                 output_slice::<f32>(stringify!($run), output)?,
             )
         }
-    )*};
-}
-
-/// 矩阵乘适配：`m` 由 `K` 与缓冲长度推导（`i4` 每字节两个 nibble），`n` 由输出长度推导。
-/// 稠密 `f32` 两路激活包二维只读视图；打包 `u8` 是位流，保留裸切片与静态几何。
-macro_rules! gemm {
-    ($(($run:ident, f32, $div:expr)),* $(,)?) => {$(
+    };
+    (gemm!($run:ident, f32, $div:expr)) => {
         fn $run(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
             let (a, b) = <(f32, f32) as Inputs>::unpack(inputs, stringify!($run))?;
             let out = output_slice::<f32>(stringify!($run), output)?;
             let m = a.len() / $div;
             let rows = batches(stringify!($run), out.len(), m)?;
-            let av = tensor::View::matrix(m, $div, a)?;
-            let bv = tensor::View::matrix($div, rows, b)?;
-            nn::$run::forward(av, bv, out)
+            nn::$run::forward(
+                tensor::View::matrix(m, $div, a)?,
+                tensor::View::matrix($div, rows, b)?,
+                out,
+            )
         }
-    )*};
-    ($(($run:ident, u8, $div:expr)),* $(,)?) => {$(
+    };
+    (gemm!($run:ident, u8, $div:expr)) => {
         fn $run(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
             let (a, b) = <(u8, u8) as Inputs>::unpack(inputs, stringify!($run))?;
             let out = output_slice::<f32>(stringify!($run), output)?;
@@ -178,64 +172,102 @@ macro_rules! gemm {
             let rows = batches(stringify!($run), out.len(), m)?;
             nn::$run::forward(a, b, m, rows, out)
         }
-    )*};
+    };
+    (dequant!($run:ident, $lane:ty)) => {
+        fn $run(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+            let (q,) = <($lane,) as Inputs>::unpack(inputs, stringify!($run))?;
+            let out = output_slice::<f32>(stringify!($run), output)?;
+            nn::$run::forward(nn::$run::SCALE, nn::$run::ZERO, q, out)
+        }
+    };
+    (no_scalar!($run:ident => $dtype:expr)) => {
+        fn $run(_inputs: &[View<'_>], _output: &mut ViewMut<'_>) -> Result<()> {
+            Err(no_storage($dtype))
+        }
+    };
+    (custom!($run:ident)) => {};
 }
 
-unary!(
-    adaptive_pool_f32 => adaptive_pool,
-    abs_f32 => abs_f32,
-    cos_f32 => cos_f32,
-    avg_pool2d_f32 => avg_pool2d,
-    interpolate_f32 => interpolate,
-    max_pool1d_f32 => max_pool1d,
-    max_pool2d_f32 => max_pool2d,
-    exp_f32 => exp_f32,
-    gelu_f32 => gelu_f32,
-    hard_sigmoid_f32 => hard_sigmoid_f32,
-    leaky_relu_f32 => leaky_relu_f32,
-    neg_f32 => neg_f32,
-    recip_f32 => recip_f32,
-    relu_f32 => relu_f32,
-    rsqrt_f32 => rsqrt_f32,
-    log_f32 => log_f32,
-    silu_f32 => silu_f32,
-    softmax_f32 => softmax_f32,
-    reduce_max_f32 => reduce_max_f32,
-    reduce_prod_f32 => reduce_prod_f32,
-    reduce_sum_f32 => reduce_sum_f32,
-    scale_f32 => scale_f32,
-    sigmoid_f32 => sigmoid_f32,
-    sign_f32 => sign_f32,
-    sin_f32 => sin_f32,
-    sqrt_f32 => sqrt_f32,
-    square_f32 => square_f32,
-    scan_f32 => scan_f32,
-    tanh_f32 => tanh_f32,
-    ceil_f32 => ceil_f32,
-    exp2_f32 => exp2_f32,
-    floor_f32 => floor_f32,
-    log1p_f32 => log1p_f32,
-    round_f32 => round_f32,
-    trunc_f32 => trunc_f32
-);
-binary!(
-    add_f32,
-    div_f32,
-    embed_f32,
-    max_f32,
-    min_f32,
-    mul_f32,
-    remainder_f32,
-    rmsnorm_f32,
-    residual_add_f32,
-    sub_f32
-);
+/// 唯一内核目录：一行同时生成适配函数和表项，表序与 `nn::registry::REGISTRY` 编译期互锁。
+macro_rules! kernels {
+    ($($kind:ident!($run:ident $($args:tt)*)),* $(,)?) => {
+        $(kernel_adapter!($kind!($run $($args)*));)*
+        const KERNELS: [Entry; nn::registry::REGISTRY.len()] = kernel_table![$($run),*];
+    };
+}
 
-norm!(
-    batch_norm_f32 => batch_norm,
-    group_norm_f32 => group_norm,
-    instance_norm_f32 => instance_norm,
-    layer_norm_f32 => layer_norm
+kernels!(
+    no_scalar!(abs_f16 => DType::F16),
+    unary!(abs_f32 => abs_f32),
+    unary!(adaptive_pool_f32 => adaptive_pool),
+    binary!(add_f32),
+    custom!(attention_f32),
+    unary!(avg_pool2d_f32 => avg_pool2d),
+    norm!(batch_norm_f32 => batch_norm),
+    unary!(ceil_f32 => ceil_f32),
+    custom!(clamp_f32),
+    custom!(conv2d_f32),
+    unary!(cos_f32 => cos_f32),
+    custom!(decode_attention_f32),
+    custom!(decode_flash_attention_f32),
+    dequant!(dequant_i2, u8),
+    dequant!(dequant_i4, u8),
+    custom!(dequant_i8),
+    binary!(div_f32),
+    binary!(embed_f32),
+    unary!(exp2_f32 => exp2_f32),
+    unary!(exp_f32 => exp_f32),
+    custom!(flash_attention_f32),
+    unary!(floor_f32 => floor_f32),
+    unary!(gelu_f32 => gelu_f32),
+    gemm!(gemm_f32, f32, nn::gemm_f32::K),
+    gemm!(gemm_i2, u8, nn::gemm_i2::K / 4),
+    gemm!(gemm_i4, u8, nn::gemm_i4::K / 2),
+    gemm!(gemm_i8, u8, nn::gemm_i8::K),
+    custom!(gemv_f32),
+    custom!(gemv_i2),
+    custom!(gemv_i4),
+    custom!(gemv_i8),
+    norm!(group_norm_f32 => group_norm),
+    unary!(hard_sigmoid_f32 => hard_sigmoid_f32),
+    norm!(instance_norm_f32 => instance_norm),
+    unary!(interpolate_f32 => interpolate),
+    custom!(latent_attention_f32),
+    norm!(layer_norm_f32 => layer_norm),
+    unary!(leaky_relu_f32 => leaky_relu_f32),
+    unary!(log1p_f32 => log1p_f32),
+    unary!(log_f32 => log_f32),
+    custom!(matmul_f32),
+    custom!(matmul_i8),
+    binary!(max_f32),
+    unary!(max_pool1d_f32 => max_pool1d),
+    unary!(max_pool2d_f32 => max_pool2d),
+    binary!(min_f32),
+    binary!(mul_f32),
+    unary!(neg_f32 => neg_f32),
+    unary!(recip_f32 => recip_f32),
+    unary!(reduce_max_f32 => reduce_max_f32),
+    unary!(reduce_prod_f32 => reduce_prod_f32),
+    unary!(reduce_sum_f32 => reduce_sum_f32),
+    unary!(relu_f32 => relu_f32),
+    binary!(remainder_f32),
+    binary!(residual_add_f32),
+    binary!(rmsnorm_f32),
+    custom!(rope_f32),
+    unary!(round_f32 => round_f32),
+    unary!(rsqrt_f32 => rsqrt_f32),
+    unary!(scale_f32 => scale_f32),
+    unary!(scan_f32 => scan_f32),
+    unary!(sigmoid_f32 => sigmoid_f32),
+    unary!(sign_f32 => sign_f32),
+    unary!(silu_f32 => silu_f32),
+    unary!(sin_f32 => sin_f32),
+    unary!(softmax_f32 => softmax_f32),
+    unary!(sqrt_f32 => sqrt_f32),
+    unary!(square_f32 => square_f32),
+    binary!(sub_f32),
+    unary!(tanh_f32 => tanh_f32),
+    unary!(trunc_f32 => trunc_f32),
 );
 
 /// 二维卷积适配：`[x, weight, bias] → y`，声明档单样本几何由算子模块定。

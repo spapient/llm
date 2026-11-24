@@ -1,4 +1,4 @@
-// cutile 模板：reduce_sum_f32 —— 求和归约
+// cutile cpu 微内核：reduce_sum_f32 —— 求和归约
 // 槽位：{{op}} 是算子名，@prim(...) 由片段层逐个替换。
 // 布局契约（由声明层校验）：a={{a}}
 //

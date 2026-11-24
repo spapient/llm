@@ -1,4 +1,4 @@
-// cutile 模板：decode_flash_attention_f32 —— online softmax 单遍扫历史 K/V。
+// cutile metal 微内核：decode_flash_attention_f32 —— online softmax 单遍扫历史 K/V。
 // 槽位：{{op}} 是算子名，@prim(...) 由片段层逐个替换。
 // 布局契约（由声明层校验）：q={{q}} k={{k}} v={{v}} y={{y}}
 //

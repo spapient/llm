@@ -1,6 +1,6 @@
-// cutile 模板：gemv_packed —— weight-only int2/int4 解码 GEMV 的共享内核
+// cutile intel 微内核：gemv_packed —— weight-only int2/int4 解码 GEMV 的共享内核
 // 槽位：{{GMAX}} 来自 [axes]，{{op}} 是算子名，{{cpb}}/{{width}}/{{zero}} 来自 [consts]；
-// @prim(...) 由片段层逐个替换。逻辑只有一份，设备差异全部在 prim/<vendor>/<prim>.<ext> 里。
+// @prim(...) 由片段层逐个替换。共享 ABI 由 ops/*.toml 固定；本文件是 intel 的独立实现，可针对设备演进。
 // 布局契约（由声明层校验）：w={{w}} x={{x}}
 // i2 与 i4 的唯一差别是打包宽度：cpb=每字节码数、width=每码位数、zero=零点（i2=4/2/2、i4=2/4/8）。
 // 打包前提：M 与 gsz 均为 cpb 的倍数、M 整除 gsz；非整倍数宽度在 op 前置校验处被拒，模板按

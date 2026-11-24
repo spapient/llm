@@ -1,4 +1,4 @@
-// cutile 模板：unary_fn —— 逐元素一元函数的共享内核（abs / neg / square 等只差一个右值表达式）。
+// cutile cpu 微内核：unary_fn —— 逐元素一元函数的共享内核（abs / neg / square 等只差一个右值表达式）。
 // 槽位：{{op}} 是算子名，{{unexpr}} 来自 [consts]，作用于读入的 x；@prim(...) 由片段层逐个替换。
 // 布局契约（由声明层校验）：a={{a}}
 //

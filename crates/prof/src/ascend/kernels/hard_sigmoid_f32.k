@@ -1,4 +1,4 @@
-// cutile 模板：hard_sigmoid_f32 —— 逐元素 HardSigmoid
+// cutile ascend 微内核：hard_sigmoid_f32 —— 逐元素 HardSigmoid
 // 槽位：{{op}} 是算子名，@prim(...) 由片段层逐个替换。
 // 布局契约（由声明层校验）：a={{a}}
 //

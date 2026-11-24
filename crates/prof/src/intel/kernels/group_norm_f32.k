@@ -1,4 +1,4 @@
-// cutile 模板：group_norm_f32 —— 组归一化（NHWC 布局）
+// cutile intel 微内核：group_norm_f32 —— 组归一化（NHWC 布局）
 // 槽位：{{op}} 是算子名，@prim(...) 由片段层逐个替换。
 // 布局契约（由声明层校验）：x={{x}} gamma={{gamma}} beta={{beta}} y={{y}}
 //

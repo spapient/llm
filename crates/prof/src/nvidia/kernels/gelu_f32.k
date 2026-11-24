@@ -1,4 +1,4 @@
-// cutile 模板：gelu_f32 —— 逐元素 GELU（A&S erf，与 Rust 参考同一份系数）
+// cutile nvidia 微内核：gelu_f32 —— 逐元素 GELU（A&S erf，与 Rust 参考同一份系数）
 // 槽位：{{op}} 是算子名，@prim(...) 由片段层逐个替换。
 // 布局契约（由声明层校验）：a={{a}}
 //

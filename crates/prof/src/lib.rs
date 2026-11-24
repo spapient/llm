@@ -179,6 +179,6 @@ mod templates {
     include!(concat!(env!("OUT_DIR"), "/templates_table.rs"));
 }
 
-pub use templates::TEMPLATES;
+pub use templates::{DEVICE_TEMPLATES, TEMPLATES};
 
 pub mod catalogue;

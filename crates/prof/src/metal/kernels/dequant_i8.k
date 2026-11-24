@@ -1,4 +1,4 @@
-// cutile 模板：dequant_i8 —— 8 位反量化
+// cutile metal 微内核：dequant_i8 —— 8 位反量化
 // 槽位：{{op}} 是算子名，@prim(...) 由片段层逐个替换。
 // 布局契约（由声明层校验）：q={{q}}
 //

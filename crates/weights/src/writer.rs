@@ -165,11 +165,11 @@ impl Writer {
         crate::proof::root(&leaves)
     }
 
-    /// 为每段选定存储表示：压缩开启且 rans 帧严格变小时才用 rans，否则原样存储；
+    /// 为每段选定存储表示：先做保序去重，再并行编码内联段；引用关系与段序不受并行度影响。
     /// 取值与既有内联段逐位相等的段改写引用，数据区不再重复占字节。
     fn plan(&self) -> Result<Vec<Plan<'_>>> {
         let mut reps: HashMap<(u16, Vec<u64>, Digest), Vec<usize>> = HashMap::new();
-        let mut out = Vec::with_capacity(self.segs.len());
+        let mut slots = Vec::with_capacity(self.segs.len());
         for (idx, segment) in self.segs.iter().enumerate() {
             let key = (
                 segment.dtype().code(),
@@ -177,14 +177,76 @@ impl Writer {
                 crate::proof::hash_bytes(&segment.data),
             );
             if let Some(rep) = self.find_rep(&reps, &key, segment) {
-                out.push(Plan::Ref { rep });
+                slots.push(Some(Plan::Ref { rep }));
                 continue;
             }
-            let packed = self.pack_inline(segment);
             reps.entry(key).or_default().push(idx);
-            out.push(packed);
+            slots.push(None);
         }
-        Ok(out)
+        self.encode_inline(&mut slots)?;
+        let mut plans = Vec::with_capacity(slots.len());
+        for slot in slots {
+            plans.push(slot.ok_or_else(|| bad("去重后段缺存储计划"))?);
+        }
+        Ok(plans)
+    }
+
+    /// 编码所有内联段：结果按段下标原位回填，线程调度不改变输出字节。
+    fn encode_inline<'a>(&'a self, slots: &mut [Option<Plan<'a>>]) -> Result<()> {
+        let idxs: Vec<usize> = slots
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, slot)| slot.is_none().then_some(idx))
+            .collect();
+        if idxs.is_empty() {
+            return Ok(());
+        }
+        let workers = self.config.workers.max(1).min(idxs.len());
+        if workers == 1 {
+            self.encode_serial(slots, &idxs);
+            return Ok(());
+        }
+        self.encode_parallel(slots, &idxs, workers)
+    }
+
+    /// 单线程回填：逐个编码并按段下标落槽。
+    fn encode_serial<'a>(&'a self, slots: &mut [Option<Plan<'a>>], idxs: &[usize]) {
+        for &idx in idxs {
+            slots[idx] = Some(self.pack_inline(&self.segs[idx]));
+        }
+    }
+
+    /// 作用域并行编码：按 `workers` 分段派发线程，join 后按下标回填；线程异常按错误上抛。
+    fn encode_parallel<'a>(
+        &'a self,
+        slots: &mut [Option<Plan<'a>>],
+        idxs: &[usize],
+        workers: usize,
+    ) -> Result<()> {
+        let chunk_len = idxs.len().div_ceil(workers);
+        let encoded = std::thread::scope(|scope| {
+            let mut handles = Vec::with_capacity(workers);
+            for chunk in idxs.chunks(chunk_len) {
+                handles.push(scope.spawn(move || {
+                    chunk
+                        .iter()
+                        .map(|&idx| (idx, self.pack_inline(&self.segs[idx])))
+                        .collect::<Vec<_>>()
+                }));
+            }
+            let mut plans = Vec::with_capacity(idxs.len());
+            for handle in handles {
+                let chunk = handle
+                    .join()
+                    .map_err(|_| crate::bad("段编码工作线程异常终止"))?;
+                plans.extend(chunk);
+            }
+            Ok::<Vec<(usize, Plan<'_>)>, Error>(plans)
+        })?;
+        for (idx, plan) in encoded {
+            slots[idx] = Some(plan);
+        }
+        Ok(())
     }
 
     /// 哈希命中后逐位比对元数据与字节；碰撞只错过复用，绝不错配。
@@ -201,10 +263,11 @@ impl Writer {
             .find(|&rep| self.segs[rep].same_value(segment) && self.segs[rep].data == segment.data)
     }
 
-    /// 内联段存储表示：压缩开启时先试五轴无损选码，再退 rans 帧，都不更小则原样 `Store`。
+    /// 内联段存储表示：压缩开启时先试配置允许的五轴无损选码，再退 rans 帧，
+    /// 都不更小则原样 `Store`。
     fn pack_inline<'a>(&self, segment: &'a Segment) -> Plan<'a> {
         if self.config.compress {
-            if let Some(artifact) = axes_frame(segment) {
+            if let Some(artifact) = axes_frame(segment, self.config.axes) {
                 return Plan::Inline {
                     codec: Codec::Axes,
                     stored: Cow::Owned(artifact),
@@ -401,9 +464,11 @@ impl Writer {
 // —— 写出计划的展开（原 `plan` 平铺进 `writer`）：段序列落成描述符与数据区 ——
 
 /// 五轴无损选码：仅 f32 二维稠密权重（无量化方案）且 artifact 严格更小时才返回。
-pub(crate) fn axes_frame(segment: &Segment) -> Option<Vec<u8>> {
+pub(crate) fn axes_frame(segment: &Segment, axes: AxisSet) -> Option<Vec<u8>> {
     let (m, n) = axes_dims(segment)?;
-    crate::axes::compress(&segment.data, m, n).ok().flatten()
+    crate::axes::compress_with_axes(&segment.data, m, n, axes)
+        .ok()
+        .flatten()
 }
 
 /// 可做五轴选码的形状：f32 二维稠密权重矩阵的 `m×n`，任一维为 0 即不适用。

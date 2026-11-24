@@ -1,4 +1,4 @@
-// cutile 模板：matmul_i8 —— 大 K 对称 int8 矩阵乘（dp4a 签名）
+// cutile cpu 微内核：matmul_i8 —— 大 K 对称 int8 矩阵乘（dp4a 签名）
 // 槽位：{{op}} 是算子名，@prim(...) 由片段层逐个替换。
 // 布局契约（由声明层校验）：a={{a}} b={{b}}
 // 点积在 int32 上精确累加（对应 dp4a），再 cvt 成 f32；CPU 无 dp4a，退化为标量整数点积。

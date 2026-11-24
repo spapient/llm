@@ -1,4 +1,4 @@
-// cutile 模板：layer_norm_f32 —— 层归一化（行主序 R×W）
+// cutile intel 微内核：layer_norm_f32 —— 层归一化（行主序 R×W）
 // 槽位：{{op}} 是算子名，@prim(...) 由片段层逐个替换。
 // 布局契约（由声明层校验）：x={{x}} gamma={{gamma}} beta={{beta}} y={{y}}
 //

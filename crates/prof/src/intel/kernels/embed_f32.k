@@ -1,4 +1,4 @@
-// cutile 模板：embed_f32 —— 行向量 gather
+// cutile intel 微内核：embed_f32 —— 行向量 gather
 // 槽位：{{op}} 是算子名，@prim(...) 由片段层逐个替换。
 // 布局契约（由声明层校验）：idx={{idx}} table={{table}} y={{y}}
 //

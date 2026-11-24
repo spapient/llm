@@ -118,7 +118,9 @@ impl<'a> Archive<'a> {
 
     /// 按名查段。
     pub fn get(&self, name: &str) -> Option<&Stored> {
-        self.segs.iter().find(|seg| seg.name() == name)
+        self.idx
+            .get(name)
+            .and_then(|&position| self.segs.get(position))
     }
 
     /// 借用段的原始存储字节（零拷贝，不做解压）。引用段返回代表段的帧。
