@@ -247,5 +247,5 @@ fn average_bits(group: usize, len: usize, levels: &[usize]) -> f64 {
 }
 
 #[cfg(test)]
-#[path = "../tests/adaptive.rs"]
+#[path = "../../tests/adaptive.rs"]
 mod adaptive_tests;

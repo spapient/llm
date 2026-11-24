@@ -477,13 +477,12 @@ pub(crate) fn data_start(meta: &[Meta], pos: usize, len: usize) -> Result<usize>
     Err(bad("数据区偏移超出文件"))
 }
 
-#[path = "gguf_dequant.rs"]
-pub(crate) mod gguf_dequant;
+pub(crate) mod dequant;
 
-pub(crate) use gguf_dequant::dequantize;
+pub(crate) use dequant::dequantize;
 #[cfg(test)]
-pub(crate) use gguf_dequant::f16_to_f32;
+pub(crate) use dequant::f16_to_f32;
 
 #[cfg(test)]
-#[path = "../tests/gguf.rs"]
+#[path = "../../tests/gguf.rs"]
 mod tests;

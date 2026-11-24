@@ -352,11 +352,10 @@ pub(crate) fn validate_compensate(m: usize, n: usize, w: &[f32]) -> Result<()> {
     Ok(())
 }
 
-#[path = "ptq_adaptive.rs"]
 pub(crate) mod adaptive;
 
 pub use adaptive::{Adaptive, AdaptiveCompensated, adaptive_quantize, compensate_adaptive};
 
 #[cfg(test)]
-#[path = "../tests/ptq.rs"]
+#[path = "../../tests/ptq.rs"]
 mod tests;

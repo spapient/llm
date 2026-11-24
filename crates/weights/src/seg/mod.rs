@@ -428,10 +428,9 @@ pub(crate) fn lossless_entry(seg: &Stored) -> bool {
     seg.quant().is_none() && matches!(seg.codec(), Codec::Store | Codec::Rans | Codec::Axes)
 }
 
-#[path = "seg_layout.rs"]
-pub(crate) mod seg_layout;
+pub(crate) mod layout;
 
-pub(crate) use seg_layout::{FOOTER_LEN, fixed, layout, read_descs};
+pub(crate) use layout::{FOOTER_LEN, fixed, layout, read_descs};
 
 // —— 描述符解码路径：帧头、形状、量化参数与三条长度判据 ——
 
@@ -535,5 +534,5 @@ pub(crate) fn check_quant(quant: Option<&Quant>, rank: u32) -> Result<()> {
 }
 
 #[cfg(test)]
-#[path = "../tests/seg.rs"]
+#[path = "../../tests/seg.rs"]
 mod tests;

@@ -423,13 +423,12 @@ impl Reader for MmapSource {
     }
 }
 
-#[path = "safetensors_header.rs"]
 pub(crate) mod header;
 
 #[cfg(test)]
-#[path = "../tests/safetensors.rs"]
+#[path = "../../tests/safetensors.rs"]
 mod tests;
 
 #[cfg(all(feature = "mmap", unix, test))]
-#[path = "../tests/mmap.rs"]
+#[path = "../../tests/mmap.rs"]
 mod mmap_tests;

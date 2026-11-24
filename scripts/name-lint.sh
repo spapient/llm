@@ -6,6 +6,8 @@
 # 并存）是**标识符级**判断，grep 做不了——设备源字符串里的 Metal 选择器
 # `[[buffer(0)]]` 与外来 API（`MTLBuffer`/`atIndex`）必须豁免，而裸 grep 无法区分。
 # 那条判据在 `crates/tools/src/words.rs`，由 `cargo test -p llm-tools --test gate` 守。
+#
+# 文件名零下划线零容忍：限定词一律下沉到目录，不设类别豁免、不留存量基线。
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -22,7 +24,7 @@ report() {
   fi
 }
 
-report "src 文件名含下划线（N4：限定词应下沉到目录）" \
+report "src 文件名含下划线（N4：限定词应下沉到目录；零容忍，无基线豁免）" \
   sh -c "find crates/*/src -name '*_*.rs' | sort"
 
 report "定义名以 _v2/_old/_bak/_tmp/_util/_helper/_manager/_handler 结尾（N5 残留标记）" \
