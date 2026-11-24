@@ -239,11 +239,16 @@ where
     let mut slot = vec![T::ZERO; store.width()];
     for rank in group.ranks() {
         store.read_into(*rank, &mut slot)?;
-        for (acc, value) in out.iter_mut().zip(&slot) {
-            *acc = reduce.apply(*acc, *value);
-        }
+        reduce_values(reduce, out, &slot);
     }
     Ok(())
+}
+
+/// 将一个镜像槽归约进输出；归约顺序与组内 rank 顺序一致。
+fn reduce_values<T: ReduceScalar>(reduce: Reduce, out: &mut [T], slot: &[T]) {
+    for (acc, value) in out.iter_mut().zip(slot) {
+        *acc = reduce.apply(*acc, *value);
+    }
 }
 
 fn all_reduce_store<S, T>(store: &mut S, group: &Group, reduce: Reduce, buf: &mut [T], site: &'static str) -> Result<()>

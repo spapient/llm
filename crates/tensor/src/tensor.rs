@@ -109,11 +109,18 @@ impl<E> Store<E> for Owned<E> {
         &self.0
     }
 
-    fn into_vec(self) -> Vec<E>
+    fn into_vec_range(self, range: Range<usize>) -> Vec<E>
     where
         E: Clone,
     {
-        self.0
+        let start = range.start.min(self.0.len());
+        let end = range.end.min(self.0.len()).max(start);
+        let mut elements = self.0;
+        if start != 0 {
+            elements.drain(..start);
+        }
+        elements.truncate(end - start);
+        elements
     }
 }
 
@@ -341,14 +348,8 @@ where
         if !self.is_contiguous() {
             return self.to_vec();
         }
-        let base = self.base;
-        let numel = self.numel();
-        let mut values = self.storage.into_vec();
-        if base != 0 {
-            values.drain(..base);
-        }
-        values.truncate(numel);
-        values
+        let end = self.base.saturating_add(self.numel());
+        self.storage.into_vec_range(self.base..end)
     }
 }
 

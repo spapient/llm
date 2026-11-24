@@ -58,6 +58,11 @@ mod nvidia {
     testkit::device_suite!();
 }
 
+mod nvidia_a3000 {
+    use llm_prof::nvidia_a3000::*;
+    testkit::device_suite!();
+}
+
 /// 片段集合的克隆只加一次引用计数；克隆之后再登记，改的是克隆自己（写时复制）。
 #[test]
 fn a_clone_keeps_its_own_inserts() {

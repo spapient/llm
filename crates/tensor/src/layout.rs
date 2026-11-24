@@ -756,15 +756,10 @@ where
         if !self.is_contiguous() {
             return self.to_contiguous();
         }
-        let base = self.base;
-        let numel = self.numel();
+        let end = self.base.saturating_add(self.numel());
         let mut strides = self.dims.clone();
         accumulate(self.dims(), strides.as_slice_mut(), Order::RowMajor);
-        let mut values = self.storage.into_vec();
-        if base != 0 {
-            values.drain(..base);
-        }
-        values.truncate(numel);
+        let values = self.storage.into_vec_range(self.base..end);
         assemble(self.dims, strides, 0, Owned::from(values))
     }
 

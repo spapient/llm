@@ -165,7 +165,8 @@ fn unroll_configuration_follows_the_template_stem() {
         for vendor in crate::names().iter().copied().filter(|name| *name != "cpu") {
             let source = crate::catalogue::template_for(vendor, name).expect("后端有效正文");
             if source.contains("cublasSgemm") {
-                assert_eq!((vendor, *name), ("nvidia", "matmul_f32"));
+                assert_eq!(*name, "matmul_f32");
+                assert!(vendor.starts_with("nvidia"));
                 assert!(!source.contains("/* cutile-unroll */"));
                 assert!(!source.contains("#pragma unroll"));
                 continue;
