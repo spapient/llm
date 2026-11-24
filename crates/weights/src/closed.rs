@@ -122,20 +122,17 @@ macro_rules! closed_enum {
     // 只带短名：没有线上数值码的反向解析，只有枚举定义与 `as_str`；调用首 token 写 `@named`。
     (
         @named
-        $(#[$meta:meta])*
-        $vis:vis enum $name:ident {
-            $(
-                $(#[$variant_meta:meta])*
-                $variant:ident = $code:literal => $sname:literal,
-            )+
+        $(#[$nm:meta])*
+        $v:vis enum $e:ident {
+            $( $(#[$vm:meta])* $var:ident = $c:literal => $sn:literal, )+
         }
     ) => {
         closed_enum!(@str_only
-            $(#[$meta])*
-            $vis enum $name {
-                $( $(#[$variant_meta])* $variant = $code, )+
+            $(#[$nm])*
+            $v enum $e {
+                $( $(#[$vm])* $var = $c, )+
             }
-            { $( $variant => $sname, )+ }
+            { $( $var => $sn, )+ }
         );
     };
 }

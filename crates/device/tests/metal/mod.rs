@@ -13,6 +13,7 @@ use llm_optim::execution::Backend::Metal;
 use llm_optim::execution::{Mode, program, program_sample};
 
 mod attention;
+mod backward;
 mod contract;
 mod correctness;
 mod gemm;

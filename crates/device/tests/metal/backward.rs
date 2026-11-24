@@ -6,7 +6,7 @@
 //! 无设备时 early return，不算失败。
 
 use super::*;
-use device::backward::lookup;
+use crate::backward::lookup;
 use engine::exec::Executor;
 use engine::exec::{Graph, Launch, Node, Stream};
 use llm_optim::execution::Backend;
@@ -39,7 +39,7 @@ fn tanh(x: f32) -> f32 {
     2.0 / (1.0 + f32::exp(-2.0 * x)) - 1.0
 }
 
-/// 反向逐点族条目：域内取值避开溢出 / 除零；导数由 [`device::backward`] 描述表给出。
+/// 反向逐点族条目：域内取值避开溢出 / 除零；导数由 [`crate::backward`] 描述表给出。
 const ENTRIES: &[Entry] = &[
     Entry {
         op: "relu_f32",
@@ -89,7 +89,7 @@ fn run_entry(entry: &Entry) {
     // 非恒一的上游梯度：同时验出「逐元素乘 dout」这一步，而不只是偏导本身。
     let dout: Vec<f32> = (0..LEN).map(|i| 0.5 + 0.1 * i as f32).collect();
 
-    let msl = device::backward::source(Backend::Metal, descriptor, LEN)
+    let msl = crate::backward::source(Backend::Metal, descriptor, LEN)
         .unwrap_or_else(|error| panic!("{} 反向 MSL 应能生成：{error}", entry.op));
     let name = format!("{}_grad", entry.op);
     executor

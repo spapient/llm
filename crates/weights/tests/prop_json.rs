@@ -22,9 +22,8 @@ fn value() -> impl Strategy<Value = Value> {
             proptest::collection::hash_set(any::<String>(), 0..=4).prop_flat_map(move |keys| {
                 let keys: Vec<String> = keys.into_iter().collect();
                 let n = keys.len();
-                (Just(keys), proptest::collection::vec(inner.clone(), n)).prop_map(|(keys, vals)| {
-                    Value::Object(keys.into_iter().zip(vals).collect())
-                })
+                (Just(keys), proptest::collection::vec(inner.clone(), n))
+                    .prop_map(|(keys, vals)| Value::Object(keys.into_iter().zip(vals).collect()))
             }),
         ]
     })

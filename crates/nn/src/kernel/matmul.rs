@@ -590,6 +590,7 @@ fn deterministic(len: usize, salt: u32) -> Vec<f32> {
 
 #[cfg(test)]
 mod tests {
+    include!("../../tests/kernel_matmul_test_support.rs");
     include!("../../tests/kernel_matmul_tests.rs");
 }
 
