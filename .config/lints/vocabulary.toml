@@ -276,13 +276,9 @@ min_lines_baseline = [
   "crates/shard/src/topology.rs",
   "crates/storage/src/alloc.rs",
   "crates/storage/src/buf.rs",
-  "crates/storage/src/crc.rs",
-  "crates/storage/src/fault.rs",
   "crates/storage/src/format.rs",
-  "crates/storage/src/leb.rs",
   "crates/storage/src/lane.rs",
   "crates/storage/src/mmap.rs",
-  "crates/storage/src/sink.rs",
   "crates/storage/src/state.rs",
   "crates/tensor/src/ops.rs",
   "crates/tensor/src/rank.rs",
@@ -325,6 +321,10 @@ min_lines_baseline = [
   "crates/weights/src/cursor.rs",
   "crates/weights/src/l3.rs",
   "crates/weights/src/svd.rs",
+  "crates/wire/src/crc.rs",
+  "crates/wire/src/fault.rs",
+  "crates/wire/src/leb.rs",
+  "crates/wire/src/sink.rs",
 ]
 
 # `[[gate.debt]]` 存量棘轮：只登记入口编排层（`crates/cli/src/`）的既有超标。登记表是实测快照：
