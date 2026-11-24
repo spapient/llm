@@ -15,8 +15,7 @@ fn assert_tiled_matches(m: usize, n: usize, k: usize) {
     let b = sample(k * n, 11);
     let mut expected = vec![0i32; m * n];
     let mut actual = vec![0i32; m * n];
-    let av = tensor::View::matrix(m, k, &a).expect("a 二维");
-    let bv = tensor::View::matrix(k, n, &b).expect("b 二维");
+    let (av, bv) = pair_views(m, n, k, &a, &b);
     forward_scalar(av.clone(), bv.clone(), &mut expected).expect("参考可计算");
     forward_tiled(av, bv, &mut actual).expect("tile 可计算");
     assert_eq!(actual, expected, "i8 tile 必须与标量参考逐位一致");

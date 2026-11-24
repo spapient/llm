@@ -5,9 +5,9 @@ use super::*;
 /// 长序列 flash attention：S=2048、D=64，验证 K/V 分块流式扫描不保留完整分数向量，
 /// 与「整行分数留在 threadgroup 内存」的分块路径对拍并报延迟。
 ///
-/// 本用例只出测量：`cargo test -p llm-engine --lib -- metal_flash_attention_long --release --ignored --nocapture`。
+/// 本用例只出测量：`cargo test -p llm-device --test metal_suite -- metal_flash_attention_long --release --ignored --nocapture`。
 #[test]
-#[ignore = "Metal 长序列 flash attention：cargo test -p llm-engine --lib -- metal_flash_attention_long --release --ignored --nocapture"]
+#[ignore = "Metal 长序列 flash attention：cargo test -p llm-device --test metal_suite -- metal_flash_attention_long --release --ignored --nocapture"]
 fn metal_flash_attention_long() {
     let Some((device, queue)) = bench_device("长序列 flash attention 基准") else {
         return;

@@ -157,7 +157,7 @@ fn dense_pulses_outside_the_ternary_set_are_rejected() {
 }
 
 /// E14 稀疏度与「事件臂 vs 稠密臂」的等效乘加对照（`#[ignore]` 实测：
-/// `cargo test -p llm-nn --lib -- spike_arm_costs --release --ignored --nocapture`）。
+/// `cargo test -p llm-algorithm --lib -- spike_arm_costs --release --ignored --nocapture`）。
 ///
 /// 几何冻结在 1024 → 1024，权重与激活都由固定种子的 xorshift 生成，`Encoder` 的码位门槛决定
 /// 发放比例——于是「事件臂做了多少次整数累加」与「稠密臂做了多少次」可由 `active` 直接比出来，
@@ -166,7 +166,7 @@ fn dense_pulses_outside_the_ternary_set_are_rejected() {
 /// 注意两份耗时里都含相同的一份固定开销（`outputs` 次反量化 + LIF 推进），因此加速比**低于**
 /// 乘加比；这条只报数，判决仍归 `tools::card` 的协议卡。
 #[test]
-#[ignore = "E14 事件臂实测：cargo test -p llm-nn --lib -- spike_arm_costs --release --ignored --nocapture"]
+#[ignore = "E14 事件臂实测：cargo test -p llm-algorithm --lib -- spike_arm_costs --release --ignored --nocapture"]
 fn spike_arm_costs() {
     use std::hint::black_box;
     use std::time::Instant;
@@ -500,9 +500,9 @@ fn a_gradient_buf_of_another_shape_is_rejected() {
 /// 权重，码位在下一拍 `view` 时才重新取。于是「训练在改变什么」在这条用例里是可直接读出来的：
 /// 训练前的量化误差由初值占据，训练后的残差只剩 `round()` 那半格。
 ///
-/// 跑：`cargo test -p llm-nn --lib --release -- qat_costs --ignored --nocapture`
+/// 跑：`cargo test -p llm-algorithm --lib --release -- qat_costs --ignored --nocapture`
 #[test]
-#[ignore = "训练闭环实测：cargo test -p llm-nn --lib -- qat_costs --ignored --nocapture"]
+#[ignore = "训练闭环实测：cargo test -p llm-algorithm --lib -- qat_costs --ignored --nocapture"]
 fn qat_costs() {
     const TARGET: [f32; 8] = [0.8, -1.2, 2.4, -0.6, 1.0, -2.0, 0.3, 1.7];
     let mut master = Master::new(vec![0.0; 8], vec![1.0], 8, 1, 1.0, 0.0, 0.0).expect("几何合法");

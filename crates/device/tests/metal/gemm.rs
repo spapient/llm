@@ -77,7 +77,7 @@ impl Bench {
 /// `simdgroup_load` / `simdgroup_multiply_accumulate` / `simdgroup_store`），与 CPU 参考对拍。
 /// 探测失败只报原因，后续路线退回寄存器分块。
 #[test]
-#[ignore = "Metal simdgroup 探测：cargo test -p llm-engine --lib -- metal_simdgroup --release --ignored --nocapture"]
+#[ignore = "Metal simdgroup 探测：cargo test -p llm-device --test metal_suite -- metal_simdgroup --release --ignored --nocapture"]
 fn metal_simdgroup_probe() {
     let Some((device, queue)) = bench_device("simdgroup 探测") else {
         return;
@@ -117,10 +117,10 @@ kernel void kernel_main(device const float* A [[buffer(0)]],
 /// 对拍 GPU 与 CPU 参考、并报 naive（每线程一输出）与 tiled（threadgroup 共享内存分块）
 /// 的真实端到端延迟与 GFLOP/s。
 ///
-/// 本用例只出测量：`cargo test -p llm-engine --lib -- metal_matmul_forward --release --ignored --nocapture`。
+/// 本用例只出测量：`cargo test -p llm-device --test metal_suite -- metal_matmul_forward --release --ignored --nocapture`。
 /// 无 Metal 设备时静默跳过；产品级 E1/E3（7B / 100K / NVIDIA A800·3090·T600）不在本机、保持 OPEN。
 #[test]
-#[ignore = "Metal matmul 前向基准：cargo test -p llm-engine --lib -- metal_matmul_forward --release --ignored --nocapture"]
+#[ignore = "Metal matmul 前向基准：cargo test -p llm-device --test metal_suite -- metal_matmul_forward --release --ignored --nocapture"]
 fn metal_matmul_forward() {
     let Some((device, queue)) = bench_device("matmul 前向基准") else {
         return;
@@ -167,10 +167,10 @@ fn metal_matmul_forward() {
 /// `Mode::tiled`（共享内存分块）生成 MSL，在真机 GPU 上跑
 /// 同一组输入、对拍 CPU 参考并报延迟与 GFLOP/s。
 ///
-/// 本用例只出测量：`cargo test -p llm-engine --lib -- metal_tiled_gemm_k4096 --release --ignored --nocapture`。
+/// 本用例只出测量：`cargo test -p llm-device --test metal_suite -- metal_tiled_gemm_k4096 --release --ignored --nocapture`。
 /// 无 Metal 设备时静默跳过；产品级 E1/E3 不在本机、保持 OPEN。
 #[test]
-#[ignore = "Metal 生产态分块 GEMM：cargo test -p llm-engine --lib -- metal_tiled_gemm_k4096 --release --ignored --nocapture"]
+#[ignore = "Metal 生产态分块 GEMM：cargo test -p llm-device --test metal_suite -- metal_tiled_gemm_k4096 --release --ignored --nocapture"]
 fn metal_tiled_gemm_k4096() {
     let Some((device, queue)) = bench_device("分块 GEMM 基准") else {
         return;
@@ -235,9 +235,9 @@ fn metal_tiled_gemm_k4096() {
 /// simdgroup GEMM 放大形状基准：M=N=512、K=4096，验证 8×8 矩阵指令在更大的输出块上
 /// 仍与 CPU 参考一致，并报端到端 GFLOP/s（256×256 的小形状受启动开销影响大）。
 ///
-/// 本用例只出测量：`cargo test -p llm-engine --lib -- metal_simdgroup_gemm_512 --release --ignored --nocapture`。
+/// 本用例只出测量：`cargo test -p llm-device --test metal_suite -- metal_simdgroup_gemm_512 --release --ignored --nocapture`。
 #[test]
-#[ignore = "Metal simdgroup GEMM 512×512×4096：cargo test -p llm-engine --lib -- metal_simdgroup_gemm_512 --release --ignored --nocapture"]
+#[ignore = "Metal simdgroup GEMM 512×512×4096：cargo test -p llm-device --test metal_suite -- metal_simdgroup_gemm_512 --release --ignored --nocapture"]
 fn metal_simdgroup_gemm_512() {
     let Some((device, queue)) = bench_device("simdgroup GEMM 基准") else {
         return;
@@ -275,9 +275,9 @@ fn metal_simdgroup_gemm_512() {
 /// 同一输入先跑 CPU 参考（`nn::matmul_i8::forward_tiled`）逐元素对拍，再对 tile=8/16/32
 /// 报端到端延迟；这是 `matmul_i8` 的设备侧落地，不是 f32 GEMM 的近似。
 ///
-/// 本用例只出测量：`cargo test --release -p llm-engine --lib -- metal_int8_gemm_k4096 --ignored --nocapture`。
+/// 本用例只出测量：`cargo test --release -p llm-device --test metal_suite -- metal_int8_gemm_k4096 --ignored --nocapture`。
 #[test]
-#[ignore = "Metal int8 GEMM：cargo test --release -p llm-engine --lib -- metal_int8_gemm_k4096 --ignored --nocapture"]
+#[ignore = "Metal int8 GEMM：cargo test --release -p llm-device --test metal_suite -- metal_int8_gemm_k4096 --ignored --nocapture"]
 fn metal_int8_gemm_k4096() {
     let Some((device, queue)) = bench_device("int8 GEMM 基准") else {
         return;
@@ -313,9 +313,9 @@ fn metal_int8_gemm_k4096() {
 /// 同时验证两条回落契约：非 int8 签名、`K` 不被 `tile` 整除时都必须回到网格/串行路径，
 /// 不允许把「没走 int8 分块」冒充成已落地。
 ///
-/// 本用例只出测量：`cargo test --release -p llm-engine --lib -- metal_int8_gemm_cutile_k4096 --ignored --nocapture`。
+/// 本用例只出测量：`cargo test --release -p llm-device --test metal_suite -- metal_int8_gemm_cutile_k4096 --ignored --nocapture`。
 #[test]
-#[ignore = "Metal int8 GEMM cutile 端到端：cargo test --release -p llm-engine --lib -- metal_int8_gemm_cutile_k4096 --ignored --nocapture"]
+#[ignore = "Metal int8 GEMM cutile 端到端：cargo test --release -p llm-device --test metal_suite -- metal_int8_gemm_cutile_k4096 --ignored --nocapture"]
 fn metal_int8_gemm_cutile_k4096() {
     let Some((device, queue)) = bench_device("int8 GEMM cutile 端到端") else {
         return;
@@ -381,9 +381,9 @@ fn metal_int8_gemm_cutile_k4096() {
 /// `Mode::tiled_attention`（每行一个 threadgroup）生成 MSL，
 /// 在真机 GPU 上跑同一组 Q/K/V、对拍 CPU 参考并报延迟与吞吐。
 ///
-/// 本用例只出测量：`cargo test -p llm-engine --lib -- metal_tiled_attention_s512 --release --ignored --nocapture`。
+/// 本用例只出测量：`cargo test -p llm-device --test metal_suite -- metal_tiled_attention_s512 --release --ignored --nocapture`。
 #[test]
-#[ignore = "Metal 生产态分块注意力：cargo test -p llm-engine --lib -- metal_tiled_attention_s512 --release --ignored --nocapture"]
+#[ignore = "Metal 生产态分块注意力：cargo test -p llm-device --test metal_suite -- metal_tiled_attention_s512 --release --ignored --nocapture"]
 fn metal_tiled_attention_s512() {
     let Some((device, queue)) = bench_device("分块注意力基准") else {
         return;

@@ -17,8 +17,7 @@ fn assert_tiled_matches(m: usize, n: usize, k: usize) {
     let b = sample(k * n, 2);
     let mut expected = vec![0.0f32; m * n];
     let mut actual = vec![0.0f32; m * n];
-    let av = tensor::View::matrix(m, k, &a).expect("a 二维");
-    let bv = tensor::View::matrix(k, n, &b).expect("b 二维");
+    let (av, bv) = pair_views(m, n, k, &a, &b);
     forward_scalar(av.clone(), bv.clone(), &mut expected).expect("参考可计算");
     forward_tiled(av, bv, &mut actual).expect("tile 可计算");
     // K=4096 级 f32 累加的顺序误差在 1e-3 量级，rtol 取 1e-3、atol 取 1e-3。

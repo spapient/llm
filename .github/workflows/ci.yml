@@ -101,7 +101,10 @@ jobs:
         with:
           toolchain: "1.100.0"
       - uses: Swatinem/rust-cache@v2
+      # 两条口径都要：lib 里的 executor Metal 单测 + `metal_suite` 集成目标
+      # （correctness/gemm/attention/contract/tensor）。只跑 `--lib metal` 会漏掉后者。
       - run: cargo test -p llm-device --lib --locked metal
+      - run: cargo test -p llm-device --test metal_suite --locked
 
   address-sanitizer-macos:
     name: address sanitizer (macOS)
@@ -262,6 +265,24 @@ jobs:
       # 只防整体回退；every_source 全仓门的红绿由存量债负责，不在本覆盖率门口径内。
       - name: Coverage floor (tools)
         run: cargo llvm-cov nextest -p llm-tools --all-features --locked --fail-under-lines 88 --fail-under-functions 85
+      # 六大核心 crate 补门（此前只有上面 5 个 crate 有硬门，最大的 nn/train/prof/device/shard/serve
+      # 回退不可见）。本地干净基线（macOS arm64，all-features）：nn 行 84.4% / 函数 85.6%，
+      # train 86.4% / 88.5%，prof 69.2% / 73.0%，device 58.3% / 65.6%，shard 57.0% / 61.0%，
+      # serve 85.0% / 87.9%。下限统一留 8–10 点平台余量（ubuntu x86_64 走 AVX2 车道而非 NEON，
+      # prof 的探测分支同理）；device 的 Metal 执行器路径在 ubuntu 不可用，余量放宽到 15 点。
+      # 与既有 floor 同一立场：只防整体回退、不卡单次波动，基线抬升后阈值只收紧。
+      - name: Coverage floor (nn)
+        run: cargo llvm-cov nextest -p llm-nn --all-features --locked --fail-under-lines 75 --fail-under-functions 76
+      - name: Coverage floor (train)
+        run: cargo llvm-cov nextest -p llm-train --all-features --locked --fail-under-lines 78 --fail-under-functions 80
+      - name: Coverage floor (prof)
+        run: cargo llvm-cov nextest -p llm-prof --all-features --locked --fail-under-lines 60 --fail-under-functions 63
+      - name: Coverage floor (device)
+        run: cargo llvm-cov nextest -p llm-device --all-features --locked --fail-under-lines 43 --fail-under-functions 50
+      - name: Coverage floor (shard)
+        run: cargo llvm-cov nextest -p llm-shard --all-features --locked --fail-under-lines 48 --fail-under-functions 52
+      - name: Coverage floor (serve)
+        run: cargo llvm-cov nextest -p llm-serve --all-features --locked --fail-under-lines 77 --fail-under-functions 79
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
         with:

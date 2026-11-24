@@ -9,6 +9,9 @@ pub use super::{
     AXES, K, TILE_K, TILE_M, TILE_N, forward_scalar, matmul_scalar, matmul_tiled, project_shape,
 };
 
+#[cfg(test)]
+use super::pair_views;
+
 /// 输出块行数：4 行共用每一条 `B` 行块的读取。
 const BLOCK_ROWS: usize = 4;
 

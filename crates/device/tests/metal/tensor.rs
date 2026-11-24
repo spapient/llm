@@ -11,9 +11,9 @@ use super::*;
 ///
 /// 正确性只在 `M·N·K ≤ 1024³` 的形状上对拍：更大的 f64 参考要跑上分钟，而吞吐测点只需要输入。
 ///
-/// 运行：`cargo test --release -p llm-engine --lib -- metal_tensor_gemm --ignored --nocapture`
+/// 运行：`cargo test --release -p llm-device --test metal_suite -- metal_tensor_gemm --ignored --nocapture`
 #[test]
-#[ignore = "Metal 张量核 GEMM：cargo test --release -p llm-engine --lib -- metal_tensor_gemm --ignored --nocapture"]
+#[ignore = "Metal 张量核 GEMM：cargo test --release -p llm-device --test metal_suite -- metal_tensor_gemm --ignored --nocapture"]
 fn metal_tensor_gemm() {
     let Some((device, queue)) = bench_device("张量核 GEMM") else {
         return;
@@ -72,9 +72,9 @@ fn metal_tensor_gemm() {
 ///
 /// 生产算子 `matmul_f32` 把规约轴固定为 4096，立方形状无法由算子样本表达；这里自建签名与样本直接
 /// 调内核生成器——测的是内核本身，不是算子装配。运行：
-/// `cargo test --release -p llm-engine --lib -- metal_tensor_kernel_gemm --ignored --nocapture`
+/// `cargo test --release -p llm-device --test metal_suite -- metal_tensor_kernel_gemm --ignored --nocapture`
 #[test]
-#[ignore = "Metal 张量核立方 GEMM：cargo test --release -p llm-engine --lib -- metal_tensor_kernel_gemm --ignored --nocapture"]
+#[ignore = "Metal 张量核立方 GEMM：cargo test --release -p llm-device --test metal_suite -- metal_tensor_kernel_gemm --ignored --nocapture"]
 fn metal_tensor_kernel_gemm() {
     use nn::sig::Signature;
 

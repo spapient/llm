@@ -35,6 +35,7 @@
 #![deny(unsafe_code)]
 
 pub mod backends;
+pub mod backward;
 pub mod cuda;
 mod dialect;
 #[cfg(target_os = "macos")]

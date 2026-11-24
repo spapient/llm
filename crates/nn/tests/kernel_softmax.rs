@@ -24,16 +24,9 @@ fn softmax_rejects_empty_input() {
 /// 输入与输出长度不一致时拒绝；非对齐长度不静默截断。
 #[test]
 fn softmax_rejects_mismatched_output_length() {
-    let mut out = vec![0.0; 3];
-    assert!(
-        forward(tensor::View::one(&[1.0, 2.0]), &mut out).is_err(),
-        "输出比输入长必须拒绝"
-    );
-    let mut short = vec![0.0; 1];
-    assert!(
-        forward(tensor::View::one(&[1.0, 2.0, 3.0]), &mut short).is_err(),
-        "输出比输入短必须拒绝"
-    );
+    testkit::assert_rejects_length_mismatch(|input, out| {
+        forward(tensor::View::one(input), out).is_err()
+    });
 }
 
 /// 饱和与退化输入：全零、重复元素、同号大值与极值；每行仍归一化到 1 且不含 NaN/Inf。
