@@ -70,9 +70,6 @@ const ENTRIES: &[Entry] = &[
 
 #[test]
 fn backward_gradient_matches_central_difference_on_metal() {
-    let Some(_device) = bench_device("反向梯度对拍") else {
-        return;
-    };
     for entry in ENTRIES {
         run_entry(entry);
     }
