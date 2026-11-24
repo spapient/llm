@@ -120,8 +120,7 @@ fn sharding_of(name: &str) -> Sharding {
     TP_SHARDING
         .iter()
         .find(|(suffix, _)| name.ends_with(suffix))
-        .map(|(_, sharding)| *sharding)
-        .unwrap_or(Sharding::Column)
+        .map_or(Sharding::Column, |(_, sharding)| *sharding)
 }
 
 /// 层名里的块号：取第一个可解析为 `usize` 的点分段；没有则为非分层参数。
@@ -191,8 +190,7 @@ impl Assembler {
         let name = layer.name().to_string();
         let block = layer_index(&name);
         let held = block
-            .map(|index| index >= start && index < end)
-            .unwrap_or(true);
+            .is_none_or(|index| index >= start && index < end);
 
         let linear = layer.linear();
         let geo = linear.map(|linear| LinearGeo {

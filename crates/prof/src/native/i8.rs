@@ -90,7 +90,7 @@ unsafe fn harvest(
                     let mut s = vaddvq_s32(*cell);
                     let mut q = kvec;
                     while q < k {
-                        s += *ap.add(mr * k + q) as i32 * *bp.add(jj * k + q) as i32;
+                        s += i32::from(*ap.add(mr * k + q)) * i32::from(*bp.add(jj * k + q));
                         q += 1;
                     }
                     out[(r + mr) * n + jj] = s;

@@ -132,7 +132,7 @@ fn evaluate(logits: &[f32], labels: &[f32], vocab: usize) -> Result<(f64, usize,
         let start = row * vocab;
         let slice = &logits[start..start + vocab];
         let label = label as usize;
-        nll_sum += row_nll(slice, label) as f64;
+        nll_sum += f64::from(row_nll(slice, label));
         if row_argmax(slice) == label {
             correct += 1;
         }
@@ -176,7 +176,7 @@ pub fn mse(pred: &[f32], target: &[f32]) -> Result<f32> {
         .iter()
         .zip(target.iter())
         .map(|(p, t)| {
-            let d = (p - t) as f64;
+            let d = f64::from(p - t);
             d * d
         })
         .sum();
@@ -202,8 +202,8 @@ pub fn bce_with_logits(logits: &[f32], target: &[f32]) -> Result<f32> {
         .iter()
         .zip(target.iter())
         .map(|(x, y)| {
-            let x = *x as f64;
-            let y = *y as f64;
+            let x = f64::from(*x);
+            let y = f64::from(*y);
             x.max(0.0) - x * y + (1.0 + (-x.abs()).exp()).ln()
         })
         .sum();
@@ -225,12 +225,12 @@ pub fn huber(pred: &[f32], target: &[f32], delta: f32) -> Result<f32> {
     if delta <= 0.0 {
         return Err(Error::new(Code::Invalid, "huber: delta 必须为正"));
     }
-    let d = delta as f64;
+    let d = f64::from(delta);
     let sum: f64 = pred
         .iter()
         .zip(target.iter())
         .map(|(p, t)| {
-            let e = (*p as f64 - *t as f64).abs();
+            let e = (f64::from(*p) - f64::from(*t)).abs();
             if e <= d {
                 0.5 * e * e
             } else {
@@ -256,7 +256,7 @@ pub fn hinge(pred: &[f32], target: &[f32]) -> Result<f32> {
     let sum: f64 = pred
         .iter()
         .zip(target.iter())
-        .map(|(p, t)| (1.0 - *t as f64 * *p as f64).max(0.0))
+        .map(|(p, t)| (1.0 - f64::from(*t) * f64::from(*p)).max(0.0))
         .sum();
     Ok((sum / pred.len() as f64) as f32)
 }
@@ -475,7 +475,7 @@ pub fn kl_div(student: &[f32], teacher: &[f32], vocab: usize, temperature: f32) 
     let rows = check_pair_shape(student.len(), teacher.len(), vocab)?;
     let mut kl_sum = 0.0f64;
     for (s, t) in student.chunks_exact(vocab).zip(teacher.chunks_exact(vocab)) {
-        kl_sum += row_kl(s, t, temperature) as f64;
+        kl_sum += f64::from(row_kl(s, t, temperature));
     }
     Ok((kl_sum / rows as f64) as f32)
 }

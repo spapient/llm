@@ -62,7 +62,7 @@ impl Cache {
         std::fs::copy(exe, &staged)?;
         std::fs::rename(&staged, &path)?;
         sign(&bin, key)?;
-        let bytes = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
+        let bytes = std::fs::metadata(&path).map_or(0, |meta| meta.len());
         touch(&self.entry_dir(&key.source).join("meta.txt"));
         Ok(Artifact::new(key.clone(), path, bytes, false))
     }
@@ -349,7 +349,7 @@ impl CacheKey {
             .collect();
         let mut changes = Vec::new();
         for (field, value) in &current {
-            let cached = by_name.get(*field).map(|v| v.to_string());
+            let cached = by_name.get(*field).map(std::string::ToString::to_string);
             if cached.as_deref() != Some(value.as_str()) {
                 changes.push(Changed::of(field, cached, Some(value.clone())));
             }

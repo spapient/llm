@@ -14,7 +14,7 @@ pub(crate) struct Report<'a> {
 
 /// 把形状渲染成 JSON 整数数组：`[4096, 4096]` / `[4096]`。
 pub(crate) fn shape_json(shape: &[usize]) -> String {
-    let parts: Vec<String> = shape.iter().map(|dim| dim.to_string()).collect();
+    let parts: Vec<String> = shape.iter().map(std::string::ToString::to_string).collect();
     format!("[{}]", parts.join(", "))
 }
 
@@ -96,7 +96,7 @@ pub(crate) fn report_json(
         ("kind", Field::Str(meta.kind.to_string())),
         ("backend", Field::Str(meta.backend.to_string())),
         ("shape", Field::Raw(meta.shape.clone())),
-        ("batch", Field::Int(meta.batch as i64)),
+        ("batch", Field::Int(i64::from(meta.batch))),
         ("dtype", Field::Str(meta.dtype.to_string())),
     ];
     for (key, value) in front {

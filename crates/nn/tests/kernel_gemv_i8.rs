@@ -11,7 +11,7 @@ fn forward_matches_a_hand_written_sum() {
 
     forward(tensor::View::one(&x), &w, tensor::View::one(&scales), &mut out).expect("合法");
     let expected = 0.5 * (1.0 * 1.0 + 2.0 * 2.0 + 3.0 * 3.0 + 4.0 * 4.0);
-    assert!((out[0] - expected).abs() < 1e-6, "{:?}", out);
+    assert!((out[0] - expected).abs() < 1e-6, "{out:?}");
 }
 
 #[test]

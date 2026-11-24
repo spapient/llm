@@ -374,7 +374,7 @@ pub mod i8 {
         }
 
         fn to_f32(elem: u8) -> f32 {
-            (elem as i8) as f32
+            f32::from(elem as i8)
         }
 
         /// 对称 `int8` 走 [`simd::elementwise`]：位模式原样重解释成 `i8` 再展宽，零点 0 无需偏移。

@@ -422,8 +422,7 @@ fn use_statements(text: &str) -> Vec<String> {
 fn use_tree(statement: &str, owner: &str) -> Vec<(String, String)> {
     let body = statement
         .split_once("use ")
-        .map(|(_, rest)| rest.trim_end_matches(';').trim())
-        .unwrap_or("");
+        .map_or("", |(_, rest)| rest.trim_end_matches(';').trim());
     // `use` 的路径是相对**所在模块**解析的：`super::` 逐层上溯、`self::` 原地、`crate::` 绝对。
     // 声明索引让 owner 与文件名解耦（`kernel_matmul.rs` 的 owner 是 `kernel::matmul`），
     // 这条解析才可能对——按文件名算 owner 时，`super::` 会被拼成 `kernel_matmul::super::…`。
@@ -456,31 +455,28 @@ fn use_tree(statement: &str, owner: &str) -> Vec<(String, String)> {
         parts.join("::")
     };
     let mut out = Vec::new();
-    match body.split_once('{') {
-        Some((prefix, rest)) => {
-            let prefix = prefix.trim_end_matches(':').trim_end_matches("::");
-            for item in rest.split('}').next().unwrap_or("").split(',') {
-                let item = item.trim();
-                if item.is_empty() || item.contains('{') {
-                    continue;
-                }
-                let (source, alias) = split_alias(item);
-                out.push((join(prefix, source), alias.to_string()));
+    if let Some((prefix, rest)) = body.split_once('{') {
+        let prefix = prefix.trim_end_matches(':').trim_end_matches("::");
+        for item in rest.split('}').next().unwrap_or("").split(',') {
+            let item = item.trim();
+            if item.is_empty() || item.contains('{') {
+                continue;
             }
+            let (source, alias) = split_alias(item);
+            out.push((join(prefix, source), alias.to_string()));
         }
-        None => {
-            // 无花括号时 source 可能带 `::` 前缀（`use decode::semantics as decode_attention`），
-            // 前缀必须保留，不能像花括号条目那样按词尾标识符截断。
-            let (source, alias) = match body.rsplit_once(" as ") {
-                Some((source, alias)) => (source.trim(), ident(alias)),
-                None => (body.trim(), body.trim()),
-            };
-            let (prefix, name) = match source.rsplit_once("::") {
-                Some((prefix, name)) => (prefix, name),
-                None => ("", source),
-            };
-            out.push((join(prefix, name), alias.to_string()));
-        }
+    } else {
+        // 无花括号时 source 可能带 `::` 前缀（`use decode::semantics as decode_attention`），
+        // 前缀必须保留，不能像花括号条目那样按词尾标识符截断。
+        let (source, alias) = match body.rsplit_once(" as ") {
+            Some((source, alias)) => (source.trim(), ident(alias)),
+            None => (body.trim(), body.trim()),
+        };
+        let (prefix, name) = match source.rsplit_once("::") {
+            Some((prefix, name)) => (prefix, name),
+            None => ("", source),
+        };
+        out.push((join(prefix, name), alias.to_string()));
     }
     out
 }

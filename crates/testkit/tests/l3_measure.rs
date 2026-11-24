@@ -21,7 +21,7 @@ pub fn scaled(len: usize, salt: u32, scale: f32) -> Vec<f32> {
 /// `‖W‖_F`：`‖W‖₂ ≤ ‖W‖_F` 对任何矩阵成立，拿它当 `ρ` 无需先分解。
 pub fn frobenius(w: &[f32]) -> f64 {
     w.iter()
-        .map(|&v| (v as f64) * (v as f64))
+        .map(|&v| f64::from(v) * f64::from(v))
         .sum::<f64>()
         .sqrt()
 }
@@ -30,7 +30,7 @@ pub fn frobenius(w: &[f32]) -> f64 {
 pub fn distance(a: &[f32], b: &[f32]) -> f64 {
     a.iter()
         .zip(b)
-        .map(|(&p, &q)| ((p - q) as f64).powi(2))
+        .map(|(&p, &q)| f64::from(p - q).powi(2))
         .sum::<f64>()
         .sqrt()
 }

@@ -65,16 +65,13 @@ impl Kernel for Reference {
         inputs: &[View<'_>],
         output: &mut ViewMut<'_>,
     ) -> Result<()> {
-        match KERNELS.iter().find(|entry| entry.op == op) {
-            Some(entry) => (entry.run)(inputs, output),
-            None => {
-                let covered = KERNELS.iter().map(|entry| entry.op).collect::<Vec<_>>();
-                let message = format!(
-                    "`{op}` 没有标量内核；`train::Reference` 覆盖 {}",
-                    covered.join(", ")
-                );
-                Err(Error::new(Code::Unsupported, message).with(SITE))
-            }
+        if let Some(entry) = KERNELS.iter().find(|entry| entry.op == op) { (entry.run)(inputs, output) } else {
+            let covered = KERNELS.iter().map(|entry| entry.op).collect::<Vec<_>>();
+            let message = format!(
+                "`{op}` 没有标量内核；`train::Reference` 覆盖 {}",
+                covered.join(", ")
+            );
+            Err(Error::new(Code::Unsupported, message).with(SITE))
         }
     }
 }

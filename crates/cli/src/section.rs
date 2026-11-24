@@ -352,8 +352,6 @@ pub(super) fn artifact_line(measured: &Bench) -> String {
 pub(super) fn cache_dir_line(measured: &Bench) -> String {
     let dir = measured
         .cache_dir
-        .as_ref()
-        .map(|path| path.display().to_string())
-        .unwrap_or_else(|| "-".to_string());
+        .as_ref().map_or_else(|| "-".to_string(), |path| path.display().to_string());
     format!("  缓存  {dir}\n")
 }

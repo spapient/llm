@@ -256,7 +256,7 @@ fn slots_tail(step: &Step, args: &EpiArgs<'_>) -> diagnostic::Result<(Epilogue, 
             Epilogue::Quant,
             [
                 args.out.to_string(),
-                format!("{:?}f", QUANT_SCALE),
+                format!("{QUANT_SCALE:?}f"),
                 args.count.to_string(),
                 bits(*dtype)?.to_string(),
             ],

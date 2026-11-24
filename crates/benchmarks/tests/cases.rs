@@ -149,7 +149,7 @@ pub(crate) fn the_report_carries_every_field_a_reader_needs_to_judge_it() {
         let parsed = parsed_report(&rendered);
         assert_eq!(
             parsed_batch(&parsed),
-            Some(scenario.batch as i64),
+            Some(i64::from(scenario.batch)),
             "批大小是口径的一部分：1 行 = decode 步，与 prefill 的多行批差三个数量级"
         );
         assert_eq!(
@@ -226,7 +226,7 @@ pub(crate) fn load_records_carry_every_field_a_reader_needs_to_judge_it() {
             "装载",
         );
         let parsed = parsed_report(&rendered);
-        assert_eq!(parsed_batch(&parsed), Some(scenario.batch as i64));
+        assert_eq!(parsed_batch(&parsed), Some(i64::from(scenario.batch)));
         assert_eq!(
             parsed
                 .get("bytes_per_iter")
@@ -301,7 +301,7 @@ pub(crate) fn model_records_carry_every_field_a_reader_needs_to_judge_it() {
         let parsed = parsed_report(&rendered);
         assert_eq!(
             parsed_batch(&parsed),
-            Some(scenario.batch as i64),
+            Some(i64::from(scenario.batch)),
             "批大小是口径的一部分：1 行 = decode 步，与 prefill 的多行批差三个数量级"
         );
         assert_eq!(
@@ -468,7 +468,7 @@ fn a_real_decode_series_becomes_a_reviewable_card() {
         ),
         "三态之外没有第四种结论"
     );
-    let reason = standing.shortfall().map(Shortfall::as_str).unwrap_or("met");
+    let reason = standing.shortfall().map_or("met", Shortfall::as_str);
     println!("E10 decode_step_ns → {} ({reason})", standing.as_str());
 }
 
@@ -554,7 +554,7 @@ pub(crate) fn no_measurement_is_filed_under_an_unregistered_group() {
     };
 
     let groups: Vec<PathBuf> = entries
-        .filter_map(|entry| entry.ok())
+        .filter_map(std::result::Result::ok)
         .map(|entry| entry.path())
         .filter(|path| path.is_dir())
         .collect();

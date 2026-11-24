@@ -218,12 +218,12 @@ const ENTRIES: &[Entry] = &[
     Entry {
         op: "max_f32",
         tol: 0.0,
-        kind: Op::Binary(|x, y| x.max(y), |len| pair(len, 0.125, -3.0, 0.125, -3.0)),
+        kind: Op::Binary(f32::max, |len| pair(len, 0.125, -3.0, 0.125, -3.0)),
     },
     Entry {
         op: "min_f32",
         tol: 0.0,
-        kind: Op::Binary(|x, y| x.min(y), |len| pair(len, 0.125, -3.0, 0.125, -3.0)),
+        kind: Op::Binary(f32::min, |len| pair(len, 0.125, -3.0, 0.125, -3.0)),
     },
     Entry {
         op: "div_f32",

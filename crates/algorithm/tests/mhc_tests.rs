@@ -38,7 +38,7 @@ fn a_row_is_a_convex_combination_of_the_input_rows() {
     ];
     let mhc = Mhc::new(&mix, 4).expect("四流");
     let input: Vec<Vec<f64>> = (0..4)
-        .map(|r| (0..3).map(|c| (r * 7 + c) as f64 - 5.0).collect())
+        .map(|r| (0..3).map(|c| f64::from(r * 7 + c) - 5.0).collect())
         .collect();
     let out = mhc.mix_streams(&input).expect("几何合法");
     for (r, row) in out.iter().enumerate() {

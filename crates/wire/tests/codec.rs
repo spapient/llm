@@ -10,7 +10,7 @@ use llm_wire::sink::{Count, FileSink, Measured, Sealed, Sink, SliceSink};
 
 #[test]
 fn counting_and_writing_agree_byte_for_byte() {
-    let values = [0u64, 7, 128, u32::MAX as u64, u64::MAX];
+    let values = [0u64, 7, 128, u64::from(u32::MAX), u64::MAX];
     let mut counted = Count::default();
     for value in values {
         write(&mut counted, value);

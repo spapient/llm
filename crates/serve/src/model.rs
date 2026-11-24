@@ -185,15 +185,13 @@ impl<E: Executor> CpuModel<E> {
             .bind(block.hist_k, Buf::F32(Vec::new()))
             .as_ref()
             .and_then(Buf::f32)
-            .map(<[f32]>::to_vec)
-            .unwrap_or_default();
+            .map_or_default(<[f32]>::to_vec);
         let mut hist_v = self
             .executor
             .bind(block.hist_v, Buf::F32(Vec::new()))
             .as_ref()
             .and_then(Buf::f32)
-            .map(<[f32]>::to_vec)
-            .unwrap_or_default();
+            .map_or_default(<[f32]>::to_vec);
         hist_k.resize(hist_total, 0.0);
         hist_v.resize(hist_total, 0.0);
         let mut cursor = 0;
@@ -346,7 +344,7 @@ impl<E: Executor> CpuModel<E> {
             )
             .with(SITE));
         }
-        Ok(flat.chunks(width).map(|row| row.to_vec()).collect())
+        Ok(flat.chunks(width).map(<[f32]>::to_vec).collect())
     }
 }
 

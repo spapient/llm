@@ -354,8 +354,8 @@ fn op_chunked_scan_matches_reference(op_name: &str) {
     for g in 1..grid_size as usize {
         let prev_start = (g as u32 - 1) * chunk;
         let prev_len = chunk.min(len - prev_start);
-        let tail = local[(prev_start + prev_len - 1) as usize] as f64;
-        carry[g] = decay.powf(prev_len as f64) * carry[g - 1] + tail;
+        let tail = f64::from(local[(prev_start + prev_len - 1) as usize]);
+        carry[g] = decay.powf(f64::from(prev_len)) * carry[g - 1] + tail;
     }
 
     // 阶段 3：校正（c → y 就地累加）。槽 0 复用为携带态缓冲。

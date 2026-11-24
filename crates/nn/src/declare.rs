@@ -79,8 +79,7 @@ impl AxisCore {
             .spec
             .ops()
             .first()
-            .map(String::as_str)
-            .unwrap_or_default();
+            .map_or_default(String::as_str);
         Bounds::of_ctx(op, self.len, 1).map(Some)
     }
 }

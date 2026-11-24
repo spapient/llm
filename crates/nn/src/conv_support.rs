@@ -158,8 +158,7 @@ pub(crate) fn thread_count(rows: usize, patch: usize) -> usize {
         1
     } else {
         thread::available_parallelism()
-            .map(|v| v.get())
-            .unwrap_or(1)
+            .map_or(1, std::num::NonZero::get)
             .min(rows)
     }
 }

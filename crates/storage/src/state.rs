@@ -153,7 +153,7 @@ pub(crate) fn write_moments(sink: &mut impl Sink, moments: &Moments) {
 
 /// 累积梯度段：窗口批数 → 槽位数 → 每槽长度 + f32 小端；布局与矩状态段平行。
 pub(crate) fn write_grad_accum(sink: &mut impl Sink, accum: &GradAccum) {
-    snapshot::varint(sink, accum.count() as u64);
+    snapshot::varint(sink, u64::from(accum.count()));
     snapshot::varint(sink, accum.slots().len() as u64);
     for slot in accum.slots() {
         write_f32_table(sink, slot);

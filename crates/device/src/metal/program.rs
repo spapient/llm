@@ -271,8 +271,7 @@ fn only_read(signature: &Signature) -> Result<&str> {
 /// `sqrt(Σx²/N + ε)` 折叠：f64 求和、写回前收窄 f32（与 `.k` 模板同口径）。
 fn rms_fold(output: &str, blocks: usize, len: usize) -> String {
     format!(
-        "        {{\n            const float *parts = (const float *)b_{output}.contents;\n            double acc = 0.0;\n            for (int g = 0; g < {blocks}; ++g) {{ acc += (double)parts[g]; }}\n            ((float *)b_rms.contents)[0] = (float)sqrt(acc / (double){len} + (double){eps}f);\n        }}\n",
-        eps = RMS_EPS
+        "        {{\n            const float *parts = (const float *)b_{output}.contents;\n            double acc = 0.0;\n            for (int g = 0; g < {blocks}; ++g) {{ acc += (double)parts[g]; }}\n            ((float *)b_rms.contents)[0] = (float)sqrt(acc / (double){len} + (double){RMS_EPS}f);\n        }}\n"
     )
 }
 

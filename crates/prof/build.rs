@@ -286,9 +286,7 @@ fn provides_of(doc: &toml::Table, name: &str, ext: &str) -> Vec<Provide> {
 fn entry_of(provides: &[Provide], prim: &str, implementation: &str, path: &Path) -> String {
     provides
         .iter()
-        .find(|provide| provide.prim == prim && provide.imp == implementation)
-        .map(|provide| provide.func.clone())
-        .unwrap_or_else(|| {
+        .find(|provide| provide.prim == prim && provide.imp == implementation).map_or_else(|| {
             let declared: Vec<&str> = provides
                 .iter()
                 .filter(|provide| provide.prim == prim)
@@ -304,7 +302,7 @@ fn entry_of(provides: &[Provide], prim: &str, implementation: &str, path: &Path)
                     declared.join(", ")
                 }
             ))
-        })
+        }, |provide| provide.func.clone())
 }
 
 /// 片段第一行的签名声明：`/* cutile-sign: <prim>/<impl> */`。返回 `impl` 名。

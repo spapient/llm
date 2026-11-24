@@ -177,7 +177,7 @@ fn attention_reference(q: &[f32], k: &[f32], v: &[f32], s: usize, d: usize) -> V
             row_max = row_max.max(scores[j]);
         }
         let mut sum = 0.0f64;
-        for score in scores.iter_mut() {
+        for score in &mut scores {
             *score = (*score - row_max).exp();
             sum += *score;
         }

@@ -46,7 +46,7 @@ impl Load for f32 {
 impl Load for u8 {
     /// `u8 → i8` 是位模式重解释，`i8 → f32` 是有符号展宽。
     fn one(elem: Self) -> f32 {
-        (elem as i8) as f32
+        f32::from(elem as i8)
     }
 }
 

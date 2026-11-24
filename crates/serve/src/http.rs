@@ -337,8 +337,7 @@ fn reason(status: u16) -> &'static str {
     REASONS
         .iter()
         .find(|(code, _)| *code == status)
-        .map(|(_, why)| *why)
-        .unwrap_or("Unknown")
+        .map_or("Unknown", |(_, why)| *why)
 }
 
 fn io(error: std::io::Error) -> diagnostic::Error {

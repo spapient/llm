@@ -188,7 +188,7 @@ fn the_dense_dot_stays_inside_the_gamma_bound_against_a_wider_reference() {
     let u = f64::from(f32::EPSILON) / 2.0;
     let gamma = M as f64 * u / (1.0 - (M as f64) * u);
     let error = (f64::from(y[0]) - exact).abs();
-    let ulps = (y[0] as f64 - exact).abs() / (exact.abs() * u);
+    let ulps = (f64::from(y[0]) - exact).abs() / (exact.abs() * u);
     assert!(
         error <= gamma * magnitude,
         "实测 {error:e} 超出 γ_M·Σ|wx| = {:e}（≈{ulps:.1} ulp）",

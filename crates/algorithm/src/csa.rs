@@ -99,7 +99,7 @@ fn normalize_rows<S: Scalar>(mat: &mut [S], n: usize) {
         let sum = mat[r * n..(r + 1) * n]
             .iter()
             .copied()
-            .fold(S::ZERO, |acc, v| acc.add(v));
+            .fold(S::ZERO, std::ops::Add::add);
         if sum > S::ZERO {
             for v in &mut mat[r * n..(r + 1) * n] {
                 *v = v.div(sum);
@@ -127,7 +127,7 @@ pub fn is_doubly_stochastic<S: Scalar>(mat: &[S], n: usize, tol: S) -> bool {
         let row = mat[r * n..(r + 1) * n]
             .iter()
             .copied()
-            .fold(S::ZERO, |acc, v| acc.add(v));
+            .fold(S::ZERO, std::ops::Add::add);
         let col = (0..n).fold(S::ZERO, |acc, i| acc.add(mat[i * n + r]));
         row.sub(S::ONE).abs() <= tol && col.sub(S::ONE).abs() <= tol
     })

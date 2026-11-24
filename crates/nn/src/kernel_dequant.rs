@@ -85,7 +85,7 @@ pub fn sample_packed(len: usize, cpb: usize) -> Sample {
 pub fn unpack(byte: u8, slot: usize, cpb: usize, zero: f32) -> f32 {
     let width = crate::quant::width_cpb(cpb);
     let mask = (1u8 << width) - 1;
-    ((byte >> (slot * width)) & mask) as f32 - zero
+    f32::from((byte >> (slot * width)) & mask) - zero
 }
 
 /// 标量参考：逐字节解 `cpb` 个码，与内核同一公式。

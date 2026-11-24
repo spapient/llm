@@ -170,7 +170,7 @@ fn compiled_executable(dir: &Path, base: &Path) -> Option<PathBuf> {
     entries
         .flatten()
         .map(|entry| entry.path())
-        .find(|path| path.is_file() && path.extension().map(|ext| ext != "c").unwrap_or(true))
+        .find(|path| path.is_file() && path.extension().is_none_or(|ext| ext != "c"))
 }
 
 /// 只执行：读 stdout 的位模式与 stderr 的计时样本。

@@ -125,7 +125,7 @@ impl_scalar!(
     f32::NEG_INFINITY,
     |v| v as f32,
     |v| v as f32,
-    |v| v as f64,
+    f64::from,
     |v| v as usize
 );
 impl_scalar!(

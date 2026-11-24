@@ -33,7 +33,7 @@ fn pool_references_pick_exact_window_extremes() {
 
 /// 把 `f32` 切片转成标量 `S` 的切片（精度对拍前的搬运用，不参与算术）。
 fn cast<S: Scalar>(x: &[f32]) -> Vec<S> {
-    x.iter().map(|&v| S::from_f64(v as f64)).collect()
+    x.iter().map(|&v| S::from_f64(f64::from(v))).collect()
 }
 
 /// 把标量 `S` 的切片转回 `f32`（对拍读数，只做展示级转换）。

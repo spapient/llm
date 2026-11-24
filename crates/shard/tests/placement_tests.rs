@@ -19,7 +19,7 @@ fn single_process_holds_every_layer_with_full_shape() {
     let assembler = Assembler::new(Plan::single());
     let placed = assembler.place_stack(&sample(), 2).expect("单进程合法");
 
-    assert!(placed.iter().all(|p| p.held()));
+    assert!(placed.iter().all(super::Placement::held));
     let q = placed
         .iter()
         .find(|p| p.name() == "blk.0.q")

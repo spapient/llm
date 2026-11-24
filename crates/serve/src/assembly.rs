@@ -344,25 +344,19 @@ impl<'a> NodeSink<'a> {
 
     /// 懒分配全模型共享的 rope 批位置表编号：已取号复用，否则登记新号。
     pub(crate) fn ensure_rope_pos_table(&mut self) -> Result<u32> {
-        match *self.rope_pos_table {
-            Some(id) => Ok(id),
-            None => {
-                let id = self.alloc_table()?;
-                *self.rope_pos_table = Some(id);
-                Ok(id)
-            }
+        if let Some(id) = *self.rope_pos_table { Ok(id) } else {
+            let id = self.alloc_table()?;
+            *self.rope_pos_table = Some(id);
+            Ok(id)
         }
     }
 
     /// 懒分配全模型共享的 attention 段长表编号：已取号复用，否则登记新号。
     pub(crate) fn ensure_hist_len_table(&mut self) -> Result<u32> {
-        match *self.hist_len_table {
-            Some(id) => Ok(id),
-            None => {
-                let id = self.alloc_table()?;
-                *self.hist_len_table = Some(id);
-                Ok(id)
-            }
+        if let Some(id) = *self.hist_len_table { Ok(id) } else {
+            let id = self.alloc_table()?;
+            *self.hist_len_table = Some(id);
+            Ok(id)
         }
     }
 
@@ -388,7 +382,7 @@ fn chain(
     // 旁路持有槽：逐元素二元可借用的残差/门控激活；非二元层输出刷新它，二元层不覆盖。
     let mut held: Option<(u32, usize)> = None;
 
-    for layer in layers.iter() {
+    for layer in layers {
         let (next, in_width, out_width, kind) =
             chain_step(sink, prev, prev_out, held, layer.as_ref(), params)?;
         if prev_out.is_none() {

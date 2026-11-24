@@ -65,8 +65,7 @@ pub fn skip_count() -> usize {
 pub fn skipped_reasons() -> Vec<String> {
     SKIP_REASONS
         .lock()
-        .map(|guard| guard.clone())
-        .unwrap_or_default()
+        .map_or_default(|guard| guard.clone())
 }
 
 /// 真机门控与跳过登记合一：设备未显式打开时登记原因并返回 `true`（调用方立即 `return`）；

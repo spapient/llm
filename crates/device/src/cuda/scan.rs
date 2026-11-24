@@ -67,9 +67,6 @@ fn scan_correct(output: &str, chunk: usize, len: i64, decay: f32) -> String {
     let body = scan_correct_body(output, decay, "    ");
     format!(
         "__global__ void {CORRECT}(\n    const float* d_c,\n    float* d_{output}) {{\n    int g = blockIdx.x * blockDim.x + threadIdx.x;\n{head}{body}\n}}",
-        head = head,
-        body = body,
-        output = output,
     )
 }
 

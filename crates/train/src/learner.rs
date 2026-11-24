@@ -403,7 +403,7 @@ impl Ledger {
         validate(&point)?;
         let samples = point.samples as u64;
         self.samples += samples;
-        self.loss_sum += point.loss as f64 * samples as f64;
+        self.loss_sum += f64::from(point.loss) * samples as f64;
         self.correct += point.correct;
         self.best = Some(match self.best {
             Some(best) => best.min(point.loss),

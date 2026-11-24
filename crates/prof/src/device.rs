@@ -429,8 +429,7 @@ impl FragmentSet {
         self.inner
             .fragments
             .get(&prim)
-            .map(Vec::as_slice)
-            .unwrap_or_default()
+            .map_or_default(Vec::as_slice)
     }
 
     /// 设备名。

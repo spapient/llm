@@ -11,7 +11,7 @@ const WIDTH: usize = 4;
 
 /// 投影 `[n_h · d_h, d_c]` = `[4, 2]`：`seed` 只用来让两个投影不一样。
 fn projection(seed: f64) -> Vec<f64> {
-    (0..8).map(|i| seed + 0.125 * i as f64).collect()
+    (0..8).map(|i| seed + 0.125 * f64::from(i)).collect()
 }
 
 /// 注意力层。

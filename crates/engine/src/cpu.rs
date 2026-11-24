@@ -215,15 +215,12 @@ impl CpuExecutor {
                     ids.push(operand.id());
                     values.push(value);
                 }
-                None => match ids.iter().position(|&id| id == operand.id()) {
-                    Some(taken_at) => values.push(values[taken_at].clone()),
-                    None => {
-                        self.restore(Taken { ids, values });
-                        return Taken {
-                            ids: Vec::new(),
-                            values: Vec::new(),
-                        };
-                    }
+                None => if let Some(taken_at) = ids.iter().position(|&id| id == operand.id()) { values.push(values[taken_at].clone()) } else {
+                    self.restore(Taken { ids, values });
+                    return Taken {
+                        ids: Vec::new(),
+                        values: Vec::new(),
+                    };
                 },
             }
         }

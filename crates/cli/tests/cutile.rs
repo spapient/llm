@@ -17,8 +17,7 @@ fn nvidia_present() -> bool {
     let catalogue = Catalogue::load(&settings().dirs()).expect("内置数据");
     catalogue
         .profile("nvidia")
-        .map(llm_optim::witness::device_available)
-        .unwrap_or(false)
+        .is_some_and(llm_optim::witness::device_available)
 }
 
 /// 性能判据每轮都要有一句结论：没声明峰值时说“未测量”，不能什么都不打印。

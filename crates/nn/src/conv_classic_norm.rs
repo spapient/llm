@@ -23,7 +23,7 @@ pub mod batch {
         // 声明档是 `n=2, h=1, w=2`：`h·w = spatial`。
         crate::kernel::norm::BatchNorm2d {
             channels: C,
-            eps: S::from_f64(EPS as f64),
+            eps: S::from_f64(f64::from(EPS)),
             momentum: S::from_f64(0.1),
         }
         .forward_train(x, gamma, beta, N, 1, S, &mut mean, &mut var, out)
@@ -71,7 +71,7 @@ pub mod group {
         crate::kernel::norm::GroupNorm {
             groups: G,
             channels: C,
-            eps: S::from_f64(EPS as f64),
+            eps: S::from_f64(f64::from(EPS)),
         }
         .forward(x, gamma, beta, N, S, out)
     }
@@ -120,7 +120,7 @@ pub mod instance {
     ) -> diagnostic::Result<()> {
         crate::kernel::norm::InstanceNorm {
             channels: C,
-            eps: S::from_f64(EPS as f64),
+            eps: S::from_f64(f64::from(EPS)),
         }
         .forward(x, gamma, beta, N, S, out)
     }
@@ -162,7 +162,7 @@ pub mod layer {
     ) -> diagnostic::Result<()> {
         crate::kernel::norm::LayerNorm {
             width: W,
-            eps: S::from_f64(EPS as f64),
+            eps: S::from_f64(f64::from(EPS)),
         }
         .forward(x, gamma, beta, out)
     }

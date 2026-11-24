@@ -439,8 +439,7 @@ fn temp_path(path: &Path) -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let name = path
         .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
+        .map_or_default(|name| name.to_string_lossy().into_owned());
     path.with_file_name(format!(
         ".{name}.{}.{}.tmp",
         std::process::id(),

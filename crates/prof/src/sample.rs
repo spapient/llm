@@ -161,7 +161,7 @@ pub mod init {
     fn orthonormalize(big: usize, small: usize, gain: f32, seed: u64) -> Vec<f32> {
         let mut mat = vec![0.0f32; big * small];
         let mut rng = SplitMix64::new(seed);
-        for v in mat.iter_mut() {
+        for v in &mut mat {
             *v = rng.next_normal();
         }
         for col in 0..small {

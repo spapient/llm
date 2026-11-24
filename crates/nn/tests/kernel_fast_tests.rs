@@ -154,8 +154,7 @@ fn bench_throughput() {
     println!(
         "threads={}",
         std::thread::available_parallelism()
-            .map(|x| x.get())
-            .unwrap_or(1)
+            .map_or(1, std::num::NonZero::get)
     );
     let g = |ns: f64, m: usize, n: usize, k: usize| 2.0 * m as f64 * n as f64 * k as f64 / ns;
     for (m, n, k) in shapes {

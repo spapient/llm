@@ -248,7 +248,7 @@ fn parse_compile(table: &Table) -> (Vec<String>, String, Vec<(String, String)>) 
         .unwrap_or("");
     let headers = compile
         .and_then(|table| table.table("headers"))
-        .map(|table| {
+        .map_or_default(|table| {
             table
                 .entries()
                 .iter()
@@ -257,8 +257,7 @@ fn parse_compile(table: &Table) -> (Vec<String>, String, Vec<(String, String)>) 
                     _ => None,
                 })
                 .collect()
-        })
-        .unwrap_or_default();
+        });
     (flags, preamble.to_string(), headers)
 }
 /// 峰值常数：`value` 必须等于 `src` 的推导式结果；抄来的数字与带变量名的公式都不收。

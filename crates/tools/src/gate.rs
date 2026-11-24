@@ -276,6 +276,5 @@ fn debts(table: &Table) -> Result<BTreeMap<String, Debt>> {
 fn min_baseline(table: &Table) -> BTreeSet<String> {
     table
         .string_array("min_lines_baseline")
-        .map(|items| items.iter().map(ToString::to_string).collect())
-        .unwrap_or_default()
+        .map_or_default(|items| items.iter().map(ToString::to_string).collect())
 }

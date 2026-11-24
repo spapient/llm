@@ -219,7 +219,7 @@ impl Router {
 
     /// 已挂载的路由，按挂载顺序。
     pub fn routes(&self) -> impl Iterator<Item = &Route> {
-        self.endpoints.iter().map(|endpoint| endpoint.route())
+        self.endpoints.iter().map(super::endpoint::Endpoint::route)
     }
 
     /// 匹配一条端点：方法大小写不敏感，路径逐字节比较。

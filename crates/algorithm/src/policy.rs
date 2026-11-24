@@ -237,7 +237,7 @@ mod decision {
             .copied()
             .fold(scores[0], |m, x| if x > m { x } else { m });
         let exps: Vec<S> = scores.iter().map(|&s| s.sub(max).exp()).collect();
-        let sum = exps.iter().copied().fold(S::ZERO, |a, b| a.add(b));
+        let sum = exps.iter().copied().fold(S::ZERO, std::ops::Add::add);
         exps.into_iter().map(|e| e.div(sum)).collect()
     }
 

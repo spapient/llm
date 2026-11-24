@@ -237,7 +237,7 @@ fn entry_row(segment: &weights::Stored) -> String {
     let shape = segment
         .shape()
         .iter()
-        .map(|dim| dim.to_string())
+        .map(std::string::ToString::to_string)
         .collect::<Vec<_>>()
         .join("×");
     let shape = if shape.is_empty() {

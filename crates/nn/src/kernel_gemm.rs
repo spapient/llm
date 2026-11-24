@@ -194,7 +194,7 @@ pub fn unpack(byte: u8, slot: usize, cpb: usize, zero: i32) -> i8 {
     let width = crate::quant::width_cpb(cpb);
     let mask = (1u8 << width) - 1;
     let value = (byte >> (slot * width)) & mask;
-    (value as i32 - zero) as i8
+    (i32::from(value) - zero) as i8
 }
 
 /// 确定性打包位模式：`len` 个码按 `cpb` 每字节装一行；码值取
@@ -217,14 +217,14 @@ pub fn dot(a: &[u8], b: &[u8], n: usize, i: usize, j: usize, conf: &Conf) -> f32
     let bytes_per_row = K / conf.cpb;
     let mut acc: i32 = 0;
     for p in 0..K {
-        let x = unpack(
+        let x = i32::from(unpack(
             a[i * bytes_per_row + p / conf.cpb],
             p % conf.cpb,
             conf.cpb,
             conf.zero,
-        ) as i32;
+        ));
         let y_pos = p * n + j;
-        let y = unpack(b[y_pos / conf.cpb], y_pos % conf.cpb, conf.cpb, conf.zero) as i32;
+        let y = i32::from(unpack(b[y_pos / conf.cpb], y_pos % conf.cpb, conf.cpb, conf.zero));
         acc += x * y;
     }
     acc as f32
@@ -254,7 +254,7 @@ pub fn packed_b_len(n: usize, conf: &Conf) -> usize {
 pub fn unpack_stream(bytes: &[u8], cpb: usize, zero: i32) -> Vec<i32> {
     bytes
         .iter()
-        .flat_map(|&byte| (0..cpb).map(move |slot| unpack(byte, slot, cpb, zero) as i32))
+        .flat_map(|&byte| (0..cpb).map(move |slot| i32::from(unpack(byte, slot, cpb, zero))))
         .collect()
 }
 
@@ -262,7 +262,7 @@ pub fn unpack_stream(bytes: &[u8], cpb: usize, zero: i32) -> Vec<i32> {
 pub fn decode_stream(codes: &mut [i32], bytes: &[u8], conf: &Conf) {
     for (idx, code) in codes.iter_mut().enumerate() {
         let byte = bytes[idx / conf.cpb];
-        *code = unpack(byte, idx % conf.cpb, conf.cpb, conf.zero) as i32;
+        *code = i32::from(unpack(byte, idx % conf.cpb, conf.cpb, conf.zero));
     }
 }
 
@@ -303,7 +303,7 @@ fn write_back(out: &mut [f32], row: usize, n: usize, start: usize, width: usize,
 
 /// 逐元素格式的整数码：`u8` 位模式按 `i8` 解释，与 [`Gemm::dot`] 的取码口径同一份。
 pub fn signed_codes(values: &[u8]) -> Vec<i32> {
-    values.iter().map(|&byte| byte as i8 as i32).collect()
+    values.iter().map(|&byte| i32::from(byte as i8)).collect()
 }
 
 /// 打包格式的本体：两条位流各解一遍，再走 [`accumulate_tiled`]。
@@ -474,17 +474,14 @@ fn f32_values<G: Gemm>(values: &[G::Elem]) -> Vec<f32> {
 #[cfg(test)]
 fn sample_unpacked<G: Gemm>(a: &[G::Elem], b: &[G::Elem], m: usize, n: usize) -> Vec<i32> {
     let mut values = Vec::with_capacity(m * K + K * n);
-    match G::config() {
-        Some(row) => {
-            let a: &[u8] = Element::borrow_u8(a).expect("打包格式元素为 u8");
-            let b: &[u8] = Element::borrow_u8(b).expect("打包格式元素为 u8");
-            values.extend(unpack_stream(a, row.cpb, row.zero));
-            values.extend(unpack_stream(b, row.cpb, row.zero));
-        }
-        None => {
-            values.extend(G::codes(a));
-            values.extend(G::codes(b));
-        }
+    if let Some(row) = G::config() {
+        let a: &[u8] = Element::borrow_u8(a).expect("打包格式元素为 u8");
+        let b: &[u8] = Element::borrow_u8(b).expect("打包格式元素为 u8");
+        values.extend(unpack_stream(a, row.cpb, row.zero));
+        values.extend(unpack_stream(b, row.cpb, row.zero));
+    } else {
+        values.extend(G::codes(a));
+        values.extend(G::codes(b));
     }
     values
 }

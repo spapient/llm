@@ -93,7 +93,7 @@ pub mod i8 {
             let acc: i32 = row
                 .iter()
                 .enumerate()
-                .map(|(p, packed)| (*packed as i8) as i32 * (b[p * n + j] as i8) as i32)
+                .map(|(p, packed)| i32::from(*packed as i8) * i32::from(b[p * n + j] as i8))
                 .sum();
             acc as f32
         },

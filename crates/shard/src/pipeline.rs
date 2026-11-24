@@ -98,12 +98,9 @@ impl Prepared {
 
 /// 形状覆盖：命令行给的 `MxN`，或算子的生产形状。
 pub(crate) fn shape(text: Option<&str>, model: &Model) -> diagnostic::Result<(u64, u64)> {
-    match text {
-        Some(text) => parse_shape(text, u64::from(model.group.max(1))),
-        None => {
-            let (m, n) = model.shape;
-            Ok((m as u64, n as u64))
-        }
+    if let Some(text) = text { parse_shape(text, u64::from(model.group.max(1))) } else {
+        let (m, n) = model.shape;
+        Ok((m as u64, n as u64))
     }
 }
 

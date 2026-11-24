@@ -410,7 +410,7 @@ pub(crate) fn matmul_threads(c: &mut Criterion) {
 
 /// 可用核数（取不到时按 1 算，不猜）。
 fn cores() -> usize {
-    thread::available_parallelism().map_or(1, |count| count.get())
+    thread::available_parallelism().map_or(1, std::num::NonZero::get)
 }
 
 /// 把 `m` 行切给 `parallel` 个线程：每线程只碰自己那段输出行。

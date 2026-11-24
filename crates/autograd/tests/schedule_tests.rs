@@ -12,7 +12,7 @@ fn insertion_order_is_the_reverse_record_order() {
     schedule
         .plan_with(&tape, z, Ordering::Insertion)
         .expect("规划");
-    let outputs: Vec<_> = schedule.steps().iter().map(|node| node.output()).collect();
+    let outputs: Vec<_> = schedule.steps().iter().map(super::super::graph::Node::output).collect();
     assert_eq!(outputs, [z, y]);
     assert_eq!(schedule.ordering(), Ordering::Insertion);
 }
@@ -240,7 +240,7 @@ fn random_graphs_keep_every_invariant() {
             schedule
                 .endpoints()
                 .iter()
-                .map(|var| var.id())
+                .map(super::super::graph::Var::id)
                 .collect::<Vec<_>>(),
             expected_endpoints,
             "第 {round} 轮：终点与可达的 Grad 变量不一致"

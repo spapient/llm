@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn integers_round_trip_across_boundaries() {
-    for value in [0u64, 1, 127, 128, 16_383, 16_384, u32::MAX as u64, u64::MAX] {
+    for value in [0u64, 1, 127, 128, 16_383, 16_384, u64::from(u32::MAX), u64::MAX] {
         let mut buf = Vec::new();
         write(&mut buf, value);
         assert_eq!(Cursor::new(&buf).read::<u64>().expect("规范"), value);
@@ -58,7 +58,7 @@ fn taking_past_the_end_is_an_error() {
 fn random_u64_values_round_trip_through_canonical_encoding() {
     let mut rng = testkit::Rng::new(0x1E_B12E);
     for _ in 0..64 {
-        let value = ((rng.below(u32::MAX) as u64) << 32) | rng.below(u32::MAX) as u64;
+        let value = (u64::from(rng.below(u32::MAX)) << 32) | u64::from(rng.below(u32::MAX));
         let mut buf = Vec::new();
         write(&mut buf, value);
         assert!(buf.len() <= 10, "u64 的 LEB128 最多 10 字节");

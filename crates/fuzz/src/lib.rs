@@ -296,17 +296,14 @@ pub mod finding {
 
     impl fmt::Display for Repro<'_> {
         fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-            match std::str::from_utf8(self.0) {
-                Ok(text) => write!(formatter, "{text:?}"),
-                Err(_) => {
-                    const NIBBLE: [u8; 16] = *b"0123456789abcdef";
-                    let mut hex = String::with_capacity(self.0.len() * 2);
-                    for &byte in self.0 {
-                        hex.push(NIBBLE[(byte >> 4) as usize] as char);
-                        hex.push(NIBBLE[(byte & 0x0F) as usize] as char);
-                    }
-                    write!(formatter, "0x{hex}")
+            if let Ok(text) = std::str::from_utf8(self.0) { write!(formatter, "{text:?}") } else {
+                const NIBBLE: [u8; 16] = *b"0123456789abcdef";
+                let mut hex = String::with_capacity(self.0.len() * 2);
+                for &byte in self.0 {
+                    hex.push(NIBBLE[(byte >> 4) as usize] as char);
+                    hex.push(NIBBLE[(byte & 0x0F) as usize] as char);
                 }
+                write!(formatter, "0x{hex}")
             }
         }
     }
@@ -367,7 +364,7 @@ pub mod seed {
         fn below(&mut self, bound: usize) -> usize {
             match bound {
                 0 => 0,
-                bound => ((self.next_u64() as u128 * bound as u128) >> 64) as usize,
+                bound => ((u128::from(self.next_u64()) * bound as u128) >> 64) as usize,
             }
         }
 

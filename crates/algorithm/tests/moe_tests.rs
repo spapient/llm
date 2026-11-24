@@ -38,7 +38,7 @@ fn input() -> Vec<f64> {
 fn the_route_is_the_decision_heads_distribution() {
     let moe = moe(2);
     let x = input();
-    let scores: Vec<f64> = (0..3).map(|e| (3 - e) as f64 * x[0]).collect();
+    let scores: Vec<f64> = (0..3).map(|e| f64::from(3 - e) * x[0]).collect();
     let dist = Calib::Spherical.to_dist(&scores);
     let total = dist[0] + dist[1];
     let picks = moe.route(&x).expect("几何合法");

@@ -314,9 +314,7 @@ fn fallback_home() -> PathBuf {
 
 #[cfg(target_os = "macos")]
 fn cache_home() -> PathBuf {
-    home()
-        .map(|home| home.join("Library").join("Caches"))
-        .unwrap_or_else(fallback_home)
+    home().map_or_else(fallback_home, |home| home.join("Library").join("Caches"))
 }
 
 #[cfg(windows)]

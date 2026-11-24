@@ -76,10 +76,6 @@ fn rmsnorm_map(signature: &Signature, sample: &Sample) -> Result<String> {
     let y = output_name(signature)?;
     let body = format!(
         "    if (n < {len}) {{\n        d_{y}[n] = d_{gamma}[n] * d_{x}[n] / rms;\n    }}",
-        len = len,
-        x = x,
-        gamma = gamma,
-        y = y,
     );
     Ok(chunk_entry(signature, NORM, "float rms", &body))
 }
@@ -105,9 +101,6 @@ fn softmax_norm_map(signature: &Signature, sample: &Sample) -> Result<String> {
     let y = output_name(signature)?;
     let body = format!(
         "    if (n < {len}) {{\n        d_{y}[n] = _cutile_exp_f32(d_{x}[n] - max) / sum;\n    }}",
-        len = len,
-        x = x,
-        y = y,
     );
     Ok(chunk_entry(signature, NORM, "float max, float sum", &body))
 }

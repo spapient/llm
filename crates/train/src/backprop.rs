@@ -372,11 +372,11 @@ fn probabilities(q: &[f32], k: &[f32], i: usize, hist: usize, d: usize, scale: f
     let mut probs = score_row(q, k, i, hist, d, scale);
     let max = probs.iter().copied().fold(f32::MIN, f32::max);
     let mut sum = 0.0f32;
-    for slot in probs.iter_mut() {
+    for slot in &mut probs {
         *slot = (*slot - max).exp();
         sum += *slot;
     }
-    for slot in probs.iter_mut() {
+    for slot in &mut probs {
         *slot /= sum;
     }
     probs

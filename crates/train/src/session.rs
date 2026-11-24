@@ -406,8 +406,7 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
             .map(|slot| {
                 self.bufs
                     .gradient(slot.var())
-                    .map(|grads| grads.to_vec())
-                    .unwrap_or_default()
+                    .map_or_default(<[f32]>::to_vec)
             })
             .collect();
         GradAccum::new(slots, self.accum)

@@ -344,8 +344,8 @@ fn a_grouped_axis_counts_traffic_but_not_arithmetic() {
         .expect("64 能被 32 整除");
 
     let axes = formula.axes(&extents).expect("可分解");
-    let reduced: Vec<char> = axes.reduced().map(|axis| axis.label()).collect();
-    let grouped: Vec<char> = axes.grouped().map(|axis| axis.label()).collect();
+    let reduced: Vec<char> = axes.reduced().map(super::axis::Axis::label).collect();
+    let grouped: Vec<char> = axes.grouped().map(super::axis::Axis::label).collect();
     assert_eq!(reduced, ['m'], "只有 m 是真正的求和维");
     assert_eq!(grouped, ['g'], "g 是 m 的分组面");
     assert_eq!(axes.all_elements().expect("可算"), 8 * 64, "g 不进运算次数");

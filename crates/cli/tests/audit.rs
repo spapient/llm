@@ -175,7 +175,7 @@ fn production_files_only_hook_tests_in() {
 }
 
 fn args(words: &[&str]) -> Vec<String> {
-    words.iter().map(|word| word.to_string()).collect()
+    words.iter().map(std::string::ToString::to_string).collect()
 }
 
 /// 解析一次的分配次数是**契约**：改文法或取值类型时，先想清楚多的那次分配值不值。

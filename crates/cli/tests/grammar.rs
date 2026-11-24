@@ -2,7 +2,7 @@ use super::*;
 use diagnostic::Code;
 
 fn args(list: &[&str]) -> Vec<String> {
-    list.iter().map(|item| item.to_string()).collect()
+    list.iter().map(std::string::ToString::to_string).collect()
 }
 
 #[test]

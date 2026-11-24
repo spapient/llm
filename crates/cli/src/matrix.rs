@@ -142,9 +142,7 @@ pub(super) fn ledger_primitives(profile: &Profile) -> String {
     for have in &profile.provides {
         let witness = have
             .witness
-            .as_ref()
-            .map(|witness| format!("{}({})", witness.file, witness.func))
-            .unwrap_or_else(|| "—".to_string());
+            .as_ref().map_or_else(|| "—".to_string(), |witness| format!("{}({})", witness.file, witness.func));
         table = table.row([
             format!("`{}`", have.prim),
             have.impl_name.to_string(),

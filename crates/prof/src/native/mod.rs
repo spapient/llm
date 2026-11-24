@@ -91,8 +91,7 @@ pub fn threads_override() -> usize {
         .filter(|x| *x > 0)
         .unwrap_or_else(|| {
             thread::available_parallelism()
-                .map(|x| x.get())
-                .unwrap_or(1)
+                .map_or(1, std::num::NonZero::get)
         })
 }
 

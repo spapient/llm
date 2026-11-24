@@ -6,7 +6,7 @@ fn stats(x: &[f32], c: usize, count: usize) -> (Vec<f32>, Vec<f32>) {
     let mut sq = vec![0.0f64; c];
     for p in 0..count {
         for ci in 0..c {
-            let v = x[p * c + ci] as f64;
+            let v = f64::from(x[p * c + ci]);
             mean[ci] += v;
             sq[ci] += v * v;
         }

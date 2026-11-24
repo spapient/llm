@@ -465,7 +465,7 @@ fn check_layout(slot: &str, spec: &LayoutSpec, profile: &Profile) -> diagnostic:
 fn impl_tag(fragments: &diagnostic::Result<FragmentSet>) -> String {
     fragments
         .as_ref()
-        .map(|set| {
+        .map_or_default(|set| {
             let mut names: Vec<&str> = Prim::ALL
                 .iter()
                 .copied()
@@ -475,7 +475,6 @@ fn impl_tag(fragments: &diagnostic::Result<FragmentSet>) -> String {
             names.dedup();
             names.join(",")
         })
-        .unwrap_or_default()
 }
 
 /// 缓存指纹（README §10.3）：键覆盖的每一项都必须是"改了它就会改变产物"的输入。`flags` 与 `preamble`
@@ -500,28 +499,26 @@ fn key(
         .collect();
     let dtype = op
         .variant(&path.variant)
-        .map(|variant| {
+        .map_or_default(|variant| {
             DTypeSet::of(
                 DType::ALL
                     .iter()
                     .copied()
                     .filter(|dt| variant.needs(op).any(|need| need.dt.contains(*dt))),
             )
-        })
-        .unwrap_or_default();
+        });
 
     // 片段层只取一次：片段哈希与 AST 指纹都从同一份输入派生。
     let fragment_hashes: Vec<(Prim, u64)> = prepared
         .fragments
         .as_ref()
-        .map(|set| {
+        .map_or_default(|set| {
             Prim::ALL
                 .iter()
                 .copied()
                 .filter_map(|prim| set.get(prim).map(|text| (prim, emit::fnv1a(text))))
                 .collect()
-        })
-        .unwrap_or_default();
+        });
     // 内核实现标签：参与展开片段的实现名并集排序去重；同原语多实现时各自成独立缓存条目（ADR 0027 §6）。
     let impl_name = impl_tag(&prepared.fragments);
     // 缓存指纹锚定结构化 AST：FNV(AST 规范编码)。AST 不可用时回退到模板哈希，

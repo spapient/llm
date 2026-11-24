@@ -159,8 +159,7 @@ impl Radix {
                 .nodes
                 .get(idx)
                 .and_then(Option::as_ref)
-                .map(|block| block.children.as_slice())
-                .unwrap_or_default(),
+                .map_or_default(|block| block.children.as_slice()),
         }
     }
 
@@ -189,15 +188,12 @@ impl Radix {
             children: Vec::new(),
             tick: self.clock,
         };
-        let idx = match self.nodes.iter().position(Option::is_none) {
-            Some(idx) => {
-                self.nodes[idx] = Some(block);
-                idx
-            }
-            None => {
-                self.nodes.push(Some(block));
-                self.nodes.len() - 1
-            }
+        let idx = if let Some(idx) = self.nodes.iter().position(Option::is_none) {
+            self.nodes[idx] = Some(block);
+            idx
+        } else {
+            self.nodes.push(Some(block));
+            self.nodes.len() - 1
         };
         match at {
             Some(parent) => {

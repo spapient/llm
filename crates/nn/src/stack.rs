@@ -252,12 +252,9 @@ fn layers_of(groups: Groups<'_>, uncovered: &mut Vec<String>) -> Vec<(usize, Box
     groups
         .into_iter()
         .filter_map(
-            |(block, (at, group))| match recurrent_layer(block, &group) {
-                Some(layer) => Some((at, Box::new(layer) as Box<dyn Contract>)),
-                None => {
-                    uncovered.extend(group.iter().map(|entry| entry.name().to_string()));
-                    None
-                }
+            |(block, (at, group))| if let Some(layer) = recurrent_layer(block, &group) { Some((at, Box::new(layer) as Box<dyn Contract>)) } else {
+                uncovered.extend(group.iter().map(|entry| entry.name().to_string()));
+                None
             },
         )
         .collect()

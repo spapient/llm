@@ -61,7 +61,7 @@ pub fn entropy(logits: &[f32], vocab: usize) -> Result<f32> {
     let rows = check_rl_logits_shape(logits.len(), vocab)?;
     let mut sum = 0.0f64;
     for row in logits.chunks_exact(vocab) {
-        sum += row_entropy(row) as f64;
+        sum += f64::from(row_entropy(row));
     }
     Ok((sum / rows as f64) as f32)
 }
@@ -99,7 +99,7 @@ pub fn policy_loss(log_probs: &[f32], advantages: &[f32]) -> Result<f32> {
     let sum: f64 = log_probs
         .iter()
         .zip(advantages)
-        .map(|(&p, &a)| (a * p) as f64)
+        .map(|(&p, &a)| f64::from(a * p))
         .sum();
     Ok(-(sum / log_probs.len() as f64) as f32)
 }
@@ -218,12 +218,12 @@ pub fn grpo_loss(
     let mut surrogate_sum = 0.0f64;
     let mut kl_sum = 0.0f64;
     for (((&n, &old), &a), &kl) in new_logp.iter().zip(old_logp).zip(advantages).zip(ref_kl) {
-        surrogate_sum += clipped_term(n, old, a, low, high) as f64;
-        kl_sum += kl as f64;
+        surrogate_sum += f64::from(clipped_term(n, old, a, low, high));
+        kl_sum += f64::from(kl);
     }
     let surrogate_mean = surrogate_sum / rows as f64;
     let kl_mean = kl_sum / rows as f64;
-    Ok((-surrogate_mean + grpo.beta as f64 * kl_mean) as f32)
+    Ok((-surrogate_mean + f64::from(grpo.beta) * kl_mean) as f32)
 }
 
 #[cfg(test)]

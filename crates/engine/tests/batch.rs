@@ -630,7 +630,7 @@ fn a_round_runs_generation_before_ctx() {
         panic!("不限预算必须装得下");
     };
     assert_eq!(
-        rows.iter().map(|row| row.id()).collect::<Vec<_>>(),
+        rows.iter().map(super::super::ifb::Candidate::id).collect::<Vec<_>>(),
         [2, 1],
         "能解码的在前，提示段在后"
     );
@@ -650,7 +650,7 @@ fn a_tight_budget_pushes_the_ctx_block_to_the_next_round() {
         panic!("生成行只要 1 行，装得下");
     };
     assert_eq!(
-        rows.iter().map(|row| row.id()).collect::<Vec<_>>(),
+        rows.iter().map(super::super::ifb::Candidate::id).collect::<Vec<_>>(),
         [2],
         "2 个 token 的预算连一整页上下文都放不下，只跑生成"
     );

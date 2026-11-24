@@ -291,8 +291,7 @@ fn the_artifact_cache_leaves_the_work_directory_empty() {
     let (key, harness, _) = built(&op, &dirs);
     execute(&cpu_profile(), Some(&tool), &key, &harness, &dirs).expect("应能编译执行");
     let leftovers: Vec<_> = std::fs::read_dir(dirs.work())
-        .map(|items| items.flatten().map(|item| item.file_name()).collect())
-        .unwrap_or_default();
+        .map_or_default(|items| items.flatten().map(|item| item.file_name()).collect());
     assert!(
         leftovers.is_empty(),
         "产物拷进缓存后沙箱就该删掉，否则每次编译都留一份可执行文件：{leftovers:?}"

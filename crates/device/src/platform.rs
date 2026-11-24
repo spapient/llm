@@ -573,11 +573,10 @@ pub(crate) fn msvc_version(cl: &Path) -> Vec<u32> {
     };
     rest.split('\\')
         .next()
-        .map(|version| {
+        .map_or_default(|version| {
             version
                 .split('.')
                 .map(|part| part.parse::<u32>().unwrap_or(0))
                 .collect()
         })
-        .unwrap_or_default()
 }

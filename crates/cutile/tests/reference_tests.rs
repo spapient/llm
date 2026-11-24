@@ -82,13 +82,12 @@ fn every_accepted_fusion_is_either_testable_or_named_unrealizable() {
         let declared = decls
             .iter()
             .find(|decl| decl.name == fusion.producer)
-            .map(|decl| {
+            .is_some_and(|decl| {
                 decl.phases
                     .iter()
                     .flat_map(|phase| phase.reads.iter())
                     .all(|name| sample.buf(name).is_some())
-            })
-            .unwrap_or(false);
+            });
         if !declared {
             unshaped += 1;
             continue;

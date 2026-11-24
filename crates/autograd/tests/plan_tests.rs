@@ -170,7 +170,7 @@ fn release_points_follow_the_last_consumer_not_the_scope() {
         schedule
             .steps()
             .iter()
-            .map(|step| step.output())
+            .map(super::super::graph::Node::output)
             .collect::<Vec<_>>(),
         [loss, joined, right, left, shared]
     );
@@ -316,7 +316,7 @@ fn summarize(case: &str, tape: &Tape, schedule: &Schedule, bytes: &[u64], budget
     let Ok(plan) = Plan::of(tape, schedule, bytes, Budget::new(budget)) else {
         return format!("{case}/{budget}: 放不下");
     };
-    let saved: Vec<u32> = plan.saved().iter().map(|var| var.id()).collect();
+    let saved: Vec<u32> = plan.saved().iter().map(super::super::graph::Var::id).collect();
     let release: Vec<Option<usize>> = plan.saved().iter().map(|var| plan.release(*var)).collect();
     format!(
         "{case}/{budget}: {:?} saved={saved:?} release={release:?} replayed={} peak={}",

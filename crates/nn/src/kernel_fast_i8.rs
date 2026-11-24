@@ -268,7 +268,7 @@ mod kernel {
                 let bp = &bpack[jj * k..jj * k + k];
                 let mut acc = 0i32;
                 for p in 0..k {
-                    acc += ar[p] as i32 * bp[p] as i32;
+                    acc += i32::from(ar[p]) * i32::from(bp[p]);
                 }
                 out[row * n + jj] = acc;
             }

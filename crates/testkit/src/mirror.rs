@@ -231,7 +231,7 @@ fn every_registered_kernel_signature_matches_its_model_sample() {
         if let Err(error) = signature.check_sample(&sample) {
             failures.push(format!("`{}`：样本与 `.k` 签名不一致：{error}", entry.name));
         }
-        let output_dtype = signature.output_type().and_then(|ctype| ctype.dtype());
+        let output_dtype = signature.output_type().and_then(cutile::sig::CType::dtype);
         if output_dtype != Some(entry.model.dtype) {
             failures.push(format!(
                 "`{}`：`.k` 可写输出是 `{}`，语义表 dtype 是 `{:?}`，两者必须是同一个类型",
