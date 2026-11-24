@@ -167,8 +167,8 @@ fn validate_weights(weights: &[f32], n: usize) -> Result<f32> {
         return Err(Error::new(Code::Invalid, "权重必须是有限非负数").with(SITE));
     }
     let total: f32 = weights.iter().sum();
-    if total <= 0.0 {
-        return Err(Error::new(Code::Invalid, "权重总质量必须为正").with(SITE));
+    if !total.is_finite() || total <= 0.0 {
+        return Err(Error::new(Code::Invalid, "权重总质量必须是有限正数").with(SITE));
     }
     Ok(total)
 }

@@ -15,6 +15,10 @@ pub enum SettingValue {
     Path(PathBuf),
     /// 非负字节数（`u64`）。
     Bytes(u64),
+    /// 非负整数配置。
+    UInt(u64),
+    /// 有限浮点配置。
+    Float(f32),
 }
 
 impl SettingValue {

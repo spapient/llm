@@ -115,9 +115,17 @@ pub enum Sampling {
     #[default]
     Sequential,
     /// 每轮按种子派生独立流重洗批序。
-    Shuffle { seed: u64 },
+    Shuffle {
+        /// 重洗随机流种子。
+        seed: u64,
+    },
     /// 按每批的非负权重有放回抽样。
-    Weighted { weights: Vec<f32>, seed: u64 },
+    Weighted {
+        /// 每批抽样权重（条数等于批数）。
+        weights: Vec<f32>,
+        /// 抽样随机流种子。
+        seed: u64,
+    },
 }
 
 /// 批装配配置：几何与采样方式一次性收口到构造期，热路径不再做合法性分支检查。
@@ -156,6 +164,16 @@ impl LoaderConfig {
     }
 }
 
+impl Default for LoaderConfig {
+    fn default() -> Self {
+        Self {
+            rows: 1,
+            cols: 1,
+            sampling: Sampling::Sequential,
+        }
+    }
+}
+
 /// 批装配器：持有条目流、批几何与采样序，实现 [`Dataset`]；条目类型 `T` 由源缓冲决定。
 #[derive(Debug, Clone)]
 pub struct Loader<'a, T> {
@@ -178,7 +196,7 @@ impl<'a, T> Loader<'a, T> {
     pub fn with_config(items: &'a [T], config: LoaderConfig) -> Result<Self> {
         let stride = stride(config.rows, config.cols, SITE)?;
         let batches = items.len() / stride;
-        let sampler = Sampler::from_config(batches, config.shuffle, config.weights)?;
+        let sampler = Sampler::from_config(batches, config.sampling)?;
         Ok(Self {
             items,
             rows: config.rows,

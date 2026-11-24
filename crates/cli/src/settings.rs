@@ -213,6 +213,51 @@ impl Settings {
             })
     }
 
+    /// 投影成训练装配纯数据；train 不读配置文件、环境变量或 argv。
+    pub fn train_spec(&self) -> Result<train::TrainSpec> {
+        let session = train::TrainConfig::with_overrides(
+            self.float(Key::TrainLearningRate),
+            self.uint(Key::TrainWarmupSteps),
+            self.uint(Key::TrainMaxSteps),
+            self.float(Key::TrainClipNorm),
+            self.u32(Key::TrainAccumulation)?,
+        )?;
+        let loader = train::LoaderConfig::new(
+            self.usize(Key::TrainBatchRows)?,
+            self.usize(Key::TrainBatchCols)?,
+        )?;
+        train::TrainSpec::new(session, loader)
+    }
+
+    fn float(&self, key: Key) -> Option<f32> {
+        self.resolved(key).and_then(|(value, _)| match value {
+            SettingValue::Float(number) => Some(number),
+            _ => None,
+        })
+    }
+
+    fn uint(&self, key: Key) -> Option<u64> {
+        self.resolved(key).and_then(|(value, _)| match value {
+            SettingValue::UInt(number) => Some(number),
+            _ => None,
+        })
+    }
+
+    fn u32(&self, key: Key) -> Result<Option<u32>> {
+        self.uint(key)
+            .map(|value| {
+                u32::try_from(value)
+                    .map_err(|_| invalid(format!("`{}` 超出 u32 范围", key.dotted())))
+            })
+            .transpose()
+    }
+
+    fn usize(&self, key: Key) -> Result<usize> {
+        let value = self.uint(key).unwrap_or(0);
+        usize::try_from(value)
+            .map_err(|_| invalid(format!("`{}` 超出 usize 范围", key.dotted())))
+    }
+
     /// 投影成内核只认的三目录纯数据：缓存 / 工作 / 数据根；`cutile` 不读环境变量（ADR 0023）。
     pub fn dirs(&self) -> cutile::dirs::Dirs {
         cutile::dirs::Dirs::new(

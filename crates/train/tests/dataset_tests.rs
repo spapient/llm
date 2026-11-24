@@ -14,7 +14,7 @@ fn same_shuffle_seed_replays_the_same_order() {
     let tokens: Vec<u32> = (0..8).collect();
     let config = LoaderConfig::new(1, 1).expect("几何合法");
     let seeded = LoaderConfig {
-        shuffle: Some(7),
+        sampling: Sampling::Shuffle { seed: 7 },
         ..config
     };
 
@@ -30,7 +30,7 @@ fn different_shuffle_seeds_yield_different_orders() {
     let make = |seed| {
         let config = LoaderConfig::new(1, 1).expect("几何合法");
         let seeded = LoaderConfig {
-            shuffle: Some(seed),
+            sampling: Sampling::Shuffle { seed },
             ..config
         };
         drain_tokens(&mut Loader::with_config(&tokens, seeded).expect("装配"))
@@ -46,7 +46,7 @@ fn shuffle_keeps_every_batch_exactly_once() {
     let tokens: Vec<u32> = (0..8).collect();
     let config = LoaderConfig::new(1, 1).expect("几何合法");
     let seeded = LoaderConfig {
-        shuffle: Some(3),
+        sampling: Sampling::Shuffle { seed: 3 },
         ..config
     };
 
@@ -93,7 +93,10 @@ fn weighted_rejects_illegal_weights_at_construction() {
     let config = LoaderConfig::new(1, 1).expect("几何合法");
 
     let wrong_len = LoaderConfig {
-        weights: Some(vec![1.0, 2.0]),
+        sampling: Sampling::Weighted {
+            weights: vec![1.0, 2.0],
+            seed: 0,
+        },
         ..config
     };
     assert_eq!(
@@ -103,7 +106,10 @@ fn weighted_rejects_illegal_weights_at_construction() {
     );
 
     let negative = LoaderConfig {
-        weights: Some(vec![1.0, -1.0, 1.0, 1.0]),
+        sampling: Sampling::Weighted {
+            weights: vec![1.0, -1.0, 1.0, 1.0],
+            seed: 0,
+        },
         ..config
     };
     assert_eq!(
@@ -113,7 +119,10 @@ fn weighted_rejects_illegal_weights_at_construction() {
     );
 
     let nan = LoaderConfig {
-        weights: Some(vec![f32::NAN; 4]),
+        sampling: Sampling::Weighted {
+            weights: vec![f32::NAN; 4],
+            seed: 0,
+        },
         ..config
     };
     assert_eq!(
@@ -123,7 +132,10 @@ fn weighted_rejects_illegal_weights_at_construction() {
     );
 
     let zero = LoaderConfig {
-        weights: Some(vec![0.0; 4]),
+        sampling: Sampling::Weighted {
+            weights: vec![0.0; 4],
+            seed: 0,
+        },
         ..config
     };
     assert_eq!(
@@ -138,7 +150,10 @@ fn weighted_draws_one_batch_per_declared_batch() {
     let tokens: Vec<u32> = (0..4).collect();
     let config = LoaderConfig::new(1, 1).expect("几何合法");
     let weighted = LoaderConfig {
-        weights: Some(vec![1.0, 1.0, 1.0, 1.0]),
+        sampling: Sampling::Weighted {
+            weights: vec![1.0, 1.0, 1.0, 1.0],
+            seed: 0,
+        },
         ..config
     };
     let mut loader = Loader::with_config(&tokens, weighted).expect("装配");
@@ -154,7 +169,10 @@ fn high_weight_batch_is_sampled_more_often() {
     let tokens: Vec<u32> = (0..2).collect();
     let config = LoaderConfig::new(1, 1).expect("几何合法");
     let weighted = LoaderConfig {
-        weights: Some(vec![1.0, 100.0]),
+        sampling: Sampling::Weighted {
+            weights: vec![1.0, 100.0],
+            seed: 0,
+        },
         ..config
     };
     let mut loader = Loader::with_config(&tokens, weighted).expect("装配");
