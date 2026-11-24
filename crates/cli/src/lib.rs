@@ -56,7 +56,7 @@ use diagnostic::{Code, Error, Result};
 /// 命令分派：解析后的命令接到对应编排；输出由各编排函数落到 stdout，
 /// 错误交给二进制入口汇总成退出码。
 pub fn entry(invocation: &Invocation<'_>) -> Result<()> {
-    device::backends::install();
+    shard::backends::install();
     route(invocation.command())
 }
 

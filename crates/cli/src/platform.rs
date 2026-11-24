@@ -1,6 +1,6 @@
 //! `llm platform`：把六平台执行合同打成一张表（[ADR 0052](../../../docs/adr/0052-execution-platform-contract.md)）。
 
-use device::platform::{Machine, Row, Standing, audit};
+use shard::platform::{Machine, Row, Standing, audit};
 use diagnostic::Result;
 use std::fmt::Write as _;
 
