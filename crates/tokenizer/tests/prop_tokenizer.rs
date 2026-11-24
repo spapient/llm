@@ -46,6 +46,6 @@ proptest! {
     /// 越界 token 必拒：字节级词表只有 256，超出就是坏序列，不能悄悄折算。
     #[test]
     fn out_of_vocab_tokens_are_always_rejected(id in 256u32..) {
-        prop_assert!(Bytes.decode(&[Token::new(id)]).is_err(), "token {id} 被接受");
+        prop_assert!(Bytes.decode(&[Token::new(id)]).is_err(), "token {} 被接受", id);
     }
 }

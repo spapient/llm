@@ -94,7 +94,7 @@ proptest! {
         let mut text = String::new();
         write(&tree, &mut text);
         let parsed = parse(&text).expect("自己写出的合法 JSON 必须可读");
-        prop_assert_eq!(parsed, tree, "文本：{text}");
+        prop_assert_eq!(parsed, tree, "文本：{}", text);
     }
 
     /// 重复键在解析期即被拒绝：头部里同一个键写两遍是损坏或攻击，

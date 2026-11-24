@@ -697,6 +697,7 @@ dependencies = [
  "llm-train",
  "llm-weights",
  "llm-wire",
+ "proptest",
 ]
 
 [[package]]
@@ -754,6 +755,8 @@ name = "llm-tokenizer"
 version = "0.1.0"
 dependencies = [
  "llm-diagnostic",
+ "llm-testkit",
+ "proptest",
 ]
 
 [[package]]
@@ -791,6 +794,7 @@ dependencies = [
  "llm-tensor",
  "llm-testkit",
  "llm-wire",
+ "proptest",
 ]
 
 [[package]]
