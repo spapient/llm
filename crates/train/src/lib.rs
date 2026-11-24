@@ -26,7 +26,7 @@
 //!
 //! 入口只做模块声明与再导出：实现按上面五条轴分布在 10 个子模块里（`backprop`、`geometry`、`kernel`、
 //! `learner`（含 `Batch`/`Dataset`/`Chunks`/`Loader`/`LoaderConfig`）、`loss`（含策略族）、`optimizer`、`pool`（含 `store` 门面）、
-//! `rng`、`schedule`（学习率调度曲线）、`session`（会话与分布式编排）；`rng` 是并入的计数器型确定性随机，独立于五条轴）。
+//! `rng`、`session`（含学习率调度曲线）（会话与分布式编排）；`rng` 是并入的计数器型确定性随机，独立于五条轴）。
 //!
 //! # 例子
 //!
@@ -49,7 +49,6 @@ mod loss;
 mod optimizer;
 mod pool;
 mod rng;
-mod schedule;
 mod session;
 
 /// 训练侧测试共用的夹具图（`tests/support.rs`）：在 crate 根挂一次，测试模块引用它，
@@ -72,8 +71,7 @@ pub use optimizer::{Adam, Group, Hybrid, Muon, Optimizer, OwnedSlot, Sgd, Slot};
 pub use pool::OperatorSetOps;
 pub use pool::{Bufs, Data, Inputs, Kernel, Kind, Lane, Reference, View, ViewMut};
 pub use rng::{Bernoulli, Normal, Rng, Uniform, block};
-pub use schedule::{Anneal, Schedule};
 pub use session::{
-    Checkpoint, Distributed, GradientSnapshot, Local, ParamSlot, Remote, Session, Step,
-    TrainConfig, TrainSpec, operators, resume,
+    Anneal, Checkpoint, Distributed, GradientSnapshot, Local, ParamSlot, Remote, Schedule, Session,
+    Step, TrainConfig, TrainOverrides, TrainSpec, operators, resume,
 };

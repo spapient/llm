@@ -221,13 +221,13 @@ impl Settings {
 
     /// 会话侧覆盖参数；未给的字段取 [`TrainConfig`](train::TrainConfig) 默认值。
     fn session_config(&self) -> Result<train::TrainConfig> {
-        train::TrainConfig::with_overrides(
-            self.float(Key::TrainLearningRate),
-            self.uint(Key::TrainWarmupSteps),
-            self.uint(Key::TrainMaxSteps),
-            self.float(Key::TrainClipNorm),
-            self.u32(Key::TrainAccumulation)?,
-        )
+        train::TrainConfig::with_overrides(train::TrainOverrides {
+            learning_rate: self.float(Key::TrainLearningRate),
+            warmup_steps: self.uint(Key::TrainWarmupSteps),
+            max_steps: self.uint(Key::TrainMaxSteps),
+            clip_norm: self.float(Key::TrainClipNorm),
+            accumulation: self.u32(Key::TrainAccumulation)?,
+        })
     }
 
     /// 静态目标及其数值参数；名称在投影边界收窄成闭集。

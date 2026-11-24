@@ -538,22 +538,33 @@ fn train_spec_validates_session_and_loader_together() -> Result<()> {
 fn overrides_fall_back_to_default_without_duplicating_constants() {
     let base = TrainConfig::default();
 
-    let all_default =
-        TrainConfig::with_overrides(None, None, None, None, None).expect("缺省配置合法");
+    let all_default = TrainConfig::with_overrides(TrainOverrides::default()).expect("缺省配置合法");
     assert_eq!(all_default, base, "全缺省应与默认配置逐字段一致");
 
-    let overridden = TrainConfig::with_overrides(Some(2e-3), Some(2), Some(5), Some(0.5), Some(2))
-        .expect("部分覆盖合法");
+    let overridden = TrainConfig::with_overrides(TrainOverrides {
+        learning_rate: Some(2e-3),
+        warmup_steps: Some(2),
+        max_steps: Some(5),
+        clip_norm: Some(0.5),
+        accumulation: Some(2),
+    })
+    .expect("全部覆盖合法");
     assert_eq!(overridden.learning_rate, 2e-3);
     assert_eq!(overridden.warmup_steps, 2);
     assert_eq!(overridden.max_steps, 5);
     assert_eq!(overridden.clip_norm, Some(0.5));
     assert_eq!(overridden.accumulation, 2);
 
-    let bad_steps = TrainConfig::with_overrides(None, None, Some(0), None, None);
+    let bad_steps = TrainConfig::with_overrides(TrainOverrides {
+        max_steps: Some(0),
+        ..TrainOverrides::default()
+    });
     assert_eq!(bad_steps.expect_err("总步数不能为 0").code(), Code::Invalid);
 
-    let bad_accum = TrainConfig::with_overrides(None, None, None, None, Some(0));
+    let bad_accum = TrainConfig::with_overrides(TrainOverrides {
+        accumulation: Some(0),
+        ..TrainOverrides::default()
+    });
     assert_eq!(
         bad_accum.expect_err("累积窗口不能为 0").code(),
         Code::Invalid

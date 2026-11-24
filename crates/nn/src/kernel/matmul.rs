@@ -292,7 +292,7 @@ pub fn matmul_tn_tiled(x: &[f32], w: &[f32], rows: usize, n: usize, k: usize, ou
             let mut p0 = 0;
             while p0 < k {
                 let p1 = (p0 + TN_K).min(k);
-                let tile = TnTile {
+                let tile = Tile {
                     rows: r0..r1,
                     contraction: p0..p1,
                     cols: j0..j1,
@@ -311,15 +311,8 @@ pub fn matmul_tn_tiled(x: &[f32], w: &[f32], rows: usize, n: usize, k: usize, ou
     }
 }
 
-/// 线性层布局的一个 tile：输出行、收缩轴、输出列三条区间（与 [`Tile`] 同构，含义不同）。
-struct TnTile {
-    rows: Range<usize>,
-    contraction: Range<usize>,
-    cols: Range<usize>,
-}
-
-/// 块内累加：`acc[row, j] += Σ_p x[row, p]·w[j, p]`，`acc` 的行宽是 [`TN_COLS`]。
-fn accumulate_tn_tile(x: &[f32], w: &[f32], acc: &mut [f32], tile: &TnTile, k: usize) {
+/// 块内累加：`acc[row, j] += Σ_p x[row, p]·w[j, p]`，与 NN 布局共用 [`Tile`] 的三条区间。
+fn accumulate_tn_tile(x: &[f32], w: &[f32], acc: &mut [f32], tile: &Tile, k: usize) {
     for j in tile.cols.clone() {
         let wchunk = &w[j * k + tile.contraction.start..j * k + tile.contraction.end];
         let slot = j - tile.cols.start;
@@ -590,14 +583,7 @@ pub mod i8 {
     ///
     /// 三条缓冲长度与 `(m, n, k)` 不符时返回说明。
     pub fn forward_tiled(a: View<'_, i8>, b: View<'_, i8>, out: &mut [i32]) -> Result<()> {
-        let (m, k) = super::dim2(a.dims(), "matmul_i8")?;
-        let (k2, n) = super::dim2(b.dims(), "matmul_i8")?;
-        if k != k2 {
-            return Err(diagnostic::Error::new(
-                diagnostic::Code::Invalid,
-                format!("matmul_i8 收缩轴不符：a·k={k}，b·k={k2}"),
-            ));
-        }
+        let (m, k, n) = super::dim2_pair(a.dims(), b.dims(), "matmul_i8")?;
         super::check_dims(a.as_slice(), b.as_slice(), m, n, k, out)?;
         blocked(a.as_slice(), b.as_slice(), m, n, k, out);
         Ok(())

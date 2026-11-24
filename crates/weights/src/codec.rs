@@ -1,5 +1,7 @@
 //! `axes` 的编解码机制：熵帧、字典/稀疏/量化三种载荷的读写，以及定宽取字节。
 
+use std::collections::HashMap;
+
 use diagnostic::Result;
 
 use crate::bad;
@@ -48,27 +50,32 @@ pub(crate) fn unpack_marked(frame: &[u8], cap: usize) -> Result<Vec<u8>> {
     unpack_body(mark, body, cap)
 }
 
-/// 唯一值排序表 + 等长索引序列：排序去重后二分定位，零关联容器依赖。
+/// 唯一值排序表 + 等长索引序列。排序表保持线上格式稳定，哈希表只加速写端定位。
 pub(crate) fn dict_payload(w: &[f32]) -> Option<Vec<u8>> {
-    let mut vals: Vec<u32> = w.iter().map(|v| v.to_bits()).collect();
-    vals.sort_unstable();
-    vals.dedup();
-    if vals.len() == w.len() {
+    let mut values: Vec<u32> = w.iter().map(|v| v.to_bits()).collect();
+    values.sort_unstable();
+    values.dedup();
+    if values.len() == w.len() {
         return None; // 全唯一，字典表 + 全宽索引必然大于 raw，无收益。
     }
-    let width = idx_width(vals.len());
-    let mut p = Vec::new();
-    p.extend_from_slice(&(width as u32).to_le_bytes());
-    p.extend_from_slice(&(vals.len() as u32).to_le_bytes());
-    for bits in &vals {
-        p.extend_from_slice(&bits.to_le_bytes());
+    let width = idx_width(values.len());
+    let indices: HashMap<u32, u32> = values
+        .iter()
+        .enumerate()
+        .map(|(id, &bits)| (bits, id as u32))
+        .collect();
+    let mut payload = Vec::with_capacity(8 + values.len() * 4 + w.len() * width);
+    payload.extend_from_slice(&(width as u32).to_le_bytes());
+    payload.extend_from_slice(&(values.len() as u32).to_le_bytes());
+    for bits in &values {
+        payload.extend_from_slice(&bits.to_le_bytes());
     }
-    // 定宽小端：取 `u32` 的低 `width` 字节，与 `as u8`/`as u16` 的截断逐字节一致。
-    for v in w {
-        let id = vals.binary_search(&v.to_bits()).ok()?;
-        p.extend_from_slice(&(id as u32).to_le_bytes()[..width]);
+    // 定宽小端：哈希查询均摊 O(1)，索引仍取排序表序号，输出与二分实现逐位一致。
+    for value in w {
+        let id = indices.get(&value.to_bits()).copied()?;
+        payload.extend_from_slice(&id.to_le_bytes()[..width]);
     }
-    Some(pack_bytes(&p))
+    Some(pack_bytes(&payload))
 }
 
 /// 索引宽度：`256`/`65536` 个值以内用 1/2 字节，其余 4 字节。
@@ -214,7 +221,7 @@ fn quant_head(bytes: &[u8]) -> Result<(f32, u8, u8, usize)> {
 
 /// 小端字节 ↔ 标量的宽度事实：f32/f64 各一条实现。`to_le_bytes`/`from_le_bytes` 据此泛化，
 /// 不再每个标量类型各写一份「flat_map / as_chunks + from_le_bytes」。
-pub(crate) trait Le: Copy + 'static {
+pub(crate) trait LittleEndian: Copy + 'static {
     const WIDTH: usize;
     /// 把标量的小端字节追加进缓冲。
     fn push_le(self, out: &mut Vec<u8>);
@@ -222,7 +229,7 @@ pub(crate) trait Le: Copy + 'static {
     fn from_le(chunk: &[u8]) -> Self;
 }
 
-impl Le for f32 {
+impl LittleEndian for f32 {
     const WIDTH: usize = 4;
     fn push_le(self, out: &mut Vec<u8>) {
         out.extend_from_slice(&f32::to_le_bytes(self));
@@ -232,7 +239,7 @@ impl Le for f32 {
     }
 }
 
-impl Le for f64 {
+impl LittleEndian for f64 {
     const WIDTH: usize = 8;
     fn push_le(self, out: &mut Vec<u8>) {
         out.extend_from_slice(&f64::to_le_bytes(self));
@@ -245,7 +252,7 @@ impl Le for f64 {
 }
 
 /// 标量序列 → 小端字节。
-pub(crate) fn to_le_bytes<T: Le>(values: &[T]) -> Vec<u8> {
+pub(crate) fn to_le_bytes<T: LittleEndian>(values: &[T]) -> Vec<u8> {
     let mut out = Vec::with_capacity(values.len() * T::WIDTH);
     for &v in values {
         v.push_le(&mut out);
@@ -254,7 +261,7 @@ pub(crate) fn to_le_bytes<T: Le>(values: &[T]) -> Vec<u8> {
 }
 
 /// 小端字节 → 标量序列：字节数必须恰为 `want` 个标量，截断与余量都显式报错。
-pub(crate) fn from_le_bytes<T: Le>(bytes: &[u8], want: usize) -> Result<Vec<T>> {
+pub(crate) fn from_le_bytes<T: LittleEndian>(bytes: &[u8], want: usize) -> Result<Vec<T>> {
     if bytes.len() != want * T::WIDTH {
         return Err(bad(format!(
             "{} 字节 {} != 期望 {}",

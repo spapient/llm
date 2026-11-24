@@ -41,6 +41,20 @@ fn dict_wins_on_low_cardinality() {
 }
 
 #[test]
+fn dict_payload_has_stable_wire_bytes() {
+    let weights = [1.0, -0.0, 2.5, 1.0, -0.0, 2.5, 1.0, 2.5];
+    let payload = dict_payload(&weights).expect("低基数输入必须可用字典");
+    assert_eq!(
+        payload,
+        [
+            0x00, 0x01, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80,
+            0x3f, 0x00, 0x00, 0x20, 0x40, 0x00, 0x00, 0x00, 0x80, 0x00, 0x02, 0x01,
+            0x00, 0x02, 0x01, 0x00, 0x01,
+        ]
+    );
+}
+
+#[test]
 fn sparse_roundtrips_zero_heavy() {
     let mut w = vec![0.0f32; 4096];
 

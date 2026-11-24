@@ -432,28 +432,67 @@ pub(crate) fn layer_of(name: &str) -> Option<u32> {
 
 // —— 账本正文的文本形态（原 `text` 平铺进 `settle`）：一端写，一端核回 ——
 
-impl Settled {
-    /// 单条目的规范 JSON（六格缩进，与 [`Settlement::render`] 拼在一起）。
-    pub(crate) fn render(&self) -> String {
-        let mut out = String::new();
-        out.push_str("    {\n");
-        let _ = writeln!(out, "      \"name\": \"{}\",", escape(&self.name));
-        let _ = writeln!(out, "      \"layer\": {},", layer_json(self.layer));
-        let _ = writeln!(out, "      \"raw_len\": {},", self.raw_len);
-        let _ = writeln!(out, "      \"volume_bytes\": {},", self.volume);
-        let _ = writeln!(out, "      \"volume_ratio\": {:.6},", self.volume_ratio());
-        let _ = writeln!(out, "      \"entropy_H\": {:.6},", self.entropy);
-        let (bits, group) = self.quant.unwrap_or((0, 0));
-        let _ = writeln!(out, "      \"quant_bits\": {bits},");
-        let _ = writeln!(out, "      \"quant_group_size\": {group},");
-        let _ = writeln!(out, "      \"verify_bitwise_equal\": {},", self.bitwise);
-        let _ = writeln!(out, "      \"is_lossless\": {},", self.lossless);
-        let _ = writeln!(out, "      \"decision\": \"{}\",", self.decision());
-        let _ = writeln!(out, "      \"codec_reason\": \"{}\",", self.reason.as_str());
-        let _ = writeln!(out, "      \"cert\": \"{}\"", self.cert.as_str());
-        out.push_str("    }");
-        out
-    }
+/// 张量账本的字段模式：一次声明同时生成规范 JSON 与逐格核账，键名、顺序、精度不再漂移。
+macro_rules! settled_fields {
+    ($row:ident, $bits:ident, $group:ident; $($key:literal : $kind:ident => $value:expr),+ $(,)?) => {
+        impl Settled {
+            /// 单条目的规范 JSON（六格缩进，与 [`Settlement::render`] 拼在一起）。
+            pub(crate) fn render(&self) -> String {
+                let $row = self;
+                let ($bits, $group) = $row.quant.unwrap_or((0, 0));
+                let mut out = String::new();
+                out.push_str("    {\n");
+                settled_fields!(@render out, $row; $($key : $kind => $value),+);
+                out.push_str("    }");
+                out
+            }
+        }
+
+        fn expected($row: &Settled) -> [(&'static str, String); settled_fields!(@count $($key)+)] {
+            let ($bits, $group) = $row.quant.unwrap_or((0, 0));
+            [$(($key, settled_fields!(@expected $kind, $value))),+]
+        }
+    };
+    (@render $out:ident, $row:ident; $key:literal : $kind:ident => $value:expr, $($rest:tt)+) => {
+        settled_fields!(@write $out, $key, $kind, $value, ",");
+        settled_fields!(@render $out, $row; $($rest)+);
+    };
+    (@render $out:ident, $row:ident; $key:literal : $kind:ident => $value:expr) => {
+        settled_fields!(@write $out, $key, $kind, $value, "");
+    };
+    (@write $out:ident, $key:literal, name, $value:expr, $comma:literal) => {
+        let _ = writeln!($out, concat!("      \"", $key, "\": \"{}\"", $comma), escape($value));
+    };
+    (@write $out:ident, $key:literal, text, $value:expr, $comma:literal) => {
+        let _ = writeln!($out, concat!("      \"", $key, "\": \"{}\"", $comma), $value);
+    };
+    (@write $out:ident, $key:literal, fixed6, $value:expr, $comma:literal) => {
+        let _ = writeln!($out, concat!("      \"", $key, "\": {:.6}", $comma), $value);
+    };
+    (@write $out:ident, $key:literal, plain, $value:expr, $comma:literal) => {
+        let _ = writeln!($out, concat!("      \"", $key, "\": {}", $comma), $value);
+    };
+    (@expected fixed6, $value:expr) => { format!("{:.6}", $value) };
+    (@expected $kind:ident, $value:expr) => { ($value).to_string() };
+    (@count $($key:literal)+) => { 0 $(+ settled_fields!(@one $key))+ };
+    (@one $key:literal) => { 1usize };
+}
+
+settled_fields! {
+    row, bits, group;
+    "name": name => row.name(),
+    "layer": plain => layer_json(row.layer()),
+    "raw_len": plain => row.raw_len(),
+    "volume_bytes": plain => row.volume(),
+    "volume_ratio": fixed6 => row.volume_ratio(),
+    "entropy_H": fixed6 => row.entropy(),
+    "quant_bits": plain => bits,
+    "quant_group_size": plain => group,
+    "verify_bitwise_equal": plain => row.bitwise(),
+    "is_lossless": plain => row.lossless(),
+    "decision": text => row.decision(),
+    "codec_reason": text => row.reason().as_str(),
+    "cert": text => row.cert().as_str(),
 }
 
 /// 层号的 JSON 写法：没有层号就写 `null`，不写 0（0 是真实层号，混同会丢信息）。
@@ -579,26 +618,6 @@ fn written(value: &Value) -> Result<String> {
         Value::Integer(_) | Value::Decimal(_) => value.number_text(),
         other => Err(bad(format!("账本的这一格必须是标量，得到{}", other.kind()))),
     }
-}
-
-/// 一条目期望的十三格：键名与 [`Settled::render`] 同源同序，值按规范写法成文。
-fn expected(entry: &Settled) -> [(&'static str, String); 13] {
-    let (bits, group) = entry.quant().unwrap_or((0, 0));
-    [
-        ("name", entry.name().to_string()),
-        ("layer", layer_json(entry.layer())),
-        ("raw_len", entry.raw_len().to_string()),
-        ("volume_bytes", entry.volume().to_string()),
-        ("volume_ratio", format!("{:.6}", entry.volume_ratio())),
-        ("entropy_H", format!("{:.6}", entry.entropy())),
-        ("quant_bits", bits.to_string()),
-        ("quant_group_size", group.to_string()),
-        ("verify_bitwise_equal", entry.bitwise().to_string()),
-        ("is_lossless", entry.lossless().to_string()),
-        ("decision", entry.decision().to_string()),
-        ("codec_reason", entry.reason().as_str().to_string()),
-        ("cert", entry.cert().as_str().to_string()),
-    ]
 }
 
 #[cfg(test)]

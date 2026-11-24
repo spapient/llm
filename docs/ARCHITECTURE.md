@@ -185,7 +185,7 @@ testkit    → （叶    +dev: autograd, cutile, nn, prof, tensor, tools, train,
 | `Assembler` / `Placement` / `LinearGeo` | `shard` | 模型层并行归属：把 `nn` 层清单映射到本 rank 的 PP 段与 TP 分片几何；`Placement` 带泛型载荷（装配侧句柄原样带回），段外层不建分片计划，非分层参数各副本持有；可按几何取本 rank 本地子块（`Copy` 元素档泛型切片），但只产归属几何与本地子块，不装载进图、不发通信 |
 | `Snapshot` / `Format` / `Facts` | `storage`（`snapshot` 模块） | 检查点字节格式与恢复事实：字节只写相对上一条的差、尾部 CRC-32；`verify` 只验字节，`check_weights` 要求条目表与权重文件逐条相同。不依赖任何训练侧类型，写出同样的字节即可换掉实现 |
 | `Moments` / `SlotMoments` / `GradAccum` / `Ties` | `storage`（`snapshot` 模块） | 快照携带的优化器状态段：矩状态按槽位自持、累积梯度带计数、权重绑定表是 `(源槽, 回填槽)` 下标对；编解码与字节格式同源，训练侧只读写不重新定义 |
-| `Schedule` / `Anneal` / `Step` / `Session` / `TrainConfig` / `TrainSpec` / `ParamSlot` / `Checkpoint` / `Distributed` / `GradientSnapshot` | `train` | 训练循环状态：纯函数学习率调度与衰减曲线、一次会话复用同一张图 / 缓冲 / 优化器、参数槽与分布式装配（后端契约在 `shard`）；`TrainSpec` 是会话配置与数据批几何在装配边界的静态组合；`GradientSnapshot` 是按 `Var` 自持的独立梯度向量副本，脱离累积窗口与缓冲生命周期 |
+| `Schedule` / `Anneal` / `Step` / `Session` / `TrainConfig` / `TrainOverrides` / `TrainSpec` / `ParamSlot` / `Checkpoint` / `Distributed` / `GradientSnapshot` | `train` | 训练循环状态：纯函数学习率调度与衰减曲线、一次会话复用同一张图 / 缓冲 / 优化器、参数槽与分布式装配（后端契约在 `shard`）；`TrainOverrides` 以命名字段承载可选会话覆盖，未给字段保留原值；`TrainSpec` 是会话配置与数据批几何在装配边界的静态组合；`GradientSnapshot` 是按 `Var` 自持的独立梯度向量副本，脱离累积窗口与缓冲生命周期 |
 | `Batch` / `Dataset` / `Chunks` | `train`（`samples` 模块） | 训练样本：借用调用方 token 缓冲（零分配 / 零拷贝），两个构造函数共用同一份几何校验，批总数在构造期算好，`Dataset` 对象安全 |
 | `Optimizer` / `Sgd` / `Adam` / `Group` / `Slot` / `OwnedSlot` | `train` | 优化器：对象安全 trait，矩状态按槽位编号自持；参数组由 `ParamRole` 派生，不按字段名猜（矩状态与累积梯度的**类型**归 `storage`，本层只持有并步进） |
 | `Muon` | `train` | 矩阵参数的近似正交化更新：更新量只由方向决定，非矩阵槽**拒绝**而不是悄悄跳过 |
