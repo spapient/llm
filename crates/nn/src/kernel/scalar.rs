@@ -32,6 +32,7 @@ pub trait Scalar:
     + core::ops::Mul<Output = Self>
     + core::ops::Div<Output = Self>
     + core::ops::Neg<Output = Self>
+    + core::ops::Rem<Output = Self>
 {
     /// 加法幺元。
     const ZERO: Self;

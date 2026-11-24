@@ -59,7 +59,7 @@ pub(crate) fn elementwise(c: &mut Criterion) {
     let va = View::one(&a);
     let vb = View::one(&b);
     checked_or_exit(
-        elementwise::forward::<Add>(va.clone(), vb.clone(), &mut out),
+        elementwise::forward::<f32, Add>(va.clone(), vb.clone(), &mut out),
         "缓冲等长",
     );
 
@@ -67,7 +67,7 @@ pub(crate) fn elementwise(c: &mut Criterion) {
     group.throughput(Throughput::Elements(VECTOR as u64));
     group.bench_function("forward", |iter| {
         iter.iter(|| {
-            black_box(elementwise::forward::<Add>(
+            black_box(elementwise::forward::<f32, Add>(
                 va.clone(),
                 vb.clone(),
                 black_box(&mut out),

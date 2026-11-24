@@ -119,7 +119,8 @@ macro_rules! unary_f32 {
 
         impl $crate::unary::Unary for $name {
             fn apply<K: $crate::kernel::scalar::Scalar>(x: K) -> K {
-                ($apply)(x)
+                let apply: fn(K) -> K = $apply;
+                apply(x)
             }
 
             $( fn input(len: usize) -> Vec<f32> {

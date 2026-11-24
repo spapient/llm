@@ -1,26 +1,26 @@
 //! 逐元素二元骨架：`y[n] = op(a[n], b[n])`。
 
 use crate::formula::FormulaOwner;
+use crate::kernel::scalar::Scalar;
 use crate::model::{Buf, Cost, Sample, ShapeCtx, Values};
 use diagnostic::{Code, Error};
-use tensor::{Element, View};
+use tensor::View;
 
 // 单轴定义与形状投影复用一元骨架（与 dequant / softmax / rmsnorm / rope / scan 同一模式）。
 pub use crate::unary::{AXES, project_shape};
 
 /// 逐元素二元算子随语义变化的那部分。
 ///
-/// 元素档 [`K`](Binary::K) 是执行侧泛型挂接，范式同 `Gemm::Plain::Elem`：算术与前向
-/// 内核按 `K` 抽象；对拍通道归一 f32，非 f32 档随取值通道批次接入（ADR 0054 §1）。
+/// 逐元素运算泛型到浮点标量档 `K: Scalar`（ADR 0054 §1 的「元素档 K」）：同一份闭包
+/// 服务四档浮点。对拍通道归一 f32，[`apply_f32`](Self::apply_f32) 即 `apply::<f32>` 的默认别名。
 pub trait Binary: FormulaOwner {
-    /// 本算子的元素类型；既有档为 `f32`。
-    type K: Element;
+    /// 逐元素运算：两个输入值，一个输出值，泛型到浮点标量档 `K`。
+    fn apply<K: Scalar>(x: K, y: K) -> K;
 
-    /// 逐元素运算：两个输入值，一个输出值（执行侧，按元素档 [`K`](Self::K) 抽象）。
-    fn apply(x: Self::K, y: Self::K) -> Self::K;
-
-    /// f32 标量核：对拍通道归一 f32 的入口；既有档与 [`apply`](Self::apply) 同一闭包。
-    fn apply_f32(x: f32, y: f32) -> f32;
+    /// f32 标量核：对拍通道归一 f32 的入口，默认即 [`apply`](Self::apply) 的 f32 单态化。
+    fn apply_f32(x: f32, y: f32) -> f32 {
+        Self::apply(x, y)
+    }
 
     /// 第一路输入的确定性取值：默认线性夹具 `−1.0 + 0.5·i`；需要不同取值时覆盖。
     fn input_a(len: usize) -> Vec<f32> {
@@ -79,15 +79,15 @@ pub fn reference<B: Binary>(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
         .collect())
 }
 
-/// 内核本体：结果写进调用方给的缓冲，按元素档 [`Binary::K`] 抽象，不自带分配。
+/// 内核本体：结果写进调用方给的缓冲，泛型到浮点标量档 `K`，不自带分配。
 ///
 /// # Errors
 ///
 /// 两个输入等长、且与输出等长，否则返回说明。
-pub fn forward<B: Binary>(
-    a: View<'_, B::K>,
-    b: View<'_, B::K>,
-    out: &mut [B::K],
+pub fn forward<K: Scalar, B: Binary>(
+    a: View<'_, K>,
+    b: View<'_, K>,
+    out: &mut [K],
 ) -> diagnostic::Result<()> {
     let a = a.as_slice();
     let b = b.as_slice();
@@ -130,16 +130,9 @@ macro_rules! binary_f32 {
         );
 
         impl $crate::elementwise::Binary for $name {
-            type K = f32;
-
-            fn apply(x: Self::K, y: Self::K) -> Self::K {
-                const APPLY: fn(f32, f32) -> f32 = $apply;
-                APPLY(x, y)
-            }
-
-            fn apply_f32(x: f32, y: f32) -> f32 {
-                const APPLY: fn(f32, f32) -> f32 = $apply;
-                APPLY(x, y)
+            fn apply<K: $crate::kernel::scalar::Scalar>(x: K, y: K) -> K {
+                let apply: fn(K, K) -> K = $apply;
+                apply(x, y)
             }
 
             $( fn input_a(len: usize) -> Vec<f32> {
@@ -174,7 +167,7 @@ macro_rules! binary_f32 {
         ///
         /// 三个缓冲等长，否则返回说明。
         pub fn forward(a: tensor::View<'_, f32>, b: tensor::View<'_, f32>, out: &mut [f32]) -> diagnostic::Result<()> {
-            $crate::elementwise::forward::<$name>(a, b, out)
+            $crate::elementwise::forward::<f32, $name>(a, b, out)
         }
 
         #[cfg(test)]
