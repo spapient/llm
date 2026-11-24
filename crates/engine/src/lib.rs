@@ -6,8 +6,8 @@
 //! 后端（`llm-shard` / `llm-prof`）、kernel 编译（`cutile`）、缓冲分配（`storage`）。
 //! **依赖**：`tensor`、`diagnostic`、`storage`。**被依赖**：`serve`、`benchmarks`、`cli`。
 //!
-//! 本 crate 定义执行缝（[`exec::Executor`]），并自带 Metal FFI 实现（`metal` 模块，
-//! ADR 0035 越界岛）；CUDA / 昇腾等其余厂商链与六平台合同仍在 `llm-shard`。
+//! 本 crate 定义执行缝（[`exec::Executor`]）；Metal FFI 后端在 `llm-prof::runtime::metal`
+//! 设备岛，CUDA / 昇腾等其余厂商链与六平台合同仍在 `llm-shard`。
 //!
 //! 页账与提交契约原是两个独立成员（`llm-kv` / `llm-exec`）：它们的生产消费者只有本 crate，
 //! 合并后"谁在借页"与"谁在提交"的不变量在同一处断言，成员与依赖边各少一个。
@@ -79,10 +79,6 @@ pub mod kv;
 pub mod radix;
 pub mod scheduler;
 pub mod sequence;
-
-/// Metal FFI 执行器（仅 macOS）：`Executor` 缝的 Metal 实现，ADR 0035 唯一 Metal 越界岛。
-#[cfg(target_os = "macos")]
-pub mod metal;
 
 pub use batch::{Admission, Batch, SequenceOutcome};
 pub use ifb::{Budget, Candidate, Phase, Verdict, chunk, pack};

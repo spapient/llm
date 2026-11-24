@@ -59,8 +59,8 @@ pub(crate) fn the_error_boundary_does_not_fall_back_to_strings() {
 pub(crate) const VENDOR_PUBLIC_BASELINE: &[(&str, &str)] = &[];
 
 /// 允许公开项带厂商名的成员：后端实现层，`cutile` 的 `Backend` 缝由它填。
-/// `shard` 执行面承接全部 vendor 后端实现；`device` crate 已删除，不再有第二归属层。
-pub(crate) const VENDOR_OWNERS: [&str; 1] = ["shard"];
+/// `prof` 收设备档案与 FFI 后端岛；`shard` 承接过渡执行面；`device` crate 已删除。
+pub(crate) const VENDOR_OWNERS: [&str; 2] = ["prof", "shard"];
 
 /// 厂商名清单；判据是"公开项以 `厂商名_` 起头"。
 pub(crate) const VENDORS: [&str; 8] = [
