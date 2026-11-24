@@ -72,6 +72,6 @@ pub use pool::OperatorSetOps;
 pub use pool::{Bufs, Data, Inputs, Kernel, Kind, Lane, Reference, View, ViewMut};
 pub use rng::{Bernoulli, Normal, Rng, Uniform, block};
 pub use session::{
-    Anneal, Checkpoint, Distributed, GradientSnapshot, Local, ParamSlot, Remote, Schedule,
-    Session, Step, TrainConfig, operators, resume,
+    Anneal, Checkpoint, Distributed, GradientSnapshot, Local, ParamSlot, Remote, Schedule, Session,
+    Step, TrainConfig, operators, resume,
 };
