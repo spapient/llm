@@ -103,11 +103,11 @@
 | --- | --- | --- |
 | 能力 | **8 / 10** | 集合端口元素档泛型、策略三旋钮、`#[parallel(..)]` 入口、`Plan` 三轴视图、`Job/Queue` 排队原语就位；归属计划接到 `nn` 层清单（PP 段过滤、TP 列/行几何）；本轮再把几何推进到**本地权重子块切片**（泛型 `Copy` 档，列切整块、行切按行取列段，拼回原样对拍），注解策略→归属→本地子块 dev 链打通（confirmed）。缺口仍在：子块尚未装载进 serve `Graph`/`Params`；PP 跨段流水调度、TP 行切求和归约未接运行图；接通的运行通路只有 DP 梯度同步；真实跨进程/设备通信缺（§5.1/5.3）。既有对比基线分布式维 llm=3。 |
 | 性能 | **6 / 10** | `reduce_into` 直写调用方缓冲、一次归约不分配堆；组内归约内层预取镜像切片；标量安全后端无 SIMD，平均除法保留循环（已注释保留理由）。切片侧列切行段连续、一次整块 `to_vec`；行切列段不连续，外层按行拷（布局决定的分散拷贝），行内整块复制；归属与切片都是装配期动作，不进前向/反向热路径；队列排序是批次提交点稳定排序。未新增热路径通路，无基准测量观测（unknown），不夸大量化收益。 |
-| 质量 | **9 / 10** | 构造期校验（零维 / 上界 / rank 越界 / 宽度不符 / 组非空升序 / 层段整除 / TP 切维整除 / 切片形状积与溢出 / 份号越界）、浮点极值 NaN 传播、归约闭集与行序断言；计划层全 rank 归属与层段无重叠无遗漏对拍；归属侧每块恰归一个 PP rank、非分层双副本、段外无计划对拍；切片拼回原轴/原行、泛型档、长度不符拒绝对拍；队列同档保序；注解编译期闭集/度数/布尔/重复键拒绝 + 端到端类型解析；新顶层类型回登所有权表，dev 工具边回登边表。本轮补口径一致性：remainder 设备模板由 floor 向负无穷对齐到参考闭包 `x % y` 的 fmod/截断商（`x - _cutile_trunc_f32(x/v)*v`，去冗余 copysign），nn 模块注释与 `.toml` 注释同改；shard `placement/tiling` 抽私有方法降 assign/split 圈复杂度、词表 `index→idx`；testkit 单行重导出垫片收拢进 lib.rs；fuzz harness 终止形态与契约库零 panic 立场对齐。 |
-| 代码量 | **6 / 10** | 上一轮本体减法：移除 f32 闭包行表、浮点实例化收编进宏、rank 越界校验抽 helper。本轮切片能力加在既有 `tiling.rs`/`placement.rs` 方法上，未新增源文件；测试追加到既有测试文件；16 个并入 optim 模块保持原位。本轮精简：testkit 单行垫片 `assert.rs` 收拢进 `lib.rs`（删一碎文件）、撤销一条越权 debt 条目与配套注释、remainder 模板去掉冗余 copysign 表达式。能力件仍以新增为主，未再拆本体；train 三巨石未在本轮边界内拆分。 |
+| 质量 | **9 / 10** | 构造期校验（零维 / 上界 / rank 越界 / 宽度不符 / 组非空升序 / 层段整除 / TP 切维整除 / 切片形状积与溢出 / 份号越界）、浮点极值 NaN 传播、归约闭集与行序断言；计划层全 rank 归属与层段无重叠无遗漏对拍；归属侧每块恰归一个 PP rank、非分层双副本、段外无计划对拍；切片拼回原轴/原行、泛型档、长度不符拒绝对拍；队列同档保序；注解编译期闭集/度数/布尔/重复键拒绝 + 端到端类型解析；新顶层类型回登所有权表，dev 工具边回登边表。本轮补口径一致性：remainder 设备模板由 floor 向负无穷对齐到参考闭包 `x % y` 的 fmod/截断商（`x - _cutile_trunc_f32(x/v)*v`，去冗余 copysign），nn 模块注释与 `.toml` 注释同改；shard `placement/tiling` 抽私有方法降 assign/split 圈复杂度、词表 `index→idx`；testkit 单行重导出垫片收拢进 lib.rs；fuzz harness 终止形态与契约库零 panic 立场对齐。本轮门禁收口再补：性质测试台账与源码扫描双向对齐（`serve / tokenizer / weights` 已写性质块，从 ABSENT 挪进 COVERED，manifest 声明集与台账等值）；架构边集镜像补齐漏登的 `tokenizer → testkit` dev 边；nn unary 二十五算子泛型闭包编译破损修复——闭包绑定到 `fn(K) -> K` 函数指针、参数由签名反推为泛型档 `K`，与二元族同一模式，不靠在调用点标注方法泛型（调用点 `K` 未入作用域）；全仓 `clippy -D warnings` / doc-test / doc link 零告警。 |
+| 代码量 | **6 / 10** | 上一轮本体减法：移除 f32 闭包行表、浮点实例化收编进宏、rank 越界校验抽 helper。本轮切片能力加在既有 `tiling.rs`/`placement.rs` 方法上，未新增源文件；测试追加到既有测试文件；16 个并入 optim 模块保持原位。本轮精简：testkit 单行垫片 `assert.rs` 收拢进 `lib.rs`（删一碎文件）、撤销一条越权 debt 条目与配套注释、remainder 模板去掉冗余 copysign 表达式。能力件仍以新增为主，未再拆本体。密度存量债本轮未压到 S++ 线：N6 总量超 7,718 行、N3 九个 >600 文件、N2 三个 >8,000 crate（明细见 §5.4.4）；低风险目录化拆分与结构性 crate 外移分别排进 REPO-review §2.1 / §2.4，后者需 ADR 拍板、动架构边表，不在本轮门禁边界内。 |
 | 门禁可执行性 | **9 / 10** | 本轮一次性全仓复跑硬门全绿（2026-11-24 干净重建口径）：`fmt --all --check` 0 diff；`clippy --workspace --all-targets --all-features -D warnings` 0 警告；`nextest run --workspace --all-features` **2954 passed / 0 failed / 41 skipped**；`cargo test --doc --workspace --all-features` 各档 0 failed；`deny --offline check all` 四类（advisories/bans/licenses/sources）ok；`machete` 无未用依赖；`jscpd` **0 clones / 0.00%**（673 文件、166,413 行、1,119,936 token）；静态门 `gate` **15 passed**；架构门 `testkit --lib` **100 passed**；`name-lint` 0 命中；`bench --workspace --no-run` Finished；基准回归 `regress` **12 passed**（无测量产物的场景按设计 skip，不静默放行）。本轮闭合上一轮 §5.4.3 点名的三条上游残留：train 巨石已目录化过 gate 899 线、全仓 doc intra-doc link 清零、全仓 fmt/clippy/doc 补跑完。扣 1 分：密度预算（N2/N3/N6）仍是报告阶段红账（见 §5.4.4），真机/跨进程测量未接入回归门，性能回归只编译不采样。 |
 
-> 结论：距 "S++ / 10 分" 仍未达成。本轮闭合了上一轮点名的三条上游在途残留（Metal pointwise 对拍、fuzz broken link、deny 离线）与 remainder 双源口径；但 §5.1 的运行装配缺口（子块装载进图、PP 跨段流水、TP 行切运行归约、生产装配持有归属结果、跨进程后端）一条未推进，`train` 三巨石 Lines 与既有 doc broken link 仍压门禁。分数为绿窗口实测口径，被上游半成品阻塞的 crate 不重复计绿。
+> 结论：距 "S++ / 10 分" 仍未达成。本轮把**可执行硬门禁**一次性跑到全绿（2954 测试 0 failed、clippy/fmt/doc/deny/machete/jscpd/架构/命名/基准编译/回归全绿，零豁免、零克隆、零未用依赖），并闭合了上一轮点名的 train 巨石 gate 线、doc broken link、全仓工具链三条残留；但两类硬缺口仍在：一是 §5.1 的运行装配缺口（子块装载进图、PP 跨段流水、TP 行切运行归约、生产装配持有归属结果、跨进程后端）一条未推进，二是 §5.4.4 密度预算（N2/N3/N6）尚未压到 S++ 线。分数为绿窗口实测口径，被上游半成品阻塞的 crate 不重复计绿。
 
 ## 4. 与 Burn 对照（沿用 §10 已核事实，不重复取证）
 
@@ -152,11 +152,21 @@
 
 ### 5.4.3 仍压门禁的既有边界债（本轮边界内未拆）
 
-- **`train` 三巨石 Lines 超标**：`session.rs` 实测 Lines=1211（物理 1212）、`backprop.rs` 915（物理 916）、`geometry.rs` 1403（物理 1404），均超 `file_max_lines=899`，是 gate 测试当前**唯一红账**（`every_source_passes_the_static_gate` 14 passed / 1 failed）。三者 worktree 行数 == HEAD 行数，属已提交存量、非本轮引入；门规则立场运行时生产代码不进 debt，收口方式是按主题拆模块。本轮硬边界"减法仅限 shard 本体内部"未拆 train。内部段边界已取证：geometry 三段（静态规格表 12-282 / 形状面 283-598 / 数值微核 599-1404）；backprop（执行器助手 41-157 / 注意力反向本体 312-452 / 公式表 453-916）；session（TrainConfig / ParamSlot / Session 三块）。
-- **既有 doc broken link 未修**：shard 3 条（`Priority::TABLE` 私有、`Local::reduce_into` unresolved、`Codegen::lower` unresolved）、nn 4 条（`registry::model`、`WeightFormat::INT4`×2、`OpLayer→AxisCore` 私有）、prof 6 条（`GEMM_KERNELS`/`gemm_negotiate`/`gemm8x8`/`sme`/`Tile`/`micro_packed`）、testkit 3 条（`compare→close_scalar` 私有、`crate::prop_discipline` unresolved、`squash→BELOW_ONE` 私有）。前几轮即存在，非本轮 remainder/fuzz 改动引入；全仓 `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` 尚未在本轮跑完。
+- **`train` 三巨石 Lines 超标：已闭合（gate 口径）**。三文件已目录化拆分，物理行数回落到 gate `file_max_lines=899` 以内：`session.rs` 887、`backprop.rs` 319、`geometry.rs` 694；静态门 `every_source_passes_the_static_gate` 转绿（15 passed）。注意 loc 脚本更严的 N3 线（>600 一票否决）下，`session.rs` 887 / `geometry.rs` 694 / `kernel.rs` 640 / `backprop/formulas.rs` 608 仍在 >600 清单，见 §5.4.4。
+- **既有 doc broken link：已清零**。前几轮登记的 shard 3 / nn 4 / prof 6 / testkit 3 条 intra-doc link 按四类修法逐条真实修复（private-intra-doc-links 去方括号留纯文本反引号；broken-unresolved 核对真实目标后改全路径或纯文本；模块名撞原语/函数去链接；redundant explicit target 去 target），不靠 `#[allow]` 豁免。`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps` 零 error。
 - `cutile` 一元算子族在途：`ir_emit.rs` 重组为 `printer.rs`、新增 `unary_tests.rs`；收尾时 ownership 门扫到既有 HEAD 公开类型 `cutile:UnaryFn` 漏登基线，已补进既有 `cutile` 的 `ownership.unlisted` 基线节（不碰 cutile 代码、不新增架构边），ownership 门转绿；该闭集待 cutile 分节稳定后再逐节进对外所有权表。再次动手 cutile 源码前应先确认工作树静止，必要时 `cargo clean -p cutile` 清陈旧 OUT_DIR。
-- 边表经本轮复核：`train → annotation` 为 dev 工具边，已补登 `docs/ARCHITECTURE.md`；实测 `cargo metadata` 运行时边 69、`+dev` 边 55、总计 **124** 条，文档计数与门禁 `testkit::layer` 断言一致。
-- 本批五包（shard/nn/prof/fuzz/testkit）`fmt --check` 0 diff、`clippy --all-targets -D warnings` 0 警告；全仓 `fmt --all --check` 仍有非本批文件的上游在途未格式化 diff，`--all-targets/--all-features` clippy 与全仓 doc 未在本轮跑完。
+- 边表经本轮复核：`train → annotation` 为 dev 工具边，已补登 `docs/ARCHITECTURE.md`；本轮再补 `tokenizer → testkit` dev 边（tokenizer dev-dependency 用 testkit，文档边集原漏登，`layer` 门转绿），边数同步为运行时 69、`+dev` 56、总计 **125** 条，文档计数与门禁 `testkit::layer` 断言一致。
+- 全仓工具链本轮已一次性跑完：`fmt --all --check` 0 diff；`clippy --workspace --all-targets --all-features -D warnings` 0 警告；全仓 doc-test 0 failed。此前"非本批文件未格式化 diff / 全仓 clippy 与 doc 未跑完"的状态已解除。
+
+### 5.4.4 密度预算红账（N2 / N3 / N6，报告阶段未阻断）
+
+CI `density budget` 步骤 `continue-on-error: true`（R1–R2 报告不阻断，R3 起转阻断，阈值只收紧）。本轮实测 `scripts/loc-budget.sh` 三项仍红，属已提交存量、非本轮引入：
+
+- **N6 总量**：`crates/*/src` **103,818** 行 / 预算 96,100，超 **7,718** 行；408 个源文件。
+- **N3 单文件 >600 一票否决（9 个）**：`train/session.rs` 887、`testkit/contracts.rs` 749、`train/geometry.rs` 694、`weights/torch/mod.rs` 663、`weights/safetensors/mod.rs` 643、`train/kernel.rs` 640、`train/backprop/formulas.rs` 608、`weights/ptq/mod.rs` 603、`fuzz/drivers.rs` 602。
+- **N2 单 crate >8,000（3 个）**：`nn` 15,543、`weights` 9,839、`prof` 9,701。
+
+无损减法已在前几轮清到低残留：jscpd 跨文件真重复 0、machete 未用依赖 0、gate 零引用 pub / 死代码判据绿。剩余可压缩空间按 `docs/REPO-review-2026-11.md` §2 分两档：**低风险**是 §2.1 超大文件按主题目录化拆分（公开路径不变、只搬模块与再导出，消 N3 清单，但不降总量）；**结构性**是 §2.4 `weights` 五领域混杂拆出 `crypto` / `codec` 独立 crate（降 N2/N6，但动架构边表、需 ADR 拍板，周期 1–2 周）。本轮硬边界不动架构边表，未做结构性拆 crate；N2/N6 的真减行要等 ADR 与拆案落地，不能靠放宽阈值或删判据散文凑数字。
 
 这些不属于 shard 并行主线，未在本轮擅改其设计。全量门禁按 §6 一次性复跑。
 
