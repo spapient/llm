@@ -1,7 +1,7 @@
-//! matmul 两档精度（`f32` / `i8`）共用的对拍装配：视图构造 + 标量参考与 tile 两条骨架各跑一遍。
-//!
-//! 采样公式与最终断言两档不同（`f32` 按 IEEE 容差、`i8` 逐位相等），留在各自测试文件；
-//! 这里只收拢两档逐字同形的装配段，避免两份样板各自漂移。
+// matmul 两档精度（`f32` / `i8`）共用的对拍装配：视图构造 + 标量参考与 tile 两条骨架各跑一遍。
+//
+// 采样公式与最终断言两档不同（`f32` 按 IEEE 容差、`i8` 逐位相等），留在各自测试文件；
+// 这里只收拢两档逐字同形的装配段，避免两份样板各自漂移。
 
 use crate::kernel::matmul::{forward_scalar, forward_tiled, pair_views, Precision};
 
@@ -16,7 +16,7 @@ fn run_both<P: Precision>(
     let mut expected = vec![P::Acc::default(); m * n];
     let mut actual = vec![P::Acc::default(); m * n];
     let (av, bv) = pair_views(m, n, k, a, b);
-    forward_scalar(av.clone(), bv.clone(), &mut expected).expect("参考可计算");
-    forward_tiled(av, bv, &mut actual).expect("tile 可计算");
+    forward_scalar::<P>(av.clone(), bv.clone(), &mut expected).expect("参考可计算");
+    forward_tiled::<P>(av, bv, &mut actual).expect("tile 可计算");
     (expected, actual)
 }

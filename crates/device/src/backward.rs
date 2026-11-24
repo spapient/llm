@@ -94,17 +94,19 @@ pub fn lookup(op: &str) -> Option<&'static GradientEntry> {
 pub fn source(backend: Backend, entry: &GradientEntry, len: usize) -> Result<String> {
     match backend {
         Backend::Metal => Ok(metal_source(entry, len)),
-        Backend::Cuda => Err(
-            Error::new(
-                Code::Unsupported,
-                format!("CUDA 反向核 `{}` 尚未生成：本机无 NVCC 与真机证据", entry.op),
-            )
-            .with(SITE),
-        ),
+        Backend::Cuda => Err(Error::new(
+            Code::Unsupported,
+            format!(
+                "CUDA 反向核 `{}` 尚未生成：本机无 NVCC 与真机证据",
+                entry.op
+            ),
+        )
+        .with(SITE)),
     }
 }
 
 /// Metal 逐点反向核：一元素一线程，长度守卫跳过末组越界线程；骨架统一乘上游梯度。
+/// 线程下标命名为 `i`，与导数表达式里的 `x[i]` / `y[i]` 对齐。
 fn metal_source(entry: &GradientEntry, len: usize) -> String {
     let name = format!("{}_grad", entry.op);
     let deriv = entry.deriv;
@@ -116,9 +118,9 @@ fn metal_source(entry: &GradientEntry, len: usize) -> String {
          \x20    device const float* y [[buffer(1)]],\n\
          \x20    device const float* dout [[buffer(2)]],\n\
          \x20    device float* dx [[buffer(3)]],\n\
-         \x20    uint tid [[thread_position_in_grid]]) {{\n\
-         \x20    if (tid >= {len}) return;\n\
-         \x20    dx[tid] = dout[tid] * {deriv};\n\
+         \x20    uint i [[thread_position_in_grid]]) {{\n\
+         \x20    if (i >= {len}) return;\n\
+         \x20    dx[i] = dout[i] * {deriv};\n\
          }}"
     )
 }

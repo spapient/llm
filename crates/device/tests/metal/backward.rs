@@ -44,12 +44,13 @@ const ENTRIES: &[Entry] = &[
     Entry {
         op: "relu_f32",
         f: |x| x.max(0.0),
-        inputs: |len| linear(len, 0.125, -6.0),
+        // 错开半步，避开 x=0 折点：折点处中心差分取到单侧斜率，与次梯度约定不可比。
+        inputs: |len| linear(len, 0.125, -6.0625),
     },
     Entry {
         op: "leaky_relu_f32",
         f: |x| if x >= 0.0 { x } else { 0.01 * x },
-        inputs: |len| linear(len, 0.125, -6.0),
+        inputs: |len| linear(len, 0.125, -6.0625),
     },
     Entry {
         op: "sigmoid_f32",
@@ -150,6 +151,5 @@ fn bind_f32(executor: &mut MetalExecutor, id: u32, values: &[f32]) {
     let Some(buf) = executor.buf_mut(id) else {
         panic!("缓冲 {id} 分配后应在场");
     };
-    buf.as_mut_bytes()
-        .copy_from_slice(&as_bytes(values));
+    buf.as_mut_bytes().copy_from_slice(&as_bytes(values));
 }
