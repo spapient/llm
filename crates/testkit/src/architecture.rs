@@ -94,7 +94,7 @@ pub(crate) fn dependents(dependency: &str) -> BTreeSet<String> {
 /// 成员短名 → 源码根目录。
 pub(crate) fn src_root(member: &str) -> PathBuf {
     let dir = dirs()
-        .get(member).map_or_else(|| PathBuf::from("crates").join(member), |path| path.to_path_buf());
+        .get(member).map_or_else(|| PathBuf::from("crates").join(member), |path| path.clone());
     workspace_root().join(dir).join("src")
 }
 

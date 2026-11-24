@@ -156,8 +156,8 @@ fn the_ledger_lists_every_declared_primitive() {
     let verified = Verified {
         device: "cpu".to_string(),
         channel: llm_optim::verify::Channel::Parallel,
-        vendor: profile.meta.vendor.to_string(),
-        id: profile.meta.id.to_string(),
+        vendor: profile.meta.vendor.clone(),
+        id: profile.meta.id.clone(),
         variant: "pipe2".to_string(),
         tile: "GMAX=32".to_string(),
         shapes: vec![(32, 1), (4096, 4096)],

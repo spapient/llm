@@ -19,7 +19,7 @@ fn zero_probability_is_identity() {
 fn same_seed_gives_same_mask() {
     let base: Vec<f32> = (0..1024).map(|i| i as f32).collect();
     let mut a = base.clone();
-    let mut b = base.clone();
+    let mut b = base;
     dropout(&mut a, 0.3, 42, true).unwrap();
     dropout(&mut b, 0.3, 42, true).unwrap();
     assert_eq!(a, b);

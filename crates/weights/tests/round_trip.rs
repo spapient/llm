@@ -98,7 +98,7 @@ fn a_flipped_bit_is_rejected_by_the_global_crc() {
         .finish(6)
         .expect("产出");
 
-    let mut damaged = bytes.clone();
+    let mut damaged = bytes;
     let flip = damaged.len() / 2;
     damaged[flip] ^= 0x01;
     let error = Archive::parse(&damaged).expect_err("比特翻转必须被拦");

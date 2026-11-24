@@ -121,8 +121,7 @@ impl Header {
     pub fn data_bytes(&self) -> usize {
         self.entries
             .last()
-            .map(|entry| entry.end().saturating_sub(self.data_start))
-            .unwrap_or(0)
+            .map_or(0, |entry| entry.end().saturating_sub(self.data_start))
     }
 }
 

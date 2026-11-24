@@ -106,7 +106,7 @@ fn build_source(
     if let Err(error) = &prepared.fragments {
         return Err(error.clone());
     }
-    let nodes = prepared.nodes.clone().map_err(|error| error.clone())?;
+    let nodes = prepared.nodes.clone()?;
     generate(op, profile, variant, tile, &nodes, cache, key)
 }
 

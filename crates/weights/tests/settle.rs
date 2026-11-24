@@ -127,7 +127,7 @@ fn a_certificate_that_names_another_measurement_is_refused() {
         ledger::Note {
             comp: 1e-9,
 
-            ..cert.note.clone()
+            ..cert.note
         },
     ] {
         assert_eq!(sound_cert(&tampered), Cert::Refused, "{tampered:?}");

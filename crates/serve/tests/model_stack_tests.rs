@@ -187,7 +187,7 @@ fn a_quantized_int4_archive_loads_and_matches_the_reference() {
             name: "blk.0.weight",
             shape: [1, 16],
             dtype: "U8",
-            bytes: w.clone(),
+            bytes: w,
         },
         ArchiveEntry {
             name: "blk.0.weight_scale",

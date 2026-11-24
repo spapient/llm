@@ -202,7 +202,7 @@ fn a_tampered_certificate_is_rejected_on_read() {
 
     // 稳定性翻成 `Fail`：`Fail` 本身合法，但一条没放行的证书不该出现在载荷里。
 
-    let mut not_passed = cert.note.clone();
+    let mut not_passed = cert.note;
 
     not_passed.stable = ledger::Stable::Fail;
 

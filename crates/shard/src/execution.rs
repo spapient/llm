@@ -361,8 +361,8 @@ fn run_once(
     let tolerance = cutile::reference::tolerance(run.model.dtype);
     let max_rel_err = check_parity(&outcome.bits, &expected, tolerance)?;
     Ok(Execution {
-        device: profile.meta.id.to_string(),
-        vendor: profile.meta.vendor.to_string(),
+        device: profile.meta.id.clone(),
+        vendor: profile.meta.vendor.clone(),
         variant: path.variant,
         tile: prepared.plan.tile.to_string(),
         key: prepared.key.hex(),

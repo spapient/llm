@@ -229,7 +229,7 @@ fn a_certificate_supplies_the_epsilon_of_its_own_decomposition() {
     let failed = Note {
         stable: Stable::Fail,
 
-        ..certified.note.clone()
+        ..certified.note
     };
 
     assert!(Rung::from_note(&failed, 4.0, 4.0, 1.0, 0.0).is_err());
@@ -237,7 +237,7 @@ fn a_certificate_supplies_the_epsilon_of_its_own_decomposition() {
     let unequal = Note {
         equal: false,
 
-        ..certified.note.clone()
+        ..certified.note
     };
 
     assert!(Rung::from_note(&unequal, 4.0, 4.0, 1.0, 0.0).is_err());
@@ -247,7 +247,7 @@ fn a_certificate_supplies_the_epsilon_of_its_own_decomposition() {
     let scratch = Note {
         method: EpsMethod::Candidate,
 
-        ..certified.note.clone()
+        ..certified.note
     };
 
     assert!(Rung::from_note(&scratch, 4.0, 4.0, 1.0, 0.0).is_err());
@@ -257,7 +257,7 @@ fn a_certificate_supplies_the_epsilon_of_its_own_decomposition() {
 
         stable: Stable::Open,
 
-        ..certified.note.clone()
+        ..certified.note
     };
 
     assert!(Rung::from_note(&candidate_bound, 4.0, 4.0, 1.0, 0.0).is_err());

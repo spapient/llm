@@ -318,7 +318,7 @@ fn verify_checks_the_bytes_without_building_the_snapshot() {
     let error = Snapshot::verify(&bytes[..Format::HEADER_BYTES]).expect_err("只有一个头");
     assert!(error.to_string().contains("截断"), "{error}");
 
-    let mut foreign = bytes.clone();
+    let mut foreign = bytes;
     foreign[0] = b'X';
     assert!(Snapshot::verify(&foreign).is_err(), "魔数不符也要拦下");
 }

@@ -46,7 +46,7 @@ fn ledger_evidence_table(rows: &[BackendRow]) -> String {
         let meta = &row.profile.meta;
         table = table.row([
             format!("`{}`", meta.vendor),
-            meta.id.to_string(),
+            meta.id.clone(),
             meta.emit.to_string(),
             format!("{} {}", meta.tool, meta.tool_ver),
             row.basis.to_string(),
@@ -62,7 +62,7 @@ fn ledger_evidence_table(rows: &[BackendRow]) -> String {
 /// 原语 × 后端对照表：一格一条供给，多条用 `<br>` 叠在格里。
 fn ledger_prim_matrix(rows: &[BackendRow]) -> String {
     let mut head = vec![String::from("原语")];
-    head.extend(rows.iter().map(|row| row.profile.meta.vendor.to_string()));
+    head.extend(rows.iter().map(|row| row.profile.meta.vendor.clone()));
     let mut table = Sheet::new(head);
     for prim in Prim::ALL {
         let mut cells = vec![format!("`{prim}`")];
@@ -145,7 +145,7 @@ pub(super) fn ledger_primitives(profile: &Profile) -> String {
             .as_ref().map_or_else(|| "—".to_string(), |witness| format!("{}({})", witness.file, witness.func));
         table = table.row([
             format!("`{}`", have.prim),
-            have.impl_name.to_string(),
+            have.impl_name.clone(),
             have.grade.to_string(),
             witness,
         ]);

@@ -540,8 +540,8 @@ pub(crate) fn bind_weights<E: Executor>(
             Error::new(Code::Missing, format!("参数表缺权重条目 `{entry}`")).with(SITE)
         })?;
         let buf = match block {
-            Block::Dense(values) => Buf::F32(values.to_vec()),
-            Block::Packed(bytes) => Buf::U8(bytes.to_vec()),
+            Block::Dense(values) => Buf::F32(values.clone()),
+            Block::Packed(bytes) => Buf::U8(bytes.clone()),
         };
         executor.bind(*id, buf);
     }

@@ -94,7 +94,7 @@ fn weighted_rejects_illegal_weights_at_construction() {
 
     let wrong_len = LoaderConfig {
         weights: Some(vec![1.0, 2.0]),
-        ..config.clone()
+        ..config
     };
     assert_eq!(
         Loader::with_config(&tokens, wrong_len).unwrap_err().code(),
@@ -104,7 +104,7 @@ fn weighted_rejects_illegal_weights_at_construction() {
 
     let negative = LoaderConfig {
         weights: Some(vec![1.0, -1.0, 1.0, 1.0]),
-        ..config.clone()
+        ..config
     };
     assert_eq!(
         Loader::with_config(&tokens, negative).unwrap_err().code(),
@@ -114,7 +114,7 @@ fn weighted_rejects_illegal_weights_at_construction() {
 
     let nan = LoaderConfig {
         weights: Some(vec![f32::NAN; 4]),
-        ..config.clone()
+        ..config
     };
     assert_eq!(
         Loader::with_config(&tokens, nan).unwrap_err().code(),

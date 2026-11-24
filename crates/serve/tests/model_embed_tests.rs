@@ -19,7 +19,7 @@ fn an_embedding_single_step_matches_the_reference() {
         Embedding::new("tok_emb", vocab, dim, 1).expect("层"),
     )])
     .expect("栈");
-    let params = params_of(&[("tok_emb.weight", table.clone())]);
+    let params = params_of(&[("tok_emb.weight", table)]);
 
     forward_close(stack, params, &idx, &reference);
 }
@@ -44,7 +44,7 @@ fn an_embedding_then_projection_matches_the_reference() {
 
     let stack = embed_projection_stack(vocab, dim);
     let params = params_of(&[
-        ("tok_emb.weight", table.clone()),
+        ("tok_emb.weight", table),
         ("proj.weight", w.to_vec()),
     ]);
 
@@ -108,7 +108,7 @@ fn predict_logits_from_an_embedding_sequence_match_the_reference() {
 
     let stack = embed_projection_stack(vocab, dim);
     let params = params_of(&[
-        ("tok_emb.weight", table.clone()),
+        ("tok_emb.weight", table),
         ("proj.weight", w.to_vec()),
     ]);
 
@@ -138,7 +138,7 @@ fn logits_batch_runs_two_sequences_through_the_flat_projection_chain() {
     let b = Sequence::new(1, &[5u32], 2, 16, Stream::new(0)).expect("序列 B");
 
     let rows = model
-        .logits_batch(&[a.clone(), b.clone()], &mut batch)
+        .logits_batch(&[a, b], &mut batch)
         .expect("整批前向");
     assert_eq!(rows.len(), 2, "两行 logits 与输入切片一一对应");
 

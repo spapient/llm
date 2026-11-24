@@ -150,7 +150,7 @@ fn future_tokens_cannot_reach_the_past() {
             "t = {t} 看见了未来"
         );
     }
-    let mut past = key.clone();
+    let mut past = key;
     past[0] = 42.0;
     let shifted = BlockTable::new(&past, &value, seq, dim, CSA_M, 2).expect("合法表");
     assert_ne!(

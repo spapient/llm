@@ -108,7 +108,7 @@ fn slot_value(
     combo
         .get(name)
         .map(|value| value.to_string())
-        .or_else(|| op.layout(name).map(|spec| spec.as_str().to_string()))
+        .or_else(|| op.layout(name).map(|spec| spec.as_str()))
         .or_else(|| op.const_value(name).map(str::to_string))
         .ok_or_else(|| {
             error(

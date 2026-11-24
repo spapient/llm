@@ -311,7 +311,7 @@ fn walk_declarations(
                         if let Some(child) = child_file(file, &name, pending.as_deref()) {
                             // 非内联模块的实体是子文件（`#[path]` / 同名 `.rs` / 目录 `mod.rs`）：
                             // 父路径回填到实体，声明处骨架只在找不到子文件时兜底。
-                            out.insert(joined.clone(), child.clone());
+                            out.insert(joined, child.clone());
                             walk_declarations(&child, &path, out);
                         }
                     }

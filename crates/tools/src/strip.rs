@@ -41,7 +41,7 @@ fn modules(src: &str, only_test: bool) -> Result<Vec<Mount>> {
     let tokens = parse(src)?;
     let mut out = Vec::new();
     split_items(&tokens, |attr, item| {
-        if let Some(mount) = declared(item, only_test, attr.is_test, attr.path.clone()) {
+        if let Some(mount) = declared(item, only_test, attr.is_test, attr.path) {
             out.push(mount);
         }
     });

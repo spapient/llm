@@ -171,7 +171,7 @@ fn standard_pipeline_is_idempotent() {
         "out",
         Expr::Neg(Box::new(Expr::Neg(Box::new(literal(2.0))))),
     );
-    let once = Pipeline::standard().run(kernel.clone()).expect("once");
+    let once = Pipeline::standard().run(kernel).expect("once");
     let twice = Pipeline::standard().run(once.clone()).expect("twice");
     assert_eq!(once, twice);
 }

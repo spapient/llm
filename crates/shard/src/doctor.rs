@@ -184,11 +184,11 @@ fn op_info(op: &OpDecl) -> diagnostic::Result<OpInfo> {
 /// 判据：用的是哪份档案、它指向哪条工具链；不回答"这份档案在本机跑不跑得动"（证据另报）。
 fn device_info(profile: &Profile) -> DeviceInfo {
     DeviceInfo {
-        vendor: profile.meta.vendor.to_string(),
-        id: profile.meta.id.to_string(),
+        vendor: profile.meta.vendor.clone(),
+        id: profile.meta.id.clone(),
         emit: profile.meta.emit.to_string(),
-        tool: profile.meta.tool.to_string(),
-        tool_ver: profile.meta.tool_ver.to_string(),
+        tool: profile.meta.tool.clone(),
+        tool_ver: profile.meta.tool_ver.clone(),
         toolchain: toolchain::probe_declared(&profile.meta.tool).map(|tool| tool.id()),
         flags: profile.flags.join(" "),
         spaces: [

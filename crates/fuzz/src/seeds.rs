@@ -58,7 +58,6 @@ pub fn frame() -> Vec<u8> {
     )
     .frame()
     .expect("编码合法帧")
-    .to_vec()
 }
 
 /// 与目标无关的边界输入：空串、零字节、上界字节。

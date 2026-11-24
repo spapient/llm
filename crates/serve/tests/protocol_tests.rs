@@ -81,7 +81,7 @@ fn trailing_bytes_belong_to_the_next_frame() {
     let second = Envelope::new(Version::current(), Kind::Done, b"bye".to_vec())
         .frame()
         .expect("编码");
-    let mut stream = first.clone();
+    let mut stream = first;
     stream.extend_from_slice(&second);
 
     assert_eq!(Envelope::parse(&stream).expect("只解析第一帧"), envelope());

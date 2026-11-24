@@ -7,8 +7,8 @@ fn logits_batch_default_runs_each_sequence_in_input_order() {
     let mut batch = Batch::new(pager);
     let first = Sequence::new(7, &[2u32], 2, 16, Stream::new(0)).expect("序列");
     let second = Sequence::new(3, &[2u32], 2, 16, Stream::new(0)).expect("序列");
-    batch.admit(first.clone()).expect("准入");
-    batch.admit(second.clone()).expect("准入");
+    batch.admit(first).expect("准入");
+    batch.admit(second).expect("准入");
     let sequences: Vec<Sequence> = batch.sequences().to_vec();
 
     let mut model = OrderProbe { calls: Vec::new() };

@@ -239,8 +239,8 @@ fn blank(run: &Run<'_>, tool: Option<&toolchain::Toolchain>) -> Verified {
         device: String::new(),
         // 缺省是语义门：`Parallel` 必须由确实跑通的并行程序写进去，不能靠缺省拿到。
         channel: Channel::Harness,
-        vendor: run.profile.meta.vendor.to_string(),
-        id: run.profile.meta.id.to_string(),
+        vendor: run.profile.meta.vendor.clone(),
+        id: run.profile.meta.id.clone(),
         variant: String::new(),
         tile: String::new(),
         shapes: Vec::new(),

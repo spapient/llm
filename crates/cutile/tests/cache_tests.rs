@@ -92,7 +92,7 @@ fn kernel_identity_fields_change_the_hash() {
     let mut other = key();
     other.impl_name = "dp4a".to_string();
     assert_ne!(key().hash(), other.hash(), "换实现必须换键");
-    other.impl_name = key().impl_name.clone();
+    other.impl_name = key().impl_name;
     other.block = "32".to_string();
     assert_ne!(key().hash(), other.hash(), "换块宽必须换键");
 }
@@ -318,11 +318,11 @@ fn a_different_harness_compiler_or_dtype_is_a_different_artifact() {
     let base = ArtifactKey::keyed(hex.clone(), "cc", key.flags_hash, harness);
     let same = ArtifactKey::keyed(hex.clone(), "cc", key.flags_hash, harness);
     let clang = ArtifactKey::keyed(hex.clone(), "clang", key.flags_hash, harness);
-    let shaped = ArtifactKey::keyed(hex.clone(), "cc", key.flags_hash, other);
+    let shaped = ArtifactKey::keyed(hex, "cc", key.flags_hash, other);
     assert_eq!(base.hex(), same.hex(), "同一输入得到同一产物");
     assert_ne!(base.hex(), clang.hex(), "换编译器的代码生成不同");
     assert_ne!(base.hex(), shaped.hex(), "主函数换了不能复用");
-    let mut retyped = key.clone();
+    let mut retyped = key;
     retyped.dtype = DTypeSet::of([DType::U8]);
     let dtype = ArtifactKey::keyed(retyped.hex(), "cc", retyped.flags_hash, harness);
     assert_ne!(base.hex(), dtype.hex(), "输出精度变了必须换键");

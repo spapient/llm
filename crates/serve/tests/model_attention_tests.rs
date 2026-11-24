@@ -218,7 +218,7 @@ fn logits_batch_runs_two_sequences_with_unequal_history_lengths() {
     batch.write_kv(1, 0, &row_b0).expect("种子历史 B 首行");
     batch.write_kv(1, 1, &row_b1).expect("种子历史 B 次行");
 
-    let sequences = [a.clone(), b.clone()];
+    let sequences = [a, b];
     let histories = [
         (hist_k_a.as_slice(), hist_v_a.as_slice()),
         (hist_k_b.as_slice(), hist_v_b.as_slice()),
