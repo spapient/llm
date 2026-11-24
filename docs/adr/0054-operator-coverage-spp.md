@@ -1,6 +1,6 @@
 # 0054：算子/内核覆盖——骨架族泛型 + 目录行表 + 能力表，覆盖对齐 Burn 而边际实现压到一行
 
-- 状态：P1 切片已落地（f32 三骨架 + 首批 5 个不可微算子 + 能力表骨架）；完整元素档 `K` 泛型、五新族与算子级 bwd 列后续批次，落地进度以代码与门禁为准
+- 状态：P1 切片已落地（f32 三骨架 + 首批 5 个不可微算子 + 能力表骨架 + sign/recip 两个一元算子；unary/reduce 执行侧已挂接元素档 `K`）；完整元素档贯通、五新族与算子级 bwd 列后续批次，落地进度以代码与门禁为准
 - 日期：2026-11-24
 - 相关：[0050](0050-operator-base.md)（`Operator` 基座六族语义）、[0053](0053-typed-operators.md)（清单驱动注册表与类型化 API 面）、[0018](0018-dtype-single-source.md)（精度单一事实源）、[0052](0052-execution-platform-contract.md)（六平台执行合同）、[0005](0005-annotations-as-contracts.md)（注解即契约）、[0013](0013-dense-projection-operator.md)（加算子只加数据）
 
@@ -95,16 +95,17 @@ Burn 的覆盖单位是**后端 trait 方法 + 每后端实现**：ADR 0053 已�
 - **首批 5 个不可微 f32 算子全登记**：`abs_f32`/`neg_f32`/`square_f32`（unary）、`remainder_f32`（elementwise）、`reduce_prod_f32`（reduce）。每个算子七个登记点齐全（骨架模块与宏调用、`kernel.rs` re-export、`lib.rs` 根导出、`registry.rs` 字典序清单、`train/kernel.rs` 适配 fn 与 `KERNELS` 表、prof `.toml` 档案、`.k` 模板）。五者均 `DIFFERENTIABLE=false`，不进 `FORMULAS` 目录即可前向使用，与 S12「反向仅留标记位、bwd 族另案」一致。
 - **能力表骨架（闭集收口）**：`prof/src/capability.rs` 提供 `Capability { skeleton: Skeleton, dtype: DType }` 行表、`CAPABILITIES` 与 `supports(skeleton, dtype)` 查表。骨架键取 `Skeleton` 闭集枚举而非自由字符串：族名只有声明层一张表可解析，编译期堵死悬空族名（旧版 `&'static str` 键曾登记闭集外的 `"unary"`，一元/二元同归 `Elementwise`）。当前登记 `Elementwise`/`Reduce`/`Gemm` × `F32` 三行；`Scan` 族与低比特档实现覆盖/取值通道未核通，不凭目录名单签发为能力。backend 第三维按 ADR 0050 边界留注释占位（L2 不认识设备字面量），P3 接 `Executor` 对账后扩列。含三则单测：已登记 f32 三族可查、未知族/档判缺项、表内骨架键回指闭集全量对账。
 - **模板减码**：抽共享 `unary_fn.k`（`{{unexpr}}` 表达式槽位）承接三个一元算子；`remainder_f32` 复用现成 `binary.k`（`binop="%"`）；`reduce_prod_f32` 因归约 preamble 无并行乘积原语，写独立标量折叠 `.k`，并行归约原语标 PARTIAL。
+- **S1 首批纯表达式一元算子**：`sign_f32`（三分支符号，`DIFFERENTIABLE=false`，0 点不可微）、`recip_f32`（`1.0/x`，零除域受限，`DIFFERENTIABLE=false`，0 奇异）。二者复用共享 `unary_fn.k` 模板、不新增内核文件；七落点（nn 骨架模块与宏调用、`kernel.rs` re-export、`lib.rs` 根导出、`registry.rs` 字典序行、`train/kernel.rs` 适配映射与 `KERNELS` 表行、prof `.toml` 档案、共享模板）齐全。测试分两档：全域有限算子走对拍 + 长度负例 + 饱和/重复边界且查有限性；域受限（会产 Inf/NaN）算子仅对拍 + 长度负例。Rust 参考侧与 C 模板同用三分支显式实现，避免 `f32::signum` 在零点口径分叉。落地后目录 `.toml`、registry 清单、train `KERNELS` 表三表各 59 条，编译期名字/顺序双断言兜底；cutile 几何可测融合对仍为 1（未新增可桥接邻近对，基线不变）。
 
 ### 裁决与边界
 
-- **骨架完整泛型到元素档 `K` 本轮不强推**。阻塞点不在 tensor 侧——`View<'a, K: Element>` 已泛型；而在 prof L2 取值通道。仓内已接受「执行侧泛型 `K`、对拍侧 f32 归一」的分层先例：`Gemm` 骨架用关联类型 `type Elem: Element`（执行侧泛型），`reference` 仍归一返回 `Vec<f32>`；三族 `Unary`/`Binary`/`Reduce` 尚未走到这一层。贯通完整 `K` 泛型需同时解除三个硬点：① `Model.sample`/`reference` 是裸 `fn` 指针槽（erased 装配槽，签名必须具体，存不下泛型结果）；② `Values` 档位闭集仅 `F32(Vec<f32>)`/`U8(Vec<u8>)`；③ 对拍下游（`need.rs`/`schema.rs`/cutile `reference.rs`）按 f32 归一，阈值与桥接宽度未按元素档分档。此外 `operator_via!` 的 `DTYPE` 仍硬编 `DType::F32`，算子级档参数化缺口列 P2。一次贯通会牵动整条取值通道与 52 个算子 reference、verify 阈值与桥接宽度，属大重构，单列后续批次；本轮先在 f32 三骨架内补算子，不动 prof 通道。
+- **骨架元素档 `K` 分层落地进度**。仓内先例是「执行侧泛型 `K`、对拍侧 f32 归一」：`Gemm` 用关联类型 `type Elem: Element`。本轮 `Unary`/`Reduce` 已按同构分层挂接执行侧 `K`：trait 声明 `type K: Element`，执行侧方法 `apply`/`start`/`fold` 按 `Self::K` 抽象，另设 `apply_f32`/`start_f32`/`fold_f32` 作对拍通道归一入口（既有档与执行侧同一闭包）；宏实例填 `type K = f32`，`reference` 仍返回 `Vec<f32>`，`forward` 走 `View<'_, U::K>`。`Binary` 族仍钉 f32，未泛型化。贯通完整 `K` 泛型仍卡在三个硬点：① `Model.sample`/`reference` 是裸 `fn` 指针槽（erased 装配槽，签名必须具体，存不下泛型结果）；② `Values` 档位闭集仅 `F32(Vec<f32>)`/`U8(Vec<u8>)`；③ 对拍下游（`need.rs`/`schema.rs`/cutile `reference.rs`）按 f32 归一，阈值与桥接宽度未按元素档分档。此外 `operator_via!` 的 `DTYPE` 仍硬编 `DType::F32`，算子级档参数化缺口列 P2。一次贯通会牵动整条取值通道与 52 个算子 reference、verify 阈值与桥接宽度，属大重构，单列后续批次；本轮先在 f32 三骨架内补算子，不动 prof 通道。
 - **列 P2/PARTIAL**：Compare/Logical/Structure/ReduceDim/Sample 五新族；mean/argmin/采样分布；算子级 bwd 族；跨后端真内核覆盖。
 - **cutile 融合绊线基线更新**：新增 `abs_f32` 落入 `add_f32` 邻近窗口，凑出首条几何可测融合 `abs_f32 -> add_f32`（同秩同长，生产者产出经 `run_fused` 桥进消费者输入槽；oracle 链路由 `the_fused_oracle_bridges_every_seam...` 独立对拍背书）。参考测试快照由 `testable == 0` 更新为 `testable == 1`，注释标明该条数随注册表构成漂移、再增 elementwise 邻近对或纳入形状代数时须逐条复核 oracle。
 
 ### 门禁状态与未测
 
-- 截至回写：`llm-prof` 164 + 56 + 3 passed（1 ignored）、`llm-nn` 483 + 2 passed（4 ignored）、`llm-train` 231 + 5 passed、`cutile` 139 + 2 passed、`llm-serve` 197 passed。注册表与算子目录的编译期名字/顺序双断言通过；能力表三则对账测试通过。
+- 截至回写：`llm-prof` 164 + 56 + 3 passed（1 ignored）、`llm-nn` 491 + 2 passed（4 ignored）、`llm-train` 231 + 5 passed、`cutile` 139 + 2 passed、`llm-serve` 197 passed、`llm-annotation` 48 + 6 passed；全量 `--workspace --exclude llm-fuzz` 无 FAILED，`clippy --workspace --exclude llm-fuzz --all-targets` 无 error/warning。注册表与算子目录的编译期名字/顺序双断言通过；能力表三则对账测试通过。
 - `llm-train`/`llm-serve` 经传递依赖链上的 cutile，曾处于并行线「子节点抽象回退」中途（`children`/`map_children` 签名与调用方暂不同步、doctest rlib 路径陈旧的中间态）；本轮回切后各 crate 单测与 doctest 复跑均通过，不在中间态上签发对拍结论。
 - 净降行数与文件数、jscpd 重复度降幅：**待实测**，先以现有 nn/tensor/prof 基线扫描后定值，不在落地前写未测降幅。
 

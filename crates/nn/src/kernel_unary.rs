@@ -3,12 +3,22 @@
 use crate::formula::FormulaOwner;
 use crate::model::{AxisRole, AxisSpec, Buf, Cost, Sample, ShapeCtx, Values};
 use diagnostic::{Code, Error};
-use tensor::View;
+use tensor::{Element, View};
 
 /// 逐元素一元算子随语义变化的那部分。
+///
+/// 元素档 [`K`](Unary::K) 是执行侧泛型挂接，范式同 `Gemm::Plain::Elem`：算术与前向
+/// 内核按 `K` 抽象；对拍通道（样本 / 参考 / 目录位宽）当前归一 f32，非 f32 档随取值通道
+/// 批次接入（ADR 0054 §1），不在骨架里另造类型枚举。
 pub trait Unary: FormulaOwner {
-    /// 逐元素函数：一个输入值，一个输出值。
-    fn apply(x: f32) -> f32;
+    /// 本算子的元素类型；既有档为 `f32`。
+    type K: Element;
+
+    /// 逐元素函数：一个输入值，一个输出值（执行侧，按元素档 [`K`](Self::K) 抽象）。
+    fn apply(x: Self::K) -> Self::K;
+
+    /// f32 标量核：对拍通道归一 f32 的入口；既有档与 [`apply`](Self::apply) 同一闭包。
+    fn apply_f32(x: f32) -> f32;
 
     /// 输入的确定性取值：默认线性夹具 `−4.0 + 0.25·i`；需要不同取值时在实现里覆盖。
     fn input(len: usize) -> Vec<f32> {
@@ -57,18 +67,19 @@ pub fn sample<U: Unary>(len: usize, _: usize) -> Sample {
     }
 }
 
-/// 标量参考：逐元素应用 [`Unary::apply`]。
+/// 标量参考：逐元素应用 f32 标量核 [`Unary::apply_f32`]。样本通道当前只有 f32，
+/// 非 f32 档随取值通道批次接入。
 pub fn reference<U: Unary>(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
     let a = sample.f32("a")?;
-    Ok(a.iter().map(|x| U::apply(*x)).collect())
+    Ok(a.iter().map(|x| U::apply_f32(*x)).collect())
 }
 
-/// 内核本体：结果写进调用方给的缓冲。
+/// 内核本体：结果写进调用方给的缓冲，按元素档 [`Unary::K`] 抽象。
 ///
 /// # Errors
 ///
 /// 输入与输出等长，否则返回说明。
-pub fn forward<U: Unary>(a: View<'_, f32>, out: &mut [f32]) -> diagnostic::Result<()> {
+pub fn forward<U: Unary>(a: View<'_, U::K>, out: &mut [U::K]) -> diagnostic::Result<()> {
     let a = a.as_slice();
     if a.len() != out.len() {
         return Err(Error::new(
@@ -105,7 +116,14 @@ macro_rules! unary_f32 {
         );
 
         impl $crate::unary::Unary for $name {
-            fn apply(x: f32) -> f32 {
+            type K = f32;
+
+            fn apply(x: Self::K) -> Self::K {
+                const APPLY: fn(f32) -> f32 = $apply;
+                APPLY(x)
+            }
+
+            fn apply_f32(x: f32) -> f32 {
                 const APPLY: fn(f32) -> f32 = $apply;
                 APPLY(x)
             }
@@ -481,6 +499,60 @@ pub mod square_f32 {
             assert_eq!(out[2], 4.0, "(-2)²");
         },
         |x| x * x,
+        false
+    );
+}
+
+pub mod sign_f32 {
+    //! 逐元素符号：`y[n] = sign(a[n])`（正 → 1、负 → −1、零 → 0）。
+
+    crate::unary_f32!(
+        Sign,
+        SignF32,
+        "sign_f32",
+        unary_op_tests,
+        {
+            // 三个锚点：负区取 −1、零点、正区取 1。
+            let mut out = [0.0; 3];
+            assert!(
+                forward(tensor::View::one(&[-3.0, 0.0, 2.0]), &mut out).is_ok(),
+                "等长"
+            );
+            assert_eq!(out[0], -1.0, "负区符号");
+            assert_eq!(out[1], 0.0, "零点");
+            assert_eq!(out[2], 1.0, "正区符号");
+        },
+        |x| if x > 0.0 {
+            1.0
+        } else if x < 0.0 {
+            -1.0
+        } else {
+            0.0
+        },
+        false
+    );
+}
+
+pub mod recip_f32 {
+    //! 逐元素倒数：`y[n] = 1 / a[n]`；零输入按 IEEE 得无穷（样本夹具避开 0）。
+
+    crate::unary_f32!(
+        Recip,
+        RecipF32,
+        "recip_f32",
+        unary_pair_tests,
+        {
+            // 三个锚点：整数倒数、分数倒数；不含 0，避免零除语义分歧。
+            let mut out = [0.0; 3];
+            assert!(
+                forward(tensor::View::one(&[2.0, 4.0, 0.5]), &mut out).is_ok(),
+                "等长"
+            );
+            assert_eq!(out[0], 0.5, "1/2");
+            assert_eq!(out[1], 0.25, "1/4");
+            assert_eq!(out[2], 2.0, "1/0.5");
+        },
+        |x| 1.0 / x,
         false
     );
 }

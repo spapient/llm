@@ -3,15 +3,24 @@
 use crate::formula::FormulaOwner;
 use crate::model::{Buf, Cost, Sample, ShapeCtx, Values};
 use diagnostic::{Code, Error};
-use tensor::View;
+use tensor::{Element, View};
 
 // 单轴定义与形状投影复用一元骨架（与 dequant / softmax / rmsnorm / rope / scan 同一模式）。
 pub use crate::unary::{AXES, project_shape};
 
 /// 逐元素二元算子随语义变化的那部分。
+///
+/// 元素档 [`K`](Binary::K) 是执行侧泛型挂接，范式同 `Gemm::Plain::Elem`：算术与前向
+/// 内核按 `K` 抽象；对拍通道归一 f32，非 f32 档随取值通道批次接入（ADR 0054 §1）。
 pub trait Binary: FormulaOwner {
-    /// 逐元素运算：两个输入值，一个输出值。
-    fn apply(x: f32, y: f32) -> f32;
+    /// 本算子的元素类型；既有档为 `f32`。
+    type K: Element;
+
+    /// 逐元素运算：两个输入值，一个输出值（执行侧，按元素档 [`K`](Self::K) 抽象）。
+    fn apply(x: Self::K, y: Self::K) -> Self::K;
+
+    /// f32 标量核：对拍通道归一 f32 的入口；既有档与 [`apply`](Self::apply) 同一闭包。
+    fn apply_f32(x: f32, y: f32) -> f32;
 
     /// 第一路输入的确定性取值：默认线性夹具 `−1.0 + 0.5·i`；需要不同取值时覆盖。
     fn input_a(len: usize) -> Vec<f32> {
@@ -54,7 +63,7 @@ pub fn sample<B: Binary>(len: usize, _: usize) -> Sample {
     }
 }
 
-/// 标量参考：逐元素应用 [`Binary::apply`]，不依赖任何设备。
+/// 标量参考：逐元素应用 f32 标量核 [`Binary::apply_f32`]，不依赖任何设备。
 pub fn reference<B: Binary>(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
     let a = sample.f32("a")?;
     let b = sample.f32("b")?;
@@ -66,19 +75,19 @@ pub fn reference<B: Binary>(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
     }
     Ok(a.iter()
         .zip(b.iter())
-        .map(|(x, y)| B::apply(*x, *y))
+        .map(|(x, y)| B::apply_f32(*x, *y))
         .collect())
 }
 
-/// 内核本体：结果写进调用方给的缓冲，不自带分配。
+/// 内核本体：结果写进调用方给的缓冲，按元素档 [`Binary::K`] 抽象，不自带分配。
 ///
 /// # Errors
 ///
 /// 两个输入等长、且与输出等长，否则返回说明。
 pub fn forward<B: Binary>(
-    a: View<'_, f32>,
-    b: View<'_, f32>,
-    out: &mut [f32],
+    a: View<'_, B::K>,
+    b: View<'_, B::K>,
+    out: &mut [B::K],
 ) -> diagnostic::Result<()> {
     let a = a.as_slice();
     let b = b.as_slice();
@@ -121,7 +130,14 @@ macro_rules! binary_f32 {
         );
 
         impl $crate::elementwise::Binary for $name {
-            fn apply(x: f32, y: f32) -> f32 {
+            type K = f32;
+
+            fn apply(x: Self::K, y: Self::K) -> Self::K {
+                const APPLY: fn(f32, f32) -> f32 = $apply;
+                APPLY(x, y)
+            }
+
+            fn apply_f32(x: f32, y: f32) -> f32 {
                 const APPLY: fn(f32, f32) -> f32 = $apply;
                 APPLY(x, y)
             }

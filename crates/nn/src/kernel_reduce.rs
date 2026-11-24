@@ -3,15 +3,27 @@
 use crate::formula::FormulaOwner;
 use crate::model::{AxisRole, AxisSpec, Buf, Cost, Sample, ShapeCtx, Values};
 use diagnostic::{Code, Error};
-use tensor::View;
+use tensor::{Element, View};
 
 /// 归约算子随语义变化的部分。
+///
+/// 元素档 [`K`](Reduce::K) 是执行侧泛型挂接，范式同 `Gemm::Plain::Elem`：折叠与前向
+/// 内核按 `K` 抽象；对拍通道归一 f32，非 f32 档随取值通道批次接入（ADR 0054 §1）。
 pub trait Reduce: FormulaOwner {
-    /// 累加初值。
-    fn start() -> f32;
+    /// 本算子的元素类型；既有档为 `f32`。
+    type K: Element;
 
-    /// 一次折叠：把当前累加值与下一个元素合并。
-    fn fold(acc: f32, x: f32) -> f32;
+    /// 累加初值（执行侧）。
+    fn start() -> Self::K;
+
+    /// 一次折叠：把当前累加值与下一个元素合并（执行侧）。
+    fn fold(acc: Self::K, x: Self::K) -> Self::K;
+
+    /// f32 标量初值：对拍通道归一 f32 的入口；既有档与 [`start`](Self::start) 同值。
+    fn start_f32() -> f32;
+
+    /// f32 折叠：对拍通道归一 f32 的入口；既有档与 [`fold`](Self::fold) 同一闭包。
+    fn fold_f32(acc: f32, x: f32) -> f32;
 
     /// 确定性输入：默认线性夹具 `−1.0 + 0.5·i`；需要不同取值时在实现里覆盖。
     fn input(len: usize) -> Vec<f32> {
@@ -66,22 +78,22 @@ pub fn sample<R: Reduce>(len: usize, _: usize) -> Sample {
     }
 }
 
-/// 标量参考：折叠整个输入。
+/// 标量参考：用 f32 折叠整个输入（对拍通道归一 f32）。
 pub fn reference<R: Reduce>(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
     let a = sample.f32("a")?;
-    let mut acc = R::start();
+    let mut acc = R::start_f32();
     for x in a {
-        acc = R::fold(acc, *x);
+        acc = R::fold_f32(acc, *x);
     }
     Ok(vec![acc])
 }
 
-/// 内核本体：结果写进调用方给的单元素缓冲。
+/// 内核本体：结果写进调用方给的单元素缓冲，按元素档 [`Reduce::K`] 抽象。
 ///
 /// # Errors
 ///
 /// 输出缓冲不是单元素时返回说明。
-pub fn forward<R: Reduce>(a: View<'_, f32>, out: &mut [f32]) -> diagnostic::Result<()> {
+pub fn forward<R: Reduce>(a: View<'_, R::K>, out: &mut [R::K]) -> diagnostic::Result<()> {
     let a = a.as_slice();
     if out.len() != 1 {
         return Err(Error::new(
@@ -114,11 +126,22 @@ macro_rules! reduce_f32 {
         );
 
         impl $crate::reduce::Reduce for $name {
-            fn start() -> f32 {
+            type K = f32;
+
+            fn start() -> Self::K {
                 $start
             }
 
-            fn fold(acc: f32, x: f32) -> f32 {
+            fn fold(acc: Self::K, x: Self::K) -> Self::K {
+                const FOLD: fn(f32, f32) -> f32 = $fold;
+                FOLD(acc, x)
+            }
+
+            fn start_f32() -> f32 {
+                $start
+            }
+
+            fn fold_f32(acc: f32, x: f32) -> f32 {
                 const FOLD: fn(f32, f32) -> f32 = $fold;
                 FOLD(acc, x)
             }

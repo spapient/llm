@@ -1,0 +1,12 @@
+# 逐元素符号：y[n] = sign(a[n])（正 → 1、负 → −1、零 → 0）。
+# 一元骨架，与 gelu 同布局/needs/变体，只差右值表达式。
+base = "gelu_f32"
+
+[op]
+name     = "sign_f32"
+stem     = "unary_fn"
+skeleton = "elementwise"
+summary  = "y[n] = sign(a[n])"
+
+[consts]
+unexpr = "x > 0.0f ? 1.0f : x < 0.0f ? -1.0f : 0.0f"

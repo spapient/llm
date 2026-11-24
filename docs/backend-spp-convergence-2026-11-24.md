@@ -6,8 +6,8 @@
 - 2026-11-24 收口实测：cutile 中间态已闭合——`Expr::children()` 返回自有 `Vec<&Expr>`（不再构造悬垂临时切片），遍历与按元数重建抽到独立 `expr.rs`，发射侧 `call_name` + `children()` 无逃逸借用；core 链 `cutile / annotation / engine / storage / nn / serve` 全量测试与 `clippy -D warnings`、`fmt --check` 绿。E0515/E0599/E0308 均在清 `target/debug/deps` 陈旧产物后复测排除。
 - 2026-11-24 复核实测（03:22，干净重建口径）：core 链门禁复测全绿——engine 100 lib + 3 doc、serve 197 + 3、cutile 139 + 2、annotation 48 + 6 + 2 ignored、storage 40 + 1；`clippy --all-targets -D warnings` 对 engine/serve/cutile/annotation/storage 零告警，`fmt --all --check` 干净。
 - 本轮收口裁决（泛型 / 注解 / 配置化优先，减重复代码）：
-  - 执行缝 `Executor`：`E: Executor` 泛型基座与 `Trace<E>` 装饰器已成立；绑取表面现状为 f32 / bytes 双路四签名（`bind_f32/bind_bytes/fetch_f32/fetch_bytes`）。合并为单配置路（`bind(id, Buf)` / `fetch(id) -> &Buf`，lane 标签复用 `storage::LaneBuf`）属可减码方向，但牵动 engine trait + cpu 实现 + serve 装配/模型 + 两处测试共 6 文件 32 处调用点，且该文件正是并行工作流在途回退对象（见 §1 R1 落地状态），单写者认领前不重放，避免覆盖并行线未提交改动（N20）。
-  - nn 三骨架（`unary / elementwise / reduce`）：算子声明、样本夹具、注解别名已由 `unary_f32 / binary_f32 / reduce_f32` 宏配置展开，新增一族只加一次调用；`View<'_, f32>` 元素档绑定是 ADR-0054 广度批次（比较 / 逻辑 / 位运算、进阶归约、采样、排序）的前置泛型，拆元素 trait 会牵动 57 算子目录、样本与 `#[model]` 契约，不在本轮 core 收口范围。
+  - **执行缝 `Executor` 单配置路已落地（R1.1，09:30）**：`E: Executor` 泛型基座与 `Trace<E>` 装饰器成立；原 f32 / bytes 双路四签名（`bind_f32/bind_bytes/fetch_f32/fetch_bytes`）合并为单配置路 `bind(id, Buf)` / `fetch(id) -> &Buf`，lane 标签复用既有 `storage::LaneBuf`，trait / `Trace` / `VacantExecutor` / `CpuExecutor` 与 serve 装配、模型、engine/serve 测试同步改完；全仓 check、clippy `-D warnings`、fmt 干净，engine/serve 测试绿。Metal 边界自有 `bind_bytes(id, len)` 分配口未并入 trait（ADR-0035 FFI 岛），走 trait 默认拒接位。
+  - nn 三骨架（`unary / elementwise / reduce`）：算子声明、样本夹具、注解别名已由 `unary_f32 / binary_f32 / reduce_f32` 宏配置展开，新增一族只加一次调用；本轮五处手写线性夹具闭包（unary×2、elementwise×2、rmsnorm×1）复用 `model::linear(len, step, base)` 配置助手；带取模/采样语义的夹具保留。`View<'_, f32>` 元素档绑定仍是 ADR-0054 广度批次前置泛型，拆元素 trait 牵动 57 算子目录、样本与 `#[model]` 契约，不在本轮 core 收口范围。
   - 量化族：`prof::quant::Row{bits,cpb,zero,table,offsets}` 编译期配置表 + `Packed<P: PackedRow, const G>` / `Format` / `Plain` 泛型骨架已就位；i2/i4/i8 三档只差一行 `Row` 常量。
 - 依据：[PROMPT-S++-AUDIT.md](PROMPT-S++-AUDIT.md)（N1–N20、P0–P7、密度预算、§7 九门、§8 性能 S++）、ADR 0025 / 0035 / 0050 / 0051 / 0052 / 0054、[backend-runtime-design.md](backend-runtime-design.md)、[parallel-spp-review-2026-11-24.md](parallel-spp-review-2026-11-24.md) §5.4。
 
@@ -236,6 +236,8 @@ tensor   1,990 行 /  7 文件 / pub  13 / 最大 tensor.rs:730        布局算
 | R3 | 待测 | | 待测 | | | ROCm/OpenCL Driver 位；Remote 传输契约；台账证据回填 | |
 | R4 | 待测 | | 待测 | | | 计时口径统一；三真机矩阵；Burn ≥1.2× 对照 | |
 | R5 | ≤96,100 | 净减 ≥5% | — | | 0 | 砍无消费者面；jscpd 抽同构；>600 清零；命名清零 | 九门全绿 |
+| R1.1（执行缝单路，2026-11-24 09:30） | 待测 | trait 4 签名→2 | 0 | 待测 | `Executor` 绑取双路合并为 `bind(id, Buf)` / `fetch(id) -> &Buf`（lane 标签复用 `storage::LaneBuf`）；`Trace` 装饰器同步减薄；serve 装配/模型与 engine、serve 测试改走单路；nn 五处手写线性夹具闭包复用 `model::linear` 配置助手 | cutile 139 / annotation 48 / engine 100+3 / storage 40+1 / nn 483+2 / serve 197+3 绿；clippy `-D warnings` 全仓零告警；fmt 干净；全仓 check 通过 |
+| R3.1（三族骨架元素泛型，2026-11-24） | 待测 | 三族 `Unary`/`Binary`/`Reduce` 挂关联类型 `type K: Element` | 0 | 待测 | 执行侧 `apply`/`fold`/`forward` 按 `Self::K` 抽象（范式同 `Gemm::Plain::Elem`）；对拍侧保留 f32 标量核 `apply_f32`/`fold_f32`/`start_f32`，`reference` 仍归一返回 `Vec<f32>`；宏内绑定 `type K = f32`，`apply` 与 `apply_f32` 同闭包；epilogue 标量表改指 `apply_f32`。未动 prof `Values`/`reference` 裸槽与对拍下游 f32 归一（列 P2） | 全仓 check 通过；nn 491+2 绿、engine 100+3、serve 197+3；clippy `-D warnings` 聚焦包零告警；fmt 干净 |
 
 ## 6. 风险与红线
 
