@@ -1,8 +1,9 @@
 # 0056：prof 真内核与 cutile DSL/IR——10 分标尺裁决、可闭合切片与冻结边界
 
 - 状态：已采纳（已闭合 `einsum` 减码拆分切片 + cutile typed IR 表驱动一元闭集与发射模块拆分；
-  CUDA prof 见证层已在 win A3000 真机对拍闭合；typed IR 元素档贯通、跨算子融合、typed IR 核接设备
-  执行与 roofline 列开放项 / PARTIAL，不以未测能力签发满分）
+  CUDA prof 见证层已在 win A3000 真机对拍闭合，设备计时通道已打通出真机读数；typed IR 元素档贯通、
+  跨算子融合、typed IR 核接设备执行、匹配口径的 roofline L3 判定与 decode 融合收益列开放项 / PARTIAL，
+  不以未测能力签发满分）
 - 日期：2026-11-24
 - 相关：[0017](0017-kernel-ast-and-ir-freeze.md)（单 kernel AST 与运行时张量 IR 冻结）、
   [0054](0054-operator-coverage-spp.md)（骨架元素档 `K` 分层与贯通硬点）、
@@ -156,17 +157,48 @@ A（类型覆盖面），这两块均受 ADR 0017 / 0054 冻结，不在本批�
 - **G2 设备执行闭环**：typed IR 替换旧模板链路，接 `Image` 与布局推导；`.k` 正文经 `shard::ir`
   桥进 vendor `Codegen::lower` 后，IR 核才能宣称设备执行。
 - **G3 多 runtime 真机对拍 + roofline**：CUDA/Ascend/ROCm/Intel/MUSA 真机证据；性能达 roofline
-  70%（L3）是 ADR 0017 解冻 L2 的条件之一。CUDA 第一站 win（`win`@192.168.0.65，A3000）已闭合：
-  当前仓已同步到该机，`llm-device` 的 nvidia 档案 18 条见证经 nvcc 真编译 + 设备执行 + 回读对拍全过
-  （`every_nvidia_witness_runs_on_the_cuda_device`，`nvcc_ready()` 在 win 判真）；本档仍是 prof
-  片段链路见证层，typed IR 核的设备执行走 G2。剩余：roofline 计时 / 达标率未测；
-  Ascend/ROCm/Intel/MUSA 设备通道本轮未探测。
+  70%（L3）是 ADR 0017 解冻 L2 的条件之一。CUDA 第一站 win（`win`@192.168.0.65，A3000）：
+  - 见证层（前批已闭合）：`llm-device` 的 nvidia 档案 18 条见证经 nvcc 真编译 + 设备执行 + 回读对拍全过
+    （`every_nvidia_witness_runs_on_the_cuda_device`，`nvcc_ready()` 在 win 判真）；本档仍是 prof
+    片段链路见证层，typed IR 核的设备执行走 G2。
+  - 设备计时通道（本批打通，confirmed）：`cutile bench --device nvidia` 在 A3000 上经
+    `device_measure → benchmark_harness(cudaEvent) → stderr ns → parse_samples` 出 p50 / GB/s /
+    GFLOP/s / 带宽达成率 / Verdict，两条 lowering 路径对拍 `max_rel_err=0.000e0`：`gemv_i4` 4096²
+    p50 0.155 ms、68.0 GB/s、216.9 GFLOP/s；`add_f32` p50 0.007 ms、7.2 GB/s，工作集 32 KiB 装入
+    FAST 48 KiB，设施自动判为缓存带宽、口径无效不参与 §16 判定。
+  - **尺子跨口径，L3 未形成有效判定**：现档案 peak 是 T600 / sm75 口径（10 SM × 64 核、128-bit、
+    160.032 GB/s、2.688 TFLOPS，`-arch=sm_75`）。A3000 真机经 deviceQuery 实测：sm86、32 SM、
+    128 FP32/SM、4096 核、192-bit、12287 MiB、L2 3 MiB；max SM 1665 MHz、mem 7001 MHz。应有峰值
+    `bw = 192/8*2*7.001e9 = 336.048 GB/s`、`fp32 = 32*128*2*1.665e9 = 13.63968 TFLOPS`。当前
+    `Catalogue::resolve` 按 vendor 名取唯一档案、`probe` 只探 CPU，无 GPU 型号指纹探测，本机落到
+    sm75 档案；用 T600 峰值除 A3000 耗时得到的达成率（`gemv_i4` 42.5%）跨口径不可比，不签 L3
+    Reached / Below。
+  - 前置开放项：① 设备指纹探测通道（读 cc / name / SM / 时钟 / 位宽）；② 同 vendor 多 profile 共享
+    同一套 `.cu` 片段（避免复制整套片段目录增码），A3000 专用 peak 档案；③ decode 链全局内存 bound
+    有效基线（默认 shape 逐点缓冲入缓存、口径无效）。Ascend/ROCm/Intel/MUSA 设备通道本轮未探测。
 - **G4 注解 / 通道配置化**：IR standard/contracted 通道选择、`#[dsl(contracted)]` 闭集配置位，
   待 G2 让前端有生产消费者后接入；走声明表，不写第二套按名分派。
 - **G5 autotune**：变体择优从链序首命中升级到实测计时选优；依赖 G3 真机计时通道。
 - **G6 表达式族扩充**：本轮已闭合一元数学 + 取整十族（见 S2）。剩余：比较 / 选择出布尔值（牵动 IR
   类型系统，须另案定布尔档）；`sign`/`recip`/`log1p`/`exp2`/`rsqrt` 等未纳入本轮闭集；超越五族的
   容差对拍通道（非逐位）待补。
+
+## L2 解冻证据对照（ADR 0017 两条件，逐项标状态）
+
+解冻 L2 须**同时**满足下列两条、且先过新 ADR；本批只补证据与基线，不实现融合 / JIT / 动态形状。
+
+- **条件① 单 kernel 真机对拍全部达 L2，且性能达 roofline 70%（L3）**
+  - *L2 对拍（部分达成，见证层）*：CUDA prof 片段见证 18/18、Metal 逐点族 31 个真机对拍
+    `max_rel_err=0`；但 typed IR 核尚未接设备执行（G2），IR 核的 L2 未达。
+  - *L3 性能（未达成）*：设备计时通道已能在 A3000 出 p50 / 吞吐读数，但 peak 尺子是 T600 sm75 口径，
+    与本机 sm86 不符，达成率跨口径不可比；尚未在匹配尺子下得出有效 70% 判定。
+- **条件② roofline 证据证明 decode 场景存在跨算子融合收益（带宽天花板被融合突破，非估算）**
+  - *未达成*：`cutile::fuse` 仅逐点-逐点（同 `extent`、只读 f32 输入），归约链 / 可写链接 / extent
+    不一致一律拒绝；无跨算子融合 pass，也无融合前后带宽 / 耗时对比测点。decode 链（rope / rmsnorm /
+    softmax / silu / attention）本批只见到串行小样本，且逐点默认 shape 缓冲入缓存、口径无效。融合收益
+    不可估，本批不写提速或突破带宽天花板的结论。
+- **前置（满足后另过新 ADR 再解冻）**：G2 typed IR 核接设备执行；设备指纹探测 + A3000 专用 peak 档案；
+  decode 链全局内存 bound 有效基线与融合前后对比测点。
 
 ## 未知与未测
 
@@ -192,8 +224,9 @@ A（类型覆盖面），这两块均受 ADR 0017 / 0054 冻结，不在本批�
   顶部无条件 `use llm_device::executor::*`，而 `executor` 模块 `#[cfg(target_os = "macos")]`，win 上编该
   目标会 `E0432`——本轮 win 只跑 lib + schedule，未编 `metal_suite`，跨平台测试装配门另案补。
   linux 云主机仍无 GPU / `nvcc` / `cargo` / 仓库副本，不能作为 CUDA 通道。
-- **性能数字待校准**：IR 优化 / 发射无耗时基线；roofline 达标率、跨算子融合收益均未实测，不在落地
-  前写提速承诺。
+- **性能数字待校准**：CUDA 设备计时通道本批已能出真机读数（见 G3），但 peak 尺子仍是 T600 口径，
+  A3000 达成率跨口径不可比；IR 优化 / 发射无独立耗时基线；roofline 70% 达标判定与跨算子融合收益均未
+  实测，不在落地前写提速承诺。
 - **超越函数精度口径未定档**：Sqrt/Exp/Ln/Sin/Cos 的 Rust `f32` 方法与 C `<math.h>` 库实现存在 ulp
   级差异，本轮只做发射文本断言，未建立容差对拍通道；逐位通道仅覆盖位级五族（Abs/Ceil/Floor/Round/Trunc）。
 - **净减生产行 / 文件数**：本轮为巨石拆分（1 文件 → 8 子模块），生产代码路径未增；净删行数目标随后续批次实测，不在此写未测降幅。einsum 新文件 jscpd 零克隆已实测。

@@ -7,6 +7,10 @@
 # 默认 features 下 harness 被 `required-features = ["engine"]` 关掉，过滤器为空匹配、不影响计数。
 
 [profile.default]
+# 失败不重试：flaky 测试要修根因而不是靠重试刷绿，重试会把确定性失败藏进偶发通过。
+retries = 0
+# 单条失败不中止其余测试：并行隔离下全量结果一次看全，避免后半程问题被首条失败掩盖。
+fail-fast = false
 # 超过 60s 仍未结束的测试标注为慢测试（只报告，不终止：关键路径会起子进程编 C/Metal）。
 slow-timeout = "60s"
 # 排除非 libtest 的 libfuzzer harness，其余 lib/集成/二进制测试照常并行运行。

@@ -365,7 +365,7 @@ fn fingerprint_separates_bpe_merge_order() {
     };
     let order_b = VocabSource {
         family: VocabFamily::Bpe,
-        pieces: pieces,
+        pieces,
         merges: vec![
             Merge {
                 left: b"b".to_vec(),

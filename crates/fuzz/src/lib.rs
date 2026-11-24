@@ -1,6 +1,6 @@
 //! 模糊测试的**契约层**：定义"被测入口"、确定性用例生成与"什么算违约"，不绑定任何具体解析器。
 //!
-//! **拥有**：[`Target`]、[`Seed`]、[`Behaviour`]、[`Finding`]、[`check`] / [`sweep`] /
+//! **拥有**：[`Target`]、[`Seed`]、[`Behaviour`]、[`Finding`]、[`check_target`] / [`sweep`] /
 //! [`sweep_all`]。**不拥有**：具体解析器（`cutile` 的模板与片段名）、语料库与进程管理
 //! （属于 CI 的 fuzz job）。**依赖**：`diagnostic`（运行时只此一个）。**被依赖**：
 //! `tests/parsers.rs`（本 crate 自己的集成测试，以 `+dev` 依赖接上 `cli` / `weights` 等
@@ -19,7 +19,7 @@
 //! 2. **结论稳定**：同一输入跑两次必须给出同样的接受/拒绝、同样的类别与消息；
 //! 3. **拒绝要有话说**：拒绝时消息为空，等于"失败了但不知道为什么"，这是诊断缺陷。
 //!
-//! 三条都由 [`check`] 核对。第 1 条靠 [`std::panic::catch_unwind`]：panic 被记成一条带
+//! 三条都由 [`check_target`] 核对。第 1 条靠 [`std::panic::catch_unwind`]：panic 被记成一条带
 //! 目标名、用例号与输入的 [`Behaviour::Panicked`] 证据，而不是让整次遍历连同已跑过的用例
 //! 一起消失。这并不与"不吞掉崩溃"矛盾——崩溃仍然被报告成 [`Finding`]，只是报告里带着"哪条
 //! 输入打死了它"。若交给驱动方自己 `catch_unwind`，每个驱动都会重写一遍证据格式，还得自己
