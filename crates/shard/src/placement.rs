@@ -14,7 +14,7 @@
 //! 本模块只产出**归属几何与权重范围计划**：不装载真实权重、不发起通信。真实切片装载接
 //! 参数表、跨进程集合通信仍受安全通道边界约束（见分账 §5.3）。
 
-use nn::{Contract, Stack};
+use nn::{Contract, Linear, Stack};
 
 use crate::plan::Plan;
 use crate::policy::ParallelConfig;
@@ -126,7 +126,7 @@ fn sharding_of(name: &str) -> Sharding {
 /// 层名里的块号：取第一个可解析为 `usize` 的点分段；没有则为非分层参数。
 ///
 /// `blk.0.q` → `0`；`tok_embeddings` → `None`。段序按名字书写顺序，不依赖固定前缀。
-fn layer_index(name: &str) -> Option<usize> {
+fn layer_idx(name: &str) -> Option<usize> {
     name.split('.')
         .filter_map(|seg| seg.parse::<usize>().ok())
         .next()
@@ -188,29 +188,12 @@ impl Assembler {
         payload: T,
     ) -> Result<Placement<T>> {
         let name = layer.name().to_string();
-        let block = layer_index(&name);
-        let held = block
-            .is_none_or(|index| index >= start && index < end);
-
+        let block = layer_idx(&name);
+        let held = block.is_none_or(|idx| idx >= start && idx < end);
         let linear = layer.linear();
-        let geo = linear.map(|linear| LinearGeo {
-            in_features: linear.in_features(),
-            out_features: linear.out_features(),
-        });
+        let geo = linear.map(Self::linear_geo);
         let rank = self.plan.tp_idx();
-
-        let (tiling, shard_shape, shard_range) = match (held, linear) {
-            (true, Some(linear)) => {
-                let parts = self.plan.topology().tp();
-                let sharding = sharding_of(&name);
-                let tiling =
-                    Tiling::new(sharding, parts, linear.out_features(), linear.in_features())?;
-                let shape = tiling.weight_shape(rank)?;
-                let range = tiling.range(rank)?;
-                (Some(tiling), Some(shape), Some(range))
-            }
-            _ => (None, None, None),
-        };
+        let (tiling, shard_shape, shard_range) = self.sharded(held, linear, &name, rank)?;
 
         Ok(Placement {
             name,
@@ -223,6 +206,36 @@ impl Assembler {
             part: rank,
             payload,
         })
+    }
+
+    /// 线性投影几何只读副本：脱离 [`nn::Linear`] 引用，供装配侧长期持有。
+    fn linear_geo(linear: &Linear) -> LinearGeo {
+        LinearGeo {
+            in_features: linear.in_features(),
+            out_features: linear.out_features(),
+        }
+    }
+
+    /// 段内投影的 TP 分片计划；段外层或非投影层三个槽位均为 `None`。
+    fn sharded(
+        &self,
+        held: bool,
+        linear: Option<&Linear>,
+        name: &str,
+        rank: usize,
+    ) -> Result<(Option<Tiling>, Option<[usize; 2]>, Option<(usize, usize)>)> {
+        match (held, linear) {
+            (true, Some(linear)) => {
+                let parts = self.plan.topology().tp();
+                let sharding = sharding_of(name);
+                let tiling =
+                    Tiling::new(sharding, parts, linear.out_features(), linear.in_features())?;
+                let shape = tiling.weight_shape(rank)?;
+                let range = tiling.range(rank)?;
+                Ok((Some(tiling), Some(shape), Some(range)))
+            }
+            _ => Ok((None, None, None)),
+        }
     }
 }
 

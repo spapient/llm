@@ -14,7 +14,7 @@ fn a_single_rank_plan_holds_the_world_and_full_layer_range() {
 }
 
 #[test]
-fn each_axis_group_keeps_the_other_two_indices_fixed() {
+fn each_axis_group_keeps_the_other_two_idxs_fixed() {
     let topology = Topology::new(2, 3, 2).expect("合法");
     // rank 2 = (tp 0, pp 1, dp 0)。
     let plan = Plan::new(topology, 2).expect("rank 在世界内");

@@ -1,7 +1,7 @@
 //! 测试约定：浮点对拍、真机门控、临时目录、随机数、位级 CRC 参考。**只作 dev-dependency**。
 //!
 //! **拥有**：
-//! - [`assert`]：结构化相等断言 [`assert::assert_eq`]，失败时给行级 diff；判定仍是 `PartialEq`，
+//! - `assert_eq`：结构化相等断言，失败时给行级 diff；判定仍是 `PartialEq`，
 //!   不引入浮点容差（浮点对拍归 [`compare`]，字节快照归 [`hash`]）；
 //! - [`compare`]：逐元素与方向判据 `approx_eq`、`close`、`assert_close`、`all_finite`、
 //!   `cosine_similarity`、`COSINE_GUARD`，以及整批相对误差口径 `max_rel_err`、`Scale`、
@@ -39,7 +39,6 @@
 
 #![deny(unsafe_code)]
 
-pub mod assert;
 pub mod compare;
 pub mod device;
 pub mod evidence;
@@ -90,7 +89,7 @@ mod l3_measure;
 #[path = "../tests/l3_ruling.rs"]
 mod l3_ruling;
 
-pub use assert::assert_eq;
+pub use similar_asserts::assert_eq;
 pub use compare::{
     COSINE_GUARD, Scale, all_finite, approx_eq, assert_close, assert_rel_with, assert_within_rel,
     close, cosine_similarity, max_rel_err,

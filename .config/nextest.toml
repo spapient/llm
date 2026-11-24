@@ -38,8 +38,10 @@ slow-timeout = { period = "60s", terminate-after = 2 }
 default-filter = '''!binary(gen_corpus) & !binary(fuzz_cli) & !binary(fuzz_http_head) & !binary(fuzz_weights_json) & !binary(fuzz_weights_safetensors) & !binary(fuzz_weights_archive) & !binary(fuzz_train_snapshot) & !binary(fuzz_serve_frames) & !binary(fuzz_wire_sealed) & !binary(fuzz_wire_leb) & !binary(fuzz_lex) & !binary(fuzz_crc) & !binary(fuzz_leb_roundtrip) & !binary(fuzz_shape) & !binary(fuzz_cutile_negotiate) & !binary(fuzz_dist)'''
 
 # JUnit/XUnit XML 报告：供 CI 面板与归档消费；失败/重试用例的 stdout/stderr 随用例记录。
+# nextest 把相对路径自动落到 workspace 根的 `target/nextest/<profile>/` 下，这里只写文件名，
+# 不要再带 `target/nextest/ci/` 前缀（否则会被嵌套成双份目录）。
 [profile.ci.junit]
-path = "target/nextest/ci/junit.xml"
+path = "junit.xml"
 
 # 分类超时 override：设备探针 / 子进程编译类用例（起 cc/clang/xcrun、编 Metal/PTX）
 # 给 180s 周期、连续两次超时才终止，其余用例走上面的 60s 口径。

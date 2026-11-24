@@ -149,23 +149,28 @@ impl Tiling {
                 full.len()
             );
         }
-        match self.sharding {
+        Ok(match self.sharding {
             // 输出维行段连续：整段一次切片，不逐元素拷。
-            Sharding::Column => {
-                let lo = start * inp;
-                let hi = lo + width * inp;
-                Ok(full[lo..hi].to_vec())
-            }
+            Sharding::Column => self.column_slice(start, width, inp, full),
             // 输入维列段：行与行之间不连续，外层按行取列段；每行内部整块复制。
-            Sharding::Row => {
-                let mut local = Vec::with_capacity(out * width);
-                for row in 0..out {
-                    let begin = row * inp;
-                    local.extend_from_slice(&full[begin + start..begin + start + width]);
-                }
-                Ok(local)
-            }
+            Sharding::Row => self.row_slice(start, width, inp, out, full),
+        })
+    }
+
+    /// 列切：行段在缓冲里连续，一次切出整段。
+    fn column_slice<T: Copy>(&self, start: usize, width: usize, inp: usize, full: &[T]) -> Vec<T> {
+        let lo = start * inp;
+        full[lo..lo + width * inp].to_vec()
+    }
+
+    /// 行切：列段跨行分散，外层按行取列段（布局决定的分散拷贝，非逐元素遍历），行内整块复制。
+    fn row_slice<T: Copy>(&self, start: usize, width: usize, inp: usize, out: usize, full: &[T]) -> Vec<T> {
+        let mut local = Vec::with_capacity(out * width);
+        for row in 0..out {
+            let begin = row * inp;
+            local.extend_from_slice(&full[begin + start..begin + start + width]);
         }
+        local
     }
 
     /// 被切维在每份里的长度：构造期已保证整除。
