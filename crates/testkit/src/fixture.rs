@@ -30,3 +30,17 @@ pub fn pack_codes(bits: usize, values: &[i8]) -> Vec<u8> {
         })
         .collect()
 }
+
+/// 长度不匹配必须拒绝：长输出、短输出两个用例各驱动一次 `run`，`run` 返回该次是否被拒绝。
+///
+/// 输出缓冲与输入等长是逐元素内核的前置契约，两类非对齐长度都不许静默截断；各算子把
+/// 自己的 `forward` 包成 `|input, out| forward(View::one(input), out).is_err()` 传入。
+pub fn assert_rejects_length_mismatch<F>(mut run: F)
+where
+    F: FnMut(&[f32], &mut [f32]) -> bool,
+{
+    let mut long = vec![0.0; 3];
+    assert!(run(&[1.0, 2.0], &mut long), "输出比输入长必须拒绝");
+    let mut short = vec![0.0; 1];
+    assert!(run(&[1.0, 2.0, 3.0], &mut short), "输出比输入短必须拒绝");
+}
