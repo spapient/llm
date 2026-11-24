@@ -138,14 +138,8 @@ fn check_binary_grad(
 /// 一元算子的两类对拍（中心差分、饱和点解析断言）与"长度会变"的算子（池化 / 插值）此前
 /// 各写一份这四步；`output_len` 就是为后者准备的。
 fn unary_grad(op: &str, p0: &[f32], output_len: usize) -> Result<Vec<f32>> {
-    let mut tape = Tape::new();
-    let p = tape.parameter();
-    let y = tape.record(op, &[p]).expect("记录 y");
-    let out = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
-    let sizes = support::sizes_of(&tape, &[(p, p0.len()), (y, output_len), (out, 1)]);
-    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
-    session.register_parameter(p, ParamRole::Trainable, p0.to_vec())?;
-    session.bufs().compute_step(op, &[p], y)?;
+    let (mut session, params, y, out) = parameter_session(op, &[p0], output_len, None)?;
+    let p = params[0];
     sum_backward(&mut session, y, out)?;
     Ok(session.bufs().gradient(p).expect("p 梯度应在场").to_vec())
 }

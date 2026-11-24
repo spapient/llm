@@ -127,7 +127,7 @@ fields = [
 for name in ["tiled_kernel", "naive_cuda", "cublas_abi_first", "cublas_abi_e2e", "direct_cublas", "cpu"]:
     fields += [f"{name}_ms_median", f"{name}_ms_min", f"{name}_ms_max"]
 with (ROOT / "summary.csv").open("w", newline="") as handle:
-    writer = csv.DictWriter(handle, fieldnames=fields)
+    writer = csv.DictWriter(handle, fieldnames=fields, lineterminator="\n")
     writer.writeheader()
     for row in rows:
         flat = {key: row.get(key) for key in fields}
@@ -140,7 +140,7 @@ for row in rows:
     print(
         f"{row['M']}x{row['N']}x{row['K']}: "
         f"ABI={row['cublas_abi_e2e_ms']['median']:.6f} ms "
-        f"(previous={row['previous_tiled_abi_e2e_ms']['median']:.6f} ms, "
+        f"(previous={row['previous_tiled_abi_e2e_ms']:.6f} ms, "
         f"speedup={row['abi_speedup_vs_previous_tiled']:.3f}x), "
         f"direct cuBLAS={row['direct_cublas_ms']['median']:.6f} ms"
     )

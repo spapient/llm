@@ -88,5 +88,5 @@ fn train_spec_fingerprint_is_stable_and_field_sensitive() {
         weights: vec![0.25, 0.75],
         seed: 11,
     };
-    assert_eq!(changed.config_fingerprint(&sgd), fingerprint);
+    assert_ne!(changed.config_fingerprint(&sgd), fingerprint);
 }
