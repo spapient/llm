@@ -56,11 +56,7 @@ type Generated = (Vec<String>, Vec<String>, String, Vec<Option<String>>);
 /// 共享同一份模板 stem，`dt` 叶子与 `[op].name` 随档替换——「加一档=加一行」的数据驱动档维度。
 /// 无 `tiers` 的档案逐字走旧路径（名=文件名）。展开后全体按名升序排序，二分查找的「有序」
 /// 不变量因此与档展开兼容（注册表与目录仍同序）。
-fn scan(
-    ops: &Path,
-    manifest: &Path,
-    files: &[PathBuf],
-) -> diagnostic::Result<Generated> {
+fn scan(ops: &Path, manifest: &Path, files: &[PathBuf]) -> diagnostic::Result<Generated> {
     let entries = collect_entries(ops, manifest, files)?;
     Ok(flatten(entries))
 }
