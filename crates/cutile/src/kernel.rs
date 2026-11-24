@@ -165,36 +165,33 @@ pub enum UnaryFn {
 }
 
 impl UnaryFn {
+    /// C `<math.h>` 函数名，下标与枚举变体声明顺序一一对应。
+    const NAMES: [&'static str; 10] = [
+        "fabsf", "sqrtf", "expf", "logf", "sinf", "cosf", "ceilf", "floorf", "roundf", "truncf",
+    ];
+
+    /// 主机侧 f32 求值表：解释执行、字面量折叠与参考对拍共用同一口径。
+    const APPLY: [fn(f32) -> f32; 10] = [
+        f32::abs,
+        f32::sqrt,
+        f32::exp,
+        f32::ln,
+        f32::sin,
+        f32::cos,
+        f32::ceil,
+        f32::floor,
+        f32::round,
+        f32::trunc,
+    ];
+
     /// C `<math.h>` 函数名。
     pub(crate) const fn c_name(self) -> &'static str {
-        match self {
-            UnaryFn::Abs => "fabsf",
-            UnaryFn::Sqrt => "sqrtf",
-            UnaryFn::Exp => "expf",
-            UnaryFn::Ln => "logf",
-            UnaryFn::Sin => "sinf",
-            UnaryFn::Cos => "cosf",
-            UnaryFn::Ceil => "ceilf",
-            UnaryFn::Floor => "floorf",
-            UnaryFn::Round => "roundf",
-            UnaryFn::Trunc => "truncf",
-        }
+        Self::NAMES[self as usize]
     }
 
     /// 主机侧 f32 求值：解释执行、字面量折叠与参考对拍共用同一口径，避免两边各写一套数学定义。
     pub fn apply(self, value: f32) -> f32 {
-        match self {
-            UnaryFn::Abs => value.abs(),
-            UnaryFn::Sqrt => value.sqrt(),
-            UnaryFn::Exp => value.exp(),
-            UnaryFn::Ln => value.ln(),
-            UnaryFn::Sin => value.sin(),
-            UnaryFn::Cos => value.cos(),
-            UnaryFn::Ceil => value.ceil(),
-            UnaryFn::Floor => value.floor(),
-            UnaryFn::Round => value.round(),
-            UnaryFn::Trunc => value.trunc(),
-        }
+        (Self::APPLY[self as usize])(value)
     }
 }
 

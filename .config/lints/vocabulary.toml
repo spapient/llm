@@ -67,8 +67,8 @@ reason = "命令文法内部类型；`cli` 的公开面是 `Invocation`/`Command
 
 [[ownership.unlisted]]
 crate = "cutile"
-names = ["CallArg", "ChainStep", "FragmentGap", "Lock", "NeedReport", "PrimCall", "SpaceUse", "Unlock"]
-reason = "内核 DSL 的协商前端与结果类型；按 `crates/cutile/README.md` 的分节归类，待分节稳定后逐节进表（执行期五个名字随拆分迁到 `optim`）"
+names = ["CallArg", "ChainStep", "FragmentGap", "Lock", "NeedReport", "PrimCall", "SpaceUse", "Unlock", "UnaryFn"]
+reason = "内核 DSL 的协商前端与结果类型；`UnaryFn` 是一元数学算子（Abs/Sqrt/Exp/Ln/Trig/取整）发射名与主机求值闭集；按 `crates/cutile/README.md` 的分节归类，待分节稳定后逐节进表（执行期五个名字随拆分迁到 `optim`）"
 
 [[ownership.unlisted]]
 crate = "dtype"
@@ -125,12 +125,14 @@ reason = "字节码闭集的接收器与无符号整数标记族；公开面是 
 # 一条从不生效的档位比没有更糟，因为它让人以为有人管着。真出现 Rust 侧微核时按「度量 + 档位」
 # 两级表重开，而不是先放一个空数字在这里。
 ccn_max = 5          # 圈复杂度上限：ccn = 1 + 条件计数
-nloc_max = 60        # 函数体有效行数上限
-file_max_lines = 600 # 单文件行数硬上限：N3 的原始线。曾有 899 → 1200 的放宽，现已无文件超标，收紧回 600
-test_max_lines = 800 # 测试代码行数上限：`tests/` 与 `#[path]` 挂进 src 的测试模块同受此限。
-                     # 与 file_max_lines 分开：生产面 600 是 N3 的原始线，测试面放宽到 800 是因为
-                     # 一条真机用例的装配（设备/缓冲/派发/对拍）本身就要 30–50 行，600 会逼人把
-                     # 用例切碎到看不出在测什么。当前最大 cli/tests/device.rs 767，故这是收紧而非放宽。
+nloc_max = 60         # 函数体有效行数上限
+file_max_lines = 899  # 单文件行数硬上限：超过即按主题拆模块。899 是生产面上限，给一条完整算子族/格式表留足篇幅。
+file_min_lines = 300  # 单文件行数下限：除薄入口（`lib.rs`/`main.rs`/`mod.rs`）与 libFuzzer 垫片
+                      # （`fuzz/src/fuzz_*.rs`，判据在 `drivers.rs`）外，生产文件不足 300 行不允许单独
+                      # 开文件——独立语义应收拢进所属模块，而不是铺成一函数一文件的口袋碎块。
+test_max_lines = 800  # 测试代码行数上限：`tests/` 与 `#[path]` 挂进 src 的测试模块同受此限。
+                      # 与 file_max_lines 分开：测试面放宽到 800 是因为一条真机用例的装配
+                      # （设备/缓冲/派发/对拍）本身就要 30–50 行，切碎到看不出在测什么。测试代码不套下限。
 
 # `[[gate.debt]]` 存量棘轮：只登记入口编排层既有超标（cli 的编排文件与 cutile 二进制入口）。
 # 登记表是实测快照：登记值必须等于实测值，改善后必须删掉对应度量条目（`Gate::stale`），

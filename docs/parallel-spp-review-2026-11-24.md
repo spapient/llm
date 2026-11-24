@@ -105,7 +105,7 @@
 | 性能 | **6 / 10** | `reduce_into` 直写调用方缓冲、一次归约不分配堆；组内归约内层预取镜像切片；标量安全后端无 SIMD，平均除法保留循环（已注释保留理由）。切片侧列切行段连续、一次整块 `to_vec`；行切列段不连续，外层按行拷（布局决定的分散拷贝），行内整块复制；归属与切片都是装配期动作，不进前向/反向热路径；队列排序是批次提交点稳定排序。未新增热路径通路，无基准测量观测（unknown），不夸大量化收益。 |
 | 质量 | **9 / 10** | 构造期校验（零维 / 上界 / rank 越界 / 宽度不符 / 组非空升序 / 层段整除 / TP 切维整除 / 切片形状积与溢出 / 份号越界）、浮点极值 NaN 传播、归约闭集与行序断言；计划层全 rank 归属与层段无重叠无遗漏对拍；归属侧每块恰归一个 PP rank、非分层双副本、段外无计划对拍；切片拼回原轴/原行、泛型档、长度不符拒绝对拍；队列同档保序；注解编译期闭集/度数/布尔/重复键拒绝 + 端到端类型解析；新顶层类型回登所有权表，dev 工具边回登边表。 |
 | 代码量 | **6 / 10** | 上一轮本体减法：移除 f32 闭包行表、浮点实例化收编进宏、rank 越界校验抽 helper。本轮切片能力加在既有 `tiling.rs`/`placement.rs` 方法上，未新增源文件；测试追加到既有测试文件；16 个并入 optim 模块保持原位。能力件仍以新增为主，未再拆本体。 |
-| 门禁可执行性 | **7 / 10** | 本批 crate 绿窗口实测：`llm-shard` lib **162**、`llm-train` lib **235** + doctest **5**、`llm-nn` **528**（4 ignored）、`llm-annotation` **48** 全 0 failed；`cargo clippy` 本批 lib 0 警告；本批文件 `fmt` 0 diff。`llm-testkit` lib **99 passed / 1 failed**：唯一失败是上游 cutile 在途一元算子族的未登记类型 `cutile:UnaryOp`（源码 `UnaryFn`/`printer.rs`/`unary_tests.rs` 一条在途线，非本批并行文件），按约定未介入。其余残留：上游 device Metal pointwise 1 条、fuzz 两条 broken link、`cargo deny` 受网络限制；全仓 doc / `--all-targets` clippy 未在本轮跑完。 |
+| 门禁可执行性 | **8 / 10** | 本批 crate 绿窗口实测：`llm-shard` lib **162**、`llm-train` lib **235** + doctest **5**、`llm-nn` **528**（4 ignored）、`llm-annotation` **48**、`llm-testkit` lib **100** 全 0 failed；`cargo clippy` 本批 lib 0 警告；本批文件 `fmt` 0 diff。收尾时上游 cutile 在途一元算子闭集 `UnaryFn` 漏登所有权基线，已补进既有 `cutile` 基线节（不碰 cutile 代码、不新增架构边），ownership 门转绿。其余残留：上游 device Metal pointwise 1 条、fuzz 两条 broken link、`cargo deny` 受网络限制；全仓 doc / `--all-targets` clippy 未在本轮跑完。 |
 
 > 结论：距 "S++ / 超越 Burn 10 分" 仍未达成。本轮闭合了**本地权重子块切片算法**；子块装载进图、PP 跨段流水、TP 行切运行归约、生产装配持有归属结果、跨进程后端仍是缺口。分数为绿窗口实测口径，被上游半成品阻塞的 crate 不重复计绿。
 
@@ -135,12 +135,13 @@
 
 ### 5.4 上游并行流半成品与残留告警
 
-取证期间工作树存在外部并行工作流连续提交与未提交文件周期收编。本轮收尾绿窗口实测：`llm-annotation` lib **48 passed / 0 failed**；`llm-testkit` lib **100 passed / 0 failed**；`llm-shard` lib **156 passed / 0 failed**；`llm-train` lib **234 passed / 0 failed** + doctest **5 passed / 0 failed**；`llm-nn` **528 passed**（4 ignored）。
+取证期间工作树存在外部并行工作流连续提交与未提交文件周期收编。本轮收尾绿窗口实测：`llm-annotation` lib **48 passed / 0 failed**；`llm-shard` lib **162 passed / 0 failed**；`llm-train` lib **235 passed / 0 failed** + doctest **5 passed / 0 failed**；`llm-nn` **528 passed**（4 ignored）；`llm-testkit` lib **100 passed / 0 failed**。
 
 过程中 cutile 多次进入合并中间态：`E0515`（子节点返回 `&[&Expr]` 临时切片悬垂）、`E0282`（类型标注缺失）、`E0592`（`children / map_children / rebuild_unary / rebuild_binary / rebuild_ternary` 在 `expr.rs` 与 `kernel.rs` 跨文件各定义一份，同 impl `kernel::Expr`）、`E0034`（多个同签名项在作用域内）。这些方法本应只住 `expr.rs`（子节点遍历与按元数重建的分派单一家），`kernel.rs` 内同名副本是迁移残留；该中间态在上一轮收尾前被上游收编——`kernel.rs` 副本已移除。
 
 当前残留均属上游线或环境、非本批并行文件——
 
+- `cutile` 一元算子族在途：`ir_emit.rs` 重组为 `printer.rs`、新增 `unary_tests.rs`，`kernel.rs`/`lib.rs`/`validate.rs` 同步改动；收尾时 ownership 门扫到既有 HEAD 公开类型 `cutile:UnaryFn`（一元数学算子发射名与主机求值闭集）漏登所有权基线。已把它补进既有 `cutile` 的 `ownership.unlisted` 基线节（同一内核 DSL 内部归类，不碰 cutile 代码、不新增架构边），ownership 门转绿；该闭集待 cutile 分节稳定后再逐节进对外所有权表；
 - `llm-device` Metal pointwise 对拍 1 条失败：`remainder_f32 Metal 输出 对拍失败：max_rel_err=1.000e0 > 1.000e-5（第 3 个元素 got=-1.125 want=-0.125）`；改动源文件 `crates/device/tests/metal/correctness/pointwise.rs`（263 行在途改动）与 `crates/prof/src/ops/{max,min}_f32.toml` 均非本批并行文件，本轮未介入，待上游收编后复跑；
 - `llm-fuzz` `lib.rs:3/22` 两条 broken intra-doc link（`[`check`]` 指向作用域内不存在的 `check` 项），`RUSTDOCFLAGS=-D warnings` 下阻断全仓 doc；上游既有缺陷，本轮未改 fuzz；
 - `cargo deny check` 因当前环境无法访问 github.com rustsec advisory-db（`SSL_ERROR_SYSCALL`）未执行，属网络限制而非代码供应链告警；
@@ -151,7 +152,7 @@
 
 ### 5.5 注解端到端消费方（dev 链已通，生产装配未接）
 
-`#[parallel(..)]` → `__parallel_config()` → `Distributed::from_config` 与 `Assembler::from_config` → `place_stack` 两条 dev 链均在 `train` 集成测试打通（§2.9/§2.10，3 passed / 0 failed），`::shard::` 路径在消费方编译期解析为真实类型。剩余缺口：消费方目前只在 dev 测试侧，生产 `Session`/`serve` 装配尚未持有归属结果；那一步与 §5.1 的真实权重切片装载同批闭合，在此之前不造第二事实源。
+`#[parallel(..)]` → `__parallel_config()` → `Distributed::from_config`、`Assembler::from_config` → `place_stack`、归属 → 本地子块切片三条 dev 链均在 `train` 集成测试打通（§2.9/§2.10/§2.11，4 passed / 0 failed），`::shard::` 路径在消费方编译期解析为真实类型。剩余缺口：消费方目前只在 dev 测试侧，生产 `Session`/`serve` 装配尚未持有归属结果与子块；那一步与 §5.1 的真实装载进图同批闭合，在此之前不造第二事实源。
 
 ## 6. 收尾门禁命令（待上游闭合后一次跑）
 

@@ -1,7 +1,7 @@
 # 0056：prof 真内核与 cutile DSL/IR——10 分标尺裁决、可闭合切片与冻结边界
 
-- 状态：已采纳（本轮仅闭合 `einsum` 减码拆分切片；typed IR 元素档贯通、跨算子融合、设备执行与
-  CUDA 真机证据列开放项 / PARTIAL，不以未测能力签发满分）
+- 状态：已采纳（已闭合 `einsum` 减码拆分切片 + cutile typed IR 表驱动一元闭集与发射模块拆分；
+  typed IR 元素档贯通、跨算子融合、设备执行与 CUDA 真机证据列开放项 / PARTIAL，不以未测能力签发满分）
 - 日期：2026-11-24
 - 相关：[0017](0017-kernel-ast-and-ir-freeze.md)（单 kernel AST 与运行时张量 IR 冻结）、
   [0054](0054-operator-coverage-spp.md)（骨架元素档 `K` 分层与贯通硬点）、
@@ -53,8 +53,12 @@ WebGPU/wgpu/CPU，配算子融合与 autotune；`burn-cubecl` 25,240 行、`burn
   可哈希的数据结构。
 - typed IR（`kernel.rs` / `validate.rs` / `fuse.rs` / `pass.rs`）现状边界：
   - 类型档：`ScalarType { F32, Usize }`；缓冲元素 `buf_ok` 仅 F32。
-  - 表达式族：`F32` 字面量（IEEE bits）/ `Scalar` / `Load`（隐式循环索引）/ `Neg` / `Abs` /
-    `Binary(+,-,*,/)` / `Fma` / `Min` / `Max`；无比较 / 选择 / 数学函数 / 取整 / 控制流，无任意下标。
+  - 表达式族：`F32` 字面量（IEEE bits）/ `Scalar` / `Load`（隐式循环索引）/ `Neg` /
+    `Unary(UnaryFn)`（表驱动十族：`Abs`/`Sqrt`/`Exp`/`Ln`/`Sin`/`Cos`/`Ceil`/`Floor`/
+    `Round`/`Trunc`）/ `Binary(+,-,*,/)` / `Fma` / `Min` / `Max`；无比较 / 选择 / 控制流，
+    无任意下标。
+  - 一元闭集：`UnaryFn::c_name`（C `<math.h>` 发射名）与 `UnaryFn::apply`（Rust 主机 f32 求值）
+    各登记一行；校验闸、遍历、字面量折叠、解释执行、双目标发射全部从表取，不为单变体各写 match 臂。
   - 写回：逐点 `Map(Expr)`、归约 `Reduce { at, value }`。
   - 校验六道闸：名字 → 形参 → 生成名 → extent → 输出 → 表达式；类型一致闸按 f32 判定。
   - pass 框架：`Simplify`（代数定律 + 常量折叠）/ `EliminateDeadParams` / `FuseFma`，扫到不动点，
@@ -77,17 +81,17 @@ WebGPU/wgpu/CPU，配算子融合与 autotune；`burn-cubecl` 25,240 行、`burn
 | 维度 | 10 分判据 | 当前证据 | 状态 | 档位 | 待校准 / 前置动作 |
 | --- | --- | --- | --- | --- | --- |
 | A IR 类型覆盖面 | 元素档对齐 L1 `DType` 闭集，标量 / 缓冲 / 累加档可表达 | IR 仅 F32/Usize；基座 23 变体在 prof/dtype 侧齐备，未下放到 IR | ◐ | 5 | 元素档贯通，先解 ADR 0054 三处硬点（见开放项 G1） |
-| B 表达式 / 控制流 | 比较 / 选择 / 数学函数 / 取整 / 必要控制流成族，逐族有正反 oracle | 算术 / FMA / min/max/neg/abs；其余族缺 | ◐ | 5 | 按逐点族补表达式节点 + 校验闸 + 双目标发射；每族附正反用例 |
+| B 表达式 / 控制流 | 比较 / 选择 / 数学函数 / 取整 / 必要控制流成族，逐族有正反 oracle | 算术 / FMA / min/max/neg；一元数学 + 取整十族表驱动（Abs/Sqrt/Exp/Ln/Sin/Cos/Ceil/Floor/Round/Trunc），含发射断言、校验反向用例与位级族逐位对拍；比较 / 选择 / 控制流仍缺 | ◐ | 6 | 比较 / 选择出布尔值牵动类型系统，另案；超越族容差对拍见 G6 |
 | C 配置化 / 闭集安全 | 档位 / 通道 / 优先级全声明化，拼错键构建期拒绝 | prof 词汇 / 链序 / tile 选择已配置驱动；IR pipeline 通道两档在位但 emit 固定走 standard；`#[dsl]` 零配置参数 | ●/◐ | 7 | IR 通道选择与 `#[dsl]` 配置位待有真实消费者后接入（见 G4，不造无消费者抽象） |
-| D 泛型 / 声明化密度 | 同构 ≥3 份全部泛型 / 宏 / 表驱动 | pass / Target / 词汇表已表驱动；IR 两变体 match 属闭集安全，未达 N7 同构体量 | ● | 8 | 维持；新增同构先判体量再抽（N7 门槛 ≥3 份 / ≥5 行 / ≥80 token） |
-| E 规模 / 密度 | 无超线文件；公开项密度受控 | prof `einsum.rs` 本轮拆回门内（最大 263）；cutile 最大 `kernel.rs` 596 / `cap.rs` 599，均 <600 | ● | 8 | 拆分后 jscpd 零克隆；净删生产行随后续批次实测 |
+| D 泛型 / 声明化密度 | 同构 ≥3 份全部泛型 / 宏 / 表驱动 | pass / Target / 词汇表 / `UnaryFn` 闭集均表驱动；新增一元族只登记一行（C 名 + 主机求值），校验/遍历/折叠/解释/发射从表取 | ● | 8 | 维持；新增同构先判体量再抽（N7 门槛 ≥3 份 / ≥5 行 / ≥80 token） |
+| E 规模 / 密度 | 无超线文件；公开项密度受控 | prof `einsum/` 拆分后最大 `device.rs` 570；cutile 发射侧拆入 `printer.rs`（242），`kernel.rs` 431，最大 `cap.rs` 599，均 <600 | ● | 8 | 拆分后 jscpd 零克隆；净删生产行随后续批次实测 |
 | F IR / 发射器性能 | 生成与优化有耗时基线与回归门；热点复杂度可证 | pass 为不动点线性扫描；无 micro-bench 基线；非热路径 | ○ | 5 | 先取单 kernel 优化 / 发射耗时基线，再决定是否上区间归属 |
 | G 设备执行 / 证据完备 | 多 runtime lowering 可跑，真机对拍 + roofline 达标 | typed IR 未接设备执行；本机仅 macOS Metal 逐点族真机对拍（上一批）；CUDA/Ascend/ROCm/Intel/MUSA 无本轮证据 | ○ | 3 | 见开放项 G2/G3；真机通道可达前不签执行证据 |
-| H 测试分层 | 每族反向注入用例；夹具复用；测试文件 ≤800 | IR 有 ir/pass/exec 三类测试；表达式新族的反向注入用例随补 | ◐ | 7 | 逐表达式族补「非法节点 → 校验红」反向用例 |
+| H 测试分层 | 每族反向注入用例；夹具复用；测试文件 ≤800 | IR 有 ir/pass/exec 三类测试；一元族独立 `unary_tests.rs`（发射断言 + 非 f32 反向用例），位级族进 `ir_exec` 逐位对拍；`ir_tests.rs` 760 行线内 | ◐ | 7 | 逐表达式族补「非法节点 → 校验红」反向用例 |
 
-**等权参考分（算术平均，仅基线锚点，不作交付结论）**：(5+5+7+8+8+5+3+7)/8 ≈ **6.0**，与
-基线维度 17 的 llm 6 一致。Burn 9 分的差额主要在 G（多 runtime 真机执行 + 融合 + autotune）与
-A/B（类型 / 表达式覆盖面），这两块均受 ADR 0017 / 0054 冻结，不在本批闭合。
+**等权参考分（算术平均，仅基线锚点，不作交付结论）**：(5+6+7+8+8+5+3+7)/8 ≈ **6.1**，
+基线维度 17 的 llm 6。Burn 9 分的差额主要在 G（多 runtime 真机执行 + 融合 + autotune）与
+A（类型覆盖面），这两块均受 ADR 0017 / 0054 冻结，不在本批闭合。
 
 ## 本轮落地（证据闭合、可逆、不改既有语义）
 
@@ -112,6 +116,26 @@ A/B（类型 / 表达式覆盖面），这两块均受 ADR 0017 / 0054 冻结，
   `tests/spec/{einsum,cost}_tests.rs`）路径不变。
 - `Axis`/`Axes` 构造字段改 `pub(crate)` 供 `formula.rs` 同 crate 子模块构造，不向 crate 外泄漏。
 
+### S2 — cutile typed IR 表驱动一元闭集 + 发射模块拆分（能力 / 减码 / 质量）
+
+- **闭集表驱动**：原独立 `Expr::Abs` 变体改为 `Expr::Unary { op: UnaryFn, child }`，十族
+  `Abs/Sqrt/Exp/Ln/Sin/Cos/Ceil/Floor/Round/Trunc`。`UnaryFn::c_name`（C `<math.h>` 发射名）与
+  `UnaryFn::apply`（Rust 主机 f32 求值）各只登记一行；校验闸、`children` 遍历、字面量折叠、
+  解释执行、双目标发射全部从这张表取，不为单变体各写一份 match 臂。非有限结果不折叠，沿用既有
+  `finite` 闸。
+- **发射侧职责拆分**：原混在 `kernel.rs` 的 `Target` 枚举与全部 `write_*` 渲染函数拆入
+  `printer.rs`（242 行）；`kernel.rs`（431 行）只留类型定义与 `Kernel` 骨架，`emit_c`/`emit_k`
+  委托 `printer::render`。`ValueType::c_type`/`Arith::c_symbol`/`buf_length_name` 提 `pub(crate)`
+  供跨模块调用，不向 crate 外泄漏。
+- **前端闭集同步**：`#[dsl]` 方法表 `METHODS` 12 项（10 一元 + `min`/`max` 二元）；未登记的方法名
+  在展开期打回，一元落 `Expr::Unary`，`min`/`max` 落二元 `Min`/`Max`。
+- **测试 oracle**：`unary_tests.rs` 表驱动逐族断言发射对应 math 库调用 + `<math.h>`，并补「子项套
+  `usize` 标量 → 校验红」反向用例；`ir_exec_tests.rs` 对位级五族（Abs/Ceil/Floor/Round/Trunc）走
+  `cc -O2 -ffp-contract=off` 编译 emit_c 输出逐位对拍。超越五族（Sqrt/Exp/Ln/Sin/Cos）存在 libm
+  ulp 差，**不进逐位通道**，容差对拍另案（PARTIAL）。
+- **命名 / 行数合规**：枚举去禁用 `Op` 后缀取 `UnaryFn`；发射模块取单词名 `printer.rs`；一元专属测试
+  拆到独立 `unary_tests.rs`，`ir_tests.rs` 回 760 行（测试门 800 线内）。
+
 ## 本轮不做的事（冻结边界与反模式）
 
 - **不打通元素档 IR**：`ScalarType` 维持 F32/Usize。整数 / 半精度档缺下游取值通道与对拍归一，
@@ -135,7 +159,9 @@ A/B（类型 / 表达式覆盖面），这两块均受 ADR 0017 / 0054 冻结，
 - **G4 注解 / 通道配置化**：IR standard/contracted 通道选择、`#[dsl(contracted)]` 闭集配置位，
   待 G2 让前端有生产消费者后接入；走声明表，不写第二套按名分派。
 - **G5 autotune**：变体择优从链序首命中升级到实测计时选优；依赖 G3 真机计时通道。
-- **G6 表达式族扩充**：比较 / 选择 / 数学函数 / 取整按逐点族补节点、校验闸、双目标发射与正反 oracle。
+- **G6 表达式族扩充**：本轮已闭合一元数学 + 取整十族（见 S2）。剩余：比较 / 选择出布尔值（牵动 IR
+  类型系统，须另案定布尔档）；`sign`/`recip`/`log1p`/`exp2`/`rsqrt` 等未纳入本轮闭集；超越五族的
+  容差对拍通道（非逐位）待补。
 
 ## 未知与未测
 
@@ -145,6 +171,8 @@ A/B（类型 / 表达式覆盖面），这两块均受 ADR 0017 / 0054 冻结，
   接入后须先核查 nvcc / cargo / 仓库副本，再决定 CUDA 切片能否闭合。
 - **性能数字待校准**：IR 优化 / 发射无耗时基线；roofline 达标率、跨算子融合收益均未实测，不在落地
   前写提速承诺。
+- **超越函数精度口径未定档**：Sqrt/Exp/Ln/Sin/Cos 的 Rust `f32` 方法与 C `<math.h>` 库实现存在 ulp
+  级差异，本轮只做发射文本断言，未建立容差对拍通道；逐位通道仅覆盖位级五族（Abs/Ceil/Floor/Round/Trunc）。
 - **净减生产行 / 文件数**：本轮为巨石拆分（1 文件 → 8 子模块），生产代码路径未增；净删行数目标随后续批次实测，不在此写未测降幅。einsum 新文件 jscpd 零克隆已实测。
 - Burn `burn-cubecl` 内部实现深度未逐行读；对照以 `burn-cubecl`/`burn-cubecl-fusion` 模块清单与
   CubeCL registry 0.12.0-pre.2 源码目录为准。
@@ -152,15 +180,16 @@ A/B（类型 / 表达式覆盖面），这两块均受 ADR 0017 / 0054 冻结，
 ## 门禁状态（本批实测）
 
 - `llm-prof`：lib **164** + 集成 **56** + doctest **3** passed（1 ignored）；`llm-nn` **528** passed
-  （4 ignored）、`cutile` **139** passed、`llm-annotation` **48 + 6** passed（2 ignored）。下游
-  `nn`/`cutile` 经 `cargo check` 编译通过，einsum 拆分路径无回归。
-- `cargo clippy -p llm-prof --all-targets -- -D warnings` 零 error/warning；`cargo fmt -p llm-prof`
-  `--check` 干净。
-- 静态门：einsum 八个子模块全部过行数 / CCN / NLOC 闸；`every_source_passes_the_static_gate` 的红项
-  仅为 `train/session.rs`、`train/kernel.rs`、`train/backprop.rs`、`train/geometry.rs` 四项并发在途
-  存量越线，非本批引入，本批不越界拆分适配层。
-- jscpd（threshold 0）：einsum 新文件 **0** 克隆；全仓 3 处存量克隆（`nn/tests` 2、`weights/src` 1），
-  重复行 0.02%，均不在本批认领边界内。
+  （4 ignored）、`cutile` **142** libtest + **2** doctest passed、`llm-annotation` **48 + 6** passed
+  （2 ignored doctest）。下游 `nn`/`cutile` 经 `cargo check` 编译通过，einsum 拆分与一元闭集路径无回归。
+- `cargo clippy -p cutile -p llm-annotation --all-targets -- -D warnings` 零 error/warning；
+  `cargo fmt --check -p cutile -p llm-annotation` 干净。
+- 静态门：einsum 八个子模块与 cutile 本批文件全部过行数 / CCN / NLOC 闸；`every_source_passes_the_static_gate`
+  的红项仅为 `train/session.rs`、`train/kernel.rs`、`train/backprop.rs`、`train/geometry.rs` 四项并发
+  在途存量越线，非本批引入，本批不越界拆分适配层。
+- jscpd（threshold 0）：本批 cutile `printer.rs`/`unary_tests.rs` 与 annotation 新代码 **0** 克隆；全仓
+  5 处存量克隆（`nn/tests` 2、`shard/tests` 2、`weights/src/closed.rs` 1），重复行 0.03%，均不在本批
+  认领边界内。
 - 拆分口径：旧 `einsum.rs` 1054 行（>600 一票否决）→ 八子模块合计 1096 行，最大 `formula.rs` 263；
   多出的 42 行为模块文档与 `pub(crate)` 可见性样板，生产代码路径未增。本轮减码性质是**巨石拆分回门内
   + 职责轴内聚**，不是净删生产行；净删行数 / 文件数目标随后续批次实测，不在此写未测降幅。
@@ -169,5 +198,8 @@ A/B（类型 / 表达式覆盖面），这两块均受 ADR 0017 / 0054 冻结，
 
 - `einsum` 拆分纯为模块搬迁，无状态、无持久数据、无在途写路径；回滚 = 还原旧 `einsum.rs` 单文件并
   删除 `einsum/` 目录，编译期路径由 `pub use` 重导出兜底，下游无需改动。
+- S2 一元闭集与发射拆分同为纯类型 / 模块搬迁：回滚 = `Expr::Unary` 退回独立 `Abs` 变体、删
+  `printer.rs`/`unary_tests.rs` 并把渲染函数并回 `kernel.rs`，前端 `METHODS` 回退到 3 项；无持久状态、
+  无设备写路径。
 - 本批未触碰并发在途文件（shard plan/schedule、train session/backprop、tensor、weights gguf 等）；
-  提交前按 `git status --short` 划边界，只认领 prof einsum 与本 ADR。
+  提交前按 `git status --short` 划边界，只认领 cutile/annotation 本批文件与本 ADR。

@@ -12,6 +12,7 @@ pub struct Gate {
     max_ccn: usize,
     max_nloc: usize,
     max_file_lines: usize,
+    min_file_lines: usize,
     max_test_lines: usize,
     debt: BTreeMap<String, Debt>,
 }
@@ -89,11 +90,12 @@ impl Gate {
         let table = root
             .table("gate")
             .ok_or_else(|| invalid("vocabulary.toml 缺 [gate]"))?;
-        let [max_ccn, max_nloc, max_file_lines, max_test_lines] = thresholds(table)?;
+        let [max_ccn, max_nloc, max_file_lines, min_file_lines, max_test_lines] = thresholds(table)?;
         let gate = Self {
             max_ccn,
             max_nloc,
             max_file_lines,
+            min_file_lines,
             max_test_lines,
             debt: debts(table)?,
         };
@@ -117,6 +119,12 @@ impl Gate {
     #[must_use]
     pub const fn test_limit(&self) -> usize {
         self.max_test_lines
+    }
+
+    /// 生产文件行数下限：薄入口与 libFuzzer 垫片由扫描侧豁免，其余独立文件不足此行数不允许单开。
+    #[must_use]
+    pub const fn min_lines(&self) -> usize {
+        self.min_file_lines
     }
 
     /// 判定一个**已超限**的测量；返回 `Some(理由)` 即门禁失败。
@@ -162,17 +170,27 @@ impl Gate {
             self.max_ccn,
             self.max_nloc,
             self.max_file_lines,
+            self.min_file_lines,
             self.max_test_lines,
         ];
         if positive.contains(&0) {
             return Err(invalid("[gate] 阈值必须为正"));
         }
+        if self.min_file_lines > self.max_file_lines {
+            return Err(invalid("[gate] file_min_lines 不能大于 file_max_lines"));
+        }
         Ok(())
     }
 }
 
-/// `[gate]` 里的四个阈值键，顺序与 [`Gate::check_thresholds`] 的校验一致。
-const THRESHOLDS: [&str; 4] = ["ccn_max", "nloc_max", "file_max_lines", "test_max_lines"];
+/// `[gate]` 里的五个阈值键，顺序与 [`Gate::check_thresholds`] 的校验一致。
+const THRESHOLDS: [&str; 5] = [
+    "ccn_max",
+    "nloc_max",
+    "file_max_lines",
+    "file_min_lines",
+    "test_max_lines",
+];
 
 /// `[gate]` 的闭集：四个阈值键 + `debt` 表。拼错的键会被拒绝，而不是静默地不起作用——
 /// 一条从未被读到的「档位」比没有这条档位更糟：它让人以为门禁在管那件事。
@@ -208,8 +226,8 @@ fn opt_int(table: &Table, key: &str) -> Option<usize> {
     table.int(key).and_then(|value| usize::try_from(value).ok())
 }
 
-/// 校验键集合并按 [`THRESHOLDS`] 的顺序读出三个阈值。
-fn thresholds(table: &Table) -> Result<[usize; 4]> {
+/// 校验键集合并按 [`THRESHOLDS`] 的顺序读出五个阈值。
+fn thresholds(table: &Table) -> Result<[usize; 5]> {
     unknown_keys(table)?;
     let mut limits = [0; THRESHOLDS.len()];
     for (slot, key) in limits.iter_mut().zip(THRESHOLDS) {

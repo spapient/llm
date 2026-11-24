@@ -123,6 +123,13 @@ fn scan_production(
     if let Some(lines) = dup::file_lines(&text, gate) {
         judge(gate, &name, Metric::Lines, lines, bad, live);
     }
+    if !is_thin_entry(path) && raw.lines().count() < gate.min_lines() {
+        bad.push(format!(
+            "{name}: 生产文件 {} 行低于下限 {}——把同主题语义收拢进所属模块，不要单开口袋碎文件",
+            raw.lines().count(),
+            gate.min_lines()
+        ));
+    }
     for finding in ccn::analyze(&text).expect("ccn 分析") {
         let key = format!("{name}:{}#{}", finding.name, finding.nth);
         let (ccn, nloc) = (finding.ccn as usize, finding.nloc as usize);
@@ -297,6 +304,21 @@ fn is_production(path: &Path) -> bool {
     };
     let test_fixture = name == "tests.rs" || name.ends_with("_tests.rs");
     path.components().any(|part| part.as_os_str() == "src") && !test_fixture
+}
+
+/// 行数下限豁免的薄文件：模块入口（`lib.rs`/`main.rs`/`mod.rs`）只做声明与重导出，
+/// libFuzzer 垫片（`fuzz/src/fuzz_*.rs`）入口只有一行、判据在 `drivers.rs`。
+fn is_thin_entry(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    if matches!(name, "lib.rs" | "main.rs" | "mod.rs") {
+        return true;
+    }
+    let in_fuzz = path
+        .components()
+        .any(|part| part.as_os_str() == "fuzz");
+    in_fuzz && name.starts_with("fuzz_")
 }
 
 /// `#[cfg(test)] mod 名字;` 挂载的文件集合；递归展开——被挂载的文件自己也可能挂载子模块，
