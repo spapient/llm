@@ -242,10 +242,10 @@ llm 文档列的形状族（`tensor.rs:20-31`）：`broadcast/narrow/slice/chunk
 | 对照点 | llm | llm.u | Burn |
 | --- | --- | --- | --- |
 | 拓扑/切分结构 | `shard` 9.5k：`topology/collective/pipeline/tiling/program/ir/remote/ledger/runner/witness/verify/sweep` | `exec/comm.rs` + config 能力协商 | `burn-shard`（张量按设备切分，张量并行）、`burn-communication`（remote 后端网络） |
-| 跨进程集合通信 | `shard/collective.rs` 结构在位；真实传输链路本轮未核运行证据 | Comm trait + CPU 空参考实现倾向（本轮未逐行核） | WebSocket/remote backend |
+| 跨进程集合通信 | `Collective` 端口 + 两实现：`Local` 进程内镜像、`FileRemote` 共享文件跨进程后端（all_reduce/all_gather/broadcast/reduce_scatter 四算子，f32 小端定槽位，双句柄自测通过）；`Remote` 占位。无 NCCL/RDMA/socket 高速织物，未做真多进程 spawn E2E | Comm trait + CPU 空参考实现倾向（本轮未逐行核） | WebSocket/remote backend |
 | 数据/张量并行 | 拓扑轴切分数据结构（`topology.rs`/`tiling.rs`） | config 表 | shard rules + DistributedOps/CollectiveOps trait |
 
-> 三仓的集合通信本轮都只核到仓内结构/trait 层；真实多进程传输是否接通，均标 unknown。
+> llm 的 `FileRemote` 文件后端协议在位且双句柄自测，但未从两个 OS 进程 spawn 对拍；llm.u/Burn 的真实多进程传输本轮标 unknown。
 
 ## 11. 随机数与确定性
 
@@ -303,7 +303,7 @@ llm 文档列的形状族（`tensor.rs:20-31`）：`broadcast/narrow/slice/chunk
 
 **本轮仍未取得干净观测（unknown）**
 
-- 三仓真机后端（CUDA/Metal/ROCm/WGPU）运行激活、性能与数值正确性；llm serve HTTP 端到端接通（仅见 `http.rs` 薄适配器，未起进程）；llm.u 各 feature 实际编译状态与设备覆盖；burn 本机后端状态；跨进程集合通信真实传输链路；形状算子边界行为逐一对拍。`cargo clippy --workspace --all-targets`、`cargo fmt --check` 本轮未在收尾门禁外单独复跑。
+- 三仓真机后端（CUDA/Metal/ROCm/WGPU）运行激活、性能与数值正确性；llm serve HTTP 端到端接通（仅见 `http.rs` 薄适配器，未起进程）；llm.u 各 feature 实际编译状态与设备覆盖；burn 本机后端状态；跨进程集合通信高速织物与多进程 spawn 对拍（`FileRemote` 文件后端已双句柄自测）；形状算子边界行为逐一对拍。`cargo clippy --workspace --all-targets`、`cargo fmt --check` 本轮未在收尾门禁外单独复跑。
 
 ## 14. 能力矩阵总表
 
@@ -342,7 +342,7 @@ llm 文档列的形状族（`tensor.rs:20-31`）：`broadcast/narrow/slice/chunk
 | 权重格式读取 | ● safetensors/gguf/json/torch.bin | ● gguf/safetensors/hf-pickle | ○ pytorch-reader |
 | 内置分词器 | ● tokenizer | ○ | ○ |
 | 拓扑/切分数据结构 | ● shard | ◐ config | ● shard rules |
-| 跨进程集合通信 | ○ 结构在位，传输未核 | ◐ Comm trait，CPU 参考 | ◐ WebSocket/remote |
+| 跨进程集合通信 | ◐ Local + FileRemote 文件后端，无高速织物/多进程 spawn | ◐ Comm trait，CPU 参考 | ◐ WebSocket/remote |
 | 确定性 RNG | ● 计数器 PRNG + 三分布 | ○ 注入闭包 | ● rand/seed |
 | 自定义内核 DSL | ● cutile + annotation 宏 | ○ 直写后端 | ● CubeCL + IR + fusion |
 | 模块派生宏 | ○ | ○ | ● burn-derive |
@@ -412,7 +412,7 @@ llm 文档列的形状族（`tensor.rs:20-31`）：`broadcast/narrow/slice/chunk
 | 3 | 后端执行成熟度/性能 | 3 | 6 | 8 | llm 生产装配仅 CPU（`serve/src/model.rs:27`），Metal 仅测试构造，CUDA/昇腾无 Executor impl，真机激活未核；llm.u 多后端 GEMM/内核族厚，真机激活本轮未复跑；Burn 跨后端可跑完整算子集 |
 | 4 | 算子/内核覆盖 | 5 | 4 | 9 | llm 注册表 **70 条**算子（elementwise/unary/激活/norm/attention/pool/conv/reduce/embed/rope/gemm·gemv·matmul f32+i2/i4/i8/dequant）+ 四层契约，unary 族本轮已进 HEAD 基线；真机内核激活未核；llm.u 七臂内核族；Burn 张量 API 全套 + linalg/einsum/fusion |
 | 5 | nn 层完整度 | 5 | 3 | 9 | llm conv/pool/norm/attn/embed/rope 齐，无 RNN；llm.u 无 conv/pool/RNN；Burn 8 大类 + 49 Config 含 RNN/Transformer |
-| 6 | 自动微分 | 7 | 2 | 10 | llm 独立 tape/schedule/account/plan/replay 元数据层；本轮 `cargo test -p llm-train backprop` 50 例全绿：`Reference` CPU 后端解析梯度与中心差分逐参数对拍（ABSOLUTE 2e-3 + RELATIVE 0.05），含 conv2d/GRPO/distillation KL/端到端 SGD；梯度侧已落地按 `Var` 自持的独立快照 `GradientSnapshot`（`Session::gradient_snapshot`，副本脱离累积窗口计数与缓冲生命周期，清零/步进后仍有效）；剩余缺口：无后端装饰器式任意可微闭包（算子按名注册、显式 `record`）、分布式无真实传输后端/NCCL、GPU/真机后端梯度激活未观测——`Kernel`/`Executor` 缝当前只有前向，反向公式是 train 侧 CPU 标量参考实现，设备侧无梯度核生成与派发通路；llm.u 逐层手写 bwd；Burn 后端装饰器任意可微 + checkpoint |
+| 6 | 自动微分 | 7 | 2 | 10 | llm 独立 tape/schedule/account/plan/replay 元数据层；本轮 `cargo test -p llm-train backprop` 50 例全绿：`Reference` CPU 后端解析梯度与中心差分逐参数对拍（ABSOLUTE 2e-3 + RELATIVE 0.05），含 conv2d/GRPO/distillation KL/端到端 SGD；梯度侧已落地按 `Var` 自持的独立快照 `GradientSnapshot`（`Session::gradient_snapshot`，副本脱离累积窗口计数与缓冲生命周期，清零/步进后仍有效）；剩余缺口：无后端装饰器式任意可微闭包（算子按名注册、显式 `record`）、分布式只有进程内 `Local` 与文件后端 `FileRemote`，无 NCCL/RDMA/socket 高速织物与多进程 spawn E2E、GPU/真机后端梯度激活未观测——`Kernel`/`Executor` 缝当前只有前向，反向公式是 train 侧 CPU 标量参考实现，设备侧无梯度核生成与派发通路；llm.u 逐层手写 bwd；Burn 后端装饰器任意可微 + checkpoint |
 | 7 | 优化器 | 4 | 3 | 9 | llm Sgd/Adam/Muon；llm.u 仅 Adam；Burn 12 个 impl + LBFGS/Momentum/累积/裁剪/衰减 |
 | 8 | 调度/训练循环 | 5 | 4 | 9 | llm Session/Learner/evaluate/账表/优化步在位，本轮基线编译绿，backprop 套件含 `an_arbitrary_geometry_trains_end_to_end_under_sgd` 端到端 SGD 训练例实测通过；真机/大规模训练收敛与调度仍未核；llm.u Session/Trainer + Cosine；Burn Learner/early stopping/sharder/logger |
 | 9 | 损失函数 | 5 | 4 | 9 | llm CE/argmax/mse/bce/huber/hinge + Distill/Grpo（策略族物理拆至 `loss_rl.rs`，`loss.rs:10,12` 挂载再导出）；llm.u 7 fn；Burn 17 种 loss（含 CTC/RNNT/三元组/NLL） |
@@ -420,7 +420,7 @@ llm 文档列的形状族（`tensor.rs:20-31`）：`broadcast/narrow/slice/chunk
 | 11 | 数据集管线 | 3 | 1 | 9 | llm `Dataset` trait + `Loader`/`Chunks` + 顺序/洗牌/加权三族采样 + 权重校验 + `dataset_tests.rs` 181 行，基线编译绿；无物理分词/打包源；llm.u pack/shard 函数；Burn audio/nlp/vision/source/transform |
 | 12 | 检查点/序列化 | 6 | 4 | 9 | llm weights/storage 自描述 + CRC-32 + 恢复事实；llm.u 状态字节存档；Burn store/checkpoint/burnpack/pytorch |
 | 13 | 推理服务 | 6 | 6 | 3 | llm ifb/radix/page/speculate + HTTP 薄适配器；llm.u 调度生命周期完整，HTTP 运行时未核；Burn 仅示例 server/remote |
-| 14 | 分布式/并行 | 3 | 2 | 6 | llm 拓扑/切分/Reduce 齐、Remote 占位；llm.u Comm trait + CPU 空参考实现；Burn WebSocket/remote + shard 规则；三家均无 NCCL 级栈 |
+| 14 | 分布式/并行 | 3 | 2 | 6 | llm 拓扑/切分/Reduce 齐；`Collective` 端口有 `Local` 进程内与 `FileRemote` 文件跨进程两实现（四算子自测），`Remote` 占位；无高速织物与多进程 spawn E2E；llm.u Comm trait + CPU 空参考实现；Burn WebSocket/remote + shard 规则；三家均无 NCCL 级栈 |
 | 15 | 量化/精度 | 6 | 5 | 7 | llm GGML+MX+FP4+亚字节格式最广，落点权重档案侧；llm.u I2–I8+FP8/FP4+AWQ；Burn 参数级 ModuleMapper/Quantizer/Calibration；三家均无 QAT |
 | 16 | 随机数/确定性 | 7 | 1 | 8 | llm 计数器 PRNG + 三分布可复现；llm.u 采样注入闭包；Burn rand/seed/Distribution |
 | 17 | 内核 DSL 扩展 | 5 | 2 | 9 | llm cutile 协商/拼接/emit/指纹，自述仅 P0 模板纵切面 + typed kernel 起步；`cutile/src/native.rs` 为 nn→cutile→prof::native 零成本转发面；本轮 clean 后 cutile 基线编译绿；llm.u 内核直写后端；Burn CubeCL IR 成熟多 runtime lowering + 融合 |
@@ -471,7 +471,7 @@ llm 文档列的形状族（`tensor.rs:20-31`）：`broadcast/narrow/slice/chunk
 - **#8 调度/训练循环 3 → 5（llm）**：上一版因 train lib 被 cutile 未提交中间态阻塞、编译与运行观测缺失定 3；本轮 `cargo check --workspace` 绿，`cargo test -p llm-train backprop` 50 例全绿，含 `an_arbitrary_geometry_trains_end_to_end_under_sgd` 端到端 SGD 训练例实测通过，Session/Learner/evaluate/账表/优化步链路达最小可用闭环；真机大规模训练收敛、调度策略仍未核，故定 5 而非更高。
 - **#4 算子/内核覆盖 4 → 5（llm）**：上一版注册表 52 条定 4；本轮上一轮 unary 增量收进 HEAD 基线，注册表展开 **70 条**，elementwise/unary/激活/norm/attention/pool/conv/reduce/embed/rope/gemm·gemv·matmul 与 i2/i4/i8/dequant 族齐备；各算子真机内核激活仍未核、无 RNN 类算子，故定 5（骨架在位、部分实现）而非 6–7。
 - **#19 测试/质量门禁 维持 5（llm）**：本轮整 workspace `cargo check` 绿、`cargo test --workspace` 2369 passed / 1 failed，唯一红灯为 tools 静态门 3 项 train 文件 Lines 存量赤字（#44，非编译错误）；静态门未清、clippy/fmt 未收尾复跑，维持 5。
-- **#6 自动微分 维持 7（llm）**：本轮独立读测试源码复核，`Reference` CPU 内核后端解析梯度与中心差分逐参数对拍，50 例实测通过（上一版口径 43 例）；脱离优化器窗口的 Var→向量独立梯度快照已补 `GradientSnapshot`（`gradient_snapshot`，测试覆盖清零后副本仍有效、常量叶子不入快照）。仍缺：后端装饰器式任意可微闭包、真实分布式传输/NCCL、GPU 后端梯度激活——`Kernel`/`Executor` 仅前向缝，反向为 train CPU 标量公式，设备侧无梯度核通路，维持 7。
+- **#6 自动微分 维持 7（llm）**：本轮独立读测试源码复核，`Reference` CPU 内核后端解析梯度与中心差分逐参数对拍，50 例实测通过（上一版口径 43 例）；脱离优化器窗口的 Var→向量独立梯度快照已补 `GradientSnapshot`（`gradient_snapshot`，测试覆盖清零后副本仍有效、常量叶子不入快照）。仍缺：后端装饰器式任意可微闭包、NCCL/RDMA/socket 高速织物与多进程 spawn E2E（现有进程内 `Local` + 文件后端 `FileRemote`）、GPU 后端梯度激活——`Kernel`/`Executor` 仅前向缝，反向为 train CPU 标量公式，设备侧无梯度核通路，维持 7。
 - **#11 数据集管线 维持 3（llm）**：`Dataset` trait / `Loader`/`Chunks` / 三族采样 / 权重校验 / 181 行测试在位且基线编译绿；仍无物理分词/打包源，维持 3。
 - **#17 内核 DSL 维持 5（llm）**：上一版因 cutile 未提交抽象重构中间态存疑；本轮 `cargo clean -p cutile` 后 `Finished`，中间态已收进 HEAD；但 DSL 仍为 P0 模板纵切面 + typed kernel 起步，内核覆盖待扩，维持 5。
 - **#21 unsafe/内存安全边界（llm 8 / llm.u 3 / Burn 6）**：llm `unsafe_code`/`unsafe_op_in_unsafe_fn` 均 deny，101 处 unsafe（块 67+fn 23+impl 5+extern 6）集中为显式岛；llm.u 441 处（块 322+fn 104+impl 15）分散且 lint 仅 cli deny；Burn 246 处（块 208+fn 27+impl 11）、未设 deny/forbid。计数口径为源码 `unsafe {`/`unsafe fn`/`unsafe impl`/extern unsafe，已排除所有层级 `target/` 与 fuzz 生成 codegen。
