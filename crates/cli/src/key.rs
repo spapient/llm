@@ -104,6 +104,13 @@ keys! { roots;
     WorkDir => "work.dir", ["WORK_DIR"], parse_path, Some(SettingValue::Path(roots.default_work_dir(APP))), "编译与执行时的临时工作目录";
     DataRoot => "data.root", ["DATA_DIR"], parse_path, None, "声明层 / 档案层 / 片段层的替代根；未设置表示用内嵌数据";
     CacheLimit => "cache.limit_bytes", [], parse_bytes, Some(SettingValue::Bytes(2 * 1024 * 1024 * 1024)), "缓存容量上限（字节）";
+    TrainLearningRate => "train.learning_rate", ["TRAIN_LEARNING_RATE"], parse_float, Some(SettingValue::Float(train::TrainConfig::default().learning_rate)), "训练峰值学习率";
+    TrainWarmupSteps => "train.warmup_steps", ["TRAIN_WARMUP_STEPS"], parse_uint, Some(SettingValue::UInt(train::TrainConfig::default().warmup_steps)), "学习率预热步数";
+    TrainMaxSteps => "train.max_steps", ["TRAIN_MAX_STEPS"], parse_uint, Some(SettingValue::UInt(train::TrainConfig::default().max_steps)), "计划总训练步数";
+    TrainClipNorm => "train.clip_norm", ["TRAIN_CLIP_NORM"], parse_float, None, "全局梯度裁剪范数；未设置表示不裁剪";
+    TrainAccumulation => "train.accumulation", ["TRAIN_ACCUMULATION"], parse_uint, Some(SettingValue::UInt(train::TrainConfig::default().accumulation.into())), "梯度累积窗口";
+    TrainBatchRows => "train.batch_rows", ["TRAIN_BATCH_ROWS"], parse_uint, Some(SettingValue::UInt(train::LoaderConfig::default().rows as u64)), "每批行数";
+    TrainBatchCols => "train.batch_cols", ["TRAIN_BATCH_COLS"], parse_uint, Some(SettingValue::UInt(train::LoaderConfig::default().cols as u64)), "每批列数";
 }
 
 /// 槽位数量；[`Key::KEYS`] 是唯一事实源。
@@ -222,6 +229,24 @@ fn parse_bytes(key: Key, text: &str, origin: &Origin) -> Result<SettingValue> {
     text.parse::<u64>()
         .map(SettingValue::Bytes)
         .map_err(|_| bad_value(key, origin, "应为非负整数"))
+}
+
+/// 非负整数配置。
+fn parse_uint(key: Key, text: &str, origin: &Origin) -> Result<SettingValue> {
+    text.parse::<u64>()
+        .map(SettingValue::UInt)
+        .map_err(|_| bad_value(key, origin, "应为非负整数"))
+}
+
+/// 有限浮点配置；NaN 与无穷在配置入口直接拒绝。
+fn parse_float(key: Key, text: &str, origin: &Origin) -> Result<SettingValue> {
+    let value = text
+        .parse::<f32>()
+        .map_err(|_| bad_value(key, origin, "应为浮点数"))?;
+    if !value.is_finite() {
+        return Err(bad_value(key, origin, "应为有限数"));
+    }
+    Ok(SettingValue::Float(value))
 }
 
 /// 相对路径按 `base` 解析；非路径值原样返回。

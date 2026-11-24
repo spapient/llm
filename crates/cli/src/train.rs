@@ -1,11 +1,14 @@
-//! `train` 命令：把 cli 搬下来的字符串解析成 [`train::TrainConfig`]，`--load` 从快照恢复事实、
-//! 矩状态、累积窗口与权重绑定表。
+//! `train` 命令：配置文件、环境变量与显式选项共同投影成 [`train::TrainSpec`]；
+//! `--load` 从快照恢复事实、矩状态、累积窗口与权重绑定表。
 
 use diagnostic::render::Panel;
 use diagnostic::{Code, Error, Result};
 
+use crate::settings::Settings;
+
 /// `train` 分派：解析配置、按 `--load` 决定汇报恢复事实还是配置。
 pub(crate) fn train_run(
+    settings: &Settings,
     lr: Option<&str>,
     warmup: Option<&str>,
     steps: Option<&str>,
@@ -13,35 +16,36 @@ pub(crate) fn train_run(
     accumulation: Option<&str>,
     load: Option<&str>,
 ) -> Result<()> {
-    let config = build_train_config(lr, warmup, steps, clip, accumulation)?;
+    let spec = build_train_spec(settings, lr, warmup, steps, clip, accumulation)?;
     if let Some(path) = load {
-        report_recovered(path, &config)
+        report_recovered(path, &spec)
     } else {
-        report_train_config(&config);
+        report_train_config(&spec);
         Ok(())
     }
 }
 
-/// 把 cli 搬下来的字符串解析成 [`train::TrainConfig`]；缺省常数归
-/// [`train::TrainConfig::default`]，本函数只解析到 [`Option`]，不复制第二份默认值。
-fn build_train_config(
+/// 先取四层配置投影，再应用优先级相同的显式训练选项；默认值只由 train 类型提供。
+fn build_train_spec(
+    settings: &Settings,
     lr: Option<&str>,
     warmup: Option<&str>,
     steps: Option<&str>,
     clip: Option<&str>,
     accumulation: Option<&str>,
-) -> Result<train::TrainConfig> {
+) -> Result<train::TrainSpec> {
+    let spec = settings.train_spec()?;
     let learning_rate = parse_optional_f32(lr, "--lr")?;
     let clip_norm = parse_optional_f32(clip, "--clip")?;
     let (warmup_steps, max_steps, accumulation) = parse_train_uints(warmup, steps, accumulation)?;
-    train::TrainConfig::with_overrides(
+    let session = spec.session.overridden(
         learning_rate,
         warmup_steps,
         max_steps,
         clip_norm,
         accumulation,
-    )
-    .map_err(|error| error.with("llm train"))
+    )?;
+    train::TrainSpec::new(session, spec.loader).map_err(|error| error.with("llm train"))
 }
 
 /// 无符号档位：warmup/步数是 `u64`，累积窗是 `u32`；类型随快照事实口径固定。
