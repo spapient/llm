@@ -8,6 +8,10 @@ use diagnostic::Code;
 #[crate::spec(name = "no_axes", out = [8], ops = ["gemv_i4"])]
 struct NoAxes;
 
+/// 静态注解直接声明参数角色，不再需要手写一份 Contract 实现。
+#[crate::spec(name = "fixed_norm", out = [8], ops = ["rmsnorm_f32"], role = "norm")]
+struct FixedNorm;
+
 #[test]
 fn an_unknown_operator_is_rejected_at_definition_time() {
     let error = ContractSpec::new(

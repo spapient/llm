@@ -40,6 +40,12 @@ fn a_layer_annotation_carries_name_shape_input_and_ops() {
     assert_eq!(declaration.out, [2, 3], "轴序不能被重排");
     assert_eq!(declaration.ops, ["gemv_i4"]);
     assert_eq!(declaration.input, None, "没有 `in` 不是文法错误");
+    assert_eq!(declaration.role, None, "角色缺省走 Trainable");
+    let norm = parse(&lex(
+        r#"name = "norm", out = [8], ops = ["rmsnorm_f32"], role = "norm""#,
+    ))
+    .expect("合法角色");
+    assert_eq!(norm.role.as_deref(), Some("norm"));
     let scalar = parse(&lex(r#"name = "loss", out = [], ops = ["dot"]"#)).expect("合法");
     assert!(scalar.out.is_empty(), "空形状即标量输出");
     let projected = parse(&lex(r#"out = [8], name = "q", in = 32, ops = ["dot"]"#));

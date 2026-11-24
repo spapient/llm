@@ -759,7 +759,7 @@ fn decode_q2k(raw: &[u8], out: &mut [f32]) -> Result<()> {
 }
 
 /// Q2_K 的一对缩放：低四位是 scale，高四位是 min。
-fn scale_pair(d: f32, min: f32, sc: u8) -> (u8, u8) {
+fn scale_pair(d: f32, min: f32, sc: u8) -> (f32, f32) {
     (d * f32::from(sc & 0x0F), min * f32::from(sc >> 4))
 }
 
