@@ -54,8 +54,8 @@ P3 要在边界 crate 挂 Metal/CUDA 后端（ADR 0025 §1、§9；ADR 0028 §3 
 |---|---|---|
 | `crates/storage/src/mmap.rs`（模块级，1 处） | mmap 映射 | 模块级 allow；只读、私有映射、`Drop` 归还、线程归属；对外只暴露拥有型 `&[u8]` 视图 |
 | `crates/device/src/executor.rs`（模块级，1 处） | FFI 调用 + 设备缓冲句柄 | 手写 `objc_msgSend` 与 Metal 运行时符号；+1 保留的对象在 `Drop` 恰好 `-release` 一次，句柄私有、不跨线程，自动释放对象由 autorelease 池收口；对外是 `Executor` / `Allocator` 的安全实现 |
-| `crates/nn/src/kernel_fast_i8.rs`（函数级，4 处） | 裸指针切片重建（打包/计算包装） | i8 sdot 瓦片体 `sdot_tile` / `dot_one` / `harvest` 与端口探针已迁入 `prof::native::i8`；nn 侧只剩面板打包与行段计算的裸指针重建包装，长度守卫由调用方打包布局保证 |
-| `crates/nn/src/kernel_fast_pool.rs`（函数级，3 处） | 跨线程发布裸指针 | 常驻 GEMM 线程池：任务只发布裸指针 + 一次闸门；裸指针只活到 `done` 齐、主线程返回前 |
+| `crates/nn/src/kernel/fast/i8.rs`（函数级，4 处） | 裸指针切片重建（打包/计算包装） | i8 sdot 瓦片体 `sdot_tile` / `dot_one` / `harvest` 与端口探针已迁入 `prof::native::i8`；nn 侧只剩面板打包与行段计算的裸指针重建包装，长度守卫由调用方打包布局保证 |
+| `crates/nn/src/kernel/fast/pool.rs`（函数级，3 处） | 跨线程发布裸指针 | 常驻 GEMM 线程池：任务只发布裸指针 + 一次闸门；裸指针只活到 `done` 齐、主线程返回前 |
 | `crates/prof/src/native/gemm8x8.rs`（函数级，11 处） | 裸指针切片重建 + NEON/AVX2 intrinsics | f32 8×8 寄存器块微内核；`fma_step` 生产与探针共用；nn `kernel_fast_micro.rs` 的瓦片体迁出后 nn 岛已清空，本岛是唯一宿主 |
 | `crates/prof/src/native/i8.rs`（模块级，1 处） | 裸指针 + aarch64 dotprod `sdot` intrinsics | i8 4×4 瓦片体 `sdot_tile` 由生产微内核与取数受限探针共用同一份；模块级一处 `#![allow(unsafe_code)]` 放行整岛，头注释载探测与读边界不变量；安全入口先做运行时探测与形状守卫再进 `unsafe` 工人 |
 | `crates/prof/src/native/sme.rs`（函数级，8 处） | 内联汇编 + SME intrinsics | aarch64 SME 16×64 ZA 外积；nightly + `target_arch = "aarch64"` 门控；nn `kernel_fast_sme.rs` 迁出后已删，本岛是唯一宿主 |
@@ -116,3 +116,4 @@ P3 要在边界 crate 挂 Metal/CUDA 后端（ADR 0025 §1、§9；ADR 0028 §3 
 - 2026-11-22：`op::fast` 增 x86_64 AVX2/FMA 微内核（与 NEON 同一组不变量，仍属同一逻辑岛），`fast.rs` 11 → 14 处，`op` 合计 17 处；白名单与门禁同步更新，未放宽任何阈值。
 - 2026-11-23：`nn::kernel` 由 `kernel/` 目录合并回单文件 `kernel.rs`（`fast` 四段 `i8`/`micro`/`pool`/`sme` 的 34 处越界点随合并回 `kernel.rs`），§6 表格与 `testkit/src/boundary.rs` 白名单同步改回单行；总处数仍为 36，存量冻结口径不变。
 - 2026-11-23：`nn::kernel` 由单文件 `kernel.rs` 平铺为「门面 + 每族一文件」（`kernel_fast.rs` 等 15 个 `kernel_*.rs`、`conv_*.rs` 8 个），`unsafe` 岛随 `fast` 段落到 `kernel_fast.rs`；§6 表格与白名单同步到新路径，总处数仍为 36，存量冻结口径不变。
+- 2026-11-24：`fast` 各段由 `kernel_fast_*.rs` 平铺文件收拢进 `kernel/fast/` 目录（`i8.rs`、`pool.rs` 等），越界点随文件迁移、处数不变（i8 4 + pool 3）；§6 表格与白名单同步到目录路径，存量冻结口径不变。
