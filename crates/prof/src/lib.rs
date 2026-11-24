@@ -173,8 +173,8 @@ macro_rules! for_each_template {
     };
 }
 
-/// 模板表：算子名 → `ops/<stem>.k` 的正文，`include_str!` 在编译期读入，与
-/// [`for_each_template!`] 同一次扫描生成。
+/// 模板表：CPU 兼容视图 + `(vendor, 算子名)` → `<vendor>/kernels/<stem>.k` 的完整矩阵，
+/// `include_str!` 在编译期读入，与 [`for_each_template!`] 同一次扫描生成。
 mod templates {
     include!(concat!(env!("OUT_DIR"), "/templates_table.rs"));
 }

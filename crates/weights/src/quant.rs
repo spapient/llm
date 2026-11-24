@@ -6,7 +6,7 @@ use tensor::DType;
 
 use crate::Wire;
 use crate::{Entry, Header};
-use storage::leb::{self, Cursor};
+use storage::leb::Cursor;
 use storage::sink::Sink;
 
 // —— 仿射量化方案（磁盘描述符） ——
@@ -83,22 +83,26 @@ impl Quant {
         self.validate_layout(rank)?;
         self.validate()?;
         out.put(&[0]); // scheme = affine
-        leb::write(out, self.axis);
-        leb::write(out, self.block);
-        out.put(&[if self.zero { 1 } else { 0 }]);
-        leb::write(out, self.scale_ty.code());
-        if let Some(zp_ty) = self.zp_ty {
-            leb::write(out, zp_ty.code());
-        }
+        self.encode_fields(out);
         Ok(())
     }
 
     /// 从游标解码。
     pub(crate) fn decode(cur: &mut Cursor<'_>, rank: u32) -> Result<Self> {
         read_scheme(cur)?;
-        let (axis, block, zero) = read_head(cur)?;
-        let (scale_ty, zp_ty) = read_types(cur, zero)?;
+        let (axis, block, zero, scale_ty, zp_ty) = Self::decode_fields(cur)?;
         Self::new(rank, axis, block, zero, scale_ty, zp_ty)
+    }
+}
+
+// 线上字段的唯一声明：编码与解码共用字段顺序、条件尾部与 flags 掩码。
+wire_fields! {
+    Quant {
+        axis: leb_u32,
+        block: leb_u32,
+        zero: bool_flag<0x01>,
+        scale_ty: wire_type,
+        zp_ty: wire_type if zero,
     }
 }
 
@@ -110,28 +114,6 @@ fn read_scheme(cur: &mut Cursor<'_>) -> Result<()> {
     }
     let message = format!("未知量化 scheme {scheme}，当前只支持 affine(0)");
     Err(Error::new(Code::Unsupported, message).with("weights::quant"))
-}
-
-/// 轴、组宽与 flags；flags 只允许最低位（零点开关），其余位是预留。
-fn read_head(cur: &mut Cursor<'_>) -> Result<(u32, u32, bool)> {
-    let axis = cur.read::<u32>()?;
-    let block = cur.read::<u32>()?;
-    let flags = cur.read_u8()?;
-    if flags & !1 != 0 {
-        return Err(bad("量化 flags 含非零预留位"));
-    }
-    Ok((axis, block, flags & 1 == 1))
-}
-
-/// 标度类型；有零点时紧随其后读零点类型，无零点则不占字节。
-fn read_types(cur: &mut Cursor<'_>, zero: bool) -> Result<(Wire, Option<Wire>)> {
-    let scale_ty = crate::read_wire(cur)?;
-    let zp_ty = if zero {
-        Some(crate::read_wire(cur)?)
-    } else {
-        None
-    };
-    Ok((scale_ty, zp_ty))
 }
 
 // —— 权重/标度成对推断 ——

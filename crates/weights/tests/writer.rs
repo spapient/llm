@@ -132,7 +132,6 @@ fn write_to_path_without_checksums_round_trips() {
     let _ = std::fs::remove_file(&target);
 }
 
-
 #[test]
 fn parallel_encoding_is_byte_for_byte_deterministic() {
     let matrix: Vec<f32> = (0..64).map(|i| (i as f32 * 0.37).sin()).collect();

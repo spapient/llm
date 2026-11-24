@@ -1,4 +1,4 @@
-//! 模板表生成：`ops/*.toml` → `template_list.rs` + `templates_table.rs`。
+//! 模板表生成：`ops/*.toml` + `<vendor>/kernels/*.k` → `template_list.rs` + `templates_table.rs`。
 //!
 //! 算子的 `Table` 声明树已由 `prof_ops!()` 编译期展开成强类型 `OpView`（见 `crate::OPS`）；
 //! 本脚本只保留模板正文这一半：一份 `$m!{ 名字 => 模板 }` 清单与一张模板正文表。生成顺序按
@@ -61,11 +61,7 @@ fn resolved_table(ops: &Path, path: &Path) -> diagnostic::Result<toml::Table> {
 }
 
 /// 单份档案展开出的档条目；继承解析、模板 stem 校验都在本助手内闭包。
-fn entries_for_file(
-    ops: &Path,
-    path: &Path,
-    devices: &[Device],
-) -> diagnostic::Result<Vec<Entry>> {
+fn entries_for_file(ops: &Path, path: &Path, devices: &[Device]) -> diagnostic::Result<Vec<Entry>> {
     let name = file_stem(path);
     let table = resolved_table(ops, path)?;
     let stem = stem_of(&table, name, ops, devices);
@@ -220,7 +216,7 @@ fn emit_templates(
     table.push_str("];\n\n/// `(vendor, 算子名)` 与后端模板正文，按二元组升序。\n");
     let _ = writeln!(
         table,
-        "pub const DEVICE_TEMPLATES: [(&str, &str, &str); {}] = [",
+        "pub static DEVICE_TEMPLATES: [(&str, &str, &str); {}] = [",
         names.len() * devices.len()
     );
     for device in devices {
@@ -250,11 +246,7 @@ fn emit_entries(
         // 无档与 f32 档直接内嵌源文件；其余档只替换独立 C 浮点类型 token。
         match tier.as_deref() {
             None | Some("f32") => {
-                let _ = writeln!(
-                    table,
-                    "    {prefix}include_str!({:?})),",
-                    path.display()
-                );
+                let _ = writeln!(table, "    {prefix}include_str!({:?})),", path.display());
             }
             Some(tier) => {
                 let text = std::fs::read_to_string(&path)
@@ -326,7 +318,9 @@ fn stem_of(table: &toml::Table, name: &str, ops: &Path, devices: &[Device]) -> S
         .and_then(|value| value.as_str())
         .unwrap_or(name)
         .to_string();
-    let src = ops.parent().unwrap_or_else(|| fail("`ops/` 没有源码父目录"));
+    let src = ops
+        .parent()
+        .unwrap_or_else(|| fail("`ops/` 没有源码父目录"));
     for device in devices {
         let template = kernel_path(src, device, &stem);
         if !template.is_file() {

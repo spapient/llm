@@ -480,7 +480,6 @@ pub(crate) fn data_start(meta: &[Meta], pos: usize, len: usize) -> Result<usize>
     Err(bad("数据区偏移超出文件"))
 }
 
-
 #[cfg(test)]
 #[path = "../../tests/gguf.rs"]
 mod tests;

@@ -24,7 +24,8 @@ use tensor::Shape;
 use crate::{Bounds, BoundsResult, Contract, ContractSpec, spec_accessors};
 
 /// 循环单元的门结构。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Cell {
     /// 单门：`h' = tanh(W·[x, h] + b)`。
     Rnn,

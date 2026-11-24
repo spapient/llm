@@ -279,7 +279,7 @@ impl MemoryBlock {
     ///
     /// `width == 0`、`buckets == 0`、`order < 2`、`gate` 非有限——返回 `Code::Invalid`。
     pub fn new(
-        name: &str,
+        name: impl Into<String>,
         width: usize,
         order: usize,
         seed: u64,

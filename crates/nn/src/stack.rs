@@ -44,10 +44,7 @@ use tensor::Shape;
 use weights::{Entry, Header};
 
 use crate::recurrent::{Cell, Recurrent, RecurrentTensor};
-use crate::{
-    Attention, AttentionAlgo, AttentionBlock, Bounds, Contract, DecodeAttention, Embedding, Gauge,
-    LatentAttention, Linear, MatMul, MemoryBlock, OpLayer, ParamRole, Precision, WeightFormat,
-};
+use crate::{Bounds, Contract, LayerConfig, Linear, ModelConfig, WeightFormat};
 
 /// 权重条目名里表示"这是一个权重矩阵"的后缀；层名去掉它，才能与其它按名查找的地方对齐。
 pub const WEIGHT_SUFFIX: &str = ".weight";
@@ -158,19 +155,29 @@ impl Stack {
         })
     }
 
-    /// 由运行时配置构造层栈；每层复用自己的公开构造器，重名在最后统一拒绝。
+    /// 由完整模型配置构造层栈，是外部配置装配的首选入口。
     ///
     /// # Errors
     ///
-    /// 任一层配置非法或构造后的层名重复时返回对应诊断，并带上配置序号。
-    pub fn from_configs(configs: impl IntoIterator<Item = crate::LayerConfig>) -> Result<Self> {
+    /// 任一层配置非法或层名重复时返回对应诊断。
+    pub fn from_config(config: ModelConfig) -> Result<Self> {
+        config.build()
+    }
+
+    /// 由层配置迭代器构造层栈；每项被直接消费，层名与集合不做额外克隆。
+    ///
+    /// # Errors
+    ///
+    /// 任一层配置非法时返回包含 `layers[N]` 与配置类型的诊断；层名重复时由 [`Stack::of`] 拒绝。
+    pub fn from_configs(configs: impl IntoIterator<Item = LayerConfig>) -> Result<Self> {
         let layers = configs
             .into_iter()
             .enumerate()
             .map(|(idx, config)| {
+                let kind = config.kind();
                 config
                     .build()
-                    .map_err(|error| error.with(format!("配置第 {idx} 层")))
+                    .map_err(|error| error.with(format!("模型配置 layers[{idx}]（type = {kind}）")))
             })
             .collect::<Result<Vec<_>>>()?;
         Self::of(layers)
@@ -224,269 +231,6 @@ impl Stack {
         }
         Floor { total, unpriced }
     }
-}
-
-/// 可由外部模型描述逐条生成的层配置。
-///
-/// 这里没有第二套 `Layer` 实现：`build` 的产物就是原有具体类型的 trait object，所以
-/// `Contract::linear` / `embedding` / `attention_block` / `recurrent` 等类型化视图全部保留。
-#[derive(Debug, Clone, PartialEq)]
-pub enum LayerConfig {
-    /// 任意已注册的单轴算子；`op` 是拥有所有权的字符串，可直接来自配置文件。
-    Axis {
-        /// 层名。
-        name: String,
-        /// 注册算子名。
-        op: String,
-        /// 轴长。
-        len: usize,
-        /// 参数角色。
-        role: ParamRole,
-    },
-    /// 线性投影。
-    Linear {
-        /// 层名。
-        name: String,
-        /// 输入宽度。
-        in_features: usize,
-        /// 输出宽度。
-        out_features: usize,
-        /// 权重编码。
-        format: WeightFormat,
-    },
-    /// 矩阵乘。
-    MatMul {
-        /// 层名。
-        name: String,
-        /// 输出行数。
-        rows: usize,
-        /// 输出列数。
-        cols: usize,
-        /// 元素精度。
-        precision: Precision,
-        /// 收缩轴档位。
-        gauge: Gauge,
-    },
-    /// 嵌入查表。
-    Embedding {
-        /// 层名。
-        name: String,
-        /// 词表大小。
-        vocab: usize,
-        /// 嵌入宽度。
-        dim: usize,
-        /// token 数。
-        tokens: usize,
-    },
-    /// 已切分 Q/K/V 的注意力。
-    Attention {
-        /// 层名。
-        name: String,
-        /// 序列长度。
-        seq: usize,
-        /// 头宽。
-        head_dim: usize,
-        /// 实现算法。
-        algo: AttentionAlgo,
-    },
-    /// 解码期注意力。
-    DecodeAttention {
-        /// 层名。
-        name: String,
-        /// query 行数。
-        q_rows: usize,
-        /// 头宽。
-        head_dim: usize,
-        /// 实现算法。
-        algo: AttentionAlgo,
-    },
-    /// 潜空间注意力。
-    LatentAttention {
-        /// 层名。
-        name: String,
-        /// 序列长度。
-        seq: usize,
-        /// 压缩宽度。
-        latent: usize,
-        /// 头数。
-        heads: usize,
-    },
-    /// Q/K/V、注意力与输出投影组成的组合块。
-    AttentionBlock {
-        /// 块名。
-        name: String,
-        /// 隐藏宽度。
-        hidden: usize,
-        /// Q/K/V 投影宽度。
-        kv_width: usize,
-        /// 头宽。
-        head_dim: usize,
-        /// 序列长度。
-        seq: usize,
-        /// 实现算法。
-        algo: AttentionAlgo,
-        /// 投影权重编码。
-        format: WeightFormat,
-    },
-    /// RNN / GRU / LSTM 循环层。
-    Recurrent {
-        /// 层名。
-        name: String,
-        /// 单元类型。
-        cell: Cell,
-        /// 输入宽度。
-        input: usize,
-        /// 隐宽。
-        hidden: usize,
-        /// 层数。
-        layers: usize,
-        /// 方向数（1 或 2）。
-        dirs: usize,
-        /// 是否带偏置。
-        bias: bool,
-        /// 是否采用 batch-first 布局。
-        batch_first: bool,
-    },
-    /// 条件记忆层。
-    Memory {
-        /// 层名。
-        name: String,
-        /// 隐藏宽度。
-        width: usize,
-        /// N-gram 阶。
-        order: usize,
-        /// 哈希种子。
-        seed: u64,
-        /// 表槽数。
-        buckets: usize,
-        /// 门控强度。
-        gate: f32,
-    },
-}
-
-impl LayerConfig {
-    /// 用原有构造器物化这一层；所有结构错误都在返回 trait object 前报出。
-    ///
-    /// # Errors
-    ///
-    /// 错误原样来自对应层构造器：未注册算子、零宽形状、非法分组或非法几何均不会被配置层改写。
-    pub fn build(self) -> Result<Box<dyn Contract>> {
-        match self {
-            Self::Axis { .. }
-            | Self::Linear { .. }
-            | Self::MatMul { .. }
-            | Self::Embedding { .. } => Self::build_basic(self),
-            Self::Attention { .. }
-            | Self::DecodeAttention { .. }
-            | Self::LatentAttention { .. }
-            | Self::AttentionBlock { .. } => Self::build_attention(self),
-            Self::Recurrent { .. } | Self::Memory { .. } => Self::build_recurrent(self),
-        }
-    }
-
-    /// 基础线性族：单轴算子、线性投影、矩阵乘、嵌入查表。
-    fn build_basic(self) -> Result<Box<dyn Contract>> {
-        match self {
-            Self::Axis {
-                name,
-                op,
-                len,
-                role,
-            } => OpLayer::new(name, op, len, role).map(boxed),
-            Self::Linear {
-                name,
-                in_features,
-                out_features,
-                format,
-            } => Linear::with_format(name, format, in_features, out_features).map(boxed),
-            Self::MatMul {
-                name,
-                rows,
-                cols,
-                precision,
-                gauge,
-            } => MatMul::with_precision(name, rows, cols, precision, gauge).map(boxed),
-            Self::Embedding {
-                name,
-                vocab,
-                dim,
-                tokens,
-            } => Embedding::new(name, vocab, dim, tokens).map(boxed),
-            _ => Self::misaligned(),
-        }
-    }
-
-    /// 注意力族：切分 Q/K/V、解码期、潜空间与组合注意力块。
-    fn build_attention(self) -> Result<Box<dyn Contract>> {
-        match self {
-            Self::Attention {
-                name,
-                seq,
-                head_dim,
-                algo,
-            } => Attention::new(name, seq, head_dim, algo).map(boxed),
-            Self::DecodeAttention {
-                name,
-                q_rows,
-                head_dim,
-                algo,
-            } => DecodeAttention::new(name, q_rows, head_dim, algo).map(boxed),
-            Self::LatentAttention {
-                name,
-                seq,
-                latent,
-                heads,
-            } => LatentAttention::new(name, seq, latent, heads).map(boxed),
-            Self::AttentionBlock {
-                name,
-                hidden,
-                kv_width,
-                head_dim,
-                seq,
-                algo,
-                format,
-            } => {
-                AttentionBlock::new(name, hidden, kv_width, head_dim, seq, algo, format).map(boxed)
-            }
-            _ => Self::misaligned(),
-        }
-    }
-
-    /// 循环与记忆族：RNN/GRU/LSTM 单元与条件记忆层。
-    fn build_recurrent(self) -> Result<Box<dyn Contract>> {
-        match self {
-            Self::Recurrent {
-                name,
-                cell,
-                input,
-                hidden,
-                layers,
-                dirs,
-                bias,
-                batch_first,
-            } => Recurrent::with_layout(name, cell, input, hidden, layers, dirs, bias, batch_first)
-                .map(boxed),
-            Self::Memory {
-                name,
-                width,
-                order,
-                seed,
-                buckets,
-                gate,
-            } => MemoryBlock::new(&name, width, order, seed, buckets, gate).map(boxed),
-            _ => Self::misaligned(),
-        }
-    }
-
-    /// 分发错位的防御性错误：主 [`build`] 按族分派，族内辅助不应收到其他族变体。
-    fn misaligned() -> Result<Box<dyn Contract>> {
-        Err(Error::new(Code::Internal, "配置族分发错位").with("nn::LayerConfig"))
-    }
-}
-
-/// 把具体层收口到栈的类型擦除边界；只在配置出口写一次。
-fn boxed<L: Contract + 'static>(layer: L) -> Box<dyn Contract> {
-    Box::new(layer)
 }
 
 /// 条目归到两侧：能认成循环层的按层归组，其余逐条判投影。

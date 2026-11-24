@@ -2,6 +2,27 @@
 //!
 //! [`ModelConfig`] 是可序列化的完整层栈，[`LayerConfig`] 使用 `type = "..."` 区分层类型。
 //! 所有配置都拒绝未知字段；装配直接消费字符串与集合，不为类型擦除额外克隆配置。
+//!
+//! # TOML 样例
+//!
+//! ```toml
+//! [[layers]]
+//! type = "linear"
+//! name = "blk.0.q"
+//! in_features = 128
+//! out_features = 64
+//!
+//! [layers.format]
+//! type = "int4"
+//! group = 32
+//!
+//! [[layers]]
+//! type = "axis"
+//! name = "blk.0.norm"
+//! op = "rmsnorm_f32"
+//! len = 128
+//! role = "norm"
+//! ```
 
 use diagnostic::Result;
 use serde::{Deserialize, Serialize};
@@ -70,6 +91,7 @@ pub enum LayerConfig {
         format: WeightFormat,
     },
     /// 矩阵乘。
+    #[serde(rename = "matmul")]
     MatMul {
         /// 层名。
         name: String,
@@ -189,12 +211,26 @@ impl LayerConfig {
         match self {
             Self::Axis { .. } => "axis",
             Self::Linear { .. } => "linear",
-            Self::MatMul { .. } => "mat_mul",
+            Self::MatMul { .. } => "matmul",
             Self::Embedding { .. } => "embedding",
+            rest => Self::kind_attention(rest),
+        }
+    }
+
+    /// 注意力族短名：四种 Q/K/V 变体同属一条装配族。
+    const fn kind_attention(this: &Self) -> &'static str {
+        match this {
             Self::Attention { .. } => "attention",
             Self::DecodeAttention { .. } => "decode_attention",
             Self::LatentAttention { .. } => "latent_attention",
             Self::AttentionBlock { .. } => "attention_block",
+            rest => Self::kind_recurrent(rest),
+        }
+    }
+
+    /// 循环与记忆族短名：收尾两臂穷尽枚举剩余变体。
+    const fn kind_recurrent(this: &Self) -> &'static str {
+        match this {
             Self::Recurrent { .. } => "recurrent",
             Self::Memory { .. } => "memory",
         }
@@ -248,6 +284,13 @@ impl LayerConfig {
                 dim,
                 tokens,
             } => Embedding::new(name, vocab, dim, tokens).map(boxed),
+            rest => Self::build_attention(rest),
+        }
+    }
+
+    /// 注意力族构造：Q/K/V、解码期、潜空间与组合块四条通路。
+    fn build_attention(config: LayerConfig) -> Result<Box<dyn Contract>> {
+        match config {
             Self::Attention {
                 name,
                 seq,
@@ -275,8 +318,16 @@ impl LayerConfig {
                 algo,
                 format,
             } => {
-                AttentionBlock::new(name, hidden, kv_width, head_dim, seq, algo, format).map(boxed)
+                AttentionBlock::new(name, hidden, kv_width, head_dim, seq, algo, format)
+                    .map(boxed)
             }
+            rest => Self::build_recurrent(rest),
+        }
+    }
+
+    /// 循环与记忆族构造：收尾两臂穷尽枚举剩余变体。
+    fn build_recurrent(config: LayerConfig) -> Result<Box<dyn Contract>> {
+        match config {
             Self::Recurrent {
                 name,
                 cell,
@@ -286,17 +337,8 @@ impl LayerConfig {
                 dirs,
                 bias,
                 batch_first,
-            } => Recurrent::with_layout(
-                name,
-                cell,
-                input,
-                hidden,
-                layers,
-                dirs,
-                bias,
-                batch_first,
-            )
-            .map(boxed),
+            } => Recurrent::with_layout(name, cell, input, hidden, layers, dirs, bias, batch_first)
+                .map(boxed),
             Self::Memory {
                 name,
                 width,

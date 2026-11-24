@@ -356,19 +356,6 @@ fn signed(bytes: &[u8]) -> Vec<i8> {
     bytes.iter().map(|&x| x as i8).collect()
 }
 
-/// 反量化适配：`[q] → y: f32`，scale/zero 取样本常量；打包与逐元素两档只差输入 lane。
-macro_rules! dequant {
-    ($(($run:ident, $lane:ty)),* $(,)?) => {$(
-        fn $run(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
-            let (q,) = <($lane,) as Inputs>::unpack(inputs, stringify!($run))?;
-            let out = output_slice::<f32>(stringify!($run), output)?;
-            nn::$run::forward(nn::$run::SCALE, nn::$run::ZERO, q, out)
-        }
-    )*};
-}
-
-dequant!((dequant_i2, u8), (dequant_i4, u8));
-
 /// i8 反量化：f32 承载量化整数，输入包只读张量视图。
 fn dequant_i8(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
     let (q,) = <(f32,) as Inputs>::unpack(inputs, "dequant_i8")?;
@@ -402,94 +389,6 @@ fn rope_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
         output_slice::<f32>("rope_f32", output)?,
     )
 }
-
-/// 设备档算子（`f16` / `bf16` 等）在 CPU 标量参考层没有存储 lane（本层缓冲只有 f32 与打包 u8）。
-/// 生成显式拒绝的表行入口：既满足与注册表的同序锁，又如实表达既有契约——设备档走 cutile 协商
-/// 执行，不在标量参考层跑。「加一个设备档算子=加一行声明」，拒绝逻辑只写一遍。
-macro_rules! no_scalar {
-    ($($run:ident => $dtype:expr),* $(,)?) => {$(
-        fn $run(_inputs: &[View<'_>], _output: &mut ViewMut<'_>) -> Result<()> {
-            Err(no_storage($dtype))
-        }
-    )*};
-}
-
-no_scalar!(abs_f16 => DType::F16);
-
-/// 标量内核表：长度就是 [`nn::registry::REGISTRY`] 的长度，名字与顺序由下面的 `const` 断言锁住。
-const KERNELS: [Entry; nn::registry::REGISTRY.len()] = kernel_table![
-    abs_f16,
-    abs_f32,
-    adaptive_pool_f32,
-    add_f32,
-    attention_f32,
-    avg_pool2d_f32,
-    batch_norm_f32,
-    ceil_f32,
-    clamp_f32,
-    conv2d_f32,
-    cos_f32,
-    decode_attention_f32,
-    decode_flash_attention_f32,
-    dequant_i2,
-    dequant_i4,
-    dequant_i8,
-    div_f32,
-    embed_f32,
-    exp2_f32,
-    exp_f32,
-    flash_attention_f32,
-    floor_f32,
-    gelu_f32,
-    gemm_f32,
-    gemm_i2,
-    gemm_i4,
-    gemm_i8,
-    gemv_f32,
-    gemv_i2,
-    gemv_i4,
-    gemv_i8,
-    group_norm_f32,
-    hard_sigmoid_f32,
-    instance_norm_f32,
-    interpolate_f32,
-    latent_attention_f32,
-    layer_norm_f32,
-    leaky_relu_f32,
-    log1p_f32,
-    log_f32,
-    matmul_f32,
-    matmul_i8,
-    max_f32,
-    max_pool1d_f32,
-    max_pool2d_f32,
-    min_f32,
-    mul_f32,
-    neg_f32,
-    recip_f32,
-    reduce_max_f32,
-    reduce_prod_f32,
-    reduce_sum_f32,
-    relu_f32,
-    remainder_f32,
-    residual_add_f32,
-    rmsnorm_f32,
-    rope_f32,
-    round_f32,
-    rsqrt_f32,
-    scale_f32,
-    scan_f32,
-    sigmoid_f32,
-    sign_f32,
-    silu_f32,
-    sin_f32,
-    softmax_f32,
-    sqrt_f32,
-    square_f32,
-    sub_f32,
-    tanh_f32,
-    trunc_f32,
-];
 
 const _: () = same_order(&KERNELS, &nn::registry::REGISTRY);
 

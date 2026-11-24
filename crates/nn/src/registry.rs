@@ -2,7 +2,7 @@
 //!
 //! 与 [`prof::catalogue`] 分工：那里回答"有哪些算子、各自用哪份模板"，本表回答"谁来算"。
 //! 两张表都按名字排同一顺序，错位在编译期失败；模板正文不在这里重复——要它的人问
-//! `prof::catalogue::template(name)`，于是 `.k` 只有一份。
+//! `prof::catalogue::template(name)` 取主机参考实现；设备正文由发射层按 vendor 选择。
 
 use prof::catalogue::Registration;
 

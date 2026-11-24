@@ -87,9 +87,13 @@ fn every_device_fragment_set_splices_the_p0_template() {
         let ext = profile.meta.emit.ext();
         let fragments = prof::builtin(vendor, ext)
             .unwrap_or_else(|| panic!("`{vendor}` 的片段层没有按 `. {ext}` 登记"));
+        let backend = prof::catalogue::named_for(vendor, &op.name)
+            .expect("后端必须有自己的微内核")
+            .to_decl()
+            .expect("后端声明自洽");
         for combo in &combos {
-            if let Err(error) = substitute::render(op, combo, &fragments) {
-                panic!("`{vendor}` 的片段与模板签名不同构（{combo}）：{error}");
+            if let Err(error) = substitute::render(&backend, combo, &fragments) {
+                panic!("`{vendor}` 的片段与微内核签名不同构（{combo}）：{error}");
             }
         }
     }

@@ -119,6 +119,7 @@ pub enum Metric {
 struct Prepared {
     labels: Vec<f32>,
     logits: Vec<f32>,
+    loss: Var,
     metric: Option<Metric>,
 }
 
@@ -231,12 +232,16 @@ impl<K: Kernel, O: Optimizer, C: Collective> Learner<K, O, C> {
         Ok(())
     }
 
-    /// 入账评估量、回传梯度、跑闭包覆盖口并走优化步。
+    /// 校验指标、登记反传终点与 loss，再入账、回传并走优化步。
     fn finish<G>(&mut self, prepared: Prepared, backward: &mut G) -> Result<()>
     where
         G: FnMut(&mut Session<K, O, C>) -> Result<()>,
     {
-        self.record(&prepared)?;
+        let point = self.point(&prepared)?;
+        validate(&point).map_err(|error| error.with(SITE))?;
+        self.session.plan(prepared.loss)?;
+        self.session.record_loss(prepared.loss)?;
+        self.board.record(point).map_err(|error| error.with(SITE))?;
         self.backward_with(backward)?;
         self.session.optimize()?;
         Ok(())
@@ -252,7 +257,7 @@ impl<K: Kernel, O: Optimizer, C: Collective> Learner<K, O, C> {
         Ok(())
     }
 
-    /// 接批、跑前向并取出评估所需的标签与 logits；反传终点已由前向闭包登记进计划。
+    /// 接批、跑前向并取出标签、logits 与 loss；训练路径由 [`Self::finish`] 统一登记反传计划。
     fn forward_pass<F>(
         &mut self,
         rows: usize,
@@ -270,6 +275,7 @@ impl<K: Kernel, O: Optimizer, C: Collective> Learner<K, O, C> {
         Ok(Prepared {
             labels,
             logits,
+            loss: out.loss,
             metric: out.metric,
         })
     }
@@ -333,12 +339,6 @@ impl<K: Kernel, O: Optimizer, C: Collective> Learner<K, O, C> {
             loss: outcome.loss,
             correct: outcome.correct,
         })
-    }
-
-    /// 按度量计算 loss 与命中并记进训练看板。
-    fn record(&mut self, prepared: &Prepared) -> Result<()> {
-        let point = self.point(prepared)?;
-        self.board.record(point).map_err(|error| error.with(SITE))
     }
 
     /// 按度量计算 loss 与命中并记进评估独立账表；步号沿用当前训练步，仅作对账标记。

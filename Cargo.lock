@@ -657,6 +657,8 @@ dependencies = [
  "llm-weights",
  "num-traits",
  "proptest",
+ "serde",
+ "toml",
 ]
 
 [[package]]

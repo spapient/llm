@@ -1,5 +1,5 @@
-//! 算子目录：`src/ops/*.toml` 经 [`prof_ops!`](annotation::prof_ops) 展开的强类型视图，
-//! 与 `<stem>.k` 的模板正文。
+//! 算子目录：`src/ops/*.toml` 经 [`prof_ops!`](annotation::prof_ops) 展开的强类型共享契约，
+//! 与 `src/<vendor>/kernels/<stem>.k` 的逐后端微内核正文。
 //!
 //! 与 [`crate::builtin`] 的档案表并列但不同：档案表答"这台机器能跑什么"，目录答"有哪些算子"。
 
@@ -91,7 +91,8 @@ pub fn named(name: &str) -> Option<Op> {
 /// 按后端与名字取一条内嵌算子；声明共享，正文来自该后端的 `kernels/`。
 pub fn named_for(vendor: &str, name: &str) -> Option<Op> {
     let template = template_for(vendor, name)?;
-    Some(Op::new(view(name)?.name, view(name)?, template))
+    let view = view(name)?;
+    Some(Op::new(view.name, view, template))
 }
 
 /// 全部主机参考算子，顺序与 [`crate::OPS`] 一致。
@@ -118,8 +119,8 @@ pub fn for_device<'a>(
     op: &'a crate::decl::OpDecl,
     vendor: &str,
 ) -> diagnostic::Result<Cow<'a, crate::decl::OpDecl>> {
-    let source = template_for(vendor, &op.name)
-        .ok_or_else(|| missing_template(vendor, op.name))?;
+    let source =
+        template_for(vendor, &op.name).ok_or_else(|| missing_template(vendor, &op.name))?;
     if source == op.template {
         return Ok(Cow::Borrowed(op));
     }
@@ -148,7 +149,10 @@ fn checked_signature(
     if signature != op.signature {
         return Err(Error::new(
             Code::Invalid,
-            format!("后端 `{vendor}` 的算子 `{}` 与共享契约的 ABI 不一致", op.name),
+            format!(
+                "后端 `{vendor}` 的算子 `{}` 与共享契约的 ABI 不一致",
+                op.name
+            ),
         ));
     }
     Ok(signature)

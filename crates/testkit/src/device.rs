@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-/// P0 闭集：`crates/prof/ops/*.k` 真的会 `@` 到的八个原语，模板按名字取片段。
+/// P0 闭集：`crates/prof/src/<vendor>/kernels/*.k` 会 `@` 到的八个原语。
 ///
 /// 这是**算子模板**的事实，不是某台设备的事实，因此六台设备共用一份。设备模块自带
 /// 一份的写法会让 [`Contract::check_p0_set`] 的可信度落到被检查方手里：各设备缩一缩自己
@@ -227,7 +227,7 @@ impl<'a> Contract<'a> {
         ))
     }
 
-    /// 片段目录里的全部文件名（`.rs` 除外），排序后返回。
+    /// 片段目录里的全部文件名（`.rs` 与 `kernels/` 等子树除外），排序后返回。
     fn found_names(&self) -> Result<Vec<String>, String> {
         let entries = std::fs::read_dir(self.dir)
             .map_err(|error| format!("`{}` 的片段目录不可读：{error}", self.id))?;
@@ -235,6 +235,13 @@ impl<'a> Contract<'a> {
         for entry in entries {
             let entry =
                 entry.map_err(|error| format!("`{}` 的片段目录项不可读：{error}", self.id))?;
+            if entry
+                .file_type()
+                .map_err(|error| error.to_string())?
+                .is_dir()
+            {
+                continue;
+            }
             let name = entry.file_name().to_string_lossy().into_owned();
             if !name.ends_with(".rs") {
                 found.push(name);

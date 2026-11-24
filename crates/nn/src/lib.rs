@@ -56,6 +56,7 @@ extern crate self as nn;
 pub use annotation::spec;
 
 mod attention;
+mod config;
 mod contract;
 mod declare;
 mod engram;
@@ -73,7 +74,10 @@ mod param_role {
     //! 参数角色闭集：一个参数槽归哪个优化器组（D11；权重衰减豁免与可训练判定由角色派生）。
 
     /// 参数角色：优化器分组的唯一事实源。
-    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+    #[derive(
+        Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+    )]
+    #[serde(rename_all = "snake_case")]
     pub enum ParamRole {
         /// 普通可训练权重（投影矩阵、稠密权重）：参与权重衰减。
         #[default]
@@ -116,6 +120,8 @@ mod stack;
 pub use attention::{Attention, AttentionAlgo, AttentionBlock, DecodeAttention, LatentAttention};
 
 #[doc(inline)]
+pub use config::{LayerConfig, ModelConfig};
+#[doc(inline)]
 pub use contract::{BoundsResult, Contract, ContractSpec, Linear};
 #[doc(inline)]
 pub use declare::{Bounds, OpLayer};
@@ -150,7 +156,7 @@ pub use single::{
 };
 
 #[doc(inline)]
-pub use stack::{Floor, LayerConfig, Stack, Unpriced, WEIGHT_SUFFIX};
+pub use stack::{Floor, Stack, Unpriced, WEIGHT_SUFFIX};
 
 /// 稠密计算核：矩阵乘族、激活、归一化、反量化、逐元素、归约与 SIMD/SME 通道。
 ///

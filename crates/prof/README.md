@@ -45,7 +45,7 @@ crates/prof/
 │   ├── epilogue.rs        # 写回尾块的六步文法
 │   ├── decl.rs            # 声明层：OpDecl 类型 + 轴展开 + 变体链（字段级解析在 ingest.rs）
 │   ├── ingest.rs          # 声明语料的摄入：声明表 → OpDecl（模块路径 decl::ingest，文件不套子目录）
-│   ├── catalogue.rs       # 算子目录：`src/ops/*.k` 与同名 `.toml` 一一对齐，按名二分查找
+│   ├── catalogue.rs       # 算子目录：共享声明 + `(vendor, op)` 后端正文二分查找
 │   ├── prof.rs            # 档案层：类型、指纹匹配、选择与 `ProfileError`
 │   ├── witness.rs         # 见证与自洽校验：`Profile::validate`（`[units]` 一致性、见证查找）
 │   ├── decode.rs          # 表值解码的唯一实现：段读取 + 名字列表/闭集位集/区间/正整数
@@ -53,20 +53,17 @@ crates/prof/
 │   ├── need.rs            # 需求与供给的代数：`Need` / `Provide` / `Attr` 与协商口径
 │   ├── annotate.rs        # 闭集枚举宏 `closed_enum!`（变体 / 名字表 / Display / parse 同表展开）
 │   ├── device.rs          # 设备行 + 片段层：Device / Image / Status、Fragment / FragmentSet / Layout / load
-│   ├── native.rs           # 主机微内核岛：公共几何、暂存面板与三条 CPU 通道
-│   ├── gemm8x8.rs          #   f32 8×8 寄存器块微内核
-│   ├── i8.rs               #   i8 sdot 4×4 微内核与端口探针
-│   ├── sme.rs              #   Apple SME 16×64 微内核（nightly + aarch64）
-│   ├── runtime.rs          # 设备运行时后端岛：队列、缓冲、管线与执行器
-│   ├── exec.rs             #   后端执行器抽象与分派
-│   ├── metal.rs            #   Metal 队列、缓冲、管线与执行器
+│   ├── runtime.rs         # 设备运行时后端岛：队列、缓冲、管线与执行器
+│   ├── exec.rs            #   后端执行器抽象与分派
 │   ├── sign.rs            # 片段签名行 `/* cutile-sign: <prim>/<impl> */`（ADR 0027 §5；构建期与本层共用）
 │   ├── lib.rs             # 公开面：模块声明 + 生成表的出口（运行期不解析 TOML、不读目录）
 │   ├── buildtables.rs     # 构建期：片段 → FRAGMENTS / PRIMS / EPILOGUE / DEVICE
-│   ├── buildops.rs        # 构建期：ops/*.toml → 声明表
+│   ├── buildops.rs        # 构建期：共享声明 + 六后端内核 → 完整生成矩阵
 │   ├── buildimage.rs      # 构建期：device-image 下真编设备镜像
-│   ├── <vendor>/          # 一台设备一个目录：<vendor>.toml + 8 段 <prim>.<ext> + epilogue + witness
-│   └── ops/               # 算子语料：<stem>.toml（声明）+ <stem>.k（模板正文）
+│   ├── <vendor>/          # 档案 + 原语 + epilogue + witness + kernels/*.k；Metal 另含 runtime.rs
+│   │   └── kernels/       # 本后端的全部算子微内核，ABI 与共享声明一致
+│   ├── cpu/native/        # 主机微内核：公共几何、NEON/AVX2、i8 sdot、Apple SME
+│   └── ops/               # 只放 `<stem>.toml` 共享声明，不放设备实现
 └── tests/                 # 片段对账、内嵌档案、档案 schema；tests/spec/ 是契约词汇的用例
 ```
 ## 一份档案写什么
@@ -202,17 +199,17 @@ P0 九条不多不少、每条签名都是带见证的供给且入口名与 `PRI
 
 ## 新增设备 / 新增执行单元
 
-1. 在 `src/<name>/` 下写 `<name>.toml` 与片段 / 见证正文（键必须属于闭集，写错字段会在解析期报错）；
-2. 目录本身就是清单：`build.rs` 扫 `src/*/*.toml`，加一个目录就是加一台设备，`lib.rs` 不登记 vendor；
-3. `cargo test -p llm-prof` —— `every_embedded_entry_is_a_device_archive` 会把"生成表里缺一份档案"直接判为失败；
+1. 在 `src/<name>/` 下写 `<name>.toml`、片段 / 见证正文，并在 `kernels/` 提供全部算子实现；
+2. 目录本身就是清单：`build.rs` 扫 `src/*/*.toml`，构建期拒绝缺失内核，`lib.rs` 不登记 vendor；
+3. `cargo test -p llm-prof` —— 内核矩阵测试逐条拒绝 ABI / 布局 / 能力需求漂移；
    同一测试目标再对一遍片段层契约（见上），它同时把每条见证在本机执行一次；
 4. `cargo run --bin cutile -- doctor --op gemv_i4 --device <name>` 看协商结果（`units:` 那一行就是本档案的执行单元）；
 5. 有真机时 `cargo run --bin cutile -- verify --op gemv_i4 --devices <name>` 对拍并回填 `grade` / `witness`。
 
 ## 什么不放进来
 
-- **算子声明与模板**（`src/ops/*.{toml,k}`）**在本 crate**：它们与档案共用同一套模板词法与签名，
-  由 `build.rs` 与档案一起展开成表。
+- **算子声明与微内核**（`src/ops/*.toml`、`src/<vendor>/kernels/*.k`）**在本 crate**：声明共享，
+  正文按后端独立实现，由 `build.rs` 与档案一起展开成表。
 - **原语片段**（`src/<vendor>/<prim>.<ext>`）与见证源码**也在本 crate**：它们是数据，不是代码。
 - **机制**：协商（`cap`）、选择（`plan`）、拼接（`substitute`）与 emit（`emit`）、探测（`probe`）都在 `cutile`；
   依赖方向固定为 `llm → cutile → prof`、`prof → {diagnostic, dtype}`，本 crate 不依赖 `cutile`。

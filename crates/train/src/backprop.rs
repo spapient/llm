@@ -7,12 +7,6 @@ use crate::geometry::Geometry;
 use crate::kernel::{Kernel, same_str};
 use crate::pool::Bufs;
 mod formulas;
-use formulas::{
-    adaptive_pool, attention, avg_pool2d, batch_norm, conv2d, decode_attention, div, embed, exp,
-    gelu, gemm, gemv, group_norm, hard_sigmoid, instance_norm, interpolate, latent_attention,
-    layer_norm, leaky_relu, log, max, max_pool1d, max_pool2d, min, mul, passthrough, reduce_max,
-    reduce_sum, relu, rmsnorm, rope, scale, sigmoid, silu, softmax, sub, tanh,
-};
 
 /// 本模块诊断站点。
 pub(crate) const SITE: &str = "train::backprop";
@@ -198,7 +192,7 @@ struct Entry {
 /// 展开公式目录：`op => formula` 一行一条，数组长度由下方 [`FORMULAS`] 的声明给定。
 macro_rules! formulas {
     ($($op:literal => $formula:ident),* $(,)?) => {
-        [$(Entry { op: $op, formula: $formula }),*]
+        [$(Entry { op: $op, formula: formulas::$formula }),*]
     };
 }
 

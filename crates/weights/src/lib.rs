@@ -260,6 +260,86 @@ macro_rules! closed_enum {
     };
 }
 
+/// 由线上字段声明生成 `encode_fields` / `decode_fields`：字段顺序就是字节顺序，
+/// 写端与读端不可能各维护一份字段列表。语义校验、`scheme` 分支与公开错误口径仍由调用方保留。
+///
+/// 当前字段类型是刻意收敛的小闭集：`leb_u32`、`bool_flag<mask>`、`wire_type`，
+/// 以及 `wire_type if 布尔字段` 的条件尾部。需要新类型时在这里加一组内部臂，
+/// 而不是在格式模块里重新手写对称代码。
+macro_rules! wire_fields {
+    (
+        $name:ident {
+            $(
+                $field:ident : $kind:ident $(<$mask:literal>)? $(if $guard:ident)?
+            ),+ $(,)?
+        }
+    ) => {
+        impl $name {
+            /// 按声明顺序编码字段体；外层负责语义校验与前导 scheme。
+            fn encode_fields(&self, out: &mut impl storage::sink::Sink) {
+                $(
+                    wire_fields!(@encode self, out, $field, $kind $(<$mask>)? $(if $guard)?);
+                )+
+            }
+            /// 按声明顺序解码字段体；外层负责组装结构与语义校验。
+            fn decode_fields(
+                cur: &mut storage::leb::Cursor<'_>,
+            ) -> diagnostic::Result<(
+                $( wire_fields!(@field_type $kind $(<$mask>)? $(if $guard)?), )+
+            )> {
+                $(
+                    wire_fields!(@decode $name, cur, $field, $kind $(<$mask>)? $(if $guard)?);
+                )+
+                Ok(($($field,)+))
+            }
+        }
+    };
+    (@field_type leb_u32) => { u32 };
+    (@field_type bool_flag<$mask:literal>) => { bool };
+    (@field_type wire_type) => { crate::Wire };
+    (@field_type wire_type if $guard:ident) => { Option<crate::Wire> };
+    (@encode $this:ident, $out:ident, $field:ident, leb_u32) => {
+        storage::leb::write($out, $this.$field);
+    };
+    (@encode $this:ident, $out:ident, $field:ident, bool_flag<$mask:literal>) => {
+        $out.put(&[u8::from($this.$field)]);
+    };
+    (@encode $this:ident, $out:ident, $field:ident, wire_type) => {
+        storage::leb::write($out, $this.$field.code());
+    };
+    (@encode $this:ident, $out:ident, $field:ident, wire_type if $guard:ident) => {
+        if $this.$guard {
+            if let Some(value) = $this.$field {
+                storage::leb::write($out, value.code());
+            }
+        }
+    };
+    (@decode $name:ident, $cur:ident, $field:ident, leb_u32) => {
+        let $field = $cur.read::<u32>()?;
+    };
+    (@decode $name:ident, $cur:ident, $field:ident, bool_flag<$mask:literal>) => {
+        let $field = {
+            let flags = $cur.read_u8()?;
+            if flags & !$mask != 0 {
+                return Err(crate::bad(format!(
+                    "{} flags 含非零预留位",
+                    stringify!($name),
+                )));
+            }
+            flags & $mask != 0
+        };
+    };
+    (@decode $name:ident, $cur:ident, $field:ident, wire_type) => {
+        let $field = crate::read_wire($cur)?;
+    };
+    (@decode $name:ident, $cur:ident, $field:ident, wire_type if $guard:ident) => {
+        let $field = if $guard {
+            Some(crate::read_wire($cur)?)
+        } else {
+            None
+        };
+    };
+}
 
 // —— 自有 `.u` 容器 v2：描述符、读/写、帧编码、增量补丁与双模式 ——
 mod archive;

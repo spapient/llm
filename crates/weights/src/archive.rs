@@ -328,7 +328,6 @@ impl Metrics {
     }
 }
 
-
 // —— 容器生命周期模式、增量补丁与外部源导入桥接 ——
 
 /// 模式标记段的保留名。
@@ -608,7 +607,6 @@ pub mod import {
         Segment::new(name, wire, dims.to_vec(), None, bytes)
     }
 }
-
 
 #[cfg(test)]
 #[path = "../tests/lifecycle.rs"]

@@ -8,7 +8,8 @@ use std::fmt;
 use tensor::DType;
 
 /// 权重编码。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum WeightFormat {
     /// 32 位浮点。
     F32,

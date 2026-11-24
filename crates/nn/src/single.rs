@@ -171,7 +171,8 @@ impl Contract for Embedding {
 /// 矩阵乘在算子表里按 `K` 分成两档：`gemm_*` 用 8，`matmul_*` 用 4096（prefill 主链路代表值）。
 /// 两档的下界相差 512 倍，所以档位必须由层**声明**——拿小档的算子给大档的层计价，
 /// 报出来的就是一条偏小 512 倍的下界。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 #[repr(u8)]
 pub enum Gauge {
     /// `K = 8`：小收缩轴（逐 token 的投影级矩阵乘）。
@@ -186,7 +187,8 @@ pub enum Gauge {
 /// `gemv_*` 声明了 `needs.quant.group`（每 `group` 个元素配一个标度），`gemm_*` / `matmul_*`
 /// 没有这条声明。分组是投影侧的口径，矩阵乘侧只按精度选内核，所以这里是另一条轴，而不是
 /// 把 `WeightFormat` 的 `group` 字段勉强塞进来。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 #[repr(u8)]
 pub enum Precision {
     /// 稠密 32 位浮点。

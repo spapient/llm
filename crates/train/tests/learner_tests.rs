@@ -45,7 +45,6 @@ fn forward(
         .bufs()
         .load(logits, Data::F32(logits_values.to_vec()))?;
     session.bufs().compute_step("add_f32", &[p, x], loss)?;
-    session.plan(loss)?;
     Ok(ForwardOut {
         logits,
         loss,
@@ -83,8 +82,7 @@ fn run_metric_batch(
                 .load(logits, Data::F32(vec![0.0, 10.0, 0.0]))?;
             let metric = metric(session)?;
             session.bufs().compute_step("add_f32", &[p, x], loss)?;
-            session.plan(loss)?;
-            Ok(ForwardOut {
+                    Ok(ForwardOut {
                 logits,
                 loss,
                 metric: Some(metric),
@@ -121,6 +119,7 @@ fn learner_runs_a_batch_and_records_metrics() -> Result<()> {
     assert_eq!(point.accuracy(), 1.0, "argmax 命中标签");
     assert!(point.loss < 1e-3, "对齐类别 NLL 趋近 0");
     assert_eq!(learner.session().step(), 1, "窗口 1，每批步进一次");
+    assert_eq!(learner.session().losses().len(), 1, "Learner 统一记录一次 loss");
     Ok(())
 }
 
@@ -219,6 +218,7 @@ fn evaluate_runs_a_validation_pass_without_gradients_or_steps() -> Result<()> {
     assert_eq!(board.len(), 1, "训练序列仍是一条，验证不追加");
     assert_eq!(board.eval_points().len(), 1, "验证独立账表一条");
     assert_eq!(learner.session().step(), 1, "验证批不步进优化器");
+    assert_eq!(learner.session().losses().len(), 1, "验证批不重复记录 loss");
     assert!(
         learner.session().accumulated_microbatches() == 0,
         "验证后梯度缓冲已清空"

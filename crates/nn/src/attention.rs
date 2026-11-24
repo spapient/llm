@@ -9,7 +9,8 @@ use crate::{
 };
 
 /// 注意力实现算法。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AttentionAlgo {
     /// 朴素路径：落地完整 `s×s` 分数矩阵，作为数值参考实现。
     Naive,

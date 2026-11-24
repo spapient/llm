@@ -258,3 +258,34 @@ fn the_same_entry_is_never_reported_as_two_layers() {
     names.sort_unstable();
     assert_eq!(names, ["x.weight_scale", "y.scale"]);
 }
+
+#[test]
+fn affine_scheme_wire_bytes_are_stable() {
+    let quant = Quant::new(2, 0, 32, true, Wire::F16, Some(Wire::I8)).expect("合法方案");
+    let mut buf = Vec::new();
+    quant.encode(&mut buf, 2).expect("编码");
+
+    // scheme(0) + axis(0) + block(32) + flags(1) + scale(F16) + zero-point(I8)。
+    let expected = [
+        0,
+        0,
+        32,
+        1,
+        u8::try_from(Wire::F16.code()).expect("F16 码位单字节"),
+        u8::try_from(Wire::I8.code()).expect("I8 码位单字节"),
+    ];
+    assert_eq!(buf, expected);
+    assert_eq!(
+        Quant::decode(&mut Cursor::new(&buf), 2).expect("解码"),
+        quant
+    );
+}
+
+#[test]
+fn reserved_quant_flag_bits_are_rejected() {
+    let mut buf = vec![0, 0, 32, 0x02];
+    buf.push(u8::try_from(Wire::F16.code()).expect("F16 码位单字节"));
+
+    let error = Quant::decode(&mut Cursor::new(&buf), 2).expect_err("预留位非零必须拒绝");
+    assert_eq!(error.code(), Code::Invalid);
+}

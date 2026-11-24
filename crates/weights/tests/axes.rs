@@ -250,7 +250,6 @@ fn bad_shape_is_an_error() {
     assert!(search(&[1.0], 3, 1).is_err());
 }
 
-
 #[test]
 fn an_empty_axis_set_keeps_only_the_verified_raw_baseline() {
     let w: Vec<f32> = (0..4096).map(|k| k as f32).collect();

@@ -37,11 +37,7 @@ fn a_tile_overflow_names_the_axis_to_prune() {
 fn an_attr_key_must_belong_to_its_primitive() {
     let store = Prim::Store;
     assert!(!store.accepts(AttrKey::Sat), "`store` 不接受 `sat`");
-    let mut allowed: Vec<&str> = store
-        .attr_keys()
-        .iter()
-        .map(|key| key.as_str())
-        .collect();
+    let mut allowed: Vec<&str> = store.attr_keys().iter().map(|key| key.as_str()).collect();
     allowed.push(AttrKey::Exec.as_str());
     let text = allowed.join(" | ");
     assert_eq!(text, "src | dst | align | exec");

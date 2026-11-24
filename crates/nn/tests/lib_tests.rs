@@ -328,7 +328,8 @@ fn config_construction_keeps_constructor_and_stack_diagnostics() {
     };
     let error = Stack::from_configs([invalid]).expect_err("未知算子");
     assert_eq!(error.code(), Code::Missing);
-    assert!(error.to_string().contains("配置第 0 层"), "{error}");
+    assert!(error.to_string().contains("layers[0]"), "{error}");
+    assert!(error.to_string().contains("type = axis"), "{error}");
 
     let duplicate = || LayerConfig::Linear {
         name: "same".into(),
@@ -354,4 +355,189 @@ fn a_spec_centralizes_structural_invariants() {
     let error = ContractSpec::new("duplicate", Shape::new([4]), [RmsNorm::OP, RmsNorm::OP])
         .expect_err("重复算子");
     assert_eq!(error.code(), Code::Invalid);
+}
+
+#[test]
+fn model_config_is_strict_serializable_and_buildable() {
+    let text = r#"
+[[layers]]
+type = "axis"
+name = "blk.0.norm"
+op = "rmsnorm_f32"
+len = 128
+
+[[layers]]
+type = "linear"
+name = "blk.0.q"
+in_features = 128
+out_features = 64
+
+[layers.format]
+type = "int4"
+group = 32
+
+[[layers]]
+type = "recurrent"
+name = "encoder"
+cell = "gru"
+input = 128
+hidden = 64
+"#;
+    let config: ModelConfig = toml::from_str(text).expect("严格 TOML 配置");
+    assert_eq!(config.layers.len(), 3);
+    assert_eq!(config.layers[0].kind(), "axis");
+    assert_eq!(config.layers[0].name(), "blk.0.norm");
+    assert_eq!(config.layers[1].kind(), "linear");
+
+    let encoded = toml::to_string(&config).expect("配置可序列化");
+    let round_trip: ModelConfig = toml::from_str(&encoded).expect("配置往返");
+    assert_eq!(round_trip, config);
+
+    let stack = Stack::from_config(config).expect("模型配置装配");
+    assert_eq!(stack.layers()[0].spca().role(), ParamRole::Trainable);
+    let recurrent = stack.layers()[2].recurrent().expect("循环层视图");
+    assert_eq!(recurrent.layers(), 1);
+    assert_eq!(recurrent.dirs(), 1);
+    assert!(recurrent.bias());
+    assert!(!recurrent.batch_first());
+}
+
+#[test]
+fn model_config_rejects_misspelled_fields_at_every_level() {
+    let unknown_model = "model_name = \"bad\"\nlayers = []\n";
+    assert!(toml::from_str::<ModelConfig>(unknown_model).is_err());
+
+    let unknown_layer = r#"
+[[layers]]
+type = "axis"
+name = "norm"
+op = "rmsnorm_f32"
+len = 8
+length = 8
+"#;
+    assert!(toml::from_str::<ModelConfig>(unknown_layer).is_err());
+
+    let unknown_format = r#"
+[[layers]]
+type = "linear"
+name = "q"
+in_features = 8
+out_features = 8
+[layers.format]
+type = "int4"
+group = 32
+groups = 32
+"#;
+    assert!(toml::from_str::<ModelConfig>(unknown_format).is_err());
+}
+
+#[test]
+fn layer_config_kind_matches_its_wire_name() {
+    let config = LayerConfig::MatMul {
+        name: "project".into(),
+        rows: 2,
+        cols: 3,
+        precision: Precision::F32,
+        gauge: Gauge::Short,
+    };
+    assert_eq!(config.kind(), "matmul");
+    let encoded = toml::to_string(&ModelConfig::new(vec![config])).expect("配置序列化");
+    assert!(encoded.contains("type = \"matmul\""), "{encoded}");
+}
+
+#[test]
+fn every_layer_config_has_a_stable_unique_wire_name() {
+    let configs = [
+        LayerConfig::Axis {
+            name: "a".into(),
+            op: RmsNorm::OP.into(),
+            len: 8,
+            role: ParamRole::Norm,
+        },
+        LayerConfig::Linear {
+            name: "l".into(),
+            in_features: 8,
+            out_features: 8,
+            format: WeightFormat::INT4,
+        },
+        LayerConfig::MatMul {
+            name: "m".into(),
+            rows: 1,
+            cols: 8,
+            precision: Precision::F32,
+            gauge: Gauge::Short,
+        },
+        LayerConfig::Embedding {
+            name: "e".into(),
+            vocab: 16,
+            dim: 8,
+            tokens: 1,
+        },
+        LayerConfig::Attention {
+            name: "a".into(),
+            seq: 1,
+            head_dim: 8,
+            algo: AttentionAlgo::Flash,
+        },
+        LayerConfig::DecodeAttention {
+            name: "d".into(),
+            q_rows: 1,
+            head_dim: 8,
+            algo: AttentionAlgo::Flash,
+        },
+        LayerConfig::LatentAttention {
+            name: "la".into(),
+            seq: 1,
+            latent: 8,
+            heads: 1,
+        },
+        LayerConfig::AttentionBlock {
+            name: "ab".into(),
+            hidden: 8,
+            kv_width: 8,
+            head_dim: 8,
+            seq: 1,
+            algo: AttentionAlgo::Flash,
+            format: WeightFormat::INT4,
+        },
+        LayerConfig::Recurrent {
+            name: "r".into(),
+            cell: Cell::Gru,
+            input: 8,
+            hidden: 8,
+            layers: 1,
+            dirs: 1,
+            bias: true,
+            batch_first: false,
+        },
+        LayerConfig::Memory {
+            name: "mem".into(),
+            width: 8,
+            order: 3,
+            seed: 7,
+            buckets: 32,
+            gate: 0.5,
+        },
+    ];
+    let expected = [
+        "axis",
+        "linear",
+        "matmul",
+        "embedding",
+        "attention",
+        "decode_attention",
+        "latent_attention",
+        "attention_block",
+        "recurrent",
+        "memory",
+    ];
+    let mut names = std::collections::BTreeSet::new();
+    for (config, expected) in configs.into_iter().zip(expected) {
+        assert_eq!(config.kind(), expected);
+        assert!(names.insert(expected), "配置短名必须唯一");
+        let encoded = toml::to_string(&config).expect("层配置可序列化");
+        let decoded: LayerConfig = toml::from_str(&encoded).expect("层配置可反序列化");
+        assert_eq!(decoded, config);
+    }
+    assert_eq!(names.len(), 10);
 }

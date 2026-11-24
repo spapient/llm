@@ -3,7 +3,7 @@
 # 它和 `gemv_i4` 是同一副骨架、同一批原语，差别只在"权重怎么取"：
 #   gemv_i4 ：@quant(deq, packed, scale, gsz) → 先解包再点积
 #   gemv_f32：@load_async(wp, row + g*gsz)    → 直接点积
-# 也就是说新增这条算子只改数据（本文件 + `gemv_f32.k` + `gemv_f32.rs` 的语义表），
+# 新增算子由本文件声明契约，各后端在 `<vendor>/kernels/gemv_f32.k` 提供实现并配语义表，
 # `cutile` 的机制一行未改——这是 cutile README §13.2"新增一格边际成本 0 行"的第一次兑现。
 #
 # 它补的是一个真实缺口：`gemv_i4` 只覆盖 4 位权重，而一份 f32 权重的读下界是它的 8 倍，

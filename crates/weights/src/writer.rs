@@ -168,6 +168,17 @@ impl Writer {
     /// 为每段选定存储表示：先做保序去重，再并行编码内联段；引用关系与段序不受并行度影响。
     /// 取值与既有内联段逐位相等的段改写引用，数据区不再重复占字节。
     fn plan(&self) -> Result<Vec<Plan<'_>>> {
+        let mut slots = self.classify_slots();
+        self.encode_inline(&mut slots)?;
+        let mut plans = Vec::with_capacity(slots.len());
+        for slot in slots {
+            plans.push(slot.ok_or_else(|| crate::bad("去重后段缺存储计划"))?);
+        }
+        Ok(plans)
+    }
+
+    /// 保序去重：逐段比对既有代表段，命中写引用槽，未命中留空待编码内联。
+    fn classify_slots(&self) -> Vec<Option<Plan<'_>>> {
         let mut reps: HashMap<(u16, Vec<u64>, Digest), Vec<usize>> = HashMap::new();
         let mut slots = Vec::with_capacity(self.segs.len());
         for (idx, segment) in self.segs.iter().enumerate() {
@@ -183,12 +194,7 @@ impl Writer {
             reps.entry(key).or_default().push(idx);
             slots.push(None);
         }
-        self.encode_inline(&mut slots)?;
-        let mut plans = Vec::with_capacity(slots.len());
-        for slot in slots {
-            plans.push(slot.ok_or_else(|| crate::bad("去重后段缺存储计划"))?);
-        }
-        Ok(plans)
+        slots
     }
 
     /// 编码所有内联段：结果按段下标原位回填，线程调度不改变输出字节。
@@ -243,10 +249,15 @@ impl Writer {
             }
             Ok::<Vec<(usize, Plan<'_>)>, Error>(plans)
         })?;
+        Self::apply_encoded(slots, encoded);
+        Ok(())
+    }
+
+    /// 并行编码结果按段下标原位落槽，槽序与输入一致。
+    fn apply_encoded<'a>(slots: &mut [Option<Plan<'a>>], encoded: Vec<(usize, Plan<'a>)>) {
         for (idx, plan) in encoded {
             slots[idx] = Some(plan);
         }
-        Ok(())
     }
 
     /// 哈希命中后逐位比对元数据与字节；碰撞只错过复用，绝不错配。
