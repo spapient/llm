@@ -75,6 +75,24 @@ fn tier_row(exp_name: &str, exp_table: &toml::Table) -> diagnostic::Result<Strin
     ))
 }
 
+/// 单份档案展开出的档条目；继承解析、模板 stem 校验都在本助手内闭包。
+fn entries_for_file(ops: &Path, path: &Path) -> diagnostic::Result<Vec<Entry>> {
+    let name = file_stem(path);
+    let table = resolved_table(ops, path)?;
+    let stem = stem_of(&table, name, ops);
+    let mut out: Vec<Entry> = Vec::new();
+    for (exp_name, exp_table, tier) in expand_tiers(name, &table)? {
+        let row = tier_row(&exp_name, &exp_table)?;
+        out.push(Entry {
+            name: exp_name,
+            stem: stem.clone(),
+            row,
+            tier,
+        });
+    }
+    Ok(out)
+}
+
 /// 遍历档案文件，逐档展开成行条目（保持文件序，稍后由 [`flatten`] 统一排序）。
 fn collect_entries(
     ops: &Path,
@@ -87,18 +105,8 @@ fn collect_entries(
             "cargo:rerun-if-changed={}",
             buildgen::relative(manifest, path)
         );
-        let name = file_stem(path);
-        let table = resolved_table(ops, path)?;
-        let stem = stem_of(&table, name, ops);
-        for (exp_name, exp_table, tier) in expand_tiers(name, &table)? {
-            let row = tier_row(&exp_name, &exp_table)?;
-            entries.push(Entry {
-                name: exp_name,
-                stem: stem.clone(),
-                row,
-                tier,
-            });
-        }
+        let mut file_entries = entries_for_file(ops, path)?;
+        entries.append(&mut file_entries);
     }
     Ok(entries)
 }
@@ -286,14 +294,11 @@ fn substitute_ctype(text: &str, tier: &str) -> String {
     if token == "float" {
         return text.to_owned();
     }
-    let ident = |c: char| c.is_alphanumeric() || c == '_';
     let mut out = String::with_capacity(text.len());
     let mut last = 0;
     for (idx, _) in text.match_indices("float") {
-        let before = idx == 0 || !text[..idx].chars().next_back().is_some_and(ident);
         let end = idx + "float".len();
-        let after = end >= text.len() || !text[end..].chars().next().is_some_and(ident);
-        if before && after {
+        if standalone(text, idx, end) {
             out.push_str(&text[last..idx]);
             out.push_str(token);
             last = end;
@@ -301,6 +306,18 @@ fn substitute_ctype(text: &str, tier: &str) -> String {
     }
     out.push_str(&text[last..]);
     out
+}
+
+/// 字符是否属于 C 标识符（字母数字 / 下划线）。
+fn is_ident(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// `float` 在 `idx` 处是否为独立单词：前后都不接标识符字符。
+fn standalone(text: &str, idx: usize, end: usize) -> bool {
+    let before = idx == 0 || !text[..idx].chars().next_back().is_some_and(is_ident);
+    let after = end >= text.len() || !text[end..].chars().next().is_some_and(is_ident);
+    before && after
 }
 
 /// 一个算子的模板名：`[op].stem` 缺省为算子名；共享模板（`binary`/`gemm_packed`…）在语料里
