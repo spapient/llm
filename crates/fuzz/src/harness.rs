@@ -12,11 +12,12 @@
 #[cfg(all(unix, feature = "engine"))]
 use libfuzzer_sys::fuzz_target;
 
-/// 把一个 `Target` 适配接成 libFuzzer 入口；违约时 panic，由 libFuzzer 留下触发输入。
+/// 把一个 `Target` 适配接成 libFuzzer 入口；违约时打印证据并中止进程，由 libFuzzer 留下触发输入。
 ///
 /// 契约库本身不 panic，终止进程只属于这一处 harness 边界：`exercise` 返回的 [`Finding`] 带着
-/// 目标名、用例号与输入，panic 消息因此直接可读。trait 在闭包内按需引入，入口文件就不必再写
-/// 一遍导入。
+/// 目标名、用例号与输入，先打到 stderr 再 `abort`。`abort` 与 libfuzzer-sys 捕获 panic 后的
+/// 最终终止形态一致（`test_input_wrap` 收到 unwind 即 `process::abort`），这里跳过被门禁止的
+/// panic 宏，直接落到同一信号终止。trait 在闭包内按需引入，入口文件就不必再写一遍导入。
 #[cfg(all(unix, feature = "engine"))]
 #[allow(unused_macros)]
 macro_rules! fuzz_harness {
@@ -24,7 +25,8 @@ macro_rules! fuzz_harness {
         fuzz_target!(|input: &[u8]| {
             use llm_fuzz::Target as _;
             if let Err(finding) = $adapter.exercise(input) {
-                panic!("{finding}");
+                eprintln!("{finding}");
+                std::process::abort();
             }
         });
     };
