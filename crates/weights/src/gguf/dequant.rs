@@ -1,11 +1,11 @@
-//! 分块反量化：块内位域 → f32。纯数学函数，不持有文件/游标状态；分派表代替多臂 `match`。
+//! 分块反量化：GGUF 各量化块的位域解包到 f32；纯数学函数，不持有文件/游标状态。
 
 use diagnostic::Result;
 use storage::bad;
 
-use crate::gguf::Kind;
+use super::Kind;
 
-// —— 分块反量化（原 `dequant` 平铺进 `gguf`）：块内位域 → f32 ——
+// —— 分块反量化：块内位域 → f32。纯数学函数，不持有文件/游标状态；分派表代替多臂 `match` ——
 
 /// 把一个张量的原始字节反量化进 `out`；长度不符或布局不符显式报错。
 pub(crate) fn dequantize(kind: Kind, raw: &[u8], out: &mut [f32]) -> Result<()> {
@@ -362,7 +362,7 @@ fn unpack_q3_scales(raw: &[u8]) -> [i8; 16] {
 }
 
 #[cfg(test)]
-mod dequant_tests {
+mod tests {
     use super::*;
 
     /// f16 位模式 → 小端字节。

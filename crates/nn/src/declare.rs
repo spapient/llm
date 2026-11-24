@@ -186,7 +186,11 @@ impl OpLayer {
 
     /// 本层绑定的算子名，直接读自已校验规格，不另存一份字符串。
     pub fn op(&self) -> &str {
-        self.inner.spca().ops().first().map_or_default(String::as_str)
+        self.inner
+            .spca()
+            .ops()
+            .first()
+            .map_or_default(String::as_str)
     }
 }
 

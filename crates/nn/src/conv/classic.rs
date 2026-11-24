@@ -30,11 +30,13 @@ macro_rules! window_op {
     ($ty:ident, $alias:ident, $op:tt, $m:tt, $n:tt, $in_len:expr, $out_len:expr,
      $flops:expr, $reads:expr) => {
         /// 声明档样本：`x` 与 `y` 的长度由模块几何常量给出。
+        /// 构造确定性的卷积输入、权重、偏置与输出样本。
         pub fn sample(_: usize, _: usize) -> Sample {
             window_sample($in_len, $out_len)
         }
 
         /// 标量参考：读 `x`、跑模块的 `run::<f32>`、返回 `y`（真窗口）。
+        /// 使用标量卷积实现计算参考输出。
         pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
             window_reference(sample, $out_len, run::<f32>)
         }
@@ -45,6 +47,7 @@ macro_rules! window_op {
         }
 
         /// 标量代价：显式口径，浮点运算与字节读写见本模块装配行的注释。
+        /// 按单个输出元素计算卷积代价。
         pub fn cost(shape: &ShapeCtx) -> Result<Cost, Error> {
             crate::model::cost_n(shape, $op, $flops, $reads)
         }
@@ -156,17 +159,458 @@ fn norm_reference(
 }
 
 /// 二维卷积（声明档 `4×4, cin 2, cout 3, k=3, s=1, p=1`，same 输出）。
-pub mod conv2d;
+pub mod conv2d {
+    use super::*;
 
-/// 窗口族：最大池化（1d/2d）、平均池化与自适应池化，共用 [`crate::conv::classic`] 的
-/// `window_op!` 装配。
-pub mod pool;
+    /// 输入高度。
+    pub const H: usize = 4;
+    /// 输入宽度或归一化宽度。
+    pub const W: usize = 4;
+    /// 输入通道数。
+    pub const CIN: usize = 2;
+    /// 输出通道数。
+    pub const COUT: usize = 3;
+    /// 卷积核边长。
+    pub const K: usize = 3;
+    /// 步长或空间尺寸。
+    pub const S: usize = 1;
+    /// 单侧补零宽度。
+    pub const P: usize = 1;
+    /// 输出高度。
+    pub const OH: usize = 4;
+    /// 输出宽度。
+    pub const OW: usize = 4;
+    /// 单个输出元素对应的卷积输入元素数。
+    pub const PATCH: usize = K * K * CIN;
+
+    fn conv() -> crate::conv::Conv2d {
+        crate::conv::Conv2d::new(
+            CIN,
+            COUT,
+            ConvGeom {
+                kh: K,
+                kw: K,
+                sh: S,
+                sw: S,
+                ph: P,
+                pw: P,
+            },
+        )
+    }
+
+    /// 构造确定性的卷积输入、权重、偏置与输出样本。
+    pub fn sample(_: usize, _: usize) -> Sample {
+        Sample {
+            m: OH * OW,
+            n: COUT,
+            scalars: vec![("N", 1)],
+            bufs: vec![
+                x_buf(H * W * CIN),
+                Buf {
+                    name: "weight",
+                    values: Values::F32(
+                        (0..PATCH * COUT)
+                            .map(|i| 0.05 + (i % 7) as f32 * 0.03)
+                            .collect(),
+                    ),
+                },
+                Buf {
+                    name: "bias",
+                    values: Values::F32(vec![0.4; COUT]),
+                },
+                Buf {
+                    name: "y",
+                    values: Values::F32(vec![0.0; OH * OW * COUT]),
+                },
+            ],
+        }
+    }
+
+    /// 标量参考：读样本输入 / 权重 / 偏置，跑声明档二维卷积，返回输出向量。
+    pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
+        let x = sample.f32("x")?;
+        let weight = sample.f32("weight")?;
+        let bias = sample.f32("bias")?;
+        let mut out = vec![0.0f32; OH * OW * COUT];
+        conv().forward_f32(x, weight, bias, 1, (H, W), &mut out)?;
+        Ok(out)
+    }
+
+    /// 执行声明档二维卷积前向计算。
+    pub fn forward(
+        x: tensor::View<'_, f32>,
+        weight: tensor::View<'_, f32>,
+        bias: tensor::View<'_, f32>,
+        out: &mut [f32],
+    ) -> diagnostic::Result<()> {
+        conv().forward_f32(
+            x.as_slice(),
+            weight.as_slice(),
+            bias.as_slice(),
+            1,
+            (H, W),
+            out,
+        )
+    }
+
+    /// 按声明档形状推导出算子代价（FLOPs 与权重条数）。
+    pub fn cost(shape: &ShapeCtx) -> Result<Cost, Error> {
+        crate::model::cost_n(shape, "conv2d_f32", 2.0 * PATCH as f64, 3)
+    }
+
+    classic_op!(Conv2dModel, Conv2d, "conv2d_f32", 3, 16, 3);
+}
+
+/// 窗口族共用 `window_op!`；子模块只保留各自几何与真执行入口。
+pub mod pool {
+    /// 自适应平均池化（声明档 4×4 → 2×2）。
+    pub mod adaptive {
+        use super::super::*;
+
+        /// 输入高度。
+        pub const H: usize = 4;
+        /// 输入宽度或归一化宽度。
+        pub const W: usize = 4;
+        /// 输出高度。
+        pub const OH: usize = 2;
+        /// 输出宽度。
+        pub const OW: usize = 2;
+
+        pub(crate) fn run<S: Scalar>(x: &[S], out: &mut [S]) -> diagnostic::Result<()> {
+            crate::conv::AdaptiveAvgPool2d { oh: OH, ow: OW }.forward(x, 1, H, W, 1, out)
+        }
+
+        window_op!(
+            AdaptivePoolModel,
+            AdaptivePool,
+            "adaptive_pool_f32",
+            64,
+            64,
+            H * W,
+            OH * OW,
+            5.0,
+            2
+        );
+    }
+
+    /// 二维平均池化（声明档几何 `3×3, s=1, p=1`，补零不计入分母）。
+    pub mod avg2d {
+        use super::super::*;
+
+        /// 输入高度。
+        pub const H: usize = 4;
+        /// 输入宽度或归一化宽度。
+        pub const W: usize = 4;
+
+        fn pool() -> crate::conv::AvgPool2d {
+            crate::conv::AvgPool2d {
+                geom: ConvGeom {
+                    kh: 3,
+                    kw: 3,
+                    sh: 1,
+                    sw: 1,
+                    ph: 1,
+                    pw: 1,
+                },
+                count_include_pad: false,
+            }
+        }
+
+        pub(crate) fn run<S: Scalar>(x: &[S], out: &mut [S]) -> diagnostic::Result<()> {
+            pool().forward(x, 1, H, W, 1, out)
+        }
+
+        window_op!(
+            AvgPool2dModel,
+            AvgPool2d,
+            "avg_pool2d_f32",
+            64,
+            64,
+            H * W,
+            H * W,
+            10.0,
+            4
+        );
+    }
+
+    /// 一维最大池化（声明档几何 `k=2, s=2, p=0`，单通道）。
+    pub mod max1d {
+        use super::super::*;
+
+        /// 输出序列长度。
+        pub const OL: usize = 8;
+        /// 输入序列长度。
+        pub const L: usize = 16;
+
+        pub(crate) fn run<S: Scalar>(x: &[S], out: &mut [S]) -> diagnostic::Result<()> {
+            crate::conv::MaxPool1d { k: 2, s: 2, p: 0 }.forward(x, 1, L, 1, out)
+        }
+
+        window_op!(
+            MaxPool1dModel,
+            MaxPool1d,
+            "max_pool1d_f32",
+            64,
+            64,
+            L,
+            OL,
+            2.0,
+            2
+        );
+    }
+
+    /// 二维最大池化（声明档几何 `3×3, s=1, p=1`，same 输出）。
+    pub mod max2d {
+        use super::super::*;
+
+        /// 输入高度。
+        pub const H: usize = 4;
+        /// 输入宽度或归一化宽度。
+        pub const W: usize = 4;
+
+        fn geom() -> ConvGeom {
+            ConvGeom {
+                kh: 3,
+                kw: 3,
+                sh: 1,
+                sw: 1,
+                ph: 1,
+                pw: 1,
+            }
+        }
+
+        pub(crate) fn run<S: Scalar>(x: &[S], out: &mut [S]) -> diagnostic::Result<()> {
+            crate::conv::MaxPool2d { geom: geom() }.forward(x, 1, H, W, 1, out)
+        }
+
+        window_op!(
+            MaxPool2dModel,
+            MaxPool2d,
+            "max_pool2d_f32",
+            64,
+            64,
+            H * W,
+            H * W,
+            8.0,
+            4
+        );
+    }
+}
 
 /// 双线性插值（声明档 2×2 → 4×4，`align_corners = false`）。
-pub mod interpolate;
+pub mod interpolate {
+    use super::*;
 
-/// 归一化族：批 / 组 / 实例 / 层，四种统计范围共用 [`crate::conv::classic`] 的 `norm_op!` 装配。
-pub mod norm;
+    /// 输入高度。
+    pub const H: usize = 2;
+    /// 输入宽度或归一化宽度。
+    pub const W: usize = 2;
+    /// 输出高度。
+    pub const OH: usize = 4;
+    /// 输出宽度。
+    pub const OW: usize = 4;
+
+    pub(crate) fn run<S: Scalar>(x: &[S], out: &mut [S]) -> diagnostic::Result<()> {
+        crate::conv::Interpolate {
+            sampler: crate::conv::Sampler::Linear,
+            oh: OH,
+            ow: OW,
+        }
+        .forward(x, 1, H, W, 1, out)
+    }
+
+    window_op!(
+        InterpolateModel,
+        Interpolate,
+        "interpolate_f32",
+        64,
+        64,
+        H * W,
+        OH * OW,
+        8.0,
+        4
+    );
+}
+
+/// 四种归一化只保留各自统计域与声明档参数。
+pub mod norm {
+    /// 批归一化（声明档 `C=4, spatial=2, n=2`）。
+    pub mod batch {
+        use super::super::*;
+
+        /// 通道数。
+        pub const C: usize = 4;
+        /// 步长或空间尺寸。
+        pub const S: usize = 2;
+        /// 批大小。
+        pub const N: usize = 2;
+        /// 数值稳定性 epsilon。
+        pub const EPS: f32 = 1e-5;
+
+        pub(crate) fn run<S: Scalar>(
+            x: &[S],
+            gamma: &[S],
+            beta: &[S],
+            out: &mut [S],
+        ) -> diagnostic::Result<()> {
+            let mut mean = vec![S::ZERO; C];
+            let mut var = vec![S::ONE; C];
+            crate::kernel::norm::BatchNorm2d {
+                channels: C,
+                eps: S::from_f64(f64::from(EPS)),
+                momentum: S::from_f64(0.1),
+            }
+            .forward_train(x, gamma, beta, N, 1, S, &mut mean, &mut var, out)
+        }
+
+        norm_op!(
+            BatchNormModel,
+            BatchNorm,
+            "batch_norm_f32",
+            64,
+            64,
+            N * S * C,
+            C,
+            vec![("N", (N * S * C) as i64), ("C", C as i64), ("S", S as i64)],
+            1.5,
+            0.25,
+            4.0,
+            3
+        );
+    }
+
+    /// 组归一化（声明档 `G=2, C=4, spatial=2, n=2`）。
+    pub mod group {
+        use super::super::*;
+
+        /// 归一化分组数。
+        pub const G: usize = 2;
+        /// 通道数。
+        pub const C: usize = 4;
+        /// 步长或空间尺寸。
+        pub const S: usize = 2;
+        /// 批大小。
+        pub const N: usize = 2;
+        /// 数值稳定性 epsilon。
+        pub const EPS: f32 = 1e-5;
+
+        pub(crate) fn run<S: Scalar>(
+            x: &[S],
+            gamma: &[S],
+            beta: &[S],
+            out: &mut [S],
+        ) -> diagnostic::Result<()> {
+            crate::kernel::norm::GroupNorm {
+                groups: G,
+                channels: C,
+                eps: S::from_f64(f64::from(EPS)),
+            }
+            .forward(x, gamma, beta, N, S, out)
+        }
+
+        norm_op!(
+            GroupNormModel,
+            GroupNorm,
+            "group_norm_f32",
+            64,
+            64,
+            N * S * C,
+            C,
+            vec![
+                ("N", (N * S * C) as i64),
+                ("G", G as i64),
+                ("C", C as i64),
+                ("S", S as i64),
+            ],
+            1.25,
+            0.5,
+            4.0,
+            3
+        );
+    }
+
+    /// 实例归一化（声明档 `C=4, spatial=2, n=2`）。
+    pub mod instance {
+        use super::super::*;
+
+        /// 通道数。
+        pub const C: usize = 4;
+        /// 步长或空间尺寸。
+        pub const S: usize = 2;
+        /// 批大小。
+        pub const N: usize = 2;
+        /// 数值稳定性 epsilon。
+        pub const EPS: f32 = 1e-5;
+
+        pub(crate) fn run<S: Scalar>(
+            x: &[S],
+            gamma: &[S],
+            beta: &[S],
+            out: &mut [S],
+        ) -> diagnostic::Result<()> {
+            crate::kernel::norm::InstanceNorm {
+                channels: C,
+                eps: S::from_f64(f64::from(EPS)),
+            }
+            .forward(x, gamma, beta, N, S, out)
+        }
+
+        norm_op!(
+            InstanceNormModel,
+            InstanceNorm,
+            "instance_norm_f32",
+            64,
+            64,
+            N * S * C,
+            C,
+            vec![("N", (N * S * C) as i64), ("C", C as i64), ("S", S as i64)],
+            0.75,
+            -0.25,
+            4.0,
+            3
+        );
+    }
+
+    /// 层归一化（声明档 `3 行 × 4 宽`）。
+    pub mod layer {
+        use super::super::*;
+
+        /// 层归一化行数。
+        pub const R: usize = 3;
+        /// 输入宽度或归一化宽度。
+        pub const W: usize = 4;
+        /// 数值稳定性 epsilon。
+        pub const EPS: f32 = 1e-5;
+
+        pub(crate) fn run<S: Scalar>(
+            x: &[S],
+            gamma: &[S],
+            beta: &[S],
+            out: &mut [S],
+        ) -> diagnostic::Result<()> {
+            crate::kernel::norm::LayerNorm {
+                width: W,
+                eps: S::from_f64(f64::from(EPS)),
+            }
+            .forward(x, gamma, beta, out)
+        }
+
+        norm_op!(
+            LayerNormModel,
+            LayerNorm,
+            "layer_norm_f32",
+            64,
+            64,
+            R * W,
+            W,
+            vec![("N", (R * W) as i64), ("R", R as i64), ("W", W as i64)],
+            1.0,
+            0.0,
+            4.0,
+            3
+        );
+    }
+}
 
 // 公开路径保持为 `classic::{max_pool1d, …, layer_norm}`，`lib.rs` 与测试据此取名。
 pub use norm::{

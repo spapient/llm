@@ -268,3 +268,90 @@ fn layers_are_usable_as_map_keys() {
     configured.insert(layer.clone(), 1);
     assert_eq!(configured.get(&layer), Some(&1));
 }
+
+#[test]
+fn a_static_annotation_declares_its_parameter_role() {
+    assert_eq!(FixedNorm.spca().role(), ParamRole::Norm);
+    assert!(FixedNorm.spca().role().wd_exempt());
+}
+
+#[test]
+fn a_config_stack_reuses_the_typed_layers_and_their_views() {
+    let stack = Stack::from_configs([
+        LayerConfig::Axis {
+            name: "blk.0.norm".into(),
+            op: RmsNorm::OP.to_string(),
+            len: 128,
+            role: ParamRole::Norm,
+        },
+        LayerConfig::Linear {
+            name: "blk.0.q".into(),
+            in_features: 128,
+            out_features: 64,
+            format: WeightFormat::INT4,
+        },
+        LayerConfig::AttentionBlock {
+            name: "blk.1".into(),
+            hidden: 128,
+            kv_width: 64,
+            head_dim: 32,
+            seq: 16,
+            algo: AttentionAlgo::Flash,
+            format: WeightFormat::INT4,
+        },
+    ])
+    .expect("配置合法");
+
+    assert_eq!(stack.layers().len(), 3);
+    assert_eq!(stack.layers()[0].output().dims(), [128]);
+    assert_eq!(
+        stack.layers()[1].linear().expect("线性视图").out_features(),
+        64
+    );
+    assert_eq!(
+        stack.layers()[2]
+            .attention_block()
+            .expect("组合块视图")
+            .heads(),
+        2
+    );
+    assert!(stack.floor().unpriced().is_empty());
+}
+
+#[test]
+fn config_construction_keeps_constructor_and_stack_diagnostics() {
+    let invalid = LayerConfig::Axis {
+        name: "bad".into(),
+        op: "not_registered".into(),
+        len: 8,
+        role: ParamRole::Trainable,
+    };
+    let error = Stack::from_configs([invalid]).expect_err("未知算子");
+    assert_eq!(error.code(), Code::Missing);
+    assert!(error.to_string().contains("配置第 0 层"), "{error}");
+
+    let duplicate = || LayerConfig::Linear {
+        name: "same".into(),
+        in_features: 32,
+        out_features: 32,
+        format: WeightFormat::INT4,
+    };
+    let error = Stack::from_configs([duplicate(), duplicate()]).expect_err("重名");
+    assert_eq!(error.code(), Code::Invalid);
+}
+
+#[test]
+fn a_spec_centralizes_structural_invariants() {
+    for name in ["", "  \t"] {
+        let error = ContractSpec::new(name, Shape::new([4]), [RmsNorm::OP]).expect_err("空名字");
+        assert_eq!(error.code(), Code::Invalid);
+    }
+    let error = ContractSpec::new("zero", Shape::new([4, 0]), [RmsNorm::OP]).expect_err("零宽轴");
+    assert_eq!(error.code(), Code::Invalid);
+    let error = ContractSpec::new("overflow", Shape::new([usize::MAX, 2]), [RmsNorm::OP])
+        .expect_err("元素数溢出");
+    assert_eq!(error.code(), Code::Invalid);
+    let error = ContractSpec::new("duplicate", Shape::new([4]), [RmsNorm::OP, RmsNorm::OP])
+        .expect_err("重复算子");
+    assert_eq!(error.code(), Code::Invalid);
+}

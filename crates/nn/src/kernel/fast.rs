@@ -280,7 +280,68 @@ fn sweep_columns(sweep: Sweep<'_>, out: &mut [f32], k0: usize, kb: usize, first:
 }
 
 mod i8;
-mod micro;
+mod micro {
+    //! 微内核整行块扫描坐标与标量残块兜底；微内核本体在 `cutile::native`。
+
+    #[derive(Clone, Copy)]
+    pub(super) struct Sweep<'a> {
+        pub(super) a: &'a [f32],
+        pub(super) apack: &'a [f32],
+        pub(super) bpack: &'a [f32],
+        pub(super) w: &'a [f32],
+        pub(super) full: usize,
+        pub(super) n: usize,
+        pub(super) k: usize,
+        pub(super) layout: Layout,
+    }
+
+    #[derive(Clone, Copy)]
+    pub(super) struct Span {
+        pub(super) i: usize,
+        pub(super) j: usize,
+        pub(super) mr: usize,
+        pub(super) nr: usize,
+        pub(super) n: usize,
+        pub(super) k: usize,
+        pub(super) stride: usize,
+    }
+
+    #[derive(Clone, Copy)]
+    pub(super) enum Layout {
+        Nt,
+        Tn,
+    }
+
+    pub(super) fn weight_stride(span: Span, k0: usize, layout: Layout) -> (usize, usize, usize) {
+        match layout {
+            Layout::Nt => (k0 * span.n + span.j, span.n, 1),
+            Layout::Tn => (span.j * span.stride + k0, 1, span.stride),
+        }
+    }
+
+    pub(super) fn edge(
+        a: &[f32],
+        w: &[f32],
+        out: &mut [f32],
+        span: Span,
+        k0: usize,
+        first: bool,
+        layout: Layout,
+    ) {
+        let (base, dp, dc) = weight_stride(span, k0, layout);
+        for r in 0..span.mr {
+            for c in 0..span.nr {
+                let slot = (span.i + r) * span.n + span.j + c;
+                let mut acc = if first { 0.0f32 } else { out[slot] };
+                let wc = base + c * dc;
+                for p in 0..span.k {
+                    acc += a[(span.i + r) * span.stride + k0 + p] * w[wc + p * dp];
+                }
+                out[slot] = acc;
+            }
+        }
+    }
+}
 
 /// i8 `sdot` 端口峰值探针（K8 的分母），只在测量容器里导出；本体在 `cutile::native::i8`。
 #[cfg(all(feature = "bench", target_arch = "aarch64"))]

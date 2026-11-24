@@ -35,9 +35,8 @@ fn build_train_spec(
     accumulation: Option<&str>,
 ) -> Result<train::TrainSpec> {
     let spec = settings.train_spec()?;
-    let learning_rate = parse_optional_f32(lr, "--lr")?;
-    let clip_norm = parse_optional_f32(clip, "--clip")?;
-    let (warmup_steps, max_steps, accumulation) = parse_train_uints(warmup, steps, accumulation)?;
+    let (learning_rate, clip_norm, warmup_steps, max_steps, accumulation) =
+        parse_overrides(lr, clip, warmup, steps, accumulation)?;
     let session = spec.session.overridden(
         learning_rate,
         warmup_steps,
@@ -46,6 +45,21 @@ fn build_train_spec(
         accumulation,
     )?;
     train::TrainSpec::new(session, spec.loader).map_err(|error| error.with("llm train"))
+}
+
+/// 显式训练选项按类型解析：学习率 / 裁剪为 `f32`，warmup / 步数为 `u64`，累积窗为 `u32`。
+fn parse_overrides(
+    lr: Option<&str>,
+    clip: Option<&str>,
+    warmup: Option<&str>,
+    steps: Option<&str>,
+    accumulation: Option<&str>,
+) -> Result<(Option<f32>, Option<f32>, Option<u64>, Option<u64>, Option<u32>)> {
+    let learning_rate = parse_optional_f32(lr, "--lr")?;
+    let clip_norm = parse_optional_f32(clip, "--clip")?;
+    let (warmup_steps, max_steps, accumulation) =
+        parse_train_uints(warmup, steps, accumulation)?;
+    Ok((learning_rate, clip_norm, warmup_steps, max_steps, accumulation))
 }
 
 /// 无符号档位：warmup/步数是 `u64`，累积窗是 `u32`；类型随快照事实口径固定。

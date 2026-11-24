@@ -1,6 +1,5 @@
 //! 容器生命周期模式与增量补丁：训练/发布判定、`opt.` 状态剥离、逐字节 XOR 补丁。
 
-use crate::bad;
 use diagnostic::Result;
 
 use crate::{Archive, Segment, Stored, Wire};

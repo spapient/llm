@@ -79,8 +79,22 @@ impl ContractSpec {
         role: ParamRole,
     ) -> Result<Self> {
         let name = name.into();
+        Self::check_geometry(&name, &output)?;
+        let ops = Self::check_ops(&name, ops)?;
+        Ok(Self {
+            name,
+            output,
+            ops,
+            role,
+        })
+    }
+
+    /// 名字非空、输出无零宽轴、元素数不溢出。
+    fn check_geometry(name: &str, output: &Shape) -> Result<()> {
         if name.trim().is_empty() {
-            return Err(Error::new(Code::Invalid, "层名不能为空或只含空白").with("nn::ContractSpec"));
+            return Err(
+                Error::new(Code::Invalid, "层名不能为空或只含空白").with("nn::ContractSpec")
+            );
         }
         if let Some(axis) = output.dims().iter().position(|dim| *dim == 0) {
             return Err(Error::new(
@@ -97,7 +111,14 @@ impl ContractSpec {
                 Error::new(Code::Invalid, format!("层 `{name}` 的输出元素数溢出"))
                     .with("nn::ContractSpec")
             })?;
+        Ok(())
+    }
 
+    /// 算子去重、已在声明目录、且有注册表语义表；返回按序去重后的名字表。
+    fn check_ops(
+        name: &str,
+        ops: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Result<Vec<String>> {
         // 热路径不建整表：每层只按名字查一次，全表清单只在报错时才拼。
         let mut checked: Vec<String> = Vec::new();
         for wanted in ops {
@@ -125,12 +146,7 @@ impl ContractSpec {
             }
             checked.push(wanted);
         }
-        Ok(Self {
-            name,
-            output,
-            ops: checked,
-            role,
-        })
+        Ok(checked)
     }
 
     /// 层名（与权重条目的前缀一致）。

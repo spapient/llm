@@ -582,6 +582,33 @@ fn gradient_snapshot_is_var_keyed_and_survives_zero_gradients() {
     assert_eq!(snapshot.get(p), Some(&[3.0; N][..]));
 }
 
+/// 参数视图热路径复制基准；默认忽略，优化前后用同一命令测量。
+#[test]
+#[ignore = "性能测量，需要显式运行"]
+fn parameter_view_pipeline_copy_benchmark() {
+    const WIDTH: usize = 16_384;
+    const ITERS: usize = 2_000;
+    let (tape, sizes, p, _x, _loss) = support::add_graph(WIDTH);
+    let config = TrainConfig::new(1e-3, 0, 1, None, 1).expect("配置");
+    let mut session = open_session(tape, sizes, config);
+    session
+        .register_parameter(p, ParamRole::Trainable, vec![1.0; WIDTH])
+        .expect("登记参数");
+    session.load_gradient(p, &[0.5; WIDTH]).expect("梯度就位");
+    type BenchSession = Session<Reference, Sgd, Remote>;
+    let started = std::time::Instant::now();
+    for _ in 0..ITERS {
+        let views =
+            BenchSession::collect_views(&mut session.slots, &mut session.bufs).expect("取视图");
+        BenchSession::return_views(&mut session.slots, &mut session.bufs, views);
+        BenchSession::mirror_params(&session.slots, &mut session.bufs).expect("镜像参数");
+    }
+    let elapsed = started.elapsed();
+    println!(
+        "parameter-view pipeline: {ITERS} iterations x {WIDTH} f32 in {elapsed:?}"
+    );
+}
+
 /// 检查点事实集：恢复所需的最小事实集与偏差拒绝。
 mod checkpoint {
     use crate::session::*;

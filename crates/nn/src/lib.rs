@@ -56,7 +56,6 @@ extern crate self as nn;
 pub use annotation::spec;
 
 mod attention;
-mod config;
 mod contract;
 mod declare;
 mod engram;
@@ -117,13 +116,9 @@ mod stack;
 pub use attention::{Attention, AttentionAlgo, AttentionBlock, DecodeAttention, LatentAttention};
 
 #[doc(inline)]
-pub use config::LayerConfig;
-#[doc(inline)]
 pub use contract::{BoundsResult, Contract, ContractSpec, Linear};
 #[doc(inline)]
 pub use declare::{Bounds, OpLayer};
-#[doc(inline)]
-pub use config::LayerConfig;
 #[doc(inline)]
 pub use weight::WeightFormat;
 
@@ -155,7 +150,7 @@ pub use single::{
 };
 
 #[doc(inline)]
-pub use stack::{Floor, Stack, Unpriced, WEIGHT_SUFFIX};
+pub use stack::{Floor, LayerConfig, Stack, Unpriced, WEIGHT_SUFFIX};
 
 /// 稠密计算核：矩阵乘族、激活、归一化、反量化、逐元素、归约与 SIMD/SME 通道。
 ///

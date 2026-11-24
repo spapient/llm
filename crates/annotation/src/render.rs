@@ -34,7 +34,10 @@ fn spec(code: &mut String, declaration: &Declaration, ty: &str) {
     } else {
         "new"
     };
-    let _ = write!(code, "            let declaration = ::nn::ContractSpec::{constructor}(");
+    let _ = write!(
+        code,
+        "            let declaration = ::nn::ContractSpec::{constructor}("
+    );
     literal(code, &declaration.name);
     code.push_str(", ");
     shape_of(code, &declaration.out, |code, dim| {
@@ -45,15 +48,9 @@ fn spec(code: &mut String, declaration: &Declaration, ty: &str) {
         literal(code, op);
         code.push_str(".to_string()");
     });
-    code.push_str("]");
+    code.push(']');
     if let Some(role) = &declaration.role {
-        let variant = match role.as_str() {
-            "trainable" => "Trainable",
-            "bias" => "Bias",
-            "norm" => "Norm",
-            "embedding" => "Embedding",
-            _ => unreachable!("角色已在注解解析期校验"),
-        };
+        let variant = role_variant(role);
         let _ = write!(code, ", ::nn::ParamRole::{variant}");
     }
     code.push_str(");\n");
@@ -65,6 +62,16 @@ fn spec(code: &mut String, declaration: &Declaration, ty: &str) {
     literal(code, &declaration.name);
     code.push_str(", error) }\n");
     code.push_str("            }\n        })\n    }\n}\n\n");
+}
+
+/// 角色短名映射到 `nn::ParamRole` 变体；短名闭集已在注解解析期校验，兜底取嵌入表角色。
+fn role_variant(role: &str) -> &'static str {
+    match role {
+        "trainable" => "Trainable",
+        "bias" => "Bias",
+        "norm" => "Norm",
+        _ => "Embedding",
+    }
 }
 
 /// 第二块：三个访问器只转发给 [`spec`] 生成的那份 `ContractSpec`。

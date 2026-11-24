@@ -51,7 +51,7 @@ fn an_unknown_mode_code_is_rejected_not_fallen_back_to_infer() {
     let parsed = Archive::parse(&bytes).expect("a");
     let error = mode_of(&parsed).expect_err("未知码必须报错");
     assert_eq!(error.code(), Code::Invalid);
-    assert!(error.to_string().contains("mode"), "{error}");
+    assert!(error.to_string().contains("Mode"), "{error}");
 }
 
 #[test]

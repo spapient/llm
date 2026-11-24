@@ -54,11 +54,16 @@ pub(crate) fn parse(tokens: &[Token]) -> Result<Declaration, Error> {
         out: values[1].axes().0.to_vec(),
         input: input_width(&values)?,
         ops,
-        role: match values[4].text() {
-            "" => None,
-            role => Some(role.to_string()),
-        },
+        role: role_option(values[4].text()),
     })
+}
+
+/// 空角色描述归一为 `None`；非空保留为角色短名（闭集校验在 [`role_value`]）。
+fn role_option(text: &str) -> Option<String> {
+    match text {
+        "" => None,
+        role => Some(role.to_string()),
+    }
 }
 
 /// 静态参数角色：与 `nn::ParamRole` 的稳定短名一一对应。

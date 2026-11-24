@@ -90,12 +90,13 @@ fn the_generated_code_implements_the_contract_of_the_annotated_type() {
 #[test]
 fn a_static_role_is_rendered_into_the_checked_spec_constructor() {
     let code = render(
-        &declaration(
-            r#"name = "norm", out = [8], ops = ["rmsnorm_f32"], role = "norm""#,
-        ),
+        &declaration(r#"name = "norm", out = [8], ops = ["rmsnorm_f32"], role = "norm""#),
         "Norm",
     );
-    assert!(code.contains("::nn::ContractSpec::new_with_role("), "{code}");
+    assert!(
+        code.contains("::nn::ContractSpec::new_with_role("),
+        "{code}"
+    );
     assert!(code.contains("::nn::ParamRole::Norm"), "{code}");
 }
 
