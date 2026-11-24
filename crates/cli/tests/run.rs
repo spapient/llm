@@ -109,6 +109,20 @@ fn bind_u8(executor: &mut ::device::executor::MetalExecutor, slot: u32, values: 
     bytes.copy_from_slice(values);
 }
 
+/// 绑定 16 位浮点缓冲：逐元素取小端两位字节（f16/bf16 共用，位模式由调用方给）。
+fn bind_half(
+    executor: &mut ::device::executor::MetalExecutor,
+    slot: u32,
+    len: usize,
+    bits: impl Fn(usize) -> [u8; 2],
+) {
+    executor.bind_bytes(slot, len * 2).expect("half 缓冲");
+    let bytes = executor.buf_mut(slot).expect("half 可写").as_mut_bytes();
+    for idx in 0..len {
+        bytes[idx * 2..idx * 2 + 2].copy_from_slice(&bits(idx));
+    }
+}
+
 /// 把单个 f32 标量写进执行器缓冲（4 字节）。
 #[cfg(target_os = "macos")]
 fn bind_scalar(executor: &mut ::device::executor::MetalExecutor, slot: u32, value: f32) {
@@ -148,6 +162,18 @@ fn bind_decl_bufs(
                 CType::U8 => {
                     let values = sample.u8(&param.name).expect("u8 输入");
                     bind_u8(executor, slot, values);
+                }
+                CType::F16 => {
+                    let values = sample.f16(&param.name).expect("f16 输入");
+                    bind_half(executor, slot, values.len(), |i| {
+                        values[i].to_bits().to_le_bytes()
+                    });
+                }
+                CType::Bf16 => {
+                    let values = sample.bf16(&param.name).expect("bf16 输入");
+                    bind_half(executor, slot, values.len(), |i| {
+                        values[i].to_bits().to_le_bytes()
+                    });
                 }
                 CType::Int => unreachable!("标量不是缓冲"),
             }

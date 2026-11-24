@@ -31,11 +31,11 @@ fn declarations(manifest: &Path) -> diagnostic::Result<(String, String, String)>
     let ops = manifest.join("src").join("ops");
     println!("cargo:rerun-if-changed={}", ops.display());
     let files = buildgen::collect(&ops)?;
-    let (names, stems, rows) = scan(&ops, manifest, &files)?;
+    let (names, stems, rows, tiers) = scan(&ops, manifest, &files)?;
     Ok((
         emit_declared(&rows, &names),
         emit_list(&names, &stems),
-        emit_templates(&ops, &names, &stems),
+        emit_templates(&ops, &names, &stems, &tiers),
     ))
 }
 
@@ -49,8 +49,8 @@ fn scan(
     ops: &Path,
     manifest: &Path,
     files: &[PathBuf],
-) -> diagnostic::Result<(Vec<String>, Vec<String>, String)> {
-    let mut entries: Vec<(String, String, String)> = Vec::new();
+) -> diagnostic::Result<(Vec<String>, Vec<String>, String, Vec<Option<String>>)> {
+    let mut entries: Vec<(String, String, String, Option<String>)> = Vec::new();
     for path in files {
         println!(
             "cargo:rerun-if-changed={}",
@@ -59,38 +59,43 @@ fn scan(
         let name = file_stem(path);
         let table = resolve(ops, buildgen::read(path)?)?;
         let stem = stem_of(&table, name, ops);
-        for (exp_name, exp_table) in expand_tiers(name, &table)? {
+        for (exp_name, exp_table, tier) in expand_tiers(name, &table)? {
             let row = format!(
                 "            (\"{exp_name}\", {}),",
                 buildgen::emit(&exp_table, &exp_name)?
             );
-            entries.push((exp_name, stem.clone(), row));
+            entries.push((exp_name, stem.clone(), row, tier));
         }
     }
     entries.sort_by(|a, b| a.0.cmp(&b.0));
     let mut names = Vec::new();
     let mut stems = Vec::new();
+    let mut tiers = Vec::new();
     let mut rows = String::new();
-    for (name, stem, row) in entries {
+    for (name, stem, row, tier) in entries {
         names.push(name);
         stems.push(stem);
+        tiers.push(tier);
         let _ = writeln!(rows, "{row}");
     }
-    Ok((names, stems, rows))
+    Ok((names, stems, rows, tiers))
 }
 
 /// 按 `[op].tiers` 把一份算法档案展开成逐档算子表；无 `tiers` 时原样返回单条（名=文件名）。
 ///
 /// 档名取 `<算法>_<档>`：算法名是 `[op].name`（缺省文件名）去掉既有 `_<档>` 后缀。每档把
 /// `[op].name` 设为展开名、所有 `dt` 数组里的精度 token 替换为本档，其余声明逐字共享。
-fn expand_tiers(name: &str, table: &toml::Table) -> diagnostic::Result<Vec<(String, toml::Table)>> {
+fn expand_tiers(
+    name: &str,
+    table: &toml::Table,
+) -> diagnostic::Result<Vec<(String, toml::Table, Option<String>)>> {
     let tiers = table
         .get("op")
         .and_then(|value| value.as_table())
         .and_then(|op| op.get("tiers"))
         .and_then(|value| value.as_array());
     let Some(tiers) = tiers else {
-        return Ok(vec![(name.to_string(), table.clone())]);
+        return Ok(vec![(name.to_string(), table.clone(), None)]);
     };
     let algo = table
         .get("op")
@@ -110,7 +115,7 @@ fn expand_tiers(name: &str, table: &toml::Table) -> diagnostic::Result<Vec<(Stri
             op.remove("tiers");
             op.insert("name".into(), toml::Value::String(format!("{algo}_{tier}")));
         }
-        out.push((format!("{algo}_{tier}"), expanded));
+        out.push((format!("{algo}_{tier}"), expanded, Some(tier.to_string())));
     }
     Ok(out)
 }
