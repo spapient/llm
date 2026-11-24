@@ -27,6 +27,11 @@ wire = { path = "../wire", package = "llm-wire" }
 
 [dev-dependencies]
 testkit = { path = "../testkit", package = "llm-testkit" }
+proptest = { workspace = true }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "prop_frame"
+path = "tests/prop_frame.rs"

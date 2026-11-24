@@ -27,6 +27,7 @@ storage = { path = "../storage", package = "llm-storage" }
 [dev-dependencies]
 testkit = { path = "../testkit", package = "llm-testkit" }
 storage = { path = "../storage", package = "llm-storage", features = ["mmap"] }
+proptest = { workspace = true }
 
 [lints]
 workspace = true
@@ -34,3 +35,7 @@ workspace = true
 [[test]]
 name = "round_trip"
 path = "tests/round_trip.rs"
+
+[[test]]
+name = "prop_json"
+path = "tests/prop_json.rs"
