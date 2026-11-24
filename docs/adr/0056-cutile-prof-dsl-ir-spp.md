@@ -86,7 +86,7 @@ WebGPU/wgpu/CPU，配算子融合与 autotune；`burn-cubecl` 25,240 行、`burn
 | D 泛型 / 声明化密度 | 同构 ≥3 份全部泛型 / 宏 / 表驱动 | pass / Target / 词汇表 / `UnaryFn` 闭集均表驱动；新增一元族只登记一行（C 名 + 主机求值），校验/遍历/折叠/解释/发射从表取 | ● | 8 | 维持；新增同构先判体量再抽（N7 门槛 ≥3 份 / ≥5 行 / ≥80 token） |
 | E 规模 / 密度 | 无超线文件；公开项密度受控 | prof `einsum/` 拆分后最大 `device.rs` 570；cutile 发射侧拆入 `printer.rs`（242），`kernel.rs` 431，最大 `cap.rs` 599，均 <600 | ● | 8 | 拆分后 jscpd 零克隆；净删生产行随后续批次实测 |
 | F IR / 发射器性能 | 生成与优化有耗时基线与回归门；热点复杂度可证 | pass 为不动点线性扫描；无 micro-bench 基线；非热路径 | ○ | 5 | 先取单 kernel 优化 / 发射耗时基线，再决定是否上区间归属 |
-| G 设备执行 / 证据完备 | 多 runtime lowering 可跑，真机对拍 + roofline 达标 | typed IR 未接设备执行；本机仅 macOS Metal 逐点族真机对拍（上一批）；CUDA/Ascend/ROCm/Intel/MUSA 无本轮证据 | ○ | 3 | 见开放项 G2/G3；真机通道可达前不签执行证据 |
+| G 设备执行 / 证据完备 | 多 runtime lowering 可跑，真机对拍 + roofline 达标 | typed IR 未接设备执行；本机仅 macOS Metal 逐点族真机对拍；win（RTX A3000）CUDA 硬件 + nvcc13.3 + MSVC cl 工具链闭环探针已跑通，但仓内 CUDA 后端对拍套件尚未同步到 win 运行；Ascend/ROCm/Intel/MUSA 无证据 | ○ | 3 | 见开放项 G2/G3；仓内后端真机对拍跑通前不签 CUDA 执行结论 |
 | H 测试分层 | 每族反向注入用例；夹具复用；测试文件 ≤800 | IR 有 ir/pass/exec 三类测试；一元族独立 `unary_tests.rs`（发射断言 + 非 f32 反向用例），位级族进 `ir_exec` 逐位对拍；`ir_tests.rs` 760 行线内 | ◐ | 7 | 逐表达式族补「非法节点 → 校验红」反向用例 |
 
 **等权参考分（算术平均，仅基线锚点，不作交付结论）**：(5+6+7+8+8+5+3+7)/8 ≈ **6.1**，
@@ -155,7 +155,9 @@ A（类型覆盖面），这两块均受 ADR 0017 / 0054 冻结，不在本批�
 - **G2 设备执行闭环**：typed IR 替换旧模板链路，接 `Image` 与布局推导；`.k` 正文经 `shard::ir`
   桥进 vendor `Codegen::lower` 后，IR 核才能宣称设备执行。
 - **G3 多 runtime 真机对拍 + roofline**：CUDA/Ascend/ROCm/Intel/MUSA 真机证据；性能达 roofline
-  70%（L3）是 ADR 0017 解冻 L2 的条件之一。
+  70%（L3）是 ADR 0017 解冻 L2 的条件之一。CUDA 第一站 = win（`win`@192.168.0.65，A3000）：
+  先把当前仓同步到该机（现有副本均为旧代次快照、非 git 仓），再跑 `llm-device` 的 CUDA 生成 / 编译 /
+  回读对拍，核 `nvcc_ready()` 在 win 判真；Ascend/ROCm/Intel/MUSA 设备通道本轮未探测。
 - **G4 注解 / 通道配置化**：IR standard/contracted 通道选择、`#[dsl(contracted)]` 闭集配置位，
   待 G2 让前端有生产消费者后接入；走声明表，不写第二套按名分派。
 - **G5 autotune**：变体择优从链序首命中升级到实测计时选优；依赖 G3 真机计时通道。
@@ -165,10 +167,21 @@ A（类型覆盖面），这两块均受 ADR 0017 / 0054 冻结，不在本批�
 
 ## 未知与未测
 
-- **CUDA / Windows 真机通道当前不可达**：本轮可见环境仅 MBP（macOS arm64，本机唯一可探测设备为
-  Metal）与一台 linux 云主机（无 `nvcc`/`nvidia-smi`/`cargo`/仓库副本）；环境列表中无 Windows 实例。
-  CUDA 编译回读链路虽在 `device` 侧在位，但本轮无 CUDA 真机对拍证据，不签发 CUDA 执行结论。Windows
-  接入后须先核查 nvcc / cargo / 仓库副本，再决定 CUDA 切片能否闭合。
+- **CUDA / Windows 硬件与工具链通道已实测可达（confirmed），仓内后端对拍仍未在 win 跑过（PARTIAL）**：
+  前一轮把"执行环境注册表内无 Windows 实例"当成"无 Windows 通道"，漏扫了 `~/.ssh/config` 里的局域网主机
+  `win → 192.168.0.65`（用户 `fei`，密钥 `id_ed25519_mac_local`）。本轮经 SSH 实测该机：
+  - GPU：NVIDIA RTX A3000 12GB，驱动 621.14，UMD CUDA 13.5；`nvidia-smi` 正常。
+  - 工具链：`nvcc` 13.3 V13.3.33（`CUDA_PATH` 在位、nvcc 在 PATH）；MSVC `cl.exe` 14.51.36231
+    （VS18 BuildTools，vswhere 定位，与仓内 `platform::find_cl` 同一路径）；Rust `rustc`/`cargo`
+    1.100.0-nightly。
+  - 闭环探针：一条 8 线程平方 kernel 经 `nvcc -ccbin <cl.exe>` 编译并在 A3000 上运行，回读
+    `0 1 4 9 16 25 36 49`、`cudaGetLastError = 0`；编译执行链路打通（探针临时目录已清理）。
+- **仓内 CUDA 套件尚未在 win 跑（PARTIAL，缺口是代码同步，不是无设备）**：win 上现有源码副本
+  （`llm-cuda`/`llm-verify`/`llm_clean`/`llm_b`）均为旧代次快照——无当前 `device` crate，cutile 无
+  typed IR（`kernel/expr/pass/validate/printer`），且都不是 git 仓；当前仓在本机 MBP。把当前仓同步到
+  win 后，方可 `cargo test -p llm-device` 跑仓内 CUDA 生成 / 编译 / 回读对拍，并核 `nvcc_ready()`
+  （`detect_nvcc` + `find_cl`）在 win 判真。linux 云主机仍无 GPU / `nvcc` / `cargo` / 仓库副本，不能
+  作为 CUDA 通道。
 - **性能数字待校准**：IR 优化 / 发射无耗时基线；roofline 达标率、跨算子融合收益均未实测，不在落地
   前写提速承诺。
 - **超越函数精度口径未定档**：Sqrt/Exp/Ln/Sin/Cos 的 Rust `f32` 方法与 C `<math.h>` 库实现存在 ulp

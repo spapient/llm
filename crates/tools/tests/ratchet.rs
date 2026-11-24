@@ -44,7 +44,7 @@ fn debt_gate(ccn: i64, measured: usize) -> (Gate, Over) {
     (gate, over)
 }
 
-/// 项目配置：三个阈值来自构建期生成的 `lints/vocabulary.toml`；存量债务只允许挂在入口编排层
+/// 项目配置：五个阈值来自构建期生成的 `lints/vocabulary.toml`；存量债务只允许挂在入口编排层
 ///（`crates/cli/src/` 下的编排与二进制入口），运行时生产代码 `crates/*/src` 一条都不能有。
 #[test]
 fn the_project_config_lists_only_root_entry_legacy_debt() {

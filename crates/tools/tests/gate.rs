@@ -123,7 +123,10 @@ fn scan_production(
     if let Some(lines) = dup::file_lines(&text, gate) {
         judge(gate, &name, Metric::Lines, lines, bad, live);
     }
-    if !is_thin_entry(path) && raw.lines().count() < gate.min_lines() {
+    if !is_thin_entry(path)
+        && raw.lines().count() < gate.min_lines()
+        && !gate.in_min_baseline(&name)
+    {
         bad.push(format!(
             "{name}: 生产文件 {} 行低于下限 {}——把同主题语义收拢进所属模块，不要单开口袋碎文件",
             raw.lines().count(),

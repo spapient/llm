@@ -15,6 +15,9 @@ pub struct Gate {
     min_file_lines: usize,
     max_test_lines: usize,
     debt: BTreeMap<String, Debt>,
+    /// 行数下限存量基线：这些既存正交模块暂不受 [`min_lines`](Self::min_lines) 约束；
+    /// 新开口子必须达到下限或归入既有模块。条目达标（≥下限）后应从清单删除。
+    min_baseline: BTreeSet<String>,
 }
 
 /// 一个存量债项的登记度量（只登记仍超标的字段）。
@@ -98,6 +101,7 @@ impl Gate {
             min_file_lines,
             max_test_lines,
             debt: debts(table)?,
+            min_baseline: min_baseline(table),
         };
         gate.check_thresholds().map(|()| gate)
     }
@@ -125,6 +129,12 @@ impl Gate {
     #[must_use]
     pub const fn min_lines(&self) -> usize {
         self.min_file_lines
+    }
+
+    /// 该相对路径是否在行数下限存量基线内（既存正交模块，暂不受下限约束）。
+    #[must_use]
+    pub fn in_min_baseline(&self, key: &str) -> bool {
+        self.min_baseline.contains(key)
     }
 
     /// 判定一个**已超限**的测量；返回 `Some(理由)` 即门禁失败。
@@ -198,7 +208,9 @@ fn unknown_keys(table: &Table) -> Result<()> {
     match table
         .entries()
         .iter()
-        .find(|(name, _)| name != "debt" && !THRESHOLDS.contains(&name.as_str()))
+        .find(|(name, _)| {
+            name != "debt" && name != "min_lines_baseline" && !THRESHOLDS.contains(&name.as_str())
+        })
     {
         Some((name, _)) => Err(invalid(&format!("[gate] 未知键 {name}"))),
         None => Ok(()),
@@ -256,4 +268,12 @@ fn debts(table: &Table) -> Result<BTreeMap<String, Debt>> {
         debt.insert(key, entry);
     }
     Ok(debt)
+}
+
+/// 行数下限存量基线：相对仓库根的正斜杠路径集合；缺省为空（没有豁免条目）。
+fn min_baseline(table: &Table) -> BTreeSet<String> {
+    table
+        .string_array("min_lines_baseline")
+        .map(|items| items.iter().map(ToString::to_string).collect())
+        .unwrap_or_default()
 }
