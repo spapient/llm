@@ -14,6 +14,21 @@ fn sample() -> Stack {
     .expect("层名唯一")
 }
 
+/// 装好 rank 0 的装配器并放置两层样例栈（`dp=1`）；单 rank 用例共用这一段装配样板。
+fn placed(tp: usize, pp: usize, blocks: usize) -> Vec<Placement<()>> {
+    let topology = Topology::new(tp, pp, 1).expect("拓扑合法");
+    let assembler = Assembler::new(Plan::new(topology, 0).expect("rank 0"));
+    assembler.place_stack(&sample(), blocks).expect("归属")
+}
+
+/// 按层名取放置结果；用例只关心命中的那一层。
+fn by_name<'a>(placed: &'a [Placement<()>], name: &str) -> &'a Placement<()> {
+    placed
+        .iter()
+        .find(|p| p.name() == name)
+        .expect("层在清单里")
+}
+
 #[test]
 fn single_process_holds_every_layer_with_full_shape() {
     let assembler = Assembler::new(Plan::single());
@@ -53,35 +68,22 @@ fn pp_splits_blocks_across_pipeline_ranks() {
 
 #[test]
 fn tp_column_splits_output_and_row_splits_input() {
-    let topology = Topology::new(2, 1, 1).expect("拓扑合法");
-    let assembler = Assembler::new(Plan::new(topology, 0).expect("rank 0"));
-    let placed = assembler.place_stack(&sample(), 1).expect("归属");
+    let placed = placed(2, 1, 1);
 
-    let q = placed
-        .iter()
-        .find(|p| p.name() == "blk.0.q")
-        .expect("Q 列切");
+    let q = by_name(&placed, "blk.0.q");
     assert_eq!(q.shard_shape(), Some([12, 12]), "输出维 24 列切成两半");
     assert_eq!(q.shard_range(), Some((0, 12)));
 
-    let o = placed
-        .iter()
-        .find(|p| p.name() == "blk.0.o")
-        .expect("O 行切");
+    let o = by_name(&placed, "blk.0.o");
     assert_eq!(o.shard_shape(), Some([12, 12]), "输入维 24 行切成两半");
     assert_eq!(o.shard_range(), Some((0, 12)));
 }
 
 #[test]
 fn block_outside_the_pipeline_has_no_tiling() {
-    let topology = Topology::new(2, 2, 1).expect("拓扑合法");
-    let assembler = Assembler::new(Plan::new(topology, 0).expect("rank 0"));
-    let placed = assembler.place_stack(&sample(), 2).expect("归属");
+    let placed = placed(2, 2, 2);
 
-    let outside = placed
-        .iter()
-        .find(|p| p.name() == "blk.1.q")
-        .expect("段外层");
+    let outside = by_name(&placed, "blk.1.q");
     assert!(!outside.held());
     assert!(outside.tiling().is_none());
     assert!(outside.shard_shape().is_none());
@@ -146,34 +148,21 @@ fn projection_suffix_selects_the_sharding_side() {
 
 #[test]
 fn held_projection_yields_local_slice_and_non_projection_has_none() {
-    let topology = Topology::new(2, 1, 1).expect("拓扑合法");
-    let assembler = Assembler::new(Plan::new(topology, 0).expect("rank 0"));
-    let placed = assembler.place_stack(&sample(), 1).expect("归属");
+    let placed = placed(2, 1, 1);
 
-    let q = placed
-        .iter()
-        .find(|p| p.name() == "blk.0.q")
-        .expect("Q 列切");
+    let q = by_name(&placed, "blk.0.q");
     let full = vec![0.0f32; 24 * 12];
     let local = q.split(&full).expect("Q 有分片").expect("切片成功");
     assert_eq!(local.len(), 12 * 12, "列切子块形状 [12, 12]");
 
-    let embed = placed
-        .iter()
-        .find(|p| p.name() == "tok_embeddings")
-        .expect("嵌入表");
+    let embed = by_name(&placed, "tok_embeddings");
     assert!(embed.split(&full).is_none(), "非投影层不切片");
 }
 
 #[test]
 fn pipeline_outside_layer_has_no_slice() {
-    let topology = Topology::new(1, 2, 1).expect("拓扑合法");
-    let assembler = Assembler::new(Plan::new(topology, 0).expect("rank 0"));
-    let placed = assembler.place_stack(&sample(), 2).expect("归属");
+    let placed = placed(1, 2, 2);
 
-    let outside = placed
-        .iter()
-        .find(|p| p.name() == "blk.1.q")
-        .expect("段外层");
+    let outside = by_name(&placed, "blk.1.q");
     assert!(outside.split(&[0.0f32; 24 * 12]).is_none());
 }

@@ -103,11 +103,11 @@
 | --- | --- | --- |
 | 能力 | **8 / 10** | 集合端口元素档泛型、策略三旋钮、`#[parallel(..)]` 入口、`Plan` 三轴视图、`Job/Queue` 排队原语就位；归属计划接到 `nn` 层清单（PP 段过滤、TP 列/行几何）；本轮再把几何推进到**本地权重子块切片**（泛型 `Copy` 档，列切整块、行切按行取列段，拼回原样对拍），注解策略→归属→本地子块 dev 链打通（confirmed）。缺口仍在：子块尚未装载进 serve `Graph`/`Params`；PP 跨段流水调度、TP 行切求和归约未接运行图；接通的运行通路只有 DP 梯度同步；真实跨进程/设备通信缺（§5.1/5.3）。既有对比基线分布式维 llm=3。 |
 | 性能 | **6 / 10** | `reduce_into` 直写调用方缓冲、一次归约不分配堆；组内归约内层预取镜像切片；标量安全后端无 SIMD，平均除法保留循环（已注释保留理由）。切片侧列切行段连续、一次整块 `to_vec`；行切列段不连续，外层按行拷（布局决定的分散拷贝），行内整块复制；归属与切片都是装配期动作，不进前向/反向热路径；队列排序是批次提交点稳定排序。未新增热路径通路，无基准测量观测（unknown），不夸大量化收益。 |
-| 质量 | **9 / 10** | 构造期校验（零维 / 上界 / rank 越界 / 宽度不符 / 组非空升序 / 层段整除 / TP 切维整除 / 切片形状积与溢出 / 份号越界）、浮点极值 NaN 传播、归约闭集与行序断言；计划层全 rank 归属与层段无重叠无遗漏对拍；归属侧每块恰归一个 PP rank、非分层双副本、段外无计划对拍；切片拼回原轴/原行、泛型档、长度不符拒绝对拍；队列同档保序；注解编译期闭集/度数/布尔/重复键拒绝 + 端到端类型解析；新顶层类型回登所有权表，dev 工具边回登边表。 |
-| 代码量 | **6 / 10** | 上一轮本体减法：移除 f32 闭包行表、浮点实例化收编进宏、rank 越界校验抽 helper。本轮切片能力加在既有 `tiling.rs`/`placement.rs` 方法上，未新增源文件；测试追加到既有测试文件；16 个并入 optim 模块保持原位。能力件仍以新增为主，未再拆本体。 |
-| 门禁可执行性 | **8 / 10** | 本批 crate 绿窗口实测：`llm-shard` lib **162**、`llm-train` lib **235** + doctest **5**、`llm-nn` **528**（4 ignored）、`llm-annotation` **48**、`llm-testkit` lib **100** 全 0 failed；`cargo clippy` 本批 lib 0 警告；本批文件 `fmt` 0 diff。收尾时上游 cutile 在途一元算子闭集 `UnaryFn` 漏登所有权基线，已补进既有 `cutile` 基线节（不碰 cutile 代码、不新增架构边），ownership 门转绿。其余残留：上游 device Metal pointwise 1 条、fuzz 两条 broken link、`cargo deny` 受网络限制；全仓 doc / `--all-targets` clippy 未在本轮跑完。 |
+| 质量 | **9 / 10** | 构造期校验（零维 / 上界 / rank 越界 / 宽度不符 / 组非空升序 / 层段整除 / TP 切维整除 / 切片形状积与溢出 / 份号越界）、浮点极值 NaN 传播、归约闭集与行序断言；计划层全 rank 归属与层段无重叠无遗漏对拍；归属侧每块恰归一个 PP rank、非分层双副本、段外无计划对拍；切片拼回原轴/原行、泛型档、长度不符拒绝对拍；队列同档保序；注解编译期闭集/度数/布尔/重复键拒绝 + 端到端类型解析；新顶层类型回登所有权表，dev 工具边回登边表。本轮补口径一致性：remainder 设备模板由 floor 向负无穷对齐到参考闭包 `x % y` 的 fmod/截断商（`x - _cutile_trunc_f32(x/v)*v`，去冗余 copysign），nn 模块注释与 `.toml` 注释同改；shard `placement/tiling` 抽私有方法降 assign/split 圈复杂度、词表 `index→idx`；testkit 单行重导出垫片收拢进 lib.rs；fuzz harness 终止形态与契约库零 panic 立场对齐。 |
+| 代码量 | **6 / 10** | 上一轮本体减法：移除 f32 闭包行表、浮点实例化收编进宏、rank 越界校验抽 helper。本轮切片能力加在既有 `tiling.rs`/`placement.rs` 方法上，未新增源文件；测试追加到既有测试文件；16 个并入 optim 模块保持原位。本轮精简：testkit 单行垫片 `assert.rs` 收拢进 `lib.rs`（删一碎文件）、撤销一条越权 debt 条目与配套注释、remainder 模板去掉冗余 copysign 表达式。能力件仍以新增为主，未再拆本体；train 三巨石未在本轮边界内拆分。 |
+| 门禁可执行性 | **8 / 10** | 本批 crate 绿窗口实测：`llm-shard` lib **162**、`llm-nn` **528**（4 ignored）、`llm-prof` **164 + 56**、`llm-fuzz` **17+3+5+1**、`llm-testkit` lib **100** 全 0 failed；本批五包 `clippy --all-targets -D warnings` 0 警告、`fmt --check` 0 diff。上一轮点名的三条上游残留本轮全部取证闭合：Metal 对拍套件 `metal_suite` **15 passed / 0 failed / 12 ignored**（pointwise 用例 ok，旧 remainder 第 3 元素偏差不复现）；fuzz 两条 broken intra-doc link 已改指 `check_target`，`RUSTDOCFLAGS=-D warnings` doc 零告警；`cargo deny --offline check all` 四类（advisories/bans/licenses/sources）全 ok。ratchet 棘轮门转绿：撤销了越权挂在 `crates/fuzz/` 的 debt 条目（门只放行 `crates/cli/src/`），harness 终止形态改为 `eprintln!` 证据后 `process::abort()`。仍压着门的既有边界债：`train` 三巨石 Lines 超 899（gate 唯一红账）、跨 shard/nn/prof/testkit 的 16 条既有 doc broken link、全仓 `--all-targets/--all-features` clippy 与 `fmt --all` 未在本轮跑完。 |
 
-> 结论：距 "S++ / 超越 Burn 10 分" 仍未达成。本轮闭合了**本地权重子块切片算法**；子块装载进图、PP 跨段流水、TP 行切运行归约、生产装配持有归属结果、跨进程后端仍是缺口。分数为绿窗口实测口径，被上游半成品阻塞的 crate 不重复计绿。
+> 结论：距 "S++ / 10 分" 仍未达成。本轮闭合了上一轮点名的三条上游在途残留（Metal pointwise 对拍、fuzz broken link、deny 离线）与 remainder 双源口径；但 §5.1 的运行装配缺口（子块装载进图、PP 跨段流水、TP 行切运行归约、生产装配持有归属结果、跨进程后端）一条未推进，`train` 三巨石 Lines 与既有 doc broken link 仍压门禁。分数为绿窗口实测口径，被上游半成品阻塞的 crate 不重复计绿。
 
 ## 4. 与 Burn 对照（沿用 §10 已核事实，不重复取证）
 
@@ -135,20 +135,30 @@
 
 ### 5.4 上游并行流半成品与残留告警
 
-取证期间工作树存在外部并行工作流连续提交与未提交文件周期收编。本轮收尾绿窗口实测：`llm-annotation` lib **48 passed / 0 failed**；`llm-shard` lib **162 passed / 0 failed**；`llm-train` lib **235 passed / 0 failed** + doctest **5 passed / 0 failed**；`llm-nn` **528 passed**（4 ignored）；`llm-testkit` lib **100 passed / 0 failed**。
+取证期间工作树存在外部并行工作流连续提交与未提交文件周期收编。本轮收尾绿窗口实测：`llm-annotation` lib **48 passed / 0 failed**；`llm-shard` lib **162 passed / 0 failed**；`llm-train` lib **235 passed / 0 failed** + doctest **5 passed / 0 failed**；`llm-nn` **528 passed**（4 ignored）；`llm-prof` **164 + 56 passed**；`llm-fuzz` **17+3+5+1 passed**；`llm-device` `metal_suite` **15 passed / 0 failed / 12 ignored**；`llm-testkit` lib **100 passed / 0 failed**。
 
 过程中 cutile 多次进入合并中间态：`E0515`（子节点返回 `&[&Expr]` 临时切片悬垂）、`E0282`（类型标注缺失）、`E0592`（`children / map_children / rebuild_unary / rebuild_binary / rebuild_ternary` 在 `expr.rs` 与 `kernel.rs` 跨文件各定义一份，同 impl `kernel::Expr`）、`E0034`（多个同签名项在作用域内）。这些方法本应只住 `expr.rs`（子节点遍历与按元数重建的分派单一家），`kernel.rs` 内同名副本是迁移残留；该中间态在上一轮收尾前被上游收编——`kernel.rs` 副本已移除。
 
-当前残留均属上游线或环境、非本批并行文件——
+### 5.4.1 本轮已闭合的三条上游在途残留（confirmed）
 
-- `cutile` 一元算子族在途：`ir_emit.rs` 重组为 `printer.rs`、新增 `unary_tests.rs`，`kernel.rs`/`lib.rs`/`validate.rs` 同步改动；收尾时 ownership 门扫到既有 HEAD 公开类型 `cutile:UnaryFn`（一元数学算子发射名与主机求值闭集）漏登所有权基线。已把它补进既有 `cutile` 的 `ownership.unlisted` 基线节（同一内核 DSL 内部归类，不碰 cutile 代码、不新增架构边），ownership 门转绿；该闭集待 cutile 分节稳定后再逐节进对外所有权表；
-- `llm-device` Metal pointwise 对拍 1 条失败：`remainder_f32 Metal 输出 对拍失败：max_rel_err=1.000e0 > 1.000e-5（第 3 个元素 got=-1.125 want=-0.125）`；改动源文件 `crates/device/tests/metal/correctness/pointwise.rs`（263 行在途改动）与 `crates/prof/src/ops/{max,min}_f32.toml` 均非本批并行文件，本轮未介入，待上游收编后复跑；
-- `llm-fuzz` `lib.rs:3/22` 两条 broken intra-doc link（`[`check`]` 指向作用域内不存在的 `check` 项），`RUSTDOCFLAGS=-D warnings` 下阻断全仓 doc；上游既有缺陷，本轮未改 fuzz；
-- `cargo deny check` 因当前环境无法访问 github.com rustsec advisory-db（`SSL_ERROR_SYSCALL`）未执行，属网络限制而非代码供应链告警；
-- 边表经本轮复核：`train → annotation` 为 dev 工具边，已补登 `docs/ARCHITECTURE.md`；实测 `cargo metadata` 运行时边 69、`+dev` 边 55、总计 **124** 条，文档计数与门禁 `testkit::layer` 断言一致；
-- 干净窗口 `clippy --workspace --lib` 0、`fmt --all --check` 0 diff；`--all-targets / --all-features` clippy 与全仓 doc 未在本轮跑完。
+- **`llm-device` Metal pointwise 对拍**：旧记录的 `remainder_f32 第 3 元素 got=-1.125 want=-0.125` 在当前工作树不复现；`cargo test -p llm-device --test metal_suite` 实测 **15 passed / 0 failed / 12 ignored**，`pointwise_elementwise_matches_cpu_reference_on_metal ... ok`。取证发现一处真实口径隐患：nn 参考闭包是 `|x,y| x % y`（Rust `f32::Rem` = fmod = `x - trunc(x/y)·y`，截断商、符号同被除数），而设备模板 `remainder_f32.k` 原写 `copysign(x - floor(x/v)*v, x)`（floor 向负无穷），负商非整数时与 trunc 不等价，且该算子未进 Metal `ENTRIES` 对拍表、设备路径未经真机覆盖。已裁决以 nn 运行时参考闭包为契约事实，模板对齐 fmod/截断商：表达式改 `x - _cutile_trunc_f32(x/v)*v`，去掉冗余 copysign；`.toml` 注释 `floor→trunc`；nn 模块注释删去"IEEE 余数语义"误称。六后端 preamble 均已提供可移植 `_cutile_trunc_f32`。
+- **`llm-fuzz` 两条 broken intra-doc link**：`lib.rs:3/22` 原写 `[`check`]`，作用域内无 `check` 项；实际判据入口是 `check_target`（`lib.rs:106`，经 538 行 `pub use contract::{check_target, sweep, sweep_all}` 导出）。两处已改指 `[`check_target`]`。验证：`RUSTDOCFLAGS="-D warnings" cargo doc -p llm-fuzz --no-deps` 零告警；`cargo test -p llm-fuzz` 四档全绿（17 + 3 + 5 + 1，0 failed）。
+- **`cargo deny` 网络受限**：根因是缺 `--offline`，非代码供应链告警。本地 advisory 快照完整存在于 `~/.cargo/advisory-dbs/advisory-db-3157b0e258782691`（commit `52384ab`，crates/ rust/ 齐全）。cargo-deny 0.20.2 不接受 check 子命令的 `--offline`，但顶层 `cargo deny --offline check` 可用；实测 `cargo deny --offline check all` → `advisories ok, bans ok, licenses ok, sources ok` 四类全绿，离线无需改 `deny.toml`。
 
-这些不属于 shard 并行主线，未在本轮擅改其设计。全量门禁待上游 fuzz doc 链接与网络条件具备后按 §6 一次性复跑。
+### 5.4.2 本轮顺带收口的静态门项
+
+- shard `placement.rs` 词表改名（`layer_index→layer_idx`、闭包 `index→idx`）并抽 `linear_geo`/`sharded` 私有方法降 assign 圈复杂度；`tiling.rs` 把 `split` 的列切/行切抽成 `column_slice`/`row_slice`，长度校验抽 `check_len`，降主体 ccn；`plan_tests.rs` 测试名 `indices→idxs`；testkit 单行重导出垫片 `assert.rs`（12 行）收拢进 `lib.rs` 直连 `similar_asserts::assert_eq`。
+- fuzz harness 终止形态合规化：`harness.rs` 原在 `fuzz_target!` 闭包内 `panic!("{finding}")`。门的 Call 度量阈值为 0，棘轮 debt 按 `ratchet` 测试硬约束只放行 `crates/cli/src/`，`crates/fuzz/` 不能挂债务条目（上一轮误挂的 `call=1` 条目已撤销，ratchet 用例转绿）。代码侧改为先 `eprintln!("{finding}")` 落证据到 stderr，再 `std::process::abort()`——与 libfuzzer-sys `test_input_wrap` 捕获 unwind 后 `process::abort()` 的最终终止形态一致，跳过被零 panic 门禁止的 panic 宏；契约库本身仍不 panic。`cargo check -p llm-fuzz --features engine` 通过。
+
+### 5.4.3 仍压门禁的既有边界债（本轮边界内未拆）
+
+- **`train` 三巨石 Lines 超标**：`session.rs` 实测 Lines=1211（物理 1212）、`backprop.rs` 915（物理 916）、`geometry.rs` 1403（物理 1404），均超 `file_max_lines=899`，是 gate 测试当前**唯一红账**（`every_source_passes_the_static_gate` 14 passed / 1 failed）。三者 worktree 行数 == HEAD 行数，属已提交存量、非本轮引入；门规则立场运行时生产代码不进 debt，收口方式是按主题拆模块。本轮硬边界"减法仅限 shard 本体内部"未拆 train。内部段边界已取证：geometry 三段（静态规格表 12-282 / 形状面 283-598 / 数值微核 599-1404）；backprop（执行器助手 41-157 / 注意力反向本体 312-452 / 公式表 453-916）；session（TrainConfig / ParamSlot / Session 三块）。
+- **既有 doc broken link 未修**：shard 3 条（`Priority::TABLE` 私有、`Local::reduce_into` unresolved、`Codegen::lower` unresolved）、nn 4 条（`registry::model`、`WeightFormat::INT4`×2、`OpLayer→AxisCore` 私有）、prof 6 条（`GEMM_KERNELS`/`gemm_negotiate`/`gemm8x8`/`sme`/`Tile`/`micro_packed`）、testkit 3 条（`compare→close_scalar` 私有、`crate::prop_discipline` unresolved、`squash→BELOW_ONE` 私有）。前几轮即存在，非本轮 remainder/fuzz 改动引入；全仓 `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` 尚未在本轮跑完。
+- `cutile` 一元算子族在途：`ir_emit.rs` 重组为 `printer.rs`、新增 `unary_tests.rs`；收尾时 ownership 门扫到既有 HEAD 公开类型 `cutile:UnaryFn` 漏登基线，已补进既有 `cutile` 的 `ownership.unlisted` 基线节（不碰 cutile 代码、不新增架构边），ownership 门转绿；该闭集待 cutile 分节稳定后再逐节进对外所有权表。再次动手 cutile 源码前应先确认工作树静止，必要时 `cargo clean -p cutile` 清陈旧 OUT_DIR。
+- 边表经本轮复核：`train → annotation` 为 dev 工具边，已补登 `docs/ARCHITECTURE.md`；实测 `cargo metadata` 运行时边 69、`+dev` 边 55、总计 **124** 条，文档计数与门禁 `testkit::layer` 断言一致。
+- 本批五包（shard/nn/prof/fuzz/testkit）`fmt --check` 0 diff、`clippy --all-targets -D warnings` 0 警告；全仓 `fmt --all --check` 仍有非本批文件的上游在途未格式化 diff，`--all-targets/--all-features` clippy 与全仓 doc 未在本轮跑完。
+
+这些不属于 shard 并行主线，未在本轮擅改其设计。全量门禁按 §6 一次性复跑。
 
 ### 5.5 注解端到端消费方（dev 链已通，生产装配未接）
 
@@ -161,8 +171,8 @@ cargo test --workspace
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo fmt --all --check
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
-cargo deny check
+cargo deny --offline check all
 cargo test -p llm-testkit --lib
 ```
 
-成员名 / 测试目标名以 `cargo metadata --no-deps` 当前结果为准；旧 `llm-tool` / `tool gate` 命名可能已随 `tools` 改名变化，testkit 架构/所有权/层边门经 `--lib` 跑（旧 `--test architecture/contracts` 目标名已失效）。
+成员名 / 测试目标名以 `cargo metadata --no-deps` 当前结果为准；旧 `llm-tool` / `tool gate` 命名可能已随 `tools` 改名变化，testkit 架构/所有权/层边门经 `--lib` 跑（旧 `--test architecture/contracts` 目标名已失效）。Metal 对拍目标名是 `metal_suite`（`--test metal` 不存在）；`cargo deny` 的 `--offline` 必须放在顶层 `deny` 之后、`check` 之前（check 子命令不接受该 flag），离线读本地 advisory 快照、不需联网拉 github rustsec 库。
