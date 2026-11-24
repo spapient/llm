@@ -377,6 +377,18 @@ pub mod driver {
         ))
     }
 
+    /// 在唯一临时目录中执行动作，成功或失败都清理中间产物。
+    pub fn with_scratch<T>(
+        dirs: &Dirs,
+        tag: &str,
+        action: impl FnOnce(&Path) -> Result<T>,
+    ) -> Result<T> {
+        let dir = scratch(dirs, tag);
+        let outcome = action(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        outcome
+    }
+
     /// 两个后端 kernel 共享的 witness 正文：`local` 清零、`switch` 分派、cap 截断与回写循环。
     /// `close` 是收尾文本（换行数 Metal/CUDA 不同）；`local` 声明留在各自函数里（Metal 加 `thread`）。
     pub fn push_dispatch(program: &mut String, max: usize, selected: &[Selected<'_>], close: &str) {

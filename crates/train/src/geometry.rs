@@ -209,7 +209,7 @@ const DECLARED: &[(&str, Geometry)] = declared_geometries! {
 
 mod kernels;
 mod shapes;
-use shapes::{invalid, norm_outputs, pool_len, spatial_outputs};
+use shapes::{invalid, pool_len};
 
 // ---- 方法分派：形状核对 + 逐变体路由 -----------------------------------------
 impl Geometry {

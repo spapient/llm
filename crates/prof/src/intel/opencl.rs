@@ -21,21 +21,107 @@ const PROFILING_COMMAND_END: u32 = 0x1283;
 #[link(name = "OpenCL")]
 unsafe extern "system" {
     fn clGetPlatformIDs(num: u32, ids: *mut *mut c_void, count: *mut u32) -> i32;
-    fn clGetDeviceIDs(platform: *mut c_void, kind: u64, num: u32, ids: *mut *mut c_void, count: *mut u32) -> i32;
-    fn clGetDeviceInfo(device: *mut c_void, key: u32, size: usize, value: *mut c_void, written: *mut usize) -> i32;
-    fn clCreateContext(properties: *const isize, devices: u32, device: *const *mut c_void, notify: *mut c_void, data: *mut c_void, status: *mut i32) -> *mut c_void;
-    fn clCreateCommandQueueWithProperties(context: *mut c_void, device: *mut c_void, properties: *const usize, status: *mut i32) -> *mut c_void;
-    fn clCreateBuffer(context: *mut c_void, flags: u64, size: usize, host: *mut c_void, status: *mut i32) -> *mut c_void;
-    fn clCreateProgramWithSource(context: *mut c_void, count: u32, strings: *const *const c_char, lengths: *const usize, status: *mut i32) -> *mut c_void;
-    fn clBuildProgram(program: *mut c_void, devices: u32, device: *const *mut c_void, options: *const c_char, notify: *mut c_void, data: *mut c_void) -> i32;
-    fn clGetProgramBuildInfo(program: *mut c_void, device: *mut c_void, key: u32, size: usize, value: *mut c_void, written: *mut usize) -> i32;
+    fn clGetDeviceIDs(
+        platform: *mut c_void,
+        kind: u64,
+        num: u32,
+        ids: *mut *mut c_void,
+        count: *mut u32,
+    ) -> i32;
+    fn clGetDeviceInfo(
+        device: *mut c_void,
+        key: u32,
+        size: usize,
+        value: *mut c_void,
+        written: *mut usize,
+    ) -> i32;
+    fn clCreateContext(
+        properties: *const isize,
+        devices: u32,
+        device: *const *mut c_void,
+        notify: *mut c_void,
+        data: *mut c_void,
+        status: *mut i32,
+    ) -> *mut c_void;
+    fn clCreateCommandQueueWithProperties(
+        context: *mut c_void,
+        device: *mut c_void,
+        properties: *const usize,
+        status: *mut i32,
+    ) -> *mut c_void;
+    fn clCreateBuffer(
+        context: *mut c_void,
+        flags: u64,
+        size: usize,
+        host: *mut c_void,
+        status: *mut i32,
+    ) -> *mut c_void;
+    fn clCreateProgramWithSource(
+        context: *mut c_void,
+        count: u32,
+        strings: *const *const c_char,
+        lengths: *const usize,
+        status: *mut i32,
+    ) -> *mut c_void;
+    fn clBuildProgram(
+        program: *mut c_void,
+        devices: u32,
+        device: *const *mut c_void,
+        options: *const c_char,
+        notify: *mut c_void,
+        data: *mut c_void,
+    ) -> i32;
+    fn clGetProgramBuildInfo(
+        program: *mut c_void,
+        device: *mut c_void,
+        key: u32,
+        size: usize,
+        value: *mut c_void,
+        written: *mut usize,
+    ) -> i32;
     fn clCreateKernel(program: *mut c_void, name: *const c_char, status: *mut i32) -> *mut c_void;
     fn clSetKernelArg(kernel: *mut c_void, index: u32, size: usize, value: *const c_void) -> i32;
-    fn clEnqueueWriteBuffer(queue: *mut c_void, buffer: *mut c_void, blocking: u32, offset: usize, size: usize, host: *const c_void, waiting: u32, events: *const *mut c_void, event: *mut *mut c_void) -> i32;
-    fn clEnqueueReadBuffer(queue: *mut c_void, buffer: *mut c_void, blocking: u32, offset: usize, size: usize, host: *mut c_void, waiting: u32, events: *const *mut c_void, event: *mut *mut c_void) -> i32;
-    fn clEnqueueNDRangeKernel(queue: *mut c_void, kernel: *mut c_void, dimensions: u32, offset: *const usize, global: *const usize, local: *const usize, waiting: u32, events: *const *mut c_void, event: *mut *mut c_void) -> i32;
+    fn clEnqueueWriteBuffer(
+        queue: *mut c_void,
+        buffer: *mut c_void,
+        blocking: u32,
+        offset: usize,
+        size: usize,
+        host: *const c_void,
+        waiting: u32,
+        events: *const *mut c_void,
+        event: *mut *mut c_void,
+    ) -> i32;
+    fn clEnqueueReadBuffer(
+        queue: *mut c_void,
+        buffer: *mut c_void,
+        blocking: u32,
+        offset: usize,
+        size: usize,
+        host: *mut c_void,
+        waiting: u32,
+        events: *const *mut c_void,
+        event: *mut *mut c_void,
+    ) -> i32;
+    fn clEnqueueNDRangeKernel(
+        queue: *mut c_void,
+        kernel: *mut c_void,
+        dimensions: u32,
+        offset: *const usize,
+        global: *const usize,
+        local: *const usize,
+        waiting: u32,
+        events: *const *mut c_void,
+        event: *mut *mut c_void,
+    ) -> i32;
     fn clFinish(queue: *mut c_void) -> i32;
-    fn clGetEventProfilingInfo(event: *mut c_void, key: u32, size: usize, value: *mut c_void, written: *mut usize) -> i32;
+    fn clGetEventProfilingInfo(
+        event: *mut c_void,
+        key: u32,
+        size: usize,
+        value: *mut c_void,
+        written: *mut usize,
+    ) -> i32;
     fn clReleaseEvent(handle: *mut c_void) -> i32;
     fn clReleaseKernel(handle: *mut c_void) -> i32;
     fn clReleaseProgram(handle: *mut c_void) -> i32;
@@ -93,13 +179,21 @@ impl OpenClDevice {
         })?;
         let info = device_info(raw)?;
         let mut status = 0;
-        let context = unsafe { clCreateContext(null(), 1, &raw, null_mut(), null_mut(), &mut status) };
+        let context =
+            unsafe { clCreateContext(null(), 1, &raw, null_mut(), null_mut(), &mut status) };
         check(status, "clCreateContext")?;
         let context = Handle::new(context, clReleaseContext)?;
         let properties = [QUEUE_PROPERTIES, QUEUE_PROFILING_ENABLE as usize, 0];
-        let queue = unsafe { clCreateCommandQueueWithProperties(context.raw, raw, properties.as_ptr(), &mut status) };
+        let queue = unsafe {
+            clCreateCommandQueueWithProperties(context.raw, raw, properties.as_ptr(), &mut status)
+        };
         check(status, "clCreateCommandQueueWithProperties")?;
-        Ok(Self { raw, context, queue: Handle::new(queue, clReleaseCommandQueue)?, info })
+        Ok(Self {
+            raw,
+            context,
+            queue: Handle::new(queue, clReleaseCommandQueue)?,
+            info,
+        })
     }
 
     /// 设备身份与能力。
@@ -113,30 +207,69 @@ impl OpenClDevice {
     /// # Errors
     /// 源码含 NUL、程序创建/构建失败或入口不存在时返回诊断。
     pub fn compile(&self, source: &str, options: &str, entry: &str) -> Result<OpenClKernel> {
-        let source = std::ffi::CString::new(source).map_err(|_| invalid("OpenCL 源文本包含 NUL"))?;
-        let options = std::ffi::CString::new(options).map_err(|_| invalid("OpenCL 编译参数包含 NUL"))?;
+        let source =
+            std::ffi::CString::new(source).map_err(|_| invalid("OpenCL 源文本包含 NUL"))?;
+        let options =
+            std::ffi::CString::new(options).map_err(|_| invalid("OpenCL 编译参数包含 NUL"))?;
         let entry = std::ffi::CString::new(entry).map_err(|_| invalid("OpenCL 入口名包含 NUL"))?;
         let mut status = 0;
         let pointer = source.as_ptr();
-        let program = unsafe { clCreateProgramWithSource(self.context.raw, 1, &pointer, null(), &mut status) };
+        let program = unsafe {
+            clCreateProgramWithSource(self.context.raw, 1, &pointer, null(), &mut status)
+        };
         check(status, "clCreateProgramWithSource")?;
         let program = Handle::new(program, clReleaseProgram)?;
-        let built = unsafe { clBuildProgram(program.raw, 1, &self.raw, options.as_ptr(), null_mut(), null_mut()) };
+        let built = unsafe {
+            clBuildProgram(
+                program.raw,
+                1,
+                &self.raw,
+                options.as_ptr(),
+                null_mut(),
+                null_mut(),
+            )
+        };
         if built != 0 {
-            return Err(Error::new(Code::Invalid, format!("OpenCL 内核构建失败（{built}）：\n{}", self.build_log(program.raw)?))
-                .with("prof::runtime::opencl::OpenClDevice::compile"));
+            return Err(Error::new(
+                Code::Invalid,
+                format!(
+                    "OpenCL 内核构建失败（{built}）：\n{}",
+                    self.build_log(program.raw)?
+                ),
+            )
+            .with("prof::runtime::opencl::OpenClDevice::compile"));
         }
         let kernel = unsafe { clCreateKernel(program.raw, entry.as_ptr(), &mut status) };
         check(status, "clCreateKernel")?;
-        Ok(OpenClKernel { kernel: Handle::new(kernel, clReleaseKernel)?, _program: program })
+        Ok(OpenClKernel {
+            kernel: Handle::new(kernel, clReleaseKernel)?,
+            _program: program,
+        })
     }
 
     fn build_log(&self, program: *mut c_void) -> Result<String> {
         let mut bytes = 0;
-        check(unsafe { clGetProgramBuildInfo(program, self.raw, 0x1183, 0, null_mut(), &mut bytes) }, "clGetProgramBuildInfo(size)")?;
+        check(
+            unsafe { clGetProgramBuildInfo(program, self.raw, 0x1183, 0, null_mut(), &mut bytes) },
+            "clGetProgramBuildInfo(size)",
+        )?;
         let mut text = vec![0_u8; bytes];
-        check(unsafe { clGetProgramBuildInfo(program, self.raw, 0x1183, bytes, text.as_mut_ptr().cast(), null_mut()) }, "clGetProgramBuildInfo")?;
-        Ok(String::from_utf8_lossy(&text).trim_end_matches('\0').to_string())
+        check(
+            unsafe {
+                clGetProgramBuildInfo(
+                    program,
+                    self.raw,
+                    0x1183,
+                    bytes,
+                    text.as_mut_ptr().cast(),
+                    null_mut(),
+                )
+            },
+            "clGetProgramBuildInfo",
+        )?;
+        Ok(String::from_utf8_lossy(&text)
+            .trim_end_matches('\0')
+            .to_string())
     }
 
     /// 分配一段可读写的设备缓冲。
@@ -148,9 +281,13 @@ impl OpenClDevice {
             return Err(invalid("OpenCL 缓冲长度必须大于零"));
         }
         let mut status = 0;
-        let raw = unsafe { clCreateBuffer(self.context.raw, 1 << 0, bytes, null_mut(), &mut status) };
+        let raw =
+            unsafe { clCreateBuffer(self.context.raw, 1 << 0, bytes, null_mut(), &mut status) };
         check(status, "clCreateBuffer")?;
-        Ok(OpenClBuffer { handle: Handle::new(raw, clReleaseMemObject)?, bytes })
+        Ok(OpenClBuffer {
+            handle: Handle::new(raw, clReleaseMemObject)?,
+            bytes,
+        })
     }
 
     /// 把主机 `f32` 切片完整写入设备缓冲。
@@ -180,9 +317,27 @@ impl OpenClDevice {
     fn write<T>(&self, buffer: &OpenClBuffer, values: &[T]) -> Result<()> {
         let bytes = size_of_val(values);
         if bytes != buffer.bytes {
-            return Err(invalid(format!("写入 {bytes} 字节，OpenCL 缓冲是 {} 字节", buffer.bytes)));
+            return Err(invalid(format!(
+                "写入 {bytes} 字节，OpenCL 缓冲是 {} 字节",
+                buffer.bytes
+            )));
         }
-        check(unsafe { clEnqueueWriteBuffer(self.queue.raw, buffer.handle.raw, 1, 0, bytes, values.as_ptr().cast(), 0, null(), null_mut()) }, "clEnqueueWriteBuffer")
+        check(
+            unsafe {
+                clEnqueueWriteBuffer(
+                    self.queue.raw,
+                    buffer.handle.raw,
+                    1,
+                    0,
+                    bytes,
+                    values.as_ptr().cast(),
+                    0,
+                    null(),
+                    null_mut(),
+                )
+            },
+            "clEnqueueWriteBuffer",
+        )
     }
 
     fn read<T: Copy>(&self, buffer: &OpenClBuffer) -> Result<Vec<T>> {
@@ -190,7 +345,22 @@ impl OpenClDevice {
             return Err(invalid("OpenCL 缓冲长度与元素类型不对齐"));
         }
         let mut values = vec![0_u8; buffer.bytes];
-        check(unsafe { clEnqueueReadBuffer(self.queue.raw, buffer.handle.raw, 1, 0, buffer.bytes, values.as_mut_ptr().cast(), 0, null(), null_mut()) }, "clEnqueueReadBuffer")?;
+        check(
+            unsafe {
+                clEnqueueReadBuffer(
+                    self.queue.raw,
+                    buffer.handle.raw,
+                    1,
+                    0,
+                    buffer.bytes,
+                    values.as_mut_ptr().cast(),
+                    0,
+                    null(),
+                    null_mut(),
+                )
+            },
+            "clEnqueueReadBuffer",
+        )?;
         let count = buffer.bytes / size_of::<T>();
         let pointer = values.as_mut_ptr().cast::<T>();
         // SAFETY: 缓冲区已成功写满，按 T 对齐且拥有 count * size_of::<T>() 字节；读取后立即复制。
@@ -202,7 +372,13 @@ impl OpenClDevice {
     ///
     /// # Errors
     /// 参数绑定、发射或同步失败时返回诊断。
-    pub fn launch(&self, kernel: &OpenClKernel, buffers: &[&OpenClBuffer], global: [usize; 3], local: Option<[usize; 3]>) -> Result<()> {
+    pub fn launch(
+        &self,
+        kernel: &OpenClKernel,
+        buffers: &[&OpenClBuffer],
+        global: [usize; 3],
+        local: Option<[usize; 3]>,
+    ) -> Result<()> {
         self.dispatch(kernel, buffers, global, local, null_mut())?;
         check(unsafe { clFinish(self.queue.raw) }, "clFinish")
     }
@@ -211,17 +387,31 @@ impl OpenClDevice {
     ///
     /// # Errors
     /// 参数绑定、发射、同步或性能事件读取失败时返回诊断。
-    pub fn launch_timed(&self, kernel: &OpenClKernel, buffers: &[&OpenClBuffer], global: [usize; 3], local: Option<[usize; 3]>) -> Result<u64> {
+    pub fn launch_timed(
+        &self,
+        kernel: &OpenClKernel,
+        buffers: &[&OpenClBuffer],
+        global: [usize; 3],
+        local: Option<[usize; 3]>,
+    ) -> Result<u64> {
         let mut raw = null_mut();
         self.dispatch(kernel, buffers, global, local, &mut raw)?;
         let event = Handle::new(raw, clReleaseEvent)?;
         check(unsafe { clFinish(self.queue.raw) }, "clFinish")?;
         let start = event_info(event.raw, PROFILING_COMMAND_START)?;
         let end = event_info(event.raw, PROFILING_COMMAND_END)?;
-        end.checked_sub(start).ok_or_else(|| invalid("OpenCL 事件结束时间早于开始时间"))
+        end.checked_sub(start)
+            .ok_or_else(|| invalid("OpenCL 事件结束时间早于开始时间"))
     }
 
-    fn dispatch(&self, kernel: &OpenClKernel, buffers: &[&OpenClBuffer], global: [usize; 3], local: Option<[usize; 3]>, event: *mut *mut c_void) -> Result<()> {
+    fn dispatch(
+        &self,
+        kernel: &OpenClKernel,
+        buffers: &[&OpenClBuffer],
+        global: [usize; 3],
+        local: Option<[usize; 3]>,
+        event: *mut *mut c_void,
+    ) -> Result<()> {
         if global.contains(&0) || local.is_some_and(|shape| shape.contains(&0)) {
             return Err(invalid("OpenCL 全局与局部工作尺寸必须非零"));
         }
@@ -230,10 +420,35 @@ impl OpenClDevice {
         }
         for (index, buffer) in buffers.iter().enumerate() {
             let raw = buffer.handle.raw;
-            check(unsafe { clSetKernelArg(kernel.kernel.raw, index as u32, size_of::<*mut c_void>(), (&raw as *const *mut c_void).cast()) }, "clSetKernelArg")?;
+            check(
+                unsafe {
+                    clSetKernelArg(
+                        kernel.kernel.raw,
+                        index as u32,
+                        size_of::<*mut c_void>(),
+                        (&raw as *const *mut c_void).cast(),
+                    )
+                },
+                "clSetKernelArg",
+            )?;
         }
         let local = local.as_ref().map_or(null(), |shape| shape.as_ptr());
-        check(unsafe { clEnqueueNDRangeKernel(self.queue.raw, kernel.kernel.raw, 3, null(), global.as_ptr(), local, 0, null(), event) }, "clEnqueueNDRangeKernel")
+        check(
+            unsafe {
+                clEnqueueNDRangeKernel(
+                    self.queue.raw,
+                    kernel.kernel.raw,
+                    3,
+                    null(),
+                    global.as_ptr(),
+                    local,
+                    0,
+                    null(),
+                    event,
+                )
+            },
+            "clEnqueueNDRangeKernel",
+        )
     }
 }
 
@@ -269,7 +484,10 @@ struct Handle {
 }
 
 impl Handle {
-    fn new(raw: *mut c_void, release: unsafe extern "system" fn(*mut c_void) -> i32) -> Result<Self> {
+    fn new(
+        raw: *mut c_void,
+        release: unsafe extern "system" fn(*mut c_void) -> i32,
+    ) -> Result<Self> {
         if raw.is_null() {
             return Err(Error::new(Code::Internal, "OpenCL 返回空句柄"));
         }
@@ -298,9 +516,15 @@ fn find_device() -> Option<(*mut c_void, *mut c_void)> {
 
 fn platforms() -> Result<Vec<*mut c_void>> {
     let mut count = 0;
-    check(unsafe { clGetPlatformIDs(0, null_mut(), &mut count) }, "clGetPlatformIDs(count)")?;
+    check(
+        unsafe { clGetPlatformIDs(0, null_mut(), &mut count) },
+        "clGetPlatformIDs(count)",
+    )?;
     let mut values = vec![null_mut(); count as usize];
-    check(unsafe { clGetPlatformIDs(count, values.as_mut_ptr(), null_mut()) }, "clGetPlatformIDs")?;
+    check(
+        unsafe { clGetPlatformIDs(count, values.as_mut_ptr(), null_mut()) },
+        "clGetPlatformIDs",
+    )?;
     Ok(values)
 }
 
@@ -312,7 +536,18 @@ fn devices(platform: *mut c_void) -> Result<Vec<*mut c_void>> {
     }
     check(status, "clGetDeviceIDs(count)")?;
     let mut values = vec![null_mut(); count as usize];
-    check(unsafe { clGetDeviceIDs(platform, DEVICE_TYPE_GPU, count, values.as_mut_ptr(), null_mut()) }, "clGetDeviceIDs")?;
+    check(
+        unsafe {
+            clGetDeviceIDs(
+                platform,
+                DEVICE_TYPE_GPU,
+                count,
+                values.as_mut_ptr(),
+                null_mut(),
+            )
+        },
+        "clGetDeviceIDs",
+    )?;
     Ok(values)
 }
 
@@ -332,22 +567,52 @@ fn device_info(raw: *mut c_void) -> Result<OpenClInfo> {
 
 fn device_string(raw: *mut c_void, key: u32) -> Result<String> {
     let mut bytes = 0;
-    check(unsafe { clGetDeviceInfo(raw, key, 0, null_mut(), &mut bytes) }, "clGetDeviceInfo(size)")?;
+    check(
+        unsafe { clGetDeviceInfo(raw, key, 0, null_mut(), &mut bytes) },
+        "clGetDeviceInfo(size)",
+    )?;
     let mut value = vec![0_u8; bytes];
-    check(unsafe { clGetDeviceInfo(raw, key, bytes, value.as_mut_ptr().cast(), null_mut()) }, "clGetDeviceInfo")?;
-    Ok(String::from_utf8_lossy(&value).trim_end_matches('\0').to_string())
+    check(
+        unsafe { clGetDeviceInfo(raw, key, bytes, value.as_mut_ptr().cast(), null_mut()) },
+        "clGetDeviceInfo",
+    )?;
+    Ok(String::from_utf8_lossy(&value)
+        .trim_end_matches('\0')
+        .to_string())
 }
 
 fn device_scalar<T: Copy>(raw: *mut c_void, key: u32) -> Result<T> {
     let mut value = MaybeUninit::<T>::uninit();
-    check(unsafe { clGetDeviceInfo(raw, key, size_of::<T>(), value.as_mut_ptr().cast(), null_mut()) }, "clGetDeviceInfo(scalar)")?;
+    check(
+        unsafe {
+            clGetDeviceInfo(
+                raw,
+                key,
+                size_of::<T>(),
+                value.as_mut_ptr().cast(),
+                null_mut(),
+            )
+        },
+        "clGetDeviceInfo(scalar)",
+    )?;
     // SAFETY: OpenCL 已按键对应的 T 大小初始化该值。
     Ok(unsafe { value.assume_init() })
 }
 
 fn event_info(event: *mut c_void, key: u32) -> Result<u64> {
     let mut value = MaybeUninit::<u64>::uninit();
-    check(unsafe { clGetEventProfilingInfo(event, key, size_of::<u64>(), value.as_mut_ptr().cast(), null_mut()) }, "clGetEventProfilingInfo")?;
+    check(
+        unsafe {
+            clGetEventProfilingInfo(
+                event,
+                key,
+                size_of::<u64>(),
+                value.as_mut_ptr().cast(),
+                null_mut(),
+            )
+        },
+        "clGetEventProfilingInfo",
+    )?;
     // SAFETY: 成功的性能查询恰好写入一个 cl_ulong。
     Ok(unsafe { value.assume_init() })
 }
@@ -356,8 +621,11 @@ fn check(status: i32, operation: &str) -> Result<()> {
     if status == 0 {
         return Ok(());
     }
-    Err(Error::new(Code::Internal, format!("{operation} 失败，OpenCL 错误码 {status}"))
-        .with("prof::runtime::opencl"))
+    Err(Error::new(
+        Code::Internal,
+        format!("{operation} 失败，OpenCL 错误码 {status}"),
+    )
+    .with("prof::runtime::opencl"))
 }
 
 fn invalid(message: impl Into<String>) -> Error {
@@ -377,12 +645,21 @@ mod tests {
         assert!(info.compute_units > 0);
         let device = OpenClDevice::new().expect("创建 Intel OpenCL 设备");
         let source = "__kernel void copy(__global const float *input, __global float *output) { size_t i = get_global_id(0); output[i] = input[i] * 2.0f; }";
-        let kernel = device.compile(source, "-cl-std=CL2.0", "copy").expect("编译 OpenCL 内核");
+        let kernel = device
+            .compile(source, "-cl-std=CL2.0", "copy")
+            .expect("编译 OpenCL 内核");
         let input = device.buffer(4 * size_of::<f32>()).expect("输入缓冲");
         let output = device.buffer(4 * size_of::<f32>()).expect("输出缓冲");
-        device.write_f32(&input, &[1.0, 2.0, 3.0, 4.0]).expect("写入输入");
-        device.launch_timed(&kernel, &[&input, &output], [4, 1, 1], None).expect("发射内核");
-        assert_eq!(device.read_f32(&output).expect("回读输出"), vec![2.0, 4.0, 6.0, 8.0]);
+        device
+            .write_f32(&input, &[1.0, 2.0, 3.0, 4.0])
+            .expect("写入输入");
+        device
+            .launch_timed(&kernel, &[&input, &output], [4, 1, 1], None)
+            .expect("发射内核");
+        assert_eq!(
+            device.read_f32(&output).expect("回读输出"),
+            vec![2.0, 4.0, 6.0, 8.0]
+        );
     }
 
     #[test]

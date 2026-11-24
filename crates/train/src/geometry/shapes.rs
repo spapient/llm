@@ -7,211 +7,74 @@ use nn::conv::ConvGeom;
 
 // ---- 形状面：核对、窗口几何与共享工具 ----------------------------------------
 
-/// 二维池化/卷积的输出元素数（窗口非法时记 0，与 [`pool_len`] 的拒绝口径一致）。
-pub(crate) fn spatial_outputs(g: Geometry) -> usize {
-    match g {
-        Geometry::Pool2d { k, s, p, h, w, c }
-        | Geometry::Avg2d {
-            k, s, p, h, w, c, ..
-        } => pool_len(h, k, s, p)
-            .and_then(|oh| Ok(oh * pool_len(w, k, s, p)? * c))
-            .unwrap_or(0),
-        Geometry::Conv2d {
-            k,
-            s,
-            p,
-            h,
-            w,
-            cin: _,
-            cout,
-        } => pool_len(h, k, s, p)
-            .and_then(|oh| Ok(oh * pool_len(w, k, s, p)? * cout))
-            .unwrap_or(0),
-        _ => 0,
-    }
-}
-
-/// 三种归一化的输出元素数：`n·spatial·channels`（层归一化即 `rows·width`）。
-pub(crate) fn norm_outputs(g: Geometry) -> usize {
-    match g {
-        Geometry::Norm {
-            n,
-            spatial,
-            channels,
-        }
-        | Geometry::Group {
-            n,
-            spatial,
-            channels,
-            ..
-        } => n * spatial * channels,
-        Geometry::Layer { rows, width } => rows * width,
-        _ => 0,
-    }
-}
-
-/// 按几何族核对输入与输出长度；每个分支只做配置投影，实际判据由下方共享函数拥有。
+/// 单次几何分派：每个分支只投影配置，共享函数拥有长度判据。
 pub(crate) fn check_geometry(g: Geometry, lens: &[usize], out: usize) -> Result<()> {
-    match g {
-        Geometry::Norm {
-            n,
-            spatial,
-            channels,
-        } => check_norm(lens, out, n, spatial, channels),
-        Geometry::Group {
-            groups,
-            n,
-            spatial,
-            channels,
-        } => check_group(lens, out, groups, n, spatial, channels),
-        Geometry::Layer { rows, width } => check_layer(lens, out, rows, width),
-        Geometry::Conv2d {
-            k,
-            s,
-            p,
-            h,
-            w,
-            cin,
-            cout,
-        } => check_conv2d_shape(lens, out, Window { k, s, p }, (h, w, cin, cout)),
-        _ => check_spatial(g, lens, out),
-    }
-}
-
-/// 池化族的形状投影；自适应与插值转交 reshape 判据。
-fn check_spatial(g: Geometry, lens: &[usize], out: usize) -> Result<()> {
     match g {
         Geometry::Pool1d { k, s, p, l, c } => check_pool1d(lens, out, k, s, p, l, c),
         Geometry::Pool2d { k, s, p, h, w, c } => {
-            check_spatial_pool(lens, out, Window { k, s, p }, (h, w, c), "二维池化")
+            check_pool2d(lens, out, Window { k, s, p }, (h, w, c), "二维池化")
         }
-        Geometry::Avg2d {
-            k, s, p, h, w, c, ..
-        } => check_spatial_pool(lens, out, Window { k, s, p }, (h, w, c), "二维平均池化"),
-        _ => check_reshape(g, lens, out),
-    }
-}
-
-/// 自适应池化与插值共用输入平面和输出平面判据，诊断仍保留具体算子族。
-fn check_reshape(g: Geometry, lens: &[usize], out: usize) -> Result<()> {
-    match g {
+        Geometry::Avg2d { k, s, p, h, w, c, .. } => {
+            check_pool2d(lens, out, Window { k, s, p }, (h, w, c), "二维平均池化")
+        }
         Geometry::Adaptive { oh, ow, h, w, c } => {
-            check_spatial_reshape(lens, out, (oh, ow), (h, w, c), "自适应池化")
+            check_plane(lens, out, (oh, ow), (h, w, c), "自适应池化")
         }
-        Geometry::Interp {
-            oh, ow, h, w, c, ..
-        } => check_spatial_reshape(lens, out, (oh, ow), (h, w, c), "插值"),
-        _ => Err(internal("reshape 只接收自适应池化或插值几何").with("train::Geometry::check_reshape")),
+        Geometry::Interp { oh, ow, h, w, c, .. } => {
+            check_plane(lens, out, (oh, ow), (h, w, c), "插值")
+        }
+        Geometry::Norm { n, spatial, channels } => {
+            check_normalization(lens, out, n * spatial * channels, channels, "批归一化")
+        }
+        Geometry::Group { groups, n, spatial, channels } => {
+            check_normalization(lens, out, n * spatial * channels, channels, "组归一化")?;
+            ensure_shape(groups > 0 && channels.is_multiple_of(groups), lens, out, "组归一化")
+        }
+        Geometry::Layer { rows, width } => {
+            check_normalization(lens, out, rows * width, width, "层归一化")
+        }
+        Geometry::Conv2d { k, s, p, h, w, cin, cout } => {
+            check_conv2d_shape(lens, out, Window { k, s, p }, (h, w, cin, cout))
+        }
     }
 }
 
-/// 一维池化的形状核对：输入 `n·l·c`、输出 `n·ol·c`。
-pub(crate) fn check_pool1d(
-    lens: &[usize],
-    out: usize,
-    k: usize,
-    s: usize,
-    p: usize,
-    l: usize,
-    c: usize,
+/// 一维池化：输入 `n·l·c`、输出 `n·ol·c`。
+fn check_pool1d(
+    lens: &[usize], out: usize, k: usize, s: usize, p: usize, l: usize, c: usize,
 ) -> Result<()> {
-    let per = l
-        .checked_mul(c)
-        .filter(|&v| v > 0)
-        .ok_or_else(|| invalid("池化输入为空"))?;
+    let per = l.checked_mul(c).filter(|&v| v > 0).ok_or_else(|| invalid("池化输入为空"))?;
     let want = lens[0] / per * pool_len(l, k, s, p)? * c;
-    ensure_shape(
-        lens[0] == lens[0] / per * per && out == want,
-        lens,
-        out,
-        "一维池化",
-    )
+    ensure_shape(lens[0] == lens[0] / per * per && out == want, lens, out, "一维池化")
 }
 
-/// 二维池化（最大/平均）的形状核对：输入 `n·h·w·c`、输出 `n·oh·ow·c`。
-pub(crate) fn check_spatial_pool(
-    lens: &[usize],
-    out: usize,
-    win: Window,
-    plane: (usize, usize, usize),
-    what: &str,
+/// 二维池化：先推输出窗口，再走公共平面判据。
+fn check_pool2d(
+    lens: &[usize], out: usize, win: Window, plane: (usize, usize, usize), what: &str,
 ) -> Result<()> {
+    let output = pool2d_out(win, plane.0, plane.1)?;
+    check_plane(lens, out, output, plane, what)
+}
+
+/// 二维空间算子：输入 `n·h·w·c`、输出 `n·oh·ow·c`，拒绝零平面与除零。
+fn check_plane(
+    lens: &[usize], out: usize, output: (usize, usize), plane: (usize, usize, usize), what: &str,
+) -> Result<()> {
+    let (oh, ow) = output;
     let (h, w, c) = plane;
-    let (oh, ow) = pool2d_out(win, h, w)?;
-    let per = h * w * c;
+    let per = h.checked_mul(w).and_then(|v| v.checked_mul(c)).filter(|&v| v > 0)
+        .ok_or_else(|| invalid(format!("{what}输入平面为空")))?;
     let n = lens[0] / per;
-    ensure_shape(
-        lens[0] == n * per && out == n * oh * ow * c,
-        lens,
-        out,
-        what,
-    )
+    ensure_shape(lens[0] == n * per && out == n * oh * ow * c, lens, out, what)
 }
 
-/// 自适应池化/插值的形状核对：输入 `n·h·w·c`、输出 `n·oh·ow·c`。
-pub(crate) fn check_spatial_reshape(
-    lens: &[usize],
-    out: usize,
-    out2: (usize, usize),
-    plane: (usize, usize, usize),
-    what: &str,
+/// 归一化统一契约：`(x, gamma, beta, out) = (total, width, width, total)`。
+fn check_normalization(
+    lens: &[usize], out: usize, total: usize, width: usize, what: &str,
 ) -> Result<()> {
-    let (oh, ow) = out2;
-    let (h, w, c) = plane;
-    let per = h * w * c;
-    let n = lens[0] / per;
     ensure_shape(
-        lens[0] == n * per && out == n * oh * ow * c,
-        lens,
-        out,
-        what,
-    )
-}
-
-/// 批归一化的形状核对：`(n·s·c, c, c)` 的 `(x, gamma, beta)`。
-pub(crate) fn check_norm(
-    lens: &[usize],
-    out: usize,
-    n: usize,
-    spatial: usize,
-    channels: usize,
-) -> Result<()> {
-    let total = n * spatial * channels;
-    ensure_shape(
-        lens[0] == total && out == total && lens[1] == channels && lens[2] == channels,
-        lens,
-        out,
-        "批归一化",
-    )
-}
-
-/// 组归一化（含实例归一化）的形状核对：组数合法、通道被组整除、四长度对齐。
-pub(crate) fn check_group(
-    lens: &[usize],
-    out: usize,
-    groups: usize,
-    n: usize,
-    spatial: usize,
-    channels: usize,
-) -> Result<()> {
-    let total = n * spatial * channels;
-    let channels_ok = [lens[0], lens[1], lens[2], out] == [total, channels, channels, total];
-    ensure_shape(
-        groups > 0 && channels.is_multiple_of(groups) && channels_ok,
-        lens,
-        out,
-        "组归一化",
-    )
-}
-
-/// 层归一化的形状核对：`(rows·width, width, width)` 的 `(x, gamma, beta)`。
-pub(crate) fn check_layer(lens: &[usize], out: usize, rows: usize, width: usize) -> Result<()> {
-    let total = rows * width;
-    ensure_shape(
-        lens[0] == total && out == total && lens[1] == width && lens[2] == width,
-        lens,
-        out,
-        "层归一化",
+        [lens[0], lens[1], lens[2], out] == [total, width, width, total],
+        lens, out, what,
     )
 }
 

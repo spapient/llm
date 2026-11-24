@@ -1,14 +1,19 @@
 //! `verify`：逐设备把三件事钉在一起——见证跑通、协商选中首档、内核与标量参考对拍（README §11）。
 
+use crate::build;
 use crate::gate::LanguageGate;
+use crate::pipeline::{Prepared, Run, parse_shape, rejected_shapes, verify_shapes};
+use crate::toolchain;
 use crate::witness;
 use cutile::builtin::Catalogue;
 use cutile::cache::Artifact;
-use cutile::cap::{self, NoPath};
+use cutile::cap::{self, NoPath, Path, Proof};
 use cutile::dirs::Dirs;
 use cutile::emit::Fragment;
+use cutile::prof::{Emit, Profile};
 use diagnostic::{Code, Error};
 use prof::decl::OpDecl;
+use prof::model::Sample;
 
 /// 一台设备通过 `L2` 的证据：这次执行真的产生了什么。档案登记值（`tool_ver`）与实测值（`toolchain`）
 /// 分开列：两者不一致不改等级，但报告必须把差异说出来。

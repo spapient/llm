@@ -84,8 +84,10 @@ fn main() {
 
 /// 一台设备：档案元数据、片段与路径（正文由生成的 `include_str!` 读，脚本里不再存一份）。
 struct Device {
-    /// vendor 名，同时是 `src/` 下的目录名与档案文件名。
+    /// 唯一档案键：基档是 `nvidia`，变体是 `nvidia_a3000`。
     name: String,
+    /// 共享片段、见证与后端内核的目录名；变体不复制设备族语料。
+    family: String,
     /// 片段与见证的扩展名，由目录里的见证文件决定。
     ext: String,
     /// 档案 `[meta]` 里要写进设备行的那三项。
@@ -106,9 +108,8 @@ struct Device {
     forms: Vec<String>,
 }
 
-/// 目录里的设备：一个子目录一台，顺序按目录名升序（产物稳定）。
-///
-/// 每个目录只列一次：判据是「目录里有没有见证文件」，而判完要读的文件清单正是同一份。
+/// 设备目录：`<family>.toml` 是基档，其余 `<variant>.toml` 是同族硬件变体。
+/// 变体生成独立档案键 `<family>_<variant>`，但共享目录里的片段、见证与后端特化。
 fn devices_of(src: &Path) -> Vec<Device> {
     let mut dirs: Vec<(PathBuf, Vec<PathBuf>)> = dirs_in(src)
         .into_iter()
@@ -121,32 +122,50 @@ fn devices_of(src: &Path) -> Vec<Device> {
 
     let mut out: Vec<Device> = Vec::new();
     for (dir, files) in dirs {
-        let name = dir
+        let family = dir
             .file_name()
             .and_then(|value| value.to_str())
             .unwrap_or_else(|| fail(format!("`{}` 的目录名不是合法 UTF-8", dir.display())));
-        if !identifier(name) {
-            fail(format!("设备目录名 `{name}` 不是可移植的 Rust 标识符"));
+        if !identifier(family) {
+            fail(format!("设备目录名 `{family}` 不是可移植的 Rust 标识符"));
         }
-        let device = scan(&dir, name, files);
-        // 六台设备的尾块必须是同一组形式：装配器按名字取段，缺一处就只在那一台上炸。
-        match out.first() {
-            Some(first) if first.forms != device.forms => fail(format!(
-                "`{name}` 的尾块分段是 [{}]，与 `{}` 的 [{}] 不一致",
-                device.forms.join(", "),
-                first.name,
-                first.forms.join(", ")
-            )),
-            _ => out.push(device),
+        let mut variants: Vec<String> = files
+            .iter()
+            .filter(|path| {
+                extension(path).as_deref() == Some("toml") && stem(path) != Some(family)
+            })
+            .map(|path| {
+                stem(path)
+                    .unwrap_or_else(|| fail(format!("`{}` 没有档案名", path.display())))
+                    .to_string()
+            })
+            .collect();
+        variants.sort();
+        for variant in std::iter::once(None).chain(variants.iter().map(|name| Some(name.as_str()))) {
+            let name = variant.map_or_else(|| family.to_string(), |v| format!("{family}_{v}"));
+            if !identifier(&name) {
+                fail(format!("设备档案键 `{name}` 不是可移植的 Rust 标识符"));
+            }
+            let device = scan(&dir, &name, family, files.clone());
+            match out.first() {
+                Some(first) if first.forms != device.forms => fail(format!(
+                    "`{name}` 的尾块分段是 [{}]，与 `{}` 的 [{}] 不一致",
+                    device.forms.join(", "),
+                    first.name,
+                    first.forms.join(", ")
+                )),
+                _ => out.push(device),
+            }
         }
     }
+    out.sort_by(|left, right| left.name.cmp(&right.name));
     out
 }
 
 /// 扫描一台设备的目录：七段原语片段 + `epilogue.<ext>` + `witness.<ext>` + 同名档案。
 ///
 /// `files` 由调用方一次性列出并传入：判「这个目录算不算设备」与「它有哪些文件」是同一回读盘。
-fn scan(dir: &Path, name: &str, files: Vec<PathBuf>) -> Device {
+fn scan(dir: &Path, name: &str, family: &str, files: Vec<PathBuf>) -> Device {
     let witness = files
         .iter()
         .find(|path| stem(path) == Some(WITNESS_STEM))
@@ -210,6 +229,7 @@ fn scan(dir: &Path, name: &str, files: Vec<PathBuf>) -> Device {
     let forms = forms_of(&read(&epilogue), &epilogue);
     Device {
         name: name.to_string(),
+        family: family.to_string(),
         ext,
         emit: text(meta, "emit", name),
         tool: text(meta, "tools", name),

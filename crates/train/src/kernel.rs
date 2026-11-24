@@ -132,19 +132,32 @@ fn attention_paths(inputs: &[View<'_>], output: &mut ViewMut<'_>, run: Attention
     run(q, k, v, out)
 }
 
+/// 把一段 `f32` 切片按行宽 `w` 装配成二维只读视图。
+fn row_matrix<'a>(op: &str, w: usize, slice: &'a [f32]) -> Result<tensor::View<'a, f32>> {
+    let rows = batches(op, slice.len(), w)?;
+    tensor::View::matrix(rows, w, slice)
+}
+
+/// decode 的键与值共享同一历史行数，装配成一对二维视图。
+fn decode_kv<'a>(
+    d: usize,
+    k: &'a [f32],
+    v: &'a [f32],
+) -> Result<(tensor::View<'a, f32>, tensor::View<'a, f32>)> {
+    let hist = batches("decode_attention_f32", k.len(), d)?;
+    let kv = tensor::View::matrix(hist, d, k)?;
+    let vv = tensor::View::matrix(hist, d, v)?;
+    Ok((kv, vv))
+}
+
 /// decode 几何：查询与历史行数分别按声明头宽反推。
 fn decode_paths(inputs: &[View<'_>], output: &mut ViewMut<'_>, run: AttentionKernel) -> Result<()> {
     let (q, k, v) = <(f32, f32, f32) as Inputs>::unpack(inputs, "decode_attention_f32")?;
     let out = output_slice::<f32>("decode_attention_f32", output)?;
     let d = nn::conv::decode_attention::MODEL.shape.1;
-    let qr = batches("decode_attention_f32", q.len(), d)?;
-    let hist = batches("decode_attention_f32", k.len(), d)?;
-    run(
-        tensor::View::matrix(qr, d, q)?,
-        tensor::View::matrix(hist, d, k)?,
-        tensor::View::matrix(hist, d, v)?,
-        out,
-    )
+    let qv = row_matrix("decode_attention_f32", d, q)?;
+    let (kv, vv) = decode_kv(d, k, v)?;
+    run(qv, kv, vv, out)
 }
 
 /// 潜空间注意力：读宽取声明宽度，写宽由输出长度决定。
@@ -152,14 +165,9 @@ pub(crate) fn latent_attention_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>
     let (q, k, v) = <(f32, f32, f32) as Inputs>::unpack(inputs, "latent_attention_f32")?;
     let out = output_slice::<f32>("latent_attention_f32", output)?;
     let w = nn::conv::attention::latent::MODEL.shape.1;
-    let r = batches("latent_attention_f32", q.len(), w)?;
-    let t = batches("latent_attention_f32", k.len(), w)?;
-    nn::conv::attention::latent_forward(
-        tensor::View::matrix(r, w, q)?,
-        tensor::View::matrix(t, w, k)?,
-        v,
-        out,
-    )
+    let qv = row_matrix("latent_attention_f32", w, q)?;
+    let kv = row_matrix("latent_attention_f32", w, k)?;
+    nn::conv::attention::latent_forward(qv, kv, v, out)
 }
 
 /// 单行内核声明的适配器：声明种类决定拆包与调用形态，自定义函数只登记表项。

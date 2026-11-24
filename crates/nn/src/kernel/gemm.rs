@@ -593,51 +593,36 @@ macro_rules! gemm_variant {
 
 /// 四档精度变体只声明格式契约；遍历、形状与计价共享上方骨架。
 mod variants {
-    pub mod i2 {
-        //! `gemm_i2`：对称 int2 矩阵乘，打包、取样与整数点积由 `I2` 配置驱动。
-        use crate::gemm as skel;
-        pub use crate::gemm::{AXES, K, project_shape};
-        use crate::quant::I2;
+    /// 打包档声明：模块名、标记、语义别名、算子名与量化配置同行绑定。
+    macro_rules! packed_variant {
+        ($module:ident, $name:ident, $alias:ident, $op:literal, $row:ident) => {
+            #[doc = concat!("`", $op, "`：对称打包矩阵乘，由 `", stringify!($row), "` 配置驱动。")]
+            pub mod $module {
+                use crate::gemm as skel;
+                pub use crate::gemm::{AXES, K, project_shape};
+                use crate::quant::$row;
 
-        crate::gemm_variant!(
-            GemmI2,
-            GemmI2Model,
-            "gemm_i2",
-            gemm_packed_tests,
-            false,
-            u8,
-            I2.bits,
-            fn config() -> Option<crate::quant::Row> {
-                Some(I2)
-            },
-            fn mul(a: &[u8], b: &[u8], m: usize, n: usize, out: &mut [f32]) {
-                crate::gemm::packed_tiled(a, b, m, n, &crate::gemm::Conf::from(&I2), out)
-            },
-        );
+                crate::gemm_variant!(
+                    $name,
+                    $alias,
+                    $op,
+                    gemm_packed_tests,
+                    false,
+                    u8,
+                    $row.bits,
+                    fn config() -> Option<crate::quant::Row> {
+                        Some($row)
+                    },
+                    fn mul(a: &[u8], b: &[u8], m: usize, n: usize, out: &mut [f32]) {
+                        crate::gemm::packed_tiled(a, b, m, n, &crate::gemm::Conf::from(&$row), out)
+                    },
+                );
+            }
+        };
     }
 
-    pub mod i4 {
-        //! `gemm_i4`：对称 int4 矩阵乘，打包、取样与整数点积由 `I4` 配置驱动。
-        use crate::gemm as skel;
-        pub use crate::gemm::{AXES, K, project_shape};
-        use crate::quant::I4;
-
-        crate::gemm_variant!(
-            GemmI4,
-            GemmI4Model,
-            "gemm_i4",
-            gemm_packed_tests,
-            false,
-            u8,
-            I4.bits,
-            fn config() -> Option<crate::quant::Row> {
-                Some(I4)
-            },
-            fn mul(a: &[u8], b: &[u8], m: usize, n: usize, out: &mut [f32]) {
-                crate::gemm::packed_tiled(a, b, m, n, &crate::gemm::Conf::from(&I4), out)
-            },
-        );
-    }
+    packed_variant!(i2, GemmI2, GemmI2Model, "gemm_i2", I2);
+    packed_variant!(i4, GemmI4, GemmI4Model, "gemm_i4", I4);
 
     pub mod i8 {
         //! `gemm_i8`：对称 int8 矩阵乘，`i32` 精确累加后收敛为 f32。

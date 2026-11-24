@@ -27,59 +27,77 @@ pub(crate) fn type_definition(line: &str) -> Option<(bool, &str)> {
     (!name.is_empty()).then_some((public, name))
 }
 
-/// 一段源码里的顶层 `pub` 类型名。`vocabulary!` 与 `axis!` / `planar!` 宏块开头那个名字也算：
-/// 宏把它们展开成 `pub enum Name` / `pub struct Name`，逐行读文本看不到那一行 `pub`——正文扫描
-/// 与 `pub` 校验必须共用这一份口径，否则「反向扫描认了、正向校验不认」的自相矛盾会出现。
+/// 类型声明宏的形态：一个块声明单个类型，或一张表声明多个类型。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TypeMacro {
+    Single,
+    Table,
+}
+
+/// 一段源码里的顶层 `pub` 类型名，包括声明宏展开出的公开类型。
+/// `axis!` / `planar!` 表中的每一行都声明一个类型；`vocabulary!` / `closed_enum!` 只声明一个。
+/// 正文扫描与 `pub` 校验共用这一份口径，避免正向与反向所有权检查互相矛盾。
 pub(crate) fn public_type_names(text: &str) -> BTreeSet<&str> {
     let mut names = BTreeSet::new();
-    let mut in_macro_block = false;
+    let mut macro_block = None;
     for line in text.lines() {
         if let Some((true, name)) = type_definition(line) {
             names.insert(name);
         }
         let trimmed = line.trim();
-        if trimmed.starts_with("vocabulary!") {
-            in_macro_block = true;
-            continue;
-        }
-        if is_type_macro_open(trimmed) {
+        if let Some(kind) = type_macro_open(trimmed) {
             match inline_type_macro_arg(trimmed) {
                 Some(name) => {
                     names.insert(name);
                 }
-                None => in_macro_block = true,
+                None if trimmed.ends_with('{') => macro_block = Some(kind),
+                None => {}
             }
             continue;
         }
-        if in_macro_block {
-            if trimmed.is_empty()
-                || trimmed.starts_with("///")
-                || trimmed.starts_with("//!")
-                || trimmed.starts_with('#')
-            {
-                continue;
-            }
-            if let Some(name) = macro_type_arg(trimmed) {
-                names.insert(name);
-            }
-            in_macro_block = false;
+        let Some(kind) = macro_block else {
+            continue;
+        };
+        if kind == TypeMacro::Table && trimmed == "}" {
+            macro_block = None;
+            continue;
+        }
+        if trimmed.is_empty()
+            || trimmed.starts_with("///")
+            || trimmed.starts_with("//!")
+            || trimmed.starts_with('#')
+            || trimmed.starts_with('@')
+        {
+            continue;
+        }
+        if let Some(name) = macro_type_arg(trimmed) {
+            names.insert(name);
+        }
+        if kind == TypeMacro::Single {
+            macro_block = None;
         }
     }
     names
 }
 
-/// 展开成 `pub enum|struct Name` 的层发射宏：所有权门认它们的第一个标识符参数为类型名。
-/// `axis!` / `planar!` / `closed_enum!` 逐行读源码同样看不到展开后的 `pub`，
-/// 与 `vocabulary!` 同源。调用点常带 `crate::` / `$crate::` 前缀，判定只看宏名本身。
-fn is_type_macro_open(trimmed: &str) -> bool {
-    ["axis!", "planar!", "closed_enum!"].iter().any(|open| {
+/// 展开成公开类型的声明宏；调用点可带 `crate::` / `$crate::` 前缀。
+fn type_macro_open(trimmed: &str) -> Option<TypeMacro> {
+    [
+        ("vocabulary!", TypeMacro::Single),
+        ("closed_enum!", TypeMacro::Single),
+        ("axis!", TypeMacro::Table),
+        ("planar!", TypeMacro::Table),
+    ]
+    .iter()
+    .find_map(|(open, kind)| {
         trimmed
             .split_once(open)
             .is_some_and(|(head, _)| head.is_empty() || head.ends_with("::"))
+            .then_some(*kind)
     })
 }
 
-/// 内联形式 `axis!(Name, ...)` 的 `Name`；多行形式（宏名独占一行）返回 `None`。
+/// 内联形式 `axis!(Name, ...)` 的 `Name`；块形式返回 `None`。
 fn inline_type_macro_arg(trimmed: &str) -> Option<&str> {
     let open = trimmed.find('(')?;
     macro_type_arg(&trimmed[open + 1..])
@@ -97,8 +115,7 @@ pub(crate) fn public_types(files: &[std::path::PathBuf]) -> BTreeSet<String> {
     names
 }
 
-/// 宏块的类型名：`vocabulary!` 的 `Name {`、`axis!` / `planar!` 的 `Name,`。
-/// 取行首标识符，首字母大写才算类型名。
+/// 宏声明中的类型名：取行首标识符，首字母大写才算类型名。
 pub(crate) fn macro_type_arg(line: &str) -> Option<&str> {
     let name = line.trim_start();
     let end = name
@@ -106,6 +123,40 @@ pub(crate) fn macro_type_arg(line: &str) -> Option<&str> {
         .unwrap_or(name.len());
     let name = &name[..end];
     (!name.is_empty() && name.chars().next()?.is_ascii_uppercase()).then_some(name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::public_type_names;
+
+    #[test]
+    fn declaration_tables_expose_every_type() {
+        let names = public_type_names(
+            r#"axis! {
+                /// 文档不属于类型名。
+                RmsNorm => "rmsnorm_f32", Norm;
+                Sigmoid => "sigmoid_f32";
+                Tanh => "tanh_f32";
+            }"#,
+        );
+        let expected = ["RmsNorm", "Sigmoid", "Tanh"].into_iter().collect();
+        assert_eq!(names, expected);
+    }
+
+    #[test]
+    fn enum_declarations_do_not_expose_variants() {
+        let names = public_type_names(
+            r#"closed_enum! { @named
+                /// 枚举类型与变体必须分开。
+                pub enum Reason {
+                    Stored = 0 => "stored",
+                    Coded = 1 => "coded",
+                }
+            }"#,
+        );
+        let expected = ["Reason"].into_iter().collect();
+        assert_eq!(names, expected);
+    }
 }
 
 /// `lints/vocabulary.toml` 里的反向所有权存量基线：crate → 登记为「暂未进表」的公开类型名。

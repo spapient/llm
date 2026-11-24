@@ -517,10 +517,11 @@ type Rest<'a> = Vec<(usize, &'a Entry)>;
 
 /// 分组：一次投影的标度条目跳过，循环件名按层名归组，其余留着逐条判投影。
 fn partition<'a>(header: &'a Header, scales: &[&str]) -> (Groups<'a>, Rest<'a>) {
+    let scales: std::collections::BTreeSet<_> = scales.iter().copied().collect();
     let mut groups: Groups<'a> = BTreeMap::new();
     let mut rest: Rest<'a> = Vec::new();
     for (at, entry) in header.entries().iter().enumerate() {
-        if scales.contains(&entry.name()) {
+        if scales.contains(entry.name()) {
             continue;
         }
         match recurrent_parts(entry.name()) {
