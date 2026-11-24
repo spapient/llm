@@ -59,12 +59,14 @@ jobs:
       # lib / 集成 / 二进制测试由 nextest 按测试二进制并行隔离运行。libfuzzer harness
       # 不是 libtest 运行器，已在 `.config/nextest.toml` 按二进制名排除，交独立 fuzz job。
       # doc-test 不在 nextest 范围，由 `doc` job 的 `cargo test --doc` 负责。
+      # `--profile ci`：全量跑完不中止、JUnit XML 留痕、设备/探针类用例走放宽超时（配置见
+      # `.config/nextest.toml`；反重试立场保持不变，flaky 修根因而不靠重试刷绿）。
       # LLM_TEST_SKIP_DIR 让 testkit 把"前提不满足而跳过"的用例落到结构化日志，供下一步汇总，
       # 避免静默空转在绿测里不可见。
       - name: Test
         env:
           LLM_TEST_SKIP_DIR: ${{ github.workspace }}/target/skips
-        run: cargo nextest run --workspace --all-features --locked
+        run: cargo nextest run --profile ci --workspace --all-features --locked
 
       # 跳过不是失败：这里只汇总条数与原因，不按跳过数阻断。
       - name: Report skipped tests
@@ -79,6 +81,16 @@ jobs:
           else
             echo "No skipped-test records."
           fi
+
+      # JUnit XML 留痕：失败/重试用例与输出随报告归档，供面板与事后回查。
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextest-junit-${{ matrix.os }}
+          path: target/nextest/ci/junit.xml
+          retention-days: 14
+          if-no-files-found: ignore
 
   metal-macos:
     name: Metal ABI (macOS)
