@@ -6,7 +6,8 @@ use cutile::{decl, emit, substitute};
 /// 一台设备全部算子 × 分块组合的最终源文件：`{算子}_{序号}` → 文本。
 ///
 /// 走的是执行层同一条路（`substitute::render` 拼片段层 → `emit::assemble` 补 preamble），
-/// 所以这里解析的文本就是最终落盘的那份。
+/// 所以这里解析的文本就是最终落盘的那份。协商判据也与生产链路同源：设备接不住的档
+/// （如 CPU 前端不具备的 f16/bf16）不发射到它的语法前端，只对协商可行的算子做收下校验。
 fn units_of(
     catalogue: &Catalogue,
     profile: &Profile,
@@ -14,6 +15,9 @@ fn units_of(
 ) -> Vec<(String, String)> {
     let mut units = Vec::new();
     for op in catalogue.ops() {
+        if cutile::cap::negotiate(op, profile).is_err() {
+            continue;
+        }
         let combos = decl::expand(op).expect("tile 候选");
         let variant = op.variants.first().expect("降级链至少一档");
         for (idx, combo) in combos.iter().enumerate() {

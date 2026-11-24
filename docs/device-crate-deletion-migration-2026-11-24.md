@@ -58,9 +58,15 @@
 ### 2.2 A/E/B → shard（批次 #30）
 
 - 落点：复用 shard 现有 `backend.rs`（Backend/Codegen/Driver/Source/Launch/Lower/TensorGeometry）、`device.rs`（注册表 + CBackend）、`toolchain`、`bench`、`verify`、`execution`；vendor 实现按 `shard/src/<vendor>/` 收子模块。
-- use 映射：`llm_optim::*`（即 `llm-shard` 自身）→ `crate::*`；device 内部 `super::` 路径随模块重排。
+- 本批实际落点目录（避免并入既有文件造成职责混杂）：
+  - E dialect：`shard/src/dialect.rs` + `shard/src/dialect/{body,geometry,text}.rs`；纯 `pub(crate)` lowering 原语，不进 shard 对外面。
+  - B platform：`shard/src/platform.rs`（Row/Standing/Why/Arch/Host/Machine/audit/require/standing + 工具链/设备命令探测）。
+  - A 装配：`shard/src/backends/{mod,ascend,common,cuda,harness,metal,parallel}.rs`；Metal host 侧 `shard/src/backends/metal/{host,program,runtime,stage,witness,device}.rs`；CUDA 共享装配 `shard/src/backends/cuda/{shared,segments}.rs`。
+  - D 过渡：`cuda/{gemm,grid,chunk,scan}.rs`、`metal/chunk.rs`、`tiled/*` 本批随 A 族一并落 shard 子树保持编译绿，#31 再抽离 prof/<vendor>/；不在 #30 留 shard→device 的反向边。
+- use 映射：`llm_optim::*`（即 `llm-shard` 自身）→ `crate::*`；device 内部 `crate::metal::` → `crate::backends::metal::`、`crate::cuda::` → `crate::backends::cuda::`；`super::` 相对同级路径随目录重排后保持同级；错误站点字面量 `engine::tiled::…` 临时改 `shard::tiled::…`（#31 随正文归 prof 再定）。
+- **Metal 探针归属决策**：shard(L5) 不得上靠 engine(L6)，故 `platform.rs` 迁入 shard 后不再实例化 `engine::metal::MetalDevice`；`metal_device()` 退化为平台常量判定（`std::env::consts::OS == "macos"` 即设备位成立），与其余设备行"无进程内 FFI 探针"的口径一致；真实 FFI 设备句柄只在 engine 执行面使用。Host trait 本就允许上层注入自定义宿主，真实设备证据由执行面装配阶段校验。
+- `install()` 注册静态后端的入口随迁 shard（`crate::backend::register`），cli 改调 shard 入口。
 - `platform.rs` 合同与 toolchain 探测随执行面进 shard；cli `platform.rs` 改引用 shard 路径。
-- `install()` 注册静态后端的入口随迁 shard，cli 改调 shard 入口。
 
 ### 2.3 D → prof/<vendor>/（批次 #31）
 
