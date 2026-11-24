@@ -1,7 +1,7 @@
 //! 装配管线：把 `nn` 层栈与驻留参数表接成 engine [`Graph`]，再由 [`CpuModel`](crate::model::CpuModel) 宿主执行。
 
 use diagnostic::{Code, Error, Result};
-use engine::exec::{Executor, Graph, Launch, Node, Stream};
+use engine::exec::{Buf, Executor, Graph, Launch, Node, Stream};
 use nn::{Contract, Stack};
 
 pub(crate) use crate::block::BlockBinding;
@@ -545,23 +545,23 @@ pub(crate) fn bind_weights<E: Executor>(
         let block = params.get(entry).ok_or_else(|| {
             Error::new(Code::Missing, format!("参数表缺权重条目 `{entry}`")).with(SITE)
         })?;
-        match block {
-            Block::Dense(values) => {
-                executor.bind_f32(*id, values.to_vec());
-            }
-            Block::Packed(bytes) => {
-                executor.bind_bytes(*id, bytes.to_vec());
-            }
-        }
+        let buf = match block {
+            Block::Dense(values) => Buf::F32(values.to_vec()),
+            Block::Packed(bytes) => Buf::U8(bytes.to_vec()),
+        };
+        executor.bind(*id, buf);
     }
     Ok(())
 }
 
 /// 预绑输入与各逐层激活的零缓冲：执行时只覆写，不在图运行期分配。
 pub(crate) fn bind_activations<E: Executor>(executor: &mut E, assembly: &Assembly) {
-    executor.bind_f32(assembly.input, vec![0.0; assembly.input_len]);
+    executor.bind(
+        assembly.input,
+        Buf::F32(vec![0.0; assembly.input_len]),
+    );
     for (id, len) in &assembly.activations {
-        executor.bind_f32(*id, vec![0.0; *len]);
+        executor.bind(*id, Buf::F32(vec![0.0; *len]));
     }
 }
 
@@ -573,7 +573,8 @@ pub(crate) fn submit_and_fetch<E: Executor>(
     executor.submit(&assembly.graph, Stream::new(0))?;
     executor.sync(Stream::new(0))?;
     let output = executor
-        .fetch_f32(assembly.output)
+        .fetch(assembly.output)
+        .and_then(Buf::f32)
         .ok_or_else(|| Error::new(Code::Internal, "输出缓冲已预绑，取回失败").with(SITE))?;
     Ok(output.to_vec())
 }

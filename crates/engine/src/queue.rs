@@ -27,23 +27,13 @@ pub trait Executor {
         ))
     }
 
-    /// 绑定一块 `f32` 操作数；返回被替换掉的旧块。
-    fn bind_f32(&mut self, _id: u32, _values: Vec<f32>) -> Option<Vec<f32>> {
+    /// 绑定一段配置操作数（浮点或打包字节，lane 标签由 [`Buf`] 自带）；返回被替换掉的旧块。
+    fn bind(&mut self, _id: u32, _values: Buf) -> Option<Buf> {
         None
     }
 
-    /// 绑定一块打包字节操作数；返回被替换掉的旧块。
-    fn bind_bytes(&mut self, _id: u32, _values: Vec<u8>) -> Option<Vec<u8>> {
-        None
-    }
-
-    /// 按编号取 `f32` 操作数；缺失或形态不符为 `None`。
-    fn fetch_f32(&self, _id: u32) -> Option<&[f32]> {
-        None
-    }
-
-    /// 按编号取打包字节操作数；缺失或形态不符为 `None`。
-    fn fetch_bytes(&self, _id: u32) -> Option<&[u8]> {
+    /// 按编号取回一段配置操作数；未绑定为 `None`，lane 形态在缓冲内自证。
+    fn fetch(&self, _id: u32) -> Option<&Buf> {
         None
     }
 }
@@ -104,20 +94,12 @@ impl<E: Executor> Executor for Trace<E> {
         self.inner.register_program(program)
     }
 
-    fn bind_f32(&mut self, id: u32, values: Vec<f32>) -> Option<Vec<f32>> {
-        self.inner.bind_f32(id, values)
+    fn bind(&mut self, id: u32, values: Buf) -> Option<Buf> {
+        self.inner.bind(id, values)
     }
 
-    fn bind_bytes(&mut self, id: u32, values: Vec<u8>) -> Option<Vec<u8>> {
-        self.inner.bind_bytes(id, values)
-    }
-
-    fn fetch_f32(&self, id: u32) -> Option<&[f32]> {
-        self.inner.fetch_f32(id)
-    }
-
-    fn fetch_bytes(&self, id: u32) -> Option<&[u8]> {
-        self.inner.fetch_bytes(id)
+    fn fetch(&self, id: u32) -> Option<&Buf> {
+        self.inner.fetch(id)
     }
 }
 
@@ -304,19 +286,11 @@ impl Executor for VacantExecutor {
         Err(self.rejected("不能登记内核"))
     }
 
-    fn bind_f32(&mut self, _id: u32, _values: Vec<f32>) -> Option<Vec<f32>> {
+    fn bind(&mut self, _id: u32, _values: Buf) -> Option<Buf> {
         None
     }
 
-    fn bind_bytes(&mut self, _id: u32, _values: Vec<u8>) -> Option<Vec<u8>> {
-        None
-    }
-
-    fn fetch_f32(&self, _id: u32) -> Option<&[f32]> {
-        None
-    }
-
-    fn fetch_bytes(&self, _id: u32) -> Option<&[u8]> {
+    fn fetch(&self, _id: u32) -> Option<&Buf> {
         None
     }
 }

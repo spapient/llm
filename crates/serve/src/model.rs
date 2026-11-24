@@ -4,7 +4,7 @@ pub use crate::kernels::register_cpu;
 pub use crate::params::Params;
 
 use diagnostic::{Code, Error, Result};
-use engine::exec::{CpuExecutor, Device, Executor};
+use engine::exec::{Buf, CpuExecutor, Device, Executor};
 use engine::{Batch, Sequence};
 use nn::Stack;
 use std::path::Path;
@@ -95,7 +95,8 @@ impl<E: Executor> CpuModel<E> {
             )
             .with(SITE));
         }
-        self.executor.bind_f32(self.assembly.input, input.to_vec());
+        self.executor
+            .bind(self.assembly.input, Buf::F32(input.to_vec()));
         // 张量级前向没有序列位置：rope 位置取 0（角度为 0 的恒等旋转）。
         self.assembly.set_rope_positions(0);
         submit_and_fetch(&mut self.executor, &self.assembly)
@@ -132,12 +133,13 @@ impl<E: Executor> CpuModel<E> {
 
     /// 把输入与各逐层激活缓冲重绑到 `batch` 份单序列段长；驻留权重不乘批。
     fn resize_for_batch(&mut self, batch: usize) {
-        self.executor.bind_f32(
+        self.executor.bind(
             self.assembly.input,
-            vec![0.0; self.assembly.input_len * batch],
+            Buf::F32(vec![0.0; self.assembly.input_len * batch]),
         );
         for (id, len) in &self.assembly.activations {
-            self.executor.bind_f32(*id, vec![0.0; len * batch]);
+            self.executor
+                .bind(*id, Buf::F32(vec![0.0; len * batch]));
         }
     }
 
@@ -149,7 +151,7 @@ impl<E: Executor> CpuModel<E> {
         let batch = rows.len();
         let input = self.predict_input_batch(rows)?;
         self.resize_for_batch(batch);
-        self.executor.bind_f32(self.assembly.input, input);
+        self.executor.bind(self.assembly.input, Buf::F32(input));
         // 无块链没有 rope 节点：位置取 0（角度为 0 的恒等旋转）。
         self.assembly.set_rope_positions(0);
         self.fill_memory(rows);
@@ -181,11 +183,17 @@ impl<E: Executor> CpuModel<E> {
         let hist_total = rows.iter().map(|row| row.settled() * kv).sum();
         let mut hist_k = self
             .executor
-            .bind_f32(block.hist_k, Vec::new())
+            .bind(block.hist_k, Buf::F32(Vec::new()))
+            .as_ref()
+            .and_then(Buf::f32)
+            .map(<[f32]>::to_vec)
             .unwrap_or_default();
         let mut hist_v = self
             .executor
-            .bind_f32(block.hist_v, Vec::new())
+            .bind(block.hist_v, Buf::F32(Vec::new()))
+            .as_ref()
+            .and_then(Buf::f32)
+            .map(<[f32]>::to_vec)
             .unwrap_or_default();
         hist_k.resize(hist_total, 0.0);
         hist_v.resize(hist_total, 0.0);
@@ -208,8 +216,8 @@ impl<E: Executor> CpuModel<E> {
             }
             cursor += hist * kv;
         }
-        self.executor.bind_f32(block.hist_k, hist_k);
-        self.executor.bind_f32(block.hist_v, hist_v);
+        self.executor.bind(block.hist_k, Buf::F32(hist_k));
+        self.executor.bind(block.hist_v, Buf::F32(hist_v));
         Ok(())
     }
 
@@ -219,12 +227,12 @@ impl<E: Executor> CpuModel<E> {
     fn fill_batch_tables(&mut self, rows: &[Row<'_>]) {
         let lengths: Vec<f32> = rows.iter().map(|row| row.settled() as f32).collect();
         if let Some(id) = self.assembly.rope_pos_table {
-            self.executor.bind_f32(id, lengths.clone());
+            self.executor.bind(id, Buf::F32(lengths.clone()));
         } else if let Some(first) = lengths.first() {
             self.assembly.set_rope_positions(*first as u32);
         }
         if let Some(id) = self.assembly.hist_len_table {
-            self.executor.bind_f32(id, lengths);
+            self.executor.bind(id, Buf::F32(lengths));
         }
     }
 
@@ -251,8 +259,8 @@ impl<E: Executor> CpuModel<E> {
                 };
                 gate.extend(std::iter::repeat_n(gain, binding.width));
             }
-            self.executor.bind_f32(binding.slots, slots);
-            self.executor.bind_f32(binding.gate, gate);
+            self.executor.bind(binding.slots, Buf::F32(slots));
+            self.executor.bind(binding.gate, Buf::F32(gate));
         }
     }
 
@@ -294,7 +302,7 @@ impl<E: Executor> CpuModel<E> {
         let batch_n = rows.len();
         let input = self.predict_input_batch(rows)?;
         self.resize_for_batch(batch_n);
-        self.executor.bind_f32(self.assembly.input, input);
+        self.executor.bind(self.assembly.input, Buf::F32(input));
         self.fill_batch_tables(rows);
         self.fill_memory(rows);
         self.load_history_batch(rows, batch)?;
@@ -438,11 +446,14 @@ fn reorder_history_row(
     }
 }
 
-/// 取回已预绑的投影缓冲；编号在装配期绑定，取回失败归内部错误。
+/// 取回已预绑的投影缓冲；编号在装配期绑定，取回失败或 lane 不符归内部错误。
 fn bound_slice<'a, E: Executor>(executor: &'a E, id: u32, what: &str) -> Result<&'a [f32]> {
-    executor.fetch_f32(id).ok_or_else(|| {
-        Error::new(Code::Internal, format!("{what} 投影缓冲已预绑，取回失败")).with(SITE)
-    })
+    executor
+        .fetch(id)
+        .and_then(Buf::f32)
+        .ok_or_else(|| {
+            Error::new(Code::Internal, format!("{what} 投影缓冲已预绑，取回失败")).with(SITE)
+        })
 }
 
 impl<E: Executor> crate::Predict for CpuModel<E> {

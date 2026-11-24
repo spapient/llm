@@ -27,19 +27,19 @@ impl Bindings {
         Self::default()
     }
 
-    /// 绑定一个 `f32` 编号；返回被替换掉的旧浮点块。
-    pub fn bind_f32(&mut self, id: u32, values: Vec<f32>) -> Option<Vec<f32>> {
-        match self.values.insert(id, Buf::F32(values)) {
-            Some(Buf::F32(old)) => Some(old),
-            Some(Buf::U8(_)) | None => None,
-        }
-    }
-
-    /// 绑定一个打包字节编号；返回被替换掉的旧字节块。
-    pub fn bind_u8(&mut self, id: u32, values: Vec<u8>) -> Option<Vec<u8>> {
-        match self.values.insert(id, Buf::U8(values)) {
-            Some(Buf::U8(old)) => Some(old),
-            Some(Buf::F32(_)) | None => None,
+    /// 绑定一段配置缓冲；同 lane 旧块原样返回，lane 不符或原先为空返回 `None`。
+    pub fn bind(&mut self, id: u32, values: Buf) -> Option<Buf> {
+        match self.values.entry(id) {
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                slot.insert(values);
+                None
+            }
+            std::collections::btree_map::Entry::Occupied(mut slot)
+                if slot.get().lane() == values.lane() =>
+            {
+                Some(slot.insert(values))
+            }
+            std::collections::btree_map::Entry::Occupied(_) => None,
         }
     }
 
@@ -149,14 +149,9 @@ impl CpuExecutor {
         Ok(())
     }
 
-    /// 绑定一个 `f32` 操作数编号；返回被替换掉的旧浮点块。
-    pub fn bind(&mut self, id: u32, values: Vec<f32>) -> Option<Vec<f32>> {
-        self.bindings.bind_f32(id, values)
-    }
-
-    /// 绑定一个打包字节操作数编号；返回被替换掉的旧字节块。
-    pub fn bind_u8(&mut self, id: u32, values: Vec<u8>) -> Option<Vec<u8>> {
-        self.bindings.bind_u8(id, values)
+    /// 绑定一段配置操作数；返回被替换掉的旧块（lane 不符返回 `None`）。
+    pub fn bind(&mut self, id: u32, values: Buf) -> Option<Buf> {
+        self.bindings.bind(id, values)
     }
 
     /// 当前操作数表。
@@ -257,20 +252,12 @@ impl Executor for CpuExecutor {
         CpuExecutor::register(self, program)
     }
 
-    fn bind_f32(&mut self, id: u32, values: Vec<f32>) -> Option<Vec<f32>> {
+    fn bind(&mut self, id: u32, values: Buf) -> Option<Buf> {
         CpuExecutor::bind(self, id, values)
     }
 
-    fn bind_bytes(&mut self, id: u32, values: Vec<u8>) -> Option<Vec<u8>> {
-        CpuExecutor::bind_u8(self, id, values)
-    }
-
-    fn fetch_f32(&self, id: u32) -> Option<&[f32]> {
-        CpuExecutor::get(self, id)
-    }
-
-    fn fetch_bytes(&self, id: u32) -> Option<&[u8]> {
-        CpuExecutor::get_u8(self, id)
+    fn fetch(&self, id: u32) -> Option<&Buf> {
+        self.bindings.buf(id)
     }
 
     /// 排这一条流上已提交的节点：按入队顺序执行，成功一条才出队一条。
