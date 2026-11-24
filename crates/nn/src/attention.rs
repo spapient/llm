@@ -281,29 +281,17 @@ impl AttentionBlock {
         self.attn.algo()
     }
 
-    /// Q 投影。
-    pub fn q(&self) -> &Linear {
-        &self.q
-    }
-
-    /// K 投影。
-    pub fn k(&self) -> &Linear {
-        &self.k
-    }
-
-    /// V 投影。
-    pub fn v(&self) -> &Linear {
-        &self.v
-    }
-
-    /// 注意力层。
-    pub fn attention(&self) -> &Attention {
-        &self.attn
-    }
-
-    /// 输出投影。
-    pub fn out(&self) -> &Linear {
-        &self.out
+    crate::accessors! {
+        /// Q 投影。
+        q -> &Linear = &q,
+        /// K 投影。
+        k -> &Linear = &k,
+        /// V 投影。
+        v -> &Linear = &v,
+        /// 注意力层。
+        attention -> &Attention = &attn,
+        /// 输出投影。
+        out -> &Linear = &out,
     }
 
     /// 子层权重条目名：`{块名}.{子层}{WEIGHT_SUFFIX}`；装配侧按名取回驻留权重整块。

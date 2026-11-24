@@ -131,7 +131,100 @@ impl Checkpoint {
             self.batch_rows,
             self.batch_cols,
         )?;
-        Ok(weights::Snapshot::new(facts, weights.clone()))
+        Ok(weights::Snapshot::new(facts, weights.clone())
+            .with_config_fingerprint(self.config_fingerprint))
+    }
+}
+
+impl TrainSpec {
+    /// 完整训练配置的确定指纹；优化器以具体类型名纳入，浮点按 IEEE 位模式哈希。
+    pub fn config_fingerprint(&self, optimizer: &str) -> u64 {
+        let mut hash = StableHash::new("train-spec-v1");
+        hash.text(optimizer);
+        hash_config(&mut hash, &self.session);
+        hash.number(self.loader.rows as u64);
+        hash.number(self.loader.cols as u64);
+        match &self.loader.sampling {
+            crate::Sampling::Sequential => hash.number(0),
+            crate::Sampling::Shuffle { seed } => {
+                hash.number(1);
+                hash.number(*seed);
+            }
+            crate::Sampling::Weighted { weights, seed } => {
+                hash.number(2);
+                hash.number(*seed);
+                hash.number(weights.len() as u64);
+                for &weight in weights {
+                    hash.number(weight.to_bits().into());
+                }
+            }
+        }
+        hash.text(self.objective.as_str());
+        match self.objective {
+            ObjectiveConfig::Classify => {}
+            ObjectiveConfig::Distill(config) => {
+                hash.number(config.temperature().to_bits().into());
+                hash.number(config.alpha().to_bits().into());
+            }
+            ObjectiveConfig::Grpo(config) => {
+                hash.number(config.epsilon().to_bits().into());
+                hash.number(config.beta().to_bits().into());
+            }
+        }
+        hash.finish()
+    }
+}
+
+/// 只有会话配置时的默认指纹；完整装配可用 [`TrainSpec::config_fingerprint`] 覆盖。
+pub(super) fn session_fingerprint(config: &TrainConfig, optimizer: &str) -> u64 {
+    let mut hash = StableHash::new("train-session-v1");
+    hash.text(optimizer);
+    hash_config(&mut hash, config);
+    hash.finish()
+}
+
+fn hash_config(hash: &mut StableHash, config: &TrainConfig) {
+    hash.number(config.learning_rate.to_bits().into());
+    hash.number(config.warmup_steps);
+    hash.number(config.max_steps);
+    hash.number(config.clip_norm.is_some().into());
+    if let Some(clip) = config.clip_norm {
+        hash.number(clip.to_bits().into());
+    }
+    hash.number(config.accumulation.into());
+    hash.text(config.anneal.as_str());
+    hash.number(config.min_ratio.to_bits().into());
+}
+
+/// 格式固定的小端 FNV-1a：不依赖 `DefaultHasher` 的实现细节。
+struct StableHash(u64);
+
+impl StableHash {
+    fn new(domain: &str) -> Self {
+        let mut hash = Self(0xcbf2_9ce4_8422_2325);
+        hash.text(domain);
+        hash
+    }
+
+    fn number(&mut self, value: u64) {
+        self.bytes(&value.to_le_bytes());
+    }
+
+    fn text(&mut self, text: &str) {
+        self.number(text.len() as u64);
+        self.bytes(text.as_bytes());
+    }
+
+    fn bytes(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.0 ^= u64::from(byte);
+            self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+
+    fn finish(self) -> u64 {
+        // `0` 是旧快照的“未声明”哨兵，不让有效配置落入跳过校验的分支。
+        if self.0 == 0 { 1 } else { self.0 }
     }
 }
 
@@ -231,6 +324,17 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
     ///
     /// 矩表/累积表槽位数或槽内长度不符、ties 编号越界或两端长度不符，一律 [`Code::Invalid`]。
     pub fn restore_snapshot(&mut self, snapshot: &Snapshot) -> Result<()> {
+        let saved = snapshot.config_fingerprint();
+        if saved != 0 && saved != self.config_fingerprint {
+            return Err(Error::new(
+                Code::Invalid,
+                format!(
+                    "训练配置指纹不一致：快照 {saved:#018x}，当前 {:#018x}",
+                    self.config_fingerprint
+                ),
+            )
+            .with(SITE));
+        }
         self.restore_moments(snapshot.moments())?;
         self.restore_accum(snapshot.accum())?;
         self.restore_ties(snapshot.ties())?;

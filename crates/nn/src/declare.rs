@@ -259,7 +259,7 @@ macro_rules! priced {
     };
 }
 
-/// 只读访问器表：`名字 -> 类型 = 字段`，字段必填（访问器返字段值，不做计算）。
+/// 只读访问器表：`名字 -> 类型 = 字段` 返回副本，`= &字段` 返回借用；两者都不做计算。
 ///
 /// 一行一条的写法与 [`layer_delegate!`] 同源：层数多、访问器都是"返字段"，手写会把
 /// `pub fn x(&self) -> T { self.x }` 平铺成四行 × 每层数条。带计算的访问器（如 `bytes()`、
@@ -272,6 +272,14 @@ macro_rules! accessors {
             $(#[$attr])*
             pub fn $name(&self) -> $ty {
                 self.$field
+            }
+        )+
+    };
+    ($($(#[$attr:meta])* $name:ident -> $ty:ty = &$field:ident),+ $(,)?) => {
+        $(
+            $(#[$attr])*
+            pub fn $name(&self) -> $ty {
+                &self.$field
             }
         )+
     };

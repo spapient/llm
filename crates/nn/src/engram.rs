@@ -99,19 +99,16 @@ impl<S: Scalar> Table<S> {
         }
     }
 
-    /// 表长（素数）。
-    pub fn len(&self) -> usize {
-        self.len
+    crate::accessors! {
+        /// 表长（素数）。
+        len -> usize = len,
+        /// 嵌入维。
+        dim -> usize = dim,
     }
 
     /// 恒为假（表长至少为 2），仅供容器式 API 完整性。
     pub fn is_empty(&self) -> bool {
         self.len == 0
-    }
-
-    /// 嵌入维。
-    pub fn dim(&self) -> usize {
-        self.dim
     }
 
     /// 槽下标：`z = φ(ngram, seed) mod len`。
@@ -319,17 +316,7 @@ impl MemoryBlock {
 }
 
 impl Contract for MemoryBlock {
-    fn name(&self) -> &str {
-        self.spec.name()
-    }
-
-    fn output(&self) -> &Shape {
-        self.spec.output()
-    }
-
-    fn spca(&self) -> &ContractSpec {
-        &self.spec
-    }
+    crate::spec_accessors!();
 
     fn memory(&self) -> Option<&MemoryBlock> {
         Some(self)

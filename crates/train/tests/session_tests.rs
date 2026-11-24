@@ -1,6 +1,6 @@
 use super::*;
 
-use crate::{Chunks, Data, Dataset, Reference, Sgd};
+use crate::{Chunks, Data, Dataset, LoaderConfig, ObjectiveConfig, Reference, Sampling, Sgd};
 use autograd::{Sizes, Store, Tape, Var};
 use diagnostic::{Code, Result};
 use nn::ParamRole;

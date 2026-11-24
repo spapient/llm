@@ -64,14 +64,11 @@ impl Unpriced {
         }
     }
 
-    /// 层名。
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    /// 为什么没有下界。
-    pub fn reason(&self) -> &str {
-        &self.reason
+    crate::accessors! {
+        /// 层名。
+        name -> &str = &name,
+        /// 为什么没有下界。
+        reason -> &str = &reason,
     }
 }
 
@@ -89,14 +86,14 @@ pub struct Floor {
 }
 
 impl Floor {
-    /// 各层下界之和。无法计价的层不出现在这个数里。
-    pub fn total(&self) -> Bounds {
-        self.total
+    crate::accessors! {
+        /// 各层下界之和。无法计价的层不出现在这个数里。
+        total -> Bounds = total,
     }
 
-    /// 无法计价的层，保持构造顺序。
-    pub fn unpriced(&self) -> &[Unpriced] {
-        &self.unpriced
+    crate::accessors! {
+        /// 无法计价的层，保持构造顺序。
+        unpriced -> &[Unpriced] = &unpriced,
     }
 }
 
@@ -205,14 +202,11 @@ impl Stack {
         Ok(Self { layers, uncovered })
     }
 
-    /// 全部层，保持权重文件里的偏移顺序（构造顺序）。
-    pub fn layers(&self) -> &[Box<dyn Contract>] {
-        &self.layers
-    }
-
-    /// 无法归因为投影的条目名（范数、偏置、位置编码……）。
-    pub fn uncovered(&self) -> &[String] {
-        &self.uncovered
+    crate::accessors! {
+        /// 全部层，保持权重文件里的偏移顺序（构造顺序）。
+        layers -> &[Box<dyn Contract>] = &layers,
+        /// 无法归因为投影的条目名（范数、偏置、位置编码……）。
+        uncovered -> &[String] = &uncovered,
     }
 
     /// 总下界：各层下界之和，加上无法计价的层的清单。

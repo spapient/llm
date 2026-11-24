@@ -132,7 +132,7 @@ fn call_arguments_follow_the_template_signature() {
         "gemv_f32",
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../prof/src/cpu/kernels/gemv_f32.k"
+            "/../prof/src/ops/gemv_f32.k"
         )),
     )
     .expect("签名可解析");

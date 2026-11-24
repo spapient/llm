@@ -149,24 +149,18 @@ impl ContractSpec {
         Ok(checked)
     }
 
-    /// 层名（与权重条目的前缀一致）。
-    pub fn name(&self) -> &str {
-        &self.name
+    crate::accessors! {
+        /// 层名（与权重条目的前缀一致）。
+        name -> &str = &name,
+        /// 输出形状。
+        output -> &Shape = &output,
+        /// 要用的算子名。空切片表示这一层的编码还没有算子，因此无法计价。
+        ops -> &[String] = &ops,
     }
 
-    /// 参数角色：优化器分组与权重衰减豁免的派生依据。
-    pub fn role(&self) -> ParamRole {
-        self.role
-    }
-
-    /// 输出形状。
-    pub fn output(&self) -> &Shape {
-        &self.output
-    }
-
-    /// 要用的算子名。空切片表示这一层的编码还没有算子，因此无法计价。
-    pub fn ops(&self) -> &[String] {
-        &self.ops
+    crate::accessors! {
+        /// 参数角色：优化器分组与权重衰减豁免的派生依据。
+        role -> ParamRole = role,
     }
 }
 

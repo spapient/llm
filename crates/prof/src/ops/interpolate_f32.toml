@@ -5,7 +5,15 @@ base = "silu_f32"
 [op]
 name     = "interpolate_f32"
 skeleton = "elementwise"
-summary  = "y = 四邻双线性加权"
+summary  = "NHWC 四邻双线性加权，align_corners=false"
+
+[consts]
+H = 2
+W = 2
+OH = 4
+OW = 4
+C = 1
+BATCH = 1
 
 [layouts]
 x = "row"

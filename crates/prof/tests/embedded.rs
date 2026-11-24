@@ -127,7 +127,7 @@ fn device_specialization_selects_the_backend_without_changing_abi() {
 
 /// 未特化且未调优的算子在所有后端共享参考正文，克隆声明不会引入字符串分配。
 #[test]
-fn inherited_kernels_reuse_the_reference_declaration() {
+fn untuned_kernels_reuse_the_shared_reference_declaration() {
     let op = crate::catalogue::named("gemm_f32")
         .expect("未调优的参考算子")
         .to_decl()

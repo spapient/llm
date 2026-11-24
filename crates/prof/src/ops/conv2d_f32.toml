@@ -6,7 +6,19 @@ base = "silu_f32"
 [op]
 name     = "conv2d_f32"
 skeleton = "elementwise"
-summary  = "y[i,j,co] = bias[co] + Σ x[窗口]·weight[K,co]，3×3 same 补零"
+summary  = "NHWC y[b,i,j,co] = bias[co] + Σ x[窗口]·weight[K,co]"
+
+[consts]
+H = 4
+W = 4
+CIN = 2
+COUT = 3
+KH = 3
+KW = 3
+SH = 1
+SW = 1
+PH = 1
+PW = 1
 
 [layouts]
 x      = "row"
