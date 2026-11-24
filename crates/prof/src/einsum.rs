@@ -86,13 +86,21 @@
 //! assert_eq!(cost.write, 8 * 4);
 //! ```
 
+#[path = "axis.rs"]
 pub mod axis;
+#[path = "bits.rs"]
 pub mod bits;
+#[path = "cache.rs"]
 pub mod cache;
+#[path = "cost.rs"]
 pub mod cost;
+#[path = "expr.rs"]
 pub mod expr;
+#[path = "extents.rs"]
 pub mod extents;
+#[path = "formula.rs"]
 pub mod formula;
+#[path = "operand.rs"]
 pub mod operand;
 
 pub use axis::{Axes, Axis, AxisRole};

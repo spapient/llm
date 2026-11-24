@@ -13,13 +13,16 @@
 use std::thread;
 
 /// f32 8×8 寄存器块微内核（NEON lane-indexed FMA / AVX2+FMA / scalar 兜底）。
+#[path = "gemm8x8.rs"]
 pub mod gemm8x8;
 
 /// i8 `sdot` 4×4 寄存器块微内核（aarch64 dotprod）与端口探针；非 aarch64 交回标量兜底。
+#[path = "i8.rs"]
 pub mod i8;
 
 /// Apple SME 16×64 微内核：nightly + aarch64 才存在（`target_feature(enable = "sme")` 仍不稳定）。
 #[cfg(all(nightly, target_arch = "aarch64"))]
+#[path = "sme.rs"]
 pub mod sme;
 
 /// f32 NEON 寄存器瓦片几何（8×8 块）——编译期常量的单一事实源。

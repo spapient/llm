@@ -61,11 +61,6 @@ exempt = []
 # 每条都必须带理由：一份没有理由的豁免等于把规则删掉一半。
 #
 [[ownership.unlisted]]
-crate = "cli"
-names = ["CutileCommand"]
-reason = "命令文法内部类型；`cli` 的公开面是 `Invocation`/`Command`，文法稳定后再进表"
-
-[[ownership.unlisted]]
 crate = "cutile"
 names = ["CallArg", "ChainStep", "FragmentGap", "NeedReport", "PrimCall", "Unlock"]
 reason = "内核 DSL 的协商前端与结果类型；`UnaryFn` 是一元数学算子（Abs/Sqrt/Exp/Ln/Trig/取整）发射名与主机求值闭集；按 `crates/cutile/README.md` 的分节归类，待分节稳定后逐节进表（执行期五个名字随拆分迁到 `optim`）"
@@ -240,23 +235,24 @@ min_lines_baseline = [
   "crates/prof/src/catalogue.rs",
   "crates/prof/src/decode.rs",
   "crates/prof/src/einsum.rs",
-  "crates/prof/src/einsum/axis.rs",
-  "crates/prof/src/einsum/bits.rs",
-  "crates/prof/src/einsum/cache.rs",
-  "crates/prof/src/einsum/cost.rs",
-  "crates/prof/src/einsum/expr.rs",
-  "crates/prof/src/einsum/extents.rs",
-  "crates/prof/src/einsum/formula.rs",
-  "crates/prof/src/einsum/operand.rs",
+  "crates/prof/src/axis.rs",
+  "crates/prof/src/bits.rs",
+  "crates/prof/src/cache.rs",
+  "crates/prof/src/cost.rs",
+  "crates/prof/src/expr.rs",
+  "crates/prof/src/extents.rs",
+  "crates/prof/src/formula.rs",
+  "crates/prof/src/operand.rs",
   "crates/prof/src/epilogue.rs",
   "crates/prof/src/native.rs",
-  "crates/prof/src/native/i8.rs",
+  "crates/prof/src/i8.rs",
   "crates/prof/src/runtime.rs",
   "crates/prof/src/need.rs",
   "crates/prof/src/operator.rs",
   "crates/prof/src/sample.rs",
   "crates/prof/src/sign.rs",
   "crates/prof/src/text.rs",
+  "crates/prof/src/tpl.rs",
   "crates/prof/src/witness.rs",
   "crates/serve/src/admit.rs",
   "crates/serve/src/block.rs",
