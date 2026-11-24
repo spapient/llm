@@ -36,6 +36,8 @@ impl fmt::Display for SettingValue {
         match self {
             Self::Path(path) => write!(formatter, "{}", path.display()),
             Self::Bytes(bytes) => write!(formatter, "{bytes}"),
+            Self::UInt(number) => write!(formatter, "{number}"),
+            Self::Float(number) => write!(formatter, "{number}"),
         }
     }
 }
