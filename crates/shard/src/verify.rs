@@ -459,7 +459,10 @@ fn parity(
     if bits.len() != expect {
         return Err(Error::new(
             Code::Invalid,
-            format!("形状 {m}x{n}：内核只输出 {} 个数，期望 {expect}", bits.len()),
+            format!(
+                "形状 {m}x{n}：内核只输出 {} 个数，期望 {expect}",
+                bits.len()
+            ),
         ));
     }
     let error = cutile::reference::max_rel_err(bits, want);

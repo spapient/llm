@@ -271,7 +271,6 @@ fn split_rejects_length_mismatch_and_rank_out_of_range() {
     );
 }
 
-
 #[test]
 fn split_into_reuses_capacity_and_never_exposes_a_partial_shard() {
     let tiling = Tiling::new(Sharding::Row, 2, 2, 4).expect("整除");

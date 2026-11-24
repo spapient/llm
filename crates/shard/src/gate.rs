@@ -1,7 +1,7 @@
 //! 语法门：设备不在本机时，用一门语言自己的解析器把见证过一遍。
 
 use crate::config::{LanguageFront, config};
-use crate::runner::driver::{scratch, write_text};
+use crate::runner::driver::{with_scratch, write_text};
 use crate::toolchain::{Toolchain, clang, probe_declared};
 use crate::witness::{Selected, declared_witnesses, device_available, source};
 use cutile::atom::Witness;

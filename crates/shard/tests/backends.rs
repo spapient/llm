@@ -312,4 +312,3 @@ fn an_ascend_run_without_ccec_names_the_missing_compiler() {
     let text = error.to_string();
     assert!(text.contains("ccec"), "要报缺哪个程序：{text}");
 }
-

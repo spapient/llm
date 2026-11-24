@@ -139,7 +139,11 @@ impl Topology {
     pub fn idxs(&self, rank: u32) -> Result<(usize, usize, usize)> {
         let position = rank as usize;
         if position >= self.world {
-            fail!("shard::Topology::idxs", "rank {rank} 超出 0..{}", self.world);
+            fail!(
+                "shard::Topology::idxs",
+                "rank {rank} 超出 0..{}",
+                self.world
+            );
         }
         let [tp, pp, dp] = self.digits(position, None);
         Ok((tp, pp, dp))
@@ -571,9 +575,6 @@ impl<T> Queue<T> {
 }
 
 #[cfg(test)]
-#[path = "../tests/topology_tests.rs"]
-mod tests;
-#[cfg(test)]
 #[path = "../tests/plan_tests.rs"]
 mod plan_tests;
 #[cfg(test)]
@@ -582,3 +583,6 @@ mod policy_tests;
 #[cfg(test)]
 #[path = "../tests/schedule_tests.rs"]
 mod schedule_tests;
+#[cfg(test)]
+#[path = "../tests/topology_tests.rs"]
+mod tests;

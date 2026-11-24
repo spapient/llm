@@ -266,3 +266,40 @@ fn nvidia_matmul_uses_pedantic_cublas_and_cached_device_storage() {
         .expect("NVIDIA 档案");
     assert!(profile.flags.iter().any(|flag| flag == "-lcublas"));
 }
+
+/// A3000 是独立指纹与编译架构，但复用 NVIDIA 的 cuBLAS 正文和片段，不复制设备族语料。
+#[test]
+fn a3000_variant_selects_sm86_and_reuses_the_nvidia_backend() {
+    let detected = crate::prof::Detected::new()
+        .with("cc", "8.6")
+        .with("name", "NVIDIA RTX A3000 12GB Laptop GPU");
+    let chosen = crate::prof::select(crate::prof::builtin_profiles(), &detected)
+        .expect("A3000 实测指纹必须命中变体");
+    assert_eq!(chosen.meta.vendor, "nvidia_a3000");
+    assert_eq!(chosen.meta.id, "sm86");
+    assert_eq!(chosen.mem.fast_bytes, 49_152);
+    assert_eq!(chosen.mem.reg_bytes, 262_144);
+    assert_eq!(chosen.simt.group, 32);
+    assert_eq!(chosen.simt.groups_max, 1_536);
+    assert!(chosen.flags.iter().any(|flag| flag == "-arch=sm_86"));
+    assert!(chosen.flags.iter().any(|flag| flag == "-lcublas"));
+    assert!(!chosen.flags.iter().any(|flag| flag == "-arch=sm_75"));
+    assert!(!chosen.preamble.is_empty(), "必须继承 NVIDIA 前置声明");
+    assert!(!chosen.provides.is_empty(), "必须继承 NVIDIA 原语供给");
+
+    for name in ["matmul_f32", "add_f32", "gemm_i8"] {
+        assert_eq!(
+            crate::catalogue::template_for("nvidia_a3000", name),
+            crate::catalogue::template_for("nvidia", name),
+            "`{name}` 必须复用 NVIDIA 后端正文"
+        );
+    }
+    assert!(crate::device::dir_of("nvidia_a3000").is_some_and(|root| root.ends_with("/nvidia")));
+
+    let t600 = crate::prof::Detected::new()
+        .with("cc", "7.5")
+        .with("name", "NVIDIA T600");
+    let chosen = crate::prof::select(crate::prof::builtin_profiles(), &t600)
+        .expect("T600 仍必须命中原档案");
+    assert_eq!(chosen.meta.vendor, "nvidia");
+}

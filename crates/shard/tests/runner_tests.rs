@@ -74,7 +74,6 @@ int main(void) { printf(\"%u\\n\", (unsigned)FLAG_MARK); return 0; }\n";
     let _ = std::fs::remove_dir_all(&workdir);
 }
 
-
 #[test]
 fn one_summary_agrees_with_every_individual_statistic() {
     let timing = Timing {
@@ -84,6 +83,13 @@ fn one_summary_agrees_with_every_individual_statistic() {
     assert_eq!(summary.min_ns, timing.min_ns().expect("min"));
     assert_eq!(summary.p50_ns, timing.p50_ns().expect("p50"));
     assert_eq!(summary.p95_ns, timing.p95_ns().expect("p95"));
-    assert_eq!(summary, TimingSummary { min_ns: 10.0, p50_ns: 25.0, p95_ns: 40.0 });
+    assert_eq!(
+        summary,
+        TimingSummary {
+            min_ns: 10.0,
+            p50_ns: 25.0,
+            p95_ns: 40.0
+        }
+    );
     assert_eq!(Timing::default().summary(), None);
 }

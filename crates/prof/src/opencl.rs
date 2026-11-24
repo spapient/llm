@@ -190,7 +190,7 @@ impl OpenClDevice {
         let text = query_bytes("clGetProgramBuildInfo", |size, value, written| unsafe {
             cl_get_build_info(program, self.raw, PROGRAM_BUILD_LOG, size, value, written)
         })?;
-        Ok(device_text(&text))
+        Ok(device_text_from_bytes(&text))
     }
 
     /// 分配一段可读写的设备缓冲。

@@ -127,7 +127,10 @@ impl Default for RuntimeConfig {
                     ["-xcce", "--cce-aicore-algorithm=dav-c220", "-fsyntax-only"],
                 ),
             ],
-            host_flags: ["-O2", "-std=c99"].into_iter().map(str::to_string).collect(),
+            host_flags: ["-O2", "-std=c99"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
             l3_threshold: 0.7,
             lock_wait: Duration::from_secs(5),
         }

@@ -7,7 +7,13 @@ fn defaults_are_valid_and_cover_every_required_front() {
     let languages: Vec<_> = config.gates.iter().map(|gate| gate.emit).collect();
     assert_eq!(
         languages,
-        [Emit::Cuda, Emit::Opencl, Emit::C, Emit::Metal, Emit::Ascendc]
+        [
+            Emit::Cuda,
+            Emit::Opencl,
+            Emit::C,
+            Emit::Metal,
+            Emit::Ascendc
+        ]
     );
 }
 

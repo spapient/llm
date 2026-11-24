@@ -201,9 +201,9 @@ impl crate::Store<u8> for LegacyStore<'_> {
 }
 
 #[test]
-fn legacy_store_implementations_use_the_default_consuming_copy() {
+fn legacy_store_implementations_use_the_default_range_copy() {
     let tensor: Tensor<LegacyStore<'_>, [usize; 1], u8> =
-        Tensor::new([3], LegacyStore(&[1, 2, 3])).expect("旧式自定义存储");
-    let owned = tensor.into_owned();
-    assert_eq!(owned.to_vec(), [1, 2, 3]);
+        Tensor::new([4], LegacyStore(&[1, 2, 3, 4])).expect("旧式自定义存储");
+    let owned = tensor.narrow(0, 1, 2).expect("借用子视图").into_owned();
+    assert_eq!(owned.to_vec(), [2, 3], "默认实现只复制逻辑范围");
 }

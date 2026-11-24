@@ -414,9 +414,9 @@ fn compact_step(
 pub(crate) struct Offsets<'a, R> {
     dims: &'a [usize],
     strides: &'a [usize],
-    turn: &'a [bool],
-    idxs: Option<R>,
-    at: isize,
+    reverse: &'a [bool],
+    indices: Option<R>,
+    offset: isize,
     remaining: usize,
 }
 
@@ -426,11 +426,11 @@ impl<'a, R: Rank> Offsets<'a, R> {
         dims: &'a [usize],
         strides: &'a [usize],
         base: usize,
-        turn: &'a [bool],
+        reverse: &'a [bool],
     ) -> Self {
-        let idxs = R::filled(dims.len(), 0);
-        let at = Self::reversed_base(dims, strides, base, turn);
-        let remaining = if at.is_some() && dims.len() == strides.len() && idxs.is_some() {
+        let indices = R::filled(dims.len(), 0);
+        let offset = Self::reversed_base(dims, strides, base, reverse);
+        let remaining = if offset.is_some() && dims.len() == strides.len() && indices.is_some() {
             product(dims)
         } else {
             0
@@ -438,9 +438,9 @@ impl<'a, R: Rank> Offsets<'a, R> {
         Self {
             dims,
             strides,
-            turn,
-            idxs,
-            at: at.unwrap_or(0) as isize,
+            reverse,
+            indices,
+            offset: offset.unwrap_or(0) as isize,
             remaining,
         }
     }
@@ -450,44 +450,50 @@ impl<'a, R: Rank> Offsets<'a, R> {
         dims: &[usize],
         strides: &[usize],
         base: usize,
-        turn: &[bool],
+        reverse: &[bool],
     ) -> Option<usize> {
-        dims.iter().enumerate().try_fold(base, |at, (axis, &dim)| {
-            if !turn.get(axis).copied().unwrap_or(false) {
-                return Some(at);
-            }
-            let step = *strides.get(axis)?;
-            shifted(at, step, dim.saturating_sub(1))
-        })
+        dims.iter()
+            .enumerate()
+            .try_fold(base, |offset, (axis, &dim)| {
+                if !reverse.get(axis).copied().unwrap_or(false) {
+                    return Some(offset);
+                }
+                let stride = *strides.get(axis)?;
+                shifted(offset, stride, dim.saturating_sub(1))
+            })
     }
 
     /// 行进到下一个逻辑位置；最后一个元素之后不再做无效偏移运算。
     fn advance(&mut self) {
-        let Some(idxs) = self.idxs.as_mut() else {
+        let Some(indices) = self.indices.as_mut() else {
             self.remaining = 0;
             return;
         };
-        let idxs = idxs.as_slice_mut();
-        let mut at = self.at;
-        for axis in (0..idxs.len()).rev() {
-            idxs[axis] += 1;
-            let turned = self.turn.get(axis).copied().unwrap_or(false);
-            let (step, reset) = Self::directed_step(self.strides[axis], self.dims[axis], turned);
-            at += step;
-            if idxs[axis] < self.dims[axis] {
+        let indices = indices.as_slice_mut();
+        let mut offset = self.offset;
+        for axis in (0..indices.len()).rev() {
+            indices[axis] += 1;
+            let reversed = self.reverse.get(axis).copied().unwrap_or(false);
+            let (step, reset) = Self::directed_step(self.strides[axis], self.dims[axis], reversed);
+            offset += step;
+            if indices[axis] < self.dims[axis] {
                 break;
             }
-            idxs[axis] = 0;
-            at += reset;
+            indices[axis] = 0;
+            offset += reset;
         }
-        self.at = at;
+        self.offset = offset;
     }
 
     /// 返回单次行进与轴回绕的有向位移，正反方向共用同一套进位。
-    fn directed_step(step: usize, dim: usize, turned: bool) -> (isize, isize) {
-        let step = step as isize;
-        let span = step * dim as isize;
-        if turned { (-step, span) } else { (step, -span) }
+    fn directed_step(stride: usize, dim: usize, reversed: bool) -> (isize, isize) {
+        let stride = stride as isize;
+        let span = stride * dim as isize;
+        if reversed {
+            (-stride, span)
+        } else {
+            (stride, -span)
+        }
     }
 }
 
@@ -498,7 +504,7 @@ impl<R: Rank> Iterator for Offsets<'_, R> {
         if self.remaining == 0 {
             return None;
         }
-        let current = self.at as usize;
+        let current = self.offset as usize;
         self.remaining -= 1;
         if self.remaining != 0 {
             self.advance();
