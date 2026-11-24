@@ -47,6 +47,9 @@ struct Entry {
     tier: Option<String>,
 }
 
+/// 展开产物四元组：名字表 / 模板 stem 表 / 行清单 / 档名表，三份同序。
+type Generated = (Vec<String>, Vec<String>, String, Vec<Option<String>>);
+
 /// 逐文件扫描：`(算子名, 模板 stem, 表字面量行)` 三份同序清单，展开 `base` 继承与 `tiers` 档后生成。
 ///
 /// 一份档案声明 `[op].tiers = ["f32", "f16", …]` 时，按档展开成多个算子名 `<算法>_<档>`，
@@ -57,7 +60,7 @@ fn scan(
     ops: &Path,
     manifest: &Path,
     files: &[PathBuf],
-) -> diagnostic::Result<(Vec<String>, Vec<String>, String, Vec<Option<String>>)> {
+) -> diagnostic::Result<Generated> {
     let entries = collect_entries(ops, manifest, files)?;
     Ok(flatten(entries))
 }
@@ -112,7 +115,7 @@ fn collect_entries(
 }
 
 /// 条目按名升序，汇总成名字表 / 模板表 / 行清单 / 档名表四份同序清单。
-fn flatten(entries: Vec<Entry>) -> (Vec<String>, Vec<String>, String, Vec<Option<String>>) {
+fn flatten(entries: Vec<Entry>) -> Generated {
     let mut entries = entries;
     entries.sort_by(|a, b| a.name.cmp(&b.name));
     let mut names = Vec::new();
@@ -263,7 +266,11 @@ fn emit_templates(
         // 正文内联进生成表——「加一档=加一行声明」，模板只有一份。
         match tier.as_deref() {
             None | Some("f32") => {
-                let _ = writeln!(table, "    (\"{name}\", include_str!({:?})),", path.display());
+                let _ = writeln!(
+                    table,
+                    "    (\"{name}\", include_str!({:?})),",
+                    path.display()
+                );
             }
             Some(tier) => {
                 let text = std::fs::read_to_string(&path)

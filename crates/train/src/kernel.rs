@@ -377,8 +377,22 @@ fn rope_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
     )
 }
 
+/// 设备档算子（`f16` / `bf16` 等）在 CPU 标量参考层没有存储 lane（本层缓冲只有 f32 与打包 u8）。
+/// 生成显式拒绝的表行入口：既满足与注册表的同序锁，又如实表达既有契约——设备档走 cutile 协商
+/// 执行，不在标量参考层跑。「加一个设备档算子=加一行声明」，拒绝逻辑只写一遍。
+macro_rules! no_scalar {
+    ($($run:ident => $dtype:expr),* $(,)?) => {$(
+        fn $run(_inputs: &[View<'_>], _output: &mut ViewMut<'_>) -> Result<()> {
+            Err(no_storage($dtype))
+        }
+    )*};
+}
+
+no_scalar!(abs_f16 => DType::F16);
+
 /// 标量内核表：长度就是 [`nn::registry::REGISTRY`] 的长度，名字与顺序由下面的 `const` 断言锁住。
 const KERNELS: [Entry; nn::registry::REGISTRY.len()] = kernel_table![
+    abs_f16,
     abs_f32,
     adaptive_pool_f32,
     add_f32,

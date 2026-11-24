@@ -184,7 +184,10 @@ impl Sample {
     pub fn bf16(&self, name: &str) -> diagnostic::Result<&[half::bf16]> {
         match self.buf(name).map(|buf| &buf.values) {
             Some(Values::Bf16(values)) => Ok(values),
-            Some(_) => Err(Error::new(Code::Invalid, format!("缓冲 `{name}` 不是 bf16"))),
+            Some(_) => Err(Error::new(
+                Code::Invalid,
+                format!("缓冲 `{name}` 不是 bf16"),
+            )),
             None => Err(Error::new(
                 Code::Missing,
                 format!("样本里没有缓冲 `{name}`"),

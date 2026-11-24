@@ -260,26 +260,14 @@ pub(crate) fn elements<'a>(
 pub(crate) fn string(token: &Token) -> Result<String, Error> {
     // `macro_rules!` 的 `$x:literal` 元变量会以「不可见分组」包一层字面量送达 proc-macro；
     // 展平这层分组，注解的字符串字段便能由宏参数化（如按精度档传 `dtype`），不必逐档硬编。
-    if let Token::Group(Bracket::Invisible, items) = token {
-        if let [single] = items.as_slice() {
-            return string(single);
-        }
-    }
+    let token = visible_literal(token);
     let Token::Literal(text) = token else {
         return Err(Error::at(
             0,
             format!("期望字符串字面量（`\"..\"`），得到 {}", token.describe()),
         ));
     };
-    let inner = text
-        .strip_prefix('"')
-        .and_then(|rest| rest.strip_suffix('"'))
-        .ok_or_else(|| {
-            Error::at(
-                0,
-                format!("期望普通字符串字面量（`\"..\"`），得到 `{text}`"),
-            )
-        })?;
+    let inner = quoted_inner(text)?;
     if inner.contains('\\') {
         return Err(Error::at(
             0,
@@ -287,6 +275,28 @@ pub(crate) fn string(token: &Token) -> Result<String, Error> {
         ));
     }
     Ok(inner.to_string())
+}
+
+/// 解包 `$x:literal` 元变量的不可见分组；单元素分组递归展平，其余原样返回。
+fn visible_literal(token: &Token) -> &Token {
+    if let Token::Group(Bracket::Invisible, items) = token
+        && let [single] = items.as_slice()
+    {
+        return visible_literal(single);
+    }
+    token
+}
+
+/// 去掉字符串字面量两端引号；非引号包裹返回错误。
+fn quoted_inner(text: &str) -> Result<&str, Error> {
+    text.strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+        .ok_or_else(|| {
+            Error::at(
+                0,
+                format!("期望普通字符串字面量（`\"..\"`），得到 `{text}`"),
+            )
+        })
 }
 
 /// 只接受十进制无符号整数字面量：形状是数值，`0x10` 与 `4usize` 会让注解出现两套写法。
