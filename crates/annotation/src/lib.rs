@@ -63,6 +63,7 @@
 
 mod decl;
 mod dsl;
+mod ops;
 mod render;
 mod syntax;
 
@@ -71,6 +72,7 @@ mod syntax;
 mod fixture;
 
 use proc_macro::{Delimiter, Group, Span, TokenStream, TokenTree};
+use std::path::Path;
 use syntax::{Bracket, Error as SyntaxError, Token};
 
 /// 把 `#[spec(name = "..", out = [..], in = .., ops = [".."])]` 展开成 `::nn::Contract` 的实现。
@@ -198,6 +200,25 @@ pub fn parallel(attribute: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn dsl(attribute: TokenStream, item: TokenStream) -> TokenStream {
     dsl::expand(attribute, item)
+}
+
+/// 编译期扫调用 crate 的 `src/ops/*.toml`，展开成 `pub const OPS: [OpView; N]` 静态表。
+///
+/// 解析与渲染都在宏进程内完成；生成代码只持有强类型 `OpView`，不残留 `Table` / `Value`
+/// 动态树。语料读不到 / 闭集越界时退一条指向具体原因的 `compile_error!`。
+#[proc_macro]
+pub fn prof_ops(_input: TokenStream) -> TokenStream {
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
+    let ops_dir = Path::new(&manifest).join("src").join("ops");
+    let code = match ops::collect(&ops_dir) {
+        Ok(models) => render::render_ops(&models),
+        Err(error) => format!("compile_error!({error:?});"),
+    };
+    code.parse().unwrap_or_else(|_| {
+        r#"compile_error!("注解层内部错误：生成代码不是合法 token 流");"#
+            .parse()
+            .unwrap_or_default()
+    })
 }
 
 /// 两道注解共用的一趟展开：解析 → 取类型名 → 渲染 → 拼接。

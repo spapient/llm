@@ -17,6 +17,8 @@ proc-macro = true
 proc-macro2 = { workspace = true }
 quote = { workspace = true }
 syn = { workspace = true }
+# 仅在编译期宏进程内解析算子语料 TOML，不链接进消费方运行期二进制（见 ADR 0022 补记）。
+toml = { workspace = true }
 
 [lints]
 workspace = true

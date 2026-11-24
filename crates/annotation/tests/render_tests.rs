@@ -3,12 +3,13 @@
 //! 断言的是文本，不是行为：渲染器只拼字符串，于是"生成的代码长什么样"可以被逐字钉住。
 
 use crate::decl::{
-    DTYPES, Declaration, ModelDecl, RuntimeDecl, SKELETONS, parse, parse_model, parse_parallel,
-    parse_runtime,
+    AttrModel, AxisModel, DTYPES, Declaration, ModelDecl, NeedModel, OpModel, RuntimeDecl,
+    SKELETONS, SpanModel, VariantModel, parse, parse_model, parse_parallel, parse_runtime,
 };
 use crate::fixture::lex;
 use crate::render::{
-    MODEL_ROOM, RUNTIME_ROOM, STATIC_ROOM, render, render_model, render_parallel, render_runtime,
+    MODEL_ROOM, RUNTIME_ROOM, STATIC_ROOM, render, render_model, render_ops, render_parallel,
+    render_runtime,
 };
 
 fn declaration(text: &str) -> Declaration {
@@ -467,5 +468,101 @@ fn a_default_parallel_declaration_renders_sum_normal() {
     assert!(code.contains("::shard::Reduce::Sum"), "{code}");
     assert!(code.contains(".with_average(true)"), "{code}");
     assert!(code.contains("::shard::Priority::Normal"), "{code}");
+    assert_balanced(&code);
+}
+
+/// 一条最小逐元素算子夹具：与 `add_f32.toml` 同形。
+fn sample_op() -> OpModel {
+    OpModel {
+        name: "add_f32".to_string(),
+        skeleton: "elementwise".to_string(),
+        summary: "y[n] = a[n] + b[n]".to_string(),
+        axes: vec![AxisModel {
+            name: "N".to_string(),
+            values: vec![32],
+        }],
+        needs: vec![NeedModel {
+            prim: "load".to_string(),
+            extent: SpanModel::AtMost(4096),
+            n: SpanModel::Any,
+            k: SpanModel::Any,
+            dt: vec![],
+            space: vec!["GM".to_string(), "FAST".to_string()],
+            attrs: vec![AttrModel {
+                key: "src".to_string(),
+                values: vec!["GM".to_string()],
+            }],
+        }],
+        layouts: vec![("a".to_string(), "row".to_string())],
+        grid: None,
+        chunk: None,
+        consts: vec![("binop".to_string(), "+".to_string())],
+        variants: vec![VariantModel {
+            name: "direct".to_string(),
+            order: 1,
+            schedule: "direct".to_string(),
+            mma_share: 0.0,
+            extra_needs: vec![],
+        }],
+        template: String::new(),
+        phases: vec![],
+    }
+}
+
+/// 算子表渲染出强类型 `OpView` 字面量：闭集短名逐条映射到 prof 变体路径。
+#[test]
+fn ops_table_renders_typed_op_views() {
+    let code = render_ops(&[sample_op()]);
+    assert!(
+        code.contains("pub const OPS: [::llm_prof::decl::OpView; 1] = ["),
+        "{code}"
+    );
+    assert!(
+        code.contains("::llm_prof::decl::Skeleton::Elementwise"),
+        "{code}"
+    );
+    assert!(code.contains("::llm_prof::atom::Prim::Load"), "{code}");
+    assert!(code.contains("::llm_prof::atom::Space::Gm"), "{code}");
+    assert!(code.contains("::llm_prof::atom::Space::Fast"), "{code}");
+    assert!(code.contains("::llm_prof::atom::AttrKey::Src"), "{code}");
+    assert!(
+        code.contains("::llm_prof::atom::Span::at_most(4096)"),
+        "{code}"
+    );
+    assert!(
+        code.contains("::llm_prof::sch::layout::LayoutSpec::Row"),
+        "{code}"
+    );
+    assert!(code.contains("::llm_prof::sch::Schedule::Direct"), "{code}");
+    assert!(code.contains("values: &[32u32]"), "{code}");
+    assert_balanced(&code);
+}
+
+/// 流水线调度与列布局带参构造逐字落进字面量。
+#[test]
+fn ops_table_renders_parameterized_schedule_and_layout() {
+    let mut op = sample_op();
+    op.variants[0].schedule = "pipe<2>".to_string();
+    op.layouts[0] = ("w".to_string(), "col".to_string());
+    let code = render_ops(&[op]);
+    assert!(
+        code.contains("::llm_prof::sch::Schedule::Pipe { stages: 2 }"),
+        "{code}"
+    );
+    assert!(
+        code.contains("::llm_prof::sch::layout::LayoutSpec::Col"),
+        "{code}"
+    );
+    assert_balanced(&code);
+}
+
+/// 闭集外的骨架名不允许落到默认变体；整份生成物退一条 `compile_error!`。
+#[test]
+fn an_unmapped_op_skeleton_falls_back_to_compile_error() {
+    let mut op = sample_op();
+    op.skeleton = "ghost".to_string();
+    let code = render_ops(&[op]);
+    assert!(code.contains("compile_error!"), "{code}");
+    assert!(code.contains("骨架"), "{code}");
     assert_balanced(&code);
 }

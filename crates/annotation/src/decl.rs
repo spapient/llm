@@ -579,3 +579,129 @@ fn flag_value(cursor: &mut Cursor<'_>, at: Position, spec: &KeySpec<'_>) -> Resu
         )),
     }
 }
+
+// ── prof 算子语料中间模型（编译期生成器，脱离 `proc_macro` 可单测）──────────
+
+/// 区间取值的解析形态；render 据此选择 `Span` 的 const 构造子。
+///
+/// `Range(lo, hi)` 暂无 const 构造子（`Span::range` 非 const fn），当前语料也未使用；
+/// 一旦出现，render 先退 `compile_error!`，待 prof 侧补 const 区间构造再放行。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SpanModel {
+    /// 不限。
+    Any,
+    /// 精确值。
+    Exact(u32),
+    /// 上界（下界 0）。
+    AtMost(u32),
+    /// 下界（上界不限）。
+    AtLeast(u32),
+    /// 闭区间（暂不可 const 构造）。
+    Range(u32, u32),
+}
+
+/// 一条轴：名字 + 候选取值。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AxisModel {
+    /// 轴名（也是模板槽位名）。
+    pub(crate) name: String,
+    /// 候选取值。
+    pub(crate) values: Vec<u32>,
+}
+
+/// 一条能力属性：闭集键 + 自由字符串取值。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AttrModel {
+    /// 属性键短名（`src`/`dst`/`axis`/`op`/…）。
+    pub(crate) key: String,
+    /// 取值列表。
+    pub(crate) values: Vec<String>,
+}
+
+/// 一条原语需求的能力签名。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NeedModel {
+    /// 原语短名。
+    pub(crate) prim: String,
+    /// 主维度区间（`m`/`bytes`/`extent`）。
+    pub(crate) extent: SpanModel,
+    /// `mma` 的 `n`。
+    pub(crate) n: SpanModel,
+    /// `mma` 的 `k`。
+    pub(crate) k: SpanModel,
+    /// 数据类型短名列表。
+    pub(crate) dt: Vec<String>,
+    /// 存储空间短名列表。
+    pub(crate) space: Vec<String>,
+    /// 枚举型属性。
+    pub(crate) attrs: Vec<AttrModel>,
+}
+
+/// 网格映射（仅 Gemm）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GridModel {
+    /// `(线程名, 标量名)` 按序。
+    pub(crate) dims: Vec<(String, String)>,
+}
+
+/// 分块并行块长（reduce / scan）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ChunkModel {
+    /// 块长。
+    pub(crate) size: usize,
+}
+
+/// 降级链上的一个变体。
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct VariantModel {
+    /// 变体名。
+    pub(crate) name: String,
+    /// 优先级，小者优先。
+    pub(crate) order: u32,
+    /// 调度写法原文（`direct` / `pipe<2>` / …）。
+    pub(crate) schedule: String,
+    /// 非 MMA 占比上界。
+    pub(crate) mma_share: f64,
+    /// 变体级增量需求（只能加强公共需求）。
+    pub(crate) extra_needs: Vec<NeedModel>,
+}
+
+/// 一条显式数据流阶段。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PhaseModel {
+    /// 阶段名。
+    pub(crate) name: String,
+    /// 读槽位名。
+    pub(crate) reads: Vec<String>,
+    /// 写槽位名。
+    pub(crate) writes: Vec<String>,
+}
+
+/// 一份 `ops/*.toml` 解析后的全部强类型字段；渲染层据此拼 `OpView` const 字面量。
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct OpModel {
+    /// 算子名。
+    pub(crate) name: String,
+    /// 骨架短名。
+    pub(crate) skeleton: String,
+    /// 一句话说明。
+    pub(crate) summary: String,
+    /// 轴。
+    pub(crate) axes: Vec<AxisModel>,
+    /// 算子级公共需求。
+    pub(crate) needs: Vec<NeedModel>,
+    /// 布局契约：`(槽位, 布局写法原文)`。
+    pub(crate) layouts: Vec<(String, String)>,
+    /// 网格映射。
+    pub(crate) grid: Option<GridModel>,
+    /// 分块并行块长。
+    pub(crate) chunk: Option<ChunkModel>,
+    /// 模板常量：`(键, 十进制取值)`。
+    pub(crate) consts: Vec<(String, String)>,
+    /// 降级链，按 `order` 升序。
+    pub(crate) variants: Vec<VariantModel>,
+    /// 模板正文占位；#46 接 `TEMPLATES` 表按名配对。
+    pub(crate) template: String,
+    /// 显式数据流阶段；为空时 owned 化按签名派生单阶段。
+    pub(crate) phases: Vec<PhaseModel>,
+}

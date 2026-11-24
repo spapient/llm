@@ -290,11 +290,11 @@ Rust 官方与微软训练材料的一致口径：
 |---|---|---|
 | `prim: Prim` | `prim: Prim` | 闭集枚举 |
 | `extent/n/k: Span` | 同 `Span` | `Span` 全 const fn |
-| `dt: DTypeSet` | `dt: u32` 位掩码 | 闭集索引位；owned 化 `Set::insert` |
-| `space: SpaceSet` | `space: u32` 位掩码 | 同上 |
+| `dt: DTypeSet` | `dt: &'static [DType]` 元素切片 | owned 化 `Set::of(..)` 重建 |
+| `space: SpaceSet` | `space: &'static [Space]` 元素切片 | 同上 |
 | `attrs: Vec<Attr>` | `attrs: &'static [AttrView]` | `AttrView { key: AttrKey, values: &'static [&'static str] }` |
 
-`Set::empty()` 是 const，`insert` 非 const，故视图层位集落整数掩码。
+`Set::empty()` 是 const、`insert` 非 const，故视图层持元素切片（非整数掩码），owned 化时 `Set::of` 重建位集。批次 B 已按此落地于 `decl.rs`。
 
 ### 12.3 宏 crate 分层（沿用 `annotation` 的 Streams 倒置范式）
 
@@ -302,8 +302,79 @@ Rust 官方与微软训练材料的一致口径：
 - `resolve`：`base` 递归继承 + 深度合并（纯函数，脱离 proc_macro 单测）；
 - `tiers`：档展开 + `dt` 精度替换 + 模板 C 类型替换（纯函数）；
 - `model`：`toml::Table` → 视图字段，闭集/范围/链单调/字段齐全校验，失败 `compile_error!` 指到字段；
-- `render`：`quote!` 展开 `pub const OPS: [OpView; N]` token 流；
+- `render`：字符串拼 `pub const OPS: [OpView; N]` 字面量（沿用 `annotation/render.rs` 的 `String` + `write!` 范式，不引 `quote!`），产物再解析成 token 流；
 - 闭集序号：编译期生成 `名字 → u16` 索引，查找 O(1) 替代二分（借鉴方案 5，不引 phf）。
+
+#### 12.3.1 闭集词 → prof 变体路径映射（render 依据，已核枚举标识）
+
+| 闭集 | TOML 短名 | prof 变体 | 全限定路径 |
+|---|---|---|---|
+| 骨架 | `elementwise` / `reduce` / `gemm` / `scan` | `Elementwise` / `Reduce` / `Gemm` / `Scan` | `::llm_prof::decl::Skeleton::*` |
+| 原语 | `mma` `dot` `load` `load_async` `commit_wait` `store` `bar` `shuffle` `broadcast` `reduce` `scan` `exp2` `rcp` `cvt` `quant` `atomic` | `Mma` `Dot` `Load` `LoadAsync` `CommitWait` `Store` `Bar` `Shuffle` `Broadcast` `Reduce` `Scan` `Exp2` `Rcp` `Cvt` `Quant` `Atomic` | `::llm_prof::atom::Prim::*` |
+| 存储空间 | `GM` / `FAST` / `REG` | `Gm` / `Fast` / `Reg` | `::llm_prof::atom::Space::*` |
+| 数据类型 | `f32` / `f16` / `bf16` | `F32` / `F16` / `BF16` | `::llm_prof::atom::DType::*`（atom 重导出 `dtype::DType`） |
+| 调度 | `direct` / `pipe{n}` / `warp_specialized{p,c}` / `ping_pong{g}` | `Direct` / `Pipe{stages}` / `WarpSpecialized{producer,consumer}` / `PingPong{groups}` | `::llm_prof::sch::Schedule::*` |
+| 布局 | `row` / `col` / `swz<b,m,s>` / `pad(p)` | `Row` / `Col` / `Swz{b,m,s}` / `Pad(p)` | `::llm_prof::sch::layout::LayoutSpec::*` |
+
+`AttrKey` 词表随 `model` 校验层一起核（`Src`/`Dst`/`Align`/`Axis`/`Op`/`Sat`/`Stages`/`Group`/`Kind`/`Accuracy`/`Lanes`/`Exec` 等）。闭集词非法时 `model` 层在编译期 `compile_error!`，render 兜底分支不可达。
+
+#### 12.3.2 AttrKey 词 → `::llm_prof::atom::AttrKey::*` 映射（已核 `atom.rs:290`）
+
+| TOML 键 | 变体 | TOML 键 | 变体 |
+|---|---|---|---|
+| `op` | `Op` | `axis` | `Axis` |
+| `kind` | `Kind` | `sat` | `Sat` |
+| `accuracy` | `Accuracy` | `group` | `Group` |
+| `lanes` | `Lanes` | `src` | `Src` |
+| `dst` | `Dst` | `stages` | `Stages` |
+| `exec` | `Exec` | `align` | `Align` |
+
+属性取值是自由字符串列表（如 `axis = ["GMAX"]`、`op = ["sum"]`、`accuracy = ["fp32"]`），不进闭集，原样渲染成 `&'static [&'static str]`。某属性键是否被该原语接受（`Prim::accepts`）属协商校验，保留在 prof owned 化/装载路径，宏进程只做键 → 变体映射。
+
+#### 12.3.3 Span 写法 → const 构造子（`atom.rs:340`）
+
+`Span` 的 `range(lo, hi)` 非 const fn，视图层只能走四个 const 构造子：
+
+| TOML 写法 | 构造子 | const |
+|---|---|---|
+| 缺省 | `Span::any()` | 是 |
+| `16`（纯数字） | `Span::exact(16)` | 是 |
+| `<=4096` | `Span::at_most(4096)` | 是 |
+| `16..` | `Span::at_least(16)` | 是 |
+| `16..64`（闭区间） | 无 const 构造子 | 否——当前语料未使用；若后续出现，需先给 `Span` 加 const `range` 或在视图层改存 `(lo, hi)` |
+
+实测 70 份 `ops/*.toml`：主维度 span 只有 `<=N`（`bytes`/`m`/`n`/`k`），无闭区间、无纯数字 exact、无 `N..`。
+
+#### 12.3.4 Schedule / Layout 参数解析口径
+
+- **Schedule**（`sch.rs:33`）：`direct` → `Schedule::Direct`；`pipe<N>` → `Pipe { stages: N }`；`ws<p,c>` → `WarpSpecialized { producer: p, consumer: c }`；`pingpong<N>` → `PingPong { groups: N }`。`<...>` 内逗号分隔 u32。当前语料只有 `direct`（25）与 `pipe<2>`（3），无 `ws` / `pingpong`。
+- **LayoutSpec**（`sch.rs:313`）：`row` → `Row`；`col` → `Col`；`swz<b,m,s>` → `Swz { b, m, s }`（u8×3）；`pad(p)` → `Pad(p)`（u32）。当前语料只有 `row`（63 处），无 `col` / `swz` / `pad`。
+
+#### 12.3.5 语料实况分布（2026-11-24 扫描 70 份 TOML）
+
+- `tiers` 档展开：仅 `abs_f32.toml`（`f32`/`f16`）；其余 69 份无档。
+- `extra_needs`：变体段无实值（grep 命中均为注释文字）；`VariantView::extra_needs` 先渲染空切片。
+- `[[phases]]`：无显式阶段；`OpView::phases` 渲染空切片，owned 化按签名派生单阶段。
+- 模板正文（`template`）：本批不进视图；`OpView.template` 由 #46 prof 接线时经既有 `TEMPLATES` 表按名配对（`include_str!` 属编译期 const 数组，不在要拆的 OnceLock 树内）。
+
+
+### 12.7 #45 开工骨架决策（2026-11-24 定：并入 annotation，不开新 crate）
+
+- **宏落点**：不新开 proc-macro crate；prof 语料展开宏并入既有 `crates/annotation`（`llm-annotation`，已是 `proc-macro = true`，且不依赖任何本地 crate，方向无环）。prof 在 `[dependencies]` 引入 annotation；annotation 生成代码用全限定路径 `::llm_prof::decl::{OpView, NeedView, …}`，**不反向依赖 prof**（方向约束 §11.4-3）。
+- **展开路径（用户拍板：annotation 宏直读 TOML，重议 0022）**：宏为 `#[proc_macro]` 函数宏，编译期 `fs::read_to_string` 读 `src/ops/*.toml`（路径锚 `CARGO_MANIFEST_DIR`），用 `toml` 解析后直接展开 `pub const OPS: [OpView; N]` token 流；不产 OUT_DIR `.rs` 中间件、不建树。`toml` 加为 annotation 的 normal 依赖——它只在编译期宏进程内运行，不链接进 prof 运行期二进制，但 `cargo tree -e normal` 会出现 toml/serde 子树，故需在 0022 补一条重议注记区分「编译期宏依赖」与「运行期解析器」。
+- **分层**（照搬 annotation 既有 syntax/decl/render 倒置范式，但本宏是文件目录而非 Rust 属性）：`fs`（锚定路径、扫目录、读 toml/`.k`）/ `resolve`（`base` 递归继承 + 深度合并，纯函数可单测）/ `tiers`（档展开 + `dt` 精度替换 + 模板 C 类型替换，纯函数）/ `model`（toml 表 → 视图字段中间模型，闭集/范围/链单调/字段齐全校验，失败 `compile_error!` 指到文件字段）/ `render`（字符串拼 const 视图字面量，不碰 `proc_macro`，纯文本可断言测试）。文法/解析/render 层脱离 `proc_macro` 可独立单测。
+- **薄 build.rs 壳**：现有 build.rs 的 A 类外壳（签名 marker/`(prim,impl)` 配对、尾块核验、设备镜像外部编译、`cfg(nightly)` 探测、`rerun-if-changed`）保留；B 类文本产物（`declared.rs`/`embedded.rs`/`tables.rs`/`template_list.rs`）随批次 C/D 拆除。继承合并与档展开迁到宏内 `resolve/tiers` 纯函数层。
+- **重编跟踪兜底**：stable 宏无 `tracked_path`，宏内 `fs` 读的 TOML 改动不自动重编；由薄 build.rs 发 `cargo:rerun-if-changed=src/ops` 等路径兜底，模板 `.k` 经 `include_str!` 纳入 cargo 跟踪。
+- **render 路径**：宏不感知 prof 内部模块布局，只传全限定 `::llm_prof::decl::…`；`Set`/枚举等由视图字段类型在 prof 侧解析。
+- **序号**：`OPS: [OpView; N]` 数组下标即编译期序号；另生成按序的 `(&'static str, u16)` 索引表供名字 O(1) 定位，不引 `phf`。
+- **门禁注意**：annotation 新增生产文件受 `file_min_lines = 300` 硬卡，baseline 只豁免 `dsl/expr.rs`；不得往 `min_lines_baseline` 扩列。落点与行数预算（`file_max_lines = 899`，现状 `decl.rs` 581 / `render.rs` 325）：
+  - 中间模型族 + 闭集短名常量 → 既有 `decl.rs`（达标，追加后估 ~700 行，余量充足）。
+  - 视图字面量渲染（`render_ops` 及辅助）→ 既有 `render.rs`（达标，追加后估 ~520 行）。
+  - TOML 解析纯函数（`resolve` 继承合并 / `tiers` 展开 / 表 → model / span·schedule·layout·attrs 解码）→ 独立新文件 `src/ops.rs`，预计 ≥300 行合规；不塞回 `decl.rs`（模型 + 解析合计会顶到 899 硬顶），也不挂 `syntax.rs`（那是 Rust token 文法，与 TOML 解析正交）。
+  - `toml` 依赖与解析层同批加入并被实际使用，避免 `cargo machete` 判 unused dependency。
+
+- **闭环约束（2026-11-24 回退教训）**：annotation 是 lib crate，`pub(crate)` 项无生产调用点即触发 `dead_code`，`clippy -D warnings` 下变红。因此 **宏入口、fs/resolve 解析、model 构造、render 必须同批落地闭环**，不能先落半截 render/model 等后续接入；空壳与未构造结构同样告警。`OpModel`/`VariantModel` 含 `f64`（`mma_share`），只 derive `PartialEq` 不 derive `Eq`。
+- **落地顺序**：一批内先通 `fs`（锚 `CARGO_MANIFEST_DIR` 扫 `ops/*.toml`、读 `.k`）→ `resolve`（`base` 递归继承 + 深度合并）→ `model`（toml 值 → 中间模型，闭集/范围/链单调校验）→ `render`（拼 const 视图字面量）→ `#[proc_macro]` 入口把模型接进 token 流；单测覆盖单件 model→render 文本往返与配平。`tiers` 档展开作为紧随的第二刀。
 
 ### 12.4 批次（每批收尾跑一次全门禁）
 
@@ -324,6 +395,7 @@ Rust 官方与微软训练材料的一致口径：
   - 阶段：视图 `phases` 为空时按签名派生单阶段（`buf_names(false/true)`）；非空时逐条校验读写槽位落在签名缓冲形参内（`check_phase_slots`，与 `ingest::slot_names` 同口径，错误走 `decl::field`）。
 - **命名坑**：转换方法定名 `into_owned`，不用 `to_owned`——后者命中 `ToOwned` trait 保留名，迭代借用项会解析成克隆而非 owned 转换。
 - **实测**：`cargo check -p llm-prof`、`clippy -p llm-prof`（零告警）、`cargo test -p llm-prof`（56 单测 + 3 doctest 全绿）、`check --workspace --all-targets` 全绿；旧 `Table → OpDecl::parse` 路径未动。
+- **门禁处置**：`into_decl` 初版 Ccn=6 超 `ccn_max=5`，按口径（`?`/`if`/`match`/`&&/||` 各 +1，闭包内条件归属外层）把阶段构造拆成 `declare_phases`（空视图派生单阶段）+ `view_phase`（单阶段槽位校验）两层辅助，父函数条件数降到阈值内；8 个新公开视图类型按门规进 `ARCHITECTURE.md` 第三节所有权表（不走 `unlisted` baseline）。收尾全门：`fmt --check` 干净、`clippy --workspace --all-targets -D warnings` 零告警、`nextest --workspace` 2844 passed / 17 skipped / 0 failed、doc-test 绿、tools gate 15 过、testkit 架构/所有权 100 过、name-lint 0 命中。
 - **未做（归后续批次）**：`OpView` 尚未接生产链（`declared.rs` OnceLock 树仍在）；闭集序号「名字→序号」O(1) 定位随批次 C 宏展开时由数组下标天然给出，prof 侧不另建索引结构；新公开视图类型的 ownership baseline 登记归批次 F 收尾。
 
 ### 12.5 已知坑

@@ -100,3 +100,19 @@ TOML 的书写形式（键顺序、引号、缩进）。
 `cutile::dirs::Dirs`（三个路径的纯数据）。因此上面「`cutile::settings` 删掉文件层、`Layer::File`、
 `SCHEMA_VER`、文件相对路径基准」这段描述的**位置**已过期，事实（那些东西全部消失、`missing`/`io`
 不再由设置层产生、退出码契约不变）仍然成立。
+
+## 后续（2026-11-24）：语料解析从 `build.rs` 迁到编译期宏进程，toml 依赖的归类口径
+
+批次 C 把算子语料的展开从 `build.rs → OnceLock<Table> 动态树 → 运行期二次 parse` 改为
+`annotation` 的 proc-macro 在编译期直读 `ops/*.toml`、展开成 `const` 强类型 `OpView` 视图。
+由此带来一条依赖归类的边界，本条补记以免与「normal 树无 toml」的旧后果混淆：
+
+- **运行期链接进产物**：仍然**没有** toml / serde。展开产物是 `const [OpView; N]`，prof 二进制
+  不携带 TOML 解析器；`OpView::into_decl` 只做视图 → owned 类型的字段拷贝与模板签名解析，不解析 TOML。
+- **编译期宏进程**：`toml` 作为 `llm-annotation` 的 normal 依赖，只在编译器进程跑 proc-macro 时
+  被使用，不链接进消费方二进制。`cargo tree -e normal` 此时会出现 toml / serde 子树——这是
+  **编译期生成器依赖**，与旧 `[build-dependencies]` 同属构建期用途，不违反本条「运行期无解析器」
+  的决策。旧后果里「normal 无 toml」的口径应理解为「运行期第三方依赖为 0」，而非「构建期生成器
+  不能依赖 toml」。
+- 解析用的闭集校验、范围/档展开、继承合并都在宏进程的纯函数层完成并可单测；宏产物里不残留
+  `Table` / `Value` 动态树。

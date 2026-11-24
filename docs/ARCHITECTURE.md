@@ -94,6 +94,7 @@ testkit    → （叶    +dev: autograd, cutile, nn, prof, tensor, tools, train,
 | `Format` / `Element` / `Conf` | `nn` | 打包格式的派生配置（`Conf` 只收骨架运行期要的 `cpb` / `zero` / `offsets`）与样本缓冲元素闭集 |
 | `Template` / `Segment` / `Arg` / `LayoutSpec` / `Schedule` / `Masking` | `prof` | 声明侧的三张闭集：模板词法、布局构造子与调度模板；`cutile` 只消费，不持第二份。`Arg` 是 `@原语` 片段的一个参数（位置原样拼入 / 命名 `$key` 占位），随 `Segment` 一起经 `cutile::substitute` 再导出 |
 | `OpDecl` | `prof` | 声明解析结果（名字 + 槽位 + 档位 + 供给）：只由 `src/ops/` 语料解析出来，不认识内核类型 |
+| `OpView` / `AxisView` / `NeedView` / `AttrView` / `GridView` / `ChunkView` / `VariantView` / `PhaseView` | `prof` | 算子声明的编译期 const 只读视图：字段仅 `&'static str` / `&'static [..]` / 闭集枚举 / 标量，由宏展开期填充，运行期一次性 owned 化成 `OpDecl` 及子类型；视图层不持 `String` / `Vec` 堆分配，位集以元素切片存放、owned 化时重建 |
 | `Registration` | `prof` | 注册表 `REGISTRY` 的一行：名字 + 内核类型 + 语义表构造器。行形状与 `Op`/`TEMPLATES` 同一张表，故住声明层；`nn` 只按模板名填表，`cutile` 只消费 |
 | `Phase` / `Seam` / `Fusion` | `prof` | 槽位代数：`compose` 判定生产者能否拼到消费者前面——`Phase` 是一段「读哪些槽位 → 写哪些槽位」，`Seam` 是两侧同类型的一处缝，`Fusion` 是拼接后的整体；只做判定，不碰设备源 |
 | `Scalar` | `nn` | 元素运算超 trait（`Add` / `Sub` / `Mul` / `Div`）：让泛型内核写 `a + b` 而不是逐方法调用 |

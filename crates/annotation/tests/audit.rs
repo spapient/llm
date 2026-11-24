@@ -72,7 +72,7 @@ fn section_keys<'a>(manifest: &'a str, section: &str) -> Vec<&'a str> {
             inside = trimmed == section;
             continue;
         }
-        if !inside {
+        if !inside || trimmed.starts_with('#') {
             continue;
         }
         let Some(key) = trimmed.split('=').next().map(str::trim) else {
@@ -438,12 +438,13 @@ fn code_only_stops_at_end_on_unterminated_forms() {
     assert_eq!(code_only("let raw = r\"###tail"), "let raw = r");
 }
 
-/// 只依赖编译期 Rust AST 工具；过程宏展开后的目标 crate 不承接这些运行期依赖。
+/// 只依赖编译期工具：Rust AST 工具与语料 TOML 解析都只在宏进程跑，展开后的目标 crate
+/// 不承接这些运行期依赖（见 ADR 0022 补记：编译期生成器依赖 ≠ 运行期解析器）。
 #[test]
 fn macro_dependencies_are_compile_time_only() {
     let manifest_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
     let manifest = fs::read_to_string(&manifest_path).expect("manifest 可读");
     let mut dependencies = section_keys(&manifest, "[dependencies]");
     dependencies.sort_unstable();
-    assert_eq!(dependencies, ["proc-macro2", "quote", "syn"]);
+    assert_eq!(dependencies, ["proc-macro2", "quote", "syn", "toml"]);
 }

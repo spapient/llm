@@ -679,26 +679,7 @@ impl OpView {
     /// 模板入口 / 形参不在闭集，或显式阶段引用了签名之外的槽位时返回带字段路径的说明。
     pub fn into_decl(self) -> diagnostic::Result<OpDecl> {
         let signature = crate::sig::Signature::parse(self.name, self.template)?;
-        let phases = if self.phases.is_empty() {
-            vec![Phase {
-                name: self.name.to_string(),
-                reads: signature.buf_names(false),
-                writes: signature.buf_names(true),
-            }]
-        } else {
-            self.phases
-                .iter()
-                .map(|phase| {
-                    let reads = check_phase_slots(self.name, "reads", phase.reads, &signature)?;
-                    let writes = check_phase_slots(self.name, "writes", phase.writes, &signature)?;
-                    Ok(Phase {
-                        name: phase.name.to_string(),
-                        reads,
-                        writes,
-                    })
-                })
-                .collect::<diagnostic::Result<Vec<_>>>()?
-        };
+        let phases = declare_phases(self.name, self.phases, &signature)?;
         Ok(OpDecl {
             name: self.name.to_string(),
             skeleton: self.skeleton,
@@ -723,6 +704,40 @@ impl OpView {
             phases,
         })
     }
+}
+
+/// 阶段：空视图按签名派生单阶段；非空逐条转 owned 并校验槽位落在签名形参内。
+fn declare_phases(
+    op: &str,
+    views: &[PhaseView],
+    signature: &crate::sig::Signature,
+) -> diagnostic::Result<Vec<Phase>> {
+    if views.is_empty() {
+        return Ok(vec![Phase {
+            name: op.to_string(),
+            reads: signature.buf_names(false),
+            writes: signature.buf_names(true),
+        }]);
+    }
+    views
+        .iter()
+        .map(|phase| view_phase(op, phase, signature))
+        .collect()
+}
+
+/// 一条显式阶段：校验读写槽位后转 owned。
+fn view_phase(
+    op: &str,
+    phase: &PhaseView,
+    signature: &crate::sig::Signature,
+) -> diagnostic::Result<Phase> {
+    let reads = check_phase_slots(op, "reads", phase.reads, signature)?;
+    let writes = check_phase_slots(op, "writes", phase.writes, signature)?;
+    Ok(Phase {
+        name: phase.name.to_string(),
+        reads,
+        writes,
+    })
 }
 
 /// 校验阶段读写槽位都落在签名缓冲形参内，返回 owned 名字表（与 `ingest::slot_names` 同口径）。

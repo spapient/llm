@@ -1,6 +1,9 @@
 //! 渲染：把一份声明拼成源码。只做字符串拼接、不维护状态、不接触 `proc_macro`，因此可以用纯文本断言测试。
 
-use crate::decl::{DTYPES, Declaration, ModelDecl, ParallelDecl, RuntimeDecl, SKELETONS};
+use crate::decl::{
+    AttrModel, AxisModel, ChunkModel, DTYPES, Declaration, GridModel, ModelDecl, NeedModel,
+    OpModel, ParallelDecl, PhaseModel, RuntimeDecl, SKELETONS, SpanModel, VariantModel,
+};
 use std::fmt::Write;
 
 /// 三块输出的预留容量：按最长的真实声明留足余量，于是"渲染一次 = 一次分配"真的成立。
@@ -323,3 +326,475 @@ fn priority_variant(short: &str) -> &str {
 
 /// 并行策略访问器的预留容量。
 pub(crate) const PARALLEL_ROOM: usize = 768;
+
+/// 整条算子表的预留容量：按最宽一份视图留足余量，渲染一次不二次分配。
+pub(crate) const OPS_ROOM: usize = 8192;
+
+/// 把一批算子模型渲染成 `pub const OPS: [OpView; N] = [...]` 字面量流。
+///
+/// 任一闭集短名无法映射到 prof 变体时，整份生成物退一条 `compile_error!`（不产出指向
+/// 不存在变体的代码）；与 [`render_model`] 的闭集兜底同一口径。
+pub(crate) fn render_ops(ops: &[OpModel]) -> String {
+    match first_error(ops) {
+        Some(message) => format!("compile_error!({:?});\n", message),
+        None => render_ops_unchecked(ops),
+    }
+}
+
+/// 遍历整批，返回第一条无法映射的闭集 / 非法写法文案；全部可映射时为 `None`。
+fn first_error(ops: &[OpModel]) -> Option<String> {
+    ops.iter().find_map(|op| {
+        if skeleton_variant(&op.skeleton).is_none() {
+            return Some(op_error("骨架", &op.skeleton));
+        }
+        needs_error(&op.needs)
+            .err()
+            .or_else(|| layouts_error(&op.layouts))
+            .or_else(|| variants_error(&op.variants))
+    })
+}
+
+/// 需求段逐条校验：原语 / 类型 / 存储 / 属性键 / 区间写法都要可映射。
+fn needs_error(needs: &[NeedModel]) -> Result<(), String> {
+    for need in needs {
+        check_need(need)?;
+    }
+    Ok(())
+}
+
+/// 单条需求的全部闭集与区间校验。
+fn check_need(need: &NeedModel) -> Result<(), String> {
+    if prim_variant(&need.prim).is_none() {
+        return Err(op_error("原语", &need.prim));
+    }
+    space_error(&need.space)?;
+    dtype_error(&need.dt)?;
+    attrs_error(&need.attrs)?;
+    span_error(&need.extent)?;
+    span_error(&need.n)?;
+    span_error(&need.k)
+}
+
+/// 原语未映射时返回带原语名的错误；已映射为 `Ok(())`。
+fn prim_variant(prim: &str) -> Option<&'static str> {
+    match prim {
+        "mma" => Some("Mma"),
+        "dot" => Some("Dot"),
+        "load" => Some("Load"),
+        "load_async" => Some("LoadAsync"),
+        "commit_wait" => Some("CommitWait"),
+        "store" => Some("Store"),
+        "bar" => Some("Bar"),
+        "shuffle" => Some("Shuffle"),
+        "broadcast" => Some("Broadcast"),
+        "reduce" => Some("Reduce"),
+        "scan" => Some("Scan"),
+        "exp2" => Some("Exp2"),
+        "rcp" => Some("Rcp"),
+        "cvt" => Some("Cvt"),
+        "quant" => Some("Quant"),
+        "atomic" => Some("Atomic"),
+        _ => None,
+    }
+}
+
+/// 骨架短名 → `Skeleton` 变体名。
+fn skeleton_variant(short: &str) -> Option<&'static str> {
+    match short {
+        "elementwise" => Some("Elementwise"),
+        "reduce" => Some("Reduce"),
+        "gemm" => Some("Gemm"),
+        "scan" => Some("Scan"),
+        _ => None,
+    }
+}
+
+/// 存储短名 → `Space` 变体名。
+fn space_variant(short: &str) -> Option<&'static str> {
+    match short {
+        "GM" => Some("Gm"),
+        "FAST" => Some("Fast"),
+        "REG" => Some("Reg"),
+        _ => None,
+    }
+}
+
+/// 类型短名 → `DType` 变体名（覆盖语料出现的定点 / 浮点档）。
+fn dtype_variant(short: &str) -> Option<&'static str> {
+    match short {
+        "f32" => Some("F32"),
+        "f16" => Some("F16"),
+        "bf16" => Some("BF16"),
+        "i2" => Some("I2"),
+        "i4" => Some("I4"),
+        "i8" => Some("I8"),
+        "i32" => Some("I32"),
+        _ => None,
+    }
+}
+
+/// 属性键短名 → `AttrKey` 变体名。
+fn attr_key_variant(short: &str) -> Option<&'static str> {
+    match short {
+        "op" => Some("Op"),
+        "axis" => Some("Axis"),
+        "kind" => Some("Kind"),
+        "sat" => Some("Sat"),
+        "accuracy" => Some("Accuracy"),
+        "group" => Some("Group"),
+        "lanes" => Some("Lanes"),
+        "src" => Some("Src"),
+        "dst" => Some("Dst"),
+        "stages" => Some("Stages"),
+        "exec" => Some("Exec"),
+        "align" => Some("Align"),
+        _ => None,
+    }
+}
+
+/// 存储列表逐项校验。
+fn space_error(space: &[String]) -> Result<(), String> {
+    space
+        .iter()
+        .find_map(|name| space_variant(name).map_or_else(|| Some(op_error("存储", name)), |_| None))
+        .map_or(Ok(()), Err)
+}
+
+/// 类型列表逐项校验。
+fn dtype_error(dt: &[String]) -> Result<(), String> {
+    dt.iter()
+        .find_map(|name| dtype_variant(name).map_or_else(|| Some(op_error("类型", name)), |_| None))
+        .map_or(Ok(()), Err)
+}
+
+/// 属性段逐条校验键。
+fn attrs_error(attrs: &[AttrModel]) -> Result<(), String> {
+    attrs
+        .iter()
+        .find_map(|attr| {
+            attr_key_variant(&attr.key)
+                .map_or_else(|| Some(op_error("属性键", &attr.key)), |_| None)
+        })
+        .map_or(Ok(()), Err)
+}
+
+/// 区间写法校验：闭区间暂无可 const 构造子。
+fn span_error(span: &SpanModel) -> Result<(), String> {
+    match span {
+        SpanModel::Range(..) => Err(op_error("区间", "闭区间 `lo..hi` 暂无 const 构造子")),
+        _ => Ok(()),
+    }
+}
+
+/// 布局列表逐项校验写法可解析。
+fn layouts_error(layouts: &[(String, String)]) -> Option<String> {
+    layouts.iter().find_map(|(_, spec)| layout_expr(spec).err())
+}
+
+/// 变体段逐条校验调度写法可解析。
+fn variants_error(variants: &[VariantModel]) -> Option<String> {
+    variants
+        .iter()
+        .find_map(|variant| schedule_expr(&variant.schedule).err())
+}
+
+/// 闭集未映射的统一错误文案。
+fn op_error(kind: &str, value: &str) -> String {
+    format!("注解层内部错误：{kind} `{value}` 不在 prof 闭集内")
+}
+
+/// 校验通过后的表渲染。
+fn render_ops_unchecked(ops: &[OpModel]) -> String {
+    let mut code = String::with_capacity(OPS_ROOM);
+    let _ = writeln!(
+        code,
+        "pub const OPS: [::llm_prof::decl::OpView; {}] = [",
+        ops.len()
+    );
+    for op in ops {
+        render_op(&mut code, op);
+    }
+    code.push_str("];\n");
+    code
+}
+
+/// 一条算子的 `OpView` 字面量。
+fn render_op(code: &mut String, op: &OpModel) {
+    code.push_str("    ::llm_prof::decl::OpView {\n");
+    field_str(code, "name", &op.name);
+    skeleton_field(code, &op.skeleton);
+    field_str(code, "summary", &op.summary);
+    render_axes(code, &op.axes);
+    render_needs(code, &op.needs);
+    render_layouts(code, &op.layouts);
+    render_grid(code, &op.grid);
+    render_chunk(code, &op.chunk);
+    render_consts(code, &op.consts);
+    render_variants(code, &op.variants);
+    field_str(code, "template", &op.template);
+    render_phases(code, &op.phases);
+    code.push_str("    },\n");
+}
+
+/// 字符串字段：`name: "..",`。
+fn field_str(code: &mut String, field: &str, value: &str) {
+    code.push_str(&format!("        {field}: "));
+    literal(code, value);
+    code.push_str(",\n");
+}
+
+/// 骨架字段：拼 `Skeleton::Variant`。
+fn skeleton_field(code: &mut String, skeleton: &str) {
+    let variant = skeleton_variant(skeleton).expect("闭集已在 first_error 校验");
+    code.push_str(&format!(
+        "        skeleton: ::llm_prof::decl::Skeleton::{variant},\n"
+    ));
+}
+
+/// 轴列表：`axes: &[AxisView { .. }, ..],`。
+fn render_axes(code: &mut String, axes: &[AxisModel]) {
+    code.push_str("        axes: &[");
+    comma(code, axes.iter(), |code, axis| {
+        code.push_str("::llm_prof::decl::AxisView { name: ");
+        literal(code, &axis.name);
+        code.push_str(", values: &[");
+        comma(code, axis.values.iter(), |code, value| {
+            let _ = write!(code, "{value}u32");
+        });
+        code.push_str("] }");
+    });
+    code.push_str("],\n");
+}
+
+/// 需求列表。
+fn render_needs(code: &mut String, needs: &[NeedModel]) {
+    code.push_str("        needs: &[");
+    comma(code, needs.iter(), render_need);
+    code.push_str("],\n");
+}
+
+/// 单条需求的 `NeedView` 字面量。
+fn render_need(code: &mut String, need: &NeedModel) {
+    let prim = prim_variant(&need.prim).expect("闭集已校验");
+    code.push_str("::llm_prof::decl::NeedView { prim: ::llm_prof::atom::Prim::");
+    code.push_str(prim);
+    code.push_str(", extent: ");
+    span_expr(code, &need.extent);
+    code.push_str(", n: ");
+    span_expr(code, &need.n);
+    code.push_str(", k: ");
+    span_expr(code, &need.k);
+    code.push_str(", dt: &[");
+    comma(code, need.dt.iter(), |code, name| {
+        let variant = dtype_variant(name).expect("闭集已校验");
+        let _ = write!(code, "::llm_prof::atom::DType::{variant}");
+    });
+    code.push_str("], space: &[");
+    comma(code, need.space.iter(), |code, name| {
+        let variant = space_variant(name).expect("闭集已校验");
+        let _ = write!(code, "::llm_prof::atom::Space::{variant}");
+    });
+    code.push_str("], attrs: &[");
+    comma(code, need.attrs.iter(), render_attr);
+    code.push_str("] }");
+}
+
+/// 一条属性的 `AttrView` 字面量。
+fn render_attr(code: &mut String, attr: &AttrModel) {
+    let key = attr_key_variant(&attr.key).expect("闭集已校验");
+    code.push_str("::llm_prof::decl::AttrView { key: ::llm_prof::atom::AttrKey::");
+    code.push_str(key);
+    code.push_str(", values: &[");
+    comma(code, attr.values.iter(), |code, value| literal(code, value));
+    code.push_str("] }");
+}
+
+/// 区间表达式：选 const 构造子。
+fn span_expr(code: &mut String, span: &SpanModel) {
+    match span {
+        SpanModel::Any => code.push_str("::llm_prof::atom::Span::any()"),
+        SpanModel::Exact(value) => {
+            let _ = write!(code, "::llm_prof::atom::Span::exact({value})");
+        }
+        SpanModel::AtMost(value) => {
+            let _ = write!(code, "::llm_prof::atom::Span::at_most({value})");
+        }
+        SpanModel::AtLeast(value) => {
+            let _ = write!(code, "::llm_prof::atom::Span::at_least({value})");
+        }
+        SpanModel::Range(..) => code.push_str("::llm_prof::atom::Span::any()"),
+    }
+}
+
+/// 布局列表：`layouts: &[("a", Row), ..],`。
+fn render_layouts(code: &mut String, layouts: &[(String, String)]) {
+    code.push_str("        layouts: &[");
+    comma(code, layouts.iter(), |code, (slot, spec)| {
+        literal(code, slot);
+        code.push_str(", ");
+        code.push_str(&layout_expr(spec).expect("写法已校验"));
+    });
+    code.push_str("],\n");
+}
+
+/// 网格映射；缺省为 `None`。
+fn render_grid(code: &mut String, grid: &Option<GridModel>) {
+    code.push_str("        grid: ");
+    match grid {
+        Some(grid) => {
+            code.push_str("Some(::llm_prof::decl::GridView { dims: &[");
+            comma(code, grid.dims.iter(), |code, (thread, scalar)| {
+                literal(code, thread);
+                code.push_str(", ");
+                literal(code, scalar);
+            });
+            code.push_str("] }),");
+        }
+        None => code.push_str("None,"),
+    }
+    code.push('\n');
+}
+
+/// 分块并行；缺省为 `None`。
+fn render_chunk(code: &mut String, chunk: &Option<ChunkModel>) {
+    code.push_str("        chunk: ");
+    match chunk {
+        Some(chunk) => {
+            let _ = write!(
+                code,
+                "Some(::llm_prof::decl::ChunkView {{ size: {} }}),",
+                chunk.size
+            );
+        }
+        None => code.push_str("None,"),
+    }
+    code.push('\n');
+}
+
+/// 模板常量列表。
+fn render_consts(code: &mut String, consts: &[(String, String)]) {
+    code.push_str("        consts: &[");
+    comma(code, consts.iter(), |code, (key, value)| {
+        literal(code, key);
+        code.push_str(", ");
+        literal(code, value);
+    });
+    code.push_str("],\n");
+}
+
+/// 变体链。
+fn render_variants(code: &mut String, variants: &[VariantModel]) {
+    code.push_str("        variants: &[");
+    comma(code, variants.iter(), render_variant);
+    code.push_str("],\n");
+}
+
+/// 单条变体的 `VariantView` 字面量。
+fn render_variant(code: &mut String, variant: &VariantModel) {
+    code.push_str("::llm_prof::decl::VariantView { name: ");
+    literal(code, &variant.name);
+    let _ = write!(code, ", order: {}u32, schedule: ", variant.order);
+    code.push_str(&schedule_expr(&variant.schedule).expect("写法已校验"));
+    let _ = write!(
+        code,
+        ", mma_share: {}, extra_needs: &[] }}",
+        variant.mma_share
+    );
+}
+
+/// 阶段列表。
+fn render_phases(code: &mut String, phases: &[PhaseModel]) {
+    code.push_str("        phases: &[");
+    comma(code, phases.iter(), |code, phase| {
+        code.push_str("::llm_prof::decl::PhaseView { name: ");
+        literal(code, &phase.name);
+        code.push_str(", reads: &[");
+        comma(code, phase.reads.iter(), |code, value| literal(code, value));
+        code.push_str("], writes: &[");
+        comma(code, phase.writes.iter(), |code, value| {
+            literal(code, value)
+        });
+        code.push_str("] }");
+    });
+    code.push_str("],\n");
+}
+
+/// 调度写法 → `Schedule` 构造表达式；写法不在闭集内时返回错误文案。
+fn schedule_expr(schedule: &str) -> Result<String, String> {
+    let text = schedule.trim();
+    if text == "direct" {
+        return Ok("::llm_prof::sch::Schedule::Direct".to_string());
+    }
+    let Some((name, args)) = split_args(text) else {
+        return Err(op_error("调度", schedule));
+    };
+    match (name, split_numbers(&args)?.as_slice()) {
+        ("pipe", [stages]) => Ok(format!(
+            "::llm_prof::sch::Schedule::Pipe {{ stages: {stages} }}"
+        )),
+        ("ws", [producer, consumer]) => Ok(format!(
+            "::llm_prof::sch::Schedule::WarpSpecialized {{ producer: {producer}, consumer: {consumer} }}"
+        )),
+        ("pingpong", [groups]) => Ok(format!(
+            "::llm_prof::sch::Schedule::PingPong {{ groups: {groups} }}"
+        )),
+        _ => Err(op_error("调度", schedule)),
+    }
+}
+
+/// 布局写法 → `LayoutSpec` 构造表达式；写法不在闭集内时返回错误文案。
+fn layout_expr(text: &str) -> Result<String, String> {
+    match text.trim() {
+        "row" => Ok("::llm_prof::sch::layout::LayoutSpec::Row".to_string()),
+        "col" => Ok("::llm_prof::sch::layout::LayoutSpec::Col".to_string()),
+        other => {
+            if let Some(rest) = other.strip_prefix("swz<") {
+                let [b, m, s] = split_widths(
+                    rest.strip_suffix('>')
+                        .ok_or_else(|| op_error("布局", text))?,
+                )?;
+                return Ok(format!(
+                    "::llm_prof::sch::layout::LayoutSpec::Swz {{ b: {b}, m: {m}, s: {s} }}"
+                ));
+            }
+            if let Some(rest) = other.strip_prefix("pad(") {
+                let pad = rest
+                    .strip_suffix(')')
+                    .ok_or_else(|| op_error("布局", text))?
+                    .trim();
+                let pad: u32 = pad.parse().map_err(|_| op_error("布局", text))?;
+                return Ok(format!("::llm_prof::sch::layout::LayoutSpec::Pad({pad})"));
+            }
+            Err(op_error("布局", text))
+        }
+    }
+}
+
+/// 拆 `name<args>`：返回名字与尖括号内参数串。
+fn split_args(text: &str) -> Option<(&str, String)> {
+    let open = text.find('<')?;
+    let close = text.rfind('>')?;
+    if open >= close {
+        return None;
+    }
+    Some((text[..open].trim(), text[open + 1..close].to_string()))
+}
+
+/// 逗号分隔的无符号整数参数列表。
+fn split_numbers(args: &str) -> Result<Vec<u32>, String> {
+    args.split(',')
+        .map(|part| {
+            part.trim()
+                .parse::<u32>()
+                .map_err(|_| op_error("调度参数", part))
+        })
+        .collect()
+}
+
+/// `swz<b,m,s>` 的三个位宽（u8）。
+fn split_widths(inner: &str) -> Result<[u8; 3], String> {
+    let parts: Vec<&str> = inner.split(',').map(str::trim).collect();
+    let [b, m, s] = parts.try_into().map_err(|_| op_error("布局", inner))?;
+    let width = |value: &str| value.parse::<u8>().map_err(|_| op_error("位宽", value));
+    Ok([width(b)?, width(m)?, width(s)?])
+}
