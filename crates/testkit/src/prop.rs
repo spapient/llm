@@ -228,7 +228,7 @@ pub mod ledger {
     /// 有明确替代覆盖、因而**不该**再写性质测试的成员，按理由归类。
     pub const ABSENT: &[Absence] = &[
         Absence {
-            members: &["cutile", "device"],
+            members: &["cutile"],
             reason: "发射路径：结论要么要真设备（`testkit::gating` 的跳过语义，本机恒定 skip 等于空转），\
                      要么是 PTX 文本形状——而它的真值是实测吞吐，断言文本只会锁死实现。",
         },

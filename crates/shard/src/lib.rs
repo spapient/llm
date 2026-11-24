@@ -143,11 +143,10 @@ pub mod toolchain;
 pub mod verify;
 pub mod witness;
 
-// 设备执行面（回迁自 llm-device）：后端装配、方言 lowering、六平台合同与过渡内核族。
+// 设备执行面（回迁自旧 device crate）：后端装配、方言 lowering、六平台合同与过渡内核族。
 pub mod backends;
 pub mod cuda;
 mod dialect;
 pub mod metal;
-pub mod tiled;
 
 pub use runner::{compile_flags, driver};

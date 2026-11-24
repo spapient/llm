@@ -2,12 +2,12 @@
 //!
 //! **拥有**：`Sequence`、`Scheduler`、`Batch`、`Admission`、`State`，以及页账（[`kv`]）、
 //! 提交与执行（[`exec`]）。
-//! **不拥有**：采样策略（它只决定 `advance` 取哪个 token，不改变状态机）、设备源 lowering 与其余
-//! 厂商后端（`llm-device`）、kernel 编译（`cutile`）、缓冲分配（`storage`）。
-//! **依赖**：`tensor`、`diagnostic`、`storage`。**被依赖**：`llm-device`、`serve`、`benchmarks`、`cli`。
+//! **不拥有**：采样策略（它只决定 `advance` 取哪个 token，不改变状态机）、设备档案与厂商
+//! 后端（`llm-shard` / `llm-prof`）、kernel 编译（`cutile`）、缓冲分配（`storage`）。
+//! **依赖**：`tensor`、`diagnostic`、`storage`。**被依赖**：`serve`、`benchmarks`、`cli`。
 //!
 //! 本 crate 定义执行缝（[`exec::Executor`]），并自带 Metal FFI 实现（`metal` 模块，
-//! ADR 0035 越界岛）；CUDA / 昇腾等其余厂商链与方言、六平台合同仍在 `llm-device`。
+//! ADR 0035 越界岛）；CUDA / 昇腾等其余厂商链与六平台合同仍在 `llm-shard`。
 //!
 //! 页账与提交契约原是两个独立成员（`llm-kv` / `llm-exec`）：它们的生产消费者只有本 crate，
 //! 合并后"谁在借页"与"谁在提交"的不变量在同一处断言，成员与依赖边各少一个。

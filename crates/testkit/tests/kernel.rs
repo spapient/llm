@@ -3,8 +3,8 @@
 //! 调用点（都以 `#[path]` 取用本文件）：
 //!
 //! - `crates/cutile/src/harness.rs`：只测 C 宿主基准封装把样本渲染成数组、把签名拼成调用；
-//! - `crates/device/src/program.rs`：测「声明 → 并行程序」装配，拿同一份签名/样本覆盖可拒绝族；
-//! - `crates/device/tests/schedule.rs`：测 vendor 生产态 lowering 的源文本（`__device__` /
+//! - `crates/shard/src/program.rs`：测「声明 → 并行程序」装配，拿同一份签名/样本覆盖可拒绝族；
+//! - `crates/shard/tests/schedule.rs`：测 vendor 生产态 lowering 的源文本（`__device__` /
 //!   `kernel_main` / `<<<1, 1>>>` 一类判据）。
 //!
 //! 夹具共用不改这两件事：两边测的仍是不同层的产物。取值被下游的文本断言**逐字**依赖
@@ -12,7 +12,7 @@
 //! 改这里的数等于改那些断言。
 //!
 //! 每个条目都带 `#[cfg(test)]`：这是**纯测试夹具**，没有运行时形态。`testkit` 的库体零依赖
-//! （不把被测层拉进依赖表），所以它不能是常驻模块；三条用到它的边（`cutile` 与 `device` 都已
+//! （不把被测层拉进依赖表），所以它不能是常驻模块；两条用到它的边（`cutile` 与 `shard` 都已
 //! 声明 `+dev: testkit`）按 `#[path]` 把它编进各自的测试口径。条目级 `cfg` 让静态门的
 //! 「生产面零 `unwrap`/`expect`」口径直接看不到本文件，而不必在门禁里为它开例外。
 

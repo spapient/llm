@@ -160,101 +160,6 @@ fn metal_lower(
         | Lower::ChunkScan { .. }
         | Lower::ChunkRmsnorm { .. }
         | Lower::ChunkSoftmax { .. } => metal_chunk_lower(kernel, signature, sample, kind),
-        Lower::TiledGemm { .. }
-        | Lower::SimdGroupGemm { .. }
-        | Lower::TensorGemm { .. }
-        | Lower::Int8Gemm { .. }
-        | Lower::TiledAttention { .. }
-        | Lower::FlashAttention { .. }
-        | Lower::WmmaGemm => metal_special(kernel, signature, sample, kind),
-    }
-}
-
-/// 特殊 lowering 家族（分块 / simdgroup GEMM、分块 / flash 注意力、WMMA）：单独一个 match 让 [`metal_lower`] 的
-/// 骨架分派保持在门禁臂数内。
-fn metal_special(
-    kernel: &str,
-    signature: &Signature,
-    sample: &Sample,
-    kind: &Lower,
-) -> Result<Vec<String>> {
-    match kind {
-        Lower::TiledGemm { .. }
-        | Lower::SimdGroupGemm { .. }
-        | Lower::TensorGemm { .. }
-        | Lower::Int8Gemm { .. }
-        | Lower::WmmaGemm => metal_gemm_lower(kernel, signature, sample, kind),
-        Lower::TiledAttention { .. } | Lower::FlashAttention { .. } => {
-            metal_attention_lower(kernel, signature, sample, kind)
-        }
-        _ => Err(Error::new(
-            Code::Internal,
-            "非特殊 lowering 不应进入 metal_special".to_string(),
-        )),
-    }
-}
-
-/// GEMM 家族（共享内存分块 / simdgroup 矩阵指令 / WMMA 张量核）的 Metal 落地。
-fn metal_gemm_lower(
-    kernel: &str,
-    signature: &Signature,
-    sample: &Sample,
-    kind: &Lower,
-) -> Result<Vec<String>> {
-    match kind {
-        Lower::TiledGemm { tile, per_thread } => {
-            crate::tiled::metal_tiled_gemm(kernel, signature, sample, *tile, *per_thread)
-                .map(|s| vec![s])
-        }
-        Lower::SimdGroupGemm {
-            row_frags,
-            col_frags,
-        } => crate::tiled::metal_simdgroup_gemm(kernel, signature, sample, *row_frags, *col_frags)
-            .map(|s| vec![s]),
-        Lower::TensorGemm { geometry } => {
-            crate::tiled::metal_tensor_gemm(kernel, signature, sample, *geometry).map(|s| vec![s])
-        }
-        Lower::Int8Gemm { tile } => {
-            crate::tiled::metal_int8_gemm(kernel, signature, sample, *tile).map(|s| vec![s])
-        }
-        other => Err(gemm_unsupported(other)),
-    }
-}
-
-/// GEMM lowering 不在 Metal 生产态内的错误：WMMA 属未覆盖，其余是调用方走错入口。
-fn gemm_unsupported(kind: &Lower) -> Error {
-    match kind {
-        Lower::WmmaGemm => Error::new(
-            Code::Unsupported,
-            "Metal 生产态 lowering 未覆盖 WMMA 张量核特化".to_string(),
-        ),
-        _ => Error::new(
-            Code::Internal,
-            "非 GEMM lowering 不应进入 metal_gemm_lower".to_string(),
-        ),
-    }
-}
-
-/// 注意力家族（共享内存分块 / flash 在线 softmax）的 Metal 落地。
-fn metal_attention_lower(
-    kernel: &str,
-    signature: &Signature,
-    sample: &Sample,
-    kind: &Lower,
-) -> Result<Vec<String>> {
-    match kind {
-        Lower::TiledAttention { threads } => {
-            crate::tiled::metal_tiled_attention(kernel, signature, sample, *threads)
-                .map(|s| vec![s])
-        }
-        Lower::FlashAttention { threads, block } => {
-            crate::tiled::metal_flash_attention(kernel, signature, sample, *threads, *block)
-                .map(|s| vec![s])
-        }
-        _ => Err(Error::new(
-            Code::Internal,
-            "非注意力 lowering 不应进入 metal_attention_lower".to_string(),
-        )),
     }
 }
 
@@ -283,16 +188,7 @@ fn metal_chunk_lower(
             crate::metal::metal_chunk_softmax(kernel, signature, sample, *chunk)
                 .map(|(max, expsum, map)| vec![max, expsum, map])
         }
-        Lower::Pointwise
-        | Lower::Loop(_)
-        | Lower::QuantizedGemvI4 { .. }
-        | Lower::TiledGemm { .. }
-        | Lower::SimdGroupGemm { .. }
-        | Lower::TensorGemm { .. }
-        | Lower::Int8Gemm { .. }
-        | Lower::TiledAttention { .. }
-        | Lower::FlashAttention { .. }
-        | Lower::WmmaGemm => Err(Error::new(
+        Lower::Pointwise | Lower::Loop(_) | Lower::QuantizedGemvI4 { .. } => Err(Error::new(
             Code::Internal,
             "非分块算子不应进入 Metal 分块 lowering",
         )),

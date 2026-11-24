@@ -1,7 +1,6 @@
 //! Metal 设备边界：手写 FFI，设备、命令队列、共享缓冲、计算管线句柄与 [`MetalExecutor`]。
 //!
-//! 本模块是 `engine::Executor` 缝的 Metal 实现（ADR 0035 唯一 Metal FFI 越界岛）；原住
-//! `llm-device`，随 device crate 删除回迁本层（L6 同层归位，实现与缝同住）。
+//! 本模块是 `engine::Executor` 缝的 Metal 实现（ADR 0035 唯一 Metal FFI 越界岛）；实现与缝同住。
 
 #![allow(unsafe_code)]
 

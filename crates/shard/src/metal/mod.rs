@@ -1,6 +1,6 @@
 //! Metal 后端执行层：host 驱动骨架（`host`）、单段设备源（`device`）、分块段源（`chunk`）、
 //! 多段装配（`stage`）、合成程序（`program`）、运行时编译执行（`runtime`）与见证驱动（`witness`）。
-//! 对外路径仍为 `llm_device::metal::*`；内部 helper 只在 crate 内可见，经本文件聚合重导出。
+//! 对外路径为 `llm-shard::metal::*`；内部 helper 只在 crate 内可见，经本文件聚合重导出。
 
 pub(crate) mod chunk;
 pub(crate) mod device;
@@ -10,7 +10,7 @@ pub(crate) mod runtime;
 pub(crate) mod stage;
 pub(crate) mod witness;
 
-// 对外公开入口（被 `crate::backends` 与外部测试经 `llm_device::metal::*` 引用）。
+// 对外公开入口（被 `crate::backends` 与外部测试经 `llm-shard::metal::*` 引用）。
 pub use device::{metal_grid_kernel, metal_harness, metal_loop_kernel};
 pub use host::{metal_benchmark_driver, metal_dispatch_driver};
 pub use program::{reduce, rmsnorm, scan, softmax};

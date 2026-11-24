@@ -1,6 +1,6 @@
 # device crate 删除与设备内核下沉迁移方案（2026-11-24）
 
-- 状态：**#29（Metal FFI Executor → engine）已落地，check/clippy/fmt/testkit 全绿**；#30/#31/#32 施工中（任务 #30/#31/#32）
+- 状态：**#29（Metal FFI Executor → engine）已闭环**；**#30（A/E/B + 过渡 D → shard）生产面已回迁**；**#31 按 ADR 0028 / L2 边界裁决：整程序 tile kernel 的选 tile / 成文 / 编排 / harness / toolchain 机制留 shard，不拆入 prof vendor**；**#32 `crates/device` 目录已物理删除（git 全量 D），cli path 依赖移除，backward 标量公式权威归 `train/backprop`+`formulas`，设备侧同式反向内核为未启用 POC 缝随退役**；文档 / 基线 / 边界注释回写完成。剩余仅存量棘轮治理（ownership / baseline / complexity）。
 - 触发：`crates/device` 不应再持有设备内核正文；整机删除，职责按层归位到对应设备专属代码
 - 范围：`crates/device` 全部 `src`（7218 行）+ `tests`（3712 行）
 
@@ -76,16 +76,25 @@
 - **测试挂载迁移**：生产文件尾部 `#[cfg(test)] #[path]` 挂载点随迁：`tiled.rs`→`tests/tiled.rs`；`backends/mod.rs`→`tests/backends.rs`、`testkit/tests/kernel.rs`（保留对 testkit 的相对路径）、`tests/program.rs`；`platform.rs`→`tests/platform.rs`。独立 `[[test]]` target `metal_suite.rs`（挂 `metal_executor_harness.rs` + `metal/mod.rs` 及其子模块）与 `schedule.rs` 随生产链迁 shard；`backends_production.rs` 归属施工时核对挂载。shard Cargo.toml 的 `[[test]]` 名单与 autotests=false 口径对齐。
 - **密度下限基线**：下限门 `file_min_lines=300`，多个迁入文件低于阈值（geometry 133 / text 100 / body 115 / stage 96 / witness 67 / metal/device 73 等）；属存量搬迁，需把 `.config/lints/vocabulary.toml` 的 device 下限基线条目连同文件迁到 shard 名下，不得按"新文件"硬卡；#32 删 device 时清掉对应 device 条目。
 - **依赖清单核对**：迁入生产代码外部 use 仅 `cutile / diagnostic / prof / std` + shard 自引用；shard Cargo 已具备 cutile/diagnostic/prof/nn，无需为生产面新增 engine/tensor 依赖（`tens`/`nn`/`testkit` 仅 dev 测试图）。
+- **#30 落地记录（生产面闭环）**：A/E/B 生产族 + 过渡 D 族已复制入 shard 子树并完成路径改写、lib 挂模块；cli `backends::install()` 与 `platform::{…}` 引用切 shard；`testkit/src/boundary.rs` `VENDOR_OWNERS` 双份过渡并列 `["device","shard"]`、UNSAFE_ISLANDS 指向 `engine/src/metal.rs`；密度下限基线 device/shard 双份过渡登记。门禁：workspace `check --all-targets` 绿；shard lib 185 passed / 0 failed、integration 绿；cli 61 passed；tools 密度门 39+15+27+10 绿；`cargo +nightly fmt --check` 0 diff；shard/cli/device/engine clippy 无 error。
+- **测试隔离处置（注册表污染）**：`tests/backends.rs` 见证真机套件的 `ensure_backends()` 会把 Metal/CUDA/昇腾后端注入进程级全局注册表（`device.rs` 的 `OnceLock<Mutex<Vec>>`），与同 lib test 进程内 `bench::unregistered_device_profiles_are_not_reported_as_gpu_benchmarks` 的空表断言互相污染（全量跑时后者拿到已注册后端，单跑通过、全跑失败）。device 旧份在独立 crate 无此冲突；迁入 shard 合进程后暴露。#30 过渡处置：注释掉 `backends/mod.rs:40` 的 `#[path=…/backends.rs]` 挂载，文件保留；`test_imports` 中仅该套件消费的 `MetalBackend`/`Driver`/`ascend_device`/`detect_cce` 别名一并摘除，program.rs/kernel.rs 仍消费的 `fold_of/unsupported/Launch/Lower/Source/Code/cuda/metal/Signature/Sample` 保留。**#31/#32 落独立 `[[test]]` integration target（独立 test binary，注册表进程隔离）后再挂回**；`program.rs`/`kernel.rs`/`platform.rs`/`tiled.rs` 不触注册表，保留挂载。
+- **#30 残留（转 #31/#32 收口）**：`backends_production.rs` 当前为未挂载孤儿文件，#31/#32 随见证套件一并定挂载；独立 integration target `schedule.rs`、`metal_suite.rs` 强耦合跨三批链未迁；ARCHITECTURE.md L5/L6/边表/L141 平台合同归属、ADR 0052/0053/0054/0056 的 device 提及留 #32 收尾回写；cli Cargo.toml L46 `llm-device` 依赖与 `tests/device.rs` 的 D 族引用留 #31/#32。
 
 ### 2.3 D → prof/<vendor>/（批次 #31）
 
 - 语言归位：CUDA/MUSA → `prof/src/nvidia|musa/*.cu`；Metal → `prof/src/metal/*.metal`；Ascend → `prof/src/ascend/*.cpp`。
 - 切分原则（每函数）：纯设备源片段/模板进 prof vendor 目录；取签名/样本/形状校验、整除守卫判定、发射几何、`format!` 装配留 shard（#30）。
-- 通道待核：prof `build.rs`/`buildops.rs`/`buildtables.rs` 现按 `read_dir` 收集 `$0` 占位符片段并编译期展开成 FRAGMENTS/PRIMS/EPILOGUE/DEVICE 表；device 并行内核是 Rust 函数做形状特化的自包含源。落地前先定装载方式（静态源文件嵌入，或在 vendor 目录内建 Rust kernel 模块），并复核不违反 L2 禁项。
+- 通道勘察结论（#31 开工前已核，confirmed）：
+  - prof 现有两条静态语料通道：① 八槽 vendor 原语片段 `src/<vendor>/<prim>.<ext>`（首行 `/* cutile-sign: <prim>/<impl> */`，`$0..$3` 占位，`build.rs:162-198` 收集进 FRAGMENTS/PRIMS/EPILOGUE/DEVICE 表，同构片段逐设备同源）；② 设备无关算子模板 `ops/*.k`（`{{op}}` / `@prim(...)` 槽位，调 vendor 原语）。**整程序 vendor kernel 目前不在任一槽位**。
+  - `prof/src/native/` 是 prof 内唯一 Rust 微内核受控岛（arch 门 / 特性探测 / unsafe 白名单钉死，`native/mod.rs:16-127`）：先例证明 prof 可持 Rust kernel 模块，但边界仅限主机 CPU 微内核与瓦片几何，不收设备 vendor 正文。
+  - L2 禁项（`ARCHITECTURE.md:16`）：契约/档案子域不得出现机制代码（拼接 / 协商 / emit）、设备知识与厂商内核正文；`src/<vendor>/` 是唯一允许原语级同构正文的档案子域。整程序的线程块/网格/寄存器与共享内存特化、工具链探测属设备知识与机制，必须留 shard（L5 执行面）。
+  - D 族待拆清单（shard 现状，2641 行）：`cuda/{chunk,gemm,grid,scan,segments,shared}.rs`、`metal/chunk.rs`、`tiled/{attention,scalar,tensor,geometry,transpose}.rs`。函数已分两类：**可下沉候选**——纯设备源正文 / shim / head / scaffold 文本片段；**必留 shard**——形状校验、签名/样本取值、发射几何（`cuda_grid`/`cuda_params`/`cuda_prelude`/`cuda_wrapper`）、driver 与 Codegen/Driver 装配、`format!` 整程序拼接。
+- **#31 裁决结论（已落地）**：按 ADR 0028 与 L2 边界，prof 档案子域禁持机制代码 / 设备知识 / 厂商内核正文，且整程序 tile kernel（线程块 / 共享内存 / WMMA / matmul2d 编排）不在现有八槽片段或 `ops/*.k` 模板通道内。故选 tile、成文、发射几何、编排、harness、toolchain 探测一律留 shard 执行面；不扩展 `build.rs` 接纳整程序静态源、也不强行把整程序拆进八槽。原 D 族中不可承接的整程序正文（`cuda/gemm.rs` WMMA、`tiled/{attention,scalar,tensor,geometry,transpose}.rs` 与 `tiled.rs`）已从工作树退役；存活的 host 骨架 / 分配守卫 / 计时循环 / 缓冲 / 单次派发 Driver / 发射回读 / 多段脚手架 / 块级派发 / 主机折叠 / 段生成 / host 串联仍住 shard（`cuda/{shared,segments,grid,chunk,scan}.rs`、`metal/{host,program,runtime,stage,witness,chunk,device}.rs`）。本机仅 Metal 链路可运行，CUDA/Ascend/MUSA 只能保证编译与静态对拍。
 
 ### 2.4 F → nn/train（批次 #32）
 
 - `backward.rs` 逐点反向核契约：标量反向公式权威在 `train`，设备同式执行体随归属层定；先挂 nn 反向通道，与 `autograd` 图编排解耦。
+- **#32 落地记录**：标量反向公式权威实现已在 `train/src/backprop.rs` + `formulas.rs`（`Entry { op, formula }`，`FORMULAS[40]`，按逆拓扑回传梯度），梯度图编排归 `autograd`。旧 `device/backward.rs` 的 `GradientEntry` + `POINTWISE` + `lookup` + `source(metal_kernel/cuda_kernel)` 是设备侧同式反向内核源生成，核查全仓后确认仅被 device 自身真机测试引用、无生产路径调用（未启用 POC 缝），随 `crates/device` 目录删除一并退役，不另落承接 crate；`GradientEntry` 不进架构所有权表。
 
 ## 3. 同步清单（批次 #32 收尾前逐项落地）
 

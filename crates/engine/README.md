@@ -16,7 +16,7 @@ contract. One file per concept, no subdirectories.
 | `exec` | what does a submission *mean*? (`Stream` / `Graph` / `Node` / `Launch` / `Operand`) |
 | `cpu` | how does a graph run in-process? (`LocalExecutor`, `Program`, `Bindings`) |
 
-Device sources, vendor chains and platform eligibility live in `llm-device`; `engine` only defines
+Device sources, vendor chains and platform eligibility live in `llm-shard`; `engine` only defines
 the seam (`exec::Executor`) that it fills.
 
 ## Guarantees
@@ -39,7 +39,7 @@ the seam (`exec::Executor`) that it fills.
 
 ## Where the numbers come from
 
-Launch geometry and vendor source text are `llm-device`'s. Two `#[ignore]` probes live here and both
+Launch geometry and vendor source text are `llm-shard`'s. Two `#[ignore]` probes live here and both
 report measured quantities rather than verdicts — the verdict belongs to `tool::card`:
 
 - `E12` page access (`tests/kv.rs`) — random-access recall and slot-lookup cost, which stays flat as

@@ -374,7 +374,6 @@ fn the_first_layer_computes_the_hand_arithmetic_on_its_own_bytes() {
     assert_eq!(executed.max_rel_err, 0.0, "同一份舍入顺序应当逐位相等");
 }
 
-// 子模块名与 `llm-device` 的 extern 名同为 `device`：本模块内指设备 crate 时必须写
-// `::device::`，裸 `device::` 会落到这个测试子模块上。
+// 测试子模块名同为 `device`：引用设备 crate 时必须写 `::shard::...`，裸 `device::` 会落到本子模块上。
 #[path = "device.rs"]
 mod device;

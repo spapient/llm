@@ -17,7 +17,7 @@
 | L3 内核 | `cutile` | 纯机制：协商 → 拼接 → emit → 缓存指纹，一行也不执行。只产设备源与指纹，换掉工具链不影响它；执行侧（工具链探测、编译、验见证、测速）随原 `optim` 并入 `shard`，因为那部分要碰编译器与设备，换掉执行方式不该动框架 | 设备厂商特判、运行时依赖 |
 | L4 运行时 | `tensor`、`storage`、`tokenizer` | 张量元数据、布局搬运、文本边界、检查点字节格式（`snapshot` 折进 `storage`：`Snapshot<Manifest>` 泛型，字节只写相对上一条的差 + CRC-32 尾部，不认识训练循环） | 模型语义、调度策略 |
 | L5 模型与训练 | `weights`、`autograd`、`nn`、`algorithm`、`shard` | 权重结构与自有 `.u` 容器、外部权重格式只读适配（torch `.bin` 的 ZIP+pickle 栈机、GGUF、JSON，只吐四要素不判语义）、反向图与显存计划、层定义与内核族（`nn` 同时拥有内核装配、神经算子与唯一注册表 `REGISTRY`——注册表必须持有内核类型才能装进语义表，故它与内核同住）、架构变体的参考语义（不产出 `ContractSpec`）、切分拓扑与集合通信、以及原 `optim` 的编译执行面 | 进程 / 服务语义 |
-| L6 调度与服务 | `train`、`engine`、`device`、`serve` | 训练样本与循环、检查点事实集、连续批与 KV 页账、提交与执行体、设备源 lowering 与厂商后端（`device::backends` / `device::metal::host` / `device::metal::fold` / `device::cuda` / `device::dialect` / `device::platform`，实现 `cutile` 的 `Backend` 缝与 `engine` 的 `Executor` 缝；`engine::metal` 是唯一 `unsafe` 岛（[ADR 0035](adr/0035-unsafe-ffi-boundary.md)））、端点契约与线格式、CPU 模型宿主 | 直接调用 `cutile` 生成 kernel；执行任何业务 |
+| L6 调度与服务 | `train`、`engine`、`serve` | 训练样本与循环、检查点事实集、连续批与 KV 页账、提交与执行体、端点契约与线格式、CPU 模型宿主；设备源 lowering 与厂商后端归 L5 `shard`（`shard::backends` / `shard::metal::host` / `shard::cuda` / `shard::dialect` / `shard::platform`，实现 `cutile` 的 `Backend` 缝与 `engine` 的 `Executor` 缝；`engine::metal` 是唯一 `unsafe` 岛（[ADR 0035](adr/0035-unsafe-ffi-boundary.md)）） | 直接调用 `cutile` 生成 kernel；执行任何业务 |
 | L7 入口 | `cli`（bin：`llm` 与 `cutile`） | 组合根：命令行文法、配置解析、各层装配、取值解析与人可读排版；编排入口不定义新类型 | 编排入口新增领域类型；在本层复制内核机制 |
 
 `annotation`（编译期注解）、`fuzz`（模糊测试契约）、`benchmarks`（集中测量容器）与 `testkit`（测试夹具与门禁）是**工具成员**：没有运行时层级，依赖边不参与方向判定。
@@ -42,7 +42,7 @@
 
 **合并判据是「同构」，不是「消费者数量」。** 一个成员只有一条入边时，它通常是边界而不是肥肉：`storage` 独自持有全仓唯一的 `unsafe` 岛（`tensor` 是 `deny(unsafe_code)` 且有 11 个消费者），`algorithm` 刻意不产 `ContractSpec`（`nn` 专产），`shard` 坐 L5 而 `train` 坐 L6。可合并的硬信号只有一个——两个成员的 `lib.rs` / `build.rs` 除专名外**逐字相同**：六台设备 crate 并入 `prof`（原 `frag`）时按这条判据删掉 512 行、补回 55 行，净省 457 行。反面的账同样要算：一次合并能省的至多是该 crate 的 `Cargo.toml`（全仓 1060 行 / 33 个，约 32 行）加一段头注释，指望靠合并兑现「代码大量减少」是算错账。裁决过程与测量数字见 [lld.md](lld.md) v3.0.90。
 
-允许的边（当前全量，共 125 条，含 56 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benchmarks` / `testkit` 的边不参与运行时方向判定）：
+允许的边（当前全量，共 116 条，含 53 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benchmarks` / `testkit` 的边不参与运行时方向判定）：
 
 ```
 diagnostic → （叶：错误类型 + `toml`，被大量成员消费；运行时出边为零；`+dev` 只登记夹具）
@@ -61,9 +61,8 @@ algorithm  → diagnostic, nn    +dev: prof, testkit（架构变体的参考语�
 shard      → cutile, diagnostic, nn, prof    +dev: testkit（切分拓扑、集合通信与原 `optim` 的编译执行面）
 train      → autograd, diagnostic, nn, prof, shard, storage, tensor, weights    +dev: annotation, testkit
 engine     → diagnostic, storage, tensor    +dev: testkit
-device     → cutile, diagnostic, engine, prof, shard    +dev: nn, tensor, testkit（设备源 lowering 与厂商后端（`engine::metal` 是唯一 unsafe 岛）；`nn` 只在 dev 图里供对拍参考核与注册表，生产面不认识算子层）
 serve      → diagnostic, engine, nn, train, tensor, tokenizer, weights, wire    +dev: testkit（形状积只经 `tensor::product` 的饱和乘法：回绕出的偏小数会骗过权重长度核对）
-cli        → cutile, device, diagnostic, engine, nn, prof, serve, shard, tensor, tokenizer, train, weights    +dev: storage（L7 组合根：只做命令分派与各层装配，不定义新类型）
+cli        → cutile, diagnostic, engine, nn, prof, serve, shard, tensor, tokenizer, train, weights    +dev: storage（L7 组合根：只做命令分派与各层装配，不定义新类型）
 annotation → （叶：工具边，`#[model]` 注解，不参与方向判定）
 fuzz       → diagnostic    +dev: cli, cutile, serve, storage, tensor, testkit, tools, train, weights, wire（工具成员；`+dev` 是 `src/drivers.rs` 里的驱动对象与 `registry()` 登记表，合法种子经 `#[path]` 编入 `src/seeds.rs`，`src/fuzz_*.rs` 只剩一行入口）
 benchmarks → （叶    +dev: autograd, cutile, engine, nn, prof, serve, storage, tensor, testkit, tokenizer, tools, train, weights, wire（工具成员：只声明被测对象，测量配置归 criterion）
@@ -137,8 +136,7 @@ testkit    → （叶    +dev: autograd, cutile, nn, prof, tensor, tools, train,
 | `Budget` / `Candidate` / `Phase` / `Verdict` | `engine`（`ifb` 模块） | 一次迭代的可行域与相位：`pack` 判"这一轮塞得下几行"，与 `admit` 判"这辈子跑不跑得完"分开；相位是序列自己的事实，不是调用方贴的标签。唯一消费者是 `serve::Completion` 的批调度：`round` 先把本层一次提交的粒度收进预算、再把 `Packed` 的行原样下发，于是"这一轮算几行"只有一个来源（打包给配额、`chunk` 给块尾，取小的那个） |
 | `Executor` / `Trace` / `Program` / `Bindings` / `Buf` / `View` / `ViewMut` / `CpuExecutor` | `engine` | CPU 执行体（[ADR 0051](adr/0051-execution-backend-base.md)）：`Program` 按名字登记、重名拒绝，`Bindings` 是编号 ↔ 缓冲的操作数表，`CpuExecutor` 入队并在 `sync` 时就地执行；`Trace` 只记录不改语义。`Buf`/`View`/`ViewMut` 是 `storage::LaneBuf`/`LaneView`/`LaneViewMut` 的别名，执行缝只按编号绑定缓冲、不解释形状（ADR 0044） |
 | `MetalDevice` / `MetalCommandQueue` / `MetalBuf` / `MetalPipeline` / `MetalExecutor` | `engine`（`metal` 模块） | 设备后端边界（[ADR 0035](adr/0035-unsafe-ffi-boundary.md) 白名单第五类「进程级库句柄」，越界岛，不单独成 crate）：句柄私有、不跨线程，MSL 由装配层注入，本层不调用 `cutile` |
-| `GradientEntry` | `device`（`backward` 模块） | 设备反向核契约：逐点一元算子的导数表达式与「是否读回前向输出」标记；四段定长操作数槽（输入 `x` / 保存输出 `y` / 上游梯度 `dout` / 输入梯度 `dx`）。梯度图编排归 `autograd`，标量反向公式权威实现归 `train`，本模块只出设备侧同式执行体与源；CUDA 通道留缝、未产出未验证内核 |
-| `Abi` / `Arch` / `Host` / `Machine` / `Row` / `Standing` / `Why` | `device`（`platform` 模块） | 六平台执行合同（[ADR 0052](adr/0052-execution-platform-contract.md)）：`Row` 是执行族闭集（CPU / Metal / CUDA / ROCm-HIP / Vulkan-SYCL 合一的 GPU 行，顺序即合同登记顺序），`Standing` 是三态裁决（覆盖 + 证据 或 未覆盖 + `Why`），`Why` 只分 `NoDevice` / `NoToolchain`——两者处置不同（换机器 vs 装工具链），混成一个"未覆盖"就丢了唯一的行动信息。`audit` 每次都出六行（少一行会让"未覆盖"与"根本没问"变成同一输出），`require` 才报 `E-PLAT`；它只判**平台有没有资格跑**，不判内核在某台设备上是否正确（那是 `shard::verify` 与 `tools::card` 的事）。`Host` 是注入缝（架构 + 该行工具链），`Machine` 是这台机器的实现：架构取 `std::env::consts`、工具链复用 `backends` 那份进程级快照探测（不新开第二次 `--version`），于是测试能用一台假机器摆出九种组合。**不拥有**设备探测实现、设备后端代码（Metal / CUDA 的越界边界见 [ADR 0035](adr/0035-unsafe-ffi-boundary.md)，本层只裁决"能不能跑"）、性能与正确性结论（E1–E15 归协议卡）、以及设备档案本身（那是 `prof` 的声明层） |
+| `Abi` / `Arch` / `Host` / `Machine` / `Row` / `Standing` / `Why` | `shard`（`platform` 模块） | 六平台执行合同（[ADR 0052](adr/0052-execution-platform-contract.md)）：`Row` 是执行族闭集（CPU / Metal / CUDA / ROCm-HIP / Vulkan-SYCL 合一的 GPU 行，顺序即合同登记顺序），`Standing` 是三态裁决（覆盖 + 证据 或 未覆盖 + `Why`），`Why` 只分 `NoDevice` / `NoToolchain`——两者处置不同（换机器 vs 装工具链），混成一个"未覆盖"就丢了唯一的行动信息。`audit` 每次都出六行（少一行会让"未覆盖"与"根本没问"变成同一输出），`require` 才报 `E-PLAT`；它只判**平台有没有资格跑**，不判内核在某台设备上是否正确（那是 `shard::verify` 与 `tools::card` 的事）。`Host` 是注入缝（架构 + 该行工具链），`Machine` 是这台机器的实现：架构取 `std::env::consts`、工具链复用 `backends` 那份进程级快照探测（不新开第二次 `--version`），于是测试能用一台假机器摆出九种组合。**不拥有**设备探测实现、设备后端代码（Metal / CUDA 的越界边界见 [ADR 0035](adr/0035-unsafe-ffi-boundary.md)，本层只裁决"能不能跑"）、性能与正确性结论（E1–E15 归协议卡）、以及设备档案本身（那是 `prof` 的声明层） |
 | `Tokenizer` / `Token` / `Bytes` / `Bpe` / `Unigram` / `SpecialTokens` / `Encoding` / `Strategy` / `Truncation` / `Padding` / `PadDirection` / `Fingerprint` / `DecoderStream` / `Vocab` / `VocabSource` / `VocabFamily` / `Merge` | `tokenizer` | 文本 ↔ token 的唯一边界：编号、编码对齐记录、序列策略、词表身份指纹与 UTF-8 边界安全的流式解码 |
 | `Adaptive` / `AdaptiveCompensated` / `Header` / `Entry` / `Reader` / `Loader` / `Archive` / `File` / `MmapSource` / `Quantized` / `Scheme` / `Compensated` / `Writer` / `Stored` / `Segment` / `Quant` / `Codec` / `Proof` / `Metrics` | `weights` | 权重文件：外部 safetensors 只读适配（`Reader` 借出 / `Loader` 拷贝两条契约）+ 自有 `.u` 容器 v2 读写（rANS、Merkle 证明、两级 CRC、原子写、现场度量）；`Quantized` 的分组、输入宽度与输出宽度出自同一次推断 |
 | `Certified` / `Note` / `Stable` / `Mode` / `EpsMethod` / `Bound` | `weights` | `ledger` 的谱隙证书与它门控的秩选择：判定与产出出自同一次分解，证书写在 `AX03` 的 `rank` 段并由 `audit` 重算，对不上就拒读；证书自报 `ε` 的**方法**（`EpsMethod`）与这张界的**类型**（`Bound`，L0 诊断 vs L0' 候选），于是「幂迭代只够排序」与「候选界不签无损」是可执行约束而不是注释；`E_decomp` 与 `E_comp` 分开记，合成误差只有 `Note::synth` 一处算式 |
@@ -217,7 +215,7 @@ testkit    → （叶    +dev: autograd, cutile, nn, prof, tensor, tools, train,
 | `ConvGeom` | `nn` | 卷积几何：把填充 / 步长 / 膨胀折成输出尺寸与索引映射，卷积与池化共用一份 |
 | `Axis` / `Builtin` / `Skeleton` / `Variant` / `TileCombo` / `Chunk` / `Grid` | `prof` | 声明层与模板词法：`Builtin` 是一次声明解析的结果（名字 + 模板正文 + 槽位），`Skeleton` / `Axis` / `Variant` / `TileCombo` 是模板槽位与 tile 组合，`Chunk` / `Grid` 是片段正文的分块与网格形状 |
 | `LanguageGate` | `shard` | 每门语言一个语法前端（命令 + 版本 + 诊断解析）：片段正文必须被它接受，门不许自己写第二份语言知识 |
-| `Scope` / `TensorGeometry` / `Timing` | `shard` | 测速范围（单点 / 多轮 / 预热）、张量几何的归一化描述、一次测量的耗时口径 |
+| `Scope` / `Timing` | `shard` | 测速范围（单点 / 多轮 / 预热）、一次测量的耗时口径 |
 | `Attr` / `AttrKey` / `Grade` / `Mismatch` / `Need` / `Prim` / `Provide` / `Space` / `Span` | `prof` | 原语闭集（`Prim`）与它的属性键 / 档位（`AttrKey` / `Attr` / `Grade`）、档位空间（`Space`）、供给与需求（`Provide` / `Need`）及失配（`Mismatch`）、源码区间（`Span`）：全是闭集生成的，声明顺序就是 `ALL` 的下标 |
 
 几个**同名不同物**的邻居，评审时容易混淆：

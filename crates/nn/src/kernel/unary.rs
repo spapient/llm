@@ -178,6 +178,26 @@ pub fn dispatch<U: Unary>(a: FloatSlice<'_>, out: FloatSliceMut<'_>) -> diagnost
     }
 }
 
+/// 两档一元算子共用的 [`Unary`](crate::unary::Unary) 实现：闭包先绑定到 `fn(K) -> K` 函数指针，
+/// 参数类型由签名反推为泛型档 `K`（调用点还进不了方法泛型作用域，不在方法上标注 `K`）；可选
+/// 输入样本槽原样转发。f32 档与精度档（`unary_tier`）只共享这一段，其余档差异各自展开。
+#[macro_export]
+macro_rules! unary_impl {
+    ($name:ident, $apply:expr $(, $input:expr)?) => {
+        impl $crate::unary::Unary for $name {
+            fn apply<K: $crate::kernel::scalar::Scalar>(x: K) -> K {
+                let apply: fn(K) -> K = $apply;
+                apply(x)
+            }
+
+            $( fn input(len: usize) -> Vec<f32> {
+                const INPUT: fn(usize) -> Vec<f32> = $input;
+                INPUT(len)
+            } )?
+        }
+    };
+}
+
 /// 生成一份 f32 一元逐元素算子的公开面：标记类型、[`Unary`] 实现、[`annotation::model`] 别名、
 /// `forward` 入口与测试挂载。`scale` / `gelu` / `silu` 只差一行 `apply`（可选样本夹具）；
 /// 新增一种一元运算加一次调用即可。
@@ -199,19 +219,7 @@ macro_rules! unary_f32 {
             "nn::unary::formula"
         );
 
-        impl $crate::unary::Unary for $name {
-            // 闭包先绑定到 `fn(K) -> K` 函数指针：参数类型由该签名反推为泛型 `K`，
-            // 不在调用点标注 `K`（调用点还进不了方法泛型作用域）。与二元族同一模式。
-            fn apply<K: $crate::kernel::scalar::Scalar>(x: K) -> K {
-                let apply: fn(K) -> K = $apply;
-                apply(x)
-            }
-
-            $( fn input(len: usize) -> Vec<f32> {
-                const INPUT: fn(usize) -> Vec<f32> = $input;
-                INPUT(len)
-            } )?
-        }
+        $crate::unary_impl! { $name, $apply $(, $input)? }
 
         // 基座契约（ADR 0050）：只转发族骨架，不写第二份算术；骨架走绝对路径，算子模块
         // 嵌在哪一层都不依赖 `super` 的父模块解析。
@@ -276,17 +284,7 @@ macro_rules! unary_tier {
 
         $crate::formula_owner!($name, "n,n->n", $operands, "nn::unary::formula");
 
-        impl $crate::unary::Unary for $name {
-            fn apply<K: $crate::kernel::scalar::Scalar>(x: K) -> K {
-                let apply: fn(K) -> K = $apply;
-                apply(x)
-            }
-
-            $( fn input(len: usize) -> Vec<f32> {
-                const INPUT: fn(usize) -> Vec<f32> = $input;
-                INPUT(len)
-            } )?
-        }
+        $crate::unary_impl! { $name, $apply $(, $input)? }
 
         $crate::operator_via!(
             @impl $name, $op, 1, (4096, 4096), $diff, 1, $crate::unary::AXES,

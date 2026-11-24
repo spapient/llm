@@ -470,7 +470,8 @@ fn use_tree(statement: &str, owner: &str) -> Vec<(String, String)> {
         // 前缀必须保留，不能像花括号条目那样按词尾标识符截断。
         let (source, alias) = match body.rsplit_once(" as ") {
             Some((source, alias)) => (source.trim(), ident(alias)),
-            None => (body.trim(), body.trim()),
+            // 无 `as` 时注册名也是路径尾标识符（与花括号条目同口径），不是整条路径。
+            None => (body.trim(), ident(body.trim())),
         };
         let (prefix, name) = match source.rsplit_once("::") {
             Some((prefix, name)) => (prefix, name),

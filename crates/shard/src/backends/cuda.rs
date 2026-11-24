@@ -244,7 +244,6 @@ fn cuda_single_source(
             crate::cuda::cuda_chunk_reduce(kernel, signature, sample, *chunk, func)
         }
         Lower::Loop(grid) => crate::cuda::cuda_loop_kernel(kernel, signature, sample, grid),
-        Lower::WmmaGemm => crate::cuda::gemm_kernel(signature, sample),
         _ => Err(Error::new(
             Code::Internal,
             "该骨架产出多段源码，应在 cuda_lower 分派，不应落到单段兜底".to_string(),

@@ -111,36 +111,6 @@ fn a_loop_launch_without_dims_has_no_metal_thread_shape() {
 }
 
 #[test]
-fn the_tile_families_report_unsupported_rather_than_a_wrong_source() {
-    // 这几种形态的生产态入口各自存在（`engine::tiled` / `wmma` / flash），单源装配不认识它们。
-    // 报 `Unsupported` 而不是硬拼一份源：调用方据此回落语义门，而不是把缺实现当成已验证。
-    for kind in [
-        Lower::TiledGemm {
-            tile: 8,
-            per_thread: 1,
-        },
-        Lower::TiledAttention { threads: 32 },
-        Lower::SimdGroupGemm {
-            row_frags: 1,
-            col_frags: 1,
-        },
-        Lower::FlashAttention {
-            threads: 32,
-            block: 32,
-        },
-        Lower::WmmaGemm,
-    ] {
-        let launch = launch(kind, [1, 1, 1], 1);
-        let cuda_error = cuda(cutile_x_kernel::SOURCE, &gemv().0, &gemv().1, &launch)
-            .expect_err("CUDA 没有该形态的并行程序");
-        assert_eq!(cuda_error.code(), Code::Unsupported, "{cuda_error}");
-        let metal_error = metal(cutile_x_kernel::SOURCE, &gemv().0, &gemv().1, &launch)
-            .expect_err("Metal 没有该形态的并行程序");
-        assert_eq!(metal_error.code(), Code::Unsupported, "{metal_error}");
-    }
-}
-
-#[test]
 fn a_block_family_on_metal_is_stages_plus_a_host_fold() {
     // 分块族在 Metal 侧的落点是 [`crate::metal`]：段与折叠一体，不是「不支持」。
     let Source::Pair { device, host } = metal(
@@ -170,20 +140,6 @@ fn the_host_fold_follows_the_declared_reduction() {
     assert_eq!(fold_of("_cutile_sum_f32"), "sum");
     // 没声明折叠算子时按求和：把“认不出”读成 max 会让归约结果静默变成窗口最大值。
     assert_eq!(fold_of("_cutile_unknown_f32"), "sum");
-}
-
-#[test]
-fn the_unsupported_error_names_the_vendor_and_the_kind() {
-    let error = unsupported(
-        "Metal",
-        &Lower::FlashAttention {
-            threads: 32,
-            block: 32,
-        },
-    );
-    assert_eq!(error.code(), Code::Unsupported);
-    assert!(error.to_string().contains("Metal"), "{error}");
-    assert!(error.to_string().contains("FlashAttention"), "{error}");
 }
 
 /// 循环注入的 host 驱动只传缓冲实参：`kernel_main` 的形参表由 `tid_kernel_main` 生成，只有缓冲

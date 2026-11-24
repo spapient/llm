@@ -583,7 +583,6 @@ version = "0.1.0"
 dependencies = [
  "assert_cmd",
  "cutile",
- "llm-device",
  "llm-diagnostic",
  "llm-engine",
  "llm-nn",
@@ -596,20 +595,6 @@ dependencies = [
  "llm-train",
  "llm-weights",
  "toml",
-]
-
-[[package]]
-name = "llm-device"
-version = "0.1.0"
-dependencies = [
- "cutile",
- "llm-diagnostic",
- "llm-engine",
- "llm-nn",
- "llm-prof",
- "llm-shard",
- "llm-tensor",
- "llm-testkit",
 ]
 
 [[package]]

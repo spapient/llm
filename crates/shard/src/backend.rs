@@ -37,56 +37,6 @@ pub struct Launch {
     pub group: usize,
 }
 
-/// 张量核 GEMM 的几何：输出块的行/列跨度、规约块尺寸，以及每组挂几个 simdgroup。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TensorGeometry {
-    /// 输出块的行跨度（`M` 方向）。
-    pub tile_m: usize,
-    /// 输出块的列跨度（`N` 方向），也是线程组内存的唯一占用方。
-    pub tile_n: usize,
-    /// 规约轴切片长度（装载按 16 元素一组）。
-    pub k_tile: usize,
-    /// 每个线程组挂的 simdgroup 数，组内线程数为 `32·simdgroups`。
-    pub simdgroups: usize,
-}
-
-impl TensorGeometry {
-    /// 显式指定四要素：后端选型、基准对照与专用形状都从这里进来。
-    #[must_use]
-    pub const fn new(tile_m: usize, tile_n: usize, k_tile: usize, simdgroups: usize) -> Self {
-        Self {
-            tile_m,
-            tile_n,
-            k_tile,
-            simdgroups,
-        }
-    }
-
-    /// 规约块是否整除 `K`：整除时生成的内核没有尾块分支。
-    #[must_use]
-    pub const fn exact(&self, k: usize) -> bool {
-        k.is_multiple_of(self.k_tile)
-    }
-
-    /// 输出块跨度是否落在矩阵乘单元支持的档位里（`32`、`64`、`128`）。
-    #[must_use]
-    pub fn spans_ok(&self) -> bool {
-        matches!(self.tile_m, 32 | 64 | 128) && matches!(self.tile_n, 32 | 64 | 128)
-    }
-
-    /// 规约块形状与 simdgroup 数是否合法。
-    #[must_use]
-    pub fn block_ok(&self) -> bool {
-        self.k_tile >= 32 && self.k_tile.is_multiple_of(16) && matches!(self.simdgroups, 4 | 8)
-    }
-
-    /// B 片（`tile_n × k_tile` 的 half，按 4 元素补齐）是否装得进 32 KiB 线程组内存。
-    #[must_use]
-    pub fn fits_threadgroup_memory(&self) -> bool {
-        self.tile_n * (self.k_tile + 4) * 2 <= 32 * 1024
-    }
-}
-
 /// 生产态内核 lowering 请求：骨架分派后的中性描述，vendor 后端据此生成设备源。
 #[derive(Debug, Clone, PartialEq)]
 pub enum Lower {
@@ -123,58 +73,6 @@ pub enum Lower {
         /// 每块元素数。
         chunk: usize,
     },
-    /// 共享内存分块 f32 GEMM：A/B 按 `tile×tile` 块协同搬进 threadgroup 内存，规约轴在共享块上
-    /// 复用，语义与标量三重循环逐元素相同。要求 `M/N/K` 均能被 `tile` 整除——部分线程组会破坏
-    /// `threadgroup_barrier` 的统一控制流，不满足时由调用方回落到网格/串行路径。
-    TiledGemm {
-        /// 输出块边长（同时是每维 threadgroup 线程数）。
-        tile: usize,
-        /// 每个线程计算的输出块边长（`1` = 每线程一输出；`4` = 4×4 寄存器分块）。
-        per_thread: usize,
-    },
-    /// threadgroup 协作的分块注意力：一个线程组负责一个查询行，线程分摊 S 个分数与 D 个输出维，
-    /// 行内最大值/指数和走线程组树归约，完整分数留在 threadgroup 内存。要求线程数为 2 的幂，
-    /// 且 `S·4` 字节的分数块落在设备线程组内存上限内；不满足时由调用方回落到网格/串行路径。
-    TiledAttention {
-        /// 每个查询行使用的线程数（2 的幂）。
-        threads: usize,
-    },
-    /// simdgroup 矩阵指令 GEMM：每个 simdgroup（32 线程）用 `8×8×8` 矩阵乘指令算
-    /// `row_frags × col_frags` 个 `8×8` 输出片段，K 轴每次前进 8。要求 `K % 8 == 0`、
-    /// `M` 被 `8·row_frags` 整除、`N` 被 `8·col_frags` 整除；不满足时由调用方回落。
-    SimdGroupGemm {
-        /// 每个 simdgroup 沿 M 的输出片段数（每片段 8 行）。
-        row_frags: usize,
-        /// 每个 simdgroup 沿 N 的输出片段数（每片段 8 列）。
-        col_frags: usize,
-    },
-    /// 张量核矩阵乘 GEMM：一个 `tile_m × tile_n` 输出块由 `32·simdgroups` 个线程协同算完，
-    /// 规约轴按 `k_tile` 切片，B 片经线程组内存中转。乘加走硬件的矩阵乘单元而非标量 FMA，
-    /// 因此要求 B 预先转成 `N×K` 的低精度布局（布局前置不属于 lowering 本身）。
-    /// 要求 `M` 被 `tile_m` 整除、两个块跨度 ∈ {32, 64, 128}、`k_tile` 是 16 的倍数、
-    /// `simdgroups ∈ {4, 8}`；不满足时由调用方回落。
-    TensorGemm {
-        /// 输出块跨度、规约块与 simdgroup 数。
-        geometry: TensorGeometry,
-    },
-    /// flash attention 分块：一个线程组负责一个查询行，K/V 按 `block` 个键分块流式扫描，
-    /// 在线 softmax（running max/sum）把输出累加在寄存器，不保留完整分数向量。
-    /// 要求线程数为 2 的幂、`block` 是线程数的倍数、`D ≤ 64`；不满足时由调用方回落。
-    FlashAttention {
-        /// 每个查询行使用的线程数（2 的幂）。
-        threads: usize,
-        /// 每次流式扫描的键块大小（线程数的倍数）。
-        block: usize,
-    },
-    /// 共享内存分块的对称 int8 GEMM：`i8` 输入、`i32` 精确累加、`f32` 输出。
-    Int8Gemm {
-        /// 输出块边长，同时是每维 threadgroup 线程数；`tile² ≤ 1024`。
-        tile: usize,
-    },
-    /// 张量核特化的 f32 GEMM（WMMA）：整块 `64×64`、`BK=8`、每 CTA 4 个 `32×32×8` 累积片段。
-    /// 形状在生成期已知，越界访问在展开时按整除性决定是否加守卫；不满足 `K % 8 == 0` 的
-    /// 形状由调用方回落到循环注入或串行路径。
-    WmmaGemm,
 }
 
 /// 生成程序文本：纯函数，见证清单（结构化中性输入）→ 一门语言的源文本，可离线对拍。

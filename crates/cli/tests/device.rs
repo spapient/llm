@@ -234,7 +234,7 @@ fn op_matches_reference_cuda(op_name: &str) {
     let threads: usize = 256;
     let blocks = (scalar_len(&decl, &sample) as usize).div_ceil(threads);
     let driver =
-        ::device::cuda::cuda_point_driver(&device, &decl.signature, &sample, blocks, threads)
+        ::shard::cuda::cuda_point_driver(&device, &decl.signature, &sample, blocks, threads)
             .expect("host 驱动应能生成");
     let (_counts, bits) =
         shard::witness::run_cuda(&profile, &dirs, &driver, op_name).expect("CUDA 真机执行");
@@ -268,7 +268,7 @@ fn op_chunked_reduce_matches_reference_cuda(op_name: &str) {
     let device = program(&catalogue, &dirs, op_name, Cuda, Mode::segmented(), m, n)
         .and_then(|s| s.one("降源"))
         .expect("内核应能生成");
-    let driver = ::device::cuda::cuda_grid_driver(&device, &decl.signature, &sample, grid, grid)
+    let driver = ::shard::cuda::cuda_grid_driver(&device, &decl.signature, &sample, grid, grid)
         .expect("host 驱动应能生成");
     let (_counts, bits) =
         shard::witness::run_cuda(&profile, &dirs, &driver, op_name).expect("CUDA 真机执行");
@@ -672,7 +672,7 @@ fn op_normalized_matches_reference_cuda(op_name: &str) {
                 program(&catalogue, &dirs, op_name, Cuda, Mode::segmented(), m, n)
                     .and_then(|s| s.two("分段"))
                     .expect("分段内核应能生成");
-            ::device::norm::cuda_rmsnorm_driver(&[partial, norm], &decl.signature, &sample, chunk)
+            ::shard::cuda::cuda_rmsnorm_driver(&[partial, norm], &decl.signature, &sample, chunk)
                 .expect("host 串联驱动应能生成")
         }
         "softmax_f32" => {
@@ -680,7 +680,7 @@ fn op_normalized_matches_reference_cuda(op_name: &str) {
                 program(&catalogue, &dirs, op_name, Cuda, Mode::segmented(), m, n)
                     .and_then(|s| s.three("softmax"))
                     .expect("分段内核应能生成");
-            ::device::norm::cuda_softmax_driver(
+            ::shard::cuda::cuda_softmax_driver(
                 &[max, expsum, norm],
                 &decl.signature,
                 &sample,
@@ -729,7 +729,7 @@ fn op_looped_matches_reference_cuda(op_name: &str) {
     .expect("循环注入内核应能生成");
     let dims = stages.dims().expect("循环注入应回网格各维").to_vec();
     let device = stages.one("循环注入").expect("循环注入设备源");
-    let driver = ::device::cuda::cuda_loop_driver(&device, &decl.signature, &sample, &dims)
+    let driver = ::shard::cuda::cuda_loop_driver(&device, &decl.signature, &sample, &dims)
         .expect("host 驱动应能生成");
     let (_counts, bits) =
         shard::witness::run_cuda(&profile, &dirs, &driver, op_name).expect("CUDA 真机执行");

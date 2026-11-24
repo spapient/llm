@@ -19,7 +19,7 @@ b = "row"
 
 # 网格映射：矩阵乘按输出元素拆线程（二维网格 [M, N]）。`i:M`、`j:N` 把模板里的循环
 # `for (int i = 0; i < M; ++i)`、`for (int j = 0; j < N; ++j)` 绑定到线程下标，规约维 `p` 循环保留。
-# 与 `gemm_f32` 同一降低路径；大 K=4096 的 Metal 分块详见 `cutile::execution::Mode::tiled`。
+# 与 `gemm_f32` 同一降低路径；分块 GEMM 特化不再由外部生成层维护，设备 kernel 归 `prof` 设备岛。
 [grid]
 dims = ["i:M", "j:N"]
 
