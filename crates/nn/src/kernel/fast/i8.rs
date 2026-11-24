@@ -90,18 +90,7 @@ pub(super) fn f32_calc(j: &Job, slot: usize) {
         let out = std::slice::from_raw_parts_mut(j.out as *mut f32, j.m * j.n);
         let out_l = &mut out[r0 * j.n..(r0 + rows) * j.n];
         if j.tn {
-            super::compute_rows(
-                a_l,
-                bp,
-                b,
-                super::Extent {
-                    rows,
-                    n: j.n,
-                    k: j.k,
-                },
-                out_l,
-                super::Layout::Tn,
-            );
+            tn::compute_tn(a_l, bp, b, rows, j.n, j.k, out_l);
         } else {
             compute_gemm(a_l, bp, b, rows, j.n, j.k, out_l);
         }

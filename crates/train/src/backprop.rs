@@ -200,25 +200,34 @@ const FORMULAS: [Entry; 40] = formulas![
     "add_f32" => passthrough,
     "residual_add_f32" => passthrough,
     "mul_f32" => mul,
-    "scale_f32" => scale,
+    "scale_f32" => |ctx| unary(ctx, |g, _| g * nn::scale_f32::ALPHA),
     "sub_f32" => sub,
     "div_f32" => div,
-    "exp_f32" => exp,
-    "log_f32" => log,
+    "exp_f32" => |ctx| output_unary(ctx, |g, y| g * y),
+    "log_f32" => |ctx| unary(ctx, |g, x| g / x),
     "min_f32" => min,
     "max_f32" => max,
     "max_pool1d_f32" => max_pool1d,
     "max_pool2d_f32" => max_pool2d,
-    "silu_f32" => silu,
-    "gelu_f32" => gelu,
-    "hard_sigmoid_f32" => hard_sigmoid,
+    "silu_f32" => |ctx| unary(ctx, |g, v| {
+        let sigmoid = 1.0 / (1.0 + (-v).exp());
+        g * (sigmoid + v * sigmoid * (1.0 - sigmoid))
+    }),
+    "gelu_f32" => |ctx| unary(ctx, |g, x| g * gelu_grad(x)),
+    "hard_sigmoid_f32" => |ctx| unary(ctx, |g, v| {
+        let v = f64::from(v);
+        let inside = (v / 6.0 + 0.5) > 0.0 && (v / 6.0 + 0.5) < 1.0;
+        g * if inside { 1.0 / 6.0 } else { 0.0 }
+    }),
     "instance_norm_f32" => instance_norm,
     "interpolate_f32" => interpolate,
     "layer_norm_f32" => layer_norm,
-    "leaky_relu_f32" => leaky_relu,
-    "relu_f32" => relu,
-    "sigmoid_f32" => sigmoid,
-    "tanh_f32" => tanh,
+    "leaky_relu_f32" => |ctx| unary(ctx, |g, v| {
+        g * if v >= 0.0 { 1.0 } else { nn::leaky_relu_f32::SLOPE }
+    }),
+    "relu_f32" => |ctx| unary(ctx, |g, v| g * if v > 0.0 { 1.0 } else { 0.0 }),
+    "sigmoid_f32" => |ctx| output_unary(ctx, |g, y| g * y * (1.0 - y)),
+    "tanh_f32" => |ctx| output_unary(ctx, |g, y| g * (1.0 - y * y)),
     "reduce_sum_f32" => reduce_sum,
     "reduce_max_f32" => reduce_max,
     "softmax_f32" => softmax,
@@ -345,55 +354,21 @@ fn mul(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
     Ok(vec![da, db])
 }
 
-/// y = α·a：dA = α·in。
-fn scale(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
-    let alpha = nn::scale_f32::ALPHA;
-    let da = ctx.incoming.iter().map(|&g| g * alpha).collect();
-    Ok(vec![da])
-}
-
 /// y = a−b：dA = in，dB = −in。
 fn sub(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
-    let da = ctx.incoming.to_vec();
-    let db = ctx.incoming.iter().map(|&g| -g).collect();
-    Ok(vec![da, db])
+    Ok(vec![
+        ctx.incoming.to_vec(),
+        ctx.incoming.iter().map(|&g| -g).collect(),
+    ])
 }
 
 /// y = a/b：dA = in/b，dB = −in·a/b²。
 fn div(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
-    let a = &ctx.inputs[0];
-    let b = &ctx.inputs[1];
+    let (a, b) = (&ctx.inputs[0], &ctx.inputs[1]);
     let da = ctx.incoming.iter().zip(b).map(|(&g, &w)| g / w).collect();
-    let db = ctx
-        .incoming
-        .iter()
-        .zip(a)
-        .zip(b)
-        .map(|((&g, &x), &w)| -g * x / (w * w))
-        .collect();
+    let db = ctx.incoming.iter().zip(a).zip(b)
+        .map(|((&g, &x), &w)| -g * x / (w * w)).collect();
     Ok(vec![da, db])
-}
-
-/// y = exp(a)：dA = in·y（输出 y 即 exp(a)，避免重算）。
-fn exp(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
-    let da = ctx
-        .incoming
-        .iter()
-        .zip(ctx.output)
-        .map(|(&g, &y)| g * y)
-        .collect();
-    Ok(vec![da])
-}
-
-/// y = ln(a)：dA = in/a。
-fn log(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
-    let da = ctx
-        .incoming
-        .iter()
-        .zip(&ctx.inputs[0])
-        .map(|(&g, &x)| g / x)
-        .collect();
-    Ok(vec![da])
 }
 
 /// y = min(a,b)：梯度给较小者；相等给 `a`（避免双计）。
@@ -406,95 +381,26 @@ fn max(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
     extremum(ctx, |x, y| x >= y, |x, y| y > x)
 }
 
-/// `min`/`max` 共用的选点反向：`a_wins` / `b_wins` 各自判"该元素拿走上游梯度"，等号只归 `a`。
+/// `min`/`max` 共用选点反向，等号只归 `a`。
 fn extremum(
-    ctx: Ctx<'_>,
-    a_wins: impl Fn(f32, f32) -> bool,
-    b_wins: impl Fn(f32, f32) -> bool,
+    ctx: Ctx<'_>, a_wins: impl Fn(f32, f32) -> bool, b_wins: impl Fn(f32, f32) -> bool,
 ) -> Result<Vec<Vec<f32>>> {
-    let a = &ctx.inputs[0];
-    let b = &ctx.inputs[1];
-    let pick = |wins: &dyn Fn(f32, f32) -> bool| -> Vec<f32> {
-        ctx.incoming
-            .iter()
-            .zip(a)
-            .zip(b)
-            .map(|((&g, &x), &y)| if wins(x, y) { g } else { 0.0 })
-            .collect()
-    };
+    let (a, b) = (&ctx.inputs[0], &ctx.inputs[1]);
+    let pick = |wins: &dyn Fn(f32, f32) -> bool| ctx.incoming.iter().zip(a).zip(b)
+        .map(|((&g, &x), &y)| if wins(x, y) { g } else { 0.0 }).collect();
     Ok(vec![pick(&a_wins), pick(&b_wins)])
 }
 
-/// 一元逐元素算子：`y′` 只看本元素，`dA[i] = in[i]·f(x[i])`。
-fn unary(ctx: Ctx<'_>, grad: impl Fn(f32) -> f32) -> Result<Vec<Vec<f32>>> {
-    let x = &ctx.inputs[0];
-    let da = ctx
-        .incoming
-        .iter()
-        .zip(x)
-        .map(|(&g, &v)| g * grad(v))
-        .collect();
-    Ok(vec![da])
+/// 一元公式目录的公共迭代器；闭包保留每项自己的浮点结合顺序。
+fn unary(ctx: Ctx<'_>, contribution: impl Fn(f32, f32) -> f32) -> Result<Vec<Vec<f32>>> {
+    Ok(vec![ctx.incoming.iter().zip(&ctx.inputs[0])
+        .map(|(&g, &x)| contribution(g, x)).collect()])
 }
 
-/// y = x·σ(x)：y′ = σ + x·σ(1−σ)，dA = in·y′。
-fn silu(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
-    unary(ctx, |v| {
-        let sigmoid = 1.0 / (1.0 + (-v).exp());
-        sigmoid + v * sigmoid * (1.0 - sigmoid)
-    })
-}
-
-/// y = σ(x)：y′ = y·(1−y)，输出即 σ，避免重算。
-fn sigmoid(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
-    let da = ctx
-        .incoming
-        .iter()
-        .zip(ctx.output)
-        .map(|(&g, &y)| g * y * (1.0 - y))
-        .collect();
-    Ok(vec![da])
-}
-
-/// y = tanh(x)：y′ = 1−y²，输出即 tanh。
-fn tanh(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
-    let da = ctx
-        .incoming
-        .iter()
-        .zip(ctx.output)
-        .map(|(&g, &y)| g * (1.0 - y * y))
-        .collect();
-    Ok(vec![da])
-}
-
-/// y = x（x ≥ 0）或 slope·x：y′ = 1 或 slope，dA = in·y′。
-fn leaky_relu(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
-    unary(ctx, |v| {
-        if v >= 0.0 {
-            1.0
-        } else {
-            nn::leaky_relu_f32::SLOPE
-        }
-    })
-}
-
-/// y = max(x, 0)：y′ = 1（x > 0）或 0；负区的斜率是 0，不是 LeakyReLU 那份 0.01。
-fn relu(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
-    unary(ctx, |v| if v > 0.0 { 1.0 } else { 0.0 })
-}
-
-/// y = clamp(x/6 + 0.5, 0, 1)：饱和区梯度为 0，线性区为 1/6。
-fn hard_sigmoid(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
-    unary(ctx, |v| {
-        let v = f64::from(v);
-        let inside = (v / 6.0 + 0.5) > 0.0 && (v / 6.0 + 0.5) < 1.0;
-        if inside { 1.0 / 6.0 } else { 0.0 }
-    })
-}
-
-/// y = 0.5·x·(1 + erf(x/√2))：y′ = Φ(x) + x·φ(x)，φ 为标准正态密度、Φ 为累积分布。
-fn gelu(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
-    unary(ctx, gelu_grad)
+/// 输出可复用的一元公式（exp/sigmoid/tanh），避免重算前向函数。
+fn output_unary(ctx: Ctx<'_>, contribution: impl Fn(f32, f32) -> f32) -> Result<Vec<Vec<f32>>> {
+    Ok(vec![ctx.incoming.iter().zip(ctx.output)
+        .map(|(&g, &y)| contribution(g, y)).collect()])
 }
 
 /// y = Σa：上游标量梯度广播回每个元素，dA[i] = in[0]。

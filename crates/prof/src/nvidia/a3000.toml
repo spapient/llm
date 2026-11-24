@@ -1,0 +1,39 @@
+# NVIDIA RTX A3000 12GB Laptop GPU / sm86 变体。
+# 只覆盖实测差异；片段、见证、原语供给与 cuBLAS 特化由 nvidia.toml 在构建期合并复用。
+# 2026-11-25 在 win 上由 cudaGetDeviceProperties / cudaDeviceGetAttribute 实测：
+# 32 SM、warpSize 32、sharedMemPerBlock 49152、sharedMemPerMultiprocessor 102400、
+# regsPerBlock = regsPerMultiprocessor = 65536、maxThreadsPerMultiProcessor = 1536、
+# memoryBusWidth 192、memoryClockRate 7001000 kHz；nvidia-smi 报告最高 SM 时钟 1665 MHz。
+
+[meta]
+vendor   = "nvidia_a3000"
+id       = "sm86"
+emit     = "cuda"
+tools    = "nvcc"
+tool_ver = "13.3"
+checked  = "2026-11-25"
+
+[fingerprint]
+cc   = "8.6"
+name = "contains: RTX A3000"
+
+[mem]
+# 调度契约按每 block 可用上限；不是把每 SM 的 102400 字节误写成单 block 可用量。
+FAST = { bytes = 49152, bank = 32 }
+# regsPerBlock = 65536 个 32-bit 寄存器，即 262144 字节。
+REG  = { bytes = 262144 }
+
+[simt]
+group      = 32
+# 32 SM × 1536 thread/SM ÷ 32 lane = 1536 个常驻 warp。
+groups_max = 1536
+
+[peak]
+# 32 SM × 128 FP32 lane/SM × 2（FMA）× 1.665 GHz = 13.63968 TFLOPS。
+flops_f32 = { value = 13.63968e12, src = "32*128*2*1.665e9" }
+# 192 bit GDDR6，DDR 计 2 × 7.001 GHz：192/8*2*7.001e9 = 336.048 GB/s。
+bw        = { value = 336.048e9, src = "192/8*2*7.001e9" }
+
+[compile]
+# 数组整体覆盖基档，不能继承 sm_75 后又在末尾追加一个互相矛盾的架构。
+flags = ["-arch=sm_86", "-O3", "-lcublas"]

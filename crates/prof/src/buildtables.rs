@@ -68,7 +68,7 @@ pub fn tables_of(devices: &[Device], out: &Path, images: bool) -> String {
              use crate::atom::Prim;\n\n\
              /// 本设备片段与见证所在目录，`device` 按它读磁盘。\n\
              pub const ROOT: &str = concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/src/{}\");",
-            device.name, device.name, device.name
+            device.name, device.name, device.family
         );
         fragments(&mut text, device);
         let _ = writeln!(

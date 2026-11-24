@@ -51,11 +51,12 @@ struct Tuning {
 }
 
 impl Tuning {
-    /// 后端专用因子优先于 `default`；零与缺省都表示不展开。
-    fn unroll_for(&self, stem: &str, vendor: &str) -> Option<u32> {
+    /// 档案键优先于设备族，设备族优先于 `default`；零与缺省都表示不展开。
+    fn unroll_for(&self, stem: &str, device: &Device) -> Option<u32> {
         let config = self.unroll.get(stem)?;
         config
-            .get(vendor)
+            .get(&device.name)
+            .or_else(|| config.get(&device.family))
             .or_else(|| config.get("default"))
             .copied()
             .filter(|factor| *factor > 0)
@@ -268,7 +269,7 @@ fn emit_entries(
         } else {
             format!("(\"{}\", ", entry.name)
         };
-        let unroll = tuning.unroll_for(&entry.stem, &device.name);
+        let unroll = tuning.unroll_for(&entry.stem, device);
         match (entry.tier.as_deref(), unroll) {
             (None | Some("f32"), None) => {
                 let _ = writeln!(table, "    {prefix}include_str!({:?})),", path.display());
@@ -290,7 +291,7 @@ fn emit_entries(
 /// 两级查找无需 vendor 分支；两者都缺失时在构建期报告后端与参考路径。
 fn kernel_path(src: &Path, device: &Device, stem: &str) -> PathBuf {
     let specialized = src
-        .join(&device.name)
+        .join(&device.family)
         .join("kernels")
         .join(format!("{stem}.k"));
     if specialized.is_file() {

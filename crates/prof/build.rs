@@ -131,9 +131,7 @@ fn devices_of(src: &Path) -> Vec<Device> {
         }
         let mut variants: Vec<String> = files
             .iter()
-            .filter(|path| {
-                extension(path).as_deref() == Some("toml") && stem(path) != Some(family)
-            })
+            .filter(|path| extension(path).as_deref() == Some("toml") && stem(path) != Some(family))
             .map(|path| {
                 stem(path)
                     .unwrap_or_else(|| fail(format!("`{}` 没有档案名", path.display())))
@@ -141,12 +139,13 @@ fn devices_of(src: &Path) -> Vec<Device> {
             })
             .collect();
         variants.sort();
-        for variant in std::iter::once(None).chain(variants.iter().map(|name| Some(name.as_str()))) {
+        for variant in std::iter::once(None).chain(variants.iter().map(|name| Some(name.as_str())))
+        {
             let name = variant.map_or_else(|| family.to_string(), |v| format!("{family}_{v}"));
             if !identifier(&name) {
                 fail(format!("设备档案键 `{name}` 不是可移植的 Rust 标识符"));
             }
-            let device = scan(&dir, &name, family, files.clone());
+            let device = scan(&dir, family, variant, files.clone());
             match out.first() {
                 Some(first) if first.forms != device.forms => fail(format!(
                     "`{name}` 的尾块分段是 [{}]，与 `{}` 的 [{}] 不一致",
@@ -162,10 +161,10 @@ fn devices_of(src: &Path) -> Vec<Device> {
     out
 }
 
-/// 扫描一台设备的目录：七段原语片段 + `epilogue.<ext>` + `witness.<ext>` + 同名档案。
-///
-/// `files` 由调用方一次性列出并传入：判「这个目录算不算设备」与「它有哪些文件」是同一回读盘。
-fn scan(dir: &Path, name: &str, family: &str, files: Vec<PathBuf>) -> Device {
+/// 扫描设备族目录，并为基档或一个变体生成独立设备行。
+/// 所有变体共用同一份片段清单；档案正文在构建期合并，运行期没有继承分支。
+fn scan(dir: &Path, family: &str, variant: Option<&str>, files: Vec<PathBuf>) -> Device {
+    let name = variant.map_or_else(|| family.to_string(), |v| format!("{family}_{v}"));
     let witness = files
         .iter()
         .find(|path| stem(path) == Some(WITNESS_STEM))
@@ -179,19 +178,19 @@ fn scan(dir: &Path, name: &str, family: &str, files: Vec<PathBuf>) -> Device {
     let ext =
         extension(&witness).unwrap_or_else(|| fail(format!("`{}` 没有扩展名", witness.display())));
 
-    let doc = archive_of(dir, name);
+    let doc = archive_of(dir, family, variant);
     let meta = doc
         .get("meta")
         .and_then(|value| value.as_table())
         .unwrap_or_else(|| fail(format!("`{name}` 的档案没有 `[meta]` 表")));
-    let provides = provides_of(&doc, name, &ext);
-    let archive = dir.join(format!("{name}.toml"));
+    let provides = provides_of(&doc, family, &ext);
+    let archive = dir.join(format!("{}.toml", variant.unwrap_or(family)));
 
     let mut fragments = Vec::new();
     let mut entries = Vec::new();
     let mut epilogue = None;
     for path in files {
-        if path == witness || path == archive || extension(&path).as_deref() == Some("rs") {
+        if path == witness || matches!(extension(&path).as_deref(), Some("toml" | "rs")) {
             continue;
         }
         let prim = stem(&path)
@@ -228,11 +227,11 @@ fn scan(dir: &Path, name: &str, family: &str, files: Vec<PathBuf>) -> Device {
 
     let forms = forms_of(&read(&epilogue), &epilogue);
     Device {
-        name: name.to_string(),
+        name: name.clone(),
         family: family.to_string(),
         ext,
-        emit: text(meta, "emit", name),
-        tool: text(meta, "tools", name),
+        emit: text(meta, "emit", &name),
+        tool: text(meta, "tools", &name),
         tool_ver: meta
             .get("tool_ver")
             .and_then(|value| value.as_str())
@@ -247,16 +246,19 @@ fn scan(dir: &Path, name: &str, family: &str, files: Vec<PathBuf>) -> Device {
     }
 }
 
-/// 目录对应的档案：`src/<vendor>/<vendor>.toml`，目录名与 `meta.vendor` 必须一致。
-fn archive_of(dir: &Path, name: &str) -> toml::Table {
-    let path = dir.join(format!("{name}.toml"));
-    if !path.is_file() {
-        fail(format!(
-            "`{}` 没有同名档案 `{name}.toml`：目录名就是 vendor，档案必须同名",
-            dir.display()
-        ));
+/// 读取基档与可选变体覆盖表。表递归合并、数组整体替换，编译 flags 不会拼接漂移。
+fn archive_of(dir: &Path, family: &str, variant: Option<&str>) -> toml::Table {
+    let base = dir.join(format!("{family}.toml"));
+    if !base.is_file() {
+        fail(format!("`{}` 缺设备族基档 `{family}.toml`", dir.display()));
     }
-    let doc = buildgen::read(&path).unwrap_or_else(|error| fail(format!("{error}")));
+    let mut doc = buildgen::read(&base).unwrap_or_else(|error| fail(format!("{error}")));
+    let name = variant.map_or_else(|| family.to_string(), |v| format!("{family}_{v}"));
+    if let Some(variant) = variant {
+        let overlay = dir.join(format!("{variant}.toml"));
+        let overlay = buildgen::read(&overlay).unwrap_or_else(|error| fail(format!("{error}")));
+        merge_tables(&mut doc, overlay);
+    }
     let vendor = doc
         .get("meta")
         .and_then(|value| value.as_table())
@@ -265,10 +267,24 @@ fn archive_of(dir: &Path, name: &str) -> toml::Table {
         .unwrap_or_else(|| fail(format!("`{name}` 的档案没有 `meta.vendor`")));
     if vendor != name {
         fail(format!(
-            "档案 `{name}.toml` 的 `meta.vendor` 是 `{vendor}`：目录名与 vendor 必须一致"
+            "设备档案 `{name}` 的 `meta.vendor` 是 `{vendor}`：两者必须一致"
         ));
     }
     doc
+}
+
+/// 只合并表字段；`provides`、flags 等数组由变体整体继承或整体覆盖，不逐项拼接。
+fn merge_tables(base: &mut toml::Table, overlay: toml::Table) {
+    for (key, value) in overlay {
+        match (base.get_mut(&key), value) {
+            (Some(toml::Value::Table(base)), toml::Value::Table(overlay)) => {
+                merge_tables(base, overlay);
+            }
+            (_, value) => {
+                base.insert(key, value);
+            }
+        }
+    }
 }
 
 /// 一条 `[[provides]]` 里生成期要核的三件事：签名、见证入口、见证文件。

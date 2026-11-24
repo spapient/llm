@@ -141,6 +141,19 @@ mod tn {
         group_panel::<f32, NR, false>(w, buf, n, k, npad, p, slot, true);
     }
 
+    /// 共用父模块行机器，只固定 TN 布局。
+    pub(super) fn compute_tn(
+        a: &[f32],
+        bpack: &[f32],
+        w: &[f32],
+        rows: usize,
+        n: usize,
+        k: usize,
+        out: &mut [f32],
+    ) {
+        super::compute_rows(a, bpack, w, super::Extent { rows, n, k }, out, Layout::Tn);
+    }
+
     #[cfg(test)]
     mod tests {
         include!("../../tests/kernel_tn_tests.rs");

@@ -32,13 +32,13 @@ pub trait Store<E> {
     /// 返回底层全部元素，而非当前子视图的逻辑元素。
     fn slice(&self) -> &[E];
 
-    /// 消费存储并返回底层元素；借用存储复制，自持存储可直接交出原缓冲。
-    fn into_vec(self) -> Vec<E>
+    /// 消费存储并复制或复用指定范围；越界范围按可得元素截断。
+    fn into_vec_range(self, range: Range<usize>) -> Vec<E>
     where
         Self: Sized,
         E: Clone,
     {
-        self.slice().to_vec()
+        self.slice().get(range).unwrap_or_default().to_vec()
     }
 }
 
