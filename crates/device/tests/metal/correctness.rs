@@ -235,5 +235,6 @@ mod attention;
 mod bound;
 mod exact;
 mod layout;
+mod pointwise;
 mod scan;
 mod spot;
