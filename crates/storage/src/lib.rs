@@ -47,10 +47,6 @@ mod format;
 #[cfg(all(feature = "mmap", unix))]
 mod mmap;
 mod state;
-pub mod crc;
-pub mod fault;
-pub mod leb;
-pub mod sink;
 
 #[cfg(all(feature = "mmap", unix))]
 pub use mmap::Mmap;

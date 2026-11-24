@@ -90,13 +90,13 @@ pub mod expr;
 pub mod formula;
 pub mod operand;
 
-pub use axis::{Axes, Axis, AxisRole};
-pub use operand::Bits;
-pub use formula::FormulaCache;
-pub use operand::Cost;
-pub use expr::Expr;
 pub use axis::Extents;
+pub use axis::{Axes, Axis, AxisRole};
+pub use expr::Expr;
 pub use formula::Formula;
+pub use formula::FormulaCache;
+pub use operand::Bits;
+pub use operand::Cost;
 pub use operand::{
     Access, Operand, OperandSpec, bf16_io_operands, f16_io_operands, f32_binary_operands,
     f32_io_operands,
