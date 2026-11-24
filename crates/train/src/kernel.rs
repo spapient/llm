@@ -290,12 +290,6 @@ fn gemv_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
         output_slice::<f32>("gemv_f32", output)?,
     )
 }
-gemm!((gemm_f32, f32, nn::gemm_f32::K),);
-gemm!(
-    (gemm_i2, u8, nn::gemm_i2::K / 4),
-    (gemm_i4, u8, nn::gemm_i4::K / 2),
-    (gemm_i8, u8, nn::gemm_i8::K),
-);
 
 /// 大 K 稠密 GEMM：收缩轴取生产档 [`nn::matmul::K`]，行数由输入长度推出。
 fn matmul_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {

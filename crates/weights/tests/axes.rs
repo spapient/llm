@@ -249,3 +249,33 @@ fn malformed_artifacts_are_errors() {
 fn bad_shape_is_an_error() {
     assert!(search(&[1.0], 3, 1).is_err());
 }
+
+
+#[test]
+fn an_empty_axis_set_keeps_only_the_verified_raw_baseline() {
+    let w: Vec<f32> = (0..4096).map(|k| k as f32).collect();
+
+    let pick = search_with_axes(&w, 64, 64, AxisSet::empty()).expect("搜索");
+
+    assert_eq!(pick.axis, Axis::Raw);
+    let got = decode(&pick.artifact).expect("解码");
+    assert!(got.iter().zip(&w).all(|(a, b)| a.to_bits() == b.to_bits()));
+}
+
+#[test]
+fn axis_sets_are_composable_and_rank_can_be_disabled() {
+    assert_eq!(AxisSet::default(), AxisSet::ALL);
+    assert!(AxisSet::WITHOUT_RANK.contains(Axis::Dict));
+    assert!(!AxisSet::WITHOUT_RANK.contains(Axis::Rank));
+
+    let w: Vec<f32> = (0..4096).map(|k| k as f32).collect();
+    let pick = search_with_axes(&w, 64, 64, AxisSet::WITHOUT_RANK).expect("搜索");
+    assert_ne!(pick.axis, Axis::Rank);
+
+    let grid: Vec<f32> = (0..4096)
+        .map(|i| 1.0 + ((i * 37) % 16) as f32 * 0.25)
+        .collect();
+    let only_quant = AxisSet::empty().with(Axis::Quant);
+    let pick = search_with_axes(&grid, 64, 64, only_quant).expect("搜索");
+    assert_eq!(pick.axis, Axis::Quant);
+}

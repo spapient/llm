@@ -118,15 +118,32 @@ pub fn for_device<'a>(
     op: &'a crate::decl::OpDecl,
     vendor: &str,
 ) -> diagnostic::Result<Cow<'a, crate::decl::OpDecl>> {
-    let source = template_for(vendor, &op.name).ok_or_else(|| {
-        Error::new(
-            Code::Missing,
-            format!("后端 `{vendor}` 没有算子 `{}` 的微内核", op.name),
-        )
-    })?;
+    let source = template_for(vendor, &op.name)
+        .ok_or_else(|| missing_template(vendor, op.name))?;
     if source == op.template {
         return Ok(Cow::Borrowed(op));
     }
+    let signature = checked_signature(op, source, vendor)?;
+    let mut specialized = op.clone();
+    specialized.template = source.to_string();
+    specialized.signature = signature;
+    Ok(Cow::Owned(specialized))
+}
+
+/// 后端缺该算子的诊断：模板表按 `(vendor, 名)` 升序，查不到即未登记。
+fn missing_template(vendor: &str, name: &str) -> Error {
+    Error::new(
+        Code::Missing,
+        format!("后端 `{vendor}` 没有算子 `{name}` 的微内核"),
+    )
+}
+
+/// 解析后端正文入口并比对共享契约签名；不一致即 ABI 漂移，拒绝专项化。
+fn checked_signature(
+    op: &crate::decl::OpDecl,
+    source: &str,
+    vendor: &str,
+) -> diagnostic::Result<crate::sig::Signature> {
     let signature = crate::sig::Signature::parse(&op.name, source)?;
     if signature != op.signature {
         return Err(Error::new(
@@ -134,10 +151,7 @@ pub fn for_device<'a>(
             format!("后端 `{vendor}` 的算子 `{}` 与共享契约的 ABI 不一致", op.name),
         ));
     }
-    let mut specialized = op.clone();
-    specialized.template = source.to_string();
-    specialized.signature = signature;
-    Ok(Cow::Owned(specialized))
+    Ok(signature)
 }
 
 /// 按名字取编译期视图；`OPS` 按名升序，二分查找。

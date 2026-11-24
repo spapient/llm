@@ -131,3 +131,53 @@ fn write_to_path_without_checksums_round_trips() {
 
     let _ = std::fs::remove_file(&target);
 }
+
+
+#[test]
+fn parallel_encoding_is_byte_for_byte_deterministic() {
+    let matrix: Vec<f32> = (0..64).map(|i| (i as f32 * 0.37).sin()).collect();
+    let bytes: Vec<u8> = matrix.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let duplicate = bytes.clone();
+    let grid: Vec<u8> = (0..64)
+        .map(|i| 1.0 + (i % 4) as f32 * 0.25)
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
+
+    let build = |workers: usize| {
+        let mut writer = Writer::with(Config::default().with_workers(workers));
+        writer
+            .push(Segment::new("a", Wire::F32, vec![8, 8], None, bytes.clone()).expect("段"))
+            .expect("追加");
+        writer
+            .push(Segment::new("b", Wire::F32, vec![8, 8], None, duplicate.clone()).expect("段"))
+            .expect("追加");
+        writer
+            .push(Segment::new("c", Wire::F32, vec![8, 8], None, grid.clone()).expect("段"))
+            .expect("追加");
+        writer.push(seg("d", vec![0u8; 400])).expect("追加");
+        writer.finish(6).expect("编码")
+    };
+
+    let serial = build(1);
+    for workers in [0, 2, 3, 16] {
+        assert_eq!(build(workers), serial, "workers = {workers}");
+    }
+    let archive = Archive::parse(&serial).expect("解析");
+    assert!(archive.get("b").is_some_and(|seg| seg.is_ref()));
+}
+
+#[test]
+fn axis_and_worker_builders_match_config() {
+    let axes = crate::axes::AxisSet::WITHOUT_RANK;
+    let mut configured = Writer::with(Config::default().with_axes(axes).with_workers(3));
+    configured.push(seg("a", vec![1u8; 64])).expect("追加");
+
+    let mut built = Writer::new();
+    built.axes(axes).workers(3);
+    built.push(seg("a", vec![1u8; 64])).expect("追加");
+
+    assert_eq!(
+        configured.finish(6).expect("配置"),
+        built.finish(6).expect("builder")
+    );
+}

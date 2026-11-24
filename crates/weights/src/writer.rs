@@ -186,7 +186,7 @@ impl Writer {
         self.encode_inline(&mut slots)?;
         let mut plans = Vec::with_capacity(slots.len());
         for slot in slots {
-            plans.push(slot.ok_or_else(|| bad("去重后段缺存储计划"))?);
+            plans.push(slot.ok_or_else(|| crate::bad("去重后段缺存储计划"))?);
         }
         Ok(plans)
     }

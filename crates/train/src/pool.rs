@@ -265,6 +265,11 @@ impl<K: Kernel> Bufs<K> {
     pub(crate) fn overwrite_f32(&mut self, var: Var, values: &[f32]) -> Result<()> {
         self.validate_gradient(var, values)?;
         let slot = self.slot(var)?;
+        self.overwrite_slot(slot, var, values)
+    }
+
+    /// 命中常驻 f32 槽原地覆盖；类型不符拒绝，空槽装入副本。
+    fn overwrite_slot(&mut self, slot: usize, var: Var, values: &[f32]) -> Result<()> {
         match self.slots[slot].as_mut() {
             Some(Data::F32(existing)) => existing.copy_from_slice(values),
             Some(Data::U8(_)) => {
