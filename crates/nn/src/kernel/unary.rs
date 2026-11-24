@@ -118,10 +118,11 @@ macro_rules! unary_f32 {
         );
 
         impl $crate::unary::Unary for $name {
-            // `$apply` 是泛型方法体内的逐元素表达式片段：`x: K` 由形参提供类型，
-            // 不再包一层闭包——闭包参数标不到方法泛型 `K` 上（调用点 `K` 未入作用域）。
+            // 闭包先绑定到 `fn(K) -> K` 函数指针：参数类型由该签名反推为泛型 `K`，
+            // 不在调用点标注 `K`（调用点还进不了方法泛型作用域）。与二元族同一模式。
             fn apply<K: $crate::kernel::scalar::Scalar>(x: K) -> K {
-                $apply
+                let apply: fn(K) -> K = $apply;
+                apply(x)
             }
 
             $( fn input(len: usize) -> Vec<f32> {
