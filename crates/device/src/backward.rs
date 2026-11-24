@@ -21,10 +21,9 @@
 
 use llm_optim::execution::Backend;
 
-/// 闭集一元导数公式：只标身份，方言 intrinsic（`exp`/`erf` 命名、浮点后缀）由发射器落地，
-/// 机制层不出现厂商字面量。公式口径与 `train` 标量反向一一对应。
+/// 点态导数：一行表达式，直接拼进 `dx[i] = dout[i] * (<expr>);`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Deriv {
+enum Pointwise {
     /// `max(x, 0)`：`x > 0 ? 1 : 0`（严格大于，负区斜率 0）。
     Relu,
     /// `x ≥ 0 ? x : 0.01·x`：正区斜率 1，负区斜率 [`LEAKY_SLOPE`]。
@@ -35,10 +34,23 @@ enum Deriv {
     TanhOut,
     /// `exp(x)`：`y`，读回前向输出 `y`。
     ExpOut,
+}
+
+/// 需现算局部量的激活：导数依赖对 `x` 现算的 σ / 正态密度，公式里用方言 intrinsic。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Active {
     /// `x·σ(x)`：`σ + x·σ·(1−σ)`，对 `x` 现算 σ。
     Silu,
     /// `0.5·x·(1+erf(x/√2))`：`Φ(x) + x·φ(x)`，对 `x` 现算正态密度。
     Gelu,
+}
+
+/// 闭集一元导数公式：只标身份，方言 intrinsic（`exp`/`erf` 命名、浮点后缀）由发射器落地，
+/// 机制层不出现厂商字面量。公式口径与 `train` 标量反向一一对应。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Deriv {
+    Pointwise(Pointwise),
+    Active(Active),
 }
 
 /// LeakyReLU 负区斜率，与 `nn::leaky_relu_f32::SLOPE` 同值。
@@ -47,7 +59,10 @@ const LEAKY_SLOPE: f32 = 0.01;
 impl Deriv {
     /// 该公式是否读回前向输出 `y`；为 `false` 时槽位 1 仍绑定但内核不读。
     fn reads_output(self) -> bool {
-        matches!(self, Deriv::SigmoidOut | Deriv::TanhOut | Deriv::ExpOut)
+        matches!(
+            self,
+            Deriv::Pointwise(Pointwise::SigmoidOut | Pointwise::TanhOut | Pointwise::ExpOut)
+        )
     }
 }
 
@@ -75,31 +90,31 @@ impl GradientEntry {
 pub const POINTWISE: &[GradientEntry] = &[
     GradientEntry {
         op: "relu_f32",
-        deriv: Deriv::Relu,
+        deriv: Deriv::Pointwise(Pointwise::Relu),
     },
     GradientEntry {
         op: "leaky_relu_f32",
-        deriv: Deriv::LeakyRelu,
+        deriv: Deriv::Pointwise(Pointwise::LeakyRelu),
     },
     GradientEntry {
         op: "sigmoid_f32",
-        deriv: Deriv::SigmoidOut,
+        deriv: Deriv::Pointwise(Pointwise::SigmoidOut),
     },
     GradientEntry {
         op: "tanh_f32",
-        deriv: Deriv::TanhOut,
+        deriv: Deriv::Pointwise(Pointwise::TanhOut),
     },
     GradientEntry {
         op: "exp_f32",
-        deriv: Deriv::ExpOut,
+        deriv: Deriv::Pointwise(Pointwise::ExpOut),
     },
     GradientEntry {
         op: "silu_f32",
-        deriv: Deriv::Silu,
+        deriv: Deriv::Active(Active::Silu),
     },
     GradientEntry {
         op: "gelu_f32",
-        deriv: Deriv::Gelu,
+        deriv: Deriv::Active(Active::Gelu),
     },
 ];
 

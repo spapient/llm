@@ -2,10 +2,13 @@
 base = "gelu_f32"
 
 [op]
-name     = "abs_f32"
+name     = "abs"
 stem     = "unary_fn"
 skeleton = "elementwise"
 summary  = "y[n] = |a[n]|"
+# 档族：同一份 unary_fn 模板展开 f32（逐字 include）与 f16（float→half 按档替换）两份原语，
+# 注册名 abs_f32 / abs_f16 由 name 去档后缀 + tiers 推导，与 nn 注册表三方同序。
+tiers    = ["f32", "f16"]
 
 [consts]
 unexpr = "x < 0.0f ? -x : x"
