@@ -619,6 +619,7 @@ name = "llm-engine"
 version = "0.1.0"
 dependencies = [
  "llm-diagnostic",
+ "llm-prof",
  "llm-storage",
  "llm-tensor",
  "llm-testkit",
