@@ -1,7 +1,8 @@
 use crate::session::{Distributed, Remote};
 use annotation::parallel;
 use diagnostic::Result;
-use shard::{Priority, Reduce};
+use nn::{Linear, Stack};
+use shard::{Assembler, Priority, Reduce};
 
 /// 带完整策略标注的装配描述：TP=2、DP=2，最大值归约、不取平均、高优先级。
 #[parallel(
@@ -42,4 +43,24 @@ fn bare_annotation_falls_back_to_single_process_policy() {
     assert_eq!(policy.reduce(), Reduce::Sum);
     assert!(policy.average());
     assert_eq!(policy.priority(), Priority::Normal);
+}
+
+#[test]
+fn annotation_policy_drives_layer_assembly_placement() -> Result<()> {
+    // 策略从注解取出后，直接驱动模型层的并行归属：PP 段保留、TP 分片几何落到本 rank。
+    let policy = Sharded::__parallel_config();
+    let stack = Stack::new(vec![
+        Linear::new("blk.0.q", 12, 24)?,
+        Linear::new("blk.0.o", 24, 12)?,
+    ])?;
+
+    let assembler = Assembler::from_config(0, &policy)?;
+    let placed = assembler.place_stack(&stack, 1)?;
+    assert!(placed.iter().all(|p| p.held()));
+
+    let q = placed.iter().find(|p| p.name() == "blk.0.q").expect("Q 列切");
+    assert_eq!(q.shard_shape(), Some([12, 12]));
+    let o = placed.iter().find(|p| p.name() == "blk.0.o").expect("O 行切");
+    assert_eq!(o.shard_shape(), Some([12, 12]));
+    Ok(())
 }
