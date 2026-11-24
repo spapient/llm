@@ -138,11 +138,11 @@ impl Schedule {
         match tape.requirement(loss) {
             Some(requirement) if requirement.requires() => Ok(()),
             Some(_) => Err(invalid(
-                "autograd::Tape::plan_into",
+                "autograd::Schedule::plan_with",
                 format!("变量 {} 不参与反向", loss.id()),
             )),
             None => Err(invalid(
-                "autograd::Tape::plan_into",
+                "autograd::Schedule::plan_with",
                 format!("变量 {} 不存在（当前已创建 {} 个）", loss.id(), tape.vars()),
             )),
         }

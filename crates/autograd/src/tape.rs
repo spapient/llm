@@ -76,7 +76,7 @@ impl Tape {
     pub fn record(&mut self, op: impl Into<String>, inputs: &[Var]) -> Result<Var> {
         let (requirement, deepest) = self.survey(inputs, "autograd::Tape::record")?;
         let op = op.into();
-        self.named(&op)?;
+        self.named(&op, "autograd::Tape::record")?;
         Ok(self.push(op, inputs, requirement, deepest))
     }
 
@@ -88,22 +88,28 @@ impl Tape {
         requirement: Requirement,
     ) -> Result<Var> {
         let op = op.into();
-        let (_, deepest) = self.check_inputs(&op, inputs, requirement)?;
+        let (_, deepest) = self.check_inputs(
+            &op,
+            inputs,
+            requirement,
+            "autograd::Tape::record_with",
+        )?;
         Ok(self.push(op, inputs, requirement, deepest))
     }
 
-    /// 记录的公共校验：算子名非空、输入存在、声明的需求与输入相容。
+    /// 记录的公共校验：算子名非空、输入存在、声明的需求与输入相容。`site` 标到实际调用口。
     fn check_inputs(
         &self,
         op: &str,
         inputs: &[Var],
         requirement: Requirement,
+        site: &'static str,
     ) -> Result<(Requirement, u32)> {
-        self.named(op)?;
-        let (inferred, deepest) = self.survey(inputs, "autograd::Tape::record_with")?;
+        self.named(op, site)?;
+        let (inferred, deepest) = self.survey(inputs, site)?;
         if requirement.requires() && !inferred.requires() {
             return Err(invalid(
-                "autograd::Tape::record_with",
+                site,
                 format!(
                     "算子 {op} 声明为 {}，但没有任何输入需要梯度",
                     requirement.name()
@@ -113,10 +119,10 @@ impl Tape {
         Ok((inferred, deepest))
     }
 
-    /// 算子名非空；空名会让诊断与调度都失去可读性。
-    fn named(&self, op: &str) -> Result<()> {
+    /// 算子名非空；空名会让诊断与调度都失去可读性。`site` 标到实际调用口。
+    fn named(&self, op: &str, site: &'static str) -> Result<()> {
         if op.trim().is_empty() {
-            return Err(invalid("autograd::Tape::record_with", "算子名不能为空"));
+            return Err(invalid(site, "算子名不能为空"));
         }
         Ok(())
     }
@@ -143,7 +149,12 @@ impl Tape {
     /// 整图审计：逐个节点复核输入存在、算子名非空、声明的需求与输入相容。
     pub fn validate(&self) -> Result<()> {
         for node in self.nodes() {
-            self.check_inputs(node.op(), node.inputs(), node.requirement())
+            self.check_inputs(
+                node.op(),
+                node.inputs(),
+                node.requirement(),
+                "autograd::Tape::validate",
+            )
                 .map(|_| ())
                 .map_err(|error| {
                     error.with(format!(
