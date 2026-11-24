@@ -36,6 +36,16 @@ impl OpDecl {
         Ok(op_decl)
     }
 
+    /// 从编译期强类型 [`super::OpView`] 构造：视图 → owned 字段，再跑模板侧三条判据。
+    ///
+    /// 模板正文由调用方按算子名从 [`crate::catalogue::TEMPLATES`] 配对；视图层不持有模板，
+    /// 签名仍是从模板解析（ABI 唯一事实源）。
+    pub fn from_view(view: &super::OpView, template: &str) -> diagnostic::Result<Self> {
+        let declaration = view.into_decl(template)?;
+        declaration.verified(template)?;
+        Ok(declaration)
+    }
+
     /// 逐点网格判定：无归约/点积、单标量的 Elementwise 算子走 `crate::harness` 的逐点网格快路径——
     /// 线程下标就是元素下标、标量槽透传 `1`，网格必须覆盖整行。该判定是 lowering 分派的单一事实源，
     /// 机制层（cutile）与 cli 编排共用，避免两处各写一遍分派条件。

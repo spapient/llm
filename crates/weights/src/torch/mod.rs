@@ -11,7 +11,7 @@ use diagnostic::Result;
 use dtype::DType;
 use storage::{bad, or_bad};
 
-use crate::cursor::{Cursor, slice};
+use storage::leb::{Cursor, slice};
 
 /// 张量目录条目：名字、元素类型、形状，加存储区在归档内的字节区间。
 #[derive(Debug, Clone)]
@@ -73,7 +73,7 @@ impl<'a> Checkpoint<'a> {
     }
 
     /// 张量字节：`/data/<key>` 与 `data/<key>` 两种条目名都试；区间越界由共享的
-    /// `cursor::slice` 判据统一拒——偏移相加必须先查溢出，否则绕回小值
+    /// `storage::leb::slice` 判据统一拒——偏移相加必须先查溢出，否则绕回小值
     /// 会让越界区间变成「空的成功切片」。
     pub fn data(&self, tensor: &Tensor) -> Result<&'a [u8]> {
         let key = &tensor.storage_key;
@@ -171,7 +171,7 @@ impl<'a> Vm<'a> {
 
     fn execute(&mut self) -> Result<()> {
         loop {
-            let op = self.cursor.byte()?;
+            let op = self.cursor.read_u8()?;
             if op == b'.' {
                 return Ok(());
             }
@@ -253,11 +253,11 @@ impl<'a> Vm<'a> {
 
     fn line(&mut self) -> Result<String> {
         let len = or_bad(
-            self.cursor.tail().iter().position(|&byte| byte == b'\n'),
+            self.cursor.remaining().iter().position(|&byte| byte == b'\n'),
             "GLOBAL 缺换行",
         )?;
         let text = self.cursor.text(len)?;
-        self.cursor.byte()?;
+        self.cursor.read_u8()?;
         Ok(text)
     }
 }

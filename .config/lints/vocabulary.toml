@@ -322,7 +322,6 @@ min_lines_baseline = [
   "crates/train/src/loss/rl.rs",
   "crates/train/src/rng.rs",
   "crates/weights/src/closed.rs",
-  "crates/weights/src/cursor.rs",
   "crates/weights/src/l3.rs",
   "crates/weights/src/svd.rs",
 ]

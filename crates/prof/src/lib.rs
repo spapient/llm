@@ -66,6 +66,9 @@
     feature(stdarch_aarch64_feature_detection)
 )]
 
+// 宏产物按全限定路径 `::llm_prof::…` 引用本 crate 类型；crate 内部展开时需要这道自别名。
+extern crate self as llm_prof;
+
 mod annotate;
 
 // ---- 词汇层：算子契约 ---------------------------------------------------------
@@ -148,13 +151,14 @@ pub mod decl;
 #[path = "../tests/embedded.rs"]
 mod tests;
 
-/// 构建期生成的算子声明表（`build.rs` 读 `src/ops/*.toml` 展开成 `Table` 字面量）。
-#[allow(clippy::all, missing_docs)]
-mod declared_generated {
-    include!(concat!(env!("OUT_DIR"), "/declared.rs"));
+/// 算子声明视图：[`prof_ops!`](annotation::prof_ops) 在编译期读 `src/ops/*.toml`，展开成强类型
+/// `const [OpView]` 视图数组；视图层不残留 `Table` / `Value` 动态树（ADR 0022 重议条款）。
+#[allow(missing_docs)]
+mod ops_generated {
+    annotation::prof_ops!();
 }
 
-pub use declared_generated::declared;
+pub use ops_generated::OPS;
 
 /// 全量算子清单里「名字 → 模板 stem」的那一半：由 [`build.rs`](../build.rs) 与声明表同一次
 /// 扫描生成（`ops/*.toml` 的 `[op].stem`），语料是唯一事实源——加算子 = 加两个文件。

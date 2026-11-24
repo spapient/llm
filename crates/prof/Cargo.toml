@@ -23,6 +23,9 @@ bench = []
 # 与档案同住本 crate：模板与签名是设备档案与片段正文的共同文法，拆开只会多一层转发。
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 dtype = { path = "../dtype", package = "llm-dtype" }
+# 算子语料编译期展开：`prof_ops!()` 在宏进程读 `src/ops/*.toml`，展开成 `const [OpView]`；
+# annotation 不反向依赖 prof（生成代码用全限定路径），方向无环。宏依赖只活在编译器进程。
+annotation = { path = "../annotation", package = "llm-annotation" }
 # 半精度样本取值（`Values::F16`/`Bf16`）：与 nn 的 `Scalar` 半精度档共用同一份 IEEE 编解码。
 half = { workspace = true }
 

@@ -112,6 +112,70 @@ impl<'a> Cursor<'a> {
         self.pos = stop;
         Ok(slice)
     }
+
+    /// 全部字节数（粗查「谎报计数不得超过流规模」）。
+    pub fn total(&self) -> usize {
+        self.bytes.len()
+    }
+
+    /// 定宽 `N` 字节小端原始数组：先按 [`Self::take`] 定界，再一次性收窄，不经 `u64` 往返。
+    fn le<const N: usize>(&mut self) -> Result<[u8; N]> {
+        let mut raw = [0u8; N];
+        raw.copy_from_slice(self.take(N)?);
+        Ok(raw)
+    }
+
+    /// 定宽 4 字节小端整数（ZIP/GGUF/pickle 的「字」）。
+    pub fn word(&mut self) -> Result<u32> {
+        self.le().map(u32::from_le_bytes)
+    }
+
+    /// 定宽 8 字节小端整数（GGUF 的计数与偏移）。
+    pub fn wide(&mut self) -> Result<u64> {
+        self.le().map(u64::from_le_bytes)
+    }
+
+    /// 变宽小端整数：宽度由调用方（opcode 或长度前缀）给出。
+    pub fn uint(&mut self, len: usize) -> Result<u64> {
+        Ok(self
+            .take(len)?
+            .iter()
+            .rev()
+            .fold(0u64, |acc, &byte| (acc << 8) | u64::from(byte)))
+    }
+
+    /// 宽度已知的 UTF-8 文本。
+    pub fn text(&mut self, len: usize) -> Result<String> {
+        String::from_utf8(self.take(len)?.to_vec()).map_err(|_| bad("字符串不是 UTF-8"))
+    }
+}
+
+/// `bytes[at..at + len]`：偏移溢出与越界都显式失败（随机访问的「偏移 + 宽度」判据）。
+pub fn slice(bytes: &[u8], at: usize, len: usize) -> Result<&[u8]> {
+    let stop = at.checked_add(len).ok_or_else(|| bad("字段偏移溢出"))?;
+    bytes.get(at..stop).ok_or_else(|| bad("字段越界"))
+}
+
+/// 小端定宽字节：宽度由 const 泛型给出，越界由 [`slice`] 统一拒。
+fn le_at<const N: usize>(bytes: &[u8], at: usize) -> Result<[u8; N]> {
+    let mut raw = [0u8; N];
+    raw.copy_from_slice(slice(bytes, at, N)?);
+    Ok(raw)
+}
+
+/// 小端定宽整数：三个入口只是 [`le_at`] 的一次 `from_le_bytes` 收窄。
+pub fn u16_at(bytes: &[u8], at: usize) -> Result<u16> {
+    le_at(bytes, at).map(u16::from_le_bytes)
+}
+
+/// 偏移 `at` 处的 4 字节小端整数。
+pub fn u32_at(bytes: &[u8], at: usize) -> Result<u32> {
+    le_at(bytes, at).map(u32::from_le_bytes)
+}
+
+/// 偏移 `at` 处的 8 字节小端整数。
+pub fn u64_at(bytes: &[u8], at: usize) -> Result<u64> {
+    le_at(bytes, at).map(u64::from_le_bytes)
 }
 
 /// 一个 7 位组的规范性：第 10 个字节（`shift == 63`）只允许 `0x00`/`0x01`，

@@ -664,6 +664,7 @@ name = "llm-prof"
 version = "0.1.0"
 dependencies = [
  "half",
+ "llm-annotation",
  "llm-diagnostic",
  "llm-dtype",
  "llm-testkit",

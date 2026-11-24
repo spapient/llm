@@ -5,7 +5,7 @@ use diagnostic::{Code, Error, Result};
 
 use crate::align_up;
 use crate::bad;
-use crate::cursor::{u16_at, u32_at};
+use storage::leb::{u16_at, u32_at};
 use crate::writer::{GLOBAL_CRC, MAGIC, MAX_ALIGN_LOG, SEG_CRC, VERSION};
 use storage::leb::Cursor;
 

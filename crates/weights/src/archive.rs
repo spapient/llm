@@ -7,7 +7,7 @@ use crate::bad;
 use diagnostic::Result;
 
 use crate::Codec;
-use crate::cursor::u32_at;
+use storage::leb::u32_at;
 use crate::proof::{Digest, Proof};
 use crate::seg::{FOOTER_LEN, Stored, fixed, layout, lossless_entry, read_descs};
 use crate::writer::{GLOBAL_CRC, SEG_CRC};

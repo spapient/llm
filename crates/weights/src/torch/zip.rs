@@ -3,7 +3,7 @@
 use diagnostic::Result;
 use storage::bad;
 
-use crate::cursor::{slice, u16_at, u32_at, u64_at};
+use storage::leb::{slice, u16_at, u32_at, u64_at};
 
 // —— ZIP 归档解析（原 `zip`）：STORED 条目，含 ZIP64 回退 ——
 //

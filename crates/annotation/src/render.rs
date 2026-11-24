@@ -481,7 +481,6 @@ fn render_op(code: &mut String, op: &OpModel) {
     render_chunk(code, &op.chunk);
     render_consts(code, &op.consts);
     render_variants(code, &op.variants);
-    field_str(code, "template", &op.template);
     render_phases(code, &op.phases);
     code.push_str("    },\n");
 }
@@ -576,9 +575,11 @@ fn span_expr(code: &mut String, span: &SpanModel) {
 fn render_layouts(code: &mut String, layouts: &[(String, String)]) {
     code.push_str("        layouts: &[");
     comma(code, layouts.iter(), |code, (slot, spec)| {
+        code.push('(');
         literal(code, slot);
         code.push_str(", ");
         code.push_str(&expression(layout_expr(spec)));
+        code.push(')');
     });
     code.push_str("],\n");
 }
@@ -590,9 +591,11 @@ fn render_grid(code: &mut String, grid: &Option<GridModel>) {
         Some(grid) => {
             code.push_str("Some(::llm_prof::decl::GridView { dims: &[");
             comma(code, grid.dims.iter(), |code, (thread, scalar)| {
+                code.push('(');
                 literal(code, thread);
                 code.push_str(", ");
                 literal(code, scalar);
+                code.push(')');
             });
             code.push_str("] }),");
         }
@@ -621,9 +624,11 @@ fn render_chunk(code: &mut String, chunk: &Option<ChunkModel>) {
 fn render_consts(code: &mut String, consts: &[(String, String)]) {
     code.push_str("        consts: &[");
     comma(code, consts.iter(), |code, (key, value)| {
+        code.push('(');
         literal(code, key);
         code.push_str(", ");
         literal(code, value);
+        code.push(')');
     });
     code.push_str("],\n");
 }
@@ -643,7 +648,7 @@ fn render_variant(code: &mut String, variant: &VariantModel) {
     code.push_str(&expression(schedule_expr(&variant.schedule)));
     let _ = write!(
         code,
-        ", mma_share: {}, extra_needs: &[] }}",
+        ", mma_share: {}f64, extra_needs: &[] }}",
         variant.mma_share
     );
 }

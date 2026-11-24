@@ -83,7 +83,8 @@ impl Catalogue {
     fn assemble(ops: Vec<Op>, profiles: Vec<Profile>) -> diagnostic::Result<Self> {
         let mut parsed = Vec::new();
         for op in &ops {
-            let declaration = OpDecl::parse(op.declaration(), op.template())
+            let declaration = op
+                .to_decl()
                 .map_err(|error| error.with(format!("`{}`", op.name())))?;
             if declaration.name != op.name() {
                 return Err(Error::new(

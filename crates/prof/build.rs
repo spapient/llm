@@ -1,5 +1,5 @@
-//! 构建期一次生成三棵树：档案表（`$OUT_DIR/embedded.rs`）、片段表（`$OUT_DIR/tables.rs`）
-//! 与算子声明表（`$OUT_DIR/declared.rs`）。
+//! 构建期一次生成两棵树：档案表（`$OUT_DIR/embedded.rs`）与片段表（`$OUT_DIR/tables.rs`）；
+//! 算子声明已由 `prof_ops!()` 编译期展开成强类型 `OpView`，本脚本只保留算子模板正文表。
 //!
 //! 三份语料同性质——都是「编译期解析一次、运行期只遍历 `Table`」（ADR 0022）——所以只有一个
 //! 构建脚本：`src/<vendor>/<vendor>.toml` 回答"哪台设备"，`ops/*.toml` 回答"哪些算子"。
@@ -65,13 +65,11 @@ fn main() {
     let devices = devices_of(&src);
     let images = env::var_os("CARGO_FEATURE_DEVICE_IMAGE").is_some();
     let tables = buildtables::tables_of(&devices, &out, images);
-    let (declared, template_list, templates_table) =
-        buildops::declarations_of(Path::new(&manifest));
+    let (template_list, templates_table) = buildops::declarations_of(Path::new(&manifest));
 
     for (name, text) in [
         ("embedded.rs", buildtables::archives_of(&devices)),
         ("tables.rs", tables),
-        ("declared.rs", declared),
         ("template_list.rs", template_list),
         ("templates_table.rs", templates_table),
     ] {

@@ -1,4 +1,5 @@
-//! 算子目录：`src/ops/*.toml` 的声明表，与 `<stem>.k` 的模板正文。
+//! 算子目录：`src/ops/*.toml` 经 [`prof_ops!`](annotation::prof_ops) 展开的强类型视图，
+//! 与 `<stem>.k` 的模板正文。
 //!
 //! 与 [`crate::builtin`] 的档案表并列但不同：档案表答"这台机器能跑什么"，目录答"有哪些算子"。
 
@@ -27,26 +28,22 @@ pub struct Registration {
     pub differentiable: bool,
 }
 
-/// 一份算子声明：编译期生成的声明表与同名 `<stem>.k` 模板。
-#[derive(Debug, Clone, PartialEq)]
+/// 一份算子声明：编译期强类型 [`OpView`](crate::decl::OpView) 与同名 `<stem>.k` 模板。
+#[derive(Debug, Clone, Copy)]
 pub struct Op {
     name: &'static str,
-    declaration: &'static diagnostic::data::Table,
+    view: &'static crate::decl::OpView,
     template: &'static str,
 }
 
 impl Op {
-    /// 由名字、声明表与模板构造；名字取 `<name>.toml` 的文件名。
+    /// 由名字、声明视图与模板构造；名字取 `<name>.toml` 的文件名。
     pub fn new(
         name: &'static str,
-        declaration: &'static diagnostic::data::Table,
+        view: &'static crate::decl::OpView,
         template: &'static str,
     ) -> Self {
-        Self {
-            name,
-            declaration,
-            template,
-        }
+        Self { name, view, template }
     }
 
     /// 算子名（与 `<name>.toml` 的文件名一致）。
@@ -54,14 +51,19 @@ impl Op {
         self.name
     }
 
-    /// 声明表：`[op]` / `[axes]` / `[needs]` / `[layouts]` / `[[variants]]`。
-    pub fn declaration(&self) -> &'static diagnostic::data::Table {
-        self.declaration
+    /// 声明视图：`[op]` / `[axes]` / `[needs]` / `[layouts]` / `[[variants]]` 的静态镜像。
+    pub fn view(&self) -> &'static crate::decl::OpView {
+        self.view
     }
 
     /// 模板正文：C 风格文本 + `{{插值}}` + `@原语` 槽位。
     pub fn template(&self) -> &'static str {
         self.template
+    }
+
+    /// owned 化成 [`OpDecl`](crate::decl::OpDecl)：视图 → 归属类型，并跑模板侧校验。
+    pub fn to_decl(&self) -> diagnostic::Result<crate::decl::OpDecl> {
+        crate::decl::OpDecl::from_view(self.view, self.template)
     }
 }
 
@@ -71,13 +73,21 @@ pub fn named(name: &str) -> Option<Op> {
         .binary_search_by_key(&name, |(entry, _)| entry)
         .ok()
         .map(|idx| TEMPLATES[idx])?;
-    Some(Op::new(entry, crate::declared(entry)?, template))
+    Some(Op::new(entry, view(entry)?, template))
 }
 
-/// 全部内嵌算子，顺序与 [`TEMPLATES`] 一致。
+/// 全部内嵌算子，顺序与 [`crate::OPS`] 一致（与 [`TEMPLATES`] 同序）。
 pub fn all() -> Vec<Op> {
-    TEMPLATES
+    crate::OPS
         .iter()
-        .filter_map(|(name, template)| Some(Op::new(name, crate::declared(name)?, template)))
+        .filter_map(|view| Some(Op::new(view.name, view, template(view.name)?)))
         .collect()
+}
+
+/// 按名字取编译期视图；`OPS` 按名升序，二分查找。
+fn view(name: &str) -> Option<&'static crate::decl::OpView> {
+    let idx = crate::OPS
+        .binary_search_by_key(&name, |view| view.name)
+        .ok()?;
+    Some(&crate::OPS[idx])
 }

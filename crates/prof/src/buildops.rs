@@ -1,50 +1,48 @@
-//! 算子声明表生成：`ops/*.toml` → `declared.rs` + `template_list.rs` + `templates_table.rs`。
+//! 模板表生成：`ops/*.toml` → `template_list.rs` + `templates_table.rs`。
 //!
-//! 产物只有一棵 `Table` 树、一份 `$m!{ 名字 => 模板 }` 清单与一张模板正文表（ADR 0022：
-//! 运行期无解析器）；生成顺序按文件 stem 升序，所以模板清单与注册表的
-//! 顺序都可由文件名推出。模板名（`stem`）由语料自己声明：`[op].stem` 缺省为文件名，共享一份
-//! 模板的算子写显式 stem（`base` 继承自动传播）——"哪些算子用哪份模板"只住在 `ops/` 里，
-//! 代码没有第二份清单。
+//! 算子的 `Table` 声明树已由 `prof_ops!()` 编译期展开成强类型 `OpView`（见 `crate::OPS`）；
+//! 本脚本只保留模板正文这一半：一份 `$m!{ 名字 => 模板 }` 清单与一张模板正文表。生成顺序按
+//! 算子名升序，模板清单、注册表与 [`crate::OPS`] 同序。模板名（`stem`）由语料自己声明：
+//! `[op].stem` 缺省为文件名，共享一份模板的算子写显式 stem（`base` 继承自动传播）——
+//! "哪些算子用哪份模板"只住在 `ops/` 里，代码没有第二份清单。
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use crate::{buildgen, fail};
 
-/// 算子声明表：`ops/*.toml` → `$OUT_DIR/declared.rs` + `template_list.rs` + `templates_table.rs`。
-pub fn declarations_of(manifest: &Path) -> (String, String, String) {
-    declarations(manifest).unwrap_or_else(|error| fail(format!("算子声明表：{error}")))
+/// 模板清单与模板正文表：`ops/*.toml` → `template_list.rs` + `templates_table.rs`。
+pub fn declarations_of(manifest: &Path) -> (String, String) {
+    declarations(manifest).unwrap_or_else(|error| fail(format!("算子模板表：{error}")))
 }
 
-/// 三份产物：声明表（`declared.rs`）、`for_each_template!` 的清单（`template_list.rs`，
-/// 与 `ops/` 同源所以没有第二份手写清单）与模板正文表（`templates_table.rs`）。
-fn declarations(manifest: &Path) -> diagnostic::Result<(String, String, String)> {
+/// 两份产物：`for_each_template!` 的清单（`template_list.rs`，与 `ops/` 同源所以没有第二份
+/// 手写清单）与模板正文表（`templates_table.rs`）。
+fn declarations(manifest: &Path) -> diagnostic::Result<(String, String)> {
     let ops = manifest.join("src").join("ops");
     println!("cargo:rerun-if-changed={}", ops.display());
     let files = buildgen::collect(&ops)?;
-    let (names, stems, rows, tiers) = scan(&ops, manifest, &files)?;
+    let (names, stems, tiers) = scan(&ops, manifest, &files)?;
     Ok((
-        emit_declared(&rows),
         emit_list(&names, &stems),
         emit_templates(&ops, &names, &stems, &tiers),
     ))
 }
 
-/// 单份展开条目：算子名 / 模板 stem / 表字面量行 / 档名。
+/// 单份展开条目：算子名 / 模板 stem / 档名。
 struct Entry {
     name: String,
     stem: String,
-    row: String,
     tier: Option<String>,
 }
 
-/// 展开产物四元组：名字表 / 模板 stem 表 / 行清单 / 档名表，三份同序。
-type Generated = (Vec<String>, Vec<String>, String, Vec<Option<String>>);
+/// 展开产物三元组：名字表 / 模板 stem 表 / 档名表，三份同序。
+type Generated = (Vec<String>, Vec<String>, Vec<Option<String>>);
 
-/// 逐文件扫描：`(算子名, 模板 stem, 表字面量行)` 三份同序清单，展开 `base` 继承与 `tiers` 档后生成。
+/// 逐文件扫描：`(算子名, 模板 stem, 档名)` 三份同序清单，展开 `base` 继承与 `tiers` 档后生成。
 ///
 /// 一份档案声明 `[op].tiers = ["f32", "f16", …]` 时，按档展开成多个算子名 `<算法>_<档>`，
-/// 共享同一份模板 stem，`dt` 叶子与 `[op].name` 随档替换——「加一档=加一行」的数据驱动档维度。
+/// 共享同一份模板 stem，模板正文随档替换 C 浮点类型——「加一档=加一行」的数据驱动档维度。
 /// 无 `tiers` 的档案逐字走旧路径（名=文件名）。展开后全体按名升序排序，二分查找的「有序」
 /// 不变量因此与档展开兼容（注册表与目录仍同序）。
 fn scan(ops: &Path, manifest: &Path, files: &[PathBuf]) -> diagnostic::Result<Generated> {
@@ -57,26 +55,16 @@ fn resolved_table(ops: &Path, path: &Path) -> diagnostic::Result<toml::Table> {
     resolve(ops, buildgen::read(path)?)
 }
 
-/// 逐档生成一条表字面量行。
-fn tier_row(exp_name: &str, exp_table: &toml::Table) -> diagnostic::Result<String> {
-    Ok(format!(
-        "            (\"{exp_name}\", {}),",
-        buildgen::emit(exp_table, exp_name)?
-    ))
-}
-
 /// 单份档案展开出的档条目；继承解析、模板 stem 校验都在本助手内闭包。
 fn entries_for_file(ops: &Path, path: &Path) -> diagnostic::Result<Vec<Entry>> {
     let name = file_stem(path);
     let table = resolved_table(ops, path)?;
     let stem = stem_of(&table, name, ops);
     let mut out: Vec<Entry> = Vec::new();
-    for (exp_name, exp_table, tier) in expand_tiers(name, &table)? {
-        let row = tier_row(&exp_name, &exp_table)?;
+    for (exp_name, _exp_table, tier) in expand_tiers(name, &table)? {
         out.push(Entry {
             name: exp_name,
             stem: stem.clone(),
-            row,
             tier,
         });
     }
@@ -101,21 +89,19 @@ fn collect_entries(
     Ok(entries)
 }
 
-/// 条目按名升序，汇总成名字表 / 模板表 / 行清单 / 档名表四份同序清单。
+/// 条目按名升序，汇总成名字表 / 模板表 / 档名表三份同序清单。
 fn flatten(entries: Vec<Entry>) -> Generated {
     let mut entries = entries;
     entries.sort_by(|a, b| a.name.cmp(&b.name));
     let mut names = Vec::new();
     let mut stems = Vec::new();
     let mut tiers = Vec::new();
-    let mut rows = String::new();
     for entry in entries {
         names.push(entry.name);
         stems.push(entry.stem);
         tiers.push(entry.tier);
-        let _ = writeln!(rows, "{}", entry.row);
     }
-    (names, stems, rows, tiers)
+    (names, stems, tiers)
 }
 
 /// 按 `[op].tiers` 把一份算法档案展开成逐档算子表；无 `tiers` 时原样返回单条（名=文件名）。
@@ -182,27 +168,6 @@ fn file_stem(path: &Path) -> &str {
     path.file_stem()
         .and_then(|stem| stem.to_str())
         .unwrap_or_else(|| fail(format!("`{}` 的文件名不是合法 UTF-8", path.display())))
-}
-
-/// `declared.rs`：`Table` 树字面量 + 二分查找。
-fn emit_declared(rows: &str) -> String {
-    let mut code = String::from(
-        "// @generated by crates/prof/build.rs — do not edit.\n\
-         // Source: crates/prof/ops/*.toml, sorted by file stem.\n",
-    );
-    code.push_str(crate::TABLE_REGISTRY_HEAD);
-    code.push_str(rows);
-    code.push_str(
-        "        ]\n\
-         \x20   })\n\
-         }\n\n\
-         /// 按名字取编译期生成的声明表；名字不在表里时返回 `None`。表按名升序（生成序），二分查找。\n\
-         pub fn declared(name: &str) -> Option<&'static Table> {\n\
-         \x20   let idx = tables().binary_search_by_key(&name, |(entry, _)| entry).ok()?;\n\
-         \x20   Some(&tables()[idx].1)\n\
-         }\n\n",
-    );
-    code
 }
 
 /// `template_list.rs`：`$m!{ 名字 => 模板, ... }` 宏清单，与 `names` 同序（文件名升序）。

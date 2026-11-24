@@ -504,7 +504,6 @@ fn sample_op() -> OpModel {
             mma_share: 0.0,
             extra_needs: vec![],
         }],
-        template: String::new(),
         phases: vec![],
     }
 }

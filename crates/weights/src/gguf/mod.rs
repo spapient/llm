@@ -4,7 +4,7 @@ use diagnostic::{Code, Error, Result};
 use dtype::{DType, QType};
 use storage::bad;
 
-use crate::cursor::Cursor;
+use storage::leb::Cursor;
 
 /// 文件 magic。
 pub const MAGIC: [u8; 4] = *b"GGUF";
@@ -276,7 +276,7 @@ impl<'a> Gguf<'a> {
         self.meta("general.architecture").and_then(Value::text)
     }
 
-    /// 张量原始字节视图：区间判据走共享的 `cursor::slice`，偏移越界与长度越界
+    /// 张量原始字节视图：区间判据走共享的 `storage::leb::slice`，偏移越界与长度越界
     /// 都由它一处拒。
     pub fn raw(&self, tensor: &Tensor) -> Result<&'a [u8]> {
         let offset = usize::try_from(tensor.offset).map_err(|_| bad("张量偏移溢出"))?;
@@ -284,7 +284,7 @@ impl<'a> Gguf<'a> {
             .data
             .checked_add(offset)
             .ok_or_else(|| bad("张量偏移溢出"))?;
-        crate::cursor::slice(self.bytes, start, tensor.bytes()?)
+        storage::leb::slice(self.bytes, start, tensor.bytes()?)
     }
 
     /// 按名反量化为 f32。
@@ -349,7 +349,7 @@ fn list(cursor: &mut Cursor<'_>, depth: usize) -> Result<Value> {
 fn length(cursor: &mut Cursor<'_>) -> Result<(u32, u64)> {
     let kind = cursor.word()?;
     let count = cursor.wide()?;
-    if count > cursor.rest() as u64 {
+    if count > cursor.remaining().len() as u64 {
         return Err(bad("数组元素数超过剩余字节"));
     }
     Ok((kind, count))

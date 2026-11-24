@@ -665,20 +665,19 @@ pub struct OpView {
     pub consts: &'static [(&'static str, &'static str)],
     /// 降级链，按 `order` 升序。
     pub variants: &'static [VariantView],
-    /// 模板正文。
-    pub template: &'static str,
     /// 显式数据流阶段；为空时 owned 化按签名派生单阶段。
     pub phases: &'static [PhaseView],
 }
 
 impl OpView {
-    /// owned 化成 [`OpDecl`]：从模板解析内核签名，阶段缺省时按签名派生单阶段。
+    /// owned 化成 [`OpDecl`]：模板正文由调用方按名从 [`crate::catalogue::TEMPLATES`] 配对传入，
+    /// 内核签名从模板解析，阶段缺省时按签名派生单阶段。
     ///
     /// # Errors
     ///
     /// 模板入口 / 形参不在闭集，或显式阶段引用了签名之外的槽位时返回带字段路径的说明。
-    pub fn into_decl(self) -> diagnostic::Result<OpDecl> {
-        let signature = crate::sig::Signature::parse(self.name, self.template)?;
+    pub fn into_decl(self, template: &str) -> diagnostic::Result<OpDecl> {
+        let signature = crate::sig::Signature::parse(self.name, template)?;
         let phases = declare_phases(self.name, self.phases, &signature)?;
         Ok(OpDecl {
             name: self.name.to_string(),
@@ -699,7 +698,7 @@ impl OpView {
                 .map(|(key, value)| (key.to_string(), value.to_string()))
                 .collect(),
             variants: self.variants.iter().map(|v| v.into_owned()).collect(),
-            template: self.template.to_string(),
+            template: template.to_string(),
             signature,
             phases,
         })

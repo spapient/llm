@@ -700,8 +700,6 @@ pub(crate) struct OpModel {
     pub(crate) consts: Vec<(String, String)>,
     /// 降级链，按 `order` 升序。
     pub(crate) variants: Vec<VariantModel>,
-    /// 模板正文占位；#46 接 `TEMPLATES` 表按名配对。
-    pub(crate) template: String,
     /// 显式数据流阶段；为空时 owned 化按签名派生单阶段。
     pub(crate) phases: Vec<PhaseModel>,
 }

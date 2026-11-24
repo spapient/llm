@@ -74,7 +74,6 @@ pub mod settle;
 pub mod l3;
 
 // —— 外部格式只读适配：torch `.bin`（ZIP_STORED + pickle，已平铺进单模块）、GGUF、受限 JSON ——
-pub(crate) mod cursor;
 pub mod gguf;
 pub mod json;
 pub mod torch;

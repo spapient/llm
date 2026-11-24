@@ -12,7 +12,7 @@ use crate::codec::{
     pack_bytes, payload_cap, quant_payload, sparse_payload, to_le_bytes, unpack_bytes,
     unpack_marked, word,
 };
-use crate::cursor::u32_at;
+use storage::leb::u32_at;
 
 /// artifact 魔数（v4：`rank` 载荷改存低秩项的两个因子而非整张 `L`，v1–v3 不再可读）。
 const MAGIC: [u8; 4] = *b"AX04";

@@ -83,6 +83,33 @@ fn minimal_len(value: u64) -> usize {
     (64 - value.leading_zeros()).max(1).div_ceil(7) as usize
 }
 
+#[test]
+fn fixed_width_le_reads_and_random_access() {
+    // 顺序：word(4) + wide(8) + uint(2) + text(3)，小端拼装与位置纪律。
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&0x0102_0304u32.to_le_bytes());
+    bytes.extend_from_slice(&0x0102_0304_0506_0708u64.to_le_bytes());
+    bytes.extend_from_slice(&0xABCDu16.to_le_bytes());
+    bytes.extend_from_slice(b"abc");
+    let mut cur = Cursor::new(&bytes);
+    assert_eq!(cur.total(), bytes.len());
+    assert_eq!(cur.word().unwrap(), 0x0102_0304);
+    assert_eq!(cur.wide().unwrap(), 0x0102_0304_0506_0708);
+    assert_eq!(cur.uint(2).unwrap(), 0xABCD);
+    assert_eq!(cur.text(3).unwrap(), "abc");
+    assert!(cur.remaining().is_empty());
+    assert!(Cursor::new(&bytes).text(99).is_err(), "越界文本必须失败");
+
+    // 随机访问：偏移 + 宽度判据，溢出与越界都显式失败。
+    let raw = [0x11u8, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
+    assert_eq!(u16_at(&raw, 0).unwrap(), 0x2211);
+    assert_eq!(u32_at(&raw, 0).unwrap(), 0x4433_2211);
+    assert_eq!(u64_at(&raw, 0).unwrap(), 0x8877_6655_4433_2211);
+    assert_eq!(slice(&raw, 2, 3).unwrap(), &[0x33, 0x44, 0x55]);
+    assert!(slice(&raw, usize::MAX, 4).is_err(), "偏移溢出必须失败");
+    assert!(u32_at(&raw, 6).is_err(), "越界必须失败");
+}
+
 proptest! {
     #![proptest_config(prop::config())]
 

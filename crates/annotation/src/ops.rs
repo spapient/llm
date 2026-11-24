@@ -190,7 +190,6 @@ fn parse_model(name: &str, table: &Table) -> Result<OpModel, String> {
         chunk,
         consts,
         variants,
-        template: String::new(),
         phases,
     })
 }
