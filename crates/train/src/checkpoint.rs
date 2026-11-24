@@ -26,14 +26,11 @@ impl Step {
         Self { idx, loss }
     }
 
-    /// 步号（从 0 开始）。
-    pub fn idx(&self) -> u64 {
-        self.idx
-    }
-
-    /// 该步的平均损失。
-    pub fn loss(&self) -> f32 {
-        self.loss
+    getters! {
+        /// 步号（从 0 开始）。
+        idx => idx: u64,
+        /// 该步的平均损失。
+        loss => loss: f32,
     }
 }
 

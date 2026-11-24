@@ -349,11 +349,113 @@ pub use cutile::native::i8::{
     SDOT_BLOCK_MAC_PER_K, SDOT_MAC_PER_ROUND, port_sdot, port_sdot_block,
 };
 
-/// 端口探针清单：哪几条指令路径可测，由这里统一回答（调用方不写 `cfg`）。
+/// 一条端口峰值探针：**一条指令路径**的分母。
+///
+/// 四个字段就是本模块与测量容器之间的全部协议：组名（`{group}/{threads}{suffix}`）、
+/// 一轮的操作次数（算吞吐的分子）、探针本身。清单由提供方给，见 [`probes`]。
 #[cfg(feature = "bench")]
-mod probe;
+#[derive(Clone, Copy, Debug)]
+pub struct Probe {
+    /// 基准组名前缀，如 `i8_peak`。
+    pub group: &'static str,
+    /// 组名后缀，用来在同前缀下区分通道，如 `_block`。
+    pub suffix: &'static str,
+    /// 探针一轮做多少次操作（MAC 数）。
+    pub ops_per_round: usize,
+    /// 跑 `rounds` 轮；本机没有这条指令路径时返回 `false` 且一条都不执行。
+    pub run: fn(usize) -> bool,
+}
+
+/// 本机可测的端口探针清单——**由提供方回答**，调用方不写 `cfg`。
+///
+/// `nightly` 是本 crate 的私有 cfg，下游不能可靠判断；缺失通道直接不进清单。
+/// 每项只测同一条指令路径，SME、sdot 与 f32 FMA 的分母不混用。
 #[cfg(feature = "bench")]
-pub use probe::{Probe, probes};
+pub fn probes() -> &'static [Probe] {
+    PROBES
+}
+
+#[cfg(all(feature = "bench", nightly, target_arch = "aarch64"))]
+const SME_FLOPS_PER_ROUND: usize = 4 * 16 * 16 * 2;
+
+#[cfg(all(feature = "bench", nightly, target_arch = "aarch64"))]
+const SME_PURE: Probe = Probe {
+    group: "sme_peak",
+    suffix: "",
+    ops_per_round: SME_FLOPS_PER_ROUND,
+    run: cutile::native::sme::port_run,
+};
+
+#[cfg(all(feature = "bench", nightly, target_arch = "aarch64"))]
+const SME_MIX: Probe = Probe {
+    group: "sme_peak",
+    suffix: "_mix",
+    ops_per_round: SME_FLOPS_PER_ROUND,
+    run: sme_mix_probe,
+};
+
+/// 混合探针复用固定缓存行，测取数端口上限；真实内核走不同行只会更慢。
+#[cfg(all(feature = "bench", nightly, target_arch = "aarch64"))]
+fn sme_mix_probe(rounds: usize) -> bool {
+    static A: [f32; 16] = [1.0; 16];
+    static B: [f32; 64] = [1.0; 64];
+    cutile::native::sme::port_mix(rounds, &A, &B)
+}
+
+#[cfg(all(feature = "bench", target_arch = "aarch64"))]
+const I8_PURE: Probe = Probe {
+    group: "i8_peak",
+    suffix: "",
+    ops_per_round: 2 * cutile::native::i8::SDOT_MAC_PER_ROUND,
+    run: cutile::native::i8::port_sdot,
+};
+
+#[cfg(all(feature = "bench", target_arch = "aarch64"))]
+const FMA_PURE: Probe = Probe {
+    group: "fma_peak",
+    suffix: "",
+    ops_per_round: 2 * cutile::native::gemm8x8::FMA_MAC_PER_K,
+    run: cutile::native::gemm8x8::port_fma,
+};
+
+/// 固定 K 让地址在环内推进，避免 LLVM 把 load 整体提出循环。
+#[cfg(all(feature = "bench", target_arch = "aarch64"))]
+const PROBE_K: usize = 1024;
+
+#[cfg(all(feature = "bench", target_arch = "aarch64"))]
+const I8_BLOCK: Probe = Probe {
+    group: "i8_peak",
+    suffix: "_block",
+    ops_per_round: 2 * cutile::native::i8::SDOT_BLOCK_MAC_PER_K * PROBE_K,
+    run: |rounds| {
+        static A: [i8; 4 * PROBE_K] = [3; 4 * PROBE_K];
+        static B: [i8; 4 * PROBE_K] = [5; 4 * PROBE_K];
+        cutile::native::i8::port_sdot_block(rounds, &A, &B, PROBE_K)
+    },
+};
+
+#[cfg(all(feature = "bench", target_arch = "aarch64"))]
+const FMA_BLOCK: Probe = Probe {
+    group: "fma_peak",
+    suffix: "_block",
+    ops_per_round: 2 * cutile::native::gemm8x8::FMA_MAC_PER_K * PROBE_K,
+    run: |rounds| {
+        static A: [f32; NR * PROBE_K] = [1.0; NR * PROBE_K];
+        static B: [f32; NR * PROBE_K] = [1.0; NR * PROBE_K];
+        cutile::native::gemm8x8::port_fma_block(rounds, &A, &B, PROBE_K)
+    },
+};
+
+#[cfg(all(feature = "bench", nightly, target_arch = "aarch64"))]
+const PROBES: &[Probe] = &[SME_PURE, SME_MIX, I8_PURE, I8_BLOCK, FMA_PURE, FMA_BLOCK];
+#[cfg(all(
+    feature = "bench",
+    not(all(nightly, target_arch = "aarch64")),
+    target_arch = "aarch64"
+))]
+const PROBES: &[Probe] = &[I8_PURE, I8_BLOCK, FMA_PURE, FMA_BLOCK];
+#[cfg(all(feature = "bench", not(target_arch = "aarch64")))]
+const PROBES: &[Probe] = &[];
 
 use i8::{f32_calc, f32_pack};
 pub use i8::{gemm_i8, gemm_i8_checked, gemm_i8_single};

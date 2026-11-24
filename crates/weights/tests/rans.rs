@@ -3,9 +3,9 @@ use super::*;
 
 /// 任意字节往返：解码必须与输入逐字节相等。
 fn assert_roundtrip(src: &[u8]) {
-    let frame = encode(src);
+    let frame = encode_rans(src);
 
-    let back = decode(&frame, src.len()).expect("解码");
+    let back = decode_rans(&frame, src.len()).expect("解码");
 
     assert_eq!(back, src, "往返不一致");
 }
@@ -63,7 +63,7 @@ fn skewed_distribution_roundtrips() {
         }
     }
 
-    let frame = encode(&src);
+    let frame = encode_rans(&src);
 
     assert!(frame.len() < src.len(), "高偏斜数据应被压缩");
 
@@ -72,11 +72,11 @@ fn skewed_distribution_roundtrips() {
 
 #[test]
 fn truncated_frame_is_rejected() {
-    let frame = encode(&vec![3u8; 1000]);
+    let frame = encode_rans(&vec![3u8; 1000]);
 
     for cut in [0, 1, 4, 33, frame.len() - 1] {
         assert!(
-            decode(&frame[..cut], 1000).is_err(),
+            decode_rans(&frame[..cut], 1000).is_err(),
             "截断到 {cut} 必须报错"
         );
     }
@@ -84,16 +84,16 @@ fn truncated_frame_is_rejected() {
 
 #[test]
 fn garbage_is_rejected() {
-    assert!(decode(&[0xFF; 64], 64).is_err());
+    assert!(decode_rans(&[0xFF; 64], 64).is_err());
 }
 
 #[test]
 fn a_trailing_extra_byte_is_rejected() {
-    let mut frame = encode(&vec![3u8; 1000]);
+    let mut frame = encode_rans(&vec![3u8; 1000]);
 
     frame.push(0x77);
 
-    let error = decode(&frame, 1000).expect_err("帧尾多余字节必须报错");
+    let error = decode_rans(&frame, 1000).expect_err("帧尾多余字节必须报错");
 
     assert!(error.to_string().contains("多余字节"), "{error}");
 }
@@ -104,11 +104,11 @@ fn a_lying_length_is_rejected_before_allocating() {
 
     // 而不是先按它分配再想办法。
 
-    let mut frame = encode(&[7u8; 64]);
+    let mut frame = encode_rans(&[7u8; 64]);
 
     frame[..4].copy_from_slice(&u32::MAX.to_le_bytes());
 
-    let error = decode(&frame, 64).expect_err("帧自报长度不能当分配依据");
+    let error = decode_rans(&frame, 64).expect_err("帧自报长度不能当分配依据");
 
     assert!(error.to_string().contains("超过上限"), "{error}");
 }
@@ -148,24 +148,24 @@ fn entropy(src: &[u8]) -> f64 {
 fn payload_len(frame: &[u8]) -> usize {
     let mut cur = frame;
 
-    take::<4>(&mut cur).expect("src_len");
+    take_rans::<4>(&mut cur).expect("src_len");
 
-    let bitmap = take::<32>(&mut cur).expect("bitmap");
+    let bitmap = take_rans::<32>(&mut cur).expect("bitmap");
 
     let present = bitmap.iter().map(|b| b.count_ones()).sum::<u32>() as usize;
 
     for _ in 0..present {
-        take::<2>(&mut cur).expect("freq");
+        take_rans::<2>(&mut cur).expect("freq");
     }
 
     for _ in 0..NLANES {
-        take::<4>(&mut cur).expect("state");
+        take_rans::<4>(&mut cur).expect("state");
     }
 
     let mut total = 0usize;
 
     for _ in 0..NLANES {
-        total += u32::from_le_bytes(take::<4>(&mut cur).expect("lane len")) as usize;
+        total += u32::from_le_bytes(take_rans::<4>(&mut cur).expect("lane len")) as usize;
     }
 
     total
@@ -185,7 +185,7 @@ fn payload_approaches_entropy_bound() {
 
     let ideal = (n as f64) * h / 8.0;
 
-    let frame = encode(&src);
+    let frame = encode_rans(&src);
 
     let payload = payload_len(&frame) as f64;
 
@@ -219,7 +219,7 @@ fn uniform_data_is_not_amplified() {
         })
         .collect();
 
-    let frame = encode(&src);
+    let frame = encode_rans(&src);
 
     // 编码帧本身允许含头部，但写端策略保证只有严格变小才选 rans。
 
@@ -229,7 +229,7 @@ fn uniform_data_is_not_amplified() {
 /// rANS 编解码吞吐（`#[ignore]`）：
 /// `cargo test -p llm-weights --lib -- rans_throughput --release --ignored --nocapture`。
 ///
-/// 8M 字节偏斜分布（80% 为 0，其余 4 符号）`encode` 与 `decode` 分别计时，报 MB/s。5 轮取中位数，
+/// 8M 字节偏斜分布（80% 为 0，其余 4 符号）`encode_rans` 与 `decode_rans` 分别计时，报 MB/s。5 轮取中位数，
 /// 只出数字、不做断言——吞吐随机器浮动。
 #[test]
 #[ignore = "吞吐基准：cargo test -p llm-weights --lib -- rans_throughput --release --ignored --nocapture"]
@@ -242,14 +242,14 @@ fn rans_throughput() {
     let mut dec = [0.0f64; 5];
     for slot in &mut enc {
         let start = std::time::Instant::now();
-        let frame = encode(&src);
+        let frame = encode_rans(&src);
         std::hint::black_box(&frame);
         *slot = start.elapsed().as_secs_f64();
     }
-    let frame = encode(&src);
+    let frame = encode_rans(&src);
     for slot in &mut dec {
         let start = std::time::Instant::now();
-        let back = decode(&frame, src.len()).expect("解码");
+        let back = decode_rans(&frame, src.len()).expect("解码");
         assert_eq!(back.len(), src.len());
         std::hint::black_box(&back);
         *slot = start.elapsed().as_secs_f64();

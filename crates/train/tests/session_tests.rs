@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "session/config.rs"]
+mod config;
+
 use crate::{Chunks, Data, Dataset, LoaderConfig, Reference, Sgd};
 use autograd::{Sizes, Store, Tape, Var};
 use diagnostic::{Code, Result};

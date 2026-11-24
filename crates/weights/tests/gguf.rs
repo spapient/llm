@@ -1,5 +1,5 @@
 //! `gguf` 模块的单元测试。
-use super::dequant::f16_to_f32;
+use super::f16_to_f32;
 use super::*;
 use crate::gguf_fixture as fixture;
 

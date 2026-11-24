@@ -12,9 +12,9 @@ use crate::axes::AxisSet;
 
 use crate::Codec;
 use crate::Wire;
+use crate::codec::encode_rans;
 use crate::crc;
 use crate::proof::Digest;
-use crate::rans;
 use crate::seg::Segment;
 use storage::leb;
 use storage::sink::{Count, FileSink, Measured, Sealed, Sink, SliceSink};
@@ -291,7 +291,7 @@ impl Writer {
                     stored: Cow::Owned(artifact),
                 };
             }
-            let frame = rans::encode(&segment.data);
+            let frame = encode_rans(&segment.data);
             if frame.len() < segment.data.len() {
                 return Plan::Inline {
                     codec: Codec::Rans,

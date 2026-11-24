@@ -133,6 +133,9 @@ macro_rules! layer_delegate {
 /// 新增一层就与在算子表里登记一条同宽，也不会漏掉 derive 或契约接线。
 #[macro_export]
 macro_rules! axis {
+    ($($(#[$meta:meta])* $ty:ident => $op:literal $(, $role:ident)?);* $(;)?) => {
+        $($crate::axis!($(#[$meta])* $ty, $op $(, $role)?);)*
+    };
     ($(#[$meta:meta])* $ty:ident, $op:literal) => {
         $crate::axis!($(#[$meta])* $ty, $op, Trainable);
     };

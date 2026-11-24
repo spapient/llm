@@ -31,7 +31,7 @@ impl Codec {
     pub(crate) fn decode<'a>(self, raw: &'a [u8], want: usize) -> Result<Cow<'a, [u8]>> {
         Ok(match self {
             Self::Store => Cow::Borrowed(raw),
-            Self::Rans => Cow::Owned(crate::rans::decode(raw, want)?),
+            Self::Rans => Cow::Owned(crate::codec::decode_rans(raw, want)?),
             Self::Axes => Cow::Owned(crate::axes::expand(raw)?),
         })
     }

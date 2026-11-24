@@ -41,7 +41,39 @@
 
 #![deny(unsafe_code)]
 
+/// crate 内声明式字段投影：文档与访问器同名，避免为每个字段重复函数骨架。
+macro_rules! getters {
+    ($( $(#[$doc:meta])* $method:ident => $field:ident : $ty:ty ),* $(,)?) => {$(
+        $(#[$doc])*
+        pub fn $method(&self) -> $ty {
+            self.$field
+        }
+    )*};
+}
+
+/// 借用字段单独声明，返回时只做一次引用与切片协变。
+macro_rules! ref_getters {
+    ($( $(#[$doc:meta])* $method:ident => $field:ident : $ty:ty ),* $(,)?) => {$(
+        $(#[$doc])*
+        pub fn $method(&self) -> $ty {
+            &self.$field
+        }
+    )*};
+}
+
+/// 纯字段 builder 的声明式实现；带校验或条件转换的 builder 不使用此宏。
+macro_rules! builders {
+    ($( $(#[$doc:meta])* $method:ident => $field:ident : $ty:ty ),* $(,)?) => {$(
+        $(#[$doc])*
+        pub fn $method(mut self, $field: $ty) -> Self {
+            self.$field = $field;
+            self
+        }
+    )*};
+}
+
 mod backprop;
+mod config;
 pub mod geometry;
 mod kernel;
 mod learner;

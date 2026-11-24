@@ -277,19 +277,15 @@ impl Adam {
         (&mut self.momentum[idx], &mut self.variance[idx])
     }
 
-    /// 一阶矩表（按槽位编号）：快照导出走这里，优化器之外不另存一份矩状态。
-    pub fn momentum(&self) -> &[Vec<f32>] {
-        &self.momentum
+    ref_getters! {
+        /// 一阶矩表（按槽位编号）：快照导出走这里，优化器之外不另存一份矩状态。
+        momentum => momentum: &[Vec<f32>],
+        /// 二阶矩表（按槽位编号）。
+        variance => variance: &[Vec<f32>],
     }
-
-    /// 二阶矩表（按槽位编号）。
-    pub fn variance(&self) -> &[Vec<f32>] {
-        &self.variance
-    }
-
-    /// 优化器全局步数（偏差修正分母）。
-    pub fn step_count(&self) -> u64 {
-        self.step
+    getters! {
+        /// 优化器全局步数（偏差修正分母）。
+        step_count => step: u64,
     }
 }
 

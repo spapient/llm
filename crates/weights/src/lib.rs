@@ -369,7 +369,6 @@ macro_rules! wire_fields {
 // —— 自有 `.u` 容器 v2：描述符、读/写、帧编码、增量补丁与双模式 ——
 mod archive;
 mod container;
-mod rans;
 mod seg;
 mod writer;
 

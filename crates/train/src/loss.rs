@@ -178,7 +178,10 @@ fn paired_mean(
 
 /// 均方误差：`mean((pred − target)²)`。
 pub fn mse(pred: &[f32], target: &[f32]) -> Result<f32> {
-    paired_mean(pred, target, "mse", |p, t| (p - t).powi(2))
+    paired_mean(pred, target, "mse", |p, t| {
+        let d = (p as f32 - t as f32) as f64;
+        d * d
+    })
 }
 
 /// 二分类交叉熵：`max(x,0) − x·y + ln(1+exp(−|x|))`，不经过饱和概率。

@@ -62,19 +62,13 @@ impl<'a, Item> Batch<'a, Item> {
         Self { items, rows, cols }
     }
 
-    /// 条目序列（行主序）。
-    pub fn items(&self) -> &'a [Item] {
-        self.items
-    }
-
-    /// 行数。
-    pub fn rows(&self) -> usize {
-        self.rows
-    }
-
-    /// 列数。
-    pub fn cols(&self) -> usize {
-        self.cols
+    getters! {
+        /// 条目序列（行主序）。
+        items => items: &'a [Item],
+        /// 行数。
+        rows => rows: usize,
+        /// 列数。
+        cols => cols: usize,
     }
 }
 
