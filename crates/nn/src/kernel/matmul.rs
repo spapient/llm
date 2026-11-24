@@ -31,7 +31,7 @@ use std::ops::Range;
 use diagnostic::{Code, Error, Result};
 
 use crate::model::{AxisRole, AxisSpec, Buf, Cost, Sample, ShapeCtx, Values};
-use tensor::{NumericElement, View};
+use tensor::View;
 
 /// 取二维视图的 `(rows, cols)`；秩不符按算子名报错。矩阵乘族各出口共用这一处几何解包。
 pub(crate) fn dim2(dims: &[usize], op: &str) -> Result<(usize, usize)> {
@@ -88,37 +88,32 @@ pub const TN_COLS: usize = 32;
 /// 线性层 tile 的收缩块宽度。
 pub const TN_K: usize = 256;
 
-/// 收缩轴可变 GEMM 的精度契约：两档只差元素类型、累加器与一次乘加。
-///
-/// `Self` 是参与乘加的元素，收紧到 `NumericElement`：浮点与整数封闭分组，
-/// 布尔与打包 lane 不能进乘加族。打包量化权重仍走 `gemv::Element` 分派 trait，不在此域。
-pub trait Precision: Copy + NumericElement {
-    /// 累加器与输出元素：`f32` 档就是 [`f32`]，`i8` 档是 [`i32`]（转回 f32 由注册侧做）。
-    type Acc: Copy + Default;
+/// 全算子族共享的精度根（累加器 + 乘累加），定义在 [`crate::kernel::scalar`]，此处转出供 GEMM 入口使用。
+pub use crate::kernel::scalar::Precision;
 
+/// GEMM 的精度档：在共享 [`Precision`] 之上再加一个注册名（尺寸校验与代价标签取它）。
+///
+/// 注册名是「每档对应的 matmul 算子名」，属 GEMM 局部而非元素精度的固有属性，
+/// 故与共享根分离：unary / binary / reduce 泛型到 `Precision` / `Scalar` 即可，不需要名字。
+pub trait Tier: Precision {
     /// 注册名：尺寸校验与代价标签都取它，入口不必再传一遍名字。
     const NAME: &'static str;
-
-    /// 一次乘加：`*acc += a·b`。
-    fn mac(acc: &mut Self::Acc, a: Self, b: Self);
 }
 
-impl Precision for f32 {
-    type Acc = f32;
+impl Tier for f32 {
     const NAME: &'static str = "matmul_f32";
-
-    fn mac(acc: &mut f32, a: f32, b: f32) {
-        *acc += a * b;
-    }
 }
 
 impl Precision for i8 {
     type Acc = i32;
-    const NAME: &'static str = "matmul_i8";
 
     fn mac(acc: &mut i32, a: i8, b: i8) {
         *acc += i32::from(a) * i32::from(b);
     }
+}
+
+impl Tier for i8 {
+    const NAME: &'static str = "matmul_i8";
 }
 
 /// 标量参考：`out[i,j] = Σ_p a[i,p]·b[p,j]`，每个元素按 `p` 顺序独立累加；两档精度共用。
@@ -206,8 +201,8 @@ fn accumulate_tile<P: Precision>(
     }
 }
 
-/// 三条缓冲的尺寸校验，两档精度的四个 `forward` 共用；算子名取自 [`Precision::NAME`]。
-fn check_dims<P: Precision>(
+/// 三条缓冲的尺寸校验，两档精度的四个 `forward` 共用；算子名取自 [`Tier::NAME`]。
+fn check_dims<P: Tier>(
     a: &[P],
     b: &[P],
     m: usize,
@@ -237,7 +232,7 @@ fn check_dims<P: Precision>(
 type MatmulKernel<P> = fn(&[P], &[P], usize, usize, usize, &mut [<P as Precision>::Acc]);
 
 /// 校验两条二维视图与输出缓冲，再把裸切片交给指定骨架；标量与 tile 两条入口共用这套装配。
-fn run<P: Precision>(
+fn run<P: Tier>(
     a: View<'_, P>,
     b: View<'_, P>,
     out: &mut [P::Acc],
@@ -254,7 +249,7 @@ fn run<P: Precision>(
 /// # Errors
 ///
 /// 三条缓冲长度与 `(m, n, k)` 不符时返回说明。
-pub fn forward_scalar<P: Precision>(
+pub fn forward_scalar<P: Tier>(
     a: View<'_, P>,
     b: View<'_, P>,
     out: &mut [P::Acc],
@@ -267,7 +262,7 @@ pub fn forward_scalar<P: Precision>(
 /// # Errors
 ///
 /// 三条缓冲长度与 `(m, n, k)` 不符时返回说明。
-pub fn forward_tiled<P: Precision>(
+pub fn forward_tiled<P: Tier>(
     a: View<'_, P>,
     b: View<'_, P>,
     out: &mut [P::Acc],
@@ -481,12 +476,12 @@ pub fn project_shape(m: usize, n: usize) -> Result<ShapeCtx> {
 /// 标量代价：`2·m·K·n` FLOP，读 `(m·K + K·n)·size_of::<P>()` 字节，写 `m·n·4` 字节。
 ///
 /// 读数由精度定（`f32` 每元素 4 字节、`i8` 1 字节），写出恒为 f32；轴名与算子名取自
-/// [`Precision::NAME`]。
+/// [`Tier::NAME`]。
 ///
 /// # Errors
 ///
 /// 形状上下文缺轴时返回带算子名的说明。
-fn cost_of<P: Precision>(shape: &ShapeCtx) -> Result<Cost> {
+fn cost_of<P: Tier>(shape: &ShapeCtx) -> Result<Cost> {
     let axis = |label: char| {
         shape
             .get(label)

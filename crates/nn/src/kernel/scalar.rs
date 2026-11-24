@@ -1,22 +1,37 @@
-//! 浮点标量闭集：一份算术骨架为 `f32` / `f64` / `half::f16` / `half::bf16` 实现。
+//! 元素精度根与浮点标量闭集：`Precision` 是全算子族共享的乘累加契约，`Scalar` 是其浮点子集。
 
 use core::fmt::Debug;
-use tensor::FloatElement;
+use tensor::{FloatElement, NumericElement};
+
+/// 全算子族共享的元素精度档：累加器类型 + 乘累加原语（ADR 0054 §1 的「元素档 K」根）。
+///
+/// 稠密档（`f32` / `f64` / `half::f16` / `half::bf16`）以自身为累加器；`i8` 以 `i32` 防溢出。
+/// 骨架族（unary / binary / reduce / matmul）泛型到本 trait 即获多精度执行能力，
+/// 无需为每档另写一份算子（不开平行的 `*_f16` 注册族）。打包量化权重走 `gemv::Element`，不在此列。
+pub trait Precision: Copy + NumericElement {
+    /// 累加器类型（稠密档 = 自身，`i8` = `i32`）。
+    type Acc: Copy + Default;
+    /// 乘累加：`acc += a * b`。
+    fn mac(acc: &mut Self::Acc, a: Self, b: Self);
+}
 
 /// 浮点标量闭集：`f32` / `f64` / `half::f16` / `half::bf16` 满足；`nn` 的脉冲 / 合成 / 决策头复用本 trait。
 ///
 /// 元素域收紧到 `FloatElement`：只有封闭浮点标量可进超越函数 / 浮点算术族，
-/// 整数与布尔不在其列。
+/// 整数与布尔不在其列。作为 [`Precision`] 的浮点子集，一元 / 二元 / 归约骨架泛型到本 trait
+/// 即在同一份闭包下服务四个浮点档。
 pub trait Scalar:
     Copy
     + PartialEq
     + PartialOrd
     + Debug
     + FloatElement
+    + Precision
     + core::ops::Add<Output = Self>
     + core::ops::Sub<Output = Self>
     + core::ops::Mul<Output = Self>
     + core::ops::Div<Output = Self>
+    + core::ops::Neg<Output = Self>
 {
     /// 加法幺元。
     const ZERO: Self;
@@ -53,6 +68,14 @@ pub trait Scalar:
     fn to_usize(self) -> usize;
     /// 就近取整，半分远离零（`f64::round` 的口径）。
     fn round(self) -> Self;
+    /// 向上取整。
+    fn ceil(self) -> Self;
+    /// 向零截断。
+    fn trunc(self) -> Self;
+    /// `ln(1 + x)`（无 `x≈0` 时的灾难性消去）。
+    fn ln_1p(self) -> Self;
+    /// 以 2 为底的指数 `2^x`。
+    fn exp2(self) -> Self;
     /// 取回 `f64`。
     fn to_f64(self) -> f64;
 }
@@ -64,6 +87,12 @@ pub trait Scalar:
 /// half 侧保证，骨架侧不复制任何一份算术。
 macro_rules! impl_scalar {
     ($ty:ty, $zero:expr, $one:expr, $neg_inf:expr, $from_f64:expr, $from_usize:expr, $to_f64:expr, $to_usize:expr) => {
+        impl Precision for $ty {
+            type Acc = $ty;
+            fn mac(acc: &mut Self::Acc, a: Self, b: Self) {
+                *acc = *acc + a * b;
+            }
+        }
         impl Scalar for $ty {
             const ZERO: Self = $zero;
             const ONE: Self = $one;
@@ -107,6 +136,18 @@ macro_rules! impl_scalar {
             }
             fn round(self) -> Self {
                 num_traits::Float::round(self)
+            }
+            fn ceil(self) -> Self {
+                num_traits::Float::ceil(self)
+            }
+            fn trunc(self) -> Self {
+                num_traits::Float::trunc(self)
+            }
+            fn ln_1p(self) -> Self {
+                num_traits::Float::ln_1p(self)
+            }
+            fn exp2(self) -> Self {
+                num_traits::Float::exp2(self)
             }
             fn to_f64(self) -> f64 {
                 ($to_f64)(self)

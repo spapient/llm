@@ -1,3 +1,5 @@
+use super::*;
+
 /// 确定性 i8 样本：覆盖正负与零，(len, salt) 固定即序列固定。
 fn sample(len: usize, salt: i32) -> Vec<i8> {
     (0..len)
@@ -18,7 +20,7 @@ fn assert_tiled_matches(m: usize, n: usize, k: usize) {
         n,
         k,
         forward_scalar,
-        super::forward_tiled,
+        forward_tiled,
     );
     assert_eq!(actual, expected, "i8 tile 必须与标量参考逐位一致");
 }
@@ -48,7 +50,7 @@ fn tiled_matches_scalar_on_trivial_shapes() {
 #[test]
 fn empty_contraction_yields_zeros() {
     let mut out = vec![1i32; 4];
-    forward_tiled::<i8>(
+    forward_tiled(
         tensor::View::matrix(2, 0, &[]).expect("空收缩 a"),
         tensor::View::matrix(0, 2, &[]).expect("空收缩 b"),
         &mut out,

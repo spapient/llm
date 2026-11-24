@@ -131,8 +131,7 @@ fn run_entry(entry: &Entry) {
         .zip(&dout)
         .map(|(&value, &upstream)| {
             let value = value as f64;
-            let central =
-                ((entry.f)(value + STEP) - (entry.f)(value - STEP)) / (2.0 * STEP);
+            let central = ((entry.f)(value + STEP) - (entry.f)(value - STEP)) / (2.0 * STEP);
             (upstream as f64 * central) as f32
         })
         .collect();

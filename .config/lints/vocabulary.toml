@@ -183,6 +183,7 @@ min_lines_baseline = [
   "crates/cutile/src/reference.rs",
   "crates/cutile/src/space.rs",
   "crates/cutile/src/validate.rs",
+  "crates/device/src/backward.rs",
   "crates/device/src/backends/ascend.rs",
   "crates/device/src/backends/common.rs",
   "crates/device/src/backends/harness.rs",

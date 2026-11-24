@@ -52,19 +52,21 @@ pub mod log_f32 {
 pub mod gelu_f32 {
     //! 逐元素 GELU 激活（精确 erf 版）：`y[n] = 0.5*a[n]*(1 + erf(a[n]/sqrt(2)))`。
 
-    /// 标量误差函数：Abramowitz-Stegun 手册公式 7.1.26（`|误差| < 1.5e-7`）。
-    pub fn erf(x: f32) -> f32 {
-        let sign = if x < 0.0 { -1.0 } else { 1.0 };
+    use crate::kernel::scalar::Scalar;
+
+    /// 标量误差函数：Abramowitz-Stegun 手册公式 7.1.26（`|误差| < 1.5e-7`），泛型到浮点标量档。
+    pub fn erf<K: Scalar>(x: K) -> K {
+        let sign = if x < K::ZERO { -K::ONE } else { K::ONE };
         let x = x.abs();
-        let p = 0.327_591_1;
-        let a1 = 0.254_829_6;
-        let a2 = -0.284_496_72;
-        let a3 = 1.421_413_8;
-        let a4 = -1.453_152_1;
-        let a5 = 1.061_405_4;
-        let t = 1.0 / (1.0 + p * x);
+        let p = K::from_f64(0.327_591_1);
+        let a1 = K::from_f64(0.254_829_6);
+        let a2 = K::from_f64(-0.284_496_72);
+        let a3 = K::from_f64(1.421_413_8);
+        let a4 = K::from_f64(-1.453_152_1);
+        let a5 = K::from_f64(1.061_405_4);
+        let t = K::ONE / (K::ONE + p * x);
         let series = t * (a1 + t * (a2 + t * (a3 + t * (a4 + t * a5))));
-        let y = 1.0 - series * (-x * x).exp();
+        let y = K::ONE - series * (-x * x).exp();
         sign * y
     }
 
@@ -75,11 +77,11 @@ pub mod gelu_f32 {
         unary_pair_tests,
         {
             // 精确 erf 的已知值钉住：Abramowitz-Stegun 7.1.26 闭式，两侧绝对误差 < 1.5e-7。
-            assert!((erf(0.0) - 0.0).abs() < 1e-6);
-            assert!((erf(1.0) - 0.842_700_8).abs() < 1.5e-6);
-            assert!((erf(-1.0) + 0.842_700_8).abs() < 1.5e-6);
+            assert!((erf(0.0_f32) - 0.0).abs() < 1e-6);
+            assert!((erf(1.0_f32) - 0.842_700_8).abs() < 1.5e-6);
+            assert!((erf(-1.0_f32) + 0.842_700_8).abs() < 1.5e-6);
         },
-        |x| 0.5 * x * (1.0 + erf(x * std::f32::consts::FRAC_1_SQRT_2))
+        |x| K::from_f64(0.5) * x * (K::ONE + erf(x * K::from_f64(std::f64::consts::FRAC_1_SQRT_2)))
     );
 }
 
@@ -101,7 +103,7 @@ pub mod silu_f32 {
                 out = out[0]
             );
         },
-        |x| x / (1.0 + (-x).exp())
+        |x| x / (K::ONE + (-x).exp())
     );
 }
 
@@ -127,7 +129,7 @@ pub mod leaky_relu_f32 {
             assert_eq!(out[1], 0.0, "零点");
             assert_eq!(out[2], 2.0, "正区恒等");
         },
-        |x| if x >= 0.0 { x } else { SLOPE * x }
+        |x| if x >= K::ZERO { x } else { K::from_f64(SLOPE as f64) * x }
     );
 }
 
@@ -150,7 +152,7 @@ pub mod relu_f32 {
             assert_eq!(out[1], 0.0, "零点");
             assert_eq!(out[2], 2.0, "正区恒等");
         },
-        |x| x.max(0.0)
+        |x| x.max(K::ZERO)
     );
 }
 
@@ -174,7 +176,7 @@ pub mod sigmoid_f32 {
             assert_eq!(out[2], 0.0, "下饱和不溢出");
             assert_eq!(out[3], 1.0, "上饱和不溢出");
         },
-        |x| 1.0 / (1.0 + (-x).exp())
+        |x| K::ONE / (K::ONE + (-x).exp())
     );
 }
 
@@ -198,7 +200,7 @@ pub mod tanh_f32 {
             assert_eq!(out[2], -1.0, "下饱和");
             assert_eq!(out[3], 1.0, "上饱和");
         },
-        |x| 2.0 / (1.0 + (-2.0 * x).exp()) - 1.0
+        |x| K::from_f64(2.0) / (K::ONE + (-K::from_f64(2.0) * x).exp()) - K::ONE
     );
 }
 
@@ -223,8 +225,8 @@ pub mod hard_sigmoid_f32 {
             assert!((out[3] - 1.0).abs() < 1e-6, "3 落在上饱和 {}", out[3]);
         },
         |x| {
-            let v = x / 6.0 + 0.5;
-            v.clamp(0.0, 1.0)
+            let v = x / K::from_f64(6.0) + K::from_f64(0.5);
+            v.max(K::ZERO).min(K::ONE)
         }
     );
 }
@@ -246,7 +248,7 @@ pub mod scale_f32 {
             assert!(forward(tensor::View::one(&[1.0]), &mut out).is_ok(), "等长");
             assert_eq!(out[0], ALPHA, "scale(1) = ALPHA");
         },
-        |x| ALPHA * x,
+        |x| K::from_f64(ALPHA as f64) * x,
         |len| crate::model::linear(len, 0.25, -2.0)
     );
 }
@@ -342,12 +344,12 @@ pub mod sign_f32 {
             assert_eq!(out[1], 0.0, "零点");
             assert_eq!(out[2], 1.0, "正区符号");
         },
-        |x| if x > 0.0 {
-            1.0
-        } else if x < 0.0 {
-            -1.0
+        |x| if x > K::ZERO {
+            K::ONE
+        } else if x < K::ZERO {
+            -K::ONE
         } else {
-            0.0
+            K::ZERO
         },
         false
     );
@@ -372,7 +374,7 @@ pub mod recip_f32 {
             assert_eq!(out[1], 0.25, "1/4");
             assert_eq!(out[2], 2.0, "1/0.5");
         },
-        |x| 1.0 / x,
+        |x| K::ONE / x,
         false
     );
 }
@@ -473,7 +475,7 @@ pub mod rsqrt_f32 {
             assert_eq!(out[0], 1.0, "1/√1");
             assert_eq!(out[1], 0.5, "1/√4");
         },
-        |x| 1.0 / x.sqrt(),
+        |x| K::ONE / x.sqrt(),
         false,
         |len| (0..len).map(|i| (i + 1) as f32 * 0.25).collect()
     );
