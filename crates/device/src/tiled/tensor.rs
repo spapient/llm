@@ -2,7 +2,7 @@
 
 use super::geometry::{gemm_bufs, gemm_dims};
 use diagnostic::{Code, Error, Result};
-use llm_optim::backend::TensorGeometry;
+use shard::backend::TensorGeometry;
 use prof::model::Sample;
 use prof::sig::Signature;
 

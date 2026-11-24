@@ -2,7 +2,7 @@
 //! 这些原语与厂商无关，单列一份，避免 CUDA / 昇腾 / Metal 各抄一份漂移。
 
 use diagnostic::{Code, Error, Result};
-use llm_optim::driver;
+use shard::driver;
 use prof::model::Sample;
 use prof::prof::Profile;
 use prof::sig::Signature;

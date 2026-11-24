@@ -107,13 +107,13 @@ fn run_variant(
     operator: &str,
     device: &str,
     sample: &nn::model::Sample,
-) -> Result<llm_optim::execution::Execution> {
-    llm_optim::execution::execute(catalogue, dirs, operator, device, sample)
+) -> Result<shard::execution::Execution> {
+    shard::execution::execute(catalogue, dirs, operator, device, sample)
 }
 
 /// 一层的报告行：形状、算子、变体、tile、误差、片段行数与缓存键。
 fn variant_row(
-    executed: &llm_optim::execution::Execution,
+    executed: &shard::execution::Execution,
     m: usize,
     n: usize,
     operator: &str,

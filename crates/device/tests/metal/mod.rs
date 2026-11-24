@@ -8,9 +8,9 @@
 
 use super::harness::*;
 use super::*;
-use llm_optim::backend::TensorGeometry;
-use llm_optim::execution::Backend::Metal;
-use llm_optim::execution::{Mode, program, program_sample};
+use shard::backend::TensorGeometry;
+use shard::execution::Backend::Metal;
+use shard::execution::{Mode, program, program_sample};
 
 mod attention;
 mod backward;

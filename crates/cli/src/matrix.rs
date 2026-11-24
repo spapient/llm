@@ -4,8 +4,8 @@ use cutile::atom::Prim;
 use cutile::plan::Verdict;
 use cutile::prof::Profile;
 use diagnostic::render::{Align, Sheet};
-use llm_optim::ledger::{BackendRow, LedgerCell, Status};
-use llm_optim::verify::Verified;
+use shard::ledger::{BackendRow, LedgerCell, Status};
+use shard::verify::Verified;
 use prof::decl::Fusion;
 use std::fmt::Write as _;
 

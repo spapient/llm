@@ -124,7 +124,7 @@ pub use config::{LanguageFront, RuntimeConfig};
 
 // ---- 优化面（原 `optim` crate 并入） ----------------------------------------
 //
-// `device` / `cli` 以 `llm_optim::` 名义消费这些路径：后端契约、工具链、执行驱动。
+// `device` / `cli` 以 `shard::` 名义消费这些路径：后端契约、工具链、执行驱动。
 pub mod backend;
 pub mod bench;
 pub mod build;
@@ -135,11 +135,19 @@ pub mod gate;
 pub mod ir;
 pub mod ledger;
 pub mod pipeline;
+pub mod platform;
 pub mod program;
 pub mod runner;
 pub mod sweep;
 pub mod toolchain;
 pub mod verify;
 pub mod witness;
+
+// 设备执行面（回迁自 llm-device）：后端装配、方言 lowering、六平台合同与过渡内核族。
+pub mod backends;
+mod cuda;
+mod dialect;
+mod metal;
+mod tiled;
 
 pub use runner::{compile_flags, driver};

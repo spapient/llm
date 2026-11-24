@@ -4,10 +4,10 @@ use crate::backends::common::{device_fn, witness_head, witness_readback};
 use crate::platform::{ascend_device, detect_cce};
 use cutile::dirs::Dirs;
 use diagnostic::{Code, Error, Result};
-use llm_optim::backend::{Backend, Codegen, Driver, Readback, Source};
-use llm_optim::driver;
-use llm_optim::toolchain::Toolchain;
-use llm_optim::witness::{MAX_OUT, Scope, Selected};
+use shard::backend::{Backend, Codegen, Driver, Readback, Source};
+use shard::driver;
+use shard::toolchain::Toolchain;
+use shard::witness::{MAX_OUT, Scope, Selected};
 use prof::model::Sample;
 use prof::prof::Emit;
 use prof::prof::Profile;
@@ -192,7 +192,7 @@ fn ascend_compile(exe: &Path, src: &Path, profile: &Profile, dirs: &Dirs) -> Res
     // `-xcce` / `--cce-aicore-algorithm` 归档案的 `[compile].flags`：那是"哪个核芯"的声明，本层不猜
     // （`dav-c220` 只对 `id = "910b"` 成立）。唯一的分拣是顺序：`-l` 类参数被转给链接器，排在源
     // 文件之前就是"undefined reference to aclInit"，所以它们挪到源文件之后。
-    let flags = llm_optim::compile_flags(profile, dirs)?;
+    let flags = shard::compile_flags(profile, dirs)?;
     let (links, options): (Vec<String>, Vec<String>) =
         flags.into_iter().partition(|flag| flag.starts_with("-l"));
     command

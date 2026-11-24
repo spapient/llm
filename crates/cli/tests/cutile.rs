@@ -17,19 +17,19 @@ fn nvidia_present() -> bool {
     let catalogue = Catalogue::load(&settings().dirs()).expect("内置数据");
     catalogue
         .profile("nvidia")
-        .is_some_and(llm_optim::witness::device_available)
+        .is_some_and(shard::witness::device_available)
 }
 
 /// 性能判据每轮都要有一句结论：没声明峰值时说“未测量”，不能什么都不打印。
 #[test]
 fn the_performance_line_is_printed_even_when_nothing_was_measured() {
-    let peak = llm_optim::bench::Peak {
+    let peak = shard::bench::Peak {
         value: 68.0e9,
         src: "2*8*2666e6".to_string(),
     };
 
     let reached = section::performance_note(
-        llm_optim::bench::Performance::new(Some(0.72), false),
+        shard::bench::Performance::new(Some(0.72), false),
         Some(&peak),
     );
     assert!(reached.contains("72.0%"), "{reached}");
@@ -37,7 +37,7 @@ fn the_performance_line_is_printed_even_when_nothing_was_measured() {
     assert!(reached.contains("不是“相对原生库的 85%”"), "{reached}");
 
     let below = section::performance_note(
-        llm_optim::bench::Performance::new(Some(0.0069), false),
+        shard::bench::Performance::new(Some(0.0069), false),
         Some(&peak),
     );
     assert!(below.contains("0.7%"), "{below}");
@@ -45,14 +45,14 @@ fn the_performance_line_is_printed_even_when_nothing_was_measured() {
     assert!(below.contains("特化代码"), "{below}");
 
     let cached = section::performance_note(
-        llm_optim::bench::Performance::new(Some(0.19), true),
+        shard::bench::Performance::new(Some(0.19), true),
         Some(&peak),
     );
     assert!(cached.contains("口径无效"), "{cached}");
     assert!(cached.contains("不参与 §16 判定"), "{cached}");
 
     // 没有峰值：判据没有尺子，仍要说清“未测量”，而不是静默通过。
-    let unknown = section::performance_note(llm_optim::bench::Performance::new(None, false), None);
+    let unknown = section::performance_note(shard::bench::Performance::new(None, false), None);
     assert!(unknown.contains("未测量"), "{unknown}");
     assert!(unknown.contains("不参与 Go/No-Go"), "{unknown}");
     assert!(!unknown.contains("门槛"), "{unknown}");
@@ -155,7 +155,7 @@ fn the_ledger_lists_every_declared_primitive() {
     let profile = catalogue.resolve("cpu").expect("cpu 档案");
     let verified = Verified {
         device: "cpu".to_string(),
-        channel: llm_optim::verify::Channel::Parallel,
+        channel: shard::verify::Channel::Parallel,
         vendor: profile.meta.vendor.clone(),
         id: profile.meta.id.clone(),
         variant: "pipe2".to_string(),

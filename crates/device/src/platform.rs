@@ -31,7 +31,7 @@
 //! 证据长什么样。
 
 use diagnostic::{Code, Error, Result};
-use llm_optim::toolchain::{Toolchain, parse_version, probe};
+use shard::toolchain::{Toolchain, parse_version, probe};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;

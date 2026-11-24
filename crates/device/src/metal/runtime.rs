@@ -2,9 +2,9 @@
 
 use cutile::dirs::Dirs;
 use diagnostic::{Code, Error, Result};
-use llm_optim::backend::Readback;
-use llm_optim::driver;
-use llm_optim::witness::MAX_OUT;
+use shard::backend::Readback;
+use shard::driver;
+use shard::witness::MAX_OUT;
 use prof::prof::Profile;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -46,7 +46,7 @@ pub fn metal_kernel(dir: &Path, program: &str, flags: &[String]) -> Result<PathB
 }
 
 /// 编译并执行一次 Metal 生产态内核（设备源 + host 驱动），返回 `(stdout, stderr)` 原文。
-/// 与 [`llm_optim::backend::Driver::compile_run`] 同口径：一次性目录，用完即删。
+/// 与 [`shard::backend::Driver::compile_run`] 同口径：一次性目录，用完即删。
 pub fn compile_run_metal(
     profile: &Profile,
     dirs: &Dirs,
@@ -79,7 +79,7 @@ fn metal_driver_exe_from(
     stem: &str,
     role: &str,
 ) -> Result<PathBuf> {
-    let Some(compiler) = llm_optim::toolchain::detect() else {
+    let Some(compiler) = shard::toolchain::detect() else {
         return Err(Error::new(
             Code::Unsupported,
             format!("缺少 host C 编译器：Metal {role}需要一个 host 驱动把内核发射到 GPU"),

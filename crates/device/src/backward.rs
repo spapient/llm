@@ -19,7 +19,7 @@
 //! 设备核只产出本节点对本输入的逐元素贡献。归一化 / 注意力 / 卷积 / 矩阵乘等带规约轴或多输出的
 //! 算子反向不在本逐点契约内，走各自的多趟核通道。
 
-use llm_optim::execution::Backend;
+use shard::execution::Backend;
 
 /// 点态导数：一行表达式，直接拼进 `dx[i] = dout[i] * (<expr>);`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

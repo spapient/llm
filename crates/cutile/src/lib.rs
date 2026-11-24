@@ -107,11 +107,11 @@ pub mod space;
 pub mod substitute;
 pub mod validate;
 // 生产态内核发射与基准封装（M3-2 / M3-10）已搬到 `engine`（L6）：Metal / CUDA 的 vendor 语法
-// 不进 cutile，机制层只经 `llm_optim::backend::Codegen::lower` / `llm_optim::backend::Codegen::harness`
+// 不进 cutile，机制层只经 `shard::backend::Codegen::lower` / `shard::backend::Codegen::harness`
 // 缝分派（`docs/ARCHITECTURE.md` 的 L3 契约：cutile 不出现厂商字面量）。
 //
 // 接缝与命令策略（`backend`、`build`、`device`、`gate`、`pipeline`、`runner`、`toolchain`、
-// `witness`、`verify`、`execution`）住在 `shard`（extern 别名 `llm-optim`）：它们要拼一次编译、跑一次设备，而本 crate
+// `witness`、`verify`、`execution`）住在 `shard`：它们要拼一次编译、跑一次设备，而本 crate
 // 只做"把三层数据变成源文本"这段旧模板前端（①②③④⑤）。
 
 #[cfg(test)]

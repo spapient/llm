@@ -2,7 +2,7 @@
 //! CUDA 与 Metal 各走一套合成入口；分块族的段数与折叠是一体的，这层只回答「什么形态配哪份程序」。
 
 use diagnostic::{Code, Error, Result};
-use llm_optim::backend::{Launch, Lower, Source};
+use shard::backend::{Launch, Lower, Source};
 use prof::decl::Grid;
 use prof::model::Sample;
 use prof::sig::Signature;

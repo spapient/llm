@@ -3,8 +3,8 @@
 use super::*;
 
 use cutile::dirs::Dirs;
-use llm_optim::execution::Backend::Metal;
-use llm_optim::execution::{Mode, program};
+use shard::execution::Backend::Metal;
+use shard::execution::{Mode, program};
 
 #[test]
 fn production_grid_kernel_compiles_for_a_real_op() {
@@ -12,7 +12,7 @@ fn production_grid_kernel_compiles_for_a_real_op() {
     let dirs = Dirs::under(std::env::temp_dir().join("engine-metal-grid"));
     let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
     let profile = metal_profile();
-    if !llm_optim::witness::device_available(&profile) {
+    if !shard::witness::device_available(&profile) {
         testkit::skip("engine: Metal 工具链不在本机，生产态内核编译用例未运行");
         return;
     }
@@ -32,7 +32,7 @@ fn production_reduce_kernel_compiles_for_a_real_op() {
     let dirs = Dirs::under(std::env::temp_dir().join("engine-metal-reduce"));
     let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
     let profile = metal_profile();
-    if !llm_optim::witness::device_available(&profile) {
+    if !shard::witness::device_available(&profile) {
         testkit::skip("engine: Metal 工具链不在本机，归约内核编译用例未运行");
         return;
     }
@@ -62,7 +62,7 @@ fn production_scan_kernel_compiles_for_a_real_op() {
     let dirs = Dirs::under(std::env::temp_dir().join("engine-metal-scan"));
     let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
     let profile = metal_profile();
-    if !llm_optim::witness::device_available(&profile) {
+    if !shard::witness::device_available(&profile) {
         testkit::skip("engine: Metal 工具链不在本机，扫描内核编译用例未运行");
         return;
     }
@@ -98,7 +98,7 @@ fn production_rmsnorm_kernel_compiles_for_a_real_op() {
     let dirs = Dirs::under(std::env::temp_dir().join("engine-metal-rmsnorm"));
     let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
     let profile = metal_profile();
-    if !llm_optim::witness::device_available(&profile) {
+    if !shard::witness::device_available(&profile) {
         testkit::skip("engine: Metal 工具链不在本机，两趟内核编译用例未运行");
         return;
     }
@@ -145,7 +145,7 @@ fn production_softmax_kernel_compiles_for_a_real_op() {
     let dirs = Dirs::under(std::env::temp_dir().join("engine-metal-softmax"));
     let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
     let profile = metal_profile();
-    if !llm_optim::witness::device_available(&profile) {
+    if !shard::witness::device_available(&profile) {
         testkit::skip("engine: Metal 工具链不在本机，softmax 内核编译用例未运行");
         return;
     }
@@ -183,7 +183,7 @@ fn production_gemv_kernel_compiles_for_a_real_op() {
     let dirs = Dirs::under(std::env::temp_dir().join("engine-metal-gemv"));
     let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
     let profile = metal_profile();
-    if !llm_optim::witness::device_available(&profile) {
+    if !shard::witness::device_available(&profile) {
         testkit::skip("engine: Metal 工具链不在本机，gemv 内核编译用例未运行");
         return;
     }
@@ -213,7 +213,7 @@ fn production_gemm_kernel_compiles_for_a_real_op() {
     let dirs = Dirs::under(std::env::temp_dir().join("engine-metal-gemm"));
     let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
     let profile = metal_profile();
-    if !llm_optim::witness::device_available(&profile) {
+    if !shard::witness::device_available(&profile) {
         testkit::skip("engine: Metal 工具链不在本机，gemm 内核编译用例未运行");
         return;
     }
@@ -265,7 +265,7 @@ fn production_attention_kernel_compiles_for_a_real_op() {
     let dirs = Dirs::under(std::env::temp_dir().join("engine-metal-attention"));
     let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
     let profile = metal_profile();
-    if !llm_optim::witness::device_available(&profile) {
+    if !shard::witness::device_available(&profile) {
         testkit::skip("engine: Metal 工具链不在本机，attention 内核编译用例未运行");
         return;
     }
@@ -294,7 +294,7 @@ fn production_flash_attention_kernel_compiles_for_a_real_op() {
     let dirs = Dirs::under(std::env::temp_dir().join("engine-metal-flash-attention"));
     let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
     let profile = metal_profile();
-    if !llm_optim::witness::device_available(&profile) {
+    if !shard::witness::device_available(&profile) {
         testkit::skip("engine: Metal 工具链不在本机，flash_attention 内核编译用例未运行");
         return;
     }
@@ -322,7 +322,7 @@ fn production_quantized_gemv_compiles(op_name: &str) {
     let dirs = Dirs::under(std::env::temp_dir().join("engine-metal-gemv-quant"));
     let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
     let profile = metal_profile();
-    if !llm_optim::witness::device_available(&profile) {
+    if !shard::witness::device_available(&profile) {
         testkit::skip(format!(
             "engine: Metal 工具链不在本机，{op_name} 内核编译用例未运行"
         ));

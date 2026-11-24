@@ -9,7 +9,7 @@ use super::*;
 use crate::backward::lookup;
 use engine::exec::Executor;
 use engine::exec::{Graph, Launch, Node, Stream};
-use llm_optim::execution::Backend;
+use shard::execution::Backend;
 
 /// 对拍长度：96 个元素，单线程组可覆盖；末组越界线程由内核长度守卫跳过。
 const LEN: usize = 96;

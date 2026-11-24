@@ -67,6 +67,15 @@
 - **Metal 探针归属决策**：shard(L5) 不得上靠 engine(L6)，故 `platform.rs` 迁入 shard 后不再实例化 `engine::metal::MetalDevice`；`metal_device()` 退化为平台常量判定（`std::env::consts::OS == "macos"` 即设备位成立），与其余设备行"无进程内 FFI 探针"的口径一致；真实 FFI 设备句柄只在 engine 执行面使用。Host trait 本就允许上层注入自定义宿主，真实设备证据由执行面装配阶段校验。
 - `install()` 注册静态后端的入口随迁 shard（`crate::backend::register`），cli 改调 shard 入口。
 - `platform.rs` 合同与 toolchain 探测随执行面进 shard；cli `platform.rs` 改引用 shard 路径。
+- **精确路径改写表（cp 后逐文件 sed）**：
+  - `llm_optim::backend::` → `crate::backend::`；`llm_optim::witness::` → `crate::witness::`；`llm_optim::toolchain::` → `crate::toolchain::`；`llm_optim::execution::` → `crate::execution::`。
+  - `llm_optim::driver` → `crate::driver`（lib 根已 re-export）；`llm_optim::compile_flags` → `crate::compile_flags`（lib 根 re-export）；`llm_optim::runner::parse_bits` 注释提及，随 #31 清理。
+  - `crate::metal::` → `crate::backends::metal::`；`crate::cuda::` → `crate::backends::cuda::`；`crate::dialect::`、`crate::platform::`、`crate::backends::`、`crate::tiled::` 根名不变。
+  - `crate::test_imports::*`（backends/mod.rs 的 `#[cfg(test)]` 聚合别名）随 mod 一起迁。
+  - 站点字面量：`engine::tiled::…` → `shard::tiled::…`；`engine::dialect::…` → `shard::dialect::…`；`engine::platform` → `shard::platform`。
+- **测试挂载迁移**：生产文件尾部 `#[cfg(test)] #[path]` 挂载点随迁：`tiled.rs`→`tests/tiled.rs`；`backends/mod.rs`→`tests/backends.rs`、`testkit/tests/kernel.rs`（保留对 testkit 的相对路径）、`tests/program.rs`；`platform.rs`→`tests/platform.rs`。独立 `[[test]]` target `metal_suite.rs`（挂 `metal_executor_harness.rs` + `metal/mod.rs` 及其子模块）与 `schedule.rs` 随生产链迁 shard；`backends_production.rs` 归属施工时核对挂载。shard Cargo.toml 的 `[[test]]` 名单与 autotests=false 口径对齐。
+- **密度下限基线**：下限门 `file_min_lines=300`，多个迁入文件低于阈值（geometry 133 / text 100 / body 115 / stage 96 / witness 67 / metal/device 73 等）；属存量搬迁，需把 `.config/lints/vocabulary.toml` 的 device 下限基线条目连同文件迁到 shard 名下，不得按"新文件"硬卡；#32 删 device 时清掉对应 device 条目。
+- **依赖清单核对**：迁入生产代码外部 use 仅 `cutile / diagnostic / prof / std` + shard 自引用；shard Cargo 已具备 cutile/diagnostic/prof/nn，无需为生产面新增 engine/tensor 依赖（`tens`/`nn`/`testkit` 仅 dev 测试图）。
 
 ### 2.3 D → prof/<vendor>/（批次 #31）
 

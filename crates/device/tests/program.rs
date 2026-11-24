@@ -1,5 +1,5 @@
 use super::*;
-use llm_optim::execution::POINT_THREADS;
+use shard::execution::POINT_THREADS;
 use nn::model::{Buf, Values};
 use prof::decl::Grid;
 
