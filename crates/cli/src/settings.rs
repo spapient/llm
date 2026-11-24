@@ -232,7 +232,11 @@ impl Settings {
 
     /// 静态目标及其数值参数；名称在投影边界收窄成闭集。
     fn objective_config(&self) -> Result<train::ObjectiveConfig> {
-        match self.text(Key::TrainObjective).unwrap_or("classify") {
+        match self
+            .text(Key::TrainObjective)
+            .as_deref()
+            .unwrap_or("classify")
+        {
             "classify" => Ok(train::ObjectiveConfig::Classify),
             "distill" => Ok(train::ObjectiveConfig::Distill(train::Distill::new(
                 self.float(Key::TrainDistillTemperature).unwrap_or(2.0),
@@ -254,9 +258,9 @@ impl Settings {
         )
     }
 
-    fn text(&self, key: Key) -> Option<&str> {
+    fn text(&self, key: Key) -> Option<String> {
         self.resolved(key).and_then(|(value, _)| match value {
-            SettingValue::Text(text) => Some(text.as_str()),
+            SettingValue::Text(text) => Some(text),
             _ => None,
         })
     }

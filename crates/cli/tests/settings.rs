@@ -353,19 +353,29 @@ fn train_settings_project_environment_and_cli_overrides() {
 fn train_objectives_project_to_typed_config() {
     let roots = Roots::new(test_home());
     let mut settings = Settings::defaults(&roots);
-    settings.apply_override("train.objective=distill").expect("蒸馏目标");
-    settings.apply_override("train.distill_temperature=3.5").expect("温度");
+    settings
+        .apply_override("train.objective=distill")
+        .expect("蒸馏目标");
+    settings
+        .apply_override("train.distill_temperature=3.5")
+        .expect("温度");
     assert_eq!(
         settings.train_spec().expect("蒸馏配置").objective,
         train::ObjectiveConfig::Distill(train::Distill::new(3.5, 0.5))
     );
-    settings.apply_override("train.objective=grpo").expect("GRPO 目标");
-    settings.apply_override("train.grpo_beta=0.2").expect("KL 系数");
+    settings
+        .apply_override("train.objective=grpo")
+        .expect("GRPO 目标");
+    settings
+        .apply_override("train.grpo_beta=0.2")
+        .expect("KL 系数");
     assert_eq!(
         settings.train_spec().expect("GRPO 配置").objective,
         train::ObjectiveConfig::Grpo(train::Grpo::new(0.2, 0.2))
     );
-    settings.apply_override("train.objective=unknown").expect("文本解析成功");
+    settings
+        .apply_override("train.objective=unknown")
+        .expect("文本解析成功");
     assert_eq!(settings.train_spec().unwrap_err().code(), Code::Invalid);
 }
 

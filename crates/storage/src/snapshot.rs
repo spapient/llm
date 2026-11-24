@@ -137,7 +137,19 @@ impl<C: Manifest> Snapshot<C> {
         }
     }
 
-    /// 恢复事实（五个数整体比较）。
+    /// 绑定训练配置指纹；默认构造器的 `0` 表示未声明。
+    #[must_use]
+    pub fn with_config_fingerprint(mut self, fingerprint: u64) -> Self {
+        self.facts = self.facts.with_config_fingerprint(fingerprint);
+        self
+    }
+
+    /// 训练配置指纹。
+    pub fn config_fingerprint(&self) -> u64 {
+        self.facts.config_fingerprint()
+    }
+
+    /// 恢复事实（五个数与配置指纹整体比较）。
     pub fn facts(&self) -> Facts {
         self.facts
     }
@@ -332,6 +344,7 @@ impl<C: Manifest> Snapshot<C> {
         varint(sink, facts.layers() as u64);
         varint(sink, facts.batch_rows() as u64);
         varint(sink, facts.batch_cols() as u64);
+        sink.put(&facts.config_fingerprint().to_le_bytes());
         varint(sink, self.weights.data_start() as u64);
 
         let entries = self.weights.entries();
@@ -420,7 +433,12 @@ fn decode_facts(cursor: &mut Cursor<'_>) -> Result<Facts> {
     for (slot, label) in counts.iter_mut().zip(labels) {
         *slot = cursor.count(label)?;
     }
-    Facts::new(step, counts[0], counts[1], counts[2], counts[3]).map_err(error_ctx)
+    let fingerprint = u64::from_le_bytes(cursor.take(8)?.try_into().map_err(|_| {
+        codec::invalid("配置指纹必须是 8 字节小端整数")
+    })?);
+    Facts::new(step, counts[0], counts[1], counts[2], counts[3])
+        .map(|facts| facts.with_config_fingerprint(fingerprint))
+        .map_err(error_ctx)
 }
 
 /// 条目表构造失败挂上解码上下文。

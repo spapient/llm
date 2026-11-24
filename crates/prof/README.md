@@ -63,7 +63,7 @@ crates/prof/
 │   ├── kernels.toml       # 模板级性能策略：展开因子按 default / vendor 配置
 │   ├── <vendor>/          # 档案 + 原语 + epilogue + witness；Metal 另含 runtime.rs
 │   │   └── kernels/       # 可选的真实后端特化；未特化项按 `[kernels].base` 继承
-│   ├── cpu/native/        # 主机微内核：公共几何、NEON/AVX2、i8 sdot、Apple SME
+│   ├── native*.rs        # 平铺的主机微内核：公共几何、NEON/AVX2、i8 sdot、Apple SME
 │   └── ops/               # 只放 `<stem>.toml` 共享声明，不放设备实现
 └── tests/                 # 片段对账、内嵌档案、档案 schema；tests/spec/ 是契约词汇的用例
 ```

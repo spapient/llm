@@ -109,8 +109,8 @@ mod spec_tests;
 /// 以及编译期瓦片几何常量、面板暂存、线程数、对齐等设备无关公共件。`nn` 的 GEMM 骨架经
 /// `prof::native::*` 借用瓦片尺寸、坐标与内核入口，`cutile` 的 tile DSL IR 经
 /// `native::gemm_negotiate` 择优调用。与 `device` 同是「被上层消费、不反向依赖上层」的设备
-/// 实现层；arch 门、特性探测与 `unsafe` 全部收在本岛，上层不写这些门。
-#[path = "cpu/native/mod.rs"]
+/// 实现层；arch 门、特性探测与 `unsafe` 全部收在本岛，上层不写这些门。三份架构内核
+/// 与本模块一并平铺在 `src/`，由显式文件路径保留既有公共模块路径。
 pub mod native;
 /// 设备运行时后端岛：提交契约、FFI 句柄、命令队列、缓冲、管线与执行器实现。
 pub mod runtime;

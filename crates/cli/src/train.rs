@@ -54,12 +54,23 @@ fn parse_overrides(
     warmup: Option<&str>,
     steps: Option<&str>,
     accumulation: Option<&str>,
-) -> Result<(Option<f32>, Option<f32>, Option<u64>, Option<u64>, Option<u32>)> {
+) -> Result<(
+    Option<f32>,
+    Option<f32>,
+    Option<u64>,
+    Option<u64>,
+    Option<u32>,
+)> {
     let learning_rate = parse_optional_f32(lr, "--lr")?;
     let clip_norm = parse_optional_f32(clip, "--clip")?;
-    let (warmup_steps, max_steps, accumulation) =
-        parse_train_uints(warmup, steps, accumulation)?;
-    Ok((learning_rate, clip_norm, warmup_steps, max_steps, accumulation))
+    let (warmup_steps, max_steps, accumulation) = parse_train_uints(warmup, steps, accumulation)?;
+    Ok((
+        learning_rate,
+        clip_norm,
+        warmup_steps,
+        max_steps,
+        accumulation,
+    ))
 }
 
 /// 无符号档位：warmup/步数是 `u64`，累积窗是 `u32`；类型随快照事实口径固定。

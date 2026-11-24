@@ -28,6 +28,15 @@ fn a_snapshot_round_trips_through_its_bytes() {
     assert_eq!(restored.weights().entries()[1].name(), "blk.0.scales");
 }
 
+#[test]
+fn config_fingerprint_round_trips_as_a_stable_u64() {
+    let snapshot = snapshot().with_config_fingerprint(0x0123_4567_89ab_cdef);
+    let restored = Snapshot::decode(&snapshot.encode().expect("编码")).expect("解码");
+    assert_eq!(restored.config_fingerprint(), 0x0123_4567_89ab_cdef);
+    assert_eq!(restored, snapshot);
+    assert_eq!(snapshot().config_fingerprint(), 0, "缺省表示未声明");
+}
+
 /// 变长整数的每个宽度边界都要对上：错一档就是半个检查点。
 #[test]
 fn optimizer_moments_round_trip_bit_for_bit() {

@@ -58,3 +58,53 @@ fn check_parity_reports_the_error_within_tolerance() {
     let err = check_parity(&[1.0625], &[1.0], 0.1).expect("6.25% 误差在 0.1 容差内");
     assert_eq!(err, 0.0625, "返回实测误差而不是只给布尔");
 }
+
+/// 走真实 C 编译执行，并额外对拍朴素参考，避免 flash 内核与参考共享同一错误。
+fn assert_cpu_matches(
+    op: &str,
+    sample: &Sample,
+    reference: fn(&Sample) -> diagnostic::Result<Vec<f32>>,
+) {
+    let root = std::env::temp_dir().join(format!(
+        "cutile-wide-attention-{op}-{}-{}",
+        sample.n,
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let catalogue = Catalogue::try_builtin().expect("内置算子与后端档案");
+    let execution = execute(&catalogue, &Dirs::under(&root), op, "cpu", sample)
+        .unwrap_or_else(|error| panic!("{op} D={} 编译执行失败：{error}", sample.n));
+    let expected = reference(sample).expect("独立朴素参考");
+    let error = cutile::reference::max_rel_err(&execution.output, &expected);
+    assert!(
+        error <= execution.tolerance,
+        "{op} D={} 与朴素参考不符：max_rel_err {error:.3e} > {:.0e}",
+        sample.n,
+        execution.tolerance
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn flash_attention_supports_head_widths_beyond_the_accumulator_block() {
+    for d in [1, 64, 65, 128] {
+        let sample = nn::conv::attention::sample(2, d);
+        assert_cpu_matches(
+            "flash_attention_f32",
+            &sample,
+            nn::conv::attention::reference,
+        );
+    }
+}
+
+#[test]
+fn decode_flash_attention_supports_head_widths_beyond_the_accumulator_block() {
+    for d in [1, 64, 65, 128] {
+        let sample = nn::conv::decode_attention::sample(2, d);
+        assert_cpu_matches(
+            "decode_flash_attention_f32",
+            &sample,
+            nn::conv::decode_attention::reference,
+        );
+    }
+}

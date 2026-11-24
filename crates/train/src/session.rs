@@ -200,23 +200,13 @@ pub struct TrainSpec {
 impl TrainSpec {
     /// 在装配边界统一校验各子配置；默认目标是分类。
     pub fn new(session: TrainConfig, loader: LoaderConfig) -> Result<Self> {
-        Self::default()
-            .with_session(session)?
-            .with_loader(loader)
-    }
-
-    /// 覆盖会话配置并校验。
-    pub fn with_session(mut self, session: TrainConfig) -> Result<Self> {
-        session.validate()?;
-        self.session = session;
-        Ok(self)
-    }
-
-    /// 覆盖数据配置并校验。
-    pub fn with_loader(mut self, loader: LoaderConfig) -> Result<Self> {
-        loader.validate()?;
-        self.loader = loader;
-        Ok(self)
+        let spec = Self {
+            session,
+            loader,
+            objective: ObjectiveConfig::default(),
+        };
+        spec.validate()?;
+        Ok(spec)
     }
 
     /// 覆盖静态目标并复用损失函数的数值判据。
@@ -224,6 +214,13 @@ impl TrainSpec {
         objective.validate()?;
         self.objective = objective;
         Ok(self)
+    }
+
+    /// 校验当前完整配置，防止公开字段在构造后被改成非法值。
+    pub fn validate(&self) -> Result<()> {
+        self.session.validate()?;
+        self.loader.validate()?;
+        self.objective.validate()
     }
 
     /// 拆成会话与数据的运行配置；目标仍可由 [`Self::objective`] 在拆分前读取。
@@ -282,6 +279,8 @@ pub struct Session<K: Kernel, O: Optimizer, C: Collective = shard::Remote> {
     slots: Vec<ParamSlot>,
     lr_schedule: Schedule,
     config: TrainConfig,
+    /// 恢复时要求匹配的稳定配置指纹。
+    config_fingerprint: u64,
     step: u64,
     /// 当前累积窗口内已汇总的 micro-batch 数；满 `accumulation` 才步进一次。
     accum: u32,
@@ -326,6 +325,8 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
             config.min_ratio,
         )?;
         let bufs = Bufs::new(sizes.clone(), kernel);
+        let config_fingerprint =
+            checkpoint::session_fingerprint(&config, std::any::type_name::<O>());
         Ok(Self {
             tape,
             sizes,
@@ -336,6 +337,7 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
             slots: Vec::new(),
             lr_schedule,
             config,
+            config_fingerprint,
             step: 0,
             accum: 0,
             ties: Vec::new(),

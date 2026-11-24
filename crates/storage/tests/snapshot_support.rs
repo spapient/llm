@@ -287,9 +287,11 @@ pub(crate) fn assert_round_trip(snapshot: &Snapshot) {
 pub(crate) fn handcrafted(entries: &[(u64, u64, &str, usize, u64)]) -> Vec<u8> {
     let mut payload = Format::MAGIC.to_vec();
     payload.extend_from_slice(&Format::VERSION.to_le_bytes());
-    for value in [7, 1, 1, 1, 1, 64] {
+    for value in [7, 1, 1, 1, 1] {
         push_varint(&mut payload, value);
     }
+    payload.extend_from_slice(&0_u64.to_le_bytes());
+    push_varint(&mut payload, 64);
     push_varint(&mut payload, entries.len() as u64);
     let mut previous = 0usize;
     for (front, back, middle, offset, layout) in entries {

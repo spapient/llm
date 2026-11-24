@@ -176,7 +176,7 @@ unsafe fn fma_block_rounds(rounds: usize, ap: *const f32, bp: *const f32, k: usi
     }
 }
 
-/// 读回上一步的 16 个累加向量（非首块续算用）。
+/// 读回上一步的 16 个累加向量（非首块续算用）；每行两个 4-lane 半块。
 #[cfg(target_arch = "aarch64")]
 #[allow(unsafe_code)]
 fn micro_load(
@@ -187,30 +187,15 @@ fn micro_load(
 ) -> [std::arch::aarch64::float32x4_t; 16] {
     unsafe {
         use std::arch::aarch64::*;
-        let mut acc = [vdupq_n_f32(0.0); 16];
         let prev = out.as_ptr();
-        let r = row0;
-        acc[0] = vld1q_f32(prev.add(r * n + j));
-        acc[1] = vld1q_f32(prev.add(r * n + j + 4));
-        acc[2] = vld1q_f32(prev.add((r + 1) * n + j));
-        acc[3] = vld1q_f32(prev.add((r + 1) * n + j + 4));
-        acc[4] = vld1q_f32(prev.add((r + 2) * n + j));
-        acc[5] = vld1q_f32(prev.add((r + 2) * n + j + 4));
-        acc[6] = vld1q_f32(prev.add((r + 3) * n + j));
-        acc[7] = vld1q_f32(prev.add((r + 3) * n + j + 4));
-        acc[8] = vld1q_f32(prev.add((r + 4) * n + j));
-        acc[9] = vld1q_f32(prev.add((r + 4) * n + j + 4));
-        acc[10] = vld1q_f32(prev.add((r + 5) * n + j));
-        acc[11] = vld1q_f32(prev.add((r + 5) * n + j + 4));
-        acc[12] = vld1q_f32(prev.add((r + 6) * n + j));
-        acc[13] = vld1q_f32(prev.add((r + 6) * n + j + 4));
-        acc[14] = vld1q_f32(prev.add((r + 7) * n + j));
-        acc[15] = vld1q_f32(prev.add((r + 7) * n + j + 4));
-        acc
+        std::array::from_fn(|i| {
+            let row = prev.add((row0 + i / 2) * n + j);
+            vld1q_f32(row.add((i % 2) * 4))
+        })
     }
 }
 
-/// 把 16 个累加向量写回 `out` 的 8×8 块。
+/// 把 16 个累加向量按行写回 `out` 的 8×8 块。
 #[cfg(target_arch = "aarch64")]
 #[allow(unsafe_code)]
 fn micro_store(
@@ -223,23 +208,11 @@ fn micro_store(
     unsafe {
         use std::arch::aarch64::*;
         let op = out.as_mut_ptr();
-        let r = row0;
-        vst1q_f32(op.add(r * n + j), acc[0]);
-        vst1q_f32(op.add(r * n + j + 4), acc[1]);
-        vst1q_f32(op.add((r + 1) * n + j), acc[2]);
-        vst1q_f32(op.add((r + 1) * n + j + 4), acc[3]);
-        vst1q_f32(op.add((r + 2) * n + j), acc[4]);
-        vst1q_f32(op.add((r + 2) * n + j + 4), acc[5]);
-        vst1q_f32(op.add((r + 3) * n + j), acc[6]);
-        vst1q_f32(op.add((r + 3) * n + j + 4), acc[7]);
-        vst1q_f32(op.add((r + 4) * n + j), acc[8]);
-        vst1q_f32(op.add((r + 4) * n + j + 4), acc[9]);
-        vst1q_f32(op.add((r + 5) * n + j), acc[10]);
-        vst1q_f32(op.add((r + 5) * n + j + 4), acc[11]);
-        vst1q_f32(op.add((r + 6) * n + j), acc[12]);
-        vst1q_f32(op.add((r + 6) * n + j + 4), acc[13]);
-        vst1q_f32(op.add((r + 7) * n + j), acc[14]);
-        vst1q_f32(op.add((r + 7) * n + j + 4), acc[15]);
+        for (r, halves) in acc.as_chunks::<2>().0.iter().enumerate() {
+            let row = op.add((row0 + r) * n + j);
+            vst1q_f32(row, halves[0]);
+            vst1q_f32(row.add(4), halves[1]);
+        }
     }
 }
 
@@ -315,17 +288,7 @@ fn micro_load(out: &[f32], row0: usize, n: usize, j: usize) -> [std::arch::x86_6
     unsafe {
         use std::arch::x86_64::*;
         let prev = out.as_ptr();
-        let r = row0;
-        [
-            _mm256_loadu_ps(prev.add(r * n + j)),
-            _mm256_loadu_ps(prev.add((r + 1) * n + j)),
-            _mm256_loadu_ps(prev.add((r + 2) * n + j)),
-            _mm256_loadu_ps(prev.add((r + 3) * n + j)),
-            _mm256_loadu_ps(prev.add((r + 4) * n + j)),
-            _mm256_loadu_ps(prev.add((r + 5) * n + j)),
-            _mm256_loadu_ps(prev.add((r + 6) * n + j)),
-            _mm256_loadu_ps(prev.add((r + 7) * n + j)),
-        ]
+        std::array::from_fn(|r| _mm256_loadu_ps(prev.add((row0 + r) * n + j)))
     }
 }
 
