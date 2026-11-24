@@ -445,7 +445,7 @@ pub use quant::{Quant, Quantized};
 pub use seg::Codec;
 pub use seg::Segment;
 pub use seg::Stored;
-pub use settle::{Reason, Settled, Settlement};
+pub use settle::{Reason, Settled, Settlement, Thresholds};
 pub use writer::{Config, Writer};
 
 pub use container::{

@@ -224,6 +224,47 @@ fn a_tiny_tensor_is_passed_through_instead_of_coded() {
 }
 
 #[test]
+fn default_thresholds_preserve_the_canonical_ledger() {
+    let (settlement, bytes) = container(vec![f32_segment("bias", &[1.0, 2.0, 3.0])], true);
+
+    let explicit = Settlement::settle_with(&bytes, Thresholds::default()).expect("默认阈值记账");
+
+    assert_eq!(explicit.render(), settlement.render());
+}
+
+#[test]
+fn custom_thresholds_change_the_reason_without_changing_the_container() {
+    let (_, bytes) = container(vec![f32_segment("bias", &[1.0, 2.0, 3.0])], true);
+    let thresholds = Thresholds {
+        small_bytes: 0,
+        ..Thresholds::default()
+    };
+
+    let settlement = Settlement::settle_with(&bytes, thresholds).expect("自定义阈值记账");
+
+    assert_eq!(only(&settlement).reason(), Reason::Raw);
+}
+
+#[test]
+fn verification_requires_the_same_thresholds_as_settlement() {
+    let (_, bytes) = container(vec![f32_segment("bias", &[1.0, 2.0, 3.0])], true);
+    let thresholds = Thresholds {
+        small_bytes: 0,
+        ..Thresholds::default()
+    };
+    let text = Settlement::settle_with(&bytes, thresholds)
+        .expect("自定义阈值记账")
+        .render();
+
+    let verified = Settlement::verify_with(&text, &bytes, thresholds).expect("同口径核账");
+    assert_eq!(verified.render(), text);
+
+    let error = Settlement::verify(&text, &bytes).expect_err("默认口径不应核过自定义账");
+    assert_eq!(error.code(), Code::Invalid);
+    assert!(error.to_string().contains("codec_reason"), "{error}");
+}
+
+#[test]
 fn a_deduplicated_tensor_occupies_no_bytes_and_says_so() {
     let values = compressible(512);
 

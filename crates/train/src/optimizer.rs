@@ -481,19 +481,27 @@ impl<M: Optimizer, N: Optimizer> Optimizer for Hybrid<M, N> {
         step: u64,
         shapes: &[Option<(usize, usize)>],
     ) -> Result<()> {
-        if momentum.len() != variance.len()
-            || (!momentum.is_empty() && momentum.len() != shapes.len())
-        {
-            return Err(Error::new(
-                Code::Invalid,
-                "混合优化器恢复：矩状态与槽形状表长度不一致",
-            )
-            .with(SITE));
-        }
+        check_shaped_len(&momentum, &variance, shapes)?;
         let (mm, mv, nm, nv) = split_shaped(momentum, variance, shapes)?;
         restore_part(&mut self.matrix, mm, mv, step)?;
         restore_part(&mut self.other, nm, nv, step)
     }
+}
+
+/// 矩状态与形状表长度对齐：动量/方差等长；非空时还必须与槽形状表逐槽对齐。
+fn check_shaped_len(
+    momentum: &[Vec<f32>],
+    variance: &[Vec<f32>],
+    shapes: &[Option<(usize, usize)>],
+) -> Result<()> {
+    if momentum.len() != variance.len() || (!momentum.is_empty() && momentum.len() != shapes.len()) {
+        return Err(Error::new(
+            Code::Invalid,
+            "混合优化器恢复：矩状态与槽形状表长度不一致",
+        )
+        .with(SITE));
+    }
+    Ok(())
 }
 
 /// 按槽形状把矩状态拆进矩阵与标量四列；矩阵槽校验长度与形状乘积一致。

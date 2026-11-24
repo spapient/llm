@@ -1,5 +1,5 @@
 //! 算子目录：`src/ops/*.toml` 经 [`prof_ops!`](annotation::prof_ops) 展开的强类型共享契约，
-//! 与 `src/<vendor>/kernels/<stem>.k` 的逐后端微内核正文。
+//! 以及后端特化或按设备档案继承得到的有效微内核正文。
 //!
 //! 与 [`crate::builtin`] 的档案表并列但不同：档案表答"这台机器能跑什么"，目录答"有哪些算子"。
 
@@ -88,7 +88,7 @@ pub fn named(name: &str) -> Option<Op> {
     named_for("cpu", name)
 }
 
-/// 按后端与名字取一条内嵌算子；声明共享，正文来自该后端的 `kernels/`。
+/// 按后端与名字取一条内嵌算子；声明共享，正文来自后端特化或其配置的参考实现。
 pub fn named_for(vendor: &str, name: &str) -> Option<Op> {
     let template = template_for(vendor, name)?;
     let view = view(name)?;

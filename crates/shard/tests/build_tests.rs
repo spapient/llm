@@ -355,13 +355,16 @@ fn two_compilers_worth_of_artifacts_are_not_chosen_between() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// 同一声明发射到不同后端时，正文与 AST 指纹都来自实际设备实现。
+/// 同一参考声明经后端调优后，实际发射正文与 AST 缓存指纹同步变化。
 #[test]
-fn source_selects_the_backend_kernel_and_separates_cache_fingerprints() {
+fn source_applies_backend_tuning_and_separates_cache_fingerprints() {
     let root = std::env::temp_dir().join(format!("cutile-backend-kernel-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let dirs = dirs(&root);
-    let op = builtin();
+    let op = prof::catalogue::named("add_f32")
+        .expect("热点参考算子")
+        .to_decl()
+        .expect("参考声明可解析");
     let path = declared_path(&op);
     let tile = first_tile(&op);
     let cpu = cpu_profile();
@@ -370,14 +373,9 @@ fn source_selects_the_backend_kernel_and_separates_cache_fingerprints() {
 
     let (host, host_key) = source(&op, &cpu, &path, &tile, &dirs).expect("CPU 可发射");
     let (device, device_key) = source(&op, &nvidia, &path, &tile, &dirs).expect("NVIDIA 可发射");
-    assert!(host.text.contains("cutile cpu 微内核"));
-    assert!(device.text.contains("cutile nvidia 微内核"));
+    assert!(!host.text.contains("#pragma unroll"));
+    assert_eq!(device.text.matches("#pragma unroll 4").count(), 1);
     assert_ne!(host_key.ast_hash, device_key.ast_hash);
-    assert_eq!(
-        device.text.matches("cutile nvidia 微内核").count(),
-        1,
-        "只能拼入所选后端的一份实现"
-    );
 
     let _ = std::fs::remove_dir_all(&root);
 }

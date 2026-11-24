@@ -162,7 +162,7 @@ mod ops_generated {
 pub use ops_generated::OPS;
 
 /// 全量算子清单里「名字 → 模板 stem」的那一半：由 [`build.rs`](../build.rs) 与声明表同一次
-/// 扫描生成（`ops/*.toml` 的 `[op].stem`），语料是唯一事实源——加算子 = 加两个文件。
+/// 扫描生成（`ops/*.toml` 的 `[op].stem`），语料是唯一事实源——新增算子只声明契约和参考正文。
 ///
 /// 这里不含任何内核类型：本 crate 只回答"有哪些算子、各自用哪份模板"。谁实现它们由
 /// `nn::registry` 回答——那张表按名字与本表逐条对齐，错位在编译期就失败。
@@ -173,8 +173,8 @@ macro_rules! for_each_template {
     };
 }
 
-/// 模板表：CPU 兼容视图 + `(vendor, 算子名)` → `<vendor>/kernels/<stem>.k` 的完整矩阵，
-/// `include_str!` 在编译期读入，与 [`for_each_template!`] 同一次扫描生成。
+/// 模板表：CPU 兼容视图 + `(vendor, 算子名)` → 有效后端正文的完整矩阵。
+/// 后端特化优先，未特化时按档案继承参考实现；无需调优的正文由 `include_str!` 零复制内嵌。
 mod templates {
     include!(concat!(env!("OUT_DIR"), "/templates_table.rs"));
 }

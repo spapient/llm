@@ -86,35 +86,27 @@ fn entries_for_file(ops: &Path, path: &Path) -> diagnostic::Result<Vec<Entry>> {
     let name = file_stem(path);
     let table = resolved_table(ops, path)?;
     let stem = template_stem(&table, name);
-    let mut entries = Vec::new();
-    for (expanded_name, _, tier) in expand_tiers(name, &table)? {
-        entries.push(Entry {
-            name: expanded_name,
+    let entries = expand_tiers(name, &table)
+        .into_iter()
+        .map(|(name, tier)| Entry {
+            name,
             stem: stem.clone(),
             tier,
-        });
-    }
+        })
+        .collect();
     Ok(entries)
 }
 
-/// 按 `[op].tiers` 把一份算法档案展开成逐档算子；无 `tiers` 时保留文件名。
-///
-/// 每档替换所有 `dt` 数组里的精度 token，其余声明共享。档名为 `<算法>_<档>`。
-fn expand_tiers(
-    name: &str,
-    table: &toml::Table,
-) -> diagnostic::Result<Vec<(String, toml::Table, Option<String>)>> {
-    let tiers = table
-        .get("op")
-        .and_then(toml::Value::as_table)
+/// 按 `[op].tiers` 展开名字与档名；声明本体由 `prof_ops!()` 展开，这里不克隆或改写整棵树。
+fn expand_tiers(name: &str, table: &toml::Table) -> Vec<(String, Option<String>)> {
+    let op = table.get("op").and_then(toml::Value::as_table);
+    let tiers = op
         .and_then(|op| op.get("tiers"))
         .and_then(toml::Value::as_array);
     let Some(tiers) = tiers else {
-        return Ok(vec![(name.to_string(), table.clone(), None)]);
+        return vec![(name.to_string(), None)];
     };
-    let algorithm = table
-        .get("op")
-        .and_then(toml::Value::as_table)
+    let algorithm = op
         .and_then(|op| op.get("name"))
         .and_then(toml::Value::as_str)
         .unwrap_or(name);
@@ -126,42 +118,9 @@ fn expand_tiers(
         let tier = tier
             .as_str()
             .unwrap_or_else(|| fail(format!("`{name}.toml` 的 tiers 元素必须是字符串档名")));
-        let mut expanded = table.clone();
-        substitute_dt(&mut expanded, tier);
-        if let Some(op) = expanded.get_mut("op").and_then(toml::Value::as_table_mut) {
-            op.remove("tiers");
-            op.insert(
-                "name".into(),
-                toml::Value::String(format!("{algorithm}_{tier}")),
-            );
-        }
-        entries.push((
-            format!("{algorithm}_{tier}"),
-            expanded,
-            Some(tier.to_string()),
-        ));
+        entries.push((format!("{algorithm}_{tier}"), Some(tier.to_string())));
     }
     Ok(entries)
-}
-
-/// 递归把表里所有 `dt` 数组的精度 token 替换为 `tier`。
-fn substitute_dt(table: &mut toml::Table, tier: &str) {
-    for (key, value) in table.iter_mut() {
-        match value {
-            toml::Value::Table(inner) => substitute_dt(inner, tier),
-            toml::Value::Array(array) if key == "dt" => replace_dt_tokens(array, tier),
-            _ => {}
-        }
-    }
-}
-
-/// 把 `dt` 数组里的字符串精度 token 整体换成本档；非字符串项原样保留。
-fn replace_dt_tokens(array: &mut [toml::Value], tier: &str) {
-    for item in array.iter_mut() {
-        if item.as_str().is_some() {
-            *item = toml::Value::String(tier.to_string());
-        }
-    }
 }
 
 /// 文件名 stem；生成代码需要合法的 UTF-8 字符串。

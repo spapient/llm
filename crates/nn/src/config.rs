@@ -137,7 +137,7 @@ layer_config_table! {
             len: usize => "轴长。",
             #[serde(default)] role: ParamRole => "参数角色；缺省为普通可训练参数。"
         },
-        build = |name, op, len, role| OpLayer::new(name, op, len, role),
+        build = OpLayer::new,
     },
     Linear => {
         wire = "linear",
@@ -175,7 +175,7 @@ layer_config_table! {
             dim: usize => "嵌入宽度。",
             tokens: usize => "token 数。"
         },
-        build = |name, vocab, dim, tokens| Embedding::new(name, vocab, dim, tokens),
+        build = Embedding::new,
     },
     Attention => {
         wire = "attention",
@@ -186,7 +186,7 @@ layer_config_table! {
             head_dim: usize => "头宽。",
             algo: AttentionAlgo => "实现算法。"
         },
-        build = |name, seq, head_dim, algo| Attention::new(name, seq, head_dim, algo),
+        build = Attention::new,
     },
     DecodeAttention => {
         wire = "decode_attention",
@@ -197,7 +197,7 @@ layer_config_table! {
             head_dim: usize => "头宽。",
             algo: AttentionAlgo => "实现算法。"
         },
-        build = |name, q_rows, head_dim, algo| DecodeAttention::new(name, q_rows, head_dim, algo),
+        build = DecodeAttention::new,
     },
     LatentAttention => {
         wire = "latent_attention",
@@ -208,7 +208,7 @@ layer_config_table! {
             latent: usize => "压缩宽度。",
             heads: usize => "头数。"
         },
-        build = |name, seq, latent, heads| LatentAttention::new(name, seq, latent, heads),
+        build = LatentAttention::new,
     },
     AttentionBlock => {
         wire = "attention_block",

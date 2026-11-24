@@ -299,7 +299,7 @@ pub(crate) fn settle_one(
             .map(|quant| (bits_per(seg, volume), quant.block)),
         bitwise,
         lossless: lossless_entry(seg) && bitwise,
-        reason: reason_of(seg, raw_len, volume, entropy, bitwise),
+        reason: reason_of(seg, raw_len, volume, entropy, bitwise, thresholds),
         cert: certificate_of(archive, seg),
     })
 }
@@ -349,6 +349,7 @@ pub(crate) fn reason_of(
     volume: usize,
     entropy: f64,
     bitwise: bool,
+    thresholds: Thresholds,
 ) -> Reason {
     if !bitwise {
         return Reason::Mismatch;
@@ -357,24 +358,30 @@ pub(crate) fn reason_of(
         return Reason::Deduplicated;
     }
     // 小段先答：编码的固定开销与熵无关，先判大小才不会把 8 字节的偏置说成"不可压"。
-    if raw_len < SMALL_BYTES {
+    if raw_len < thresholds.small_bytes {
         return Reason::Small;
     }
-    frame_reason(seg.codec(), raw_len, volume, entropy)
+    frame_reason(seg.codec(), raw_len, volume, entropy, thresholds)
 }
 
 /// 按帧形态答：轴字典是被选中的无损形态，`store`/`rans` 才有"省没省"的问题。
-pub(crate) fn frame_reason(codec: Codec, raw_len: usize, volume: usize, entropy: f64) -> Reason {
+pub(crate) fn frame_reason(
+    codec: Codec,
+    raw_len: usize,
+    volume: usize,
+    entropy: f64,
+    thresholds: Thresholds,
+) -> Reason {
     match codec {
         Codec::Axes => Reason::Axes,
-        Codec::Store => store_reason(entropy),
-        Codec::Rans => rans_reason(raw_len, volume),
+        Codec::Store => store_reason(entropy, thresholds.max_entropy),
+        Codec::Rans => rans_reason(raw_len, volume, thresholds.gain_floor),
     }
 }
 
 /// `store` 帧：熵到顶说明内容真的没冗余，否则是"有冗余但没编"。
-pub(crate) fn store_reason(entropy: f64) -> Reason {
-    if entropy >= MAX_ENTROPY {
+pub(crate) fn store_reason(entropy: f64, max_entropy: f64) -> Reason {
+    if entropy >= max_entropy {
         Reason::Incompressible
     } else {
         Reason::Raw
@@ -382,8 +389,8 @@ pub(crate) fn store_reason(entropy: f64) -> Reason {
 }
 
 /// `rans` 帧：省下的比例够不够抵一次重编码。
-pub(crate) fn rans_reason(raw_len: usize, volume: usize) -> Reason {
-    if gain(raw_len, volume) < GAIN_FLOOR {
+pub(crate) fn rans_reason(raw_len: usize, volume: usize, gain_floor: f64) -> Reason {
+    if gain(raw_len, volume) < gain_floor {
         Reason::BelowGain
     } else {
         Reason::Rans

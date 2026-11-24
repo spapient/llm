@@ -102,7 +102,7 @@ fn device_templates_are_sorted_and_complete() {
     assert!(crate::catalogue::template_for("cpu", "no-such-op").is_none());
 }
 
-/// 发射选择真正读取后端正文；CPU 相同实现保持零拷贝，其他实现拥有替换后的声明。
+/// 发射选择真正读取后端调优结果；参考实现保持零拷贝，调优正文才拥有替换后的声明。
 #[test]
 fn device_specialization_selects_the_backend_without_changing_abi() {
     let op = crate::catalogue::named("add_f32")
@@ -115,6 +115,7 @@ fn device_specialization_selects_the_backend_without_changing_abi() {
     let nvidia = crate::catalogue::for_device(&op, "nvidia").expect("NVIDIA 内核存在");
     assert!(matches!(nvidia, std::borrow::Cow::Owned(_)));
     assert_eq!(nvidia.signature, op.signature);
+    assert!(nvidia.template.contains("#pragma unroll 4"));
     assert_eq!(
         nvidia.template,
         crate::catalogue::template_for("nvidia", &op.name).expect("NVIDIA 正文")
@@ -122,4 +123,62 @@ fn device_specialization_selects_the_backend_without_changing_abi() {
 
     let error = crate::catalogue::for_device(&op, "no-such-device").expect_err("未知后端必须失败");
     assert_eq!(error.code(), diagnostic::Code::Missing);
+}
+
+/// 未特化且未调优的算子在所有后端共享参考正文，克隆声明不会引入字符串分配。
+#[test]
+fn inherited_kernels_reuse_the_reference_declaration() {
+    let op = crate::catalogue::named("gemm_f32")
+        .expect("未调优的参考算子")
+        .to_decl()
+        .expect("参考声明");
+    for vendor in crate::names() {
+        let selected = crate::catalogue::for_device(&op, vendor).expect("有效后端内核");
+        assert!(
+            matches!(selected, std::borrow::Cow::Borrowed(_)),
+            "`{vendor}` 应零拷贝复用参考声明"
+        );
+    }
+}
+
+/// 展开配置以模板 stem 为键：同模板算子共享策略，不同结构不会因声明继承而被误展开。
+#[test]
+fn unroll_configuration_follows_the_template_stem() {
+    const HOT: &[&str] = &[
+        "add_f32",
+        "mul_f32",
+        "abs_f32",
+        "sin_f32",
+        "matmul_f32",
+        "gemm_i4",
+        "gemm_i2",
+        "gemm_i8",
+        "matmul_i8",
+    ];
+    for name in HOT {
+        let reference = crate::catalogue::template_for("cpu", name).expect("CPU 参考正文");
+        assert!(reference.contains("/* cutile-unroll */"), "`{name}` 缺锚点");
+        assert!(
+            !reference.contains("#pragma unroll"),
+            "`{name}` 的参考档不应展开"
+        );
+        for vendor in crate::names().iter().copied().filter(|name| *name != "cpu") {
+            let source = crate::catalogue::template_for(vendor, name).expect("后端有效正文");
+            assert_eq!(
+                source.matches("#pragma unroll 4").count(),
+                1,
+                "`{vendor}`/`{name}` 必须且只能展开一次"
+            );
+        }
+    }
+
+    for name in ["adaptive_pool_f32", "remainder_f32", "gemv_i4"] {
+        for vendor in crate::names() {
+            let source = crate::catalogue::template_for(vendor, name).expect("后端有效正文");
+            assert!(
+                !source.contains("#pragma unroll"),
+                "`{vendor}`/`{name}` 不应继承其他模板的展开策略"
+            );
+        }
+    }
 }

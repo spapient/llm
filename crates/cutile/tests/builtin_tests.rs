@@ -88,7 +88,7 @@ fn every_device_fragment_set_splices_the_p0_template() {
         let fragments = prof::builtin(vendor, ext)
             .unwrap_or_else(|| panic!("`{vendor}` 的片段层没有按 `. {ext}` 登记"));
         let backend = prof::catalogue::named_for(vendor, &op.name)
-            .expect("后端必须有自己的微内核")
+            .expect("后端必须有特化或继承得到的有效微内核")
             .to_decl()
             .expect("后端声明自洽");
         for combo in &combos {

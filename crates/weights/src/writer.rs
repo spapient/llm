@@ -240,17 +240,24 @@ impl Writer {
                         .collect::<Vec<_>>()
                 }));
             }
-            let mut plans = Vec::with_capacity(idxs.len());
-            for handle in handles {
-                let chunk = handle
-                    .join()
-                    .map_err(|_| crate::bad("段编码工作线程异常终止"))?;
-                plans.extend(chunk);
-            }
-            Ok::<Vec<(usize, Plan<'_>)>, Error>(plans)
+            Self::join_plans(handles)
         })?;
         Self::apply_encoded(slots, encoded);
         Ok(())
+    }
+
+    /// 等待各段线程收尾并按下标汇总；线程异常按错误上抛。
+    fn join_plans<'a>(
+        handles: Vec<std::thread::JoinHandle<Vec<(usize, Plan<'a>)>>>,
+    ) -> Result<Vec<(usize, Plan<'a>)>> {
+        let mut plans = Vec::new();
+        for handle in handles {
+            let chunk = handle
+                .join()
+                .map_err(|_| crate::bad("段编码工作线程异常终止"))?;
+            plans.extend(chunk);
+        }
+        Ok(plans)
     }
 
     /// 并行编码结果按段下标原位落槽，槽序与输入一致。

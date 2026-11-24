@@ -238,7 +238,15 @@ impl<K: Kernel, O: Optimizer, C: Collective> Learner<K, O, C> {
         G: FnMut(&mut Session<K, O, C>) -> Result<()>,
     {
         let point = self.point(&prepared)?;
-        self.register(point, prepared.loss)?;
+        self.advance(point, prepared.loss, backward)
+    }
+
+    /// 登记 loss、回算梯度并走一次优化步；指标点已由 [`Self::finish`] 校验。
+    fn advance<G>(&mut self, point: MetricPoint, loss: Var, backward: &mut G) -> Result<()>
+    where
+        G: FnMut(&mut Session<K, O, C>) -> Result<()>,
+    {
+        self.register(point, loss)?;
         self.backward_with(backward)?;
         self.session.optimize()?;
         Ok(())
