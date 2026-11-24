@@ -3,7 +3,7 @@
 //! 采样公式与最终断言两档不同（`f32` 按 IEEE 容差、`i8` 逐位相等），留在各自测试文件；
 //! 这里只收拢两档逐字同形的装配段，避免两份样板各自漂移。
 
-use crate::kernel::matmul::{forward_scalar, forward_tiled, Precision};
+use crate::kernel::matmul::{forward_scalar, forward_tiled, pair_views, Precision};
 
 /// 跑通标量参考与 tile 两条骨架，返回 `(参考输出, tile 输出)` 供调用方按本档口径断言。
 fn run_both<P: Precision>(
@@ -15,8 +15,7 @@ fn run_both<P: Precision>(
 ) -> (Vec<P::Acc>, Vec<P::Acc>) {
     let mut expected = vec![P::Acc::default(); m * n];
     let mut actual = vec![P::Acc::default(); m * n];
-    let av = View::matrix(m, k, a).expect("a 二维");
-    let bv = View::matrix(k, n, b).expect("b 二维");
+    let (av, bv) = pair_views(m, n, k, a, b);
     forward_scalar(av.clone(), bv.clone(), &mut expected).expect("参考可计算");
     forward_tiled(av, bv, &mut actual).expect("tile 可计算");
     (expected, actual)
