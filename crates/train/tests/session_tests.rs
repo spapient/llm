@@ -494,6 +494,28 @@ fn overrides_fall_back_to_default_without_duplicating_constants() {
     );
 }
 
+/// 独立梯度快照：按 `Var` 复制的副本在清零缓冲后仍然有效，未带梯度的变量查不到。
+#[test]
+fn gradient_snapshot_is_var_keyed_and_survives_zero_gradients() {
+    let (tape, sizes, p, x, _loss) = fixture();
+    let config = TrainConfig::new(1e-2, 0, 1, None, 1).expect("配置合法");
+    let mut session = open_session(tape, sizes, config);
+    session
+        .register_parameter(p, ParamRole::Trainable, vec![1.0; N])
+        .expect("登记参数");
+    session.load_gradient(p, &[3.0; N]).expect("梯度就位");
+
+    let snapshot = session.gradient_snapshot();
+    assert_eq!(snapshot.len(), 1);
+    assert_eq!(snapshot.get(p), Some(&[3.0; N][..]));
+    assert_eq!(snapshot.get(x), None, "常量叶子不在快照里");
+
+    // 缓冲清零后，副本仍是独立持有的那份。
+    session.zero_gradients();
+    assert_eq!(session.bufs().gradient(p), None);
+    assert_eq!(snapshot.get(p), Some(&[3.0; N][..]));
+}
+
 /// 检查点事实集：恢复所需的最小事实集与偏差拒绝。
 mod checkpoint {
     use crate::session::*;

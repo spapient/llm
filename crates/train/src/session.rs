@@ -412,6 +412,22 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
         GradAccum::new(slots, self.accum)
     }
 
+    /// 独立梯度快照：按 [`Var`] 复制一份当前梯度向量。与 [`Self::accum_snapshot`] 不同，
+    /// 它不读累积窗口计数、不清缓冲、也不与参数槽下标绑定；副本在后续 `zero_gradients`
+    /// 或优化器步进之后仍然有效。
+    pub fn gradient_snapshot(&self) -> GradientSnapshot {
+        let entries = self
+            .slots
+            .iter()
+            .filter_map(|slot| {
+                self.bufs
+                    .gradient(slot.var())
+                    .map(|grad| (slot.var(), grad.to_vec()))
+            })
+            .collect();
+        GradientSnapshot::new(entries)
+    }
+
     /// 已登记的权重绑定对：`(源槽下标, 回填槽下标)`，供快照导出与回填对账。
     pub fn ties(&self) -> &[(usize, usize)] {
         &self.ties
@@ -666,6 +682,49 @@ impl Checkpoint {
             self.batch_cols,
         )?;
         Ok(weights::Snapshot::new(facts, weights.clone()))
+    }
+}
+
+/// 独立梯度快照：按图变量自持一份梯度向量副本，脱离优化器累积窗口与缓冲生命周期。
+///
+/// 与 [`storage::GradAccum`] 的差别：`GradAccum` 按参数槽对齐、带 micro-batch 计数，
+/// 服务窗口内汇总；本快照按 [`Var`] 取读、整块复制，不随 `zero_gradients` 或优化器步进失效。
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct GradientSnapshot {
+    entries: Vec<(Var, Vec<f32>)>,
+}
+
+impl GradientSnapshot {
+    /// 由 `(变量, 梯度向量)` 条目构造；条目顺序沿用传入顺序。
+    pub fn new(entries: Vec<(Var, Vec<f32>)>) -> Self {
+        Self { entries }
+    }
+
+    /// 全部条目：变量与其梯度向量。
+    #[must_use]
+    pub fn entries(&self) -> &[(Var, Vec<f32>)] {
+        &self.entries
+    }
+
+    /// 取一个变量的梯度向量；快照里没有该变量时为 `None`。
+    #[must_use]
+    pub fn get(&self, var: Var) -> Option<&[f32]> {
+        self.entries
+            .iter()
+            .find(|(held, _)| *held == var)
+            .map(|(_, grad)| grad.as_slice())
+    }
+
+    /// 快照条目数。
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// 是否没有任何变量带梯度。
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
     }
 }
 
