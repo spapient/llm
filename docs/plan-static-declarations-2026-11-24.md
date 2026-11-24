@@ -264,7 +264,75 @@ Rust 官方与微软训练材料的一致口径：
   3. 保持二分：算子规模未涨、压测未证明查表是热点前，不做查找优化。
 - **结论**：先落方案 3 数据层；查找优化后置，路径 2 优先；仅当算子规模明显变大或压测证明名字查表是热点时，再上路径 1。
 
-## 12. 风险
+## 12. 实现蓝图（纯方案 3 + 闭集序号，续作基线）
+
+### 12.1 OpDecl → OpView const 视图映射（已核字段）
+
+| owned `OpDecl` 字段 | const `OpView` 字段 | 说明 |
+|---|---|---|
+| `name: String` | `name: &'static str` | |
+| `skeleton: Skeleton` | `skeleton: Skeleton` | 闭集枚举 Copy |
+| `summary: String` | `summary: &'static str` | |
+| `axes: Vec<Axis>` | `axes: &'static [AxisView]` | `AxisView { name: &'static str, values: &'static [u32] }` |
+| `needs: Vec<Need>` | `needs: &'static [NeedView]` | 见 12.2 |
+| `layouts: Vec<(String, LayoutSpec)>` | `layouts: &'static [(&'static str, LayoutSpec)]` | `LayoutSpec` 枚举 |
+| `grid: Option<Grid>` | `grid: Option<GridView>` | `GridView { dims: &'static [(&'static str, &'static str)] }` |
+| `chunk: Option<Chunk>` | `chunk: Option<ChunkView>` | `ChunkView { size: usize }` |
+| `consts: Vec<(String,String)>` | `consts: &'static [(&'static str, &'static str)]` | |
+| `variants: Vec<Variant>` | `variants: &'static [VariantView]` | `VariantView { name: &'static str, order: u32, schedule: Schedule, mma_share: f64, extra_needs: &'static [NeedView] }` |
+| `template: String` | `template: &'static str` | `include_str!` |
+| `signature: Signature` | 视图不存 | 转换期从模板重解 |
+| `phases: Vec<Phase>` | `phases: &'static [PhaseView]` | `PhaseView { name: &'static str, reads: &'static [&'static str], writes: &'static [&'static str] }` |
+
+### 12.2 Need → NeedView
+
+| owned `Need` | const `NeedView` | 说明 |
+|---|---|---|
+| `prim: Prim` | `prim: Prim` | 闭集枚举 |
+| `extent/n/k: Span` | 同 `Span` | `Span` 全 const fn |
+| `dt: DTypeSet` | `dt: u32` 位掩码 | 闭集索引位；owned 化 `Set::insert` |
+| `space: SpaceSet` | `space: u32` 位掩码 | 同上 |
+| `attrs: Vec<Attr>` | `attrs: &'static [AttrView]` | `AttrView { key: AttrKey, values: &'static [&'static str] }` |
+
+`Set::empty()` 是 const，`insert` 非 const，故视图层位集落整数掩码。
+
+### 12.3 宏 crate 分层（沿用 `annotation` 的 Streams 倒置范式）
+
+- `fs`：`CARGO_MANIFEST_DIR` 锚定路径，扫 `ops/` 目录、读 toml 与 `.k`；
+- `resolve`：`base` 递归继承 + 深度合并（纯函数，脱离 proc_macro 单测）；
+- `tiers`：档展开 + `dt` 精度替换 + 模板 C 类型替换（纯函数）；
+- `model`：`toml::Table` → 视图字段，闭集/范围/链单调/字段齐全校验，失败 `compile_error!` 指到字段；
+- `render`：`quote!` 展开 `pub const OPS: [OpView; N]` token 流；
+- 闭集序号：编译期生成 `名字 → u16` 索引，查找 O(1) 替代二分（借鉴方案 5，不引 phf）。
+
+### 12.4 批次（每批收尾跑一次全门禁）
+
+- **A**：删算子侧死代码 `NAMES`/`names()` 与 `catalogue.rs` 重导出（已核零消费）。
+- **B**：prof 内定 `OpView/NeedView/…` 与 owned 化转换；先以手写视图测试，不接宏。
+- **C**：宏 crate 打通算子链 const `OPS`；拆 `declared.rs` OnceLock/树。
+- **D**：档案链 `ProfileView`，拆 `embedded.rs`。
+- **E**：tools 门禁链 `GateView`，拆 `vocabulary.rs`。
+- **F**：拆 `buildgen::emit` 表达式生成；生产链 `diagnostic::data` 依赖清零；测试构造迁移；全门禁复核。
+
+### 12.6 批次 B 落地记录（2026-11-24）
+
+- **落点**：视图族并入既有 `crates/prof/src/decl.rs`（未单开 `view.rs`）。原因：`file_min_lines = 300` 对新增生产文件硬卡，且 `min_lines_baseline` 只准缩短不准扩列；视图本就是声明层的编译期镜像，归 `decl.rs` 内聚。并入后 `decl.rs` 754 行（< 899 硬顶）。
+- **视图结构**（全 `Copy`，字段仅 `&'static str` / `&'static [..]` / 闭集枚举 / 标量 / `Span`）：`AxisView`、`AttrView`、`NeedView`、`GridView`、`ChunkView`、`VariantView`、`PhaseView`、`OpView`。
+- **位集口径**：`DType` / `Space` 在视图层用 `&'static [..]` 元素切片；owned 化时 `Set::of(..)` 重建，不在视图层持 `Set`（`insert` 非 const）。
+- **owned 化**：子视图 `into_owned()` → 既有 `Axis/Attr/Need/Grid/Chunk/Variant/Phase`；`OpView::into_decl()` 组装 `OpDecl`。
+  - 签名：`Signature::parse(name, template)` 仍从模板解析（ABI 唯一事实源，视图不存）。
+  - 阶段：视图 `phases` 为空时按签名派生单阶段（`buf_names(false/true)`）；非空时逐条校验读写槽位落在签名缓冲形参内（`check_phase_slots`，与 `ingest::slot_names` 同口径，错误走 `decl::field`）。
+- **命名坑**：转换方法定名 `into_owned`，不用 `to_owned`——后者命中 `ToOwned` trait 保留名，迭代借用项会解析成克隆而非 owned 转换。
+- **实测**：`cargo check -p llm-prof`、`clippy -p llm-prof`（零告警）、`cargo test -p llm-prof`（56 单测 + 3 doctest 全绿）、`check --workspace --all-targets` 全绿；旧 `Table → OpDecl::parse` 路径未动。
+- **未做（归后续批次）**：`OpView` 尚未接生产链（`declared.rs` OnceLock 树仍在）；闭集序号「名字→序号」O(1) 定位随批次 C 宏展开时由数组下标天然给出，prof 侧不另建索引结构；新公开视图类型的 ownership baseline 登记归批次 F 收尾。
+
+### 12.5 已知坑
+
+- stable proc-macro 无 `tracked_path`：宏读的 TOML 改动不自动重编；兜底用源内 `include_str!` 纳入 cargo 跟踪，或保留极薄 build.rs 只发 `rerun-if-changed`（不产代码）。
+- 宏 crate 不能反向依赖 prof；视图类型定义在 prof，宏只传全限定路径。
+- 继承链多级（深度 ≤3）、档展开、模板类型替换必须在纯函数层可单测。
+
+## 13. 风险
 
 
 

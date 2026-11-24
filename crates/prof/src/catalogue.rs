@@ -2,7 +2,6 @@
 //!
 //! 与 [`crate::builtin`] 的档案表并列但不同：档案表答"这台机器能跑什么"，目录答"有哪些算子"。
 
-pub use crate::declared_generated::names;
 pub use crate::templates::TEMPLATES;
 
 /// 按名字取模板正文；名字不在清单里时返回 `None`。表按名升序（生成序），二分查找。

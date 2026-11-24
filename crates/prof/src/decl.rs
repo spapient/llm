@@ -4,7 +4,7 @@
 //! 是声明的形状，[`expand`] 把轴展开成 tile 候选，`variants` 保证降级有序。
 //! 字段级解析在同文件的 `ingest` 模块（表 → 类型；本文件只留类型与代数）。
 
-use crate::atom::Need;
+use crate::atom::{Attr, AttrKey, DType, Need, Prim, Set, Space, Span};
 use crate::sch::Schedule;
 use crate::sch::layout::LayoutSpec;
 use crate::sig::CType;
@@ -477,6 +477,271 @@ fn extra_needs(idx: usize, entry: &diagnostic::data::Table) -> diagnostic::Resul
 /// `variants[i].{name}` 形式的字段路径；`name` 为空时只剩前缀。
 fn field_path(idx: usize, name: &str) -> String {
     format!("variants[{idx}].{name}")
+}
+
+// ---- 编译期强类型只读视图（方案 3） -----------------------------------------
+//
+// 宏在编译期把算子配置填充成这些 `const` 结构；字段只用 `&'static str`、`&'static [..]`、
+// 闭集枚举、标量与 [`Span`] 等可在编译期字面量构造的类型。运行期再一次性 owned 化成上面的
+// 归属类型；视图本身不分配 `String` / `Vec`。位集（数据类型 / 存储空间）在视图层用元素切片
+// 表示，owned 化时重建为 [`Set`]。
+
+/// 轴视图：名字 + 正整数候选值。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AxisView {
+    /// 轴名（也是模板槽位名）。
+    pub name: &'static str,
+    /// 候选取值。
+    pub values: &'static [u32],
+}
+
+impl AxisView {
+    /// owned 化成 [`Axis`]。
+    pub fn into_owned(self) -> Axis {
+        Axis {
+            name: self.name.to_string(),
+            values: self.values.to_vec(),
+        }
+    }
+}
+
+/// 属性取值视图：一个属性键上的一组取值。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AttrView {
+    /// 属性键闭集。
+    pub key: AttrKey,
+    /// 取值列表。
+    pub values: &'static [&'static str],
+}
+
+impl AttrView {
+    /// owned 化成 [`Attr`]。
+    pub fn into_owned(self) -> Attr {
+        Attr::new(self.key, self.values.iter().copied())
+    }
+}
+
+/// 需求视图：模板 / 算子声明对某原语的要求。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NeedView {
+    /// 原语闭集。
+    pub prim: Prim,
+    /// 主维度区间。
+    pub extent: Span,
+    /// `mma` 的 `n`。
+    pub n: Span,
+    /// `mma` 的 `k`。
+    pub k: Span,
+    /// 数据类型取值（视图层用元素切片）。
+    pub dt: &'static [DType],
+    /// 存储空间取值（视图层用元素切片）。
+    pub space: &'static [Space],
+    /// 枚举型属性。
+    pub attrs: &'static [AttrView],
+}
+
+impl NeedView {
+    /// owned 化成 [`Need`]；位集由元素切片重建。
+    pub fn into_owned(self) -> Need {
+        Need {
+            prim: self.prim,
+            extent: self.extent,
+            n: self.n,
+            k: self.k,
+            dt: Set::of(self.dt.iter().copied()),
+            space: Set::of(self.space.iter().copied()),
+            attrs: self.attrs.iter().map(|a| a.into_owned()).collect(),
+        }
+    }
+}
+
+/// 网格映射视图：`Gemm` 骨架按输出行拆线程，一维或多维。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GridView {
+    /// 网格维（按序）：每项 `(线程名, 边界标量名)`。
+    pub dims: &'static [(&'static str, &'static str)],
+}
+
+impl GridView {
+    /// owned 化成 [`Grid`]。
+    pub fn into_owned(self) -> Grid {
+        Grid {
+            dims: self
+                .dims
+                .iter()
+                .map(|(thread, scalar)| (thread.to_string(), scalar.to_string()))
+                .collect(),
+        }
+    }
+}
+
+/// 分块并行视图：把长轴切成固定大小的块。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChunkView {
+    /// 块长（元素 / 线程）。
+    pub size: usize,
+}
+
+impl ChunkView {
+    /// owned 化成 [`Chunk`]。
+    pub fn into_owned(self) -> Chunk {
+        Chunk { size: self.size }
+    }
+}
+
+/// 降级变体视图：降级链上的一个变体。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VariantView {
+    /// 变体名。
+    pub name: &'static str,
+    /// 优先级，小者优先。
+    pub order: u32,
+    /// 调度模板。
+    pub schedule: Schedule,
+    /// 非 MMA 占比上界。
+    pub mma_share: f64,
+    /// 变体级增量需求（只能加强公共需求）。
+    pub extra_needs: &'static [NeedView],
+}
+
+impl VariantView {
+    /// owned 化成 [`Variant`]。
+    pub fn into_owned(self) -> Variant {
+        Variant {
+            name: self.name.to_string(),
+            order: self.order,
+            schedule: self.schedule,
+            mma_share: self.mma_share,
+            extra_needs: self.extra_needs.iter().map(|n| n.into_owned()).collect(),
+        }
+    }
+}
+
+/// 数据流阶段视图：一次执行切成「读哪些槽位 → 写哪些槽位」的有序片段。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PhaseView {
+    /// 阶段名（缺省 = 算子名）。
+    pub name: &'static str,
+    /// 本阶段读的槽位名。
+    pub reads: &'static [&'static str],
+    /// 本阶段写的槽位名。
+    pub writes: &'static [&'static str],
+}
+
+impl PhaseView {
+    /// owned 化成 [`Phase`]。
+    pub fn into_owned(self) -> Phase {
+        Phase {
+            name: self.name.to_string(),
+            reads: self.reads.iter().map(ToString::to_string).collect(),
+            writes: self.writes.iter().map(ToString::to_string).collect(),
+        }
+    }
+}
+
+/// 算子声明视图：编译期可 const 构造的算子静态形状。
+///
+/// 模板正文由 `include_str!` 挂入；内核签名 [`crate::sig::Signature`] 与缺省阶段在
+/// owned 化时从模板派生，视图层不重复存储。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OpView {
+    /// 算子名。
+    pub name: &'static str,
+    /// 骨架闭集。
+    pub skeleton: Skeleton,
+    /// 一句话说明。
+    pub summary: &'static str,
+    /// 轴。
+    pub axes: &'static [AxisView],
+    /// 算子级公共需求。
+    pub needs: &'static [NeedView],
+    /// 布局契约：槽位 → 布局闭集。
+    pub layouts: &'static [(&'static str, LayoutSpec)],
+    /// 网格映射（仅 Gemm）。
+    pub grid: Option<GridView>,
+    /// 分块并行块长（reduce / scan）。
+    pub chunk: Option<ChunkView>,
+    /// 模板常量：`{{槽位}}` 的固定取值。
+    pub consts: &'static [(&'static str, &'static str)],
+    /// 降级链，按 `order` 升序。
+    pub variants: &'static [VariantView],
+    /// 模板正文。
+    pub template: &'static str,
+    /// 显式数据流阶段；为空时 owned 化按签名派生单阶段。
+    pub phases: &'static [PhaseView],
+}
+
+impl OpView {
+    /// owned 化成 [`OpDecl`]：从模板解析内核签名，阶段缺省时按签名派生单阶段。
+    ///
+    /// # Errors
+    ///
+    /// 模板入口 / 形参不在闭集，或显式阶段引用了签名之外的槽位时返回带字段路径的说明。
+    pub fn into_decl(self) -> diagnostic::Result<OpDecl> {
+        let signature = crate::sig::Signature::parse(self.name, self.template)?;
+        let phases = if self.phases.is_empty() {
+            vec![Phase {
+                name: self.name.to_string(),
+                reads: signature.buf_names(false),
+                writes: signature.buf_names(true),
+            }]
+        } else {
+            self.phases
+                .iter()
+                .map(|phase| {
+                    let reads = check_phase_slots(self.name, "reads", phase.reads, &signature)?;
+                    let writes = check_phase_slots(self.name, "writes", phase.writes, &signature)?;
+                    Ok(Phase {
+                        name: phase.name.to_string(),
+                        reads,
+                        writes,
+                    })
+                })
+                .collect::<diagnostic::Result<Vec<_>>>()?
+        };
+        Ok(OpDecl {
+            name: self.name.to_string(),
+            skeleton: self.skeleton,
+            summary: self.summary.to_string(),
+            axes: self.axes.iter().map(|a| a.into_owned()).collect(),
+            needs: self.needs.iter().map(|n| n.into_owned()).collect(),
+            layouts: self
+                .layouts
+                .iter()
+                .map(|(slot, spec)| (slot.to_string(), *spec))
+                .collect(),
+            grid: self.grid.map(GridView::into_owned),
+            chunk: self.chunk.map(ChunkView::into_owned),
+            consts: self
+                .consts
+                .iter()
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+                .collect(),
+            variants: self.variants.iter().map(|v| v.into_owned()).collect(),
+            template: self.template.to_string(),
+            signature,
+            phases,
+        })
+    }
+}
+
+/// 校验阶段读写槽位都落在签名缓冲形参内，返回 owned 名字表（与 `ingest::slot_names` 同口径）。
+fn check_phase_slots(
+    op: &str,
+    key: &str,
+    names: &[&'static str],
+    signature: &crate::sig::Signature,
+) -> diagnostic::Result<Vec<String>> {
+    let unknown = names
+        .iter()
+        .find(|name| !signature.params().iter().any(|param| param.name == **name));
+    match unknown {
+        Some(name) => Err(field(
+            &format!("{op}.phases.{key}"),
+            format!("`{name}` 不是签名的缓冲形参"),
+        )),
+        None => Ok(names.iter().map(ToString::to_string).collect()),
+    }
 }
 
 /// 语料摄入：声明表 → [`OpDecl`] 的字段级解析与模板侧校验，平铺在 `src/ingest.rs`
