@@ -58,8 +58,9 @@ pub(crate) fn the_error_boundary_does_not_fall_back_to_strings() {
 /// 直接报越界而不是记进基线。
 pub(crate) const VENDOR_PUBLIC_BASELINE: &[(&str, &str)] = &[];
 
-/// 允许公开项带厂商名的成员：后端实现层（L6），`cutile` 的 `Backend` 缝由它填。
-pub(crate) const VENDOR_OWNERS: [&str; 1] = ["device"];
+/// 允许公开项带厂商名的成员：后端实现层，`cutile` 的 `Backend` 缝由它填。
+/// `device` 待 #32 删空后移除，过渡期与 `shard`（执行面承接 vendor 后端）并列。
+pub(crate) const VENDOR_OWNERS: [&str; 2] = ["device", "shard"];
 
 /// 厂商名清单；判据是"公开项以 `厂商名_` 起头"。
 pub(crate) const VENDORS: [&str; 8] = [
@@ -197,7 +198,7 @@ pub(crate) fn the_device_backends_are_installed_on_the_product_path() {
     );
     assert!(
         missing.is_empty(),
-        "这些产品入口没有装配设备后端（`device::backends::install()`）：{missing:?}——\
+        "这些产品入口没有装配设备后端（`shard::backends::install()`）：{missing:?}——\
      装配点只留在 `tests/` 时，用户拿到的是“本机没有该后端”这条错误信息"
     );
 }
