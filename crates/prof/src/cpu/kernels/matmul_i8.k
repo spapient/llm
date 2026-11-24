@@ -5,6 +5,7 @@
 typedef unsigned char u8;
 
 void cutile_{{op}}_kernel(const u8 *a, const u8 *b, float *y, int M, int N, int K) {
+    /* cutile-unroll */
     for (int i = 0; i < M; ++i) {
         for (int j = 0; j < N; ++j) {
             int acc = 0;

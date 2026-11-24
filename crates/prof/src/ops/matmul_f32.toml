@@ -6,10 +6,6 @@ name     = "matmul_f32"
 skeleton = "gemm"
 summary  = "Y[m,n] = sum_k A[m,k] B[k,n] (K=4096)"
 
-# 展开位置由正文锚点标注；因子是配置，不在生成器中写厂商分支。
-[kernel]
-unroll = { default = 4, cpu = 0 }
-
 [axes]
 N = [256]
 

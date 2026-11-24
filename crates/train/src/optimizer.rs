@@ -200,20 +200,6 @@ fn rescale(slots: &mut [Slot<'_>], scale: f32, divide: bool) {
     }
 }
 
-/// 按形状是否为矩阵把槽拆进矩阵与标量两条子优化器通路。
-fn split_slots<'a>(slots: &'a mut [Slot<'a>]) -> (Vec<Slot<'a>>, Vec<Slot<'a>>) {
-    let mut matrix = Vec::new();
-    let mut other = Vec::new();
-    for slot in slots.iter_mut() {
-        if slot.shape.is_some() {
-            matrix.push(slot.reborrow());
-        } else {
-            other.push(slot.reborrow());
-        }
-    }
-    (matrix, other)
-}
-
 /// 普通 SGD（可选解耦权重衰减 + 全局范数裁剪）。
 macro_rules! decay_clip {
     ($T:ty) => {
@@ -453,7 +439,15 @@ impl<M: Optimizer, N: Optimizer> Optimizer for Hybrid<M, N> {
         }
         let scale = clip_scale(norm, self.clip_norm);
         rescale(slots, scale, false);
-        let (mut matrix, mut other) = split_slots(slots);
+        let mut matrix = Vec::new();
+        let mut other = Vec::new();
+        for slot in slots.iter_mut() {
+            if slot.shape.is_some() {
+                matrix.push(slot.reborrow());
+            } else {
+                other.push(slot.reborrow());
+            }
+        }
         let result = self
             .matrix
             .step(&mut matrix, lr)

@@ -19,6 +19,8 @@ pub enum SettingValue {
     UInt(u64),
     /// 有限浮点配置。
     Float(f32),
+    /// 闭集名称等文本配置。
+    Text(String),
 }
 
 impl SettingValue {
@@ -38,6 +40,7 @@ impl fmt::Display for SettingValue {
             Self::Bytes(bytes) => write!(formatter, "{bytes}"),
             Self::UInt(number) => write!(formatter, "{number}"),
             Self::Float(number) => write!(formatter, "{number}"),
+            Self::Text(text) => formatter.write_str(text),
         }
     }
 }
@@ -109,6 +112,11 @@ keys! { roots;
     TrainMaxSteps => "train.max_steps", ["TRAIN_MAX_STEPS"], parse_uint, Some(SettingValue::UInt(train::TrainConfig::default().max_steps)), "计划总训练步数";
     TrainClipNorm => "train.clip_norm", ["TRAIN_CLIP_NORM"], parse_float, None, "全局梯度裁剪范数；未设置表示不裁剪";
     TrainAccumulation => "train.accumulation", ["TRAIN_ACCUMULATION"], parse_uint, Some(SettingValue::UInt(train::TrainConfig::default().accumulation.into())), "梯度累积窗口";
+    TrainObjective => "train.objective", ["TRAIN_OBJECTIVE"], parse_text, Some(SettingValue::Text("classify".to_string())), "训练目标：classify / distill / grpo";
+    TrainDistillTemperature => "train.distill_temperature", ["TRAIN_DISTILL_TEMPERATURE"], parse_float, Some(SettingValue::Float(2.0)), "蒸馏软目标温度";
+    TrainDistillAlpha => "train.distill_alpha", ["TRAIN_DISTILL_ALPHA"], parse_float, Some(SettingValue::Float(0.5)), "蒸馏软损失权重";
+    TrainGrpoEpsilon => "train.grpo_epsilon", ["TRAIN_GRPO_EPSILON"], parse_float, Some(SettingValue::Float(0.2)), "GRPO 裁剪范围";
+    TrainGrpoBeta => "train.grpo_beta", ["TRAIN_GRPO_BETA"], parse_float, Some(SettingValue::Float(0.01)), "GRPO 参考 KL 惩罚系数";
     TrainBatchRows => "train.batch_rows", ["TRAIN_BATCH_ROWS"], parse_uint, Some(SettingValue::UInt(train::LoaderConfig::default().rows as u64)), "每批行数";
     TrainBatchCols => "train.batch_cols", ["TRAIN_BATCH_COLS"], parse_uint, Some(SettingValue::UInt(train::LoaderConfig::default().cols as u64)), "每批列数";
 }
@@ -222,6 +230,11 @@ fn bad_value(key: Key, origin: &Origin, what: &str) -> Error {
 /// 路径：原文原样收下（相对路径由调用方按启动目录 rebase）。
 fn parse_path(_key: Key, text: &str, _origin: &Origin) -> Result<SettingValue> {
     Ok(SettingValue::Path(PathBuf::from(text)))
+}
+
+/// 文本：具体闭集由强类型投影校验，解析层只保留已修剪的原文。
+fn parse_text(_key: Key, text: &str, _origin: &Origin) -> Result<SettingValue> {
+    Ok(SettingValue::Text(text.to_string()))
 }
 
 /// 非负字节数。

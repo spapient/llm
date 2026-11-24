@@ -2,7 +2,7 @@
 
 use crate::bad;
 use diagnostic::Result;
-use storage::leb::{self, Cursor};
+use storage::leb::Cursor;
 use storage::sink::Sink;
 
 use crate::svd;
@@ -388,12 +388,6 @@ pub fn audit(note: &Note, m: usize, n: usize, low: &[f32], rest: &[f32]) -> Resu
         )));
     }
     Ok(())
-}
-
-fn read_f64(cur: &mut Cursor<'_>) -> Result<f64> {
-    let mut bytes = [0u8; 8];
-    bytes.copy_from_slice(cur.take(8)?);
-    Ok(f64::from_le_bytes(bytes))
 }
 
 #[cfg(test)]

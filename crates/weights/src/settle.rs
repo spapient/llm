@@ -22,6 +22,28 @@ pub const GAIN_FLOOR: f64 = 0.02;
 /// 逻辑字节的熵达到这个值（bit/byte）即视为没有冗余（`incompressible`）。
 pub const MAX_ENTROPY: f64 = 7.9;
 
+/// 沉降账本的判定阈值。默认值与 [`SMALL_BYTES`] / [`GAIN_FLOOR`] / [`MAX_ENTROPY`]
+/// 三个线上常量一致；只有显式调用 [`Settlement::settle_with`] 才改变判定口径。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Thresholds {
+    /// 小于该字节数的段不值得编码，原样落盘（`passthrough:small`）。
+    pub small_bytes: usize,
+    /// 至少省下这个比例才算真压了；不到就是 `below_gain`。
+    pub gain_floor: f64,
+    /// 逻辑字节的熵达到这个值（bit/byte）即视为没有冗余（`incompressible`）。
+    pub max_entropy: f64,
+}
+
+impl Default for Thresholds {
+    fn default() -> Self {
+        Self {
+            small_bytes: SMALL_BYTES,
+            gain_floor: GAIN_FLOOR,
+            max_entropy: MAX_ENTROPY,
+        }
+    }
+}
+
 closed_enum! { @named
     /// `codec_reason` 闭集：**为什么**这一条占了现在这些字节。
     pub enum Reason {
@@ -158,10 +180,15 @@ pub struct Settlement {
 impl Settlement {
     /// 由落盘字节现算整份账；容器不合法就是错误，不退回"空账"。
     pub fn settle(bytes: &[u8]) -> Result<Self> {
+        Self::settle_with(bytes, Thresholds::default())
+    }
+
+    /// 按给定阈值现算整份账；只改变原因判定，不改变任何读端校验。
+    pub fn settle_with(bytes: &[u8], thresholds: Thresholds) -> Result<Self> {
         let archive = Archive::parse(bytes)?;
         let mut tensors = Vec::with_capacity(archive.segments().len());
         for seg in archive.segments() {
-            tensors.push(settle_one(&archive, seg)?);
+            tensors.push(settle_one(&archive, seg, thresholds)?);
         }
         Ok(Self {
             file_len: bytes.len(),
@@ -235,7 +262,12 @@ impl Settlement {
     /// 文本不是合法 JSON、缺键、某格与现算不符，或容器本身解不开，一律 [`diagnostic::Code::Invalid`]；消息里
     /// 带上出错的那一格与它的主人，避免「账本有问题」这种无法定位的结论。
     pub fn verify(text: &str, bytes: &[u8]) -> Result<Self> {
-        let settled = Self::settle(bytes)?;
+        Self::verify_with(text, bytes, Thresholds::default())
+    }
+
+    /// 按同一份阈值核对账本：写账与核账必须使用同一口径。
+    pub fn verify_with(text: &str, bytes: &[u8], thresholds: Thresholds) -> Result<Self> {
+        let settled = Self::settle_with(bytes, thresholds)?;
         let parsed = json::parse_ledger(text)?;
         verify_root(parsed.object()?, &settled)?;
         Ok(settled)
@@ -243,7 +275,11 @@ impl Settlement {
 }
 
 /// 单段记账：解码往返先定 `bitwise`，再由 codec 与实测字节定量给出原因。
-pub(crate) fn settle_one(archive: &Archive<'_>, seg: &Stored) -> Result<Settled> {
+pub(crate) fn settle_one(
+    archive: &Archive<'_>,
+    seg: &Stored,
+    thresholds: Thresholds,
+) -> Result<Settled> {
     let raw_len = seg.logical_len()?;
     // 引用段的 `len()` 是代表段的帧长；它自己一个字节都不占，所以体积要按 0 记。
     let volume = if seg.is_ref() { 0 } else { seg.len() };

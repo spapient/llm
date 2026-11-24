@@ -4,6 +4,7 @@
 //
 // 标量三重循环（CPU 无 MMA 片段）。复用 load/store，M/N/K 是整数标量。
 void cutile_{{op}}_kernel(const float *a, const float *b, float *y, int M, int N, int K) {
+    /* cutile-unroll */
     for (int i = 0; i < M; ++i) {
         for (int j = 0; j < N; ++j) {
             float acc = 0.0f;

@@ -5,10 +5,6 @@ name     = "matmul_i8"
 skeleton = "gemm"
 summary  = "Y[m,n] = f32(sum_k i8(A[m,k]) i8(B[k,n])) (K=4096)"
 
-# 与稠密大 K 矩阵乘共用配置文法；具体因子按后端覆盖。
-[kernel]
-unroll = { default = 4, cpu = 0 }
-
 [axes]
 N = [256]
 

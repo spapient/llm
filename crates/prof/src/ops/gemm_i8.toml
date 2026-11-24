@@ -5,10 +5,6 @@ name     = "gemm_i8"
 skeleton = "gemm"
 summary  = "Y[m,n] = f32(sum_k i8(A[m,k]) i8(B[k,n]))"
 
-# 展开位置由正文锚点标注；后端可只覆盖因子，无需复制整份内核。
-[kernel]
-unroll = { default = 4, cpu = 0 }
-
 [axes]
 N = [32]
 

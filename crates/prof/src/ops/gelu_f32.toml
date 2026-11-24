@@ -6,10 +6,6 @@ name     = "gelu_f32"
 skeleton = "elementwise"
 summary  = "y[n] = 0.5*a[n]*(1 + erf(a[n]/sqrt(2)))"
 
-# 继承本声明的一元函数共享同一调优策略；新增后端可在内联表中覆盖自己的因子。
-[kernel]
-unroll = { default = 4, cpu = 0 }
-
 [axes]
 N = [32]
 

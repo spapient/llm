@@ -2,6 +2,7 @@
 // 槽位：{{op}} 是算子名，{{binop}} 来自 [consts]；@prim(...) 由片段层逐个替换。
 // binop 是逐元素运算符（"+" / "*"），落在 ap[0] 与 bp[0] 之间；其余结构完全一致。
 void cutile_{{op}}_kernel(const float *a, const float *b, float *y, int N) {
+    /* cutile-unroll */
     for (int n = 0; n < N; ++n) {
         const float *ap = 0;
         const float *bp = 0;

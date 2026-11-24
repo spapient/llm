@@ -215,7 +215,8 @@ impl Settings {
 
     /// 投影成训练装配纯数据；train 不读配置文件、环境变量或 argv。
     pub fn train_spec(&self) -> Result<train::TrainSpec> {
-        train::TrainSpec::new(self.session_config()?, self.loader_config()?)
+        train::TrainSpec::new(self.session_config()?, self.loader_config()?)?
+            .with_objective(self.objective_config()?)
     }
 
     /// 会话侧覆盖参数；未给的字段取 [`TrainConfig`](train::TrainConfig) 默认值。
@@ -229,12 +230,35 @@ impl Settings {
         )
     }
 
+    /// 静态目标及其数值参数；名称在投影边界收窄成闭集。
+    fn objective_config(&self) -> Result<train::ObjectiveConfig> {
+        match self.text(Key::TrainObjective).unwrap_or("classify") {
+            "classify" => Ok(train::ObjectiveConfig::Classify),
+            "distill" => Ok(train::ObjectiveConfig::Distill(train::Distill::new(
+                self.float(Key::TrainDistillTemperature).unwrap_or(2.0),
+                self.float(Key::TrainDistillAlpha).unwrap_or(0.5),
+            ))),
+            "grpo" => Ok(train::ObjectiveConfig::Grpo(train::Grpo::new(
+                self.float(Key::TrainGrpoEpsilon).unwrap_or(0.2),
+                self.float(Key::TrainGrpoBeta).unwrap_or(0.01),
+            ))),
+            other => Err(invalid(format!("未知训练目标 `{other}`"))),
+        }
+    }
+
     /// 数据批几何；采样策略默认顺序遍历。
     fn loader_config(&self) -> Result<train::LoaderConfig> {
         train::LoaderConfig::new(
             self.usize(Key::TrainBatchRows)?,
             self.usize(Key::TrainBatchCols)?,
         )
+    }
+
+    fn text(&self, key: Key) -> Option<&str> {
+        self.resolved(key).and_then(|(value, _)| match value {
+            SettingValue::Text(text) => Some(text.as_str()),
+            _ => None,
+        })
     }
 
     fn float(&self, key: Key) -> Option<f32> {

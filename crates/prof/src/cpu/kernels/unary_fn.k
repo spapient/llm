@@ -5,6 +5,7 @@
 // 一元骨架：读一个数、算 {{unexpr}}、写一个数。表达式只用到寄存器里的 x，不依赖设备数学库，
 // 跨设备语义与 nn::unary 的标量核由执行对拍钉住。
 void cutile_{{op}}_kernel(const float *a, float *y, int N) {
+    /* cutile-unroll */
     for (int n = 0; n < N; ++n) {
         const float *ap = 0;
         @load(ap, a + n);
