@@ -191,6 +191,21 @@ fn quantized(name: &str, out: usize, in_features: usize, groups: usize) -> Vec<E
 }
 
 #[test]
+fn quantized_bit_widths_are_explicit() {
+    for (bits, format) in [
+        (2, WeightFormat::int2(32)),
+        (4, WeightFormat::int4(32)),
+        (8, WeightFormat::int8(32)),
+    ] {
+        assert_eq!(quantized_format(32, bits).expect("已注册位宽"), format);
+    }
+    assert_eq!(
+        quantized_format(32, 3).expect_err("未知位宽").code(),
+        Code::Unsupported
+    );
+}
+
+#[test]
 fn a_packed_weight_and_its_scales_become_one_priced_layer() {
     // 128 个输入 / 4 个分组 = 每 32 个元素一个标度，正是内核声明的那个分组。
     let model =

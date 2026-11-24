@@ -479,20 +479,20 @@ pub trait Rank: Clone {
 
     /// 交换两轴；轴越界返回 `None`。
     #[must_use]
-    fn swapped(&self, a: usize, b: usize) -> Option<Self> {
-        if a >= self.as_slice().len() || b >= self.as_slice().len() {
+    fn swapped(&self, first: usize, second: usize) -> Option<Self> {
+        if first >= self.as_slice().len() || second >= self.as_slice().len() {
             return None;
         }
-        let mut out = self.clone();
-        out.as_slice_mut().swap(a, b);
-        Some(out)
+        let mut output = self.clone();
+        output.as_slice_mut().swap(first, second);
+        Some(output)
     }
 
     /// 搬动一轴并保持其余轴的相对顺序，不创建排列索引。
     #[must_use]
     fn moved(&self, from: usize, to: usize) -> Option<Self> {
-        let mut out = self.clone();
-        let axes = out.as_slice_mut();
+        let mut output = self.clone();
+        let axes = output.as_slice_mut();
         if from >= axes.len() || to >= axes.len() {
             return None;
         }
@@ -503,7 +503,7 @@ pub trait Rank: Clone {
             axes.copy_within(to..from, to + 1);
         }
         axes[to] = value;
-        Some(out)
+        Some(output)
     }
 
     /// 按排列重排；长度或轴值不合法返回 `None`。

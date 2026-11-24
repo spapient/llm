@@ -588,16 +588,22 @@ impl FileRemote {
     }
 
     fn read_slot(&self, rank: u32, out: &mut [f32]) -> Result<()> {
+        let bytes = self.read_bytes(rank)?;
+        for (slot, chunk) in out.iter_mut().zip(bytes.as_chunks::<4>().0) {
+            *slot = f32::from_le_bytes(*chunk);
+        }
+        Ok(())
+    }
+
+    /// 文件定位与完整读取共用一条路径，调用方只负责协议解码。
+    fn read_bytes(&self, rank: u32) -> Result<Vec<u8>> {
         self.check_rank("shard::FileRemote::read", rank)?;
         let mut file = File::open(&self.backing).map_err(|error| self.io("打开", error))?;
         self.seek_slot(&mut file, rank)?;
         let mut bytes = vec![0u8; self.width * size_of::<f32>()];
         file.read_exact(&mut bytes)
             .map_err(|error| self.io("读", error))?;
-        for (slot, chunk) in out.iter_mut().zip(bytes.as_chunks::<4>().0) {
-            *slot = f32::from_le_bytes(*chunk);
-        }
-        Ok(())
+        Ok(bytes)
     }
 
     fn write_slot(&self, rank: u32, values: &[f32]) -> Result<()> {

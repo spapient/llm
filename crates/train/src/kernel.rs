@@ -123,7 +123,11 @@ type AttentionKernel = fn(
 ) -> Result<()>;
 
 /// 稠密注意力几何：头宽取声明宽度，行数由 q 长按头宽分段。
-fn attention_paths(inputs: &[View<'_>], output: &mut ViewMut<'_>, run: AttentionKernel) -> Result<()> {
+fn attention_paths(
+    inputs: &[View<'_>],
+    output: &mut ViewMut<'_>,
+    run: AttentionKernel,
+) -> Result<()> {
     let (q, k, v) = <(f32, f32, f32) as Inputs>::unpack(inputs, "attention_f32")?;
     let out = output_slice::<f32>("attention_f32", output)?;
     let d = nn::conv::attention::MODEL.shape.1;

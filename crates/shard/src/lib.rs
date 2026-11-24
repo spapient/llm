@@ -131,11 +131,13 @@ pub mod toolchain;
 pub mod verify;
 pub mod witness;
 
-// 设备执行面：后端见证装配、六平台合同与编译执行回读。
-pub mod backends;
-/// Metal 双源编译执行接口；实现与设备后端共同收口，避免跨目录跳转。
+/// 设备后端安装与 Metal 执行接口，统一由 [`backend`] 提供。
+pub mod backends {
+    pub use crate::backend::{compile_run_metal, install, metal_driver, metal_kernel};
+}
+/// Metal 双源编译执行接口。
 pub mod metal {
-    pub use crate::backends::{compile_run_metal, metal_driver, metal_kernel};
+    pub use crate::backend::{compile_run_metal, metal_driver, metal_kernel};
 }
 
 pub use runner::{compile_flags, driver};

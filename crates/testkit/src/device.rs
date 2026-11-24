@@ -1,7 +1,5 @@
 //! 设备片段层的契约：一台设备的 P0 片段、见证入口与档案供给必须互相闭合。
 
-use std::path::Path;
-
 /// P0 闭集：`crates/prof/src/<vendor>/kernels/*.k` 会 `@` 到的八个原语。
 ///
 /// 这是**算子模板**的事实，不是某台设备的事实，因此六台设备共用一份。设备模块自带
@@ -298,12 +296,7 @@ impl<'a> Contract<'a> {
         want.push(format!("witness.{}", self.ext));
         // 一份写回尾块文本承载六种形式，文件名由 `prof::sign` 定，不随原语扩张。
         want.push(format!("{}.{}", self.epilogue_stem, self.ext));
-        // 档案与片段语料住在同一目录（`src/<vendor>/<vendor>.toml`），它是目录闭集的一格。
-        let vendor = Path::new(self.dir)
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or(self.id);
-        want.push(format!("{vendor}.toml"));
+        // TOML 基档与变体由 prof/build.rs 的档案闭集另行校验，不混入片段文件名集合。
         want
     }
 }

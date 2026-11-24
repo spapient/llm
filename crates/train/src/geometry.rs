@@ -235,11 +235,30 @@ impl Geometry {
         match self {
             Self::Pool1d { k, s, p, l, c } => pool_len(l, k, s, p).map_or(0, |ol| ol * c),
             Self::Pool2d { k, s, p, h, w, c }
-            | Self::Avg2d { k, s, p, h, w, c, .. } => plane(h, k, s, p, w, c),
+            | Self::Avg2d {
+                k, s, p, h, w, c, ..
+            } => plane(h, k, s, p, w, c),
             Self::Adaptive { oh, ow, c, .. } | Self::Interp { oh, ow, c, .. } => oh * ow * c,
-            Self::Norm { n, spatial, channels }
-            | Self::Group { n, spatial, channels, .. } => n * spatial * channels,
-            Self::Conv2d { k, s, p, h, w, cout, .. } => plane(h, k, s, p, w, cout),
+            Self::Norm {
+                n,
+                spatial,
+                channels,
+            }
+            | Self::Group {
+                n,
+                spatial,
+                channels,
+                ..
+            } => n * spatial * channels,
+            Self::Conv2d {
+                k,
+                s,
+                p,
+                h,
+                w,
+                cout,
+                ..
+            } => plane(h, k, s, p, w, cout),
             Self::Layer { rows, width } => rows * width,
         }
     }

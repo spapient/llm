@@ -102,8 +102,8 @@ struct Device {
     epilogue: PathBuf,
     /// 见证源码与它的档案：生成的代码按路径读，构建期再按路径校。
     witness: PathBuf,
-    /// 档案路径：生成的代码按路径读，生成器也拿它当输入登记。
-    archive: PathBuf,
+    /// 已合并基档与变体的完整档案；校验和内嵌必须共用这一份。
+    archive: toml::Table,
     /// 尾块六段的名字，按出现顺序。
     forms: Vec<String>,
 }
@@ -184,7 +184,6 @@ fn scan(dir: &Path, family: &str, variant: Option<&str>, files: Vec<PathBuf>) ->
         .and_then(|value| value.as_table())
         .unwrap_or_else(|| fail(format!("`{name}` 的档案没有 `[meta]` 表")));
     let provides = provides_of(&doc, family, &ext);
-    let archive = dir.join(format!("{}.toml", variant.unwrap_or(family)));
 
     let mut fragments = Vec::new();
     let mut entries = Vec::new();
@@ -241,7 +240,7 @@ fn scan(dir: &Path, family: &str, variant: Option<&str>, files: Vec<PathBuf>) ->
         entries,
         epilogue,
         witness,
-        archive,
+        archive: doc.clone(),
         forms,
     }
 }

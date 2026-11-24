@@ -193,6 +193,16 @@ pub(crate) fn check_slots(slots: &[Slot<'_>]) -> Result<()> {
     slots.iter().try_for_each(Slot::check_len)
 }
 
+/// 通用矩缓冲槽：按全局槽号扩容，形状变化时原位置零初始化。
+fn state_slot(state: &mut Vec<Vec<f32>>, idx: usize, len: usize) -> &mut Vec<f32> {
+    state.resize_with(state.len().max(idx + 1), Vec::new);
+    let slot = &mut state[idx];
+    if slot.len() != len {
+        slot.resize(len, 0.0);
+    }
+    slot
+}
+
 /// 按裁剪比例缩放梯度；`divide` 为 `true` 是步后还原，否则步前裁剪。
 fn rescale(slots: &mut [Slot<'_>], scale: f32, divide: bool) {
     if scale == 1.0 {
@@ -260,23 +270,6 @@ impl Adam {
         with_eps => eps: f32,
     }
 
-    /// 确保槽位 `idx` 的矩向量长度等于参数长度；首次见到的槽位分配零向量。
-    fn moments(&mut self, idx: usize, len: usize) -> (&mut Vec<f32>, &mut Vec<f32>) {
-        if idx >= self.momentum.len() {
-            let missing = idx - self.momentum.len() + 1;
-            self.momentum
-                .resize_with(self.momentum.len() + missing, Vec::new);
-            self.variance
-                .resize_with(self.variance.len() + missing, Vec::new);
-        }
-        let m = &mut self.momentum[idx];
-        if m.len() != len {
-            m.resize(len, 0.0);
-            self.variance[idx].resize(len, 0.0);
-        }
-        (&mut self.momentum[idx], &mut self.variance[idx])
-    }
-
     ref_getters! {
         /// 一阶矩表（按槽位编号）：快照导出走这里，优化器之外不另存一份矩状态。
         momentum => momentum: &[Vec<f32>],
@@ -323,7 +316,11 @@ impl Optimizer for Adam {
             (self.beta1, self.beta2, self.eps, self.weight_decay);
         for (idx, slot) in slots.iter_mut().enumerate() {
             let decay = decay_rate(slot.role, weight_decay);
-            let (m, v) = self.moments(idx, slot.params.len());
+            let len = slot.params.len();
+            let (m, v) = (
+                state_slot(&mut self.momentum, idx, len),
+                state_slot(&mut self.variance, idx, len),
+            );
             // 逐元素串行更新：m/v 对每个元素有跨步依赖，长度随参数数据而定，不能向量化展开。
             for ((param, grad), (m_value, v_value)) in slot
                 .params
@@ -411,29 +408,10 @@ impl<M: Optimizer, N: Optimizer> Hybrid<M, N> {
     /// 先校验完整槽表，再拆分可变视图；任何非法输入都发生在子优化器更新之前。
     fn check(slots: &[Slot<'_>]) -> Result<()> {
         check_slots(slots)?;
-        for (idx, slot) in slots.iter().enumerate() {
-            Self::check_slot(idx, slot)?;
-        }
-        Ok(())
-    }
-
-    /// 单槽校验：矩阵形状不含零维，梯度逐项有限。
-    fn check_slot(idx: usize, slot: &Slot<'_>) -> Result<()> {
-        if let Some((rows, cols)) = slot.shape
-            && (rows == 0 || cols == 0)
-        {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("第 {idx} 槽矩阵形状 [{rows}, {cols}] 含零维"),
-            )
-            .with(SITE));
-        }
-        if let Some(bad) = slot.grads.iter().position(|grad| !grad.is_finite()) {
-            return Err(
-                Error::new(Code::Invalid, format!("第 {idx} 槽梯度第 {bad} 项非有限")).with(SITE),
-            );
-        }
-        Ok(())
+        slots
+            .iter()
+            .enumerate()
+            .try_for_each(|(idx, slot)| validate_slot(idx, slot))
     }
 }
 
@@ -611,20 +589,6 @@ impl Muon {
         self
     }
 
-    /// 确保槽位 `idx` 的动量缓冲长度等于参数长度；首次见到的槽位分配零向量。
-    fn velocity(&mut self, idx: usize, len: usize) -> &mut Vec<f32> {
-        if idx >= self.velocity.len() {
-            let missing = idx - self.velocity.len() + 1;
-            self.velocity
-                .resize_with(self.velocity.len() + missing, Vec::new);
-        }
-        let buf = &mut self.velocity[idx];
-        if buf.len() != len {
-            buf.resize(len, 0.0);
-        }
-        buf
-    }
-
     /// 一个槽的推进：动量累加 →（可选 Nesterov）→ 正交化 → 写回。
     fn advance(
         &mut self,
@@ -636,7 +600,7 @@ impl Muon {
     ) {
         let (beta, nesterov, eps) = (self.momentum, self.nesterov, self.eps);
         let decay = decay_rate(slot.role, self.weight_decay);
-        let velocity = self.velocity(idx, rows * cols);
+        let velocity = state_slot(&mut self.velocity, idx, rows * cols);
         for (tracked, &grad) in velocity.iter_mut().zip(slot.grads.iter()) {
             *tracked = beta * *tracked + scale * grad;
         }
@@ -722,43 +686,36 @@ impl Optimizer for Muon {
     }
 }
 
-/// 每个槽的矩阵形状，**全部**先查完再返回。
-fn shapes_of(slots: &[Slot<'_>]) -> Result<Vec<(usize, usize)>> {
-    let mut shapes = Vec::with_capacity(slots.len());
-    for (idx, slot) in slots.iter().enumerate() {
-        shapes.push(matrix_of(idx, slot)?);
-    }
-    Ok(shapes)
-}
-
-/// Nesterov 前瞻方向 `g + μ·u`：动量缓冲 `u` 已经含了本步的梯度，前瞻取的是「再多走一点」。
-fn nesterov_direction(velocity: &[f32], grads: &[f32], beta: f32, scale: f32) -> Vec<f32> {
-    velocity
-        .iter()
-        .zip(grads)
-        .map(|(&tracked, &grad)| scale * grad + beta * tracked)
-        .collect()
-}
-
-/// 一个槽的矩阵形状：非矩阵、零维或梯度非有限都在这里拒绝。
-fn matrix_of(idx: usize, slot: &Slot<'_>) -> Result<(usize, usize)> {
-    let Some((rows, cols)) = slot.shape else {
-        let message = format!(
-            "第 {idx} 槽（角色 {}）不是矩阵：Muon 的正交化只在矩阵上有定义，\
-             偏置/归一化增益按角色分派给 AdamW",
-            slot.role.as_str()
-        );
-        return Err(Error::new(Code::Invalid, message).with(SITE));
-    };
-    if rows == 0 || cols == 0 {
-        let message = format!("第 {idx} 槽声明为 [{rows}, {cols}]：两边都必须非零");
-        return Err(Error::new(Code::Invalid, message).with(SITE));
+/// Muon 与混合路由共享的数值入口：矩阵不得含零维，梯度必须逐项有限。
+fn validate_slot(idx: usize, slot: &Slot<'_>) -> Result<()> {
+    if let Some((rows, cols)) = slot.shape
+        && (rows == 0 || cols == 0)
+    {
+        return Err(Error::new(Code::Invalid, format!("第 {idx} 槽矩阵形状 [{rows}, {cols}] 含零维")).with(SITE));
     }
     if let Some(bad) = slot.grads.iter().position(|grad| !grad.is_finite()) {
-        let message = format!("第 {idx} 槽梯度第 {bad} 项非有限：正交化会把它铺满整个方向");
-        return Err(Error::new(Code::Invalid, message).with(SITE));
+        return Err(Error::new(Code::Invalid, format!("第 {idx} 槽梯度第 {bad} 项非有限")).with(SITE));
     }
-    Ok((rows, cols))
+    Ok(())
+}
+
+/// 每个槽的矩阵形状，全部先查完再返回。
+fn shapes_of(slots: &[Slot<'_>]) -> Result<Vec<(usize, usize)>> {
+    slots.iter().enumerate().map(|(idx, slot)| matrix_of(idx, slot)).collect()
+}
+
+/// Nesterov 前瞻方向 `g + μ·u`：动量缓冲 `u` 已含本步梯度。
+fn nesterov_direction(velocity: &[f32], grads: &[f32], beta: f32, scale: f32) -> Vec<f32> {
+    velocity.iter().zip(grads).map(|(&u, &g)| scale * g + beta * u).collect()
+}
+
+/// Muon 只接受矩阵；零维与非有限梯度由 [`validate_slot`] 统一拒绝。
+fn matrix_of(idx: usize, slot: &Slot<'_>) -> Result<(usize, usize)> {
+    validate_slot(idx, slot)?;
+    slot.shape.ok_or_else(|| Error::new(
+        Code::Invalid,
+        format!("第 {idx} 槽（角色 {}）不是矩阵：请经 Hybrid 分派给非矩阵优化器", slot.role.as_str()),
+    ).with(SITE))
 }
 
 /// 步长缩放 `0.2·√max(rows, cols)`：正交后奇异值为 1，不缩放的话更新量随矩阵阶数增长。

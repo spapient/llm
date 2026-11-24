@@ -1,6 +1,8 @@
 //! 数值微核：各经典算子变体的前向/反向参考实现（梯度对拍基准）。
 
-use super::shapes::{internal, Window, bounds, norm_group, pool_len, pool2d_out, square, window1d, window2d};
+use super::shapes::{
+    Window, bounds, internal, norm_group, pool_len, pool2d_out, square, window1d, window2d,
+};
 use crate::geometry::{EPS, Geometry, MOMENTUM, Running};
 use diagnostic::Result;
 use nn::conv::{AdaptiveAvgPool2d, AvgPool2d, Conv2d, Interpolate, MaxPool1d, MaxPool2d, Sampler};
@@ -120,7 +122,10 @@ fn forward_reshape(g: Geometry, inputs: &[&[f32]], out: &mut [f32]) -> Result<()
             };
             Interpolate { sampler, oh, ow }.forward(inputs[0], n, h, w, c, out)
         }
-        _ => Err(internal("reshape 只接收自适应池化或插值几何").with("train::Geometry::forward_reshape")),
+        _ => {
+            Err(internal("reshape 只接收自适应池化或插值几何")
+                .with("train::Geometry::forward_reshape"))
+        }
     }
 }
 
@@ -551,11 +556,7 @@ pub(crate) fn backward(
 }
 
 /// 空间算子二级路由：reshape/卷积与池化各自只处理自己的闭集。
-fn backward_spatial(
-    g: Geometry,
-    inputs: &[Vec<f32>],
-    incoming: &[f32],
-) -> Result<Vec<Vec<f32>>> {
+fn backward_spatial(g: Geometry, inputs: &[Vec<f32>], incoming: &[f32]) -> Result<Vec<Vec<f32>>> {
     match g {
         Geometry::Adaptive { oh, ow, h, w, c } => {
             backward_adaptive(inputs, incoming, oh, ow, h, w, c)
@@ -576,32 +577,18 @@ fn backward_spatial(
             w,
             cin,
             cout,
-        } => backward_conv2d(
-            inputs,
-            incoming,
-            Window { k, s, p },
-            (h, w, cin, cout),
-        ),
+        } => backward_conv2d(inputs, incoming, Window { k, s, p }, (h, w, cin, cout)),
         _ => backward_pool(g, inputs, incoming),
     }
 }
 
 /// 池化反向：1D/2D 最大池与平均池各自投影到对应微核。
-fn backward_pool(
-    g: Geometry,
-    inputs: &[Vec<f32>],
-    incoming: &[f32],
-) -> Result<Vec<Vec<f32>>> {
+fn backward_pool(g: Geometry, inputs: &[Vec<f32>], incoming: &[f32]) -> Result<Vec<Vec<f32>>> {
     match g {
-        Geometry::Pool1d { k, s, p, l, c } => {
-            backward_pool1d(inputs, incoming, k, s, p, l, c)
+        Geometry::Pool1d { k, s, p, l, c } => backward_pool1d(inputs, incoming, k, s, p, l, c),
+        Geometry::Pool2d { k, s, p, h, w, c } => {
+            backward_pool2d(inputs, incoming, Window { k, s, p }, (h, w, c))
         }
-        Geometry::Pool2d { k, s, p, h, w, c } => backward_pool2d(
-            inputs,
-            incoming,
-            Window { k, s, p },
-            (h, w, c),
-        ),
         Geometry::Avg2d {
             k,
             s,

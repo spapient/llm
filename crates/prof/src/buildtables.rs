@@ -16,10 +16,8 @@ pub fn archives_of(devices: &[Device]) -> String {
     );
     code.push_str(TABLE_REGISTRY_HEAD);
     for device in devices {
-        let table =
-            buildgen::read(&device.archive).unwrap_or_else(|error| fail(format!("{error}")));
-        let pairs =
-            buildgen::emit(&table, &device.name).unwrap_or_else(|error| fail(format!("{error}")));
+        let pairs = buildgen::emit(&device.archive, &device.name)
+            .unwrap_or_else(|error| fail(format!("{error}")));
         let _ = writeln!(code, "            ({:?}, {pairs}),", device.name);
     }
     code.push_str(

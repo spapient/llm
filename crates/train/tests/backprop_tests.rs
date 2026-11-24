@@ -298,8 +298,7 @@ fn check_affine(
     geometry: Option<Geometry>,
     loss: impl Fn(&[f32], &[f32], &[f32]) -> f32,
 ) -> Result<()> {
-    let (mut session, params, y, out) =
-        parameter_session(op, &[x0, g0, b0], total, geometry)?;
+    let (mut session, params, y, out) = parameter_session(op, &[x0, g0, b0], total, geometry)?;
     let (x, g, b) = (params[0], params[1], params[2]);
     sum_backward(&mut session, y, out)?;
 

@@ -366,8 +366,13 @@ fn sub(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
 fn div(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
     let (a, b) = (&ctx.inputs[0], &ctx.inputs[1]);
     let da = ctx.incoming.iter().zip(b).map(|(&g, &w)| g / w).collect();
-    let db = ctx.incoming.iter().zip(a).zip(b)
-        .map(|((&g, &x), &w)| -g * x / (w * w)).collect();
+    let db = ctx
+        .incoming
+        .iter()
+        .zip(a)
+        .zip(b)
+        .map(|((&g, &x), &w)| -g * x / (w * w))
+        .collect();
     Ok(vec![da, db])
 }
 
@@ -383,24 +388,42 @@ fn max(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
 
 /// `min`/`max` 共用选点反向，等号只归 `a`。
 fn extremum(
-    ctx: Ctx<'_>, a_wins: impl Fn(f32, f32) -> bool, b_wins: impl Fn(f32, f32) -> bool,
+    ctx: Ctx<'_>,
+    a_wins: impl Fn(f32, f32) -> bool,
+    b_wins: impl Fn(f32, f32) -> bool,
 ) -> Result<Vec<Vec<f32>>> {
     let (a, b) = (&ctx.inputs[0], &ctx.inputs[1]);
-    let pick = |wins: &dyn Fn(f32, f32) -> bool| ctx.incoming.iter().zip(a).zip(b)
-        .map(|((&g, &x), &y)| if wins(x, y) { g } else { 0.0 }).collect();
+    let pick = |wins: &dyn Fn(f32, f32) -> bool| {
+        ctx.incoming
+            .iter()
+            .zip(a)
+            .zip(b)
+            .map(|((&g, &x), &y)| if wins(x, y) { g } else { 0.0 })
+            .collect()
+    };
     Ok(vec![pick(&a_wins), pick(&b_wins)])
 }
 
 /// 一元公式目录的公共迭代器；闭包保留每项自己的浮点结合顺序。
 fn unary(ctx: Ctx<'_>, contribution: impl Fn(f32, f32) -> f32) -> Result<Vec<Vec<f32>>> {
-    Ok(vec![ctx.incoming.iter().zip(&ctx.inputs[0])
-        .map(|(&g, &x)| contribution(g, x)).collect()])
+    Ok(vec![
+        ctx.incoming
+            .iter()
+            .zip(&ctx.inputs[0])
+            .map(|(&g, &x)| contribution(g, x))
+            .collect(),
+    ])
 }
 
 /// 输出可复用的一元公式（exp/sigmoid/tanh），避免重算前向函数。
 fn output_unary(ctx: Ctx<'_>, contribution: impl Fn(f32, f32) -> f32) -> Result<Vec<Vec<f32>>> {
-    Ok(vec![ctx.incoming.iter().zip(ctx.output)
-        .map(|(&g, &y)| contribution(g, y)).collect()])
+    Ok(vec![
+        ctx.incoming
+            .iter()
+            .zip(ctx.output)
+            .map(|(&g, &y)| contribution(g, y))
+            .collect(),
+    ])
 }
 
 /// y = Σa：上游标量梯度广播回每个元素，dA[i] = in[0]。

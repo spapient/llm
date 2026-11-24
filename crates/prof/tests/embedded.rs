@@ -299,7 +299,7 @@ fn a3000_variant_selects_sm86_and_reuses_the_nvidia_backend() {
     let t600 = crate::prof::Detected::new()
         .with("cc", "7.5")
         .with("name", "NVIDIA T600");
-    let chosen = crate::prof::select(crate::prof::builtin_profiles(), &t600)
-        .expect("T600 仍必须命中原档案");
+    let chosen =
+        crate::prof::select(crate::prof::builtin_profiles(), &t600).expect("T600 仍必须命中原档案");
     assert_eq!(chosen.meta.vendor, "nvidia");
 }

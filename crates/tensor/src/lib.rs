@@ -122,27 +122,12 @@ mod element {
 #[cfg(test)]
 #[path = "../tests/tensor_tests.rs"]
 mod tests;
-
 #[cfg(test)]
 #[path = "../tests/view_tests.rs"]
 mod view_tests;
-
-#[cfg(test)]
-#[path = "../tests/typed_tests.rs"]
-mod static_rank_tests;
-
-#[cfg(test)]
-#[path = "../tests/prop_shape.rs"]
-mod prop_shape;
-
-#[cfg(test)]
-#[path = "../tests/shape_tests.rs"]
-mod shape_tests;
-
-#[cfg(test)]
-#[path = "../tests/element_tests.rs"]
-mod element_tests;
-
 #[cfg(test)]
 #[path = "../tests/ops_tests.rs"]
 mod ops_tests;
+#[cfg(test)]
+#[path = "../tests/prop_shape.rs"]
+mod prop_shape;

@@ -10,47 +10,113 @@ use nn::conv::ConvGeom;
 /// 单次几何分派：每个分支只投影配置，共享函数拥有长度判据。
 pub(crate) fn check_geometry(g: Geometry, lens: &[usize], out: usize) -> Result<()> {
     match g {
+        Geometry::Pool1d { .. } | Geometry::Pool2d { .. } | Geometry::Avg2d { .. } => {
+            check_pool(g, lens, out)
+        }
+        Geometry::Adaptive { .. } | Geometry::Interp { .. } | Geometry::Conv2d { .. } => {
+            check_plane(g, lens, out)
+        }
+        Geometry::Norm { .. } | Geometry::Group { .. } | Geometry::Layer { .. } => {
+            check_norm(g, lens, out)
+        }
+    }
+}
+
+/// 池化族：一维、二维最大池与平均池各自投影到公共判据。
+fn check_pool(g: Geometry, lens: &[usize], out: usize) -> Result<()> {
+    match g {
         Geometry::Pool1d { k, s, p, l, c } => check_pool1d(lens, out, k, s, p, l, c),
         Geometry::Pool2d { k, s, p, h, w, c } => {
             check_pool2d(lens, out, Window { k, s, p }, (h, w, c), "二维池化")
         }
-        Geometry::Avg2d { k, s, p, h, w, c, .. } => {
-            check_pool2d(lens, out, Window { k, s, p }, (h, w, c), "二维平均池化")
-        }
+        Geometry::Avg2d {
+            k, s, p, h, w, c, ..
+        } => check_pool2d(lens, out, Window { k, s, p }, (h, w, c), "二维平均池化"),
+        _ => Err(internal("池化形状核对只接收池化几何")),
+    }
+}
+
+/// 平面族：自适应池化、插值与二维卷积按输出平面核对。
+fn check_plane(g: Geometry, lens: &[usize], out: usize) -> Result<()> {
+    match g {
         Geometry::Adaptive { oh, ow, h, w, c } => {
             check_plane(lens, out, (oh, ow), (h, w, c), "自适应池化")
         }
-        Geometry::Interp { oh, ow, h, w, c, .. } => {
-            check_plane(lens, out, (oh, ow), (h, w, c), "插值")
-        }
-        Geometry::Norm { n, spatial, channels } => {
-            check_normalization(lens, out, n * spatial * channels, channels, "批归一化")
-        }
-        Geometry::Group { groups, n, spatial, channels } => {
+        Geometry::Interp {
+            oh, ow, h, w, c, ..
+        } => check_plane(lens, out, (oh, ow), (h, w, c), "插值"),
+        Geometry::Conv2d {
+            k,
+            s,
+            p,
+            h,
+            w,
+            cin,
+            cout,
+        } => check_conv2d_shape(lens, out, Window { k, s, p }, (h, w, cin, cout)),
+        _ => Err(internal("平面形状核对只接收自适应池化、插值或卷积几何")),
+    }
+}
+
+/// 归一化族：批/组/层归一化共享 `(x, gamma, beta, out)` 契约。
+fn check_norm(g: Geometry, lens: &[usize], out: usize) -> Result<()> {
+    match g {
+        Geometry::Norm {
+            n,
+            spatial,
+            channels,
+        } => check_normalization(lens, out, n * spatial * channels, channels, "批归一化"),
+        Geometry::Group {
+            groups,
+            n,
+            spatial,
+            channels,
+        } => {
             check_normalization(lens, out, n * spatial * channels, channels, "组归一化")?;
-            ensure_shape(groups > 0 && channels.is_multiple_of(groups), lens, out, "组归一化")
+            ensure_shape(
+                groups > 0 && channels.is_multiple_of(groups),
+                lens,
+                out,
+                "组归一化",
+            )
         }
         Geometry::Layer { rows, width } => {
             check_normalization(lens, out, rows * width, width, "层归一化")
         }
-        Geometry::Conv2d { k, s, p, h, w, cin, cout } => {
-            check_conv2d_shape(lens, out, Window { k, s, p }, (h, w, cin, cout))
-        }
+        _ => Err(internal("归一化形状核对只接收归一化几何")),
     }
 }
 
 /// 一维池化：输入 `n·l·c`、输出 `n·ol·c`。
 fn check_pool1d(
-    lens: &[usize], out: usize, k: usize, s: usize, p: usize, l: usize, c: usize,
+    lens: &[usize],
+    out: usize,
+    k: usize,
+    s: usize,
+    p: usize,
+    l: usize,
+    c: usize,
 ) -> Result<()> {
-    let per = l.checked_mul(c).filter(|&v| v > 0).ok_or_else(|| invalid("池化输入为空"))?;
+    let per = l
+        .checked_mul(c)
+        .filter(|&v| v > 0)
+        .ok_or_else(|| invalid("池化输入为空"))?;
     let want = lens[0] / per * pool_len(l, k, s, p)? * c;
-    ensure_shape(lens[0] == lens[0] / per * per && out == want, lens, out, "一维池化")
+    ensure_shape(
+        lens[0] == lens[0] / per * per && out == want,
+        lens,
+        out,
+        "一维池化",
+    )
 }
 
 /// 二维池化：先推输出窗口，再走公共平面判据。
 fn check_pool2d(
-    lens: &[usize], out: usize, win: Window, plane: (usize, usize, usize), what: &str,
+    lens: &[usize],
+    out: usize,
+    win: Window,
+    plane: (usize, usize, usize),
+    what: &str,
 ) -> Result<()> {
     let output = pool2d_out(win, plane.0, plane.1)?;
     check_plane(lens, out, output, plane, what)
@@ -58,23 +124,41 @@ fn check_pool2d(
 
 /// 二维空间算子：输入 `n·h·w·c`、输出 `n·oh·ow·c`，拒绝零平面与除零。
 fn check_plane(
-    lens: &[usize], out: usize, output: (usize, usize), plane: (usize, usize, usize), what: &str,
+    lens: &[usize],
+    out: usize,
+    output: (usize, usize),
+    plane: (usize, usize, usize),
+    what: &str,
 ) -> Result<()> {
     let (oh, ow) = output;
     let (h, w, c) = plane;
-    let per = h.checked_mul(w).and_then(|v| v.checked_mul(c)).filter(|&v| v > 0)
+    let per = h
+        .checked_mul(w)
+        .and_then(|v| v.checked_mul(c))
+        .filter(|&v| v > 0)
         .ok_or_else(|| invalid(format!("{what}输入平面为空")))?;
     let n = lens[0] / per;
-    ensure_shape(lens[0] == n * per && out == n * oh * ow * c, lens, out, what)
+    ensure_shape(
+        lens[0] == n * per && out == n * oh * ow * c,
+        lens,
+        out,
+        what,
+    )
 }
 
 /// 归一化统一契约：`(x, gamma, beta, out) = (total, width, width, total)`。
 fn check_normalization(
-    lens: &[usize], out: usize, total: usize, width: usize, what: &str,
+    lens: &[usize],
+    out: usize,
+    total: usize,
+    width: usize,
+    what: &str,
 ) -> Result<()> {
     ensure_shape(
         [lens[0], lens[1], lens[2], out] == [total, width, width, total],
-        lens, out, what,
+        lens,
+        out,
+        what,
     )
 }
 

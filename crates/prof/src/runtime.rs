@@ -8,5 +8,5 @@ pub mod exec;
 pub mod metal;
 
 #[cfg(windows)]
-#[path = "intel/opencl.rs"]
+#[path = "opencl.rs"]
 pub mod opencl;

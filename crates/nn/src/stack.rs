@@ -679,7 +679,8 @@ fn projection(header: &Header, entry: &Entry) -> Result<Option<Linear>> {
     let name = layer_name(entry.name());
     // 量化条目先问标度：宽度、分组与位宽都从那一处来；这是本函数里唯一需要"先问"的理由。
     if let Some(quantized) = header.quantization(entry.name())? {
-        let format = quantized_format(quantized.group(), quantized.bits());
+        let format = quantized_format(quantized.group(), quantized.bits())
+            .map_err(|error| error.with(format!("权重条目 `{}`", entry.name())))?;
         return Linear::with_format(
             name,
             format,
@@ -700,12 +701,16 @@ fn projection(header: &Header, entry: &Entry) -> Result<Option<Linear>> {
         .map_err(|error| error.with(format!("权重条目 `{}`", entry.name())))
 }
 
-/// 量化条目按位宽选编码：逐元素 int8（8 位）走 `gemv_i8`，打包 nibble（4 位）走 `gemv_i4`。
-fn quantized_format(group: usize, bits: u8) -> WeightFormat {
-    if bits == 8 {
-        WeightFormat::int8(group)
-    } else {
-        WeightFormat::int4(group)
+/// 量化位宽到编码的闭集映射；未知位宽绝不静默落入 int4。
+fn quantized_format(group: usize, bits: u8) -> Result<WeightFormat> {
+    match bits {
+        2 => Ok(WeightFormat::int2(group)),
+        4 => Ok(WeightFormat::int4(group)),
+        8 => Ok(WeightFormat::int8(group)),
+        _ => Err(Error::new(
+            Code::Unsupported,
+            format!("没有注册 {bits} 位量化投影"),
+        )),
     }
 }
 

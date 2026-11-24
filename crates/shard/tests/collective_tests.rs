@@ -443,3 +443,19 @@ fn file_remote_reduce_scatters() {
     assert_eq!(buf, [5.0, 6.0, 7.0, 8.0]);
     let _ = std::fs::remove_file(&backing);
 }
+
+
+#[test]
+fn local_reduction_supports_128_bit_integer_scalars() {
+    let topology = Topology::new(2, 1, 1).expect("tp 2");
+    let mut local = Local::<i128>::new(topology, 2).expect("i128 镜像");
+    local.load(0, &[i128::MAX - 2, -4]).expect("rank 0");
+    local.load(1, &[1, 6]).expect("rank 1");
+    let group = topology.group(Parallel::Tensor, 0).expect("组");
+    let mut buf = [0i128; 2];
+    local
+        .all_reduce(&group, Reduce::Sum, &mut buf)
+        .expect("i128 求和");
+    assert_eq!(buf, [i128::MAX - 1, 2]);
+    assert_eq!(local.replica(1).expect("写回"), buf);
+}

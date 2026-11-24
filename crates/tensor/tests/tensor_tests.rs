@@ -1,4 +1,7 @@
-use crate::{DType, Element, Order, Owned, Shape, Tensor, View};
+use crate::{
+    BoolElement, DType, Element, FloatElement, IntElement, Order, Owned, Shape, Tensor, View,
+    product,
+};
 use diagnostic::Code;
 
 #[test]
@@ -302,4 +305,104 @@ fn ordered_zero_allocation_preserves_the_requested_layout() {
     assert_eq!(tensor.strides(), [1, 2]);
     assert_eq!(tensor.numel(), 6);
     assert!(tensor.as_slice().iter().all(|&value| value == 0.0));
+}
+
+#[test]
+fn the_element_count_is_the_product_of_the_axes() {
+    let shape = Shape::new([2, 3, 4]);
+    assert_eq!(shape.rank(), 3);
+    assert_eq!(shape.numel(), 24);
+    assert_eq!(shape.numel(), product(shape.dims()));
+    assert_eq!(shape.element_bytes(DType::F32), 96);
+}
+
+#[test]
+fn a_scalar_shape_holds_one_element() {
+    let shape = Shape::new([]);
+    assert_eq!(shape.rank(), 0);
+    assert_eq!(shape.numel(), 1, "空轴序列是标量，不是零个元素");
+    assert_eq!(shape.element_bytes(DType::F32), 4);
+}
+
+#[test]
+fn sub_byte_precisions_round_the_byte_count_up() {
+    // 6 个元素：f16/bf16 各 2 字节，u4/i4 只占 24 位 = 3 字节。
+    // 字节数小于 `numel` 是亚字节精度的正确结果，不是漏乘。
+    let shape = Shape::new([2, 3]);
+    assert_eq!(shape.element_bytes(DType::F16), 12);
+    assert_eq!(shape.element_bytes(DType::BF16), 12);
+    assert_eq!(shape.element_bytes(DType::U8), 6);
+    assert_eq!(shape.element_bytes(DType::I8), 6);
+    assert_eq!(shape.element_bytes(DType::U4), 3);
+    assert_eq!(shape.element_bytes(DType::I4), 3);
+}
+
+#[test]
+fn an_overflowing_shape_saturates_instead_of_wrapping() {
+    // 轴长可能来自不受信任的权重文件头：回绕会给出一个偏小的元素数，骗过下游的容量检查。
+    let shape = Shape::new([usize::MAX, 2]);
+    assert_eq!(shape.numel(), usize::MAX, "饱和到上限，不回绕");
+}
+
+#[test]
+fn an_axis_length_is_read_by_position() {
+    let shape = Shape::new([5, 7]);
+    assert_eq!(shape.dim(0), Some(5));
+    assert_eq!(shape.dim(1), Some(7));
+    assert_eq!(shape.dim(2), None);
+}
+
+fn assert_float<T: FloatElement>() {}
+fn assert_int<T: IntElement>() {}
+fn assert_bool<T: BoolElement>() {}
+
+#[test]
+fn bool_maps_to_bool() {
+    assert_eq!(bool::DTYPE, DType::Bool);
+}
+
+#[test]
+fn unsigned_integers_map_to_their_widths() {
+    assert_eq!(u8::DTYPE, DType::U8);
+    assert_eq!(u16::DTYPE, DType::U16);
+    assert_eq!(u32::DTYPE, DType::U32);
+    assert_eq!(u64::DTYPE, DType::U64);
+}
+
+#[test]
+fn signed_integers_map_to_their_widths() {
+    assert_eq!(i8::DTYPE, DType::I8);
+    assert_eq!(i16::DTYPE, DType::I16);
+    assert_eq!(i32::DTYPE, DType::I32);
+    assert_eq!(i64::DTYPE, DType::I64);
+}
+
+#[test]
+fn floats_map_to_their_widths() {
+    assert_eq!(f32::DTYPE, DType::F32);
+    assert_eq!(f64::DTYPE, DType::F64);
+    assert_eq!(half::f16::DTYPE, DType::F16);
+    assert_eq!(half::bf16::DTYPE, DType::BF16);
+}
+
+#[test]
+fn markers_split_closed_groups() {
+    assert_float::<f32>();
+    assert_float::<f64>();
+    assert_float::<half::f16>();
+    assert_float::<half::bf16>();
+    assert_int::<u8>();
+    assert_int::<u32>();
+    assert_int::<i8>();
+    assert_int::<i64>();
+    assert_bool::<bool>();
+}
+
+#[test]
+fn sub_byte_precisions_have_no_scalar_element() {
+    // 亚字节精度是 `DType` 位宽表的一等公民，但没有原生标量，因此不进 `Element`。
+    // 它们的字节数由 `DType::bytes_for` 位级进位表达，而不是硬造一个打包标量。
+    for dtype in [DType::U1, DType::U2, DType::U4, DType::I4, DType::F4] {
+        assert!(dtype.bits() < 8, "{dtype:?} 应是亚字节精度");
+    }
 }

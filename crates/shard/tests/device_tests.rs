@@ -113,3 +113,28 @@ fn specs_register_each_execution_frontend_once() {
     }
     assert!(!seen.is_empty(), "执行前端注册表不得被清空");
 }
+
+
+#[test]
+fn scratch_action_cleans_up_on_success_and_failure() {
+    let root = std::env::temp_dir().join(format!("shard-scratch-cleanup-{}", std::process::id()));
+    let dirs = Dirs::under(&root);
+    let mut success_path = None;
+    let value = crate::runner::driver::with_scratch(&dirs, "success", |dir| {
+        success_path = Some(dir.to_path_buf());
+        std::fs::create_dir_all(dir).expect("临时目录");
+        Ok(7)
+    });
+    assert_eq!(value.expect("成功值"), 7);
+    assert!(!success_path.expect("路径").exists(), "成功后必须清理");
+
+    let mut failure_path = None;
+    let result: diagnostic::Result<()> = crate::runner::driver::with_scratch(&dirs, "failure", |dir| {
+        failure_path = Some(dir.to_path_buf());
+        std::fs::create_dir_all(dir).expect("临时目录");
+        Err(diagnostic::Error::new(diagnostic::Code::Invalid, "故意失败"))
+    });
+    assert!(result.is_err());
+    assert!(!failure_path.expect("路径").exists(), "失败后也必须清理");
+    let _ = std::fs::remove_dir_all(root);
+}
