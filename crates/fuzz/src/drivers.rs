@@ -16,7 +16,7 @@ use std::sync::OnceLock;
 use cutile::builtin::Catalogue;
 use diagnostic::{Code, Error};
 use llm_fuzz::Target;
-use wire::sink::Sink;
+use storage::sink::Sink;
 
 // 合法范例与边界样本：登记表据此配对种子，语料生成器借 `edges` 写边界样本。本文件被四个
 // 目标 `#[path]` 包含，`llm_fuzz::Target` 在库内靠 `extern crate self as llm_fuzz` 自引用。
@@ -163,11 +163,11 @@ pub struct WireLeb;
 
 impl Target for WireLeb {
     fn name(&self) -> &str {
-        "wire::leb::Cursor"
+        "storage::leb::Cursor"
     }
 
     fn run(&self, input: &[u8]) -> Result<(), Error> {
-        let mut cursor = wire::leb::Cursor::new(input);
+        let mut cursor = storage::leb::Cursor::new(input);
         let _: u64 = cursor.read()?;
         Ok(())
     }
@@ -182,23 +182,23 @@ pub struct WireSealed;
 
 impl Target for WireSealed {
     fn name(&self) -> &str {
-        "wire::sink::Sealed"
+        "storage::sink::Sealed"
     }
 
     fn run(&self, input: &[u8]) -> Result<(), Error> {
         let mut written: Vec<u8> = Vec::new();
         let checksum = {
-            let mut sealed = wire::sink::Sealed::new(&mut written);
+            let mut sealed = storage::sink::Sealed::new(&mut written);
             sealed.put(input);
             sealed.checksum()
         };
-        let mut counted = wire::sink::Count::default();
+        let mut counted = storage::sink::Count::default();
         counted.put(input);
         let mut slice = vec![0u8; input.len()];
-        let mut buf = wire::sink::SliceSink::new(&mut slice);
+        let mut buf = storage::sink::SliceSink::new(&mut slice);
         buf.put(input);
         let inconsistent = [
-            checksum != wire::crc::crc32(input),
+            checksum != storage::crc::crc32(input),
             counted.0 != input.len(),
             written.as_slice() != input,
             buf.overflow(),
@@ -228,11 +228,11 @@ pub struct Crc;
 
 impl Target for Crc {
     fn name(&self) -> &str {
-        "wire::crc"
+        "storage::crc"
     }
 
     fn run(&self, input: &[u8]) -> Result<(), Error> {
-        let whole = wire::crc::crc32(input);
+        let whole = storage::crc::crc32(input);
         if whole != naive_crc32(input) {
             return Err(inconsistent("crc32 与逐位参考实现不一致"));
         }
@@ -243,7 +243,7 @@ impl Target for Crc {
             .map_or(0, |byte| usize::from(*byte) % (input.len() + 1));
         for split in [mid, head] {
             let (left, right) = input.split_at(split);
-            let chained = !wire::crc::update(wire::crc::update(u32::MAX, left), right);
+            let chained = !storage::crc::update(storage::crc::update(u32::MAX, left), right);
             if chained != whole {
                 return Err(inconsistent("crc32 分段续算与整段结果不一致"));
             }
@@ -274,7 +274,7 @@ pub struct LebRoundtrip;
 
 impl Target for LebRoundtrip {
     fn name(&self) -> &str {
-        "wire::leb::roundtrip"
+        "storage::leb::roundtrip"
     }
 
     fn run(&self, input: &[u8]) -> Result<(), Error> {
@@ -283,11 +283,11 @@ impl Target for LebRoundtrip {
         word[..n].copy_from_slice(&input[..n]);
         let value = u64::from_le_bytes(word);
         let mut canonical = Vec::new();
-        wire::leb::write(&mut canonical, value);
+        storage::leb::write(&mut canonical, value);
         if canonical.len() != leb_len(value) {
             return Err(inconsistent("LEB128 写出的不是最短规范长度"));
         }
-        let mut cursor = wire::leb::Cursor::new(&canonical);
+        let mut cursor = storage::leb::Cursor::new(&canonical);
         let decoded: u64 = cursor.read()?;
         if decoded != value || !cursor.remaining().is_empty() {
             return Err(inconsistent("LEB128 写→读不恒等或未读完"));
@@ -298,13 +298,13 @@ impl Target for LebRoundtrip {
 
 /// 规范解码后的重编码必须逐字复现被消费的前缀；解不出数就无事可验。
 fn canonical_prefix_matches(input: &[u8]) -> Result<(), Error> {
-    let mut raw = wire::leb::Cursor::new(input);
+    let mut raw = storage::leb::Cursor::new(input);
     let Ok(prefix) = raw.read::<u64>() else {
         return Ok(());
     };
     let consumed = &input[..raw.pos()];
     let mut again = Vec::new();
-    wire::leb::write(&mut again, prefix);
+    storage::leb::write(&mut again, prefix);
     if again.as_slice() != consumed {
         return Err(inconsistent("LEB128 规范解码后的重编码与原前缀不一致"));
     }

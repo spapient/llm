@@ -85,9 +85,13 @@
 //! assert_eq!(cost.write, 8 * 4);
 //! ```
 
+#[path = "axis.rs"]
 pub mod axis;
+#[path = "expr.rs"]
 pub mod expr;
+#[path = "formula.rs"]
 pub mod formula;
+#[path = "operand.rs"]
 pub mod operand;
 
 pub use axis::Extents;
@@ -104,6 +108,6 @@ pub use operand::{
 
 #[cfg(test)]
 mod tests {
-    include!("../../tests/spec/einsum_tests.rs");
-    include!("../../tests/spec/cost_tests.rs");
+    include!("../tests/spec/einsum_tests.rs");
+    include!("../tests/spec/cost_tests.rs");
 }

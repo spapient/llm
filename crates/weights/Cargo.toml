@@ -21,7 +21,6 @@ mmap = ["storage/mmap"]
 dtype = { path = "../dtype", package = "llm-dtype" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 tensor = { path = "../tensor", package = "llm-tensor" }
-wire = { path = "../wire", package = "llm-wire" }
 storage = { path = "../storage", package = "llm-storage" }
 
 [dev-dependencies]

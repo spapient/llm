@@ -4,7 +4,7 @@ use std::ops::Range;
 
 use diagnostic::{Code, Error, Result};
 use tensor::DType;
-use wire::leb::Cursor as WireCursor;
+use crate::leb::Cursor as WireCursor;
 
 use crate::ManifestEntry;
 use crate::snapshot::PREALLOC;
@@ -72,7 +72,7 @@ fn dtype(tag: u8) -> Result<DType> {
         .ok_or_else(|| invalid(format!("未知的元素类型标签 {tag}")))
 }
 
-/// 逐字节读取器：在 `wire::Cursor` 之上保留快照侧的字段上下文与错误词汇。
+/// 逐字节读取器：在 `leb::Cursor` 之上保留快照侧的字段上下文与错误词汇。
 pub(crate) struct Cursor<'a> {
     inner: WireCursor<'a>,
     /// 当前消费偏移；测试用它给名字块切片区间定位。

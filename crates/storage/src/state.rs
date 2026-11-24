@@ -4,7 +4,7 @@ use crate::codec::{Cursor, frame, invalid};
 use crate::snapshot;
 use crate::snapshot::PREALLOC;
 use diagnostic::{Code, Error, Result};
-use wire::sink::Sink;
+use crate::sink::Sink;
 
 /// 一个矩状态/累积梯度槽最少占 1 字节（槽长 varint）；解码据此把声明槽位与剩余字节对账。
 pub(crate) const MIN_MOMENT_SLOT: usize = 1;

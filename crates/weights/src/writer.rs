@@ -14,8 +14,8 @@ use crate::crc;
 use crate::proof::Digest;
 use crate::rans;
 use crate::seg::Segment;
-use wire::leb;
-use wire::sink::{Count, FileSink, Measured, Sealed, Sink, SliceSink};
+use storage::leb;
+use storage::sink::{Count, FileSink, Measured, Sealed, Sink, SliceSink};
 
 /// 魔数 `.u\0\0`：小端字节 `[0x2E, 0x75, 0x00, 0x00]`，第三、四字节 NUL 收尾（ADR 0045）。
 pub const MAGIC: u32 = 0x0000_752E;

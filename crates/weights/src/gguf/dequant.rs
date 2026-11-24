@@ -1,7 +1,7 @@
 //! 分块反量化：块内位域 → f32。纯数学函数，不持有文件/游标状态；分派表代替多臂 `match`。
 
 use diagnostic::Result;
-use wire::bad;
+use storage::bad;
 
 use crate::gguf::Kind;
 

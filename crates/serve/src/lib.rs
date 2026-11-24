@@ -48,14 +48,14 @@ pub(crate) use admit::refused;
 pub(crate) use params::descriptors;
 
 // 线协议：常量/闭集与宏在 `protocol`，帧与增量解码在 `frame`（`proto` 兼容路径见下）。
-// CRC-32 的唯一实现在 L1 `wire`：帧尾校验直接复用它，协议层不再自带第二张表。
+// CRC-32 的唯一实现在 L1 `storage`：帧尾校验直接复用它，协议层不再自带第二张表。
 mod frame;
 mod protocol;
 
 pub(crate) use protocol::macros;
 
-/// CRC-32：与 `weights`/`train` 共用 L1 `wire` 的唯一实现。
-pub(crate) use wire::crc::crc32;
+/// CRC-32：与 `weights`/`train` 共用 L1 `storage` 的唯一实现。
+pub(crate) use storage::crc::crc32;
 
 pub use admit::{admit, admit_batch};
 pub use completion::Completion;

@@ -36,7 +36,7 @@
 #![deny(unsafe_code)]
 
 /// 全 crate 的“非法输入”构造点转发自 L1 [`wire`]：判据与上下文标注各只有一处实现。
-pub(crate) use wire::bad;
+pub(crate) use storage::bad;
 
 // 闭集枚举的单一生成点：判别值与 from_code 同源。
 #[macro_use]
@@ -83,9 +83,9 @@ pub use lifecycle::import;
 pub mod safetensors;
 
 // 纯字节码基础件归 L1 `wire`；这里只做薄转发，保持容器内部路径不变。
-/// CRC-32（转发自 `wire::crc`）。
+/// CRC-32（转发自 `storage::crc`）。
 pub mod crc {
-    pub use wire::crc::*;
+    pub use storage::crc::*;
 }
 
 /// 生命周期模式薄转发：实现见内部 `lifecycle` 模块。

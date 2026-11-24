@@ -12,10 +12,10 @@
 
 | 层 | 成员 | 职责 | 不允许出现 |
 |---|---|---|---|
-| L1 基础设施 | `diagnostic`、`dtype`、`wire`、`tools` | 错误类型与声明数据树（`data`：构建期语料在运行期的形状，**没有解析器**）、精度闭集、与领域无关的字节码闭集（CRC-32 / LEB128 / Sink / 对齐落位 / `Invalid` 构造点）、静态质量门与回退判定 | 任何运行时领域语义、任何 TOML 解析 |
+| L1 基础设施 | `diagnostic`、`dtype`、`tools` | 错误类型与声明数据树（`data`：构建期语料在运行期的形状，**没有解析器**）、精度闭集、静态质量门与回退判定 | 任何运行时领域语义、任何 TOML 解析 |
 | L2 数据层 | `prof` | 算子契约与设备档案同住一个 crate。契约侧出签名 / 样本 / 语义表 / 求和表达式 / 模板词法，以及 `atom` 这一层词汇（原语、存储位、数据类型、属性键、证据等级、需求与供给的代数 `Need` / `Provide` / `Span` / `KernelKey`）；档案侧出声明层与模板正文：`OpDecl` 解析、`catalogue` 的 57 条算子模板、六台设备的原语片段与见证（一台设备一个模块，`src/<设备>/` 放语料，`build.rs` 一次把它解析成每台设备的 `FRAGMENTS` / `PRIMS` / `EPILOGUE` / `DEVICE` 表，并在编译期拼成一张聚合表，按 `Layout` 决定读内嵌表还是读盘）。两者同住是因为它们是**同一条文法**：档案声明"这台设备能拼出 `dot`"，片段声明"`dot` 这么写"，模板与签名就是两边的共同语言——拆成两个 crate 只会多一层 `pub use` 转发，一行代码也不会少 | 契约/档案子域不得出现机制代码（拼接、协商、emit）、设备知识与厂商内核正文；主机 CPU 微内核本体只允许收在 `native` 受控岛（arch 门 / 特性探测 / `unsafe` 由 unsafe 岛白名单钉死），其余子域不持内核正文 |
 | L3 内核 | `cutile` | 纯机制：协商 → 拼接 → emit → 缓存指纹，一行也不执行。只产设备源与指纹，换掉工具链不影响它；执行侧（工具链探测、编译、验见证、测速）随原 `optim` 并入 `shard`，因为那部分要碰编译器与设备，换掉执行方式不该动框架 | 设备厂商特判、运行时依赖 |
-| L4 运行时 | `tensor`、`storage`、`tokenizer` | 张量元数据、布局搬运、文本边界、检查点字节格式（`snapshot` 折进 `storage`：`Snapshot<Manifest>` 泛型，字节只写相对上一条的差 + CRC-32 尾部，不认识训练循环） | 模型语义、调度策略 |
+| L4 运行时 | `tensor`、`storage`、`tokenizer` | 张量元数据、布局搬运、文本边界、检查点字节格式（`snapshot` 折进 `storage`：`Snapshot<Manifest>` 泛型，字节只写相对上一条的差 + CRC-32 尾部，不认识训练循环）；`storage` 另折入与领域无关的字节码闭集（CRC-32 / LEB128 / Sink / 对齐落位 / `Invalid` 构造点） | 模型语义、调度策略 |
 | L5 模型与训练 | `weights`、`autograd`、`nn`、`algorithm`、`shard` | 权重结构与自有 `.u` 容器、外部权重格式只读适配（torch `.bin` 的 ZIP+pickle 栈机、GGUF、JSON，只吐四要素不判语义）、反向图与显存计划、层定义与内核族（`nn` 同时拥有内核装配、神经算子与唯一注册表 `REGISTRY`——注册表必须持有内核类型才能装进语义表，故它与内核同住）、架构变体的参考语义（不产出 `ContractSpec`）、切分拓扑与集合通信、以及原 `optim` 的编译执行面 | 进程 / 服务语义 |
 | L6 调度与服务 | `train`、`engine`、`serve` | 训练样本与循环、检查点事实集、连续批与 KV 页账、提交与执行体、端点契约与线格式、CPU 模型宿主；设备见证装配与平台合同归 L5 `shard`（`shard::backends` / `shard::metal` / `shard::platform`，实现 `cutile` 的 `Backend` 缝），厂商 FFI 运行时句柄与执行器归 L2 `prof::runtime` 后端岛；`prof::runtime::metal` 是唯一 Metal `unsafe` 岛（[ADR 0035](adr/0035-unsafe-ffi-boundary.md)） | 直接调用 `cutile` 生成 kernel；执行任何业务 |
 | L7 入口 | `cli`（bin：`llm` 与 `cutile`） | 组合根：命令行文法、配置解析、各层装配、取值解析与人可读排版；编排入口不定义新类型 | 编排入口新增领域类型；在本层复制内核机制 |
@@ -47,25 +47,24 @@
 ```
 diagnostic → （叶：错误类型 + `toml`，被大量成员消费；运行时出边为零；`+dev` 只登记夹具）
 dtype      → （叶    +dev: testkit（精度闭集）
-wire       → diagnostic    +dev: testkit（叶：纯字节码闭集，不认识张量或容器布局）
 tools      → diagnostic    +dev: testkit（配置驱动静态质量门 + 回退判定）
 prof       → diagnostic, dtype    +dev: testkit（契约词汇 + 档案 + 声明层 + 模板正文；片段与见证的语料在这里，机制也只有它）
 cutile     → annotation, diagnostic, prof    +dev: nn, testkit（机制：协商 → 拼接 → emit → 指纹，一行也不执行）
 tensor     → diagnostic, dtype    +dev: testkit（`dtype` 之上的形状与索引代数；`diagnostic` 只用于构造期 `Invalid`）
-storage    → diagnostic, tensor, wire    +dev: testkit（扁平缓冲与分配，以及折进来的检查点字节格式）
+storage    → diagnostic, tensor    +dev: testkit（扁平缓冲与分配、折进来的检查点字节格式，以及与领域无关的字节码闭集：CRC-32 / LEB128 / Sink / 对齐落位 / `Invalid` 构造点）
 tokenizer  → diagnostic    +dev: testkit（词表与分词）
-weights    → diagnostic, dtype, storage, tensor, wire    +dev: storage, testkit（`storage` 由 `mmap` feature 可选启用，复用其唯一 unsafe 岛）
+weights    → diagnostic, dtype, storage, tensor    +dev: storage, testkit（`storage` 由 `mmap` feature 可选启用，复用其唯一 unsafe 岛）
 autograd   → diagnostic, tensor    +dev: testkit（反向图与显存计划）
 nn         → annotation, diagnostic, cutile, prof, tensor, weights    +dev: testkit（内核装配 + 神经算子 + 唯一注册表；`cutile::native` 是到 `prof::native` 的零成本转发面，nn 经它上提 i8/sme 探针与瓦片几何，不再直引 prof 内核层）
 algorithm  → diagnostic, nn    +dev: prof, testkit（架构变体的参考语义：产出张量流而非 `ContractSpec`，故不认识 `tensor` / `weights`）
 shard      → cutile, diagnostic, nn, prof    +dev: testkit（切分拓扑、集合通信与原 `optim` 的编译执行面）
 train      → autograd, diagnostic, nn, prof, shard, storage, tensor, weights    +dev: annotation, testkit
 engine     → diagnostic, prof, storage, tensor    +dev: testkit
-serve      → diagnostic, engine, nn, train, tensor, tokenizer, weights, wire    +dev: testkit（形状积只经 `tensor::product` 的饱和乘法：回绕出的偏小数会骗过权重长度核对）
+serve      → diagnostic, engine, nn, storage, tensor, tokenizer, train, weights    +dev: testkit（形状积只经 `tensor::product` 的饱和乘法：回绕出的偏小数会骗过权重长度核对）
 cli        → cutile, diagnostic, engine, nn, prof, serve, shard, tensor, tokenizer, train, weights    +dev: storage（L7 组合根：只做命令分派与各层装配，不定义新类型）
 annotation → （叶：工具边，`#[model]` 注解，不参与方向判定）
-fuzz       → diagnostic    +dev: cli, cutile, serve, storage, tensor, testkit, tools, train, weights, wire（工具成员；`+dev` 是 `src/drivers.rs` 里的驱动对象与 `registry()` 登记表，合法种子经 `#[path]` 编入 `src/seeds.rs`，`src/fuzz_*.rs` 只剩一行入口）
-benchmarks → （叶    +dev: autograd, cutile, engine, nn, prof, serve, storage, tensor, testkit, tokenizer, tools, train, weights, wire（工具成员：只声明被测对象，测量配置归 criterion）
+fuzz       → diagnostic    +dev: cli, cutile, serve, storage, tensor, testkit, tools, train, weights（工具成员；`+dev` 是 `src/drivers.rs` 里的驱动对象与 `registry()` 登记表，合法种子经 `#[path]` 编入 `src/seeds.rs`，`src/fuzz_*.rs` 只剩一行入口）
+benchmarks → （叶    +dev: autograd, cutile, engine, nn, prof, serve, storage, tensor, testkit, tokenizer, tools, train, weights（工具成员：只声明被测对象，测量配置归 criterion）
 testkit    → （叶    +dev: autograd, cutile, nn, prof, tensor, tools, train, weights（工具成员：夹具库 + 门禁；被测层只出现在 dev-dependencies）
 ```
 
@@ -78,7 +77,7 @@ testkit    → （叶    +dev: autograd, cutile, nn, prof, tensor, tools, train,
 
 | 概念 | 唯一主人 | 负责什么 |
 |---|---|---|
-| `Error` / `Code` / `Result` / `Cursor` | `diagnostic` | 全仓唯一错误类型：类别由产生错误的那一层给，上层只补上下文；`also` 追加同级诊断，`from_io` 区分"缺失"与"读不出"，`exit_code` 是类别到退出码的唯一映射。`Cursor`（`scan` 模块）是带字节位置的逐字节游标：只做读字节 / 跳空白 / 吃必需字节三件事，不认语法、不建树——否则它就成了第二份解析器 。同名局部读取器在 `wire`（LEB）/ `train`（快照）/ `tokenizer` / `cutile` / `annotation` 各有一份，按各自的格式边界读字节，与本行不是同一个类型——合并它们要按格式逐个收，不在这里主张 |
+| `Error` / `Code` / `Result` / `Cursor` | `diagnostic` | 全仓唯一错误类型：类别由产生错误的那一层给，上层只补上下文；`also` 追加同级诊断，`from_io` 区分"缺失"与"读不出"，`exit_code` 是类别到退出码的唯一映射。`Cursor`（`scan` 模块）是带字节位置的逐字节游标：只做读字节 / 跳空白 / 吃必需字节三件事，不认语法、不建树——否则它就成了第二份解析器 。同名局部读取器在 `storage`（LEB）/ `train`（快照）/ `tokenizer` / `cutile` / `annotation` 各有一份，按各自的格式边界读字节，与本行不是同一个类型——合并它们要按格式逐个收，不在这里主张 |
 | `Table` / `Value` | `diagnostic` | 声明数据树：构建期生成的代码构造、运行期只读，因此不存在"语法错误"这一类 |
 | `Panel` / `Sheet` / `Align` / `join_names` / `human_bytes` / `per_run` | `diagnostic`（`render` 模块） | 人读渲染：带标题的两列面板、Markdown 表（表头 / 分隔行 / 逐列对齐只在这里拼）、顿号列表、1024 进制字节与单次耗时；只接字符串与数，不做判定 |
 | `Rng` / `Uniform` / `Normal` / `Bernoulli` | `train` | 计数器型确定性随机与三个构造期校验参数的分布；采样是 `u ∈ [0,1) → 元素` 的纯映射 |

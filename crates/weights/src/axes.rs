@@ -5,7 +5,7 @@ use crate::bad;
 use diagnostic::{Error, Result};
 
 use crate::ledger;
-use wire::leb::Cursor;
+use storage::leb::Cursor;
 
 use crate::codec::{
     bytes_to_f32, decode_dict, decode_quant, decode_sparse, dict_payload, f32_bytes, from_le_bytes,

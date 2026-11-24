@@ -42,6 +42,11 @@ mod lane;
 
 pub mod snapshot;
 
+pub mod crc;
+pub mod fault;
+pub mod leb;
+pub mod sink;
+
 mod codec;
 mod format;
 #[cfg(all(feature = "mmap", unix))]
@@ -53,7 +58,17 @@ pub use mmap::Mmap;
 
 pub use alloc::{Allocator, CpuAllocator};
 pub use buf::Buf;
+pub use fault::{bad, or_bad};
 pub use lane::{Lane, LaneBuf, LaneView, LaneViewMut};
 pub use snapshot::{
     Facts, Format, GradAccum, Manifest, ManifestEntry, Moments, SlotMoments, Snapshot, Ties,
 };
+
+/// 向上取整到 `align` 的倍数；`align` 非 2 的幂或结果溢出时返回 `None`。
+#[must_use]
+pub fn align_up(value: usize, align: usize) -> Option<usize> {
+    if align == 0 || !align.is_power_of_two() {
+        return None;
+    }
+    value.div_ceil(align).checked_mul(align)
+}

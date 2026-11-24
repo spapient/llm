@@ -8,11 +8,11 @@ use diagnostic::{Code, Error, Result};
 use storage::snapshot::{Manifest, ManifestEntry};
 use tensor::{DType, Shape};
 
-use wire::leb::Cursor;
+use storage::leb::Cursor;
 
 const SITE: &str = "weights::Header::new";
 
-pub(crate) use wire::align_up;
+pub(crate) use storage::align_up;
 
 /// 一个权重条目：名字、元素类型、形状与它在数据段里的字节区间。
 #[derive(Debug, Clone, PartialEq, Eq)]

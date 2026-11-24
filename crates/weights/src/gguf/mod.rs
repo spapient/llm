@@ -2,7 +2,7 @@
 
 use diagnostic::{Code, Error, Result};
 use dtype::{DType, QType};
-use wire::bad;
+use storage::bad;
 
 use crate::cursor::Cursor;
 
@@ -468,7 +468,7 @@ pub(crate) fn data_start(meta: &[Meta], pos: usize, len: usize) -> Result<usize>
         .and_then(|n| usize::try_from(n).ok())
         .filter(|&n| n > 0)
         .unwrap_or(DEFAULT_ALIGN);
-    let Some(data) = wire::align_up(pos, align) else {
+    let Some(data) = storage::align_up(pos, align) else {
         return Err(bad("对齐必须是 2 的幂且对齐后不溢出"));
     };
     if data <= len {

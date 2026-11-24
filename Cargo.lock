@@ -574,7 +574,6 @@ dependencies = [
  "llm-tools",
  "llm-train",
  "llm-weights",
- "llm-wire",
 ]
 
 [[package]]
@@ -640,7 +639,6 @@ dependencies = [
  "llm-tools",
  "llm-train",
  "llm-weights",
- "llm-wire",
  "proptest",
 ]
 
@@ -678,12 +676,12 @@ dependencies = [
  "llm-diagnostic",
  "llm-engine",
  "llm-nn",
+ "llm-storage",
  "llm-tensor",
  "llm-testkit",
  "llm-tokenizer",
  "llm-train",
  "llm-weights",
- "llm-wire",
  "proptest",
 ]
 
@@ -780,7 +778,6 @@ dependencies = [
  "llm-storage",
  "llm-tensor",
  "llm-testkit",
- "llm-wire",
  "proptest",
 ]
 

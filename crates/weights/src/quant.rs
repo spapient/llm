@@ -6,8 +6,8 @@ use tensor::DType;
 
 use crate::Wire;
 use crate::{Entry, Header};
-use wire::leb::{self, Cursor};
-use wire::sink::Sink;
+use storage::leb::{self, Cursor};
+use storage::sink::Sink;
 
 // —— 仿射量化方案（磁盘描述符） ——
 

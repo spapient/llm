@@ -7,7 +7,7 @@ use crate::align_up;
 use crate::bad;
 use crate::cursor::{u16_at, u32_at};
 use crate::writer::{GLOBAL_CRC, MAGIC, MAX_ALIGN_LOG, SEG_CRC, VERSION};
-use wire::leb::Cursor;
+use storage::leb::Cursor;
 
 use crate::seg::{Codec, Desc, DescBody, Descriptor, Stored, StoredInner};
 

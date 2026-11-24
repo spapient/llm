@@ -5,7 +5,7 @@
 
 use diagnostic::Result;
 
-use wire::bad;
+use storage::bad;
 
 /// `bytes[at..at + len]`：偏移溢出与越界都显式失败。
 pub(crate) fn slice(bytes: &[u8], at: usize, len: usize) -> Result<&[u8]> {

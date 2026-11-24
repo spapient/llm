@@ -34,6 +34,16 @@ use std::path::{Path, PathBuf};
 use diagnostic::buildgen;
 use sign::{EPILOGUE_STEM, WITNESS_STEM};
 
+/// 生成表共用的注册表骨架：`OnceLock<Tables>` 与 `tables()`，声明表与档案表两份生成器各接
+/// 自己的来源注释与行。住在 crate 根，两个生成器模块对等引用，互不反向依赖。
+pub(crate) const TABLE_REGISTRY_HEAD: &str = "use std::sync::OnceLock;\n\n\
+     use diagnostic::data::{Table, Value};\n\n\
+     type Tables = Vec<(&'static str, Table)>;\n\n\
+     fn tables() -> &'static Tables {\n\
+     \x20   static TABLES: OnceLock<Tables> = OnceLock::new();\n\
+     \x20   TABLES.get_or_init(|| {\n\
+     \x20       vec![\n";
+
 fn main() {
     let manifest = variable("CARGO_MANIFEST_DIR");
     let src = PathBuf::from(&manifest).join("src");

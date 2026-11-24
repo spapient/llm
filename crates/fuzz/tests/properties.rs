@@ -16,8 +16,8 @@ proptest! {
     #[test]
     fn leb_roundtrip(value: u64) {
         let mut out = Vec::new();
-        wire::leb::write(&mut out, value);
-        let mut cursor = wire::leb::Cursor::new(&out);
+        storage::leb::write(&mut out, value);
+        let mut cursor = storage::leb::Cursor::new(&out);
         let decoded: u64 = cursor.read().expect("规范编码必须可解");
         prop_assert_eq!(decoded, value);
         prop_assert!(cursor.remaining().is_empty());
@@ -26,10 +26,10 @@ proptest! {
     /// CRC-32 分段续算与整段一致：任意字节、任意切点。
     #[test]
     fn crc_split_equals_whole(bytes: Vec<u8>) {
-        let whole = wire::crc::crc32(&bytes);
+        let whole = storage::crc::crc32(&bytes);
         for split in [0, bytes.len() / 2, bytes.len()] {
             let (left, right) = bytes.split_at(split);
-            let chained = !wire::crc::update(wire::crc::update(u32::MAX, left), right);
+            let chained = !storage::crc::update(storage::crc::update(u32::MAX, left), right);
             prop_assert_eq!(chained, whole);
         }
     }

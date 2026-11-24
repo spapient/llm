@@ -1,7 +1,7 @@
 //! ZIP 归档解析：STORED 条目，含 ZIP64 回退；与 pickle 虚拟机分属两个内聚族。
 
 use diagnostic::Result;
-use wire::bad;
+use storage::bad;
 
 use crate::cursor::{slice, u16_at, u32_at, u64_at};
 

@@ -9,7 +9,7 @@
 
 use diagnostic::Result;
 use dtype::DType;
-use wire::{bad, or_bad};
+use storage::{bad, or_bad};
 
 use crate::cursor::{Cursor, slice};
 

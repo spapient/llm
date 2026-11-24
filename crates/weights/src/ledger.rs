@@ -2,8 +2,8 @@
 
 use crate::bad;
 use diagnostic::Result;
-use wire::leb::{self, Cursor};
-use wire::sink::Sink;
+use storage::leb::{self, Cursor};
+use storage::sink::Sink;
 
 use crate::svd;
 

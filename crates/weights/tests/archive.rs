@@ -129,7 +129,7 @@ mod ref_tests {
 
     use crate::crc;
 
-    use wire::leb;
+    use storage::leb;
 
     use crate::testutil::f32_segment;
 

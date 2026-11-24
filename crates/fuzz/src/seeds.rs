@@ -45,7 +45,7 @@ pub fn u_container() -> Vec<u8> {
 /// 一个合法的 LEB128 编码：300 的变长字节。
 pub fn leb() -> Vec<u8> {
     let mut out = Vec::new();
-    wire::leb::write(&mut out, 300u64);
+    storage::leb::write(&mut out, 300u64);
     out
 }
 

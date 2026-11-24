@@ -30,8 +30,8 @@ pub use crate::format::{Facts, Format};
 pub use crate::state::{GradAccum, Moments, SlotMoments, Ties};
 use diagnostic::{Code, Error, Result};
 use tensor::DType;
-use wire::leb::write;
-use wire::sink::{Count, FileSink, Sealed, Sink, SliceSink};
+use crate::leb::write;
+use crate::sink::{Count, FileSink, Sealed, Sink, SliceSink};
 
 use crate::codec::{Cursor, difference, invalid, mismatch, read_entries, tag, truncated};
 use crate::state::{
@@ -295,7 +295,7 @@ impl<C: Manifest> Snapshot<C> {
         }
         let (payload, footer) = bytes.split_at(end);
         let recorded = u32::from_le_bytes([footer[0], footer[1], footer[2], footer[3]]);
-        let actual = wire::crc::crc32(payload);
+        let actual = crate::crc::crc32(payload);
         if recorded == actual {
             return Ok(());
         }

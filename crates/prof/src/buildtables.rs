@@ -4,8 +4,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 use crate::buildimage::{Outcome, outcome, recipe, require};
-use crate::buildops::TABLE_REGISTRY_HEAD;
-use crate::{Device, buildgen, fail, variant};
+use crate::{Device, TABLE_REGISTRY_HEAD, buildgen, fail, variant};
 
 // ── 档案表 ────────────────────────────────────────────────────────────
 
