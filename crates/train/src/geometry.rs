@@ -326,6 +326,11 @@ impl Geometry {
                 self.arity()
             )));
         }
+        self.check_pool(lens, out)
+    }
+
+    /// 池化族核对：一维/二维最大池化与二维平均池化；其余变体委托重排族。
+    fn check_pool(self, lens: &[usize], out: usize) -> Result<()> {
         match self {
             Self::Pool1d { k, s, p, l, c } => check_pool1d(lens, out, k, s, p, l, c),
             Self::Pool2d { k, s, p, h, w, c } => {
@@ -334,12 +339,30 @@ impl Geometry {
             Self::Avg2d {
                 k, s, p, h, w, c, ..
             } => check_spatial_pool(lens, out, Window { k, s, p }, (h, w, c), "二维平均池化"),
+            rest => rest.check_reshape(lens, out),
+        }
+    }
+
+    /// 空间重排族核对：自适应池化、插值与二维卷积；其余变体委托归一化族。
+    fn check_reshape(self, lens: &[usize], out: usize) -> Result<()> {
+        match self {
             Self::Adaptive { oh, ow, h, w, c } => {
                 check_spatial_reshape(lens, out, (oh, ow), (h, w, c), "自适应池化")
             }
             Self::Interp {
                 oh, ow, h, w, c, ..
             } => check_spatial_reshape(lens, out, (oh, ow), (h, w, c), "插值"),
+            Self::Conv2d {
+                k, s, p, h, w, cin, cout,
+            } => check_conv2d_shape(lens, out, Window { k, s, p }, (h, w, cin, cout)),
+            rest => rest.check_norm(lens, out),
+        }
+    }
+
+    /// 归一化与全连接族核对：批归一化、分组归一化、层归一化；兜底臂仅为类型穷尽。
+    #[allow(unreachable_patterns)]
+    fn check_norm(self, lens: &[usize], out: usize) -> Result<()> {
+        match self {
             Self::Norm {
                 n,
                 spatial,
@@ -352,15 +375,10 @@ impl Geometry {
                 channels,
             } => check_group(lens, out, groups, n, spatial, channels),
             Self::Layer { rows, width } => check_layer(lens, out, rows, width),
-            Self::Conv2d {
-                k,
-                s,
-                p,
-                h,
-                w,
-                cin,
-                cout,
-            } => check_conv2d_shape(lens, out, Window { k, s, p }, (h, w, cin, cout)),
+            other => Err(Error::new(
+                Code::Internal,
+                format!("几何变体 `{other:?}` 未进入形状核对族"),
+            )),
         }
     }
 

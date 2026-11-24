@@ -75,7 +75,7 @@ fn dictionary_indices_roundtrip_at_every_width_boundary() {
 #[test]
 fn dictionary_rejects_an_unknown_index_width() {
     let mut bytes = vec![0]; // store 标记
-    for word in [3, 1, 0, 0] {
+    for word in [3u32, 1, 0, 0] {
         bytes.extend_from_slice(&word.to_le_bytes());
     }
     let error = decode_dict(&mut Cursor::new(&bytes), 1).expect_err("宽度 3 不合法");

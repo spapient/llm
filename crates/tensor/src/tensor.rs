@@ -1,83 +1,125 @@
-//! 逻辑张量：`Tensor<B, R, K>`——存储、秩、元素类型各占一个泛型位。
-//!
-//! | 位置 | 约束 | 管什么 | 两种形态 |
-//! |---|---|---|---|
-//! | `B` | [`Store`] | 元素存在哪 | 借来的 `&'a [K]` / 自己持有的 [`Owned<K>`](Owned) |
-//! | `R` | [`Rank`] | 秩从哪来 | `[usize; D]` 编译期定长 / `Vec<usize>` 运行期长度 |
-//! | `K` | [`Element`] | 元素是什么 | `f32` / `i8` / `u8`，精度钉在类型上 |
-//!
-//! 与 Burn `Tensor<B, const D, K>` 只差两处，都是刻意的：`B` 是存储而不是后端算子集（算子由
-//! `nn` 数据驱动注册表给出，泛型派发会带来 `FloatTensorOps` 那种百方法接口，见 ADR 0053），
-//! `R` 是 `[usize; D]` 的超集（运行期 batch / segment 几何也要进同一个类型，ADR 0046）。
-//! 其余全部继承：连续与非连续布局、stride、transpose、permute、reshape 都是零拷贝的元数据
-//! 重排；形状、元素数、可达性与溢出在构造期一次拦下。
-//!
-//! 本文件只放类型定义、构造、只读访问器与组装动作；布局/形状算子在 [`shape`](shape)，可写访问
-//! 与自持分配、窗口写在 [`owned`](owned)。
+//! 张量本体、存储抽象、构造与只读访问。
 
 use core::marker::PhantomData;
 use diagnostic::Result;
 
-use crate::invalid;
-
 use crate::element::Element;
-use crate::layout;
-use crate::rank::Rank;
-use crate::shape::element_bytes;
-use crate::store::{Owned, Store};
-use crate::{DType, product};
+use crate::shape::{Order, accumulate, element_bytes};
+use crate::{DType, Rank, Tensor, layout, product};
 
-mod owned;
-mod shape;
-
-/// 逻辑张量：元数据 + 元素存储。
-///
-/// 两个默认参数给出运行期秩 + `f32`：`Tensor<&[f32]>` 是 2 维以内的任意秩 f32 借来视图，
-/// 而 `Tensor<&[f32], [usize; 2], f32>` 把秩 2 钉进类型。
+/// 逻辑张量：存储 `B`、秩见证 `R`、元素类型 `K` 各占一个泛型位。
 #[derive(Debug, Clone)]
 pub struct Tensor<B, R = Vec<usize>, K = f32> {
     pub(crate) dims: R,
     pub(crate) steps: R,
-    /// 起点偏移：下标 0 对应的缓冲位置。子视图不改缓冲、只把它前移。
+    /// 下标零对应的存储位置，子视图只前移它而不复制缓冲。
     pub(crate) base: usize,
     pub(crate) buf: B,
-    /// 零尺寸，把 `K` 钉在类型里；`fn() -> K` 位置避免自动 trait 泄漏到 `Tensor`。
+    /// 函数返回位置避免 `K` 的自动 trait 泄漏到 `Tensor`。
     marker: PhantomData<fn() -> K>,
 }
 
-/// 借用调用方缓冲的只读张量：运行期秩 + 借来的元素。
+/// 运行期秩的只读借用视图。
 pub type View<'a, K> = Tensor<&'a [K], Vec<usize>, K>;
 
-/// 借用调用方缓冲的可写张量：运行期秩 + 借来的可写元素，用作算子输出操作数。
+/// 运行期秩的可写借用视图。
 pub type ViewMut<'a, K> = Tensor<&'a mut [K], Vec<usize>, K>;
 
-/// 擦除后的自持张量：存储自持、秩运行期——后端进出的统一形态（对标 Burn 的 `BridgeTensor`）。
-///
-/// 编译期秩与借用存储在装配边界 downgrade 成这一形态；设备后端只认这一张量类型进出，
-/// 不再区分视图来自调用方缓冲还是自持分配。同步取出数据走 [`Tensor::to_vec`] /
-/// `into_vec`；异步出口在执行缝侧接流，本层不持有设备句柄。
+/// 运行期秩的自持张量，是后端边界的统一拥有形态。
 pub type DynTensor<K> = Tensor<Owned<K>, Vec<usize>, K>;
 
+/// 只读元素存储。
+pub trait Store<E> {
+    /// 返回底层全部元素，而非当前子视图的逻辑元素。
+    fn slice(&self) -> &[E];
+}
+
+/// 可写元素存储。
+pub trait StoreMut<E>: Store<E> {
+    /// 返回底层全部元素的可写切片。
+    fn slice_mut(&mut self) -> &mut [E];
+}
+
+impl<E> Store<E> for &[E] {
+    fn slice(&self) -> &[E] {
+        self
+    }
+}
+
+impl<E> Store<E> for &mut [E] {
+    fn slice(&self) -> &[E] {
+        self
+    }
+}
+
+impl<E> StoreMut<E> for &mut [E] {
+    fn slice_mut(&mut self) -> &mut [E] {
+        self
+    }
+}
+
+/// 自己持有的连续元素缓冲。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Owned<E>(Vec<E>);
+
+impl<E> Owned<E> {
+    /// 分配 `len` 个默认元素；容量不可用时返回错误而不是中止进程。
+    pub fn zeros(len: usize) -> Result<Self>
+    where
+        E: Copy + Default,
+    {
+        let mut elements = Vec::new();
+        elements.try_reserve_exact(len).map_err(|_| {
+            crate::invalid(
+                format!("{len} 个元素超出可用内存或地址空间"),
+                "tensor::Owned::zeros",
+            )
+        })?;
+        elements.resize(len, E::default());
+        Ok(Self(elements))
+    }
+
+    /// 底层只读切片。
+    pub fn as_slice(&self) -> &[E] {
+        &self.0
+    }
+
+    /// 拆出底层 `Vec`。
+    pub fn into_vec(self) -> Vec<E> {
+        self.0
+    }
+}
+
+impl<E> From<Vec<E>> for Owned<E> {
+    fn from(elements: Vec<E>) -> Self {
+        Self(elements)
+    }
+}
+
+impl<E> Store<E> for Owned<E> {
+    fn slice(&self) -> &[E] {
+        &self.0
+    }
+}
+
+impl<E> StoreMut<E> for Owned<E> {
+    fn slice_mut(&mut self) -> &mut [E] {
+        &mut self.0
+    }
+}
+
 impl<'a, K: Element> View<'a, K> {
-    /// 一维只读视图：唯一轴长即缓冲长度，行主序连续。
-    ///
-    /// 逐元素 / 归约这类单操作数内核，输入本来就是一段连续切片；几何只有一个长度，由缓冲自身
-    /// 给出，构造期不可能失败，因此不走 [`Tensor::new`](Self::new) 的 `Result`。多维几何必须
-    /// 显式传入形状，仍走 `new` 在校验拦下轴数与元素数不符。
+    /// 从切片构造一维连续只读视图，轴长由切片长度给出。
     pub fn one(slice: &'a [K]) -> Self {
         assemble(vec![slice.len()], vec![1], 0, slice)
     }
 
-    /// 二维只读视图：`rows × cols` 行主序连续。
-    ///
-    /// 矩阵族内核的输入本来就是一段连续二维切片，但两条轴长都要由调用方显式给出（不像一维
-    /// [`View::one`] 能从缓冲长度反推唯一轴），因此仍走 [`Tensor::new`](Self::new) 的 `Result`，
-    /// 在校验拦下元素数与 `rows·cols` 不符。
+    /// 构造 `rows × cols` 行主序只读视图。
     pub fn matrix(rows: usize, cols: usize, slice: &'a [K]) -> Result<Self> {
         Self::new(vec![rows, cols], slice)
     }
 
-    /// 三条同宽二维只读视图：`q/k/v` 都是 `rows×cols`，注意力族 prefill/decode 输入的公共装配。
+    /// 构造三条同形二维只读视图，供注意力等算子复用装配逻辑。
     pub fn matrix_triple(
         rows: usize,
         cols: usize,
@@ -92,47 +134,49 @@ impl<'a, K: Element> View<'a, K> {
         ))
     }
 
-    /// 拆出内部借用切片，保留构造视图时的借用生命周期 `'a`。
-    ///
-    /// [`as_slice`](Self::as_slice) 的生命周期绑在 `&self` 上；执行缝要把视图再交回调用方缓冲
-    /// 时需要保留到原始借用 `'a`，走本入口。内部引用是 `Copy`，不会挪走视图本身。
+    /// 保留原始生命周期地取出借用切片。
     pub fn borrowed_slice(&self) -> &'a [K] {
         self.buf
     }
 }
 
 impl<'a, K: Element> ViewMut<'a, K> {
-    /// 一维可写视图：唯一轴长即缓冲长度，行主序连续。口径同 [`View::one`]，只是存储可写。
+    /// 从切片构造一维连续可写视图。
     pub fn one(slice: &'a mut [K]) -> Self {
         assemble(vec![slice.len()], vec![1], 0, slice)
     }
 
-    /// 二维可写视图：`rows × cols` 行主序连续。口径同 [`View::matrix`]，只是存储可写，
-    /// 用作矩阵族算子的输出操作数。
+    /// 构造 `rows × cols` 行主序可写视图。
     pub fn matrix(rows: usize, cols: usize, slice: &'a mut [K]) -> Result<Self> {
         Self::new(vec![rows, cols], slice)
     }
 
-    /// 消费可写视图，取出内部可写借用切片；形状与步长元数据随之丢弃。
-    ///
-    /// 入口内核只按连续切片写结果时，用本入口把视图扁平化：视图是一次性输出操作数，
-    /// 消费它取切片不留下第二个别名，也不需要再经 [`as_slice_mut`](Self::as_slice_mut)
-    /// 走可变借用绑定。
+    /// 消费视图并取出原始可写借用。
     pub fn into_slice_mut(self) -> &'a mut [K] {
         self.buf
     }
 }
 
-impl<B, R, K> PartialEq for Tensor<B, R, K>
+impl<B, R, K, B2, R2> PartialEq<Tensor<B2, R2, K>> for Tensor<B, R, K>
 where
     R: Rank,
+    R2: Rank,
     K: Element + PartialEq,
     B: Store<K>,
+    B2: Store<K>,
 {
-    /// 形状逐轴一致，且逻辑序元素逐一相等；非连续布局也按 [`to_vec`](Self::to_vec) 的逻辑序比较。
-    fn eq(&self, other: &Self) -> bool {
-        self.dims() == other.dims() && self.to_vec() == other.to_vec()
+    /// 比较形状和逻辑序元素，存储与秩见证可以不同。
+    fn eq(&self, other: &Tensor<B2, R2, K>) -> bool {
+        self.dims() == other.dims() && self.iter().eq(other.iter())
     }
+}
+
+impl<B, R, K> Eq for Tensor<B, R, K>
+where
+    R: Rank,
+    K: Element + Eq,
+    B: Store<K>,
+{
 }
 
 impl<B, R, K> Tensor<B, R, K>
@@ -141,12 +185,17 @@ where
     K: Element,
     B: Store<K>,
 {
-    /// 连续行主序张量：元素个数必须与形状一致。
+    /// 构造行主序连续张量，元素数必须与形状一致。
     pub fn new(dims: impl Into<R>, buf: B) -> Result<Self> {
-        Self::build(dims.into(), buf, "tensor::Tensor::new")
+        Self::with_order(dims, buf, Order::RowMajor)
     }
 
-    /// 任意合法步长：转置、行/列切片这类非连续布局也是合法张量。
+    /// 按配置的 `order` 构造连续张量。
+    pub fn with_order(dims: impl Into<R>, buf: B, order: Order) -> Result<Self> {
+        Self::build(dims.into(), buf, order, "tensor::Tensor::with_order")
+    }
+
+    /// 构造任意合法步长的张量，支持转置、广播和非连续子视图。
     pub fn strided(dims: impl Into<R>, steps: impl Into<R>, buf: B) -> Result<Self> {
         let dims = dims.into();
         let steps = steps.into();
@@ -160,23 +209,15 @@ where
         Ok(assemble(dims, steps, 0, buf))
     }
 
-    /// 两种形态共用的连续构造：先核元素数，再推连续步长。
-    fn build(dims: R, buf: B, marker: &str) -> Result<Self> {
+    /// 校验连续缓冲并推导步长。
+    fn build(dims: R, buf: B, order: Order, marker: &str) -> Result<Self> {
         let numel = product(dims.as_slice());
         let len = buf.slice().len();
         if len != numel {
-            return Err(invalid(
-                format!(
-                    "缓冲 {len} 个元素，形状 {:?} 需要 {numel} 个（{:?} 共 {} 字节）",
-                    dims.as_slice(),
-                    K::DTYPE,
-                    element_bytes(numel, K::DTYPE)
-                ),
-                marker,
-            ));
+            return Err(invalid_message(&dims, numel, len, marker));
         }
-        let steps = R::contiguous(dims.as_slice()).ok_or_else(|| {
-            invalid(
+        let steps = R::ordered(dims.as_slice(), order).ok_or_else(|| {
+            crate::invalid(
                 format!("形状 {:?} 的轴数与秩见证不符", dims.as_slice()),
                 marker,
             )
@@ -194,70 +235,111 @@ where
         self.steps.as_slice()
     }
 
-    /// 起点偏移：下标 0 在存储里的位置。换行主序视图对象共享同一块缓冲时靠它区分。
+    /// 下标零在底层存储里的偏移。
     pub fn base(&self) -> usize {
         self.base
     }
 
-    /// 轴数（rank）。标量为 0。
+    /// 轴数；标量为 0。
     pub fn rank(&self) -> usize {
         self.dims.as_slice().len()
     }
 
-    /// 元素个数：各轴长度之积，标量为 1。
+    /// 逻辑元素个数；标量为 1。
     pub fn numel(&self) -> usize {
         product(self.dims.as_slice())
     }
 
-    /// 元素类型（`K` 的常量，不是字段）。
+    /// 元素类型常量。
     pub fn dtype(&self) -> DType {
         K::DTYPE
     }
 
-    /// 存储里的全部元素——借来视图就是调用方的缓冲本身，不是副本。
-    ///
-    /// 这是**存储**而不是"本张量的元素"：子视图只覆盖其中 `base .. base + 最高偏移` 一段。
-    /// 要本张量的元素依次读出，用 [`to_vec`](Self::to_vec)；要一块可接着 [`reshape`](Self::reshape) 的存储，用 [`to_contiguous`](Self::to_contiguous)。
+    /// 底层全部存储；子视图逻辑元素请使用 [`iter`](Self::iter)。
     pub fn as_slice(&self) -> &[K] {
         self.buf.slice()
     }
 
-    /// 是否为行主序连续布局：与连续步长逐轴核对。长度为 1 的轴不参与核对（它的步长不贡献偏移）。
+    /// 是否为行主序紧凑布局。
     pub fn is_contiguous(&self) -> bool {
-        layout::is_contiguous(self.dims.as_slice(), self.steps.as_slice())
+        layout::is_contiguous(self.dims(), self.strides())
     }
 
-    /// 按下标取值；秩不符或越界返回 `None`（不 panic）。
+    /// 按下标读取；秩不符、越界或偏移溢出返回 `None`。
     pub fn at(&self, idx: impl AsRef<[usize]>) -> Option<K> {
-        let offset = layout::offset(
-            self.dims.as_slice(),
-            self.steps.as_slice(),
-            self.base,
-            idx.as_ref(),
-        )?;
+        let offset = layout::offset(self.dims(), self.strides(), self.base, idx.as_ref())?;
         self.buf.slice().get(offset).copied()
     }
 
-    /// 二维张量的第 `row` 行；秩不是 2、行越界或列不连续时返回 `None`。
+    /// 返回二维张量的连续行。
     pub fn row(&self, row: usize) -> Option<&[K]> {
         layout::row(
-            self.dims.as_slice(),
-            self.steps.as_slice(),
+            self.dims(),
+            self.strides(),
             self.base,
             self.buf.slice(),
             row,
         )
     }
 
-    /// 形状照抄、步长重算、起点归零，配上一块新的连续缓冲：摊平与翻转共用这一处收尾。
-    pub(crate) fn respell(&self, buf: Vec<K>) -> Tensor<Owned<K>, R, K> {
-        let steps = R::contiguous(self.dims.as_slice()).unwrap_or_else(|| self.dims.clone());
+    /// 按行主序逻辑顺序读取元素，不创建中间 `Vec`。
+    ///
+    /// 转置、广播和带步长切片都按各自元数据遍历；连续物化仍走整段拷贝快路径。
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = K> + '_ {
+        let source = self.buf.slice();
+        layout::Offsets::<R>::new(self.dims(), self.strides(), self.base, &[])
+            .map(move |offset| source[offset])
+    }
+
+    /// 用同一形状和连续新存储重建张量。
+    pub(crate) fn respell<O: Element>(&self, buf: Vec<O>) -> Tensor<Owned<O>, R, O> {
+        let mut steps = self.dims.clone();
+        accumulate(self.dims(), steps.as_slice_mut(), Order::RowMajor);
         assemble(self.dims.clone(), steps, 0, Owned::from(buf))
     }
 }
 
-/// 六处构造与重排共用同一个组装动作：元数据 + 起点 + 存储 + 零尺寸类型标记。
-/// 把布局装进秩见证，存储原样带上：`respine`（吃掉存储）与借用版算子共用这一处。
+impl<R, K> Tensor<Owned<K>, R, K>
+where
+    R: Rank,
+    K: Element,
+{
+    /// 按形状分配行主序连续零值张量。
+    pub fn zeros(dims: impl Into<R>) -> Result<Self> {
+        Self::zeros_with_order(dims, Order::RowMajor)
+    }
+
+    /// 按形状和排列顺序分配连续零值张量。
+    pub fn zeros_with_order(dims: impl Into<R>, order: Order) -> Result<Self> {
+        let dims = dims.into();
+        let buf = Owned::zeros(product(dims.as_slice()))?;
+        Self::build(dims, buf, order, "tensor::Tensor::zeros_with_order")
+    }
+
+    /// 消费张量并返回逻辑序元素；完整连续自持张量可直接交出原缓冲。
+    pub fn into_vec(self) -> Vec<K> {
+        if self.base == 0 && self.is_contiguous() && self.buf.slice().len() == self.numel() {
+            self.buf.into_vec()
+        } else {
+            self.to_vec()
+        }
+    }
+}
+
+/// 连续构造错误的统一文案。
+fn invalid_message<R: Rank>(dims: &R, numel: usize, len: usize, marker: &str) -> diagnostic::Error {
+    crate::invalid(
+        format!(
+            "缓冲 {len} 个元素，形状 {:?} 需要 {numel} 个（{:?} 共 {} 字节）",
+            dims.as_slice(),
+            "元素",
+            element_bytes(numel, DType::F32)
+        ),
+        marker,
+    )
+}
+
+/// 无校验组装，仅用于已经建立布局不变量的构造与变换。
 pub(crate) fn assemble<B, R, K>(dims: R, steps: R, base: usize, buf: B) -> Tensor<B, R, K> {
     Tensor {
         dims,
