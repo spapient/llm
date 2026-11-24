@@ -249,11 +249,7 @@ fn run<P: Tier>(
 /// # Errors
 ///
 /// 三条缓冲长度与 `(m, n, k)` 不符时返回说明。
-pub fn forward_scalar<P: Tier>(
-    a: View<'_, P>,
-    b: View<'_, P>,
-    out: &mut [P::Acc],
-) -> Result<()> {
+pub fn forward_scalar<P: Tier>(a: View<'_, P>, b: View<'_, P>, out: &mut [P::Acc]) -> Result<()> {
     run(a, b, out, matmul_scalar)
 }
 
@@ -262,11 +258,7 @@ pub fn forward_scalar<P: Tier>(
 /// # Errors
 ///
 /// 三条缓冲长度与 `(m, n, k)` 不符时返回说明。
-pub fn forward_tiled<P: Tier>(
-    a: View<'_, P>,
-    b: View<'_, P>,
-    out: &mut [P::Acc],
-) -> Result<()> {
+pub fn forward_tiled<P: Tier>(a: View<'_, P>, b: View<'_, P>, out: &mut [P::Acc]) -> Result<()> {
     run(a, b, out, matmul_tiled)
 }
 

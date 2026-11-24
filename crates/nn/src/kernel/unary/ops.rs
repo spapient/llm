@@ -21,7 +21,7 @@ pub mod exp_f32 {
             assert_eq!(out[1], 0.0, "exp(-1000) 下溢为 0");
             assert!((out[2] - std::f32::consts::E).abs() < 1e-6, "exp(1)=e");
         },
-        x.exp(),
+        |x| x.exp(),
         |len| (0..len).map(|i| ((i % 65) as f32) * 0.25 - 8.0).collect()
     );
 }
@@ -44,7 +44,7 @@ pub mod log_f32 {
             assert_eq!(out[0], 0.0, "ln(1)=0");
             assert!((out[1] - 1.0).abs() < 1e-6, "ln(e)=1");
         },
-        x.ln(),
+        |x| x.ln(),
         |len| crate::model::linear(len, 0.25, 0.5)
     );
 }
@@ -81,7 +81,7 @@ pub mod gelu_f32 {
             assert!((erf(1.0_f32) - 0.842_700_8).abs() < 1.5e-6);
             assert!((erf(-1.0_f32) + 0.842_700_8).abs() < 1.5e-6);
         },
-        K::from_f64(0.5) * x * (K::ONE + erf(x * K::from_f64(std::f64::consts::FRAC_1_SQRT_2)))
+        |x| K::from_f64(0.5) * x * (K::ONE + erf(x * K::from_f64(std::f64::consts::FRAC_1_SQRT_2)))
     );
 }
 
@@ -97,13 +97,9 @@ pub mod silu_f32 {
             // silu(1) = sigmoid(1)：1/(1+e^-1) 的已知值钉住。
             let mut out = [0.0; 1];
             assert!(forward(tensor::View::one(&[1.0]), &mut out).is_ok(), "等长");
-            assert!(
-                (out[0] - 0.731_058_6).abs() < 1e-6,
-                "silu(1) = {out}",
-                out = out[0]
-            );
+            assert!((out[0] - 0.731_058_6).abs() < 1e-6, "silu(1) = {}", out[0]);
         },
-        x / (K::ONE + (-x).exp())
+        |x| x / (K::ONE + (-x).exp())
     );
 }
 
@@ -129,7 +125,11 @@ pub mod leaky_relu_f32 {
             assert_eq!(out[1], 0.0, "零点");
             assert_eq!(out[2], 2.0, "正区恒等");
         },
-        if x >= K::ZERO { x } else { K::from_f64(SLOPE as f64) * x }
+        |x| if x >= K::ZERO {
+            x
+        } else {
+            K::from_f64(SLOPE as f64) * x
+        }
     );
 }
 
@@ -152,7 +152,7 @@ pub mod relu_f32 {
             assert_eq!(out[1], 0.0, "零点");
             assert_eq!(out[2], 2.0, "正区恒等");
         },
-        x.max(K::ZERO)
+        |x| x.max(K::ZERO)
     );
 }
 
@@ -176,7 +176,7 @@ pub mod sigmoid_f32 {
             assert_eq!(out[2], 0.0, "下饱和不溢出");
             assert_eq!(out[3], 1.0, "上饱和不溢出");
         },
-        K::ONE / (K::ONE + (-x).exp())
+        |x| K::ONE / (K::ONE + (-x).exp())
     );
 }
 
@@ -200,7 +200,7 @@ pub mod tanh_f32 {
             assert_eq!(out[2], -1.0, "下饱和");
             assert_eq!(out[3], 1.0, "上饱和");
         },
-        K::from_f64(2.0) / (K::ONE + (-K::from_f64(2.0) * x).exp()) - K::ONE
+        |x| K::from_f64(2.0) / (K::ONE + (-K::from_f64(2.0) * x).exp()) - K::ONE
     );
 }
 
@@ -224,7 +224,7 @@ pub mod hard_sigmoid_f32 {
             assert_eq!(out[2], 1.0, "上饱和");
             assert!((out[3] - 1.0).abs() < 1e-6, "3 落在上饱和 {}", out[3]);
         },
-        {
+        |x| {
             let v = x / K::from_f64(6.0) + K::from_f64(0.5);
             v.max(K::ZERO).min(K::ONE)
         }
@@ -248,7 +248,7 @@ pub mod scale_f32 {
             assert!(forward(tensor::View::one(&[1.0]), &mut out).is_ok(), "等长");
             assert_eq!(out[0], ALPHA, "scale(1) = ALPHA");
         },
-        K::from_f64(ALPHA as f64) * x,
+        |x| K::from_f64(ALPHA as f64) * x,
         |len| crate::model::linear(len, 0.25, -2.0)
     );
 }
@@ -272,7 +272,7 @@ pub mod abs_f32 {
             assert_eq!(out[1], 0.0, "零点");
             assert_eq!(out[2], 2.0, "正区恒等");
         },
-        x.abs(),
+        |x| x.abs(),
         false
     );
 }
@@ -296,7 +296,7 @@ pub mod neg_f32 {
             assert_eq!(out[1], 0.0, "零点");
             assert_eq!(out[2], -3.0, "正区取负");
         },
-        -x,
+        |x| -x,
         false
     );
 }
@@ -320,7 +320,7 @@ pub mod square_f32 {
             assert_eq!(out[1], 9.0, "3²");
             assert_eq!(out[2], 4.0, "(-2)²");
         },
-        x * x,
+        |x| x * x,
         false
     );
 }
@@ -344,7 +344,7 @@ pub mod sign_f32 {
             assert_eq!(out[1], 0.0, "零点");
             assert_eq!(out[2], 1.0, "正区符号");
         },
-        if x > K::ZERO {
+        |x| if x > K::ZERO {
             K::ONE
         } else if x < K::ZERO {
             -K::ONE
@@ -374,7 +374,7 @@ pub mod recip_f32 {
             assert_eq!(out[1], 0.25, "1/4");
             assert_eq!(out[2], 2.0, "1/0.5");
         },
-        K::ONE / x,
+        |x| K::ONE / x,
         false
     );
 }
@@ -401,7 +401,7 @@ pub mod cos_f32 {
             assert_eq!(out[0], 1.0, "cos(0)");
             assert!(out[1].abs() < 1e-6, "cos(π/2)≈0");
         },
-        x.cos(),
+        |x| x.cos(),
         false
     );
 }
@@ -428,7 +428,7 @@ pub mod sin_f32 {
             assert_eq!(out[0], 0.0, "sin(0)");
             assert!((out[1] - 1.0).abs() < 1e-6, "sin(π/2)=1");
         },
-        x.sin(),
+        |x| x.sin(),
         false
     );
 }
@@ -451,7 +451,7 @@ pub mod sqrt_f32 {
             assert_eq!(out[0], 0.0, "√0");
             assert_eq!(out[1], 2.0, "√4");
         },
-        x.sqrt(),
+        |x| x.sqrt(),
         false,
         |len| (0..len).map(|i| (i as f32) * 0.25).collect()
     );
@@ -475,7 +475,7 @@ pub mod rsqrt_f32 {
             assert_eq!(out[0], 1.0, "1/√1");
             assert_eq!(out[1], 0.5, "1/√4");
         },
-        K::ONE / x.sqrt(),
+        |x| K::ONE / x.sqrt(),
         false,
         |len| (0..len).map(|i| (i + 1) as f32 * 0.25).collect()
     );
@@ -494,7 +494,7 @@ pub mod ceil_f32 {
             assert!(forward(tensor::View::one(&[1.2, -1.2]), &mut out).is_ok());
             assert_eq!(out, [2.0, -1.0]);
         },
-        x.ceil(),
+        |x| x.ceil(),
         false
     );
 }
@@ -512,7 +512,7 @@ pub mod floor_f32 {
             assert!(forward(tensor::View::one(&[1.2, -1.2]), &mut out).is_ok());
             assert_eq!(out, [1.0, -2.0]);
         },
-        x.floor(),
+        |x| x.floor(),
         false
     );
 }
@@ -530,7 +530,7 @@ pub mod round_f32 {
             assert!(forward(tensor::View::one(&[1.5, -1.5]), &mut out).is_ok());
             assert_eq!(out, [2.0, -2.0]);
         },
-        x.round(),
+        |x| x.round(),
         false
     );
 }
@@ -548,7 +548,7 @@ pub mod trunc_f32 {
             assert!(forward(tensor::View::one(&[1.7, -1.7]), &mut out).is_ok());
             assert_eq!(out, [1.0, -1.0]);
         },
-        x.trunc(),
+        |x| x.trunc(),
         false
     );
 }
@@ -573,7 +573,7 @@ pub mod log1p_f32 {
             assert_eq!(out[0], 0.0);
             assert!((out[1] - 1.0).abs() < 1e-6);
         },
-        x.ln_1p(),
+        |x| x.ln_1p(),
         false,
         |len| crate::model::linear(len, 0.25, 0.0)
     );
@@ -592,7 +592,7 @@ pub mod exp2_f32 {
             assert!(forward(tensor::View::one(&[0.0, 3.0]), &mut out).is_ok());
             assert_eq!(out, [1.0, 8.0]);
         },
-        x.exp2(),
+        |x| x.exp2(),
         false,
         |len| crate::model::linear(len, 0.125, -2.0)
     );

@@ -212,7 +212,10 @@ mod tests {
     fn assert_close<K: Scalar>(got: &[K], want: &[f32], rel: f64) {
         for (g, w) in got.iter().zip(want) {
             let (g, w) = (g.to_f64(), f64::from(*w));
-            assert!((g - w).abs() <= rel * w.abs().max(1.0), "{g} vs {w} (rel {rel})");
+            assert!(
+                (g - w).abs() <= rel * w.abs().max(1.0),
+                "{g} vs {w} (rel {rel})"
+            );
         }
     }
 
