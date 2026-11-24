@@ -4,5 +4,5 @@
 pub mod exec;
 
 #[cfg(target_os = "macos")]
-#[path = "metal.rs"]
+#[path = "metal/runtime.rs"]
 pub mod metal;

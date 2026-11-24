@@ -171,7 +171,7 @@ fn scan(dir: &Path, name: &str, files: Vec<PathBuf>) -> Device {
     let mut entries = Vec::new();
     let mut epilogue = None;
     for path in files {
-        if path == witness || path == archive {
+        if path == witness || path == archive || extension(&path).as_deref() == Some("rs") {
             continue;
         }
         let prim = stem(&path)

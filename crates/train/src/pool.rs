@@ -138,7 +138,10 @@ pub struct Bufs<K: Kernel> {
     slots: Vec<Option<Data>>,
     /// 梯度缓冲：autograd 只出 tape / plan / Replay，梯度存储由训练侧自持，与激活槽平行按变量编号。
     gradients: Vec<Option<Vec<f32>>>,
+    /// 前向/输出值的等长空闲表。
     pool: Pool,
+    /// 清零后的梯度向量独立回收，下一批按等长直接复用。
+    gradient_pool: Pool,
     /// 每个输出变量登记的算子实例几何：反向按同一个实例回传，前向/反向不各持一套几何。
     instances: Vec<Option<Geometry>>,
     /// 归一化的滚动统计：按输出变量常驻，训练期逐步递推（推理期直接取这一份）。
