@@ -165,6 +165,7 @@ impl<K: Kernel> Bufs<K> {
             sizes,
             kernel,
             pool: Pool::default(),
+            gradient_pool: Pool::default(),
             live: 0,
             peak: 0,
             scratch: Default::default(),
@@ -260,6 +261,20 @@ impl<K: Kernel> Bufs<K> {
             .map(Data::view)
     }
 
+    /// 原位镜像一段 f32 参数；已装配的常驻槽只覆盖内容，不交还再分配缓冲。
+    pub(crate) fn overwrite_f32(&mut self, var: Var, values: &[f32]) -> Result<()> {
+        self.validate_gradient(var, values)?;
+        let slot = self.slot(var)?;
+        match self.slots[slot].as_mut() {
+            Some(Data::F32(existing)) => existing.copy_from_slice(values),
+            Some(Data::U8(_)) => {
+                return Err(Error::new(Code::Invalid, "参数镜像的目标不是 f32").with(SITE));
+            }
+            None => self.load(var, Data::F32(values.to_vec()))?,
+        }
+        Ok(())
+    }
+
     /// 装入一个参数槽的当前梯度；长度必须与登记形状一致，梯度 lane 只有 f32。
     ///
     /// 梯度存储在训练侧：autograd 只给 tape / plan / Replay，不持有梯度；这里是梯度唯一落点。
@@ -269,8 +284,7 @@ impl<K: Kernel> Bufs<K> {
     /// 变量未登记形状（[`Code::Internal`]）、登记类型不是 f32 或长度不符（[`Code::Invalid`]）。
     pub fn load_gradient(&mut self, var: Var, grads: &[f32]) -> Result<()> {
         self.validate_gradient(var, grads)?;
-        self.gradients[var.id() as usize] = Some(grads.to_vec());
-        Ok(())
+        self.copy_gradient(var.id() as usize, grads)
     }
 
     /// 把一批微批梯度累加进现有梯度缓冲；缓冲为空时先装入副本。
@@ -284,15 +298,27 @@ impl<K: Kernel> Bufs<K> {
     pub fn accumulate_gradient(&mut self, var: Var, grads: &[f32]) -> Result<()> {
         self.validate_gradient(var, grads)?;
         let slot = var.id() as usize;
-        match &mut self.gradients[slot] {
-            Some(existing) => {
-                // 逐元素相加：长度已在上面校验一致，串行依赖 `a += b`，无法整块搬运。
-                for (accumulated, incoming) in existing.iter_mut().zip(grads) {
-                    *accumulated += *incoming;
-                }
+        if let Some(existing) = &mut self.gradients[slot] {
+            // 逐元素相加：长度已在上面校验一致，串行依赖 `a += b`，无法整块搬运。
+            for (accumulated, incoming) in existing.iter_mut().zip(grads) {
+                *accumulated += *incoming;
             }
-            None => self.gradients[slot] = Some(grads.to_vec()),
+            Ok(())
+        } else {
+            self.copy_gradient(slot, grads)
         }
+    }
+
+    /// 覆盖一条梯度：优先保留在场块，否则取同长度空闲块。
+    fn copy_gradient(&mut self, slot: usize, grads: &[f32]) -> Result<()> {
+        if let Some(existing) = &mut self.gradients[slot] {
+            existing.clear();
+            existing.extend_from_slice(grads);
+            return Ok(());
+        }
+        let mut held = self.gradient_pool.acquire_f32(grads.len())?;
+        held.copy_from_slice(grads);
+        self.gradients[slot] = Some(held);
         Ok(())
     }
 
@@ -337,14 +363,22 @@ impl<K: Kernel> Bufs<K> {
     /// 放回 [`Self::take_gradient`] 取走的梯度向量；空向量不写回（与未装入同口径）。
     pub fn put_back_gradient(&mut self, var: Var, grads: Vec<f32>) {
         if let Some(slot) = self.gradients.get_mut(var.id() as usize) {
-            *slot = (!grads.is_empty()).then_some(grads);
+            if grads.is_empty() {
+                self.gradient_pool.give_f32(grads);
+                *slot = None;
+            } else {
+                *slot = Some(grads);
+            }
         }
     }
 
-    /// 清空全部梯度缓冲：参数/激活槽不动，只归还梯度 lane 的向量。
+    /// 清空全部梯度缓冲：参数/激活槽不动，梯度向量进入独立空闲表供下一批复用。
     pub fn clear_gradients(&mut self) {
-        // 槽位长度保留（索引对应变量编号），只把梯度 lane 的向量整块置空。
-        self.gradients.fill(None);
+        for slot in &mut self.gradients {
+            if let Some(grads) = slot.take() {
+                self.gradient_pool.give_f32(grads);
+            }
+        }
     }
 
     /// 当前占用的字节数（含常驻值）。

@@ -582,6 +582,31 @@ fn gradient_snapshot_is_var_keyed_and_survives_zero_gradients() {
     assert_eq!(snapshot.get(p), Some(&[3.0; N][..]));
 }
 
+/// 参数、梯度与镜像缓冲跨视图周期保持同一地址，清零后的梯度也复用原容量。
+#[test]
+fn parameter_views_and_gradients_reuse_their_allocations() {
+    let (tape, sizes, p, _x, _loss) = fixture();
+    let config = TrainConfig::new(1e-3, 0, 1, None, 1).expect("配置");
+    let mut session = open_session(tape, sizes, config);
+    session
+        .register_parameter(p, ParamRole::Trainable, vec![1.0; N])
+        .expect("登记参数");
+    session.load_gradient(p, &[0.5; N]).expect("梯度就位");
+    let params = session.slots[0].params.as_ptr();
+    let mirrored = session.bufs.value(p).and_then(|view| view.f32()).expect("参数镜像").as_ptr();
+    let gradients = session.bufs.gradient(p).expect("梯度").as_ptr();
+    type BenchSession = Session<Reference, Sgd, Remote>;
+    let views = BenchSession::collect_views(&mut session.slots, &mut session.bufs).expect("取视图");
+    BenchSession::return_views(&mut session.slots, &mut session.bufs, views);
+    BenchSession::mirror_params(&session.slots, &mut session.bufs).expect("镜像参数");
+    assert_eq!(session.slots[0].params.as_ptr(), params);
+    assert_eq!(session.bufs.gradient(p).expect("梯度").as_ptr(), gradients);
+    assert_eq!(session.bufs.value(p).and_then(|view| view.f32()).expect("参数镜像").as_ptr(), mirrored);
+    session.zero_gradients();
+    session.load_gradient(p, &[0.25; N]).expect("重新装梯度");
+    assert_eq!(session.bufs.gradient(p).expect("梯度").as_ptr(), gradients);
+}
+
 /// 参数视图热路径复制基准；默认忽略，优化前后用同一命令测量。
 #[test]
 #[ignore = "性能测量，需要显式运行"]

@@ -65,7 +65,8 @@ fn main() {
     let devices = devices_of(&src);
     let images = env::var_os("CARGO_FEATURE_DEVICE_IMAGE").is_some();
     let tables = buildtables::tables_of(&devices, &out, images);
-    let (template_list, templates_table) = buildops::declarations_of(Path::new(&manifest));
+    let (template_list, templates_table) =
+        buildops::declarations_of(Path::new(&manifest), &devices);
 
     for (name, text) in [
         ("embedded.rs", buildtables::archives_of(&devices)),

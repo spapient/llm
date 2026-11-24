@@ -1,12 +1,14 @@
 //! 写端：收集段，按对齐布局一次产出 canonical 字节，同一份编码可写内存或流式落盘。
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use diagnostic::{Code, Error, Result};
+
+use crate::axes::AxisSet;
 
 use crate::Codec;
 use crate::Wire;
@@ -34,22 +36,44 @@ pub const MAX_ALIGN_LOG: u8 = 16;
 
 const WRITE_BUF: usize = 8 * 1024;
 
-/// 写端选项：两级 CRC 与自适应压缩，默认全开。
+/// 写端选项：两级 CRC、自适应压缩、五轴候选与编码并行度，默认与既有行为一致。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Config {
     /// 两级 CRC（全局 + 段级）。
     pub checksum: bool,
     /// 自适应 rANS / 五轴压缩。
     pub compress: bool,
+    /// 五轴候选集合；只在 `compress` 开启时生效。
+    pub axes: AxisSet,
+    /// 段编码工作线程数；`0` 与 `1` 都是串行。输出与线程数无关。
+    pub workers: usize,
 }
 
 impl Default for Config {
-    /// 默认开启两级 CRC 与自适应压缩。
+    /// 默认开启两级 CRC 与全五轴自适应压缩，串行编码。
     fn default() -> Self {
         Self {
             checksum: true,
             compress: true,
+            axes: AxisSet::ALL,
+            workers: 1,
         }
+    }
+}
+
+impl Config {
+    /// 设置五轴候选集合。
+    #[must_use]
+    pub const fn with_axes(mut self, axes: AxisSet) -> Self {
+        self.axes = axes;
+        self
+    }
+
+    /// 设置编码并行度；`0` 与 `1` 都是串行。
+    #[must_use]
+    pub const fn with_workers(mut self, workers: usize) -> Self {
+        self.workers = workers;
+        self
     }
 }
 
@@ -57,6 +81,7 @@ impl Default for Config {
 #[derive(Debug)]
 pub struct Writer {
     segs: Vec<Segment>,
+    names: HashSet<String>,
     config: Config,
 }
 
@@ -77,6 +102,7 @@ impl Writer {
     pub fn with(config: Config) -> Self {
         Self {
             segs: Vec::new(),
+            names: HashSet::new(),
             config,
         }
     }
@@ -93,10 +119,22 @@ impl Writer {
         self
     }
 
+    /// 设置五轴候选集合；[`AxisSet::WITHOUT_RANK`] 可完全跳过 SVD。
+    pub fn axes(&mut self, axes: AxisSet) -> &mut Self {
+        self.config.axes = axes;
+        self
+    }
+
+    /// 设置段编码并行度；`0` 与 `1` 都是串行，输出与并行度无关。
+    pub fn workers(&mut self, workers: usize) -> &mut Self {
+        self.config.workers = workers;
+        self
+    }
+
     /// 追加一个已自洽的段；重名在这里被拒。
     pub fn push(&mut self, segment: Segment) -> Result<&mut Self> {
         segment.validate()?;
-        if self.segs.iter().any(|known| known.name() == segment.name()) {
+        if !self.names.insert(segment.name().to_owned()) {
             return Err(
                 Error::new(Code::Invalid, format!("段 `{}` 重复", segment.name()))
                     .with("weights::Writer::push"),

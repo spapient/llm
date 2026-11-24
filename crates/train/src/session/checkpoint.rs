@@ -3,7 +3,7 @@
 use super::{ParamSlot, SITE, Session, SlotMeta};
 use crate::optimizer::{Optimizer, OwnedSlot};
 use crate::pool::Bufs;
-use crate::{Data, Kernel};
+use crate::Kernel;
 use autograd::Var;
 use diagnostic::{Code, Error, Result};
 use shard::Collective;

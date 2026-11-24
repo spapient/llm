@@ -4,7 +4,7 @@
 //! **拥有**：`Header`/`Entry`/`Reader`/`Loader` 三条契约，`safetensors` 的两种后端，自有的 `.u`
 //! 容器 v2（`writer`/`archive`/`seg`/`proof`/`rans`；CRC/LEB/Sink 已归 L1 `wire`）、量化方案
 //! `quant`/`ptq`，外部格式只读适配（`gguf`/`json`/`torch` 公开，`pickle`/`zip`/`dequant` 为
-//! crate 私有），以及“外部格式 → 中性段流”的桥接（`lifecycle::import`）。
+//! crate 私有），以及“外部格式 → 中性段流”的桥接（`archive::import`）。
 //! **不拥有**：dtype 闭集（`dtype`）、张量元数据（`tensor`）、物理布局（`storage`）。
 //! **依赖**：`dtype`、`diagnostic`、`tensor`、`wire`（`storage` 经可选 `mmap` feature
 //! 引入，只在 Unix 上提供映射源；`+dev`：`testkit`）。
@@ -264,7 +264,6 @@ macro_rules! closed_enum {
 // —— 自有 `.u` 容器 v2：描述符、读/写、帧编码、增量补丁与双模式 ——
 mod archive;
 mod container;
-mod lifecycle;
 mod rans;
 mod seg;
 mod writer;
@@ -297,7 +296,7 @@ pub mod gguf;
 pub mod json;
 pub mod torch;
 
-pub use lifecycle::import;
+pub use archive::import;
 pub mod safetensors;
 
 // 纯字节码基础件归 L1 `wire`；这里只做薄转发，保持容器内部路径不变。
@@ -306,14 +305,14 @@ pub mod crc {
     pub use storage::crc::*;
 }
 
-/// 生命周期模式薄转发：实现见内部 `lifecycle` 模块。
+/// 生命周期模式薄转发：实现见内部 `archive` 模块。
 pub mod mode {
-    pub use crate::lifecycle::{MODE_NAME, Mode, is_opt, mode_of, release};
+    pub use crate::archive::{MODE_NAME, Mode, is_opt, mode_of, release};
 }
 
-/// 增量补丁薄转发：实现见内部 `lifecycle` 模块。
+/// 增量补丁薄转发：实现见内部 `archive` 模块。
 pub mod patch {
-    pub use crate::lifecycle::{diff, join};
+    pub use crate::archive::{diff, join};
 }
 
 #[cfg(test)]
@@ -328,6 +327,7 @@ pub(crate) mod gguf_fixture;
 pub use crate::archive::VOCAB_NAME;
 
 pub use archive::{Archive, E8_RATIO, Metrics};
+pub use axes::{Axis, AxisSet};
 pub use dtype::DType as Wire;
 pub use l3::{Bracket, Chain, Ruling, Rung};
 

@@ -110,6 +110,7 @@ mod spec_tests;
 /// `prof::native::*` 借用瓦片尺寸、坐标与内核入口，`cutile` 的 tile DSL IR 经
 /// `native::gemm_negotiate` 择优调用。与 `device` 同是「被上层消费、不反向依赖上层」的设备
 /// 实现层；arch 门、特性探测与 `unsafe` 全部收在本岛，上层不写这些门。
+#[path = "cpu/native/mod.rs"]
 pub mod native;
 /// 设备运行时后端岛：提交契约、FFI 句柄、命令队列、缓冲、管线与执行器实现。
 pub mod runtime;

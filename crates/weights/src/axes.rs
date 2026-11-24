@@ -37,6 +37,49 @@ closed_enum! { @coded
     }
 }
 
+/// 五轴搜索的候选集合。`Raw` 始终作为逐位基线参与计算，集合控制的是其余四种候选；
+/// 因此 [`AxisSet::empty`] 表示"只做 rANS 基线"，而不是连基线也跳过。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AxisSet(u8);
+
+impl Default for AxisSet {
+    fn default() -> Self {
+        Self::ALL
+    }
+}
+
+impl AxisSet {
+    /// 全部候选（默认，与既有五轴搜索一致）。
+    pub const ALL: Self = Self(0b1_1111);
+    /// 不跑 SVD 的快速集合：字典、稀疏与精确网格量化。
+    pub const WITHOUT_RANK: Self = Self::ALL.without(Axis::Rank);
+
+    /// 只有 `Raw` 基线，不尝试其他候选。
+    pub const fn empty() -> Self {
+        Self(0)
+    }
+
+    /// 加入一个候选轴。
+    #[must_use]
+    pub const fn with(mut self, axis: Axis) -> Self {
+        self.0 |= 1 << axis.code();
+        self
+    }
+
+    /// 排除一个候选轴。
+    #[must_use]
+    pub const fn without(mut self, axis: Axis) -> Self {
+        self.0 &= !(1 << axis.code());
+        self
+    }
+
+    /// 本集合是否启用某个轴。
+    #[must_use]
+    pub const fn contains(self, axis: Axis) -> bool {
+        self.0 & (1 << axis.code()) != 0
+    }
+}
+
 /// 轴配置闭集：下标即码位（[`Axis`] 判别值的逆）。
 const AXES: [&dyn AxisCfg; 5] = [&Raw, &Dict, &Sparse, &Quant, &Rank];
 
@@ -147,6 +190,12 @@ impl Pick {
 
 /// 五轴搜索：返回逐位验证通过且字节最小的候选；形状不合法返回错误。
 pub fn search(w: &[f32], m: usize, n: usize) -> Result<Pick> {
+    search_with_axes(w, m, n, AxisSet::ALL)
+}
+
+/// 按候选集合搜索：与 [`search`] 同一判据，但只尝试 `axes` 启用的轴。
+/// `Raw` 基线始终计算并验证，因此禁用 `Rank` 可以完全跳过 SVD。
+pub fn search_with_axes(w: &[f32], m: usize, n: usize, axes: AxisSet) -> Result<Pick> {
     check_shape(w, m, n)?;
     let shape = (m, n);
     // `Raw` 恒可用，是基线；基线必须先自身逐位成立，破了就是压缩器实现 bug，报错而不是 panic。
@@ -159,6 +208,7 @@ pub fn search(w: &[f32], m: usize, n: usize) -> Result<Pick> {
     Ok(AXES[1..]
         .iter()
         .copied()
+        .filter(|cfg| axes.contains(cfg.kind()))
         .filter_map(|cfg| {
             let payload = cfg.encode(w, m, n)?;
             sound(cfg, &payload, shape, w).then(|| frame(cfg.kind(), m, n, payload))
@@ -171,8 +221,18 @@ pub fn search(w: &[f32], m: usize, n: usize) -> Result<Pick> {
 /// 字节级无损压缩入口：`data` 是行主序 f32 小端字节（`m*n` 个元素）。仅当五轴 artifact
 /// 严格小于原字节时才返回 `Some`，供 `.u` 容器写端在 rANS 之外择优。
 pub fn compress(data: &[u8], m: usize, n: usize) -> Result<Option<Vec<u8>>> {
+    compress_with_axes(data, m, n, AxisSet::ALL)
+}
+
+/// 按候选集合压缩；与 [`compress`] 同一逐位验证和体积判据。
+pub fn compress_with_axes(
+    data: &[u8],
+    m: usize,
+    n: usize,
+    axes: AxisSet,
+) -> Result<Option<Vec<u8>>> {
     let w = bytes_to_f32(data, m * n)?;
-    let pick = search(&w, m, n)?;
+    let pick = search_with_axes(&w, m, n, axes)?;
     Ok((pick.len() < data.len()).then_some(pick.artifact))
 }
 
