@@ -91,7 +91,7 @@ testkit    → （叶    +dev: autograd, cutile, nn, prof, tensor, tools, train,
 | `Signature` / `Sample` / `Model` | `prof` | 算子声明与语义（签名 / 样本 / 标量参考）；签名是 ABI 的唯一事实源，实参顺序、输出名与输出类型都由它派生；`bind` 是真实数据进入样本的唯一入口 |
 | `Op` | `prof` | 算子的注册身份：注册名与可微性由 `Operator` 派生，模板正文归目录，注册表是它唯一的投影面 |
 | `Capability` | `prof` | 后端能力表：一条登记「一副骨架族支持哪个元素档」，`supports` 按骨架族 × 元素档两维查表，缺项返回 `false` 由上层按缺的是哪一族、哪一档定位，不回泛化 `Unsupported`；第三维 `backend` 留待接 `Executor`/后端真实实现逐条对账后再补，本层不认识设备字面量 |
-| `Precision` | `nn` | 收缩轴可变 GEMM 的精度契约（元素类型 + 累加器 + 一次乘加），遍历与尺寸校验只写一份 |
+| `Precision` / `Tier` | `nn` | 收缩轴可变 GEMM 的精度契约（元素类型 + 累加器 + 一次乘加），遍历与尺寸校验只写一份；`Tier` 在 `Precision` 之上加 GEMM 局部注册名（每档对应的 matmul 算子名，供尺寸校验与代价标签取用），注册名是算子归属而非元素精度的固有属性，故与共享根分离 |
 | `OperandSpec` / `FormulaCache` / `FormulaOwner` / `Row` / `Operator` | `prof` | 打包格式的静态表（`Row` 全 `const`）、表达式缓存，以及六族骨架之上的统一语义契约（[ADR 0050](adr/0050-operator-base.md)）。`FormulaOwner` 是一条求和表达式的唯一载体：`EXPR` / `OPERANDS` / `FRAME` 加**每个实现一份**的缓存单元格——写在泛型骨架里的 `static` 只有一份，先解析的式子会覆盖后面的，故缓存按实现分而不是按骨架分 |
 | `Format` / `Element` / `Conf` | `nn` | 打包格式的派生配置（`Conf` 只收骨架运行期要的 `cpb` / `zero` / `offsets`）与样本缓冲元素闭集 |
 | `Template` / `Segment` / `LayoutSpec` / `Schedule` / `Masking` | `prof` | 声明侧的三张闭集：模板词法、布局构造子与调度模板；`cutile` 只消费，不持第二份 |
