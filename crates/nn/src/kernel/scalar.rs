@@ -200,3 +200,78 @@ impl_scalar!(
     half::bf16::to_f64,
     |v| half::bf16::to_f64(v) as usize
 );
+
+#[cfg(test)]
+mod tests {
+    //! 泛型化判据：同一副骨架在 f64 / f16 / bf16 上执行，结果对 f32 参考落在档内精度容差内。
+    //! `forward` 仅绑 f32 时这些用例无法编译——它们锁住「Precision 推广到全算子族」的能力增益。
+    use super::Scalar;
+    use crate::kernel::{elementwise, reduce, unary};
+    use tensor::View;
+
+    fn assert_close<K: Scalar>(got: &[K], want: &[f32], rel: f64) {
+        for (g, w) in got.iter().zip(want) {
+            let (g, w) = (g.to_f64(), f64::from(*w));
+            assert!((g - w).abs() <= rel * w.abs().max(1.0), "{g} vs {w} (rel {rel})");
+        }
+    }
+
+    fn unary_gelu<K: Scalar>(rel: f64) {
+        use unary::ops::gelu_f32::Gelu;
+        let xs = [-2.0_f64, -0.5, 0.0, 0.7, 1.5, 3.0];
+        let a32: Vec<f32> = xs.iter().map(|&v| v as f32).collect();
+        let mut want = vec![0.0_f32; xs.len()];
+        unary::forward::<f32, Gelu>(View::one(&a32), &mut want).unwrap();
+        let ak: Vec<K> = xs.iter().map(|&v| K::from_f64(v)).collect();
+        let mut got = vec![K::ZERO; xs.len()];
+        unary::forward::<K, Gelu>(View::one(&ak), &mut got).unwrap();
+        assert_close(&got, &want, rel);
+    }
+
+    fn binary_add<K: Scalar>(rel: f64) {
+        use elementwise::add_f32::Add;
+        let pairs = [(-1.5_f64, 0.25), (0.5, 2.0), (3.0, -4.0), (0.0, 0.0)];
+        let a32: Vec<f32> = pairs.iter().map(|p| p.0 as f32).collect();
+        let b32: Vec<f32> = pairs.iter().map(|p| p.1 as f32).collect();
+        let mut want = vec![0.0_f32; pairs.len()];
+        elementwise::forward::<f32, Add>(View::one(&a32), View::one(&b32), &mut want).unwrap();
+        let ak: Vec<K> = pairs.iter().map(|p| K::from_f64(p.0)).collect();
+        let bk: Vec<K> = pairs.iter().map(|p| K::from_f64(p.1)).collect();
+        let mut got = vec![K::ZERO; pairs.len()];
+        elementwise::forward::<K, Add>(View::one(&ak), View::one(&bk), &mut got).unwrap();
+        assert_close(&got, &want, rel);
+    }
+
+    fn reduce_sum<K: Scalar>(rel: f64) {
+        use reduce::reduce_sum_f32::Sum;
+        let xs = [-3.0_f64, -1.5, 0.0, 2.5, 4.0];
+        let a32: Vec<f32> = xs.iter().map(|&v| v as f32).collect();
+        let mut want = vec![0.0_f32; 1];
+        reduce::forward::<f32, Sum>(View::one(&a32), &mut want).unwrap();
+        let ak: Vec<K> = xs.iter().map(|&v| K::from_f64(v)).collect();
+        let mut got = vec![K::ZERO; 1];
+        reduce::forward::<K, Sum>(View::one(&ak), &mut got).unwrap();
+        assert_close(&got, &want, rel);
+    }
+
+    #[test]
+    fn unary_runs_in_every_float_tier() {
+        unary_gelu::<f64>(1e-6);
+        unary_gelu::<half::f16>(2e-2);
+        unary_gelu::<half::bf16>(5e-2);
+    }
+
+    #[test]
+    fn binary_runs_in_every_float_tier() {
+        binary_add::<f64>(1e-6);
+        binary_add::<half::f16>(2e-2);
+        binary_add::<half::bf16>(5e-2);
+    }
+
+    #[test]
+    fn reduce_runs_in_every_float_tier() {
+        reduce_sum::<f64>(1e-6);
+        reduce_sum::<half::f16>(2e-2);
+        reduce_sum::<half::bf16>(5e-2);
+    }
+}
