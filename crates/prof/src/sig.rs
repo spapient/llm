@@ -11,6 +11,10 @@ pub enum CType {
     F32,
     /// `unsigned char` / `u8`（样本里是 [`crate::model::Values::U8`]）。
     U8,
+    /// `half` / `__half`（样本里是 [`crate::model::Values::F16`]）。
+    F16,
+    /// `bf16` / `bfloat`（样本里是 [`crate::model::Values::Bf16`]）。
+    Bf16,
     /// 整数标量（`int`、`long` 等），取值来自 [`Sample::scalars`]。
     Int,
 }
@@ -21,6 +25,8 @@ impl CType {
         match self {
             Self::F32 => "float",
             Self::U8 => "unsigned char",
+            Self::F16 => "half",
+            Self::Bf16 => "bf16",
             Self::Int => "int",
         }
     }
@@ -35,6 +41,8 @@ impl CType {
         match self {
             Self::F32 => Some(DType::F32),
             Self::U8 => Some(DType::U8),
+            Self::F16 => Some(DType::F16),
+            Self::Bf16 => Some(DType::BF16),
             Self::Int => None,
         }
     }
@@ -314,7 +322,10 @@ mod check {
     pub(super) fn type_matches(ctype: CType, values: &Values) -> bool {
         matches!(
             (ctype, values),
-            (CType::F32, Values::F32(_)) | (CType::U8, Values::U8(_))
+            (CType::F32, Values::F32(_))
+                | (CType::U8, Values::U8(_))
+                | (CType::F16, Values::F16(_))
+                | (CType::Bf16, Values::Bf16(_))
         )
     }
 
@@ -454,7 +465,7 @@ mod parse {
             .join(" ")
     }
 
-    /// 缓冲形参的类型：只有 `float` 与 `unsigned char`/`u8`。
+    /// 缓冲形参的类型：`float`、`unsigned char`/`u8`、`half`/`__half`、`bf16`/`bfloat`。
     pub(super) fn buf_ctype(
         op: &str,
         name: &str,
@@ -464,10 +475,12 @@ mod parse {
         match ty {
             "float" => Ok(CType::F32),
             "u8" | "unsigned char" => Ok(CType::U8),
+            "half" | "__half" => Ok(CType::F16),
+            "bf16" | "bfloat" | "__nv_bfloat16" => Ok(CType::Bf16),
             _ => Err(at(
                 line,
                 format!(
-                    "算子 `{op}` 的缓冲形参 `{name}` 用类型 `{ty} *`；支持的缓冲类型只有 `float`（f32）与 `unsigned char`/`u8`"
+                    "算子 `{op}` 的缓冲形参 `{name}` 用类型 `{ty} *`；支持的缓冲类型只有 `float`（f32）、`unsigned char`/`u8`、`half`（f16）与 `bf16`"
                 ),
             )),
         }

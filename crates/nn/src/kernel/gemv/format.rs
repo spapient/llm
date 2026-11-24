@@ -33,7 +33,7 @@ impl Element for f32 {
     fn borrow(values: &Values) -> Option<&[Self]> {
         match values {
             Values::F32(values) => Some(values),
-            Values::U8(_) => None,
+            Values::U8(_) | Values::F16(_) | Values::Bf16(_) => None,
         }
     }
 
@@ -59,7 +59,7 @@ impl Element for u8 {
 
     fn borrow(values: &Values) -> Option<&[Self]> {
         match values {
-            Values::F32(_) => None,
+            Values::F32(_) | Values::F16(_) | Values::Bf16(_) => None,
             Values::U8(values) => Some(values),
         }
     }

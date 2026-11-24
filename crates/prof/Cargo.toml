@@ -23,6 +23,8 @@ bench = []
 # 与档案同住本 crate：模板与签名是设备档案与片段正文的共同文法，拆开只会多一层转发。
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
 dtype = { path = "../dtype", package = "llm-dtype" }
+# 半精度样本取值（`Values::F16`/`Bf16`）：与 nn 的 `Scalar` 半精度档共用同一份 IEEE 编解码。
+half = { workspace = true }
 
 [dev-dependencies]
 # 片段层对账用例（`device_suite!`）在独立集成测试里，以外部 `prof::` 引用本 crate；

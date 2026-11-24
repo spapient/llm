@@ -537,6 +537,8 @@ fn working_set(sample: &Sample, output: &str) -> u64 {
         .map(|buf| match &buf.values {
             Values::F32(values) => 4 * values.len() as u64,
             Values::U8(values) => values.len() as u64,
+            Values::F16(values) => 2 * values.len() as u64,
+            Values::Bf16(values) => 2 * values.len() as u64,
         })
         .sum()
 }

@@ -221,6 +221,8 @@ pub fn c_type(values: &Values) -> &'static str {
     match values {
         Values::F32(_) => "float",
         Values::U8(_) => "unsigned char",
+        Values::F16(_) => "half",
+        Values::Bf16(_) => "bf16",
     }
 }
 
@@ -235,6 +237,17 @@ pub fn c_literal(values: &Values) -> String {
         Values::U8(values) => values
             .iter()
             .map(|value| format!("0x{value:02x}u"))
+            .collect::<Vec<_>>()
+            .join(", "),
+        // 半精度数组元素由 C 隐式收窄 f32 字面量（CUDA/Metal 均合法），与 f32 同一份字面量口径。
+        Values::F16(values) => values
+            .iter()
+            .map(|value| format!("{:?}f", value.to_f32()))
+            .collect::<Vec<_>>()
+            .join(", "),
+        Values::Bf16(values) => values
+            .iter()
+            .map(|value| format!("{:?}f", value.to_f32()))
             .collect::<Vec<_>>()
             .join(", "),
     }

@@ -30,13 +30,17 @@ pub use crate::einsum::Cost;
 #[doc(inline)]
 pub use crate::einsum::Extents;
 
-/// 缓冲的取值：P0 只出现 f32 与打包字节。
+/// 缓冲的取值：浮点档（f32/f16/bf16）与打包字节。
 #[derive(Debug, Clone, PartialEq)]
 pub enum Values {
     /// 单精度浮点。
     F32(Vec<f32>),
     /// 打包字节（如 int4 权重）。
     U8(Vec<u8>),
+    /// 半精度浮点（IEEE binary16）。
+    F16(Vec<half::f16>),
+    /// brain 浮点（bfloat16）。
+    Bf16(Vec<half::bf16>),
 }
 
 impl Values {
@@ -45,6 +49,8 @@ impl Values {
         match self {
             Self::F32(values) => values.len(),
             Self::U8(values) => values.len(),
+            Self::F16(values) => values.len(),
+            Self::Bf16(values) => values.len(),
         }
     }
 
@@ -60,6 +66,8 @@ impl Values {
         match self {
             Self::F32(_) => "float",
             Self::U8(_) => "unsigned char",
+            Self::F16(_) => "half",
+            Self::Bf16(_) => "bf16",
         }
     }
 
@@ -70,7 +78,10 @@ impl Values {
     pub fn same_kind(&self, other: &Self) -> bool {
         matches!(
             (self, other),
-            (Self::F32(_), Self::F32(_)) | (Self::U8(_), Self::U8(_))
+            (Self::F32(_), Self::F32(_))
+                | (Self::U8(_), Self::U8(_))
+                | (Self::F16(_), Self::F16(_))
+                | (Self::Bf16(_), Self::Bf16(_))
         )
     }
 }
@@ -141,9 +152,39 @@ impl Sample {
     pub fn f32(&self, name: &str) -> diagnostic::Result<&[f32]> {
         match self.buf(name).map(|buf| &buf.values) {
             Some(Values::F32(values)) => Ok(values),
-            Some(Values::U8(_)) => {
-                Err(Error::new(Code::Invalid, format!("缓冲 `{name}` 不是 f32")))
-            }
+            Some(_) => Err(Error::new(Code::Invalid, format!("缓冲 `{name}` 不是 f32"))),
+            None => Err(Error::new(
+                Code::Missing,
+                format!("样本里没有缓冲 `{name}`"),
+            )),
+        }
+    }
+
+    /// 取 f16 缓冲。
+    ///
+    /// # Errors
+    ///
+    /// 缓冲不存在或不是 f16 时返回带名字的说明。
+    pub fn f16(&self, name: &str) -> diagnostic::Result<&[half::f16]> {
+        match self.buf(name).map(|buf| &buf.values) {
+            Some(Values::F16(values)) => Ok(values),
+            Some(_) => Err(Error::new(Code::Invalid, format!("缓冲 `{name}` 不是 f16"))),
+            None => Err(Error::new(
+                Code::Missing,
+                format!("样本里没有缓冲 `{name}`"),
+            )),
+        }
+    }
+
+    /// 取 bf16 缓冲。
+    ///
+    /// # Errors
+    ///
+    /// 缓冲不存在或不是 bf16 时返回带名字的说明。
+    pub fn bf16(&self, name: &str) -> diagnostic::Result<&[half::bf16]> {
+        match self.buf(name).map(|buf| &buf.values) {
+            Some(Values::Bf16(values)) => Ok(values),
+            Some(_) => Err(Error::new(Code::Invalid, format!("缓冲 `{name}` 不是 bf16"))),
             None => Err(Error::new(
                 Code::Missing,
                 format!("样本里没有缓冲 `{name}`"),
@@ -159,9 +200,7 @@ impl Sample {
     pub fn u8(&self, name: &str) -> diagnostic::Result<&[u8]> {
         match self.buf(name).map(|buf| &buf.values) {
             Some(Values::U8(values)) => Ok(values),
-            Some(Values::F32(_)) => {
-                Err(Error::new(Code::Invalid, format!("缓冲 `{name}` 不是 u8")))
-            }
+            Some(_) => Err(Error::new(Code::Invalid, format!("缓冲 `{name}` 不是 u8"))),
             None => Err(Error::new(
                 Code::Missing,
                 format!("样本里没有缓冲 `{name}`"),
@@ -273,9 +312,9 @@ fn lengths(m: usize, n: usize, x: &[f32], w: &[f32]) -> diagnostic::Result<()> {
 fn dense(sample: &Sample) -> diagnostic::Result<()> {
     match sample.buf("w").map(|buf| &buf.values) {
         Some(Values::F32(_)) => Ok(()),
-        Some(Values::U8(_)) => Err(Error::new(
+        Some(Values::U8(_) | Values::F16(_) | Values::Bf16(_)) => Err(Error::new(
             Code::Unsupported,
-            "该算子的权重缓冲是打包字节（量化），真实 f32 权重不能注入：先按算子声明的分组量化",
+            "该算子的权重缓冲是打包字节（量化 / 半精度），真实 f32 权重不能注入：先按算子声明的分组量化",
         )
         .with("prof::model::bind")),
         None => {

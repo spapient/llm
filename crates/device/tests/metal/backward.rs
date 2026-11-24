@@ -39,6 +39,22 @@ fn tanh(x: f64) -> f64 {
     2.0 / (1.0 + f64::exp(-2.0 * x)) - 1.0
 }
 
+/// A&S 7.1.26 误差函数（|误差| < 1.5e-7），与 `nn::gelu_f32::erf` 同式，f64 档供中心差分参考。
+fn erf(x: f64) -> f64 {
+    let sign = if x < 0.0 { -1.0 } else { 1.0 };
+    let x = x.abs();
+    let p = 0.327_591_1;
+    let t = 1.0 / (1.0 + p * x);
+    let series = t * (0.254_829_6 + t * (-0.284_496_72 + t * (1.421_413_8 + t * (-1.453_152_1 + t * 1.061_405_4))));
+    let y = 1.0 - series * (-x * x).exp();
+    sign * y
+}
+
+/// GELU 前向：`0.5·x·(1 + erf(x/√2))`。
+fn gelu(x: f64) -> f64 {
+    0.5 * x * (1.0 + erf(x * std::f64::consts::FRAC_1_SQRT_2))
+}
+
 /// 反向逐点族条目：域内取值避开溢出 / 除零；导数由 [`crate::backward`] 描述表给出。
 const ENTRIES: &[Entry] = &[
     Entry {
@@ -67,6 +83,16 @@ const ENTRIES: &[Entry] = &[
         f: f64::exp,
         inputs: |len| linear(len, 0.08, -6.0),
     },
+    Entry {
+        op: "silu_f32",
+        f: |x| x * sigmoid(x),
+        inputs: |len| linear(len, 0.0625, -3.0),
+    },
+    Entry {
+        op: "gelu_f32",
+        f: gelu,
+        inputs: |len| linear(len, 0.0625, -3.0),
+    },
 ];
 
 #[test]
@@ -90,8 +116,7 @@ fn run_entry(entry: &Entry) {
     // 非恒一的上游梯度：同时验出「逐元素乘 dout」这一步，而不只是偏导本身。
     let dout: Vec<f32> = (0..LEN).map(|i| 0.5 + 0.1 * i as f32).collect();
 
-    let msl = crate::backward::source(Backend::Metal, descriptor, LEN)
-        .unwrap_or_else(|error| panic!("{} 反向 MSL 应能生成：{error}", entry.op));
+    let msl = crate::backward::source(Backend::Metal, descriptor, LEN);
     let name = format!("{}_grad", entry.op);
     executor
         .register(&name, &msl)
