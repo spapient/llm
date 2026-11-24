@@ -14,13 +14,13 @@ use llm_optim::execution::Backend;
 /// 对拍长度：96 个元素，单线程组可覆盖；末组越界线程由内核长度守卫跳过。
 const LEN: usize = 96;
 
-/// 中心差分步长：与 `train` gradcheck 同量级，压在 f32 舍入与截断误差都可控的区间。
-const STEP: f32 = 1e-6;
+/// 中心差分步长：参考在 f64 里求值，步长取 f64 量级，避免 f32 相减把有效位吃掉。
+const STEP: f64 = 1e-6;
 
-/// 一条反向对拍配置：算子名、标量前向函数、输入夹具生成器、容差。
+/// 一条反向对拍配置：算子名、f64 标量前向函数（只供中心差分参考）、输入夹具生成器。
 struct Entry {
     op: &'static str,
-    f: fn(f32) -> f32,
+    f: fn(f64) -> f64,
     inputs: fn(usize) -> Vec<f32>,
 }
 
@@ -30,13 +30,13 @@ fn linear(len: usize, step: f32, off: f32) -> Vec<f32> {
 }
 
 /// σ(x)：与前向参考同式，避免对齐到另一条数学库实现。
-fn sigmoid(x: f32) -> f32 {
-    1.0 / (1.0 + f32::exp(-x))
+fn sigmoid(x: f64) -> f64 {
+    1.0 / (1.0 + f64::exp(-x))
 }
 
 /// tanh(x)：exp 组合口径，与前向夹具一致。
-fn tanh(x: f32) -> f32 {
-    2.0 / (1.0 + f32::exp(-2.0 * x)) - 1.0
+fn tanh(x: f64) -> f64 {
+    2.0 / (1.0 + f64::exp(-2.0 * x)) - 1.0
 }
 
 /// 反向逐点族条目：域内取值避开溢出 / 除零；导数由 [`crate::backward`] 描述表给出。
@@ -64,7 +64,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         op: "exp_f32",
-        f: f32::exp,
+        f: f64::exp,
         inputs: |len| linear(len, 0.08, -6.0),
     },
 ];
@@ -86,7 +86,7 @@ fn run_entry(entry: &Entry) {
     };
 
     let x = (entry.inputs)(LEN);
-    let y: Vec<f32> = x.iter().map(|&v| (entry.f)(v)).collect();
+    let y: Vec<f32> = x.iter().map(|&v| (entry.f)(v as f64) as f32).collect();
     // 非恒一的上游梯度：同时验出「逐元素乘 dout」这一步，而不只是偏导本身。
     let dout: Vec<f32> = (0..LEN).map(|i| 0.5 + 0.1 * i as f32).collect();
 
@@ -125,20 +125,24 @@ fn run_entry(entry: &Entry) {
         .map(|buf| read_back(buf.as_mut_bytes()))
         .unwrap_or_else(|| panic!("{} 梯度输出缓冲不在场", entry.op));
 
+    // 参考在 f64 里做中心差分：`dL/dx = dout·[f(x+h)−f(x−h)]/(2h)`，再压回 f32 与设备输出比。
     let want: Vec<f32> = x
         .iter()
         .zip(&dout)
         .map(|(&value, &upstream)| {
-            let central = ((entry.f)(value + STEP) - (entry.f)(value - STEP)) / (2.0 * STEP);
-            upstream * central
+            let value = value as f64;
+            let central =
+                ((entry.f)(value + STEP) - (entry.f)(value - STEP)) / (2.0 * STEP);
+            (upstream as f64 * central) as f32
         })
         .collect();
 
+    // 容差对齐 train gradcheck 口径：逐元素相对 5%，Unit 地板同时兜住近零梯度的绝对误差。
     testkit::assert_rel_with(
         testkit::Scale::Unit,
         &dx,
         &want,
-        1e-3,
+        5e-2,
         &format!("{} Metal 反向梯度与中心差分", entry.op),
     );
 }

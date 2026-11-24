@@ -438,7 +438,7 @@ pub fn close_enough(actual: &[f32], expected: &[f32], rtol: f32, atol: f32) -> R
 
 /// 对拍夹具：把 `[m,k]` 与 `[k,n]` 两份样本装配成两个只读视图，f32 / i8 两档共用。
 #[cfg(test)]
-pub(crate) fn pair_views<'a, K: NumericElement>(
+pub(crate) fn pair_views<'a, K: Precision>(
     m: usize,
     n: usize,
     k: usize,
