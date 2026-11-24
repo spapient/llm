@@ -5,8 +5,9 @@
 
 #![allow(unsafe_code)]
 
-use crate::runtime::exec::{Device, Executor, Graph, Node, Stream};
-use crate::runtime::queue::{Queued, check_operands, enqueue};
+use crate::runtime::exec::{
+    Device, Executor, Graph, Node, Queued, Stream, check_operands, enqueue,
+};
 use diagnostic::{Code, Error, Result};
 use std::collections::BTreeMap;
 use std::ffi::{CString, c_char, c_void};

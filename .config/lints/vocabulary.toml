@@ -208,6 +208,7 @@ min_lines_baseline = [
   "crates/dtype/src/blocked.rs",
   "crates/dtype/src/format.rs",
   "crates/engine/src/cpu.rs",
+  "crates/engine/src/exec.rs",
   "crates/engine/src/ifb.rs",
   "crates/engine/src/pager.rs",
   "crates/engine/src/radix.rs",
