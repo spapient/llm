@@ -1,7 +1,7 @@
 //! 逐元素一元骨架：`y[n] = f(a[n])`。
 
 use crate::formula::FormulaOwner;
-use crate::kernel::scalar::Scalar;
+use crate::kernel::scalar::{FloatSlice, FloatSliceMut, Scalar};
 use crate::model::{AxisRole, AxisSpec, Buf, Cost, Sample, ShapeCtx, Values};
 use diagnostic::{Code, Error};
 use tensor::View;
@@ -94,6 +94,24 @@ pub fn forward<K: Scalar, U: Unary>(a: View<'_, K>, out: &mut [K]) -> diagnostic
         *out = U::apply(*x);
     }
     Ok(())
+}
+
+/// 运行时精度入口：一次 match 把 tagged 缓冲分派到对应档的单态化 [`forward`]。
+///
+/// 调用方持运行时精度（如配置驱动的 dtype）时走这里，无需在调用点编译期单态化；
+/// 输入与输出必须同档，错档挡回。这是「枚举身份 + 入口一次分派」的执行缝。
+///
+/// # Errors
+///
+/// 输入输出档不一致，或缓冲长度不一致时返回说明。
+pub fn dispatch<U: Unary>(a: FloatSlice<'_>, out: FloatSliceMut<'_>) -> diagnostic::Result<()> {
+    match (a, out) {
+        (FloatSlice::F32(a), FloatSliceMut::F32(o)) => forward::<f32, U>(View::one(a), o),
+        (FloatSlice::F64(a), FloatSliceMut::F64(o)) => forward::<f64, U>(View::one(a), o),
+        (FloatSlice::F16(a), FloatSliceMut::F16(o)) => forward::<half::f16, U>(View::one(a), o),
+        (FloatSlice::Bf16(a), FloatSliceMut::Bf16(o)) => forward::<half::bf16, U>(View::one(a), o),
+        _ => Err(Error::new(Code::Invalid, "输入与输出精度档不一致")),
+    }
 }
 
 /// 生成一份 f32 一元逐元素算子的公开面：标记类型、[`Unary`] 实现、[`annotation::model`] 别名、

@@ -1,7 +1,7 @@
 //! 归约骨架：`y[0] = fold(a[0..n])`，输出单个元素。
 
 use crate::formula::FormulaOwner;
-use crate::kernel::scalar::Scalar;
+use crate::kernel::scalar::{FloatSlice, FloatSliceMut, Scalar};
 use crate::model::{AxisRole, AxisSpec, Buf, Cost, Sample, ShapeCtx, Values};
 use diagnostic::{Code, Error};
 use tensor::View;
@@ -110,6 +110,21 @@ pub fn forward<K: Scalar, R: Reduce>(a: View<'_, K>, out: &mut [K]) -> diagnosti
     }
     out[0] = acc;
     Ok(())
+}
+
+/// 运行时精度入口：一次 match 把 tagged 缓冲分派到对应档的单态化 [`forward`]。
+///
+/// # Errors
+///
+/// 输入输出档不一致，或归约输出非单元素时返回说明。
+pub fn dispatch<R: Reduce>(a: FloatSlice<'_>, out: FloatSliceMut<'_>) -> diagnostic::Result<()> {
+    match (a, out) {
+        (FloatSlice::F32(a), FloatSliceMut::F32(o)) => forward::<f32, R>(View::one(a), o),
+        (FloatSlice::F64(a), FloatSliceMut::F64(o)) => forward::<f64, R>(View::one(a), o),
+        (FloatSlice::F16(a), FloatSliceMut::F16(o)) => forward::<half::f16, R>(View::one(a), o),
+        (FloatSlice::Bf16(a), FloatSliceMut::Bf16(o)) => forward::<half::bf16, R>(View::one(a), o),
+        _ => Err(Error::new(Code::Invalid, "输入与输出精度档不一致")),
+    }
 }
 
 /// 生成一份 f32 归约算子的公开面：标记类型、[`Reduce`] 实现、[`annotation::model`] 别名、

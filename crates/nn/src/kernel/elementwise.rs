@@ -1,7 +1,7 @@
 //! 逐元素二元骨架：`y[n] = op(a[n], b[n])`。
 
 use crate::formula::FormulaOwner;
-use crate::kernel::scalar::Scalar;
+use crate::kernel::scalar::{FloatSlice, FloatSliceMut, Scalar};
 use crate::model::{Buf, Cost, Sample, ShapeCtx, Values};
 use diagnostic::{Code, Error};
 use tensor::View;
@@ -107,6 +107,33 @@ pub fn forward<K: Scalar, B: Binary>(
         *out = B::apply(*x, *y);
     }
     Ok(())
+}
+
+/// 运行时精度入口：一次 match 把两份 tagged 输入与输出分派到对应档的单态化 [`forward`]。
+///
+/// # Errors
+///
+/// 三者档不一致，或缓冲长度不一致时返回说明。
+pub fn dispatch<B: Binary>(
+    a: FloatSlice<'_>,
+    b: FloatSlice<'_>,
+    out: FloatSliceMut<'_>,
+) -> diagnostic::Result<()> {
+    match (a, b, out) {
+        (FloatSlice::F32(a), FloatSlice::F32(b), FloatSliceMut::F32(o)) => {
+            forward::<f32, B>(View::one(a), View::one(b), o)
+        }
+        (FloatSlice::F64(a), FloatSlice::F64(b), FloatSliceMut::F64(o)) => {
+            forward::<f64, B>(View::one(a), View::one(b), o)
+        }
+        (FloatSlice::F16(a), FloatSlice::F16(b), FloatSliceMut::F16(o)) => {
+            forward::<half::f16, B>(View::one(a), View::one(b), o)
+        }
+        (FloatSlice::Bf16(a), FloatSlice::Bf16(b), FloatSliceMut::Bf16(o)) => {
+            forward::<half::bf16, B>(View::one(a), View::one(b), o)
+        }
+        _ => Err(Error::new(Code::Invalid, "输入与输出精度档不一致")),
+    }
 }
 
 /// 生成一份 f32 二元逐元素算子的公开面：标记类型、[`Binary`] 实现、[`annotation::model`] 别名、

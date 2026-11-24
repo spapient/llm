@@ -99,6 +99,7 @@ testkit    → （叶    +dev: autograd, cutile, nn, prof, tensor, tools, train,
 | `Registration` | `prof` | 注册表 `REGISTRY` 的一行：名字 + 内核类型 + 语义表构造器。行形状与 `Op`/`TEMPLATES` 同一张表，故住声明层；`nn` 只按模板名填表，`cutile` 只消费 |
 | `Phase` / `Seam` / `Fusion` | `prof` | 槽位代数：`compose` 判定生产者能否拼到消费者前面——`Phase` 是一段「读哪些槽位 → 写哪些槽位」，`Seam` 是两侧同类型的一处缝，`Fusion` 是拼接后的整体；只做判定，不碰设备源 |
 | `Scalar` | `nn` | 元素运算超 trait（`Add` / `Sub` / `Mul` / `Div`）：让泛型内核写 `a + b` 而不是逐方法调用 |
+| `FloatTier` / `FloatSlice` / `FloatSliceMut` | `nn` | 浮点档的运行时身份与执行缝：`FloatTier` 是枚举精度身份，后缀 / 位宽由唯一档表 `FLOAT_TIERS` 查表得出（加一档=加一行）；`FloatSlice` / `FloatSliceMut` 是运行时精度 tagged 的缓冲和类型，unary / binary / reduce 的 `dispatch` 入口一次 match 即单态化到对应档的泛型核，错档挡回，无 unsafe 重解释。骨架仍泛型到 `Scalar`，本组只把运行时精度接到编译期单态化 |
 | `Probe` | `nn` | 端口峰值探针——**一条指令路径**的分母：组名前缀 / 通道后缀 / 一轮 MAC 数 / 本机跑一轮的 `run` 闭包四字段是它与测量容器之间的全部协议 |
 | `Monoid` / `SsmStep` / `PlaneStep` / `Scan` | `nn` | β 指数梯形扫描的数学底座与 `scan_f32` 算子：半群、两种离散化、复值状态的步进；语义表注解是唯一对拍口径 |
 | `Profile` | `prof` | 设备档案；机制代码不得出现 `vendor == "..."` |

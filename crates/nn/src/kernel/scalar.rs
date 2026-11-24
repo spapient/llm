@@ -201,6 +201,68 @@ impl_scalar!(
     |v| half::bf16::to_f64(v) as usize
 );
 
+/// 浮点档的运行时身份：枚举当精度身份、[`FLOAT_TIERS`] 当查表事实源（后缀 / 位宽）。
+///
+/// 加一档 = 表里加一行；骨架仍泛型到 [`Scalar`] 按档单态化，本枚举只在入口把**运行时**精度
+/// 一次 match 分派到对应单态化核（[`FloatSlice`] / [`FloatSliceMut`]）。注册名后缀与位宽查表
+/// 得出，不写第二份 match——「枚举身份 + 查表事实源 + 入口一次分派」的执行缝。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum FloatTier {
+    /// 32 位浮点（对拍归一基准）。
+    F32 = 0,
+    /// 64 位浮点。
+    F64 = 1,
+    /// IEEE 半精度。
+    F16 = 2,
+    /// brain 半精度。
+    Bf16 = 3,
+}
+
+/// 档表：唯一事实源 `(档, 注册后缀, 元素字节)`。新增浮点档只在此加一行。
+const FLOAT_TIERS: [(FloatTier, &str, usize); 4] = [
+    (FloatTier::F32, "f32", 4),
+    (FloatTier::F64, "f64", 8),
+    (FloatTier::F16, "f16", 2),
+    (FloatTier::Bf16, "bf16", 2),
+];
+
+impl FloatTier {
+    /// 注册后缀（`<算法>_<后缀>`）：按判别值查表，非 match。
+    pub const fn suffix(self) -> &'static str {
+        FLOAT_TIERS[self as usize].1
+    }
+    /// 元素字节宽：按判别值查表，非 match。
+    pub const fn bytes(self) -> usize {
+        FLOAT_TIERS[self as usize].2
+    }
+}
+
+/// 运行时精度 tagged 的只读缓冲：入口一次 match 即单态化到对应档的泛型核，无 unsafe 重解释。
+#[derive(Clone, Copy)]
+pub enum FloatSlice<'a> {
+    /// f32 档。
+    F32(&'a [f32]),
+    /// f64 档。
+    F64(&'a [f64]),
+    /// f16 档。
+    F16(&'a [half::f16]),
+    /// bf16 档。
+    Bf16(&'a [half::bf16]),
+}
+
+/// 运行时精度 tagged 的可写缓冲：与 [`FloatSlice`] 同档配对，错档在入口被挡回。
+pub enum FloatSliceMut<'a> {
+    /// f32 档。
+    F32(&'a mut [f32]),
+    /// f64 档。
+    F64(&'a mut [f64]),
+    /// f16 档。
+    F16(&'a mut [half::f16]),
+    /// bf16 档。
+    Bf16(&'a mut [half::bf16]),
+}
+
 #[cfg(test)]
 mod tests {
     //! 泛型化判据：同一副骨架在 f64 / f16 / bf16 上执行，结果对 f32 参考落在档内精度容差内。
@@ -276,5 +338,56 @@ mod tests {
         reduce_sum::<f64>(1e-6);
         reduce_sum::<half::f16>(2e-2);
         reduce_sum::<half::bf16>(5e-2);
+    }
+
+    #[test]
+    fn float_tier_table_is_the_single_source() {
+        use super::{FLOAT_TIERS, FloatTier};
+        // 判别值即表下标：后缀与位宽查表得出，加一档=加一行。
+        for (i, (tier, suffix, bytes)) in FLOAT_TIERS.iter().enumerate() {
+            assert_eq!(*tier as usize, i);
+            assert_eq!(tier.suffix(), *suffix);
+            assert_eq!(tier.bytes(), *bytes);
+        }
+        assert_eq!(FloatTier::F16.suffix(), "f16");
+        assert_eq!(FloatTier::Bf16.bytes(), 2);
+    }
+
+    #[test]
+    fn runtime_dispatch_monomorphizes_every_tier() {
+        use super::{FloatSlice, FloatSliceMut};
+        use unary::ops::gelu_f32::Gelu;
+        // 同一入口按运行时精度档分派到单态化核：f32 基准 + 三个非 f32 档对拍容差内。
+        let xs = [-2.0_f64, -0.5, 0.0, 0.7, 1.5, 3.0];
+        let a32: Vec<f32> = xs.iter().map(|&v| v as f32).collect();
+        let mut want = vec![0.0_f32; xs.len()];
+        unary::dispatch::<Gelu>(FloatSlice::F32(&a32), FloatSliceMut::F32(&mut want)).unwrap();
+
+        let a64: Vec<f64> = xs.to_vec();
+        let mut got64 = vec![0.0_f64; xs.len()];
+        unary::dispatch::<Gelu>(FloatSlice::F64(&a64), FloatSliceMut::F64(&mut got64)).unwrap();
+        assert_close(&got64, &want, 1e-6);
+
+        let a16: Vec<half::f16> = xs.iter().map(|&v| half::f16::from_f64(v)).collect();
+        let mut got16 = vec![half::f16::ZERO; xs.len()];
+        unary::dispatch::<Gelu>(FloatSlice::F16(&a16), FloatSliceMut::F16(&mut got16)).unwrap();
+        assert_close(&got16, &want, 2e-2);
+
+        let abf: Vec<half::bf16> = xs.iter().map(|&v| half::bf16::from_f64(v)).collect();
+        let mut gotbf = vec![half::bf16::ZERO; xs.len()];
+        unary::dispatch::<Gelu>(FloatSlice::Bf16(&abf), FloatSliceMut::Bf16(&mut gotbf)).unwrap();
+        assert_close(&gotbf, &want, 5e-2);
+    }
+
+    #[test]
+    fn runtime_dispatch_rejects_mismatched_tiers() {
+        use super::{FloatSlice, FloatSliceMut};
+        use unary::ops::gelu_f32::Gelu;
+        let a32 = [0.5_f32, 1.0];
+        let mut out16 = [half::f16::ZERO; 2];
+        // 输入 f32、输出 f16：错档在入口一次 match 的兜底臂被挡回。
+        assert!(
+            unary::dispatch::<Gelu>(FloatSlice::F32(&a32), FloatSliceMut::F16(&mut out16)).is_err()
+        );
     }
 }

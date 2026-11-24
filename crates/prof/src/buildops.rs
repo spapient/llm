@@ -83,10 +83,7 @@ fn scan(
 ///
 /// 档名取 `<算法>_<档>`：算法名是 `[op].name`（缺省文件名）去掉既有 `_<档>` 后缀。每档把
 /// `[op].name` 设为展开名、所有 `dt` 数组里的精度 token 替换为本档，其余声明逐字共享。
-fn expand_tiers(
-    name: &str,
-    table: &toml::Table,
-) -> diagnostic::Result<Vec<(String, toml::Table)>> {
+fn expand_tiers(name: &str, table: &toml::Table) -> diagnostic::Result<Vec<(String, toml::Table)>> {
     let tiers = table
         .get("op")
         .and_then(|value| value.as_table())
@@ -104,9 +101,9 @@ fn expand_tiers(
     let algo = algo.rsplit_once('_').map_or(algo, |(head, _)| head);
     let mut out = Vec::new();
     for tier in tiers {
-        let tier = tier.as_str().unwrap_or_else(|| {
-            fail(format!("`{name}.toml` 的 tiers 元素必须是字符串档名"))
-        });
+        let tier = tier
+            .as_str()
+            .unwrap_or_else(|| fail(format!("`{name}.toml` 的 tiers 元素必须是字符串档名")));
         let mut expanded = table.clone();
         substitute_dt(&mut expanded, tier);
         if let Some(op) = expanded.get_mut("op").and_then(|v| v.as_table_mut()) {
