@@ -2,7 +2,7 @@
 //!
 //! [`Kernel`] 自带 `.k` 正文发射（[`Kernel::emit_k`]）；本模块只做三件事：把 `Write::Map` /
 //! `Write::Reduce` 映射成 [`Lower`] 形态、把 `.k` 正文解析成 [`Signature`]，再经
-//! [`Codegen::lower`] 交给 vendor 后端。样本由调用方在派发时给出，桥本身与样本无关——它回答的是
+//! `Codegen::lower` 交给 vendor 后端。样本由调用方在派发时给出，桥本身与样本无关——它回答的是
 //! 「这段 typed IR 该降成什么形态、长成什么 `.k` 文本」，不回答「这一份具体跑多长」。
 
 use crate::backend::Lower;

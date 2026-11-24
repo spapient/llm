@@ -1,7 +1,7 @@
 //! 算子实例几何：把窗口、步长、分组、批空间这些**运行时参数**从算子名里拆出来。
 //!
 //! 本文件只留静态规格（`EPS`/`MOMENTUM`/[`Running`]/[`Geometry`]/`DECLARED`）与方法分派；
-//! 形状核对与窗口几何在 [`shapes`]，逐变体前向/反向数值微核在 [`kernels`]。
+//! 形状核对与窗口几何在 `shapes`，逐变体前向/反向数值微核在 `kernels`。
 use diagnostic::{Code, Error, Result};
 use nn::conv::{AdaptiveAvgPool2d, AvgPool2d, Conv2d, Interpolate, MaxPool1d, MaxPool2d, Sampler};
 use nn::kernel::norm::{BatchNorm2d, GroupNorm, LayerNorm};

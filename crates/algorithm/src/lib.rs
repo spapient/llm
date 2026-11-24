@@ -181,7 +181,7 @@ const fn f(name: &'static str, wiring: Wiring) -> Family {
 /// 还缺什么。缺的是什么必须具名，而且分三种，因为三种的补法完全不同：
 ///
 /// - [`Blocked::Operator`]：算子层没有（要在 `nn` 注册表登记 + `prof` 档案语料 + 内核模板），[`ledger`] 会用
-///   [`nn::builtin_named`] 复核——声明挡住了而算子其实已经存在时，台账就是过期了，测试会失败。
+///   `nn::builtin_named` 复核——声明挡住了而算子其实已经存在时，台账就是过期了，测试会失败。
 /// - [`Blocked::Layer`]：算子有，但 `nn` 里没有能承载它的层，几何喂不进去。
 /// - [`Blocked::Geometry`]：层与算子都有，但这一族的某条路径与现有几何冲突（例如 MLA 的
 ///   `d_c + d_h^R` 不是头宽整数倍，`AttentionBlock` 的 `kv_width % head_dim == 0` 直接拒收）。

@@ -13,7 +13,7 @@ use diagnostic::Result;
 
 /// 集合通信的调度优先级。
 ///
-/// 判别式就是它在 [`Self::TABLE`] 里的行号（`#[repr(usize)]`）：短名与序数走同一张行表，
+/// 判别式就是它在 `TABLE` 里的行号（`#[repr(usize)]`）：短名与序数走同一张行表，
 /// 不再各写一个三臂 `match`。序数越小越先调度；优先级只决定同一批次里集合操作的排队顺序，
 /// 不改变任何归约数值。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]

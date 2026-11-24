@@ -78,7 +78,7 @@ impl FileRemote {
         self.read(rank)
     }
 
-    /// 把组内归约写进调用方给的缓冲；长度必须等于归约宽度。与 [`Local::reduce_into`] 同口径。
+    /// 把组内归约写进调用方给的缓冲；长度必须等于归约宽度。与 `Local::reduce_into` 同口径。
     ///
     /// # Errors
     ///
