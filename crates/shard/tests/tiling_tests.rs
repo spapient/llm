@@ -270,3 +270,20 @@ fn split_rejects_length_mismatch_and_rank_out_of_range() {
         "份下标 2 越出 0..2"
     );
 }
+
+
+#[test]
+fn split_into_reuses_capacity_and_never_exposes_a_partial_shard() {
+    let tiling = Tiling::new(Sharding::Row, 2, 2, 4).expect("整除");
+    let full: Vec<i32> = (0..8).collect();
+    let mut local = Vec::with_capacity(4);
+    let capacity = local.capacity();
+    tiling.split_into(0, &full, &mut local).expect("首份");
+    assert_eq!(local, [0, 1, 4, 5]);
+    tiling.split_into(1, &full, &mut local).expect("次份");
+    assert_eq!(local, [2, 3, 6, 7]);
+    assert_eq!(local.capacity(), capacity, "复用时不应重新分配");
+
+    assert!(tiling.split_into(0, &full[..7], &mut local).is_err());
+    assert!(local.is_empty(), "失败不能留下旧值或半份新值");
+}

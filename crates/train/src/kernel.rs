@@ -114,7 +114,7 @@ struct Entry {
     run: fn(&[View<'_>], &mut ViewMut<'_>) -> Result<()>,
 }
 
-/// 稠密自注意力内核入口：`q/k/v` 是二维只读视图，几何从视图形状取，结果写进调用方缓冲。
+/// 三类注意力共享同一函数指针签名；具体几何由各适配路由负责。
 type AttentionKernel = fn(
     tensor::View<'_, f32>,
     tensor::View<'_, f32>,
@@ -122,147 +122,61 @@ type AttentionKernel = fn(
     &mut [f32],
 ) -> Result<()>;
 
-/// decode 注意力内核入口：`q/k/v` 是二维只读视图，查询/历史行数与头宽从视图形状取。
-type DecodeKernel = fn(
-    tensor::View<'_, f32>,
-    tensor::View<'_, f32>,
-    tensor::View<'_, f32>,
-    &mut [f32],
-) -> Result<()>;
-
-/// 量化 GEMV 适配：`[x: f32, w: u8, scales: f32] → y: f32`。三档位宽同一条形参表，
-/// 只差一行算术入口，因此适配只写一份。
-macro_rules! quant_gemv {
-    ($($run:ident),* $(,)?) => {$(
-        pub(crate) fn $run(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
-            let (x, w, scales) = <(f32, u8, f32) as Inputs>::unpack(inputs, stringify!($run))?;
-            nn::$run::forward(
-                tensor::View::one(x),
-                w,
-                tensor::View::one(scales),
-                output_slice::<f32>(stringify!($run), output)?,
-            )
-        }
-    )*};
-}
-
-quant_gemv!(gemv_i2, gemv_i4, gemv_i8);
-
-/// 自注意力三路适配的公共几何：头宽取声明宽度，`heads` 由 q 长按头宽分段；两版只差算术入口。
-fn attention_paths(
-    inputs: &[View<'_>],
-    output: &mut ViewMut<'_>,
-    run: AttentionKernel,
-) -> Result<()> {
+/// 稠密注意力几何：头宽取声明宽度，行数由 q 长按头宽分段。
+fn attention_paths(inputs: &[View<'_>], output: &mut ViewMut<'_>, run: AttentionKernel) -> Result<()> {
     let (q, k, v) = <(f32, f32, f32) as Inputs>::unpack(inputs, "attention_f32")?;
     let out = output_slice::<f32>("attention_f32", output)?;
     let d = nn::conv::attention::MODEL.shape.1;
     let s = batches("attention_f32", q.len(), d)?;
-    let (qv, kv, vv) = tensor::View::matrix_triple(s, d, q, k, v)?;
-    run(qv, kv, vv, out)
+    let (q, k, v) = tensor::View::matrix_triple(s, d, q, k, v)?;
+    run(q, k, v, out)
 }
 
-/// `[q, k, v: f32] → y: f32`：尺寸由声明宽度推导；算术走稠密分块 tile。
-pub(crate) fn attention_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
-    attention_paths(inputs, output, nn::conv::attention::forward)
-}
-
-/// 同形参，走 online softmax 版（`nn::conv::attention::flash_forward`）。
-pub(crate) fn flash_attention_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
-    attention_paths(inputs, output, nn::conv::attention::flash_forward)
-}
-
-/// decode 注意力适配的公共几何：`q_rows` 由 q 长、`hist` 由 k 长按头宽 `d` 推出。
-fn decode_paths(inputs: &[View<'_>], output: &mut ViewMut<'_>, run: DecodeKernel) -> Result<()> {
+/// decode 几何：查询与历史行数分别按声明头宽反推。
+fn decode_paths(inputs: &[View<'_>], output: &mut ViewMut<'_>, run: AttentionKernel) -> Result<()> {
     let (q, k, v) = <(f32, f32, f32) as Inputs>::unpack(inputs, "decode_attention_f32")?;
     let out = output_slice::<f32>("decode_attention_f32", output)?;
     let d = nn::conv::decode_attention::MODEL.shape.1;
-    let (q_rows, hist) = decode_geom(q.len(), k.len(), d)?;
-    let (qv, kv, vv) = decode_triple(q, k, v, q_rows, hist, d)?;
-    run(qv, kv, vv, out)
-}
-
-/// decode 几何：查询行数与历史行数各按头宽反推。
-fn decode_geom(q_len: usize, k_len: usize, d: usize) -> Result<(usize, usize)> {
-    let q_rows = batches("decode_attention_f32", q_len, d)?;
-    let hist = batches("decode_attention_f32", k_len, d)?;
-    Ok((q_rows, hist))
-}
-
-/// decode 三视图：`q` 是 `q_rows×d`，`k/v` 是 `hist×d`。
-fn decode_triple<'a>(
-    q: &'a [f32],
-    k: &'a [f32],
-    v: &'a [f32],
-    q_rows: usize,
-    hist: usize,
-    d: usize,
-) -> Result<(
-    tensor::View<'a, f32>,
-    tensor::View<'a, f32>,
-    tensor::View<'a, f32>,
-)> {
-    Ok((
-        tensor::View::matrix(q_rows, d, q)?,
+    let qr = batches("decode_attention_f32", q.len(), d)?;
+    let hist = batches("decode_attention_f32", k.len(), d)?;
+    run(
+        tensor::View::matrix(qr, d, q)?,
         tensor::View::matrix(hist, d, k)?,
         tensor::View::matrix(hist, d, v)?,
-    ))
+        out,
+    )
 }
 
-/// decode 注意力：`q/k/v → out`。
-pub(crate) fn decode_attention_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
-    decode_paths(inputs, output, nn::conv::attention::decode_forward)
-}
-
-/// 同 decode 几何，走 online softmax 版 `nn::conv::attention::decode_flash_forward`。
-pub(crate) fn decode_flash_attention_f32(
-    inputs: &[View<'_>],
-    output: &mut ViewMut<'_>,
-) -> Result<()> {
-    decode_paths(inputs, output, nn::conv::attention::decode_flash_forward)
-}
-
-/// 潜空间注意力适配：`[q, k, v: f32] → y: f32`，行宽取声明宽度，输出宽由输出长度反推。
-///
-/// 与 `attention_f32` 的区别只有输出宽可以更窄（上投影折在口径差里），所以适配层不做任何
-/// 头数/压缩比的假设——全部几何都由张量长度与声明宽度给出。
+/// 潜空间注意力：读宽取声明宽度，写宽由输出长度决定。
 pub(crate) fn latent_attention_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
     let (q, k, v) = <(f32, f32, f32) as Inputs>::unpack(inputs, "latent_attention_f32")?;
     let out = output_slice::<f32>("latent_attention_f32", output)?;
     let w = nn::conv::attention::latent::MODEL.shape.1;
-    let (r, t) = latent_geom(q.len(), k.len(), w)?;
-    let (qv, kv) = row_pair(q, k, r, t, w)?;
-    nn::conv::attention::latent_forward(qv, kv, v, out)
-}
-
-/// 潜空间几何：查询行数与键行数各按行宽反推。
-fn latent_geom(q_len: usize, k_len: usize, w: usize) -> Result<(usize, usize)> {
-    let r = batches("latent_attention_f32", q_len, w)?;
-    let t = batches("latent_attention_f32", k_len, w)?;
-    Ok((r, t))
-}
-
-/// 两条同宽行主序视图：`a` 是 `ra×w`、`b` 是 `rb×w`。
-fn row_pair<'a>(
-    a: &'a [f32],
-    b: &'a [f32],
-    ra: usize,
-    rb: usize,
-    w: usize,
-) -> Result<(tensor::View<'a, f32>, tensor::View<'a, f32>)> {
-    Ok((
-        tensor::View::matrix(ra, w, a)?,
-        tensor::View::matrix(rb, w, b)?,
-    ))
+    let r = batches("latent_attention_f32", q.len(), w)?;
+    let t = batches("latent_attention_f32", k.len(), w)?;
+    nn::conv::attention::latent_forward(
+        tensor::View::matrix(r, w, q)?,
+        tensor::View::matrix(t, w, k)?,
+        v,
+        out,
+    )
 }
 
 /// 单行内核声明的适配器：声明种类决定拆包与调用形态，自定义函数只登记表项。
 macro_rules! kernel_adapter {
-    (unary!($run:ident => $module:ident)) => {
+    (unary!($run:ident => $($module:ident)::+)) => {
+        fn $run(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+            let (a,) = <(f32,) as Inputs>::unpack(inputs, stringify!($run))?;
+            nn::$($module)::+::forward(
+                tensor::View::one(a), output_slice::<f32>(stringify!($run), output)?,
+            )
+        }
+    };
+    (configured!($run:ident => $module:ident; $($arg:expr),*)) => {
         fn $run(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
             let (a,) = <(f32,) as Inputs>::unpack(inputs, stringify!($run))?;
             nn::$module::forward(
-                tensor::View::one(a),
+                $($arg,)* tensor::View::one(a),
                 output_slice::<f32>(stringify!($run), output)?,
             )
         }
@@ -271,19 +185,30 @@ macro_rules! kernel_adapter {
         fn $run(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
             let (a, b) = <(f32, f32) as Inputs>::unpack(inputs, stringify!($run))?;
             nn::$run::forward(
-                tensor::View::one(a),
-                tensor::View::one(b),
+                tensor::View::one(a), tensor::View::one(b),
                 output_slice::<f32>(stringify!($run), output)?,
             )
         }
     };
-    (norm!($run:ident => $module:ident)) => {
+    (norm!($run:ident => $($module:ident)::+)) => {
         fn $run(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
             let (x, gamma, beta) = <(f32, f32, f32) as Inputs>::unpack(inputs, stringify!($run))?;
-            nn::$module::forward(
-                tensor::View::one(x),
-                tensor::View::one(gamma),
-                tensor::View::one(beta),
+            nn::$($module)::+::forward(
+                tensor::View::one(x), tensor::View::one(gamma), tensor::View::one(beta),
+                output_slice::<f32>(stringify!($run), output)?,
+            )
+        }
+    };
+    (attention!($run:ident => $route:ident, $kernel:path)) => {
+        fn $run(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+            $route(inputs, output, $kernel)
+        }
+    };
+    (quant!($run:ident)) => {
+        fn $run(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+            let (x, w, scales) = <(f32, u8, f32) as Inputs>::unpack(inputs, stringify!($run))?;
+            nn::$run::forward(
+                tensor::View::one(x), w, tensor::View::one(scales),
                 output_slice::<f32>(stringify!($run), output)?,
             )
         }
@@ -296,8 +221,7 @@ macro_rules! kernel_adapter {
             let rows = batches(stringify!($run), out.len(), m)?;
             nn::$run::forward(
                 tensor::View::matrix(m, $div, a)?,
-                tensor::View::matrix($div, rows, b)?,
-                out,
+                tensor::View::matrix($div, rows, b)?, out,
             )
         }
     };
@@ -310,11 +234,13 @@ macro_rules! kernel_adapter {
             nn::$run::forward(a, b, m, rows, out)
         }
     };
-    (dequant!($run:ident, $lane:ty)) => {
+    (dequant!($run:ident, u8)) => {
         fn $run(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
-            let (q,) = <($lane,) as Inputs>::unpack(inputs, stringify!($run))?;
-            let out = output_slice::<f32>(stringify!($run), output)?;
-            nn::$run::forward(nn::$run::SCALE, nn::$run::ZERO, q, out)
+            let (q,) = <(u8,) as Inputs>::unpack(inputs, stringify!($run))?;
+            nn::$run::forward(
+                nn::$run::SCALE, nn::$run::ZERO, q,
+                output_slice::<f32>(stringify!($run), output)?,
+            )
         }
     };
     (no_scalar!($run:ident => $dtype:expr)) => {
@@ -338,23 +264,23 @@ kernels!(
     unary!(abs_f32 => abs_f32),
     unary!(adaptive_pool_f32 => adaptive_pool),
     binary!(add_f32),
-    custom!(attention_f32),
+    attention!(attention_f32 => attention_paths, nn::conv::attention::forward),
     unary!(avg_pool2d_f32 => avg_pool2d),
     norm!(batch_norm_f32 => batch_norm),
     unary!(ceil_f32 => ceil_f32),
-    custom!(clamp_f32),
-    custom!(conv2d_f32),
+    configured!(clamp_f32 => clamp_f32; nn::clamp_f32::LO, nn::clamp_f32::HI),
+    norm!(conv2d_f32 => conv::conv2d),
     unary!(cos_f32 => cos_f32),
-    custom!(decode_attention_f32),
-    custom!(decode_flash_attention_f32),
+    attention!(decode_attention_f32 => decode_paths, nn::conv::attention::decode_forward),
+    attention!(decode_flash_attention_f32 => decode_paths, nn::conv::attention::decode_flash_forward),
     dequant!(dequant_i2, u8),
     dequant!(dequant_i4, u8),
-    custom!(dequant_i8),
+    configured!(dequant_i8 => dequant_i8; nn::dequant_i8::SCALE, nn::dequant_i8::ZERO),
     binary!(div_f32),
     binary!(embed_f32),
     unary!(exp2_f32 => exp2_f32),
     unary!(exp_f32 => exp_f32),
-    custom!(flash_attention_f32),
+    attention!(flash_attention_f32 => attention_paths, nn::conv::attention::flash_forward),
     unary!(floor_f32 => floor_f32),
     unary!(gelu_f32 => gelu_f32),
     gemm!(gemm_f32, f32, nn::gemm_f32::K),
@@ -362,9 +288,9 @@ kernels!(
     gemm!(gemm_i4, u8, nn::gemm_i4::K / 2),
     gemm!(gemm_i8, u8, nn::gemm_i8::K),
     custom!(gemv_f32),
-    custom!(gemv_i2),
-    custom!(gemv_i4),
-    custom!(gemv_i8),
+    quant!(gemv_i2),
+    quant!(gemv_i4),
+    quant!(gemv_i8),
     norm!(group_norm_f32 => group_norm),
     unary!(hard_sigmoid_f32 => hard_sigmoid_f32),
     norm!(instance_norm_f32 => instance_norm),
@@ -390,7 +316,7 @@ kernels!(
     binary!(remainder_f32),
     binary!(residual_add_f32),
     binary!(rmsnorm_f32),
-    custom!(rope_f32),
+    configured!(rope_f32 => rope_f32; 7),
     unary!(round_f32 => round_f32),
     unary!(rsqrt_f32 => rsqrt_f32),
     unary!(scale_f32 => scale_f32),
@@ -406,17 +332,6 @@ kernels!(
     unary!(tanh_f32 => tanh_f32),
     unary!(trunc_f32 => trunc_f32),
 );
-
-/// 二维卷积适配：`[x, weight, bias] → y`，声明档单样本几何由算子模块定。
-fn conv2d_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
-    let (x, weight, bias) = <(f32, f32, f32) as Inputs>::unpack(inputs, "conv2d_f32")?;
-    nn::conv::conv2d::forward(
-        tensor::View::one(x),
-        tensor::View::one(weight),
-        tensor::View::one(bias),
-        output_slice::<f32>("conv2d_f32", output)?,
-    )
-}
 
 /// 稠密向量投影：输入列表按算子操作数声明 `[weights, x]` 排列。
 fn gemv_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {

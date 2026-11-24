@@ -397,13 +397,11 @@ fn prepare(
 
 /// 判据：每调用耗时是多少；不回答"样本够不够多"——p50/p95 缺失时退回 min，不把缺项变成第二个失败条件。
 fn timings(outcome: &runner::Outcome) -> diagnostic::Result<(f64, f64, f64)> {
-    let per_run_ns = outcome
+    let summary = outcome
         .timing
-        .min_ns()
+        .summary()
         .ok_or_else(|| Error::new(Code::Internal, "内核没有报告可用的计时样本"))?;
-    let p50_ns = outcome.timing.p50_ns().unwrap_or(per_run_ns);
-    let p95_ns = outcome.timing.p95_ns().unwrap_or(per_run_ns);
-    Ok((per_run_ns, p50_ns, p95_ns))
+    Ok((summary.min_ns, summary.p50_ns, summary.p95_ns))
 }
 
 /// 判据：达成率与它的口径各是什么；不回答"实现该怎么改"——它只摊开数，不给建议。

@@ -101,7 +101,7 @@ fn check_reshape(g: Geometry, lens: &[usize], out: usize) -> Result<()> {
         Geometry::Interp {
             oh, ow, h, w, c, ..
         } => check_spatial_reshape(lens, out, (oh, ow), (h, w, c), "插值"),
-        _ => unreachable!("reshape 只接收自适应池化或插值几何"),
+        _ => Err(internal("reshape 只接收自适应池化或插值几何").with("train::Geometry::check_reshape")),
     }
 }
 
@@ -376,6 +376,11 @@ pub(crate) fn norm_group(
 /// 几何不符的统一报错。
 pub(crate) fn invalid(message: impl Into<String>) -> Error {
     Error::new(Code::Invalid, message.into())
+}
+
+/// 分派闭环外的兜底：几何变体不该进入这一级路由。
+pub(crate) fn internal(message: impl Into<String>) -> Error {
+    Error::new(Code::Internal, message.into())
 }
 
 /// 形状核对：不符时把实际值带上，避免只报一句"形状不对"。

@@ -298,32 +298,9 @@ fn check_affine(
     geometry: Option<Geometry>,
     loss: impl Fn(&[f32], &[f32], &[f32]) -> f32,
 ) -> Result<()> {
-    let mut tape = Tape::new();
-    let x = tape.parameter();
-    let g = tape.parameter();
-    let b = tape.parameter();
-    let y = tape.record(op, &[x, g, b]).expect("记录 y");
-    let out = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
-    let sizes = support::sizes_of(
-        &tape,
-        &[
-            (x, x0.len()),
-            (g, g0.len()),
-            (b, b0.len()),
-            (y, total),
-            (out, 1),
-        ],
-    );
-    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
-    session.register_parameter(x, ParamRole::Trainable, x0.to_vec())?;
-    session.register_parameter(g, ParamRole::Trainable, g0.to_vec())?;
-    session.register_parameter(b, ParamRole::Trainable, b0.to_vec())?;
-    match geometry {
-        Some(geometry) => session
-            .bufs()
-            .compute_shaped_step(op, &[x, g, b], y, geometry)?,
-        None => session.bufs().compute_step(op, &[x, g, b], y)?,
-    }
+    let (mut session, params, y, out) =
+        parameter_session(op, &[x0, g0, b0], total, geometry)?;
+    let (x, g, b) = (params[0], params[1], params[2]);
     sum_backward(&mut session, y, out)?;
 
     let f = &loss;
@@ -372,15 +349,9 @@ fn check_geometry_grad(
     x0: &[f32],
     loss: impl Fn(&[f32]) -> f32,
 ) -> Result<()> {
-    let total = geometry.outputs();
-    let mut tape = Tape::new();
-    let p = tape.parameter();
-    let y = tape.record(op, &[p]).expect("记录 y");
-    let out = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
-    let sizes = support::sizes_of(&tape, &[(p, x0.len()), (y, total), (out, 1)]);
-    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
-    session.register_parameter(p, ParamRole::Trainable, x0.to_vec())?;
-    session.bufs().compute_shaped_step(op, &[p], y, geometry)?;
+    let (mut session, params, y, out) =
+        parameter_session(op, &[x0], geometry.outputs(), Some(geometry))?;
+    let p = params[0];
     sum_backward(&mut session, y, out)?;
     check_grad(
         session.bufs().gradient(p).expect("参数梯度应在场"),

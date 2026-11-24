@@ -55,10 +55,10 @@ fn dict_payload_has_stable_wire_bytes() {
 }
 
 #[test]
-fn dictionary_indices_roundtrip_at_every_width_boundary() {
+fn dictionary_idxs_roundtrip_at_every_width_boundary() {
     for unique in [1usize, 256, 257, 65_536, 65_537] {
         let weights: Vec<f32> = (0..unique * 2)
-            .map(|index| f32::from_bits((index % unique) as u32))
+            .map(|idx| f32::from_bits((idx % unique) as u32))
             .collect();
         let payload = dict_payload(&weights).expect("重复输入必须可用字典");
         let decoded = decode_dict(&mut Cursor::new(&payload), weights.len()).expect("字典解码");
@@ -73,7 +73,7 @@ fn dictionary_indices_roundtrip_at_every_width_boundary() {
 }
 
 #[test]
-fn dictionary_rejects_an_unknown_index_width() {
+fn dictionary_rejects_an_unknown_idx_width() {
     let mut bytes = vec![0]; // store 标记
     for word in [3u32, 1, 0, 0] {
         bytes.extend_from_slice(&word.to_le_bytes());

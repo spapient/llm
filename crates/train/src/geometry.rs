@@ -209,11 +209,7 @@ const DECLARED: &[(&str, Geometry)] = declared_geometries! {
 
 mod kernels;
 mod shapes;
-use kernels::{
-    backward_adaptive, backward_avg2d, backward_conv2d, backward_group, backward_interp,
-    backward_layer, backward_norm, backward_pool1d, backward_pool2d,
-};
-use shapes::{Window, invalid, norm_outputs, pool_len, spatial_outputs};
+use shapes::{invalid, norm_outputs, pool_len, spatial_outputs};
 
 // ---- 方法分派：形状核对 + 逐变体路由 -----------------------------------------
 impl Geometry {
@@ -337,59 +333,7 @@ impl Geometry {
             &inputs.iter().map(Vec::len).collect::<Vec<_>>(),
             incoming.len(),
         )?;
-        match self {
-            Self::Pool1d { k, s, p, l, c } => backward_pool1d(inputs, incoming, k, s, p, l, c),
-            Self::Pool2d { k, s, p, h, w, c } => {
-                backward_pool2d(inputs, incoming, Window { k, s, p }, (h, w, c))
-            }
-            Self::Avg2d {
-                k,
-                s,
-                p,
-                h,
-                w,
-                c,
-                count_include_pad,
-            } => backward_avg2d(
-                inputs,
-                incoming,
-                Window { k, s, p },
-                (h, w, c),
-                count_include_pad,
-            ),
-            Self::Adaptive { oh, ow, h, w, c } => {
-                backward_adaptive(inputs, incoming, oh, ow, h, w, c)
-            }
-            Self::Interp {
-                oh,
-                ow,
-                h,
-                w,
-                c,
-                linear,
-            } => backward_interp(inputs, incoming, (oh, ow), (h, w, c), linear),
-            Self::Norm {
-                n,
-                spatial,
-                channels,
-            } => backward_norm(inputs, incoming, n, spatial, channels),
-            Self::Group {
-                groups,
-                n,
-                spatial,
-                channels,
-            } => backward_group(inputs, incoming, groups, n, spatial, channels),
-            Self::Layer { rows, width } => backward_layer(inputs, incoming, rows, width),
-            Self::Conv2d {
-                k,
-                s,
-                p,
-                h,
-                w,
-                cin,
-                cout,
-            } => backward_conv2d(inputs, incoming, Window { k, s, p }, (h, w, cin, cout)),
-        }
+        kernels::backward(self, inputs, incoming)
     }
 }
 

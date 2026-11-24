@@ -2,9 +2,9 @@
 //! safetensors 的两种后端（[`safetensors::Archive`] 借用整份字节、[`safetensors::File`] 只读头部）。
 //!
 //! **拥有**：`Header`/`Entry`/`Reader`/`Loader` 三条契约，`safetensors` 的两种后端，自有的 `.u`
-//! 容器 v2（`writer`/`archive`/`seg`/`proof`/`rans`；CRC/LEB/Sink 已归 L1 `wire`）、量化方案
-//! `quant`/`ptq`，外部格式只读适配（`gguf`/`json`/`torch` 公开，`pickle`/`zip`/`dequant` 为
-//! crate 私有），以及“外部格式 → 中性段流”的桥接（`archive::import`）。
+//! 容器 v2（`container`/`writer`/`archive`/`seg`/`codec`；CRC/LEB/Sink 已归 L1 `wire`）、量化方案
+//! `quant`/`ptq`，外部格式只读适配（`torch` 含 ZIP/pickle 解码、`gguf` 含量化块反量化、`json`），
+//! 以及“外部格式 → 中性段流”的桥接（`archive::import`）。
 //! **不拥有**：dtype 闭集（`dtype`）、张量元数据（`tensor`）、物理布局（`storage`）。
 //! **依赖**：`dtype`、`diagnostic`、`tensor`、`wire`（`storage` 经可选 `mmap` feature
 //! 引入，只在 Unix 上提供映射源；`+dev`：`testkit`）。

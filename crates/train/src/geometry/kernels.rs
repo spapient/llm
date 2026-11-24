@@ -1,6 +1,6 @@
 //! 数值微核：各经典算子变体的前向/反向参考实现（梯度对拍基准）。
 
-use super::shapes::{Window, bounds, norm_group, pool_len, pool2d_out, square, window1d, window2d};
+use super::shapes::{internal, Window, bounds, norm_group, pool_len, pool2d_out, square, window1d, window2d};
 use crate::geometry::{EPS, Geometry, MOMENTUM, Running};
 use diagnostic::Result;
 use nn::conv::{AdaptiveAvgPool2d, AvgPool2d, Conv2d, Interpolate, MaxPool1d, MaxPool2d, Sampler};
@@ -93,7 +93,7 @@ fn forward_pool(g: Geometry, inputs: &[&[f32]], out: &mut [f32]) -> Result<()> {
             }
             .forward(inputs[0], n, h, w, c, out)
         }
-        _ => unreachable!("pool 只接收池化几何"),
+        _ => Err(internal("pool 只接收池化几何").with("train::Geometry::forward_pool")),
     }
 }
 
@@ -120,7 +120,7 @@ fn forward_reshape(g: Geometry, inputs: &[&[f32]], out: &mut [f32]) -> Result<()
             };
             Interpolate { sampler, oh, ow }.forward(inputs[0], n, h, w, c, out)
         }
-        _ => unreachable!("reshape 只接收自适应池化或插值几何"),
+        _ => Err(internal("reshape 只接收自适应池化或插值几何").with("train::Geometry::forward_reshape")),
     }
 }
 
@@ -523,4 +523,100 @@ pub(crate) fn backward_conv2d(
         &mut dbias,
     )?;
     Ok(vec![dx, dweight, dbias])
+}
+
+// ---- 反向路由 ---------------------------------------------------------------
+
+/// 反向总路由：归一化族直连微核，其余空间算子进二级路由。
+pub(crate) fn backward(
+    g: Geometry,
+    inputs: &[Vec<f32>],
+    incoming: &[f32],
+) -> Result<Vec<Vec<f32>>> {
+    match g {
+        Geometry::Norm {
+            n,
+            spatial,
+            channels,
+        } => backward_norm(inputs, incoming, n, spatial, channels),
+        Geometry::Group {
+            groups,
+            n,
+            spatial,
+            channels,
+        } => backward_group(inputs, incoming, groups, n, spatial, channels),
+        Geometry::Layer { rows, width } => backward_layer(inputs, incoming, rows, width),
+        _ => backward_spatial(g, inputs, incoming),
+    }
+}
+
+/// 空间算子二级路由：reshape/卷积与池化各自只处理自己的闭集。
+fn backward_spatial(
+    g: Geometry,
+    inputs: &[Vec<f32>],
+    incoming: &[f32],
+) -> Result<Vec<Vec<f32>>> {
+    match g {
+        Geometry::Adaptive { oh, ow, h, w, c } => {
+            backward_adaptive(inputs, incoming, oh, ow, h, w, c)
+        }
+        Geometry::Interp {
+            oh,
+            ow,
+            h,
+            w,
+            c,
+            linear,
+        } => backward_interp(inputs, incoming, (oh, ow), (h, w, c), linear),
+        Geometry::Conv2d {
+            k,
+            s,
+            p,
+            h,
+            w,
+            cin,
+            cout,
+        } => backward_conv2d(
+            inputs,
+            incoming,
+            Window { k, s, p },
+            (h, w, cin, cout),
+        ),
+        _ => backward_pool(g, inputs, incoming),
+    }
+}
+
+/// 池化反向：1D/2D 最大池与平均池各自投影到对应微核。
+fn backward_pool(
+    g: Geometry,
+    inputs: &[Vec<f32>],
+    incoming: &[f32],
+) -> Result<Vec<Vec<f32>>> {
+    match g {
+        Geometry::Pool1d { k, s, p, l, c } => {
+            backward_pool1d(inputs, incoming, k, s, p, l, c)
+        }
+        Geometry::Pool2d { k, s, p, h, w, c } => backward_pool2d(
+            inputs,
+            incoming,
+            Window { k, s, p },
+            (h, w, c),
+        ),
+        Geometry::Avg2d {
+            k,
+            s,
+            p,
+            h,
+            w,
+            c,
+            count_include_pad,
+        } => backward_avg2d(
+            inputs,
+            incoming,
+            Window { k, s, p },
+            (h, w, c),
+            count_include_pad,
+        ),
+        _ => Err(internal("池化反向只接收池化几何").with("train::Geometry::backward_pool")),
+    }
 }

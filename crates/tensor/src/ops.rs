@@ -12,8 +12,8 @@ pub trait Abs: Default {
     /// 返回非负绝对值；有符号整数最小值饱和到最大值。
     fn abs(self) -> Self;
 
-    /// 判断 `|self - rhs| <= eps`，整数减法不得溢出。
-    fn abs_diff_le(self, rhs: Self, eps: Self) -> bool;
+    /// 判断 `|self - rhs| <= tolerance`，整数减法不得溢出。
+    fn abs_diff_le(self, rhs: Self, tolerance: Self) -> bool;
 }
 
 macro_rules! float_abs {
@@ -24,8 +24,8 @@ macro_rules! float_abs {
                     if self < Self::default() { -self } else { self }
                 }
 
-                fn abs_diff_le(self, rhs: Self, eps: Self) -> bool {
-                    (self - rhs).abs() <= eps
+                fn abs_diff_le(self, rhs: Self, tolerance: Self) -> bool {
+                    (self - rhs).abs() <= tolerance
                 }
             }
         )+
@@ -40,9 +40,9 @@ macro_rules! signed_abs {
                     self.saturating_abs()
                 }
 
-                fn abs_diff_le(self, rhs: Self, eps: Self) -> bool {
-                    eps >= 0
-                        && (self as i128 - rhs as i128).unsigned_abs() <= eps as u128
+                fn abs_diff_le(self, rhs: Self, tolerance: Self) -> bool {
+                    tolerance >= 0
+                        && (self as i128 - rhs as i128).unsigned_abs() <= tolerance as u128
                 }
             }
         )+
@@ -57,8 +57,8 @@ macro_rules! unsigned_abs {
                     self
                 }
 
-                fn abs_diff_le(self, rhs: Self, eps: Self) -> bool {
-                    self.abs_diff(rhs) <= eps
+                fn abs_diff_le(self, rhs: Self, tolerance: Self) -> bool {
+                    self.abs_diff(rhs) <= tolerance
                 }
             }
         )+
@@ -69,6 +69,21 @@ float_abs!(f32, f64, half::f16, half::bf16);
 signed_abs!(i8, i16, i32, i64);
 unsigned_abs!(u8, u16, u32, u64);
 
+macro_rules! elementwise_binary {
+    ($name:ident, $trait:ident, $operation:ident, $doc:literal) => {
+        #[doc = $doc]
+        pub fn $name<B2: Store<K>, R2: Rank>(
+            &self,
+            rhs: &Tensor<B2, R2, K>,
+        ) -> Result<Tensor<Owned<K>, R, K>>
+        where
+            K: NumericElement + $trait<Output = K>,
+        {
+            self.zip_with(rhs, $trait::$operation)
+        }
+    };
+}
+
 impl<B, R, K> Tensor<B, R, K>
 where
     R: Rank,
@@ -76,27 +91,28 @@ where
     B: Store<K>,
 {
     /// 逐元素映射，可改变元素类型并保留原秩见证。
-    pub fn map<O, F>(&self, f: F) -> Tensor<Owned<O>, R, O>
+    pub fn map<O, F>(&self, operation: F) -> Tensor<Owned<O>, R, O>
     where
         O: Element,
         F: FnMut(K) -> O,
     {
-        self.respell(self.iter().map(f).collect())
+        self.owned_with_values(self.iter().map(operation).collect())
     }
 
     /// 对两个同形张量按逻辑序执行二元映射。
     ///
-    /// 两侧存储和秩见证可以不同，输出元素类型也可以不同；只有形状必须一致。
-    pub fn zip_with<B2, R2, O, F>(
+    /// 两侧的存储、秩见证和元素类型均可不同，输出元素类型也可不同；只有形状必须一致。
+    pub fn zip_with<B2, R2, K2, O, F>(
         &self,
-        rhs: &Tensor<B2, R2, K>,
-        mut op: F,
+        rhs: &Tensor<B2, R2, K2>,
+        mut operation: F,
     ) -> Result<Tensor<Owned<O>, R, O>>
     where
-        B2: Store<K>,
+        B2: Store<K2>,
         R2: Rank,
+        K2: Element,
         O: Element,
-        F: FnMut(K, K) -> O,
+        F: FnMut(K, K2) -> O,
     {
         if self.dims() != rhs.dims() {
             return Err(invalid(
@@ -107,54 +123,15 @@ where
         let values = self
             .iter()
             .zip(rhs.iter())
-            .map(|(left, right)| op(left, right))
+            .map(|(left, right)| operation(left, right))
             .collect();
-        Ok(self.respell(values))
+        Ok(self.owned_with_values(values))
     }
 
-    /// 逐元素加法。
-    pub fn add<B2: Store<K>, R2: Rank>(
-        &self,
-        rhs: &Tensor<B2, R2, K>,
-    ) -> Result<Tensor<Owned<K>, R, K>>
-    where
-        K: NumericElement + Add<Output = K>,
-    {
-        self.zip_with(rhs, Add::add)
-    }
-
-    /// 逐元素减法。
-    pub fn sub<B2: Store<K>, R2: Rank>(
-        &self,
-        rhs: &Tensor<B2, R2, K>,
-    ) -> Result<Tensor<Owned<K>, R, K>>
-    where
-        K: NumericElement + Sub<Output = K>,
-    {
-        self.zip_with(rhs, Sub::sub)
-    }
-
-    /// 逐元素乘法。
-    pub fn mul<B2: Store<K>, R2: Rank>(
-        &self,
-        rhs: &Tensor<B2, R2, K>,
-    ) -> Result<Tensor<Owned<K>, R, K>>
-    where
-        K: NumericElement + Mul<Output = K>,
-    {
-        self.zip_with(rhs, Mul::mul)
-    }
-
-    /// 逐元素除法，除零沿用标量语义。
-    pub fn div<B2: Store<K>, R2: Rank>(
-        &self,
-        rhs: &Tensor<B2, R2, K>,
-    ) -> Result<Tensor<Owned<K>, R, K>>
-    where
-        K: NumericElement + Div<Output = K>,
-    {
-        self.zip_with(rhs, Div::div)
-    }
+    elementwise_binary!(add, Add, add, "逐元素加法。");
+    elementwise_binary!(sub, Sub, sub, "逐元素减法。");
+    elementwise_binary!(mul, Mul, mul, "逐元素乘法。");
+    elementwise_binary!(div, Div, div, "逐元素除法，除零沿用标量语义。");
 
     /// 加标量。
     pub fn add_scalar(&self, scalar: K) -> Tensor<Owned<K>, R, K>
@@ -216,24 +193,24 @@ where
     }
 
     /// 共享极值位置实现，严格比较确保并列保留首个位置。
-    fn extreme_position(&self, replace: impl Fn(K, K) -> bool) -> Option<usize>
+    fn extreme_position(&self, should_replace: impl Fn(K, K) -> bool) -> Option<usize>
     where
         K: OrderedElement,
     {
         self.iter()
             .enumerate()
-            .reduce(|(best_index, best), (index, value)| {
-                if replace(best, value) {
-                    (index, value)
+            .reduce(|(best_idx, best), (idx, value)| {
+                if should_replace(best, value) {
+                    (idx, value)
                 } else {
-                    (best_index, best)
+                    (best_idx, best)
                 }
             })
-            .map(|(index, _)| index)
+            .map(|(idx, _)| idx)
     }
 
-    /// 判断同形张量逐元素绝对差是否不超过 `eps`，不分配临时缓冲。
-    pub fn all_close<B2: Store<K>, R2: Rank>(&self, rhs: &Tensor<B2, R2, K>, eps: K) -> bool
+    /// 判断同形张量逐元素绝对差是否不超过 `tolerance`，不分配临时缓冲。
+    pub fn all_close<B2: Store<K>, R2: Rank>(&self, rhs: &Tensor<B2, R2, K>, tolerance: K) -> bool
     where
         K: OrderedElement + Abs,
     {
@@ -241,6 +218,6 @@ where
             && self
                 .iter()
                 .zip(rhs.iter())
-                .all(|(left, right)| left.abs_diff_le(right, eps))
+                .all(|(left, right)| left.abs_diff_le(right, tolerance))
     }
 }

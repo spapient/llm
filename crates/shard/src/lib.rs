@@ -102,9 +102,6 @@ macro_rules! refuse_at {
 
 mod collective;
 mod placement;
-mod plan;
-mod policy;
-mod schedule;
 mod tiling;
 mod topology;
 
@@ -112,12 +109,9 @@ mod remote;
 
 pub use collective::{Collective, Group, Local, Reduce, ReduceScalar, Remote};
 pub use placement::{Assembler, LinearGeo, Placement};
-pub use plan::Plan;
-pub use policy::{ParallelConfig, Priority};
 pub use remote::FileRemote;
-pub use schedule::{Job, Queue};
 pub use tiling::{Sharding, Tiling};
-pub use topology::{Parallel, Topology};
+pub use topology::{Job, Parallel, ParallelConfig, Plan, Priority, Queue, Topology};
 
 pub mod config;
 pub use config::{LanguageFront, RuntimeConfig};

@@ -16,9 +16,8 @@
 
 use nn::{Contract, Linear, Stack};
 
-use crate::plan::Plan;
-use crate::policy::ParallelConfig;
 use crate::tiling::{Sharding, Tiling};
+use crate::topology::{ParallelConfig, Plan};
 use diagnostic::Result;
 
 /// 段内投影的 TP 分片计划三元组：分片布局、权重形状、行/列区间；非投影层三槽均 `None`。

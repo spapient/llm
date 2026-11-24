@@ -137,15 +137,33 @@ impl Tiling {
     ///
     /// `rank` 越出份数（复用 [`Self::range`]）；`full` 长度不等于完整形状积，或形状积溢出。
     pub fn split<T: Copy>(&self, rank: usize, full: &[T]) -> Result<Vec<T>> {
+        let mut local = Vec::new();
+        self.split_into(rank, full, &mut local)?;
+        Ok(local)
+    }
+
+    /// 取第 `rank` 份并写入调用方缓冲；先清空旧值，成功后保留容量供下一层复用。
+    ///
+    /// # Errors
+    ///
+    /// 判据与 [`Self::split`] 相同；失败时缓冲保持为空，不暴露半份分片。
+    pub fn split_into<T: Copy>(&self, rank: usize, full: &[T], local: &mut Vec<T>) -> Result<()> {
+        local.clear();
         let (start, width) = self.range(rank)?;
         let [out, inp] = self.shape;
         self.check_len(full.len(), out, inp)?;
-        Ok(match self.sharding {
-            // 输出维行段连续：整段一次切片，不逐元素拷。
-            Sharding::Column => self.column_slice(start, width, inp, full),
-            // 输入维列段：行与行之间不连续，外层按行取列段；每行内部整块复制。
-            Sharding::Row => self.row_slice(start, width, inp, out, full),
-        })
+        match self.sharding {
+            Sharding::Column => {
+                let lo = start * inp;
+                local.extend_from_slice(&full[lo..lo + width * inp]);
+            }
+            Sharding::Row => {
+                for row in full.chunks_exact(inp) {
+                    local.extend_from_slice(&row[start..start + width]);
+                }
+            }
+        }
+        Ok(())
     }
 
     /// 校验完整权重长度等于形状积；形状积溢出或不符即拒绝。
@@ -160,29 +178,6 @@ impl Tiling {
             );
         }
         Ok(())
-    }
-
-    /// 列切：行段在缓冲里连续，一次切出整段。
-    fn column_slice<T: Copy>(&self, start: usize, width: usize, inp: usize, full: &[T]) -> Vec<T> {
-        let lo = start * inp;
-        full[lo..lo + width * inp].to_vec()
-    }
-
-    /// 行切：列段跨行分散，外层按行取列段（布局决定的分散拷贝，非逐元素遍历），行内整块复制。
-    fn row_slice<T: Copy>(
-        &self,
-        start: usize,
-        width: usize,
-        inp: usize,
-        out: usize,
-        full: &[T],
-    ) -> Vec<T> {
-        let mut local = Vec::with_capacity(out * width);
-        for row in 0..out {
-            let begin = row * inp;
-            local.extend_from_slice(&full[begin + start..begin + start + width]);
-        }
-        local
     }
 
     /// 被切维在每份里的长度：构造期已保证整除。

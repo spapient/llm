@@ -5,38 +5,56 @@
 
 use diagnostic::Result;
 
-use crate::invalid;
-use crate::shape::{Rank, Slice, product};
+use crate::element::Element;
+use crate::tensor::{Order, Rank, Slice, accumulate, assemble, product};
+use crate::{DynTensor, Owned, Store, StoreMut, Tensor, View, ViewMut, invalid};
 
 /// 校验秩对应、零元素口径、整数溢出和缓冲可达性。
 pub(crate) fn check(
     dims: &[usize],
-    steps: &[usize],
+    strides: &[usize],
     numel: usize,
     len: usize,
     marker: &str,
 ) -> Result<()> {
-    if dims.len() != steps.len() {
-        return Err(invalid(
-            format!(
-                "步长有 {} 个轴，形状 {dims:?} 有 {} 个轴",
-                steps.len(),
-                dims.len()
-            ),
-            marker,
-        ));
-    }
-    if numel == 0 && len != 0 {
-        return Err(invalid(
-            format!("零元素视图不该借用 {len} 个元素的缓冲"),
-            marker,
-        ));
-    }
+    check_rank(dims, strides, marker)?;
+    check_empty(numel, len, marker)?;
     if numel == 0 {
         return Ok(());
     }
-    let highest = highest(dims, steps)
-        .ok_or_else(|| invalid(format!("形状 {dims:?} 与步长 {steps:?} 算出溢出"), marker))?;
+    check_reachable(dims, strides, len, marker)
+}
+
+/// 轴长与步长必须来自同一个秩见证。
+fn check_rank(dims: &[usize], strides: &[usize], marker: &str) -> Result<()> {
+    if dims.len() == strides.len() {
+        return Ok(());
+    }
+    Err(invalid(
+        format!(
+            "步长有 {} 个轴，形状 {dims:?} 有 {} 个轴",
+            strides.len(),
+            dims.len()
+        ),
+        marker,
+    ))
+}
+
+/// 空视图只能借用空缓冲，非空视图交给可达性校验。
+fn check_empty(numel: usize, len: usize, marker: &str) -> Result<()> {
+    if numel != 0 || len == 0 {
+        return Ok(());
+    }
+    Err(invalid(
+        format!("零元素视图不该借用 {len} 个元素的缓冲"),
+        marker,
+    ))
+}
+
+/// 最高逻辑位置必须落在实际缓冲内。
+fn check_reachable(dims: &[usize], strides: &[usize], len: usize, marker: &str) -> Result<()> {
+    let highest = highest(dims, strides)
+        .ok_or_else(|| invalid(format!("形状 {dims:?} 与步长 {strides:?} 算出溢出"), marker))?;
     if highest < len {
         return Ok(());
     }
@@ -47,39 +65,50 @@ pub(crate) fn check(
 }
 
 /// 每轴最后一位的总偏移；空轴或算术溢出返回 `None`。
-fn highest(dims: &[usize], steps: &[usize]) -> Option<usize> {
+fn highest(dims: &[usize], strides: &[usize]) -> Option<usize> {
     dims.iter()
-        .zip(steps)
+        .zip(strides)
         .try_fold(0usize, |acc, (&dim, &step)| {
             acc.checked_add(dim.checked_sub(1)?.checked_mul(step)?)
         })
 }
 
+/// 读取同一轴的长度与步长，避免各变换分别处理缺失轴。
+fn axis_spec(dims: &[usize], strides: &[usize], axis: usize) -> Option<(usize, usize)> {
+    Some((*dims.get(axis)?, *strides.get(axis)?))
+}
+
+/// 从 `base` 沿 `step` 行进 `at` 步，乘法与加法都受溢出保护。
+fn shifted(base: usize, step: usize, at: usize) -> Option<usize> {
+    at.checked_mul(step).and_then(|span| base.checked_add(span))
+}
+
 /// 多下标转元素偏移；秩不符、越界或溢出返回 `None`。
-pub(crate) fn offset(dims: &[usize], steps: &[usize], base: usize, idx: &[usize]) -> Option<usize> {
+pub(crate) fn offset(
+    dims: &[usize],
+    strides: &[usize],
+    base: usize,
+    idx: &[usize],
+) -> Option<usize> {
     if idx.len() != dims.len() {
         return None;
     }
-    let span = idx
-        .iter()
+    idx.iter()
         .enumerate()
-        .try_fold(0usize, |acc, (axis, &position)| {
-            let dim = *dims.get(axis)?;
-            let step = *steps.get(axis)?;
-            if position >= dim {
-                return None;
-            }
-            acc.checked_add(position.checked_mul(step)?)
-        })?;
-    base.checked_add(span)
+        .try_fold(base, |base, (axis, &position)| {
+            let (dim, step) = axis_spec(dims, strides, axis)?;
+            (position < dim)
+                .then_some(())
+                .and_then(|()| shifted(base, step, position))
+        })
 }
 
 /// 判断是否为行主序紧凑布局；单例轴和空轴不产生额外偏移约束。
-pub(crate) fn is_contiguous(dims: &[usize], steps: &[usize]) -> bool {
-    if dims.len() != steps.len() {
+pub(crate) fn is_contiguous(dims: &[usize], strides: &[usize]) -> bool {
+    if dims.len() != strides.len() {
         return false;
     }
-    match collapse(dims, steps, 0, dims.len()) {
+    match collapse(dims, strides, 0, dims.len()) {
         Some((_, 1)) => true,
         Some((dim, _)) => dim <= 1,
         None => false,
@@ -89,16 +118,16 @@ pub(crate) fn is_contiguous(dims: &[usize], steps: &[usize]) -> bool {
 /// 二维视图的连续行；秩、行号或列步长不合法返回 `None`。
 pub(crate) fn row<'a, E>(
     dims: &[usize],
-    steps: &[usize],
+    strides: &[usize],
     base: usize,
     data: &'a [E],
     row: usize,
 ) -> Option<&'a [E]> {
     let columns = *dims.get(1)?;
-    if steps.get(1) != Some(&1) {
+    if strides.get(1) != Some(&1) {
         return None;
     }
-    let start = offset(dims, steps, base, &[row, 0])?;
+    let start = offset(dims, strides, base, &[row, 0])?;
     data.get(start..start.checked_add(columns)?)
 }
 
@@ -108,7 +137,7 @@ pub(crate) struct Layout<R> {
     /// 起点偏移。
     pub(crate) base: usize,
     dims: R,
-    steps: R,
+    strides: R,
 }
 
 impl<R: Rank> Layout<R> {
@@ -118,44 +147,41 @@ impl<R: Rank> Layout<R> {
     }
 
     /// 各轴步长。
-    pub(crate) fn steps(&self) -> &[usize] {
-        self.steps.as_slice()
+    pub(crate) fn strides(&self) -> &[usize] {
+        self.strides.as_slice()
     }
 
     /// 拆出起点、轴长和步长，供零拷贝组装使用。
     pub(crate) fn into_parts(self) -> (usize, R, R) {
-        (self.base, self.dims, self.steps)
+        (self.base, self.dims, self.strides)
     }
 }
 
 /// 沿 `axis` 取 `[start, start + len)`，返回新起点和轴长。
 pub(crate) fn narrow(
     dims: &[usize],
-    steps: &[usize],
+    strides: &[usize],
     base: usize,
     axis: usize,
     start: usize,
     len: usize,
 ) -> Option<(usize, usize)> {
-    let room = dims.get(axis)?.checked_sub(len)?;
-    if start > room {
-        return None;
-    }
-    let base = base.checked_add(start.checked_mul(*steps.get(axis)?)?)?;
-    Some((base, len))
+    let (dim, step) = axis_spec(dims, strides, axis)?;
+    dim.checked_sub(len)?.checked_sub(start)?;
+    shifted(base, step, start).map(|base| (base, len))
 }
 
 /// 多轴切片；未给出的尾部轴保持不变。
 pub(crate) fn window<R: Rank>(
     dims: &R,
-    steps: &R,
+    strides: &R,
     base: usize,
     slices: impl IntoIterator<Item = Slice>,
 ) -> Option<Layout<R>> {
     let mut out = Layout {
         base,
         dims: dims.clone(),
-        steps: steps.clone(),
+        strides: strides.clone(),
     };
     for (axis, slice) in slices.into_iter().enumerate() {
         place(&mut out, axis, slice)?;
@@ -169,112 +195,132 @@ fn place<R: Rank>(out: &mut Layout<R>, axis: usize, slice: Slice) -> Option<()> 
         return None;
     }
     let len = slice.end.checked_sub(slice.start)?;
-    let (base, dim) = narrow(out.dims(), out.steps(), out.base, axis, slice.start, len)?;
-    let step = out.steps.as_slice().get(axis)?.checked_mul(slice.step)?;
+    let (base, dim) = narrow(out.dims(), out.strides(), out.base, axis, slice.start, len)?;
+    let step = out
+        .strides
+        .as_slice()
+        .get(axis)
+        .and_then(|step| step.checked_mul(slice.step))?;
     out.base = base;
     out.dims.as_slice_mut()[axis] = dim.div_ceil(slice.step);
-    out.steps.as_slice_mut()[axis] = step;
+    out.strides.as_slice_mut()[axis] = step;
     Some(())
 }
 
 /// 固定一轴并删除它。
 pub(crate) fn select<R: Rank>(
     dims: &[usize],
-    steps: &[usize],
+    strides: &[usize],
     base: usize,
     axis: usize,
     idx: usize,
 ) -> Option<Layout<R>> {
-    let dim = *dims.get(axis)?;
-    let step = *steps.get(axis)?;
-    if idx >= dim {
-        return None;
-    }
-    let base = base.checked_add(idx.checked_mul(step)?)?;
-    spliced(dims, steps, base, axis, axis + 1, None)
+    let (base, _) = narrow(dims, strides, base, axis, idx, 1)?;
+    spliced(dims, strides, base, axis, axis + 1, None)
 }
 
 /// 删除长为 1 的一轴。
 pub(crate) fn squeeze<R: Rank>(
     dims: &[usize],
-    steps: &[usize],
+    strides: &[usize],
     base: usize,
     axis: usize,
 ) -> Option<Layout<R>> {
     if dims.get(axis) != Some(&1) {
         return None;
     }
-    spliced(dims, steps, base, axis, axis + 1, None)
+    spliced(dims, strides, base, axis, axis + 1, None)
 }
 
 /// 两轴取对角：保留轴长度取较小值，步长取两轴之和。
 pub(crate) fn diagonal<R: Rank>(
     dims: &[usize],
-    steps: &[usize],
+    strides: &[usize],
     base: usize,
     a: usize,
     b: usize,
 ) -> Option<Layout<R>> {
-    if a == b {
-        return None;
-    }
-    let (keep, drop) = (a.min(b), a.max(b));
-    let len = (*dims.get(keep)?).min(*dims.get(drop)?);
-    let diagonal_step = steps.get(keep)?.checked_add(*steps.get(drop)?)?;
-    let out_dims =
-        R::from_iter(dims.iter().copied().enumerate().filter_map(|(axis, dim)| {
-            (axis != drop).then_some(if axis == keep { len } else { dim })
-        }))?;
-    let out_steps = R::from_iter(
-        steps
+    let (keep, drop, len, diagonal_step) = diagonal_geometry(dims, strides, a, b)?;
+    let out_dims = R::from_iter(
+        dims.iter()
+            .copied()
+            .enumerate()
+            .filter_map(|(axis, dim)| diagonal_axis(axis, keep, drop, dim, len)),
+    )?;
+    let out_strides = R::from_iter(
+        strides
             .iter()
             .copied()
             .enumerate()
-            .filter_map(|(axis, step)| {
-                (axis != drop).then_some(if axis == keep { diagonal_step } else { step })
-            }),
+            .filter_map(|(axis, step)| diagonal_axis(axis, keep, drop, step, diagonal_step)),
     )?;
     Some(Layout {
         base,
         dims: out_dims,
-        steps: out_steps,
+        strides: out_strides,
     })
+}
+
+/// 计算对角视图的四元几何，集中处理同轴、缺轴与步长溢出。
+fn diagonal_geometry(
+    dims: &[usize],
+    strides: &[usize],
+    a: usize,
+    b: usize,
+) -> Option<(usize, usize, usize, usize)> {
+    if a == b {
+        return None;
+    }
+    let (keep, drop) = (a.min(b), a.max(b));
+    let (keep_dim, keep_step) = axis_spec(dims, strides, keep)?;
+    let (drop_dim, drop_step) = axis_spec(dims, strides, drop)?;
+    let step = keep_step.checked_add(drop_step)?;
+    Some((keep, drop, keep_dim.min(drop_dim), step))
+}
+
+/// 删除对角源轴，并把保留轴替换为对角长度或合成步长。
+fn diagonal_axis(
+    axis: usize,
+    keep: usize,
+    drop: usize,
+    value: usize,
+    replacement: usize,
+) -> Option<usize> {
+    (axis != drop).then_some(if axis == keep { replacement } else { value })
 }
 
 /// 插入一个长为 1、步长为 0 的轴。
 pub(crate) fn unsqueeze<R: Rank>(
     dims: &[usize],
-    steps: &[usize],
+    strides: &[usize],
     base: usize,
     axis: usize,
 ) -> Option<Layout<R>> {
-    spliced(dims, steps, base, axis, axis, Some((1, 0)))
+    spliced(dims, strides, base, axis, axis, Some((1, 0)))
 }
 
 /// 把行主序紧凑的 `[start, end)` 轴段压成一轴。
 pub(crate) fn flatten<R: Rank>(
     dims: &[usize],
-    steps: &[usize],
+    strides: &[usize],
     base: usize,
     start: usize,
     end: usize,
 ) -> Option<Layout<R>> {
-    let (dim, step) = collapse(dims, steps, start, end)?;
-    spliced(dims, steps, base, start, end, Some((dim, step)))
+    let (dim, step) = collapse(dims, strides, start, end)?;
+    spliced(dims, strides, base, start, end, Some((dim, step)))
 }
 
 /// 将轴段替换为一项或删除，直接构造目标秩容器。
 fn spliced<R: Rank>(
     dims: &[usize],
-    steps: &[usize],
+    strides: &[usize],
     base: usize,
     start: usize,
     end: usize,
     item: Option<(usize, usize)>,
 ) -> Option<Layout<R>> {
-    if start > end || end > dims.len() || dims.len() != steps.len() {
-        return None;
-    }
+    valid_range(dims, strides, start, end)?;
     let out_dims = R::from_iter(
         dims[..start]
             .iter()
@@ -282,42 +328,83 @@ fn spliced<R: Rank>(
             .chain(item.map(|(dim, _)| dim))
             .chain(dims[end..].iter().copied()),
     )?;
-    let out_steps = R::from_iter(
-        steps[..start]
+    let out_strides = R::from_iter(
+        strides[..start]
             .iter()
             .copied()
             .chain(item.map(|(_, step)| step))
-            .chain(steps[end..].iter().copied()),
+            .chain(strides[end..].iter().copied()),
     )?;
     Some(Layout {
         base,
         dims: out_dims,
-        steps: out_steps,
+        strides: out_strides,
     })
 }
 
+/// 轴段必须在同秩元数据内，切片下标才可安全使用。
+fn valid_range(dims: &[usize], strides: &[usize], start: usize, end: usize) -> Option<()> {
+    (start <= end && end <= dims.len() && dims.len() == strides.len()).then_some(())
+}
+
 /// 计算轴段压平后的轴长和步长；非紧凑段返回 `None`。
-fn collapse(dims: &[usize], steps: &[usize], start: usize, end: usize) -> Option<(usize, usize)> {
+fn collapse(dims: &[usize], strides: &[usize], start: usize, end: usize) -> Option<(usize, usize)> {
     let segment = dims.get(start..end)?;
-    let dim = segment
+    let dim = collapsed_dim(segment)?;
+    let unit = unit_step(segment, strides, start, dim)?;
+    check_compact(segment, strides, start, dim, unit).map(|()| (dim, unit))
+}
+
+/// 轴段总长度，任何乘法溢出都使变换失败。
+fn collapsed_dim(segment: &[usize]) -> Option<usize> {
+    segment
         .iter()
-        .try_fold(1usize, |acc, &axis| acc.checked_mul(axis))?;
+        .try_fold(1usize, |acc, &axis| acc.checked_mul(axis))
+}
+
+/// 空轴和单例轴不产生偏移；其余布局取最内非单例轴的步长。
+fn unit_step(segment: &[usize], strides: &[usize], start: usize, dim: usize) -> Option<usize> {
     if dim <= 1 {
-        return Some((dim, 0));
+        return Some(0);
     }
     let inner = segment.iter().rposition(|&axis| axis > 1)?;
-    let unit = *steps.get(start + inner)?;
-    let mut expected = unit;
-    for (offset, &axis) in segment.iter().enumerate().rev() {
-        if axis <= 1 {
-            continue;
-        }
-        if steps.get(start + offset) != Some(&expected) {
-            return None;
-        }
-        expected = expected.checked_mul(axis)?;
+    strides.get(start + inner).copied()
+}
+
+/// 从内向外线性验证期望步长，单例轴不参与约束。
+fn check_compact(
+    segment: &[usize],
+    strides: &[usize],
+    start: usize,
+    dim: usize,
+    unit: usize,
+) -> Option<()> {
+    if dim <= 1 {
+        return Some(());
     }
-    Some((dim, unit))
+    segment
+        .iter()
+        .enumerate()
+        .rev()
+        .try_fold(unit, |expected, (offset, &axis)| {
+            compact_step(strides, start, offset, axis, expected)
+        })
+        .map(|_| ())
+}
+
+/// 验证一个非单例轴并推出下一轴的期望步长。
+fn compact_step(
+    strides: &[usize],
+    start: usize,
+    offset: usize,
+    axis: usize,
+    expected: usize,
+) -> Option<usize> {
+    if axis <= 1 {
+        return Some(expected);
+    }
+    (strides.get(start + offset) == Some(&expected)).then_some(())?;
+    expected.checked_mul(axis)
 }
 
 /// 逻辑行主序偏移迭代器，可选择让指定轴反向遍历。
@@ -326,9 +413,9 @@ fn collapse(dims: &[usize], steps: &[usize], start: usize, end: usize) -> Option
 /// 不为读取临时物化完整张量。
 pub(crate) struct Offsets<'a, R> {
     dims: &'a [usize],
-    steps: &'a [usize],
+    strides: &'a [usize],
     turn: &'a [bool],
-    indices: Option<R>,
+    idxs: Option<R>,
     at: isize,
     remaining: usize,
 }
@@ -337,67 +424,72 @@ impl<'a, R: Rank> Offsets<'a, R> {
     /// 创建偏移序列。无效见证或翻转起点溢出会产生空序列而非 panic。
     pub(crate) fn new(
         dims: &'a [usize],
-        steps: &'a [usize],
+        strides: &'a [usize],
         base: usize,
         turn: &'a [bool],
     ) -> Self {
-        let indices = R::filled(dims.len(), 0);
-        let mut remaining = if dims.len() == steps.len() && indices.is_some() {
+        let idxs = R::filled(dims.len(), 0);
+        let at = Self::reversed_base(dims, strides, base, turn);
+        let remaining = if at.is_some() && dims.len() == strides.len() && idxs.is_some() {
             product(dims)
         } else {
             0
         };
-        let mut at = base;
-        for (axis, &dim) in dims.iter().enumerate() {
-            if !turn.get(axis).copied().unwrap_or(false) {
-                continue;
-            }
-            let Some(step) = steps.get(axis) else {
-                remaining = 0;
-                break;
-            };
-            match step
-                .checked_mul(dim.saturating_sub(1))
-                .and_then(|span| at.checked_add(span))
-            {
-                Some(start) => at = start,
-                None => {
-                    remaining = 0;
-                    break;
-                }
-            }
-        }
         Self {
             dims,
-            steps,
+            strides,
             turn,
-            indices,
-            at: at as isize,
+            idxs,
+            at: at.unwrap_or(0) as isize,
             remaining,
         }
     }
 
+    /// 每个反向轴从逻辑末位起步；任一轴缺失或溢出都使序列为空。
+    fn reversed_base(
+        dims: &[usize],
+        strides: &[usize],
+        base: usize,
+        turn: &[bool],
+    ) -> Option<usize> {
+        dims.iter()
+            .enumerate()
+            .try_fold(base, |at, (axis, &dim)| {
+                if !turn.get(axis).copied().unwrap_or(false) {
+                    return Some(at);
+                }
+                let step = *strides.get(axis)?;
+                shifted(at, step, dim.saturating_sub(1))
+            })
+    }
+
     /// 行进到下一个逻辑位置；最后一个元素之后不再做无效偏移运算。
     fn advance(&mut self) {
-        let Some(indices) = self.indices.as_mut() else {
+        let Some(idxs) = self.idxs.as_mut() else {
             self.remaining = 0;
             return;
         };
-        let indices = indices.as_slice_mut();
+        let idxs = idxs.as_slice_mut();
         let mut at = self.at;
-        for axis in (0..indices.len()).rev() {
-            indices[axis] += 1;
-            let step = self.steps[axis] as isize;
+        for axis in (0..idxs.len()).rev() {
+            idxs[axis] += 1;
             let turned = self.turn.get(axis).copied().unwrap_or(false);
-            at += if turned { -step } else { step };
-            if indices[axis] < self.dims[axis] {
+            let (step, reset) = Self::directed_step(self.strides[axis], self.dims[axis], turned);
+            at += step;
+            if idxs[axis] < self.dims[axis] {
                 break;
             }
-            indices[axis] = 0;
-            let span = step * self.dims[axis] as isize;
-            at += if turned { span } else { -span };
+            idxs[axis] = 0;
+            at += reset;
         }
         self.at = at;
+    }
+
+    /// 返回单次行进与轴回绕的有向位移，正反方向共用同一套进位。
+    fn directed_step(step: usize, dim: usize, turned: bool) -> (isize, isize) {
+        let step = step as isize;
+        let span = step * dim as isize;
+        if turned { (-step, span) } else { (step, -span) }
     }
 }
 
@@ -425,4 +517,351 @@ impl<R: Rank> ExactSizeIterator for Offsets<'_, R> {
     fn len(&self) -> usize {
         self.remaining
     }
+}
+
+impl<B, R, K> Tensor<B, R, K>
+where
+    R: Rank,
+    K: Element,
+    B: Store<K>,
+{
+    /// 交换两轴，不移动元素。
+    #[doc(alias = "swap_dims")]
+    pub fn transpose(self, first: usize, second: usize) -> Option<Self> {
+        self.map_axes(|axes| axes.swapped(first, second))
+    }
+
+    /// 把一轴搬到另一位置，其余轴的相对顺序不变。
+    #[doc(alias = "moveaxis")]
+    pub fn movedim(self, from: usize, to: usize) -> Option<Self> {
+        self.map_axes(|axes| axes.moved(from, to))
+    }
+
+    /// 按完整轴排列重排元数据。
+    pub fn permute(self, order: impl AsRef<[usize]>) -> Option<Self> {
+        let order = order.as_ref();
+        if !is_permutation(order, self.rank()) {
+            return None;
+        }
+        self.map_axes(|axes| axes.permuted(order))
+    }
+
+    /// 对轴长和步长施加同一个变换，避免两套元数据漂移。
+    fn map_axes(self, transform: impl Fn(&R) -> Option<R>) -> Option<Self> {
+        Some(assemble(
+            transform(&self.dims)?,
+            transform(&self.strides)?,
+            self.base,
+            self.storage,
+        ))
+    }
+
+    /// 广播到目标形状；新增或扩展轴使用步长 0。
+    #[doc(alias = "expand")]
+    pub fn broadcast(self, dims: impl Into<R>) -> Option<Self> {
+        let dims = dims.into();
+        let leading = dims.as_slice().len().checked_sub(self.rank())?;
+        let mut strides = dims.clone();
+        for (axis, (&wanted, stride)) in dims
+            .as_slice()
+            .iter()
+            .zip(strides.as_slice_mut())
+            .enumerate()
+        {
+            *stride = broadcast_stride(leading, self.dims(), self.strides(), axis, wanted)?;
+        }
+        Some(assemble(dims, strides, self.base, self.storage))
+    }
+
+    /// 等元素数地改变形状；仅行主序紧凑布局可直接重解释。
+    pub fn reshape<R2: Rank>(self, dims: impl Into<R2>) -> Option<Tensor<B, R2, K>> {
+        if !self.is_contiguous() {
+            return None;
+        }
+        let dims = dims.into();
+        if product(dims.as_slice()) != self.numel() {
+            return None;
+        }
+        let strides = R2::contiguous(dims.as_slice())?;
+        Some(assemble(dims, strides, self.base, self.storage))
+    }
+
+    /// 沿一轴取 `[start, start + len)`，只前移起点并收窄轴长。
+    pub fn narrow(mut self, axis: usize, start: usize, len: usize) -> Option<Self> {
+        let (base, dim) = narrow(self.dims(), self.strides(), self.base, axis, start, len)?;
+        self.base = base;
+        self.dims.as_slice_mut()[axis] = dim;
+        Some(self)
+    }
+
+    /// 多轴切片，支持 [`Slice::stepped`]；所有切片只修改元数据。
+    pub fn slice<S: Into<Slice> + Clone>(self, ranges: impl AsRef<[S]>) -> Option<Self> {
+        let layout = self.window(ranges.as_ref())?;
+        Some(self.with_layout(layout))
+    }
+
+    /// 计算切片窗口，供只读切片和可写窗口共用。
+    pub(crate) fn window<S: Into<Slice> + Clone>(&self, ranges: &[S]) -> Option<Layout<R>> {
+        if ranges.len() > self.rank() {
+            return None;
+        }
+        window(
+            &self.dims,
+            &self.strides,
+            self.base,
+            ranges.iter().cloned().map(Into::into),
+        )
+    }
+
+    /// 沿 `axis` 等分为至多 `pieces` 个非空借用视图。
+    pub fn chunks(&self, axis: usize, pieces: usize) -> impl Iterator<Item = Tensor<&[K], R, K>> {
+        let dim = self.dims().get(axis).copied().unwrap_or(0);
+        let size = dim.div_ceil(pieces.max(1));
+        self.split(axis, (0..pieces).map(move |_| size)).into_iter()
+    }
+
+    /// 按给定段长依次切分；越界段夹到剩余长度，请求耗尽后停止。
+    pub fn split(
+        &self,
+        axis: usize,
+        sizes: impl IntoIterator<Item = usize>,
+    ) -> Vec<Tensor<&[K], R, K>> {
+        let dim = self.dims().get(axis).copied().unwrap_or(0);
+        let mut start = 0usize;
+        let mut parts = Vec::new();
+        for len in sizes {
+            let len = len.min(dim.saturating_sub(start));
+            if len == 0 {
+                break;
+            }
+            let Some(piece) = self.segment(axis, start, len) else {
+                break;
+            };
+            parts.push(piece);
+            start += len;
+        }
+        parts
+    }
+
+    /// 构造一个借用分段。
+    fn segment(&self, axis: usize, start: usize, len: usize) -> Option<Tensor<&[K], R, K>> {
+        assemble(
+            self.dims.clone(),
+            self.strides.clone(),
+            self.base,
+            self.storage.slice(),
+        )
+        .narrow(axis, start, len)
+    }
+
+    /// 固定一轴的每个位置，返回全部秩减一借用视图。
+    pub fn unbind<R2: Rank>(&self, axis: usize) -> Vec<Tensor<&[K], R2, K>> {
+        let dim = self.dims().get(axis).copied().unwrap_or(0);
+        (0..dim)
+            .filter_map(|idx| {
+                let layout = select::<R2>(self.dims(), self.strides(), self.base, axis, idx)?;
+                Some(assemble_layout(layout, self.storage.slice()))
+            })
+            .collect()
+    }
+
+    /// 固定一轴并删除它。
+    pub fn select<R2: Rank>(self, axis: usize, idx: usize) -> Option<Tensor<B, R2, K>> {
+        let layout = select(self.dims(), self.strides(), self.base, axis, idx)?;
+        Some(self.with_layout(layout))
+    }
+
+    /// 删除长为 1 的一轴。
+    pub fn squeeze<R2: Rank>(self, axis: usize) -> Option<Tensor<B, R2, K>> {
+        let layout = squeeze(self.dims(), self.strides(), self.base, axis)?;
+        Some(self.with_layout(layout))
+    }
+
+    /// 两轴取对角，长度取较小值、步长相加，不移动元素。
+    #[doc(alias = "diag")]
+    pub fn diagonal<R2: Rank>(self, first: usize, second: usize) -> Option<Tensor<B, R2, K>> {
+        let layout = diagonal(self.dims(), self.strides(), self.base, first, second)?;
+        Some(self.with_layout(layout))
+    }
+
+    /// 在指定位置插入一个单例轴。
+    pub fn unsqueeze<R2: Rank>(self, axis: usize) -> Option<Tensor<B, R2, K>> {
+        let layout = unsqueeze(self.dims(), self.strides(), self.base, axis)?;
+        Some(self.with_layout(layout))
+    }
+
+    /// 压平行主序紧凑的 `[start, end)` 轴段。
+    pub fn flatten<R2: Rank>(self, start: usize, end: usize) -> Option<Tensor<B, R2, K>> {
+        let layout = flatten(self.dims(), self.strides(), self.base, start, end)?;
+        Some(self.with_layout(layout))
+    }
+
+    /// 沿指定轴反转逻辑顺序并物化；无效轴忽略，重复轴只翻一次。
+    #[must_use]
+    pub fn flip(&self, axes: impl AsRef<[usize]>) -> Tensor<Owned<K>, R, K> {
+        let mut reversed_axes = vec![false; self.rank()];
+        for &axis in axes.as_ref() {
+            if let Some(slot) = reversed_axes.get_mut(axis) {
+                *slot = true;
+            }
+        }
+        let source = self.storage.slice();
+        let values = Offsets::<R>::new(self.dims(), self.strides(), self.base, &reversed_axes)
+            .map(|offset| source[offset])
+            .collect();
+        self.owned_with_values(values)
+    }
+
+    /// 把已经计算好的布局装回张量并保留原存储。
+    fn with_layout<R2: Rank>(self, layout: Layout<R2>) -> Tensor<B, R2, K> {
+        assemble_layout(layout, self.storage)
+    }
+
+    /// 按逻辑序收集元素；连续布局直接整段复制，非连续布局零临时迭代。
+    pub fn to_vec(&self) -> Vec<K> {
+        if self.is_contiguous() {
+            let end = self.base.saturating_add(self.numel());
+            return self
+                .storage
+                .slice()
+                .get(self.base..end)
+                .unwrap_or_default()
+                .to_vec();
+        }
+        self.iter().collect()
+    }
+
+    /// 物化为行主序连续自持张量。
+    #[must_use]
+    pub fn to_contiguous(&self) -> Tensor<Owned<K>, R, K> {
+        self.owned_with_values(self.to_vec())
+    }
+
+    /// 借出运行期秩只读视图，不复制元素。
+    pub fn as_view(&self) -> View<'_, K> {
+        assemble(
+            self.dims().to_vec(),
+            self.strides().to_vec(),
+            self.base,
+            self.storage.slice(),
+        )
+    }
+
+    /// 消费为自持连续张量；已有连续存储直接复用，非连续布局按逻辑序物化。
+    #[must_use]
+    pub fn into_owned(self) -> Tensor<Owned<K>, R, K> {
+        if !self.is_contiguous() {
+            return self.to_contiguous();
+        }
+        let base = self.base;
+        let numel = self.numel();
+        let mut strides = self.dims.clone();
+        accumulate(self.dims(), strides.as_slice_mut(), Order::RowMajor);
+        let mut values = self.storage.into_vec();
+        if base != 0 {
+            values.drain(..base);
+        }
+        values.truncate(numel);
+        assemble(self.dims, strides, 0, Owned::from(values))
+    }
+
+    /// 擦除存储与编译期秩，返回后端统一拥有形态。
+    pub fn into_dyn(self) -> DynTensor<K> {
+        let owned = self.into_owned();
+        assemble(
+            owned.dims().to_vec(),
+            owned.strides().to_vec(),
+            owned.base,
+            owned.storage,
+        )
+    }
+}
+
+impl<B, R, K> Tensor<B, R, K>
+where
+    R: Rank,
+    K: Element,
+    B: StoreMut<K>,
+{
+    /// 返回底层全部元素的可写切片。
+    pub fn as_slice_mut(&mut self) -> &mut [K] {
+        self.storage.slice_mut()
+    }
+
+    /// 借出运行期秩可写视图，不复制元素。
+    pub fn as_view_mut(&mut self) -> ViewMut<'_, K> {
+        assemble(
+            self.dims().to_vec(),
+            self.strides().to_vec(),
+            self.base,
+            self.storage.slice_mut(),
+        )
+    }
+
+    /// 将窗口内每个逻辑位置写为 `value`。
+    pub fn slice_fill<S: Into<Slice> + Clone>(
+        &mut self,
+        ranges: impl AsRef<[S]>,
+        value: K,
+    ) -> Option<()> {
+        let layout = self.window(ranges.as_ref())?;
+        self.write_window(layout, core::iter::repeat(value));
+        Some(())
+    }
+
+    /// 按行主序逻辑顺序给窗口赋值，元素数必须完全一致。
+    pub fn slice_assign<S: Into<Slice> + Clone>(
+        &mut self,
+        ranges: impl AsRef<[S]>,
+        values: impl AsRef<[K]>,
+    ) -> Option<()> {
+        let layout = self.window(ranges.as_ref())?;
+        let values = values.as_ref();
+        if values.len() != product(layout.dims()) {
+            return None;
+        }
+        self.write_window(layout, values.iter().copied());
+        Some(())
+    }
+
+    /// 共用窗口写入循环；调用方负责校验填充值或源元素数量。
+    fn write_window(&mut self, layout: Layout<R>, values: impl IntoIterator<Item = K>) {
+        let offsets = Offsets::<R>::new(layout.dims(), layout.strides(), layout.base, &[]);
+        let target = self.storage.slice_mut();
+        for (offset, value) in offsets.zip(values) {
+            target[offset] = value;
+        }
+    }
+}
+
+/// 广播单轴的步长规则。
+fn broadcast_stride(
+    leading: usize,
+    dims: &[usize],
+    strides: &[usize],
+    axis: usize,
+    wanted: usize,
+) -> Option<usize> {
+    let Some(source) = axis.checked_sub(leading) else {
+        return Some(0);
+    };
+    let existing = *dims.get(source)?;
+    if existing == 1 {
+        return Some(0);
+    }
+    if existing != wanted {
+        return None;
+    }
+    strides.get(source).copied()
+}
+
+/// 将布局的三个组成部分装回张量。
+fn assemble_layout<B, R: Rank, K>(layout: Layout<R>, storage: B) -> Tensor<B, R, K> {
+    let (base, dims, strides) = layout.into_parts();
+    assemble(dims, strides, base, storage)
+}
+
+/// 判断轴序列是否恰好是 `0..rank` 的排列。
+fn is_permutation(order: &[usize], rank: usize) -> bool {
+    order.len() == rank && (0..rank).all(|axis| order.contains(&axis))
 }

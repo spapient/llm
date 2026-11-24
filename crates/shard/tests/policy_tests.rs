@@ -1,5 +1,5 @@
 use crate::Topology;
-use crate::policy::{ParallelConfig, Priority};
+use crate::topology::{ParallelConfig, Priority};
 use diagnostic::Code;
 
 /// 优先级短名、序数与判别式一一对应；序数越小越先调度。

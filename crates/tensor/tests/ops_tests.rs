@@ -153,3 +153,57 @@ fn complete_owned_tensor_into_vec_reuses_its_allocation() {
     assert_eq!(values, [1, 2, 3, 4]);
     assert_eq!(pointer, values.as_ptr(), "完整连续张量不应再次分配");
 }
+
+#[test]
+fn zip_with_accepts_different_input_element_types() {
+    let left: View<'_, i32> = View::new(vec![2], &[1, 2]).expect("整数输入");
+    let right: Tensor<Owned<f32>, [usize; 1], f32> =
+        Tensor::new([2], Owned::from(vec![0.5, 0.25])).expect("浮点输入");
+    let output: Tensor<Owned<f32>, Vec<usize>, f32> = left
+        .zip_with(&right, |integer, float| integer as f32 + float)
+        .expect("混合元素类型");
+    assert_eq!(output.to_vec(), [1.5, 2.25]);
+}
+
+#[test]
+fn owned_consumption_reuses_the_same_allocation() {
+    let tensor: Tensor<Owned<i32>, [usize; 2], i32> =
+        Tensor::new([2, 2], Owned::from(vec![1, 2, 3, 4])).expect("自持张量");
+    let pointer = tensor.as_slice().as_ptr();
+    let owned = tensor.into_owned();
+    assert_eq!(owned.as_slice().as_ptr(), pointer, "into_owned 不应复制");
+    let dynamic = owned.into_dyn();
+    assert_eq!(dynamic.as_slice().as_ptr(), pointer, "into_dyn 不应复制");
+    assert_eq!(dynamic.to_vec(), [1, 2, 3, 4]);
+}
+
+#[test]
+fn contiguous_subview_into_vec_reuses_the_parent_allocation() {
+    let tensor: Tensor<Owned<i32>, Vec<usize>, i32> =
+        Tensor::new(vec![3, 2], Owned::from(vec![1, 2, 3, 4, 5, 6])).expect("父张量");
+    let pointer = tensor.as_slice().as_ptr();
+    let tail = tensor.narrow(0, 1, 1).expect("中间一行");
+    let values = tail.into_vec();
+    assert_eq!(values, [3, 4]);
+    assert_eq!(
+        values.as_ptr(),
+        pointer,
+        "连续子视图只需移动元素，不重新分配"
+    );
+}
+
+struct LegacyStore<'a>(&'a [u8]);
+
+impl crate::Store<u8> for LegacyStore<'_> {
+    fn slice(&self) -> &[u8] {
+        self.0
+    }
+}
+
+#[test]
+fn legacy_store_implementations_use_the_default_consuming_copy() {
+    let tensor: Tensor<LegacyStore<'_>, [usize; 1], u8> =
+        Tensor::new([3], LegacyStore(&[1, 2, 3])).expect("旧式自定义存储");
+    let owned = tensor.into_owned();
+    assert_eq!(owned.to_vec(), [1, 2, 3]);
+}

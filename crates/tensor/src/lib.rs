@@ -27,15 +27,15 @@
 
 mod layout;
 mod ops;
-mod shape;
 mod tensor;
-mod view;
 
 pub use dtype::{Class, DType, DTypeSpec, FloatLayout};
 pub use element::{BoolElement, Element, FloatElement, IntElement, NumericElement, OrderedElement};
 pub use ops::Abs;
-pub use shape::{AxisLen, Order, Rank, Shape, Slice, product};
-pub use tensor::{DynTensor, Owned, Store, StoreMut, Tensor, View, ViewMut};
+pub use tensor::{
+    AxisLen, DynTensor, Order, Owned, Rank, Shape, Slice, Store, StoreMut, Tensor, View, ViewMut,
+    product,
+};
 
 use diagnostic::{Code, Error};
 

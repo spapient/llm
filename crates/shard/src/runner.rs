@@ -24,45 +24,54 @@ pub struct Timing {
     pub samples_ns: Vec<f64>,
 }
 
+/// 一组计时样本的完整摘要，三个读数由同一次排序派生。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TimingSummary {
+    /// 最快样本。
+    pub min_ns: f64,
+    /// 中位数；偶数个样本取中间两个的平均值。
+    pub p50_ns: f64,
+    /// 95 分位，采用最近秩法。
+    pub p95_ns: f64,
+}
+
 impl Timing {
-    /// 最快的一次：达成率用它，避免被调度抖动与换页拖低。
+    /// 最快的一次：只需线性扫描，不为单项读数分配内存。
     #[must_use]
     pub fn min_ns(&self) -> Option<f64> {
         self.samples_ns.iter().copied().reduce(f64::min)
     }
 
-    /// 中位数（偶数个样本取中间两个的平均值）：与 [`Self::min_ns`] 的差距即抖动幅度。
+    /// 一次排序同时得到 min / p50 / p95，避免基准路径重复克隆并排序样本。
     #[must_use]
-    pub fn p50_ns(&self) -> Option<f64> {
-        let sorted = self.sorted();
-        if sorted.is_empty() {
-            return None;
-        }
+    pub fn summary(&self) -> Option<TimingSummary> {
+        let mut sorted = self.samples_ns.clone();
+        sorted.sort_by(f64::total_cmp);
+        let min_ns = *sorted.first()?;
         let middle = sorted.len() / 2;
-        Some(if sorted.len().is_multiple_of(2) {
+        let p50_ns = if sorted.len().is_multiple_of(2) {
             (sorted[middle - 1] + sorted[middle]) / 2.0
         } else {
             sorted[middle]
+        };
+        let rank = ((0.95 * sorted.len() as f64).ceil() as usize).min(sorted.len());
+        Some(TimingSummary {
+            min_ns,
+            p50_ns,
+            p95_ns: sorted[rank - 1],
         })
     }
 
-    /// 95 分位（最近秩法）：尾部离群的上界；样本很少时它退化成最大值。达成率仍按 [`Self::p50_ns`]，
-    /// 这里只把离群幅度摊开，不做静默剔除——剔除了哪几样本应当可见、可复核。
+    /// 中位数；同时需要其它分位时使用 [`Self::summary`]。
     #[must_use]
-    pub fn p95_ns(&self) -> Option<f64> {
-        let sorted = self.sorted();
-        if sorted.is_empty() {
-            return None;
-        }
-        let rank = ((0.95 * sorted.len() as f64).ceil() as usize).min(sorted.len());
-        Some(sorted[rank - 1])
+    pub fn p50_ns(&self) -> Option<f64> {
+        self.summary().map(|summary| summary.p50_ns)
     }
 
-    /// 升序样本：空表返回空，分位方法各自判空。
-    fn sorted(&self) -> Vec<f64> {
-        let mut sorted = self.samples_ns.clone();
-        sorted.sort_by(f64::total_cmp);
-        sorted
+    /// 95 分位；同时需要其它分位时使用 [`Self::summary`]。
+    #[must_use]
+    pub fn p95_ns(&self) -> Option<f64> {
+        self.summary().map(|summary| summary.p95_ns)
     }
 }
 
