@@ -21,6 +21,9 @@ use crate::policy::ParallelConfig;
 use crate::tiling::{Sharding, Tiling};
 use diagnostic::Result;
 
+/// 段内投影的 TP 分片计划三元组：分片布局、权重形状、行/列区间；非投影层三槽均 `None`。
+type ShardPlan = (Option<Tiling>, Option<[usize; 2]>, Option<(usize, usize)>);
+
 /// 投影几何的只读副本：脱离 [`nn::Linear`] 引用，供装配侧长期持有。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LinearGeo {
@@ -223,7 +226,7 @@ impl Assembler {
         linear: Option<&Linear>,
         name: &str,
         rank: usize,
-    ) -> Result<(Option<Tiling>, Option<[usize; 2]>, Option<(usize, usize)>)> {
+    ) -> Result<ShardPlan> {
         match (held, linear) {
             (true, Some(linear)) => {
                 let parts = self.plan.topology().tp();

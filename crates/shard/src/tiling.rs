@@ -139,22 +139,27 @@ impl Tiling {
     pub fn split<T: Copy>(&self, rank: usize, full: &[T]) -> Result<Vec<T>> {
         let (start, width) = self.range(rank)?;
         let [out, inp] = self.shape;
-        let expected = out
-            .checked_mul(inp)
-            .ok_or_else(|| invalid!("shard::Tiling::split", "权重形状积溢出"))?;
-        if full.len() != expected {
-            fail!(
-                "shard::Tiling::split",
-                "权重长度 {} 与完整形状 [{out}, {inp}] 的积 {expected} 不符",
-                full.len()
-            );
-        }
+        self.check_len(full.len(), out, inp)?;
         Ok(match self.sharding {
             // 输出维行段连续：整段一次切片，不逐元素拷。
             Sharding::Column => self.column_slice(start, width, inp, full),
             // 输入维列段：行与行之间不连续，外层按行取列段；每行内部整块复制。
             Sharding::Row => self.row_slice(start, width, inp, out, full),
         })
+    }
+
+    /// 校验完整权重长度等于形状积；形状积溢出或不符即拒绝。
+    fn check_len(&self, full_len: usize, out: usize, inp: usize) -> Result<()> {
+        let expected = out
+            .checked_mul(inp)
+            .ok_or_else(|| invalid!("shard::Tiling::split", "权重形状积溢出"))?;
+        if full_len != expected {
+            fail!(
+                "shard::Tiling::split",
+                "权重长度 {full_len} 与完整形状 [{out}, {inp}] 的积 {expected} 不符",
+            );
+        }
+        Ok(())
     }
 
     /// 列切：行段在缓冲里连续，一次切出整段。
