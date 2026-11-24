@@ -1,26 +1,10 @@
-//! Metal / CUDA / 昇腾设备后端：实现 [`crate::backend::Backend`]（`Codegen` 出源 + `Driver` 跑源）。
-//! 三族各占一子模块，共享几何与回读在 `common`，`Launch` 并行装配在 `parallel`；本文件只保留
-//! 进程级注册入口与跨模块重导出，对外路径为 `llm-shard::backends::*`。
+//! Metal / CUDA / 昇腾设备后端：实现 [`crate::backend::Backend`]（见证装配 + 编译执行回读）。
+//! 三族各占一子模块，共享见证装配与回读在 `common`；本文件只保留进程级注册入口与跨模块重导出。
 
 pub(crate) mod ascend;
 pub(crate) mod common;
 pub(crate) mod cuda;
-pub(crate) mod harness;
 pub(crate) mod metal;
-pub(crate) mod parallel;
-
-// 测试经 `use super::*` 取用的裸名：旧巨石文件顶部的 crate 内重导出面，拆分后由本文件聚合保留。
-// 仅 `#[cfg(test)]` 编译：lib 代码走子模块路径，这些别名不参与生产导入面。
-#[cfg(test)]
-mod test_imports {
-    pub(crate) use super::parallel::{cuda, fold_of, metal};
-    pub(crate) use crate::backend::{Launch, Lower, Source};
-    pub(crate) use diagnostic::Code;
-    pub(crate) use prof::model::Sample;
-    pub(crate) use prof::sig::Signature;
-}
-#[cfg(test)]
-pub(crate) use test_imports::*;
 
 pub use crate::metal::{compile_run_metal, metal_driver, metal_kernel};
 
@@ -34,18 +18,3 @@ pub fn install() {
     crate::backend::register(&CUDA_BACKEND);
     crate::backend::register(&ASCEND_BACKEND);
 }
-
-// 见证真机套件 `tests/backends.rs`：其 `ensure_backends()` 会把 Metal/CUDA/昇腾后端注入进程级
-// 全局注册表，与同 lib test 进程内的 `bench` 空表断言互相污染。批次 #30 暂不挂载；
-// #31/#32 随链路回迁为独立 integration target（独立 test binary，注册表隔离）后再挂回。
-// #[cfg(test)]
-// #[path = "../../tests/backends.rs"]
-// mod tests;
-
-#[cfg(test)]
-#[path = "../../../testkit/tests/kernel.rs"]
-mod cutile_x_kernel;
-
-#[cfg(test)]
-#[path = "../../tests/program.rs"]
-mod program_tests;

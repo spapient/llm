@@ -64,6 +64,18 @@ fn fail(error: Error) -> ExitCode {
 
 fn run(command: &CutileCommand<'_>, settings: &Settings) -> diagnostic::Result<String> {
     match command {
+        CutileCommand::Doctor { .. }
+        | CutileCommand::Verify { .. }
+        | CutileCommand::Bench { .. } => run_pipeline(command, settings),
+        CutileCommand::Ledger { .. }
+        | CutileCommand::Fusions { .. }
+        | CutileCommand::Cache { .. } => run_ledger(command, settings),
+    }
+}
+
+/// 诊断与执行流水线：逐阶段体检、逐设备校验、实测达成率。
+fn run_pipeline(command: &CutileCommand<'_>, settings: &Settings) -> diagnostic::Result<String> {
+    match command {
         CutileCommand::Doctor { op, device, why } => doctor(settings, op, device, why.as_deref()),
         CutileCommand::Verify {
             op,
@@ -76,9 +88,23 @@ fn run(command: &CutileCommand<'_>, settings: &Settings) -> diagnostic::Result<S
             device,
             repeat,
         } => bench(settings, op, shape.as_deref(), device.as_deref(), *repeat),
+        _ => Err(Error::new(
+            Code::Internal,
+            "台账与维护命令应由 `run_ledger` 分派",
+        )),
+    }
+}
+
+/// 台账与维护：跨档案能力台账、候选融合打分、缓存回收。
+fn run_ledger(command: &CutileCommand<'_>, settings: &Settings) -> diagnostic::Result<String> {
+    match command {
         CutileCommand::Ledger { out } => ledger(settings, out.as_deref()),
         CutileCommand::Fusions { profile, budget } => fusions(settings, profile, *budget),
         CutileCommand::Cache { limit } => cache_gc(settings, *limit),
+        _ => Err(Error::new(
+            Code::Internal,
+            "诊断与执行命令应由 `run_pipeline` 分派",
+        )),
     }
 }
 

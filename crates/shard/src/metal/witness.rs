@@ -1,7 +1,5 @@
 //! Metal 见证驱动：一次发射 `cutile_witness`，按「见证宽度」回读缓冲位模式。
 
-use crate::metal::host::host_prologue;
-
 /// 见证驱动的 head：入口、参数与见证宽度用法；与基准驱动共用同一段前导。
 const METAL_HEAD: &str = r#"#import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
@@ -64,4 +62,27 @@ pub fn metal_driver(max: usize) -> String {
         "#define WITNESS_MAX_OUT {max}\n{METAL_HEAD}{prologue}{METAL_TAIL}",
         prologue = host_prologue("cutile_witness")
     )
+}
+
+/// host 驱动共用的前导：取默认设备、装载 metallib、取入口函数、建管线。
+fn host_prologue(entry: &str) -> String {
+    format!(
+        r#"{library}        id<MTLFunction> function = [library newFunctionWithName:@"{entry}"];
+        if (!function) {{ fprintf(stderr, "metallib 里没有 {entry}\n"); return 5; }}
+        id<MTLComputePipelineState> pipeline = [device newComputePipelineStateWithFunction:function error:&error];
+        if (!pipeline) {{ fprintf(stderr, "管线创建失败：%s\n", error.localizedDescription.UTF8String); return 6; }}
+"#,
+        library = host_library()
+    )
+}
+
+/// host 前导的公共半截：取默认设备、装载 metallib。
+fn host_library() -> &'static str {
+    r#"        id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+        if (!device) { fprintf(stderr, "本机没有 Metal 设备\n"); return 3; }
+        NSError *error = nil;
+        NSURL *url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:argv[1]]];
+        id<MTLLibrary> library = [device newLibraryWithURL:url error:&error];
+        if (!library) { fprintf(stderr, "metallib 装载失败：%s\n", error.localizedDescription.UTF8String); return 4; }
+"#
 }

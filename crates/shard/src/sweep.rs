@@ -8,9 +8,8 @@
 
 use crate::build;
 use crate::pipeline::{Prepared, Run, parse_shape, rejected_shapes, verify_shapes};
-use crate::verify::{Channel, NO_DEVICE, Verified, backend};
-use crate::witness;
-use crate::{runner, toolchain};
+use crate::toolchain;
+use crate::verify::{Channel, Verified};
 use cutile::cache::Artifact;
 use cutile::cap::{Path, Proof};
 use cutile::dirs::Dirs;
@@ -33,7 +32,7 @@ pub fn verify_one(
     proof: &Proof,
 ) -> diagnostic::Result<Verified> {
     let run = Run::new(op, profile, proof.clone())?;
-    let (lane, tool) = Lane::ready(profile)?;
+    let (_lane, tool) = Lane::ready(profile)?;
     let path = run
         .negotiate()
         .map_err(|error| Error::new(Code::Unsupported, error.to_string()))?;
@@ -43,7 +42,6 @@ pub fn verify_one(
     let sweep = Sweep {
         run: &run,
         dirs,
-        lane,
         tool,
         path,
         tolerance: cutile::reference::tolerance(run.model.dtype),
@@ -52,43 +50,27 @@ pub fn verify_one(
     sweep.measure()
 }
 
-/// 一个形状“怎么编译执行”：设备差异只在这里。
+/// 一个形状“怎么编译执行”：当前只保留本机 C 参考通道；设备生产态执行走 `prof::runtime` FFI 后端岛。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Lane {
     /// 本机 C 编译器 + 产物缓存（命中就不调编译器）。
     Host,
-    /// nvcc 临时编译、GPU 执行、回读；不进产物缓存，产物因此为空。
-    Cuda,
-    /// xcrun metal + metallib 临时编译、Apple GPU 执行、回读；不进产物缓存。
-    Metal,
-    /// ccec 临时编译、NPU 执行、AscendCL 回读；不进产物缓存。
-    Ascend,
 }
 
 impl Lane {
-    /// 档案声明的 `emit` 对应哪条通道，以及这条通道此刻能不能跑（`None` 表示没有编译器，只能复用产物）。本机没有执行路径时在这里 fail-fast。
+    /// 档案声明的 `emit` 对应哪条通道，以及这条通道此刻能不能跑（`None` 表示没有编译器，只能复用产物）。
     pub(crate) fn ready(
         profile: &Profile,
     ) -> diagnostic::Result<(Self, Option<toolchain::Toolchain>)> {
         match profile.meta.emit {
             Emit::C => Ok((Self::Host, toolchain::detect())),
-            Emit::Cuda => Self::ready_device(profile, Self::Cuda),
-            Emit::Metal => Self::ready_device(profile, Self::Metal),
-            Emit::Ascendc => Self::ready_device(profile, Self::Ascend),
-            _ => Err(Error::new(Code::Unsupported, unsupported_emit(profile))),
-        }
-    }
-
-    /// 加速器通道共用的「设备在不在」判断：在则经 [`crate::backend::Driver::toolchain`] 取实测
-    /// 工具链返回，不在则 fail-fast（`NO_DEVICE`）。工具链身份只经 `Backend` 缝取，机制层不直接
-    /// 调 `detect_nvcc` / `detect_metal`——后端实现搬去 `engine` 后这里一行不改。
-    fn ready_device(
-        profile: &Profile,
-        lane: Self,
-    ) -> diagnostic::Result<(Self, Option<toolchain::Toolchain>)> {
-        match crate::device::spec(profile.meta.emit) {
-            Some(backend) if backend.available(profile) => Ok((lane, backend.toolchain())),
-            _ => Err(Error::new(Code::Unsupported, NO_DEVICE.to_string())),
+            _ => Err(Error::new(
+                Code::Unsupported,
+                format!(
+                    "设备 `{}` 的生产态 verify 走 prof::runtime FFI 后端岛，shard 只保留 C 参考通道",
+                    profile.meta.id
+                ),
+            )),
         }
     }
 }
@@ -97,7 +79,6 @@ impl Lane {
 struct Sweep<'a> {
     run: &'a Run<'a>,
     dirs: &'a Dirs,
-    lane: Lane,
     tool: Option<toolchain::Toolchain>,
     path: Path,
     tolerance: f64,
@@ -139,32 +120,20 @@ impl Sweep<'_> {
         Ok((sample, prepared))
     }
 
-    /// 输出个数该是多少：C 通道看样本声明的 `y`，设备通道（CUDA / Metal / 昇腾）看参考输出的长度。
-    fn expected(&self, sample: &Sample, want: &[f32]) -> usize {
-        match self.lane {
-            Lane::Host => sample.buf("y").map_or(sample.n, |y| y.values.len()),
-            Lane::Cuda | Lane::Metal | Lane::Ascend => want.len(),
-        }
+    /// 输出个数该是多少：C 通道看样本声明的 `y`。
+    fn expected(&self, sample: &Sample, _want: &[f32]) -> usize {
+        sample.buf("y").map_or(sample.n, |y| y.values.len())
     }
 
-    /// 一格怎么跑：返回回读的输出与产物记录（CUDA / Metal / 昇腾 通道每次临时编译，没有产物）。
+    /// 一格怎么跑：返回回读的输出与产物记录。
     fn kernel(
         &mut self,
         sample: &Sample,
         prepared: &Prepared,
     ) -> diagnostic::Result<(Vec<f32>, Option<Artifact>)> {
-        match self.lane {
-            Lane::Host => {
-                // C 参考通道本身就是串行语义基准：不参与「形态是否并行」的判定，也不该被读成缺口。
-                self.verified.channel = Channel::Reference;
-                self.host(sample, prepared)
-            }
-            Lane::Cuda => self.device(sample, prepared, Emit::Cuda),
-            Lane::Metal => self.device(sample, prepared, Emit::Metal),
-            // 昇腾没有并行内核（P0 片段只到标量 C）：`parallel` 如实 `Unsupported`，回落后由
-            // `AscendBackend::harness` 给那份单源 AscendC 程序，报告里的通道写“语义门”。
-            Lane::Ascend => self.device(sample, prepared, Emit::Ascendc),
-        }
+        // C 参考通道本身就是串行语义基准：不参与「形态是否并行」的判定，也不该被读成缺口。
+        self.verified.channel = Channel::Reference;
+        self.host(sample, prepared)
     }
 
     /// C 通道：缓存编译（命中就不调编译器），产物因此进报告。
@@ -182,54 +151,6 @@ impl Sweep<'_> {
             self.dirs,
         )?;
         Ok((outcome.bits, Some(artifact)))
-    }
-
-    /// 设备通道：nvcc / xcrun metal / ccec 临时编译、设备执行、回读；签名与样本先对齐（与 C 通道同一条判据）。
-    fn device(
-        &mut self,
-        sample: &Sample,
-        prepared: &Prepared,
-        emit: Emit,
-    ) -> diagnostic::Result<(Vec<f32>, Option<Artifact>)> {
-        let (backend, launch) = self.channel(emit, sample)?;
-        let (program, channel) = self.program(backend, sample, prepared, &launch)?;
-        let (stdout, _stderr) =
-            backend.compile_run(self.run.profile, self.dirs, &program, "verify")?;
-        // 只有真跑通了才写「并行」：回落的单线程执行不得借此升级。
-        self.verified.channel = channel;
-        Ok((runner::parse_bits(&stdout), None))
-    }
-
-    /// 通道前置：签名与样本先对齐（与 C 通道同一条判据），再取后端与派发几何。
-    fn channel(
-        &self,
-        emit: Emit,
-        sample: &Sample,
-    ) -> diagnostic::Result<(&'static dyn crate::backend::Backend, crate::backend::Launch)> {
-        self.run.op.signature.check_sample(sample)?;
-        let backend = backend(emit)?;
-        let launch = crate::execution::launch(self.run.op, sample)?;
-        Ok((backend, launch))
-    }
-
-    /// 要编译的那份程序：并行网格（生产态形态）优先，该形态没有实现时显式回落单线程语义门。
-    fn program(
-        &self,
-        backend: &dyn crate::backend::Backend,
-        sample: &Sample,
-        prepared: &Prepared,
-        launch: &crate::backend::Launch,
-    ) -> diagnostic::Result<(crate::backend::Source, Channel)> {
-        let signature = &self.run.op.signature;
-        let source = &prepared.source.text;
-        match backend.parallel(source, signature, sample, launch) {
-            Ok(program) => Ok((program, Channel::Parallel)),
-            Err(error) if error.code() == Code::Unsupported => Ok((
-                backend.harness(source, signature, sample)?,
-                Channel::Harness,
-            )),
-            Err(error) => Err(error),
-        }
     }
 }
 
@@ -283,25 +204,6 @@ fn parity(
         ));
     }
     Ok(error)
-}
-
-/// 非 C 前端的说明：设备在本机与不在本机是两句不同的话。
-fn unsupported_emit(profile: &Profile) -> String {
-    let declared: Vec<String> = profile
-        .provides
-        .iter()
-        .map(|have| format!("{}={}", have.prim, have.grade))
-        .collect();
-    let why = if witness::device_available(profile) {
-        format!(
-            "设备在本机（`emit = {}`），内核执行路径尚未接通（`c` / `cuda` / `metal` / `ascendc` 已接，\
-             其余仍只有见证）：见证已经在这台设备上跑过，内核文本还没有对应的编译/回读路径",
-            profile.meta.emit
-        )
-    } else {
-        NO_DEVICE.to_string()
-    };
-    format!("{why}；档案声明的等级：{}", declared.join(" "))
 }
 
 /// 负例也是判据：组大小约束被放宽时，这里必须先在 `verify` 里失败，而不是等到错数据。

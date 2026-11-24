@@ -1,9 +1,7 @@
 //! `bench`：量一次，并把它折成"达成率"这个可判定的数（README §12.3）。
 
-use crate::backend::Lower;
 use crate::build;
 use crate::config::config;
-use crate::device;
 use crate::pipeline::{self, Run, model_for};
 use crate::runner;
 use crate::toolchain;
@@ -225,30 +223,18 @@ fn verified<'a>(
     Ok((profile, evidence))
 }
 
-/// 当前 harness 只计时串行 C 语义路径；不能把它的耗时拿来除以设备的峰值带宽。
+/// 当前 harness 只计时串行 C 语义路径；设备生产态计时走 `prof::runtime` FFI 后端岛。
 fn require_bench_backend(profile: &Profile) -> diagnostic::Result<()> {
     if profile.meta.emit == Emit::C {
         return Ok(());
     }
-    let Some(backend) = device::spec(profile.meta.emit) else {
-        return Err(Error::new(
-            Code::Unsupported,
-            format!(
-                "`bench` 的 `{}` 设备后端尚未注册，不能报告设备吞吐",
-                profile.meta.emit
-            ),
-        ));
-    };
-    if !backend.available(profile) {
-        return Err(Error::new(
-            Code::Unsupported,
-            format!(
-                "`bench` 的 `{}` 设备工具链或运行时不可用",
-                profile.meta.emit
-            ),
-        ));
-    }
-    Ok(())
+    Err(Error::new(
+        Code::Unsupported,
+        format!(
+            "`bench` 的 `{}` 设备生产态计时走 prof::runtime FFI 后端岛，shard 不再生成设备基准程序",
+            profile.meta.emit
+        ),
+    ))
 }
 
 /// 判据：测了什么、测到多少（形状、样本数、耗时、工作集与产物）；不回答"离档案峰值差多少"。
@@ -328,7 +314,13 @@ fn measure(
     if run.profile.meta.emit == Emit::C {
         host_measure(run, dirs, prepared, sample, repeat)
     } else {
-        device_measure(run, dirs, sample, repeat, &prepared.source.text)
+        Err(Error::new(
+            Code::Unsupported,
+            format!(
+                "设备 `{}` 的生产态计时走 prof::runtime FFI 后端岛，shard 不再生成设备基准程序",
+                run.profile.meta.id
+            ),
+        ))
     }
 }
 
@@ -360,51 +352,6 @@ fn host_measure(
     })
 }
 
-/// 设备基准：每次都实际编译并执行生产态 kernel，没有可复用产物。
-fn device_measure(
-    run: &Run<'_>,
-    dirs: &Dirs,
-    sample: &Sample,
-    repeat: usize,
-    source: &str,
-) -> diagnostic::Result<Measured> {
-    let backend = device_backend(run.profile)?;
-    let kind = production_lower(run.op, run.profile.meta.emit)?;
-    let harness = backend.benchmark_harness(
-        run.profile,
-        source,
-        &run.op.signature,
-        sample,
-        &kind,
-        repeat,
-    )?;
-    let (stdout, stderr) = backend.compile_run(run.profile, dirs, &harness, "bench")?;
-    Ok(Measured {
-        outcome: runner::Outcome {
-            bits: runner::parse_bits(&stdout),
-            timing: runner::parse_timing(&stderr),
-            stderr,
-        },
-        artifact: None,
-        cache_dir: None,
-        compiler: compiler_id(run.profile, backend),
-    })
-}
-
-/// 设备计时后端必须已注册：没注册是装配缺失，不是「这个 emit 不支持」。
-fn device_backend(profile: &Profile) -> diagnostic::Result<&'static dyn crate::backend::Backend> {
-    device::spec(profile.meta.emit)
-        .ok_or_else(|| Error::new(Code::Unsupported, "设备计时后端未注册"))
-}
-
-/// CUDA 走 nvcc 族的档案，其余走设备后端自己的工具链；两处都拿不到就如实记「无」。
-fn compiler_id(profile: &Profile, backend: &'static dyn crate::backend::Backend) -> Option<String> {
-    match profile.meta.emit {
-        Emit::Cuda => toolchain::for_profile(profile).map(|tool| tool.id()),
-        _ => backend.toolchain().map(|tool| tool.id()),
-    }
-}
-
 /// 样本数就是重复次数：少一条就不能拿 p50/p95 说事。
 fn check_samples(repeat: usize, outcome: &runner::Outcome) -> diagnostic::Result<()> {
     let got = outcome.timing.samples_ns.len();
@@ -433,42 +380,6 @@ fn check_accuracy(
         ));
     }
     Ok(max_rel_err)
-}
-
-fn production_lower(op: &OpDecl, emit: Emit) -> diagnostic::Result<Lower> {
-    if op.name == "gemv_i4" && emit == Emit::Cuda {
-        return Ok(Lower::QuantizedGemvI4 { threads: 32 });
-    }
-    skeleton_lower(op)
-}
-
-/// 只有逐点与 GEMM 骨架有生产态计时路径：逐点优先走逐点核，其余走声明里的网格。
-fn skeleton_lower(op: &OpDecl) -> diagnostic::Result<Lower> {
-    match op.skeleton {
-        prof::decl::Skeleton::Elementwise => pointwise_or_grid(op),
-        prof::decl::Skeleton::Gemm => grid_lower(op),
-        _ => Err(Error::new(
-            Code::Unsupported,
-            format!("`{}` 的生产态 lowering 尚无设备计时路径", op.name),
-        )),
-    }
-}
-
-/// 逐点算子不读邻居，因此不需要网格；一旦它声明了网格之外的并行形态就退回网格路径。
-fn pointwise_or_grid(op: &OpDecl) -> diagnostic::Result<Lower> {
-    if op.pointwise() {
-        Ok(Lower::Pointwise)
-    } else {
-        grid_lower(op)
-    }
-}
-
-/// 逐点之外的并行形态都走声明里的网格：没有网格就没有生产态计时路径。
-fn grid_lower(op: &OpDecl) -> diagnostic::Result<Lower> {
-    op.grid
-        .clone()
-        .map(Lower::Loop)
-        .ok_or_else(|| Error::new(Code::Unsupported, "该算子没有生产态并行网格"))
 }
 
 /// 判据：选了哪条变体、按什么形状编哪份源文本；不回答"它编不编得过"——编译在 [`run_sample`]。

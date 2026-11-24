@@ -132,21 +132,17 @@ pub mod device;
 pub mod doctor;
 pub mod execution;
 pub mod gate;
-pub mod ir;
 pub mod ledger;
 pub mod pipeline;
 pub mod platform;
-pub mod program;
 pub mod runner;
 pub mod sweep;
 pub mod toolchain;
 pub mod verify;
 pub mod witness;
 
-// 设备执行面（回迁自旧 device crate）：后端装配、方言 lowering、六平台合同与过渡内核族。
+// 设备执行面：后端见证装配、六平台合同与编译执行回读。
 pub mod backends;
-pub mod cuda;
-mod dialect;
 pub mod metal;
 
 pub use runner::{compile_flags, driver};

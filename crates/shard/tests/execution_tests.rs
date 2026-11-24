@@ -1,5 +1,4 @@
-//! `execution` 的派发几何与回读判据用例：目录取内置声明、样本取该声明自己的语义表，
-//! 于是「网格怎么来」只由声明与样本决定，测试不另造形状。
+//! `execution` 的形状与回读判据用例。
 //!
 //! 移出源文件是为了让生产文件留在静态门的行数上限内；`super::*` 仍是 `execution` 那层。
 
@@ -48,65 +47,6 @@ fn check_parity_rejects_length_mismatch_and_drift() {
         Code::Invalid,
         "相对误差超容差"
     );
-}
-
-/// 内置目录里的一条真实声明与它自己的样本：派发几何只由声明与样本推出，测试不另造形状。
-fn decl(name: &str) -> (&'static OpDecl, Sample) {
-    // 目录是进程级只读数据：解析一次就够了，每条用例各重建一遍只是白花时间。
-    static CATALOGUE: std::sync::OnceLock<Catalogue> = std::sync::OnceLock::new();
-    let catalogue = CATALOGUE.get_or_init(|| Catalogue::try_builtin().expect("内置数据可解析"));
-    let op = catalogue.op(name).expect("目录里有这条声明");
-    let model = nn::registry::model(name).expect("有语义表");
-    let sample = (model.sample)(8, 4);
-    (op, sample)
-}
-
-#[test]
-fn a_pointwise_launch_is_one_item_per_element_in_thread_blocks() {
-    let (op, sample) = decl("scale_f32");
-    let launch = launch(op, &sample).expect("逐点可派发");
-    assert_eq!(launch.kind, Lower::Pointwise);
-    // 逐点：工作项 = 长度轴上的元素数（签名里唯一的标量），成组发射。
-    let len = sample.scalar("N").expect("样本带 `N`");
-    assert_eq!(launch.items, [usize::try_from(len).unwrap(), 1, 1]);
-    assert_eq!(launch.group, POINT_THREADS);
-}
-
-#[test]
-fn a_chunked_family_is_one_item_per_block_and_never_grouped() {
-    let (op, sample) = decl("rmsnorm_f32");
-    let launch = launch(op, &sample).expect("分块可派发");
-    let Lower::ChunkRmsnorm { chunk } = launch.kind else {
-        panic!("rmsnorm 应降成分块归一化，实为 {:?}", launch.kind);
-    };
-    // 块数是长度轴的向上取整：末块不满也算一块，否则尾部元素没人算。
-    assert_eq!(launch.items, [sample.m.div_ceil(chunk), 1, 1]);
-    // 一块一线程：组内再塞线程会让同一块被多算几遍。
-    assert_eq!(launch.group, 1);
-}
-
-#[test]
-fn a_declared_grid_becomes_the_item_count_axis_by_axis() {
-    let (op, sample) = decl("gemv_i8");
-    let launch = launch(op, &sample).expect("网格可派发");
-    let Lower::Loop(grid) = &launch.kind else {
-        panic!("gemv 应降成网格，实为 {:?}", launch.kind);
-    };
-    // gemv 的网格是 `dims = ["n:N"]`（一维、按输出行拆线程）：工作项数就是该标量的取值，
-    // 其余维补 1。"按行拆"因此不是每条线程算整遍，而是每行一条线程。
-    assert_eq!(grid.dims.len(), 1, "gemv 是一维网格");
-    let rows = sample.scalar("N").expect("样本带 `N`");
-    assert_eq!(launch.items, [usize::try_from(rows).unwrap(), 1, 1]);
-    assert_eq!(launch.group, 1);
-}
-
-#[test]
-fn a_serial_fallback_launches_exactly_one_item() {
-    // 零维网格是「原样跑一遍」：不给 0（网格为零既不执行也不报错），只给一格。
-    assert_eq!(pad(&[]), [1, 1, 1]);
-    assert_eq!(along(0), [1, 1, 1]);
-    assert_eq!(along(5), [5, 1, 1]);
-    assert_eq!(pad(&[4, 2]), [4, 2, 1]);
 }
 
 #[test]

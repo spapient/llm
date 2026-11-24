@@ -28,7 +28,7 @@ fn unregistered_device_profiles_are_not_reported_as_gpu_benchmarks() {
         let error = require_bench_backend(profile).expect_err("设备计时后端尚未接入");
         assert_eq!(error.code(), Code::Unsupported, "{device}: {error}");
         assert!(
-            error.to_string().contains("不能报告设备吞吐"),
+            error.to_string().contains("prof::runtime"),
             "{device}: {error}"
         );
     }
@@ -42,20 +42,6 @@ fn bandwidth_attainment_is_a_byte_ratio_not_a_gigabyte_one() {
     assert!((measured.gflops - 1.43).abs() < 0.01, "{measured:?}");
     assert!((measured.bandwidth_ratio.expect("有峰值") - 0.0070).abs() < 1e-4);
     assert_eq!(throughput(1, 1.0, 0.0, Some(1.0)).bandwidth_ratio, None);
-}
-
-#[test]
-fn gemv_i4_selects_the_cooperative_device_lowering() {
-    let catalogue = Catalogue::try_builtin().expect("内置档案可解析");
-    let op = catalogue.op("gemv_i4").expect("gemv_i4 已登记");
-    assert_eq!(
-        production_lower(op, Emit::Cuda).expect("CUDA 有生产态 lowering"),
-        Lower::QuantizedGemvI4 { threads: 32 }
-    );
-    assert!(matches!(
-        production_lower(op, Emit::Metal).expect("Metal 有生产态 lowering"),
-        Lower::Loop(_)
-    ));
 }
 
 #[test]

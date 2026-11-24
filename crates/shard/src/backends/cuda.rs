@@ -1,94 +1,17 @@
-//! CUDA / MUSA 后端：`Codegen` 出 `.cu`、`Driver` 跑 `nvcc` / `mcc`。几何选型、lowering 分派、
-//! witness 装配与编译运行在本模块；并行程序装配见 [`super::parallel`]。
+//! CUDA / MUSA 后端：见证片段装配 + `nvcc` / `mcc` 编译执行回读。
+//! 设备算子正文来自 prof 档案片段；本模块不按骨架重写算子算法。
 
-use crate::backend::{Backend, Codegen, Driver, Launch, Lower, Readback, Source};
-use crate::backends::common::{
-    benchmark_grid, benchmark_output_len, device_fn, positive_scalar, witness_head,
-    witness_readback,
-};
+use crate::backend::{Backend, Codegen, Driver, Readback, Source};
+use crate::backends::common::{device_fn, witness_head, witness_readback};
 use crate::driver;
 use crate::platform::{detect_musa, detect_nvcc, find_cl, musa_device};
 use crate::toolchain::Toolchain;
 use crate::witness::{MAX_OUT, Scope, Selected};
 use cutile::dirs::Dirs;
 use diagnostic::{Code, Error, Result};
-use prof::decl::Grid;
-use prof::model::Sample;
 use prof::prof::{Emit, Profile};
-use prof::sig::Signature;
 use std::path::Path;
 use std::process::Command;
-
-use super::parallel;
-
-fn cuda_bench_geometry(
-    signature: &Signature,
-    sample: &Sample,
-    kind: &Lower,
-) -> Result<([usize; 3], [usize; 3], String)> {
-    match kind {
-        Lower::Pointwise => pointwise_wrap(signature, sample),
-        Lower::Loop(grid) => loop_wrap(signature, sample, grid),
-        Lower::QuantizedGemvI4 { threads } => warp_wrap(signature, sample, *threads),
-        _ => Err(Error::new(
-            Code::Unsupported,
-            "该 lowering 尚无单 kernel 设备计时封装",
-        )),
-    }
-}
-
-/// 逐点族：一条线程一个输出元素，块宽 256。
-fn pointwise_wrap(
-    signature: &Signature,
-    sample: &Sample,
-) -> Result<([usize; 3], [usize; 3], String)> {
-    let len = benchmark_output_len(signature, sample)?;
-    Ok((
-        [len.div_ceil(256), 1, 1],
-        [256, 1, 1],
-        crate::cuda::buf_args(signature),
-    ))
-}
-
-/// 多段族：网格就是声明里的网格，一个线程一段。
-fn loop_wrap(
-    signature: &Signature,
-    sample: &Sample,
-    grid: &Grid,
-) -> Result<([usize; 3], [usize; 3], String)> {
-    Ok((
-        benchmark_grid(grid, sample)?,
-        [1, 1, 1],
-        crate::dialect::launch_args(sample, signature.params())?,
-    ))
-}
-
-/// i4 GEMV 一行一个 warp：`grid = [N, 1, 1]`、`block = [threads, 1, 1]`。
-fn warp_wrap(
-    signature: &Signature,
-    sample: &Sample,
-    threads: usize,
-) -> Result<([usize; 3], [usize; 3], String)> {
-    let rows = warp_rows(sample)?;
-    Ok((
-        [rows, 1, 1],
-        [warp_lanes(threads)?, 1, 1],
-        crate::dialect::launch_args(sample, signature.params())?,
-    ))
-}
-
-/// GEMV 的规约按 lane 展开，因此 32-lane warp 是硬条件而非默认值。
-fn warp_lanes(threads: usize) -> Result<usize> {
-    if threads != 32 {
-        return Err(Error::new(Code::Unsupported, "CUDA GEMV 要求 32-lane warp"));
-    }
-    Ok(threads)
-}
-
-/// 输出宽度 `N` 必须存在且为正整数：零行或负行没有可写的输出。
-fn warp_rows(sample: &Sample) -> Result<usize> {
-    positive_scalar(sample, "N", "gemv_i4 输出宽度")
-}
 
 pub(crate) struct CudaBackend;
 
@@ -105,58 +28,6 @@ impl Codegen for CudaBackend {
     ) -> Result<String> {
         let _ = scope; // CUDA 只走设备执行
         cuda_program(profile, dirs, selected)
-    }
-    fn lower(
-        &self,
-        kernel: &str,
-        signature: &Signature,
-        sample: &Sample,
-        kind: &Lower,
-    ) -> Result<Vec<String>> {
-        cuda_lower(kernel, signature, sample, kind)
-    }
-    fn harness(&self, kernel: &str, signature: &Signature, sample: &Sample) -> Result<Source> {
-        Ok(Source::Single(crate::cuda::cuda_harness(
-            kernel, signature, sample,
-        )?))
-    }
-    fn parallel(
-        &self,
-        kernel: &str,
-        signature: &Signature,
-        sample: &Sample,
-        launch: &Launch,
-    ) -> Result<Source> {
-        parallel::cuda(kernel, signature, sample, launch).map(Source::Single)
-    }
-    fn benchmark_harness(
-        &self,
-        profile: &Profile,
-        kernel: &str,
-        signature: &Signature,
-        sample: &Sample,
-        kind: &Lower,
-        repeat: usize,
-    ) -> Result<Source> {
-        let lowered = cuda_lower(kernel, signature, sample, kind)?;
-        let [device] = lowered.as_slice() else {
-            return Err(Error::new(
-                Code::Unsupported,
-                "CUDA 基准当前只支持单段生产态 kernel",
-            ));
-        };
-        let (grid, threads, args) = cuda_bench_geometry(signature, sample, kind)?;
-        let source = crate::cuda::cuda_benchmark_driver(
-            device,
-            signature,
-            sample,
-            grid,
-            threads,
-            &args,
-            repeat,
-            profile.meta.tool == "mcc",
-        )?;
-        Ok(Source::Single(source))
     }
 }
 
@@ -204,52 +75,6 @@ impl Driver for CudaBackend {
 }
 
 impl Backend for CudaBackend {}
-
-/// 把中性的 [`Lower`] 描述降成 CUDA：逐点网格与分块归约已落地，其余骨架尚未覆盖。
-fn cuda_lower(
-    kernel: &str,
-    signature: &Signature,
-    sample: &Sample,
-    kind: &Lower,
-) -> Result<Vec<String>> {
-    match kind {
-        // 逐块归一化两族与扫描自己就产出多段源码，不经过下面的单文件包装。
-        Lower::ChunkRmsnorm { chunk } => {
-            crate::cuda::cuda_chunk_rmsnorm(kernel, signature, sample, *chunk)
-        }
-        Lower::ChunkSoftmax { chunk } => {
-            crate::cuda::cuda_chunk_softmax(kernel, signature, sample, *chunk)
-        }
-        Lower::ChunkScan { chunk, decay } => {
-            crate::cuda::cuda_chunk_scan(kernel, signature, sample, *chunk, *decay)
-        }
-        Lower::QuantizedGemvI4 { threads } => {
-            crate::cuda::cuda_quantized_gemv_i4(signature, *threads).map(|source| vec![source])
-        }
-        // 其余骨架都只吐一段源码；分派单独一层，是为了让这一层只回答「哪一族」。
-        _ => cuda_single_source(kind, kernel, signature, sample).map(|source| vec![source]),
-    }
-}
-
-/// 单段源码骨架的分派：pointwise / chunk-reduce / loop / wmma 各产出一段源码。
-fn cuda_single_source(
-    kind: &Lower,
-    kernel: &str,
-    signature: &Signature,
-    sample: &Sample,
-) -> Result<String> {
-    match kind {
-        Lower::Pointwise => crate::cuda::cuda_grid_kernel(kernel, signature, sample),
-        Lower::ChunkReduce { chunk, func } => {
-            crate::cuda::cuda_chunk_reduce(kernel, signature, sample, *chunk, func)
-        }
-        Lower::Loop(grid) => crate::cuda::cuda_loop_kernel(kernel, signature, sample, grid),
-        _ => Err(Error::new(
-            Code::Internal,
-            "该骨架产出多段源码，应在 cuda_lower 分派，不应落到单段兜底".to_string(),
-        )),
-    }
-}
 
 fn cuda_program(profile: &Profile, dirs: &Dirs, selected: &[Selected<'_>]) -> Result<String> {
     let mut program = witness_head("#include <cuda_runtime.h>\n#include <cstdio>\n", profile);

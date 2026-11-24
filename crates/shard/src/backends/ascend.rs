@@ -8,14 +8,18 @@ use crate::toolchain::Toolchain;
 use crate::witness::{MAX_OUT, Scope, Selected};
 use cutile::dirs::Dirs;
 use diagnostic::{Code, Error, Result};
-use prof::model::Sample;
 use prof::prof::Emit;
 use prof::prof::Profile;
-use prof::sig::Signature;
 use std::path::Path;
 use std::process::Command;
 
-use super::harness::{ACL_GUARD, ascend_harness};
+/// AscendCL 的调用守卫：失败时报出是哪个调用并返回非零。
+const ACL_GUARD: &str = "static int cutile_acl(const char *what, aclError code) {\n\
+     \x20   if (code == ACL_SUCCESS) return 0;\n\
+     \x20   fprintf(stderr, \"acl %s: %d\\n\", what, (int)code);\n\
+     \x20   return -1;\n\
+     }\n\
+     #define CUTILE_ACL(call) do { if (cutile_acl(#call, (call)) != 0) return 1; } while (0)\n";
 
 /// 昇腾的可用性：编译器与设备都在（`ccec` 认得出设备，但没有 NPU 也发射不了）。
 pub(crate) fn ascend_ready() -> bool {
@@ -40,11 +44,6 @@ impl Codegen for AscendBackend {
     ) -> Result<String> {
         let _ = scope; // 与 CUDA 同：见证只有设备执行这一条范围
         ascend_program(profile, dirs, selected)
-    }
-
-    /// 语义门：`.k` 内核 → `__aicore__` 单源 AscendC 程序（内核 + 单块发射 + AscendCL 回读）。
-    fn harness(&self, kernel: &str, signature: &Signature, sample: &Sample) -> Result<Source> {
-        ascend_harness(kernel, signature, sample).map(Source::Single)
     }
 }
 

@@ -22,37 +22,30 @@ fn witness_note_is_absent_when_nothing_ran() {
     assert!(witness_note(0, 0, &rejected).is_none());
 }
 
-/// 昇腾的 `emit` 走的是**设备通道**（与 `cuda` / `metal` 同构），不是“这条 emit 还没接通”那一句：
-/// 登记 `Lane::Ascend` 之后，`verify --devices ascend` 的结论只由“本机有没有这台设备”决定。
-///
-/// 本用例在 `cutile` 里跑，引擎后端没有注册，所以期望的就是 [`NO_DEVICE`]——如果 `Lane::ready`
-/// 又退回 `unsupported_emit`，那条分支会打印“内核执行路径尚未接通”，把这台设备说成连通道都
-/// 没有，而实际缺的只是机器。
+/// 非 C 前端的生产态 verify 走 `prof::runtime` FFI 后端岛，shard 只保留 C 参考通道。
 #[test]
-fn the_ascend_emit_takes_the_device_lane() {
+fn the_ascend_emit_reports_the_prof_runtime_lane() {
     let profile = cutile::builtin::Catalogue::try_builtin()
         .expect("内置数据")
         .profile("ascend")
         .cloned()
         .expect("ascend 档案");
-    let error = Lane::ready(&profile).expect_err("本机没有昇腾执行前端");
+    let error = Lane::ready(&profile).expect_err("shard 不再生成设备 verify 程序");
     assert_eq!(error.code(), Code::Unsupported);
-    assert_eq!(error.message(), NO_DEVICE);
+    assert!(error.message().contains("prof::runtime"), "{error}");
 }
 
-/// 再往外一层：整条 [`verify_one`] 的结论也必须落在"本机没有这台设备"上。次序有讲究——通道判据
-/// 在协商之前（`Lane::ready` 先于 `Run::negotiate`），否则 `L0 < L2` 会先报"无可行变体"，把
-/// "缺一台机器"说成"这台设备连声明都不够"，而后者是要改数据才能解决的。
+/// 再往外一层：整条 [`verify_one`] 的结论也必须落在 prof::runtime 后端岛上。
 #[test]
-fn verifying_ascend_without_the_device_reports_the_missing_device() {
+fn verifying_ascend_reports_the_prof_runtime_lane() {
     let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
     let profile = catalogue.profile("ascend").cloned().expect("ascend 档案");
     let op = catalogue.op("gemv_i4").expect("gemv_i4 声明");
     let dirs = Dirs::under(std::env::temp_dir().join("cutile-verify-ascend"));
-    let error =
-        verify_one(op, &profile, &dirs, &cutile::cap::Proof::none()).expect_err("本机没有昇腾设备");
+    let error = verify_one(op, &profile, &dirs, &cutile::cap::Proof::none())
+        .expect_err("shard 不再生成设备 verify 程序");
     assert_eq!(error.code(), Code::Unsupported);
-    assert_eq!(error.message(), NO_DEVICE);
+    assert!(error.message().contains("prof::runtime"), "{error}");
 }
 
 #[test]

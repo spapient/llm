@@ -7,18 +7,8 @@ use cutile::cache::Artifact;
 use cutile::cap::{self, NoPath};
 use cutile::dirs::Dirs;
 use cutile::emit::Fragment;
-use cutile::prof::Emit;
 use diagnostic::{Code, Error};
 use prof::decl::OpDecl;
-
-/// 设备不在本机时唯一的说法：通道、协商与报告都用它。
-pub(crate) const NO_DEVICE: &str = "本机没有该设备，只能真机验证";
-
-/// 按 `emit` 取设备后端，取不到就是「本机没有这门语言的执行前端」。把 `.ok_or_else` 收在一处，
-/// 让 CUDA / Metal 两条通道只写 `backend(emit)?`，不各自重复拼错误。
-pub(crate) fn backend(emit: Emit) -> diagnostic::Result<&'static dyn crate::backend::Backend> {
-    crate::device::spec(emit).ok_or_else(|| Error::new(Code::Unsupported, NO_DEVICE.to_string()))
-}
 
 /// 一台设备通过 `L2` 的证据：这次执行真的产生了什么。档案登记值（`tool_ver`）与实测值（`toolchain`）
 /// 分开列：两者不一致不改等级，但报告必须把差异说出来。
