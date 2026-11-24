@@ -62,6 +62,7 @@ pub struct Facts {
     layers: usize,
     batch_rows: usize,
     batch_cols: usize,
+    config_fingerprint: u64,
 }
 
 impl Facts {
@@ -88,7 +89,19 @@ impl Facts {
             layers,
             batch_rows,
             batch_cols,
+            config_fingerprint: 0,
         })
+    }
+
+    /// 绑定稳定训练配置指纹；`0` 保留为“未声明”。
+    pub const fn with_config_fingerprint(mut self, fingerprint: u64) -> Self {
+        self.config_fingerprint = fingerprint;
+        self
+    }
+
+    /// 训练配置指纹。
+    pub const fn config_fingerprint(&self) -> u64 {
+        self.config_fingerprint
     }
 
     /// 步号。
