@@ -1,17 +1,20 @@
-//! 模板表生成：`ops/*.toml` + `<vendor>/kernels/*.k` → `template_list.rs` + `templates_table.rs`。
+//! 模板表生成：`ops/*.toml` + 有效后端内核 → `template_list.rs` + `templates_table.rs`。
 //!
-//! 算子的 `Table` 声明树已由 `prof_ops!()` 编译期展开成强类型 `OpView`（见 `crate::OPS`）；
-//! 本脚本只保留模板正文这一半：一份 `$m!{ 名字 => 模板 }` 清单与一张模板正文表。生成顺序按
-//! 算子名升序，模板清单、注册表与 [`crate::OPS`] 同序。模板名（`stem`）由语料自己声明：
-//! `[op].stem` 缺省为文件名，共享一份模板的算子写显式 stem（`base` 继承自动传播）——
-//! "哪些算子用哪份模板"只住在 `ops/` 里，代码没有第二份清单。
+//! 算子的 `Table` 声明树已由 `prof_ops!()` 编译期展开成强类型 `OpView`（见 `crate::OPS`）。
+//! 本模块只生成正文：算子名与模板 stem 来自共享声明；后端优先使用自己的
+//! `<vendor>/kernels/<stem>.k`，未特化时沿设备档案的 `[kernels].base` 继承参考实现。
+//! 因此“完整覆盖”不再等于“每个后端复制一份相同文件”。
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use crate::{Device, buildgen, fail};
 
-/// 模板清单与后端正文表：`ops/*.toml` + `<vendor>/kernels/*.k` → 两张生成表。
+/// 循环展开锚点：正文标记位置，TOML 的 `[kernel].unroll` 决定因子。
+const UNROLL_MARKER: &str = "/* cutile-unroll */";
+
+/// 模板清单与后端正文表：`ops/*.toml` + 有效后端内核 → 两张生成表。
 pub fn declarations_of(manifest: &Path, devices: &[Device]) -> (String, String) {
     declarations(manifest, devices).unwrap_or_else(|error| fail(format!("算子模板表：{error}")))
 }
@@ -22,247 +25,354 @@ fn declarations(manifest: &Path, devices: &[Device]) -> diagnostic::Result<(Stri
     let ops = src.join("ops");
     println!("cargo:rerun-if-changed={}", ops.display());
     let files = buildgen::collect(&ops)?;
-    let (names, stems, tiers) = scan(&ops, manifest, &files, devices)?;
-    Ok((
-        emit_list(&names, &stems),
-        emit_templates(&src, devices, &names, &stems, &tiers),
-    ))
+    let entries = scan(&ops, manifest, &files, devices)?;
+    Ok((emit_list(&entries), emit_templates(&src, devices, &entries)))
 }
 
-/// 单份展开条目：算子名 / 模板 stem / 档名。
+/// 一份展开后的算子正文配置；同一算子的各后端共享声明，只按 vendor 读取调优覆盖。
 struct Entry {
     name: String,
     stem: String,
     tier: Option<String>,
+    /// `default` 或 vendor → 展开因子；`0` 显式关闭，缺省不展开。
+    unroll: BTreeMap<String, u32>,
 }
 
-/// 展开产物三元组：名字表 / 模板 stem 表 / 档名表，三份同序。
-type Generated = (Vec<String>, Vec<String>, Vec<Option<String>>);
+impl Entry {
+    /// 后端专用因子优先于 `default`；零等效于没有指令。
+    fn unroll_for(&self, vendor: &str) -> Option<u32> {
+        self.unroll
+            .get(vendor)
+            .or_else(|| self.unroll.get("default"))
+            .copied()
+            .filter(|factor| *factor > 0)
+    }
+}
 
-/// 逐文件扫描：`(算子名, 模板 stem, 档名)` 三份同序清单，展开 `base` 继承与 `tiers` 档后生成。
-///
-/// 一份档案声明 `[op].tiers = ["f32", "f16", …]` 时，按档展开成多个算子名 `<算法>_<档>`，
-/// 共享同一份模板 stem，模板正文随档替换 C 浮点类型——「加一档=加一行」的数据驱动档维度。
-/// 无 `tiers` 的档案逐字走旧路径（名=文件名）。展开后全体按名升序排序，二分查找的「有序」
-/// 不变量因此与档展开兼容（注册表与目录仍同序）。
+/// 逐文件扫描并展开 `base` 继承与 `tiers` 档；最终按算子名排序，供生成表二分查找。
 fn scan(
     ops: &Path,
     manifest: &Path,
     files: &[PathBuf],
     devices: &[Device],
-) -> diagnostic::Result<Generated> {
-    let entries = collect_entries(ops, manifest, files, devices)?;
-    Ok(flatten(entries))
+) -> diagnostic::Result<Vec<Entry>> {
+    let mut entries = collect_entries(ops, manifest, files, devices)?;
+    entries.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(entries)
 }
 
-/// 读入并解析（含 `base` 继承）一份档案表。
+/// 读入并解析（含共享声明 `base` 继承）一份档案表。
 fn resolved_table(ops: &Path, path: &Path) -> diagnostic::Result<toml::Table> {
     resolve(ops, buildgen::read(path)?)
 }
 
-/// 单份档案展开出的档条目；继承解析、模板 stem 校验都在本助手内闭包。
-fn entries_for_file(ops: &Path, path: &Path, devices: &[Device]) -> diagnostic::Result<Vec<Entry>> {
+/// 单份档案展开出的档条目；模板名与调优配置同样随共享声明继承。
+fn entries_for_file(
+    ops: &Path,
+    path: &Path,
+    devices: &[Device],
+) -> diagnostic::Result<Vec<Entry>> {
     let name = file_stem(path);
     let table = resolved_table(ops, path)?;
-    let stem = stem_of(&table, name, ops, devices);
-    let mut out: Vec<Entry> = Vec::new();
-    for (exp_name, _exp_table, tier) in expand_tiers(name, &table)? {
-        out.push(Entry {
-            name: exp_name,
+    let stem = template_stem(&table, name);
+    let unroll = unroll_of(&table, name, devices);
+    let mut entries = Vec::new();
+    for (expanded_name, _, tier) in expand_tiers(name, &table)? {
+        entries.push(Entry {
+            name: expanded_name,
             stem: stem.clone(),
             tier,
+            unroll: unroll.clone(),
         });
     }
-    Ok(out)
+    Ok(entries)
 }
 
-/// 遍历档案文件，逐档展开成行条目（保持文件序，稍后由 [`flatten`] 统一排序）。
+/// 遍历档案文件，逐档展开成条目（统一排序在 [`scan`] 完成）。
 fn collect_entries(
     ops: &Path,
     manifest: &Path,
     files: &[PathBuf],
     devices: &[Device],
 ) -> diagnostic::Result<Vec<Entry>> {
-    let mut entries: Vec<Entry> = Vec::new();
+    let mut entries = Vec::new();
     for path in files {
         println!(
             "cargo:rerun-if-changed={}",
             buildgen::relative(manifest, path)
         );
-        let mut file_entries = entries_for_file(ops, path, devices)?;
-        entries.append(&mut file_entries);
+        entries.append(&mut entries_for_file(ops, path, devices)?);
     }
     Ok(entries)
 }
 
-/// 条目按名升序，汇总成名字表 / 模板表 / 档名表三份同序清单。
-fn flatten(entries: Vec<Entry>) -> Generated {
-    let mut entries = entries;
-    entries.sort_by(|a, b| a.name.cmp(&b.name));
-    let mut names = Vec::new();
-    let mut stems = Vec::new();
-    let mut tiers = Vec::new();
-    for entry in entries {
-        names.push(entry.name);
-        stems.push(entry.stem);
-        tiers.push(entry.tier);
-    }
-    (names, stems, tiers)
-}
-
-/// 按 `[op].tiers` 把一份算法档案展开成逐档算子表；无 `tiers` 时原样返回单条（名=文件名）。
+/// 按 `[op].tiers` 把一份算法档案展开成逐档算子；无 `tiers` 时保留文件名。
 ///
-/// 档名取 `<算法>_<档>`：算法名是 `[op].name`（缺省文件名）去掉既有 `_<档>` 后缀。每档把
-/// `[op].name` 设为展开名、所有 `dt` 数组里的精度 token 替换为本档，其余声明逐字共享。
+/// 每档替换所有 `dt` 数组里的精度 token，其余声明共享。档名为 `<算法>_<档>`。
 fn expand_tiers(
     name: &str,
     table: &toml::Table,
 ) -> diagnostic::Result<Vec<(String, toml::Table, Option<String>)>> {
     let tiers = table
         .get("op")
-        .and_then(|value| value.as_table())
+        .and_then(toml::Value::as_table)
         .and_then(|op| op.get("tiers"))
-        .and_then(|value| value.as_array());
+        .and_then(toml::Value::as_array);
     let Some(tiers) = tiers else {
         return Ok(vec![(name.to_string(), table.clone(), None)]);
     };
-    let algo = table
+    let algorithm = table
         .get("op")
-        .and_then(|value| value.as_table())
+        .and_then(toml::Value::as_table)
         .and_then(|op| op.get("name"))
-        .and_then(|value| value.as_str())
+        .and_then(toml::Value::as_str)
         .unwrap_or(name);
-    let algo = algo.rsplit_once('_').map_or(algo, |(head, _)| head);
-    let mut out = Vec::new();
+    let algorithm = algorithm
+        .rsplit_once('_')
+        .map_or(algorithm, |(head, _)| head);
+    let mut entries = Vec::new();
     for tier in tiers {
         let tier = tier
             .as_str()
             .unwrap_or_else(|| fail(format!("`{name}.toml` 的 tiers 元素必须是字符串档名")));
         let mut expanded = table.clone();
         substitute_dt(&mut expanded, tier);
-        if let Some(op) = expanded.get_mut("op").and_then(|v| v.as_table_mut()) {
+        if let Some(op) = expanded.get_mut("op").and_then(toml::Value::as_table_mut) {
             op.remove("tiers");
-            op.insert("name".into(), toml::Value::String(format!("{algo}_{tier}")));
+            op.insert(
+                "name".into(),
+                toml::Value::String(format!("{algorithm}_{tier}")),
+            );
         }
-        out.push((format!("{algo}_{tier}"), expanded, Some(tier.to_string())));
+        entries.push((
+            format!("{algorithm}_{tier}"),
+            expanded,
+            Some(tier.to_string()),
+        ));
     }
-    Ok(out)
+    Ok(entries)
 }
 
-/// 递归把表里所有 `dt` 数组的精度 token 替换为 `tier`（`[needs].*.dt` 等叶子）。
+/// 递归把表里所有 `dt` 数组的精度 token 替换为 `tier`。
 fn substitute_dt(table: &mut toml::Table, tier: &str) {
     for (key, value) in table.iter_mut() {
         match value {
             toml::Value::Table(inner) => substitute_dt(inner, tier),
-            toml::Value::Array(arr) if key == "dt" => replace_dt_tokens(arr, tier),
+            toml::Value::Array(array) if key == "dt" => replace_dt_tokens(array, tier),
             _ => {}
         }
     }
 }
 
 /// 把 `dt` 数组里的字符串精度 token 整体换成本档；非字符串项原样保留。
-fn replace_dt_tokens(arr: &mut [toml::Value], tier: &str) {
-    for item in arr.iter_mut() {
+fn replace_dt_tokens(array: &mut [toml::Value], tier: &str) {
+    for item in array.iter_mut() {
         if item.as_str().is_some() {
             *item = toml::Value::String(tier.to_string());
         }
     }
 }
 
-/// 文件名 stem；不是合法 UTF-8 就构建期失败（生成代码里要写进 `&'static str`）。
+/// 文件名 stem；生成代码需要合法的 UTF-8 字符串。
 fn file_stem(path: &Path) -> &str {
     path.file_stem()
         .and_then(|stem| stem.to_str())
         .unwrap_or_else(|| fail(format!("`{}` 的文件名不是合法 UTF-8", path.display())))
 }
 
-/// `template_list.rs`：`$m!{ 名字 => 模板, ... }` 宏清单，与 `names` 同序（文件名升序）。
-fn emit_list(names: &[String], stems: &[String]) -> String {
+/// `template_list.rs`：算子名与模板 stem 的宏清单，顺序与 [`crate::OPS`] 一致。
+fn emit_list(entries: &[Entry]) -> String {
     let mut list = String::from(
         "// @generated by crates/prof/build.rs — do not edit.\n\
-         // Source: crates/prof/ops/*.toml (`[op].stem`), sorted by file stem.\n",
+         // Source: crates/prof/src/ops/*.toml (`[op].stem`), sorted by operator name.\n",
     );
     list.push_str("$m! {\n");
-    for (name, stem) in names.iter().zip(stems) {
-        let _ = writeln!(list, "    {name} => \"{stem}\",");
+    for entry in entries {
+        let _ = writeln!(list, "    {} => \"{}\",", entry.name, entry.stem);
     }
     list.push_str("}\n");
     list
 }
 
-/// `templates_table.rs`：CPU 兼容表 + `(vendor, 名字) → 后端正文` 的完整矩阵。
-fn emit_templates(
-    src: &Path,
-    devices: &[Device],
-    names: &[String],
-    stems: &[String],
-    tiers: &[Option<String>],
-) -> String {
+/// `templates_table.rs`：CPU 兼容表 + `(vendor, 名字) → 有效后端正文` 的完整矩阵。
+fn emit_templates(src: &Path, devices: &[Device], entries: &[Entry]) -> String {
     let mut table = String::from(
         "// @generated by crates/prof/build.rs — do not edit.\n\
-         // Source: crates/prof/src/<vendor>/kernels/<stem>.k.\n\
+         // Sources: backend overrides and their configured reference kernels.\n\
          /// CPU 算子名与模板正文，顺序与 `crate::for_each_template!` 一致。\n",
     );
     let _ = writeln!(
         table,
         "pub const TEMPLATES: [(&str, &str); {}] = [",
-        names.len()
+        entries.len()
     );
     let cpu = devices
         .iter()
         .find(|device| device.name == "cpu")
         .unwrap_or_else(|| fail("设备档案缺少 `cpu`：主机参考内核无处登记"));
-    emit_entries(&mut table, src, cpu, names, stems, tiers, false);
-    table.push_str("];\n\n/// `(vendor, 算子名)` 与后端模板正文，按二元组升序。\n");
+    emit_entries(&mut table, src, devices, cpu, entries, false);
+    table.push_str("];\n\n/// `(vendor, 算子名)` 与有效后端模板正文，按二元组升序。\n");
     let _ = writeln!(
         table,
         "pub static DEVICE_TEMPLATES: [(&str, &str, &str); {}] = [",
-        names.len() * devices.len()
+        entries.len() * devices.len()
     );
     for device in devices {
-        emit_entries(&mut table, src, device, names, stems, tiers, true);
+        emit_entries(&mut table, src, devices, device, entries, true);
     }
     table.push_str("];\n");
     table
 }
 
-/// 发射一台设备的全部算子；`qualified` 决定二元组还是带 vendor 的三元组。
+/// 发射一台设备的全部算子；无需换类型或展开时直接 `include_str!`，不复制正文。
 fn emit_entries(
     table: &mut String,
     src: &Path,
+    devices: &[Device],
     device: &Device,
-    names: &[String],
-    stems: &[String],
-    tiers: &[Option<String>],
+    entries: &[Entry],
     qualified: bool,
 ) {
-    for ((name, stem), tier) in names.iter().zip(stems).zip(tiers) {
-        let path = kernel_path(src, device, stem);
+    for entry in entries {
+        let path = kernel_path(src, devices, device, &entry.stem);
         let prefix = if qualified {
-            format!("(\"{}\", \"{name}\", ", device.name)
+            format!("(\"{}\", \"{}\", ", device.name, entry.name)
         } else {
-            format!("(\"{name}\", ")
+            format!("(\"{}\", ", entry.name)
         };
-        // 无档与 f32 档直接内嵌源文件；其余档只替换独立 C 浮点类型 token。
-        match tier.as_deref() {
-            None | Some("f32") => {
+        let unroll = entry.unroll_for(&device.name);
+        match (entry.tier.as_deref(), unroll) {
+            (None | Some("f32"), None) => {
                 let _ = writeln!(table, "    {prefix}include_str!({:?})),", path.display());
             }
-            Some(tier) => {
-                let text = std::fs::read_to_string(&path)
-                    .unwrap_or_else(|error| fail(format!("读模板 `{}`：{error}", path.display())));
-                let text = substitute_ctype(&text, tier);
+            (tier, _) => {
+                let text = read(&path);
+                let text = apply_unroll(text, unroll, &path);
+                let text = match tier {
+                    None | Some("f32") => text,
+                    Some(tier) => substitute_ctype(&text, tier),
+                };
                 let _ = writeln!(table, "    {prefix}{text:?}),");
             }
         }
     }
 }
 
-/// 一个后端的一份微内核正文；目录名与设备档案共用同一份扫描结果。
-fn kernel_path(src: &Path, device: &Device, stem: &str) -> PathBuf {
-    src.join(&device.name)
-        .join("kernels")
-        .join(format!("{stem}.k"))
+/// 解析有效内核路径：本后端文件优先，否则沿 `[kernels].base` 查找参考实现。
+///
+/// 缺失基座、未知后端与继承环都在构建期失败；诊断携带完整查找链，不静默换实现。
+fn kernel_path(src: &Path, devices: &[Device], device: &Device, stem: &str) -> PathBuf {
+    let mut current = device;
+    let mut chain = vec![current.name.as_str()];
+    loop {
+        let path = src
+            .join(&current.name)
+            .join("kernels")
+            .join(format!("{stem}.k"));
+        if path.is_file() {
+            return path;
+        }
+        let Some(base) = current.kernel_base.as_deref() else {
+            fail(format!(
+                "算子模板 `{stem}.k` 在 `{}` 后端不存在，且未声明 `[kernels].base`",
+                current.name
+            ));
+        };
+        current = devices.iter().find(|candidate| candidate.name == base).unwrap_or_else(|| {
+            fail(format!(
+                "`{}` 的 `[kernels].base = \"{base}\"` 指向未知后端",
+                current.name
+            ))
+        });
+        if chain.contains(&current.name.as_str()) {
+            fail(format!(
+                "内核继承形成环：{} → {}",
+                chain.join(" → "),
+                current.name
+            ));
+        }
+        chain.push(&current.name);
+    }
+}
+
+/// 一个算子的模板名：`[op].stem` 缺省为算子名。
+fn template_stem(table: &toml::Table, name: &str) -> String {
+    table
+        .get("op")
+        .and_then(toml::Value::as_table)
+        .and_then(|op| op.get("stem"))
+        .and_then(toml::Value::as_str)
+        .unwrap_or(name)
+        .to_string()
+}
+
+/// 读取 `[kernel].unroll = { default = 4, cpu = 0, ... }` 并校验后端闭集。
+fn unroll_of(table: &toml::Table, name: &str, devices: &[Device]) -> BTreeMap<String, u32> {
+    let Some(kernel) = table.get("kernel") else {
+        return BTreeMap::new();
+    };
+    let kernel = kernel
+        .as_table()
+        .unwrap_or_else(|| fail(format!("`{name}.kernel` 必须是表")));
+    for key in kernel.keys() {
+        if key != "unroll" {
+            fail(format!("`{name}.kernel.{key}` 未知：目前只支持 `unroll`"));
+        }
+    }
+    let Some(config) = kernel.get("unroll") else {
+        return BTreeMap::new();
+    };
+    let config = config
+        .as_table()
+        .unwrap_or_else(|| fail(format!("`{name}.kernel.unroll` 必须是内联表")));
+    let mut unroll = BTreeMap::new();
+    for (backend, value) in config {
+        if backend != "default" && !devices.iter().any(|device| device.name == *backend) {
+            fail(format!(
+                "`{name}.kernel.unroll.{backend}` 不是已登记后端或 `default`"
+            ));
+        }
+        let factor = value.as_integer().unwrap_or_else(|| {
+            fail(format!(
+                "`{name}.kernel.unroll.{backend}` 必须是非负整数"
+            ))
+        });
+        let factor = u32::try_from(factor).unwrap_or_else(|_| {
+            fail(format!(
+                "`{name}.kernel.unroll.{backend}` 必须在 0..={} 之间",
+                u32::MAX
+            ))
+        });
+        unroll.insert(backend.clone(), factor);
+    }
+    unroll
+}
+
+/// 把唯一展开锚点替换为配置指令；配置了因子却没标位置属于模板错误。
+fn apply_unroll(text: String, factor: Option<u32>, path: &Path) -> String {
+    let markers = text.matches(UNROLL_MARKER).count();
+    if markers > 1 {
+        fail(format!(
+            "`{}` 有 {markers} 个 `{UNROLL_MARKER}`：每份模板至多标注一个展开点",
+            path.display()
+        ));
+    }
+    let Some(factor) = factor else {
+        return text;
+    };
+    if markers == 0 {
+        fail(format!(
+            "`{}` 配置了展开因子，却缺少 `{UNROLL_MARKER}` 锚点",
+            path.display()
+        ));
+    }
+    text.replacen(UNROLL_MARKER, &format!("#pragma unroll {factor}"), 1)
+}
+
+/// 读取一份微内核正文，I/O 错误直接终止构建并带上路径。
+fn read(path: &Path) -> String {
+    std::fs::read_to_string(path)
+        .unwrap_or_else(|error| fail(format!("读模板 `{}`：{error}", path.display())))
 }
 
 /// 档名 → 模板里的 C 浮点类型 token（与 `sig::CType::c_name` 同一份口径）。
@@ -275,8 +385,7 @@ fn c_token(tier: &str) -> &'static str {
     }
 }
 
-/// 把模板正文里**独立单词** `float` 替换为本档 C 类型（词边界判定，不伤 `_cutile_exp_f32`
-/// 这类标识符与中文注释）；f32 档原样返回。半精度字面量 `0.0f` 由 C 隐式转换，无需改后缀。
+/// 把模板正文里独立单词 `float` 替换为本档 C 类型，不伤标识符与注释。
 fn substitute_ctype(text: &str, tier: &str) -> String {
     let token = c_token(tier);
     if token == "float" {
@@ -284,10 +393,10 @@ fn substitute_ctype(text: &str, tier: &str) -> String {
     }
     let mut out = String::with_capacity(text.len());
     let mut last = 0;
-    for (idx, _) in text.match_indices("float") {
-        let end = idx + "float".len();
-        if standalone(text, idx, end) {
-            out.push_str(&text[last..idx]);
+    for (index, _) in text.match_indices("float") {
+        let end = index + "float".len();
+        if standalone(text, index, end) {
+            out.push_str(&text[last..index]);
             out.push_str(token);
             last = end;
         }
@@ -297,48 +406,18 @@ fn substitute_ctype(text: &str, tier: &str) -> String {
 }
 
 /// 字符是否属于 C 标识符（字母数字 / 下划线）。
-fn is_ident(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
+fn is_ident(character: char) -> bool {
+    character.is_alphanumeric() || character == '_'
 }
 
-/// `float` 在 `idx` 处是否为独立单词：前后都不接标识符字符。
-fn standalone(text: &str, idx: usize, end: usize) -> bool {
-    let before = idx == 0 || !text[..idx].chars().next_back().is_some_and(is_ident);
+/// `float` 在 `index` 处是否为独立单词：前后都不接标识符字符。
+fn standalone(text: &str, index: usize, end: usize) -> bool {
+    let before = index == 0 || !text[..index].chars().next_back().is_some_and(is_ident);
     let after = end >= text.len() || !text[end..].chars().next().is_some_and(is_ident);
     before && after
 }
 
-/// 一个算子的模板名：`[op].stem` 缺省为算子名；共享模板（`binary`/`gemm_packed`…）在语料里
-/// 显式声明。模板文件必须存在，写错在构建期就失败。
-fn stem_of(table: &toml::Table, name: &str, ops: &Path, devices: &[Device]) -> String {
-    let stem = table
-        .get("op")
-        .and_then(|value| value.as_table())
-        .and_then(|op| op.get("stem"))
-        .and_then(|value| value.as_str())
-        .unwrap_or(name)
-        .to_string();
-    let src = ops
-        .parent()
-        .unwrap_or_else(|| fail("`ops/` 没有源码父目录"));
-    for device in devices {
-        let template = kernel_path(src, device, &stem);
-        if !template.is_file() {
-            fail(format!(
-                "`{name}.toml` 声明的模板 `{stem}.k` 在 `{}` 后端不存在：每个设备必须提供同名实现",
-                device.name
-            ));
-        }
-    }
-    stem
-}
-
-/// 解析 `base = "<name>"`：当前表先继承 `<name>.toml`，再被自己的键覆盖。
-///
-/// 兄弟继承（如 `gemv_i2` → `gemv_i4`）只差 `[op]`/`[consts]`/个别 `[needs]` 叶子，
-/// `[needs]`/`[layouts]`/`[[variants]]` 一大段逐字相同，写在 base 里由继承共享。继承链可多级
-/// （如 `adaptive_pool_f32` → `silu_f32` → `gelu_f32`），每级先展开自己的 base 再被当前表覆盖。
-/// 声明语料无环，递归深度 ≤ 3。
+/// 解析共享声明 `base = "<name>"`：当前表覆盖基座，同名子表递归合并。
 fn resolve(ops: &Path, mut table: toml::Table) -> diagnostic::Result<toml::Table> {
     let Some(toml::Value::String(base)) = table.get("base").cloned() else {
         return Ok(table);
@@ -348,7 +427,7 @@ fn resolve(ops: &Path, mut table: toml::Table) -> diagnostic::Result<toml::Table
     Ok(merge(base, table))
 }
 
-/// 深度合并：`over` 覆盖 `base`，同名的子表递归合并（`[needs]` 只覆盖差的那一个叶子）。
+/// 深度合并：`over` 覆盖 `base`，同名子表递归合并。
 fn merge(mut base: toml::Table, over: toml::Table) -> toml::Table {
     for (key, value) in over {
         match (base.get_mut(&key), value) {

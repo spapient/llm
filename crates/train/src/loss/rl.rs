@@ -105,7 +105,7 @@ pub fn policy_loss(log_probs: &[f32], advantages: &[f32]) -> Result<f32> {
 }
 
 /// GRPO / PPO 训练损失配置：裁剪范围 `ε` 与参考 KL 惩罚系数 `β`。
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Grpo {
     epsilon: f32,
     beta: f32,
@@ -129,7 +129,7 @@ impl Grpo {
 }
 
 /// 裁剪范围 ε 必须是非负有限数。
-fn check_epsilon(epsilon: f32) -> Result<()> {
+pub(super) fn check_epsilon(epsilon: f32) -> Result<()> {
     if epsilon < 0.0 || !epsilon.is_finite() {
         return Err(
             Error::new(Code::Invalid, format!("裁剪范围 ε={epsilon} 必须非负有限")).with(RL_SITE),
@@ -139,7 +139,7 @@ fn check_epsilon(epsilon: f32) -> Result<()> {
 }
 
 /// KL 惩罚系数 β 必须是非负有限数。
-fn check_beta(beta: f32) -> Result<()> {
+pub(super) fn check_beta(beta: f32) -> Result<()> {
     if beta < 0.0 || !beta.is_finite() {
         return Err(
             Error::new(Code::Invalid, format!("KL 惩罚系数 β={beta} 必须非负有限")).with(RL_SITE),

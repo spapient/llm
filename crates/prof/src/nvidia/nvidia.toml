@@ -13,6 +13,10 @@ tools    = "nvcc"
 tool_ver = "13.3"
 checked  = "2026-11-12"
 
+# `kernels/` 只保存真正特化的正文；其余算子复用 CPU 参考实现，避免六份机械副本。
+[kernels]
+base = "cpu"
+
 [fingerprint]
 cc   = "7.5"
 name = "contains: T600"

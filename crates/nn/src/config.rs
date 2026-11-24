@@ -24,7 +24,7 @@
 //! role = "norm"
 //! ```
 
-use diagnostic::Result;
+use diagnostic::{Code, Error, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::recurrent::{Cell, Recurrent};
@@ -218,6 +218,7 @@ impl LayerConfig {
     }
 
     /// 注意力族短名：四种 Q/K/V 变体同属一条装配族。
+    #[allow(unreachable_patterns)]
     const fn kind_attention(this: &Self) -> &'static str {
         match this {
             Self::Attention { .. } => "attention",
@@ -228,11 +229,13 @@ impl LayerConfig {
         }
     }
 
-    /// 循环与记忆族短名：收尾两臂穷尽枚举剩余变体。
+    /// 循环与记忆族短名：收尾两臂穷尽枚举剩余变体；兜底臂仅为类型穷尽，正常委托不可达。
+    #[allow(unreachable_patterns)]
     const fn kind_recurrent(this: &Self) -> &'static str {
         match this {
             Self::Recurrent { .. } => "recurrent",
             Self::Memory { .. } => "memory",
+            _ => "unknown",
         }
     }
 
@@ -325,7 +328,8 @@ impl LayerConfig {
         }
     }
 
-    /// 循环与记忆族构造：收尾两臂穷尽枚举剩余变体。
+    /// 循环与记忆族构造：收尾两臂穷尽枚举剩余变体；兜底仅为类型穷尽，正常委托不可达。
+    #[allow(unreachable_patterns)]
     fn build_recurrent(config: LayerConfig) -> Result<Box<dyn Contract>> {
         match config {
             Self::Recurrent {
@@ -337,8 +341,17 @@ impl LayerConfig {
                 dirs,
                 bias,
                 batch_first,
-            } => Recurrent::with_layout(name, cell, input, hidden, layers, dirs, bias, batch_first)
-                .map(boxed),
+            } => Recurrent::with_layout(
+                name,
+                cell,
+                input,
+                hidden,
+                layers,
+                dirs,
+                bias,
+                batch_first,
+            )
+            .map(boxed),
             Self::Memory {
                 name,
                 width,
@@ -347,6 +360,11 @@ impl LayerConfig {
                 buckets,
                 gate,
             } => MemoryBlock::new(name, width, order, seed, buckets, gate).map(boxed),
+            other => Err(Error::new(
+                Code::Internal,
+                format!("配置族委托错位：`{}` 不应进入循环记忆族", other.name()),
+            )
+            .with("nn::LayerConfig")),
         }
     }
 }

@@ -204,24 +204,13 @@ fn shape(len: usize, m: usize, n: usize) -> Result<usize> {
 impl Note {
     /// 强类型 LEB128 编码。
     pub(crate) fn encode(&self, out: &mut impl Sink) {
-        leb::write(out, self.rank);
-        out.put(&[u8::from(self.used)]);
-        out.put(&[self.mode as u8]);
-        out.put(&[self.stable as u8]);
-        out.put(&[self.method as u8]);
-        out.put(&[self.bound as u8]);
-        out.put(&self.gap.to_le_bytes());
-        out.put(&self.eps.to_le_bytes());
-        out.put(&self.decomp.to_le_bytes());
-        out.put(&self.comp.to_le_bytes());
-        out.put(&[u8::from(self.equal)]);
-        out.put(&[u8::from(self.lossless)]);
+        self.encode_fields(out);
     }
 
-    /// 强类型解码；字段不符显式报错。逐段按 `Note::encode` 的顺序读，段内报错点与逐字段读一致。
+    /// 强类型解码；字段不符显式报错。字段顺序与 [`Note::encode`] 同源。
     pub fn decode(cur: &mut Cursor<'_>) -> Result<Self> {
-        let (rank, used, mode, stable, method, bound) = head(cur)?;
-        let ([gap, eps, decomp, comp], [equal, lossless]) = tail(cur)?;
+        let (rank, used, mode, stable, method, bound, gap, eps, decomp, comp, equal, lossless) =
+            Self::decode_fields(cur)?;
         Ok(Self {
             rank,
             used,
@@ -253,40 +242,22 @@ impl Note {
     }
 }
 
-/// 标识段的原始字：秩与五个字节（`used` | 模式 | 稳定 | 方法 | 界）。
-fn words(cur: &mut Cursor<'_>) -> Result<(u32, [u8; 5])> {
-    let rank = cur.read::<u32>()?;
-    let flags = cur.take(5)?;
-    Ok((rank, [flags[0], flags[1], flags[2], flags[3], flags[4]]))
-}
-
-/// 把四个码位解成闭集值；码位不认识就是坏载荷，不猜近似项。
-fn signs(flags: &[u8; 5]) -> Result<(Mode, Stable, EpsMethod, Bound)> {
-    let mode = Mode::from_code(flags[1])?;
-    let stable = Stable::from_code(flags[2])?;
-    let method = EpsMethod::from_code(flags[3])?;
-    let bound = Bound::from_code(flags[4])?;
-    Ok((mode, stable, method, bound))
-}
-
-/// 标识段：秩、是否使用秩选择、重构模式码、稳定性码、`ε_alg` 方法码、界类型码。
-fn head(cur: &mut Cursor<'_>) -> Result<(u32, bool, Mode, Stable, EpsMethod, Bound)> {
-    let (rank, flags) = words(cur)?;
-    let (mode, stable, method, bound) = signs(&flags)?;
-    Ok((rank, flags[0] != 0, mode, stable, method, bound))
-}
-
-/// 实数与标志段：四个 f64（谱隙、总扰动、截断误差、补偿误差）小端连排，其后是两条布尔（非 0 即真）。
-fn tail(cur: &mut Cursor<'_>) -> Result<([f64; 4], [bool; 2])> {
-    let mut reals = [0.0f64; 4];
-    for value in &mut reals {
-        *value = read_f64(cur)?;
+// 证书线上字段的唯一声明：秩、五个标志/闭集码、四个小端 f64、两个布尔。
+wire_fields! {
+    Note {
+        rank: leb_u32,
+        used: bool,
+        mode: enum_u8<Mode>,
+        stable: enum_u8<Stable>,
+        method: enum_u8<EpsMethod>,
+        bound: enum_u8<Bound>,
+        gap: f64,
+        eps: f64,
+        decomp: f64,
+        comp: f64,
+        equal: bool,
+        lossless: bool,
     }
-    let mut flags = [false; 2];
-    for flag in &mut flags {
-        *flag = cur.read_u8()? != 0;
-    }
-    Ok((reals, flags))
 }
 
 /// 不变量校验：证书自己能查的矛盾，全部在这里挡住。

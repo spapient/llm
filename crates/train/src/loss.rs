@@ -356,7 +356,7 @@ pub(crate) fn grpo(
 
 // ---- 蒸馏目标：温度、α 混合与逐 token 参考 KL ----
 /// 蒸馏损失配置：软目标温度 `T` 与软损失权重 `α`（Hinton 2015 约定）。
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Distill {
     temperature: f32,
     alpha: f32,
@@ -399,6 +399,44 @@ fn check_alpha(alpha: f32) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// 静态训练目标：只保存种类与超参数；运行时变量仍由 [`crate::Metric`] 持有。
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum ObjectiveConfig {
+    /// next-token 分类交叉熵。
+    #[default]
+    Classify,
+    /// 教师蒸馏。
+    Distill(Distill),
+    /// GRPO 策略目标。
+    Grpo(Grpo),
+}
+
+impl ObjectiveConfig {
+    /// 稳定的配置指纹标签。
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Classify => "classify",
+            Self::Distill(_) => "distill",
+            Self::Grpo(_) => "grpo",
+        }
+    }
+
+    /// 在配置装配边界校验目标超参数，与运行期损失入口使用同一组判据。
+    pub fn validate(self) -> Result<()> {
+        match self {
+            Self::Classify => Ok(()),
+            Self::Distill(config) => {
+                check_temperature(config.temperature())?;
+                check_alpha(config.alpha())
+            }
+            Self::Grpo(config) => {
+                rl::check_epsilon(config.epsilon())?;
+                rl::check_beta(config.beta())
+            }
+        }
+    }
 }
 
 /// 校验 logits 几何（词表/行数/长度/`out` 等长），返回行数。

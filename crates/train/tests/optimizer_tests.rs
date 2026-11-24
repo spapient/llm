@@ -436,3 +436,55 @@ fn the_tall_and_wide_branches_are_the_same_iteration() {
         }
     }
 }
+
+/// 混合优化器只按全局范数裁剪一次，且步进后归还原梯度口径。
+#[test]
+fn hybrid_clips_across_matrix_and_vector_slots_once() {
+    let mut params = [vec![1.0; 4], vec![1.0]];
+    let mut grads = [vec![3.0, 4.0, 0.0, 0.0], vec![0.0]];
+    let roles = [ParamRole::Trainable, ParamRole::Bias];
+    let mut views = slots(&mut params, &mut grads, &roles);
+    views[0].shape = Some((2, 2));
+    let mut optimizer = Hybrid::new(Sgd::new(), Sgd::new());
+    optimizer.set_clip_norm(Some(1.0));
+    optimizer.step(&mut views, 0.1).expect("混合步进");
+    assert!((params[0][0] - 0.94).abs() < 1e-6);
+    assert!((params[0][1] - 0.92).abs() < 1e-6);
+    assert_eq!(grads[0], [3.0, 4.0, 0.0, 0.0]);
+}
+
+/// 首次步进前按形状恢复：矩阵动量给 Muon，偏置双矩给 Adam。
+#[test]
+fn hybrid_restores_child_state_before_the_first_step() {
+    let mut optimizer = Hybrid::new(Muon::new(), Adam::new());
+    optimizer
+        .restore_shaped(
+            vec![vec![0.5; 4], vec![0.25; 2]],
+            vec![Vec::new(), vec![0.125; 2]],
+            7,
+            &[Some((2, 2)), None],
+        )
+        .expect("按形状恢复");
+    assert_eq!(optimizer.matrix().momentum_table(), &[vec![0.5; 4]]);
+    assert_eq!(optimizer.other().momentum(), &[vec![0.25; 2]]);
+    assert_eq!(optimizer.other().variance(), &[vec![0.125; 2]]);
+    assert_eq!(optimizer.matrix().step_count(), 7);
+    assert_eq!(optimizer.other().step_count(), 7);
+}
+
+/// 非有限梯度在任何子优化器更新前拒绝，两个参数槽都不动。
+#[test]
+fn hybrid_rejects_non_finite_gradients_without_partial_updates() {
+    let mut params = [vec![1.0; 4], vec![2.0; 2]];
+    let before = params.clone();
+    let mut grads = [vec![0.1; 4], vec![f32::NAN, 0.0]];
+    let roles = [ParamRole::Trainable, ParamRole::Bias];
+    let mut views = slots(&mut params, &mut grads, &roles);
+    views[0].shape = Some((2, 2));
+    let mut optimizer = Hybrid::new(Muon::new(), Adam::new());
+    let error = optimizer.step(&mut views, 0.1).expect_err("NaN 必须拒绝");
+    assert_eq!(error.code(), Code::Invalid);
+    assert_eq!(params, before);
+    assert_eq!(optimizer.matrix().step_count(), 0);
+    assert_eq!(optimizer.other().step_count(), 0);
+}

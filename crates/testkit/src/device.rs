@@ -233,22 +233,27 @@ impl<'a> Contract<'a> {
             .map_err(|error| format!("`{}` 的片段目录不可读：{error}", self.id))?;
         let mut found = Vec::new();
         for entry in entries {
-            let entry =
-                entry.map_err(|error| format!("`{}` 的片段目录项不可读：{error}", self.id))?;
-            if entry
-                .file_type()
-                .map_err(|error| error.to_string())?
-                .is_dir()
-            {
-                continue;
-            }
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if !name.ends_with(".rs") {
-                found.push(name);
-            }
+            self.record_name(entry, &mut found)?;
         }
         found.sort();
         Ok(found)
+    }
+
+    /// 收录单个目录项：跳过子目录与 `.rs` 源文件，其余片段名进结果集。
+    fn record_name(
+        &self,
+        entry: std::io::Result<std::fs::DirEntry>,
+        found: &mut Vec<String>,
+    ) -> Result<(), String> {
+        let entry = entry.map_err(|error| format!("`{}` 的片段目录项不可读：{error}", self.id))?;
+        if entry.file_type().map_err(|error| error.to_string())?.is_dir() {
+            return Ok(());
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.ends_with(".rs") {
+            found.push(name);
+        }
+        Ok(())
     }
 
     /// 档案里认领 `prim/impl_name` 的那条供给。

@@ -86,6 +86,8 @@ fn main() {
 struct Device {
     /// vendor 名，同时是 `src/` 下的目录名与档案文件名。
     name: String,
+    /// 未特化微内核的参考后端；`None` 表示必须提供自己的正文。
+    kernel_base: Option<String>,
     /// 片段与见证的扩展名，由目录里的见证文件决定。
     ext: String,
     /// 档案 `[meta]` 里要写进设备行的那三项。
@@ -166,6 +168,7 @@ fn scan(dir: &Path, name: &str, files: Vec<PathBuf>) -> Device {
         .and_then(|value| value.as_table())
         .unwrap_or_else(|| fail(format!("`{name}` 的档案没有 `[meta]` 表")));
     let provides = provides_of(&doc, name, &ext);
+    let kernel_base = kernel_base_of(&doc, name);
     let archive = dir.join(format!("{name}.toml"));
 
     let mut fragments = Vec::new();
@@ -210,6 +213,7 @@ fn scan(dir: &Path, name: &str, files: Vec<PathBuf>) -> Device {
     let forms = forms_of(&read(&epilogue), &epilogue);
     Device {
         name: name.to_string(),
+        kernel_base,
         ext,
         emit: text(meta, "emit", name),
         tool: text(meta, "tools", name),
@@ -249,6 +253,30 @@ fn archive_of(dir: &Path, name: &str) -> toml::Table {
         ));
     }
     doc
+}
+
+/// 微内核继承配置：`[kernels].base = "cpu"`；缺省表示该后端必须自带正文。
+///
+/// 这里只解析来源策略，具体 stem 是否存在由 `buildops` 在完整算子矩阵上校验。
+fn kernel_base_of(doc: &toml::Table, name: &str) -> Option<String> {
+    let Some(value) = doc.get("kernels") else {
+        return None;
+    };
+    let kernels = value
+        .as_table()
+        .unwrap_or_else(|| fail(format!("`{name}.kernels` 必须是表")));
+    for key in kernels.keys() {
+        if key != "base" {
+            fail(format!("`{name}.kernels.{key}` 未知：目前只支持 `base`"));
+        }
+    }
+    kernels.get("base").map(|value| {
+        value
+            .as_str()
+            .filter(|base| !base.is_empty())
+            .unwrap_or_else(|| fail(format!("`{name}.kernels.base` 必须是非空后端名")))
+            .to_string()
+    })
 }
 
 /// 一条 `[[provides]]` 里生成期要核的三件事：签名、见证入口、见证文件。

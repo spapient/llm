@@ -238,12 +238,18 @@ impl<K: Kernel, O: Optimizer, C: Collective> Learner<K, O, C> {
         G: FnMut(&mut Session<K, O, C>) -> Result<()>,
     {
         let point = self.point(&prepared)?;
-        validate(&point).map_err(|error| error.with(SITE))?;
-        self.session.plan(prepared.loss)?;
-        self.session.record_loss(prepared.loss)?;
-        self.board.record(point).map_err(|error| error.with(SITE))?;
+        self.register(point, prepared.loss)?;
         self.backward_with(backward)?;
         self.session.optimize()?;
+        Ok(())
+    }
+
+    /// 校验指标点、登记反传计划与看板，再落记录 loss。
+    fn register(&mut self, point: MetricPoint, loss: Var) -> Result<()> {
+        validate(&point).map_err(|error| error.with(SITE))?;
+        self.session.plan(loss)?;
+        self.session.record_loss(loss)?;
+        self.board.record(point).map_err(|error| error.with(SITE))?;
         Ok(())
     }
 

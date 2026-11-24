@@ -85,6 +85,16 @@ impl Slot<'_> {
         }
         Ok(())
     }
+
+    /// 短生命周期重借用：分组路由不复制参数或梯度。
+    fn reborrow(&mut self) -> Slot<'_> {
+        Slot {
+            params: self.params,
+            grads: self.grads,
+            role: self.role,
+            shape: self.shape,
+        }
+    }
 }
 
 /// 视图与梯度向量的配对：梯度向量在会话侧取走后随视图一起存活，步进结束整块归还缓冲。
@@ -134,6 +144,18 @@ pub trait Optimizer {
         variance: Vec<Vec<f32>>,
         step: u64,
     ) -> Result<()>;
+
+    /// 带槽形状的恢复入口；混合优化器据此在首次步进前确定子状态路由，普通优化器走 [`Self::restore`]。
+    fn restore_shaped(
+        &mut self,
+        momentum: Vec<Vec<f32>>,
+        variance: Vec<Vec<f32>>,
+        step: u64,
+        shapes: &[Option<(usize, usize)>],
+    ) -> Result<()> {
+        let _ = shapes;
+        self.restore(momentum, variance, step)
+    }
 }
 
 /// 全局梯度范数（L2）：跨全部槽位汇总，裁剪按这个范数统一缩比。
@@ -162,6 +184,34 @@ pub(crate) fn clip_scale(norm: f32, max_norm: Option<f32>) -> f32 {
 /// 校验全部槽位长度；校验失败不进入更新路径。
 pub(crate) fn check_slots(slots: &[Slot<'_>]) -> Result<()> {
     slots.iter().try_for_each(Slot::check_len)
+}
+
+/// 按裁剪比例缩放梯度；`divide` 为 `true` 是步后还原，否则步前裁剪。
+fn rescale(slots: &mut [Slot<'_>], scale: f32, divide: bool) {
+    if scale == 1.0 {
+        return;
+    }
+    for grad in slots.iter_mut().flat_map(|slot| slot.grads.iter_mut()) {
+        if divide {
+            *grad /= scale;
+        } else {
+            *grad *= scale;
+        }
+    }
+}
+
+/// 按形状是否为矩阵把槽拆进矩阵与标量两条子优化器通路。
+fn split_slots<'a>(slots: &'a mut [Slot<'a>]) -> (Vec<Slot<'a>>, Vec<Slot<'a>>) {
+    let mut matrix = Vec::new();
+    let mut other = Vec::new();
+    for slot in slots.iter_mut() {
+        if slot.shape.is_some() {
+            matrix.push(slot.reborrow());
+        } else {
+            other.push(slot.reborrow());
+        }
+    }
+    (matrix, other)
 }
 
 /// 普通 SGD（可选解耦权重衰减 + 全局范数裁剪）。
@@ -325,6 +375,172 @@ impl Optimizer for Adam {
         self.step = step;
         Ok(())
     }
+}
+
+/// 泛型混合优化器：矩阵槽走 `M`，其余槽走 `N`；矩状态按全局槽序号确定性拆分与恢复。
+#[derive(Debug, Clone, PartialEq)]
+pub struct Hybrid<M, N> {
+    matrix: M,
+    other: N,
+    clip_norm: Option<f32>,
+}
+
+impl<M: Optimizer, N: Optimizer> Hybrid<M, N> {
+    /// 构造混合优化器；子优化器不再各自裁剪，全局范数只在本层计算一次。
+    pub fn new(mut matrix: M, mut other: N) -> Self {
+        matrix.set_clip_norm(None);
+        other.set_clip_norm(None);
+        Self {
+            matrix,
+            other,
+            clip_norm: None,
+        }
+    }
+
+    /// 矩阵槽优化器。
+    pub fn matrix(&self) -> &M {
+        &self.matrix
+    }
+
+    /// 非矩阵槽优化器。
+    pub fn other(&self) -> &N {
+        &self.other
+    }
+
+    /// 先校验完整槽表，再拆分可变视图；任何非法输入都发生在子优化器更新之前。
+    fn check(slots: &[Slot<'_>]) -> Result<()> {
+        check_slots(slots)?;
+        for (idx, slot) in slots.iter().enumerate() {
+            Self::check_slot(idx, slot)?;
+        }
+        Ok(())
+    }
+
+    /// 单槽校验：矩阵形状不含零维，梯度逐项有限。
+    fn check_slot(idx: usize, slot: &Slot<'_>) -> Result<()> {
+        if let Some((rows, cols)) = slot.shape {
+            if rows == 0 || cols == 0 {
+                return Err(Error::new(
+                    Code::Invalid,
+                    format!("第 {idx} 槽矩阵形状 [{rows}, {cols}] 含零维"),
+                )
+                .with(SITE));
+            }
+        }
+        if let Some(bad) = slot.grads.iter().position(|grad| !grad.is_finite()) {
+            return Err(Error::new(
+                Code::Invalid,
+                format!("第 {idx} 槽梯度第 {bad} 项非有限"),
+            )
+            .with(SITE));
+        }
+        Ok(())
+    }
+}
+
+impl<M: Optimizer, N: Optimizer> Optimizer for Hybrid<M, N> {
+    fn set_clip_norm(&mut self, clip_norm: Option<f32>) {
+        self.clip_norm = clip_norm;
+        self.matrix.set_clip_norm(None);
+        self.other.set_clip_norm(None);
+    }
+
+    fn step(&mut self, slots: &mut [Slot<'_>], lr: f32) -> Result<()> {
+        Self::check(slots)?;
+        let norm = global_norm(slots);
+        if !norm.is_finite() {
+            return Err(Error::new(Code::Invalid, "全局梯度范数溢出").with(SITE));
+        }
+        let scale = clip_scale(norm, self.clip_norm);
+        rescale(slots, scale, false);
+        let (mut matrix, mut other) = split_slots(slots);
+        let result = self
+            .matrix
+            .step(&mut matrix, lr)
+            .and_then(|_| self.other.step(&mut other, lr));
+        drop((matrix, other));
+        rescale(slots, scale, true);
+        result
+    }
+
+    fn restore(
+        &mut self,
+        momentum: Vec<Vec<f32>>,
+        variance: Vec<Vec<f32>>,
+        step: u64,
+    ) -> Result<()> {
+        if !momentum.is_empty() || !variance.is_empty() {
+            return Err(Error::new(
+                Code::Invalid,
+                "混合优化器的非空矩状态必须通过 restore_shaped 按槽形状恢复",
+            )
+            .with(SITE));
+        }
+        self.matrix.restore(Vec::new(), Vec::new(), step)?;
+        self.other.restore(Vec::new(), Vec::new(), step)
+    }
+
+    fn restore_shaped(
+        &mut self,
+        momentum: Vec<Vec<f32>>,
+        variance: Vec<Vec<f32>>,
+        step: u64,
+        shapes: &[Option<(usize, usize)>],
+    ) -> Result<()> {
+        if momentum.len() != variance.len()
+            || (!momentum.is_empty() && momentum.len() != shapes.len())
+        {
+            return Err(Error::new(
+                Code::Invalid,
+                "混合优化器恢复：矩状态与槽形状表长度不一致",
+            )
+            .with(SITE));
+        }
+        let (mm, mv, nm, nv) = split_shaped(momentum, variance, shapes)?;
+        restore_part(&mut self.matrix, mm, mv, step)?;
+        restore_part(&mut self.other, nm, nv, step)
+    }
+}
+
+/// 按槽形状把矩状态拆进矩阵与标量四列；矩阵槽校验长度与形状乘积一致。
+fn split_shaped(
+    momentum: Vec<Vec<f32>>,
+    variance: Vec<Vec<f32>>,
+    shapes: &[Option<(usize, usize)>],
+) -> Result<(Vec<Vec<f32>>, Vec<Vec<f32>>, Vec<Vec<f32>>, Vec<Vec<f32>>)> {
+    let (mut mm, mut mv, mut nm, mut nv) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for (idx, (m, v)) in momentum.into_iter().zip(variance).enumerate() {
+        if let Some((rows, cols)) = shapes[idx] {
+            if rows.checked_mul(cols) != Some(m.len()) {
+                return Err(Error::new(
+                    Code::Invalid,
+                    format!("第 {idx} 槽矩状态长度与矩阵形状不符"),
+                )
+                .with(SITE));
+            }
+            mm.push(m);
+            mv.push(v);
+        } else {
+            nm.push(m);
+            nv.push(v);
+        }
+    }
+    Ok((mm, mv, nm, nv))
+}
+
+/// 子表二阶矩全为空表示无矩实现；否则保留逐槽对齐交给子优化器校验。
+fn restore_part<O: Optimizer>(
+    optimizer: &mut O,
+    momentum: Vec<Vec<f32>>,
+    variance: Vec<Vec<f32>>,
+    step: u64,
+) -> Result<()> {
+    let variance = if variance.iter().all(Vec::is_empty) {
+        Vec::new()
+    } else {
+        variance
+    };
+    optimizer.restore(momentum, variance, step)
 }
 
 #[cfg(test)]

@@ -8,6 +8,7 @@ use nn::ParamRole;
 use shard::{Collective, Group, Parallel, ParallelConfig, Priority, Reduce, Topology};
 use tensor::{DType, Shape};
 
+use crate::loss::ObjectiveConfig;
 use crate::optimizer::{Optimizer, Slot};
 use crate::pool::Bufs;
 use crate::schedule::{Anneal, Schedule};
@@ -192,17 +193,40 @@ pub struct TrainSpec {
     pub session: TrainConfig,
     /// 数据批几何与互斥采样策略。
     pub loader: LoaderConfig,
+    /// 静态目标种类与超参数。
+    pub objective: ObjectiveConfig,
 }
 
 impl TrainSpec {
-    /// 在装配边界统一校验各子配置。
+    /// 在装配边界统一校验各子配置；默认目标是分类。
     pub fn new(session: TrainConfig, loader: LoaderConfig) -> Result<Self> {
-        session.validate()?;
-        loader.validate()?;
-        Ok(Self { session, loader })
+        Self::default()
+            .with_session(session)?
+            .with_loader(loader)
     }
 
-    /// 拆成各运行对象的独立配置。
+    /// 覆盖会话配置并校验。
+    pub fn with_session(mut self, session: TrainConfig) -> Result<Self> {
+        session.validate()?;
+        self.session = session;
+        Ok(self)
+    }
+
+    /// 覆盖数据配置并校验。
+    pub fn with_loader(mut self, loader: LoaderConfig) -> Result<Self> {
+        loader.validate()?;
+        self.loader = loader;
+        Ok(self)
+    }
+
+    /// 覆盖静态目标并复用损失函数的数值判据。
+    pub fn with_objective(mut self, objective: ObjectiveConfig) -> Result<Self> {
+        objective.validate()?;
+        self.objective = objective;
+        Ok(self)
+    }
+
+    /// 拆成会话与数据的运行配置；目标仍可由 [`Self::objective`] 在拆分前读取。
     pub fn into_parts(self) -> (TrainConfig, LoaderConfig) {
         (self.session, self.loader)
     }

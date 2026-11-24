@@ -64,11 +64,12 @@ pub use learner::{
     MetricsBoard, Sampling,
 };
 pub use loss::{
-    Distill, Grpo, Loss, Outcome, advantage, argmax_hits, bce_with_logits, clipped_surrogate,
+    Distill, Grpo, Loss, ObjectiveConfig, Outcome, advantage, argmax_hits, bce_with_logits,
+    clipped_surrogate,
     cross_entropy, distillation_loss, entropy, grpo_loss, hinge, huber, kl_div, kl_per_row,
     log_prob, log_softmax, mse, policy_loss,
 };
-pub use optimizer::{Adam, Group, Muon, Optimizer, OwnedSlot, Sgd, Slot};
+pub use optimizer::{Adam, Group, Hybrid, Muon, Optimizer, OwnedSlot, Sgd, Slot};
 pub use pool::OperatorSetOps;
 pub use pool::{Bufs, Data, Inputs, Kernel, Kind, Lane, Reference, View, ViewMut};
 pub use rng::{Bernoulli, Normal, Rng, Uniform, block};

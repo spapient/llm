@@ -230,8 +230,9 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
         self.check_moment_slots(slots)?;
         let momentum = slots.iter().map(|s| s.m().to_vec()).collect();
         let variance = slots.iter().map(|s| s.v().to_vec()).collect();
+        let shapes: Vec<_> = self.slots.iter().map(|slot| slot.matrix()).collect();
         self.optimizer
-            .restore(momentum, variance, moments.step())
+            .restore_shaped(momentum, variance, moments.step(), &shapes)
             .map_err(|error| error.with(SITE))?;
         Ok(())
     }
@@ -252,14 +253,14 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
         Ok(())
     }
 
-    /// 单槽矩长度对账：一阶/二阶矩元素数必须等于会话槽参数元素数。
+    /// 单槽矩长度对账：一阶矩必须等长；二阶矩可等长，或由无一阶外矩的实现留空。
     fn check_moment_slot_length(&self, idx: usize, slot: &SlotMoments) -> Result<()> {
         let want = self.slots[idx].params().len();
-        if slot.m().len() != want || slot.v().len() != want {
+        if slot.m().len() != want || !(slot.v().is_empty() || slot.v().len() == want) {
             let message = format!(
-                "第 {idx} 槽矩长度不符：快照 {} 元素，会话 {} 元素",
+                "第 {idx} 槽矩长度不符：一阶 {} / 二阶 {} 元素，会话 {want} 元素",
                 slot.m().len(),
-                want
+                slot.v().len(),
             );
             return Err(Error::new(Code::Invalid, message).with(SITE));
         }

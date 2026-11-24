@@ -6,6 +6,10 @@ stem     = "gemm_packed"
 skeleton = "gemm"
 summary  = "Y[m,n] = f32(sum_k i4(A[m,k]) i4(B[k,n]))"
 
+# int2 通过 `base` 同步继承该热点调优；CPU 的零值显式关闭展开。
+[kernel]
+unroll = { default = 4, cpu = 0 }
+
 [axes]
 N = [32]
 
