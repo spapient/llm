@@ -24,7 +24,9 @@ pub(crate) fn ok<E>(r: Result<(), E>) -> bool {
 }
 
 pub(crate) fn found<T>(option: Option<T>, what: &str) -> T {
-    if let Some(value) = option { value } else {
+    if let Some(value) = option {
+        value
+    } else {
         eprintln!("基准夹具失败（{what}）：查表未命中");
         std::process::exit(1)
     }

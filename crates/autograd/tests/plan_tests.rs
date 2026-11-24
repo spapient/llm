@@ -316,7 +316,11 @@ fn summarize(case: &str, tape: &Tape, schedule: &Schedule, bytes: &[u64], budget
     let Ok(plan) = Plan::of(tape, schedule, bytes, Budget::new(budget)) else {
         return format!("{case}/{budget}: 放不下");
     };
-    let saved: Vec<u32> = plan.saved().iter().map(super::super::graph::Var::id).collect();
+    let saved: Vec<u32> = plan
+        .saved()
+        .iter()
+        .map(super::super::graph::Var::id)
+        .collect();
     let release: Vec<Option<usize>> = plan.saved().iter().map(|var| plan.release(*var)).collect();
     format!(
         "{case}/{budget}: {:?} saved={saved:?} release={release:?} replayed={} peak={}",

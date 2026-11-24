@@ -42,7 +42,9 @@ fn quantiles_are_ordered_for_random_samples() {
     let mut rng = testkit::Rng::new(0xA17E);
     for _ in 0..32 {
         let count = rng.below(64) + 1;
-        let samples: Vec<f64> = (0..count).map(|_| f64::from(rng.below(1_000_000))).collect();
+        let samples: Vec<f64> = (0..count)
+            .map(|_| f64::from(rng.below(1_000_000)))
+            .collect();
         let timing = Timing {
             samples_ns: samples,
         };

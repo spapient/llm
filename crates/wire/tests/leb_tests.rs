@@ -2,7 +2,16 @@ use super::*;
 
 #[test]
 fn integers_round_trip_across_boundaries() {
-    for value in [0u64, 1, 127, 128, 16_383, 16_384, u64::from(u32::MAX), u64::MAX] {
+    for value in [
+        0u64,
+        1,
+        127,
+        128,
+        16_383,
+        16_384,
+        u64::from(u32::MAX),
+        u64::MAX,
+    ] {
         let mut buf = Vec::new();
         write(&mut buf, value);
         assert_eq!(Cursor::new(&buf).read::<u64>().expect("规范"), value);

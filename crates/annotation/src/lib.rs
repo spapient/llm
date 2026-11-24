@@ -277,7 +277,8 @@ fn attach<S: Streams>(item: S, generated: &str) -> S {
 
 /// 生成一条 `compile_error!`；`span` 决定 IDE 把红线画在哪个 token 上。
 fn compile_error<S: Streams>(message: &str, span: Option<Span>) -> S {
-    S::from_code(&format!("compile_error!({message:?});")).map_or_else(S::fallback, |code| code.respan(span))
+    S::from_code(&format!("compile_error!({message:?});"))
+        .map_or_else(S::fallback, |code| code.respan(span))
 }
 
 /// `proc_macro` 的 token 流 → 本 crate 的 token 模型；两者一一对应，下标因此可以互换。

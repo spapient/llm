@@ -89,7 +89,6 @@ mod l3_measure;
 #[path = "../tests/l3_ruling.rs"]
 mod l3_ruling;
 
-pub use similar_asserts::assert_eq;
 pub use compare::{
     COSINE_GUARD, Scale, all_finite, approx_eq, assert_close, assert_rel_with, assert_within_rel,
     close, cosine_similarity, max_rel_err,
@@ -99,3 +98,4 @@ pub use gating::{device_enabled, device_or_skip, skip, skip_count, skip_none, sk
 pub use hash::{assert_table_matches_bitwise, crc32_bitwise};
 pub use rng::{Rng, sample};
 pub use scratch::{scratch_clean, scratch_dir};
+pub use similar_asserts::assert_eq;

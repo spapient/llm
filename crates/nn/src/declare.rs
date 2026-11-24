@@ -75,11 +75,7 @@ impl AxisCore {
 
     /// 本层下界：单轴算子的第二形参被骨架忽略，补 `1` 只满足 `shape_ctx` 签名，不参与代价。
     pub(crate) fn bounds(&self) -> crate::BoundsResult {
-        let op = self
-            .spec
-            .ops()
-            .first()
-            .map_or_default(String::as_str);
+        let op = self.spec.ops().first().map_or_default(String::as_str);
         Bounds::of_ctx(op, self.len, 1).map(Some)
     }
 }

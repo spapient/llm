@@ -224,7 +224,12 @@ pub fn dot(a: &[u8], b: &[u8], n: usize, i: usize, j: usize, conf: &Conf) -> f32
             conf.zero,
         ));
         let y_pos = p * n + j;
-        let y = i32::from(unpack(b[y_pos / conf.cpb], y_pos % conf.cpb, conf.cpb, conf.zero));
+        let y = i32::from(unpack(
+            b[y_pos / conf.cpb],
+            y_pos % conf.cpb,
+            conf.cpb,
+            conf.zero,
+        ));
         acc += x * y;
     }
     acc as f32

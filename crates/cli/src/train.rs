@@ -14,7 +14,9 @@ pub(crate) fn train_run(
     load: Option<&str>,
 ) -> Result<()> {
     let config = build_train_config(lr, warmup, steps, clip, accumulation)?;
-    if let Some(path) = load { report_recovered(path, &config) } else {
+    if let Some(path) = load {
+        report_recovered(path, &config)
+    } else {
         report_train_config(&config);
         Ok(())
     }

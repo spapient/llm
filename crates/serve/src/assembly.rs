@@ -344,7 +344,9 @@ impl<'a> NodeSink<'a> {
 
     /// 懒分配全模型共享的 rope 批位置表编号：已取号复用，否则登记新号。
     pub(crate) fn ensure_rope_pos_table(&mut self) -> Result<u32> {
-        if let Some(id) = *self.rope_pos_table { Ok(id) } else {
+        if let Some(id) = *self.rope_pos_table {
+            Ok(id)
+        } else {
             let id = self.alloc_table()?;
             *self.rope_pos_table = Some(id);
             Ok(id)
@@ -353,7 +355,9 @@ impl<'a> NodeSink<'a> {
 
     /// 懒分配全模型共享的 attention 段长表编号：已取号复用，否则登记新号。
     pub(crate) fn ensure_hist_len_table(&mut self) -> Result<u32> {
-        if let Some(id) = *self.hist_len_table { Ok(id) } else {
+        if let Some(id) = *self.hist_len_table {
+            Ok(id)
+        } else {
             let id = self.alloc_table()?;
             *self.hist_len_table = Some(id);
             Ok(id)

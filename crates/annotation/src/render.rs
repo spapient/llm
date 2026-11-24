@@ -234,7 +234,9 @@ const CONST: &str = "        static SPEC: ::std::sync::OnceLock<::nn::ContractSp
 
 /// 形状表达式：空形状必须显式给 `Vec<usize>`——`Shape::new([])` 推断不出元素类型。
 fn shape_of<T>(code: &mut String, axes: &[T], each: impl FnMut(&mut String, &T)) {
-    if axes.is_empty() { code.push_str("::nn::Shape::new(::std::vec::Vec::<usize>::new())") } else {
+    if axes.is_empty() {
+        code.push_str("::nn::Shape::new(::std::vec::Vec::<usize>::new())")
+    } else {
         code.push_str("::nn::Shape::new([");
         comma(code, axes.iter(), each);
         code.push_str("])");

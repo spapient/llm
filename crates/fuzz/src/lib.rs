@@ -296,7 +296,9 @@ pub mod finding {
 
     impl fmt::Display for Repro<'_> {
         fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-            if let Ok(text) = std::str::from_utf8(self.0) { write!(formatter, "{text:?}") } else {
+            if let Ok(text) = std::str::from_utf8(self.0) {
+                write!(formatter, "{text:?}")
+            } else {
                 const NIBBLE: [u8; 16] = *b"0123456789abcdef";
                 let mut hex = String::with_capacity(self.0.len() * 2);
                 for &byte in self.0 {

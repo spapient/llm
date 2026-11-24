@@ -12,20 +12,28 @@ pub fn workspace_root() -> PathBuf {
 
 /// 递归列出 `dir` 下的全部 `.rs` 文件（顺序无关，只用于扫描）。
 pub fn rust_files(dir: &Path) -> Vec<PathBuf> {
-    with_cache(|cache| if let Some(found) = cache.dirs.get(dir) { found.clone() } else {
-        let mut found = Vec::new();
-        walk(dir, &mut found);
-        cache.dirs.insert(dir.to_path_buf(), found.clone());
-        found
+    with_cache(|cache| {
+        if let Some(found) = cache.dirs.get(dir) {
+            found.clone()
+        } else {
+            let mut found = Vec::new();
+            walk(dir, &mut found);
+            cache.dirs.insert(dir.to_path_buf(), found.clone());
+            found
+        }
     })
 }
 
 /// 读一份源文件；读不到时返回 `None`。
 pub fn source_text(path: &Path) -> Option<String> {
-    with_cache(|cache| if let Some(text) = cache.texts.get(path) { text.clone() } else {
-        let text = std::fs::read_to_string(path).ok();
-        cache.texts.insert(path.to_path_buf(), text.clone());
-        text
+    with_cache(|cache| {
+        if let Some(text) = cache.texts.get(path) {
+            text.clone()
+        } else {
+            let text = std::fs::read_to_string(path).ok();
+            cache.texts.insert(path.to_path_buf(), text.clone());
+            text
+        }
     })
 }
 
@@ -41,7 +49,9 @@ fn with_cache<T>(body: impl FnOnce(&mut SourceCache) -> T) -> T {
     let cache = CACHE.get_or_init(|| Mutex::new(SourceCache::default()));
     // 门禁里的断言会 panic，但都不在持锁期间：这里按中毒恢复处理，不让一个门禁的失败
     // 连带把其余门禁判成"缓存中毒"。
-    let mut guard = cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut guard = cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     body(&mut guard)
 }
 
@@ -94,7 +104,8 @@ pub(crate) fn dependents(dependency: &str) -> BTreeSet<String> {
 /// 成员短名 → 源码根目录。
 pub(crate) fn src_root(member: &str) -> PathBuf {
     let dir = dirs()
-        .get(member).map_or_else(|| PathBuf::from("crates").join(member), |path| path.clone());
+        .get(member)
+        .map_or_else(|| PathBuf::from("crates").join(member), |path| path.clone());
     workspace_root().join(dir).join("src")
 }
 
@@ -113,7 +124,11 @@ fn dirs() -> &'static BTreeMap<String, PathBuf> {
             let manifest = package["manifest_path"].as_str().expect("清单路径");
             let dir = Path::new(manifest)
                 .parent()
-                .and_then(|parent| parent.strip_prefix(&root).ok()).map_or_else(|| PathBuf::from("crates").join(short(name)), Path::to_path_buf);
+                .and_then(|parent| parent.strip_prefix(&root).ok())
+                .map_or_else(
+                    || PathBuf::from("crates").join(short(name)),
+                    Path::to_path_buf,
+                );
             dirs.insert(short(name), dir);
         }
         dirs

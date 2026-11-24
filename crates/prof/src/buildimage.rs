@@ -73,7 +73,9 @@ fn compile(device: &Device, recipe: &Recipe, out: &Path) -> diagnostic::Result<O
                 .collect();
             run(inspector, &args).ok()
         })
-        .map_or(0, |stdout| stdout.lines().filter(|line| line.contains(" T ")).count());
+        .map_or(0, |stdout| {
+            stdout.lines().filter(|line| line.contains(" T ")).count()
+        });
 
     Ok(Outcome::Compiled {
         path: image,

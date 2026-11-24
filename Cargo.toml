@@ -24,6 +24,8 @@ rust_2018_idioms = { level = "warn", priority = -1 }
 all = { level = "deny", priority = -1 }
 cargo = { level = "deny", priority = -1 }
 dbg_macro = "deny"
+# 可迭代的集合禁止索引式 `for i in 0..n`：优先整块 slice / 迭代器 / 向量化，串行依赖才保留下标。
+needless_range_loop = "deny"
 # 版本分叉只发生在第三方宏 crate 的 dev 图上：criterion 链里 serde_derive 转 syn 3、
 # half 链里 zerocopy-derive 转 syn 2。本仓清单收敛不到，故按需放行这一条。
 multiple_crate_versions = "allow"

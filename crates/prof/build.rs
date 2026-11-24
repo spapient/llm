@@ -286,23 +286,27 @@ fn provides_of(doc: &toml::Table, name: &str, ext: &str) -> Vec<Provide> {
 fn entry_of(provides: &[Provide], prim: &str, implementation: &str, path: &Path) -> String {
     provides
         .iter()
-        .find(|provide| provide.prim == prim && provide.imp == implementation).map_or_else(|| {
-            let declared: Vec<&str> = provides
-                .iter()
-                .filter(|provide| provide.prim == prim)
-                .map(|provide| provide.imp.as_str())
-                .collect();
-            fail(format!(
-                "`{}` 声明的签名 `{prim}/{implementation}` 在档案里没有对应 `provides`\
+        .find(|provide| provide.prim == prim && provide.imp == implementation)
+        .map_or_else(
+            || {
+                let declared: Vec<&str> = provides
+                    .iter()
+                    .filter(|provide| provide.prim == prim)
+                    .map(|provide| provide.imp.as_str())
+                    .collect();
+                fail(format!(
+                    "`{}` 声明的签名 `{prim}/{implementation}` 在档案里没有对应 `provides`\
                  （档案里 `{prim}` 的实现：{}）",
-                path.display(),
-                if declared.is_empty() {
-                    "一条都没有".to_string()
-                } else {
-                    declared.join(", ")
-                }
-            ))
-        }, |provide| provide.func.clone())
+                    path.display(),
+                    if declared.is_empty() {
+                        "一条都没有".to_string()
+                    } else {
+                        declared.join(", ")
+                    }
+                ))
+            },
+            |provide| provide.func.clone(),
+        )
 }
 
 /// 片段第一行的签名声明：`/* cutile-sign: <prim>/<impl> */`。返回 `impl` 名。

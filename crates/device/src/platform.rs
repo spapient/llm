@@ -571,12 +571,10 @@ pub(crate) fn msvc_version(cl: &Path) -> Vec<u32> {
     let Some((_, rest)) = text.rsplit_once("MSVC\\") else {
         return Vec::new();
     };
-    rest.split('\\')
-        .next()
-        .map_or_default(|version| {
-            version
-                .split('.')
-                .map(|part| part.parse::<u32>().unwrap_or(0))
-                .collect()
-        })
+    rest.split('\\').next().map_or_default(|version| {
+        version
+            .split('.')
+            .map(|part| part.parse::<u32>().unwrap_or(0))
+            .collect()
+    })
 }

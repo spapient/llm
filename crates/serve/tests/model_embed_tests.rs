@@ -43,10 +43,7 @@ fn an_embedding_then_projection_matches_the_reference() {
     nn::gemv_f32::forward(tensor::View::one(&embedded), &w, &mut reference).expect("参考：投影");
 
     let stack = embed_projection_stack(vocab, dim);
-    let params = params_of(&[
-        ("tok_emb.weight", table),
-        ("proj.weight", w.to_vec()),
-    ]);
+    let params = params_of(&[("tok_emb.weight", table), ("proj.weight", w.to_vec())]);
 
     forward_close(stack, params, &idx, &reference);
 }
@@ -107,10 +104,7 @@ fn predict_logits_from_an_embedding_sequence_match_the_reference() {
     let sequence = Sequence::new(0, &[2u32], 2, 16, Stream::new(0)).expect("序列");
 
     let stack = embed_projection_stack(vocab, dim);
-    let params = params_of(&[
-        ("tok_emb.weight", table),
-        ("proj.weight", w.to_vec()),
-    ]);
+    let params = params_of(&[("tok_emb.weight", table), ("proj.weight", w.to_vec())]);
 
     let mut model = assemble(stack, params);
     let mut batch = plain_batch();
@@ -137,9 +131,7 @@ fn logits_batch_runs_two_sequences_through_the_flat_projection_chain() {
     let a = Sequence::new(0, &[2u32], 2, 16, Stream::new(0)).expect("序列 A");
     let b = Sequence::new(1, &[5u32], 2, 16, Stream::new(0)).expect("序列 B");
 
-    let rows = model
-        .logits_batch(&[a, b], &mut batch)
-        .expect("整批前向");
+    let rows = model.logits_batch(&[a, b], &mut batch).expect("整批前向");
     assert_eq!(rows.len(), 2, "两行 logits 与输入切片一一对应");
 
     assert_close(&rows[0], &reference_row(&table, &w, 2, dim));

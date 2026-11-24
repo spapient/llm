@@ -55,12 +55,12 @@
 
 | 断言入口 | 判据 | 适用 |
 |---|---|---|
-| `testkit::assert::assert_eq`（similar-asserts） | `PartialEq` 精确相等，失败给行级 diff | 集合 / 结构体 / 字节片等结构化相等对比 |
+| `testkit::assert_eq`（similar-asserts 重导出） | `PartialEq` 精确相等，失败给行级 diff | 集合 / 结构体 / 字节片等结构化相等对比 |
 | `testkit::compare`（`assert_close` / `assert_within_rel` / `approx_eq`…） | 逐元素容差 / 整批相对误差 / 方向余弦 | 浮点对拍；**数值禁止用精确相等** |
 | `testkit::hash::assert_table_matches_bitwise` | 位级 CRC-32 参考 | 权重 / 二进制快照逐字节锁定 |
 
 `assert_eq` 是 std `assert_eq!` 的诊断增强替代，判定语义仍是 `PartialEq`，不引入任何浮点容差。
-存量 4154 处 `assert_eq!` 不强制批量替换；新写的大集合/结构对比优先走 `testkit::assert::assert_eq`。
+存量 4154 处 `assert_eq!` 不强制批量替换；新写的大集合/结构对比优先走 `testkit::assert_eq`。
 
 ### 4. 快照：保留手写位级快照，不引 insta；编译错误契约走展开断言，暂不引 trybuild
 

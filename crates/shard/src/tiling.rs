@@ -169,7 +169,14 @@ impl Tiling {
     }
 
     /// 行切：列段跨行分散，外层按行取列段（布局决定的分散拷贝，非逐元素遍历），行内整块复制。
-    fn row_slice<T: Copy>(&self, start: usize, width: usize, inp: usize, out: usize, full: &[T]) -> Vec<T> {
+    fn row_slice<T: Copy>(
+        &self,
+        start: usize,
+        width: usize,
+        inp: usize,
+        out: usize,
+        full: &[T],
+    ) -> Vec<T> {
         let mut local = Vec::with_capacity(out * width);
         for row in 0..out {
             let begin = row * inp;

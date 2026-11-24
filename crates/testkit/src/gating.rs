@@ -63,9 +63,7 @@ pub fn skip_count() -> usize {
 /// 本进程已登记的跳过原因（按登记顺序）。
 #[must_use]
 pub fn skipped_reasons() -> Vec<String> {
-    SKIP_REASONS
-        .lock()
-        .map_or_default(|guard| guard.clone())
+    SKIP_REASONS.lock().map_or_default(|guard| guard.clone())
 }
 
 /// 真机门控与跳过登记合一：设备未显式打开时登记原因并返回 `true`（调用方立即 `return`）；

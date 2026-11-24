@@ -140,9 +140,10 @@ pub(super) fn ledger_header(profile: &Profile, verified: &Verified, conclusion: 
 pub(super) fn ledger_primitives(profile: &Profile) -> String {
     let mut table = Sheet::new(["原语", "实现", "等级", "见证"]);
     for have in &profile.provides {
-        let witness = have
-            .witness
-            .as_ref().map_or_else(|| "—".to_string(), |witness| format!("{}({})", witness.file, witness.func));
+        let witness = have.witness.as_ref().map_or_else(
+            || "—".to_string(),
+            |witness| format!("{}({})", witness.file, witness.func),
+        );
         table = table.row([
             format!("`{}`", have.prim),
             have.impl_name.clone(),

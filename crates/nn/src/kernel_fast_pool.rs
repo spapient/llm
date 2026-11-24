@@ -80,7 +80,10 @@ impl Gate {
 
     /// 到齐放行，返回 `false`；被 `abort()` 提前放行时返回 `true`。
     fn wait(&self, p: usize) -> bool {
-        let mut s = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut s = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let start_gen = s.generation;
         s.arrived += 1;
         if s.arrived == p {
@@ -90,14 +93,20 @@ impl Gate {
             return false;
         }
         while s.generation == start_gen && !s.aborted {
-            s = self.cv.wait(s).unwrap_or_else(std::sync::PoisonError::into_inner);
+            s = self
+                .cv
+                .wait(s)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
         s.aborted
     }
 
     /// 中止本次闸门：放行所有已在等待的参与者，并让后续 `wait` 也立即返回 `true`。
     fn abort(&self) {
-        let mut s = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut s = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         s.aborted = true;
         self.cv.notify_all();
     }
@@ -174,9 +183,15 @@ fn spin(id: usize, pool: &'static Pool) {
     let cell = &pool.cells[id];
     loop {
         let task = {
-            let mut g = cell.job.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut g = cell
+                .job
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             while g.is_none() {
-                g = cell.cv.wait(g).unwrap_or_else(std::sync::PoisonError::into_inner);
+                g = cell
+                    .cv
+                    .wait(g)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
             }
             g.take()
         };
@@ -199,7 +214,10 @@ fn spin(id: usize, pool: &'static Pool) {
         // 归还槽位：先置回空闲位，再通知等待空闲槽的发布者。
         pool.free.fetch_or(1u64 << id, Ordering::AcqRel);
         {
-            let _g = pool.free_lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _g = pool
+                .free_lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             pool.free_cv.notify_all();
         }
     }
@@ -224,26 +242,32 @@ fn pick_free(free: u64, need: usize) -> Option<u64> {
 fn lease_free(pool: &'static Pool, need: usize) -> u64 {
     let mut free = pool.free.load(Ordering::Acquire);
     loop {
-        if let Some(m) = pick_free(free, need) { match pool.free.compare_exchange(
-            free,
-            free & !m,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ) {
-            Ok(_) => return m,
-            Err(actual) => free = actual,
-        } } else {
+        if let Some(m) = pick_free(free, need) {
+            match pool
+                .free
+                .compare_exchange(free, free & !m, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return m,
+                Err(actual) => free = actual,
+            }
+        } else {
             // 拿锁后必须重查位图：worker 是「先置位、再取锁、再 notify」的，若置位与本次
             // 加锁之间发生归还，那次 notify 落在「还没人睡下」的空档里，唤醒就丢了——
             // 睡下去要等到下一次任务结束才醒，并发调用者会互等到卡住。
             // 所以先持锁复核一次，确认仍然没有空槽，才允许睡。
-            let guard = pool.free_lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let guard = pool
+                .free_lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             free = pool.free.load(Ordering::Acquire);
             if pick_free(free, need).is_some() {
                 drop(guard);
                 continue;
             }
-            let guard = pool.free_cv.wait(guard).unwrap_or_else(std::sync::PoisonError::into_inner);
+            let guard = pool
+                .free_cv
+                .wait(guard)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             drop(guard);
             free = pool.free.load(Ordering::Acquire);
         }
@@ -266,7 +290,10 @@ fn dispatch(pool: &'static Pool, job: &Arc<Job>, mut mask: u64) {
         let id = mask.trailing_zeros() as usize;
         mask &= mask - 1;
         {
-            let mut g = pool.cells[id].job.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut g = pool.cells[id]
+                .job
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             *g = Some((job.clone(), slot));
         }
         pool.cells[id].cv.notify_one();
@@ -296,7 +323,12 @@ fn await_done(job: &Job, p: usize) {
 
 /// 等全部槽归还后再把 panic 抛回调用方：此刻没有 worker 再碰 job 的裸指针。
 fn resume_panic(job: &Job) {
-    if let Some(payload) = job.panic.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
+    if let Some(payload) = job
+        .panic
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+    {
         std::panic::resume_unwind(payload);
     }
 }
