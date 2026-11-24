@@ -1,0 +1,12 @@
+# 逐元素四舍五入：y[n] = round(a[n])，半值远离零。
+# 一元骨架，与 gelu 同布局/needs/变体，只差右值表达式；取整函数走三后端 preamble 软件标量接口。
+base = "gelu_f32"
+
+[op]
+name     = "round_f32"
+stem     = "unary_fn"
+skeleton = "elementwise"
+summary  = "y[n] = round(a[n])"
+
+[consts]
+unexpr = "_cutile_round_f32(x)"

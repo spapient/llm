@@ -206,7 +206,7 @@ testkit    → （叶    +dev: autograd, cutile, nn, prof, tensor, tools, train,
 | `Scale` | `testkit` | 夹具侧的浮点对拍分母策略：`Scale` 只答「分母按整批最大幅度还是每元素留 1 的地板取」；失败读数与最差元素（`RelErr` / `Worst`）连同服务内部的判定 `rel_err` / `within_ratio` / `within_rel` 一律是 crate 内部载体，公开面只留 `max_rel_err` / `assert_within_rel` / `assert_rel_with`。阈值仍只由 `cutile::reference::tolerance` 拥有——本行不设第二张分档表，`Scale::Batch` 与它由 `crates/testkit/tests/rel_tests.rs` 逐位钉住 |
 | `Absence` | `testkit` | 性质测试台账的一行：`members` 只持成员名、`reason` 只持一句**可核查**的替代覆盖说明，台账因此是纯数据——判据全在 `prop_discipline` 那道门里（与源码扫描双向一致、理由必须具体、已登记缺口有上限）。台账自己不做判断，也就不会和扫描各有一套说法 |
 | `Gemm` / `Matmul` / `MatmulI8Op` / `Packed` / `PackedRow` | `nn` | 内核族的算子实体：打包格式（`Packed` 行描述子 + `PackedRow` 行视图）与三条收缩装配；`#[model]` 的 `reference` 是语义表唯一来源 |
-| `Plain` / `PlainFmt` / `Dense` / `DequantI8` / `QuantI4` / `SymI8` | `nn` | 未打包与量化格式的算子实体：回写尾块、反量化、4 位分组量化、对称 i8，各带自己的语义表注解 |
+| `Plain` / `PlainFmt` / `Dense` / `DequantI8` / `QuantI4` / `SymI8` / `Clamp` | `nn` | 未打包与量化格式的算子实体：回写尾块、反量化、4 位分组量化、对称 i8、逐元素裁剪，各带自己的语义表注解 |
 | `Binary` / `Unary` | `nn` | 逐元素两族：一张宏表同时生成声明与内核绑定，新算子只加一行 |
 | `Embed` / `Sampler` / `FlashAttention` / `DecodeFlashAttention` | `nn` | 词表与注意力侧算子实体：预填充 / 解码两条几何、掩码与归一化、采样；`reference` 是唯一对拍口径 |
 | `ConvGeom` | `nn` | 卷积几何：把填充 / 步长 / 膨胀折成输出尺寸与索引映射，卷积与池化共用一份 |

@@ -1,6 +1,6 @@
 # 0054：算子/内核覆盖——骨架族泛型 + 目录行表 + 能力表，覆盖对齐 Burn 而边际实现压到一行
 
-- 状态：P1 切片已落地（f32 三骨架 + 首批 5 个不可微算子 + 能力表骨架 + sign/recip 与 sin/cos/sqrt 一元算子；unary/reduce 执行侧已挂接元素档 `K`；一元实例拆平级壳文件压线）；完整元素档贯通、五新族与算子级 bwd 列后续批次，落地进度以代码与门禁为准
+- 状态：P1 切片已落地（f32 三骨架 + 首批 5 个不可微算子 + 能力表骨架 + sign/recip、sin/cos/sqrt/rsqrt、ceil/floor/round/trunc/log1p/exp2 一元算子 + clamp 裁剪算子；unary/reduce 执行侧已挂接元素档 `K`；一元实例拆平级壳文件压线）；完整元素档贯通、五新族与算子级 bwd 列后续批次，落地进度以代码与门禁为准
 - 日期：2026-11-24
 - 相关：[0050](0050-operator-base.md)（`Operator` 基座六族语义）、[0053](0053-typed-operators.md)（清单驱动注册表与类型化 API 面）、[0018](0018-dtype-single-source.md)（精度单一事实源）、[0052](0052-execution-platform-contract.md)（六平台执行合同）、[0005](0005-annotations-as-contracts.md)（注解即契约）、[0013](0013-dense-projection-operator.md)（加算子只加数据）
 
@@ -97,7 +97,10 @@ Burn 的覆盖单位是**后端 trait 方法 + 每后端实现**：ADR 0053 已�
 - **模板减码**：抽共享 `unary_fn.k`（`{{unexpr}}` 表达式槽位）承接三个一元算子；`remainder_f32` 复用现成 `binary.k`（`binop="%"`）；`reduce_prod_f32` 因归约 preamble 无并行乘积原语，写独立标量折叠 `.k`，并行归约原语标 PARTIAL。
 - **S1 首批纯表达式一元算子**：`sign_f32`（三分支符号，`DIFFERENTIABLE=false`，0 点不可微）、`recip_f32`（`1.0/x`，零除域受限，`DIFFERENTIABLE=false`，0 奇异）。二者复用共享 `unary_fn.k` 模板、不新增内核文件；七落点（nn 骨架模块与宏调用、`kernel.rs` re-export、`lib.rs` 根导出、`registry.rs` 字典序行、`train/kernel.rs` 适配映射与 `KERNELS` 表行、prof `.toml` 档案、共享模板）齐全。测试分两档：全域有限算子走对拍 + 长度负例 + 饱和/重复边界且查有限性；域受限（会产 Inf/NaN）算子仅对拍 + 长度负例。Rust 参考侧与 C 模板同用三分支显式实现，避免 `f32::signum` 在零点口径分叉。落地后目录 `.toml`、registry 清单、train `KERNELS` 表三表各 59 条，编译期名字/顺序双断言兜底；cutile 几何可测融合对仍为 1（未新增可桥接邻近对，基线不变）。
 - **S2 数学一元算子**：`sin_f32`/`cos_f32`（`_cutile_sin/cos_f32`）、`sqrt_f32`（`_cutile_sqrt_f32`，样本夹具取非负避开负入 NaN）。三者复用共享 `unary_fn.k`、不新增内核文件；三后端 preamble 原语 `sqrt/sin/cos/pow` 均已注册。本轮只接前向、不接 bwd 族，按 S12 口径显式 `DIFFERENTIABLE=false`，故不进 `FORMULAS` 反向公式目录（编译期 `formulas_cover` 守「可微必配公式」互锁）。`sqrt` 走非负夹具的 pair 档；`sin`/`cos` 避开 MAX/MIN 大数约化，同样走 pair 档。七落点齐全，三表各 62 条。
-- **一元实例拆平级壳文件压线**：算子实例段从 `kernel_unary.rs` 抽到 `kernel_unary_ops.rs`，作为 `kernel` 下与 `unary`（trait/宏/骨架）平级的壳模块 `unary_ops`，照 `elementwise`/`reduce` 既有平级壳先例；`kernel.rs` 从 `unary_ops` 重导出，`<crate>::<name>` 路径不变。骨架装配改走绝对路径 `crate::unary::{project_shape,cost,sample,reference}`，不再依赖 `super::` 的父模块解析，算子模块嵌在哪一层都不影响定位；test_support 挂载改 `pub(crate)` 供平级壳测试宏可见。拆分后骨架 187 行、实例 456 行，均在单文件 600 行硬线内。
+- **S2 rsqrt 与 S1 clamp**：`rsqrt_f32`（`1/√x`，域 x>0、0 奇异，夹具取正且非零，`DIFFERENTIABLE=false`）；cutile preamble 无 rsqrt 片段，按 `1.0f / _cutile_sqrt_f32(x)` 表达式绕开缺失片段，复用共享 `unary_fn.k`。`clamp_f32`（`clamp(x, lo, hi)`）走 `operator_here!` 独立模块（不套 unary/binary 宏），自带 cost/sample/reference/forward；参考侧 `forward(lo, hi, x, out)` 保留 f32 标量界形参，前置校验两界有限且 `lo<=hi`，越界值裁到界内。七落点齐全，三表各 64 条。
+- **S2 取整四族与 log1p/exp2**：`ceil_f32`/`floor_f32`/`round_f32`/`trunc_f32`（全域有限，走 `unary_op_tests` 饱和/重复边界档；`round` 半值远离零，与 Rust `f32::round` 口径对拍钉住）、`log1p_f32`（域 x>-1，夹具取非负 pair 档）、`exp2_f32`（夹具压上溢 pair 档）。六者均 `DIFFERENTIABLE=false`，不进 `FORMULAS`。取整四函数在**六台后端** preamble 各挂一行包裹：cpu/ascend/nvidia/musa 用 libm `ceilf/floorf/roundf/truncf`，intel(OpenCL C)/metal 用无后缀内建 `ceil/floor/round/trunc`；`log1p` 按 `_cutile_log_f32(1.0f + x)`、`exp2` 按 `_cutile_exp_f32(x·ln2)` 表达式复用既有 log/exp 片段绕开缺失软件接口，与 rsqrt 同策略。六者复用共享 `unary_fn.k`、零新增 `.k` 文件；七落点齐全，三表各 70 条。目录按文件 stem 字节序排列，`exp2`/`log1p` 的数字前缀（`2`/`1`）码位小于下划线，排在 `exp`/`log` 之前，registry 与 `KERNELS` 表同序对齐，编译期双断言兜底。
+- **clamp 标量界通道边界（诚实标注）**：内核签名闭集 `CType` 只有 f32/u8 指针与整数标量，无 f32 标量形参；`Sample.scalars` 仅 i64 形状标量，`Values` 档位闭集仅张量 Vec。故 `lo`/`hi` 在目录样本与真机内核模板层固化为模块常量（`LO=-1.0`/`HI=1.0`），同 `dequant_i8` 的 scale/zero 口径；运行时可变的 f32 标量参数通道（一等 f32 scalar 位 + 模板形参 + 取值通道）随 `pow_scalar`/scale 真标量化批次接入，列 P2。本批 `clamp` 图输入仅 `x` 一路（ARITY=1），train 适配层取模块常量转发；参考侧保留 f32 标量形参以便界负例与饱和裁剪直接对拍。
+- **一元实例拆平级壳文件压线**：算子实例段从 `kernel_unary.rs` 抽到 `kernel_unary_ops.rs`，作为 `kernel` 下与 `unary`（trait/宏/骨架）平级的壳模块 `unary_ops`，照 `elementwise`/`reduce` 既有平级壳先例；`kernel.rs` 从 `unary_ops` 重导出，`<crate>::<name>` 路径不变。骨架装配改走绝对路径 `crate::unary::{project_shape,cost,sample,reference}`，不再依赖 `super::` 的父模块解析，算子模块嵌在哪一层都不影响定位；test_support 挂载改 `pub(crate)` 供平级壳测试宏可见。拆分后骨架 187 行、实例 591 行，均在单文件 600 行硬线内。
 
 ### 裁决与边界
 
@@ -107,7 +110,7 @@ Burn 的覆盖单位是**后端 trait 方法 + 每后端实现**：ADR 0053 已�
 
 ### 门禁状态与未测
 
-- 截至回写：`llm-prof` 164 + 56 + 3 passed（1 ignored）、`llm-nn` 499 + 2 passed（4 ignored）、`llm-train` 231 + 5 passed、`cutile` 139 + 2 passed、`llm-serve` 197 passed、`llm-annotation` 48 + 6 passed；全量 `--workspace --exclude llm-fuzz` 除静态门外无 FAILED，`clippy --workspace --exclude llm-fuzz --all-targets` 无 error/warning，`cargo fmt --check --all` 干净。注册表与算子目录的编译期名字/顺序双断言通过；能力表三则对账测试通过；testkit 注解↔注册表镜像对账通过。
+- 截至回写：`llm-prof` 164 + 56 + 3 passed（1 ignored）、`llm-nn` 528 passed（4 ignored）、`llm-train` 231 + 5 passed、`cutile` 139 passed、`llm-serve` 197 passed、`llm-annotation` 48 + 6 passed、`llm-testkit` 100 passed、`llm-shard` 141 passed；全量 `--workspace --exclude llm-fuzz` 除静态门外无 FAILED，`clippy --workspace --exclude llm-fuzz --all-targets` 无 error/warning，`cargo fmt --check --all` 干净。注册表与算子目录的编译期名字/顺序双断言通过；能力表三则对账测试通过；testkit 注解↔注册表镜像与签名↔样本对账通过。静态门剩余 7 项为 HEAD 即在的存量越线（einsum/session/backprop/geometry/tensor 行数、harness 调用数、train kernel.rs 适配层），拆分收口属并行在途批次，本批未新增越线文件。
 - **静态质量门存量越线（非本批引入）**：`prof/einsum.rs`、`train/session.rs`、`train/backprop.rs`、`train/geometry.rs`、`tensor/tensor.rs` 在 HEAD 基线即超单文件 600 行硬线，`fuzz/harness.rs` 有 Call 存量项；`train/kernel.rs` HEAD 609 行已越线，本批仅按七落点登记新增适配/表行。这些属并行线在途收口范围，本任务不越界拆分适配层；本批推越的 `kernel_unary.rs` 已按平级壳拆分回线。棘轮口径下存量只准降，恶化必失败，列入 P3 收口。
 - `llm-train`/`llm-serve` 经传递依赖链上的 cutile，曾处于并行线「子节点抽象回退」中途（`children`/`map_children` 签名与调用方暂不同步、doctest rlib 路径陈旧的中间态）；本轮回切后各 crate 单测与 doctest 复跑均通过，不在中间态上签发对拍结论。
 - 净降行数与文件数、jscpd 重复度降幅：**待实测**，先以现有 nn/tensor/prof 基线扫描后定值，不在落地前写未测降幅。

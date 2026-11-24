@@ -78,6 +78,10 @@ __host__ __device__ float _cutile_sqrt_f32(float x) { return sqrtf(x); }
 __host__ __device__ float _cutile_sin_f32(float x) { return sinf(x); }
 __host__ __device__ float _cutile_cos_f32(float x) { return cosf(x); }
 __host__ __device__ float _cutile_pow_f32(float x, float y) { return powf(x, y); }
+__host__ __device__ float _cutile_ceil_f32(float x) { return ceilf(x); }
+__host__ __device__ float _cutile_floor_f32(float x) { return floorf(x); }
+__host__ __device__ float _cutile_round_f32(float x) { return roundf(x); }
+__host__ __device__ float _cutile_trunc_f32(float x) { return truncf(x); }
 """
 
 [[provides]]

@@ -195,12 +195,13 @@ macro_rules! kernel_table {
 
 /// 单算子入口（`gemv_f32` / `rmsnorm_f32` …）：下游原先写 `op::gemv_f32`，现在写 `nn::gemv_f32`。
 pub use kernel::{
-    Scalar, abs_f32, add_f32, apply_epilogue, cos_f32, dequant_i2, dequant_i4, dequant_i8, div_f32,
-    embed_f32, exp_f32, gelu_f32, gemm_f32, gemm_i2, gemm_i4, gemm_i8, gemv_f32, gemv_i2, gemv_i4,
-    gemv_i8, hard_sigmoid_f32, leaky_relu_f32, log_f32, matmul_i8, max_f32, min_f32, mul_f32,
-    neg_f32, recip_f32, reduce_max_f32, reduce_prod_f32, reduce_sum_f32, relu_f32, remainder_f32,
-    residual_add_f32, rmsnorm_f32, rope_f32, rsqrt_f32, scale_f32, sigmoid_f32, sign_f32, silu_f32, sin_f32,
-    softmax_f32, sqrt_f32, square_f32, sub_f32, tanh_f32,
+    Scalar, abs_f32, add_f32, apply_epilogue, ceil_f32, clamp_f32, cos_f32, dequant_i2, dequant_i4,
+    dequant_i8, div_f32, embed_f32, exp_f32, exp2_f32, floor_f32, gelu_f32, gemm_f32, gemm_i2,
+    gemm_i4, gemm_i8, gemv_f32, gemv_i2, gemv_i4, gemv_i8, hard_sigmoid_f32, leaky_relu_f32,
+    log_f32, log1p_f32, matmul_i8, max_f32, min_f32, mul_f32, neg_f32, recip_f32, reduce_max_f32,
+    reduce_prod_f32, reduce_sum_f32, relu_f32, remainder_f32, residual_add_f32, rmsnorm_f32,
+    rope_f32, round_f32, rsqrt_f32, scale_f32, sigmoid_f32, sign_f32, silu_f32, sin_f32,
+    softmax_f32, sqrt_f32, square_f32, sub_f32, tanh_f32, trunc_f32,
 };
 
 // 契约层在 `prof`：内核源码与骨架宏都按 crate 根解析契约路径，这里把它们搬回来，于是内核源码

@@ -88,6 +88,10 @@ static inline float _cutile_sqrt_f32(float x) { return sqrtf(x); }
 static inline float _cutile_sin_f32(float x) { return sinf(x); }
 static inline float _cutile_cos_f32(float x) { return cosf(x); }
 static inline float _cutile_pow_f32(float x, float y) { return powf(x, y); }
+static inline float _cutile_ceil_f32(float x) { return ceilf(x); }
+static inline float _cutile_floor_f32(float x) { return floorf(x); }
+static inline float _cutile_round_f32(float x) { return roundf(x); }
+static inline float _cutile_trunc_f32(float x) { return truncf(x); }
 
 /* 归约统一入口 (a, n, stride)：n==1 走标量快通道，n>1 按步长数组归约。 */
 static inline float _cutile_sum_f32(const float *a, int n, int stride) {

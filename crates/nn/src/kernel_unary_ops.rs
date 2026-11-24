@@ -478,3 +478,120 @@ pub mod rsqrt_f32 {
         |len| (0..len).map(|i| (i + 1) as f32 * 0.25).collect()
     );
 }
+
+pub mod ceil_f32 {
+    //! 逐元素向上取整：`y[n] = ceil(a[n])`；锚点 ceil(1.2)=2、ceil(-1.2)=-1。
+
+    crate::unary_f32!(
+        Ceil,
+        CeilF32,
+        "ceil_f32",
+        unary_op_tests,
+        {
+            let mut out = [0.0; 2];
+            assert!(forward(tensor::View::one(&[1.2, -1.2]), &mut out).is_ok());
+            assert_eq!(out, [2.0, -1.0]);
+        },
+        |x| x.ceil(),
+        false
+    );
+}
+
+pub mod floor_f32 {
+    //! 逐元素向下取整：`y[n] = floor(a[n])`；锚点 floor(1.2)=1、floor(-1.2)=-2。
+
+    crate::unary_f32!(
+        Floor,
+        FloorF32,
+        "floor_f32",
+        unary_op_tests,
+        {
+            let mut out = [0.0; 2];
+            assert!(forward(tensor::View::one(&[1.2, -1.2]), &mut out).is_ok());
+            assert_eq!(out, [1.0, -2.0]);
+        },
+        |x| x.floor(),
+        false
+    );
+}
+
+pub mod round_f32 {
+    //! 逐元素四舍五入：`y[n] = round(a[n])`，半值远离零；锚点 round(±1.5)=±2。
+
+    crate::unary_f32!(
+        Round,
+        RoundF32,
+        "round_f32",
+        unary_op_tests,
+        {
+            let mut out = [0.0; 2];
+            assert!(forward(tensor::View::one(&[1.5, -1.5]), &mut out).is_ok());
+            assert_eq!(out, [2.0, -2.0]);
+        },
+        |x| x.round(),
+        false
+    );
+}
+
+pub mod trunc_f32 {
+    //! 逐元素向零截断：`y[n] = trunc(a[n])`；锚点 trunc(1.7)=1、trunc(-1.7)=-1。
+
+    crate::unary_f32!(
+        Trunc,
+        TruncF32,
+        "trunc_f32",
+        unary_op_tests,
+        {
+            let mut out = [0.0; 2];
+            assert!(forward(tensor::View::one(&[1.7, -1.7]), &mut out).is_ok());
+            assert_eq!(out, [1.0, -1.0]);
+        },
+        |x| x.trunc(),
+        false
+    );
+}
+
+pub mod log1p_f32 {
+    //! 逐元素 `ln(1+a[n])`：域 `a[n] > -1`，夹具取非负避开边界奇异；锚点 ln1p(0)=0、ln1p(e-1)=1。
+
+    crate::unary_f32!(
+        Log1p,
+        Log1pF32,
+        "log1p_f32",
+        unary_pair_tests,
+        {
+            let mut out = [0.0; 2];
+            assert!(
+                forward(
+                    tensor::View::one(&[0.0, std::f32::consts::E - 1.0]),
+                    &mut out
+                )
+                .is_ok()
+            );
+            assert_eq!(out[0], 0.0);
+            assert!((out[1] - 1.0).abs() < 1e-6);
+        },
+        |x| x.ln_1p(),
+        false,
+        |len| crate::model::linear(len, 0.25, 0.0)
+    );
+}
+
+pub mod exp2_f32 {
+    //! 逐元素 `2^a[n]`：经 `exp(x·ln2)` 复用既有 exp 接口；夹具压住上溢；锚点 exp2(0)=1、exp2(3)=8。
+
+    crate::unary_f32!(
+        Exp2,
+        Exp2F32,
+        "exp2_f32",
+        unary_pair_tests,
+        {
+            let mut out = [0.0; 2];
+            assert!(forward(tensor::View::one(&[0.0, 3.0]), &mut out).is_ok());
+            assert_eq!(out, [1.0, 8.0]);
+        },
+        |x| x.exp2(),
+        false,
+        |len| crate::model::linear(len, 0.125, -2.0)
+    );
+}

@@ -50,6 +50,10 @@ static inline float _cutile_sqrt_f32(float x) { return sqrt(x); }
 static inline float _cutile_sin_f32(float x) { return sin(x); }
 static inline float _cutile_cos_f32(float x) { return cos(x); }
 static inline float _cutile_pow_f32(float x, float y) { return pow(x, y); }
+static inline float _cutile_ceil_f32(float x) { return ceil(x); }
+static inline float _cutile_floor_f32(float x) { return floor(x); }
+static inline float _cutile_round_f32(float x) { return round(x); }
+static inline float _cutile_trunc_f32(float x) { return trunc(x); }
 static inline float _cutile_sum_f32(const float *a, int n, int stride) {
     if (n == 1) return a[0];
     float acc = 0.0f;

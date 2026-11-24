@@ -11,6 +11,8 @@
 // 运行时探测门在 `prof` 的 `lib.rs` 按 nightly + aarch64 声明；本 crate 经 `cutile::native`
 // 转发调用（nn → cutile → prof），不再持有这些门，也不直接 import `prof` 的内核层。
 
+#[path = "kernel_clamp.rs"]
+pub mod clamp;
 #[path = "kernel_dequant.rs"]
 pub mod dequant;
 #[path = "kernel_elementwise.rs"]
@@ -46,6 +48,7 @@ pub mod unary_ops;
 
 // 一元 / 二元 / 归约 / 反量化 / GEMV / GEMM 骨架内的声明式子模块，re-export 到 crate 根
 // 保持 `<crate>::<name>::MODEL` / `forward` 路径。
+pub use clamp as clamp_f32;
 pub use dequant::{dequant_i2, dequant_i4, i8 as dequant_i8};
 pub use elementwise::{
     add_f32, div_f32, max_f32, min_f32, mul_f32, remainder_f32, residual_add_f32, sub_f32,
@@ -57,10 +60,9 @@ pub use matmul::i8 as matmul_i8;
 pub use reduce::{reduce_max_f32, reduce_prod_f32, reduce_sum_f32};
 pub use scalar::Scalar;
 pub use unary_ops::{
-    abs_f32, cos_f32, exp_f32, gelu_f32, hard_sigmoid_f32, leaky_relu_f32, log_f32, neg_f32,
-    recip_f32, relu_f32, rsqrt_f32, scale_f32, sigmoid_f32, sign_f32, silu_f32, sin_f32,
-    sqrt_f32, square_f32,
-    tanh_f32,
+    abs_f32, ceil_f32, cos_f32, exp_f32, exp2_f32, floor_f32, gelu_f32, hard_sigmoid_f32,
+    leaky_relu_f32, log_f32, log1p_f32, neg_f32, recip_f32, relu_f32, round_f32, rsqrt_f32,
+    scale_f32, sigmoid_f32, sign_f32, silu_f32, sin_f32, sqrt_f32, square_f32, tanh_f32, trunc_f32,
 };
 pub use {embed as embed_f32, rmsnorm as rmsnorm_f32, rope as rope_f32, softmax as softmax_f32};
 

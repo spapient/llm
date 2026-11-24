@@ -212,7 +212,13 @@ unary!(
     sqrt_f32 => sqrt_f32,
     square_f32 => square_f32,
     scan_f32 => scan_f32,
-    tanh_f32 => tanh_f32
+    tanh_f32 => tanh_f32,
+    ceil_f32 => ceil_f32,
+    exp2_f32 => exp2_f32,
+    floor_f32 => floor_f32,
+    log1p_f32 => log1p_f32,
+    round_f32 => round_f32,
+    trunc_f32 => trunc_f32
 );
 binary!(
     add_f32,
@@ -351,6 +357,18 @@ fn dequant_i8(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
     )
 }
 
+/// clamp：`[x] → y`，界取模块常量 `LO` / `HI`（签名通道只支持整数标量）。
+fn clamp_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
+    let (x,) = <(f32,) as Inputs>::unpack(inputs, "clamp_f32")?;
+    let out = output_slice::<f32>("clamp_f32", output)?;
+    nn::clamp_f32::forward(
+        nn::clamp_f32::LO,
+        nn::clamp_f32::HI,
+        tensor::View::one(x),
+        out,
+    )
+}
+
 /// `[a: f32] → y: f32`：位置取样本约定的 7。
 fn rope_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
     let (a,) = <(f32,) as Inputs>::unpack(inputs, "rope_f32")?;
@@ -369,6 +387,8 @@ const KERNELS: [Entry; nn::registry::REGISTRY.len()] = kernel_table![
     attention_f32,
     avg_pool2d_f32,
     batch_norm_f32,
+    ceil_f32,
+    clamp_f32,
     conv2d_f32,
     cos_f32,
     decode_attention_f32,
@@ -378,8 +398,10 @@ const KERNELS: [Entry; nn::registry::REGISTRY.len()] = kernel_table![
     dequant_i8,
     div_f32,
     embed_f32,
+    exp2_f32,
     exp_f32,
     flash_attention_f32,
+    floor_f32,
     gelu_f32,
     gemm_f32,
     gemm_i2,
@@ -396,6 +418,7 @@ const KERNELS: [Entry; nn::registry::REGISTRY.len()] = kernel_table![
     latent_attention_f32,
     layer_norm_f32,
     leaky_relu_f32,
+    log1p_f32,
     log_f32,
     matmul_f32,
     matmul_i8,
@@ -414,6 +437,7 @@ const KERNELS: [Entry; nn::registry::REGISTRY.len()] = kernel_table![
     residual_add_f32,
     rmsnorm_f32,
     rope_f32,
+    round_f32,
     rsqrt_f32,
     scale_f32,
     scan_f32,
@@ -426,6 +450,7 @@ const KERNELS: [Entry; nn::registry::REGISTRY.len()] = kernel_table![
     square_f32,
     sub_f32,
     tanh_f32,
+    trunc_f32,
 ];
 
 const _: () = same_order(&KERNELS, &nn::registry::REGISTRY);

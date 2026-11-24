@@ -23,6 +23,8 @@ macro_rules! for_each_operator {
             attention_f32: $crate::conv::attention::AttentionF32,
             avg_pool2d_f32: $crate::conv::avg_pool2d::AvgPool2dModel,
             batch_norm_f32: $crate::conv::batch_norm::BatchNormModel,
+            ceil_f32: $crate::kernel::ceil_f32::CeilF32,
+            clamp_f32: $crate::kernel::clamp_f32::ClampF32,
             conv2d_f32: $crate::conv::conv2d::Conv2dModel,
             cos_f32: $crate::kernel::cos_f32::CosF32,
             decode_attention_f32: $crate::conv::decode_attention::DecodeAttentionF32,
@@ -32,8 +34,10 @@ macro_rules! for_each_operator {
             dequant_i8: $crate::kernel::dequant_i8::DequantI8F32,
             div_f32: $crate::kernel::div_f32::DivF32,
             embed_f32: $crate::kernel::embed_f32::EmbedF32,
+            exp2_f32: $crate::kernel::exp2_f32::Exp2F32,
             exp_f32: $crate::kernel::exp_f32::ExpF32,
             flash_attention_f32: $crate::conv::attention::FlashAttentionF32,
+            floor_f32: $crate::kernel::floor_f32::FloorF32,
             gelu_f32: $crate::kernel::gelu_f32::GeluF32,
             gemm_f32: $crate::kernel::gemm_f32::GemmF32,
             gemm_i2: $crate::kernel::gemm_i2::GemmI2Model,
@@ -50,6 +54,7 @@ macro_rules! for_each_operator {
             latent_attention_f32: $crate::conv::attention::latent::LatentAttentionF32,
             layer_norm_f32: $crate::conv::layer_norm::LayerNormModel,
             leaky_relu_f32: $crate::kernel::leaky_relu_f32::LeakyReluF32,
+            log1p_f32: $crate::kernel::log1p_f32::Log1pF32,
             log_f32: $crate::kernel::log_f32::LogF32,
             matmul_f32: $crate::kernel::matmul::MatmulF32,
             matmul_i8: $crate::kernel::matmul_i8::MatmulI8,
@@ -68,6 +73,7 @@ macro_rules! for_each_operator {
             residual_add_f32: $crate::kernel::residual_add_f32::ResidualAddF32,
             rmsnorm_f32: $crate::kernel::rmsnorm_f32::RmsNormF32,
             rope_f32: $crate::kernel::rope_f32::RopeF32,
+            round_f32: $crate::kernel::round_f32::RoundF32,
             rsqrt_f32: $crate::kernel::rsqrt_f32::RsqrtF32,
             scale_f32: $crate::kernel::scale_f32::ScaleF32,
             scan_f32: $crate::conv::scan_f32::ScanF32,
@@ -80,6 +86,7 @@ macro_rules! for_each_operator {
             square_f32: $crate::kernel::square_f32::SquareF32,
             sub_f32: $crate::kernel::sub_f32::SubF32,
             tanh_f32: $crate::kernel::tanh_f32::TanhF32,
+            trunc_f32: $crate::kernel::trunc_f32::TruncF32,
         }
     };
 }
