@@ -4,12 +4,12 @@
   存量源码红账——src 下划线文件名、复杂度/行数越线、存量克隆——属并发在途债，由各静态门
   棘轮报出，不在本 ADR 配置层清绿）
 - 日期：2026-11-24
-- 相关：[`ARCHITECTURE.md`](ARCHITECTURE.md)（分层与所有权）、
-  [`scripts/name-lint.sh`](../scripts/name-lint.sh)（文件名/符号形状门）、
-  [`.config/nextest.toml`](../.config/nextest.toml)（测试运行器 profile）、
-  [`crates/testkit/src/lib.rs`](../crates/testkit/src/lib.rs)（共享夹具模块表）、
-  [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)（coverage / test job）、
-  [`docs/GATE-RUBRIC-2026-11-24.md`](GATE-RUBRIC-2026-11-24.md)（八维标尺）
+- 相关：[`ARCHITECTURE.md`](../ARCHITECTURE.md)（分层与所有权）、
+  [`scripts/name-lint.sh`](../../scripts/name-lint.sh)（文件名/符号形状门）、
+  [`.config/nextest.toml`](../../.config/nextest.toml)（测试运行器 profile）、
+  [`crates/testkit/src/lib.rs`](../../crates/testkit/src/lib.rs)（共享夹具模块表）、
+  [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)（coverage / test job）、
+  [`docs/GATE-RUBRIC-2026-11-24.md`](../GATE-RUBRIC-2026-11-24.md)（八维标尺）
 
 ## 背景
 
