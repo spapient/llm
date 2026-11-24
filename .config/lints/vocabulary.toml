@@ -348,23 +348,14 @@ min_lines_baseline = [
   "crates/wire/src/sink.rs",
 ]
 
-# `[[gate.debt]]` 存量棘轮：登记两类既有超标——入口编排层的派发复杂度，以及工具/边界成员里
-# 协议必需的终止形态。登记表是实测快照：登记值必须等于实测值，改善后必须删掉对应度量条目
-# （`Gate::stale`），恶化必失败。运行时生产代码（`crates/*/src` 的训练/推理路径，除 cli 入口外）
-# 没有债务条目：超限即新增，直接失败，按主题拆模块收口。
+# `[[gate.debt]]` 存量棘轮：只登记入口编排层（`crates/cli/src/`）的既有超标。登记表是实测快照：
+# 登记值必须等于实测值，改善后必须删掉对应度量条目（`Gate::stale`），恶化必失败。运行时生产代码
+# （`crates/*/src` 的训练/推理路径，除 cli 入口外）没有债务条目：超限即新增，直接失败，按主题拆模块收口。
 #
-# 现行条目一：`cutile` 子命令的派发。`run` 是 `CutileCommand` 六个变体的一一对应展开——一个六元的
+# 现行条目：`cutile` 子命令的派发。`run` 是 `CutileCommand` 六个变体的一一对应展开——一个六元的
 # 平坦枚举，复杂度就是"派发表有几行"，压到 5 以内只能再拆一次 `match`（把一张表劈成两张），
 # 那不是简化。等派发表下沉 `tools` 后按表驱动重写，届时删掉这条。
-#
-# 现行条目二：`fuzz` harness 边界的唯一 `panic!`。`fuzz` 是工具成员、不进运行时分层；libfuzzer
-# 协议要求违约时中止进程并留下触发输入，契约库本身不 panic，终止只发生在这一处 include 进各
-# `fuzz_*.rs` 的适配器里。换成正常返回会漏报违约，故登记这一条，不放宽到其它运行时文件。
 
 [[gate.debt]]
 key = "crates/cli/src/cutile.rs:run#0"
 ccn = 6
-
-[[gate.debt]]
-key = "crates/fuzz/src/harness.rs"
-call = 1
