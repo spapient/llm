@@ -22,7 +22,7 @@ pub const GAIN_FLOOR: f64 = 0.02;
 /// 逻辑字节的熵达到这个值（bit/byte）即视为没有冗余（`incompressible`）。
 pub const MAX_ENTROPY: f64 = 7.9;
 
-named_enum! {
+closed_enum! { @named
     /// `codec_reason` 闭集：**为什么**这一条占了现在这些字节。
     pub enum Reason {
         /// `store` 帧，且内容有冗余但没压——写侧没开压缩。
@@ -44,7 +44,7 @@ named_enum! {
     }
 }
 
-named_enum! {
+closed_enum! { @named
     /// 证书列：这条量的压缩有没有一张自洽的证书背书（LLD §4.7 的账本要说清「凭什么这么压」）。
     pub enum Cert {
         /// 不是秩轴段：这条量没经过谱隙证书，其余轴本来就不签发。

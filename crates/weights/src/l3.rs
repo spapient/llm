@@ -215,7 +215,7 @@ impl Bracket {
     }
 }
 
-named_enum! {
+closed_enum! { @named
     /// 网络级四态判定（闭集，码位与短名稳定）。
     pub enum Ruling {
         /// 所有段 `ε = 0`、无移出段、artifact 往返逐位：可以签发整网无损证书。

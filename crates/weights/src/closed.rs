@@ -118,13 +118,10 @@ macro_rules! closed_enum {
         );
         closed_enum!(@as_str $name { $( $vs => $sname, )+ });
     };
-}
 
-/// 只带短名的闭集枚举：没有线上数值码，只有账本/文本里的字符串写法。
-///
-/// 复用 `closed_enum!` 的内部臂，只生成枚举定义与 `as_str`。
-macro_rules! named_enum {
+    // 只带短名：没有线上数值码的反向解析，只有枚举定义与 `as_str`；调用首 token 写 `@named`。
     (
+        @named
         $(#[$meta:meta])*
         $vis:vis enum $name:ident {
             $(
