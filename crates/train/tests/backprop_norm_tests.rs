@@ -337,147 +337,51 @@ fn interpolate_matches_central_differences() -> Result<()> {
     })
 }
 
-#[test]
-fn batch_norm_matches_central_differences() -> Result<()> {
-    use nn::conv::batch_norm as decl;
-    let total = decl::C * decl::S * decl::N;
-    let (x0, g0, b0) = (ramp(total), gain(), shift());
-    check_affine_grad("batch_norm_f32", &x0, &g0, &b0, total, |px, pg, pb| {
-        let mut y = vec![0.0f32; total];
-        nn::conv::batch_norm::forward(
-            tensor::View::one(px),
-            tensor::View::one(pg),
-            tensor::View::one(pb),
-            &mut y,
-        )
-        .expect("前向");
-        y.iter().sum()
-    })
+/// 声明档三元输入共用同一中心差分骨架；每条仍生成独立命名的测试。
+macro_rules! declared_affine_grad {
+    ($( $name:ident => ($module:ident, $total:expr) ),* $(,)?) => {$(
+        #[test]
+        fn $name() -> Result<()> {
+            let total = $total;
+            let (x0, g0, b0) = (ramp(total), gain(), shift());
+            check_affine_grad(concat!(stringify!($module), "_f32"), &x0, &g0, &b0, total, |px, pg, pb| {
+                let mut y = vec![0.0f32; total];
+                nn::conv::$module::forward(
+                    tensor::View::one(px),
+                    tensor::View::one(pg),
+                    tensor::View::one(pb),
+                    &mut y,
+                )
+                .expect("前向");
+                y.iter().sum()
+            })
+        }
+    )*};
 }
 
-#[test]
-fn group_norm_matches_central_differences() -> Result<()> {
-    use nn::conv::group_norm as decl;
-    let total = decl::C * decl::S * decl::N;
-    let (x0, g0, b0) = (ramp(total), gain(), shift());
-    check_affine_grad("group_norm_f32", &x0, &g0, &b0, total, |px, pg, pb| {
-        let mut y = vec![0.0f32; total];
-        nn::conv::group_norm::forward(
-            tensor::View::one(px),
-            tensor::View::one(pg),
-            tensor::View::one(pb),
-            &mut y,
-        )
-        .expect("前向");
-        y.iter().sum()
-    })
+declared_affine_grad! {
+    batch_norm_matches_central_differences => (batch_norm, nn::conv::batch_norm::C * nn::conv::batch_norm::S * nn::conv::batch_norm::N),
+    group_norm_matches_central_differences => (group_norm, nn::conv::group_norm::C * nn::conv::group_norm::S * nn::conv::group_norm::N),
+    instance_norm_matches_central_differences => (instance_norm, nn::conv::instance_norm::C * nn::conv::instance_norm::S * nn::conv::instance_norm::N),
+    layer_norm_matches_central_differences => (layer_norm, nn::conv::layer_norm::R * nn::conv::layer_norm::W),
 }
 
-#[test]
-fn instance_norm_matches_central_differences() -> Result<()> {
-    use nn::conv::instance_norm as decl;
-    let total = decl::C * decl::S * decl::N;
-    let (x0, g0, b0) = (ramp(total), gain(), shift());
-    check_affine_grad("instance_norm_f32", &x0, &g0, &b0, total, |px, pg, pb| {
-        let mut y = vec![0.0f32; total];
-        nn::conv::instance_norm::forward(
-            tensor::View::one(px),
-            tensor::View::one(pg),
-            tensor::View::one(pb),
-            &mut y,
-        )
-        .expect("前向");
-        y.iter().sum()
-    })
+/// 运行时几何的一元反向对拍只声明几何、算子和输入长度。
+macro_rules! shaped_sum_grad {
+    ($( $name:ident => ($op:literal, $geometry:expr, $len:expr) ),* $(,)?) => {$(
+        #[test]
+        fn $name() -> Result<()> {
+            sum_grad($op, $geometry, &ramp($len))
+        }
+    )*};
 }
 
-#[test]
-fn layer_norm_matches_central_differences() -> Result<()> {
-    use nn::conv::layer_norm as decl;
-    let total = decl::R * decl::W;
-    let x0 = ramp(total);
-    let g0 = gain();
-    let b0 = shift();
-    check_affine_grad("layer_norm_f32", &x0, &g0, &b0, total, |px, pg, pb| {
-        let mut y = vec![0.0f32; total];
-        nn::conv::layer_norm::forward(
-            tensor::View::one(px),
-            tensor::View::one(pg),
-            tensor::View::one(pb),
-            &mut y,
-        )
-        .expect("前向");
-        y.iter().sum()
-    })
-}
-
-#[test]
-fn shaped_max_pool1d_matches_central_differences() -> Result<()> {
-    let geometry = Geometry::Pool1d {
-        k: 3,
-        s: 1,
-        p: 1,
-        l: 7,
-        c: 1,
-    };
-    let x0 = ramp(7);
-    sum_grad("max_pool1d_f32", geometry, &x0)
-}
-
-#[test]
-fn shaped_max_pool2d_matches_central_differences() -> Result<()> {
-    let geometry = Geometry::Pool2d {
-        k: 3,
-        s: 2,
-        p: 0,
-        h: 5,
-        w: 5,
-        c: 2,
-    };
-    let x0 = ramp(5 * 5 * 2);
-    sum_grad("max_pool2d_f32", geometry, &x0)
-}
-
-#[test]
-fn shaped_avg_pool2d_matches_central_differences() -> Result<()> {
-    let geometry = Geometry::Avg2d {
-        k: 3,
-        s: 2,
-        p: 1,
-        h: 5,
-        w: 5,
-        c: 1,
-        count_include_pad: false,
-    };
-    let x0 = ramp(5 * 5);
-    sum_grad("avg_pool2d_f32", geometry, &x0)
-}
-
-#[test]
-fn shaped_adaptive_pool_matches_central_differences() -> Result<()> {
-    let geometry = Geometry::Adaptive {
-        oh: 3,
-        ow: 3,
-        h: 6,
-        w: 6,
-        c: 1,
-    };
-    let x0 = ramp(36);
-    sum_grad("adaptive_pool_f32", geometry, &x0)
-}
-
-#[test]
-fn shaped_interpolate_matches_central_differences() -> Result<()> {
-    let geometry = Geometry::Interp {
-        oh: 5,
-        ow: 5,
-        h: 3,
-        w: 3,
-        c: 1,
-        linear: true,
-    };
-    let x0 = ramp(9);
-    sum_grad("interpolate_f32", geometry, &x0)
+shaped_sum_grad! {
+    shaped_max_pool1d_matches_central_differences => ("max_pool1d_f32", Geometry::Pool1d { k: 3, s: 1, p: 1, l: 7, c: 1 }, 7),
+    shaped_max_pool2d_matches_central_differences => ("max_pool2d_f32", Geometry::Pool2d { k: 3, s: 2, p: 0, h: 5, w: 5, c: 2 }, 5 * 5 * 2),
+    shaped_avg_pool2d_matches_central_differences => ("avg_pool2d_f32", Geometry::Avg2d { k: 3, s: 2, p: 1, h: 5, w: 5, c: 1, count_include_pad: false }, 5 * 5),
+    shaped_adaptive_pool_matches_central_differences => ("adaptive_pool_f32", Geometry::Adaptive { oh: 3, ow: 3, h: 6, w: 6, c: 1 }, 36),
+    shaped_interpolate_matches_central_differences => ("interpolate_f32", Geometry::Interp { oh: 5, ow: 5, h: 3, w: 3, c: 1, linear: true }, 9),
 }
 
 #[test]

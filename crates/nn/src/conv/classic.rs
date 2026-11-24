@@ -23,22 +23,27 @@ macro_rules! classic_op {
     };
 }
 
-/// 窗口族（池化 / 自适应 / 插值）的公开面：`sample` / `reference` / `forward` / `cost` 四个入口
-/// 由本宏统一生成。算术在模块自带的 `run` 里（不藏进宏），缓冲搬运与代价口径复用
-/// [`window_sample`] / [`window_reference`] / [`crate::model::cost_n`]。
+/// 窗口族公开面：形状、样本、参考、前向与代价在一处平铺声明；算术仍由模块的 `run` 提供。
 macro_rules! window_op {
     ($ty:ident, $alias:ident, $op:tt, $m:tt, $n:tt, $in_len:expr, $out_len:expr,
      $flops:expr, $reads:expr) => {
-        /// 声明档样本：`x` 与 `y` 的长度由模块几何常量给出。
-        /// 构造确定性的卷积输入、权重、偏置与输出样本。
+        /// 构造这一窗口声明档的确定性输入与输出缓冲。
         pub fn sample(_: usize, _: usize) -> Sample {
-            window_sample($in_len, $out_len)
+            Sample::f32_io(
+                $out_len,
+                $out_len,
+                $in_len,
+                $out_len,
+                vec![("N", $out_len as i64)],
+            )
         }
 
-        /// 标量参考：读 `x`、跑模块的 `run::<f32>`、返回 `y`（真窗口）。
-        /// 使用标量卷积实现计算参考输出。
+        /// 用模块的真实窗口实现计算参考输出。
         pub fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>> {
-            window_reference(sample, $out_len, run::<f32>)
+            let x = sample.f32("x")?;
+            let mut out = vec![0.0f32; $out_len];
+            run::<f32>(x, &mut out)?;
+            Ok(out)
         }
 
         /// 声明档前向：与参考共用同一条 `run`，几何与样本一致。
@@ -46,8 +51,7 @@ macro_rules! window_op {
             run::<f32>(x.as_slice(), out)
         }
 
-        /// 标量代价：显式口径，浮点运算与字节读写见本模块装配行的注释。
-        /// 按单个输出元素计算卷积代价。
+        /// 标量代价：由声明的浮点运算数与读操作数推出。
         pub fn cost(shape: &ShapeCtx) -> Result<Cost, Error> {
             crate::model::cost_n(shape, $op, $flops, $reads)
         }
@@ -56,12 +60,10 @@ macro_rules! window_op {
     };
 }
 
-/// 归一化族（批 / 组 / 实例 / 层）的公开面：与 [`window_op!`] 同构，但 `sample` / `reference`
-/// 多带 `gamma` / `beta` 两个参数缓冲，`forward` 签名多两个入参。
+/// 归一化族公开面：共享 64×64 注解档；批／组／实例可省略共同的 `N*S*C` 与 `C` 几何。
 macro_rules! norm_op {
-    ($ty:ident, $alias:ident, $op:tt, $m:tt, $n:tt,
-     $total:expr, $channels:expr, $scalars:expr, $gamma:expr, $beta:expr,
-     $flops:expr, $reads:expr) => {
+    ($ty:ident, $alias:ident, $op:tt, $total:expr, $channels:expr, $scalars:expr,
+     $gamma:expr, $beta:expr, $flops:expr, $reads:expr) => {
         /// 声明档样本：`x` 与 `gamma`/`beta` 的长度由模块几何常量给出。
         pub fn sample(_: usize, _: usize) -> Sample {
             norm_sample($total, $channels, $scalars, $gamma, $beta)
@@ -87,31 +89,12 @@ macro_rules! norm_op {
             crate::model::cost_n(shape, $op, $flops, $reads)
         }
 
-        classic_op!($ty, $alias, $op, 3, $m, $n);
+        classic_op!($ty, $alias, $op, 3, 64, 64);
     };
-}
-
-/// 窗口骨架的确定性样本：`x`（长 `in_len`）与 `y`（长 `out_len`），`N` 记输出长度。
-fn window_sample(in_len: usize, out_len: usize) -> Sample {
-    Sample::f32_io(
-        out_len,
-        out_len,
-        in_len,
-        out_len,
-        vec![("N", out_len as i64)],
-    )
-}
-
-/// 窗口骨架的标量参考：读 `x`、跑 `run`、返回 `y`。算术在 `run` 里，这里只做缓冲搬运。
-fn window_reference(
-    sample: &Sample,
-    out_len: usize,
-    run: impl Fn(&[f32], &mut [f32]) -> diagnostic::Result<()>,
-) -> diagnostic::Result<Vec<f32>> {
-    let x = sample.f32("x")?;
-    let mut out = vec![0.0f32; out_len];
-    run(x, &mut out)?;
-    Ok(out)
+    ($ty:ident, $alias:ident, $op:tt, $scalars:expr, $gamma:expr, $beta:expr,
+     $flops:expr, $reads:expr) => {
+        norm_op!($ty, $alias, $op, N * S * C, C, $scalars, $gamma, $beta, $flops, $reads);
+    };
 }
 
 /// 归一化骨架的确定性样本：`x`（总长 `total`）、`gamma`/`beta`（各 `channels` 个）、`y`。
@@ -434,18 +417,19 @@ pub mod interpolate {
 
 /// 四种归一化只保留各自统计域与声明档参数。
 pub mod norm {
+    /// 批／组／实例归一化共享的通道数。
+    pub const C: usize = 4;
+    /// 共享的空间尺寸。
+    pub const S: usize = 2;
+    /// 共享的批大小。
+    pub const N: usize = 2;
+    /// 四种归一化共享的数值稳定性 epsilon。
+    pub const EPS: f32 = 1e-5;
+
     /// 批归一化（声明档 `C=4, spatial=2, n=2`）。
     pub mod batch {
         use super::super::*;
-
-        /// 通道数。
-        pub const C: usize = 4;
-        /// 步长或空间尺寸。
-        pub const S: usize = 2;
-        /// 批大小。
-        pub const N: usize = 2;
-        /// 数值稳定性 epsilon。
-        pub const EPS: f32 = 1e-5;
+        pub use super::{C, EPS, N, S};
 
         pub(crate) fn run<S: Scalar>(
             x: &[S],
@@ -467,10 +451,6 @@ pub mod norm {
             BatchNormModel,
             BatchNorm,
             "batch_norm_f32",
-            64,
-            64,
-            N * S * C,
-            C,
             vec![("N", (N * S * C) as i64), ("C", C as i64), ("S", S as i64)],
             1.5,
             0.25,

@@ -106,12 +106,13 @@ fn dict_table(bytes: &[u8], at: &mut usize) -> Result<(usize, Vec<f32>)> {
     Ok((width, vals.collect::<Result<_>>()?))
 }
 
-/// 定宽索引（1/2/4 字节小端）；宽度只可能取自 `dict_payload` 写出的三种。
+/// 定宽索引（1/2/4 字节小端）；其它宽度不是本格式的合法输入。
 fn read_idx(bytes: &[u8], at: &mut usize, width: usize) -> Result<usize> {
     match width {
         1 => take::<1>(bytes, at, "字节截断").map(|b| usize::from(b[0])),
         2 => take::<2>(bytes, at, "字节截断").map(|b| usize::from(u16::from_le_bytes(b))),
-        _ => take::<4>(bytes, at, "字节截断").map(|b| u32::from_le_bytes(b) as usize),
+        4 => take::<4>(bytes, at, "字节截断").map(|b| u32::from_le_bytes(b) as usize),
+        other => Err(bad(format!("未知 dict 索引宽度 {other}"))),
     }
 }
 

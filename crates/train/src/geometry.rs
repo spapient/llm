@@ -327,74 +327,28 @@ impl Geometry {
             )));
         }
         match self {
-            Self::Pool1d { .. } | Self::Pool2d { .. } | Self::Avg2d { .. } => {
-                self.check_pool(lens, out)
-            }
-            Self::Adaptive { .. } | Self::Interp { .. } => self.check_reshape(lens, out),
-            Self::Norm { .. } | Self::Group { .. } | Self::Layer { .. } => {
-                self.check_norm_family(lens, out)
-            }
-            Self::Conv2d { .. } => self.check_conv(lens, out),
-        }
-    }
-
-    fn check_pool(self, lens: &[usize], out: usize) -> Result<()> {
-        match self {
             Self::Pool1d { k, s, p, l, c } => check_pool1d(lens, out, k, s, p, l, c),
             Self::Pool2d { k, s, p, h, w, c } => {
                 check_spatial_pool(lens, out, Window { k, s, p }, (h, w, c), "二维池化")
             }
-            Self::Avg2d {
-                k, s, p, h, w, c, ..
-            } => check_spatial_pool(lens, out, Window { k, s, p }, (h, w, c), "二维平均池化"),
-            _ => Ok(()),
-        }
-    }
-
-    fn check_reshape(self, lens: &[usize], out: usize) -> Result<()> {
-        match self {
+            Self::Avg2d { k, s, p, h, w, c, .. } => {
+                check_spatial_pool(lens, out, Window { k, s, p }, (h, w, c), "二维平均池化")
+            }
             Self::Adaptive { oh, ow, h, w, c } => {
                 check_spatial_reshape(lens, out, (oh, ow), (h, w, c), "自适应池化")
             }
-            Self::Interp {
-                oh, ow, h, w, c, ..
-            } => check_spatial_reshape(lens, out, (oh, ow), (h, w, c), "插值"),
-            _ => Ok(()),
-        }
-    }
-
-    fn check_norm_family(self, lens: &[usize], out: usize) -> Result<()> {
-        match self {
-            Self::Norm {
-                n,
-                spatial,
-                channels,
-            } => check_norm(lens, out, n, spatial, channels),
-            Self::Group {
-                groups,
-                n,
-                spatial,
-                channels,
-            } => check_group(lens, out, groups, n, spatial, channels),
+            Self::Interp { oh, ow, h, w, c, .. } => {
+                check_spatial_reshape(lens, out, (oh, ow), (h, w, c), "插值")
+            }
+            Self::Norm { n, spatial, channels } => check_norm(lens, out, n, spatial, channels),
+            Self::Group { groups, n, spatial, channels } => {
+                check_group(lens, out, groups, n, spatial, channels)
+            }
             Self::Layer { rows, width } => check_layer(lens, out, rows, width),
-            _ => Ok(()),
+            Self::Conv2d { k, s, p, h, w, cin, cout } => {
+                check_conv2d_shape(lens, out, Window { k, s, p }, (h, w, cin, cout))
+            }
         }
-    }
-
-    fn check_conv(self, lens: &[usize], out: usize) -> Result<()> {
-        let Self::Conv2d {
-            k,
-            s,
-            p,
-            h,
-            w,
-            cin,
-            cout,
-        } = self
-        else {
-            return Ok(());
-        };
-        check_conv2d_shape(lens, out, Window { k, s, p }, (h, w, cin, cout))
     }
 
     /// 按实例几何前向：算术全部复用 `nn::conv` / `nn::kernel::norm` 的真实现。

@@ -1,6 +1,9 @@
 //! 缓冲形态、视图与标量参考内核：`f32` 与按位打包 `u8` 两条 lane 的静态契约，以及把视图适配到
 //! `nn` 参考实现的标量内核表。
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use crate::pool::SITE;
 use diagnostic::{Code, Error, Result};
 use nn::kernel_table;
@@ -522,6 +525,170 @@ fn rope_f32(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
         tensor::View::one(a),
         output_slice::<f32>("rope_f32", output)?,
     )
+}
+
+// ---- 反向共享的旋转与正交化数值核心 ----
+
+/// `rope_f32` 的固定位置：前向与反向同为 7（标量槽尚未接进训练内核）。
+const ROPE_POS: f32 = 7.0;
+
+/// 旋转表缓存槽：段长 + 该段长下的 `(sin, cos)` 表。
+type RotationCache = RefCell<Option<(usize, Rc<[(f32, f32)]>)>>;
+
+thread_local! {
+    /// 段长 → 旋转表。`θ_i = ROPE_POS·base^(-2i/d)` 只依赖 `d`，与数据无关，所以 `(sin, cos)`
+    /// 也可以一次性算好：逐对重算 `powf` 与 `sin_cos` 是这条路径上唯一的纯浪费。
+    static ROTATIONS: RotationCache = const { RefCell::new(None) };
+}
+
+/// 段长 `d` 的旋转表：`d/2` 对 `(sin θ_i, cos θ_i)`，与逐对计算的 `angle.sin_cos()` 逐位相同。
+fn rotations(d: usize) -> Rc<[(f32, f32)]> {
+    ROTATIONS.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if let Some((cached, table)) = slot.as_ref()
+            && *cached == d
+        {
+            return Rc::clone(table);
+        }
+        let table: Rc<[(f32, f32)]> = nn::rope_f32::frequencies(d)
+            .iter()
+            .map(|&freq| (ROPE_POS * freq).sin_cos())
+            .collect();
+        *slot = Some((d, Rc::clone(&table)));
+        table
+    })
+}
+
+/// RoPE 反向本体：逐对把上游梯度按同一角度旋转回去；末尾不成对的元素原样透传。
+pub(crate) fn rope_grad(x: &[f32], grad: &[f32]) -> Vec<f32> {
+    let d = x.len();
+    let pairs = d / 2;
+    let mut dx = vec![0.0; d];
+    let rotations = rotations(d);
+    for (i, &(sin, cos)) in rotations.iter().enumerate() {
+        dx[2 * i] = grad[2 * i] * cos + grad[2 * i + 1] * sin;
+        dx[2 * i + 1] = -grad[2 * i] * sin + grad[2 * i + 1] * cos;
+    }
+    debug_assert_eq!(rotations.len(), pairs);
+    if d % 2 == 1 {
+        dx[d - 1] = grad[d - 1];
+    }
+    dx
+}
+
+
+/// 近似正交化：先按 Frobenius 范数归一，再迭代 [`NS_STEPS`] 次 Newton–Schulz。
+pub(crate) fn orthogonalize(grad: &[f32], rows: usize, cols: usize, eps: f32) -> Vec<f32> {
+    let norm = grad.iter().fold(0.0_f32, |acc, v| acc + v * v).sqrt();
+    let scale = 1.0 / (norm + eps);
+    let mut x: Vec<f32> = grad.iter().map(|v| v * scale).collect();
+    for _ in 0..NS_STEPS {
+        let (gram, side) = if rows >= cols {
+            (gram_of_columns(&x, rows, cols), Side::Right)
+        } else {
+            (gram_of_rows(&x, rows, cols), Side::Left)
+        };
+        let squared = square(&gram, side.order(rows, cols));
+        x = advance(&x, rows, cols, &gram, &squared, side);
+    }
+    x
+}
+
+/// `XᵀX`（`cols × cols`）：行数不少于列数时的小边。
+fn gram_of_columns(x: &[f32], rows: usize, cols: usize) -> Vec<f32> {
+    let mut gram = vec![0.0_f32; cols * cols];
+    for row in 0..rows {
+        let lane = &x[row * cols..(row + 1) * cols];
+        for col in 0..cols {
+            let left = lane[col];
+            if left == 0.0 {
+                continue;
+            }
+            for inner in 0..cols {
+                gram[col * cols + inner] += left * lane[inner];
+            }
+        }
+    }
+    gram
+}
+
+/// `X Xᵀ`（`rows × rows`）：列数多于行数时的小边。
+fn gram_of_rows(x: &[f32], rows: usize, cols: usize) -> Vec<f32> {
+    let mut gram = vec![0.0_f32; rows * rows];
+    for outer in 0..rows {
+        for inner in 0..rows {
+            let mut acc = 0.0_f32;
+            for col in 0..cols {
+                acc += x[outer * cols + col] * x[inner * cols + col];
+            }
+            gram[outer * rows + inner] = acc;
+        }
+    }
+    gram
+}
+
+/// 方阵自乘 `M·M`（行主序）。Gram 对称且阶数是小边，直接写三重循环。
+fn square(matrix: &[f32], order: usize) -> Vec<f32> {
+    let mut out = vec![0.0_f32; order * order];
+    for row in 0..order {
+        for inner in 0..order {
+            let left = matrix[row * order + inner];
+            if left == 0.0 {
+                continue;
+            }
+            for col in 0..order {
+                out[row * order + col] += left * matrix[inner * order + col];
+            }
+        }
+    }
+    out
+}
+
+/// Gram 乘在 `X` 的哪一边：小边是列时乘在右边（`XA`），小边是行时乘在左边（`AX`）。
+#[derive(Clone, Copy)]
+enum Side {
+    /// `A` 是 `rows × rows`（小边是行），乘在 `X` 左边。
+    Left,
+    /// `A` 是 `cols × cols`（小边是列），乘在 `X` 右边。
+    Right,
+}
+
+impl Side {
+    /// 小边的阶数：Gram 与 `A²` 都是这个阶数的方阵。
+    fn order(self, rows: usize, cols: usize) -> usize {
+        match self {
+            Side::Left => rows,
+            Side::Right => cols,
+        }
+    }
+}
+
+/// 一步 `X ← aX + b(AX) + c(A²X)`；`side` 为 [`Side::Right`] 时是 `X ← aX + b(XA) + c(XA²)`。
+/// 两者遍历的是同一块 `X`，只是 `A` 乘在另一侧：沿哪条轴收缩、Gram 槽位怎么排跟着 `side` 变。
+fn advance(
+    x: &[f32],
+    rows: usize,
+    cols: usize,
+    gram: &[f32],
+    squared: &[f32],
+    side: Side,
+) -> Vec<f32> {
+    let (a, b, c) = NS_COEF;
+    let mut out = vec![0.0_f32; rows * cols];
+    for row in 0..rows {
+        for col in 0..cols {
+            let mut acc = a * x[row * cols + col];
+            for inner in 0..side.order(rows, cols) {
+                let (value, slot) = match side {
+                    Side::Left => (x[inner * cols + col], row * rows + inner),
+                    Side::Right => (x[row * cols + inner], inner * cols + col),
+                };
+                acc += b * value * gram[slot] + c * value * squared[slot];
+            }
+            out[row * cols + col] = acc;
+        }
+    }
+    out
 }
 
 const _: () = same_order(&KERNELS, &nn::registry::REGISTRY);

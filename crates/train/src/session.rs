@@ -1,5 +1,5 @@
 //! 训练会话：tape → 反传计划 → 梯度需求分类 → 梯度缓冲 → 优化器步的最小闭环。
-//! 静态配置与调度曲线在 [`config`](crate::config)，快照事实集与视图装配在 [`checkpoint`]。
+//! 静态配置、调度曲线、快照事实集与视图装配均在 [`checkpoint`]。
 
 use autograd::{Requirement, Sizes, Tape, Var};
 use diagnostic::{Code, Error, Result};
@@ -12,11 +12,13 @@ use crate::pool::Bufs;
 use crate::{Data, Kernel};
 use storage::{GradAccum, Ties};
 
-pub use crate::config::{Anneal, Schedule, TrainConfig, TrainOverrides, TrainSpec};
 pub use shard::{Local, Remote};
 #[path = "checkpoint.rs"]
 mod checkpoint;
-pub use checkpoint::{Checkpoint, GradientSnapshot, Step, operators, resume};
+pub use checkpoint::{
+    Anneal, Checkpoint, GradientSnapshot, Schedule, Step, TrainConfig, TrainOverrides, TrainSpec,
+    operators, resume,
+};
 
 /// 本模块诊断站点。
 pub(crate) const SITE: &str = "train::Session";

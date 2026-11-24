@@ -3,6 +3,7 @@
 //! [`Sgd`]、[`Adam`] 与 [`Muon`] 同住本文件：共用 `Slot`/`check_slots`/`decay_rate`/`clip_scale`/
 //! `global_norm` 那组助手，[`Muon`] 自带 Newton–Schulz 正交化与矩阵视图。
 
+use crate::kernel::orthogonalize;
 use diagnostic::{Code, Error, Result};
 use nn::ParamRole;
 
@@ -234,11 +235,6 @@ macro_rules! decay_clip {
     };
 }
 
-mod muon;
-pub use muon::Muon;
-#[cfg(test)]
-pub(crate) use muon::orthogonalize;
-
 // ---- Adam：AdamW 解耦衰减 + 偏差修正 + 全局范数裁剪 ----
 /// Adam（AdamW 解耦衰减 + 偏差修正 + 全局范数裁剪）。
 #[derive(Debug, Clone, PartialEq)]
@@ -259,10 +255,9 @@ impl Adam {
         Self::default()
     }
 
-    /// 设置 `ε`（分母保护项）。
-    pub fn with_eps(mut self, eps: f32) -> Self {
-        self.eps = eps;
-        self
+    builders! {
+        /// 设置 `ε`（分母保护项）。
+        with_eps => eps: f32,
     }
 
     /// 确保槽位 `idx` 的矩向量长度等于参数长度；首次见到的槽位分配零向量。
@@ -581,6 +576,196 @@ fn split_shaped(
     }
     Ok(states)
 }
+
+/// Muon（MomentUm Orthogonalized by Newton–Schulz）：矩阵参数的近似正交化更新。
+#[derive(Debug, Clone, PartialEq)]
+pub struct Muon {
+    momentum: f32,
+    nesterov: bool,
+    eps: f32,
+    weight_decay: f32,
+    clip_norm: Option<f32>,
+    step: u64,
+    velocity: Vec<Vec<f32>>,
+}
+
+/// 步长缩放的系数：与参考实现一致，把正交更新的尺度对齐 AdamW。
+const SCALE_COEF: f32 = 0.2;
+
+impl Muon {
+    /// 默认超参：`μ = 0.95`、Nesterov、`ε = 1e-7`，不衰减、不裁剪。
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    builders! {
+        /// 设置动量系数 `μ`。
+        with_momentum => momentum: f32,
+        /// 设置归一化保护项 `ε`。
+        with_eps => eps: f32,
+    }
+
+    /// 关掉 Nesterov 前瞻（默认开）。
+    pub fn without_nesterov(mut self) -> Self {
+        self.nesterov = false;
+        self
+    }
+
+    /// 确保槽位 `idx` 的动量缓冲长度等于参数长度；首次见到的槽位分配零向量。
+    fn velocity(&mut self, idx: usize, len: usize) -> &mut Vec<f32> {
+        if idx >= self.velocity.len() {
+            let missing = idx - self.velocity.len() + 1;
+            self.velocity
+                .resize_with(self.velocity.len() + missing, Vec::new);
+        }
+        let buf = &mut self.velocity[idx];
+        if buf.len() != len {
+            buf.resize(len, 0.0);
+        }
+        buf
+    }
+
+    /// 一个槽的推进：动量累加 →（可选 Nesterov）→ 正交化 → 写回。
+    fn advance(
+        &mut self,
+        idx: usize,
+        slot: &mut Slot<'_>,
+        (rows, cols): (usize, usize),
+        scale: f32,
+        lr: f32,
+    ) {
+        let (beta, nesterov, eps) = (self.momentum, self.nesterov, self.eps);
+        let decay = decay_rate(slot.role, self.weight_decay);
+        let velocity = self.velocity(idx, rows * cols);
+        for (tracked, &grad) in velocity.iter_mut().zip(slot.grads.iter()) {
+            *tracked = beta * *tracked + scale * grad;
+        }
+        let direction = if nesterov {
+            nesterov_direction(velocity, slot.grads, beta, scale)
+        } else {
+            velocity.clone()
+        };
+        let orthogonal = orthogonalize(&direction, rows, cols, eps);
+        let factor = lr * scale_factor(rows, cols);
+        for (param, &step) in slot.params.iter_mut().zip(&orthogonal) {
+            *param -= factor * step;
+            *param -= lr * decay * *param;
+        }
+    }
+
+    ref_getters! {
+        /// 动量表（按槽位编号）：快照导出走这里，优化器之外不另存一份状态。
+        momentum_table => velocity: &[Vec<f32>],
+    }
+    getters! {
+        /// 优化器全局步数。
+        step_count => step: u64,
+    }
+}
+
+decay_clip!(Muon);
+
+impl Default for Muon {
+    fn default() -> Self {
+        Self {
+            momentum: 0.95,
+            nesterov: true,
+            eps: 1e-7,
+            weight_decay: 0.0,
+            clip_norm: None,
+            step: 0,
+            velocity: Vec::new(),
+        }
+    }
+}
+
+impl Optimizer for Muon {
+    fn set_clip_norm(&mut self, clip_norm: Option<f32>) {
+        self.clip_norm = clip_norm;
+    }
+
+    fn step(&mut self, slots: &mut [Slot<'_>], lr: f32) -> Result<()> {
+        check_slots(slots)?;
+        let shapes = shapes_of(slots)?;
+        let scale = clip_scale(global_norm(slots), self.clip_norm);
+        self.step = self.step.saturating_add(1);
+        for (idx, (slot, &shape)) in slots.iter_mut().zip(&shapes).enumerate() {
+            self.advance(idx, slot, shape, scale, lr);
+        }
+        Ok(())
+    }
+
+    fn restore(
+        &mut self,
+        momentum: Vec<Vec<f32>>,
+        variance: Vec<Vec<f32>>,
+        step: u64,
+    ) -> Result<()> {
+        if !variance.is_empty() {
+            let message = format!(
+                "Muon 只持一阶动量：快照带回 {} 个二阶矩槽，无法回载",
+                variance.len()
+            );
+            return Err(Error::new(Code::Invalid, message).with(SITE));
+        }
+        self.velocity = momentum;
+        self.step = step;
+        Ok(())
+    }
+
+    fn write_config(&self, sink: &mut dyn FnMut(u64)) {
+        for value in [self.momentum, self.eps] {
+            sink(value.to_bits().into());
+        }
+        sink(self.nesterov.into());
+        write_decay_clip(self.weight_decay, self.clip_norm, sink);
+    }
+}
+
+/// 每个槽的矩阵形状，**全部**先查完再返回。
+fn shapes_of(slots: &[Slot<'_>]) -> Result<Vec<(usize, usize)>> {
+    let mut shapes = Vec::with_capacity(slots.len());
+    for (idx, slot) in slots.iter().enumerate() {
+        shapes.push(matrix_of(idx, slot)?);
+    }
+    Ok(shapes)
+}
+
+/// Nesterov 前瞻方向 `g + μ·u`：动量缓冲 `u` 已经含了本步的梯度，前瞻取的是「再多走一点」。
+fn nesterov_direction(velocity: &[f32], grads: &[f32], beta: f32, scale: f32) -> Vec<f32> {
+    velocity
+        .iter()
+        .zip(grads)
+        .map(|(&tracked, &grad)| scale * grad + beta * tracked)
+        .collect()
+}
+
+/// 一个槽的矩阵形状：非矩阵、零维或梯度非有限都在这里拒绝。
+fn matrix_of(idx: usize, slot: &Slot<'_>) -> Result<(usize, usize)> {
+    let Some((rows, cols)) = slot.shape else {
+        let message = format!(
+            "第 {idx} 槽（角色 {}）不是矩阵：Muon 的正交化只在矩阵上有定义，\
+             偏置/归一化增益按角色分派给 AdamW",
+            slot.role.as_str()
+        );
+        return Err(Error::new(Code::Invalid, message).with(SITE));
+    };
+    if rows == 0 || cols == 0 {
+        let message = format!("第 {idx} 槽声明为 [{rows}, {cols}]：两边都必须非零");
+        return Err(Error::new(Code::Invalid, message).with(SITE));
+    }
+    if let Some(bad) = slot.grads.iter().position(|grad| !grad.is_finite()) {
+        let message = format!("第 {idx} 槽梯度第 {bad} 项非有限：正交化会把它铺满整个方向");
+        return Err(Error::new(Code::Invalid, message).with(SITE));
+    }
+    Ok((rows, cols))
+}
+
+/// 步长缩放 `0.2·√max(rows, cols)`：正交后奇异值为 1，不缩放的话更新量随矩阵阶数增长。
+fn scale_factor(rows: usize, cols: usize) -> f32 {
+    SCALE_COEF * (rows.max(cols) as f32).sqrt()
+}
+
 
 #[cfg(test)]
 #[path = "../tests/optimizer_tests.rs"]

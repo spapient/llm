@@ -378,7 +378,7 @@ pub(crate) mod codec;
 // —— 量化：磁盘方案、成对推断与 2/3/4/8-bit 对称 PTQ ——
 pub mod quant;
 
-// —— PTQ 公开路径：实现与磁盘量化方案同居 `quant`，调用方无需感知文件布局 ——
+/// 对称训练后量化；实现与磁盘量化方案同居 `quant`，公开路径保持稳定。
 pub mod ptq {
     pub use crate::quant::{
         Adaptive, AdaptiveCompensated, Compensated, I2, I3, I4, I8, Scheme, adaptive_quantize,
@@ -389,11 +389,10 @@ pub mod ptq {
 // —— 谱隙证书链：f64 单边 Jacobi SVD、谱隙判定账本、五轴无损选码（.u v2 张量级压缩侧车）——
 pub mod axes;
 pub mod ledger;
+/// 单边 Jacobi 奇异值分解与谱隙选秩；数学内核由 `ledger` 持有。
 pub mod svd {
     pub use crate::ledger::{REL_GAP, Svd, compute_svd, signal_rank};
-    pub(crate) use crate::ledger::{
-        Spectral, factor_low, norm, residual, residual32, spectral_gap,
-    };
+    pub(crate) use crate::ledger::{Spectral, factor_low, spectral_gap};
 }
 
 // —— 沉降账本：LLD §4.7 的逐张量体积 / 原因 / 无损判决，全部由落盘字节现算 ——

@@ -12,9 +12,9 @@ use crate::axes::AxisSet;
 
 use crate::Codec;
 use crate::Wire;
+use crate::archive::Digest;
 use crate::codec::encode_rans;
 use crate::crc;
-use crate::proof::Digest;
 use crate::seg::Segment;
 use storage::leb;
 use storage::sink::{Count, FileSink, Measured, Sealed, Sink, SliceSink};
@@ -160,9 +160,9 @@ impl Writer {
         let leaves: Vec<_> = self
             .segs
             .iter()
-            .map(|segment| crate::proof::leaf(segment.name(), &segment.data))
+            .map(|segment| crate::archive::leaf(segment.name(), &segment.data))
             .collect();
-        crate::proof::root(&leaves)
+        crate::archive::root(&leaves)
     }
 
     /// 为每段选定存储表示：先做保序去重，再并行编码内联段；引用关系与段序不受并行度影响。
@@ -185,7 +185,7 @@ impl Writer {
             let key = (
                 segment.dtype().code(),
                 segment.shape().to_vec(),
-                crate::proof::hash_bytes(&segment.data),
+                crate::archive::hash_bytes(&segment.data),
             );
             if let Some(rep) = self.find_rep(&reps, &key, segment) {
                 slots.push(Some(Plan::Ref { rep }));

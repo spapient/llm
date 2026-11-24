@@ -81,7 +81,6 @@ impl AxisSet {
 }
 
 /// 一轴的声明式能力表：编码与解码同源注册，调用点不需要逐个感知具体轴。
-#[derive(Clone, Copy)]
 struct AxisSpec {
     axis: Axis,
     encode: fn(&[f32], usize, usize) -> Option<Vec<u8>>,
@@ -185,7 +184,7 @@ pub fn compress_with_axes(
     n: usize,
     axes: AxisSet,
 ) -> Result<Option<Vec<u8>>> {
-    let w = bytes_to_f32(data, m * n)?;
+    let w = bytes_to_f32(data, checked_area(m, n)?)?;
     let pick = search_with_axes(&w, m, n, axes)?;
     Ok((pick.len() < data.len()).then_some(pick.artifact))
 }
@@ -217,10 +216,14 @@ pub fn certificate(artifact: &[u8]) -> Result<Option<ledger::Note>> {
     rank_head(&artifact[HEAD..]).map(|head| Some(head.note))
 }
 
-/// 形状判据：`m`、`n` 非零且元素数与乘积一致；不回答权重内容。
+/// 形状判据：维数可写入 `u32`、均非零、乘积不溢出且与元素数一致。
 fn check_shape(w: &[f32], m: usize, n: usize) -> Result<()> {
-    if m == 0 || n == 0 || w.len() != m * n {
+    let want = checked_area(m, n)?;
+    if m == 0 || n == 0 || w.len() != want {
         return Err(bad(format!("形状不合法 m={m} n={n} len={}", w.len())));
+    }
+    if u32::try_from(m).is_err() || u32::try_from(n).is_err() {
+        return Err(bad("形状维度超过线上 u32 范围"));
     }
     Ok(())
 }
@@ -245,8 +248,13 @@ fn check_head(artifact: &[u8]) -> Result<()> {
 fn shape_of(artifact: &[u8]) -> Result<(usize, usize)> {
     let m = u32_at(artifact, 5)? as usize;
     let n = u32_at(artifact, 9)? as usize;
-    m.checked_mul(n).ok_or_else(shape_overflow)?;
+    checked_area(m, n)?;
     Ok((m, n))
+}
+
+/// 安全计算形状面积，供字节压缩与头部解析共用。
+fn checked_area(m: usize, n: usize) -> Result<usize> {
+    m.checked_mul(n).ok_or_else(shape_overflow)
 }
 
 /// 元素数：`head` 已判过乘积不溢出，这里的乘法不会回绕。
@@ -271,8 +279,8 @@ fn frame(axis: Axis, m: usize, n: usize, payload: Vec<u8>) -> Pick {
 
 /// 载荷逐位还原判据：编码后的载荷直接反解并对质，跳过 `frame → head` 的再解析——
 /// 帧头本就是写端刚构造的，读端重解析它并不会让结果更可信，只是多一次分配与越界检查。
-fn sound(cfg: &AxisSpec, payload: &[u8], shape: (usize, usize), w: &[f32]) -> bool {
-    (cfg.decode)(&mut Cursor::new(payload), shape).is_ok_and(|got| {
+fn sound(spec: &AxisSpec, payload: &[u8], shape: (usize, usize), w: &[f32]) -> bool {
+    (spec.decode)(&mut Cursor::new(payload), shape).is_ok_and(|got| {
         got.len() == w.len() && got.iter().zip(w).all(|(a, b)| a.to_bits() == b.to_bits())
     })
 }
