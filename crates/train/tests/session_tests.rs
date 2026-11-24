@@ -560,6 +560,54 @@ fn overrides_fall_back_to_default_without_duplicating_constants() {
     );
 }
 
+/// 配置指纹稳定且覆盖调度、目标、数据采样与优化器类型。
+#[test]
+fn train_spec_fingerprint_is_stable_and_field_sensitive() {
+    let base = TrainSpec::default();
+    let fingerprint = base.config_fingerprint("Sgd");
+    assert_eq!(base.config_fingerprint("Sgd"), fingerprint);
+    assert_ne!(base.config_fingerprint("Adam"), fingerprint);
+    let mut changed = base.clone();
+    changed.session.anneal = crate::Anneal::Cosine;
+    assert_ne!(changed.config_fingerprint("Sgd"), fingerprint);
+    let mut changed = base.clone();
+    changed.session.clip_norm = Some(1.0);
+    assert_ne!(changed.config_fingerprint("Sgd"), fingerprint);
+    let mut changed = base.clone();
+    changed.objective = ObjectiveConfig::Distill(crate::Distill::new(2.0, 0.5));
+    assert_ne!(changed.config_fingerprint("Sgd"), fingerprint);
+    let mut changed = base.clone();
+    changed.loader.sampling = Sampling::Shuffle { seed: 7 };
+    assert_ne!(changed.config_fingerprint("Sgd"), fingerprint);
+    let mut changed = base;
+    changed.loader.sampling = Sampling::Weighted {
+        weights: vec![0.25, 0.75],
+        seed: 11,
+    };
+    assert_ne!(changed.config_fingerprint("Sgd"), fingerprint);
+}
+
+/// 非零指纹在结构校验之前对账，失败时不写步数、梯度或绑定状态。
+#[test]
+fn restore_rejects_config_drift_before_writing_any_state() -> Result<()> {
+    let (tape, sizes, p, _x, _loss) = fixture();
+    let config = TrainConfig::new(1e-2, 0, 4, None, 2)?;
+    let spec = TrainSpec::new(config.clone(), LoaderConfig::new(1, N)?)?;
+    let mut target = open_session(tape, sizes, config);
+    target.bind_recovery_config(&spec)?;
+    target.register_parameter(p, ParamRole::Trainable, vec![1.0; N])?;
+    let facts = Facts::new(9, 1, 1, 1, N)?;
+    let snapshot = Snapshot::new(facts, Header::new(Vec::new(), 0)?)
+        .with_config_fingerprint(target.config_fingerprint().wrapping_add(1));
+    let error = target.restore_snapshot(&snapshot).expect_err("配置漂移");
+    assert_eq!(error.code(), Code::Invalid);
+    assert_eq!(target.step(), 0);
+    assert_eq!(target.accumulated_microbatches(), 0);
+    assert!(target.ties().is_empty());
+    assert!(target.bufs().gradient(p).is_none());
+    Ok(())
+}
+
 /// 独立梯度快照：按 `Var` 复制的副本在清零缓冲后仍然有效，未带梯度的变量查不到。
 #[test]
 fn gradient_snapshot_is_var_keyed_and_survives_zero_gradients() {

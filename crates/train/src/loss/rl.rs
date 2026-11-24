@@ -226,6 +226,3 @@ pub fn grpo_loss(
     Ok((-surrogate_mean + f64::from(grpo.beta) * kl_mean) as f32)
 }
 
-#[cfg(test)]
-#[path = "../../tests/rl_tests.rs"]
-mod rl_tests;

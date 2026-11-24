@@ -1,4 +1,4 @@
-// cutile cpu 微内核：latent_attention_f32 —— 潜空间注意力，键行尾部是解耦 RoPE 段。
+// cutile 共享参考微内核：latent_attention_f32 —— 潜空间注意力，键行尾部是解耦 RoPE 段。
 // 槽位：{{op}} 是算子名，@prim(...) 由片段层逐个替换。
 // 布局契约（由声明层校验）：q={{q}} k={{k}} v={{v}} y={{y}}
 //

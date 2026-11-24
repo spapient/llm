@@ -58,13 +58,13 @@ crates/prof/
 │   ├── sign.rs            # 片段签名行 `/* cutile-sign: <prim>/<impl> */`（ADR 0027 §5；构建期与本层共用）
 │   ├── lib.rs             # 公开面：模块声明 + 生成表的出口（运行期不解析 TOML、不读目录）
 │   ├── buildtables.rs     # 构建期：片段 → FRAGMENTS / PRIMS / EPILOGUE / DEVICE
-│   ├── buildops.rs        # 构建期：共享声明 + 特化 / 继承 + 调优 → 完整生成矩阵
+│   ├── buildops.rs        # 构建期：共享声明 + 后端特化 + 调优 → 完整生成矩阵
 │   ├── buildimage.rs      # 构建期：device-image 下真编设备镜像
 │   ├── kernels.toml       # 模板级性能策略：展开因子按 default / vendor 配置
 │   ├── <vendor>/          # 档案 + 原语 + epilogue + witness；Metal 另含 runtime.rs
-│   │   └── kernels/       # 可选的真实后端特化；未特化项按 `[kernels].base` 继承
-│   ├── native*.rs        # 平铺的主机微内核：公共几何、NEON/AVX2、i8 sdot、Apple SME
-│   └── ops/               # 只放 `<stem>.toml` 共享声明，不放设备实现
+│   │   └── kernels/       # 可选的真实后端特化；缺省使用 `ops/<stem>.k`
+│   ├── native*.rs         # 平铺的主机微内核：公共几何、NEON/AVX2、i8 sdot、Apple SME
+│   └── ops/               # `<name>.toml` 共享声明 + `<stem>.k` 可移植参考正文
 └── tests/                 # 片段对账、内嵌档案、档案 schema；tests/spec/ 是契约词汇的用例
 ```
 ## 一份档案写什么
@@ -72,7 +72,6 @@ crates/prof/
 | 段 | 内容 | 语义定义在 |
 |---|---|---|
 | `[meta]` | `vendor` / `id` / `emit` / `tool` / `tool_ver` / `checked` | `prof::prof` |
-| `[kernels]` | 可选 `base`：未特化正文的参考后端；本地 `kernels/<stem>.k` 始终优先 | `build.rs`、`buildops.rs` |
 | `[fingerprint]` | 探测命中的键（`arch`、`cc`、`soc`…）及其取值模式 | `prof::prof`、`cutile::probe` |
 | `[space]` | 三级存储的物理名（`GM` / `FAST` / `REG`） | `prof::prof`、`cutile::space` |
 | `[units.<name>]` | 执行单元名 → 它能访问的存储层 | `prof::prof` |
@@ -201,9 +200,9 @@ P0 九条不多不少、每条签名都是带见证的供给且入口名与 `PRI
 
 ## 新增设备 / 新增执行单元
 
-1. 在 `src/<name>/` 下写 `<name>.toml`、片段 / 见证正文；用 `[kernels].base` 选择参考实现，
-   只有真正不同的算法才在 `kernels/<stem>.k` 写后端特化；
-2. 目录本身就是清单：`build.rs` 扫设备档案，构建期拒绝继承环、缺失正文与 ABI 漂移，
+1. 在 `src/<name>/` 下写 `<name>.toml`、片段 / 见证正文；未特化算子自动使用
+   `ops/<stem>.k`，只有真正不同的算法才在 `kernels/<stem>.k` 写后端特化；
+2. 目录本身就是清单：`build.rs` 扫设备档案，构建期拒绝缺失正文与 ABI 漂移，
    `lib.rs` 不登记 vendor；展开因子集中在 `src/kernels.toml`，不在 Rust 中写厂商分支；
 3. `cargo test -p llm-prof` —— 内核矩阵测试逐条拒绝 ABI / 布局 / 能力需求漂移；
    同一测试目标再对一遍片段层契约（见上），它同时把每条见证在本机执行一次；
@@ -212,8 +211,8 @@ P0 九条不多不少、每条签名都是带见证的供给且入口名与 `PRI
 
 ## 什么不放进来
 
-- **算子声明与微内核**（`src/ops/*.toml`、`src/<vendor>/kernels/*.k`）**在本 crate**：声明共享，
-  后端按需覆盖，未特化正文沿档案配置继承；相同实现只存一份。
+- **算子声明与微内核**（`src/ops/*.{toml,k}`、`src/<vendor>/kernels/*.k`）**在本 crate**：
+  声明与参考正文按算子归在一起，后端按需特化；相同实现只存一份。
 - **原语片段**（`src/<vendor>/<prim>.<ext>`）与见证源码**也在本 crate**：它们是数据，不是代码。
 - **机制**：协商（`cap`）、选择（`plan`）、拼接（`substitute`）与 emit（`emit`）、探测（`probe`）都在 `cutile`；
   依赖方向固定为 `llm → cutile → prof`、`prof → {diagnostic, dtype}`，本 crate 不依赖 `cutile`。

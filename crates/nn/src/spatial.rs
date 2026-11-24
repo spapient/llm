@@ -35,209 +35,156 @@ fn nonzero_channels(cin: usize, cout: usize, layer: &str) -> Result<()> {
     Ok(())
 }
 
-/// 一维卷积层：NHWC 输入 `[l, cin]`，输出 `[ol, cout]`。
-#[crate::spec(name = $name, out = [$ol, $cout], ops = [$op])]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Conv1d {
-    cin: usize,
-    cout: usize,
-    geom: ConvGeom,
-    ol: usize,
+/// 卷积族声明：字段、构造参数、几何计划、输出轴和特有方法都由声明点给出。
+/// 公共部分只保留通道校验、注解规格装配与下界接线，不隐藏任何几何算法。
+macro_rules! convolution_layer {
+    (
+        $(#[$meta:meta])* $layer:ident, $spec:ident, $op:expr;
+        ($($field:ident: $fty:ty),*);
+        ($cin:ident: usize, $cout:ident: usize $(, $arg:ident: $aty:ty)*);
+        $plan:block;
+        ($($axis:expr),*);
+        {$($methods:tt)*}
+    ) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+        pub struct $layer {
+            $($field: $fty),*
+        }
+
+        impl $layer {
+            #[doc = concat!("构造 [`", stringify!($layer), "`]，按输入与几何计算输出形状。")]
+            ///
+            /// # Errors
+            ///
+            /// 通道或几何为零、输入无法形成合法输出，或算子规格无效时返回说明。
+            pub fn new(
+                name: impl Into<String>,
+                $cin: usize,
+                $cout: usize,
+                $($arg: $aty),*
+            ) -> Result<Self> {
+                let layer = concat!("nn::", stringify!($layer), "::new");
+                nonzero_channels($cin, $cout, layer)?;
+                let ($($field),*) = $plan;
+                let spec = $spec!(name, $($axis,)* $op)?;
+                Ok(Self { spec, $($field),* })
+            }
+
+            $($methods)*
+        }
+
+        crate::priced!($layer, $op);
+    };
 }
 
-impl Conv1d {
-    /// 构造：按输入长度与几何算出输出长度。
-    ///
-    /// # Errors
-    ///
-    /// 通道/几何为零，或输入短于窗口时返回说明。
-    pub fn new(
-        name: impl Into<String>,
-        cin: usize,
-        cout: usize,
-        geom: ConvGeom,
-        l: usize,
-    ) -> Result<Self> {
-        let layer = "nn::Conv1d::new";
-        nonzero_channels(cin, cout, layer)?;
+convolution_layer!(
+    /// 一维卷积层：NHWC 输入 `[l, cin]`，输出 `[ol, cout]`。
+    #[crate::spec(name = $name, out = [$ol, $cout], ops = [$op])]
+    Conv1d, __layer_spec_Conv1d, GEMM;
+    (cin: usize, cout: usize, geom: ConvGeom, ol: usize);
+    (cin: usize, cout: usize, geom: ConvGeom, l: usize);
+    {
         let kernel = OpConv1::new(cin, cout, geom.kw, geom.sw, geom.pw);
         let ol = kernel.len(l)?;
-        let spec = __layer_spec_Conv1d!(name, ol, cout, GEMM)?;
-        Ok(Self {
-            spec,
-            cin,
-            cout,
-            geom,
-            ol,
-        })
+        (cin, cout, geom, ol)
+    };
+    (ol, cout);
+    {
+        crate::accessors! {
+            /// 输入通道。
+            cin -> usize = cin,
+            /// 输出通道。
+            cout -> usize = cout,
+            /// 卷积几何。
+            geom -> ConvGeom = geom,
+            /// 输出长度。
+            #[allow(clippy::len_without_is_empty)]
+            len -> usize = ol,
+        }
     }
+);
 
-    crate::accessors! {
-        /// 输入通道。
-        cin -> usize = cin,
-        /// 输出通道。
-        cout -> usize = cout,
-        /// 卷积几何。
-        geom -> ConvGeom = geom,
-        /// 输出长度。
-        #[allow(clippy::len_without_is_empty)]
-        len -> usize = ol,
-    }
-}
-
-crate::priced!(Conv1d, GEMM);
-
-/// 二维卷积层：NHWC 输入 `[h, w, cin]`，输出 `[oh, ow, cout]`。
-#[crate::spec(name = $name, out = [$oh, $ow, $cout], ops = [$op])]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Conv2d {
-    cin: usize,
-    cout: usize,
-    geom: ConvGeom,
-    oh: usize,
-    ow: usize,
-}
-
-impl Conv2d {
-    /// 构造：按输入边长与几何算出输出边长。
-    ///
-    /// # Errors
-    ///
-    /// 通道/几何为零，或输入短于窗口时返回说明。
-    pub fn new(
-        name: impl Into<String>,
-        cin: usize,
-        cout: usize,
-        geom: ConvGeom,
-        h: usize,
-        w: usize,
-    ) -> Result<Self> {
-        let layer = "nn::Conv2d::new";
-        nonzero_channels(cin, cout, layer)?;
+convolution_layer!(
+    /// 二维卷积层：NHWC 输入 `[h, w, cin]`，输出 `[oh, ow, cout]`。
+    #[crate::spec(name = $name, out = [$oh, $ow, $cout], ops = [$op])]
+    Conv2d, __layer_spec_Conv2d, CONV;
+    (cin: usize, cout: usize, geom: ConvGeom, oh: usize, ow: usize);
+    (cin: usize, cout: usize, geom: ConvGeom, h: usize, w: usize);
+    {
         let kernel = OpConv2::new(cin, cout, geom);
         let (oh, ow) = kernel.shape(h, w)?;
-        let spec = __layer_spec_Conv2d!(name, oh, ow, cout, CONV)?;
-        Ok(Self {
-            spec,
-            cin,
-            cout,
-            geom,
-            oh,
-            ow,
-        })
+        (cin, cout, geom, oh, ow)
+    };
+    (oh, ow, cout);
+    {
+        crate::accessors! {
+            /// 输入通道。
+            cin -> usize = cin,
+            /// 输出通道。
+            cout -> usize = cout,
+            /// 卷积几何。
+            geom -> ConvGeom = geom,
+        }
+
+        /// 输出边长 `(oh, ow)`。
+        pub fn shape(&self) -> (usize, usize) {
+            (self.oh, self.ow)
+        }
     }
+);
 
-    crate::accessors! {
-        /// 输入通道。
-        cin -> usize = cin,
-        /// 输出通道。
-        cout -> usize = cout,
-        /// 卷积几何。
-        geom -> ConvGeom = geom,
-    }
-
-    /// 输出边长 `(oh, ow)`。
-    pub fn shape(&self) -> (usize, usize) {
-        (self.oh, self.ow)
-    }
-}
-
-crate::priced!(Conv2d, CONV);
-
-/// 一维反卷积层：`[l, cin]` → `[ol, cout]`，权重 `[cin, cout, k]`。
-#[crate::spec(name = $name, out = [$ol, $cout], ops = [$op])]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ConvTranspose1d {
-    deconv: OpDeconv1,
-    ol: usize,
-}
-
-impl ConvTranspose1d {
-    /// 构造：按输入长度与 `(k, s, p)` 算出输出长度。
-    ///
-    /// # Errors
-    ///
-    /// 通道/几何为零，或输出长度非正时返回说明。
-    pub fn new(
-        name: impl Into<String>,
-        cin: usize,
-        cout: usize,
-        k: usize,
-        s: usize,
-        p: usize,
-        l: usize,
-    ) -> Result<Self> {
-        let layer = "nn::ConvTranspose1d::new";
-        nonzero_channels(cin, cout, layer)?;
+convolution_layer!(
+    /// 一维反卷积层：`[l, cin]` → `[ol, cout]`，权重 `[cin, cout, k]`。
+    #[crate::spec(name = $name, out = [$ol, $cout], ops = [$op])]
+    ConvTranspose1d, __layer_spec_ConvTranspose1d, GEMM;
+    (deconv: OpDeconv1, ol: usize);
+    (cin: usize, cout: usize, k: usize, s: usize, p: usize, l: usize);
+    {
         let deconv = OpDeconv1::new(cin, cout, k, s, p);
         let ol = deconv.len(l)?;
-        let spec = __layer_spec_ConvTranspose1d!(name, ol, cout, GEMM)?;
-        Ok(Self { spec, deconv, ol })
+        (deconv, ol)
+    };
+    (ol, cout);
+    {
+        crate::accessors! {
+            /// 输出长度。
+            #[allow(clippy::len_without_is_empty)]
+            len -> usize = ol,
+        }
+
+        /// 输出通道。
+        pub fn cout(&self) -> usize {
+            self.deconv.cout
+        }
     }
+);
 
-    /// 输出长度。
-    #[allow(clippy::len_without_is_empty)]
-    pub fn len(&self) -> usize {
-        self.ol
-    }
-
-    /// 输出通道。
-    pub fn cout(&self) -> usize {
-        self.deconv.cout
-    }
-}
-
-crate::priced!(ConvTranspose1d, GEMM);
-
-/// 二维反卷积层：`[h, w, cin]` → `[oh, ow, cout]`，权重 `[cin, cout, kh, kw]`。
-#[crate::spec(name = $name, out = [$oh, $ow, $cout], ops = [$op])]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ConvTranspose2d {
-    deconv: OpDeconv2,
-    oh: usize,
-    ow: usize,
-}
-
-impl ConvTranspose2d {
-    /// 构造：按输入边长与几何算出输出边长。
-    ///
-    /// # Errors
-    ///
-    /// 通道/几何为零，或输出边长非正时返回说明。
-    pub fn new(
-        name: impl Into<String>,
-        cin: usize,
-        cout: usize,
-        geom: ConvGeom,
-        h: usize,
-        w: usize,
-    ) -> Result<Self> {
-        let layer = "nn::ConvTranspose2d::new";
-        nonzero_channels(cin, cout, layer)?;
+convolution_layer!(
+    /// 二维反卷积层：`[h, w, cin]` → `[oh, ow, cout]`，权重 `[cin, cout, kh, kw]`。
+    #[crate::spec(name = $name, out = [$oh, $ow, $cout], ops = [$op])]
+    ConvTranspose2d, __layer_spec_ConvTranspose2d, GEMM;
+    (deconv: OpDeconv2, oh: usize, ow: usize);
+    (cin: usize, cout: usize, geom: ConvGeom, h: usize, w: usize);
+    {
         let deconv = OpDeconv2::new(cin, cout, geom);
         let oh = deconv.oh(h)?;
         let ow = deconv.ow(w)?;
-        let spec = __layer_spec_ConvTranspose2d!(name, oh, ow, cout, GEMM)?;
-        Ok(Self {
-            spec,
-            deconv,
-            oh,
-            ow,
-        })
-    }
+        (deconv, oh, ow)
+    };
+    (oh, ow, cout);
+    {
+        /// 输出边长 `(oh, ow)`。
+        pub fn shape(&self) -> (usize, usize) {
+            (self.oh, self.ow)
+        }
 
-    /// 输出边长 `(oh, ow)`。
-    pub fn shape(&self) -> (usize, usize) {
-        (self.oh, self.ow)
+        /// 输出通道。
+        pub fn cout(&self) -> usize {
+            self.deconv.cout
+        }
     }
-
-    /// 输出通道。
-    pub fn cout(&self) -> usize {
-        self.deconv.cout
-    }
-}
-
-crate::priced!(ConvTranspose2d, GEMM);
+);
 
 /// 一维最大池化层：`[l, c]` → `[ol, c]`。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
