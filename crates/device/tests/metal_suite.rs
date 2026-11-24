@@ -15,6 +15,11 @@ mod backends {
     pub use llm_device::backends::install;
 }
 
+/// 设备反向核：描述表与反向程序生成，从 lib 侧透传到本测试二进制根。
+mod backward {
+    pub use llm_device::backward::*;
+}
+
 #[path = "metal_executor_harness.rs"]
 mod harness;
 mod metal;
