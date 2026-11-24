@@ -383,14 +383,11 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
         Ok(())
     }
 
-    /// 最近一批的行数。
-    pub fn batch_rows(&self) -> usize {
-        self.batch_rows
-    }
-
-    /// 最近一批的列宽。
-    pub fn batch_cols(&self) -> usize {
-        self.batch_cols
+    getters! {
+        /// 最近一批的行数。
+        batch_rows => batch_rows: usize,
+        /// 最近一批的列宽。
+        batch_cols => batch_cols: usize,
     }
 
     /// 走一步优化器：累积窗口满后先做数据并行梯度同步，再按当前学习率更新全部参数槽，

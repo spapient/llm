@@ -38,7 +38,8 @@ flops_f32 = { value = 2.688e12, src = "10*64*2*2.1e9" }
 bw        = { value = 160.032e9, src = "128/8*2*5.001e9" }
 
 [compile]
-flags = ["-arch=sm_75", "-O3"]
+# cuBLAS 是 matmul_f32 真特化的设备库；CUDA toolkit 同时提供头文件与链接库。
+flags = ["-arch=sm_75", "-O3", "-lcublas"]
 preamble = """
 #include <math.h>
 #ifndef __host__

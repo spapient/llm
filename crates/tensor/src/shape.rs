@@ -112,15 +112,15 @@ pub trait Rank: Clone {
     /// 按排列重排；长度或轴值不合法返回 `None`。
     #[must_use]
     fn permuted(&self, order: &[usize]) -> Option<Self> {
-        if order.len() != self.as_slice().len() {
+        let source = self.as_slice();
+        if order.len() != source.len() {
             return None;
         }
-        Self::from_iter(
-            order
-                .iter()
-                .map(|&axis| self.as_slice().get(axis).copied())
-                .collect::<Option<Vec<_>>>()?,
-        )
+        let mut out = Self::from_slice(source)?;
+        for (target, &source_axis) in out.as_slice_mut().iter_mut().zip(order) {
+            *target = *source.get(source_axis)?;
+        }
+        Some(out)
     }
 }
 

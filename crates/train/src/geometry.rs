@@ -174,108 +174,39 @@ impl Geometry {
     }
 }
 
-/// 十个经典算子的声明档实例：`declared` 的事实来源，一份表、一个数据源。
-const DECLARED: &[(&str, Geometry)] = &[
-    (
-        "max_pool1d_f32",
-        Geometry::Pool1d {
-            k: 2,
-            s: 2,
-            p: 0,
-            l: nn::conv::max_pool1d::L,
-            c: 1,
-        },
-    ),
-    (
-        "max_pool2d_f32",
-        Geometry::Pool2d {
-            k: 3,
-            s: 1,
-            p: 1,
-            h: nn::conv::max_pool2d::H,
-            w: nn::conv::max_pool2d::W,
-            c: 1,
-        },
-    ),
-    (
-        "avg_pool2d_f32",
-        Geometry::Avg2d {
-            k: 3,
-            s: 1,
-            p: 1,
-            h: nn::conv::avg_pool2d::H,
-            w: nn::conv::avg_pool2d::W,
-            c: 1,
-            count_include_pad: false,
-        },
-    ),
-    (
-        "adaptive_pool_f32",
-        Geometry::Adaptive {
-            oh: nn::conv::adaptive_pool::OH,
-            ow: nn::conv::adaptive_pool::OW,
-            h: nn::conv::adaptive_pool::H,
-            w: nn::conv::adaptive_pool::W,
-            c: 1,
-        },
-    ),
-    (
-        "interpolate_f32",
-        Geometry::Interp {
-            oh: nn::conv::interpolate::OH,
-            ow: nn::conv::interpolate::OW,
-            h: nn::conv::interpolate::H,
-            w: nn::conv::interpolate::W,
-            c: 1,
-            linear: true,
-        },
-    ),
-    (
-        "conv2d_f32",
-        Geometry::Conv2d {
-            k: nn::conv::conv2d::K,
-            s: nn::conv::conv2d::S,
-            p: nn::conv::conv2d::P,
-            h: nn::conv::conv2d::H,
-            w: nn::conv::conv2d::W,
-            cin: nn::conv::conv2d::CIN,
-            cout: nn::conv::conv2d::COUT,
-        },
-    ),
-    (
-        "batch_norm_f32",
-        Geometry::Norm {
-            n: nn::conv::batch_norm::N,
-            spatial: nn::conv::batch_norm::S,
-            channels: nn::conv::batch_norm::C,
-        },
-    ),
-    (
-        "group_norm_f32",
-        Geometry::Group {
-            groups: nn::conv::group_norm::G,
-            n: nn::conv::group_norm::N,
-            spatial: nn::conv::group_norm::S,
-            channels: nn::conv::group_norm::C,
-        },
-    ),
-    (
-        "instance_norm_f32",
-        Geometry::Group {
-            groups: nn::conv::instance_norm::C,
-            n: nn::conv::instance_norm::N,
-            spatial: nn::conv::instance_norm::S,
-            channels: nn::conv::instance_norm::C,
-        },
-    ),
-    (
-        "layer_norm_f32",
-        Geometry::Layer {
-            rows: nn::conv::layer_norm::R,
-            width: nn::conv::layer_norm::W,
-        },
-    ),
-];
+/// 表中大写标识符取自该行 `nn::conv` 模块，数字与布尔字面量原样进入几何。
+macro_rules! declaration_value {
+    ($module:ident, $value:ident) => {
+        nn::conv::$module::$value
+    };
+    ($module:ident, $value:expr) => {
+        $value
+    };
+}
+
+/// 一行声明同时确定算子名、几何变体与全部字段，避免表项包装和模块路径重复。
+macro_rules! declared_geometries {
+    ($( $module:ident => $variant:ident { $($field:ident : $value:tt),* $(,)? } ),* $(,)?) => {
+        &[$((
+            concat!(stringify!($module), "_f32"),
+            Geometry::$variant { $($field: declaration_value!($module, $value)),* },
+        )),*]
+    };
+}
+
+/// 十个经典算子的声明档实例：`declared` 的唯一事实来源。
+const DECLARED: &[(&str, Geometry)] = declared_geometries! {
+    max_pool1d => Pool1d { k: 2, s: 2, p: 0, l: L, c: 1 },
+    max_pool2d => Pool2d { k: 3, s: 1, p: 1, h: H, w: W, c: 1 },
+    avg_pool2d => Avg2d { k: 3, s: 1, p: 1, h: H, w: W, c: 1, count_include_pad: false },
+    adaptive_pool => Adaptive { oh: OH, ow: OW, h: H, w: W, c: 1 },
+    interpolate => Interp { oh: OH, ow: OW, h: H, w: W, c: 1, linear: true },
+    conv2d => Conv2d { k: K, s: S, p: P, h: H, w: W, cin: CIN, cout: COUT },
+    batch_norm => Norm { n: N, spatial: S, channels: C },
+    group_norm => Group { groups: G, n: N, spatial: S, channels: C },
+    instance_norm => Group { groups: C, n: N, spatial: S, channels: C },
+    layer_norm => Layer { rows: R, width: W },
+};
 
 mod kernels;
 mod shapes;

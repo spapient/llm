@@ -144,16 +144,13 @@ pub enum Precision {
     Int8 = 3,
 }
 
-/// 「精度 × 档位 → 算子名」的全部已注册组合，唯一事实源。
-///
-/// 表的行数就是 `nn` 里 gemm 骨架注册的算子数（6 条）；台账 v3.0.74 记有它们的来历。
-const RUNGS: [(Precision, Gauge, &str); 6] = [
-    (Precision::F32, Gauge::Short, MatMul::OP),
-    (Precision::F32, Gauge::Long, "matmul_f32"),
-    (Precision::Int8, Gauge::Short, "gemm_i8"),
-    (Precision::Int8, Gauge::Long, "matmul_i8"),
-    (Precision::Int4, Gauge::Short, "gemm_i4"),
-    (Precision::Int2, Gauge::Short, "gemm_i2"),
+/// 「精度 × 档位 → 算子名」的完整二维配置；空单元就是没有注册该组合。
+/// 行、列分别由 `Precision` / `Gauge` 的显式 `repr(u8)` 判别值索引，查询为 O(1)。
+const OPERATORS: [[Option<&str>; 2]; 4] = [
+    [Some(MatMul::OP), Some("matmul_f32")],
+    [Some("gemm_i2"), None],
+    [Some("gemm_i4"), None],
+    [Some("gemm_i8"), Some("matmul_i8")],
 ];
 
 impl Gauge {

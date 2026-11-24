@@ -6,7 +6,7 @@
 use diagnostic::Result;
 
 use crate::invalid;
-use crate::shape::{Order, Rank, Slice, accumulate, product};
+use crate::shape::{Rank, Slice, product};
 
 /// 校验秩对应、零元素口径、整数溢出和缓冲可达性。
 pub(crate) fn check(
@@ -120,6 +120,11 @@ impl<R: Rank> Layout<R> {
     /// 各轴步长。
     pub(crate) fn steps(&self) -> &[usize] {
         self.steps.as_slice()
+    }
+
+    /// 拆出起点、轴长和步长，供零拷贝组装使用。
+    pub(crate) fn into_parts(self) -> (usize, R, R) {
+        (self.base, self.dims, self.steps)
     }
 }
 
@@ -380,7 +385,12 @@ impl<'a, R: Rank> Offsets<'a, R> {
     }
 
     /// 行进到下一个逻辑位置；最后一个元素之后不再做无效偏移运算。
-    fn advance(&mut self, indices: &mut [usize]) {
+    fn advance(&mut self) {
+        let Some(indices) = self.indices.as_mut() else {
+            self.remaining = 0;
+            return;
+        };
+        let indices = indices.as_slice_mut();
         let mut at = self.at;
         for axis in (0..indices.len()).rev() {
             indices[axis] += 1;
@@ -405,11 +415,10 @@ impl<R: Rank> Iterator for Offsets<'_, R> {
         if self.remaining == 0 {
             return None;
         }
-        let indices = self.indices.as_mut()?;
         let current = self.at as usize;
         self.remaining -= 1;
         if self.remaining != 0 {
-            self.advance(indices.as_slice_mut());
+            self.advance();
         }
         Some(current)
     }

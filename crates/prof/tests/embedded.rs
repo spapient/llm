@@ -164,6 +164,12 @@ fn unroll_configuration_follows_the_template_stem() {
         );
         for vendor in crate::names().iter().copied().filter(|name| *name != "cpu") {
             let source = crate::catalogue::template_for(vendor, name).expect("后端有效正文");
+            if source.contains("cublasSgemm") {
+                assert_eq!((vendor, *name), ("nvidia", "matmul_f32"));
+                assert!(!source.contains("/* cutile-unroll */"));
+                assert!(!source.contains("#pragma unroll"));
+                continue;
+            }
             assert_eq!(
                 source.matches("#pragma unroll 4").count(),
                 1,
@@ -214,4 +220,39 @@ fn musa_matmul_specialization_preserves_abi_and_device_contract() {
     assert_eq!(source.matches("#pragma unroll 4").count(), 1);
     assert!(!source.contains("#include <wmma"));
     assert!(!source.contains("nvcuda::wmma"));
+}
+
+/// NVIDIA 使用严格 FP32 cuBLAS，缓存按设备失效且并发安全；公开 ABI 仍与共享声明一致。
+#[test]
+fn nvidia_matmul_uses_pedantic_cublas_and_cached_device_storage() {
+    let reference = crate::catalogue::named("matmul_f32")
+        .expect("共享矩阵乘声明")
+        .to_decl()
+        .expect("共享声明有效");
+    let specialized = crate::catalogue::for_device(&reference, "nvidia")
+        .expect("NVIDIA cuBLAS 矩阵乘特化");
+    assert!(matches!(specialized, std::borrow::Cow::Owned(_)));
+    assert_eq!(specialized.signature, reference.signature);
+    assert_eq!(specialized.needs, reference.needs);
+    assert_eq!(specialized.layouts, reference.layouts);
+
+    let source = &specialized.template;
+    for required in [
+        "#include <cublas_v2.h>",
+        "CUBLAS_PEDANTIC_MATH",
+        "CUBLAS_POINTER_MODE_HOST",
+        "std::mutex",
+        "std::lock_guard<std::mutex>",
+        "cudaGetDevice(&device)",
+        "state.device != device",
+        "cudaMalloc",
+        "cublasSgemm",
+        "N, M, K, &alpha, state.b, N, state.a, K, &beta, state.y, N",
+        "cudaMemcpyDeviceToHost",
+    ] {
+        assert!(source.contains(required), "NVIDIA cuBLAS 特化缺 `{required}`");
+    }
+    assert_eq!(source.matches("cublasSgemm(").count(), 1);
+    assert!(!source.contains("CUBLAS_COMPUTE_32F_FAST_TF32"));
+    assert!(!source.contains("cudaDeviceSynchronize"));
 }

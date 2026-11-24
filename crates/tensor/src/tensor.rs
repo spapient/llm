@@ -5,7 +5,7 @@ use diagnostic::Result;
 
 use crate::element::Element;
 use crate::shape::{Order, accumulate, element_bytes};
-use crate::{DType, Rank, Tensor, layout, product};
+use crate::{DType, Rank, layout, product};
 
 /// 逻辑张量：存储 `B`、秩见证 `R`、元素类型 `K` 各占一个泛型位。
 #[derive(Debug, Clone)]
@@ -214,7 +214,7 @@ where
         let numel = product(dims.as_slice());
         let len = buf.slice().len();
         if len != numel {
-            return Err(invalid_message(&dims, numel, len, marker));
+            return Err(invalid_message::<K, _>(&dims, numel, len, marker));
         }
         let steps = R::ordered(dims.as_slice(), order).ok_or_else(|| {
             crate::invalid(
@@ -327,13 +327,18 @@ where
 }
 
 /// 连续构造错误的统一文案。
-fn invalid_message<R: Rank>(dims: &R, numel: usize, len: usize, marker: &str) -> diagnostic::Error {
+fn invalid_message<K: Element, R: Rank>(
+    dims: &R,
+    numel: usize,
+    len: usize,
+    marker: &str,
+) -> diagnostic::Error {
     crate::invalid(
         format!(
             "缓冲 {len} 个元素，形状 {:?} 需要 {numel} 个（{:?} 共 {} 字节）",
             dims.as_slice(),
-            "元素",
-            element_bytes(numel, DType::F32)
+            K::DTYPE,
+            element_bytes(numel, K::DTYPE)
         ),
         marker,
     )

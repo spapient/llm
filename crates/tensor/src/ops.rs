@@ -1,33 +1,22 @@
-//! 张量方法面：逐元素算术、归约与统计，按元素能力分组收紧 bound。
-//!
-//! 这里只放"纯元素、不依赖设备调度"的参考语义：形状代数与布局在 [`crate::layout`]，
-//! 矩阵乘 / 激活 / 归一这类设备内核仍走 `nn` 数据驱动注册表（ADR 0053），本层不重复第二份算术。
-//!
-//! 能力分组即 trait bound：加减乘除要 [`NumericElement`]，取极值要 [`OrderedElement`]；
-//! 分组外的元素类型（如 `bool`）在编译期就调不到对应方法，不需要运行期 `supports(dtype)` 开关。
+//! 逐元素映射、二元运算与归约；全部直接消费逻辑序迭代器。
 
 use core::ops::{Add, Div, Mul, Sub};
 
 use diagnostic::Result;
 
-use crate::Tensor;
 use crate::element::{Element, NumericElement, OrderedElement};
-use crate::invalid;
-use crate::rank::Rank;
-use crate::store::{Owned, Store};
+use crate::{Owned, Rank, Store, Tensor, invalid};
 
-/// 元素绝对值：标准库数值与 half 标量各有取负，闭一层避免方法 bound 上挂第二份标记。
-///
-/// 只对 [`Element`](crate::Element) 闭集内的标量实现；外部类型无法接入本层元素集合。
+/// 元素绝对值能力，仅供 [`Tensor::all_close`] 的闭集标量使用。
 pub trait Abs: Default {
-    /// 自身的非负值。
+    /// 返回非负绝对值。
     fn abs(self) -> Self;
 }
 
-macro_rules! abs_impl {
-    ($($t:ty),+ $(,)?) => {
+macro_rules! signed_abs {
+    ($($scalar:ty),+ $(,)?) => {
         $(
-            impl Abs for $t {
+            impl Abs for $scalar {
                 fn abs(self) -> Self {
                     if self < Self::default() { -self } else { self }
                 }
@@ -36,29 +25,20 @@ macro_rules! abs_impl {
     };
 }
 
-abs_impl!(f32, f64, half::f16, half::bf16, i8, i16, i32, i64);
+macro_rules! unsigned_abs {
+    ($($scalar:ty),+ $(,)?) => {
+        $(
+            impl Abs for $scalar {
+                fn abs(self) -> Self {
+                    self
+                }
+            }
+        )+
+    };
+}
 
-// 无符号标量不存在小于 0 的分支：绝对值即自身。
-impl Abs for u8 {
-    fn abs(self) -> Self {
-        self
-    }
-}
-impl Abs for u16 {
-    fn abs(self) -> Self {
-        self
-    }
-}
-impl Abs for u32 {
-    fn abs(self) -> Self {
-        self
-    }
-}
-impl Abs for u64 {
-    fn abs(self) -> Self {
-        self
-    }
-}
+signed_abs!(f32, f64, half::f16, half::bf16, i8, i16, i32, i64);
+unsigned_abs!(u8, u16, u32, u64);
 
 impl<B, R, K> Tensor<B, R, K>
 where
@@ -66,94 +46,112 @@ where
     K: Element,
     B: Store<K>,
 {
-    /// 逐元素映射：按逻辑序对每个元素应用 `f`，产出自持连续张量。
-    pub fn map<F>(&self, f: F) -> Tensor<Owned<K>, R, K>
+    /// 逐元素映射，可改变元素类型并保留原秩见证。
+    pub fn map<O, F>(&self, f: F) -> Tensor<Owned<O>, R, O>
     where
-        F: Fn(K) -> K,
+        O: Element,
+        F: FnMut(K) -> O,
     {
-        let values = self.to_vec().into_iter().map(f).collect();
-        self.respell(values)
+        self.respell(self.iter().map(f).collect())
     }
 
-    /// 逐元素二元：两张量形状逐轴一致，`op(a[i], b[i])` 写入新自持张量。
+    /// 对两个同形张量按逻辑序执行二元映射。
     ///
-    /// 形状不符返回 `Invalid`——不做静默广播（广播是布局动作，走 [`Tensor::broadcast`]）。
-    fn binary<O>(&self, rhs: &Self, op: O, marker: &str) -> Result<Tensor<Owned<K>, R, K>>
+    /// 两侧存储和秩见证可以不同，输出元素类型也可以不同；只有形状必须一致。
+    pub fn zip_with<B2, R2, O, F>(
+        &self,
+        rhs: &Tensor<B2, R2, K>,
+        mut op: F,
+    ) -> Result<Tensor<Owned<O>, R, O>>
     where
-        O: Fn(K, K) -> K,
+        B2: Store<K>,
+        R2: Rank,
+        O: Element,
+        F: FnMut(K, K) -> O,
     {
         if self.dims() != rhs.dims() {
             return Err(invalid(
                 format!("形状 {:?} 与 {:?} 不一致", self.dims(), rhs.dims()),
-                marker,
+                "tensor::Tensor::zip_with",
             ));
         }
-        let a = self.to_vec();
-        let b = rhs.to_vec();
-        let values = a.into_iter().zip(b).map(|(x, y)| op(x, y)).collect();
+        let values = self
+            .iter()
+            .zip(rhs.iter())
+            .map(|(left, right)| op(left, right))
+            .collect();
         Ok(self.respell(values))
     }
 
-    /// 逐元素加：`out[i] = a[i] + b[i]`。
-    pub fn add(&self, rhs: &Self) -> Result<Tensor<Owned<K>, R, K>>
+    /// 逐元素加法。
+    pub fn add<B2: Store<K>, R2: Rank>(
+        &self,
+        rhs: &Tensor<B2, R2, K>,
+    ) -> Result<Tensor<Owned<K>, R, K>>
     where
         K: NumericElement + Add<Output = K>,
     {
-        self.binary(rhs, Add::add, "tensor::Tensor::add")
+        self.zip_with(rhs, Add::add)
     }
 
-    /// 逐元素减：`out[i] = a[i] - b[i]`。
-    pub fn sub(&self, rhs: &Self) -> Result<Tensor<Owned<K>, R, K>>
+    /// 逐元素减法。
+    pub fn sub<B2: Store<K>, R2: Rank>(
+        &self,
+        rhs: &Tensor<B2, R2, K>,
+    ) -> Result<Tensor<Owned<K>, R, K>>
     where
         K: NumericElement + Sub<Output = K>,
     {
-        self.binary(rhs, Sub::sub, "tensor::Tensor::sub")
+        self.zip_with(rhs, Sub::sub)
     }
 
-    /// 逐元素乘：`out[i] = a[i] * b[i]`。
-    pub fn mul(&self, rhs: &Self) -> Result<Tensor<Owned<K>, R, K>>
+    /// 逐元素乘法。
+    pub fn mul<B2: Store<K>, R2: Rank>(
+        &self,
+        rhs: &Tensor<B2, R2, K>,
+    ) -> Result<Tensor<Owned<K>, R, K>>
     where
         K: NumericElement + Mul<Output = K>,
     {
-        self.binary(rhs, Mul::mul, "tensor::Tensor::mul")
+        self.zip_with(rhs, Mul::mul)
     }
 
-    /// 逐元素除：`out[i] = a[i] / b[i]`；除零口径沿用标量语义。
-    pub fn div(&self, rhs: &Self) -> Result<Tensor<Owned<K>, R, K>>
+    /// 逐元素除法，除零沿用标量语义。
+    pub fn div<B2: Store<K>, R2: Rank>(
+        &self,
+        rhs: &Tensor<B2, R2, K>,
+    ) -> Result<Tensor<Owned<K>, R, K>>
     where
         K: NumericElement + Div<Output = K>,
     {
-        self.binary(rhs, Div::div, "tensor::Tensor::div")
+        self.zip_with(rhs, Div::div)
     }
 
-    /// 加标量：`out[i] = a[i] + scalar`。
+    /// 加标量。
     pub fn add_scalar(&self, scalar: K) -> Tensor<Owned<K>, R, K>
     where
         K: NumericElement + Add<Output = K>,
     {
-        self.map(|x| x + scalar)
+        self.map(|value| value + scalar)
     }
 
-    /// 乘标量：`out[i] = a[i] * scalar`。
+    /// 乘标量。
     pub fn mul_scalar(&self, scalar: K) -> Tensor<Owned<K>, R, K>
     where
         K: NumericElement + Mul<Output = K>,
     {
-        self.map(|x| x * scalar)
+        self.map(|value| value * scalar)
     }
 
     /// 全元素求和；空张量返回 `None`。
-    ///
-    /// 累加是串行依赖：下一项依赖前一项的和，无法整块并行归约，这里保留 fold（见仓内循环纪律）。
     pub fn sum(&self) -> Option<K>
     where
-        K: NumericElement + Add<Output = K> + Default,
+        K: NumericElement + Add<Output = K>,
     {
-        let values = self.to_vec();
-        if values.is_empty() {
+        if self.numel() == 0 {
             return None;
         }
-        Some(values.into_iter().fold(K::default(), Add::add))
+        Some(self.iter().fold(K::default(), Add::add))
     }
 
     /// 全局最大元素；空张量返回 `None`。
@@ -161,9 +159,7 @@ where
     where
         K: OrderedElement,
     {
-        self.to_vec()
-            .into_iter()
-            .reduce(|a, b| if b >= a { b } else { a })
+        self.iter().reduce(|a, b| if b > a { b } else { a })
     }
 
     /// 全局最小元素；空张量返回 `None`。
@@ -171,33 +167,51 @@ where
     where
         K: OrderedElement,
     {
-        self.to_vec()
-            .into_iter()
-            .reduce(|a, b| if b <= a { b } else { a })
+        self.iter().reduce(|a, b| if b < a { b } else { a })
     }
 
-    /// 全局最大元素的逻辑序下标；空张量返回 `None`。并列时取最先出现的位置。
+    /// 全局最大元素的逻辑序位置，并列时取最先出现者。
     pub fn argmax(&self) -> Option<usize>
     where
         K: OrderedElement,
     {
-        self.to_vec()
-            .into_iter()
-            .enumerate()
-            .reduce(|(i, a), (j, b)| if b >= a { (j, b) } else { (i, a) })
-            .map(|(idx, _)| idx)
+        self.extreme_position(|a, b| b > a)
     }
 
-    /// 逐元素绝对差不超过 `eps`；形状不一致或元素数不符直接 `false`。
-    pub fn all_close(&self, rhs: &Self, eps: K) -> bool
+    /// 全局最小元素的逻辑序位置，并列时取最先出现者。
+    pub fn argmin(&self) -> Option<usize>
+    where
+        K: OrderedElement,
+    {
+        self.extreme_position(|a, b| b < a)
+    }
+
+    /// 共享极值位置实现，严格比较确保并列保留首个位置。
+    fn extreme_position(&self, replace: impl Fn(K, K) -> bool) -> Option<usize>
+    where
+        K: OrderedElement,
+    {
+        self.iter()
+            .enumerate()
+            .reduce(|(best_index, best), (index, value)| {
+                if replace(best, value) {
+                    (index, value)
+                } else {
+                    (best_index, best)
+                }
+            })
+            .map(|(index, _)| index)
+    }
+
+    /// 判断同形张量逐元素绝对差是否不超过 `eps`，不分配临时缓冲。
+    pub fn all_close<B2: Store<K>, R2: Rank>(&self, rhs: &Tensor<B2, R2, K>, eps: K) -> bool
     where
         K: OrderedElement + Sub<Output = K> + Abs,
     {
-        if self.dims() != rhs.dims() {
-            return false;
-        }
-        let a = self.to_vec();
-        let b = rhs.to_vec();
-        a.len() == b.len() && a.into_iter().zip(b).all(|(x, y)| (x - y).abs() <= eps)
+        self.dims() == rhs.dims()
+            && self
+                .iter()
+                .zip(rhs.iter())
+                .all(|(left, right)| (left - right).abs() <= eps)
     }
 }

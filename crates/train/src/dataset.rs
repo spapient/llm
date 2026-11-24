@@ -148,11 +148,10 @@ impl LoaderConfig {
         stride(self.rows, self.cols, SITE).map(|_| ())
     }
 
-    /// 设置互斥的采样策略。
-    #[must_use]
-    pub fn with_sampling(mut self, sampling: Sampling) -> Self {
-        self.sampling = sampling;
-        self
+    builders! {
+        /// 设置互斥的采样策略。
+        #[must_use]
+        with_sampling => sampling: Sampling,
     }
 }
 
