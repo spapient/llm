@@ -78,16 +78,16 @@ mod prop_config;
 #[path = "../tests/prop_discipline.rs"]
 mod prop_discipline;
 // L3 合成律的跨层对拍：只收「一层算不出来」的事实——`bound` 量真实内核上的界是否罩住实测误差，
-// `ruling` 量真实容器的逐位往返，`measure` 是两者共用的夹具（定理侧递推由 `weights::l3` 自测）。
+// `ruling` 量真实容器的逐位往返，`measure` 是两者共用的夹具（定理侧递推由 `weights::chain` 自测）。
 #[cfg(test)]
-#[path = "../tests/l3_bound.rs"]
-mod l3_bound;
+#[path = "../tests/chain_bound.rs"]
+mod chain_bound;
 #[cfg(test)]
-#[path = "../tests/l3_measure.rs"]
-mod l3_measure;
+#[path = "../tests/chain_measure.rs"]
+mod chain_measure;
 #[cfg(test)]
-#[path = "../tests/l3_ruling.rs"]
-mod l3_ruling;
+#[path = "../tests/chain_ruling.rs"]
+mod chain_ruling;
 
 pub use compare::{
     COSINE_GUARD, Scale, all_finite, approx_eq, assert_close, assert_rel_with, assert_within_rel,

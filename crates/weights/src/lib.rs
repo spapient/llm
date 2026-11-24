@@ -399,7 +399,9 @@ pub mod svd {
 pub mod settle;
 
 // —— L3 合成律：LLD §4.5 的逐段证书 → 网络级误差上界与适用域 ——
-pub mod l3;
+pub mod chain;
+/// 既有 `l3` 路径的兼容别名；实现与规范命名统一为 [`chain`]。
+pub use self::chain as l3;
 
 // —— 外部格式只读适配：torch `.bin`（ZIP_STORED + pickle，已平铺进单模块）、GGUF、受限 JSON ——
 pub mod gguf;
@@ -439,7 +441,7 @@ pub use crate::archive::VOCAB_NAME;
 pub use archive::{Archive, E8_RATIO, Metrics, Proof};
 pub use axes::{Axis, AxisSet};
 pub use dtype::DType as Wire;
-pub use l3::{Bracket, Chain, Ruling, Rung};
+pub use chain::{Bracket, Chain, Ruling, Rung};
 
 pub use ptq::*;
 pub use quant::{Quant, Quantized};

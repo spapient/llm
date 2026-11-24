@@ -47,18 +47,15 @@ where
     pub fn broadcast(self, dims: impl Into<R>) -> Option<Self> {
         let dims = dims.into();
         let lead = dims.as_slice().len().checked_sub(self.rank())?;
-        let steps = dims
+        let mut steps = dims.clone();
+        for (axis, (&want, step)) in dims
             .as_slice()
             .iter()
+            .zip(steps.as_slice_mut())
             .enumerate()
-            .map(|(axis, &want)| {
-                broadcast_step(
-                    (lead, self.dims(), self.strides()),
-                    (axis, want),
-                )
-            })
-            .collect::<Option<Vec<_>>>()?;
-        let steps = R::from_slice(&steps)?;
+        {
+            *step = broadcast_step((lead, self.dims(), self.strides()), (axis, want))?;
+        }
         Some(assemble(dims, steps, self.base, self.buf))
     }
 
@@ -77,14 +74,7 @@ where
 
     /// 沿一轴取 `[start, start + len)`，只前移起点并收窄轴长。
     pub fn narrow(mut self, axis: usize, start: usize, len: usize) -> Option<Self> {
-        let (base, dim) = layout::narrow(
-            self.dims(),
-            self.strides(),
-            self.base,
-            axis,
-            start,
-            len,
-        )?;
+        let (base, dim) = layout::narrow(self.dims(), self.strides(), self.base, axis, start, len)?;
         self.base = base;
         self.dims.as_slice_mut()[axis] = dim;
         Some(self)
@@ -101,12 +91,12 @@ where
         if ranges.len() > self.rank() {
             return None;
         }
-        let slices = ranges
-            .iter()
-            .cloned()
-            .map(Into::into)
-            .collect::<Vec<_>>();
-        layout::window(&self.dims, &self.steps, self.base, slices)
+        layout::window(
+            &self.dims,
+            &self.steps,
+            self.base,
+            ranges.iter().cloned().map(Into::into),
+        )
     }
 
     /// 沿 `axis` 等分为至多 `pieces` 个非空借用视图。
@@ -141,8 +131,13 @@ where
 
     /// 构造一个借用分段。
     fn segment(&self, axis: usize, start: usize, len: usize) -> Option<Tensor<&[K], R, K>> {
-        assemble(self.dims.clone(), self.steps.clone(), self.base, self.buf.slice())
-            .narrow(axis, start, len)
+        assemble(
+            self.dims.clone(),
+            self.steps.clone(),
+            self.base,
+            self.buf.slice(),
+        )
+        .narrow(axis, start, len)
     }
 
     /// 固定一轴的每个位置，返回全部秩减一借用视图。

@@ -235,12 +235,12 @@ where
     /// 判断同形张量逐元素绝对差是否不超过 `eps`，不分配临时缓冲。
     pub fn all_close<B2: Store<K>, R2: Rank>(&self, rhs: &Tensor<B2, R2, K>, eps: K) -> bool
     where
-        K: OrderedElement + Sub<Output = K> + Abs,
+        K: OrderedElement + Abs,
     {
         self.dims() == rhs.dims()
             && self
                 .iter()
                 .zip(rhs.iter())
-                .all(|(left, right)| (left - right).abs() <= eps)
+                .all(|(left, right)| left.abs_diff_le(right, eps))
     }
 }

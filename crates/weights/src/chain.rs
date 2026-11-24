@@ -279,5 +279,5 @@ fn check_value(label: &str, value: f64) -> Result<()> {
 }
 
 #[cfg(test)]
-#[path = "../tests/l3.rs"]
+#[path = "../tests/chain.rs"]
 mod tests;

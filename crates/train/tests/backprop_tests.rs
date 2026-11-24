@@ -112,18 +112,8 @@ fn check_binary_grad(
     b0: &[f32],
     loss: impl Fn(&[f32], &[f32]) -> f32,
 ) -> Result<()> {
-    let mut tape = Tape::new();
-    let a = tape.parameter();
-    let b = tape.parameter();
-    let y = tape.record(op, &[a, b]).expect("记录 y");
-    let out = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
-
-    let sizes = support::sizes_of(&tape, &[(a, N), (b, N), (y, N), (out, 1)]);
-
-    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
-    session.register_parameter(a, ParamRole::Trainable, a0.to_vec())?;
-    session.register_parameter(b, ParamRole::Trainable, b0.to_vec())?;
-    session.bufs().compute_step(op, &[a, b], y)?;
+    let (mut session, params, y, out) = parameter_session(op, &[a0, b0], N, None)?;
+    let (a, b) = (params[0], params[1]);
     sum_backward(&mut session, y, out)?;
 
     // `loss` 借给两个闭包（按引用捕获，避免一次 move 后第二次取不到）。

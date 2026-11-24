@@ -169,19 +169,8 @@ fn place<R: Rank>(out: &mut Layout<R>, axis: usize, slice: Slice) -> Option<()> 
         return None;
     }
     let len = slice.end.checked_sub(slice.start)?;
-    let (base, dim) = narrow(
-        out.dims(),
-        out.steps(),
-        out.base,
-        axis,
-        slice.start,
-        len,
-    )?;
-    let step = out
-        .steps
-        .as_slice()
-        .get(axis)?
-        .checked_mul(slice.step)?;
+    let (base, dim) = narrow(out.dims(), out.steps(), out.base, axis, slice.start, len)?;
+    let step = out.steps.as_slice().get(axis)?.checked_mul(slice.step)?;
     out.base = base;
     out.dims.as_slice_mut()[axis] = dim.div_ceil(slice.step);
     out.steps.as_slice_mut()[axis] = step;
@@ -232,12 +221,19 @@ pub(crate) fn diagonal<R: Rank>(
     let (keep, drop) = (a.min(b), a.max(b));
     let len = (*dims.get(keep)?).min(*dims.get(drop)?);
     let diagonal_step = steps.get(keep)?.checked_add(*steps.get(drop)?)?;
-    let out_dims = R::from_iter(dims.iter().copied().enumerate().filter_map(|(axis, dim)| {
-        (axis != drop).then_some(if axis == keep { len } else { dim })
-    }))?;
-    let out_steps = R::from_iter(steps.iter().copied().enumerate().filter_map(|(axis, step)| {
-        (axis != drop).then_some(if axis == keep { diagonal_step } else { step })
-    }))?;
+    let out_dims =
+        R::from_iter(dims.iter().copied().enumerate().filter_map(|(axis, dim)| {
+            (axis != drop).then_some(if axis == keep { len } else { dim })
+        }))?;
+    let out_steps = R::from_iter(
+        steps
+            .iter()
+            .copied()
+            .enumerate()
+            .filter_map(|(axis, step)| {
+                (axis != drop).then_some(if axis == keep { diagonal_step } else { step })
+            }),
+    )?;
     Some(Layout {
         base,
         dims: out_dims,

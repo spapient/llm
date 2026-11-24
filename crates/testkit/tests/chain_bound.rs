@@ -3,9 +3,9 @@
 //! 两条用例问的是同一件事的两个尺度：一段权重上的界，与整批（多行输入）的界。后者证明的是
 //! `√rows` 而不是 `rows`——逐行上界相同、行间独立，界按行数的平方根放大。
 
-use weights::l3::{Chain, Rung};
+use weights::chain::{Chain, Rung};
 
-use super::l3_measure::{distance, forward, frobenius, quantized, rung, scaled, two_layer};
+use super::chain_measure::{distance, forward, frobenius, quantized, rung, scaled, two_layer};
 
 #[test]
 fn a_quantized_layer_stays_inside_the_l3_bound() {

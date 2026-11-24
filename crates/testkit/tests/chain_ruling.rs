@@ -2,12 +2,12 @@
 //!
 //! `ε = 0` 只是定理侧的一项；"产物确实还原"只能由写盘 → 解析 → 逐段解码之后的字节比较给出。
 //! 往返走 `weights::Writer`/`Archive` 本体，比的是落盘字节读回来的结果，不是一份"应该相等"的
-//! 预期；反方向（同样 `ε = 0` 但往返不逐位 → `Unverified`）属纯代数，由 `weights::l3` 的单测守。
+//! 预期；反方向（同样 `ε = 0` 但往返不逐位 → `Unverified`）属纯代数，由 `weights::chain` 的单测守。
 
-use weights::l3::{Chain, Ruling};
+use weights::chain::{Chain, Ruling};
 use weights::{Archive, Segment, Stored, Wire, Writer};
 
-use super::l3_measure::{frobenius, rung, scaled};
+use super::chain_measure::{frobenius, rung, scaled};
 
 #[test]
 fn a_bitwise_artifact_round_trip_completes_the_lossless_ruling() {

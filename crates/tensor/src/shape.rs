@@ -244,7 +244,11 @@ pub struct Slice {
 impl Slice {
     /// 连续段，等价于 `start..end`。
     pub const fn new(start: usize, end: usize) -> Self {
-        Self { start, end, step: 1 }
+        Self {
+            start,
+            end,
+            step: 1,
+        }
     }
 
     /// 每隔 `step` 个位置读取一次。

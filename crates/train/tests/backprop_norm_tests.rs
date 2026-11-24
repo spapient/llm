@@ -82,22 +82,9 @@ fn check_attention_grad(
     v0: Vec<f32>,
     objective: impl Fn(&[f32], &[f32], &[f32]) -> f32,
 ) -> Result<()> {
-    let mut tape = Tape::new();
-    let (q, k, v) = (tape.parameter(), tape.parameter(), tape.parameter());
-    let y = tape.record(op, &[q, k, v]).expect("记录 y");
-    let loss = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
-    let sizes = support::sizes_of(
-        &tape,
-        &[
-            (q, lengths[0]),
-            (k, lengths[1]),
-            (v, lengths[2]),
-            (y, lengths[3]),
-            (loss, 1),
-        ],
-    );
-    let mut session = attention_session(tape, sizes, [q, k, v], [&q0, &k0, &v0])?;
-    session.bufs().compute_step(op, &[q, k, v], y)?;
+    let (mut session, params, y, loss) =
+        parameter_session(op, &[&q0, &k0, &v0], lengths[3], None)?;
+    let (q, k, v) = (params[0], params[1], params[2]);
     sum_backward(&mut session, y, loss)?;
     let f = &objective;
     check_grad(

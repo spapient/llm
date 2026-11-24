@@ -1,10 +1,10 @@
 //! 真实权重 → 一段 L3 事实：两侧范数取 Frobenius 上界，`ε` 量在**将要使用的那份产物**上。
 //!
 //! 界偏松是取舍不是判据放宽：`‖W‖₂ ≤ ‖W‖_F` 恒成立、无需先做 SVD，而 `ε` 由量化后再解回的
-//! 结果现算。`L_i` / `b_i` 不给默认值——`weights::l3` 刻意不提供任何"内置激活常量"，所以
+//! 结果现算。`L_i` / `b_i` 不给默认值——`weights::chain` 刻意不提供任何"内置激活常量"，所以
 //! [`rung`] 要调用方显式传。
 
-use weights::l3::Rung;
+use weights::chain::Rung;
 use weights::{I4, dequantize, quantize};
 
 /// 量化分组：32 元素一组、一个标度，与 `nn`/`serve` 的 4bit 权重口径一致。
