@@ -258,6 +258,13 @@ pub(crate) fn elements<'a>(
 
 /// 只接受普通字符串字面量：转义会让"注解里的名字"与"实际名字"不再逐字相同。
 pub(crate) fn string(token: &Token) -> Result<String, Error> {
+    // `macro_rules!` 的 `$x:literal` 元变量会以「不可见分组」包一层字面量送达 proc-macro；
+    // 展平这层分组，注解的字符串字段便能由宏参数化（如按精度档传 `dtype`），不必逐档硬编。
+    if let Token::Group(Bracket::Invisible, items) = token {
+        if let [single] = items.as_slice() {
+            return string(single);
+        }
+    }
     let Token::Literal(text) = token else {
         return Err(Error::at(
             0,

@@ -141,20 +141,34 @@ const CUDA_INTR: Intr = Intr { exp: "expf" };
 
 /// 元素体内核语句：先算公式需要的局部量，再统一乘上游梯度 `dout[i]`。
 fn body_lines(deriv: Deriv, intr: &Intr) -> Vec<String> {
-    let exp = intr.exp;
     match deriv {
-        Deriv::Relu => vec!["dx[i] = dout[i] * (x[i] > 0.0f ? 1.0f : 0.0f);".into()],
-        Deriv::LeakyRelu => vec![format!(
+        Deriv::Pointwise(p) => pointwise_lines(p),
+        Deriv::Active(a) => active_lines(a, intr),
+    }
+}
+
+/// 点态导数行：表达式拼进 `dx[i] = dout[i] * (<expr>);`。
+fn pointwise_lines(p: Pointwise) -> Vec<String> {
+    match p {
+        Pointwise::Relu => vec!["dx[i] = dout[i] * (x[i] > 0.0f ? 1.0f : 0.0f);".into()],
+        Pointwise::LeakyRelu => vec![format!(
             "dx[i] = dout[i] * (x[i] >= 0.0f ? 1.0f : {LEAKY_SLOPE}f);"
         )],
-        Deriv::SigmoidOut => vec!["dx[i] = dout[i] * (y[i] * (1.0f - y[i]));".into()],
-        Deriv::TanhOut => vec!["dx[i] = dout[i] * (1.0f - y[i] * y[i]);".into()],
-        Deriv::ExpOut => vec!["dx[i] = dout[i] * y[i];".into()],
-        Deriv::Silu => vec![
+        Pointwise::SigmoidOut => vec!["dx[i] = dout[i] * (y[i] * (1.0f - y[i]));".into()],
+        Pointwise::TanhOut => vec!["dx[i] = dout[i] * (1.0f - y[i] * y[i]);".into()],
+        Pointwise::ExpOut => vec!["dx[i] = dout[i] * y[i];".into()],
+    }
+}
+
+/// 需现算局部量的激活体内核；`exp` 取方言 intrinsic（Metal `exp` / CUDA `expf`）。
+fn active_lines(a: Active, intr: &Intr) -> Vec<String> {
+    let exp = intr.exp;
+    match a {
+        Active::Silu => vec![
             format!("float s = 1.0f / (1.0f + {exp}(-x[i]));"),
             "dx[i] = dout[i] * (s + x[i] * s * (1.0f - s));".into(),
         ],
-        Deriv::Gelu => {
+        Active::Gelu => {
             // Φ(x) 里的 erf 走 A&S 7.1.26 多项式（|误差| < 1.5e-7），与 `nn::gelu_f32::erf` 同式。
             vec![
                 "float az = abs(x[i] * 0.70710678f);".into(),
