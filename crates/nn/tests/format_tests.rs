@@ -1,5 +1,17 @@
 use super::*;
 
+const FORMATS: [(WeightFormat, DType); 9] = [
+    (WeightFormat::F32, DType::F32),
+    (WeightFormat::F16, DType::F16),
+    (WeightFormat::BF16, DType::BF16),
+    (WeightFormat::I8, DType::I8),
+    (WeightFormat::PACKED2, DType::U2),
+    (WeightFormat::PACKED4, DType::U4),
+    (WeightFormat::int2(32), DType::U2),
+    (WeightFormat::int4(32), DType::U4),
+    (WeightFormat::int8(32), DType::I8),
+];
+
 #[test]
 fn every_element_type_maps_to_a_format_and_back() {
     for dtype in DType::ALL.iter().copied() {
@@ -15,18 +27,7 @@ fn every_element_type_maps_to_a_format_and_back() {
 
 #[test]
 fn every_weight_format_has_an_explicit_dtype() {
-    let formats = [
-        (WeightFormat::F32, DType::F32),
-        (WeightFormat::F16, DType::F16),
-        (WeightFormat::BF16, DType::BF16),
-        (WeightFormat::I8, DType::I8),
-        (WeightFormat::PACKED2, DType::U2),
-        (WeightFormat::PACKED4, DType::U4),
-        (WeightFormat::int2(32), DType::U2),
-        (WeightFormat::int4(32), DType::U4),
-        (WeightFormat::int8(32), DType::I8),
-    ];
-    for (format, dtype) in formats {
+    for (format, dtype) in FORMATS {
         assert_eq!(format.dtype(), dtype, "{format} 的存储类型必须显式声明");
     }
 }
@@ -194,17 +195,7 @@ fn weight_format_keeps_the_sixteen_byte_layout() {
 
 #[test]
 fn toml_wire_formats_are_stable_and_round_trip() {
-    for format in [
-        WeightFormat::F32,
-        WeightFormat::F16,
-        WeightFormat::BF16,
-        WeightFormat::I8,
-        WeightFormat::PACKED2,
-        WeightFormat::PACKED4,
-        WeightFormat::INT2,
-        WeightFormat::INT4,
-        WeightFormat::INT8,
-    ] {
+    for (format, _) in FORMATS {
         let encoded = toml::to_string(&format).expect("权重编码可序列化");
         let decoded: WeightFormat = toml::from_str(&encoded).expect("权重编码可反序列化");
         assert_eq!(decoded, format, "配置往返：{encoded}");

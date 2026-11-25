@@ -59,6 +59,17 @@ fn a_graph_keeps_insertion_order() {
 }
 
 #[test]
+fn cloned_graph_writes_are_independent() {
+    let mut original = graph(&["a"]);
+    let mut cloned = original.clone();
+    cloned.push(Node::new("b", Launch::new([1, 1, 1], [1, 1, 1])));
+    assert_eq!(original.len(), 1);
+    assert_eq!(cloned.len(), 2);
+    original.nodes_mut()[0].scalars_mut().set_rope_position(9);
+    assert!(cloned.nodes()[0].scalars().rope_position().is_none());
+}
+
+#[test]
 fn an_executor_only_needs_submit() {
     let mut graph = Graph::new();
     graph.push(Node::new("gemv_i4", Launch::new([8, 1, 1], [64, 1, 1])));

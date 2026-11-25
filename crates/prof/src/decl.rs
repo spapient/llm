@@ -10,6 +10,7 @@ use crate::sig::CType;
 use crate::tpl::{Arg, Template};
 use core::fmt;
 use diagnostic::{Code, Error};
+use std::sync::Arc;
 
 /// 变体数上限（cutile README §4.1）。
 pub const MAX_VARIANTS: usize = 8;
@@ -422,10 +423,10 @@ fn record_seam(seams: &mut Vec<Seam>, consumer: &OpDecl, pair: (&str, &str), cty
     });
 }
 
-/// 轴展开出的一组具体值。
+/// 轴展开出的一组具体值；轴名共享，克隆组合不再重复分配字符串。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TileCombo {
-    values: Vec<(String, u32)>,
+    values: Vec<(Arc<str>, u32)>,
 }
 
 impl TileCombo {
@@ -433,12 +434,12 @@ impl TileCombo {
     pub fn get(&self, name: &str) -> Option<u32> {
         self.values
             .iter()
-            .find(|(axis, _)| axis == name)
+            .find(|(axis, _)| axis.as_ref() == name)
             .map(|(_, value)| *value)
     }
 
     /// 全部取值。
-    pub fn values(&self) -> &[(String, u32)] {
+    pub fn values(&self) -> &[(Arc<str>, u32)] {
         &self.values
     }
 
