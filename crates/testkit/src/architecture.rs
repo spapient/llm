@@ -367,94 +367,98 @@ fn load_workspace() -> (BTreeSet<String>, BTreeSet<Edge>) {
     (members, edges)
 }
 
-/// 层内顺序来自 DOC 表；同层只允许依赖排在自己前面的成员。
-fn strip(members: &BTreeSet<String>, edges: &BTreeSet<Edge>) -> BTreeSet<Edge> {
-    edges
-        .iter()
-        .filter(|edge| members.contains(&edge.from) && members.contains(&edge.to))
-        .cloned()
-        .collect()
-}
-
 #[test]
-fn every_workspace_member_is_in_the_table() {
+fn the_layer_table_lists_exactly_the_workspace_members() {
     let (members, _) = workspace();
     let contract = contract();
-    let missing: Vec<&String> = members
-        .iter()
-        .filter(|name| !contract.layers.contains_key(*name) && !contract.tools.contains(*name))
-        .collect();
-    assert!(
-        missing.is_empty(),
-        "有工作区成员不在 docs/ARCHITECTURE.md 的层表里：{missing:?}"
-    );
-}
-
-#[test]
-fn every_member_in_the_table_is_a_workspace_member() {
-    let (members, _) = workspace();
-    let stale: Vec<&String> = contract()
+    let listed: BTreeSet<String> = contract
         .layers
         .keys()
-        .filter(|name| !members.contains(*name))
+        .chain(contract.tools.iter())
+        .cloned()
         .collect();
-    assert!(stale.is_empty(), "层表里有不是工作区成员的条目：{stale:?}");
+    assert_eq!(
+        members,
+        &listed,
+        "层表与 Cargo.toml 的成员不一致：多 {:?}，缺 {:?}",
+        members.difference(&listed).collect::<Vec<_>>(),
+        listed.difference(members).collect::<Vec<_>>()
+    );
+    let overlap: Vec<&String> = contract
+        .tools
+        .iter()
+        .filter(|tool| contract.layers.contains_key(*tool))
+        .collect();
+    assert!(
+        overlap.is_empty(),
+        "工具成员不能同时出现在运行时层里：{overlap:?}"
+    );
 }
 
 #[test]
-fn documented_edges_and_counts_match_cargo_metadata() {
-    let (declared, total, dev) = declared_edges();
+fn the_declared_edges_are_exactly_the_workspace_edges() {
     let (_, actual) = workspace();
-    assert_eq!(
-        declared, *actual,
-        "docs/ARCHITECTURE.md 的允许边与 cargo metadata 不一致"
+    let (declared, total, dev) = declared_edges();
+    let missing: Vec<&Edge> = actual.difference(&declared).collect();
+    let extra: Vec<&Edge> = declared.difference(actual).collect();
+    assert!(
+        missing.is_empty() && extra.is_empty(),
+        "文档与 cargo metadata 的边集不一致：文档缺 {missing:?}，文档多 {extra:?}"
     );
-    assert_eq!(total, actual.len(), "文档的边总数");
     assert_eq!(
-        dev,
-        actual.iter().filter(|edge| edge.dev).count(),
-        "文档的 +dev 边数"
+        actual.len(),
+        total,
+        "文档声称共 {total} 条边，实际 {} 条",
+        actual.len()
+    );
+    let actual_dev = actual.iter().filter(|edge| edge.dev).count();
+    assert_eq!(
+        actual_dev, dev,
+        "文档声称 {dev} 条 +dev 边，实际 {actual_dev} 条"
     );
 }
 
 #[test]
-fn runtime_edges_only_point_to_the_same_or_a_lower_layer() {
+fn every_edge_points_to_a_lower_layer_or_to_the_left() {
     let (_, edges) = workspace();
     let contract = contract();
-    for edge in edges.iter().filter(|edge| !edge.dev) {
-        let from = contract.layers.get(&edge.from);
-        let to = contract.layers.get(&edge.to);
-        let (Some(from), Some(to)) = (from, to) else {
+    for edge in edges {
+        // 工具成员没有运行时层级；`+dev` 边只服务测试，不进产品二进制。
+        if edge.dev || contract.tools.contains(&edge.from) || contract.tools.contains(&edge.to) {
             continue;
-        };
+        }
+        let from = contract
+            .layers
+            .get(&edge.from)
+            .unwrap_or_else(|| panic!("层表缺成员 {}", edge.from));
+        let to = contract
+            .layers
+            .get(&edge.to)
+            .unwrap_or_else(|| panic!("层表缺成员 {}", edge.to));
         assert!(
-            to.0 < from.0 || (to.0 == from.0 && to.1 <= from.1),
-            "非法边：{} (L{}) → {} (L{})",
+            to.0 < from.0 || (to.0 == from.0 && to.1 < from.1),
+            "{} → {} 违反依赖方向：只能指向更低的层或同层更靠左的成员",
             edge.from,
-            from.0,
-            edge.to,
-            to.0
+            edge.to
         );
     }
 }
 
 #[test]
-fn a_cross_layer_dev_dependency_never_hides_a_layer_violation() {
+fn every_member_is_consumed_or_consumes_something() {
     let (members, edges) = workspace();
     let contract = contract();
-    let stripped = strip(members, edges);
-    for edge in stripped {
-        let Some(from) = contract.layers.get(&edge.from) else {
+    let used: BTreeSet<&String> = edges
+        .iter()
+        .flat_map(|edge| [&edge.from, &edge.to])
+        .collect();
+    for member in members {
+        if contract.tools.contains(member) {
             continue;
-        };
-        let Some(to) = contract.layers.get(&edge.to) else {
-            continue;
-        };
+        }
         assert!(
-            to.0 < from.0 || (to.0 == from.0 && to.1 <= from.1),
-            "层间禁止依赖（含 dev）：{} → {}",
-            edge.from,
-            edge.to
+            used.contains(member),
+            "{member} 没有任何依赖边：它只是一个目录，不是模块（ARCHITECTURE §五）"
         );
     }
 }
