@@ -676,23 +676,31 @@ fn recovered(block: &str, entries: &[&Entry]) -> Vec<(String, Shape)> {
         .collect()
 }
 
-/// 一个条目能否被视为一次投影：分支只决定格式与宽度，构造和诊断共用同一出口。
+/// 一个条目能否被视为一次投影：量化分派与稠密几何识别分开，错误上下文由调用点附加。
 fn projection(header: &Header, entry: &Entry) -> Result<Option<Linear>> {
     let name = layer_name(entry.name());
-    let (format, in_features, out_features) =
-        if let Some(quantized) = header.quantization(entry.name())? {
-            let format = quantized_format(quantized.group(), quantized.bits())?;
-            (format, quantized.in_features(), quantized.out_features())
-        } else {
-            let [out_features, in_features] = entry.shape().dims() else {
-                return Ok(None);
-            };
-            let Some(format) = WeightFormat::of_dtype(entry.dtype()) else {
-                return Ok(None);
-            };
-            (format, *in_features, *out_features)
-        };
-    Linear::with_format(name, format, in_features, out_features).map(Some)
+    if let Some(quantized) = header.quantization(entry.name())? {
+        let format = quantized_format(quantized.group(), quantized.bits())?;
+        return Linear::with_format(
+            name,
+            format,
+            quantized.in_features(),
+            quantized.out_features(),
+        )
+        .map(Some);
+    }
+    dense_projection(name, entry)
+}
+
+/// 非量化投影只接受二维矩阵与已注册的稠密元素格式。
+fn dense_projection(name: &str, entry: &Entry) -> Result<Option<Linear>> {
+    let [out_features, in_features] = entry.shape().dims() else {
+        return Ok(None);
+    };
+    let Some(format) = WeightFormat::of_dtype(entry.dtype()) else {
+        return Ok(None);
+    };
+    Linear::with_format(name, format, *in_features, *out_features).map(Some)
 }
 
 /// 量化位宽到编码的闭集映射；未知位宽绝不静默落入 int4。
