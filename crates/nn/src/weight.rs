@@ -40,8 +40,8 @@ pub enum WeightFormat {
     },
 }
 
-/// 元素类型 ↔ 权重编码的唯一事实源：`of_dtype` 与 `dtype()` 是它的两个方向。
-const FORMATS: &[(DType, WeightFormat)] = &[
+/// 无分组格式的规范元素类型映射；带分组格式不能由元素类型唯一反推。
+const PLAIN_FORMATS: &[(DType, WeightFormat)] = &[
     (DType::F32, WeightFormat::F32),
     (DType::F16, WeightFormat::F16),
     (DType::BF16, WeightFormat::Bf16),
@@ -60,10 +60,10 @@ impl WeightFormat {
     /// 对称 int8 的默认格式：32 元素分组，即 `Linear::I8` 的输入格式。
     pub const INT8: Self = Self::Int8 { group: 32 };
 
-    /// 由权重的元素类型推出格式：查 `FORMATS` 的那一个方向。
+    /// 由权重的元素类型查出规范的无分组格式。
     #[must_use]
     pub fn of_dtype(dtype: DType) -> Option<Self> {
-        FORMATS
+        PLAIN_FORMATS
             .iter()
             .find(|(element, _)| *element == dtype)
             .map(|(_, format)| *format)
@@ -87,15 +87,20 @@ impl WeightFormat {
     /// 这种编码在内存里的元素类型：主匹配穷尽所有格式，不允许静默回落。
     pub const fn dtype(self) -> DType {
         match self {
-            Self::Int2 { .. } => DType::U2,
-            Self::Int4 { .. } => DType::U4,
-            Self::Int8 { .. } => DType::I8,
+            Self::F32 | Self::F16 | Self::Bf16 => self.float_dtype(),
+            Self::I8 | Self::Int8 { .. } => DType::I8,
+            Self::Packed2 | Self::Int2 { .. } => DType::U2,
+            Self::Packed4 | Self::Int4 { .. } => DType::U4,
+        }
+    }
+
+    /// 浮点格式的独立映射；其它格式由总入口直接映射，不会递归回来。
+    const fn float_dtype(self) -> DType {
+        match self {
             Self::F32 => DType::F32,
             Self::F16 => DType::F16,
             Self::Bf16 => DType::BF16,
-            Self::I8 => DType::I8,
-            Self::Packed2 => DType::U2,
-            Self::Packed4 => DType::U4,
+            other => other.dtype(),
         }
     }
 

@@ -119,18 +119,45 @@ pub enum Values {
     U8x4(Vector<u8, 4>),
 }
 
-impl Values {
-    /// 标量元素个数；向量档返回底层标量数。
-    pub fn len(&self) -> usize {
-        match self {
-            Self::F32(values) => values.len(),
-            Self::U8(values) => values.len(),
-            Self::F16(values) => values.len(),
-            Self::Bf16(values) => values.len(),
-            other => vector_len(other),
-        }
-    }
+/// 变体元数据表：长度、车道数、诊断名与元素档只在一处登记，新增变体缺表项即编译失败。
+macro_rules! values_by_variant {
+    ($($variant:ident => ($describe:literal, $dtype:expr, $lanes:expr)),+ $(,)?) => {
+        impl Values {
+            /// 标量元素个数；向量档返回底层标量数。
+            pub fn len(&self) -> usize {
+                match self { $(Self::$variant(values) => values.len()),+ }
+            }
 
+            /// 每组的标量车道数；普通标量档为 1。
+            pub fn lanes(&self) -> usize {
+                match self { $(Self::$variant(_) => $lanes),+ }
+            }
+
+            /// 元素类型的唯一诊断名。
+            pub fn describe(&self) -> &'static str {
+                match self { $(Self::$variant(_) => $describe),+ }
+            }
+
+            /// 元素档，不包含车道数；车道由具体 `Vector<T, N>` 类型与枚举身份共同表达。
+            pub fn dtype(&self) -> DType {
+                match self { $(Self::$variant(_) => $dtype),+ }
+            }
+        }
+    };
+}
+
+values_by_variant! {
+    F32 => ("float", DType::F32, 1),
+    U8 => ("unsigned char", DType::U8, 1),
+    F16 => ("half", DType::F16, 1),
+    Bf16 => ("bf16", DType::BF16, 1),
+    F32x4 => ("float4", DType::F32, 4),
+    F16x4 => ("half4", DType::F16, 4),
+    Bf16x4 => ("bf16x4", DType::BF16, 4),
+    U8x4 => ("uchar4", DType::U8, 4),
+}
+
+impl Values {
     /// 是否为空。
     pub fn is_empty(&self) -> bool {
         self.len() == 0
@@ -141,48 +168,14 @@ impl Values {
         self.dtype().bytes_for(self.len() as u64)
     }
 
-    /// 每组的标量车道数；普通标量档为 1。
-    pub fn lanes(&self) -> usize {
-        if matches!(
-            self,
-            Self::F32x4(_) | Self::F16x4(_) | Self::Bf16x4(_) | Self::U8x4(_)
-        ) {
-            4
-        } else {
-            1
-        }
-    }
-
     /// C 数组的存储项数；向量档按组计，对拍长度仍由 [`Self::len`] 给出。
     pub fn storage_len(&self) -> usize {
         self.len() / self.lanes()
     }
 
-    /// 元素类型的唯一诊断名。
-    pub fn describe(&self) -> &'static str {
-        match self {
-            Self::F32(_) => "float",
-            Self::U8(_) => "unsigned char",
-            Self::F16(_) => "half",
-            Self::Bf16(_) => "bf16",
-            other => vector_describe(other),
-        }
-    }
-
     /// 类型与车道数都相同才算同档；判别看完整枚举身份。
     pub fn same_kind(&self, other: &Self) -> bool {
         std::mem::discriminant(self) == std::mem::discriminant(other)
-    }
-
-    /// 元素档，不包含车道数；车道由具体 `Vector<T, N>` 类型与枚举身份共同表达。
-    pub fn dtype(&self) -> DType {
-        match self {
-            Self::F32(_) => DType::F32,
-            Self::U8(_) => DType::U8,
-            Self::F16(_) => DType::F16,
-            Self::Bf16(_) => DType::BF16,
-            other => vector_dtype(other),
-        }
     }
 
     /// 取 f32 标量切片；四车道 f32 直接零拷贝返回，其余档显式拒绝。
@@ -195,36 +188,6 @@ impl Values {
                 format!("对拍通道仅支持 f32，当前档 `{}`", other.describe()),
             )),
         }
-    }
-}
-
-fn vector_len(values: &Values) -> usize {
-    match values {
-        Values::F32x4(values) => values.len(),
-        Values::F16x4(values) => values.len(),
-        Values::Bf16x4(values) => values.len(),
-        Values::U8x4(values) => values.len(),
-        _ => 0,
-    }
-}
-
-fn vector_describe(values: &Values) -> &'static str {
-    match values {
-        Values::F32x4(_) => "float4",
-        Values::F16x4(_) => "half4",
-        Values::Bf16x4(_) => "bf16x4",
-        Values::U8x4(_) => "uchar4",
-        _ => "scalar",
-    }
-}
-
-fn vector_dtype(values: &Values) -> DType {
-    match values {
-        Values::F32x4(_) => DType::F32,
-        Values::F16x4(_) => DType::F16,
-        Values::Bf16x4(_) => DType::BF16,
-        Values::U8x4(_) => DType::U8,
-        _ => DType::F32,
     }
 }
 
@@ -258,6 +221,20 @@ pub struct Sample {
     pub scalars: Vec<(&'static str, i64)>,
     /// 具名缓冲（输出缓冲也在其中）。
     pub bufs: Vec<Buf>,
+}
+
+/// 生成一个类型化缓冲读取器：缺失与错档诊断保持同一措辞。
+macro_rules! sample_getter {
+    ($method:ident, $variant:ident, $ty:ty, $label:literal) => {
+        #[doc = concat!("取 `", $label, "` 缓冲。\n\n# Errors\n\n缓冲不存在或不是 `", $label, "` 时返回带名字的说明。")]
+        pub fn $method(&self, name: &str) -> diagnostic::Result<&[$ty]> {
+            match self.buf(name).map(|buf| &buf.values) {
+                Some(Values::$variant(values)) => Ok(values),
+                Some(_) => Err(Error::new(Code::Invalid, format!("缓冲 `{name}` 不是 {}", $label))),
+                None => Err(Error::new(Code::Missing, format!("样本里没有缓冲 `{name}`"))),
+            }
+        }
+    };
 }
 
 impl Sample {
@@ -313,56 +290,9 @@ impl Sample {
         }
     }
 
-    /// 取 f16 缓冲。
-    ///
-    /// # Errors
-    ///
-    /// 缓冲不存在或不是 f16 时返回带名字的说明。
-    pub fn f16(&self, name: &str) -> diagnostic::Result<&[half::f16]> {
-        match self.buf(name).map(|buf| &buf.values) {
-            Some(Values::F16(values)) => Ok(values),
-            Some(_) => Err(Error::new(Code::Invalid, format!("缓冲 `{name}` 不是 f16"))),
-            None => Err(Error::new(
-                Code::Missing,
-                format!("样本里没有缓冲 `{name}`"),
-            )),
-        }
-    }
-
-    /// 取 bf16 缓冲。
-    ///
-    /// # Errors
-    ///
-    /// 缓冲不存在或不是 bf16 时返回带名字的说明。
-    pub fn bf16(&self, name: &str) -> diagnostic::Result<&[half::bf16]> {
-        match self.buf(name).map(|buf| &buf.values) {
-            Some(Values::Bf16(values)) => Ok(values),
-            Some(_) => Err(Error::new(
-                Code::Invalid,
-                format!("缓冲 `{name}` 不是 bf16"),
-            )),
-            None => Err(Error::new(
-                Code::Missing,
-                format!("样本里没有缓冲 `{name}`"),
-            )),
-        }
-    }
-
-    /// 取 u8 缓冲。
-    ///
-    /// # Errors
-    ///
-    /// 缓冲不存在或不是 u8 时返回带名字的说明。
-    pub fn u8(&self, name: &str) -> diagnostic::Result<&[u8]> {
-        match self.buf(name).map(|buf| &buf.values) {
-            Some(Values::U8(values)) => Ok(values),
-            Some(_) => Err(Error::new(Code::Invalid, format!("缓冲 `{name}` 不是 u8"))),
-            None => Err(Error::new(
-                Code::Missing,
-                format!("样本里没有缓冲 `{name}`"),
-            )),
-        }
-    }
+    sample_getter!(f16, F16, half::f16, "f16");
+    sample_getter!(bf16, Bf16, half::bf16, "bf16");
+    sample_getter!(u8, U8, u8, "u8");
 
     /// 把一个缓冲换成调用方的取值。
     ///

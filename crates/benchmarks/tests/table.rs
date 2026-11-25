@@ -66,8 +66,71 @@ pub(crate) const SCENARIOS: &[Scenario] = &[
     row!(Scenario, "gemm_quant", "tiled_i8_256x256_k8" => "gemm_i8/prefill_256x256_k8", backend: "cpu-reference", op: "gemm_i8", shape: &[256, 256], dtype: "u8", batch: 1, bounds: (256, 256)),
     row!(Scenario, "matmul_f32_256x256_k4096", "tiled" => "matmul_f32/prefill_256x256_k4096_tiled", backend: "cpu-reference", op: "matmul_f32", shape: &[256, 256, 4096], dtype: "f32", batch: 1, bounds: (256, 256)),
     row!(Scenario, "matmul_i8_256x256_k4096", "tiled" => "matmul_i8/prefill_256x256_k4096_tiled", backend: "cpu-reference", op: "matmul_i8", shape: &[256, 256, 4096], dtype: "i8", batch: 1, bounds: (256, 256)),
-    row!(Scenario, "attention_prefill_f32", "tiled_1024x64" => "attention_f32/prefill_1024x64_tiled", backend: "cpu-reference", op: "attention_f32", shape: &[1024, 64], dtype: "f32", batch: 1, bounds: (1024, 64)),
+    row!(Scenario, "attention_prefill_f32", "online_1024x64" => "attention_f32/prefill_1024x64_online", backend: "cpu-reference", op: "flash_attention_f32", shape: &[1024, 64], dtype: "f32", batch: 1, bounds: (1024, 64)),
     row!(Scenario, "silu_f32", "decode_1x4096", backend: "cpu-reference", op: "silu_f32", shape: &[4096], dtype: "f32", batch: 1, bounds: (4096, 1)),
+];
+
+/// 不属于基线、负载或模型台账的测量身份；四表合成完整注册集，每个身份只有一处真相。
+///
+/// 嵌套用例（如 `f32/1024x1024x1024`）保留 Criterion 的目录层级；峰值探针的原始分组
+/// 也保留斜杠，由登记检查统一调用 `on_disk`，不与 roofline 或基线判定混用。
+pub(crate) const MEASUREMENT_GROUPS: &[(&str, &[&str])] = &[
+    ("attention_dense_f32", &["naive_1024x64"]),
+    ("cutile/negotiate", &["gemv_i4_on_cpu"]),
+    ("decode_attention_f32", &["naive_hist512x64", "flash_hist512x64"]),
+    ("flops_peak", &["f32_chain_4", "f32_chain_6", "f32_chain_8"]),
+    ("fma_peak/1", &["port"]),
+    ("fma_peak/16", &["port"]),
+    ("fma_peak/16_block", &["port"]),
+    ("fma_peak/18", &["port"]),
+    ("fma_peak/18_block", &["port"]),
+    ("fma_peak/1_block", &["port"]),
+    ("gemm_f32", &["scalar_256x256_k8"]),
+    ("gemm_quant", &["scalar_i2_256x256_k8", "scalar_i4_256x256_k8", "scalar_i8_256x256_k8"]),
+    ("gemm_threads", &[
+        "f32/1024x1024x1024", "f32/256x256x4096", "f32/512x512x512",
+        "f32_fast_single/1024x1024x1024", "f32_fast_single/256x256x4096", "f32_fast_single/512x512x512",
+        "f32_fast_threads/1024x1024x1024", "f32_fast_threads/256x256x4096", "f32_fast_threads/512x512x512",
+        "i8/1024x1024x1024", "i8/256x256x4096", "i8/512x512x512",
+        "i8_fast_single/1024x1024x1024", "i8_fast_single/256x256x4096", "i8_fast_single/512x512x512",
+        "i8_fast_threads/1024x1024x1024", "i8_fast_threads/256x256x4096", "i8_fast_threads/512x512x512",
+        "i8_threads/1024x1024x1024", "i8_threads/256x256x4096", "i8_threads/512x512x512",
+    ]),
+    ("gemv_i4", &["scalar_decode_1x4096x4096", "vector_decode_1x4096x4096"]),
+    ("i8_peak/1", &["port"]),
+    ("i8_peak/16", &["port"]),
+    ("i8_peak/16_block", &["port"]),
+    ("i8_peak/18", &["port"]),
+    ("i8_peak/18_block", &["port"]),
+    ("i8_peak/1_block", &["port"]),
+    ("machine_peak", &["f32_18"]),
+    ("matmul_f32_256x256_k4096", &["scalar"]),
+    ("matmul_i8_256x256_k4096", &["scalar"]),
+    ("matmul_tn_f32_256x256_k4096", &["packed", "row_by_row_gemv", "tiled"]),
+    ("mem_stream", &["l1_read_16kib", "l1_write_16kib", "l2_read_1mib", "l2_write_1mib", "dram_read_64mib", "dram_write_64mib"]),
+    ("parse/gguf", &["q4_k_floats", "q6_k_floats"]),
+    ("parse/json", &["header"]),
+    ("parse/safetensors", &["archive"]),
+    ("sme_peak/1", &["port"]),
+    ("sme_peak/16", &["port"]),
+    ("sme_peak/16_mix", &["port"]),
+    ("sme_peak/18", &["port"]),
+    ("sme_peak/18_mix", &["port"]),
+    ("sme_peak/1_mix", &["port"]),
+    ("span_parse", &["at_most", "exact", "open_range", "range"]),
+    ("tokenizer/count", &["bytes_4kib"]),
+    ("tokenizer/decode", &["bpe_synth_4kib", "bytes_4kib"]),
+    ("tokenizer/encode", &["bpe_synth_4kib", "bytes_4kib"]),
+    ("tokenizer/encode_detailed", &["bytes_4kib"]),
+    ("tokenizer/stream", &["push_32b_chunks"]),
+    ("train/buffers", &["forward_round_pool_reuse"]),
+    ("train/schedule", &["lr_warmup_to_cosine"]),
+    ("train/snapshot", &["encode", "decode"]),
+    ("weights/archive", &["get_by_name", "merkle_root", "parse", "prove", "verify"]),
+    ("weights/writer", &["finish"]),
+    ("wire/crc", &["update_4kib"]),
+    ("wire/leb", &["decode_values", "encode_values"]),
+    ("wire/sink", &["sealed_1kib"]),
 ];
 
 /// 一条登记基线：哪台机器、哪个后端、哪个场景、多少 ns、允许多少相对偏差。
@@ -108,8 +171,9 @@ pub(crate) const BASELINES: &[Baseline] = &[
     row!(Baseline, scenario "matmul_f32/prefill_256x256_k4096_tiled", host: "macos-aarch64", backend: "cpu-reference", ns: 18_867_825.0, budget_percent: 10.0),
     // Apple M5 Pro（2026-11-20，tile 内核 256×256×4096，100 次采样）：scalar 148.03 ms → tiled 20.76 ms（7.1×）。
     row!(Baseline, scenario "matmul_i8/prefill_256x256_k4096_tiled", host: "macos-aarch64", backend: "cpu-reference", ns: 20_760_328.0, budget_percent: 10.0),
-    // Apple M5 Pro（2026-11-20，分块 tile 1024×64，100 次采样）：online 18.40 ms → tiled 12.35 ms（1.49×）。
-    row!(Baseline, scenario "attention_f32/prefill_1024x64_tiled", host: "macos-aarch64", backend: "cpu-reference", ns: 12_350_014.0, budget_percent: 10.0),
+    // Apple M5 Pro（2026-11-20，online 1024×64，100 次采样）：18.40 ms。
+    // 只把这次历史 online 测量与现存用例对齐；不拿 tiled 的 12.35 ms 充当 online 基线，预算不变。
+    row!(Baseline, scenario "attention_f32/prefill_1024x64_online", host: "macos-aarch64", backend: "cpu-reference", ns: 18_400_000.0, budget_percent: 10.0),
     // Apple M5 Pro（2026-11-16，逐元素 SiLU 参考）：噪声相对均值约 1.5%，预算取 10%。
     row!(Baseline, scenario "silu_f32/decode_1x4096", host: "macos-aarch64", backend: "cpu-reference", ns: 3_287.0, budget_percent: 10.0),
 ];
