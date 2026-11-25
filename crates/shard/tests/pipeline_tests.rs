@@ -734,10 +734,9 @@ fn every_negotiable_intel_translation_unit_builds_on_uhd750() {
     let device = prof::runtime::opencl::OpenClDevice::new().expect("必须探测到 UHD 750");
     let catalogue = catalogue();
     let profile = catalogue.profile("intel").expect("intel 档案");
-    let dirs = Dirs::under(std::env::temp_dir().join(format!(
-        "cutile-intel-build-{}",
-        std::process::id()
-    )));
+    let dirs = Dirs::under(
+        std::env::temp_dir().join(format!("cutile-intel-build-{}", std::process::id())),
+    );
     let units = units_of(&catalogue, profile, &dirs);
     assert!(!units.is_empty(), "UHD 750 至少要有可达的翻译单元");
     for (name, text) in &units {

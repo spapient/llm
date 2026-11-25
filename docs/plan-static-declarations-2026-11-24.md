@@ -469,6 +469,9 @@ Rust 官方与微软训练材料的一致口径：
 - 样板一 `llm-dtype`：`src/lib.rs` 顶部 `#![deny(clippy::pedantic)]`；独立 test target `tests/dtype_contracts.rs` 同源属性。本体 lib 与 tests pedantic 0 告警；补 `#[must_use]`，测试数值转换改 `u32::try_from(..).expect(..)`（沿用仓内测试惯例，生产仍禁裸 expect）。
 - 样板二 `llm-diagnostic`：`src/lib.rs` 顶部 `#![deny(clippy::pedantic)]`；`autotests = false`，四个测试经 `#[path]` mod 编入 lib test target，受 lib 属性覆盖，无需独立 target 属性。整改：9 处 `#[must_use]`、2 处 `push_str(&format!)` 改 `writeln!`（`use std::fmt::Write as _;`）、3 段 `# Errors` 文档、1 处私有 `io_err` 参数改引用、1 处 `u64→f64` 展示换算局部 `#[allow(clippy::cast_precision_loss)]` 并注释理由。pedantic 全 target 0，20 单测 + 2 doc-test 绿，全量 nextest 无回归。
 - 全仓存量（lib 级粗估，以当次 clippy 为准）：nn 600、weights 318、train 327、prof 280、cutile 151、algorithm 125、serve 106、engine 94、tools 88、shard 83、storage 80、autograd 49、tensor 46、tokenizer 45、cli 34、testkit 26、fuzz 17、annotation 16；dtype、diagnostic 已清零。cast 族（截断/精度/符号/指针对齐）属数值内核与 FFI 固有语义，不得为消告警改转换口径；签名扩散类（`&Option<T>`、pass_by_value）需全调用点核对，均留后续批次逐条裁决。
+- 候选层逐点裁决（2026-11-26 当次 `-W clippy::pedantic` 实测，结论：本批均不开门）：
+  - `llm-fuzz`：lib 17 条（10 `must_use`、4 `errors_doc`、1 `doc_markdown`、2 有意截断 cast——`Rng::below` u128→usize 为 Lemire 归一化取模到 `[0,bound)`，`Rng::byte` u64→u8 取低 8 位，可局部 `#[allow]` 注释）。但经 `#[path]` 包含的 `seeds.rs`/`drivers.rs` 在多个 harness/test target 重复暴露 150 条 `lifetime tied str`（登记表 `&'static str` 被误判）、10 条 strict float 比较、10 条 u32→f32 精度损失、20 条 `doc_markdown`。整改面大且含 float 比较语义债，留后续批次。
+  - `llm-annotation`：16 条。3 条 `pass_by_value` 经核为 clippy 误报，不可改签名——`dsl.rs:63 expand(attribute/item: TokenStream)`、`expr.rs:149 receiver: TokenStream2` 是 proc-macro 按值消费输入流，`lib.rs:244 resolve<S,D>` 泛型 `S` 要移动进返回元组，三者本就该按值；其余为 2 条 private `&Option<T>`→`Option<&T>`、1 条 i64→f64 cast、5 条 `format_push_string`、2 条分号、1 条 `format_implicit`、1 条 match 同臂、1 条 let-else。误报项只能局部 `#[allow]`，开门收益低且需核对 private 签名调用点，留后续批次。
 
 ### 15.3 #53 train/serve 适配协议裁决
 
@@ -482,4 +485,4 @@ Rust 官方与微软训练材料的一致口径：
 - #26 除 dtype、diagnostic 两个样板层外，全仓 pedantic 存量未整改；大层 cast 语义债与签名扩散留后续批次。
 - #53 第二批前置条件未满足，保持待评估。
 - `--perf` 固定硬件基准、`--fuzz`、`--miri`、`--coverage` 未跑；18 项 skipped 平台专项未执行；`tensor::View::one` 维度/步长 Vec 分配缺 release 基准证据。
-- 工作树中 `crates/shard/tests/pipeline_tests.rs`、`docs/gpu-tuning-candidates-cuda-intel.md` 为并发会话在飞改动，本批未触碰；nextest 已在含该改动的树上跑绿。
+- 并发在飞项现状（2026-11-26 复核）：`docs/gpu-tuning-candidates-cuda-intel.md`、`crates/prof/src/opencl.rs` 已并入并发提交；`crates/shard/tests/pipeline_tests.rs` 的 fmt 红账由本批 `rustfmt` 单文件修正（仅折行排版，逻辑零变化；该用例 `#[cfg(windows)]`，本机 macOS 不编译运行）。nextest 已在含上述改动的树上跑绿（3031 passed / 18 skipped / 0 failed）。
