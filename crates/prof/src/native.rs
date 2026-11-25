@@ -8,8 +8,6 @@
 //! FMA、dotprod 与 SME 算法统一住在 `ops/gemm_micro.k`，这里只保留公开兼容面、
 //! 面板缓存和协商表；调用方路径不变，运行时特性与 ABI 全由安全桥收口。
 
-use std::thread;
-
 /// f32 8×8 微内核的兼容公开面；算法由 `gemm_micro.k` 静态链接。
 pub mod gemm8x8 {
     /// 一个待算的 8×8 微内核块。
