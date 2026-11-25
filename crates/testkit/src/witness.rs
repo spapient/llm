@@ -82,13 +82,16 @@ fn compile(ext: &str, main: &std::path::Path, binary: &std::path::Path) -> Resul
     let cpp = ext == "cpp";
     let compiler = compiler(cpp);
     let standard = standard(cpp);
-    let compiled = Command::new(&compiler)
+    let mut command = Command::new(&compiler);
+    command
         .arg("-O1")
         .arg(standard)
         .args(erase_qualifiers(ext))
         .arg("-o")
         .arg(binary)
-        .arg(main)
+        .arg(main);
+    link_math(&mut command, cpp);
+    let compiled = command
         .output()
         .map_err(|error| format!("编译器 `{}` 不可执行：{error}", compiler.to_string_lossy()))?;
     if compiled.status.success() {
@@ -100,6 +103,18 @@ fn compile(ext: &str, main: &std::path::Path, binary: &std::path::Path) -> Resul
         String::from_utf8_lossy(&compiled.stderr).trim()
     ))
 }
+
+/// 链接 libm：glibc 把 `roundf` 等数学函数收在独立 libm；macOS 并入 libSystem，
+/// Windows 工具链没有 `-lm` 选项，故仅在非 Windows 的 C 见证上追加。
+#[cfg(not(target_os = "windows"))]
+fn link_math(command: &mut Command, cpp: bool) {
+    if !cpp {
+        command.arg("-lm");
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn link_math(_command: &mut Command, _cpp: bool) {}
 
 /// 抹掉宿主编译器不认识的地址空间限定符。Metal 的 `thread` 只声明"这块内存在本线程"，
 /// 算术与回读一字不差；擦掉限定符，同一份正文才能在主机上算参考值。

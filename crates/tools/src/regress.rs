@@ -158,19 +158,19 @@ impl Case {
     ) -> Result<Self> {
         if !baseline.is_finite() || baseline <= 0.0 {
             return Err(invalid(
-                "Case::new",
+                "Case::with_epsilon",
                 format!("基线必须是正的有限数，得到 {baseline}"),
             ));
         }
         if !(0.0..=100.0).contains(&budget_percent) {
             return Err(invalid(
-                "new",
+                "Case::with_epsilon",
                 format!("预算必须落在 0..=100，得到 {budget_percent}"),
             ));
         }
         if !(0.0..=100.0).contains(&epsilon_percent) {
             return Err(invalid(
-                "with_epsilon",
+                "Case::with_epsilon",
                 format!("不可察觉带必须落在 0..=100，得到 {epsilon_percent}"),
             ));
         }

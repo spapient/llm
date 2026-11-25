@@ -165,6 +165,9 @@ pub(crate) struct RelErr {
     /// 分母：误差相对于这个数是多少。整批口径下是整批最大参考幅度 `max|want|`（`want` 全零时
     /// 为 `0.0`），单位口径下是最差元素自己的 `max(|want|, 1)`。
     pub scale: f64,
+    /// 整批平均相对误差 `mean-RE`：每元素同口径相对误差的算术平均，控整体精度；与 [`Self::ratio`]
+    /// 的离群口径并列双门。空批为 `0.0`，长度不符或非有限不一致时为无穷大。
+    pub mean: f64,
     /// 误差最大的元素；整批逐元素相等（或无元素）时为 [`None`]。
     pub worst: Option<Worst>,
     /// 长度不等，或某个下标的非有限值分类不一致——这时 `err` 是无穷大且 `worst` 指向第一处。
@@ -223,6 +226,7 @@ fn mismatched() -> RelErr {
     RelErr {
         err: f64::INFINITY,
         scale: 0.0,
+        mean: f64::INFINITY,
         worst: None,
         mismatched: true,
     }
@@ -261,18 +265,21 @@ fn element_reading(idx: usize, got: f32, want: f32, denom: f64) -> Option<(f64, 
     Some((value, diff, denom, Worst { idx, got, want }))
 }
 
-/// 长度已校验后的累加：第一处非有限值不一致立刻定论，否则取判据值最大的元素。
+/// 长度已校验后的累加：第一处非有限值不一致立刻定论，否则取判据值最大的元素，并累加整批平均。
 fn tally(got: &[f32], want: &[f32], scale: Scale, batch: f64) -> RelErr {
     let mut report = RelErr {
         err: 0.0,
         scale: denominator(scale, batch, 0.0),
+        mean: 0.0,
         worst: None,
         mismatched: false,
     };
     let mut best = f64::NEG_INFINITY;
+    let mut sum = 0.0f64;
     for (idx, (&got, &want)) in got.iter().zip(want).enumerate() {
         if !pairing_agrees(got, want) {
             report.err = f64::INFINITY;
+            report.mean = f64::INFINITY;
             report.worst = Some(Worst { idx, got, want });
             report.mismatched = true;
             return report;
@@ -282,6 +289,7 @@ fn tally(got: &[f32], want: &[f32], scale: Scale, batch: f64) -> RelErr {
         else {
             continue;
         };
+        sum += value;
         if value > best {
             best = value;
             report.err = diff;
@@ -289,6 +297,11 @@ fn tally(got: &[f32], want: &[f32], scale: Scale, batch: f64) -> RelErr {
             report.worst = Some(worst);
         }
     }
+    report.mean = if got.is_empty() {
+        0.0
+    } else {
+        sum / got.len() as f64
+    };
     report
 }
 
@@ -296,6 +309,19 @@ fn tally(got: &[f32], want: &[f32], scale: Scale, batch: f64) -> RelErr {
 #[must_use]
 pub fn max_rel_err(got: &[f32], want: &[f32]) -> f64 {
     rel_err(got, want).ratio()
+}
+
+/// 整批平均相对误差（`mean-RE`）：每元素同口径相对误差的算术平均，控整体精度；与 [`max_rel_err`]
+/// 的离群口径并列双门。分母策略与 [`rel_err_with`] 一致；长度不符或非有限不一致时为无穷大。
+#[must_use]
+pub fn mean_rel_err(got: &[f32], want: &[f32]) -> f64 {
+    rel_err(got, want).mean
+}
+
+/// 指定分母策略的平均相对误差；与 [`mean_rel_err`] 的关系同 [`rel_err_with`] 之于 [`rel_err`]。
+#[must_use]
+pub fn mean_rel_err_with(got: &[f32], want: &[f32], scale: Scale) -> f64 {
+    rel_err_with(got, want, scale).mean
 }
 
 /// 整批对拍不通过时 panic；分母取 [`Scale::Batch`]，阈值给 `f32`。

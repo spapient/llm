@@ -216,3 +216,48 @@ fn the_two_denominators_differ_only_in_the_floor() {
         "参考幅度大于 1 时单位口径更严：两条是不同的问题，不是松紧两档"
     );
 }
+
+#[test]
+fn mean_rel_err_is_zero_on_matching_batches() {
+    assert_eq!(mean_rel_err(&[1.0, 2.0], &[1.0, 2.0]), 0.0);
+    assert_eq!(mean_rel_err(&[], &[]), 0.0, "空批视为对上");
+}
+
+#[test]
+fn mean_rel_err_averages_per_element_on_the_same_denominator() {
+    // Batch 分母 = max|want| = 2.0：elem0 无偏差，elem1 相对差 0.1/2.0 = 0.05。
+    let err = mean_rel_err(&[1.0, 2.1], &[1.0, 2.0]);
+    assert!((err - 0.025).abs() < 1e-6, "{err}");
+    let max = max_rel_err(&[1.0, 2.1], &[1.0, 2.0]);
+    assert!((max - 0.05).abs() < 1e-6, "max 门仍是最差元素：{max}");
+}
+
+#[test]
+fn mean_and_max_separate_whole_batch_drift_from_an_isolated_outlier() {
+    // 单点离群：max 被该点顶高，mean 被其余零偏差拉低，两门必须给出不同读数。
+    let mean = mean_rel_err(&[1.0, 2.5], &[1.0, 2.0]);
+    let max = max_rel_err(&[1.0, 2.5], &[1.0, 2.0]);
+    assert!((mean - 0.125).abs() < 1e-6, "{mean}");
+    assert!((max - 0.25).abs() < 1e-6, "{max}");
+    assert!(max > mean, "离群门应高于平均门");
+}
+
+#[test]
+fn mean_rel_err_follows_the_unit_denominator_floor() {
+    let got = [0.00011, 0.0002];
+    let want = [0.0001, 0.0002];
+    let mean = mean_rel_err_with(&got, &want, Scale::Unit);
+    assert!((mean - 0.000005).abs() < 1e-9, "{mean}");
+}
+
+#[test]
+fn mean_rel_err_is_infinity_on_mismatch_and_falls_back_to_absolute_on_zero_reference() {
+    assert_eq!(mean_rel_err(&[1.0], &[1.0, 1.0]), f64::INFINITY, "长度不同");
+    assert_eq!(
+        mean_rel_err(&[f32::NAN], &[0.0]),
+        f64::INFINITY,
+        "NaN 对有限"
+    );
+    // 参考全零：退化为绝对误差的平均，不套相对误差。
+    assert_eq!(mean_rel_err(&[0.0, 2.0], &[0.0, 0.0]), 1.0);
+}

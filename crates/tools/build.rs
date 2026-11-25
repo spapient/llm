@@ -45,7 +45,7 @@ fn render(root: &toml::Table) -> diagnostic::Result<String> {
 
 /// `[gate]`：未知键与数值类型都在构建期拒绝。
 fn gate(root: &toml::Table) -> diagnostic::Result<String> {
-    let table = table(root, "gate")?;
+    let table = buildgen::subtable(root, "gate")?;
     for key in table.keys() {
         if !matches!(
             key.as_str(),
@@ -101,7 +101,7 @@ fn debt_row(value: &toml::Value) -> diagnostic::Result<String> {
     let table = value
         .as_table()
         .ok_or_else(|| invalid("[gate.debt] 必须是表"))?;
-    let key = required(table, "key")?;
+    let key = buildgen::string(table, "key")?;
     let fields = ["ccn", "nloc", "lines", "call"].map(|key| optional(table, key));
     if fields.iter().all(|field| field == "None") {
         return Err(invalid(&format!("[gate.debt] {key} 无度量")));
@@ -114,7 +114,7 @@ fn debt_row(value: &toml::Value) -> diagnostic::Result<String> {
 
 /// 闭集/位集合规条目。
 fn exemptions(root: &toml::Table, section: &str) -> diagnostic::Result<String> {
-    let table = table(root, section)?;
+    let table = buildgen::subtable(root, section)?;
     let rows = table
         .get("exempt")
         .and_then(toml::Value::as_array)
@@ -122,8 +122,8 @@ fn exemptions(root: &toml::Table, section: &str) -> diagnostic::Result<String> {
     rows.iter()
         .map(|value| {
             let table = value.as_table().ok_or_else(|| invalid("exempt 必须是表"))?;
-            let name = required(table, "crate")?;
-            let reason = required(table, "reason")?;
+            let name = buildgen::string(table, "crate")?;
+            let reason = buildgen::string(table, "reason")?;
             reasoned(reason)?;
             Ok(format!(
                 "crate::gate::ExemptView {{ crate_name:{name:?}, reason:{reason:?} }}"
@@ -135,7 +135,7 @@ fn exemptions(root: &toml::Table, section: &str) -> diagnostic::Result<String> {
 
 /// ownership 的存量条目：crate、名字数组与理由完整保留。
 fn unlisted(root: &toml::Table) -> diagnostic::Result<String> {
-    let rows = table(root, "ownership")?
+    let rows = buildgen::subtable(root, "ownership")?
         .get("unlisted")
         .and_then(toml::Value::as_array)
         .ok_or_else(|| invalid("[ownership] 缺 unlisted 数组"))?;
