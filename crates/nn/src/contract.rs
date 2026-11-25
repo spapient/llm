@@ -262,7 +262,7 @@ impl Linear {
         let spec = ContractSpec::new_with_role(
             name,
             Shape::new([out_features]),
-            format.operator(),
+            Self::operator_for(format),
             ParamRole::Trainable,
         )?;
         Ok(Self {

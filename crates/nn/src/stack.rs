@@ -705,15 +705,8 @@ fn dense_projection(name: &str, entry: &Entry) -> Result<Option<Linear>> {
 
 /// 量化位宽到编码的闭集映射；未知位宽绝不静默落入 int4。
 fn quantized_format(group: usize, bits: u8) -> Result<WeightFormat> {
-    match bits {
-        2 => Ok(WeightFormat::int2(group)),
-        4 => Ok(WeightFormat::int4(group)),
-        8 => Ok(WeightFormat::int8(group)),
-        _ => Err(Error::new(
-            Code::Unsupported,
-            format!("没有注册 {bits} 位量化投影"),
-        )),
-    }
+    WeightFormat::from_quantized(bits, group)
+        .ok_or_else(|| Error::new(Code::Unsupported, format!("没有注册 {bits} 位量化投影")))
 }
 
 /// 层名：去掉 [`WEIGHT_SUFFIX`]，其它名字原样保留。

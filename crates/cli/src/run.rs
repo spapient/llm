@@ -144,9 +144,12 @@ fn layer_operator<'a>(layer: &'a nn::Linear, x: &[f32]) -> OpGate<'a> {
             x.len()
         ));
     }
-    match layer.format().operator() {
+    match nn::Linear::operator_for(layer.format()) {
         Some(operator) => OpGate::Ready(operator),
-        None => OpGate::Stop(format!("`{name}`：{}", layer.format().unpriced_reason())),
+        None => OpGate::Stop(format!(
+            "`{name}`：{}",
+            nn::Linear::unpriced_reason_for(layer.format())
+        )),
     }
 }
 

@@ -20,6 +20,7 @@ annotation = { path = "../annotation", package = "llm-annotation" }
 # 内核协商面经 `cutile` 转发到 `prof::native`：nn 不直接 import `prof` 的内核层，走 nn → cutile → prof。
 cutile = { path = "../cutile" }
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
+dtype = { path = "../dtype", package = "llm-dtype", features = ["serde"] }
 half = { workspace = true, features = ["num-traits"] }
 num-traits = { workspace = true }
 prof = { path = "../prof", package = "llm-prof" }

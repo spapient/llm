@@ -6,6 +6,7 @@ use crate::bad;
 use crate::codec;
 use crate::svd;
 use diagnostic::{Code, Error, Result};
+use dtype::WeightFormat;
 use tensor::DType;
 
 use crate::Wire;
@@ -168,6 +169,12 @@ impl<'a> Quantized<'a> {
             DType::U8 | DType::U4 => 4,
             other => other.bits() as u8,
         }
+    }
+
+    /// 转成共享权重格式；未知量化位宽返回 `None`，不推断上层算子能力。
+    #[must_use]
+    pub fn weight_format(&self) -> Option<WeightFormat> {
+        WeightFormat::from_quantized(self.bits(), self.group)
     }
 
     /// 标度条目的名字。

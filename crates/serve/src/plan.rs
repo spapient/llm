@@ -110,15 +110,15 @@ pub(crate) struct MemorySpec {
 }
 
 /// 投影层必须能推出已注册算子名（F32 稠密或分组匹配内核的量化格式）；其余在此拒绝。
-/// 块内投影复用同一份判据，格式到算子名的映射统一走 [`WeightFormat::operator`]，不另立一份表。
+/// 块内投影复用同一份判据，格式到算子名的映射统一走 [`Linear::operator_for`]，不另立一份表。
 pub(crate) fn plan_operator(name: &str, linear: &Linear) -> Result<&'static str> {
-    linear.format().operator().ok_or_else(|| {
+    Linear::operator_for(linear.format()).ok_or_else(|| {
         Error::new(
             Code::Unsupported,
             format!(
                 "层 `{name}` 是 {}，没有可装配的内核：{}",
                 linear.format(),
-                linear.format().unpriced_reason()
+                Linear::unpriced_reason_for(linear.format())
             ),
         )
         .with(SITE)

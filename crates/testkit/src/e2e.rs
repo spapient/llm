@@ -107,7 +107,7 @@ fn the_layer_declaration_agrees_with_the_container() {
         "容器存的是 (out, in)，层声明必须把两轴对调回来，否则整条链路差一次转置"
     );
     assert_eq!(
-        layer.format().operator(),
+        nn::Linear::operator_for(layer.format()),
         Some("gemv_f32"),
         "精度决定算子名：这个名字要与训练缓冲里 `compute` 的实参一致"
     );

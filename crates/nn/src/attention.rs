@@ -257,7 +257,9 @@ impl AttentionBlock {
         algo: AttentionAlgo,
         format: WeightFormat,
     ) -> Result<ContractSpec> {
-        let ops = format.operator().into_iter().chain([algo.operator()]);
+        let ops = Linear::operator_for(format)
+            .into_iter()
+            .chain([algo.operator()]);
         ContractSpec::new(name, Shape::new([hidden]), ops)
     }
 

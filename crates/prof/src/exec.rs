@@ -86,22 +86,10 @@ value_methods! {
     ScalarSlots {
         /// 空槽：一个标量都没填。
         new() -> Self = Self { rope_position: None };
-        /// 写入 rope 解码位置。
-        set_rope_position(&mut self, position: u32) = self.rope_position = Some(position);
         /// rope 解码位置（只读；未填为 `None`）。
         rope_position(&self) -> Option<u32> = self.rope_position;
         /// 是否一个槽位都没填。
         is_empty(&self) -> bool = self.rope_position.is_none();
-    }
-    Launch {
-        /// 由网格与线程块构造；标量槽默认全空。
-        new(grid: [u32; 3], block: [u32; 3]) -> Self = Self { grid, block, scalars: ScalarSlots::new() };
-        /// 替换整套标量槽（构造期装配；几何之外的参数一次性给定）。
-        with_scalars(mut self, scalars: ScalarSlots) -> Self = { self.scalars = scalars; self };
-        /// 标量槽（只读）。
-        scalars(&self) -> &ScalarSlots = &self.scalars;
-        /// 标量槽（可写）。
-        scalars_mut(&mut self) -> &mut ScalarSlots = &mut self.scalars;
     }
     Operand {
         /// 只读输入操作数。
@@ -133,20 +121,6 @@ value_methods! {
         /// 可写输出操作数，按声明顺序。
         outputs(&self) -> &[Operand] = &self.outputs;
     }
-    Graph {
-        /// 空图。
-        new() -> Self = Self::default();
-        /// 追加一个节点；与其它克隆共享时先复制节点表，保持写时独立。
-        push(&mut self, node: Node) = Arc::make_mut(&mut self.nodes).push(node);
-        /// 全部节点，按插入顺序。
-        nodes(&self) -> &[Node] = &self.nodes;
-        /// 全部节点的可变视图：装配宿主在提交前回填逐步变化的标量槽（如 rope 位置），不改执行几何。
-        nodes_mut(&mut self) -> &mut [Node] = Arc::make_mut(&mut self.nodes).as_mut_slice();
-        /// 节点数。
-        len(&self) -> usize = self.nodes.len();
-        /// 是否为空。
-        is_empty(&self) -> bool = self.nodes.is_empty();
-    }
     Stream {
         /// 由编号构造。
         new(id: u32) -> Self = Self { id };
@@ -161,16 +135,82 @@ value_methods! {
         /// 架构标签（`aarch64` / `neon` / `sm_90` …），只作登记，不产生热路径分发。
         arch(&self) -> &str = &self.arch;
     }
+    Graph {
+        /// 空图。
+        new() -> Self = Self::default();
+    }
+}
+
+impl ScalarSlots {
+    /// 写入 rope 解码位置。
+    pub fn set_rope_position(&mut self, position: u32) {
+        self.rope_position = Some(position);
+    }
+}
+
+impl Graph {
+    /// 追加一个节点；与其它克隆共享时先复制节点表，保持写时独立。
+    pub fn push(&mut self, node: Node) {
+        Arc::make_mut(&mut self.nodes).push(node);
+    }
+
+    /// 全部节点，按插入顺序。
+    pub fn nodes(&self) -> &[Node] {
+        &self.nodes
+    }
+
+    /// 全部节点的可变视图：装配宿主在提交前回填逐步变化的标量槽（如 rope 位置），不改执行几何。
+    pub fn nodes_mut(&mut self) -> &mut [Node] {
+        Arc::make_mut(&mut self.nodes).as_mut_slice()
+    }
+
+    /// 节点数。
+    pub fn len(&self) -> usize {
+        self.nodes.len()
+    }
+
+    /// 是否为空。
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+    }
 }
 
 impl Launch {
+    /// 由网格与线程块构造；标量槽默认全空。
+    pub fn new(grid: [u32; 3], block: [u32; 3]) -> Self {
+        Self {
+            grid,
+            block,
+            scalars: ScalarSlots::new(),
+        }
+    }
+
+    /// 替换整套标量槽（构造期装配；几何之外的参数一次性给定）。
+    #[must_use]
+    pub fn with_scalars(mut self, scalars: ScalarSlots) -> Self {
+        self.scalars = scalars;
+        self
+    }
+
+    /// 标量槽（只读）。
+    pub fn scalars(&self) -> &ScalarSlots {
+        &self.scalars
+    }
+
+    /// 标量槽（可写）。
+    pub fn scalars_mut(&mut self) -> &mut ScalarSlots {
+        &mut self.scalars
+    }
+
     /// 总线程数：`grid` 与 `block` 的逐轴乘积再相乘。
     pub fn total_threads(&self) -> u64 {
-        let volume = |dims: [u32; 3]| {
-            dims.into_iter()
-                .fold(1u64, |acc, dim| acc.saturating_mul(u64::from(dim)))
-        };
-        volume(self.grid).saturating_mul(volume(self.block))
+        let grid = u64::from(self.grid[0])
+            .saturating_mul(u64::from(self.grid[1]))
+            .saturating_mul(u64::from(self.grid[2]));
+        let block = u64::from(self.block[0])
+            .saturating_mul(u64::from(self.block[1]))
+            .saturating_mul(u64::from(self.block[2]));
+        grid.saturating_mul(block)
     }
 }
 

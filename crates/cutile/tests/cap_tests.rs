@@ -53,7 +53,7 @@ fn downgrade_op() -> OpDecl {
         skeleton: Skeleton::Gemm,
         summary: "-".to_string(),
         axes: vec![Axis {
-            name: "GMAX".to_string(),
+            name: std::sync::Arc::from("GMAX"),
             values: vec![32],
         }],
         needs: vec![Need::of(Prim::Dot)],

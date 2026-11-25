@@ -99,8 +99,13 @@ pub mod dtype;
 mod format;
 pub mod mxtype;
 pub mod qtype;
+pub use format::weight;
 
 pub use dtype::{Class, DType, DTypeSpec, FloatLayout};
 pub use format::{BlockFormat, Format, Layout, UnknownCode, UnknownName};
 pub use mxtype::{Element, MxType};
 pub use qtype::QType;
+pub use weight::WeightFormat;
+
+#[cfg(test)]
+include!("../tests/weight_tests.rs");

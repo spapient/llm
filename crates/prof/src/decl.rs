@@ -35,7 +35,7 @@ crate::closed_enum! {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Axis {
     /// 轴名（也是模板里的槽位名）。
-    pub name: String,
+    pub name: Arc<str>,
     /// 候选取值。
     pub values: Vec<u32>,
 }
@@ -240,7 +240,7 @@ impl OpDecl {
 
     /// 按名字取轴。
     pub fn axis(&self, name: &str) -> Option<&Axis> {
-        self.axes.iter().find(|axis| axis.name == name)
+        self.axes.iter().find(|axis| axis.name.as_ref() == name)
     }
 
     /// 模板侧校验：槽位、能力需求、调用点参数与数据流阶段必须一致。
@@ -487,10 +487,11 @@ pub fn expand(op: &OpDecl) -> diagnostic::Result<Vec<TileCombo>> {
     let mut combos = vec![TileCombo { values: Vec::new() }];
     for axis in &op.axes {
         let mut next = Vec::with_capacity(combos.len() * axis.values.len());
+        let name = axis.name.clone();
         for combo in &combos {
             for value in &axis.values {
                 let mut values = combo.values.clone();
-                values.push((axis.name.clone(), *value));
+                values.push((name.clone(), *value));
                 next.push(TileCombo { values });
             }
         }
@@ -592,7 +593,7 @@ impl AxisView {
     /// owned 化成 [`Axis`]。
     pub fn into_owned(self) -> Axis {
         Axis {
-            name: self.name.to_string(),
+            name: Arc::from(self.name),
             values: self.values.to_vec(),
         }
     }
