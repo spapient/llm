@@ -258,8 +258,7 @@ tests! {
         assert!(bindings.is_empty());
         assert_eq!(bindings.bind(0, Buf::F32(vec![1.0])), None);
         assert_eq!(bindings.bind(0, Buf::F32(vec![2.0])).as_ref().and_then(Buf::f32), Some(&[1.0][..]));
-        assert_eq!(bindings.get(0), Some(&[2.0][..]));
-        assert_eq!(bindings.get(1), None);
+        assert_eq!((bindings.get(0), bindings.get(1)), (Some(&[2.0][..]), None));
         assert_eq!(bindings.len(), 1);
     }
 

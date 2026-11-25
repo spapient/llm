@@ -1,5 +1,5 @@
-from pathlib import Path
 import re
+from pathlib import Path
 
 root = Path(__file__).resolve().parents[1]
 report = root / "weight-format-architecture-research.md"
