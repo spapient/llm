@@ -117,10 +117,11 @@ mod attention {
         batch: BatchDecodeKernel,
     ) -> Result<()> {
         let head_dim = launch.block[1] as usize;
-        if head_dim == 0 || history.is_empty() {
-            return Err(
-                Error::new(Code::Invalid, "decode 批段头宽与段长表必须非空").with(super::SITE)
-            );
+        if head_dim == 0 {
+            return Err(Error::new(Code::Invalid, "decode 批段头宽为 0").with(super::SITE));
+        }
+        if history.is_empty() {
+            return Err(Error::new(Code::Invalid, "decode 批段长表为空").with(super::SITE));
         }
         let heads = launch.block[0] as usize / head_dim;
         let q_rows = q.len() / (history.len() * heads * head_dim);
@@ -176,7 +177,7 @@ mod attention {
         }
     }
 }
-#[path = "kernel_dense.rs"]
+#[path = "dense.rs"]
 mod dense;
 use attention::*;
 use dense::*;
