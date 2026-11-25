@@ -336,26 +336,31 @@ pub mod weight {
         }
 
         /// 显式声明 2 位量化的分组。
+        #[must_use]
         pub const fn int2(group: usize) -> Self {
             Self::scaled(DType::U2, group)
         }
 
         /// 显式声明 4 位量化的分组。
+        #[must_use]
         pub const fn int4(group: usize) -> Self {
             Self::scaled(DType::U4, group)
         }
 
         /// 显式声明 8 位逐元素量化的分组。
+        #[must_use]
         pub const fn int8(group: usize) -> Self {
             Self::scaled(DType::I8, group)
         }
 
         /// 这种编码在内存里的元素类型，直接复用 `DType`，无匹配或重复映射。
+        #[must_use]
         pub const fn dtype(self) -> DType {
             self.dtype
         }
 
         /// 量化分组；非量化格式返回 `None`，调用方不需要匹配各个量化变体。
+        #[must_use]
         pub const fn group(self) -> Option<usize> {
             if self.quantized {
                 Some(self.group)
