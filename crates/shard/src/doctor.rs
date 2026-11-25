@@ -4,17 +4,17 @@ use crate::build;
 use crate::pipeline::Run;
 use crate::toolchain;
 use crate::witness::{self, Basis, Evidence};
+use cutile::atom::{Grade, Prim, Provide, Space};
 use cutile::builtin::Catalogue;
 use cutile::cache::{Cache, CacheKey, Changed, Entry};
 use cutile::cap::{self, NoPath, Path, Proof, VariantCheck};
+use cutile::decl::{OpDecl, expand};
 use cutile::dirs::Dirs;
 use cutile::emit::Fragment;
 use cutile::plan::Plan;
 use cutile::prof::Profile;
 use cutile::space;
 use diagnostic::{Code, Error};
-use prof::atom::{Grade, Prim, Provide, Space};
-use prof::decl::{OpDecl, expand};
 use std::path::PathBuf;
 
 /// 一次 `doctor` 的结论：每一步的产物，排版交给前端。

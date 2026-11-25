@@ -7,11 +7,11 @@ use crate::runner;
 use crate::toolchain;
 use crate::witness::{self, Evidence};
 use cutile::builtin::{AUTO_DEVICE, Catalogue};
+use cutile::decl::OpDecl;
 use cutile::dirs::Dirs;
+use cutile::model::{Cost, Sample};
 use cutile::prof::{Emit, Profile};
 use diagnostic::{Code, Error};
-use prof::decl::OpDecl;
-use prof::model::{Cost, Sample};
 use std::path::PathBuf;
 
 /// 一次 `bench` 的实测口径（README §12.3 的台账）。
@@ -436,7 +436,7 @@ fn tune_candidates(
     context: &TuneContext<'_>,
     m: usize,
     n: usize,
-    candidates: Vec<prof::decl::TileCombo>,
+    candidates: Vec<cutile::decl::TileCombo>,
 ) -> diagnostic::Result<pipeline::Prepared> {
     let mut best: Option<(pipeline::Prepared, f64)> = None;
     for tile in candidates {
@@ -453,7 +453,7 @@ fn measure_seed(
     context: &TuneContext<'_>,
     m: usize,
     n: usize,
-    tile: &prof::decl::TileCombo,
+    tile: &cutile::decl::TileCombo,
 ) -> diagnostic::Result<(pipeline::Prepared, f64)> {
     let prepared = context
         .run

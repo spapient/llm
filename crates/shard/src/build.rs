@@ -166,7 +166,7 @@ fn hit(cache: &Cache, key: &CacheKey, profile: &Profile) -> Option<Source> {
 fn generate(
     op: &OpDecl,
     profile: &Profile,
-    variant: &prof::decl::Variant,
+    variant: &cutile::decl::Variant,
     tile: &TileCombo,
     body: &str,
     cache: &Cache,

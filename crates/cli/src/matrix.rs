@@ -1,10 +1,10 @@
 //! 台账的表格排版：证据汇总表、原语 × 后端矩阵、逐条说明与档案头/原语表。
 
 use cutile::atom::Prim;
+use cutile::decl::Fusion;
 use cutile::plan::Verdict;
 use cutile::prof::Profile;
 use diagnostic::render::{Align, Sheet};
-use prof::decl::Fusion;
 use shard::ledger::{BackendRow, LedgerCell, Status};
 use shard::verify::Verified;
 use std::fmt::Write as _;

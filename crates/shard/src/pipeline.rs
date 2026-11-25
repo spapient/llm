@@ -3,14 +3,14 @@
 use crate::build;
 use cutile::cache::{Artifact, CacheKey};
 use cutile::cap::{self, NoPath, Path, Proof};
+use cutile::decl::OpDecl;
 use cutile::dirs::Dirs;
 use cutile::emit::Source;
 use cutile::harness;
+use cutile::model::{Model, Sample};
 use cutile::plan::{self, Plan};
 use cutile::prof::{Emit, Profile};
 use diagnostic::{Code, Error};
-use prof::decl::OpDecl;
-use prof::model::{Model, Sample};
 
 /// 这次要跑的那条流水线：算子、语义模型、设备档案与执行证据。
 #[derive(Debug)]
@@ -78,7 +78,7 @@ impl<'a> Run<'a> {
         dirs: &Dirs,
         m: usize,
         n: usize,
-        tile: &prof::decl::TileCombo,
+        tile: &cutile::decl::TileCombo,
     ) -> diagnostic::Result<Prepared> {
         let shape = (self.model.shape_ctx)(m, n)?;
         let cost = (self.model.cost)(&shape)?;

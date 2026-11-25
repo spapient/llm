@@ -261,3 +261,47 @@ fn mean_rel_err_is_infinity_on_mismatch_and_falls_back_to_absolute_on_zero_refer
     // 参考全零：退化为绝对误差的平均，不套相对误差。
     assert_eq!(mean_rel_err(&[0.0, 2.0], &[0.0, 0.0]), 1.0);
 }
+
+#[test]
+fn rel_gate_reports_mean_and_max_from_one_pass() {
+    let got = [1.0, 2.5, 3.0, 4.0];
+    let want = [1.0, 2.0, 3.0, 4.0];
+    let gate = rel_gate(&got, &want);
+    assert!((gate.mean - 0.03125).abs() < 1e-9, "{}", gate.mean);
+    assert!((gate.max - 0.125).abs() < 1e-9, "{}", gate.max);
+}
+
+#[test]
+fn rel_gate_separates_a_low_mean_from_a_loose_max_gate() {
+    // 单点离群：mean 在严门内，max 被放宽门兜住 → 双门通过。
+    let got = [1.0, 2.5, 3.0, 4.0];
+    let want = [1.0, 2.0, 3.0, 4.0];
+    let gate = rel_gate(&got, &want);
+    assert!(gate.passes(0.05, 0.2), "mean 严门、max 放宽门都应通过");
+    assert!(!gate.passes(0.05, 0.1), "max 门收窄后离群被拦住");
+}
+
+#[test]
+fn rel_gate_fails_when_mean_drifts_across_the_strict_gate() {
+    // 整批同向轻微漂移：mean 超严门，max 仍在放宽门内。
+    let got = [1.1, 2.1, 3.1, 4.1];
+    let want = [1.0, 2.0, 3.0, 4.0];
+    let gate = rel_gate(&got, &want);
+    assert!(gate.max <= 0.03, "max 门内：{}", gate.max);
+    assert!(!gate.passes(0.02, 0.03), "mean 门外：{}", gate.mean);
+}
+
+#[test]
+fn rel_gate_is_infinity_on_mismatched_lengths() {
+    let gate = rel_gate(&[1.0], &[1.0, 1.0]);
+    assert_eq!((gate.mean, gate.max), (f64::INFINITY, f64::INFINITY));
+    assert!(!gate.passes(1.0, 1.0));
+}
+
+#[test]
+#[should_panic(expected = "双门对拍失败")]
+fn assert_rel_gate_panics_when_either_gate_fails() {
+    let got = [1.0, 2.5, 3.0, 4.0];
+    let want = [1.0, 2.0, 3.0, 4.0];
+    assert_rel_gate(&got, &want, 0.05, 0.1, "GEMM 双门");
+}

@@ -5,8 +5,8 @@
 //! 做对称 round-trip，残差与缩放直接就地累加。契约层（`prof`）只声明"有哪些步"，执行层在这里
 //! 决定"每一步落在哪个既有内核上"。
 
+use cutile::atom::{ActKind, DType};
 use diagnostic::{Code, Error};
-use prof::atom::{ActKind, DType};
 use prof::epilogue::Step;
 
 /// 按 `steps` 的顺序把写回尾块施加到 `out`（行主序，列宽 `cols`）。

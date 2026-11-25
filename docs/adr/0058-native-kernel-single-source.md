@@ -17,9 +17,10 @@
 把 `prof::native` 的三族主机微内核收敛为：
 
 1. **一个 `crates/prof/src/ops/gemm_micro.k`**：承载 f32 FMA、i8 sdot、Apple SME 三族算法体及共享探针核心。
-2. **现有 `crates/prof/src/runtime.rs` 中的安全桥**：只负责切片校验、运行时特性探测、ABI 声明、线程／面板调度和公开路径兼容。
-3. **现有 `crates/prof/src/ops/kernels.toml`**：统一登记瓦片几何、具名展开和 SME 规模门槛，不新增配置文件。
-4. **现有 `crates/prof/build.rs` / `buildops.rs`**：完成模板替换、注解校验和静态 C 库构建，不新增平行生成器。
+2. **`crates/prof/src/ops/gemm_micro.h`**：SME 段 FFI 原型的唯一 C 签名事实源；只声明 `cutile_sme_*` 原型，几何常量不抄写进头，由 `kernels.toml` 经构建脚本投影。
+3. **现有 `crates/prof/src/runtime.rs` 中的安全桥**：只负责切片校验、运行时特性探测、手写 `extern "C"` ABI 声明、线程／面板调度和公开路径兼容。
+4. **现有 `crates/prof/src/ops/kernels.toml`**：统一登记瓦片几何、具名展开和 SME 规模门槛，不新增配置文件。
+5. **现有 `crates/prof/build.rs` / `buildops.rs`**：完成模板替换、注解校验和静态 C 库构建，不新增平行生成器。
 
 删除 `prof/src/native.rs`、`native/gemm8x8.rs`、`native/i8.rs`、`native/sme.rs` 和空目录；
 同时删除纯转发文件 `cutile/src/native.rs`，在 `cutile/src/lib.rs` 用一行 `pub use prof::native as native;`
@@ -200,6 +201,9 @@ unroll = 1
 - 使用工作区锁文件中已有的 `cc` 构建依赖；不增加运行时依赖。
 - `build.rs` 将校验、替换后的正文写到 `OUT_DIR/gemm_micro.c`，由 `cc` 针对 Cargo target 编译为
   `cutile_gemm_micro` 静态库。
+- 构建期由 `diagnostic::scan::ffi_align` 核对三方：`gemm_micro.h` 头原型 ↔ `.k` 注解登记符号集
+  ↔ `runtime.rs` 手写 extern 的符号名集与参数宽类（const/mut 指针、整数宽度）；任一侧漂移即终止构建。
+  通用对齐内核在 `diagnostic`，prof 侧只保留本仓词法映射；不引入 bindgen。
 - 不读取用户环境里的另一份模板，不在运行时编译，不使用 `dlopen`。
 - 交叉编译沿用 Cargo target；禁止用构建宿主架构替代目标架构。
 

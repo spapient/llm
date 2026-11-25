@@ -2,9 +2,9 @@
 
 use crate::fixtures::{checked_or_exit, found};
 use criterion::Criterion;
+use cutile::atom::Span;
 use cutile::builtin::Catalogue;
 use cutile::cap;
-use prof::atom::Span;
 use std::hint::black_box;
 
 /// `(用例名, 字面量)`：精确、上界、区间、开区间。

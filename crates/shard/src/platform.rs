@@ -338,7 +338,7 @@ const LANGUAGES: &[(&str, Row)] = &[
     ("neon", Row::Arm),
 ];
 
-impl prof::atom::Closed for Row {
+impl cutile::atom::Closed for Row {
     /// 六行，**永不删行**（规则 0.5）：缺设备的行也在里面，只是状态为 [`Standing::Open`]。
     const ALL: &'static [Self] = &[
         Self::Cuda,

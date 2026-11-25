@@ -197,9 +197,9 @@ mod chain_measure;
 mod chain_ruling;
 
 pub use compare::{
-    COSINE_GUARD, Scale, all_finite, approx_eq, assert_close, assert_near, assert_rel_with,
-    assert_vec_near, assert_within_rel, close, cosine_similarity, max_rel_err, mean_rel_err,
-    mean_rel_err_with,
+    COSINE_GUARD, RelGate, Scale, all_finite, approx_eq, assert_close, assert_near,
+    assert_rel_gate, assert_rel_with, assert_vec_near, assert_within_rel, close, cosine_similarity,
+    max_rel_err, mean_rel_err, mean_rel_err_with, rel_gate,
 };
 pub use fixture::{assert_rejects_length_mismatch, pack_codes, safetensors_bytes};
 pub use gating::{device_enabled, device_or_skip, skip, skip_count, skip_none, skipped_reasons};

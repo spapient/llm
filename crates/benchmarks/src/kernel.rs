@@ -135,13 +135,7 @@ pub(crate) fn gemv_quant(c: &mut Criterion) {
         gemv_i4::forward(View::one(&x), &weights, View::one(&scales), &mut out),
         GEOM,
     );
-    for (j, (&got, &want)) in out.iter().zip(&expected).enumerate() {
-        let slack = 1e-5 * want.abs().max(1.0);
-        assert!(
-            (got - want).abs() <= slack,
-            "第 {j} 列：向量通道 {got} 偏离标量叶 {want}"
-        );
-    }
+    testkit::assert_vec_near(&out, &expected, 1e-5, "gemv_i4 向量通道 vs 标量叶");
 
     let mut group = c.benchmark_group("gemv_i4");
     group.throughput(Throughput::Bytes((row * ROW + 4 * scales.len()) as u64));

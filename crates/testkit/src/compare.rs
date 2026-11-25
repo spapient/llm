@@ -297,12 +297,13 @@ fn tally(got: &[f32], want: &[f32], scale: Scale, batch: f64) -> RelErr {
             report.worst = Some(worst);
         }
     }
-    report.mean = if got.is_empty() {
-        0.0
-    } else {
-        sum / got.len() as f64
-    };
+    report.mean = mean_per_element(sum, got.len());
     report
+}
+
+/// 整批平均相对误差：空批记 0，否则按元素数把累加值归一。
+fn mean_per_element(sum: f64, len: usize) -> f64 {
+    if len == 0 { 0.0 } else { sum / len as f64 }
 }
 
 /// 全局相对误差：`max|got − want| / max|want|`，与 `cutile::reference::max_rel_err` 同一口径。
@@ -316,6 +317,49 @@ pub fn max_rel_err(got: &[f32], want: &[f32]) -> f64 {
 #[must_use]
 pub fn mean_rel_err(got: &[f32], want: &[f32]) -> f64 {
     rel_err(got, want).mean
+}
+
+/// 一次对拍的双门读数：整体平均误差与离群最大误差，同一次遍历得出，不重复扫整批。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RelGate {
+    /// `mean-RE`：整批平均相对误差，控整体精度。
+    pub mean: f64,
+    /// `max-RE`：整批最大相对误差，控孤立离群。
+    pub max: f64,
+}
+
+impl RelGate {
+    /// 两门是否都在各自阈值内：`mean ≤ mean_tol` 且 `max ≤ max_tol`。
+    #[must_use]
+    pub fn passes(self, mean_tol: f64, max_tol: f64) -> bool {
+        self.mean <= mean_tol && self.max <= max_tol
+    }
+}
+
+/// 一次遍历同时出双门读数（[`Scale::Batch`] 口径）；长度不符或非有限不一致时两门均为无穷大。
+#[must_use]
+pub fn rel_gate(got: &[f32], want: &[f32]) -> RelGate {
+    let report = rel_err(got, want);
+    RelGate {
+        mean: report.mean,
+        max: report.ratio(),
+    }
+}
+
+/// 双门断言：`mean-RE ≤ mean_tol` 且 `max-RE ≤ max_tol`。
+///
+/// max 门可按约定倍数放宽（`max_tol` 由调用方显式传入），避免单个孤立离群点拖垮整张量；
+/// 两门阈值分别对照，失败消息写清是哪一门超了多少。长度不等或非有限值不一致时读数为无穷大，
+/// 必然判失败。
+#[track_caller]
+pub fn assert_rel_gate(got: &[f32], want: &[f32], mean_tol: f64, max_tol: f64, what: &str) {
+    let gate = rel_gate(got, want);
+    assert!(
+        gate.passes(mean_tol, max_tol),
+        "{what} 双门对拍失败：mean-RE={:.3e}（门 {mean_tol:.3e}），max-RE={:.3e}（门 {max_tol:.3e}）",
+        gate.mean,
+        gate.max
+    );
 }
 
 /// 指定分母策略的平均相对误差；与 [`mean_rel_err`] 的关系同 [`rel_err_with`] 之于 [`rel_err`]。
