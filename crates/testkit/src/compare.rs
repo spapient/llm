@@ -80,7 +80,12 @@ pub fn assert_close<T: Float + std::fmt::Display>(left: &[T], right: &[T], abs: 
     fail_first(
         left,
         right,
-        |idx, got, want, tolerance| panic!("第 {idx} 个元素 {got} vs {want}（容差 {tolerance}）"),
+        |idx, got, want, tolerance| {
+            assert!(
+                idx >= left.len(),
+                "第 {idx} 个元素 {got} vs {want}（容差 {tolerance}）"
+            )
+        },
         abs,
         rel,
     );
@@ -90,7 +95,7 @@ pub fn assert_close<T: Float + std::fmt::Display>(left: &[T], right: &[T], abs: 
 fn fail_first<T: Float>(
     left: &[T],
     right: &[T],
-    fail: impl FnOnce(usize, T, T, T) -> !,
+    fail: impl FnOnce(usize, T, T, T),
     abs: T,
     rel: T,
 ) {
@@ -140,9 +145,11 @@ pub fn assert_vec_near<T: Float + std::fmt::Display>(got: &[T], want: &[T], tol:
     }) else {
         return;
     };
-    panic!(
+    assert!(
+        idx >= got.len(),
         "{what}: 第 {idx} 项 got {}, want {}（tol = {tol}）",
-        got[idx], want[idx]
+        got[idx],
+        want[idx]
     );
 }
 
