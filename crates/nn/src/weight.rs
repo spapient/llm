@@ -4,7 +4,7 @@
 
 use std::fmt;
 
-use serde::ser::{Error as _, SerializeStruct as _};
+use serde::ser::{Error as _, SerializeStruct};
 use serde::{Deserialize, Serialize};
 use tensor::DType;
 
@@ -243,14 +243,32 @@ impl Serialize for WeightFormat {
         let name = self
             .wire_name()
             .ok_or_else(|| S::Error::custom("非法权重编码"))?;
-        let mut wire =
-            serializer.serialize_struct("WeightFormat", 1 + usize::from(self.quantized))?;
-        wire.serialize_field("type", name)?;
-        if self.quantized {
-            wire.serialize_field("group", &self.group)?;
-        }
-        wire.end()
+        serialize_fields(self, serializer, name)
     }
+}
+
+/// 序列化字段装配：格式名必有，量化分组交给独立可选分支。
+fn serialize_fields<S: serde::Serializer>(
+    format: &WeightFormat,
+    serializer: S,
+    name: &str,
+) -> Result<S::Ok, S::Error> {
+    let mut wire =
+        serializer.serialize_struct("WeightFormat", 1 + usize::from(format.quantized))?;
+    wire.serialize_field("type", name)?;
+    serialize_group(format, &mut wire)?;
+    wire.end()
+}
+
+/// 只有量化格式写 `group`，无分组编码不产生多余字段。
+fn serialize_group<S: SerializeStruct>(
+    format: &WeightFormat,
+    wire: &mut S,
+) -> Result<(), S::Error> {
+    if format.quantized {
+        wire.serialize_field("group", &format.group)?;
+    }
+    Ok(())
 }
 
 /// 配置反序列化的临时结构；严格拒绝未知字段，正式状态仍由描述表构造。
