@@ -289,3 +289,32 @@ fn reserved_quant_flag_bits_are_rejected() {
     let error = Quant::decode(&mut Cursor::new(&buf), 2).expect_err("预留位非零必须拒绝");
     assert_eq!(error.code(), Code::Invalid);
 }
+
+#[test]
+fn quantized_entries_produce_shared_weight_format() {
+    for (weight, scale, expected) in [
+        (
+            packed("a.weight", 8, 64),
+            scales("a.scales", 8, 2, DType::F16),
+            WeightFormat::int4(32),
+        ),
+        (
+            Entry::new("b.weight", DType::I8, Shape::new([8, 64])),
+            scales("b.scales", 8, 2, DType::F16),
+            WeightFormat::int8(32),
+        ),
+        (
+            nibbles("c.weight", 8, 64),
+            scales("c.scales", 8, 2, DType::F16),
+            WeightFormat::int4(32),
+        ),
+    ] {
+        let name = weight.name().to_string();
+        let header = header(vec![weight, scale]);
+        let quantized = header
+            .quantization(&name)
+            .expect("文件自洽")
+            .expect("量化条目");
+        assert_eq!(quantized.weight_format(), Some(expected));
+    }
+}

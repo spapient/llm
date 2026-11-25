@@ -299,7 +299,7 @@ impl Contract for Linear {
         // 编码没有算子：不是"下界为零"，而是"这个格式还没有可计价的内核"。
         // 如实报出而不是拿另一个格式的算子凑一个数——那正是改造前 F32 权重按 int4
         // 报出 10 MiB 的原因。
-        let Some(operator) = self.format.operator() else {
+        let Some(operator) = Self::operator_for(self.format) else {
             // 理由由编码自己给：`Int4 { group }` 要说出"分组不同"，`Packed4` 要说出"缺标度条目"，
             // 否则读完只知道"没有算子"，不知道该改文件还是该换内核。
             return Err(Error::new(
@@ -307,7 +307,7 @@ impl Contract for Linear {
                 format!(
                     "层 `{}` 的权重{}，无法推出下界",
                     self.spec.name(),
-                    self.format.unpriced_reason()
+                    Self::unpriced_reason_for(self.format)
                 ),
             )
             .with("nn::Linear::bounds"));

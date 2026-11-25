@@ -3,9 +3,9 @@
 //! [`Scale`]、[`Add`]、[`Mul`])、查表层 [`Embedding`]、注意力层 [`Attention`] 与循环层
 //! [`Recurrent`]；权重编码 [`WeightFormat`]、层的性能下界 [`Bounds`] 与层栈总下界 [`Stack`]。
 //!
-//! **拥有**：`Contract`、`ContractSpec`、上述各层、算子参考算术与注册表、`WeightFormat`、`Bounds`、`Stack`。**不拥有**：算子契约词汇与
-//! 档案模板（`prof`）、kernel 机制（`cutile`）、权重字节与解析（`weights`）。
-//! **依赖**：`weights`、`tensor`、`prof`、`annotation`、`diagnostic`。**被依赖**：`train`。
+//! **拥有**：`Contract`、`ContractSpec`、上述各层、算子参考算术与注册表、`Bounds`、`Stack`。**不拥有**：算子契约词汇与
+//! 档案模板（`prof`）、kernel 机制（`cutile`）、权重字节与解析（`weights`）、共享格式身份（`dtype`）。
+//! **依赖**：`dtype`、`weights`、`tensor`、`prof`、`annotation`、`diagnostic`。**被依赖**：`train`。
 //!
 //! `nn` 是 DSL 的**消费者**而不是并列层：层定义唯一的产出是一份 [`ContractSpec`]，里面的算子名
 //! 必须已经存在于 `prof::catalogue::all()`。写错名字在这里就失败，而不是等到 emit 阶段才报"未知算子"。

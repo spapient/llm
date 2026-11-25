@@ -12,7 +12,7 @@ macro_rules! tests {
 
 /// 单表达式测试夹具也只声明一次；多步校验不进入这个宏。
 macro_rules! functions {
-    ($($(#[$meta:meta])* fn $name:ident($($args:tt)*) $(->$ret:ty)? = $body:expr;)*) => {
+    ($($(#[$meta:meta])* $name:ident($($args:tt)*) $(->$ret:ty)? = $body:expr;)*) => {
         $($(#[$meta])* fn $name($($args)*) $(->$ret)? { $body })*
     };
 }
@@ -49,7 +49,7 @@ struct Counting {
 
 /// 测试 trait 的单表达式实现复用同一声明骨架。
 macro_rules! trait_methods {
-    ($trait:ident { $($type:ident { $($name:ident($($args:tt)*) $(->$ret:ty)? = $body:expr; )* }) }) => {
+    ($trait:ident { $($type:ident { $($name:ident($($args:tt)*) $(->$ret:ty)? = $body:expr; )* })* }) => {
         $(impl $trait for $type { $(fn $name($($args)*) $(->$ret)? { $body })* })*
     };
 }
@@ -63,21 +63,17 @@ fn map_f32(
     apply: impl FnOnce(&[&[f32]], &mut [f32]),
 ) -> Result<()> {
     if inputs.len() != arity || outputs.len() != 1 {
-        return Err(Error::new(Code::Invalid, "操作数数量不符").with(site));
+        return Err(crate::invalid(site, "操作数数量不符"));
     }
     let typed: Vec<&[f32]> = inputs
         .iter()
-        .map(|input| {
-            input
-                .f32()
-                .ok_or_else(|| Error::new(Code::Invalid, "输入不是 f32").with(site))
-        })
+        .map(|input| input.f32().ok_or_else(|| crate::invalid(site, "输入不是 f32")))
         .collect::<Result<_>>()?;
     let output = outputs[0]
         .f32_mut()
-        .ok_or_else(|| Error::new(Code::Invalid, "输出不是 f32").with(site))?;
+        .ok_or_else(|| crate::invalid(site, "输出不是 f32"))?;
     if typed.iter().any(|input| input.len() != output.len()) {
-        return Err(Error::new(Code::Invalid, "形状不一致").with(site));
+        return Err(crate::invalid(site, "形状不一致"));
     }
     apply(&typed, output);
     Ok(())
@@ -117,43 +113,35 @@ trait_methods! {
 
 tests! {
     total_threads_multiplies_grid_and_block {
-        assert_eq!(Launch::new([2, 3, 1], [4, 5, 1]).total_threads(), 120);
-        assert_eq!(Launch::new([0, 1, 1], [1, 1, 1]).total_threads(), 0);
+        assert_eq!((Launch::new([2, 3, 1], [4, 5, 1]).total_threads(), Launch::new([0, 1, 1], [1, 1, 1]).total_threads()), (120, 0));
     }
 
     scalar_slots_start_empty {
-        let launch = launch();
-        assert!(launch.scalars().is_empty());
-        assert_eq!(launch.scalars().rope_position(), None);
+        assert_eq!((launch().scalars().is_empty(), launch().scalars().rope_position()), (true, None));
     }
 
     a_rope_position_round_trips_through_the_node {
         let mut scalars = ScalarSlots::new();
         scalars.set_rope_position(7);
-        let node = Node::new("rope_f32", launch().with_scalars(scalars));
-        assert_eq!(node.scalars().rope_position(), Some(7));
-        assert_eq!(node.launch().scalars().rope_position(), Some(7));
+        let built = Node::new("rope_f32", launch().with_scalars(scalars));
+        assert_eq!((built.scalars().rope_position(), built.launch().scalars().rope_position()), (Some(7), Some(7)));
         let mut other = node("rope_f32");
         other.scalars_mut().set_rope_position(12);
         assert_eq!(other.scalars().rope_position(), Some(12));
     }
 
     a_graph_keeps_insertion_order {
-        let mut graph = Graph::new();
-        assert!(graph.is_empty());
-        graph.push(node("a"));
-        graph.push(node("b"));
-        assert_eq!(graph.len(), 2);
+        assert!(Graph::new().is_empty());
+        let graph = graph(&["a", "b"]);
         let names: Vec<&str> = graph.nodes().iter().map(Node::name).collect();
-        assert_eq!(names, ["a", "b"]);
+        assert_eq!((graph.len(), names.as_slice()), (2, ["a", "b"].as_slice()));
     }
 
     cloned_graph_writes_are_independent {
         let mut original = graph(&["a"]);
         let mut cloned = original.clone();
         cloned.push(node("b"));
-        assert_eq!(original.len(), 1);
-        assert_eq!(cloned.len(), 2);
+        assert_eq!((original.len(), cloned.len()), (1, 2));
         original.nodes_mut()[0].scalars_mut().set_rope_position(9);
         assert!(cloned.nodes()[0].scalars().rope_position().is_none());
     }
@@ -161,8 +149,7 @@ tests! {
     an_executor_only_needs_submit {
         let mut executor = Counting { device: Device::new("cpu", "generic"), submitted: 0 };
         executor.submit(&graph(&["gemv_i4"]), Stream::new(0)).expect("提交");
-        assert_eq!(executor.submitted, 1);
-        assert_eq!(executor.device().vendor(), "cpu");
+        assert_eq!((executor.submitted, executor.device().vendor()), (1, "cpu"));
         executor.sync(Stream::new(0)).expect("CPU 同步是空操作");
     }
 
@@ -170,8 +157,7 @@ tests! {
         let mut executor = local();
         submit(&mut executor, &["a", "b"], 0);
         submit(&mut executor, &["c"], 0);
-        assert_eq!(pending_names(&executor), ["a", "b", "c"]);
-        assert_eq!(executor.len(), 3);
+        assert_eq!((pending_names(&executor), executor.len()), (vec!["a", "b", "c"], 3));
     }
 
     local_sync_drains_only_the_named_stream {
@@ -179,8 +165,7 @@ tests! {
         submit(&mut executor, &["x", "y"], 0);
         submit(&mut executor, &["z"], 1);
         executor.sync(Stream::new(0)).expect("排干流 0");
-        assert_eq!(pending_names(&executor), ["z"]);
-        assert_eq!(executor.pending()[0].stream(), Stream::new(1));
+        assert_eq!((pending_names(&executor), executor.pending()[0].stream()), (vec!["z"], Stream::new(1)));
     }
 
     local_executor_empty_graph_submits_nothing {
@@ -191,8 +176,7 @@ tests! {
 
     local_executor_reports_bound_device {
         let executor = LocalExecutor::new(Device::new("cpu", "aarch64"), Box::new(CpuAllocator::new()));
-        assert_eq!(executor.device().vendor(), "cpu");
-        assert_eq!(executor.device().arch(), "aarch64");
+        assert_eq!((executor.device().vendor(), executor.device().arch()), ("cpu", "aarch64"));
     }
 
     /// 装饰器转发不改语义，提交序被记录，同步只排被装饰执行器的那条流。
@@ -214,29 +198,23 @@ tests! {
     }
 
     a_new_node_has_no_operands {
-        let node = node("softmax_f32");
-        assert!(node.inputs().is_empty());
-        assert!(node.outputs().is_empty());
+        assert!(node("softmax_f32").inputs().is_empty() && node("softmax_f32").outputs().is_empty());
     }
 
     node_binds_input_and_output_operands {
         let node = bound("gemv_f32", &[0, 1], &[2]);
         let inputs: Vec<u32> = node.inputs().iter().map(Operand::id).collect();
         let outputs: Vec<u32> = node.outputs().iter().map(Operand::id).collect();
-        assert_eq!(inputs, [0, 1]);
-        assert_eq!(outputs, [2]);
-        assert_eq!(node.inputs()[0].role(), OperandRole::Input);
-        assert_eq!(node.outputs()[0].role(), OperandRole::Output);
+        assert_eq!((inputs, outputs), (vec![0, 1], vec![2]));
+        assert_eq!((node.inputs()[0].role(), node.outputs()[0].role()), (OperandRole::Input, OperandRole::Output));
     }
 
     queued_node_keeps_its_operand_bindings {
-        let mut graph = Graph::new();
-        graph.push(bound("rope_f32", &[3], &[4]));
+        let graph = graph_of([bound("rope_f32", &[3], &[4])]);
         let mut executor = local();
         executor.submit(&graph, Stream::new(0)).expect("提交");
         let queued = executor.pending();
-        assert_eq!(queued[0].node().inputs()[0].id(), 3);
-        assert_eq!(queued[0].node().outputs()[0].id(), 4);
+        assert_eq!((queued[0].node().inputs()[0].id(), queued[0].node().outputs()[0].id()), (3, 4));
     }
 
     a_cpu_executor_writes_through_the_bound_operands {
@@ -244,8 +222,7 @@ tests! {
         executor.bind(0, Buf::F32(vec![1.0, 2.0, 3.0]));
         executor.bind(1, Buf::F32(vec![0.0; 3]));
         executor.run(&bound("scale", &[0], &[1])).expect("执行");
-        assert_eq!(executor.get(0).expect("输入还在"), [1.0, 2.0, 3.0]);
-        assert_eq!(executor.get(1).expect("输出写回"), [2.0, 4.0, 6.0]);
+        assert_eq!((executor.get(0).expect("输入还在"), executor.get(1).expect("输出写回")), ([1.0, 2.0, 3.0].as_slice(), [2.0, 4.0, 6.0].as_slice()));
     }
 
     /// 图序就是执行序：第二个节点读到第一个节点写过的值，同步前不写结果。
@@ -255,14 +232,10 @@ tests! {
         for (id, values) in [(0, [1.0, 1.0]), (1, [0.0; 2]), (2, [10.0, 20.0]), (3, [0.0; 2])] {
             executor.bind(id, Buf::F32(values.to_vec()));
         }
-        let graph = graph_of([bound("scale", &[0], &[1]), bound("add", &[1, 2], &[3])]);
-        executor.submit(&graph, Stream::new(0)).expect("入队");
-        assert_eq!(executor.len(), 2);
-        assert_eq!(executor.get(3).expect("输出缓冲"), [0.0, 0.0]);
+        executor.submit(&graph_of([bound("scale", &[0], &[1]), bound("add", &[1, 2], &[3])]), Stream::new(0)).expect("入队");
+        assert_eq!((executor.len(), executor.get(3).expect("输出缓冲")), (2, [0.0, 0.0].as_slice()));
         executor.sync(Stream::new(0)).expect("执行");
-        assert!(executor.is_empty());
-        assert_eq!(executor.get(3).expect("最后一步输出"), [13.0, 23.0]);
-        assert_eq!(executor.bindings().len(), 4);
+        assert_eq!((executor.is_empty(), executor.get(3).expect("最后一步输出"), executor.bindings().len()), (true, [13.0, 23.0].as_slice(), 4));
     }
 
     an_unregistered_kernel_is_refused_by_name {

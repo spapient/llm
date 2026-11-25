@@ -42,7 +42,7 @@
 
 **合并判据是「同构」，不是「消费者数量」。** 一个成员只有一条入边时，它通常是边界而不是肥肉：`storage` 独自持有全仓唯一的 `unsafe` 岛（`tensor` 是 `deny(unsafe_code)` 且有 11 个消费者），`algorithm` 刻意不产 `ContractSpec`（`nn` 专产），`shard` 坐 L5 而 `train` 坐 L6。可合并的硬信号只有一个——两个成员的 `lib.rs` / `build.rs` 除专名外**逐字相同**：六台设备 crate 并入 `prof`（原 `frag`）时按这条判据删掉 512 行、补回 55 行，净省 457 行。反面的账同样要算：一次合并能省的至多是该 crate 的 `Cargo.toml`（全仓 1060 行 / 33 个，约 32 行）加一段头注释，指望靠合并兑现「代码大量减少」是算错账。裁决过程与测量数字见 [lld.md](lld.md) v3.0.90。
 
-允许的边（当前全量，共 112 条，含 50 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benchmarks` / `testkit` 的边不参与运行时方向判定）：
+允许的边（当前全量，共 113 条，含 50 条 `+dev` 边；工具成员 `annotation` / `fuzz` / `benchmarks` / `testkit` 的边不参与运行时方向判定）：
 
 ```
 diagnostic → （叶：错误类型 + `toml`，被大量成员消费；运行时出边为零；`+dev` 只登记夹具）
@@ -55,7 +55,7 @@ storage    → diagnostic, tensor    +dev: testkit（扁平缓冲与分配、折
 tokenizer  → diagnostic    +dev: testkit（词表与分词）
 weights    → diagnostic, dtype, storage, tensor    +dev: storage, testkit（`storage` 由 `mmap` feature 可选启用，复用其唯一 unsafe 岛）
 autograd   → diagnostic, tensor    +dev: testkit（反向图与显存计划）
-nn         → annotation, diagnostic, cutile, prof, tensor, weights    +dev: testkit（内核装配 + 神经算子 + 唯一注册表；`cutile::native` 是到 `prof::native` 的零成本转发面，nn 经它上提 i8/sme 探针与瓦片几何，不再直引 prof 内核层）
+nn         → annotation, diagnostic, cutile, dtype, prof, tensor, weights    +dev: testkit（内核装配 + 神经算子 + 唯一注册表；`cutile::native` 是到 `prof::native` 的零成本转发面，nn 经它上提 i8/sme 探针与瓦片几何，不再直引 prof 内核层）
 algorithm  → diagnostic, nn    +dev: prof, testkit（架构变体的参考语义：产出张量流而非 `ContractSpec`，故不认识 `tensor` / `weights`）
 shard      → cutile, diagnostic, nn, prof    +dev: testkit（切分拓扑、集合通信与原 `optim` 的编译执行面）
 train      → autograd, diagnostic, nn, prof, shard, storage, tensor, weights    +dev: annotation, testkit
@@ -81,7 +81,7 @@ testkit    → （叶    +dev: autograd, cutile, nn, prof, tensor, tools, train,
 | `Panel` / `Sheet` / `Align` / `join_names` / `human_bytes` / `per_run` | `diagnostic`（`render` 模块） | 人读渲染：带标题的两列面板、Markdown 表（表头 / 分隔行 / 逐列对齐只在这里拼）、顿号列表、1024 进制字节与单次耗时；只接字符串与数，不做判定 |
 | `Rng` / `Uniform` / `Normal` / `Bernoulli` | `train` | 计数器型确定性随机与三个构造期校验参数的分布；采样是 `u ∈ [0,1) → 元素` 的纯映射 |
 | `LoaderConfig` | `train` | 批装配配置：行列几何与采样三态（顺序 / 种子洗牌 / 权重有放回）一次性收口到构造期校验，热路径不再做合法性分支；洗牌与加权随机流只由种子派生 |
-| `DType` / `QType` / `MxType` / `Element` / `FloatLayout` / `Class` / `DTypeSpec` | `dtype` | 全仓唯一精度事实源，三轴分文件（标量 / GGML 块量化 / OCP MX）；只放身份与布局元数据，反量化算法留在 `weights`。`Class` 是数值类别闭集（整数 / 浮点 / 亚字节打包），`DTypeSpec` 是声明侧的精度规格，二者经 `tensor` 再导出给张量层按身份取用 |
+| `DType` / `QType` / `MxType` / `Element` / `FloatLayout` / `Class` / `DTypeSpec` / `WeightFormat` | `dtype` | 全仓唯一精度事实源，三轴分文件（标量 / GGML 块量化 / OCP MX）与共享组合格式；只放身份、布局与量化分组，反量化算法留在 `weights`，算子选择留在 `nn`。`Class` 是数值类别闭集（整数 / 浮点 / 亚字节打包），`DTypeSpec` 是声明侧的精度规格，`WeightFormat` 复用 `DType` 并补充可选分组，不携带算子或设备语义 |
 | `Dirs` | `cutile` | 内核要的三个目录（缓存根 / 工作目录 / 可选数据根）——纯数据，不带默认值、不读环境变量、不认识命令行 |
 | `Settings` / `Roots` / `SettingValue` | `cli` | 配置键的解析策略：来源分层与追踪、平台默认目录、相对路径基准；键表一行一个，`describe` 与"未登记键"都从同一张表派生 |
 | `Expr` / `Extents` / `Operand` / `Axes` / `Bits` / `Cost` / `Buf` | `prof` | 求和表达式的语义：一条式子推出 `flops` 与最少流量；`Buf` 是内核样本的具名缓冲。不认识设备、tile 或片段 |
@@ -151,7 +151,7 @@ testkit    → （叶    +dev: autograd, cutile, nn, prof, tensor, tools, train,
 | `Plan` / `Budget` / `Choice` / `Footprint` / `Sizes` / `MemoryPolicy` | `autograd` | 显存计划：只读 `Tape`、`Schedule` 与形状表，不分配、不执行。与 `cutile::plan::Plan`（单条 kernel 选哪个 tile）不是同一件事 |
 | `Replay` / `Store` | `autograd` | 重放执行：把计划编成扁平序列表；`Store` 是唯一口子，真实缓冲归 `train` |
 | `Summary` | `autograd` | 图规模与可达性的只读计数快照，供诊断、缓存键与容量预估 |
-| `Contract` / `ContractSpec` / `Linear` / `LmHead` / `WeightFormat` / `ParamRole` / `OpLayer` / `LayerConfig` / `ModelConfig` | `nn` | 层定义与契约校验：产出的算子名必须存在于 `nn` 注册表；`WeightFormat` 是格式 → 算子名的唯一事实源（精度档是一条线：2 / 4 / 8 位量化与 2 / 4 位打包各占一档，量化档的分组从对应算子的语义表读出，层里不写第二份常数），`ParamRole` 让权重衰减豁免与可训练判定从角色派生；`OpLayer` 是运行期配置化的单轴层（算子名 / 长度 / 角色都是构造参数，契约与编译期层同源同一个 `AxisCore`）；`LayerConfig` 是逐条外部描述物化既有层的配置枚举，`ModelConfig` 是按执行顺序持有完整层栈的可序列化配置，二者拒绝未知字段；`build` 产物仍是原有具体类型的 trait object，不另设第二套层实现 |
+| `Contract` / `ContractSpec` / `Linear` / `LmHead` / `ParamRole` / `OpLayer` / `LayerConfig` / `ModelConfig` | `nn` | 层定义与契约校验：产出的算子名必须存在于 `nn` 注册表；`Linear::operator_for` 是格式 → 算子名的唯一事实源（精度档是一条线：2 / 4 / 8 位量化与 2 / 4 位打包各占一档，量化档的分组从对应算子的语义表读出，层里不写第二份常数），`ParamRole` 让权重衰减豁免与可训练判定从角色派生；`OpLayer` 是运行期配置化的单轴层（算子名 / 长度 / 角色都是构造参数，契约与编译期层同源同一个 `AxisCore`）；`LayerConfig` 是逐条外部描述物化既有层的配置枚举，`ModelConfig` 是按执行顺序持有完整层栈的可序列化配置，二者拒绝未知字段；`build` 产物仍是原有具体类型的 trait object，不另设第二套层实现 |
 | `RmsNorm` / `Softmax` / `Sigmoid` / `Tanh` / `Relu` / `Gelu` / `Silu` / `LeakyRelu` / `HardSigmoid` / `Rope` / `Scale` / `Add` / `Sub` / `Mul` / `Div` / `Max` / `Min` / `Exp` / `Log` / `Embedding` / `Scan` / `MatMul` / `Gauge` / `Precision` / `Attention` / `AttentionAlgo` / `LatentAttention` / `DecodeAttention` | `nn` | 单算子层（`src/single.rs` / `src/attention.rs`）：形状完全由构造参数给出、没有窗口/分组几何，两族只差权重口径；解码注意力按算子表声明的历史档给**松下界**，不假装知道真实 KV 长度：只固定自己绑定的算子名与形状口径；下界仍由算子语义表推出，层里不写第二份流量常数。`MatMul` 另带两条轴——`Precision`（元素精度）与 `Gauge`（收缩轴档位）选算子（`Gauge::Short` 是 `gemm_*`、`K = 8`，`Gauge::Long` 是 `matmul_*`、`K = 4096`，同一族在算子表里是两个档，差 512 倍），「精度 × 档位」写成一张表，表里没有的组合报 `Unsupported` 而不是借兄弟算子凑一个数 |
 | `Conv1d` / `Conv2d` / `ConvTranspose1d` / `ConvTranspose2d` / `MaxPool1d` / `MaxPool2d` / `AvgPool2d` / `AdaptiveAvgPool2d` / `Interpolate` / `BatchNorm2d` / `GroupNorm` / `InstanceNorm` / `LayerNorm` | `nn` | 经典几何层（`src/spatial.rs`）：每个层只固定自己绑定的 `nn` 算子名与形状口径，窗口 / 步长 / 分组等几何与数值算术都在 `nn` 侧（`conv` / `kernel`），层里不写第二份流量常数。归一化族与卷积 / 池化 / 插值共享同一条形状约定（末轴是通道）与同一档下界口径（问算子语义表），只是不碰窗口——判据是**声明口径相同**而不是行数，故同住 `spatial`；两族都只用到「逐字段必须非零」这一条校验，`nonzero` 因此上提到 `lib` 与 `nonzero_all` 并列 |
 | `Cell` / `Recurrent` / `RecurrentTensor` | `nn` | 循环层（`src/recurrent.rs`）：`Cell` 是门结构（RNN 单门 / GRU 三门 / LSTM 四门，门数与激活次数都从它推、下界按真实次数收），`RecurrentTensor` 是方向内的一件权重（输入侧 / 隐侧 × 矩阵 / 偏置四件，名字与形状对齐真实 checkpoint），`Recurrent` 是 `layers` 层 × `dirs` 方向的循环层：绑定 `gemv_f32` 门投影 + 单元的激活算子，不拥有门控数值本身 |
