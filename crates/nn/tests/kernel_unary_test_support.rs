@@ -100,6 +100,32 @@ pub(crate) fn assert_unary_edge(
     }
 }
 
+/// `scale` 的固定边界与全精度检查共用原 `edge_cases_match_reference` 测试。
+pub(crate) fn assert_scale_edge(
+    forward: fn(tensor::View<'_, f32>, &mut [f32]) -> diagnostic::Result<()>,
+    alpha: f32,
+) {
+    assert_unary_edge(forward, &[1.0], &[alpha], &[0.0]);
+    check_scale_tiers(alpha);
+}
+
+fn check_scale_tiers(alpha: f32) {
+    check_scale_tier::<f64>(alpha, 1e-12);
+    check_scale_tier::<half::f16>(alpha, 1e-2);
+    check_scale_tier::<half::bf16>(alpha, 2e-2);
+}
+
+fn check_scale_tier<K: crate::scalar::Scalar>(alpha: f32, tol: f64) {
+    let alpha = K::from_f64(f64::from(alpha));
+    let input = [-2.0, 0.0, 3.0].map(K::from_f64);
+    let want = [-K::from_f64(2.0) * alpha, K::ZERO, alpha * K::from_f64(3.0)];
+    let mut got = [K::ZERO; 3];
+    crate::scale::forward(tensor::View::one(&input), &mut got).expect("等长");
+    for (got, want) in got.iter().zip(want) {
+        assert!((got.to_f64() - want.to_f64()).abs() < tol, "{got:?} vs {want:?}");
+    }
+}
+
 pub(crate) use unary_op_tests;
 pub(crate) use unary_pair_tests;
 pub(crate) use unary_tier_tests;

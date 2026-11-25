@@ -129,8 +129,6 @@ pub(crate) mod ops {
     pub mod gelu_f32 {
         //! 逐元素 GELU 激活（精确 erf 版）：`y[n] = 0.5*a[n]*(1 + erf(a[n]/sqrt(2)))`。
 
-        use crate::scalar::Scalar;
-
         /// 标量误差函数：Abramowitz-Stegun 手册公式 7.1.26（`|误差| < 1.5e-7`），泛型到浮点标量档。
         pub fn erf<K: Scalar>(x: K) -> K {
             let sign = if x < K::ZERO { -K::ONE } else { K::ONE };
@@ -199,32 +197,10 @@ pub(crate) mod ops {
             ScaleModel,
             "scale",
             unary_op_tests,
-            assert_unary_edge(forward, &[1.0], &[ALPHA], &[0.0]),
+            assert_scale_edge(forward, ALPHA),
             |x| K::from_f64(ALPHA as f64) * x,
             |len| crate::model::linear(len, 0.25, -2.0)
         );
-
-        #[cfg(test)]
-        mod tier_tests {
-            use super::*;
-            use crate::scalar::Scalar;
-
-            fn check<K: Scalar>(tol: f64) {
-                let input = [-2.0, 0.0, 3.0].map(K::from_f64);
-                let mut out = [K::ZERO; 3];
-                forward(tensor::View::one(&input), &mut out).expect("等长");
-                for (got, want) in out.iter().zip([-1.0, 0.0, 1.5]) {
-                    assert!((got.to_f64() - want).abs() < tol, "{got:?} vs {want}");
-                }
-            }
-
-            #[test]
-            fn forward_supports_every_float_tier() {
-                check::<f64>(1e-12);
-                check::<half::f16>(1e-2);
-                check::<half::bf16>(2e-2);
-            }
-        }
     }
 }
 
@@ -409,15 +385,14 @@ macro_rules! unary_f32 {
         #[doc = concat!("`", $op, "` 的语义别名。")]
         pub type $alias = $name;
 
+        use $crate::scalar::Scalar;
+
         /// 内核入口：结果写进调用方给的缓冲。
         ///
         /// # Errors
         ///
         /// 输入与输出等长，否则返回说明。
-        pub fn forward<K: $crate::scalar::Scalar>(
-            a: tensor::View<'_, K>,
-            out: &mut [K],
-        ) -> diagnostic::Result<()> {
+        pub fn forward<K: Scalar>(a: tensor::View<'_, K>, out: &mut [K]) -> diagnostic::Result<()> {
             $crate::unary::forward::<K, $name>(a, out)
         }
 
@@ -425,7 +400,7 @@ macro_rules! unary_f32 {
         mod tests {
             use super::*;
             #[allow(unused_imports)]
-            use $crate::unary::test_support::assert_unary_edge;
+            use $crate::unary::test_support::{assert_scale_edge, assert_unary_edge};
             $crate::unary::test_support::$kind!($name, forward);
 
             #[test]
