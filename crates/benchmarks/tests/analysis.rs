@@ -55,16 +55,18 @@ pub(crate) fn on_disk(name: &str) -> String {
     safe
 }
 
-/// criterion 的输出目录：`target/criterion/<group>/<benchmark>/new/estimates.json`。
-///
-/// 目标目录在**工作区根**（`crates/benchmarks/../..`），不在本成员的目录下：criterion 由
-/// `cargo bench` 调用，写的是调用方的 `target/`。
+/// Criterion 根目录：默认是工作区 `target/criterion`，复盘快照可由环境变量显式指定。
+pub(crate) fn criterion_root(manifest: &Path) -> PathBuf {
+    std::env::var_os("LLM_BENCH_CRITERION_ROOT").map_or_else(
+        || manifest.join("../..").join("target/criterion"),
+        PathBuf::from,
+    )
+}
+
+/// criterion 的输出目录：`<根>/<分组>/<用例>/new/estimates.json`，与登记检查同源。
 pub(crate) fn estimates(manifest: &Path, group: &str, benchmark: &str) -> PathBuf {
-    manifest
-        .join("../..")
-        .join("target/criterion")
-        .join(on_disk(group))
-        .join(on_disk(benchmark))
+    criterion_root(manifest)
+        .join(measurement_id(group, benchmark))
         .join("new/estimates.json")
 }
 

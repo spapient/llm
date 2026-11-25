@@ -13,12 +13,6 @@ mod host;
 mod record;
 mod table;
 
-#[path = "../src/fixtures.rs"]
-#[allow(dead_code)]
-mod fixtures;
-#[path = "../src/protocol.rs"]
-mod protocol;
-
 pub(crate) use analysis::*;
 pub(crate) use archive::*;
 pub(crate) use host::*;

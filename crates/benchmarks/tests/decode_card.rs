@@ -1,4 +1,4 @@
-//! 协议卡的真实 decode 测量装置；断言保留在回归测试中，判定规则仍属 `tool::card`。
+//! 协议卡的真实 decode 测量装置；判定规则由 `tool::card` 持有。
 
 use std::hint::black_box;
 use std::path::{Path, PathBuf};

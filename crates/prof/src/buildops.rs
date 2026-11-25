@@ -14,6 +14,19 @@ use crate::{Device, buildgen, fail};
 /// 循环展开锚点：正文标记位置，`kernels.toml` 决定因子。
 const UNROLL_MARKER: &str = "/* cutile-unroll */";
 
+/// Rust 常量与 C 模板槽位的唯一映射：槽位、微内核族、配置键。
+const NATIVE_FIELDS: &[(&str, &str, &str)] = &[
+    ("FMA_MR", "fma", "mr"),
+    ("FMA_NR", "fma", "nr"),
+    ("FMA_KB", "fma", "kb"),
+    ("SDOT_MR", "sdot", "mr"),
+    ("SDOT_NR", "sdot", "nr"),
+    ("SDOT_CHAINS", "sdot", "chains"),
+    ("SME_MR", "sme", "mr"),
+    ("SME_NR", "sme", "nr"),
+    ("SME_MIN_ELEMS", "sme", "min_elems"),
+];
+
 /// 模板清单与后端正文表。
 pub fn template_tables_of(manifest: &Path, devices: &[Device]) -> (String, String) {
     render_template_tables(manifest, devices)
@@ -491,27 +504,14 @@ pub fn build_native(manifest: &Path, out: &Path) {
     std::fs::write(&c, rendered)
         .unwrap_or_else(|error| fail(format!("写 {} 失败：{error}", c.display())));
     let native = native_table(&table);
-    let mut contract = format!(
-        r#"#[doc = "gemm_micro 配置常量。"] pub const FMA_MR: usize = {};
-#[doc = "gemm_micro 配置常量。"] pub const FMA_NR: usize = {};
-#[doc = "gemm_micro 配置常量。"] pub const FMA_KB: usize = {};
-#[doc = "gemm_micro 配置常量。"] pub const SDOT_MR: usize = {};
-#[doc = "gemm_micro 配置常量。"] pub const SDOT_NR: usize = {};
-#[doc = "gemm_micro 配置常量。"] pub const SDOT_CHAINS: usize = {};
-#[doc = "gemm_micro 配置常量。"] pub const SME_MR: usize = {};
-#[doc = "gemm_micro 配置常量。"] pub const SME_NR: usize = {};
-#[doc = "gemm_micro 配置常量。"] pub const SME_MIN_ELEMS: usize = {};
-"#,
-        native_positive(native, "fma", "mr"),
-        native_positive(native, "fma", "nr"),
-        native_positive(native, "fma", "kb"),
-        native_positive(native, "sdot", "mr"),
-        native_positive(native, "sdot", "nr"),
-        native_positive(native, "sdot", "chains"),
-        native_positive(native, "sme", "mr"),
-        native_positive(native, "sme", "nr"),
-        native_positive(native, "sme", "min_elems"),
-    );
+    let mut contract = String::new();
+    for (slot, family, key) in NATIVE_FIELDS {
+        let value = native_positive(native, family, key);
+        let _ = writeln!(
+            contract,
+            "#[doc = \"gemm_micro 配置常量。\"] pub const {slot}: usize = {value};"
+        );
+    }
     contract.push_str("unsafe extern \"C\" {\n\
         #[cfg(not(all(target_arch = \"x86_64\", target_env = \"msvc\")))] fn cutile_fma_micro(a: *const f32, b: *const f32, out: *mut f32, row: i32, col: i32, n: i32, kb: i32, first: i32);\n\
         #[cfg(all(target_arch = \"x86_64\", target_env = \"msvc\"))] fn cutile_fma_micro_avx2(a: *const f32, b: *const f32, out: *mut f32, row: i32, col: i32, n: i32, kb: i32, first: i32);\n\
@@ -612,19 +612,8 @@ fn validate_native_family(native: &toml::Table, family: &str, allowed: &[&str]) 
 
 fn replace_native_slots(native: &toml::Table, text: &str) -> String {
     let mut out = text.to_owned();
-    for (slot, field) in [
-        ("FMA_MR", "mr"),
-        ("FMA_NR", "nr"),
-        ("FMA_KB", "kb"),
-        ("SDOT_MR", "mr"),
-        ("SDOT_NR", "nr"),
-        ("SDOT_CHAINS", "chains"),
-        ("SME_MR", "mr"),
-        ("SME_NR", "nr"),
-        ("SME_MIN_ELEMS", "min_elems"),
-    ] {
-        let family = slot.split_once('_').map_or("", |(head, _)| head);
-        let value = native_positive(native, &family.to_ascii_lowercase(), field);
+    for (slot, family, key) in NATIVE_FIELDS {
+        let value = native_positive(native, family, key);
         out = out.replace(&format!("{{{{{slot}}}}}"), &value.to_string());
     }
     out

@@ -1,7 +1,7 @@
 //! 层计划与族别分流：类型视图（投影/查表）优先，再按算子族别闭集归类等长族。
 
 use diagnostic::{Code, Error, Result};
-use nn::quant::{I4, I8};
+use nn::quant::{I2, I4, I8};
 use nn::{Contract, Embedding, Linear, MemoryBlock, Shape, WEIGHT_SUFFIX, WeightFormat};
 
 use crate::kernels::SITE;
@@ -110,7 +110,7 @@ pub(crate) struct MemorySpec {
     pub(crate) gate: f32,
 }
 
-/// 投影层必须能推出已注册算子名（F32 稠密或分组匹配内核的 int4/int8）；其余在此拒绝。
+/// 投影层必须能推出已注册算子名（F32 稠密或分组匹配内核的量化格式）；其余在此拒绝。
 /// 块内投影复用同一份判据，格式到算子名的映射统一走 [`WeightFormat::operator`]，不另立一份表。
 pub(crate) fn plan_operator(name: &str, linear: &Linear) -> Result<&'static str> {
     linear.format().operator().ok_or_else(|| {
@@ -283,9 +283,8 @@ pub(crate) fn linear_plan(
     params: &Params,
 ) -> Result<LayerPlan> {
     let operator = plan_operator(name, linear)?;
-    validate_quantized_shape(linear.format(), linear.in_features())?;
     let (weight_shape, scales_shape) =
-        projection_shapes(linear.format(), linear.in_features(), linear.out_features());
+        projection_shapes(linear.format(), linear.in_features(), linear.out_features())?;
     let mut plan = build_plan(
         LayerKind::Projection,
         operator.to_string(),
@@ -323,25 +322,15 @@ fn quantized_layout(format: WeightFormat) -> Option<(usize, usize)> {
 }
 
 /// 投影的驻留权重与标度形状：稠密 `[out, in]` 整块 f32；量化给打包字节
-/// `[out, in/cpb]` 加标度 `[out, in/group]`，与 GEMV/GEMM/反量化共用配置事实源。
+/// `[out, in/cpb]` 加标度 `[out, in/group]`。与 GEMV/GEMM/反量化共用配置事实源，
+/// 输入宽度不整除时返回 `Invalid`，不产出无效形状。
 pub(crate) fn projection_shapes(
     format: WeightFormat,
     in_features: usize,
     out_features: usize,
-) -> (Vec<usize>, Vec<usize>) {
+) -> Result<(Vec<usize>, Vec<usize>)> {
     let Some((cpb, group)) = quantized_layout(format) else {
-        return (vec![out_features, in_features], Vec::new());
-    };
-    (
-        vec![out_features, in_features / cpb],
-        vec![out_features, in_features / group],
-    )
-}
-
-/// 量化投影的整除校验：输入宽度必须是分组宽度（与每字节码数）的整数倍。
-pub(crate) fn validate_quantized_shape(format: WeightFormat, in_features: usize) -> Result<()> {
-    let Some((cpb, group)) = quantized_layout(format) else {
-        return Ok(());
+        return Ok((vec![out_features, in_features], Vec::new()));
     };
     if !in_features.is_multiple_of(group) || !in_features.is_multiple_of(cpb) {
         return Err(Error::new(
@@ -350,7 +339,10 @@ pub(crate) fn validate_quantized_shape(format: WeightFormat, in_features: usize)
         )
         .with(SITE));
     }
-    Ok(())
+    Ok((
+        vec![out_features, in_features / cpb],
+        vec![out_features, in_features / group],
+    ))
 }
 
 /// 等长族计划（一元点wise / 归一化 / 逐元素二元 / 位置编码）：宽度取自输出形状；归一化带 gamma

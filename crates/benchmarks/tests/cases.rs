@@ -200,7 +200,11 @@ pub(crate) fn model_records_carry_every_field_a_reader_needs_to_judge_it() {
 }
 
 // 协议卡只负责测量与搬运；门槛、区间和三态判定唯一由 `tool::card` 持有。
+#[path = "decode_card.rs"]
 mod decode_card;
+#[path = "../src/fixtures.rs"]
+#[allow(dead_code)]
+mod fixtures;
 use decode_card::{WINDOWS, archive, harness, jitter, protocol, samples};
 use tool::card::{Card, Shortfall, Standing};
 
@@ -278,10 +282,7 @@ fn registered_ids() -> std::collections::BTreeSet<String> {
 
 #[test]
 pub(crate) fn no_measurement_is_filed_under_an_unregistered_group() {
-    let root = std::env::var_os("LLM_BENCH_CRITERION_ROOT").map_or_else(
-        || Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/criterion"),
-        PathBuf::from,
-    );
+    let root = criterion_root(Path::new(env!("CARGO_MANIFEST_DIR")));
     if !root.is_dir() {
         testkit::skip(format!(
             "benchmarks: 还没跑过基准（{} 不存在）",
