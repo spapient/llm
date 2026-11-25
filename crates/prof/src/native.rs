@@ -90,7 +90,10 @@ pub mod sme {
 
     /// 整铺 SME GEMM；形状、缓冲或设备能力不满足时返回 `false`。
     pub fn gemm(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f32]) -> bool {
-        crate::runtime::gemm_micro::sme_gemm(a, b, m, n, k, out).unwrap_or(false)
+        let Some(panel_len) = m.checked_mul(k) else { return false; };
+        super::with_panels(panel_len, |panel| {
+            crate::runtime::gemm_micro::sme_gemm(a, b, m, n, k, out, panel).unwrap_or(false)
+        })
     }
 
     /// 线程上限同时受行块、列组和用户配置约束。
@@ -162,15 +165,8 @@ pub fn with_panels<R>(len: usize, f: impl FnOnce(&mut [f32]) -> R) -> R {
     })
 }
 
-/// 线程数：`LLM_THREADS` 环境变量优先，否则全核。四档 GEMM（f32 Nt/Tn、i8、SME）共用，
-/// 与具体精度无关，故住在 native 根而不是某个精度模块里。
-pub fn threads_override() -> usize {
-    std::env::var("LLM_THREADS")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .filter(|x| *x > 0)
-        .unwrap_or_else(|| thread::available_parallelism().map_or(1, std::num::NonZero::get))
-}
+/// 线程配置唯一实现由安全桥持有，公开路径不变。
+pub use crate::runtime::gemm_micro::threads_override;
 
 /// 向上对齐到 `block` 的整数倍：面板列宽补齐到 NR/I8_NR，补零列由零初始化面板承担。
 pub const fn align_up(x: usize, block: usize) -> usize {

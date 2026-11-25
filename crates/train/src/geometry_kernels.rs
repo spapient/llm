@@ -30,9 +30,15 @@ pub(crate) fn forward(
 ) -> Result<()> {
     match g {
         Norm { .. } | Group { .. } | Layer { .. } => forward_normalized(g, inputs, out, running),
-        Geometry::Conv2d { k, s, p, h, w, cin, cout } => {
-            forward_conv2d(inputs, out, Window { k, s, p }, (h, w, cin, cout))
-        }
+        Geometry::Conv2d {
+            k,
+            s,
+            p,
+            h,
+            w,
+            cin,
+            cout,
+        } => forward_conv2d(inputs, out, Window { k, s, p }, (h, w, cin, cout)),
         _ => forward_spatial(g, inputs, out),
     }
 }
@@ -45,10 +51,17 @@ fn forward_normalized(
     running: Option<&mut Running>,
 ) -> Result<()> {
     match g {
-        Norm { n, spatial, channels } => {
-            forward_batch_norm(inputs, out, running, n, spatial, channels)
-        }
-        Group { groups, n, spatial, channels } => GroupNorm {
+        Norm {
+            n,
+            spatial,
+            channels,
+        } => forward_batch_norm(inputs, out, running, n, spatial, channels),
+        Group {
+            groups,
+            n,
+            spatial,
+            channels,
+        } => GroupNorm {
             groups,
             channels,
             eps: EPS,

@@ -206,7 +206,9 @@ const DECLARED: &[(&str, Geometry)] = declared_geometries! {
     layer_norm => Layer { rows: R, width: W },
 };
 
+#[path = "geometry_kernels.rs"]
 mod kernels;
+#[path = "geometry_shapes.rs"]
 mod shapes;
 use shapes::{invalid, pool_len};
 
