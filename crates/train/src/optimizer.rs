@@ -4,6 +4,8 @@ use diagnostic::{Code, Error, Result};
 use nn::ParamRole;
 
 pub(crate) const SITE: &str = "train::Optimizer";
+type Table = Vec<Vec<f32>>;
+type Shapes<'a> = &'a [Option<(usize, usize)>];
 
 /// 参数角色对应的更新组。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -39,17 +41,22 @@ impl Group {
     }
 }
 
-/// 一个参数槽的可变更新视图。
-pub struct Slot<'a> {
+/// 参数槽的泛型数据：借用视图与拥有所有权共用同一布局。
+pub struct SlotData<P, G> {
     /// 参数值。
-    pub params: &'a mut [f32],
-    /// 已同步梯度。
-    pub grads: &'a mut [f32],
+    pub params: P,
+    /// 梯度。
+    pub grads: G,
     /// 参数角色。
     pub role: ParamRole,
     /// 矩阵形状，非矩阵为 `None`。
     pub shape: Option<(usize, usize)>,
 }
+/// 一个参数槽的可变更新视图。
+pub type Slot<'a> = SlotData<&'a mut [f32], &'a mut [f32]>;
+/// 会话取走的参数/梯度所有权，步进后按槽归还。
+pub type OwnedSlot = SlotData<Vec<f32>, Vec<f32>>;
+
 impl Slot<'_> {
     fn reborrow(&mut self) -> Slot<'_> {
         Slot {
@@ -59,18 +66,6 @@ impl Slot<'_> {
             shape: self.shape,
         }
     }
-}
-
-/// 会话取走的参数/梯度所有权，步进后按槽归还。
-pub struct OwnedSlot {
-    /// 参数值。
-    pub params: Vec<f32>,
-    /// 梯度向量。
-    pub grads: Vec<f32>,
-    /// 参数角色。
-    pub role: ParamRole,
-    /// 矩阵形状。
-    pub shape: Option<(usize, usize)>,
 }
 impl OwnedSlot {
     /// 借成短生命周期更新视图。
@@ -95,18 +90,13 @@ pub trait Optimizer {
         Ok(())
     }
     /// 回载矩状态与优化器步数。
-    fn restore(
-        &mut self,
-        momentum: Table,
-        variance: Table,
-        step: u64,
-    ) -> Result<()>;
+    fn restore(&mut self, momentum: Table, variance: Table, step: u64) -> Result<()>;
     /// 预检恢复输入；实现必须保证同一输入随后可原子提交。
     fn validate_restore(
         &self,
         momentum: &[Vec<f32>],
         variance: &[Vec<f32>],
-        shapes: &[Option<(usize, usize)>],
+        shapes: Shapes<'_>,
     ) -> Result<()> {
         let _ = shapes;
         paired(momentum, variance)
@@ -117,7 +107,7 @@ pub trait Optimizer {
         momentum: Table,
         variance: Table,
         step: u64,
-        shapes: &[Option<(usize, usize)>],
+        shapes: Shapes<'_>,
     ) -> Result<()> {
         let _ = shapes;
         self.restore(momentum, variance, step)
@@ -195,7 +185,7 @@ macro_rules! stock {
                 self.tuning.validate()?;
                 $valid(self)
             }
-            fn validate_restore(&self, m: &[Vec<f32>], v: &[Vec<f32>], _: &[Option<(usize, usize)>]) -> Result<()> {
+            fn validate_restore(&self, m: &[Vec<f32>], v: &[Vec<f32>], _: Shapes<'_>) -> Result<()> {
                 $check(m, v)
             }
             fn restore(&mut self, m: Table, v: Table, step: u64) -> Result<()> {
@@ -528,11 +518,7 @@ impl Partitioned {
         self.other.validate(other)
     }
 }
-fn split_shaped(
-    m: Table,
-    v: Table,
-    shapes: &[Option<(usize, usize)>],
-) -> Result<Partitioned> {
+fn split_shaped(m: Table, v: Table, shapes: Shapes<'_>) -> Result<Partitioned> {
     validation_rules!(SITE; m.len() == shapes.len() || m.is_empty() => "矩状态与形状表长度不符");
     let mut out = Partitioned::default();
     for (idx, (m, v)) in m.into_iter().zip(v).enumerate() {
@@ -587,12 +573,7 @@ impl<M: Optimizer, N: Optimizer> Hybrid<M, N> {
             clip: self.clip_norm,
         }
     }
-    fn validate_state(
-        &self,
-        m: &[Vec<f32>],
-        v: &[Vec<f32>],
-        shapes: &[Option<(usize, usize)>],
-    ) -> Result<()> {
+    fn validate_state(&self, m: &[Vec<f32>], v: &[Vec<f32>], shapes: Shapes<'_>) -> Result<()> {
         tables(m, v)?;
         for (idx, (slot, shape)) in m.iter().zip(shapes).enumerate() {
             if let Some((r, c)) = shape {
@@ -627,12 +608,7 @@ impl<M: Optimizer, N: Optimizer> Optimizer for Hybrid<M, N> {
         self.matrix.validate()?;
         self.other.validate()
     }
-    fn validate_restore(
-        &self,
-        m: &[Vec<f32>],
-        v: &[Vec<f32>],
-        shapes: &[Option<(usize, usize)>],
-    ) -> Result<()> {
+    fn validate_restore(&self, m: &[Vec<f32>], v: &[Vec<f32>], shapes: Shapes<'_>) -> Result<()> {
         self.validate_state(m, v, shapes)
     }
     fn restore(&mut self, m: Table, v: Table, step: u64) -> Result<()> {
@@ -640,13 +616,7 @@ impl<M: Optimizer, N: Optimizer> Optimizer for Hybrid<M, N> {
         self.matrix.restore(Vec::new(), Vec::new(), step)?;
         self.other.restore(Vec::new(), Vec::new(), step)
     }
-    fn restore_shaped(
-        &mut self,
-        m: Table,
-        v: Table,
-        step: u64,
-        shapes: &[Option<(usize, usize)>],
-    ) -> Result<()> {
+    fn restore_shaped(&mut self, m: Table, v: Table, step: u64, shapes: Shapes<'_>) -> Result<()> {
         self.validate_state(&m, &v, shapes)?;
         let states = split_shaped(m, v, shapes)?;
         states.matrix.restore(&mut self.matrix, step)?;

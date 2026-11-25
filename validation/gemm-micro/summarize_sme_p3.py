@@ -1,18 +1,21 @@
 import json
 import re
 import statistics
+import sys
 from collections import defaultdict
 from pathlib import Path
 
 HERE = Path(__file__).parent
 ROUNDS = 30
 PATTERN = re.compile(r"^\s+(i8|f32) (\d+x\d+x\d+): fast ([0-9.]+) GF/s \| fast单 ([0-9.]+) GF/s")
+DEFAULT_LOG = "sme-performance-p3-final.log"
+DEFAULT_OUTPUT = "sme-performance-p3-final.json"
 
 
-def read_samples():
+def read_samples(log_name):
     context = None
     samples = defaultdict(list)
-    for line in (HERE / "sme-performance-p3-final.log").read_text().splitlines():
+    for line in (HERE / log_name).read_text().splitlines():
         marker = re.fullmatch(r"ROUND (\d+) (OLD|NEW)", line)
         if marker:
             context = (marker.group(2), int(marker.group(1)))
@@ -62,7 +65,9 @@ def compare(samples):
 
 
 def main():
-    metrics = compare(read_samples())
+    log_name = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_LOG
+    output_name = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_OUTPUT
+    metrics = compare(read_samples(log_name))
     result = {
         "schema": 1,
         "unit": "GF/s",
@@ -78,9 +83,7 @@ def main():
         "median_gate_passed": all(item["median_delta_percent"] >= -3.0 for item in metrics),
         "metrics": metrics,
     }
-    (HERE / "sme-performance-p3-final.json").write_text(
-        json.dumps(result, ensure_ascii=False, indent=2) + "\n"
-    )
+    (HERE / output_name).write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
     for item in metrics:
         print(
             f"{item['dtype']:>3} {item['shape']:>15} {item['mode']:>11} | old {item['old']['median']:7.1f} | new {item['new']['median']:7.1f} | {item['median_delta_percent']:+6.2f}%"

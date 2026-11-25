@@ -14,6 +14,7 @@ void cutile_{{op}}_kernel(const float *x, const u8 *w, const float *scales,
         const int lanes = (N - n0 < {{nblock}}) ? (N - n0) : {{nblock}};
         const u8 *rows[{{nblock}}];
         float acc[{{nblock}}];
+        float deq[{{GMAX}}];
 
         for (int lane = 0; lane < lanes; ++lane) {
             acc[lane] = 0.0f;

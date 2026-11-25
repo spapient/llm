@@ -117,13 +117,13 @@
 |---|---|---|
 | 固定版本 `cargo test -p llm-annotation -p llm-prof -p cutile -p llm-shard` | 通过：annotation 59+6、prof 177+65、cutile 165、shard 192 | `../target/ops-directed-tests.log` |
 | 范围内全特性 Clippy，`-D warnings` | 通过 | `../target/ops-clippy.log` |
-| `cargo test -p llm-tools --test gate --locked` | 固定快照 13 项通过；当前工作区剩 `embed`、`rmsnorm`、`softmax`、`clamp` 四个 `nn` 碎文件失败，失效链接已修复 | `../target/ops-static-gate.log` |
+| `cargo test -p llm-tools --test gate --locked` | 固定快照 13 项通过；当前工作区剩 `fast`、`conv`、`gemv` 三个超大文件及 `embed`、`rmsnorm`、`softmax`、`clamp` 四个碎文件失败，失效链接已修复 | `../target/ops-static-gate.log` |
 | 全局 `npx --yes jscpd`，版本 5.4.3 | 530 个 Rust 文件，0 克隆，0% | `../target/ops-global-jscpd.log` |
 | 声明快照对拍 | 69 个既有算子不变，`gemv_i2/i4` 为经 L2 验证的有意变化，仅新增 `add_f32x4`，删除 0 | `../target/ops-equivalence.log` |
 | 格式与本次文件 `git diff --check` | 通过；全量 `git diff --check` 另被并行生成日志的行尾空白阻断 | 统一 CI 日志 |
-| `scripts/name-lint.sh` | 固定快照通过；当前工作区被 9 个并行扁平化文件名阻断 | `../target/ops-name-lint.log` |
+| `scripts/name-lint.sh` | 当前工作区与固定快照均通过 | `../target/ops-name-lint.log` |
 | 本轮 `cargo test -p llm-train --locked` | 252 通过、1 ignored；6 项 doc-test 通过；`prof` 与 `train` 严格 Clippy 通过 | `../target/ops-train-tests.log` |
-| 最新 `cargo test -p cutile --lib` | **未通过**：并行 `nn` 路径迁移缺少 `gemv_format.rs`，不覆盖固定候选证据 | `../target/ops-cutile-tests.log` |
+| 最新 `cargo test -p cutile --lib` | **166 通过、0 失败**，严格 Clippy 通过；`gemv_format.rs` 缺失已由并行内联迁移消除 | `../target/ops-cutile-tests.log` |
 | 固定快照 nextest | **3,022 通过、0 失败、18 skipped** | `../target/ops-ci-snapshot.log` |
 | 固定快照 `scripts/ci.sh` | **未通过**：密度预算 104,729 / 60,000 行，超出 44,729 行；此前的格式、Clippy、doc-test、依赖、静态门、架构门、宏展开、拼写和 actionlint 均通过 | `../target/ops-ci-snapshot.log` |
 | 固定快照 jscpd 有效路径复验 | 530 个 Rust 文件，0 克隆，0%；原 `target/` 内 0 文件阶段不计为证据 | `../target/ops-snapshot-jscpd.log` |
@@ -136,12 +136,12 @@
 |---|---|---|
 | 重复率 <0.5% | 通过 | 全局 jscpd 0%，未调整阈值 |
 | 新增复杂度 | 通过 | 静态门 13 项通过；不把 ratchet 通过等同于所有存量函数均 ≤5 |
-| 命名 | 部分通过 | 固定快照零命中；当前工作区 9 个并行扁平化文件未通过 |
+| 命名 | 通过 | 当前工作区与固定快照均零命中 |
 | 文件数量 | 通过且有实测 | `ops` 净减少 32 个 |
 | 文件 ≤300 行 | **未满足** | 仍有 10 个本次涉及文件超过 300 行，见下表 |
 | 复用覆盖率 ≥85% | 未证明 | 未生成合规的核心逻辑函数清单与承载比例 |
 | 功能密度 ≤常规实现 1/10 | **未满足** | 总行数下降 14.2%，不是 90% |
-| 全仓 `src` ≤60,000 行 | **未满足** | 当前工作区 109,476 行，超出 49,476 行；固定快照为 104,729 行 |
+| 全仓 `src` ≤60,000 行 | **未满足** | 当前工作区 109,501 行，超出 49,501 行；固定快照为 104,729 行 |
 | 性能提升 | **未证明** | release 配对仅有弱信号，不能确认稳定加速 |
 | 全平台数值/性能 | 未完成 | Intel/Windows、NVIDIA、MUSA 等目标设备未验收 |
 

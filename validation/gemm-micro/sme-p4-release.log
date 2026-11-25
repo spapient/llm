@@ -1,0 +1,10 @@
+
+running 5 tests
+test fast::tests::sme_matches_on_single_col_group ... ok
+test fast::tests::sme_matches_on_single_row_block ... ok
+test fast::tests::sme_matches_on_tile_multiples ... ok
+test fast::tests::sme_matches_when_threaded ... ok
+test fast::tests::sme_matches_at_full_thread_count ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 565 filtered out; finished in 0.09s
+
