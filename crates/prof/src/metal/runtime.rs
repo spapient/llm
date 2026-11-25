@@ -424,8 +424,8 @@ impl Executor for MetalExecutor {
                 idx += 1;
                 continue;
             }
-            let node = self.pending[idx].node().clone();
-            self.run(&node)?;
+            let queued = self.pending[idx].clone();
+            self.run(queued.node())?;
             self.pending.remove(idx);
         }
         Ok(())

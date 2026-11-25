@@ -269,8 +269,8 @@ impl Executor for CpuExecutor {
                 idx += 1;
                 continue;
             }
-            let node = self.queue[idx].node().clone();
-            self.run(&node)?;
+            let queued = self.queue[idx].clone();
+            self.run(queued.node())?;
             self.queue.remove(idx);
         }
         Ok(())

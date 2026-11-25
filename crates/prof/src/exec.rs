@@ -5,6 +5,7 @@
 //! 设备后端在 [`crate::runtime`] 岛内实现本缝，上层编排只按名字与几何提交节点。
 
 use diagnostic::{Code, Error, Result};
+use std::sync::Arc;
 
 /// 定长类型化闭集标量槽（D9 / ADR 0043）：首批仅 rope 解码位置。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -198,10 +199,18 @@ impl Node {
     }
 }
 
-/// 一张图：按插入顺序提交的节点列表。
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// 一张图：按插入顺序提交的节点列表；克隆共享节点，首次修改时才复制。
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Graph {
-    nodes: Vec<Node>,
+    nodes: Arc<[Node]>,
+}
+
+impl Default for Graph {
+    fn default() -> Self {
+        Self {
+            nodes: Arc::from(Vec::new()),
+        }
+    }
 }
 
 impl Graph {
@@ -210,9 +219,9 @@ impl Graph {
         Self::default()
     }
 
-    /// 追加一个节点。
+    /// 追加一个节点；与其它克隆共享时先复制节点表，保持写时独立。
     pub fn push(&mut self, node: Node) {
-        self.nodes.push(node);
+        Arc::make_mut(&mut self.nodes).push(node);
     }
 
     /// 全部节点，按插入顺序。
@@ -222,7 +231,7 @@ impl Graph {
 
     /// 全部节点的可变视图：装配宿主在提交前回填逐步变化的标量槽（如 rope 位置），不改执行几何。
     pub fn nodes_mut(&mut self) -> &mut [Node] {
-        &mut self.nodes
+        Arc::make_mut(&mut self.nodes)
     }
 
     /// 节点数。
@@ -297,11 +306,12 @@ pub trait Executor {
     }
 }
 
-/// 一条已提交到本地队列、尚未随其流同步的节点快照。
+/// 一条已提交到本地队列、尚未随其流同步的节点快照；共享图只增加一次 Arc 计数。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Queued {
     stream: Stream,
-    node: Node,
+    graph: Graph,
+    index: usize,
 }
 
 impl Queued {
@@ -312,16 +322,17 @@ impl Queued {
 
     /// 节点快照。
     pub fn node(&self) -> &Node {
-        &self.node
+        &self.graph.nodes()[self.index]
     }
 }
 
 /// 入队提交：把图里每个节点按流入队。各设备后端共用同一份口径。
 pub fn enqueue(queue: &mut Vec<Queued>, graph: &Graph, stream: Stream) {
-    for node in graph.nodes() {
+    for index in 0..graph.nodes().len() {
         queue.push(Queued {
             stream,
-            node: node.clone(),
+            graph: graph.clone(),
+            index,
         });
     }
 }
