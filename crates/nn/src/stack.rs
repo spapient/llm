@@ -559,7 +559,9 @@ fn projections_of(
 ) -> Result<Vec<(usize, Box<dyn Contract>)>> {
     let mut found: Vec<(usize, Box<dyn Contract>)> = Vec::new();
     for (at, entry) in rest {
-        match projection(header, entry)? {
+        match projection(header, entry)
+            .map_err(|error| error.with(format!("权重条目 `{}`", entry.name())))?
+        {
             Some(layer) => found.push((at, Box::new(layer))),
             None => uncovered.push(entry.name().to_string()),
         }
@@ -674,36 +676,23 @@ fn recovered(block: &str, entries: &[&Entry]) -> Vec<(String, Shape)> {
         .collect()
 }
 
-/// 一个条目能否被视为一次投影：能则给出层，不能则返回 `None`（进未覆盖清单）。
+/// 一个条目能否被视为一次投影：分支只决定格式与宽度，构造和诊断共用同一出口。
 fn projection(header: &Header, entry: &Entry) -> Result<Option<Linear>> {
     let name = layer_name(entry.name());
-    // 量化条目先问标度：宽度、分组与位宽都从那一处来；这是本函数里唯一需要"先问"的理由。
-    if let Some(quantized) = header.quantization(entry.name())? {
-        let format = quantized_format(quantized.group(), quantized.bits())
-            .map_err(|error| error.with(format!("权重条目 `{}`", entry.name())))?;
-        return Linear::with_format(
-            name,
-            format,
-            quantized.in_features(),
-            quantized.out_features(),
-        )
-        .map(Some)
-        .map_err(|error| error.with(format!("权重条目 `{}`", entry.name())));
-    }
-    dense_projection(name, entry)
-}
-
-/// 非量化投影只接受二维矩阵与已注册的稠密元素格式。
-fn dense_projection(name: &str, entry: &Entry) -> Result<Option<Linear>> {
-    let [out_features, in_features] = entry.shape().dims() else {
-        return Ok(None);
-    };
-    let Some(format) = WeightFormat::of_dtype(entry.dtype()) else {
-        return Ok(None);
-    };
-    Linear::with_format(name, format, *in_features, *out_features)
-        .map(Some)
-        .map_err(|error| error.with(format!("权重条目 `{}`", entry.name())))
+    let (format, in_features, out_features) =
+        if let Some(quantized) = header.quantization(entry.name())? {
+            let format = quantized_format(quantized.group(), quantized.bits())?;
+            (format, quantized.in_features(), quantized.out_features())
+        } else {
+            let [out_features, in_features] = entry.shape().dims() else {
+                return Ok(None);
+            };
+            let Some(format) = WeightFormat::of_dtype(entry.dtype()) else {
+                return Ok(None);
+            };
+            (format, *in_features, *out_features)
+        };
+    Linear::with_format(name, format, in_features, out_features).map(Some)
 }
 
 /// 量化位宽到编码的闭集映射；未知位宽绝不静默落入 int4。

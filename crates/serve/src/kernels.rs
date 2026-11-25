@@ -124,7 +124,7 @@ kernel!(
     gelu_f32,
     reduce_max_f32,
     reduce_sum_f32,
-    scale_f32,
+    scale,
     silu_f32,
     softmax_f32; unary
 );
@@ -529,7 +529,7 @@ const KERNELS: &[Entry] = &kernel_table![
     residual_add_f32,
     rmsnorm_f32,
     rope_f32,
-    scale_f32,
+    scale,
     silu_f32,
     softmax_f32,
 ];

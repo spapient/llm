@@ -22,7 +22,7 @@ fn mul_then_reduce_matches_central_differences() -> Result<()> {
 fn scale_silu_chain_matches_central_differences() -> Result<()> {
     let mut tape = Tape::new();
     let p = tape.parameter();
-    let h = tape.record("scale_f32", &[p]).expect("记录 h");
+    let h = tape.record("scale", &[p]).expect("记录 h");
     let y = tape.record("silu_f32", &[h]).expect("记录 y");
     let loss = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
 
@@ -33,7 +33,7 @@ fn scale_silu_chain_matches_central_differences() -> Result<()> {
 
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
     session.register_parameter(p, ParamRole::Trainable, p0.clone())?;
-    session.bufs().compute_step("scale_f32", &[p], h)?;
+    session.bufs().compute_step("scale", &[p], h)?;
     session.bufs().compute_step("silu_f32", &[h], y)?;
     sum_backward(&mut session, y, loss)?;
 

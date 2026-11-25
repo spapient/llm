@@ -53,7 +53,7 @@ struct OperatorFamily {
 const OPERATOR_FAMILIES: &[OperatorFamily] = &[
     OperatorFamily {
         kind: LayerKind::Unary,
-        operators: &["gelu_f32", "scale_f32", "silu_f32", "softmax_f32"],
+        operators: &["gelu_f32", "scale", "silu_f32", "softmax_f32"],
     },
     OperatorFamily {
         kind: LayerKind::Norm,

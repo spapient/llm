@@ -77,7 +77,7 @@ macro_rules! for_each_operator {
             rope_f32: $crate::rope_f32::RopeF32,
             round_f32: $crate::round_f32::RoundF32,
             rsqrt_f32: $crate::rsqrt_f32::RsqrtF32,
-            scale_f32: $crate::scale_f32::ScaleF32,
+            scale: $crate::scale::ScaleModel,
             scan_f32: $crate::conv::scan_f32::ScanF32,
             sigmoid_f32: $crate::sigmoid_f32::SigmoidF32,
             sign_f32: $crate::sign_f32::SignF32,

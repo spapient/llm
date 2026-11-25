@@ -2,6 +2,6 @@
 base = "gelu_f32"
 
 [op]
-name     = "scale_f32"
+name     = "scale"
 skeleton = "elementwise"
 summary  = "y[n] = alpha*x[n]"

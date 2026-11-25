@@ -331,14 +331,14 @@ fn unary_elementwise_runs_through_the_registered_kernel() {
     let mut gelu_ref = vec![0.0; 4];
     nn::gelu_f32::forward(tensor::View::one(&a), &mut gelu_ref).expect("参考");
     let mut scale_ref = vec![0.0; 4];
-    nn::scale_f32::forward(tensor::View::one(&a), &mut scale_ref).expect("参考");
+    nn::scale::forward(tensor::View::one(&a), &mut scale_ref).expect("参考");
 
     let mut executor = cpu();
     bind(&mut executor, 0, &a);
 
     let silu = run_one(&mut executor, "silu_f32", &[0], 1, 4);
     let gelu = run_one(&mut executor, "gelu_f32", &[0], 2, 4);
-    let scale = run_one(&mut executor, "scale_f32", &[0], 3, 4);
+    let scale = run_one(&mut executor, "scale", &[0], 3, 4);
 
     assert_close(&silu, &silu_ref);
     assert_close(&gelu, &gelu_ref);

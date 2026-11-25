@@ -18,7 +18,7 @@ macro_rules! unary_pair_tests {
                 $forward(tensor::View::one(&[1.0, 2.0]), &mut out).is_err(),
                 "输出比输入长"
             );
-            let mut empty = vec![];
+            let mut empty: Vec<f32> = Vec::new();
             $forward(tensor::View::one(&[]), &mut empty).expect("空行逐元素放行");
         }
     };
@@ -78,6 +78,26 @@ macro_rules! unary_tier_tests {
             $forward(tensor::View::one(empty_in), &mut empty).expect("空行逐元素放行");
         }
     };
+}
+
+/// 按表核对一元边界：`tol = 0` 保持精确相等，其余元素保持严格绝对容差。
+pub(crate) fn assert_unary_edge(
+    forward: fn(tensor::View<'_, f32>, &mut [f32]) -> diagnostic::Result<()>,
+    input: &[f32],
+    want: &[f32],
+    tol: &[f32],
+) {
+    assert_eq!(input.len(), want.len(), "输入与期望长度必须一致");
+    assert_eq!(input.len(), tol.len(), "输入与容差长度必须一致");
+    let mut got = vec![0.0; input.len()];
+    forward(tensor::View::one(input), &mut got).expect("等长");
+    for (idx, ((&got, &want), &tol)) in got.iter().zip(want).zip(tol).enumerate() {
+        if tol == 0.0 {
+            assert_eq!(got, want, "第 {idx} 项必须精确相等");
+        } else {
+            assert!((got - want).abs() < tol, "第 {idx} 项 {got} vs {want}（容差 {tol}）");
+        }
+    }
 }
 
 pub(crate) use unary_op_tests;

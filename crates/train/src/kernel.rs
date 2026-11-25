@@ -335,7 +335,7 @@ kernels!(
     configured!(rope_f32 => rope_f32; 7),
     unary!(round_f32 => round_f32),
     unary!(rsqrt_f32 => rsqrt_f32),
-    unary!(scale_f32 => scale_f32),
+    unary!(scale => scale),
     unary!(scan_f32 => scan_f32),
     unary!(sigmoid_f32 => sigmoid_f32),
     unary!(sign_f32 => sign_f32),

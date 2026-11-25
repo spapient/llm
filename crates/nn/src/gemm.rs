@@ -361,13 +361,7 @@ pub fn forward<G: Gemm>(
 /// 各打包 / 不打包格式共用的对拍：内核算出的结果必须与标量参考逐位一致。
 #[cfg(test)]
 pub(crate) fn matches_reference<G: Gemm>() {
-    let sample = sample::<G>(16, 12);
-    let expected = reference::<G>(&sample).expect("参考可计算");
-    let a = take::<G>(&sample, "a").expect("a");
-    let b = take::<G>(&sample, "b").expect("b");
-    let mut out = vec![0.0; 16 * 12];
-    forward::<G>(a, b, 16, 12, &mut out).expect("尺寸符");
-    assert_eq!(out, expected);
+    matches_reference_over_shapes::<G>(&[(16, 12)]);
 }
 
 /// 多形状对拍矩阵：每条格式在一档 `(m, n)` 配置上重放参考与内核，结果逐位一致。

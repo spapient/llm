@@ -211,8 +211,8 @@ pub use scalar::Scalar;
 pub use unary::abs_f16;
 pub use unary::ops::{
     abs_f32, ceil_f32, cos_f32, exp_f32, exp2_f32, floor_f32, gelu_f32, hard_sigmoid_f32,
-    leaky_relu_f32, log_f32, log1p_f32, neg_f32, recip_f32, relu_f32, round_f32, rsqrt_f32,
-    scale_f32, sigmoid_f32, sign_f32, silu_f32, sin_f32, sqrt_f32, square_f32, tanh_f32, trunc_f32,
+    leaky_relu_f32, log_f32, log1p_f32, neg_f32, recip_f32, relu_f32, round_f32, rsqrt_f32, scale,
+    sigmoid_f32, sign_f32, silu_f32, sin_f32, sqrt_f32, square_f32, tanh_f32, trunc_f32,
 };
 pub use {embed as embed_f32, rmsnorm as rmsnorm_f32, rope as rope_f32, softmax as softmax_f32};
 

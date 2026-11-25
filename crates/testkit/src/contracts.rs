@@ -285,9 +285,17 @@ fn walk_declarations(
     };
     let mut stack: Vec<(usize, String)> = Vec::new();
     let mut explicit: Option<String> = None;
+    let mut catalog = None;
     for line in text.lines() {
         let trimmed = line.trim_start();
         let indent = line.len() - trimmed.len();
+        if trimmed.ends_with("_catalog! {") {
+            catalog = Some(indent);
+            continue;
+        }
+        if trimmed == "}" && catalog == Some(indent) {
+            catalog = None;
+        }
         if let Some(rest) = trimmed.strip_prefix("#[path = \"") {
             explicit = rest.split('"').next().map(str::to_string);
             continue;
@@ -296,7 +304,7 @@ fn walk_declarations(
             // 属性行之外的任何一行都清掉待用属性：`#[path]` 只对它紧邻的那条 `mod` 生效。
             if !trimmed.starts_with("//") {
                 let pending = explicit.take();
-                if let Some((name, inline)) = module_declaration(trimmed) {
+                if let Some((name, inline)) = module_declaration(trimmed, catalog.is_some()) {
                     while stack.last().is_some_and(|(depth, _)| *depth >= indent) {
                         stack.pop();
                     }
@@ -322,9 +330,11 @@ fn walk_declarations(
 }
 
 /// 一行是不是模块声明：返回 `(模块名, 是否内联)`。
-/// `packed_variant!(i2, ...)` 展开成内联 `pub mod i2`，与逐字写出的模块声明同权。
-fn module_declaration(line: &str) -> Option<(String, bool)> {
-    let (name, inline) = if let Some(rest) = line.strip_prefix("packed_variant!(") {
+/// `packed_variant!(i2, ...)` 与目录表中的 `i2 => (...)` 都展开成内联模块。
+fn module_declaration(line: &str, catalog: bool) -> Option<(String, bool)> {
+    let (name, inline) = if catalog {
+        (line.split_once(" => (")?.0, true)
+    } else if let Some(rest) = line.strip_prefix("packed_variant!(") {
         (rest.split(',').next().unwrap_or_default().trim(), true)
     } else {
         let rest = line
@@ -343,12 +353,16 @@ fn module_declaration(line: &str) -> Option<(String, bool)> {
 }
 
 #[test]
-fn packed_variant_is_an_inline_module_declaration() {
+fn generated_modules_are_inline_module_declarations() {
     assert_eq!(
-        module_declaration("packed_variant!(i2, GemmI2);"),
+        module_declaration("packed_variant!(i2, GemmI2);", false),
         Some(("i2".to_string(), true))
     );
-    assert!(module_declaration("other_macro!(i2);").is_none());
+    assert_eq!(
+        module_declaration("abs_f32 => (\"绝对值\", Abs", true),
+        Some(("abs_f32".to_string(), true))
+    );
+    assert!(module_declaration("other_macro!(i2);", false).is_none());
 }
 
 /// 文件 → 声明出的模块路径（取最短的一条：一个文件被多处声明时，最短的是它的规范位置）。
