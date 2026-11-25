@@ -1,7 +1,6 @@
 //! 层计划与族别分流：类型视图（投影/查表）优先，再按算子族别闭集归类等长族。
 
 use diagnostic::{Code, Error, Result};
-use nn::quant::{I2, I4, I8};
 use nn::{Contract, Embedding, Linear, MemoryBlock, Shape, WEIGHT_SUFFIX, WeightFormat};
 
 use crate::kernels::SITE;
@@ -311,14 +310,10 @@ fn projection_plan(
     Ok(plan)
 }
 
-/// 量化投影的共享布局：每字节码数取 `nn` 的量化配置表，分组取层声明。
+/// 量化投影的共享布局：每字节码数直接由 `DType` 位宽推导，分组取层声明。
 fn quantized_layout(format: WeightFormat) -> Option<(usize, usize)> {
-    match format {
-        WeightFormat::Int2 { group } => Some((I2.cpb, group)),
-        WeightFormat::Int4 { group } => Some((I4.cpb, group)),
-        WeightFormat::Int8 { group } => Some((I8.cpb, group)),
-        _ => None,
-    }
+    let group = format.group()?;
+    Some((8 / format.dtype().bits() as usize, group))
 }
 
 /// 投影的驻留权重与标度形状：稠密 `[out, in]` 整块 f32；量化给打包字节

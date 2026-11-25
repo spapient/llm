@@ -9,7 +9,7 @@ fn every_element_type_maps_to_a_format_and_back() {
     }
     assert_eq!(
         WeightFormat::of_dtype(DType::U4),
-        Some(WeightFormat::Packed4)
+        Some(WeightFormat::PACKED4)
     );
 }
 
@@ -18,13 +18,13 @@ fn every_weight_format_has_an_explicit_dtype() {
     let formats = [
         (WeightFormat::F32, DType::F32),
         (WeightFormat::F16, DType::F16),
-        (WeightFormat::Bf16, DType::BF16),
+        (WeightFormat::BF16, DType::BF16),
         (WeightFormat::I8, DType::I8),
-        (WeightFormat::Packed2, DType::U2),
-        (WeightFormat::Packed4, DType::U4),
-        (WeightFormat::Int2 { group: 32 }, DType::U2),
-        (WeightFormat::Int4 { group: 32 }, DType::U4),
-        (WeightFormat::Int8 { group: 32 }, DType::I8),
+        (WeightFormat::PACKED2, DType::U2),
+        (WeightFormat::PACKED4, DType::U4),
+        (WeightFormat::int2(32), DType::U2),
+        (WeightFormat::int4(32), DType::U4),
+        (WeightFormat::int8(32), DType::I8),
     ];
     for (format, dtype) in formats {
         assert_eq!(format.dtype(), dtype, "{format} 的存储类型必须显式声明");
@@ -84,9 +84,9 @@ fn int8_elements_take_one_byte_each() {
 fn a_format_without_an_operator_says_so_instead_of_guessing() {
     for format in [
         WeightFormat::F16,
-        WeightFormat::Bf16,
+        WeightFormat::BF16,
         WeightFormat::I8,
-        WeightFormat::Packed4,
+        WeightFormat::PACKED4,
     ] {
         assert_eq!(format.operator(), None, "{format} 还没有已声明的算子");
         assert!(
@@ -157,11 +157,11 @@ fn the_int2_rung_is_packed_and_says_which_group_mismatches() {
     );
     assert_eq!(
         WeightFormat::of_dtype(DType::U2),
-        Some(WeightFormat::Packed2),
+        Some(WeightFormat::PACKED2),
         "元素类型 → 格式这一向也要能认出 2 位打包"
     );
     assert_eq!(
-        WeightFormat::Packed2.to_string(),
+        WeightFormat::PACKED2.to_string(),
         "2 位打包（未声明分组）",
         "没有分组的打包要说清「未声明」，不能退化成元素类型名 u2"
     );
@@ -175,4 +175,48 @@ fn int2_weights_give_a_linear_a_real_lower_bound() {
     assert_eq!(layer.spca().ops(), [crate::Linear::I2]);
     let floor = layer.bounds().expect("合法").expect("有算子");
     assert!(floor.read() > 0 && floor.flops() > 0.0);
+}
+
+#[test]
+fn grouped_formats_expose_their_group_without_variant_matching() {
+    assert_eq!(WeightFormat::INT2.group(), Some(32));
+    assert_eq!(WeightFormat::INT4.group(), Some(32));
+    assert_eq!(WeightFormat::INT8.group(), Some(32));
+    assert_eq!(WeightFormat::int4(0).group(), Some(0));
+    assert_eq!(WeightFormat::PACKED4.group(), None);
+    assert_eq!(WeightFormat::F32.group(), None);
+}
+
+#[test]
+fn weight_format_keeps_the_sixteen_byte_layout() {
+    assert_eq!(std::mem::size_of::<WeightFormat>(), 16);
+}
+
+#[test]
+fn toml_wire_formats_are_stable_and_round_trip() {
+    for format in [
+        WeightFormat::F32,
+        WeightFormat::F16,
+        WeightFormat::BF16,
+        WeightFormat::I8,
+        WeightFormat::PACKED2,
+        WeightFormat::PACKED4,
+        WeightFormat::INT2,
+        WeightFormat::INT4,
+        WeightFormat::INT8,
+    ] {
+        let encoded = toml::to_string(&format).expect("权重编码可序列化");
+        let decoded: WeightFormat = toml::from_str(&encoded).expect("权重编码可反序列化");
+        assert_eq!(decoded, format, "配置往返：{encoded}");
+    }
+    assert_eq!(
+        toml::to_string(&WeightFormat::INT4).expect("int4 配置"),
+        "type = \"int4\"\ngroup = 32\n"
+    );
+    assert_eq!(
+        toml::to_string(&WeightFormat::PACKED4).expect("packed4 配置"),
+        "type = \"packed4\"\n"
+    );
+    assert!(toml::from_str::<WeightFormat>("type = \"int4\"\n").is_err());
+    assert!(toml::from_str::<WeightFormat>("type = \"f32\"\ngroup = 32\n").is_err());
 }

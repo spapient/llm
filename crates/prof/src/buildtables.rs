@@ -137,7 +137,7 @@ fn fingerprints(archive: &toml::Table) -> String {
         .iter()
         .map(|(key, value)| format!("({key:?}, {:?})", required_value(value)))
         .collect();
-    format!("&[{}]", pairs.join(","))
+    expressions(&pairs)
 }
 
 /// 规则必须是字符串，不把数值静默写成指纹。
@@ -159,7 +159,7 @@ fn spaces(archive: &toml::Table) -> String {
             )
         })
         .collect();
-    format!("&[{}]", pairs.join(","))
+    expressions(&pairs)
 }
 
 /// 整数缺省值同时是旧口径的下限。
@@ -218,7 +218,7 @@ fn units(archive: &toml::Table) -> String {
             format!("({name:?}, {})", expressions(&values))
         })
         .collect();
-    format!("&[{}]", entries.join(","))
+    expressions(&entries)
 }
 
 /// 全部能力供给。
@@ -228,7 +228,7 @@ fn provides(archive: &toml::Table) -> String {
         .and_then(toml::Value::as_array)
         .unwrap_or_else(|| fail("档案缺 `provides` 数组"));
     let entries: Vec<String> = provides.iter().map(provide).collect();
-    format!("&[{}]", entries.join(","))
+    expressions(&entries)
 }
 
 /// 一条供给：签名段、证据等级、见证与属性全部保留。

@@ -190,7 +190,7 @@ impl Stack {
     /// （[`WeightFormat::of_dtype`]）；秩不是 2 的条目 → 未覆盖清单。
     ///
     /// dtype 只说明"元素怎么存"，不说明"多少个元素共享一个缩放因子"。因此 4 位打包的条目只会
-    /// 得到 [`WeightFormat::Packed4`]：层照样被列出来，但 [`Stack::floor`] 会明确报"分组未声明、
+    /// 得到 [`WeightFormat::PACKED4`]：层照样被列出来，但 [`Stack::floor`] 会明确报"分组未声明、
     /// 无法计价"。缺什么就说什么，不拿一个默认分组去凑。
     ///
     /// # Errors

@@ -48,29 +48,23 @@ fn compile(device: &Device, recipe: &Recipe, out: &Path) -> diagnostic::Result<O
     let image = out.join(format!("{}.witness.{}", device.name, recipe.format));
 
     let mut args: Vec<String> = parts.map(str::to_string).collect();
-    args.extend(
-        recipe
-            .compile
-            .iter()
-            .map(|arg| expand(arg, &device.witness, &object, &image)),
-    );
+    args.extend(expand_args(
+        recipe.compile,
+        &device.witness,
+        &object,
+        &image,
+    ));
     run(program, &args)?;
 
     if let Some((linker, link_args)) = recipe.link {
-        let args: Vec<String> = link_args
-            .iter()
-            .map(|arg| expand(arg, &device.witness, &object, &image))
-            .collect();
+        let args = expand_args(link_args, &device.witness, &object, &image);
         run(linker, &args)?;
     }
 
     let symbols = recipe
         .inspect
         .and_then(|(inspector, inspect_args)| {
-            let args: Vec<String> = inspect_args
-                .iter()
-                .map(|arg| expand(arg, &device.witness, &object, &image))
-                .collect();
+            let args = expand_args(inspect_args, &device.witness, &object, &image);
             run(inspector, &args).ok()
         })
         .map_or(0, |stdout| {
@@ -117,10 +111,14 @@ pub fn recipe(emit: &str) -> Option<&'static Recipe> {
 }
 
 /// 占位符替换：`$src` / `$obj` / `$out`。
-fn expand(arg: &str, src: &Path, object: &Path, image: &Path) -> String {
-    arg.replace("$src", &src.display().to_string())
-        .replace("$obj", &object.display().to_string())
-        .replace("$out", &image.display().to_string())
+fn expand_args(args: &[&str], src: &Path, object: &Path, image: &Path) -> Vec<String> {
+    args.iter()
+        .map(|arg| {
+            arg.replace("$src", &src.display().to_string())
+                .replace("$obj", &object.display().to_string())
+                .replace("$out", &image.display().to_string())
+        })
+        .collect()
 }
 
 /// 跑一个子进程；失败时把第一行 stderr 作为原因交回（构建不因此失败）。

@@ -149,14 +149,22 @@ impl fmt::Display for MatchRule {
         match self {
             Self::Exact(text) => f.write_str(text),
             Self::Range { lo, hi } => write!(f, "{lo}..{hi}"),
-            Self::Contains(tokens) => {
-                f.write_str("contains: ")?;
-                joined(f, "|", tokens)
-            }
+            Self::Contains(tokens) => marked(f, "contains: ", "|", tokens),
             Self::Set { base, members } => braced(f, base, members),
             Self::OneOf(branches) => joined(f, "|", branches),
         }
     }
+}
+
+/// `前缀 + 用分隔符串起来的条目`（`contains: a|b`）。
+fn marked<T: fmt::Display>(
+    f: &mut fmt::Formatter<'_>,
+    head: &str,
+    sep: &str,
+    items: &[T],
+) -> fmt::Result {
+    f.write_str(head)?;
+    joined(f, sep, items)
 }
 
 /// `基名{条目}`（`x86{avx2,sve}`）。
