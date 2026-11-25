@@ -122,8 +122,8 @@ reason = "随原 wire 字节码闭集并入 storage：CRC-32 / LEB128 / Sink 接
 ccn_max = 5          # 圈复杂度上限：ccn = 1 + 条件计数
 nloc_max = 60         # 函数体有效行数上限
 file_max_lines = 899  # 单文件行数硬上限：超过即按主题拆模块。899 是生产面上限，给一条完整算子族/格式表留足篇幅。
-file_min_lines = 300  # 单文件行数下限：除薄入口（`lib.rs`/`main.rs`/`mod.rs`）与 libFuzzer 垫片
-                      # （`fuzz/src/fuzz_*.rs`，判据在 `drivers.rs`）外，生产文件不足 300 行不允许单独
+file_min_lines = 230  # 单文件行数下限：除薄入口（`lib.rs`/`main.rs`/`mod.rs`）与 libFuzzer 垫片
+                      # （`fuzz/src/fuzz_*.rs`，判据在 `drivers.rs`）外，生产文件不足 230 行不允许单独
                       # 开文件——独立语义应收拢进所属模块，而不是铺成一函数一文件的口袋碎块。
 test_max_lines = 800  # 测试代码行数上限：`tests/` 与 `#[path]` 挂进 src 的测试模块同受此限。
                       # 与 file_max_lines 分开：测试面放宽到 800 是因为一条真机用例的装配

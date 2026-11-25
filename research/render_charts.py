@@ -102,7 +102,7 @@ plt.close(fig)
 
 labels = ["dtype()", "operator_for()"]
 baseline = [9.175834, 137.791791]
-split = [5.133459, 124.43725]
+split = [6.318625, 110.250125]
 x = [0, 1]
 width = 0.30
 fig, ax = plt.subplots(figsize=(12, 7.2), dpi=100)

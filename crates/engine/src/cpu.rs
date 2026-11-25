@@ -91,6 +91,7 @@ impl Taken {
 pub struct CpuExecutor {
     device: Device,
     programs: Vec<Box<dyn Program>>,
+    idxs: std::collections::HashMap<String, usize>,
     bindings: Bindings,
     queue: Vec<Queued>,
 }
@@ -124,14 +125,15 @@ impl CpuExecutor {
         Self {
             device,
             programs: Vec::new(),
+            idxs: std::collections::HashMap::new(),
             bindings: Bindings::new(),
             queue: Vec::new(),
         }
     }
 
-    /// 登记一段内核体；同名已登记时返回 `Invalid`，而不是让后登记的那份静默顶替。
+    /// 登记一段内核体并建立名字索引；同名已登记时返回 `Invalid`，不允许静默顶替。
     pub fn register(&mut self, program: Box<dyn Program>) -> Result<()> {
-        if self.position(program.name()).is_ok() {
+        if self.idxs.contains_key(program.name()) {
             return Err(invalid(
                 "engine::CpuExecutor::register",
                 format!(
@@ -140,6 +142,8 @@ impl CpuExecutor {
                 ),
             ));
         }
+        self.idxs
+            .insert(program.name().to_owned(), self.programs.len());
         self.programs.push(program);
         Ok(())
     }
@@ -170,7 +174,12 @@ impl CpuExecutor {
     ///
     /// 内核未登记、操作数未绑定、同一节点里一个编号既是输入又是输出、或内核本身报错。
     pub fn run(&mut self, node: &Node) -> Result<()> {
-        let idx = self.position(node.name())?;
+        let idx = self.idxs.get(node.name()).copied().ok_or_else(|| {
+            invalid(
+                "engine::CpuExecutor::run",
+                format!("内核 `{}` 未登记", node.name()),
+            )
+        })?;
         self.check_operands(node)?;
         let mut inputs = self.take(node.inputs());
         let mut outputs = self.take(node.outputs());
@@ -181,14 +190,6 @@ impl CpuExecutor {
         self.restore(std::mem::take(&mut inputs));
         self.restore(std::mem::take(&mut outputs));
         result.map_err(|error| error.with("engine::CpuExecutor::run"))
-    }
-
-    /// 按名字找内核下标。
-    fn position(&self, name: &str) -> Result<usize> {
-        self.programs
-            .iter()
-            .position(|program| program.name() == name)
-            .ok_or_else(|| invalid("engine::CpuExecutor::run", format!("内核 `{name}` 未登记")))
     }
 
     /// 节点自己的操作数约束：每个编号都要已绑定，且输入与输出不能是同一个编号。
@@ -272,28 +273,6 @@ impl Executor for CpuExecutor {
     }
 }
 
-/// 测试内核共享操作数数量、dtype 与等长校验；实际数值闭包保持独立。
 #[cfg(test)]
-pub(crate) fn map_f32(
-    inputs: &[View<'_>],
-    outputs: &mut [ViewMut<'_>],
-    arity: usize,
-    site: &'static str,
-    apply: impl FnOnce(&[&[f32]], &mut [f32]),
-) -> Result<()> {
-    if inputs.len() != arity || outputs.len() != 1 {
-        return Err(invalid(site, "操作数数量不符"));
-    }
-    let typed: Vec<&[f32]> = inputs
-        .iter()
-        .map(|input| input.f32().ok_or_else(|| invalid(site, "输入不是 f32")))
-        .collect::<Result<_>>()?;
-    let output = outputs[0]
-        .f32_mut()
-        .ok_or_else(|| invalid(site, "输出不是 f32"))?;
-    if typed.iter().any(|input| input.len() != output.len()) {
-        return Err(invalid(site, "形状不一致"));
-    }
-    apply(&typed, output);
-    Ok(())
-}
+#[path = "../tests/cpu.rs"]
+pub(crate) mod test_support;

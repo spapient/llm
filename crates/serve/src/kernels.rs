@@ -1,58 +1,412 @@
-//! CPU 推理内核桥：把 `nn` 的标量参考适配成 engine 可登记的 [`Program`]。
+//! CPU 内核登记：共享缓冲视图提取，并把适配函数表投影成 engine [`Program`]。
 //!
-//! 落点裁决见 `docs/adr/0025-runtime-backend-abstraction.md`；设备数据与机制的边界见
-//! `docs/ARCHITECTURE.md` 第一、二节。
-//! 端点契约、路由与线格式保持模型无关；CPU 模型实现作为注入 [`Predict`](crate::Predict)
-//! 的提供者收在本模块内，真设备后端仍收在独立边界 crate，不回流这里。
-//!
-//! # 职责
-//!
-//! - 编译期锁定的算子表：表内每个名字都必须在 `nn::registry::REGISTRY` 内（`const` 子集断言）；
-//!   表未覆盖的算子不登记，执行时由 [`CpuExecutor`](engine::exec::CpuExecutor) 按名拒绝，
-//!   不留静默空入口。
-//! - 适配函数只做拆视图 + 调 `nn::<op>::forward`，算术不重写。模式复刻 `train::KERNELS`
-//!   （`crates/train/src/kernel.rs`），但不带 train 的 `Lane` 适配层：缓冲形态用 engine
-//!   自己的 [`View`] / [`ViewMut`]，f32 与打包字节两路分开取切片。
-//! - 层栈装配、驻留参数表与前向宿主收在 [`assembly`](crate::assembly) 模块，本文件只留内核适配表。
-//!
-//! # 不拥有
-//!
-//! 执行/调度/KV 簿记（`engine`）、算子声明（`prof`）、参考算术与层形状语义（`nn`）、
-//! 权重字节读取（`weights`）。本模块不出现设备厂商或后端类型的特判分支。
-//!
-//! # 范围
-//!
-//! 接纯切片签名的 f32 算子，以及 i4/i8 量化 lane（`gemv_i4`/`gemv_i8`/`dequant_i4`/
-//! `dequant_i8`）；量化权重文件侧的半精度与零点解码仍留后，本轮量化通路以内存夹具对拍
-//! 验证。`rope_f32` 单序列位置走标量槽回填；批形态逐序列位置表走独立输入缓冲（ADR 0043 §5）。
-//! decode 变长历史段紧排布局已定（ADR 0046 §7，op `*_batch_var` 入口就位），serve 批装填 / 写回
-//! 随块链整批刀落地。
+//! 算术只住在 `nn`；稠密/量化与注意力/RoPE 的签名适配分属两个内联模块。本文件只拥有
+//! 注册表、视图类型检查和 `Program` 桥，不拥有算子语义、设备分派或图接线。
 
 use diagnostic::{Code, Error, Result};
 use engine::exec::{Executor, Launch, Program, View, ViewMut};
 use nn::kernel_table;
 
+mod attention {
+    //! 注意力与 RoPE 的签名适配：实例几何来自 `Launch` 或缓冲，算法体只在 `nn`。
+
+    use super::{input_f32, output_f32};
+    use diagnostic::{Code, Error, Result};
+    use engine::exec::{Launch, View, ViewMut};
+
+    /// prefill、单段 decode 与变长批段 decode 的三种 `nn` 入口。
+    type AttentionKernel = fn(
+        tensor::View<'_, f32>,
+        tensor::View<'_, f32>,
+        tensor::View<'_, f32>,
+        &mut [f32],
+    ) -> Result<()>;
+    type DecodeKernel = fn(&[f32], &[f32], &[f32], &mut [f32], usize, usize, usize) -> Result<()>;
+    type BatchDecodeKernel =
+        fn(&[f32], &[f32], &[f32], &mut [f32], usize, &[usize], usize, usize) -> Result<()>;
+    type DecodeViews<'a, 'b> = (&'a [f32], &'a [f32], &'a [f32], &'b mut [f32]);
+
+    /// 拆出 q/k/v 三路读入与一路写出；错误名指向实际适配族。
+    fn qkv<'a, 'b>(
+        name: &str,
+        inputs: &'a [View<'a>],
+        outputs: &'b mut [ViewMut<'_>],
+    ) -> Result<DecodeViews<'a, 'b>> {
+        Ok((
+            input_f32(name, inputs, 0)?,
+            input_f32(name, inputs, 1)?,
+            input_f32(name, inputs, 2)?,
+            output_f32(name, outputs, 0)?,
+        ))
+    }
+
+    /// prefill 共享几何：头宽来自静态语义表，序列行数由 q 缓冲推出。
+    fn attention_paths(
+        inputs: &[View<'_>],
+        outputs: &mut [ViewMut<'_>],
+        run: AttentionKernel,
+    ) -> Result<()> {
+        let (q, k, v, out) = qkv("attention", inputs, outputs)?;
+        let d = nn::conv::attention::MODEL.shape.1;
+        let (q, k, v) = tensor::View::matrix_triple(q.len() / d, d, q, k, v)?;
+        run(q, k, v, out)
+    }
+
+    /// prefill 表项：朴素与 Flash 只替换 `nn` 入口，适配骨架保持一份。
+    macro_rules! attention_kernel {
+        ($($run:ident => $forward:path),* $(,)?) => {$(
+            pub(super) fn $run(_: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
+                attention_paths(inputs, outputs, $forward)
+            }
+        )*};
+    }
+
+    attention_kernel!(
+        attention_f32 => nn::conv::attention::forward,
+        flash_attention_f32 => nn::conv::attention::flash_forward,
+    );
+
+    /// decode 公共路由：第四路非空时是 ragged 段长表，否则是单序列历史。
+    fn decode_paths(
+        launch: &Launch,
+        inputs: &[View<'_>],
+        outputs: &mut [ViewMut<'_>],
+        single: DecodeKernel,
+        batch: BatchDecodeKernel,
+    ) -> Result<()> {
+        let (q, k, v, out) = qkv("decode_attention", inputs, outputs)?;
+        match inputs
+            .get(3)
+            .and_then(View::f32)
+            .filter(|table| !table.is_empty())
+        {
+            Some(history) => decode_batch(launch, q, k, v, out, history, batch),
+            None => decode_single(q, k, v, out, single),
+        }
+    }
+
+    /// 单序列几何：头宽取静态语义表，查询行数与历史行数分别由缓冲长度推出。
+    fn decode_single(
+        q: &[f32],
+        k: &[f32],
+        v: &[f32],
+        out: &mut [f32],
+        single: DecodeKernel,
+    ) -> Result<()> {
+        let d = nn::conv::decode_attention::MODEL.shape.1;
+        let heads = q.len() / d;
+        single(
+            q,
+            k,
+            v,
+            out,
+            q.len() / (heads * d),
+            k.len() / (heads * d),
+            d,
+        )
+    }
+
+    /// 批段几何：段长表只在此处转换为 `nn` 的索引档，K/V 布局由批入口统一解释。
+    fn decode_batch(
+        launch: &Launch,
+        q: &[f32],
+        k: &[f32],
+        v: &[f32],
+        out: &mut [f32],
+        history: &[f32],
+        batch: BatchDecodeKernel,
+    ) -> Result<()> {
+        let head_dim = launch.block[1] as usize;
+        if head_dim == 0 || history.is_empty() {
+            return Err(
+                Error::new(Code::Invalid, "decode 批段头宽与段长表必须非空").with(super::SITE)
+            );
+        }
+        let heads = launch.block[0] as usize / head_dim;
+        let q_rows = q.len() / (history.len() * heads * head_dim);
+        let history: Vec<usize> = history.iter().map(|&rows| rows as usize).collect();
+        batch(q, k, v, out, q_rows, &history, head_dim, heads)
+    }
+
+    /// decode 表项：朴素与 Flash 共享单段/批段路由和几何守卫。
+    macro_rules! decode_kernel {
+        ($($run:ident => $single:path, $batch:path),* $(,)?) => {$(
+            pub(super) fn $run(launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
+                decode_paths(&launch, inputs, outputs, $single, $batch)
+            }
+        )*};
+    }
+
+    decode_kernel!(
+        decode_attention_f32 => nn::conv::attention::decode_forward_heads, nn::conv::attention::decode_forward_batch_var,
+        decode_flash_attention_f32 => nn::conv::attention::decode_flash_forward_heads, nn::conv::attention::decode_flash_forward_batch_var,
+    );
+
+    /// RoPE 路由：批位置表优先，缺省从 `Launch` 标量槽读取单序列位置。
+    pub(super) fn rope_f32(
+        launch: Launch,
+        inputs: &[View<'_>],
+        outputs: &mut [ViewMut<'_>],
+    ) -> Result<()> {
+        let x = input_f32("rope_f32", inputs, 0)?;
+        let out = output_f32("rope_f32", outputs, 0)?;
+        let head_dim = launch.block[1] as usize;
+        match inputs
+            .get(1)
+            .and_then(View::f32)
+            .filter(|table| !table.is_empty())
+        {
+            Some(positions) => {
+                nn::rope_f32::forward_batch_from_f32(positions, tensor::View::one(x), out, head_dim)
+            }
+            None => rope_single(&launch, x, out, head_dim),
+        }
+    }
+
+    /// 单序列位置通道：缺位置即拒绝，不把未初始化标量当成位置零。
+    fn rope_single(launch: &Launch, x: &[f32], out: &mut [f32], head_dim: usize) -> Result<()> {
+        let position = launch
+            .scalars()
+            .rope_position()
+            .ok_or_else(|| Error::new(Code::Invalid, "rope_f32 位置标量未填").with(super::SITE))?;
+        if head_dim == 0 || head_dim == x.len() {
+            nn::rope_f32::forward(position as usize, tensor::View::one(x), out)
+        } else {
+            nn::rope_f32::forward_heads(position as usize, tensor::View::one(x), out, head_dim)
+        }
+    }
+}
+
+mod dense {
+    //! 稠密、量化与逐元素算子的签名适配；算术与几何语义均由 `nn` 持有。
+
+    use super::{input_f32, input_u8, output_f32};
+    use diagnostic::{Code, Error, Result};
+    use engine::exec::{Launch, View, ViewMut};
+
+    /// 一元/二元适配共享同一宏：列表只登记入口，拆包与输出检查不重复。
+    macro_rules! elementwise {
+        ($($run:ident),* ; unary) => {$(
+            pub(super) fn $run(_: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
+                let input = input_f32(stringify!($run), inputs, 0)?;
+                let output = output_f32(stringify!($run), outputs, 0)?;
+                nn::$run::forward(tensor::View::one(input), output)
+            }
+        )*};
+        ($($run:ident),* ; binary) => {$(
+            pub(super) fn $run(_: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
+                let left = input_f32(stringify!($run), inputs, 0)?;
+                let right = input_f32(stringify!($run), inputs, 1)?;
+                let output = output_f32(stringify!($run), outputs, 0)?;
+                nn::$run::forward(tensor::View::one(left), tensor::View::one(right), output)
+            }
+        )*};
+    }
+
+    elementwise!(gelu_f32, reduce_max_f32, reduce_sum_f32, scale, silu_f32, softmax_f32; unary);
+    elementwise!(add_f32, mul_f32, residual_add_f32, embed_f32; binary);
+
+    /// RMSNorm 按 `gamma` 行宽处理连续行批，段内校验由 `nn` 统一执行。
+    pub(super) fn rmsnorm_f32(
+        _: Launch,
+        inputs: &[View<'_>],
+        outputs: &mut [ViewMut<'_>],
+    ) -> Result<()> {
+        let x = input_f32("rmsnorm_f32", inputs, 0)?;
+        let gamma = input_f32("rmsnorm_f32", inputs, 1)?;
+        let out = output_f32("rmsnorm_f32", outputs, 0)?;
+        nn::rmsnorm_f32::forward_batch(
+            tensor::View::one(x),
+            tensor::View::one(gamma),
+            out,
+            gamma.len(),
+        )
+    }
+
+    /// 稠密投影：单行复用 GEMV，行批按 `Launch` 几何选择共享权重的矩阵路径。
+    pub(super) fn gemv_f32(
+        launch: Launch,
+        inputs: &[View<'_>],
+        outputs: &mut [ViewMut<'_>],
+    ) -> Result<()> {
+        let (x, weights, out) = gemv_inputs(inputs, outputs)?;
+        let m = launch.block[1] as usize;
+        if m == 0 || x.len() == m {
+            return nn::gemv_f32::forward(tensor::View::one(x), weights, out);
+        }
+        project_rows(x, weights, out, m, launch.block[0] as usize)
+    }
+
+    /// 取出投影两个读入与一个写出的 `f32` 视图。
+    fn gemv_inputs<'a, 'b>(
+        inputs: &'b [View<'_>],
+        outputs: &'a mut [ViewMut<'_>],
+    ) -> Result<(&'b [f32], &'b [f32], &'a mut [f32])> {
+        Ok((
+            input_f32("gemv_f32", inputs, 0)?,
+            input_f32("gemv_f32", inputs, 1)?,
+            output_f32("gemv_f32", outputs, 0)?,
+        ))
+    }
+
+    /// 行批投影：输入按 `m` 切行、输出按 `n` 切行，权重视图始终保持 `[n, m]`。
+    pub(super) fn project_rows(
+        x: &[f32],
+        weights: &[f32],
+        out: &mut [f32],
+        m: usize,
+        n: usize,
+    ) -> Result<()> {
+        let rows = row_batch_rows(x, out, m, n)?;
+        if rows == 1 {
+            return nn::gemv_f32::forward(tensor::View::one(x), weights, out);
+        }
+        project_batch(x, weights, out, m, n, rows)
+    }
+
+    /// 多行矩阵路径：几何视图只在合法行批上构造，按行数选择共享内核。
+    fn project_batch(
+        x: &[f32],
+        weights: &[f32],
+        out: &mut [f32],
+        m: usize,
+        n: usize,
+        rows: usize,
+    ) -> Result<()> {
+        let xv = tensor::View::matrix(rows, m, x)?;
+        let wv = tensor::View::matrix(n, m, weights)?;
+        if rows >= nn::fast::MIN_ROWS {
+            return nn::fast::gemm_f32_tn(xv, wv, out);
+        }
+        nn::matmul::forward_tn_tiled(xv, wv, out)
+    }
+
+    /// 行批几何校验：输入必须含整数行，输出必须与 `rows × n` 完全一致。
+    fn row_batch_rows(x: &[f32], out: &[f32], m: usize, n: usize) -> Result<usize> {
+        if m == 0 || !x.len().is_multiple_of(m) || out.len() != (x.len() / m) * n {
+            return Err(Error::new(Code::Invalid, "gemv 行批几何不自洽").with(super::SITE));
+        }
+        Ok(x.len() / m)
+    }
+
+    /// 量化 GEMV 的单行与行批函数指针形态。
+    type GemvQuantFn =
+        fn(tensor::View<'_, f32>, &[u8], tensor::View<'_, f32>, &mut [f32]) -> Result<()>;
+    /// 量化 GEMV 通用桥：单行与行批共用视图拆包，具体算术由两个函数指针注入。
+    fn gemv_quant(
+        launch: Launch,
+        x: &[f32],
+        weights: &[u8],
+        scales: &[f32],
+        out: &mut [f32],
+        single: GemvQuantFn,
+        batch: GemvQuantFn,
+    ) -> Result<()> {
+        let m = launch.block[1] as usize;
+        if m == 0 || x.len() == m {
+            return single(
+                tensor::View::one(x),
+                weights,
+                tensor::View::one(scales),
+                out,
+            );
+        }
+        batch(
+            tensor::View::matrix(x.len() / m, m, x)?,
+            weights,
+            tensor::View::one(scales),
+            out,
+        )
+    }
+
+    /// 量化 GEMV 表项：`x: f32, w: u8, scales: f32 → y: f32` 只写一次。
+    macro_rules! gemv_quant_kernel {
+        ($($run:ident => $batch:path),* $(,)?) => {$(
+            pub(super) fn $run(launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
+                let name = stringify!($run);
+                let x = input_f32(name, inputs, 0)?;
+                let weights = input_u8(name, inputs, 1)?;
+                let scales = input_f32(name, inputs, 2)?;
+                let out = output_f32(name, outputs, 0)?;
+                gemv_quant(launch, x, weights, scales, out, nn::$run::forward, $batch)
+            }
+        )*};
+    }
+
+    gemv_quant_kernel!(
+        gemv_i2 => nn::gemv_i2::forward_batch,
+        gemv_i4 => nn::gemv_i4::forward_batch,
+        gemv_i8 => nn::gemv_i8::forward_batch,
+    );
+
+    /// 打包反量化与逐元素反量化共享声明宏，样本常量仍由 `nn` 持有。
+    macro_rules! dequant {
+        ($($run:ident),* ; packed) => {$(
+            pub(super) fn $run(_: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
+                let q = input_u8(stringify!($run), inputs, 0)?;
+                let out = output_f32(stringify!($run), outputs, 0)?;
+                nn::$run::forward(nn::$run::SCALE, nn::$run::ZERO, q, out)
+            }
+        )*};
+    }
+
+    dequant!(dequant_i2, dequant_i4; packed);
+
+    /// `i8` 码点以 `f32` 缓冲表示，输入 lane 与打包格式不同。
+    pub(super) fn dequant_i8(
+        _: Launch,
+        inputs: &[View<'_>],
+        outputs: &mut [ViewMut<'_>],
+    ) -> Result<()> {
+        let q = input_f32("dequant_i8", inputs, 0)?;
+        let out = output_f32("dequant_i8", outputs, 0)?;
+        nn::dequant_i8::forward(
+            nn::dequant_i8::SCALE,
+            nn::dequant_i8::ZERO,
+            tensor::View::one(q),
+            out,
+        )
+    }
+
+    /// 量化 GEMM 算术入口：两路打包字节与静态几何 `(m, n)` 到浮点输出。
+    type GemmQuantFn = fn(&[u8], &[u8], usize, usize, &mut [f32]) -> Result<()>;
+
+    /// 量化 GEMM 的公共几何推导：`K` 与位宽来自 `nn::gemm::Gemm`。
+    fn gemm_quant<G: nn::gemm::Gemm<Elem = u8>>(
+        a: &[u8],
+        b: &[u8],
+        out: &mut [f32],
+        run: GemmQuantFn,
+    ) -> Result<()> {
+        let row = nn::gemm::K / nn::gemm::codes_per_byte(G::BITS);
+        run(a, b, a.len() / row, b.len() / row, out)
+    }
+
+    /// 量化 GEMM 表项：标记类型提供位宽，适配器不复制第二条位宽常量。
+    macro_rules! gemm_quant_kernel {
+        ($(($run:ident, $marker:ty)),* $(,)?) => {$(
+            pub(super) fn $run(_: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
+                let name = stringify!($run);
+                let a = input_u8(name, inputs, 0)?;
+                let b = input_u8(name, inputs, 1)?;
+                let out = output_f32(name, outputs, 0)?;
+                gemm_quant::<$marker>(a, b, out, nn::$run::forward)
+            }
+        )*};
+    }
+
+    gemm_quant_kernel!(
+        (gemm_i2, nn::gemm_i2::GemmI2),
+        (gemm_i4, nn::gemm_i4::GemmI4),
+        (gemm_i8, nn::gemm_i8::GemmI8),
+    );
+}
+use attention::*;
+use dense::*;
+
 pub(crate) const SITE: &str = "serve::model";
 
-/// 注意力内核入口：`q/k/v → out`，序列长 `s` 与头宽 `d` 随几何传入。
-type AttentionKernel = fn(
-    tensor::View<'_, f32>,
-    tensor::View<'_, f32>,
-    tensor::View<'_, f32>,
-    &mut [f32],
-) -> Result<()>;
-
-/// decode 注意力内核入口：`q/k/v → out`，查询行数 `q_rows`、历史行数 `hist` 与头宽 `d` 随几何传入。
-type DecodeKernel = fn(&[f32], &[f32], &[f32], &mut [f32], usize, usize, usize) -> Result<()>;
-
-/// decode 批段内核入口：`q/k/v → out`，`hist` 为逐序列段长表（ragged 紧排），头数/头宽静态传入。
-type BatchDecodeKernel =
-    fn(&[f32], &[f32], &[f32], &mut [f32], usize, &[usize], usize, usize) -> Result<()>;
-
-/// decode 拆出的三路读入与一路写出视图。
-type DecodeViews<'a, 'b> = (&'a [f32], &'a [f32], &'a [f32], &'b mut [f32]);
-
-/// 适配入口：拆好视图后调用算子参考实现；launch 承载逐步变化的标量槽（如 rope 位置）。
+/// 适配入口：拆好视图后调用算子实现；`Launch` 承载实例几何与标量槽。
 type KernelFn = fn(Launch, &[View<'_>], &mut [ViewMut<'_>]) -> Result<()>;
 
 /// 取第 `slot` 路输入为 `f32` 切片；编号缺失或形态不符给 `Invalid`。
@@ -95,416 +449,13 @@ fn output_f32<'a>(
         })
 }
 
-/// 表内一行：算子名（与 `nn::registry::REGISTRY` 同名）+ 缓冲级函数指针。
+/// 表内一行：算子名与 `nn::registry::REGISTRY` 同名，执行体是静态函数指针。
 struct Entry {
     op: &'static str,
     run: KernelFn,
 }
 
-/// 算子适配宏：按 arity 分支展开拆切片 + 调 `nn::<op>::forward`。
-macro_rules! kernel {
-    ($($run:ident),* ; unary) => {$(
-        fn $run(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
-            let input = input_f32(stringify!($run), inputs, 0)?;
-            let output = output_f32(stringify!($run), outputs, 0)?;
-            nn::$run::forward(tensor::View::one(input), output)
-        }
-    )*};
-    ($($run:ident),* ; binary) => {$(
-        fn $run(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
-            let left = input_f32(stringify!($run), inputs, 0)?;
-            let right = input_f32(stringify!($run), inputs, 1)?;
-            let output = output_f32(stringify!($run), outputs, 0)?;
-            nn::$run::forward(tensor::View::one(left), tensor::View::one(right), output)
-        }
-    )*};
-}
-
-kernel!(
-    gelu_f32,
-    reduce_max_f32,
-    reduce_sum_f32,
-    scale,
-    silu_f32,
-    softmax_f32; unary
-);
-kernel!(
-    add_f32,
-    mul_f32,
-    residual_add_f32,
-    embed_f32; binary
-);
-
-/// rmsnorm 适配：行宽取 `gamma` 长度；整块 `[batch, row_dim]` 段连续，段内独立 RMS 归一化，
-/// `gamma` 按行宽复用；单序列 `batch=1` 退化为单行 `forward`。段内校验交 [`forward_batch`]。
-fn rmsnorm_f32(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
-    let x = input_f32("rmsnorm_f32", inputs, 0)?;
-    let gamma = input_f32("rmsnorm_f32", inputs, 1)?;
-    let out = output_f32("rmsnorm_f32", outputs, 0)?;
-    nn::rmsnorm_f32::forward_batch(
-        tensor::View::one(x),
-        tensor::View::one(gamma),
-        out,
-        gamma.len(),
-    )
-}
-
-/// 注意力三路适配：`q/k/v → out`；头宽 `d` 取算子静态语义表，序列长 `s` 由 `q` 长推出，
-/// 形状不符交由算子参考校验。朴素与 Flash 同几何，只换内核算式。
-fn attention_paths(
-    inputs: &[View<'_>],
-    outputs: &mut [ViewMut<'_>],
-    run: AttentionKernel,
-) -> Result<()> {
-    let (q, k, v, out) = attention_inputs(inputs, outputs)?;
-    let d = nn::conv::attention::MODEL.shape.1;
-    let s = q.len() / d;
-    let (qv, kv, vv) = tensor::View::matrix_triple(s, d, q, k, v)?;
-    run(qv, kv, vv, out)
-}
-
-/// 拆出 prefill 三路读入与一路写出视图。
-fn attention_inputs<'a, 'b>(
-    inputs: &'a [View<'a>],
-    outputs: &'b mut [ViewMut<'_>],
-) -> Result<DecodeViews<'a, 'b>> {
-    let q = input_f32("attention", inputs, 0)?;
-    let k = input_f32("attention", inputs, 1)?;
-    let v = input_f32("attention", inputs, 2)?;
-    let out = output_f32("attention", outputs, 0)?;
-    Ok((q, k, v, out))
-}
-
-/// 朴素自注意力适配：走稠密分块 tile 路径。
-fn attention_f32(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
-    attention_paths(inputs, outputs, nn::conv::attention::forward)
-}
-
-/// prefill 自注意力适配：走分块 tile 路径。
-fn flash_attention_f32(
-    _launch: Launch,
-    inputs: &[View<'_>],
-    outputs: &mut [ViewMut<'_>],
-) -> Result<()> {
-    attention_paths(inputs, outputs, nn::conv::attention::flash_forward)
-}
-
-/// decode 三路适配：`q/hist_k/hist_v → out`；第四路输入为 ragged 段长表（ADR 0046 §8）走批段
-/// 入口，缺省回退单序列 heads 入口。头数/头宽静态取 Launch 几何，段长表折 usize，形状不符交算子校验。
-fn decode_paths(
-    launch: &Launch,
-    inputs: &[View<'_>],
-    outputs: &mut [ViewMut<'_>],
-    single: DecodeKernel,
-    batch: BatchDecodeKernel,
-) -> Result<()> {
-    let (q, k, v, out) = decode_views(inputs, outputs)?;
-    match inputs
-        .get(3)
-        .and_then(View::f32)
-        .filter(|table| !table.is_empty())
-    {
-        Some(hist_table) => decode_batch(launch, q, k, v, out, hist_table, batch),
-        None => decode_single(q, k, v, out, single),
-    }
-}
-
-/// 拆出 decode 三路读入与一路写出视图；编号缺失或形态不符交输入助手报 `Invalid`。
-fn decode_views<'a, 'b>(
-    inputs: &'a [View<'a>],
-    outputs: &'b mut [ViewMut<'_>],
-) -> Result<DecodeViews<'a, 'b>> {
-    let q = input_f32("decode_attention", inputs, 0)?;
-    let k = input_f32("decode_attention", inputs, 1)?;
-    let v = input_f32("decode_attention", inputs, 2)?;
-    let out = output_f32("decode_attention", outputs, 0)?;
-    Ok((q, k, v, out))
-}
-
-/// 单序列路径：头宽取算子静态语义表，头数/查询行数/历史行数由缓冲长度反推。
-fn decode_single(
-    q: &[f32],
-    k: &[f32],
-    v: &[f32],
-    out: &mut [f32],
-    single: DecodeKernel,
-) -> Result<()> {
-    let d = nn::conv::decode_attention::MODEL.shape.1;
-    let heads = q.len() / d;
-    let q_rows = q.len() / (heads * d);
-    let hist = k.len() / (heads * d);
-    single(q, k, v, out, q_rows, hist, d)
-}
-
-/// 批段路径：头数/头宽取 Launch 静态几何，段长表逐序列给历史行数；查询行数由 q 总长反推。
-fn decode_batch(
-    launch: &Launch,
-    q: &[f32],
-    k: &[f32],
-    v: &[f32],
-    out: &mut [f32],
-    hist_table: &[f32],
-    batch: BatchDecodeKernel,
-) -> Result<()> {
-    let head_dim = launch.block[1] as usize;
-    if head_dim == 0 {
-        return Err(Error::new(Code::Invalid, "decode 批段头宽为 0").with(SITE));
-    }
-    let heads = launch.block[0] as usize / head_dim;
-    let hist: Vec<usize> = hist_table.iter().map(|&h| h as usize).collect();
-    if hist.is_empty() {
-        return Err(Error::new(Code::Invalid, "decode 批段长表为空").with(SITE));
-    }
-    let q_rows = q.len() / (hist.len() * heads * head_dim);
-    batch(q, k, v, out, q_rows, &hist, head_dim, heads)
-}
-
-fn decode_attention_f32(
-    launch: Launch,
-    inputs: &[View<'_>],
-    outputs: &mut [ViewMut<'_>],
-) -> Result<()> {
-    decode_paths(
-        &launch,
-        inputs,
-        outputs,
-        nn::conv::attention::decode_forward_heads,
-        nn::conv::attention::decode_forward_batch_var,
-    )
-}
-
-fn decode_flash_attention_f32(
-    launch: Launch,
-    inputs: &[View<'_>],
-    outputs: &mut [ViewMut<'_>],
-) -> Result<()> {
-    decode_paths(
-        &launch,
-        inputs,
-        outputs,
-        nn::conv::attention::decode_flash_forward_heads,
-        nn::conv::attention::decode_flash_forward_batch_var,
-    )
-}
-
-/// 稠密投影适配：单向量走原 gemv；行批整块按输入宽 `m`（Launch 第二维）切段，逐行共享同一份
-/// 驻留权重调 gemv。`m=0` 是装配期占位，退回单向量几何（长度自洽交由内核校验）。
-fn gemv_f32(launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
-    let (x, weights, out) = gemv_inputs(inputs, outputs)?;
-    let m = launch.block[1] as usize;
-    if m == 0 || x.len() == m {
-        return nn::gemv_f32::forward(tensor::View::one(x), weights, out);
-    }
-    project_rows(x, weights, out, m, launch.block[0] as usize)
-}
-
-/// 取出投影两个读入与一个写出的 f32 视图。
-fn gemv_inputs<'a, 'b>(
-    inputs: &'b [View<'_>],
-    outputs: &'a mut [ViewMut<'_>],
-) -> Result<(&'b [f32], &'b [f32], &'a mut [f32])> {
-    let x = input_f32("gemv_f32", inputs, 0)?;
-    let weights = input_f32("gemv_f32", inputs, 1)?;
-    let out = output_f32("gemv_f32", outputs, 0)?;
-    Ok((x, weights, out))
-}
-
-/// 行批投影：整块 `x` 按 `m` 切段、`out` 按 `n` 切段。
-fn project_rows(x: &[f32], weights: &[f32], out: &mut [f32], m: usize, n: usize) -> Result<()> {
-    let rows = row_batch_rows(x, out, m, n)?;
-    let (xv, wv) = row_pair(x, weights, rows, n, m)?;
-    if rows == 1 {
-        return nn::gemv_f32::forward(tensor::View::one(x), weights, out);
-    }
-    if rows >= nn::fast::MIN_ROWS {
-        return nn::fast::gemm_f32_tn(xv, wv, out);
-    }
-    nn::matmul::forward_tn_tiled(xv, wv, out)
-}
-
-/// 两条 TN 行主序视图：`x` 是 `rows×m`、`weights` 是 `n×m`。
-fn row_pair<'a>(
-    x: &'a [f32],
-    weights: &'a [f32],
-    rows: usize,
-    n: usize,
-    m: usize,
-) -> Result<(tensor::View<'a, f32>, tensor::View<'a, f32>)> {
-    Ok((
-        tensor::View::matrix(rows, m, x)?,
-        tensor::View::matrix(n, m, weights)?,
-    ))
-}
-
-/// 行批几何校验并给出输出行数：`x` 是 `rows × m`，`out` 必须是 `rows × n`。
-fn row_batch_rows(x: &[f32], out: &[f32], m: usize, n: usize) -> Result<usize> {
-    if m == 0 || !x.len().is_multiple_of(m) || out.len() != (x.len() / m) * n {
-        return Err(Error::new(Code::Invalid, "gemv 行批几何不自洽").with(SITE));
-    }
-    Ok(x.len() / m)
-}
-
-/// 量化 GEMV 单行算术入口：一个输入向量 → 一个输出向量。激活与标度是只读张量视图，打包权重保持裸字节。
-type GemvQuantFn =
-    fn(x: tensor::View<'_, f32>, w: &[u8], s: tensor::View<'_, f32>, out: &mut [f32]) -> Result<()>;
-
-/// 量化 GEMV 行批算术入口：`rows × m` 的输入 → `rows × n` 的输出；激活是二维只读视图，标度一维，打包权重保持裸字节。
-type GemvQuantBatchFn =
-    fn(x: tensor::View<'_, f32>, w: &[u8], s: tensor::View<'_, f32>, out: &mut [f32]) -> Result<()>;
-
-/// `[x: f32, w: u8, scales: f32] → y: f32`：量化 GEMV 通用桥接，按批行数分流。
-fn gemv_quant(
-    launch: Launch,
-    x: &[f32],
-    weights: &[u8],
-    scales: &[f32],
-    out: &mut [f32],
-    single: GemvQuantFn,
-    batch: GemvQuantBatchFn,
-) -> Result<()> {
-    let m = launch.block[1] as usize;
-    if m == 0 || x.len() == m {
-        return single(
-            tensor::View::one(x),
-            weights,
-            tensor::View::one(scales),
-            out,
-        );
-    }
-    let rows = x.len() / m;
-    batch(
-        tensor::View::matrix(rows, m, x)?,
-        weights,
-        tensor::View::one(scales),
-        out,
-    )
-}
-
-/// 量化 GEMV 桥接适配：第 0 路 x、第 1 路打包权重、第 2 路标度、第 0 路输出。
-macro_rules! gemv_quant_kernel {
-    ($($run:ident => $batch:path),*) => {$(
-        fn $run(launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
-            let name = stringify!($run);
-            let x = input_f32(name, inputs, 0)?;
-            let weights = input_u8(name, inputs, 1)?;
-            let scales = input_f32(name, inputs, 2)?;
-            let out = output_f32(name, outputs, 0)?;
-            gemv_quant(launch, x, weights, scales, out, nn::$run::forward, $batch)
-        }
-    )*};
-}
-
-gemv_quant_kernel!(
-    gemv_i2 => nn::gemv_i2::forward_batch,
-    gemv_i4 => nn::gemv_i4::forward_batch,
-    gemv_i8 => nn::gemv_i8::forward_batch
-);
-
-/// 反量化桥接：打包字节 lane（i2/i4）输入 u8；i8 逐元素 lane 输入 f32。
-macro_rules! dequant_packed {
-    ($($run:ident),*) => {$(
-        fn $run(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
-            let name = stringify!($run);
-            let q = input_u8(name, inputs, 0)?;
-            let out = output_f32(name, outputs, 0)?;
-            nn::$run::forward(nn::$run::SCALE, nn::$run::ZERO, q, out)
-        }
-    )*};
-}
-
-dequant_packed!(dequant_i2, dequant_i4);
-
-/// `[q: f32] → y: f32`：i8 逐元素反量化，scale/zero 取样本常量。
-fn dequant_i8(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
-    let q = input_f32("dequant_i8", inputs, 0)?;
-    let out = output_f32("dequant_i8", outputs, 0)?;
-    nn::dequant_i8::forward(
-        nn::dequant_i8::SCALE,
-        nn::dequant_i8::ZERO,
-        tensor::View::one(q),
-        out,
-    )
-}
-
-/// 量化 GEMM 算术入口：两路打包字节 + 静态几何 `(m, n)` → 浮点输出。
-type GemmQuantFn = fn(a: &[u8], b: &[u8], m: usize, n: usize, out: &mut [f32]) -> Result<()>;
-
-/// 量化 GEMM 通用桥接：`A: u8, B: u8 → Y: f32`，几何从静态收缩轴 `K` 与缓冲长度反推。
-fn gemm_quant<G: nn::gemm::Gemm<Elem = u8>>(
-    a: &[u8],
-    b: &[u8],
-    out: &mut [f32],
-    run: GemmQuantFn,
-) -> Result<()> {
-    let cpb = nn::gemm::codes_per_byte(G::BITS);
-    let row = nn::gemm::K / cpb;
-    let m = a.len() / row;
-    let n = b.len() / row;
-    run(a, b, m, n, out)
-}
-
-/// 量化 GEMM 桥接适配：两路打包字节输入、一路浮点输出。
-macro_rules! gemm_quant_kernel {
-    ($(($run:ident, $marker:ty)),*) => {$(
-        fn $run(_launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
-            let name = stringify!($run);
-            let a = input_u8(name, inputs, 0)?;
-            let b = input_u8(name, inputs, 1)?;
-            let out = output_f32(name, outputs, 0)?;
-            gemm_quant::<$marker>(a, b, out, nn::$run::forward)
-        }
-    )*};
-}
-
-gemm_quant_kernel!(
-    (gemm_i2, nn::gemm_i2::GemmI2),
-    (gemm_i4, nn::gemm_i4::GemmI4),
-    (gemm_i8, nn::gemm_i8::GemmI8)
-);
-
-/// 按头宽选 RoPE 入口：头宽 0 或等于整段（单头）走单头旋转，否则按头分段重计频率。
-fn run_rope(pos: usize, x: &[f32], out: &mut [f32], head_dim: usize) -> Result<()> {
-    if head_dim == 0 || head_dim == x.len() {
-        nn::rope_f32::forward(pos, tensor::View::one(x), out)
-    } else {
-        nn::rope_f32::forward_heads(pos, tensor::View::one(x), out, head_dim)
-    }
-}
-
-/// RoPE 适配：单序列位置走标量槽（ADR 0043 §1）；批形态第二路输入为逐序列位置表
-/// （ADR 0043 §5），元素折 f32、内核 `as usize`，批节点绑表后不再读标量槽。头宽取 Launch
-/// 几何第二维，单头走单头旋转，多头按头宽分段重计频率。
-fn rope_f32(launch: Launch, inputs: &[View<'_>], outputs: &mut [ViewMut<'_>]) -> Result<()> {
-    let x = input_f32("rope_f32", inputs, 0)?;
-    let out = output_f32("rope_f32", outputs, 0)?;
-    let head_dim = launch.block[1] as usize;
-    match inputs
-        .get(1)
-        .and_then(View::f32)
-        .filter(|table| !table.is_empty())
-    {
-        Some(table) => rope_batch(table, x, out, head_dim),
-        None => rope_single(&launch, x, out, head_dim),
-    }
-}
-
-/// 批位置表通道：`positions[b]` 折 usize，段内复用多头旋转编排。
-fn rope_batch(table: &[f32], x: &[f32], out: &mut [f32], head_dim: usize) -> Result<()> {
-    let positions: Vec<usize> = table.iter().map(|&pos| pos as usize).collect();
-    nn::rope_f32::forward_batch(&positions, tensor::View::one(x), out, head_dim)
-}
-
-/// 单序列标量槽通道：未填位置给 `Invalid`；头宽 0 或等于整段走单头旋转。
-fn rope_single(launch: &Launch, x: &[f32], out: &mut [f32], head_dim: usize) -> Result<()> {
-    let pos = launch
-        .scalars()
-        .rope_position()
-        .ok_or_else(|| Error::new(Code::Invalid, "rope_f32 位置标量未填").with(SITE))?;
-    run_rope(pos as usize, x, out, head_dim)
-}
-
-/// 内核表展开：每条例子取适配函数标识符，算子名由 `stringify!` 派生，避免名字与函数名各写一份。
-/// CPU 内核表：`nn::registry::REGISTRY` 的 f32 纯切片子集，不是全覆盖。
+/// CPU 内核表：名字由适配函数标识符派生，避免名称与入口各写一份。
 const KERNELS: &[Entry] = &kernel_table![
     add_f32,
     attention_f32,
@@ -536,8 +487,7 @@ const KERNELS: &[Entry] = &kernel_table![
 
 const _: () = all_in_registry(KERNELS);
 
-/// 编译期断言：表内每个算子名都能在 `nn::registry::REGISTRY` 里找到（子集即可，不必等长）；
-/// 归属查询复用上游 `nn::contains`，本层不自抄 const 字节比较。
+/// 编译期断言：表内每个算子都在唯一注册表内；复用上游 const 查询，不复制字节比较。
 const fn all_in_registry(entries: &[Entry]) {
     let mut idx = 0;
     while idx < entries.len() {
@@ -549,7 +499,7 @@ const fn all_in_registry(entries: &[Entry]) {
     }
 }
 
-/// 表条目对 engine [`Program`] 契约的适配：名字随表走，执行入口落到适配函数。
+/// 一条静态表项对 engine 动态 `Program` 契约的适配；动态性只留在后端边界。
 struct Kernel {
     entry: &'static Entry,
 }

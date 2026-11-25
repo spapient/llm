@@ -98,7 +98,8 @@ fn check_input(producer: &Kernel, consumer: &Kernel) -> Result<(), VerificationE
 /// 两侧本来就必须共享同一个 `extent` 形参（`check_extent` 只比较名字），留两份会被「参数不重名」
 /// 闸挡下，于是融合永远不成立。同名**异型**不去重：那正是两侧真的冲突，仍由同一道闸报出来。
 fn merged_params(producer: &Kernel, consumer: &Kernel) -> Vec<Parameter> {
-    let mut merged: Vec<Parameter> = Vec::new();
+    let mut merged: Vec<Parameter> =
+        Vec::with_capacity(producer.params.len().saturating_add(consumer.params.len()));
     for parameter in producer.params.iter().chain(&consumer.params) {
         let linked = parameter.name == producer.output;
         let seen = merged.iter().any(|prior| prior == parameter);

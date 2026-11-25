@@ -151,8 +151,8 @@ fn rotate_heads(pos: usize, x: &[f32], out: &mut [f32], head_dim: usize, freq: &
 
 /// 批量校验：返回单序列段长 `heads·head_dim`；批数取 `positions.len()`，段内头宽/倍数守卫
 /// 交给 [`forward_heads`]。
-fn rope_batch_segments(
-    positions: &[usize],
+fn rope_batch_segments<T>(
+    positions: &[T],
     x: &[f32],
     out: &[f32],
     head_dim: usize,
@@ -189,19 +189,46 @@ pub fn forward_batch(
     out: &mut [f32],
     head_dim: usize,
 ) -> diagnostic::Result<()> {
+    forward_batch_with(positions, x, out, head_dim, |&position| position)
+}
+
+/// 从 `f32` 位置表批量旋转：转换在逐段读取时完成，不分配临时 `Vec<usize>`。
+///
+/// 数值转换与既有执行器入口一致；几何校验与写回顺序同 [`forward_batch`]。
+///
+/// # Errors
+///
+/// `positions` 为空、头宽为 0、输入输出不等长或长度不是批段整数倍时返回说明。
+pub fn forward_batch_from_f32(
+    positions: &[f32],
+    x: View<'_, f32>,
+    out: &mut [f32],
+    head_dim: usize,
+) -> diagnostic::Result<()> {
+    forward_batch_with(positions, x, out, head_dim, |&position| position as usize)
+}
+
+/// 批量旋转公共核：位置来源可投影，段校验、频率表与写回逻辑只有一份。
+fn forward_batch_with<T>(
+    positions: &[T],
+    x: View<'_, f32>,
+    out: &mut [f32],
+    head_dim: usize,
+    position: impl Fn(&T) -> usize,
+) -> diagnostic::Result<()> {
     let x = x.as_slice();
     let seg = rope_batch_segments(positions, x, out, head_dim)?;
-    // 先把每个序列的段形状校验完，再统一写：任一序列非法时不会留下写了一半的输出。
+    // 先校验所有段，再统一写：任一序列非法时不会留下写了一半的输出。
     for start in (0..x.len()).step_by(seg) {
         let span = start..start + seg;
         rope_heads(&x[span.clone()], &out[span], head_dim)?;
     }
     let freq = frequencies(head_dim);
-    for (seq, &pos) in positions.iter().enumerate() {
+    for (seq, value) in positions.iter().enumerate() {
         let start = seq * seg;
         let span = start..start + seg;
         rotate_heads(
-            pos,
+            position(value),
             &x[span.clone()],
             &mut out[span],
             head_dim,

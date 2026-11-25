@@ -1,5 +1,5 @@
 use super::*;
-use crate::{cpu::map_f32, exec::Buf};
+use crate::{cpu::test_support::map_f32, exec::Buf};
 use diagnostic::{Code, Error, Result};
 use storage::CpuAllocator;
 

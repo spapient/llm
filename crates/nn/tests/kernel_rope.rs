@@ -109,6 +109,24 @@ fn batch_rotates_each_segment_at_its_own_position() {
 }
 
 #[test]
+fn f32_batch_positions_match_the_usize_entry_without_a_conversion_buf() {
+    let x: Vec<f32> = (0..16).map(|idx| idx as f32 * 0.25 - 2.0).collect();
+    let positions = [3.0f32, 9.0];
+    let mut expected = vec![0.0; x.len()];
+    forward_batch(
+        &[3, 9],
+        tensor::View::one(&x),
+        &mut expected,
+        4,
+    )
+    .expect("usize 位置表");
+    let mut produced = vec![0.0; x.len()];
+    forward_batch_from_f32(&positions, tensor::View::one(&x), &mut produced, 4)
+        .expect("f32 位置表");
+    assert_eq!(produced, expected);
+}
+
+#[test]
 fn batch_one_entry_matches_the_heads_kernel() {
     let head_dim = 4;
     let heads = 2;

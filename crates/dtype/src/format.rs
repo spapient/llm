@@ -263,34 +263,19 @@ pub mod weight {
         quantized: bool,
     }
 
-    /// 格式身份与稳定配置名；`DType` 仍是唯一的存储、位宽和规范名事实源。
-    #[cfg_attr(not(feature = "serde"), allow(dead_code))]
-    struct FormatDescriptor {
-        name: &'static str,
-        dtype: DType,
-        quantized: bool,
-    }
-
-    impl FormatDescriptor {
-        const fn new(name: &'static str, dtype: DType, quantized: bool) -> Self {
-            Self {
-                name,
-                dtype,
-                quantized,
-            }
-        }
-    }
+    /// 格式描述项：稳定配置名、存储类型、是否量化；`DType` 持有其余事实。
+    type FormatDescriptor = (&'static str, DType, bool);
 
     const FORMAT_DESCRIPTORS: &[FormatDescriptor] = &[
-        FormatDescriptor::new("f32", DType::F32, false),
-        FormatDescriptor::new("f16", DType::F16, false),
-        FormatDescriptor::new("bf16", DType::BF16, false),
-        FormatDescriptor::new("i8", DType::I8, false),
-        FormatDescriptor::new("packed2", DType::U2, false),
-        FormatDescriptor::new("packed4", DType::U4, false),
-        FormatDescriptor::new("int2", DType::U2, true),
-        FormatDescriptor::new("int4", DType::U4, true),
-        FormatDescriptor::new("int8", DType::I8, true),
+        ("f32", DType::F32, false),
+        ("f16", DType::F16, false),
+        ("bf16", DType::BF16, false),
+        ("i8", DType::I8, false),
+        ("packed2", DType::U2, false),
+        ("packed4", DType::U4, false),
+        ("int2", DType::U2, true),
+        ("int4", DType::U4, true),
+        ("int8", DType::I8, true),
     ];
 
     impl WeightFormat {
@@ -337,7 +322,7 @@ pub mod weight {
         pub fn of_dtype(dtype: DType) -> Option<Self> {
             FORMAT_DESCRIPTORS
                 .iter()
-                .find(|descriptor| !descriptor.quantized && descriptor.dtype == dtype)
+                .find(|(_, candidate, quantized)| !quantized && *candidate == dtype)
                 .map(|_| Self::plain(dtype))
         }
 
@@ -346,10 +331,8 @@ pub mod weight {
         pub fn from_quantized(bits: u8, group: usize) -> Option<Self> {
             FORMAT_DESCRIPTORS
                 .iter()
-                .find(|descriptor| {
-                    descriptor.quantized && descriptor.dtype.bits() == u32::from(bits)
-                })
-                .map(|descriptor| Self::scaled(descriptor.dtype, group))
+                .find(|(_, candidate, quantized)| *quantized && candidate.bits() == u32::from(bits))
+                .map(|(_, dtype, _)| Self::scaled(*dtype, group))
         }
 
         /// 显式声明 2 位量化的分组。
@@ -382,25 +365,25 @@ pub mod weight {
         }
 
         /// 稳定配置名，由同一张描述表正向查出。
-        #[cfg_attr(not(feature = "serde"), allow(dead_code))]
+        #[cfg(feature = "serde")]
         fn wire_name(self) -> Option<&'static str> {
             FORMAT_DESCRIPTORS
                 .iter()
-                .find(|descriptor| {
-                    descriptor.dtype == self.dtype && descriptor.quantized == self.quantized
+                .find(|(_, candidate, quantized)| {
+                    *candidate == self.dtype && *quantized == self.quantized
                 })
-                .map(|descriptor| descriptor.name)
+                .map(|(name, ..)| *name)
         }
 
         /// 从稳定配置名和分组还原；无分组格式拒绝多余的 `group`，量化格式强制要求它。
-        #[cfg_attr(not(feature = "serde"), allow(dead_code))]
+        #[cfg(feature = "serde")]
         fn from_wire(name: &str, group: Option<usize>) -> Option<Self> {
-            let descriptor = FORMAT_DESCRIPTORS
+            let &(_, dtype, quantized) = FORMAT_DESCRIPTORS
                 .iter()
-                .find(|descriptor| descriptor.name == name)?;
-            match (descriptor.quantized, group) {
-                (true, Some(group)) => Some(Self::scaled(descriptor.dtype, group)),
-                (false, None) => Some(Self::plain(descriptor.dtype)),
+                .find(|(candidate, ..)| *candidate == name)?;
+            match (quantized, group) {
+                (true, Some(group)) => Some(Self::scaled(dtype, group)),
+                (false, None) => Some(Self::plain(dtype)),
                 _ => None,
             }
         }
