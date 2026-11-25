@@ -1,9 +1,9 @@
 # CUDA / Intel 核显内核配置候选档位对照（调研）
 
-- 版本：v1.0
+- 版本：v1.1
 - 日期：2026-11-26
-- 调研主机：Apple M5 Pro / macOS arm64 / rustc 1.100.0
-- 数据来源：联网厂商文档与公开调优指南（见末节「来源」）＋ 仓内设备档案 `crates/prof/src/nvidia/a3000.toml`、`crates/prof/src/intel/intel.toml`
+- 调研主机：Apple M5 Pro / macOS arm64 / rustc 1.100.0；win 实测 192.168.0.65（Windows 10.0.26300）
+- 数据来源：联网厂商文档与公开调优指南（见末节「来源」）＋ 仓内设备档案 `crates/prof/src/nvidia/a3000.toml`、`crates/prof/src/intel/intel.toml` ＋ win 实测枚举读数
 - 配套冻结口径：[`docs/adr/0056-cutile-prof-dsl-ir-spp.md`](adr/0056-cutile-prof-dsl-ir-spp.md) G1/G2/G3/G5
 
 ## 一、结论先行
@@ -11,8 +11,10 @@
 1. 调研收敛出两平台的分块、线程/warp、流水线、向量化候选档位；仓内目前只登记了
    `[simt].group`（warp/subgroup 宽度）与族级 `block` 占位种子，**warp 数、stage 深度、
    向量宽度、work-group 多档位尚未进入候选空间**。
-2. 真机验证现状：本机 M5 Pro 仅 Metal 后端；win（RTX A3000 12GB，sm86）CUDA prof 见证层
-   已闭合 18/18，**Intel 核显无真机证据**；本次探测时 win（192.168.0.65:22）SSH 离线。
+2. 真机验证现状：本机 M5 Pro 仅 Metal 后端；win 上 A3000（sm86）与 UHD750 双硬件在场、
+   nvcc 13.3、MSVC 14.51 cl 与 Intel OpenCL/Level-Zero 运行时均可见，最小 CUDA 内核已实测
+   编译并在 A3000 上回读正确；但 win 仓内快照落后本机、prof 产物错位，当前口径对拍用例未跑成，
+   Intel 仓内真机对拍证据仍为空。
 3. 本表是候选空间的**设计输入**，不代表已落地、可发射、可计时的配置。typed IR 设备执行
    （G2）、真机计时择优（G5）仍在冻结边界内；非 f32 档贯通属 G1。
 
@@ -66,33 +68,54 @@ REG 32 KiB、OpenCL 2.0、tools clang 17.0；f32 峰值 665.6 GFLOPS、带宽 51
   OpenCL ICD 均不存在。
 - 可跑：host C 与 Metal 语法门 / 逐点族真机对拍；**CUDA、Intel OpenCL 档无法在本机验证**。
 
-### SSH `win`（192.168.0.65，user fei）
+### SSH `win`（192.168.0.65，user fei，Windows 10.0.26300 / i7-11700）
 
-- 已知设备：`NVIDIA RTX A3000 12GB Laptop GPU`（sm86）；CUDA prof 见证层 18/18 真机对拍
-  闭合，`max_rel_err` 全 0，`scope=Device`（ADR 0056 G 段）。
-- Intel：仓内 `intel/` 为 UHD750 OpenCL 档案，**无真机证据**；win 是否另有 Intel 核显待
-  上线后枚举确认。
-- 本次探测状态：`ping` 100% 丢包、22 端口连接超时，**整机离线**，未取到新的工具链读数。
+2026-11-26 上线实测：
+
+| 项 | 读数 |
+| --- | --- |
+| NVIDIA | RTX A3000 12GB Laptop GPU，驱动 621.14，**sm 8.6**，12288 MiB |
+| Intel | UHD Graphics 750（gen12），驱动 32.0.101.7088 |
+| Rust | rustc / cargo **1.100.0-nightly**（符合固定版本） |
+| CUDA 工具链 | nvcc **13.3 V13.3.33**；MSVC **在位**：VS18 BuildTools `VC\Tools\MSVC\14.51.36231` cl 19.51.36256（`Hostx64\x64\cl.exe`，vswhere `-latest` 命中），另 `D:\VSBuildTools\MSVC\14.44.35207`；`D:\BuildTools` 为仅含 LLVM format/tidy 的残壳 |
+| Intel 运行时 | oneAPI 2026.0；`sycl-ls` 枚举到 `level_zero:0` UHD750 12.1.0 [1.6.34728]、`opencl:0` UHD750 **OpenCL 3.0 NEO** [32.0.101.7088]，另有两条 CPU OpenCL |
+
+CUDA 链实测（最小 `hello.cu`，sm_86）：默认 ssh 环境下 `nvcc -ccbin <14.51 cl>` 直编 **EXIT=0**（无需预
+source vcvarsall）；产物在 A3000 运行回读 `1.0`、退出码 0，设备内核执行 + 回读正确。前序"MSVC 缺失"为
+漏查 D 盘两个 VS 实例导致的误判。
+
+历史证据：ADR 0056 G 段记录此前 CUDA prof 见证层 18/18 真机对拍闭合、`max_rel_err` 全 0、`scope=Device`；
+本轮最小内核已复核编译-执行链通，仓内见证对拍待代码同步后复跑。
+
+仓内快照状态（`C:\Users\fei\llm-sync`、`llm-a3000-91199ce0`、`llm-intel`）：均非 git 跟踪，
+停在 P1/P2 阶段（含 `witness_tests.rs` 通道，但无本轮 P3 `geometry_seed`）；`D:\llm` 为更旧的
+分片调度快照。`llm-a3000` 当前 prof 内嵌生成产物仍引用旧 `ProfileView`，与已并库的 prof 源码错位，
+`cargo test` 编译断裂——快照落后本机，不能作为当前口径验证基线。
+
+仓内可用性判定（本机代码口径）：
+
+- CUDA：`nvcc_available()` 要求 nvcc **且** Windows 上 `find_cl()` 命中；`find_cl` 经 vswhere
+  `-products * -find VC\Tools\MSVC\**\bin\Hostx64\x64\cl.exe` 命中 14.51 cl（文件校验通过），判定**可用**。
+- OpenCL：`OpenClDevice::probe()` 枚举设备名含 `Intel` 即选中；运行时在场，代码同步后应命中
+  UHD750（注意 CPU OpenCL 设备名也含 "Intel"，平台/设备顺序需在接通时核对）。
 
 ### 仓内通道限制
 
 五个 Emit 前端的语法门均为 `-fsyntax-only`，CUDA 另带 `--cuda-host-only -nocudainc
--nocudalib`；设备真编译/launch 走独立 runner（`CudaBackend`，win 上已跑通见证层）。
+-nocudalib`；设备真编译/launch 走独立 runner（`CudaBackend`，win 上历史已跑通见证层）。
 typed IR 接设备执行仍属 G2；在该通道贯通前，仓内新配置只能过语法门与 host C 对拍，出不了
 两平台设备性能数字。
 
-## 六、win 上线后探测与验证步骤
+## 六、剩余阻塞与验证步骤
 
-1. 连通：`ssh win`（非交互会话需先 `call vcvarsall.bat x64`，再让 nvcc `-ccbin cl.exe`）。
-2. GPU 枚举（PowerShell）：
-   `Get-CimInstance Win32_VideoController | Select Name,DriverVersion`；
-   NVIDIA：`nvidia-smi`；Intel：`clinfo -l`（OpenCL ICD）或 `sycl-ls`（Level Zero/oneAPI）。
-3. 工具链核对：rustc/cargo 固定 **1.100.0**；CUDA 侧 nvcc + MSVC；Intel 侧 Intel OpenCL
-   runtime 或 Level Zero。
-4. 仓内入口：`cargo test -p llm-shard`；`cargo run --bin cutile -- bench --shape <M>x<N>
-   --repeat 50`。
-5. 边界：见证层对拍 ≠ typed IR 设备执行；无 roofline 读数前不签 L3 性能档；Intel/MUSA/
-   Ascend/ROCm 维持无证据口径。
+1. **代码同步**：把本机当前工作区同步到 win（三份快照均落后本机若干代，prof 生成产物与源码已错位、
+   对拍用例名/结构不一致）；同步后再跑当前口径用例。
+2. **跑当前口径对拍**：`cargo test -p llm-shard --test backends` 下的
+   `every_nvidia_witness_runs_on_the_cuda_device`（CUDA，带 skip 门控）与
+   `every_intel_witness_runs_on_uhd750`（OpenCL，无 skip，探测不到即红）。MSVC/nvcc 编译链
+   本轮已用最小内核复核通过，无需再补宿主编译器。
+4. 边界：见证层对拍 ≠ typed IR 设备执行；无 roofline 读数前不签 L3 性能档；MUSA/Ascend/
+   ROCm 维持无证据口径。
 
 ## 七、来源
 

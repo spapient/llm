@@ -1,5 +1,7 @@
 //! 人读渲染：带标题的两列面板、Markdown 表、顿号列表、字节量与单次耗时。
 
+use std::fmt::Write as _;
+
 /// 一份带标题的面板：标题一行，之后每行一个“标签 + 值”，标签按最宽者对齐。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Panel {
@@ -24,6 +26,7 @@ impl Panel {
     }
 
     /// 排成文本：标题一行，之后按“标签 + 值”两列输出，末尾带换行。
+    #[must_use]
     pub fn render(&self) -> String {
         let widest = self
             .rows
@@ -34,7 +37,7 @@ impl Panel {
         let mut text = format!("{}\n", self.title);
         for (label, value) in &self.rows {
             let pad = widest.saturating_sub(span(label));
-            text.push_str(&format!("  {label}{}  {value}\n", " ".repeat(pad)));
+            let _ = writeln!(text, "  {label}{}  {value}", " ".repeat(pad));
         }
         text
     }
@@ -114,6 +117,7 @@ impl Sheet {
     }
 
     /// 排成 Markdown：表头一行、分隔一行、之后每行一条，末尾带换行。
+    #[must_use]
     pub fn render(&self) -> String {
         let mut text = format!("| {} |\n|", self.head.join(" | "));
         for column in 0..self.head.len() {
@@ -125,7 +129,7 @@ impl Sheet {
         }
         text.push('\n');
         for row in &self.rows {
-            text.push_str(&format!("| {} |\n", row.join(" | ")));
+            let _ = writeln!(text, "| {} |", row.join(" | "));
         }
         text
     }
@@ -142,8 +146,11 @@ pub fn join_names<'a>(names: impl Iterator<Item = &'a str>) -> String {
 }
 
 /// 人读的字节数（工作集与容量对照用）：1024 进制，B / KiB / MiB / GiB。
+#[must_use]
 pub fn human_bytes(bytes: u64) -> String {
     const UNITS: [&str; 4] = ["B", "KiB", "MiB", "GiB"];
+    // 仅做 1024 进制档位换算与一位小数展示：u64 末位整数精度损失不影响档位选择。
+    #[allow(clippy::cast_precision_loss)]
     let mut value = bytes as f64;
     let mut unit = 0;
     while value >= 1024.0 && unit + 1 < UNITS.len() {
@@ -158,6 +165,7 @@ pub fn human_bytes(bytes: u64) -> String {
 }
 
 /// 单次耗时：亚微秒内核用 ns，否则用 ms（避免一串 `0.000`）。
+#[must_use]
 pub fn per_run(ns: f64) -> String {
     if ns < 1e3 {
         format!("{ns:.1} ns/次")

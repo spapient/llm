@@ -63,6 +63,7 @@ impl Error {
     }
 
     /// 由一次读文件失败构造：路径不存在是 `missing`，其余是 `io`。
+    #[must_use]
     pub fn from_io(path: &Path, error: &std::io::Error) -> Self {
         let code = if error.kind() == std::io::ErrorKind::NotFound {
             Code::Missing

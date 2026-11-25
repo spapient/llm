@@ -28,6 +28,7 @@ pub struct Cursor<'a> {
 
 impl<'a> Cursor<'a> {
     /// 在一段文本上开一个游标；`site` 会写进这里产生的每条错误的上下文。
+    #[must_use]
     pub fn new(text: &'a str, site: &'static str) -> Self {
         Self {
             bytes: text.as_bytes(),
@@ -37,11 +38,13 @@ impl<'a> Cursor<'a> {
     }
 
     /// 全文的字节视图。
+    #[must_use]
     pub fn bytes(&self) -> &'a [u8] {
         self.bytes
     }
 
     /// 当前下标。
+    #[must_use]
     pub fn pos(&self) -> usize {
         self.pos
     }
@@ -57,6 +60,7 @@ impl<'a> Cursor<'a> {
     }
 
     /// 下一个字节；已到末尾为 `None`。
+    #[must_use]
     pub fn peek(&self) -> Option<u8> {
         self.bytes.get(self.pos).copied()
     }
@@ -76,6 +80,11 @@ impl<'a> Cursor<'a> {
     }
 
     /// 吃一个必需的字节；不一致与已到末尾两种失败带不同文案。
+    ///
+    /// # Errors
+    ///
+    /// 下一字节不等于 `wanted`，或已到末尾时返回 [`Code::Invalid`]；两类失败
+    /// 文案分别指明期望的字节与“已到末尾”。
     pub fn eat(&mut self, wanted: u8) -> Result<()> {
         let at = self.pos;
         match self.bump() {

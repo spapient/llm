@@ -450,3 +450,36 @@ Rust 官方与微软训练材料的一致口径：
 - 工作区 `--all-targets --all-features` 编译零警告；`prof` 169 项单测、65 项设备片段测试，`testkit` 116 项，诊断底座 20 项单测与 2 项文档测试通过。
 - 静态质量门 13 项通过，覆盖复杂度、行数、禁止调用、命名与文档链接；最终全量结果以 `bash scripts/ci.sh` 的当次输出为准，不预写分数或沿用历史记录。
 - 保持平铺、配置优先与单源校验；不得靠调宽阈值、删除有效覆盖或新增基线完成闭环。
+
+## 15. 收尾复核与 #26 / #53 台账（2026-11-26）
+
+### 15.1 当次实测基线（命令输出为准，不复用历史记录）
+
+- `cargo check --workspace --all-targets --all-features --locked`：0 error。
+- `cargo nextest run --workspace --all-features --locked`：3031 passed / 18 skipped / 0 failed。
+- `cargo test --doc --workspace`：1 + 6 + 3 passed；`cargo fmt --all --check`：0；`cargo clippy --workspace --all-targets --all-features -- -D warnings`：0。
+- ruff `check` 与 `format --check validation`：0；`cargo deny check`：advisories/bans/licenses/sources ok；`cargo machete`：无未用依赖。
+- jscpd：535 文件 / 163,094 行 / 0 clone / 0.00%；tools 门 13 passed；`complexity.sh` 0；testkit 架构门 117 passed；命名门 0 命中；`cargo expand` 双产物非空；typos 0；actionlint 0；`cargo bench --workspace --no-run` 0；regress 12 passed；cloc 2.12 统计步 0（`.tools/cloc`，须 `.tools` 前置 PATH，非系统命令）。
+- 密度门 `loc-budget.sh`：**未通过**，src 104,164 行 / 313 文件。`SRC_MAX=60000`（历史重建提交 b65a0966 回退的项目目标值），脚本注释棘轮基线停在 95,800；当前超目标值 44,164 行、超棘轮基线 8,364 行。>600 行文件 45 个（最大 `cutile/src/parser.rs` 900）；>8200 行 crate 4 个：nn 15,303、prof 12,237、weights 10,019、cutile 8,658。均为存量大层；本批增量仅为注解、文档与台账注释，未新增能力代码，也未调宽阈值掩盖超标。超棘轮基线的 8,364 行属后续并发会话能力增量，需另行取证登记或无损缩减，不在本批处置范围。
+
+### 15.2 #26 pedantic 分层机制与样板层
+
+- 机制约束（实测确认）：Cargo lints 不支持工具表内 `workspace = true` 子表继承；`[lints] workspace = true` 与 crate 级 `[lints.clippy]` 覆盖不能并存；子表写 `workspace = true` 被拒。可行通道是源码级 lint 属性，沿用仓内既有 `#[allow]` 先例。
+- 作用域口径（更正上一轮判断）：源码 `#![deny(clippy::pedantic)]` 只作用本 crate 编译单元，不继承给依赖；ci.sh 的 clippy 步是 `-D warnings` 但**不开** pedantic flag。因此依赖 crate 的 pedantic 告警不阻断真实门禁；只有手动用 `-W clippy::pedantic -D warnings` 整图编译时，未整改依赖才会被命令行 flag 升级。
+- 样板一 `llm-dtype`：`src/lib.rs` 顶部 `#![deny(clippy::pedantic)]`；独立 test target `tests/dtype_contracts.rs` 同源属性。本体 lib 与 tests pedantic 0 告警；补 `#[must_use]`，测试数值转换改 `u32::try_from(..).expect(..)`（沿用仓内测试惯例，生产仍禁裸 expect）。
+- 样板二 `llm-diagnostic`：`src/lib.rs` 顶部 `#![deny(clippy::pedantic)]`；`autotests = false`，四个测试经 `#[path]` mod 编入 lib test target，受 lib 属性覆盖，无需独立 target 属性。整改：9 处 `#[must_use]`、2 处 `push_str(&format!)` 改 `writeln!`（`use std::fmt::Write as _;`）、3 段 `# Errors` 文档、1 处私有 `io_err` 参数改引用、1 处 `u64→f64` 展示换算局部 `#[allow(clippy::cast_precision_loss)]` 并注释理由。pedantic 全 target 0，20 单测 + 2 doc-test 绿，全量 nextest 无回归。
+- 全仓存量（lib 级粗估，以当次 clippy 为准）：nn 600、weights 318、train 327、prof 280、cutile 151、algorithm 125、serve 106、engine 94、tools 88、shard 83、storage 80、autograd 49、tensor 46、tokenizer 45、cli 34、testkit 26、fuzz 17、annotation 16；dtype、diagnostic 已清零。cast 族（截断/精度/符号/指针对齐）属数值内核与 FFI 固有语义，不得为消告警改转换口径；签名扩散类（`&Option<T>`、pass_by_value）需全调用点核对，均留后续批次逐条裁决。
+
+### 15.3 #53 train/serve 适配协议裁决
+
+- 三适配文件（`train/kernel.rs`、`serve/kernels.rs`、`serve/dense.rs`）定向 jscpd 1309 行 0 clone，逐字比对无真实可合并重复。事实源已统一：`storage::LaneView/LaneViewMut` 取槽、`tensor::View::{one,matrix,matrix_triple}` 装配、`nn::registry` 注册表。
+- 不可抹平的执行缝必须留入口层：train 单 `&mut ViewMut` + `Kernel`（Geometry/Running/反向）vs serve 多 `&mut [ViewMut]` + `engine::Program`（Launch block/标量槽）；几何来源与反向核心各异。
+- 裁决：当前基线无可合规下沉块；七个候选留入口层或已是事实源。明细见 `validation/train-serve-adapter-protocol-design.md`。第二批前置：先对齐 slot 取槽与错误口径、几何契约，满足后再评估下沉。
+
+### 15.4 未完成项（如实披露）
+
+- 密度门存量红账：超目标值 44,164 行、超棘轮基线 8,364 行；删除等于砍能力，违反正确性优先，非本批可消除。`SRC_MAX=60000` 系历史重建提交 b65a0966 回退的目标值，与脚本注释棘轮基线 95,800 脱节；是否把门禁常量改回棘轮口径、超基线部分如何取证登记，属仓库门禁治理决策，本批不擅自调宽。
+- #26 除 dtype、diagnostic 两个样板层外，全仓 pedantic 存量未整改；大层 cast 语义债与签名扩散留后续批次。
+- #53 第二批前置条件未满足，保持待评估。
+- `--perf` 固定硬件基准、`--fuzz`、`--miri`、`--coverage` 未跑；18 项 skipped 平台专项未执行；`tensor::View::one` 维度/步长 Vec 分配缺 release 基准证据。
+- 工作树中 `crates/shard/tests/pipeline_tests.rs`、`docs/gpu-tuning-candidates-cuda-intel.md` 为并发会话在飞改动，本批未触碰；nextest 已在含该改动的树上跑绿。

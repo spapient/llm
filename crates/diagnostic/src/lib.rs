@@ -21,6 +21,7 @@
 //! ```
 
 #![deny(unsafe_code)]
+#![deny(clippy::pedantic)]
 
 pub mod code;
 pub mod error;

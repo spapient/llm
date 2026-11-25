@@ -59,6 +59,6 @@
 ## 8. 其他未完成项（不在本批范围）
 
 - 报告 §5.4：`tensor::View::one` 每次创建维度与步长 `Vec`，RoPE 计时区仍有 2 次分配；需 release 基准证明内联小秩形状或借用形状的收益后另行优化。
-- 报告 §5.5：完整 CI 与固定硬件 `--perf` 未跑完；密度预算全仓 `src` 104,130 / 60,000 行超预算，基准编译与 criterion 未执行。
-- #47 / #50 / #51 / #52 静态化批次全量闭环尚未在绿基线上跑完；#26 pedantic 分层开启与告警整改 pending。
+- 密度预算全仓 `src` 104,164 / 60,000 行，超 44,164 行（存量结构性债，非本批适配层引入）；`cargo bench --no-run` 与 regress 判定已过，固定硬件 criterion 采样未执行。
+- #47 / #50 / #51 / #52 静态化批次的分项门禁（check、nextest、静态门、架构门、jscpd、deny、machete、命名、拼写、expand、actionlint）已在绿基线上复核通过；全量 `ci.sh` 仍被存量密度门阻断。#26 已落地 `llm-dtype`、`llm-diagnostic` 两个 pedantic 样板层，其余大层存量未整改。
 - 本批未运行 `scripts/ci.sh` 全量门禁与 release 基准；上述定向 check / 静态门 / jscpd 不替代完整工作流证据。
