@@ -210,7 +210,7 @@ const DECLARED: &[(&str, Geometry)] = declared_geometries! {
 mod kernels;
 #[path = "shapes.rs"]
 mod shapes;
-use shapes::{invalid, pool_len};
+use shapes::pool_len;
 
 // ---- 方法分派：形状核对 + 逐变体路由 -----------------------------------------
 impl Geometry {
@@ -221,12 +221,11 @@ impl Geometry {
             | Self::Pool2d { .. }
             | Self::Avg2d { .. }
             | Self::Conv2d { .. } => self.pool_output(),
-            Self::Adaptive { .. } | Self::Interp { .. } => self.plane_output(),
-            Self::Norm { .. } | Self::Group { .. } | Self::Layer { .. } => self.norm_output(),
+            _ => self.other_output(),
         }
     }
 
-    /// 池化与卷积输出：二维边长由两次窗口展开相乘。
+    /// 窗口类几何的输出元素数。
     fn pool_output(self) -> usize {
         match self {
             Self::Pool1d { k, s, p, l, c } => pool_len(l, k, s, p).map_or(0, |ol| ol * c),
@@ -247,17 +246,10 @@ impl Geometry {
         }
     }
 
-    /// 固定平面输出：自适应池化与插值的 `oh·ow·c`。
-    fn plane_output(self) -> usize {
+    /// 固定平面与归一化几何的输出元素数。
+    fn other_output(self) -> usize {
         match self {
             Self::Adaptive { oh, ow, c, .. } | Self::Interp { oh, ow, c, .. } => oh * ow * c,
-            _ => 0,
-        }
-    }
-
-    /// 归一化输出：按元素总数 `n·spatial·channels`（层归一化为 `rows·width`）。
-    fn norm_output(self) -> usize {
-        match self {
             Self::Norm {
                 n,
                 spatial,
@@ -296,10 +288,7 @@ impl Geometry {
         out: &mut [f32],
         running: Option<&mut Running>,
     ) -> Result<()> {
-        self.check_shape(
-            &inputs.iter().map(|x| x.len()).collect::<Vec<_>>(),
-            out.len(),
-        )?;
+        self.check_shape(&shapes::lengths(inputs), out.len())?;
         kernels::forward(self, inputs, out, running)
     }
 
@@ -317,11 +306,8 @@ impl Geometry {
         else {
             return self.forward(inputs, out);
         };
-        self.check_shape(
-            &inputs.iter().map(|x| x.len()).collect::<Vec<_>>(),
-            out.len(),
-        )?;
-        check_running(running, channels)?;
+        self.check_shape(&shapes::lengths(inputs), out.len())?;
+        shapes::check_running(running, channels)?;
         kernels::forward_batch_norm_eval(inputs, out, running, n, spatial, channels)
     }
 
@@ -331,35 +317,14 @@ impl Geometry {
     ///
     /// 形状与实例不符时返回 [`Code::Invalid`]。
     pub fn backward(self, inputs: &[Vec<f32>], incoming: &[f32]) -> Result<Vec<Vec<f32>>> {
-        self.check_shape(
-            &inputs.iter().map(Vec::len).collect::<Vec<_>>(),
-            incoming.len(),
-        )?;
+        self.check_shape(&shapes::lengths(inputs), incoming.len())?;
         kernels::backward(self, inputs, incoming)
     }
 }
 
-/// 滚动统计通道数必须与实例一致；训练与推理共用同一拒绝判据。
-fn check_running(running: &Running, channels: usize) -> Result<()> {
-    if running.mean.len() == channels && running.var.len() == channels {
-        return Ok(());
-    }
-    Err(invalid(format!(
-        "滚动统计有 {} 个均值 / {} 个方差，实例几何要 {channels} 个通道",
-        running.mean.len(),
-        running.var.len()
-    )))
-}
-
 /// 二维平面输出元素数：两次窗口展开相乘，几何不成立时退 0。
 fn plane_out(h: usize, w: usize, k: usize, s: usize, p: usize, channels: usize) -> usize {
-    let Ok(oh) = pool_len(h, k, s, p) else {
-        return 0;
-    };
-    let Ok(ow) = pool_len(w, k, s, p) else {
-        return 0;
-    };
-    oh * ow * channels
+    shapes::pool2d_out(shapes::Window { k, s, p }, h, w).map_or(0, |(oh, ow)| oh * ow * channels)
 }
 
 #[cfg(test)]

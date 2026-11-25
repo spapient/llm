@@ -224,6 +224,16 @@ pub mod gemm_micro {
         if k == 0 || n < SME_NR || !sme_available() {
             return Ok(false);
         }
+        checked_sme_micro(a, b, out, n, k)
+    }
+
+    fn checked_sme_micro(
+        a: &[f32],
+        b: &[f32],
+        out: &mut [f32],
+        n: usize,
+        k: usize,
+    ) -> Result<bool> {
         ensure(
             sizes(SME_MR, n, n, k)?,
             (a.len(), b.len(), out.len()),
@@ -239,6 +249,11 @@ pub mod gemm_micro {
         m > 0 && n > 0 && k > 0 && m.is_multiple_of(SME_MR) && n.is_multiple_of(SME_NR)
     }
 
+    fn sme_needs(m: usize, n: usize, k: usize) -> Result<(Sizes, bool)> {
+        let need = sizes(m, n, n, k)?;
+        Ok((need, area(need.2, k, "SME 规模")? >= SME_MIN_ELEMS))
+    }
+
     /// SME 整铺生产入口；面板由公开调用面的线程私有缓存注入。
     pub fn sme_gemm(
         a: &[f32],
@@ -252,14 +267,26 @@ pub mod gemm_micro {
         if !sme_tiled(m, n, k) || !sme_available() {
             return Ok(false);
         }
-        let need = sizes(m, n, n, k)?;
-        if area(need.2, k, "SME 规模")? < SME_MIN_ELEMS {
+        let (need, large_enough) = sme_needs(m, n, k)?;
+        if !large_enough {
             return Ok(false);
         }
+        checked_sme_gemm(a, b, (m, n, k), out, panel, need)
+    }
+
+    fn checked_sme_gemm(
+        a: &[f32],
+        b: &[f32],
+        shape: (usize, usize, usize),
+        out: &mut [f32],
+        panel: &mut [f32],
+        need: Sizes,
+    ) -> Result<bool> {
         ensure(need, (a.len(), b.len(), out.len()), "SME")?;
         if panel.len() < need.0 {
             return invalid("SME 打包面板不足");
         }
+        let (m, n, k) = shape;
         sme_packed(a, b, m, n, k, out, panel);
         Ok(true)
     }

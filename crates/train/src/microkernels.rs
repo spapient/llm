@@ -124,7 +124,7 @@ fn running_or_local<'a>(
     channels: usize,
 ) -> Result<&'a mut Running> {
     if let Some(stats) = running.as_deref() {
-        super::check_running(stats, channels)?;
+        super::shapes::check_running(stats, channels)?;
     }
     Ok(running.unwrap_or(local))
 }

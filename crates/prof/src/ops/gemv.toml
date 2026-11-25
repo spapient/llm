@@ -36,12 +36,12 @@ op = { name = "gemv_f32", skeleton = "gemm", summary = "y[n] = dot(w[n, :], x[:]
 [[operators]]
 op = { name = "gemv_i2", stem = "gemv_packed", skeleton = "gemm", summary = "y[n] = Σ_g scale[n,g] · dot(dequant(w[n, g·G : g·G+G]), x[g·G : g·G+G])" }
 needs = { quant = { dt = ["i2", "f32"], space = ["REG", "GM"], group = ["32"] } }
-consts = { cpb = 4, width = 2, zero = 2 }
+consts = { cpb = 4, width = 2, zero = 2, nblock = 8 }
 
 [[operators]]
 op = { name = "gemv_i4", stem = "gemv_packed", skeleton = "gemm", summary = "y[n] = Σ_g scale[n,g] · dot(dequant(w[n, g·G : g·G+G]), x[g·G : g·G+G])" }
 needs = { quant = { dt = ["i4", "f32"], space = ["REG", "GM"], group = ["32"] } }
-consts = { cpb = 2, width = 4, zero = 8 }
+consts = { cpb = 2, width = 4, zero = 8, nblock = 8 }
 
 [[operators]]
 op = { name = "gemv_i8", skeleton = "gemm", summary = "y[n] = Σ_g scale[n,g] · dot(signed(w[n,g]), x[g])" }

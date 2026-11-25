@@ -97,8 +97,8 @@ pub trait Optimizer {
     /// 回载矩状态与优化器步数。
     fn restore(
         &mut self,
-        momentum: Vec<Vec<f32>>,
-        variance: Vec<Vec<f32>>,
+        momentum: Table,
+        variance: Table,
         step: u64,
     ) -> Result<()>;
     /// 预检恢复输入；实现必须保证同一输入随后可原子提交。
@@ -114,8 +114,8 @@ pub trait Optimizer {
     /// 带参数形状的恢复入口，混合路由据此分派子状态。
     fn restore_shaped(
         &mut self,
-        momentum: Vec<Vec<f32>>,
-        variance: Vec<Vec<f32>>,
+        momentum: Table,
+        variance: Table,
         step: u64,
         shapes: &[Option<(usize, usize)>],
     ) -> Result<()> {
@@ -156,9 +156,23 @@ impl DecayClip {
     }
 }
 
-macro_rules! decay_clip {
-    ($ty:ident) => {
+macro_rules! stock {
+    ($ty:ident, $doc:literal, {$($field:ident:$ftype:ty = $default:expr),*},
+     $valid:ident, $check:ident, $restore:ident, $config:ident) => {
+        #[doc = $doc]
+        #[derive(Debug, Clone, PartialEq)]
+        pub struct $ty {
+            tuning: DecayClip,
+            $($field: $ftype),*
+        }
+        impl Default for $ty {
+            fn default() -> Self {
+                Self { tuning: DecayClip::default(), $($field: $default),* }
+            }
+        }
         impl $ty {
+            /// 构造默认优化器。
+            pub fn new() -> Self { Self::default() }
             /// 设置解耦权重衰减；合法性在装配/步进边界校验。
             pub fn with_weight_decay(mut self, value: f32) -> Self {
                 self.tuning.decay = value;
@@ -170,32 +184,21 @@ macro_rules! decay_clip {
                 self
             }
         }
-    };
-}
-macro_rules! optimizer_impl {
-    ($ty:ident, $valid:ident, $check:ident, $restore:ident, $config:ident) => {
         impl Optimizer for $ty {
             fn step(&mut self, slots: &mut [Slot<'_>], lr: f32) -> Result<()> {
                 self.validate()?;
                 let norm = check_slots(slots, lr, self.tuning.clip.is_some())?;
                 self.advance(slots, lr, norm)
             }
-            fn set_clip_norm(&mut self, value: Option<f32>) {
-                self.tuning.clip = value;
-            }
+            fn set_clip_norm(&mut self, value: Option<f32>) { self.tuning.clip = value; }
             fn validate(&self) -> Result<()> {
                 self.tuning.validate()?;
                 $valid(self)
             }
-            fn validate_restore(
-                &self,
-                m: &[Vec<f32>],
-                v: &[Vec<f32>],
-                _: &[Option<(usize, usize)>],
-            ) -> Result<()> {
+            fn validate_restore(&self, m: &[Vec<f32>], v: &[Vec<f32>], _: &[Option<(usize, usize)>]) -> Result<()> {
                 $check(m, v)
             }
-            fn restore(&mut self, m: Vec<Vec<f32>>, v: Vec<Vec<f32>>, step: u64) -> Result<()> {
+            fn restore(&mut self, m: Table, v: Table, step: u64) -> Result<()> {
                 $restore(self, m, v, step)
             }
             fn write_config(&self, sink: &mut dyn FnMut(u64)) {
@@ -280,7 +283,7 @@ fn no_moments(m: &[Vec<f32>], v: &[Vec<f32>]) -> Result<()> {
     validation_rules!(SITE; m.is_empty() && v.is_empty() => "SGD 无矩状态");
     Ok(())
 }
-fn state_slot(state: &mut Vec<Vec<f32>>, idx: usize, len: usize) -> &mut Vec<f32> {
+fn state_slot(state: &mut Table, idx: usize, len: usize) -> &mut Vec<f32> {
     state.resize_with(state.len().max(idx + 1), Vec::new);
     let slot = &mut state[idx];
     if slot.len() != len {
@@ -301,16 +304,7 @@ fn rescale(slots: &mut [Slot<'_>], scale: f32, divide: bool) {
     }
 }
 
-/// 无矩随机梯度下降。
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct Sgd {
-    tuning: DecayClip,
-}
 impl Sgd {
-    /// 构造默认 SGD。
-    pub fn new() -> Self {
-        Self::default()
-    }
     fn advance(&mut self, slots: &mut [Slot<'_>], lr: f32, norm: f32) -> Result<()> {
         let scale = self.tuning.scale(norm);
         for slot in slots {
@@ -322,46 +316,25 @@ impl Sgd {
         Ok(())
     }
 }
-decay_clip!(Sgd);
 fn valid_sgd(_: &Sgd) -> Result<()> {
     Ok(())
 }
-fn restore_sgd(this: &mut Sgd, m: Vec<Vec<f32>>, v: Vec<Vec<f32>>, _: u64) -> Result<()> {
+fn restore_sgd(this: &mut Sgd, m: Table, v: Table, _: u64) -> Result<()> {
     let _ = this;
     no_moments(&m, &v)
 }
 fn write_sgd(_: &Sgd, _: &mut dyn FnMut(u64)) {}
-optimizer_impl!(Sgd, valid_sgd, no_moments, restore_sgd, write_sgd);
+stock!(
+    Sgd,
+    "无矩随机梯度下降。",
+    {},
+    valid_sgd,
+    no_moments,
+    restore_sgd,
+    write_sgd
+);
 
-/// AdamW：偏差修正双矩与解耦衰减。
-#[derive(Debug, Clone, PartialEq)]
-pub struct Adam {
-    beta1: f32,
-    beta2: f32,
-    eps: f32,
-    tuning: DecayClip,
-    step: u64,
-    momentum: Vec<Vec<f32>>,
-    variance: Vec<Vec<f32>>,
-}
-impl Default for Adam {
-    fn default() -> Self {
-        Self {
-            beta1: 0.9,
-            beta2: 0.999,
-            eps: 1e-8,
-            tuning: DecayClip::default(),
-            step: 0,
-            momentum: Vec::new(),
-            variance: Vec::new(),
-        }
-    }
-}
 impl Adam {
-    /// 构造默认 AdamW。
-    pub fn new() -> Self {
-        Self::default()
-    }
     builders! { /// 设置分母保护项。
         with_eps => eps: f32,
     }
@@ -409,7 +382,6 @@ impl Adam {
         }
     }
 }
-decay_clip!(Adam);
 fn valid_adam(this: &Adam) -> Result<()> {
     validation_rules!(SITE;
         [this.beta1, this.beta2].into_iter().all(|v| v.is_finite() && (0.0..1.0).contains(&v)) => "Adam 的 beta 必须在 [0, 1)",
@@ -417,7 +389,7 @@ fn valid_adam(this: &Adam) -> Result<()> {
     );
     Ok(())
 }
-fn restore_adam(this: &mut Adam, m: Vec<Vec<f32>>, v: Vec<Vec<f32>>, step: u64) -> Result<()> {
+fn restore_adam(this: &mut Adam, m: Table, v: Table, step: u64) -> Result<()> {
     paired(&m, &v)?;
     this.momentum = m;
     this.variance = v;
@@ -429,35 +401,16 @@ fn write_adam(this: &Adam, sink: &mut dyn FnMut(u64)) {
         sink(value.to_bits().into());
     }
 }
-optimizer_impl!(Adam, valid_adam, paired, restore_adam, write_adam);
+stock!(Adam, "AdamW：偏差修正双矩与解耦衰减。", {
+    beta1: f32 = 0.9,
+    beta2: f32 = 0.999,
+    eps: f32 = 1e-8,
+    step: u64 = 0,
+    momentum: Table = Vec::new(),
+    variance: Table = Vec::new()
+}, valid_adam, paired, restore_adam, write_adam);
 
-/// Muon：动量方向经 Newton–Schulz 近似正交化。
-#[derive(Debug, Clone, PartialEq)]
-pub struct Muon {
-    momentum: f32,
-    nesterov: bool,
-    eps: f32,
-    tuning: DecayClip,
-    step: u64,
-    velocity: Vec<Vec<f32>>,
-}
-impl Default for Muon {
-    fn default() -> Self {
-        Self {
-            momentum: 0.95,
-            nesterov: true,
-            eps: 1e-7,
-            tuning: DecayClip::default(),
-            step: 0,
-            velocity: Vec::new(),
-        }
-    }
-}
 impl Muon {
-    /// 构造默认 Muon。
-    pub fn new() -> Self {
-        Self::default()
-    }
     builders! { /// 设置动量系数。
         with_momentum => momentum: f32, /// 设置归一化保护项。
         with_eps => eps: f32,
@@ -514,7 +467,6 @@ impl Muon {
         }
     }
 }
-decay_clip!(Muon);
 fn valid_muon(this: &Muon) -> Result<()> {
     validation_rules!(SITE;
         this.momentum.is_finite() && (0.0..1.0).contains(&this.momentum) => "Muon 的 momentum 必须在 [0, 1)",
@@ -522,7 +474,7 @@ fn valid_muon(this: &Muon) -> Result<()> {
     );
     Ok(())
 }
-fn restore_muon(this: &mut Muon, m: Vec<Vec<f32>>, v: Vec<Vec<f32>>, step: u64) -> Result<()> {
+fn restore_muon(this: &mut Muon, m: Table, v: Table, step: u64) -> Result<()> {
     first_only(&m, &v)?;
     this.velocity = m;
     this.step = step;
@@ -534,12 +486,18 @@ fn write_muon(this: &Muon, sink: &mut dyn FnMut(u64)) {
     }
     sink(this.nesterov.into());
 }
-optimizer_impl!(Muon, valid_muon, first_only, restore_muon, write_muon);
+stock!(Muon, "Muon：动量方向经 Newton–Schulz 近似正交化。", {
+    momentum: f32 = 0.95,
+    nesterov: bool = true,
+    eps: f32 = 1e-7,
+    step: u64 = 0,
+    velocity: Table = Vec::new()
+}, valid_muon, first_only, restore_muon, write_muon);
 
 #[derive(Default)]
 struct MomentState {
-    m: Vec<Vec<f32>>,
-    v: Vec<Vec<f32>>,
+    m: Table,
+    v: Table,
 }
 impl MomentState {
     fn validate<O: Optimizer>(&self, optimizer: &O) -> Result<()> {
@@ -571,8 +529,8 @@ impl Partitioned {
     }
 }
 fn split_shaped(
-    m: Vec<Vec<f32>>,
-    v: Vec<Vec<f32>>,
+    m: Table,
+    v: Table,
     shapes: &[Option<(usize, usize)>],
 ) -> Result<Partitioned> {
     validation_rules!(SITE; m.len() == shapes.len() || m.is_empty() => "矩状态与形状表长度不符");
@@ -677,15 +635,15 @@ impl<M: Optimizer, N: Optimizer> Optimizer for Hybrid<M, N> {
     ) -> Result<()> {
         self.validate_state(m, v, shapes)
     }
-    fn restore(&mut self, m: Vec<Vec<f32>>, v: Vec<Vec<f32>>, step: u64) -> Result<()> {
+    fn restore(&mut self, m: Table, v: Table, step: u64) -> Result<()> {
         no_moments(&m, &v)?;
         self.matrix.restore(Vec::new(), Vec::new(), step)?;
         self.other.restore(Vec::new(), Vec::new(), step)
     }
     fn restore_shaped(
         &mut self,
-        m: Vec<Vec<f32>>,
-        v: Vec<Vec<f32>>,
+        m: Table,
+        v: Table,
         step: u64,
         shapes: &[Option<(usize, usize)>],
     ) -> Result<()> {

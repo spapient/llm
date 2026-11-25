@@ -565,5 +565,5 @@ pub use pool::{
 
 #[cfg(test)]
 mod tests {
-    include!("../../tests/conv_classic_tests.rs");
+    include!("../tests/conv_classic_tests.rs");
 }

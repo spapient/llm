@@ -11,7 +11,6 @@ unary_fn    = { default = 4, cpu = 0 }
 matmul_f32  = { default = 4, cpu = 0, nvidia = 0 }
 gemm_packed = { default = 4, cpu = 0 }
 gemm_i8     = { default = 4, cpu = 0 }
-gemv_packed = { default = 4, cpu = 0 }
 
 # 主机 GEMM 微内核：具名展开只在这一族登记，不与上面的设备模板重复。
 [gemm_micro.fma]

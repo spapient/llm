@@ -1,0 +1,22 @@
+
+running 5 tests
+.. 2/5
+boundary::unsafe_islands_are_the_ones_the_adr_lists --- FAILED
+..
+failures:
+
+---- boundary::unsafe_islands_are_the_ones_the_adr_lists stdout ----
+
+thread 'boundary::unsafe_islands_are_the_ones_the_adr_lists' (52426111) panicked at crates/testkit/src/boundary.rs:169:5:
+assertion `left == right` failed: 越界岛与 ADR 0035 §6 的白名单不一致：多一处是新岛（先改 ADR 说清不变量），少一处是基线过期
+  left: {"crates/nn/src/fast.rs": 4, "crates/nn/src/fast/pool.rs": 3, "crates/nn/src/fast_pool.rs": 3, "crates/prof/src/metal/runtime.rs": 1, "crates/prof/src/opencl.rs": 1, "crates/prof/src/runtime.rs": 1, "crates/storage/src/mmap.rs": 1}
+ right: {"crates/nn/src/fast.rs": 4, "crates/nn/src/fast_pool.rs": 3, "crates/prof/src/metal/runtime.rs": 1, "crates/prof/src/opencl.rs": 1, "crates/prof/src/runtime.rs": 1, "crates/storage/src/mmap.rs": 1}
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    boundary::unsafe_islands_are_the_ones_the_adr_lists
+
+test result: FAILED. 4 passed; 1 failed; 0 ignored; 0 measured; 111 filtered out; finished in 0.08s
+
+error: test failed, to rerun pass `-p llm-testkit --lib`

@@ -158,7 +158,8 @@ pub use stack::{Floor, Stack, Unpriced, WEIGHT_SUFFIX};
 ///
 /// 它原先独立成 crate（`gemm`），与本 crate 之间的唯一通路是 `op` 的 `pub use` 门面；合并后
 /// 层定义直接引用内核，声明层退回 `prof`。
-pub mod clamp;
+#[path = "clamp.rs"]
+pub mod clamp_f32;
 pub mod dequant;
 pub mod elementwise;
 pub mod embed;
@@ -195,7 +196,7 @@ macro_rules! kernel_table {
     };
 }
 
-pub use clamp as clamp_f32;
+pub use clamp_f32 as clamp;
 pub use dequant::{dequant_i2, dequant_i4, i8 as dequant_i8};
 pub use elementwise::{
     add_f32, add_f32x4, div_f32, max_f32, min_f32, mul_f32, remainder_f32, residual_add_f32,

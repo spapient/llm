@@ -2,12 +2,11 @@
 //! 这里集中处理零维、输入个数、窗口边界与归一化槽长，避免前向与恢复各写一套校验。
 //! 校验固定先于任何计算或状态提交，错误同时保留算子类别与具体槽位。
 
-use super::{EPS, Geometry};
+use super::{EPS, Geometry, Running};
 use diagnostic::{Code, Error, Result};
 use nn::conv::ConvGeom;
 
 type Plane = (usize, usize, usize);
-type Shape = (usize, usize, usize, usize);
 
 macro_rules! route {
     ($(#[$meta:meta])* $name:ident, $g:ident, $lens:ident, $out:ident;
@@ -52,26 +51,10 @@ route!(check_plane_geometry, "平面形状核对只接收自适应池化或插�
 );
 
 route!(check_norm, "归一化形状核对只接收归一化几何", g, lens, out;
-    Geometry::Norm { n, spatial, channels } => check_normalization(lens, out, n * spatial * channels, channels, "批归一化"),
-    Geometry::Group { groups, n, spatial, channels } => check_group(lens, out, groups, n * spatial * channels, channels),
-    Geometry::Layer { rows, width } => check_normalization(lens, out, rows * width, width, "层归一化")
+    Geometry::Norm { n, spatial, channels } => check_normalization(lens, out, n * spatial * channels, channels, None, "批归一化"),
+    Geometry::Group { groups, n, spatial, channels } => check_normalization(lens, out, n * spatial * channels, channels, Some(groups), "组归一化"),
+    Geometry::Layer { rows, width } => check_normalization(lens, out, rows * width, width, None, "层归一化")
 );
-
-fn check_group(
-    lens: &[usize],
-    out: usize,
-    groups: usize,
-    total: usize,
-    channels: usize,
-) -> Result<()> {
-    check_normalization(lens, out, total, channels, "组归一化")?;
-    ensure_shape(
-        groups > 0 && channels.is_multiple_of(groups),
-        lens,
-        out,
-        "组归一化",
-    )
-}
 
 /// 二维空间算子：输入 `n·h·w·c`、输出 `n·oh·ow·c`，拒绝零平面与除零。
 fn check_plane(
@@ -101,14 +84,12 @@ fn check_normalization(
     out: usize,
     total: usize,
     width: usize,
+    groups: Option<usize>,
     what: &str,
 ) -> Result<()> {
-    ensure_shape(
-        [lens[0], lens[1], lens[2], out] == [total, width, width, total],
-        lens,
-        out,
-        what,
-    )
+    let group_ok = groups.is_none_or(|groups| groups > 0 && width.is_multiple_of(groups));
+    let shape_ok = [lens[0], lens[1], lens[2], out] == [total, width, width, total];
+    ensure_shape(group_ok && shape_ok, lens, out, what)
 }
 
 /// 二维卷积的形状核对：激活/权重/偏置/输出四者长度对齐。
@@ -116,7 +97,7 @@ pub(crate) fn check_conv2d_shape(
     lens: &[usize],
     out: usize,
     win: Window,
-    (h, w, cin, cout): Shape,
+    (h, w, cin, cout): (usize, usize, usize, usize),
 ) -> Result<()> {
     let (oh, ow) = pool2d_out(win, h, w)?;
     let patch = win.k * win.k * cin;
@@ -266,13 +247,26 @@ pub(crate) fn internal(message: impl Into<String>) -> Error {
 
 /// 形状核对：不符时把实际值带上，避免只报一句"形状不对"。
 pub(crate) fn ensure_shape(ok: bool, lens: &[usize], out: usize, what: &str) -> Result<()> {
-    if ok {
-        return Ok(());
-    }
-    Err(invalid(format!(
-        "{what} 的形状与实例几何不符：输入 {lens:?}、输出 {out} 个元素"
-    ))
-    .with("train::Geometry::check_shape"))
+    validation_rules!("train::Geometry::check_shape";
+        ok => format!("{what} 的形状与实例几何不符：输入 {lens:?}、输出 {out} 个元素"),
+    );
+    Ok(())
+}
+
+/// 滚动统计通道数必须与实例一致；训练与推理共用同一拒绝判据。
+pub(super) fn check_running(running: &Running, channels: usize) -> Result<()> {
+    validation_rules!("train::Geometry::check_running";
+        running.mean.len() == channels && running.var.len() == channels => format!(
+            "滚动统计有 {} 个均值 / {} 个方差，实例几何要 {channels} 个通道",
+            running.mean.len(), running.var.len()
+        ),
+    );
+    Ok(())
+}
+
+/// 前向/反向共用的输入长度投影，避免三条路径各写一遍收集逻辑。
+pub(super) fn lengths<T: AsRef<[f32]>>(inputs: &[T]) -> Vec<usize> {
+    inputs.iter().map(|input| input.as_ref().len()).collect()
 }
 
 impl Geometry {

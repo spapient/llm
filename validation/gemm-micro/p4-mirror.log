@@ -1,0 +1,71 @@
+error[E0583]: file not found for module `classic`
+ --> crates/nn/src/conv.rs:6:1
+  |
+6 | pub mod classic;
+  | ^^^^^^^^^^^^^^^^
+  |
+  = help: to create the module `classic`, create file "crates/nn/src/conv/classic.rs" or "crates/nn/src/conv/classic/mod.rs"
+  = note: if there is a `mod classic` elsewhere in the crate already, import it with `use crate::...` instead
+
+error[E0583]: file not found for module `decode`
+ --> crates/nn/src/conv.rs:7:1
+  |
+7 | pub(crate) mod decode;
+  | ^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: to create the module `decode`, create file "crates/nn/src/conv/decode.rs" or "crates/nn/src/conv/decode/mod.rs"
+  = note: if there is a `mod decode` elsewhere in the crate already, import it with `use crate::...` instead
+
+error[E0583]: file not found for module `deconv`
+ --> crates/nn/src/conv.rs:8:1
+  |
+8 | pub mod deconv;
+  | ^^^^^^^^^^^^^^^
+  |
+  = help: to create the module `deconv`, create file "crates/nn/src/conv/deconv.rs" or "crates/nn/src/conv/deconv/mod.rs"
+  = note: if there is a `mod deconv` elsewhere in the crate already, import it with `use crate::...` instead
+
+error[E0583]: file not found for module `geom`
+ --> crates/nn/src/conv.rs:9:1
+  |
+9 | mod geom;
+  | ^^^^^^^^^
+  |
+  = help: to create the module `geom`, create file "crates/nn/src/conv/geom.rs" or "crates/nn/src/conv/geom/mod.rs"
+  = note: if there is a `mod geom` elsewhere in the crate already, import it with `use crate::...` instead
+
+warning: unused attribute
+ --> crates/nn/src/fast.rs:9:1
+  |
+9 | #[path = "pack.rs"]
+  | ^^^^^^^^^^^^^^^^^^^ help: remove this attribute
+  |
+  = note: `#[path]` is unused on this inline module
+  = note: `#[warn(unused_attributes)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused attribute
+   --> crates/nn/src/fast.rs:443:1
+    |
+443 | #[path = "pool.rs"]
+    | ^^^^^^^^^^^^^^^^^^^ help: remove this attribute
+    |
+    = note: `#[path]` is unused on this inline module
+
+warning: unused attribute
+  --> crates/nn/src/gemv.rs:62:1
+   |
+62 | #[path = "format.rs"]
+   | ^^^^^^^^^^^^^^^^^^^^^ help: remove this attribute
+   |
+   = note: `#[path]` is unused on this inline module
+
+warning: unused attribute
+   --> crates/nn/src/gemv.rs:405:1
+    |
+405 | #[path = "forward.rs"]
+    | ^^^^^^^^^^^^^^^^^^^^^^ help: remove this attribute
+    |
+    = note: `#[path]` is unused on this inline module
+
+For more information about this error, try `rustc --explain E0583`.
+error: could not compile `llm-nn` (lib) due to 4 previous errors; 4 warnings emitted

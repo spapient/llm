@@ -9,8 +9,8 @@
 不能宣称完成：统一 CI 的最终结果见第 6 节；release 性能没有证明提升；Intel/Windows、NVIDIA、MUSA 的目标设备数值与性能未验收；部分本次修改文件仍超过 300 行；复用覆盖率与 1/10 功能密度没有达标证据。
 
 - 初始基线：`69edfdea922b1ecede3a81d8ad2a810a4c984389`。
-- 当前源码检查点：`0178a110a9702e985ff3cca28735883ebf41ed7f`，外加本报告记录的后续工作区修改。
-- 当前 `ops` 内容 SHA-256：`f5df67d9d6a98641763f0d8543d6477e9fdb22f7e5676bd2098babd4129aef9e`。
+- 当前源码检查点：`350fde205e08ff865dda6ce8d90b38ed9b218979`，外加本报告记录的后续工作区修改。
+- 当前 `ops` 内容 SHA-256：`9b64c14bcd214f1f54e3352d69d2326847e8a38208f0793c2f8eaca2a088d0d1`。
 - 固定验收快照：5,783 个文件，SHA-256 `93c6d9c2d911e89c8d3a702bddc6d3270aa5add59b46b76d58eb6562fd0d12e3`，避免并行编辑改变 CI 输入。
 - 工作区存在并行修改；本报告不将 `train`、SME 等无关改动归为本次成果。
 
@@ -53,9 +53,10 @@
 | 当前算子 | 72 |
 | 新增 | 仅 `add_f32x4` |
 | 删除 | 0 |
-| 既有声明内容变化 | 0 |
+| 有意模板变化 | `gemv_i2`、`gemv_i4` |
+| 其余既有算子声明不变 | 69 |
 
-该检查曾捕获并修正 `latent_attention_f32` 摘要丢失 RoPE 语义的问题。证据见 `../target/ops-equivalence.log`。
+该检查曾捕获并修正 `latent_attention_f32` 摘要丢失 RoPE 语义的问题。最终差异仅限两个打包 GEMV 的 `nblock` 配置与八行复用模板；其 CPU L2 对拍在三种形状上均为 `max_rel_err = 0`。证据见 `../target/ops-equivalence.log`。
 
 ### 3.2 浮点求值顺序
 
@@ -75,11 +76,11 @@
 | 指标 | 初始 | 当前 | 净变化 |
 |---|---:|---:|---:|
 | 全部文件 | 118 | 86 | **-32（-27.1%）** |
-| 全部行数 | 2,829 | 2,441 | **-388（-13.7%）** |
+| 全部行数 | 2,829 | 2,428 | **-401（-14.2%）** |
 | TOML 文件 | 71 | 38 | -33 |
 | TOML 行数 | 1,407 | 891 | **-516（-36.7%）** |
 | `.k` 文件 | 47 | 48 | +1 |
-| `.k` 行数 | 1,422 | 1,550 | +128 |
+| `.k` 行数 | 1,422 | 1,537 | +115 |
 
 `.k` 增量包含新增四车道能力及并行 SME 改动，不能全部归因于声明合并。总量下降来自统一事实源，不是删除算子、测试或诊断。完整数据见 `../target/ops-history-metrics.json`。
 
@@ -99,12 +100,12 @@
 
 | 指标 | 数值 |
 |---|---:|
-| 基线逐次 p50 的中位数 | 2.427 ms |
-| 当前逐次 p50 的中位数 | 2.469 ms |
-| 配对加速比中位数 | 0.9813× |
-| 配对加速比范围 | 0.6044–1.0310× |
+| 基线逐次 p50 的中位数 | 3.177 ms |
+| 当前逐次 p50 的中位数 | 3.029 ms |
+| 配对加速比中位数 | 1.0137× |
+| 配对加速比范围 | 0.8628–1.3328× |
 
-存在明显顺序/频率扰动与离群样本，因此不能把这些数据包装成提升，也不把 0.9813×解读为稳定的精确回退比例。结论是：**当前重构没有证明性能提升。** 原始 16 对数据见 `../target/gemv-release-performance.json`。
+存在明显负载漂移、顺序效应与离群样本，1.0137×只能视为弱信号，不能解释为已确认的稳定加速。结论是：**数值正确性通过，但性能提升仍未得到可靠证明。** 原始 16 对数据见 `../target/gemv-release-performance.json`。
 
 按组缩放、融合解包、查表和 NEON 解包探索均未形成可靠收益；未保留专用 `cpu/gemv_packed.c`。没有生成指针、容量或分配计数证据，因此也不宣称缓冲复用或内存性能提升。
 
@@ -114,14 +115,15 @@
 
 | 检查 | 结果 | 证据 |
 |---|---|---|
-| `cargo test -p llm-annotation -p llm-prof -p cutile -p llm-shard` | 通过：annotation 59+6、prof 177+65、cutile 165、shard 192 | `../target/ops-directed-tests.log` |
+| 固定版本 `cargo test -p llm-annotation -p llm-prof -p cutile -p llm-shard` | 通过：annotation 59+6、prof 177+65、cutile 165、shard 192 | `../target/ops-directed-tests.log` |
 | 范围内全特性 Clippy，`-D warnings` | 通过 | `../target/ops-clippy.log` |
-| `cargo test -p llm-tools --test gate --locked` | 固定快照 13 项通过；当前工作区仍有 7 个 `nn` 碎文件失败，失效文档链接已修复 | `../target/ops-static-gate.log` |
+| `cargo test -p llm-tools --test gate --locked` | 固定快照 13 项通过；当前工作区剩 `embed`、`rmsnorm`、`softmax`、`clamp` 四个 `nn` 碎文件失败，失效链接已修复 | `../target/ops-static-gate.log` |
 | 全局 `npx --yes jscpd`，版本 5.4.3 | 530 个 Rust 文件，0 克隆，0% | `../target/ops-global-jscpd.log` |
-| 声明快照对拍 | 71 个既有算子完全等价，仅新增 1 个 | `../target/ops-equivalence.log` |
+| 声明快照对拍 | 69 个既有算子不变，`gemv_i2/i4` 为经 L2 验证的有意变化，仅新增 `add_f32x4`，删除 0 | `../target/ops-equivalence.log` |
 | 格式与本次文件 `git diff --check` | 通过；全量 `git diff --check` 另被并行生成日志的行尾空白阻断 | 统一 CI 日志 |
-| `scripts/name-lint.sh` | 当前工作区与固定快照均通过 | `../target/ops-name-lint.log` |
-| 当前工作区 `cargo test -p llm-train --locked` | **未通过**：最新并行 `prof/native.rs` 有 4 个接口/所有权错误，不能复用此前通过结论 | `../target/ops-train-tests.log` |
+| `scripts/name-lint.sh` | 固定快照通过；当前工作区被 9 个并行扁平化文件名阻断 | `../target/ops-name-lint.log` |
+| 本轮 `cargo test -p llm-train --locked` | 252 通过、1 ignored；6 项 doc-test 通过；`prof` 与 `train` 严格 Clippy 通过 | `../target/ops-train-tests.log` |
+| 最新 `cargo test -p cutile --lib` | **未通过**：并行 `nn` 路径迁移缺少 `gemv_format.rs`，不覆盖固定候选证据 | `../target/ops-cutile-tests.log` |
 | 固定快照 nextest | **3,022 通过、0 失败、18 skipped** | `../target/ops-ci-snapshot.log` |
 | 固定快照 `scripts/ci.sh` | **未通过**：密度预算 104,729 / 60,000 行，超出 44,729 行；此前的格式、Clippy、doc-test、依赖、静态门、架构门、宏展开、拼写和 actionlint 均通过 | `../target/ops-ci-snapshot.log` |
 | 固定快照 jscpd 有效路径复验 | 530 个 Rust 文件，0 克隆，0%；原 `target/` 内 0 文件阶段不计为证据 | `../target/ops-snapshot-jscpd.log` |
@@ -134,13 +136,13 @@
 |---|---|---|
 | 重复率 <0.5% | 通过 | 全局 jscpd 0%，未调整阈值 |
 | 新增复杂度 | 通过 | 静态门 13 项通过；不把 ratchet 通过等同于所有存量函数均 ≤5 |
-| 命名 | 通过 | 当前工作区与固定快照均零命中 |
+| 命名 | 部分通过 | 固定快照零命中；当前工作区 9 个并行扁平化文件未通过 |
 | 文件数量 | 通过且有实测 | `ops` 净减少 32 个 |
 | 文件 ≤300 行 | **未满足** | 仍有 10 个本次涉及文件超过 300 行，见下表 |
 | 复用覆盖率 ≥85% | 未证明 | 未生成合规的核心逻辑函数清单与承载比例 |
-| 功能密度 ≤常规实现 1/10 | **未满足** | 总行数下降 13.7%，不是 90% |
-| 全仓 `src` ≤60,000 行 | **未满足** | 当前工作区 104,697 行，超出 44,697 行；固定快照为 104,729 行 |
-| 性能提升 | **未证明** | release 配对结果不支持加速 |
+| 功能密度 ≤常规实现 1/10 | **未满足** | 总行数下降 14.2%，不是 90% |
+| 全仓 `src` ≤60,000 行 | **未满足** | 当前工作区 109,476 行，超出 49,476 行；固定快照为 104,729 行 |
+| 性能提升 | **未证明** | release 配对仅有弱信号，不能确认稳定加速 |
 | 全平台数值/性能 | 未完成 | Intel/Windows、NVIDIA、MUSA 等目标设备未验收 |
 
 超过 300 行的涉及文件：`annotation/src/ops.rs` 857、`annotation/src/render.rs` 860、`prof/src/buildops.rs` 697、`prof/src/atom.rs` 531、`prof/src/build.rs` 631、`cutile/src/cap.rs` 854、`cutile/src/printer.rs` 822、`cutile/tests/cap_tests.rs` 442、`shard/src/build.rs` 573、`shard/tests/pipeline_tests.rs` 775。`cutile/src/harness.rs` 已通过逻辑复用从 325 行降至 300 行，165 项 `cutile` 测试与严格 Clippy 通过。静态门通过不代表这项硬要求已经满足。
@@ -157,20 +159,20 @@
 
 ## 9. 全仓密度减量顺序
 
-当前工作区共有 104,697 行 Rust `src`，需要减少 44,697 行（42.7%）才能达到 60,000 行预算。实测明细见 `../target/crate-density.json`。
+当前工作区共有 109,476 行 Rust `src`，需要减少 49,476 行（45.2%）才能达到 60,000 行预算。实测明细见 `../target/crate-density.json`。
 
 | crate | 行数 | 全仓占比 | 主要减量方向 |
 |---|---:|---:|---|
-| `nn` | 15,810 | 15.1% | 一元/逐元素表驱动、归一化与碎文件收拢 |
-| `prof` | 12,407 | 11.85% | 声明文档模型、构建/宏展开路径复用 |
-| `weights` | 10,012 | 9.56% | 编解码、区间和校验逻辑的公共承载 |
-| `cutile` | 8,657 | 8.27% | 统一 typed IR 前端，收敛旧字符串发射路径 |
-| `train` | 7,434 | 7.1% | 几何校验、归一化与梯度的公共骨架 |
-| `shard` | 7,269 | 6.94% | 后端执行与诊断的表驱动编排 |
+| `nn` | 20,623 | 18.84% | 一元/逐元素表驱动、归一化与碎文件收拢 |
+| `prof` | 12,388 | 11.32% | 声明文档模型、构建/宏展开路径复用 |
+| `weights` | 10,012 | 9.15% | 编解码、区间和校验逻辑的公共承载 |
+| `cutile` | 8,657 | 7.91% | 统一 typed IR 前端，收敛旧字符串发射路径 |
+| `train` | 7,419 | 6.78% | 几何校验、归一化与梯度的公共骨架 |
+| `shard` | 7,269 | 6.64% | 后端执行与诊断的表驱动编排 |
 
-前六项合计 61,589 行，其余 crate 仍有 43,108 行。如果只处理前六项，需要减少约 72.6% 才能达到全仓预算。因此，以下顺序是工程治理方案，不是未经验证的达标承诺：
+前六项合计 66,368 行，其余 crate 仍有 43,108 行。如果只处理前六项，需要减少约 74.5% 才能达到全仓预算。因此，以下顺序是工程治理方案，不是未经验证的达标承诺：
 
-1. **先消除新增碎片。** 将 `reduce`、`embed`、`rmsnorm`、`softmax`、`rope`、`epilogue`、`clamp` 七个 `nn` 碎文件按实际调用图归入语义所有者，保持公开模块路径、测试数量和断言强度；不能只改文件名或移动目录制造指标。
+1. **先消除新增碎片。** 将当前仍被静态门拒绝的 `embed`、`rmsnorm`、`softmax`、`clamp` 四个 `nn` 碎文件按实际调用图归入语义所有者，保持公开模块路径、测试数量和断言强度；不能只改文件名或移动目录制造指标。
 2. **再消除平行实现。** `nn` 的一元/逐元素族复用声明表；`prof` 两条声明展开路径共享文档模型；`cutile` 在原生边界明确后收敛到 typed IR；`weights` 共用编解码与区间校验；`train` 共用几何和梯度骨架；`shard` 用配置表收敛后端编排。
 3. **逐刀验收真实净减量。** 每刀记录功能清单、独立参考实现、文件/行数和完整测试，不把删注释、删测试、移动生产目录或降低诊断强度计为收益。测试只能迁移到既有测试文件且覆盖不降级。
-4. **按证据复核预算。** 每刀后重新运行 `scripts/loc-budget.sh` 与 `scripts/ci.sh`，累计减少量不足 44,697 行就继续，而不是提高预算或宣称主观满分。
+4. **按证据复核预算。** 每刀后重新运行 `scripts/loc-budget.sh` 与 `scripts/ci.sh`，累计减少量不足 49,476 行就继续，而不是提高预算或宣称主观满分。

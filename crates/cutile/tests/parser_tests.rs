@@ -95,6 +95,7 @@ fn vector_program_uses_registered_target_lowerings_only() {
 fn family_quantization_constants_are_available_to_templates() {
     let catalogue = Catalogue::try_builtin().expect("内置目录");
     let op = catalogue.op("gemv_i2").expect("量化 GEMV");
+    assert_eq!(op.const_value("nblock"), Some("8"));
     assert_eq!(op.const_value("cpb"), Some("4"));
     assert_eq!(op.const_value("width"), Some("2"));
     assert_eq!(op.const_value("zero"), Some("2"));

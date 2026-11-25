@@ -143,9 +143,9 @@ static inline void sdot_tile(const int8_t *ap, const int8_t *bp, int k, int kvec
 }
 #endif
 
+#if defined(__aarch64__)
 /* cutile-probe: fma_pure, core=fma_tile */
 void cutile_fma_pure(size_t rounds) {
-#if defined(__aarch64__)
     float32x4_t acc[16];
     for (int r = 0; r < 16; ++r) acc[r] = vdupq_n_f32(0.0f);
     const float32x4_t av = vdupq_n_f32(1.0000001f);
@@ -153,26 +153,18 @@ void cutile_fma_pure(size_t rounds) {
         for (int r = 0; r < 16; ++r) acc[r] = vfmaq_f32(acc[r], av, av);
     }
     for (int r = 0; r < 16; ++r) __asm__ volatile("" : "+w"(acc[r]));
-#else
-    (void)rounds;
-#endif
 }
 
 /* cutile-probe: fma_block, core=fma_tile */
 void cutile_fma_block(size_t rounds, const float *a, const float *b, int k) {
-#if defined(__aarch64__)
     float32x4_t acc[16];
     for (int r = 0; r < 16; ++r) acc[r] = vdupq_n_f32(0.0f);
     for (size_t i = 0; i < rounds; ++i) fma_tile(acc, a, b, k);
     for (int r = 0; r < 16; ++r) __asm__ volatile("" : "+w"(acc[r]));
-#else
-    (void)rounds; (void)a; (void)b; (void)k;
-#endif
 }
 
 /* cutile-probe: sdot_pure, core=sdot_tile */
 void cutile_sdot_pure(size_t rounds) {
-#if defined(__aarch64__)
     const int8x16_t a = vdupq_n_s8(3), b = vdupq_n_s8(5);
     int32x4_t acc[CUTILE_SDOT_CHAINS];
     for (int i = 0; i < CUTILE_SDOT_CHAINS; ++i) acc[i] = vdupq_n_s32(0);
@@ -180,23 +172,17 @@ void cutile_sdot_pure(size_t rounds) {
         for (int chain = 0; chain < CUTILE_SDOT_CHAINS; ++chain) acc[chain] = vdotq_s32(acc[chain], a, b);
     }
     for (int i = 0; i < CUTILE_SDOT_CHAINS; ++i) __asm__ volatile("" : "+w"(acc[i]));
-#else
-    (void)rounds;
-#endif
 }
 
 /* cutile-probe: sdot_block, core=sdot_tile */
 void cutile_sdot_block(size_t rounds, const int8_t *a, const int8_t *b, int k) {
-#if defined(__aarch64__)
     int32x4_t acc[CUTILE_SDOT_NR][CUTILE_SDOT_MR];
     for (size_t i = 0; i < rounds; ++i) sdot_tile(a, b, k, k, acc);
     for (int nb = 0; nb < CUTILE_SDOT_NR; ++nb) {
         for (int r = 0; r < CUTILE_SDOT_MR; ++r) __asm__ volatile("" : "+w"(acc[nb][r]));
     }
-#else
-    (void)rounds; (void)a; (void)b; (void)k;
-#endif
 }
+#endif
 
 /* cutile-export: sdot */
 #if defined(__aarch64__)
@@ -358,12 +344,10 @@ void cutile_sme_micro(const float *a, const float *b, float *out, size_t n, size
 #endif
 }
 
+#if defined(__aarch64__)
 /* cutile-probe: sme_pure, core=sme_tile */
-#if defined(__aarch64__)
 __attribute__((target("sme")))
-#endif
 void cutile_sme_pure(size_t rounds) {
-#if defined(__aarch64__)
     sme_enter();
     __asm__ volatile(
         "fmov z0.s, #1.0\nfmov z1.s, #1.0\n"
@@ -373,17 +357,13 @@ void cutile_sme_pure(size_t rounds) {
         "subs %[k], %[k], #1\nb.ne 0b\n"
         : [k] "+r"(rounds) : : "z0", "z1", "p0", "memory");
     sme_exit();
-#else
-    (void)rounds;
-#endif
 }
-
-/* cutile-probe: sme_mix, core=sme_tile */
-#if defined(__aarch64__)
-__attribute__((target("sme")))
 #endif
-void cutile_sme_mix(size_t rounds, const float *a, const float *b) {
+
 #if defined(__aarch64__)
+/* cutile-probe: sme_mix, core=sme_tile */
+__attribute__((target("sme")))
+void cutile_sme_mix(size_t rounds, const float *a, const float *b) {
     const float *b1 = b + 16, *b2 = b + 32, *b3 = b + 48;
     sme_enter();
     __asm__ volatile(
@@ -400,8 +380,6 @@ void cutile_sme_mix(size_t rounds, const float *a, const float *b) {
         : [a] "r"(a), [b] "r"(b), [b1] "r"(b1), [b2] "r"(b2), [b3] "r"(b3)
         : "z0", "z1", "z2", "z3", "z4", "p0", "memory");
     sme_exit();
-#else
-    (void)rounds; (void)a; (void)b;
-#endif
 }
+#endif
 #endif
