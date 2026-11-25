@@ -460,7 +460,7 @@ Rust 官方与微软训练材料的一致口径：
 - `cargo test --doc --workspace`：1 + 6 + 3 passed；`cargo fmt --all --check`：0；`cargo clippy --workspace --all-targets --all-features -- -D warnings`：0。
 - ruff `check` 与 `format --check validation`：0；`cargo deny check`：advisories/bans/licenses/sources ok；`cargo machete`：无未用依赖。
 - jscpd：535 文件 / 163,094 行 / 0 clone / 0.00%；tools 门 13 passed；`complexity.sh` 0；testkit 架构门 117 passed；命名门 0 命中；`cargo expand` 双产物非空；typos 0；actionlint 0；`cargo bench --workspace --no-run` 0；regress 12 passed；cloc 2.12 统计步 0（`.tools/cloc`，须 `.tools` 前置 PATH，非系统命令）。
-- 密度门 `loc-budget.sh`：**未通过**，src 104,164 行 / 313 文件，三条硬阻断同时命中。`SRC_MAX=60000`（历史重建提交 b65a0966 回退的项目目标值），脚本注释棘轮基线停在 95,800（第 127 行，实测 95,687/410 文件）；当前超目标值 44,164 行、超棘轮基线 8,364 行。
+- 密度门 `loc-budget.sh`：**未通过**，src 104,164 行 / 313 文件，三条硬阻断同时命中。常量脱节已取证（`git log -S SRC_MAX` + 父提交比对）：重建提交 `b65a0966` 将 `SRC_MAX` 从 **96,100** 回退为 **60,000**，注释由棘轮口径改为"项目统一目标，未达标必须阻断"；但脚本顶部 7–145 行棘轮注释原样保留，停在 95,800（第 127 行，实测 95,687/410 文件）。`FILE_VETO=600`、`CRATE_MAX=8200` 该提交未动。当前 104,164 行：超目标值 44,164、超重建前代码基线 96,100 为 8,064、超注释棘轮 95,800 为 8,364。
   - **总量（N6，`SRC_MAX=60000`）**：104,164 行，超 44,164。
   - **>600 行一票否决（N3，`FILE_VETO=600`）**：45 个文件。Top：`cutile/src/parser.rs` 900、`prof/src/opencl.rs` 898、`weights/src/gguf.rs` 876、`weights/src/quant.rs` 874、`tensor/src/layout.rs` 871、`weights/src/seg.rs` 864、`annotation/src/render.rs` 860、`prof/src/decl.rs` 857、`annotation/src/ops.rs` 857、`cutile/src/cap.rs` 854；其余 35 个 602–850 行（清单可由脚本 157 行当次复算）。
   - **>8200 行 crate（N2，`CRATE_MAX=8200`）**：4 个——nn 15,303 行/37 文件、prof 12,237/32、weights 10,019/15、cutile 8,658/21。
@@ -478,6 +478,9 @@ Rust 官方与微软训练材料的一致口径：
   - `llm-annotation`：16 条。3 条 `pass_by_value` 经核为 clippy 误报，不可改签名——`dsl.rs:63 expand(attribute/item: TokenStream)`、`expr.rs:149 receiver: TokenStream2` 是 proc-macro 按值消费输入流，`lib.rs:244 resolve<S,D>` 泛型 `S` 要移动进返回元组，三者本就该按值；其余为 2 条 private `&Option<T>`→`Option<&T>`、1 条 i64→f64 cast、5 条 `format_push_string`、2 条分号、1 条 `format_implicit`、1 条 match 同臂、1 条 let-else。误报项只能局部 `#[allow]`，开门收益低且需核对 private 签名调用点，留后续批次。
   - `llm-cli`：34 条。含 8 条返回值包装类（6 条 `Result` 不必要包装、2 条返回值多余），属 API 返回类型重构判断，不能机械改；4 条 cast 精度债（usize→f32/f64）；其余 5 `errors_doc`、13 `must_use`、2 `pass_by_value`、1 `doc_markdown`、1 布尔冗余。返回类型重构需逐条评估契约，留后续批次。
   - `llm-testkit`：26 条（dev-dep 测试契约层）。7 条 cast 债（精度/符号/截断）、1 条 strict float 比较；其余 3 扩展名比较、3 match bool、3 `must_use`、3 `Panics` 文档、4 `doc_markdown`、1 long literal、1 绑定名相似。cast 来自测试夹具数值，非生产内核；dev-dep 不进入运行期二进制，优先级低于生产底座，留后续批次。
+  - `llm-tensor`（下一批次优先候选，机械占比最高）：46 条。14 `errors_doc`、14 `must_use`、8 条 lossless `From` 可安全改写、1 `doc_markdown`、1 `pass_by_value`；语义债 8 条，均为张量布局/对拍容差固有换算，不可改口径：`layout.rs:443` usize offset→isize、`490/491` stride/dim usize→isize、`507` offset isize→usize（反向方向负 offset 语义）、`ops.rs:45` 一行四列 `i8/i16/i32/i64→u128`（前置 `tolerance >= 0` 守卫保证非负，clippy 看不到守卫）。开门时这 5 处按 diagnostic 样板局部 `#[allow]` + 注释理由；底座改动须全量回归。
+  - `llm-tokenizer`：45 条。15 `errors_doc`、9 `must_use`、3 `doc_markdown`、2 redundant closure、1 lossless `From`、1 unused self、1 返回值包装、1 `pass_by_value`；语义债 12 条截断 cast（7 `usize→u32` 截断 + 5 64 位指针下截断）。留后续批次。
+  - `llm-autograd`：46 条。11 `errors_doc`、9 `must_use`、3 match bool、1 needless for_each、1 2 字节按引用、2 unused self；语义债 22 条 cast（精度 1、丢符号 3、截断 2、32 位指针截断 5、64 位指针截断 10、环绕 1），近半为 cast 债，留后续批次。
 
 ### 15.3 #53 train/serve 适配协议裁决
 
@@ -487,7 +490,7 @@ Rust 官方与微软训练材料的一致口径：
 
 ### 15.4 未完成项（如实披露）
 
-- 密度门存量红账：超目标值 44,164 行、超棘轮基线 8,364 行；删除等于砍能力，违反正确性优先，非本批可消除。`SRC_MAX=60000` 系历史重建提交 b65a0966 回退的目标值，与脚本注释棘轮基线 95,800 脱节；是否把门禁常量改回棘轮口径、超基线部分如何取证登记，属仓库门禁治理决策，本批不擅自调宽。
+- 密度门存量红账：超目标值 44,164 行、超注释棘轮 95,800 为 8,364、超重建前代码基线 96,100 为 8,064；删除等于砍能力，违反正确性优先，非本批可消除。注意：即使把 `SRC_MAX` 改回重建前的 96,100，当前仍超 8,064 行，门不会直接转绿——不存在"改回棘轮口径即绿"的捷径，只能无损缩减或对超基线增量逐项取证登记。`SRC_MAX=60000` 系重建提交 b65a0966 回退的项目目标值，与棘轮注释脱节；阈值口径与增量归属属仓库门禁治理决策，本批不擅自调宽。
 - #26 除 dtype、diagnostic 两个样板层外，全仓 pedantic 存量未整改；大层 cast 语义债与签名扩散留后续批次。
 - #53 第二批前置条件未满足，保持待评估。
 - `--perf` 固定硬件基准、`--fuzz`、`--miri`、`--coverage` 未跑；18 项 skipped 平台专项未执行；`tensor::View::one` 维度/步长 Vec 分配缺 release 基准证据。
