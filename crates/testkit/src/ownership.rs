@@ -35,8 +35,8 @@ enum TypeMacro {
 }
 
 /// 一段源码里的顶层 `pub` 类型名，包括声明宏展开出的公开类型。
-/// `axis!` / `planar!` 表中的每一行都声明一个类型；`vocabulary!` / `closed_enum!` 只声明一个。
-/// 正文扫描与 `pub` 校验共用这一份口径，避免正向与反向所有权检查互相矛盾。
+/// `axis!` / `planar!` 表中的每一行都声明一个类型；`vocabulary!` / `closed_enum!` / `stock!`
+/// 只声明一个。正文扫描与 `pub` 校验共用这一份口径，避免正向与反向所有权检查互相矛盾。
 pub(crate) fn public_type_names(text: &str) -> BTreeSet<&str> {
     let mut names = BTreeSet::new();
     let mut macro_block = None;
@@ -50,7 +50,9 @@ pub(crate) fn public_type_names(text: &str) -> BTreeSet<&str> {
                 Some(name) => {
                     names.insert(name);
                 }
-                None if trimmed.ends_with('{') => macro_block = Some(kind),
+                None if trimmed.ends_with('{') || trimmed.ends_with('(') => {
+                    macro_block = Some(kind);
+                }
                 None => {}
             }
             continue;
@@ -85,6 +87,7 @@ fn type_macro_open(trimmed: &str) -> Option<TypeMacro> {
     [
         ("vocabulary!", TypeMacro::Single),
         ("closed_enum!", TypeMacro::Single),
+        ("stock!", TypeMacro::Single),
         ("axis!", TypeMacro::Table),
         ("planar!", TypeMacro::Table),
     ]

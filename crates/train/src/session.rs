@@ -23,9 +23,6 @@ pub use checkpoint::{
 /// 本模块诊断站点。
 pub(crate) const SITE: &str = "train::Session";
 
-/// 取视图时按槽号记下的元数据：变量、角色、矩阵形状。
-type SlotMeta = (Var, ParamRole, Option<(usize, usize)>);
-
 /// 一个已登记的参数槽：变量编号、角色与常驻参数值。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParamSlot {

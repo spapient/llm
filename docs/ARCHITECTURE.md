@@ -188,7 +188,7 @@ testkit    → （叶    +dev: autograd, cutile, nn, prof, tensor, tools, train,
 | `Moments` / `SlotMoments` / `GradAccum` / `Ties` | `storage`（`snapshot` 模块） | 快照携带的优化器状态段：矩状态按槽位自持、累积梯度带计数、权重绑定表是 `(源槽, 回填槽)` 下标对；编解码与字节格式同源，训练侧只读写不重新定义 |
 | `Schedule` / `Anneal` / `Step` / `Session` / `TrainConfig` / `TrainOverrides` / `TrainSpec` / `ParamSlot` / `Checkpoint` / `Distributed` / `GradientSnapshot` | `train` | 训练循环状态：纯函数学习率调度、会话复用图 / 缓冲 / 优化器、参数槽与分布式装配；`TrainOverrides` 保留未覆盖字段；`TrainSpec` 组合会话、批几何与目标并生成覆盖优化器类型的配置指纹；`GradientSnapshot` 按 `Var` 自持，脱离累积窗口与缓冲生命周期。详见[训练架构指南](train-architecture-2026-11-25.md) |
 | `Batch` / `Dataset` / `Chunks` / `Loader` / `LoaderConfig` | `train`（`learner` 模块） | 训练样本与批装配：借用调用方 token 缓冲，行列几何与采样在构造期校验，批总数由同一份游标状态派生；`Dataset` 对象安全，`Chunks` 是 `Loader` 的兼容别名 |
-| `Optimizer` / `Sgd` / `Adam` / `Group` / `Slot` / `OwnedSlot` | `train` | 优化器：对象安全 trait，矩状态按槽位编号自持；参数组由 `ParamRole` 派生，不按字段名猜（矩状态与累积梯度的**类型**归 `storage`，本层只持有并步进） |
+| `Optimizer` / `Sgd` / `Adam` / `Group` / `SlotData` / `Slot` / `OwnedSlot` | `train` | 优化器：对象安全 trait，矩状态按槽位编号自持；参数组由 `ParamRole` 派生，不按字段名猜；`SlotData<P, G>` 统一借用与拥有型槽布局（矩状态与累积梯度的**类型**归 `storage`，本层只持有并步进） |
 | `Muon` / `Hybrid` | `train` | 矩阵参数的近似正交化更新，以及按矩阵 / 非矩阵槽分路的泛型组合优化器；非矩阵槽走 `Muon` 会**拒绝**而不是悄悄跳过，`Hybrid` 只在全局计算一次裁剪范数 |
 | `Bufs` / `Kernel` / `Reference` / `Data` / `View` / `ViewMut` / `Kind` / `Lane` / `Sealed` / `Inputs` / `OperatorSetOps` | `train` | 激活缓冲：`autograd::Store` 在训练侧的落地，按等长空闲表在稳定几何下复用，算术交给 `Kernel`；本层不定义算子、不碰 `unsafe`，只支持 `f32` 与打包 `u8` lane。`Data`/`View`/`ViewMut`/`Kind` 是 `storage` 对应 lane 类型的别名，本层只保留 lane 静态契约（`Lane`/`Inputs`/`Sealed`）与 `DType`→lane 映射 |
 | `MetricPoint` / `MetricsBoard` / `Learner` / `ForwardOut` | `train` | 评估与编排：`Learner` 驱动"前向 → 评估入账 → 装梯度 → 优化步"闭环，模型拓扑与梯度来源由闭包注入 |

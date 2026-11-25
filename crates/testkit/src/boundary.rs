@@ -71,9 +71,9 @@ pub(crate) const VENDORS: [&str; 8] = [
 pub(crate) const UNSAFE_ISLANDS: &[(&str, usize)] = &[
     ("crates/prof/src/metal/runtime.rs", 1),
     ("crates/prof/src/opencl.rs", 1),
-    // `fast` 段为 `fast.rs`（i8 包装 4）与 `fast/pool.rs`（常驻池 3），总数不变。
+    // `fast` 段为 `fast.rs`（i8 包装 4）与 `pool.rs`（常驻池 3），总数不变。
     ("crates/nn/src/fast.rs", 4),
-    ("crates/nn/src/fast_pool.rs", 3),
+    ("crates/nn/src/pool.rs", 3),
     ("crates/prof/src/runtime.rs", 1),
     ("crates/storage/src/mmap.rs", 1),
 ];

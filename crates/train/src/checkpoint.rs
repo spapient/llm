@@ -1,6 +1,6 @@
 //! 静态训练配置与可恢复检查点：学习率调度、命名覆盖、快照回载校验和优化器视图装配。
 
-use super::{ParamSlot, SITE, Session, SlotMeta};
+use super::{ParamSlot, SITE, Session};
 use crate::loss::ObjectiveConfig;
 use crate::optimizer::{Optimizer, OwnedSlot};
 use crate::pool::Bufs;
@@ -269,8 +269,7 @@ impl TrainConfig {
             max_steps,
             clip_norm,
             accumulation,
-            anneal: Anneal::default(),
-            min_ratio: 0.0,
+            ..Self::default()
         };
         config.validate()?;
         Ok(config)
@@ -302,8 +301,7 @@ impl TrainConfig {
             max_steps: overrides.max_steps.unwrap_or(self.max_steps),
             clip_norm: overrides.clip_norm.or(self.clip_norm),
             accumulation: overrides.accumulation.unwrap_or(self.accumulation),
-            anneal: self.anneal,
-            min_ratio: self.min_ratio,
+            ..self
         };
         config.validate()?;
         Ok(config)
@@ -371,16 +369,13 @@ impl TrainSpec {
 impl TrainSpec {
     /// 完整训练配置的确定指纹；优化器类型与静态超参均纳入，浮点按 IEEE 位模式哈希。
     pub fn config_fingerprint<O: Optimizer + ?Sized>(&self, optimizer: &O) -> u64 {
-        let mut hash = StableHash::new("train-spec-v1");
-        hash.text(std::any::type_name::<O>());
-        optimizer.write_config(&mut |value| hash.number(value));
-        hash_config(&mut hash, &self.session);
-        hash.number(self.loader.rows as u64);
-        hash.number(self.loader.cols as u64);
-        hash_sampling(&mut hash, &self.loader.sampling);
-        hash.text(self.objective.as_str());
-        hash_objective(&mut hash, &self.objective);
-        hash.finish()
+        fingerprint_with("train-spec-v1", &self.session, optimizer, |hash| {
+            hash.number(self.loader.rows as u64);
+            hash.number(self.loader.cols as u64);
+            hash_sampling(hash, &self.loader.sampling);
+            hash.text(self.objective.as_str());
+            hash_objective(hash, &self.objective);
+        })
     }
 }
 
@@ -389,10 +384,21 @@ pub(super) fn session_fingerprint<O: Optimizer + ?Sized>(
     config: &TrainConfig,
     optimizer: &O,
 ) -> u64 {
-    let mut hash = StableHash::new("train-session-v1");
+    fingerprint_with("train-session-v1", config, optimizer, |_| {})
+}
+
+/// 优化器与会话配置的公共指纹入口；完整规格只追加数据与目标字段。
+fn fingerprint_with<O: Optimizer + ?Sized>(
+    domain: &str,
+    config: &TrainConfig,
+    optimizer: &O,
+    mut extra: impl FnMut(&mut StableHash),
+) -> u64 {
+    let mut hash = StableHash::new(domain);
     hash.text(std::any::type_name::<O>());
     optimizer.write_config(&mut |value| hash.number(value));
     hash_config(&mut hash, config);
+    extra(&mut hash);
     hash.finish()
 }
 
@@ -602,16 +608,11 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
 
     /// 旧快照的零指纹表示未声明；非零指纹必须先于任何状态写入完成校验。
     fn check_config_fingerprint(&self, saved: u64) -> Result<()> {
-        if saved != 0 && saved != self.config_fingerprint {
-            return Err(Error::new(
-                Code::Invalid,
-                format!(
-                    "训练配置指纹不一致：快照 {saved:#018x}，当前 {:#018x}",
-                    self.config_fingerprint
-                ),
-            )
-            .with(SITE));
-        }
+        validation_rules!(SITE;
+            saved == 0 || saved == self.config_fingerprint => format!(
+                "训练配置指纹不一致：快照 {saved:#018x}，当前 {:#018x}", self.config_fingerprint
+            ),
+        );
         Ok(())
     }
 
@@ -647,30 +648,19 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
 
     /// 所有快照槽表共用槽数对账。
     fn check_slot_count(&self, actual: usize, what: &str) -> Result<()> {
-        if actual == self.slots.len() {
-            return Ok(());
-        }
-        Err(Error::new(
-            Code::Invalid,
-            format!(
-                "{what}槽位数不符：快照 {actual} 槽，会话 {} 槽",
-                self.slots.len(),
-            ),
-        )
-        .with(SITE))
+        validation_rules!(SITE;
+            actual == self.slots.len() => format!("{what}槽位数不符：快照 {actual} 槽，会话 {} 槽", self.slots.len()),
+        );
+        Ok(())
     }
 
     /// 所有按槽向量共用长度对账。
     fn check_slot_len(&self, idx: usize, actual: usize, what: &str) -> Result<()> {
         let expected = self.slots[idx].params().len();
-        if actual == expected {
-            return Ok(());
-        }
-        Err(Error::new(
-            Code::Invalid,
-            format!("第 {idx} 槽{what}长度不符：快照 {actual} 元素，会话 {expected} 元素",),
-        )
-        .with(SITE))
+        validation_rules!(SITE;
+            actual == expected => format!("第 {idx} 槽{what}长度不符：快照 {actual} 元素，会话 {expected} 元素"),
+        );
+        Ok(())
     }
 
     /// 一阶矩必须等长；二阶矩可等长，或由无二阶矩的实现留空。
@@ -723,15 +713,13 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
 
     /// 校验绑定两端参数槽长度一致；不符是 [`Code::Invalid`]。
     pub(super) fn check_tie_length(&self, source: usize, tied: usize) -> Result<()> {
-        if self.slots[source].params().len() == self.slots[tied].params().len() {
-            return Ok(());
-        }
-        let message = format!(
-            "绑定两端长度不一致：源槽 {} 元素，回填槽 {} 元素",
-            self.slots[source].params().len(),
-            self.slots[tied].params().len()
+        validation_rules!(SITE;
+            self.slots[source].params().len() == self.slots[tied].params().len() => format!(
+                "绑定两端长度不一致：源槽 {} 元素，回填槽 {} 元素",
+                self.slots[source].params().len(), self.slots[tied].params().len()
+            ),
         );
-        Err(Error::new(Code::Invalid, message).with(SITE))
+        Ok(())
     }
 
     /// 预检并克隆绑定表；编号越界或两端长度不符都在提交前拒绝。
@@ -759,22 +747,21 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
         slots: &mut [ParamSlot],
         bufs: &mut Bufs<K>,
     ) -> Result<Vec<OwnedSlot>> {
-        let meta: Vec<SlotMeta> = slots
-            .iter()
-            .map(|slot| (slot.var(), slot.role(), slot.matrix()))
-            .collect();
-        let mut views = Vec::with_capacity(meta.len());
-        for (idx, (var, role, shape)) in meta.into_iter().enumerate() {
+        let mut views = Vec::with_capacity(slots.len());
+        let mut idx = 0;
+        while idx < slots.len() {
+            let (var, role, shape) = {
+                let slot = &slots[idx];
+                (slot.var(), slot.role(), slot.matrix())
+            };
             let Some(grads) = bufs.take_gradient(var) else {
-                // 中途归还已取走的梯度：失败路径不留悬空向量。
-                Self::return_views_prefix(slots, bufs, views);
+                Self::return_views(&mut slots[..views.len()], bufs, views);
                 return Err(Error::new(
                     Code::Missing,
                     format!("参数 {} 的梯度还没装入缓冲", var.id()),
                 )
                 .with(SITE));
             };
-            // 参数向量随视图整块移交；同步/步进后由原所有者归还，不再为每次更新复制一份。
             let params = std::mem::take(&mut slots[idx].params);
             views.push(OwnedSlot {
                 params,
@@ -782,6 +769,7 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
                 role,
                 shape,
             });
+            idx += 1;
         }
         Ok(views)
     }
@@ -793,15 +781,6 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
             slot.params = view.params;
             bufs.put_back_gradient(slot.var(), view.grads);
         }
-    }
-
-    /// 收集视图失败时的局部归还：已装配的前 `views.len()` 个槽对应 `slots` 前缀。
-    pub(super) fn return_views_prefix(
-        slots: &mut [ParamSlot],
-        bufs: &mut Bufs<K>,
-        views: Vec<OwnedSlot>,
-    ) {
-        Self::return_views(&mut slots[..views.len()], bufs, views);
     }
 
     /// 把优化器写回后的参数值镜像回激活缓冲，供下一轮前向复用。

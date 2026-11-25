@@ -387,6 +387,10 @@ fn normalize(path: &std::path::Path) -> PathBuf {
 
 /// 文件自己的模块路径（`gemv/f32.rs` → `gemv::f32`，`lib.rs` → 空）。
 fn module_path_of(file: &std::path::Path) -> String {
+    // crate 根永远是空路径；其中声明的内联模块不能把根文件自己的 `pub use` 错归到子模块。
+    if file.file_stem().is_some_and(|stem| stem == "lib") {
+        return String::new();
+    }
     // 声明索引优先：`#[path = "kernel_matmul.rs"] pub mod matmul;` 之后文件名不再等于模块路径，
     // 只有声明处知道这个文件是谁的实体。
     if let Some(declared) = declared_paths().get(&normalize(file)) {
@@ -411,6 +415,12 @@ fn module_path_of(file: &std::path::Path) -> String {
         .filter(|part| part != "lib" && part != "mod")
         .collect();
     parts.join("::")
+}
+
+#[test]
+fn crate_root_aliases_resolve_to_their_declared_modules() {
+    let expected = root().join("crates/nn/src/embed.rs");
+    assert_eq!(locate_module("embed_f32"), Some(expected));
 }
 
 /// 文件里的每条 `use` 语句（多行也算一条，直到分号）。

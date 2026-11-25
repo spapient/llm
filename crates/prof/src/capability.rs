@@ -112,11 +112,10 @@ mod tests {
 
     #[test]
     fn table_keys_stay_within_the_skeleton_closed_set() {
-        // 骨架键已是枚举，编译期不可悬空；运行期再逐条回指闭集全量，锁住表与声明同表。
         for cap in CAPABILITIES {
             assert!(
                 Skeleton::ALL.contains(&cap.skeleton),
-                "表内骨架 {} 不在闭集内",
+                "未知骨架 {}",
                 cap.skeleton.as_str()
             );
         }

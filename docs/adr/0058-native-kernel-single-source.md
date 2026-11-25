@@ -4,7 +4,8 @@
   旧三份算法文件与空 `native/` 目录已删除；不得据此宣称最终 Q3／A3 或全仓完成。
 - 证据：P2 的 30 轮统计与 Windows AVX2 复验见 `summary-p2.json`、`win-p2.log`；P3 的 stable
   真机对拍、30 轮旧／新统计和反汇编见 `sme-p3-final-release.log`、
-  `sme-performance-p3-final.json`、`sme-p3-disassembly.log`。最终文件／行数预算、纯转发删除与全仓门禁仍未签收。
+  `sme-performance-p3-final.json`、`sme-p3-disassembly.log`；P4 最新同源复测见
+  `performance-p4-final.json`。两个纯转发文件已删除；最终行数预算与全仓门禁仍未签收。
 - 日期：2026-11-25。
 - 范围：`crates/prof/src/native.rs`、`crates/prof/src/native/`、`crates/cutile/src/native.rs` 及其生产调用面。
 - 相关：[0005](0005-annotations-as-contracts.md)、[0022](0022-build-time-corpora.md)、
