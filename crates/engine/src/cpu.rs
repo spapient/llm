@@ -21,6 +21,15 @@ pub struct Bindings {
     values: std::collections::BTreeMap<u32, Buf>,
 }
 
+/// 单表达式访问器统一声明，绑定、执行与恢复逻辑不进入宏。
+macro_rules! value_methods {
+    ($($type:ty { $($(#[$meta:meta])* $name:ident($($args:tt)*) $(->$ret:ty)? = $body:expr; )* })*) => {
+        $(impl $type {
+            $($(#[$meta])* pub fn $name($($args)*) $(->$ret)? { $body })*
+        })*
+    };
+}
+
 impl Bindings {
     /// 空表。
     pub fn new() -> Self {
@@ -42,30 +51,20 @@ impl Bindings {
             std::collections::btree_map::Entry::Occupied(_) => None,
         }
     }
+}
 
-    /// 某个编号的 `f32` 内容；字节缓冲返回 `None`。
-    pub fn get(&self, id: u32) -> Option<&[f32]> {
-        self.values.get(&id).and_then(Buf::f32)
-    }
-
-    /// 某个编号的打包字节内容；浮点缓冲返回 `None`。
-    pub fn get_u8(&self, id: u32) -> Option<&[u8]> {
-        self.values.get(&id).and_then(Buf::u8)
-    }
-
-    /// 某个编号绑定的缓冲（只读）。
-    pub fn buf(&self, id: u32) -> Option<&Buf> {
-        self.values.get(&id)
-    }
-
-    /// 已绑定的编号数。
-    pub fn len(&self) -> usize {
-        self.values.len()
-    }
-
-    /// 是否一个编号都没绑。
-    pub fn is_empty(&self) -> bool {
-        self.values.is_empty()
+value_methods! {
+    Bindings {
+        /// 某个编号的 `f32` 内容；字节缓冲返回 `None`。
+        get(&self, id: u32) -> Option<&[f32]> = self.values.get(&id).and_then(Buf::f32);
+        /// 某个编号的打包字节内容；浮点缓冲返回 `None`。
+        get_u8(&self, id: u32) -> Option<&[u8]> = self.values.get(&id).and_then(Buf::u8);
+        /// 某个编号绑定的缓冲（只读）。
+        buf(&self, id: u32) -> Option<&Buf> = self.values.get(&id);
+        /// 已绑定的编号数。
+        len(&self) -> usize = self.values.len();
+        /// 是否一个编号都没绑。
+        is_empty(&self) -> bool = self.values.is_empty();
     }
 }
 
