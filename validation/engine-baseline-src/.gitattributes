@@ -1,9 +1,0 @@
-* text=auto eol=lf
-
-*.rs text diff=rust
-*.toml text diff=toml
-Cargo.lock merge=union
-
-*.png binary
-*.jpg binary
-*.gz binary

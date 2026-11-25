@@ -82,7 +82,6 @@ impl Taken {
 pub struct CpuExecutor {
     device: Device,
     programs: Vec<Box<dyn Program>>,
-    idxs: std::collections::HashMap<String, usize>,
     bindings: Bindings,
     queue: Vec<Queued>,
 }
@@ -116,15 +115,14 @@ impl CpuExecutor {
         Self {
             device,
             programs: Vec::new(),
-            idxs: std::collections::HashMap::new(),
             bindings: Bindings::new(),
             queue: Vec::new(),
         }
     }
 
-    /// 登记一段内核体并建立名字索引；同名已登记时返回 `Invalid`，不允许静默顶替。
+    /// 登记一段内核体；同名已登记时返回 `Invalid`，而不是让后登记的那份静默顶替。
     pub fn register(&mut self, program: Box<dyn Program>) -> Result<()> {
-        if self.idxs.contains_key(program.name()) {
+        if self.position(program.name()).is_ok() {
             return Err(invalid(
                 "engine::CpuExecutor::register",
                 format!(
@@ -133,8 +131,6 @@ impl CpuExecutor {
                 ),
             ));
         }
-        self.idxs
-            .insert(program.name().to_owned(), self.programs.len());
         self.programs.push(program);
         Ok(())
     }
@@ -165,12 +161,7 @@ impl CpuExecutor {
     ///
     /// 内核未登记、操作数未绑定、同一节点里一个编号既是输入又是输出、或内核本身报错。
     pub fn run(&mut self, node: &Node) -> Result<()> {
-        let idx = self.idxs.get(node.name()).copied().ok_or_else(|| {
-            invalid(
-                "engine::CpuExecutor::run",
-                format!("内核 `{}` 未登记", node.name()),
-            )
-        })?;
+        let idx = self.position(node.name())?;
         self.check_operands(node)?;
         let mut inputs = self.take(node.inputs());
         let mut outputs = self.take(node.outputs());
@@ -181,6 +172,14 @@ impl CpuExecutor {
         self.restore(std::mem::take(&mut inputs));
         self.restore(std::mem::take(&mut outputs));
         result.map_err(|error| error.with("engine::CpuExecutor::run"))
+    }
+
+    /// 按名字找内核下标。
+    fn position(&self, name: &str) -> Result<usize> {
+        self.programs
+            .iter()
+            .position(|program| program.name() == name)
+            .ok_or_else(|| invalid("engine::CpuExecutor::run", format!("内核 `{name}` 未登记")))
     }
 
     /// 节点自己的操作数约束：每个编号都要已绑定，且输入与输出不能是同一个编号。

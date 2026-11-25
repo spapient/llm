@@ -1,48 +1,0 @@
-
-==> rustfmt（格式检查，不改动文件）
-
-==> clippy（-D warnings，correctness / complexity / perf 等组）
-    Checking llm-train v0.1.0 (/Users/fei/code/llm/crates/train)
-    Checking llm-serve v0.1.0 (/Users/fei/code/llm/crates/serve)
-    Checking llm-testkit v0.1.0 (/Users/fei/code/llm/crates/testkit)
-    Checking llm-cli v0.1.0 (/Users/fei/code/llm/crates/cli)
-    Checking llm-benchmarks v0.1.0 (/Users/fei/code/llm/crates/benchmarks)
-    Checking llm-fuzz v0.1.0 (/Users/fei/code/llm/crates/fuzz)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.52s
-
-==> Ruff（Python 缺陷、现代化、导入与格式；版本由 pyproject.toml 锁定）
-ruff 0.17.6
-All checks passed!
-8 files already formatted
-
-==> cloc（跨语言行数与逐文件报告；业务源码与验证脚本全量统计）
-2.12
-     100 files     200 files     300 files     400 files     500 files     600 files     700 files     800 files     900 files     911 text files.
-classified 775 filesDuplicate file check 775 files (729 known unique)Unique:      100 files                                          Unique:      200 files                                          Unique:      300 files                                          Unique:      400 files                                          Unique:      500 files                                          Unique:      600 files                                          Unique:      700 files                                               756 unique files.                              
-Counting:  100Counting:  200Counting:  300Counting:  400Counting:  500Counting:  600Counting:  700     186 files ignored.
-Wrote target/cloc/report.csv
-
-==> 测试（nextest 并行隔离运行；libfuzzer harness 已在 .config/nextest.toml 排除）
-   Compiling llm-train v0.1.0 (/Users/fei/code/llm/crates/train)
-error[E0425]: cannot find function `check_pool1d` in this scope
-  --> crates/train/src/geometry/shapes.rs:42:43
-   |
-42 |     Geometry::Pool1d { k, s, p, l, c } => check_pool1d(lens, out, k, s, p, l, c),
-   |                                           ^^^^^^^^^^^^ not found in this scope
-   |
-note: similarly named function `check_pool2d` defined here
-  --> crates/train/src/geometry/shapes.rs:74:1
-   |
-74 | fn check_pool2d(lens: &[usize], out: usize, win: Window, plane: Plane, what: &str) -> Result<()> {
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-help: a function with a similar name exists
-   |
-42 -     Geometry::Pool1d { k, s, p, l, c } => check_pool1d(lens, out, k, s, p, l, c),
-42 +     Geometry::Pool1d { k, s, p, l, c } => check_pool2d(lens, out, k, s, p, l, c),
-   |
-
-For more information about this error, try `rustc --explain E0425`.
-error: could not compile `llm-train` (lib) due to 1 previous error
-warning: build failed, waiting for other jobs to finish...
-error: could not compile `llm-train` (lib test) due to 1 previous error
-error: command `/Users/fei/.rustup/toolchains/1.100.0-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run '--message-format=json-render-diagnostics' --workspace --all-features --locked` exited with code 101

@@ -1,7 +1,0 @@
-# 只排除版本控制、构建产物和临时目录；业务源码、测试与验证脚本全部纳入。
---exclude-dir=.git,target,.tmp
-# 同时保留语言汇总与逐文件明细，便于追踪密度变化。
---by-file-by-lang
-# 机器可读报告；命令行参数可覆盖本配置。
---csv
---out=target/cloc/report.csv

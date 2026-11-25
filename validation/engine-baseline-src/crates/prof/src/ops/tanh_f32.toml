@@ -1,7 +1,0 @@
-# 逐元素 Tanh：y[n] = 2 / (1 + exp(-2·a[n])) - 1。
-# 与 silu_f32 同一副一元骨架，只差逐元素函数；用 exp 表达而不是另立一条数学依赖。
-base = "silu_f32"
-
-[op]
-name     = "tanh_f32"
-summary  = "y[n] = 2 / (1 + exp(-2·a[n])) - 1"

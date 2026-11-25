@@ -1,7 +1,0 @@
-# 逐元素 Sigmoid：y[n] = 1 / (1 + exp(-a[n]))。
-# 与 silu_f32 同一副一元骨架，只差逐元素函数；exp 走 preamble 软件标量接口，不依赖数学库。
-base = "silu_f32"
-
-[op]
-name     = "sigmoid_f32"
-summary  = "y[n] = 1 / (1 + exp(-a[n]))"

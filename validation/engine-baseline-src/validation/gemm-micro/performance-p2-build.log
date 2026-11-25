@@ -1,6 +1,0 @@
-   Compiling llm-annotation v0.1.0 (/Users/fei/code/llm/crates/annotation)
-   Compiling llm-prof v0.1.0 (/Users/fei/code/llm/crates/prof)
-   Compiling cutile v0.1.0 (/Users/fei/code/llm/crates/cutile)
-   Compiling llm-nn v0.1.0 (/Users/fei/code/llm/crates/nn)
-    Finished `release` profile [optimized] target(s) in 41.83s
-  Executable unittests src/lib.rs (target/release/build/llm-nn/cafccc36c1dd2436/out/llm_nn-cafccc36c1dd2436)

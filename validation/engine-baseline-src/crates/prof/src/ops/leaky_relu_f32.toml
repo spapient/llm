@@ -1,7 +1,0 @@
-# 逐元素 LeakyReLU：y[n] = a[n] (a[n] ≥ 0) 或 slope·a[n]（其余）。
-# 与 silu_f32 同一副一元骨架，只差逐元素函数；slope 取 0.01（PyTorch 默认）。
-base = "silu_f32"
-
-[op]
-name     = "leaky_relu_f32"
-summary  = "y[n] = a[n] if a[n] >= 0 else 0.01*a[n]"
