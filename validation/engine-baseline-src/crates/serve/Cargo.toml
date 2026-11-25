@@ -1,0 +1,37 @@
+[package]
+name = "llm-serve"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "Endpoint contract: routes, responses and the request-to-scheduler bridge."
+publish = false
+autotests = false
+
+[features]
+default = []
+# 只读内存映射装载：透传 weights 的映射源；仅 Unix 编译映射借用路径，其它平台整块回退文件流式读取。
+mmap = ["weights/mmap"]
+
+[dependencies]
+diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
+engine = { path = "../engine", package = "llm-engine" }
+nn = { path = "../nn", package = "llm-nn" }
+train = { path = "../train", package = "llm-train" }
+tensor = { path = "../tensor", package = "llm-tensor" }
+tokenizer = { path = "../tokenizer", package = "llm-tokenizer" }
+weights = { path = "../weights", package = "llm-weights" }
+storage = { path = "../storage", package = "llm-storage" }
+
+[dev-dependencies]
+testkit = { path = "../testkit", package = "llm-testkit" }
+proptest = { workspace = true }
+
+[lints]
+workspace = true
+
+[[test]]
+name = "prop_frame"
+path = "tests/prop_frame.rs"

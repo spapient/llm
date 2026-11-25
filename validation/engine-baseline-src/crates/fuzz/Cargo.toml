@@ -1,0 +1,155 @@
+[package]
+name = "llm-fuzz"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "Fuzz contract: deterministic seeds, target trait and the invariants a parser must keep."
+publish = false
+# 关掉自动发现：`tests/parsers.rs` 与 15 个 `src/fuzz_*.rs` 入口都逐项声明，入口只剩一行。
+autotests = false
+
+[features]
+# 只在构建 libfuzzer harness 时启用；默认 `cargo test/build` 不编译 libFuzzer 运行时。
+engine = ["dep:libfuzzer-sys"]
+
+[dependencies]
+diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
+
+# libFuzzer 运行时只服务 harness；契约库不引用它，未启用 `engine` 时不编译。
+# Cargo 不允许 dev-dependencies 可选，因此保留在常规依赖侧并由 `engine` feature 门控。
+# 运行时只在 Unix 提供可链接入口；Windows/MSVC 下没有 libFuzzer 运行时，harness 退化为空 main 桩。
+[target.'cfg(unix)'.dependencies]
+libfuzzer-sys = { version = "0.4.13", optional = true }
+
+# 驱动方：把真实解析器灌进 `sweep`（见 `tests/parsers.rs`）与 libfuzzer harness（见 `src/fuzz_*.rs`）；
+# 共享的驱动与合法种子在 `src/drivers.rs` / `src/seeds.rs`，两边不各写一份判据。
+# 只在测试与 harness 里用，不进契约库运行时。
+[dev-dependencies]
+cli = { path = "../cli", package = "llm-cli" }
+weights = { path = "../weights", package = "llm-weights" }
+storage = { path = "../storage", package = "llm-storage" }
+train = { path = "../train", package = "llm-train" }
+serve = { path = "../serve", package = "llm-serve" }
+tensor = { path = "../tensor", package = "llm-tensor" }
+tool = { path = "../tools", package = "llm-tools" }
+testkit = { path = "../testkit", package = "llm-testkit" }
+# 语义 oracle：能力协商、确定性随机与形状算术都要对真实实现取不变量。
+cutile = { path = "../cutile" }
+# 属性层：Burn 式随机生成 + 收缩，覆盖 fuzzer 难以命中的组合空间。
+proptest = { workspace = true }
+
+# 确定性 sweep 遍历：走 libtest，默认 feature 即可跑（驱动来自 `src/drivers.rs`）。
+[[test]]
+name = "parsers"
+path = "tests/parsers.rs"
+
+# 语料生成器：`harness = false` 的普通二进制，默认 feature 即可构建；把合法范例写到
+# corpus/<目标>/seed.bin。不走 libtest，由 CI fuzz job 显式调用。
+[[test]]
+name = "gen_corpus"
+path = "tests/gen_corpus.rs"
+harness = false
+
+# libfuzzer 目标是 `harness = false` 的独立测试二进制：入口只有一行（`src/fuzz_*.rs` 调
+# `fuzz_harness!`），判据全部在 `src/drivers.rs`；不走 libtest、不作为 `example` 存在，
+# 仅在 `engine` feature 下编译。
+[[test]]
+name = "fuzz_cli"
+path = "src/harness/cli.rs"
+harness = false
+required-features = ["engine"]
+
+[[test]]
+name = "fuzz_weights_json"
+path = "src/harness/weights/json.rs"
+harness = false
+required-features = ["engine"]
+
+[[test]]
+name = "fuzz_weights_safetensors"
+path = "src/harness/weights/safetensors.rs"
+harness = false
+required-features = ["engine"]
+
+[[test]]
+name = "fuzz_weights_archive"
+path = "src/harness/weights/archive.rs"
+harness = false
+required-features = ["engine"]
+
+[[test]]
+name = "fuzz_train_snapshot"
+path = "src/harness/train/snapshot.rs"
+harness = false
+required-features = ["engine"]
+
+[[test]]
+name = "fuzz_serve_frames"
+path = "src/harness/serve/frames.rs"
+harness = false
+required-features = ["engine"]
+
+[[test]]
+name = "fuzz_http_head"
+path = "src/harness/http/head.rs"
+harness = false
+required-features = ["engine"]
+
+[[test]]
+name = "fuzz_wire_sealed"
+path = "src/harness/wire/sealed.rs"
+harness = false
+required-features = ["engine"]
+
+[[test]]
+name = "fuzz_wire_leb"
+path = "src/harness/wire/leb.rs"
+harness = false
+required-features = ["engine"]
+
+[[test]]
+name = "fuzz_lex"
+path = "src/harness/lex.rs"
+harness = false
+required-features = ["engine"]
+
+[[test]]
+name = "fuzz_crc"
+path = "src/harness/crc.rs"
+harness = false
+required-features = ["engine"]
+
+[[test]]
+name = "fuzz_leb_roundtrip"
+path = "src/harness/leb/roundtrip.rs"
+harness = false
+required-features = ["engine"]
+
+[[test]]
+name = "fuzz_shape"
+path = "src/harness/shape.rs"
+harness = false
+required-features = ["engine"]
+
+[[test]]
+name = "fuzz_cutile_negotiate"
+path = "src/harness/cutile/negotiate.rs"
+harness = false
+required-features = ["engine"]
+
+[[test]]
+name = "fuzz_dist"
+path = "src/harness/dist.rs"
+harness = false
+required-features = ["engine"]
+
+# proptest 属性层：走 libtest，默认 feature 即可跑，与确定性 sweep 互补（随机生成 + 收缩）。
+[[test]]
+name = "properties"
+path = "tests/properties.rs"
+
+[lints]
+workspace = true

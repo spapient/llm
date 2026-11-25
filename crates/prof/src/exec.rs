@@ -7,6 +7,7 @@
 use diagnostic::{Code, Error, Result};
 use std::sync::Arc;
 
+#[macro_export]
 /// 单表达式构造、访问与绑定方法统一在此声明；复杂校验和执行分支不进入宏。
 macro_rules! value_methods {
     ($($type:ty { $($(#[$meta:meta])* $name:ident($($args:tt)*) $(->$ret:ty)? = $body:expr; )* })*) => {

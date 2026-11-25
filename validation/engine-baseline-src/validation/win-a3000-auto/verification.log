@@ -1,0 +1,32 @@
+   Compiling llm-annotation v0.1.0 (C:\Users\fei\llm-a3000-91199ce0\crates\annotation)
+   Compiling llm-prof v0.1.0 (C:\Users\fei\llm-a3000-91199ce0\crates\prof)
+warning: unused imports: `MR` and `NR`
+  --> crates\prof\src\native_i8.rs:20:21
+   |
+20 | use super::i8_geo::{MR, NR};
+   |                     ^^  ^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling cutile v0.1.0 (C:\Users\fei\llm-a3000-91199ce0\crates\cutile)
+   Compiling llm-nn v0.1.0 (C:\Users\fei\llm-a3000-91199ce0\crates\nn)
+warning: `llm-prof` (lib) generated 1 warning (run `cargo fix --lib -p llm-prof` to apply 1 suggestion)
+   Compiling llm-shard v0.1.0 (C:\Users\fei\llm-a3000-91199ce0\crates\shard)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 12.55s
+     Running `target\debug\examples\a3000_auto_verify.exe`
+selected=nvidia_a3000(sm86)
+flags=-arch=sm_86 -O3 -lcublas
+case=1x1x0 PASS variant=direct tile=N=256 max_rel_err=0.000000e0 outputs=1
+case=3x5x0 PASS variant=direct tile=N=256 max_rel_err=0.000000e0 outputs=15
+case=1x1x1 PASS variant=direct tile=N=256 max_rel_err=0.000000e0 outputs=1
+case=1x17x3 PASS variant=direct tile=N=256 max_rel_err=8.300180e-8 outputs=17
+case=17x1x19 PASS variant=direct tile=N=256 max_rel_err=1.699687e-7 outputs=17
+case=15x17x31 PASS variant=direct tile=N=256 max_rel_err=1.795350e-7 outputs=255
+case=16x16x16 PASS variant=direct tile=N=256 max_rel_err=1.911235e-7 outputs=256
+case=17x17x17 PASS variant=direct tile=N=256 max_rel_err=1.467131e-7 outputs=289
+case=31x33x35 PASS variant=direct tile=N=256 max_rel_err=1.787144e-7 outputs=1023
+case=64x65x63 PASS variant=direct tile=N=256 max_rel_err=2.181339e-7 outputs=4160
+case=65x64x129 PASS variant=direct tile=N=256 max_rel_err=5.612446e-7 outputs=4160
+case=128x3x65 PASS variant=direct tile=N=256 max_rel_err=4.015953e-7 outputs=384
+case=2x4096x1 PASS variant=direct tile=N=256 max_rel_err=0.000000e0 outputs=8192
+case=256x256x4096 PASS variant=direct tile=N=256 max_rel_err=3.567510e-6 outputs=65536

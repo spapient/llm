@@ -1,0 +1,11 @@
+# 不再需要 nightly：两处不稳定能力已用 `#[cfg(nightly)]` 挂起，并各配一条 stable 退路
+# （`crates/nn/build.rs` 按 `rustc --version` 判定并产出该 cfg）：
+#   - `gemv::simd` 的手写车道 → stable 走 `kernel_gemv_simd_stable.rs`；
+#   - `fast::sme` 的 ZA 外积 → stable 走 NEON 通道。
+# 因此这里钉到固定的已发布 stable 版本 1.100.0（与 workspace `rust-version`、CI、
+# `clippy.toml` 的 `msrv` 一致）：clone 下来 `cargo build` 直接能过，
+# 想验证 nightly 通道则显式 `cargo +nightly test`。
+[toolchain]
+channel = "1.100.0"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

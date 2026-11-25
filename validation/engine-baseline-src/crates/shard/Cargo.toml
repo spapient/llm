@@ -1,0 +1,24 @@
+[package]
+name = "llm-shard"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "TP/PP/DP topology: world size, per-axis process groups and partition slicing."
+publish = false
+autotests = false
+
+[dependencies]
+cutile = { path = "../cutile", package = "cutile" }
+diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
+nn = { path = "../nn", package = "llm-nn" }
+prof = { path = "../prof", package = "llm-prof" }
+
+[dev-dependencies]
+proptest = { workspace = true }
+testkit = { path = "../testkit", package = "llm-testkit" }
+
+[lints]
+workspace = true

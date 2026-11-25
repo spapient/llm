@@ -1,0 +1,61 @@
+[package]
+name = "llm-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "Command-line combination root: parse argv and settings, assemble the kernel layers, and expose the `llm` binary."
+publish = false
+autotests = false
+autobins = false
+
+[[bin]]
+name = "llm"
+path = "src/main.rs"
+doc = false
+
+# 与 `crates/cutile` 同名：不产出它的文档，否则两者写到同一个 `target/doc/cutile/index.html`（cargo#6313）。
+[[bin]]
+name = "cutile"
+path = "src/cutile.rs"
+doc = false
+
+[[test]]
+name = "cli"
+path = "tests/cli.rs"
+
+[[test]]
+name = "vault"
+path = "tests/vault.rs"
+
+[[test]]
+name = "audit"
+path = "tests/audit.rs"
+
+[features]
+# 发布模式：构建期把能编译的设备编成镜像并嵌入（见 `crates/prof/build.rs`）。
+device-image = ["cutile/device-image", "prof/device-image"]
+
+[dependencies]
+cutile = { path = "../cutile" }
+shard = { path = "../shard", package = "llm-shard" }
+diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
+engine = { path = "../engine", package = "llm-engine" }
+nn = { path = "../nn", package = "llm-nn" }
+prof = { path = "../prof", package = "llm-prof" }
+serve = { path = "../serve", package = "llm-serve" }
+tensor = { path = "../tensor", package = "llm-tensor" }
+tokenizer = { path = "../tokenizer", package = "llm-tokenizer" }
+train = { path = "../train", package = "llm-train" }
+weights = { path = "../weights", package = "llm-weights" }
+# L7 唯一外部依赖例外（ADR 0048）：配置文件层解析；L1–L6 生产路径仍零外部依赖（D5 修订）。
+toml = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = "2.2.2"
+storage = { path = "../storage", package = "llm-storage" }
+
+[lints]
+workspace = true

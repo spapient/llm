@@ -1,0 +1,31 @@
+# Embedding 行查表：y[n, :] = table[idx[n], :]（行向量 gather）。
+# OpDecl 闭集归到 elementwise（按 token 遍历，每行拷贝 D 个元素）；needs 只有 load/store，
+# 词表大小与行宽是标量参数。
+
+[op]
+name     = "embed_f32"
+skeleton = "elementwise"
+summary  = "y[n,:] = table[idx[n],:]"
+
+[axes]
+N = [32]
+
+[needs]
+load  = { bytes = "<=4096", space = ["GM", "FAST"], src = ["GM"], dst = ["GM"] }
+store = { bytes = "<=4096", dt = ["f32"], space = ["GM"] }
+
+[layouts]
+idx   = "row"
+table = "row"
+y     = "row"
+
+# 网格映射：每行一线程（`n:N` 绑定模板里的 `for (int n = 0; n < N; ++n)`），行内 `d` 循环留在线程内。
+# gather 的随机访问只在表行首，行内是连续拷贝，按行拆线程不会把一次读放大成多次。
+[grid]
+dims = ["n:N"]
+
+[[variants]]
+name      = "direct"
+order     = 1
+schedule  = "direct"
+mma_share = 0.0

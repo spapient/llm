@@ -1,0 +1,7 @@
+# 标量缩放：与 gelu_f32 同一副一元骨架，只差逐元素函数。
+base = "gelu_f32"
+
+[op]
+name     = "scale"
+skeleton = "elementwise"
+summary  = "y[n] = alpha*x[n]"

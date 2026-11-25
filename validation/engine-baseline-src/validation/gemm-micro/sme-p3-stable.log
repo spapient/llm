@@ -1,0 +1,15 @@
+   Compiling llm-prof v0.1.0 (/Users/fei/code/llm/crates/prof)
+   Compiling cutile v0.1.0 (/Users/fei/code/llm/crates/cutile)
+   Compiling llm-nn v0.1.0 (/Users/fei/code/llm/crates/nn)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.88s
+     Running unittests src/lib.rs (target/debug/build/llm-nn/df9ccdaf5cbe3590/out/llm_nn-df9ccdaf5cbe3590)
+
+running 5 tests
+test kernel::fast::tests::sme_matches_on_single_col_group ... ok
+test kernel::fast::tests::sme_matches_on_single_row_block ... ok
+test kernel::fast::tests::sme_matches_on_tile_multiples ... ok
+test kernel::fast::tests::sme_matches_when_threaded ... ok
+test kernel::fast::tests::sme_matches_at_full_thread_count ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 565 filtered out; finished in 0.92s
+

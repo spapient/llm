@@ -1,0 +1,14 @@
+{
+  "path": ["crates"],
+  "output": "target/jscpd-report",
+  "reporters": ["console", "json"],
+  "format": ["rust"],
+  "minLines": 5,
+  "minTokens": 80,
+  "threshold": 0,
+  "ignore": [
+    "**/target/**",
+    "**/*.rs.bk",
+    "**/build.rs"
+  ]
+}

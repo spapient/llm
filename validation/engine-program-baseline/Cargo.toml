@@ -1,0 +1,14 @@
+[package]
+name = "engine-program-baseline"
+version = "0.0.0"
+edition = "2024"
+
+[workspace]
+
+[dependencies]
+engine = { path = "../engine-baseline-src/crates/engine", package = "llm-engine" }
+diagnostic = { path = "../engine-baseline-src/crates/diagnostic", package = "llm-diagnostic" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

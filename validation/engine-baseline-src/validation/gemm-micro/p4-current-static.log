@@ -1,0 +1,27 @@
+
+running 13 tests
+............ 12/13
+every_source_passes_the_static_gate --- FAILED
+
+failures:
+
+---- every_source_passes_the_static_gate stdout ----
+
+thread 'every_source_passes_the_static_gate' (52731424) panicked at crates/tools/tests/gate.rs:108:5:
+静态质量门失败：
+  crates/nn/src/fast.rs: 新增 Lines=1540
+  crates/nn/src/embed.rs: 生产文件 151 行低于下限 300——把同主题语义收拢进所属模块，不要单开口袋碎文件
+  crates/nn/src/rmsnorm.rs: 生产文件 213 行低于下限 300——把同主题语义收拢进所属模块，不要单开口袋碎文件
+  crates/nn/src/softmax.rs: 生产文件 91 行低于下限 300——把同主题语义收拢进所属模块，不要单开口袋碎文件
+  crates/nn/src/conv.rs: 新增 Lines=3603
+  crates/nn/src/gemv.rs: 新增 Lines=1761
+  crates/nn/src/clamp.rs: 生产文件 91 行低于下限 300——把同主题语义收拢进所属模块，不要单开口袋碎文件
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    every_source_passes_the_static_gate
+
+test result: FAILED. 12 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.09s
+
+error: test failed, to rerun pass `-p llm-tools --test gate`

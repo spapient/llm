@@ -1,0 +1,276 @@
+# 0056：prof 真内核与 cutile DSL/IR——10 分标尺裁决、可闭合切片与冻结边界
+
+- 状态：已采纳（已闭合 `einsum` 减码拆分切片 + cutile typed IR 表驱动一元闭集与发射模块拆分；
+  CUDA prof 见证层已在 win A3000 真机对拍闭合，设备计时通道已打通出真机读数；typed IR 元素档贯通、
+  跨算子融合、typed IR 核接设备执行、匹配口径的 roofline L3 判定与 decode 融合收益列开放项 / PARTIAL，
+  不以未测能力签发满分）
+- 日期：2026-11-24
+- 相关：[0017](0017-kernel-ast-and-ir-freeze.md)（单 kernel AST 与运行时张量 IR 冻结）、
+  [0054](0054-operator-coverage-spp.md)（骨架元素档 `K` 分层与贯通硬点）、
+  [0005](0005-annotations-as-contracts.md)（注解即契约）、
+  [`docs/COMPARISON-llm-llmu-burn.md`](../COMPARISON-llm-llmu-burn.md) §16.3 维度 17、
+  [`docs/GATE-RUBRIC-2026-11-24.md`](../GATE-RUBRIC-2026-11-24.md) 八维标尺、
+  [`docs/PROMPT-S++-AUDIT.md`](../PROMPT-S++-AUDIT.md) N3 / N7
+
+## 背景
+
+用户目标：真内核落在 `crates/prof`，`crates/cutile` 的 DSL / IR 做到 10 分、对标并超越 Burn，
+要求泛型、注解、配置化、优先路径，能力 / 性能 / 质量三提升，代码与代码文件大量减少。
+
+对照基线（`COMPARISON` §16.3 维度 17「内核 DSL 扩展」）：**llm 6 / llm.u 2 / Burn 9**。
+Burn 的 9 分来自 CubeCL：设备无关内核语言 + cubek IR，JIT lowering 到 CUDA/HIP/Metal/Vulkan/
+WebGPU/wgpu/CPU，配算子融合与 autotune；`burn-cubecl` 25,240 行、`burn-cubecl-fusion` 14,771 行，
+后端壳层极薄（`burn-cpu` 61、`burn-cuda` 58），重内核在 IR 侧。
+
+本仓两条已签发约束决定了本轮不能照搬该路线：
+
+1. **ADR 0017 冻结 L2**：跨算子融合、运行时 JIT、动态形状重写不在本批；解冻须同时满足单 kernel
+   真机对拍达 L2、性能达 roofline 70%（L3）、roofline 证据证明存在跨算子融合收益，且先过新 ADR。
+2. **ADR 0054 §110 贯通硬点**：完整元素档 `K` 贯通卡在三处——① `Model.sample`/`reference` 是裸
+   `fn` 指针槽（erased 装配槽，存不下泛型结果）；② `Values` 档位闭集仅 `F32(Vec<f32>)`/
+   `U8(Vec<u8>)`；③ 对拍下游（`need.rs`/`schema.rs`/cutile `reference.rs`）按 f32 归一，阈值与
+   桥接宽度未按档分档。一次贯通牵动整条取值通道与 52 个算子 reference、verify 阈值与桥接宽度，
+   属跨批次大重构。
+
+## 取证基线（当前 revision 回链）
+
+### prof（词汇 / 契约 / 档案 / 主机微核）
+
+- 词汇层泛型与闭集基础在位：`atom.rs` 闭集宏 `vocabulary!`/`inherent_names!`、编译期位集
+  `Set<E: Closed, const WORDS>`、`Prim` 16 原语 + `AttrKey` 闭集、`Span` 区间代数（exact /
+  at_most / at_least / range / covers）、`KernelKey` 配置登记键（prim / dtype / space / lanes /
+  arch / block / impl_name）。
+- 类型单一事实源：`atom::DType` 直接复用 L1 `dtype::DType`（U4/U8/U16/U32/I4/I8/I32/F16/BF16/F32
+  等 23 变体 + MX 族），prof 不另造类型枚举。
+- 优先路径已配置驱动：`cap.rs` 协商按 TOML 降级链序命中第一个可行变体即停（`Path::is_head` 标识
+  首选），不做自动打分；`plan.rs` 按声明顺序取 tile，roofline 只给估值。
+- 主机真内核隔离子岛平铺为 `native.rs` 与 `native_{gemm8x8,i8,sme}.rs`：f32 NEON/AVX2 8×8 `gemm8x8`、i8 dotprod 4×4 `sdot`、Apple SME
+  16×64 ZA 外积；`gemm_negotiate` 经编译期配置表 `GEMM_KERNELS` 择优，arch 门 / 特性探测 / unsafe
+  全收在岛内。
+- 存量越线：`einsum.rs` 1054 行，超单文件 600 硬线（N3 一票否决项）。
+
+### cutile（设备无关 kernel DSL 与编译前端）
+
+- 旧模板链路五步：expand → negotiate → select → substitute → emit + cache；中间产物都是可打印、
+  可哈希的数据结构。
+- typed IR（`kernel.rs` / `validate.rs` / `fuse.rs` / `pass.rs`）现状边界：
+  - 类型档：`ScalarType { F32, Usize }`；缓冲元素 `buf_ok` 仅 F32。
+  - 表达式族：`F32` 字面量（IEEE bits）/ `Scalar` / `Load`（隐式循环索引）/ `Neg` /
+    `Unary(UnaryFn)`（表驱动十族：`Abs`/`Sqrt`/`Exp`/`Ln`/`Sin`/`Cos`/`Ceil`/`Floor`/
+    `Round`/`Trunc`）/ `Binary(+,-,*,/)` / `Fma` / `Min` / `Max`；无比较 / 选择 / 控制流，
+    无任意下标。
+  - 一元闭集：`UnaryFn::c_name`（C `<math.h>` 发射名）与 `UnaryFn::apply`（Rust 主机 f32 求值）
+    各登记一行；校验闸、遍历、字面量折叠、解释执行、双目标发射全部从表取，不为单变体各写 match 臂。
+  - 写回：逐点 `Map(Expr)`、归约 `Reduce { at, value }`。
+  - 校验六道闸：名字 → 形参 → 生成名 → extent → 输出 → 表达式；类型一致闸按 f32 判定。
+  - pass 框架：`Simplify`（代数定律 + 常量折叠）/ `EliminateDeadParams` / `FuseFma`，扫到不动点，
+    每 pass 后校验，轮次上限取初始 cost，震荡报错；`standard`（位精确）与 `contracted`（opt-in FMA
+    收缩，改舍入）两通道。
+  - 双目标发射：可移植 C（配对长度 + 守卫 + 返回 0）与设备 `.k` 正文（无长度配对 / 守卫，交 vendor
+    骨架）；目标分叉收敛进 `Target` 枚举，正文只写一遍。
+  - 融合：仅逐点-逐点；归约链、缺失链接、可写链接、extent 不一致一律拒绝。
+- 前端：`#[dsl]` 过程宏把一个 `for idx in 0..extent` 循环 + 一次写回翻译成 `Kernel`。当前显式拒绝
+  泛型函数（`generics.params` 非空即拒），参数档仅 `f32` / `usize` / `&[f32]` / `&mut [f32]`，
+  注解不接配置参数（`#[dsl]` takes no arguments）。
+- **未接设备执行**：typed IR 尚未替换旧模板链路；`Image` 与布局推导未接；`#[dsl]` 无生产挂载点，
+  仅 annotation 测试 fixture。
+
+## 10 分标尺拆解（套 GATE-RUBRIC 八维，逐项给当前档位）
+
+标尺（`COMPARISON` §16.1）：9–10 成熟完备生产可用；7–8 主体完整；5–6 端口 / 骨架；3–4 最小可用；
+1–2 仅声明；0 缺失。状态：● 可跑 / ◐ 骨架部分 / ○ 缺失。
+
+| 维度 | 10 分判据 | 当前证据 | 状态 | 档位 | 待校准 / 前置动作 |
+| --- | --- | --- | --- | --- | --- |
+| A IR 类型覆盖面 | 元素档对齐 L1 `DType` 闭集，标量 / 缓冲 / 累加档可表达 | IR 仅 F32/Usize；基座 23 变体在 prof/dtype 侧齐备，未下放到 IR | ◐ | 5 | 元素档贯通，先解 ADR 0054 三处硬点（见开放项 G1） |
+| B 表达式 / 控制流 | 比较 / 选择 / 数学函数 / 取整 / 必要控制流成族，逐族有正反 oracle | 算术 / FMA / min/max/neg；一元数学 + 取整十族表驱动（Abs/Sqrt/Exp/Ln/Sin/Cos/Ceil/Floor/Round/Trunc），含发射断言、校验反向用例与位级族逐位对拍；比较 / 选择 / 控制流仍缺 | ◐ | 6 | 比较 / 选择出布尔值牵动类型系统，另案；超越族容差对拍见 G6 |
+| C 配置化 / 闭集安全 | 档位 / 通道 / 优先级全声明化，拼错键构建期拒绝 | prof 词汇 / 链序 / tile 选择已配置驱动；IR pipeline 通道两档在位但 emit 固定走 standard；`#[dsl]` 零配置参数 | ●/◐ | 7 | IR 通道选择与 `#[dsl]` 配置位待有真实消费者后接入（见 G4，不造无消费者抽象） |
+| D 泛型 / 声明化密度 | 同构 ≥3 份全部泛型 / 宏 / 表驱动 | pass / Target / 词汇表 / `UnaryFn` 闭集均表驱动；新增一元族只登记一行（C 名 + 主机求值），校验/遍历/折叠/解释/发射从表取 | ● | 8 | 维持；新增同构先判体量再抽（N7 门槛 ≥3 份 / ≥5 行 / ≥80 token） |
+| E 规模 / 密度 | 无超线文件；公开项密度受控 | prof `einsum/` 拆分后最大 `device.rs` 570；cutile 发射侧拆入 `printer.rs`（242），`kernel.rs` 431，最大 `cap.rs` 599，均 <600 | ● | 8 | 拆分后 jscpd 零克隆；净删生产行随后续批次实测 |
+| F IR / 发射器性能 | 生成与优化有耗时基线与回归门；热点复杂度可证 | pass 为不动点线性扫描；无 micro-bench 基线；非热路径 | ○ | 5 | 先取单 kernel 优化 / 发射耗时基线，再决定是否上区间归属 |
+| G 设备执行 / 证据完备 | 多 runtime lowering 可跑，真机对拍 + roofline 达标 | typed IR 未接设备执行（G2 仍开）；本机 macOS Metal 逐点族真机对拍；win（RTX A3000 12GB, sm86）经仓内 `CudaBackend` 跑通 nvidia 档案 **18 条见证**：nvcc 13.3 `-ccbin` cl 19.51 真编译整份 `.cu` → 设备 launch → 回读 f32 按 `expect` 切段对拍，`max_rel_err` 全 0、`scope=Device`（prof 片段链路 L2 见证层，非 typed IR 核）；无 roofline（L3）；Ascend/ROCm/Intel/MUSA 无证据 | ◐ | 4 | 见 G2/G3；CUDA prof 见证层真机对拍已闭合（18/18），typed IR 设备执行、roofline 达标与其余 runtime 落地前不签更高档 |
+| H 测试分层 | 每族反向注入用例；夹具复用；测试文件 ≤800 | IR 有 ir/pass/exec 三类测试；一元族独立 `unary_tests.rs`（发射断言 + 非 f32 反向用例），位级族进 `ir_exec` 逐位对拍；`ir_tests.rs` 760 行线内 | ◐ | 7 | 逐表达式族补「非法节点 → 校验红」反向用例 |
+
+**等权参考分（算术平均，仅基线锚点，不作交付结论）**：(5+6+7+8+8+5+4+7)/8 ≈ **6.3**，
+基线维度 17 的 llm 6。Burn 9 分的差额主要在 G（多 runtime 真机执行 + 融合 + autotune）与
+A（类型覆盖面），这两块均受 ADR 0017 / 0054 冻结，不在本批闭合。
+
+## 本轮落地（证据闭合、可逆、不改既有语义）
+
+### S1 — `einsum.rs` 按职责轴拆分回 600 硬线内（质量 / 减码）
+
+旧单文件 1054 行（N3 超线）。按职责轴拆成 `crates/prof/src/einsum/` 八个子模块，入口
+`einsum/mod.rs` 聚合重导出，对外路径 `prof::einsum::*` 逐字不变：
+
+| 子模块 | 职责 |
+| --- | --- |
+| `bits.rs` | `Bits` 位宽闭集 + 名字 / 位宽表 + `Closed` 实现 |
+| `cost.rs` | `Cost`（flops / read / write）分量与派生合计 |
+| `expr.rs` | `Expr` 显式模式文法解析 + 输出 / 重复字母校验；`is_label`/`NOT_LABEL` 提升 `pub(crate)` 共享 |
+| `extents.rs` | `Extents` 轴长度表 + 分组轴来历 + 整除校验 |
+| `operand.rs` | `Access` / `OperandSpec` / `Operand` + f32 标准操作数常量 |
+| `axis.rs` | `AxisRole` / `Axis` / `Axes` 轴分解与 flops 口径；共享 `multiply`/`overflow` 溢出算术 |
+| `formula.rs` | `Formula` 配对、轴分解、流量推导与同名 / 单出口 / 写回输出轴校验 |
+| `cache.rs` | `FormulaCache` OnceLock 表达式缓存 |
+
+- 拆分后最大文件 `formula.rs` 262 行、`expr.rs` 164、`extents.rs` 157，全部 <600。
+- 语义不变：`prof` lib 164 单测通过；对外引用（`nn` 骨架、`tpl.rs`、`model.rs` 再导出、
+  `tests/spec/{einsum,cost}_tests.rs`）路径不变。
+- `Axis`/`Axes` 构造字段改 `pub(crate)` 供 `formula.rs` 同 crate 子模块构造，不向 crate 外泄漏。
+
+### S2 — cutile typed IR 表驱动一元闭集 + 发射模块拆分（能力 / 减码 / 质量）
+
+- **闭集表驱动**：原独立 `Expr::Abs` 变体改为 `Expr::Unary { op: UnaryFn, child }`，十族
+  `Abs/Sqrt/Exp/Ln/Sin/Cos/Ceil/Floor/Round/Trunc`。`UnaryFn::c_name`（C `<math.h>` 发射名）与
+  `UnaryFn::apply`（Rust 主机 f32 求值）各只登记一行；校验闸、`children` 遍历、字面量折叠、
+  解释执行、双目标发射全部从这张表取，不为单变体各写一份 match 臂。非有限结果不折叠，沿用既有
+  `finite` 闸。
+- **发射侧职责拆分**：原混在 `kernel.rs` 的 `Target` 枚举与全部 `write_*` 渲染函数拆入
+  `printer.rs`（242 行）；`kernel.rs`（431 行）只留类型定义与 `Kernel` 骨架，`emit_c`/`emit_k`
+  委托 `printer::render`。`ValueType::c_type`/`Arith::c_symbol`/`buf_length_name` 提 `pub(crate)`
+  供跨模块调用，不向 crate 外泄漏。
+- **前端闭集同步**：`#[dsl]` 方法表 `METHODS` 12 项（10 一元 + `min`/`max` 二元）；未登记的方法名
+  在展开期打回，一元落 `Expr::Unary`，`min`/`max` 落二元 `Min`/`Max`。
+- **测试 oracle**：`unary_tests.rs` 表驱动逐族断言发射对应 math 库调用 + `<math.h>`，并补「子项套
+  `usize` 标量 → 校验红」反向用例；`ir_exec_tests.rs` 对位级五族（Abs/Ceil/Floor/Round/Trunc）走
+  `cc -O2 -ffp-contract=off` 编译 emit_c 输出逐位对拍。超越五族（Sqrt/Exp/Ln/Sin/Cos）存在 libm
+  ulp 差，**不进逐位通道**，容差对拍另案（PARTIAL）。
+- **命名 / 行数合规**：枚举去禁用 `Op` 后缀取 `UnaryFn`；发射模块取单词名 `printer.rs`；一元专属测试
+  拆到独立 `unary_tests.rs`，`ir_tests.rs` 回 760 行（测试门 800 线内）。
+
+## 本轮不做的事（冻结边界与反模式）
+
+- **不打通元素档 IR**：`ScalarType` 维持 F32/Usize。整数 / 半精度档缺下游取值通道与对拍归一，
+  单独下放类型枚举会造出半吊子；贯通须先解 ADR 0054 三处硬点（G1）。
+- **不加无消费者的 `#[dsl]` 配置位 / IR 通道开关**：`#[dsl]` 当前无生产挂载点。配置位在没有真实
+  消费者前接入，属 `PROMPT-S++-AUDIT.md` §9 反模式（平铺冒充高内聚 / 提前抽象）；待 IR 替换模板
+  链路、前端有生产核后再按 N7 体量判定。
+- **不解冻跨算子融合 / JIT / 动态形状**：遵守 ADR 0017；不新增跨 kernel 重写模块。
+- **不抽统一 Finding / 元素泛型层**：字段与语义不同，强抽丢信息；tools L1 不反向依赖 L2 prof 宏。
+- **不放宽任何阈值**：阈值只收紧；新增档位必须进闭集并经构建期校验。
+
+## 开放项（PARTIAL，前置条件满足后另案）
+
+- **G1 元素档贯通（跨批次大重构）**：依次解 ① sample/reference 泛型槽、② `Values` 档位闭集扩档、
+  ③ 对拍下游按档分阈值与桥接宽度；IR `ScalarType`/`Expr`/校验闸/发射拼写/前端参数档同批下放到
+  i32/u32/i8/u8/f16/bf16。前置：ADR 0054 修订或新 ADR；每档附主机参考对拍，设备发射另验。
+- **G2 设备执行闭环**：typed IR 替换旧模板链路，接 `Image` 与布局推导；`.k` 正文经 `shard::ir`
+  桥进 vendor `Codegen::lower` 后，IR 核才能宣称设备执行。
+- **G3 多 runtime 真机对拍 + roofline**：CUDA/Ascend/ROCm/Intel/MUSA 真机证据；性能达 roofline
+  70%（L3）是 ADR 0017 解冻 L2 的条件之一。CUDA 第一站 win（`win`@192.168.0.65，A3000）：
+  - 见证层（前批已闭合）：`llm-device` 的 nvidia 档案 18 条见证经 nvcc 真编译 + 设备执行 + 回读对拍全过
+    （`every_nvidia_witness_runs_on_the_cuda_device`，`nvcc_ready()` 在 win 判真）；本档仍是 prof
+    片段链路见证层，typed IR 核的设备执行走 G2。
+  - 设备计时通道（本批打通，confirmed）：`cutile bench --device nvidia` 在 A3000 上经
+    `device_measure → benchmark_harness(cudaEvent) → stderr ns → parse_samples` 出 p50 / GB/s /
+    GFLOP/s / 带宽达成率 / Verdict，两条 lowering 路径对拍 `max_rel_err=0.000e0`：`gemv_i4` 4096²
+    p50 0.155 ms、68.0 GB/s、216.9 GFLOP/s；`add_f32` p50 0.007 ms、7.2 GB/s，工作集 32 KiB 装入
+    FAST 48 KiB，设施自动判为缓存带宽、口径无效不参与 §16 判定。
+  - **尺子跨口径，L3 未形成有效判定**：现档案 peak 是 T600 / sm75 口径（10 SM × 64 核、128-bit、
+    160.032 GB/s、2.688 TFLOPS，`-arch=sm_75`）。A3000 真机经 deviceQuery 实测：sm86、32 SM、
+    128 FP32/SM、4096 核、192-bit、12287 MiB、L2 3 MiB；max SM 1665 MHz、mem 7001 MHz。应有峰值
+    `bw = 192/8*2*7.001e9 = 336.048 GB/s`、`fp32 = 32*128*2*1.665e9 = 13.63968 TFLOPS`。当前
+    `Catalogue::resolve` 按 vendor 名取唯一档案、`probe` 只探 CPU，无 GPU 型号指纹探测，本机落到
+    sm75 档案；用 T600 峰值除 A3000 耗时得到的达成率（`gemv_i4` 42.5%）跨口径不可比，不签 L3
+    Reached / Below。
+  - 前置开放项：① 设备指纹探测通道（读 cc / name / SM / 时钟 / 位宽）；② 同 vendor 多 profile 共享
+    同一套 `.cu` 片段（避免复制整套片段目录增码），A3000 专用 peak 档案；③ decode 链全局内存 bound
+    有效基线（默认 shape 逐点缓冲入缓存、口径无效）。Ascend/ROCm/Intel/MUSA 设备通道本轮未探测。
+- **G4 注解 / 通道配置化**：IR standard/contracted 通道选择、`#[dsl(contracted)]` 闭集配置位，
+  待 G2 让前端有生产消费者后接入；走声明表，不写第二套按名分派。
+- **G5 autotune**：变体择优从链序首命中升级到实测计时选优；依赖 G3 真机计时通道。
+- **G6 表达式族扩充**：本轮已闭合一元数学 + 取整十族（见 S2）。剩余：比较 / 选择出布尔值（牵动 IR
+  类型系统，须另案定布尔档）；`sign`/`recip`/`log1p`/`exp2`/`rsqrt` 等未纳入本轮闭集；超越五族的
+  容差对拍通道（非逐位）待补。
+
+## L2 解冻证据对照（ADR 0017 两条件，逐项标状态）
+
+解冻 L2 须**同时**满足下列两条、且先过新 ADR；本批只补证据与基线，不实现融合 / JIT / 动态形状。
+
+- **条件① 单 kernel 真机对拍全部达 L2，且性能达 roofline 70%（L3）**
+  - *L2 对拍（部分达成，见证层）*：CUDA prof 片段见证 18/18、Metal 逐点族 31 个真机对拍
+    `max_rel_err=0`；但 typed IR 核尚未接设备执行（G2），IR 核的 L2 未达。
+  - *L3 性能（未达成）*：设备计时通道已能在 A3000 出 p50 / 吞吐读数，但 peak 尺子是 T600 sm75 口径，
+    与本机 sm86 不符，达成率跨口径不可比；尚未在匹配尺子下得出有效 70% 判定。
+- **条件② roofline 证据证明 decode 场景存在跨算子融合收益（带宽天花板被融合突破，非估算）**
+  - *未达成*：`cutile::fuse` 仅逐点-逐点（同 `extent`、只读 f32 输入），归约链 / 可写链接 / extent
+    不一致一律拒绝；无跨算子融合 pass，也无融合前后带宽 / 耗时对比测点。decode 链（rope / rmsnorm /
+    softmax / silu / attention）本批只见到串行小样本，且逐点默认 shape 缓冲入缓存、口径无效。融合收益
+    不可估，本批不写提速或突破带宽天花板的结论。
+- **前置（满足后另过新 ADR 再解冻）**：G2 typed IR 核接设备执行；设备指纹探测 + A3000 专用 peak 档案；
+  decode 链全局内存 bound 有效基线与融合前后对比测点。
+
+## 未知与未测
+
+- **CUDA / Windows 硬件与工具链通道已实测可达（confirmed）**：
+  前一轮把"执行环境注册表内无 Windows 实例"当成"无 Windows 通道"，漏扫了 `~/.ssh/config` 里的局域网主机
+  `win → 192.168.0.65`（用户 `fei`，密钥 `id_ed25519_mac_local`）。经 SSH 实测该机：
+  - GPU：NVIDIA RTX A3000 12GB（sm86 Ada，UUID `GPU-fc44195b-6612-39b9-bc3f-f88ea2c737f3`），驱动 621.14；`nvidia-smi` 正常。
+  - 工具链：`nvcc` 13.3 V13.3.33（`CUDA_PATH` 在位、nvcc 在 PATH）；MSVC 工具集 14.51.36231 /
+    `cl.exe` 19.51.36256 x64（VS18 BuildTools，vswhere 定位，与仓内 `platform::find_cl` 同一路径）；
+    Rust 固定 `rustc`/`cargo` 1.100.0-nightly（`nightly-2026-09-01`）。
+  - 闭环探针：一条 8 线程平方 kernel 经 `nvcc -ccbin <cl.exe>` 编译并在 A3000 上运行，回读
+    `0 1 4 9 16 25 36 49`、`cudaGetLastError = 0`；编译执行链路打通（探针临时目录已清理）。
+- **仓内 CUDA 见证层已在 win 真机跑通（confirmed，L2 见证层，非 typed IR 核）**：当前仓已从 MBP 同步到
+  `C:\Users\fei\llm-sync`（target 落 `D:\cargo-target\llm-sync`，非 git 副本）。`cargo test -p llm-device`
+  在 win 1.100.0-nightly 下：lib **51** passed（含新增 `every_nvidia_witness_runs_on_the_cuda_device`），
+  schedule 集成 **14** passed；nvidia 档案 **18** 条见证整份 `.cu` 经 `compile_run_cuda` 真编译 →
+  A3000 launch → 回读 f32 按 `expect` 切段对拍，`max_rel_err` 全 `0.000e0`、`scope=Device`，
+  `nvcc_ready()` 判真（`detect_nvcc` + `find_cl` 均命中）。
+  边界：① 走 prof 档案旧模板片段链路，typed IR 核接设备执行仍属 G2；② 档案 `cc=sm_75`（T600 口径），
+  实测机 A3000 为 sm86，靠 sm75 cubin 向后兼容跑通，未在原生 sm75 卡复测；③ L0 条目（`mma.sync`/
+  `shuffle`/`broadcast`/`scan`/`exp2`/`rcp`/`commit_wait`/`bar`）也被 `run_all` 执行回读通过，但执行
+  证据不回写档案 `grade`，等级上调另案；④ 无 roofline 计时；⑤ `metal_suite` 是 macOS-only 套件，
+  顶部无条件 `use llm_device::executor::*`，而 `executor` 模块 `#[cfg(target_os = "macos")]`，win 上编该
+  目标会 `E0432`——本轮 win 只跑 lib + schedule，未编 `metal_suite`，跨平台测试装配门另案补。
+  linux 云主机仍无 GPU / `nvcc` / `cargo` / 仓库副本，不能作为 CUDA 通道。
+- **性能数字待校准**：CUDA 设备计时通道本批已能出真机读数（见 G3），但 peak 尺子仍是 T600 口径，
+  A3000 达成率跨口径不可比；IR 优化 / 发射无独立耗时基线；roofline 70% 达标判定与跨算子融合收益均未
+  实测，不在落地前写提速承诺。
+- **超越函数精度口径未定档**：Sqrt/Exp/Ln/Sin/Cos 的 Rust `f32` 方法与 C `<math.h>` 库实现存在 ulp
+  级差异，本轮只做发射文本断言，未建立容差对拍通道；逐位通道仅覆盖位级五族（Abs/Ceil/Floor/Round/Trunc）。
+- **净减生产行 / 文件数**：本轮为巨石拆分（1 文件 → 8 子模块），生产代码路径未增；净删行数目标随后续批次实测，不在此写未测降幅。einsum 新文件 jscpd 零克隆已实测。
+- Burn `burn-cubecl` 内部实现深度未逐行读；对照以 `burn-cubecl`/`burn-cubecl-fusion` 模块清单与
+  CubeCL registry 0.12.0-pre.2 源码目录为准。
+
+## 门禁状态（本批实测）
+
+- `llm-prof`：lib **164** + 集成 **56** + doctest **3** passed（1 ignored）；`llm-nn` **528** passed
+  （4 ignored）、`cutile` **142** libtest + **2** doctest passed、`llm-annotation` **48 + 6** passed
+  （2 ignored doctest）。下游 `nn`/`cutile` 经 `cargo check` 编译通过，einsum 拆分与一元闭集路径无回归。
+- win（A3000 / rustc 1.100.0-nightly）`llm-device`：lib **51** passed、schedule 集成 **14** passed，
+  0 failed；nvidia 18 条见证真机编译执行回读对拍全过（`max_rel_err=0`、`scope=Device`）。mac 侧同套
+  lib **66** passed，新 CUDA 用例在无 nvcc 环境经 `testkit::skip` 登记跳过、不计失败。
+- `cargo clippy -p cutile -p llm-annotation --all-targets -- -D warnings` 零 error/warning；
+  `cargo fmt --check -p cutile -p llm-annotation` 干净。
+- 静态门：einsum 八个子模块与 cutile 本批文件全部过行数 / CCN / NLOC 闸；`every_source_passes_the_static_gate`
+  的红项仅为 `train/session.rs`、`train/kernel.rs`、`train/backprop.rs`、`train/geometry.rs` 四项并发
+  在途存量越线，非本批引入，本批不越界拆分适配层。
+- jscpd（threshold 0）：本批 cutile `printer.rs`/`unary_tests.rs` 与 annotation 新代码 **0** 克隆；全仓
+  5 处存量克隆（`nn/tests` 2、`shard/tests` 2、`weights/src/closed.rs` 1），重复行 0.03%，均不在本批
+  认领边界内。
+- 拆分口径：旧 `einsum.rs` 1054 行（>600 一票否决）→ 八子模块合计 1096 行，最大 `formula.rs` 263；
+  多出的 42 行为模块文档与 `pub(crate)` 可见性样板，生产代码路径未增。本轮减码性质是**巨石拆分回门内
+  + 职责轴内聚**，不是净删生产行；净删行数 / 文件数目标随后续批次实测，不在此写未测降幅。
+
+## 回滚
+
+- `einsum` 拆分纯为模块搬迁，无状态、无持久数据、无在途写路径；回滚 = 还原旧 `einsum.rs` 单文件并
+  删除 `einsum/` 目录，编译期路径由 `pub use` 重导出兜底，下游无需改动。
+- S2 一元闭集与发射拆分同为纯类型 / 模块搬迁：回滚 = `Expr::Unary` 退回独立 `Abs` 变体、删
+  `printer.rs`/`unary_tests.rs` 并把渲染函数并回 `kernel.rs`，前端 `METHODS` 回退到 3 项；无持久状态、
+  无设备写路径。
+- CUDA 真机见证用例（`backends.rs` 的 `every_nvidia_witness_runs_on_the_cuda_device` + `nvidia_profile`）
+  为纯测试增补，生产路径无改动；回滚 = 删该用例与辅助函数。win 同步副本 `C:\Users\fei\llm-sync` 非 git，
+  不纳入回滚边界。
+- 本批未触碰并发在途文件（shard plan/schedule、train session/backprop、tensor、weights gguf 等）；
+  提交前按 `git status --short` 划边界，只认领 cutile/annotation/device 测试本批文件与本 ADR。
+
+
+## 2026-11-25 增量：Program IR、类型化原子与首条向量生产链
+
+- **模板落 IR**：完整 `.k` 由 `Program` 持有，条件编译、辅助函数、嵌套控制流与原子调用均为结构节点；生产构建执行校验、优化和目标发射，不再以模板字符串直拼作为后端回退。
+- **原子类型化**：`Atom` 绑定 `Need`、胜出 `Provide`、端口方向／地址空间、dtype、位宽、存储字节、实现标签与 `AtomBody`；IR 调用点只保存 `AtomId`，协商与原子绑定共用供给选择。
+- **确定性择优**：`Run::prepare` 默认使用形状／家族启发式；`RuntimeConfig.autotune` 缺省关闭，显式开启后才逐候选编译、对拍和计时，候选并列时保持声明顺序，产物仍受既有缓存指纹约束。
+- **首条向量档**：`ScalarType::F32x4`、`CType::F32x4`、`Values::F32x4` 与解析／样本 ABI 已贯通。`add_f32x4` 的真实 C 编译执行和逐标量对拍通过，非标量整组形状在编译前拒绝；`vector_signature_preserves_dtype_and_lane_identity`、`vector_program_uses_registered_target_lowerings_only`、`registered_f32x4_kernel_executes_and_matches_scalar_lanes` 为对应 oracle。
+- **边界不变**：这一切片不表示全 `DType`、全后端 SIMD、全设备真机或 roofline 达标。CUDA／HIP 等未登记向量算术 lowering 的目标会显式报错；性能只接受同机、同形状、同 repeat 的 release 对照，最终门禁与实测结果另记。

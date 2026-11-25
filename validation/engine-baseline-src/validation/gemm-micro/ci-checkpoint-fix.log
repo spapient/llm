@@ -1,0 +1,130 @@
+error[E0599]: no method named `outputs` found for enum `geometry::Geometry` in the current scope
+   --> crates/train/src/../tests/backprop_tests.rs:373:47
+    |
+373 |         parameter_session(op, &[x0], geometry.outputs(), Some(geometry))?;
+    |                                               ^^^^^^^ method not found in `geometry::Geometry`
+    |
+   ::: crates/train/src/geometry.rs:37:1
+    |
+ 37 | pub enum Geometry {
+    | ----------------- method `outputs` not found for this enum
+
+error[E0599]: no method named `outputs` found for enum `geometry::Geometry` in the current scope
+   --> crates/train/src/../tests/backprop_tests.rs:394:26
+    |
+394 |     let total = geometry.outputs();
+    |                          ^^^^^^^ method not found in `geometry::Geometry`
+    |
+   ::: crates/train/src/geometry.rs:37:1
+    |
+ 37 | pub enum Geometry {
+    | ----------------- method `outputs` not found for this enum
+
+error[E0599]: no method named `outputs` found for enum `geometry::Geometry` in the current scope
+   --> crates/train/src/../tests/backprop_norm_tests.rs:161:43
+    |
+161 |         let mut y = vec![0.0f32; geometry.outputs()];
+    |                                           ^^^^^^^ method not found in `geometry::Geometry`
+    |
+   ::: crates/train/src/geometry.rs:37:1
+    |
+ 37 | pub enum Geometry {
+    | ----------------- method `outputs` not found for this enum
+
+error[E0599]: no method named `outputs` found for enum `geometry::Geometry` in the current scope
+   --> crates/train/src/../tests/backprop_norm_tests.rs:244:36
+    |
+238 |   macro_rules! shaped_affine_grad {
+...
+244 |               let x0 = ramp(geometry.outputs());
+    |                                      ^^^^^^^ method not found in `geometry::Geometry`
+...
+254 | / shaped_affine_grad! {
+255 | |     shaped_batch_norm_matches_central_differences => ("batch_norm_f32", Geometry::Norm { n: 2, spatial: 3, channels: 5 }, (gain5(...
+256 | |     shaped_group_norm_matches_central_differences => ("group_norm_f32", Geometry::Group { groups: 3, n: 2, spatial: 3, channels: ...
+257 | |     shaped_layer_norm_matches_central_differences => ("layer_norm_f32", Geometry::Layer { rows: 2, width: 5 }, (gain5(), shift5())),
+258 | | }
+    | |_- in this macro invocation
+    |
+   ::: crates/train/src/geometry.rs:37:1
+    |
+ 37 |   pub enum Geometry {
+    |   ----------------- method `outputs` not found for this enum
+
+error[E0599]: no method named `outputs` found for enum `geometry::Geometry` in the current scope
+   --> crates/train/src/../tests/backprop_norm_tests.rs:246:51
+    |
+238 |   macro_rules! shaped_affine_grad {
+...
+246 |                   let mut y = vec![0.0f32; geometry.outputs()];
+    |                                                     ^^^^^^^ method not found in `geometry::Geometry`
+...
+254 | / shaped_affine_grad! {
+255 | |     shaped_batch_norm_matches_central_differences => ("batch_norm_f32", Geometry::Norm { n: 2, spatial: 3, channels: 5 }, (gain5(...
+256 | |     shaped_group_norm_matches_central_differences => ("group_norm_f32", Geometry::Group { groups: 3, n: 2, spatial: 3, channels: ...
+257 | |     shaped_layer_norm_matches_central_differences => ("layer_norm_f32", Geometry::Layer { rows: 2, width: 5 }, (gain5(), shift5())),
+258 | | }
+    | |_- in this macro invocation
+    |
+   ::: crates/train/src/geometry.rs:37:1
+    |
+ 37 |   pub enum Geometry {
+    |   ----------------- method `outputs` not found for this enum
+
+error[E0599]: no method named `outputs` found for enum `geometry::Geometry` in the current scope
+   --> crates/train/src/../tests/backprop_tests.rs:644:43
+    |
+644 |             let mut y = vec![0.0f32; geom.outputs()];
+    |                                           ^^^^^^^ method not found in `geometry::Geometry`
+    |
+   ::: crates/train/src/geometry.rs:37:1
+    |
+ 37 | pub enum Geometry {
+    | ----------------- method `outputs` not found for this enum
+
+error[E0599]: no method named `outputs` found for enum `geometry::Geometry` in the current scope
+  --> crates/train/src/../tests/geometry_tests.rs:54:38
+   |
+54 |         let mut out = vec![0.0f32; g.outputs()];
+   |                                      ^^^^^^^ method not found in `geometry::Geometry`
+   |
+  ::: crates/train/src/geometry.rs:37:1
+   |
+37 | pub enum Geometry {
+   | ----------------- method `outputs` not found for this enum
+
+error[E0599]: no method named `outputs` found for enum `geometry::Geometry` in the current scope
+   --> crates/train/src/../tests/geometry_tests.rs:174:21
+    |
+174 |     assert_eq!(pool.outputs(), 2 * 2 * 2);
+    |                     ^^^^^^^ method not found in `geometry::Geometry`
+    |
+   ::: crates/train/src/geometry.rs:37:1
+    |
+ 37 | pub enum Geometry {
+    | ----------------- method `outputs` not found for this enum
+
+error[E0599]: no method named `outputs` found for enum `geometry::Geometry` in the current scope
+   --> crates/train/src/../tests/geometry_tests.rs:175:37
+    |
+175 |     let mut out = vec![0.0f32; pool.outputs()];
+    |                                     ^^^^^^^ method not found in `geometry::Geometry`
+    |
+   ::: crates/train/src/geometry.rs:37:1
+    |
+ 37 | pub enum Geometry {
+    | ----------------- method `outputs` not found for this enum
+
+error[E0599]: no method named `outputs` found for enum `geometry::Geometry` in the current scope
+   --> crates/train/src/../tests/geometry_tests.rs:188:39
+    |
+188 |     assert!(bad.check_shape(&[3], bad.outputs()).is_err());
+    |                                       ^^^^^^^ method not found in `geometry::Geometry`
+    |
+   ::: crates/train/src/geometry.rs:37:1
+    |
+ 37 | pub enum Geometry {
+    | ----------------- method `outputs` not found for this enum
+
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `llm-train` (lib test) due to 14 previous errors

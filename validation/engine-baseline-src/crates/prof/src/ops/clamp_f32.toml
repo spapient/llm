@@ -1,0 +1,24 @@
+# 逐元素裁剪：y[n] = clamp(x[n], lo, hi)；lo/hi 是单元素标量界。
+# OpDecl 闭集归到 elementwise；needs 只有 load/store。标量参数框架只支持整数，
+# 故内核模板里的界写成与样本一致的常量（同 dequant_i8 口径），f32 标量入参通道随取值批次接入。
+
+[op]
+name     = "clamp_f32"
+skeleton = "elementwise"
+summary  = "y[n] = clamp(x[n], lo, hi)"
+
+[axes]
+N = [32]
+
+[needs]
+load  = { bytes = "<=4096", space = ["GM", "FAST"], src = ["GM"], dst = ["GM"] }
+store = { bytes = "<=4096", dt = ["f32"], space = ["GM"] }
+
+[layouts]
+x = "row"
+
+[[variants]]
+name      = "direct"
+order     = 1
+schedule  = "direct"
+mma_share = 0.0

@@ -1,0 +1,33 @@
+
+==> rustfmt（格式检查，不改动文件）
+
+==> clippy（-D warnings，correctness / complexity / perf 等组）
+   Compiling llm-prof v0.1.0 (/Users/fei/code/llm/crates/prof)
+    Checking cutile v0.1.0 (/Users/fei/code/llm/crates/cutile)
+    Checking llm-engine v0.1.0 (/Users/fei/code/llm/crates/engine)
+    Checking llm-nn v0.1.0 (/Users/fei/code/llm/crates/nn)
+    Checking llm-shard v0.1.0 (/Users/fei/code/llm/crates/shard)
+    Checking llm-algorithm v0.1.0 (/Users/fei/code/llm/crates/algorithm)
+    Checking llm-train v0.1.0 (/Users/fei/code/llm/crates/train)
+error[E0425]: cannot find function `lengths` in module `shapes`
+   --> crates/train/src/geometry.rs:272:35
+    |
+272 |         self.check_shape(&shapes::lengths(inputs), out.len())?;
+    |                                   ^^^^^^^ not found in `shapes`
+
+error[E0425]: cannot find function `lengths` in module `shapes`
+   --> crates/train/src/geometry.rs:290:35
+    |
+290 |         self.check_shape(&shapes::lengths(inputs), out.len())?;
+    |                                   ^^^^^^^ not found in `shapes`
+
+error[E0425]: cannot find function `lengths` in module `shapes`
+   --> crates/train/src/geometry.rs:301:35
+    |
+301 |         self.check_shape(&shapes::lengths(inputs), incoming.len())?;
+    |                                   ^^^^^^^ not found in `shapes`
+
+For more information about this error, try `rustc --explain E0425`.
+error: could not compile `llm-train` (lib) due to 3 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `llm-train` (lib test) due to 3 previous errors

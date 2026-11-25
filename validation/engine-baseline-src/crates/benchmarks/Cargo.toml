@@ -1,0 +1,59 @@
+[package]
+name = "llm-benchmarks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "Measurement container: centralised criterion micro-benchmarks across the workspace."
+publish = false
+# 测试按模块平铺在 `tests/` 下（`regress.rs` 是根，其余是它的子模块），
+# 只有 `[[test]]` 里列出的那个 target；关掉自动发现，平铺的模块文件才不会各成一个 target。
+autotests = false
+# `src/main.rs` 是 criterion 入口而不是产品二进制：关掉 bin 自动发现，否则 cargo 会把它当
+# 一个库外的可执行文件去链接（那时还没有 dev-dependencies，也拿不到 criterion 的 main）。
+autobins = false
+
+# 测量容器只在 bench target 里用这些依赖：criterion 负责统计（预热、采样、测量时长
+# 都是它自己的配置），prof/op 是被测对象。
+[dev-dependencies]
+criterion = { workspace = true }
+cutile = { path = "../cutile" }
+prof = { path = "../prof", package = "llm-prof" }
+weights = { path = "../weights", package = "llm-weights", features = ["mmap"] }
+tokenizer = { path = "../tokenizer", package = "llm-tokenizer" }
+storage = { path = "../storage", package = "llm-storage" }
+train = { path = "../train", package = "llm-train" }
+autograd = { path = "../autograd", package = "llm-autograd" }
+tensor = { path = "../tensor", package = "llm-tensor" }
+# roofline 的分子（每条基准至少搬多少、算多少）由算子语义推出，不在报告里手写第二份公式。
+nn = { path = "../nn", package = "llm-nn", features = ["bench"] }
+# 整模型一步基准：合成栈经 engine 页账与 serve 宿主跑 Predict 路线 B（测量容器，全部在 dev）。
+engine = { path = "../engine", package = "llm-engine" }
+serve = { path = "../serve", package = "llm-serve" }
+# 基线判定与报告归档：`tests/regress` 用 `tools::regress` 判、用 `weights::json` 读
+# criterion 的 estimates.json（本成员没有生产依赖，全部在 dev）。
+tool = { path = "../tools", package = "llm-tools" }
+testkit = { path = "../testkit", package = "llm-testkit" }
+
+# 显式关闭 libtest harness：criterion 提供自己的 main（criterion_main!）。
+# 源码平铺在 `src/` 一层，与其他成员同一套布局；本成员没有库、不发布任何东西，全部是测量
+# 脚手架，因此同样受生产门约束（`Call` 上限 0、`Ccn ≤ 5`、`Nloc ≤ 60`）——夹具失败一律走
+# `fixtures::checked`，`src/` 里没有 `unwrap` / `expect` / `panic!`。
+# 全部 24 组基准由这一个 target 声明（`src/main.rs` + 同目录五个模块），只链接一次、
+# 只起一个进程；分组名与用例名逐字保留，`target/criterion/<group>/<benchmark>/` 路径不变。
+# 选跑某组用 criterion 的过滤参数：`cargo bench -p llm-benchmarks -- gemv_f32`。
+[[bench]]
+name = "workspace"
+path = "src/main.rs"
+harness = false
+
+[lints]
+workspace = true
+
+# 一个测试 target：`tests/regress.rs` 装配同目录的 `table` / `host` / `analysis` /
+# `record` / `archive` / `cases` 六个模块。分组数据与用例分文件，target 只有一个。
+[[test]]
+name = "regress"
+path = "tests/regress.rs"

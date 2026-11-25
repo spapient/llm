@@ -1,0 +1,25 @@
+# Softmax：y[n] = exp(x[n]-max)/sum(exp(x-max))。
+# OpDecl 闭集归到 elementwise（三趟逐元素）；max 归约申请 reduce，exp 映射走 preamble 软件向量接口。
+
+[op]
+name     = "softmax_f32"
+skeleton = "elementwise"
+summary  = "y[n] = softmax(x)[n]"
+
+[axes]
+N = [32]
+
+[needs]
+reduce = { axis = ["GMAX"], op = ["max"], dt = ["f32"] }
+
+[layouts]
+x = "row"
+
+[chunk]
+size = 256
+
+[[variants]]
+name      = "direct"
+order     = 1
+schedule  = "direct"
+mma_share = 0.0

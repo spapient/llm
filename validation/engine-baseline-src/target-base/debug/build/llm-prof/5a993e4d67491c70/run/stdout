@@ -1,0 +1,7 @@
+cargo:rerun-if-changed=devices
+cargo:rerun-if-changed=devices/ascend.toml
+cargo:rerun-if-changed=devices/cpu.toml
+cargo:rerun-if-changed=devices/intel.toml
+cargo:rerun-if-changed=devices/metal.toml
+cargo:rerun-if-changed=devices/musa.toml
+cargo:rerun-if-changed=devices/nvidia.toml

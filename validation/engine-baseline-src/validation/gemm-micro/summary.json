@@ -1,0 +1,119 @@
+{
+  "schema": 1,
+  "status": "P0/P1 complete; P2/P3 open",
+  "production_switched": false,
+  "legacy_native_retained": true,
+  "file_reduction_claimed": false,
+  "performance_improvement_claimed": false,
+  "baseline_head": "1573cd23ea0ee149777103d6da37fc90bd3b8972",
+  "current_head": "6df507b3bb63083ebcb457ed7a68b932a36e03ee",
+  "baseline": {
+    "native_lines": 1077,
+    "native_bytes": 43999,
+    "public_lines": 47,
+    "performance_samples": [
+      "i8 256x256x4096: fast 1449.5 GF/s | fast单 325.5 GF/s | 单/多 0.22",
+      "i8 512x512x512: fast 1568.7 GF/s | fast单 350.0 GF/s | 单/多 0.22",
+      "i8 1024x1024x1024: fast 3810.7 GF/s | fast单 405.2 GF/s | 单/多 0.11",
+      "f32 256x256x4096: fast 941.9 GF/s | fast单 100.0 GF/s | 单/多 0.11",
+      "f32 512x512x512: fast 1029.8 GF/s | fast单 112.0 GF/s | 单/多 0.11",
+      "f32 1024x1024x1024: fast 1172.0 GF/s | fast单 96.5 GF/s | 单/多 0.08"
+    ]
+  },
+  "sources": {
+    "crates/prof/src/ops/gemm_micro.k": {
+      "lines": 211,
+      "bytes": 8294,
+      "sha256": "af6b2e5c212ff32088d08958517e150e44c1f4f1c6052e8c857e4fcdbcd8ea4c"
+    },
+    "crates/prof/src/ops/kernels.toml": {
+      "lines": 31,
+      "bytes": 1028,
+      "sha256": "5b187d21022099482f1708c7be6b8162a0d1a59c51a571fc9644cb9be0b362a6"
+    },
+    "crates/prof/src/build.rs": {
+      "lines": 630,
+      "bytes": 23995,
+      "sha256": "c5c5a5ae413a008e4ba21afd582e5b33ede2da5c5d843fe44dad8ec13ff9143e"
+    },
+    "crates/prof/src/buildops.rs": {
+      "lines": 598,
+      "bytes": 22728,
+      "sha256": "5e15623ef92b60a9d7f3dc4e66b8304efef14ad07f65e76d52317c3ee279e800"
+    },
+    "crates/prof/src/runtime.rs": {
+      "lines": 182,
+      "bytes": 6161,
+      "sha256": "9468ecc4ab7800e24654d447288b55ab745ac20de550169d2c389aa813eb79cc"
+    },
+    "crates/prof/tests/embedded.rs": {
+      "lines": 391,
+      "bytes": 15122,
+      "sha256": "7507f87a928c0db2f029dd02b7a6039d1a2aaadcc86f12eed257ffe1cf19454d"
+    },
+    "crates/prof/Cargo.toml": {
+      "lines": 54,
+      "bytes": 2577,
+      "sha256": "e0f41eae094c12162800a81258c4915cd1724d3640f7fc529664d7070774550f"
+    }
+  },
+  "tests": {
+    "prof_p1": {
+      "passed": 240,
+      "failed": 0,
+      "ignored": 1
+    },
+    "cutile_p1": {
+      "passed": 161,
+      "failed": 0,
+      "ignored": 0
+    },
+    "nn_p1": {
+      "passed": 560,
+      "failed": 0,
+      "ignored": 4
+    },
+    "micro_parity": {
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0
+    },
+    "sme_parity": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    "prof_baseline": {
+      "passed": 237,
+      "failed": 0,
+      "ignored": 1
+    },
+    "cutile_baseline": {
+      "passed": 161,
+      "failed": 0,
+      "ignored": 0
+    },
+    "nn_baseline": {
+      "passed": 559,
+      "failed": 0,
+      "ignored": 4
+    },
+    "sme_baseline": {
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0
+    }
+  },
+  "evidence_logs": [
+    "prof-tests.log",
+    "cutile-tests.log",
+    "nn-tests.log",
+    "sme-tests.log",
+    "performance.log",
+    "prof-p1.log",
+    "cutile-p1.log",
+    "nn-p1.log",
+    "micro-p1.log",
+    "sme-p1.log"
+  ]
+}

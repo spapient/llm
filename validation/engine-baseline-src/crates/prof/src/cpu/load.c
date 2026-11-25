@@ -1,0 +1,3 @@
+/* cutile-sign: load/memcpy */
+/* load: GM -> 寄存器指针（CPU 上取地址即可，同步语义） */
+$0 = $1;

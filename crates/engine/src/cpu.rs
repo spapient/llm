@@ -21,15 +21,6 @@ pub struct Bindings {
     values: std::collections::BTreeMap<u32, Buf>,
 }
 
-/// 单表达式访问器统一声明，绑定、执行与恢复逻辑不进入宏。
-macro_rules! value_methods {
-    ($($type:ty { $($(#[$meta:meta])* $name:ident($($args:tt)*) $(->$ret:ty)? = $body:expr; )* })*) => {
-        $(impl $type {
-            $($(#[$meta])* pub fn $name($($args)*) $(->$ret)? { $body })*
-        })*
-    };
-}
-
 impl Bindings {
     /// 空表。
     pub fn new() -> Self {
@@ -53,7 +44,7 @@ impl Bindings {
     }
 }
 
-value_methods! {
+prof::value_methods! {
     Bindings {
         /// 某个编号的 `f32` 内容；字节缓冲返回 `None`。
         get(&self, id: u32) -> Option<&[f32]> = self.values.get(&id).and_then(Buf::f32);
@@ -108,7 +99,7 @@ impl fmt::Debug for CpuExecutor {
     }
 }
 
-value_methods! {
+prof::value_methods! {
     CpuExecutor {
         /// 尚未同步的提交，按入队顺序（跨流交错时保持提交顺序）。
         pending(&self) -> &[Queued] = &self.queue;

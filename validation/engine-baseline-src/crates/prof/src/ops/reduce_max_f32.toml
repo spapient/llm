@@ -1,0 +1,28 @@
+# 最大值归约：y[0] = max(a[0..n])。
+# reduce 骨架：与 reduce_sum 同构，只改折叠运算；needs 为 reduce/store。
+
+[op]
+name     = "reduce_max_f32"
+skeleton = "reduce"
+summary  = "y[0] = max(a[0..n])"
+
+[axes]
+N = [32]
+
+[needs]
+reduce = { axis = ["GMAX"], op = ["max"], dt = ["f32"] }
+store  = { bytes = "<=4096", dt = ["f32"], space = ["GM"] }
+
+[layouts]
+a = "row"
+
+# 分块归约：与 reduce_sum 同构，只改折叠运算；每线程归约一块写部分值 y[g]，主机取最大。
+[chunk]
+# 32 而不是 256：网格 = ceil(N/32)，小 N 下也够占满 SM；部分和更细，主机折叠 O(G) 只是加法。
+size = 32
+
+[[variants]]
+name      = "direct"
+order     = 1
+schedule  = "direct"
+mma_share = 0.0

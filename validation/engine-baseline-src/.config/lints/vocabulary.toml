@@ -1,0 +1,307 @@
+# 词汇表契约的门禁配置（`docs/ARCHITECTURE.md` 第三节「闭集与位集」）。
+#
+# 消费方：`crates/tools/build.rs` 在**构建期**用 `toml` 把本文件展开成 `Table` 字面量，运行期由
+# `tools::vocabulary()` 读取（ADR 0022）；`tests/contracts.rs`、`tests/architecture.rs` 与
+# `crates/tools` 的门禁共用这棵树，不再各自解析文本。
+#
+# dylint 规则（HIR 版，`ui-toml` 配置指向本文件）是**计划中的**下一个消费方，用于在 IDE 里即时
+# 提示同一条契约；它尚未落地，所以本文件的任何改动都以 `cargo test --test contracts` 为准，
+# 不要假设有另一处也在读它。
+#
+# 白名单按 crate 列，并强制带理由：一份没有理由的豁免等于把规则删掉一半。
+
+[closed]
+# 允许手写闭集表（`pub const ALL: [Self; N]`）的 crate。
+#
+# 规则：`prof` 下游的成员必须用 `impl Closed for ..` 把名字表写成切片，`ALL`/`as_str`/`parse`
+# 由 `prof::inherent_names!` 统一转发；只有**够不到 `Closed`** 的层（`llm-prof` 是 L2 基座，
+# 反向依赖会在层内成环）才允许把词汇表留在本地。
+
+[[closed.exempt]]
+crate = "diagnostic"
+reason = "L1：错误类别是错误类型的词汇表，反向依赖 L2 的 prof 会成环"
+
+[[closed.exempt]]
+crate = "shard"
+reason = "L1：分片种类（张量流水线/数据）是调度层的词汇表"
+
+[[closed.exempt]]
+crate = "nn"
+reason = "L5：`Cell::ALL`（三种循环单元）与 `RecurrentTensor::ALL`（四件权重）是带领域方法（`gates`/`of_gates`/`activations`/`suffix`）的语义枚举的遍历助表，不是 `prof` 的名字原子表；转 `Closed` 会凭空加 `nn → prof` 依赖，并把 `Ord`/`Hash`/`as_str` 硬套到领域枚举上"
+
+
+[bitset]
+exempt = []
+
+# 手写位集（`struct FooSet(u32)`）的允许清单。
+#
+# 规则：位集只有 `prof::atom::Set<E, WORDS>` 一份实现（`WORDS` 是 const 参数，容量在编译期
+# 自证）。本清单为空是有意的——空清单本身是判据，不是"还没填"。
+
+# 注解文法的闭集（`crates/annotation/src/syntax.rs` 的 `DTYPES`）没有豁免节：
+#
+# 规则：注解里的名字必须是词汇表的**投影**——`DTYPES` 与「`cutile::reference::tolerance`
+# 给出非零阈值」的 `DType` 集合逐项相等，且用变体名核对 `codegen` 的机械映射。这是等式，
+# 不是"尽量"：少一个名字就有一种输出永远无法被声明，多一个就拼出匹配不上的代码。
+#
+# 语义表与注册表的镜像（`#[model]` 标了必须注册、注册的 `model:` 必须是 `..::MODEL`）同样没有
+# 豁免节：两条规则互为反面，出现例外说明契约该改，而不是某个 crate 该豁免。
+# 门禁：`tests/contracts.rs::{annotation_names_come_from_the_vocabulary,
+# the_registry_and_the_model_annotations_are_mirrors}`，以及 `#[model]` 在每个
+# 调用点生成的 `DType::parse(..)` / `output_type()` 断言。
+
+[ownership]
+# 反向所有权校验的存量基线（`tests/architecture.rs::every_public_type_is_listed_or_baselined`）。
+#
+# 规则：每个成员 `crates/<member>/src` 里的 `pub struct|enum|trait` 必须出现在
+# `docs/ARCHITECTURE.md` 第三节的所有权表，或登记在这里。
+#
+# 与 `[closed]` 白名单、`[[gate.debt]]` 同一套路：**存量冻结，新增必进表**。基线不允许过期——
+# 某个名字后来进了表，或不再是 `pub`（删掉/改成私有），对应条目必须删除，否则测试失败。
+# 每条都必须带理由：一份没有理由的豁免等于把规则删掉一半。
+#
+[[ownership.unlisted]]
+crate = "cli"
+names = ["CutileCommand"]
+reason = "CLI 子命令解析出的命令枚举（table/doctor/verify/bench/ledger/fusions/cache 等分支结果），只由 `main.rs` 经 `llm_cli::kernel` 路径消费；lib 层对外契约是 `argv::Command`/`Invocation`，枚举本体属 bin 入口件，不进所有权表"
+
+[[ownership.unlisted]]
+crate = "cutile"
+names = ["CallArg", "ChainStep", "FragmentGap", "NeedReport", "PrimCall", "Unlock"]
+reason = "内核 DSL 的协商前端与结果类型；`UnaryFn` 是一元数学算子（Abs/Sqrt/Exp/Ln/Trig/取整）发射名与主机求值闭集；按 `crates/cutile/README.md` 的分节归类，待分节稳定后逐节进表（执行期五个名字随拆分迁到 `optim`）"
+
+[[ownership.unlisted]]
+crate = "dtype"
+names = ["BlockFormat", "ElementSpec", "Family", "MxTypeSpec", "QTypeSpec", "UnknownCode", "UnknownName"]
+reason = "行表类型、分类闭集与解析错误；表形状仍在演进，按闭集整体进表比逐项更清楚"
+
+[[ownership.unlisted]]
+crate = "engine"
+names = ["LocalExecutor"]
+reason = "`LocalExecutor` 是 `Executor` 基座的只记账同步 CPU 实现（提交入队、按流排水，持注入分配器），未接真机后端；作为本地/测试后端保留在门面后，对外契约以 `Executor` 缝为准，故不进所有权表"
+
+[[ownership.unlisted]]
+crate = "fuzz"
+names = ["Behaviour", "Cli", "Crc", "CutileNegotiate", "Dist", "HttpHead", "LebRoundtrip", "Lex", "Repro", "Seed", "ServeFrames", "Target", "TrainSnapshot", "WeightsArchive", "WeightsJson", "WeightsSafetensors", "WireLeb", "WireSealed"]
+reason = "模糊测试的驱动侧适配与目标件：每个 `Target` 实现对应一个 harness 入口（命令行 / 词法 / 权重 JSON·safetensors·自有容器 / 训练快照 / 帧解码 / HTTP 头 / LEB 游标·往返 / 线格式密封 / CRC 分块对拍 / 分布、形状与协商不变量），加上目标、种子、行为描述与复现样本；工具成员，不参与运行时分层"
+
+[[ownership.unlisted]]
+crate = "prof"
+names = ["Access", "Constant", "Formula", "Mem", "Meta", "Param", "ProfileError", "Recipe", "Simt", "SplitMix64", "Unit", "Witness"]
+reason = "档案行表的列类型与匹配规则（公开面是 `Archive`/`Profile`），加上随 `op`/`prim` 解散迁来的声明解析结果（骨架 / 网格映射 / 轴候选 / tile 组合 / 变体闭集）与内嵌片段条目 `Builtin`；`spec` 并入本 crate 后又多了契约词汇的内部类型（访问模式、算子参数、轴角色与轴规格、C 类型、公式缓存句柄、形状上下文、计数器型随机）。`Axis` 在声明层与 `einsum` 各有一份，同名不同物：表里只登记声明层那一份，本基线不再重复；`AttrKey`/`Grade`/`Prim`/`Space` 由 `vocabulary!` / `closed_enum!` 宏生成、扫描器认不出定义行，故四者不再登记"
+
+[[ownership.unlisted]]
+crate = "train"
+names = ["Running"]
+reason = "`Running` 是 BatchNorm 滚动统计值类型（每通道均值/方差），随 `Geometry::Norm` 前向读写搬运。公开训练面是 `Session`/`TrainConfig`"
+
+[[ownership.unlisted]]
+crate = "tools"
+names = ["Call", "Direction", "Link", "Mount", "Over"]
+reason = "复杂度与回归门禁的行类型，以及 `Mount`（`mod 名字;` 的模块名与显式 `#[path]` 相对路径描述，供剔除测试条目时判定挂载归属）；工具成员，公开面是 `Report`"
+
+[[ownership.unlisted]]
+crate = "weights"
+names = ["Pick", "Sha256", "Svd", "Tensor"]
+reason = "选码结果与哈希内部件：五轴选码结果（`axes` 的 `Pick`）、`svd` 分解件与哈希内部件；`Axis` 已随 `AxisSet` 成为写端裁剪配置并进入所有权表；谱隙证书的 `Certified`/`Note`/`Stable`/`Mode`/`EpsMethod`/`Bound` 已进所有权表（它们决定秩，是可读的判定口径而不是实现细节），公开生产面是表里的读写契约与容器类型。外部格式的解析件随 `formats` 并入本 crate：`Gguf` 是 GGUF 头部 + 数据区视图，`Tensor` 是 GGUF 与 torch 两种文件里各一条的张量目录项（`gguf::Tensor` / `torch::Tensor`，同名不同物、靠路径区分），都只吐「名字 + 类型 + 形状 + 字节区间」、不带任何容器判据；torch `.bin` 的读出结果收进 `torch::Checkpoint`（与所有权表里的 `train::Checkpoint` 同名不同物，靠路径区分），`Bin` 随 torch 解析重写为只读 `Checkpoint` 后注销"
+
+[[ownership.unlisted]]
+crate = "storage"
+names = ["Uint"]
+reason = "随原 wire 字节码闭集并入 storage：CRC-32 / LEB128 / Sink 接收器 / 对齐落位 / `Invalid` 构造点。`Uint` 是 LEB 无符号整数标记族；公开面是 `crc`/`leb`/`sink` 这组函数与 trait，内部实现件待边界稳定后逐项进表。`leb::Cursor` 已作为读游标进入所有权表的 `Cursor` 行，不再留在基线里"
+
+[gate]
+# 静态质量门阈值（`tools` 分析器消费，`cargo test` 不可绕过）。
+# 重复块不在此列：jscpd 管重复率硬门，cargo dupes 管语义近重复。
+#
+# 闭集：只有下面五个阈值键、`debt` 表与 `min_lines_baseline` 数组，多一个键就构建期报错（`gate::unknown_keys`）。
+# 曾经还有 `simd_nloc = 96` 这条「SIMD 微核放宽」档位，但 Rust 侧没有任何 SIMD 微核
+# （向量代码全在 `prim` 的 C 片段里，由 `cc` 编译、不经本门禁），于是它从未被读到过——
+# 一条从不生效的档位比没有更糟，因为它让人以为有人管着。真出现 Rust 侧微核时按「度量 + 档位」
+# 两级表重开，而不是先放一个空数字在这里。
+ccn_max = 5          # 圈复杂度上限：ccn = 1 + 条件计数
+nloc_max = 60         # 函数体有效行数上限
+file_max_lines = 899  # 单文件行数硬上限：超过即按主题拆模块。899 是生产面上限，给一条完整算子族/格式表留足篇幅。
+file_min_lines = 300  # 单文件行数下限：除薄入口（`lib.rs`/`main.rs`/`mod.rs`）与 libFuzzer 垫片
+                      # （`fuzz/src/fuzz_*.rs`，判据在 `drivers.rs`）外，生产文件不足 300 行不允许单独
+                      # 开文件——独立语义应收拢进所属模块，而不是铺成一函数一文件的口袋碎块。
+test_max_lines = 800  # 测试代码行数上限：`tests/` 与 `#[path]` 挂进 src 的测试模块同受此限。
+                      # 与 file_max_lines 分开：测试面放宽到 800 是因为一条真机用例的装配
+                      # （设备/缓冲/派发/对拍）本身就要 30–50 行，切碎到看不出在测什么。测试代码不套下限。
+
+# 行数下限存量基线（棘轮）：下列既存正交职责模块暂不受 file_min_lines 约束。
+# 规则：新开口子必须达到下限或归入既有模块，不得在此清单外新增碎文件；清单条目一旦
+# 收拢达标（≥ file_min_lines）就必须从这里删除，基线只准缩短、不准扩列。
+min_lines_baseline = [
+  "crates/algorithm/src/attnres.rs",
+  "crates/algorithm/src/codec.rs",
+  "crates/algorithm/src/kda.rs",
+  "crates/algorithm/src/mhc.rs",
+  "crates/algorithm/src/mix.rs",
+  "crates/algorithm/src/moe.rs",
+  "crates/algorithm/src/patch.rs",
+  "crates/algorithm/src/policy.rs",
+  "crates/algorithm/src/tower.rs",
+  "crates/annotation/src/dsl/expr.rs",
+  "crates/autograd/src/account.rs",
+  "crates/autograd/src/graph.rs",
+  "crates/autograd/src/replay.rs",
+  "crates/autograd/src/tape.rs",
+  "crates/benchmarks/src/attention.rs",
+  "crates/benchmarks/src/fixtures.rs",
+  "crates/benchmarks/src/model.rs",
+  "crates/benchmarks/src/parse.rs",
+  "crates/benchmarks/src/peak.rs",
+  "crates/benchmarks/src/protocol.rs",
+  "crates/cli/src/archive.rs",
+  "crates/cli/src/argv.rs",
+  "crates/cli/src/config.rs",
+  "crates/cli/src/flag.rs",
+  "crates/cli/src/kernel.rs",
+  "crates/cli/src/matrix.rs",
+  "crates/cli/src/platform.rs",
+  "crates/cli/src/prose.rs",
+  "crates/cli/src/settings.rs",
+  "crates/cli/src/train.rs",
+  "crates/cutile/src/ast.rs",
+  "crates/cutile/src/builtin.rs",
+  "crates/cutile/src/dirs.rs",
+  "crates/cutile/src/emit.rs",
+  "crates/cutile/src/expr.rs",
+  "crates/cutile/src/fuse.rs",
+  "crates/cutile/src/harness.rs",
+  "crates/cutile/src/lru.rs",
+  "crates/cutile/src/native.rs",
+  "crates/cutile/src/printer.rs",
+  "crates/cutile/src/probe.rs",
+  "crates/cutile/src/reference.rs",
+  "crates/cutile/src/space.rs",
+  "crates/cutile/src/validate.rs",
+  "crates/shard/src/backends/ascend.rs",
+  "crates/shard/src/backends/common.rs",
+  "crates/shard/src/backends/cuda.rs",
+  "crates/shard/src/backends/metal.rs",
+  "crates/shard/src/execution.rs",
+  "crates/shard/src/metal/runtime.rs",
+  "crates/shard/src/metal/witness.rs",
+  "crates/shard/src/sweep.rs",
+  "crates/diagnostic/src/buildgen.rs",
+  "crates/diagnostic/src/code.rs",
+  "crates/diagnostic/src/error.rs",
+  "crates/diagnostic/src/render.rs",
+  "crates/diagnostic/src/scan.rs",
+  "crates/dtype/src/blocked.rs",
+  "crates/dtype/src/format.rs",
+  "crates/engine/src/cpu.rs",
+  "crates/engine/src/exec.rs",
+  "crates/engine/src/ifb.rs",
+  "crates/engine/src/pager.rs",
+  "crates/engine/src/queue.rs",
+  "crates/engine/src/radix.rs",
+  "crates/engine/src/sequence.rs",
+  "crates/fuzz/src/harness.rs",
+  "crates/nn/src/clamp.rs",
+  "crates/nn/src/embed.rs",
+  "crates/nn/src/epilogue.rs",
+  "crates/nn/src/reduce.rs",
+  "crates/nn/src/registry.rs",
+  "crates/nn/src/rmsnorm.rs",
+  "crates/nn/src/rope.rs",
+  "crates/nn/src/softmax.rs",
+  "crates/nn/src/weight.rs",
+  "crates/prof/src/annotate.rs",
+  "crates/prof/src/buildimage.rs",
+  "crates/prof/src/buildtables.rs",
+  "crates/prof/src/capability.rs",
+  "crates/prof/src/catalogue.rs",
+  "crates/prof/src/decode.rs",
+  "crates/prof/src/axis.rs",
+  "crates/prof/src/einsum.rs",
+  "crates/prof/src/epilogue.rs",
+  "crates/prof/src/expr.rs",
+  "crates/prof/src/native/i8.rs",
+  "crates/prof/src/native.rs",
+  "crates/prof/src/operand.rs",
+  "crates/prof/src/runtime.rs",
+  "crates/prof/src/need.rs",
+  "crates/prof/src/operator.rs",
+  "crates/prof/src/sample.rs",
+  "crates/prof/src/sign.rs",
+  "crates/prof/src/text.rs",
+  "crates/prof/src/tpl.rs",
+  "crates/prof/src/witness.rs",
+  "crates/serve/src/admit.rs",
+  "crates/serve/src/block.rs",
+  "crates/serve/src/endpoint.rs",
+  "crates/serve/src/protocol.rs",
+  "crates/serve/src/request.rs",
+  "crates/serve/src/speculate.rs",
+  "crates/shard/src/backend.rs",
+  "crates/shard/src/config.rs",
+  "crates/shard/src/device.rs",
+  "crates/shard/src/gate.rs",
+  "crates/shard/src/ledger.rs",
+  "crates/shard/src/pipeline.rs",
+  "crates/shard/src/placement.rs",
+  "crates/shard/src/plan.rs",
+  "crates/shard/src/policy.rs",
+  "crates/shard/src/remote.rs",
+  "crates/shard/src/schedule.rs",
+  "crates/shard/src/tiling.rs",
+  "crates/shard/src/toolchain.rs",
+  "crates/shard/src/topology.rs",
+  "crates/storage/src/alloc.rs",
+  "crates/storage/src/buf.rs",
+  "crates/storage/src/crc.rs",
+  "crates/storage/src/fault.rs",
+  "crates/storage/src/format.rs",
+  "crates/storage/src/lane.rs",
+  "crates/storage/src/leb.rs",
+  "crates/storage/src/mmap.rs",
+  "crates/storage/src/sink.rs",
+  "crates/storage/src/state.rs",
+  "crates/tensor/src/ops.rs",
+  "crates/tensor/src/rank.rs",
+  "crates/tensor/src/shape.rs",
+  "crates/tensor/src/store.rs",
+  "crates/tensor/src/tensor.rs",
+  "crates/tensor/src/tensor/owned.rs",
+  "crates/testkit/src/evidence.rs",
+  "crates/testkit/src/fixture.rs",
+  "crates/testkit/src/gating.rs",
+  "crates/testkit/src/hash.rs",
+  "crates/testkit/src/prop.rs",
+  "crates/testkit/src/rng.rs",
+  "crates/testkit/src/scratch.rs",
+  "crates/testkit/src/suite.rs",
+  "crates/testkit/src/witness.rs",
+  "crates/tokenizer/src/bpe.rs",
+  "crates/tokenizer/src/bytes.rs",
+  "crates/tokenizer/src/encoding.rs",
+  "crates/tokenizer/src/fixtures.rs",
+  "crates/tokenizer/src/special.rs",
+  "crates/tokenizer/src/strategy.rs",
+  "crates/tokenizer/src/unigram.rs",
+  "crates/tokenizer/src/vocab/codec.rs",
+  "crates/tools/src/call.rs",
+  "crates/tools/src/docs.rs",
+  "crates/tools/src/dup.rs",
+  "crates/tools/src/error.rs",
+  "crates/tools/src/escape.rs",
+  "crates/tools/src/gate.rs",
+  "crates/tools/src/regress.rs",
+  "crates/tools/src/stats.rs",
+  "crates/tools/src/strip.rs",
+  "crates/tools/src/words.rs",
+  "crates/train/src/dataset/sampler.rs",
+  "crates/train/src/kernel/attention.rs",
+  "crates/train/src/loss/rl.rs",
+  "crates/train/src/rng.rs",
+  "crates/weights/src/chain.rs",
+]
+
+# `[[gate.debt]]` 存量棘轮：只登记入口编排层（`crates/cli/src/`）的既有超标。登记表是实测快照：
+# 登记值必须等于实测值，改善后必须删掉对应度量条目（`Gate::stale`），恶化必失败。运行时生产代码
+# （`crates/*/src` 的训练/推理路径，除 cli 入口外）没有债务条目：超限即新增，直接失败，按主题拆模块收口。
+#
+# 当前无债务条目：`cutile` 子命令派发按主题拆成流水线 / 台账两个分派，各三臂，圈复杂度均在阈值内。

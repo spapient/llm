@@ -1,0 +1,7 @@
+# 逐元素 HardSigmoid：y[n] = clamp(a[n]/6 + 0.5, 0, 1)。
+# 与 silu_f32 同一副一元骨架，只差逐元素函数。
+base = "silu_f32"
+
+[op]
+name     = "hard_sigmoid_f32"
+summary  = "y[n] = clamp(a[n]/6 + 0.5, 0, 1)"

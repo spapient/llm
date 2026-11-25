@@ -1,0 +1,18 @@
+   Compiling llm-prof v0.1.0 (/Users/fei/code/llm/crates/prof)
+   Compiling cutile v0.1.0 (/Users/fei/code/llm/crates/cutile)
+   Compiling llm-nn v0.1.0 (/Users/fei/code/llm/crates/nn)
+    Finished `release` profile [optimized] target(s) in 37.67s
+     Running unittests src/lib.rs (target/release/build/llm-nn/cafccc36c1dd2436/out/llm_nn-cafccc36c1dd2436)
+
+running 1 test
+threads=18
+  i8 256x256x4096: fast 1977.7 GF/s | fast单 305.3 GF/s | 单/多 0.15
+  i8 512x512x512: fast 1504.9 GF/s | fast单 371.4 GF/s | 单/多 0.25
+  i8 1024x1024x1024: fast 3836.5 GF/s | fast单 432.8 GF/s | 单/多 0.11
+  f32 256x256x4096: fast 982.2 GF/s | fast单 105.9 GF/s | 单/多 0.11
+  f32 512x512x512: fast 1037.1 GF/s | fast单 116.1 GF/s | 单/多 0.11
+  f32 1024x1024x1024: fast 1263.9 GF/s | fast单 107.6 GF/s | 单/多 0.09
+test kernel::fast::tests::bench_throughput ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 561 filtered out; finished in 0.30s
+

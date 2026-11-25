@@ -1,0 +1,52 @@
+# 二元逐元素算子族：共享加法骨架、能力供给、布局与 direct 变体。
+
+[axes]
+N = [32]
+
+[needs]
+load  = { bytes = "<=4096", space = ["GM", "FAST"], src = ["GM"], dst = ["GM"] }
+store = { bytes = "<=4096", dt = ["f32"], space = ["GM"] }
+
+[layouts]
+a = "row"
+b = "row"
+
+[[variants]]
+name      = "direct"
+order     = 1
+schedule  = "direct"
+mma_share = 0.0
+
+[[operators]]
+op = { name = "add_f32", stem = "binary", skeleton = "elementwise", summary = "y[n] = a[n] + b[n]" }
+consts = { binop = "+" }
+
+[[operators]]
+op = { name = "add_f32x4", stem = "binary_f32x4", skeleton = "elementwise", summary = "四车道 f32：y[n] = a[n] + b[n]，N 按标量计" }
+needs = { load = { lanes = ["4"] }, store = { lanes = ["4"] } }
+consts = { binop = "+" }
+
+[[operators]]
+op = { name = "div_f32", stem = "binary", skeleton = "elementwise", summary = "y[n] = a[n] / b[n]" }
+consts = { binop = "/" }
+
+[[operators]]
+op = { name = "max_f32", stem = "max_f32", skeleton = "elementwise", summary = "y[n] = max(a[n], b[n])" }
+
+[[operators]]
+op = { name = "min_f32", stem = "min_f32", skeleton = "elementwise", summary = "y[n] = min(a[n], b[n])" }
+
+[[operators]]
+op = { name = "mul_f32", stem = "binary", skeleton = "elementwise", summary = "y[n] = a[n] * b[n]" }
+consts = { binop = "*" }
+
+[[operators]]
+op = { name = "remainder_f32", stem = "remainder_f32", skeleton = "elementwise", summary = "y[n] = a[n] % b[n]，截断商余数" }
+
+[[operators]]
+op = { name = "residual_add_f32", stem = "binary", skeleton = "elementwise", summary = "残差层相加：y[n] = a[n] + b[n]" }
+consts = { binop = "+" }
+
+[[operators]]
+op = { name = "sub_f32", stem = "binary", skeleton = "elementwise", summary = "y[n] = a[n] - b[n]" }
+consts = { binop = "-" }

@@ -1,0 +1,36 @@
+[package]
+name = "llm-storage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "Flat buffers, allocation, the checkpoint byte format, and the domain-free bytecode base: Buf, Allocator, Snapshot, CRC-32, LEB128, and sinks."
+publish = false
+autotests = false
+
+[features]
+default = []
+# 启用只读内存映射：本 feature 是全仓唯一的 unsafe 代码路径。
+# 仅 Unix 目标生效（`mmap(2)`）；其它平台上本 feature 是空操作，`Mmap` 不存在。
+mmap = []
+
+[dependencies]
+diagnostic = { path = "../diagnostic", package = "llm-diagnostic" }
+tensor = { path = "../tensor", package = "llm-tensor" }
+
+[dev-dependencies]
+testkit = { path = "../testkit", package = "llm-testkit" }
+proptest = { workspace = true }
+
+[[test]]
+name = "codec"
+path = "tests/codec.rs"
+
+[[test]]
+name = "prop_wire"
+path = "tests/prop_wire.rs"
+
+[lints]
+workspace = true

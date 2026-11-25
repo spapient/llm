@@ -1,0 +1,16 @@
+
+574d5a55758aae73-gemm_micro.o:
+                 U ___stack_chk_fail
+                 U ___stack_chk_guard
+0000000000000f88 T _cutile_fma_block
+0000000000000b98 T _cutile_fma_micro
+0000000000000000 T _cutile_fma_micro_scalar
+0000000000000eac T _cutile_fma_pure
+000000000000127c T _cutile_sdot_block
+00000000000013bc T _cutile_sdot_micro
+00000000000011d4 T _cutile_sdot_pure
+0000000000002d70 T _cutile_sme_micro
+0000000000002e10 T _cutile_sme_mix
+0000000000001b94 T _cutile_sme_pack
+0000000000002dc8 T _cutile_sme_pure
+0000000000002b4c T _cutile_sme_stage

@@ -1,0 +1,140 @@
+ROUND 1 OLD
+
+running 1 test
+threads=18
+  i8 256x256x4096: fast 1810.4 GF/s | fast单 325.2 GF/s | 单/多 0.18
+  i8 512x512x512: fast 1622.4 GF/s | fast单 345.1 GF/s | 单/多 0.21
+  i8 1024x1024x1024: fast 3688.3 GF/s | fast单 405.7 GF/s | 单/多 0.11
+  f32 256x256x4096: fast 980.7 GF/s | fast单 100.1 GF/s | 单/多 0.10
+  f32 512x512x512: fast 996.7 GF/s | fast单 111.2 GF/s | 单/多 0.11
+  f32 1024x1024x1024: fast 1183.5 GF/s | fast单 96.0 GF/s | 单/多 0.08
+test kernel::fast::tests::bench_throughput ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 560 filtered out; finished in 0.34s
+
+ROUND 1 P2
+
+running 1 test
+threads=18
+  i8 256x256x4096: fast 1775.3 GF/s | fast单 325.7 GF/s | 单/多 0.18
+  i8 512x512x512: fast 1412.5 GF/s | fast单 368.9 GF/s | 单/多 0.26
+  i8 1024x1024x1024: fast 3255.2 GF/s | fast单 408.5 GF/s | 单/多 0.13
+  f32 256x256x4096: fast 1053.8 GF/s | fast单 101.4 GF/s | 单/多 0.10
+  f32 512x512x512: fast 991.6 GF/s | fast单 111.5 GF/s | 单/多 0.11
+  f32 1024x1024x1024: fast 1243.8 GF/s | fast单 99.5 GF/s | 单/多 0.08
+test kernel::fast::tests::bench_throughput ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 561 filtered out; finished in 0.33s
+
+ROUND 2 OLD
+
+running 1 test
+threads=18
+  i8 256x256x4096: fast 1960.9 GF/s | fast单 296.6 GF/s | 单/多 0.15
+  i8 512x512x512: fast 1584.5 GF/s | fast单 322.0 GF/s | 单/多 0.20
+  i8 1024x1024x1024: fast 3860.9 GF/s | fast单 384.4 GF/s | 单/多 0.10
+  f32 256x256x4096: fast 956.6 GF/s | fast单 96.9 GF/s | 单/多 0.10
+  f32 512x512x512: fast 990.5 GF/s | fast单 106.2 GF/s | 单/多 0.11
+  f32 1024x1024x1024: fast 1136.5 GF/s | fast单 100.5 GF/s | 单/多 0.09
+test kernel::fast::tests::bench_throughput ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 560 filtered out; finished in 0.41s
+
+ROUND 2 P2
+
+running 1 test
+threads=18
+  i8 256x256x4096: fast 1815.3 GF/s | fast单 292.0 GF/s | 单/多 0.16
+  i8 512x512x512: fast 1608.6 GF/s | fast单 367.6 GF/s | 单/多 0.23
+  i8 1024x1024x1024: fast 3742.6 GF/s | fast单 391.5 GF/s | 单/多 0.10
+  f32 256x256x4096: fast 1056.3 GF/s | fast单 99.6 GF/s | 单/多 0.09
+  f32 512x512x512: fast 996.8 GF/s | fast单 110.2 GF/s | 单/多 0.11
+  f32 1024x1024x1024: fast 1185.5 GF/s | fast单 96.2 GF/s | 单/多 0.08
+test kernel::fast::tests::bench_throughput ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 561 filtered out; finished in 0.34s
+
+ROUND 3 OLD
+
+running 1 test
+threads=18
+  i8 256x256x4096: fast 1777.0 GF/s | fast单 300.8 GF/s | 单/多 0.17
+  i8 512x512x512: fast 1492.3 GF/s | fast单 321.6 GF/s | 单/多 0.22
+  i8 1024x1024x1024: fast 3785.8 GF/s | fast单 385.9 GF/s | 单/多 0.10
+  f32 256x256x4096: fast 976.5 GF/s | fast单 96.5 GF/s | 单/多 0.10
+  f32 512x512x512: fast 974.5 GF/s | fast单 106.4 GF/s | 单/多 0.11
+  f32 1024x1024x1024: fast 1177.2 GF/s | fast单 96.4 GF/s | 单/多 0.08
+test kernel::fast::tests::bench_throughput ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 560 filtered out; finished in 0.35s
+
+ROUND 3 P2
+
+running 1 test
+threads=18
+  i8 256x256x4096: fast 1812.0 GF/s | fast单 297.7 GF/s | 单/多 0.16
+  i8 512x512x512: fast 1583.3 GF/s | fast单 349.4 GF/s | 单/多 0.22
+  i8 1024x1024x1024: fast 3809.3 GF/s | fast单 410.2 GF/s | 单/多 0.11
+  f32 256x256x4096: fast 968.0 GF/s | fast单 95.9 GF/s | 单/多 0.10
+  f32 512x512x512: fast 1030.8 GF/s | fast单 108.9 GF/s | 单/多 0.11
+  f32 1024x1024x1024: fast 1211.9 GF/s | fast单 99.2 GF/s | 单/多 0.08
+test kernel::fast::tests::bench_throughput ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 561 filtered out; finished in 0.34s
+
+ROUND 4 OLD
+
+running 1 test
+threads=18
+  i8 256x256x4096: fast 1840.7 GF/s | fast单 307.1 GF/s | 单/多 0.17
+  i8 512x512x512: fast 1490.6 GF/s | fast单 331.8 GF/s | 单/多 0.22
+  i8 1024x1024x1024: fast 3849.4 GF/s | fast单 386.4 GF/s | 单/多 0.10
+  f32 256x256x4096: fast 985.8 GF/s | fast单 95.7 GF/s | 单/多 0.10
+  f32 512x512x512: fast 1003.3 GF/s | fast单 107.5 GF/s | 单/多 0.11
+  f32 1024x1024x1024: fast 1223.4 GF/s | fast单 96.4 GF/s | 单/多 0.08
+test kernel::fast::tests::bench_throughput ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 560 filtered out; finished in 0.33s
+
+ROUND 4 P2
+
+running 1 test
+threads=18
+  i8 256x256x4096: fast 1880.7 GF/s | fast单 299.6 GF/s | 单/多 0.16
+  i8 512x512x512: fast 1528.1 GF/s | fast单 342.4 GF/s | 单/多 0.22
+  i8 1024x1024x1024: fast 3704.2 GF/s | fast单 398.7 GF/s | 单/多 0.11
+  f32 256x256x4096: fast 989.0 GF/s | fast单 98.4 GF/s | 单/多 0.10
+  f32 512x512x512: fast 1022.0 GF/s | fast单 108.8 GF/s | 单/多 0.11
+  f32 1024x1024x1024: fast 1216.2 GF/s | fast单 101.0 GF/s | 单/多 0.08
+test kernel::fast::tests::bench_throughput ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 561 filtered out; finished in 0.33s
+
+ROUND 5 OLD
+
+running 1 test
+threads=18
+  i8 256x256x4096: fast 1797.8 GF/s | fast单 299.6 GF/s | 单/多 0.17
+  i8 512x512x512: fast 1610.2 GF/s | fast单 320.4 GF/s | 单/多 0.20
+  i8 1024x1024x1024: fast 3774.7 GF/s | fast单 375.4 GF/s | 单/多 0.10
+  f32 256x256x4096: fast 1013.7 GF/s | fast单 74.1 GF/s | 单/多 0.07
+  f32 512x512x512: fast 675.7 GF/s | fast单 100.6 GF/s | 单/多 0.15
+  f32 1024x1024x1024: fast 1253.2 GF/s | fast单 93.5 GF/s | 单/多 0.07
+test kernel::fast::tests::bench_throughput ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 560 filtered out; finished in 0.38s
+
+ROUND 5 P2
+
+running 1 test
+threads=18
+  i8 256x256x4096: fast 1864.4 GF/s | fast单 298.1 GF/s | 单/多 0.16
+  i8 512x512x512: fast 1471.2 GF/s | fast单 344.2 GF/s | 单/多 0.23
+  i8 1024x1024x1024: fast 3665.4 GF/s | fast单 399.4 GF/s | 单/多 0.11
+  f32 256x256x4096: fast 971.7 GF/s | fast单 102.7 GF/s | 单/多 0.11
+  f32 512x512x512: fast 1006.6 GF/s | fast单 108.2 GF/s | 单/多 0.11
+  f32 1024x1024x1024: fast 1236.5 GF/s | fast单 99.1 GF/s | 单/多 0.08
+test kernel::fast::tests::bench_throughput ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 561 filtered out; finished in 0.33s
+

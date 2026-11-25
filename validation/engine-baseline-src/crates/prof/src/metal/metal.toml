@@ -1,0 +1,297 @@
+# Apple Metal 档案（P0 内核对拍已落地：gemv_i4/i8/f32 的 L2 对拍在本机 GPU 跑通，max_rel_err=0）。
+# 见证走 `xcrun metal` → `metallib` → GPU（`Scope::Device`）；内核对拍由 cutile 的 `Lane::Metal`
+# （`metal_harness` + `compile_run_metal`）走同一条编译链，逐形状与标量参考对拍。
+#
+# 等级：被 P0 算子（gemv_i4/i8/f32）实际调用的原语标 L2（内核对拍已验）；`simd_dp4a`（i8 点积）
+# 与 `atomic` 没有 P0 算子调用，仍是 L1。`quant` 是泛型低位宽解包（`unpack`），`dt` 覆盖 i2/i4，
+# 位宽参数（cpb/width/zero）由模板注入。
+#
+# 指纹按 cutile README §5.3 的 Apple 行：机器名含 `Apple M`，GPU 核数落在 M 系列的量级（10..80）。
+# 设计表原写的 `os >= 26` 没有进指纹：`cutile::probe` 目前只采集 CPU 的 `algorithm`/`features`，
+# 尚未采集 `sw_vers`；写一条当前永远无法满足的条件，只会让档案看起来更严格、实际更难命中。
+# 两级存储的物理名是 MSL 的地址空间：GM = `device`，FAST = `threadgroup`，REG = `thread`。
+# 同一原语可以有多条 `provides`：`dot` 的 `simd_dp4a`（i8×4）与 `fma4`（四累加器 f32）是两种
+# 能力，合并成一条会变成少写字段。
+
+[meta]
+vendor   = "metal"
+id       = "m5"
+emit     = "metal"
+tools    = "xcrun metal"
+tool_ver = "32023.922"
+checked  = "2026-11-12"
+
+[fingerprint]
+name       = "contains: Apple M"
+gpu_cores  = "10..80"
+
+[space]
+GM   = "device"
+FAST = "threadgroup"
+REG  = "thread"
+
+[mem]
+# MSL 的 threadgroup 内存上限 32 KiB；Apple GPU 的 threadgroup 内存按 32 个 bank 组织。
+FAST = { bytes = 32768, bank = 32 }
+REG  = { bytes = 65536 }
+
+[simt]
+# `group = 32` 是 simdgroup 的宽度；`groups_max = 32` 是 1024 线程/threadgroup 的 MSL 上限
+# 折算成 simdgroup 批次数（1024 / 32），不是核数。
+group      = 32
+groups_max = 32
+
+[peak]
+# 20 核 × 128 lane × 2 flop × 1.6 GHz（M5 Pro 的 20 核 GPU 口径）。
+# `src` 必须可求值且与 `value` 相等：量纲与含义写在这里，数字只写一次。
+flops_f32 = { value = 8.192e12, src = "20*128*2*1.6e9" }
+# LPDDR5X 256 bit（32 B）× 9600 MT/s。
+bw        = { value = 307.2e9, src = "256/8*9.6e9" }
+
+[compile]
+# 语言版本按本机工具链实测写：`xcrun metal -dM -E` 报 `__METAL_VERSION__ 410`，即 4.1。
+# 原先钉的 3.1 会让**每一份**生成的 MSL 编不过——3.1 起指针参数必须显式写地址空间，而本后端的
+# 有效微内核（含继承的 CPU 参考正文）写的是不带地址空间的 `const float *x`：这条钉子与 emit 层的
+# ABI 互相矛盾，实际能编的是 4.1 这一档。改这条要与模板 ABI 一起改，不能只改一边。
+flags = ["-std=metal4.1"]
+preamble = """
+#include <metal_stdlib>
+using namespace metal;
+static inline float _cutile_exp_f32(float x) { return exp(x); }
+static inline float _cutile_log_f32(float x) { return log(x); }
+template <typename P>
+static inline float _cutile_sum_f32(P a, int n, int stride) {
+    if (n == 1) return a[0];
+    float acc = 0.0f;
+    for (int i = 0; i < n; ++i) acc += a[i * stride];
+    return acc;
+}
+template <typename P>
+static inline float _cutile_sumsq_f32(P a, int n, int stride) {
+    float acc = 0.0f;
+    for (int i = 0; i < n; ++i) { float x = a[i * stride]; acc += x * x; }
+    return acc;
+}
+template <typename P>
+static inline float _cutile_max_f32(P a, int n, int stride) {
+    if (n == 1) return a[0];
+    float acc = -3.402823466e38f;
+    for (int i = 0; i < n; ++i) { float x = a[i * stride]; if (x > acc) acc = x; }
+    return acc;
+}
+template <typename X>
+static inline float _cutile_exp_sum_f32(X x, int n, int stride, float max) {
+    float acc = 0.0f;
+    for (int i = 0; i < n; ++i) acc += _cutile_exp_f32(x[i * stride] - max);
+    return acc;
+}
+template <typename Y, typename X>
+static inline void _cutile_exp_norm_f32(Y y, X x, int n, int stride, float max, float sum) {
+    for (int i = 0; i < n; ++i) y[i * stride] = _cutile_exp_f32(x[i * stride] - max) / sum;
+}
+static inline float _cutile_sqrt_f32(float x) { return sqrt(x); }
+static inline float _cutile_sin_f32(float x) { return sin(x); }
+static inline float _cutile_cos_f32(float x) { return cos(x); }
+static inline float _cutile_pow_f32(float x, float y) { return pow(x, y); }
+static inline float _cutile_ceil_f32(float x) { return ceil(x); }
+static inline float _cutile_floor_f32(float x) { return floor(x); }
+static inline float _cutile_round_f32(float x) { return round(x); }
+static inline float _cutile_trunc_f32(float x) { return trunc(x); }
+"""
+
+[[provides]]
+prim    = "dot"
+impl    = "simd_dp4a"
+dt      = ["i8", "i32"]
+space   = ["REG"]
+lanes   = ["4"]
+grade   = "L1"
+witness = { file = "metal/witness.metal", func = "witness_dot_i8", expect = [10.0] }
+
+# P0 模板的 `@dot` 是标量 f32 累加的语义，与上面的整数点积不是同一条指令：单独一条签名。
+# 正文与 `intel` 的 `fma4` 同源（四链、16-wide 步进、4-wide 收口）：单链把 FMA 的吞吐压到 1/4，
+# 名字里的 `4` 就是"四条互不相欠的链"。见证值不变——{1,2,3,4}·{5,6,7,8} 在两种次序下都精确
+# 等于 70（整数输入，每条链的部分和都是 f32 精确整数）。
+[[provides]]
+prim    = "dot"
+impl    = "fma4"
+dt      = ["f32"]
+space   = ["REG"]
+lanes   = ["1"]
+grade   = "L2"
+witness = { file = "metal/witness.metal", func = "witness_dot", expect = [70.0] }
+
+[[provides]]
+prim    = "quant"
+impl    = "unpack"
+dt      = ["i2", "i4", "f32"]
+space   = ["REG", "GM"]
+group   = ["32"]
+grade   = "L2"
+witness = { file = "metal/witness.metal", func = "witness_quant", expect = [-4.0, 3.5] }
+
+[[provides]]
+prim    = "load"
+impl    = "device_load"
+m       = "<=32768"
+dt      = ["i4", "u8", "f32"]
+space   = ["GM", "FAST"]
+src     = ["GM"]
+dst     = ["GM"]
+lanes   = ["1", "4"]
+grade   = "L2"
+witness = { file = "metal/witness.metal", func = "witness_load", expect = [1.0] }
+
+# `load_async` 的 `impl` 记的是正文真正发出来的东西，不是设备会不会那条指令：P0 的 emit 没有
+# shared 落点，异步搬运也只能落 shared——所以这条只剩同步加载（intel 例外：`prefetch` 是语言
+# 内建，真的发）。`stages` 因此记 1：正文每轮只发一次加载。`pipe<2>`/`pipe<3>` 的级数是调度侧
+# 建模，不在能力签名里。
+[[provides]]
+prim    = "load_async"
+impl    = "sync_load"
+m       = "<=32768"
+dt      = ["i4", "u8", "f32"]
+space   = ["GM", "FAST"]
+src     = ["GM"]
+dst     = ["GM", "FAST"]
+stages  = ["1"]
+grade   = "L2"
+witness = { file = "metal/witness.metal", func = "witness_load_async", expect = [1.0] }
+
+# 目录条目：P0 direct/pipe 没有在途异步搬运，commit_wait 无可等 → 只登记 L0（未验证视为不具备）。
+[[provides]]
+prim    = "commit_wait"
+impl    = "noop"
+grade   = "L0"
+witness = { file = "metal/witness.metal", func = "witness_commit_wait", expect = [0.0] }
+
+[[provides]]
+prim    = "store"
+impl    = "device_store"
+m       = "<=32768"
+dt      = ["f32"]
+space   = ["GM"]
+lanes   = ["1", "4"]
+grade   = "L2"
+witness = { file = "metal/witness.metal", func = "witness_store", expect = [3.25] }
+
+# 目录条目：P0 direct/pipe 没有共享落点，bar 无可挡 → 只登记 L0（未验证视为不具备）。
+[[provides]]
+prim    = "bar"
+impl    = "noop"
+grade   = "L0"
+witness = { file = "metal/witness.metal", func = "witness_bar", expect = [0.0] }
+
+[[provides]]
+prim    = "cvt"
+impl    = "float_cast"
+dt      = ["f32", "i32", "i8"]
+# 片段层一个原语只有一份正文（`FragmentSet::get`），正文做的是就近舍入、不饱和的转换。
+# 登记 `on` 会让只要求 `on` 的算子静默拿到不饱和结果，所以只写真能交付的这一侧。
+sat     = ["off"]
+grade   = "L2"
+witness = { file = "metal/witness.metal", func = "witness_cvt", expect = [3.0] }
+
+[[provides]]
+prim    = "reduce"
+impl    = "simd_bfly"
+axis    = ["GMAX"]
+op      = ["sum", "max"]
+dt      = ["f32"]
+grade   = "L2"
+witness = { file = "metal/witness.metal", func = "witness_reduce", expect = [7.5] }
+
+[[provides]]
+prim    = "atomic"
+impl    = "atomic_fetch"
+dt      = ["f32"]
+space   = ["GM"]
+op      = ["add", "max"]
+grade   = "L1"
+witness = { file = "metal/witness.metal", func = "witness_atomic", expect = [5.0] }
+
+# ── 闭集的其余六条 ──────────────────────────────────────────────────────────
+# 档案描述的是**设备**，不只是 P0 的 `gemv_i4`：M 系列的 GPU 有 simdgroup 矩阵单元
+# （`simdgroup_matrix`）、lane 内交换/广播/前缀扫描，以及 SFU 的 `exp2`/`rcp`。它们没有片段
+# 文本（P0 模板不调用），所以等级是 L0——"声明了 + 有见证源码"，不是"本机能跑"。
+# gemm_f32 真正调用的标量 tile（有片段正文，L2），与下一条设备矩阵单元并存。
+[[provides]]
+prim     = "mma"
+impl     = "scalar_tile"
+m        = "<=8"
+n        = "<=8"
+k        = "<=8"
+dt       = ["f32"]
+space    = ["REG"]
+accuracy = ["fp32"]
+grade    = "L2"
+witness  = { file = "metal/witness.metal", func = "witness_mma_scalar", expect = [1.0, 2.0, 3.0, 4.0] }
+
+[[provides]]
+prim     = "mma"
+impl     = "simdgroup_matrix"
+m        = "<=64"
+n        = "<=64"
+k        = "<=64"
+dt       = ["f16", "bf16"]
+space    = ["REG", "FAST"]
+accuracy = ["fp32"]
+grade    = "L0"
+witness  = { file = "metal/witness.metal", func = "witness_mma", expect = [1.0, 2.0, 3.0, 4.0] }
+
+# `simd_shuffle`：simdgroup 内按 lane 取数，宽度受 `[simt].group = 32` 约束。
+[[provides]]
+prim    = "shuffle"
+impl    = "simd_shuffle"
+m       = "<=32"
+dt      = ["f32", "i32"]
+space   = ["REG"]
+lanes   = ["1"]
+grade   = "L0"
+witness = { file = "metal/witness.metal", func = "witness_shuffle", expect = [4.0, 3.0, 2.0, 1.0] }
+
+[[provides]]
+prim    = "broadcast"
+impl    = "simd_broadcast"
+m       = "<=32"
+dt      = ["f32"]
+space   = ["REG"]
+grade   = "L0"
+witness = { file = "metal/witness.metal", func = "witness_broadcast", expect = [7.0, 7.0, 7.0, 7.0] }
+
+# `simd_prefix_inclusive_sum` 做含前缀和；`max` 前缀走同一条 lane 序列的另一种运算。
+[[provides]]
+prim    = "scan"
+impl    = "simd_prefix_sum"
+axis    = ["GMAX"]
+op      = ["sum", "max"]
+dt      = ["f32"]
+space   = ["REG"]
+grade   = "L0"
+witness = { file = "metal/witness.metal", func = "witness_scan", expect = [1.0, 3.0, 6.0, 10.0] }
+
+[[provides]]
+prim     = "exp2"
+impl     = "exp2_fast"
+dt       = ["f32"]
+space    = ["REG"]
+accuracy = ["approx"]
+grade    = "L0"
+witness  = { file = "metal/witness.metal", func = "witness_exp2", expect = [8.0, 0.5] }
+
+[[provides]]
+prim     = "rcp"
+impl     = "rcp_fast"
+dt       = ["f32"]
+space    = ["REG"]
+kind     = ["rcp", "rsqrt"]
+accuracy = ["approx"]
+grade    = "L0"
+witness  = { file = "metal/witness.metal", func = "witness_rcp", expect = [0.25, 0.5] }
+
+# ---- 写回尾块（epilogue）的六种形式 ----------------------------------------
+# `form` 的取值就是 prof::epilogue 的闭环，六种形式由语法写死，档案只回答"这台设备怎么
+# 实现它、证据到哪一级"。片段文本在 `src/epilogue.{ext}`，以 `/* epi: <form> */` 分段；
+# 六台设备共用同一份占位符契约（$0 输出 tile，$1 第二操作数，$2 元素数/列数，$3 本步参数）。
+# `quant` / `store` 的算术不在别处另写一份：它们复用 `quant.{ext}` 与 `store.{ext}` 的指令级
+# 原语，这里的片段只是把该步接进写回顺序。

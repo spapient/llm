@@ -1,0 +1,23 @@
+# 8 位反量化：y[n] = scale*(q[n]-zero)。
+# OpDecl 闭集归到 elementwise；needs 只有 load/store，scale/zero 是标量参数。
+
+[op]
+name     = "dequant_i8"
+skeleton = "elementwise"
+summary  = "y[n] = scale*(q[n]-zero)"
+
+[axes]
+N = [32]
+
+[needs]
+load  = { bytes = "<=4096", space = ["GM", "FAST"], src = ["GM"], dst = ["GM"] }
+store = { bytes = "<=4096", dt = ["f32"], space = ["GM"] }
+
+[layouts]
+q = "row"
+
+[[variants]]
+name      = "direct"
+order     = 1
+schedule  = "direct"
+mma_share = 0.0
