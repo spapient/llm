@@ -19,7 +19,7 @@ pub(crate) fn record_for(host: &HostProfile, scenario: &Scenario, observed: f64)
         scenario.backend,
         geometry_of(scenario),
         harness_of(host, scenario.backend),
-        RecordRoofline::default(),
+        PeakProfile::default(),
     )
     .expect("算子记录合法：身份 / 几何 / 后端通过构造自检");
     record.with_observed(observed).expect("实测有限")
@@ -31,7 +31,7 @@ pub(crate) fn ceiling_record(host: &HostProfile, ceiling: &Ceiling, observed: f6
         .expect("上界几何合法：每迭代字节数作为一维");
     // MB/s（十进制）→ GB/s：记录上界字段按 GB/s 口径。
     let peak_bw_gb_s = mbps(ceiling) * BYTES_PER_MB / BYTES_PER_GB;
-    let roofline = RecordRoofline::new(Some(peak_bw_gb_s), None).expect("上界带宽非负有限");
+    let profile = PeakProfile::new(Some(peak_bw_gb_s), None).expect("上界带宽非负有限");
     let name = format!("mem_stream/{}_{}", ceiling.tier, ceiling.traffic);
     let record = BenchRecord::new(
         EntryKind::Op,
@@ -39,7 +39,7 @@ pub(crate) fn ceiling_record(host: &HostProfile, ceiling: &Ceiling, observed: f6
         "cpu-reference",
         geometry,
         harness_of(host, "cpu-reference"),
-        roofline,
+        profile,
     )
     .expect("上界记录合法：身份 / 几何 / 后端通过构造自检");
     record.with_observed(observed).expect("实测有限")
@@ -63,7 +63,7 @@ pub(crate) fn load_record(
         scenario.backend,
         geometry,
         harness_of(host, scenario.backend),
-        RecordRoofline::default(),
+        PeakProfile::default(),
     )
     .expect("装载记录合法：身份 / 几何 / 后端通过构造自检");
     record.with_observed(observed).expect("实测有限")
@@ -86,7 +86,7 @@ pub(crate) fn model_record(
         "cpu-reference",
         geometry,
         harness_of(host, "cpu-reference"),
-        RecordRoofline::default(),
+        PeakProfile::default(),
     )
     .expect("模型记录合法：身份 / 几何 / 后端通过构造自检");
     record.with_observed(observed).expect("实测有限")
@@ -140,8 +140,8 @@ pub(crate) fn assert_record_fields(
     assert_eq!(record.harness().os(), host.os);
     assert_eq!(record.harness().toolchain(), host.toolchain);
     assert_eq!(record.harness().driver(), expect.backend);
-    assert!(record.roofline().peak_bw_gb_s().is_none());
-    assert!(record.roofline().peak_gflops().is_none());
+    assert!(record.peak_profile().peak_bw_gb_s().is_none());
+    assert!(record.peak_profile().peak_gflops().is_none());
     assert_eq!(record.observed(), Some(expect.observed));
 }
 

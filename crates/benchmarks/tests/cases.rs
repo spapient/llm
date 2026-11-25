@@ -77,10 +77,11 @@ fn op_report<'a>(host: &HostProfile, scenario: &'a Scenario) -> Report<'a> {
     Report {
         scenario,
         record: record_for(host, scenario, 1_500_000.0),
-        roofline: Roofline::of(host, scenario, 2_000_000.0, 2_000_000.0),
+        attainment: Attainment::of(host, scenario, 2_000_000.0, 2_000_000.0),
         verdict: Judgement::Improved {
             observed: 1.0,
             baseline: 2.0,
+            effect: 0.5,
         }
         .as_str(),
         baseline_ns: 2_000_000.0,
@@ -111,7 +112,7 @@ pub(crate) fn the_report_carries_every_field_a_reader_needs_to_judge_it() {
         assert_json_int(
             &parsed,
             "working_set_bytes",
-            (report.roofline.read + report.roofline.write) as i64,
+            (report.attainment.read + report.attainment.write) as i64,
         );
     }
 }
@@ -260,6 +261,37 @@ fn an_unmeasured_cell_stays_open_never_a_silent_pass() {
     let outside = jitter().with_hosts(&["no-such-part"]);
     let card = Card::judge(outside, harness(host()), &samples).expect("判");
     assert_eq!(card.standing(), Standing::Open(Shortfall::Host));
+}
+
+/// 归档记录身份：三张台账表的 `scenario` 名字全局唯一；重复即登记错误。
+#[test]
+pub(crate) fn scenario_identities_are_unique() {
+    let mut ids: Vec<&str> = Vec::new();
+    ids.extend(SCENARIOS.iter().map(|sc| sc.scenario));
+    ids.extend(LOAD_SCENARIOS.iter().map(|sc| sc.scenario));
+    ids.extend(DECODE_SCENARIOS.iter().map(|sc| sc.scenario));
+    let unique: std::collections::BTreeSet<&str> = ids.iter().copied().collect();
+    assert_eq!(ids.len(), unique.len(), "归档记录身份重复登记");
+}
+
+/// 台账字段完整：定位、身份、几何与账目非空且在合法区间；缺一项即登记数据错误。
+#[test]
+pub(crate) fn scenario_fields_are_complete() {
+    for sc in SCENARIOS {
+        assert!(!sc.group.is_empty() && !sc.benchmark.is_empty());
+        assert!(!sc.scenario.is_empty() && !sc.backend.is_empty());
+        assert!(!sc.op.is_empty() && !sc.dtype.is_empty());
+        assert!(!sc.shape.is_empty() && sc.batch >= 1);
+    }
+    for sc in LOAD_SCENARIOS {
+        assert!(!sc.scenario.is_empty() && !sc.backend.is_empty());
+        assert!(!sc.dtype.is_empty() && !sc.shape.is_empty());
+        assert!(sc.batch >= 1 && sc.bytes > 0);
+    }
+    for sc in DECODE_SCENARIOS {
+        assert!(!sc.scenario.is_empty() && sc.batch >= 1);
+        assert!(sc.tokens > 0 && sc.pages > 0);
+    }
 }
 
 /// 四张台账合成唯一注册集；重复身份直接视为登记错误。

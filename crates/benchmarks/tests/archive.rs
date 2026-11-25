@@ -6,7 +6,7 @@ use super::*;
 pub(crate) struct Report<'a> {
     pub(crate) scenario: &'a Scenario,
     pub(crate) record: BenchRecord,
-    pub(crate) roofline: Roofline,
+    pub(crate) attainment: Attainment,
     pub(crate) verdict: &'static str,
     pub(crate) baseline_ns: f64,
     pub(crate) budget_percent: f64,
@@ -127,7 +127,7 @@ impl Report<'_> {
     pub(crate) fn render(&self) -> String {
         let scenario = self.scenario;
         let record = &self.record;
-        let roofline = &self.roofline;
+        let attainment = &self.attainment;
         let harness = record.harness();
         let geometry = record.geometry();
         let observed = record.observed().expect("记录已回填实测");
@@ -147,11 +147,11 @@ impl Report<'_> {
             shape_json(geometry.shape()),
             geometry.batch(),
             geometry.dtype(),
-            roofline.read,
-            roofline.write,
-            roofline.read + roofline.write,
-            roofline.tier,
-            roofline.flops.round() as i64,
+            attainment.read,
+            attainment.write,
+            attainment.read + attainment.write,
+            attainment.tier,
+            attainment.flops.round() as i64,
             Direction::Lower.as_str(),
             self.budget_percent.round() as i64,
             self.baseline_ns.round() as i64,
@@ -162,17 +162,17 @@ impl Report<'_> {
             harness.os(),
             harness.toolchain(),
             harness.arch(),
-            roofline.read_ceiling_mbps.round() as i64,
-            roofline.write_ceiling_mbps.round() as i64,
-            roofline.ns.round() as i64,
-            roofline.side,
-            roofline.achieved_percent.round() as i64,
-            roofline.declared_ns.round() as i64,
-            roofline.ceiling_percent.round() as i64,
-            roofline.s_plus_percent().round() as i64,
-            roofline.s_plus_line().round() as i64,
-            roofline.mflops_per_s.round() as i64,
-            roofline.bottleneck(),
+            attainment.read_ceiling_mbps.round() as i64,
+            attainment.write_ceiling_mbps.round() as i64,
+            attainment.ns.round() as i64,
+            attainment.side,
+            attainment.achieved_percent.round() as i64,
+            attainment.declared_ns.round() as i64,
+            attainment.ceiling_percent.round() as i64,
+            attainment.s_plus_percent().round() as i64,
+            attainment.s_plus_line().round() as i64,
+            attainment.mflops_per_s.round() as i64,
+            attainment.bottleneck(),
         )
     }
 }
@@ -180,7 +180,8 @@ impl Report<'_> {
 /// 判定单个场景：建 `Case`、比对实测、归档报告；回退则 panic。
 pub(crate) fn judge_one(manifest: &Path, host: &HostProfile, scenario: &Scenario) -> Option<()> {
     let baseline = baseline_for(host.host, scenario.backend, scenario.scenario)?;
-    let observed = observed_ns(&estimates(manifest, scenario.group, scenario.benchmark))?;
+    let estimate = observed_estimate(&estimates(manifest, scenario.group, scenario.benchmark))?;
+    let observed = estimate.point;
 
     let case = Case::new(
         scenario.scenario,
@@ -189,7 +190,9 @@ pub(crate) fn judge_one(manifest: &Path, host: &HostProfile, scenario: &Scenario
         Direction::Lower,
     )
     .expect("基线合法");
-    let judgement = case.judge(observed);
+    let interval = Estimate::interval(estimate.lower, estimate.point, estimate.upper)
+        .expect("criterion 区间有序");
+    let judgement = case.judge_interval(interval);
 
     let dir = manifest
         .join("../..")
@@ -199,7 +202,7 @@ pub(crate) fn judge_one(manifest: &Path, host: &HostProfile, scenario: &Scenario
     let report = Report {
         scenario,
         record: record_for(host, scenario, observed),
-        roofline: Roofline::of(host, scenario, baseline.ns, observed),
+        attainment: Attainment::of(host, scenario, baseline.ns, observed),
         verdict: judgement.as_str(),
         baseline_ns: baseline.ns,
         budget_percent: baseline.budget_percent,
@@ -209,17 +212,17 @@ pub(crate) fn judge_one(manifest: &Path, host: &HostProfile, scenario: &Scenario
     weights::json::parse(&rendered).expect("归档必须是合法 JSON");
     std::fs::write(dir.join(format!("{}.json", scenario.group)), &rendered).expect("归档可写");
 
-    if !report.roofline.meets_s_plus() {
+    if !report.attainment.meets_s_plus() {
         panic!(
             "{} 没到 S++ 线：{} 侧达成率 {:.0}% < {:.0}%（实测 {observed:.0} ns，\
              声明上界 {:.0} ns，带宽上界 {:.0} ns）。\
              慢在内核就优化内核；慢在上界就说明上界登记过期，按新测量重登",
             scenario.scenario,
-            report.roofline.side,
-            report.roofline.s_plus_percent(),
-            report.roofline.s_plus_line(),
+            report.attainment.side,
+            report.attainment.s_plus_percent(),
+            report.attainment.s_plus_line(),
             baseline.ns,
-            report.roofline.ns,
+            report.attainment.ns,
         );
     }
 
@@ -277,7 +280,8 @@ impl CeilingReport<'_> {
 
 /// 判定单个上界：搬运速率掉了，说明机器或工具链变了，roofline 的分母必须重新登记。
 pub(crate) fn judge_ceiling(manifest: &Path, host: &HostProfile, ceiling: &Ceiling) -> Option<()> {
-    let observed = observed_ns(&estimates(manifest, ceiling.group, ceiling.benchmark))?;
+    let estimate = observed_estimate(&estimates(manifest, ceiling.group, ceiling.benchmark))?;
+    let observed = estimate.point;
     let case = Case::new(
         ceiling.benchmark,
         ceiling.ns,
@@ -285,7 +289,9 @@ pub(crate) fn judge_ceiling(manifest: &Path, host: &HostProfile, ceiling: &Ceili
         Direction::Lower,
     )
     .expect("上界合法");
-    let judgement = case.judge(observed);
+    let interval = Estimate::interval(estimate.lower, estimate.point, estimate.upper)
+        .expect("criterion 区间有序");
+    let judgement = case.judge_interval(interval);
 
     let dir = manifest
         .join("../..")

@@ -112,6 +112,63 @@ fn merge_tables_nests_recursively_and_replaces_arrays() {
     );
 }
 
+#[test]
+fn env_required_rejects_an_unset_variable() {
+    // 成功分支只是 `env::var` 透传；缺失或非 UTF-8 统一归 [`Code::Missing`]。
+    let error = env_required("BUILDGEN_TEST_ENV_VAR_UNSET").unwrap_err();
+    assert_eq!(error.code(), Code::Missing);
+}
+
+#[test]
+fn slices_render_quoted_and_expression_elements() {
+    let values = ["a".to_string(), "b".to_string()];
+    assert_eq!(string_slice(&values), "&[\"a\", \"b\"]");
+    assert_eq!(expr_slice(&values), "&[a,b]");
+    assert_eq!(expr_slice(&[]), "&[]");
+}
+
+#[test]
+fn read_text_returns_utf8_body_or_missing_error() {
+    let dir = temp_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("body.txt");
+    std::fs::write(&path, "hello").unwrap();
+    assert_eq!(read_text(&path).unwrap(), "hello");
+    assert!(read_text(&dir.join("missing")).is_err());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn files_lists_only_regular_files_sorted() {
+    let dir = temp_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("b.txt"), "1").unwrap();
+    std::fs::write(dir.join("a.txt"), "2").unwrap();
+    std::fs::create_dir(dir.join("sub")).unwrap();
+    std::fs::write(dir.join("sub/c.txt"), "3").unwrap();
+
+    let names: Vec<String> = files(&dir)
+        .unwrap()
+        .iter()
+        .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, ["a.txt", "b.txt"]);
+
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn subtable_and_string_read_required_keys_or_fail() {
+    let table = toml::from_str::<toml::Table>("[meta]\nname = \"x\"\n").unwrap();
+
+    let meta = subtable(&table, "meta").unwrap();
+    assert_eq!(string(meta, "name").unwrap(), "x");
+    assert_eq!(subtable(&table, "meta").unwrap(), meta);
+
+    assert!(subtable(&table, "missing").is_err());
+    assert!(string(meta, "missing").is_err());
+}
+
 /// 临时目录：进程号 + 原子序号 + 纳秒，避免同纳秒内并行用例撞名。
 fn temp_dir() -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);

@@ -9,8 +9,7 @@ description = "Archive layer: per-device capability archives consumed by cutile.
 readme = "README.md"
 publish = false
 autotests = false
-# 构建脚本已迁入 src/，Cargo 必须显式指向它，否则 OUT_DIR 生成表不会生成。
-build = "src/build.rs"
+# 构建脚本在包根 `build.rs`，`#[path]` 挂载 `src/` 下的生成器模块；否则 OUT_DIR 生成表不会生成。
 
 [features]
 # 构建期真编设备镜像（`build.rs` 调 `xcrun metal`）。默认只有源码：镜像要工具链、要时间，

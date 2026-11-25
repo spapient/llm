@@ -26,13 +26,18 @@ pub fn build_native(manifest: &Path, out: &Path) {
     let ops = manifest.join("src").join("ops");
     let config = ops.join("kernels.toml");
     let template = ops.join("gemm_micro.k");
+    let header = ops.join("gemm_micro.h");
+    let bridge = manifest.join("src").join("runtime.rs");
     println!("cargo:rerun-if-changed={}", config.display());
     println!("cargo:rerun-if-changed={}", template.display());
+    println!("cargo:rerun-if-changed={}", header.display());
+    println!("cargo:rerun-if-changed={}", bridge.display());
     let table = buildgen::read(&config).unwrap_or_else(|error| fail(format!("{error}")));
     let rendered = render_native(&super::read(&template), &table);
     let c = out.join("gemm_micro.c");
     std::fs::write(&c, rendered)
         .unwrap_or_else(|error| fail(format!("写 {} 失败：{error}", c.display())));
+    align_contract(&super::read(&header), &super::read(&bridge));
     let native = native_table(&table);
     let mut contract = String::new();
     for (slot, family, key) in NATIVE_FIELDS {
@@ -42,21 +47,26 @@ pub fn build_native(manifest: &Path, out: &Path) {
             "#[doc = \"gemm_micro 配置常量。\"] pub const {slot}: usize = {value};"
         );
     }
-    contract.push_str("unsafe extern \"C\" {\n\
-        fn cutile_sme_micro(a: *const f32, b: *const f32, out: *mut f32, n: usize, k: usize);\n\
-        fn cutile_sme_pack(a: *const f32, panel: *mut f32, k: usize, mblk0: usize, blocks: usize);\n\
-        fn cutile_sme_stage(a: *const f32, b: *const f32, out: *mut f32, n: usize, k: usize, blocks: usize);\n\
-    }\n");
     let contract_path = out.join("gemm_micro_contract.rs");
     std::fs::write(&contract_path, contract)
         .unwrap_or_else(|error| fail(format!("写 {} 失败：{error}", contract_path.display())));
-    compile_native(&c);
+    compile_native(&c, &ops);
+}
+
+/// 头原型 ↔ Rust extern 按 [`NATIVE_SYMBOLS`] 符号集对齐；漂移直接终止构建。
+fn align_contract(header: &str, rust: &str) {
+    let expected: std::collections::BTreeSet<&str> =
+        NATIVE_SYMBOLS.iter().map(|(_, symbol)| *symbol).collect();
+    if let Err(error) = crate::fficontract::align(&expected, header, rust) {
+        fail(error);
+    }
 }
 
 /// SME 段无平台裁剪；其余 f32/i8 瓦片已在 Rust intrinsic 中实现，统一单次编译。
-fn compile_native(c: &Path) {
+fn compile_native(c: &Path, ops: &Path) {
     cc::Build::new()
         .file(c)
+        .include(ops)
         .opt_level(3)
         .flag_if_supported("-std=c99")
         .compile("cutile_gemm_micro");
@@ -148,6 +158,15 @@ fn native_positive(native: &toml::Table, family: &str, key: &str) -> usize {
 
 const NATIVE_EXPORTS: [&str; 3] = ["sme", "sme_pack", "sme_stage"];
 const NATIVE_PROBES: [(&str, &str); 2] = [("sme_pure", "sme_tile"), ("sme_mix", "sme_tile")];
+
+/// 注解短名 → 链接符号名；对齐门按符号名核对头原型与 Rust extern。
+const NATIVE_SYMBOLS: [(&str, &str); 5] = [
+    ("sme", "cutile_sme_micro"),
+    ("sme_pack", "cutile_sme_pack"),
+    ("sme_stage", "cutile_sme_stage"),
+    ("sme_pure", "cutile_sme_pure"),
+    ("sme_mix", "cutile_sme_mix"),
+];
 
 /// 校验 `gemm_micro.k` 的导出、探针归属和具名展开；调用方提供构建期失败出口。
 fn validate_native_annotations(text: &str, fail: impl Fn(String) -> !) {

@@ -49,22 +49,87 @@ impl Direction {
             Self::Lower => "lower-is-better",
         }
     }
+}
 
-    /// 折算到「越大越好」的可比坐标：`Lower` 取相反数（取负对浮点是精确的）。
-    fn polar(self, value: f64) -> f64 {
+/// 一次测量：点估计与其置信区间。
+///
+/// 区间来自 criterion mean 的 `confidence_interval`，本模块不做第二套 bootstrap 重采样
+/// （重采样区间归 [`crate::card::Tally`]）。三点必须满足 `lower ≤ point ≤ upper` 且均为有限数。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Estimate {
+    /// 点估计（mean.point_estimate）。
+    point: f64,
+    /// 置信区间下界。
+    lower: f64,
+    /// 置信区间上界。
+    upper: f64,
+}
+
+impl Estimate {
+    /// 单点测量：区间退化为零宽 `[x, x]`；用于旧单点入口与尚无区间的采集路径。
+    pub fn point(value: f64) -> Self {
+        Self {
+            point: value,
+            lower: value,
+            upper: value,
+        }
+    }
+
+    /// 带区间的测量；非有限数或区间逆序返回 `invalid`（采集坏了，不是没测到）。
+    pub fn interval(lower: f64, point: f64, upper: f64) -> Result<Self> {
+        let finite = [lower, point, upper].iter().all(|v| v.is_finite());
+        if !finite || lower > point || point > upper {
+            return Err(invalid(
+                "Estimate::interval",
+                format!("区间必须有限且有序：lower {lower}, point {point}, upper {upper}"),
+            ));
+        }
+        Ok(Self {
+            point,
+            lower,
+            upper,
+        })
+    }
+
+    /// 点估计。
+    pub fn point_estimate(&self) -> f64 {
+        self.point
+    }
+
+    /// 区间下界。
+    pub fn lower(&self) -> f64 {
+        self.lower
+    }
+
+    /// 区间上界。
+    pub fn upper(&self) -> f64 {
+        self.upper
+    }
+}
+
+/// 未判定理由：区间跨着预算线，样本还不够把「过」与「不过」分开。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OpenReason {
+    /// 区间与预算线相交，方向上不能整段归内侧或外侧。
+    Straddle,
+}
+
+impl OpenReason {
+    /// 稳定的短名，写进归档。
+    pub fn as_str(self) -> &'static str {
         match self {
-            Self::Higher => value,
-            Self::Lower => -value,
+            Self::Straddle => "straddle",
         }
     }
 }
 
-/// 一个基准场景：名字、基线值、允许的相对偏差与方向。
+/// 一个基准场景：名字、基线值、允许的相对偏差、不可察觉带与方向。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Case {
     name: String,
     baseline: f64,
     budget_percent: f64,
+    epsilon_percent: f64,
     direction: Direction,
 }
 
@@ -76,6 +141,18 @@ impl Case {
         budget_percent: f64,
         direction: Direction,
     ) -> Result<Self> {
+        Self::with_epsilon(name, baseline, budget_percent, 0.0, direction)
+    }
+
+    /// 同 [`new`](Self::new)，另设不可察觉带 `epsilon_percent`：相对基线在该带内的漂移记持平，
+    /// 不报改进。`epsilon_percent` 落在 `0..=100`。
+    pub fn with_epsilon(
+        name: impl Into<String>,
+        baseline: f64,
+        budget_percent: f64,
+        epsilon_percent: f64,
+        direction: Direction,
+    ) -> Result<Self> {
         if !baseline.is_finite() || baseline <= 0.0 {
             return Err(invalid(
                 "Case::new",
@@ -84,14 +161,21 @@ impl Case {
         }
         if !(0.0..=100.0).contains(&budget_percent) {
             return Err(invalid(
-                "Case::new",
+                "new",
                 format!("预算必须落在 0..=100，得到 {budget_percent}"),
+            ));
+        }
+        if !(0.0..=100.0).contains(&epsilon_percent) {
+            return Err(invalid(
+                "with_epsilon",
+                format!("不可察觉带必须落在 0..=100，得到 {epsilon_percent}"),
             ));
         }
         Ok(Self {
             name: name.into(),
             baseline,
             budget_percent,
+            epsilon_percent,
             direction,
         })
     }
@@ -125,35 +209,97 @@ impl Case {
         }
     }
 
-    /// 判定一次实测。
-    pub fn judge(&self, observed: f64) -> Judgement {
-        if !observed.is_finite() {
-            return self.regressed(observed);
-        }
-        let seen = self.direction.polar(observed);
-        if seen > self.direction.polar(self.baseline) {
-            return Judgement::Improved {
-                observed,
-                baseline: self.baseline,
-            };
-        }
-        if seen >= self.direction.polar(self.limit()) {
-            Judgement::Pass
-        } else {
-            self.regressed(observed)
+    /// 改进门槛：整段优于这条线才算稳健改进；落在不可察觉带内记持平。
+    fn improved_line(&self) -> f64 {
+        let eps = self.epsilon_percent / 100.0;
+        match self.direction {
+            Direction::Higher => self.baseline * (1.0 + eps),
+            Direction::Lower => self.baseline * (1.0 - eps),
         }
     }
 
-    /// 回退结论：携带实测与基线。
+    /// 效应规模：相对基线的变化比例，归一为「改进为正」；回退为负。
+    fn effect(&self, point: f64) -> f64 {
+        match self.direction {
+            Direction::Higher => (point - self.baseline) / self.baseline,
+            Direction::Lower => (self.baseline - point) / self.baseline,
+        }
+    }
+
+    /// 判定一次单点实测（区间退化为零宽，不会跨门槛）。
+    pub fn judge(&self, observed: f64) -> Judgement {
+        self.judge_interval(Estimate::point(observed))
+    }
+
+    /// 判定一次带置信区间的实测：整段内侧 Pass、整段外侧 Regressed、跨门槛 Open。
+    pub fn judge_interval(&self, estimate: Estimate) -> Judgement {
+        if !estimate.point_estimate().is_finite() {
+            return self.regressed(estimate.point_estimate());
+        }
+        match self.direction {
+            Direction::Higher => self.judge_higher(estimate),
+            Direction::Lower => self.judge_lower(estimate),
+        }
+    }
+
+    /// 越大越好：预算线在下侧，改进门槛在上侧。
+    fn judge_higher(&self, est: Estimate) -> Judgement {
+        if est.upper < self.limit() {
+            return self.regressed(est.point_estimate());
+        }
+        if est.lower > self.improved_line() {
+            return self.improved(est.point_estimate());
+        }
+        if est.lower >= self.limit() {
+            return Judgement::Pass;
+        }
+        self.straddle(est)
+    }
+
+    /// 越小越好：预算线在上侧，改进门槛在下侧。
+    fn judge_lower(&self, est: Estimate) -> Judgement {
+        if est.lower > self.limit() {
+            return self.regressed(est.point_estimate());
+        }
+        if est.upper < self.improved_line() {
+            return self.improved(est.point_estimate());
+        }
+        if est.upper <= self.limit() {
+            return Judgement::Pass;
+        }
+        self.straddle(est)
+    }
+
+    /// 回退结论：携带实测、基线与效应规模。
     fn regressed(&self, observed: f64) -> Judgement {
         Judgement::Regressed {
             observed,
             baseline: self.baseline,
+            effect: self.effect(observed),
+        }
+    }
+
+    /// 改进结论：携带实测、基线与效应规模。
+    fn improved(&self, observed: f64) -> Judgement {
+        Judgement::Improved {
+            observed,
+            baseline: self.baseline,
+            effect: self.effect(observed),
+        }
+    }
+
+    /// 跨门槛结论：携带区间两端、基线与理由。
+    fn straddle(&self, est: Estimate) -> Judgement {
+        Judgement::Open {
+            lower: est.lower,
+            upper: est.upper,
+            baseline: self.baseline,
+            reason: OpenReason::Straddle,
         }
     }
 }
 
-/// 判定结论：通过、回退、改进。
+/// 判定结论：通过、回退、改进，或跨门槛未判定。
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[must_use]
 pub enum Judgement {
@@ -161,24 +307,57 @@ pub enum Judgement {
     Pass,
     /// 超出预算：CI 必须失败。
     Regressed {
-        /// 实测值。
+        /// 实测点估计。
         observed: f64,
         /// 基线值。
         baseline: f64,
+        /// 效应规模（改进为正，回退为负，相对基线）。
+        effect: f64,
     },
-    /// 好于基线：不报警，但在报告里单独列出。
+    /// 整段优于基线：不报警，但在报告里单独列出。
     Improved {
-        /// 实测值。
+        /// 实测点估计。
         observed: f64,
         /// 基线值。
         baseline: f64,
+        /// 效应规模（改进为正）。
+        effect: f64,
+    },
+    /// 区间跨着预算线：样本还不够把「过」与「不过」分开，不等于失败。
+    Open {
+        /// 区间下界。
+        lower: f64,
+        /// 区间上界。
+        upper: f64,
+        /// 基线值。
+        baseline: f64,
+        /// 未判定理由。
+        reason: OpenReason,
     },
 }
 
 impl Judgement {
-    /// 是否算通过（回退是唯一的失败态）。
+    /// 是否回退（唯一的失败态；未判定与改进都不是失败）。
+    pub fn is_regressed(&self) -> bool {
+        matches!(self, Self::Regressed { .. })
+    }
+
+    /// 是否未判定（跨门槛，需补样本或在报告里标 Open）。
+    pub fn is_open(&self) -> bool {
+        matches!(self, Self::Open { .. })
+    }
+
+    /// 是否不算失败：回退才失败，通过 / 改进 / 未判定均不拦 CI。
     pub fn is_pass(&self) -> bool {
-        !matches!(self, Self::Regressed { .. })
+        !self.is_regressed()
+    }
+
+    /// 效应规模；持平与未判定没有可报的效应，返回 `None`。
+    pub fn effect(&self) -> Option<f64> {
+        match self {
+            Self::Regressed { effect, .. } | Self::Improved { effect, .. } => Some(*effect),
+            Self::Pass | Self::Open { .. } => None,
+        }
     }
 
     /// 稳定的短名。
@@ -187,6 +366,7 @@ impl Judgement {
             Self::Pass => "pass",
             Self::Regressed { .. } => "regressed",
             Self::Improved { .. } => "improved",
+            Self::Open { .. } => "open",
         }
     }
 }

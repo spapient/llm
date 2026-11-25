@@ -12,22 +12,36 @@ pub(crate) const BANDWIDTH_PERCENT: f64 = 85.0;
 /// 就是这台机器上这个内核已知能跑到的上界。
 pub(crate) const COMPUTE_PERCENT: f64 = 90.0;
 
-/// criterion 的 mean 点估计（`ns/iter`）。
+/// criterion `mean` 估计：点估计与置信区间两端。标准误等离散统计量随溯源扩位批次再入档。
+pub(crate) struct MeanEstimate {
+    /// 点估计（`mean.point_estimate`）。
+    pub(crate) point: f64,
+    /// 置信区间下界（`mean.confidence_interval.lower_bound`）。
+    pub(crate) lower: f64,
+    /// 置信区间上界（`mean.confidence_interval.upper_bound`）。
+    pub(crate) upper: f64,
+}
+
+/// 解析 criterion `estimates.json` 的 `mean` 段：点估计与 95% 置信区间。
 ///
-/// 只依赖 `estimates.json` 里两个键名（`mean` 与 `point_estimate`）：criterion 的统计口径演进过，
-/// 但这两个名字是它对外报告的核心。读不出来就明说"读不出"，不猜一个数。
-pub(crate) fn mean_ns(text: &str) -> Option<f64> {
-    let mean = text.find("\"mean\"")?;
-    let key = text[mean..].find("\"point_estimate\"")?;
-    let tail = &text[mean + key + "\"point_estimate\"".len()..];
-    let start = tail.find(|c: char| c == '-' || c.is_ascii_digit())?;
-    let number: String = tail[start..]
-        .chars()
-        .take_while(|c| {
-            *c == '-' || *c == '.' || c.is_ascii_digit() || *c == 'e' || *c == '+' || *c == 'E'
-        })
-        .collect();
-    number.parse().ok()
+/// 走账本解析器（认小数与指数），不再手写字符串扫描；任一字段缺失或非数返回 `None`，不猜数。
+pub(crate) fn mean_estimate(text: &str) -> Option<MeanEstimate> {
+    let root = weights::json::parse_ledger(text).ok()?;
+    let mean = root.get("mean")?;
+    let point = number(mean.get("point_estimate")?)?;
+    let ci = mean.get("confidence_interval")?;
+    let lower = number(ci.get("lower_bound")?)?;
+    let upper = number(ci.get("upper_bound")?)?;
+    Some(MeanEstimate {
+        point,
+        lower,
+        upper,
+    })
+}
+
+/// 从 JSON 值取浮点；非数字或原文解析失败返回 `None`。
+fn number(value: &weights::json::Value) -> Option<f64> {
+    value.number_text().ok()?.parse().ok()
 }
 
 /// criterion 落盘名的长度上限，与 `criterion::report::MAX_DIRECTORY_NAME_LEN` 同值。
@@ -70,8 +84,8 @@ pub(crate) fn estimates(manifest: &Path, group: &str, benchmark: &str) -> PathBu
         .join("new/estimates.json")
 }
 
-/// 实测值；还没跑过基准就登记跳过并返回 `None`。
-pub(crate) fn observed_ns(path: &Path) -> Option<f64> {
+/// 实测估计件；还没跑过基准就登记跳过并返回 `None`。
+pub(crate) fn observed_estimate(path: &Path) -> Option<MeanEstimate> {
     let Ok(text) = std::fs::read_to_string(path) else {
         testkit::skip(format!(
             "benchmarks: 还没有基准测量（{}），先跑 cargo bench -p llm-benchmarks",
@@ -79,12 +93,17 @@ pub(crate) fn observed_ns(path: &Path) -> Option<f64> {
         ));
         return None;
     };
-    Some(mean_ns(&text).unwrap_or_else(|| {
+    Some(mean_estimate(&text).unwrap_or_else(|| {
         panic!(
-            "读不出 {} 的 mean.point_estimate：criterion 的输出格式变了，判定口径要跟着改",
+            "读不出 {} 的 mean 估计：criterion 的输出格式变了，判定口径要跟着改",
             path.display()
         )
     }))
+}
+
+/// 实测点估计；还没跑过基准就登记跳过并返回 `None`。
+pub(crate) fn observed_ns(path: &Path) -> Option<f64> {
+    observed_estimate(path).map(|estimate| estimate.point)
 }
 
 /// 搬 `bytes` 字节在该档上界下至少需要多少 ns。
@@ -115,11 +134,11 @@ pub(crate) fn tokens_per_s(tokens: u64, ns: f64) -> f64 {
     }
 }
 
-/// 一条基准的 roofline 口径：下界流量、所落的存储档位、该档实测上界、达成率。
+/// 一条基准的达成率口径：下界流量、所落的存储档位、该档实测上界、达成率。
 ///
 /// 这是 Report 侧的本地分析件，不进 [`BenchRecord`]：达成率、瓶颈侧、MB/s、flops、档位都由
-/// 算子语义与本机上界在此派生。
-pub(crate) struct Roofline {
+/// 算子语义与本机上界在此派生。硬件峰值上界另见 `tool::bench::PeakProfile`。
+pub(crate) struct Attainment {
     /// 下界读入字节（`nn::Bounds`，由算子语义推出，不是手写常数）。
     pub(crate) read: u64,
     /// 下界写出字节。
@@ -147,8 +166,8 @@ pub(crate) struct Roofline {
     pub(crate) mflops_per_s: f64,
 }
 
-impl Roofline {
-    /// 由算子语义与本机上界推出一条基准的 roofline 口径。
+impl Attainment {
+    /// 由算子语义与本机上界推出一条基准的达成率口径。
     ///
     /// 工作集决定档位：16 KiB 量级的行宽算子按 `l1` 判，几百 KiB 的 `gemm` / `attention` 按
     /// `l2` 判，`gemv` 那 64 MiB 权重按 `dram` 判。档位定错会把"L1 里的往返"拿去比主存带宽，
@@ -232,7 +251,7 @@ impl Roofline {
         }
     }
 
-    /// S++ 达成率（%）：与 [`Roofline::s_plus_line`] 同一侧的分母。
+    /// S++ 达成率（%）：与 [`Attainment::s_plus_line`] 同一侧的分母。
     pub(crate) fn s_plus_percent(&self) -> f64 {
         if self.bandwidth_bound() {
             self.achieved_percent
@@ -287,4 +306,19 @@ fn collect_measured(root: &Path, directory: &Path, ids: &mut Vec<String>) {
             collect_measured(root, &path, ids);
         }
     }
+}
+
+#[test]
+fn criterion_mean_estimate_parses_point_and_interval() {
+    let text = r#"{"mean":{"confidence_interval":{"confidence_level":0.95,"lower_bound":3341.168991727609,"upper_bound":3394.9963879253296},"point_estimate":3365.7723866140363,"standard_error":13.81689390329594},"median":{"point_estimate":3320.82}}"#;
+    let estimate = mean_estimate(text).expect("解析 mean 段");
+    assert!((estimate.point - 3365.7723866140363).abs() < 1e-9);
+    assert!((estimate.lower - 3341.168991727609).abs() < 1e-9);
+    assert!((estimate.upper - 3394.9963879253296).abs() < 1e-9);
+}
+
+#[test]
+fn a_missing_mean_interval_returns_none() {
+    let text = r#"{"mean":{"point_estimate":1.0}}"#;
+    assert!(mean_estimate(text).is_none());
 }

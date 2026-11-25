@@ -10,9 +10,9 @@
 //!
 //! - **生产代码**（`crates/*/src` 非测试夹具；入口二进制 `cli` 的 `src/main.rs` 与 `src/bin/cutile.rs` 也在此列）：全套门——
 //!   裸 unwrap/expect/panic、ccn、nloc、单文件行数、词法。
-//! - **构建脚本**（`crates/*/build.rs`）：守门词法与单文件行数；脚本对 cargo 注入的环境变量
-//!   用 `expect`、用 `fail()` panic 是构建期惯例，不套运行时零 panic 门，复杂度指标随脚本
-//!   清理再纳入。
+//! - **构建脚本**（`crates/*/build.rs`，以及 `Cargo.toml` 的 `build = "..."` 显式指向、可落在
+//!   `src/` 下的脚本）：守门词法与单文件行数；脚本对 cargo 注入的环境变量用 `expect`、用
+//!   `fail()` panic 是构建期惯例，不套运行时零 panic 门，复杂度指标随脚本清理再纳入。
 //! - **外部集成测试**（`crates/*/tests/`）：测试代码惯例可用 `expect`/`unwrap`，只守门词法
 //!   能解析，不套生产限值。
 //! - **挂载的测试模块**（`src` 里 `#[cfg(test)] mod 名字;` 指向的文件）：与内联 cfg(test)
@@ -53,6 +53,7 @@ fn every_source_passes_the_static_gate() {
     let production = rust_files(&crates);
     let mounted_tests = mounted_test_modules(&production);
     let build_scripts = build_script_files(&crates);
+    let build_script_set: BTreeSet<PathBuf> = build_scripts.iter().cloned().collect();
     let integration_tests = integration_test_files(&crates);
 
     let scanned = production.len() + build_scripts.len();
@@ -67,7 +68,9 @@ fn every_source_passes_the_static_gate() {
     let mut live = BTreeMap::new();
 
     for path in &production {
-        if mounted_tests.contains(path) {
+        if build_script_set.contains(path) {
+            continue;
+        } else if mounted_tests.contains(path) {
             scan_integration_test(&gate, root, path, &mut bad);
         } else {
             scan_production(&gate, root, path, &mut bad, &mut live);
@@ -228,19 +231,51 @@ fn rust_files(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// 各 crate 根目录下的 `build.rs`（不在 `src` 里，原扫描集漏掉了这一类）。
+/// 构建脚本：包根默认的 `build.rs`，外加 `Cargo.toml` 里 `build = "..."` 显式指向的脚本
+/// （该字段可把脚本指到 `src/` 等其它位置）。
 fn build_script_files(crates: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let Ok(entries) = std::fs::read_dir(crates) else {
         return out;
     };
     for entry in entries.flatten() {
-        let build = entry.path().join("build.rs");
+        let root = entry.path();
+        let build = root.join("build.rs");
         if build.is_file() {
             out.push(build);
         }
+        if let Some(relative) = declared_build_script(&root.join("Cargo.toml")) {
+            let path = root.join(relative);
+            if path.is_file() {
+                out.push(path);
+            }
+        }
     }
     out
+}
+
+/// 解析顶层 `build = "<路径>"`；`build = [...]`（feature 数组）不是脚本路径，跳过。
+fn declared_build_script(manifest: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(manifest).ok()?;
+    for line in text.lines() {
+        let Some(rest) = line.trim().strip_prefix("build") else {
+            continue;
+        };
+        let Some(rest) = rest.trim_start().strip_prefix('=') else {
+            continue;
+        };
+        let Some(value) = rest.trim_start().strip_prefix('"') else {
+            continue;
+        };
+        let Some(end) = value.find('"') else {
+            continue;
+        };
+        let relative = &value[..end];
+        if !relative.is_empty() {
+            return Some(relative.to_string());
+        }
+    }
+    None
 }
 
 /// 本仓不设示例程序：根与各 crate 下出现 `examples/` 目录即判失败，可演示用法由测试夹具

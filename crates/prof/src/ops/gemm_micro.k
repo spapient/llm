@@ -1,14 +1,13 @@
 // GEMM 主机微内核：SME 外积瓦片与两个探针。FMA(f32) 与 sdot(i8 dotprod) 已迁至 Rust intrinsic。
 // 所有几何来自 ops/kernels.toml；运行时特性探测由 Rust 安全桥负责。
-#include <stddef.h>
-#include <stdint.h>
-
 #if defined(_M_X64) && !defined(__x86_64__)
 #define __x86_64__ 1
 #endif
 #if defined(_M_ARM64) && !defined(__aarch64__)
 #define __aarch64__ 1
 #endif
+
+#include "gemm_micro.h"
 
 #define CUTILE_SME_MR {{SME_MR}}
 #define CUTILE_SME_NR {{SME_NR}}

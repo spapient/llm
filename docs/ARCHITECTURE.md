@@ -77,7 +77,7 @@ testkit    → （叶    +dev: autograd, cutile, nn, prof, tensor, tools, train,
 
 | 概念 | 唯一主人 | 负责什么 |
 |---|---|---|
-| `Error` / `Code` / `Result` / `Cursor` | `diagnostic` | 全仓唯一错误类型：类别由产生错误的那一层给，上层只补上下文；`also` 追加同级诊断，`from_io` 区分"缺失"与"读不出"，`exit_code` 是类别到退出码的唯一映射。`Cursor`（`scan` 模块）是带字节位置的逐字节游标：只做读字节 / 跳空白 / 吃必需字节三件事，不认语法、不建树——否则它就成了第二份解析器 。同名局部读取器在 `storage`（LEB）/ `train`（快照）/ `tokenizer` / `cutile` / `annotation` 各有一份，按各自的格式边界读字节，与本行不是同一个类型——合并它们要按格式逐个收，不在这里主张 |
+| `Error` / `Code` / `Result` / `Cursor` / `FfiParam` / `FfiSignature` / `ffi_align` | `diagnostic`（`scan` 模块） | 全仓唯一错误类型：类别由产生错误的那一层给，上层只补上下文；`also` 追加同级诊断，`from_io` 区分"缺失"与"读不出"，`exit_code` 是类别到退出码的唯一映射。`Cursor` 是带字节位置的逐字节游标：只做读字节 / 跳空白 / 吃必需字节三件事，不认语法、不建树——否则它就成了第二份解析器。`FfiParam` / `FfiSignature` / `ffi_align` 是外部符号名集与参数宽类（只读指针 / 可写指针 / 机器字）序列的纯 std 对齐内核：名集相等、宽类一致，不解释 C/Rust 具体类型词法，类型词法映射与符号前缀由各消费方留本地。同名局部读取器在 `storage`（LEB）/ `train`（快照）/ `tokenizer` / `cutile` / `annotation` 各有一份，按各自的格式边界读字节，与本行不是同一个类型——合并它们要按格式逐个收，不在这里主张 |
 | `Panel` / `Sheet` / `Align` / `join_names` / `human_bytes` / `per_run` | `diagnostic`（`render` 模块） | 人读渲染：带标题的两列面板、Markdown 表（表头 / 分隔行 / 逐列对齐只在这里拼）、顿号列表、1024 进制字节与单次耗时；只接字符串与数，不做判定 |
 | `Rng` / `Uniform` / `Normal` / `Bernoulli` | `train` | 计数器型确定性随机与三个构造期校验参数的分布；采样是 `u ∈ [0,1) → 元素` 的纯映射 |
 | `LoaderConfig` | `train` | 批装配配置：行列几何与采样三态（顺序 / 种子洗牌 / 权重有放回）一次性收口到构造期校验，热路径不再做合法性分支；洗牌与加权随机流只由种子派生 |
@@ -203,8 +203,8 @@ testkit    → （叶    +dev: autograd, cutile, nn, prof, tensor, tools, train,
 | `CpuModel` / `Params` / `Block` | `serve` | CPU 模型宿主与驻留参数表：装载期一次解码、生成循环不再读文件；七个层族装配成 `engine::exec::Graph`，执行器泛化为 `E: Executor`；`from_path` 按 `Reader` / `Loader` 在装配点分流 |
 | `Command` / `Invocation` / `USAGE` | `cli` | 命令行文法（argv / env → 强类型调用参数）与编排分派 |
 | `Token` / `Pos` / `Delim` / `Finding` / `Gate` / `GateView` / `DebtView` / `VocabularyView` / `ExemptView` / `UnlistedView` / `Hit` | `tools` | 零依赖词法 token 树、单函数复杂度 finding、配置化阈值及其编译期强类型视图、标识符层词汇命中（全拼名 + 应改用的缩写）；配置只由构建脚本解析成视图，运行期不读 TOML 或动态数据树。分析器只产出数据，不打印不退出。词汇判定在**标识符**层而不是文本层，字符串字面量与注释不参与——设备源码里 `[[buffer(0)]]` 这类选择器因此不会被误报 |
-| `Case` / `Baseline` / `Judgement` | `tools` | 回退判定（与基线相比有没有退）；不做测量 |
-| `EntryKind` / `Harness` / `Roofline` / `Bottleneck` / `Score` / `Geometry` / `BenchRecord` | `tools` | 统一基准记录结构：记录只持有身份、几何与峰值，未测得的峰值留 `None`；`Roofline::score` 把「峰值 + 算术强度 + 实测吞吐」折成占上界百分比与瓶颈侧，测量与上界登记仍归 `shard` / `benchmarks` |
+| `Case` / `Baseline` / `Judgement` / `Estimate` / `OpenReason` | `tools` | 回退判定（与基线相比有没有退）：`Estimate` 是点估计加置信区间的测量件，`OpenReason` 是跨门槛未判定的理由闭集；不做测量 |
+| `EntryKind` / `Harness` / `PeakProfile` / `Bottleneck` / `Score` / `Geometry` / `BenchRecord` | `tools` | 统一基准记录结构：记录只持有身份、几何与峰值，未测得的峰值留 `None`；`PeakProfile::score` 把「峰值 + 算术强度 + 实测吞吐」折成占上界百分比与瓶颈侧，测量与上界登记仍归 `shard` / `benchmarks` |
 | `Protocol` / `Statistic` / `Tally` / `Standing` / `Shortfall` / `Card` | `tools` | 实测卡三态判定：闭集 → 样本量 → 统计量定义 → 区间与门槛，次序有意；样本与时钟来源归 `benchmarks` |
 | `spec` / `model` 属性宏 | `annotation` | 把注解展开成契约实现 + 编译期断言 + 一条校验测试；**不持有运行期注册表**。`model` 生成 `MODEL` 并断言注解与 `Operator` 对齐；设备执行由 `cutile` 的 `const SPECS` / `const GATES` 描述符表按函数指针登记 |
 | `Contract` / `Provision` / `Witness` | `testkit` | 设备片段层自述：`Contract` 只答「这台设备声明了哪些 P0 片段、拿哪些见证入口验」，`Provision` 只答「一条原语在这台设备上由哪个实现供给」，`Witness` 只答「用哪个 `witness_*` 入口、期望什么输出」。三者都只持 `&str` / `&[f32]` 借用、不持档案类型，于是夹具库不把 `prof` 拖进依赖，设备档案在测试侧摊平即用 |

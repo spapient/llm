@@ -10,12 +10,12 @@ fn main() {
 }
 
 fn run() -> diagnostic::Result<()> {
-    let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
+    let manifest = PathBuf::from(buildgen::env_required("CARGO_MANIFEST_DIR")?);
     let source = manifest.join("../../.config/lints/vocabulary.toml");
     println!("cargo:rerun-if-changed=../../.config/lints/vocabulary.toml");
     let table = buildgen::read(&source)?;
     let code = render(&table)?;
-    let out = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR"));
+    let out = PathBuf::from(buildgen::env_required("OUT_DIR")?);
     let target = out.join("vocabulary.rs");
     std::fs::write(&target, code)
         .unwrap_or_else(|error| panic!("写入 {} 失败：{error}", target.display()));
@@ -91,8 +91,8 @@ fn gate(root: &toml::Table) -> diagnostic::Result<String> {
     Ok(format!(
         "crate::gate::GateView {{ ccn_max:{ccn}, nloc_max:{nloc}, file_max_lines:{file_max}, \
          file_min_lines:{file_min}, test_max_lines:{test_max}, debt:{}, min_lines_baseline:{} }}",
-        expressions(&debt),
-        strings(&baseline),
+        buildgen::expr_slice(&debt),
+        buildgen::string_slice(&baseline),
     ))
 }
 
@@ -130,7 +130,7 @@ fn exemptions(root: &toml::Table, section: &str) -> diagnostic::Result<String> {
             ))
         })
         .collect::<diagnostic::Result<Vec<_>>>()
-        .map(|rows| expressions(&rows))
+        .map(|rows| buildgen::expr_slice(&rows))
 }
 
 /// ownership 的存量条目：crate、名字数组与理由完整保留。
@@ -157,11 +157,11 @@ fn unlisted(root: &toml::Table) -> diagnostic::Result<String> {
                 .collect::<diagnostic::Result<Vec<_>>>()?;
             Ok(format!(
                 "crate::gate::UnlistedView {{ crate_name:{name:?}, names:{}, reason:{reason:?} }}",
-                strings(&names)
+                buildgen::string_slice(&names)
             ))
         })
         .collect::<diagnostic::Result<Vec<_>>>()?;
-    Ok(expressions(&entries))
+    Ok(buildgen::expr_slice(&entries))
 }
 
 /// 理由必须具体，不接受空泛占位。
@@ -212,16 +212,6 @@ fn optional(table: &toml::Table, key: &str) -> String {
         .and_then(toml::Value::as_integer)
         .and_then(|value| usize::try_from(value).ok())
         .map_or_else(|| "None".to_string(), |value| format!("Some({value})"))
-}
-
-/// 字符串切片保持引号，表达式切片不额外加引号。
-fn strings(values: &[String]) -> String {
-    format!("&{values:?}")
-}
-
-/// 强类型表达式切片。
-fn expressions(values: &[String]) -> String {
-    format!("&[{}]", values.join(","))
 }
 
 /// 配置错误统一为 `diagnostic::Error`，构建脚本主入口负责打印并失败。

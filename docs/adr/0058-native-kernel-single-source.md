@@ -19,7 +19,7 @@
 1. **一个 `crates/prof/src/ops/gemm_micro.k`**：承载 f32 FMA、i8 sdot、Apple SME 三族算法体及共享探针核心。
 2. **现有 `crates/prof/src/runtime.rs` 中的安全桥**：只负责切片校验、运行时特性探测、ABI 声明、线程／面板调度和公开路径兼容。
 3. **现有 `crates/prof/src/ops/kernels.toml`**：统一登记瓦片几何、具名展开和 SME 规模门槛，不新增配置文件。
-4. **现有 `crates/prof/src/build.rs` / `buildops.rs`**：完成模板替换、注解校验和静态 C 库构建，不新增平行生成器。
+4. **现有 `crates/prof/build.rs` / `buildops.rs`**：完成模板替换、注解校验和静态 C 库构建，不新增平行生成器。
 
 删除 `prof/src/native.rs`、`native/gemm8x8.rs`、`native/i8.rs`、`native/sme.rs` 和空目录；
 同时删除纯转发文件 `cutile/src/native.rs`，在 `cutile/src/lib.rs` 用一行 `pub use prof::native as native;`
@@ -101,7 +101,7 @@ ops/gemm_micro.k
   │  cutile-export / cutile-probe / cutile-unroll:<family>[_isa]
   │  fma_tile / sdot_tile / sme_tile 同一算法核心
   ▼
-src/build.rs + buildops.rs
+build.rs + buildops.rs
   │  配置校验 → 模板替换 → OUT_DIR/gemm_micro.c → libcutile_gemm_micro.a
   ▼
 runtime.rs 安全桥

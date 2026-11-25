@@ -8,7 +8,12 @@
   [`lld.md`](../lld.md)（E1 TTFT/TPOT、E3 服务吞吐、E6 适配性、E7 带宽、E10 可预测性）、
   [`PROMPT-S++-AUDIT.md`](../PROMPT-S++-AUDIT.md) §8（compute ≥90% / bandwidth ≥85%）、
   [`crates/tools/src/bench.rs`](../../crates/tools/src/bench.rs)、[`card.rs`](../../crates/tools/src/card.rs)、
-  [`regress.rs`](../../crates/tools/src/regress.rs)、[`stats.rs`](../../crates/tools/src/stats.rs)
+  [`regress.rs`](../../crates/tools/src/regress.rs)、[`stats.rs`](../../crates/tools/src/stats.rs)；
+  ADR：[`0005 注解生成契约不生成注册表`](0005-annotations-as-contracts.md)、
+  [`0006 配置机制与身份分离`](0006-config-mechanism-vs-identity.md)、
+  [`0017 kernel AST 与 IR 冻结`](0017-kernel-ast-and-ir-freeze.md)、
+  [`0018 dtype 单一事实源`](0018-dtype-single-source.md)、
+  [`0022 构建期语料解析`](0022-build-time-corpora.md)
 
 ## 1. 本文件回答什么
 
@@ -51,11 +56,15 @@
 | 维度 | 行业第一梯队做法 | 来源 |
 |---|---|---|
 | 基准分层分类学 | 四级构成式层级：L1 原语算子、L2 融合算子、L3 层/块、L4 端到端模型；高层复用低层模块，既在独立模式又在组合模式评测；任务必须对应真实模型里跑的算子，形状/精度/接口对齐生产实现，零合成任务 | [FastKernels](https://fastkernels.github.io/)、[arXiv 2605.23215](https://arxiv.org/html/2605.23215v1)；[BenchCouncil AIBench](https://www.benchcouncil.org/AIBench/)（micro/component/e2e） |
-| 服务负载与指标 | MLPerf 四场景：single-stream、multi-stream、server（Poisson 到达）、offline；LLM 拆 TTFT/TPOT，报 tail p90/p99，有 accuracy gate，禁止缓存结果或用额外权重；vLLM 基准报 TTFT/TPOT/ITL/E2EL、mean/median/p90/p99、并发扫描、稳态平台窗口（剔除 ramp-up/drain）、满足 SLO 的 goodput、ISL/OSL 分布 | [MLPerf Inference](https://github.com/mlcommons/inference)、[vLLM benchmarks](https://docs.vllm.ai/projects/benchmarks/en/latest/)、[benchmark_serving.py](https://github.com/vllm-project/vllm/blob/main/benchmarks/benchmark_serving.py) |
+| 服务负载与指标 | MLPerf 四场景：single-stream、multi-stream、server（Poisson 到达）、offline；LLM 拆 TTFT/TPOT/ITL/E2EL，报 p50/p90/p99 长尾，有 accuracy gate，禁止缓存结果或用额外权重。开环（Poisson/到达率独立于响应）暴露排队与尾延迟，是 goodput 与 SLO 测量前提；闭环（固定并发、完成即补）测吞吐天花板，但 back-pressure 会掩盖变慢。计时从调度到达时刻起算（避免 coordinated omission）；warmup 与首尾 ramp-up/drain 瞬态剔除出稳态窗口；goodput = 满足 SLO 的吞吐（总吞吐 × 达成率）。负载须登记到达分布、ISL/OSL 分布、think time、并发/到达率、前缀共享 | [MLPerf Inference](https://github.com/mlcommons/inference)、[MLPerf Endpoints 术语](https://docs.mlcommons.org/endpoints-submission-docs/reference/glossary/)、[IETF LLM 基准术语草案](https://datatracker.ietf.org/doc/html/draft-gaikwad-llm-benchmarking-terminology)、[GPUSmith 开/闭环与 goodput](https://gpusmith.com/articles/en/llm-load-testing-methodology-open-vs-closed-loop)、[vLLM benchmark_serving.py](https://github.com/vllm-project/vllm/blob/main/benchmarks/benchmark_serving.py) |
 | 统计严谨性 | criterion：bootstrap 置信区间、OLS 斜率/R²、中位数/MAD、IQR 离群比例；iai-callgrind：走 Cachegrind 出确定性指令数/L1L2/LLC 缓存计数，绕开墙钟噪声（Linux/Valgrind 边界内）；hypobench：最小效应规模门、多重比较 Bonferroni 校正、bootstrap change CI、Welch t 检验按迭代均值、A/A 重复消除假阳性 | [criterion.rs book](https://bheisler.github.io/criterion.rs/book/)、[iai-callgrind](https://github.com/iai-callgrind/iai-callgrind)、[hypobench](https://github.com/vorner/hypobench) |
 | roofline | 算术强度 I=FLOPs/byte，上界 P=min(π, I·β)，ridge/balance point，分层 L1/L2/DRAM 多坡；FLOPs 与流量优先用 PMU 实测而非估算；缓存计数可作确定性佐证 | 本仓 `bench-roofline-analysis.md`（roofline 上界口径） |
 | 环境可重复性 | performance governor、锁频、关 turbo/boost、绑核（taskset）、隔离核、关 SMT/NUMA 干扰、drop caches、冷热分离、A/A 重复、长采样；记录调频/温度/功耗/页缓存状态 | [Google Benchmark: perf vs micro](https://github.com/google/benchmark/blob/main/docs/perf-vs-microbenchmark.md) |
 | 趋势与回归归档 | 按 commit + machine 存历史结果；CI compare 两版，因子阈值 + 统计上下界；显著回退自动定位到提交区间；历史以 JSON 入库，滚动窗口 + 中位数 + 容差 | [airspeed velocity](https://asv.readthedocs.io/en/stable/commands.html)、[github-action-benchmark](https://github.com/benchmark-action/github-action-benchmark) |
+| 计时洁净与防消除 | 输入与输出双向 `black_box` 阻断常量折叠与死代码消除；结果必须被消费（返回/写入屏障）；fixture 构造、克隆、预热在计时区外；被测方法用委托包装防内联并单独扣 overhead；E/S、打印、文件访问排除出计时 | [rustbites black_box](https://rustbites.com/posts/bite-090/)、[Oracle JVM 基准陷阱](https://www.oracle.com/technetwork/articles/java/architect-benchmarking-2266277.html)、[CodSpeed JMH 指南](https://codspeed.io/docs/guides/how-to-benchmark-java-with-jmh) |
+| 数值对拍容差 | 参考用高精度（f64，必要时任意精度）；按 dtype 分级 rtol/atol 或 ULP；整数默认精确相等，量化输出可声明有界容差；mean-RE 与 max-RE 双门，max 可放宽以容纳孤立离群；近零/溢出/常态三区域分别判定 | [JAX 数值精度](https://docs.jax.dev/en/latest/accuracy.html)、[PyTorch testing 容差表](https://pytorch.ac.cn/docs/2.5/testing.html)、[TOSA 精度要求](https://www.mlplatform.org/tosa/tosa_spec_1_0_1.html)、[CANN Bench 分 dtype 门槛](https://arxiv.org/html/2607.20518) |
+| 可复现元数据 | 每条产物绑定：commit SHA（base/candidate）、二进制/权重摘要、编译器/链接器版本与 flags、工具链版本、CPU 型号/ISA/核数/亲和/governor/频率/温度/功耗、加速卡型号/架构/驱动/运行时、命令行、schema 版本、环境变量、负载种子与输入摘要、原始产物摘要；摘要须能从原始产物复算，不手写数字；版本化 JSON schema + 稳定 workload 标识供趋势 join | [pyperf 元数据字段](https://pyperf.readthedocs.io/en/stable/api.html)、[AIPerf JSON 导出 schema](https://docs.nvidia.com/aiperf/v0.9.0/reference/json-export-schema)、[SPEC CPU2026 运行规则](https://www.spec.org/cpu2026/docs/runrules.html) |
+| 形状网格选型 | 形状来自真实模型配置派生（M×K×N / hidden×head_dim×heads×seqlen）；覆盖整除对齐点与非整除边界（tile 量化余量）；兼顾均分计算单元的高利用点与小维度碎片点；每形状登记算法 FLOPs 与字节口径 | [CUTLASS Profiler](https://docs.nvidia.com/cutlass/4.7.0/media/docs/cpp/profiler.html)、[NVIDIA GEMM 背景（tile 量化）](https://docs.nvidia.com/deeplearning/performance/dl-performance-matrix-multiplication/index.html)、[ROCm MAF 矩阵尺寸建议](https://rocm.blogs.amd.com/software-tools-optimization/measuring-max-achievable-flops-part2/README.html) |
 
 ## 3. 差距诊断（现状证据 → 对标 → 缺口）
 
@@ -79,8 +88,12 @@ P2 运行时层、P3 后端/量化/硬件观测、P4 服务化。
 | D1 | 算子回归 `regress::Case.judge` 用单点 observed 对预算线，不挂区间（`regress.rs:129`） | 噪声期易假回退/假通过；判定应基于统计量区间 + 最小效应规模，与 `card` 口径统一 | P1 |
 | D2 | 多数算子性能基准未绑数值对拍；仅 `gemv_i4` 有标量 vs 向量误差对照 | 缺 accuracy gate：正确性不过不应出性能数（MLPerf / FastKernels 同口径） | P1 |
 | D3 | `model.rs` 只测单步/batch4 的 ns 与 tokens/s；无 TTFT、TPOT、ITL、E2EL、长尾分位、稳态窗口、goodput | 服务侧指标与负载场景缺失，无法支撑 E1/E3 验收 | P4 |
-| D4 | 形状偏窄：decode 行宽固定 4096；精度 f32/i2/i4/i8，无 f16/bf16/f8(e4m3/e5m2)/nf4 | 缺真实模型形状网格与精度-性能曲线 | P3 |
+| D4 | 精度覆盖 f32/i2/i4/i8，无 f16/bf16/f8(e4m3/e5m2)/nf4 | 缺分 dtype 的精度-性能曲线与容差对照 | P3 |
 | D5 | 热路径分配/复制/缓冲复用未在基准内计数；内存峰值、tokens/J 未测量 | 性能结论缺分配与能效证据，违反 AGENTS.md §6.1 缓冲复用可观测要求 | P2 |
+| D6 | 多个迭代闭包内在计时区克隆输入（`kernel.rs:70-73/96-99/173/187/206/221`、`attention.rs:63/166`），fixture 构造与被测成本混在一起 | 输入克隆/构造应在区外完成，迭代内只传视图；否则时延含非被测复制成本 | P1 |
+| D7 | 形状偏窄且手填：decode 行宽固定 4096，缺整除对齐点与非整除边界，未从真实模型配置派生形状网格 | 形状应由模型配置 + 边界余数点组成网格，复用注解元数据，不靠逐组手写 | P3 |
+| D8 | 各基准闭包各自手写 `black_box` 包装、克隆、对拍、归档样板，骨架重复 | 重复骨架应收敛到公共采集器；用例只声明「算子/形状/后端/容差/指标」，样板由配置表展开 | P0 |
+| D9 | 基准元数据（shape/dtype/skeleton）与 `nn` 侧 `#[model]` 注解各写一份 | 应以注解编译期常量为单一事实源派生台账，消除第二份可漂移的形状/精度登记 | P0 |
 
 ### 3.3 架构
 
@@ -91,6 +104,7 @@ P2 运行时层、P3 后端/量化/硬件观测、P4 服务化。
 | A3 | `Harness` 仅 host/cpu/os/arch/toolchain/driver（`bench.rs:36`） | 环境档案缺绑核、governor/boost、SMT/NUMA、页缓存冷热、温度/功耗、采样数/预热；未测得留 `None` | P1 |
 | A4 | 归档 JSON 落本机 `target/bench-report/`，无跨 commit/跨运行历史库与趋势对比 | 缺可回查的时间序列与 CI 回归对比层 | P2 |
 | A5 | roofline 只分 bandwidth / not-bandwidth，算力 vs 延迟瓶颈不分；无 PMU 佐证 | 缺分层 roofline（L1/L2/DRAM 多坡）与计数器证据；延迟瓶颈需 prof 采样，当前不具备 | P3 |
+| A6 | 归档只带 host/cpu/os/arch/toolchain/driver；缺 commit SHA、二进制/权重摘要、编译 flags、亲和/governor/频率/温度、种子与输入摘要、原始产物摘要 | 结果无法从产物独立复算，也无法 join 历史趋势；溯源字段需进版本化 schema | P1 |
 
 ### 3.4 质量
 
@@ -135,8 +149,10 @@ benchmarks 归档层：JSON 记录、历史库、对比、报告渲染（只消�
 ### 4.3 场景与负载分离（A2/D3）
 
 - `KernelCase`：算子、层级、形状、dtype、后端、工作集档位、对拍容差。
-- `Workload`：ISL/OSL 长度分布、批大小网格、并发度、到达过程（closed-loop / Poisson）、
-  稳态窗口定义、SLO/超时、预热与重复次数。负载生成器不依赖被测引擎内部实现，只经公共接口发请求。
+- `Workload`：ISL/OSL 长度分布、批大小网格、并发度、到达过程（开环 Poisson / 闭环固定并发）、
+  稳态窗口定义、SLO/超时、预热与重复次数。开环暴露排队与尾延迟，用于 SLO/goodput 判定；闭环测吞吐
+  天花板。计时从调度到达时刻起算（避免 coordinated omission）；warmup 与首尾 ramp-up/drain 瞬态剔除出
+  稳态窗口。负载生成器不依赖被测引擎内部实现，只经公共接口发请求。
 
 ### 4.4 统计判定（D1/Q1/Q2）
 
@@ -152,7 +168,10 @@ benchmarks 归档层：JSON 记录、历史库、对比、报告渲染（只消�
 
 - `Harness` 扩 `EnvProfile`：绑核/亲和、governor/boost、SMT/NUMA、页缓存冷热、温度/功耗、
   工具链/驱动版本、样本数、预热轮次、迭代次数；任一项采集不到留 `None`，不填标称值。
-- 每条归档带：命令、工具版本、产物路径、主机档案、跳过/忽略/阻塞原因；Open/Skip/Ignored 结构化汇总。
+- **溯源字段（每条产物必填，缺测写 `null`）**：base/candidate commit SHA、二进制与权重摘要、
+  编译器/链接器版本与 flags、CPU 型号/ISA/核数/频率、加速卡型号/架构/驱动/运行时、
+  命令行与 schema 版本、相关环境变量、负载种子与输入摘要、原始时长产物摘要、稳定 workload 标识。
+- 摘要必须能从原始产物复算，不手写数字；Open/Skip/Ignored/阻塞原因结构化汇总，附命令、工具版本与产物路径。
 
 ### 4.6 趋势归档（A4/Q4）
 
@@ -160,25 +179,103 @@ benchmarks 归档层：JSON 记录、历史库、对比、报告渲染（只消�
   显著回退定位到提交区间；基线用滚动中位数 + 区间对照，而非单份快照。
 - 稳态吞吐按 E3 口径：每配置 ≥3 次独立重复，报均值/中位数与 95% CI，附错误率/超时率/队列时间。
 
+### 4.7 计时洁净与防优化消除（D6）
+
+- 输入与输出双向加屏障：输入 `black_box` 阻断常量折叠，输出被公共采集器消费（返回/写入屏障）阻断死代码消除。
+- fixture（权重、输入、输出缓冲）在计时区外构造一次；迭代闭包内只传视图（`&[T]`、`View`），不在闭包内 `clone` 输入。
+- 预热迭代不计入统计；被测方法经委托包装防内联，包装 overhead 单独跑一轮扣减。
+- 被测闭包内禁止 E/S、打印、文件访问；这一类辅助操作移到区外或用内存替身。
+- 屏障施加、缓冲复用、overhead 扣减由公共采集器统一完成，用例不各自手写。
+
+### 4.8 形状网格与元数据单一事实源（D7/D9）
+
+- 算子的 shape/dtype/skeleton 取自 `nn` 侧 `#[model]` 注解展开的编译期规格常量（dtype 同时遵循 0018 单一事实源）；基准台账只登记差异项（后端、容差、负载、基线预算），不复制第二份形状与精度。按 0005，注解只出契约常量、不生成注册表；基准用例注册表独立维护，不由注解扫描产出。
+- 形状网格三类点：真实模型配置派生点、整除对齐点（tile 满块）、非整除边界与小维度碎片点（tile 量化余量）；每形状的算法 FLOPs 与字节仍由 `nn::Bounds` 语义表推出。
+- 新增形状 = 网格表加一项；采集、判定、归档内核不改。
+
+### 4.9 内存与分配计数（D5）
+
+- 基准 binary 挂 dev-only 全局计数分配器，记录每迭代 `alloc_count`、`alloc_bytes` 与峰值驻留；计数与耗时并列归档。
+- 堆测量串行或放独立进程，避免并行测试的分配混入；全局分配器只在基准 binary 声明。
+- 「零分配 / 缓冲复用」结论必须有分配计数或容量、指针、分配计数证据支撑；无证据只陈述结构变化，不宣称性能收益。
+
+### 4.10 复用与配置化优先（D8，本轮核心约束）
+
+- **优先级**：配置表 / 枚举 / 注解 ＞ 泛型 / 闭包 / 高阶组件 ＞ 声明式宏 ＞ 复制代码；禁止平行实现、仅转发的包装层和伪泛型。
+- **基准用例即配置项**：一条项声明层级、算子引用、形状网格、dtype、后端、参考实现、容差、指标、方向、基线预算；公共采集器按项展开计时闭包、屏障、对拍、归档与 roofline 派生。
+- **共用能力各实现一次**：防消除屏障、对拍容差、区间判定、环境档案采集、归档字段、roofline 上界派生，均为单一公共组件，被配置项引用；同一逻辑出现两次即提取，不复制分支骨架。
+- **扩展路径**：新增同类基准只加表项或注解；只有证明配置/泛型无法承载时才动公共内核；新增文件必须证明独立职责，碎片文件折回既有模块。
+- **复用既有设施**：沿用 `annotation` crate 的 `#[model]` 规格常量与 `prof_ops!` 表驱动模式，不另起第二套注册或配置源；配置语料在构建期展开为静态表（0022），运行期不挂 TOML 解析器。
+
+### 4.11 硬件观测与分层 roofline（A5）
+
+- roofline 按 L1 / L2 / DRAM 分层成多坡曲线，算术强度 I=FLOPs/byte，上界取 `min(峰值算力, I·峰值带宽)`；当前只分 bandwidth / not-bandwidth，算力与延迟瓶颈暂不细分。
+- FLOPs、缓存/内存流量优先用 PMU 或缓存计数器实测，不用估算冒充；Linux 下 iai-callgrind 的指令/L1L2/LLC 计数作确定性第二佐证。
+- 无 PMU 权限、计数器不可用或延迟瓶颈缺 prof 采样证据时，对应格记 Open，只报 `not-bandwidth`，不猜算力或延迟归属。
+
 ## 5. 正确性与性能绑定（D2）
 
-- 每条 `Op/Fused/Layer` 性能基准挂一个数值对拍：按 dtype 预注册容差（max rel err / abs err），
-  参考实现为 CPU 标量锚点；正确性未过门，该性能格记 Open，不出性能数。
-- 性能与正确性用同一 `KernelCase` 几何，避免两套形状漂移；容差口径写入台账行，不写进算子实现。
+- 每条 `Op/Fused/Layer` 性能基准挂一个数值对拍：参考实现为高精度锚点（f32/f16/bf16 对拍用 f64，
+  f64 对拍用任意精度）；正确性未过门，该性能格记 Open，不出性能数。
+- **容差按 dtype 分级登记**：浮点用 rtol/atol 或 ULP（scale-aware），整数默认精确相等，量化输出可声明
+  有界整数容差；分档参考行业容差表（f16/bf16 宽于 f32，f32 宽于 f64），具体数值在台账行冻结，不写进算子实现。
+- **双门判定**：mean-RE 控整体精度，max-RE 控孤立离群；max 门可按约定倍数放宽，避免单点离群拖垮整张量。
+  近零（参考值趋零，相对误差失真）、溢出/∞、常态三区域分别选误差口径，不在近零点套用相对误差。
+- 性能与正确性用同一 `KernelCase` 几何，避免两套形状漂移；对拍样本、种子与输入摘要随归档留存。
 
 ## 6. 落地路线（对齐 roadmap P0–P4，每阶段可证伪验收）
 
 | 阶段 | 改动面 | 验收口径（可回查） |
 |---|---|---|
-| P0 架构定型 | `EntryKind` 补五级；两套 Roofline 正名；身份/路径单一派生；五层边界与依赖单向化自检 | 依赖方向门通过；命名门（name-lint）零新违规；台账身份唯一自检通过；无第二套路径转换 |
-| P1 CPU 闭环 | 算子回归改区间判定 + 效应规模 + 校正；A/A 前置基准；消费 criterion 结构化产物；EnvProfile 扩位；正确性对拍绑定 | 区间判定单测覆盖 Pass/Fail/Open 三态；A/A 基准入档；每条性能格带容差对拍；产物字段完整可解析 |
+| P0 架构定型 | `EntryKind` 补五级；两套 Roofline 正名；身份/路径单一派生；五层边界与依赖单向化自检；基准用例配置化/注解注册，复用 `#[model]` 元数据；公共采集器收敛 `black_box`/克隆/对拍/归档样板 | 依赖方向门通过；命名门零新违规；台账身份唯一自检通过；无第二套路径转换与第二份形状登记；重复骨架只存在于公共采集器一处 |
+| P1 CPU 闭环 | 算子回归改区间判定 + 效应规模 + 校正；A/A 前置基准；消费 criterion 结构化产物；EnvProfile 与溯源字段扩位；正确性对拍绑定；计时洁净（fixture 出区、闭包内不克隆） | 区间判定单测覆盖 Pass/Fail/Open 三态；A/A 基准入档；每条性能格带容差对拍；归档字段完整可解析且可从原始产物复算；闭包内无输入克隆 |
 | P2 运行时层 | Layer/Model 基准；KV 长度/批网格；TPOT/ITL/P50/P95/P99；稳态窗口；内存峰值/分配计数；历史趋势库 | 每配置 ≥3 次独立重复入档；分配计数有计数证据；趋势 compare 产出上下界与回退标记 |
-| P3 后端/量化/观测 | 多后端行；f16/bf16/f8/nf4 精度曲线；分层 roofline；PMU/缓存计数佐证；能效 tokens/J | 同口径跨后端对照；精度-性能曲线可复算；瓶颈侧有计数器证据，不靠猜测 |
+| P3 后端/量化/观测 | 多后端行；f16/bf16/f8/nf4 精度曲线；形状网格（对齐点 + 非整除边界）；分层 roofline；PMU/缓存计数佐证；能效 tokens/J | 同口径跨后端对照；精度-性能曲线可复算；形状覆盖对齐与边界点；瓶颈侧有计数器证据，不靠猜测 |
 | P4 服务化 | Serving 场景（single-stream / server Poisson / offline）；TTFT/TPOT/goodput；并发-Pareto；同口径对照 llama.cpp/vLLM | E1/E3 口径：分相报数、长尾分位、goodput、SLO 满足率；跨实现对照须同设备同负载，异源数字只作情报 |
+
+### 6.1 P0 落地设计拆解（架构定型，不改测量口径）
+
+**范围（只做结构与命名定型，不碰计时与判定口径）**
+
+1. 分类学：`tools::bench::EntryKind` 由 Op/Layer/Model 扩为 Op/Fused/Layer/Model/Serving 五级闭集；`as_str` 短名随闭集登记。Serving 在本阶段只占类型位，不实现服务化基准（归 P4）。
+2. 正名：`tools::bench::Roofline`（硬件峰值上界）→ `PeakProfile`；`tests/analysis.rs::Roofline`（报告侧达成率口径）→ `Attainment`。Rust 符号重命名，归档 JSON 键名（`roofline_ns` / `bottleneck_side` 等）保持不变以兼容历史快照。
+3. 身份单一派生：台账 `scenario` 继续由 `row!` 宏按 `group/bench` 编译期拼接；新增台账自检：身份三元组 `(scenario, backend, op)` 唯一、分组/用例可定位；磁盘路径清洗只走 `analysis::on_disk` 一处。
+4. 配置化优先：用例即台账表行；不造注解注册表（遵 0005：注解只出契约常量）；dtype 口径归 0018 单一事实源；roofline 分子继续由 `nn::Bounds` 推出，不手写第二份 read/write/flops 公式。
+5. 采集族承载点：既有 `dual` / `gemm_pair` / `spread` / `f32_paths` / `i8_paths` 已是对应采集族的公共承载点。P0 不新增 `bench_function` 转发包装——各闭包借用 / 拥有 / 返回 `Result` 形态各异，抽取只会变成一层转发，违反复用铁律；闭包内 clone、输入输出屏障与缓冲复用的统一收敛随 P1 计时洁净一并处理。线程屏障 / `iter_custom` 保持独立族，不强行套同一闭包。
+
+**领域解耦**：不变核心是身份三元组 `(surface, backend, geometry)`、几何校验与峰值上界结构（tools，不依赖 criterion、不读环境）；可变差异是分组名、形状、后端、负载档位、基线预算，全部外置到台账表行，不写进被测内核。
+
+**正交分层（单向）**：数据定义（tools::bench 结构与校验）→ 台账配置（tests/table 表与派生宏）→ 采集装配（src 各分组与既有采集族承载点）→ 记录归档（record/archive）；入口 `main.rs` 只声明 criterion 分组。采集器依赖被测对象，不反向。crate 内模块单向依赖由 `pub(crate)` 可见性约束；工作空间层表与边集归既有 testkit 架构门，P0 不新增平行源码扫描器。
+
+**复用路径**：复用既有 `tools::bench` 结构与 `row!` 宏；采集族只承载装配，不复制判定/统计；线程与 custom 采集保留各自族。新增同类基准只加台账行 + 登记一个分组；新增后端只加一行同形状不同 `backend`，判定与归档不动。
+
+**验证计划**：tools 静态门（CCN/NLOC/文件行数）、name-lint 命名门零新违规、testkit 架构门层表/边集不破坏；新增五级 `as_str` 闭集断言与台账身份唯一自检；正名后既有 card/record/archive/cases 测试全绿；jscpd 重复率不上升。
+
+**P0 明确不做**：闭包内夹具出区等计时洁净（P1）、区间判定与 A/A 前置基准、正确性对拍绑定（P1）、形状网格与精度曲线（P3）、分配计数与分层 roofline（P2/P3）、Serving 场景实现（P4）。
+
+### 6.2 P1 落地设计拆解（CPU 闭环判定与洁净）
+
+**批次划分**（每批可独立回查，不把半成品混进同一门禁）：
+
+1. **判定内核（`tools::regress`）**：观测由单点 `f64` 升级为带置信区间的 `Estimate { point, lower, upper }`；区间对预算线落成三态——整段内侧 Pass、整段外侧 Regressed、跨门槛 Open(Straddle)；效应规模归一为「改进为正」并随结论携带；最小效应规模门（不可察觉漂移带 `epsilon_percent`）内的漂移记持平而非 Improved；旧单点入口保留，内部退化为零宽区间。
+2. **结构化产物（`tests/analysis.rs`）**：用仓库唯一 JSON 解析器 `weights::json` 读取 criterion `estimates.json` 的 `mean.point_estimate` / `mean.confidence_interval.{lower_bound,upper_bound,confidence_level}` / `mean.standard_error`，替换手写字符串扫描；解析不出即明说，不猜数。
+3. **本批不做（P1 后续批次）**：A/A 前置基准入档；`EnvProfile` 与溯源字段扩位；正确性对拍绑定骨架（容差分级、双门）；计时洁净（fixture 出区、闭包内不克隆、屏障与 overhead 扣减统一到采集器）。
+
+**领域解耦**：不变核心是方向折算、基线/预算线、效应规模口径；可变差异是观测为点或区间、不可察觉带宽度，外置到 `Case` 配置。判定区间来自 criterion mean CI，`regress` 不做第二套 bootstrap 重采样（重采样区间仍归 `card::Tally`）。
+
+**正交分层（单向）**：`tools::regress` 纯判定——不读文件、不依赖 criterion、不碰环境；`analysis` 负责产物解析与区间装配；`archive` 只消费结论并归档。依赖方向 tools → 无外部测量源，analysis → tools，archive → analysis/tools。
+
+**复用路径**：三态「整段内 Pass / 整段外 Fail / 跨线 Straddle」的方向分支与 `card::verdict` 同源；但 card 判绝对门槛、regress 判相对基线的预算线，两条规则各自一处，不合并成一个泛型门槛组件。`stats::interval` 只服务 card 的样本重采样，regress 不调用。
+
+**扩展方式**：新增未判定理由（如样本不足 Noise）只加 `OpenReason` 表项与短名；新增指标方向不改内核。多重比较校正在 `Baseline` 批量判定层（族系错误率的阈值缩放），单 `Case` 不挂校正状态；本批先留批量层接入位，不内建校正算法。
+
+**验证计划**：tools 集成测试覆盖 Higher/Lower 各 Pass / Regressed / Open、改进 / 持平 / 越不可察觉带、效应符号与量级；analysis 用真实 `estimates.json` 片段断言 point/lower/upper/stderr；既有 regress 14 用例、card 测试与台账自检不退化；jscpd 重复率不上升。
+
+**P1 边界**：iai-callgrind / PMU 计数在当前装置不具备条件，记 Open，不伪装；A/A、对拍绑定、溯源扩位、计时洁净未完成前，对应归档格保持 OPEN。
 
 ## 7. 边界与不做
 
-- 不造通用 IR/融合编译器（ADR 0017 边界）；基准只经公共接口调用被测对象。
+- 不自行定义张量 IR/AST 或融合编译器；沿用 0017 冻结的 kernel AST 与运行时张量 IR 边界，基准只经公共接口调用被测对象。
 - 不用理论峰值、他机数字或参考实现冒充实测；达成率不等于硬件利用率。
 - 不跨机比绝对值；未建档主机/无设备行记 Open，不删行、不降阈值。
 - 不引入生产非必要依赖；确定性计数工具按平台边界挂接，不可用记 Open。
@@ -186,8 +283,13 @@ benchmarks 归档层：JSON 记录、历史库、对比、报告渲染（只消�
 
 ## 8. 未完成项与证据边界
 
-- 本文为提案；§4 各决策均未落地，验收前对应格保持 OPEN。
-- 函数长度、圈复杂度、嵌套、jscpd 等门禁数值须以最终格式化代码的静态报告为准，本文不预设全绿。
+- P0 已落地：五级 `EntryKind`、`PeakProfile` / `Attainment` 正名、台账身份唯一与字段完整自检；§4 其余决策（区间判定、对拍绑定、形状网格、分配计数、分层 roofline、Serving 场景等）未落地，验收前对应格保持 OPEN。
+- P0 取舍：未造注解注册表（遵 0005，注解只出契约常量）；未抽 `bench_function` 转发包装（闭包形态各异，抽取即转发层）；台账 dtype/形状尚未回读 `#[model]` 常量，留 P3；闭包内 clone 与输入输出屏障的统一收敛留 P1 计时洁净。
+- **P1 本批已落地（判定内核 + 产物解析）**：`tools::regress` 新增 `Estimate`（点估计 + 置信区间）与 `OpenReason::Straddle`；区间对预算线三态——整段内侧 Pass、整段外侧 Regressed、跨门槛 Open；效应规模归一为改进为正并随结论携带；`epsilon_percent` 不可察觉带内漂移记持平不报改进；单点入口保留为零宽区间。`tests/analysis.rs` 改用 `weights::json::parse_ledger` 解析 criterion `mean.point_estimate` 与 `confidence_interval` 两端，归档判定链路（`judge_one` / `judge_ceiling`）接入区间；新公共类型已登记进 `docs/ARCHITECTURE.md` 所有权表。
+- **P1 剩余批次（未落地，对应格保持 OPEN）**：A/A 前置基准入档；`EnvProfile` 与溯源字段扩位（含 mean 标准误 / std 等离散统计量入档，本轮解析件暂未携带 stderr）；正确性对拍绑定骨架（容差分级、mean-RE / max-RE 双门）；计时洁净（fixture 出区、闭包内不克隆、输入输出屏障与 overhead 扣减统一到采集器）；多重比较校正落在批量判定层，单 `Case` 不挂。
+- 门禁证据：本批 `cargo fmt --all --check` 通过；`llm-tools --test card` 45 passed（含新增 6 个区间判定用例）；`llm-benchmarks --test regress` 16 passed（含 2 个产物解析用例）；`llm-testkit --lib` 117 passed（架构 / 所有权门）；jscpd 0 clones / 0.00%；命名门 0 命中。
+- **存量阻塞（非本轮产物，未回滚、未掩盖）**：`crates/diagnostic/src/buildgen.rs` 两个 `Result` 函数缺 `# Errors` 小节，`clippy -D warnings` 在依赖链阻断，本轮 crate 未能跑到 clippy 结论；`crates/prof/src/build.rs` 90 行触生产文件行数下限门，tools gate 静态门报存量碎文件。两处均属进行中的存量未提交改动，需对应模块收尾。
+- 函数长度、圈复杂度、嵌套等门禁数值以最终格式化代码的静态报告为准；本批新增判定函数均 ≤10 行、分支 ≤3。
 - PMU 采样、iai-callgrind、多后端与服务化场景在当前 CPU 参考装置上不具备运行条件，列入后续阶段。
-- 未生成性能报告或基准产物；复跑命令沿用 `cargo bench -p llm-benches` 与 `cargo test -p llm-benches --test regress`，
+- 未生成性能报告或基准产物；复跑命令为 `cargo bench -p llm-benchmarks` 与 `cargo test -p llm-benchmarks --test regress`，
   历史归档路径 `target/bench-report/<host>/`。

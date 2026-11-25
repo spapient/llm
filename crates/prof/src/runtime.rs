@@ -19,9 +19,21 @@ pub mod gemm_micro {
 
     include!(concat!(env!("OUT_DIR"), "/gemm_micro_contract.rs"));
 
-    #[cfg(all(feature = "bench", target_arch = "aarch64"))]
+    // 签名与 `ops/gemm_micro.h` 原型由构建期对齐门核对；探针另挂 bench 特性与 aarch64 门。
     unsafe extern "C" {
+        fn cutile_sme_micro(a: *const f32, b: *const f32, out: *mut f32, n: usize, k: usize);
+        fn cutile_sme_pack(src: *const f32, panel: *mut f32, k: usize, mblk0: usize, blocks: usize);
+        fn cutile_sme_stage(
+            a: *const f32,
+            b: *const f32,
+            out: *mut f32,
+            n: usize,
+            k: usize,
+            blocks: usize,
+        );
+        #[cfg(all(feature = "bench", target_arch = "aarch64"))]
         fn cutile_sme_pure(rounds: usize);
+        #[cfg(all(feature = "bench", target_arch = "aarch64"))]
         fn cutile_sme_mix(rounds: usize, a: *const f32, b: *const f32);
     }
 

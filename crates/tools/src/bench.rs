@@ -1,5 +1,5 @@
-//! 统一基准记录结构（M1-C2）：一条算子 / 层 / 整模型基准的身份、形状、批次、精度、后端与
-//! roofline 上界。
+//! 统一基准记录结构（M1-C2）：一条算子 / 融合 / 层 / 整模型 / 服务负载基准的身份、形状、
+//! 批次、精度、后端与硬件峰值上界。
 
 use diagnostic::{Error, Result};
 
@@ -8,15 +8,19 @@ fn invalid(ctx: &str, message: impl Into<String>) -> Error {
     crate::error::invalid("bench", ctx, message)
 }
 
-/// 条目层级：算子内核、层、整模型。
+/// 条目层级：算子内核、融合复合、层、整模型、服务负载。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EntryKind {
-    /// 单条算子基准。
+    /// 单条算子内核基准。
     Op,
+    /// 多算子融合 / 复合路径基准（一条调用链内含多个算子）。
+    Fused,
     /// 一层组合基准。
     Layer,
     /// 整模型一步基准。
     Model,
+    /// 服务化负载基准（请求流 / 并发；类型位先占位，测量落地归 P4）。
+    Serving,
 }
 
 impl EntryKind {
@@ -24,8 +28,10 @@ impl EntryKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Op => "op",
+            Self::Fused => "fused",
             Self::Layer => "layer",
             Self::Model => "model",
+            Self::Serving => "serving",
         }
     }
 }
@@ -93,22 +99,22 @@ impl Harness {
     }
 }
 
-/// roofline 上界：同一硬件的峰值带宽与峰值算力。任一项未测得即留 [`None`]，
-/// 不拿标称值或他机数字顶替。
+/// 硬件峰值画像：同一硬件的峰值带宽与峰值算力上界。任一项未测得即留 [`None`]，
+/// 不拿标称值或他机数字顶替。与报告侧的达成率口径（`Attainment`）区分：本类型只持有硬件峰值。
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct Roofline {
+pub struct PeakProfile {
     peak_bw_gb_s: Option<f64>,
     peak_gflops: Option<f64>,
 }
 
-impl Roofline {
+impl PeakProfile {
     /// 构造上界；给出的值必须是有限且非负的。
     pub fn new(peak_bw_gb_s: Option<f64>, peak_gflops: Option<f64>) -> Result<Self> {
         for (label, value) in [("peak_bw_gb_s", peak_bw_gb_s), ("peak_gflops", peak_gflops)] {
             match value {
                 Some(number) if !number.is_finite() || number < 0.0 => {
                     return Err(invalid(
-                        "Roofline::new",
+                        "PeakProfile::new",
                         format!("{label} 必须是非负有限数，得到 {number}"),
                     ));
                 }
@@ -156,10 +162,10 @@ impl Roofline {
     /// 两个峰值都要登记，否则无法折成百分比。
     fn peaks(&self) -> Result<(f64, f64)> {
         let Some(peak_bw) = self.peak_bw_gb_s else {
-            return Err(invalid("Roofline::score", "带宽峰值未登记，无法打分"));
+            return Err(invalid("PeakProfile::score", "带宽峰值未登记，无法打分"));
         };
         let Some(peak_flops) = self.peak_gflops else {
-            return Err(invalid("Roofline::score", "算力峰值未登记，无法打分"));
+            return Err(invalid("PeakProfile::score", "算力峰值未登记，无法打分"));
         };
         Ok((peak_bw, peak_flops))
     }
@@ -248,7 +254,7 @@ impl Geometry {
     }
 }
 
-/// 一条统一基准记录：身份 + 几何 + 后端 + roofline 上界 + 可选实测。
+/// 一条统一基准记录：身份 + 几何 + 后端 + 硬件峰值画像 + 可选实测。
 #[derive(Debug, Clone, PartialEq)]
 pub struct BenchRecord {
     kind: EntryKind,
@@ -256,7 +262,7 @@ pub struct BenchRecord {
     backend: String,
     geometry: Geometry,
     harness: Harness,
-    roofline: Roofline,
+    peak_profile: PeakProfile,
     observed: Option<f64>,
 }
 
@@ -268,7 +274,7 @@ impl BenchRecord {
         backend: impl Into<String>,
         geometry: Geometry,
         harness: Harness,
-        roofline: Roofline,
+        peak_profile: PeakProfile,
     ) -> Result<Self> {
         let name = name.into();
         let backend = backend.into();
@@ -279,7 +285,7 @@ impl BenchRecord {
             backend,
             geometry,
             harness,
-            roofline,
+            peak_profile,
             observed: None,
         })
     }
@@ -321,9 +327,9 @@ impl BenchRecord {
         &self.harness
     }
 
-    /// roofline 上界。
-    pub fn roofline(&self) -> &Roofline {
-        &self.roofline
+    /// 硬件峰值画像（带宽 / 算力上界）。
+    pub fn peak_profile(&self) -> &PeakProfile {
+        &self.peak_profile
     }
 
     /// 实测值；未测量为 `None`，不伪造。
@@ -358,7 +364,7 @@ fn check_shape_batch(shape: &[usize], batch: u32) -> Result<()> {
 fn check_ratio(value: f64, label: &str) -> Result<()> {
     if !value.is_finite() || value < 0.0 {
         return Err(invalid(
-            "Roofline::score",
+            "PeakProfile::score",
             format!("{label} 必须是非负有限数，得到 {value}"),
         ));
     }

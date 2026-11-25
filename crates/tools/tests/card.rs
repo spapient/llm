@@ -2,10 +2,10 @@
 //! 只用公开面，不读实现即可换掉实现。
 
 use diagnostic::{Code, Result};
-use llm_tools::bench::{BenchRecord, Bottleneck, EntryKind, Geometry, Harness, Roofline};
+use llm_tools::bench::{BenchRecord, Bottleneck, EntryKind, Geometry, Harness, PeakProfile};
 use llm_tools::card::{Card, Direction, Protocol, Shortfall, Standing, Statistic, Tally};
 use llm_tools::escape::quote;
-use llm_tools::regress::{Baseline, Case, Direction as RegDir, Judgement};
+use llm_tools::regress::{Baseline, Case, Direction as RegDir, Estimate, Judgement, OpenReason};
 use llm_tools::stats::{interval, mean, quantile, resample, sd};
 
 /// 一台在闭集里的 A800：多数用例只关心门槛，不关心装置。
@@ -224,7 +224,7 @@ fn bench_record(name: &str, backend: &str, geom: Geometry) -> Result<BenchRecord
         backend,
         geom,
         bench_harness(),
-        Roofline::default(),
+        PeakProfile::default(),
     )
 }
 
@@ -239,8 +239,8 @@ fn a_minimal_record_keeps_observed_and_roofline_optional() {
     assert_eq!(record.geometry().batch(), 1);
     assert_eq!(record.geometry().dtype(), "f32");
     assert!(record.observed().is_none(), "未测量不预填实测");
-    assert!(record.roofline().peak_bw_gb_s().is_none());
-    assert!(record.roofline().peak_gflops().is_none());
+    assert!(record.peak_profile().peak_bw_gb_s().is_none());
+    assert!(record.peak_profile().peak_gflops().is_none());
 }
 
 #[test]
@@ -288,17 +288,17 @@ fn invalid_geometry_itself_is_an_error() {
 
 #[test]
 fn roofline_rejects_negative_or_nonfinite_peaks() {
-    assert!(Roofline::new(Some(-1.0), None).is_err());
-    assert!(Roofline::new(None, Some(f64::INFINITY)).is_err());
-    let ok = Roofline::new(Some(1024.0), Some(512.0)).expect("上界合法");
+    assert!(PeakProfile::new(Some(-1.0), None).is_err());
+    assert!(PeakProfile::new(None, Some(f64::INFINITY)).is_err());
+    let ok = PeakProfile::new(Some(1024.0), Some(512.0)).expect("上界合法");
     assert_eq!(ok.peak_bw_gb_s(), Some(1024.0));
     assert_eq!(ok.peak_gflops(), Some(512.0));
 }
 
 #[test]
 fn score_is_bandwidth_bound_below_the_ridge_point() {
-    let roofline = Roofline::new(Some(1000.0), Some(500.0)).expect("上界合法");
-    let score = roofline.score(0.25, 125.0).expect("打分合法");
+    let profile = PeakProfile::new(Some(1000.0), Some(500.0)).expect("上界合法");
+    let score = profile.score(0.25, 125.0).expect("打分合法");
     assert_eq!(score.side(), Bottleneck::Bandwidth);
     assert_eq!(score.ceiling_gflops(), 250.0);
     assert_eq!(score.percent(), 50.0);
@@ -306,8 +306,8 @@ fn score_is_bandwidth_bound_below_the_ridge_point() {
 
 #[test]
 fn score_is_compute_bound_at_or_above_the_ridge_point() {
-    let roofline = Roofline::new(Some(1000.0), Some(500.0)).expect("上界合法");
-    let score = roofline.score(2.0, 250.0).expect("打分合法");
+    let profile = PeakProfile::new(Some(1000.0), Some(500.0)).expect("上界合法");
+    let score = profile.score(2.0, 250.0).expect("打分合法");
     assert_eq!(score.side(), Bottleneck::Compute);
     assert_eq!(score.ceiling_gflops(), 500.0);
     assert_eq!(score.percent(), 50.0);
@@ -315,18 +315,18 @@ fn score_is_compute_bound_at_or_above_the_ridge_point() {
 
 #[test]
 fn score_rejects_nonfinite_or_negative_inputs() {
-    let roofline = Roofline::new(Some(1000.0), Some(500.0)).expect("上界合法");
-    assert!(roofline.score(-0.25, 125.0).is_err());
-    assert!(roofline.score(f64::NAN, 125.0).is_err());
-    assert!(roofline.score(0.25, f64::INFINITY).is_err());
+    let profile = PeakProfile::new(Some(1000.0), Some(500.0)).expect("上界合法");
+    assert!(profile.score(-0.25, 125.0).is_err());
+    assert!(profile.score(f64::NAN, 125.0).is_err());
+    assert!(profile.score(0.25, f64::INFINITY).is_err());
 }
 
 #[test]
 fn score_requires_both_peaks() {
-    assert!(Roofline::default().score(0.25, 125.0).is_err());
-    let no_flops = Roofline::new(Some(1000.0), None).expect("上界合法");
+    assert!(PeakProfile::default().score(0.25, 125.0).is_err());
+    let no_flops = PeakProfile::new(Some(1000.0), None).expect("上界合法");
     assert!(no_flops.score(0.25, 125.0).is_err());
-    let no_bw = Roofline::new(None, Some(500.0)).expect("上界合法");
+    let no_bw = PeakProfile::new(None, Some(500.0)).expect("上界合法");
     assert!(no_bw.score(0.25, 125.0).is_err());
 }
 
@@ -339,8 +339,10 @@ fn bottleneck_short_names_are_stable() {
 #[test]
 fn entry_kind_short_names_are_stable() {
     assert_eq!(EntryKind::Op.as_str(), "op");
+    assert_eq!(EntryKind::Fused.as_str(), "fused");
     assert_eq!(EntryKind::Layer.as_str(), "layer");
     assert_eq!(EntryKind::Model.as_str(), "model");
+    assert_eq!(EntryKind::Serving.as_str(), "serving");
 }
 
 // ---------------------------------------------------------------------------
@@ -429,9 +431,98 @@ fn judgements_and_directions_have_stable_names() {
     assert!(
         Judgement::Improved {
             observed: 2.0,
-            baseline: 1.0
+            baseline: 1.0,
+            effect: 1.0
         }
         .is_pass()
+    );
+}
+
+#[test]
+fn a_higher_is_better_interval_splits_inside_outside_and_straddle() {
+    let case = Case::new("tput", 100.0, 5.0, RegDir::Higher).expect("场景");
+    assert_eq!(
+        case.judge_interval(Estimate::interval(96.0, 97.0, 98.0).expect("区间")),
+        Judgement::Pass
+    );
+    assert!(matches!(
+        case.judge_interval(Estimate::interval(90.0, 91.0, 92.0).expect("区间")),
+        Judgement::Regressed { .. }
+    ));
+    assert!(matches!(
+        case.judge_interval(Estimate::interval(93.0, 96.0, 97.0).expect("区间")),
+        Judgement::Open {
+            reason: OpenReason::Straddle,
+            ..
+        }
+    ));
+    assert!(matches!(
+        case.judge_interval(Estimate::interval(101.0, 102.0, 103.0).expect("区间")),
+        Judgement::Improved { .. }
+    ));
+}
+
+#[test]
+fn a_lower_is_better_interval_mirrors_the_three_states() {
+    let case = Case::new("latency", 50.0, 10.0, RegDir::Lower).expect("场景");
+    assert_eq!(
+        case.judge_interval(Estimate::interval(48.0, 49.0, 52.0).expect("区间")),
+        Judgement::Pass
+    );
+    assert!(matches!(
+        case.judge_interval(Estimate::interval(56.0, 57.0, 58.0).expect("区间")),
+        Judgement::Regressed { .. }
+    ));
+    assert!(matches!(
+        case.judge_interval(Estimate::interval(52.0, 54.0, 57.0).expect("区间")),
+        Judgement::Open {
+            reason: OpenReason::Straddle,
+            ..
+        }
+    ));
+    assert!(matches!(
+        case.judge_interval(Estimate::interval(44.0, 45.0, 46.0).expect("区间")),
+        Judgement::Improved { .. }
+    ));
+}
+
+#[test]
+fn an_open_judgement_carries_no_effect_size() {
+    let case = Case::new("tput", 100.0, 5.0, RegDir::Higher).expect("场景");
+    let open = case.judge_interval(Estimate::interval(93.0, 96.0, 97.0).expect("区间"));
+    assert!(open.is_open());
+    assert!(open.effect().is_none());
+}
+
+#[test]
+fn drift_within_the_invisible_band_is_not_improved() {
+    let case = Case::with_epsilon("tput", 100.0, 5.0, 2.0, RegDir::Higher).expect("场景");
+    assert_eq!(case.judge(101.0), Judgement::Pass);
+    assert!(matches!(case.judge(103.0), Judgement::Improved { .. }));
+}
+
+#[test]
+fn effect_size_is_positive_for_improvement_and_negative_for_regression() {
+    let higher = Case::new("tput", 100.0, 5.0, RegDir::Higher).expect("场景");
+    let lower = Case::new("latency", 50.0, 10.0, RegDir::Lower).expect("场景");
+    let regress_high = higher.judge(91.0);
+    let regress_low = lower.judge(57.0);
+    assert!(regress_high.effect().expect("效应") < 0.0);
+    assert!(regress_low.effect().expect("效应") < 0.0);
+    assert!((regress_high.effect().expect("效应") + 0.09).abs() < 1e-12);
+    let improved = lower.judge(40.0);
+    assert!(improved.effect().expect("效应") > 0.0);
+}
+
+#[test]
+fn a_reversed_or_non_finite_interval_is_rejected() {
+    assert_eq!(
+        Estimate::interval(5.0, 3.0, 4.0).unwrap_err().code(),
+        Code::Invalid
+    );
+    assert_eq!(
+        Estimate::interval(f64::NAN, 1.0, 2.0).unwrap_err().code(),
+        Code::Invalid
     );
 }
 

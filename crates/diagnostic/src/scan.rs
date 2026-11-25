@@ -1,8 +1,11 @@
-//! 带字节位置的扫描游标：逐字节文法（头部 JSON 之类）共用的最小骨架。
+//! 确定性输入处理底座：带字节位置的扫描游标，与已解析签名序列的形状核对。
 //!
-//! 位置既是前进下标、也是报错坐标，所以这里不缓存、不跳读：只回答「下一个字节是什么」
-//! 「跳过空白」「吃一个必需字节」。文法不在这里（各层自己写），错误消息也由调用方给，
-//! 本类型只补上位置与站点——同一段输入在两处被解析时，诊断格式必须一致。
+//! - [`Cursor`]：逐字节文法（头部 JSON 之类）共用的最小骨架。位置既是前进下标、也是报错
+//!   坐标，所以这里不缓存、不跳读：只回答「下一个字节是什么」「跳过空白」「吃一个必需字节」。
+//!   文法不在这里（各层自己写），错误消息也由调用方给，本类型只补上位置与站点——同一段
+//!   输入在两处被解析时，诊断格式必须一致。
+//! - [`ffi_align`]：两侧已解析外部符号的名集与参数宽类序列核对；本层不解析 C／Rust 类型
+//!   词法，词法映射与符号前缀由各消费方解析成 [`FfiSignature`] 后传入。
 //!
 //! # 例子
 //!
@@ -17,6 +20,7 @@
 //! ```
 
 use crate::{Code, Error, Result};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// 一块文本上的逐字节游标：`pos` 同时是报错位置。
 #[derive(Debug, Clone)]
@@ -105,3 +109,102 @@ impl<'a> Cursor<'a> {
         Error::new(Code::Invalid, message).with(self.site)
     }
 }
+
+// ---- FFI 签名序列对齐 ---------------------------------------------------------
+
+/// 外部参数的 ABI 宽类：只核指针 const 性与整数宽度，不核参数名与具体类型位宽。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FfiParam {
+    /// 只读指针（`const T *` / `*const T`）。
+    PtrConst,
+    /// 可写指针（`T *` / `*mut T`）。
+    PtrMut,
+    /// 机器字整数（`size_t` / `usize`）。
+    Size,
+}
+
+/// 一条外部符号：名字与按声明顺序排列的参数宽类序列。
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct FfiSignature {
+    /// 链接符号名。
+    pub name: String,
+    /// 参数宽类序列。
+    pub params: Vec<FfiParam>,
+}
+
+/// 核对 `expected` 符号集在两侧名集相等、共同名宽类序列一致。
+///
+/// `left` / `right` 是两侧各自解析出的签名；缺符号、多符号或宽类序列不一致均拒绝。
+///
+/// # Errors
+///
+/// 形状不一致返回 [`Code::Invalid`]；缺签名或出现未登记符号返回 [`Code::Missing`]，
+/// 消息指明符号名与违例类型。
+pub fn ffi_align(
+    expected: &BTreeSet<&str>,
+    left: &[FfiSignature],
+    right: &[FfiSignature],
+) -> Result<()> {
+    let l = by_name(left);
+    let r = by_name(right);
+    check_expected(expected, &l, &r)?;
+    check_registered(expected, &l, &r)
+}
+
+/// 核对登记符号在两侧都存在且宽类序列一致。
+fn check_expected(
+    expected: &BTreeSet<&str>,
+    left: &BTreeMap<&str, &[FfiParam]>,
+    right: &BTreeMap<&str, &[FfiParam]>,
+) -> Result<()> {
+    for name in expected.iter().copied() {
+        let (lp, rp) = pair(name, left, right)?;
+        if lp != rp {
+            return Err(Error::new(
+                Code::Invalid,
+                format!("`{name}` 两侧参数形状不一致"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// 取同一符号两侧的参数序列；任一侧缺签名按 [`Code::Missing`] 报错。
+fn pair<'a>(
+    name: &str,
+    left: &'a BTreeMap<&'a str, &'a [FfiParam]>,
+    right: &'a BTreeMap<&'a str, &'a [FfiParam]>,
+) -> Result<(&'a [FfiParam], &'a [FfiParam])> {
+    match (left.get(name), right.get(name)) {
+        (None, _) => Err(Error::new(Code::Missing, format!("左侧缺签名 `{name}`"))),
+        (_, None) => Err(Error::new(Code::Missing, format!("右侧缺签名 `{name}`"))),
+        (Some(lp), Some(rp)) => Ok((*lp, *rp)),
+    }
+}
+
+/// 核对两侧出现的符号都在登记集内，拒绝未登记的外部符号。
+fn check_registered(
+    expected: &BTreeSet<&str>,
+    left: &BTreeMap<&str, &[FfiParam]>,
+    right: &BTreeMap<&str, &[FfiParam]>,
+) -> Result<()> {
+    for name in left.keys().chain(right.keys()) {
+        if !expected.contains(name) {
+            return Err(Error::new(
+                Code::Missing,
+                format!("`{name}` 未登记为外部符号"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn by_name(sigs: &[FfiSignature]) -> BTreeMap<&str, &[FfiParam]> {
+    sigs.iter()
+        .map(|sig| (sig.name.as_str(), sig.params.as_slice()))
+        .collect()
+}
+
+#[cfg(test)]
+#[path = "../tests/ffi_tests.rs"]
+mod tests;
