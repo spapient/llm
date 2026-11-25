@@ -255,3 +255,34 @@ impl Roofline {
         }
     }
 }
+
+/// 登记身份转为 Criterion 相对路径：分组名清洗，嵌套用例逐段清洗但保留层级。
+pub(crate) fn measurement_id(group: &str, benchmark: &str) -> String {
+    let benchmark = benchmark
+        .split('/')
+        .map(on_disk)
+        .collect::<Vec<_>>()
+        .join("/");
+    format!("{}/{benchmark}", on_disk(group))
+}
+
+/// 递归收集所有含 `new/estimates.json` 的测量，避免漏掉 `BenchmarkId` 的嵌套目录。
+pub(crate) fn measured_ids(root: &Path) -> Vec<String> {
+    let mut ids = Vec::new();
+    collect_measured(root, root, &mut ids);
+    ids.sort();
+    ids
+}
+
+/// 深度优先遍历 Criterion 目录；找到测量后不再进入其 `new` / `change` 子目录。
+fn collect_measured(root: &Path, directory: &Path, ids: &mut Vec<String>) {
+    for entry in std::fs::read_dir(directory).expect("基准目录可读") {
+        let path = entry.expect("基准目录项可读").path();
+        if path.join("new/estimates.json").is_file() {
+            let id = path.strip_prefix(root).expect("测量位于根目录内");
+            ids.push(id.to_string_lossy().replace('\\', "/"));
+        } else if path.is_dir() {
+            collect_measured(root, &path, ids);
+        }
+    }
+}

@@ -178,3 +178,11 @@ pub(crate) fn harness_of(host: &HostProfile, driver: &str) -> Harness {
         driver,
     )
 }
+
+/// 找出主机缺失的第一档搬运上界；完整档案返回 `None`。
+pub(crate) fn missing_ceiling(host: &HostProfile) -> Option<(&'static str, &'static str)> {
+    ["l1", "l2", "dram"]
+        .into_iter()
+        .flat_map(|tier| ["read", "write"].map(|traffic| (tier, traffic)))
+        .find(|(tier, traffic)| ceiling_for(host.host, tier, traffic).is_none())
+}

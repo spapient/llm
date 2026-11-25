@@ -176,7 +176,77 @@ pub(crate) fn parsed_report(rendered: &str) -> weights::json::Value {
     weights::json::parse(rendered).expect("合法 JSON")
 }
 
-/// 取归档 JSON 里的批大小整数；键缺失或非整数返回 `None`。
-pub(crate) fn parsed_batch(parsed: &weights::json::Value) -> Option<i64> {
-    parsed.get("batch").and_then(|value| value.integer().ok())
+/// 三类报告共有的身份、几何、实测与主机字段；类别专属字段由调用方追加。
+pub(crate) fn assert_report_fields(rendered: &str, specific: &[&str], what: &str) {
+    const COMMON: &[&str] = &[
+        "\"surface\"",
+        "\"shape\"",
+        "\"dtype\"",
+        "\"backend\"",
+        "\"metric\"",
+        "\"observed_ns\"",
+        "\"host\"",
+        "\"cpu\"",
+        "\"os\"",
+        "\"toolchain\"",
+        "\"algorithm\"",
+    ];
+    assert_present(rendered, &[COMMON, specific].concat(), what);
+}
+
+/// 核对报告中的整数账目，键名自动进入失败上下文。
+pub(crate) fn assert_json_int(parsed: &weights::json::Value, key: &str, expected: i64) {
+    assert_eq!(
+        parsed.get(key).and_then(|value| value.integer().ok()),
+        Some(expected),
+        "报告字段 `{key}` 与登记口径不一致"
+    );
+}
+
+/// 算子报告的基线、roofline 与瓶颈字段。
+pub(crate) fn assert_op_report_fields(rendered: &str) {
+    assert_report_fields(
+        rendered,
+        &[
+            "\"direction\"",
+            "\"budget_percent\"",
+            "\"baseline_ns\"",
+            "\"verdict\"",
+            "\"read_bytes\"",
+            "\"write_bytes\"",
+            "\"working_set_bytes\"",
+            "\"cache_tier\"",
+            "\"flops\"",
+            "\"read_ceiling_mbps\"",
+            "\"write_ceiling_mbps\"",
+            "\"roofline_ns\"",
+            "\"bottleneck_side\"",
+            "\"achieved_percent\"",
+            "\"declared_ns\"",
+            "\"ceiling_percent\"",
+            "\"s_plus_percent\"",
+            "\"s_plus_line\"",
+            "\"mflops_per_s\"",
+            "\"bottleneck\"",
+        ],
+        "",
+    );
+}
+
+/// 装载报告的字节账目与派生带宽。
+pub(crate) fn assert_load_report_fields(rendered: &str) {
+    assert_report_fields(rendered, &["\"bytes_per_iter\"", "\"gb_per_s\""], "装载");
+}
+
+/// 模型报告的 token 与页池账目。
+pub(crate) fn assert_decode_report_fields(rendered: &str) {
+    assert_report_fields(
+        rendered,
+        &[
+            "\"tokens_per_iter\"",
+            "\"pages_in_use\"",
+            "\"tokens_per_s\"",
+        ],
+        "模型",
+    );
 }
