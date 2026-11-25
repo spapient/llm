@@ -26,7 +26,7 @@ pub(crate) fn the_error_boundary_does_not_fall_back_to_strings() {
          否则合并/删除成员会让本测试静默通过",
             root.display()
         );
-        paths.extend(files);
+        paths.extend(files.iter().cloned());
     }
     let mut offences = Vec::new();
     for path in paths {
@@ -103,12 +103,12 @@ pub(crate) fn the_document_names_only_existing_items() {
 pub(crate) fn the_mechanism_layer_exposes_no_vendor_names() {
     let (members, _) = workspace();
     let mut found = BTreeSet::new();
-    for member in &members {
+    for member in members {
         if VENDOR_OWNERS.contains(&member.as_str()) {
             continue;
         }
         let root = src_root(member);
-        for path in rust_files(&root) {
+        for path in rust_files(&root).iter() {
             let Some(text) = source_text(&path) else {
                 continue;
             };
@@ -139,9 +139,9 @@ pub(crate) fn the_mechanism_layer_exposes_no_vendor_names() {
 #[test]
 pub(crate) fn unsafe_islands_are_the_ones_the_adr_lists() {
     let mut found = BTreeMap::new();
-    for member in workspace().0 {
+    for member in &workspace().0 {
         let root = src_root(&member);
-        for path in rust_files(&root) {
+        for path in rust_files(&root).iter() {
             let Some(text) = source_text(&path) else {
                 continue;
             };
@@ -178,7 +178,7 @@ pub(crate) fn unsafe_islands_are_the_ones_the_adr_lists() {
 pub(crate) fn the_device_backends_are_installed_on_the_product_path() {
     let mut entries = 0;
     let mut missing = Vec::new();
-    for path in rust_files(&workspace_root().join("crates/cli/src")) {
+    for path in rust_files(&workspace_root().join("crates/cli/src")).iter() {
         let Ok(body) = std::fs::read_to_string(&path) else {
             continue;
         };
@@ -225,7 +225,7 @@ fn declares_any(crate_name: &str, name: &str) -> bool {
         "struct", "enum", "trait", "type", "fn", "const", "union", "mod",
     ];
     let root = src_root(crate_name);
-    rust_files(&root).into_iter().any(|path| {
+    rust_files(&root).iter().any(|path| {
         source_text(&path).is_some_and(|text| {
             text.lines().any(|line| {
                 is_public_definition(line, name, &KINDS) || is_module_or_macro(line, name)

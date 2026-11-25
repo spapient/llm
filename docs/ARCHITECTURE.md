@@ -206,9 +206,9 @@ testkit    → （叶    +dev: autograd, cutile, nn, prof, tensor, tools, train,
 | `Case` / `Baseline` / `Judgement` / `Estimate` / `OpenReason` / `SelfCheck` | `tools` | 回退判定（与基线相比有没有退）：`Estimate` 是点估计加置信区间的测量件，`OpenReason` 是跨门槛未判定的理由闭集；`SelfCheck` 是 A/A 前置自检的两份等价性结论（对称、无方向）；不做测量 |
 | `EntryKind` / `Harness` / `PeakProfile` / `Bottleneck` / `Score` / `Geometry` / `BenchRecord` | `tools` | 统一基准记录结构：记录只持有身份、几何与峰值，未测得的峰值留 `None`；`PeakProfile::score` 把「峰值 + 算术强度 + 实测吞吐」折成占上界百分比与瓶颈侧，测量与上界登记仍归 `shard` / `benchmarks` |
 | `Protocol` / `Statistic` / `Tally` / `Standing` / `Shortfall` / `Card` | `tools` | 实测卡三态判定：闭集 → 样本量 → 统计量定义 → 区间与门槛，次序有意；样本与时钟来源归 `benchmarks` |
-| `HistorySample` | `tools` | 历史趋势对照的一条观测：只持一次实测 ns/iter（commit / host / 产物摘要等身份由归档层补充），基线取历史滚动中位数，三态判定与效应规模复用 `tools::regress` 口径，不另造门槛；本层不做测量、不读历史库 |
-| `ServingScene` / `Arrival` / `PhaseLatency` | `tools` | 服务化基准的场景 / 到达过程闭集与分相时延读数：`ServingScene` 对齐 MLPerf 四档，`Arrival` 分开环 Poisson / 闭环固定并发，`PhaseLatency` 持 TTFT / TPOT / ITL / E2E，goodput = 归一吞吐 × SLO 达成率。本层只做确定性统计口径，不读时钟、不起服务、不做调度；负载生成与端点留运行时接入位 |
-| `AllocProfile` | `tools` | 一次运行的堆分配读数：分配次数、累计分配字节、驻留峰值；dev-only 全局计数分配器挂载到基准 binary、串行测量与高水位采样仍属运行时接入位（OPEN）。「零分配 / 缓冲复用」结论须有本读数证据，无证据只陈述结构变化 |
+| `HistorySample` | `tools`（`regress` 模块） | 历史趋势对照的一条观测：只持一次实测 ns/iter（commit / host / 产物摘要等身份由归档层补充），基线取历史滚动中位数，三态判定与效应规模复用 `tools::regress` 口径，不另造门槛；本层不做测量、不读历史库 |
+| `ServingScene` / `Arrival` / `PhaseLatency` | `tools`（`bench` 模块） | 服务化基准的场景 / 到达过程闭集与分相时延读数：`ServingScene` 对齐 MLPerf 四档，`Arrival` 分开环 Poisson / 闭环固定并发，`PhaseLatency` 持 TTFT / TPOT / ITL / E2E，goodput = 归一吞吐 × SLO 达成率。本层只做确定性统计口径，不读时钟、不起服务、不做调度；负载生成与端点留运行时接入位 |
+| `AllocProfile` | `tools`（`bench` 模块） | 一次运行的堆分配读数：分配次数、累计分配字节、驻留峰值；dev-only 全局计数分配器挂载到基准 binary、串行测量与高水位采样仍属运行时接入位（OPEN）。「零分配 / 缓冲复用」结论须有本读数证据，无证据只陈述结构变化 |
 | `spec` / `model` 属性宏 | `annotation` | 把注解展开成契约实现 + 编译期断言 + 一条校验测试；**不持有运行期注册表**。`model` 生成 `MODEL` 并断言注解与 `Operator` 对齐；设备执行由 `cutile` 的 `const SPECS` / `const GATES` 描述符表按函数指针登记 |
 | `Contract` / `Provision` / `Witness` | `testkit` | 设备片段层自述：`Contract` 只答「这台设备声明了哪些 P0 片段、拿哪些见证入口验」，`Provision` 只答「一条原语在这台设备上由哪个实现供给」，`Witness` 只答「用哪个 `witness_*` 入口、期望什么输出」。三者都只持 `&str` / `&[f32]` 借用、不持档案类型，于是夹具库不把 `prof` 拖进依赖，设备档案在测试侧摊平即用 |
 | `Call` / `Reading` | `testkit` | 见证对拍的两端：`Call` 是「要跑哪个入口、期望什么」，`Reading` 是「跑完读回了几个、值是什么、最大相对误差多少」。个数与值分路回读，`max_rel_err` 在个数不符时取 [`f64::INFINITY`]，使"少写一个元素"与"值错了"在读数层就可区分 |

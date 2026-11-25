@@ -38,7 +38,7 @@ fn scan_dirs(member: &str) -> Vec<PathBuf> {
 }
 
 /// 成员名 → 该成员全部 Rust 源文件的 `(相对路径, 文本)`。
-fn member_sources(member: &str) -> Vec<(String, String)> {
+fn member_sources(member: &str) -> Vec<(String, std::sync::Arc<str>)> {
     scan_dirs(member)
         .iter()
         .flat_map(|dir| rust_files(dir).to_vec())
@@ -47,7 +47,7 @@ fn member_sources(member: &str) -> Vec<(String, String)> {
 }
 
 /// 成员名 → 清单文本；读不到时返回 `None`（虚拟成员没有清单）。
-fn manifest_text(member: &str) -> Option<String> {
+fn manifest_text(member: &str) -> Option<std::sync::Arc<str>> {
     let manifest = src_root(member).parent()?.join("Cargo.toml");
     source_text(&manifest)
 }
@@ -107,7 +107,7 @@ fn constructs_a_config(line: &str) -> bool {
 fn no_crate_hand_rolls_its_own_proptest_config() {
     let (members, _) = workspace();
     let mut offenders = Vec::new();
-    for member in &members {
+    for member in members {
         for (path, text) in member_sources(member) {
             if path == HARNESS {
                 continue;

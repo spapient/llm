@@ -8,7 +8,14 @@ use crate::witness::{Call, MAX_OUT, Reading, run};
 pub const TOLERANCE: f64 = 1e-5;
 /// P0 闭集：`crates/prof/src/<vendor>/kernels/*.k` 会 `@` 到的八个原语。
 pub const P0: [&str; 8] = [
-    "cvt", "dot", "load", "load_async", "mma", "quant", "reduce", "store",
+    "cvt",
+    "dot",
+    "load",
+    "load_async",
+    "mma",
+    "quant",
+    "reduce",
+    "store",
 ];
 
 /// Rust、TOML 与共享参考由生成器单独校验，其余设备源文件进入目录闭集核对。
@@ -234,7 +241,11 @@ impl<'a> Contract<'a> {
         found: &mut Vec<String>,
     ) -> Result<(), String> {
         let entry = entry.map_err(|error| format!("`{}` 的片段目录项不可读：{error}", self.id))?;
-        if entry.file_type().map_err(|error| error.to_string())?.is_dir() {
+        if entry
+            .file_type()
+            .map_err(|error| error.to_string())?
+            .is_dir()
+        {
             return Ok(());
         }
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -257,7 +268,12 @@ impl<'a> Contract<'a> {
             .iter()
             .find(|(name, _)| *name == prim)
             .map(|(_, func)| *func)
-            .ok_or_else(|| format!("`{}` 的 `{prim}` 有片段却没有入口：镜像里查不到它的见证", self.id))
+            .ok_or_else(|| {
+                format!(
+                    "`{}` 的 `{prim}` 有片段却没有入口：镜像里查不到它的见证",
+                    self.id
+                )
+            })
     }
 
     /// 某条见证函数是否被档案里的一条供给认领。
@@ -341,7 +357,9 @@ impl<'a> Contract<'a> {
 /// 取片段首行的签名声明：`/* cutile-sign: <prim>/<impl> */`。
 fn sign(body: &str) -> Result<(&str, &str), String> {
     let Some((_, rest)) = body.split_once("cutile-sign:") else {
-        return Err(String::from("片段缺签名声明 `/* cutile-sign: <prim>/<impl> */`"));
+        return Err(String::from(
+            "片段缺签名声明 `/* cutile-sign: <prim>/<impl> */`",
+        ));
     };
     let Some((line, _)) = rest.split_once("*/") else {
         return Err(String::from("签名声明没有闭合的 `*/`"));
@@ -353,12 +371,80 @@ fn sign(body: &str) -> Result<(&str, &str), String> {
     Ok((prim.trim(), implementation.trim()))
 }
 
+/// 编译并执行一遍见证；`Ok(None)` 表示本机没有编译器（已登记跳过）。
+fn execute(contract: &Contract<'_>, calls: &[Call<'_>]) -> Result<Option<Vec<Reading>>, String> {
+    match run(contract.source, contract.ext, calls) {
+        Ok(readings) => Ok(Some(readings)),
+        Err(error) if error.contains("不可执行") => {
+            Ok(crate::gating::skip_none(format!("本机没有编译器：{error}")))
+        }
+        Err(error) => Err(format!(
+            "`{}` 的见证源码过不了本机编译器：{error}",
+            contract.id
+        )),
+    }
+}
+
+/// 读数与期望的对拍：条数先对齐，再逐条比相对误差。
+fn judge(id: &str, calls: &[Call<'_>], readings: &[Reading]) -> Result<(), String> {
+    if readings.len() != calls.len() {
+        return Err(format!(
+            "`{id}` 回读到的读数比供给少：{} < {}",
+            readings.len(),
+            calls.len()
+        ));
+    }
+    for reading in readings {
+        if reading.max_rel_err <= TOLERANCE {
+            continue;
+        }
+        return Err(format!(
+            "`{id}` 的见证 `{}` 不成立：得到 {:?}，期望 {:?}，max_rel_err {:.3e} > {TOLERANCE:.0e}",
+            reading.func,
+            reading.values,
+            expected(calls, &reading.func),
+            reading.max_rel_err
+        ));
+    }
+    Ok(())
+}
+
+/// 某条见证在档案里登记的期望值。
+fn expected<'a>(calls: &'a [Call<'a>], func: &str) -> &'a [f32] {
+    calls
+        .iter()
+        .find(|call| call.func == func)
+        .map_or(&[], |call| call.expect)
+}
+
+/// 见证文件里的 `int witness_*(float *out)` 定义名。
+fn definitions(source: &str) -> Vec<&str> {
+    source
+        .match_indices("int ")
+        .filter_map(|(idx, _)| defined_name(&source[idx + 4..]))
+        .collect()
+}
+
+/// 从 `int ` 之后读出函数名：只认 `witness_*` 且参数表里有 `float *out`。
+fn defined_name(rest: &str) -> Option<&str> {
+    let (name, args) = rest.split_once('(')?;
+    let args = args.split_once(')')?.0;
+    (is_witness_name(name) && args.contains("float *out")).then_some(name)
+}
+
+/// 见证入口的命名形状。
+fn is_witness_name(name: &str) -> bool {
+    name.strip_prefix("witness_").is_some_and(|rest| {
+        !rest.is_empty() && rest.chars().all(|ch| ch.is_alphanumeric() || ch == '_')
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::witness::{Call, run};
 
     const SIGNED: &str = "/* cutile-sign: load/scalar_copy */\n$0 = $1;";
+    const SOURCE: &str = "int witness_load(float *out) { out[0] = 2.0f; return 1; }\n";
     const FRAGMENTS: [(&str, &str); 1] = [("load", SIGNED)];
     const PRIMS: [(&str, &str); 1] = [("load", "witness_load")];
     const PROVIDES: [Provision<'_>; 1] = [Provision {
@@ -392,6 +478,16 @@ mod tests {
         }
     }
 
+    fn witness(expect: &[f32]) -> Provision<'_> {
+        Provision {
+            witness: Some(Witness {
+                func: "witness_load",
+                expect,
+            }),
+            ..PROVIDES[0]
+        }
+    }
+
     #[test]
     fn a_signature_is_read_from_the_first_comment() {
         assert_eq!(sign(SIGNED).ok(), Some(("load", "scalar_copy")));
@@ -421,7 +517,12 @@ mod tests {
     fn a_signature_the_archive_does_not_claim_is_a_defect() {
         let fragments = [("load", "/* cutile-sign: load/vectorized */\n$0 = $1;")];
         let defect = with_fragments(&fragments, &PROVIDES, "").check_signatures();
-        assert!(defect.as_ref().is_err_and(|reason| reason.contains("没有对应供给")), "{defect:?}");
+        assert!(
+            defect
+                .as_ref()
+                .is_err_and(|reason| reason.contains("没有对应供给")),
+            "{defect:?}"
+        );
     }
 
     #[test]
@@ -429,7 +530,12 @@ mod tests {
         let source = "int witness_load(float *out) { out[0] = 1.0f; return 1; }\n\
                       int witness_orphan(float *out) { out[0] = 1.0f; return 1; }\n";
         let defect = probe(&PROVIDES, source).check_witness_entries();
-        assert!(defect.as_ref().is_err_and(|reason| reason.contains("没有任何供给认领")), "{defect:?}");
+        assert!(
+            defect
+                .as_ref()
+                .is_err_and(|reason| reason.contains("没有任何供给认领")),
+            "{defect:?}"
+        );
     }
 
     #[test]
@@ -443,14 +549,70 @@ mod tests {
             },
         ];
         let defect = probe(&bare, "").check_evidence();
-        assert!(defect.as_ref().is_err_and(|reason| reason.contains("无凭无据")), "{defect:?}");
+        assert!(
+            defect
+                .as_ref()
+                .is_err_and(|reason| reason.contains("无凭无据")),
+            "{defect:?}"
+        );
     }
 
     #[test]
     fn a_fragment_set_that_overruns_p0_is_a_defect() {
         let fragments = [("load", SIGNED), ("load", SIGNED)];
         let defect = with_fragments(&fragments, &PROVIDES, "").check_p0_set();
-        assert!(defect.as_ref().is_err_and(|reason| reason.contains("抢同一个原语")), "{defect:?}");
+        assert!(
+            defect
+                .as_ref()
+                .is_err_and(|reason| reason.contains("抢同一个原语")),
+            "{defect:?}"
+        );
+    }
+
+    #[test]
+    fn a_self_contained_witness_is_accepted_but_a_quoted_include_is_not() {
+        let good = [witness(&[2.0])];
+        assert_eq!(probe(&good, SOURCE).check_self_contained(), Ok(()));
+        assert_eq!(
+            probe(&good, "#include <math.h>\n").check_self_contained(),
+            Ok(())
+        );
+        let defect = probe(&good, "#include \"preamble.h\"\n").check_self_contained();
+        assert!(
+            defect
+                .as_ref()
+                .is_err_and(|reason| reason.contains("引号包含")),
+            "{defect:?}"
+        );
+    }
+
+    #[test]
+    fn expectations_must_fit_the_reading_buf() {
+        let good = [witness(&[2.0])];
+        assert_eq!(probe(&good, SOURCE).check_expectations(), Ok(()));
+        let overflow = [2.0; MAX_OUT + 1];
+        let loud = [witness(&overflow)];
+        let defect = probe(&loud, SOURCE).check_expectations();
+        assert!(
+            defect
+                .as_ref()
+                .is_err_and(|reason| reason.contains("期望值")),
+            "{defect:?}"
+        );
+    }
+
+    #[test]
+    fn a_witness_that_computes_something_else_is_a_defect() {
+        let good = [witness(&[2.0])];
+        assert_eq!(probe(&good, SOURCE).check_witnesses(), Ok(()));
+        let wrong = [witness(&[3.0])];
+        let defect = probe(&wrong, SOURCE).check_witnesses();
+        assert!(
+            defect
+                .as_ref()
+                .is_err_and(|reason| reason.contains("不成立")),
+            "{defect:?}"
+        );
     }
 
     #[test]
@@ -458,8 +620,14 @@ mod tests {
         let source = "int witness_ok(float *out) { out[0] = 2.0f; return 1; }\n\
                       int witness_off(float *out) { out[0] = 2.5f; return 1; }\n";
         let calls = [
-            Call { func: "witness_ok", expect: &[2.0] },
-            Call { func: "witness_off", expect: &[2.0] },
+            Call {
+                func: "witness_ok",
+                expect: &[2.0],
+            },
+            Call {
+                func: "witness_off",
+                expect: &[2.0],
+            },
         ];
         let Ok(readings) = run(source, "c", &calls) else {
             assert!(crate::gating::skip("本机没有可用的 C 编译器"));
@@ -474,7 +642,10 @@ mod tests {
     #[test]
     fn a_count_mismatch_is_not_a_near_miss() {
         let source = "int witness_short(float *out) { out[0] = 1.0f; return 1; }\n";
-        let calls = [Call { func: "witness_short", expect: &[1.0, 1.0] }];
+        let calls = [Call {
+            func: "witness_short",
+            expect: &[1.0, 1.0],
+        }];
         let Ok(readings) = run(source, "c", &calls) else {
             assert!(crate::gating::skip("本机没有可用的 C 编译器"));
             return;
@@ -486,7 +657,10 @@ mod tests {
     #[test]
     fn a_witness_the_host_rejects_is_an_error() {
         let source = "int witness_broken(float *out) { out[0] = ; return 1; }\n";
-        let calls = [Call { func: "witness_broken", expect: &[0.0] }];
+        let calls = [Call {
+            func: "witness_broken",
+            expect: &[0.0],
+        }];
         let Err(error) = run(source, "c", &calls) else {
             panic!("语法错误的见证必须编译失败");
         };

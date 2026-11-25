@@ -1,5 +1,6 @@
 //! 架构契约的事实面：`docs/ARCHITECTURE.md` 的三张表与 `cargo metadata` 的成员/边。
 
+use std::borrow::Borrow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -31,14 +32,15 @@ pub fn source_text(path: &Path) -> Option<Arc<str>> {
 }
 
 /// 读命中时只克隆值句柄；未命中时计算一次并写回同一张缓存表。
-fn cached<K, V>(map: &mut BTreeMap<K, V>, key: &K, load: impl FnOnce() -> V) -> V
+fn cached<K, Q, V>(map: &mut BTreeMap<K, V>, key: &Q, load: impl FnOnce() -> V) -> V
 where
-    K: Ord + Clone,
+    K: Borrow<Q> + Ord,
+    Q: Ord + ToOwned<Owned = K> + ?Sized,
     V: Clone,
 {
     map.get(key).cloned().unwrap_or_else(|| {
         let value = load();
-        map.insert(key.clone(), value.clone());
+        map.insert(key.to_owned(), value.clone());
         value
     })
 }
@@ -382,7 +384,10 @@ fn every_workspace_member_is_in_the_table() {
         .iter()
         .filter(|name| !contract.layers.contains_key(*name) && !contract.tools.contains(*name))
         .collect();
-    assert!(missing.is_empty(), "有工作区成员不在 docs/ARCHITECTURE.md 的层表里：{missing:?}");
+    assert!(
+        missing.is_empty(),
+        "有工作区成员不在 docs/ARCHITECTURE.md 的层表里：{missing:?}"
+    );
 }
 
 #[test]
@@ -400,9 +405,16 @@ fn every_member_in_the_table_is_a_workspace_member() {
 fn documented_edges_and_counts_match_cargo_metadata() {
     let (declared, total, dev) = declared_edges();
     let (_, actual) = workspace();
-    assert_eq!(declared, *actual, "docs/ARCHITECTURE.md 的允许边与 cargo metadata 不一致");
+    assert_eq!(
+        declared, *actual,
+        "docs/ARCHITECTURE.md 的允许边与 cargo metadata 不一致"
+    );
     assert_eq!(total, actual.len(), "文档的边总数");
-    assert_eq!(dev, actual.iter().filter(|edge| edge.dev).count(), "文档的 +dev 边数");
+    assert_eq!(
+        dev,
+        actual.iter().filter(|edge| edge.dev).count(),
+        "文档的 +dev 边数"
+    );
 }
 
 #[test]

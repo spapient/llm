@@ -59,12 +59,19 @@ fn cosine_ranges_from_minus_one_to_one() {
 fn cosine_is_none_on_mismatched_or_zero_vectors() {
     assert_eq!(cosine_similarity(&[1.0], &[1.0, 1.0]), None, "长度不同");
     assert_eq!(cosine_similarity(&[0.0, 0.0], &[1.0, 2.0]), None, "零向量");
-    assert_eq!(cosine_similarity(&[1.0, 2.0], &[0.0, 0.0]), None, "另一向量为零");
+    assert_eq!(
+        cosine_similarity(&[1.0, 2.0], &[0.0, 0.0]),
+        None,
+        "另一向量为零"
+    );
 }
 
 #[test]
 fn cosine_is_scale_invariant() {
-    assert_eq!(cosine_similarity(&[1.0, 2.0, 3.0], &[2.0, 4.0, 6.0]), Some(1.0));
+    assert_eq!(
+        cosine_similarity(&[1.0, 2.0, 3.0], &[2.0, 4.0, 6.0]),
+        Some(1.0)
+    );
 }
 
 /// 对称分母与参考侧分母不可互换；这条钉住二者的语义差异。
@@ -72,7 +79,10 @@ fn cosine_is_scale_invariant() {
 #[should_panic(expected = "容差")]
 fn the_asymmetric_relative_budget_is_stricter_than_the_symmetric_one() {
     let (got, want, abs, rel) = (1.5f32, 1.0f32, 0.0f32, 0.4f32);
-    assert!(close(&[got], &[want], abs, rel), "对称分母放行：0.5 ≤ 0.4·1.5");
+    assert!(
+        close(&[got], &[want], abs, rel),
+        "对称分母放行：0.5 ≤ 0.4·1.5"
+    );
     assert_close(&[got], &[want], abs, rel);
 }
 
@@ -90,7 +100,10 @@ fn max_rel_err_is_infinity_on_mismatched_lengths_or_nonfinite_mismatch() {
     assert_eq!(max_rel_err(&[1.0], &[1.0, 1.0]), f64::INFINITY);
     assert_eq!(max_rel_err(&[f32::NAN], &[0.0]), f64::INFINITY);
     assert_eq!(max_rel_err(&[f32::INFINITY], &[1.0]), f64::INFINITY);
-    assert_eq!(max_rel_err(&[f32::INFINITY], &[f32::NEG_INFINITY]), f64::INFINITY);
+    assert_eq!(
+        max_rel_err(&[f32::INFINITY], &[f32::NEG_INFINITY]),
+        f64::INFINITY
+    );
 }
 
 #[test]
@@ -99,7 +112,13 @@ fn max_rel_err_matches_nan_and_same_infinity() {
         let pair = [value];
         assert_eq!(max_rel_err(&pair, &pair), 0.0);
         assert_eq!(mean_rel_err(&pair, &pair), 0.0, "成对非有限值不得污染均值");
-        assert_eq!(rel_gate(&pair, &pair), RelGate { mean: 0.0, max: 0.0 });
+        assert_eq!(
+            rel_gate(&pair, &pair),
+            RelGate {
+                mean: 0.0,
+                max: 0.0
+            }
+        );
     }
 }
 
@@ -116,8 +135,15 @@ fn rel_err_locates_the_worst_element() {
     assert_eq!(report.scale, 3.0);
     let worst = report.worst.expect("0.1 的偏差落在第二个元素");
     assert_eq!((worst.idx, worst.got, worst.want), (1, 2.1, 2.0));
-    assert_eq!(report.ratio(), max_rel_err(&[1.0, 2.1, 3.0], &[1.0, 2.0, 3.0]));
-    assert!((report.ratio() - 0.1 / 3.0).abs() < 1e-6, "{}", report.ratio());
+    assert_eq!(
+        report.ratio(),
+        max_rel_err(&[1.0, 2.1, 3.0], &[1.0, 2.0, 3.0])
+    );
+    assert!(
+        (report.ratio() - 0.1 / 3.0).abs() < 1e-6,
+        "{}",
+        report.ratio()
+    );
 }
 
 #[test]
@@ -169,9 +195,15 @@ fn assert_within_rel_reports_a_nonfinite_break() {
 /// 覆盖空批、全零参考、跨 8 车道边界、次正规、溢出与三类非有限值。
 fn samples() -> Vec<Vec<f32>> {
     vec![
-        vec![], vec![0.0], vec![0.0, 0.0], vec![1.0, -2.0, 3.0],
-        vec![1e-30, 3.0], vec![f32::MAX, 1.0], vec![f32::NAN, 1.0],
-        vec![f32::INFINITY, 1.0], vec![f32::NEG_INFINITY, f32::INFINITY],
+        vec![],
+        vec![0.0],
+        vec![0.0, 0.0],
+        vec![1.0, -2.0, 3.0],
+        vec![1e-30, 3.0],
+        vec![f32::MAX, 1.0],
+        vec![f32::NAN, 1.0],
+        vec![f32::INFINITY, 1.0],
+        vec![f32::NEG_INFINITY, f32::INFINITY],
         (0..9).map(|i| i as f32 * 0.25 - 1.0).collect(),
     ]
 }
@@ -194,7 +226,10 @@ fn the_two_oracles_agree_bit_for_bit() {
             reference::max_rel_err(got, want).to_bits(),
             "样本 {left}×{right} 的判据读数不同"
         );
-        assert_eq!(rel_err(got, want).ratio().to_bits(), max_rel_err(got, want).to_bits());
+        assert_eq!(
+            rel_err(got, want).ratio().to_bits(),
+            max_rel_err(got, want).to_bits()
+        );
     });
 }
 
@@ -303,5 +338,11 @@ fn rel_gate_is_infinity_on_mismatched_lengths() {
 #[test]
 #[should_panic(expected = "双门对拍失败")]
 fn assert_rel_gate_panics_when_either_gate_fails() {
-    assert_rel_gate(&[1.0, 2.5, 3.0, 4.0], &[1.0, 2.0, 3.0, 4.0], 0.05, 0.1, "GEMM 双门");
+    assert_rel_gate(
+        &[1.0, 2.5, 3.0, 4.0],
+        &[1.0, 2.0, 3.0, 4.0],
+        0.05,
+        0.1,
+        "GEMM 双门",
+    );
 }

@@ -42,7 +42,9 @@
 pub mod compare;
 pub mod device;
 /// 见证判据保留原公共路径，实现与设备契约同住一处。
-pub mod evidence;
+pub mod evidence {
+    pub use crate::device::TOLERANCE;
+}
 pub mod fixture;
 pub mod gating;
 /// 位级 CRC 参考保留原公共路径，实现归入格式夹具。

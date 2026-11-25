@@ -30,7 +30,7 @@ pub(crate) fn sources() -> Vec<(String, PathBuf)> {
     names.retain(|name| name != "testkit");
     names.sort();
     for name in names {
-        let mut files = rust_files(&crates.join(&name).join("src"));
+        let mut files = rust_files(&crates.join(&name).join("src")).to_vec();
         files.sort();
         for file in files {
             out.push((name.clone(), file));
@@ -584,7 +584,7 @@ pub(crate) fn exempt(section: &str) -> Vec<(String, String)> {
 pub(crate) fn annotation_list(name: &str) -> Vec<String> {
     let head = format!("const {name}: [&str;");
     let (_, text) = rust_files(&root().join("crates/annotation/src"))
-        .into_iter()
+        .iter()
         .find_map(|path| {
             let body = fs::read_to_string(&path).ok()?;
             body.contains(&head).then_some((path, body))

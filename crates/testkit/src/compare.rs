@@ -28,9 +28,7 @@ fn first_failure<T: Float>(
     right: &[T],
     accept: impl Fn(T, T) -> bool,
 ) -> Option<usize> {
-    left.iter()
-        .zip(right)
-        .position(|(&a, &b)| !accept(a, b))
+    left.iter().zip(right).position(|(&a, &b)| !accept(a, b))
 }
 
 /// 双项容差标量判定：`|a-b| ≤ abs + rel·max(|a|,|b|)`。
@@ -79,9 +77,13 @@ pub fn assert_close<T: Float + std::fmt::Display>(left: &[T], right: &[T], abs: 
         left.len(),
         right.len()
     );
-    fail_first(left, right, |idx, got, want, tolerance| {
-        panic!("第 {idx} 个元素 {got} vs {want}（容差 {tolerance}）")
-    }, abs, rel);
+    fail_first(
+        left,
+        right,
+        |idx, got, want, tolerance| panic!("第 {idx} 个元素 {got} vs {want}（容差 {tolerance}）"),
+        abs,
+        rel,
+    );
 }
 
 /// 单侧相对容差共用的定位内核；回调只在首个违约元素执行。
@@ -138,7 +140,10 @@ pub fn assert_vec_near<T: Float + std::fmt::Display>(got: &[T], want: &[T], tol:
     }) else {
         return;
     };
-    panic!("{what}: 第 {idx} 项 got {}, want {}（tol = {tol}）", got[idx], want[idx]);
+    panic!(
+        "{what}: 第 {idx} 项 got {}, want {}（tol = {tol}）",
+        got[idx], want[idx]
+    );
 }
 
 /// 两条同长向量的余弦相似度；长度不同、或任一向量范数为零时返回 [`None`]。

@@ -108,7 +108,11 @@ mod tests {
         let before = skip_count();
         assert!(skip("测试用临时跳过原因"));
         assert!(skip_count() > before, "跳过计数必须单调递增");
-        assert!(skipped_reasons().iter().any(|reason| reason == "测试用临时跳过原因"));
+        assert!(
+            skipped_reasons()
+                .iter()
+                .any(|reason| reason == "测试用临时跳过原因")
+        );
     }
 
     #[test]

@@ -192,7 +192,11 @@ mod tests {
     fn sample_is_reproducible_and_inside_the_band() {
         assert_eq!(sample(9, 3), sample(9, 3), "同 (len, salt) 必须同一批值");
         assert_ne!(sample(9, 3), sample(9, 4), "salt 必须真的参与计算");
-        assert!(sample(64, 1).iter().all(|value| (-1.0..1.0).contains(value)));
+        assert!(
+            sample(64, 1)
+                .iter()
+                .all(|value| (-1.0..1.0).contains(value))
+        );
         assert_eq!(sample(0, 7), Vec::<f32>::new(), "零长批是空切片");
     }
 
@@ -203,7 +207,10 @@ mod tests {
             sample_with(16, 5, |word| ((word >> 8) % 2048) as f32 / 1024.0 - 1.0)
         );
         let scaled = sample_with(8, 1, |word| ((word >> 8) as f32) / 256.0 - 32.0);
-        assert_eq!(scaled, sample_with(8, 1, |word| ((word >> 8) as f32) / 256.0 - 32.0));
+        assert_eq!(
+            scaled,
+            sample_with(8, 1, |word| ((word >> 8) as f32) / 256.0 - 32.0)
+        );
         let as_i8 = sample_with(8, 1, |word| ((word % 251) as i32 - 125) as i8);
         assert!(as_i8.iter().all(|value| (-125..=125).contains(value)));
         assert_eq!(sample_with::<f32>(0, 1, |_| 0.0), Vec::<f32>::new());
