@@ -91,6 +91,15 @@ fn vector_program_uses_registered_target_lowerings_only() {
     assert!(error.to_string().contains("no registered native float4"));
 }
 
+#[test]
+fn family_quantization_constants_are_available_to_templates() {
+    let catalogue = Catalogue::try_builtin().expect("内置目录");
+    let op = catalogue.op("gemv_i2").expect("量化 GEMV");
+    assert_eq!(op.const_value("cpb"), Some("4"));
+    assert_eq!(op.const_value("width"), Some("2"));
+    assert_eq!(op.const_value("zero"), Some("2"));
+}
+
 /// 活跃 `#error` 在 IR 构建期失败，不能流进后端源码。
 #[test]
 fn active_preprocessor_error_is_rejected_before_printing() {

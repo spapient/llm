@@ -326,13 +326,6 @@ fn gemm_micro_fma_matches_scalar_on_first_and_continuation() {
         let b: Vec<f32> = (0..k * 8).map(|i| (i as f32 * 0.07).cos()).collect();
         let mut got = vec![0.25; 64];
         let mut expected = got.clone();
-        let tile = crate::native::gemm8x8::Tile {
-            row0: 0,
-            j: 0,
-            n: 8,
-            kb: k,
-            first,
-        };
         for r in 0..8 {
             for c in 0..8 {
                 let slot = r * 8 + c;
@@ -343,7 +336,8 @@ fn gemm_micro_fma_matches_scalar_on_first_and_continuation() {
                 expected[slot] = acc;
             }
         }
-        crate::runtime::gemm_micro::fma_micro(&panel, &b, &mut got, tile).expect("C FMA 安全桥");
+        crate::runtime::gemm_micro::fma_micro(&panel, &b, &mut got, (0, 0, 8, k), first)
+            .expect("C FMA 安全桥");
         for (idx, (left, right)) in expected.iter().zip(&got).enumerate() {
             assert!(
                 (left - right).abs() <= 1e-5,
@@ -355,15 +349,9 @@ fn gemm_micro_fma_matches_scalar_on_first_and_continuation() {
 
 #[test]
 fn gemm_micro_rejects_short_bufs_before_ffi_call() {
-    let tile = crate::native::gemm8x8::Tile {
-        row0: 0,
-        j: 0,
-        n: 8,
-        kb: 1,
-        first: true,
-    };
-    let error = crate::runtime::gemm_micro::fma_micro(&[], &[0.0; 8], &mut [0.0; 64], tile)
-        .expect_err("A 面板不足必须拒绝");
+    let error =
+        crate::runtime::gemm_micro::fma_micro(&[], &[0.0; 8], &mut [0.0; 64], (0, 0, 8, 1), true)
+            .expect_err("A 面板不足必须拒绝");
     assert_eq!(error.code(), diagnostic::Code::Invalid);
 }
 
@@ -383,8 +371,13 @@ fn gemm_micro_sdot_matches_scalar_exactly() {
         kvec: 32,
     };
     let public_ran = crate::native::i8::dot_block(&a, &b, &mut public, gram);
-    let runtime_ran =
-        crate::runtime::gemm_micro::sdot_micro(&a, &b, &mut runtime, gram).expect("C sdot 安全桥");
+    let runtime_ran = crate::runtime::gemm_micro::sdot_micro(
+        &a,
+        &b,
+        &mut runtime,
+        (gram.r, gram.blk, gram.n, gram.k, gram.kvec),
+    )
+    .expect("C sdot 安全桥");
     assert_eq!(runtime_ran, public_ran);
     if !runtime_ran {
         return;

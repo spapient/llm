@@ -98,14 +98,8 @@ pub use tpl::formula;
 #[path = "../tests/spec/support/lib_spec_tests.rs"]
 mod spec_tests;
 
-/// 主机原生微内核隔离子岛：f32 NEON/AVX2 8×8 块（`gemm8x8`）、i8 dotprod 4×4 `sdot` 块
-/// （`i8`）、Apple SME 16×64 ZA 外积（`sme`）三条通道的瓦片本体、运行时探测与端口探针，
-/// 以及编译期瓦片几何常量、面板暂存、线程数、对齐等设备无关公共件。`nn` 的 GEMM 骨架经
-/// `prof::native::*` 借用瓦片尺寸、坐标与内核入口，`cutile` 的 tile DSL IR 经
-/// `native::gemm_negotiate` 择优调用。与 `device` 同是「被上层消费、不反向依赖上层」的设备
-/// 实现层；arch 门、特性探测与 `unsafe` 全部收在本岛，上层不写这些门。三份架构内核
-/// 与本模块一并平铺在 `src/`，由显式文件路径保留既有公共模块路径。
-pub mod native;
+// 公开主机微内核面由能力模块持有；同名重导出冻结既有调用路径。
+pub use crate::capability::native;
 /// 设备运行时后端岛：提交契约、FFI 句柄、命令队列、缓冲、管线与执行器实现。
 pub mod runtime;
 

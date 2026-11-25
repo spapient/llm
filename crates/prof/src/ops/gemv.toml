@@ -15,9 +15,6 @@ load_async  = { bytes = "<=4096", space = ["GM", "FAST"], src = ["GM"], dst = ["
 w = "row"
 x = "row"
 
-[consts]
-nblock = 8
-
 [grid]
 dims = ["n:N"]
 
