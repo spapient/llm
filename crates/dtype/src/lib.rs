@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 #![deny(missing_debug_implementations)]
+#![deny(clippy::pedantic)]
 
 //! Element-type floor for the `llm` runtime: one closed set per precision axis — scalar
 //! [`DType`], GGML block-quantized [`QType`] and micro-scaled [`MxType`] — where every identity
