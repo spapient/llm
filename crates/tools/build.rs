@@ -172,21 +172,6 @@ fn reasoned(reason: &str) -> diagnostic::Result<()> {
     Ok(())
 }
 
-/// 必填子表。
-fn table<'a>(root: &'a toml::Table, key: &str) -> diagnostic::Result<&'a toml::Table> {
-    root.get(key)
-        .and_then(toml::Value::as_table)
-        .ok_or_else(|| invalid(&format!("vocabulary.toml 缺 [{key}]")))
-}
-
-/// 必填字符串原文。
-fn required<'a>(table: &'a toml::Table, key: &str) -> diagnostic::Result<&'a str> {
-    table
-        .get(key)
-        .and_then(toml::Value::as_str)
-        .ok_or_else(|| invalid(&format!("缺字符串 `{key}`")))
-}
-
 /// 字符串数组；不把非字符串静默转文本。
 fn text(value: &toml::Value) -> diagnostic::Result<String> {
     value
