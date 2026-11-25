@@ -27,7 +27,6 @@ void cutile_{{op}}_kernel(const float *x, const u8 *w, const float *scales,
 
             for (int lane = 0; lane < lanes; ++lane) {
                 const float *sc = scales + (n0 + lane) * (M / gsz) + g;
-                float deq[{{GMAX}}];
                 // 每组先求原始点积、最后只乘一次标度，避免逐元素重复乘 scale。
                 const float unit = 1.0f;
                 @quant(deq, rows[lane] + g * (gsz / {{cpb}}), &unit, gsz, cpb: {{cpb}}, width: {{width}}, zero: {{zero}});

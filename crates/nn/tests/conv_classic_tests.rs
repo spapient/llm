@@ -32,17 +32,17 @@ fn pool_references_pick_exact_window_extremes() {
 }
 
 /// 把 `f32` 切片转成标量 `S` 的切片（精度对拍前的搬运用，不参与算术）。
-fn cast<S: Scalar>(x: &[f32]) -> Vec<S> {
+fn from_f32<S: Scalar>(x: &[f32]) -> Vec<S> {
     x.iter().map(|&v| S::from_f64(f64::from(v))).collect()
 }
 
 /// 把标量 `S` 的切片转回 `f32`（对拍读数，只做展示级转换）。
-fn back<S: Scalar>(x: &[S]) -> Vec<f32> {
+fn to_f32<S: Scalar>(x: &[S]) -> Vec<f32> {
     x.iter().map(|&v| v.to_f64() as f32).collect()
 }
 
 /// 逐位对拍：`a` 与 `b` 同长，逐元素差不超过 `tol`。
-fn close(a: &[f32], b: &[f32], tol: f32, what: &str) {
+fn assert_absolute_close(a: &[f32], b: &[f32], tol: f32, what: &str) {
     assert_eq!(a.len(), b.len(), "{what}: 长度不一致");
     for (i, (&x, &y)) in a.iter().zip(b.iter()).enumerate() {
         assert!(
@@ -61,10 +61,10 @@ fn window_parity<S: Scalar>(
     tol: f32,
     what: &str,
 ) {
-    let x = cast::<S>(sample.f32("x").expect("x 缓冲"));
+    let x = from_f32::<S>(sample.f32("x").expect("x 缓冲"));
     let mut out = vec![S::ZERO; out_len];
     run(&x, &mut out).expect("run 应成功");
-    close(want, &back(&out), tol, what);
+    assert_absolute_close(want, &to_f32(&out), tol, what);
 }
 
 /// 归一化族精度对拍：给定 `f32` 参考，跑 `run::<S>`（多带 gamma/beta）并逐位比较。
@@ -76,12 +76,12 @@ fn norm_parity<S: Scalar>(
     tol: f32,
     what: &str,
 ) {
-    let x = cast::<S>(sample.f32("x").expect("x 缓冲"));
-    let gamma = cast::<S>(sample.f32("gamma").expect("gamma 缓冲"));
-    let beta = cast::<S>(sample.f32("beta").expect("beta 缓冲"));
+    let x = from_f32::<S>(sample.f32("x").expect("x 缓冲"));
+    let gamma = from_f32::<S>(sample.f32("gamma").expect("gamma 缓冲"));
+    let beta = from_f32::<S>(sample.f32("beta").expect("beta 缓冲"));
     let mut out = vec![S::ZERO; out_len];
     run(&x, &gamma, &beta, &mut out).expect("run 应成功");
-    close(want, &back(&out), tol, what);
+    assert_absolute_close(want, &to_f32(&out), tol, what);
 }
 
 /// 窗口算子 `run` 在 f16 / bf16 / f64 下与 f32 参考一致：同一份泛型算术，四种精度一条路径。

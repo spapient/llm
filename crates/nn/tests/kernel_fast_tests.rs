@@ -193,6 +193,26 @@ fn bench_throughput() {
             g(best1, m, n, k),
             g(best1, m, n, k) / mt
         );
+        with_panels(align_up(n, NR) * k, |bpack| {
+            let mut pack_best = f64::INFINITY;
+            for _ in 0..5 {
+                let start = Instant::now();
+                pack_b_f32_into(bpack, &b, n, k);
+                pack_best = pack_best.min(start.elapsed().as_nanos() as f64);
+            }
+            let mut compute_best = f64::INFINITY;
+            for _ in 0..5 {
+                let start = Instant::now();
+                compute_gemm(&a, bpack, &b, m, n, k, &mut out);
+                compute_best = compute_best.min(start.elapsed().as_nanos() as f64);
+            }
+            println!(
+                "    B打包 {:.3} ms | A打包+计算 {:.3} ms | B打包/单线程 {:.1}%",
+                pack_best / 1e6,
+                compute_best / 1e6,
+                pack_best / best1 * 100.0
+            );
+        });
     }
 }
 

@@ -8,11 +8,6 @@ use testkit::assert_close;
 
 const TOL: f64 = 1e-12;
 
-/// 绝对容差逐元素对拍：f64 口径统一走 testkit 的泛型实现，失败带首个越界下标。
-fn close(a: &[f64], b: &[f64]) {
-    assert_close(a, b, TOL, 0.0);
-}
-
 /// 系数构成单位剖分：和为 1。
 #[test]
 fn coefficients_partition_unity() {
@@ -31,14 +26,14 @@ fn coefficients_partition_unity() {
 fn gamma_zero_is_continuous() {
     let (ya, yb) = (vec![1.0, 2.0], vec![3.0, 4.0]);
     let yc = cont(&ya, &yb, 0.25);
-    close(&synthesize(&ya, &yb, &ya, 0.25, 0.0), &yc);
+    assert_close(&synthesize(&ya, &yb, &ya, 0.25, 0.0), &yc, TOL, 0.0);
 }
 
 /// γ=1 时输出就是事件通道。
 #[test]
 fn gamma_one_is_event() {
     let (ya, yb, yg) = (vec![1.0, 2.0], vec![3.0, 4.0], vec![0.0, 1.0]);
-    close(&synthesize(&ya, &yb, &yg, 0.25, 1.0), &yg);
+    assert_close(&synthesize(&ya, &yb, &yg, 0.25, 1.0), &yg, TOL, 0.0);
 }
 
 /// IEEE 恒等编码下（y_γ = y_cont），γ 混合与纯连续一致（F0-2）。
@@ -47,7 +42,7 @@ fn ieee_gamma_mix_is_continuous() {
     let (ya, yb) = (vec![1.0, -2.0], vec![3.0, 4.0]);
     let yc = cont(&ya, &yb, 0.4);
     for gamma in [0.0, 0.3, 0.7, 1.0] {
-        close(&synthesize(&ya, &yb, &yc, 0.4, gamma), &yc);
+        assert_close(&synthesize(&ya, &yb, &yc, 0.4, gamma), &yc, TOL, 0.0);
     }
 }
 
