@@ -1,91 +1,89 @@
-//! 片段层的用例套：九条判据 × 每台设备一遍。
+//! 片段层的声明式用例套：九条判据 × 每台设备一遍，装配结果只构建一次。
 //!
-//! `rocm` 与 `opencl` 的用例正文逐字相同，只有 `DEVICE` / `FRAGMENTS` / `PRIMS` / `ROOT`
-//! 这几张生成表不同——逐字复制两份正是 N7 要消掉的同构。于是套子只在这里写一次，设备模块
-//! 用一个宏把它摊成 `#[test]` 函数，连 P0 闭集也不必自带：
-//!
-//! ```ignore
-//! use super::*;
-//! testkit::device_suite!();
-//! ```
-//!
-//! 断言用 `assert!` 而不是 `expect`：判据本身只**产出缺陷**（`Result<(), String>`），失败
-//! 发生在测试里——`src/` 上的静态门禁不给 `panic`/`expect` 留预算，宏体也是 `src/`。
-//!
-//! 语言门不在这里：`cc` 编得过一份源码只说明它是合法 C，不说明它是该设备语言。各自的
-//! 设备前端（`ccec` / `clang -cl-std`）由 `cutile::gate` 与设备模块自己的用例管。
+//! 判据只产出 `Result`，失败统一发生在生成的 `#[test]` 中；设备模块只提供生成表，
+//! 不复制判据，也不能替换 P0 闭集。
 
-/// 把一台设备的片段层判据摊成 `#[test]` 函数。
-///
-/// 不收参数：P0 闭集在 [`crate::device::P0`] 里只有一份，设备模块无从挑一个让自己变绿的闭集。
+/// 把一台设备的片段层判据摊成独立 `#[test]` 函数。
 #[macro_export]
 macro_rules! device_suite {
     () => {
         use ::llm_prof::prof::{Profile, builtin_profiles};
 
-        /// 档案里与 `DEVICE.vendor` 同名的那台设备。
-        fn profile() -> Result<Profile, String> {
-            let wanted = DEVICE.vendor;
-            builtin_profiles()
-                .map_err(|error| error.to_string())?
-                .iter()
-                .find(|profile| profile.meta.vendor == wanted)
-                .cloned()
-                .ok_or_else(|| format!("档案里没有厂商 `{wanted}`"))
+        /// 本设备全部测试共享的只读装配；九条判据不再重复解析档案和分配三张 Vec。
+        struct Fixture {
+            fragments: Vec<(&'static str, &'static str)>,
+            prims: Vec<(&'static str, &'static str)>,
+            provides: Vec<$crate::device::Provision<'static>>,
         }
 
-        /// 在契约上跑一条判据。`ext` 取 `DEVICE.ext` 而不是档案的 `emit`——两处不相等由
-        /// 设备行那条用例单独指出，其余用例只在一个口径上判定。
-        fn with_contract<T>(
-            body: impl FnOnce(&$crate::device::Contract<'_>) -> T,
-        ) -> Result<T, String> {
+        /// 档案只解析一次，其静态引用再供装配表借用，避免自引用结构。
+        fn profile() -> Result<&'static Profile, String> {
+            static PROFILE: ::std::sync::OnceLock<Result<Profile, String>> =
+                ::std::sync::OnceLock::new();
+            PROFILE.get_or_init(|| {
+                let wanted = DEVICE.vendor;
+                builtin_profiles()
+                    .map_err(|error| error.to_string())?
+                    .iter()
+                    .find(|profile| profile.meta.vendor == wanted)
+                    .cloned()
+                    .ok_or_else(|| format!("档案里没有厂商 `{wanted}`"))
+            }).as_ref().map_err(Clone::clone)
+        }
+
+        /// 从静态档案与生成表构建一次夹具。
+        fn build_fixture() -> Result<Fixture, String> {
             let profile = profile()?;
-            let fragments: Vec<(&str, &str)> = FRAGMENTS
-                .iter()
-                .map(|(prim, text)| (prim.as_str(), *text))
-                .collect();
-            let prims: Vec<(&str, &str)> = PRIMS
-                .iter()
-                .map(|(prim, func)| (prim.as_str(), *func))
-                .collect();
-            let provides: Vec<$crate::device::Provision<'_>> = profile
+            let fragments = FRAGMENTS.iter().map(|(prim, text)| (prim.as_str(), *text)).collect();
+            let prims = PRIMS.iter().map(|(prim, func)| (prim.as_str(), *func)).collect();
+            let provides = profile
                 .provides
                 .iter()
                 .map(|provide| $crate::device::Provision {
                     prim: provide.prim.as_str(),
                     impl_name: provide.impl_name.as_str(),
-                    witness: provide
-                        .witness
-                        .as_ref()
-                        .map(|witness| $crate::device::Witness {
-                            func: witness.func.as_str(),
-                            expect: &witness.expect,
-                        }),
+                    witness: provide.witness.as_ref().map(|witness| $crate::device::Witness {
+                        func: witness.func.as_str(),
+                        expect: &witness.expect,
+                    }),
                 })
                 .collect();
+            Ok(Fixture { fragments, prims, provides })
+        }
+
+        /// 每台设备一个缓存；测试并行时 `OnceLock` 保证装配恰好一次。
+        fn fixture() -> Result<&'static Fixture, String> {
+            static FIXTURE: ::std::sync::OnceLock<Result<Fixture, String>> =
+                ::std::sync::OnceLock::new();
+            FIXTURE.get_or_init(build_fixture).as_ref().map_err(Clone::clone)
+        }
+
+        /// 在共享夹具上运行一条判据。
+        fn with_contract<T>(
+            body: impl FnOnce(&$crate::device::Contract<'_>) -> T,
+        ) -> Result<T, String> {
+            let fixture = fixture()?;
+            let profile = profile()?;
             Ok(body(&$crate::device::Contract {
                 id: &profile.meta.id,
                 ext: DEVICE.ext,
                 dir: ROOT,
                 p0: &$crate::device::P0,
-                fragments: &fragments,
-                prims: &prims,
-                provides: &provides,
+                fragments: &fixture.fragments,
+                prims: &fixture.prims,
+                provides: &fixture.provides,
                 epilogue_stem: ::llm_prof::stems::EPILOGUE_STEM,
                 source: DEVICE.source,
             }))
         }
 
-        /// 断言一条判据：失败信息带上缺陷本身，而不是"断言失败"。
+        /// 断言一条判据，并保留缺陷文本。
         fn judged(
             check: impl FnOnce(&$crate::device::Contract<'_>) -> Result<(), String>,
             claim: &str,
         ) {
             let verdict = with_contract(check);
-            assert!(
-                verdict.as_ref().is_ok_and(|inner| inner.is_ok()),
-                "{claim}：{verdict:?}"
-            );
+            assert!(verdict.as_ref().is_ok_and(|inner| inner.is_ok()), "{claim}：{verdict:?}");
         }
 
         /// 设备行与档案行必须逐项相等：五项元数据加一份入口表。
@@ -108,74 +106,29 @@ macro_rules! device_suite {
             Err(String::from("设备行里的原语入口必须就是生成表那份"))
         }
 
-        #[test]
-        fn the_fragment_layer_is_exactly_the_p0_set() {
-            judged(
-                |contract| contract.check_p0_set(),
-                "片段层必须恰好是 P0 闭集",
-            );
-        }
-
-        #[test]
-        fn every_signature_is_a_profile_provide_that_has_a_witness() {
-            judged(
-                |contract| contract.check_signatures(),
-                "每条签名必须是一条有见证的供给",
-            );
-        }
-
-        #[test]
-        fn every_witness_function_is_claimed_by_exactly_one_entry() {
-            judged(
-                |contract| contract.check_witness_entries(),
-                "每个见证函数必须恰好被一条入口认领",
-            );
-        }
-
-        #[test]
-        fn every_provision_rests_on_a_fragment_or_a_witness() {
-            judged(
-                |contract| contract.check_evidence(),
-                "每条供给必须有片段正文或见证",
-            );
-        }
-
-        #[test]
-        fn the_fragment_directory_is_a_closed_set() {
-            judged(
-                |contract| contract.check_closed_directory(),
-                "片段目录必须是闭集",
-            );
-        }
-
-        #[test]
-        fn every_expectation_fits_the_readback_buf() {
-            judged(
-                |contract| contract.check_expectations(),
-                "期望值必须放得进回读缓冲",
-            );
-        }
-
-        #[test]
-        fn the_witness_compiles_wherever_it_is_copied_to() {
-            judged(|contract| contract.check_self_contained(), "见证必须自足");
-        }
-
-        #[test]
-        fn every_witness_computes_what_the_profile_expects() {
-            judged(
-                |contract| contract.check_witnesses(),
-                "每条见证必须算出档案写的值",
-            );
-        }
+        $crate::test_cases!(contract_checks {
+            the_fragment_layer_is_exactly_the_p0_set =>
+                ($crate::device::Contract::check_p0_set, "片段层必须恰好是 P0 闭集"),
+            every_signature_is_a_profile_provide_that_has_a_witness =>
+                ($crate::device::Contract::check_signatures, "每条签名必须是一条有见证的供给"),
+            every_witness_function_is_claimed_by_exactly_one_entry =>
+                ($crate::device::Contract::check_witness_entries, "每个见证函数必须恰好被一条入口认领"),
+            every_provision_rests_on_a_fragment_or_a_witness =>
+                ($crate::device::Contract::check_evidence, "每条供给必须有片段正文或见证"),
+            the_fragment_directory_is_a_closed_set =>
+                ($crate::device::Contract::check_closed_directory, "片段目录必须是闭集"),
+            every_expectation_fits_the_readback_buf =>
+                ($crate::device::Contract::check_expectations, "期望值必须放得进回读缓冲"),
+            the_witness_compiles_wherever_it_is_copied_to =>
+                ($crate::device::Contract::check_self_contained, "见证必须自足"),
+            every_witness_computes_what_the_profile_expects =>
+                ($crate::device::Contract::check_witnesses, "每条见证必须算出档案写的值"),
+        }, |(check, claim)| judged(check, claim));
 
         #[test]
         fn the_device_row_is_the_profile_it_was_generated_from() {
-            let verdict = profile().and_then(|profile| row(&profile));
-            assert!(
-                verdict.is_ok(),
-                "生成表的设备行必须就是档案那一行：{verdict:?}"
-            );
+            let verdict = profile().and_then(row);
+            assert!(verdict.is_ok(), "生成表的设备行必须就是档案那一行：{verdict:?}");
         }
     };
 }

@@ -274,6 +274,31 @@ benchmarks 归档层：JSON 记录、历史库、对比、报告渲染（只消�
 
 **P1 边界**：iai-callgrind / PMU 计数在当前装置不具备条件，记 Open，不伪装；A/A、对拍绑定、溯源扩位、计时洁净未完成前，对应归档格保持 OPEN。
 
+### 6.3 P2 运行时层（测量内核先行，运行时接入位留 OPEN）
+
+**本轮落地的装置无关纯内核**：
+
+1. **历史趋势对照（`tools::trend`）**：`HistorySample` 只持一次实测观测（commit / host / 产物摘要等身份由归档层补充）；`median_baseline` 取历史滚动中位数（复用 `stats::quantile(0.5)`）；`compare` 用基线构造 `regress::Case`，三态判定与效应规模仍走 `regress` 口径，不平行造第二套门槛。方向取 `Lower`（ns 越小越好，回退 = 观测越过基线预算线）；历史为空、基线非法或当前值非有限时返回 `None`，不拿单份历史冒充滚动基线。
+2. **分配计数值对象（`tools::alloc::AllocProfile`）**：`count` / `bytes` / `peak_bytes` 三计数口径；只持数值与访问器，不依赖分配器。
+
+**复用路径**：分位 p50 / p95 / p99 已由 `card::Tally` 覆盖（`stats::quantile`），本轮不重复造分位内核；趋势三态复用 `regress`；中位数复用 `stats`。
+
+**OPEN（依赖 engine / 采集器，本轮不切入）**：每配置 ≥3 次独立稳态重复入档；稳态窗口剔除首尾 ramp-up / drain；KV 长度与批网格；逐 token 时序采集；dev-only 全局计数分配器挂基准 binary、串行测量与驻留高水位采样；历史 JSON 库按 `(commit, machine, profile)` join；离散统计量（std_dev / MAD / slope）与 commit SHA 注入通道。
+
+### 6.4 P3 后端 / 量化 / 观测（形状网格纯函数先行）
+
+**本轮落地的纯函数**：`tools::grid::aligned_points`（tile 整除对齐点 `tile·q`）与 `boundary_points`（满块减一碎片边界点 `tile·q − 1`，覆盖 tile 量化余量的最后一块不满路径）。每形状的算法 FLOPs 与字节仍由 `nn::Bounds` 语义表推出，这里不写第二份 read / write / flops 公式；真实模型配置派生点由台账行直接给出，网格函数只生成两类机械点。
+
+**OPEN**：多后端行对照；f16 / bf16 / f8(e4m3/e5m2) / nf4 精度-性能曲线；分层 roofline L1 / L2 / DRAM 三坡（分子 `Bounds`，分母同机三档实测搬运上界，未测得留 `None`）；PMU / 缓存计数佐证；能效 tokens/J。iai-callgrind 与 PMU 仅在 Linux / Valgrind 边界内可用，macOS 记 Open 不伪装。
+
+### 6.5 P4 服务化（场景与指标闭集预留）
+
+**本轮落地的纯内核（`tools::serve`）**：`ServingScene` 对齐 MLPerf 四档（single-stream / multi-stream / server / offline）；`Arrival` 分开环 Poisson 与闭环固定并发；`PhaseLatency` 持 TTFT / TPOT / ITL / E2E；`phase_latency` 由单调不减的 token 产出时刻拆分相（空 / 非有限 / 时序回退返回 `None`，单 token 时 ITL 为空、TPOT 为 0）；`slo_hit_rate` 出 SLO 达成率；`tokens_per_s` 归一吞吐；`goodput_tokens_per_s` = 归一吞吐 × 达成率。
+
+**边界**：本层不读时钟、不起服务、不做调度，逐 token 时刻由采集层喂入；长尾分位复用 `card::Tally`，不另造列统计。
+
+**OPEN**：Poisson 到达与并发 Pareto 负载生成器；ISL / OSL 分布、think time、前缀共享登记；真实 HTTP / gRPC 端点；跨实现对照 llama.cpp / vLLM 须同设备同负载，异源数字只作情报。
+
 ## 7. 边界与不做
 
 - 不自行定义张量 IR/AST 或融合编译器；沿用 0017 冻结的 kernel AST 与运行时张量 IR 边界，基准只经公共接口调用被测对象。
@@ -292,6 +317,12 @@ benchmarks 归档层：JSON 记录、历史库、对比、报告渲染（只消�
   - **#36 对拍绑定**：复用既有 `testkit::compare`（`close` / `assert_close` / `assert_vec_near` / `max_rel_err` / `Scale` / 非有限配对）与 `cutile::reference::tolerance` 的 dtype 分级容差表（F16/BF16 1e-3、F32 1e-5、整数与布尔精确），**不新造平行容差组件**。已落地：在既有 `tally` 单次遍历内累加 `mean-RE`（`mean_rel_err` / `mean_rel_err_with`，与 max-RE 同分母策略，长度不符与非有限不一致归无穷，空批为零，全零参考退绝对误差）；本轮补双门读数与组合判定——`RelGate { mean, max }` 由一次 `rel_gate` 遍历同时出 mean-RE / max-RE，`passes(mean_tol, max_tol)` 判两门各自阈值，`assert_rel_gate` 双门断言并把超门读数写进失败消息；max 门阈值由调用方显式放宽，不内置臆造倍数。唯一既有数值对拍点（`gemv_i4` 标量叶 vs 向量通道）已从手写 `slack = 1e-5·max(1,|want|)` 循环迁到公共 `assert_vec_near`（Unit 地板口径），消除第二份容差公式。剩余缺口：台账登记每格 dtype 双门阈值（mean 门 / max 放宽倍数）、标量参考 vs tile 执行路径的预检对照缓冲、未过门记 Open 不出性能数的绑定骨架——当前 `cpu-reference` 装置被测即标量参考，无第二份高精度锚点，标量/tiled 对照与双门阈值随 P3 精度曲线（f16/bf16/f8/nf4 精度-性能网格）一并定型。
   - **#37 计时洁净与 A/A 采集**：已逐闭包核查——fixture（权重 / 输入 / 输出缓冲）在装配段构造一次，迭代闭包内只传 `&[T]` / `View` 复用；输入 `View` 的 `clone` 只是视图描述符（引用 + 小 strides）复制，**不是元素深拷贝**；输出缓冲跨迭代复用，闭包内无 `to_vec` / `collect` 堆分配。防消除返回值由 criterion 0.8.2 `Bencher::iter` 内部 `black_box(routine())` 统一兜底（`bencher.rs` 单次调用），闭包返回 `Result` 不必各自再包一层；既有闭包外层 `black_box` 属冗余屏障，不构成口径缺口。线程 / `iter_custom` 峰值探针保留独立族，不套同一闭包。剩余接入位：委托包装防内联与 overhead 扣减统一到公共采集器（随 P2 采集器收敛）；A/A 成对探针需要第二份独立重复测量与台账登记，当前装置只有一套实现，`self_check` 判定内核已备，探针与归档对照留接入位。
   - 多重比较校正落在批量判定层，单 `Case` 不挂。
+- **P2–P4 本轮已落地（装置无关纯内核，测量层预留）**：
+  - **#31 P2**：`tools::trend` 历史趋势对照——`HistorySample`（单条观测）、`median_baseline`（滚动中位数，复用 `stats::quantile`）、`compare`（复用 `regress::Case` 三态，不另造门槛）；`tools::alloc::AllocProfile`（分配次数 / 累计字节 / 驻留峰值值对象）。分位 p50/p95/p99 复用 `card::Tally`，未重复造内核。
+  - **#32 P3**：`tools::grid` 形状网格纯函数——`aligned_points`（tile 整除对齐点）与 `boundary_points`（满块减一碎片边界点）；每形状 FLOPs / 字节仍由 `nn::Bounds` 推出。
+  - **#33 P4**：`tools::serve` 服务指标闭集——`ServingScene` 四档、`Arrival` 开 / 闭环、`PhaseLatency`（TTFT/TPOT/ITL/E2E）、`phase_latency`、`slo_hit_rate`、`tokens_per_s`、`goodput_tokens_per_s`（归一吞吐 × SLO 达成率）。不读时钟、不起服务、不做调度。
+  - 新公共类型已登记进 `docs/ARCHITECTURE.md` 所有权表；集成测试挂 `tools --test runtime`。
+- **P2–P4 剩余 OPEN（运行时 / 后端 / 负载受装置与原型阶段约束，对应格保持 OPEN）**：≥3 次独立稳态重复与稳态窗口、KV / 批网格、逐 token 时序采集；全局计数分配器挂基准 binary 与串行高水位采样；历史 JSON 库 `(commit, machine, profile)` join、离散统计量与 commit SHA 注入；多后端行、f16/bf16/f8/nf4 精度曲线、分层 roofline 三坡、PMU / 缓存计数、能效 tokens/J；Poisson / Pareto 负载生成器、真实端点、跨实现对照（同设备同负载，异源数字只作情报）。PMU / iai-callgrind 仅 Linux / Valgrind 边界内可用，macOS 记 Open 不伪装。
 - 门禁证据：本批 `cargo fmt --all --check` 通过；`llm-tools --test card` 49 passed（含 6 个区间判定用例与 4 个 A/A 自检用例）；`llm-benchmarks --test regress` 16 passed（含 2 个产物解析用例）；`llm-testkit --lib` 127 passed（含 5 条 mean-RE 用例与 5 条双门判定用例；架构 / 所有权门）；jscpd 0 clones / 0.00%；命名门 0 命中；`clippy -p llm-tools -p llm-benchmarks -p llm-testkit` 无 warning。代码核查：benchmarks 全部基准入口在 `main.rs` 挂载，无未挂载死入口；fixtures / io / attention 辅助函数均有调用方；testkit `compare` 公共判据均被引用，`math` 仅为 `compare` 的路径别名重导出、无第二份实现。计时闭包输入为 `View`，clone 是引用 + 小 strides 的描述符复制，非元素深拷贝，输出缓冲跨迭代复用；返回值由 criterion 0.8.2 `Bencher::iter` 内部 `black_box(routine())` 兜底。
 - **原登记存量阻塞（后续批次均已收口）**：`crates/diagnostic/src/buildgen.rs` 早先两个 `Result` 函数缺 `# Errors` 小节、`clippy -D warnings` 在依赖链阻断——现已补齐全部 `Result` 函数的 `# Errors` 小节，workspace `clippy --all-targets --all-features -D warnings` 全绿；`crates/prof/src/build.rs` 90 行触生产文件行数下限门——构建入口已迁至包根 `crates/prof/build.rs`，静态门按构建脚本口径归类（不套生产行数下限 / Ccn），`every_source_passes_the_static_gate` 通过。
 - 函数长度、圈复杂度、嵌套等门禁数值以最终格式化代码的静态报告为准；本批新增判定函数均 ≤10 行、分支 ≤3。

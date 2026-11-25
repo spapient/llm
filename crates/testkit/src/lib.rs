@@ -41,16 +41,23 @@
 
 pub mod compare;
 pub mod device;
+/// 见证判据保留原公共路径，实现与设备契约同住一处。
 pub mod evidence;
 pub mod fixture;
 pub mod gating;
-pub mod hash;
+/// 位级 CRC 参考保留原公共路径，实现归入格式夹具。
+pub mod hash {
+    pub use crate::fixture::{assert_table_matches_bitwise, crc32_bitwise};
+}
 /// 标量参考数学与数值对拍共用 `compare` 的实现，这里保留原公共路径。
 pub mod math {
     pub use crate::compare::{dot, mean, variance};
 }
 pub mod prop;
-pub mod rng;
+/// 确定性输入保留原公共路径，实现归入测试夹具。
+pub mod rng {
+    pub use crate::fixture::{Rng, sample, sample_with};
+}
 pub mod scratch;
 pub mod suite;
 pub mod witness;
@@ -171,8 +178,6 @@ mod e2e;
 // 三条外部 `#[path]` 用户的取值来源（`cutile` 单测、`device` 单测、`device` 的 schedule 集成
 // 测试）已在 `crates/testkit/tests/kernel.rs`：它只被那三处编译，`src/` 里不留测试夹具。
 #[cfg(test)]
-mod layer;
-#[cfg(test)]
 mod mirror;
 #[cfg(test)]
 mod ownership;
@@ -184,17 +189,7 @@ mod prop_config;
 #[cfg(test)]
 #[path = "../tests/prop_discipline.rs"]
 mod prop_discipline;
-// L3 合成律的跨层对拍：只收「一层算不出来」的事实——`bound` 量真实内核上的界是否罩住实测误差，
-// `ruling` 量真实容器的逐位往返，`measure` 是两者共用的夹具（定理侧递推由 `weights::chain` 自测）。
-#[cfg(test)]
-#[path = "../tests/chain_bound.rs"]
-mod chain_bound;
-#[cfg(test)]
-#[path = "../tests/chain_measure.rs"]
-mod chain_measure;
-#[cfg(test)]
-#[path = "../tests/chain_ruling.rs"]
-mod chain_ruling;
+// L3 合成律的跨层对拍已并入 `e2e`：真实权重、网络级误差界与无损容器共享一组夹具。
 
 pub use compare::{
     COSINE_GUARD, RelGate, Scale, all_finite, approx_eq, assert_close, assert_near,

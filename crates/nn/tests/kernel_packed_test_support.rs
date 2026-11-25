@@ -103,7 +103,7 @@ macro_rules! packed_gemv_tests {
             assert!(at::<$ty>(m, n).is_ok(), "生产形状必须能算出代价");
             assert_eq!(
                 $model.dtype,
-                ::prof::atom::DType::F32,
+                ::cutile::atom::DType::F32,
                 "样本的输出缓冲是 f32"
             );
             assert_eq!($model.group as usize, $group, "注册的粒度就是注解的粒度");

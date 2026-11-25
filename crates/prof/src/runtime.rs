@@ -7,9 +7,6 @@ mod kernel;
 #[cfg(target_os = "macos")]
 #[path = "metal/runtime.rs"]
 pub mod metal;
-#[cfg(windows)]
-#[path = "opencl.rs"]
-pub mod opencl;
 
 /// `gemm_micro.k` 的安全静态 ABI 桥；所有裸指针都受切片长度、坐标、溢出与特性门约束。
 #[allow(unsafe_code)]

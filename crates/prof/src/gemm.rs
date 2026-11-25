@@ -389,3 +389,34 @@ mod tests {
         assert_eq!(scalar, dot, "dotprod 与标量结果不一致");
     }
 }
+
+#[cfg(all(test, target_arch = "x86_64"))]
+mod tests_x86 {
+    use super::{FMA_MR, FMA_NR, fma_avx2, fma_scalar};
+
+    #[test]
+    fn avx2_fma_matches_scalar() {
+        if !std::arch::is_x86_feature_detected!("avx2")
+            || !std::arch::is_x86_feature_detected!("fma")
+        {
+            return;
+        }
+        let k = 32usize;
+        let a: Vec<f32> = (0..FMA_MR * k)
+            .map(|i| (i % 7) as f32 * 0.25 - 0.5)
+            .collect();
+        let b: Vec<f32> = (0..FMA_NR * k)
+            .map(|i| (i % 5) as f32 * 0.5 - 1.0)
+            .collect();
+        let mut scalar = vec![0.0f32; FMA_MR * FMA_NR];
+        let mut avx2 = vec![0.0f32; FMA_MR * FMA_NR];
+        fma_scalar(&a, &b, &mut scalar, 0, 0, FMA_NR, k, true);
+        unsafe {
+            fma_avx2(&a, &b, &mut avx2, 0, 0, FMA_NR, k, true);
+        }
+        for (s, v) in scalar.iter().zip(&avx2) {
+            let tol = 1e-4 * s.abs().max(1.0);
+            assert!((s - v).abs() <= tol, "scalar={s} avx2={v}");
+        }
+    }
+}

@@ -33,9 +33,9 @@ fn the_model_group_matches_the_declaration() {
         .expect("内置算子")
         .needs
         .iter()
-        .filter(|need| need.prim == prof::atom::Prim::Quant)
+        .filter(|need| need.prim == cutile::atom::Prim::Quant)
         .flat_map(|need| need.attrs.iter())
-        .find(|attr| attr.key() == prof::atom::AttrKey::Group)
+        .find(|attr| attr.key() == cutile::atom::AttrKey::Group)
         .and_then(|attr| attr.values().first())
         .expect("声明里有 quant.group")
         .parse::<u32>()
@@ -301,17 +301,17 @@ fn configured_conv2d_supports_rectangular_strided_batches() {
     let mut sample = spatial_sample(2 * 3 * 5 * 2, 2 * 2 * 3 * 2);
     sample.n = 2;
     sample.scalars = vec![("N", 2)];
-    sample.bufs.push(prof::model::Buf {
+    sample.bufs.push(cutile::model::Buf {
         name: "weight",
-        values: prof::model::Values::F32(
+        values: cutile::model::Values::F32(
             (0..2 * 3 * 2 * 2)
                 .map(|idx| 0.05 + (idx % 7) as f32 * 0.03)
                 .collect(),
         ),
     });
-    sample.bufs.push(prof::model::Buf {
+    sample.bufs.push(cutile::model::Buf {
         name: "bias",
-        values: prof::model::Values::F32(vec![0.4; 2]),
+        values: cutile::model::Values::F32(vec![0.4; 2]),
     });
     let geom = nn::conv::ConvGeom {
         kh: 2,
@@ -731,7 +731,7 @@ fn a_fragment_body_the_language_rejects_is_a_defect() {
 #[cfg(windows)]
 #[test]
 fn every_negotiable_intel_translation_unit_builds_on_uhd750() {
-    let device = prof::runtime::opencl::OpenClDevice::new().expect("必须探测到 UHD 750");
+    let device = prof::device::opencl::OpenClDevice::new().expect("必须探测到 UHD 750");
     let catalogue = catalogue();
     let profile = catalogue.profile("intel").expect("intel 档案");
     let dirs = Dirs::under(

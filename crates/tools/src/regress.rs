@@ -508,3 +508,58 @@ fn finite_positive(value: f64) -> bool {
 fn overlap(first: &Estimate, second: &Estimate) -> bool {
     first.lower() <= second.upper() && second.lower() <= first.upper()
 }
+
+// ---------------------------------------------------------------------------
+// 历史趋势对照：基线来自一批历史测量的滚动中位数，三态仍走上面的 Case 口径。
+// ---------------------------------------------------------------------------
+
+/// 一条历史测量：只持一次实测 ns/iter；commit / host / 产物摘要等身份由归档层补充。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HistorySample {
+    observed: f64,
+}
+
+impl HistorySample {
+    /// 登记一次历史观测；值必须有限且非负。
+    pub fn new(observed: f64) -> Option<Self> {
+        observed
+            .is_finite()
+            .then_some(())
+            .filter(|_| observed >= 0.0)
+            .map(|()| Self { observed })
+    }
+
+    /// 实测 ns/iter。
+    #[must_use]
+    pub fn observed(&self) -> f64 {
+        self.observed
+    }
+}
+
+/// 历史滚动中位数基线（ns/iter）；历史为空返回 [`None`]。
+#[must_use]
+pub fn median_baseline(history: &[HistorySample]) -> Option<f64> {
+    if history.is_empty() {
+        return None;
+    }
+    let mut values: Vec<f64> = history.iter().map(|sample| sample.observed).collect();
+    values.sort_by(f64::total_cmp);
+    Some(crate::stats::quantile(&values, 0.5))
+}
+
+/// 当前观测相对历史中位数基线的三态判定。
+///
+/// 方向取 [`Direction::Lower`]（ns 越小越好，回退 = 观测越过基线预算线）；历史不足、基线
+/// 非法或预算线越界时返回 [`None`]，不拿单份历史冒充滚动基线。
+pub fn compare(
+    current: f64,
+    history: &[HistorySample],
+    budget_percent: f64,
+) -> Option<Judgement> {
+    let baseline = median_baseline(history)?;
+    let case = Case::new("trend", baseline, budget_percent, Direction::Lower).ok()?;
+    if !current.is_finite() {
+        return None;
+    }
+    Some(case.judge(current))
+}

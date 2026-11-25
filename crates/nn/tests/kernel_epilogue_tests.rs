@@ -113,7 +113,7 @@ fn pipeline_runs_in_declared_order() {
 // 对每台设备吐出的那段文本本身。六台设备共用同一组场景，语义漂移会直接落在某一台上。
 
 use cutile::substitute::{EpiArgs, epilogue};
-use prof::atom::{ActKind, DType};
+use cutile::atom::{ActKind, DType};
 use prof::epilogue::Step;
 
 /// 场景数组的最大元素数：见证 ABI 的写出上限 [`testkit::witness::MAX_OUT`] 就是这个数，

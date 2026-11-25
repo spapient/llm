@@ -3,6 +3,8 @@
 
 use diagnostic::{Error, Result};
 
+use crate::stats::mean;
+
 /// 配置错误：上下文统一带 `tools::bench::` 前缀。
 fn invalid(ctx: &str, message: impl Into<String>) -> Error {
     crate::error::invalid("bench", ctx, message)
@@ -369,4 +371,217 @@ fn check_ratio(value: f64, label: &str) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// 形状网格点：tile 整除对齐点与满块减一碎片边界点。每形状 FLOPs / 字节仍由 `nn::Bounds`
+// 语义表推出，这里不写第二份流量常数。
+// ---------------------------------------------------------------------------
+
+/// 整除对齐点：`tile` 的整数倍，不超过 `max`；`tile` 为 0 或 `max` 小于 `tile` 时为空。
+#[must_use]
+pub fn aligned_points(tile: usize, max: usize) -> Vec<usize> {
+    if tile == 0 {
+        return Vec::new();
+    }
+    (1..)
+        .map(|q| q * tile)
+        .take_while(|&point| point <= max)
+        .collect()
+}
+
+/// 非整除边界点：每档 `tile·q − 1`（满块减一的碎片形状），不超过 `max`。
+///
+/// 覆盖 tile 量化余量：分块内核在 `tile·q − 1` 这种最后一块不满的形状上最容易出边界错误，
+/// 对齐点测不到这条路径。
+#[must_use]
+pub fn boundary_points(tile: usize, max: usize) -> Vec<usize> {
+    if tile == 0 {
+        return Vec::new();
+    }
+    (1..)
+        .map(|q| q * tile - 1)
+        .take_while(|&point| point <= max)
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// 分配计数值对象：一次基准运行的堆分配读数。计数分配器挂载与高水位采样属运行时接入位。
+// ---------------------------------------------------------------------------
+
+/// 一次运行的堆分配读数：次数、累计分配字节、驻留峰值字节。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AllocProfile {
+    count: u64,
+    bytes: u64,
+    peak_bytes: u64,
+}
+
+impl AllocProfile {
+    /// 登记一份分配读数；三项均为计数口径，由计数分配器在采集侧填充。
+    pub fn new(count: u64, bytes: u64, peak_bytes: u64) -> Self {
+        Self {
+            count,
+            bytes,
+            peak_bytes,
+        }
+    }
+
+    /// 分配次数。
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// 本次运行累计分配字节（含已释放段，是分配总量而非驻留量）。
+    #[must_use]
+    pub fn bytes(&self) -> u64 {
+        self.bytes
+    }
+
+    /// 驻留高水位字节。
+    #[must_use]
+    pub fn peak_bytes(&self) -> u64 {
+        self.peak_bytes
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 服务化基准：场景 / 到达过程闭集与分相时延 / goodput 口径。只做确定性统计，不读时钟、
+// 不起服务、不做调度；逐 token 产出时刻由采集层喂入。
+// ---------------------------------------------------------------------------
+
+/// 服务负载场景：对齐 MLPerf 四档，LLM 在此之上拆 TTFT / TPOT / ITL / E2EL。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServingScene {
+    /// 单序列串行：一次一个请求，测首 token 与单步时延。
+    SingleStream,
+    /// 多序列同时在途，按批次完成度报吞吐。
+    MultiStream,
+    /// 开环服务：Poisson 到达，暴露排队与尾延迟，是 goodput 与 SLO 测量前提。
+    Server,
+    /// 离线批量：无到达约束，只测吞吐天花板。
+    Offline,
+}
+
+impl ServingScene {
+    /// 稳定短名，写进归档报告。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SingleStream => "single-stream",
+            Self::MultiStream => "multi-stream",
+            Self::Server => "server",
+            Self::Offline => "offline",
+        }
+    }
+}
+
+/// 请求到达过程：开环与闭环是两条不同的问题，不可互换。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Arrival {
+    /// 开环：到达率独立于响应，暴露排队与尾延迟。
+    OpenPoisson,
+    /// 闭环：固定并发、完成即补，测吞吐天花板，但 back-pressure 会掩盖变慢。
+    ClosedConcurrency,
+}
+
+impl Arrival {
+    /// 稳定短名，写进归档报告。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::OpenPoisson => "open-poisson",
+            Self::ClosedConcurrency => "closed-concurrency",
+        }
+    }
+}
+
+/// 一条请求的分相时延（单位 ns）。
+///
+/// `ttft` 是首 token 时刻（相对计时起点）；`itl` 是相邻 token 间隔列；`tpot` 是后续间隔的均值；
+/// `e2e` 是末 token 时刻（端到端）。单 token 请求 `itl` 为空、`tpot` 为 0。
+#[derive(Debug, Clone, PartialEq)]
+pub struct PhaseLatency {
+    ttft_ns: f64,
+    tpot_ns: f64,
+    e2e_ns: f64,
+    itl: Vec<f64>,
+}
+
+impl PhaseLatency {
+    /// 首 token 时延（ns）。
+    #[must_use]
+    pub fn ttft_ns(&self) -> f64 {
+        self.ttft_ns
+    }
+
+    /// 后续 token 平均步长（ns）。
+    #[must_use]
+    pub fn tpot_ns(&self) -> f64 {
+        self.tpot_ns
+    }
+
+    /// 端到端时延（ns）。
+    #[must_use]
+    pub fn e2e_ns(&self) -> f64 {
+        self.e2e_ns
+    }
+
+    /// 相邻 token 间隔列（ns）。
+    #[must_use]
+    pub fn itl(&self) -> &[f64] {
+        &self.itl
+    }
+}
+
+/// 由 token 产出时刻（ns，相对计时起点，单调不减）拆分相时延。
+///
+/// 时刻为空、非有限或回退（后一个早于前一个）时返回 [`None`]：口径不猜，也不把乱序时序
+/// 折成看似平稳的间隔。
+#[must_use]
+pub fn phase_latency(marks: &[f64]) -> Option<PhaseLatency> {
+    if marks.is_empty() || !marks.iter().all(|mark| mark.is_finite()) {
+        return None;
+    }
+    let ttft = marks[0];
+    let e2e = marks[marks.len() - 1];
+    let itl: Vec<f64> = marks.windows(2).map(|pair| pair[1] - pair[0]).collect();
+    if itl.iter().any(|gap| *gap < 0.0) {
+        return None;
+    }
+    let tpot = mean(&itl);
+    Some(PhaseLatency {
+        ttft_ns: ttft,
+        tpot_ns: tpot,
+        e2e_ns: e2e,
+        itl,
+    })
+}
+
+/// SLO 达成率：满足 SLO 的请求占比；总数为 0 时返回 0，不除零。
+#[must_use]
+pub fn slo_hit_rate(met: usize, total: usize) -> f64 {
+    if total == 0 {
+        0.0
+    } else {
+        met as f64 / total as f64
+    }
+}
+
+/// 归一吞吐：每纳秒 token 数折成 tokens/s；时长非正返回 0，不拿零分母出 inf。
+#[must_use]
+pub fn tokens_per_s(tokens: u64, elapsed_ns: f64) -> f64 {
+    if elapsed_ns > 0.0 {
+        tokens as f64 / elapsed_ns * 1e9
+    } else {
+        0.0
+    }
+}
+
+/// goodput：满足 SLO 的有效吞吐（tokens/s），= 归一吞吐 × SLO 达成率。
+///
+/// 总吞吐里不满足 SLO 的部分不计入 goodput；达成率由 [`slo_hit_rate`] 单独给出，便于报告
+/// 同时列出原始吞吐与有效吞吐。
+#[must_use]
+pub fn goodput_tokens_per_s(tokens: u64, elapsed_ns: f64, met: usize, total: usize) -> f64 {
+    tokens_per_s(tokens, elapsed_ns) * slo_hit_rate(met, total)
 }

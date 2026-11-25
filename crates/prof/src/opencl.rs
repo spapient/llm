@@ -247,7 +247,7 @@ impl OpenClDevice {
     pub fn new() -> Result<Self> {
         let (_, raw) = find_device().ok_or_else(|| {
             Error::new(Code::Unsupported, "没有可用的 Intel OpenCL GPU")
-                .with("prof::runtime::opencl::OpenClDevice::new")
+                .with("prof::device::opencl::OpenClDevice::new")
         })?;
         Self::with_device(raw)
     }
@@ -314,7 +314,7 @@ impl OpenClDevice {
             Code::Invalid,
             format!("OpenCL 内核构建失败（{built}）：\n{log}"),
         )
-        .with("prof::runtime::opencl::OpenClDevice::compile"))
+        .with("prof::device::opencl::OpenClDevice::compile"))
     }
 
     fn create_kernel(&self, program: &Handle, entry: &CString) -> Result<Handle> {
@@ -890,9 +890,9 @@ fn check(status: i32, operation: &str) -> Result<()> {
         Code::Internal,
         format!("{operation} 失败，OpenCL 错误码 {status}"),
     )
-    .with("prof::runtime::opencl"))
+    .with("prof::device::opencl"))
 }
 
 fn invalid(message: impl Into<String>) -> Error {
-    Error::new(Code::Invalid, message.into()).with("prof::runtime::opencl")
+    Error::new(Code::Invalid, message.into()).with("prof::device::opencl")
 }

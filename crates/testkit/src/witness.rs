@@ -46,9 +46,8 @@ pub struct Reading {
 /// 临时目录不可写、编译器缺席、编译失败、程序非零退出、输出行数不足时返回可读的原因。
 pub fn run(source: &str, ext: &str, calls: &[Call<'_>]) -> Result<Vec<Reading>, String> {
     let dir = scratch(&format!("{ext}-{}", main_ext(ext)));
-    let _guard = Guard(dir.clone());
-    let main = layout(&dir, ext, source, calls)?;
-    let binary = dir.join("witness");
+    let main = layout(dir.path(), ext, source, calls)?;
+    let binary = dir.path().join("witness");
     compile(ext, &main, &binary)?;
     let stdout = execute(&binary)?;
     read(&stdout, calls)
@@ -163,7 +162,8 @@ fn execute(binary: &std::path::Path) -> Result<String, String> {
 
 /// 生成的程序：把见证源码原样 `#include` 进来，于是辅助函数与 `static` 都保持同一份。
 fn program(calls: &[Call<'_>]) -> String {
-    let mut text = String::from("/* 由 testkit::witness 生成：一条见证一行读数。 */\n");
+    let mut text = String::with_capacity(256 + calls.len() * 192);
+    text.push_str("/* 由 testkit::witness 生成：一条见证一行读数。 */\n");
     let _ = writeln!(text, "#define MAX_OUT {MAX_OUT}");
     text.push_str("#include <stdio.h>\n");
     let _ = writeln!(text, "#include \"witness.h\"");
@@ -201,7 +201,13 @@ fn reading(call: &Call<'_>, line: &str) -> Result<Reading, String> {
         .next()
         .and_then(|field| field.parse().ok())
         .ok_or_else(|| format!("`{}` 的读数首列不是个数：`{line}`", call.func))?;
-    let values: Vec<f32> = fields.filter_map(|field| field.parse().ok()).collect();
+    let values = fields
+        .map(|field| {
+            field
+                .parse::<f32>()
+                .map_err(|_| format!("`{}` 的读数含非法浮点 `{field}`", call.func))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let max_rel_err = deviation(&values, call.expect, count);
     Ok(Reading {
         func: call.func.to_string(),
@@ -221,24 +227,24 @@ fn deviation(values: &[f32], expect: &[f32], count: i32) -> f64 {
     }
 }
 
-/// 一次执行的临时目录；`Drop` 时整棵删掉，编译失败也不留垃圾。
-struct Guard(PathBuf);
-
-impl Drop for Guard {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-fn scratch(tag: &str) -> PathBuf {
+/// 一次执行的 RAII 临时目录；标签含进程与序号，并发见证不会互相清场。
+fn scratch(tag: &str) -> crate::scratch::ScratchDir {
     static NEXT: AtomicU32 = AtomicU32::new(0);
-    crate::scratch::scratch_dir(&format!(
-        "witness-{tag}-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ))
+    let serial = NEXT.fetch_add(1, Ordering::Relaxed);
+    crate::scratch::ScratchDir::new(&format!("witness-{tag}-{serial}"))
 }
 
 #[cfg(test)]
-#[path = "../tests/witness_tests.rs"]
-mod witness_tests;
+mod tests {
+    use super::*;
+
+    #[test]
+    fn malformed_readings_are_rejected_instead_of_dropped() {
+        let call = Call {
+            func: "witness_bad",
+            expect: &[1.0],
+        };
+        let error = reading(&call, "1 not-a-float").expect_err("非法读数必须报错");
+        assert!(error.contains("非法浮点"), "{error}");
+    }
+}

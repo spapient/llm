@@ -15,15 +15,22 @@ pub const COSINE_GUARD: f32 = 0.999;
 /// 逐个元素**绝对误差**比较：两套同尺度算法变体对拍走这一档。`NaN` 与 `NaN` 视为相等
 /// （对拍时它两边同源，不该因为 `NaN != NaN` 失败）。
 pub fn approx_eq<T: Float>(left: &[T], right: &[T], tolerance: T) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-    left.iter().zip(right).all(|(a, b)| {
-        if *a == *b || (a.is_nan() && b.is_nan()) {
-            return true;
-        }
-        (*a - *b).abs() <= tolerance
-    })
+    left.len() == right.len()
+        && first_failure(left, right, |a, b| {
+            a == b || (a.is_nan() && b.is_nan()) || (a - b).abs() <= tolerance
+        })
+        .is_none()
+}
+
+/// 返回首个不满足判据的位置；长度由调用方校验，扫描只做一次顺序遍历。
+fn first_failure<T: Float>(
+    left: &[T],
+    right: &[T],
+    accept: impl Fn(T, T) -> bool,
+) -> Option<usize> {
+    left.iter()
+        .zip(right)
+        .position(|(&a, &b)| !accept(a, b))
 }
 
 /// 双项容差标量判定：`|a-b| ≤ abs + rel·max(|a|,|b|)`。
@@ -72,12 +79,23 @@ pub fn assert_close<T: Float + std::fmt::Display>(left: &[T], right: &[T], abs: 
         left.len(),
         right.len()
     );
-    for (idx, (got, want)) in left.iter().zip(right).enumerate() {
-        let tolerance = abs + rel * want.abs();
-        assert!(
-            (*got - *want).abs() <= tolerance,
-            "第 {idx} 个元素 {got} vs {want}（容差 {tolerance}）"
-        );
+    fail_first(left, right, |idx, got, want, tolerance| {
+        panic!("第 {idx} 个元素 {got} vs {want}（容差 {tolerance}）")
+    }, abs, rel);
+}
+
+/// 单侧相对容差共用的定位内核；回调只在首个违约元素执行。
+fn fail_first<T: Float>(
+    left: &[T],
+    right: &[T],
+    fail: impl FnOnce(usize, T, T, T),
+    abs: T,
+    rel: T,
+) {
+    if let Some(idx) = first_failure(left, right, |got, want| {
+        (got - want).abs() <= abs + rel * want.abs()
+    }) {
+        fail(idx, left[idx], right[idx], abs + rel * right[idx].abs());
     }
 }
 
@@ -115,12 +133,12 @@ pub fn assert_near<T: Float + std::fmt::Display>(got: T, want: T, tol: T, what: 
 #[track_caller]
 pub fn assert_vec_near<T: Float + std::fmt::Display>(got: &[T], want: &[T], tol: T, what: &str) {
     assert_eq!(got.len(), want.len(), "{what}: 长度不等");
-    for (idx, (&g, &w)) in got.iter().zip(want).enumerate() {
-        assert!(
-            (g - w).abs() <= tol * w.abs().max(T::one()),
-            "{what}: 第 {idx} 项 got {g}, want {w}（tol = {tol}）"
-        );
-    }
+    let Some(idx) = first_failure(got, want, |g, w| {
+        (g - w).abs() <= tol * w.abs().max(T::one())
+    }) else {
+        return;
+    };
+    panic!("{what}: 第 {idx} 项 got {}, want {}（tol = {tol}）", got[idx], want[idx]);
 }
 
 /// 两条同长向量的余弦相似度；长度不同、或任一向量范数为零时返回 [`None`]。
@@ -129,16 +147,14 @@ pub fn cosine_similarity(left: &[f32], right: &[f32]) -> Option<f32> {
     if left.len() != right.len() {
         return None;
     }
-    let mut dot = 0.0f64;
-    let mut left_sq = 0.0f64;
-    let mut right_sq = 0.0f64;
-    for (a, b) in left.iter().zip(right) {
-        let a = f64::from(*a);
-        let b = f64::from(*b);
-        dot += a * b;
-        left_sq += a * a;
-        right_sq += b * b;
-    }
+    let (dot, left_sq, right_sq) = left.iter().zip(right).fold(
+        (0.0f64, 0.0f64, 0.0f64),
+        |(dot, left_sq, right_sq), (a, b)| {
+            let a = f64::from(*a);
+            let b = f64::from(*b);
+            (dot + a * b, left_sq + a * a, right_sq + b * b)
+        },
+    );
     let denom = (left_sq * right_sq).sqrt();
     if denom == 0.0 {
         return None;
@@ -257,6 +273,9 @@ fn pairing_agrees(got: f32, want: f32) -> bool {
 
 /// 单元素读数 `(判据值, 绝对误差, 分母, 该元素)`；逐元素相等时为 [`None`]（不占最差点）。
 fn element_reading(idx: usize, got: f32, want: f32, denom: f64) -> Option<(f64, f64, f64, Worst)> {
+    if !got.is_finite() || !want.is_finite() {
+        return None;
+    }
     let diff = (f64::from(got) - f64::from(want)).abs();
     if diff == 0.0 {
         return None;
@@ -447,10 +466,6 @@ pub(crate) fn within_ratio(got: &[f32], want: &[f32], tolerance: f64) -> bool {
 #[cfg(test)]
 #[path = "../tests/compare_tests.rs"]
 mod compare_tests;
-
-#[cfg(test)]
-#[path = "../tests/rel_tests.rs"]
-mod rel_tests;
 
 // ---- 标量参考数学 -----------------------------------------------------------
 

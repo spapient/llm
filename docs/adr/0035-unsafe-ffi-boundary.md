@@ -69,7 +69,7 @@ P3 要在边界 crate 挂 Metal/CUDA 后端（ADR 0025 §1、§9；ADR 0028 §3 
 
 `i8.rs` 由 8 涨到 12、`micro.rs` 由 6 涨到 11 是同一形态的**有意增量**：把生产微内核的瓦片体抽成`sdot_tile`（i8）与 `fma_step`（f32）后，探针与被测内核共用一份实现，代价是每个新函数各自一个 `#[allow]`，收益是**消掉一份重复的瓦片体**——若探针自写一份，分母就与分子不同源，K7/K8 变成两个内核相除。其中 `i8.rs` 的 4 处是上一轮合并 `sdot_tile` 时新增、本轮才补登记（欠账，已补）。新增的 f32 探针只在 `bench` 特性下编译，生产公开面不含该项；不变量与 `micro_packed` 一致：包装只做长度守卫与指针透传，工人只为 `fma_step` 的读边界（`NR*k` 内的 `NR` 行）负责。
 
-四个逻辑岛：`storage` 的 mmap、`prof::runtime` 的 Metal FFI、`prof::runtime` 的 OpenCL FFI、
+四个逻辑岛：`storage` 的 mmap、`prof::runtime` 的 Metal FFI、`prof::device` 的 OpenCL FFI、
 CPU 微内核——瓦片 intrinsic 段已收进 `prof::native` 三岛（`gemm8x8` / `i8` / `sme`），`nn`
 这一组只剩 `i8` 的打包/计算裸指针包装与 `pool` 线程池（裸指针只活到 `done` 齐、主线程返回前）；
 线程池与并发机制仍留 nn，属调度骨架而非设备原语。
@@ -119,4 +119,5 @@ CPU 微内核——瓦片 intrinsic 段已收进 `prof::native` 三岛（`gemm8x
 - 2026-11-24：`fast` 各段由 `kernel_fast_*.rs` 平铺文件收拢进 `kernel/fast/` 目录（`i8.rs`、`pool.rs` 等），越界点随文件迁移、处数不变（i8 4 + pool 3）；§6 表格与白名单同步到目录路径，存量冻结口径不变。
 - 2026-11-25：Metal 路径同步为 `prof/src/metal/runtime.rs`；登记既有 `prof/src/opencl.rs` 模块级 OpenCL FFI 岛，句柄所有权与释放不变量入表，总处数由 29 校正为 30。
 - 2026-11-26：FMA(f32) 与 sdot(i8 dotprod) 主机内核由 C 迁至 Rust intrinsic，算术本体内聚到新岛 `prof/src/gemm.rs`（模块级 1 处）；几何、缓冲与特性门仍由 `runtime.rs::gemm_micro` 安全桥先校验，SME 段保留在 C ABI 岛；白名单与 §6 表格同步，未放宽阈值。
+- 2026-11-26：OpenCL FFI 岛模块路径由 `prof::runtime::opencl` 归置到 `prof::device::opencl`（文件仍为平铺的 `prof/src/opencl.rs`，`#[cfg(windows)]` 挂载不变；Metal FFI 仍留 `prof::runtime::metal`），外部引用与架构所有权表同步，FFI 不变量与句柄所有权不变。
 - 2026-11-26：SME 绑定层走路线乙：抽权威 C 头 `ops/gemm_micro.h` 作签名单一事实源，Rust 侧仍守默认策略手写 `extern "C"`、零 FFI crate；构建期由 `diagnostic::scan::ffi_align` 核对头原型 ↔ `.k` 注解登记符号集 ↔ Rust extern 的符号名集与参数宽类序列。bindgen 不引入，保留为未来接入外部 C 库、非平凡 struct/handle 或大绑定面时的升级预案。

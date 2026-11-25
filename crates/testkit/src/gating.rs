@@ -1,53 +1,59 @@
 //! 真机门控与跳过登记：测试专用的环境前提开关，不是产品配置。
 
 use std::path::PathBuf;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, MutexGuard};
 
-/// 真机门控环境变量名（测试专用，不是产品配置）。取值是逗号分隔的 vendor 列表
-/// （`cpu,nvidia`），`all` 表示全部打开；未设置表示全部关闭。
+/// 真机门控环境变量名（测试专用，不是产品配置）。取值是逗号分隔的 vendor 列表。
 const DEVICE_ENV: &str = "LLM_TEST_DEVICE";
 
-/// 进程内跳过计数与原因清单：标准测试框架没有正式 skip 信号，集中登记后才能在报告里
-/// 区分"通过"与"前提不满足而未运行"。
+/// 进程内跳过计数与原因清单：标准测试框架没有正式 skip 信号，集中登记后才能审计。
 static SKIPPED: AtomicUsize = AtomicUsize::new(0);
 static SKIP_REASONS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 /// 这台设备的真机用例是否被显式打开。
 pub fn device_enabled(vendor: &str) -> bool {
-    match std::env::var(DEVICE_ENV) {
-        Ok(spec) => matches(&spec, vendor),
-        Err(_) => false,
-    }
+    std::env::var(DEVICE_ENV).is_ok_and(|spec| matches(&spec, vendor))
+}
+
+/// 原因锁只保护 Vec 操作，持锁期间不会 panic；若外部已中毒，恢复数据比清空审计轨迹更安全。
+fn reasons() -> MutexGuard<'static, Vec<String>> {
+    SKIP_REASONS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// 登记一条"环境前提不满足"的跳过；恒返回 `true`，调用方据此立即 `return`。
 pub fn skip(reason: impl Into<String>) -> bool {
     let reason = reason.into();
     SKIPPED.fetch_add(1, Ordering::Relaxed);
-    if let Ok(mut reasons) = SKIP_REASONS.lock() {
-        reasons.push(reason.clone());
-    }
     eprintln!("llm-testkit[skip]: {reason}");
-    if let Some(dir) = std::env::var_os("LLM_TEST_SKIP_DIR") {
-        let dir = PathBuf::from(dir);
-        if std::fs::create_dir_all(&dir).is_ok() {
-            let path = dir.join("skips.log");
-            if let Ok(mut file) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-            {
-                use std::io::Write;
-                let _ = writeln!(file, "{reason}");
-            }
-        }
-    }
+    append_skip_log(&reason);
+    reasons().push(reason);
     true
 }
 
-/// 登记一条跳过并返回 `None`：供 `Option` 链式表达式（如 `ok().or_else(...)`）内联使用，
-/// 避免在测试臂里再开一个语句块；类型 `T` 由上下文推断。
+/// 按配置把跳过原因追加到日志；日志是辅助产物，失败不掩盖原始跳过事实。
+fn append_skip_log(reason: &str) {
+    let Some(dir) = std::env::var_os("LLM_TEST_SKIP_DIR") else {
+        return;
+    };
+    let dir = PathBuf::from(dir);
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("skips.log"))
+    else {
+        return;
+    };
+    use std::io::Write;
+    let _ = writeln!(file, "{reason}");
+}
+
+/// 登记一条跳过并返回 `None`：供 `Option` 链式表达式内联使用。
 #[must_use]
 pub fn skip_none<T>(reason: impl Into<String>) -> Option<T> {
     skip(reason);
@@ -63,11 +69,10 @@ pub fn skip_count() -> usize {
 /// 本进程已登记的跳过原因（按登记顺序）。
 #[must_use]
 pub fn skipped_reasons() -> Vec<String> {
-    SKIP_REASONS.lock().map_or_default(|guard| guard.clone())
+    reasons().clone()
 }
 
-/// 真机门控与跳过登记合一：设备未显式打开时登记原因并返回 `true`（调用方立即 `return`）；
-/// 已打开返回 `false`。等价于 `if !device_enabled(v) { skip(reason) }`，省掉重复的成对写法。
+/// 真机门控与跳过登记合一：设备未显式打开时登记原因并返回 `true`。
 pub fn device_or_skip(vendor: &str, reason: impl Into<String>) -> bool {
     if device_enabled(vendor) {
         false
@@ -86,5 +91,30 @@ fn matches(spec: &str, vendor: &str) -> bool {
 }
 
 #[cfg(test)]
-#[path = "../tests/gating_tests.rs"]
-mod gating_tests;
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gating_accepts_all_lists_and_ignores_blank_entries() {
+        assert!(matches("all", "nvidia"));
+        assert!(matches("cpu, nvidia", "nvidia"));
+        assert!(matches(" cpu ", "cpu"));
+        assert!(!matches("", "cpu"));
+        assert!(!matches("cpu", "nvidia"));
+    }
+
+    #[test]
+    fn skip_registers_reason_and_count() {
+        let before = skip_count();
+        assert!(skip("测试用临时跳过原因"));
+        assert!(skip_count() > before, "跳过计数必须单调递增");
+        assert!(skipped_reasons().iter().any(|reason| reason == "测试用临时跳过原因"));
+    }
+
+    #[test]
+    fn device_or_skip_registers_when_disabled() {
+        let before = skip_count();
+        assert!(device_or_skip("nvidia", "测试：未启用 nvidia"));
+        assert!(skip_count() > before, "跳过计数必须单调递增");
+    }
+}

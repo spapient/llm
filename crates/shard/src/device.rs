@@ -262,7 +262,7 @@ pub fn metal_driver(max: usize) -> String {
 pub(crate) mod opencl {
     use super::*;
     use crate::toolchain::Toolchain;
-    use prof::runtime::opencl::{OpenClBuf, OpenClDevice};
+    use prof::device::opencl::{OpenClBuf, OpenClDevice};
 
     pub(crate) struct OpenClBackend;
 

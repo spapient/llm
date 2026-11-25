@@ -1,19 +1,14 @@
-//! 设备片段层的契约：一台设备的 P0 片段、见证入口与档案供给必须互相闭合。
+//! 设备片段契约与可执行见证：P0 片段、档案供给、入口和本机读数必须闭合。
 
+use std::collections::{BTreeMap, BTreeSet};
+
+use crate::witness::{Call, MAX_OUT, Reading, run};
+
+/// 见证对拍的容差，与 `cutile::witness` 同一个口径。
+pub const TOLERANCE: f64 = 1e-5;
 /// P0 闭集：`crates/prof/src/<vendor>/kernels/*.k` 会 `@` 到的八个原语。
-///
-/// 这是**算子模板**的事实，不是某台设备的事实，因此六台设备共用一份。设备模块自带
-/// 一份的写法会让 [`Contract::check_p0_set`] 的可信度落到被检查方手里：各设备缩一缩自己
-/// 的闭集，门禁就绿了。闭集留在这里，设备只能选择覆盖它或暴露缺口。
 pub const P0: [&str; 8] = [
-    "cvt",
-    "dot",
-    "load",
-    "load_async",
-    "mma",
-    "quant",
-    "reduce",
-    "store",
+    "cvt", "dot", "load", "load_async", "mma", "quant", "reduce", "store",
 ];
 
 /// Rust、TOML 与共享参考由生成器单独校验，其余设备源文件进入目录闭集核对。
@@ -58,18 +53,14 @@ pub struct Contract<'a> {
     pub prims: &'a [(&'a str, &'a str)],
     /// 档案里这台设备的全部供给。
     pub provides: &'a [Provision<'a>],
-    /// 写回尾块的文件名主干（`prof::sign` 的那一份），闭集要拿它算文件名。
+    /// 写回尾块的文件名主干（`prof::sign` 的那一份）。
     pub epilogue_stem: &'a str,
     /// 见证源码（`DEVICE.source`）。
     pub source: &'a str,
 }
 
 impl<'a> Contract<'a> {
-    /// 片段必须**恰好**覆盖 P0 闭集：一个不多（多余的原语没有模板用），一个不少（缺一条模板拼不出来）。
-    ///
-    /// # Errors
-    ///
-    /// 有两条片段抢同一个原语，或片段集合与 P0 闭集不相等时返回原因。
+    /// 片段必须**恰好**覆盖 P0 闭集，且同一原语不得有两份正文。
     pub fn check_p0_set(&self) -> Result<(), String> {
         let mut names: Vec<&str> = self.fragments.iter().map(|(prim, _)| *prim).collect();
         names.sort_unstable();
@@ -89,22 +80,16 @@ impl<'a> Contract<'a> {
         ))
     }
 
-    /// 每条签名的 `(原语, impl)` 必须是档案里的一条供给，且那条供给有见证——签名是承诺，没有见证
-    /// 的签名是"看起来实现了"。入口名还必须与档案的见证是同一条。
-    ///
-    /// # Errors
-    ///
-    /// 第一条不闭合的签名返回原因；`Ok` 表示九条签名逐条对上了。
+    /// 每条签名都必须对应一条带见证的档案供给，且入口一致。
     pub fn check_signatures(&self) -> Result<(), String> {
-        for (prim, body) in self.fragments {
+        self.fragments.iter().try_for_each(|(prim, body)| {
             let signed = sign(body)
                 .map_err(|reason| format!("`{}` 的 `{prim}.{}`：{reason}", self.id, self.ext))?;
-            self.check_signed(prim, signed)?;
-        }
-        Ok(())
+            self.check_signed(prim, signed)
+        })
     }
 
-    /// 一条签名：文件名与署名同一个词，然后交给档案对账。
+    /// 文件名与署名必须指向同一个原语，然后交给档案对账。
     fn check_signed(&self, prim: &str, signed: (&str, &str)) -> Result<(), String> {
         let (signed_prim, signed_impl) = signed;
         if signed_prim != prim {
@@ -116,7 +101,7 @@ impl<'a> Contract<'a> {
         self.check_provide(signed_prim, signed_impl)
     }
 
-    /// 署名在档案里必须有供给，那条供给必须有见证，且见证入口与生成表里的是同一个。
+    /// 署名在档案里必须有供给、见证和同一个入口。
     fn check_provide(&self, prim: &str, impl_name: &str) -> Result<(), String> {
         let Some(provide) = self.find(prim, impl_name) else {
             return Err(format!(
@@ -140,83 +125,64 @@ impl<'a> Contract<'a> {
         ))
     }
 
-    /// 见证文件里的每个 `int witness_*(float *out)` 都必须被某条供给认领，每个入口都必须在文件里
-    /// 定义一次：多出来的是死代码，少一条是镜像里点名点空。
-    ///
-    /// # Errors
-    ///
-    /// 入口缺席、重复，或有见证函数无人认领时返回原因。
+    /// 每个生成表入口恰好定义一次，每个见证函数也恰好被一条供给认领。
     pub fn check_witness_entries(&self) -> Result<(), String> {
-        let defined = crate::evidence::definitions(self.source);
-        let prims = self.prims.iter().map(|(prim, func)| (*prim, *func));
-        self.check_one_each(&defined, prims, "原语", "一条签名一个函数")?;
-        self.check_unclaimed(&defined)
-    }
-
-    /// 每条命名了算法的条目在见证文件里必须正好有一段函数：少一段是漏说了，多一段是两份真相。
-    fn check_one_each<'n>(
-        &self,
-        defined: &[&'n str],
-        entries: impl Iterator<Item = (&'n str, &'n str)>,
-        kind: &str,
-        rule: &str,
-    ) -> Result<(), String> {
-        for (name, func) in entries {
-            let count = defined.iter().filter(|seen| **seen == func).count();
-            if count != 1 {
-                return Err(format!(
-                    "`{}` 的{kind} `{name}` 入口 `{func}` 在见证文件里出现了 {count} 次：{rule}",
-                    self.id
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    /// 反向的漏：见证文件里每个函数都得有档案认领，否则它算的东西归属不到任何一条。
-    fn check_unclaimed(&self, defined: &[&str]) -> Result<(), String> {
+        let defined = definitions(self.source);
+        let mut counts = BTreeMap::new();
         for name in defined {
-            if !self.claimed(name) {
-                return Err(format!(
-                    "`{}` 的见证函数 `{name}` 没有任何供给认领：它执行的算法归属不到一条签名",
-                    self.id
-                ));
-            }
+            *counts.entry(name).or_insert(0usize) += 1;
         }
-        Ok(())
+        self.check_one_each(&counts)?;
+        self.check_unclaimed(&counts)
     }
 
-    /// 没有片段正文的供给必须带见证。扫描器一台设备一种语言、一个原语至多一份正文，所以
-    /// 硬件具备但 P0 模板用不上的能力只能停在档案里；这类供给若连见证都没有，就只剩一行
-    /// 声明——正文说"怎么写"、见证说"写成什么"，两样都缺的能力不该出现在档案里。
-    ///
-    /// # Errors
-    ///
-    /// 第一条"正文与见证都缺"的供给返回原因。
-    pub fn check_evidence(&self) -> Result<(), String> {
-        for provide in self.provides {
-            let fragmented = self.fragments.iter().any(|(_, body)| {
-                sign(body).is_ok_and(|sign| sign == (provide.prim, provide.impl_name))
-            });
-            if fragmented || provide.witness.is_some() {
-                continue;
+    /// 用一次建好的定义索引核对所有入口，避免每个原语重扫整个见证文件。
+    fn check_one_each(&self, defined: &BTreeMap<&str, usize>) -> Result<(), String> {
+        self.prims.iter().try_for_each(|(prim, func)| {
+            let count = defined.get(func).copied().unwrap_or_default();
+            if count == 1 {
+                return Ok(());
             }
-            return Err(format!(
+            Err(format!(
+                "`{}` 的原语 `{prim}` 入口 `{func}` 在见证文件里出现了 {count} 次：一条签名一个函数",
+                self.id
+            ))
+        })
+    }
+
+    /// 见证文件里每个函数都得有档案认领。
+    fn check_unclaimed(&self, defined: &BTreeMap<&str, usize>) -> Result<(), String> {
+        defined.keys().try_for_each(|name| {
+            if self.claimed(name) {
+                return Ok(());
+            }
+            Err(format!(
+                "`{}` 的见证函数 `{name}` 没有任何供给认领：它执行的算法归属不到一条签名",
+                self.id
+            ))
+        })
+    }
+
+    /// 没有片段正文的供给必须带见证；两项都缺的能力没有证据。
+    pub fn check_evidence(&self) -> Result<(), String> {
+        let signed: BTreeSet<(&str, &str)> = self
+            .fragments
+            .iter()
+            .filter_map(|(_, body)| sign(body).ok())
+            .collect();
+        self.provides.iter().try_for_each(|provide| {
+            let signature = (provide.prim, provide.impl_name);
+            if signed.contains(&signature) || provide.witness.is_some() {
+                return Ok(());
+            }
+            Err(format!(
                 "`{}` 的 `{}/{}` 既没有片段正文也没有见证：这条能力无凭无据",
                 self.id, provide.prim, provide.impl_name
-            ));
-        }
-        Ok(())
+            ))
+        })
     }
 
-    /// 目录是闭集：P0 原语、见证/尾块之外，只允许 `preamble.<ext>` 与有共享参考的算子特化。
-    /// 分类依据与构建器一致；未知设备源文件仍会被拒绝。
-    ///
-    /// `.rs` / `.toml` / `.k` 由生成器另行校验，不混入设备源文件集合。
-    ///
-    /// # Errors
-    ///
-    /// 目录不可读，或目录里出现了闭集之外的名字时返回原因。
+    /// 目录是闭集：P0、见证/尾块之外，只允许前置声明与已声明算子的特化。
     pub fn check_closed_directory(&self) -> Result<(), String> {
         let found = self.found_names()?;
         let mut want = self.expected_names();
@@ -236,7 +202,7 @@ impl<'a> Contract<'a> {
         ))
     }
 
-    /// `preamble.<ext>` 与有共享 `ops/<stem>.k` 的特化正文都是已登记的辅助文件。
+    /// 前置声明与共享 `ops/<stem>.k` 的特化正文都是已登记辅助文件。
     fn is_known_auxiliary(&self, name: &str) -> bool {
         let Some(stem) = name.strip_suffix(&format!(".{}", self.ext)) else {
             return false;
@@ -249,7 +215,7 @@ impl<'a> Contract<'a> {
             .is_some_and(|src| src.join("ops").join(format!("{stem}.k")).is_file())
     }
 
-    /// 片段目录里的全部文件名（`.rs` 与 `kernels/` 等子树除外），排序后返回。
+    /// 片段目录里的全部文件名（子目录与生成器另行校验的文件除外）。
     fn found_names(&self) -> Result<Vec<String>, String> {
         let entries = std::fs::read_dir(self.dir)
             .map_err(|error| format!("`{}` 的片段目录不可读：{error}", self.id))?;
@@ -261,18 +227,14 @@ impl<'a> Contract<'a> {
         Ok(found)
     }
 
-    /// 收录单个目录项：跳过子目录、`.rs` 与由生成器另行校验的 `.toml` 档案。
+    /// 收录单个目录项。
     fn record_name(
         &self,
         entry: std::io::Result<std::fs::DirEntry>,
         found: &mut Vec<String>,
     ) -> Result<(), String> {
         let entry = entry.map_err(|error| format!("`{}` 的片段目录项不可读：{error}", self.id))?;
-        if entry
-            .file_type()
-            .map_err(|error| error.to_string())?
-            .is_dir()
-        {
+        if entry.file_type().map_err(|error| error.to_string())?.is_dir() {
             return Ok(());
         }
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -284,23 +246,18 @@ impl<'a> Contract<'a> {
 
     /// 档案里认领 `prim/impl_name` 的那条供给。
     fn find(&self, prim: &str, impl_name: &str) -> Option<&'a Provision<'a>> {
-        let provides: &'a [Provision<'a>] = self.provides;
-        provides
+        self.provides
             .iter()
             .find(|provide| provide.prim == prim && provide.impl_name == impl_name)
     }
 
     /// 生成表里 `prim` 的见证入口名。
     fn entry(&self, prim: &str) -> Result<&'a str, String> {
-        let prims: &'a [(&'a str, &'a str)] = self.prims;
-        let found = prims.iter().find(|(name, _)| *name == prim);
-        match found {
-            Some((_, func)) => Ok(func),
-            None => Err(format!(
-                "`{}` 的 `{prim}` 有片段却没有入口：镜像里查不到它的见证",
-                self.id
-            )),
-        }
+        self.prims
+            .iter()
+            .find(|(name, _)| *name == prim)
+            .map(|(_, func)| *func)
+            .ok_or_else(|| format!("`{}` 的 `{prim}` 有片段却没有入口：镜像里查不到它的见证", self.id))
     }
 
     /// 某条见证函数是否被档案里的一条供给认领。
@@ -310,31 +267,81 @@ impl<'a> Contract<'a> {
             .any(|provide| provide.witness.is_some_and(|witness| witness.func == name))
     }
 
-    /// 闭集里的全部名字：P0 的 `<prim>.<ext>`、一个 `witness.<ext>`、一份 `epilogue.<ext>`。
+    /// 闭集里的全部名字：P0 的 `<prim>.<ext>`、一个见证和一份尾块。
     fn expected_names(&self) -> Vec<String> {
-        let mut want: Vec<String> = self
-            .p0
-            .iter()
-            .map(|prim| format!("{prim}.{}", self.ext))
-            .collect();
+        let mut want = Vec::with_capacity(self.p0.len() + 2);
+        want.extend(self.p0.iter().map(|prim| format!("{prim}.{}", self.ext)));
         want.push(format!("witness.{}", self.ext));
-        // 一份写回尾块文本承载六种形式，文件名由 `prof::sign` 定，不随原语扩张。
         want.push(format!("{}.{}", self.epilogue_stem, self.ext));
-        // TOML 基档与变体由 prof/build.rs 的档案闭集另行校验，不混入片段文件名集合。
         want
+    }
+
+    /// 见证源码必须自足：副本编译时无法解析设备目录里的引号包含。
+    pub fn check_self_contained(&self) -> Result<(), String> {
+        for (idx, line) in self.source.lines().enumerate() {
+            let Some((_, rest)) = line.split_once("#include") else {
+                continue;
+            };
+            let target = rest.trim();
+            if target.starts_with('"') {
+                return Err(format!(
+                    "`{}` 的见证第 {} 行用引号包含了 `{target}`：副本编译时相对路径不存在",
+                    self.id,
+                    idx + 1
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// 每条期望值必须写得进 `1..=MAX_OUT` 的回读缓冲。
+    pub fn check_expectations(&self) -> Result<(), String> {
+        self.provides.iter().try_for_each(|provide| {
+            let Some(witness) = provide.witness else {
+                return Ok(());
+            };
+            self.check_length(provide.prim, provide.impl_name, witness.expect)
+        })
+    }
+
+    /// 一条期望值的长度校验。
+    fn check_length(&self, kind: &str, name: &str, expect: &[f32]) -> Result<(), String> {
+        let len = expect.len();
+        if (1..=MAX_OUT).contains(&len) {
+            return Ok(());
+        }
+        Err(format!(
+            "`{}` 的 `{kind}/{name}` 期望值有 {len} 个：见证必须写 1..={MAX_OUT} 个元素",
+            self.id
+        ))
+    }
+
+    /// 每条供给的见证都要在本机算出档案写的值。
+    pub fn check_witnesses(&self) -> Result<(), String> {
+        let calls = self.calls();
+        let Some(readings) = execute(self, &calls)? else {
+            return Ok(());
+        };
+        judge(self.id, &calls, &readings)
+    }
+
+    /// 档案里带见证的供给，摊成执行器要的 `Call`。
+    fn calls(&self) -> Vec<Call<'a>> {
+        self.provides
+            .iter()
+            .filter_map(|provide| provide.witness)
+            .map(|witness| Call {
+                func: witness.func,
+                expect: witness.expect,
+            })
+            .collect()
     }
 }
 
 /// 取片段首行的签名声明：`/* cutile-sign: <prim>/<impl> */`。
-///
-/// # Errors
-///
-/// 片段没有签名声明、声明没有闭合，或声明不是两段时返回原因。
 fn sign(body: &str) -> Result<(&str, &str), String> {
     let Some((_, rest)) = body.split_once("cutile-sign:") else {
-        return Err(String::from(
-            "片段缺签名声明 `/* cutile-sign: <prim>/<impl> */`",
-        ));
+        return Err(String::from("片段缺签名声明 `/* cutile-sign: <prim>/<impl> */`"));
     };
     let Some((line, _)) = rest.split_once("*/") else {
         return Err(String::from("签名声明没有闭合的 `*/`"));
@@ -347,5 +354,142 @@ fn sign(body: &str) -> Result<(&str, &str), String> {
 }
 
 #[cfg(test)]
-#[path = "../tests/device_tests.rs"]
-mod device_tests;
+mod tests {
+    use super::*;
+    use crate::witness::{Call, run};
+
+    const SIGNED: &str = "/* cutile-sign: load/scalar_copy */\n$0 = $1;";
+    const FRAGMENTS: [(&str, &str); 1] = [("load", SIGNED)];
+    const PRIMS: [(&str, &str); 1] = [("load", "witness_load")];
+    const PROVIDES: [Provision<'_>; 1] = [Provision {
+        prim: "load",
+        impl_name: "scalar_copy",
+        witness: Some(Witness {
+            func: "witness_load",
+            expect: &[1.0],
+        }),
+    }];
+
+    fn probe<'a>(provides: &'a [Provision<'a>], source: &'a str) -> Contract<'a> {
+        with_fragments(&FRAGMENTS, provides, source)
+    }
+
+    fn with_fragments<'a>(
+        fragments: &'a [(&'a str, &'a str)],
+        provides: &'a [Provision<'a>],
+        source: &'a str,
+    ) -> Contract<'a> {
+        Contract {
+            id: "probe",
+            ext: "c",
+            dir: ".",
+            p0: &["load"],
+            fragments,
+            prims: &PRIMS,
+            provides,
+            epilogue_stem: "epilogue",
+            source,
+        }
+    }
+
+    #[test]
+    fn a_signature_is_read_from_the_first_comment() {
+        assert_eq!(sign(SIGNED).ok(), Some(("load", "scalar_copy")));
+        assert!(sign("$0 = $1;").is_err(), "缺签名声明必须被发现");
+        assert!(sign("/* cutile-sign: load */").is_err(), "少一段必须被发现");
+    }
+
+    #[test]
+    fn only_real_definitions_are_witnesses() {
+        let source = "// `int witness_<name>(float *out)` 只是注释\n\
+                      int witness_dot(float *out) { out[0] = 1.0f; return 1; }\n\
+                      int helper(int x) { return x; }\n";
+        assert_eq!(definitions(source), ["witness_dot"]);
+    }
+
+    #[test]
+    fn a_well_formed_probe_passes_every_judgement() {
+        let source = "int witness_load(float *out) { out[0] = 1.0f; return 1; }\n";
+        let contract = probe(&PROVIDES, source);
+        assert_eq!(contract.check_p0_set(), Ok(()));
+        assert_eq!(contract.check_signatures(), Ok(()));
+        assert_eq!(contract.check_witness_entries(), Ok(()));
+        assert_eq!(contract.check_evidence(), Ok(()));
+    }
+
+    #[test]
+    fn a_signature_the_archive_does_not_claim_is_a_defect() {
+        let fragments = [("load", "/* cutile-sign: load/vectorized */\n$0 = $1;")];
+        let defect = with_fragments(&fragments, &PROVIDES, "").check_signatures();
+        assert!(defect.as_ref().is_err_and(|reason| reason.contains("没有对应供给")), "{defect:?}");
+    }
+
+    #[test]
+    fn an_unclaimed_witness_is_a_defect() {
+        let source = "int witness_load(float *out) { out[0] = 1.0f; return 1; }\n\
+                      int witness_orphan(float *out) { out[0] = 1.0f; return 1; }\n";
+        let defect = probe(&PROVIDES, source).check_witness_entries();
+        assert!(defect.as_ref().is_err_and(|reason| reason.contains("没有任何供给认领")), "{defect:?}");
+    }
+
+    #[test]
+    fn a_provision_without_any_evidence_is_a_defect() {
+        let bare = [
+            PROVIDES[0],
+            Provision {
+                prim: "mma",
+                impl_name: "cube",
+                witness: None,
+            },
+        ];
+        let defect = probe(&bare, "").check_evidence();
+        assert!(defect.as_ref().is_err_and(|reason| reason.contains("无凭无据")), "{defect:?}");
+    }
+
+    #[test]
+    fn a_fragment_set_that_overruns_p0_is_a_defect() {
+        let fragments = [("load", SIGNED), ("load", SIGNED)];
+        let defect = with_fragments(&fragments, &PROVIDES, "").check_p0_set();
+        assert!(defect.as_ref().is_err_and(|reason| reason.contains("抢同一个原语")), "{defect:?}");
+    }
+
+    #[test]
+    fn a_host_witness_is_compiled_and_compared() {
+        let source = "int witness_ok(float *out) { out[0] = 2.0f; return 1; }\n\
+                      int witness_off(float *out) { out[0] = 2.5f; return 1; }\n";
+        let calls = [
+            Call { func: "witness_ok", expect: &[2.0] },
+            Call { func: "witness_off", expect: &[2.0] },
+        ];
+        let Ok(readings) = run(source, "c", &calls) else {
+            assert!(crate::gating::skip("本机没有可用的 C 编译器"));
+            return;
+        };
+        assert_eq!(readings[0].count, 1);
+        assert_eq!(readings[0].values, [2.0]);
+        assert!(readings[0].max_rel_err <= 1e-6, "{:?}", readings[0]);
+        assert!(readings[1].max_rel_err > 1e-3, "{:?}", readings[1]);
+    }
+
+    #[test]
+    fn a_count_mismatch_is_not_a_near_miss() {
+        let source = "int witness_short(float *out) { out[0] = 1.0f; return 1; }\n";
+        let calls = [Call { func: "witness_short", expect: &[1.0, 1.0] }];
+        let Ok(readings) = run(source, "c", &calls) else {
+            assert!(crate::gating::skip("本机没有可用的 C 编译器"));
+            return;
+        };
+        assert_eq!(readings[0].count, 1);
+        assert!(readings[0].max_rel_err.is_infinite());
+    }
+
+    #[test]
+    fn a_witness_the_host_rejects_is_an_error() {
+        let source = "int witness_broken(float *out) { out[0] = ; return 1; }\n";
+        let calls = [Call { func: "witness_broken", expect: &[0.0] }];
+        let Err(error) = run(source, "c", &calls) else {
+            panic!("语法错误的见证必须编译失败");
+        };
+        assert!(error.contains("拒绝了见证源码"), "{error}");
+    }
+}

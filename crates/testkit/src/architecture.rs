@@ -3,45 +3,51 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// 仓根：本模块住在 `crates/<crate>/src/`，仓根是清单目录上两级。
 pub fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// 递归列出 `dir` 下的全部 `.rs` 文件（顺序无关，只用于扫描）。
-pub fn rust_files(dir: &Path) -> Vec<PathBuf> {
+/// 目录扫描与文本读取共享缓存；后续门禁只克隆 `Arc` 句柄，不复制内容。
+pub fn rust_files(dir: &Path) -> Arc<[PathBuf]> {
     with_cache(|cache| {
-        if let Some(found) = cache.dirs.get(dir) {
-            found.clone()
-        } else {
+        cached(&mut cache.dirs, dir, || {
             let mut found = Vec::new();
             walk(dir, &mut found);
-            cache.dirs.insert(dir.to_path_buf(), found.clone());
-            found
-        }
+            found.into()
+        })
     })
 }
 
 /// 读一份源文件；读不到时返回 `None`。
-pub fn source_text(path: &Path) -> Option<String> {
+pub fn source_text(path: &Path) -> Option<Arc<str>> {
     with_cache(|cache| {
-        if let Some(text) = cache.texts.get(path) {
-            text.clone()
-        } else {
-            let text = std::fs::read_to_string(path).ok();
-            cache.texts.insert(path.to_path_buf(), text.clone());
-            text
-        }
+        cached(&mut cache.texts, path, || {
+            std::fs::read_to_string(path).ok().map(Arc::from)
+        })
     })
 }
 
-/// 扫描缓存：门禁分散在 9 个模块里，扫的是同一批目录、读的是同一批文件。
+/// 读命中时只克隆值句柄；未命中时计算一次并写回同一张缓存表。
+fn cached<K, V>(map: &mut BTreeMap<K, V>, key: &K, load: impl FnOnce() -> V) -> V
+where
+    K: Ord + Clone,
+    V: Clone,
+{
+    map.get(key).cloned().unwrap_or_else(|| {
+        let value = load();
+        map.insert(key.clone(), value.clone());
+        value
+    })
+}
+
+/// 扫描缓存：门禁分散在多个模块里，扫的是同一批目录、读的是同一批文件。
 #[derive(Default)]
 struct SourceCache {
-    dirs: BTreeMap<PathBuf, Vec<PathBuf>>,
-    texts: BTreeMap<PathBuf, Option<String>>,
+    dirs: BTreeMap<PathBuf, Arc<[PathBuf]>>,
+    texts: BTreeMap<PathBuf, Option<Arc<str>>>,
 }
 
 fn with_cache<T>(body: impl FnOnce(&mut SourceCache) -> T) -> T {
@@ -95,9 +101,9 @@ pub(crate) fn short(name: &str) -> String {
 pub(crate) fn dependents(dependency: &str) -> BTreeSet<String> {
     workspace()
         .1
-        .into_iter()
+        .iter()
         .filter(|edge| !edge.dev && edge.to == dependency)
-        .map(|edge| edge.from)
+        .map(|edge| edge.from.clone())
         .collect()
 }
 
@@ -135,7 +141,13 @@ fn dirs() -> &'static BTreeMap<String, PathBuf> {
     })
 }
 
-pub(crate) fn contract() -> Contract {
+/// DOC 层表只解析一次；所有边界门禁共享同一份只读契约。
+pub(crate) fn contract() -> &'static Contract {
+    static CACHE: OnceLock<Contract> = OnceLock::new();
+    CACHE.get_or_init(parse_contract)
+}
+
+fn parse_contract() -> Contract {
     let mut layers = BTreeMap::new();
     for line in DOC.lines() {
         let Some(rest) = line.strip_prefix("| L") else {
@@ -294,9 +306,9 @@ pub(crate) fn owned_types() -> Vec<(String, String)> {
     rows
 }
 
-/// 工作区成员与成员之间的依赖边（`cargo metadata` 是唯一事实源）。
-pub(crate) fn workspace() -> (BTreeSet<String>, BTreeSet<Edge>) {
-    metadata().clone()
+/// 工作区成员与依赖边只读共享；调用方不得为了一次遍历克隆整张图。
+pub(crate) fn workspace() -> &'static (BTreeSet<String>, BTreeSet<Edge>) {
+    metadata()
 }
 
 fn metadata() -> &'static (BTreeSet<String>, BTreeSet<Edge>) {
@@ -351,4 +363,86 @@ fn load_workspace() -> (BTreeSet<String>, BTreeSet<Edge>) {
         }
     }
     (members, edges)
+}
+
+/// 层内顺序来自 DOC 表；同层只允许依赖排在自己前面的成员。
+fn strip(members: &BTreeSet<String>, edges: &BTreeSet<Edge>) -> BTreeSet<Edge> {
+    edges
+        .iter()
+        .filter(|edge| members.contains(&edge.from) && members.contains(&edge.to))
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn every_workspace_member_is_in_the_table() {
+    let (members, _) = workspace();
+    let contract = contract();
+    let missing: Vec<&String> = members
+        .iter()
+        .filter(|name| !contract.layers.contains_key(*name) && !contract.tools.contains(*name))
+        .collect();
+    assert!(missing.is_empty(), "有工作区成员不在 docs/ARCHITECTURE.md 的层表里：{missing:?}");
+}
+
+#[test]
+fn every_member_in_the_table_is_a_workspace_member() {
+    let (members, _) = workspace();
+    let stale: Vec<&String> = contract()
+        .layers
+        .keys()
+        .filter(|name| !members.contains(*name))
+        .collect();
+    assert!(stale.is_empty(), "层表里有不是工作区成员的条目：{stale:?}");
+}
+
+#[test]
+fn documented_edges_and_counts_match_cargo_metadata() {
+    let (declared, total, dev) = declared_edges();
+    let (_, actual) = workspace();
+    assert_eq!(declared, *actual, "docs/ARCHITECTURE.md 的允许边与 cargo metadata 不一致");
+    assert_eq!(total, actual.len(), "文档的边总数");
+    assert_eq!(dev, actual.iter().filter(|edge| edge.dev).count(), "文档的 +dev 边数");
+}
+
+#[test]
+fn runtime_edges_only_point_to_the_same_or_a_lower_layer() {
+    let (_, edges) = workspace();
+    let contract = contract();
+    for edge in edges.iter().filter(|edge| !edge.dev) {
+        let from = contract.layers.get(&edge.from);
+        let to = contract.layers.get(&edge.to);
+        let (Some(from), Some(to)) = (from, to) else {
+            continue;
+        };
+        assert!(
+            to.0 < from.0 || (to.0 == from.0 && to.1 <= from.1),
+            "非法边：{} (L{}) → {} (L{})",
+            edge.from,
+            from.0,
+            edge.to,
+            to.0
+        );
+    }
+}
+
+#[test]
+fn a_cross_layer_dev_dependency_never_hides_a_layer_violation() {
+    let (members, edges) = workspace();
+    let contract = contract();
+    let stripped = strip(members, edges);
+    for edge in stripped {
+        let Some(from) = contract.layers.get(&edge.from) else {
+            continue;
+        };
+        let Some(to) = contract.layers.get(&edge.to) else {
+            continue;
+        };
+        assert!(
+            to.0 < from.0 || (to.0 == from.0 && to.1 <= from.1),
+            "层间禁止依赖（含 dev）：{} → {}",
+            edge.from,
+            edge.to
+        );
+    }
 }

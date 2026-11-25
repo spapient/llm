@@ -41,7 +41,7 @@ fn scan_dirs(member: &str) -> Vec<PathBuf> {
 fn member_sources(member: &str) -> Vec<(String, String)> {
     scan_dirs(member)
         .iter()
-        .flat_map(|dir| rust_files(dir))
+        .flat_map(|dir| rust_files(dir).to_vec())
         .filter_map(|path| source_text(&path).map(|text| (relative(&path), text)))
         .collect()
 }

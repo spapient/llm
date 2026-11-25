@@ -22,6 +22,11 @@
 
 use crate::atom::{Epilogue, Prim};
 
+/// Windows Intel OpenCL 运行时后端：设备探测、JIT、类型化缓冲、发射与回读；仅在 Windows 编入。
+#[cfg(windows)]
+#[path = "opencl.rs"]
+pub mod opencl;
+
 /// 一台设备的设备侧代码：源码 + 可选的镜像。
 #[derive(Debug, Clone, Copy)]
 pub struct Device {

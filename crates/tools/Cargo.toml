@@ -40,3 +40,7 @@ path = "tests/lex.rs"
 [[test]]
 name = "words"
 path = "tests/words.rs"
+
+[[test]]
+name = "runtime"
+path = "tests/runtime.rs"

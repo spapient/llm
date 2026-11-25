@@ -1,7 +1,7 @@
 use super::*;
 use crate::fixtures::catalogue;
 use crate::witness::Basis;
-use prof::atom::Prim;
+use cutile::atom::Prim;
 
 fn dirs() -> Dirs {
     Dirs::under(std::env::temp_dir().join("cutile-doctor-tests"))
@@ -133,7 +133,7 @@ fn storage_reports_the_archive_capacity_next_to_the_declared_traffic() {
     let fast = report
         .storage
         .iter()
-        .find(|row| row.space == prof::atom::Space::Fast)
+        .find(|row| row.space == cutile::atom::Space::Fast)
         .expect("有 FAST 行");
     assert_eq!(fast.capacity, Some(524_288), "容量取档案声明，不是中转缓冲");
     assert!(
@@ -145,7 +145,7 @@ fn storage_reports_the_archive_capacity_next_to_the_declared_traffic() {
     let reg = report
         .storage
         .iter()
-        .find(|row| row.space == prof::atom::Space::Reg)
+        .find(|row| row.space == cutile::atom::Space::Reg)
         .expect("有 REG 行");
     assert_eq!(reg.capacity, Some(65_536));
     assert!(
@@ -155,7 +155,7 @@ fn storage_reports_the_archive_capacity_next_to_the_declared_traffic() {
     let gm = report
         .storage
         .iter()
-        .find(|row| row.space == prof::atom::Space::Gm)
+        .find(|row| row.space == cutile::atom::Space::Gm)
         .expect("有 GM 行");
     assert_eq!(gm.capacity, None, "GM 不受限额，不编一个容量");
 }
