@@ -360,7 +360,7 @@ fn emit_entries(
                 let _ = writeln!(table, "    {prefix}include_str!({:?})),", path.display());
             }
             (tier, _) => {
-                let text = read(&path);
+                let text = super::read(&path);
                 let text = apply_unroll(text, unroll, &path);
                 let text = match tier {
                     None | Some("f32") => text,
@@ -411,12 +411,6 @@ fn apply_unroll(text: String, factor: Option<u32>, path: &Path) -> String {
         ));
     }
     text.replacen(UNROLL_MARKER, &format!("#pragma unroll {factor}"), 1)
-}
-
-/// 读取一份微内核正文，I/O 错误直接终止构建并带上路径。
-fn read(path: &Path) -> String {
-    std::fs::read_to_string(path)
-        .unwrap_or_else(|error| fail(format!("读模板 `{}`：{error}", path.display())))
 }
 
 /// 档名 → 模板里的 C 浮点类型 token（与 `sig::CType::c_name` 同一份口径）。
@@ -499,7 +493,7 @@ pub fn build_native(manifest: &Path, out: &Path) {
     println!("cargo:rerun-if-changed={}", config.display());
     println!("cargo:rerun-if-changed={}", template.display());
     let table = buildgen::read(&config).unwrap_or_else(|error| fail(format!("{error}")));
-    let rendered = render_native(&read(&template), &table);
+    let rendered = render_native(&super::read(&template), &table);
     let c = out.join("gemm_micro.c");
     std::fs::write(&c, rendered)
         .unwrap_or_else(|error| fail(format!("写 {} 失败：{error}", c.display())));
@@ -529,7 +523,7 @@ pub fn build_native(manifest: &Path, out: &Path) {
         fn cutile_sme_pure(rounds: usize);\n\
         fn cutile_sme_mix(rounds: usize, a: *const f32, b: *const f32);\n\
     }\n");
-    contract.push_str(crate::sign::NATIVE_PROBE_RS);
+    contract.push_str(NATIVE_PROBE_RS);
     let contract_path = out.join("gemm_micro_contract.rs");
     std::fs::write(&contract_path, contract)
         .unwrap_or_else(|error| fail(format!("写 {} 失败：{error}", contract_path.display())));
@@ -565,7 +559,7 @@ fn compile_native(c: &Path) {
 fn render_native(text: &str, table: &toml::Table) -> String {
     let native = native_table(table);
     validate_native_config(native);
-    crate::sign::validate_native_annotations(text, fail);
+    validate_native_annotations(text, fail);
     let out = replace_native_slots(native, text);
     if out.contains("{{") {
         fail("`gemm_micro.k` 仍有未登记的 `{{…}}` 槽位");
@@ -653,6 +647,164 @@ fn native_positive(native: &toml::Table, family: &str, key: &str) -> usize {
         .filter(|value| *value > 0)
         .unwrap_or_else(|| fail(format!("`gemm_micro.{family}.{key}` 超出正 usize 范围")))
 }
+
+const NATIVE_EXPORTS: [&str; 6] = ["fma", "fma_scalar", "sdot", "sme", "sme_pack", "sme_stage"];
+const NATIVE_PROBES: [(&str, &str); 6] = [
+    ("fma_pure", "fma_tile"),
+    ("fma_block", "fma_tile"),
+    ("sdot_pure", "sdot_tile"),
+    ("sdot_block", "sdot_tile"),
+    ("sme_pure", "sme_tile"),
+    ("sme_mix", "sme_tile"),
+];
+
+/// 校验 `gemm_micro.k` 的导出、探针归属和具名展开；调用方提供构建期失败出口。
+fn validate_native_annotations(text: &str, fail: impl Fn(String) -> !) {
+    let mut exports = std::collections::BTreeSet::new();
+    let mut probes = std::collections::BTreeSet::new();
+    let mut unrolls = std::collections::BTreeSet::new();
+    for raw in text.lines().map(str::trim) {
+        validate_export(raw, &mut exports, &fail);
+        validate_probe(raw, &mut probes, &fail);
+        validate_unroll(raw, &mut unrolls, &fail);
+    }
+    require_names(&exports, NATIVE_EXPORTS, "生产导出", &fail);
+    require_names(&probes, NATIVE_PROBES.map(|(name, _)| name), "探针", &fail);
+}
+
+fn require_names<'a>(
+    names: &std::collections::BTreeSet<String>,
+    required: impl IntoIterator<Item = &'a str>,
+    kind: &str,
+    fail: &impl Fn(String) -> !,
+) {
+    for name in required {
+        if !names.contains(name) {
+            fail(format!("`gemm_micro.k` 缺{kind} `{name}`"));
+        }
+    }
+}
+
+fn annotation<'a>(line: &'a str, kind: &str) -> Option<&'a str> {
+    line.strip_prefix(&format!("/* {kind}"))?
+        .strip_suffix("*/")
+        .map(str::trim)
+}
+
+fn validate_export(
+    raw: &str,
+    exports: &mut std::collections::BTreeSet<String>,
+    fail: &impl Fn(String) -> !,
+) {
+    if let Some(name) = annotation(raw, "cutile-export:")
+        && (!NATIVE_EXPORTS.contains(&name) || !exports.insert(name.to_string()))
+    {
+        fail(format!("未知或重复的 `cutile-export` 名字 `{name}`"));
+    }
+}
+
+fn validate_probe(
+    raw: &str,
+    probes: &mut std::collections::BTreeSet<String>,
+    fail: &impl Fn(String) -> !,
+) {
+    if let Some(body) = annotation(raw, "cutile-probe:") {
+        let (name, core) = probe_fields(body, fail);
+        let expected = probe_core(name, fail);
+        if core != expected || !probes.insert(name.to_string()) {
+            fail(format!("重复或核心不符的 `cutile-probe` `{body}`"));
+        }
+    }
+}
+
+fn probe_fields<'a>(body: &'a str, fail: &impl Fn(String) -> !) -> (&'a str, &'a str) {
+    let Some((name, core)) = body.split_once(',') else {
+        fail(format!("探针 `{body}` 缺 `core=<名字>`"));
+    };
+    let Some(core) = core.trim().strip_prefix("core=") else {
+        fail(format!("探针 `{body}` 缺 `core=<名字>`"));
+    };
+    if core.contains(',') {
+        fail(format!("探针 `{body}` 含未知字段"));
+    }
+    (name.trim(), core)
+}
+
+fn probe_core<'a>(name: &str, fail: &impl Fn(String) -> !) -> &'a str {
+    let Some((_, core)) = NATIVE_PROBES.iter().find(|(probe, _)| *probe == name) else {
+        fail(format!("未知 `cutile-probe` 名字 `{name}`"));
+    };
+    core
+}
+
+fn validate_unroll(
+    raw: &str,
+    unrolls: &mut std::collections::BTreeSet<String>,
+    fail: &impl Fn(String) -> !,
+) {
+    if let Some(name) = annotation(raw, "cutile-unroll:")
+        && (!["fma_neon", "fma_avx2", "fma_scalar", "sdot", "sme"].contains(&name)
+            || !unrolls.insert(name.to_string()))
+    {
+        fail(format!("未知或重复的具名展开 `{name}`"));
+    }
+}
+
+/// 由 `cutile-probe` 语料生成的 Rust 薄包装；保持既有公开名字，生产默认不包含。
+const NATIVE_PROBE_RS: &str = r#"
+#[cfg(all(feature = "bench", target_arch = "aarch64"))]
+#[doc = "FMA 纯端口探针：环内无内存访问。"]
+pub fn port_fma(rounds: usize) -> bool {
+    if rounds == 0 { return false; }
+    unsafe { cutile_fma_pure(rounds); }
+    true
+}
+
+#[cfg(all(feature = "bench", target_arch = "aarch64"))]
+#[doc = "sdot 纯端口探针：无 dotprod 时拒绝执行。"]
+pub fn port_sdot(rounds: usize) -> bool {
+    if rounds == 0 || !sdot_available() { return false; }
+    unsafe { cutile_sdot_pure(rounds); }
+    true
+}
+
+#[cfg(all(feature = "bench", target_arch = "aarch64"))]
+#[doc = "FMA 取数探针：调用与生产相同的 fma_tile。"]
+pub fn port_fma_block(rounds: usize, a: &[f32], b: &[f32], k: usize) -> bool {
+    let Ok(need) = area(FMA_NR, k, "FMA probe") else { return false; };
+    let Ok(width) = c_int(k, "k") else { return false; };
+    if rounds == 0 || k == 0 || a.len() < need || b.len() < need { return false; }
+    unsafe { cutile_fma_block(rounds, a.as_ptr(), b.as_ptr(), width); }
+    true
+}
+
+#[cfg(all(feature = "bench", target_arch = "aarch64"))]
+#[doc = "sdot 取数探针：调用与生产相同的 sdot_tile。"]
+pub fn port_sdot_block(rounds: usize, a: &[i8], b: &[i8], k: usize) -> bool {
+    let Ok(need) = area(SDOT_MR, k, "sdot probe") else { return false; };
+    let Ok(width) = c_int(k, "k") else { return false; };
+    if rounds == 0 || k == 0 || !k.is_multiple_of(16) || !sdot_available()
+        || a.len() < need || b.len() < need { return false; }
+    unsafe { cutile_sdot_block(rounds, a.as_ptr(), b.as_ptr(), width); }
+    true
+}
+
+#[cfg(all(feature = "bench", target_arch = "aarch64"))]
+#[doc = "SME 纯外积探针：与生产共用 fmopa 核心，环内无内存访问。"]
+pub fn port_run(rounds: usize) -> bool {
+    if rounds == 0 || !sme_available() { return false; }
+    unsafe { cutile_sme_pure(rounds); }
+    true
+}
+
+#[cfg(all(feature = "bench", target_arch = "aarch64"))]
+#[doc = "SME 固定缓存行取数探针：与生产共用 fmopa 核心。"]
+pub fn port_mix(rounds: usize, a: &[f32; SME_MR], b: &[f32; SME_NR]) -> bool {
+    if rounds == 0 || !sme_available() { return false; }
+    unsafe { cutile_sme_mix(rounds, a.as_ptr(), b.as_ptr()); }
+    true
+}
+"#;
 
 #[cfg(test)]
 mod tests {

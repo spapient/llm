@@ -527,6 +527,7 @@ fn dirs_in(src: &Path) -> Vec<(PathBuf, Vec<PathBuf>)> {
     out
 }
 
+/// 读取一份文件正文，I/O 错误直接终止构建并带上路径；构建期子 mod 经 `super::` 复用。
 fn read(path: &Path) -> String {
     fs::read_to_string(path)
         .unwrap_or_else(|error| fail(format!("读取 {} 失败：{error}", path.display())))

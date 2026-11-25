@@ -460,7 +460,11 @@ Rust 官方与微软训练材料的一致口径：
 - `cargo test --doc --workspace`：1 + 6 + 3 passed；`cargo fmt --all --check`：0；`cargo clippy --workspace --all-targets --all-features -- -D warnings`：0。
 - ruff `check` 与 `format --check validation`：0；`cargo deny check`：advisories/bans/licenses/sources ok；`cargo machete`：无未用依赖。
 - jscpd：535 文件 / 163,094 行 / 0 clone / 0.00%；tools 门 13 passed；`complexity.sh` 0；testkit 架构门 117 passed；命名门 0 命中；`cargo expand` 双产物非空；typos 0；actionlint 0；`cargo bench --workspace --no-run` 0；regress 12 passed；cloc 2.12 统计步 0（`.tools/cloc`，须 `.tools` 前置 PATH，非系统命令）。
-- 密度门 `loc-budget.sh`：**未通过**，src 104,164 行 / 313 文件。`SRC_MAX=60000`（历史重建提交 b65a0966 回退的项目目标值），脚本注释棘轮基线停在 95,800；当前超目标值 44,164 行、超棘轮基线 8,364 行。>600 行文件 45 个（最大 `cutile/src/parser.rs` 900）；>8200 行 crate 4 个：nn 15,303、prof 12,237、weights 10,019、cutile 8,658。均为存量大层；本批增量仅为注解、文档与台账注释，未新增能力代码，也未调宽阈值掩盖超标。超棘轮基线的 8,364 行属后续并发会话能力增量，需另行取证登记或无损缩减，不在本批处置范围。
+- 密度门 `loc-budget.sh`：**未通过**，src 104,164 行 / 313 文件，三条硬阻断同时命中。`SRC_MAX=60000`（历史重建提交 b65a0966 回退的项目目标值），脚本注释棘轮基线停在 95,800（第 127 行，实测 95,687/410 文件）；当前超目标值 44,164 行、超棘轮基线 8,364 行。
+  - **总量（N6，`SRC_MAX=60000`）**：104,164 行，超 44,164。
+  - **>600 行一票否决（N3，`FILE_VETO=600`）**：45 个文件。Top：`cutile/src/parser.rs` 900、`prof/src/opencl.rs` 898、`weights/src/gguf.rs` 876、`weights/src/quant.rs` 874、`tensor/src/layout.rs` 871、`weights/src/seg.rs` 864、`annotation/src/render.rs` 860、`prof/src/decl.rs` 857、`annotation/src/ops.rs` 857、`cutile/src/cap.rs` 854；其余 35 个 602–850 行（清单可由脚本 157 行当次复算）。
+  - **>8200 行 crate（N2，`CRATE_MAX=8200`）**：4 个——nn 15,303 行/37 文件、prof 12,237/32、weights 10,019/15、cutile 8,658/21。
+  - 均为存量大层；本批增量仅为注解、文档与台账注释，未新增能力代码，也未调宽阈值掩盖超标。超棘轮基线的 8,364 行属后续并发会话能力增量，需另行取证登记或无损缩减，不在本批处置范围。注释棘轮只登记了 N6 总量；N3 文件线、N2 crate 线无棘轮注释，是独立硬线。
 
 ### 15.2 #26 pedantic 分层机制与样板层
 
@@ -472,6 +476,8 @@ Rust 官方与微软训练材料的一致口径：
 - 候选层逐点裁决（2026-11-26 当次 `-W clippy::pedantic` 实测，结论：本批均不开门）：
   - `llm-fuzz`：lib 17 条（10 `must_use`、4 `errors_doc`、1 `doc_markdown`、2 有意截断 cast——`Rng::below` u128→usize 为 Lemire 归一化取模到 `[0,bound)`，`Rng::byte` u64→u8 取低 8 位，可局部 `#[allow]` 注释）。但经 `#[path]` 包含的 `seeds.rs`/`drivers.rs` 在多个 harness/test target 重复暴露 150 条 `lifetime tied str`（登记表 `&'static str` 被误判）、10 条 strict float 比较、10 条 u32→f32 精度损失、20 条 `doc_markdown`。整改面大且含 float 比较语义债，留后续批次。
   - `llm-annotation`：16 条。3 条 `pass_by_value` 经核为 clippy 误报，不可改签名——`dsl.rs:63 expand(attribute/item: TokenStream)`、`expr.rs:149 receiver: TokenStream2` 是 proc-macro 按值消费输入流，`lib.rs:244 resolve<S,D>` 泛型 `S` 要移动进返回元组，三者本就该按值；其余为 2 条 private `&Option<T>`→`Option<&T>`、1 条 i64→f64 cast、5 条 `format_push_string`、2 条分号、1 条 `format_implicit`、1 条 match 同臂、1 条 let-else。误报项只能局部 `#[allow]`，开门收益低且需核对 private 签名调用点，留后续批次。
+  - `llm-cli`：34 条。含 8 条返回值包装类（6 条 `Result` 不必要包装、2 条返回值多余），属 API 返回类型重构判断，不能机械改；4 条 cast 精度债（usize→f32/f64）；其余 5 `errors_doc`、13 `must_use`、2 `pass_by_value`、1 `doc_markdown`、1 布尔冗余。返回类型重构需逐条评估契约，留后续批次。
+  - `llm-testkit`：26 条（dev-dep 测试契约层）。7 条 cast 债（精度/符号/截断）、1 条 strict float 比较；其余 3 扩展名比较、3 match bool、3 `must_use`、3 `Panics` 文档、4 `doc_markdown`、1 long literal、1 绑定名相似。cast 来自测试夹具数值，非生产内核；dev-dep 不进入运行期二进制，优先级低于生产底座，留后续批次。
 
 ### 15.3 #53 train/serve 适配协议裁决
 
