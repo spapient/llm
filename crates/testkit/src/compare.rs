@@ -90,7 +90,7 @@ pub fn assert_close<T: Float + std::fmt::Display>(left: &[T], right: &[T], abs: 
 fn fail_first<T: Float>(
     left: &[T],
     right: &[T],
-    fail: impl FnOnce(usize, T, T, T),
+    fail: impl FnOnce(usize, T, T, T) -> !,
     abs: T,
     rel: T,
 ) {

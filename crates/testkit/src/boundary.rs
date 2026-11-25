@@ -109,7 +109,7 @@ pub(crate) fn the_mechanism_layer_exposes_no_vendor_names() {
         }
         let root = src_root(member);
         for path in rust_files(&root).iter() {
-            let Some(text) = source_text(&path) else {
+            let Some(text) = source_text(path) else {
                 continue;
             };
             for name in text.lines().filter_map(public_item_name) {
@@ -140,9 +140,9 @@ pub(crate) fn the_mechanism_layer_exposes_no_vendor_names() {
 pub(crate) fn unsafe_islands_are_the_ones_the_adr_lists() {
     let mut found = BTreeMap::new();
     for member in &workspace().0 {
-        let root = src_root(&member);
+        let root = src_root(member);
         for path in rust_files(&root).iter() {
-            let Some(text) = source_text(&path) else {
+            let Some(text) = source_text(path) else {
                 continue;
             };
             let count = text
@@ -179,7 +179,7 @@ pub(crate) fn the_device_backends_are_installed_on_the_product_path() {
     let mut entries = 0;
     let mut missing = Vec::new();
     for path in rust_files(&workspace_root().join("crates/cli/src")).iter() {
-        let Ok(body) = std::fs::read_to_string(&path) else {
+        let Ok(body) = std::fs::read_to_string(path) else {
             continue;
         };
         // 库入口：`pub fn entry(`。二进制入口：`fn main(` 且不转调库入口（转调的由库那处装着）。
@@ -226,7 +226,7 @@ fn declares_any(crate_name: &str, name: &str) -> bool {
     ];
     let root = src_root(crate_name);
     rust_files(&root).iter().any(|path| {
-        source_text(&path).is_some_and(|text| {
+        source_text(path).is_some_and(|text| {
             text.lines().any(|line| {
                 is_public_definition(line, name, &KINDS) || is_module_or_macro(line, name)
             })

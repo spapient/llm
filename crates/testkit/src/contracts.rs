@@ -586,7 +586,7 @@ pub(crate) fn annotation_list(name: &str) -> Vec<String> {
     let (_, text) = rust_files(&root().join("crates/annotation/src"))
         .iter()
         .find_map(|path| {
-            let body = fs::read_to_string(&path).ok()?;
+            let body = fs::read_to_string(path).ok()?;
             body.contains(&head).then_some((path, body))
         })
         .unwrap_or_else(|| {

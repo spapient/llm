@@ -124,8 +124,8 @@ impl Rng {
 }
 
 /// 基础确定性序列：`i·2654435761 + salt·40503`，映射由调用方配置。
-fn sample_word(index: usize, salt: u32) -> u32 {
-    (index as u32)
+fn sample_word(idx: usize, salt: u32) -> u32 {
+    (idx as u32)
         .wrapping_mul(2_654_435_761)
         .wrapping_add(salt.wrapping_mul(40_503))
 }
@@ -134,7 +134,7 @@ fn sample_word(index: usize, salt: u32) -> u32 {
 #[must_use]
 pub fn sample_with<T>(len: usize, salt: u32, map: impl Fn(u32) -> T) -> Vec<T> {
     let mut values = Vec::with_capacity(len);
-    values.extend((0..len).map(|index| map(sample_word(index, salt))));
+    values.extend((0..len).map(|idx| map(sample_word(idx, salt))));
     values
 }
 

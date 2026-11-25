@@ -327,7 +327,7 @@ pub(crate) fn declares_public(crate_name: &str, name: &str) -> bool {
     /// 所有权表除类型外还允许登记这几种公开条目（类型别名、函数、常量、模块）。
     const NON_TYPE_KINDS: [&str; 4] = ["type", "fn", "const", "mod"];
     for path in rust_files(&src_root(crate_name)).iter() {
-        let Some(text) = source_text(&path) else {
+        let Some(text) = source_text(path) else {
             continue;
         };
         if public_type_names(&text).contains(name)

@@ -108,21 +108,21 @@ macro_rules! device_suite {
 
         $crate::test_cases!(contract_checks {
             the_fragment_layer_is_exactly_the_p0_set =>
-                ($crate::device::Contract::check_p0_set, "片段层必须恰好是 P0 闭集"),
+                (|contract: &$crate::device::Contract<'_>| contract.check_p0_set(), "片段层必须恰好是 P0 闭集"),
             every_signature_is_a_profile_provide_that_has_a_witness =>
-                ($crate::device::Contract::check_signatures, "每条签名必须是一条有见证的供给"),
+                (|contract: &$crate::device::Contract<'_>| contract.check_signatures(), "每条签名必须是一条有见证的供给"),
             every_witness_function_is_claimed_by_exactly_one_entry =>
-                ($crate::device::Contract::check_witness_entries, "每个见证函数必须恰好被一条入口认领"),
+                (|contract: &$crate::device::Contract<'_>| contract.check_witness_entries(), "每个见证函数必须恰好被一条入口认领"),
             every_provision_rests_on_a_fragment_or_a_witness =>
-                ($crate::device::Contract::check_evidence, "每条供给必须有片段正文或见证"),
+                (|contract: &$crate::device::Contract<'_>| contract.check_evidence(), "每条供给必须有片段正文或见证"),
             the_fragment_directory_is_a_closed_set =>
-                ($crate::device::Contract::check_closed_directory, "片段目录必须是闭集"),
+                (|contract: &$crate::device::Contract<'_>| contract.check_closed_directory(), "片段目录必须是闭集"),
             every_expectation_fits_the_readback_buf =>
-                ($crate::device::Contract::check_expectations, "期望值必须放得进回读缓冲"),
+                (|contract: &$crate::device::Contract<'_>| contract.check_expectations(), "期望值必须放得进回读缓冲"),
             the_witness_compiles_wherever_it_is_copied_to =>
-                ($crate::device::Contract::check_self_contained, "见证必须自足"),
+                (|contract: &$crate::device::Contract<'_>| contract.check_self_contained(), "见证必须自足"),
             every_witness_computes_what_the_profile_expects =>
-                ($crate::device::Contract::check_witnesses, "每条见证必须算出档案写的值"),
+                (|contract: &$crate::device::Contract<'_>| contract.check_witnesses(), "每条见证必须算出档案写的值"),
         }, |(check, claim)| judged(check, claim));
 
         #[test]
