@@ -145,8 +145,8 @@ fn unlisted(root: &toml::Table) -> diagnostic::Result<String> {
             let table = value
                 .as_table()
                 .ok_or_else(|| invalid("unlisted 必须是表"))?;
-            let name = required(table, "crate")?;
-            let reason = required(table, "reason")?;
+            let name = buildgen::string(table, "crate")?;
+            let reason = buildgen::string(table, "reason")?;
             reasoned(reason)?;
             let names = table
                 .get("names")
