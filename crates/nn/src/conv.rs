@@ -1,15 +1,10 @@
 //! 神经算子：卷积 / 反卷积（`geom` / `pool` / `interp` / `deconv`）、注意力（`attention`）、
 //! 池化与范数（`classic`）、扫描骨架（`scan`）。
 
-#[path = "conv/attention.rs"]
 pub mod attention;
-#[path = "conv/classic.rs"]
 pub mod classic;
-#[path = "conv/decode.rs"]
 pub(crate) mod decode;
-#[path = "conv/deconv.rs"]
 pub mod deconv;
-#[path = "conv/geom.rs"]
 mod geom;
 pub mod scan {
     //! β 指数梯形扫描语义（§5.6，数学验证 5）：幺半群前缀扫描 + 对角 SSM 半群离散化。
@@ -202,7 +197,7 @@ pub mod scan {
         use tensor::View;
 
         // 单轴定义与形状投影复用 unary 骨架：时间轴 `n` 既是输入轴也是输出轴。
-        pub use crate::kernel::unary::{AXES, project_shape};
+        pub use crate::unary::{AXES, project_shape};
 
         /// 对角衰减系数 `ā = exp(λ·dt)`（模板常量 `{{a}}`）。
         const DECAY: f32 = 0.5;
@@ -277,7 +272,7 @@ mod support {
     use diagnostic::{Code, Error, Result};
 
     use crate::Scalar;
-    use crate::kernel::fast;
+    use crate::fast;
 
     use super::geom::{Conv2d, ConvGeom};
 

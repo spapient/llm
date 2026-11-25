@@ -28,7 +28,7 @@ fn the_registry_and_the_model_annotations_are_mirrors() {
         let Some((_, rest)) = line.trim().split_once(": $crate::") else {
             continue;
         };
-        // 表项形如 `名字: $crate::kernel::gemm_f32::GemmF32,`：模板正文归 `prof::catalogue`，
+        // 表项形如 `名字: $crate::gemm_f32::GemmF32,`：模板正文归 `prof::catalogue`，
         // 表里只有名字与内核类型，因此到这里就结束。
         let ty = rest.split([',', '\n']).next().unwrap_or_default().trim();
         if !ty.contains("::") {

@@ -322,12 +322,12 @@ spatial_layer!(
 //
 // 归一化层与上面的窗口族共用同一个文件：它们都不碰窗口，只碰通道与组的整除关系，而形状口径
 // （末轴是通道）与下界口径（问算子语义表）完全一致。层只声明形状与算子归属，执行仍在
-// `nn::kernel::norm`。
+// `nn::norm`。
 
-type OpBatch = crate::kernel::norm::BatchNorm2d<f32>;
-type OpGroup = crate::kernel::norm::GroupNorm<f32>;
-type OpInst = crate::kernel::norm::InstanceNorm<f32>;
-type OpNorm = crate::kernel::norm::LayerNorm<f32>;
+type OpBatch = crate::norm::BatchNorm2d<f32>;
+type OpGroup = crate::norm::GroupNorm<f32>;
+type OpInst = crate::norm::InstanceNorm<f32>;
+type OpNorm = crate::norm::LayerNorm<f32>;
 
 /// 校验 `eps` 为正且有限：所有归一化层共用。
 fn check_eps(eps: f32, layer: &str) -> Result<()> {

@@ -9,7 +9,7 @@ use nn::conv::{
     AdaptiveAvgPool2d, AvgPool2d, Conv2d as Conv2dKernel, Interpolate, MaxPool1d, MaxPool2d,
     Sampler,
 };
-use nn::kernel::norm::{BatchNorm2d, GroupNorm, LayerNorm};
+use nn::norm::{BatchNorm2d, GroupNorm, LayerNorm};
 
 /// 几何族路由只负责闭集分派，数值和错误路径仍由各微核显式持有。
 macro_rules! route {

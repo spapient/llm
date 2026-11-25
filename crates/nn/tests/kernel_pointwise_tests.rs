@@ -1,5 +1,5 @@
 mod clamp {
-    pub use crate::kernel::clamp::*;
+    pub use crate::clamp::*;
 
     mod tests {
 use super::*;
@@ -75,7 +75,7 @@ fn clamp_keeps_values_in_bounds_on_saturated_inputs() {
 }
 
 mod embed {
-    pub use crate::kernel::embed::*;
+    pub use crate::embed::*;
 
     mod tests {
 use super::*;
@@ -174,7 +174,7 @@ fn embed_rejection_leaves_the_output_untouched() {
 }
 
 mod rmsnorm {
-    pub use crate::kernel::rmsnorm::*;
+    pub use crate::rmsnorm::*;
     use crate::model::{Buf, Sample};
 
     mod tests {
@@ -425,7 +425,7 @@ fn rmsnorm_epsilon_is_configurable_and_validated_before_writing() {
 }
 
 mod softmax {
-    pub use crate::kernel::softmax::*;
+    pub use crate::softmax::*;
 
     mod tests {
 use super::*;

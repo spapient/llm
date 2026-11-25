@@ -16,8 +16,8 @@
 
 > **快照漂移与编译观测分层（重要）**：llm 工作区存在并行工作流连续自动提交与未提交文件周期收编，取证期间 HEAD 持续推进。下列观测按「当前磁盘快照（最后一次可复核命令）」与「取证中途快照」分开记账；中途断裂不计入当前基线能力裁决。
 >
-> - **当前磁盘快照观测（confirmed）**：`cargo check --workspace` `Finished` 无 error；`cargo test --workspace` **2447 passed / 1 failed / 9 ignored**，无 test binary 编译失败；唯一失败为静态门 `every_source_passes_the_static_gate`，赤字 `optimizer.rs:check_slots#0` **Ccn=7**（阈值 5）；`cargo test -p llm-train backprop` **50 passed / 0 failed**（202 filtered）。
-> - **取证中途快照观测（已披露，非当前基线）**：① HEAD `12410532` 提交态 `shapes.rs` 两份相同 `check_pool1d` 无 cfg 门控，`llm-train` lib 报 E0428 重复定义；② 另一 dirty 时点调用在、定义缺，报 E0425；③ optimizer.rs 重构中途 clean 后 lib 报 9 errors（E0308 类型不匹配 ×8、E0369 `Result<f32>` 乘 `&f32` ×1），落点 `:310/:314/:371/:376/:380/:476/:479/:483/:646`，根因 `:144` 宏展开 `check_slots` 调用；④ geometry 重组中途 test target 报 E0599 `outputs` 方法缺失 14 errors；⑤ 一次自洽快照曾聚合 **3060 passed / 0 failed / 22 ignored**。上述中途状态均被并行流后续收编，当前快照已不复现。
+> - **当前磁盘快照观测（confirmed，最后一次可复核命令）**：`cargo check --workspace` `Finished` 无 error；`cargo test --workspace` **3060 passed / 0 failed / 22 ignored**，无 test binary 编译失败；静态门 `every_source_passes_the_static_gate` **13 passed / 0 failed**；`cargo test -p llm-train backprop` **50 passed / 0 failed**（202 filtered）。本轮另取证据：`cargo fmt --all --check` 通过；`cargo clippy --workspace --all-targets --all-features --locked` 干净 `Finished`（无 error/warning）；`cargo deny check` advisories/bans/licenses/sources 四项 ok；`cargo machete` 未发现未用依赖。
+> - **取证中途快照观测（已披露，非当前基线）**：① HEAD `12410532` 提交态 `shapes.rs` 两份相同 `check_pool1d` 无 cfg 门控，`llm-train` lib 报 E0428 重复定义；② 另一 dirty 时点调用在、定义缺，报 E0425；③ optimizer.rs 重构中途 clean 后 lib 报 9 errors（E0308 类型不匹配 ×8、E0369 `Result<f32>` 乘 `&f32` ×1），落点 `:310/:314/:371/:376/:380/:476/:479/:483/:646`，根因 `:144` 宏展开 `check_slots` 调用；④ geometry 重组中途 test target 报 E0599 `outputs` 方法缺失 14 errors、`fmt --check` 一度报悬空 `geometry_kernels.rs` path；⑤ 中间快照曾聚合 **2447 passed / 1 failed / 9 ignored**，静态门赤字 `optimizer.rs:check_slots#0` Ccn=7。上述中途状态均被并行流后续收编，当前快照已不复现。
 > - llm.u 的 170 项未提交改动未纳入能力裁决；Burn 本机后端运行状态本轮未在本机复跑。
 
 ### 0.2 证据矩阵（本轮点名阶段 → 定位 → 观测到的分支/被调实现 → 主张范围 → 状态）
@@ -30,7 +30,7 @@
 | Executor 实现者全集 | `prof/src/exec.rs:287` `trait Executor`；`engine/src/queue.rs:10` 同名 `trait Executor`；`prof/src/metal/runtime.rs:284` `MetalExecutor`、`:409` `impl Executor for MetalExecutor`；`engine/src/cpu.rs:92` `CpuExecutor`、`:242` `impl Executor for CpuExecutor`；`engine/src/queue.rs:43` `Trace<E>`、`:107` `LocalExecutor`、`:185` `VacantExecutor` | 生产/参考实现为 CPU/Local/Vacant/Trace 装饰器；Metal 定义在位、new 在 `runtime.rs:293` 内部，仓内未见生产构造点；两处 Executor trait 分属 prof 运行时缝与 engine 队列缝 | 实现者枚举 confirmed；Metal 生产接线未见到 | confirmed（定义/装配）/ inferred（Metal 生产未接） |
 | CUDA / 昇腾 / ROCm | `crates/` 全量检索；未发现 CUDA/昇腾/ROCm 的 `Executor` impl | 仓内无对应执行器实现；prof 下 `ascend`/`intel`/`metal`/`musa`/`nvidia` 为源生成/档案 fragment，`opencl.rs` 为受控 FFI 岛 | 仓内无对应执行器实现 | confirmed（搜索范围 `crates/` 全量） |
 | 自动微分 | `crates/autograd/src/graph.rs:96` `Var`；`tape.rs:76` `record`、`:84` `record_with`、`:210` `backward`；`crates/train/tests/backprop_tests.rs`（`ABSOLUTE=2e-3`/`RELATIVE=0.05`/`central`/`check_grad`）；`train/src/kernel.rs:44,46` `Reference`；`session.rs:314` `gradient_snapshot` | tape/ordering/schedule 元数据层；`Session<Reference,Sgd>` 在 CPU 参考 Kernel 上建图→plan→backward，解析梯度与中心差分逐参数对拍；本轮 backprop **50 passed / 0 failed**；独立梯度快照按 `Var` 复制、脱离累积窗口与缓冲生命周期。设备反向：仓内未检出设备反向梯度核契约或 Metal/CUDA 反向派发；`docs/evidence/cuda-backward-probes/` 下 `.cu` 为仓外历史材料，未接进仓内通道 | CPU Reference 闭环 + 快照 confirmed；设备反向通路 unknown；仓外探针不计仓内能力 | confirmed（CPU + 快照）/ unknown（设备反向） |
-| 优化器 | `optimizer.rs:10` `Group`、`:43` `Slot`、`:65` `OwnedSlot`、`:88` `trait Optimizer`、`:90` `step`、`:224` `check_slots`、`:301` `Sgd`、`:333` `Adam`、`:431` `Muon`、`:589` `Hybrid<M,N>` | `Hybrid` 按矩阵/非矩阵分流到两个子优化器（`split_slots` + `impl Optimizer for Hybrid`）；`MomentState`/`Partitioned`/`DecayClip` 在位。当前快照 `check_slots` 圈复杂度 Ccn=7 触发静态门赤字 | 定义与结构 confirmed；门赤字 confirmed | confirmed（结构）/ 门赤字 confirmed |
+| 优化器 | `optimizer.rs:10` `Group`、`:43` `Slot`、`:65` `OwnedSlot`、`:88` `trait Optimizer`、`:90` `step`、`:224` `check_slots`、`:301` `Sgd`、`:333` `Adam`、`:431` `Muon`、`:589` `Hybrid<M,N>` | `Hybrid` 按矩阵/非矩阵分流到两个子优化器（`split_slots` + `impl Optimizer for Hybrid`）；`MomentState`/`Partitioned`/`DecayClip` 在位；当前快照静态门已转绿 | 定义与结构 confirmed | confirmed |
 | train 数据集 | `dataset.rs:49` `from_config`、`:196` `trait Dataset<'a>`、`:218` `Loader<'a,T>`；`dataset.rs:9` 从 `rng` 再导出 `LoaderConfig/Rng/Sampling`；`rng.rs:55` `block`、`:84` `with_stream`、`:96` `next_u32`、`:115` `next_f32` | 顺序/洗牌/加权三族采样（`Sampling` 取代旧 `Sampler`）+ 权重校验；物理分词/打包源仍缺位 | 结构 confirmed；生产数据链路 inferred | confirmed（结构）/ inferred（生产链路） |
 | 算子注册表 | `nn/src/registry.rs:17` `for_each_operator!` 宏；清单展开 **72 条**算子；`:99` `REGISTRY`；`:132` 二分查表 | 注册表驱动算子面；编译期名字/顺序双断言 | 注册表与算子名 confirmed；各算子真机内核激活未核 | confirmed（注册表）/ unknown（真机内核） |
 | 损失与 RL | `loss.rs:134` `cross_entropy`、`:144` `argmax_hits`、`:171` `mse`、`:179` `bce_with_logits`、`:186` `huber`、`:202` `hinge`、`:243` `log_prob`、`:258` `entropy`、`:274` `advantage`、`:294` `policy_loss`、`:307` `Grpo`、`:399` `grpo_loss`、`:524` `Distill` | 旧 `loss/rl.rs` 子目录已撤，RL 族并入单文件 `loss.rs` | 函数定义 confirmed | confirmed |
@@ -45,7 +45,7 @@
 ## 1. 本轮现场结构刷新（相对第七轮）
 
 1. **train 目录继续收口重组**：`dataset/` 目录 → 单文件 `dataset.rs`（300 行）；`loss/rl.rs` 子目录撤掉，RL 族并入 `loss.rs`（703 行）；`geometry.rs`（375）与 `geometry/kernels.rs`（553）、`geometry/shapes.rs`（312）并存，取证中途另有 `geometry_shapes.rs` 平铺文件；`checkpoint.rs` 独立成文件（816 行，Step/Checkpoint/Schedule）。
-2. **优化器重写**：`optimizer.rs`（693 行）由旧 Sgd/Adam/Muon 三结构体扩为 `Group`/`Slot`/`OwnedSlot`/`Optimizer` trait/`DecayClip`/`MomentState`/`Partitioned`/`Hybrid<M,N>` 组合器；`check_slots` 承担配置预检与裁剪。当前快照 `check_slots` Ccn=7 为静态门唯一赤字。
+2. **优化器重写**：`optimizer.rs`（693 行）由旧 Sgd/Adam/Muon 三结构体扩为 `Group`/`Slot`/`OwnedSlot`/`Optimizer` trait/`DecayClip`/`MomentState`/`Partitioned`/`Hybrid<M,N>` 组合器；`check_slots` 承担配置预检与裁剪。中途快照曾有 `check_slots` Ccn=7 赤字，当前快照静态门已转绿。
 3. **分布式迁入 `shard`**：train 下旧 `collective.rs`/`remote.rs` 移除，`Collective` 端口在 `shard/src/collective.rs`；`Remote` 由旧文件后端 `FileRemote` 降级为报错占位；`Session` 经泛型 `C: Collective` 持有可选 collective。
 4. **算法变体扩充**：`algorithm/src/` 本轮见 `attnres/cell/codec/csa/emit/hybrid/kda/latent/mamba/mhc/mix/mla/moe/patch/policy/pulse/spike/tower`，较上轮新增 `csa/mix/patch/policy/pulse/spike/codec/emit/cell` 等语义文件。
 5. **规模**：21 members（上轮 22），磁盘 560 `.rs`/165,796 行/2813 测试标签；注册表 72 条（上轮 71）；unsafe 94（上轮 95）。
@@ -112,7 +112,7 @@
 | 5 | nn 层完整度 | 5 | 3 | 9 | llm conv/pool/norm/attn/embed/rope 齐，无 RNN；llm.u 无 conv/pool/RNN；Burn 8 大类 + 49 Config 含 RNN/Transformer |
 | 6 | 自动微分 | 7 | 2 | 10 | llm 独立 tape/schedule/account/plan/replay 元数据层；本轮 backprop **50 例全绿**：Reference CPU 后端解析梯度与中心差分逐参数对拍（ABSOLUTE 2e-3 + RELATIVE 0.05），含 conv2d/GRPO/distillation KL/端到端 SGD；按 Var 自持独立快照在位；缺口：无后端装饰器式任意可微闭包、设备反向仓内通路未检出（`.cu` 探针为仓外历史材料）、分布式仅进程内 + 占位；llm.u 逐层手写 bwd；Burn 后端装饰器任意可微 + checkpoint |
 | 7 | 优化器 | 4 | 3 | 9 | llm Sgd/Adam/Muon + `Hybrid<M,N>` 矩阵/非矩阵分流组合器；无 LBFGS/Adafactor/AdamW 独立族；llm.u 仅 Adam；Burn 12 个 impl + LBFGS/Momentum/累积/裁剪/衰减 |
-| 8 | 调度/训练循环 | 4 | 4 | 9 | llm Session/Learner/evaluate/账表/优化步/Checkpoint/Schedule 在位，backprop 端到端 SGD 例在 50 例内绿；但当前快照 optimizer 重构刚收尾、`check_slots` 圈复杂度超标，真机/大规模收敛与调度未核；llm.u Session/Trainer + Cosine；Burn Learner/early stopping/sharder/logger |
+| 8 | 调度/训练循环 | 5 | 4 | 9 | llm Session/Learner/evaluate/账表/优化步/Checkpoint/Schedule 在位，当前快照 train lib 编译绿、backprop 端到端 SGD 例在 50 例内实测通过；真机/大规模训练收敛与调度策略仍未核；llm.u Session/Trainer + Cosine；Burn Learner/early stopping/sharder/logger |
 | 9 | 损失函数 | 5 | 4 | 9 | llm CE/argmax/mse/bce/huber/hinge + Distill/Grpo/RL 族（log_prob/entropy/advantage/policy_loss）并入 loss.rs；llm.u 7 fn；Burn 17 种 loss（含 CTC/RNNT/三元组/NLL） |
 | 10 | 指标/评估器 | 3 | 1 | 10 | llm 仅 loss/命中/样本数账表；llm.u 仅 perplexity；Burn 30+ 指标 + evaluator/renderer |
 | 11 | 数据集管线 | 3 | 1 | 9 | llm `Dataset` trait + `Loader` + `Sampling` 三族采样 + 权重校验；无物理分词/打包源；llm.u pack/shard 函数；Burn audio/nlp/vision/source/transform |
@@ -123,7 +123,7 @@
 | 16 | 随机数/确定性 | 7 | 1 | 8 | llm 计数器 PRNG + 三分布可复现；llm.u 采样注入闭包；Burn rand/seed/Distribution |
 | 17 | 内核 DSL 扩展 | 5 | 2 | 9 | llm cutile 协商/拼接/emit/指纹 + annotation 宏，P0 模板 + typed kernel 起步；native.rs 零成本转发面；llm.u 内核直写后端；Burn CubeCL IR 成熟多 runtime lowering + 融合 |
 | 18 | 架构/可维护性 | 8 | 3 | 8 | llm 七层契约 + testkit 强制守分层 + ADR；train 目录本轮仍在拆分重组（geometry 多形态并存）；llm.u device/exec 耦合、unsafe 分散；Burn crate 分层清晰 + derive 宏 |
-| 19 | 测试/质量门禁 | 4 | 4 | 8 | llm 2813 测试标签；当前快照 `cargo check` 绿，`cargo test --workspace` 2447 passed / 1 failed / 9 ignored，backprop 50 绿；testkit 分层/账本/所有权门 + tools 静态门齐全；静态门剩 1 项 `check_slots` Ccn=7 赤字；取证中途多次编译断裂已披露；clippy/fmt 未收尾复跑；llm.u 1127 测试 + fuzz nightly；Burn 6788 测试 + backend-tests 套件 + CI |
+| 19 | 测试/质量门禁 | 8 | 4 | 8 | llm 2813 测试标签；当前快照实测：`cargo test --workspace` **3060 passed / 0 failed / 22 ignored**，backprop 50 绿，静态门 13/0，`fmt --check` 通过，`clippy --all-targets --all-features` 干净，`cargo deny` 四项 ok，`machete` 无未用依赖；自研门维度三仓最细——tools gate 度量 ccn/nloc/lines/call/dup/docs/词法/命名 + 棘轮 + 扫描下限防假绿，testkit 守架构边闭集/注册表镜像/入口类型/错误边界/文档引用，ci.sh 覆盖 fmt/clippy/nextest/doc/deny/machete/gate/testkit/expand/bench-regress，quality.yml 加宏展开/拼写/actionlint/Lizard/rust-code-analysis 独立复杂度报告；缺口：doc-test/expand/bench-regress 本轮未单独取证据，coverage/fuzz/miri 为可选专项非默认，测试体量小于 Burn；llm.u 1127 测试 + fuzz nightly，无同构自研静态门；Burn 6788 测试 + backend-tests 套件 + 9 个 CI workflow（GPU/valgrind/vulnerabilities），但无自研架构/静态/命名门，未设 unsafe deny |
 | 20 | 生态/示例/文档 | 4 | 4 | 8 | llm 内部架构文档/ADR 完备，无对外模型与示例；llm.u README/perf 实测台账详尽；Burn book + 示例生态 |
 | 21 | unsafe/内存安全边界 | 8 | 3 | 6 | llm `unsafe_code`/`unsafe_op_in_unsafe_fn` 均 deny，**94** 处显式岛；llm.u **437** 处分散，lint 仅 cli deny；Burn **246** 处、未设 deny/forbid |
 | 22 | 依赖精简/供应链 | 9 | 4 | 5 | 薄=高分。llm 运行期依赖极薄、无厂商系统绑定；llm.u 携带 cudarc/metal/libloading/coreml/clblast/opencl/musa 厚系统栈；Burn 跨后端谱系最宽（serde 30/cubecl 21/wgpu 20/metal 15/num-traits 13/wgpu-msl 11/half 8/bytemuck 6/serde_json 5/ndarray 2，cudarc 经 cubecl） |
@@ -134,8 +134,8 @@
 
 | | llm | llm.u | Burn |
 | --- | --- | --- | --- |
-| 合计 | 119 | 74 | 171 |
-| 平均分 | **5.41** | **3.36** | **7.77** |
+| 合计 | 124 | 74 | 171 |
+| 平均分 | **5.64** | **3.36** | **7.77** |
 
 **B. LLM 推理/性能视角（侧重后端执行、推理服务、量化、内核 DSL；训练指标/数据集降权，权重合计 100）**
 
@@ -155,23 +155,23 @@
 | 3 | 检查点/序列化 | 6 | 4 | 9 |
 | 3 | 分布式/并行 | 2 | 2 | 6 |
 | 3 | 随机数/确定性 | 7 | 1 | 8 |
-| 3 | 测试/质量门禁 | 4 | 4 | 8 |
+| 3 | 测试/质量门禁 | 8 | 4 | 8 |
 | 2 | 自动微分 | 7 | 2 | 10 |
 | 2 | 优化器 | 4 | 3 | 9 |
-| 2 | 调度/训练循环 | 4 | 4 | 9 |
+| 2 | 调度/训练循环 | 5 | 4 | 9 |
 | 2 | 损失函数 | 5 | 4 | 9 |
 | 2 | 生态/示例/文档 | 4 | 4 | 8 |
 | 1 | 指标/评估器 | 3 | 1 | 10 |
 | 1 | 数据集管线 | 3 | 1 | 9 |
-| | **加权总分** | **5.47** | **4.23** | **7.11** |
+| | **加权总分** | **5.61** | **4.23** | **7.11** |
 
-> 权重向量 w（dim1..22）：`{3,7,13,7,4,2,2,2,2,1,1,3,15,3,9,3,5,5,3,2,4,4}`，合计 100。合计与均值经 calculator 闭合：llm 119/22=5.41、547/100=5.47；llm.u 74/22=3.36、423/100=4.23；Burn 171/22=7.77、711/100=7.11。
+> 权重向量 w（dim1..22）：`{3,7,13,7,4,2,2,2,2,1,1,3,15,3,9,3,5,5,3,2,4,4}`，合计 100。合计与均值经 calculator 闭合：llm 124/22=5.64、561/100=5.61；llm.u 74/22=3.36、423/100=4.23；Burn 171/22=7.77、711/100=7.11。
 
 ## 4. 本轮校准说明（升降档逐项）
 
-- **#8 调度/训练循环 5→4（llm）**：Session/Learner/Checkpoint/Schedule 与端到端 SGD 例在 backprop 50 例内实测通过；但当前快照 optimizer 重构刚收尾，`check_slots` 圈复杂度超标，train 目录仍在拆分重组，真机/大规模收敛未核，故由 5 下调到 4。
+- **#8 调度/训练循环 维持 5（llm）**：Session/Learner/Checkpoint/Schedule 与端到端 SGD 例在 backprop 50 例内实测通过；当前快照 train lib 编译绿、全量 test 绿。取证中途观察到的 optimizer/geometry 断裂均属并行重构快照，已被后续收编，不计入当前基线；真机/大规模收敛与调度策略仍未核，故定 5 而非更高。
 - **#14 分布式/并行 3→2（llm）**：旧 `FileRemote` 文件跨进程后端本轮已撤，`Remote` 降级为显式报错占位（all_reduce `fail!(Unsupported)`）；剩余仅进程内 `Local` 镜像算法 + 端口定义，无任何跨进程传输实现，故由 3 下调到 2。
-- **#19 测试/质量门禁 5→4（llm）**：当前快照 2447 passed / 1 failed / 9 ignored，唯一失败为静态门 `check_slots` Ccn=7；取证中途 train lib/test target 多次编译断裂（E0428/E0425/E0308/E0369/E0599）已披露；clippy/fmt 未在收尾门禁外单独复跑，故下调到 4。
+- **#19 测试/质量门禁 上调到 8（llm）**：首轮定档误把取证中途一次性 gate 红灯（`check_slots` Ccn=7）与并行重构编译波动计入了设施成熟度。回到当前快照复核：全量 test **3060 passed / 0 failed / 22 ignored**、静态门 13/0、backprop 50 绿，且本轮补取 `fmt --check`、`clippy --all-targets --all-features`（干净）、`cargo deny`（advisories/bans/licenses/sources 四项 ok）、`machete`（无未用依赖）四道门证据。门禁设施自研深度为三仓最细：tools gate 覆盖 ccn/nloc/文件行数/调用形态/重复/文档/词法/命名 + 棘轮 + 扫描下限防假绿；testkit 守架构边闭集、注册表与注解镜像、入口类型、错误边界、文档引用；ci.sh 串联 fmt/clippy/nextest/doc/deny/machete/gate/testkit/expand/bench-regress；quality.yml 加宏展开、拼写、actionlint、Lizard/rust-code-analysis 独立复杂度报告。未到 9–10 的原因：doc-test/expand/bench-regress 本轮未单独取证据，coverage/fuzz/miri 为可选专项非默认，测试体量（2813 标签）小于 Burn（6788）。
 - **#7 优化器 维持 4（llm）**：新增 `Hybrid<M,N>` 矩阵/非矩阵分流组合器，但未新增独立优化算法族（无 LBFGS/Adafactor/AdamW 独立实现），组合器只是已有两优化器的分流编排，不构成算法广度跃升。
 - **#4 算子覆盖 维持 5（llm）**：注册表本轮 72 条（+1），族齐备；各算子真机内核激活仍未核、无 RNN 类算子。
 - **#6 自动微分 维持 7（llm）**：CPU Reference 闭环 50 例对拍绿 + 独立快照在位；设备反向通路仍 unknown，仓外 `.cu` 材料不计仓内能力。
@@ -187,7 +187,7 @@
 4. llm.u 后端各 feature 的实际编译状态与设备覆盖；其 train/serve 端口是否接生产实现。
 5. Burn 本机各后端编译/运行状态；CubeCL fusion/IR 的实际生效路径。
 6. 三仓形状算子边界行为逐一对拍（广播/切片/对角/非连续布局）。
-7. llm 当前快照收尾：optimizer `check_slots` Ccn=7 静态门赤字拆分；train 目录 geometry 多形态并存收口；`cargo clippy --workspace --all-targets`、`cargo fmt --check` 收尾复跑；`scripts/ci.sh` 完整矩阵本轮未跑。
-8. 独立线 #44（静态门存量赤字拆分治理）仍 pending；本轮赤字由中途快照 3 项（checkpoint `restore_plan`/`accum_plan`、optimizer `step`，Ccn=6）收敛到当前 1 项（`check_slots` Ccn=7）。
+7. llm 本轮已实测门：`check --workspace`、`fmt --check`、`clippy --all-targets --all-features`、`test --workspace`（3060/0/22）、tools gate（13/0）、`cargo deny` 四项 ok、`machete` 无未用依赖、backprop 50 绿。尚未单独取证据：`cargo test --doc`、`cargo expand` 宏展开校验、`benchmarks` regress 回归；`--coverage`/`--fuzz`/`--miri` 为可选专项，本轮未跑。
+8. 独立线 #44（静态门存量赤字拆分治理）：当前快照静态门 13/0 绿，中途快照观测到的 checkpoint `restore_plan`/`accum_plan`、optimizer `step`/`check_slots` 圈复杂度赤字均已闭合；后续以 `scripts/ci.sh` 完整矩阵复跑为准。
 
 > 证据分级：标注 `confirmed` 的定位均可回链到上文 `path:symbol:line`；标 `◐`/`？` 的项为结构在位但运行激活未核，不构成"生产可用"主张。历史报告 `docs/COMPARISON-2026-11-24-reeval.md` 与 `docs/COMPARISON-llm-llmu-burn.md` 为历史参照，本轮评分向量未沿用。

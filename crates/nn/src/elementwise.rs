@@ -1,7 +1,7 @@
 //! 逐元素二元骨架：`y[n] = op(a[n], b[n])`。
 
 use crate::formula::FormulaOwner;
-use crate::kernel::scalar::{FloatSlice, FloatSliceMut, Scalar};
+use crate::scalar::{FloatSlice, FloatSliceMut, Scalar};
 use crate::model::{Buf, Cost, Sample, ShapeCtx, Values, Vector};
 use diagnostic::{Code, Error};
 use tensor::View;
@@ -193,7 +193,7 @@ macro_rules! binary_f32 {
         );
 
         impl $crate::elementwise::Binary for $name {
-            fn apply<K: $crate::kernel::scalar::Scalar>(x: K, y: K) -> K {
+            fn apply<K: $crate::scalar::Scalar>(x: K, y: K) -> K {
                 let apply: fn(K, K) -> K = $apply;
                 apply(x, y)
             }
@@ -252,7 +252,7 @@ macro_rules! binary_f32 {
 
 #[cfg(test)]
 mod test_support {
-    include!("../../tests/kernel_elementwise_test_support.rs");
+    include!("../tests/kernel_elementwise_test_support.rs");
 }
 
 // 声明式算子表：同一副二元骨架的七个算子，每个算子一个 `pub mod` 保持 `nn::<name>::forward`

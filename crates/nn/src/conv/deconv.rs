@@ -7,7 +7,7 @@ use crate::guard::check_all;
 use diagnostic::{Code, Error, Result};
 
 use crate::conv::ConvGeom;
-use crate::kernel::fast;
+use crate::fast;
 use tensor::NumericElement;
 
 /// 前向标量缝：f32 与对称 i8（i32 累加）共用同一套前向/散射算法，
@@ -459,5 +459,5 @@ fn scatter1_at<T: Copy + AddAssign>(
 
 #[cfg(test)]
 mod tests {
-    include!("../../tests/conv_deconv_tests.rs");
+    include!("../tests/conv_deconv_tests.rs");
 }

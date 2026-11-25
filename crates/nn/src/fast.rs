@@ -6,10 +6,8 @@ use std::thread;
 use diagnostic::{Code, Error, Result};
 use tensor::View;
 
-#[path = "fast/pack.rs"]
 mod pack;
 use pack::micro;
-#[path = "fast/pool.rs"]
 mod pool;
 // 面板暂存池、线程数、对齐助手都是设备无关的公共件，本体单点住在 `cutile::native`，
 // 这里只重导出别名供本族子模块经 `super::` 引用；nn 不持有这些实现（B-1 收口）。
@@ -429,8 +427,8 @@ mod i8 {
     /// 显式错误版对称 int8 GEMM：三条缓冲与 `(m, n, k)` 严格相等才跑，不符返回 [`Code::Invalid`]，
     /// 不 panic。算术同 [`gemm_i8`]（i32 精确累加，与 [`crate::matmul_i8::forward_tiled`] 逐位一致）。
     pub fn gemm_i8_checked(a: View<'_, i8>, b: View<'_, i8>, out: &mut [i32]) -> Result<()> {
-        let (m, k) = crate::kernel::matmul::dim2(a.dims(), "gemm_i8")?;
-        let (k2, n) = crate::kernel::matmul::dim2(b.dims(), "gemm_i8")?;
+        let (m, k) = crate::matmul::dim2(a.dims(), "gemm_i8")?;
+        let (k2, n) = crate::matmul::dim2(b.dims(), "gemm_i8")?;
         if k != k2 {
             return Err(Error::new(
                 Code::Invalid,
@@ -714,8 +712,8 @@ use micro::{Layout, Span, Sweep, edge};
 
 #[cfg(test)]
 mod tests {
-    include!("../../tests/kernel_fast_tests.rs");
+    include!("../tests/kernel_fast_tests.rs");
     // SME 对拍：stable／nightly 共用 C 内核，运行时能力由 prof 安全桥决定。
     #[cfg(target_arch = "aarch64")]
-    include!("../../tests/kernel_sme_tests.rs");
+    include!("../tests/kernel_sme_tests.rs");
 }

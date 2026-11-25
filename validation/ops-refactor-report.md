@@ -11,7 +11,7 @@
 - 初始基线：`69edfdea922b1ecede3a81d8ad2a810a4c984389`。
 - 当前源码检查点：`0178a110a9702e985ff3cca28735883ebf41ed7f`，外加本报告记录的后续工作区修改。
 - 当前 `ops` 内容 SHA-256：`f5df67d9d6a98641763f0d8543d6477e9fdb22f7e5676bd2098babd4129aef9e`。
-- 固定验收快照：5,776 个文件，SHA-256 `53f40c9cd3c7cdbe9c40337dfe222d6c4ebe23c3597c84fa53d551aa941e6507`，避免并行编辑改变 CI 输入。
+- 固定验收快照：5,783 个文件，SHA-256 `93c6d9c2d911e89c8d3a702bddc6d3270aa5add59b46b76d58eb6562fd0d12e3`，避免并行编辑改变 CI 输入。
 - 工作区存在并行修改；本报告不将 `train`、SME 等无关改动归为本次成果。
 
 ## 2. 架构分析与已落地重构
@@ -99,12 +99,12 @@
 
 | 指标 | 数值 |
 |---|---:|
-| 基线逐次 p50 的中位数 | 2.865 ms |
-| 当前逐次 p50 的中位数 | 3.0725 ms |
-| 配对加速比中位数 | 0.9551× |
-| 配对加速比范围 | 0.8284–1.0556× |
+| 基线逐次 p50 的中位数 | 2.427 ms |
+| 当前逐次 p50 的中位数 | 2.469 ms |
+| 配对加速比中位数 | 0.9813× |
+| 配对加速比范围 | 0.6044–1.0310× |
 
-存在明显顺序/频率扰动，因此不能把这些数据包装成提升，也不把 0.9551×解读为稳定的精确回退比例。结论是：**当前重构没有证明性能提升。** 原始 16 对数据见 `../target/gemv-release-performance.json`。
+存在明显顺序/频率扰动与离群样本，因此不能把这些数据包装成提升，也不把 0.9813×解读为稳定的精确回退比例。结论是：**当前重构没有证明性能提升。** 原始 16 对数据见 `../target/gemv-release-performance.json`。
 
 按组缩放、融合解包、查表和 NEON 解包探索均未形成可靠收益；未保留专用 `cpu/gemv_packed.c`。没有生成指针、容量或分配计数证据，因此也不宣称缓冲复用或内存性能提升。
 
@@ -119,10 +119,13 @@
 | `cargo test -p llm-tools --test gate --locked` | 13 项通过 | `../target/ops-static-gate.log` |
 | 全局 `npx --yes jscpd`，版本 5.4.3 | 530 个 Rust 文件，0 克隆，0% | `../target/ops-global-jscpd.log` |
 | 声明快照对拍 | 71 个既有算子完全等价，仅新增 1 个 | `../target/ops-equivalence.log` |
-| `cargo fmt --all --check`、`scripts/name-lint.sh`、`git diff --check` | 已通过定向检查 | 统一 CI 日志 |
-| `scripts/ci.sh` | **未通过**：最后一次在全工作区 Clippy 阶段被并行 `train` 缺失 `check_pool1d` 阻断；本次涉及 crate 的 Clippy 已通过 | `../target/ops-ci.log` |
+| 格式与本次文件 `git diff --check` | 通过；全量 `git diff --check` 另被并行生成日志的行尾空白阻断 | 统一 CI 日志 |
+| `scripts/name-lint.sh` | 固定快照通过；当前工作区被 `geometry_kernels.rs`、`geometry_shapes.rs` 阻断 | 统一 CI 日志 |
+| 固定快照 nextest | **3,022 通过、0 失败、18 skipped** | `../target/ops-ci-snapshot.log` |
+| 固定快照 `scripts/ci.sh` | **未通过**：密度预算 104,729 / 60,000 行，超出 44,729 行；此前的格式、Clippy、doc-test、依赖、静态门、架构门、宏展开、拼写和 actionlint 均通过 | `../target/ops-ci-snapshot.log` |
+| 固定快照 jscpd 有效路径复验 | 530 个 Rust 文件，0 克隆，0%；原 `target/` 内 0 文件阶段不计为证据 | `../target/ops-snapshot-jscpd.log` |
 
-定向 doc-test 中有 3 个 ignored（annotation 2 个、prof 1 个），不计入通过数。通用 clang 检查不伪装编译 cuBLAS/MUSA SDK 翻译单元；原生项留给目标工具链。Ascend `ccec` 本机不可用。云端完整工作流、fuzz/ASan、Miri 和全量 `scripts/ci.sh --perf` 未执行，均不记为通过。
+定向 doc-test 中有 3 个 ignored（annotation 2 个、prof 1 个），不计入通过数；固定快照 nextest 另有 18 个 skipped。通用 clang 检查不伪装编译 cuBLAS/MUSA SDK 翻译单元；原生项留给目标工具链。Ascend `ccec` 本机不可用。云端完整工作流、fuzz/ASan、Miri 和全量 `scripts/ci.sh --perf` 未执行，均不记为通过。
 
 ## 7. 硬门禁复核
 
@@ -130,11 +133,12 @@
 |---|---|---|
 | 重复率 <0.5% | 通过 | 全局 jscpd 0%，未调整阈值 |
 | 新增复杂度 | 通过 | 静态门 13 项通过；不把 ratchet 通过等同于所有存量函数均 ≤5 |
-| 命名 | 通过 | 命名门零命中 |
+| 命名 | 部分通过 | 固定快照零命中；当前工作区两个并行扁平化文件未通过 |
 | 文件数量 | 通过且有实测 | `ops` 净减少 32 个 |
 | 文件 ≤300 行 | **未满足** | 仍有 10 个本次涉及文件超过 300 行，见下表 |
 | 复用覆盖率 ≥85% | 未证明 | 未生成合规的核心逻辑函数清单与承载比例 |
 | 功能密度 ≤常规实现 1/10 | **未满足** | 总行数下降 13.7%，不是 90% |
+| 全仓 `src` ≤60,000 行 | **未满足** | 固定快照 104,729 行，超出 44,729 行 |
 | 性能提升 | **未证明** | release 配对结果不支持加速 |
 | 全平台数值/性能 | 未完成 | Intel/Windows、NVIDIA、MUSA 等目标设备未验收 |
 

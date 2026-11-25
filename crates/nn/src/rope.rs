@@ -222,5 +222,5 @@ crate::operator_here!(Rope, "rope_f32", 1, (4096, 4096), true, reference);
 
 #[cfg(test)]
 mod tests {
-    include!("../../tests/kernel_rope.rs");
+    include!("../tests/kernel_rope.rs");
 }

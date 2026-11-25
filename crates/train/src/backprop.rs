@@ -4,8 +4,8 @@ use autograd::{Node, Schedule, Tape, Var};
 use diagnostic::{Code, Error, Result};
 
 use crate::geometry::Geometry;
-use crate::kernel::{Kernel, same_str};
 use crate::pool::Bufs;
+use crate::{Kernel, same_str};
 
 /// 本模块诊断站点。
 pub(crate) const SITE: &str = "train::backprop";

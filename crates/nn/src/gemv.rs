@@ -59,14 +59,11 @@ macro_rules! scaled_grain {
     };
 }
 
-#[path = "gemv/format.rs"]
 mod format;
-#[path = "gemv/forward.rs"]
 mod forward;
 pub use forward::packed;
 use forward::shape;
 #[cfg(nightly)]
-#[path = "gemv/simd.rs"]
 mod simd;
 #[cfg(not(nightly))]
 mod simd {
@@ -243,7 +240,7 @@ pub(crate) use shape::scale_of;
 
 #[cfg(test)]
 mod packed_test_support {
-    include!("../../tests/kernel_packed_test_support.rs");
+    include!("../tests/kernel_packed_test_support.rs");
 }
 
 /// 打包量化的分组长度：一行权重的元素个数是它的整数倍，标度按它分组记账。
@@ -307,7 +304,7 @@ macro_rules! gemv_packed {
             scales: tensor::View<'_, f32>,
             out: &mut [f32],
         ) -> diagnostic::Result<()> {
-            let (rows, m) = $crate::kernel::matmul::dim2(x.dims(), $op)?;
+            let (rows, m) = $crate::matmul::dim2(x.dims(), $op)?;
             let n = out.len().checked_div(rows).unwrap_or(0);
             let geo = $crate::gemv::Geometry::new(rows, m, n);
             $crate::gemv::packed::forward_batch(
@@ -438,7 +435,7 @@ pub mod f32 {
 
     #[cfg(test)]
     mod tests {
-        include!("../../tests/kernel_gemv.rs");
+        include!("../tests/kernel_gemv.rs");
     }
 }
 pub mod i2 {
@@ -565,7 +562,7 @@ pub mod i8 {
         scales: tensor::View<'_, f32>,
         out: &mut [f32],
     ) -> diagnostic::Result<()> {
-        let (rows, m) = crate::kernel::matmul::dim2(x.dims(), "gemv_i8")?;
+        let (rows, m) = crate::matmul::dim2(x.dims(), "gemv_i8")?;
         let n = out.len().checked_div(rows).unwrap_or(0);
         let geo = gemv::Geometry::new(rows, m, n);
         gemv::forward_plain_batch::<gemv::SymI8<GROUP>>(
@@ -579,7 +576,7 @@ pub mod i8 {
 
     #[cfg(test)]
     mod tests {
-        include!("../../tests/kernel_gemv_i8.rs");
+        include!("../tests/kernel_gemv_i8.rs");
     }
 }
 

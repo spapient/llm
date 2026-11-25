@@ -494,7 +494,7 @@ fn sample_unpacked<G: Gemm>(a: &[G::Elem], b: &[G::Elem], m: usize, n: usize) ->
 /// 稠密 f32 跑独立 f64 闭式校验（整数闭式不适用，但那不等于只能自我对拍）。形状矩阵只定义一次。
 #[cfg(test)]
 mod test_support {
-    include!("../../tests/kernel_gemm_test_support.rs");
+    include!("../tests/kernel_gemm_test_support.rs");
 }
 
 /// 生成一份 GEMM 精度变体的完整公开面：标记类型、[`Gemm`] 实现、`forward` 入口、
@@ -561,7 +561,7 @@ macro_rules! gemm_variant {
             b: tensor::View<'_, f32>,
             out: &mut [f32],
         ) -> diagnostic::Result<()> {
-            let (m, _, n) = $crate::kernel::matmul::dim2_pair(a.dims(), b.dims(), $op)?;
+            let (m, _, n) = $crate::matmul::dim2_pair(a.dims(), b.dims(), $op)?;
             $crate::gemm::forward::<$name>(a.as_slice(), b.as_slice(), m, n, out)
         }
     };

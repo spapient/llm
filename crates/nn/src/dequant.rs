@@ -258,7 +258,7 @@ macro_rules! dequant_packed {
 
 #[cfg(test)]
 mod test_support {
-    include!("../../tests/kernel_dequant_test_support.rs");
+    include!("../tests/kernel_dequant_test_support.rs");
 }
 
 pub mod dequant_i2 {
@@ -367,6 +367,6 @@ pub mod i8 {
 
     #[cfg(test)]
     mod tests {
-        include!("../../tests/kernel_dequant_i8_tests.rs");
+        include!("../tests/kernel_dequant_i8_tests.rs");
     }
 }

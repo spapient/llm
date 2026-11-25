@@ -4,7 +4,7 @@
 // 两条骨架入口由调用方传入，`i8` 档因此仍能对拍本地 4×16 寄存器分块实现。这里只收拢两档
 // 逐字同形的装配段，避免两份样板各自漂移。
 
-use crate::kernel::matmul::{pair_views, Precision};
+use crate::matmul::{pair_views, Precision};
 use tensor::View;
 
 /// 跑通标量参考与 tile 两条骨架，返回 `(参考输出, tile 输出)` 供调用方按本档口径断言。

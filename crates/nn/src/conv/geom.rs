@@ -1,7 +1,7 @@
 //! 职责：卷积几何：输入输出体量与切片步幅计算。
 use diagnostic::{Code, Error, Result};
 
-use crate::kernel::fast;
+use crate::fast;
 
 use crate::conv::support::*;
 

@@ -3,7 +3,7 @@
 //! 本文件只留静态规格（`EPS`/`MOMENTUM`/[`Running`]/[`Geometry`]/`DECLARED`）与方法分派；
 //! 形状核对与窗口几何在 `shapes`，逐变体前向/反向数值微核在 `kernels`。
 use diagnostic::{Code, Error, Result};
-use nn::kernel::norm::BatchNorm2d;
+use nn::norm::BatchNorm2d;
 
 // ---- 静态规格与声明档表 ------------------------------------------------------
 
@@ -207,9 +207,7 @@ const DECLARED: &[(&str, Geometry)] = declared_geometries! {
     layer_norm => Layer { rows: R, width: W },
 };
 
-#[path = "geometry_kernels.rs"]
 mod kernels;
-#[path = "geometry_shapes.rs"]
 mod shapes;
 use shapes::{invalid, pool_len};
 
@@ -275,7 +273,7 @@ impl Geometry {
         }
     }
 
-    /// 按实例几何前向：算术全部复用 `nn::conv` / `nn::kernel::norm` 的真实现。
+    /// 按实例几何前向：算术全部复用 `nn::conv` / `nn::norm` 的真实现。
     ///
     /// # Errors
     ///

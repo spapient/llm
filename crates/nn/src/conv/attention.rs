@@ -75,7 +75,7 @@ pub(crate) fn qkv(sample: &Sample) -> diagnostic::Result<(&[f32], &[f32], &[f32]
 
 /// 行 `row` 与行 `col` 的点积：四个朴素/flash 实现共用，免得每处重写 `d` 长的累加循环。
 fn dot(x: &[f32], y: &[f32], row: usize, col: usize, d: usize) -> f32 {
-    crate::kernel::matmul::dot_lanes(&x[row * d..][..d], &y[col * d..][..d])
+    crate::matmul::dot_lanes(&x[row * d..][..d], &y[col * d..][..d])
 }
 
 /// 头宽不能为 0：`√d` 作分数除数，`d=0` 会让每条分数除零成 NaN。
@@ -237,9 +237,9 @@ pub fn forward(
     v: tensor::View<'_, f32>,
     out: &mut [f32],
 ) -> diagnostic::Result<()> {
-    let (s, d) = crate::kernel::matmul::dim2(q.dims(), "attention_f32")?;
-    crate::kernel::matmul::dim2(k.dims(), "attention_f32")?;
-    crate::kernel::matmul::dim2(v.dims(), "attention_f32")?;
+    let (s, d) = crate::matmul::dim2(q.dims(), "attention_f32")?;
+    crate::matmul::dim2(k.dims(), "attention_f32")?;
+    crate::matmul::dim2(v.dims(), "attention_f32")?;
     decode(
         q.as_slice(),
         k.as_slice(),
@@ -263,9 +263,9 @@ pub fn flash_forward(
     v: tensor::View<'_, f32>,
     out: &mut [f32],
 ) -> diagnostic::Result<()> {
-    let (s, d) = crate::kernel::matmul::dim2(q.dims(), "flash_attention_f32")?;
-    crate::kernel::matmul::dim2(k.dims(), "flash_attention_f32")?;
-    crate::kernel::matmul::dim2(v.dims(), "flash_attention_f32")?;
+    let (s, d) = crate::matmul::dim2(q.dims(), "flash_attention_f32")?;
+    crate::matmul::dim2(k.dims(), "flash_attention_f32")?;
+    crate::matmul::dim2(v.dims(), "flash_attention_f32")?;
     decode(
         q.as_slice(),
         k.as_slice(),
@@ -443,8 +443,8 @@ pub mod latent {
         v: &[f32],
         out: &mut [f32],
     ) -> diagnostic::Result<()> {
-        let (_, w) = crate::kernel::matmul::dim2(q.dims(), "latent_attention_f32")?;
-        let (_, kw) = crate::kernel::matmul::dim2(k.dims(), "latent_attention_f32")?;
+        let (_, w) = crate::matmul::dim2(q.dims(), "latent_attention_f32")?;
+        let (_, kw) = crate::matmul::dim2(k.dims(), "latent_attention_f32")?;
         if kw != w {
             return Err(Error::new(
                 Code::Invalid,
@@ -521,5 +521,5 @@ crate::operator_here!(
 
 #[cfg(test)]
 mod attention_suite {
-    include!("../../tests/conv_attention_suite.rs");
+    include!("../tests/conv_attention_suite.rs");
 }

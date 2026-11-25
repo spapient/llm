@@ -277,18 +277,18 @@ pub mod packed {
         cpb: usize,
         dequant: &[f32],
     ) -> diagnostic::Result<()> {
-        let ctx = crate::kernel::gemv::forward::scaled_row_ctx(
+        let ctx = crate::gemv::forward::scaled_row_ctx(
             x.len(),
             out.len(),
             scales,
             weights.len(),
             cpb,
         )?;
-        if let Some(affine) = crate::kernel::gemv::simd::admit(cpb, out.len(), ctx, dequant) {
-            crate::kernel::gemv::simd::forward_batch(&[x], weights, scales, affine, out);
+        if let Some(affine) = crate::gemv::simd::admit(cpb, out.len(), ctx, dequant) {
+            crate::gemv::simd::forward_batch(&[x], weights, scales, affine, out);
             return Ok(());
         }
-        crate::kernel::gemv::forward::forward_rows_scaled(
+        crate::gemv::forward::forward_rows_scaled(
             x,
             weights,
             scales,
@@ -304,20 +304,20 @@ pub mod packed {
         x: &[f32],
         weights: &[u8],
         scales: &[f32],
-        geo: crate::kernel::gemv::forward::Geometry,
+        geo: crate::gemv::forward::Geometry,
         out: &mut [f32],
         cpb: usize,
         dequant: &[f32],
     ) -> diagnostic::Result<()> {
-        crate::kernel::gemv::forward::batch_geometry(x.len(), out.len(), geo)?;
+        crate::gemv::forward::batch_geometry(x.len(), out.len(), geo)?;
         let ctx =
-            crate::kernel::gemv::forward::scaled_row_ctx(geo.m, geo.n, scales, weights.len(), cpb)?;
-        if let Some(affine) = crate::kernel::gemv::simd::admit(cpb, geo.n, ctx, dequant) {
+            crate::gemv::forward::scaled_row_ctx(geo.m, geo.n, scales, weights.len(), cpb)?;
+        if let Some(affine) = crate::gemv::simd::admit(cpb, geo.n, ctx, dequant) {
             let rows: Vec<&[f32]> = x.chunks(geo.m).collect();
-            crate::kernel::gemv::simd::forward_batch(&rows, weights, scales, affine, out);
+            crate::gemv::simd::forward_batch(&rows, weights, scales, affine, out);
             return Ok(());
         }
-        crate::kernel::gemv::forward::forward_batch_rows_scaled(
+        crate::gemv::forward::forward_batch_rows_scaled(
             x,
             weights,
             scales,
@@ -330,13 +330,13 @@ pub mod packed {
     }
 }
 
-pub(in crate::kernel::gemv) mod shape {
+pub(in crate::gemv) mod shape {
     //! 形状上下文、确定性样本与标量参考：`#[annotation::model]` 要的三件产物。
     use diagnostic::{Code, Error};
 
     use crate::model::{Buf, Cost, Sample, ShapeCtx};
 
-    use crate::kernel::gemv::format::{Element, Format};
+    use crate::gemv::format::{Element, Format};
 
     /// 与权重格式无关的输入向量：两条算子共用同一份取值。
     fn input(m: usize) -> Vec<f32> {

@@ -251,7 +251,7 @@ mod tests {
     //! 泛型化判据：同一副骨架在 f64 / f16 / bf16 上执行，结果对 f32 参考落在档内精度容差内。
     //! `forward` 仅绑 f32 时这些用例无法编译——它们锁住「Precision 推广到全算子族」的能力增益。
     use super::Scalar;
-    use crate::kernel::{elementwise, reduce, unary};
+    use crate::{elementwise, reduce, unary};
     use tensor::View;
 
     fn assert_close<K: Scalar>(got: &[K], want: &[f32], rel: f64) {

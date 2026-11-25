@@ -158,7 +158,22 @@ pub use stack::{Floor, Stack, Unpriced, WEIGHT_SUFFIX};
 ///
 /// 它原先独立成 crate（`gemm`），与本 crate 之间的唯一通路是 `op` 的 `pub use` 门面；合并后
 /// 层定义直接引用内核，声明层退回 `prof`。
-pub mod kernel;
+pub mod clamp;
+pub mod dequant;
+pub mod elementwise;
+pub mod embed;
+pub mod epilogue;
+pub mod fast;
+pub mod gemm;
+pub mod gemv;
+pub mod matmul;
+pub mod norm;
+pub mod reduce;
+pub mod rmsnorm;
+pub mod rope;
+pub mod scalar;
+pub mod softmax;
+pub mod unary;
 
 /// 神经算子：卷积族、注意力族、池化与范数、扫描骨架（原独立 crate `conv`）。
 pub mod conv;
@@ -166,28 +181,13 @@ pub mod conv;
 /// 算子注册表：名字 → 语义表 + 可微性。与 `prof::catalogue` 按名字逐条对齐，错位在编译期失败。
 pub mod registry;
 
-/// 内核模块按原路径转出：内核源码与新下游都写 `nn::gemv::…` / `nn::gemm::…`。
-///
-/// 归一化**层**（契约登记）与空间层同居 `spatial`，`nn::kernel::norm` 才是它调用的**核**，
-/// 同名不同物，靠命名空间区分而不是改名。
-pub use kernel::{
-    dequant, elementwise, embed, epilogue, fast, gemm, gemv, matmul, reduce, rmsnorm, rope, scalar,
-    softmax, unary,
-};
-
 /// 卷积族模块按原路径转出：`nn::layer_norm` / `nn::adaptive_pool` / `nn::scan_f32` …
-///
-/// 这些名字在 `nn` 根都没有别的含义（归一化**层**是 `LayerNorm` 类型，不是 `layer_norm` 模块），
-/// 所以平铺一层不会遮蔽任何东西；`nn::conv::*` 的完整路径同时保留。
 pub use conv::{
     adaptive_pool, avg_pool2d, batch_norm, conv2d, group_norm, instance_norm, interpolate,
     layer_norm, max_pool1d, max_pool2d, scan_f32,
 };
 
 /// 标量内核表：把「算子名 → 内核函数」装配成一个常量数组，供上层按注册名派发。
-///
-/// 只做语法搬运，表项类型由调用方决定（`Entry` 在展开点按名字解析）：名字取自注册表，
-/// 函数取自本 crate 的参考内核，两者同序由调用方的 `const` 断言锁住。
 #[macro_export]
 macro_rules! kernel_table {
     ($($run:ident),* $(,)?) => {
@@ -195,16 +195,25 @@ macro_rules! kernel_table {
     };
 }
 
-/// 单算子入口（`gemv_f32` / `rmsnorm_f32` …）：下游原先写 `op::gemv_f32`，现在写 `nn::gemv_f32`。
-pub use kernel::{
-    Scalar, abs_f32, add_f32, add_f32x4, apply_epilogue, ceil_f32, clamp_f32, cos_f32, dequant_i2,
-    dequant_i4, dequant_i8, div_f32, embed_f32, exp_f32, exp2_f32, floor_f32, gelu_f32, gemm_f32,
-    gemm_i2, gemm_i4, gemm_i8, gemv_f32, gemv_i2, gemv_i4, gemv_i8, hard_sigmoid_f32,
-    leaky_relu_f32, log_f32, log1p_f32, matmul_i8, max_f32, min_f32, mul_f32, neg_f32, recip_f32,
-    reduce_max_f32, reduce_prod_f32, reduce_sum_f32, relu_f32, remainder_f32, residual_add_f32,
-    rmsnorm_f32, rope_f32, round_f32, rsqrt_f32, scale_f32, sigmoid_f32, sign_f32, silu_f32,
-    sin_f32, softmax_f32, sqrt_f32, square_f32, sub_f32, tanh_f32, trunc_f32,
+pub use clamp as clamp_f32;
+pub use dequant::{dequant_i2, dequant_i4, i8 as dequant_i8};
+pub use elementwise::{
+    add_f32, add_f32x4, div_f32, max_f32, min_f32, mul_f32, remainder_f32, residual_add_f32,
+    sub_f32,
 };
+pub use epilogue::apply as apply_epilogue;
+pub use gemm::{f32 as gemm_f32, i2 as gemm_i2, i4 as gemm_i4, i8 as gemm_i8};
+pub use gemv::{f32 as gemv_f32, i2 as gemv_i2, i4 as gemv_i4, i8 as gemv_i8};
+pub use matmul::i8 as matmul_i8;
+pub use reduce::{reduce_max_f32, reduce_prod_f32, reduce_sum_f32};
+pub use scalar::Scalar;
+pub use unary::abs_f16;
+pub use unary::ops::{
+    abs_f32, ceil_f32, cos_f32, exp_f32, exp2_f32, floor_f32, gelu_f32, hard_sigmoid_f32,
+    leaky_relu_f32, log_f32, log1p_f32, neg_f32, recip_f32, relu_f32, round_f32, rsqrt_f32,
+    scale_f32, sigmoid_f32, sign_f32, silu_f32, sin_f32, sqrt_f32, square_f32, tanh_f32, trunc_f32,
+};
+pub use {embed as embed_f32, rmsnorm as rmsnorm_f32, rope as rope_f32, softmax as softmax_f32};
 
 // 契约层在 `prof`：内核源码与骨架宏都按 crate 根解析契约路径，这里把它们搬回来，于是内核源码
 // 里写的是 `crate::model::…` / `crate::operator_via!`，而不是到处写依赖 crate 名。
@@ -227,3 +236,12 @@ mod tests;
 #[cfg(test)]
 #[path = "../tests/prop_tests.rs"]
 mod prop_tests;
+
+#[cfg(test)]
+#[path = "../tests/kernel_prop_numeric.rs"]
+mod prop_numeric;
+
+#[cfg(test)]
+mod pointwise_tests {
+    include!("../tests/kernel_pointwise_tests.rs");
+}

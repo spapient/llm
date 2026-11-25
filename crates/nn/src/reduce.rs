@@ -1,7 +1,7 @@
 //! 归约骨架：`y[0] = fold(a[0..n])`，输出单个元素。
 
 use crate::formula::FormulaOwner;
-use crate::kernel::scalar::{FloatSlice, FloatSliceMut, Scalar};
+use crate::scalar::{FloatSlice, FloatSliceMut, Scalar};
 use crate::model::{AxisRole, AxisSpec, Buf, Cost, Sample, ShapeCtx};
 use diagnostic::{Code, Error};
 use tensor::View;
@@ -135,11 +135,11 @@ macro_rules! reduce_f32 {
         );
 
         impl $crate::reduce::Reduce for $name {
-            fn start<K: $crate::kernel::scalar::Scalar>() -> K {
+            fn start<K: $crate::scalar::Scalar>() -> K {
                 K::from_f64(($start) as f64)
             }
 
-            fn fold<K: $crate::kernel::scalar::Scalar>(acc: K, x: K) -> K {
+            fn fold<K: $crate::scalar::Scalar>(acc: K, x: K) -> K {
                 let fold: fn(K, K) -> K = $fold;
                 fold(acc, x)
             }
@@ -177,7 +177,7 @@ macro_rules! reduce_f32 {
 
 #[cfg(test)]
 mod test_support {
-    include!("../../tests/kernel_reduce_test_support.rs");
+    include!("../tests/kernel_reduce_test_support.rs");
 }
 
 // 声明式算子表：同一副归约骨架的两种算子（最大值 / 求和），每个算子一个 `pub mod` 保持

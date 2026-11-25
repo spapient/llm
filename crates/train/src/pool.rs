@@ -36,8 +36,8 @@
 //! ```
 
 use crate::geometry::{Geometry, Running};
-pub use crate::kernel::{Data, Inputs, Kernel, Kind, Lane, Reference, View, ViewMut};
-use crate::kernel::{fits, lane_of, no_storage, zeroed};
+pub use crate::{Data, Inputs, Kernel, Kind, Lane, Reference, View, ViewMut};
+use crate::{fits, lane_of, no_storage, zeroed};
 use autograd::{Sizes, Store, Var};
 use diagnostic::{Code, Error, Result};
 use tensor::{DType, Shape};

@@ -182,5 +182,5 @@ fn shape_err(what: &str, expected: usize, got: usize) -> Error {
 
 #[cfg(test)]
 mod tests {
-    include!("../../tests/kernel_epilogue_tests.rs");
+    include!("../tests/kernel_epilogue_tests.rs");
 }

@@ -23,7 +23,7 @@ fn tn_matches_transposed_nt_bit_patterns() {
             &mut got,
         )
         .expect("TN 几何合法");
-        crate::kernel::fast::gemm_f32(&x, &wt, rows, n, k, &mut want);
+        crate::fast::gemm_f32(&x, &wt, rows, n, k, &mut want);
         assert_eq!(got, want, "TN 与 NT（转置后）应当逐位相同：{rows}×{n}×{k}");
     }
 }

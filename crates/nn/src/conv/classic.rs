@@ -1,9 +1,9 @@
 //! 池化 / 插值 / 归一化的算子声明：几何是声明档固定常量，算术与标量参考直接复用
-//! [`crate::conv`] 与 [`crate::kernel::norm`] 的真实现。
+//! [`crate::conv`] 与 [`crate::norm`] 的真实现。
 
 use crate::Scalar;
 use crate::conv::ConvGeom;
-use crate::kernel::unary::{AXES, project_shape};
+use crate::unary::{AXES, project_shape};
 use crate::model::{Buf, Cost, Sample, ShapeCtx, x_buf};
 use diagnostic::Error;
 
@@ -428,7 +428,7 @@ pub mod norm {
         ) -> diagnostic::Result<()> {
             let mut mean = vec![S::ZERO; C];
             let mut var = vec![S::ONE; C];
-            crate::kernel::norm::BatchNorm2d {
+            crate::norm::BatchNorm2d {
                 channels: C,
                 eps: S::from_f64(f64::from(EPS)),
                 momentum: S::from_f64(0.1),
@@ -462,7 +462,7 @@ pub mod norm {
             beta: &[S],
             out: &mut [S],
         ) -> diagnostic::Result<()> {
-            crate::kernel::norm::GroupNorm {
+            crate::norm::GroupNorm {
                 groups: G,
                 channels: C,
                 eps: S::from_f64(f64::from(EPS)),
@@ -498,7 +498,7 @@ pub mod norm {
             beta: &[S],
             out: &mut [S],
         ) -> diagnostic::Result<()> {
-            crate::kernel::norm::InstanceNorm {
+            crate::norm::InstanceNorm {
                 channels: C,
                 eps: S::from_f64(f64::from(EPS)),
             }
@@ -533,7 +533,7 @@ pub mod norm {
             beta: &[S],
             out: &mut [S],
         ) -> diagnostic::Result<()> {
-            crate::kernel::norm::LayerNorm {
+            crate::norm::LayerNorm {
                 width: W,
                 eps: S::from_f64(f64::from(EPS)),
             }
@@ -565,5 +565,5 @@ pub use pool::{
 
 #[cfg(test)]
 mod tests {
-    include!("../../tests/conv_classic_tests.rs");
+    include!("../tests/conv_classic_tests.rs");
 }

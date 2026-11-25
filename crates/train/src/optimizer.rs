@@ -1,5 +1,5 @@
 //! 参数更新：统一配置预检、全局裁剪、矩状态恢复与按角色衰减。
-use crate::kernel::orthogonalize;
+use crate::orthogonalize;
 use diagnostic::{Code, Error, Result};
 use nn::ParamRole;
 

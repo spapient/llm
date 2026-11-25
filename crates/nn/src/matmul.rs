@@ -88,8 +88,8 @@ pub const TN_COLS: usize = 32;
 /// 线性层 tile 的收缩块宽度。
 pub const TN_K: usize = 256;
 
-/// 全算子族共享的精度根（累加器 + 乘累加），定义在 [`crate::kernel::scalar`]，此处转出供 GEMM 入口使用。
-pub use crate::kernel::scalar::Precision;
+/// 全算子族共享的精度根（累加器 + 乘累加），定义在 [`crate::scalar`]，此处转出供 GEMM 入口使用。
+pub use crate::scalar::Precision;
 
 /// GEMM 的精度档：在共享 [`Precision`] 之上再加一个注册名（尺寸校验与代价标签取它）。
 ///
@@ -564,8 +564,8 @@ fn deterministic(len: usize, salt: u32) -> Vec<f32> {
 
 #[cfg(test)]
 mod tests {
-    include!("../../tests/kernel_matmul_test_support.rs");
-    include!("../../tests/kernel_matmul_tests.rs");
+    include!("../tests/kernel_matmul_test_support.rs");
+    include!("../tests/kernel_matmul_tests.rs");
 }
 
 /// 对称 int8 GEMM 变体：标量/分块出口与形状投影，骨架算术在本模块。
@@ -732,7 +732,7 @@ pub mod i8 {
 
     #[cfg(test)]
     mod tests {
-        include!("../../tests/kernel_matmul_test_support.rs");
-        include!("../../tests/kernel_matmul_i8_tests.rs");
+        include!("../tests/kernel_matmul_test_support.rs");
+        include!("../tests/kernel_matmul_i8_tests.rs");
     }
 }

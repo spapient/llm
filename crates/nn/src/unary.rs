@@ -1,7 +1,7 @@
 //! 逐元素一元骨架：`y[n] = f(a[n])`。
 
 use crate::formula::FormulaOwner;
-use crate::kernel::scalar::{FloatSlice, FloatSliceMut, Scalar};
+use crate::scalar::{FloatSlice, FloatSliceMut, Scalar};
 use crate::model::{AxisRole, AxisSpec, Buf, Cost, Sample, ShapeCtx, Values};
 use diagnostic::{Code, Error};
 use tensor::View;
@@ -61,7 +61,7 @@ pub(crate) mod ops {
     pub mod gelu_f32 {
         //! 逐元素 GELU 激活（精确 erf 版）：`y[n] = 0.5*a[n]*(1 + erf(a[n]/sqrt(2)))`。
 
-        use crate::kernel::scalar::Scalar;
+        use crate::scalar::Scalar;
 
         /// 标量误差函数：Abramowitz-Stegun 手册公式 7.1.26（`|误差| < 1.5e-7`），泛型到浮点标量档。
         pub fn erf<K: Scalar>(x: K) -> K {
@@ -741,7 +741,7 @@ pub fn dispatch<U: Unary>(a: FloatSlice<'_>, out: FloatSliceMut<'_>) -> diagnost
 macro_rules! unary_impl {
     ($name:ident, $apply:expr $(, $input:expr)?) => {
         impl $crate::unary::Unary for $name {
-            fn apply<K: $crate::kernel::scalar::Scalar>(x: K) -> K {
+            fn apply<K: $crate::scalar::Scalar>(x: K) -> K {
                 let apply: fn(K) -> K = $apply;
                 apply(x)
             }
@@ -895,5 +895,5 @@ pub mod abs_f16 {
 
 #[cfg(test)]
 pub(crate) mod test_support {
-    include!("../../tests/kernel_unary_test_support.rs");
+    include!("../tests/kernel_unary_test_support.rs");
 }

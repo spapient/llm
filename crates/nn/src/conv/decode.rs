@@ -103,15 +103,15 @@ mod kernel {
         v: tensor::View<'_, f32>,
         out: &mut [f32],
     ) -> diagnostic::Result<()> {
-        let (q_rows, d) = crate::kernel::matmul::dim2(q.dims(), "decode_attention_f32")?;
-        let (hist, kd) = crate::kernel::matmul::dim2(k.dims(), "decode_attention_f32")?;
+        let (q_rows, d) = crate::matmul::dim2(q.dims(), "decode_attention_f32")?;
+        let (hist, kd) = crate::matmul::dim2(k.dims(), "decode_attention_f32")?;
         if kd != d {
             return Err(Error::new(
                 Code::Invalid,
                 format!("decode_attention_f32 头宽不符：q·d={d}，k·d={kd}"),
             ));
         }
-        crate::kernel::matmul::dim2(v.dims(), "decode_attention_f32")?;
+        crate::matmul::dim2(v.dims(), "decode_attention_f32")?;
         single_naive(
             q.as_slice(),
             k.as_slice(),
@@ -130,15 +130,15 @@ mod kernel {
         v: tensor::View<'_, f32>,
         out: &mut [f32],
     ) -> diagnostic::Result<()> {
-        let (q_rows, d) = crate::kernel::matmul::dim2(q.dims(), "decode_flash_attention_f32")?;
-        let (hist, kd) = crate::kernel::matmul::dim2(k.dims(), "decode_flash_attention_f32")?;
+        let (q_rows, d) = crate::matmul::dim2(q.dims(), "decode_flash_attention_f32")?;
+        let (hist, kd) = crate::matmul::dim2(k.dims(), "decode_flash_attention_f32")?;
         if kd != d {
             return Err(Error::new(
                 Code::Invalid,
                 format!("decode_flash_attention_f32 头宽不符：q·d={d}，k·d={kd}"),
             ));
         }
-        crate::kernel::matmul::dim2(v.dims(), "decode_flash_attention_f32")?;
+        crate::matmul::dim2(v.dims(), "decode_flash_attention_f32")?;
         single_flash(
             q.as_slice(),
             k.as_slice(),

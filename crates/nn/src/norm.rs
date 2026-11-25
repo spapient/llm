@@ -354,5 +354,5 @@ fn normalize_row<S: Scalar>(
 
 #[cfg(test)]
 mod tests {
-    include!("../../tests/kernel_norm_tests.rs");
+    include!("../tests/kernel_norm_tests.rs");
 }

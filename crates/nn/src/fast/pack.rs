@@ -267,14 +267,14 @@ pub(crate) mod micro {
     }
 }
 
-pub(in crate::kernel::fast) mod tn {
+pub(in crate::fast) mod tn {
     //! 线性层布局（TN）的稠密 f32 GEMM：`out[rows,n] = x[rows,k] · w[n,k]ᵀ`。
     use diagnostic::Result;
     use tensor::View;
 
-    use crate::kernel::fast::pack::{group_panel, pack_panel};
-    use crate::kernel::fast::pool::{Bufs, Shape, pool, run_pooled};
-    use crate::kernel::fast::{Layout, MR, NR, align_up, threads_override};
+    use crate::fast::pack::{group_panel, pack_panel};
+    use crate::fast::pool::{Bufs, Shape, pool, run_pooled};
+    use crate::fast::{Layout, MR, NR, align_up, threads_override};
 
     /// 走这条入口的最少行数：一个完整微内核行块。再少的批只有残行（标量），打包的转置成本摊不回来，
     /// 调用方应当继续用按列驻留的 tile 核。
@@ -295,7 +295,7 @@ pub(in crate::kernel::fast) mod tn {
     pub fn gemm_f32_tn(x: View<'_, f32>, w: View<'_, f32>, out: &mut [f32]) -> Result<()> {
         let (rows, n, k) = crate::matmul::tn_geom(x.dims(), w.dims())?;
         let (x, w) = (x.as_slice(), w.as_slice());
-        crate::kernel::fast::check_dims(x, w, rows, n, k, out);
+        crate::fast::check_dims(x, w, rows, n, k, out);
         let t = threads_override().min(rows.div_ceil(MR)).max(1);
         if t <= 1 {
             single_tn(x, w, rows, n, k, out);
@@ -310,7 +310,7 @@ pub(in crate::kernel::fast) mod tn {
     /// 单线程：整段打包一次，再按行块算完整段 K。
     fn single_tn(x: &[f32], w: &[f32], rows: usize, n: usize, k: usize, out: &mut [f32]) {
         let npad = align_up(n, NR);
-        crate::kernel::fast::with_panels(npad * k, |bpack| {
+        crate::fast::with_panels(npad * k, |bpack| {
             pack_tn_into(bpack, w, n, k);
             compute_tn(x, bpack, w, rows, n, k, out);
         });
@@ -327,7 +327,7 @@ pub(in crate::kernel::fast) mod tn {
         t: usize,
     ) -> bool {
         let npad = align_up(n, NR);
-        crate::kernel::fast::with_panels(npad * k, |buf| {
+        crate::fast::with_panels(npad * k, |buf| {
             run_pooled(
                 pool(),
                 Bufs {
@@ -345,8 +345,8 @@ pub(in crate::kernel::fast) mod tn {
                 },
                 MR,
                 t,
-                crate::kernel::fast::f32_pack,
-                crate::kernel::fast::f32_calc,
+                crate::fast::f32_pack,
+                crate::fast::f32_calc,
             )
         })
     }
@@ -355,7 +355,7 @@ pub(in crate::kernel::fast) mod tn {
     fn scoped_tn(x: &[f32], w: &[f32], out: &mut [f32], rows: usize, n: usize, k: usize, t: usize) {
         let npad = align_up(n, NR);
         let per = rows.div_ceil(MR).div_ceil(t) * MR;
-        crate::kernel::fast::with_panels(npad * k, |bpack| {
+        crate::fast::with_panels(npad * k, |bpack| {
             pack_tn_into(bpack, w, n, k);
             let bp: &[f32] = bpack;
             std::thread::scope(|s| {
@@ -379,7 +379,7 @@ pub(in crate::kernel::fast) mod tn {
     }
 
     /// 本槽负责的列组按 `p` 步长轮转，别槽的列组由别槽打包（与父模块同一套分工）。
-    pub(in crate::kernel::fast) fn stage(
+    pub(in crate::fast) fn stage(
         w: &[f32],
         buf: &mut [f32],
         n: usize,
@@ -392,7 +392,7 @@ pub(in crate::kernel::fast) mod tn {
     }
 
     /// 共用父模块行机器，只固定 TN 布局。
-    pub(in crate::kernel::fast) fn compute_tn(
+    pub(in crate::fast) fn compute_tn(
         a: &[f32],
         bpack: &[f32],
         w: &[f32],
@@ -401,11 +401,11 @@ pub(in crate::kernel::fast) mod tn {
         k: usize,
         out: &mut [f32],
     ) {
-        crate::kernel::fast::compute_rows(
+        crate::fast::compute_rows(
             a,
             bpack,
             w,
-            crate::kernel::fast::Extent { rows, n, k },
+            crate::fast::Extent { rows, n, k },
             out,
             Layout::Tn,
         );
@@ -413,6 +413,6 @@ pub(in crate::kernel::fast) mod tn {
 
     #[cfg(test)]
     mod tests {
-        include!("../../../tests/kernel_tn_tests.rs");
+        include!("../tests/kernel_tn_tests.rs");
     }
 }
