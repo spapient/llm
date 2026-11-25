@@ -107,6 +107,17 @@ impl fmt::Debug for CpuExecutor {
     }
 }
 
+value_methods! {
+    CpuExecutor {
+        /// 尚未同步的提交，按入队顺序（跨流交错时保持提交顺序）。
+        pending(&self) -> &[Queued] = &self.queue;
+        /// 尚未同步的提交条数。
+        len(&self) -> usize = self.queue.len();
+        /// 队列是否为空。
+        is_empty(&self) -> bool = self.queue.is_empty();
+    }
+}
+
 impl CpuExecutor {
     /// 绑定一台 CPU 设备；内核表、操作数表与队列都是空的。
     pub fn new(device: Device) -> Self {
@@ -116,21 +127,6 @@ impl CpuExecutor {
             bindings: Bindings::new(),
             queue: Vec::new(),
         }
-    }
-
-    /// 尚未同步的提交，按入队顺序（跨流交错时保持提交顺序）。
-    pub fn pending(&self) -> &[Queued] {
-        &self.queue
-    }
-
-    /// 尚未同步的提交条数。
-    pub fn len(&self) -> usize {
-        self.queue.len()
-    }
-
-    /// 队列是否为空。
-    pub fn is_empty(&self) -> bool {
-        self.queue.is_empty()
     }
 
     /// 登记一段内核体；同名已登记时返回 `Invalid`，而不是让后登记的那份静默顶替。

@@ -269,13 +269,11 @@ tests! {
         for id in 0..3 {
             executor.bind(id, Buf::F32(vec![1.0, 1.0]));
         }
-        let nodes = graph_of([bound("scale", &[0], &[1]), bound("scale", &[0], &[2])]);
-        executor.submit(&nodes, Stream::new(0)).expect("流 0 入队");
+        executor.submit(&graph_of([bound("scale", &[0], &[1]), bound("scale", &[0], &[2])]), Stream::new(0)).expect("流 0 入队");
         submit(&mut executor, &["scale"], 1);
         assert_eq!(executor.len(), 3);
         executor.sync(Stream::new(0)).expect("只排流 0");
-        assert_eq!(executor.len(), 1);
-        assert_eq!(executor.pending()[0].stream(), Stream::new(1));
+        assert_eq!((executor.len(), executor.pending()[0].stream()), (1, Stream::new(1)));
         assert_eq!(executor.get(2).expect("流 0 的结果"), [2.0, 2.0]);
     }
 
@@ -283,26 +281,21 @@ tests! {
     a_failed_node_stays_in_the_queue {
         let mut executor = cpu();
         executor.bind(0, Buf::F32(vec![1.0]));
-        let graph = graph_of([bound("scale", &[0], &[1])]);
-        executor.submit(&graph, Stream::new(0)).expect("入队不校验");
+        executor.submit(&graph_of([bound("scale", &[0], &[1])]), Stream::new(0)).expect("入队不校验");
         let error = executor.sync(Stream::new(0)).unwrap_err();
-        assert_eq!(error.code(), Code::Invalid);
-        assert_eq!(executor.len(), 1);
+        assert_eq!((error.code(), executor.len()), (Code::Invalid, 1));
         assert_eq!(executor.get(0).expect("输入原样放回"), [1.0]);
     }
 
     /// 未接入运行时的后端只登记厂商标签，所有运行面明确返回 Unsupported。
     vacant_executor_rejects_every_runtime_surface {
         let mut executor = VacantExecutor::new(Device::new("cuda", "sm_90"));
-        assert_eq!(executor.device().vendor(), "cuda");
-        assert_eq!(executor.vendor(), "cuda");
+        assert_eq!((executor.device().vendor(), executor.vendor()), ("cuda", "cuda"));
         let error = executor.submit(&graph(&["gemv_i4"]), Stream::new(0)).unwrap_err();
         assert_eq!(error.code(), Code::Unsupported);
         assert!(error.to_string().contains("cuda"), "{error}");
         let program: Box<dyn Program> = Box::new(Fail("placeholder"));
         assert_eq!(executor.register_program(program).unwrap_err().code(), Code::Unsupported);
-        assert!(executor.bind(0, Buf::F32(vec![1.0])).is_none());
-        assert!(executor.bind(0, Buf::U8(vec![1u8])).is_none());
-        assert!(executor.fetch(0).is_none());
+        assert_eq!((executor.bind(0, Buf::F32(vec![1.0])).is_none(), executor.bind(0, Buf::U8(vec![1u8])).is_none(), executor.fetch(0).is_none()), (true, true, true));
     }
 }
