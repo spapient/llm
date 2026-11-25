@@ -105,9 +105,8 @@ fn fma_run<const C: usize>(lanes: &mut [[f32; LANES]; C], rounds: usize) -> f32 
 /// **同线程数**，故每通道的探针与分母由 [`nn::fast::probes`] 成对给出。生产默认线程数是
 /// `available_parallelism`，所以 K7 该取 `{count}` 那一档，单线程档只用于隔离抖动。
 ///
-/// 通道探针本身也受 `cfg(nightly)` 门控：钉住的 stable 工具链上 `sme` 通道不编译，
-/// `probes()` 只含 i8 / f32 两条 NEON 曲线，且它们与生产共用 `sdot_tile` / `fma_step`
-/// 同一份实现（N5），口径才闭合——拿不编译的通道算出的百分比没有分母。
+/// SME、i8 与 f32 探针都复用生产的 C 核心；运行时无对应能力时探针明确返回 `false`，
+/// 不用另一指令通道补造分母（N5），口径才闭合。
 ///
 /// 组名沿用 `{group}/{threads}{suffix}`，与 SME 时代的基准名逐字一致（历史曲线可比）。
 fn ported_ops(

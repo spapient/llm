@@ -53,26 +53,28 @@ P3 要在边界 crate 挂 Metal/CUDA 后端（ADR 0025 §1、§9；ADR 0028 §3 
 | 位置 | 越界对象（§1 类别） | 不变量与对外视图 |
 |---|---|---|
 | `crates/storage/src/mmap.rs`（模块级，1 处） | mmap 映射 | 模块级 allow；只读、私有映射、`Drop` 归还、线程归属；对外只暴露拥有型 `&[u8]` 视图 |
-| `crates/prof/src/runtime/metal.rs`（模块级，1 处） | FFI 调用 + 设备缓冲句柄 | 手写 `objc_msgSend` 与 Metal 运行时符号；+1 保留的对象在 `Drop` 恰好 `-release` 一次，句柄私有、不跨线程，自动释放对象由 autorelease 池收口；对外是 `prof::runtime::exec::Executor` 的安全实现 |
-| `crates/nn/src/kernel/fast/i8.rs`（函数级，4 处） | 裸指针切片重建（打包/计算包装） | i8 sdot 瓦片体 `sdot_tile` / `dot_one` / `harvest` 与端口探针已迁入 `prof::native::i8`；nn 侧只剩面板打包与行段计算的裸指针重建包装，长度守卫由调用方打包布局保证 |
-| `crates/nn/src/kernel/fast/pool.rs`（函数级，3 处） | 跨线程发布裸指针 | 常驻 GEMM 线程池：任务只发布裸指针 + 一次闸门；裸指针只活到 `done` 齐、主线程返回前 |
-| `crates/prof/src/native_gemm8x8.rs`（函数级，11 处） | 裸指针切片重建 + NEON/AVX2 intrinsics | f32 8×8 寄存器块微内核；`fma_step` 生产与探针共用；nn `kernel_fast_micro.rs` 的瓦片体迁出后 nn 岛已清空，本岛是唯一宿主 |
-| `crates/prof/src/native_i8.rs`（模块级，1 处） | 裸指针 + aarch64 dotprod `sdot` intrinsics | i8 4×4 瓦片体 `sdot_tile` 由生产微内核与取数受限探针共用同一份；模块级一处 `#![allow(unsafe_code)]` 放行整岛，头注释载探测与读边界不变量；安全入口先做运行时探测与形状守卫再进 `unsafe` 工人 |
-| `crates/prof/src/native_sme.rs`（函数级，8 处） | 内联汇编 + SME intrinsics | aarch64 SME 16×64 ZA 外积；nightly + `target_arch = "aarch64"` 门控；nn `kernel_fast_sme.rs` 迁出后已删，本岛是唯一宿主 |
+| `crates/prof/src/metal/runtime.rs`（模块级，1 处） | FFI 调用 + 设备缓冲句柄 | 手写 `objc_msgSend` 与 Metal 运行时符号；+1 保留的对象在 `Drop` 恰好 `-release` 一次，句柄私有、不跨线程，自动释放对象由 autorelease 池收口；对外是 `prof::runtime::exec::Executor` 的安全实现 |
+| `crates/prof/src/opencl.rs`（模块级，1 处） | OpenCL FFI + 设备、缓冲与内核句柄 | 原始句柄私有，释放入口按资源所有权各调用一次；调用方只接触拥有型安全封装，错误统一转 `diagnostic`，不向运行时核心泄漏裸指针 |
+| `crates/prof/src/runtime.rs`（`gemm_micro` 模块级，1 处） | 静态 C ABI + 裸指针微内核调用 | 仅经安全切片与强类型几何进入；面板长度、坐标、整数转换先验证，输入只读、输出可写且不重叠；指针不跨线程、不逃逸，功能门禁阈值不变 |
+| `crates/nn/src/kernel/fast.rs`（函数级，4 处） | 裸指针切片重建 | I8 包装 4 处的长度由调用方打包布局保证；`fast` 段平铺为 `fast.rs`（i8 包装）与 `fast_pool.rs`（常驻池）后按文件分列，总数不变 |
+| `crates/nn/src/kernel/fast/pool.rs`（函数级，3 处） | 跨线程发布 | 常驻池 3 处只发布裸指针与一次闸门，裸指针只活到 `done` 齐、主线程返回前 |
+| `crates/prof/src/native/gemm8x8.rs`（函数级，11 处） | 裸指针切片重建 + NEON/AVX2 intrinsics | f32 8×8 寄存器块微内核；`fma_step` 生产与探针共用；nn `kernel_fast_micro.rs` 的瓦片体迁出后 nn 岛已清空，本岛是唯一宿主 |
+| `crates/prof/src/native/i8.rs`（模块级，1 处） | 裸指针 + aarch64 dotprod `sdot` intrinsics | i8 4×4 瓦片体 `sdot_tile` 由生产微内核与取数受限探针共用同一份；模块级一处 `#![allow(unsafe_code)]` 放行整岛，头注释载探测与读边界不变量；安全入口先做运行时探测与形状守卫再进 `unsafe` 工人 |
+| `crates/prof/src/native/sme.rs`（函数级，8 处） | 内联汇编 + SME intrinsics | aarch64 SME 16×64 ZA 外积；nightly + `target_arch = "aarch64"` 门控；nn `kernel_fast_sme.rs` 迁出后已删，本岛是唯一宿主 |
 
 `gemm` 那几行是**存量冻结**：只许减少，不许增加。要新增一行，先改本表，并说明这个越界点为什么
 不能落在边界 crate。拆文件不改变冻结口径——`fast` 平铺拆成 `kernel_fast_{i8,micro,pool,sme}.rs`
 后按文件重新列举，
-总数由 17 涨到 21 是拆分时每个微内核各自重建切片的重复，**属于需要往下削的欠账而不是新增许可**；当前各行相加 **29 处**（nn `i8` 4 + `pool` 3 = 7，prof native `gemm8x8` 11 + `i8` 1 + `sme` 8 = 20，device 1，storage 1）。f32 `micro`、SME `sme`、i8 `sdot` 三条瓦片通道已从 nn 迁入 `prof::native` 隔离子岛，nn 侧对应岛清空或删除，prof 三岛是唯一宿主——原「双份过渡态」至此收口，prof 计数是迁出后的存量而非新增越界面。此前文首写「总计 26」与各行相加 27 已不符，本轮一并改正为按表求和。另删除一处**空头许可**：`crates/nn/src/kernel/fast/probe.rs` 曾有模块级 `#![allow(unsafe_code)]` 而文件内`unsafe` 用量为 0（`git grep unsafe` 只命中那一行本身），已删——白名单里挂一个不越界的文件，等于把「可枚举」这条判据本身弄假。
+总数由 17 涨到 21 是拆分时每个微内核各自重建切片的重复，**属于需要往下削的欠账而不是新增许可**；当前各行相加 **30 处**（nn `i8` 4 + `pool` 3 = 7，prof native `gemm8x8` 11 + `i8` 1 + `sme` 8 = 20，Metal 1 + OpenCL 1，storage 1）。f32 `micro`、SME `sme`、i8 `sdot` 三条瓦片通道已从 nn 迁入 `prof::native` 隔离子岛，nn 侧对应岛清空或删除，prof 三岛是唯一宿主——原「双份过渡态」至此收口，prof 计数是迁出后的存量而非新增越界面。此前文首写「总计 26」与各行相加 27 已不符，本轮一并改正为按表求和。另删除一处**空头许可**：`crates/nn/src/kernel/fast/probe.rs` 曾有模块级 `#![allow(unsafe_code)]` 而文件内`unsafe` 用量为 0（`git grep unsafe` 只命中那一行本身），已删——白名单里挂一个不越界的文件，等于把「可枚举」这条判据本身弄假。
 
 `sme.rs` 由 4 涨到 8 是**唯一一次有意的增量**：四个探针入口（`port_run`/`port_mix` 各一个安全包装 + 一个 `#[target_feature]` 工人）不是新的越界面，而是把已在岛内的 `fmopa` 与 `ld1w` 路径暴露成可计时的循环，用来给出 GF/s 的分母与**取数代价**（否则 K7 只能拿 NEON 峰值当分母，那是口径混用）。它们受 `bench` 特性门控，生产公开面不含该项，不变量与 `sme_tile` 一致：包装只做 `available()` 判定与指针透传，工人只为 `smstart`/`smstop` 配对与读边界负责，`port_run` 完全不接触内存，`port_mix` 只读调用方给的 `&[f32; 16]` 与 `&[f32; 64]`（各恰好一次读满，无越界）。
 
 `i8.rs` 由 8 涨到 12、`micro.rs` 由 6 涨到 11 是同一形态的**有意增量**：把生产微内核的瓦片体抽成`sdot_tile`（i8）与 `fma_step`（f32）后，探针与被测内核共用一份实现，代价是每个新函数各自一个 `#[allow]`，收益是**消掉一份重复的瓦片体**——若探针自写一份，分母就与分子不同源，K7/K8 变成两个内核相除。其中 `i8.rs` 的 4 处是上一轮合并 `sdot_tile` 时新增、本轮才补登记（欠账，已补）。新增的 f32 探针只在 `bench` 特性下编译，生产公开面不含该项；不变量与 `micro_packed` 一致：包装只做长度守卫与指针透传，工人只为 `fma_step` 的读边界（`NR*k` 内的 `NR` 行）负责。
 
-三个逻辑岛：`storage` 的 mmap、`prof::runtime` 的 Metal FFI、CPU 微内核——瓦片 intrinsic 段已收进
-`prof::native` 三岛（`gemm8x8` / `i8` / `sme`），`nn` 这一组只剩 `i8` 的打包/计算裸指针包装
-与 `pool` 线程池（裸指针只活到 `done` 齐、主线程返回前）；线程池与并发机制仍留 nn，属调度骨架
-而非设备原语。
+四个逻辑岛：`storage` 的 mmap、`prof::runtime` 的 Metal FFI、`prof::runtime` 的 OpenCL FFI、
+CPU 微内核——瓦片 intrinsic 段已收进 `prof::native` 三岛（`gemm8x8` / `i8` / `sme`），`nn`
+这一组只剩 `i8` 的打包/计算裸指针包装与 `pool` 线程池（裸指针只活到 `done` 齐、主线程返回前）；
+线程池与并发机制仍留 nn，属调度骨架而非设备原语。
 
 ## 备选方案
 
@@ -117,3 +119,4 @@ P3 要在边界 crate 挂 Metal/CUDA 后端（ADR 0025 §1、§9；ADR 0028 §3 
 - 2026-11-23：`nn::kernel` 由 `kernel/` 目录合并回单文件 `kernel.rs`（`fast` 四段 `i8`/`micro`/`pool`/`sme` 的 34 处越界点随合并回 `kernel.rs`），§6 表格与 `testkit/src/boundary.rs` 白名单同步改回单行；总处数仍为 36，存量冻结口径不变。
 - 2026-11-23：`nn::kernel` 由单文件 `kernel.rs` 平铺为「门面 + 每族一文件」（`kernel_fast.rs` 等 15 个 `kernel_*.rs`、`conv_*.rs` 8 个），`unsafe` 岛随 `fast` 段落到 `kernel_fast.rs`；§6 表格与白名单同步到新路径，总处数仍为 36，存量冻结口径不变。
 - 2026-11-24：`fast` 各段由 `kernel_fast_*.rs` 平铺文件收拢进 `kernel/fast/` 目录（`i8.rs`、`pool.rs` 等），越界点随文件迁移、处数不变（i8 4 + pool 3）；§6 表格与白名单同步到目录路径，存量冻结口径不变。
+- 2026-11-25：Metal 路径同步为 `prof/src/metal/runtime.rs`；登记既有 `prof/src/opencl.rs` 模块级 OpenCL FFI 岛，句柄所有权与释放不变量入表，总处数由 29 校正为 30。

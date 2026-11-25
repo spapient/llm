@@ -1,8 +1,8 @@
-from pathlib import Path
 import csv
 import hashlib
 import json
 import statistics
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 WORKSPACE = ROOT.parents[1]
@@ -72,7 +72,9 @@ for index, first in enumerate(main[0]):
     row["candidate_percent_of_cublas"] = 100 * row["cublas_fp32_ms"]["median"] / candidate_ms
     row["public_abi_overhead_ratio"] = row["public_abi_e2e_ms"]["median"] / candidate_ms
     if cpu:
-        row["public_abi_speedup_vs_cpu"] = row["cpu_ms"]["median"] / row["public_abi_e2e_ms"]["median"]
+        row["public_abi_speedup_vs_cpu"] = (
+            row["cpu_ms"]["median"] / row["public_abi_e2e_ms"]["median"]
+        )
     rows.append(row)
 
 summary = {
@@ -113,9 +115,17 @@ summary = {
 
 (ROOT / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n")
 fields = [
-    "M", "N", "K", "runs", "reps_per_run", "candidate_gflops_from_median",
-    "speedup_vs_naive_cuda", "cublas_speedup_over_candidate", "candidate_percent_of_cublas",
-    "public_abi_overhead_ratio", "public_abi_speedup_vs_cpu",
+    "M",
+    "N",
+    "K",
+    "runs",
+    "reps_per_run",
+    "candidate_gflops_from_median",
+    "speedup_vs_naive_cuda",
+    "cublas_speedup_over_candidate",
+    "candidate_percent_of_cublas",
+    "public_abi_overhead_ratio",
+    "public_abi_speedup_vs_cpu",
 ]
 for name in ["candidate", "naive_cuda", "public_abi_e2e", "cpu", "cublas_fp32"]:
     fields += [f"{name}_ms_median", f"{name}_ms_min", f"{name}_ms_max"]
@@ -126,7 +136,9 @@ with (ROOT / "summary.csv").open("w", newline="") as handle:
         flat = {key: row.get(key) for key in fields}
         for name in ["candidate", "naive_cuda", "public_abi_e2e", "cpu", "cublas_fp32"]:
             for statistic in ["median", "min", "max"]:
-                flat[f"{name}_ms_{statistic}"] = row[f"{name}_ms"][statistic] if row[f"{name}_ms"] else None
+                flat[f"{name}_ms_{statistic}"] = (
+                    row[f"{name}_ms"][statistic] if row[f"{name}_ms"] else None
+                )
         writer.writerow(flat)
 
 for row in rows:

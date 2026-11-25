@@ -494,10 +494,7 @@ fn sample_of(m: usize, n: usize, k: usize, a: Values, b: Values) -> Sample {
                 name: "b",
                 values: b,
             },
-            Buf {
-                name: "y",
-                values: Values::F32(vec![0.0; m * n]),
-            },
+            Buf::f32("y", vec![0.0; m * n]),
         ],
     }
 }
@@ -525,13 +522,23 @@ pub fn sample_k(m: usize, n: usize, k: usize) -> Sample {
 ///
 /// # Errors
 ///
-/// 样本缺 `a` / `b` 时返回说明。
+/// 样本缺 `a` / `b` / `K`，或 `K` 不是非负 usize 时返回说明。
 pub fn reference(sample: &Sample) -> Result<Vec<f32>> {
     let a = sample.f32("a")?;
     let b = sample.f32("b")?;
+    let k = contraction_axis(sample)?;
     let mut out = vec![0.0f32; sample.m * sample.n];
-    matmul_scalar(a, b, sample.m, sample.n, K, &mut out);
+    matmul_scalar(a, b, sample.m, sample.n, k, &mut out);
     Ok(out)
+}
+
+/// 样本的收缩轴单独解析，缺失与非负/宽度错误保持不同诊断。
+fn contraction_axis(sample: &Sample) -> Result<usize> {
+    let k = sample
+        .scalar("K")
+        .ok_or_else(|| Error::new(Code::Missing, "样本缺收缩轴标量 `K`"))?;
+    usize::try_from(k)
+        .map_err(|_| Error::new(Code::Invalid, format!("收缩轴 `K` 不是非负 usize：{k}")))
 }
 
 /// 稠密矩阵乘标记类型：只用来承载语义表，没有实例。
@@ -577,89 +584,92 @@ pub mod i8 {
     const BLOCK_ROWS: usize = 4;
     const BLOCK_COLS: usize = 16;
 
-    /// 分块入口：校验尺寸后走 4×16 寄存器分块。
+    /// 分块入口：公共 `run` 完成视图与尺寸校验，4×16 瓦片在编译期单态化。
     ///
     /// # Errors
     ///
     /// 三条缓冲长度与 `(m, n, k)` 不符时返回说明。
     pub fn forward_tiled(a: View<'_, i8>, b: View<'_, i8>, out: &mut [i32]) -> Result<()> {
-        let (m, k, n) = super::dim2_pair(a.dims(), b.dims(), "matmul_i8")?;
-        super::check_dims(a.as_slice(), b.as_slice(), m, n, k, out)?;
-        blocked(a.as_slice(), b.as_slice(), m, n, k, out);
-        Ok(())
+        super::run(a, b, out, blocked::<BLOCK_ROWS, BLOCK_COLS>)
     }
 
-    fn blocked(a: &[i8], b: &[i8], m: usize, n: usize, k: usize, out: &mut [i32]) {
+    /// const 泛型瓦片：完整块走寄存器累加，两块残区共用同一标量区域骨架。
+    fn blocked<const R: usize, const C: usize>(
+        a: &[i8],
+        b: &[i8],
+        m: usize,
+        n: usize,
+        k: usize,
+        out: &mut [i32],
+    ) {
         let mut i0 = 0;
-        while i0 + BLOCK_ROWS <= m {
+        while i0 + R <= m {
             let mut j0 = 0;
-            while j0 + BLOCK_COLS <= n {
-                block(a, b, out, (i0, j0), n, k);
-                j0 += BLOCK_COLS;
+            while j0 + C <= n {
+                block::<R, C>(a, b, out, (i0, j0), n, k);
+                j0 += C;
             }
-            edge_cols(a, b, out, i0, j0, n, k);
-            i0 += BLOCK_ROWS;
+            scalar_region(a, b, out, i0..i0 + R, j0..n, n, k);
+            i0 += R;
         }
-        edge_rows(a, b, out, i0, m, n, k);
+        scalar_region(a, b, out, i0..m, 0..n, n, k);
     }
 
-    fn block(a: &[i8], b: &[i8], out: &mut [i32], at: (usize, usize), n: usize, k: usize) {
+    fn block<const R: usize, const C: usize>(
+        a: &[i8],
+        b: &[i8],
+        out: &mut [i32],
+        at: (usize, usize),
+        n: usize,
+        k: usize,
+    ) {
         let (i0, j0) = at;
-        let mut acc = [[0i32; BLOCK_COLS]; BLOCK_ROWS];
+        let mut acc = [[0i32; C]; R];
         for p in 0..k {
-            let wide = widen(&b[p * n + j0..][..BLOCK_COLS]);
-            for r in 0..BLOCK_ROWS {
+            let wide = widen::<C>(&b[p * n + j0..][..C]);
+            for r in 0..R {
                 let x = i32::from(a[(i0 + r) * k + p]);
-                for j in 0..BLOCK_COLS {
+                for j in 0..C {
                     acc[r][j] += x * wide[j];
                 }
             }
         }
-        for r in 0..BLOCK_ROWS {
-            out[(i0 + r) * n + j0..][..BLOCK_COLS].copy_from_slice(&acc[r]);
+        for r in 0..R {
+            out[(i0 + r) * n + j0..][..C].copy_from_slice(&acc[r]);
         }
     }
 
-    fn widen(row: &[i8]) -> [i32; BLOCK_COLS] {
-        let mut wide = [0i32; BLOCK_COLS];
+    fn widen<const C: usize>(row: &[i8]) -> [i32; C] {
+        let mut wide = [0i32; C];
         for (slot, &value) in wide.iter_mut().zip(row) {
             *slot = i32::from(value);
         }
         wide
     }
 
-    fn edge_cols(
+    /// 标量残区：行列边界均由区间声明，不再分别维护“残行”和“残列”两份循环。
+    fn scalar_region(
         a: &[i8],
         b: &[i8],
         out: &mut [i32],
-        i0: usize,
-        mut j0: usize,
+        rows: std::ops::Range<usize>,
+        cols: std::ops::Range<usize>,
         n: usize,
         k: usize,
     ) {
-        while j0 < n {
-            for r in 0..BLOCK_ROWS {
-                let mut acc = 0i32;
-                for p in 0..k {
-                    acc += i32::from(a[(i0 + r) * k + p]) * i32::from(b[p * n + j0]);
-                }
-                out[(i0 + r) * n + j0] = acc;
+        for i in rows {
+            for j in cols.clone() {
+                out[i * n + j] = dot(a, b, i, j, n, k);
             }
-            j0 += 1;
         }
     }
 
-    fn edge_rows(a: &[i8], b: &[i8], out: &mut [i32], mut i0: usize, m: usize, n: usize, k: usize) {
-        while i0 < m {
-            for j in 0..n {
-                let mut acc = 0i32;
-                for p in 0..k {
-                    acc += i32::from(a[i0 * k + p]) * i32::from(b[p * n + j]);
-                }
-                out[i0 * n + j] = acc;
-            }
-            i0 += 1;
+    fn dot(a: &[i8], b: &[i8], i: usize, j: usize, n: usize, k: usize) -> i32 {
+        let mut acc = 0i32;
+        for p in 0..k {
+            acc += i32::from(a[i * k + p]) * i32::from(b[p * n + j]);
         }
+        acc
     }
 
     /// 标量代价：`2·m·K·n` FLOP；输入为 i8，输出 f32。

@@ -1,5 +1,7 @@
 # 构建产物
 target/
+# 临时工作目录：本地快照、编译中间产物、基线与符号表，均不入库
+.tmp/
 
 # jscpd 重复检测报告：输出在 target/jscpd-report（随 target/ 忽略）；
 # /report/ 作为遗留保险，源码树不允许出现 report 目录。

@@ -48,9 +48,9 @@
 //! let path = cutile::cap::negotiate(op, cpu).expect("CPU 应命中首档");
 //! assert_eq!(path.variant, "pipe2");
 //!
-//! // Intel 档案（gen12/OpenCL）在 P0 仍是 L1 证据：未验证的能力视为不具备（README §11.3）。
+//! // UHD 750/OpenCL 已有真机能力证据：声明侧同样命中首选变体。
 //! let intel = cat.profile("intel").expect("内置档案");
-//! assert!(cutile::cap::negotiate(op, intel).is_err());
+//! assert_eq!(cutile::cap::negotiate(op, intel)?.variant, "pipe2");
 //! # Ok(())
 //! # }
 //! ```
@@ -87,6 +87,11 @@ pub use ::prof::sch::layout;
 pub use ::prof::{model, sch, sig};
 
 pub mod ast;
+pub mod parser;
+/// 类型化原子的兼容入口；实现与所有权由 `cap` 持有。
+pub mod atoms {
+    pub use crate::cap::Atom;
+}
 pub mod builtin;
 pub mod cache;
 pub mod cap;
@@ -119,4 +124,4 @@ pub mod validate;
 mod ir_exec_tests;
 
 /// crate 自身的 schema 版本；闭集变更时递增，旧 `plan` 表与缓存随即失效（README §6.4）。
-pub const SCHEMA_VER: u16 = 4;
+pub const SCHEMA_VER: u16 = 5;

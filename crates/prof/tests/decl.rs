@@ -40,7 +40,7 @@ fn an_attr_key_must_belong_to_its_primitive() {
     let mut allowed: Vec<&str> = store.attr_keys().iter().map(|key| key.as_str()).collect();
     allowed.push(AttrKey::Exec.as_str());
     let text = allowed.join(" | ");
-    assert_eq!(text, "src | dst | align | exec");
+    assert_eq!(text, "src | dst | align | lanes | exec");
 }
 
 /// 降级链的单调性判据接受借用名：装载期不为它拷一份 `String`。
@@ -155,4 +155,26 @@ fn compose_rejects_a_self_fusion() {
         compose(&single_output, &single_output).is_none(),
         "名字相同即自融合，与槽位是否对得上无关"
     );
+}
+
+/// 强类型变体仍拒绝非有限占比与非相邻重名，不靠动态解析器补检。
+#[test]
+fn typed_variants_keep_share_and_global_name_validation() {
+    let first = builtin()
+        .variants
+        .into_iter()
+        .next()
+        .expect("内置算子至少一个变体");
+    for share in [f64::NAN, -0.01, 1.01] {
+        let mut invalid = first.clone();
+        invalid.mma_share = share;
+        let error = check_chain(&[invalid]).expect_err("占比必须有限且在 0..=1 内");
+        assert!(error.to_string().contains("mma_share"), "{error}");
+    }
+
+    let mut middle = first.clone();
+    middle.name = "middle".to_string();
+    middle.order = first.order + 1;
+    let error = check_chain(&[first.clone(), middle, first]).expect_err("非相邻变体也不允许重名");
+    assert!(error.to_string().contains("重复"), "{error}");
 }

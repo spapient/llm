@@ -283,59 +283,23 @@ fn two_rounds_yield_twice_the_declared_batches() {
 #[test]
 fn weighted_rejects_illegal_weights_at_construction() {
     let tokens: Vec<u32> = (0..4).collect();
-    let config = LoaderConfig::new(1, 1).expect("几何合法");
-
-    let wrong_len = LoaderConfig {
-        sampling: Sampling::Weighted {
-            weights: vec![1.0, 2.0],
-            seed: 0,
-        },
-        ..config
-    };
-    assert_eq!(
-        Loader::with_config(&tokens, wrong_len).unwrap_err().code(),
-        Code::Invalid,
-        "权重条数与批数不符必须在构造期拒绝"
-    );
-
-    let negative = LoaderConfig {
-        sampling: Sampling::Weighted {
-            weights: vec![1.0, -1.0, 1.0, 1.0],
-            seed: 0,
-        },
-        ..config
-    };
-    assert_eq!(
-        Loader::with_config(&tokens, negative).unwrap_err().code(),
-        Code::Invalid,
-        "负权重必须拒绝"
-    );
-
-    let nan = LoaderConfig {
-        sampling: Sampling::Weighted {
-            weights: vec![f32::NAN; 4],
-            seed: 0,
-        },
-        ..config
-    };
-    assert_eq!(
-        Loader::with_config(&tokens, nan).unwrap_err().code(),
-        Code::Invalid,
-        "NaN 权重必须拒绝"
-    );
-
-    let zero = LoaderConfig {
-        sampling: Sampling::Weighted {
-            weights: vec![0.0; 4],
-            seed: 0,
-        },
-        ..config
-    };
-    assert_eq!(
-        Loader::with_config(&tokens, zero).unwrap_err().code(),
-        Code::Invalid,
-        "权重总质量为正才允许抽样"
-    );
+    let cases = [
+        (vec![1.0, 2.0], "权重条数与批数不符必须在构造期拒绝"),
+        (vec![1.0, -1.0, 1.0, 1.0], "负权重必须拒绝"),
+        (vec![f32::NAN; 4], "NaN 权重必须拒绝"),
+        (vec![0.0; 4], "权重总质量为正才允许抽样"),
+    ];
+    for (weights, message) in cases {
+        let config = LoaderConfig {
+            sampling: Sampling::Weighted { weights, seed: 0 },
+            ..LoaderConfig::new(1, 1).expect("几何合法")
+        };
+        assert_eq!(
+            Loader::with_config(&tokens, config).unwrap_err().code(),
+            Code::Invalid,
+            "{message}"
+        );
+    }
 }
 
 #[test]
@@ -355,6 +319,17 @@ fn weighted_draws_one_batch_per_declared_batch() {
         .filter_map(|_| loader.next_batch())
         .collect();
     assert_eq!(drawn.len(), 4, "每轮抽出的批数等于声明批数");
+
+    let mut order: Vec<usize> = (0..4).collect();
+    let (ptr, capacity) = (order.as_ptr(), order.capacity());
+    draw_round(&[1.0; 4], 4.0, 7, 0, &mut order);
+    draw_round(&[1.0; 4], 4.0, 7, 1, &mut order);
+    assert_eq!(order.len(), 4);
+    assert_eq!(
+        (order.as_ptr(), order.capacity()),
+        (ptr, capacity),
+        "跨轮重抽必须复用索引缓冲"
+    );
 }
 
 #[test]

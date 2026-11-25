@@ -22,6 +22,6 @@ pub use prof::native::{GEMM_KERNELS, Gemm, Native};
 // 瓦片几何单一事实源（f32 8×8 / i8 4×4 / SME 16×64）与微内核体。
 pub use prof::native::{f32, gemm8x8, i8, i8_geo, sme_geo};
 
-// Apple SME 16×64 微内核：nightly + aarch64 才存在（`target_feature(enable = "sme")` 仍不稳定）。
-#[cfg(all(nightly, target_arch = "aarch64"))]
+// Apple SME 16×64 微内核：C 目标特性由 prof 管理，stable 也保留同一公开路径。
+#[cfg(target_arch = "aarch64")]
 pub use prof::native::sme;

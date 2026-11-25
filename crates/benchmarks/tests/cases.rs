@@ -558,38 +558,37 @@ pub(crate) fn no_measurement_is_filed_under_an_unregistered_group() {
         .map(|entry| entry.path())
         .filter(|path| path.is_dir())
         .collect();
-    let registered = SCENARIOS
+    let registered: Vec<(String, String)> = SCENARIOS
         .iter()
-        .map(|sc| (sc.scenario, sc.group, sc.benchmark))
-        .chain(
-            LOAD_SCENARIOS
-                .iter()
-                .map(|sc| (sc.scenario, sc.group, sc.benchmark)),
-        )
-        .chain(
-            DECODE_SCENARIOS
-                .iter()
-                .map(|sc| (sc.scenario, sc.group, sc.benchmark)),
-        );
+        .map(|sc| (sc.group, sc.benchmark))
+        .chain(LOAD_SCENARIOS.iter().map(|sc| (sc.group, sc.benchmark)))
+        .chain(DECODE_SCENARIOS.iter().map(|sc| (sc.group, sc.benchmark)))
+        .map(|(group, benchmark)| (on_disk(group), on_disk(benchmark)))
+        .collect();
 
-    for (scenario, group, benchmark) in registered {
-        if estimates(manifest, group, benchmark).exists() {
-            continue;
+    let mut unregistered = Vec::new();
+    for group in groups {
+        let group_name = group
+            .file_name()
+            .expect("基准分组必有名字")
+            .to_string_lossy()
+            .into_owned();
+        for benchmark in std::fs::read_dir(group)
+            .expect("基准分组可读")
+            .filter_map(std::result::Result::ok)
+        {
+            let path = benchmark.path();
+            if !path.join("new/estimates.json").exists() {
+                continue;
+            }
+            let benchmark_name = benchmark.file_name().to_string_lossy().into_owned();
+            if !registered.contains(&(group_name.clone(), benchmark_name.clone())) {
+                unregistered.push(format!("{group_name}/{benchmark_name}"));
+            }
         }
-        // 同一用例已经测出、却不是登记的那个分组：判定按登记路径永远读不到，会一直登记跳过。
-        let filed: Vec<&Path> = groups
-            .iter()
-            .filter(|dir| {
-                dir.join(on_disk(benchmark))
-                    .join("new/estimates.json")
-                    .exists()
-            })
-            .map(|dir| dir.strip_prefix(&root).unwrap_or(dir))
-            .collect();
-        assert!(
-            filed.is_empty(),
-            "{scenario} 的测量落在 {filed:?}，登记的却是 `{group}`（落盘名 `{}`）：判定会永远跳过它",
-            on_disk(group)
-        );
     }
+    assert!(
+        unregistered.is_empty(),
+        "这些测量没有对应的登记分组与用例，判定永远不会读取：{unregistered:?}"
+    );
 }

@@ -1,6 +1,6 @@
 use super::*;
 
-#[path = "session/config.rs"]
+#[path = "session_contract.rs"]
 mod config;
 
 use crate::{Chunks, Data, Dataset, LoaderConfig, Reference, Sgd};
@@ -62,8 +62,8 @@ fn forward_fixture(
 }
 
 /// 登记两层夹具的三个参数并绑定源/回填槽；初值沿用夹具口径。
-fn register_two_layer(
-    session: &mut Session<Reference, Sgd>,
+fn register_two_layer<O: crate::Optimizer>(
+    session: &mut Session<Reference, O>,
     w_source: Var,
     w_tied: Var,
     u: Var,

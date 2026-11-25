@@ -1,0 +1,20 @@
+# 归一化族：共享 RMSNorm 能力供给与四缓冲布局，统计域由职责名区分。
+base = "rmsnorm_f32"
+
+[layouts]
+x     = "row"
+gamma = "row"
+beta  = "row"
+y     = "row"
+
+[[operators]]
+op = { name = "batch_norm_f32", skeleton = "elementwise", summary = "y = gamma*(x-μ)/sqrt(σ²+eps)+beta，μ/σ² 取批统计" }
+
+[[operators]]
+op = { name = "group_norm_f32", skeleton = "elementwise", summary = "y = gamma*(x-μ_g)/sqrt(σ²_g+eps)+beta，统计域是组" }
+
+[[operators]]
+op = { name = "instance_norm_f32", skeleton = "elementwise", summary = "y = gamma*(x-μ_{n,c})/sqrt(σ²_{n,c}+eps)+beta" }
+
+[[operators]]
+op = { name = "layer_norm_f32", skeleton = "elementwise", summary = "y = gamma*(x-μ_row)/sqrt(σ²_row+eps)+beta" }

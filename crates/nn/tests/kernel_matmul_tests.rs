@@ -1,15 +1,9 @@
 use super::*;
+use testkit::sample_with;
 
-/// 确定性采样：伪随机但无外部依赖，同一个 `(len, salt)` 永远同一个序列。
+/// 确定性采样：基础 PRNG 序列由 testkit::sample_with 统一供给，这里只配置大 K 累加所需的取值口径。
 fn sample(len: usize, salt: u32) -> Vec<f32> {
-    (0..len)
-        .map(|i| {
-            let x = (i as u32)
-                .wrapping_mul(2654435761)
-                .wrapping_add(salt.wrapping_mul(40503));
-            ((x >> 8) as f32) / 256.0 - 32.0
-        })
-        .collect()
+    sample_with(len, salt, |z| ((z >> 8) as f32) / 256.0 - 32.0)
 }
 
 fn assert_tiled_matches(m: usize, n: usize, k: usize) {
@@ -28,27 +22,23 @@ fn assert_tiled_matches(m: usize, n: usize, k: usize) {
     close_enough(&actual, &expected, 1e-3, 1e-3).expect("tile 与标量参考在容差内一致");
 }
 
-#[test]
-fn tiled_matches_scalar_on_standard_shape() {
-    assert_tiled_matches(256, 256, 4096);
-}
+// 每个表项仍是独立 `#[test]`；形状表与 i8 档共用，本行只选 f32 的容差判据。
+tiled_shape_cases!(assert_tiled_matches);
 
 #[test]
-fn tiled_matches_scalar_on_tile_multiples() {
-    assert_tiled_matches(128, 64, 96);
-}
-
-#[test]
-fn tiled_matches_scalar_on_ragged_edges() {
-    // 非 tile 整数倍：末块带守卫（TILE_M/N/K 都切出残边）。
-    assert_tiled_matches(100, 70, 4093);
-}
-
-#[test]
-fn tiled_matches_scalar_on_trivial_shapes() {
-    assert_tiled_matches(1, 1, 1);
-    assert_tiled_matches(1, 8, 3);
-    assert_tiled_matches(8, 1, 3);
+fn model_reference_reads_the_contraction_axis_from_the_sample() {
+    let sample = sample_k(2, 3, 5);
+    let actual = reference(&sample).expect("动态 K 的参考可计算");
+    let mut expected = vec![0.0; 6];
+    matmul_scalar(
+        sample.f32("a").expect("a"),
+        sample.f32("b").expect("b"),
+        2,
+        3,
+        5,
+        &mut expected,
+    );
+    assert_eq!(actual, expected);
 }
 
 /// 线性层布局对拍：同一份输入与权重，标量参考与 tile 在 IEEE 容差内一致。
@@ -64,28 +54,17 @@ fn assert_tn_matches(rows: usize, n: usize, k: usize) {
     close_enough(&actual, &expected, 1e-3, 1e-3).expect("线性层 tile 与标量参考一致");
 }
 
-#[test]
-fn tn_tiled_matches_scalar_on_prefill_shape() {
-    // 行批 256、输出 128、收缩轴 1024：prefill 投影的代表形状。
-    assert_tn_matches(256, 128, 1024);
-}
-
-#[test]
-fn tn_tiled_matches_scalar_on_tile_multiples() {
-    assert_tn_matches(TN_ROWS, TN_COLS, TN_K);
-}
-
-#[test]
-fn tn_tiled_matches_scalar_on_ragged_edges() {
+// 线性层（TN）形状对拍表：prefill 代表形、tile 整数倍、三轴残边与 decode 单行。
+testkit::test_cases!(tn_shapes {
+    prefill => (256, 128, 1024),
+    tile_multiples => (TN_ROWS, TN_COLS, TN_K),
     // 非 tile 整数倍：行块、列块、收缩块三处都切出残边。
-    assert_tn_matches(TN_ROWS + 3, TN_COLS + 5, TN_K + 7);
-}
-
-#[test]
-fn tn_tiled_matches_scalar_on_single_row() {
+    ragged_edges => (TN_ROWS + 3, TN_COLS + 5, TN_K + 7),
     // decode 口径：一行输入也必须与 `gemv_f32` 同一算式（同一份点积顺序）。
-    assert_tn_matches(1, 8, 13);
-}
+    single_row => (1, 8, 13),
+}, |(rows, n, k): (usize, usize, usize)| {
+    assert_tn_matches(rows, n, k);
+});
 
 #[test]
 fn tn_empty_contraction_yields_zeros() {

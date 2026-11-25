@@ -238,6 +238,7 @@ space   = ["GM", "FAST"]
 src     = ["GM"]
 dst     = ["GM", "FAST"]
 align   = ["1"]
+lanes   = ["1", "4"]
 grade   = "L2"
 witness = { file = "cpu/witness.c", func = "witness_load", expect = [1.0] }
 
@@ -272,6 +273,7 @@ m       = "<=65536"
 dt      = ["f32"]
 space   = ["GM", "REG"]
 align   = ["1"]
+lanes   = ["1", "4"]
 grade   = "L2"
 witness = { file = "cpu/witness.c", func = "witness_store", expect = [3.25] }
 

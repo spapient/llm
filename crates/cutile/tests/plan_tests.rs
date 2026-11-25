@@ -306,3 +306,30 @@ fn the_ranking_covers_every_candidate_and_orders_it() {
         last_rank = rank;
     }
 }
+
+/// 启发式只重排已有候选，形状改变时默认配置可以确定性改变。
+#[test]
+fn heuristic_candidates_are_shape_aware_and_declared_backed() {
+    let mut op = op();
+    op.axes[0].values = vec![32, 256];
+    let small = ShapeCtx::new([('n', 64)]).expect("小形状");
+    let large = ShapeCtx::new([('n', 1_048_576)]).expect("大形状");
+    let small_candidates = candidates(&op, &small).expect("小形状候选");
+    let large_candidates = candidates(&op, &large).expect("大形状候选");
+    assert_eq!(small_candidates.len(), 2);
+    assert_eq!(small_candidates[0].summary(), "GMAX=32");
+    assert_eq!(large_candidates[0].summary(), "GMAX=256");
+    let plan =
+        select_with_heuristics(&op, &profile(), &path(0.62), cost(), &large).expect("启发式计划");
+    assert_eq!(plan.tile.summary(), "GMAX=256");
+}
+
+/// 手工构造的零体积配置不得触发取模 panic，也不能进入正常计划。
+#[test]
+fn heuristic_zero_volume_is_ordered_last_without_panicking() {
+    let mut op = op();
+    op.axes[0].values = vec![0, 16];
+    let shape = ShapeCtx::new([('n', 64)]).expect("形状");
+    let candidates = candidates(&op, &shape).expect("零体积必须安全排序");
+    assert_eq!(candidates.last().expect("末项").summary(), "GMAX=0");
+}

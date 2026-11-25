@@ -1,0 +1,5 @@
+    Checking llm-dtype v0.1.0 (/Users/fei/code/llm/crates/dtype)
+    Checking llm-diagnostic v0.1.0 (/Users/fei/code/llm/crates/diagnostic)
+   Compiling llm-annotation v0.1.0 (/Users/fei/code/llm/crates/annotation)
+   Compiling llm-prof v0.1.0 (/Users/fei/code/llm/crates/prof)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.75s

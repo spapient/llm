@@ -201,31 +201,39 @@ impl_scalar!(
     |v| half::bf16::to_f64(v) as usize
 );
 
-/// 浮点档的运行时身份：枚举当精度身份、[`FLOAT_TIERS`] 当查表事实源（后缀 / 位宽）。
-///
-/// 加一档 = 表里加一行；骨架仍泛型到 [`Scalar`] 按档单态化，本枚举只在入口把**运行时**精度
-/// 一次 match 分派到对应单态化核（[`FloatSlice`] / [`FloatSliceMut`]）。注册名后缀与位宽查表
-/// 得出，不写第二份 match——「枚举身份 + 查表事实源 + 入口一次分派」的执行缝。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(u8)]
-pub enum FloatTier {
-    /// 32 位浮点（对拍归一基准）。
-    F32 = 0,
-    /// 64 位浮点。
-    F64 = 1,
-    /// IEEE 半精度。
-    F16 = 2,
-    /// brain 半精度。
-    Bf16 = 3,
+/// 一张浮点档表同时生成运行时身份、只读／可写缓冲和查表事实；新增精度只增加一行。
+macro_rules! float_tiers {
+    ($($variant:ident = $disc:expr => ($ty:ty, $suffix:literal, $bytes:expr, $doc:literal)),* $(,)?) => {
+        /// 浮点档的运行时身份；显式判别值同时是档表下标。
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        #[repr(u8)]
+        pub enum FloatTier {
+            $(#[doc = $doc] $variant = $disc),*
+        }
+
+        const FLOAT_TIERS: &[(FloatTier, &str, usize)] = &[
+            $((FloatTier::$variant, $suffix, $bytes)),*
+        ];
+
+        /// 运行时精度的只读缓冲；入口一次匹配即单态化，无 unsafe 重解释。
+        #[derive(Clone, Copy)]
+        pub enum FloatSlice<'a> {
+            $(#[doc = $doc] $variant(&'a [$ty])),*
+        }
+
+        /// 运行时精度的可写缓冲；输入与输出必须同档。
+        pub enum FloatSliceMut<'a> {
+            $(#[doc = $doc] $variant(&'a mut [$ty])),*
+        }
+    };
 }
 
-/// 档表：唯一事实源 `(档, 注册后缀, 元素字节)`。新增浮点档只在此加一行。
-const FLOAT_TIERS: [(FloatTier, &str, usize); 4] = [
-    (FloatTier::F32, "f32", 4),
-    (FloatTier::F64, "f64", 8),
-    (FloatTier::F16, "f16", 2),
-    (FloatTier::Bf16, "bf16", 2),
-];
+float_tiers! {
+    F32 = 0 => (f32, "f32", 4, "32 位浮点（对拍归一基准）。"),
+    F64 = 1 => (f64, "f64", 8, "64 位浮点。"),
+    F16 = 2 => (half::f16, "f16", 2, "IEEE 半精度。"),
+    Bf16 = 3 => (half::bf16, "bf16", 2, "brain 半精度。"),
+}
 
 impl FloatTier {
     /// 注册后缀（`<算法>_<后缀>`）：按判别值查表，非 match。
@@ -236,31 +244,6 @@ impl FloatTier {
     pub const fn bytes(self) -> usize {
         FLOAT_TIERS[self as usize].2
     }
-}
-
-/// 运行时精度 tagged 的只读缓冲：入口一次 match 即单态化到对应档的泛型核，无 unsafe 重解释。
-#[derive(Clone, Copy)]
-pub enum FloatSlice<'a> {
-    /// f32 档。
-    F32(&'a [f32]),
-    /// f64 档。
-    F64(&'a [f64]),
-    /// f16 档。
-    F16(&'a [half::f16]),
-    /// bf16 档。
-    Bf16(&'a [half::bf16]),
-}
-
-/// 运行时精度 tagged 的可写缓冲：与 [`FloatSlice`] 同档配对，错档在入口被挡回。
-pub enum FloatSliceMut<'a> {
-    /// f32 档。
-    F32(&'a mut [f32]),
-    /// f64 档。
-    F64(&'a mut [f64]),
-    /// f16 档。
-    F16(&'a mut [half::f16]),
-    /// bf16 档。
-    Bf16(&'a mut [half::bf16]),
 }
 
 #[cfg(test)]

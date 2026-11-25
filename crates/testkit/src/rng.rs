@@ -40,17 +40,25 @@ impl Rng {
     }
 }
 
-/// 确定性测试样本：`sample(len, salt)` 生成 `[-1, 1)` 的 f32，同一 `(len, salt)` 永远同一批值。
+/// 确定性样本序列：基础 PRNG 公式（`i·2654435761 + salt·40503`）只在这里写一次，
+/// 各测试的取值口径（移位、模、缩放、偏移、元素类型）通过 `map` 闭包**配置化**给出。
+/// 同一 `(len, salt)` 永远同一批值；`T` 由映射决定（f32 / i8 / 其他标量均可）。
 #[must_use]
-pub fn sample(len: usize, salt: u32) -> Vec<f32> {
+pub fn sample_with<T>(len: usize, salt: u32, map: impl Fn(u32) -> T) -> Vec<T> {
     (0..len)
         .map(|i| {
             let z = (i as u32)
                 .wrapping_mul(2654435761)
                 .wrapping_add(salt.wrapping_mul(40503));
-            ((z >> 8) % 2048) as f32 / 1024.0 - 1.0
+            map(z)
         })
         .collect()
+}
+
+/// 确定性测试样本：`sample(len, salt)` 生成 `[-1, 1)` 的 f32，同一 `(len, salt)` 永远同一批值。
+#[must_use]
+pub fn sample(len: usize, salt: u32) -> Vec<f32> {
+    sample_with(len, salt, |z| ((z >> 8) % 2048) as f32 / 1024.0 - 1.0)
 }
 
 #[cfg(test)]
@@ -106,5 +114,23 @@ mod tests {
                 .all(|value| (-1.0..1.0).contains(value))
         );
         assert_eq!(sample(0, 7), Vec::<f32>::new(), "零长批是空切片");
+    }
+
+    #[test]
+    fn sample_with_shares_the_base_prng_and_supports_custom_mappings() {
+        // `sample` 就是 `sample_with` 的 [-1,1) 投影：同一条基础序列，不多一份公式。
+        assert_eq!(
+            sample(16, 5),
+            sample_with(16, 5, |z| ((z >> 8) % 2048) as f32 / 1024.0 - 1.0)
+        );
+        // 可配置映射：缩放、偏移、元素类型各取所需，基础 PRNG 公式只留一份。
+        let scaled = sample_with(8, 1, |z| ((z >> 8) as f32) / 256.0 - 32.0);
+        assert_eq!(
+            scaled,
+            sample_with(8, 1, |z| ((z >> 8) as f32) / 256.0 - 32.0)
+        );
+        let as_i8 = sample_with(8, 1, |z| ((z % 251) as i32 - 125) as i8);
+        assert!(as_i8.iter().all(|v| (-125..=125).contains(v)));
+        assert_eq!(sample_with::<f32>(0, 1, |_| 0.0), Vec::<f32>::new());
     }
 }

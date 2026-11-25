@@ -111,6 +111,37 @@ fn the_output_type_is_readable_and_names_the_same_element_type() {
 }
 
 #[test]
+fn vector_signature_preserves_dtype_and_lane_identity() {
+    let signature = Signature::parse(
+        "vec4",
+        "void cutile_vec4_kernel(const float4 *a, float4 *y, int N) {}",
+    )
+    .expect("float4 签名");
+    assert_eq!(signature.output_type(), Some(CType::F32x4));
+    assert_eq!(CType::F32x4.dtype(), Some(DType::F32));
+    assert_eq!(CType::F32x4.lanes(), 4);
+
+    let mut sample = Sample {
+        m: 4,
+        n: 4,
+        scalars: vec![("N", 4)],
+        bufs: vec![
+            Buf {
+                name: "a",
+                values: Values::F32x4(crate::model::Vector::from_fn(1, |idx| idx as f32)),
+            },
+            Buf {
+                name: "y",
+                values: Values::F32x4(crate::model::Vector::from_fn(1, |_| 0.0)),
+            },
+        ],
+    };
+    signature.check_sample(&sample).expect("同档样本");
+    sample.bufs[0].values = Values::F32(vec![0.0; 4]);
+    assert!(signature.check_sample(&sample).is_err(), "标量不能冒充向量");
+}
+
+#[test]
 fn a_void_signature_has_no_output_and_is_rejected() {
     let error =
         Signature::parse("probe", "void cutile_probe_kernel(void) {}\n").expect_err("没有输出");

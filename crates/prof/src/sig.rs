@@ -5,10 +5,13 @@ use crate::text::{line_error as at, matching_paren, split_top_level};
 use diagnostic::{Code, Error};
 
 /// 形参的类型。
+#[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CType {
     /// `float`（样本里是 [`crate::model::Values::F32`]）。
     F32,
+    /// `float4`（样本里是 [`crate::model::Values::F32x4`]）。
+    F32x4,
     /// `unsigned char` / `u8`（样本里是 [`crate::model::Values::U8`]）。
     U8,
     /// `half` / `__half`（样本里是 [`crate::model::Values::F16`]）。
@@ -22,13 +25,8 @@ pub enum CType {
 impl CType {
     /// C 侧的类型名（诊断与文档用）。
     pub fn c_name(self) -> &'static str {
-        match self {
-            Self::F32 => "float",
-            Self::U8 => "unsigned char",
-            Self::F16 => "half",
-            Self::Bf16 => "bf16",
-            Self::Int => "int",
-        }
+        const NAMES: [&str; 6] = ["float", "float4", "unsigned char", "half", "bf16", "int"];
+        NAMES[self as usize]
     }
 
     /// 是否对应一个样本缓冲（标量不是缓冲）。
@@ -36,15 +34,23 @@ impl CType {
         !matches!(self, Self::Int)
     }
 
+    /// 每个缓冲存储项包含的标量数；整数标量档也按 1 计。
+    pub fn lanes(self) -> usize {
+        const LANES: [usize; 6] = [1, 4, 1, 1, 1, 1];
+        LANES[self as usize]
+    }
+
     /// 样本侧对应的 [`DType`]：签名与语义表必须用同一个词描述同一块缓冲。
     pub fn dtype(self) -> Option<DType> {
-        match self {
-            Self::F32 => Some(DType::F32),
-            Self::U8 => Some(DType::U8),
-            Self::F16 => Some(DType::F16),
-            Self::Bf16 => Some(DType::BF16),
-            Self::Int => None,
-        }
+        const DTYPES: [Option<DType>; 6] = [
+            Some(DType::F32),
+            Some(DType::F32),
+            Some(DType::U8),
+            Some(DType::F16),
+            Some(DType::BF16),
+            None,
+        ];
+        DTYPES[self as usize]
     }
 }
 
@@ -323,6 +329,7 @@ mod check {
         matches!(
             (ctype, values),
             (CType::F32, Values::F32(_))
+                | (CType::F32x4, Values::F32x4(_))
                 | (CType::U8, Values::U8(_))
                 | (CType::F16, Values::F16(_))
                 | (CType::Bf16, Values::Bf16(_))
@@ -465,25 +472,35 @@ mod parse {
             .join(" ")
     }
 
-    /// 缓冲形参的类型：`float`、`unsigned char`/`u8`、`half`/`__half`、`bf16`/`bfloat`。
+    /// 缓冲形参的类型：标量档与显式四车道档共用这一个闭集。
     pub(super) fn buf_ctype(
         op: &str,
         name: &str,
         ty: &str,
         line: usize,
     ) -> diagnostic::Result<CType> {
-        match ty {
-            "float" => Ok(CType::F32),
-            "u8" | "unsigned char" => Ok(CType::U8),
-            "half" | "__half" => Ok(CType::F16),
-            "bf16" | "bfloat" | "__nv_bfloat16" => Ok(CType::Bf16),
-            _ => Err(at(
-                line,
-                format!(
-                    "算子 `{op}` 的缓冲形参 `{name}` 用类型 `{ty} *`；支持的缓冲类型只有 `float`（f32）、`unsigned char`/`u8`、`half`（f16）与 `bf16`"
-                ),
-            )),
+        const TYPES: &[(&str, CType)] = &[
+            ("float", CType::F32),
+            ("float4", CType::F32x4),
+            ("u8", CType::U8),
+            ("unsigned char", CType::U8),
+            ("half", CType::F16),
+            ("__half", CType::F16),
+            ("bf16", CType::Bf16),
+            ("bfloat", CType::Bf16),
+            ("__nv_bfloat16", CType::Bf16),
+        ];
+        for &(candidate, ctype) in TYPES {
+            if candidate == ty {
+                return Ok(ctype);
+            }
         }
+        Err(at(
+            line,
+            format!(
+                "算子 `{op}` 的缓冲形参 `{name}` 用类型 `{ty} *`；支持 `float`、`float4`、`unsigned char`/`u8`、`half` 与 `bf16`"
+            ),
+        ))
     }
 
     /// 标量形参的类型：只支持整数标量。

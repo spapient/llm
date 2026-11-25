@@ -11,7 +11,7 @@ use cutile::dirs::Dirs;
 use cutile::prof::{Emit, Profile};
 use diagnostic::{Code, Error};
 use prof::decl::OpDecl;
-use prof::model::{Cost, Sample, Values};
+use prof::model::{Cost, Sample};
 use std::path::PathBuf;
 
 /// 一次 `bench` 的实测口径（README §12.3 的台账）。
@@ -259,7 +259,7 @@ fn run_sample(
     (m, n): (usize, usize),
     repeat: usize,
 ) -> diagnostic::Result<Timed> {
-    let (prepared, sample) = prepare_sample(run, dirs, (m, n))?;
+    let (prepared, sample) = prepare_sample(run, dirs, (m, n), repeat)?;
     let measured = measure(run, dirs, &prepared, &sample, repeat)?;
     let (per_run_ns, p50_ns, p95_ns, max_rel_err) =
         readings(run, &sample, repeat, &measured.outcome)?;
@@ -283,8 +283,9 @@ fn prepare_sample(
     run: &Run<'_>,
     dirs: &Dirs,
     (m, n): (usize, usize),
+    repeat: usize,
 ) -> diagnostic::Result<(pipeline::Prepared, Sample)> {
-    let prepared = prepare(run, dirs, m, n)?;
+    let prepared = prepare(run, dirs, m, n, repeat)?;
     let sample = run.sample(m, n);
     run.op.signature.check_sample(&sample)?;
     Ok((prepared, sample))
@@ -371,15 +372,15 @@ fn check_accuracy(
     outcome: &runner::Outcome,
 ) -> diagnostic::Result<f64> {
     let expected = (run.model.reference)(sample)?;
-    let max_rel_err = cutile::reference::max_rel_err(&outcome.bits, &expected);
-    let tolerance = cutile::reference::tolerance(run.model.dtype);
-    if max_rel_err > tolerance {
-        return Err(Error::new(
-            Code::Internal,
-            format!("基准结果与标量参考不一致：max_rel_err {max_rel_err:.3e} > {tolerance:.0e}"),
-        ));
-    }
-    Ok(max_rel_err)
+    let expected = expected.as_f32()?.to_vec();
+    crate::pipeline::parity(
+        &outcome.bits,
+        &expected,
+        expected.len(),
+        cutile::reference::tolerance(run.model.dtype),
+        "基准结果与标量参考不一致",
+        Code::Internal,
+    )
 }
 
 /// 判据：选了哪条变体、按什么形状编哪份源文本；不回答"它编不编得过"——编译在 [`run_sample`]。
@@ -388,14 +389,92 @@ fn prepare(
     dirs: &Dirs,
     m: usize,
     n: usize,
+    repeat: usize,
 ) -> diagnostic::Result<pipeline::Prepared> {
     let path = run
         .negotiate()
         .map_err(|error| Error::new(Code::Unsupported, error.to_string()))?;
+    if config().autotune {
+        return tune(run, dirs, m, n, &path, repeat);
+    }
     run.prepare(&path, dirs, m, n)
 }
 
-/// 判据：每调用耗时是多少；不回答"样本够不够多"——p50/p95 缺失时退回 min，不把缺项变成第二个失败条件。
+/// autotune 一次调用的共享只读上下文，避免把同一组依赖逐项穿透所有辅助函数。
+struct TuneContext<'a> {
+    run: &'a Run<'a>,
+    dirs: &'a Dirs,
+    path: &'a cutile::cap::Path,
+    sample: &'a Sample,
+    repeat: usize,
+}
+
+/// opt-in 实测：每枚种子都必须编译且对拍成功；同耗时保持启发式顺序。
+fn tune(
+    run: &Run<'_>,
+    dirs: &Dirs,
+    m: usize,
+    n: usize,
+    path: &cutile::cap::Path,
+    repeat: usize,
+) -> diagnostic::Result<pipeline::Prepared> {
+    let shape = (run.model.shape_ctx)(m, n)?;
+    let sample = run.sample(m, n);
+    run.op.signature.check_sample(&sample)?;
+    let candidates = cutile::plan::candidates(run.op, &shape)?;
+    let context = TuneContext {
+        run,
+        dirs,
+        path,
+        sample: &sample,
+        repeat,
+    };
+    tune_candidates(&context, m, n, candidates)
+}
+
+fn tune_candidates(
+    context: &TuneContext<'_>,
+    m: usize,
+    n: usize,
+    candidates: Vec<prof::decl::TileCombo>,
+) -> diagnostic::Result<pipeline::Prepared> {
+    let mut best: Option<(pipeline::Prepared, f64)> = None;
+    for tile in candidates {
+        let (prepared, per_run) = measure_seed(context, m, n, &tile)?;
+        if best.as_ref().is_none_or(|(_, best_ns)| per_run < *best_ns) {
+            best = Some((prepared, per_run));
+        }
+    }
+    best.map(|(prepared, _)| prepared)
+        .ok_or_else(|| Error::new(Code::Internal, "autotune 没有可用候选"))
+}
+
+fn measure_seed(
+    context: &TuneContext<'_>,
+    m: usize,
+    n: usize,
+    tile: &prof::decl::TileCombo,
+) -> diagnostic::Result<(pipeline::Prepared, f64)> {
+    let prepared = context
+        .run
+        .prepare_tile(context.path, context.dirs, m, n, tile)?;
+    let measured = measure(
+        context.run,
+        context.dirs,
+        &prepared,
+        context.sample,
+        context.repeat,
+    )?;
+    let (per_run, _, _, _) = readings(
+        context.run,
+        context.sample,
+        context.repeat,
+        &measured.outcome,
+    )?;
+    Ok((prepared, per_run))
+}
+
+/// 判据：每调用耗时是多少；样本不足时不把缺项变成第二个失败条件。
 fn timings(outcome: &runner::Outcome) -> diagnostic::Result<(f64, f64, f64)> {
     let summary = outcome
         .timing
@@ -443,12 +522,7 @@ fn working_set(sample: &Sample, output: &str) -> u64 {
         .bufs
         .iter()
         .filter(|buf| buf.name != output)
-        .map(|buf| match &buf.values {
-            Values::F32(values) => 4 * values.len() as u64,
-            Values::U8(values) => values.len() as u64,
-            Values::F16(values) => 2 * values.len() as u64,
-            Values::Bf16(values) => 2 * values.len() as u64,
-        })
+        .map(|buf| buf.values.byte_len())
         .sum()
 }
 

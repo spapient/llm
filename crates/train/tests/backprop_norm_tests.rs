@@ -234,46 +234,25 @@ shaped_sum_grad! {
     shaped_interpolate_matches_central_differences => ("interpolate_f32", Geometry::Interp { oh: 5, ow: 5, h: 3, w: 3, c: 1, linear: true }, 9),
 }
 
-#[test]
-fn shaped_batch_norm_matches_central_differences() -> Result<()> {
-    let geometry = Geometry::Norm {
-        n: 2,
-        spatial: 3,
-        channels: 5,
-    };
-    let (x0, g0, b0) = (ramp(30), gain5(), shift5());
-    check_geometry_affine("batch_norm_f32", geometry, &x0, &g0, &b0, |px, pg, pb| {
-        let mut y = vec![0.0f32; geometry.outputs()];
-        geometry.forward(&[px, pg, pb], &mut y).expect("前向");
-        y.iter().sum()
-    })
+/// 运行时几何的三元反向对拍：每项只声明名称、算子、几何和仿射参数。
+macro_rules! shaped_affine_grad {
+    ($( $name:ident => ($op:literal, $geometry:expr, $params:expr) ),* $(,)?) => {$(
+        #[test]
+        fn $name() -> Result<()> {
+            let geometry = $geometry;
+            let (g0, b0) = $params;
+            let x0 = ramp(geometry.outputs());
+            check_geometry_affine($op, geometry, &x0, &g0, &b0, |px, pg, pb| {
+                let mut y = vec![0.0f32; geometry.outputs()];
+                geometry.forward(&[px, pg, pb], &mut y).expect("前向");
+                y.iter().sum()
+            })
+        }
+    )*};
 }
 
-#[test]
-fn shaped_group_norm_matches_central_differences() -> Result<()> {
-    let geometry = Geometry::Group {
-        groups: 3,
-        n: 2,
-        spatial: 3,
-        channels: 6,
-    };
-    let (x0, g0, b0) = (ramp(36), gain6(), shift6());
-    check_geometry_affine("group_norm_f32", geometry, &x0, &g0, &b0, |px, pg, pb| {
-        let mut y = vec![0.0f32; geometry.outputs()];
-        geometry.forward(&[px, pg, pb], &mut y).expect("前向");
-        y.iter().sum()
-    })
-}
-
-#[test]
-fn shaped_layer_norm_matches_central_differences() -> Result<()> {
-    let geometry = Geometry::Layer { rows: 2, width: 5 };
-    let x0 = ramp(10);
-    let g0 = gain5();
-    let b0 = shift5();
-    check_geometry_affine("layer_norm_f32", geometry, &x0, &g0, &b0, |px, pg, pb| {
-        let mut y = vec![0.0f32; geometry.outputs()];
-        geometry.forward(&[px, pg, pb], &mut y).expect("前向");
-        y.iter().sum()
-    })
+shaped_affine_grad! {
+    shaped_batch_norm_matches_central_differences => ("batch_norm_f32", Geometry::Norm { n: 2, spatial: 3, channels: 5 }, (gain5(), shift5())),
+    shaped_group_norm_matches_central_differences => ("group_norm_f32", Geometry::Group { groups: 3, n: 2, spatial: 3, channels: 6 }, (gain6(), shift6())),
+    shaped_layer_norm_matches_central_differences => ("layer_norm_f32", Geometry::Layer { rows: 2, width: 5 }, (gain5(), shift5())),
 }

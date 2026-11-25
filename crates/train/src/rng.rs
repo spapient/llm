@@ -217,6 +217,71 @@ impl Normal {
     }
 }
 
+/// 批采样方式：三种策略由类型保证互斥，随机流只由显式种子派生。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub enum Sampling {
+    /// 按条目原顺序取完整批。
+    #[default]
+    Sequential,
+    /// 每轮按种子派生独立流重洗批序。
+    Shuffle {
+        /// 重洗随机流种子。
+        seed: u64,
+    },
+    /// 按每批的非负权重有放回抽样。
+    Weighted {
+        /// 每批抽样权重（条数等于批数）。
+        weights: Vec<f32>,
+        /// 抽样随机流种子。
+        seed: u64,
+    },
+}
+
+/// 批装配配置：几何与采样方式一次性收口到构造期，热路径不再做合法性分支检查。
+#[derive(Debug, Clone, PartialEq)]
+pub struct LoaderConfig {
+    /// 每批行数；构造期校验非零。
+    pub rows: usize,
+    /// 列宽（每行条目数）；构造期校验非零且 `rows * cols` 不溢出。
+    pub cols: usize,
+    /// 批采样方式。
+    pub sampling: Sampling,
+}
+
+impl LoaderConfig {
+    /// 校验行列非零且乘积不溢出；采样方式默认顺序。
+    pub fn new(rows: usize, cols: usize) -> Result<Self> {
+        let config = Self {
+            rows,
+            cols,
+            ..Self::default()
+        };
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// 校验批几何；公开字段被直接修改后也可在装配边界重新检查。
+    pub fn validate(&self) -> Result<()> {
+        crate::learner::dataset::stride(self.rows, self.cols, "train::dataset").map(|_| ())
+    }
+
+    builders! {
+        /// 设置互斥的采样策略。
+        #[must_use]
+        with_sampling => sampling: Sampling,
+    }
+}
+
+impl Default for LoaderConfig {
+    fn default() -> Self {
+        Self {
+            rows: 1,
+            cols: 1,
+            sampling: Sampling::Sequential,
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "../tests/rng_tests.rs"]
 mod tests;

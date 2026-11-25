@@ -211,7 +211,7 @@ impl<K: Kernel, O: Optimizer, C: Collective> Learner<K, O, C> {
         Ok(())
     }
 
-    /// 单个 micro-batch 的编排闭环：前向装配 → 评估入账 → 装梯度 → 优化步。
+    /// 单个 micro-batch 主路径：前向 → 指标/计划/入账 → 回传 → 优化。
     fn train_batch<F, G>(
         &mut self,
         rows: usize,
@@ -225,47 +225,27 @@ impl<K: Kernel, O: Optimizer, C: Collective> Learner<K, O, C> {
         G: FnMut(&mut Session<K, O, C>) -> Result<()>,
     {
         let prepared = self.forward_pass(rows, cols, tokens, forward)?;
-        self.finish(prepared, backward)?;
-        Ok(())
+        self.record_training(&prepared)?;
+        self.finish_training(backward)
     }
 
-    /// 校验指标、登记反传终点与 loss，再入账、回传并走优化步。
-    fn finish<G>(&mut self, prepared: Prepared, backward: &mut G) -> Result<()>
-    where
-        G: FnMut(&mut Session<K, O, C>) -> Result<()>,
-    {
-        let point = self.point(&prepared)?;
-        self.advance(point, prepared.loss, backward)
-    }
-
-    /// 登记 loss、回算梯度并走一次优化步；指标点已由 [`Self::finish`] 校验。
-    fn advance<G>(&mut self, point: MetricPoint, loss: Var, backward: &mut G) -> Result<()>
-    where
-        G: FnMut(&mut Session<K, O, C>) -> Result<()>,
-    {
-        self.register(point, loss)?;
-        self.backward_with(backward)?;
-        self.session.optimize()?;
-        Ok(())
-    }
-
-    /// 校验指标点、登记反传计划与看板，再落记录 loss。
-    fn register(&mut self, point: MetricPoint, loss: Var) -> Result<()> {
-        validate(&point).map_err(|error| error.with(SITE))?;
-        self.session.plan(loss)?;
-        self.session.record_loss(loss)?;
-        self.board.record(point).map_err(|error| error.with(SITE))?;
-        Ok(())
-    }
-
-    /// 自动回算参数梯度，再跑调用方闭包覆盖/追加口。
-    fn backward_with<G>(&mut self, backward: &mut G) -> Result<()>
+    /// 反传与优化阶段共享同一函数指针签名，主路径只保留三个阶段。
+    fn finish_training<G>(&mut self, backward: &mut G) -> Result<()>
     where
         G: FnMut(&mut Session<K, O, C>) -> Result<()>,
     {
         self.session.backward()?;
         backward(&mut self.session)?;
-        Ok(())
+        self.session.optimize()
+    }
+
+    /// 训练记账阶段：指标有效后才登记计划、损失与看板点。
+    fn record_training(&mut self, prepared: &Prepared) -> Result<()> {
+        let point = self.point(prepared)?;
+        validate(&point).map_err(|error| error.with(SITE))?;
+        self.session.plan(prepared.loss)?;
+        self.session.record_loss(prepared.loss)?;
+        self.board.record(point).map_err(|error| error.with(SITE))
     }
 
     /// 接批、跑前向并取出标签、logits 与 loss；训练路径由 [`Self::finish`] 统一登记反传计划。
@@ -535,24 +515,18 @@ impl MetricsBoard {
 
 /// 一条指标的入参校验：样本非零、loss 有限、命中条数不超过样本数。
 fn validate(point: &MetricPoint) -> Result<()> {
-    if point.samples == 0 {
-        return Err(Error::new(Code::Invalid, "指标样本数不能为 0").with(METRICS_SITE));
-    }
-    if !point.loss.is_finite() {
-        let message = format!("loss {} 不是有限数（NaN / Infinity 不进看板）", point.loss);
-        return Err(Error::new(Code::Invalid, message).with(METRICS_SITE));
-    }
-    if point.correct > point.samples as u64 {
-        let message = format!("命中条数 {} 超过样本数 {}", point.correct, point.samples);
-        return Err(Error::new(Code::Invalid, message).with(METRICS_SITE));
-    }
+    validation_rules!(METRICS_SITE;
+        point.samples != 0 => "指标样本数不能为 0",
+        point.loss.is_finite() => format!("loss {} 不是有限数（NaN / Infinity 不进看板）", point.loss),
+        point.correct <= point.samples as u64 => format!("命中条数 {} 超过样本数 {}", point.correct, point.samples),
+    );
     Ok(())
 }
 
 #[path = "dataset.rs"]
 pub(crate) mod dataset;
 
-pub use dataset::{Batch, Chunks, Dataset, Loader, LoaderConfig, Sampling};
+pub use dataset::{Batch, Chunks, Dataset, Loader};
 
 #[cfg(test)]
 #[path = "../tests/learner_tests.rs"]

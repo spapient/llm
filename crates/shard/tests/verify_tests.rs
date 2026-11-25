@@ -3,6 +3,7 @@
 //! 生产文件只留执行与判据，用例集中于此。
 
 use super::*;
+use crate::fixtures::{catalogue, profile};
 use crate::gate::LanguageGate;
 
 fn failed(label: &str) -> VerifyEntry {
@@ -25,11 +26,7 @@ fn witness_note_is_absent_when_nothing_ran() {
 /// 非 C 前端的生产态 verify 走 `prof::runtime` FFI 后端岛，shard 只保留 C 参考通道。
 #[test]
 fn the_ascend_emit_reports_the_prof_runtime_lane() {
-    let profile = cutile::builtin::Catalogue::try_builtin()
-        .expect("内置数据")
-        .profile("ascend")
-        .cloned()
-        .expect("ascend 档案");
+    let profile = profile("ascend");
     let error = host_tool(&profile).expect_err("shard 不再生成设备 verify 程序");
     assert_eq!(error.code(), Code::Unsupported);
     assert!(error.message().contains("prof::runtime"), "{error}");
@@ -38,7 +35,7 @@ fn the_ascend_emit_reports_the_prof_runtime_lane() {
 /// 再往外一层：整条 [`verify_one`] 的结论也必须落在 prof::runtime 后端岛上。
 #[test]
 fn verifying_ascend_reports_the_prof_runtime_lane() {
-    let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
+    let catalogue = catalogue();
     let profile = catalogue.profile("ascend").cloned().expect("ascend 档案");
     let op = catalogue.op("gemv_i4").expect("gemv_i4 声明");
     let dirs = Dirs::under(std::env::temp_dir().join("cutile-verify-ascend"));

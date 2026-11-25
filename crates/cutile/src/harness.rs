@@ -6,13 +6,14 @@ use prof::sig::{CType, Signature};
 
 /// 把样本与内核源码拼成一个可执行的 `main()`：warmup 若干次后逐次计时、打印输出位模式。
 ///
-/// # Errors：签名没有可写输出、样本缺输出缓冲、输出不是 f32，或签名与样本不一致。
+/// # Errors：签名没有可写输出、样本缺输出缓冲、输出不是 f32 标量或四车道档，或签名与样本不一致。
 pub fn harness(
     kernel_source: &str,
     signature: &Signature,
     sample: &Sample,
     repeat: usize,
 ) -> diagnostic::Result<String> {
+    let ctype = output_type(signature)?;
     let (output, values) = output_of(signature, sample)?;
     let kernel = signature.kernel();
     let warmup = warmup_runs(repeat);
@@ -22,18 +23,20 @@ pub fn harness(
     text.push_str(&decls);
     text.push_str(&main(
         output,
-        values.len(),
+        HarnessRun {
+            len: values.len(),
+            ctype,
+            repeat,
+            warmup,
+        },
         &kernel,
         &args,
         &init,
-        repeat,
-        warmup,
     ));
     Ok(text)
 }
 
-/// 可写输出与它的样本值：回读按 `float` 位模式解释，所以只认 `float *`；签名声明成别的类型时
-/// C 编译器只会报一句 `incompatible pointer type`，不带算子名与缓冲名，故在生成程序之前先说清。
+/// 可写输出与它的扁平标量视图；`float4` 按底层 f32 车道回读。
 pub fn output_of<'a>(
     signature: &'a Signature,
     sample: &'a Sample,
@@ -42,16 +45,16 @@ pub fn output_of<'a>(
     let out = sample
         .buf(output)
         .ok_or_else(|| Error::new(Code::Missing, format!("样本里没有输出缓冲 `{output}`")))?;
-    let Values::F32(values) = &out.values else {
-        return Err(Error::new(
+    let values = out.values.as_f32().map_err(|_| {
+        Error::new(
             Code::Invalid,
-            format!("输出缓冲 `{output}` 必须是 f32"),
-        ));
-    };
+            format!("输出缓冲 `{output}` 必须是 f32 或 f32x4"),
+        )
+    })?;
     Ok((output, values))
 }
 
-/// 可写输出名：装载期已校验，这里只能是实现漂移。
+/// 可写输出名：只允许可按 f32 车道回读的标量与四车道缓冲。
 pub fn output_name(signature: &Signature) -> diagnostic::Result<&str> {
     let output = signature.output().ok_or_else(|| {
         Error::new(
@@ -59,17 +62,24 @@ pub fn output_name(signature: &Signature) -> diagnostic::Result<&str> {
             "内核签名没有可写输出缓冲（装载期已经校验过，这里只能是实现漂移）",
         )
     })?;
-    if signature.output_type() != Some(CType::F32) {
-        return Err(Error::new(
-            Code::Unsupported,
-            format!(
-                "算子 `{}` 的可写输出 `{output}` 在 `.k` 里不是 `float *`（是 `{}`）；回读按 float 位模式解释，只认 `float`",
-                signature.op(),
-                signature.output_type().map_or("无", CType::c_name)
-            ),
-        ));
+    let ctype = output_type(signature)?;
+    if matches!(ctype, CType::F32 | CType::F32x4) {
+        return Ok(output);
     }
-    Ok(output)
+    Err(Error::new(
+        Code::Unsupported,
+        format!(
+            "算子 `{}` 的可写输出 `{output}` 是 `{}`；回读只认 `float` 与 `float4`",
+            signature.op(),
+            ctype.c_name()
+        ),
+    ))
+}
+
+fn output_type(signature: &Signature) -> diagnostic::Result<CType> {
+    signature
+        .output_type()
+        .ok_or_else(|| Error::new(Code::Internal, "内核签名有输出名却缺少输出类型"))
 }
 
 /// 文件头：POSIX 声明、身份注释、内核源码与跨平台计时运行时。
@@ -80,23 +90,21 @@ fn prelude(
     repeat: usize,
     warmup: usize,
 ) -> String {
-    let mut text = String::new();
     // `clock_gettime` 在 `-std=c99` 下需要先声明 POSIX 版本，且必须在任何系统头之前。
-    text.push_str("#define _POSIX_C_SOURCE 200809L\n");
-    text.push_str(&format!(
-        "/* cutile harness | kernel={kernel} m={} n={} repeat={repeat} warmup={warmup} */\n",
+    let mut text = format!(
+        "#define _POSIX_C_SOURCE 200809L\n/* cutile harness | kernel={kernel} m={} n={} repeat={repeat} warmup={warmup} */\n{kernel_source}",
         sample.m, sample.n
-    ));
-    text.push_str(kernel_source);
+    );
     if !text.ends_with('\n') {
         text.push('\n');
     }
-    text.push_str(RUNTIME);
-    text
+    text + RUNTIME
 }
 
 /// 计时运行时：`CLOCK_MONOTONIC` 取样、编译器屏障、`f32` 位模式回读。
 const RUNTIME: &str = "\n#include <stdio.h>\n\
+#include <stddef.h>\n\
+#include <string.h>\n\
 #ifdef _WIN32\n\
 #include <windows.h>\n\
 static double cutile_now_ns(void) {\n\
@@ -114,6 +122,11 @@ static double cutile_now_ns(void) {\n\
     return (double)ts.tv_sec * 1e9 + (double)ts.tv_nsec;\n\
 }\n\
 #endif\n\n\
+static float cutile_read_f32(const void *values, int idx) {\n\
+    float value;\n\
+    memcpy(&value, (const unsigned char *)values + (size_t)idx * sizeof value, sizeof value);\n\
+    return value;\n\
+}\n\n\
 /* 编译器屏障：没有它，优化器可以把“输入相同”的重复调用提到循环外或整段删掉，\n\
  * 量到的是空循环。clang/gcc 都支持；其他编译器退化为空操作。 */\n\
 #if defined(__GNUC__) || defined(__clang__)\n\
@@ -132,10 +145,12 @@ fn input_bufs(sample: &Sample, output: &str) -> (String, String) {
             continue;
         }
         let ctype = c_type(&buf.values);
-        let size = buf.values.len();
+        let size = buf.values.storage_len();
+        // C/CUDA 不接受零长数组；存储至少一项，向量按组初始化，ABI 标量仍由样本给出。
+        let storage = size.max(1);
         decls.push_str(&format!(
-            "static volatile const {ctype} cutile_init_{name}[{size}] = {{{literal}}};\n\
-             static {ctype} {name}[{size}];\n",
+            "static volatile const {ctype} cutile_init_{name}[{storage}] = {{{literal}}};\n\
+             static {ctype} {name}[{storage}];\n",
             name = buf.name,
             literal = c_literal(&buf.values)
         ));
@@ -148,32 +163,36 @@ fn input_bufs(sample: &Sample, output: &str) -> (String, String) {
     (decls, init)
 }
 
-/// 主函数：warmup、校准批量、逐样本计时，最后按位模式回读输出。`CUTILE_BARRIER()` 挡"提到循环外"，
-/// `volatile` 出口读挡"只留最后一次写"：缺一，32x1 就退化成空循环。
-fn main(
-    output: &str,
+/// 一次基准的运行参数：输出标量数、输出类型、样本数与预热次数。
+struct HarnessRun {
     len: usize,
-    kernel: &str,
-    call_args: &str,
-    init: &str,
+    ctype: CType,
     repeat: usize,
     warmup: usize,
-) -> String {
-    // 出口保活整个输出数组：只读 `y[0]` 时其余写入可能被优化掉，故逐元素写进 `volatile` sink。
+}
+
+/// 主函数：warmup、校准批量、逐样本计时，最后按位模式回读输出。`CUTILE_BARRIER()` 挡"提到循环外"，
+/// `volatile` 出口读挡"只留最后一次写"：缺一，32x1 就退化成空循环。
+fn main(output: &str, run: HarnessRun, kernel: &str, call_args: &str, init: &str) -> String {
+    let (len, ctype, repeat, warmup) = (run.len, run.ctype, run.repeat, run.warmup);
+    // 按底层标量车道保活与回读；memcpy 不把向量对象错误地别名成 float 数组。
     let sink = if len > 0 {
         format!(
-            "        for (int cutile_s = 0; cutile_s < {len}; ++cutile_s) {{ cutile_sink = {output}[cutile_s]; }}\n"
+            "        for (int cutile_s = 0; cutile_s < {len}; ++cutile_s) {{ cutile_sink = cutile_read_f32({output}, cutile_s); }}\n"
         )
     } else {
         String::new()
     };
+    let storage = (len / ctype.lanes()).max(1);
+    let ctype = ctype.c_name();
     format!(
         "int main(void) {{
-    float {output}[{len}];
+    /* 大输出不能占宿主线程栈（Windows 默认 1 MiB）；与输入一样使用静态存储。 */
+    static {ctype} {output}[{storage}];
     volatile float cutile_sink = 0.0f;
 {init}    /* warmup：代码、页表与缓存进稳态，不计入样本 */
     for (int cutile_warm = 0; cutile_warm < {warmup}; ++cutile_warm) {{
-        for (int cutile_i = 0; cutile_i < {len}; ++cutile_i) {{ {output}[cutile_i] = 0.0f; }}
+        memset({output}, 0, sizeof({output}));
         {kernel}({call_args});
         CUTILE_BARRIER();
 {sink}    }}
@@ -191,7 +210,7 @@ fn main(
     if (cutile_batch < 1) {{ cutile_batch = 1; }}
     if (cutile_batch > 1024) {{ cutile_batch = 1024; }}
     for (int cutile_r = 0; cutile_r < {repeat}; ++cutile_r) {{
-        for (int cutile_i = 0; cutile_i < {len}; ++cutile_i) {{ {output}[cutile_i] = 0.0f; }}
+        memset({output}, 0, sizeof({output}));
         double cutile_t0 = cutile_now_ns();
         for (int cutile_b = 0; cutile_b < cutile_batch; ++cutile_b) {{
             {kernel}({call_args});
@@ -202,7 +221,7 @@ fn main(
     }}
     for (int cutile_i = 0; cutile_i < {len}; ++cutile_i) {{
         union {{ float f; unsigned int u; }} cutile_u;
-        cutile_u.f = {output}[cutile_i];
+        cutile_u.f = cutile_read_f32({output}, cutile_i);
         printf(\"%u\\n\", cutile_u.u);
     }}
     return 0;
@@ -216,41 +235,59 @@ fn warmup_runs(repeat: usize) -> usize {
     (repeat / 10).max(1)
 }
 
-/// 缓冲的 C 元素类型。
+/// 缓冲的 C 元素类型；与 `Values` 的档／车道描述唯一同源。
 pub fn c_type(values: &Values) -> &'static str {
-    match values {
-        Values::F32(_) => "float",
-        Values::U8(_) => "unsigned char",
-        Values::F16(_) => "half",
-        Values::Bf16(_) => "bf16",
-    }
+    values.describe()
 }
 
 /// 缓冲的 C 静态数组初始化式。
 pub fn c_literal(values: &Values) -> String {
     match values {
-        Values::F32(values) => values
-            .iter()
-            .map(|value| format!("{value:?}f"))
-            .collect::<Vec<_>>()
-            .join(", "),
-        Values::U8(values) => values
-            .iter()
-            .map(|value| format!("0x{value:02x}u"))
-            .collect::<Vec<_>>()
-            .join(", "),
-        // 半精度数组元素由 C 隐式收窄 f32 字面量（CUDA/Metal 均合法），与 f32 同一份字面量口径。
-        Values::F16(values) => values
-            .iter()
-            .map(|value| format!("{:?}f", value.to_f32()))
-            .collect::<Vec<_>>()
-            .join(", "),
-        Values::Bf16(values) => values
-            .iter()
-            .map(|value| format!("{:?}f", value.to_f32()))
-            .collect::<Vec<_>>()
-            .join(", "),
+        Values::F32(values) => literals(values.iter().copied(), float_literal),
+        Values::U8(values) => literals(values.iter().copied(), byte_literal),
+        Values::F16(values) => literals(values.iter().map(|value| value.to_f32()), float_literal),
+        Values::Bf16(values) => literals(values.iter().map(|value| value.to_f32()), float_literal),
+        other => vector_literal(other),
     }
+}
+
+fn vector_literal(values: &Values) -> String {
+    match values {
+        Values::F32x4(values) => vector_literals(values.as_arrays(), float_literal),
+        Values::U8x4(values) => vector_literals(values.as_arrays(), byte_literal),
+        Values::F16x4(values) => {
+            vector_literals(values.as_arrays(), |value| float_literal(value.to_f32()))
+        }
+        Values::Bf16x4(values) => {
+            vector_literals(values.as_arrays(), |value| float_literal(value.to_f32()))
+        }
+        other => c_literal(other),
+    }
+}
+
+/// 每组单独加花括号，避免把 N 个标量误当成 N 个向量数组项。
+fn vector_literals<T: Copy>(values: &[[T; 4]], mut literal: impl FnMut(T) -> String) -> String {
+    values
+        .iter()
+        .map(|group| format!("{{{}}}", literals(group.iter().copied(), &mut literal)))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn literals<T>(values: impl IntoIterator<Item = T>, literal: impl FnMut(T) -> String) -> String {
+    values
+        .into_iter()
+        .map(literal)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn float_literal(value: f32) -> String {
+    format!("{value:?}f")
+}
+
+fn byte_literal(value: u8) -> String {
+    format!("0x{value:02x}u")
 }
 
 /// `cutile_x_kernel` 的签名与样本：与 `engine` 的 vendor 内核对拍共用 `testkit` 的一份取值。

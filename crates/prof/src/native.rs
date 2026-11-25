@@ -5,53 +5,126 @@
 //! GEMM 骨架、未来的 `cutile` tile DSL IR）只问一句「这块谁能算」，不必写任何
 //! `cfg(target_arch)` / `cfg(nightly)` / 特性探测——那些门全部收在本模块里。
 //!
-//! 三份内核与本文件一并平铺在 `prof/src/`：`native_gemm8x8.rs` 是 NEON/AVX2/scalar
-//! 8×8 寄存器块，`native_i8.rs` 是 aarch64 dotprod 4×4 `sdot` 块，`native_sme.rs`
-//! 是 Apple SME 16×64 ZA 外积。显式 `#[path]` 保留 `native::{gemm8x8,i8,sme}` 公共
-//! 模块路径；本文件只放**公共方法**：暂存面板、线程数、对齐，与那张协商表。
+//! FMA、dotprod 与 SME 算法统一住在 `ops/gemm_micro.k`，这里只保留公开兼容面、
+//! 面板缓存和协商表；调用方路径不变，运行时特性与 ABI 全由安全桥收口。
 
 use std::thread;
 
-/// f32 8×8 寄存器块微内核（NEON lane-indexed FMA / AVX2+FMA / scalar 兜底）。
-#[path = "native_gemm8x8.rs"]
-pub mod gemm8x8;
+/// f32 8×8 微内核的兼容公开面；算法由 `gemm_micro.k` 静态链接。
+pub mod gemm8x8 {
+    /// 一个待算的 8×8 微内核块。
+    #[derive(Clone, Copy)]
+    pub struct Tile {
+        /// 块左上角行。
+        pub row0: usize,
+        /// 块左上角列。
+        pub j: usize,
+        /// 矩阵列宽。
+        pub n: usize,
+        /// 本块内积分长度。
+        pub kb: usize,
+        /// 首块从零累加，否则读回输出续算。
+        pub first: bool,
+    }
 
-/// i8 `sdot` 4×4 寄存器块微内核（aarch64 dotprod）与端口探针；非 aarch64 交回标量兜底。
-#[path = "native_i8.rs"]
-pub mod i8;
+    /// 保持原 `void` 调用面；非法缓冲与既有 slice 入口一样触发断言。
+    pub fn micro_packed(panel: &[f32], b: &[f32], out: &mut [f32], tile: Tile) {
+        assert!(
+            crate::runtime::gemm_micro::fma_micro(panel, b, out, tile).is_ok(),
+            "FMA 微内核的面板或输出缓冲不足"
+        );
+    }
 
-/// Apple SME 16×64 微内核：nightly + aarch64 才存在（`target_feature(enable = "sme")` 仍不稳定）。
-#[cfg(all(nightly, target_arch = "aarch64"))]
-#[path = "native_sme.rs"]
-pub mod sme;
+    #[cfg(all(feature = "bench", target_arch = "aarch64"))]
+    pub use crate::runtime::gemm_micro::{port_fma, port_fma_block};
+
+    /// FMA 探针每 K 步的 MAC：由配置几何派生。
+    #[cfg(all(feature = "bench", target_arch = "aarch64"))]
+    pub const FMA_MAC_PER_K: usize =
+        crate::runtime::gemm_micro::FMA_MR * crate::runtime::gemm_micro::FMA_NR;
+}
+
+/// i8 `sdot` 4×4 微内核的兼容公开面；无 dotprod 时仍返回 `false`。
+pub mod i8 {
+    /// 一个 sdot 4 列块的坐标与 K 向量段。
+    #[derive(Clone, Copy)]
+    pub struct Gram {
+        /// 块起点行。
+        pub r: usize,
+        /// 块起点列。
+        pub blk: usize,
+        /// 矩阵列宽。
+        pub n: usize,
+        /// 内积长度。
+        pub k: usize,
+        /// 向量化段长度，必须是 16 的非零倍数才进入 sdot。
+        pub kvec: usize,
+    }
+
+    /// 保持原布尔拒绝语义；非法长度或溢出同样拒绝，不进入 C ABI。
+    pub fn dot_block(a: &[i8], bpack: &[i8], out: &mut [i32], gram: Gram) -> bool {
+        crate::runtime::gemm_micro::sdot_micro(a, bpack, out, gram).unwrap_or(false)
+    }
+
+    #[cfg(all(feature = "bench", target_arch = "aarch64"))]
+    pub use crate::runtime::gemm_micro::{port_sdot, port_sdot_block};
+
+    /// 纯 sdot 探针一轮的 MAC：配置链数 × 16。
+    #[cfg(all(feature = "bench", target_arch = "aarch64"))]
+    pub const SDOT_MAC_PER_ROUND: usize = crate::runtime::gemm_micro::SDOT_CHAINS * 16;
+
+    /// 取数探针每 K 步的 MAC：由 4×4 配置几何派生。
+    #[cfg(all(feature = "bench", target_arch = "aarch64"))]
+    pub const SDOT_BLOCK_MAC_PER_K: usize =
+        crate::runtime::gemm_micro::SDOT_MR * crate::runtime::gemm_micro::SDOT_NR;
+}
+
+/// Apple SME 16×64 微内核：C 函数级目标特性使 stable 与 nightly 共用同一入口。
+#[cfg(target_arch = "aarch64")]
+pub mod sme {
+    pub use super::sme_geo::{MIN_ELEMS, MR, NR};
+
+    /// 整铺 SME GEMM；形状、缓冲或设备能力不满足时返回 `false`。
+    pub fn gemm(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f32]) -> bool {
+        crate::runtime::gemm_micro::sme_gemm(a, b, m, n, k, out).unwrap_or(false)
+    }
+
+    /// 线程上限同时受行块、列组和用户配置约束。
+    pub fn threads_for(m: usize, n: usize) -> usize {
+        crate::runtime::gemm_micro::sme_threads(m, n)
+    }
+
+    /// 测量容器复用生产 SME 外积核心。
+    #[cfg(feature = "bench")]
+    pub use crate::runtime::gemm_micro::{port_mix, port_run};
+}
 
 /// f32 NEON 寄存器瓦片几何（8×8 块）——编译期常量的单一事实源。
 pub mod f32 {
-    /// 微内核行数。
-    pub const MR: usize = 8;
-    /// 微内核列数（两个 NEON 向量 / 一个 AVX2 向量）。
-    pub const NR: usize = 8;
-    /// K 方向内积分块宽度：`K = 4096` 时整段 B 面板有 4MB，按 256 切块让 A 面板与 B 瓦片同时
-    /// 驻留 L1/L2。
-    pub const KB: usize = 256;
+    /// 微内核行数，来自 `gemm_micro.fma` 配置。
+    pub const MR: usize = crate::runtime::gemm_micro::FMA_MR;
+    /// 微内核列数，来自同一配置。
+    pub const NR: usize = crate::runtime::gemm_micro::FMA_NR;
+    /// K 方向内积分块宽度：K=4096 时按 256 切块以驻留 L1/L2。
+    pub const KB: usize = crate::runtime::gemm_micro::FMA_KB;
 }
 
-/// i8 sdot 寄存器瓦片几何（4×4 块）：配置常量的单一事实源，瓦片本体在 `i8`。
+/// i8 sdot 寄存器瓦片几何：配置常量的单一事实源，瓦片本体在 `i8`。
 pub mod i8_geo {
     /// 微内核行数：四行共享同一 B 向量，摊薄 B 加载。
-    pub const MR: usize = 4;
+    pub const MR: usize = crate::runtime::gemm_micro::SDOT_MR;
     /// 微内核列数：4 个 int32x4 累加器 × 4 行 = 16 寄存器，避开溢出。
-    pub const NR: usize = 4;
+    pub const NR: usize = crate::runtime::gemm_micro::SDOT_NR;
 }
 
-/// Apple SME ZA 外积瓦片几何（16×64）。
+/// Apple SME ZA 外积瓦片几何：数值只来自 `[gemm_micro.sme]`。
 pub mod sme_geo {
     /// 微内核行数：一个 16×16 ZA 瓦片覆盖 16 行。
-    pub const MR: usize = 16;
+    pub const MR: usize = crate::runtime::gemm_micro::SME_MR;
     /// 微内核列数：4 个 ZA 瓦片各 16 列，一次写回 64 列。
-    pub const NR: usize = 64;
+    pub const NR: usize = crate::runtime::gemm_micro::SME_NR;
     /// 规模门槛（元素数）：低于此值 `smstart`/`smstop` 与打包固定成本超过外积收益，交回 NEON。
-    pub const MIN_ELEMS: usize = 1 << 20;
+    pub const MIN_ELEMS: usize = crate::runtime::gemm_micro::SME_MIN_ELEMS;
 }
 
 // 打包面板的暂存区：按线程复用，用完即还。
@@ -120,7 +193,7 @@ pub struct Native {
 /// 目前只登记 SME 这一条「整铺大 GEMM」的专用通道；NEON/AVX2 8×8 是 `gemm8x8` 里恒在的兜底，
 /// 不登记（它没有拒绝条件，`gemm_negotiate` 命中前先由它接单没有意义）。
 pub const GEMM_KERNELS: &[Native] = &[
-    #[cfg(all(nightly, target_arch = "aarch64"))]
+    #[cfg(target_arch = "aarch64")]
     Native {
         name: "sme",
         mr: sme::MR,

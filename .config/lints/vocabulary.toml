@@ -243,7 +243,7 @@ min_lines_baseline = [
   "crates/prof/src/einsum.rs",
   "crates/prof/src/epilogue.rs",
   "crates/prof/src/expr.rs",
-  "crates/prof/src/native_i8.rs",
+  "crates/prof/src/native/i8.rs",
   "crates/prof/src/native.rs",
   "crates/prof/src/operand.rs",
   "crates/prof/src/runtime.rs",

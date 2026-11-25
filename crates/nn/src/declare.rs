@@ -76,7 +76,7 @@ impl AxisCore {
     /// 本层下界：单轴算子的第二形参被骨架忽略，补 `1` 只满足 `shape_ctx` 签名，不参与代价。
     pub(crate) fn bounds(&self) -> crate::BoundsResult {
         let op = self.spec.ops().first().map_or_default(String::as_str);
-        Bounds::of_ctx(op, self.len, 1).map(Some)
+        Bounds::of_geometry(op, LayerGeometry::axis(self.len)).map(Some)
     }
 }
 
@@ -256,7 +256,7 @@ macro_rules! priced {
                 let out = self.output();
                 let width = out.dim(out.rank().saturating_sub(1)).unwrap_or(1);
                 let rows = out.numel() / width.max(1);
-                $crate::Bounds::of_ctx($op, rows, width).map(Some)
+                $crate::Bounds::of_geometry($op, $crate::LayerGeometry::shape(rows, width)).map(Some)
             }
         }
     };
@@ -288,6 +288,45 @@ macro_rules! accessors {
     };
 }
 
+/// 层交给算子的几何：既保留宽度，也保留算子应使用哪一种轴映射。
+///
+/// `Projection` 由输入／输出角色填轴；`Shape` 把 `(outer, width)` 交给算子自己的形状投影。
+/// 两者不能只靠一对整数猜测，矩阵乘、Embedding 与投影正是因此需要不同入口。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LayerGeometry {
+    /// 投影几何。
+    Projection {
+        /// 输入宽度。
+        input: usize,
+        /// 输出宽度。
+        output: usize,
+    },
+    /// 算子自定义形状。
+    Shape {
+        /// 外层行数。
+        outer: usize,
+        /// 末轴宽度。
+        width: usize,
+    },
+}
+
+impl LayerGeometry {
+    /// 构造一次投影几何。
+    pub const fn projection(input: usize, output: usize) -> Self {
+        Self::Projection { input, output }
+    }
+
+    /// 构造一次算子自定义形状。
+    pub const fn shape(outer: usize, width: usize) -> Self {
+        Self::Shape { outer, width }
+    }
+
+    /// 构造单轴几何；第二形参只是算子签名槽，不参与代价。
+    pub const fn axis(len: usize) -> Self {
+        Self::shape(len, 1)
+    }
+}
+
 /// 一次调用的性能下界：读、写两个方向的最少流量与最少浮点运算次数。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Bounds {
@@ -303,6 +342,18 @@ impl Bounds {
         write: 0,
         flops: 0.0,
     };
+
+    /// 由统一层几何推出下界；旧 `of_op` / `of_ctx` 暂作兼容适配器。
+    ///
+    /// # Errors
+    ///
+    /// 算子缺少语义表，或几何不满足算子自己的形状与代价约束时返回诊断。
+    pub fn of_geometry(op: &str, geometry: LayerGeometry) -> Result<Self> {
+        match geometry {
+            LayerGeometry::Projection { input, output } => Self::of_op(op, input, output),
+            LayerGeometry::Shape { outer, width } => Self::of_ctx(op, outer, width),
+        }
+    }
 
     /// 由算子语义推出下界。
     ///
@@ -355,7 +406,7 @@ impl Bounds {
         let mut total = Self::ZERO;
         for op in ops {
             total = total.plus(
-                Self::of_op(op, in_features, out_features)
+                Self::of_geometry(op, LayerGeometry::projection(in_features, out_features))
                     .map_err(|error| error.with(format!("算子 `{op}`")))?,
             );
         }

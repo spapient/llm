@@ -1,30 +1,147 @@
-//! 训练数据集管线：源（条目流）→ 采样序（采样序）→ 批装配（[`Loader`]）三层分离。
+//! 训练数据集管线：源条目流 → 采样序 → 批装配。
 //!
-//! [`Dataset`] 是按批取样本的对象安全契约，关联类型 [`Dataset::Item`] 表达条目形态；
-//! [`Loader`]/[`Chunks`] 是带泛型参数 `T` 的唯一装配实现，当前消费者只实例化 `T = u32`
-//! （行主序 token）。批借用调用方缓冲，不拷贝、不拥有，批次的生命周期停在调用方那份缓冲上。
-//!
-//! **不拥有**：分词、打包与训练/验证集切分（打乱只改变采样序的游标推进方式）；条目型样本
-//! （输入/目标对）、逐条目变换与多源拼接待真实消费者出现后再挂到源层。
-//!
-//! **预留插点**（证据不足，未实现）：后台预取队列、加权抽样的别名表 O(1) 索引、批次到张量
-//! 视图的装配；`Loader<T>` 的泛型层级已为这些落点留好条目类型缝。
+//! [`Dataset`] 是按批取样的对象安全契约；[`Loader`]/[`Chunks`] 是唯一装配实现。
+//! 批借用调用方缓冲，不拷贝、不拥有；采样策略及 epoch 生命周期由 `sampler` 持有。
+//! 分词、打包与训练/验证集切分不属于本模块。
 
 use diagnostic::{Code, Error, Result};
 
-use crate::rng::Rng;
+pub use crate::rng::{LoaderConfig, Rng, Sampling};
+#[derive(Debug, Clone)]
+enum Policy {
+    Sequential,
+    Shuffled {
+        seed: u64,
+    },
+    Weighted {
+        weights: Vec<f32>,
+        total: f32,
+        seed: u64,
+    },
+}
 
-/// 本模块诊断站点。
+/// 一条采样序：策略只保存差异，索引容量、游标和 epoch 在三种策略间共享。
+#[derive(Debug, Clone)]
+pub(crate) struct Sampler {
+    policy: Policy,
+    order: Vec<usize>,
+    cursor: usize,
+    epoch: u64,
+}
+
+fn configured_policy(n: usize, sampling: Sampling) -> Result<Policy> {
+    Ok(match sampling {
+        Sampling::Sequential => Policy::Sequential,
+        Sampling::Shuffle { seed } => Policy::Shuffled { seed },
+        Sampling::Weighted { weights, seed } => {
+            let total = validate_weights(&weights, n)?;
+            Policy::Weighted {
+                weights,
+                total,
+                seed,
+            }
+        }
+    })
+}
+
+impl Sampler {
+    /// 按互斥配置装配采样序；首轮与后续 epoch 共用同一个索引重建入口。
+    pub(crate) fn from_config(n: usize, sampling: Sampling) -> Result<Self> {
+        let mut sampler = Self {
+            policy: configured_policy(n, sampling)?,
+            order: (0..n).collect(),
+            cursor: 0,
+            epoch: 0,
+        };
+        sampler.rebuild(0);
+        Ok(sampler)
+    }
+
+    /// 还没取走的批数。
+    pub(crate) fn remaining(&self) -> usize {
+        self.order.len() - self.cursor
+    }
+
+    /// 取下一个批索引；`None` 当且仅当本轮取空。
+    pub(crate) fn next(&mut self) -> Option<usize> {
+        let idx = *self.order.get(self.cursor)?;
+        self.cursor += 1;
+        Some(idx)
+    }
+
+    /// 进入下一轮：游标归位，策略只通过 epoch 改变派生随机流。
+    pub(crate) fn reset(&mut self) {
+        self.epoch += 1;
+        self.rebuild(self.epoch);
+        self.cursor = 0;
+    }
+
+    /// 按派生 epoch 原位重建索引，保留索引表容量。
+    fn rebuild(&mut self, epoch: u64) {
+        match &mut self.policy {
+            Policy::Sequential => {}
+            Policy::Shuffled { seed } => {
+                shuffle(&mut Rng::with_stream(*seed, epoch as u32), &mut self.order);
+            }
+            Policy::Weighted {
+                weights,
+                total,
+                seed,
+            } => draw_round(weights, *total, *seed, epoch, &mut self.order),
+        }
+    }
+}
+
+/// Fisher–Yates 洗牌：从末位向前，每位与 `[0, i]` 内随机位交换。
+fn shuffle(rng: &mut Rng, order: &mut [usize]) {
+    for i in (1..order.len()).rev() {
+        let j = (rng.next_u32() as usize) % (i + 1);
+        order.swap(i, j);
+    }
+}
+
+/// 校验权重：长度对齐、有限、非负、总质量为正；返回总权重。
+fn validate_weights(weights: &[f32], n: usize) -> Result<f32> {
+    validation_rules!(SITE;
+        weights.len() == n => format!("权重条数 {} 与批数 {n} 不符", weights.len()),
+        weights.iter().all(|&w| w.is_finite() && w >= 0.0) => "权重必须是有限非负数",
+    );
+    let total: f32 = weights.iter().sum();
+    validation_rules!(SITE;
+        total.is_finite() && total > 0.0 => "权重总质量必须是有限正数",
+    );
+    Ok(total)
+}
+
+/// 轮盘有放回原位重抽；保留调用方索引缓冲的容量。
+pub(crate) fn draw_round(weights: &[f32], total: f32, seed: u64, epoch: u64, out: &mut Vec<usize>) {
+    let mut rng = Rng::with_stream(seed, epoch as u32);
+    let n = out.len();
+    out.clear();
+    out.extend((0..n).map(|_| draw(&mut rng, weights, total)));
+}
+
+/// 抽一个批索引：命中首个累计权重超过随机靶值的位置。
+fn draw(rng: &mut Rng, weights: &[f32], total: f32) -> usize {
+    let target = rng.next_f32() * total;
+    let mut acc = 0.0;
+    for (i, &w) in weights.iter().enumerate() {
+        acc += w;
+        if target < acc {
+            return i;
+        }
+    }
+    weights.len() - 1
+}
+
 const SITE: &str = "train::dataset";
 
 /// 批几何：`rows`、`cols` 非零且乘积不溢出，返回每批元素数（`rows * cols`）。
-fn stride(rows: usize, cols: usize, site: &str) -> Result<usize> {
-    if rows == 0 {
-        return Err(Error::new(Code::Invalid, "批行数不能为 0").with(site));
-    }
-    if cols == 0 {
-        return Err(Error::new(Code::Invalid, "列宽不能为 0").with(site));
-    }
+pub(crate) fn stride(rows: usize, cols: usize, site: &str) -> Result<usize> {
+    validation_rules!(site;
+        rows != 0 => "批行数不能为 0",
+        cols != 0 => "列宽不能为 0",
+    );
     rows.checked_mul(cols).ok_or_else(|| {
         Error::new(
             Code::Invalid,
@@ -46,14 +163,10 @@ impl<'a, Item> Batch<'a, Item> {
     /// 构造：`rows` 与 `cols` 都非零，且 `items.len() == rows * cols`。
     pub fn new(items: &'a [Item], rows: usize, cols: usize) -> Result<Self> {
         let expected = stride(rows, cols, SITE)?;
-        if items.len() != expected {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("条目数 {} 与 {rows} x {cols} 不符", items.len()),
-            )
-            .with(SITE));
-        }
-        Ok(Self { items, rows, cols })
+        validation_rules!(SITE;
+            items.len() == expected => format!("条目数 {} 与 {rows} x {cols} 不符", items.len()),
+        );
+        Ok(Self::exact(items, rows, cols))
     }
 
     /// 不变量已由调用方在构造期保证（长度等于 `rows * cols` 且两者非零）时使用。
@@ -98,71 +211,6 @@ pub trait Dataset<'a> {
 
     /// 回到本轮开头；多 epoch 复用时每轮开始前调用。
     fn reset(&mut self);
-}
-
-/// 批采样方式：三种策略由类型保证互斥，随机流只由显式种子派生。
-#[derive(Debug, Clone, Default, PartialEq)]
-pub enum Sampling {
-    /// 按条目原顺序取完整批。
-    #[default]
-    Sequential,
-    /// 每轮按种子派生独立流重洗批序。
-    Shuffle {
-        /// 重洗随机流种子。
-        seed: u64,
-    },
-    /// 按每批的非负权重有放回抽样。
-    Weighted {
-        /// 每批抽样权重（条数等于批数）。
-        weights: Vec<f32>,
-        /// 抽样随机流种子。
-        seed: u64,
-    },
-}
-
-/// 批装配配置：几何与采样方式一次性收口到构造期，热路径不再做合法性分支检查。
-#[derive(Debug, Clone, PartialEq)]
-pub struct LoaderConfig {
-    /// 每批行数；构造期校验非零。
-    pub rows: usize,
-    /// 列宽（每行条目数）；构造期校验非零且 `rows * cols` 不溢出。
-    pub cols: usize,
-    /// 批采样方式。
-    pub sampling: Sampling,
-}
-
-impl LoaderConfig {
-    /// 校验行列非零且乘积不溢出；采样方式默认顺序。
-    pub fn new(rows: usize, cols: usize) -> Result<Self> {
-        let config = Self {
-            rows,
-            cols,
-            sampling: Sampling::Sequential,
-        };
-        config.validate()?;
-        Ok(config)
-    }
-
-    /// 校验批几何；公开字段被直接修改后也可在装配边界重新检查。
-    pub fn validate(&self) -> Result<()> {
-        stride(self.rows, self.cols, SITE).map(|_| ())
-    }
-
-    builders! {
-        /// 设置互斥的采样策略。
-        #[must_use]
-        with_sampling => sampling: Sampling,
-    }
-}
-
-impl Default for LoaderConfig {
-    fn default() -> Self {
-        Self {
-            rows: 1,
-            cols: 1,
-            sampling: Sampling::Sequential,
-        }
-    }
 }
 
 /// 批装配器：持有条目流、批几何与采样序，实现 [`Dataset`]；条目类型 `T` 由源缓冲决定。
@@ -245,166 +293,6 @@ impl<'a, T> Dataset<'a> for Loader<'a, T> {
     fn reset(&mut self) {
         self.sampler.reset();
     }
-}
-
-/// 策略状态只保存差异；索引表与游标在三种采样间共享一份实现。
-#[derive(Debug, Clone)]
-enum Policy {
-    Sequential,
-    Shuffled {
-        seed: u64,
-        epoch: u64,
-    },
-    Weighted {
-        weights: Vec<f32>,
-        total: f32,
-        seed: u64,
-        epoch: u64,
-    },
-}
-
-/// 一条采样序：统一的索引表和游标，加上决定下轮如何重建索引表的策略。
-#[derive(Debug, Clone)]
-pub(crate) struct Sampler {
-    policy: Policy,
-    order: Vec<usize>,
-    cursor: usize,
-}
-
-impl Sampler {
-    /// 按互斥配置装配采样序。
-    pub(crate) fn from_config(n: usize, sampling: Sampling) -> Result<Self> {
-        let order: Vec<_> = (0..n).collect();
-        match sampling {
-            Sampling::Sequential => Ok(Self {
-                policy: Policy::Sequential,
-                order,
-                cursor: 0,
-            }),
-            Sampling::Shuffle { seed } => {
-                let mut sampler = Self {
-                    policy: Policy::Shuffled { seed, epoch: 0 },
-                    order,
-                    cursor: 0,
-                };
-                let mut rng = Rng::with_stream(seed, 0);
-                shuffle(&mut rng, &mut sampler.order);
-                Ok(sampler)
-            }
-            Sampling::Weighted { weights, seed } => {
-                let total = validate_weights(&weights, n)?;
-                let mut sampler = Self {
-                    policy: Policy::Weighted {
-                        weights,
-                        total,
-                        seed,
-                        epoch: 0,
-                    },
-                    order,
-                    cursor: 0,
-                };
-                sampler.redraw(0);
-                Ok(sampler)
-            }
-        }
-    }
-
-    /// 还没取走的批数。
-    pub(crate) fn remaining(&self) -> usize {
-        self.order.len() - self.cursor
-    }
-
-    /// 取下一个批索引；`None` 当且仅当本轮取空。
-    pub(crate) fn next(&mut self) -> Option<usize> {
-        let idx = *self.order.get(self.cursor)?;
-        self.cursor += 1;
-        Some(idx)
-    }
-
-    /// 进入新一轮：只有策略状态不同，游标归位与索引缓冲复用完全共用。
-    pub(crate) fn reset(&mut self) {
-        let redraw = match &mut self.policy {
-            Policy::Sequential => None,
-            Policy::Shuffled { seed, epoch } => {
-                *epoch += 1;
-                shuffle(&mut Rng::with_stream(*seed, *epoch as u32), &mut self.order);
-                None
-            }
-            Policy::Weighted { epoch, .. } => Some(*epoch + 1),
-        };
-        if let Some(epoch) = redraw {
-            self.redraw(epoch);
-        }
-        self.cursor = 0;
-    }
-
-    /// 按派生流原位重抽，保留索引表容量。
-    fn redraw(&mut self, epoch: u64) {
-        let Policy::Weighted {
-            weights,
-            total,
-            seed,
-            epoch: current,
-        } = &mut self.policy
-        else {
-            return;
-        };
-        *current = epoch;
-        draw_round(weights, *total, *seed, epoch, &mut self.order);
-    }
-}
-
-/// Fisher–Yates 洗牌：从末位向前，每位与 `[0, i]` 内随机位交换。
-fn shuffle(rng: &mut Rng, order: &mut [usize]) {
-    for i in (1..order.len()).rev() {
-        let j = (rng.next_u32() as usize) % (i + 1);
-        order.swap(i, j);
-    }
-}
-
-/// 单条权重合法：有限且非负。
-fn weight_is_valid(w: f32) -> bool {
-    w.is_finite() && w >= 0.0
-}
-
-/// 校验权重：长度对齐、有限、非负、总质量为正；返回总权重。
-fn validate_weights(weights: &[f32], n: usize) -> Result<f32> {
-    if weights.len() != n {
-        return Err(Error::new(
-            Code::Invalid,
-            format!("权重条数 {} 与批数 {n} 不符", weights.len()),
-        )
-        .with(SITE));
-    }
-    if !weights.iter().all(|&w| weight_is_valid(w)) {
-        return Err(Error::new(Code::Invalid, "权重必须是有限非负数").with(SITE));
-    }
-    let total: f32 = weights.iter().sum();
-    if !total.is_finite() || total <= 0.0 {
-        return Err(Error::new(Code::Invalid, "权重总质量必须是有限正数").with(SITE));
-    }
-    Ok(total)
-}
-
-/// 轮盘有放回原位重抽；保留调用方索引缓冲的容量。
-fn draw_round(weights: &[f32], total: f32, seed: u64, epoch: u64, out: &mut Vec<usize>) {
-    let mut rng = Rng::with_stream(seed, epoch as u32);
-    let n = out.len();
-    out.clear();
-    out.extend((0..n).map(|_| draw(&mut rng, weights, total)));
-}
-
-/// 抽一个批索引：命中首个累计权重超过随机靶值的位置。
-fn draw(rng: &mut Rng, weights: &[f32], total: f32) -> usize {
-    let target = rng.next_f32() * total;
-    let mut acc = 0.0;
-    for (i, &w) in weights.iter().enumerate() {
-        acc += w;
-        if target < acc {
-            return i;
-        }
-    }
-    weights.len() - 1
 }
 
 #[cfg(test)]

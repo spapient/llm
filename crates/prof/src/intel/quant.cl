@@ -8,7 +8,7 @@
   const int _mask = (1 << $width) - 1;
   const int _packed = ($3) / $cpb;
   for (int _i = 0; _i < _packed; ++_i) {
-      const u8 _b = ($1)[_i];
+      const uchar _b = ($1)[_i];
       for (int _j = 0; _j < $cpb; ++_j) {
           ($0)[$cpb * _i + _j] = (float)(((_b >> ($width * _j)) & _mask) - $zero) * _s;
       }

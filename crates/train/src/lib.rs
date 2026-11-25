@@ -1,43 +1,48 @@
-//! 训练栈：一次训练从"学什么"到"学到哪了、能不能恢复"的全部事实。
+//! 训练编排：借用批次、前向评估、反向梯度、参数更新、分布式同步与恢复状态。
 //!
-//! 五条语义轴，各占一组子模块，互不越界：
+//! 主流程是 `Loader → Learner → Session → autograd → Bufs → Optimizer → Checkpoint`。
+//! `train` 拥有训练状态与更新算术，不复制 `autograd` 的反向计划、`nn` 的层注册、`shard` 的
+//! 拓扑通信或 `storage` 的快照字节格式。配置解析属于 `cli`，本 crate 只接收并重新校验纯数据。
 //!
-//! 1. **循环状态**——[`Schedule`]/[`Anneal`]（学习率是完全确定的函数）、[`Session`]/[`TrainConfig`]、
-//!    [`Step`]/[`Checkpoint`]（"恢复所需的最小事实集"：步数、图规模、批形状、层数、权重条目数、
-//!    并行度，少任何一项恢复出来的都不是原来那次训练）、[`Distributed`]、[`Learner`]/[`MetricsBoard`]、
-//!    [`Batch`]/[`Dataset`]/[`Chunks`]（`learner`；唯一消费者是 [`Learner`]，故批几何与批总数只有一处算）。
-//! 2. **目标函数**——[`Loss`]/[`Outcome`] 与分类/回归损失、蒸馏族（[`Distill`]、`kl_div`、
-//!    `log_softmax`）、策略族（[`Grpo`]、`policy_loss`、`clipped_surrogate`、`entropy`）。三族共用
-//!    `loss` 的几何校验与数值助手，因此只有一份长度/词表/行数契约。
-//! 3. **参数更新**——[`Optimizer`] 契约与 [`Sgd`]/[`Adam`]/[`Muon`]；[`Group`] 按 `ParamRole` 分组，
-//!    矩状态按参数下标对齐，与激活槽平行。
-//! 4. **反向**——`backprop` 按 `Schedule` 的逆拓扑序把梯度走回参数端点，文件内的公式表是
-//!    各算子的**参考公式数值体**（`nn` 提供算子名/输入个数，`prof` 提供声明档语义，本 crate 提供算得出的那条式子）。
-//! 5. **激活缓冲与几何**——[`Bufs`] 是 [`autograd::Store`] 在训练侧的实现：等长空闲表，稳态零
-//!    分配（装入新值即把旧块还表），`live`/`peak` 与 [`autograd::Plan`] 对账；[`Kernel`] 把它适配到
-//!    标量参考实现，`geometry` 是各经典算子的实例几何与前向/反向参考数值（梯度对拍的基准）。
+//! # 模块导航
 //!
-//! **拥有**：上面点名的全部类型，加上承载静态契约的 `Kind`、`Lane`、`Inputs` 与 [`OperatorSetOps`]。
-//! **不拥有**：图与记录顺序、激活的显存计划（`autograd`）、算子注册表（`nn`）与声明档语义（`prof`）、
-//! 分词与打乱（`tokenizer`；打乱只改变游标推进方式）、层定义（`nn`）、参数（`weights`）、
-//! 拓扑与集合通信（`shard`）、检查点字节格式（`storage`；编码、版本与偏移校验不在训练循环里再做一遍）。
-//! **依赖**：`nn`、`autograd`、`weights`、`shard`、`tensor`、`prof`、`storage`、`diagnostic`。
-//! **被依赖**：`cli`、`benchmarks`、`fuzz`、`serve`、`testkit`。
+//! | 模块 | 职责 |
+//! |---|---|
+//! | `session`（含 `checkpoint`） | [`Session`]、[`TrainConfig`]、[`Schedule`]、[`Distributed`] 与 [`Checkpoint`] |
+//! | `learner`（含 `dataset`） | [`Learner`]、[`Batch`]、[`Loader`]、[`Dataset`] 与 [`MetricsBoard`] |
+//! | `loss` | [`Loss`]、[`ObjectiveConfig`]、[`Distill`]、[`Grpo`] 与共享数值判据 |
+//! | `optimizer` | [`Optimizer`]、[`Sgd`]、[`Adam`]、[`Muon`]、[`Hybrid`] 与参数矩状态 |
+//! | `backprop` | 逆拓扑参考公式与参数端点梯度传播 |
+//! | `geometry` | 实例几何、滚动统计与前向/反向参考数值 |
+//! | `kernel` / `pool` | [`Kernel`]、[`Bufs`]、存储 lane 与等长缓冲复用 |
+//! | `rng` | [`Rng`]、[`Uniform`]、[`Normal`]、[`Bernoulli`] 的确定性随机 |
 //!
-//! 入口只做模块声明与再导出：实现按上面五条轴分布在 9 个子模块里（`backprop`、`geometry`、`kernel`、
-//! `learner`（含 `Batch`/`Dataset`/`Chunks`/`Loader`/`LoaderConfig`）、`loss`（含策略族）、`optimizer`、`pool`（含 `store` 门面）、
-//! `rng`、`session`（含静态配置、调度、检查点与分布式编排）；`rng` 是并入的计数器型确定性随机，独立于五条轴）。
-//!
-//! # 例子
+//! # 静态配置
 //!
 //! ```
-//! use llm_train::Schedule;
+//! use llm_train::TrainSpec;
 //!
-//! let schedule = Schedule::new(10, 100).expect("合法");
-//! assert_eq!(schedule.lr(1.0, 0), 0.1, "第 0 步只走到 warmup 的十分之一");
-//! assert_eq!(schedule.lr(1.0, 9), 1.0, "warmup 结束达到峰值");
-//! assert!(schedule.lr(1.0, 100) < 0.02, "衰减到接近 0");
+//! let spec = TrainSpec::default();
+//! spec.validate().expect("默认训练配置合法");
+//! let fingerprint = spec.config_fingerprint(&llm_train::Sgd::default());
+//! assert_eq!(fingerprint, spec.config_fingerprint(&llm_train::Sgd::default()));
 //! ```
+//!
+//! # 并行注解
+//!
+//! 注解只生成 [`ParallelConfig`](shard::ParallelConfig)，不读取环境或发起通信。
+//!
+//! ```
+//! use annotation::parallel;
+//!
+//! #[parallel(tp = 2, pp = 1, dp = 2, reduce = "max", average = false, priority = "high")]
+//! struct Sharded;
+//!
+//! let policy = Sharded::__parallel_config();
+//! assert_eq!(policy.topology().expect("合法拓扑").world(), 4);
+//! ```
+//!
+//! 完整的模块职责、恢复不变量、性能约束与后续改造基线见 `docs/train-architecture-2026-11-25.md`。
 
 #![deny(unsafe_code)]
 
@@ -72,6 +77,15 @@ macro_rules! builders {
     )*};
 }
 
+/// 配置规则表：条件不成立时以统一错误类型和指定诊断站点提前返回。
+macro_rules! validation_rules {
+    ($site:expr; $($condition:expr => $message:expr),* $(,)?) => {$(
+        if !$condition {
+            return Err(Error::new(Code::Invalid, $message).with($site));
+        }
+    )*};
+}
+
 mod backprop;
 pub mod geometry;
 mod kernel;
@@ -82,16 +96,9 @@ mod pool;
 mod rng;
 mod session;
 
-/// 训练侧测试共用的夹具图（`tests/support.rs`）：在 crate 根挂一次，测试模块引用它，
-/// 而不是在自己的内联模块里另写一份相对路径——内联模块的 `#[path]` 基准是虚拟目录，跨级上跳会失败。
-#[cfg(test)]
-#[path = "../tests/support.rs"]
-mod support;
-
 pub use geometry::{Geometry, Running};
 pub use learner::{
-    Batch, Chunks, Dataset, ForwardOut, Learner, Loader, LoaderConfig, Metric, MetricPoint,
-    MetricsBoard, Sampling,
+    Batch, Chunks, Dataset, ForwardOut, Learner, Loader, Metric, MetricPoint, MetricsBoard,
 };
 pub use loss::{
     Distill, Grpo, Loss, ObjectiveConfig, Outcome, advantage, argmax_hits, bce_with_logits,
@@ -101,8 +108,35 @@ pub use loss::{
 pub use optimizer::{Adam, Group, Hybrid, Muon, Optimizer, OwnedSlot, Sgd, Slot};
 pub use pool::OperatorSetOps;
 pub use pool::{Bufs, Data, Inputs, Kernel, Kind, Lane, Reference, View, ViewMut};
-pub use rng::{Bernoulli, Normal, Rng, Uniform, block};
+pub use rng::{Bernoulli, LoaderConfig, Normal, Rng, Sampling, Uniform, block};
 pub use session::{
     Anneal, Checkpoint, Distributed, GradientSnapshot, Local, ParamSlot, Remote, Schedule, Session,
     Step, TrainConfig, TrainOverrides, TrainSpec, operators, resume,
 };
+
+/// 训练侧测试共用夹具：同构的图与形状装配只在 crate 根保留一份。
+#[cfg(test)]
+mod support {
+    #![allow(dead_code)]
+    use autograd::{Sizes, Tape, Var};
+    use tensor::{DType, Shape};
+
+    /// 批量登记 `(变量, 元素数)` 的 f32 形状。
+    pub(crate) fn sizes_of(tape: &Tape, vars: &[(Var, usize)]) -> Sizes {
+        let mut sizes = Sizes::new(tape.vars());
+        for &(var, len) in vars {
+            sizes.set(var, Shape::new([len]), DType::F32);
+        }
+        sizes
+    }
+
+    /// `loss = add_f32(p, x)`：参数、常量输入与输出使用同一宽度。
+    pub(crate) fn add_graph(width: usize) -> (Tape, Sizes, Var, Var, Var) {
+        let mut tape = Tape::new();
+        let p = tape.parameter();
+        let x = tape.leaf();
+        let loss = tape.record("add_f32", &[p, x]).expect("记录 loss");
+        let sizes = sizes_of(&tape, &[(p, width), (x, width), (loss, width)]);
+        (tape, sizes, p, x, loss)
+    }
+}

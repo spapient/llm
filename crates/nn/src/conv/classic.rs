@@ -4,8 +4,18 @@
 use crate::Scalar;
 use crate::conv::ConvGeom;
 use crate::kernel::unary::{AXES, project_shape};
-use crate::model::{Buf, Cost, Sample, ShapeCtx, Values, x_buf};
+use crate::model::{Buf, Cost, Sample, ShapeCtx, x_buf};
 use diagnostic::Error;
+
+/// 池化声明共用的 same 3×3 几何：单位步长、单侧补零 1。
+const POOL_SAME_3X3: ConvGeom = ConvGeom {
+    kh: 3,
+    kw: 3,
+    sh: 1,
+    sw: 1,
+    ph: 1,
+    pw: 1,
+};
 
 /// 一次算子装配：标记类型、语义别名与 [`crate::operator_here`] 的基座实现，外加 `#[annotation::model]`
 /// 自检常量。`$m`/`$n` 同时喂给 `operator_here!`（元组形状）与注解（数组形状），两处从同一对字面量派生。
@@ -122,18 +132,9 @@ fn norm_sample(
         scalars,
         bufs: vec![
             x_buf(total),
-            Buf {
-                name: "gamma",
-                values: Values::F32(vec![gamma; channels]),
-            },
-            Buf {
-                name: "beta",
-                values: Values::F32(vec![beta; channels]),
-            },
-            Buf {
-                name: "y",
-                values: Values::F32(vec![0.0; total]),
-            },
+            Buf::f32("gamma", vec![gamma; channels]),
+            Buf::f32("beta", vec![beta; channels]),
+            Buf::f32("y", vec![0.0; total]),
         ],
     }
 }
@@ -200,22 +201,14 @@ pub mod conv2d {
             scalars: vec![("N", 1)],
             bufs: vec![
                 x_buf(H * W * CIN),
-                Buf {
-                    name: "weight",
-                    values: Values::F32(
-                        (0..PATCH * COUT)
-                            .map(|i| 0.05 + (i % 7) as f32 * 0.03)
-                            .collect(),
-                    ),
-                },
-                Buf {
-                    name: "bias",
-                    values: Values::F32(vec![0.4; COUT]),
-                },
-                Buf {
-                    name: "y",
-                    values: Values::F32(vec![0.0; OH * OW * COUT]),
-                },
+                Buf::f32(
+                    "weight",
+                    (0..PATCH * COUT)
+                        .map(|i| 0.05 + (i % 7) as f32 * 0.03)
+                        .collect(),
+                ),
+                Buf::f32("bias", vec![0.4; COUT]),
+                Buf::f32("y", vec![0.0; OH * OW * COUT]),
             ],
         }
     }
@@ -298,14 +291,7 @@ pub mod pool {
 
         fn pool() -> crate::conv::AvgPool2d {
             crate::conv::AvgPool2d {
-                geom: ConvGeom {
-                    kh: 3,
-                    kw: 3,
-                    sh: 1,
-                    sw: 1,
-                    ph: 1,
-                    pw: 1,
-                },
+                geom: POOL_SAME_3X3,
                 count_include_pad: false,
             }
         }
@@ -362,19 +348,11 @@ pub mod pool {
         /// 输入宽度或归一化宽度。
         pub const W: usize = 4;
 
-        fn geom() -> ConvGeom {
-            ConvGeom {
-                kh: 3,
-                kw: 3,
-                sh: 1,
-                sw: 1,
-                ph: 1,
-                pw: 1,
-            }
-        }
-
         pub(crate) fn run<S: Scalar>(x: &[S], out: &mut [S]) -> diagnostic::Result<()> {
-            crate::conv::MaxPool2d { geom: geom() }.forward(x, 1, H, W, 1, out)
+            crate::conv::MaxPool2d {
+                geom: POOL_SAME_3X3,
+            }
+            .forward(x, 1, H, W, 1, out)
         }
 
         window_op!(

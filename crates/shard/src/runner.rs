@@ -2,7 +2,6 @@
 
 use cutile::dirs::Dirs;
 use cutile::prof::Profile;
-use diagnostic::{Code, Error};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -75,19 +74,12 @@ impl Timing {
     }
 }
 
-/// 只编译：把源文本写到 `dir/kernel.c` 并编成 `dir/kernel`，返回可执行文件路径。与 `run` 分开
-/// 是因为编译产物可以落进缓存：命中时整步跳过。
-///
-/// # Errors：目录不可建、源文件不可写、编译器不存在，或编译失败（诊断带命令、完整输出与路径）。
-/// 档案声明的编译参数：`[compile].flags`，加上工具链头文件垫片给出的 `-I`。
-///
-/// 垫片是**设备知识**而不是某条编译路径的私事：生成的程序只写一种头文件名（`<cuda_runtime.h>`），
-/// MUSA 的工具链只提供 `<musa_runtime.h>`。写进 `work.dir/include` 而不是产物沙箱，是因为它按档案
-/// 而不是按产物变化；同一份垫片因此同时服务算子产物、见证程序与 `bench` 的 harness。
+/// 生成编译参数：档案 `[compile].flags` 加上工具链头文件垫片的 `-I`。
+/// 垫片按档案写入 `work.dir/include`，供算子、见证与基准共用。
 ///
 /// # Errors
 ///
-/// 垫片目录建不出来或文件写不进去时返回 IO 说明。
+/// 垫片目录不可创建或文件不可写时返回 IO 说明。
 pub fn compile_flags(profile: &Profile, dirs: &Dirs) -> diagnostic::Result<Vec<String>> {
     let mut flags = profile.flags.clone();
     if profile.headers.is_empty() {
@@ -95,17 +87,21 @@ pub fn compile_flags(profile: &Profile, dirs: &Dirs) -> diagnostic::Result<Vec<S
     }
     let include = dirs.work().join("include");
     std::fs::create_dir_all(&include).map_err(|error| {
-        Error::new(
-            Code::Io,
-            format!("创建 {} 失败：{error}", include.display()),
+        reject!(
+            Io,
+            "shard::runner::compile_flags",
+            "创建 {} 失败：{error}",
+            include.display()
         )
     })?;
     for (name, text) in &profile.headers {
         let path = include.join(name);
         std::fs::write(&path, text).map_err(|error| {
-            Error::new(
-                Code::Io,
-                format!("写工具链垫片 {} 失败：{error}", path.display()),
+            reject!(
+                Io,
+                "shard::runner::compile_flags",
+                "写工具链垫片 {} 失败：{error}",
+                path.display()
             )
         })?;
     }
@@ -120,46 +116,40 @@ pub fn compile(
     source: &str,
     dir: &Path,
 ) -> diagnostic::Result<PathBuf> {
-    std::fs::create_dir_all(dir)
-        .map_err(|error| Error::new(Code::Io, format!("创建 {} 失败：{error}", dir.display())))?;
+    std::fs::create_dir_all(dir).map_err(|error| {
+        reject!(
+            Io,
+            "shard::runner::compile",
+            "创建 {} 失败：{error}",
+            dir.display()
+        )
+    })?;
     let src = dir.join("kernel.c");
     let exe = dir.join("kernel");
-    std::fs::write(&src, source)
-        .map_err(|error| Error::new(Code::Io, format!("写 {} 失败：{error}", src.display())))?;
+    std::fs::write(&src, source).map_err(|error| {
+        reject!(
+            Io,
+            "shard::runner::compile",
+            "写 {} 失败：{error}",
+            src.display()
+        )
+    })?;
 
-    let compile = Command::new(tool)
-        .args(flags)
-        .arg("-o")
-        .arg(&exe)
-        .arg(&src)
-        .output()
-        .map_err(|error| Error::new(Code::Io, format!("调用 `{tool}` 失败：{error}")))?;
-    if !compile.status.success() {
-        // 编译失败是"声明/模板/片段里有一处写不对"，类别是 invalid；诊断带命令与完整输出。
-        return Err(Error::new(
-            Code::Invalid,
-            format!(
-                "`{tool} {}` 编译失败：\n{}\n{}\n源文件：{}",
-                flags.join(" "),
-                String::from_utf8_lossy(&compile.stdout),
-                String::from_utf8_lossy(&compile.stderr),
-                src.display()
-            ),
-        ));
-    }
+    let mut compile = Command::new(tool);
+    compile.args(flags).arg("-o").arg(&exe).arg(&src);
+    driver::run_tool(&format!("{tool} {}", flags.join(" ")), &mut compile, &src)?;
     require_executable(dir, &exe)
 }
 
 /// 编译成功但产物没落盘：把目录内容交给诊断，而不是让下游在复制阶段拿到一个不存在的裸路径。
 fn require_executable(dir: &Path, base: &Path) -> diagnostic::Result<PathBuf> {
     let Some(exe) = compiled_executable(dir, base) else {
-        return Err(Error::new(
-            Code::Invalid,
-            format!(
-                "编译成功但产物未落盘到 {}：目录内找不到可执行文件",
-                dir.display()
-            ),
-        ));
+        fail!(
+            Invalid,
+            "shard::runner::require_executable",
+            "编译成功但产物未落盘到 {}：目录内找不到可执行文件",
+            dir.display()
+        );
     };
     Ok(exe)
 }
@@ -186,15 +176,22 @@ fn compiled_executable(dir: &Path, base: &Path) -> Option<PathBuf> {
 ///
 /// # Errors：可执行文件不可运行（权限、架构不符）或退出码非零，`stderr` 原样带进诊断。
 pub fn run(exe: &Path) -> diagnostic::Result<Outcome> {
-    let run = Command::new(exe)
-        .output()
-        .map_err(|error| Error::new(Code::Io, format!("运行 {} 失败：{error}", exe.display())))?;
+    let run = Command::new(exe).output().map_err(|error| {
+        reject!(
+            Io,
+            "shard::runner::run",
+            "运行 {} 失败：{error}",
+            exe.display()
+        )
+    })?;
     let stderr = String::from_utf8_lossy(&run.stderr).to_string();
     if !run.status.success() {
-        return Err(Error::new(
-            Code::Internal,
-            format!("内核运行失败（退出码 {:?}）：{stderr}", run.status.code()),
-        ));
+        fail!(
+            Internal,
+            "shard::runner::run",
+            "内核运行失败（退出码 {:?}）：{stderr}",
+            run.status.code()
+        );
     }
     Ok(Outcome {
         bits: parse_bits(&String::from_utf8_lossy(&run.stdout)),
@@ -232,6 +229,168 @@ fn parse_samples(stderr: &str) -> Vec<f64> {
         .collect()
 }
 
+// ---- 工具链探测与实测身份 ----
+
+use std::fmt;
+use std::sync::OnceLock;
+
+#[cfg(test)]
+use testkit;
+
+/// 一条被真正解析出来的工具链。产物身份与报告用它，而不是档案里的登记版本。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Toolchain {
+    /// 命令名（`cc` / `clang` / `gcc` / `nvcc` / `xcrun metal`）。
+    pub command: String,
+    /// `--version` 里解析出的第一段版本号；解析不出时为 `None`（不猜）。
+    pub version: Option<String>,
+    /// `--version` 的首个非空行（原文，诊断与台账里要能对得上）。
+    pub banner: String,
+}
+
+impl Toolchain {
+    /// 身份：`命令@实测版本`，进产物身份与报告；解析不出版本时用 `-`，不假装知道版本。
+    #[must_use]
+    pub fn id(&self) -> String {
+        format!(
+            "{}@{}",
+            self.command,
+            self.version.as_deref().unwrap_or("-")
+        )
+    }
+
+    /// 档案登记的版本是否与实测相容：只比**主版本号**（`clang-17` 的族名不算差异），不改判定等级。
+    #[must_use]
+    pub fn agrees_with(&self, declared: &str) -> bool {
+        if declared.trim() == "*" {
+            return true;
+        }
+        let Some(actual) = self.version.as_deref() else {
+            return false;
+        };
+        let actual_major = actual.split('.').next().unwrap_or(actual);
+        // 登记值可能带工具族前缀（`clang-17`）：只看最后一段。
+        let declared = declared.trim().rsplit(['-', ' ', '_']).next().unwrap_or("");
+        let declared_major = declared.split('.').next().unwrap_or("");
+        !declared_major.is_empty() && declared_major == actual_major
+    }
+}
+
+impl fmt::Display for Toolchain {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.version {
+            Some(version) => write!(formatter, "{} {version}", self.command),
+            None => write!(formatter, "{}（版本未知：{}）", self.command, self.banner),
+        }
+    }
+}
+
+/// 从 `--version` 的输出里取第一段版本号：先看含 `version` / `release` 的行，再退回任意行；每行
+/// 取第一段带点的"数字与点"——`-O2`、`sm_100` 里的孤立数字不是版本号。
+pub fn parse_version(text: &str) -> Option<String> {
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    let keyed = lines.iter().copied().filter(|line| {
+        let lower = line.to_ascii_lowercase();
+        lower.contains("version") || lower.contains("release")
+    });
+    keyed.chain(lines.iter().copied()).find_map(|line| {
+        line.split(|ch: char| !(ch.is_ascii_digit() || ch == '.'))
+            .map(|token| token.trim_end_matches('.'))
+            .find(|token| token.contains('.'))
+            .map(str::to_string)
+    })
+}
+
+/// 进程内缓存的探测结果：同一台机器的工具链不会变，反复 `--version` 起子进程是纯浪费。
+static C_TOOLCHAIN: OnceLock<Option<Toolchain>> = OnceLock::new();
+
+/// 探测可用的 C 编译器（`cc` → `clang` → `gcc`）并读出它自报的版本；结果当作进程级快照缓存。
+pub fn detect() -> Option<Toolchain> {
+    C_TOOLCHAIN
+        .get_or_init(|| ["cc", "clang", "gcc"].into_iter().find_map(probe))
+        .clone()
+}
+
+/// 按**档案声明的工具**探测：除便携 C 之外，产物只能由档案里写的那个编译器编（`nvcc` / `mcc` /
+/// `ccec` / `xcrun metal`），宿主的 `cc` 不认识 `--cuda-gpu-algorithm`，拿它去编只会把"这台设备没有
+/// 工具链"报成一条 C 语法错误。声明不可用时返回 `None`（如实"没有"），不退回合主编译器——那会把
+/// 缺工具链伪装成编译失败。
+#[must_use]
+pub fn for_profile(profile: &cutile::prof::Profile) -> Option<Toolchain> {
+    match profile.meta.emit {
+        // 便携 C 的登记值是 `cc` 且版本记作 `*`：探测顺序（cc → clang → gcc）本身就是它的语义。
+        cutile::prof::Emit::C => detect(),
+        _ => probe_declared(&profile.meta.tool),
+    }
+}
+
+/// 按 `[meta].tools` 的**声明**探测：声明可以带固定前缀参数（`xcrun metal`），这仍是档案写的那条
+/// 命令，不是退回合主编译器。命令名与参数以空白分隔，身份里保留声明原文，报告才能与档案对账。
+#[must_use]
+pub fn probe_declared(declared: &str) -> Option<Toolchain> {
+    let mut parts = declared.split_whitespace();
+    let program = parts.next()?;
+    let leading: Vec<&str> = parts.collect();
+    let mut tool = probe_with(program, &leading)?;
+    tool.command = declared.trim().to_string();
+    Some(tool)
+}
+
+/// 本机的 clang：先问 `clang`，再退到 `cc`（macOS 与多数发行版的 `cc` 就是 clang）。判据是
+/// "这个程序是不是 clang"：`-x cuda` / `-x cl` 是 clang 的前端，gcc 没有。
+#[must_use]
+pub fn clang() -> Option<Toolchain> {
+    probe("clang").or_else(|| detect().filter(|toolchain| toolchain.banner.contains("clang")))
+}
+
+/// 探测指定命令：跑一次 `--version`，成功才返回（版本解析不出也算可用）。
+pub fn probe(command: &str) -> Option<Toolchain> {
+    probe_with(command, &[])
+}
+
+/// 探测的实作：`program` 之后先放档案声明的固定前缀参数，再问版本。
+pub(crate) fn probe_with(program: &str, leading: &[&str]) -> Option<Toolchain> {
+    let output = Command::new(program)
+        .args(leading)
+        .arg("--version")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let text = if stdout.trim().is_empty() {
+        String::from_utf8_lossy(&output.stderr).to_string()
+    } else {
+        stdout
+    };
+    let banner = text
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())?
+        .to_string();
+    Some(Toolchain {
+        command: program.to_string(),
+        version: parse_version(&text),
+        banner,
+    })
+}
+
+/// 测试门控：没有主机 C 编译器时，编译/执行类用例在 CI 上不该伪装成通过；返回 `true` 表示跳过，
+/// 原因经 [`testkit::skip`] 登记计数（标准测试框架没有正式 skip 信号）。
+#[cfg(test)]
+pub(crate) fn skip_without_host_compiler() -> bool {
+    if detect().is_none() {
+        testkit::skip("cutile: 未探测到主机 C 编译器（cc/clang/gcc），编译/执行用例未运行")
+    } else {
+        false
+    }
+}
+
 #[cfg(test)]
 #[path = "../tests/runner_tests.rs"]
 mod tests;
@@ -243,7 +402,7 @@ pub mod driver {
     use crate::witness::Selected;
     use cutile::atom::{Prim, Witness};
     use cutile::dirs::Dirs;
-    use diagnostic::{Code, Error, Result};
+    use diagnostic::Result;
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
     use std::process::Command;
@@ -260,11 +419,13 @@ pub mod driver {
         let text = crate::witness::source(witness, dirs)
             .map_err(|error| error.with(format!("`{prim}` 的")))?;
         if !text.contains(&format!("{}(", witness.func)) {
-            let message = format!(
+            fail!(
+                Invalid,
+                "shard::driver::witness_source",
                 "`{prim}` 的见证 `{}` 里没有函数 `{}({params})`",
-                witness.file, witness.func
+                witness.file,
+                witness.func
             );
-            return Err(Error::new(Code::Invalid, message));
         }
         Ok(text)
     }
@@ -306,47 +467,61 @@ pub mod driver {
     pub fn write_text(path: &Path, text: &str) -> Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|error| {
-                Error::new(Code::Io, format!("创建 {} 失败：{error}", parent.display()))
+                reject!(
+                    Io,
+                    "shard::driver::write_text",
+                    "创建 {} 失败：{error}",
+                    parent.display()
+                )
             })?;
         }
-        std::fs::write(path, text)
-            .map_err(|error| Error::new(Code::Io, format!("写 {} 失败：{error}", path.display())))
+        std::fs::write(path, text).map_err(|error| {
+            reject!(
+                Io,
+                "shard::driver::write_text",
+                "写 {} 失败：{error}",
+                path.display()
+            )
+        })
     }
 
     /// 跑一条编译器命令；非零退出码时把命令、完整输出与源文件路径一并带进诊断。
     pub fn run_tool(name: &str, command: &mut Command, source: &Path) -> Result<()> {
-        let output = command
-            .output()
-            .map_err(|error| Error::new(Code::Io, format!("调用 `{name}` 失败：{error}")))?;
+        let output = command.output().map_err(|error| {
+            reject!(Io, "shard::driver::run_tool", "调用 `{name}` 失败：{error}")
+        })?;
         if output.status.success() {
             return Ok(());
         }
-        Err(Error::new(
-            Code::Invalid,
-            format!(
-                "`{name}` 执行失败：\n{}\n{}\n源文件：{}",
-                String::from_utf8_lossy(&output.stdout).trim(),
-                String::from_utf8_lossy(&output.stderr).trim(),
-                source.display()
-            ),
-        ))
+        fail!(
+            Invalid,
+            "shard::driver::run_tool",
+            "`{name}` 编译失败：\n{}\n{}\n源文件：{}",
+            String::from_utf8_lossy(&output.stdout).trim(),
+            String::from_utf8_lossy(&output.stderr).trim(),
+            source.display()
+        )
     }
 
-    /// 跑一个已经编好的可执行文件，返回 `(stdout, stderr)` 原文。非零退出码报 [`Code::Unsupported`]：编得过却跑不起来说明这台机器现在跑不了，不是见证写错了。
+    /// 跑一个已经编好的可执行文件，返回 `(stdout, stderr)` 原文。非零退出码报 [`diagnostic::Code::Unsupported`]：编得过却跑不起来说明这台机器现在跑不了，不是见证写错了。
     pub fn run_exe(command: &mut Command, path: &Path, failure: &str) -> Result<(String, String)> {
         let output = command.output().map_err(|error| {
-            Error::new(Code::Io, format!("运行 {} 失败：{error}", path.display()))
+            reject!(
+                Io,
+                "shard::driver::run_exe",
+                "运行 {} 失败：{error}",
+                path.display()
+            )
         })?;
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
         if !output.status.success() {
-            return Err(Error::new(
-                Code::Unsupported,
-                format!(
-                    "{failure}（退出码 {:?}）：{}",
-                    output.status.code(),
-                    stderr.trim()
-                ),
-            ));
+            fail!(
+                Unsupported,
+                "shard::driver::run_exe",
+                "{failure}（退出码 {:?}）：{}",
+                output.status.code(),
+                stderr.trim()
+            );
         }
         Ok((String::from_utf8_lossy(&output.stdout).to_string(), stderr))
     }

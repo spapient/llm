@@ -3,7 +3,6 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
-use diagnostic::data::Table;
 use diagnostic::{Code, Error, Result};
 
 /// 静态质量门：阈值与存量债基线。
@@ -31,6 +30,73 @@ struct Debt {
     lines: Option<usize>,
     /// 登记的禁止形态数量。
     call: Option<usize>,
+}
+
+/// 一条存量债的只读登记；缺省度量仍为 `None`，不产生额外预算。
+#[derive(Debug, Clone, Copy)]
+pub struct DebtView<'a> {
+    /// 条目身份。
+    pub key: &'a str,
+    /// 圈复杂度。
+    pub ccn: Option<usize>,
+    /// 函数长度。
+    pub nloc: Option<usize>,
+    /// 文件行数。
+    pub lines: Option<usize>,
+    /// 禁止形态数量。
+    pub call: Option<usize>,
+}
+
+/// 质量门的泛型只读配置；生成物使用 `'static`，测试可借用普通局部切片。
+#[derive(Debug, Clone, Copy)]
+pub struct GateView<'a> {
+    /// 圈复杂度上限。
+    pub ccn_max: usize,
+    /// 函数长度上限。
+    pub nloc_max: usize,
+    /// 生产文件行数上限。
+    pub file_max_lines: usize,
+    /// 生产文件行数下限。
+    pub file_min_lines: usize,
+    /// 测试文件行数上限。
+    pub test_max_lines: usize,
+    /// 存量债条目。
+    pub debt: &'a [DebtView<'a>],
+    /// 行数下限存量基线。
+    pub min_lines_baseline: &'a [&'a str],
+}
+
+/// 一条闭集/位集合规登记。
+#[derive(Debug, Clone, Copy)]
+pub struct ExemptView {
+    /// crate 名。
+    pub crate_name: &'static str,
+    /// 登记理由。
+    pub reason: &'static str,
+}
+
+/// 一条 ownership 存量基线。
+#[derive(Debug, Clone, Copy)]
+pub struct UnlistedView {
+    /// crate 名。
+    pub crate_name: &'static str,
+    /// 公开类型名。
+    pub names: &'static [&'static str],
+    /// 登记理由。
+    pub reason: &'static str,
+}
+
+/// 完整词汇表的强类型视图；门禁与架构读取共用这一份。
+#[derive(Debug, Clone, Copy)]
+pub struct VocabularyView {
+    /// 静态质量门。
+    pub gate: GateView<'static>,
+    /// 手写闭集合规条目。
+    pub closed: &'static [ExemptView],
+    /// 手写位集合规条目。
+    pub bitset: &'static [ExemptView],
+    /// ownership 存量基线。
+    pub ownership_unlisted: &'static [UnlistedView],
 }
 
 impl Debt {
@@ -85,29 +151,23 @@ pub struct Over {
 impl Gate {
     /// 读取编译期生成的词汇表：`lints/vocabulary.toml` 的 `[gate]`。
     pub fn load() -> Result<Self> {
-        Self::from_table(crate::vocabulary())
+        Self::from_view(&crate::vocabulary().gate)
     }
 
-    /// 由词汇表构造阈值与存量棘轮；校验与错误文案与旧的运行期解析一致。
-    pub fn from_table(root: &Table) -> Result<Self> {
-        let table = root
-            .table("gate")
-            .ok_or_else(|| invalid("vocabulary.toml 缺 [gate]"))?;
-        let [
-            max_ccn,
-            max_nloc,
-            max_file_lines,
-            min_file_lines,
-            max_test_lines,
-        ] = thresholds(table)?;
+    /// 从强类型只读视图构造；阈值与存量条目的校验不打折。
+    pub fn from_view(view: &GateView<'_>) -> Result<Self> {
         let gate = Self {
-            max_ccn,
-            max_nloc,
-            max_file_lines,
-            min_file_lines,
-            max_test_lines,
-            debt: debts(table)?,
-            min_baseline: min_baseline(table),
+            max_ccn: view.ccn_max,
+            max_nloc: view.nloc_max,
+            max_file_lines: view.file_max_lines,
+            min_file_lines: view.file_min_lines,
+            max_test_lines: view.test_max_lines,
+            debt: debts_from_view(view.debt)?,
+            min_baseline: view
+                .min_lines_baseline
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
         };
         gate.check_thresholds().map(|()| gate)
     }
@@ -210,13 +270,12 @@ const THRESHOLDS: [&str; 5] = [
 
 /// `[gate]` 的闭集：五个阈值键 + `debt` 表与 `min_lines_baseline` 数组。拼错的键会被拒绝，而不是静默地不起作用——
 /// 一条从未被读到的「档位」比没有这条档位更糟：它让人以为门禁在管那件事。
-fn unknown_keys(table: &Table) -> Result<()> {
-    match table.entries().iter().find(|(name, _)| {
-        name != "debt" && name != "min_lines_baseline" && !THRESHOLDS.contains(&name.as_str())
-    }) {
-        Some((name, _)) => Err(invalid(&format!("[gate] 未知键 {name}"))),
-        None => Ok(()),
+/// 未知档位的唯一错误入口；构建期与测试共用同一文案。
+pub fn reject_unknown_gate_key(key: &str) -> Result<()> {
+    if key == "debt" || key == "min_lines_baseline" || THRESHOLDS.contains(&key) {
+        return Ok(());
     }
+    Err(invalid(&format!("[gate] 未知键 {key}")))
 }
 
 /// 未登记度量的失败文案；两个失败点共用一份措辞。
@@ -224,57 +283,25 @@ fn new_entry(over: &Over) -> String {
     format!("{}: 新增 {:?}={}", over.key, over.metric, over.value)
 }
 
-/// 一条门禁配置错误：与旧的运行期解析同一套文案，上下文固定为 `tools::gate`。
+/// 一条门禁配置错误：上下文固定为 `tools::gate`。
 fn invalid(message: &str) -> Error {
     Error::new(Code::Invalid, message).with("tools::gate")
 }
 
-fn int(table: &Table, key: &str) -> Result<usize> {
-    table
-        .int(key)
-        .and_then(|value| usize::try_from(value).ok())
-        .ok_or_else(|| invalid(&format!("[gate] 缺正整数 {key}")))
-}
-
-fn opt_int(table: &Table, key: &str) -> Option<usize> {
-    table.int(key).and_then(|value| usize::try_from(value).ok())
-}
-
-/// 校验键集合并按 [`THRESHOLDS`] 的顺序读出五个阈值。
-fn thresholds(table: &Table) -> Result<[usize; 5]> {
-    unknown_keys(table)?;
-    let mut limits = [0; THRESHOLDS.len()];
-    for (slot, key) in limits.iter_mut().zip(THRESHOLDS) {
-        *slot = int(table, key)?;
-    }
-    Ok(limits)
-}
-
-/// `[[gate.debt]]` 行展开成 `key → 登记度量`；没有度量的行是配置错误。
-fn debts(table: &Table) -> Result<BTreeMap<String, Debt>> {
+/// 只读存量条目 → 当前棘轮表；没有任何度量的行仍是配置错误。
+fn debts_from_view(rows: &[DebtView<'_>]) -> Result<BTreeMap<String, Debt>> {
     let mut debt = BTreeMap::new();
-    for row in table.table_array("debt").unwrap_or_default() {
-        let key = row
-            .string("key")
-            .ok_or_else(|| invalid("[gate.debt] 缺 key"))?
-            .to_string();
+    for row in rows {
         let entry = Debt {
-            ccn: opt_int(row, "ccn"),
-            nloc: opt_int(row, "nloc"),
-            lines: opt_int(row, "lines"),
-            call: opt_int(row, "call"),
+            ccn: row.ccn,
+            nloc: row.nloc,
+            lines: row.lines,
+            call: row.call,
         };
         if entry == Debt::default() {
-            return Err(invalid(&format!("[gate.debt] {key} 无度量")));
+            return Err(invalid(&format!("[gate.debt] {} 无度量", row.key)));
         }
-        debt.insert(key, entry);
+        debt.insert(row.key.to_string(), entry);
     }
     Ok(debt)
-}
-
-/// 行数下限存量基线：相对仓库根的正斜杠路径集合；缺省为空（没有豁免条目）。
-fn min_baseline(table: &Table) -> BTreeSet<String> {
-    table
-        .string_array("min_lines_baseline")
-        .map_or_default(|items| items.iter().map(ToString::to_string).collect())
 }

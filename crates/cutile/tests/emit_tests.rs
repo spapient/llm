@@ -41,3 +41,31 @@ fn assemble_puts_provenance_in_the_header() {
     assert!(source.text.ends_with("int x;\n"));
     assert_eq!(source.lang, Emit::C);
 }
+
+#[test]
+fn assemble_defines_the_c_float4_type_for_template_kernels() {
+    let profile = Profile::parse(prof::embedded("cpu").expect("cpu 档案")).expect("档案");
+    let op = prof::catalogue::named("add_f32x4")
+        .expect("向量算子")
+        .to_decl()
+        .expect("声明");
+    let variant = &op.variants[0];
+    let combo = crate::decl::expand(&op).expect("展开").remove(0);
+    let source = assemble(&profile, &op, variant, &combo, "float4 value;\n");
+    assert_eq!(
+        source
+            .text
+            .matches("typedef float float4 __attribute__((vector_size(16)));")
+            .count(),
+        1
+    );
+    assert!(source.text.ends_with("float4 value;\n"));
+    let source = assemble(&profile, &op, variant, &combo, &source.text);
+    assert_eq!(
+        source
+            .text
+            .matches(crate::printer::C_FLOAT4_TYPEDEF)
+            .count(),
+        1
+    );
+}

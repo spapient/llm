@@ -1,36 +1,12 @@
-//! 六平台执行合同（规则 0.5 / §5.12 / §5.14 的 `E_PLAT`）。
+//! 六平台执行合同：CUDA / HIP / Metal / GPU / x86 / ARM。
 //!
-//! `lld.md` 把六行固定成 **CUDA / HIP / Metal / GPU / x86 / ARM**，并且给了一条不能自证的纪律：
-//! 缺设备只能 `OPEN`，**不删行、不写成已交付**。此前这条纪律只活在文档里——代码侧没有任何地方
-//! 能回答"这一行现在什么状态"，于是"已交付"只能靠人记。本模块把那一格落成可判定的：一行 = 一份
-//! 静态合同（[`Row`]）+ 一条带证据的状态（[`Standing`]），判定经由宿主证词（[`Host`]），
-//! 缺证据就返回 `E_PLAT`。
-//!
-//! # 四个决定
-//!
-//! **状态只有两种，而且互不替代**：[`Standing::Covered`] 必带证据串、[`Standing::Open`] 必带理由
-//! [`Why`]。没有"大概能跑"这第三种状态——那正是 `E_PLAT` 要禁止的：`OPEN` 不等于降到 Should
-//! （§1.12），也不等于"先按已交付算"。
-//!
-//! **CPU 行的证据是架构本身，不是工具链**：x86 / ARM 两行的 `Covered` 由 [`Host::arch`] 直接推，
-//! 不经过 [`Host::device`]。这样任何宿主实现都无法把"x86 行覆盖"写成一句空话（例如让
-//! `device(row) = true` 一劳永逸），也不需要为 CPU 行另造一次编译器探测。
-//!
-//! **设备行要两件**：设备探测位 + 编译器实测身份。少一件就 `OPEN`，但两种缺法的理由分开报
-//! （[`Why::NoDevice`] / [`Why::NoToolchain`]）——"这台机器没有 A800"与"这台机器有 GPU 却装不上
-//! nvcc"对结论的影响完全不同，合成一句"不可用"会让台账失去诊断价值。
-//!
-//! **GPU 行不另开第七行**：非 CUDA / 非 HIP / 非 Metal 的通用 GPU 合同（厂商 MMA + 同构 ABI）
-//! 就是 [`Row::Gpu`]，`vulkan` / `sycl` / `spirv` 都映射进它。[`Row::from_language`] 是这张映射表
-//! 的唯一入口，多开一行等于把"六平台"偷偷改成七平台。
-//!
-//! # 本模块不拥有什么
-//!
-//! 不测数值、不判 E6 的通过率（那是协议卡 `tools::card` 的事）、不编译内核（`backends` /
-//! `dialect`）、不碰设备内存（`metal`）。它只回答"这一行现在能不能开门"，以及开门时手里那张
-//! 证据长什么样。
+//! 每行由静态 [`Row`]、宿主 [`Host`] 与 [`Standing`] 共同判定；缺证据只能为 `OPEN`，
+//! 调用 [`require`] 时返回 `E_PLAT`，不得删除行或写成已交付。
+//! CPU 行以架构为证据；设备行必须同时具备设备与编译器证据，缺失原因由 [`Why`] 区分。
+//! 通用 GPU 统一归入 [`Row::Gpu`]，语言映射只由 [`Row::from_language`] 定义。
+//! 本模块不执行数值对拍或内核编译，只判定合同是否覆盖及其证据。
 
-use crate::toolchain::{Toolchain, parse_version, probe};
+use crate::toolchain::{Toolchain, probe, probe_with};
 use diagnostic::{Code, Error, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -475,28 +451,13 @@ pub(crate) fn musa_device() -> bool {
 
 /// 探测 Metal 编译器（`xcrun metal --version`）：命令可用、能自报版本时才算数。
 pub(crate) fn detect_metal() -> Option<Toolchain> {
-    METAL.get_or_init(probe_metal).clone()
-}
-
-fn probe_metal() -> Option<Toolchain> {
-    let output = Command::new("xcrun")
-        .args(["-sdk", "macosx", "metal", "--version"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&output.stdout).to_string()
-        + &String::from_utf8_lossy(&output.stderr);
-    Some(Toolchain {
-        command: "xcrun metal".to_string(),
-        version: parse_version(&text),
-        banner: text
-            .lines()
-            .map(str::trim)
-            .find(|line| !line.is_empty())?
-            .to_string(),
-    })
+    METAL
+        .get_or_init(|| {
+            let mut tool = probe_with("xcrun", &["-sdk", "macosx", "metal"])?;
+            tool.command = "xcrun metal".to_string();
+            Some(tool)
+        })
+        .clone()
 }
 
 /// 定位 MSVC cl.exe（Windows 上 nvcc 的宿主编译器）：先问 `vswhere`，再退回环境变量登记的两个

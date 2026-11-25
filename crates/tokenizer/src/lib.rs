@@ -79,6 +79,10 @@ mod delegates {
 
 mod bpe;
 mod bytes;
+/// 词表中性线格式；实现与词表值对象同住在 `vocab`。
+pub mod codec {
+    pub use crate::vocab::{decode_vocab, encode_vocab};
+}
 mod encoding;
 #[doc(hidden)]
 pub mod fixtures;
@@ -89,11 +93,11 @@ mod vocab;
 
 pub use bpe::Bpe;
 pub use bytes::Bytes;
+pub use codec::{decode_vocab, encode_vocab};
 pub use encoding::{DecoderStream, Encoding};
 pub use special::SpecialTokens;
 pub use strategy::{PadDirection, Padding, Strategy, Truncation};
 pub use unigram::Unigram;
-pub use vocab::codec::{decode_vocab, encode_vocab};
 pub use vocab::{Fingerprint, Merge, Vocab, VocabFamily, VocabSource};
 
 use diagnostic::Result;

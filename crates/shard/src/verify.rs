@@ -1,8 +1,7 @@
 //! `verify`：逐设备把三件事钉在一起——见证跑通、协商选中首档、内核与标量参考对拍（README §11）。
 
-use crate::build;
 use crate::gate::LanguageGate;
-use crate::pipeline::{Prepared, Run, parse_shape, rejected_shapes, verify_shapes};
+use crate::pipeline::{DeviceOutcome, Prepared, Run, parse_shape, rejected_shapes, verify_shapes};
 use crate::toolchain;
 use crate::witness;
 use cutile::builtin::Catalogue;
@@ -53,6 +52,8 @@ pub struct Verified {
     pub key: String,
     /// 编译产物：形状矩阵的每一项一份（`reused` 为真表示那次没调用编译器）。
     pub artifacts: Vec<Artifact>,
+    /// 全部形状的真实 harness 计时样本；CUDA 不生成 Artifact，但同样保留计时。
+    pub timing: crate::runner::Timing,
 }
 
 /// 设备通道跑的是哪一份程序。
@@ -82,7 +83,7 @@ impl Channel {
 #[derive(Debug, Clone, PartialEq)]
 pub enum VerifyEntry {
     /// 编译、执行、对拍都在容差内。
-    Passed(Verified),
+    Passed(Box<Verified>),
     /// 未通过；`label` 是档案的呈现名（`vendor(id)`，没有档案时就是用户给的设备名）。
     Failed {
         /// 呈现名。
@@ -239,6 +240,18 @@ pub fn verify(
     op_name: &str,
     devices: &[String],
 ) -> diagnostic::Result<VerifyReport> {
+    verify_with_repeat(catalogue, dirs, op_name, devices, 1)
+}
+
+/// 与 [`verify`] 相同，但每个形状用给定重复次数产生真实计时样本；零按一次处理。
+pub fn verify_with_repeat(
+    catalogue: &Catalogue,
+    dirs: &Dirs,
+    op_name: &str,
+    devices: &[String],
+    repeat: usize,
+) -> diagnostic::Result<VerifyReport> {
+    let repeat = repeat.max(1);
     let op = catalogue
         .op(op_name)
         .ok_or_else(|| Error::new(Code::Missing, format!("没有算子 `{op_name}`")))?;
@@ -247,14 +260,20 @@ pub fn verify(
         devices: devices.to_vec(),
         entries: devices
             .iter()
-            .map(|device| one_device(op, catalogue, dirs, device))
+            .map(|device| one_device(op, catalogue, dirs, device, repeat))
             .collect(),
         negotiations: negotiations(op, catalogue, devices),
     })
 }
 
 /// 一台设备的结果：先取档案，再跑见证，最后才轮到形状对拍。回答什么：这次通过还是失败；不回答什么：失败该不该让整次 `verify` 退出。
-fn one_device(op: &OpDecl, catalogue: &Catalogue, dirs: &Dirs, device: &str) -> VerifyEntry {
+fn one_device(
+    op: &OpDecl,
+    catalogue: &Catalogue,
+    dirs: &Dirs,
+    device: &str,
+    repeat: usize,
+) -> VerifyEntry {
     let profile = match catalogue.resolve(device) {
         Ok(profile) => profile,
         Err(error) => {
@@ -270,14 +289,14 @@ fn one_device(op: &OpDecl, catalogue: &Catalogue, dirs: &Dirs, device: &str) -> 
     let proof = evidence.proof(profile);
     let done = match evidence.failure {
         Some(error) => Err(error),
-        None => verify_one(op, profile, dirs, &proof),
+        None => verify_one_with_repeat(op, profile, dirs, &proof, repeat),
     };
     match done {
         Ok(mut verified) => {
             verified.device = device.to_string();
             verified.witnesses = evidence.device;
             verified.self_checked = evidence.host;
-            VerifyEntry::Passed(verified)
+            VerifyEntry::Passed(Box::new(verified))
         }
         Err(error) => VerifyEntry::Failed {
             label,
@@ -330,12 +349,23 @@ fn gate_parts(gate: &LanguageGate) -> Option<String> {
 ///
 /// # Errors
 ///
-/// 设备不是 C 参考通道、缺编译器、协商失败、编译执行失败或任一对拍判据不成立。
+/// 设备语言没有执行前端、缺编译器、协商失败、编译执行失败或任一对拍判据不成立。
 pub fn verify_one(
     op: &OpDecl,
     profile: &Profile,
     dirs: &Dirs,
     proof: &Proof,
+) -> diagnostic::Result<Verified> {
+    verify_one_with_repeat(op, profile, dirs, proof, 1)
+}
+
+/// 单设备逐形状对拍，并保留每个形状的重复执行计时。
+pub fn verify_one_with_repeat(
+    op: &OpDecl,
+    profile: &Profile,
+    dirs: &Dirs,
+    proof: &Proof,
+    repeat: usize,
 ) -> diagnostic::Result<Verified> {
     let run = Run::new(op, profile, proof.clone())?;
     let tool = host_tool(profile)?;
@@ -348,6 +378,7 @@ pub fn verify_one(
     Sweep {
         run: &run,
         dirs,
+        repeat: repeat.max(1),
         tool,
         path,
         tolerance: cutile::reference::tolerance(run.model.dtype),
@@ -357,21 +388,23 @@ pub fn verify_one(
 }
 
 fn host_tool(profile: &Profile) -> diagnostic::Result<Option<toolchain::Toolchain>> {
-    if profile.meta.emit == Emit::C {
-        return Ok(toolchain::detect());
+    match profile.meta.emit {
+        Emit::C => Ok(toolchain::detect()),
+        Emit::Cuda => Ok(toolchain::probe(&profile.meta.tool)),
+        _ => Err(Error::new(
+            Code::Unsupported,
+            format!(
+                "设备 `{}` 的生产态 verify 走 prof::runtime FFI 后端岛；shard 当前通道为 C 与 CUDA",
+                profile.meta.id
+            ),
+        )),
     }
-    Err(Error::new(
-        Code::Unsupported,
-        format!(
-            "设备 `{}` 的生产态 verify 走 prof::runtime FFI 后端岛，shard 只保留 C 参考通道",
-            profile.meta.id
-        ),
-    ))
 }
 
 struct Sweep<'a> {
     run: &'a Run<'a>,
     dirs: &'a Dirs,
+    repeat: usize,
     tool: Option<toolchain::Toolchain>,
     path: Path,
     tolerance: f64,
@@ -388,15 +421,30 @@ impl Sweep<'_> {
 
     fn cell(&mut self, shape: (u64, u64)) -> diagnostic::Result<()> {
         let (sample, prepared) = self.prepare(shape)?;
-        self.verified.channel = Channel::Reference;
-        let (bits, artifact) = self.host(&sample, &prepared)?;
+        self.verified.channel = channel(self.run.profile.meta.emit);
+        let (bits, timing, artifact) = self.host(&sample, &prepared)?;
+        self.record_cell(sample, prepared, shape, bits, timing, artifact)
+    }
+
+    /// 对拍与结果登记同组，执行路径只负责产出证据。
+    fn record_cell(
+        &mut self,
+        sample: Sample,
+        prepared: Prepared,
+        shape: (u64, u64),
+        bits: Vec<f32>,
+        timing: crate::runner::Timing,
+        artifact: Option<Artifact>,
+    ) -> diagnostic::Result<()> {
         let want = (self.run.model.reference)(&sample)?;
+        let want = want.as_f32()?;
         let expect = sample.buf("y").map_or(sample.n, |y| y.values.len());
-        let error = parity(&bits, &want, expect, shape, self.tolerance)?;
+        let error = parity(&bits, want, expect, shape, self.tolerance)?;
         let out = &mut self.verified;
         out.max_rel_err = out.max_rel_err.max(error);
         out.shapes.push(shape);
         out.artifacts.extend(artifact);
+        out.timing.samples_ns.extend(timing.samples_ns);
         out.fragment = Fragment::new(prepared.source.lines());
         out.key = prepared.key.hex();
         out.tile = prepared.plan.tile.to_string();
@@ -410,20 +458,24 @@ impl Sweep<'_> {
         Ok((sample, prepared))
     }
 
-    fn host(
-        &self,
-        sample: &Sample,
-        prepared: &Prepared,
-    ) -> diagnostic::Result<(Vec<f32>, Option<Artifact>)> {
-        let program = prepared.harness(self.run.op, sample, 1)?;
-        let (outcome, artifact) = build::execute(
+    fn host(&self, sample: &Sample, prepared: &Prepared) -> diagnostic::Result<DeviceOutcome> {
+        let program = prepared.harness(self.run.op, sample, self.repeat)?;
+        crate::pipeline::run_backend(
             self.run.profile,
-            self.tool.as_ref(),
-            &prepared.key,
-            &program,
             self.dirs,
-        )?;
-        Ok((outcome.bits, Some(artifact)))
+            prepared,
+            &program,
+            &self.run.op.name,
+            self.tool.as_ref(),
+        )
+    }
+}
+
+fn channel(emit: Emit) -> Channel {
+    match emit {
+        Emit::C => Channel::Reference,
+        Emit::Cuda => Channel::Parallel,
+        _ => Channel::Harness,
     }
 }
 
@@ -446,6 +498,7 @@ fn blank(run: &Run<'_>, tool: Option<&toolchain::Toolchain>) -> Verified {
         flags: run.profile.flags.join(" "),
         key: String::new(),
         artifacts: Vec::new(),
+        timing: crate::runner::Timing::default(),
     }
 }
 
@@ -456,23 +509,14 @@ fn parity(
     (m, n): (u64, u64),
     tolerance: f64,
 ) -> diagnostic::Result<f64> {
-    if bits.len() != expect {
-        return Err(Error::new(
-            Code::Invalid,
-            format!(
-                "形状 {m}x{n}：内核只输出 {} 个数，期望 {expect}",
-                bits.len()
-            ),
-        ));
-    }
-    let error = cutile::reference::max_rel_err(bits, want);
-    if error > tolerance {
-        return Err(Error::new(
-            Code::Invalid,
-            format!("形状 {m}x{n} 对拍失败：max_rel_err {error:.3e} > {tolerance:.0e}"),
-        ));
-    }
-    Ok(error)
+    crate::pipeline::parity(
+        bits,
+        want,
+        expect,
+        tolerance,
+        &format!("形状 {m}x{n}"),
+        Code::Invalid,
+    )
 }
 
 fn check_rejected_shapes(group: u64) -> diagnostic::Result<()> {

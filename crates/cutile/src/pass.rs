@@ -269,7 +269,8 @@ fn fold_binary(expression: &Expr) -> Option<Expr> {
     let (Expr::F32(left), Expr::F32(right)) = (left.as_ref(), right.as_ref()) else {
         return None;
     };
-    finite(op.apply(f32::from_bits(*left), f32::from_bits(*right)))
+    op.apply(f32::from_bits(*left), f32::from_bits(*right))
+        .and_then(finite)
 }
 
 /// 一元组合子字面量折叠：子项是字面量时按算子表求值；非有限结果留给目标端 IEEE 语义。
@@ -407,6 +408,198 @@ fn fuse_multiply_add(expression: Expr) -> Option<Expr> {
         });
     }
     None
+}
+
+// ── 完整程序：同一表达式规约 + 死形参消除 ───────────────────────────────
+
+use crate::kernel::{Parameter, Program, Statement};
+
+/// 对完整程序执行一次自底向上规范化，再删除未引用形参；入口与出口都过类型闸。
+pub(crate) fn optimize_program(mut program: Program<'_>) -> Result<Program<'_>, VerificationError> {
+    program.verify()?;
+    normalize_statements(program.body_mut());
+    let used = used_params(program.params(), program.body());
+    program
+        .params_mut()
+        .retain(|param| used.contains(&param.name));
+    for helper in program.helpers_mut() {
+        normalize_statements(&mut helper.body);
+        let used = used_params(&helper.params, &helper.body);
+        helper.params.retain(|param| used.contains(&param.name));
+    }
+    program.verify()?;
+    Ok(program)
+}
+
+fn used_params(params: &[Parameter], body: &[Statement]) -> Vec<String> {
+    params
+        .iter()
+        .filter(|param| statements_mention(body, &param.name))
+        .map(|param| param.name.clone())
+        .collect()
+}
+
+fn normalize_statements(statements: &mut [Statement]) {
+    for statement in statements {
+        normalize_statement(statement);
+    }
+}
+
+fn normalize_statement(statement: &mut Statement) {
+    match statement {
+        Statement::Decl(_) | Statement::Expr(_) | Statement::Return(_) => {
+            normalize_simple(statement)
+        }
+        Statement::Atom(call) => normalize_atom(call),
+        other => normalize_control(other),
+    }
+}
+
+fn normalize_simple(statement: &mut Statement) {
+    match statement {
+        Statement::Decl(local) => normalize_optional(&mut local.init),
+        Statement::Expr(value) => normalize_slot(value),
+        Statement::Return(value) => normalize_optional(value),
+        _ => {}
+    }
+}
+
+fn normalize_atom(call: &mut crate::kernel::AtomCall) {
+    for arg in &mut call.args {
+        if let crate::kernel::AtomArg::Expr(value) = arg {
+            normalize_slot(value);
+        }
+    }
+}
+
+fn normalize_control(statement: &mut Statement) {
+    match statement {
+        Statement::Block(body) => normalize_statements(body),
+        Statement::For {
+            init,
+            condition,
+            step,
+            body,
+        } => normalize_for(init, condition, step, body),
+        Statement::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            normalize_slot(condition);
+            normalize_statements(then_branch);
+            normalize_statements(else_branch);
+        }
+        _ => {}
+    }
+}
+
+fn normalize_for(
+    init: &mut Option<Box<Statement>>,
+    condition: &mut Option<Expr>,
+    step: &mut Option<Expr>,
+    body: &mut [Statement],
+) {
+    if let Some(init) = init {
+        normalize_statement(init);
+    }
+    normalize_optional(condition);
+    normalize_optional(step);
+    normalize_statements(body);
+}
+
+fn normalize_optional(value: &mut Option<Expr>) {
+    if let Some(value) = value {
+        normalize_slot(value);
+    }
+}
+
+fn normalize_slot(value: &mut Expr) {
+    *value = normalize(value.clone());
+}
+
+fn statements_mention(statements: &[Statement], name: &str) -> bool {
+    statements
+        .iter()
+        .any(|statement| statement_mentions(statement, name))
+}
+
+fn statement_mentions(statement: &Statement, name: &str) -> bool {
+    match statement {
+        Statement::Decl(_) | Statement::Expr(_) | Statement::Return(_) => {
+            simple_mentions(statement, name)
+        }
+        Statement::Atom(call) => atom_mentions(call, name),
+        other => control_mentions(other, name),
+    }
+}
+
+fn simple_mentions(statement: &Statement, name: &str) -> bool {
+    match statement {
+        Statement::Decl(local) => local
+            .init
+            .as_ref()
+            .is_some_and(|value| expr_mentions(value, name)),
+        Statement::Expr(value) => expr_mentions(value, name),
+        Statement::Return(value) => value
+            .as_ref()
+            .is_some_and(|value| expr_mentions(value, name)),
+        _ => false,
+    }
+}
+
+fn atom_mentions(call: &crate::kernel::AtomCall, name: &str) -> bool {
+    call.args.iter().any(|arg| match arg {
+        crate::kernel::AtomArg::Expr(value) => expr_mentions(value, name),
+        crate::kernel::AtomArg::Named { value, .. } => value == name,
+    })
+}
+
+fn control_mentions(statement: &Statement, name: &str) -> bool {
+    match statement {
+        Statement::Block(body) => statements_mention(body, name),
+        Statement::For {
+            init,
+            condition,
+            step,
+            body,
+        } => for_mentions(init, condition, step, body, name),
+        Statement::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => if_mentions(condition, then_branch, else_branch, name),
+        _ => false,
+    }
+}
+
+fn if_mentions(
+    condition: &Expr,
+    then_branch: &[Statement],
+    else_branch: &[Statement],
+    name: &str,
+) -> bool {
+    expr_mentions(condition, name)
+        || statements_mention(then_branch, name)
+        || statements_mention(else_branch, name)
+}
+
+fn for_mentions(
+    init: &Option<Box<Statement>>,
+    condition: &Option<Expr>,
+    step: &Option<Expr>,
+    body: &[Statement],
+    name: &str,
+) -> bool {
+    init.as_deref()
+        .is_some_and(|init| statement_mentions(init, name))
+        || condition
+            .as_ref()
+            .is_some_and(|value| expr_mentions(value, name))
+        || step
+            .as_ref()
+            .is_some_and(|value| expr_mentions(value, name))
+        || statements_mention(body, name)
 }
 
 #[cfg(test)]

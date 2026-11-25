@@ -102,3 +102,56 @@ fn equally_specific_profiles_are_ambiguous() {
     assert_eq!(error.code(), Code::Invalid);
     assert!(error.to_string().contains("同等具体"), "{error}");
 }
+
+fn a3000() -> Detected {
+    Detected::new()
+        .with("cc", "8.6")
+        .with("name", "NVIDIA RTX A3000 12GB Laptop GPU")
+}
+
+#[test]
+fn nvidia_smi_parser_preserves_names_and_rejects_incomplete_rows() {
+    let parsed = parse_nvidia_smi(
+        "NVIDIA RTX A3000 12GB Laptop GPU, 8.6\n\"RTX, Test\",9.0\nmissing comma\n,\n",
+    );
+    assert_eq!(parsed.len(), 2);
+    assert_eq!(parsed[0].get("cc"), Some("8.6"));
+    assert_eq!(parsed[0].get("kind"), Some("gpu"));
+    assert_eq!(parsed[0].get("api"), Some("cuda"));
+    assert_eq!(parsed[1].get("name"), Some("RTX, Test"));
+    assert_eq!(parsed[1].get("cc"), Some("9.0"));
+}
+
+#[test]
+fn automatic_selection_falls_back_to_cpu_without_an_accelerator() {
+    let catalogue = Catalogue::try_builtin().expect("内置数据");
+    let chosen = select_detected(catalogue.profiles(), &[detect_cpu(), fake("sparc")])
+        .expect("无加速器时必须回退 CPU");
+    assert_eq!(chosen.meta.vendor, "cpu");
+}
+
+#[test]
+fn automatic_selection_prefers_a3000_and_deduplicates_equal_cards() {
+    let catalogue = Catalogue::try_builtin().expect("内置数据");
+    let chosen = select_detected(catalogue.profiles(), &[detect_cpu(), a3000(), a3000()])
+        .expect("CPU 与同型号双卡不能形成歧义");
+    assert_eq!(chosen.meta.vendor, "nvidia_a3000");
+    assert_eq!(chosen.meta.id, "sm86");
+}
+
+#[test]
+fn equally_specific_different_gpus_require_an_explicit_device() {
+    let catalogue = Catalogue::try_builtin().expect("内置数据");
+    let error = select_detected(catalogue.profiles(), &[fake("nvidia"), a3000()])
+        .expect_err("T600 与 A3000 同分时不应随机选卡");
+    assert_eq!(error.code(), Code::Invalid);
+    assert!(error.to_string().contains("显式指定设备"), "{error}");
+}
+
+#[test]
+fn no_matching_detected_device_is_an_explicit_error() {
+    let catalogue = Catalogue::try_builtin().expect("内置数据");
+    let error =
+        select_detected(catalogue.profiles(), &[fake("sparc")]).expect_err("未知设备不能静默回退");
+    assert_eq!(error.code(), Code::Unsupported);
+}

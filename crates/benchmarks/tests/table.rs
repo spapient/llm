@@ -52,6 +52,7 @@ macro_rules! row {
 
 pub(crate) const SCENARIOS: &[Scenario] = &[
     row!(Scenario, "gemv_f32", "decode_1x4096x4096", backend: "cpu-reference", op: "gemv_f32", shape: &[4096, 4096], dtype: "f32", batch: 1, bounds: (4096, 4096)),
+    row!(Scenario, "elementwise/add_f32", "forward", backend: "cpu-reference", op: "add_f32", shape: &[65_536], dtype: "f32", batch: 1, bounds: (65_536, 1)),
     row!(Scenario, "softmax_f32", "decode_1x4096", backend: "cpu-reference", op: "softmax_f32", shape: &[4096], dtype: "f32", batch: 1, bounds: (4096, 1)),
     row!(Scenario, "rope_f32", "decode_1x4096", backend: "cpu-reference", op: "rope_f32", shape: &[4096], dtype: "f32", batch: 1, bounds: (4096, 1)),
     row!(Scenario, "rmsnorm_f32", "decode_1x4096", backend: "cpu-reference", op: "rmsnorm_f32", shape: &[4096], dtype: "f32", batch: 1, bounds: (4096, 1)),

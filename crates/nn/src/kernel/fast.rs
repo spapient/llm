@@ -6,9 +6,11 @@ use std::thread;
 use diagnostic::{Code, Error, Result};
 use tensor::View;
 
+#[path = "fast/pack.rs"]
 mod pack;
+use pack::micro;
+#[path = "fast/pool.rs"]
 mod pool;
-
 // 面板暂存池、线程数、对齐助手都是设备无关的公共件，本体单点住在 `cutile::native`，
 // 这里只重导出别名供本族子模块经 `super::` 引用；nn 不持有这些实现（B-1 收口）。
 pub(super) use cutile::native::{align_up, threads_override, with_panels};
@@ -19,146 +21,10 @@ use pack::{pack_b_f32_into, pack_b_f32_par_into, pack_panels_into};
 use pool::{Bufs, Shape, pool, run_pooled};
 
 /// 端口峰值探针只在测量容器里导出（`bench` 特性），生产构建看不到它；本体在 `cutile::native::sme`。
-#[cfg(all(feature = "bench", nightly, target_arch = "aarch64"))]
+#[cfg(all(feature = "bench", target_arch = "aarch64"))]
 pub use cutile::native::sme::{port_mix, port_run};
 
-mod tn {
-    //! 线性层布局（TN）的稠密 f32 GEMM：`out[rows,n] = x[rows,k] · w[n,k]ᵀ`。
-    use tensor::View;
-
-    use super::pack::{group_panel, pack_panel};
-    use super::pool::{Bufs, Shape, pool, run_pooled};
-    use super::{Layout, MR, NR, align_up, threads_override};
-
-    /// 走这条入口的最少行数：一个完整微内核行块。再少的批只有残行（标量），打包的转置成本摊不回来，
-    /// 调用方应当继续用按列驻留的 tile 核。
-    pub const MIN_ROWS: usize = MR;
-
-    /// 多线程 TN 稠密 GEMM：`out[rows,n] = x[rows,k] · w[n,k]ᵀ`。
-    ///
-    /// 语义同 [`crate::matmul::forward_tn_tiled`]（同一组累加口径，IEEE 容差内一致），吞吐按父模块的
-    /// 8×8 寄存器分块 + 常驻池给。
-    ///
-    /// # Panics
-    ///
-    /// 三条缓冲长度不足 `rows·k` / `n·k` / `rows·n` 时 panic（调用方先校验）。
-    pub fn gemm_f32_tn(x: View<'_, f32>, w: View<'_, f32>, out: &mut [f32]) {
-        let (rows, n, k) =
-            crate::matmul::tn_geom(x.dims(), w.dims()).expect("gemm_f32_tn 几何不符");
-        let (x, w) = (x.as_slice(), w.as_slice());
-        super::check_dims(x, w, rows, n, k, out);
-        let t = threads_override().min(rows.div_ceil(MR)).max(1);
-        if t <= 1 {
-            single_tn(x, w, rows, n, k, out);
-            return;
-        }
-        if !pooled_tn(x, w, rows, n, k, out, t) {
-            scoped_tn(x, w, out, rows, n, k, t);
-        }
-    }
-
-    /// 单线程：整段打包一次，再按行块算完整段 K。
-    fn single_tn(x: &[f32], w: &[f32], rows: usize, n: usize, k: usize, out: &mut [f32]) {
-        let npad = align_up(n, NR);
-        super::with_panels(npad * k, |bpack| {
-            pack_tn_into(bpack, w, n, k);
-            compute_tn(x, bpack, w, rows, n, k, out);
-        });
-    }
-
-    /// 常驻池路径；池不可用（参与数不足 2）时返回 `false`，由 [`scoped_tn`] 兜底。
-    fn pooled_tn(
-        x: &[f32],
-        w: &[f32],
-        rows: usize,
-        n: usize,
-        k: usize,
-        out: &mut [f32],
-        t: usize,
-    ) -> bool {
-        let npad = align_up(n, NR);
-        super::with_panels(npad * k, |buf| {
-            run_pooled(
-                pool(),
-                Bufs {
-                    a: x.as_ptr() as *const u8,
-                    b: w.as_ptr() as *const u8,
-                    buf: buf.as_mut_ptr() as *mut u8,
-                    out: out.as_mut_ptr() as *mut u8,
-                },
-                Shape {
-                    m: rows,
-                    n,
-                    k,
-                    npad,
-                    tn: true,
-                },
-                MR,
-                t,
-                super::f32_pack,
-                super::f32_calc,
-            )
-        })
-    }
-
-    /// 兜底（池不可用）：打包一次后 shared 给 scope 线程，行块按 MR 对齐切。
-    fn scoped_tn(x: &[f32], w: &[f32], out: &mut [f32], rows: usize, n: usize, k: usize, t: usize) {
-        let npad = align_up(n, NR);
-        let per = rows.div_ceil(MR).div_ceil(t) * MR;
-        super::with_panels(npad * k, |bpack| {
-            pack_tn_into(bpack, w, n, k);
-            let bp: &[f32] = bpack;
-            std::thread::scope(|s| {
-                for (ti, block) in out[..rows * n].chunks_mut(per * n).enumerate() {
-                    let r0 = ti * per;
-                    let got = block.len() / n;
-                    let a_l = &x[r0 * k..(r0 + got) * k];
-                    s.spawn(move || compute_tn(a_l, bp, w, got, n, k, block));
-                }
-            });
-        });
-    }
-
-    /// 整段打包（单槽、兜底路径与单线程用）：面板布局与父模块一致，只是源按 `[n][k]` 读。
-    fn pack_tn_into(bpack: &mut [f32], w: &[f32], n: usize, k: usize) {
-        let npad = align_up(n, NR);
-        debug_assert_eq!(bpack.len(), npad * k);
-        for g in 0..npad / NR {
-            pack_panel(w, bpack, n, k, g * NR, g * k * NR, true);
-        }
-    }
-
-    /// 本槽负责的列组按 `p` 步长轮转，别槽的列组由别槽打包（与父模块同一套分工）。
-    pub(super) fn stage(
-        w: &[f32],
-        buf: &mut [f32],
-        n: usize,
-        k: usize,
-        npad: usize,
-        p: usize,
-        slot: usize,
-    ) {
-        group_panel::<f32, NR, false>(w, buf, n, k, npad, p, slot, true);
-    }
-
-    /// 共用父模块行机器，只固定 TN 布局。
-    pub(super) fn compute_tn(
-        a: &[f32],
-        bpack: &[f32],
-        w: &[f32],
-        rows: usize,
-        n: usize,
-        k: usize,
-        out: &mut [f32],
-    ) {
-        super::compute_rows(a, bpack, w, super::Extent { rows, n, k }, out, Layout::Tn);
-    }
-
-    #[cfg(test)]
-    mod tests {
-        include!("../../tests/kernel_tn_tests.rs");
-    }
-}
+use pack::tn;
 pub use tn::{MIN_ROWS, gemm_f32_tn};
 
 // f32 NEON 瓦片几何：单一事实源在 `cutile::native::f32`，这里重导出别名供本族子模块经
@@ -415,70 +281,323 @@ fn sweep_columns(sweep: Sweep<'_>, out: &mut [f32], k0: usize, kb: usize, first:
     }
 }
 
-mod i8;
-mod micro {
-    //! 微内核整行块扫描坐标与标量残块兜底；微内核本体在 `cutile::native`。
+mod i8 {
+    //! 职责：i8 sdot 微内核的**打包、扫描与调度骨架**。
+    // i8 sdot 通道：MR=4 × NR=4，B 转置打包成「每列 k 连续」。瓦片本体（aarch64 dotprod
+    // `sdot_tile` / `dot_one` / `harvest`）与端口探针已上提 `cutile::native::i8`；本文件只留
+    // 面板打包、行块扫描、标量兜底与多线程分派，不持 arch/feature 门与汇编片段。
+    // ---------------------------------------------------------------------------
 
-    #[derive(Clone, Copy)]
-    pub(super) struct Sweep<'a> {
-        pub(super) a: &'a [f32],
-        pub(super) apack: &'a [f32],
-        pub(super) bpack: &'a [f32],
-        pub(super) w: &'a [f32],
-        pub(super) full: usize,
-        pub(super) n: usize,
-        pub(super) k: usize,
-        pub(super) layout: Layout,
+    /// i8 微内核行数（四行共享同一 B 向量，摊薄 B 加载）。
+    use std::thread;
+
+    use diagnostic::{Code, Error, Result};
+    use tensor::View;
+
+    use super::align_up;
+    use super::compute_gemm;
+    use super::pack::{b_groups, group_panel};
+    use super::pool::{Bufs, Job, Shape, pool, run_pooled};
+    use super::threads_override;
+    use super::tn;
+
+    // i8 sdot 瓦片几何：单一事实源在 `cutile::native::i8_geo`，重导出别名供本模块与经 `super::` 引用的用例。
+    pub(super) use cutile::native::i8_geo::{MR as I8_MR, NR as I8_NR};
+
+    // 瓦片坐标与 dotprod 分派入口住在 prof 岛：探测、`target_feature` 与 `unsafe` 全收在岛内。
+    use cutile::native::i8::{Gram, dot_block};
+
+    /// 行块高度：让 A 的 `rc × k` 字节留在 L1（约 128KiB），否则每个列块都要从 L2 重拉整块 A。
+    ///
+    /// 「留住」这个假设已被实测证伪：`rc` 扫 112 / 64 / 32 与默认 128 在噪声内无差
+    /// （默认 309.1、366.7 Gelem/s；`rc=112` 304.4、346.4），见 `docs/lld.md` v3.0.40。
+    fn row_chunk(k: usize) -> usize {
+        ((1usize << 17) / k.max(1)).clamp(I8_MR, 256)
     }
 
-    #[derive(Clone, Copy)]
-    pub(super) struct Span {
-        pub(super) i: usize,
-        pub(super) j: usize,
-        pub(super) mr: usize,
-        pub(super) nr: usize,
-        pub(super) n: usize,
-        pub(super) k: usize,
-        pub(super) stride: usize,
-    }
-
-    #[derive(Clone, Copy)]
-    pub(super) enum Layout {
-        Nt,
-        Tn,
-    }
-
-    pub(super) fn weight_stride(span: Span, k0: usize, layout: Layout) -> (usize, usize, usize) {
-        match layout {
-            Layout::Nt => (k0 * span.n + span.j, span.n, 1),
-            Layout::Tn => (span.j * span.stride + k0, 1, span.stride),
+    /// 打包阶段：本槽负责的列组按 `p` 步长轮转，别槽的列组由别槽打包（列主面板走泛型轮转体）。
+    #[allow(unsafe_code)]
+    pub(super) fn i8_pack(j: &Job, slot: usize) {
+        unsafe {
+            let b = std::slice::from_raw_parts(j.b as *const i8, j.k * j.n);
+            let bp = std::slice::from_raw_parts_mut(j.buf as *mut i8, j.npad * j.k);
+            group_panel::<i8, I8_NR, true>(b, bp, j.n, j.k, j.npad, j.p, slot, false);
         }
     }
 
-    pub(super) fn edge(
-        a: &[f32],
-        w: &[f32],
-        out: &mut [f32],
-        span: Span,
-        k0: usize,
-        first: bool,
-        layout: Layout,
-    ) {
-        let (base, dp, dc) = weight_stride(span, k0, layout);
-        for r in 0..span.mr {
-            for c in 0..span.nr {
-                let slot = (span.i + r) * span.n + span.j + c;
-                let mut acc = if first { 0.0f32 } else { out[slot] };
-                let wc = base + c * dc;
-                for p in 0..span.k {
-                    acc += a[(span.i + r) * span.stride + k0 + p] * w[wc + p * dp];
-                }
-                out[slot] = acc;
+    /// 计算阶段：只算本槽的行段，`bpack` 由 Barrier 保证整块就绪。
+    pub(super) fn i8_calc(j: &Job, slot: usize) {
+        let r0 = slot * j.rows_per;
+        if r0 >= j.m {
+            return;
+        }
+        let rows = (j.m - r0).min(j.rows_per);
+        #[allow(unsafe_code)]
+        unsafe {
+            let a_l = std::slice::from_raw_parts(j.a as *const i8, j.m * j.k);
+            let a_l = &a_l[r0 * j.k..(r0 + rows) * j.k];
+            let b_l = std::slice::from_raw_parts(j.buf as *const i8, j.npad * j.k);
+            let out_l = std::slice::from_raw_parts_mut(j.out as *mut i32, j.m * j.n);
+            let out_l = &mut out_l[r0 * j.n..(r0 + rows) * j.n];
+            compute_i8_packed(a_l, b_l, j.npad, rows, j.n, j.k, out_l);
+        }
+    }
+
+    /// f32 打包体：本槽负责的 8 列组按 `p` 步长轮转，写入 `[jblk][p][NR]`（零初始化覆盖补零列）。
+    #[allow(unsafe_code)]
+    pub(super) fn f32_pack(j: &Job, slot: usize) {
+        let (n, k, npad) = (j.n, j.k, j.npad);
+        unsafe {
+            let b = std::slice::from_raw_parts(j.b as *const f32, k * n);
+            let dst = std::slice::from_raw_parts_mut(j.buf as *mut f32, npad * k);
+            if j.tn {
+                tn::stage(b, dst, n, k, npad, j.p, slot);
+            } else {
+                b_groups(b, dst, n, k, npad, j.p, slot);
             }
         }
     }
-}
 
+    /// f32 计算体：只算本槽的行段；B 面板由 Barrier 保证整块就绪。
+    #[allow(unsafe_code)]
+    pub(super) fn f32_calc(j: &Job, slot: usize) {
+        let r0 = slot * j.rows_per;
+        if r0 >= j.m {
+            return;
+        }
+        let rows = (j.m - r0).min(j.rows_per);
+        unsafe {
+            let a = std::slice::from_raw_parts(j.a as *const f32, j.m * j.k);
+            let a_l = &a[r0 * j.k..(r0 + rows) * j.k];
+            let bp = std::slice::from_raw_parts(j.buf as *const f32, j.npad * j.k);
+            let b = std::slice::from_raw_parts(j.b as *const f32, j.k * j.n);
+            let out = std::slice::from_raw_parts_mut(j.out as *mut f32, j.m * j.n);
+            let out_l = &mut out[r0 * j.n..(r0 + rows) * j.n];
+            if j.tn {
+                tn::compute_tn(a_l, bp, b, rows, j.n, j.k, out_l);
+            } else {
+                compute_gemm(a_l, bp, b, rows, j.n, j.k, out_l);
+            }
+        }
+    }
+
+    /// 多线程 i8 GEMM：`out[m,n] = a[m,k] · b[k,n]`，i8 入 i32 累加。
+    ///
+    /// # Panics
+    ///
+    /// 三条缓冲长度不足时 panic（调用方先校验）。
+    pub fn gemm_i8(a: &[i8], b: &[i8], m: usize, n: usize, k: usize, out: &mut [i32]) {
+        assert!(
+            a.len() >= m * k && b.len() >= k * n && out.len() >= m * n,
+            "gemm_i8 尺寸不符"
+        );
+        let cpu = threads_override();
+        let npad = align_up(n, I8_NR);
+        let groups = npad / I8_NR;
+        let t = cpu.min(m.div_ceil(I8_MR)).min(groups).max(1);
+        if t <= 1 {
+            single_i8(a, b, m, n, k, out);
+            return;
+        }
+        // 常驻池：一次发布 + 一次 Barrier，无 spawn 成本。
+        let mut bpack = vec![0i8; npad * k];
+        if run_pooled(
+            pool(),
+            Bufs {
+                a: a.as_ptr() as *const u8,
+                b: b.as_ptr() as *const u8,
+                buf: bpack.as_mut_ptr() as *mut u8,
+                out: out.as_mut_ptr() as *mut u8,
+            },
+            Shape {
+                m,
+                n,
+                k,
+                npad,
+                tn: false,
+            },
+            I8_MR,
+            t,
+            i8_pack,
+            i8_calc,
+        ) {
+            return;
+        }
+        scoped_i8(a, b, out, m, n, k, t);
+    }
+
+    /// 显式错误版对称 int8 GEMM：三条缓冲与 `(m, n, k)` 严格相等才跑，不符返回 [`Code::Invalid`]，
+    /// 不 panic。算术同 [`gemm_i8`]（i32 精确累加，与 [`crate::matmul_i8::forward_tiled`] 逐位一致）。
+    pub fn gemm_i8_checked(a: View<'_, i8>, b: View<'_, i8>, out: &mut [i32]) -> Result<()> {
+        let (m, k) = crate::kernel::matmul::dim2(a.dims(), "gemm_i8")?;
+        let (k2, n) = crate::kernel::matmul::dim2(b.dims(), "gemm_i8")?;
+        if k != k2 {
+            return Err(Error::new(
+                Code::Invalid,
+                format!("gemm_i8 收缩轴不符：a·k={k}，b·k={k2}"),
+            ));
+        }
+        if out.len() != m * n {
+            return Err(Error::new(
+                Code::Invalid,
+                format!(
+                    "gemm_i8 输出缓冲不符：out={}，期望 m·n={}",
+                    out.len(),
+                    m * n
+                ),
+            ));
+        }
+        gemm_i8(a.as_slice(), b.as_slice(), m, n, k, out);
+        Ok(())
+    }
+
+    /// 单线程路径：B 打包一次，直接算完整块。
+    pub(super) fn single_i8(a: &[i8], b: &[i8], m: usize, n: usize, k: usize, out: &mut [i32]) {
+        let (bpack, npad) = pack_b(b, n, k);
+        compute_i8_packed(a, &bpack, npad, m, n, k, out);
+    }
+
+    /// 兜底路径：池不可用（worker 起不来）时退回 scope 线程。
+    pub(super) fn scoped_i8(
+        a: &[i8],
+        b: &[i8],
+        out: &mut [i32],
+        m: usize,
+        n: usize,
+        k: usize,
+        t: usize,
+    ) {
+        let mut rows_per = m.div_ceil(t);
+        // 每线程成组行，保证微内核分块不被切碎（缺则末线程走标量尾块）。
+        rows_per = rows_per.div_ceil(I8_MR) * I8_MR;
+        // B 只打包一次、全部线程共享：N 线程各打包一遍会让冗余带宽吞掉扩展性。
+        let (bpack, npad) = pack_b_par(b, n, k);
+        thread::scope(|s| {
+            for (ti, block) in out[..m * n].chunks_mut(rows_per * n).enumerate() {
+                let r0 = ti * rows_per;
+                let rows = block.len() / n;
+                let a_t = &a[r0 * k..(r0 + rows) * k];
+                let bp = &bpack;
+                s.spawn(move || compute_i8_packed(a_t, bp, npad, rows, n, k, block));
+            }
+        });
+    }
+
+    /// 单线程 i8 GEMM（基准确认内核质量用）。
+    pub fn gemm_i8_single(a: &[i8], b: &[i8], m: usize, n: usize, k: usize, out: &mut [i32]) {
+        single_i8(a, b, m, n, k, out);
+    }
+
+    mod kernel {
+        use super::{Gram, I8_MR, I8_NR, dot_block};
+
+        /// 单线程块计算（B 面板已备）：**N 分组在最外层**，每组 8×k 的 B 瓦片常驻 L1，
+        /// 被本线程所有行对复用——否则每行对都把整块 B 重读一遍，卡在内存带宽。
+        pub(super) fn compute_i8_packed(
+            a: &[i8],
+            bpack: &[i8],
+            npad: usize,
+            rows: usize,
+            n: usize,
+            k: usize,
+            out: &mut [i32],
+        ) {
+            let kvec = k - k % 16;
+            let rc = (super::row_chunk(k) / I8_MR) * I8_MR;
+            let mut r0 = 0;
+            while r0 < rows {
+                let rend = (r0 + rc).min(rows);
+                let mut blk = 0;
+                while blk < npad {
+                    let mut r = r0;
+                    while r + I8_MR <= rend {
+                        pair_one(a, bpack, out, Gram { r, blk, n, k, kvec });
+                        r += I8_MR;
+                    }
+                    while r < rend {
+                        scalar_row_group(a, bpack, out, r, blk, n, k);
+                        r += 1;
+                    }
+                    blk += I8_NR;
+                }
+                r0 = rend;
+            }
+        }
+
+        /// 单个 4 列块、四行分派：dotprod 通道接住走向量，否则标量四行。
+        pub(super) fn pair_one(a: &[i8], bpack: &[i8], out: &mut [i32], g: Gram) {
+            if dot_block(a, bpack, out, g) {
+                return;
+            }
+            scalar_row_group(a, bpack, out, g.r, g.blk, g.n, g.k);
+            for mr in 1..I8_MR {
+                scalar_row_group(a, bpack, out, g.r + mr, g.blk, g.n, g.k);
+            }
+        }
+
+        /// 标量单行、单 4 列块（打包 B 取数，任意 n/k）。
+        pub(super) fn scalar_row_group(
+            a: &[i8],
+            bpack: &[i8],
+            out: &mut [i32],
+            row: usize,
+            blk: usize,
+            n: usize,
+            k: usize,
+        ) {
+            let ar = &a[row * k..(row + 1) * k];
+            for nb in 0..I8_NR {
+                let jj = blk + nb;
+                if jj < n {
+                    let bp = &bpack[jj * k..jj * k + k];
+                    let mut acc = 0i32;
+                    for p in 0..k {
+                        acc += i32::from(ar[p]) * i32::from(bp[p]);
+                    }
+                    out[row * n + jj] = acc;
+                }
+            }
+        }
+    }
+
+    mod pack {
+        use super::super::pack::{pack_serial, pack_span};
+        use super::I8_NR;
+        use super::align_up;
+        use super::thread;
+        use super::threads_override;
+
+        pub(super) fn pack_b(b: &[i8], n: usize, k: usize) -> (Vec<i8>, usize) {
+            let npad = align_up(n, I8_NR);
+            let mut bpack = vec![0i8; npad * k];
+            pack_serial::<i8, I8_NR, true>(&mut bpack, b, n, k, false);
+            (bpack, npad)
+        }
+
+        /// 并行 B 打包：转置是跨 `n` 字节步长的 cache-miss 密集写，小 `n` 大 `k` 时串行打包
+        /// 会独占整段耗时（如 256×256×4096 的 1MB 面板），这里按 4 列组切成线程。
+        pub(super) fn pack_b_par(b: &[i8], n: usize, k: usize) -> (Vec<i8>, usize) {
+            let npad = align_up(n, I8_NR);
+            let groups = npad / I8_NR;
+            let t = threads_override().min(groups);
+            if t <= 1 || npad * k < (1 << 16) {
+                return pack_b(b, n, k);
+            }
+            let mut bpack = vec![0i8; npad * k];
+            let per = groups.div_ceil(t);
+            let span = per * I8_NR * k;
+            thread::scope(|s| {
+                for (gi, chunk) in bpack.chunks_mut(span).enumerate() {
+                    let blk0 = gi * per;
+                    s.spawn(move || pack_span::<i8, I8_NR, true>(chunk, b, n, k, blk0, false));
+                }
+            });
+            (bpack, npad)
+        }
+    }
+    use kernel::compute_i8_packed;
+    use pack::{pack_b, pack_b_par};
+}
 /// i8 `sdot` 端口峰值探针（K8 的分母），只在测量容器里导出；本体在 `cutile::native::i8`。
 #[cfg(all(feature = "bench", target_arch = "aarch64"))]
 pub use cutile::native::i8::{
@@ -511,10 +630,10 @@ pub fn probes() -> &'static [Probe] {
     PROBES
 }
 
-#[cfg(all(feature = "bench", nightly, target_arch = "aarch64"))]
+#[cfg(all(feature = "bench", target_arch = "aarch64"))]
 const SME_FLOPS_PER_ROUND: usize = 4 * 16 * 16 * 2;
 
-#[cfg(all(feature = "bench", nightly, target_arch = "aarch64"))]
+#[cfg(all(feature = "bench", target_arch = "aarch64"))]
 const SME_PURE: Probe = Probe {
     group: "sme_peak",
     suffix: "",
@@ -522,7 +641,7 @@ const SME_PURE: Probe = Probe {
     run: cutile::native::sme::port_run,
 };
 
-#[cfg(all(feature = "bench", nightly, target_arch = "aarch64"))]
+#[cfg(all(feature = "bench", target_arch = "aarch64"))]
 const SME_MIX: Probe = Probe {
     group: "sme_peak",
     suffix: "_mix",
@@ -531,7 +650,7 @@ const SME_MIX: Probe = Probe {
 };
 
 /// 混合探针复用固定缓存行，测取数端口上限；真实内核走不同行只会更慢。
-#[cfg(all(feature = "bench", nightly, target_arch = "aarch64"))]
+#[cfg(all(feature = "bench", target_arch = "aarch64"))]
 fn sme_mix_probe(rounds: usize) -> bool {
     static A: [f32; 16] = [1.0; 16];
     static B: [f32; 64] = [1.0; 64];
@@ -582,14 +701,8 @@ const FMA_BLOCK: Probe = Probe {
     },
 };
 
-#[cfg(all(feature = "bench", nightly, target_arch = "aarch64"))]
+#[cfg(all(feature = "bench", target_arch = "aarch64"))]
 const PROBES: &[Probe] = &[SME_PURE, SME_MIX, I8_PURE, I8_BLOCK, FMA_PURE, FMA_BLOCK];
-#[cfg(all(
-    feature = "bench",
-    not(all(nightly, target_arch = "aarch64")),
-    target_arch = "aarch64"
-))]
-const PROBES: &[Probe] = &[I8_PURE, I8_BLOCK, FMA_PURE, FMA_BLOCK];
 #[cfg(all(feature = "bench", not(target_arch = "aarch64")))]
 const PROBES: &[Probe] = &[];
 
@@ -602,7 +715,7 @@ use micro::{Layout, Span, Sweep, edge};
 #[cfg(test)]
 mod tests {
     include!("../../tests/kernel_fast_tests.rs");
-    // SME 对拍：参考算术在 nn，被测内核入口在 cutile::native::sme；仅 nightly + aarch64 编译。
-    #[cfg(all(nightly, target_arch = "aarch64"))]
+    // SME 对拍：stable／nightly 共用 C 内核，运行时能力由 prof 安全桥决定。
+    #[cfg(target_arch = "aarch64")]
     include!("../../tests/kernel_sme_tests.rs");
 }

@@ -87,13 +87,12 @@ macro_rules! closed_enum {
             )+
         }
     ) => {
-        closed_enum!(@def
+        closed_enum!(@plain
             $(#[$meta])*
             $vis enum $name {
                 $( $(#[$variant_meta])* $variant = $code, )+
             }
         );
-        closed_enum!(@from_code $name { $( $code => $variant, )+ });
     };
 
     // —— 内部臂：枚举定义 / 反向解析 / 字符串写法，各只写一份 ——
@@ -186,30 +185,27 @@ macro_rules! closed_enum {
 
     // —— 读写双端形态：另生成 `code()`，写端不再 `as u8` 散写 ——
 
-    // `@coded`：枚举 + code() + from_code（未知码 `Invalid`）。
+    // 模式决定反向解析的错误类别，以及是否另生成线上 code() 访问器。
     (
-        @coded
-        $(#[$meta:meta])*
-        $vis:vis enum $name:ident {
-            $(
-                $(#[$variant_meta:meta])*
-                $variant:ident = $code:literal,
-            )+
-        }
+        @plain $name:ident { $( $code:literal => $variant:ident, )+ }
     ) => {
-        closed_enum!(@def
-            $(#[$meta])*
-            $vis enum $name {
-                $( $(#[$variant_meta])* $variant = $code, )+
-            }
-        );
+        closed_enum!(@from_code $name { $( $code => $variant, )+ });
+    };
+    (
+        @coded $name:ident { $( $code:literal => $variant:ident, )+ }
+    ) => {
         closed_enum!(@code $name);
         closed_enum!(@from_code $name { $( $code => $variant, )+ });
     };
-
-    // `@coded_unsupported`：与 `@coded` 同形，未知码报 `Unsupported`。
     (
-        @coded_unsupported
+        @coded_unsupported $name:ident { $( $code:literal => $variant:ident, )+ }
+    ) => {
+        closed_enum!(@code $name);
+        closed_enum!(@from_code_unsupported $name { $( $code => $variant, )+ });
+    };
+
+    (
+        @$mode:ident
         $(#[$meta:meta])*
         $vis:vis enum $name:ident {
             $(
@@ -224,8 +220,7 @@ macro_rules! closed_enum {
                 $( $(#[$variant_meta])* $variant = $code, )+
             }
         );
-        closed_enum!(@code $name);
-        closed_enum!(@from_code_unsupported $name { $( $code => $variant, )+ });
+        closed_enum!(@$mode $name { $( $code => $variant, )+ });
     };
 
     (

@@ -317,8 +317,7 @@ fn project_rows(x: &[f32], weights: &[f32], out: &mut [f32], m: usize, n: usize)
         return nn::gemv_f32::forward(tensor::View::one(x), weights, out);
     }
     if rows >= nn::fast::MIN_ROWS {
-        nn::fast::gemm_f32_tn(xv, wv, out);
-        return Ok(());
+        return nn::fast::gemm_f32_tn(xv, wv, out);
     }
     nn::matmul::forward_tn_tiled(xv, wv, out)
 }

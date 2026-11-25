@@ -171,6 +171,7 @@ fn the_ledger_lists_every_declared_primitive() {
         flags: "-O3".to_string(),
         key: "0".to_string(),
         artifacts: Vec::new(),
+        timing: Default::default(),
     };
     let note = write_ledger(
         &catalogue,

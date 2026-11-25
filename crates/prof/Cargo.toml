@@ -9,6 +9,8 @@ description = "Archive layer: per-device capability archives consumed by cutile.
 readme = "README.md"
 publish = false
 autotests = false
+# 构建脚本已迁入 src/，Cargo 必须显式指向它，否则 OUT_DIR 生成表不会生成。
+build = "src/build.rs"
 
 [features]
 # 构建期真编设备镜像（`build.rs` 调 `xcrun metal`）。默认只有源码：镜像要工具链、要时间，
@@ -29,6 +31,8 @@ annotation = { path = "../annotation", package = "llm-annotation" }
 # 半精度样本取值（`Values::F16`/`Bf16`）：与 nn 的 `Scalar` 半精度档共用同一份 IEEE 编解码。
 half = { workspace = true }
 
+# Intel OpenCL 的受控 FFI 与 RAII 句柄住在 `runtime::opencl`，不引入额外包装依赖。
+
 [dev-dependencies]
 # 片段层对账用例（`device_suite!`）在独立集成测试里，以外部 `prof::` 引用本 crate；
 # 因此本 crate 的测试面需要 testkit，而 testkit 本身不依赖 prof，不成环。
@@ -46,3 +50,5 @@ path = "tests/fragments.rs"
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic", features = ["build"] }
 # 档案本身就是 TOML：生成期要读 `[meta]` 与 `[[provides]]` 做构建期校验。
 toml = { workspace = true }
+# 同一 gemm_micro.k 在构建期生成并静态链接主机微内核，运行时不调用编译器。
+cc = { workspace = true }

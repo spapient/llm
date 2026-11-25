@@ -1,15 +1,9 @@
 use super::*;
 use crate::matmul::matmul_scalar;
+use testkit::sample_with;
 
 fn sample_i8(len: usize, salt: u32) -> Vec<i8> {
-    (0..len)
-        .map(|i| {
-            let x = (i as u32)
-                .wrapping_mul(2654435761)
-                .wrapping_add(salt.wrapping_mul(40503));
-            ((x % 251) as i32 - 125) as i8
-        })
-        .collect()
+    sample_with(len, salt, |z| ((z % 251) as i32 - 125) as i8)
 }
 
 /// 生成确定性 i8 输入，跑一遍分块参考，返回 `(a, b, want)` 供对拍或并发复用。
@@ -67,14 +61,7 @@ fn i8_concurrent_calls_are_isolated() {
 }
 
 pub(super) fn sample(len: usize, salt: u32) -> Vec<f32> {
-    (0..len)
-        .map(|i| {
-            let x = (i as u32)
-                .wrapping_mul(2654435761)
-                .wrapping_add(salt.wrapping_mul(40503));
-            ((x >> 8) as f32) / 256.0 - 32.0
-        })
-        .collect()
+    sample_with(len, salt, |z| ((z >> 8) as f32) / 256.0 - 32.0)
 }
 
 /// 生成确定性输入、跑标量参考、调用 `compute` 后与参考对拍。
@@ -209,19 +196,17 @@ fn bench_throughput() {
     }
 }
 
-/// 探针清单是「能力有没有」的唯一入口：条目随工具链变，但每条都必须有正数分子。
-///
-/// 这条测试盯的是**不泄漏 `cfg`**：调用方（测量容器）拿到的是一张清单，不是
-/// `cfg(nightly)`——后者是 crate 私有 cfg，谁写谁报 `unexpected_cfgs`。
+/// 探针清单按目标架构暴露全部候选；是否可执行由各探针的运行时安全门回答。
 #[cfg(all(feature = "bench", target_arch = "aarch64"))]
 #[test]
-fn probe_list_matches_the_toolchain() {
+fn probe_list_matches_the_target() {
     let probes = probes();
     assert!(probes.iter().all(|p| p.ops_per_round > 0), "{probes:?}");
-    #[cfg(nightly)]
-    assert!(probes.iter().any(|p| p.group == "sme_peak"));
-    #[cfg(not(nightly))]
-    assert!(probes.iter().all(|p| p.group != "sme_peak"));
+    let sme: Vec<_> = probes.iter().filter(|p| p.group == "sme_peak").collect();
+    assert_eq!(sme.len(), 2, "必须包含纯外积与取数混合探针");
+    for probe in sme {
+        assert!((probe.run)(1), "{} 必须真实执行一轮", probe.suffix);
+    }
     assert!(probes.iter().any(|p| p.group == "i8_peak"));
 }
 

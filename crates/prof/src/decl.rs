@@ -1,13 +1,13 @@
 //! 声明层：算子声明的类型、轴展开与降级链解析（cutile README §4、§10.2 的 ①）。
 //!
-//! 一份文件装三件事，因为它们是同一条链上的三节：类型（[`OpDecl`] / [`Variant`] / [`Fusion`]）
-//! 是声明的形状，[`expand`] 把轴展开成 tile 候选，`variants` 保证降级有序。
-//! 字段级解析在同文件的 `ingest` 模块（表 → 类型；本文件只留类型与代数）。
+//! 强类型视图（[`OpView`]）一次性 owned 化为声明类型；[`expand`] 展开轴候选，
+//! 变体链与模板侧校验共用同一份代数，不再保留动态表解析旁路。
 
 use crate::atom::{Attr, AttrKey, DType, Need, Prim, Set, Space, Span};
 use crate::sch::Schedule;
 use crate::sch::layout::LayoutSpec;
 use crate::sig::CType;
+use crate::tpl::{Arg, Template};
 use core::fmt;
 use diagnostic::{Code, Error};
 
@@ -170,6 +170,43 @@ impl Fusion {
 }
 
 impl OpDecl {
+    /// 从编译期强类型视图构造；模板正文仍由注册表按算子名配对。
+    pub fn from_view(view: &OpView, template: &str) -> diagnostic::Result<Self> {
+        let declaration = view.into_decl(template)?;
+        declaration.verified(template)?;
+        Ok(declaration)
+    }
+
+    /// 无归约 / 点积、单标量的逐元素算子可走低维逐点网格快路径。
+    pub fn pointwise(&self) -> bool {
+        self.skeleton == Skeleton::Elementwise
+            && !self
+                .needs
+                .iter()
+                .any(|need| matches!(need.prim, Prim::Reduce | Prim::Dot))
+            && self
+                .signature
+                .params()
+                .iter()
+                .filter(|param| !param.ctype.is_buf())
+                .count()
+                == 1
+            && self.same_element_type()
+    }
+
+    fn same_element_type(&self) -> bool {
+        let mut types = self
+            .signature
+            .params()
+            .iter()
+            .filter(|param| param.ctype.is_buf())
+            .map(|param| param.ctype);
+        let Some(first) = types.next() else {
+            return false;
+        };
+        types.all(|ctype| ctype == first)
+    }
+
     /// 槽位的声明类型：缓冲形参才有；标量或未知名返回 `None`。
     pub fn slot_type(&self, name: &str) -> Option<crate::sig::CType> {
         self.signature
@@ -203,6 +240,125 @@ impl OpDecl {
     /// 按名字取轴。
     pub fn axis(&self, name: &str) -> Option<&Axis> {
         self.axes.iter().find(|axis| axis.name == name)
+    }
+
+    /// 模板侧校验：槽位、能力需求、调用点参数与数据流阶段必须一致。
+    fn verified(&self, template: &str) -> diagnostic::Result<()> {
+        let segments = Template::parse(template);
+        tiles(self)?;
+        self.check_phases()?;
+        self.check_slots(&segments)?;
+        self.check_needs(&segments)?;
+        self.check_call_arguments(&segments)
+    }
+
+    fn check_phases(&self) -> diagnostic::Result<()> {
+        for param in self
+            .signature
+            .params()
+            .iter()
+            .filter(|param| param.ctype.is_buf())
+        {
+            let covered = self.phases.iter().any(|phase| {
+                phase.reads.iter().any(|slot| slot == &param.name)
+                    || phase.writes.iter().any(|slot| slot == &param.name)
+            });
+            if !covered {
+                return Err(field(
+                    &format!("{}.phases", self.name),
+                    format!("缓冲 `{}` 没有出现在任何阶段里", param.name),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn check_slots(&self, template: &Template<'_>) -> diagnostic::Result<()> {
+        for (line, slot) in template.slots() {
+            if slot == "op" || self.slot_known(slot) {
+                continue;
+            }
+            return Err(field(
+                &format!("{}.k:{line}", self.name),
+                format!("槽位 `{{{{{slot}}}}}` 在 [axes]、[layouts] 和 [consts] 里都没有定义"),
+            ));
+        }
+        Ok(())
+    }
+
+    fn slot_known(&self, slot: &str) -> bool {
+        self.axis(slot).is_some() || self.layout(slot).is_some() || self.const_value(slot).is_some()
+    }
+
+    fn check_needs(&self, template: &Template<'_>) -> diagnostic::Result<()> {
+        for variant in &self.variants {
+            let mut declared: Vec<Prim> = variant.needs(self).map(|need| need.prim).collect();
+            declared.extend(variant.schedule.required_prims().iter().copied());
+            for (line, prim, _) in template.calls() {
+                if declared.contains(&prim) {
+                    continue;
+                }
+                return Err(field(
+                    &format!("{}.k:{line}", self.name),
+                    format!(
+                        "变体 `{}` 没有声明模板用到的 `@{prim}`：模板由所有变体共享，每条原语都要在该变体的需求里",
+                        variant.name
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn check_call_arguments(&self, template: &Template<'_>) -> diagnostic::Result<()> {
+        for variant in &self.variants {
+            for (line, prim, args) in template.calls() {
+                for (key, value) in args.iter().filter_map(Arg::named) {
+                    self.check_argument(variant, prim, line, key, value)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// 一个能力参数：闭集内的键必须在 `needs.{prim}` 里声明过，且取值被声明允许。
+    fn check_argument(
+        &self,
+        variant: &Variant,
+        prim: Prim,
+        line: usize,
+        key: &str,
+        value: &str,
+    ) -> diagnostic::Result<()> {
+        let Some(attr_key) = AttrKey::parse(key) else {
+            return Ok(());
+        };
+        let needs = variant.needs(self).filter(|need| need.prim == prim);
+        let declared: Vec<&Attr> = needs
+            .flat_map(|need| need.attrs.iter())
+            .filter(|attr| attr.key() == attr_key)
+            .collect();
+        let at = format!("{}.k:{line}", self.name);
+        if declared.is_empty() {
+            return Err(field(
+                &at,
+                format!(
+                    "变体 `{}` 给 `@{prim}` 传了能力参数 `{key}: {value}`，但该变体的 `needs.{prim}` 没有声明 `{key}`：协商不会检查它",
+                    variant.name
+                ),
+            ));
+        }
+        if let Some(attr) = declared.iter().find(|attr| !attr.contains(value)) {
+            return Err(field(
+                &at,
+                format!(
+                    "变体 `{variant}` 给 `@{prim}` 传 `{key}: {value}`，但 `needs.{prim}.{key}` 只允许 [{}]：设备被按声明的值验证，代码却按模板的值生成",
+                    attr.values().join(" | "),
+                    variant = variant.name
+                ),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -359,22 +515,15 @@ fn too_many_tiles(op: &OpDecl, axis: &Axis, count: usize) -> Error {
 
 // ── 变体链 ─────────────────────────────────────────────────────────────
 
-/// 变体链：逐个解析、按 `order` 排序，再判数量与链路。
-pub(crate) fn variants(table: &diagnostic::data::Table) -> diagnostic::Result<Vec<Variant>> {
-    let mut variants: Vec<Variant> = table
-        .table_array("variants")
-        .unwrap_or_default()
-        .iter()
-        .enumerate()
-        .map(|(idx, entry)| variant(idx, entry))
-        .collect::<diagnostic::Result<_>>()?;
+/// 强类型变体一次性 owned 化，按优先级排序后执行完整链路校验。
+fn variants(views: &[VariantView]) -> diagnostic::Result<Vec<Variant>> {
+    let mut variants: Vec<Variant> = views.iter().map(|view| view.into_owned()).collect();
     check_count(&variants)?;
     variants.sort_by_key(|variant| variant.order);
     check_chain(&variants)?;
     Ok(variants)
 }
 
-/// 变体数：至少一个、至多 [`MAX_VARIANTS`] 个。
 fn check_count(variants: &[Variant]) -> diagnostic::Result<()> {
     if variants.is_empty() {
         return Err(field("variants", "至少需要一个变体"));
@@ -388,14 +537,11 @@ fn check_count(variants: &[Variant]) -> diagnostic::Result<()> {
     Ok(())
 }
 
-/// 降级链的判据：名字唯一、非 MMA 占比单调，且首选的掩码能落地。
+/// 名字全链路唯一、占比有限且单调，首选变体的掩码必须可落地。
 fn check_chain(variants: &[Variant]) -> diagnostic::Result<()> {
-    for pair in variants.windows(2) {
-        if pair[0].name == pair[1].name {
-            return Err(field("variants", format!("变体名 `{}` 重复", pair[0].name)));
-        }
+    for (idx, variant) in variants.iter().enumerate() {
+        check_variant(&variants[..idx], variant, idx)?;
     }
-    // 借用变体名：这条判据只读名字与占比，没有理由在装载期为它拷一份字符串。
     let chain: Vec<(&str, f64)> = variants
         .iter()
         .map(|variant| (variant.name.as_str(), variant.mma_share))
@@ -411,72 +557,18 @@ fn check_chain(variants: &[Variant]) -> diagnostic::Result<()> {
     .map_err(|detail| field("variants", detail.message()))
 }
 
-/// 一个 `[[variants]]` 段：名字与优先级、调度、非 MMA 占比、增量需求。
-fn variant(idx: usize, entry: &diagnostic::data::Table) -> diagnostic::Result<Variant> {
-    let (name, order) = identity(idx, entry)?;
-    let schedule = schedule(idx, entry)?;
-    let mma_share = share(idx, entry)?;
-    Ok(Variant {
-        name,
-        order,
-        schedule,
-        mma_share,
-        extra_needs: extra_needs(idx, entry)?,
-    })
-}
-
-/// 变体名与优先级：两个键都必填，负的 `order` 按 0 处理。
-fn identity(idx: usize, entry: &diagnostic::data::Table) -> diagnostic::Result<(String, u32)> {
-    let name = entry
-        .string("name")
-        .ok_or_else(|| field(&field_path(idx, "name"), "缺失"))?
-        .to_string();
-    let order = entry
-        .int("order")
-        .ok_or_else(|| field(&field_path(idx, "order"), "缺失"))?
-        .max(0) as u32;
-    Ok((name, order))
-}
-
-/// 调度：`schedule` 必须落在调度闭集内。
-fn schedule(idx: usize, entry: &diagnostic::data::Table) -> diagnostic::Result<Schedule> {
-    let path = field_path(idx, "schedule");
-    let text = entry
-        .string("schedule")
-        .ok_or_else(|| field(&path, "缺失"))?;
-    Schedule::parse(text).map_err(|detail| field(&path, detail.message()))
-}
-
-/// 非 MMA 占比：`0..=1` 之间。
-fn share(idx: usize, entry: &diagnostic::data::Table) -> diagnostic::Result<f64> {
-    let path = field_path(idx, "mma_share");
-    let mma_share = entry
-        .float("mma_share")
-        .ok_or_else(|| field(&path, "缺失"))?;
-    if (0.0..=1.0).contains(&mma_share) {
-        return Ok(mma_share);
+/// 单条变体的局部判据；下标同时用于全链路重名检测与精确错误定位。
+fn check_variant(earlier: &[Variant], variant: &Variant, idx: usize) -> diagnostic::Result<()> {
+    if earlier.iter().any(|have| have.name == variant.name) {
+        return Err(field("variants", format!("变体名 `{}` 重复", variant.name)));
     }
-    Err(field(&path, "必须在 0..=1 之间"))
-}
-
-/// `extra_needs`：变体自己追加的需求。
-fn extra_needs(idx: usize, entry: &diagnostic::data::Table) -> diagnostic::Result<Vec<Need>> {
-    let Some(section) = entry.table("extra_needs") else {
-        return Ok(Vec::new());
-    };
-    let prefix = field_path(idx, "");
-    section
-        .entries()
-        .iter()
-        .map(|(key, _)| {
-            crate::decl::ingest::parse_need(section, key, &format!("{prefix}.extra_needs.{key}"))
-        })
-        .collect()
-}
-
-/// `variants[i].{name}` 形式的字段路径；`name` 为空时只剩前缀。
-fn field_path(idx: usize, name: &str) -> String {
-    format!("variants[{idx}].{name}")
+    if !(0.0..=1.0).contains(&variant.mma_share) {
+        return Err(field(
+            &format!("variants[{idx}].mma_share"),
+            "必须在 0..=1 之间",
+        ));
+    }
+    Ok(())
 }
 
 // ---- 编译期强类型只读视图（方案 3） -----------------------------------------
@@ -697,7 +789,7 @@ impl OpView {
                 .iter()
                 .map(|(key, value)| (key.to_string(), value.to_string()))
                 .collect(),
-            variants: self.variants.iter().map(|v| v.into_owned()).collect(),
+            variants: variants(self.variants)?,
             template: template.to_string(),
             signature,
             phases,
@@ -739,7 +831,7 @@ fn view_phase(
     })
 }
 
-/// 校验阶段读写槽位都落在签名缓冲形参内，返回 owned 名字表（与 `ingest::slot_names` 同口径）。
+/// 校验阶段读写槽位都落在签名缓冲形参内，返回 owned 名字表。
 fn check_phase_slots(
     op: &str,
     key: &str,
@@ -757,11 +849,6 @@ fn check_phase_slots(
         None => Ok(names.iter().map(ToString::to_string).collect()),
     }
 }
-
-/// 语料摄入：声明表 → [`OpDecl`] 的字段级解析与模板侧校验，平铺在 `src/ingest.rs`
-/// （模块路径是 `decl::ingest`，文件不套子目录）。
-#[path = "ingest.rs"]
-mod ingest;
 
 #[cfg(test)]
 #[path = "../tests/decl.rs"]

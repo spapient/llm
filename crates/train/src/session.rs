@@ -105,6 +105,7 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
     ) -> Result<Self> {
         config.validate()?;
         optimizer.set_clip_norm(config.clip_norm);
+        optimizer.validate()?;
         let lr_schedule = Schedule::with(
             config.warmup_steps,
             config.max_steps,
@@ -136,10 +137,14 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
     ref_getters! {
         /// 分布式编排（只读）。
         distributed => distributed: &Distributed<C>,
+        /// 已登记的权重绑定对。
+        ties => ties: &[(usize, usize)],
     }
     getters! {
         /// 当前恢复配置指纹。
         config_fingerprint => config_fingerprint: u64,
+        /// 当前窗口内已汇总的 micro-batch 数。
+        accumulated_microbatches => accum: u32,
     }
 
     /// 绑定包含目标、批几何与采样的完整配置指纹。
@@ -291,13 +296,7 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
             .map_err(|error| error.with(SITE))
     }
 
-    /// 当前窗口内已汇总的 micro-batch 数（未满 [`TrainConfig::accumulation`] 不步进）。
-    pub fn accumulated_microbatches(&self) -> u32 {
-        self.accum
-    }
-
-    /// 当前累积窗口汇总：逐参数槽的汇总梯度（未装入的槽取空表）与已汇总 micro-batch 数，
-    /// 供快照导出；槽位顺序与 [`Self::slots`] 对齐，口径与 [`GradAccum`] 一致。
+    /// 当前累积窗口汇总：槽位顺序与 [`Self::slots`] 对齐，未装入的槽取空表。
     pub fn accum_snapshot(&self) -> GradAccum {
         let slots = self
             .slots
@@ -311,9 +310,7 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
         GradAccum::new(slots, self.accum)
     }
 
-    /// 独立梯度快照：按 [`Var`] 复制一份当前梯度向量。与 [`Self::accum_snapshot`] 不同，
-    /// 它不读累积窗口计数、不清缓冲、也不与参数槽下标绑定；副本在后续 `zero_gradients`
-    /// 或优化器步进之后仍然有效。
+    /// 独立梯度快照：不读窗口计数、不清缓冲，副本在后续步进后仍有效。
     pub fn gradient_snapshot(&self) -> GradientSnapshot {
         let entries = self
             .slots
@@ -325,11 +322,6 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
             })
             .collect();
         GradientSnapshot::new(entries)
-    }
-
-    /// 已登记的权重绑定对：`(源槽下标, 回填槽下标)`，供快照导出与回填对账。
-    pub fn ties(&self) -> &[(usize, usize)] {
-        &self.ties
     }
 
     /// 当前登记的权重绑定表快照；下标按 [`Self::slots`] 顺序对齐。
@@ -405,7 +397,7 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
             return Ok(());
         }
         self.step_once()?;
-        // 只有完整步进成功才提交窗口状态；失败时调用方仍能看到未提交的窗口计数。
+        // 只有完整步进成功才提交窗口状态；失败保留此前已完成的 micro-batch 数。
         self.accum = 0;
         Ok(())
     }
@@ -414,6 +406,18 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
     fn step_once(&mut self) -> Result<()> {
         let lr = self.lr_schedule.lr(self.config.learning_rate, self.step);
         let mut views = Self::collect_views(&mut self.slots, &mut self.bufs)?;
+        let result = self.update_views(&mut views, lr);
+        // 失败也必须归还参数与梯度所有权，不能把空槽或丢失缓冲留给下一次恢复/步进。
+        Self::return_views(&mut self.slots, &mut self.bufs, views);
+        result?;
+        Self::mirror_params(&self.slots, &mut self.bufs)?;
+        self.zero_gradients();
+        self.step = self.step.saturating_add(1);
+        Ok(())
+    }
+
+    /// 执行可失败阶段；所有权归还有调用方统一保证，不在错误分支各写一份。
+    fn update_views(&mut self, views: &mut [crate::OwnedSlot], lr: f32) -> Result<()> {
         let mut grads: Vec<&mut [f32]> = views.iter_mut().map(|slot| slot.grads.as_mut()).collect();
         self.distributed
             .sync_grads(&mut grads)
@@ -421,13 +425,7 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
         let mut slots: Vec<Slot<'_>> = views.iter_mut().map(|slot| slot.view()).collect();
         self.optimizer
             .step(&mut slots, lr)
-            .map_err(|error| error.with(SITE))?;
-        // 视图参数是取走时的拷贝：步进结果整块写回槽位、梯度向量归还缓冲，再镜像参数。
-        Self::return_views(&mut self.slots, &mut self.bufs, views);
-        Self::mirror_params(&self.slots, &mut self.bufs)?;
-        self.zero_gradients();
-        self.step = self.step.saturating_add(1);
-        Ok(())
+            .map_err(|error| error.with(SITE))
     }
 
     /// 登记权重绑定：回填时 `tied` 槽整块复制 `source` 槽的当前参数值（嵌入表与输出头共享权重的接缝）。

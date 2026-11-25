@@ -33,7 +33,13 @@ impl Element for f32 {
     fn borrow(values: &Values) -> Option<&[Self]> {
         match values {
             Values::F32(values) => Some(values),
-            Values::U8(_) | Values::F16(_) | Values::Bf16(_) => None,
+            Values::U8(_)
+            | Values::F16(_)
+            | Values::Bf16(_)
+            | Values::F32x4(_)
+            | Values::F16x4(_)
+            | Values::Bf16x4(_)
+            | Values::U8x4(_) => None,
         }
     }
 
@@ -47,10 +53,7 @@ impl Element for f32 {
     }
 
     fn buf(name: &'static str, values: Vec<Self>) -> Buf {
-        Buf {
-            name,
-            values: Values::F32(values),
-        }
+        Buf::f32(name, values)
     }
 }
 
@@ -59,7 +62,13 @@ impl Element for u8 {
 
     fn borrow(values: &Values) -> Option<&[Self]> {
         match values {
-            Values::F32(_) | Values::F16(_) | Values::Bf16(_) => None,
+            Values::F32(_)
+            | Values::F16(_)
+            | Values::Bf16(_)
+            | Values::F32x4(_)
+            | Values::F16x4(_)
+            | Values::Bf16x4(_)
+            | Values::U8x4(_) => None,
             Values::U8(values) => Some(values),
         }
     }

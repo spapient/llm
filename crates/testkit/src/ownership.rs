@@ -161,31 +161,21 @@ mod tests {
 
 /// `lints/vocabulary.toml` 里的反向所有权存量基线：crate → 登记为「暂未进表」的公开类型名。
 pub(crate) fn unlisted_baseline() -> BTreeMap<String, BTreeSet<String>> {
-    let entries = tool::vocabulary()
-        .table("ownership")
-        .and_then(|ownership| ownership.table_array("unlisted"))
-        .unwrap_or_default();
+    let entries = tool::vocabulary().ownership_unlisted;
     let mut baseline: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for entry in entries {
-        let crate_name = entry
-            .string("crate")
-            .unwrap_or_else(|| panic!("`ownership.unlisted` 的条目缺 `crate`"));
-        let reason = entry
-            .string("reason")
-            .unwrap_or_else(|| panic!("`ownership.unlisted` 的 `{crate_name}` 缺 `reason`"));
+        let crate_name = entry.crate_name;
+        let reason = entry.reason;
         assert!(
             reason.chars().count() >= 8,
             "`ownership.unlisted` 的 `{crate_name}` 理由太短：一份没有理由的豁免等于把规则删掉一半"
         );
-        let names = entry
-            .string_array("names")
-            .unwrap_or_else(|| panic!("`ownership.unlisted` 的 `{crate_name}` 缺 `names`"));
         assert!(
-            !names.is_empty(),
+            !entry.names.is_empty(),
             "`ownership.unlisted` 的 `{crate_name}` 一个名字都没登记"
         );
         let registered = baseline.entry(crate_name.to_string()).or_default();
-        for name in names {
+        for name in entry.names {
             assert!(
                 registered.insert(name.to_string()),
                 "`{name}` 在 `ownership.unlisted` 的 `{crate_name}` 里重复登记"

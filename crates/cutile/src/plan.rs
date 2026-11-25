@@ -8,7 +8,7 @@ use ::prof::catalogue::Registration;
 use core::cmp::Ordering;
 use core::fmt;
 use diagnostic::{Code, Error};
-use prof::model::{Cost, Model};
+use prof::model::{Cost, Model, ShapeCtx};
 
 /// 一次 plan 的产物。
 #[derive(Debug, Clone, PartialEq)]
@@ -102,11 +102,24 @@ fn predict_or_fail(profile: &Profile, cost: Cost, masking: Masking) -> diagnosti
     })
 }
 
-/// ③ select 本体：取轴展开出的**第一个** tile（TOML 顺序即优先级，不在这里打分），再用算子给出
-/// 的代价做 roofline 估值。峰值是能力：档案没给出可求值的峰值就无法判定，而不是"预测为 0"。
+/// 静态声明序入口：始终取轴展开出的第一个 tile。
 pub fn select(op: &OpDecl, profile: &Profile, path: &Path, cost: Cost) -> diagnostic::Result<Plan> {
-    let masking = Masking::of(path.mma_share, &path.schedule);
     let tile = expand(op)?.into_iter().next().ok_or_else(no_tiles)?;
+    select_tile(profile, path, cost, tile)
+}
+
+/// 用指定 tile 生成计划；autotune 与启发式共用这一条构造路径。
+///
+/// # Errors
+///
+/// 档案缺少可推导的峰值时返回 `Unsupported`，不把预测值写成 0。
+pub fn select_tile(
+    profile: &Profile,
+    path: &Path,
+    cost: Cost,
+    tile: TileCombo,
+) -> diagnostic::Result<Plan> {
+    let masking = Masking::of(path.mma_share, &path.schedule);
     let predicted_s = predict_or_fail(profile, cost, masking)?;
     Ok(Plan {
         variant: path.variant.clone(),
@@ -117,6 +130,66 @@ pub fn select(op: &OpDecl, profile: &Profile, path: &Path, cost: Cost) -> diagno
         bytes: cost.bytes(),
         masking,
     })
+}
+
+/// 按形状与 IR 家族给出确定性的候选顺序；候选只来自既有声明展开。
+///
+/// 排序键依次是整除余量、与家族目标体积的距离、声明序。没有随机源、运行期搜索或估计性能分。
+pub fn candidates(op: &OpDecl, shape: &ShapeCtx) -> diagnostic::Result<Vec<TileCombo>> {
+    let work = shape_work(shape);
+    let mut candidates: Vec<(usize, TileCombo)> = expand(op)?.into_iter().enumerate().collect();
+    if candidates.is_empty() {
+        return Err(no_tiles());
+    }
+    candidates.sort_by_key(|(order, tile)| candidate_key(op.skeleton, work, *order, tile));
+    Ok(candidates.into_iter().map(|(_, tile)| tile).collect())
+}
+
+/// 启发式默认计划：取排序后的首枚种子，不宣称它优于其他形状上的实现。
+pub fn select_with_heuristics(
+    op: &OpDecl,
+    profile: &Profile,
+    path: &Path,
+    cost: Cost,
+    shape: &ShapeCtx,
+) -> diagnostic::Result<Plan> {
+    let tile = candidates(op, shape)?
+        .into_iter()
+        .next()
+        .ok_or_else(no_tiles)?;
+    select_tile(profile, path, cost, tile)
+}
+
+fn shape_work(shape: &ShapeCtx) -> u64 {
+    shape
+        .extents()
+        .labels()
+        .filter_map(|label| shape.get(label))
+        .fold(1u64, |total, length| total.saturating_mul(length as u64))
+}
+
+fn candidate_key(
+    skeleton: crate::decl::Skeleton,
+    work: u64,
+    order: usize,
+    tile: &TileCombo,
+) -> (u64, u64, usize) {
+    let volume = tile.values().iter().fold(1u64, |total, (_, value)| {
+        total.saturating_mul(u64::from(*value))
+    });
+    let target = family_target(skeleton, work);
+    let remainder = work
+        .checked_rem(volume)
+        .map_or(1, |rest| u64::from(rest != 0));
+    (remainder, volume.abs_diff(target), order)
+}
+
+fn family_target(skeleton: crate::decl::Skeleton, work: u64) -> u64 {
+    match skeleton {
+        crate::decl::Skeleton::Elementwise | crate::decl::Skeleton::Reduce => work.clamp(1, 256),
+        crate::decl::Skeleton::Gemm => (work as f64).sqrt().clamp(1.0, 256.0) as u64,
+        crate::decl::Skeleton::Scan => 1,
+    }
 }
 
 /// 窗口半径由预算解出：`radius = √budget`（向上取整）。

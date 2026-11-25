@@ -16,6 +16,11 @@ pub const P0: [&str; 8] = [
     "store",
 ];
 
+/// Rust、TOML 与共享参考由生成器单独校验，其余设备源文件进入目录闭集核对。
+fn is_device_fragment(name: &str) -> bool {
+    !(name.ends_with(".rs") || name.ends_with(".toml") || name.ends_with(".k"))
+}
+
 /// 一条供给：档案里"这台设备上这条原语怎么写"的最小事实。
 #[derive(Debug, Clone, Copy)]
 pub struct Provision<'a> {
@@ -204,10 +209,10 @@ impl<'a> Contract<'a> {
         Ok(())
     }
 
-    /// 目录是闭集：只有 P0 的八个 `<prim>.<ext>` 与一个 `witness.<ext>`。`prof::codegen` 的扫描器
-    /// 只认这两种名字，多出来的设备源文件会在构建期被拒——这里提前说清是哪个文件。
+    /// 目录是闭集：P0 原语、见证/尾块之外，只允许 `preamble.<ext>` 与有共享参考的算子特化。
+    /// 分类依据与构建器一致；未知设备源文件仍会被拒绝。
     ///
-    /// `.rs` 不算内容：片段目录就是 crate 的 `src/`，`lib.rs` 与它住在一起。
+    /// `.rs` / `.toml` / `.k` 由生成器另行校验，不混入设备源文件集合。
     ///
     /// # Errors
     ///
@@ -215,14 +220,33 @@ impl<'a> Contract<'a> {
     pub fn check_closed_directory(&self) -> Result<(), String> {
         let found = self.found_names()?;
         let mut want = self.expected_names();
+        want.extend(
+            found
+                .iter()
+                .filter(|name| self.is_known_auxiliary(name))
+                .cloned(),
+        );
         want.sort();
         if found == want {
             return Ok(());
         }
         Err(format!(
-            "`{}` 的片段目录不是闭集：只允许 P0 的 `<prim>.{}` 与 `witness.{}`，实得 {found:?}",
-            self.id, self.ext, self.ext
+            "`{}` 的片段目录不是闭集：只允许 P0、见证/尾块、前置声明与已声明算子的特化正文，实得 {found:?}",
+            self.id
         ))
+    }
+
+    /// `preamble.<ext>` 与有共享 `ops/<stem>.k` 的特化正文都是已登记的辅助文件。
+    fn is_known_auxiliary(&self, name: &str) -> bool {
+        let Some(stem) = name.strip_suffix(&format!(".{}", self.ext)) else {
+            return false;
+        };
+        if stem == "preamble" {
+            return true;
+        }
+        std::path::Path::new(self.dir)
+            .parent()
+            .is_some_and(|src| src.join("ops").join(format!("{stem}.k")).is_file())
     }
 
     /// 片段目录里的全部文件名（`.rs` 与 `kernels/` 等子树除外），排序后返回。
@@ -237,7 +261,7 @@ impl<'a> Contract<'a> {
         Ok(found)
     }
 
-    /// 收录单个目录项：跳过子目录与 `.rs` 源文件，其余片段名进结果集。
+    /// 收录单个目录项：跳过子目录、`.rs` 与由生成器另行校验的 `.toml` 档案。
     fn record_name(
         &self,
         entry: std::io::Result<std::fs::DirEntry>,
@@ -252,7 +276,7 @@ impl<'a> Contract<'a> {
             return Ok(());
         }
         let name = entry.file_name().to_string_lossy().into_owned();
-        if !name.ends_with(".rs") {
+        if is_device_fragment(&name) {
             found.push(name);
         }
         Ok(())

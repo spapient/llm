@@ -21,6 +21,7 @@ macro_rules! for_each_operator {
             abs_f32: $crate::kernel::abs_f32::AbsF32,
             adaptive_pool_f32: $crate::conv::adaptive_pool::AdaptivePoolModel,
             add_f32: $crate::kernel::add_f32::AddF32,
+            add_f32x4: $crate::kernel::add_f32x4::AddF32x4,
             attention_f32: $crate::conv::attention::AttentionF32,
             avg_pool2d_f32: $crate::conv::avg_pool2d::AvgPool2dModel,
             batch_norm_f32: $crate::conv::batch_norm::BatchNormModel,

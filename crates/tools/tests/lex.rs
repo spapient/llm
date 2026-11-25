@@ -2,7 +2,6 @@
 //! 只用公开面，不读实现即可换掉实现。
 
 use diagnostic::Code;
-use diagnostic::data::{Table, Value};
 use llm_tools::call::{Kind, scan};
 use llm_tools::ccn::analyze;
 use llm_tools::docs::{Link, links};
@@ -325,17 +324,18 @@ fn empty_and_unclosed_links_are_skipped() {
 // dup：文件行数闸门
 // ---------------------------------------------------------------------------
 
-/// 一份只有阈值的 `[gate]`：行数上限故意收紧到 10，便于用短文本验证边界。
+/// 行数上限故意收紧到 10，便于用短文本验证边界。
 fn line_gate() -> Gate {
-    let thresholds = vec![
-        ("ccn_max", Value::int(5)),
-        ("nloc_max", Value::int(60)),
-        ("file_max_lines", Value::int(10)),
-        ("file_min_lines", Value::int(1)),
-        ("test_max_lines", Value::int(10)),
-    ];
-    Gate::from_table(&Table::from_pairs(vec![("gate", Value::table(thresholds))]))
-        .expect("测试阈值合法")
+    Gate::from_view(&llm_tools::GateView {
+        ccn_max: 5,
+        nloc_max: 60,
+        file_max_lines: 10,
+        file_min_lines: 1,
+        test_max_lines: 10,
+        debt: &[],
+        min_lines_baseline: &[],
+    })
+    .expect("测试阈值合法")
 }
 
 #[test]

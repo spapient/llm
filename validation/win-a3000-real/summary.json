@@ -1,0 +1,259 @@
+{
+  "schema": 1,
+  "scope": "Real Catalogue::load + measured-fingerprint Catalogue::select + negotiation + emit + NVCC + cuBLAS + independent scalar parity on win; not standalone and not MUSA evidence.",
+  "selection": {
+    "vendor": "nvidia_a3000",
+    "id": "sm86",
+    "flags": "-arch=sm_86 -O3 -lcublas"
+  },
+  "hardware": {
+    "name": "NVIDIA RTX A3000 12GB Laptop GPU",
+    "cc": "8.6",
+    "multiProcessorCount": "32",
+    "warpSize": "32",
+    "sharedMemPerBlock": "49152",
+    "sharedMemPerMultiprocessor": "102400",
+    "regsPerBlock": "65536",
+    "regsPerMultiprocessor": "65536",
+    "maxThreadsPerMultiProcessor": "1536",
+    "memoryBusWidth": "192",
+    "memoryClockRate": "7001000",
+    "clockRate": "1170000",
+    "totalGlobalMem": "12884377600"
+  },
+  "verification": {
+    "passed_cases": 14,
+    "max_rel_err": 3.56751e-06,
+    "cases": [
+      {
+        "M": 1,
+        "N": 1,
+        "K": 0,
+        "variant": "direct",
+        "max_rel_err": 0.0,
+        "outputs": 1
+      },
+      {
+        "M": 3,
+        "N": 5,
+        "K": 0,
+        "variant": "direct",
+        "max_rel_err": 0.0,
+        "outputs": 15
+      },
+      {
+        "M": 1,
+        "N": 1,
+        "K": 1,
+        "variant": "direct",
+        "max_rel_err": 0.0,
+        "outputs": 1
+      },
+      {
+        "M": 1,
+        "N": 17,
+        "K": 3,
+        "variant": "direct",
+        "max_rel_err": 8.30018e-08,
+        "outputs": 17
+      },
+      {
+        "M": 17,
+        "N": 1,
+        "K": 19,
+        "variant": "direct",
+        "max_rel_err": 1.699687e-07,
+        "outputs": 17
+      },
+      {
+        "M": 15,
+        "N": 17,
+        "K": 31,
+        "variant": "direct",
+        "max_rel_err": 1.79535e-07,
+        "outputs": 255
+      },
+      {
+        "M": 16,
+        "N": 16,
+        "K": 16,
+        "variant": "direct",
+        "max_rel_err": 1.911235e-07,
+        "outputs": 256
+      },
+      {
+        "M": 17,
+        "N": 17,
+        "K": 17,
+        "variant": "direct",
+        "max_rel_err": 1.467131e-07,
+        "outputs": 289
+      },
+      {
+        "M": 31,
+        "N": 33,
+        "K": 35,
+        "variant": "direct",
+        "max_rel_err": 1.787144e-07,
+        "outputs": 1023
+      },
+      {
+        "M": 64,
+        "N": 65,
+        "K": 63,
+        "variant": "direct",
+        "max_rel_err": 2.181339e-07,
+        "outputs": 4160
+      },
+      {
+        "M": 65,
+        "N": 64,
+        "K": 129,
+        "variant": "direct",
+        "max_rel_err": 5.612446e-07,
+        "outputs": 4160
+      },
+      {
+        "M": 128,
+        "N": 3,
+        "K": 65,
+        "variant": "direct",
+        "max_rel_err": 4.015953e-07,
+        "outputs": 384
+      },
+      {
+        "M": 2,
+        "N": 4096,
+        "K": 1,
+        "variant": "direct",
+        "max_rel_err": 0.0,
+        "outputs": 8192
+      },
+      {
+        "M": 256,
+        "N": 256,
+        "K": 4096,
+        "variant": "direct",
+        "max_rel_err": 3.56751e-06,
+        "outputs": 65536
+      }
+    ]
+  },
+  "performance": [
+    {
+      "M": 256,
+      "N": 256,
+      "K": 4096,
+      "repeat": 50,
+      "samples": 50,
+      "max_rel_err": 3.56751e-06,
+      "min_ns": 872100.0,
+      "p50_ns": 924800.0,
+      "p95_ns": 1148800.0,
+      "p50_ms": 0.9248,
+      "tflops_from_p50": 0.581,
+      "gflops_from_p50": 580.5265051903115
+    },
+    {
+      "M": 1024,
+      "N": 1024,
+      "K": 1024,
+      "repeat": 20,
+      "samples": 20,
+      "max_rel_err": 2.296522e-06,
+      "min_ns": 1883800.0,
+      "p50_ns": 1960150.0,
+      "p95_ns": 2033700.0,
+      "p50_ms": 1.96015,
+      "tflops_from_p50": 1.096,
+      "gflops_from_p50": 1095.5710777236436,
+      "previous_handwritten_e2e_ms": 5.84969,
+      "speedup_vs_handwritten": 2.984307323419126,
+      "previous_standalone_cublas_e2e_ms": 1.51473,
+      "ratio_vs_standalone_cublas": 1.2940590072158076
+    },
+    {
+      "M": 4096,
+      "N": 256,
+      "K": 4096,
+      "repeat": 10,
+      "samples": 10,
+      "max_rel_err": 4.338346e-06,
+      "min_ns": 8045900.0,
+      "p50_ns": 8263750.0,
+      "p95_ns": 8810400.0,
+      "p50_ms": 8.26375,
+      "tflops_from_p50": 1.039,
+      "gflops_from_p50": 1039.471740069581,
+      "previous_handwritten_e2e_ms": 21.03544,
+      "speedup_vs_handwritten": 2.5455077900468916,
+      "previous_standalone_cublas_e2e_ms": 7.62116,
+      "ratio_vs_standalone_cublas": 1.0843165607335365
+    }
+  ],
+  "transfer_experiment": {
+    "runs": [
+      {
+        "pageable_ms": 6.167065,
+        "pinned_staging_ms": 7.717985,
+        "pageable_GBps": 12.242,
+        "pinned_staging_GBps": 9.782,
+        "pageable_over_pinned_speedup": 0.7991
+      },
+      {
+        "pageable_ms": 6.378535,
+        "pinned_staging_ms": 7.89202,
+        "pageable_GBps": 11.836,
+        "pinned_staging_GBps": 9.566,
+        "pageable_over_pinned_speedup": 0.8082
+      },
+      {
+        "pageable_ms": 6.430275,
+        "pinned_staging_ms": 7.9093,
+        "pageable_GBps": 11.741,
+        "pinned_staging_GBps": 9.545,
+        "pageable_over_pinned_speedup": 0.813
+      },
+      {
+        "pageable_ms": 6.690695,
+        "pinned_staging_ms": 7.69719,
+        "pageable_GBps": 11.284,
+        "pinned_staging_GBps": 9.808,
+        "pageable_over_pinned_speedup": 0.8692
+      },
+      {
+        "pageable_ms": 6.36533,
+        "pinned_staging_ms": 7.895025,
+        "pageable_GBps": 11.861,
+        "pinned_staging_GBps": 9.563,
+        "pageable_over_pinned_speedup": 0.8062
+      }
+    ],
+    "decision": "Keep pageable copies; pinned staging was slower in all five runs."
+  },
+  "source_sha256": {
+    "crates/prof/build.rs": "b177bcb03eb84e44ca05f7a927cff5bceba1b085de698322ce4751a7088a09c1",
+    "crates/prof/src/buildops.rs": "a1d6ece615a8e7e38bd423c592d8894cef90d40bafec571efd16b32586978c63",
+    "crates/prof/src/buildtables.rs": "fe70f3e129fdd1fc68ededc822b2030c632cfd4a7dd6644f8d15055bf17252f0",
+    "crates/prof/src/nvidia/a3000.toml": "ec70018420fe458f749fce244b35ca580c41e72b94edf1f3a5850eb9bf5d4dd9",
+    "crates/prof/src/nvidia/kernels/matmul_f32.k": "af1d35440124945d771e1992deca3b0ff5108598f86192ab68cd385826ae99b3",
+    "crates/shard/src/pipeline.rs": "f09245a334f690756ba5a93ca942b84c12e1c1e1d5c9efe502f9bdeda0440b02",
+    "crates/shard/src/verify.rs": "fe6e5e240ad0f2061350a344d255d9d999790ff038742b50407e462fba21dc77",
+    "crates/shard/src/witness.rs": "538ab898cbc50b43dfeb6f6869eb14a3d0e73bfbe70e71f69a30c16c98bcc6a9",
+    "crates/cutile/src/harness.rs": "8f62c642b8dd0364375d459ddfa81c0c00c7ea76d8d73f7199bf46791fc777c4",
+    "crates/nn/src/kernel/matmul.rs": "7210f47caded1b81c797c9986f4de235d10770ae2392357663def7fc55a8e770"
+  },
+  "reproduction": {
+    "device_query": "device_query.cu",
+    "verification_entry": "a3000_verify.rs",
+    "benchmark_entry": "a3000_benchmark.rs",
+    "unit_normalization": "benchmark.log only renames the derived rate to tflops; benchmark_raw.log preserves the original label. Timings are unchanged and all rates are recomputed from FLOP/p50.",
+    "raw_logs": [
+      "verification.log",
+      "benchmark.log",
+      "benchmark_raw.log",
+      "hardware.log",
+      "transfer.log"
+    ]
+  }
+}

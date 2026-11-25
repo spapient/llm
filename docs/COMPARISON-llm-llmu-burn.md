@@ -184,7 +184,7 @@
 
 > 新 llm 的后端分两层：**Fragment**（每设备 9 份原语源 + toml + witness，编译期扫成表）与 **Backend**（`Codegen`/`Driver`/`Backend` 三 trait）。设备后端三 trait 齐备的是 Metal、Cuda(含 MUSA 工具链)、Ascend；另有宿主 C 参考自检后端（只证明"C 编得过、跑得出 expect"，不是设备证据）。
 >
-> **设备 L 级现状（`README`/`prof` 口径）：** `cpu` L2（生成 C 由 `cc` 编译执行，与 nn 标量参考对拍 `max_rel_err = 0`）；`metal` L2（真机 36 个算子全部按声明发射并行网格，`gemv_i4` 4096² 带宽达成率 57.6%–69.3%，仍低于 70% 特化门槛）；`musa` L2 为上一轮实测（本轮缺设备，不记为通过）；`nvidia`/`intel` L1（仅有档案、片段与见证，`verify` 会失败）。
+> **设备 L 级现状（`README`/`prof` 口径）：** `cpu` L2（生成 C 由 `cc` 编译执行，与 nn 标量参考对拍 `max_rel_err = 0`）；`metal` L2（真机 36 个算子全部按声明发射并行网格，`gemv_i4` 4096² 带宽达成率 57.6%–69.3%，仍低于 70% 特化门槛）；`musa` L2 为上一轮实测（本轮缺设备，不记为通过）；`nvidia` L1；`intel` 在 UHD 750 上达到 L2 见证层（17/17 条供给真机对拍、68/68 份翻译单元编译），生产态 `verify` 仍待统一运行时装配。
 
 ### 4.2 执行缝（trait 面）
 

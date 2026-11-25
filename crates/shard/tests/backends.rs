@@ -1,9 +1,9 @@
 use super::*;
 use crate::backend::Codegen;
+use crate::fixtures::profile;
 use crate::platform::msvc_version;
 use crate::witness::{MAX_OUT, Scope};
 use cutile::dirs::Dirs;
-use cutile::prof::Profile;
 use std::path::Path;
 
 /// 装配 Metal / CUDA 后端（幂等，进程级只装一次）。引擎测试直接调 `MetalBackend`/`CudaBackend` 的
@@ -12,22 +12,6 @@ fn ensure_backends() {
     use std::sync::OnceLock;
     static INSTALLED: OnceLock<()> = OnceLock::new();
     INSTALLED.get_or_init(install);
-}
-
-fn metal_profile() -> Profile {
-    cutile::builtin::Catalogue::try_builtin()
-        .expect("内置数据")
-        .profile("metal")
-        .cloned()
-        .expect("metal 档案")
-}
-
-fn ascend_profile() -> Profile {
-    cutile::builtin::Catalogue::try_builtin()
-        .expect("内置数据")
-        .profile("ascend")
-        .cloned()
-        .expect("ascend 档案")
 }
 
 // ---------------------------------------------------------------------------
@@ -98,54 +82,46 @@ fn metal_driver_wrapper_is_nonempty() {
 // Metal 见证真机 + 前端签名（从 cutile/witness 搬来）。
 // ---------------------------------------------------------------------------
 
+/// 两条真机路径共用同一组判据：逐条有结果、不得降级成自检、误差必须入预算。
+fn check_device_witnesses(profile: &cutile::prof::Profile, dirs: &Dirs, label: &str) {
+    let runs = crate::witness::run_all(profile, dirs)
+        .unwrap_or_else(|error| panic!("{label} 见证必须全部通过：{error}"));
+    assert_eq!(runs.len(), profile.provides.len(), "每条声明都要有结果");
+    assert!(
+        runs.iter().all(|run| run.scope == Scope::Device),
+        "GPU 上跑出来的结论不能被降级成自检"
+    );
+    assert!(runs.iter().all(|run| run.max_rel_err <= 1e-5), "{runs:?}");
+}
+
 #[test]
 fn every_metal_witness_runs_on_the_gpu() {
     ensure_backends();
-    let profile = metal_profile();
+    let profile = profile("metal");
     if !crate::witness::device_available(&profile) {
         testkit::skip("engine: Metal 设备不在本机，GPU 见证用例未运行");
         return;
     }
     let dirs = Dirs::under(std::env::temp_dir().join("engine-metal-witness"));
-    let runs = crate::witness::run_all(&profile, &dirs).expect("Metal 见证必须全部通过");
-    assert_eq!(runs.len(), profile.provides.len(), "每条声明都要有结果");
-    assert!(
-        runs.iter().all(|run| run.scope == Scope::Device),
-        "GPU 上跑出来的结论不能被降级成自检"
-    );
-    assert!(runs.iter().all(|run| run.max_rel_err <= 1e-5), "{runs:?}");
-}
-
-fn nvidia_profile() -> Profile {
-    cutile::builtin::Catalogue::try_builtin()
-        .expect("内置数据")
-        .profile("nvidia")
-        .cloned()
-        .expect("nvidia 档案")
+    check_device_witnesses(&profile, &dirs, "Metal");
 }
 
 #[test]
 fn every_nvidia_witness_runs_on_the_cuda_device() {
     ensure_backends();
-    let profile = nvidia_profile();
+    let profile = profile("nvidia");
     if !crate::witness::device_available(&profile) {
         testkit::skip("engine: CUDA/nvcc 工具链或 MSVC 宿主不在本机，GPU 见证用例未运行");
         return;
     }
     let dirs = Dirs::under(std::env::temp_dir().join("engine-cuda-witness"));
-    let runs = crate::witness::run_all(&profile, &dirs).expect("CUDA 见证必须全部通过");
-    assert_eq!(runs.len(), profile.provides.len(), "每条声明都要有结果");
-    assert!(
-        runs.iter().all(|run| run.scope == Scope::Device),
-        "GPU 上跑出来的结论不能被降级成自检"
-    );
-    assert!(runs.iter().all(|run| run.max_rel_err <= 1e-5), "{runs:?}");
+    check_device_witnesses(&profile, &dirs, "CUDA");
 }
 
 #[test]
 fn the_metal_front_end_demands_an_explicit_address_space() {
     ensure_backends();
-    if !crate::witness::device_available(&metal_profile()) {
+    if !crate::witness::device_available(&profile("metal")) {
         testkit::skip("engine: Metal 设备不在本机，MSL 前端用例未运行");
         return;
     }
@@ -154,7 +130,7 @@ fn the_metal_front_end_demands_an_explicit_address_space() {
     // 那条路径测不到"显式地址空间"这条不变量。
     let program = "#include <metal_stdlib>\nusing namespace metal;\n\
                kernel void cutile_witness(float *out) { out[0] = 1.0f; }\n";
-    let profile = metal_profile();
+    let profile = profile("metal");
     let dirs = Dirs::under(std::env::temp_dir().join("engine-metal-frontend"));
     let error = MetalBackend
         .run(&profile, &dirs, program, 1, Scope::Device)
@@ -172,7 +148,7 @@ fn the_metal_front_end_demands_an_explicit_address_space() {
 fn generated_device_program_braces_are_balanced() {
     ensure_backends();
     let dirs = Dirs::under(std::env::temp_dir().join("engine-brace-work"));
-    let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
+    let catalogue = crate::fixtures::catalogue();
     for (vendor, front) in [
         ("nvidia", &CUDA_BACKEND as &dyn Codegen),
         ("metal", &METAL_BACKEND as &dyn Codegen),
@@ -205,7 +181,7 @@ fn generated_device_program_braces_are_balanced() {
 fn an_ascend_program_is_a_single_ascendc_translation_unit() {
     ensure_backends();
     let dirs = Dirs::under(std::env::temp_dir().join("engine-ascend-program"));
-    let profile = ascend_profile();
+    let profile = profile("ascend");
     let selected = crate::witness::declared_witnesses(&profile).expect("见证");
     let text = ASCEND_BACKEND
         .program(&profile, &dirs, &selected, Scope::Device)
@@ -262,7 +238,7 @@ fn an_ascend_program_is_a_single_ascendc_translation_unit() {
 #[test]
 fn the_ascend_backend_needs_both_the_compiler_and_the_device() {
     ensure_backends();
-    let profile = ascend_profile();
+    let profile = profile("ascend");
     let ready = detect_cce().is_some() && ascend_device();
     assert_eq!(ASCEND_BACKEND.available(&profile), ready);
     assert_eq!(
@@ -302,7 +278,7 @@ fn an_ascend_run_without_ccec_names_the_missing_compiler() {
     let dirs = Dirs::under(std::env::temp_dir().join("engine-ascend-missing"));
     let error = ASCEND_BACKEND
         .run(
-            &ascend_profile(),
+            &profile("ascend"),
             &dirs,
             "int main() { return 0; }",
             1,

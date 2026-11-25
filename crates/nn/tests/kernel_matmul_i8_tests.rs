@@ -25,26 +25,27 @@ fn assert_tiled_matches(m: usize, n: usize, k: usize) {
     assert_eq!(actual, expected, "i8 tile 必须与标量参考逐位一致");
 }
 
-#[test]
-fn tiled_matches_scalar_on_standard_shape() {
-    assert_tiled_matches(256, 256, 4096);
-}
+// 每个表项仍是独立 `#[test]`；形状表与 f32 档共用，本行只选 i8 的逐位判据。
+tiled_shape_cases!(assert_tiled_matches);
 
 #[test]
-fn tiled_matches_scalar_on_tile_multiples() {
-    assert_tiled_matches(128, 64, 96);
-}
-
-#[test]
-fn tiled_matches_scalar_on_ragged_edges() {
-    assert_tiled_matches(100, 70, 4093);
-}
-
-#[test]
-fn tiled_matches_scalar_on_trivial_shapes() {
-    assert_tiled_matches(1, 1, 1);
-    assert_tiled_matches(1, 8, 3);
-    assert_tiled_matches(8, 1, 3);
+fn const_generic_tiles_cover_ragged_regions() {
+    let (m, n, k) = (7, 19, 33);
+    let a = sample(m * k, 7);
+    let b = sample(k * n, 11);
+    let mut expected = vec![0i32; m * n];
+    matmul_scalar(&a, &b, m, n, k, &mut expected);
+    macro_rules! check {
+        ($rows:literal, $cols:literal) => {
+            let mut actual = vec![0i32; m * n];
+            blocked::<$rows, $cols>(&a, &b, m, n, k, &mut actual);
+            assert_eq!(actual, expected, "瓦片 {}×{}", $rows, $cols);
+        };
+    }
+    check!(1, 1);
+    check!(2, 3);
+    check!(4, 16);
+    check!(8, 32);
 }
 
 #[test]

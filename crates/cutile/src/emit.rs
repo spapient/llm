@@ -106,13 +106,9 @@ pub fn assemble(
         "// emit={} tools={} {} | 由声明层 + 档案层 + 片段层生成，不要手改",
         profile.meta.emit, profile.meta.tool, profile.meta.tool_ver
     );
-    if !profile.preamble.is_empty() {
-        text.push_str(&profile.preamble);
-        if !profile.preamble.ends_with('\n') {
-            text.push('\n');
-        }
-    }
+    write_preamble(&mut text, profile);
     text.push('\n');
+    write_float4_typedef(&mut text, profile, body);
     text.push_str(body.trim_start());
     if !text.ends_with('\n') {
         text.push('\n');
@@ -120,6 +116,26 @@ pub fn assemble(
     Source {
         lang: profile.meta.emit,
         text,
+    }
+}
+
+/// 档案 preamble 的换行与空值规则只在这里解释一次。
+fn write_preamble(text: &mut String, profile: &Profile) {
+    if profile.preamble.is_empty() {
+        return;
+    }
+    text.push_str(&profile.preamble);
+    if !profile.preamble.ends_with('\n') {
+        text.push('\n');
+    }
+}
+
+/// C 向量定义必须在档案 preamble 之后、内核正文之前出现且只出现一次。
+fn write_float4_typedef(text: &mut String, profile: &Profile, body: &str) {
+    let typedef = crate::printer::C_FLOAT4_TYPEDEF;
+    let required = profile.meta.emit == Emit::C && crate::printer::has_float4(body);
+    if required && !body.contains(typedef) {
+        text.push_str(typedef);
     }
 }
 

@@ -19,7 +19,7 @@ use crate::conv::deconv::{ConvTranspose1d as OpDeconv1, ConvTranspose2d as OpDec
 use crate::conv::{
     Conv1d as OpConv1, Conv2d as OpConv2, MaxPool1d as OpPool1, MaxPool2d as OpPool2,
 };
-use crate::{Bounds, BoundsResult, Contract, ContractSpec, nonzero, spec_accessors};
+use crate::{Bounds, BoundsResult, Contract, ContractSpec, LayerGeometry, nonzero, spec_accessors};
 use diagnostic::{Code, Error, Result};
 
 /// 一维卷积与转置卷积绑定的算子：im2col 之后就是一次矩阵乘。
@@ -400,7 +400,7 @@ macro_rules! norm_layer {
 
             fn bounds(&self) -> BoundsResult {
                 // 层不写第二份流量公式：下界向算子语义表要。
-                Bounds::of_ctx($p, self.$a, 1).map(Some)
+                Bounds::of_geometry($p, LayerGeometry::axis(self.$a)).map(Some)
             }
         }
     };

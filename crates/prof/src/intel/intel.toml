@@ -1,19 +1,16 @@
-# Intel GPU 档案（P0 只有 L1：见证已写成数据，本机没有 Intel GPU，OpenCL 片段与见证都未执行过）。
-# 保留它是为了让"同一份模板、三台设备"在数据上成立，而不是靠口号。
-#
-# 同一原语可以有多条 `provides`：`dot` 的 `dp4a`（i8×4）与 `fma`（标量 f32）是两种
-# 能力，合并成一条会变成少写字段。
+# Intel UHD Graphics 750：OpenCL 真机档案；等级只覆盖同名实现实际跑通的范围。
+# 同一原语可以有多条供给：i8×4 点积与 f32 FMA 是不同能力，不合并字段。
 
 [meta]
 vendor   = "intel"
-id       = "gen12"
+id       = "uhd750"
 emit     = "opencl"
 tools    = "clang"
 tool_ver = "17.0"
-checked  = "2026-11-11"
+checked  = "2026-11-25"
 
 [fingerprint]
-name = "contains: Intel"
+name = "contains: UHD Graphics 750"
 arch = "gen12"
 
 [space]
@@ -30,11 +27,10 @@ group      = 16
 groups_max = 32
 
 [peak]
-# 96 EU × 8 lane × 2 flop × 1.35 GHz。
-# `src` 必须可求值且与 `value` 相等：量纲与含义写在这里，数字只写一次。
-flops_f32 = { value = 2.0736e12, src = "96*8*2*1.35e9" }
-# LPDDR5 128 bit（16 B）× 4266 MT/s。
-bw        = { value = 68.256e9,  src = "16*4266e6" }
+# OpenCL 实测 32 EU、最高 1300 MHz；每 EU 每拍 8 lane × 2 FLOP。
+flops_f32 = { value = 665.6e9, src = "32*8*2*1.3e9" }
+# 两条 DDR4-3200 通道，每通道每拍 8 B；这是理论内存峰值，不是实测带宽。
+bw        = { value = 51.2e9, src = "2*8*3200e6" }
 
 [compile]
 flags = ["-cl-std=CL2.0"]
@@ -82,7 +78,7 @@ impl    = "dp4a"
 dt      = ["i8", "i32"]
 space   = ["REG"]
 lanes   = ["4"]
-grade   = "L1"
+grade   = "L2"
 witness = { file = "intel/witness.cl", func = "witness_dot_i8", expect = [10.0] }
 
 # P0 模板的 `@dot` 是标量 f32 累加的语义，与上面的整数点积不是同一个指令：单独一条签名。
@@ -95,7 +91,7 @@ impl    = "fma4"
 dt      = ["f32"]
 space   = ["REG"]
 lanes   = ["1"]
-grade   = "L1"
+grade   = "L2"
 witness = { file = "intel/witness.cl", func = "witness_dot", expect = [70.0] }
 
 [[provides]]
@@ -104,7 +100,7 @@ impl    = "i4_unpack"
 dt      = ["i4", "f32"]
 space   = ["REG", "GM"]
 group   = ["32"]
-grade   = "L1"
+grade   = "L2"
 witness = { file = "intel/witness.cl", func = "witness_quant", expect = [-4.0, 3.5] }
 
 # `load` 在这个拼接点上是**绑地址**：模板把 `w + n*M` 绑进私有指针，读发生在 `@dot` 的循环体里。
@@ -119,7 +115,8 @@ dt      = ["i4", "u8", "f32"]
 space   = ["GM", "FAST"]
 src     = ["GM"]
 dst     = ["GM"]
-grade   = "L1"
+lanes   = ["1", "4"]
+grade   = "L2"
 witness = { file = "intel/witness.cl", func = "witness_load", expect = [1.0] }
 
 # `async_work_group_copy` 只搬 GM ↔ SLM；目标是私有指针时没有 DMA 可发，能发的是 `prefetch`
@@ -137,14 +134,14 @@ space   = ["GM", "FAST"]
 src     = ["GM"]
 dst     = ["GM", "FAST"]
 stages  = ["1"]
-grade   = "L1"
+grade   = "L2"
 witness = { file = "intel/witness.cl", func = "witness_load_async", expect = [1.0] }
 
 # 目录条目：P0 direct/pipe 没有在途异步搬运，commit_wait 无可等 → 只登记 L0（未验证视为不具备）。
 [[provides]]
 prim    = "commit_wait"
 impl    = "noop"
-grade   = "L0"
+grade   = "L2"
 witness = { file = "intel/witness.cl", func = "witness_commit_wait", expect = [0.0] }
 
 [[provides]]
@@ -153,14 +150,15 @@ impl    = "global_store"
 m       = "<=4096"
 dt      = ["f32"]
 space   = ["GM"]
-grade   = "L1"
+lanes   = ["1", "4"]
+grade   = "L2"
 witness = { file = "intel/witness.cl", func = "witness_store", expect = [3.25] }
 
 # 目录条目：P0 direct/pipe 没有共享落点，bar 无可挡 → 只登记 L0（未验证视为不具备）。
 [[provides]]
 prim    = "bar"
 impl    = "noop"
-grade   = "L0"
+grade   = "L2"
 witness = { file = "intel/witness.cl", func = "witness_bar", expect = [0.0] }
 
 [[provides]]
@@ -170,34 +168,29 @@ dt      = ["f32", "i32", "i8"]
 # 片段层一个原语只有一份正文（`FragmentSet::get`），正文做的是就近舍入、不饱和的转换。
 # 登记 `on` 会让只要求 `on` 的算子静默拿到不饱和结果，所以只写真能交付的这一侧。
 sat     = ["off"]
-grade   = "L1"
+grade   = "L2"
 witness = { file = "intel/witness.cl", func = "witness_cvt", expect = [3.0] }
 
 [[provides]]
 prim    = "reduce"
-impl    = "sub_group_reduce"
+impl    = "scalar_loop"
 axis    = ["GMAX"]
 op      = ["sum", "max"]
 dt      = ["f32"]
-grade   = "L1"
+grade   = "L2"
 witness = { file = "intel/witness.cl", func = "witness_reduce", expect = [7.5] }
 
-# OpenCL 2.0 的全局原子（`atomic_fetch_add`）。与 `nvidia` / `ascend` 的同一原语对齐：
-# 三台设备都声明了它，协商才不必为"哪台有原子"写特例。
+# 真机见证对全局 atomic_int 发 atomic_fetch_add；不声称未验证的浮点或 max 原子。
 [[provides]]
 prim    = "atomic"
 impl    = "atomic_add"
-dt      = ["f32"]
+dt      = ["i32"]
 space   = ["GM"]
-op      = ["add", "max"]
-grade   = "L0"
+op      = ["add"]
+grade   = "L2"
 witness = { file = "intel/witness.cl", func = "witness_atomic", expect = [5.0] }
 
-# ── 闭集的其余六条 ──────────────────────────────────────────────────────────
-# gen12 的 Xe 矩阵引擎（`dpas`）、subgroup 交换/广播/扫描与 `native_exp2` /
-# `native_recip`。没有片段文本（P0 模板不调用），所以等级是 L0：
-# "声明了 + 有见证源码"，不是"本机能跑"。
-# gemm_f32 真正调用的标量 tile（有片段正文，L2），与下一条设备矩阵单元并存。
+# UHD 750 没有 XMX/DPAS；只登记有同形真机证据的标量 tile。
 [[provides]]
 prim     = "mma"
 impl     = "scalar_tile"
@@ -211,26 +204,13 @@ grade    = "L2"
 witness  = { file = "intel/witness.cl", func = "witness_mma_scalar", expect = [1.0, 2.0, 3.0, 4.0] }
 
 [[provides]]
-prim     = "mma"
-impl     = "dpas"
-m        = "<=8"
-n        = "<=16"
-k        = "<=8"
-dt       = ["f16", "bf16", "i8"]
-space    = ["REG", "FAST"]
-accuracy = ["fp32"]
-grade    = "L0"
-witness  = { file = "intel/witness.cl", func = "witness_mma", expect = [1.0, 2.0, 3.0, 4.0] }
-
-# `sub_group_shuffle` / `sub_group_broadcast`：宽度受 `[simt].group = 16` 约束。
-[[provides]]
 prim    = "shuffle"
 impl    = "sub_group_shuffle"
 m       = "<=16"
 dt      = ["f32", "i32"]
 space   = ["REG"]
 lanes   = ["1"]
-grade   = "L0"
+grade   = "L2"
 witness = { file = "intel/witness.cl", func = "witness_shuffle", expect = [4.0, 3.0, 2.0, 1.0] }
 
 [[provides]]
@@ -239,7 +219,7 @@ impl    = "sub_group_broadcast"
 m       = "<=16"
 dt      = ["f32"]
 space   = ["REG"]
-grade   = "L0"
+grade   = "L2"
 witness = { file = "intel/witness.cl", func = "witness_broadcast", expect = [7.0, 7.0, 7.0, 7.0] }
 
 [[provides]]
@@ -249,7 +229,7 @@ axis    = ["GMAX"]
 op      = ["sum", "max"]
 dt      = ["f32"]
 space   = ["REG"]
-grade   = "L0"
+grade   = "L2"
 witness = { file = "intel/witness.cl", func = "witness_scan", expect = [1.0, 3.0, 6.0, 10.0] }
 
 [[provides]]
@@ -258,7 +238,7 @@ impl     = "native_exp2"
 dt       = ["f32"]
 space    = ["REG"]
 accuracy = ["approx"]
-grade    = "L0"
+grade    = "L2"
 witness  = { file = "intel/witness.cl", func = "witness_exp2", expect = [8.0, 0.5] }
 
 [[provides]]
@@ -268,7 +248,7 @@ dt       = ["f32"]
 space    = ["REG"]
 kind     = ["rcp", "rsqrt"]
 accuracy = ["approx"]
-grade    = "L0"
+grade    = "L2"
 witness  = { file = "intel/witness.cl", func = "witness_rcp", expect = [0.25, 0.5] }
 
 # ---- 写回尾块（epilogue）的六种形式 ----------------------------------------

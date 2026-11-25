@@ -1,0 +1,32 @@
+# 微内核调优的唯一事实源；键名是模板 stem，不是注册后的算子名。
+#
+# 每份正文至多用一个 `/* cutile-unroll */` 标出待展开循环；矩阵乘标在收缩轴 K 上。
+# 构建器只替换锚点，不在 Rust 中判断厂商，也不复制模板。`default` 是设备默认值，vendor 键覆盖它；
+# `cpu = 0` 保持参考实现的循环顺序，便于数值对拍。新增后端无需修改本文件，除非要专门调优。
+
+[unroll]
+binary      = { default = 4, cpu = 0 }
+unary_fn    = { default = 4, cpu = 0 }
+# NVIDIA 由 cuBLAS 管理调度，不伪造设备库正文的循环展开点。
+matmul_f32  = { default = 4, cpu = 0, nvidia = 0 }
+gemm_packed = { default = 4, cpu = 0 }
+gemm_i8     = { default = 4, cpu = 0 }
+
+# 主机 GEMM 微内核：具名展开只在这一族登记，不与上面的设备模板重复。
+[gemm_micro.fma]
+mr = 8
+nr = 8
+kb = 256
+unroll = 4
+
+[gemm_micro.sdot]
+mr = 4
+nr = 4
+chains = 12
+unroll = 1
+
+[gemm_micro.sme]
+mr = 16
+nr = 64
+min_elems = 1_048_576
+unroll = 1

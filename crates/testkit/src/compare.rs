@@ -3,36 +3,38 @@
 //! 两档共用同一条双项容差的标量判定 close_scalar：逐元素档答「这一格差多少」，
 //! 整批档答「整批里最差的那格相对多大」。分成两个文件只会让同一条对拍口径长出两份分母，
 //! 所以这里只留一份实现与一份阈值投影。
+//!
+//! 逐元素档（[`approx_eq`] / [`close`] / [`assert_close`] / [`all_finite`]）按 `T: Float` 泛型：
+//! f32 与 f64 共用一条实现，各成员不必再按精度各抄一份 `close`。
+
+use num_traits::Float;
 
 /// 量化 logits 与 f32 参考的余弦回归下界（方向一致性，尺度不变）。
 pub const COSINE_GUARD: f32 = 0.999;
 
 /// 逐个元素**绝对误差**比较：两套同尺度算法变体对拍走这一档。`NaN` 与 `NaN` 视为相等
 /// （对拍时它两边同源，不该因为 `NaN != NaN` 失败）。
-pub fn approx_eq(left: &[f32], right: &[f32], tolerance: f32) -> bool {
+pub fn approx_eq<T: Float>(left: &[T], right: &[T], tolerance: T) -> bool {
     if left.len() != right.len() {
         return false;
     }
     left.iter().zip(right).all(|(a, b)| {
-        if a == b || (a.is_nan() && b.is_nan()) {
+        if *a == *b || (a.is_nan() && b.is_nan()) {
             return true;
         }
-        (a - b).abs() <= tolerance
+        (*a - *b).abs() <= tolerance
     })
 }
 
 /// 双项容差标量判定：`|a-b| ≤ abs + rel·max(|a|,|b|)`。
-pub(crate) fn close_scalar(a: f32, b: f32, abs: f32, rel: f32) -> bool {
+pub(crate) fn close_scalar<T: Float>(a: T, b: T, abs: T, rel: T) -> bool {
     if a == b {
         return true;
     }
     if a.is_nan() {
         return b.is_nan();
     }
-    if a.is_infinite() {
-        return false;
-    }
-    if b.is_infinite() {
+    if a.is_infinite() || b.is_infinite() {
         return false;
     }
     let tolerance = abs + rel * a.abs().max(b.abs());
@@ -40,7 +42,7 @@ pub(crate) fn close_scalar(a: f32, b: f32, abs: f32, rel: f32) -> bool {
 }
 
 /// 绝对 + 相对双项容差逐元素对拍：随量级缩放的比对（解析梯度 vs 数值梯度）走这一档。
-pub fn close(left: &[f32], right: &[f32], abs: f32, rel: f32) -> bool {
+pub fn close<T: Float>(left: &[T], right: &[T], abs: T, rel: T) -> bool {
     if left.len() != right.len() {
         return false;
     }
@@ -62,7 +64,7 @@ pub fn close(left: &[f32], right: &[f32], abs: f32, rel: f32) -> bool {
 ///
 /// 长度不同或任一元素越界时 panic。
 #[track_caller]
-pub fn assert_close(left: &[f32], right: &[f32], abs: f32, rel: f32) {
+pub fn assert_close<T: Float + std::fmt::Display>(left: &[T], right: &[T], abs: T, rel: T) {
     assert_eq!(
         left.len(),
         right.len(),
@@ -73,7 +75,7 @@ pub fn assert_close(left: &[f32], right: &[f32], abs: f32, rel: f32) {
     for (idx, (got, want)) in left.iter().zip(right).enumerate() {
         let tolerance = abs + rel * want.abs();
         assert!(
-            (got - want).abs() <= tolerance,
+            (*got - *want).abs() <= tolerance,
             "第 {idx} 个元素 {got} vs {want}（容差 {tolerance}）"
         );
     }
@@ -81,8 +83,44 @@ pub fn assert_close(left: &[f32], right: &[f32], abs: f32, rel: f32) {
 
 /// 切片内全部为有限值（非 NaN、非无穷）；数值对拍前的前置谓词。
 #[must_use]
-pub fn all_finite(values: &[f32]) -> bool {
+pub fn all_finite<T: Float>(values: &[T]) -> bool {
     values.iter().all(|value| value.is_finite())
+}
+
+/// 标量对拍：`|got − want| ≤ tol · max(1, |want|)`。
+///
+/// 相对项以参考侧 `want` 为分母、并留绝对地板 1（零附近的量按绝对容差判），`what` 只进失败消息。
+/// 与 [`assert_close`] 的双项形式不同：这里单参数 `tol` 同时承担相对与绝对两档，适合性质测试的
+/// 「不变量应在这条等式附近」断言。
+///
+/// # Panics
+///
+/// 判据不成立时 panic，消息带 `what` 与分母读数。
+#[track_caller]
+pub fn assert_near<T: Float + std::fmt::Display>(got: T, want: T, tol: T, what: &str) {
+    let scale = want.abs().max(T::one());
+    assert!(
+        (got - want).abs() <= tol * scale,
+        "{what}: got {got}, want {want}（tol = {tol}，scale = {scale}）"
+    );
+}
+
+/// 逐元素对拍，判据同 [`assert_near`]：`|got − want| ≤ tol · max(1, |want|)`。
+///
+/// 长度不等即失败（形状不对就不是同一批数）；失败消息带首个越界下标与 `what`。
+///
+/// # Panics
+///
+/// 长度不同或任一元素越界时 panic。
+#[track_caller]
+pub fn assert_vec_near<T: Float + std::fmt::Display>(got: &[T], want: &[T], tol: T, what: &str) {
+    assert_eq!(got.len(), want.len(), "{what}: 长度不等");
+    for (idx, (&g, &w)) in got.iter().zip(want).enumerate() {
+        assert!(
+            (g - w).abs() <= tol * w.abs().max(T::one()),
+            "{what}: 第 {idx} 项 got {g}, want {w}（tol = {tol}）"
+        );
+    }
 }
 
 /// 两条同长向量的余弦相似度；长度不同、或任一向量范数为零时返回 [`None`]。
@@ -343,3 +381,78 @@ mod compare_tests;
 #[cfg(test)]
 #[path = "../tests/rel_tests.rs"]
 mod rel_tests;
+
+// ---- 标量参考数学 -----------------------------------------------------------
+
+/// 两条同长向量的点积：`Σ aᵢ·bᵢ`。
+///
+/// # Panics
+///
+/// `left.len() != right.len()` 时 panic；长度不符是测试用例自身的错误。
+#[must_use]
+pub fn dot<T: Float>(left: &[T], right: &[T]) -> T {
+    assert_eq!(
+        left.len(),
+        right.len(),
+        "点积两侧长度不同（left {}，right {}）",
+        left.len(),
+        right.len()
+    );
+    left.iter()
+        .zip(right)
+        .fold(T::zero(), |acc, (a, b)| acc + *a * *b)
+}
+
+/// 一维信号的均值；空切片按参考约定返回零。
+#[must_use]
+pub fn mean<T: Float>(values: &[T]) -> T {
+    if values.is_empty() {
+        return T::zero();
+    }
+    values.iter().fold(T::zero(), |acc, v| acc + *v) / len_scalar(values.len())
+}
+
+/// 一维信号相对给定均值的方差；空切片按参考约定返回零。
+#[must_use]
+pub fn variance<T: Float>(values: &[T], mean: T) -> T {
+    if values.is_empty() {
+        return T::zero();
+    }
+    values.iter().fold(T::zero(), |acc, v| {
+        let d = *v - mean;
+        acc + d * d
+    }) / len_scalar(values.len())
+}
+
+/// 浮点类型无法表示长度时以 NaN 暴露异常，而不是 panic 或静默给出零分母。
+fn len_scalar<T: Float>(len: usize) -> T {
+    T::from(len).unwrap_or_else(T::nan)
+}
+
+#[cfg(test)]
+mod reference_math_tests {
+    use super::{dot, mean, variance};
+
+    #[test]
+    fn dot_accumulates_pairwise_products() {
+        assert_eq!(dot(&[1.0f32, 2.0, 3.0], &[4.0, 5.0, 6.0]), 32.0);
+        assert_eq!(dot(&[0.5f64, -1.0], &[2.0, 3.0]), -2.0);
+        assert_eq!(dot::<f32>(&[], &[]), 0.0, "空向量点积为零");
+    }
+
+    #[test]
+    #[should_panic(expected = "长度不同")]
+    fn dot_rejects_mismatched_lengths() {
+        let _ = dot(&[1.0f32], &[1.0, 2.0]);
+    }
+
+    #[test]
+    fn mean_and_variance_match_the_textbook_formulas() {
+        let values = [1.0f64, 2.0, 3.0, 4.0];
+        let mu = mean(&values);
+        assert_eq!(mu, 2.5);
+        assert_eq!(variance(&values, mu), 1.25);
+        assert_eq!(mean::<f64>(&[]), 0.0);
+        assert_eq!(variance::<f64>(&[], 0.0), 0.0);
+    }
+}

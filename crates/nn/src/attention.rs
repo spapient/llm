@@ -4,8 +4,8 @@ use diagnostic::{Code, Error, Result};
 use tensor::Shape;
 
 use crate::{
-    Bounds, BoundsResult, Contract, ContractSpec, Linear, WEIGHT_SUFFIX, WeightFormat,
-    spec_accessors,
+    Bounds, BoundsResult, Contract, ContractSpec, LayerGeometry, Linear, WEIGHT_SUFFIX,
+    WeightFormat, spec_accessors,
 };
 
 /// 注意力实现算法。
@@ -120,7 +120,11 @@ attention_layer! {
         naive: "attention_f32",
         flash: "flash_attention_f32",
         // 输入轴 `s` 与输出轴 `d` 按投影角色翻译宽度；代价仍来自算子语义表。
-        bounds: |layer| Bounds::of_op(layer.algo().operator(), layer.seq(), layer.head_dim()).map(Some),
+        bounds: |layer| Bounds::of_geometry(
+            layer.algo().operator(),
+            LayerGeometry::projection(layer.seq(), layer.head_dim()),
+        )
+        .map(Some),
     }
 }
 
@@ -141,11 +145,11 @@ attention_layer! {
         naive: "decode_attention_f32",
         flash: "decode_flash_attention_f32",
         // `HIST` 是声明档而非真实 KV 长度；query 行数与头宽才是层知道的两轴。
-        bounds: |layer| Bounds::of_ctx(
+        bounds: |layer| Bounds::of_geometry(
             layer.algo().select(DecodeAttention::NAIVE, DecodeAttention::FLASH),
-            layer.q_rows(),
-            layer.head_dim(),
-        ).map(Some),
+            LayerGeometry::shape(layer.q_rows(), layer.head_dim()),
+        )
+        .map(Some),
     }
 }
 
@@ -385,7 +389,11 @@ impl Contract for LatentAttention {
     fn bounds(&self) -> BoundsResult {
         // 行数是摊平后的 `seq · h`；宽度只认压缩宽度 `d_c`，解耦 RoPE 那段属于装配侧的几何，
         // 由运行期行宽给出，层不假装知道它——否则下界会把上投影的活算进来，重复计价。
-        Bounds::of_op(Self::OPERATOR, self.seq * self.heads, self.latent).map(Some)
+        Bounds::of_geometry(
+            Self::OPERATOR,
+            LayerGeometry::projection(self.seq * self.heads, self.latent),
+        )
+        .map(Some)
     }
 }
 

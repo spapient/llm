@@ -37,48 +37,39 @@ fn check_labels(labels: &[f32], vocab: usize) -> Result<()> {
 }
 
 pub(crate) fn check_vocab(vocab: usize) -> Result<()> {
-    if vocab == 0 {
-        return Err(Error::new(Code::Invalid, "词表宽度不能为 0").with(SITE));
-    }
+    validation_rules!(SITE; vocab != 0 => "词表宽度不能为 0");
     Ok(())
 }
 
 pub(crate) fn check_rows(rows: usize) -> Result<()> {
-    if rows == 0 {
-        return Err(Error::new(Code::Invalid, "标签为空：没有可评估的样本行").with(SITE));
-    }
+    validation_rules!(SITE; rows != 0 => "标签为空：没有可评估的样本行");
     Ok(())
 }
 
 pub(crate) fn check_logits_len(logits_len: usize, rows: usize, vocab: usize) -> Result<()> {
     let expected = rows * vocab;
-    if logits_len != expected {
-        let message =
-            format!("logits 元素数 {logits_len} 与 {rows} 行 × {vocab} 词表 = {expected} 不符");
-        return Err(Error::new(Code::Invalid, message).with(SITE));
-    }
+    validation_rules!(SITE;
+        logits_len == expected => format!("logits 元素数 {logits_len} 与 {rows} 行 × {vocab} 词表 = {expected} 不符"),
+    );
     Ok(())
 }
 
 /// 校验两个长度相等；不等返回 [`Code::Invalid`]。`what` 标识被校验的一侧。
 pub(crate) fn check_len(actual: usize, expected: usize, what: &str) -> Result<()> {
-    if actual != expected {
-        let message = format!("{what} 长度 {actual} 与期望 {expected} 不符");
-        return Err(Error::new(Code::Invalid, message).with(SITE));
-    }
+    validation_rules!(SITE;
+        actual == expected => format!("{what} 长度 {actual} 与期望 {expected} 不符"),
+    );
     Ok(())
 }
 
 fn check_label(label: f32, vocab: usize) -> Result<()> {
-    if label < 0.0 || label.fract() != 0.0 {
-        let message = format!("标签 {label} 不是非负整数索引");
-        return Err(Error::new(Code::Invalid, message).with(SITE));
-    }
+    validation_rules!(SITE;
+        label >= 0.0 && label.fract() == 0.0 => format!("标签 {label} 不是非负整数索引"),
+    );
     let idx = label as usize;
-    if idx >= vocab {
-        let message = format!("标签索引 {idx} 越界（词表 {vocab}）");
-        return Err(Error::new(Code::Invalid, message).with(SITE));
-    }
+    validation_rules!(SITE;
+        idx < vocab => format!("标签索引 {idx} 越界（词表 {vocab}）"),
+    );
     Ok(())
 }
 
@@ -215,8 +206,8 @@ pub fn hinge(pred: &[f32], target: &[f32]) -> Result<f32> {
 /// RL 策略族的诊断站点（站名保持 `"train::rl"`，与目标函数的站点区分）。
 const RL_SITE: &str = "train::rl";
 
-/// 校验 logits 几何（词表/行数/长度），返回行数。
-fn check_rl_logits_shape(logits_len: usize, vocab: usize) -> Result<usize> {
+/// 展平行矩阵的统一几何：词表非零、行数非零、长度恰好为 `rows·vocab`。
+fn rows_of(logits_len: usize, vocab: usize) -> Result<usize> {
     check_vocab(vocab)?;
     let rows = logits_len / vocab;
     check_rows(rows)?;
@@ -265,7 +256,7 @@ pub fn log_prob(logits: &[f32], actions: &[f32], vocab: usize, out: &mut [f32]) 
 ///
 /// 词表为 0、无行、或 logits 长度不是 `vocab` 整数倍时返回 [`Code::Invalid`]。
 pub fn entropy(logits: &[f32], vocab: usize) -> Result<f32> {
-    let rows = check_rl_logits_shape(logits.len(), vocab)?;
+    let rows = rows_of(logits.len(), vocab)?;
     let mut sum = 0.0f64;
     for row in logits.chunks_exact(vocab) {
         sum += f64::from(row_entropy(row));
@@ -335,24 +326,24 @@ impl Grpo {
     }
 }
 
-/// 裁剪范围 ε 必须是非负有限数。
-fn check_epsilon(epsilon: f32) -> Result<()> {
-    if epsilon < 0.0 || !epsilon.is_finite() {
-        return Err(
-            Error::new(Code::Invalid, format!("裁剪范围 ε={epsilon} 必须非负有限")).with(RL_SITE),
-        );
-    }
-    Ok(())
+/// 标量配置规则：一行声明判据、诊断站点与消息，有限性由生成器统一保证。
+macro_rules! scalar_rules {
+    ($( $check:ident => ($site:expr, $valid:expr, $message:literal) ),* $(,)?) => {$(
+        fn $check(value: f32) -> Result<()> {
+            if !($valid)(value) || !value.is_finite() {
+                // 显式命名参数：宏卫生性下 `format!` 的 `{value}` 隐式捕获取不到宏引入的形参。
+                return Err(Error::new(Code::Invalid, format!($message, value = value)).with($site));
+            }
+            Ok(())
+        }
+    )*};
 }
 
-/// KL 惩罚系数 β 必须是非负有限数。
-fn check_beta(beta: f32) -> Result<()> {
-    if beta < 0.0 || !beta.is_finite() {
-        return Err(
-            Error::new(Code::Invalid, format!("KL 惩罚系数 β={beta} 必须非负有限")).with(RL_SITE),
-        );
-    }
-    Ok(())
+scalar_rules! {
+    check_epsilon => (RL_SITE, |v| v >= 0.0, "裁剪范围 ε={value} 必须非负有限"),
+    check_beta => (RL_SITE, |v| v >= 0.0, "KL 惩罚系数 β={value} 必须非负有限"),
+    check_temperature => (DISTILL_SITE, |v| v > 0.0, "温度 {value} 必须是正有限数"),
+    check_alpha => (DISTILL_SITE, |v| (0.0..=1.0).contains(&v), "软损失权重 α={value} 必须在 [0,1]"),
 }
 
 /// 校验四个逐元素数组等长且非空，返回元素数。
@@ -552,28 +543,6 @@ impl Distill {
     }
 }
 
-/// 温度必须是正的有限数。
-fn check_temperature(temperature: f32) -> Result<()> {
-    if temperature <= 0.0 || !temperature.is_finite() {
-        return Err(
-            Error::new(Code::Invalid, format!("温度 {temperature} 必须是正有限数"))
-                .with(DISTILL_SITE),
-        );
-    }
-    Ok(())
-}
-
-/// 软损失权重 α 必须在闭区间 `[0, 1]`。
-fn check_alpha(alpha: f32) -> Result<()> {
-    if !(0.0..=1.0).contains(&alpha) || !alpha.is_finite() {
-        return Err(
-            Error::new(Code::Invalid, format!("软损失权重 α={alpha} 必须在 [0,1]"))
-                .with(DISTILL_SITE),
-        );
-    }
-    Ok(())
-}
-
 /// 静态训练目标：只保存种类与超参数；运行时变量仍由 [`crate::Metric`] 持有。
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum ObjectiveConfig {
@@ -612,24 +581,17 @@ impl ObjectiveConfig {
     }
 }
 
-/// 校验 logits 几何（词表/行数/长度/`out` 等长），返回行数。
+/// 校验 logits 与输出几何；行矩阵判据由 [`rows_of`] 统一持有。
 fn check_logits_shape(logits_len: usize, out_len: usize, vocab: usize) -> Result<usize> {
-    check_vocab(vocab)?;
-    let rows = logits_len / vocab;
-    check_rows(rows)?;
-    check_logits_len(logits_len, rows, vocab)?;
+    let rows = rows_of(logits_len, vocab)?;
     check_len(out_len, logits_len, "out")?;
     Ok(rows)
 }
 
-/// 校验一对 logits 的几何（词表/等长/行数/长度），返回行数。
+/// 校验一对等长 logits，再套用同一行矩阵判据。
 fn check_pair_shape(student_len: usize, teacher_len: usize, vocab: usize) -> Result<usize> {
-    check_vocab(vocab)?;
     check_len(student_len, teacher_len, "教师 logits")?;
-    let rows = student_len / vocab;
-    check_rows(rows)?;
-    check_logits_len(student_len, rows, vocab)?;
-    Ok(rows)
+    rows_of(student_len, vocab)
 }
 
 /// 单行 log-softmax：`o = slice − logsumexp(slice)`。

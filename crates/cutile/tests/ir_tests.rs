@@ -614,14 +614,15 @@ fn evaluate(expression: &Expr, inputs: [f32; 2]) -> f32 {
         Expr::Load(name) | Expr::Scalar(name) => slot(name),
         Expr::Neg(value) => -evaluate(value, inputs),
         Expr::Unary { op, child } => op.apply(evaluate(child, inputs)),
-        Expr::Binary { op, left, right } => {
-            op.apply(evaluate(left, inputs), evaluate(right, inputs))
-        }
+        Expr::Binary { op, left, right } => op
+            .apply(evaluate(left, inputs), evaluate(right, inputs))
+            .expect("解释执行只构造浮点算术"),
         Expr::Min { left, right } => evaluate(left, inputs).min(evaluate(right, inputs)),
         Expr::Max { left, right } => evaluate(left, inputs).max(evaluate(right, inputs)),
         Expr::Fma { a, b, c } => {
             evaluate(a, inputs).mul_add(evaluate(b, inputs), evaluate(c, inputs))
         }
+        _ => unreachable!("既有定律不会产生扩展程序节点"),
     }
 }
 

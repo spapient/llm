@@ -455,7 +455,8 @@ proptest! {
             tensor::View::matrix(rows, k, &x).expect("x 二维"),
             tensor::View::matrix(n, k, &w).expect("w 二维"),
             &mut got,
-        );
+        )
+        .expect("TN 几何合法");
         prop::assert_within_rel(&got, &want, 1e-5, "gemm_f32_tn 对转置后的标量积");
     }
 

@@ -1,6 +1,6 @@
 //! 算子基座：语义变化点的唯一契约（ADR 0050）。
 
-use crate::model::{AxisSpec, Cost, DType, Model, Sample, ShapeCtx};
+use crate::model::{AxisSpec, Cost, DType, Model, Sample, ShapeCtx, Values};
 
 /// 一个算子的全部语义：名字、生产形状、精度、轴、可微性，以及代价/样本/参考三条行为。
 pub trait Operator {
@@ -25,8 +25,8 @@ pub trait Operator {
     fn cost(shape: &ShapeCtx) -> Result<Cost, diagnostic::Error>;
     /// 给定 `(m, n)` 的确定性样本。
     fn sample(m: usize, n: usize) -> Sample;
-    /// 标量参考：不依赖设备，也不依赖片段。
-    fn reference(sample: &Sample) -> diagnostic::Result<Vec<f32>>;
+    /// 标量参考：不依赖设备，也不依赖片段；结果按元素档装进 [`Values`]。
+    fn reference(sample: &Sample) -> diagnostic::Result<Values>;
 }
 
 /// 把 [`Operator`] 投影成语义表 [`Model`]。
@@ -138,8 +138,11 @@ macro_rules! operator_via {
                 $sample(m, n)
             }
 
-            fn reference(sample: &$crate::model::Sample) -> ::diagnostic::Result<Vec<f32>> {
-                $reference(sample)
+            fn reference(
+                sample: &$crate::model::Sample,
+            ) -> ::diagnostic::Result<$crate::model::Values> {
+                let values = $reference(sample)?;
+                ::core::result::Result::Ok($crate::model::Values::F32(values))
             }
         }
     };

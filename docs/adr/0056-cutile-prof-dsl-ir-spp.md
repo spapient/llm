@@ -265,3 +265,12 @@ A（类型覆盖面），这两块均受 ADR 0017 / 0054 冻结，不在本批�
   不纳入回滚边界。
 - 本批未触碰并发在途文件（shard plan/schedule、train session/backprop、tensor、weights gguf 等）；
   提交前按 `git status --short` 划边界，只认领 cutile/annotation/device 测试本批文件与本 ADR。
+
+
+## 2026-11-25 增量：Program IR、类型化原子与首条向量生产链
+
+- **模板落 IR**：完整 `.k` 由 `Program` 持有，条件编译、辅助函数、嵌套控制流与原子调用均为结构节点；生产构建执行校验、优化和目标发射，不再以模板字符串直拼作为后端回退。
+- **原子类型化**：`Atom` 绑定 `Need`、胜出 `Provide`、端口方向／地址空间、dtype、位宽、存储字节、实现标签与 `AtomBody`；IR 调用点只保存 `AtomId`，协商与原子绑定共用供给选择。
+- **确定性择优**：`Run::prepare` 默认使用形状／家族启发式；`RuntimeConfig.autotune` 缺省关闭，显式开启后才逐候选编译、对拍和计时，候选并列时保持声明顺序，产物仍受既有缓存指纹约束。
+- **首条向量档**：`ScalarType::F32x4`、`CType::F32x4`、`Values::F32x4` 与解析／样本 ABI 已贯通。`add_f32x4` 的真实 C 编译执行和逐标量对拍通过，非标量整组形状在编译前拒绝；`vector_signature_preserves_dtype_and_lane_identity`、`vector_program_uses_registered_target_lowerings_only`、`registered_f32x4_kernel_executes_and_matches_scalar_lanes` 为对应 oracle。
+- **边界不变**：这一切片不表示全 `DType`、全后端 SIMD、全设备真机或 roofline 达标。CUDA／HIP 等未登记向量算术 lowering 的目标会显式报错；性能只接受同机、同形状、同 repeat 的 release 对照，最终门禁与实测结果另记。

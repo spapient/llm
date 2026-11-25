@@ -1,0 +1,30 @@
+warning: type alias `OptimizerRestore` is never used
+   --> crates/train/src/checkpoint.rs:563:6
+    |
+563 | type OptimizerRestore = (Vec<Vec<f32>>, Vec<Vec<f32>>, Vec<Option<(usize, usize)>>);
+    |      ^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+
+running 6 tests
+..... 5/6
+session::tests::config::failed_optimizer_returns_parameter_and_gradient_views --- FAILED
+
+failures:
+
+---- session::tests::config::failed_optimizer_returns_parameter_and_gradient_views stdout ----
+
+thread 'session::tests::config::failed_optimizer_returns_parameter_and_gradient_views' (51391101) panicked at crates/train/src/../tests/session_contract.rs:136:5:
+assertion `left == right` failed
+  left: (0, 2)
+ right: (0, 1)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    session::tests::config::failed_optimizer_returns_parameter_and_gradient_views
+
+test result: FAILED. 5 passed; 1 failed; 0 ignored; 0 measured; 246 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p llm-train --lib`

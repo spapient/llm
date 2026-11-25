@@ -15,15 +15,26 @@ use std::path::Path;
 
 pub use crate::gate::{LanguageGate, language_gate};
 
-/// 编译并真机运行一段 CUDA 程序，回读 `(计数, f32 位模式)`。供 cli 真机对拍复用：生成生产态网格
-/// 内核 → 经 `Backend` 缝（[`crate::backend::Driver::compile_run`]）编译执行 → 解析 stdout 的
-/// `printf("%u\n")` 输出。计数来自 stderr 的 `witness N` 行，值来自 stdout 的 u32 位模式。
+/// 编译并真机运行一段 CUDA 程序，回读 `(计数, f32 位模式)`。计数来自 stderr 的 `witness N` 行。
 pub fn run_cuda(
     profile: &Profile,
     dirs: &Dirs,
     program: &str,
     label: &str,
 ) -> diagnostic::Result<(Vec<i64>, Vec<f32>)> {
+    let outcome = run_cuda_outcome(profile, dirs, program, label)?;
+    let counts = crate::runner::driver::parse_counts(&outcome.stderr);
+    Ok((counts, outcome.bits))
+}
+
+/// 经已注册 CUDA 后端编译执行，保留输出位模式、stderr 与 harness 产生的全部计时样本。
+/// 供生产态对拍和基准共用同一条编译路径，不另写 NVCC 驱动。
+pub fn run_cuda_outcome(
+    profile: &Profile,
+    dirs: &Dirs,
+    program: &str,
+    label: &str,
+) -> diagnostic::Result<crate::runner::Outcome> {
     let backend = device::spec(Emit::Cuda).ok_or_else(|| {
         Error::new(
             Code::Unsupported,
@@ -32,7 +43,11 @@ pub fn run_cuda(
     })?;
     let source = crate::backend::Source::Single(program.to_string());
     let (stdout, stderr) = backend.compile_run(profile, dirs, &source, label)?;
-    Ok(crate::runner::driver::readback(&stdout, &stderr))
+    Ok(crate::runner::Outcome {
+        bits: crate::runner::parse_bits(&stdout),
+        timing: crate::runner::parse_timing(&stderr),
+        stderr,
+    })
 }
 
 /// 一条待执行的见证：`(原语, 实现名, 声明)`；前后端都在传这三元组。

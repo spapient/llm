@@ -690,6 +690,11 @@ fn projection(header: &Header, entry: &Entry) -> Result<Option<Linear>> {
         .map(Some)
         .map_err(|error| error.with(format!("权重条目 `{}`", entry.name())));
     }
+    dense_projection(name, entry)
+}
+
+/// 非量化投影只接受二维矩阵与已注册的稠密元素格式。
+fn dense_projection(name: &str, entry: &Entry) -> Result<Option<Linear>> {
     let [out_features, in_features] = entry.shape().dims() else {
         return Ok(None);
     };

@@ -1,41 +1,49 @@
-//! Gate 结构本身：阈值解析、闭集键校验、棘轮结清。
+//! Gate 结构本身：静态视图、阈值校验与棘轮结清。
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use diagnostic::data::{Table, Value};
-use llm_tools::gate::{Gate, Metric, Over};
+use llm_tools::gate::{DebtView, Gate, GateView, Metric, Over};
 
 use super::scan_integration_test;
 
-/// 本仓库五个阈值的键与值；改动它们就改 `lints/vocabulary.toml`。
-const GATE_KEYS: [(&str, i64); 5] = [
-    ("ccn_max", 5),
-    ("nloc_max", 60),
-    ("file_max_lines", 899),
-    ("file_min_lines", 300),
-    ("test_max_lines", 800),
+/// 与仓库一致的五个阈值；类型本身排除非整数配置。
+const GATE_KEYS: [&str; 5] = [
+    "ccn_max",
+    "nloc_max",
+    "file_max_lines",
+    "file_min_lines",
+    "test_max_lines",
 ];
 
-/// 一份与仓库同阈值、没有存量债的 `[gate]` 表。
-fn sound_gate() -> Table {
-    let gate = GATE_KEYS
-        .iter()
-        .map(|(key, value)| (*key, Value::int(*value)))
-        .collect();
-    Table::from_pairs(vec![("gate", Value::table(gate))])
+/// 没有存量债的合法配置。
+const SOUND: GateView<'static> = GateView {
+    ccn_max: 5,
+    nloc_max: 60,
+    file_max_lines: 899,
+    file_min_lines: 300,
+    test_max_lines: 800,
+    debt: &[],
+    min_lines_baseline: &[],
+};
+
+/// 借用一条局部债务；Gate owned 化后不保留视图引用。
+fn with_debt(ccn: Option<usize>, nloc: Option<usize>) -> Result<Gate, diagnostic::Error> {
+    let debt = [DebtView {
+        key: "crates/x/src/y.rs:run#0",
+        ccn,
+        nloc,
+        lines: None,
+        call: None,
+    }];
+    Gate::from_view(&GateView {
+        debt: &debt,
+        ..SOUND
+    })
 }
 
-/// 造一张只含一条 ccn 债务的 gate 与一份实测超限：登记值 `ccn`、实测 `measured`。
-fn debt_gate(ccn: i64, measured: usize) -> (Gate, Over) {
-    let mut config = sound_gate();
-    config.push(
-        "gate.debt",
-        Value::table(vec![
-            ("key", Value::text("crates/x/src/y.rs:run#0")),
-            ("ccn", Value::int(ccn)),
-        ]),
-    );
-    let gate = Gate::from_table(&config).expect("表合法");
+/// 造一条 ccn 债务与一份实测超限。
+fn debt_gate(ccn: usize, measured: usize) -> (Gate, Over) {
+    let gate = with_debt(Some(ccn), None).expect("视图合法");
     let over = Over {
         key: "crates/x/src/y.rs:run#0".into(),
         metric: Metric::Ccn,
@@ -44,8 +52,7 @@ fn debt_gate(ccn: i64, measured: usize) -> (Gate, Over) {
     (gate, over)
 }
 
-/// 项目配置：五个阈值来自构建期生成的 `lints/vocabulary.toml`；存量债务只允许挂在入口编排层
-///（`crates/cli/src/` 下的编排与二进制入口），运行时生产代码 `crates/*/src` 一条都不能有。
+/// 项目配置：阈值来自构建期强类型视图，存量债务只允许挂在入口编排层。
 #[test]
 fn the_project_config_lists_only_root_entry_legacy_debt() {
     let gate = Gate::load().expect("项目配置合法");
@@ -71,7 +78,6 @@ fn a_test_boulder_over_the_limit_must_fail() {
     let dir = std::env::temp_dir().join(format!("llm-gate-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("造临时目录");
     let path = dir.join("boulder.rs");
-    // 每行都是一个合法空行：本用例量的是行数棘轮，不是词法。
     let body = "\n".repeat(limit + 1);
     std::fs::write(&path, &body).expect("写临时文件");
 
@@ -89,11 +95,18 @@ fn a_test_boulder_over_the_limit_must_fail() {
 
 #[test]
 fn every_threshold_must_be_positive() {
-    for (key, _) in GATE_KEYS {
-        let mut config = sound_gate();
-        config.set(&format!("gate.{key}"), Value::int(0));
+    for key in GATE_KEYS {
+        let mut view = SOUND;
+        match key {
+            "ccn_max" => view.ccn_max = 0,
+            "nloc_max" => view.nloc_max = 0,
+            "file_max_lines" => view.file_max_lines = 0,
+            "file_min_lines" => view.file_min_lines = 0,
+            "test_max_lines" => view.test_max_lines = 0,
+            _ => unreachable!(),
+        }
         assert_eq!(
-            Gate::from_table(&config).unwrap_err().message(),
+            Gate::from_view(&view).unwrap_err().message(),
             "[gate] 阈值必须为正",
             "`{key} = 0` 必须被拒"
         );
@@ -102,42 +115,19 @@ fn every_threshold_must_be_positive() {
 
 #[test]
 fn an_unknown_gate_key_is_an_error_not_noise() {
-    let mut config = sound_gate();
-    config.set("gate.simd_nloc", Value::int(96));
     assert_eq!(
-        Gate::from_table(&config).unwrap_err().message(),
+        llm_tools::gate::reject_unknown_gate_key("simd_nloc")
+            .unwrap_err()
+            .message(),
         "[gate] 未知键 simd_nloc",
         "从未被读到的档位必须报错，而不是静默失效"
     );
 }
 
 #[test]
-fn a_threshold_must_be_a_positive_integer() {
-    let mut config = sound_gate();
-    config.set("gate.ccn_max", Value::text("5"));
-    assert_eq!(
-        Gate::from_table(&config).unwrap_err().message(),
-        "[gate] 缺正整数 ccn_max"
-    );
-}
-
-#[test]
-fn a_vocabulary_without_a_gate_section_is_rejected() {
-    assert_eq!(
-        Gate::from_table(&Table::new()).unwrap_err().message(),
-        "vocabulary.toml 缺 [gate]"
-    );
-}
-
-#[test]
 fn a_debt_row_without_a_metric_is_rejected() {
-    let mut config = sound_gate();
-    config.push(
-        "gate.debt",
-        Value::table(vec![("key", Value::text("crates/x/src/y.rs:run#0"))]),
-    );
     assert_eq!(
-        Gate::from_table(&config).unwrap_err().message(),
+        with_debt(None, None).unwrap_err().message(),
         "[gate.debt] crates/x/src/y.rs:run#0 无度量"
     );
 }
@@ -157,7 +147,7 @@ fn a_debt_row_registers_only_the_metrics_it_names() {
     );
 }
 
-/// 登记值高于实测即失败：基线是快照，不是预算，改善必须在同一提交里记账。
+/// 登记值高于实测即失败：基线是快照，不是预算。
 #[test]
 fn a_register_above_the_measurement_must_be_lowered() {
     let (gate, over) = debt_gate(47, 6);
@@ -168,19 +158,10 @@ fn a_register_above_the_measurement_must_be_lowered() {
     );
 }
 
-/// 同一身份登记 ccn 与 nloc：只观测到 ccn 仍超限时，nloc 那条必须被要求删除。
+/// 同一身份登记 ccn 与 nloc：只观测到 ccn 仍超限时，nloc 必须结清。
 #[test]
 fn a_satisfied_metric_must_drop_even_when_the_identity_is_still_live() {
-    let mut config = sound_gate();
-    config.push(
-        "gate.debt",
-        Value::table(vec![
-            ("key", Value::text("crates/x/src/y.rs:run#0")),
-            ("ccn", Value::int(9)),
-            ("nloc", Value::int(90)),
-        ]),
-    );
-    let gate = Gate::from_table(&config).expect("表合法");
+    let gate = with_debt(Some(9), Some(90)).expect("视图合法");
     let live = BTreeMap::from([(
         "crates/x/src/y.rs:run#0".to_string(),
         BTreeSet::from([Metric::Ccn]),

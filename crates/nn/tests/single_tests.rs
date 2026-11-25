@@ -26,10 +26,11 @@ fn an_embedding_declares_its_table_and_output_shape() {
 fn an_embedding_floor_follows_the_gather_semantics() {
     let layer = Embedding::new("tok_emb", 32_000, 128, 8).expect("合法");
     let floor = layer.bounds().expect("合法").expect("有算子");
-    assert_eq!(
-        floor,
-        Bounds::of_ctx(Embedding::OP, 8, 1).expect("同一份语义")
-    );
+    // 独立按 gather 定义手算：8 个 token 各搬一条 128 宽的 f32 行。
+    let elements = (8 * 128) as u64;
+    assert_eq!(floor.read(), elements * 4, "读 8×128 个 f32");
+    assert_eq!(floor.write(), elements * 4, "写 8×128 个 f32");
+    assert_eq!(floor.flops(), 8.0, "每个 token 一次下标转换");
 }
 
 #[test]

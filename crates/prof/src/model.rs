@@ -30,7 +30,75 @@ pub use crate::einsum::Cost;
 #[doc(inline)]
 pub use crate::einsum::Extents;
 
-/// 缓冲的取值：浮点档（f32/f16/bf16）与打包字节。
+/// 类型级定宽向量：每组恰有 `N` 个标量，表示层不存在未对齐的尾部。
+#[derive(Debug, Clone, PartialEq)]
+pub struct Vector<T, const N: usize> {
+    values: Vec<[T; N]>,
+}
+
+impl<T, const N: usize> Vector<T, N> {
+    /// 从扁平标量构造；`N = 0` 或标量数不整除时拒绝。
+    pub fn new(values: Vec<T>) -> diagnostic::Result<Self>
+    where
+        T: Copy,
+    {
+        if N == 0 {
+            return Err(Error::new(Code::Invalid, "向量车道数必须大于 0"));
+        }
+        if !values.len().is_multiple_of(N) {
+            return Err(Error::new(
+                Code::Invalid,
+                format!("标量数 {} 不能整除车道数 {N}", values.len()),
+            ));
+        }
+        let groups = (0..values.len() / N)
+            .map(|group| std::array::from_fn(|lane| values[group * N + lane]))
+            .collect();
+        Ok(Self { values: groups })
+    }
+
+    /// 定宽分组切片，供 C 初始化器保留每车道边界。
+    pub fn as_arrays(&self) -> &[[T; N]] {
+        &self.values
+    }
+
+    /// 扁平标量视图，供后端打包与主机对拍零拷贝共用。
+    pub fn as_slice(&self) -> &[T] {
+        self.values.as_flattened()
+    }
+
+    /// 标量元素数（不是向量组数）。
+    pub fn len(&self) -> usize {
+        self.values.len() * N
+    }
+
+    /// 向量组数。
+    pub fn groups(&self) -> usize {
+        self.values.len()
+    }
+
+    /// 向量是否不含任何标量元素。
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
+    /// 编译期车道数。
+    pub const fn lanes(&self) -> usize {
+        N
+    }
+}
+
+impl<T> Vector<T, 4> {
+    /// 按向量组数生成四车道取值，无需运行期整除校验。
+    pub fn from_fn(groups: usize, mut generate: impl FnMut(usize) -> T) -> Self {
+        let values = (0..groups)
+            .map(|group| std::array::from_fn(|lane| generate(group * 4 + lane)))
+            .collect();
+        Self { values }
+    }
+}
+
+/// 缓冲取值：标量档与显式四车道向量档共用一条对拍通道。
 #[derive(Debug, Clone, PartialEq)]
 pub enum Values {
     /// 单精度浮点。
@@ -41,16 +109,25 @@ pub enum Values {
     F16(Vec<half::f16>),
     /// brain 浮点（bfloat16）。
     Bf16(Vec<half::bf16>),
+    /// 四车道 f32。
+    F32x4(Vector<f32, 4>),
+    /// 四车道 f16。
+    F16x4(Vector<half::f16, 4>),
+    /// 四车道 bf16。
+    Bf16x4(Vector<half::bf16, 4>),
+    /// 四车道 u8。
+    U8x4(Vector<u8, 4>),
 }
 
 impl Values {
-    /// 元素个数。
+    /// 标量元素个数；向量档返回底层标量数。
     pub fn len(&self) -> usize {
         match self {
             Self::F32(values) => values.len(),
             Self::U8(values) => values.len(),
             Self::F16(values) => values.len(),
             Self::Bf16(values) => values.len(),
+            other => vector_len(other),
         }
     }
 
@@ -59,30 +136,95 @@ impl Values {
         self.len() == 0
     }
 
-    /// 元素类型在 C 里的名字（诊断用）。
-    ///
-    /// 这是"样本给的到底是什么类型"的唯一说法：签名校验与桥接检查共用它，免得同一件事有两种叫法。
+    /// 缓冲的实际存储字节数；向量档按底层标量数计，不把车宽度重复乘入。
+    pub fn byte_len(&self) -> u64 {
+        self.dtype().bytes_for(self.len() as u64)
+    }
+
+    /// 每组的标量车道数；普通标量档为 1。
+    pub fn lanes(&self) -> usize {
+        if matches!(
+            self,
+            Self::F32x4(_) | Self::F16x4(_) | Self::Bf16x4(_) | Self::U8x4(_)
+        ) {
+            4
+        } else {
+            1
+        }
+    }
+
+    /// C 数组的存储项数；向量档按组计，对拍长度仍由 [`Self::len`] 给出。
+    pub fn storage_len(&self) -> usize {
+        self.len() / self.lanes()
+    }
+
+    /// 元素类型的唯一诊断名。
     pub fn describe(&self) -> &'static str {
         match self {
             Self::F32(_) => "float",
             Self::U8(_) => "unsigned char",
             Self::F16(_) => "half",
             Self::Bf16(_) => "bf16",
+            other => vector_describe(other),
         }
     }
 
-    /// 两份取值是不是同一种元素类型。
-    ///
-    /// 换入缓冲时长度对得上还不够：把 `F32` 塞进声明的 `U8` 槽位，下游 reference 会按错误的
-    /// 变体读它——长度一致让它悄无声息地通过。类型必须单独判。
+    /// 类型与车道数都相同才算同档；判别看完整枚举身份。
     pub fn same_kind(&self, other: &Self) -> bool {
-        matches!(
-            (self, other),
-            (Self::F32(_), Self::F32(_))
-                | (Self::U8(_), Self::U8(_))
-                | (Self::F16(_), Self::F16(_))
-                | (Self::Bf16(_), Self::Bf16(_))
-        )
+        std::mem::discriminant(self) == std::mem::discriminant(other)
+    }
+
+    /// 元素档，不包含车道数；车道由具体 `Vector<T, N>` 类型与枚举身份共同表达。
+    pub fn dtype(&self) -> DType {
+        match self {
+            Self::F32(_) => DType::F32,
+            Self::U8(_) => DType::U8,
+            Self::F16(_) => DType::F16,
+            Self::Bf16(_) => DType::BF16,
+            other => vector_dtype(other),
+        }
+    }
+
+    /// 取 f32 标量切片；四车道 f32 直接零拷贝返回，其余档显式拒绝。
+    pub fn as_f32(&self) -> diagnostic::Result<&[f32]> {
+        match self {
+            Self::F32(values) => Ok(values),
+            Self::F32x4(values) => Ok(values.as_slice()),
+            other => Err(Error::new(
+                Code::Invalid,
+                format!("对拍通道仅支持 f32，当前档 `{}`", other.describe()),
+            )),
+        }
+    }
+}
+
+fn vector_len(values: &Values) -> usize {
+    match values {
+        Values::F32x4(values) => values.len(),
+        Values::F16x4(values) => values.len(),
+        Values::Bf16x4(values) => values.len(),
+        Values::U8x4(values) => values.len(),
+        _ => 0,
+    }
+}
+
+fn vector_describe(values: &Values) -> &'static str {
+    match values {
+        Values::F32x4(_) => "float4",
+        Values::F16x4(_) => "half4",
+        Values::Bf16x4(_) => "bf16x4",
+        Values::U8x4(_) => "uchar4",
+        _ => "scalar",
+    }
+}
+
+fn vector_dtype(values: &Values) -> DType {
+    match values {
+        Values::F32x4(_) => DType::F32,
+        Values::F16x4(_) => DType::F16,
+        Values::Bf16x4(_) => DType::BF16,
+        Values::U8x4(_) => DType::U8,
+        _ => DType::F32,
     }
 }
 
@@ -93,6 +235,16 @@ pub struct Buf {
     pub name: &'static str,
     /// 取值。
     pub values: Values,
+}
+
+impl Buf {
+    /// 构造一份具名 f32 缓冲，样本装配不重复展开 `Values` 变体。
+    pub fn f32(name: &'static str, values: Vec<f32>) -> Self {
+        Self {
+            name,
+            values: Values::F32(values),
+        }
+    }
 }
 
 /// 一次运行用的样本：形状 + 具名缓冲 + 具名标量。
@@ -151,8 +303,9 @@ impl Sample {
     /// 缓冲不存在或不是 f32 时返回带名字的说明。
     pub fn f32(&self, name: &str) -> diagnostic::Result<&[f32]> {
         match self.buf(name).map(|buf| &buf.values) {
-            Some(Values::F32(values)) => Ok(values),
-            Some(_) => Err(Error::new(Code::Invalid, format!("缓冲 `{name}` 不是 f32"))),
+            Some(values) => values.as_f32().map_err(|_| {
+                Error::new(Code::Invalid, format!("缓冲 `{name}` 不是 f32 标量或向量"))
+            }),
             None => Err(Error::new(
                 Code::Missing,
                 format!("样本里没有缓冲 `{name}`"),
@@ -315,9 +468,9 @@ fn lengths(m: usize, n: usize, x: &[f32], w: &[f32]) -> diagnostic::Result<()> {
 fn dense(sample: &Sample) -> diagnostic::Result<()> {
     match sample.buf("w").map(|buf| &buf.values) {
         Some(Values::F32(_)) => Ok(()),
-        Some(Values::U8(_) | Values::F16(_) | Values::Bf16(_)) => Err(Error::new(
+        Some(_) => Err(Error::new(
             Code::Unsupported,
-            "该算子的权重缓冲是打包字节（量化 / 半精度），真实 f32 权重不能注入：先按算子声明的分组量化",
+            "该算子的权重缓冲不是稠密标量 f32：先按声明转换成真实 f32 权重，不向量化档静默注入",
         )
         .with("prof::model::bind")),
         None => {
@@ -416,8 +569,8 @@ pub struct Model {
     pub cost: fn(&ShapeCtx) -> Result<Cost, Error>,
     /// 给定 `(m, n)` 的确定性样本。
     pub sample: fn(usize, usize) -> Sample,
-    /// 标量参考：不依赖任何设备，也不依赖片段。
-    pub reference: fn(&Sample) -> diagnostic::Result<Vec<f32>>,
+    /// 标量参考：不依赖任何设备，也不依赖片段；结果按元素档装进 [`Values`]，对拍侧按档解包。
+    pub reference: fn(&Sample) -> diagnostic::Result<Values>,
 }
 
 impl Model {

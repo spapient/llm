@@ -48,6 +48,7 @@ strip = "debuginfo"
 
 # 工作区共享的第三方依赖版本：各 crate 用 `{ workspace = true }` 引用，避免版本漂移。
 [workspace.dependencies]
+cc = "1.11.1"
 criterion = "0.8.2"
 half = "2.7.1"
 num-traits = "0.2.19"

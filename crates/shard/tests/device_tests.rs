@@ -3,7 +3,7 @@
 //! 生产文件只留执行与判据，用例集中于此。
 
 use super::*;
-use cutile::builtin::Catalogue;
+use crate::fixtures::catalogue;
 
 /// 一条 mock 后端（SPIRV，本机必然缺席）：只用来验注册表的「去重 + 按 emit 分派」机制，不碰任何
 /// 厂商工具链。真机 Metal / CUDA 后端在 `engine`（L6），其 Codegen / Driver 测试也搬到了那边。
@@ -55,7 +55,7 @@ fn golden_capture() {
     let capture = std::env::var("CUTILE_CAPTURE_GOLDEN").is_ok();
     let dir = std::path::PathBuf::from("/tmp/cutile-golden");
     let dirs = Dirs::under(std::env::temp_dir().join("cutile-golden-work"));
-    let catalogue = Catalogue::try_builtin().expect("内置数据");
+    let catalogue = catalogue();
 
     let cpu = catalogue.profile("cpu").cloned().expect("cpu 档案");
     let front = spec(Emit::C).expect("c 前端");
@@ -114,7 +114,6 @@ fn specs_register_each_execution_frontend_once() {
     assert!(!seen.is_empty(), "执行前端注册表不得被清空");
 }
 
-
 #[test]
 fn scratch_action_cleans_up_on_success_and_failure() {
     let root = std::env::temp_dir().join(format!("shard-scratch-cleanup-{}", std::process::id()));
@@ -129,11 +128,15 @@ fn scratch_action_cleans_up_on_success_and_failure() {
     assert!(!success_path.expect("路径").exists(), "成功后必须清理");
 
     let mut failure_path = None;
-    let result: diagnostic::Result<()> = crate::runner::driver::with_scratch(&dirs, "failure", |dir| {
-        failure_path = Some(dir.to_path_buf());
-        std::fs::create_dir_all(dir).expect("临时目录");
-        Err(diagnostic::Error::new(diagnostic::Code::Invalid, "故意失败"))
-    });
+    let result: diagnostic::Result<()> =
+        crate::runner::driver::with_scratch(&dirs, "failure", |dir| {
+            failure_path = Some(dir.to_path_buf());
+            std::fs::create_dir_all(dir).expect("临时目录");
+            Err(diagnostic::Error::new(
+                diagnostic::Code::Invalid,
+                "故意失败",
+            ))
+        });
     assert!(result.is_err());
     assert!(!failure_path.expect("路径").exists(), "失败后也必须清理");
     let _ = std::fs::remove_dir_all(root);

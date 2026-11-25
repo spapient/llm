@@ -1,0 +1,34 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling proc-macro2 v1.0.107
+   Compiling cutile v0.1.0 (/Users/fei/code/llm/crates/cutile)
+   Compiling llm-nn v0.1.0 (/Users/fei/code/llm/crates/nn)
+   Compiling llm-prof v0.1.0 (/Users/fei/code/llm/crates/prof)
+   Compiling quote v1.0.47
+   Compiling syn v2.0.119
+   Compiling syn v3.0.10
+   Compiling serde_derive v1.0.229
+   Compiling zerocopy-derive v0.8.63
+   Compiling llm-annotation v0.1.0 (/Users/fei/code/llm/crates/annotation)
+   Compiling zerocopy v0.8.63
+   Compiling serde v1.0.229
+   Compiling half v2.7.1
+   Compiling llm-tensor v0.1.0 (/Users/fei/code/llm/crates/tensor)
+   Compiling llm-storage v0.1.0 (/Users/fei/code/llm/crates/storage)
+   Compiling llm-weights v0.1.0 (/Users/fei/code/llm/crates/weights)
+    Finished `release` profile [optimized] target(s) in 41.80s
+     Running unittests src/lib.rs (target/release/build/llm-nn/cafccc36c1dd2436/out/llm_nn-cafccc36c1dd2436)
+
+running 1 test
+threads=18
+  i8 256x256x4096: fast 1553.1 GF/s | fast单 322.9 GF/s | 单/多 0.21
+  i8 512x512x512: fast 1595.9 GF/s | fast单 377.0 GF/s | 单/多 0.24
+  i8 1024x1024x1024: fast 3146.5 GF/s | fast单 433.6 GF/s | 单/多 0.14
+  f32 256x256x4096: fast 1036.9 GF/s | fast单 107.2 GF/s | 单/多 0.10
+  f32 512x512x512: fast 1011.1 GF/s | fast单 114.4 GF/s | 单/多 0.11
+  f32 1024x1024x1024: fast 1255.9 GF/s | fast单 109.2 GF/s | 单/多 0.09
+test kernel::fast::tests::bench_throughput ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 561 filtered out; finished in 0.31s
+

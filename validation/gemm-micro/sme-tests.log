@@ -1,0 +1,29 @@
+   Compiling proc-macro2 v1.0.107
+   Compiling llm-diagnostic v0.1.0 (/Users/fei/code/llm/crates/diagnostic)
+   Compiling cutile v0.1.0 (/Users/fei/code/llm/crates/cutile)
+   Compiling llm-nn v0.1.0 (/Users/fei/code/llm/crates/nn)
+   Compiling llm-prof v0.1.0 (/Users/fei/code/llm/crates/prof)
+   Compiling quote v1.0.47
+   Compiling syn v2.0.119
+   Compiling syn v3.0.10
+   Compiling serde_derive v1.0.229
+   Compiling zerocopy-derive v0.8.63
+   Compiling llm-annotation v0.1.0 (/Users/fei/code/llm/crates/annotation)
+   Compiling zerocopy v0.8.63
+   Compiling serde v1.0.229
+   Compiling half v2.7.1
+   Compiling llm-tensor v0.1.0 (/Users/fei/code/llm/crates/tensor)
+   Compiling llm-storage v0.1.0 (/Users/fei/code/llm/crates/storage)
+   Compiling llm-weights v0.1.0 (/Users/fei/code/llm/crates/weights)
+    Finished `release` profile [optimized] target(s) in 50.91s
+     Running unittests src/lib.rs (target/release/build/llm-nn/5dce165d3cac3288/out/llm_nn-5dce165d3cac3288)
+
+running 5 tests
+test kernel::fast::tests::sme_matches_on_single_col_group ... ok
+test kernel::fast::tests::sme_matches_on_single_row_block ... ok
+test kernel::fast::tests::sme_matches_on_tile_multiples ... ok
+test kernel::fast::tests::sme_matches_when_threaded ... ok
+test kernel::fast::tests::sme_matches_at_full_thread_count ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 568 filtered out; finished in 0.04s
+

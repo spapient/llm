@@ -1,0 +1,5 @@
+pageable_ms=6.167065 pinned_staging_ms=7.717985 pageable_GBps=12.242 pinned_staging_GBps=9.782 speedup=0.7991
+pageable_ms=6.378535 pinned_staging_ms=7.892020 pageable_GBps=11.836 pinned_staging_GBps=9.566 speedup=0.8082
+pageable_ms=6.430275 pinned_staging_ms=7.909300 pageable_GBps=11.741 pinned_staging_GBps=9.545 speedup=0.8130
+pageable_ms=6.690695 pinned_staging_ms=7.697190 pageable_GBps=11.284 pinned_staging_GBps=9.808 speedup=0.8692
+pageable_ms=6.365330 pinned_staging_ms=7.895025 pageable_GBps=11.861 pinned_staging_GBps=9.563 speedup=0.8062

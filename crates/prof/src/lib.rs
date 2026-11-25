@@ -10,17 +10,17 @@
 //!
 //! - `src/<vendor>/` 是**内容**：`<vendor>.toml`（存储层物理名、输出语言、工具链版本、执行单元、
 //!   每条能力区间）与 8 段 `<prim>.<ext>` 片段、`epilogue.<ext>`、`witness.<ext>`；
-//! - [`atom`] 是**唯一的词汇表**：16 个原语、类型/存储位集、参数化签名 `Need`/`Provide`、
+//! - [`atom`] 是**唯一的词汇表**：17 个原语、类型/存储位集、参数化签名 `Need`/`Provide`、
 //!   属性键闭集 [`atom::AttrKey`]；
-//! - [`prof`] 是**唯一的 schema**：解析、闭集字段、见证与 `[units]` 一致性校验；
+//! - [`prof`] 是**唯一的档案契约**：强类型视图、闭集字段、见证与 `[units]` 一致性校验；
 //! - [`device`](mod@device) 是**设备行的形状**：这次构建带上的元数据、见证源码、可选镜像与 [`Status`]。
 //!
 //! # 生成，不解析
 //!
-//! [`build.rs`](../build.rs) 读 `src/<vendor>/<vendor>.toml`，一次生成两棵树：
-//! `$OUT_DIR/embedded.rs`（档案 → `diagnostic::data::Table` 字面量，[`embedded`] / [`names`]，
-//! ADR 0022）与 `$OUT_DIR/tables.rs`（片段 → 每台设备一个模块 + `BUILTIN` / `WITNESS` /
-//! `DEVICES` / `ROOTS` 四张聚合表）。运行期只遍历这两棵树：不读目录、没有 TOML 解析器。
+//! [`build.rs`](../build.rs) 读 `src/<vendor>/<vendor>.toml`，直接生成强类型 `ProfileView` 与片段表：
+//! `$OUT_DIR/embedded.rs` 提供 [`embedded`] / [`names`]，`$OUT_DIR/tables.rs` 提供每台设备的模块与
+//! `BUILTIN` / `WITNESS` / `DEVICES` / `ROOTS` 聚合表。运行期只遍历静态视图：不读目录、没有 TOML
+//! 解析器或通用动态数据树。
 //!
 //! `lib.rs` 里**没有 vendor 清单**：`src/` 下哪个目录有 `<vendor>/<vendor>.toml`，哪台设备就存在。
 //! 加一台设备 = 加一个目录，机制代码零改动——这是"设备差异只有数据"的可执行版本。
@@ -53,14 +53,8 @@
 //! ```
 
 #![deny(unsafe_code)]
-// 主机原生内核（`native`）在 nightly 上走手写 SME/NEON 车道，stable 上走标量退路：与 nn 的
-// `lib.rs` 同一套门控。`aarch64_unstable_target_feature` / `stdarch_aarch64_feature_detection`
-// 只在 aarch64 上存在，x86_64 等目标直接声明就是 E0635，因此还要按架构门控。
-#![cfg_attr(nightly, feature(portable_simd))]
-#![cfg_attr(
-    all(nightly, target_arch = "aarch64"),
-    feature(aarch64_unstable_target_feature)
-)]
+// SME 的 C 目标特性与 macOS 探测不需要 nightly；只有非 macOS aarch64 沿用现有运行时探测宏。
+// 该宏只在这些目标上存在，故特性声明必须同时按工具链与架构门控。
 #![cfg_attr(
     all(nightly, target_arch = "aarch64"),
     feature(stdarch_aarch64_feature_detection)
@@ -118,6 +112,11 @@ pub mod runtime;
 pub mod device;
 pub mod prof;
 pub mod sign;
+/// 设备档案强类型视图的历史公开路径；定义与实现只留在 [`prof`]。
+pub mod view {
+    pub use crate::prof::{ProfileView, ProvideView};
+}
+pub use view::{ProfileView, ProvideView};
 /// 保留词的历史路径：三个常量住在 [`sign`]，`stems::*` 兼容下游既有引用。
 pub mod stems {
     pub use crate::sign::{EPILOGUE_STEM, MARKER, WITNESS_STEM};
@@ -129,7 +128,7 @@ pub use device::{
     builtin, builtin_witness, device, devices, dir_of, layer_root, load,
 };
 
-/// 构建期生成的档案表（`build.rs` 读 `src/<vendor>/<vendor>.toml` 展开成 `Table` 字面量）。
+/// 构建期生成的 `ProfileView` 静态档案表；没有通用 `Table` / `Value` 中间层。
 #[allow(clippy::all, missing_docs)]
 mod generated {
     include!(concat!(env!("OUT_DIR"), "/embedded.rs"));
@@ -140,10 +139,8 @@ mod generated {
 // 清单会重新变成第二份真相——生成表的意义正是让它只存在于 `src/` 的目录名里。
 include!(concat!(env!("OUT_DIR"), "/tables.rs"));
 
-pub use generated::{embedded, names};
+pub use generated::{PROFILE_VIEWS, embedded, names};
 
-mod decode;
-mod schema;
 mod text;
 mod witness;
 
@@ -153,7 +150,7 @@ pub mod decl;
 mod tests;
 
 /// 算子声明视图：[`prof_ops!`](annotation::prof_ops) 在编译期读 `src/ops/*.toml`，展开成强类型
-/// `const [OpView]` 视图数组；视图层不残留 `Table` / `Value` 动态树（ADR 0022 重议条款）。
+/// `const [OpView]` 视图数组；配置形状直接由类型表达，不经过通用动态树（ADR 0022 重议条款）。
 #[allow(missing_docs)]
 mod ops_generated {
     annotation::prof_ops!();

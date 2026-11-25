@@ -322,18 +322,33 @@ fn walk_declarations(
 }
 
 /// 一行是不是模块声明：返回 `(模块名, 是否内联)`。
+/// `packed_variant!(i2, ...)` 展开成内联 `pub mod i2`，与逐字写出的模块声明同权。
 fn module_declaration(line: &str) -> Option<(String, bool)> {
-    let rest = line
-        .strip_prefix("pub mod ")
-        .or_else(|| line.strip_prefix("pub(crate) mod "))
-        .or_else(|| line.strip_prefix("mod "))?;
-    let inline = rest.ends_with('{');
-    let name = rest.trim_end_matches('{').trim_end_matches(';').trim();
+    let (name, inline) = if let Some(rest) = line.strip_prefix("packed_variant!(") {
+        (rest.split(',').next().unwrap_or_default().trim(), true)
+    } else {
+        let rest = line
+            .strip_prefix("pub mod ")
+            .or_else(|| line.strip_prefix("pub(crate) mod "))
+            .or_else(|| line.strip_prefix("mod "))?;
+        let inline = rest.ends_with('{');
+        let name = rest.trim_end_matches('{').trim_end_matches(';').trim();
+        (name, inline)
+    };
     let valid = !name.is_empty()
         && name
             .chars()
             .all(|ch| ch.is_ascii_alphanumeric() || ch == '_');
     valid.then(|| (name.to_string(), inline))
+}
+
+#[test]
+fn packed_variant_is_an_inline_module_declaration() {
+    assert_eq!(
+        module_declaration("packed_variant!(i2, GemmI2);"),
+        Some(("i2".to_string(), true))
+    );
+    assert!(module_declaration("other_macro!(i2);").is_none());
 }
 
 /// 文件 → 声明出的模块路径（取最短的一条：一个文件被多处声明时，最短的是它的规范位置）。
@@ -521,20 +536,17 @@ pub(crate) fn hits(predicate: impl Fn(&str) -> bool) -> Vec<Hit> {
 
 /// 白名单里的 crate 与理由；配置来自 `tools` 构建期生成的词汇表（同一份文件只解析一次）。
 pub(crate) fn exempt(section: &str) -> Vec<(String, String)> {
-    let table = tool::vocabulary()
-        .table(section)
-        .unwrap_or_else(|| panic!("`lints/vocabulary.toml` 缺 `[{section}]`"));
-    table
-        .table_array("exempt")
-        .unwrap_or_else(|| panic!("`lints/vocabulary.toml` 缺 `{section}.exempt`"))
+    let view = tool::vocabulary();
+    let entries = match section {
+        "closed" => view.closed,
+        "bitset" => view.bitset,
+        other => panic!("`lints/vocabulary.toml` 不支持 `[{other}]` 的合规条目"),
+    };
+    entries
         .iter()
         .map(|entry| {
-            let name = entry
-                .string("crate")
-                .unwrap_or_else(|| panic!("`{section}.exempt` 的条目缺 `crate`"));
-            let reason = entry
-                .string("reason")
-                .unwrap_or_else(|| panic!("`{section}.exempt` 的 `{name}` 缺 `reason`"));
+            let name = entry.crate_name;
+            let reason = entry.reason;
             assert!(
                 reason.chars().count() >= 8,
                 "`{section}.exempt` 的 `{name}` 理由太短（{reason:?}）：豁免必须说清为什么"

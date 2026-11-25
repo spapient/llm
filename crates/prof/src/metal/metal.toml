@@ -138,6 +138,7 @@ dt      = ["i4", "u8", "f32"]
 space   = ["GM", "FAST"]
 src     = ["GM"]
 dst     = ["GM"]
+lanes   = ["1", "4"]
 grade   = "L2"
 witness = { file = "metal/witness.metal", func = "witness_load", expect = [1.0] }
 
@@ -170,6 +171,7 @@ impl    = "device_store"
 m       = "<=32768"
 dt      = ["f32"]
 space   = ["GM"]
+lanes   = ["1", "4"]
 grade   = "L2"
 witness = { file = "metal/witness.metal", func = "witness_store", expect = [3.25] }
 

@@ -15,11 +15,12 @@
 //!
 //! # 容差口径
 //!
-//! `|got − want| ≤ tol · max(1, |want|)`：相对误差，绝对下限为 1。`testkit::compare` 是同一判据，
-//! 但它的公开面只收 `f32` 切片；这里被测的是 `f64` 实例化，故用它的 `f64` 投影，不另立第二套。
+//! `|got − want| ≤ tol · max(1, |want|)`：相对误差，绝对下限为 1。判据本体住在
+//! `testkit::compare`（`assert_near` / `assert_vec_near`，f32/f64 泛型），这里直接复用，不另立第二套。
 
 use diagnostic::Code;
 use proptest::prelude::*;
+use testkit::{assert_near, assert_vec_near};
 
 use super::*;
 
@@ -60,27 +61,6 @@ fn score_table() -> impl Strategy<Value = (Vec<f64>, usize, usize)> {
             Just(cols),
         )
     })
-}
-
-/// 相对 + 绝对下限的容差判据；`what` 只进失败消息。
-#[track_caller]
-fn assert_near(got: f64, want: f64, tol: f64, what: &str) {
-    assert!(
-        (got - want).abs() <= tol * want.abs().max(1.0),
-        "{what}: got {got}, want {want}, tol {tol}"
-    );
-}
-
-/// 逐元素对拍：长度不等即失败（形状不对就不是同一批数）。
-#[track_caller]
-fn assert_vec_near(got: &[f64], want: &[f64], tol: f64, what: &str) {
-    assert_eq!(got.len(), want.len(), "{what}: 长度不等");
-    for (i, (&g, &w)) in got.iter().zip(want).enumerate() {
-        assert!(
-            (g - w).abs() <= tol * w.abs().max(1.0),
-            "{what}: 第 {i} 项 got {g}, want {w}"
-        );
-    }
 }
 
 proptest! {

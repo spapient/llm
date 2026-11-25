@@ -1,6 +1,6 @@
 //! 注意力：`O = softmax(QKᵀ/√d)·V`。
 
-use crate::model::{AxisRole, AxisSpec, Buf, Cost, Sample, ShapeCtx, Values};
+use crate::model::{AxisRole, AxisSpec, Buf, Cost, Sample, ShapeCtx};
 use diagnostic::{Code, Error};
 
 /// 两条基本轴：序列轴 `s`、头宽轴 `d`，都既是输入也是输出。
@@ -25,7 +25,7 @@ pub fn project_shape(s: usize, d: usize) -> Result<ShapeCtx, Error> {
 }
 
 /// 取形状轴；缺失时按模块前缀与轴名报错，避免各调用点各写一遍分支。
-fn axis(shape: &ShapeCtx, what: &str, label: char) -> Result<usize, Error> {
+pub(crate) fn axis(shape: &ShapeCtx, what: &str, label: char) -> Result<usize, Error> {
     shape
         .get(label)
         .ok_or_else(|| Error::new(Code::Invalid, format!("{what} 形状缺轴 `{label}`")))
@@ -47,18 +47,12 @@ pub fn cost(shape: &ShapeCtx) -> Result<Cost, Error> {
 }
 
 /// 确定性 q/k/v/y 缓冲：`q` 与 `y` 取 `q_len`，`k`/`v` 取 `kv_len`。
-fn sample_bufs(q_len: usize, kv_len: usize) -> Vec<Buf> {
-    let det = |base: f32, step: f32, len: usize| -> Vec<f32> {
-        (0..len).map(|idx| base + idx as f32 * step).collect()
-    };
-    let buf = |name: &'static str, values: Vec<f32>| Buf {
-        name,
-        values: Values::F32(values),
-    };
+pub(crate) fn sample_bufs(q_len: usize, kv_len: usize) -> Vec<Buf> {
+    let buf = Buf::f32;
     vec![
-        buf("q", det(-0.5, 0.13, q_len)),
-        buf("k", det(0.4, -0.09, kv_len)),
-        buf("v", det(-0.2, 0.11, kv_len)),
+        buf("q", crate::model::linear(q_len, 0.13, -0.5)),
+        buf("k", crate::model::linear(kv_len, -0.09, 0.4)),
+        buf("v", crate::model::linear(kv_len, 0.11, -0.2)),
         buf("y", vec![0.0; q_len]),
     ]
 }
@@ -75,7 +69,7 @@ pub fn sample(s: usize, d: usize) -> Sample {
 }
 
 /// 三个输入缓冲：朴素与 flash 路径读同一份 `q/k/v`，缺失时的文案因此只写一次。
-fn qkv(sample: &Sample) -> diagnostic::Result<(&[f32], &[f32], &[f32])> {
+pub(crate) fn qkv(sample: &Sample) -> diagnostic::Result<(&[f32], &[f32], &[f32])> {
     Ok((sample.f32("q")?, sample.f32("k")?, sample.f32("v")?))
 }
 
@@ -85,7 +79,7 @@ fn dot(x: &[f32], y: &[f32], row: usize, col: usize, d: usize) -> f32 {
 }
 
 /// 头宽不能为 0：`√d` 作分数除数，`d=0` 会让每条分数除零成 NaN。
-fn check_width(d: usize) -> diagnostic::Result<()> {
+pub(crate) fn check_width(d: usize) -> diagnostic::Result<()> {
     if d == 0 {
         return Err(Error::new(Code::Invalid, "注意力头宽不能为 0"));
     }
@@ -106,7 +100,7 @@ pub(crate) struct Rows<'a> {
 
 impl<'a> Rows<'a> {
     /// 以操作数与 K/V 列几何建行机器：`scale = √d`。
-    fn new(q: &'a [f32], k: &'a [f32], v: &'a [f32], cols: usize, d: usize) -> Self {
+    pub(crate) fn new(q: &'a [f32], k: &'a [f32], v: &'a [f32], cols: usize, d: usize) -> Self {
         Self {
             q,
             k,
@@ -140,13 +134,13 @@ impl<'a> Rows<'a> {
         Ok(Self::new(q, k, v, sample.m, sample.n))
     }
 
-    /// 朴素路径的一行：分数 p[j] = dot(q[row], k[j]) / √d → 数值稳定 softmax → 对 `V` 加权。
-    fn naive(&self, row: usize, out: &mut [f32]) {
-        let scores: Vec<f32> = (0..self.cols)
-            .map(|col| dot(self.q, self.k, row, col, self.d) / self.scale)
-            .collect();
+    /// 朴素路径的一行：保留原迭代器顺序，缓冲容量由整次前向复用。
+    fn naive(&self, row: usize, scores: &mut Vec<f32>, exps: &mut Vec<f32>, out: &mut [f32]) {
+        scores.clear();
+        scores.extend((0..self.cols).map(|col| dot(self.q, self.k, row, col, self.d) / self.scale));
         let max = scores.iter().copied().fold(f32::MIN, f32::max);
-        let exps: Vec<f32> = scores.iter().map(|score| (score - max).exp()).collect();
+        exps.clear();
+        exps.extend(scores.iter().map(|score| (score - max).exp()));
         let sum: f32 = exps.iter().sum();
         // `V` 按 `col` 分块，每块是 `write` 个输出列；按块求和让行列关系写在类型系统里，
         // 而不是靠 `j * write + h` 手算偏移。
@@ -194,8 +188,10 @@ pub(crate) enum Mode {
 pub(crate) fn run_rows(rows: &Rows<'_>, rows_count: usize, out: &mut [f32], mode: Mode) {
     match mode {
         Mode::Naive => {
+            let (mut scores, mut exps) =
+                (Vec::with_capacity(rows.cols), Vec::with_capacity(rows.cols));
             for row in 0..rows_count {
-                rows.naive(row, out);
+                rows.naive(row, &mut scores, &mut exps, out);
             }
         }
         Mode::Online => {
@@ -282,7 +278,8 @@ pub fn flash_forward(
     )
 }
 
-mod decode;
+use crate::conv::decode;
+
 pub mod latent {
     //! 潜空间注意力（MLA 吸收式单步）：`O[r,c] = Σ_j softmax_j(q[r]·k[j]/√W) · v[j,c]`。
     //!
@@ -294,7 +291,7 @@ pub mod latent {
     //! RoPE 段必须对同一查询行的各头相同：这是 MLA 的解耦键只有一个、被所有头共享的直接后果。构造
     //! `q` 时把这段复制到每个头，本算子照常按整行做内积即可，不需要知道"哪几列是 RoPE"。
 
-    use crate::model::{AxisRole, AxisSpec, Buf, Cost, Sample, ShapeCtx, Values};
+    use crate::model::{AxisRole, AxisSpec, Buf, Cost, Sample, ShapeCtx};
     use diagnostic::{Code, Error};
 
     use super::axis;
@@ -363,13 +360,7 @@ pub mod latent {
     pub fn sample(m: usize, n: usize) -> Sample {
         let (r, w) = (m.max(1), n.max(1));
         let dc = w.div_ceil(2);
-        let det = |base: f32, step: f32, len: usize| -> Vec<f32> {
-            (0..len).map(|idx| base + idx as f32 * step).collect()
-        };
-        let buf = |name: &'static str, values: Vec<f32>| Buf {
-            name,
-            values: Values::F32(values),
-        };
+        let buf = Buf::f32;
         Sample {
             m: r,
             n: w,
@@ -380,9 +371,9 @@ pub mod latent {
                 ("DC", dc as i64),
             ],
             bufs: vec![
-                buf("q", det(-0.5, 0.13, r * w)),
-                buf("k", det(0.17, -0.05, r * w)),
-                buf("v", det(-0.23, 0.09, r * dc)),
+                buf("q", crate::model::linear(r * w, 0.13, -0.5)),
+                buf("k", crate::model::linear(r * w, -0.05, 0.17)),
+                buf("v", crate::model::linear(r * dc, 0.09, -0.23)),
                 buf(OUT, vec![0.0; r * dc]),
             ],
         }
@@ -498,7 +489,9 @@ pub use latent::{LatentAttention, LatentAttentionF32, forward as latent_forward}
 use decode::decode;
 
 // 语义表对外的名字保持 `attention::decode_attention`（`nn::conv::decode_attention` 由 lib.rs 再导出）。
-pub use decode::semantics as decode_attention;
+// 写 `super::decode` 而非 `decode`：`decode` 实体是 `conv::decode`（本模块的 super 层），
+// 镜像门禁据此把别名解析到真实实体文件，而不是误拼成 `conv::attention::decode`。
+pub use super::decode::semantics as decode_attention;
 
 /// 标记类型：承载 `#[model]` 语义。
 pub struct Attention;
@@ -527,10 +520,6 @@ crate::operator_here!(
 );
 
 #[cfg(test)]
-mod latent_attention_tests {
-    include!("../../tests/conv_latent_attention_tests.rs");
-}
-#[cfg(test)]
-mod tests {
-    include!("../../tests/conv_attention_tests.rs");
+mod attention_suite {
+    include!("../../tests/conv_attention_suite.rs");
 }

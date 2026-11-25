@@ -1,8 +1,0 @@
-# 残差相加：与 add_f32 同构（同一段加法、同一组常量），独立注册以对应网络里的残差层。
-base = "add_f32"
-
-[op]
-name     = "residual_add_f32"
-stem     = "binary"
-skeleton = "elementwise"
-summary  = "y[n] = a[n] + b[n]"

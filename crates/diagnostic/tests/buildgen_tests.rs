@@ -3,33 +3,38 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
-fn emit_covers_every_value_shape() {
-    let table: toml::Table = toml::from_str(
+fn read_preserves_every_toml_value_shape() {
+    let dir = temp_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("all.toml");
+    std::fs::write(
+        &path,
         "[head]\nname = \"add\"\nrank = 7\nratio = 0.5\non = true\n\
-         tags = [\"a\", \"b\"]\nnested = { k = 1 }",
+         tags = [\"a\", \"b\"]\nnested = { k = 1 }\nday = 2026-01-01\n",
     )
     .unwrap();
-    let out = emit(&table, "root").unwrap();
-    assert!(out.starts_with("Table::from_pairs(vec!["));
-    assert!(out.contains("Value::text(\"add\")"));
-    assert!(out.contains("Value::int(7)"));
-    assert!(out.contains("Value::real(0.5)"));
-    assert!(out.contains("Value::flag(true)"));
-    assert!(out.contains("Value::array(vec!["));
-    assert!(out.contains("Value::table(vec!["));
-    assert!(out.contains("Value::int(1)"));
+    let root = read(&path).unwrap();
+    let head = root["head"].as_table().unwrap();
+    assert_eq!(head["name"].as_str(), Some("add"));
+    assert_eq!(head["rank"].as_integer(), Some(7));
+    assert_eq!(head["ratio"].as_float(), Some(0.5));
+    assert_eq!(head["on"].as_bool(), Some(true));
+    assert_eq!(head["tags"].as_array().unwrap().len(), 2);
+    assert_eq!(head["nested"]["k"].as_integer(), Some(1));
+    assert!(head["day"].as_datetime().is_some());
+    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
-fn a_non_finite_float_or_datetime_is_rejected_with_path() {
-    let nan: toml::Table = toml::from_str("x = nan").unwrap();
-    let err = emit(&nan, "bad").unwrap_err();
-    assert_eq!(err.code(), Code::Invalid);
-    assert!(err.message().contains("bad.x") && err.message().contains("有限浮点"));
-
-    let date: toml::Table = toml::from_str("x = 2026-01-01").unwrap();
-    let err = emit(&date, "bad").unwrap_err();
-    assert!(err.message().contains("bad.x") && err.message().contains("日期"));
+fn read_preserves_non_finite_numbers_for_domain_validation() {
+    let dir = temp_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("float.toml");
+    std::fs::write(&path, "nan = nan\ninf = inf\n").unwrap();
+    let table = read(&path).unwrap();
+    assert!(table["nan"].as_float().unwrap().is_nan());
+    assert!(table["inf"].as_float().unwrap().is_infinite());
+    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]

@@ -13,21 +13,83 @@ use crate::decl::{
     VariantModel,
 };
 
-/// 扫 `ops` 目录解析全部算子；继承合并与档展开完成后按名升序。
+/// 扫 `ops` 目录解析全部算子；继承合并与档展开完成后按名升序，重名直接拒绝。
 pub(crate) fn collect(ops_dir: &Path) -> Result<Vec<OpModel>, String> {
     let mut entries: Vec<OpModel> = Vec::new();
     for path in toml_files(ops_dir)? {
         collect_file(ops_dir, &path, &mut entries)?;
     }
     entries.sort_by(|a, b| a.name.cmp(&b.name));
+    if let Some(duplicate) = entries.windows(2).find(|pair| pair[0].name == pair[1].name) {
+        return Err(format!("算子 `{}` 被重复声明", duplicate[0].name));
+    }
     Ok(entries)
 }
 
-/// 单份档案：继承合并后按档展开，逐档收进结果。
+/// 单份档案：继承合并后展开同族声明，再逐档收进结果。
 fn collect_file(dir: &Path, path: &Path, entries: &mut Vec<OpModel>) -> Result<(), String> {
+    let (file_stem, resolved) = resolved_file(dir, path)?;
+    documents(&file_stem, &resolved)?
+        .into_iter()
+        .map(|(name, table)| push_tiers(&name, &table, entries))
+        .collect::<Result<Vec<_>, _>>()
+        .map(|_| ())
+}
+
+/// 读文件、完成继承，并同时保留诊断所需的文件名。
+fn resolved_file(dir: &Path, path: &Path) -> Result<(String, Table), String> {
     let file_stem = path_stem(path)?;
     let resolved = resolve(dir, read_table(path)?)?;
-    push_tiers(&file_stem, &resolved, entries)
+    Ok((file_stem, resolved))
+}
+
+/// 一份档案可包含多个同族算子；公共段继承一次，每条只写自己的 `op` 与差异段。
+fn documents(file_stem: &str, table: &Table) -> Result<Vec<(String, Table)>, String> {
+    if !table.contains_key("operators") {
+        return Ok(vec![(file_stem.to_string(), table.clone())]);
+    }
+    let items = family_items(file_stem, table)?;
+    let mut family = table.clone();
+    family.remove("operators");
+    items
+        .iter()
+        .map(|item| family_document(file_stem, &family, item))
+        .collect()
+}
+
+/// 同族声明表：互斥关系、数组类型与非空约束集中在这里。
+fn family_items<'a>(file_stem: &str, table: &'a Table) -> Result<&'a [Value], String> {
+    if table.contains_key("op") {
+        return Err(format!(
+            "`{file_stem}` 不能同时包含 `[op]` 与 `[[operators]]`"
+        ));
+    }
+    let items = table
+        .get("operators")
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("`{file_stem}.operators` 必须是算子表数组"))?;
+    if items.is_empty() {
+        return Err(format!("`{file_stem}.operators` 不能为空"));
+    }
+    Ok(items)
+}
+
+/// 展开一条同族声明，校验条目形状与唯一职责名。
+fn family_document(
+    file_stem: &str,
+    family: &Table,
+    item: &Value,
+) -> Result<(String, Table), String> {
+    let item = item
+        .as_table()
+        .ok_or_else(|| format!("`{file_stem}.operators` 的每项都必须是表"))?;
+    let name = item
+        .get("op")
+        .and_then(Value::as_table)
+        .and_then(|op| op.get("name"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("`{file_stem}.operators` 每项都必须声明 `op.name`"))?;
+    Ok((name.to_string(), merge(family.clone(), item.clone())))
 }
 
 /// 把一份档案展开出的各档算子压入结果。
@@ -45,6 +107,8 @@ fn toml_files(ops_dir: &Path) -> Result<Vec<PathBuf>, String> {
         .filter_map(Result::ok)
         .map(|entry| entry.path())
         .filter(|path| path.extension().is_some_and(|ext| ext == "toml"))
+        // 模板调优表与算子声明同目录，但不是算子；其他缺 `[op]` 的档案仍必须报错。
+        .filter(|path| path.file_name().is_none_or(|name| name != "kernels.toml"))
         .collect();
     files.sort();
     Ok(files)
@@ -72,7 +136,10 @@ fn resolve(dir: &Path, mut table: Table) -> Result<Table, String> {
     let Some(Value::String(base)) = table.remove("base") else {
         return Ok(table);
     };
-    let base_table = resolve(dir, read_table(&dir.join(format!("{base}.toml")))?)?;
+    let mut base_table = resolve(dir, read_table(&dir.join(format!("{base}.toml")))?)?;
+    if table.contains_key("operators") {
+        base_table.remove("op");
+    }
     Ok(merge(base_table, table))
 }
 
@@ -746,5 +813,45 @@ mod tests {
         let dt = cvt.get("cvt").and_then(Value::as_table).expect("cvt");
         let dt = dt.get("dt").and_then(Value::as_array).expect("dt 数组");
         assert_eq!(dt[0].as_str(), Some("f16"));
+    }
+
+    #[test]
+    fn expands_a_family_without_losing_shared_sections() {
+        let table = toml::from_str::<Table>(
+            r#"
+            [axes]
+            N = [32]
+
+            [[operators]]
+            op = { name = "neg_f32", stem = "unary_fn", skeleton = "elementwise" }
+            consts = { unexpr = "-x" }
+
+            [[operators]]
+            op = { name = "square_f32", stem = "unary_fn", skeleton = "elementwise" }
+            consts = { unexpr = "x * x" }
+            "#,
+        )
+        .expect("合法同族声明");
+        let documents = documents("unary", &table).expect("同族展开");
+        assert_eq!(documents.len(), 2);
+        assert_eq!(documents[0].0, "neg_f32");
+        assert_eq!(documents[1].0, "square_f32");
+        assert!(
+            documents
+                .iter()
+                .all(|(_, table)| table.contains_key("axes"))
+        );
+        assert_eq!(documents[0].1["consts"]["unexpr"].as_str(), Some("-x"));
+        assert_eq!(documents[1].1["consts"]["unexpr"].as_str(), Some("x * x"));
+    }
+
+    #[test]
+    fn rejects_mixed_single_and_family_declarations() {
+        let table = toml::from_str::<Table>(
+            "[op]\nname = 'single'\n[[operators]]\nop = { name = 'family' }\n",
+        )
+        .expect("合法 TOML");
+        let error = documents("mixed", &table).expect_err("混用必须失败");
+        assert!(error.contains("不能同时包含"));
     }
 }

@@ -1,0 +1,88 @@
+{
+  "schema": 1,
+  "head": "1573cd23ea0ee149777103d6da37fc90bd3b8972",
+  "rustc": "rustc 1.100.0 (0ef1bc386 2026-11-09)",
+  "files": {
+    "crates/prof/src/native.rs": {
+      "lines": 138,
+      "bytes": 6794,
+      "sha256": "07e7836e1c5b9acda4c01c1f5995b67e87d42020243efec59c526c6a33413ce8"
+    },
+    "crates/prof/src/native/gemm8x8.rs": {
+      "lines": 319,
+      "bytes": 11932,
+      "sha256": "e53e9ee1b864135a0aecd2651a948805e8c39944a5f0ba6161a2f426d06ccbcc"
+    },
+    "crates/prof/src/native/i8.rs": {
+      "lines": 244,
+      "bytes": 11351,
+      "sha256": "c2e267997ea041810b4bcc7b41e3f86509898be199a0e3d10ab36cd9e2095e46"
+    },
+    "crates/prof/src/native/sme.rs": {
+      "lines": 376,
+      "bytes": 13922,
+      "sha256": "48c830a7ce90377b8f6e4cf8057e2a7941c257b89638347391fdca765c339060"
+    },
+    "crates/prof/src/runtime.rs": {
+      "lines": 12,
+      "bytes": 307,
+      "sha256": "caa2006120404c678660b2e042c775528477cd68d35f0a7d9973586cb8b0e01d"
+    },
+    "crates/cutile/src/native.rs": {
+      "lines": 27,
+      "bytes": 1699,
+      "sha256": "24f2bb6e1346b14903a8f6bc2c1a93816ea054e48a3a5a442fa0c4fbb8afb1a4"
+    }
+  },
+  "public_lines": [
+    "crates/prof/src/native.rs:16:pub mod gemm8x8;",
+    "crates/prof/src/native.rs:20:pub mod i8;",
+    "crates/prof/src/native.rs:25:pub mod sme;",
+    "crates/prof/src/native.rs:28:pub mod f32 {",
+    "crates/prof/src/native.rs:30:pub const MR: usize = 8;",
+    "crates/prof/src/native.rs:32:pub const NR: usize = 8;",
+    "crates/prof/src/native.rs:35:pub const KB: usize = 256;",
+    "crates/prof/src/native.rs:39:pub mod i8_geo {",
+    "crates/prof/src/native.rs:41:pub const MR: usize = 4;",
+    "crates/prof/src/native.rs:43:pub const NR: usize = 4;",
+    "crates/prof/src/native.rs:47:pub mod sme_geo {",
+    "crates/prof/src/native.rs:49:pub const MR: usize = 16;",
+    "crates/prof/src/native.rs:51:pub const NR: usize = 64;",
+    "crates/prof/src/native.rs:53:pub const MIN_ELEMS: usize = 1 << 20;",
+    "crates/prof/src/native.rs:74:pub fn with_panels<R>(len: usize, f: impl FnOnce(&mut [f32]) -> R) -> R {",
+    "crates/prof/src/native.rs:89:pub fn threads_override() -> usize {",
+    "crates/prof/src/native.rs:98:pub const fn align_up(x: usize, block: usize) -> usize {",
+    "crates/prof/src/native.rs:103:pub type Gemm = fn(&[f32], &[f32], usize, usize, usize, &mut [f32]) -> bool;",
+    "crates/prof/src/native.rs:106:pub struct Native {",
+    "crates/prof/src/native.rs:121:pub const GEMM_KERNELS: &[Native] = &[",
+    "crates/prof/src/native.rs:134:pub fn gemm_negotiate(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f32]) -> bool {",
+    "crates/prof/src/native/gemm8x8.rs:12:pub struct Tile {",
+    "crates/prof/src/native/gemm8x8.rs:28:pub fn micro_packed(panel: &[f32], b: &[f32], out: &mut [f32], tile: Tile) {",
+    "crates/prof/src/native/gemm8x8.rs:97:pub const FMA_MAC_PER_K: usize = 16 * 4;",
+    "crates/prof/src/native/gemm8x8.rs:106:pub fn port_fma(rounds: usize) -> bool {",
+    "crates/prof/src/native/gemm8x8.rs:152:pub fn port_fma_block(rounds: usize, a: &[f32], b: &[f32], k: usize) -> bool {",
+    "crates/prof/src/native/gemm8x8.rs:243:pub fn micro_packed(panel: &[f32], b: &[f32], out: &mut [f32], tile: Tile) {",
+    "crates/prof/src/native/gemm8x8.rs:317:pub fn micro_packed(panel: &[f32], b: &[f32], out: &mut [f32], tile: Tile) {",
+    "crates/prof/src/native/i8.rs:25:pub struct Gram {",
+    "crates/prof/src/native/i8.rs:44:pub fn dot_block(a: &[i8], bpack: &[i8], out: &mut [i32], g: Gram) -> bool {",
+    "crates/prof/src/native/i8.rs:57:pub fn dot_block(a: &[i8], bpack: &[i8], out: &mut [i32], g: Gram) -> bool {",
+    "crates/prof/src/native/i8.rs:145:pub const SDOT_MAC_PER_ROUND: usize = 12 * 16;",
+    "crates/prof/src/native/i8.rs:160:pub fn port_sdot(rounds: usize) -> bool {",
+    "crates/prof/src/native/i8.rs:190:pub const SDOT_BLOCK_MAC_PER_K: usize = 16;",
+    "crates/prof/src/native/i8.rs:222:pub fn port_sdot_block(rounds: usize, a: &[i8], b: &[i8], k: usize) -> bool {",
+    "crates/prof/src/native/sme.rs:20:pub use super::sme_geo::{MIN_ELEMS, MR, NR};",
+    "crates/prof/src/native/sme.rs:28:pub fn gemm(a: &[f32], b: &[f32], m: usize, n: usize, k: usize, out: &mut [f32]) -> bool {",
+    "crates/prof/src/native/sme.rs:37:pub fn threads_for(m: usize, n: usize) -> usize {",
+    "crates/prof/src/native/sme.rs:276:pub fn port_run(rounds: usize) -> bool {",
+    "crates/prof/src/native/sme.rs:329:pub fn port_mix(rounds: usize, a: &[f32; 16], b: &[f32; 64]) -> bool {",
+    "crates/prof/src/runtime.rs:4:pub mod exec;",
+    "crates/prof/src/runtime.rs:8:pub mod metal;",
+    "crates/prof/src/runtime.rs:12:pub mod opencl;",
+    "crates/cutile/src/native.rs:17:pub use prof::native::{align_up, gemm_negotiate, threads_override, with_panels};",
+    "crates/cutile/src/native.rs:20:pub use prof::native::{GEMM_KERNELS, Gemm, Native};",
+    "crates/cutile/src/native.rs:23:pub use prof::native::{f32, gemm8x8, i8, i8_geo, sme_geo};",
+    "crates/cutile/src/native.rs:27:pub use prof::native::sme;"
+  ],
+  "native_lines": 1077,
+  "native_bytes": 43999
+}

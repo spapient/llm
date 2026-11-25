@@ -80,7 +80,7 @@ op 变长批段入口已按紧排游标切段；serve 装填 / 写回侧沿用�
 
 - **段布局**：历史 K/V 扁平一块，`[batch, heads, hist_b, d]`，段间紧排。第 `b` 段起点为累计游标
   `Σ_{j<b} heads·hist_j·d`，段长 `heads·hist_b·d`，缓冲总长 `Σ_b heads·hist_b·d`；与 op
-  [`decode_batch_var`](../../crates/nn/src/conv/attention/decode.rs) 的 `kv_cursor` 累计口径一致，两侧不各写一份
+  [`decode_batch_var`](../../crates/nn/src/conv.rs) 的 `kv_cursor` 累计口径一致，两侧不各写一份
   段算术。`hist_b = sequence.len()`，按准入序对齐。
 - **段内复用既有重排**：段内仍是头优先块 `[head, token, d]`，沿用现有 `reorder_history_row` 头分段
   整段 `copy_from_slice`；ragged 只改段间偏移，不改段内布局。

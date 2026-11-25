@@ -137,9 +137,9 @@ fn compound_type(params: &[Parameter], expression: &Expr) -> Result<ScalarType, 
         | Expr::Min { left, right }
         | Expr::Max { left, right } => binary_type(params, left, right),
         Expr::Fma { a, b, c } => ternary_type(params, a, b, c),
-        // 叶子由 [`value_type`] 前置分流到本函数之外；列全是穷尽 match 的要求。
-        Expr::F32(_) | Expr::Scalar(_) | Expr::Load(_) => Err(VerificationError::new(
-            "leaf expression reached compound typing",
+        // 完整程序的扩展节点由 `verify_program` 按作用域与局部类型校验。
+        _ => Err(VerificationError::new(
+            "extended expression requires the program verifier",
         )),
     }
 }
@@ -253,4 +253,440 @@ fn is_c_keyword(name: &str) -> bool {
     C_KEYWORDS
         .split_ascii_whitespace()
         .any(|keyword| keyword == name)
+}
+
+// ── 完整模板程序 ─────────────────────────────────────────────────────────
+
+use crate::kernel::{AtomArg, LocalType, Program, Statement};
+
+struct Scope<'a> {
+    params: &'a [Parameter],
+    locals: Vec<(String, LocalType)>,
+}
+
+impl<'a> Scope<'a> {
+    fn new(params: &'a [Parameter]) -> Self {
+        Self {
+            params,
+            locals: Vec::new(),
+        }
+    }
+
+    fn child(&self) -> Self {
+        Self {
+            params: self.params,
+            locals: self.locals.clone(),
+        }
+    }
+
+    fn known(&self, name: &str) -> bool {
+        self.params.iter().any(|param| param.name == name)
+            || self.locals.iter().any(|(local, _)| local == name)
+    }
+
+    fn local(&self, name: &str) -> Option<LocalType> {
+        self.locals
+            .iter()
+            .find(|(local, _)| local == name)
+            .map(|(_, ty)| *ty)
+    }
+}
+
+pub(crate) fn verify_program(program: &Program<'_>) -> Result<(), VerificationError> {
+    verify_signature(program.name(), program.params())?;
+    verify_aliases(program)?;
+    verify_helpers(program)?;
+    verify_statements(program, &mut Scope::new(program.params()), program.body())
+}
+
+fn verify_signature(name: &str, params: &[Parameter]) -> Result<(), VerificationError> {
+    valid_identifier(name)?;
+    check_params(params)?;
+    check_generated(params)
+}
+
+fn verify_aliases(program: &Program<'_>) -> Result<(), VerificationError> {
+    for (idx, alias) in program.aliases().iter().enumerate() {
+        valid_identifier(&alias.name)?;
+        if program.aliases()[..idx]
+            .iter()
+            .any(|prior| prior.name == alias.name)
+        {
+            return Err(VerificationError::new(format!(
+                "duplicate type alias `{}`",
+                alias.name
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn verify_helpers(program: &Program<'_>) -> Result<(), VerificationError> {
+    for (idx, function) in program.helpers().iter().enumerate() {
+        if program.helpers()[..idx]
+            .iter()
+            .any(|prior| prior.name == function.name)
+        {
+            return Err(VerificationError::new(format!(
+                "duplicate helper `{}`",
+                function.name
+            )));
+        }
+        verify_function(program, function)?;
+    }
+    Ok(())
+}
+
+fn verify_function(
+    program: &Program<'_>,
+    function: &crate::kernel::Function,
+) -> Result<(), VerificationError> {
+    verify_signature(&function.name, &function.params)?;
+    verify_statements(program, &mut Scope::new(&function.params), &function.body)
+}
+
+fn verify_statements(
+    program: &Program<'_>,
+    scope: &mut Scope<'_>,
+    statements: &[Statement],
+) -> Result<(), VerificationError> {
+    for statement in statements {
+        verify_statement(program, scope, statement)?;
+    }
+    Ok(())
+}
+
+fn verify_statement(
+    program: &Program<'_>,
+    scope: &mut Scope<'_>,
+    statement: &Statement,
+) -> Result<(), VerificationError> {
+    match statement {
+        Statement::Decl(_) | Statement::Expr(_) | Statement::Atom(_) => {
+            verify_simple_statement(program, scope, statement)
+        }
+        other => verify_control_statement(program, scope, other),
+    }
+}
+
+fn verify_simple_statement(
+    program: &Program<'_>,
+    scope: &mut Scope<'_>,
+    statement: &Statement,
+) -> Result<(), VerificationError> {
+    match statement {
+        Statement::Decl(local) => declare(scope, local),
+        Statement::Expr(expression) => verify_expression(scope, expression),
+        Statement::Atom(call) => verify_atom(program, scope, call),
+        _ => Ok(()),
+    }
+}
+
+fn verify_control_statement(
+    program: &Program<'_>,
+    scope: &mut Scope<'_>,
+    statement: &Statement,
+) -> Result<(), VerificationError> {
+    match statement {
+        Statement::Block(_) | Statement::For { .. } | Statement::If { .. } => {
+            verify_nested_control(program, scope, statement)
+        }
+        Statement::Pragma { name, value } => verify_pragma(name, *value),
+        Statement::Return(value) => verify_optional(scope, value.as_ref()),
+        Statement::Continue | Statement::Break => Ok(()),
+        _ => Ok(()),
+    }
+}
+
+fn verify_nested_control(
+    program: &Program<'_>,
+    scope: &mut Scope<'_>,
+    statement: &Statement,
+) -> Result<(), VerificationError> {
+    match statement {
+        Statement::Block(body) => verify_statements(program, &mut scope.child(), body),
+        Statement::For {
+            init,
+            condition,
+            step,
+            body,
+        } => verify_for(program, scope, init, condition, step, body),
+        Statement::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => verify_if(program, scope, condition, then_branch, else_branch),
+        _ => Ok(()),
+    }
+}
+
+fn verify_for(
+    program: &Program<'_>,
+    scope: &mut Scope<'_>,
+    init: &Option<Box<Statement>>,
+    condition: &Option<Expr>,
+    step: &Option<Expr>,
+    body: &[Statement],
+) -> Result<(), VerificationError> {
+    let mut nested = scope.child();
+    verify_for_header(program, &mut nested, init, condition, step)?;
+    verify_statements(program, &mut nested, body)
+}
+
+fn verify_for_header(
+    program: &Program<'_>,
+    scope: &mut Scope<'_>,
+    init: &Option<Box<Statement>>,
+    condition: &Option<Expr>,
+    step: &Option<Expr>,
+) -> Result<(), VerificationError> {
+    if let Some(init) = init {
+        verify_statement(program, scope, init)?;
+    }
+    verify_optional(scope, condition.as_ref())?;
+    verify_optional(scope, step.as_ref())
+}
+
+fn verify_if(
+    program: &Program<'_>,
+    scope: &mut Scope<'_>,
+    condition: &Expr,
+    then_branch: &[Statement],
+    else_branch: &[Statement],
+) -> Result<(), VerificationError> {
+    verify_expression(scope, condition)?;
+    verify_statements(program, &mut scope.child(), then_branch)?;
+    verify_statements(program, &mut scope.child(), else_branch)
+}
+
+fn verify_pragma(name: &str, value: Option<u32>) -> Result<(), VerificationError> {
+    if name != "unroll" || value == Some(0) {
+        return Err(VerificationError::new(format!(
+            "unsupported pragma `{name}`"
+        )));
+    }
+    Ok(())
+}
+
+fn verify_optional(scope: &Scope<'_>, value: Option<&Expr>) -> Result<(), VerificationError> {
+    value.map_or(Ok(()), |value| verify_expression(scope, value))
+}
+
+fn declare(
+    scope: &mut Scope<'_>,
+    local: &crate::kernel::LocalDecl,
+) -> Result<(), VerificationError> {
+    valid_identifier(&local.name)?;
+    if scope.known(&local.name) {
+        return Err(VerificationError::new(format!(
+            "duplicate local `{}`",
+            local.name
+        )));
+    }
+    if local.ty.array == Some(0) {
+        return Err(VerificationError::new("array length must be positive"));
+    }
+    verify_optional(scope, local.init.as_ref())?;
+    scope.locals.push((local.name.clone(), local.ty));
+    Ok(())
+}
+
+fn verify_atom(
+    program: &Program<'_>,
+    scope: &Scope<'_>,
+    call: &crate::kernel::AtomCall,
+) -> Result<(), VerificationError> {
+    let atom = program
+        .atom(call)
+        .ok_or_else(|| VerificationError::new("atom id is not in the program arena"))?;
+    verify_atom_args(scope, call)?;
+    verify_atom_ports(atom, call)
+}
+
+fn verify_atom_args(
+    scope: &Scope<'_>,
+    call: &crate::kernel::AtomCall,
+) -> Result<(), VerificationError> {
+    for arg in &call.args {
+        verify_atom_arg(scope, arg)?;
+    }
+    Ok(())
+}
+
+fn verify_atom_arg(scope: &Scope<'_>, arg: &AtomArg) -> Result<(), VerificationError> {
+    match arg {
+        AtomArg::Expr(value) => verify_expression(scope, value),
+        AtomArg::Named { key, value } => verify_named_arg(key, value),
+    }
+}
+
+fn verify_named_arg(key: &str, value: &str) -> Result<(), VerificationError> {
+    valid_identifier(key)?;
+    if !identifier_shape_ok(value) && value.parse::<i64>().is_err() {
+        return Err(VerificationError::new(format!(
+            "invalid atom value `{value}`"
+        )));
+    }
+    Ok(())
+}
+
+fn verify_atom_ports(
+    atom: &crate::cap::Atom<'_>,
+    call: &crate::kernel::AtomCall,
+) -> Result<(), VerificationError> {
+    for port in &atom.ports {
+        if !matches!(call.args.get(port.idx), Some(AtomArg::Expr(_))) {
+            return Err(VerificationError::new(format!(
+                "atom `{}` port {} requires a positional expression",
+                atom.prim(),
+                port.idx
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn verify_expression(scope: &Scope<'_>, expression: &Expr) -> Result<(), VerificationError> {
+    for child in expression.children() {
+        verify_expression(scope, child)?;
+    }
+    verify_expression_kind(scope, expression)
+}
+
+fn verify_expression_kind(scope: &Scope<'_>, expression: &Expr) -> Result<(), VerificationError> {
+    match expression {
+        Expr::F32(_) | Expr::Scalar(_) | Expr::Load(_) | Expr::Call { .. } => {
+            verify_literal_or_name(scope, expression)
+        }
+        Expr::Assign { target, .. } => verify_assignment(scope, target),
+        Expr::Select {
+            when_true,
+            when_false,
+            ..
+        } => verify_selection(scope, when_true, when_false),
+        _ => Ok(()),
+    }
+}
+
+fn verify_literal_or_name(scope: &Scope<'_>, expression: &Expr) -> Result<(), VerificationError> {
+    match expression {
+        Expr::F32(bits) => literal_type(*bits).map(|_| ()),
+        Expr::Scalar(name) | Expr::Load(name) if !scope.known(name) => {
+            Err(VerificationError::new(format!("unknown name `{name}`")))
+        }
+        Expr::Call { function, .. } => valid_identifier(function),
+        _ => Ok(()),
+    }
+}
+
+fn verify_selection(
+    scope: &Scope<'_>,
+    when_true: &Expr,
+    when_false: &Expr,
+) -> Result<(), VerificationError> {
+    let (left, right) = (
+        expression_type(scope, when_true),
+        expression_type(scope, when_false),
+    );
+    if left.is_some() && right.is_some() && left != right {
+        return Err(VerificationError::new(
+            "selection branches have different types",
+        ));
+    }
+    Ok(())
+}
+
+fn verify_assignment(scope: &Scope<'_>, target: &Expr) -> Result<(), VerificationError> {
+    if let Expr::Scalar(name) = target
+        && scope.local(name).is_some_and(|local| local.constant)
+    {
+        return Err(VerificationError::new(format!(
+            "cannot assign const local `{name}`"
+        )));
+    }
+    Ok(())
+}
+
+fn expression_type(scope: &Scope<'_>, expression: &Expr) -> Option<ScalarType> {
+    match expression {
+        Expr::Scalar(_) | Expr::Load(_) | Expr::Index { .. } => {
+            named_expression_type(scope, expression)
+        }
+        Expr::F32(_)
+        | Expr::Int(_)
+        | Expr::Cast { .. }
+        | Expr::Compare { .. }
+        | Expr::Logical { .. }
+        | Expr::Not(_) => leaf_expression_type(expression),
+        Expr::Neg(_)
+        | Expr::Unary { .. }
+        | Expr::Update { .. }
+        | Expr::Fma { .. }
+        | Expr::Select { .. }
+        | Expr::Assign { .. } => nested_expression_type(scope, expression),
+        Expr::Binary { left, right, .. }
+        | Expr::Min { left, right }
+        | Expr::Max { left, right } => same_expression_type(scope, left, right),
+        Expr::Call { .. } | Expr::Address(_) | Expr::Deref(_) | Expr::BitNot(_) => None,
+    }
+}
+
+fn named_expression_type(scope: &Scope<'_>, expression: &Expr) -> Option<ScalarType> {
+    match expression {
+        Expr::Scalar(name) | Expr::Load(name) => named_type(scope, name),
+        Expr::Index { base, .. } => indexed_type(scope, base),
+        _ => None,
+    }
+}
+
+fn leaf_expression_type(expression: &Expr) -> Option<ScalarType> {
+    match expression {
+        Expr::F32(_) => Some(ScalarType::F32),
+        Expr::Int(_) => Some(ScalarType::I32),
+        Expr::Cast { ty, .. } => Some(*ty),
+        Expr::Compare { .. } | Expr::Logical { .. } | Expr::Not(_) => Some(ScalarType::Bool),
+        _ => None,
+    }
+}
+
+fn nested_expression_type(scope: &Scope<'_>, expression: &Expr) -> Option<ScalarType> {
+    match expression {
+        Expr::Neg(value)
+        | Expr::Unary { child: value, .. }
+        | Expr::Update { target: value, .. } => expression_type(scope, value),
+        Expr::Fma { a, .. } => expression_type(scope, a),
+        Expr::Select { when_true, .. } => expression_type(scope, when_true),
+        Expr::Assign { value, .. } => expression_type(scope, value),
+        _ => None,
+    }
+}
+
+fn same_expression_type(scope: &Scope<'_>, left: &Expr, right: &Expr) -> Option<ScalarType> {
+    let left = expression_type(scope, left);
+    if left == expression_type(scope, right) {
+        left
+    } else {
+        None
+    }
+}
+
+fn named_type(scope: &Scope<'_>, name: &str) -> Option<ScalarType> {
+    if let Some(local) = scope.local(name) {
+        return (local.pointers == 0 && local.array.is_none()).then_some(local.element);
+    }
+    scope
+        .params
+        .iter()
+        .find(|param| param.name == name)
+        .map(|param| match param.ty {
+            ValueType::Scalar(ty) => ty,
+            ValueType::Buf { element, .. } => element,
+        })
+}
+
+fn indexed_type(scope: &Scope<'_>, base: &Expr) -> Option<ScalarType> {
+    if let Expr::Scalar(name) = base {
+        return named_type(scope, name);
+    }
+    expression_type(scope, base)
 }

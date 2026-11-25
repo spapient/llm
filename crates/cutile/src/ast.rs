@@ -1,9 +1,11 @@
 //! 职责：单 kernel 级结构化 AST（ADR 0017 的 L1）。
 
-use crate::decl::{OpDecl, TileCombo};
+use crate::decl::{OpDecl, Skeleton, TileCombo};
+use crate::kernel::{Access, Arith, Expr, Kernel, Parameter, ScalarType, ValueType};
 use crate::substitute::{self, Arg, FragmentSet, Segment, error, lex};
 use core::fmt::{self, Write as _};
 use prof::atom::Prim;
+use prof::sig::CType;
 
 /// 模板级节点：拥有所有权，不借用模板正文。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -160,7 +162,7 @@ fn resolve_arg(
 }
 
 /// 把一段文本里的 `{{槽位}}` 逐个换成取值；多数实参不含槽位，无 `{{` 时原样返回免分配。
-fn resolve_slots(
+pub(crate) fn resolve_slots(
     op: &OpDecl,
     combo: &TileCombo,
     text: &str,
@@ -178,7 +180,9 @@ fn resolve_slots(
             out.push_str(&rest[start..]);
             break;
         };
-        out.push_str(&slot_value(op, combo, inner[..end].trim(), line)?);
+        let offset = text.len() - rest.len() + start;
+        let hole_line = line + text[..offset].bytes().filter(|byte| *byte == b'\n').count();
+        out.push_str(&slot_value(op, combo, inner[..end].trim(), hole_line)?);
         rest = &inner[end + 2..];
     }
     out.push_str(rest);
@@ -256,6 +260,454 @@ fn escape_char(ch: char) -> Option<&'static str> {
         '=' => Some("\\q"),
         _ => None,
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Token<'a> {
+    pub(crate) text: &'a str,
+    pub(crate) line: usize,
+}
+
+pub(crate) fn lex_c(source: &str) -> diagnostic::Result<Vec<Token<'_>>> {
+    let mut tokens = Vec::new();
+    let mut at = 0;
+    let mut line = 1;
+    while at < source.len() {
+        at = skip_trivia(source, at, &mut line)?;
+        if at == source.len() {
+            break;
+        }
+        let rest = &source[at..];
+        let len = token_len(rest);
+        if len == 0 {
+            return Err(error(
+                line,
+                format!("无法识别字符 `{}`", rest.chars().next().unwrap_or_default()),
+            ));
+        }
+        tokens.push(Token {
+            text: &rest[..len],
+            line,
+        });
+        at += len;
+    }
+    Ok(tokens)
+}
+
+fn skip_trivia(source: &str, mut at: usize, line: &mut usize) -> diagnostic::Result<usize> {
+    while at < source.len() {
+        let rest = &source[at..];
+        let byte = rest.as_bytes()[0];
+        if byte.is_ascii_whitespace() {
+            *line += usize::from(byte == b'\n');
+            at += 1;
+            continue;
+        }
+        if comment_start(rest) {
+            at += comment(rest, line)?;
+            continue;
+        }
+        break;
+    }
+    Ok(at)
+}
+
+fn comment_start(text: &str) -> bool {
+    text.starts_with("//") || text.starts_with("/*")
+}
+
+fn comment(text: &str, line: &mut usize) -> diagnostic::Result<usize> {
+    if text.starts_with("//") {
+        return Ok(text.find('\n').unwrap_or(text.len()));
+    }
+    let end = text
+        .find("*/")
+        .ok_or_else(|| error(*line, "块注释未闭合"))?;
+    *line += text[..end].bytes().filter(|byte| *byte == b'\n').count();
+    Ok(end + 2)
+}
+
+fn token_len(text: &str) -> usize {
+    let bytes = text.as_bytes();
+    if identifier_byte(bytes[0]) {
+        return take(text, |byte| byte.is_ascii_alphanumeric() || byte == b'_');
+    }
+    if number_start(bytes) {
+        return number_len(text);
+    }
+    if quote_byte(bytes[0]) {
+        return quoted_len(text, bytes[0]);
+    }
+    [
+        "++", "--", "+=", "-=", "*=", "/=", "%=", "==", "!=", "<=", ">=", "&&", "||", "<<", ">>",
+        "->",
+    ]
+    .iter()
+    .find(|op| text.starts_with(**op))
+    .map_or(1, |op| op.len())
+}
+
+fn identifier_byte(byte: u8) -> bool {
+    byte.is_ascii_alphabetic() || byte == b'_'
+}
+
+fn number_start(bytes: &[u8]) -> bool {
+    bytes[0].is_ascii_digit() || (bytes[0] == b'.' && bytes.get(1).is_some_and(u8::is_ascii_digit))
+}
+
+fn quote_byte(byte: u8) -> bool {
+    byte == b'\'' || byte == b'"'
+}
+
+fn take(text: &str, predicate: impl Fn(u8) -> bool) -> usize {
+    text.bytes().take_while(|byte| predicate(*byte)).count()
+}
+
+fn number_len(text: &str) -> usize {
+    let bytes = text.as_bytes();
+    let mut at = 0;
+    while number_byte(bytes, at) {
+        at += 1;
+    }
+    at
+}
+
+fn number_byte(bytes: &[u8], at: usize) -> bool {
+    bytes.get(at).is_some_and(|byte| {
+        byte.is_ascii_alphanumeric() || *byte == b'.' || exponent_sign(bytes, at)
+    })
+}
+
+fn exponent_sign(bytes: &[u8], at: usize) -> bool {
+    matches!(bytes.get(at), Some(b'+' | b'-'))
+        && at > 0
+        && matches!(bytes.get(at - 1), Some(b'e' | b'E'))
+}
+
+fn quoted_len(text: &str, quote: u8) -> usize {
+    let mut escaped = false;
+    for (idx, byte) in text.bytes().enumerate().skip(1) {
+        if escaped {
+            escaped = false;
+        } else if byte == b'\\' {
+            escaped = true;
+        } else if byte == quote {
+            return idx + 1;
+        }
+    }
+    0
+}
+
+#[derive(Clone, Copy)]
+struct Conditional {
+    parent: bool,
+    active: bool,
+    in_else: bool,
+}
+
+pub(crate) fn preprocess(
+    source: &str,
+    evaluate: impl Fn(&str) -> diagnostic::Result<i64>,
+) -> diagnostic::Result<String> {
+    let mut out = String::with_capacity(source.len());
+    let mut stack = Vec::new();
+    for (idx, line) in source.split_inclusive('\n').enumerate() {
+        preprocess_line(&mut out, line, idx + 1, &mut stack, &evaluate)?;
+    }
+    if !stack.is_empty() {
+        return Err(error(1, "条件编译缺少 #endif"));
+    }
+    Ok(out)
+}
+
+fn preprocess_line(
+    out: &mut String,
+    line: &str,
+    line_no: usize,
+    stack: &mut Vec<Conditional>,
+    evaluate: &impl Fn(&str) -> diagnostic::Result<i64>,
+) -> diagnostic::Result<()> {
+    let trimmed = line.trim();
+    if pragma_line(out, line, trimmed, stack) {
+        return Ok(());
+    }
+    directive_line(out, line, trimmed, stack, evaluate)?;
+    active_error(trimmed, line_no, stack)
+}
+
+fn directive_line(
+    out: &mut String,
+    line: &str,
+    trimmed: &str,
+    stack: &mut Vec<Conditional>,
+    evaluate: &impl Fn(&str) -> diagnostic::Result<i64>,
+) -> diagnostic::Result<()> {
+    if let Some(expression) = trimmed.strip_prefix("#if ") {
+        return start_conditional(expression, stack, evaluate);
+    }
+    if trimmed.starts_with('#') {
+        return directive(trimmed, stack);
+    }
+    if stack.last().is_none_or(|frame| frame.active) {
+        out.push_str(line);
+    }
+    Ok(())
+}
+
+fn active_error(trimmed: &str, line: usize, stack: &[Conditional]) -> diagnostic::Result<()> {
+    let active = stack.last().is_none_or(|frame| frame.active);
+    if active && trimmed.starts_with("#error") {
+        return Err(error(line, trimmed.to_string()));
+    }
+    Ok(())
+}
+
+fn pragma_line(out: &mut String, line: &str, trimmed: &str, stack: &[Conditional]) -> bool {
+    let active = stack.last().is_none_or(|frame| frame.active);
+    if !(active && trimmed.starts_with("#pragma ")) {
+        return false;
+    }
+    out.push_str(line);
+    true
+}
+
+fn directive(text: &str, stack: &mut Vec<Conditional>) -> diagnostic::Result<()> {
+    match text {
+        "#else" => else_directive(stack),
+        "#endif" => end_conditional(stack),
+        _ if text.starts_with("#error") => Ok(()),
+        _ => Err(error(1, format!("不支持的预处理指令 `{text}`"))),
+    }
+}
+
+fn start_conditional(
+    expression: &str,
+    stack: &mut Vec<Conditional>,
+    evaluate: &impl Fn(&str) -> diagnostic::Result<i64>,
+) -> diagnostic::Result<()> {
+    let parent = stack.last().is_none_or(|frame| frame.active);
+    let active = parent && evaluate(expression)? != 0;
+    stack.push(Conditional {
+        parent,
+        active,
+        in_else: false,
+    });
+    Ok(())
+}
+
+fn end_conditional(stack: &mut Vec<Conditional>) -> diagnostic::Result<()> {
+    stack.pop().ok_or_else(|| error(1, "多余的 #endif"))?;
+    Ok(())
+}
+
+fn else_directive(stack: &mut [Conditional]) -> diagnostic::Result<()> {
+    let frame = stack.last_mut().ok_or_else(|| error(1, "多余的 #else"))?;
+    if frame.in_else {
+        return Err(error(1, "重复或错位的 #else"));
+    }
+    frame.active = frame.parent && !frame.active;
+    frame.in_else = true;
+    Ok(())
+}
+
+// ── AST → typed IR（P1 受限 lower）─────────────────────────────────────
+/// 四则运算符槽位到 IR 算术族的同源映射；槽位是唯一单字符运算槽。
+const BINOP_ARITH: [(&str, Arith); 4] = [
+    ("+", Arith::Add),
+    ("-", Arith::Sub),
+    ("*", Arith::Mul),
+    ("/", Arith::Div),
+];
+
+/// 把节点序列 lower 成 typed IR。
+///
+/// 只认两条已核通的闭集：四则逐点 `y[n] = a[n] op b[n]` 与求和归约 `y[0] += a[k]`。
+/// 其余模板（一元三元、厂商数学函数、多临时变量、非 f32 档）识别不了返回 [`None`]，
+/// 调用方回退 [`render`] 的文本双射；这里不猜半截 IR（ADR 0056 G6）。
+pub fn lower(op: &OpDecl, nodes: &[Node]) -> Option<Kernel> {
+    let params = ir_params(op)?;
+    match op.skeleton {
+        Skeleton::Elementwise => lower_pointwise(op, &params, nodes),
+        Skeleton::Reduce => lower_reduce(op, &params, nodes),
+        Skeleton::Gemm | Skeleton::Scan => None,
+    }
+}
+
+/// 签名形参 → IR 参数；逐项委托 [`ir_param`]，非 f32 档不在 IR 闭集内。
+fn ir_params(op: &OpDecl) -> Option<Vec<Parameter>> {
+    op.signature.params().iter().map(ir_param).collect()
+}
+
+/// 单个形参：f32 缓冲按读写定访问模式，整数成 `usize` 标量，其余拒绝。
+fn ir_param(param: &prof::sig::Param) -> Option<Parameter> {
+    let ty = match param.ctype {
+        CType::F32 => ValueType::Buf {
+            element: ScalarType::F32,
+            access: buf_access(param.mutable),
+        },
+        CType::Int => ValueType::Scalar(ScalarType::Usize),
+        _ => return None,
+    };
+    Some(Parameter {
+        name: param.name.clone(),
+        ty,
+    })
+}
+
+/// 缓冲读写访问模式：可写缓冲进写回通道，只读缓冲进读通道。
+fn buf_access(mutable: bool) -> Access {
+    if mutable {
+        Access::ReadWrite
+    } else {
+        Access::Read
+    }
+}
+
+/// 唯一整数标量即循环长度；IR 的 extent 必须是 `usize` 形参。
+fn extent(params: &[Parameter]) -> Option<String> {
+    let mut names = params
+        .iter()
+        .filter(|param| param.ty == ValueType::Scalar(ScalarType::Usize))
+        .map(|param| param.name.clone());
+    let first = names.next()?;
+    names.next().is_none().then_some(first)
+}
+
+/// 四则逐点：两个 `@load` 读 + 一个 `@store` 写回，右值是两读之间的四则运算。
+fn lower_pointwise(op: &OpDecl, params: &[Parameter], nodes: &[Node]) -> Option<Kernel> {
+    let loads = load_aliases(nodes);
+    let (left, right) = pair2(&loads)?;
+    let store = store_call(nodes)?;
+    let binop = binop_slot(nodes)?;
+    let value = Expr::Binary {
+        op: binop,
+        left: Box::new(Expr::Load(left.1.clone())),
+        right: Box::new(Expr::Load(right.1.clone())),
+    };
+    let kernel = Kernel::map(
+        op.name.clone(),
+        params.to_vec(),
+        left.2.clone(),
+        extent(params)?,
+        store.0,
+        value,
+    );
+    finish(kernel)
+}
+
+/// 求和归约：`@reduce(out, a, N, 1, op: sum, …)` 落成每迭代累加 `a[k]`；乘/最大归约没有对应族。
+fn lower_reduce(op: &OpDecl, params: &[Parameter], nodes: &[Node]) -> Option<Kernel> {
+    let buf = reduce_source(nodes)?;
+    let store = store_call(nodes)?;
+    let at = store.1.parse().ok()?;
+    let kernel = Kernel::reduce(
+        op.name.clone(),
+        params.to_vec(),
+        "k".to_string(),
+        extent(params)?,
+        store.0,
+        at,
+        Expr::Load(buf.to_string()),
+    );
+    finish(kernel)
+}
+
+/// 产物过 IR 校验闸后返回；校验不通过的半成品不许流出 lower。
+fn finish(kernel: Kernel) -> Option<Kernel> {
+    kernel.verify().ok()?;
+    Some(kernel)
+}
+
+/// 归约原语缓冲名：只认 `op: sum`；其余归约族在 IR 没有对应累加模型。
+fn reduce_source(nodes: &[Node]) -> Option<&str> {
+    let call = reduce_call(nodes)?;
+    if named_value(call, "op")? != "sum" {
+        return None;
+    }
+    expr_at(call, 1)
+}
+
+/// 节点序列里的归约原语调用。
+fn reduce_call(nodes: &[Node]) -> Option<&PrimCall> {
+    nodes.iter().find_map(|node| match node {
+        Node::Prim(call) if call.prim == Prim::Reduce => Some(call),
+        _ => None,
+    })
+}
+
+/// 恰好两个读别名（逐点二元）；左右按 `@load` 出现顺序，Sub/Div 顺序敏感。
+fn pair2<T>(loads: &[T]) -> Option<(&T, &T)> {
+    let [left, right] = loads else { return None };
+    Some((left, right))
+}
+
+/// 全部 `@load(alias, buf + idx)`：别名指针 → 真实缓冲与循环下标。
+fn load_aliases(nodes: &[Node]) -> Vec<(String, String, String)> {
+    nodes.iter().filter_map(load_row).collect()
+}
+
+/// 取出匹配指定原语的调用；非 Prim 或原语不符都返回 `None`。
+fn prim_row(node: &Node, prim: Prim) -> Option<&PrimCall> {
+    let Node::Prim(call) = node else { return None };
+    (call.prim == prim).then_some(call)
+}
+
+/// 单条 load 原语解析；非 load 或目标形不成 `buf + idx` 都跳过。
+fn load_row(node: &Node) -> Option<(String, String, String)> {
+    let call = prim_row(node, Prim::Load)?;
+    let alias = expr_at(call, 0)?;
+    let target = expr_at(call, 1)?;
+    let (buf, idx) = split_target(target)?;
+    Some((alias.to_string(), buf.to_string(), idx.to_string()))
+}
+
+/// `buf + idx` 拆成缓冲名与下标；两段都必须非空。
+fn split_target(target: &str) -> Option<(&str, &str)> {
+    let (buf, idx) = target.split_once('+')?;
+    let buf = buf.trim();
+    let idx = idx.trim();
+    (!buf.is_empty() && !idx.is_empty()).then_some((buf, idx))
+}
+
+/// 节点序列里的 `@store(out, idx, var)`：输出缓冲、写回槽位下标与结果变量名。
+fn store_call(nodes: &[Node]) -> Option<(String, String, String)> {
+    nodes.iter().find_map(store_row)
+}
+
+/// 单条 store 原语解析；非 store 或形参不全都跳过。
+fn store_row(node: &Node) -> Option<(String, String, String)> {
+    let call = prim_row(node, Prim::Store)?;
+    let out = expr_at(call, 0)?;
+    let idx = expr_at(call, 1)?;
+    let var = expr_at(call, 2)?;
+    Some((out.to_string(), idx.to_string(), var.to_string()))
+}
+
+/// 模板槽位里的四则运算符；逐点模板的 `{{binop}}}` 是唯一单字符运算槽。
+fn binop_slot(nodes: &[Node]) -> Option<Arith> {
+    nodes.iter().find_map(|node| match node {
+        Node::Slot(text) => BINOP_ARITH
+            .iter()
+            .find(|(op, _)| *op == text.as_str())
+            .map(|(_, arith)| *arith),
+        _ => None,
+    })
+}
+
+/// 位置实参文本；命名实参在该位置上不是表达式。
+fn expr_at(call: &PrimCall, idx: usize) -> Option<&str> {
+    match call.args.get(idx)? {
+        CallArg::Expr(text) => Some(text),
+        CallArg::Named { .. } => None,
+    }
+}
+
+/// 命名实参取值（`key: value`）。
+fn named_value<'a>(call: &'a PrimCall, key: &str) -> Option<&'a str> {
+    call.args.iter().find_map(|arg| match arg {
+        CallArg::Named { key: name, value } if name == key => Some(value.as_str()),
+        _ => None,
+    })
 }
 
 #[cfg(test)]

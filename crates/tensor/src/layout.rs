@@ -415,7 +415,7 @@ pub(crate) struct Offsets<'a, R> {
     dims: &'a [usize],
     strides: &'a [usize],
     reverse: &'a [bool],
-    indices: Option<R>,
+    idxs: Option<R>,
     offset: isize,
     remaining: usize,
 }
@@ -428,9 +428,9 @@ impl<'a, R: Rank> Offsets<'a, R> {
         base: usize,
         reverse: &'a [bool],
     ) -> Self {
-        let indices = R::filled(dims.len(), 0);
+        let idxs = R::filled(dims.len(), 0);
         let offset = Self::reversed_base(dims, strides, base, reverse);
-        let remaining = if offset.is_some() && dims.len() == strides.len() && indices.is_some() {
+        let remaining = if offset.is_some() && dims.len() == strides.len() && idxs.is_some() {
             product(dims)
         } else {
             0
@@ -439,7 +439,7 @@ impl<'a, R: Rank> Offsets<'a, R> {
             dims,
             strides,
             reverse,
-            indices,
+            idxs,
             offset: offset.unwrap_or(0) as isize,
             remaining,
         }
@@ -465,21 +465,21 @@ impl<'a, R: Rank> Offsets<'a, R> {
 
     /// 行进到下一个逻辑位置；最后一个元素之后不再做无效偏移运算。
     fn advance(&mut self) {
-        let Some(indices) = self.indices.as_mut() else {
+        let Some(idxs) = self.idxs.as_mut() else {
             self.remaining = 0;
             return;
         };
-        let indices = indices.as_slice_mut();
+        let idxs = idxs.as_slice_mut();
         let mut offset = self.offset;
-        for axis in (0..indices.len()).rev() {
-            indices[axis] += 1;
+        for axis in (0..idxs.len()).rev() {
+            idxs[axis] += 1;
             let reversed = self.reverse.get(axis).copied().unwrap_or(false);
             let (step, reset) = Self::directed_step(self.strides[axis], self.dims[axis], reversed);
             offset += step;
-            if indices[axis] < self.dims[axis] {
+            if idxs[axis] < self.dims[axis] {
                 break;
             }
-            indices[axis] = 0;
+            idxs[axis] = 0;
             offset += reset;
         }
         self.offset = offset;

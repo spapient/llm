@@ -6,9 +6,11 @@ use super::*;
 use crate::atom::{
     Attr, AttrKey, DType, DTypeSet, Grade, Need, Prim, Provide, Space, SpaceSet, Span,
 };
+use crate::atoms::Atom;
 use crate::decl::{Axis, OpDecl, Phase, Skeleton, Variant};
 use crate::prof::Profile;
 use crate::sch::Schedule;
+use prof::FragmentSet;
 
 fn op() -> OpDecl {
     prof::catalogue::named("gemv_i4")
@@ -29,10 +31,9 @@ fn nvidia() -> Profile {
     profile_for("nvidia")
 }
 
-/// `intel`（gen12/OpenCL）的 P0 原语仍是 L1：作为"未验证 GPU"样本，验证证据不足会拦下整条链。
-/// （`nvidia` 已升 L2，不再是 L1 样本。）
-fn intel() -> Profile {
-    profile_for("intel")
+/// `ascend` 的 P0 原语仍未验证：作为证据不足样本，必须拦下整条链。
+fn ascend() -> Profile {
+    profile_for("ascend")
 }
 
 /// cpu 档案去掉这些原语：用来演示"设备缺一条能力就降级"。
@@ -95,8 +96,30 @@ fn cpu_hits_the_first_variant() {
 }
 
 #[test]
+fn intel_uhd750_hits_the_first_variant() {
+    let path = negotiate(&op(), &profile_for("intel")).expect("UHD 750 应命中首档");
+    assert_eq!(path.variant, "pipe2");
+    assert_eq!(path.idx, 0);
+}
+
+#[test]
+fn vector_lanes_are_part_of_capability_negotiation() {
+    let op = prof::catalogue::named("add_f32x4")
+        .expect("向量算子")
+        .to_decl()
+        .expect("声明");
+    for vendor in ["cpu", "intel", "metal"] {
+        negotiate(&op, &profile_for(vendor)).expect("已登记四车道能力");
+    }
+    for vendor in ["nvidia", "musa"] {
+        let error = negotiate(&op, &profile_for(vendor)).expect_err("未登记四车道算术");
+        assert!(error.to_string().contains("lanes 缺 4"), "{error}");
+    }
+}
+
+#[test]
 fn missing_evidence_blocks_every_variant() {
-    let error = negotiate(&op(), &intel()).unwrap_err();
+    let error = negotiate(&op(), &ascend()).unwrap_err();
     assert!(error.to_string().contains("没有可行变体"));
     assert!(error.chain.iter().all(|step| !step.ok));
     assert!(error.to_string().contains("L2"), "证据不足：{error}");
@@ -213,24 +236,24 @@ fn inspect_reports_the_whole_chain_as_data() {
 /// 标量/数组与 `bytes`/`m` 的解析归一化由档案解析用例覆盖，随解析器在收尾批次迁移。
 #[test]
 fn one_signature_written_in_either_layer_stays_the_same() {
-    /// 归一后的 `load` 需求：主维度 ≤4096、`f32`、`FAST`，源 `GM`、目标 `FAST`。
-    fn load_need() -> Need {
-        Need::of(Prim::Load)
-            .with_extent(Span::at_most(4096))
-            .with_dt(DTypeSet::of([DType::F32]))
-            .with_space(SpaceSet::of([Space::Fast]))
-            .with_attr(Attr::new(AttrKey::Src, ["GM"]))
-            .with_attr(Attr::new(AttrKey::Dst, ["FAST"]))
+    /// 同一组约束只声明一次；需求与供给只在自己的构造起点上不同。
+    macro_rules! load_signature {
+        ($base:expr) => {
+            $base
+                .with_extent(Span::at_most(4096))
+                .with_dt(DTypeSet::of([DType::F32]))
+                .with_space(SpaceSet::of([Space::Fast]))
+                .with_attr(Attr::new(AttrKey::Src, ["GM"]))
+                .with_attr(Attr::new(AttrKey::Dst, ["FAST"]))
+        };
     }
 
-    /// 归一后的 `load` 供给：约束与需求逐条对齐，实现名 `alias`、证据等级 `L0`。
+    fn load_need() -> Need {
+        load_signature!(Need::of(Prim::Load))
+    }
+
     fn load_provide() -> Provide {
-        Provide::of(Prim::Load, "alias")
-            .with_extent(Span::at_most(4096))
-            .with_dt(DTypeSet::of([DType::F32]))
-            .with_space(SpaceSet::of([Space::Fast]))
-            .with_attr(Attr::new(AttrKey::Src, ["GM"]))
-            .with_attr(Attr::new(AttrKey::Dst, ["FAST"]))
+        load_signature!(Provide::of(Prim::Load, "alias"))
     }
 
     // 声明侧与档案侧各持一份归一后的签名：档案写法覆盖声明，反向也成立。
@@ -343,4 +366,77 @@ fn a_proven_supply_wins_over_a_higher_grade_that_was_not_executed() {
         .expect("有供给")
         .have;
     assert_eq!(chosen.impl_name, "vendor_dot");
+}
+
+/// 原子记录的正文、端口和选中档与类型化供给一致，不回解析首行注释。
+#[test]
+fn atom_bind_body_matches_fragment_lookup() {
+    let profile = cpu();
+    let ext = profile.meta.emit.ext();
+    let fragments = prof::builtin(&profile.meta.vendor, ext).expect("cpu 片段集");
+    for provide in profile
+        .provides
+        .iter()
+        .filter(|provide| provide.grade.is_verified())
+    {
+        let atom = Atom::bind(provide, Need::of(provide.prim), &fragments)
+            .expect("可用供给必须有片段正文");
+        assert_eq!(
+            atom.body.text(),
+            fragments.get_impl(provide.prim, &provide.impl_name)
+        );
+        assert_eq!(atom.prim(), provide.prim);
+        assert_eq!(atom.impl_name(), provide.impl_name);
+        assert_eq!(atom.dtypes(), provide.dt);
+        assert_eq!(
+            atom.bit_widths().collect::<Vec<_>>(),
+            provide
+                .dt
+                .iter()
+                .map(|dtype| dtype.bits())
+                .collect::<Vec<_>>()
+        );
+        for port in &atom.ports {
+            assert!(port.idx < 3, "现有原语最多三个数据端口");
+        }
+    }
+}
+
+/// 档案声明了能力、片段层却缺正文时，绑定立即报错，不制造半成品原子。
+#[test]
+fn missing_impl_body_is_an_error() {
+    let provide = Provide::of(Prim::Dot, "no_such_impl");
+    let fragments = FragmentSet::new("cpu", "c");
+    let error = Atom::bind(&provide, Need::of(Prim::Dot), &fragments).expect_err("缺正文必须拒绝");
+    assert_eq!(error.code(), diagnostic::Code::Missing);
+    assert!(error.to_string().contains("no_such_impl"), "{error}");
+}
+
+/// 原子表与当前变体共用协商结果，IR 不能再按名字任意选一份片段。
+#[test]
+fn atom_table_resolves_only_the_negotiated_signature() {
+    let op = op();
+    let profile = cpu();
+    let fragments =
+        prof::builtin(&profile.meta.vendor, profile.meta.emit.ext()).expect("cpu 片段集");
+    let variant = op.variants.first().expect("首选变体");
+    let table = AtomTable::new(&op, variant, &profile, &fragments).expect("原子表");
+    assert!(!table.as_slice().is_empty());
+
+    let id = table.resolve(Prim::Dot, &[]).expect("dot 原子身份");
+    let dot = table.get(id).expect("arena 身份有效");
+    assert_eq!(dot.need.prim, Prim::Dot);
+    assert!(dot.body.text().is_some());
+    assert!(table.resolve(Prim::Dot, &[("op", "sum")]).is_none());
+}
+
+/// 同步 no-op 是显式原子语义，不被误判为缺正文。
+#[test]
+fn a_declared_noop_has_an_empty_body_contract() {
+    let provide = Provide::of(Prim::CommitWait, "noop");
+    let fragments = FragmentSet::new("cpu", "c");
+    let atom =
+        Atom::bind(&provide, Need::of(Prim::CommitWait), &fragments).expect("no-op 不需要片段");
+    assert_eq!(atom.body, AtomBody::Noop);
+    assert_eq!(atom.body.text(), None);
 }

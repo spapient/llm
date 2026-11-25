@@ -3,11 +3,17 @@
 //! 本缝只保留「见证片段装配 + 编译执行回读」：设备算子正文已由 prof 档案里的设备语言片段给出，
 //! 这里不再按骨架重写/降低算子算法。生产态设备执行走 `prof::runtime` FFI 后端岛。
 
+use crate::driver;
+use crate::platform::{
+    ascend_device, detect_cce, detect_metal, detect_musa, detect_nvcc, find_cl, musa_device,
+};
 use crate::toolchain::Toolchain;
 use crate::witness::{MAX_OUT, Scope, Selected};
 use cutile::dirs::Dirs;
 use cutile::prof::{Emit, Profile};
 use diagnostic::{Code, Error, Result};
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// 一次执行回读出来的东西：每条见证写出的个数 + 按顺序回读的 f32 值。
 pub type Readback = (Vec<i64>, Vec<f32>);
@@ -81,13 +87,6 @@ pub fn register(backend: &'static dyn Backend) {
 }
 
 // ---- 设备实现：配置表、单源后端与 Metal/OpenCL 执行 ----
-
-use crate::driver;
-use crate::platform::{
-    ascend_device, detect_cce, detect_metal, detect_musa, detect_nvcc, find_cl, musa_device,
-};
-use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// 单源后端差异表；公共行为全部由 [`NativeBackend`] 复用。
 struct NativeSpec {
@@ -237,7 +236,7 @@ static CUDA_BACKEND: NativeBackend = NativeBackend { spec: &CUDA_SPEC };
 static ASCEND_BACKEND: NativeBackend = NativeBackend { spec: &ASCEND_SPEC };
 static METAL_BACKEND: MetalBackend = MetalBackend;
 #[cfg(windows)]
-static OPENCL_BACKEND: opencl::OpenClBackend = opencl::OpenClBackend;
+static OPENCL_BACKEND: crate::device::opencl::OpenClBackend = crate::device::opencl::OpenClBackend;
 
 static CUDA_SPEC: NativeSpec = NativeSpec {
     emit: Emit::Cuda,
@@ -280,12 +279,15 @@ pub fn install() {
 
 fn cuda_available(profile: &Profile) -> bool {
     match profile.meta.tool.as_str() {
-        "nvcc" => {
-            detect_nvcc().is_some() && (std::env::consts::OS != "windows" || find_cl().is_some())
-        }
+        "nvcc" => nvcc_available(),
         "mcc" => detect_musa().is_some() && musa_device(),
         _ => false,
     }
+}
+
+/// Windows 的 NVCC 还依赖 MSVC 宿主编译器，其它系统只要求驱动工具链存在。
+fn nvcc_available() -> bool {
+    detect_nvcc().is_some() && (std::env::consts::OS != "windows" || find_cl().is_some())
 }
 
 fn cuda_toolchain() -> Option<Toolchain> {
@@ -569,155 +571,7 @@ fn xcrun(tool: &str, flags: &[String]) -> Command {
     command
 }
 
-const METAL_HEAD: &str = r#"#import <Foundation/Foundation.h>
-#import <Metal/Metal.h>
-#include <stdio.h>
-#include <stdlib.h>
-
-int main(int argc, const char **argv) {
-    @autoreleasepool {
-        if (argc < 3) {
-            fprintf(stderr, "usage: driver <metallib> <count>\n");
-            return 2;
-        }
-        const int count = atoi(argv[2]);
-"#;
-
-const METAL_TAIL: &str = r#"        id<MTLBuffer> values = [device newBufferWithLength:(NSUInteger)count * WITNESS_MAX_OUT * sizeof(float)
-                                                  options:MTLResourceStorageModeShared];
-        id<MTLBuffer> counts = [device newBufferWithLength:(NSUInteger)count * sizeof(int)
-                                                   options:MTLResourceStorageModeShared];
-        id<MTLCommandQueue> queue = [device newCommandQueue];
-        id<MTLCommandBuffer> buffer = [queue commandBuffer];
-        id<MTLComputeCommandEncoder> encoder = [buffer computeCommandEncoder];
-        [encoder setComputePipelineState:pipeline];
-        [encoder setBuffer:values offset:0 atIndex:0];
-        [encoder setBuffer:counts offset:0 atIndex:1];
-        [encoder dispatchThreads:MTLSizeMake((NSUInteger)count, 1, 1)
-            threadsPerThreadgroup:MTLSizeMake((NSUInteger)count, 1, 1)];
-        [encoder endEncoding];
-        [buffer commit];
-        [buffer waitUntilCompleted];
-        if (buffer.error) {
-            fprintf(stderr, "内核执行失败：%s\n", buffer.error.localizedDescription.UTF8String);
-            return 7;
-        }
-        const int *written = (const int *)counts.contents;
-        const float *out = (const float *)values.contents;
-        for (int i = 0; i < count; ++i) {
-            fprintf(stderr, "witness %d\n", written[i]);
-        }
-        fflush(stderr);
-        for (int i = 0; i < count; ++i) {
-            int n = written[i];
-            if (n < 0) n = 0;
-            if (n > WITNESS_MAX_OUT) n = WITNESS_MAX_OUT;
-            for (int j = 0; j < n; ++j) {
-                union { float f; unsigned int u; } v;
-                v.f = out[i * WITNESS_MAX_OUT + j];
-                printf("%u\n", v.u);
-            }
-        }
-    }
-    return 0;
-}
-"#;
-
-/// 生成 Metal 见证 host 驱动；写出上限由 `max` 参数注入。
-#[must_use]
-pub fn metal_driver(max: usize) -> String {
-    let library = r#"        id<MTLDevice> device = MTLCreateSystemDefaultDevice();
-        if (!device) { fprintf(stderr, "本机没有 Metal 设备\n"); return 3; }
-        NSError *error = nil;
-        NSURL *url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:argv[1]]];
-        id<MTLLibrary> library = [device newLibraryWithURL:url error:&error];
-        if (!library) { fprintf(stderr, "metallib 装载失败：%s\n", error.localizedDescription.UTF8String); return 4; }
-"#;
-    format!(
-        "#define WITNESS_MAX_OUT {max}\n{METAL_HEAD}{library}        id<MTLFunction> function = [library newFunctionWithName:@\"cutile_witness\"];
-        if (!function) {{ fprintf(stderr, \"metallib 里没有 cutile_witness\\n\"); return 5; }}
-        id<MTLComputePipelineState> pipeline = [device newComputePipelineStateWithFunction:function error:&error];
-        if (!pipeline) {{ fprintf(stderr, \"管线创建失败：%s\\n\", error.localizedDescription.UTF8String); return 6; }}
-{METAL_TAIL}"
-    )
-}
-
-#[cfg(windows)]
-mod opencl {
-    use super::*;
-    use prof::runtime::opencl::OpenClDevice;
-
-    pub(super) struct OpenClBackend;
-
-    impl Codegen for OpenClBackend {
-        fn emit(&self) -> Emit {
-            Emit::Opencl
-        }
-
-        fn program(
-            &self,
-            profile: &Profile,
-            dirs: &Dirs,
-            selected: &[Selected<'_>],
-            _scope: Scope,
-        ) -> Result<String> {
-            let mut program = profile.preamble.clone();
-            driver::normalize_newline(&mut program);
-            driver::push_sources(
-                &mut program,
-                &driver::witness_files(selected, dirs, driver::C_PARAMS)?,
-            );
-            program.push_str(&format!(
-                "__kernel void cutile_witness(__global float *out, __global int *counts) {{\n\
-             \x20   int tid = get_global_id(0);\n\
-             \x20   if (tid >= get_global_size(0)) return;\n\
-             \x20   float local[{MAX_OUT}];\n"
-            ));
-            driver::push_dispatch(&mut program, MAX_OUT, selected, "}\n");
-            Ok(program)
-        }
-    }
-
-    impl Driver for OpenClBackend {
-        fn available(&self, _: &Profile) -> bool {
-            OpenClDevice::probe().is_some()
-        }
-
-        fn run(
-            &self,
-            profile: &Profile,
-            _: &Dirs,
-            program: &str,
-            total: usize,
-            _: Scope,
-        ) -> Result<Readback> {
-            let device = OpenClDevice::new()?;
-            let kernel = device.compile(program, &profile.flags.join(" "), "cutile_witness")?;
-            let output = device.alloc(total * MAX_OUT * std::mem::size_of::<f32>())?;
-            let counts = device.alloc(total * std::mem::size_of::<i32>())?;
-            device.launch(&kernel, &[&output, &counts], [total, 1, 1], None)?;
-            let counts = device.read_i32(&counts)?;
-            let values = device.read_f32(&output)?;
-            let mut readback = Vec::new();
-            for (index, &count) in counts.iter().enumerate() {
-                let count = usize::try_from(count).unwrap_or(0).min(MAX_OUT);
-                let start = index * MAX_OUT;
-                readback.extend_from_slice(&values[start..start + count]);
-            }
-            Ok((counts.into_iter().map(i64::from).collect(), readback))
-        }
-
-        fn toolchain(&self) -> Option<Toolchain> {
-            OpenClDevice::probe().map(|info| Toolchain {
-                command: "OpenCL".to_string(),
-                version: Some(info.driver),
-                banner: format!("{} · {}", info.name, info.version),
-            })
-        }
-    }
-
-    impl Backend for OpenClBackend {}
-}
+pub use crate::device::metal_driver;
 
 #[cfg(test)]
 #[path = "../tests/backends.rs"]

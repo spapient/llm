@@ -1,8 +1,0 @@
-# 逐元素 fmod（截断商余数）：y[n] = a[n] - trunc(a[n] / b[n])·b[n]，结果符号同被除数，对齐 Rust `a % b`。浮点不能套用整数 `%` 二元模板。
-base = "add_f32"
-
-[op]
-name     = "remainder_f32"
-stem     = "remainder_f32"
-skeleton = "elementwise"
-summary  = "y[n] = a[n] % b[n]"

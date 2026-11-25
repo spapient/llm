@@ -161,7 +161,7 @@ macro_rules! vocabulary {
 }
 
 vocabulary! {
-    /// 原语闭集：模板唯一能调用的 16 个指令级操作（cutile README §5.1 的 P1–P16）。
+    /// 原语闭集：模板与后端能力唯一能调用的操作（含登记过的设备级矩阵乘）。
     Prim {
         #[doc = "`D = A × B + C`，tile 粒度、累积。"] Mma => "mma",
         #[doc = "整数点积（dp4a / dpas / dot4）。"] Dot => "dot",
@@ -202,7 +202,7 @@ impl Prim {
     pub fn attr_keys(self) -> &'static [AttrKey] {
         const ACCURACY: &[AttrKey] = &[AttrKey::Accuracy];
         const LANES: &[AttrKey] = &[AttrKey::Lanes];
-        const ALIGNED: &[AttrKey] = &[AttrKey::Src, AttrKey::Dst, AttrKey::Align];
+        const ALIGNED: &[AttrKey] = &[AttrKey::Src, AttrKey::Dst, AttrKey::Align, AttrKey::Lanes];
         const AXIS_OP: &[AttrKey] = &[AttrKey::Axis, AttrKey::Op];
         const ATTR_KEYS: [&[AttrKey]; 16] = [
             ACCURACY,                                                       // Mma

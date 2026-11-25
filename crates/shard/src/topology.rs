@@ -78,28 +78,15 @@ impl Topology {
         }
     }
 
-    /// 张量并行度。
-    #[must_use]
-    pub const fn tp(&self) -> usize {
-        self.tp
-    }
-
-    /// 流水并行度。
-    #[must_use]
-    pub const fn pp(&self) -> usize {
-        self.pp
-    }
-
-    /// 数据并行度。
-    #[must_use]
-    pub const fn dp(&self) -> usize {
-        self.dp
-    }
-
-    /// 总进程数。
-    #[must_use]
-    pub const fn world(&self) -> usize {
-        self.world
+    accessors! {
+        /// 张量并行度。
+        tp -> usize = |s| s.tp;
+        /// 流水并行度。
+        pp -> usize = |s| s.pp;
+        /// 数据并行度。
+        dp -> usize = |s| s.dp;
+        /// 总进程数。
+        world -> usize = |s| s.world;
     }
 
     /// 校验启动进程数与拓扑一致。
@@ -257,28 +244,15 @@ impl Plan {
         })
     }
 
-    /// 拓扑只读投影。
-    #[must_use]
-    pub const fn topology(&self) -> Topology {
-        self.topology
-    }
-
-    /// 本 rank 的 TP 份号。
-    #[must_use]
-    pub const fn tp_idx(&self) -> usize {
-        self.tp_idx
-    }
-
-    /// 本 rank 的 PP 段号。
-    #[must_use]
-    pub const fn pp_idx(&self) -> usize {
-        self.pp_idx
-    }
-
-    /// 本 rank 的 DP 副本号。
-    #[must_use]
-    pub const fn dp_idx(&self) -> usize {
-        self.dp_idx
+    accessors! {
+        /// 拓扑只读投影。
+        topology -> Topology = |s| s.topology;
+        /// 本 rank 的 TP 份号。
+        tp_idx -> usize = |s| s.tp_idx;
+        /// 本 rank 的 PP 段号。
+        pp_idx -> usize = |s| s.pp_idx;
+        /// 本 rank 的 DP 副本号。
+        dp_idx -> usize = |s| s.dp_idx;
     }
 
     /// 本 rank 在任意指定轴上的通信组。
@@ -444,40 +418,19 @@ impl ParallelConfig {
         self
     }
 
-    /// 张量并行度。
-    #[must_use]
-    pub const fn tp(&self) -> usize {
-        self.tp
-    }
-
-    /// 流水并行度。
-    #[must_use]
-    pub const fn pp(&self) -> usize {
-        self.pp
-    }
-
-    /// 数据并行度。
-    #[must_use]
-    pub const fn dp(&self) -> usize {
-        self.dp
-    }
-
-    /// 归约种类。
-    #[must_use]
-    pub const fn reduce(&self) -> Reduce {
-        self.reduce
-    }
-
-    /// 是否按 DP 组大小取平均。
-    #[must_use]
-    pub const fn average(&self) -> bool {
-        self.average
-    }
-
-    /// 集合通信优先级。
-    #[must_use]
-    pub const fn priority(&self) -> Priority {
-        self.priority
+    accessors! {
+        /// 张量并行度。
+        tp -> usize = |s| s.tp;
+        /// 流水并行度。
+        pp -> usize = |s| s.pp;
+        /// 数据并行度。
+        dp -> usize = |s| s.dp;
+        /// 归约种类。
+        reduce -> Reduce = |s| s.reduce;
+        /// 是否按 DP 组大小取平均。
+        average -> bool = |s| s.average;
+        /// 集合通信优先级。
+        priority -> Priority = |s| s.priority;
     }
 
     /// 由度数派生拓扑。
@@ -510,10 +463,9 @@ impl<T> Job<T> {
         Self { priority, payload }
     }
 
-    /// 调度优先级。
-    #[must_use]
-    pub const fn priority(&self) -> Priority {
-        self.priority
+    accessors! {
+        /// 调度优先级。
+        priority -> Priority = |s| s.priority;
     }
 
     /// 解出载荷。
@@ -574,15 +526,6 @@ impl<T> Queue<T> {
     }
 }
 
-#[cfg(test)]
-#[path = "../tests/plan_tests.rs"]
-mod plan_tests;
-#[cfg(test)]
-#[path = "../tests/policy_tests.rs"]
-mod policy_tests;
-#[cfg(test)]
-#[path = "../tests/schedule_tests.rs"]
-mod schedule_tests;
 #[cfg(test)]
 #[path = "../tests/topology_tests.rs"]
 mod tests;

@@ -27,6 +27,7 @@ macro_rules! device_suite {
         fn profile() -> Result<Profile, String> {
             let wanted = DEVICE.vendor;
             builtin_profiles()
+                .map_err(|error| error.to_string())?
                 .iter()
                 .find(|profile| profile.meta.vendor == wanted)
                 .cloned()

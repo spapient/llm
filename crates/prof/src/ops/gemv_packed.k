@@ -1,6 +1,6 @@
 // cutile 共享参考微内核：gemv_packed —— weight-only int2/int4 解码 GEMV 的共享内核
 // 槽位：{{GMAX}} 来自 [axes]，{{op}} 是算子名，{{cpb}}/{{width}}/{{zero}} 来自 [consts]；
-// @prim(...) 由片段层逐个替换。共享 ABI 由同目录 TOML 契约固定；后端可用自己的 kernels/<stem>.k 特化。
+// @prim(...) 由片段层逐个替换。共享 ABI 由同目录 TOML 契约固定；后端可用自己的 <stem>.<ext> 特化。
 // 布局契约（由声明层校验）：w={{w}} x={{x}}
 // i2 与 i4 的唯一差别是打包宽度：cpb=每字节码数、width=每码位数、zero=零点（i2=4/2/2、i4=2/4/8）。
 // 打包前提：M 与 gsz 均为 cpb 的倍数、M 整除 gsz；非整倍数宽度在 op 前置校验处被拒，模板按
@@ -21,8 +21,12 @@ void cutile_{{op}}_kernel(const float *x, const u8 *w, const float *scales,
             const float *sc = scales + n * (M / gsz) + g;
 
             @load_async(xs, x + g * gsz);
-            @quant(deq, row + g * (gsz / {{cpb}}), sc, gsz, cpb: {{cpb}}, width: {{width}}, zero: {{zero}});
-            @dot(acc, deq, xs, gsz);
+            // 每组先求原始点积、最后只乘一次标度，避免逐元素重复乘 scale。
+            const float unit = 1.0f;
+            @quant(deq, row + g * (gsz / {{cpb}}), &unit, gsz, cpb: {{cpb}}, width: {{width}}, zero: {{zero}});
+            float dot = 0.0f;
+            @dot(dot, deq, xs, gsz);
+            acc += dot * sc[0];
         }
 
         float v = 0.0f;

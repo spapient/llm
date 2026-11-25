@@ -1,8 +1,8 @@
-from pathlib import Path
 import csv
 import hashlib
 import json
 import statistics
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 WORKSPACE = ROOT.parents[1]
@@ -48,9 +48,9 @@ assert rendered_sha256 == "78fcb87bb852ff6f2e5d511aa59a9e807428ec79e84af86407731
 rows = []
 for index, first in enumerate(main[0]):
     M, N, K = (int(first[name]) for name in ("M", "N", "K"))
-    assert (M, N, K) == tuple(int(vendor[0][index][name]) for name in ("M", "N", "K"))
+    assert tuple(int(vendor[0][index][name]) for name in ("M", "N", "K")) == (M, N, K)
     old = BASELINE["results"][index]
-    assert (M, N, K) == (old["M"], old["N"], old["K"])
+    assert (old["M"], old["N"], old["K"]) == (M, N, K)
     row = {"M": M, "N": N, "K": K, "runs": 5, "reps_per_run": int(first["reps"])}
     for prefix, tables, column in [
         ("tiled_kernel", main, "candidate_ms"),
@@ -71,7 +71,9 @@ for index, first in enumerate(main[0]):
     row["abi_speedup_vs_previous_tiled"] = old["public_abi_e2e_ms"]["median"] / e2e
     row["abi_overhead_vs_direct_cublas"] = e2e / direct
     row["first_call_overhead_ratio"] = row["cublas_abi_first_ms"]["median"] / e2e
-    row["tiled_kernel_speedup_vs_naive"] = row["naive_cuda_ms"]["median"] / row["tiled_kernel_ms"]["median"]
+    row["tiled_kernel_speedup_vs_naive"] = (
+        row["naive_cuda_ms"]["median"] / row["tiled_kernel_ms"]["median"]
+    )
     if cpu:
         row["abi_speedup_vs_cpu"] = row["cpu_ms"]["median"] / e2e
     rows.append(row)
@@ -119,21 +121,46 @@ summary = {
 (ROOT / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n")
 
 fields = [
-    "M", "N", "K", "runs", "reps_per_run", "cublas_abi_gflops_from_median",
-    "direct_cublas_gflops_from_median", "abi_speedup_vs_previous_tiled",
-    "abi_overhead_vs_direct_cublas", "first_call_overhead_ratio",
-    "tiled_kernel_speedup_vs_naive", "abi_speedup_vs_cpu", "previous_tiled_abi_e2e_ms",
+    "M",
+    "N",
+    "K",
+    "runs",
+    "reps_per_run",
+    "cublas_abi_gflops_from_median",
+    "direct_cublas_gflops_from_median",
+    "abi_speedup_vs_previous_tiled",
+    "abi_overhead_vs_direct_cublas",
+    "first_call_overhead_ratio",
+    "tiled_kernel_speedup_vs_naive",
+    "abi_speedup_vs_cpu",
+    "previous_tiled_abi_e2e_ms",
 ]
-for name in ["tiled_kernel", "naive_cuda", "cublas_abi_first", "cublas_abi_e2e", "direct_cublas", "cpu"]:
+for name in [
+    "tiled_kernel",
+    "naive_cuda",
+    "cublas_abi_first",
+    "cublas_abi_e2e",
+    "direct_cublas",
+    "cpu",
+]:
     fields += [f"{name}_ms_median", f"{name}_ms_min", f"{name}_ms_max"]
 with (ROOT / "summary.csv").open("w", newline="") as handle:
     writer = csv.DictWriter(handle, fieldnames=fields, lineterminator="\n")
     writer.writeheader()
     for row in rows:
         flat = {key: row.get(key) for key in fields}
-        for name in ["tiled_kernel", "naive_cuda", "cublas_abi_first", "cublas_abi_e2e", "direct_cublas", "cpu"]:
+        for name in [
+            "tiled_kernel",
+            "naive_cuda",
+            "cublas_abi_first",
+            "cublas_abi_e2e",
+            "direct_cublas",
+            "cpu",
+        ]:
             for statistic in ["median", "min", "max"]:
-                flat[f"{name}_ms_{statistic}"] = row[f"{name}_ms"][statistic] if row[f"{name}_ms"] else None
+                flat[f"{name}_ms_{statistic}"] = (
+                    row[f"{name}_ms"][statistic] if row[f"{name}_ms"] else None
+                )
         writer.writerow(flat)
 
 for row in rows:

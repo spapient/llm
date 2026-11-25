@@ -1,8 +1,0 @@
-# 逐元素取小：与 add_f32 同构，只差运算。
-base = "add_f32"
-
-[op]
-name     = "min_f32"
-stem     = "min_f32"
-skeleton = "elementwise"
-summary  = "y[n] = min(a[n], b[n])"

@@ -2,7 +2,7 @@
 
 use crate::formula::FormulaOwner;
 use crate::kernel::scalar::{FloatSlice, FloatSliceMut, Scalar};
-use crate::model::{AxisRole, AxisSpec, Buf, Cost, Sample, ShapeCtx, Values};
+use crate::model::{AxisRole, AxisSpec, Buf, Cost, Sample, ShapeCtx};
 use diagnostic::{Code, Error};
 use tensor::View;
 
@@ -68,16 +68,7 @@ pub fn sample<R: Reduce>(len: usize, _: usize) -> Sample {
         m: len,
         n: 1,
         scalars: vec![("N", len as i64)],
-        bufs: vec![
-            Buf {
-                name: "a",
-                values: Values::F32(R::input(len)),
-            },
-            Buf {
-                name: "y",
-                values: Values::F32(vec![0.0]),
-            },
-        ],
+        bufs: vec![Buf::f32("a", R::input(len)), Buf::f32("y", vec![0.0])],
     }
 }
 

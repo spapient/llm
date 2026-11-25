@@ -1,5 +1,6 @@
 use super::*;
 use crate::builtin::Catalogue;
+use crate::kernel::{Arith, Expr, Kernel, Write};
 use crate::substitute;
 
 /// 双射门：全部内置算子 × 每个 tile × 每台设备，AST 路径与字符串路径逐字节相等。
@@ -128,4 +129,80 @@ fn perturb(body: &str, state: &mut u64) -> String {
         }
     }
     out
+}
+
+/// 取一台设备上某算子的 lower 产物；缺片段 / 展开 / 构建任一步都返回 `None`。
+fn lower_nodes(catalogue: &Catalogue, name: &str) -> Option<Kernel> {
+    let op = catalogue.op(name)?;
+    let combo = crate::decl::expand(op).ok()?.remove(0);
+    let fragments = prof::builtin("cpu", "c")?;
+    let nodes = build(op, &combo, &fragments).ok()?;
+    lower(op, &nodes)
+}
+
+#[test]
+fn lower_pointwise_arithmetic_to_ir() {
+    let catalogue = Catalogue::try_builtin().expect("内置数据");
+    for (name, arith) in [
+        ("add_f32", Arith::Add),
+        ("sub_f32", Arith::Sub),
+        ("mul_f32", Arith::Mul),
+        ("div_f32", Arith::Div),
+    ] {
+        let kernel = lower_nodes(&catalogue, name).expect("四则应 lower 成 IR");
+        kernel.verify().expect("lower 产物过闸");
+        let Write::Map(Expr::Binary { op, left, right }) = &kernel.write else {
+            panic!("`{name}` 逐点应为 Binary Map");
+        };
+        assert_eq!(*op, arith);
+        assert!(matches!(left.as_ref(), Expr::Load(_)), "左操作数应是缓冲读");
+        assert!(
+            matches!(right.as_ref(), Expr::Load(_)),
+            "右操作数应是缓冲读"
+        );
+    }
+}
+
+#[test]
+fn lower_reduce_sum_to_accumulating_ir() {
+    let catalogue = Catalogue::try_builtin().expect("内置数据");
+    let kernel = lower_nodes(&catalogue, "reduce_sum_f32").expect("求和归约应 lower");
+    kernel.verify().expect("lower 产物过闸");
+    let Write::Reduce { at, value } = &kernel.write else {
+        panic!("求和归约应为 Reduce");
+    };
+    assert_eq!(*at, 0);
+    assert!(matches!(value, Expr::Load(buf) if buf == "a"));
+}
+
+#[test]
+fn templates_outside_the_lower_closed_set_stay_none() {
+    let catalogue = Catalogue::try_builtin().expect("内置数据");
+    let fragments = prof::builtin("cpu", "c").expect("CPU 片段");
+    const LOWERABLE: [&str; 6] = [
+        "add_f32",
+        "sub_f32",
+        "mul_f32",
+        "div_f32",
+        "reduce_sum_f32",
+        "residual_add_f32",
+    ];
+    for op in catalogue.ops() {
+        let Ok(combo) = crate::decl::expand(op) else {
+            continue;
+        };
+        let Some(combo) = combo.into_iter().next() else {
+            continue;
+        };
+        let Ok(nodes) = build(op, &combo, &fragments) else {
+            continue;
+        };
+        if lower(op, &nodes).is_some() {
+            assert!(
+                LOWERABLE.contains(&op.name.as_str()),
+                "`{}` 不在 lower 闭集内却被识别",
+                op.name
+            );
+        }
+    }
 }

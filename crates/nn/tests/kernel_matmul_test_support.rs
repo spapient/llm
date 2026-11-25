@@ -28,3 +28,20 @@ where
     tiled(av, bv, &mut actual).expect("tile 可计算");
     (expected, actual)
 }
+
+/// 两档精度共用同一组 tile 形状；断言函数由各档自己的数值口径提供。
+macro_rules! tiled_shape_cases {
+    ($assert:path) => {
+        testkit::test_cases!(tiled_shapes {
+            standard => (256, 256, 4096),
+            tile_multiples => (128, 64, 96),
+            // 非 tile 整数倍：末块带守卫。
+            ragged_edges => (100, 70, 4093),
+            trivial_square => (1, 1, 1),
+            trivial_row => (1, 8, 3),
+            trivial_column => (8, 1, 3),
+        }, |(m, n, k): (usize, usize, usize)| {
+            $assert(m, n, k);
+        });
+    };
+}

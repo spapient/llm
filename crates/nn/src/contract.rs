@@ -8,7 +8,7 @@ use diagnostic::{Code, Error, Result};
 use tensor::Shape;
 
 use crate::axis;
-use crate::{Bounds, ParamRole};
+use crate::{Bounds, LayerGeometry, ParamRole};
 
 /// 层下界的结果：[`Contract::bounds`] 的返回类型。
 pub type BoundsResult = Result<Option<crate::Bounds>>;
@@ -312,7 +312,11 @@ impl Contract for Linear {
             )
             .with("nn::Linear::bounds"));
         };
-        crate::Bounds::of_op(operator, self.in_features, self.out_features).map(Some)
+        crate::Bounds::of_geometry(
+            operator,
+            LayerGeometry::projection(self.in_features, self.out_features),
+        )
+        .map(Some)
     }
 }
 
@@ -414,7 +418,7 @@ impl Contract for Embedding {
     }
 
     fn bounds(&self) -> BoundsResult {
-        Bounds::of_ctx(Self::OP, self.tokens, 1).map(Some)
+        Bounds::of_geometry(Self::OP, LayerGeometry::shape(self.tokens, self.dim)).map(Some)
     }
 }
 
@@ -574,7 +578,7 @@ impl Contract for MatMul {
             )
             .with("nn::MatMul::bounds"));
         };
-        Bounds::of_ctx(operator, self.rows, self.cols).map(Some)
+        Bounds::of_geometry(operator, LayerGeometry::shape(self.rows, self.cols)).map(Some)
     }
 }
 

@@ -290,6 +290,15 @@ dt      = ["f32"]
 grade   = "L1"
 witness = { file = "musa/witness.cu", func = "witness_rcp", expect = [0.25, 0.5] }
 
+[[provides]]
+prim     = "mma"
+impl     = "mp_22"
+dt       = ["f32"]
+space    = ["REG"]
+accuracy = ["fp32"]
+grade   = "L2"
+witness = { file = "musa/witness.cu", func = "witness_matmul_f32", expect = [19.0, 22.0, 43.0, 50.0] }
+
 [compile.headers]
 "cuda_runtime.h" = """
 #pragma once

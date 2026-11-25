@@ -45,68 +45,57 @@ use tensor::{DType, Shape};
 /// 本模块的诊断站点：出错时用它标明"是这一层拒绝了这次请求"。
 pub(crate) const SITE: &str = "train::Buffers";
 
-/// 同尺寸缓冲的空闲表：按**正好相等的长度**分档，只复用等长的块（池容量永不超峰值）。
+/// 一条 lane 的泛型空闲表：按恰好相等的长度分档，容量只复用不膨胀。
+#[derive(Debug, Default)]
+struct LanePool<T> {
+    piles: Vec<(usize, Vec<Vec<T>>)>,
+}
+
+impl<T: Clone + Default> LanePool<T> {
+    /// 取等长空块；没有则走可失败的零值分配。
+    fn acquire(&mut self, len: usize) -> Result<Vec<T>> {
+        let free = self.piles.iter_mut().find(|(size, _)| *size == len);
+        match free.and_then(|(_, blocks)| blocks.pop()) {
+            Some(values) => Ok(values),
+            None => zeroed(len, T::default()),
+        }
+    }
+
+    /// 按当前长度归还空块。
+    fn give(&mut self, buf: Vec<T>) {
+        let len = buf.len();
+        match self.piles.iter_mut().find(|(size, _)| *size == len) {
+            Some((_, blocks)) => blocks.push(buf),
+            None => self.piles.push((len, vec![buf])),
+        }
+    }
+
+    fn pooled(&self) -> usize {
+        self.piles.iter().map(|(_, blocks)| blocks.len()).sum()
+    }
+
+    fn bytes(&self) -> u64 {
+        self.piles
+            .iter()
+            .flat_map(|(_, blocks)| blocks)
+            .map(|block| (block.len() * size_of::<T>()) as u64)
+            .sum()
+    }
+}
+
+/// 两种存储 lane 共用 [`LanePool`] 的同一实现。
 #[derive(Debug, Default)]
 pub(crate) struct Pool {
-    f32s: Vec<(usize, Vec<Vec<f32>>)>,
-    u8s: Vec<(usize, Vec<Vec<u8>>)>,
+    f32s: LanePool<f32>,
+    u8s: LanePool<u8>,
 }
-
-/// 一条 lane 的四件套：取、还、数块数、数字节（查找是一次线性扫描，档数由形状的个数决定，通常是个位数）。
-macro_rules! buckets {
-    ($(($acquire:ident, $give:ident, $pooled:ident, $bytes:ident, $lane:ty, $pile:ident)),* $(,)?) => {$(
-        impl Pool {
-            /// 取一块长度正好是 `len` 的缓冲：池里有就复用（只对齐长度），否则零值分配。
-            fn $acquire(&mut self, len: usize) -> Result<Vec<$lane>> {
-                let pile = &mut self.$pile;
-                let free = pile.iter_mut().find(|(size, _)| *size == len);
-                match free.and_then(|(_, blocks)| blocks.pop()) {
-                    Some(mut values) => {
-                        values.truncate(len);
-                        Ok(values)
-                    }
-                    None => zeroed(len, Default::default()),
-                }
-            }
-
-            /// 还回一块空闲块，按它的长度归到对应档。
-            fn $give(&mut self, buf: Vec<$lane>) {
-                let len = buf.len();
-                let pile = &mut self.$pile;
-                match pile.iter_mut().find(|(size, _)| *size == len) {
-                    Some((_, blocks)) => blocks.push(buf),
-                    None => pile.push((len, vec![buf])),
-                }
-            }
-
-            /// 档里现成可复用的块数。
-            fn $pooled(&self) -> usize {
-                self.$pile.iter().map(|(_, blocks)| blocks.len()).sum()
-            }
-
-            /// 档里空闲块占用的字节数，与 [`Bufs::live`] 同口径对账。
-            fn $bytes(&self) -> u64 {
-                self.$pile
-                    .iter()
-                    .flat_map(|(_, blocks)| blocks.iter())
-                    .map(|block| (block.len() * size_of::<$lane>()) as u64)
-                    .sum()
-            }
-        }
-    )*};
-}
-
-buckets!(
-    (acquire_f32, give_f32, pooled_f32, bytes_f32, f32, f32s),
-    (acquire_u8, give_u8, pooled_u8, bytes_u8, u8, u8s),
-);
 
 impl Pool {
     /// 一块 `dtype` 的零值缓冲：先试空闲表，没有再向分配器要（"取多少元素"只在这里算一次）。
     pub(crate) fn block(&mut self, dtype: DType, shape: &Shape) -> Result<Data> {
         match lane_of(dtype) {
-            Some(Kind::F32) => Ok(Data::F32(self.acquire_f32(shape.numel())?)),
-            Some(Kind::U8) => Ok(Data::U8(self.acquire_u8(shape.element_bytes(dtype))?)),
+            Some(Kind::F32) => Ok(Data::F32(self.f32s.acquire(shape.numel())?)),
+            Some(Kind::U8) => Ok(Data::U8(self.u8s.acquire(shape.element_bytes(dtype))?)),
             None => Err(no_storage(dtype)),
         }
     }
@@ -114,19 +103,19 @@ impl Pool {
     /// 把一块缓冲放回空闲表。
     fn recycle(&mut self, block: Data) {
         match block {
-            Data::F32(values) => self.give_f32(values),
-            Data::U8(values) => self.give_u8(values),
+            Data::F32(values) => self.f32s.give(values),
+            Data::U8(values) => self.u8s.give(values),
         }
     }
 
     /// 空闲表里的块数。
     fn pooled(&self) -> usize {
-        self.pooled_f32() + self.pooled_u8()
+        self.f32s.pooled() + self.u8s.pooled()
     }
 
     /// 空闲表里的字节数。
     fn pooled_bytes(&self) -> u64 {
-        self.bytes_f32() + self.bytes_u8()
+        self.f32s.bytes() + self.u8s.bytes()
     }
 }
 
@@ -321,7 +310,7 @@ impl<K: Kernel> Bufs<K> {
             existing.extend_from_slice(grads);
             return Ok(());
         }
-        let mut held = self.gradient_pool.acquire_f32(grads.len())?;
+        let mut held = self.gradient_pool.f32s.acquire(grads.len())?;
         held.copy_from_slice(grads);
         self.gradients[slot] = Some(held);
         Ok(())
@@ -369,7 +358,7 @@ impl<K: Kernel> Bufs<K> {
     pub fn put_back_gradient(&mut self, var: Var, grads: Vec<f32>) {
         if let Some(slot) = self.gradients.get_mut(var.id() as usize) {
             if grads.is_empty() {
-                self.gradient_pool.give_f32(grads);
+                self.gradient_pool.f32s.give(grads);
                 *slot = None;
             } else {
                 *slot = Some(grads);
@@ -377,11 +366,18 @@ impl<K: Kernel> Bufs<K> {
         }
     }
 
+    /// 用恢复计划预建的整表原子替换梯度；旧块回收，提交本身不再分配或校验失败。
+    pub(crate) fn replace_gradients(&mut self, gradients: Vec<Option<Vec<f32>>>) {
+        debug_assert_eq!(gradients.len(), self.gradients.len());
+        self.clear_gradients();
+        self.gradients = gradients;
+    }
+
     /// 清空全部梯度缓冲：参数/激活槽不动，梯度向量进入独立空闲表供下一批复用。
     pub fn clear_gradients(&mut self) {
         for slot in &mut self.gradients {
             if let Some(grads) = slot.take() {
-                self.gradient_pool.give_f32(grads);
+                self.gradient_pool.f32s.give(grads);
             }
         }
     }

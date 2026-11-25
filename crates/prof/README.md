@@ -60,13 +60,23 @@ crates/prof/
 │   ├── buildtables.rs     # 构建期：片段 → FRAGMENTS / PRIMS / EPILOGUE / DEVICE
 │   ├── buildops.rs        # 构建期：共享声明 + 后端特化 + 调优 → 完整生成矩阵
 │   ├── buildimage.rs      # 构建期：device-image 下真编设备镜像
-│   ├── kernels.toml       # 模板级性能策略：展开因子按 default / vendor 配置
 │   ├── <vendor>/          # 档案 + 原语 + epilogue + witness；Metal 另含 runtime.rs
-│   │   └── kernels/       # 可选的真实后端特化；缺省使用 `ops/<stem>.k`
+│   │   └── <stem>.k       # 可选的真实后端特化；缺省使用 `ops/<stem>.k`
 │   ├── native*.rs         # 平铺的主机微内核：公共几何、NEON/AVX2、i8 sdot、Apple SME
-│   └── ops/               # `<name>.toml` 共享声明 + `<stem>.k` 可移植参考正文
+│   └── ops/               # 算子声明 + 共享正文；kernels.toml 是模板级调优表
 └── tests/                 # 片段对账、内嵌档案、档案 schema；tests/spec/ 是契约词汇的用例
 ```
+
+### 同族设备变体
+
+`src/<vendor>/<vendor>.toml` 是设备族基档；同目录的 `<variant>.toml` 是硬件变体，生成
+`<vendor>_<variant>` 档案键。例如 `nvidia/a3000.toml` 生成 `nvidia_a3000`，其指纹命中 RTX A3000，
+编译参数是 `sm_86`。变体与基档共用片段、见证和原生特化正文，不复制设备族语料。
+
+构建期递归合并表字段，数组整体继承或整体覆盖；不会把 `sm_75` 与 `sm_86` 的 flags 拼接起来。
+校验与内嵌使用同一份合并结果，运行期只读取完整强类型档案，没有继承分支。调优配置按
+“档案键 → 设备族 → default”的顺序选择，因此 `nvidia = 0` 同样适用于 `nvidia_a3000`。
+
 ## 一份档案写什么
 
 | 段 | 内容 | 语义定义在 |
@@ -201,9 +211,9 @@ P0 九条不多不少、每条签名都是带见证的供给且入口名与 `PRI
 ## 新增设备 / 新增执行单元
 
 1. 在 `src/<name>/` 下写 `<name>.toml`、片段 / 见证正文；未特化算子自动使用
-   `ops/<stem>.k`，只有真正不同的算法才在 `kernels/<stem>.k` 写后端特化；
-2. 目录本身就是清单：`build.rs` 扫设备档案，构建期拒绝缺失正文与 ABI 漂移，
-   `lib.rs` 不登记 vendor；展开因子集中在 `src/kernels.toml`，不在 Rust 中写厂商分支；
+   `ops/<stem>.k`，只有真正不同的算法才用 `<stem>.<ext>` 写后端特化；
+2. 目录本身就是清单：`src/build.rs` 扫设备档案，构建期拒绝缺失正文与 ABI 漂移，
+   `lib.rs` 不登记 vendor；展开因子集中在 `src/ops/kernels.toml`，不在 Rust 中写厂商分支；
 3. `cargo test -p llm-prof` —— 内核矩阵测试逐条拒绝 ABI / 布局 / 能力需求漂移；
    同一测试目标再对一遍片段层契约（见上），它同时把每条见证在本机执行一次；
 4. `cargo run --bin cutile -- doctor --op gemv_i4 --device <name>` 看协商结果（`units:` 那一行就是本档案的执行单元）；
@@ -211,7 +221,7 @@ P0 九条不多不少、每条签名都是带见证的供给且入口名与 `PRI
 
 ## 什么不放进来
 
-- **算子声明与微内核**（`src/ops/*.{toml,k}`、`src/<vendor>/kernels/*.k`）**在本 crate**：
+- **算子声明与微内核**（`src/ops/*.{toml,k}`、`src/<vendor>/<stem>.<ext>`）**在本 crate**：
   声明与参考正文按算子归在一起，后端按需特化；相同实现只存一份。
 - **原语片段**（`src/<vendor>/<prim>.<ext>`）与见证源码**也在本 crate**：它们是数据，不是代码。
 - **机制**：协商（`cap`）、选择（`plan`）、拼接（`substitute`）与 emit（`emit`）、探测（`probe`）都在 `cutile`；

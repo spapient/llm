@@ -14,7 +14,7 @@
 pub mod clamp {
     //! 逐元素裁剪：`y[n] = clamp(x[n], lo, hi)`；`lo` / `hi` 取模块常量（f32 标量入参通道未贯通，同 `dequant_i8` 口径）。
 
-    use crate::model::{Buf, Cost, Sample, ShapeCtx, Values, cost_n, x_buf};
+    use crate::model::{Buf, Cost, Sample, ShapeCtx, cost_n, x_buf};
     use diagnostic::{Code, Error};
     use tensor::View;
 
@@ -41,13 +41,7 @@ pub mod clamp {
             m: len,
             n: len,
             scalars: vec![("N", len as i64)],
-            bufs: vec![
-                x_buf(len),
-                Buf {
-                    name: "y",
-                    values: Values::F32(vec![0.0; len]),
-                },
-            ],
+            bufs: vec![x_buf(len), Buf::f32("y", vec![0.0; len])],
         }
     }
 
@@ -109,17 +103,12 @@ pub mod clamp {
 
     // 基座契约（ADR 0050）：本模块自带具体入口，直接转发；图输入只有 `x`，`lo` / `hi` 取模块常量。
     crate::operator_here!(Clamp, "clamp_f32", 1, (4096, 4096), false, reference);
-
-    #[cfg(test)]
-    mod tests {
-        include!("../tests/kernel_clamp.rs");
-    }
 }
 pub mod dequant;
 pub mod elementwise;
 pub mod embed {
     //! Embedding 行查表：`y[n, :] = table[idx[n], :]`（行向量 gather）。
-    use crate::model::{AxisRole, AxisSpec, Buf, Cost, Sample, ShapeCtx, Values};
+    use crate::model::{AxisRole, AxisSpec, Buf, Cost, Sample, ShapeCtx};
     use diagnostic::{Code, Error};
     use tensor::View;
 
@@ -179,18 +168,9 @@ pub mod embed {
             n: dim,
             scalars: vec![("N", tokens as i64), ("V", VOCAB as i64), ("D", dim as i64)],
             bufs: vec![
-                Buf {
-                    name: "idx",
-                    values: Values::F32((0..tokens).map(|i| (i % VOCAB) as f32).collect()),
-                },
-                Buf {
-                    name: "table",
-                    values: Values::F32(table),
-                },
-                Buf {
-                    name: "y",
-                    values: Values::F32(vec![0.0; tokens * dim]),
-                },
+                Buf::f32("idx", (0..tokens).map(|i| (i % VOCAB) as f32).collect()),
+                Buf::f32("table", table),
+                Buf::f32("y", vec![0.0; tokens * dim]),
             ],
         }
     }
@@ -202,8 +182,8 @@ pub mod embed {
         gather(idx, table, sample.n)
     }
 
-    /// 共享行查表：参考与内核同一套；`dim` 为行宽，表长必须是 `dim` 的整数倍，行数由此推出。
-    fn gather(idx: &[f32], table: &[f32], dim: usize) -> diagnostic::Result<Vec<f32>> {
+    /// 校验行宽、表长和全部索引；通过后才允许参考物化或内核写入。
+    fn validate_table(idx: &[f32], table: &[f32], dim: usize) -> diagnostic::Result<usize> {
         if dim == 0 {
             return Err(Error::new(Code::Invalid, "embed 行宽不能为零"));
         }
@@ -214,22 +194,30 @@ pub mod embed {
             ));
         }
         let rows = table.len() / dim;
-        let mut out = Vec::with_capacity(idx.len() * dim);
-        for value in idx {
-            let k = *value as usize;
-            if k >= rows {
+        for &value in idx {
+            let idx = value as usize;
+            if idx >= rows {
                 return Err(Error::new(
                     Code::Invalid,
-                    format!("embedding 下标 {k} 越界（词表 {rows}）"),
+                    format!("embedding 下标 {idx} 越界（词表 {rows}）"),
                 ));
             }
-            let row = k * dim;
-            out.extend_from_slice(&table[row..row + dim]);
         }
-        Ok(out)
+        Ok(rows)
     }
 
-    /// 内核本体：结果写进调用方给的缓冲。
+    /// 共享行查表：参考与内核同一套校验和索引语义。
+    fn gather(idx: &[f32], table: &[f32], dim: usize) -> diagnostic::Result<Vec<f32>> {
+        validate_table(idx, table, dim)?;
+        let mut output = Vec::with_capacity(idx.len() * dim);
+        for &value in idx {
+            let start = value as usize * dim;
+            output.extend_from_slice(&table[start..start + dim]);
+        }
+        Ok(output)
+    }
+
+    /// 内核本体：结果写进调用方给的缓冲，不分配临时输出。
     ///
     /// 行宽 `D` 由输出长度与 token 数推出：`out.len() == idx.len()·D`；表长必须是 `D` 的整数倍。
     ///
@@ -254,8 +242,11 @@ pub mod embed {
             ));
         }
         let dim = out.len() / tokens;
-        let gathered = gather(idx, table, dim)?;
-        out.copy_from_slice(&gathered);
+        validate_table(idx, table, dim)?;
+        for (&value, output) in idx.iter().zip(out.chunks_exact_mut(dim)) {
+            let start = value as usize * dim;
+            output.copy_from_slice(&table[start..start + dim]);
+        }
         Ok(())
     }
 
@@ -267,11 +258,6 @@ pub mod embed {
     pub type EmbedF32 = Embed;
 
     crate::operator_here!(Embed, "embed_f32", 2, (8, 64), true, reference);
-
-    #[cfg(test)]
-    mod tests {
-        include!("../tests/kernel_embed.rs");
-    }
 }
 pub mod epilogue;
 pub mod fast;
@@ -282,7 +268,7 @@ pub mod norm;
 pub mod reduce;
 pub mod rmsnorm {
     //! RMSNorm：`y[n] = gamma[n] * x[n] / sqrt(mean(x[0..n]^2) + eps)`。
-    use crate::model::{Buf, Cost, Sample, ShapeCtx, Values, cost_n, x_buf};
+    use crate::model::{Buf, Cost, Sample, ShapeCtx, cost_n, x_buf};
     use diagnostic::{Code, Error};
     use tensor::View;
 
@@ -310,14 +296,8 @@ pub mod rmsnorm {
             scalars: vec![("N", len as i64)],
             bufs: vec![
                 x_buf(len),
-                Buf {
-                    name: "gamma",
-                    values: Values::F32(crate::model::linear(len, 0.01, 0.5)),
-                },
-                Buf {
-                    name: "y",
-                    values: Values::F32(vec![0.0; len]),
-                },
+                Buf::f32("gamma", crate::model::linear(len, 0.01, 0.5)),
+                Buf::f32("y", vec![0.0; len]),
             ],
         }
     }
@@ -348,6 +328,22 @@ pub mod rmsnorm {
         sum
     }
 
+    /// 校验数值稳定项；有限且非负才允许进入参考或内核。
+    fn validate_epsilon(epsilon: f32) -> diagnostic::Result<()> {
+        if epsilon.is_finite() && epsilon >= 0.0 {
+            return Ok(());
+        }
+        Err(Error::new(
+            Code::Invalid,
+            "rmsnorm epsilon 必须是有限非负数",
+        ))
+    }
+
+    /// 一次平方根和倒数，供整行乘法复用，避免每元素一次除法。
+    fn inverse_rms(x: &[f32], epsilon: f32) -> f32 {
+        (sum_sq(x) / (x.len() as f32) + epsilon).sqrt().recip()
+    }
+
     /// 标量参考：两趟，与内核同一公式。
     ///
     /// # Errors
@@ -357,31 +353,46 @@ pub mod rmsnorm {
         let x = sample.f32("x")?;
         let gamma = sample.f32("gamma")?;
         check(x, gamma)?;
-        let rms = (sum_sq(x) / (x.len() as f32) + EPS).sqrt();
+        let scale = inverse_rms(x, EPS);
         Ok(x.iter()
             .zip(gamma.iter())
-            .map(|(value, weight)| weight * value / rms)
+            .map(|(value, weight)| weight * value * scale)
             .collect())
     }
 
     /// 单行数值核：调用方已完成校验；批路径复用它以避免逐行重复检查。
-    fn normalize(x: &[f32], gamma: &[f32], out: &mut [f32]) {
-        let rms = (sum_sq(x) / (x.len() as f32) + EPS).sqrt();
+    fn normalize(x: &[f32], gamma: &[f32], out: &mut [f32], epsilon: f32) {
+        let scale = inverse_rms(x, epsilon);
         for ((out, x), gamma) in out.iter_mut().zip(x).zip(gamma) {
-            *out = gamma * x / rms;
+            *out = gamma * x * scale;
         }
     }
 
-    /// 内核本体：结果写进调用方给的缓冲。
+    /// 使用默认 [`EPS`] 的内核入口。
     ///
     /// # Errors
     ///
-    /// 三个缓冲等长，或输入为空时返回说明：空行没有可统计的均方根。
+    /// 三个缓冲不等长或输入为空时返回说明。
     pub fn forward(
         x: View<'_, f32>,
         gamma: View<'_, f32>,
         out: &mut [f32],
     ) -> diagnostic::Result<()> {
+        forward_with_epsilon(x, gamma, out, EPS)
+    }
+
+    /// 可配置 epsilon 的内核入口；全部校验完成后才开始写入。
+    ///
+    /// # Errors
+    ///
+    /// 三个缓冲不等长、输入为空或 epsilon 非法时返回说明。
+    pub fn forward_with_epsilon(
+        x: View<'_, f32>,
+        gamma: View<'_, f32>,
+        out: &mut [f32],
+        epsilon: f32,
+    ) -> diagnostic::Result<()> {
+        validate_epsilon(epsilon)?;
         let x = x.as_slice();
         let gamma = gamma.as_slice();
         check(x, gamma)?;
@@ -391,12 +402,18 @@ pub mod rmsnorm {
                 format!("x {} 与 out {} 长度不一致", x.len(), out.len()),
             ));
         }
-        normalize(x, gamma, out);
+        normalize(x, gamma, out, epsilon);
         Ok(())
     }
 
     /// 批前置：只在本入口校验一次，行宽与非空约束覆盖所有后续分段。
     fn check_batch(x: &[f32], gamma: &[f32], out: &[f32], row_dim: usize) -> Result<(), Error> {
+        check_row_config(gamma, row_dim)?;
+        check_batch_bufs(x, out, row_dim)
+    }
+
+    /// 行配置只需校验一次，与整批输入输出缓冲判据分离。
+    fn check_row_config(gamma: &[f32], row_dim: usize) -> Result<(), Error> {
         if row_dim == 0 {
             return Err(Error::new(Code::Invalid, "rmsnorm 行宽不能为 0"));
         }
@@ -406,6 +423,11 @@ pub mod rmsnorm {
                 format!("gamma 长度 {} 不等于行宽 {row_dim}", gamma.len()),
             ));
         }
+        Ok(())
+    }
+
+    /// 批缓冲必须等长、非空且能按行宽完整分段。
+    fn check_batch_bufs(x: &[f32], out: &[f32], row_dim: usize) -> Result<(), Error> {
         if x.len() != out.len() {
             return Err(Error::new(
                 Code::Invalid,
@@ -418,22 +440,38 @@ pub mod rmsnorm {
         Ok(())
     }
 
-    /// 批量入口：`[batch, row_dim]` 段连续，每段独立 RMS 归一化，gamma 按行宽复用。
+    /// 使用默认 [`EPS`] 的批量入口。
     ///
     /// # Errors
     ///
-    /// 行宽为 0、gamma 与行宽不等长、x/out 不等长、缓冲非行宽倍数或为空时返回说明。
+    /// 行宽、缓冲或默认配置不合法时返回说明。
     pub fn forward_batch(
         x: View<'_, f32>,
         gamma: View<'_, f32>,
         out: &mut [f32],
         row_dim: usize,
     ) -> diagnostic::Result<()> {
+        forward_batch_with_epsilon(x, gamma, out, row_dim, EPS)
+    }
+
+    /// 可配置 epsilon 的批量入口；每段独立归一化并复用 gamma。
+    ///
+    /// # Errors
+    ///
+    /// 行宽为 0、gamma 与行宽不等长、缓冲不完整或 epsilon 非法时返回说明。
+    pub fn forward_batch_with_epsilon(
+        x: View<'_, f32>,
+        gamma: View<'_, f32>,
+        out: &mut [f32],
+        row_dim: usize,
+        epsilon: f32,
+    ) -> diagnostic::Result<()> {
+        validate_epsilon(epsilon)?;
         let x = x.as_slice();
         let gamma = gamma.as_slice();
         check_batch(x, gamma, out, row_dim)?;
         for (x, out) in x.chunks_exact(row_dim).zip(out.chunks_exact_mut(row_dim)) {
-            normalize(x, gamma, out);
+            normalize(x, gamma, out, epsilon);
         }
         Ok(())
     }
@@ -446,11 +484,6 @@ pub mod rmsnorm {
 
     /// 标记类型：`#[model]` 需要一个类型别名承载语义，这里用单元结构。
     pub struct RmsNorm;
-
-    #[cfg(test)]
-    mod tests {
-        include!("../tests/kernel_rmsnorm.rs");
-    }
 }
 pub mod rope;
 pub mod scalar;
@@ -546,11 +579,6 @@ pub mod softmax {
     pub type SoftmaxF32 = Softmax;
 
     crate::operator_here!(Softmax, "softmax_f32", 1, (4096, 4096), true, reference);
-
-    #[cfg(test)]
-    mod tests {
-        include!("../tests/kernel_softmax.rs");
-    }
 }
 pub mod unary;
 
@@ -559,7 +587,8 @@ pub mod unary;
 pub use clamp as clamp_f32;
 pub use dequant::{dequant_i2, dequant_i4, i8 as dequant_i8};
 pub use elementwise::{
-    add_f32, div_f32, max_f32, min_f32, mul_f32, remainder_f32, residual_add_f32, sub_f32,
+    add_f32, add_f32x4, div_f32, max_f32, min_f32, mul_f32, remainder_f32, residual_add_f32,
+    sub_f32,
 };
 pub use epilogue::apply as apply_epilogue;
 pub use gemm::{f32 as gemm_f32, i2 as gemm_i2, i4 as gemm_i4, i8 as gemm_i8};
@@ -589,3 +618,8 @@ pub use sch::layout;
 #[cfg(test)]
 #[path = "../tests/kernel_prop_numeric.rs"]
 mod prop_numeric;
+
+#[cfg(test)]
+mod pointwise_tests {
+    include!("../tests/kernel_pointwise_tests.rs");
+}

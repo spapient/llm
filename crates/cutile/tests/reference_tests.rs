@@ -158,14 +158,12 @@ fn the_fused_oracle_bridges_every_seam_not_just_one() {
     let want: Vec<f32> = a.iter().zip(&b).map(|(x, y)| x * y + x * y).collect();
     let oracle = verify_fusion(&mul, &add, &fusion, &mut sample).expect("融合参考可算");
     assert_eq!(oracle.bridged.len(), fusion.seams.len(), "每条缝都必须桥接");
-    assert!(within(&oracle.got, &want, DType::F32), "对拍失败");
+    let got = oracle.got.as_f32().expect("f32 产出");
+    assert!(within(got, &want, DType::F32), "对拍失败");
 
     // 只桥一条缝（旧口径）算的是另一个程序：b 仍是原值而不是生产者产出。
     let half: Vec<f32> = a.iter().zip(&b).map(|(x, y)| x * y + y).collect();
-    assert!(
-        !within(&oracle.got, &half, DType::F32),
-        "旧口径必须与完整桥接不同"
-    );
+    assert!(!within(got, &half, DType::F32), "旧口径必须与完整桥接不同");
 }
 
 #[test]

@@ -444,7 +444,6 @@ fn file_remote_reduce_scatters() {
     let _ = std::fs::remove_file(&backing);
 }
 
-
 #[test]
 fn local_reduction_supports_128_bit_integer_scalars() {
     let topology = Topology::new(2, 1, 1).expect("tp 2");

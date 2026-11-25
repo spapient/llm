@@ -1,5 +1,3 @@
-use diagnostic::data::Value;
-
 /// 生成表按文件名升序（旧的 `prof::load(dir)` 也这样排序）。
 #[test]
 fn embedded_names_are_sorted() {
@@ -9,24 +7,18 @@ fn embedded_names_are_sorted() {
         "{generated:?}"
     );
     for name in generated {
-        assert!(crate::embedded(name).is_some(), "{name} 有名字却没有表");
+        assert!(crate::embedded(name).is_some(), "{name} 有名字却没有档案");
     }
 }
 
-/// 每份生成表都是一份设备档案：有 `[meta]`，也有能力区间。
+/// 每份静态视图都有完整身份与非空能力供给；元素类型由 `ProvideView` 在编译期固定。
 #[test]
 fn every_embedded_entry_is_a_device_archive() {
     for name in crate::names() {
-        let table = crate::embedded(name).expect("名字都能取到表");
-        assert!(table.table("meta").is_some(), "{name} 缺 `[meta]`");
-        let provides = table.array("provides").expect("档案必须有 `[[provides]]`");
-        assert!(!provides.is_empty(), "{name} 没有任何能力区间");
-        assert!(
-            provides
-                .iter()
-                .all(|entry| matches!(entry, Value::Table(_))),
-            "{name} 的 `provides` 元素必须是表"
-        );
+        let profile = crate::embedded(name).expect("名字都能取到档案");
+        assert!(!profile.vendor.is_empty(), "{name} 缺厂商键");
+        assert!(!profile.id.is_empty(), "{name} 缺型号键");
+        assert!(!profile.provides.is_empty(), "{name} 没有任何能力供给");
     }
 }
 
@@ -37,7 +29,7 @@ fn embedded_reports_a_missing_archive() {
 
 #[test]
 fn select_picks_the_profile_matching_local_arch() {
-    let profiles = crate::prof::builtin_profiles();
+    let profiles = crate::prof::builtin_profiles().expect("内置档案");
     let detected = crate::prof::Detected::new().with("arch", std::env::consts::ARCH);
     let chosen = crate::prof::select(profiles, &detected).expect("本机架构应命中一份档案");
     assert_eq!(chosen.meta.vendor, "cpu");
@@ -45,7 +37,7 @@ fn select_picks_the_profile_matching_local_arch() {
 
 #[test]
 fn select_reports_unsupported_when_nothing_matches() {
-    let profiles = crate::prof::builtin_profiles();
+    let profiles = crate::prof::builtin_profiles().expect("内置档案");
     let detected = crate::prof::Detected::new().with("arch", "no-such-arch");
     let error = crate::prof::select(profiles, &detected).expect_err("无命中必须报错");
     assert_eq!(error.code(), diagnostic::Code::Unsupported);
@@ -190,6 +182,17 @@ fn unroll_configuration_follows_the_template_stem() {
     }
 }
 
+#[test]
+fn native_template_marker_is_explicit_and_name_scoped() {
+    for vendor in ["nvidia", "musa"] {
+        let source = crate::catalogue::template_for(vendor, "matmul_f32").expect("原生矩阵乘");
+        assert!(crate::sign::is_native_template(source, "matmul_f32"));
+        assert!(!crate::sign::is_native_template(source, "gemm_f32"));
+    }
+    let reference = crate::catalogue::template("matmul_f32").expect("共享矩阵乘");
+    assert!(!crate::sign::is_native_template(reference, "matmul_f32"));
+}
+
 /// MUSA 特化必须保持共享 ABI，并保留真实设备内核、分块同步与三侧边界守卫。
 /// 这里只检查源码契约；是否可由 mcc 编译及真机数值/性能由设备测试另行证明。
 #[test]
@@ -261,7 +264,8 @@ fn nvidia_matmul_uses_pedantic_cublas_and_cached_device_storage() {
     assert!(!source.contains("cudaDeviceSynchronize"));
 
     let profile = crate::prof::builtin_profiles()
-        .into_iter()
+        .expect("内置档案")
+        .iter()
         .find(|profile| profile.meta.vendor == "nvidia")
         .expect("NVIDIA 档案");
     assert!(profile.flags.iter().any(|flag| flag == "-lcublas"));
@@ -273,8 +277,11 @@ fn a3000_variant_selects_sm86_and_reuses_the_nvidia_backend() {
     let detected = crate::prof::Detected::new()
         .with("cc", "8.6")
         .with("name", "NVIDIA RTX A3000 12GB Laptop GPU");
-    let chosen = crate::prof::select(crate::prof::builtin_profiles(), &detected)
-        .expect("A3000 实测指纹必须命中变体");
+    let chosen = crate::prof::select(
+        crate::prof::builtin_profiles().expect("内置档案"),
+        &detected,
+    )
+    .expect("A3000 实测指纹必须命中变体");
     assert_eq!(chosen.meta.vendor, "nvidia_a3000");
     assert_eq!(chosen.meta.id, "sm86");
     assert_eq!(chosen.mem.fast_bytes, 49_152);
@@ -299,7 +306,136 @@ fn a3000_variant_selects_sm86_and_reuses_the_nvidia_backend() {
     let t600 = crate::prof::Detected::new()
         .with("cc", "7.5")
         .with("name", "NVIDIA T600");
-    let chosen =
-        crate::prof::select(crate::prof::builtin_profiles(), &t600).expect("T600 仍必须命中原档案");
+    let chosen = crate::prof::select(crate::prof::builtin_profiles().expect("内置档案"), &t600)
+        .expect("T600 仍必须命中原档案");
     assert_eq!(chosen.meta.vendor, "nvidia");
+}
+
+/// FMA 首块／续算与独立标量参考一致，不在生产切换后自配对拍。
+#[test]
+fn gemm_micro_fma_matches_scalar_on_first_and_continuation() {
+    #[cfg(target_arch = "x86_64")]
+    println!(
+        "x86_avx2={} x86_fma={}",
+        std::arch::is_x86_feature_detected!("avx2"),
+        std::arch::is_x86_feature_detected!("fma")
+    );
+    for first in [true, false] {
+        let k = 19;
+        let panel: Vec<f32> = (0..k * 8).map(|i| (i as f32 * 0.13).sin()).collect();
+        let b: Vec<f32> = (0..k * 8).map(|i| (i as f32 * 0.07).cos()).collect();
+        let mut got = vec![0.25; 64];
+        let mut expected = got.clone();
+        let tile = crate::native::gemm8x8::Tile {
+            row0: 0,
+            j: 0,
+            n: 8,
+            kb: k,
+            first,
+        };
+        for r in 0..8 {
+            for c in 0..8 {
+                let slot = r * 8 + c;
+                let mut acc = if first { 0.0 } else { expected[slot] };
+                for p in 0..k {
+                    acc += panel[p * 8 + r] * b[p * 8 + c];
+                }
+                expected[slot] = acc;
+            }
+        }
+        crate::runtime::gemm_micro::fma_micro(&panel, &b, &mut got, tile).expect("C FMA 安全桥");
+        for (idx, (left, right)) in expected.iter().zip(&got).enumerate() {
+            assert!(
+                (left - right).abs() <= 1e-5,
+                "first={first} index={idx}: {left} != {right}"
+            );
+        }
+    }
+}
+
+#[test]
+fn gemm_micro_rejects_short_bufs_before_ffi_call() {
+    let tile = crate::native::gemm8x8::Tile {
+        row0: 0,
+        j: 0,
+        n: 8,
+        kb: 1,
+        first: true,
+    };
+    let error = crate::runtime::gemm_micro::fma_micro(&[], &[0.0; 8], &mut [0.0; 64], tile)
+        .expect_err("A 面板不足必须拒绝");
+    assert_eq!(error.code(), diagnostic::Code::Invalid);
+}
+
+/// dotprod 可用时 C 与独立标量参考逐位一致；不可用时公开面仍明确拒绝。
+#[test]
+fn gemm_micro_sdot_matches_scalar_exactly() {
+    let k = 33;
+    let a: Vec<i8> = (0..4 * k).map(|i| ((i * 17 + 3) % 31) as i8 - 15).collect();
+    let b: Vec<i8> = (0..4 * k).map(|i| ((i * 11 + 5) % 29) as i8 - 14).collect();
+    let mut public = vec![0i32; 16];
+    let mut runtime = public.clone();
+    let gram = crate::native::i8::Gram {
+        r: 0,
+        blk: 0,
+        n: 4,
+        k,
+        kvec: 32,
+    };
+    let public_ran = crate::native::i8::dot_block(&a, &b, &mut public, gram);
+    let runtime_ran =
+        crate::runtime::gemm_micro::sdot_micro(&a, &b, &mut runtime, gram).expect("C sdot 安全桥");
+    assert_eq!(runtime_ran, public_ran);
+    if !runtime_ran {
+        return;
+    }
+    let mut expected = vec![0i32; 16];
+    for r in 0..4 {
+        for c in 0..4 {
+            for p in 0..k {
+                expected[r * 4 + c] += i32::from(a[r * k + p]) * i32::from(b[c * k + p]);
+            }
+        }
+    }
+    assert_eq!(runtime, expected);
+    assert_eq!(public, expected);
+}
+
+/// SME 短缓冲必须在 FFI 前拒绝；无 SME 的机器则明确返回未执行。
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn gemm_micro_sme_rejects_short_bufs_before_ffi_call() {
+    let result = crate::runtime::gemm_micro::sme_micro(&[], &[], &mut [], 64, 32);
+    match result {
+        Err(error) => assert_eq!(error.code(), diagnostic::Code::Invalid),
+        Ok(false) => {}
+        Ok(true) => panic!("空缓冲不得进入 SME"),
+    }
+}
+
+/// SME 单瓦片对拍使用独立标量参考；无 SME 的环境不据此签发能力。
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn gemm_micro_sme_matches_an_independent_scalar_reference() {
+    let (k, n) = (32, 64);
+    let a: Vec<f32> = (0..k * 16).map(|i| (i as f32 * 0.013).sin()).collect();
+    let b: Vec<f32> = (0..k * n).map(|i| (i as f32 * 0.007).cos()).collect();
+    let mut out = vec![0.0; 16 * n];
+    let ran = crate::runtime::gemm_micro::sme_micro(&a, &b, &mut out, n, k).expect("C SME 安全桥");
+    if !ran {
+        return;
+    }
+    for r in 0..16 {
+        for c in 0..64 {
+            let mut expected = 0.0f32;
+            for p in 0..k {
+                expected += a[p * 16 + r] * b[p * n + c];
+            }
+            let got = out[r * n + c];
+            assert!(
+                (got - expected).abs() <= 1e-4,
+                "r={r} c={c}: {got} != {expected}"
+            );
+        }
+    }
 }

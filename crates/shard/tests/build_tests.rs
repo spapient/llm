@@ -3,13 +3,10 @@
 //! 生产文件只留执行与判据，用例集中于此。
 
 use super::*;
+use crate::fixtures::profile;
 #[cfg(unix)]
 use crate::toolchain;
 use nn::model::Sample;
-
-fn cpu_profile() -> Profile {
-    Profile::parse(prof::embedded("cpu").expect("cpu 档案")).expect("档案可解析")
-}
 
 /// 只改 owned 声明里的某一处（模板不变）：用来构造"缓存键不变、判定结果变了"的输入。
 fn declared(mutate: impl FnOnce(&mut OpDecl)) -> OpDecl {
@@ -47,7 +44,7 @@ fn builtin() -> OpDecl {
 }
 
 fn cpu_path(op: &OpDecl) -> Path {
-    cutile::cap::negotiate(op, &cpu_profile()).expect("CPU 应命中首档")
+    cutile::cap::negotiate(op, &profile("cpu")).expect("CPU 应命中首档")
 }
 
 /// 不经协商的路径：契约测试要故意构造协商会拒绝的声明。
@@ -76,7 +73,7 @@ fn dirs(root: &std::path::Path) -> Dirs {
 #[test]
 fn declared_traffic_beyond_the_fast_capacity_fails_the_build() {
     let op = declared_bytes(1_048_576);
-    let error = contract(&op, &cpu_profile(), &declared_path(&op)).unwrap_err();
+    let error = contract(&op, &profile("cpu"), &declared_path(&op)).unwrap_err();
     assert_eq!(error.code(), Code::Unsupported);
     assert!(error.to_string().contains("FAST"), "{error}");
     assert!(error.to_string().contains("524288"), "{error}");
@@ -85,7 +82,7 @@ fn declared_traffic_beyond_the_fast_capacity_fails_the_build() {
 #[test]
 fn swizzle_beyond_the_bank_count_fails_the_build() {
     let op = declared_swizzle();
-    let error = contract(&op, &cpu_profile(), &declared_path(&op)).unwrap_err();
+    let error = contract(&op, &profile("cpu"), &declared_path(&op)).unwrap_err();
     assert_eq!(error.code(), Code::Unsupported);
     assert!(error.to_string().contains("布局槽位 `w`"), "{error}");
 }
@@ -93,7 +90,7 @@ fn swizzle_beyond_the_bank_count_fails_the_build() {
 #[test]
 fn the_contract_reports_the_numbers_it_compared() {
     let op = builtin();
-    let uses = contract(&op, &cpu_profile(), &cpu_path(&op)).expect("内置声明在容量内");
+    let uses = contract(&op, &profile("cpu"), &cpu_path(&op)).expect("内置声明在容量内");
     assert!(
         uses.iter().any(|usage| usage.prim == Prim::Load
             && usage.space == Space::Fast
@@ -113,7 +110,7 @@ fn a_cached_source_cannot_exempt_the_declaration_from_the_contract() {
     let root = std::env::temp_dir().join(format!("cutile-contract-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let dirs = dirs(&root);
-    let profile = cpu_profile();
+    let profile = profile("cpu");
     let op = builtin();
     let path = cpu_path(&op);
     let tile = first_tile(&op);
@@ -135,7 +132,7 @@ fn tool() -> Option<Toolchain> {
 
 /// 一份带主函数的内核源码与形状：产物身份要用的两个输入。
 fn built(op: &OpDecl, dirs: &Dirs) -> (CacheKey, String, Sample) {
-    let profile = cpu_profile();
+    let profile = profile("cpu");
     let path = cpu_path(op);
     let tile = first_tile(op);
     let (source, key) = source(op, &profile, &path, &tile, dirs).expect("可构建");
@@ -157,7 +154,7 @@ fn a_second_execution_needs_neither_the_compiler_nor_a_rebuild() {
     let root = std::env::temp_dir().join(format!("cutile-execute-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let dirs = dirs(&root);
-    let profile = cpu_profile();
+    let profile = profile("cpu");
     let op = builtin();
     let (key, harness, sample) = built(&op, &dirs);
 
@@ -212,7 +209,7 @@ fn a_new_compiler_version_does_not_reuse_the_old_artifact() {
     let _ = std::fs::remove_dir_all(&root);
     let dirs = dirs(&root);
     std::fs::create_dir_all(&root).expect("临时目录");
-    let profile = cpu_profile();
+    let profile = profile("cpu");
     let op = builtin();
     let (key, harness, _) = built(&op, &dirs);
 
@@ -297,7 +294,7 @@ fn the_artifact_cache_leaves_the_work_directory_empty() {
     let dirs = dirs(&root);
     let op = builtin();
     let (key, harness, _) = built(&op, &dirs);
-    execute(&cpu_profile(), Some(&tool), &key, &harness, &dirs).expect("应能编译执行");
+    execute(&profile("cpu"), Some(&tool), &key, &harness, &dirs).expect("应能编译执行");
     let leftovers: Vec<_> = std::fs::read_dir(dirs.work())
         .map_or_default(|items| items.flatten().map(|item| item.file_name()).collect());
     assert!(
@@ -315,7 +312,7 @@ fn without_a_compiler_a_missing_artifact_is_an_explicit_failure() {
     let op = builtin();
     let (key, harness, _) = built(&op, &dirs);
 
-    let error = execute(&cpu_profile(), None, &key, &harness, &dirs).unwrap_err();
+    let error = execute(&profile("cpu"), None, &key, &harness, &dirs).unwrap_err();
     assert_eq!(error.code(), Code::Unsupported, "{error}");
     assert!(error.to_string().contains("没有这份产物"), "{error}");
     let _ = std::fs::remove_dir_all(&root);
@@ -348,7 +345,7 @@ fn two_compilers_worth_of_artifacts_are_not_chosen_between() {
             .expect("落产物");
     }
 
-    let error = execute(&cpu_profile(), None, &key, &harness, &dirs).unwrap_err();
+    let error = execute(&profile("cpu"), None, &key, &harness, &dirs).unwrap_err();
     assert_eq!(error.code(), Code::Unsupported, "{error}");
     assert!(error.to_string().contains("cc@17.0.0"), "{error}");
     assert!(error.to_string().contains("clang@18.1.3"), "{error}");
@@ -367,7 +364,7 @@ fn source_applies_backend_tuning_and_separates_cache_fingerprints() {
         .expect("参考声明可解析");
     let path = declared_path(&op);
     let tile = first_tile(&op);
-    let cpu = cpu_profile();
+    let cpu = profile("cpu");
     let nvidia =
         Profile::parse(prof::embedded("nvidia").expect("NVIDIA 档案")).expect("NVIDIA 档案可解析");
 

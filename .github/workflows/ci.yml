@@ -319,55 +319,20 @@ jobs:
     name: fuzz (libfuzzer)
     runs-on: ubuntu-latest
     env:
-      # 构建与有界运行共用这一份清单，避免两处列表漂移。
-      FUZZ_TARGETS: >-
-        fuzz_cli fuzz_weights_json fuzz_weights_safetensors fuzz_weights_archive
-        fuzz_train_snapshot fuzz_serve_frames fuzz_wire_sealed fuzz_wire_leb
-        fuzz_http_head fuzz_lex fuzz_crc fuzz_leb_roundtrip fuzz_shape
-        fuzz_cutile_negotiate fuzz_dist
+      # 目标清单只由 scripts/fuzz.sh 持有；CI 这里只覆盖运行预算。
+      FUZZ_SECONDS: "30"
+      FUZZ_TIMEOUT: "10"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.100.0"
+          toolchain: "nightly"
       - uses: Swatinem/rust-cache@v2
-      # libFuzzer 运行时与 ASan 由 clang 提供；Rust 侧只接 `libfuzzer-sys` 垫片。
+      # 本地与 CI 共用 scripts/fuzz.sh：覆盖插桩、ASan、种子生成、超时和内存预算只有一份。
       - name: Install clang
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang
-      # 覆盖引导 + 地址 sanitizer：按 libfuzzer-sys 手册传 sancov 覆盖标志与 `-Z sanitizer=address`。
-      # harness 在 `engine` feature 后才编译，常规 test/clippy 不构建 libFuzzer 运行时。
-      # `harness = false` 的测试二进制带哈希名、留在 build out 目录，运行前按目标名解析路径。
-      - name: Build fuzz harnesses
-        run: |
-          for target in $FUZZ_TARGETS; do
-            cargo rustc -p llm-fuzz --features engine --test "$target" --release --locked -- \
-              -C passes='sancov-module' \
-              -C llvm-args='-sanitizer-coverage-level=3' \
-              -C llvm-args='-sanitizer-coverage-inline-8bit-counters' \
-              -Z sanitizer=address
-          done
-      # 种子语料由库编码生成：先构造合法范例写到 corpus/<目标>/，覆盖引导从结构附近出发，
-      # 而不是从纯噪声起步。生成器是普通 debug 二进制，不需要 sanitizer 与 libFuzzer 运行时。
-      - name: Generate seed corpus
-        run: |
-          cargo test -p llm-fuzz --test gen_corpus --locked --no-run
-          gen="$(find target/debug/build/llm-fuzz -type f -name 'gen_corpus'-* ! -name '*.d' ! -name '*.o' | head -1)"
-          "$gen" crates/fuzz/corpus
-      # 有界运行：每个目标 30 秒；挂种子语料与关键字字典；崩溃/ASan 报错以非零退出，
-      # libFuzzer 把复现输入留在 artifact 目录。单条输入超时 10 秒判挂死，内存上限 2 GiB，
-      # 避免一个死循环或失控分配拖垮整个 job。
-      - name: Run fuzz targets (bounded)
-        run: |
-          mkdir -p fuzz-artifacts
-          for target in $FUZZ_TARGETS; do
-            bin="$(find target/release/build/llm-fuzz -type f -name "$target"-* ! -name '*.d' ! -name '*.o' | head -1)"
-            dict="crates/fuzz/corpus/dict/$target.dict"
-            dict_args=""
-            [ -f "$dict" ] && dict_args="-dict=$dict"
-            "$bin" "crates/fuzz/corpus/$target" $dict_args \
-              -max_total_time=30 -timeout=10 -rss_limit_mb=2048 \
-              -print_final_stats=1 -artifact_prefix=./fuzz-artifacts/
-          done
+      - name: Build and run fuzz targets (bounded)
+        run: bash scripts/fuzz.sh
       - name: Upload crash artifacts
         if: failure()
         uses: actions/upload-artifact@v4

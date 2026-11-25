@@ -73,10 +73,7 @@ pub fn sample_packed(len: usize, cpb: usize) -> Sample {
                 name: "q",
                 values: Values::U8((0..bytes).map(|i| (i * 37 % 251) as u8).collect()),
             },
-            Buf {
-                name: "y",
-                values: Values::F32(vec![0.0; len]),
-            },
+            Buf::f32("y", vec![0.0; len]),
         ],
     }
 }
@@ -283,7 +280,7 @@ pub mod dequant_i4 {
 pub mod i8 {
     //! 8 位反量化：`y[n] = scale * (q[n] - zero)`。
     use crate::dequant;
-    use crate::model::{Buf, Cost, Sample, ShapeCtx, Values, cost_n};
+    use crate::model::{Buf, Cost, Sample, ShapeCtx, cost_n};
     use diagnostic::{Code, Error};
     use tensor::View;
 
@@ -314,14 +311,8 @@ pub mod i8 {
             n: len,
             scalars: vec![("N", len as i64)],
             bufs: vec![
-                Buf {
-                    name: "q",
-                    values: Values::F32((0..len).map(|i| (i % 16) as f32).collect()),
-                },
-                Buf {
-                    name: "y",
-                    values: Values::F32(vec![0.0; len]),
-                },
+                Buf::f32("q", (0..len).map(|i| (i % 16) as f32).collect()),
+                Buf::f32("y", vec![0.0; len]),
             ],
         }
     }

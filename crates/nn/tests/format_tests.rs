@@ -13,6 +13,24 @@ fn every_element_type_maps_to_a_format_and_back() {
     );
 }
 
+#[test]
+fn every_weight_format_has_an_explicit_dtype() {
+    let formats = [
+        (WeightFormat::F32, DType::F32),
+        (WeightFormat::F16, DType::F16),
+        (WeightFormat::Bf16, DType::BF16),
+        (WeightFormat::I8, DType::I8),
+        (WeightFormat::Packed2, DType::U2),
+        (WeightFormat::Packed4, DType::U4),
+        (WeightFormat::Int2 { group: 32 }, DType::U2),
+        (WeightFormat::Int4 { group: 32 }, DType::U4),
+        (WeightFormat::Int8 { group: 32 }, DType::I8),
+    ];
+    for (format, dtype) in formats {
+        assert_eq!(format.dtype(), dtype, "{format} 的存储类型必须显式声明");
+    }
+}
+
 /// 一档精度的三件事实：绑定的算子名、按分组拼格式的构造器、默认格式。
 type Rung = (&'static str, fn(usize) -> WeightFormat, WeightFormat);
 

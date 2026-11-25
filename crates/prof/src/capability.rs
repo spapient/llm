@@ -49,6 +49,45 @@ pub fn supports(skeleton: Skeleton, dtype: DType) -> bool {
         .any(|cap| cap.skeleton == skeleton && cap.dtype == dtype)
 }
 
+/// 一副骨架族的编译期默认派发几何：网格与线程块各三轴。
+///
+/// 形状相关的网格大小待 G2 几何通道按 `extent` 实算；当前只是族级保守占位种子。
+/// 它不参与 tile 打分、不改 `select` 的声明顺序（ADR 0056 G4/G5），真机计时择优（autotune）
+/// 仍 opt-in 留 G5。未落地的族（`Scan`）不登记，与 [`CAPABILITIES`] 同口径。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct GeometrySeed {
+    /// 骨架族标签。
+    pub skeleton: Skeleton,
+    /// 网格三轴占位；按形状展开的网格推导待几何通道接入。
+    pub grid: [u32; 3],
+    /// 线程块三轴占位。
+    pub block: [u32; 3],
+}
+
+/// 族级默认几何种子行表：顺序无关，[`geometry_seed`] 全表扫描；列表即查表，不引入索引结构。
+pub const GEOMETRY_SEEDS: &[GeometrySeed] = &[
+    GeometrySeed {
+        skeleton: Skeleton::Elementwise,
+        grid: [1, 1, 1],
+        block: [256, 1, 1],
+    },
+    GeometrySeed {
+        skeleton: Skeleton::Reduce,
+        grid: [1, 1, 1],
+        block: [256, 1, 1],
+    },
+    GeometrySeed {
+        skeleton: Skeleton::Gemm,
+        grid: [1, 1, 1],
+        block: [16, 16, 1],
+    },
+];
+
+/// 取一族的默认几何种子；未登记族返回 `None`，不猜一个泛化块大小。
+pub fn geometry_seed(skeleton: Skeleton) -> Option<&'static GeometrySeed> {
+    GEOMETRY_SEEDS.iter().find(|seed| seed.skeleton == skeleton)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,5 +120,30 @@ mod tests {
                 cap.skeleton.as_str()
             );
         }
+    }
+
+    #[test]
+    fn geometry_seed_keys_stay_within_the_closed_set() {
+        for seed in GEOMETRY_SEEDS {
+            assert!(
+                Skeleton::ALL.contains(&seed.skeleton),
+                "种子表骨架 {} 不在闭集内",
+                seed.skeleton.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn landed_families_have_a_default_seed_scan_does_not() {
+        for skeleton in [Skeleton::Elementwise, Skeleton::Reduce, Skeleton::Gemm] {
+            assert!(
+                geometry_seed(skeleton).is_some(),
+                "已落地族 {skeleton:?} 应有默认几何种子"
+            );
+        }
+        assert!(
+            geometry_seed(Skeleton::Scan).is_none(),
+            "Scan 族尚未落地，不登记占位几何"
+        );
     }
 }

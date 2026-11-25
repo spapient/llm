@@ -3,35 +3,19 @@
 //! 生产文件只留执行与判据，用例集中于此。
 
 use super::*;
+use crate::fixtures::{catalogue, profile};
 use crate::toolchain;
-use cutile::builtin::Catalogue;
 
 fn dirs() -> Dirs {
     Dirs::under(std::env::temp_dir().join("cutile-witness-tests"))
 }
 
-fn cpu() -> Profile {
-    Catalogue::try_builtin()
-        .expect("内置数据")
-        .profile("cpu")
-        .cloned()
-        .expect("cpu 档案")
-}
-
-fn device(vendor: &str) -> Profile {
-    Catalogue::try_builtin()
-        .expect("内置数据")
-        .profile(vendor)
-        .cloned()
-        .unwrap_or_else(|| panic!("{vendor} 档案"))
-}
-
 #[test]
-fn every_declared_witness_executes_on_the_device() {
+fn every_declared_witness_executes_on_the_profile() {
     if toolchain::skip_without_host_compiler() {
         return;
     }
-    let profile = cpu();
+    let profile = profile("cpu");
     let declared = profile.provides.len();
     let runs = run_all(&profile, &dirs()).expect("见证必须全部通过");
     assert_eq!(runs.len(), declared, "每条已声明的见证都要有一条执行结果");
@@ -47,7 +31,7 @@ fn a_wrong_expectation_is_a_failure() {
     if toolchain::skip_without_host_compiler() {
         return;
     }
-    let mut profile = cpu();
+    let mut profile = profile("cpu");
     profile.provides[0].witness.as_mut().expect("有见证").expect[0] += 1.0;
     let error = run_all(&profile, &dirs()).expect_err("期望值不对必须失败");
     assert_eq!(error.code(), Code::Invalid);
@@ -59,7 +43,7 @@ fn a_witness_must_write_exactly_the_declared_number_of_values() {
     if toolchain::skip_without_host_compiler() {
         return;
     }
-    let mut profile = cpu();
+    let mut profile = profile("cpu");
     profile.provides[0]
         .witness
         .as_mut()
@@ -73,7 +57,7 @@ fn a_witness_must_write_exactly_the_declared_number_of_values() {
 
 #[test]
 fn a_missing_function_is_a_failure_without_compiling() {
-    let mut profile = cpu();
+    let mut profile = profile("cpu");
     profile.provides[0].witness.as_mut().expect("有见证").func = "witness_absent".to_string();
     let error = run_all(&profile, &dirs()).expect_err("函数不存在必须失败");
     assert_eq!(error.code(), Code::Invalid);
@@ -86,7 +70,7 @@ fn every_declared_witness_is_executed_once_in_the_strongest_scope() {
     if toolchain::skip_without_host_compiler() {
         return;
     }
-    let catalogue = Catalogue::try_builtin().expect("内置数据");
+    let catalogue = catalogue();
     for profile in catalogue.profiles() {
         let vendor = profile.meta.vendor.as_str();
         let declared = profile
@@ -120,13 +104,40 @@ fn every_declared_witness_is_executed_once_in_the_strongest_scope() {
     }
 }
 
+#[cfg(windows)]
+#[test]
+fn every_intel_witness_runs_on_uhd750() {
+    crate::backend::install();
+    let profile = profile("intel");
+    assert!(device_available(&profile), "必须探测到 Intel UHD 750");
+    let runs = run_all(&profile, &dirs()).expect("17 条 Intel 见证必须全部通过");
+    assert_eq!(runs.len(), 17);
+    assert!(runs.iter().all(|run| run.scope == Scope::Device));
+    assert!(runs.iter().all(|run| run.max_rel_err <= 1e-5), "{runs:?}");
+}
+
+#[cfg(windows)]
+#[test]
+fn a_wrong_intel_expectation_fails_on_the_profile() {
+    crate::backend::install();
+    let mut profile = profile("intel");
+    profile.provides[0]
+        .witness
+        .as_mut()
+        .expect("DP4A 见证")
+        .expect[0] += 1.0;
+    let error = run_all(&profile, &dirs()).expect_err("错误期望必须在真机对拍时失败");
+    assert_eq!(error.code(), Code::Invalid);
+    assert!(error.to_string().contains("witness_dot_i8"), "{error}");
+}
+
 /// 低等级声明同样在本机跑一遍，`grade` 才不会两头都不成立。
 #[test]
 fn a_cpu_l0_witness_is_executed_on_the_device_too() {
     if toolchain::skip_without_host_compiler() {
         return;
     }
-    let profile = cpu();
+    let profile = profile("cpu");
     let unverified = profile
         .provides
         .iter()
@@ -150,7 +161,7 @@ fn the_self_check_ignores_the_device_preamble_and_flags() {
         return;
     }
     // 用本机必然缺席的设备（ascend）：自检只在设备缺席时跑，设备在场时 `run_all` 已更严格地覆盖。
-    let mut profile = device("ascend");
+    let mut profile = profile("ascend");
     profile.preamble = "#error 设备专属前置声明\n".to_string();
     profile.flags = vec!["-algorithm=sm_100a".to_string(), "-nocudainc".to_string()];
     let runs = self_check(&profile, &dirs()).expect("自检不得使用设备 preamble/flags");
@@ -162,7 +173,7 @@ fn a_wrong_expectation_fails_even_the_host_self_check() {
     if toolchain::skip_without_host_compiler() {
         return;
     }
-    let mut profile = device("ascend");
+    let mut profile = profile("ascend");
     profile.provides[0].witness.as_mut().expect("有见证").expect[0] += 1.0;
     let error = self_check(&profile, &dirs()).expect_err("期望值不对必须失败");
     assert!(error.to_string().contains("见证自检不成立"), "{error}");
@@ -172,7 +183,7 @@ fn a_wrong_expectation_fails_even_the_host_self_check() {
 #[test]
 fn every_accelerator_witness_parses_in_its_own_language() {
     for (vendor, selector) in [("nvidia", "-x cuda"), ("intel", "-x cl")] {
-        let profile = device(vendor);
+        let profile = profile(vendor);
         let declared = profile
             .provides
             .iter()
@@ -189,7 +200,7 @@ fn every_accelerator_witness_parses_in_its_own_language() {
             other => panic!("{vendor} 的见证没有在 `{selector}` 里过一遍：{other}"),
         }
     }
-    match language_gate(&device("ascend"), &dirs()) {
+    match language_gate(&profile("ascend"), &dirs()) {
         LanguageGate::Absent { reason } => assert!(
             reason.contains("ascendc"),
             "缺席也要说清是哪门语言：{reason}"
@@ -200,8 +211,11 @@ fn every_accelerator_witness_parses_in_its_own_language() {
 
 #[test]
 fn a_witness_that_runs_on_the_device_needs_no_language_gate() {
-    assert_eq!(language_gate(&cpu(), &dirs()), LanguageGate::Covered);
-    let metal = device("metal");
+    assert_eq!(
+        language_gate(&profile("cpu"), &dirs()),
+        LanguageGate::Covered
+    );
+    let metal = profile("metal");
     assert_eq!(
         matches!(language_gate(&metal, &dirs()), LanguageGate::Covered),
         device_available(&metal),

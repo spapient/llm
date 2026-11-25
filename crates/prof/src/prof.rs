@@ -1,14 +1,13 @@
 //! 档案层：设备指纹、参数化能力供给、证据等级与字段校验（cutile README §5.3、§11.2）。
-/// schema 的词汇表：`schema` / `provide` / `witness` 这些同层文件用 `use crate::prof::*`
-/// 取到它，所以是 `pub(crate) use` 而不是 `use`——这里就是本 crate 的唯一词汇表入口。
+/// 同层校验与测试共用的词汇表入口。
 pub(crate) use crate::atom::{
-    Attr, AttrKey, Closed, Grade, Need, Prim, Provide, Space, SpaceSet, Span, Witness,
+    Attr, AttrKey, DType, Grade, Need, Prim, Provide, Set, Space, SpaceSet, Span, Witness,
 };
+use crate::decl::AttrView;
 use core::fmt;
-pub(crate) use diagnostic::data::{Table, Value};
 use diagnostic::{Code, Error};
 use std::collections::BTreeMap;
-use std::sync::OnceLock;
+use std::sync::LazyLock;
 
 crate::closed_enum! {
     /// 输出语言闭集（cutile README §5.4 的 `emit` 列）。设备与输出语言是两个维度：
@@ -78,6 +77,29 @@ pub enum MatchRule {
     OneOf(Vec<MatchRule>),
 }
 impl MatchRule {
+    /// 解析规则文本：`contains:` → 择一 → 集合 → 区间 → 精确逐级降级。
+    pub fn parse(text: &str) -> Self {
+        let text = text.trim();
+        if let Some(tokens) = text.strip_prefix("contains:") {
+            return Self::Contains(split(tokens, '|'));
+        }
+        if text.contains('|') {
+            return Self::OneOf(text.split('|').map(Self::parse).collect());
+        }
+        Self::parse_narrow(text)
+    }
+
+    fn parse_narrow(text: &str) -> Self {
+        if let Some((base, members)) = brace_set(text) {
+            return Self::Set { base, members };
+        }
+        if let Some((lo, hi)) = text.split_once("..") {
+            let (lo, hi) = (lo.trim().to_string(), hi.trim().to_string());
+            return Self::Range { lo, hi };
+        }
+        Self::Exact(text.to_string())
+    }
+
     /// 是否匹配一个实际探测值：只比较一个键的取值，不判断其他规则、也不看档案。
     pub fn matches(&self, actual: &str) -> bool {
         match self {
@@ -89,6 +111,25 @@ impl MatchRule {
         }
     }
 }
+
+/// 花括号集合语法 `base{a,b}`：括号必须成对且有序，否则退回区间 / 精确。
+fn brace_set(text: &str) -> Option<(String, Vec<String>)> {
+    let (open, close) = (text.find('{')?, text.rfind('}')?);
+    if open >= close {
+        return None;
+    }
+    let base = text[..open].trim().to_string();
+    Some((base, split(&text[open + 1..close], ',')))
+}
+
+fn split(text: &str, delimiter: char) -> Vec<String> {
+    text.split(delimiter)
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 pub(crate) fn set_matches(base: &str, members: &[String], actual: &str) -> bool {
     let hit = |member: &String| actual.contains(member.as_str());
     actual.starts_with(base) && members.iter().all(hit)
@@ -185,7 +226,7 @@ impl fmt::Display for Detected {
     }
 }
 /// 存储容量与 bank 数。
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Mem {
     /// 片上快速存储字节数。
     pub fast_bytes: u64,
@@ -195,7 +236,7 @@ pub struct Mem {
     pub reg_bytes: u64,
 }
 /// SIMT 执行模型参数（CPU 也有一份，`group = 1`）。
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Simt {
     /// 子组宽度。
     pub group: u32,
@@ -356,91 +397,38 @@ pub(crate) fn witness_error(provide: &Provide, detail: impl Into<String>) -> Pro
         detail: detail.into(),
     }
 }
-/// 字段路径的惰性写法。一次 `Profile::parse` 会走几十条供给、每条十几个字段，
-/// 成功路径上不该为诊断拼任何字符串——`format!` 只在真出错时才发生。
+/// 字段路径按需渲染；成功路径不为诊断拼字符串。
 #[derive(Clone, Copy)]
 pub(crate) enum Field<'a> {
-    /// `provides[<下标>].<key>`；`witness` 为真时多一层 `witness.`。
-    Provide {
-        idx: usize,
-        key: &'a str,
-        witness: bool,
-    },
-    /// `provides[<原语名>].<key>`：校验按原语而不是下标报位置。
+    /// 按供给下标定位。
+    Provide { idx: usize, key: &'a str },
+    /// 按原语定位，供跨供给校验使用。
     Prim { prim: Prim, key: &'a str },
 }
+
 impl fmt::Display for Field<'_> {
     fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            Self::Provide {
-                idx,
-                key,
-                witness: true,
-            } => write!(out, "provides[{idx}].witness.{key}"),
-            Self::Provide {
-                idx,
-                key,
-                witness: false,
-            } => write!(out, "provides[{idx}].{key}"),
+            Self::Provide { idx, key } => write!(out, "provides[{idx}].{key}"),
             Self::Prim { prim, key } => write!(out, "provides[{prim}].{key}"),
         }
     }
 }
+
 pub(crate) const fn at(idx: usize, key: &str) -> Field<'_> {
-    Field::Provide {
-        idx,
-        key,
-        witness: false,
-    }
+    Field::Provide { idx, key }
 }
-pub(crate) const fn witness_at(idx: usize, key: &str) -> Field<'_> {
-    Field::Provide {
-        idx,
-        key,
-        witness: true,
-    }
-}
+
 pub(crate) const fn prim_at(prim: Prim, key: &str) -> Field<'_> {
     Field::Prim { prim, key }
 }
-pub(crate) fn text<'a>(
-    table: &'a Table,
-    key: &str,
-    field: impl fmt::Display,
-) -> Result<&'a str, ProfileError> {
-    table.string(key).ok_or_else(|| missing(field))
-}
-pub(crate) fn or_dash(table: &Table, key: &str) -> String {
-    table.string(key).unwrap_or("-").to_string()
-}
-/// 逐项解析一张表的每个键值对：解析段里所有"按键"段落共用这一种形状。
-pub(crate) fn entries<T>(
-    table: &Table,
-    each: impl Fn(&str, &Value) -> Result<T, ProfileError>,
-) -> Result<Vec<T>, ProfileError> {
-    table.entries().iter().map(|(k, v)| each(k, v)).collect()
-}
-/// 标量的字符串渲染：字符串原样，整数/浮点/布尔按十进制写；数组与表不是标量，返回 `None`
-/// （错误由调用方按自己的字段路径给）。档案层与声明层的标量通道都走这一条。
-pub fn scalar_texts(value: &Value) -> Option<Vec<String>> {
-    match value {
-        Value::Str(text) => Some(vec![text.clone()]),
-        Value::Int(number) => Some(vec![number.to_string()]),
-        Value::Float(number) => Some(vec![number.to_string()]),
-        Value::Bool(flag) => Some(vec![flag.to_string()]),
-        _ => None,
-    }
-}
-/// 主维度只接受区间字符串。
-pub(crate) const EXTENT_DETAIL: &str = "主维度只能是区间字符串（如 `<=4096`）";
-/// `n` / `k` 只接受区间字符串。
-pub(crate) const AXIS_DETAIL: &str = "只能是区间字符串（如 `16`、`16..64`）";
-/// `[units.<name>]` 的取值必须是表。
-pub(crate) const UNIT_DETAIL: &str = "只接受 `[units.<name>]` 形式的表";
-/// `witness` 必须是内联表。
-pub(crate) const WITNESS_DETAIL: &str =
-    "必须是内联表 `{ file, func, expect }`：没有入口函数与期望值的见证无法执行";
+
 impl Profile {
+    /// 从编译期强类型视图构造档案；保留字段校验与既有入口名。
+    pub fn parse(view: &crate::prof::ProfileView) -> Result<Self, ProfileError> {
+        view.into_owned()
+    }
+
     /// 语义存储名映射到物理名。
     pub fn physical_space(&self, space: Space) -> Option<&str> {
         let found = self.spaces.iter().find(|pair| pair.0 == space);
@@ -468,16 +456,15 @@ impl Profile {
     }
 }
 
-/// 解析全部内置档案；构建期已过校验，解析失败只可能是表结构漂移，在此过滤掉。
-pub fn builtin_profiles() -> &'static [Profile] {
-    static PROFILES: OnceLock<Vec<Profile>> = OnceLock::new();
-    PROFILES.get_or_init(|| {
-        crate::names()
-            .iter()
-            .filter_map(|name| crate::embedded(name))
-            .filter_map(|table| Profile::parse(table).ok())
-            .collect()
-    })
+/// 全部内置档案：静态视图只在首次使用时 owned 化并缓存，成功与失败都可重读。
+///
+/// # Errors
+///
+/// 任一生成档案违反字段约束时返回对应错误，不跳过设备，也不在生产路径 panic。
+pub fn builtin_profiles() -> Result<&'static [Profile], ProfileError> {
+    static PROFILES: LazyLock<Result<Vec<Profile>, ProfileError>> =
+        LazyLock::new(|| crate::PROFILE_VIEWS.iter().map(Profile::parse).collect());
+    PROFILES.as_ref().map(Vec::as_slice).map_err(Clone::clone)
 }
 
 /// 一趟扫描的结果：最高具体度、它**第一个**出现在哪、**最后一个**出现在哪。
@@ -542,3 +529,194 @@ pub use crate::witness::WitnessLookup;
 #[cfg(test)]
 #[path = "../tests/prof.rs"]
 mod tests;
+
+/// 一条能力供给的静态视图。
+#[derive(Debug, Clone, Copy)]
+pub struct ProvideView {
+    /// 原语。
+    pub prim: Prim,
+    /// 实现名。
+    pub imp: &'static str,
+    /// 主维度区间原文；缺省表示不限。
+    pub extent: Option<&'static str>,
+    /// `n` 区间原文。
+    pub n: Option<&'static str>,
+    /// `k` 区间原文。
+    pub k: Option<&'static str>,
+    /// 数据类型集合。
+    pub dt: &'static [DType],
+    /// 存储空间集合。
+    pub space: &'static [Space],
+    /// 证据等级。
+    pub grade: Grade,
+    /// 见证：`(文件, 入口, 期望输出)`。
+    pub witness: Option<(&'static str, &'static str, &'static [f32])>,
+    /// 枚举型属性。
+    pub attrs: &'static [AttrView],
+}
+
+impl ProvideView {
+    /// 转成现有供给类型；区间仍由唯一 [`Span::parse`] 校验。
+    pub fn into_owned(self) -> Result<Provide, ProfileError> {
+        Ok(Provide {
+            prim: self.prim,
+            extent: view_span(self.extent)?,
+            n: view_span(self.n)?,
+            k: view_span(self.k)?,
+            dt: Set::of(self.dt.iter().copied()),
+            space: Set::of(self.space.iter().copied()),
+            attrs: self.attrs.iter().map(|attr| attr.into_owned()).collect(),
+            impl_name: self.imp.to_string(),
+            grade: self.grade,
+            witness: self.witness.map(|(file, func, expect)| Witness {
+                file: file.to_string(),
+                func: func.to_string(),
+                expect: expect.to_vec(),
+            }),
+        })
+    }
+}
+
+/// 可选区间仍走唯一区间解析器，拒绝手工构造的非法视图。
+fn view_span(text: Option<&str>) -> Result<Span, ProfileError> {
+    text.map(|text| Span::parse(text).map_err(|error| bad("provides", error.message())))
+        .transpose()
+        .map(|span| span.unwrap_or_else(Span::any))
+}
+
+/// 一份设备档案的强类型只读视图，不包含 `String`、`Vec` 或通用 `Table`。
+#[derive(Debug, Clone, Copy)]
+pub struct ProfileView {
+    /// 厂商键。
+    pub vendor: &'static str,
+    /// 具体型号键。
+    pub id: &'static str,
+    /// 输出语言。
+    pub emit: Emit,
+    /// 编译工具名。
+    pub tools: &'static str,
+    /// 登记的工具版本。
+    pub tool_ver: &'static str,
+    /// 上次核对日期。
+    pub checked: &'static str,
+    /// 指纹 `(键, 规则原文)`。
+    pub fingerprint: &'static [(&'static str, &'static str)],
+    /// 语义存储到物理名的映射。
+    pub spaces: &'static [(Space, &'static str)],
+    /// 容量与 bank。
+    pub mem: Mem,
+    /// SIMT 参数。
+    pub simt: Simt,
+    /// 执行单元 `(名字, 可访问空间)`。
+    pub units: &'static [(&'static str, &'static [Space])],
+    /// 能力供给。
+    pub provides: &'static [ProvideView],
+    /// f32 峰值 `(数值, 推导式)`。
+    pub flops_f32: Option<(f64, &'static str)>,
+    /// 带宽 `(数值, 推导式)`。
+    pub bw: Option<(f64, &'static str)>,
+    /// 编译参数。
+    pub flags: &'static [&'static str],
+    /// 源文件前置声明。
+    pub preamble: &'static str,
+    /// 工具链头文件垫片 `(文件名, 内容)`。
+    pub headers: &'static [(&'static str, &'static str)],
+}
+
+impl ProfileView {
+    /// 转成现有档案类型；保留缺段、三级存储与峰值推导式校验。
+    pub fn into_owned(self) -> Result<Profile, ProfileError> {
+        self.check()?;
+        Ok(Profile {
+            meta: Meta {
+                vendor: self.vendor.to_string(),
+                id: self.id.to_string(),
+                emit: self.emit,
+                tool: self.tools.to_string(),
+                tool_ver: self.tool_ver.to_string(),
+                checked: self.checked.to_string(),
+            },
+            fingerprint: self
+                .fingerprint
+                .iter()
+                .map(|(key, rule)| (key.to_string(), MatchRule::parse(rule)))
+                .collect(),
+            spaces: self
+                .spaces
+                .iter()
+                .map(|(space, name)| (*space, name.to_string()))
+                .collect(),
+            mem: self.mem,
+            simt: self.simt,
+            units: self
+                .units
+                .iter()
+                .map(|(name, space)| Unit {
+                    name: name.to_string(),
+                    space: Set::of(space.iter().copied()),
+                })
+                .collect(),
+            provides: self
+                .provides
+                .iter()
+                .map(|provide| provide.into_owned())
+                .collect::<Result<_, _>>()?,
+            peak: Peak {
+                flops_f32: self
+                    .flops_f32
+                    .map(|constant| constant_owned("flops_f32", constant))
+                    .transpose()?,
+                bw: self
+                    .bw
+                    .map(|constant| constant_owned("bw", constant))
+                    .transpose()?,
+            },
+            flags: self.flags.iter().map(ToString::to_string).collect(),
+            preamble: self.preamble.to_string(),
+            headers: self
+                .headers
+                .iter()
+                .map(|(name, text)| (name.to_string(), text.to_string()))
+                .collect(),
+        })
+    }
+
+    /// 与旧表解析入口一致的最小结构约束。
+    fn check(&self) -> Result<(), ProfileError> {
+        if self.fingerprint.is_empty() {
+            return Err(missing("fingerprint.match"));
+        }
+        if self.provides.is_empty() {
+            return Err(missing("provides"));
+        }
+        for space in Space::ALL.iter().copied() {
+            if !self.spaces.iter().any(|(have, _)| *have == space) {
+                return Err(missing(format!(
+                    "space.{}（三级存储的语义名必须齐全）",
+                    space.as_str()
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// 峰值常数：数值必须与推导式在既有相对误差预算内一致。
+fn constant_owned(field: &str, (value, src): (f64, &str)) -> Result<Constant, ProfileError> {
+    let derived = crate::einsum::formula::eval_expression(src).map_err(|error| {
+        bad(
+            format!("peak.{field}.src"),
+            format!("推导式 `{src}` 求值失败：{}", error.message()),
+        )
+    })?;
+    if (derived - value).abs() > value.abs().max(1.0) * 1e-6 {
+        return Err(bad(
+            format!("peak.{field}.src"),
+            format!("推导式 `{src}` = {derived:e}，与 value = {value:e} 不一致"),
+        ));
+    }
+    Ok(Constant {
+        value,
+        src: src.to_string(),
+    })
+}

@@ -22,6 +22,8 @@ workspace = true
 [build-dependencies]
 # 构建期共享内核（读取/生成）在 diagnostic 的 build feature 下，运行期不引入 toml。
 diagnostic = { path = "../diagnostic", package = "llm-diagnostic", features = ["build"] }
+# 生成器按原生 TOML 表/值取字段，类型在 build script 内可见。
+toml = { workspace = true }
 
 [[test]]
 name = "gate"

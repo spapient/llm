@@ -225,12 +225,17 @@ macro_rules! kernel_adapter {
             )
         }
     };
+    (gemm_inputs!($run:ident, $dtype:ty, $div:expr, $inputs:expr, $output:expr)) => {{
+        let (a, b) = <($dtype, $dtype) as Inputs>::unpack($inputs, stringify!($run))?;
+        let out = output_slice::<f32>(stringify!($run), $output)?;
+        let m = a.len() / $div;
+        let rows = batches(stringify!($run), out.len(), m)?;
+        (a, b, out, m, rows)
+    }};
     (gemm!($run:ident, f32, $div:expr)) => {
         fn $run(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
-            let (a, b) = <(f32, f32) as Inputs>::unpack(inputs, stringify!($run))?;
-            let out = output_slice::<f32>(stringify!($run), output)?;
-            let m = a.len() / $div;
-            let rows = batches(stringify!($run), out.len(), m)?;
+            let (a, b, out, m, rows) =
+                kernel_adapter!(gemm_inputs!($run, f32, $div, inputs, output));
             nn::$run::forward(
                 tensor::View::matrix(m, $div, a)?,
                 tensor::View::matrix($div, rows, b)?, out,
@@ -239,10 +244,8 @@ macro_rules! kernel_adapter {
     };
     (gemm!($run:ident, u8, $div:expr)) => {
         fn $run(inputs: &[View<'_>], output: &mut ViewMut<'_>) -> Result<()> {
-            let (a, b) = <(u8, u8) as Inputs>::unpack(inputs, stringify!($run))?;
-            let out = output_slice::<f32>(stringify!($run), output)?;
-            let m = a.len() / $div;
-            let rows = batches(stringify!($run), out.len(), m)?;
+            let (a, b, out, m, rows) =
+                kernel_adapter!(gemm_inputs!($run, u8, $div, inputs, output));
             nn::$run::forward(a, b, m, rows, out)
         }
     };
@@ -276,6 +279,7 @@ kernels!(
     unary!(abs_f32 => abs_f32),
     unary!(adaptive_pool_f32 => adaptive_pool),
     binary!(add_f32),
+    binary!(add_f32x4),
     attention!(attention_f32 => attention_paths, nn::conv::attention::forward),
     unary!(avg_pool2d_f32 => avg_pool2d),
     norm!(batch_norm_f32 => batch_norm),

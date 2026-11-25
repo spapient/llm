@@ -195,8 +195,19 @@ macro_rules! formulas {
     };
 }
 
+/// 实例几何目录项：非捕获闭包直接 coerce 为公式函数指针。
+///
+/// 定义必须先于 [`FORMULAS`]（`macro_rules!` 按文本顺序解析）。
+macro_rules! instance_backward {
+    ($op:literal) => {
+        |ctx: Ctx<'_>| -> Result<Vec<Vec<f32>>> {
+            ctx.instance($op)?.backward(ctx.inputs, ctx.incoming)
+        }
+    };
+}
+
 const FORMULAS: [Entry; 40] = formulas![
-    "adaptive_pool_f32" => adaptive_pool,
+    "adaptive_pool_f32" => instance_backward!("adaptive_pool_f32"),
     "add_f32" => passthrough,
     "residual_add_f32" => passthrough,
     "mul_f32" => mul,
@@ -207,8 +218,8 @@ const FORMULAS: [Entry; 40] = formulas![
     "log_f32" => |ctx| unary(ctx, |g, x| g / x),
     "min_f32" => min,
     "max_f32" => max,
-    "max_pool1d_f32" => max_pool1d,
-    "max_pool2d_f32" => max_pool2d,
+    "max_pool1d_f32" => instance_backward!("max_pool1d_f32"),
+    "max_pool2d_f32" => instance_backward!("max_pool2d_f32"),
     "silu_f32" => |ctx| unary(ctx, |g, v| {
         let sigmoid = 1.0 / (1.0 + (-v).exp());
         g * (sigmoid + v * sigmoid * (1.0 - sigmoid))
@@ -219,9 +230,9 @@ const FORMULAS: [Entry; 40] = formulas![
         let inside = (v / 6.0 + 0.5) > 0.0 && (v / 6.0 + 0.5) < 1.0;
         g * if inside { 1.0 / 6.0 } else { 0.0 }
     }),
-    "instance_norm_f32" => instance_norm,
-    "interpolate_f32" => interpolate,
-    "layer_norm_f32" => layer_norm,
+    "instance_norm_f32" => instance_backward!("instance_norm_f32"),
+    "interpolate_f32" => instance_backward!("interpolate_f32"),
+    "layer_norm_f32" => instance_backward!("layer_norm_f32"),
     "leaky_relu_f32" => |ctx| unary(ctx, |g, v| {
         g * if v >= 0.0 { 1.0 } else { nn::leaky_relu_f32::SLOPE }
     }),
@@ -232,16 +243,16 @@ const FORMULAS: [Entry; 40] = formulas![
     "reduce_max_f32" => reduce_max,
     "softmax_f32" => softmax,
     "gemv_f32" => gemv,
-    "group_norm_f32" => group_norm,
+    "group_norm_f32" => instance_backward!("group_norm_f32"),
     "gemm_f32" => gemm,
     "embed_f32" => embed,
     "rmsnorm_f32" => rmsnorm,
     "rope_f32" => rope,
     "attention_f32" => attention,
     "latent_attention_f32" => latent_attention,
-    "avg_pool2d_f32" => avg_pool2d,
-    "batch_norm_f32" => batch_norm,
-    "conv2d_f32" => conv2d,
+    "avg_pool2d_f32" => instance_backward!("avg_pool2d_f32"),
+    "batch_norm_f32" => instance_backward!("batch_norm_f32"),
+    "conv2d_f32" => instance_backward!("conv2d_f32"),
     "flash_attention_f32" => attention,
     "decode_attention_f32" => decode_attention,
     "decode_flash_attention_f32" => decode_attention,
@@ -250,23 +261,27 @@ const FORMULAS: [Entry; 40] = formulas![
 /// 编译期闭合：公式目录与 [`nn::registry::REGISTRY`] 的 `differentiable` 标记一一对应。
 const _: () = formulas_cover(&FORMULAS, &nn::registry::REGISTRY);
 
-/// 双向互锁：可微算子缺公式、公式指向不可微/未注册算子、或公式重复，都是编译错误。
+/// 双向覆盖且总数相等即构成一一对应，因此也排除重复公式。
 const fn formulas_cover(formulas: &[Entry], registry: &[prof::catalogue::Registration]) {
     let mut i = 0;
+    let mut expected = 0;
     while i < registry.len() {
-        assert!(
-            !registry[i].differentiable || has_formula(formulas, registry[i].name),
-            "存在标记为可微却缺少反向公式的算子"
-        );
+        if registry[i].differentiable {
+            expected += 1;
+            assert!(
+                has_formula(formulas, registry[i].name),
+                "可微算子缺少反向公式"
+            );
+        }
         i += 1;
     }
+    assert!(expected == formulas.len(), "反向公式数与可微算子数不符");
     let mut j = 0;
     while j < formulas.len() {
         assert!(
             differentiable(registry, formulas[j].op),
-            "存在反向公式指向不可微或未注册的算子"
+            "公式指向不可微或未注册算子"
         );
-        assert!(!duplicate(formulas, j), "存在重复登记的反向公式");
         j += 1;
     }
 }
@@ -295,18 +310,6 @@ const fn differentiable(registry: &[prof::catalogue::Registration], name: &str) 
     false
 }
 
-/// 公式目录第 `at` 条之前是否已登记同名算子。
-const fn duplicate(formulas: &[Entry], at: usize) -> bool {
-    let mut i = 0;
-    while i < at {
-        if same_str(formulas[i].op, formulas[at].op) {
-            return true;
-        }
-        i += 1;
-    }
-    false
-}
-
 /// 按算子名查公式；目录未登记即回 [`Code::Unsupported`]。
 fn lookup(op: &str) -> Result<Formula> {
     FORMULAS
@@ -317,28 +320,6 @@ fn lookup(op: &str) -> Result<Formula> {
 }
 
 // ---- 反向公式表：40 条解析公式与共享数值助手 ----
-
-/// 经典算子的反向公式：几何交给 Geometry，公式本身只剩"取实例、回传"。
-macro_rules! instance_backward {
-    ($($name:ident => $op:literal),* $(,)?) => {$(
-        fn $name(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
-            ctx.instance($op)?.backward(ctx.inputs, ctx.incoming)
-        }
-    )*};
-}
-
-instance_backward!(
-    max_pool1d => "max_pool1d_f32",
-    max_pool2d => "max_pool2d_f32",
-    avg_pool2d => "avg_pool2d_f32",
-    adaptive_pool => "adaptive_pool_f32",
-    interpolate => "interpolate_f32",
-    batch_norm => "batch_norm_f32",
-    conv2d => "conv2d_f32",
-    group_norm => "group_norm_f32",
-    instance_norm => "instance_norm_f32",
-    layer_norm => "layer_norm_f32",
-);
 
 /// y = a + b：两条路径都原样回传上游梯度。
 fn passthrough(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
@@ -573,59 +554,42 @@ fn rope(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
     Ok(vec![crate::kernel::rope_grad(&ctx.inputs[0], ctx.incoming)])
 }
 
-/// 自注意力（`attention_f32` / `flash_attention_f32` 共用）：返回 `[dq, dk, dv]`。
+/// 稠密注意力：查询与历史行数相同。
 fn attention(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
     let d = nn::conv::attention::MODEL.shape.1;
-    let s = divide(ctx.inputs[0].len(), d, "attention_f32")?;
-    let (dq, dk, dv) = attention_grad(attention_ctx(&ctx, d), s, s);
-    Ok(vec![dq, dk, dv])
+    let rows = rows_for_width(ctx.inputs[0].len(), d, "attention_f32")?;
+    Ok(attention_grad(attention_ctx(&ctx, d), rows, rows))
 }
 
-/// 潜空间注意力（`latent_attention_f32`）：唯一差别是**写宽比读宽窄**——`dO` 与 `dV` 按压缩宽度
-/// `d_c` 走，`dQ` / `dK` 仍按读宽 `W` 走。`d_c` 由上游梯度长度与查询行数反推，不额外声明。
+/// 潜空间注意力：读写宽解耦，写宽由上游梯度与查询行数反推。
 fn latent_attention(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
     let w = nn::conv::attention::latent::MODEL.shape.1;
-    let q_rows = divide(ctx.inputs[0].len(), w, "latent_attention_f32")?;
-    let hist = divide(ctx.inputs[1].len(), w, "latent_attention_f32")?;
-    let write = ctx.incoming.len() / q_rows.max(1);
+    let rows = rows_for_width(ctx.inputs[0].len(), w, "latent_attention_f32")?;
+    let hist = rows_for_width(ctx.inputs[1].len(), w, "latent_attention_f32")?;
     let mut view = attention_ctx(&ctx, w);
-    view.write = write;
-    let (dq, dk, dv) = attention_grad(view, q_rows, hist);
-    Ok(vec![dq, dk, dv])
+    view.write = ctx.incoming.len() / rows.max(1);
+    Ok(attention_grad(view, rows, hist))
 }
 
-/// decode 注意力（`decode_attention_f32` / `decode_flash_attention_f32` 共用）：查询行数与历史
-/// 行数解耦，返回 `[dq, dk, dv]`。
+/// decode 注意力：查询行数与历史行数解耦。
 fn decode_attention(ctx: Ctx<'_>) -> Result<Vec<Vec<f32>>> {
     let d = nn::conv::decode_attention::MODEL.shape.1;
-    let q_rows = divide(ctx.inputs[0].len(), d, "decode_attention_f32")?;
-    let hist = divide(ctx.inputs[1].len(), d, "decode_attention_f32")?;
-    let (dq, dk, dv) = attention_grad(attention_ctx(&ctx, d), q_rows, hist);
-    Ok(vec![dq, dk, dv])
+    let rows = rows_for_width(ctx.inputs[0].len(), d, "decode_attention_f32")?;
+    let hist = rows_for_width(ctx.inputs[1].len(), d, "decode_attention_f32")?;
+    Ok(attention_grad(attention_ctx(&ctx, d), rows, hist))
 }
 
-/// 行数派生：长度必须能被头宽整除，否则是装配口径问题。
-fn divide(len: usize, d: usize, op: &str) -> Result<usize> {
-    if d == 0 || !len.is_multiple_of(d) {
-        return Err(Error::new(
-            Code::Invalid,
-            format!("`{op}` 长度 {len} 不能按头宽 {d} 整除"),
-        )
-        .with(SITE));
-    }
-    Ok(len / d)
+/// 长度按行宽整除并返回行数；零宽或余数都是装配错误。
+fn rows_for_width(len: usize, width: usize, op: &str) -> Result<usize> {
+    validation_rules!(SITE;
+        width != 0 && len.is_multiple_of(width) => format!("`{op}` 长度 {len} 不能按行宽 {width} 整除"),
+    );
+    Ok(len / width)
 }
 
-/// `W[n,k]` 的行主序形状：`k` 由输入宽度给定，`n` 由权重长度整除推出；不整除是装配口径问题。
+/// `W[n,k]` 的行主序形状：列宽已知，行数由权重长度推出。
 fn matrix_shape(weight: &[f32], cols: usize) -> Result<(usize, usize)> {
-    if cols == 0 || !weight.len().is_multiple_of(cols) {
-        return Err(Error::new(
-            Code::Invalid,
-            format!("权重长度 {} 不能按输入宽度 {cols} 整除出行数", weight.len()),
-        )
-        .with(SITE));
-    }
-    Ok((weight.len() / cols, cols))
+    rows_for_width(weight.len(), cols, "权重").map(|rows| (rows, cols))
 }
 
 /// 把一段梯度整块累加进目标槽；长度已由调用方对齐。
@@ -684,19 +648,24 @@ struct AttentionRow {
 }
 
 /// 注意力反向本体：逐查询行算概率与分数梯度，再散射回 `dq` / `dk` / `dv`。
-fn attention_grad(
-    ctx: AttentionCtx<'_>,
-    q_rows: usize,
-    hist: usize,
-) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+fn attention_grad(ctx: AttentionCtx<'_>, q_rows: usize, hist: usize) -> Vec<Vec<f32>> {
     let mut dq = vec![0.0; q_rows * ctx.d];
     let mut dk = vec![0.0; hist * ctx.d];
     let mut dv = vec![0.0; hist * ctx.write];
     for i in 0..q_rows {
         let row = attention_row(&ctx, i, hist);
-        scatter(&row, &ctx, i, hist, &mut dq, &mut dk, &mut dv);
+        for j in 0..hist {
+            let s = row.ds[j] * ctx.scale;
+            for h in 0..ctx.write {
+                dv[j * ctx.write + h] += row.probs[j] * ctx.dout[i * ctx.write + h];
+            }
+            for h in 0..ctx.d {
+                dq[i * ctx.d + h] += s * ctx.k[j * ctx.d + h];
+                dk[j * ctx.d + h] += s * ctx.q[i * ctx.d + h];
+            }
+        }
     }
-    (dq, dk, dv)
+    vec![dq, dk, dv]
 }
 
 /// 一条查询行：`p = softmax(QKᵀ/√d)`、`dP = dO·V`、`dS = p·(dP − Σ p·dP)`。
@@ -752,43 +721,6 @@ fn score_grad_row(probs: &[f32], dp: &[f32]) -> Vec<f32> {
         .zip(probs)
         .map(|(d, p)| p * (d - weighted))
         .collect()
-}
-
-/// 把一条查询行的贡献散射进 `dq` / `dk` / `dv`。
-fn scatter(
-    row: &AttentionRow,
-    ctx: &AttentionCtx<'_>,
-    i: usize,
-    hist: usize,
-    dq: &mut [f32],
-    dk: &mut [f32],
-    dv: &mut [f32],
-) {
-    for j in 0..hist {
-        accumulate_row(row, ctx, i, j, dq, dk, dv);
-    }
-}
-
-/// 单点散射：`dV += p·dO`，`dQ += dS·k/√d`，`dK += dS·q/√d`。
-fn accumulate_row(
-    row: &AttentionRow,
-    ctx: &AttentionCtx<'_>,
-    i: usize,
-    j: usize,
-    dq: &mut [f32],
-    dk: &mut [f32],
-    dv: &mut [f32],
-) {
-    let s = row.ds[j] * ctx.scale;
-    let (i_write, j_write) = (i * ctx.write, j * ctx.write);
-    for h in 0..ctx.write {
-        dv[j_write + h] += row.probs[j] * ctx.dout[i_write + h];
-    }
-    let (i_read, j_read) = (i * ctx.d, j * ctx.d);
-    for h in 0..ctx.d {
-        dq[i_read + h] += s * ctx.k[j_read + h];
-        dk[j_read + h] += s * ctx.q[i_read + h];
-    }
 }
 
 #[cfg(test)]

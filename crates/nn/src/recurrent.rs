@@ -21,7 +21,7 @@
 use diagnostic::{Code, Error, Result};
 use tensor::Shape;
 
-use crate::{Bounds, BoundsResult, Contract, ContractSpec, spec_accessors};
+use crate::{Bounds, BoundsResult, Contract, ContractSpec, LayerGeometry, spec_accessors};
 
 /// 循环单元的门结构。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -349,7 +349,8 @@ impl Contract for Recurrent {
         let projections = self
             .projections()
             .try_fold(Bounds::ZERO, |total, (inp, out)| {
-                Bounds::of_op(Self::GEMV, inp, out).map(|cost| total.plus(cost))
+                Bounds::of_geometry(Self::GEMV, LayerGeometry::projection(inp, out))
+                    .map(|cost| total.plus(cost))
             })?;
         Ok(Some(projections.plus(self.activation_bound()?)))
     }
@@ -363,7 +364,7 @@ impl Recurrent {
             .activations()
             .iter()
             .try_fold(Bounds::ZERO, |total, (op, count)| {
-                let step = Bounds::of_ctx(op, self.hidden, 1)?;
+                let step = Bounds::of_geometry(op, LayerGeometry::axis(self.hidden))?;
                 Ok((0..count * self.dirs * self.layers).fold(total, |sum, _| sum.plus(step)))
             })
     }

@@ -39,6 +39,17 @@ int witness_dot(float *out) {
     return 1;
 }
 
+/* matmul_f32/cublas: 2×2 矩阵乘 {{1,2},{3,4}} × {{5,6},{7,8}} = {{19,22},{43,50}} */
+int witness_matmul_f32(float *out) {
+    const float a[4] = {1.0f, 2.0f, 3.0f, 4.0f};
+    const float b[4] = {5.0f, 6.0f, 7.0f, 8.0f};
+    out[0] = a[0] * b[0] + a[1] * b[2];
+    out[1] = a[0] * b[1] + a[1] * b[3];
+    out[2] = a[2] * b[0] + a[3] * b[2];
+    out[3] = a[2] * b[1] + a[3] * b[3];
+    return 4;
+}
+
 /* quant/lop3_i4: 0xF0 解包 + scale=0.5 → {(0-8)*0.5, (15-8)*0.5} = {-4.0, 3.5} */
 int witness_quant(float *out) {
     const unsigned char packed = 0xF0u;

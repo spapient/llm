@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 readme.workspace = true
-description = "Training loop state: borrowed token batches, learning-rate schedule, step records, resumable checkpoints and their byte format."
+description = "Training orchestration: borrowed batches, objectives, autograd buffers, optimizers, distributed synchronization and resumable session state."
 publish = false
 autotests = false
 

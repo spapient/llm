@@ -3,15 +3,10 @@
 //! [`Local`] 与 [`FileRemote`] 只负责镜像读写；归约、收集、广播和散布共享同一组泛型算法，
 //! 因此两种传输不会出现语义分叉。跨进程序列化协议固定为小端 `f32`。
 
-use core::ops::{Add, Mul};
-use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
-use std::mem::size_of;
-use std::path::PathBuf;
-
-use crate::Code;
+pub use crate::device::FileRemote;
 use crate::topology::Topology;
-use diagnostic::{Error, Result};
+use core::ops::{Add, Mul};
+use diagnostic::Result;
 
 /// 可参与归约的标量：算术、偏序与四个单位元由元素类型提供。
 pub trait ReduceScalar:
@@ -136,16 +131,11 @@ impl Group {
         Ok(Self { ranks })
     }
 
-    /// 组内全部 rank。
-    #[must_use]
-    pub fn ranks(&self) -> &[u32] {
-        &self.ranks
-    }
-
-    /// 组大小。
-    #[must_use]
-    pub fn size(&self) -> usize {
-        self.ranks.len()
+    accessors! {
+        /// 组内全部 rank。
+        ranks -> &[u32] = |s| s.ranks.as_slice();
+        /// 组大小。
+        size -> usize = |s| s.ranks.len();
     }
 }
 
@@ -223,6 +213,10 @@ impl Collective for Remote {
 
 /// 镜像读写端口；集合算法只依赖这一组原语。
 trait ReplicaStore<T: ReduceScalar> {
+    const ALL_REDUCE_SITE: &'static str;
+    const GATHER_SITE: &'static str;
+    const BROADCAST_SITE: &'static str;
+    const SCATTER_SITE: &'static str;
     fn width(&self) -> usize;
     fn read_into(&self, rank: u32, out: &mut [T]) -> Result<()>;
     fn write(&mut self, rank: u32, values: &[T]) -> Result<()>;
@@ -246,17 +240,13 @@ trait ReplicaStore<T: ReduceScalar> {
     }
 }
 
-fn reduce_store<S, T>(
-    store: &S,
+fn reduce_store<T: ReduceScalar>(
+    store: &impl ReplicaStore<T>,
     group: &Group,
     reduce: Reduce,
     out: &mut [T],
     site: &'static str,
-) -> Result<()>
-where
-    S: ReplicaStore<T>,
-    T: ReduceScalar,
-{
+) -> Result<()> {
     store.check_width(site, out.len())?;
     out.fill(reduce.identity());
     let mut slot = vec![T::ZERO; store.width()];
@@ -274,17 +264,13 @@ fn reduce_values<T: ReduceScalar>(reduce: Reduce, out: &mut [T], slot: &[T]) {
     }
 }
 
-fn all_reduce_store<S, T>(
-    store: &mut S,
+fn all_reduce_store<T: ReduceScalar>(
+    store: &mut impl ReplicaStore<T>,
     group: &Group,
     reduce: Reduce,
     buf: &mut [T],
     site: &'static str,
-) -> Result<()>
-where
-    S: ReplicaStore<T>,
-    T: ReduceScalar,
-{
+) -> Result<()> {
     reduce_store(store, group, reduce, buf, site)?;
     for rank in group.ranks() {
         store.write(*rank, buf)?;
@@ -292,11 +278,12 @@ where
     Ok(())
 }
 
-fn gather_store<S, T>(store: &S, group: &Group, buf: &mut [T], site: &'static str) -> Result<()>
-where
-    S: ReplicaStore<T>,
-    T: ReduceScalar,
-{
+fn gather_store<T: ReduceScalar>(
+    store: &impl ReplicaStore<T>,
+    group: &Group,
+    buf: &mut [T],
+    site: &'static str,
+) -> Result<()> {
     let width = store.check_group_width(site, group, buf.len())?;
     for (chunk, rank) in buf.chunks_exact_mut(width).zip(group.ranks()) {
         store.read_into(*rank, chunk)?;
@@ -304,17 +291,13 @@ where
     Ok(())
 }
 
-fn broadcast_store<S, T>(
-    store: &S,
+fn broadcast_store<T: ReduceScalar>(
+    store: &impl ReplicaStore<T>,
     group: &Group,
     src: u32,
     buf: &mut [T],
     site: &'static str,
-) -> Result<()>
-where
-    S: ReplicaStore<T>,
-    T: ReduceScalar,
-{
+) -> Result<()> {
     store.check_width(site, buf.len())?;
     if !group.ranks().contains(&src) {
         return refuse_at!(site, "源 rank {src} 不在组内");
@@ -322,17 +305,13 @@ where
     store.read_into(src, buf)
 }
 
-fn scatter_store<S, T>(
-    store: &S,
+fn scatter_store<T: ReduceScalar>(
+    store: &impl ReplicaStore<T>,
     group: &Group,
     reduce: Reduce,
     buf: &mut [T],
     site: &'static str,
-) -> Result<()>
-where
-    S: ReplicaStore<T>,
-    T: ReduceScalar,
-{
+) -> Result<()> {
     let width = store.check_group_width(site, group, buf.len())?;
     buf.fill(reduce.identity());
     let mut slot = vec![T::ZERO; width];
@@ -424,6 +403,10 @@ impl<T: ReduceScalar> Local<T> {
 }
 
 impl<T: ReduceScalar> ReplicaStore<T> for Local<T> {
+    const ALL_REDUCE_SITE: &'static str = "shard::Local::all_reduce";
+    const GATHER_SITE: &'static str = "shard::Local::all_gather";
+    const BROADCAST_SITE: &'static str = "shard::Local::broadcast";
+    const SCATTER_SITE: &'static str = "shard::Local::reduce_scatter";
     fn width(&self) -> usize {
         self.width
     }
@@ -440,108 +423,7 @@ impl<T: ReduceScalar> ReplicaStore<T> for Local<T> {
     }
 }
 
-impl<T: ReduceScalar> Collective<T> for Local<T> {
-    fn all_reduce(&mut self, group: &Group, reduce: Reduce, buf: &mut [T]) -> Result<()> {
-        all_reduce_store(self, group, reduce, buf, "shard::Local::all_reduce")
-    }
-
-    fn all_gather(&mut self, group: &Group, buf: &mut [T]) -> Result<()> {
-        gather_store(self, group, buf, "shard::Local::all_gather")
-    }
-
-    fn broadcast(&mut self, group: &Group, src: u32, buf: &mut [T]) -> Result<()> {
-        broadcast_store(self, group, src, buf, "shard::Local::broadcast")
-    }
-
-    fn reduce_scatter(&mut self, group: &Group, reduce: Reduce, buf: &mut [T]) -> Result<()> {
-        scatter_store(self, group, reduce, buf, "shard::Local::reduce_scatter")
-    }
-}
-
-/// 文件传输集合通信：共享文件承载 `world × width` 个小端 `f32` 槽位。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FileRemote {
-    rank: u32,
-    world: u32,
-    width: usize,
-    bytes: u64,
-    backing: PathBuf,
-}
-
 impl FileRemote {
-    /// 打开一个 rank 的文件句柄，并将共享文件预留到完整长度。
-    ///
-    /// # Errors
-    ///
-    /// `world` 或 `width` 为零、rank 越界、文件长度溢出或文件不可创建。
-    pub fn open(rank: u32, world: u32, width: usize, backing: impl Into<PathBuf>) -> Result<Self> {
-        Self::check_open_config(rank, world, width)?;
-        let bytes = Self::file_bytes(world, width)?;
-        let remote = Self {
-            rank,
-            world,
-            width,
-            bytes,
-            backing: backing.into(),
-        };
-        remote.resize()?;
-        Ok(remote)
-    }
-
-    /// 打开配置只负责进程拓扑与非零宽度，和文件字节换算分离。
-    fn check_open_config(rank: u32, world: u32, width: usize) -> Result<()> {
-        if world == 0 {
-            fail!("shard::FileRemote::open", "进程数 world 不能为 0");
-        }
-        if rank >= world {
-            fail!("shard::FileRemote::open", "rank {rank} 超出 0..{world}");
-        }
-        if width == 0 {
-            fail!("shard::FileRemote::open", "归约宽度不能为 0");
-        }
-        Ok(())
-    }
-
-    /// 共享文件包含 `world × width` 个 `f32`，所有换算必须受溢出保护。
-    fn file_bytes(world: u32, width: usize) -> Result<u64> {
-        let slot_bytes = width
-            .checked_mul(size_of::<f32>())
-            .ok_or_else(|| invalid!("shard::FileRemote::open", "槽位字节数溢出"))?;
-        u64::try_from(slot_bytes)
-            .ok()
-            .and_then(|slot| slot.checked_mul(u64::from(world)))
-            .ok_or_else(|| invalid!("shard::FileRemote::open", "共享文件字节数溢出"))
-    }
-
-    /// 本进程的 rank。
-    #[must_use]
-    pub fn rank(&self) -> u32 {
-        self.rank
-    }
-
-    /// 将某个 rank 的输入写入对应槽位。
-    ///
-    /// # Errors
-    ///
-    /// 长度不符、rank 越界或文件不可写。
-    pub fn load(&self, rank: u32, values: &[f32]) -> Result<()> {
-        self.check_width("shard::FileRemote::load", values.len())?;
-        self.check_rank("shard::FileRemote::load", rank)?;
-        self.write_slot(rank, values)
-    }
-
-    /// 读取某个 rank 的当前槽位。
-    ///
-    /// # Errors
-    ///
-    /// rank 越界或文件不可读。
-    pub fn replica(&self, rank: u32) -> Result<Vec<f32>> {
-        self.check_rank("shard::FileRemote::replica", rank)?;
-        let mut slot = vec![0.0; self.width];
-        self.read_slot(rank, &mut slot)?;
-        Ok(slot)
-    }
-
     /// 将组内归约写入调用方缓冲。
     ///
     /// # Errors
@@ -550,80 +432,15 @@ impl FileRemote {
     pub fn reduce_into(&self, group: &Group, reduce: Reduce, out: &mut [f32]) -> Result<()> {
         reduce_store(self, group, reduce, out, "shard::FileRemote::reduce_into")
     }
-
-    fn check_rank(&self, site: &'static str, rank: u32) -> Result<()> {
-        if rank < self.world {
-            return Ok(());
-        }
-        refuse_at!(site, "rank {rank} 超出 0..{}", self.world)
-    }
-
-    fn offset(&self, rank: u32) -> u64 {
-        u64::from(rank) * (self.width as u64) * size_of::<f32>() as u64
-    }
-
-    fn io(&self, action: &str, error: std::io::Error) -> Error {
-        Error::new(
-            Code::Io,
-            format!("{action} `{}` 失败：{error}", self.backing.display()),
-        )
-    }
-
-    fn seek_slot(&self, file: &mut File, rank: u32) -> Result<()> {
-        file.seek(SeekFrom::Start(self.offset(rank)))
-            .map_err(|error| self.io("定位", error))
-            .map(|_| ())
-    }
-
-    fn resize(&self) -> Result<()> {
-        OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&self.backing)
-            .map_err(|error| self.io("创建", error))?
-            .set_len(self.bytes)
-            .map_err(|error| self.io("预留", error))
-    }
-
-    fn read_slot(&self, rank: u32, out: &mut [f32]) -> Result<()> {
-        let bytes = self.read_bytes(rank)?;
-        for (slot, chunk) in out.iter_mut().zip(bytes.as_chunks::<4>().0) {
-            *slot = f32::from_le_bytes(*chunk);
-        }
-        Ok(())
-    }
-
-    /// 文件定位与完整读取共用一条路径，调用方只负责协议解码。
-    fn read_bytes(&self, rank: u32) -> Result<Vec<u8>> {
-        self.check_rank("shard::FileRemote::read", rank)?;
-        let mut file = File::open(&self.backing).map_err(|error| self.io("打开", error))?;
-        self.seek_slot(&mut file, rank)?;
-        let mut bytes = vec![0u8; self.width * size_of::<f32>()];
-        file.read_exact(&mut bytes)
-            .map_err(|error| self.io("读", error))?;
-        Ok(bytes)
-    }
-
-    fn write_slot(&self, rank: u32, values: &[f32]) -> Result<()> {
-        self.check_rank("shard::FileRemote::write", rank)?;
-        let mut file = OpenOptions::new()
-            .write(true)
-            .open(&self.backing)
-            .map_err(|error| self.io("打开", error))?;
-        self.seek_slot(&mut file, rank)?;
-        let bytes: Vec<u8> = values
-            .iter()
-            .flat_map(|value| value.to_le_bytes())
-            .collect();
-        file.write_all(&bytes).map_err(|error| self.io("写", error))
-    }
 }
 
 impl ReplicaStore<f32> for FileRemote {
+    const ALL_REDUCE_SITE: &'static str = "shard::FileRemote::all_reduce";
+    const GATHER_SITE: &'static str = "shard::FileRemote::all_gather";
+    const BROADCAST_SITE: &'static str = "shard::FileRemote::broadcast";
+    const SCATTER_SITE: &'static str = "shard::FileRemote::reduce_scatter";
     fn width(&self) -> usize {
-        self.width
+        self.width()
     }
 
     fn read_into(&self, rank: u32, out: &mut [f32]) -> Result<()> {
@@ -635,27 +452,25 @@ impl ReplicaStore<f32> for FileRemote {
     }
 }
 
-impl Collective for FileRemote {
-    fn all_reduce(&mut self, group: &Group, reduce: Reduce, buf: &mut [f32]) -> Result<()> {
-        all_reduce_store(self, group, reduce, buf, "shard::FileRemote::all_reduce")
+impl<T, S> Collective<T> for S
+where
+    T: ReduceScalar,
+    S: ReplicaStore<T>,
+{
+    fn all_reduce(&mut self, group: &Group, reduce: Reduce, buf: &mut [T]) -> Result<()> {
+        all_reduce_store(self, group, reduce, buf, S::ALL_REDUCE_SITE)
     }
 
-    fn all_gather(&mut self, group: &Group, buf: &mut [f32]) -> Result<()> {
-        gather_store(self, group, buf, "shard::FileRemote::all_gather")
+    fn all_gather(&mut self, group: &Group, buf: &mut [T]) -> Result<()> {
+        gather_store(self, group, buf, S::GATHER_SITE)
     }
 
-    fn broadcast(&mut self, group: &Group, src: u32, buf: &mut [f32]) -> Result<()> {
-        broadcast_store(self, group, src, buf, "shard::FileRemote::broadcast")
+    fn broadcast(&mut self, group: &Group, src: u32, buf: &mut [T]) -> Result<()> {
+        broadcast_store(self, group, src, buf, S::BROADCAST_SITE)
     }
 
-    fn reduce_scatter(&mut self, group: &Group, reduce: Reduce, buf: &mut [f32]) -> Result<()> {
-        scatter_store(
-            self,
-            group,
-            reduce,
-            buf,
-            "shard::FileRemote::reduce_scatter",
-        )
+    fn reduce_scatter(&mut self, group: &Group, reduce: Reduce, buf: &mut [T]) -> Result<()> {
+        scatter_store(self, group, reduce, buf, S::SCATTER_SITE)
     }
 }
 

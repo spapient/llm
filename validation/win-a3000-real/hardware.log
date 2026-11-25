@@ -1,0 +1,13 @@
+name=NVIDIA RTX A3000 12GB Laptop GPU
+cc=8.6
+multiProcessorCount=32
+warpSize=32
+sharedMemPerBlock=49152
+sharedMemPerMultiprocessor=102400
+regsPerBlock=65536
+regsPerMultiprocessor=65536
+maxThreadsPerMultiProcessor=1536
+memoryBusWidth=192
+memoryClockRate=7001000
+clockRate=1170000
+totalGlobalMem=12884377600

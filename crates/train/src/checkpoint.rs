@@ -8,7 +8,7 @@ use crate::{Kernel, LoaderConfig};
 use autograd::Var;
 use diagnostic::{Code, Error, Result};
 use shard::Collective;
-use storage::{GradAccum, Moments, SlotMoments, Ties};
+use storage::{GradAccum, SlotMoments, Ties};
 use weights::Snapshot;
 
 // ---- 可恢复检查点：只记"要复现这次训练必须知道的东西" ----
@@ -164,21 +164,11 @@ impl Schedule {
 
     /// 全参构造；`min_ratio` 是谷底占峰值的比例，必须落在 `[0, 1]`。
     pub fn with(warmup: u64, total: u64, anneal: Anneal, min_ratio: f32) -> Result<Self> {
-        if total == 0 {
-            return Err(Error::new(Code::Invalid, "总步数不能为 0").with("train::Schedule::with"));
-        }
-        if warmup > total {
-            return Err(
-                Error::new(Code::Invalid, format!("warmup {warmup} 超过总步数 {total}"))
-                    .with("train::Schedule::with"),
-            );
-        }
-        if !(0.0..=1.0).contains(&min_ratio) {
-            return Err(
-                Error::new(Code::Invalid, format!("下限比例 {min_ratio} 不在 [0, 1]"))
-                    .with("train::Schedule::with"),
-            );
-        }
+        validation_rules!("train::Schedule::with";
+            total != 0 => "总步数不能为 0",
+            warmup <= total => format!("warmup {warmup} 超过总步数 {total}"),
+            (0.0..=1.0).contains(&min_ratio) => format!("下限比例 {min_ratio} 不在 [0, 1]"),
+        );
         Ok(Self {
             warmup,
             total,
@@ -286,45 +276,16 @@ impl TrainConfig {
         Ok(config)
     }
 
-    /// 校验配置不变量；`Session` 装配时再次调用，防止公开字段被直接改成非法值。
+    /// 配置规则唯一事实源；`Session` 装配时重验，拒绝公开字段的后续非法修改。
     pub fn validate(&self) -> Result<()> {
-        self.check_schedule()?;
-        self.check_regularization()?;
-        Ok(())
-    }
-
-    /// 调度与学习率口径：总步数、warmup 关系、学习率非负有限。
-    fn check_schedule(&self) -> Result<()> {
-        if self.max_steps == 0 {
-            return Err(Error::new(Code::Invalid, "总步数不能为 0").with(SITE));
-        }
-        if self.warmup_steps > self.max_steps {
-            return Err(Error::new(
-                Code::Invalid,
-                format!("warmup {} 超过总步数 {}", self.warmup_steps, self.max_steps),
-            )
-            .with(SITE));
-        }
-        if !self.learning_rate.is_finite() || self.learning_rate < 0.0 {
-            return Err(Error::new(Code::Invalid, "学习率必须是有限非负数").with(SITE));
-        }
-        Ok(())
-    }
-
-    /// 正则与累积口径：裁剪范数为正有限、累积窗口非零、下限比例落在 `[0, 1]`。
-    fn check_regularization(&self) -> Result<()> {
-        if self
-            .clip_norm
-            .is_some_and(|clip| !clip.is_finite() || clip <= 0.0)
-        {
-            return Err(Error::new(Code::Invalid, "裁剪范数必须是有限正数").with(SITE));
-        }
-        if self.accumulation == 0 {
-            return Err(Error::new(Code::Invalid, "累积窗口不能为 0").with(SITE));
-        }
-        if !(0.0..=1.0).contains(&self.min_ratio) {
-            return Err(Error::new(Code::Invalid, "下限比例必须在 [0, 1]").with(SITE));
-        }
+        validation_rules!(SITE;
+            self.max_steps != 0 => "总步数不能为 0",
+            self.warmup_steps <= self.max_steps => format!("warmup {} 超过总步数 {}", self.warmup_steps, self.max_steps),
+            self.learning_rate.is_finite() && self.learning_rate >= 0.0 => "学习率必须是有限非负数",
+            self.clip_norm.is_none_or(|clip| clip.is_finite() && clip > 0.0) => "裁剪范数必须是有限正数",
+            self.accumulation != 0 => "累积窗口不能为 0",
+            (0.0..=1.0).contains(&self.min_ratio) => "下限比例必须在 [0, 1]",
+        );
         Ok(())
     }
 
@@ -598,7 +559,19 @@ pub fn operators(layer: &dyn nn::Contract) -> &[String] {
 
 // ---- 会话快照回载 ----------------------------------------------------------
 //
-// 矩状态、累积窗口与绑定表按槽位对齐校验后回填。
+// 先在纯数据计划中完成全部可失败校验，再一次性提交，避免恢复一半的状态。
+type OptimizerRestore = (Vec<Vec<f32>>, Vec<Vec<f32>>, Vec<Option<(usize, usize)>>);
+
+struct RestorePlan {
+    momentum: Vec<Vec<f32>>,
+    variance: Vec<Vec<f32>>,
+    shapes: Vec<Option<(usize, usize)>>,
+    gradients: Vec<Option<Vec<f32>>>,
+    accum: u32,
+    ties: Vec<(usize, usize)>,
+    step: u64,
+}
+
 impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
     /// 把快照状态回载到这个**已装配**会话：矩状态走优化器 restore，累积窗口汇总、绑定表与
     /// 步数按槽位编号对齐校验。
@@ -610,11 +583,20 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
     ///
     /// 矩表/累积表槽位数或槽内长度不符、ties 编号越界或两端长度不符，一律 [`Code::Invalid`]。
     pub fn restore_snapshot(&mut self, snapshot: &Snapshot) -> Result<()> {
-        self.check_config_fingerprint(snapshot.config_fingerprint())?;
-        self.restore_moments(snapshot.moments())?;
-        self.restore_accum(snapshot.accum())?;
-        self.restore_ties(snapshot.ties())?;
-        self.step = snapshot.facts().step();
+        let plan = self.restore_plan(snapshot)?;
+        self.optimizer
+            .restore_shaped(
+                plan.momentum,
+                plan.variance,
+                snapshot.moments().step(),
+                &plan.shapes,
+            )
+            .map_err(|error| error.with(SITE))?;
+        // 此后全是无失败提交；梯度、窗口、绑定与步号来自同一份预检计划。
+        self.bufs.replace_gradients(plan.gradients);
+        self.accum = plan.accum;
+        self.ties = plan.ties;
+        self.step = plan.step;
         Ok(())
     }
 
@@ -633,91 +615,110 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
         Ok(())
     }
 
-    /// 矩状态回载：空表对应无矩优化器；非空表槽位数与每槽长度必须对齐会话参数槽。
-    fn restore_moments(&mut self, moments: &Moments) -> Result<()> {
-        let slots = moments.slots();
+    /// 构造完整恢复计划；此阶段不修改会话或优化器，所有克隆都留在计划中。
+    fn restore_plan(&self, snapshot: &Snapshot) -> Result<RestorePlan> {
+        self.check_config_fingerprint(snapshot.config_fingerprint())?;
+        let (momentum, variance, shapes) = self.optimizer_plan(snapshot)?;
+        let (gradients, accum) = self.accum_plan(snapshot.accum())?;
+        let ties = self.checked_ties(snapshot.ties())?;
+        Ok(RestorePlan {
+            momentum,
+            variance,
+            shapes,
+            gradients,
+            accum,
+            ties,
+            step: snapshot.facts().step(),
+        })
+    }
+
+    /// 矩状态与优化器的独立预检；失败时还没有生成其他恢复写计划。
+    fn optimizer_plan(&self, snapshot: &Snapshot) -> Result<OptimizerRestore> {
+        let slots = snapshot.moments().slots();
         self.check_moment_slots(slots)?;
-        let momentum = slots.iter().map(|s| s.m().to_vec()).collect();
-        let variance = slots.iter().map(|s| s.v().to_vec()).collect();
+        let momentum: Vec<Vec<f32>> = slots.iter().map(|s| s.m().to_vec()).collect();
+        let variance: Vec<Vec<f32>> = slots.iter().map(|s| s.v().to_vec()).collect();
         let shapes: Vec<_> = self.slots.iter().map(|slot| slot.matrix()).collect();
         self.optimizer
-            .restore_shaped(momentum, variance, moments.step(), &shapes)
+            .validate_restore(&momentum, &variance, &shapes)
             .map_err(|error| error.with(SITE))?;
-        Ok(())
+        Ok((momentum, variance, shapes))
     }
 
-    /// 矩表槽位数与每槽长度对账；空表（无矩优化器）跳过槽数校验。
-    fn check_moment_slots(&self, slots: &[SlotMoments]) -> Result<()> {
-        if !slots.is_empty() && slots.len() != self.slots.len() {
-            let message = format!(
-                "矩状态槽位数不符：快照 {} 槽，会话 {} 槽",
-                slots.len(),
-                self.slots.len()
-            );
-            return Err(Error::new(Code::Invalid, message).with(SITE));
-        }
-        for (idx, slot) in slots.iter().enumerate() {
-            self.check_moment_slot_length(idx, slot)?;
-        }
-        Ok(())
-    }
-
-    /// 单槽矩长度对账：一阶矩必须等长；二阶矩可等长，或由无二阶矩的实现留空。
-    fn check_moment_slot_length(&self, idx: usize, slot: &SlotMoments) -> Result<()> {
-        let want = self.slots[idx].params().len();
-        if slot.m().len() != want || !(slot.v().is_empty() || slot.v().len() == want) {
-            let message = format!(
-                "第 {idx} 槽矩长度不符：一阶 {} / 二阶 {} 元素，会话 {want} 元素",
-                slot.m().len(),
-                slot.v().len(),
-            );
-            return Err(Error::new(Code::Invalid, message).with(SITE));
-        }
-        Ok(())
-    }
-
-    /// 累积窗口回载：槽位数对齐；空梯度表表示该槽窗口内未装入，跳过不覆盖。
-    fn restore_accum(&mut self, accum: &GradAccum) -> Result<()> {
-        let slots = accum.slots();
-        self.check_accum_slot_count(slots)?;
-        for (idx, grads) in slots.iter().enumerate() {
-            self.load_accum_slot(idx, grads)?;
-        }
-        self.accum = accum.count();
-        Ok(())
-    }
-
-    /// 累积表槽位数对账。
-    fn check_accum_slot_count(&self, slots: &[Vec<f32>]) -> Result<()> {
-        if slots.len() != self.slots.len() {
-            let message = format!(
-                "累积梯度槽位数不符：快照 {} 槽，会话 {} 槽",
-                slots.len(),
-                self.slots.len()
-            );
-            return Err(Error::new(Code::Invalid, message).with(SITE));
-        }
-        Ok(())
-    }
-
-    /// 单槽累积梯度回载：空表跳过；非空长度必须等于槽参数元素数，再装入缓冲。
-    fn load_accum_slot(&mut self, idx: usize, grads: &[f32]) -> Result<()> {
-        if grads.is_empty() {
+    /// 所有快照槽表共用槽数对账。
+    fn check_slot_count(&self, actual: usize, what: &str) -> Result<()> {
+        if actual == self.slots.len() {
             return Ok(());
         }
-        let want = self.slots[idx].params().len();
-        if grads.len() != want {
-            let message = format!(
-                "第 {idx} 槽累积梯度长度不符：快照 {} 元素，会话 {} 元素",
-                grads.len(),
-                want
-            );
-            return Err(Error::new(Code::Invalid, message).with(SITE));
+        Err(Error::new(
+            Code::Invalid,
+            format!(
+                "{what}槽位数不符：快照 {actual} 槽，会话 {} 槽",
+                self.slots.len(),
+            ),
+        )
+        .with(SITE))
+    }
+
+    /// 所有按槽向量共用长度对账。
+    fn check_slot_len(&self, idx: usize, actual: usize, what: &str) -> Result<()> {
+        let expected = self.slots[idx].params().len();
+        if actual == expected {
+            return Ok(());
         }
-        self.bufs
-            .load_gradient(self.slots[idx].var(), grads)
-            .map_err(|error| error.with(SITE))?;
+        Err(Error::new(
+            Code::Invalid,
+            format!("第 {idx} 槽{what}长度不符：快照 {actual} 元素，会话 {expected} 元素",),
+        )
+        .with(SITE))
+    }
+
+    /// 一阶矩必须等长；二阶矩可等长，或由无二阶矩的实现留空。
+    fn check_moment_slots(&self, slots: &[SlotMoments]) -> Result<()> {
+        if !slots.is_empty() {
+            self.check_slot_count(slots.len(), "矩状态")?;
+        }
+        for (idx, slot) in slots.iter().enumerate() {
+            self.check_moment_slot(idx, slot)?;
+        }
         Ok(())
+    }
+
+    /// 单槽一阶矩必须等长；二阶矩可等长或由算法显式留空。
+    fn check_moment_slot(&self, idx: usize, slot: &SlotMoments) -> Result<()> {
+        self.check_slot_len(idx, slot.m().len(), "一阶矩")?;
+        if !slot.v().is_empty() {
+            self.check_slot_len(idx, slot.v().len(), "二阶矩")?;
+        }
+        Ok(())
+    }
+
+    fn check_accum_slots(&self, slots: &[Vec<f32>]) -> Result<()> {
+        self.check_slot_count(slots.len(), "累积梯度")?;
+        for (idx, grads) in slots.iter().enumerate().filter(|(_, g)| !g.is_empty()) {
+            self.check_slot_len(idx, grads.len(), "累积梯度")?;
+        }
+        Ok(())
+    }
+
+    /// 预检并克隆累积窗口；恢复计划按图变量编号对齐，而非按参数槽下标截断。
+    fn accum_plan(&self, accum: &GradAccum) -> Result<(Vec<Option<Vec<f32>>>, u32)> {
+        let slots = accum.slots();
+        if slots.is_empty() {
+            validation_rules!(SITE; accum.count() == 0 => "空累积表不能携带非零窗口计数");
+        } else {
+            self.check_accum_slots(slots)?;
+        }
+        validation_rules!(SITE;
+            slots.iter().flatten().all(|g| g.is_finite()) => "累积梯度含非有限值",
+        );
+        let mut gradients = vec![None; self.bufs.sizes().len()];
+        for (param, grads) in self.slots.iter().zip(slots) {
+            if !grads.is_empty() {
+                gradients[param.var().id() as usize] = Some(grads.clone());
+            }
+        }
+        Ok((gradients, accum.count()))
     }
 
     /// 校验绑定两端参数槽长度一致；不符是 [`Code::Invalid`]。
@@ -733,19 +734,19 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
         Err(Error::new(Code::Invalid, message).with(SITE))
     }
 
-    /// 绑定表回载：编号必须落在会话槽位内，两端长度一致；回载替换既有绑定表。
-    fn restore_ties(&mut self, ties: &Ties) -> Result<()> {
-        let slot_count = self.slots.len();
+    /// 预检并克隆绑定表；编号越界或两端长度不符都在提交前拒绝。
+    fn checked_ties(&self, ties: &Ties) -> Result<Vec<(usize, usize)>> {
         for &(source, tied) in ties.pairs() {
-            if source >= slot_count || tied >= slot_count {
-                let message =
-                    format!("绑定对 ({source}, {tied}) 编号越界：会话只有 {slot_count} 个参数槽");
+            if source >= self.slots.len() || tied >= self.slots.len() {
+                let message = format!(
+                    "绑定对 ({source}, {tied}) 编号越界：会话只有 {} 个参数槽",
+                    self.slots.len()
+                );
                 return Err(Error::new(Code::Invalid, message).with(SITE));
             }
             self.check_tie_length(source, tied)?;
         }
-        self.ties = ties.pairs().to_vec();
-        Ok(())
+        Ok(ties.pairs().to_vec())
     }
 }
 

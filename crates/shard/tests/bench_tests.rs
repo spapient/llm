@@ -3,7 +3,8 @@
 //! 生产文件只留执行与判据，用例集中于此。
 
 use super::*;
-use nn::model::Buf;
+use crate::fixtures::catalogue;
+use nn::model::{Buf, Values, Vector};
 
 #[test]
 fn an_attainment_above_one_is_an_invalid_measurement_not_a_pass() {
@@ -19,7 +20,7 @@ fn an_attainment_above_one_is_an_invalid_measurement_not_a_pass() {
 
 #[test]
 fn unregistered_device_profiles_are_not_reported_as_gpu_benchmarks() {
-    let catalogue = Catalogue::try_builtin().expect("内置档案可解析");
+    let catalogue = catalogue();
     let cpu = catalogue.resolve("cpu").expect("CPU 档案存在");
     assert!(require_bench_backend(cpu).is_ok());
 
@@ -72,7 +73,7 @@ fn working_set_is_every_input_buf_but_not_the_output() {
             },
             Buf {
                 name: "x",
-                values: Values::F32(vec![1.0; 4]),
+                values: Values::F32x4(Vector::new(vec![1.0; 4]).expect("四车道输入")),
             },
             Buf {
                 name: "y",

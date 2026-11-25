@@ -1,8 +1,8 @@
 //! 模板表生成：共享算子契约 + 有效后端内核 → 清单与正文表。
 //!
 //! 算子声明由 `prof_ops!()` 编译期展开成强类型 `OpView`（见 `crate::OPS`）。本模块只生成正文：
-//! 后端优先使用自己的 `<vendor>/kernels/<stem>.k`，未特化时使用同目录的 `ops/<stem>.k`
-//! 共享参考实现；`src/kernels.toml` 以 stem 为键配置调优，不随语义声明的 `base` 扩散。
+//! 后端优先使用自己的 `<vendor>/<stem>.<ext>`，未特化时使用同目录的 `ops/<stem>.k`
+//! 共享参考实现；`src/ops/kernels.toml` 以 stem 为键配置调优，不随语义声明的 `base` 扩散。
 //! 声明与参考正文同属算子，设备目录只承担真实特化，完整覆盖不需要机械副本或继承配置。
 
 use std::collections::BTreeMap;
@@ -15,19 +15,26 @@ use crate::{Device, buildgen, fail};
 const UNROLL_MARKER: &str = "/* cutile-unroll */";
 
 /// 模板清单与后端正文表。
-pub fn declarations_of(manifest: &Path, devices: &[Device]) -> (String, String) {
-    declarations(manifest, devices).unwrap_or_else(|error| fail(format!("算子模板表：{error}")))
+pub fn template_tables_of(manifest: &Path, devices: &[Device]) -> (String, String) {
+    render_template_tables(manifest, devices)
+        .unwrap_or_else(|error| fail(format!("算子模板表：{error}")))
 }
 
 /// 两份产物：`for_each_template!` 的清单与按 `(vendor, 算子名)` 排序的后端正文表。
-fn declarations(manifest: &Path, devices: &[Device]) -> diagnostic::Result<(String, String)> {
+fn render_template_tables(
+    manifest: &Path,
+    devices: &[Device],
+) -> diagnostic::Result<(String, String)> {
     let src = manifest.join("src");
     let ops = src.join("ops");
     println!("cargo:rerun-if-changed={}", ops.display());
-    let files = buildgen::collect(&ops)?;
+    let files: Vec<_> = buildgen::collect(&ops)?
+        .into_iter()
+        .filter(|path| file_stem(path) != "kernels")
+        .collect();
     let entries = scan(&ops, manifest, &files)?;
     let tuning = tuning_of(
-        buildgen::read(&src.join("kernels.toml"))?,
+        buildgen::read(&ops.join("kernels.toml"))?,
         devices,
         &entries,
     );
@@ -74,6 +81,9 @@ fn scan(ops: &Path, manifest: &Path, files: &[PathBuf]) -> diagnostic::Result<Ve
         entries.append(&mut entries_for_file(ops, path)?);
     }
     entries.sort_by(|left, right| left.name.cmp(&right.name));
+    if let Some(duplicate) = entries.windows(2).find(|pair| pair[0].name == pair[1].name) {
+        fail(format!("算子 `{}` 被重复声明", duplicate[0].name));
+    }
     Ok(entries)
 }
 
@@ -82,20 +92,82 @@ fn resolved_table(ops: &Path, path: &Path) -> diagnostic::Result<toml::Table> {
     resolve(ops, buildgen::read(path)?)
 }
 
-/// 单份档案展开出的档条目；模板 stem 随共享声明继承。
+/// 单份档案展开出的档条目；同族可共享公共段，每条只写自己的 `op` 与差异段。
 fn entries_for_file(ops: &Path, path: &Path) -> diagnostic::Result<Vec<Entry>> {
     let name = file_stem(path);
     let table = resolved_table(ops, path)?;
-    let stem = template_stem(&table, name);
-    let entries = expand_tiers(name, &table)
+    if !table.contains_key("op") && !table.contains_key("operators") {
+        return Ok(Vec::new());
+    }
+    Ok(documents(name, &table)?
+        .into_iter()
+        .flat_map(|(name, table)| document_entries(name, &table))
+        .collect())
+}
+
+/// 一条同族声明展开为带模板身份与档名的构建条目。
+fn document_entries(name: String, table: &toml::Table) -> Vec<Entry> {
+    let stem = template_stem(table, &name);
+    expand_tiers(&name, table)
         .into_iter()
         .map(|(name, tier)| Entry {
             name,
             stem: stem.clone(),
             tier,
         })
-        .collect();
-    Ok(entries)
+        .collect()
+}
+
+/// 展开同族声明；`[op]` 与 `[[operators]]` 互斥，族内每条都必须有唯一职责名。
+fn documents(
+    file_stem: &str,
+    table: &toml::Table,
+) -> diagnostic::Result<Vec<(String, toml::Table)>> {
+    if !table.contains_key("operators") {
+        return Ok(vec![(file_stem.to_string(), table.clone())]);
+    }
+    let items = family_items(file_stem, table);
+    let mut family = table.clone();
+    family.remove("operators");
+    Ok(items
+        .iter()
+        .map(|item| family_document(file_stem, &family, item))
+        .collect())
+}
+
+/// 同族声明表：互斥关系、数组类型与非空约束集中在这里。
+fn family_items<'a>(file_stem: &str, table: &'a toml::Table) -> &'a [toml::Value] {
+    if table.contains_key("op") {
+        fail(format!(
+            "`{file_stem}` 不能同时包含 `[op]` 与 `[[operators]]`"
+        ));
+    }
+    let items = table
+        .get("operators")
+        .and_then(toml::Value::as_array)
+        .unwrap_or_else(|| fail(format!("`{file_stem}.operators` 必须是算子表数组")));
+    if items.is_empty() {
+        fail(format!("`{file_stem}.operators` 不能为空"));
+    }
+    items
+}
+
+/// 展开一条同族声明，校验条目形状与唯一职责名。
+fn family_document(
+    file_stem: &str,
+    family: &toml::Table,
+    item: &toml::Value,
+) -> (String, toml::Table) {
+    let item = item
+        .as_table()
+        .unwrap_or_else(|| fail(format!("`{file_stem}.operators` 的每项都必须是表")));
+    let name = item
+        .get("op")
+        .and_then(toml::Value::as_table)
+        .and_then(|op| op.get("name"))
+        .and_then(toml::Value::as_str)
+        .unwrap_or_else(|| fail(format!("`{file_stem}.operators` 每项都必须声明 `op.name`")));
+    (name.to_string(), merge(family.clone(), item.clone()))
 }
 
 /// 按 `[op].tiers` 展开名字与档名；声明本体由 `prof_ops!()` 展开，这里不克隆或改写整棵树。
@@ -159,11 +231,11 @@ fn tuning_of(table: toml::Table, devices: &[Device], entries: &[Entry]) -> Tunin
     tuning
 }
 
-/// 顶层只允许 `[unroll]`；其余键属于未登记的调优族。
+/// 顶层闭集：设备模板 `[unroll]` 与生产微内核 `[gemm_micro]`。
 fn validate_top_keys(table: &toml::Table) {
     for key in table.keys() {
-        if key != "unroll" {
-            fail(format!("`kernels.toml.{key}` 未知：目前只支持 `[unroll]`"));
+        if !["unroll", "gemm_micro"].contains(&key.as_str()) {
+            fail(format!("`kernels.toml.{key}` 不是已登记的调优族"));
         }
     }
 }
@@ -292,8 +364,7 @@ fn emit_entries(
 fn kernel_path(src: &Path, device: &Device, stem: &str) -> PathBuf {
     let specialized = src
         .join(&device.family)
-        .join("kernels")
-        .join(format!("{stem}.k"));
+        .join(format!("{stem}.{}", device.ext));
     if specialized.is_file() {
         return specialized;
     }
@@ -383,7 +454,10 @@ fn resolve(ops: &Path, mut table: toml::Table) -> diagnostic::Result<toml::Table
         return Ok(table);
     };
     table.remove("base");
-    let base = resolve(ops, buildgen::read(&ops.join(format!("{base}.toml")))?)?;
+    let mut base = resolve(ops, buildgen::read(&ops.join(format!("{base}.toml")))?)?;
+    if table.contains_key("operators") {
+        base.remove("op");
+    }
     Ok(merge(base, table))
 }
 
@@ -400,4 +474,224 @@ fn merge(mut base: toml::Table, over: toml::Table) -> toml::Table {
         }
     }
     base
+}
+
+// ── 主机 GEMM 微内核：配置 → 注解校验 → 静态 C 库 ─────────────────────
+
+/// 构建 `gemm_micro.k`：同一正文供静态生产桥与既有验证 harness 使用。
+pub fn build_native(manifest: &Path, out: &Path) {
+    let ops = manifest.join("src").join("ops");
+    let config = ops.join("kernels.toml");
+    let template = ops.join("gemm_micro.k");
+    println!("cargo:rerun-if-changed={}", config.display());
+    println!("cargo:rerun-if-changed={}", template.display());
+    let table = buildgen::read(&config).unwrap_or_else(|error| fail(format!("{error}")));
+    let rendered = render_native(&read(&template), &table);
+    let c = out.join("gemm_micro.c");
+    std::fs::write(&c, rendered)
+        .unwrap_or_else(|error| fail(format!("写 {} 失败：{error}", c.display())));
+    let native = native_table(&table);
+    let mut contract = format!(
+        r#"#[doc = "gemm_micro 配置常量。"] pub const FMA_MR: usize = {};
+#[doc = "gemm_micro 配置常量。"] pub const FMA_NR: usize = {};
+#[doc = "gemm_micro 配置常量。"] pub const FMA_KB: usize = {};
+#[doc = "gemm_micro 配置常量。"] pub const SDOT_MR: usize = {};
+#[doc = "gemm_micro 配置常量。"] pub const SDOT_NR: usize = {};
+#[doc = "gemm_micro 配置常量。"] pub const SDOT_CHAINS: usize = {};
+#[doc = "gemm_micro 配置常量。"] pub const SME_MR: usize = {};
+#[doc = "gemm_micro 配置常量。"] pub const SME_NR: usize = {};
+#[doc = "gemm_micro 配置常量。"] pub const SME_MIN_ELEMS: usize = {};
+"#,
+        native_positive(native, "fma", "mr"),
+        native_positive(native, "fma", "nr"),
+        native_positive(native, "fma", "kb"),
+        native_positive(native, "sdot", "mr"),
+        native_positive(native, "sdot", "nr"),
+        native_positive(native, "sdot", "chains"),
+        native_positive(native, "sme", "mr"),
+        native_positive(native, "sme", "nr"),
+        native_positive(native, "sme", "min_elems"),
+    );
+    contract.push_str("unsafe extern \"C\" {\n\
+        #[cfg(not(all(target_arch = \"x86_64\", target_env = \"msvc\")))] fn cutile_fma_micro(a: *const f32, b: *const f32, out: *mut f32, row: i32, col: i32, n: i32, kb: i32, first: i32);\n\
+        #[cfg(all(target_arch = \"x86_64\", target_env = \"msvc\"))] fn cutile_fma_micro_avx2(a: *const f32, b: *const f32, out: *mut f32, row: i32, col: i32, n: i32, kb: i32, first: i32);\n\
+        #[cfg(target_arch = \"x86_64\")] fn cutile_fma_micro_scalar(a: *const f32, b: *const f32, out: *mut f32, row: i32, col: i32, n: i32, kb: i32, first: i32);\n\
+        fn cutile_sdot_micro(a: *const i8, b: *const i8, out: *mut i32, row: i32, blk: i32, n: i32, k: i32, kvec: i32);\n\
+        fn cutile_sme_micro(a: *const f32, b: *const f32, out: *mut f32, n: usize, k: usize);\n\
+        fn cutile_sme_pack(a: *const f32, panel: *mut f32, k: usize, mblk0: usize, blocks: usize);\n\
+        fn cutile_sme_stage(a: *const f32, b: *const f32, out: *mut f32, n: usize, k: usize, blocks: usize);\n\
+    }\n\
+    #[cfg(all(feature = \"bench\", target_arch = \"aarch64\"))] unsafe extern \"C\" {\n\
+        fn cutile_fma_pure(rounds: usize);\n\
+        fn cutile_fma_block(rounds: usize, a: *const f32, b: *const f32, k: i32);\n\
+        fn cutile_sdot_pure(rounds: usize);\n\
+        fn cutile_sdot_block(rounds: usize, a: *const i8, b: *const i8, k: i32);\n\
+        fn cutile_sme_pure(rounds: usize);\n\
+        fn cutile_sme_mix(rounds: usize, a: *const f32, b: *const f32);\n\
+    }\n");
+    contract.push_str(crate::sign::NATIVE_PROBE_RS);
+    let contract_path = out.join("gemm_micro_contract.rs");
+    std::fs::write(&contract_path, contract)
+        .unwrap_or_else(|error| fail(format!("写 {} 失败：{error}", contract_path.display())));
+    compile_native(&c);
+}
+
+/// MSVC 用同一正文分别裁剪基线和 AVX2 对象；其他工具链保留函数级 target 属性。
+fn compile_native(c: &Path) {
+    let msvc_x86 = std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("x86_64")
+        && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc");
+    if msvc_x86 {
+        cc::Build::new()
+            .file(c)
+            .opt_level(3)
+            .define("CUTILE_SCALAR_ONLY", None)
+            .compile("cutile_gemm_micro");
+        cc::Build::new()
+            .file(c)
+            .opt_level(3)
+            .define("CUTILE_AVX2_ONLY", None)
+            .flag("/arch:AVX2")
+            .compile("cutile_gemm_micro_avx2");
+        return;
+    }
+    cc::Build::new()
+        .file(c)
+        .opt_level(3)
+        .flag_if_supported("-std=c99")
+        .compile("cutile_gemm_micro");
+}
+
+/// 生成三族配置常量并校验／渲染所有具名注解。
+fn render_native(text: &str, table: &toml::Table) -> String {
+    let native = native_table(table);
+    validate_native_config(native);
+    crate::sign::validate_native_annotations(text, fail);
+    let out = replace_native_slots(native, text);
+    if out.contains("{{") {
+        fail("`gemm_micro.k` 仍有未登记的 `{{…}}` 槽位");
+    }
+    apply_native_unrolls(native, out)
+}
+
+fn native_table(table: &toml::Table) -> &toml::Table {
+    table
+        .get("gemm_micro")
+        .and_then(toml::Value::as_table)
+        .unwrap_or_else(|| fail("`kernels.toml.gemm_micro` 必须是表"))
+}
+
+fn validate_native_config(native: &toml::Table) {
+    for (family, allowed) in [
+        ("fma", &["mr", "nr", "kb", "unroll"][..]),
+        ("sdot", &["mr", "nr", "chains", "unroll"][..]),
+        ("sme", &["mr", "nr", "min_elems", "unroll"][..]),
+    ] {
+        validate_native_family(native, family, allowed);
+    }
+    for family in native.keys() {
+        if !["fma", "sdot", "sme"].contains(&family.as_str()) {
+            fail(format!("`gemm_micro.{family}` 不是已登记微内核族"));
+        }
+    }
+}
+
+fn validate_native_family(native: &toml::Table, family: &str, allowed: &[&str]) {
+    let section = native
+        .get(family)
+        .and_then(toml::Value::as_table)
+        .unwrap_or_else(|| fail("`gemm_micro.{family}` 必须是表"));
+    for key in section.keys() {
+        if !allowed.contains(&key.as_str()) {
+            fail(format!("`gemm_micro.{family}.{key}` 不是已登记字段"));
+        }
+    }
+    for key in allowed {
+        let _ = native_positive(native, family, key);
+    }
+}
+
+fn replace_native_slots(native: &toml::Table, text: &str) -> String {
+    let mut out = text.to_owned();
+    for (slot, field) in [
+        ("FMA_MR", "mr"),
+        ("FMA_NR", "nr"),
+        ("FMA_KB", "kb"),
+        ("SDOT_MR", "mr"),
+        ("SDOT_NR", "nr"),
+        ("SDOT_CHAINS", "chains"),
+        ("SME_MR", "mr"),
+        ("SME_NR", "nr"),
+        ("SME_MIN_ELEMS", "min_elems"),
+    ] {
+        let family = slot.split_once('_').map_or("", |(head, _)| head);
+        let value = native_positive(native, &family.to_ascii_lowercase(), field);
+        out = out.replace(&format!("{{{{{slot}}}}}"), &value.to_string());
+    }
+    out
+}
+
+fn apply_native_unrolls(native: &toml::Table, mut out: String) -> String {
+    for (name, family) in [
+        ("fma_neon", "fma"),
+        ("fma_avx2", "fma"),
+        ("fma_scalar", "fma"),
+        ("sdot", "sdot"),
+        ("sme", "sme"),
+    ] {
+        let marker = format!("/* cutile-unroll: {name} */");
+        let factor = native_positive(native, family, "unroll");
+        let count = out.matches(&marker).count();
+        if factor > 1 && count != 1 {
+            fail(format!(
+                "`gemm_micro.k` 的 `{name}` 展开点应恰好一次，实得 {count}"
+            ));
+        }
+        out = out.replace(&marker, &format!("#pragma unroll {factor}"));
+    }
+    out
+}
+
+/// 一个配置字段：必须是非零、可由 usize 承载的整数。
+fn native_positive(native: &toml::Table, family: &str, key: &str) -> usize {
+    let value = native
+        .get(family)
+        .and_then(toml::Value::as_table)
+        .and_then(|section| section.get(key))
+        .and_then(toml::Value::as_integer)
+        .unwrap_or_else(|| fail(format!("`gemm_micro.{family}.{key}` 必须是正整数")));
+    usize::try_from(value)
+        .ok()
+        .filter(|value| *value > 0)
+        .unwrap_or_else(|| fail(format!("`gemm_micro.{family}.{key}` 超出正 usize 范围")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::documents;
+
+    #[test]
+    fn family_entries_keep_shared_geometry_and_their_own_constants() {
+        let table = toml::from_str(
+            "[axes]\nN = [32]\n[[operators]]\nop = { name = 'neg_f32', stem = 'unary_fn' }\nconsts = { unexpr = '-x' }\n[[operators]]\nop = { name = 'square_f32', stem = 'unary_fn' }\nconsts = { unexpr = 'x * x' }\n",
+        )
+        .expect("合法同族声明");
+        let documents = documents("unary", &table).expect("同族展开");
+        assert_eq!(documents.len(), 2);
+        assert!(
+            documents
+                .iter()
+                .all(|(_, table)| table.contains_key("axes"))
+        );
+        assert_eq!(documents[0].0, "neg_f32");
+        assert_eq!(documents[1].1["consts"]["unexpr"].as_str(), Some("x * x"));
+    }
+
+    #[test]
+    #[should_panic(expected = "不能同时包含")]
+    fn mixed_single_and_family_declarations_are_rejected() {
+        let table =
+            toml::from_str("[op]\nname = 'single'\n[[operators]]\nop = { name = 'family' }\n")
+                .expect("合法 TOML");
+        let _ = documents("mixed", &table);
+    }
 }

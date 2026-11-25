@@ -2,7 +2,7 @@
 
 use crate::formula::FormulaOwner;
 use crate::kernel::scalar::{FloatSlice, FloatSliceMut, Scalar};
-use crate::model::{Buf, Cost, Sample, ShapeCtx, Values};
+use crate::model::{Buf, Cost, Sample, ShapeCtx, Values, Vector};
 use diagnostic::{Code, Error};
 use tensor::View;
 
@@ -47,20 +47,38 @@ pub fn sample<B: Binary>(len: usize, _: usize) -> Sample {
         n: len,
         scalars: vec![("N", len as i64)],
         bufs: vec![
+            Buf::f32("a", B::input_a(len)),
+            Buf::f32("b", B::input_b(len)),
+            Buf::f32("y", vec![0.0; len]),
+        ],
+    }
+}
+
+/// 四车道样本：`len` 仍是标量数；调用方的 `Operator::GROUP = 4` 保证整组输入。
+pub fn sample4<B: Binary>(len: usize, _: usize) -> Sample {
+    Sample {
+        m: len,
+        n: len,
+        scalars: vec![("N", len as i64)],
+        bufs: vec![
             Buf {
                 name: "a",
-                values: Values::F32(B::input_a(len)),
+                values: vector4(B::input_a(len)),
             },
             Buf {
                 name: "b",
-                values: Values::F32(B::input_b(len)),
+                values: vector4(B::input_b(len)),
             },
             Buf {
                 name: "y",
-                values: Values::F32(vec![0.0; len]),
+                values: vector4(vec![0.0; len]),
             },
         ],
     }
+}
+
+fn vector4(values: Vec<f32>) -> Values {
+    Values::F32x4(Vector::from_fn(values.len() / 4, |idx| values[idx]))
 }
 
 /// 标量参考：逐元素应用 f32 标量核 [`Binary::apply_f32`]，不依赖任何设备。
@@ -146,6 +164,24 @@ macro_rules! binary_f32 {
         $apply:expr, $diff:literal
         $(, $input_a:expr, $input_b:expr)?
     ) => {
+        $crate::binary_f32! {
+            @expand $name, $alias, $op, $kind, $apply, $diff, 1,
+            $crate::elementwise::sample::<$name> $(, $input_a, $input_b)?
+        }
+    };
+    (
+        @vector $name:ident, $alias:ident, $op:tt, $kind:ident, $apply:expr
+    ) => {
+        $crate::binary_f32! {
+            @expand $name, $alias, $op, $kind, $apply, false, 4,
+            $crate::elementwise::sample4::<$name>
+        }
+    };
+    (
+        @expand $name:ident, $alias:ident, $op:tt, $kind:ident,
+        $apply:expr, $diff:literal, $group:expr, $sample:path
+        $(, $input_a:expr, $input_b:expr)?
+    ) => {
         #[doc = concat!("`", $op, "` 的标记类型：逐元素二元运算见 `apply`，骨架见 `crate::elementwise`。")]
         pub struct $name;
 
@@ -173,15 +209,14 @@ macro_rules! binary_f32 {
             } )?
         }
 
-        // 基座契约（ADR 0050）：只转发族骨架，不写第二份算术。
+        // 名字、粒度、采样档都是宏实参；算术与标量参考仍只有一份。
         $crate::operator_via!(
-            $name,
-            $op,
-            2,
-            (4096, 4096),
-            $diff,
-            super,
-            $crate::elementwise::AXES
+            @impl $name, $op, 2, (4096, 4096), $diff, $group,
+            $crate::elementwise::AXES,
+            $crate::elementwise::project_shape,
+            $crate::elementwise::cost::<$name>,
+            $sample,
+            $crate::elementwise::reference::<$name>
         );
 
         #[annotation::model(name = $op, shape = [4096, 4096], dtype = "f32", skeleton = "elementwise")]
@@ -228,6 +263,12 @@ pub mod add_f32 {
 
     crate::binary_f32!(Add, AddF32, "add_f32", elementwise_binary_tests, |x, y| x
         + y);
+}
+
+pub mod add_f32x4 {
+    //! 四车道逐元素加法：逻辑形状仍按底层 f32 标量计。
+
+    crate::binary_f32!(@vector AddVector4, AddF32x4, "add_f32x4", elementwise_binary_tests, |x, y| x + y);
 }
 
 pub mod sub_f32 {

@@ -206,18 +206,18 @@ pub(crate) fn declared_edges() -> (BTreeSet<Edge>, usize, usize) {
     }
     for entry in entries {
         let (lhs, rhs) = entry.split_once('→').expect("每条边都有箭头");
-        let froms: Vec<String> = lhs.split('/').map(short).collect();
+        let sources: Vec<String> = lhs.split('/').map(short).collect();
         let (normal, dev_part) = match rhs.split_once("+dev:") {
             Some((normal, dev_part)) => (normal, dev_part),
             None => (rhs, ""),
         };
         // 「叶」标记只表示没有运行时出边；同一行仍可以登记 `+dev` 测试夹具边。
         let normal_is_leaf = normal.contains("（叶");
-        for from in &froms {
+        for source in &sources {
             if !normal_is_leaf {
                 for to in names(normal) {
                     edges.insert(Edge {
-                        from: from.clone(),
+                        from: source.clone(),
                         to,
                         dev: false,
                     });
@@ -225,7 +225,7 @@ pub(crate) fn declared_edges() -> (BTreeSet<Edge>, usize, usize) {
             }
             for to in names(dev_part) {
                 edges.insert(Edge {
-                    from: from.clone(),
+                    from: source.clone(),
                     to,
                     dev: true,
                 });

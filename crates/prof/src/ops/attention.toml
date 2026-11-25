@@ -1,0 +1,36 @@
+# 注意力族：共享点积、max 归约、布局与 direct 变体；查询行网格按职责配置。
+
+[axes]
+N = [8]
+
+[needs]
+dot    = { dt = ["f32"], space = ["REG"], lanes = ["1"] }
+reduce = { axis = ["GMAX"], op = ["max"], dt = ["f32"] }
+store  = { bytes = "<=4096", dt = ["f32"], space = ["GM"] }
+
+[layouts]
+q = "row"
+k = "row"
+v = "row"
+y = "row"
+
+[[variants]]
+name      = "direct"
+order     = 1
+schedule  = "direct"
+mma_share = 0.0
+
+[[operators]]
+op = { name = "attention_f32", skeleton = "elementwise", summary = "O = softmax(QK^T/sqrt(d)) V" }
+[operators.grid]
+dims = ["i:S"]
+
+[[operators]]
+op = { name = "decode_attention_f32", skeleton = "elementwise", summary = "O = softmax(QK^T/sqrt(d)) V over cached history" }
+[operators.grid]
+dims = ["i:Q_ROWS"]
+
+[[operators]]
+op = { name = "latent_attention_f32", skeleton = "elementwise", summary = "O = softmax(Q·Kᵀ/√W)·V，键行尾部为解耦 RoPE 段，输出宽 dc 可小于读入宽 W" }
+[operators.grid]
+dims = ["i:R"]

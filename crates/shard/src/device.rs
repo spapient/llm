@@ -8,7 +8,11 @@ use crate::toolchain;
 use crate::witness::{MAX_OUT, Scope, Selected};
 use cutile::dirs::Dirs;
 use cutile::prof::{Emit, Profile};
-use diagnostic::Result;
+use diagnostic::{Code, Error, Result};
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::mem::size_of;
+use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
 /// 宿主 C 参考后端：本机 CPU 永远在，证明「这段 C 编得过、跑得出 `expect`」，不是设备证据。
@@ -177,6 +181,362 @@ fn push_witness(text: &mut String, func: &str, max: usize) {
     text.push_str("        v.f = out[i];\n");
     text.push_str("        printf(\"%u\\n\", v.u);\n");
     text.push_str("    }\n");
+}
+
+// ---- Metal host 驱动与 OpenCL 设备实现 ----
+
+const METAL_HEAD: &str = r#"#import <Foundation/Foundation.h>
+#import <Metal/Metal.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+int main(int argc, const char **argv) {
+    @autoreleasepool {
+        if (argc < 3) {
+            fprintf(stderr, "usage: driver <metallib> <count>\n");
+            return 2;
+        }
+        const int count = atoi(argv[2]);
+"#;
+
+const METAL_TAIL: &str = r#"        id<MTLBuffer> values = [device newBufferWithLength:(NSUInteger)count * WITNESS_MAX_OUT * sizeof(float)
+                                                  options:MTLResourceStorageModeShared];
+        id<MTLBuffer> counts = [device newBufferWithLength:(NSUInteger)count * sizeof(int)
+                                                   options:MTLResourceStorageModeShared];
+        id<MTLCommandQueue> queue = [device newCommandQueue];
+        id<MTLCommandBuffer> buffer = [queue commandBuffer];
+        id<MTLComputeCommandEncoder> encoder = [buffer computeCommandEncoder];
+        [encoder setComputePipelineState:pipeline];
+        [encoder setBuffer:values offset:0 atIndex:0];
+        [encoder setBuffer:counts offset:0 atIndex:1];
+        [encoder dispatchThreads:MTLSizeMake((NSUInteger)count, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake((NSUInteger)count, 1, 1)];
+        [encoder endEncoding];
+        [buffer commit];
+        [buffer waitUntilCompleted];
+        if (buffer.error) {
+            fprintf(stderr, "内核执行失败：%s\n", buffer.error.localizedDescription.UTF8String);
+            return 7;
+        }
+        const int *written = (const int *)counts.contents;
+        const float *out = (const float *)values.contents;
+        for (int i = 0; i < count; ++i) {
+            fprintf(stderr, "witness %d\n", written[i]);
+        }
+        fflush(stderr);
+        for (int i = 0; i < count; ++i) {
+            int n = written[i];
+            if (n < 0) n = 0;
+            if (n > WITNESS_MAX_OUT) n = WITNESS_MAX_OUT;
+            for (int j = 0; j < n; ++j) {
+                union { float f; unsigned int u; } v;
+                v.f = out[i * WITNESS_MAX_OUT + j];
+                printf("%u\n", v.u);
+            }
+        }
+    }
+    return 0;
+}
+"#;
+
+/// 生成 Metal 见证 host 驱动；写出上限由 `max` 参数注入。
+#[must_use]
+pub fn metal_driver(max: usize) -> String {
+    let library = r#"        id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+        if (!device) { fprintf(stderr, "本机没有 Metal 设备\n"); return 3; }
+        NSError *error = nil;
+        NSURL *url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:argv[1]]];
+        id<MTLLibrary> library = [device newLibraryWithURL:url error:&error];
+        if (!library) { fprintf(stderr, "metallib 装载失败：%s\n", error.localizedDescription.UTF8String); return 4; }
+"#;
+    format!(
+        "#define WITNESS_MAX_OUT {max}\n{METAL_HEAD}{library}        id<MTLFunction> function = [library newFunctionWithName:@\"cutile_witness\"];
+        if (!function) {{ fprintf(stderr, \"metallib 里没有 cutile_witness\\n\"); return 5; }}
+        id<MTLComputePipelineState> pipeline = [device newComputePipelineStateWithFunction:function error:&error];
+        if (!pipeline) {{ fprintf(stderr, \"管线创建失败：%s\\n\", error.localizedDescription.UTF8String); return 6; }}
+{METAL_TAIL}"
+    )
+}
+
+#[cfg(windows)]
+pub(crate) mod opencl {
+    use super::*;
+    use crate::toolchain::Toolchain;
+    use prof::runtime::opencl::{OpenClBuf, OpenClDevice};
+
+    pub(crate) struct OpenClBackend;
+
+    impl Codegen for OpenClBackend {
+        fn emit(&self) -> Emit {
+            Emit::Opencl
+        }
+
+        fn program(
+            &self,
+            profile: &Profile,
+            dirs: &Dirs,
+            selected: &[Selected<'_>],
+            _scope: Scope,
+        ) -> Result<String> {
+            let mut program = profile.preamble.clone();
+            driver::normalize_newline(&mut program);
+            program.push_str("#define CUTILE_INTEL_DEVICE 1\n");
+            driver::push_sources(
+                &mut program,
+                &driver::witness_files(selected, dirs, driver::C_PARAMS)?,
+            );
+            program.push_str(&format!(
+                "__kernel void cutile_witness(__global float *out, __global int *counts) {{\n\
+                 \x20   int tid = get_group_id(0);\n\
+                 \x20   int lane = get_local_id(0);\n\
+                 \x20   out += tid * {MAX_OUT};\n\
+                 \x20   int n = 0;\n\
+                 \x20   switch (tid) {{\n"
+            ));
+            for (idx, (prim, _, witness)) in selected.iter().enumerate() {
+                let cooperative = matches!(
+                    *prim,
+                    cutile::atom::Prim::Shuffle
+                        | cutile::atom::Prim::Broadcast
+                        | cutile::atom::Prim::Scan
+                );
+                let guard = if cooperative { "" } else { "if (lane == 0) " };
+                program.push_str(&format!(
+                    "case {idx}: {guard}n = {}(out); break;\n",
+                    witness.func
+                ));
+            }
+            program.push_str(&format!(
+                "default: break;\n}}\n\
+                 \x20   if (lane == 0) counts[tid] = n < 0 ? 0 : (n > {MAX_OUT} ? {MAX_OUT} : n);\n}}\n"
+            ));
+            Ok(program)
+        }
+    }
+
+    fn bufs(device: &OpenClDevice, total: usize) -> Result<(OpenClBuf, OpenClBuf)> {
+        let output = device.alloc(total * MAX_OUT)?;
+        let counts = device.alloc_i32(total)?;
+        Ok((output, counts))
+    }
+
+    fn readback(device: &OpenClDevice, output: &OpenClBuf, counts: &OpenClBuf) -> Result<Readback> {
+        let counts = device.read_i32(counts)?;
+        let values = device.read_f32(output)?;
+        let readback = counts
+            .iter()
+            .enumerate()
+            .flat_map(|(idx, &count)| {
+                let count = usize::try_from(count).unwrap_or(0).min(MAX_OUT);
+                let start = idx * MAX_OUT;
+                values[start..start + count].iter().copied()
+            })
+            .collect();
+        Ok((counts.into_iter().map(i64::from).collect(), readback))
+    }
+
+    impl Driver for OpenClBackend {
+        fn available(&self, _: &Profile) -> bool {
+            OpenClDevice::probe().is_some()
+        }
+
+        fn run(
+            &self,
+            profile: &Profile,
+            _: &Dirs,
+            program: &str,
+            total: usize,
+            _: Scope,
+        ) -> Result<Readback> {
+            let device = OpenClDevice::new()?;
+            let kernel = device.compile(program, &profile.flags.join(" "), "cutile_witness")?;
+            let (output, counts) = bufs(&device, total)?;
+            device.launch(
+                &kernel,
+                &[&output, &counts],
+                [total * 16, 1, 1],
+                Some([16, 1, 1]),
+            )?;
+            readback(&device, &output, &counts)
+        }
+
+        fn toolchain(&self) -> Option<Toolchain> {
+            OpenClDevice::probe().map(|info| Toolchain {
+                command: "OpenCL".to_string(),
+                version: Some(info.driver),
+                banner: format!("{} · {}", info.name, info.version),
+            })
+        }
+    }
+
+    impl Backend for OpenClBackend {}
+}
+
+// ---- 文件槽存储：集合算法由 collective 统一提供 ----
+
+/// 文件传输集合通信：共享文件承载 `world × width` 个小端 `f32` 槽位。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileRemote {
+    rank: u32,
+    world: u32,
+    width: usize,
+    bytes: u64,
+    backing: PathBuf,
+}
+
+impl FileRemote {
+    /// 打开一个 rank 的文件句柄，并将共享文件预留到完整长度。
+    ///
+    /// # Errors
+    ///
+    /// `world` 或 `width` 为零、rank 越界、文件长度溢出或文件不可创建。
+    pub fn open(rank: u32, world: u32, width: usize, backing: impl Into<PathBuf>) -> Result<Self> {
+        Self::check_open_config(rank, world, width)?;
+        let bytes = Self::file_bytes(world, width)?;
+        let remote = Self {
+            rank,
+            world,
+            width,
+            bytes,
+            backing: backing.into(),
+        };
+        remote.resize()?;
+        Ok(remote)
+    }
+
+    /// 打开配置只负责进程拓扑与非零宽度，和文件字节换算分离。
+    fn check_open_config(rank: u32, world: u32, width: usize) -> Result<()> {
+        if world == 0 {
+            fail!("shard::FileRemote::open", "进程数 world 不能为 0");
+        }
+        if rank >= world {
+            fail!("shard::FileRemote::open", "rank {rank} 超出 0..{world}");
+        }
+        if width == 0 {
+            fail!("shard::FileRemote::open", "归约宽度不能为 0");
+        }
+        Ok(())
+    }
+
+    /// 共享文件包含 `world × width` 个 `f32`，所有换算必须受溢出保护。
+    fn file_bytes(world: u32, width: usize) -> Result<u64> {
+        let slot_bytes = width
+            .checked_mul(size_of::<f32>())
+            .ok_or_else(|| invalid!("shard::FileRemote::open", "槽位字节数溢出"))?;
+        u64::try_from(slot_bytes)
+            .ok()
+            .and_then(|slot| slot.checked_mul(u64::from(world)))
+            .ok_or_else(|| invalid!("shard::FileRemote::open", "共享文件字节数溢出"))
+    }
+
+    accessors! {
+        /// 本进程的 rank。
+        rank -> u32 = |s| s.rank;
+    }
+
+    /// 将某个 rank 的输入写入对应槽位。
+    ///
+    /// # Errors
+    ///
+    /// 长度不符、rank 越界或文件不可写。
+    pub fn load(&self, rank: u32, values: &[f32]) -> Result<()> {
+        self.check_width("shard::FileRemote::load", values.len())?;
+        self.check_rank("shard::FileRemote::load", rank)?;
+        self.write_slot(rank, values)
+    }
+
+    /// 读取某个 rank 的当前槽位。
+    ///
+    /// # Errors
+    ///
+    /// rank 越界或文件不可读。
+    pub fn replica(&self, rank: u32) -> Result<Vec<f32>> {
+        self.check_rank("shard::FileRemote::replica", rank)?;
+        let mut slot = vec![0.0; self.width];
+        self.read_slot(rank, &mut slot)?;
+        Ok(slot)
+    }
+
+    pub(crate) const fn width(&self) -> usize {
+        self.width
+    }
+
+    fn check_rank(&self, site: &'static str, rank: u32) -> Result<()> {
+        if rank < self.world {
+            return Ok(());
+        }
+        refuse_at!(site, "rank {rank} 超出 0..{}", self.world)
+    }
+
+    /// 槽宽校验：`load` 的输入长度必须等于本镜像的归约宽度。
+    fn check_width(&self, site: &'static str, len: usize) -> Result<()> {
+        if len == self.width {
+            return Ok(());
+        }
+        refuse_at!(site, "宽度 {len} 与归约宽度 {} 不一致", self.width)
+    }
+
+    fn offset(&self, rank: u32) -> u64 {
+        u64::from(rank) * (self.width as u64) * size_of::<f32>() as u64
+    }
+
+    fn io(&self, action: &str, error: std::io::Error) -> Error {
+        Error::new(
+            Code::Io,
+            format!("{action} `{}` 失败：{error}", self.backing.display()),
+        )
+    }
+
+    fn seek_slot(&self, file: &mut File, rank: u32) -> Result<()> {
+        file.seek(SeekFrom::Start(self.offset(rank)))
+            .map_err(|error| self.io("定位", error))
+            .map(|_| ())
+    }
+
+    fn resize(&self) -> Result<()> {
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&self.backing)
+            .map_err(|error| self.io("创建", error))?
+            .set_len(self.bytes)
+            .map_err(|error| self.io("预留", error))
+    }
+
+    pub(crate) fn read_slot(&self, rank: u32, out: &mut [f32]) -> Result<()> {
+        let bytes = self.read_bytes(rank)?;
+        for (slot, chunk) in out.iter_mut().zip(bytes.as_chunks::<4>().0) {
+            *slot = f32::from_le_bytes(*chunk);
+        }
+        Ok(())
+    }
+
+    /// 文件定位与完整读取共用一条路径，调用方只负责协议解码。
+    fn read_bytes(&self, rank: u32) -> Result<Vec<u8>> {
+        self.check_rank("shard::FileRemote::read", rank)?;
+        let mut file = File::open(&self.backing).map_err(|error| self.io("打开", error))?;
+        self.seek_slot(&mut file, rank)?;
+        let mut bytes = vec![0u8; self.width * size_of::<f32>()];
+        file.read_exact(&mut bytes)
+            .map_err(|error| self.io("读", error))?;
+        Ok(bytes)
+    }
+
+    pub(crate) fn write_slot(&self, rank: u32, values: &[f32]) -> Result<()> {
+        self.check_rank("shard::FileRemote::write", rank)?;
+        let mut file = OpenOptions::new()
+            .write(true)
+            .open(&self.backing)
+            .map_err(|error| self.io("打开", error))?;
+        self.seek_slot(&mut file, rank)?;
+        let bytes: Vec<u8> = values
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        file.write_all(&bytes).map_err(|error| self.io("写", error))
+    }
 }
 
 #[cfg(test)]

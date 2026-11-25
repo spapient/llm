@@ -1,8 +1,8 @@
 # 0037：优化器归 train、对象安全 trait、矩状态自持；ParamRole 闭集进 ContractSpec（草案）
 
-- 状态：草案（结论以看板为准；实现随 T1 轨道填入，本 ADR 不规定分布式优化器与真实大语料装配）
+- 状态：已采纳（优化器、参数角色、快照与分布式装配均已落地；当前接口以源码和训练架构指南为准）
 - 日期：2026-11-17
-- 相关：[0002](0002-single-owner-per-type.md)（类型唯一归属）、[0005](0005-annotations-as-contracts.md)（注解契约）；决策台账见 [`../implementation-task-plan.md`](../implementation-task-plan.md) §4 D2 / D11，设计取证见 [`../llmu-parity-optimization-design.md`](../llmu-parity-optimization-design.md) §1.5 P1–P4、§4.3 训练闭环
+- 相关：[0002](0002-single-owner-per-type.md)（类型唯一归属）、[0005](0005-annotations-as-contracts.md)（注解契约）、[`../train-architecture-2026-11-25.md`](../train-architecture-2026-11-25.md)（当前训练架构）；决策台账见 [`../implementation-task-plan.md`](../implementation-task-plan.md) §4 D2 / D11，设计取证见 [`../llmu-parity-optimization-design.md`](../llmu-parity-optimization-design.md) §1.5 P1–P4、§4.3 训练闭环
 
 ## 背景
 

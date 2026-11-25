@@ -207,38 +207,58 @@ const DECLARED: &[(&str, Geometry)] = declared_geometries! {
     layer_norm => Layer { rows: R, width: W },
 };
 
+#[path = "geometry_kernels.rs"]
 mod kernels;
+#[path = "geometry_shapes.rs"]
 mod shapes;
 use shapes::{invalid, pool_len};
 
 // ---- 方法分派：形状核对 + 逐变体路由 -----------------------------------------
 impl Geometry {
-    /// 输入个数：池化与插值是一元，三种归一化是 `(x, gamma, beta)`。
-    pub fn arity(self) -> usize {
+    /// 输出元素数。前向缓冲长度必须与它相等。
+    pub fn outputs(self) -> usize {
         match self {
             Self::Pool1d { .. }
             | Self::Pool2d { .. }
             | Self::Avg2d { .. }
-            | Self::Adaptive { .. }
-            | Self::Interp { .. } => 1,
-            Self::Norm { .. } | Self::Group { .. } | Self::Layer { .. } | Self::Conv2d { .. } => 3,
+            | Self::Conv2d { .. } => self.pool_output(),
+            Self::Adaptive { .. } | Self::Interp { .. } => self.plane_output(),
+            Self::Norm { .. } | Self::Group { .. } | Self::Layer { .. } => self.norm_output(),
         }
     }
 
-    /// 输出元素数。前向缓冲长度必须与它相等。
-    pub fn outputs(self) -> usize {
-        let plane = |len, k, s, p, width, channels| {
-            pool_len(len, k, s, p)
-                .and_then(|out| Ok(out * pool_len(width, k, s, p)? * channels))
-                .unwrap_or(0)
-        };
+    /// 池化与卷积输出：二维边长由两次窗口展开相乘。
+    fn pool_output(self) -> usize {
         match self {
             Self::Pool1d { k, s, p, l, c } => pool_len(l, k, s, p).map_or(0, |ol| ol * c),
             Self::Pool2d { k, s, p, h, w, c }
             | Self::Avg2d {
                 k, s, p, h, w, c, ..
-            } => plane(h, k, s, p, w, c),
+            } => plane_out(h, w, k, s, p, c),
+            Self::Conv2d {
+                k,
+                s,
+                p,
+                h,
+                w,
+                cout,
+                ..
+            } => plane_out(h, w, k, s, p, cout),
+            _ => 0,
+        }
+    }
+
+    /// 固定平面输出：自适应池化与插值的 `oh·ow·c`。
+    fn plane_output(self) -> usize {
+        match self {
             Self::Adaptive { oh, ow, c, .. } | Self::Interp { oh, ow, c, .. } => oh * ow * c,
+            _ => 0,
+        }
+    }
+
+    /// 归一化输出：按元素总数 `n·spatial·channels`（层归一化为 `rows·width`）。
+    fn norm_output(self) -> usize {
+        match self {
             Self::Norm {
                 n,
                 spatial,
@@ -250,33 +270,9 @@ impl Geometry {
                 channels,
                 ..
             } => n * spatial * channels,
-            Self::Conv2d {
-                k,
-                s,
-                p,
-                h,
-                w,
-                cout,
-                ..
-            } => plane(h, k, s, p, w, cout),
             Self::Layer { rows, width } => rows * width,
+            _ => 0,
         }
-    }
-
-    /// 校验一次调用的形状：输入个数、各输入长度、输出长度都必须与实例自洽。
-    ///
-    /// # Errors
-    ///
-    /// 任一处不符返回 [`Code::Invalid`]。
-    pub fn check_shape(self, lens: &[usize], out: usize) -> Result<()> {
-        if lens.len() != self.arity() {
-            return Err(invalid(format!(
-                "输入个数是 {}，实例要 {}",
-                lens.len(),
-                self.arity()
-            )));
-        }
-        shapes::check_geometry(self, lens, out)
     }
 
     /// 按实例几何前向：算术全部复用 `nn::conv` / `nn::kernel::norm` 的真实现。
@@ -363,6 +359,17 @@ impl Geometry {
         )?;
         kernels::backward(self, inputs, incoming)
     }
+}
+
+/// 二维平面输出元素数：两次窗口展开相乘，几何不成立时退 0。
+fn plane_out(h: usize, w: usize, k: usize, s: usize, p: usize, channels: usize) -> usize {
+    let Ok(oh) = pool_len(h, k, s, p) else {
+        return 0;
+    };
+    let Ok(ow) = pool_len(w, k, s, p) else {
+        return 0;
+    };
+    oh * ow * channels
 }
 
 #[cfg(test)]

@@ -351,3 +351,20 @@ pub fn check_operands(node: &Node, unbound: impl Fn(u32) -> bool, ctx: &'static 
     }
     Ok(())
 }
+
+/// 微内核与网格共用的面积计算：乘法溢出即报错，不回绕。
+pub(crate) fn area(a: usize, b: usize, name: &str) -> Result<usize> {
+    a.checked_mul(b)
+        .ok_or_else(|| Error::new(Code::Invalid, format!("{name} 元素数溢出")))
+}
+
+/// 坐标或尺寸的受检加法。
+pub(crate) fn add(a: usize, b: usize, name: &str) -> Result<usize> {
+    a.checked_add(b)
+        .ok_or_else(|| Error::new(Code::Invalid, format!("{name}溢出")))
+}
+
+/// 主机 ABI 的 C `int` 转换；超范围时拒绝调用，不做截断。
+pub(crate) fn c_int(value: usize, name: &str) -> Result<i32> {
+    i32::try_from(value).map_err(|_| Error::new(Code::Invalid, format!("{name} 超出 C int 范围")))
+}

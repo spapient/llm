@@ -23,7 +23,7 @@ mod generated {
 }
 
 pub use ccn::{Finding, analyze};
-pub use gate::Gate;
+pub use gate::{DebtView, ExemptView, Gate, GateView, UnlistedView, VocabularyView};
 pub use generated::vocabulary;
 pub use lex::{Delim, Pos, Token, parse};
 pub use strip::{strip_tests, submodules, test_modules};

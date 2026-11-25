@@ -665,6 +665,7 @@ dependencies = [
 name = "llm-prof"
 version = "0.1.0"
 dependencies = [
+ "cc",
  "half",
  "llm-annotation",
  "llm-diagnostic",
@@ -734,6 +735,7 @@ dependencies = [
  "llm-tools",
  "llm-train",
  "llm-weights",
+ "num-traits",
  "proptest",
  "serde_json",
  "similar-asserts",
@@ -754,6 +756,7 @@ version = "0.1.0"
 dependencies = [
  "llm-diagnostic",
  "llm-testkit",
+ "toml",
 ]
 
 [[package]]

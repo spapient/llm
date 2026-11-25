@@ -1,13 +1,10 @@
 use super::*;
+use crate::fixtures::catalogue;
 use crate::witness::Basis;
 use prof::atom::Prim;
 
 fn dirs() -> Dirs {
     Dirs::under(std::env::temp_dir().join("cutile-doctor-tests"))
-}
-
-fn catalogue() -> cutile::builtin::Catalogue {
-    cutile::builtin::Catalogue::try_builtin().expect("内置数据")
 }
 
 /// 独立缓存目录：`--why` 会读真目录，不能与其他用例共用。
@@ -45,8 +42,8 @@ fn doctor_reports_each_variant_as_data() {
 
 #[test]
 fn doctor_explains_why_a_gpu_is_rejected() {
-    // `intel`（gen12/OpenCL）的 P0 原语仍是 L1：作为"未验证 GPU"样本（`nvidia` 已升 L2）。
-    let report = doctor(&catalogue(), &dirs(), "gemv_i4", "intel").expect("仍应返回报告");
+    // `ascend` 的 P0 原语仍未验证：作为证据不足样本。
+    let report = doctor(&catalogue(), &dirs(), "gemv_i4", "ascend").expect("仍应返回报告");
     assert!(report.path.is_none(), "{report:?}");
     let no_path = report.no_path.as_ref().expect("失败要带回诊断");
     assert!(no_path.to_string().contains("L2"), "{no_path}");
@@ -235,7 +232,7 @@ fn cache_gc_reclaims_through_the_cache_directory() {
     let dirs =
         Dirs::under(std::env::temp_dir().join(format!("cutile-gc-cache-{}", std::process::id())));
     let _ = std::fs::remove_dir_all(dirs.cache());
-    let catalogue = cutile::builtin::Catalogue::try_builtin().expect("内置数据");
+    let catalogue = catalogue();
     let report = crate::doctor::doctor(&catalogue, &dirs, "gemv_i4", "cpu").expect("doctor");
     assert!(report.source.is_some(), "doctor 应已落盘");
     let before = cutile::cache::cache_gc(&dirs, None).expect("可回收");
@@ -253,4 +250,107 @@ fn cache_gc_reclaims_through_the_cache_directory() {
     assert_eq!(after.removed, entries, "{after:?}");
     assert_eq!(after.after, 0, "{after:?}");
     let _ = std::fs::remove_dir_all(dirs.cache());
+}
+
+// ---- ledger_tests.rs ----
+
+#[test]
+fn every_profile_covers_the_whole_prim_closed_set() {
+    let catalogue = catalogue();
+    let dirs = Dirs::under(std::env::temp_dir().join("cutile-ledger-test"));
+    for row in ledger(&catalogue, &dirs) {
+        for prim in Prim::ALL {
+            assert!(
+                row.cells.iter().any(|cell| cell.prim == *prim),
+                "{} 缺原语 {prim}",
+                row.profile.meta.vendor
+            );
+        }
+    }
+}
+
+#[test]
+fn verified_cells_only_come_from_executed_basis() {
+    let catalogue = catalogue();
+    let dirs = Dirs::under(std::env::temp_dir().join("cutile-ledger-test"));
+    for row in ledger(&catalogue, &dirs) {
+        for cell in &row.cells {
+            if cell.status == Status::Verified {
+                assert_eq!(row.basis, Basis::Executed, "自述依据不能记成真机对拍");
+            }
+        }
+    }
+}
+
+#[test]
+fn self_check_cells_only_come_from_declared_basis() {
+    let catalogue = catalogue();
+    let dirs = Dirs::under(std::env::temp_dir().join("cutile-ledger-test"));
+    for row in ledger(&catalogue, &dirs) {
+        for cell in &row.cells {
+            if cell.status == Status::SelfCheck {
+                assert_eq!(row.basis, Basis::Declared, "自检依据不能记成设备执行");
+            }
+        }
+    }
+}
+
+#[test]
+fn declared_provisions_each_get_a_cell_and_unprovided_are_marked() {
+    let catalogue = catalogue();
+    let dirs = Dirs::under(std::env::temp_dir().join("cutile-ledger-test"));
+    for row in ledger(&catalogue, &dirs) {
+        for prim in Prim::ALL {
+            let declared = row
+                .profile
+                .provides
+                .iter()
+                .filter(|have| have.prim == *prim)
+                .count();
+            let matched: Vec<&LedgerCell> =
+                row.cells.iter().filter(|cell| cell.prim == *prim).collect();
+            if declared == 0 {
+                assert_eq!(matched.len(), 1, "未声明的原语占一格 Unprovided");
+                assert!(
+                    matched.iter().all(|cell| cell.status == Status::Unprovided),
+                    "未声明的原语必须占一格 Unprovided"
+                );
+            } else {
+                assert_eq!(
+                    matched.len(),
+                    declared,
+                    "档案 {vendor} 原语 {prim}：多条供给必须逐条入格，不合并",
+                    vendor = row.profile.meta.vendor
+                );
+                assert!(
+                    matched.iter().all(|cell| cell.status != Status::Unprovided),
+                    "已声明的供给不得落成 Unprovided"
+                );
+            }
+        }
+    }
+}
+
+/// K14：设备执行一个都拿不到的档案，每一格要么有见证、要么自报"本机起不了前端"。
+/// 口径：`Declared` 格只允许出现在整行零见证的档案上；行里有见证而某原语没见证 = 真漏洞。
+#[test]
+fn no_provided_cell_falls_back_to_declaration_while_the_row_has_witnesses() {
+    let catalogue = catalogue();
+    let dirs = Dirs::under(std::env::temp_dir().join("cutile-ledger-test"));
+    for row in ledger(&catalogue, &dirs) {
+        if row.host == 0 {
+            continue;
+        }
+        for cell in &row.cells {
+            assert_ne!(
+                cell.status,
+                Status::Declared,
+                "档案 {vendor} 行内已有 {host} 条 host 见证，原语 {prim} 却停在只有自述：{note}",
+                vendor = row.profile.meta.vendor,
+                host = row.host,
+                prim = cell.prim,
+                note = cell.note
+            );
+        }
+    }
 }

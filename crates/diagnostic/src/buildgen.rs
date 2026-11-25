@@ -1,8 +1,6 @@
-//! 构建期共享内核：把“扫描语料 → 读取 TOML → 展开成 [`data`](crate::data) 构造表达式”
-//! 三段各 crate `build.rs` 重复的逻辑收敛到一处。
+//! 构建期共享内核：扫描语料并读取 TOML；各 crate 直接生成自己的强类型静态视图。
 
 use crate::{Code, Error, Result};
-use core::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 /// 列出 `dir` 下的 `.toml` 文件，按路径升序，供“目录型”语料（`ops/`、`devices/`）使用。
@@ -44,75 +42,6 @@ pub fn read(path: &Path) -> Result<toml::Table> {
             format!("`{}` 的顶层必须是 TOML 表", path.display()),
         )),
     }
-}
-
-/// 把一张 TOML 表展开成 `Table::from_pairs(vec![…])` 表达式。
-pub fn emit(table: &toml::Table, path: &str) -> Result<String> {
-    Ok(format!("Table::from_pairs({})", pairs(table, path)?))
-}
-
-/// 生成表内的 `vec![("key", value), …]` 片段，顶层表与 `Value::table` 共用。
-fn pairs(table: &toml::Table, path: &str) -> Result<String> {
-    let mut out = String::from("vec![");
-    for (key, value) in table {
-        let child = format!("{path}.{key}");
-        let _ = write!(out, "(\"{key}\", {}), ", value_expr(value, &child)?);
-    }
-    out.push(']');
-    Ok(out)
-}
-
-/// 按值的形态分发：标量交给 [`scalar_expr`]，数组与表各自内联展开，把单函数复杂度压到阈值内。
-fn value_expr(value: &toml::Value, path: &str) -> Result<String> {
-    match value {
-        toml::Value::Array(items) => array_expr(items, path),
-        toml::Value::Table(table) => Ok(format!("Value::table({})", pairs(table, path)?)),
-        scalar => scalar_expr(scalar, path),
-    }
-}
-
-/// 四类合法标量的构造表达式；其余形态（日期时间等）交给 [`invalid_scalar`]。
-fn scalar_expr(value: &toml::Value, path: &str) -> Result<String> {
-    match value {
-        toml::Value::String(text) => Ok(format!("Value::text({text:?})")),
-        toml::Value::Integer(number) => Ok(format!("Value::int({number})")),
-        toml::Value::Float(number) => float_expr(*number, path),
-        toml::Value::Boolean(flag) => Ok(format!("Value::flag({flag})")),
-        other => invalid_scalar(other, path),
-    }
-}
-
-/// 浮点值表达式：非有限值返回带路径的 `invalid` 错误。
-fn float_expr(number: f64, path: &str) -> Result<String> {
-    if !number.is_finite() {
-        return Err(Error::new(
-            Code::Invalid,
-            format!("`{path}` 不是有限浮点数：声明语料不使用 NaN/inf"),
-        ));
-    }
-    Ok(format!("Value::real({number:?})"))
-}
-
-/// 非法标量：日期时间提示改字符串，其余视为内部不变量破坏。
-fn invalid_scalar(value: &toml::Value, path: &str) -> Result<String> {
-    match value {
-        toml::Value::Datetime(_) => Err(Error::new(
-            Code::Invalid,
-            format!("`{path}` 是 TOML 日期时间：声明语料不使用日期，请改成字符串"),
-        )),
-        _ => Err(Error::new(Code::Internal, "标量分支收到非标量值")),
-    }
-}
-
-/// 数组值的 `Value::array(vec![…])` 表达式。
-fn array_expr(items: &[toml::Value], path: &str) -> Result<String> {
-    let mut out = String::from("Value::array(vec![");
-    for (idx, item) in items.iter().enumerate() {
-        let child = format!("{path}[{idx}]");
-        let _ = write!(out, "{}, ", value_expr(item, &child)?);
-    }
-    out.push_str("])");
-    Ok(out)
 }
 
 /// 相对 `base` 的展示路径，给 `cargo:rerun-if-changed` 用，构建日志不带绝对路径。

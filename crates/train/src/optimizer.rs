@@ -1,30 +1,24 @@
-//! 参数更新：对象安全 trait、矩状态按参数编号自持、按 [`ParamRole`](llm_nn::ParamRole) 取组。
-//!
-//! [`Sgd`]、[`Adam`] 与 [`Muon`] 同住本文件：共用 `Slot`/`check_slots`/`decay_rate`/`clip_scale`/
-//! `global_norm` 那组助手，[`Muon`] 自带 Newton–Schulz 正交化与矩阵视图。
-
+//! 参数更新：统一配置预检、全局裁剪、矩状态恢复与按角色衰减。
 use crate::kernel::orthogonalize;
 use diagnostic::{Code, Error, Result};
 use nn::ParamRole;
 
-/// 本模块诊断站点：出错时标明"是优化器拒绝了这次步进"。
 pub(crate) const SITE: &str = "train::Optimizer";
 
-/// 优化器参数组：角色派生的闭集，与 [`ParamRole`] 一一对应，不引入第二份名字表。
+/// 参数角色对应的更新组。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Group {
-    /// 普通投影权重：参与权重衰减。
+    /// 可衰减权重。
     Trainable,
-    /// 偏置：豁免权重衰减。
+    /// 偏置。
     Bias,
-    /// 归一化系数：豁免权重衰减。
+    /// 归一化参数。
     Norm,
-    /// 嵌入表：豁免权重衰减。
+    /// 嵌入表。
     Embedding,
 }
-
 impl Group {
-    /// 角色 → 组的唯一映射；优化器分组走这里，不猜字段名。
+    /// 从 `nn` 的角色闭集派生，不维护第二份标签表。
     pub fn from_role(role: ParamRole) -> Self {
         match role {
             ParamRole::Trainable => Self::Trainable,
@@ -33,61 +27,30 @@ impl Group {
             ParamRole::Embedding => Self::Embedding,
         }
     }
-
-    /// 组 → 角色的回映：标签与豁免判定都从 [`ParamRole`] 取，组侧不抄第二份名字表。
-    const fn role(self) -> ParamRole {
+    /// 诊断短名复用 `ParamRole`。
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Trainable => ParamRole::Trainable,
             Self::Bias => ParamRole::Bias,
             Self::Norm => ParamRole::Norm,
             Self::Embedding => ParamRole::Embedding,
         }
-    }
-
-    /// 组短名：诊断与快照标签，字符串事实源在 [`ParamRole::as_str`]。
-    pub const fn as_str(self) -> &'static str {
-        self.role().as_str()
+        .as_str()
     }
 }
 
-/// 一个待更新参数槽的视图：参数值就地更新，梯度为该槽当前已累积/裁剪口径的结果。
+/// 一个参数槽的可变更新视图。
 pub struct Slot<'a> {
-    /// 参数值（就地写回）。
+    /// 参数值。
     pub params: &'a mut [f32],
-    /// 当前梯度（同步阶段可就地归约/平均，步进阶段只读）。
+    /// 已同步梯度。
     pub grads: &'a mut [f32],
-    /// 参数角色：分组与衰减豁免的派生依据。
+    /// 参数角色。
     pub role: ParamRole,
-    /// 矩阵形状 `(rows, cols)`：参数在图上登记为二阶张量时给出，否则 `None`。
+    /// 矩阵形状，非矩阵为 `None`。
     pub shape: Option<(usize, usize)>,
 }
-
 impl Slot<'_> {
-    /// 参数与梯度长度必须一致，且矩阵槽的行列积必须等于参数长度。
-    fn check_len(&self) -> Result<()> {
-        if self.params.len() != self.grads.len() {
-            let message = format!(
-                "参数槽长度 {} 与梯度长度 {} 不一致：角色 {} 的参数表与梯度表必须逐项对齐",
-                self.params.len(),
-                self.grads.len(),
-                self.role.as_str()
-            );
-            return Err(Error::new(Code::Invalid, message).with(SITE));
-        }
-        if let Some((rows, cols)) = self.shape {
-            let expected = rows.checked_mul(cols);
-            if expected != Some(self.params.len()) {
-                let message = format!(
-                    "参数槽声明为 [{rows}, {cols}] 矩阵，但长度是 {}：行列积与元素数不符",
-                    self.params.len()
-                );
-                return Err(Error::new(Code::Invalid, message).with(SITE));
-            }
-        }
-        Ok(())
-    }
-
-    /// 短生命周期重借用：分组路由不复制参数或梯度。
     fn reborrow(&mut self) -> Slot<'_> {
         Slot {
             params: self.params,
@@ -98,20 +61,19 @@ impl Slot<'_> {
     }
 }
 
-/// 视图与梯度向量的配对：梯度向量在会话侧取走后随视图一起存活，步进结束整块归还缓冲。
+/// 会话取走的参数/梯度所有权，步进后按槽归还。
 pub struct OwnedSlot {
-    /// 参数值就地写回（会话槽参数的快照副本，步进后镜像回缓冲）。
+    /// 参数值。
     pub params: Vec<f32>,
-    /// 从缓冲取走的梯度向量，同步/步进结束归还。
+    /// 梯度向量。
     pub grads: Vec<f32>,
     /// 参数角色。
     pub role: ParamRole,
-    /// 矩阵形状；非矩阵槽为 `None`（口径见 [`Slot::shape`]）。
+    /// 矩阵形状。
     pub shape: Option<(usize, usize)>,
 }
-
 impl OwnedSlot {
-    /// 借成优化器/同步用的可变视图。
+    /// 借成短生命周期更新视图。
     pub fn view(&mut self) -> Slot<'_> {
         Slot {
             params: &mut self.params,
@@ -122,31 +84,34 @@ impl OwnedSlot {
     }
 }
 
-/// 对象安全优化器 trait：实现自持矩状态，按槽位编号（`slots` 下标）存取。
+/// 对象安全优化器；所有实现必须先用同一预检再修改状态。
 pub trait Optimizer {
-    /// 一步更新全部槽位；`lr` 是调度之后的当前有效学习率。
-    ///
-    /// # Errors
-    ///
-    /// 任一槽位参数/梯度长度不一致（[`Code::Invalid`]）时返回说明，不做半截更新。
+    /// 更新全部槽位；非法输入不得留下半次更新。
     fn step(&mut self, slots: &mut [Slot<'_>], lr: f32) -> Result<()>;
-
-    /// 由会话装配统一设置全局梯度范数上限；`None` 表示不裁剪。
+    /// 设置全局梯度范数上限。
     fn set_clip_norm(&mut self, clip_norm: Option<f32>);
-
-    /// 从快照回载矩状态与优化器步数；无矩优化器只接受空表。
-    ///
-    /// # Errors
-    ///
-    /// 两张表槽位数或每槽长度不符（[`Code::Invalid`]），或无矩优化器收到非空矩表。
+    /// 校验静态超参；会话装配与直接步进均调用。
+    fn validate(&self) -> Result<()> {
+        Ok(())
+    }
+    /// 回载矩状态与优化器步数。
     fn restore(
         &mut self,
         momentum: Vec<Vec<f32>>,
         variance: Vec<Vec<f32>>,
         step: u64,
     ) -> Result<()>;
-
-    /// 带槽形状的恢复入口；混合优化器据此在首次步进前确定子状态路由，普通优化器走 [`Self::restore`]。
+    /// 预检恢复输入；实现必须保证同一输入随后可原子提交。
+    fn validate_restore(
+        &self,
+        momentum: &[Vec<f32>],
+        variance: &[Vec<f32>],
+        shapes: &[Option<(usize, usize)>],
+    ) -> Result<()> {
+        let _ = shapes;
+        paired(momentum, variance)
+    }
+    /// 带参数形状的恢复入口，混合路由据此分派子状态。
     fn restore_shaped(
         &mut self,
         momentum: Vec<Vec<f32>>,
@@ -157,43 +122,164 @@ pub trait Optimizer {
         let _ = shapes;
         self.restore(momentum, variance, step)
     }
-
-    /// 把影响更新的静态超参数写入恢复指纹；运行态矩与步数不得写入。
-    /// 自定义优化器的缺省实现只区分具体类型，内置优化器逐项覆盖浮点位模式与开关。
+    /// 写入影响更新轨迹的静态配置指纹。
     fn write_config(&self, sink: &mut dyn FnMut(u64)) {
         let _ = sink;
     }
 }
 
-/// 全局梯度范数（L2）：跨全部槽位汇总，裁剪按这个范数统一缩比。
-pub(crate) fn global_norm(slots: &[Slot<'_>]) -> f32 {
-    let squares = slots
-        .iter()
-        .flat_map(|slot| slot.grads.iter())
-        .map(|g| g * g)
-        .sum::<f32>();
-    squares.sqrt()
+#[derive(Debug, Clone, Default, PartialEq)]
+struct DecayClip {
+    decay: f32,
+    clip: Option<f32>,
 }
-
-/// 该角色参与的解耦衰减系数：豁免组为 `0`，其余取配置系数；豁免判定只从 [`ParamRole`] 派生。
-pub(crate) fn decay_rate(role: ParamRole, weight_decay: f32) -> f32 {
-    if role.wd_exempt() { 0.0 } else { weight_decay }
-}
-
-/// 裁剪系数：范数未超阈值为 `1.0`；超阈值按 `max_norm / norm` 等比缩小。
-pub(crate) fn clip_scale(norm: f32, max_norm: Option<f32>) -> f32 {
-    match max_norm {
-        Some(max) if max > 0.0 && norm > max => max / norm,
-        _ => 1.0,
+impl DecayClip {
+    fn validate(&self) -> Result<()> {
+        validation_rules!(SITE;
+            self.decay.is_finite() && self.decay >= 0.0 => "权重衰减必须是有限非负数",
+            self.clip.is_none_or(|v| v.is_finite() && v > 0.0) => "裁剪范数必须是有限正数",
+        );
+        Ok(())
+    }
+    fn scale(&self, norm: f32) -> f32 {
+        match self.clip {
+            Some(max) if norm > max => max / norm,
+            _ => 1.0,
+        }
+    }
+    fn write(&self, sink: &mut dyn FnMut(u64)) {
+        sink(self.decay.to_bits().into());
+        sink(self.clip.is_some().into());
+        if let Some(value) = self.clip {
+            sink(value.to_bits().into());
+        }
     }
 }
 
-/// 校验全部槽位长度；校验失败不进入更新路径。
-pub(crate) fn check_slots(slots: &[Slot<'_>]) -> Result<()> {
-    slots.iter().try_for_each(Slot::check_len)
+macro_rules! decay_clip {
+    ($ty:ident) => {
+        impl $ty {
+            /// 设置解耦权重衰减；合法性在装配/步进边界校验。
+            pub fn with_weight_decay(mut self, value: f32) -> Self {
+                self.tuning.decay = value;
+                self
+            }
+            /// 设置全局裁剪阈值；非法值不静默改成不裁剪。
+            pub fn with_clip_norm(mut self, value: f32) -> Self {
+                self.tuning.clip = Some(value);
+                self
+            }
+        }
+    };
+}
+macro_rules! optimizer_impl {
+    ($ty:ident, $valid:ident, $check:ident, $restore:ident, $config:ident) => {
+        impl Optimizer for $ty {
+            fn step(&mut self, slots: &mut [Slot<'_>], lr: f32) -> Result<()> {
+                self.validate()?;
+                let norm = check_slots(slots, lr, self.tuning.clip.is_some())?;
+                self.advance(slots, lr, norm)
+            }
+            fn set_clip_norm(&mut self, value: Option<f32>) {
+                self.tuning.clip = value;
+            }
+            fn validate(&self) -> Result<()> {
+                self.tuning.validate()?;
+                $valid(self)
+            }
+            fn validate_restore(
+                &self,
+                m: &[Vec<f32>],
+                v: &[Vec<f32>],
+                _: &[Option<(usize, usize)>],
+            ) -> Result<()> {
+                $check(m, v)
+            }
+            fn restore(&mut self, m: Vec<Vec<f32>>, v: Vec<Vec<f32>>, step: u64) -> Result<()> {
+                $restore(self, m, v, step)
+            }
+            fn write_config(&self, sink: &mut dyn FnMut(u64)) {
+                $config(self, sink);
+                self.tuning.write(sink);
+            }
+        }
+    };
 }
 
-/// 通用矩缓冲槽：按全局槽号扩容，形状变化时原位置零初始化。
+fn invalid(message: impl Into<String>) -> Error {
+    Error::new(Code::Invalid, message.into()).with(SITE)
+}
+fn decay(role: ParamRole, value: f32) -> f32 {
+    if role.wd_exempt() { 0.0 } else { value }
+}
+fn check_lr(lr: f32) -> Result<()> {
+    validation_rules!(SITE; lr.is_finite() && lr >= 0.0 => "学习率必须是有限非负数");
+    Ok(())
+}
+fn check_slots(slots: &[Slot<'_>], lr: f32, clip: bool) -> Result<f32> {
+    check_lr(lr)?;
+    slots
+        .iter()
+        .enumerate()
+        .try_for_each(|(idx, slot)| check_slot(idx, slot))?;
+    gradient_norm(slots, clip)
+}
+
+fn gradient_norm(slots: &[Slot<'_>], required: bool) -> Result<f32> {
+    if !required {
+        // IEEE-754 指数全 1 当且仅当 NaN/Inf；最大值归约无短路分支，可向量化扫描。
+        let exponents = slots
+            .iter()
+            .flat_map(|slot| slot.grads.iter())
+            .fold(0u32, |max, grad| max.max(grad.to_bits() & 0x7f80_0000));
+        validation_rules!(SITE; exponents != 0x7f80_0000 => "梯度含 NaN / Infinity");
+        return Ok(0.0);
+    }
+    let norm = slots
+        .iter()
+        .flat_map(|slot| slot.grads.iter())
+        .map(|grad| grad * grad)
+        .sum::<f32>()
+        .sqrt();
+    validation_rules!(SITE; norm.is_finite() => "全局梯度范数非有限（含 NaN / Infinity 或溢出）");
+    Ok(norm)
+}
+
+fn check_slot(idx: usize, slot: &Slot<'_>) -> Result<()> {
+    let shape_ok = slot
+        .shape
+        .is_none_or(|(r, c)| r > 0 && c > 0 && r.checked_mul(c) == Some(slot.params.len()));
+    validation_rules!(SITE;
+        slot.params.len() == slot.grads.len() => format!("第 {idx} 槽参数与梯度长度不符"),
+        shape_ok => format!("第 {idx} 槽矩阵形状与参数长度不符或含零维"),
+    );
+    Ok(())
+}
+fn tables(m: &[Vec<f32>], v: &[Vec<f32>]) -> Result<()> {
+    validation_rules!(SITE;
+        m.len() == v.len() => "一阶矩与二阶矩槽位数不符",
+        m.iter().chain(v).flatten().all(|x| x.is_finite()) => "矩状态含非有限值",
+    );
+    Ok(())
+}
+fn paired(m: &[Vec<f32>], v: &[Vec<f32>]) -> Result<()> {
+    tables(m, v)?;
+    validation_rules!(SITE;
+        m.iter().zip(v).all(|(m, v)| m.len() == v.len()) => "一阶矩与二阶矩槽内长度不符",
+    );
+    Ok(())
+}
+fn first_only(m: &[Vec<f32>], v: &[Vec<f32>]) -> Result<()> {
+    validation_rules!(SITE;
+        v.is_empty() => "该优化器只接受一阶动量",
+        m.iter().flatten().all(|x| x.is_finite()) => "动量含非有限值",
+    );
+    Ok(())
+}
+fn no_moments(m: &[Vec<f32>], v: &[Vec<f32>]) -> Result<()> {
+    validation_rules!(SITE; m.is_empty() && v.is_empty() => "SGD 无矩状态");
+    Ok(())
+}
 fn state_slot(state: &mut Vec<Vec<f32>>, idx: usize, len: usize) -> &mut Vec<f32> {
     state.resize_with(state.len().max(idx + 1), Vec::new);
     let slot = &mut state[idx];
@@ -202,13 +288,11 @@ fn state_slot(state: &mut Vec<Vec<f32>>, idx: usize, len: usize) -> &mut Vec<f32
     }
     slot
 }
-
-/// 按裁剪比例缩放梯度；`divide` 为 `true` 是步后还原，否则步前裁剪。
 fn rescale(slots: &mut [Slot<'_>], scale: f32, divide: bool) {
     if scale == 1.0 {
         return;
     }
-    for grad in slots.iter_mut().flat_map(|slot| slot.grads.iter_mut()) {
+    for grad in slots.iter_mut().flat_map(|s| s.grads.iter_mut()) {
         if divide {
             *grad /= scale;
         } else {
@@ -217,177 +301,303 @@ fn rescale(slots: &mut [Slot<'_>], scale: f32, divide: bool) {
     }
 }
 
-/// 衰减与裁剪共用同一恢复指纹投影，避免各优化器漏写 `Option` 的有无标记。
-fn write_decay_clip(weight_decay: f32, clip_norm: Option<f32>, sink: &mut dyn FnMut(u64)) {
-    sink(weight_decay.to_bits().into());
-    sink(clip_norm.is_some().into());
-    if let Some(norm) = clip_norm {
-        sink(norm.to_bits().into());
-    }
+/// 无矩随机梯度下降。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Sgd {
+    tuning: DecayClip,
 }
-
-/// 普通 SGD（可选解耦权重衰减 + 全局范数裁剪）。
-macro_rules! decay_clip {
-    ($T:ty) => {
-        impl $T {
-            /// 设置解耦权重衰减系数；角色豁免组不受此值影响。
-            pub fn with_weight_decay(mut self, weight_decay: f32) -> Self {
-                self.weight_decay = weight_decay;
-                self
-            }
-
-            /// 设置全局梯度范数上限；`None` 表示不裁剪。
-            pub fn with_clip_norm(mut self, clip_norm: f32) -> Self {
-                self.clip_norm = (clip_norm > 0.0).then_some(clip_norm);
-                self
+impl Sgd {
+    /// 构造默认 SGD。
+    pub fn new() -> Self {
+        Self::default()
+    }
+    fn advance(&mut self, slots: &mut [Slot<'_>], lr: f32, norm: f32) -> Result<()> {
+        let scale = self.tuning.scale(norm);
+        for slot in slots {
+            let decay = decay(slot.role, self.tuning.decay);
+            for (p, g) in slot.params.iter_mut().zip(slot.grads.iter()) {
+                *p -= lr * (scale * g + decay * *p);
             }
         }
-    };
+        Ok(())
+    }
 }
+decay_clip!(Sgd);
+fn valid_sgd(_: &Sgd) -> Result<()> {
+    Ok(())
+}
+fn restore_sgd(this: &mut Sgd, m: Vec<Vec<f32>>, v: Vec<Vec<f32>>, _: u64) -> Result<()> {
+    let _ = this;
+    no_moments(&m, &v)
+}
+fn write_sgd(_: &Sgd, _: &mut dyn FnMut(u64)) {}
+optimizer_impl!(Sgd, valid_sgd, no_moments, restore_sgd, write_sgd);
 
-// ---- Adam：AdamW 解耦衰减 + 偏差修正 + 全局范数裁剪 ----
-/// Adam（AdamW 解耦衰减 + 偏差修正 + 全局范数裁剪）。
+/// AdamW：偏差修正双矩与解耦衰减。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Adam {
     beta1: f32,
     beta2: f32,
     eps: f32,
-    weight_decay: f32,
-    clip_norm: Option<f32>,
+    tuning: DecayClip,
     step: u64,
     momentum: Vec<Vec<f32>>,
     variance: Vec<Vec<f32>>,
 }
-
-impl Adam {
-    /// 默认超参：`β1 = 0.9`、`β2 = 0.999`、`ε = 1e-8`，不衰减、不裁剪。
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    builders! {
-        /// 设置 `ε`（分母保护项）。
-        with_eps => eps: f32,
-    }
-
-    ref_getters! {
-        /// 一阶矩表（按槽位编号）：快照导出走这里，优化器之外不另存一份矩状态。
-        momentum => momentum: &[Vec<f32>],
-        /// 二阶矩表（按槽位编号）。
-        variance => variance: &[Vec<f32>],
-    }
-    getters! {
-        /// 优化器全局步数（偏差修正分母）。
-        step_count => step: u64,
-    }
-}
-
-decay_clip!(Adam);
-
 impl Default for Adam {
     fn default() -> Self {
         Self {
             beta1: 0.9,
             beta2: 0.999,
             eps: 1e-8,
-            weight_decay: 0.0,
-            clip_norm: None,
+            tuning: DecayClip::default(),
             step: 0,
             momentum: Vec::new(),
             variance: Vec::new(),
         }
     }
 }
-
-impl Optimizer for Adam {
-    fn set_clip_norm(&mut self, clip_norm: Option<f32>) {
-        self.clip_norm = clip_norm;
+impl Adam {
+    /// 构造默认 AdamW。
+    pub fn new() -> Self {
+        Self::default()
     }
-
-    fn step(&mut self, slots: &mut [Slot<'_>], lr: f32) -> Result<()> {
-        check_slots(slots)?;
-        let scale = clip_scale(global_norm(slots), self.clip_norm);
+    builders! { /// 设置分母保护项。
+        with_eps => eps: f32,
+    }
+    ref_getters! { /// 一阶矩表。
+        momentum => momentum: &[Vec<f32>], /// 二阶矩表。
+        variance => variance: &[Vec<f32>],
+    }
+    getters! { /// 已提交步数。
+        step_count => step: u64,
+    }
+    fn advance(&mut self, slots: &mut [Slot<'_>], lr: f32, norm: f32) -> Result<()> {
+        let scale = self.tuning.scale(norm);
         self.step = self.step.saturating_add(1);
         let t = self.step as f32;
-        let bias1 = 1.0 - self.beta1.powf(t);
-        let bias2 = 1.0 - self.beta2.powf(t);
-
-        let (beta1, beta2, eps, weight_decay) =
-            (self.beta1, self.beta2, self.eps, self.weight_decay);
+        let (bias1, bias2) = (1.0 - self.beta1.powf(t), 1.0 - self.beta2.powf(t));
         for (idx, slot) in slots.iter_mut().enumerate() {
-            let decay = decay_rate(slot.role, weight_decay);
-            let len = slot.params.len();
-            let (m, v) = (
-                state_slot(&mut self.momentum, idx, len),
-                state_slot(&mut self.variance, idx, len),
-            );
-            // 逐元素串行更新：m/v 对每个元素有跨步依赖，长度随参数数据而定，不能向量化展开。
-            for ((param, grad), (m_value, v_value)) in slot
-                .params
-                .iter_mut()
-                .zip(slot.grads.iter())
-                .zip(m.iter_mut().zip(v.iter_mut()))
-            {
-                let g = scale * grad;
-                *m_value = beta1 * *m_value + (1.0 - beta1) * g;
-                *v_value = beta2 * *v_value + (1.0 - beta2) * g * g;
-                let m_hat = *m_value / bias1;
-                let v_hat = *v_value / bias2;
-                let update = m_hat / (v_hat.sqrt() + eps) + decay * *param;
-                *param -= lr * update;
-            }
+            self.advance_slot(idx, slot, lr, scale, bias1, bias2);
         }
         Ok(())
     }
-
-    fn restore(
+    fn advance_slot(
         &mut self,
-        momentum: Vec<Vec<f32>>,
-        variance: Vec<Vec<f32>>,
-        step: u64,
-    ) -> Result<()> {
-        if momentum.len() != variance.len() {
-            let message = format!(
-                "矩状态槽位数不一致：一阶矩 {} 槽，二阶矩 {} 槽",
-                momentum.len(),
-                variance.len()
-            );
-            return Err(Error::new(Code::Invalid, message).with(SITE));
+        idx: usize,
+        slot: &mut Slot<'_>,
+        lr: f32,
+        scale: f32,
+        bias1: f32,
+        bias2: f32,
+    ) {
+        let decay = decay(slot.role, self.tuning.decay);
+        let (m, v) = (
+            state_slot(&mut self.momentum, idx, slot.params.len()),
+            state_slot(&mut self.variance, idx, slot.params.len()),
+        );
+        for ((p, g), (m, v)) in slot
+            .params
+            .iter_mut()
+            .zip(slot.grads.iter())
+            .zip(m.iter_mut().zip(v.iter_mut()))
+        {
+            let g = scale * g;
+            *m = self.beta1 * *m + (1.0 - self.beta1) * g;
+            *v = self.beta2 * *v + (1.0 - self.beta2) * g * g;
+            *p -= lr * ((*m / bias1) / ((*v / bias2).sqrt() + self.eps) + decay * *p);
         }
-        for (idx, (m, v)) in momentum.iter().zip(&variance).enumerate() {
-            if m.len() != v.len() {
-                let message = format!(
-                    "第 {idx} 槽矩长度不一致：一阶矩 {} 元素，二阶矩 {} 元素",
-                    m.len(),
-                    v.len()
-                );
-                return Err(Error::new(Code::Invalid, message).with(SITE));
-            }
-        }
-        self.momentum = momentum;
-        self.variance = variance;
-        self.step = step;
-        Ok(())
-    }
-
-    fn write_config(&self, sink: &mut dyn FnMut(u64)) {
-        for value in [self.beta1, self.beta2, self.eps] {
-            sink(value.to_bits().into());
-        }
-        write_decay_clip(self.weight_decay, self.clip_norm, sink);
     }
 }
+decay_clip!(Adam);
+fn valid_adam(this: &Adam) -> Result<()> {
+    validation_rules!(SITE;
+        [this.beta1, this.beta2].into_iter().all(|v| v.is_finite() && (0.0..1.0).contains(&v)) => "Adam 的 beta 必须在 [0, 1)",
+        this.eps.is_finite() && this.eps > 0.0 => "Adam 的 eps 必须是有限正数",
+    );
+    Ok(())
+}
+fn restore_adam(this: &mut Adam, m: Vec<Vec<f32>>, v: Vec<Vec<f32>>, step: u64) -> Result<()> {
+    paired(&m, &v)?;
+    this.momentum = m;
+    this.variance = v;
+    this.step = step;
+    Ok(())
+}
+fn write_adam(this: &Adam, sink: &mut dyn FnMut(u64)) {
+    for value in [this.beta1, this.beta2, this.eps] {
+        sink(value.to_bits().into());
+    }
+}
+optimizer_impl!(Adam, valid_adam, paired, restore_adam, write_adam);
 
-/// 泛型混合优化器：矩阵槽走 `M`，其余槽走 `N`；矩状态按全局槽序号确定性拆分与恢复。
+/// Muon：动量方向经 Newton–Schulz 近似正交化。
+#[derive(Debug, Clone, PartialEq)]
+pub struct Muon {
+    momentum: f32,
+    nesterov: bool,
+    eps: f32,
+    tuning: DecayClip,
+    step: u64,
+    velocity: Vec<Vec<f32>>,
+}
+impl Default for Muon {
+    fn default() -> Self {
+        Self {
+            momentum: 0.95,
+            nesterov: true,
+            eps: 1e-7,
+            tuning: DecayClip::default(),
+            step: 0,
+            velocity: Vec::new(),
+        }
+    }
+}
+impl Muon {
+    /// 构造默认 Muon。
+    pub fn new() -> Self {
+        Self::default()
+    }
+    builders! { /// 设置动量系数。
+        with_momentum => momentum: f32, /// 设置归一化保护项。
+        with_eps => eps: f32,
+    }
+    /// 关闭 Nesterov 前瞻。
+    pub fn without_nesterov(mut self) -> Self {
+        self.nesterov = false;
+        self
+    }
+    ref_getters! { /// 动量表。
+        momentum_table => velocity: &[Vec<f32>],
+    }
+    getters! { /// 已提交步数。
+        step_count => step: u64,
+    }
+    fn advance(&mut self, slots: &mut [Slot<'_>], lr: f32, norm: f32) -> Result<()> {
+        let shapes: Vec<_> = slots
+            .iter()
+            .map(|s| s.shape.ok_or_else(|| invalid("Muon 只接受矩阵槽")))
+            .collect::<Result<_>>()?;
+        let scale = self.tuning.scale(norm);
+        self.step = self.step.saturating_add(1);
+        for (idx, (slot, shape)) in slots.iter_mut().zip(shapes).enumerate() {
+            self.advance_slot(idx, slot, shape, scale, lr);
+        }
+        Ok(())
+    }
+    fn advance_slot(
+        &mut self,
+        idx: usize,
+        slot: &mut Slot<'_>,
+        (rows, cols): (usize, usize),
+        scale: f32,
+        lr: f32,
+    ) {
+        let velocity = state_slot(&mut self.velocity, idx, rows * cols);
+        for (u, &g) in velocity.iter_mut().zip(slot.grads.iter()) {
+            *u = self.momentum * *u + scale * g;
+        }
+        let direction = if self.nesterov {
+            velocity
+                .iter()
+                .zip(slot.grads.iter())
+                .map(|(&u, &g)| scale * g + self.momentum * u)
+                .collect()
+        } else {
+            velocity.clone()
+        };
+        let orthogonal = orthogonalize(&direction, rows, cols, self.eps);
+        let factor = lr * 0.2 * (rows.max(cols) as f32).sqrt();
+        let decay = decay(slot.role, self.tuning.decay);
+        for (p, update) in slot.params.iter_mut().zip(orthogonal) {
+            *p -= factor * update + lr * decay * *p;
+        }
+    }
+}
+decay_clip!(Muon);
+fn valid_muon(this: &Muon) -> Result<()> {
+    validation_rules!(SITE;
+        this.momentum.is_finite() && (0.0..1.0).contains(&this.momentum) => "Muon 的 momentum 必须在 [0, 1)",
+        this.eps.is_finite() && this.eps > 0.0 => "Muon 的 eps 必须是有限正数",
+    );
+    Ok(())
+}
+fn restore_muon(this: &mut Muon, m: Vec<Vec<f32>>, v: Vec<Vec<f32>>, step: u64) -> Result<()> {
+    first_only(&m, &v)?;
+    this.velocity = m;
+    this.step = step;
+    Ok(())
+}
+fn write_muon(this: &Muon, sink: &mut dyn FnMut(u64)) {
+    for value in [this.momentum, this.eps] {
+        sink(value.to_bits().into());
+    }
+    sink(this.nesterov.into());
+}
+optimizer_impl!(Muon, valid_muon, first_only, restore_muon, write_muon);
+
+#[derive(Default)]
+struct MomentState {
+    m: Vec<Vec<f32>>,
+    v: Vec<Vec<f32>>,
+}
+impl MomentState {
+    fn validate<O: Optimizer>(&self, optimizer: &O) -> Result<()> {
+        let v = if self.v.iter().all(Vec::is_empty) {
+            &[][..]
+        } else {
+            &self.v
+        };
+        optimizer.validate_restore(&self.m, v, &[])
+    }
+    fn restore<O: Optimizer>(self, optimizer: &mut O, step: u64) -> Result<()> {
+        let v = if self.v.iter().all(Vec::is_empty) {
+            Vec::new()
+        } else {
+            self.v
+        };
+        optimizer.restore(self.m, v, step)
+    }
+}
+#[derive(Default)]
+struct Partitioned {
+    matrix: MomentState,
+    other: MomentState,
+}
+impl Partitioned {
+    fn validate<M: Optimizer, N: Optimizer>(&self, matrix: &M, other: &N) -> Result<()> {
+        self.matrix.validate(matrix)?;
+        self.other.validate(other)
+    }
+}
+fn split_shaped(
+    m: Vec<Vec<f32>>,
+    v: Vec<Vec<f32>>,
+    shapes: &[Option<(usize, usize)>],
+) -> Result<Partitioned> {
+    validation_rules!(SITE; m.len() == shapes.len() || m.is_empty() => "矩状态与形状表长度不符");
+    let mut out = Partitioned::default();
+    for (idx, (m, v)) in m.into_iter().zip(v).enumerate() {
+        let target = if shapes[idx].is_some() {
+            &mut out.matrix
+        } else {
+            &mut out.other
+        };
+        target.m.push(m);
+        target.v.push(v);
+    }
+    Ok(out)
+}
+
+/// 矩阵槽与非矩阵槽的泛型混合优化器。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Hybrid<M, N> {
     matrix: M,
     other: N,
     clip_norm: Option<f32>,
 }
-
 impl<M: Optimizer, N: Optimizer> Hybrid<M, N> {
-    /// 构造混合优化器；子优化器不再各自裁剪，全局范数只在本层计算一次。
+    /// 构造混合路由；全局裁剪只在本层执行一次。
     pub fn new(mut matrix: M, mut other: N) -> Self {
         matrix.set_clip_norm(None);
         other.set_clip_norm(None);
@@ -397,41 +607,12 @@ impl<M: Optimizer, N: Optimizer> Hybrid<M, N> {
             clip_norm: None,
         }
     }
-
-    ref_getters! {
-        /// 矩阵槽优化器。
-        matrix => matrix: &M,
-        /// 非矩阵槽优化器。
+    ref_getters! { /// 矩阵子优化器。
+        matrix => matrix: &M, /// 非矩阵子优化器。
         other => other: &N,
     }
-
-    /// 先校验完整槽表，再拆分可变视图；任何非法输入都发生在子优化器更新之前。
-    fn check(slots: &[Slot<'_>]) -> Result<()> {
-        check_slots(slots)?;
-        slots
-            .iter()
-            .enumerate()
-            .try_for_each(|(idx, slot)| validate_slot(idx, slot))
-    }
-}
-
-impl<M: Optimizer, N: Optimizer> Optimizer for Hybrid<M, N> {
-    fn set_clip_norm(&mut self, clip_norm: Option<f32>) {
-        self.clip_norm = clip_norm;
-        self.matrix.set_clip_norm(None);
-        self.other.set_clip_norm(None);
-    }
-
-    fn step(&mut self, slots: &mut [Slot<'_>], lr: f32) -> Result<()> {
-        Self::check(slots)?;
-        let norm = global_norm(slots);
-        if !norm.is_finite() {
-            return Err(Error::new(Code::Invalid, "全局梯度范数溢出").with(SITE));
-        }
-        let scale = clip_scale(norm, self.clip_norm);
-        rescale(slots, scale, false);
-        let mut matrix = Vec::new();
-        let mut other = Vec::new();
+    fn split_slots<'a, 'b>(slots: &'a mut [Slot<'b>]) -> (Vec<Slot<'a>>, Vec<Slot<'a>>) {
+        let (mut matrix, mut other) = (Vec::new(), Vec::new());
         for slot in slots.iter_mut() {
             if slot.shape.is_some() {
                 matrix.push(slot.reborrow());
@@ -439,6 +620,37 @@ impl<M: Optimizer, N: Optimizer> Optimizer for Hybrid<M, N> {
                 other.push(slot.reborrow());
             }
         }
+        (matrix, other)
+    }
+
+    fn tuning(&self) -> DecayClip {
+        DecayClip {
+            decay: 0.0,
+            clip: self.clip_norm,
+        }
+    }
+    fn validate_state(
+        &self,
+        m: &[Vec<f32>],
+        v: &[Vec<f32>],
+        shapes: &[Option<(usize, usize)>],
+    ) -> Result<()> {
+        tables(m, v)?;
+        for (idx, (slot, shape)) in m.iter().zip(shapes).enumerate() {
+            if let Some((r, c)) = shape {
+                validation_rules!(SITE; r.checked_mul(*c) == Some(slot.len()) => format!("第 {idx} 槽矩状态与形状不符"));
+            }
+        }
+        split_shaped(m.to_vec(), v.to_vec(), shapes)?.validate(&self.matrix, &self.other)
+    }
+}
+impl<M: Optimizer, N: Optimizer> Optimizer for Hybrid<M, N> {
+    fn step(&mut self, slots: &mut [Slot<'_>], lr: f32) -> Result<()> {
+        self.validate()?;
+        let norm = check_slots(slots, lr, self.clip_norm.is_some())?;
+        let scale = self.tuning().scale(norm);
+        rescale(slots, scale, false);
+        let (mut matrix, mut other) = Self::split_slots(slots);
         let result = self
             .matrix
             .step(&mut matrix, lr)
@@ -447,353 +659,51 @@ impl<M: Optimizer, N: Optimizer> Optimizer for Hybrid<M, N> {
         rescale(slots, scale, true);
         result
     }
-
-    fn restore(
-        &mut self,
-        momentum: Vec<Vec<f32>>,
-        variance: Vec<Vec<f32>>,
-        step: u64,
+    fn set_clip_norm(&mut self, value: Option<f32>) {
+        self.clip_norm = value;
+        self.matrix.set_clip_norm(None);
+        self.other.set_clip_norm(None);
+    }
+    fn validate(&self) -> Result<()> {
+        self.tuning().validate()?;
+        self.matrix.validate()?;
+        self.other.validate()
+    }
+    fn validate_restore(
+        &self,
+        m: &[Vec<f32>],
+        v: &[Vec<f32>],
+        shapes: &[Option<(usize, usize)>],
     ) -> Result<()> {
-        if !momentum.is_empty() || !variance.is_empty() {
-            return Err(Error::new(
-                Code::Invalid,
-                "混合优化器的非空矩状态必须通过 restore_shaped 按槽形状恢复",
-            )
-            .with(SITE));
-        }
+        self.validate_state(m, v, shapes)
+    }
+    fn restore(&mut self, m: Vec<Vec<f32>>, v: Vec<Vec<f32>>, step: u64) -> Result<()> {
+        no_moments(&m, &v)?;
         self.matrix.restore(Vec::new(), Vec::new(), step)?;
         self.other.restore(Vec::new(), Vec::new(), step)
     }
-
     fn restore_shaped(
         &mut self,
-        momentum: Vec<Vec<f32>>,
-        variance: Vec<Vec<f32>>,
+        m: Vec<Vec<f32>>,
+        v: Vec<Vec<f32>>,
         step: u64,
         shapes: &[Option<(usize, usize)>],
     ) -> Result<()> {
-        check_shaped_len(&momentum, &variance, shapes)?;
-        let states = split_shaped(momentum, variance, shapes)?;
+        self.validate_state(&m, &v, shapes)?;
+        let states = split_shaped(m, v, shapes)?;
         states.matrix.restore(&mut self.matrix, step)?;
         states.other.restore(&mut self.other, step)
     }
-
     fn write_config(&self, sink: &mut dyn FnMut(u64)) {
         self.matrix.write_config(sink);
         self.other.write_config(sink);
-        sink(self.clip_norm.is_some().into());
-        if let Some(norm) = self.clip_norm {
-            sink(norm.to_bits().into());
-        }
+        self.tuning().write(sink);
     }
 }
-
-/// 矩状态与形状表长度对齐：动量/方差等长；非空时还必须与槽形状表逐槽对齐。
-fn check_shaped_len(
-    momentum: &[Vec<f32>],
-    variance: &[Vec<f32>],
-    shapes: &[Option<(usize, usize)>],
-) -> Result<()> {
-    if momentum.len() != variance.len() || (!momentum.is_empty() && momentum.len() != shapes.len())
-    {
-        return Err(
-            Error::new(Code::Invalid, "混合优化器恢复：矩状态与槽形状表长度不一致").with(SITE),
-        );
-    }
-    Ok(())
-}
-
-/// 一条优化器路由的矩状态：一阶矩与二阶矩始终按槽对齐。
-#[derive(Default)]
-struct MomentState {
-    momentum: Vec<Vec<f32>>,
-    variance: Vec<Vec<f32>>,
-}
-
-impl MomentState {
-    /// 二阶矩全为空表示无矩实现；否则保留逐槽对齐交给子优化器校验。
-    fn restore<O: Optimizer>(self, optimizer: &mut O, step: u64) -> Result<()> {
-        let variance = if self.variance.iter().all(Vec::is_empty) {
-            Vec::new()
-        } else {
-            self.variance
-        };
-        optimizer.restore(self.momentum, variance, step)
-    }
-}
-
-/// 混合优化器的分路结果：矩阵槽与其他槽各自持有一份矩状态。
-#[derive(Default)]
-struct PartitionedMoments {
-    matrix: MomentState,
-    other: MomentState,
-}
-
-/// 按槽形状拆分矩状态；矩阵槽先校验长度与形状乘积，再按路由归并。
-fn split_shaped(
-    momentum: Vec<Vec<f32>>,
-    variance: Vec<Vec<f32>>,
-    shapes: &[Option<(usize, usize)>],
-) -> Result<PartitionedMoments> {
-    let mut states = PartitionedMoments::default();
-    for (idx, (momentum, variance)) in momentum.into_iter().zip(variance).enumerate() {
-        let target = if let Some((rows, cols)) = shapes[idx] {
-            if rows.checked_mul(cols) != Some(momentum.len()) {
-                return Err(Error::new(
-                    Code::Invalid,
-                    format!("第 {idx} 槽矩状态长度与矩阵形状不符"),
-                )
-                .with(SITE));
-            }
-            &mut states.matrix
-        } else {
-            &mut states.other
-        };
-        target.momentum.push(momentum);
-        target.variance.push(variance);
-    }
-    Ok(states)
-}
-
-/// Muon（MomentUm Orthogonalized by Newton–Schulz）：矩阵参数的近似正交化更新。
-#[derive(Debug, Clone, PartialEq)]
-pub struct Muon {
-    momentum: f32,
-    nesterov: bool,
-    eps: f32,
-    weight_decay: f32,
-    clip_norm: Option<f32>,
-    step: u64,
-    velocity: Vec<Vec<f32>>,
-}
-
-/// 步长缩放的系数：与参考实现一致，把正交更新的尺度对齐 AdamW。
-const SCALE_COEF: f32 = 0.2;
-
-impl Muon {
-    /// 默认超参：`μ = 0.95`、Nesterov、`ε = 1e-7`，不衰减、不裁剪。
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    builders! {
-        /// 设置动量系数 `μ`。
-        with_momentum => momentum: f32,
-        /// 设置归一化保护项 `ε`。
-        with_eps => eps: f32,
-    }
-
-    /// 关掉 Nesterov 前瞻（默认开）。
-    pub fn without_nesterov(mut self) -> Self {
-        self.nesterov = false;
-        self
-    }
-
-    /// 一个槽的推进：动量累加 →（可选 Nesterov）→ 正交化 → 写回。
-    fn advance(
-        &mut self,
-        idx: usize,
-        slot: &mut Slot<'_>,
-        (rows, cols): (usize, usize),
-        scale: f32,
-        lr: f32,
-    ) {
-        let (beta, nesterov, eps) = (self.momentum, self.nesterov, self.eps);
-        let decay = decay_rate(slot.role, self.weight_decay);
-        let velocity = state_slot(&mut self.velocity, idx, rows * cols);
-        for (tracked, &grad) in velocity.iter_mut().zip(slot.grads.iter()) {
-            *tracked = beta * *tracked + scale * grad;
-        }
-        let direction = if nesterov {
-            nesterov_direction(velocity, slot.grads, beta, scale)
-        } else {
-            velocity.clone()
-        };
-        let orthogonal = orthogonalize(&direction, rows, cols, eps);
-        let factor = lr * scale_factor(rows, cols);
-        for (param, &step) in slot.params.iter_mut().zip(&orthogonal) {
-            *param -= factor * step;
-            *param -= lr * decay * *param;
-        }
-    }
-
-    ref_getters! {
-        /// 动量表（按槽位编号）：快照导出走这里，优化器之外不另存一份状态。
-        momentum_table => velocity: &[Vec<f32>],
-    }
-    getters! {
-        /// 优化器全局步数。
-        step_count => step: u64,
-    }
-}
-
-decay_clip!(Muon);
-
-impl Default for Muon {
-    fn default() -> Self {
-        Self {
-            momentum: 0.95,
-            nesterov: true,
-            eps: 1e-7,
-            weight_decay: 0.0,
-            clip_norm: None,
-            step: 0,
-            velocity: Vec::new(),
-        }
-    }
-}
-
-impl Optimizer for Muon {
-    fn set_clip_norm(&mut self, clip_norm: Option<f32>) {
-        self.clip_norm = clip_norm;
-    }
-
-    fn step(&mut self, slots: &mut [Slot<'_>], lr: f32) -> Result<()> {
-        check_slots(slots)?;
-        let shapes = shapes_of(slots)?;
-        let scale = clip_scale(global_norm(slots), self.clip_norm);
-        self.step = self.step.saturating_add(1);
-        for (idx, (slot, &shape)) in slots.iter_mut().zip(&shapes).enumerate() {
-            self.advance(idx, slot, shape, scale, lr);
-        }
-        Ok(())
-    }
-
-    fn restore(
-        &mut self,
-        momentum: Vec<Vec<f32>>,
-        variance: Vec<Vec<f32>>,
-        step: u64,
-    ) -> Result<()> {
-        if !variance.is_empty() {
-            let message = format!(
-                "Muon 只持一阶动量：快照带回 {} 个二阶矩槽，无法回载",
-                variance.len()
-            );
-            return Err(Error::new(Code::Invalid, message).with(SITE));
-        }
-        self.velocity = momentum;
-        self.step = step;
-        Ok(())
-    }
-
-    fn write_config(&self, sink: &mut dyn FnMut(u64)) {
-        for value in [self.momentum, self.eps] {
-            sink(value.to_bits().into());
-        }
-        sink(self.nesterov.into());
-        write_decay_clip(self.weight_decay, self.clip_norm, sink);
-    }
-}
-
-/// Muon 与混合路由共享的数值入口：矩阵不得含零维，梯度必须逐项有限。
-fn validate_slot(idx: usize, slot: &Slot<'_>) -> Result<()> {
-    if let Some((rows, cols)) = slot.shape
-        && (rows == 0 || cols == 0)
-    {
-        return Err(Error::new(Code::Invalid, format!("第 {idx} 槽矩阵形状 [{rows}, {cols}] 含零维")).with(SITE));
-    }
-    if let Some(bad) = slot.grads.iter().position(|grad| !grad.is_finite()) {
-        return Err(Error::new(Code::Invalid, format!("第 {idx} 槽梯度第 {bad} 项非有限")).with(SITE));
-    }
-    Ok(())
-}
-
-/// 每个槽的矩阵形状，全部先查完再返回。
-fn shapes_of(slots: &[Slot<'_>]) -> Result<Vec<(usize, usize)>> {
-    slots.iter().enumerate().map(|(idx, slot)| matrix_of(idx, slot)).collect()
-}
-
-/// Nesterov 前瞻方向 `g + μ·u`：动量缓冲 `u` 已含本步梯度。
-fn nesterov_direction(velocity: &[f32], grads: &[f32], beta: f32, scale: f32) -> Vec<f32> {
-    velocity.iter().zip(grads).map(|(&u, &g)| scale * g + beta * u).collect()
-}
-
-/// Muon 只接受矩阵；零维与非有限梯度由 [`validate_slot`] 统一拒绝。
-fn matrix_of(idx: usize, slot: &Slot<'_>) -> Result<(usize, usize)> {
-    validate_slot(idx, slot)?;
-    slot.shape.ok_or_else(|| Error::new(
-        Code::Invalid,
-        format!("第 {idx} 槽（角色 {}）不是矩阵：请经 Hybrid 分派给非矩阵优化器", slot.role.as_str()),
-    ).with(SITE))
-}
-
-/// 步长缩放 `0.2·√max(rows, cols)`：正交后奇异值为 1，不缩放的话更新量随矩阵阶数增长。
-fn scale_factor(rows: usize, cols: usize) -> f32 {
-    SCALE_COEF * (rows.max(cols) as f32).sqrt()
-}
-
-#[cfg(test)]
-#[path = "../tests/optimizer_tests.rs"]
-mod tests;
 
 #[cfg(test)]
 #[path = "../tests/prop_optimizer.rs"]
 mod prop_optimizer;
-
-/// 无矩状态；衰减按 AdamW 同款解耦口径：`param -= lr · (grad + wd · param)`，角色豁免组
-/// 不加衰减项。
-#[derive(Debug, Clone, PartialEq)]
-pub struct Sgd {
-    weight_decay: f32,
-    clip_norm: Option<f32>,
-}
-
-impl Sgd {
-    /// 默认：不衰减、不裁剪。
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-decay_clip!(Sgd);
-
-impl Default for Sgd {
-    fn default() -> Self {
-        Self {
-            weight_decay: 0.0,
-            clip_norm: None,
-        }
-    }
-}
-
-impl Optimizer for Sgd {
-    fn set_clip_norm(&mut self, clip_norm: Option<f32>) {
-        self.clip_norm = clip_norm;
-    }
-
-    fn step(&mut self, slots: &mut [Slot<'_>], lr: f32) -> Result<()> {
-        check_slots(slots)?;
-        let scale = clip_scale(global_norm(slots), self.clip_norm);
-        for slot in slots {
-            let decay = decay_rate(slot.role, self.weight_decay);
-            // 逐元素串行写回：每个参数只依赖自己的梯度与现值，长度随槽位数据而定。
-            for (param, grad) in slot.params.iter_mut().zip(slot.grads.iter()) {
-                let update = scale * grad + decay * *param;
-                *param -= lr * update;
-            }
-        }
-        Ok(())
-    }
-
-    fn restore(
-        &mut self,
-        momentum: Vec<Vec<f32>>,
-        variance: Vec<Vec<f32>>,
-        _step: u64,
-    ) -> Result<()> {
-        if !momentum.is_empty() || !variance.is_empty() {
-            let message = format!(
-                "SGD 无矩状态：快照带回 {} 个一阶矩槽、{} 个二阶矩槽，无法回载",
-                momentum.len(),
-                variance.len()
-            );
-            return Err(Error::new(Code::Invalid, message).with(SITE));
-        }
-        Ok(())
-    }
-
-    fn write_config(&self, sink: &mut dyn FnMut(u64)) {
-        write_decay_clip(self.weight_decay, self.clip_norm, sink);
-    }
-}
+#[cfg(test)]
+#[path = "../tests/optimizer_tests.rs"]
+mod tests;

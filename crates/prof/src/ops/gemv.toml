@@ -1,0 +1,47 @@
+# GEMV 族：共享点积、归约、布局、网格与两级流水；低比特项只增加 quant 与位宽参数。
+
+[axes]
+GMAX = [32]
+
+[needs]
+dot    = { dt = ["f32"], space = ["REG"], lanes = ["1"] }
+load   = { bytes = "<=4096", space = ["GM", "FAST"], src = ["GM"], dst = ["GM"] }
+store  = { bytes = "<=4096", dt = ["f32"], space = ["GM"] }
+cvt    = { dt = ["f32", "i32"], sat = ["off"] }
+reduce = { axis = ["GMAX"], op = ["sum"], dt = ["f32"] }
+load_async  = { bytes = "<=4096", space = ["GM", "FAST"], src = ["GM"], dst = ["GM", "FAST"] }
+
+[layouts]
+w = "row"
+x = "row"
+
+[grid]
+dims = ["n:N"]
+
+[[variants]]
+name      = "pipe2"
+order     = 1
+schedule  = "pipe<2>"
+mma_share = 0.62
+
+[[variants]]
+name      = "direct"
+order     = 2
+schedule  = "direct"
+mma_share = 0.35
+
+[[operators]]
+op = { name = "gemv_f32", skeleton = "gemm", summary = "y[n] = dot(w[n, :], x[:])" }
+
+[[operators]]
+op = { name = "gemv_i2", stem = "gemv_packed", skeleton = "gemm", summary = "y[n] = Σ_g scale[n,g] · dot(dequant(w[n, g·G : g·G+G]), x[g·G : g·G+G])" }
+needs = { quant = { dt = ["i2", "f32"], space = ["REG", "GM"], group = ["32"] } }
+consts = { cpb = 4, width = 2, zero = 2 }
+
+[[operators]]
+op = { name = "gemv_i4", stem = "gemv_packed", skeleton = "gemm", summary = "y[n] = Σ_g scale[n,g] · dot(dequant(w[n, g·G : g·G+G]), x[g·G : g·G+G])" }
+needs = { quant = { dt = ["i4", "f32"], space = ["REG", "GM"], group = ["32"] } }
+consts = { cpb = 2, width = 4, zero = 8 }
+
+[[operators]]
+op = { name = "gemv_i8", skeleton = "gemm", summary = "y[n] = Σ_g scale[n,g] · dot(signed(w[n,g]), x[g])" }

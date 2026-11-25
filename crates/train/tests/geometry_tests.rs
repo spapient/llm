@@ -55,7 +55,8 @@ fn declared_forward_matches_the_reference() {
         g.forward(&declared_inputs(&sample, g), &mut out)
             .expect("前向");
         let want = (nn::registry::model(op).expect("已注册").reference)(&sample).expect("参考");
-        assert_eq!(out, want, "{op} 实例前向与声明档参考不一致");
+        let want = want.as_f32().expect("参考档为 f32");
+        assert_eq!(out.as_slice(), want, "{op} 实例前向与声明档参考不一致");
     }
 }
 

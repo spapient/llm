@@ -4,26 +4,22 @@ use crate::config::config;
 use crate::runner::{self, Outcome};
 use crate::toolchain::Toolchain;
 use cutile::SCHEMA_VER;
-use cutile::ast;
 use cutile::atom::{DType, DTypeSet, Prim, Space};
 use cutile::cache::{Artifact, ArtifactKey, Cache, CacheKey, Lock};
-use cutile::cap::Path;
+use cutile::cap::{AtomTable, Path};
 use cutile::decl::{OpDecl, TileCombo};
 use cutile::dirs::Dirs;
 use cutile::emit::{self, Source};
+use cutile::kernel::Program;
 use cutile::layout::LayoutSpec;
+use cutile::parser;
 use cutile::prof::Profile;
 use cutile::space;
 use cutile::substitute::FragmentSet;
 use diagnostic::{Code, Error};
 use std::io::{Error as IoError, ErrorKind};
 use std::path::{Path as StdPath, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
-
-/// 沙箱目录的进程内序号：同一个 key 会被同一进程的两条路径同时编译（`verify` 的自检与
-/// 形状矩阵、两条用例），`pid` 只区分进程，不区分线程。
-static SANDBOX_SEQ: AtomicUsize = AtomicUsize::new(0);
 
 /// ⑤ 的完整流程：指纹 → 查缓存 → 取锁 → 拼接 → emit → 落盘。缓存命中时直接返回已落盘的文本——
 /// 键相同意味着源文本相同。
@@ -38,15 +34,13 @@ pub fn source(
     tile: &TileCombo,
     dirs: &Dirs,
 ) -> diagnostic::Result<(Source, CacheKey)> {
-    // 算子契约跨后端共享，但正文实现归设备目录；缓存键与 AST 都必须从这次真正选择的正文派生。
+    // 缓存键与 IR 都从这次真正选择的类型化原子派生。
     let specialized = prof::catalogue::for_device(op, &profile.meta.vendor)?;
     let op = specialized.as_ref();
-    // 契约先于缓存：声明里的搬运量只影响判定、不影响源文本，所以它不在缓存键里。
-    // 如果把判定放在命中之后，一份已落盘的旧源文本就成了“声明越界也免检”的通行证。
+    // 契约先于缓存：已落盘的旧源文本不能绕过容量、能力或对齐检查。
     contract(op, profile, path)?;
-    // 片段层与 AST 在键判定前各算一次：命中与未命中复用同一份，未命中不再重读磁盘、
-    // 不再重跑 AST 构建。片段层不可用时保留旧的容错：键回退到模板指纹，命中仍可直接取用。
-    let prepared = Prepared::new(op, profile, tile, dirs);
+    let fragments = fragments(profile, dirs);
+    let prepared = Prepared::new(op, profile, path, tile, &fragments);
     let key = key(op, profile, path, tile, &prepared);
     let cache = Cache::from_dirs(dirs);
     if let Some(source) = hit(&cache, &key, profile) {
@@ -56,21 +50,40 @@ pub fn source(
     Ok((source, key))
 }
 
-/// 键判定前算好的一份输入：片段层与提升后的节点序列，命中与未命中共用同一份。
-struct Prepared {
-    fragments: diagnostic::Result<FragmentSet>,
-    nodes: diagnostic::Result<Vec<ast::Node>>,
+/// 键判定前完成一次 IR lower；显式原生模板不进入 DSL 子集解析。
+struct Prepared<'a> {
+    fragments: &'a diagnostic::Result<FragmentSet>,
+    program: Option<diagnostic::Result<Program<'a>>>,
 }
 
-impl Prepared {
-    fn new(op: &OpDecl, profile: &Profile, tile: &TileCombo, dirs: &Dirs) -> Self {
-        let fragments = fragments(profile, dirs);
-        let nodes = match &fragments {
-            Ok(set) => ast::build(op, tile, set),
-            Err(error) => Err(error.clone()),
-        };
-        Self { fragments, nodes }
+impl<'a> Prepared<'a> {
+    fn new(
+        op: &OpDecl,
+        profile: &'a Profile,
+        path: &Path,
+        tile: &TileCombo,
+        fragments: &'a diagnostic::Result<FragmentSet>,
+    ) -> Self {
+        let program = (!prof::sign::is_native_template(&op.template, &op.name))
+            .then(|| lower(op, profile, path, tile, fragments));
+        Self { fragments, program }
     }
+}
+
+/// 协商当前变体 → 绑定原子 arena → 解析完整模板；没有文本回退。
+fn lower<'a>(
+    op: &OpDecl,
+    profile: &'a Profile,
+    path: &Path,
+    tile: &TileCombo,
+    fragments: &'a diagnostic::Result<FragmentSet>,
+) -> diagnostic::Result<Program<'a>> {
+    let set = fragments.as_ref().map_err(Clone::clone)?;
+    let variant = op
+        .variant(&path.variant)
+        .ok_or_else(|| Error::new(Code::Invalid, format!("变体 `{}` 不存在", path.variant)))?;
+    let atoms = AtomTable::new(op, variant, profile, set)?;
+    parser::parse(op, tile, &atoms)
 }
 
 /// 未命中时的一次生成：取锁 → 再查一次 → 拼接 → 落盘。锁必须真的拿到（否则两个进程同时写同一份
@@ -83,7 +96,7 @@ fn publish(
     profile: &Profile,
     path: &Path,
     tile: &TileCombo,
-    prepared: &Prepared,
+    prepared: &Prepared<'_>,
 ) -> diagnostic::Result<Source> {
     let _lock = wait_for_lock(cache, key)?;
     match hit(cache, key, profile) {
@@ -92,7 +105,7 @@ fn publish(
     }
 }
 
-/// 真正拼一次并落盘。变体必须在声明的变体表里：协商给出的名字与声明脱节时，这里是唯一的检查点。
+/// 真正生成一次并落盘；普通模板走 IR，只有显式标记的原生模板保留设备翻译单元。
 fn build_source(
     cache: &Cache,
     key: &CacheKey,
@@ -100,20 +113,48 @@ fn build_source(
     profile: &Profile,
     path: &Path,
     tile: &TileCombo,
-    prepared: &Prepared,
+    prepared: &Prepared<'_>,
 ) -> diagnostic::Result<Source> {
     let variant = op
         .variant(&path.variant)
         .ok_or_else(|| Error::new(Code::Invalid, format!("变体 `{}` 不存在", path.variant)))?;
-    // 片段层错误在此透传；片段本身不再参与后续生成——渲染只需要已提升好的节点序列。
-    if let Err(error) = &prepared.fragments {
-        return Err(error.clone());
-    }
-    let nodes = prepared.nodes.clone()?;
-    generate(op, profile, variant, tile, &nodes, cache, key)
+    let text = render_body(op, profile, tile, prepared)?;
+    generate(op, profile, variant, tile, &text, cache, key)
 }
 
-/// 缓存命中：键相同意味着源文本相同，重新拼一遍不会得到别的东西。
+/// 根据显式模板类别选择正文来源；普通模板解析失败不会转入原生路径。
+fn render_body(
+    op: &OpDecl,
+    profile: &Profile,
+    tile: &TileCombo,
+    prepared: &Prepared<'_>,
+) -> diagnostic::Result<String> {
+    match &prepared.program {
+        Some(program) => render_ir(program, profile),
+        None => render_native(op, tile, prepared.fragments),
+    }
+}
+
+fn render_ir(
+    program: &diagnostic::Result<Program<'_>>,
+    profile: &Profile,
+) -> diagnostic::Result<String> {
+    program
+        .as_ref()
+        .map_err(Clone::clone)?
+        .emit(profile.meta.emit)
+        .map_err(|error| Error::new(Code::Invalid, error.to_string()))
+}
+
+fn render_native(
+    op: &OpDecl,
+    tile: &TileCombo,
+    fragments: &diagnostic::Result<FragmentSet>,
+) -> diagnostic::Result<String> {
+    cutile::substitute::render(op, tile, fragments.as_ref().map_err(Clone::clone)?)
+}
+
+/// 缓存命中：键相同意味着源文本相同。
 fn hit(cache: &Cache, key: &CacheKey, profile: &Profile) -> Option<Source> {
     cache.get(key).map(|text| Source {
         lang: profile.meta.emit,
@@ -121,19 +162,17 @@ fn hit(cache: &Cache, key: &CacheKey, profile: &Profile) -> Option<Source> {
     })
 }
 
-/// 未命中时的一次生成：AST → 文本 → 成文 → 落盘。数据流经过结构化 AST（ADR 0017 L1），双射测试
-/// 保证它与直接 `substitute::render` 逐字节相等；字符串路径保留用于回滚与对拍。
+/// 未命中时统一组装并落盘；两条正文来源由显式模板类别决定，不在解析失败后回退。
 fn generate(
     op: &OpDecl,
     profile: &Profile,
     variant: &prof::decl::Variant,
     tile: &TileCombo,
-    nodes: &[ast::Node],
+    body: &str,
     cache: &Cache,
     key: &CacheKey,
 ) -> diagnostic::Result<Source> {
-    let text = ast::render(nodes);
-    let source = emit::assemble(profile, op, variant, tile, &text);
+    let source = emit::assemble(profile, op, variant, tile, body);
     cache.put(key, &source.text).map_err(|error| {
         Error::new(
             Code::Io,
@@ -265,30 +304,19 @@ fn compile_fresh(
     key: &ArtifactKey,
     dirs: &Dirs,
 ) -> diagnostic::Result<(Outcome, Artifact)> {
-    let sandbox = sandbox(dirs, key);
-    let exe = runner::compile(&tool.command, flags, program, &sandbox)?;
-    let artifact = cache.put_artifact(key, &exe).map_err(|error| {
-        Error::new(
-            Code::Io,
-            format!(
-                "写产物缓存 {} 失败：{error}",
-                cache.artifact_path(key).display()
-            ),
-        )
-    })?;
-    let _ = std::fs::remove_dir_all(&sandbox);
-    Ok((runner::run(&artifact.path)?, artifact))
-}
-
-/// 编译沙箱：目录名必须唯一，先编译完的那条会删掉它，共用目录会让另一条的 `cc -o`
-/// 失去输出路径（表现为 linker 报 "cannot open output file"）。
-fn sandbox(dirs: &Dirs, key: &ArtifactKey) -> PathBuf {
-    dirs.work().join(format!(
-        "{}-{}-{}",
-        key.hex(),
-        std::process::id(),
-        SANDBOX_SEQ.fetch_add(1, Ordering::Relaxed)
-    ))
+    runner::driver::with_scratch(dirs, &key.hex(), |sandbox| {
+        let exe = runner::compile(&tool.command, flags, program, sandbox)?;
+        let artifact = cache.put_artifact(key, &exe).map_err(|error| {
+            Error::new(
+                Code::Io,
+                format!(
+                    "写产物缓存 {} 失败：{error}",
+                    cache.artifact_path(key).display()
+                ),
+            )
+        })?;
+        Ok((runner::run(&artifact.path)?, artifact))
+    })
 }
 
 /// 没有编译器时的唯一出路：复用已经落盘的同一份产物。主函数与**编译参数**必须逐字相同，工具链可以
@@ -486,7 +514,7 @@ fn key(
     profile: &Profile,
     path: &Path,
     tile: &TileCombo,
-    prepared: &Prepared,
+    prepared: &Prepared<'_>,
 ) -> CacheKey {
     let mut flags = profile.flags.join(" ");
     flags.push_str(&format!("|{}", profile.preamble));
@@ -507,7 +535,6 @@ fn key(
         )
     });
 
-    // 片段层只取一次：片段哈希与 AST 指纹都从同一份输入派生。
     let fragment_hashes: Vec<(Prim, u64)> = prepared.fragments.as_ref().map_or_default(|set| {
         Prim::ALL
             .iter()
@@ -515,13 +542,14 @@ fn key(
             .filter_map(|prim| set.get(prim).map(|text| (prim, emit::fnv1a(text))))
             .collect()
     });
-    // 内核实现标签：参与展开片段的实现名并集排序去重；同原语多实现时各自成独立缓存条目（ADR 0027 §6）。
-    let impl_name = impl_tag(&prepared.fragments);
-    // 缓存指纹锚定结构化 AST：FNV(AST 规范编码)。AST 不可用时回退到模板哈希，
-    // 保持 key() 不返回 Result 的容错契约；正常路径下两条路径已由双射测试守着。
-    let ast_hash = match &prepared.nodes {
-        Ok(nodes) => emit::fnv1a(&ast::encode(nodes)),
-        Err(_) => emit::fnv1a(&op.template),
+    let impl_name = impl_tag(prepared.fragments);
+    // 正常产物使用优化后 IR 的规范编码；显式原生模板以原文本身标识缓存。
+    let ast_hash = match &prepared.program {
+        Some(Ok(program)) => program.encode().map_or_else(
+            |_| emit::fnv1a(&op.template),
+            |encoded| emit::fnv1a(&encoded),
+        ),
+        None | Some(Err(_)) => emit::fnv1a(&op.template),
     };
 
     CacheKey {

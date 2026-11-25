@@ -1,6 +1,6 @@
 use super::*;
 use crate::harness::cutile_x_kernel::{sample, signature};
-use nn::model::{Buf, Values};
+use nn::model::{Buf, Values, Vector};
 
 /// 生成 C 封装文本；`CUTILE_CAPTURE_GOLDEN` 显式打开时才把副本写到 `/tmp/cutile-golden`。
 #[test]
@@ -52,8 +52,8 @@ fn harness_embeds_data_and_calls_the_kernel() {
     assert!(source.contains("CUTILE_BARRIER();"));
     assert!(source.contains("volatile float cutile_sink"));
     assert!(
-        source.contains("cutile_sink = y[cutile_s];"),
-        "整个输出都要保活进 sink"
+        source.contains("cutile_sink = cutile_read_f32(y, cutile_s);"),
+        "整个输出都要逐车道保活进 sink"
     );
     assert!(source.contains("float y[2]"));
     assert!(
@@ -77,6 +77,49 @@ fn harness_embeds_data_and_calls_the_kernel() {
         source.starts_with("#define _POSIX_C_SOURCE"),
         "POSIX 声明必须在系统头之前：{source}"
     );
+}
+
+#[test]
+fn zero_length_bufs_have_valid_storage_but_keep_their_logical_length() {
+    let mut sample = sample();
+    sample.bufs[0].values = Values::F32(Vec::new());
+    let (decls, init) = input_bufs(&sample, "y");
+    assert!(decls.contains("cutile_init_x[1]"), "{decls}");
+    assert!(decls.contains("static float x[1]"), "{decls}");
+    assert!(init.contains("cutile_i < 0"), "{init}");
+
+    let text = main(
+        "y",
+        HarnessRun {
+            len: 0,
+            ctype: CType::F32,
+            repeat: 1,
+            warmup: 1,
+        },
+        "cutile_x_kernel",
+        "x, y, 0",
+        "",
+    );
+    assert!(text.contains("static float y[1]"), "{text}");
+    assert!(text.contains("cutile_x_kernel(x, y, 0);"));
+}
+
+#[test]
+fn vector_literals_keep_lane_boundaries_and_group_storage() {
+    let values = Values::F32x4(Vector::from_fn(2, |idx| idx as f32));
+    assert_eq!(values.len(), 8);
+    assert_eq!(values.storage_len(), 2);
+    assert_eq!(c_type(&values), "float4");
+    assert_eq!(
+        c_literal(&values),
+        "{0.0f, 1.0f, 2.0f, 3.0f}, {4.0f, 5.0f, 6.0f, 7.0f}"
+    );
+
+    let mut sample = sample();
+    sample.bufs[0].values = values;
+    let (decls, init) = input_bufs(&sample, "y");
+    assert!(decls.contains("static float4 x[2]"), "{decls}");
+    assert!(init.contains("cutile_i < 2"), "{init}");
 }
 
 #[test]

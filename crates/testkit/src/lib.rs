@@ -45,11 +45,118 @@ pub mod evidence;
 pub mod fixture;
 pub mod gating;
 pub mod hash;
+/// 标量参考数学与数值对拍共用 `compare` 的实现，这里保留原公共路径。
+pub mod math {
+    pub use crate::compare::{dot, mean, variance};
+}
 pub mod prop;
 pub mod rng;
 pub mod scratch;
 pub mod suite;
 pub mod witness;
+
+// 表驱动宏直接定义在 crate 根，避免仅为宏声明单开口袋文件。
+
+/// 逐条执行命名用例：`cases!(闭包; "用例名" => 输入, …)`。
+///
+/// 表驱动配置化：用例是数据，判据只有一份。闭包接收 `(用例名, 输入)` 两个参数，每条表项顺序
+/// 调用一次；用例名应写进断言消息，失败时即可定位到具体表项。
+///
+/// ```
+/// fn double(x: i32) -> i32 { x * 2 }
+/// llm_testkit::cases!(|name, (input, want): (i32, i32)| {
+///     assert_eq!(double(input), want, "{name}");
+/// };
+/// "零" => (0, 0),
+/// "正数" => (3, 6),
+/// "负数" => (-2, -4),
+/// );
+/// ```
+#[macro_export]
+macro_rules! cases {
+    ($run:expr; $($name:literal => $input:expr),+ $(,)?) => {{
+        // `&mut` 绑定同时容纳 `Fn` 与 `FnMut` 闭包（如捕获 `&mut` 计数器），无需可变性警告豁免。
+        let run = &mut $run;
+        $( run($name, $input); )+
+    }};
+}
+
+/// 把一组同形用例各生成一个独立 `#[test]`：`test_cases!(模块名 { 测试名 => 输入, … }, 判据)`。
+///
+/// 与 [`cases!`] 的差别是**一条表项一个测试函数**：测试报告里每条用例单独计数、单独并行，
+/// 单条失败不拖累同组其他用例的执行。判据闭包接收 `(输入)`，测试名即表项标识。
+///
+/// ```
+/// llm_testkit::test_cases!(parity {
+///     even_zero => 0,
+///     even_two => 2,
+///     even_ten => 10,
+/// }, |input: i32| {
+///     assert_eq!(input % 2, 0);
+/// });
+/// ```
+#[macro_export]
+macro_rules! test_cases {
+    ($module:ident { $($name:ident => $input:expr),+ $(,)? }, $run:expr) => {
+        #[cfg(test)]
+        mod $module {
+            // 判据闭包常要调用外层的装配 helper；`use super::*` 把它们带进生成模块。
+            #[allow(unused_imports)]
+            use super::*;
+            $(
+                #[test]
+                fn $name() {
+                    let run = $run;
+                    run($input);
+                }
+            )+
+        }
+    };
+}
+
+#[cfg(test)]
+mod cases {
+    #[test]
+    fn cases_run_every_row_and_pass_the_case_name() {
+        let mut seen = Vec::new();
+        crate::cases!(|name, input: i32| {
+            seen.push((name, input * 2));
+        };
+        "一" => 1,
+        "二" => 2,
+        "三" => 3,
+        );
+        assert_eq!(seen, [("一", 2), ("二", 4), ("三", 6)]);
+    }
+
+    crate::test_cases!(generated {
+        zero_is_even => 0,
+        two_is_even => 2,
+        four_is_even => 4,
+    }, |input: i32| {
+        assert_eq!(input % 2, 0, "{input} 应为偶数");
+    });
+
+    // 第二组：钉住「同一条判据被多个生成的测试复用」，含负值输入。
+    crate::test_cases!(signs {
+        positive => 1,
+        negative => -1,
+    }, |input: i32| {
+        assert_ne!(input, 0);
+    });
+
+    /// 外层装配 helper：验证生成模块经 `use super::*` 能调到它。
+    fn triple(x: i32) -> i32 {
+        x * 3
+    }
+
+    crate::test_cases!(uses_outer_helper {
+        one => 1,
+        five => 5,
+    }, |input: i32| {
+        assert_eq!(triple(input), input * 3);
+    });
+}
 
 // 工作区级的跨层对拍与契约门禁。它们只靠 `dev-dependencies` 里的被测层编译，所以每条都在
 // `cfg(test)` 之下——`use llm_testkit` 的运行时构建看不到其中任何一行。
@@ -90,12 +197,13 @@ mod chain_measure;
 mod chain_ruling;
 
 pub use compare::{
-    COSINE_GUARD, Scale, all_finite, approx_eq, assert_close, assert_rel_with, assert_within_rel,
-    close, cosine_similarity, max_rel_err,
+    COSINE_GUARD, Scale, all_finite, approx_eq, assert_close, assert_near, assert_rel_with,
+    assert_vec_near, assert_within_rel, close, cosine_similarity, max_rel_err,
 };
 pub use fixture::{assert_rejects_length_mismatch, pack_codes, safetensors_bytes};
 pub use gating::{device_enabled, device_or_skip, skip, skip_count, skip_none, skipped_reasons};
 pub use hash::{assert_table_matches_bitwise, crc32_bitwise};
-pub use rng::{Rng, sample};
-pub use scratch::{scratch_clean, scratch_dir};
+pub use math::{dot, mean, variance};
+pub use rng::{Rng, sample, sample_with};
+pub use scratch::{ScratchDir, scratch_clean, scratch_dir};
 pub use similar_asserts::assert_eq;

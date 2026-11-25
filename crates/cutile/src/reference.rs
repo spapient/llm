@@ -110,8 +110,8 @@ pub fn within(got: &[f32], want: &[f32], dt: DType) -> bool {
 /// `(生产者输出槽位, 消费者读槽位)` 对。两者的完整性由 [`verify_fusion`] 保证：
 /// `bridged.len()` 恒等于 `fusion.seams.len()`——只桥一条就返回的旧口径会让对拍悄悄测另一个程序。
 pub struct Oracle {
-    /// 消费者产出。
-    pub got: Vec<f32>,
+    /// 消费者产出（按元素档存放；对拍侧按档解包）。
+    pub got: Values,
     /// 实际桥接的缝。
     pub bridged: Vec<(String, String)>,
 }
@@ -190,22 +190,32 @@ fn seam_targets<'a>(fusion: &'a Fusion, from: &'a str) -> diagnostic::Result<Vec
     Ok(targets)
 }
 
-/// 跑生产者、把每条缝桥进消费者样本、再跑消费者。
+/// 跑生产者、把每条缝桥进消费者样本、再跑消费者；产出按原样档位返回，对拍侧解包。
 fn run_fused(
     producer: &Model,
     consumer: &Model,
     sample: &mut Sample,
     bridged: &[(String, String)],
-) -> diagnostic::Result<Vec<f32>> {
+) -> diagnostic::Result<Values> {
     let mid = (producer.reference)(sample)?;
-    for (from, to) in bridged {
-        bridge_one(sample, from, to, &mid)?;
-    }
+    bridge_all(sample, bridged, &mid)?;
     (consumer.reference)(sample)
 }
 
-/// 把生产者产出写进消费者的一个槽位，长度不符就不写。
-fn bridge_one(sample: &mut Sample, from: &str, to: &str, mid: &[f32]) -> diagnostic::Result<()> {
+/// 批量桥接全部缝；任一槽位失败即停止，不继续写后面的槽位。
+fn bridge_all(
+    sample: &mut Sample,
+    bridged: &[(String, String)],
+    mid: &Values,
+) -> diagnostic::Result<()> {
+    for (from, to) in bridged {
+        bridge_one(sample, from, to, mid)?;
+    }
+    Ok(())
+}
+
+/// 把生产者产出写进消费者的一个槽位，长度不符就不写；档位一致性由 [`Sample::set`] 校验。
+fn bridge_one(sample: &mut Sample, from: &str, to: &str, mid: &Values) -> diagnostic::Result<()> {
     let buf = sample
         .buf(to)
         .ok_or_else(|| Error::new(Code::Missing, format!("样本里没有消费者槽位 `{to}`")))?;
@@ -219,7 +229,7 @@ fn bridge_one(sample: &mut Sample, from: &str, to: &str, mid: &[f32]) -> diagnos
             ),
         ));
     }
-    sample.set(to, Values::F32(mid.to_vec()))
+    sample.set(to, mid.clone())
 }
 
 /// 融合值自身不合法。

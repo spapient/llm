@@ -40,50 +40,7 @@ bw        = { value = 160.032e9, src = "128/8*2*5.001e9" }
 [compile]
 # cuBLAS 是 matmul_f32 真特化的设备库；CUDA toolkit 同时提供头文件与链接库。
 flags = ["-arch=sm_75", "-O3", "-lcublas"]
-preamble = """
-#include <math.h>
-#ifndef __host__
-#define __host__
-#endif
-#ifndef __device__
-#define __device__
-#endif
-__host__ __device__ float _cutile_exp_f32(float x) { return expf(x); }
-__host__ __device__ float _cutile_log_f32(float x) { return logf(x); }
-__host__ __device__ float _cutile_sum_f32(const float *a, int n, int stride) {
-    if (n == 1) return a[0];
-    float acc = 0.0f;
-    for (int i = 0; i < n; ++i) acc += a[i * stride];
-    return acc;
-}
-__host__ __device__ float _cutile_sumsq_f32(const float *a, int n, int stride) {
-    float acc = 0.0f;
-    for (int i = 0; i < n; ++i) { float x = a[i * stride]; acc += x * x; }
-    return acc;
-}
-__host__ __device__ float _cutile_max_f32(const float *a, int n, int stride) {
-    if (n == 1) return a[0];
-    float acc = -3.402823466e38f;
-    for (int i = 0; i < n; ++i) { float x = a[i * stride]; if (x > acc) acc = x; }
-    return acc;
-}
-__host__ __device__ float _cutile_exp_sum_f32(const float *x, int n, int stride, float max) {
-    float acc = 0.0f;
-    for (int i = 0; i < n; ++i) acc += _cutile_exp_f32(x[i * stride] - max);
-    return acc;
-}
-__host__ __device__ void _cutile_exp_norm_f32(float *y, const float *x, int n, int stride, float max, float sum) {
-    for (int i = 0; i < n; ++i) y[i * stride] = _cutile_exp_f32(x[i * stride] - max) / sum;
-}
-__host__ __device__ float _cutile_sqrt_f32(float x) { return sqrtf(x); }
-__host__ __device__ float _cutile_sin_f32(float x) { return sinf(x); }
-__host__ __device__ float _cutile_cos_f32(float x) { return cosf(x); }
-__host__ __device__ float _cutile_pow_f32(float x, float y) { return powf(x, y); }
-__host__ __device__ float _cutile_ceil_f32(float x) { return ceilf(x); }
-__host__ __device__ float _cutile_floor_f32(float x) { return floorf(x); }
-__host__ __device__ float _cutile_round_f32(float x) { return roundf(x); }
-__host__ __device__ float _cutile_trunc_f32(float x) { return truncf(x); }
-"""
+# 前置声明（软件数学函数与 host/device 垫片）在 preamble.cu，构建期读入并注入档案表。
 
 [[provides]]
 prim    = "dot"
@@ -271,6 +228,15 @@ kind     = ["rcp", "rsqrt"]
 accuracy = ["approx"]
 grade    = "L0"
 witness  = { file = "nvidia/witness.cu", func = "witness_rcp", expect = [0.25, 0.5] }
+
+[[provides]]
+prim     = "mma"
+impl     = "cublas"
+dt       = ["f32"]
+space    = ["REG"]
+accuracy = ["fp32"]
+grade   = "L2"
+witness = { file = "nvidia/witness.cu", func = "witness_matmul_f32", expect = [19.0, 22.0, 43.0, 50.0] }
 
 # ---- 写回尾块（epilogue）的六种形式 ----------------------------------------
 # `form` 的取值就是 prof::epilogue 的闭环，六种形式由语法写死，档案只回答"这台设备怎么

@@ -406,3 +406,100 @@ fn sub_byte_precisions_have_no_scalar_element() {
         assert!(dtype.bits() < 8, "{dtype:?} 应是亚字节精度");
     }
 }
+
+/// 编译期秩 2 的借来视图，用于类型级核心契约。
+type Fix2<'a> = Tensor<&'a [f32], [usize; 2], f32>;
+
+#[test]
+fn typed_tensor_keeps_its_rank_through_flip_and_window_writes() {
+    let data = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let tensor: Fix2<'_> = Tensor::new([2, 3], data.as_slice()).expect("形状与缓冲匹配");
+
+    // `flip` 换存储（借来 → 自持），秩见证原样留在类型上。
+    let flipped: Tensor<crate::Owned<f32>, [usize; 2], f32> = tensor.flip([1]);
+    assert_eq!(flipped.dims(), [2, 3]);
+    assert_eq!(flipped.row(0), Some(&[3.0f32, 2.0, 1.0][..]), "整行倒读");
+
+    let mut own: Tensor<crate::Owned<f32>, [usize; 2], f32> =
+        Tensor::new([2, 3], crate::Owned::from(data.to_vec())).expect("自持张量");
+    own.slice_fill([1..2, 0..3], 0.0).expect("末行清零");
+    own.slice_assign([0..1, 1..3], [8.0f32, 9.0])
+        .expect("首行两列");
+    assert_eq!(own.row(0), Some(&[1.0f32, 8.0, 9.0][..]));
+    assert_eq!(own.row(1), Some(&[0.0f32, 0.0, 0.0][..]));
+}
+
+#[test]
+fn a_static_rank_owned_tensor_walks_the_whole_shape_surface() {
+    let data: Vec<f32> = (0..12).map(|i| i as f32).collect();
+    let solid: Tensor<crate::Owned<f32>, [usize; 2], f32> =
+        Tensor::new([3, 4], crate::Owned::from(data)).expect("自持张量");
+
+    let window: Tensor<crate::Owned<f32>, [usize; 2], f32> = solid
+        .slice([crate::Slice::stepped(0, 3, 2), crate::Slice::new(1, 4)])
+        .expect("隔行、去掉首列");
+    assert_eq!(window.dims(), [2, 3]);
+    assert!(
+        window.clone().flatten::<[usize; 1]>(0, 2).is_none(),
+        "跳着读的窗口压不平：压平只能落在连续段上"
+    );
+
+    let flat: Tensor<crate::Owned<f32>, [usize; 1], f32> =
+        window.to_contiguous().flatten(0, 2).expect("物化后压平");
+    assert_eq!(flat.dims(), [6], "秩在类型里跟着变");
+    assert_eq!(flat.to_vec(), vec![1.0f32, 2.0, 3.0, 9.0, 10.0, 11.0]);
+
+    let wide: Tensor<crate::Owned<f32>, [usize; 2], f32> = flat
+        .unsqueeze(0)
+        .expect("提轴")
+        .broadcast([2, 6])
+        .expect("广播");
+    let pieces: Vec<_> = wide.chunks(1, 3).collect();
+    assert_eq!(pieces.len(), 3);
+    assert_eq!(pieces[2].dims(), [2, 2]);
+
+    let diag: Tensor<crate::Owned<f32>, [usize; 1], f32> = wide.diagonal(0, 1).expect("对角");
+    assert_eq!(diag.dims(), [2], "2×6 的对角长度取小者");
+    assert_eq!(
+        diag.to_vec(),
+        vec![1.0f32, 2.0],
+        "对角沿列走：(0,0)=1、(1,1)=2；行方向步长为 0 不影响"
+    );
+
+    let two: Tensor<crate::Owned<f32>, [usize; 2], f32> = diag
+        .unsqueeze(0)
+        .expect("提轴")
+        .broadcast([2, 2])
+        .expect("广播");
+    assert_eq!(
+        two.select::<[usize; 1]>(0, 1).expect("固定首轴").dims(),
+        [2],
+        "静态秩下 select 同样只减一秩"
+    );
+}
+
+#[derive(Clone)]
+struct ExternalRank(Vec<usize>);
+
+impl crate::Rank for ExternalRank {
+    fn as_slice(&self) -> &[usize] {
+        &self.0
+    }
+
+    fn as_slice_mut(&mut self) -> &mut [usize] {
+        &mut self.0
+    }
+
+    fn from_slice(values: &[usize]) -> Option<Self> {
+        Some(Self(values.to_vec()))
+    }
+}
+
+#[test]
+fn legacy_rank_implementations_use_the_generic_default_extensions() {
+    let tensor: Tensor<&[u8], ExternalRank, u8> =
+        Tensor::new(ExternalRank(vec![2, 2]), [1u8, 2, 3, 4].as_slice()).expect("外部秩见证");
+    let row = tensor.select::<ExternalRank>(0, 1).expect("默认迭代构造");
+    assert_eq!(row.dims(), [2]);
+    assert_eq!(row.iter().sum::<u8>(), 7);
+}

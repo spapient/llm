@@ -4,13 +4,13 @@
 
 use super::*;
 
+use testkit::assert_close;
+
 const TOL: f64 = 1e-12;
 
+/// 绝对容差逐元素对拍：f64 口径统一走 testkit 的泛型实现，失败带首个越界下标。
 fn close(a: &[f64], b: &[f64]) {
-    assert_eq!(a.len(), b.len());
-    for (x, y) in a.iter().zip(b) {
-        assert!((x - y).abs() <= TOL, "{x} vs {y}");
-    }
+    assert_close(a, b, TOL, 0.0);
 }
 
 /// 系数构成单位剖分：和为 1。

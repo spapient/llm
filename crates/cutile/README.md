@@ -198,7 +198,7 @@ crates/cutile/                  # 模板前端 + typed IR 迁移起点
     ├── reference.rs            # 对拍口径：相对误差 + 按数据类型的阈值
     ├── harness.rs              # 被测内核的 C / CUDA 基准封装生成（两种方言同模块）
     ├── dirs.rs                 # 三个目录的纯数据值对象（默认路径在调用方，本模块不读环境变量）
-    ├── probe.rs / space.rs     # 设备探测与形状空间（纯数据；起进程在 `shard`）
+    ├── probe.rs / space.rs     # CPU 特性 + nvidia-smi 设备枚举、自动选择与形状空间
     └── lru.rs                  # 缓存条目的残留、锁状态与回收判据（`Residue` / `Gc` / `State`）
 
 crates/shard/                  # 执行半边：编译、执行、见证、语言门与四份报告（cli/device 以 `shard` 依赖引用）
@@ -229,8 +229,8 @@ crates/shard/                  # 执行半边：编译、执行、见证、语�
 解析 → `cutile` → 排版 → 退出码），因此 `cutile` 不再持有第二套命令语法或第二套输出排版。
 
 TOML 解析与运行时配置不在本 crate：它们是与领域无关的基础设施。语料（`ops/*.toml`、`<vendor>/*.toml`）
-在构建期由各自的 `build.rs` 解析成 `diagnostic::data` 的表，运行期没有任何 TOML 解析器
-（[ADR 0022](../../docs/adr/0022-build-time-corpora.md)）；
+只在构建期读取，并直接生成 `OpView` / `ProfileView` 等强类型静态视图；运行期没有 TOML 解析器或通用动态数据树
+（[ADR 0022](../../docs/adr/0022-build-time-corpora.md)、[ADR 0039](../../docs/adr/0039-parser-dependency-policy.md)）；
 配置策略同样不在本 crate：本 crate 只声明"我要哪三个目录"（`crate::dirs::Dirs`，纯数据），默认目录、
 `CUTILE_*`、`--set` 与来源追踪都在命令行层 `llm-cli::settings`
 （[ADR 0023](../../docs/adr/0023-settings-to-cli.md)）。默认目录是部署策略、
@@ -538,6 +538,11 @@ grade = "L3"
 witness = { file = "nvidia/witness.cu", func = "witness_mma", expect = [1.0] }
 ```
 
+`auto` 每次解析时枚举 CPU 特性与 `nvidia-smi --query-gpu=name,compute_cap` 返回的实际设备。
+有匹配的非 C 设备时优先选加速器，无加速器才回退 CPU；同型号多卡命中同一档案会去重，不同 GPU
+以同等具体度命中时必须显式指定设备，不能依赖枚举顺序。工具或驱动调用失败等价于没有枚举到该设备，
+不会生成猜测的指纹。
+
 规则（全部由 `prof.rs` 与 `cutile` 的 `witness` 校验，不是约定）：
 
 - `provides` 里出现闭集外的 `prim` / `dt` / `space` → 加载失败。
@@ -555,7 +560,7 @@ witness = { file = "nvidia/witness.cu", func = "witness_mma", expect = [1.0] }
 |---|---|---|---|---|---|
 | NVIDIA | `cc = 7.0..12.1`（按代分 sm70/80/90/100） | `shared` | `cuda` / `ptx` | nvcc / NVRTC | 真机 |
 | AMD | `gfx = gfx9..gfx12` | `lds` | `hip` / `opencl` | hipcc / clang | 真机（RDNA） |
-| Intel GPU | `name contains Intel`、`arch = gen12+` | `slm` | `opencl` / `spirv` | IGC / oneAPI | 真机 |
+| Intel UHD 750 | `name contains UHD Graphics 750`、`arch = gen12` | `slm` | `opencl` | OpenCL NEO 32.0.101.7088 | 真机 17/17 条供给、68/68 份翻译单元 |
 | Apple | `name contains: Apple M`、`gpu_cores 10..80` | `threadgroup` | `metal` | xcrun metal | 真机 |
 | 昇腾 | `soc = Ascend 910B..` | `L1`（MTE 搬运） | `ascendc` | ccec（CANN） | 文档（L0/L1） |
 | MUSA | `name contains MTT S` | `shared` | `cuda`（源码兼容） | mcc | 文档 + 模拟 |

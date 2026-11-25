@@ -120,14 +120,14 @@ mod element {
 }
 
 #[cfg(test)]
-#[path = "../tests/tensor_tests.rs"]
-mod tests;
-#[cfg(test)]
-#[path = "../tests/view_tests.rs"]
-mod view_tests;
-#[cfg(test)]
 #[path = "../tests/ops_tests.rs"]
 mod ops_tests;
 #[cfg(test)]
 #[path = "../tests/prop_shape.rs"]
 mod prop_shape;
+#[cfg(test)]
+#[path = "../tests/tensor_tests.rs"]
+mod tests;
+#[cfg(test)]
+#[path = "../tests/view_tests.rs"]
+mod view_tests;

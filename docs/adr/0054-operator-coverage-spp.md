@@ -139,3 +139,11 @@ Burn 的覆盖单位是**后端 trait 方法 + 每后端实现**：ADR 0053 已�
 - 高阶线代、3d/转置卷积、采样分布完整度的首批范围，待几何骨架复用度实测后判别。
 - Burn `burn-linalg` 内部实现深度未逐行读；对照方法面以 `burn-tensor/src/tensor/api` 与 `burn-backend/src/backend/ops` 清单为准。
 - 减码区间、tile 宽度、批次尺寸为待校准参数，需给出测量方式后定值。
+
+
+## 2026-11-25 增量：类型级四车道 f32 切片
+
+- `Vector<T, const N>` 以 `Vec<[T; N]>` 表达定宽分组；`new` 拒绝零车道与未整除的扁平输入，`Vector<T, 4>::from_fn` 按组构造，扁平 `as_slice` 继续为零拷贝对拍视图。`Values` 可区分标量与显式四车道身份，`CType::F32x4` 与签名／样本校验同源。
+- `add_f32x4` 复用 `Binary`、`binary_f32!`、`#[model]` 和同一标量参考；宏只注入采样档与 `GROUP = 4`。`N` 始终表示底层标量数，形状不是 4 的倍数时在编译前拒绝，不把向量组数冒充逻辑形状。
+- 内置声明位于 `prof/src/ops/binary.toml`，向量循环位于 `binary_f32x4.k`。注册目录、公开导出、训练参考表与编译期顺序断言均接入同一身份。
+- 已证实范围是注册声明 → 协商 → `Program` IR → C `vector_size(16)` → 编译执行 → 标量车道对拍；OpenCL／Metal 当前只有原生类型发射证据。其他 dtype、CUDA／HIP 的向量算术 lowering 与其余目标仍未完成，不计入本切片能力。

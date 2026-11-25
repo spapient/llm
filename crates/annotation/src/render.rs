@@ -14,14 +14,20 @@ pub(crate) const RUNTIME_ROOM: usize = 512;
 /// 静态形态：私有构造函数 + `impl ::nn::Contract` + 一条 `#[cfg(test)]` 校验。
 pub(crate) fn render(declaration: &Declaration, ty: &str) -> String {
     let mut code = String::with_capacity(STATIC_ROOM);
-    spec(&mut code, declaration, ty);
+    if spec(&mut code, declaration, ty).is_none() {
+        let role = declaration.role.as_deref().unwrap_or_default();
+        return format!(
+            "compile_error!({:?});\n",
+            format!("注解层内部错误：参数角色 `{role}` 不在闭集内")
+        );
+    }
     contract(&mut code, declaration, ty);
     check_module(&mut code, declaration, ty);
     code
 }
 
 /// 第一块：`__layer_spec()` 用 `OnceLock` 保证 `ContractSpec` 只构造一次。
-fn spec(code: &mut String, declaration: &Declaration, ty: &str) {
+fn spec(code: &mut String, declaration: &Declaration, ty: &str) -> Option<()> {
     code.push_str("#[automatically_derived]\n");
     let _ = writeln!(code, "impl {ty} {{");
     code.push_str("    #[doc(hidden)]\n");
@@ -50,7 +56,7 @@ fn spec(code: &mut String, declaration: &Declaration, ty: &str) {
     });
     code.push(']');
     if let Some(role) = &declaration.role {
-        let variant = role_variant(role);
+        let variant = role_variant(role)?;
         let _ = write!(code, ", ::nn::ParamRole::{variant}");
     }
     code.push_str(");\n");
@@ -62,15 +68,17 @@ fn spec(code: &mut String, declaration: &Declaration, ty: &str) {
     literal(code, &declaration.name);
     code.push_str(", error) }\n");
     code.push_str("            }\n        })\n    }\n}\n\n");
+    Some(())
 }
 
-/// 角色短名映射到 `nn::ParamRole` 变体；短名闭集已在注解解析期校验，兜底取嵌入表角色。
-fn role_variant(role: &str) -> &'static str {
+/// 角色短名到 `nn::ParamRole` 的闭集映射；未知名不由任何合法角色代领。
+fn role_variant(role: &str) -> Option<&'static str> {
     match role {
-        "trainable" => "Trainable",
-        "bias" => "Bias",
-        "norm" => "Norm",
-        _ => "Embedding",
+        "trainable" => Some("Trainable"),
+        "bias" => Some("Bias"),
+        "norm" => Some("Norm"),
+        "embedding" => Some("Embedding"),
+        _ => None,
     }
 }
 

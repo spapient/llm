@@ -2,7 +2,9 @@
 
 use crate::einsum::Bits;
 use crate::gemv::Element;
-use crate::model::{AxisRole, AxisSpec, Buf, Cost, Sample, ShapeCtx, Values};
+#[cfg(test)]
+use crate::model::Values;
+use crate::model::{AxisRole, AxisSpec, Buf, Cost, Sample, ShapeCtx};
 use crate::quant::Row;
 use diagnostic::{Code, Error};
 
@@ -51,7 +53,7 @@ pub fn axis(shape: &ShapeCtx, label: char, op: &str) -> Result<usize, Error> {
 
 /// 矩阵乘格式：一条 GEMM 里随精度变化的那部分。
 pub trait Gemm {
-    /// 样本缓冲里的元素类型（[`Values`] 的两个闭集变体）。
+    /// 样本缓冲里的元素类型（[`Values`](crate::model::Values) 的两个闭集变体）。
     type Elem: Element;
 
     /// 诊断里点名的算子名：缺轴、尺寸不符时进错误文案。
@@ -161,10 +163,7 @@ pub fn sample<G: Gemm>(m: usize, n: usize) -> Sample {
         bufs: vec![
             G::Elem::buf("a", G::sample_a(m)),
             G::Elem::buf("b", G::sample_b(n)),
-            Buf {
-                name: "y",
-                values: Values::F32(vec![0.0; m * n]),
-            },
+            Buf::f32("y", vec![0.0; m * n]),
         ],
     }
 }

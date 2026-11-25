@@ -34,20 +34,9 @@ impl Catalogue {
     }
 
     fn builtin_profiles() -> diagnostic::Result<Vec<Profile>> {
-        let mut profiles = Vec::new();
-        for name in prof::names() {
-            let table = prof::embedded(name).ok_or_else(|| {
-                Error::new(
-                    Code::Missing,
-                    format!("内置档案 `{name}` 不在生成的档案表里：构建脚本漏掉了它"),
-                )
-            })?;
-            let profile = Profile::parse(table).map_err(|error| {
-                Error::new(Code::Invalid, format!("内置档案 `{name}`：{error}"))
-            })?;
-            profiles.push(profile);
-        }
-        Ok(profiles)
+        ::prof::prof::builtin_profiles()
+            .map(<[Profile]>::to_vec)
+            .map_err(|error| Error::new(Code::Invalid, format!("内置档案：{error}")))
     }
 
     /// 按配置装载：两层语料都是编译期内嵌的生成表，`data.root` 只决定片段与见证的校验根
@@ -73,7 +62,7 @@ impl Catalogue {
     /// 名字不存在或探测不出可用档案时返回说明。
     pub fn resolve(&self, device: &str) -> diagnostic::Result<&Profile> {
         if device == AUTO_DEVICE {
-            return self.select(&crate::probe::detect_cpu());
+            return crate::probe::select_detected(self.profiles(), &crate::probe::detect());
         }
         self.profile(device)
             .ok_or_else(|| Error::new(Code::Missing, format!("没有设备档案 `{device}`")))

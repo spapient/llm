@@ -8,6 +8,8 @@ use tensor::{DType, Shape};
 
 use crate::support;
 
+use testkit::dot;
+
 /// 夹具向量宽度。
 const N: usize = 3;
 /// 中心差分步长：f32 下在舍入与截断误差之间。
@@ -26,10 +28,6 @@ fn sum_backward(session: &mut Session<Reference, Sgd>, y: Var, loss: Var) -> Res
     session.bufs().compute_step("reduce_sum_f32", &[y], loss)?;
     session.plan(loss)?;
     session.backward()
-}
-
-fn dot(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
 fn silu(x: f32) -> f32 {
@@ -230,21 +228,42 @@ fn latent_loss(
     total
 }
 
-/// 参数图夹具的返回积：会话、参数变量、算子输出与标量损失。
-type ParameterSession = (Session<Reference, Sgd>, Vec<Var>, Var, Var);
+/// 图夹具的返回积：会话、输入变量、算子输出与标量损失。
+type GraphSession = (Session<Reference, Sgd>, Vec<Var>, Var, Var);
 
-/// 任意元数参数图夹具：统一建图、形状表、参数登记与声明档/实例几何前向。
+/// 全参数图夹具；混合参数/常量图走 [`graph_session`]。
 fn parameter_session(
     op: &str,
     values: &[&[f32]],
     output: usize,
     geometry: Option<Geometry>,
-) -> Result<ParameterSession> {
+) -> Result<GraphSession> {
+    graph_session(op, values, output, geometry, &vec![true; values.len()])
+}
+
+/// 任意元数图夹具：`trainable` 逐槽选择梯度终点或常量叶子，共用建图、形状与前向。
+fn graph_session(
+    op: &str,
+    values: &[&[f32]],
+    output: usize,
+    geometry: Option<Geometry>,
+    trainable: &[bool],
+) -> Result<GraphSession> {
+    assert_eq!(values.len(), trainable.len());
     let mut tape = Tape::new();
-    let params: Vec<Var> = values.iter().map(|_| tape.parameter()).collect();
-    let y = tape.record(op, &params).expect("记录 y");
+    let vars: Vec<Var> = trainable
+        .iter()
+        .map(|&trainable| {
+            if trainable {
+                tape.parameter()
+            } else {
+                tape.leaf()
+            }
+        })
+        .collect();
+    let y = tape.record(op, &vars).expect("记录 y");
     let out = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
-    let mut entries: Vec<_> = params
+    let mut entries: Vec<_> = vars
         .iter()
         .zip(values)
         .map(|(&var, value)| (var, value.len()))
@@ -252,16 +271,18 @@ fn parameter_session(
     entries.extend([(y, output), (out, 1)]);
     let sizes = support::sizes_of(&tape, &entries);
     let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
-    for (&param, value) in params.iter().zip(values) {
-        session.register_parameter(param, ParamRole::Trainable, value.to_vec())?;
+    for ((&var, value), &trainable) in vars.iter().zip(values).zip(trainable) {
+        if trainable {
+            session.register_parameter(var, ParamRole::Trainable, value.to_vec())?;
+        } else {
+            session.bufs().load(var, Data::F32(value.to_vec()))?;
+        }
     }
     match geometry {
-        Some(geometry) => session
-            .bufs()
-            .compute_shaped_step(op, &params, y, geometry)?,
-        None => session.bufs().compute_step(op, &params, y)?,
+        Some(geometry) => session.bufs().compute_shaped_step(op, &vars, y, geometry)?,
+        None => session.bufs().compute_step(op, &vars, y)?,
     }
-    Ok((session, params, y, out))
+    Ok((session, vars, y, out))
 }
 
 /// 一元"长度会变"的算子：`loss = Σ op(p)`，对 `p` 逐元素中心差分。

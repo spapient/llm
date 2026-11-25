@@ -3,25 +3,13 @@ use super::*;
 /// `loss = reduce_sum(mul(p, w))`：d loss/d p[i] = w[i]，乘法与归约两段链式回传。
 #[test]
 fn mul_then_reduce_matches_central_differences() -> Result<()> {
-    let mut tape = Tape::new();
-    let p = tape.parameter();
-    let w = tape.leaf();
-    let z = tape.record("mul_f32", &[p, w]).expect("记录 z");
-    let loss = tape.record("reduce_sum_f32", &[z]).expect("记录 loss");
-
-    let sizes = support::sizes_of(&tape, &[(p, N), (w, N), (z, N), (loss, 1)]);
-
     let p0 = vec![0.3_f32, -0.5, 0.8];
     let w0 = vec![1.0_f32, -0.2, 0.6];
-
-    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
-    session.register_parameter(p, ParamRole::Trainable, p0.clone())?;
-    session.bufs().load(w, Data::F32(w0.clone()))?;
-    session.bufs().compute_step("mul_f32", &[p, w], z)?;
+    let (mut session, vars, z, loss) =
+        graph_session("mul_f32", &[&p0, &w0], N, None, &[true, false])?;
     sum_backward(&mut session, z, loss)?;
-
     check_grad(
-        session.bufs().gradient(p).expect("参数梯度应在场"),
+        session.bufs().gradient(vars[0]).expect("参数梯度应在场"),
         &p0,
         "p",
         |x| dot(x, &w0),
@@ -85,31 +73,19 @@ fn detached_leaf_receives_no_gradient() -> Result<()> {
 /// `loss = reduce_sum(gelu(p))`：GELU 导数（正态密度 + 乘 Φ）逐元素对拍。
 #[test]
 fn gelu_chain_matches_central_differences() -> Result<()> {
-    let mut tape = Tape::new();
-    let p = tape.parameter();
-    let h = tape.record("gelu_f32", &[p]).expect("记录 h");
-    let loss = tape.record("reduce_sum_f32", &[h]).expect("记录 loss");
-
-    let sizes = support::sizes_of(&tape, &[(p, N), (h, N), (loss, 1)]);
-
     let p0 = vec![-1.2_f32, 0.4, 1.1];
-    let chain_loss = |params: &[f32]| {
-        params
-            .iter()
-            .map(|&x| 0.5 * x * (1.0 + nn::gelu_f32::erf(x * std::f32::consts::FRAC_1_SQRT_2)))
-            .sum::<f32>()
-    };
-
-    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
-    session.register_parameter(p, ParamRole::Trainable, p0.clone())?;
-    session.bufs().compute_step("gelu_f32", &[p], h)?;
+    let (mut session, vars, h, loss) = parameter_session("gelu_f32", &[&p0], N, None)?;
     sum_backward(&mut session, h, loss)?;
-
     check_grad(
-        session.bufs().gradient(p).expect("参数梯度应在场"),
+        session.bufs().gradient(vars[0]).expect("参数梯度应在场"),
         &p0,
         "p",
-        chain_loss,
+        |params| {
+            params
+                .iter()
+                .map(|&x| 0.5 * x * (1.0 + nn::gelu_f32::erf(x * std::f32::consts::FRAC_1_SQRT_2)))
+                .sum::<f32>()
+        },
     );
     Ok(())
 }
@@ -117,63 +93,36 @@ fn gelu_chain_matches_central_differences() -> Result<()> {
 /// `loss = reduce_max(p)`：最大值元素收到上游 1，其余为 0；中心差分核对梯度口径。
 #[test]
 fn reduce_max_matches_central_differences() -> Result<()> {
-    let mut tape = Tape::new();
-    let p = tape.parameter();
-    let h = tape.record("reduce_max_f32", &[p]).expect("记录 h");
-    let loss = tape.record("reduce_sum_f32", &[h]).expect("记录 loss");
-
-    let sizes = support::sizes_of(&tape, &[(p, N), (h, 1), (loss, 1)]);
-
     let p0 = vec![-0.7_f32, 1.3, 0.2];
-    let chain_loss = |params: &[f32]| params.iter().copied().fold(f32::MIN, f32::max);
-
-    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
-    session.register_parameter(p, ParamRole::Trainable, p0.clone())?;
-    session.bufs().compute_step("reduce_max_f32", &[p], h)?;
+    let (mut session, vars, h, loss) = parameter_session("reduce_max_f32", &[&p0], 1, None)?;
     sum_backward(&mut session, h, loss)?;
-
     check_grad(
-        session.bufs().gradient(p).expect("参数梯度应在场"),
+        session.bufs().gradient(vars[0]).expect("参数梯度应在场"),
         &p0,
         "p",
-        chain_loss,
+        |params| params.iter().copied().fold(f32::MIN, f32::max),
     );
     Ok(())
 }
 
-/// `loss = reduce_sum(gemv(x, w))`：权重 `dW[n,k]=x[k]·in[n]`，输入 `dx[k]=Σ_n W[n,k]·in[n]`。
+/// `loss = reduce_sum(gemv(x, w))`：权重在前、常量输入在后。
 #[test]
 fn gemv_matches_central_differences() -> Result<()> {
-    let rows = 2usize;
-    let cols = 3usize;
-    let mut tape = Tape::new();
-    let w = tape.parameter();
-    let x = tape.leaf();
-    // gemv 反向按输入宽度从权重长度反推行数：权重在前、输入在后与前向调用对齐。
-    let y = tape.record("gemv_f32", &[w, x]).expect("记录 y");
-    let loss = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
-
-    let sizes = support::sizes_of(&tape, &[(w, rows * cols), (x, cols), (y, rows), (loss, 1)]);
-
+    let (rows, cols) = (2, 3);
     let w0: Vec<f32> = (0..rows * cols).map(|i| 0.1 * i as f32 - 0.5).collect();
     let x0 = vec![0.3_f32, -0.2, 0.8];
-    let chain_loss = |w: &[f32], x: &[f32]| {
-        (0..rows)
-            .map(|n| (0..cols).map(|k| w[n * cols + k] * x[k]).sum::<f32>())
-            .sum::<f32>()
-    };
-
-    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
-    session.register_parameter(w, ParamRole::Trainable, w0.clone())?;
-    session.bufs().load(x, Data::F32(x0.clone()))?;
-    session.bufs().compute_step("gemv_f32", &[w, x], y)?;
+    let (mut session, vars, y, loss) =
+        graph_session("gemv_f32", &[&w0, &x0], rows, None, &[true, false])?;
     sum_backward(&mut session, y, loss)?;
-
     check_grad(
-        session.bufs().gradient(w).expect("权重梯度应在场"),
+        session.bufs().gradient(vars[0]).expect("权重梯度应在场"),
         &w0,
         "w",
-        |w| chain_loss(w, &x0),
+        |w| {
+            (0..rows)
+                .map(|n| (0..cols).map(|k| w[n * cols + k] * x0[k]).sum::<f32>())
+                .sum()
+        },
     );
     Ok(())
 }
@@ -181,86 +130,54 @@ fn gemv_matches_central_differences() -> Result<()> {
 /// `loss = reduce_sum(gemm(a, b))`：收缩轴固定 `nn::gemm::K`，对拍 `dA` / `dB`。
 #[test]
 fn gemm_matches_central_differences() -> Result<()> {
-    let k = nn::gemm::K;
-    let m = 1usize;
-    let n = 2usize;
-    let mut tape = Tape::new();
-    let a = tape.parameter();
-    let b = tape.leaf();
-    let y = tape.record("gemm_f32", &[a, b]).expect("记录 y");
-    let loss = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
-
-    let sizes = support::sizes_of(&tape, &[(a, m * k), (b, k * n), (y, m * n), (loss, 1)]);
-
+    let (k, m, n) = (nn::gemm::K, 1, 2);
     let a0: Vec<f32> = (0..m * k).map(|i| 0.1 * i as f32 - 0.3).collect();
     let b0: Vec<f32> = (0..k * n).map(|i| 0.08 * i as f32 - 0.4).collect();
-    let chain_loss = |a: &[f32], b: &[f32]| {
-        (0..m)
-            .flat_map(|i| {
-                (0..n).map(move |j| (0..k).map(|p| a[i * k + p] * b[p * n + j]).sum::<f32>())
-            })
-            .sum::<f32>()
-    };
-
-    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
-    session.register_parameter(a, ParamRole::Trainable, a0.clone())?;
-    session.bufs().load(b, Data::F32(b0.clone()))?;
-    session.bufs().compute_step("gemm_f32", &[a, b], y)?;
+    let (mut session, vars, y, loss) =
+        graph_session("gemm_f32", &[&a0, &b0], m * n, None, &[true, false])?;
     sum_backward(&mut session, y, loss)?;
-
+    let b0 = &b0;
     check_grad(
-        session.bufs().gradient(a).expect("A 梯度应在场"),
+        session.bufs().gradient(vars[0]).expect("A 梯度应在场"),
         &a0,
         "a",
-        |a| chain_loss(a, &b0),
+        |a| {
+            (0..m)
+                .flat_map(|i| {
+                    (0..n).map(move |j| (0..k).map(|p| a[i * k + p] * b0[p * n + j]).sum::<f32>())
+                })
+                .sum()
+        },
     );
     Ok(())
 }
 
-/// `loss = reduce_sum(embed(idx, table))`：被访问行累加上游梯度；表行不访问则保持 0。
+/// `loss = reduce_sum(embed(idx, table))`：被访问行累加，未访问行保持 0。
 #[test]
 fn embed_table_gradient_matches_central_differences() -> Result<()> {
-    let tokens = 2usize;
-    let dim = 2usize;
-    let rows = 3usize;
-    let mut tape = Tape::new();
-    let table = tape.parameter();
-    let idx = tape.leaf();
-    let y = tape.record("embed_f32", &[idx, table]).expect("记录 y");
-    let loss = tape.record("reduce_sum_f32", &[y]).expect("记录 loss");
-
-    let sizes = support::sizes_of(
-        &tape,
-        &[
-            (table, rows * dim),
-            (idx, tokens),
-            (y, tokens * dim),
-            (loss, 1),
-        ],
-    );
-
+    let (tokens, dim, rows) = (2, 2, 3);
     let table0: Vec<f32> = (0..rows * dim).map(|i| 0.2 * i as f32 - 0.6).collect();
     let idx0 = vec![0.0_f32, 2.0];
-    let chain_loss = |table: &[f32]| {
-        (0..tokens)
-            .flat_map(|t| {
-                let row = idx0[t] as usize * dim;
-                (0..dim).map(move |d| table[row + d])
-            })
-            .sum::<f32>()
-    };
-
-    let mut session = Session::new(tape, sizes, Reference, Sgd::new(), config())?;
-    session.register_parameter(table, ParamRole::Trainable, table0.clone())?;
-    session.bufs().load(idx, Data::F32(idx0.clone()))?;
-    session.bufs().compute_step("embed_f32", &[idx, table], y)?;
+    let (mut session, vars, y, loss) = graph_session(
+        "embed_f32",
+        &[&idx0, &table0],
+        tokens * dim,
+        None,
+        &[false, true],
+    )?;
     sum_backward(&mut session, y, loss)?;
-
     check_grad(
-        session.bufs().gradient(table).expect("表梯度应在场"),
+        session.bufs().gradient(vars[1]).expect("表梯度应在场"),
         &table0,
         "table",
-        chain_loss,
+        |table| {
+            (0..tokens)
+                .flat_map(|t| {
+                    let row = idx0[t] as usize * dim;
+                    (0..dim).map(move |d| table[row + d])
+                })
+                .sum()
+        },
     );
     Ok(())
 }

@@ -1,12 +1,267 @@
 //! 职责：② negotiate：需求 ∩ 供给，显式降级。命中第一个可行变体即停——链序就是 TOML 里写的优先级，
 //! 不做自动打分（可解释性成本高于收益）；失败诊断必须给出"缺什么、供给方是什么、最近的可行解与代价"。
 
-use crate::atom::{Grade, Mismatch, Need, Prim, Provide};
+use crate::atom::{DTypeSet, Grade, Mismatch, Need, Prim, Provide, Space, SpaceSet};
 use crate::decl::{OpDecl, Variant};
 use crate::prof::Profile;
 use crate::sch::Schedule;
+use prof::FragmentSet;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+
+/// 原子端口的读写方向。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PortDirection {
+    /// 只读输入。
+    Read,
+    /// 只写输出。
+    Write,
+    /// 原地读改写。
+    ReadWrite,
+}
+
+/// 一个类型化原子端口：位置参数下标、方向与实际地址空间集合。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AtomPort {
+    /// 在 `@prim(...)` 里的位置参数下标。
+    pub idx: usize,
+    /// 数据流方向。
+    pub direction: PortDirection,
+    /// 协商后的地址空间。
+    pub spaces: SpaceSet,
+}
+
+/// 端口地址空间的声明来源。
+#[derive(Clone, Copy)]
+enum PortSpace {
+    Supply,
+    Register,
+}
+
+type PortSpec = (usize, PortDirection, PortSpace);
+
+/// 原子的后端实现正文；无操作与“缺片段”是两种不同状态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AtomBody<'a> {
+    /// 设备相关的已登记片段。
+    Fragment(&'a str),
+    /// 同步原语在没有在途操作时显式无操作。
+    Noop,
+}
+
+impl AtomBody<'_> {
+    /// 可打印片段；`Noop` 没有文本。
+    pub fn text(&self) -> Option<&str> {
+        match self {
+            Self::Fragment(text) => Some(text),
+            Self::Noop => None,
+        }
+    }
+}
+
+/// 类型化原子：当前需求、胜出供给、端口和必选设备正文的绑定记录。
+#[derive(Debug, Clone, PartialEq)]
+pub struct Atom<'a> {
+    /// 当前调用点的类型化需求。
+    pub need: Need,
+    /// 类型化供给（能力键的事实源）。
+    pub provide: &'a Provide,
+    /// 输入 / 输出端口及地址空间。
+    pub ports: Vec<AtomPort>,
+    /// 设备片段正文或显式无操作。
+    pub body: AtomBody<'a>,
+}
+
+impl<'a> Atom<'a> {
+    /// 绑定胜出供给与片段正文，同时物化端口类型；缺实现正文返回 `Missing`。
+    pub fn bind(
+        provide: &'a Provide,
+        need: Need,
+        fragments: &'a FragmentSet,
+    ) -> diagnostic::Result<Self> {
+        let body = atom_body(provide, fragments)?;
+        let spaces = selected_spaces(&need, provide);
+        let ports = port_specs(provide.prim)
+            .iter()
+            .map(|(idx, direction, source)| AtomPort {
+                idx: *idx,
+                direction: *direction,
+                spaces: match source {
+                    PortSpace::Supply => spaces,
+                    PortSpace::Register => SpaceSet::of([Space::Reg]),
+                },
+            })
+            .collect();
+        Ok(Self {
+            need,
+            provide,
+            ports,
+            body,
+        })
+    }
+
+    /// 原语。
+    pub fn prim(&self) -> Prim {
+        self.provide.prim
+    }
+
+    /// ISA / 实现标签（与片段层登记的 `impl` 对齐）。
+    pub fn impl_name(&self) -> &str {
+        &self.provide.impl_name
+    }
+
+    /// 当前调用选中的元素档；需求未收窄时使用供给全集。
+    pub fn dtypes(&self) -> DTypeSet {
+        if self.need.dt.is_empty() {
+            self.provide.dt
+        } else {
+            self.need.dt
+        }
+    }
+
+    /// 每个选中元素档的位宽，保持闭集顺序且不分配。
+    pub fn bit_widths(&self) -> impl Iterator<Item = u32> {
+        self.dtypes().iter().map(|dtype| dtype.bits())
+    }
+
+    /// 每个选中元素档的最小存储字节数，亚字节档按向上取整报告。
+    pub fn storage_bytes(&self) -> impl Iterator<Item = u64> {
+        self.dtypes().iter().map(|dtype| dtype.bytes_for(1))
+    }
+
+    /// 调用实参是否满足这条需求；只有能力闭集内的命名参数参与匹配。
+    fn matches(&self, prim: Prim, named: &[(&str, &str)]) -> bool {
+        self.need.prim == prim
+            && named.iter().all(|(key, value)| {
+                crate::atom::AttrKey::parse(key).is_none_or(|key| {
+                    self.need
+                        .attrs
+                        .iter()
+                        .find(|attr| attr.key() == key)
+                        .is_some_and(|attr| attr.contains(value))
+                })
+            })
+    }
+}
+
+/// 原子在程序 arena 中的稳定身份；只能由 [`AtomTable`] 分配。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AtomId(usize);
+
+/// 一个已协商变体的原子 arena；IR 节点持有 `AtomId`，不持悬垂引用。
+#[derive(Debug, Clone, PartialEq)]
+pub struct AtomTable<'a> {
+    atoms: Vec<Atom<'a>>,
+}
+
+impl<'a> AtomTable<'a> {
+    /// 用与能力协商相同的需求和供给选择构造表，不为 IR 另写一套判据。
+    pub fn new(
+        op: &OpDecl,
+        variant: &Variant,
+        profile: &'a Profile,
+        fragments: &'a FragmentSet,
+    ) -> diagnostic::Result<Self> {
+        let proof = Proof::declared(profile);
+        let atoms = all_needs(op, variant)
+            .map(|need| {
+                let offer = select_borrowed(profile, &need, &proof).ok_or_else(|| {
+                    diagnostic::Error::new(
+                        diagnostic::Code::Missing,
+                        format!("需求 `{}` 没有可绑定供给", need.signature()),
+                    )
+                })?;
+                if !offer.satisfied() {
+                    let report = report_from_offer(&need, offer);
+                    return Err(diagnostic::Error::new(
+                        diagnostic::Code::Invalid,
+                        format!("需求 `{}` 不可绑定：{}", need.signature(), report.reason()),
+                    ));
+                }
+                Atom::bind(offer.have, need, fragments)
+            })
+            .collect::<diagnostic::Result<Vec<_>>>()?;
+        Ok(Self { atoms })
+    }
+
+    /// 按原语与命名能力参数绑定调用点；同分时保留需求声明顺序。
+    pub fn resolve(&self, prim: Prim, named: &[(&str, &str)]) -> Option<AtomId> {
+        self.atoms
+            .iter()
+            .enumerate()
+            .filter(|(_, atom)| atom.matches(prim, named))
+            .min_by_key(|(_, atom)| std::cmp::Reverse(atom.need.attrs.len()))
+            .map(|(idx, _)| AtomId(idx))
+    }
+
+    /// 取一条已登记原子；非法或外部构造的身份返回 `None`。
+    pub fn get(&self, id: AtomId) -> Option<&Atom<'a>> {
+        self.atoms.get(id.0)
+    }
+
+    /// 全部原子，供完整性检查与 IR 编码使用。
+    pub fn as_slice(&self) -> &[Atom<'a>] {
+        &self.atoms
+    }
+}
+
+/// 只有明确登记的同步 no-op 可以没有片段；其他缺失都是档案与片段层断裂。
+fn atom_body<'a>(
+    provide: &Provide,
+    fragments: &'a FragmentSet,
+) -> diagnostic::Result<AtomBody<'a>> {
+    if let Some(body) = fragments.get_impl(provide.prim, &provide.impl_name) {
+        return Ok(AtomBody::Fragment(body));
+    }
+    let noop = provide.impl_name == "noop" && matches!(provide.prim, Prim::CommitWait | Prim::Bar);
+    if noop {
+        return Ok(AtomBody::Noop);
+    }
+    Err(diagnostic::Error::new(
+        diagnostic::Code::Missing,
+        format!(
+            "原子 `{}/{}` 没有设备片段正文",
+            provide.prim, provide.impl_name
+        ),
+    ))
+}
+
+fn selected_spaces(need: &Need, provide: &Provide) -> SpaceSet {
+    if need.space.is_empty() {
+        provide.space
+    } else {
+        need.space
+    }
+}
+
+/// 数据参数的方向表；纯标量下标、长度与函数名不占地址空间端口。
+fn port_specs(prim: Prim) -> &'static [PortSpec] {
+    use PortDirection::{Read, ReadWrite, Write};
+    use PortSpace::{Register, Supply};
+    const SPECS: [&[PortSpec]; Prim::ALL.len()] = [
+        &[(0, ReadWrite, Supply), (1, Read, Supply), (2, Read, Supply)],
+        &[
+            (0, ReadWrite, Register),
+            (1, Read, Supply),
+            (2, Read, Supply),
+        ],
+        &[(0, Write, Register), (1, Read, Supply)],
+        &[(0, Write, Register), (1, Read, Supply)],
+        &[],
+        &[(0, Write, Supply), (2, Read, Register)],
+        &[],
+        &[(0, ReadWrite, Register), (1, Read, Register)],
+        &[(0, ReadWrite, Register), (1, Read, Register)],
+        &[(0, ReadWrite, Register), (1, Read, Supply)],
+        &[(0, ReadWrite, Register), (1, Read, Supply)],
+        &[(0, ReadWrite, Register), (1, Read, Register)],
+        &[(0, ReadWrite, Register), (1, Read, Register)],
+        &[(0, Write, Register), (1, Read, Register)],
+        &[(0, Write, Register), (1, Read, Supply), (2, Read, Supply)],
+        &[(0, ReadWrite, Supply), (1, Read, Register)],
+    ];
+    SPECS[prim as usize]
+}
 
 /// 档案身份标签：`厂商(编号)`；失败诊断与 verify 报告共用这一种写法，不在各自排版里另拼。
 pub fn device_label(profile: &Profile) -> String {

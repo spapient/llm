@@ -169,7 +169,7 @@ Rust 官方与微软训练材料的一致口径：
 
 ## 9.5 Ground 后的边界修正（2026-11-24 读 build.rs/buildops 现状）
 
-动手前重读 `crates/prof/build.rs` 与 `buildops.rs` 后，必须把 build.rs 的职责拆成两类：
+动手前重读 `../crates/prof/src/build.rs` 与 `buildops.rs` 后，必须把 build.rs 的职责拆成两类：
 
 **A 类——构建期文件系统 / 数据加工（不适合、也不该搬进 proc-macro）**
 
@@ -408,7 +408,8 @@ Rust 官方与微软训练材料的一致口径：
 - **测试迁移**：prof `tests/decl.rs` 内置自洽/compose 用例改 `to_decl()`；cutile plan/emit/reference/builtin/cap 用例改 `to_decl`，轴顺序用例改直改 owned `op.axes[0].values`，`Op::new` 三参改 `(name, source.view(), source.template())`；shard `build_tests.rs` 篡改用例改 owned：`declared_bytes` 遍历 needs 改 `extent = Span::at_most(limit)`，`declared_swizzle` 遍历 layouts 改 `LayoutSpec::Swz{40,3,3}`，`builtin()` 改 `to_decl()`。
 - **停用用例（归 #47 按 owned 恢复）**：cutile `one_signature_written_in_either_layer_stays_the_same`（Table 解析器标量/数组、bytes/m 归一化同构）；prof `a_tile_overflow_names_the_axis_to_prune`、`an_attr_key_must_belong_to_its_primitive`（最小表过不了 `verified` 的 needs/槽位交叉校验）。旧"clone 内置 Table 篡改字段"手法在视图链下无桥接：静态镜像不含动态树，无法反解回 Table。
 - **实测**：`cargo check --workspace --all-targets` 全绿；`clippy -p llm-prof/-cutile/-llm-shard/-llm-nn/-llm-train --lib --all-targets` 零告警；`cargo fmt --check` 干净。测试：annotation 55 lib + 6 集成、prof 162 lib + 56 集成（1 doc ignored）、cutile 141 lib、nn 536 lib（4 ignored）、shard 161 lib、train 236 lib，全绿。
-- **未做（归后续批次）**：档案链 `ProfileView` 拆 `embedded.rs`（批次 D）；tools 链 `GateView` 拆 `vocabulary.rs` OnceLock<Table>（批次 E）；ingest Table 段解析器与 `buildgen::emit` 拆除、`diagnostic::data` 树依赖清零（批次 F）；三条停用用例按 owned 恢复；`buildops::declarations_of` 残留"declarations"命名待清理。
+- **未做（归后续批次）**：档案链 `ProfileView` 拆 `embedded.rs`（批次 D）；tools 链 `GateView` 拆 `vocabulary.rs` OnceLock<Table>（批次 E）；ingest Table 段解析器与 `buildgen::emit` 拆除、`diagnostic::data` 树依赖清零（批次 F）。
+- **#47 收尾（2026-11-25）**：三条停用用例已恢复并进入当前测试；`declarations_of` 已改为 `template_tables_of`，内部实现改为 `render_template_tables`；重复代码、命名、复杂度与兼容路径均已复核，`bash scripts/ci.sh` 完整序列通过，未新增豁免。
 
 ### 12.5 已知坑
 
@@ -423,3 +424,29 @@ Rust 官方与微软训练材料的一致口径：
 * 本机约 31 个并行会话进程在飞，工作树可能被周期 reset；每批落地以磁盘现状复核，改动集中收尾再跑门禁。
 
 * 每批保持 `fmt`/`clippy`/`nextest`/`gate`/`testkit`/`jscpd` 绿，不豁免存量棘轮。
+
+## 14. 批次 D/E/F 完成账本（2026-11-25）
+
+### 14.1 批次 D — prof 档案链
+
+- `buildtables.rs` 直接生成 `PROFILE_VIEWS: &[ProfileView]`；`ProfileView` / `ProvideView` 平铺收进 `prof.rs`，仅保留内联 `view` 重导出路径，不新增碎文件。
+- 字段只含静态文本、切片、闭集与数值。位集、字符串与供给只在首次使用时 owned 化；`builtin_profiles` 缓存 `Result`，不静默丢设备，也不要求生产 `expect`。
+- `MatchRule::parse`、`Span::parse`、峰值推导式对拍、三级存储与见证校验仍各有唯一入口；生成器额外拒绝非有限浮点。
+
+### 14.2 批次 E — tools 门禁链
+
+- `tools/build.rs` 直接生成 `VOCABULARY: VocabularyView`，覆盖门禁、闭集 / 位集登记与 ownership 基线；`testkit` 两个消费方均读静态字段。
+- `GateView<'a>` / `DebtView<'a>` 用生命周期泛化同时服务静态生成物与局部测试，不泄漏内存；`Gate::from_table` 与旧动态阈值读取已删除。
+- 正阈值、上下限关系、未知键、无度量债务和具体登记理由仍在构建期或 owned 化时拒绝。
+
+### 14.3 批次 F — 解析器与数据树拆除
+
+- 删除 `prof/src/{schema,ingest,decode}.rs`：有效模板 / 阶段 / 变体校验并入 `decl.rs`，数值推导式并入既有 `formula.rs`。
+- 删除 `diagnostic/src/data.rs`、`buildgen::emit` 及旧数据树测试；`buildgen` 只保留 `collect` / `read` / `relative`，其测试迁移为真实 TOML 读取契约。
+- 新公开视图全部登记 `ARCHITECTURE.md` 所有权表，没有新增 `unlisted` 豁免。旧停用用例已在 #47 恢复，不重开路线。
+
+### 14.4 实测与闭环
+
+- 工作区 `--all-targets --all-features` 编译零警告；`prof` 169 项单测、65 项设备片段测试，`testkit` 116 项，诊断底座 20 项单测与 2 项文档测试通过。
+- 静态质量门 13 项通过，覆盖复杂度、行数、禁止调用、命名与文档链接；最终全量结果以 `bash scripts/ci.sh` 的当次输出为准，不预写分数或沿用历史记录。
+- 保持平铺、配置优先与单源校验；不得靠调宽阈值、删除有效覆盖或新增基线完成闭环。

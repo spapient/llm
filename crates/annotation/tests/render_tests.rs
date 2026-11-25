@@ -101,6 +101,30 @@ fn a_static_role_is_rendered_into_the_checked_spec_constructor() {
 }
 
 #[test]
+fn static_roles_are_closed_and_never_default_to_embedding() {
+    for (role, variant) in [
+        ("trainable", "Trainable"),
+        ("bias", "Bias"),
+        ("norm", "Norm"),
+        ("embedding", "Embedding"),
+    ] {
+        let text = format!(r#"name = "role", out = [8], ops = ["rmsnorm_f32"], role = "{role}""#);
+        let code = render(&declaration(&text), "Role");
+        assert!(
+            code.contains(&format!("::nn::ParamRole::{variant}")),
+            "{code}"
+        );
+    }
+
+    let mut invalid = declaration(r#"name = "role", out = [8], ops = ["rmsnorm_f32"]"#);
+    invalid.role = Some("unknown".to_string());
+    let code = render(&invalid, "Role");
+    assert!(code.starts_with("compile_error!("), "{code}");
+    assert!(code.contains("unknown"), "{code}");
+    assert!(!code.contains("ParamRole::Embedding"), "{code}");
+}
+
+#[test]
 fn an_input_width_generates_the_same_floor_path_as_a_linear_layer() {
     let code = render(
         &declaration(r#"name = "lm_head", out = [4096], in = 4096, ops = ["gemv_i4"]"#),

@@ -220,7 +220,7 @@ pub fn builtin_witness(vendor: &str, ext: &str) -> Option<&'static str> {
 // 从哪读」。两者曾经各占一个文件并且互相引用（设备行的查询返回 `FragmentSet`，片段的装载
 // 又回头查 `device`/`dir_of`）——那是一个模块被切成两半的证据，现在合成一处。
 
-use crate::sign::EPILOGUE_STEM;
+use crate::sign::{EPILOGUE_STEM, PREAMBLE_STEM};
 use diagnostic::{Code, Error};
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -557,13 +557,20 @@ fn add(set: &mut FragmentSet, path: &Path, ext: &str) -> diagnostic::Result<()> 
     set.insert(prim, source)
 }
 
-/// 文件名里的原语名：扩展名不对、或叫 [`WITNESS_STEM`] / `epilogue` 的文件都不是片段。
+/// 文件名里的原语名：扩展名不对、叫 [`WITNESS_STEM`] / [`EPILOGUE_STEM`] /
+/// [`PREAMBLE_STEM`]，或与内置算子同名的特化内核，都不是原语片段。
 ///
-/// 写回尾块的那份文本由设备行的 `epilogue` 字段直接带出去（`prof::Device`），不经过
-/// [`FragmentSet`]——它的键是 [`Prim`]，六种写回形式不是原语。
+/// 写回尾块由设备行的 `epilogue` 字段带出去，前置声明只供拼装期内联；算子特化正文走
+/// `kernel_path` 特化优先链，不进按 [`Prim`] 索引的集合。算子名判据取编译期闭集，不依赖
+/// 磁盘上是否有对应 `ops/<stem>.k`（临时对拍目录只复制设备目录，不拷模板）。
 fn fragment_stem<'a>(path: &'a Path, ext: &str) -> Option<&'a str> {
     let stem = path.file_stem().and_then(|value| value.to_str())?;
     let right_ext = path.extension().and_then(|value| value.to_str()) == Some(ext);
-    let named = stem != WITNESS_STEM && stem != EPILOGUE_STEM;
-    (right_ext && named).then_some(stem)
+    (right_ext && !is_reserved_source(stem)).then_some(stem)
+}
+
+/// 保留名与算子特化都不占用原语集合；算子名直接取编译期 `OPS` 闭集。
+fn is_reserved_source(stem: &str) -> bool {
+    matches!(stem, WITNESS_STEM | EPILOGUE_STEM | PREAMBLE_STEM)
+        || crate::OPS.iter().any(|view| view.name == stem)
 }

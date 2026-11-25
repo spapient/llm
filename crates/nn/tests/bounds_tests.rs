@@ -21,6 +21,25 @@ fn a_projection_declares_its_floor() {
 }
 
 #[test]
+fn layer_geometry_preserves_projection_and_named_shape_mappings() {
+    for (input, output) in [(64, 4), (32, 1), (4096, 64)] {
+        let unified = Bounds::of_geometry("gemv_i4", LayerGeometry::projection(input, output))
+            .expect("合法投影");
+        assert_eq!(
+            unified,
+            Bounds::of_op("gemv_i4", input, output).expect("合法投影")
+        );
+    }
+
+    let gather = Bounds::of_geometry("embed_f32", LayerGeometry::shape(8, 128))
+        .expect("8 个 token、每条 128 宽");
+    assert_eq!(gather.read(), 8 * 128 * 4);
+    assert_eq!(gather.write(), 8 * 128 * 4);
+    assert_eq!(gather.flops(), 8.0);
+    assert_eq!(LayerGeometry::axis(64), LayerGeometry::shape(64, 1));
+}
+
+#[test]
 fn the_floor_is_exactly_the_operator_semantics() {
     let model = nn::registry::model("gemv_i4").expect("有语义表");
     for (m, n) in [(64, 4), (32, 1), (4096, 64)] {

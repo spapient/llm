@@ -22,6 +22,10 @@ proptest = { workspace = true }
 # 只打印两段 Debug。同为测试库，随 testkit 只进各成员的 dev 构建，不进生产二进制。
 similar-asserts = { workspace = true }
 
+# 泛型浮点判据（`compare` / `math`）：同一条对拍口径同时服务 f32 与 f64，避免各成员按精度各抄一份
+# `close` / `dot`。纯 trait 库，proptest 自身也依赖它，依赖树不增重。
+num-traits = { workspace = true }
+
 # 只服务 `src/` 里的跨层对拍与工作区契约门禁；不进夹具库运行时。
 [dev-dependencies]
 serde_json = "1.0.154"

@@ -1,61 +1,72 @@
-//! 档案层的单元测试：语料由 `build.rs` 在构建期生成，测试只改写生成的那棵树。
+//! 档案层测试：构建期生成强类型视图，用例复制视图后验证 owned 化与自洽校验。
 //!
 //! 与 `prof.rs` 分开放，是为了让生产文件只含生产代码——两边的行数各自可读，也各自受门禁约束。
 
 use super::*;
-use crate::atom::{DType, DTypeSet};
-use crate::schema::eval_expression;
+use crate::atom::{Closed, DType, DTypeSet};
+use crate::einsum::formula::eval_expression;
+use testkit::ScratchDir;
 
-/// 内置 CPU 档案：`devices/cpu.toml` 在构建期生成的树，运行期没有 TOML 文本。
-fn cpu() -> &'static Table {
+/// 内置 CPU 档案的静态视图；运行期没有 TOML 文本或动态表树。
+fn cpu() -> &'static crate::prof::ProfileView {
     crate::embedded("cpu").expect("内置 cpu 档案")
 }
 
-/// 在档案末尾追加一条供给：测试只写被考察的字段，其余按语料给全。
-fn with_provide(table: &Table, pairs: Vec<(&str, Value)>) -> Table {
-    let mut table = table.clone();
-    table.push("provides", Value::table(pairs));
-    table
-}
-
-/// 覆盖档案里的一个路径，其余按语料给全：测试只写被考察的那个字段。
-fn edited(table: &Table, path: &str, value: Value) -> Table {
-    let mut table = table.clone();
-    table.set(path, value);
-    table
-}
-
-/// 追加一条"只有文本字段"的供给：字段按 `键, 值, 键, 值…` 平铺。
-fn provide(fields: &[&str]) -> Table {
-    let pairs = fields.chunks(2).map(|pair| (pair[0], Value::text(pair[1])));
-    with_provide(cpu(), pairs.collect())
-}
-
-/// `(prim, impl)` 那条供给在 `provides` 里的位置：按签名定位，不依赖语料顺序。
-fn position(table: &Table, prim: &str, implementation: &str) -> usize {
-    let provides = table.array("provides").expect("档案必须有 `provides`");
-    let matches = |entry: &Value| match entry {
-        Value::Table(entry) => {
-            entry.string("prim") == Some(prim) && entry.string("impl") == Some(implementation)
+/// 追加一条由既有类型直接构造的供给；字段仍按 `键, 值, 键, 值…` 平铺。
+fn provide(fields: &[&str]) -> Result<Profile, ProfileError> {
+    let mut item = Provide::of(Prim::Load, "");
+    for pair in fields.chunks(2) {
+        let (key, value) = (pair[0], pair[1]);
+        match key {
+            "prim" => {
+                item.prim = Prim::parse(value).ok_or_else(|| bad("provides.prim", "未知原语"))?;
+            }
+            "impl" => item.impl_name = value.to_string(),
+            "grade" => {
+                item.grade =
+                    Grade::parse(value).ok_or_else(|| bad("provides.grade", "未知证据等级"))?;
+            }
+            "m" | "bytes" | "extent" => {
+                if item.extent != Span::any() {
+                    return Err(bad("provides", "主维度只能写一个名字"));
+                }
+                item.extent =
+                    Span::parse(value).map_err(|error| bad("provides.extent", error.message()))?;
+            }
+            "n" | "k" => {
+                let span = Span::parse(value)
+                    .map_err(|error| bad(format!("provides.{key}"), error.message()))?;
+                if key == "n" {
+                    item.n = span;
+                } else {
+                    item.k = span;
+                }
+            }
+            "dt" => {
+                let dtype =
+                    DType::parse(value).ok_or_else(|| bad("provides.dt", "未知数据类型"))?;
+                item.dt = DTypeSet::of([dtype]);
+            }
+            "space" => {
+                let space =
+                    Space::parse(value).ok_or_else(|| bad("provides.space", "未知存储空间"))?;
+                item.space = SpaceSet::of([space]);
+            }
+            other => {
+                let key = AttrKey::parse(other)
+                    .ok_or_else(|| bad(format!("provides.{other}"), "未知属性键"))?;
+                item.attrs.push(Attr::new(key, [value]));
+            }
         }
-        _ => false,
-    };
-    provides.iter().position(matches).expect("供给存在")
-}
-
-/// 见证校验的临时目录：落地即建，`TempDir` 离开作用域时自动清理。
-struct TempDir(std::path::PathBuf);
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        std::fs::remove_dir_all(&self.0).ok();
     }
+    let mut profile = Profile::parse(cpu()).expect("基础档案自洽");
+    profile.provides.push(item);
+    Ok(profile)
 }
 
-fn temp_dir(tag: &str) -> TempDir {
-    let dir = std::env::temp_dir().join(format!("prof-{tag}-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("建临时目录");
-    TempDir(dir)
+/// 见证校验的临时目录：统一用 testkit 的 RAII `ScratchDir`，离开作用域自动清理。
+fn temp_dir(tag: &str) -> ScratchDir {
+    ScratchDir::new(tag)
 }
 
 #[test]
@@ -75,7 +86,7 @@ fn parses_builtin_cpu_profile() {
 /// 没有后续校验能把它捞回来（空集在协商里表现为"缺空间"，离原因很远）。
 #[test]
 fn a_provide_accepts_the_same_signature_spellings_as_a_need() {
-    let table = provide(&[
+    let profile = provide(&[
         "prim",
         "load",
         "impl",
@@ -92,8 +103,8 @@ fn a_provide_accepts_the_same_signature_spellings_as_a_need() {
         "FAST",
         "grade",
         "L0",
-    ]);
-    let profile = Profile::parse(&table).expect("档案层必须接受与 `[needs]` 相同的写法");
+    ])
+    .expect("档案层必须接受与 `[needs]` 相同的写法");
     let provide = profile.provides.last().expect("新加的供给");
     assert_eq!(provide.prim, Prim::Load);
     assert_eq!(
@@ -118,14 +129,21 @@ fn a_provide_accepts_the_same_signature_spellings_as_a_need() {
     assert_eq!(value(AttrKey::Dst), Some("FAST"));
 }
 
-/// 看不懂的写法要报错，不能当作"没写"。
+/// 非法取值要报错，不能当作"没写"；类型化视图不再容许动态表里的错误类型。
 #[test]
 fn a_signature_field_with_the_wrong_shape_is_an_error() {
-    for (name, value) in [("space", Value::int(3)), ("n", Value::int(16))] {
-        let mut table = provide(&["prim", "dot", "impl", "scalar_fma", "grade", "L0"]);
-        let appended = table.array("provides").expect("provides").len() - 1;
-        table.set(&format!("provides[{appended}].{name}"), value);
-        let error = Profile::parse(&table).expect_err(&format!("`{name}` 不能当成没写"));
+    for name in ["space", "n"] {
+        let error = provide(&[
+            "prim",
+            "dot",
+            "impl",
+            "scalar_fma",
+            "grade",
+            "L0",
+            name,
+            "invalid",
+        ])
+        .expect_err(&format!("`{name}` 不能当成没写"));
         assert!(error.to_string().contains(name), "{error}");
     }
 }
@@ -134,7 +152,7 @@ fn a_signature_field_with_the_wrong_shape_is_an_error() {
 /// 而档案是数据，不该有顺序语义。
 #[test]
 fn two_names_for_one_dimension_are_an_error() {
-    let table = provide(&[
+    let error = provide(&[
         "prim",
         "load",
         "impl",
@@ -145,8 +163,8 @@ fn two_names_for_one_dimension_are_an_error() {
         "<=4096",
         "grade",
         "L0",
-    ]);
-    let error = Profile::parse(&table).expect_err("一个维度只能写一个名字");
+    ])
+    .expect_err("一个维度只能写一个名字");
     assert!(error.to_string().contains("只能写一个"), "{error}");
 }
 
@@ -181,9 +199,9 @@ fn an_attr_key_must_belong_to_its_primitive() {
 }
 
 #[test]
-fn missing_emit_is_rejected() {
-    let error = Profile::parse(&edited(cpu(), "meta.emit", Value::text("nope"))).unwrap_err();
-    assert!(matches!(error, ProfileError::Unknown { .. }), "{error}");
+fn unknown_emit_is_rejected_by_the_closed_set() {
+    assert_eq!(Emit::parse("nope"), None);
+    assert_eq!(Emit::parse("cuda"), Some(Emit::Cuda));
 }
 
 #[test]
@@ -239,17 +257,21 @@ fn l3_without_witness_is_rejected_by_validation() {
 
 #[test]
 fn a_peak_must_equal_its_own_formula() {
-    // 108.8e9 是旧档案里的手抄值：与 8*2.6e9*8*2 差了三倍，装载期必须报出来。
-    let table = edited(cpu(), "peak.flops_f32.value", Value::real(108.8e9));
-    let error = Profile::parse(&table).expect_err("value 与 src 不一致必须是错误");
+    // 直接改视图里的数值：与推导式不一致时仍由同一峰值校验拒绝。
+    let mut view = *cpu();
+    let (_, src) = view.flops_f32.expect("CPU 有 f32 峰值");
+    view.flops_f32 = Some((108.8e9, src));
+    let error = Profile::parse(&view).expect_err("value 与 src 不一致必须是错误");
     assert!(error.to_string().contains("不一致"), "{error}");
 }
 
 #[test]
 fn a_peak_formula_with_a_unit_name_is_rejected() {
     let formula = "8 cores * 2.6 GHz * 8 lanes * 2 flop";
-    let table = edited(cpu(), "peak.flops_f32.src", Value::text(formula));
-    let error = Profile::parse(&table).expect_err("带单位的推导式无法核验");
+    let mut view = *cpu();
+    let (value, _) = view.flops_f32.expect("CPU 有 f32 峰值");
+    view.flops_f32 = Some((value, formula));
+    let error = Profile::parse(&view).expect_err("带单位的推导式无法核验");
     assert!(error.to_string().contains("求值失败"), "{error}");
 }
 
@@ -406,15 +428,7 @@ fn a_witness_is_file_plus_function_plus_expectation() {
     assert_eq!(witness.file, "cpu/witness.c");
     assert_eq!(witness.func, "witness_quant");
     assert_eq!(witness.expect, vec![-4.0, 3.5]);
-}
-
-#[test]
-fn a_witness_path_without_a_function_is_rejected() {
-    let quant = position(cpu(), "quant", "unpack");
-    let witness = Value::text("cpu/witness.c");
-    let table = edited(cpu(), &format!("provides[{quant}].witness"), witness);
-    let error = Profile::parse(&table).expect_err("只有路径的见证必须是错误");
-    assert!(error.to_string().contains("内联表"), "{error}");
+    // 视图见证固定为 `(文件, 入口, 期望)` 三元组；旧动态表“只有路径”的状态已由类型系统排除。
 }
 
 #[test]
@@ -438,7 +452,7 @@ fn an_empty_expectation_is_rejected() {
 #[test]
 fn the_witness_function_must_exist_in_the_file() {
     let dir = temp_dir("witness");
-    let vendor = dir.0.join("cpu");
+    let vendor = dir.join("cpu");
     std::fs::create_dir_all(&vendor).expect("建 vendor 目录");
     std::fs::write(
         vendor.join("witness.c"),
@@ -447,7 +461,7 @@ fn the_witness_function_must_exist_in_the_file() {
     .expect("写见证");
     let mut profile = Profile::parse(cpu()).expect("可解析");
     profile.provides[0].witness.as_mut().expect("见证").func = "witness_absent".to_string();
-    let errors = profile.validate_in(&dir.0).unwrap_err();
+    let errors = profile.validate_in(dir.path()).unwrap_err();
     assert!(
         errors
             .iter()
@@ -461,7 +475,7 @@ fn the_witness_function_must_exist_in_the_file() {
 fn a_missing_witness_file_is_missing() {
     let dir = temp_dir("witness-missing");
     let profile = Profile::parse(cpu()).expect("可解析");
-    let errors = profile.validate_in(&dir.0).unwrap_err();
+    let errors = profile.validate_in(dir.path()).unwrap_err();
     assert!(
         errors.iter().any(|error| error.code() == Code::Missing),
         "见证文件不在应是 `missing`：{errors:?}"
@@ -473,7 +487,7 @@ fn a_missing_witness_file_is_missing() {
 #[test]
 fn a_declared_witness_is_validated_below_l2() {
     let dir = temp_dir("witness-l1");
-    let vendor = dir.0.join("nvidia");
+    let vendor = dir.join("nvidia");
     std::fs::create_dir_all(&vendor).expect("建 vendor 目录");
     std::fs::write(
         vendor.join("witness.cu"),
@@ -495,7 +509,7 @@ fn a_declared_witness_is_validated_below_l2() {
         .expect("dot 供给");
     assert_eq!(dot.grade, Grade::L1, "前提：这条签名还没到 L2");
     dot.witness.as_mut().expect("见证").func = "witness_absent".to_string();
-    let errors = profile.validate_in(&dir.0).unwrap_err();
+    let errors = profile.validate_in(dir.path()).unwrap_err();
     assert!(
         errors
             .iter()
@@ -586,7 +600,7 @@ fn a_single_lane_device_may_not_declare_a_lane_exchange() {
 }
 
 /// 内置昇腾档案：执行单元与"哪一层只有谁能访问"全在数据里。
-fn ascend() -> &'static Table {
+fn ascend() -> &'static crate::prof::ProfileView {
     crate::embedded("ascend").expect("内置 ascend 档案")
 }
 
@@ -631,10 +645,14 @@ fn parses_builtin_ascend_profile_with_units() {
 
 #[test]
 fn exec_must_name_a_declared_unit() {
-    let cube = position(ascend(), "dot", "mmad");
-    let exec = Value::array(vec![Value::text("cube0")]);
-    let table = edited(ascend(), &format!("provides[{cube}].exec"), exec);
-    let profile = Profile::parse(&table).expect("解析期只做闭集校验");
+    let mut profile = ascend_profile();
+    let dot = profile
+        .provides
+        .iter_mut()
+        .find(|provide| provide.prim == Prim::Dot)
+        .expect("dot 供给");
+    dot.attrs.retain(|attr| attr.key() != AttrKey::Exec);
+    dot.attrs.push(exec(&["cube0"]));
     let errors = profile.validate(None).unwrap_err();
     assert!(
         errors.iter().any(|error| matches!(
@@ -647,14 +665,13 @@ fn exec_must_name_a_declared_unit() {
 
 #[test]
 fn a_unit_cannot_reach_a_space_it_does_not_have() {
-    let mmad = position(ascend(), "dot", "mmad");
-    let space = Value::array(vec![
-        Value::text("FAST"),
-        Value::text("REG"),
-        Value::text("GM"),
-    ]);
-    let table = edited(ascend(), &format!("provides[{mmad}].space"), space);
-    let profile = Profile::parse(&table).expect("`GM` 是闭集内的存储名");
+    let mut profile = ascend_profile();
+    let dot = profile
+        .provides
+        .iter_mut()
+        .find(|provide| provide.prim == Prim::Dot)
+        .expect("dot 供给");
+    dot.space = SpaceSet::of([Space::Fast, Space::Reg, Space::Gm]);
     let errors = profile.validate(None).unwrap_err();
     assert!(
         errors.iter().any(|error| matches!(
@@ -728,8 +745,10 @@ fn a_dequant_signature_covers_both_packed_widths() {
 /// 同分并列：选中靠后那份（`max_by_key` 语义），报错点名靠前那份——两者分开记，一趟扫完就够。
 #[test]
 fn select_names_the_first_rival_of_an_equally_specific_pair() {
-    let lead = Profile::parse(&edited(cpu(), "meta.vendor", Value::text("lead"))).expect("档案");
-    let tail = Profile::parse(&edited(cpu(), "meta.vendor", Value::text("tail"))).expect("档案");
+    let mut lead = Profile::parse(cpu()).expect("档案");
+    lead.meta.vendor = "lead".to_string();
+    let mut tail = Profile::parse(cpu()).expect("档案");
+    tail.meta.vendor = "tail".to_string();
     let profiles = [lead, tail];
     let detected = Detected::new().with("arch", std::env::consts::ARCH);
     let error = select(&profiles, &detected).expect_err("同分必须报错");
@@ -738,4 +757,21 @@ fn select_names_the_first_rival_of_an_equally_specific_pair() {
         error.to_string().contains("`tail` 与 `lead`"),
         "选中的是后者、点名的是前者：{error}"
     );
+}
+
+/// 类型级向量同时约束元素档与车道数，并保留零拷贝对拍通道。
+#[test]
+fn typed_vector_values_are_checked_and_remain_slice_compatible() {
+    let vector = crate::model::Vector::<f32, 4>::new(vec![1.0, -2.0, 3.5, 4.0])
+        .expect("四个标量可组成四车道向量");
+    assert_eq!(vector.lanes(), 4);
+    let values = crate::model::Values::F32x4(vector);
+    assert_eq!(values.len(), 4);
+    assert_eq!(values.dtype(), crate::model::DType::F32);
+    assert_eq!(values.describe(), "float4");
+    assert_eq!(values.as_f32().expect("f32 对拍"), [1.0, -2.0, 3.5, 4.0]);
+    assert!(values.same_kind(&values.clone()));
+
+    assert!(crate::model::Vector::<f32, 0>::new(Vec::new()).is_err());
+    assert!(crate::model::Vector::<f32, 4>::new(vec![1.0, 2.0]).is_err());
 }
