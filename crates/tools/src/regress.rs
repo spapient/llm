@@ -107,11 +107,13 @@ impl Estimate {
     }
 }
 
-/// 未判定理由：区间跨着预算线，样本还不够把「过」与「不过」分开。
+/// 未判定理由：区间跨着门槛，或统计量在这列上无定义。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OpenReason {
     /// 区间与预算线相交，方向上不能整段归内侧或外侧。
     Straddle,
+    /// 统计量无定义：非有限、近零导致相对偏差失真，样本不足以成列。
+    Degenerate,
 }
 
 impl OpenReason {
@@ -119,6 +121,7 @@ impl OpenReason {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Straddle => "straddle",
+            Self::Degenerate => "degenerate",
         }
     }
 }
@@ -423,4 +426,85 @@ impl Baseline {
         })?;
         Ok(case.judge(observed))
     }
+}
+
+/// A/A 前置自检：两份同实现测量的等价性结论，用来确认测量链路本身没有系统性偏差。
+///
+/// 与 [`Judgement`] 分工：`Judgement` 判相对登记基线有没有回退（带方向），本结论判两份
+/// 独立采集是否等价（对称、无方向）；两份落在不可察觉带内且区间重叠才记 [`SelfCheck::Agree`]。
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[must_use]
+pub enum SelfCheck {
+    /// 两份等价：点估计相对差在不可察觉带内，且置信区间重叠，链路可信。
+    Agree,
+    /// 两份差异超出不可察觉带：链路存疑，整套结果应记 Open。
+    Disagree {
+        /// 点估计相对偏差（对称，以较大值为分母）。
+        ratio: f64,
+    },
+    /// 判不了：区间不重叠（离散不足）或统计量无定义。
+    Open {
+        /// 未判定理由。
+        reason: OpenReason,
+    },
+}
+
+impl SelfCheck {
+    /// 两份是否等价。
+    pub fn is_agree(&self) -> bool {
+        matches!(self, SelfCheck::Agree)
+    }
+
+    /// 相对偏差；未判定返回 `None`。
+    pub fn ratio(&self) -> Option<f64> {
+        match self {
+            SelfCheck::Disagree { ratio } => Some(*ratio),
+            SelfCheck::Agree | SelfCheck::Open { .. } => None,
+        }
+    }
+
+    /// 稳定的短名。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SelfCheck::Agree => "agree",
+            SelfCheck::Disagree { .. } => "disagree",
+            SelfCheck::Open { .. } => "open",
+        }
+    }
+}
+
+/// 两次同基线对照：两份估计件与不可察觉带 `epsilon_percent`（百分比）。
+///
+/// 分母取两点估计的较大值，避免近零把相对差放大；任一非有限或非正数记
+/// [`OpenReason::Degenerate`]；区间不重叠记 [`OpenReason::Straddle`]；相对差超带记
+/// [`SelfCheck::Disagree`]。
+pub fn self_check(first: &Estimate, second: &Estimate, epsilon_percent: f64) -> SelfCheck {
+    let a = first.point_estimate();
+    let b = second.point_estimate();
+    if !finite_positive(a) || !finite_positive(b) {
+        return SelfCheck::Open {
+            reason: OpenReason::Degenerate,
+        };
+    }
+    if !overlap(first, second) {
+        return SelfCheck::Open {
+            reason: OpenReason::Straddle,
+        };
+    }
+    let ratio = (a - b).abs() / a.max(b);
+    if ratio <= epsilon_percent / 100.0 {
+        SelfCheck::Agree
+    } else {
+        SelfCheck::Disagree { ratio }
+    }
+}
+
+/// 点估计既有限（非 NaN / 非无穷）又严格为正；非正数或非有限值记退化样本。
+fn finite_positive(value: f64) -> bool {
+    value.is_finite() && value > 0.0
+}
+
+/// 两份置信区间是否相交。
+fn overlap(first: &Estimate, second: &Estimate) -> bool {
+    first.lower() <= second.upper() && second.lower() <= first.upper()
 }

@@ -203,7 +203,7 @@ testkit    → （叶    +dev: autograd, cutile, nn, prof, tensor, tools, train,
 | `CpuModel` / `Params` / `Block` | `serve` | CPU 模型宿主与驻留参数表：装载期一次解码、生成循环不再读文件；七个层族装配成 `engine::exec::Graph`，执行器泛化为 `E: Executor`；`from_path` 按 `Reader` / `Loader` 在装配点分流 |
 | `Command` / `Invocation` / `USAGE` | `cli` | 命令行文法（argv / env → 强类型调用参数）与编排分派 |
 | `Token` / `Pos` / `Delim` / `Finding` / `Gate` / `GateView` / `DebtView` / `VocabularyView` / `ExemptView` / `UnlistedView` / `Hit` | `tools` | 零依赖词法 token 树、单函数复杂度 finding、配置化阈值及其编译期强类型视图、标识符层词汇命中（全拼名 + 应改用的缩写）；配置只由构建脚本解析成视图，运行期不读 TOML 或动态数据树。分析器只产出数据，不打印不退出。词汇判定在**标识符**层而不是文本层，字符串字面量与注释不参与——设备源码里 `[[buffer(0)]]` 这类选择器因此不会被误报 |
-| `Case` / `Baseline` / `Judgement` / `Estimate` / `OpenReason` | `tools` | 回退判定（与基线相比有没有退）：`Estimate` 是点估计加置信区间的测量件，`OpenReason` 是跨门槛未判定的理由闭集；不做测量 |
+| `Case` / `Baseline` / `Judgement` / `Estimate` / `OpenReason` / `SelfCheck` | `tools` | 回退判定（与基线相比有没有退）：`Estimate` 是点估计加置信区间的测量件，`OpenReason` 是跨门槛未判定的理由闭集；`SelfCheck` 是 A/A 前置自检的两份等价性结论（对称、无方向）；不做测量 |
 | `EntryKind` / `Harness` / `PeakProfile` / `Bottleneck` / `Score` / `Geometry` / `BenchRecord` | `tools` | 统一基准记录结构：记录只持有身份、几何与峰值，未测得的峰值留 `None`；`PeakProfile::score` 把「峰值 + 算术强度 + 实测吞吐」折成占上界百分比与瓶颈侧，测量与上界登记仍归 `shard` / `benchmarks` |
 | `Protocol` / `Statistic` / `Tally` / `Standing` / `Shortfall` / `Card` | `tools` | 实测卡三态判定：闭集 → 样本量 → 统计量定义 → 区间与门槛，次序有意；样本与时钟来源归 `benchmarks` |
 | `spec` / `model` 属性宏 | `annotation` | 把注解展开成契约实现 + 编译期断言 + 一条校验测试；**不持有运行期注册表**。`model` 生成 `MODEL` 并断言注解与 `Operator` 对齐；设备执行由 `cutile` 的 `const SPECS` / `const GATES` 描述符表按函数指针登记 |

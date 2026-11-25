@@ -258,8 +258,9 @@ benchmarks 归档层：JSON 记录、历史库、对比、报告渲染（只消�
 **批次划分**（每批可独立回查，不把半成品混进同一门禁）：
 
 1. **判定内核（`tools::regress`）**：观测由单点 `f64` 升级为带置信区间的 `Estimate { point, lower, upper }`；区间对预算线落成三态——整段内侧 Pass、整段外侧 Regressed、跨门槛 Open(Straddle)；效应规模归一为「改进为正」并随结论携带；最小效应规模门（不可察觉漂移带 `epsilon_percent`）内的漂移记持平而非 Improved；旧单点入口保留，内部退化为零宽区间。
-2. **结构化产物（`tests/analysis.rs`）**：用仓库唯一 JSON 解析器 `weights::json` 读取 criterion `estimates.json` 的 `mean.point_estimate` / `mean.confidence_interval.{lower_bound,upper_bound,confidence_level}` / `mean.standard_error`，替换手写字符串扫描；解析不出即明说，不猜数。
-3. **本批不做（P1 后续批次）**：A/A 前置基准入档；`EnvProfile` 与溯源字段扩位；正确性对拍绑定骨架（容差分级、双门）；计时洁净（fixture 出区、闭包内不克隆、屏障与 overhead 扣减统一到采集器）。
+2. **结构化产物（`tests/analysis.rs`）**：用仓库唯一 JSON 解析器 `weights::json` 读取 criterion `estimates.json` 的 `mean.point_estimate` 与 `confidence_interval` 两端，替换手写字符串扫描；解析不出即明说，不猜数。
+3. **A/A 自检内核（`tools::regress::self_check`）**：两份同实现 `Estimate` 的对称等价性检验，无方向概念。点估计相对差（分母取较大值，避免近零失真）落在不可察觉带内且两区间重叠 → `Agree`；超带 → `Disagree { ratio }`；区间不重叠 → `Open(Straddle)`；非有限或非正 → `Open(Degenerate)`。成对采集探针、台账登记与归档对照随批次五采集器统一接入，本批只落纯判定内核与单测。
+4. **本批不做（P1 后续批次）**：`EnvProfile` 与溯源字段扩位；正确性对拍绑定骨架（容差分级、双门）；计时洁净（fixture 出区、闭包内不克隆、屏障与 overhead 扣减统一到采集器）；A/A 成对探针与归档对照。
 
 **领域解耦**：不变核心是方向折算、基线/预算线、效应规模口径；可变差异是观测为点或区间、不可察觉带宽度，外置到 `Case` 配置。判定区间来自 criterion mean CI，`regress` 不做第二套 bootstrap 重采样（重采样区间仍归 `card::Tally`）。
 
@@ -269,7 +270,7 @@ benchmarks 归档层：JSON 记录、历史库、对比、报告渲染（只消�
 
 **扩展方式**：新增未判定理由（如样本不足 Noise）只加 `OpenReason` 表项与短名；新增指标方向不改内核。多重比较校正在 `Baseline` 批量判定层（族系错误率的阈值缩放），单 `Case` 不挂校正状态；本批先留批量层接入位，不内建校正算法。
 
-**验证计划**：tools 集成测试覆盖 Higher/Lower 各 Pass / Regressed / Open、改进 / 持平 / 越不可察觉带、效应符号与量级；analysis 用真实 `estimates.json` 片段断言 point/lower/upper/stderr；既有 regress 14 用例、card 测试与台账自检不退化；jscpd 重复率不上升。
+**验证计划**：tools 集成测试覆盖 Higher/Lower 各 Pass / Regressed / Open、改进 / 持平 / 越不可察觉带、效应符号与量级；analysis 用真实 `estimates.json` 片段断言 point/lower/upper；既有 regress 14 用例、card 测试与台账自检不退化；jscpd 重复率不上升。
 
 **P1 边界**：iai-callgrind / PMU 计数在当前装置不具备条件，记 Open，不伪装；A/A、对拍绑定、溯源扩位、计时洁净未完成前，对应归档格保持 OPEN。
 
@@ -285,9 +286,13 @@ benchmarks 归档层：JSON 记录、历史库、对比、报告渲染（只消�
 
 - P0 已落地：五级 `EntryKind`、`PeakProfile` / `Attainment` 正名、台账身份唯一与字段完整自检；§4 其余决策（区间判定、对拍绑定、形状网格、分配计数、分层 roofline、Serving 场景等）未落地，验收前对应格保持 OPEN。
 - P0 取舍：未造注解注册表（遵 0005，注解只出契约常量）；未抽 `bench_function` 转发包装（闭包形态各异，抽取即转发层）；台账 dtype/形状尚未回读 `#[model]` 常量，留 P3；闭包内 clone 与输入输出屏障的统一收敛留 P1 计时洁净。
-- **P1 本批已落地（判定内核 + 产物解析）**：`tools::regress` 新增 `Estimate`（点估计 + 置信区间）与 `OpenReason::Straddle`；区间对预算线三态——整段内侧 Pass、整段外侧 Regressed、跨门槛 Open；效应规模归一为改进为正并随结论携带；`epsilon_percent` 不可察觉带内漂移记持平不报改进；单点入口保留为零宽区间。`tests/analysis.rs` 改用 `weights::json::parse_ledger` 解析 criterion `mean.point_estimate` 与 `confidence_interval` 两端，归档判定链路（`judge_one` / `judge_ceiling`）接入区间；新公共类型已登记进 `docs/ARCHITECTURE.md` 所有权表。
-- **P1 剩余批次（未落地，对应格保持 OPEN）**：A/A 前置基准入档；`EnvProfile` 与溯源字段扩位（含 mean 标准误 / std 等离散统计量入档，本轮解析件暂未携带 stderr）；正确性对拍绑定骨架（容差分级、mean-RE / max-RE 双门）；计时洁净（fixture 出区、闭包内不克隆、输入输出屏障与 overhead 扣减统一到采集器）；多重比较校正落在批量判定层，单 `Case` 不挂。
-- 门禁证据：本批 `cargo fmt --all --check` 通过；`llm-tools --test card` 45 passed（含新增 6 个区间判定用例）；`llm-benchmarks --test regress` 16 passed（含 2 个产物解析用例）；`llm-testkit --lib` 117 passed（架构 / 所有权门）；jscpd 0 clones / 0.00%；命名门 0 命中。
+- **P1 本批已落地（判定内核 + 产物解析 + A/A 自检内核）**：`tools::regress` 新增 `Estimate`（点估计 + 置信区间）与 `OpenReason::{Straddle, Degenerate}`；区间对预算线三态——整段内侧 Pass、整段外侧 Regressed、跨门槛 Open；效应规模归一为改进为正并随结论携带；`epsilon_percent` 不可察觉带内漂移记持平不报改进；单点入口保留为零宽区间。A/A 自检 `self_check` / `SelfCheck`：两份同实现估计件的对称等价性（Agree / Disagree{ratio} / Open），区间重叠且相对差在带内才记 Agree。`tests/analysis.rs` 改用 `weights::json::parse_ledger` 解析 criterion `mean.point_estimate` 与 `confidence_interval` 两端，归档判定链路（`judge_one` / `judge_ceiling`）接入区间；新公共类型已登记进 `docs/ARCHITECTURE.md` 所有权表。
+- **P1 剩余批次（未落地，对应格保持 OPEN）**：
+  - **#35 EnvProfile / 溯源扩位**：现有 `Harness` 六字段（host/cpu/os/arch/toolchain/driver）。可直接采集的增补：estimates.json 的离散统计量（`std_dev`、`median_abs_dev`、`slope`）、编译期 commit SHA；绑核 / governor / boost、SMT / NUMA、页缓存冷热、温度 / 功耗、核数 / 频率 / ISA、加速卡型号 / 驱动 / 运行时、二进制与权重摘要、编译器 flags、相关环境变量、负载种子与输入摘要、原始产物摘要、workload 标识——字段闭集先定，采集不到一律 `None`，不填标称值。
+  - **#36 对拍绑定**：复用既有 `testkit::compare`（`close` / `assert_close` / `assert_vec_near` / `max_rel_err` / `Scale` / 非有限配对）与 `cutile::reference::tolerance` 的 dtype 分级容差表（F16/BF16 1e-3、F32 1e-5、整数与布尔精确），**不新造平行容差组件**。缺口：mean-RE（整批平均相对误差）读数与 mean-RE / max-RE 双门判定；基准绑定骨架（每条 Op/Fused/Layer 性能格挂对拍，未过门记 Open 不出性能数）留采集批次。
+  - **#37 计时洁净与 A/A 采集**：闭包内现有克隆源于被测 `forward` 消费 `Vec` 所有权，消克隆需先定接口视图借用签名；fixture 出区、输入 `black_box`、输出被采集器消费、缓冲复用与 overhead 扣减收敛到公共采集器；A/A 成对探针与归档对照随本批一起接入。
+  - 多重比较校正落在批量判定层，单 `Case` 不挂。
+- 门禁证据：本批 `cargo fmt --all --check` 通过；`llm-tools --test card` 49 passed（含 6 个区间判定用例与 4 个 A/A 自检用例）；`llm-benchmarks --test regress` 16 passed（含 2 个产物解析用例）；`llm-testkit --lib` 117 passed（架构 / 所有权门）；jscpd 0 clones / 0.00%；命名门 0 命中。
 - **存量阻塞（非本轮产物，未回滚、未掩盖）**：`crates/diagnostic/src/buildgen.rs` 两个 `Result` 函数缺 `# Errors` 小节，`clippy -D warnings` 在依赖链阻断，本轮 crate 未能跑到 clippy 结论；`crates/prof/src/build.rs` 90 行触生产文件行数下限门，tools gate 静态门报存量碎文件。两处均属进行中的存量未提交改动，需对应模块收尾。
 - 函数长度、圈复杂度、嵌套等门禁数值以最终格式化代码的静态报告为准；本批新增判定函数均 ≤10 行、分支 ≤3。
 - PMU 采样、iai-callgrind、多后端与服务化场景在当前 CPU 参考装置上不具备运行条件，列入后续阶段。

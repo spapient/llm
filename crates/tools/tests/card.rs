@@ -5,7 +5,9 @@ use diagnostic::{Code, Result};
 use llm_tools::bench::{BenchRecord, Bottleneck, EntryKind, Geometry, Harness, PeakProfile};
 use llm_tools::card::{Card, Direction, Protocol, Shortfall, Standing, Statistic, Tally};
 use llm_tools::escape::quote;
-use llm_tools::regress::{Baseline, Case, Direction as RegDir, Estimate, Judgement, OpenReason};
+use llm_tools::regress::{
+    Baseline, Case, Direction as RegDir, Estimate, Judgement, OpenReason, SelfCheck, self_check,
+};
 use llm_tools::stats::{interval, mean, quantile, resample, sd};
 
 /// 一台在闭集里的 A800：多数用例只关心门槛，不关心装置。
@@ -524,6 +526,48 @@ fn a_reversed_or_non_finite_interval_is_rejected() {
         Estimate::interval(f64::NAN, 1.0, 2.0).unwrap_err().code(),
         Code::Invalid
     );
+}
+
+#[test]
+fn two_equivalent_measurements_agree() {
+    let first = Estimate::interval(99.0, 100.0, 101.0).expect("区间");
+    let second = Estimate::interval(98.0, 99.5, 101.0).expect("区间");
+    assert!(self_check(&first, &second, 5.0).is_agree());
+}
+
+#[test]
+fn measurements_apart_beyond_the_band_disagree() {
+    let first = Estimate::interval(95.0, 100.0, 105.0).expect("区间");
+    let second = Estimate::interval(104.0, 110.0, 115.0).expect("区间");
+    let check = self_check(&first, &second, 5.0);
+    let ratio = check.ratio().expect("不一致携带偏差");
+    assert!((ratio - 10.0 / 110.0).abs() < 1e-12);
+}
+
+#[test]
+fn disjoint_intervals_stay_open_straddle() {
+    let first = Estimate::interval(90.0, 92.0, 94.0).expect("区间");
+    let second = Estimate::interval(100.0, 102.0, 104.0).expect("区间");
+    assert!(matches!(
+        self_check(&first, &second, 5.0),
+        SelfCheck::Open {
+            reason: OpenReason::Straddle,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn a_non_positive_measurement_is_degenerate() {
+    let zero = Estimate::point(0.0);
+    let other = Estimate::point(100.0);
+    assert!(matches!(
+        self_check(&zero, &other, 5.0),
+        SelfCheck::Open {
+            reason: OpenReason::Degenerate,
+            ..
+        }
+    ));
 }
 
 // ---------------------------------------------------------------------------

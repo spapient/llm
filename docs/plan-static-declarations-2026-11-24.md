@@ -169,7 +169,7 @@ Rust 官方与微软训练材料的一致口径：
 
 ## 9.5 Ground 后的边界修正（2026-11-24 读 build.rs/buildops 现状）
 
-动手前重读 `../crates/prof/src/build.rs` 与 `buildops.rs` 后，必须把 build.rs 的职责拆成两类：
+动手前重读 `../crates/prof/build.rs`（包根构建脚本；设备扫描在 `src/devices.rs`）与 `buildops.rs` 后，必须把 build.rs 的职责拆成两类：
 
 **A 类——构建期文件系统 / 数据加工（不适合、也不该搬进 proc-macro）**
 
@@ -515,4 +515,5 @@ Rust 官方与微软训练材料的一致口径：
 - 并发在飞项现状（2026-11-26 复核）：`docs/gpu-tuning-candidates-cuda-intel.md`、`crates/prof/src/opencl.rs` 已并入并发提交；`crates/shard/tests/pipeline_tests.rs` 的 fmt 红账由本批 `rustfmt` 单文件修正（仅折行排版，逻辑零变化；该用例 `#[cfg(windows)]`，本机 macOS 不编译运行）。nextest 已在含上述改动的树上跑绿（3031 passed / 18 skipped / 0 failed）。
 - prof 构建脚本拆分（并发在途，非本批 annotation 工作）：native 编译段迁出至 `crates/prof/src/nativebuild.rs`，薄入口 `build.rs` 经 `#[path]` 接线，设备扫描归入新增 `devices.rs`；`buildops.rs` 保留 `template_tables_of`。该拆分未提交，归属并发会话，本批不回滚也不纳入交付结论。
 - #58 遗留：prof/tools 带领域判定的 TOML 取值簇待错误口径统一后再评估下沉（见 15.5）；nightly 通道（nn `gemv::simd`、prof `native::sme`）已在本机 nightly aarch64 工具链 + `--cfg=nightly` 下 check 绿，非 macOS aarch64 探测路径仍由 CI nightly job 守卫；linux 云主机回归阻塞——vm 项目工作区未挂载本仓库，既有两个检出属其他会话且基线落后，本批改动未提交未同步，待代码落库并同步后由 linux/CI 矩阵执行，不在旧基线伪称通过。
-- #58 密度门画像（2026-11-26 实测 `scripts/loc-budget.sh`）：src 104,892 行 / 317 文件，超 `SRC_MAX=60000` 目标 44,892 行；>400 行文件 104 个、>600 否决文件 44 个、>8200 行 crate 4 个（nn 15,303、prof 12,733、weights 10,019、cutile 8,658）。本批为 build 期去重减法，未把任何运行期大文件推过线；红账归属存量与其他在途批次，阈值口径与增量归属属门禁治理决策，本批不调宽。
+- #58 密度门画像（2026-11-26 实测 `scripts/loc-budget.sh`，真实退出码 1）：src 105,124 行 / 316 文件，超 `SRC_MAX=60000` 目标 45,124 行；>400 行文件 105 个、>600 否决文件 43 个、>8200 行 crate 4 个。本批为 build 期去重减法，未把任何运行期大文件推过线；红账归属存量与其他在途批次，阈值口径与增量归属属门禁治理决策，本批不调宽。
+- **全门禁复核（2026-11-26，本机 macOS stable 1.100.0）**：`nextest run --workspace --all-features` 3064 passed / 18 skipped / 0 failed；`cargo test --doc`、`cargo deny check`（advisories/bans/licenses/sources ok）、`cargo machete`（无未用依赖）、jscpd 0 clone、tools 静态门 13、`complexity.sh`（Lizard 1.24.1 / rust-code-analysis-cli 0.0.25）、testkit 架构门 117、`name-lint.sh` 0 命中、`cargo expand`（annotation/train 非空）、typos 0、actionlint 0、`cargo bench --no-run` 编译通过、benchmarks regress 16、ruff check/format、cloc 报告均通过；唯一硬门失败为上述密度门存量超线。`--perf`/`--fuzz`/`--miri`/`--coverage` 专项未跑。
