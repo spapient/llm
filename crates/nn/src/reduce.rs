@@ -1,8 +1,8 @@
 //! 归约骨架：`y[0] = fold(a[0..n])`，输出单个元素。
 
 use crate::formula::FormulaOwner;
-use crate::scalar::{FloatSlice, FloatSliceMut, Scalar};
 use crate::model::{AxisRole, AxisSpec, Buf, Cost, Sample, ShapeCtx};
+use crate::scalar::{FloatSlice, FloatSliceMut, Scalar};
 use diagnostic::{Code, Error};
 use tensor::View;
 

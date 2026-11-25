@@ -3,7 +3,6 @@
 //! 本文件只留静态规格（`EPS`/`MOMENTUM`/[`Running`]/[`Geometry`]/`DECLARED`）与方法分派；
 //! 形状核对与窗口几何在 `shapes`，逐变体前向/反向数值微核在 `kernels`。
 use diagnostic::{Code, Error, Result};
-use nn::norm::BatchNorm2d;
 
 // ---- 静态规格与声明档表 ------------------------------------------------------
 
@@ -320,29 +319,8 @@ impl Geometry {
             &inputs.iter().map(|x| x.len()).collect::<Vec<_>>(),
             out.len(),
         )?;
-        if running.mean.len() != channels || running.var.len() != channels {
-            return Err(invalid(format!(
-                "滚动统计有 {} 个均值 / {} 个方差，实例几何要 {channels} 个通道",
-                running.mean.len(),
-                running.var.len()
-            )));
-        }
-        BatchNorm2d {
-            channels,
-            eps: EPS,
-            momentum: MOMENTUM,
-        }
-        .forward_eval(
-            inputs[0],
-            inputs[1],
-            inputs[2],
-            n,
-            1,
-            spatial,
-            &running.mean,
-            &running.var,
-            out,
-        )
+        check_running(running, channels)?;
+        kernels::forward_batch_norm_eval(inputs, out, running, n, spatial, channels)
     }
 
     /// 按实例几何反向：贡献顺序与输入对齐（一元给 `dx`，三种归一化给 `dx/dgamma/dbeta`）。
@@ -357,6 +335,18 @@ impl Geometry {
         )?;
         kernels::backward(self, inputs, incoming)
     }
+}
+
+/// 滚动统计通道数必须与实例一致；训练与推理共用同一拒绝判据。
+fn check_running(running: &Running, channels: usize) -> Result<()> {
+    if running.mean.len() == channels && running.var.len() == channels {
+        return Ok(());
+    }
+    Err(invalid(format!(
+        "滚动统计有 {} 个均值 / {} 个方差，实例几何要 {channels} 个通道",
+        running.mean.len(),
+        running.var.len()
+    )))
 }
 
 /// 二维平面输出元素数：两次窗口展开相乘，几何不成立时退 0。

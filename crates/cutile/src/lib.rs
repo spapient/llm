@@ -102,7 +102,7 @@ pub mod fuse;
 pub mod harness;
 pub mod kernel;
 mod lru;
-pub mod native;
+pub use ::prof::native;
 pub mod pass;
 pub mod plan;
 mod printer;

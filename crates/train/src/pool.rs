@@ -35,8 +35,10 @@
 //! assert!(store.value(y).and_then(|view| view.f32()).is_some());
 //! ```
 
+#[cfg(test)]
+pub use crate::Reference;
 use crate::geometry::{Geometry, Running};
-pub use crate::{Data, Inputs, Kernel, Kind, Lane, Reference, View, ViewMut};
+pub use crate::{Data, Kernel, Kind, View};
 use crate::{fits, lane_of, no_storage, zeroed};
 use autograd::{Sizes, Store, Var};
 use diagnostic::{Code, Error, Result};

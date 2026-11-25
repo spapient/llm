@@ -9,7 +9,10 @@ fn train_spec_validates_session_and_loader_together() -> Result<()> {
     let loader = LoaderConfig::new(2, 3)?;
     let spec = TrainSpec::new(session.clone(), loader.clone())?;
     assert_eq!(spec.into_parts(), (session, loader));
-    let invalid = TrainConfig { learning_rate: f32::NAN, ..TrainConfig::default() };
+    let invalid = TrainConfig {
+        learning_rate: f32::NAN,
+        ..TrainConfig::default()
+    };
     let error = TrainSpec::new(invalid, LoaderConfig::default())
         .expect_err("公开字段绕过构造器后仍要在装配边界拒绝");
     assert_eq!(error.code(), Code::Invalid);
@@ -26,7 +29,10 @@ fn rejects_invalid_overrides() {
         accumulation: Some(0),
         ..TrainOverrides::default()
     });
-    assert_eq!(bad_accum.expect_err("累积窗口不能为 0").code(), Code::Invalid);
+    assert_eq!(
+        bad_accum.expect_err("累积窗口不能为 0").code(),
+        Code::Invalid
+    );
 }
 
 /// 可选覆盖：缺项取默认值、给出的字段生效；非法值仍走 [`TrainConfig::new`] 校验。
@@ -118,10 +124,15 @@ fn failed_optimizer_returns_parameter_and_gradient_views() {
     let config = TrainConfig::new(0.1, 0, 1, None, 2).expect("累积窗口");
     let mut session = crate::Session::new(tape, sizes, crate::kernel::Reference, Reject, config)
         .expect("故障注入会话");
-    session.register_parameter(p, nn::ParamRole::Trainable, vec![1.0; super::N]).expect("参数");
+    session
+        .register_parameter(p, nn::ParamRole::Trainable, vec![1.0; super::N])
+        .expect("参数");
     session.load_gradient(p, &[0.5; super::N]).expect("梯度");
     session.optimize().expect("未满窗口不步进");
-    assert_eq!(session.optimize().expect_err("注入失败").code(), Code::Invalid);
+    assert_eq!(
+        session.optimize().expect_err("注入失败").code(),
+        Code::Invalid
+    );
     assert_eq!(session.slots()[0].params(), &[1.0; super::N]);
     assert_eq!(session.bufs().gradient(p), Some(&[0.5; super::N][..]));
     assert_eq!((session.step(), session.accumulated_microbatches()), (0, 1));
@@ -133,19 +144,33 @@ fn adam_target() -> (AdamSession, autograd::Var) {
     use crate::Optimizer;
     let (tape, sizes, source, tied, other, ..) = super::two_layer_fixture();
     let config = TrainConfig::new(0.1, 0, 4, None, 2).expect("配置");
-    let mut target = crate::Session::new(tape, sizes, crate::kernel::Reference, crate::Adam::new(), config)
-        .expect("Adam 会话");
+    let mut target = crate::Session::new(
+        tape,
+        sizes,
+        crate::kernel::Reference,
+        crate::Adam::new(),
+        config,
+    )
+    .expect("Adam 会话");
     super::register_two_layer(&mut target, source, tied, other).expect("参数槽");
-    target.optimizer.restore(vec![vec![0.25; super::N]; 3], vec![vec![0.5; super::N]; 3], 7)
+    target
+        .optimizer
+        .restore(
+            vec![vec![0.25; super::N]; 3],
+            vec![vec![0.5; super::N]; 3],
+            7,
+        )
         .expect("既有矩状态");
     target.optimize().expect("累积第一批");
-    target.load_gradient(source, &[9.0; super::N]).expect("既有梯度");
+    target
+        .load_gradient(source, &[9.0; super::N])
+        .expect("既有梯度");
     (target, source)
 }
 
 fn invalid_ties_snapshot() -> weights::Snapshot {
-    let slot = storage::SlotMoments::new(vec![0.75; super::N], vec![0.875; super::N])
-        .expect("矩状态槽");
+    let slot =
+        storage::SlotMoments::new(vec![0.75; super::N], vec![0.875; super::N]).expect("矩状态槽");
     weights::Snapshot::new_with_all(
         storage::Facts::new(5, 1, 2, 1, super::N).expect("事实"),
         weights::Header::new(Vec::new(), 0).expect("权重头"),
@@ -160,9 +185,21 @@ fn invalid_ties_snapshot() -> weights::Snapshot {
 fn restore_validation_failure_leaves_every_state_component_unchanged() {
     let (mut target, source) = adam_target();
     let snapshot = invalid_ties_snapshot();
-    assert_eq!(target.restore_snapshot(&snapshot).expect_err("ties 越界").code(), Code::Invalid);
-    assert_eq!(target.optimizer.momentum().to_vec(), vec![vec![0.25; super::N]; 3]);
-    assert_eq!(target.optimizer.variance().to_vec(), vec![vec![0.5; super::N]; 3]);
+    assert_eq!(
+        target
+            .restore_snapshot(&snapshot)
+            .expect_err("ties 越界")
+            .code(),
+        Code::Invalid
+    );
+    assert_eq!(
+        target.optimizer.momentum().to_vec(),
+        vec![vec![0.25; super::N]; 3]
+    );
+    assert_eq!(
+        target.optimizer.variance().to_vec(),
+        vec![vec![0.5; super::N]; 3]
+    );
     assert_eq!(target.optimizer.step_count(), 7);
     assert_eq!(target.bufs().gradient(source), Some(&[9.0; super::N][..]));
     assert_eq!(target.accumulated_microbatches(), 1);

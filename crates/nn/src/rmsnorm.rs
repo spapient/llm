@@ -104,11 +104,7 @@ fn normalize(x: &[f32], gamma: &[f32], out: &mut [f32], epsilon: f32) {
 /// # Errors
 ///
 /// 三个缓冲不等长或输入为空时返回说明。
-pub fn forward(
-    x: View<'_, f32>,
-    gamma: View<'_, f32>,
-    out: &mut [f32],
-) -> diagnostic::Result<()> {
+pub fn forward(x: View<'_, f32>, gamma: View<'_, f32>, out: &mut [f32]) -> diagnostic::Result<()> {
     forward_with_epsilon(x, gamma, out, EPS)
 }
 

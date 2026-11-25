@@ -112,9 +112,30 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
             config.anneal,
             config.min_ratio,
         )?;
+        Ok(Self::assemble(
+            tape,
+            sizes,
+            kernel,
+            optimizer,
+            config,
+            distributed,
+            lr_schedule,
+        ))
+    }
+
+    /// 校验完成后的纯状态装配；配置指纹与缓冲只在这里生成一次。
+    fn assemble(
+        tape: Tape,
+        sizes: Sizes,
+        kernel: K,
+        optimizer: O,
+        config: TrainConfig,
+        distributed: Distributed<C>,
+        lr_schedule: Schedule,
+    ) -> Self {
         let bufs = Bufs::new(sizes.clone(), kernel);
         let config_fingerprint = checkpoint::session_fingerprint(&config, &optimizer);
-        Ok(Self {
+        Self {
             tape,
             sizes,
             bufs,
@@ -131,7 +152,7 @@ impl<K: Kernel, O: Optimizer, C: Collective> Session<K, O, C> {
             losses: Vec::new(),
             batch_rows: 0,
             batch_cols: 0,
-        })
+        }
     }
 
     ref_getters! {

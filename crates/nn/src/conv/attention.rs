@@ -521,5 +521,5 @@ crate::operator_here!(
 
 #[cfg(test)]
 mod attention_suite {
-    include!("../tests/conv_attention_suite.rs");
+    include!("../../tests/conv_attention_suite.rs");
 }

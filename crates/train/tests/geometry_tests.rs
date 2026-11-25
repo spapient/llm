@@ -187,3 +187,20 @@ fn arbitrary_geometries_forward_and_reject_bad_shapes() {
     };
     assert!(bad.check_shape(&[3], bad.outputs()).is_err());
 }
+
+/// 训练前向也不能把错位滚动统计静默替换成局部统计。
+#[test]
+fn training_rejects_mismatched_running_statistics() {
+    let geometry = Geometry::Norm {
+        n: 1,
+        spatial: 2,
+        channels: 2,
+    };
+    let (x, gain, shift) = (vec![0.0; 4], vec![1.0; 2], vec![0.0; 2]);
+    let mut out = vec![0.0; 4];
+    let mut wrong = Running::fresh(1);
+    let error = geometry
+        .forward_with(&[&x, &gain, &shift], &mut out, Some(&mut wrong))
+        .expect_err("滚动统计通道不符");
+    assert_eq!(error.code(), Code::Invalid);
+}

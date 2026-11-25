@@ -97,6 +97,8 @@ mod rng;
 mod session;
 
 pub use geometry::{Geometry, Running};
+pub use kernel::{Data, Inputs, Kernel, Kind, Lane, Reference, View, ViewMut};
+pub(crate) use kernel::{fits, lane_of, no_storage, orthogonalize, same_str, zeroed};
 pub use learner::{
     Batch, Chunks, Dataset, ForwardOut, Learner, Loader, Metric, MetricPoint, MetricsBoard,
 };
@@ -106,8 +108,8 @@ pub use loss::{
     kl_per_row, log_prob, log_softmax, mse, policy_loss,
 };
 pub use optimizer::{Adam, Group, Hybrid, Muon, Optimizer, OwnedSlot, Sgd, Slot};
+pub use pool::Bufs;
 pub use pool::OperatorSetOps;
-pub use pool::{Bufs, Data, Inputs, Kernel, Kind, Lane, Reference, View, ViewMut};
 pub use rng::{Bernoulli, LoaderConfig, Normal, Rng, Sampling, Uniform, block};
 pub use session::{
     Anneal, Checkpoint, Distributed, GradientSnapshot, Local, ParamSlot, Remote, Schedule, Session,

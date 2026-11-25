@@ -213,6 +213,19 @@ pub(crate) fn window2d(
 /// 归一化反向的三个输出切片。
 pub(crate) type NormOut<'a> = (&'a mut [f32], &'a mut [f32], &'a mut [f32]);
 
+/// 组成员数、均值与归一化逆标准差；统计顺序与前向参考一致。
+fn norm_stats(x: &[f32], members: impl Iterator<Item = usize> + Clone) -> (f32, f32, f32) {
+    let count = members.clone().count() as f32;
+    let (mut sum, mut sq) = (0.0f32, 0.0f32);
+    for idx in members {
+        sum += x[idx];
+        sq += x[idx] * x[idx];
+    }
+    let mean = sum / count;
+    let var = (sq / count - mean * mean).max(0.0);
+    (count, mean, 1.0 / (var + EPS).sqrt())
+}
+
 /// 归一化反向：按 `(均值, 方差)` 求 `dx`，并累加 `dgamma`/`dbeta`。
 /// 成员下标惰性迭代并克隆游标，保持遍历顺序且不为每个组分配临时向量。
 pub(crate) fn norm_group(
@@ -224,16 +237,7 @@ pub(crate) fn norm_group(
     out: NormOut<'_>,
 ) {
     let (dx, dgamma, dbeta) = out;
-    let count = members.clone().count() as f32;
-    let (mut sum, mut sq) = (0.0f32, 0.0f32);
-    for idx in members.clone() {
-        sum += x[idx];
-        sq += x[idx] * x[idx];
-    }
-    let mean = sum / count;
-    let var = (sq / count - mean * mean).max(0.0);
-    let inv = 1.0 / (var + EPS).sqrt();
-
+    let (count, mean, inv) = norm_stats(x, members.clone());
     let (mut sum_dxhat, mut sum_dxhat_xhat) = (0.0f32, 0.0f32);
     for idx in members.clone() {
         let col = channel(idx);

@@ -1,8 +1,8 @@
 //! 逐元素二元骨架：`y[n] = op(a[n], b[n])`。
 
 use crate::formula::FormulaOwner;
-use crate::scalar::{FloatSlice, FloatSliceMut, Scalar};
 use crate::model::{Buf, Cost, Sample, ShapeCtx, Values, Vector};
+use crate::scalar::{FloatSlice, FloatSliceMut, Scalar};
 use diagnostic::{Code, Error};
 use tensor::View;
 

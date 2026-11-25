@@ -21,7 +21,7 @@ macro_rules! route {
     };
 }
 
-/// 前向总路由：归一化与卷积直接投影配置，空间算子进入独立小路由。
+/// 前向总路由：归一化、卷积与空间算子各自只有一个入口。
 pub(crate) fn forward(
     g: Geometry,
     inputs: &[&[f32]],
@@ -29,17 +29,26 @@ pub(crate) fn forward(
     running: Option<&mut Running>,
 ) -> Result<()> {
     match g {
-        Norm {
-            n,
-            spatial,
-            channels,
-        } => forward_batch_norm(inputs, out, running, n, spatial, channels),
-        Group {
-            groups,
-            n,
-            spatial,
-            channels,
-        } => GroupNorm {
+        Norm { .. } | Group { .. } | Layer { .. } => forward_normalized(g, inputs, out, running),
+        Geometry::Conv2d { k, s, p, h, w, cin, cout } => {
+            forward_conv2d(inputs, out, Window { k, s, p }, (h, w, cin, cout))
+        }
+        _ => forward_spatial(g, inputs, out),
+    }
+}
+
+/// 归一化前向路由；滚动统计只被批归一化消费。
+fn forward_normalized(
+    g: Geometry,
+    inputs: &[&[f32]],
+    out: &mut [f32],
+    running: Option<&mut Running>,
+) -> Result<()> {
+    match g {
+        Norm { n, spatial, channels } => {
+            forward_batch_norm(inputs, out, running, n, spatial, channels)
+        }
+        Group { groups, n, spatial, channels } => GroupNorm {
             groups,
             channels,
             eps: EPS,
@@ -48,24 +57,25 @@ pub(crate) fn forward(
         Layer { width, .. } => {
             LayerNorm { width, eps: EPS }.forward(inputs[0], inputs[1], inputs[2], out)
         }
-        Geometry::Conv2d {
-            k,
-            s,
-            p,
-            h,
-            w,
-            cin,
-            cout,
-        } => Conv2dKernel::new(cin, cout, square(k, s, p)).forward_f32(
-            inputs[0],
-            inputs[1],
-            inputs[2],
-            1,
-            (h, w),
-            out,
-        ),
-        _ => forward_spatial(g, inputs, out),
+        _ => Err(internal("归一化前向收到非归一化几何")),
     }
+}
+
+/// 二维卷积前向数值核；窗口与通道几何由路由一次性投影。
+fn forward_conv2d(
+    inputs: &[&[f32]],
+    out: &mut [f32],
+    win: Window,
+    (h, w, cin, cout): (usize, usize, usize, usize),
+) -> Result<()> {
+    Conv2dKernel::new(cin, cout, square(win.k, win.s, win.p)).forward_f32(
+        inputs[0],
+        inputs[1],
+        inputs[2],
+        1,
+        (h, w),
+        out,
+    )
 }
 
 route!(forward_spatial(g, inputs: &[&[f32]], out: &mut [f32]) -> Result<()>;
@@ -94,6 +104,18 @@ route!(forward_reshape(g, inputs: &[&[f32]], out: &mut [f32]) -> Result<()>;
     }.forward(inputs[0], inputs[0].len() / (h * w * c), h, w, c, out)
 );
 
+/// 选择滚动统计或局部统计；非法滚动维度不能静默降级。
+fn running_or_local<'a>(
+    running: Option<&'a mut Running>,
+    local: &'a mut Running,
+    channels: usize,
+) -> Result<&'a mut Running> {
+    if let Some(stats) = running.as_deref() {
+        super::check_running(stats, channels)?;
+    }
+    Ok(running.unwrap_or(local))
+}
+
 /// 批归一化前向：有滚动统计就原地递推，否则用一次性局部统计。
 fn forward_batch_norm(
     inputs: &[&[f32]],
@@ -104,9 +126,7 @@ fn forward_batch_norm(
     channels: usize,
 ) -> Result<()> {
     let mut local = Running::fresh(channels);
-    let stats = running
-        .filter(|stats| stats.mean.len() == channels && stats.var.len() == channels)
-        .unwrap_or(&mut local);
+    let stats = running_or_local(running, &mut local, channels)?;
     BatchNorm2d {
         channels,
         eps: EPS,
@@ -121,6 +141,33 @@ fn forward_batch_norm(
         spatial,
         &mut stats.mean,
         &mut stats.var,
+        out,
+    )
+}
+
+/// 批归一化推理前向：只读取滚动统计，不修改训练状态。
+pub(crate) fn forward_batch_norm_eval(
+    inputs: &[&[f32]],
+    out: &mut [f32],
+    running: &Running,
+    n: usize,
+    spatial: usize,
+    channels: usize,
+) -> Result<()> {
+    BatchNorm2d {
+        channels,
+        eps: EPS,
+        momentum: MOMENTUM,
+    }
+    .forward_eval(
+        inputs[0],
+        inputs[1],
+        inputs[2],
+        n,
+        1,
+        spatial,
+        &running.mean,
+        &running.var,
         out,
     )
 }
@@ -349,6 +396,29 @@ pub(crate) fn backward(
     }
 }
 
+/// 组归一化反向：组成员布局只在这里解释，数值复用统一骨架。
+fn backward_group(
+    inputs: &[Vec<f32>],
+    incoming: &[f32],
+    groups: usize,
+    n: usize,
+    spatial: usize,
+    channels: usize,
+) -> Result<Vec<Vec<f32>>> {
+    let per = channels / groups;
+    normalized_backward(
+        inputs,
+        incoming,
+        channels,
+        (n * groups, spatial * per),
+        |member, at| {
+            let (bi, group) = (member / groups, member % groups);
+            let (s, channel) = (at / per, at % per);
+            (bi * spatial + s) * channels + group * per + channel
+        },
+    )
+}
+
 fn backward_other(g: Geometry, inputs: &[Vec<f32>], incoming: &[f32]) -> Result<Vec<Vec<f32>>> {
     match g {
         Group {
@@ -356,20 +426,7 @@ fn backward_other(g: Geometry, inputs: &[Vec<f32>], incoming: &[f32]) -> Result<
             n,
             spatial,
             channels,
-        } => {
-            let per = channels / groups;
-            normalized_backward(
-                inputs,
-                incoming,
-                channels,
-                (n * groups, spatial * per),
-                |member, at| {
-                    let (bi, group) = (member / groups, member % groups);
-                    let (s, channel) = (at / per, at % per);
-                    (bi * spatial + s) * channels + group * per + channel
-                },
-            )
-        }
+        } => backward_group(inputs, incoming, groups, n, spatial, channels),
         Geometry::Conv2d {
             k,
             s,

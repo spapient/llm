@@ -489,15 +489,19 @@ fn hybrid_rejects_non_finite_gradients_without_partial_updates() {
     assert_eq!(optimizer.other().step_count(), 0);
 }
 
-/// 非法超参在配置边界与直接步进入口都拒绝，不再静默关闭裁剪。
-#[test]
-fn invalid_hyperparameters_are_rejected_without_silent_fallback() {
-    let mut optimizers: Vec<Box<dyn Optimizer>> = vec![
+fn invalid_optimizers() -> Vec<Box<dyn Optimizer>> {
+    vec![
         Box::new(Sgd::new().with_clip_norm(f32::NAN)),
         Box::new(Sgd::new().with_weight_decay(-1.0)),
         Box::new(Adam::new().with_eps(0.0)),
         Box::new(Muon::new().with_momentum(f32::INFINITY)),
-    ];
+    ]
+}
+
+/// 非法超参在配置边界与直接步进入口都拒绝，不再静默关闭裁剪。
+#[test]
+fn invalid_hyperparameters_are_rejected_without_silent_fallback() {
+    let mut optimizers = invalid_optimizers();
     for optimizer in &mut optimizers {
         assert_eq!(
             optimizer.validate().expect_err("非法配置").code(),

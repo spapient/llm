@@ -413,6 +413,6 @@ pub(in crate::fast) mod tn {
 
     #[cfg(test)]
     mod tests {
-        include!("../tests/kernel_tn_tests.rs");
+        include!("../../tests/kernel_tn_tests.rs");
     }
 }

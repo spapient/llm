@@ -3,8 +3,8 @@
 
 use crate::Scalar;
 use crate::conv::ConvGeom;
-use crate::unary::{AXES, project_shape};
 use crate::model::{Buf, Cost, Sample, ShapeCtx, x_buf};
+use crate::unary::{AXES, project_shape};
 use diagnostic::Error;
 
 /// 池化声明共用的 same 3×3 几何：单位步长、单侧补零 1。
@@ -565,5 +565,5 @@ pub use pool::{
 
 #[cfg(test)]
 mod tests {
-    include!("../tests/conv_classic_tests.rs");
+    include!("../../tests/conv_classic_tests.rs");
 }

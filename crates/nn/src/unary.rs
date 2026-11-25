@@ -1,8 +1,8 @@
 //! 逐元素一元骨架：`y[n] = f(a[n])`。
 
 use crate::formula::FormulaOwner;
-use crate::scalar::{FloatSlice, FloatSliceMut, Scalar};
 use crate::model::{AxisRole, AxisSpec, Buf, Cost, Sample, ShapeCtx, Values};
+use crate::scalar::{FloatSlice, FloatSliceMut, Scalar};
 use diagnostic::{Code, Error};
 use tensor::View;
 

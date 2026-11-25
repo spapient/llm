@@ -30,7 +30,9 @@ pub mod gemm8x8 {
     /// 保持原 `void` 调用面；非法缓冲与既有 slice 入口一样触发断言。
     pub fn micro_packed(panel: &[f32], b: &[f32], out: &mut [f32], tile: Tile) {
         assert!(
-            crate::runtime::gemm_micro::fma_micro(panel, b, out, tile).is_ok(),
+            crate::runtime::gemm_micro::fma_micro(
+                panel, b, out, (tile.row0, tile.j, tile.n, tile.kb), tile.first,
+            ).is_ok(),
             "FMA 微内核的面板或输出缓冲不足"
         );
     }
@@ -63,7 +65,9 @@ pub mod i8 {
 
     /// 保持原布尔拒绝语义；非法长度或溢出同样拒绝，不进入 C ABI。
     pub fn dot_block(a: &[i8], bpack: &[i8], out: &mut [i32], gram: Gram) -> bool {
-        crate::runtime::gemm_micro::sdot_micro(a, bpack, out, gram).unwrap_or(false)
+        crate::runtime::gemm_micro::sdot_micro(
+            a, bpack, out, (gram.r, gram.blk, gram.n, gram.k, gram.kvec),
+        ).unwrap_or(false)
     }
 
     #[cfg(all(feature = "bench", target_arch = "aarch64"))]
