@@ -84,34 +84,18 @@ impl WeightFormat {
         Self::Int8 { group }
     }
 
-    /// 这种编码在内存里的元素类型：主匹配穷尽所有格式，分组助手把单函数复杂度留在门内。
+    /// 这种编码在内存里的元素类型：主匹配穷尽所有格式，不允许静默回落。
     pub const fn dtype(self) -> DType {
-        match self {
-            Self::Int2 { .. } | Self::Int4 { .. } | Self::Int8 { .. } => self.grouped_dtype(),
-            Self::F32 => DType::F32,
-            Self::F16 => DType::F16,
-            Self::Bf16 => DType::BF16,
-            Self::I8 | Self::Packed2 | Self::Packed4 => self.plain_integer_dtype(),
-        }
-    }
-
-    /// 带分组格式的映射；其它格式回派到总入口，因此没有不可达的默认类型。
-    const fn grouped_dtype(self) -> DType {
         match self {
             Self::Int2 { .. } => DType::U2,
             Self::Int4 { .. } => DType::U4,
             Self::Int8 { .. } => DType::I8,
-            other => other.dtype(),
-        }
-    }
-
-    /// 无分组整数格式的映射；其它格式同样回派到总入口。
-    const fn plain_integer_dtype(self) -> DType {
-        match self {
+            Self::F32 => DType::F32,
+            Self::F16 => DType::F16,
+            Self::Bf16 => DType::BF16,
             Self::I8 => DType::I8,
             Self::Packed2 => DType::U2,
             Self::Packed4 => DType::U4,
-            other => other.dtype(),
         }
     }
 
