@@ -200,13 +200,8 @@ pub(crate) fn model_records_carry_every_field_a_reader_needs_to_judge_it() {
 }
 
 // 协议卡只负责测量与搬运；门槛、区间和三态判定唯一由 `tool::card` 持有。
-#[path = "../src/fixtures.rs"]
-#[allow(dead_code)]
-mod fixtures;
-#[path = "../src/protocol.rs"]
-mod protocol;
-
-use protocol::decode_card::{WINDOWS, archive, harness, jitter, protocol, samples};
+mod decode_card;
+use decode_card::{WINDOWS, archive, harness, jitter, protocol, samples};
 use tool::card::{Card, Shortfall, Standing};
 
 #[test]
@@ -218,7 +213,7 @@ fn a_real_decode_series_becomes_a_reviewable_card() {
     let tally = card.tally().expect("摘要");
     assert_eq!(tally.count(), samples.len());
     assert!(tally.sd() >= 0.0 && tally.lower() <= tally.upper());
-    let text = std::fs::read_to_string(archive(&card)).expect("读回");
+    let text = std::fs::read_to_string(archive(&card, host())).expect("读回");
     let host_field = format!("\"host\": \"{}\"", host());
     for field in [
         "\"protocol\": \"E10\"",
@@ -239,8 +234,10 @@ fn a_real_decode_series_becomes_a_reviewable_card() {
 #[test]
 fn the_same_series_passes_a_loose_gate_and_fails_an_impossible_one() {
     let samples = samples();
-    let failed = Card::judge(protocol("gate", 0.0, WINDOWS), harness(host()), &samples).expect("判");
-    let passed = Card::judge(protocol("gate", 1e9, WINDOWS), harness(host()), &samples).expect("判");
+    let failed =
+        Card::judge(protocol("gate", 0.0, WINDOWS), harness(host()), &samples).expect("判");
+    let passed =
+        Card::judge(protocol("gate", 1e9, WINDOWS), harness(host()), &samples).expect("判");
     assert_eq!(failed.standing(), Standing::Fail, "不可达门槛必须 FAIL");
     assert_eq!(passed.standing(), Standing::Pass, "极宽门槛必须 PASS");
     assert_eq!(
@@ -281,7 +278,10 @@ fn registered_ids() -> std::collections::BTreeSet<String> {
 
 #[test]
 pub(crate) fn no_measurement_is_filed_under_an_unregistered_group() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/criterion");
+    let root = std::env::var_os("LLM_BENCH_CRITERION_ROOT").map_or_else(
+        || Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/criterion"),
+        PathBuf::from,
+    );
     if !root.is_dir() {
         testkit::skip(format!(
             "benchmarks: 还没跑过基准（{} 不存在）",

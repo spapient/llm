@@ -312,33 +312,36 @@ fn projection_plan(
     Ok(plan)
 }
 
+/// 量化投影的共享布局：每字节码数取 `nn` 的量化配置表，分组取层声明。
+fn quantized_layout(format: WeightFormat) -> Option<(usize, usize)> {
+    match format {
+        WeightFormat::Int2 { group } => Some((I2.cpb, group)),
+        WeightFormat::Int4 { group } => Some((I4.cpb, group)),
+        WeightFormat::Int8 { group } => Some((I8.cpb, group)),
+        _ => None,
+    }
+}
+
 /// 投影的驻留权重与标度形状：稠密 `[out, in]` 整块 f32；量化给打包字节
-/// `[out, in/cpb]` 加标度 `[out, in/group]`。每字节码数读 [`nn::quant::Row`] 配置表，
-/// 与 `nn` 的 GEMV/GEMM/反量化同一事实源（`I4.cpb=2`、`I8.cpb=1`）；分组来自格式声明。
+/// `[out, in/cpb]` 加标度 `[out, in/group]`，与 GEMV/GEMM/反量化共用配置事实源。
 pub(crate) fn projection_shapes(
     format: WeightFormat,
     in_features: usize,
     out_features: usize,
 ) -> (Vec<usize>, Vec<usize>) {
-    match format {
-        WeightFormat::Int4 { group } => (
-            vec![out_features, in_features / I4.cpb],
-            vec![out_features, in_features / group],
-        ),
-        WeightFormat::Int8 { group } => (
-            vec![out_features, in_features / I8.cpb],
-            vec![out_features, in_features / group],
-        ),
-        _ => (vec![out_features, in_features], Vec::new()),
-    }
+    let Some((cpb, group)) = quantized_layout(format) else {
+        return (vec![out_features, in_features], Vec::new());
+    };
+    (
+        vec![out_features, in_features / cpb],
+        vec![out_features, in_features / group],
+    )
 }
 
 /// 量化投影的整除校验：输入宽度必须是分组宽度（与每字节码数）的整数倍。
 pub(crate) fn validate_quantized_shape(format: WeightFormat, in_features: usize) -> Result<()> {
-    let (cpb, group) = match format {
-        WeightFormat::Int4 { group } => (I4.cpb, group),
-        WeightFormat::Int8 { group } => (I8.cpb, group),
-        _ => return Ok(()),
+    let Some((cpb, group)) = quantized_layout(format) else {
+        return Ok(());
     };
     if !in_features.is_multiple_of(group) || !in_features.is_multiple_of(cpb) {
         return Err(Error::new(

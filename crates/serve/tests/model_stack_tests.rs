@@ -113,6 +113,32 @@ fn a_quantized_layer_without_its_scale_is_rejected_at_assembly() {
     rejected_at_assembly(stack, params, Code::Missing);
 }
 
+/// 量化 int2 投影装配端到端：每字节四码 + 标度，前向与 `gemv_i2` 参考对拍。
+#[test]
+fn a_quantized_int2_projection_assembles_and_matches_the_reference() {
+    let x: Vec<f32> = (0..32).map(|idx| 1.0 + idx as f32 * 0.1).collect();
+    let codes: Vec<i8> = (0..32).map(|idx| (idx as i8 % 4) - 2).collect();
+    let w = pack_codes(2, &codes);
+    let scales = [0.5f32];
+    let mut reference = vec![0.0; 1];
+    nn::gemv_i2::forward(
+        tensor::View::one(&x),
+        &w,
+        tensor::View::one(&scales),
+        &mut reference,
+    )
+    .expect("参考");
+
+    let stack = Stack::new(vec![
+        Linear::with_format("blk.0", WeightFormat::INT2, 32, 1).expect("层"),
+    ])
+    .expect("栈");
+    let mut params = Params::new();
+    params.insert_quantized("blk.0.weight", w, "blk.0.weight_scale", scales.to_vec());
+
+    forward_close(stack, params, &x, &reference);
+}
+
 /// 量化 int4 投影装配端到端：打包字节 + 标度两条驻留条目，前向与 `gemv_i4` 参考对拍。
 #[test]
 fn a_quantized_int4_projection_assembles_and_matches_the_reference() {

@@ -8,7 +8,7 @@ use weights::{Entry as WeightEntry, Header, Loader, Quantized, Reader, Wire, dec
 
 use crate::kernels::SITE;
 
-/// 驻留权重块：稠密 f32，或量化打包字节（i4 每字节两码、i8 每字节一码）。
+/// 驻留权重块：稠密 f32，或量化字节（i2 每字节四码、i4 两码、i8 一码）。
 #[derive(Debug, Clone, PartialEq)]
 pub enum Block {
     /// 稠密 f32 整块。
