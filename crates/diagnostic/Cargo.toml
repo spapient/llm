@@ -16,8 +16,10 @@ toml = { workspace = true, optional = true }
 
 [features]
 default = []
-# 构建期共享内核：扫描语料并读取 TOML，各生成器直接产出强类型静态视图。
-build = ["dep:toml"]
+# 纯 std 构建期原语：路径文件名与目录扫描；不引入 toml。
+build-std = []
+# 构建期共享内核：build-std 原语 + TOML 扫描/读取/取值/合并，各生成器直产强类型静态视图。
+build = ["build-std", "dep:toml"]
 
 [lints]
 workspace = true

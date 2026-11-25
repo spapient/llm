@@ -490,6 +490,19 @@ Rust 官方与微软训练材料的一致口径：
 - 不可抹平的执行缝必须留入口层：train 单 `&mut ViewMut` + `Kernel`（Geometry/Running/反向）vs serve 多 `&mut [ViewMut]` + `engine::Program`（Launch block/标量槽）；几何来源与反向核心各异。
 - 裁决：当前基线无可合规下沉块；七个候选留入口层或已是事实源。明细见 `validation/train-serve-adapter-protocol-design.md`。第二批前置：先对齐 slot 取槽与错误口径、几何契约，满足后再评估下沉。
 
+### 15.5 #58 构建期公共原语下沉与 nightly 机制配置化（2026-11-26）
+
+- **落点裁决**：build 期公共原语归既有 `diagnostic::buildgen` 通道，不在 `crates/tools` 新建平行 build 内核。tools 定位是运行期静态门禁库（被 testkit normal-dep），其 `build.rs` 只是 vocabulary 生成外壳；prof/tools 已 build-dep `diagnostic(build)`，下沉零新依赖边。AGENTS §2.2/§4：优先扩展已有抽象。
+- **feature 拆分**：`diagnostic` 新增 `build-std = []`（纯 std，路径/扫描/相对路径）与 `build = ["build-std", "dep:toml"]`（再带 TOML 读取/合并）；`read`/`merge_tables` 挂 `#[cfg(feature = "build")]`，其余原语挂 `build-std`。default 仍纯 std 零依赖；`--features build-std` 与 default 分别 check 绿。
+- **下沉并复用**：`file_stem`/`extension`（prof `build.rs` 两处本地副本删除，11 处调用点切 `buildgen::`）；`merge_tables` 就地递归合并（prof `build.rs::merge_tables` 与 `buildops::merge` 两处同构合一，`buildops` 两处 owned 调用改就地形式）。新增 `merge_tables` 递归覆盖/数组整体替换与路径原语两条单测，挂既有 `buildgen_tests.rs`。
+- **nightly 机制从探测脚本改为编译 flags 注入**：`cfg(nightly)` 原由 `nn/build.rs` 与 `prof/build.rs` 跑 `rustc --version` 探测发出。现撤回 `buildgen` 的 `is_nightly`/`emit_nightly_cfg`（无消费），删除唯一薄壳 `crates/nn/build.rs` 及其 build-dep；`prof/build.rs` 保留生成职责（档案/模板表/设备镜像），仅移除 nightly 探测段。源码 `#[cfg(nightly)]` 一行未改。
+  - cfg 注入落点：CI `nightly` job 加 `env: RUSTFLAGS: "--cfg=nightly --check-cfg=cfg(nightly)"`；workspace `[workspace.lints.rust]` 登记 `unexpected_cfgs = { check-cfg = ['cfg(nightly)'] }`，消除默认构建的未知 cfg 告警。
+  - **为什么没做成 Cargo feature**：`--all-features` 会把空 feature 一并打开，stable 门禁就会编 `std::simd`/SME 通道而 E0554；Cargo 无法把单个 feature 排除出 `--all-features`。改 feature 必须把 stable 门禁换成脆弱的显式 feature 清单，故选用与工具链解耦、不被 all-features 误开的 RUSTFLAGS 注入。
+- **实测（本机 macOS，stable 1.100.0，默认不注入 nightly cfg）**：`cargo check --workspace --all-features --locked` 0 error；`clippy --workspace --all-targets --all-features -- -D warnings` 0；`fmt --check` 0。单测：diagnostic 22、nn 563（4 ignored）、prof 179、tools card 39 / gate 13 / lex 27 / words 10，全绿。
+- **追加复用**：`buildops::file_stem`（fail 硬终止版）内部改为转调 `buildgen::file_stem`，只保留非 UTF-8 时的 `fail!` 错误适配，消除第二份 `file_stem().and_then(to_str())` 解析链；`build.rs` 的 `stem`/`extension` 副本此前已删。
+- **未收簇（留后续）**：prof/tools 的 TOML 取值与字面量渲染辅助（`table/required/text/integer/optional/strings/expressions` 等）错误口径分两套——tools 走 `diagnostic::Result`，prof 走 `fail!` + `exit(1)`；prof 正文读取（`build.rs::read`、`buildtables::archive_with_preamble` 内联 `read_to_string`）仅 prof 内部两处同构，取值/读取口径统一前不下沉。各强类型视图渲染、prof 设备族/片段/见证扫描、native C 槽位与驼峰命名转换、标识符关键字校验属领域装配，留外壳。
+- **复核取证**：jscpd（`.config/.jscpd.json`，minLines 5 / minTokens 80）全仓 537 文件 / 163,600 行 / 0 clone；`cargo machete` 无未用依赖。剩余取值 helper 体量小、未达 clone 阈值，且类型约束分叉（tools 正整数 `usize` vs prof 带缺省 `i64`；tools 可选整数产 `Some/None` 字面量 vs prof 可选串产 `-` 占位），强收会把领域渲染语义塞进构建内核，违反"抽象消除真实重复、不做平行包装"。
+
 ### 15.4 未完成项（如实披露）
 
 - 密度门存量红账：超目标值 44,164 行、超注释棘轮 95,800 为 8,364、超重建前代码基线 96,100 为 8,064；删除等于砍能力，违反正确性优先，非本批可消除。注意：即使把 `SRC_MAX` 改回重建前的 96,100，当前仍超 8,064 行，门不会直接转绿——不存在"改回棘轮口径即绿"的捷径，只能无损缩减或对超基线增量逐项取证登记。`SRC_MAX=60000` 系重建提交 b65a0966 回退的项目目标值，与棘轮注释脱节；阈值口径与增量归属属仓库门禁治理决策，本批不擅自调宽。
@@ -498,3 +511,4 @@ Rust 官方与微软训练材料的一致口径：
 - `--perf` 固定硬件基准、`--fuzz`、`--miri`、`--coverage` 未跑；18 项 skipped 平台专项未执行；`tensor::View::one` 维度/步长 Vec 分配缺 release 基准证据。
 - 并发在飞项现状（2026-11-26 复核）：`docs/gpu-tuning-candidates-cuda-intel.md`、`crates/prof/src/opencl.rs` 已并入并发提交；`crates/shard/tests/pipeline_tests.rs` 的 fmt 红账由本批 `rustfmt` 单文件修正（仅折行排版，逻辑零变化；该用例 `#[cfg(windows)]`，本机 macOS 不编译运行）。nextest 已在含上述改动的树上跑绿（3031 passed / 18 skipped / 0 failed）。
 - prof 构建脚本拆分（并发在途，非本批 annotation 工作）：`buildops::build_native` 迁出至新增 `crates/prof/src/native_build.rs`（343 行，满足下限 300），`build.rs` 已 `#[path]` 接线；`buildops.rs` 保留 `template_tables_of`。当次 `cargo test -p llm-prof` 177 单测 + 65 设备片段绿；该拆分未提交，归属并发会话，本批不回滚也不纳入交付结论。
+- #58 遗留：prof/tools 的 TOML 取值与渲染簇待错误口径统一后再评估下沉（见 15.5）；nightly 通道（nn `gemv::simd`、prof `native::sme`）本机 stable 工具链不具备编译条件，其正确性由 CI `nightly` job（nightly 工具链 + `RUSTFLAGS=--cfg=nightly`）守卫，本机未跑 nightly 工具链专项；linux 云主机未跑本批 buildgen 原语回归。

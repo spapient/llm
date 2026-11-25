@@ -80,6 +80,38 @@ fn relative_strips_the_base_prefix() {
     assert_eq!(relative(base, &path), "ops/add.toml");
 }
 
+#[test]
+fn file_stem_and_extension_read_utf8_name() {
+    let path = Path::new("ops/add.toml");
+    assert_eq!(file_stem(path), Some("add"));
+    assert_eq!(extension(path).as_deref(), Some("toml"));
+
+    let bare = Path::new("readme");
+    assert_eq!(extension(bare), None);
+}
+
+#[test]
+fn merge_tables_nests_recursively_and_replaces_arrays() {
+    let mut base = toml::from_str::<toml::Table>("[a]\nx = 1\ny = 2\ntags = [\"old\"]\n").unwrap();
+    let overlay = toml::from_str::<toml::Table>("[a]\ny = 9\ntags = [\"new\"]\nz = 3\n").unwrap();
+
+    merge_tables(&mut base, overlay);
+
+    let nested = base["a"].as_table().unwrap();
+    assert_eq!(nested["x"].as_integer(), Some(1));
+    assert_eq!(nested["y"].as_integer(), Some(9));
+    assert_eq!(nested["z"].as_integer(), Some(3));
+    assert_eq!(
+        nested["tags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(toml::Value::as_str)
+            .collect::<Vec<_>>(),
+        vec![Some("new")]
+    );
+}
+
 /// 临时目录：进程号 + 原子序号 + 纳秒，避免同纳秒内并行用例撞名。
 fn temp_dir() -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);

@@ -4,7 +4,7 @@
 //! - [`error`]：带类别、上下文与同级诊断的 [`Error`]，以及统一别名 [`Result`]。
 //! - [`scan`]：带字节位置的逐字节游标（`Cursor`），不解释领域文法。
 //! - [`render`]：面板、Markdown 表、单位与列表，只排版、不做判定。
-//! - [`buildgen`]：可选的构建期目录扫描与 TOML 读取；各消费方生成强类型静态视图。
+//! - [`buildgen`]：可选的构建期原语（`build-std` 纯 std；`build` 再带 TOML 扫描/读取/合并）；各消费方生成强类型静态视图。
 //!
 //! 本 crate 不持有领域语义或通用运行期数据树。读文件统一走 [`Error::from_io`]，区分
 //! “路径不存在”与“存在但读不出来”，避免每个调用点各自猜退出码。
@@ -28,7 +28,7 @@ pub mod error;
 pub mod render;
 pub mod scan;
 
-#[cfg(feature = "build")]
+#[cfg(feature = "build-std")]
 pub mod buildgen;
 
 pub use code::Code;

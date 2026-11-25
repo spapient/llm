@@ -1,5 +1,5 @@
 # 不再需要 nightly：两处不稳定能力已用 `#[cfg(nightly)]` 挂起，并各配一条 stable 退路
-# （`crates/nn/build.rs` 按 `rustc --version` 判定并产出该 cfg）：
+# （该 cfg 由 nightly 验证环境经 `RUSTFLAGS=--cfg=nightly` 注入，不由构建脚本探测）：
 #   - `gemv::simd` 的手写车道 → stable 走 `kernel_gemv_simd_stable.rs`；
 #   - `fast::sme` 的 ZA 外积 → stable 走 NEON 通道。
 # 因此这里钉到固定的已发布 stable 版本 1.100.0（与 workspace `rust-version`、CI、

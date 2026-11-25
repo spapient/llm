@@ -38,9 +38,9 @@
 //! ```
 
 #![deny(unsafe_code)]
-// 不稳定特性一律挂在 `cfg(nightly)` 上（由本 crate 的 `build.rs` 按 `rustc --version` 判定）：
-// nightly 上走手写车道，stable 上走 `kernel.rs` 里 `gemv::simd` 的标量退路，两边的能力差异
-// 只在「向量化没向量化」，不在语义。`rust-toolchain.toml` 不必把整个工作区钉在 nightly。
+// 不稳定特性一律挂在 `cfg(nightly)` 上：该 cfg 不由构建脚本探测，而由 nightly 验证环境经
+// `RUSTFLAGS=--cfg=nightly` 注入；默认 stable 构建不挂，走 `gemv::simd` 的标量退路，两边的能力
+// 差异只在「向量化没向量化」，不在语义。`rust-toolchain.toml` 不必把整个工作区钉在 nightly。
 //
 // 本 crate 只用到 `portable_simd`（16 车道 `std::simd` 源码，架构无关，不按目标门控）。
 // SME（`sme`）与 i8 dotprod（`dotprod`）的 `target_feature` 与运行时探测门已随瓦片通道迁入

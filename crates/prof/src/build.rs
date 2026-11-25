@@ -47,14 +47,6 @@ fn main() {
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_DEVICE_IMAGE");
     println!("cargo:rerun-if-env-changed=CUTILE_REQUIRE_IMAGE");
 
-    // SME 在 macOS stable 使用 FEAT_SME；非 macOS aarch64 保留已有 nightly 探测宏。
-    println!("cargo::rustc-check-cfg=cfg(nightly)");
-    println!("cargo::rerun-if-env-changed=RUSTC");
-    println!("cargo::rerun-if-env-changed=RUSTC_BOOTSTRAP");
-    if nightly() {
-        println!("cargo::rustc-cfg=nightly");
-    }
-
     let devices = devices_of(&src);
     let images = env::var_os("CARGO_FEATURE_DEVICE_IMAGE").is_some();
     let tables = buildtables::tables_of(&devices, &out, images);
@@ -140,9 +132,12 @@ fn family_of(dir: &Path) -> &str {
 fn variants_of(files: &[PathBuf], family: &str) -> Vec<String> {
     let mut variants: Vec<String> = files
         .iter()
-        .filter(|path| extension(path).as_deref() == Some("toml") && stem(path) != Some(family))
+        .filter(|path| {
+            buildgen::extension(path).as_deref() == Some("toml")
+                && buildgen::file_stem(path) != Some(family)
+        })
         .map(|path| {
-            stem(path)
+            buildgen::file_stem(path)
                 .unwrap_or_else(|| fail(format!("`{}` 没有档案名", path.display())))
                 .to_string()
         })
@@ -190,7 +185,7 @@ fn scan(dir: &Path, family: &str, variant: Option<&str>, files: Vec<PathBuf>) ->
     let witness = expect(
         files
             .iter()
-            .find(|path| stem(path) == Some(WITNESS_STEM))
+            .find(|path| buildgen::file_stem(path) == Some(WITNESS_STEM))
             .cloned(),
         format!(
             "`{}` 里没有 `{WITNESS_STEM}.<ext>`：设备目录必须带上见证，否则映射表没有入口可指",
@@ -198,7 +193,7 @@ fn scan(dir: &Path, family: &str, variant: Option<&str>, files: Vec<PathBuf>) ->
         ),
     );
     let ext = expect(
-        extension(&witness),
+        buildgen::extension(&witness),
         format!("`{}` 没有扩展名", witness.display()),
     );
 
@@ -223,7 +218,7 @@ fn scan(dir: &Path, family: &str, variant: Option<&str>, files: Vec<PathBuf>) ->
     // 前置声明可有可无：只有写了 `preamble.<ext>` 的设备才内嵌它，其余退回档案内联文本。
     let preamble = files
         .iter()
-        .find(|path| stem(path) == Some(PREAMBLE_STEM))
+        .find(|path| buildgen::file_stem(path) == Some(PREAMBLE_STEM))
         .cloned();
     let mut fragments = fragments;
     let mut entries = entries;
@@ -275,11 +270,11 @@ fn fragment_scan(
             continue;
         }
         let prim = expect(
-            stem(path),
+            buildgen::file_stem(path),
             format!("`{}` 的文件名不是合法 UTF-8", path.display()),
         )
         .to_string();
-        if extension(path).as_deref() != Some(ext) {
+        if buildgen::extension(path).as_deref() != Some(ext) {
             fail(format!(
                 "`{}` 的扩展名与同目录的 `{WITNESS_STEM}.{ext}` 不一致：一台设备只有一种输出语言",
                 path.display()
@@ -302,14 +297,17 @@ fn fragment_scan(
 /// 见证、档案、生成代码与算子特化正文都不进原语片段。
 fn is_non_fragment(path: &Path, witness: &Path) -> bool {
     path == witness
-        || stem(path) == Some(PREAMBLE_STEM)
-        || matches!(extension(path).as_deref(), Some("toml" | "rs" | "k"))
+        || buildgen::file_stem(path) == Some(PREAMBLE_STEM)
+        || matches!(
+            buildgen::extension(path).as_deref(),
+            Some("toml" | "rs" | "k")
+        )
         || is_operator_body(path, witness)
 }
 
 /// 共享参考同名或显式标记的设备正文是算子特化，不是原语片段。
 fn is_operator_body(path: &Path, witness: &Path) -> bool {
-    let Some(stem) = stem(path) else {
+    let Some(stem) = buildgen::file_stem(path) else {
         return false;
     };
     witness
@@ -330,7 +328,7 @@ fn archive_of(dir: &Path, family: &str, variant: Option<&str>) -> toml::Table {
     if let Some(variant) = variant {
         let overlay = dir.join(format!("{variant}.toml"));
         let overlay = buildgen::read(&overlay).unwrap_or_else(|error| fail(format!("{error}")));
-        merge_tables(&mut doc, overlay);
+        buildgen::merge_tables(&mut doc, overlay);
     }
     let vendor = expect(
         doc.get("meta")
@@ -345,20 +343,6 @@ fn archive_of(dir: &Path, family: &str, variant: Option<&str>) -> toml::Table {
         ));
     }
     doc
-}
-
-/// 只合并表字段；`provides`、flags 等数组由变体整体继承或整体覆盖，不逐项拼接。
-fn merge_tables(base: &mut toml::Table, overlay: toml::Table) {
-    for (key, value) in overlay {
-        match (base.get_mut(&key), value) {
-            (Some(toml::Value::Table(base)), toml::Value::Table(overlay)) => {
-                merge_tables(base, overlay);
-            }
-            (_, value) => {
-                base.insert(key, value);
-            }
-        }
-    }
 }
 
 /// 一条 `[[provides]]` 里生成期要核的三件事：签名、见证入口、见证文件。
@@ -511,7 +495,9 @@ fn files_in(dir: &Path) -> Vec<PathBuf> {
 /// 只有带见证文件的目录才是设备目录：`src/` 里除了六台设备的语料，还有 `decl`/`ops` 这类
 /// 非设备子树（声明解析与算子语料），它们不含 `witness.<ext>`，不得被当成设备扫描。
 fn has_witness(files: &[PathBuf]) -> bool {
-    files.iter().any(|path| stem(path) == Some(WITNESS_STEM))
+    files
+        .iter()
+        .any(|path| buildgen::file_stem(path) == Some(WITNESS_STEM))
 }
 
 /// `src` 下每个子目录与其文件清单（一次读盘，判据与扫描共用同一份清单）。
@@ -534,16 +520,6 @@ fn dirs_in(src: &Path) -> Vec<(PathBuf, Vec<PathBuf>)> {
 fn read(path: &Path) -> String {
     fs::read_to_string(path)
         .unwrap_or_else(|error| fail(format!("读取 {} 失败：{error}", path.display())))
-}
-
-fn stem(path: &Path) -> Option<&str> {
-    path.file_stem().and_then(|value| value.to_str())
-}
-
-fn extension(path: &Path) -> Option<String> {
-    path.extension()
-        .and_then(|value| value.to_str())
-        .map(str::to_string)
 }
 
 fn text(table: &toml::Table, key: &str, name: &str) -> String {
@@ -620,16 +596,4 @@ fn expect<T>(value: Option<T>, message: impl std::fmt::Display) -> T {
         Some(value) => value,
         None => fail(message),
     }
-}
-
-/// 本机 `rustc` 是不是 nightly：版本串带 `-nightly`，或者 `RUSTC_BOOTSTRAP` 已开。
-fn nightly() -> bool {
-    if std::env::var_os("RUSTC_BOOTSTRAP").is_some() {
-        return true;
-    }
-    let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
-    std::process::Command::new(rustc)
-        .arg("--version")
-        .output()
-        .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).contains("nightly"))
 }

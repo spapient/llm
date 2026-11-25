@@ -140,6 +140,10 @@ jobs:
   nightly:
     name: nightly channel
     runs-on: macos-latest
+    env:
+      # `cfg(nightly)` 不再由 build.rs 探测：这里用编译 flags 注入，与工具链选择解耦，
+      # 也不会被 stable 门禁的 `--all-features` 误开。
+      RUSTFLAGS: "--cfg=nightly --check-cfg=cfg(nightly)"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master

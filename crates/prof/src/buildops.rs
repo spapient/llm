@@ -167,7 +167,9 @@ fn family_document(
         .and_then(|op| op.get("name"))
         .and_then(toml::Value::as_str)
         .unwrap_or_else(|| fail(format!("`{file_stem}.operators` 每项都必须声明 `op.name`")));
-    (name.to_string(), merge(family.clone(), item.clone()))
+    let mut merged = family.clone();
+    buildgen::merge_tables(&mut merged, item.clone());
+    (name.to_string(), merged)
 }
 
 /// 按 `[op].tiers` 展开名字与档名；声明本体由 `prof_ops!()` 展开，这里不克隆或改写整棵树。
@@ -196,10 +198,9 @@ fn expand_tiers(name: &str, table: &toml::Table) -> Vec<(String, Option<String>)
     entries
 }
 
-/// 文件名 stem；生成代码需要合法的 UTF-8 字符串。
+/// 文件名 stem；生成代码需要合法的 UTF-8 字符串，非 UTF-8 直接终止构建。
 fn file_stem(path: &Path) -> &str {
-    path.file_stem()
-        .and_then(|stem| stem.to_str())
+    buildgen::file_stem(path)
         .unwrap_or_else(|| fail(format!("`{}` 的文件名不是合法 UTF-8", path.display())))
 }
 
@@ -452,22 +453,8 @@ fn resolve(ops: &Path, mut table: toml::Table) -> diagnostic::Result<toml::Table
     if table.contains_key("operators") {
         base.remove("op");
     }
-    Ok(merge(base, table))
-}
-
-/// 深度合并：`over` 覆盖 `base`，同名子表递归合并。
-fn merge(mut base: toml::Table, over: toml::Table) -> toml::Table {
-    for (key, value) in over {
-        match (base.get_mut(&key), value) {
-            (Some(toml::Value::Table(inner)), toml::Value::Table(update)) => {
-                *inner = merge(std::mem::take(inner), update);
-            }
-            (_, value) => {
-                base.insert(key, value);
-            }
-        }
-    }
-    base
+    buildgen::merge_tables(&mut base, table);
+    Ok(base)
 }
 
 #[cfg(test)]

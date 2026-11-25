@@ -18,6 +18,9 @@ unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "deny"
 missing_docs = "deny"
 unused_lifetimes = "deny"
+# `nightly` 是工具链通道 cfg，由 nightly 验证环境经 `RUSTFLAGS=--cfg=nightly` 注入；这里登记
+# 名字，避免默认构建把它当未知 cfg 告警。
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(nightly)'] }
 rust_2018_idioms = { level = "warn", priority = -1 }
 
 [workspace.lints.clippy]
