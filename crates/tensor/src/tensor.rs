@@ -72,6 +72,10 @@ pub struct Owned<E>(Vec<E>);
 
 impl<E> Owned<E> {
     /// 分配 `len` 个默认元素；容量不可用时返回错误而不是中止进程。
+    ///
+    /// # Errors
+    ///
+    /// 容量不足或地址空间溢出，无法为 `len` 个元素预留分配时返回错误。
     pub fn zeros(len: usize) -> Result<Self>
     where
         E: Copy + Default,
@@ -88,11 +92,13 @@ impl<E> Owned<E> {
     }
 
     /// 底层只读切片。
+    #[must_use]
     pub fn as_slice(&self) -> &[E] {
         &self.0
     }
 
     /// 拆出底层 `Vec`。
+    #[must_use]
     pub fn into_vec(self) -> Vec<E> {
         self.0
     }
@@ -137,11 +143,19 @@ impl<'a, K: Element> View<'a, K> {
     }
 
     /// 构造 `rows × cols` 行主序只读视图。
+    ///
+    /// # Errors
+    ///
+    /// 切片长度不等于 `rows * cols` 时返回形状校验错误。
     pub fn matrix(rows: usize, cols: usize, slice: &'a [K]) -> Result<Self> {
         Self::new(vec![rows, cols], slice)
     }
 
     /// 构造三条同形二维只读视图，供注意力等算子复用装配逻辑。
+    ///
+    /// # Errors
+    ///
+    /// 任一缓冲长度不等于 `rows * cols` 时返回形状校验错误。
     pub fn matrix_triple(
         rows: usize,
         cols: usize,
@@ -157,6 +171,7 @@ impl<'a, K: Element> View<'a, K> {
     }
 
     /// 保留原始生命周期地取出借用切片。
+    #[must_use]
     pub fn borrowed_slice(&self) -> &'a [K] {
         self.storage
     }
@@ -169,11 +184,16 @@ impl<'a, K: Element> ViewMut<'a, K> {
     }
 
     /// 构造 `rows × cols` 行主序可写视图。
+    ///
+    /// # Errors
+    ///
+    /// 切片长度不等于 `rows * cols` 时返回形状校验错误。
     pub fn matrix(rows: usize, cols: usize, slice: &'a mut [K]) -> Result<Self> {
         Self::new(vec![rows, cols], slice)
     }
 
     /// 消费视图并取出原始可写借用。
+    #[must_use]
     pub fn into_slice_mut(self) -> &'a mut [K] {
         self.storage
     }
@@ -208,16 +228,28 @@ where
     B: Store<K>,
 {
     /// 构造行主序连续张量，元素数必须与形状一致。
+    ///
+    /// # Errors
+    ///
+    /// 缓冲元素数与形状元素数不一致时返回形状校验错误。
     pub fn new(dims: impl Into<R>, storage: B) -> Result<Self> {
         Self::with_order(dims, storage, Order::RowMajor)
     }
 
     /// 按配置的 `order` 构造连续张量。
+    ///
+    /// # Errors
+    ///
+    /// 缓冲元素数与形状元素数不一致时返回形状校验错误。
     pub fn with_order(dims: impl Into<R>, storage: B, order: Order) -> Result<Self> {
         Self::build(dims.into(), storage, order, "tensor::Tensor::with_order")
     }
 
     /// 构造任意合法步长的张量，支持转置、广播和非连续子视图。
+    ///
+    /// # Errors
+    ///
+    /// 步长与轴长不匹配、元素数不符或步长越界时返回布局校验错误。
     pub fn strided(dims: impl Into<R>, strides: impl Into<R>, storage: B) -> Result<Self> {
         let dims = dims.into();
         let strides = strides.into();
@@ -332,11 +364,19 @@ where
     K: Element,
 {
     /// 按形状分配行主序连续零值张量。
+    ///
+    /// # Errors
+    ///
+    /// 零值缓冲预留分配失败时返回容量错误。
     pub fn zeros(dims: impl Into<R>) -> Result<Self> {
         Self::zeros_with_order(dims, Order::RowMajor)
     }
 
     /// 按形状和排列顺序分配连续零值张量。
+    ///
+    /// # Errors
+    ///
+    /// 零值缓冲预留分配失败，或形状连续布局校验不通过时返回错误。
     pub fn zeros_with_order(dims: impl Into<R>, order: Order) -> Result<Self> {
         let dims = dims.into();
         let storage = Owned::zeros(product(dims.as_slice()))?;
@@ -385,7 +425,7 @@ pub(crate) fn assemble<B, R, K>(dims: R, strides: R, base: usize, storage: B) ->
 /// 元素在扁平缓冲里的排列顺序。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Order {
-    /// 行主序：最后一轴相邻（C / NumPy 默认）。
+    /// 行主序：最后一轴相邻（`C` / `NumPy` 默认）。
     RowMajor,
     /// 列主序：第一轴相邻（Fortran / 列主序矩阵接口）。
     ColMajor,
@@ -397,6 +437,7 @@ pub trait AxisLen: Copy {
     const ONE: Self;
 
     /// 饱和乘法，避免不受信任的形状回绕成小元素数。
+    #[must_use]
     fn mul_saturated(self, rhs: Self) -> Self;
 }
 
@@ -573,31 +614,37 @@ impl Shape {
     }
 
     /// 各轴长度。
+    #[must_use]
     pub fn dims(&self) -> &[usize] {
         &self.0
     }
 
     /// 轴数；标量为 0。
+    #[must_use]
     pub fn rank(&self) -> usize {
         self.0.len()
     }
 
     /// 某一轴的长度；越界返回 `None`。
+    #[must_use]
     pub fn dim(&self, axis: usize) -> Option<usize> {
         self.0.get(axis).copied()
     }
 
     /// 元素个数；空形状为 1。
+    #[must_use]
     pub fn numel(&self) -> usize {
         product(&self.0)
     }
 
     /// 该元素类型下需要的字节数，亚字节精度按位向上取整。
+    #[must_use]
     pub fn element_bytes(&self, dtype: DType) -> usize {
         element_bytes(self.numel(), dtype)
     }
 
     /// 按 `order` 推导连续步长。
+    #[must_use]
     pub fn strides(&self, order: Order) -> Vec<usize> {
         let mut strides = vec![0; self.0.len()];
         accumulate(&self.0, &mut strides, order);
@@ -630,6 +677,7 @@ pub struct Slice {
 
 impl Slice {
     /// 连续段，等价于 `start..end`。
+    #[must_use]
     pub const fn new(start: usize, end: usize) -> Self {
         Self {
             start,
@@ -639,6 +687,7 @@ impl Slice {
     }
 
     /// 每隔 `step` 个位置读取一次。
+    #[must_use]
     pub const fn stepped(start: usize, end: usize, step: usize) -> Self {
         Self { start, end, step }
     }

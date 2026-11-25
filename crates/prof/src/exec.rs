@@ -294,8 +294,3 @@ pub(crate) fn add(a: usize, b: usize, name: &str) -> Result<usize> {
     a.checked_add(b)
         .ok_or_else(|| Error::new(Code::Invalid, format!("{name}溢出")))
 }
-
-/// 主机 ABI 的 C `int` 转换；超范围时拒绝调用，不做截断。
-pub(crate) fn c_int(value: usize, name: &str) -> Result<i32> {
-    i32::try_from(value).map_err(|_| Error::new(Code::Invalid, format!("{name} 超出 C int 范围")))
-}

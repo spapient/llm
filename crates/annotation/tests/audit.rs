@@ -11,6 +11,8 @@
 //! 前两条靠 [`code_only`] 先剔掉注释与字面量：生成文本里本身就写着 `format!`，不剔会把"被生成
 //! 的代码"当成"生成器的实现"。剔除器自己有等价类测试，认错一次就会让上面两条静默漏判。
 
+#![deny(clippy::pedantic)]
+
 use std::fs;
 use std::path::{Path, PathBuf};
 

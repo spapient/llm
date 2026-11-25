@@ -217,7 +217,7 @@ pub mod native {
             pub kvec: usize,
         }
 
-        /// 保持原布尔拒绝语义；非法长度或溢出同样拒绝，不进入 C ABI。
+        /// 保持原布尔拒绝语义；非法长度或溢出同样拒绝，校验通过后才进入 intrinsic 桥。
         pub fn dot_block(a: &[i8], bpack: &[i8], out: &mut [i32], gram: Gram) -> bool {
             crate::runtime::gemm_micro::sdot_micro(
                 a,

@@ -60,6 +60,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 #![deny(missing_debug_implementations)]
+#![deny(clippy::pedantic)]
 
 mod decl;
 mod dsl;
@@ -240,6 +241,8 @@ where
 }
 
 /// 两道注解共用的前半趟：解析注解、取被标注类型名；失败时返回「原被标注项 + 编译错误」。
+// 泛型 `S` 要原样移动进返回元组 `(D, String, S)`，按引用无法保留所有权。
+#[allow(clippy::needless_pass_by_value)]
 fn resolve<S, D>(
     attribute: S,
     item: S,

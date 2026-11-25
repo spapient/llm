@@ -10,6 +10,7 @@ use crate::{Owned, Rank, Store, Tensor, invalid};
 /// 绝对值与受溢出保护的绝对差比较。
 pub trait Abs: Default {
     /// 返回非负绝对值；有符号整数最小值饱和到最大值。
+    #[must_use]
     fn abs(self) -> Self;
 
     /// 判断 `|self - rhs| <= tolerance`，整数减法不得溢出。
@@ -40,9 +41,11 @@ macro_rules! signed_abs {
                     self.saturating_abs()
                 }
 
+                // 守卫 `tolerance >= 0` 排除负值；去符号到 u128 受此不变量约束，clippy 不可见该守卫。
+                #[allow(clippy::cast_sign_loss)]
                 fn abs_diff_le(self, rhs: Self, tolerance: Self) -> bool {
                     tolerance >= 0
-                        && (self as i128 - rhs as i128).unsigned_abs() <= tolerance as u128
+                        && (i128::from(self) - i128::from(rhs)).unsigned_abs() <= tolerance as u128
                 }
             }
         )+
@@ -72,6 +75,7 @@ unsigned_abs!(u8, u16, u32, u64);
 macro_rules! elementwise_binary {
     ($name:ident, $trait:ident, $operation:ident, $doc:literal) => {
         #[doc = $doc]
+        #[doc = "# Errors\n\n两侧形状不一致时返回形状校验错误。"]
         pub fn $name<B2: Store<K>, R2: Rank>(
             &self,
             rhs: &Tensor<B2, R2, K>,
@@ -102,6 +106,10 @@ where
     /// 对两个同形张量按逻辑序执行二元映射。
     ///
     /// 两侧的存储、秩见证和元素类型均可不同，输出元素类型也可不同；只有形状必须一致。
+    ///
+    /// # Errors
+    ///
+    /// 两侧形状不一致时返回形状校验错误。
     pub fn zip_with<B2, R2, K2, O, F>(
         &self,
         rhs: &Tensor<B2, R2, K2>,

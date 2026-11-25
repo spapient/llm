@@ -56,6 +56,7 @@ P3 要在边界 crate 挂 Metal/CUDA 后端（ADR 0025 §1、§9；ADR 0028 §3 
 | `crates/prof/src/metal/runtime.rs`（模块级，1 处） | FFI 调用 + 设备缓冲句柄 | 手写 `objc_msgSend` 与 Metal 运行时符号；+1 保留的对象在 `Drop` 恰好 `-release` 一次，句柄私有、不跨线程，自动释放对象由 autorelease 池收口；对外是 `prof::runtime::exec::Executor` 的安全实现 |
 | `crates/prof/src/opencl.rs`（模块级，1 处） | OpenCL FFI + 设备、缓冲与内核句柄 | 原始句柄私有，释放入口按资源所有权各调用一次；调用方只接触拥有型安全封装，错误统一转 `diagnostic`，不向运行时核心泄漏裸指针 |
 | `crates/prof/src/runtime.rs`（`gemm_micro` 模块级，1 处） | 静态 C ABI + 裸指针微内核调用 | 仅经安全切片与强类型几何进入；面板长度、坐标、整数转换先验证，输入只读、输出可写且不重叠；指针不跨线程、不逃逸，功能门禁阈值不变 |
+| `crates/prof/src/gemm.rs`（模块级，1 处） | NEON/dotprod/AVX2 intrinsic + 切片裸指针 | FMA(f32) 与 sdot(i8 dotprod) 内核由 C 迁至 Rust intrinsic；几何、缓冲长度与特性探测仍由上层 `gemm_micro` 安全桥先校验，本岛只在已校验切片上取指针调用 intrinsics；指针不跨线程、不逃逸，SME 段仍留在 `runtime.rs` 的 C ABI 岛 |
 | `crates/nn/src/fast.rs`（函数级，4 处） | 裸指针切片重建 | I8 包装 4 处的长度由调用方打包布局保证；`fast` 段平铺为 `fast.rs`（i8 包装）与 `pool.rs`（常驻池）后按文件分列，总数不变 |
 | `crates/nn/src/pool.rs`（函数级，3 处） | 跨线程发布 | 常驻池 3 处只发布裸指针与一次闸门，裸指针只活到 `done` 齐、主线程返回前 |
 
@@ -117,3 +118,4 @@ CPU 微内核——瓦片 intrinsic 段已收进 `prof::native` 三岛（`gemm8x
 - 2026-11-23：`nn::kernel` 由单文件 `kernel.rs` 平铺为「门面 + 每族一文件」（`kernel_fast.rs` 等 15 个 `kernel_*.rs`、`conv_*.rs` 8 个），`unsafe` 岛随 `fast` 段落到 `kernel_fast.rs`；§6 表格与白名单同步到新路径，总处数仍为 36，存量冻结口径不变。
 - 2026-11-24：`fast` 各段由 `kernel_fast_*.rs` 平铺文件收拢进 `kernel/fast/` 目录（`i8.rs`、`pool.rs` 等），越界点随文件迁移、处数不变（i8 4 + pool 3）；§6 表格与白名单同步到目录路径，存量冻结口径不变。
 - 2026-11-25：Metal 路径同步为 `prof/src/metal/runtime.rs`；登记既有 `prof/src/opencl.rs` 模块级 OpenCL FFI 岛，句柄所有权与释放不变量入表，总处数由 29 校正为 30。
+- 2026-11-26：FMA(f32) 与 sdot(i8 dotprod) 主机内核由 C 迁至 Rust intrinsic，算术本体内聚到新岛 `prof/src/gemm.rs`（模块级 1 处）；几何、缓冲与特性门仍由 `runtime.rs::gemm_micro` 安全桥先校验，SME 段保留在 C ABI 岛；白名单与 §6 表格同步，未放宽阈值。

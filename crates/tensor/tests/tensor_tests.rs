@@ -430,6 +430,8 @@ fn typed_tensor_keeps_its_rank_through_flip_and_window_writes() {
 }
 
 #[test]
+// 计数夹具只取 0..11 小整数，在 f32 精确整数范围内；允许整数到浮点的构造换算。
+#[allow(clippy::cast_precision_loss)]
 fn a_static_rank_owned_tensor_walks_the_whole_shape_surface() {
     let data: Vec<f32> = (0..12).map(|i| i as f32).collect();
     let solid: Tensor<crate::Owned<f32>, [usize; 2], f32> =

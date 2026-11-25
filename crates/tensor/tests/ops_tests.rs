@@ -155,6 +155,8 @@ fn complete_owned_tensor_into_vec_reuses_its_allocation() {
 }
 
 #[test]
+// 混合类型映射仅取 1、2 两个小整数，在 f32 精确整数范围内；允许整数到浮点的测试换算。
+#[allow(clippy::cast_precision_loss)]
 fn zip_with_accepts_different_input_element_types() {
     let left: View<'_, i32> = View::new(vec![2], &[1, 2]).expect("整数输入");
     let right: Tensor<Owned<f32>, [usize; 1], f32> =

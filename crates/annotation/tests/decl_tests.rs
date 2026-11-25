@@ -76,8 +76,8 @@ fn every_bad_layer_annotation_is_rejected_with_an_actionable_message() {
         (r#"name = "a", ops = ["dot"]"#, "out"),
         (r#"name = "a", out = [1]"#, "ops"),
         (r#"name = "a", name = "b""#, "重复"),
-        (r#"out = [1], out = [2]"#, "重复"),
-        (r#"out = [1], in = 4, in = 8"#, "重复"),
+        (r"out = [1], out = [2]", "重复"),
+        (r"out = [1], in = 4, in = 8", "重复"),
         (r#"ops = ["a"], ops = ["a"]"#, "重复"),
         (r#"name = "a", out, ops = ["dot"]"#, "键与值之间的 `=`"),
         (r#"name = "a", out = 3"#, "方括号"),
@@ -249,20 +249,20 @@ fn type_target_rejects_every_malformed_shape() {
 #[test]
 fn value_accessors_are_empty_outside_their_own_variant() {
     assert_eq!(Value::Empty.text(), "");
-    assert!(Value::Empty.names().is_empty());
+    assert_eq!(Value::Empty.names(), [] as [String; 0]);
     let (axes, at) = Value::Empty.axes();
     assert!(axes.is_empty() && at == 0);
 
     let width = Value::Width(3, 2);
     assert_eq!(width.text(), "");
-    assert!(width.names().is_empty());
-    assert!(width.axes().0.is_empty());
-    assert!(width.holes().0.is_empty());
+    assert_eq!(width.names(), [] as [String; 0]);
+    assert_eq!(width.axes().0, []);
+    assert_eq!(width.holes().0, []);
 
     let holes = Value::Holes(Vec::new(), 4);
     assert_eq!(holes.text(), "");
-    assert!(holes.names().is_empty());
-    assert!(holes.axes().0.is_empty());
+    assert_eq!(holes.names(), [] as [String; 0]);
+    assert_eq!(holes.axes().0, []);
 }
 
 /// 名字既不能是空白，也不能含控制字符；两类坏字符各有一句指向名字本身的提示。
@@ -275,9 +275,9 @@ fn a_name_rejects_whitespace_and_control_characters() {
 /// 每种括号在错误信息里都有可读写法；透明组没有可见括号，要写成「不可见分组」。
 #[test]
 fn every_bracket_describes_a_readable_group() {
-    assert!(Bracket::Paren.describe().contains("("));
-    assert!(Bracket::Brace.describe().contains("{"));
-    assert!(Bracket::Square.describe().contains("["));
+    assert!(Bracket::Paren.describe().contains('('));
+    assert!(Bracket::Brace.describe().contains('{'));
+    assert!(Bracket::Square.describe().contains('['));
     assert!(Bracket::Invisible.describe().contains("不可见"));
 }
 
@@ -295,7 +295,10 @@ impl Rng {
     }
 
     fn pick(&mut self, pool: &[char]) -> char {
-        pool[(self.next() as usize) % pool.len()]
+        // 取模池长后只需要低位下标：u64 随机状态折到 usize 是测试夹具的有意截断。
+        #[allow(clippy::cast_possible_truncation)]
+        let idx = self.next() as usize;
+        pool[idx % pool.len()]
     }
 }
 
@@ -340,15 +343,14 @@ fn a_deterministic_sweep_keeps_every_parser_resilient_and_stable() {
 
 #[test]
 fn a_runtime_annotation_carries_parameter_names_in_order() {
-    let text = r#"name = $name, out = [$tokens, $dim], ops = [$op], role = $role"#;
+    let text = r"name = $name, out = [$tokens, $dim], ops = [$op], role = $role";
     let declaration = parse_runtime(&lex(text)).expect("合法");
     assert_eq!(declaration.name, "name");
     assert_eq!(declaration.out, ["tokens", "dim"]);
     assert_eq!(declaration.ops, ["op"]);
     assert_eq!(declaration.role.as_deref(), Some("role"));
 
-    let square =
-        parse_runtime(&lex(r#"name = $n, out = [$dim, $dim], ops = [$op]"#)).expect("合法");
+    let square = parse_runtime(&lex(r"name = $n, out = [$dim, $dim], ops = [$op]")).expect("合法");
     assert_eq!(square.out, ["dim", "dim"], "同一轴宽可以出现两次");
     assert_eq!(square.role, None, "没写角色走默认值");
     assert!(is_runtime(&lex(text)), "`$` 是运行时形态的唯一判据");
@@ -360,17 +362,17 @@ fn a_runtime_annotation_carries_parameter_names_in_order() {
 fn every_bad_runtime_annotation_is_rejected_with_an_actionable_message() {
     let cases = [
         (r#"name = "x", out = [$a], ops = [$o]"#, "`$`"),
-        (r#"name = $, out = [$a], ops = [$o]"#, "参数名"),
-        (r#"name = $n, out = [$a], ops = []"#, "至少要引用一个"),
-        (r#"name = $n, out = [$a], ops = [$o, $o]"#, "出现了两次"),
-        (r#"name = $n, out = [$n], ops = [$o]"#, "两种类型"),
+        (r"name = $, out = [$a], ops = [$o]", "参数名"),
+        (r"name = $n, out = [$a], ops = []", "至少要引用一个"),
+        (r"name = $n, out = [$a], ops = [$o, $o]", "出现了两次"),
+        (r"name = $n, out = [$n], ops = [$o]", "两种类型"),
         (r#"name = $n, out = [$a], ops = [$o], role = "norm""#, "`$`"),
-        (r#"name = $n, out = [$a], ops = [$o], in = 4"#, "in"),
-        (r#"out = [$a], ops = [$o]"#, "name"),
-        (r#"name = $n, ops = [$o]"#, "out"),
-        (r#"name = $n, out = [$a]"#, "ops"),
-        (r#"name = $n, name = $m, out = [$a], ops = [$o]"#, "重复"),
-        (r#"name = $n, out = [$a $b], ops = [$o]"#, "`,`"),
+        (r"name = $n, out = [$a], ops = [$o], in = 4", "in"),
+        (r"out = [$a], ops = [$o]", "name"),
+        (r"name = $n, ops = [$o]", "out"),
+        (r"name = $n, out = [$a]", "ops"),
+        (r"name = $n, name = $m, out = [$a], ops = [$o]", "重复"),
+        (r"name = $n, out = [$a $b], ops = [$o]", "`,`"),
     ];
     for (text, needle) in cases {
         reject(parse_runtime(&lex(text)), needle);
@@ -435,14 +437,14 @@ fn parallel_annotation_defaults_to_single_process_policy() {
 #[test]
 fn every_bad_parallel_annotation_is_rejected() {
     let cases = [
-        (r#"tp = 0"#, "大于 0"),
-        (r#"pp = 0"#, "大于 0"),
+        (r"tp = 0", "大于 0"),
+        (r"pp = 0", "大于 0"),
         (r#"reduce = "mean""#, "归约"),
         (r#"priority = "urgent""#, "优先级"),
-        (r#"average = 1"#, "字面量"),
+        (r"average = 1", "字面量"),
         (r#"average = "yes""#, "false"),
         (r#"role = "x""#, "未知的注解键"),
-        (r#"tp = 2, tp = 4"#, "重复"),
+        (r"tp = 2, tp = 4", "重复"),
         (r#"reduce = "sum", reduce = "max""#, "重复"),
     ];
     for (text, needle) in cases {

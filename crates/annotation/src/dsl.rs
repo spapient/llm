@@ -60,6 +60,8 @@ impl Body {
 }
 
 /// 解析函数；无论 lowering 成功还是失败，原函数都照原样再发一遍，失败时多挂一条 `compile_error!`。
+// proc-macro 输入流按值消费是既定契约：`item` 交给 `syn::parse` 取走，不能按引用传递。
+#[allow(clippy::needless_pass_by_value)]
 pub(crate) fn expand(attribute: TokenStream, item: TokenStream) -> TokenStream {
     let function = match syn::parse::<ItemFn>(item) {
         Ok(function) => function,

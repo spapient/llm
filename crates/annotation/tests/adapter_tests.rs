@@ -115,7 +115,7 @@ fn a_transparent_group_is_not_mistaken_for_a_bracket_group() {
 #[test]
 fn a_runtime_annotation_rejection_keeps_the_annotated_item() {
     let expanded = expand_runtime(
-        text(r#"name = $name, out = [$tokens], ops = [$op]"#),
+        text(r"name = $name, out = [$tokens], ops = [$op]"),
         text("pub struct Head { len: usize }"),
     );
     assert!(expanded.0.contains("compile_error!"), "{}", expanded.0);
@@ -133,7 +133,7 @@ fn a_runtime_annotation_rejection_keeps_the_annotated_item() {
 #[test]
 fn the_runtime_expansion_inserts_the_slot_before_the_constructor() {
     let declaration =
-        decl::parse_runtime(&lex(r#"name = $name, out = [$tokens, $dim], ops = [$op]"#))
+        decl::parse_runtime(&lex(r"name = $name, out = [$tokens, $dim], ops = [$op]"))
             .expect("合法运行时注解");
     let item = text("pub struct Head { len: usize }");
     let expanded = attach(

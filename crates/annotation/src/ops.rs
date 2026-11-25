@@ -570,9 +570,14 @@ fn variant_schedule(row: &Table) -> String {
 fn variant_share(row: &Table) -> f64 {
     row.get("mma_share")
         .and_then(|value| {
-            value
-                .as_float()
-                .or_else(|| value.as_integer().map(|number| number as f64))
+            value.as_float().or_else(|| {
+                value.as_integer().map(|number| {
+                    // `mma_share` 是 0..1 占比：整数入参按浮点收，末位精度损失不影响闭集归一化。
+                    #[allow(clippy::cast_precision_loss)]
+                    let share = number as f64;
+                    share
+                })
+            })
         })
         .unwrap_or(0.0)
 }
@@ -761,7 +766,7 @@ mod tests {
         assert_eq!(direct.mma_share, 0.0);
         assert!(model.grid.is_none());
         assert!(model.chunk.is_none());
-        assert!(model.phases.is_empty());
+        assert_eq!(model.phases, []);
     }
 
     /// 区间四种写法分别落到对应模型形态。

@@ -2,6 +2,8 @@
 
 #[path = "exec.rs"]
 pub mod exec;
+#[path = "gemm.rs"]
+mod kernel;
 #[cfg(target_os = "macos")]
 #[path = "metal/runtime.rs"]
 pub mod metal;
@@ -12,13 +14,18 @@ pub mod opencl;
 /// `gemm_micro.k` 的安全静态 ABI 桥；所有裸指针都受切片长度、坐标、溢出与特性门约束。
 #[allow(unsafe_code)]
 pub mod gemm_micro {
-    use super::exec::{add, area, c_int};
+    use super::exec::{add, area};
     use diagnostic::{Code, Error, Result};
 
     include!(concat!(env!("OUT_DIR"), "/gemm_micro_contract.rs"));
 
+    #[cfg(all(feature = "bench", target_arch = "aarch64"))]
+    unsafe extern "C" {
+        fn cutile_sme_pure(rounds: usize);
+        fn cutile_sme_mix(rounds: usize, a: *const f32, b: *const f32);
+    }
+
     type Sizes = (usize, usize, usize);
-    type FmaFn = unsafe extern "C" fn(*const f32, *const f32, *mut f32, i32, i32, i32, i32, i32);
 
     fn invalid<T>(message: impl Into<String>) -> Result<T> {
         Err(Error::new(Code::Invalid, message.into()).with("prof::runtime::gemm_micro"))
@@ -45,14 +52,6 @@ pub mod gemm_micro {
         ))
     }
 
-    fn c_args<const N: usize>(values: [usize; N]) -> Result<[i32; N]> {
-        let mut out = [0; N];
-        for (dst, value) in out.iter_mut().zip(values) {
-            *dst = c_int(value, "ABI 参数")?;
-        }
-        Ok(out)
-    }
-
     fn fma_needs(tile: (usize, usize, usize, usize)) -> Result<(Sizes, usize)> {
         let (row, col, n, kb) = tile;
         let (rows, cols) = position(row, col, FMA_MR, FMA_NR)?;
@@ -77,51 +76,39 @@ pub mod gemm_micro {
             return invalid("FMA 列坐标越界");
         }
         ensure(need, (panel.len(), b.len(), out.len()), "FMA")?;
-        dispatch_fma(
-            panel,
-            b,
-            out,
-            c_args([tile.0, tile.1, tile.2, tile.3])?,
-            first,
-        );
+        dispatch_fma(panel, b, out, tile, first);
         Ok(())
     }
 
+    fn dispatch_fma(
+        a: &[f32],
+        b: &[f32],
+        out: &mut [f32],
+        tile: (usize, usize, usize, usize),
+        first: bool,
+    ) {
+        let (row, col, n, kb) = tile;
+        #[cfg(target_arch = "x86_64")]
+        {
+            if avx2_fma_detected() {
+                unsafe { super::kernel::fma_avx2(a, b, out, row, col, n, kb, first) };
+            } else {
+                super::kernel::fma_scalar(a, b, out, row, col, n, kb, first);
+            }
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            unsafe { super::kernel::fma_neon(a, b, out, row, col, n, kb, first) };
+        }
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        {
+            super::kernel::fma_scalar(a, b, out, row, col, n, kb, first);
+        }
+    }
+
     #[cfg(target_arch = "x86_64")]
-    fn fma_isa() -> FmaFn {
-        if !(std::arch::is_x86_feature_detected!("avx2")
-            && std::arch::is_x86_feature_detected!("fma"))
-        {
-            return cutile_fma_micro_scalar;
-        }
-        #[cfg(target_env = "msvc")]
-        {
-            cutile_fma_micro_avx2
-        }
-        #[cfg(not(target_env = "msvc"))]
-        {
-            cutile_fma_micro
-        }
-    }
-
-    #[cfg(not(target_arch = "x86_64"))]
-    fn fma_isa() -> FmaFn {
-        cutile_fma_micro
-    }
-
-    fn dispatch_fma(a: &[f32], b: &[f32], out: &mut [f32], args: [i32; 4], first: bool) {
-        unsafe {
-            fma_isa()(
-                a.as_ptr(),
-                b.as_ptr(),
-                out.as_mut_ptr(),
-                args[0],
-                args[1],
-                args[2],
-                args[3],
-                i32::from(first),
-            );
-        }
+    fn avx2_fma_detected() -> bool {
+        std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma")
     }
 
     #[cfg(target_arch = "aarch64")]
@@ -133,6 +120,7 @@ pub mod gemm_micro {
         false
     }
 
+    /// 向量化段门槛：dotprod 可用，且 kvec 非零、不超 K、为 16 的倍数；其余平台交上层标量兜底。
     fn sdot_ready(g: (usize, usize, usize, usize, usize)) -> bool {
         sdot_available() && g.4 >= 16 && g.4 <= g.3 && g.4.is_multiple_of(16)
     }
@@ -142,14 +130,14 @@ pub mod gemm_micro {
         b: &[i8],
         out: &[i32],
         g: (usize, usize, usize, usize, usize),
-    ) -> Result<[i32; 5]> {
+    ) -> Result<()> {
         let (rows, cols) = position(g.0, g.1, SDOT_MR, SDOT_NR)?;
         ensure(
             sizes(rows, cols, g.2, g.3)?,
             (a.len(), b.len(), out.len()),
             "sdot",
         )?;
-        c_args([g.0, g.1, g.2, g.3, g.4])
+        Ok(())
     }
 
     /// sdot 单块：元组依次是行、列块、输出列宽、K 与向量化 K 长度。
@@ -162,20 +150,17 @@ pub mod gemm_micro {
         if !sdot_ready(g) {
             return Ok(false);
         }
-        let args = checked_sdot(a, b, out, g)?;
-        unsafe {
-            cutile_sdot_micro(
-                a.as_ptr(),
-                b.as_ptr(),
-                out.as_mut_ptr(),
-                args[0],
-                args[1],
-                args[2],
-                args[3],
-                args[4],
-            );
+        checked_sdot(a, b, out, g)?;
+        #[cfg(target_arch = "aarch64")]
+        {
+            let (row, blk, n, k, kvec) = g;
+            unsafe { super::kernel::sdot_dotprod(a, b, out, row, blk, n, k, kvec) };
+            Ok(true)
         }
-        Ok(true)
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            Ok(false)
+        }
     }
 
     #[cfg(all(nightly, target_arch = "aarch64"))]
@@ -363,5 +348,95 @@ pub mod gemm_micro {
         unsafe {
             cutile_sme_stage(panel.as_ptr(), b.as_ptr(), out.as_mut_ptr(), n, k, blocks);
         }
+    }
+
+    #[cfg(all(feature = "bench", target_arch = "aarch64"))]
+    #[doc = "FMA 纯端口探针：环内无内存访问。"]
+    pub fn port_fma(rounds: usize) -> bool {
+        if rounds == 0 {
+            return false;
+        }
+        unsafe {
+            super::kernel::fma_pure_probe(rounds);
+        }
+        true
+    }
+
+    #[cfg(all(feature = "bench", target_arch = "aarch64"))]
+    #[doc = "sdot 纯端口探针：无 dotprod 时拒绝执行。"]
+    pub fn port_sdot(rounds: usize) -> bool {
+        if rounds == 0 || !sdot_available() {
+            return false;
+        }
+        unsafe {
+            super::kernel::sdot_pure_probe(rounds);
+        }
+        true
+    }
+
+    #[cfg(all(feature = "bench", target_arch = "aarch64"))]
+    /// 取数探针公共门槛：`k` 非零且两面切片长度足够。
+    fn probe_ready<T>(a: &[T], b: &[T], need: usize, k: usize) -> bool {
+        k != 0 && a.len() >= need && b.len() >= need
+    }
+
+    #[cfg(all(feature = "bench", target_arch = "aarch64"))]
+    /// sdot 取数探针额外门槛：向量化段长合规且 dotprod 可用。
+    fn sdot_probe_ready(k: usize) -> bool {
+        k.is_multiple_of(16) && sdot_available()
+    }
+
+    #[cfg(all(feature = "bench", target_arch = "aarch64"))]
+    #[doc = "FMA 取数探针：调用与生产相同的 NEON 瓦片内核。"]
+    pub fn port_fma_block(rounds: usize, a: &[f32], b: &[f32], k: usize) -> bool {
+        let Ok(need) = area(FMA_NR, k, "FMA probe") else {
+            return false;
+        };
+        if rounds == 0 || !probe_ready(a, b, need, k) {
+            return false;
+        }
+        unsafe {
+            super::kernel::fma_block_probe(rounds, a.as_ptr(), b.as_ptr(), k);
+        }
+        true
+    }
+
+    #[cfg(all(feature = "bench", target_arch = "aarch64"))]
+    #[doc = "sdot 取数探针：调用与生产相同的 dotprod 瓦片内核。"]
+    pub fn port_sdot_block(rounds: usize, a: &[i8], b: &[i8], k: usize) -> bool {
+        let Ok(need) = area(SDOT_MR, k, "sdot probe") else {
+            return false;
+        };
+        if rounds == 0 || !probe_ready(a, b, need, k) || !sdot_probe_ready(k) {
+            return false;
+        }
+        unsafe {
+            super::kernel::sdot_block_probe(rounds, a.as_ptr(), b.as_ptr(), k);
+        }
+        true
+    }
+
+    #[cfg(all(feature = "bench", target_arch = "aarch64"))]
+    #[doc = "SME 纯外积探针：与生产共用 fmopa 核心，环内无内存访问。"]
+    pub fn port_run(rounds: usize) -> bool {
+        if rounds == 0 || !sme_available() {
+            return false;
+        }
+        unsafe {
+            cutile_sme_pure(rounds);
+        }
+        true
+    }
+
+    #[cfg(all(feature = "bench", target_arch = "aarch64"))]
+    #[doc = "SME 固定缓存行取数探针：与生产共用 fmopa 核心。"]
+    pub fn port_mix(rounds: usize, a: &[f32; SME_MR], b: &[f32; SME_NR]) -> bool {
+        if rounds == 0 || !sme_available() {
+            return false;
+        }
+        unsafe {
+            cutile_sme_mix(rounds, a.as_ptr(), b.as_ptr());
+        }
+        true
     }
 }

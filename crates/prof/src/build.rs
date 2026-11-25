@@ -21,6 +21,9 @@ mod sign;
 #[path = "buildops.rs"]
 mod buildops;
 
+#[path = "nativebuild.rs"]
+mod nativebuild;
+
 #[path = "buildtables.rs"]
 mod buildtables;
 
@@ -57,7 +60,7 @@ fn main() {
     let tables = buildtables::tables_of(&devices, &out, images);
     let (template_list, templates_table) =
         buildops::template_tables_of(Path::new(&manifest), &devices);
-    buildops::build_native(Path::new(&manifest), &out);
+    nativebuild::build_native(Path::new(&manifest), &out);
 
     for (name, text) in [
         ("embedded.rs", buildtables::archives_of(&devices)),

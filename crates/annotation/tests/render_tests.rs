@@ -31,7 +31,7 @@ fn q() -> String {
 #[test]
 fn a_runtime_declaration_generates_a_constructor_macro() {
     let code = render_runtime(
-        &runtime_declaration(r#"name = $name, out = [$tokens, $dim], ops = [$op], role = $role"#),
+        &runtime_declaration(r"name = $name, out = [$tokens, $dim], ops = [$op], role = $role"),
         "Embedding",
     );
     assert!(
@@ -54,7 +54,7 @@ fn a_runtime_declaration_generates_a_constructor_macro() {
 #[test]
 fn a_runtime_declaration_dedupes_axes_and_defaults_the_role() {
     let code = render_runtime(
-        &runtime_declaration(r#"name = $name, out = [$dim, $dim], ops = [$op]"#),
+        &runtime_declaration(r"name = $name, out = [$dim, $dim], ops = [$op]"),
         "Square",
     );
     assert!(
@@ -252,7 +252,7 @@ fn every_form_renders_balanced_delimiters() {
         "Q",
     ));
     assert_balanced(&render_runtime(
-        &runtime_declaration(r#"name = $name, out = [$a, $b], ops = [$op, $op2], role = $r"#),
+        &runtime_declaration(r"name = $name, out = [$a, $b], ops = [$op, $op2], role = $r"),
         "R",
     ));
     for skeleton in SKELETONS {
@@ -290,7 +290,7 @@ fn one_render_allocates_exactly_once() {
     );
 
     let runtime = runtime_declaration(
-        r#"name = $name, out = [$dim, $dim], ops = [$matmul, $bias], role = $role"#,
+        r"name = $name, out = [$dim, $dim], ops = [$matmul, $bias], role = $role",
     );
     let code = render_runtime(&runtime, "crate::MultiHeadAttention");
     assert_eq!(

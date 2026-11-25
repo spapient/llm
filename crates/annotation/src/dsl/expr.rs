@@ -143,6 +143,8 @@ fn method_call(method: &ExprMethodCall, idx: &str, params: &[Param]) -> syn::Res
 }
 
 /// 方法变体的 IR 构造：一元落 `Unary`，`min`/`max` 落二元；与查找 / 校验分流，压低单函数复杂度。
+// `receiver` 进 `quote!` 插值：按值携带待展开片段，引用会迫使上游先克隆。
+#[allow(clippy::needless_pass_by_value)]
 fn build_method(
     known: &Method,
     method: &ExprMethodCall,
@@ -188,9 +190,8 @@ fn float_literal(lit: &ExprLit) -> syn::Result<TokenStream2> {
 /// 名字在表达式里要么是 `f32` 标量，要么是「必须带下标读取」的缓冲；循环变量只能当下标用。
 fn scalar_use(path: &ExprPath, idx: &str, params: &[Param]) -> syn::Result<TokenStream2> {
     let name = scalar_ident(path, idx)?;
-    let kind = match param_kind(params, &name) {
-        Some(kind) => kind,
-        None => return fail(path.span(), &format!("unknown kernel value `{name}`")),
+    let Some(kind) = param_kind(params, &name) else {
+        return fail(path.span(), &format!("unknown kernel value `{name}`"));
     };
     match kind {
         ParamKind::F32 => Ok(quote!(::cutile::kernel::Expr::Scalar(#name.to_string()))),

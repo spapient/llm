@@ -116,6 +116,8 @@ fn a_contiguous_tensor_materialises_to_an_equal_copy() {
 }
 
 /// 0 到 11 的 3×4 连续张量：下标 = 行 * 4 + 列。
+// 计数夹具只取小整数，在 f32 精确整数范围内；允许整数到浮点的构造换算。
+#[allow(clippy::cast_precision_loss)]
 fn counted() -> Vec<f32> {
     (0..12).map(|i| i as f32).collect()
 }
@@ -667,6 +669,8 @@ fn transpose_is_zero_copy_metadata() {
 }
 
 #[test]
+// 计数夹具只取 0..23 小整数，在 f32 精确整数范围内；允许整数到浮点的构造换算。
+#[allow(clippy::cast_precision_loss)]
 fn permute_reorders_axes() {
     let data: Vec<f32> = (0..24).map(|value| value as f32).collect();
     let tensor: Tensor<&[f32], [usize; 3], f32> =

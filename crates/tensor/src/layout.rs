@@ -422,6 +422,8 @@ pub(crate) struct Offsets<'a, R> {
 
 impl<'a, R: Rank> Offsets<'a, R> {
     /// 创建偏移序列。无效见证或翻转起点溢出会产生空序列而非 panic。
+    // 基址由布局校验约束在缓冲范围内，宽度不超 isize；clippy 看不到该不变量，允许构造转换。
+    #[allow(clippy::cast_possible_wrap)]
     pub(crate) fn new(
         dims: &'a [usize],
         strides: &'a [usize],
@@ -486,6 +488,8 @@ impl<'a, R: Rank> Offsets<'a, R> {
     }
 
     /// 返回单次行进与轴回绕的有向位移，正反方向共用同一套进位。
+    // stride 与轴长 dim 均经布局校验约束在缓冲范围内，宽度不超 isize；允许形状整数到有向位移的换算。
+    #[allow(clippy::cast_possible_wrap)]
     fn directed_step(stride: usize, dim: usize, reversed: bool) -> (isize, isize) {
         let stride = stride as isize;
         let span = stride * dim as isize;
@@ -500,6 +504,8 @@ impl<'a, R: Rank> Offsets<'a, R> {
 impl<R: Rank> Iterator for Offsets<'_, R> {
     type Item = usize;
 
+    // 当前落点由基址与有向进位约束在缓冲内、下标非负；clippy 看不到反向方向的非负不变量。
+    #[allow(clippy::cast_sign_loss)]
     fn next(&mut self) -> Option<Self::Item> {
         if self.remaining == 0 {
             return None;
@@ -809,7 +815,7 @@ where
         value: K,
     ) -> Option<()> {
         let layout = self.window(ranges.as_ref())?;
-        self.write_window(layout, core::iter::repeat(value));
+        self.write_window(&layout, core::iter::repeat(value));
         Some(())
     }
 
@@ -824,12 +830,12 @@ where
         if values.len() != product(layout.dims()) {
             return None;
         }
-        self.write_window(layout, values.iter().copied());
+        self.write_window(&layout, values.iter().copied());
         Some(())
     }
 
     /// 共用窗口写入循环；调用方负责校验填充值或源元素数量。
-    fn write_window(&mut self, layout: Layout<R>, values: impl IntoIterator<Item = K>) {
+    fn write_window(&mut self, layout: &Layout<R>, values: impl IntoIterator<Item = K>) {
         let offsets = Offsets::<R>::new(layout.dims(), layout.strides(), layout.base, &[]);
         let target = self.storage.slice_mut();
         for (offset, value) in offsets.zip(values) {

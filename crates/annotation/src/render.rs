@@ -269,7 +269,7 @@ const CONST: &str = "        static SPEC: ::std::sync::OnceLock<::nn::ContractSp
 /// 形状表达式：空形状必须显式给 `Vec<usize>`——`Shape::new([])` 推断不出元素类型。
 fn shape_of<T>(code: &mut String, axes: &[T], each: impl FnMut(&mut String, &T)) {
     if axes.is_empty() {
-        code.push_str("::nn::Shape::new(::std::vec::Vec::<usize>::new())")
+        code.push_str("::nn::Shape::new(::std::vec::Vec::<usize>::new())");
     } else {
         code.push_str("::nn::Shape::new([");
         comma(code, axes.iter(), each);
@@ -325,13 +325,12 @@ pub(crate) fn render_parallel(declaration: &ParallelDecl, ty: &str) -> String {
         declaration.tp, declaration.pp, declaration.dp
     );
     code.push_str("            .expect(\"注解度数已在编译期校验非零；此处仅拒绝 u32 上界溢出\")\n");
-    code.push_str(&format!(
-        "            .with_reduce(::shard::Reduce::{reduce})\n"
-    ));
-    code.push_str(&format!("            .with_average({average})\n"));
-    code.push_str(&format!(
-        "            .with_priority(::shard::Priority::{priority})\n"
-    ));
+    let _ = writeln!(code, "            .with_reduce(::shard::Reduce::{reduce})");
+    let _ = writeln!(code, "            .with_average({average})");
+    let _ = writeln!(
+        code,
+        "            .with_priority(::shard::Priority::{priority})"
+    );
     code.push_str("    }\n}\n");
     code
 }
@@ -367,7 +366,7 @@ pub(crate) const OPS_ROOM: usize = 8192;
 /// 不存在变体的代码）；与 [`render_model`] 的闭集兜底同一口径。
 pub(crate) fn render_ops(ops: &[OpModel]) -> String {
     match first_error(ops) {
-        Some(message) => format!("compile_error!({:?});\n", message),
+        Some(message) => format!("compile_error!({message:?});\n"),
         None => render_ops_unchecked(ops),
     }
 }
@@ -508,8 +507,8 @@ fn render_op(code: &mut String, op: &OpModel) {
     render_axes(code, &op.axes);
     render_needs(code, &op.needs);
     render_layouts(code, &op.layouts);
-    render_grid(code, &op.grid);
-    render_chunk(code, &op.chunk);
+    render_grid(code, op.grid.as_ref());
+    render_chunk(code, op.chunk.as_ref());
     render_consts(code, &op.consts);
     render_variants(code, &op.variants);
     render_phases(code, &op.phases);
@@ -518,7 +517,7 @@ fn render_op(code: &mut String, op: &OpModel) {
 
 /// 字符串字段：`name: "..",`。
 fn field_str(code: &mut String, field: &str, value: &str) {
-    code.push_str(&format!("        {field}: "));
+    let _ = write!(code, "        {field}: ");
     literal(code, value);
     code.push_str(",\n");
 }
@@ -526,7 +525,7 @@ fn field_str(code: &mut String, field: &str, value: &str) {
 /// 骨架字段：拼 `Skeleton::Variant`。
 fn skeleton_field(code: &mut String, skeleton: &str) {
     let path = variant_path(&OP_SKELETONS, "::llm_prof::decl::Skeleton", skeleton);
-    code.push_str(&format!("        skeleton: {path},\n"));
+    let _ = writeln!(code, "        skeleton: {path},");
 }
 
 /// 轴列表：`axes: &[AxisView { .. }, ..],`。
@@ -588,7 +587,9 @@ fn render_attr(code: &mut String, attr: &AttrModel) {
 /// 区间表达式：选 const 构造子。
 fn span_expr(code: &mut String, span: &SpanModel) {
     match span {
-        SpanModel::Any => code.push_str("::llm_prof::atom::Span::any()"),
+        SpanModel::Any | SpanModel::Range(..) => {
+            code.push_str("::llm_prof::atom::Span::any()");
+        }
         SpanModel::Exact(value) => {
             let _ = write!(code, "::llm_prof::atom::Span::exact({value})");
         }
@@ -598,7 +599,6 @@ fn span_expr(code: &mut String, span: &SpanModel) {
         SpanModel::AtLeast(value) => {
             let _ = write!(code, "::llm_prof::atom::Span::at_least({value})");
         }
-        SpanModel::Range(..) => code.push_str("::llm_prof::atom::Span::any()"),
     }
 }
 
@@ -616,7 +616,7 @@ fn render_layouts(code: &mut String, layouts: &[(String, String)]) {
 }
 
 /// 网格映射；缺省为 `None`。
-fn render_grid(code: &mut String, grid: &Option<GridModel>) {
+fn render_grid(code: &mut String, grid: Option<&GridModel>) {
     code.push_str("        grid: ");
     match grid {
         Some(grid) => {
@@ -636,7 +636,7 @@ fn render_grid(code: &mut String, grid: &Option<GridModel>) {
 }
 
 /// 分块并行；缺省为 `None`。
-fn render_chunk(code: &mut String, chunk: &Option<ChunkModel>) {
+fn render_chunk(code: &mut String, chunk: Option<&ChunkModel>) {
     code.push_str("        chunk: ");
     match chunk {
         Some(chunk) => {
@@ -694,7 +694,7 @@ fn render_phases(code: &mut String, phases: &[PhaseModel]) {
         comma(code, phase.reads.iter(), |code, value| literal(code, value));
         code.push_str("], writes: &[");
         comma(code, phase.writes.iter(), |code, value| {
-            literal(code, value)
+            literal(code, value);
         });
         code.push_str("] }");
     });

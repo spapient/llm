@@ -30,6 +30,8 @@ fn idxs(dims: &[usize]) -> Vec<Vec<usize>> {
 }
 
 /// 断言每个多下标换出一个互不相同的线性位号，且 `0..numel` 全被取到。
+// 读回值来自计数缓冲，等于非负小整数位号；clippy 看不到该夹具不变量，允许浮点回位号换算。
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn assert_bijection(view: &View<'_, f32>, dims: &[usize]) {
     let numel = crate::product(dims);
     let mut seen = vec![false; numel];
@@ -43,6 +45,8 @@ fn assert_bijection(view: &View<'_, f32>, dims: &[usize]) {
 }
 
 /// 行主序缓冲：第 `i` 个元素就是 `i`，于是「位号」与「值」互为账本。
+// 计数夹具只取 0..=625 的小整数，在 f32 精确整数范围内；允许整数到浮点的构造换算。
+#[allow(clippy::cast_precision_loss)]
 fn counting(dims: &[usize]) -> Vec<f32> {
     (0..crate::product(dims)).map(|i| i as f32).collect()
 }
